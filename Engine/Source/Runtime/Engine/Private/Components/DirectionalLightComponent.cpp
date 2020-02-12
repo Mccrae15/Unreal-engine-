@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 /*=============================================================================
 	DirectionalLightComponent.cpp: DirectionalLightComponent implementation.
@@ -38,6 +38,57 @@ static TAutoConsoleVariable<float> CVarCSMShadowDistanceFadeoutMultiplier(
 	TEXT("Multiplier for the CSM distance fade"),
 	ECVF_RenderThreadSafe | ECVF_Scalability );
 
+static TAutoConsoleVariable<float> CVarPerObjectCastDistanceRadiusScale(
+	TEXT("r.Shadow.PerObjectCastDistanceRadiusScale"),
+	8.0f,
+	TEXT("PerObjectCastDistanceRadiusScale The scale factor multiplied with the radius of the object to calculate the maximum distance a per-object directional shadow can reach. This will only take effect after a certain (large) radius. Default is 8 times the object radius."),
+	ECVF_RenderThreadSafe
+	);
+static TAutoConsoleVariable<float> CVarPerObjectCastDistanceMin(
+	TEXT("r.Shadow.PerObjectCastDistanceMin"),
+	(float)HALF_WORLD_MAX / 32.0f,
+	TEXT("Minimum cast distance for Per-Object shadows, i.e., CastDistDance = Max(r.Shadow.PerObjectCastDistanceRadiusScale * object-radius, r.Shadow.PerObjectCastDistanceMin).\n")
+	TEXT("  Default: HALF_WORLD_MAX / 32.0f"),
+	ECVF_RenderThreadSafe
+	);
+static TAutoConsoleVariable<int32> CVarMaxNumFarShadowCascades(
+	TEXT("r.Shadow.MaxNumFarShadowCascades"),
+	10,
+	TEXT("Max number of far shadow cascades that can be cast from a directional light"),
+	ECVF_RenderThreadSafe | ECVF_Scalability );
+
+ENGINE_API int32 GFarShadowStaticMeshLODBias = 0;
+FAutoConsoleVariableRef CVarFarShadowStaticMeshLODBias(
+	TEXT("r.Shadow.FarShadowStaticMeshLODBias"),
+	GFarShadowStaticMeshLODBias,
+	TEXT("Notice: only selected geometry types (static meshes and landscapes) respect this value."),
+	ECVF_Scalability | ECVF_RenderThreadSafe
+);
+
+static TAutoConsoleVariable<float> CVarFarShadowDistanceOverride(
+	TEXT("r.Shadow.FarShadowDistanceOverride"),
+	0.0f,
+	TEXT("Overriding far shadow distance for all directional lighst"),
+	ECVF_RenderThreadSafe | ECVF_Scalability);
+
+static TAutoConsoleVariable<float> CVarRtdfFarTransitionScale(
+	TEXT("r.DFFarTransitionScale"),
+	1.0f,
+	TEXT("Use to modify the length of the far transition (fade out) of the distance field shadows.\n")
+	TEXT("1.0: (default) Calculate in the same way as other cascades.")
+	TEXT("0.0: Disable fade out."),
+	ECVF_RenderThreadSafe);
+
+static TAutoConsoleVariable<float> CVarRTDFDistanceScale(
+	TEXT("r.DFDistanceScale"),
+	1.0f,
+	TEXT("Factor to scale directional light property 'DistanceField Shadows Distance', clamped to [0.0001, 10000].\n")
+	TEXT("I.e.: DistanceFieldShadowsDistance *= r.DFDistanceScale.\n")	
+	TEXT("[0.0001,1): shorter distance\n")
+	TEXT(" 1: normal (default)\n")
+	TEXT("(1,10000]: larger distance.)"),
+	ECVF_RenderThreadSafe);
+
 
 /**
  * The scene info for a directional light.
@@ -45,6 +96,9 @@ static TAutoConsoleVariable<float> CVarCSMShadowDistanceFadeoutMultiplier(
 class FDirectionalLightSceneProxy : public FLightSceneProxy
 {
 public:
+
+	/** Control how the cascade size influence the shadow depth bias. */
+	float ShadowCascadeBiasDistribution;
 
 	/** Whether to occlude fog and atmosphere inscattering with screenspace blurred occlusion from this light. */
 	bool bEnableLightShaftOcclusion;
@@ -64,6 +118,16 @@ public:
 	 * Will only be used when non-zero.
 	 */
 	FVector LightShaftOverrideDirection;
+
+	/**
+	 * The atmosphere transmittance to apply on the illuminance
+	 */
+	FLinearColor AtmosphereTransmittanceFactor;
+
+	/**
+	 * The luminance of the sun disk in space (function of the sun illuminance and solid angle)
+	 */
+	FLinearColor SunDiscOuterSpaceLuminance;
 
 	/** 
 	 * Radius of the whole scene dynamic shadow centered on the viewer, which replaces the precomputed shadows based on distance from the camera.  
@@ -103,13 +167,16 @@ public:
 	float TraceDistance;
 
 	/** Initialization constructor. */
-	FDirectionalLightSceneProxy(const UDirectionalLightComponent* Component):
+	FDirectionalLightSceneProxy(const UDirectionalLightComponent* Component) :
 		FLightSceneProxy(Component),
+		ShadowCascadeBiasDistribution(Component->ShadowCascadeBiasDistribution),
 		bEnableLightShaftOcclusion(Component->bEnableLightShaftOcclusion),
 		bUseInsetShadowsForMovableObjects(Component->bUseInsetShadowsForMovableObjects),
 		OcclusionMaskDarkness(Component->OcclusionMaskDarkness),
 		OcclusionDepthRange(Component->OcclusionDepthRange),
 		LightShaftOverrideDirection(Component->LightShaftOverrideDirection),
+		AtmosphereTransmittanceFactor(FLinearColor::White),
+		SunDiscOuterSpaceLuminance(FLinearColor::White),
 		DynamicShadowCascades(Component->DynamicShadowCascades > 0 ? Component->DynamicShadowCascades : 0),
 		CascadeDistributionExponent(Component->CascadeDistributionExponent),
 		CascadeTransitionFraction(Component->CascadeTransitionFraction),
@@ -147,6 +214,7 @@ public:
 		}
 		bCastModulatedShadows = Component->bCastModulatedShadows;
 		ModulatedShadowColor = FLinearColor(Component->ModulatedShadowColor);
+		ShadowAmount = Component->ShadowAmount;
 	}
 
 	void UpdateLightShaftOverrideDirection_GameThread(const UDirectionalLightComponent* Component)
@@ -166,7 +234,7 @@ public:
 	{
 		LightParameters.Position = FVector::ZeroVector;
 		LightParameters.InvRadius = 0.0f;
-		LightParameters.Color = FVector(GetColor());
+		LightParameters.Color = FVector(GetColor() * AtmosphereTransmittanceFactor); 
 		LightParameters.FalloffExponent = 0.0f;
 
 		LightParameters.Direction = -GetDirection();
@@ -225,8 +293,10 @@ public:
 
 	/** Returns the number of view dependent shadows this light will create, not counting distance field shadow cascades. */
 	virtual uint32 GetNumViewDependentWholeSceneShadows(const FSceneView& View, bool bPrecomputedLightingIsValid) const override
-	{ 
-		uint32 TotalCascades = GetNumShadowMappedCascades(View.MaxShadowCascades, bPrecomputedLightingIsValid) + FarShadowCascadeCount;
+	{
+		uint32 ClampedFarShadowCascadeCount = FMath::Min((uint32)CVarMaxNumFarShadowCascades.GetValueOnAnyThread(), FarShadowCascadeCount);
+
+		uint32 TotalCascades = GetNumShadowMappedCascades(View.MaxShadowCascades, bPrecomputedLightingIsValid) + ClampedFarShadowCascadeCount;
 
 		return TotalCascades;
 	}
@@ -313,7 +383,7 @@ public:
 			{
 				FarDistance = GetDistanceFieldShadowDistance();
 			}
-			FarDistance = FMath::Max(FarDistance, FarShadowDistance);
+			FarDistance = FMath::Max(FarDistance, CVarFarShadowDistanceOverride.GetValueOnAnyThread() > 0.0f ? CVarFarShadowDistanceOverride.GetValueOnAnyThread() : FarShadowDistance);
 		}
 	    
 		// The far distance for the dynamic to static fade is the range of the directional light.
@@ -333,17 +403,48 @@ public:
 		OutInitializer.MinLightW = -HALF_WORLD_MAX;
 		// Reduce casting distance on a directional light
 		// This is necessary to improve floating point precision in several places, especially when deriving frustum verts from InvReceiverMatrix
-		OutInitializer.MaxDistanceToCastInLightW = HALF_WORLD_MAX / 32.0f;
+		// This takes the object size into account to ensure that large objects get an extended distance
+		OutInitializer.MaxDistanceToCastInLightW = FMath::Clamp(SubjectBounds.SphereRadius * CVarPerObjectCastDistanceRadiusScale.GetValueOnRenderThread(), CVarPerObjectCastDistanceMin.GetValueOnRenderThread(), (float)WORLD_MAX);
+
 		return true;
 	}
 
 	virtual bool ShouldCreateRayTracedCascade(ERHIFeatureLevel::Type InFeatureLevel, bool bPrecomputedLightingIsValid, int32 MaxNearCascades) const override
 	{
+		static auto CVarDistanceFieldShadowing = IConsoleManager::Get().FindConsoleVariable(TEXT("r.DistanceFieldShadowing"));
+		static IConsoleVariable* CVarHFShadowing = IConsoleManager::Get().FindConsoleVariable(TEXT("r.HeightFieldShadowing"));
+
+		if (CVarDistanceFieldShadowing != nullptr && CVarDistanceFieldShadowing->GetInt() == 0 && (!CVarHFShadowing || !CVarHFShadowing->GetInt()))
+		{
+			return false;
+		}
+
 		const uint32 NumCascades = GetNumShadowMappedCascades(MaxNearCascades, bPrecomputedLightingIsValid);
 		const float RayTracedShadowDistance = GetDistanceFieldShadowDistance();
 		const bool bCreateWithCSM = NumCascades > 0 && RayTracedShadowDistance > GetCSMMaxDistance(bPrecomputedLightingIsValid, MaxNearCascades);
 		const bool bCreateWithoutCSM = NumCascades == 0 && RayTracedShadowDistance > 0;
 		return DoesPlatformSupportDistanceFieldShadowing(GShaderPlatformForFeatureLevel[InFeatureLevel]) && (bCreateWithCSM || bCreateWithoutCSM);
+	}
+
+	virtual void SetAtmosphereRelatedProperties(FLinearColor TransmittanceFactor, FLinearColor SunOuterSpaceLuminance) override
+	{
+		AtmosphereTransmittanceFactor = TransmittanceFactor;
+		SunDiscOuterSpaceLuminance = SunOuterSpaceLuminance;
+	}
+
+	virtual FLinearColor GetOuterSpaceLuminance() const override
+	{ 
+		return SunDiscOuterSpaceLuminance;
+	}
+
+	virtual FLinearColor GetTransmittanceFactor() const override
+	{
+		return AtmosphereTransmittanceFactor;
+	}
+
+	virtual float GetSunLightHalfApexAngleRadian() const override
+	{
+		return 0.5f * LightSourceAngle * PI / 180.0f; // LightSourceAngle is apex angle (angular diameter) in degree
 	}
 
 private:
@@ -397,7 +498,7 @@ private:
 			return 0;
 		}
 
-		return DistanceFieldShadowDistance;
+		return DistanceFieldShadowDistance * FMath::Clamp(CVarRTDFDistanceScale.GetValueOnRenderThread(), 0.0001f, 10000.0f);
 	}
 
 	float GetShadowTransitionScale() const
@@ -557,12 +658,14 @@ private:
 			{
 				// there is only one distance field shadow cascade
 				check(SplitIndex == NumNearCascades + 1);
-				return DistanceFieldShadowDistance;
+				return GetDistanceFieldShadowDistance();
 			}
 			else
 			{
 				// the far cascades start at the after the near cascades
-				return CascadeDistanceWithoutFar + ComputeAccumulatedScale(EffectiveCascadeDistributionExponent, SplitIndex - NumNearCascades, FarShadowCascadeCount) * (FarShadowDistance - CascadeDistanceWithoutFar);
+				uint32 ClampedFarShadowCascadeCount = FMath::Min((uint32)CVarMaxNumFarShadowCascades.GetValueOnAnyThread(), FarShadowCascadeCount);
+
+				return CascadeDistanceWithoutFar + ComputeAccumulatedScale(EffectiveCascadeDistributionExponent, SplitIndex - NumNearCascades, ClampedFarShadowCascadeCount) * ((CVarFarShadowDistanceOverride.GetValueOnAnyThread() > 0.0f ? CVarFarShadowDistanceOverride.GetValueOnAnyThread() : FarShadowDistance) - CascadeDistanceWithoutFar);
 			}
 		}
 		else
@@ -682,7 +785,18 @@ private:
 		// Add the fade region to the end of the subfrustum, if this is not the last cascade.
 		if ((int32)ShadowSplitIndex < (int32)NumTotalCascades - 1)
 		{
-			SplitFar += FadeExtension;			
+			SplitFar += FadeExtension;
+		}
+		else 
+		{
+			if (bIsRayTracedCascade)
+			{
+				FadeExtension *= FMath::Clamp(CVarRtdfFarTransitionScale.GetValueOnAnyThread(), 0.0f, 1.0f);
+			}
+			// For the last cascade, we want to fade out to avoid a hard line, since there is no further cascade to overlap with, 
+			// extending the far makes little sensse as extending the shadow range would be counter intuitive and affect performance. 
+			// Thus, move the fade plane closer:
+			FadePlane -= FadeExtension;
 		}
 
 		if(OutCascadeSettings)
@@ -706,6 +820,8 @@ private:
 			OutCascadeSettings->SplitNear = SplitNear;
 			OutCascadeSettings->FadePlaneOffset = FadePlane;
 			OutCascadeSettings->FadePlaneLength = SplitFar - FadePlane;
+			OutCascadeSettings->CascadeBiasDistribution = ShadowCascadeBiasDistribution;
+			OutCascadeSettings->ShadowSplitIndex = (int32)ShadowSplitIndex;
 		}
 
 		const FSphere CascadeSphere = FDirectionalLightSceneProxy::GetShadowSplitBoundsDepthRange(View, View.ViewMatrices.GetViewOrigin(), SplitNear, SplitFar, OutCascadeSettings);
@@ -736,6 +852,7 @@ UDirectionalLightComponent::UDirectionalLightComponent(const FObjectInitializer&
 	OcclusionDepthRange = 100000.f;
 	OcclusionMaskDarkness = 0.05f;
 
+	ShadowCascadeBiasDistribution = 1;
 	WholeSceneDynamicShadowRadius_DEPRECATED = 20000.0f;
 	DynamicShadowDistanceMovableLight = 20000.0f;
 	DynamicShadowDistanceStationaryLight = 0.f;
@@ -756,13 +873,14 @@ UDirectionalLightComponent::UDirectionalLightComponent(const FObjectInitializer&
 	bCastVolumetricShadow = true;
 
 	ModulatedShadowColor = FColor(128, 128, 128);
+	ShadowAmount = 1.0f;
 }
 
 #if WITH_EDITOR
 /**
  * Called after property has changed via e.g. property window or set command.
  *
- * @param	PropertyThatChanged	UProperty that has been changed, NULL if unknown
+ * @param	PropertyThatChanged	FProperty that has been changed, NULL if unknown
  */
 void UDirectionalLightComponent::PostEditChangeProperty(FPropertyChangedEvent& PropertyChangedEvent)
 {
@@ -772,19 +890,22 @@ void UDirectionalLightComponent::PostEditChangeProperty(FPropertyChangedEvent& P
 
 	DynamicShadowDistanceMovableLight = FMath::Max(DynamicShadowDistanceMovableLight, 0.0f);
 	DynamicShadowDistanceStationaryLight = FMath::Max(DynamicShadowDistanceStationaryLight, 0.0f);
+	ShadowCascadeBiasDistribution = FMath::Clamp(ShadowCascadeBiasDistribution, 0.f, 1.f);
 
 	DynamicShadowCascades = FMath::Clamp(DynamicShadowCascades, 0, 10);
 	FarShadowCascadeCount = FMath::Clamp(FarShadowCascadeCount, 0, 10);
 	CascadeDistributionExponent = FMath::Clamp(CascadeDistributionExponent, .1f, 10.0f);
-	CascadeTransitionFraction = FMath::Clamp(CascadeTransitionFraction, 0.0f, 0.3f);
+	CascadeTransitionFraction = FMath::Clamp(CascadeTransitionFraction, KINDA_SMALL_NUMBER, 0.3f);
 	ShadowDistanceFadeoutFraction = FMath::Clamp(ShadowDistanceFadeoutFraction, 0.0f, 1.0f);
 	// max range is larger than UI
 	ShadowBias = FMath::Clamp(ShadowBias, 0.0f, 10.0f);
+	ShadowSlopeBias = FMath::Clamp(ShadowSlopeBias, 0.0f, 10.0f);
+	ShadowAmount = FMath::Clamp(ShadowAmount, 0.0f, 1.0f);
 
 	Super::PostEditChangeProperty(PropertyChangedEvent);
 }
 
-bool UDirectionalLightComponent::CanEditChange(const UProperty* InProperty) const
+bool UDirectionalLightComponent::CanEditChange(const FProperty* InProperty) const
 {
 	if (InProperty)
 	{
@@ -968,6 +1089,16 @@ void UDirectionalLightComponent::SetLightShaftOverrideDirection(FVector NewValue
 			FDirectionalLightSceneProxy* DirectionalLightSceneProxy = (FDirectionalLightSceneProxy*)SceneProxy;
 			DirectionalLightSceneProxy->UpdateLightShaftOverrideDirection_GameThread(this);
 		}
+	}
+}
+
+void UDirectionalLightComponent::SetShadowAmount(float NewValue)
+{
+	if (AreDynamicDataChangesAllowed()
+		&& ShadowAmount != NewValue)
+	{
+		ShadowAmount = NewValue;
+		MarkRenderStateDirty();
 	}
 }
 

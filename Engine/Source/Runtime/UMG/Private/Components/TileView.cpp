@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "Components/TileView.h"
 
@@ -9,7 +9,6 @@ UTileView::UTileView(const FObjectInitializer& ObjectInitializer)
 	: Super(ObjectInitializer)
 {
 	bIsVariable = true;
-	EntryHeight = 128.f;
 }
 
 TSharedRef<STableViewBase> UTileView::RebuildListWidget()

@@ -1,8 +1,7 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "Windows/WindowsApplication.h"
 #include "Containers/StringConv.h"
-#include "Templates/ScopedPointer.h"
 #include "CoreGlobals.h"
 #include "Internationalization/Text.h"
 #include "Misc/ConfigCacheIni.h"
@@ -22,6 +21,12 @@
 #if WITH_EDITOR
 #include "Modules/ModuleManager.h"
 #include "Developer/SourceCodeAccess/Public/ISourceCodeAccessModule.h"
+#endif
+
+#if WITH_ACCESSIBILITY
+#include "Windows/Accessibility/WindowsUIAManager.h"
+#include "Windows/Accessibility/WindowsUIAWidgetProvider.h"
+#include <UIAutomation.h>
 #endif
 
 // Allow Windows Platform types in the entire file.
@@ -78,6 +83,7 @@ FWindowsApplication* FWindowsApplication::CreateWindowsApplication( const HINSTA
 FWindowsApplication::FWindowsApplication( const HINSTANCE HInstance, const HICON IconHandle )
 	: GenericApplication( MakeShareable( new FWindowsCursor() ) )
 	, InstanceHandle( HInstance )
+	, bMinimized( false )
 	, bUsingHighPrecisionMouseInput( false )
 	, bIsMouseAttached( false )
 	, bForceActivateByMouse( false )
@@ -91,6 +97,9 @@ FWindowsApplication::FWindowsApplication( const HINSTANCE HInstance, const HICON
 		bAllowedToDeferMessageProcessing,
 		TEXT( "Whether windows message processing is deferred until tick or if they are processed immediately" ) )
 	, bInModalSizeLoop( false )
+#if WITH_ACCESSIBILITY
+	, UIAManager(new FWindowsUIAManager(*this))
+#endif
 
 {
 	FMemory::Memzero(ModifierKeyState, EModifierKey::Count);
@@ -311,6 +320,14 @@ void FWindowsApplication::SetMessageHandler( const TSharedRef< FGenericApplicati
 	}
 
 }
+
+#if WITH_ACCESSIBILITY
+void FWindowsApplication::SetAccessibleMessageHandler(const TSharedRef<FGenericAccessibleMessageHandler>& InAccessibleMessageHandler)
+{
+	GenericApplication::SetAccessibleMessageHandler(InAccessibleMessageHandler);
+	UIAManager->OnAccessibleMessageHandlerChanged();
+}
+#endif
 
 bool FWindowsApplication::IsGamepadAttached() const
 {
@@ -568,7 +585,7 @@ inline bool GetSizeForDevID(const FString& TargetDevID, int32& Width, int32& Hei
 			if (CM_Get_Device_ID(DevInfoData.DevInst, Buffer, MAX_DEVICE_ID_LEN, 0) == CR_SUCCESS)
 			{
 				FString DevID(Buffer);
-				DevID = DevID.Mid(8, DevID.Find(TEXT("\\"), ESearchCase::CaseSensitive, ESearchDir::FromStart, 9) - 8);
+				DevID.MidInline(8, DevID.Find(TEXT("\\"), ESearchCase::CaseSensitive, ESearchDir::FromStart, 9) - 8, false);
 				if (DevID == TargetDevID)
 				{
 					HKEY hDevRegKey = SetupDiOpenDevRegKey(DevInfo, &DevInfoData, DICS_FLAG_GLOBAL, 0, DIREG_DEV, KEY_READ);
@@ -1041,7 +1058,86 @@ int32 FWindowsApplication::ProcessMessage( HWND hwnd, uint32 msg, WPARAM wParam,
 						// Informs Windows to use the values as we altered them.
 						return WVR_VALIDRECTS;
 					}
+					else if (wParam)
+					{
+						//////////////////////////////////////////////////////
+						// Find out the schedule of when composition takes place 
+						// so rendering events are slotted into the queue at appropriate moments.
+						// This fixes bad flicker problems when resizing.
+						//////////////////////////////////////////////////////
 
+						LARGE_INTEGER Freq;
+						QueryPerformanceFrequency(&Freq);
+
+						// Ask DWM where the vertical blank falls
+						DWM_TIMING_INFO TimingInfo;
+						memset(&TimingInfo, 0, sizeof(TimingInfo));
+						TimingInfo.cbSize = sizeof(TimingInfo);
+						if (FAILED(DwmGetCompositionTimingInfo(NULL, &TimingInfo)))
+						{
+							return 0;
+						}
+
+						LARGE_INTEGER Now;
+						QueryPerformanceCounter(&Now);
+
+						// DWM told us about SOME vertical blank,
+						// past or future, possibly many frames away.
+						// Convert that into the NEXT vertical blank
+
+						int64 Period = (int64)TimingInfo.qpcRefreshPeriod;
+
+						int64 TimeToVSync = (int64)TimingInfo.qpcVBlank - (int64)Now.QuadPart;
+
+						int64 FrameAdjustMultiplier;
+
+						if (TimeToVSync >= 0)
+						{
+							FrameAdjustMultiplier = TimeToVSync / Period;
+						}
+						else
+						{
+							// Reach back to previous period
+							// so WaitTime represents consistent position within phase
+							FrameAdjustMultiplier = -1 + TimeToVSync / Period;
+						}
+
+						int64 WaitTime = TimeToVSync - (Period * FrameAdjustMultiplier);
+
+						check(WaitTime >= 0);
+						check(WaitTime < Period);
+
+						// Wait for the indicated time using a waitable timer as it 
+						// is more accurate than a simple sleep.
+						HANDLE hTimer = CreateWaitableTimer(NULL, TRUE, NULL);
+						if (NULL != hTimer)
+						{
+							float WaitTimeMilliseconds = 0.0;
+							if (Freq.QuadPart > 0)
+							{
+								WaitTimeMilliseconds = 1000.0 * WaitTime / (float)Freq.QuadPart;
+							}
+
+							// Due time for WaitForSingleObject is in 100 nanosecond units.							
+							float WaitTime100NanoSeconds = (1000.0f * 10.0f * WaitTimeMilliseconds);
+
+							LARGE_INTEGER DueTime;
+
+							// Negative value indicates relative time in the future.
+							DueTime.QuadPart = (LONGLONG)(WaitTime100NanoSeconds) * -1;
+
+							if (SetWaitableTimer(hTimer, &DueTime, 0, NULL, NULL, 0))
+							{
+								// Timeout time (second param) is in milliseconds. Set it to a bit longer than
+								// the timer due time. If everything is working it won't be used.
+								WaitForSingleObject(hTimer, (DWORD)(WaitTimeMilliseconds) + 10);
+							}
+
+							CloseHandle(hTimer);
+						}
+
+						return 0;
+					}
 					return 0;
 				}
 			}
@@ -1353,6 +1449,13 @@ int32 FWindowsApplication::ProcessMessage( HWND hwnd, uint32 msg, WPARAM wParam,
 		case WM_DESTROY:
 			{
 				Windows.Remove( CurrentNativeEventWindow );
+#if WITH_ACCESSIBILITY
+				// Tell UIA that the window no longer exists so that it can release some resources
+				if (GetAccessibleMessageHandler()->ApplicationIsAccessible())
+				{
+					UiaReturnRawElementProvider(hwnd, 0, 0, nullptr);
+				}
+#endif
 				return 0;
 			}
 			break;
@@ -1516,6 +1619,19 @@ int32 FWindowsApplication::ProcessMessage( HWND hwnd, uint32 msg, WPARAM wParam,
 			}
 			break;
 
+#if WITH_ACCESSIBILITY
+		case WM_GETOBJECT:
+		{
+			if (GetAccessibleMessageHandler()->ApplicationIsAccessible())
+			{
+				FScopedWidgetProvider Provider(UIAManager->GetWindowProvider(CurrentNativeEventWindow));
+				LRESULT Result = UiaReturnRawElementProvider(hwnd, wParam, lParam, &Provider.Provider);
+				return Result;
+			}
+			break;
+		}
+#endif
+
 		default:
 			if (bMessageExternallyHandled)
 			{
@@ -1578,6 +1694,10 @@ int32 FWindowsApplication::ProcessDeferredMessage( const FDeferredWindowsMessage
 				if(TextInputMethodSystem.IsValid())
 				{
 					TextInputMethodSystem->ProcessMessage(hwnd, msg, wParam, lParam);
+				}
+				if (msg == WM_INPUTLANGCHANGE)
+				{
+					MessageHandler->OnInputLanguageChanged();
 				}
 				return 0;
 			}
@@ -2065,9 +2185,11 @@ int32 FWindowsApplication::ProcessDeferredMessage( const FDeferredWindowsMessage
 					{
 					case SW_PARENTCLOSING:
 						CurrentNativeEventWindowPtr->OnParentWindowMinimized();
+						bMinimized = true;
 						break;
 					case SW_PARENTOPENING:
 						CurrentNativeEventWindowPtr->OnParentWindowRestored();
+						bMinimized = false;
 						break;
 					default:
 						break;

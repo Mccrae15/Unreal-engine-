@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -14,10 +14,6 @@ class ANIMATIONSHARING_API UAnimationSharingSetup : public UObject
 {
 	GENERATED_UCLASS_BODY()
 public:
-
-#if WITH_EDITOR
-	virtual void PostLoad() override;
-#endif // WITH_EDITOR
 
 	UPROPERTY(EditAnywhere, config, Category = AnimationSharing)
 	TArray<FPerSkeletonAnimationSharingSetup> SkeletonSetups;

@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -98,7 +98,7 @@ public:
 	void UpdateMetaData(TSharedRef<FNavigationMetaData> MetaData);
 
 	/** @return true if the configured navigation object is the same as an un-customized navigation rule set. */
-	bool IsDefault() const;
+	bool IsDefaultNavigation() const;
 
 private:
 

@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "LocalizationConfigurationScript.h"
 #include "LocalizationTargetTypes.h"
@@ -147,7 +147,7 @@ namespace LocalizationConfigurationScript
 		GenerateImportDialogueScriptConfigFile(Target).WriteWithSCC(GetImportDialogueScriptConfigPath(Target));
 		GenerateExportDialogueScriptConfigFile(Target).WriteWithSCC(GetExportDialogueScriptConfigPath(Target));
 		GenerateImportDialogueConfigFile(Target).WriteWithSCC(GetImportDialogueConfigPath(Target));
-		GenerateCompileTextConfigFile(Target).Write(GetCompileTextConfigPath(Target));
+		GenerateCompileTextConfigFile(Target).WriteWithSCC(GetCompileTextConfigPath(Target));
 		GenerateWordCountReportConfigFile(Target).WriteWithSCC(GetWordCountReportConfigPath(Target));
 	}
 
@@ -258,8 +258,9 @@ namespace LocalizationConfigurationScript
 	{
 		FLocalizationConfigurationScript Script;
 
-		const FString ConfigDirRelativeToGameDir = MakePathRelativeForCommandletProcess(GetConfigDir(Target), !Target->IsMemberOfEngineTargetSet());
-		const FString ContentDirRelativeToGameDir = MakePathRelativeForCommandletProcess(GetContentDir(Target), !Target->IsMemberOfEngineTargetSet());
+		const bool bIsEngineTarget = Target->IsMemberOfEngineTargetSet();
+		const FString ConfigDirRelativeToGameDir = MakePathRelativeForCommandletProcess(GetConfigDir(Target), !bIsEngineTarget);
+		const FString ContentDirRelativeToGameDir = MakePathRelativeForCommandletProcess(GetContentDir(Target), !bIsEngineTarget);
 
 		// CommonSettings
 		{
@@ -274,7 +275,7 @@ namespace LocalizationConfigurationScript
 			}
 
 			// Engine targets may not depend on game targets
-			if (!Target->IsMemberOfEngineTargetSet())
+			if (!bIsEngineTarget)
 			{
 				ULocalizationTargetSet* GameTargetSet = ULocalizationSettings::GetGameTargetSet();
 				if (GameTargetSet)
@@ -289,13 +290,13 @@ namespace LocalizationConfigurationScript
 				const ULocalizationTarget* const * OtherTarget = AllLocalizationTargets.FindByPredicate([&TargetDependencyGuid](ULocalizationTarget* const InOtherTarget)->bool{return InOtherTarget->Settings.Guid == TargetDependencyGuid;});
 				if (OtherTarget && Target != *OtherTarget)
 				{
-					ConfigSection.Add( TEXT("ManifestDependencies"), MakePathRelativeForCommandletProcess(GetManifestPath(*OtherTarget), !Target->IsMemberOfEngineTargetSet()) );
+					ConfigSection.Add( TEXT("ManifestDependencies"), MakePathRelativeForCommandletProcess(GetManifestPath(*OtherTarget), !bIsEngineTarget) );
 				}
 			}
 
 			for (const FFilePath& Path : Target->Settings.AdditionalManifestDependencies)
 			{
-				ConfigSection.Add( TEXT("ManifestDependencies"), MakePathRelativeForCommandletProcess(Path.FilePath, !Target->IsMemberOfEngineTargetSet()) );
+				ConfigSection.Add( TEXT("ManifestDependencies"), MakePathRelativeForCommandletProcess(Path.FilePath, !bIsEngineTarget) );
 			}
 
 			for (const FString& ModuleName : Target->Settings.RequiredModuleNames)
@@ -333,14 +334,14 @@ namespace LocalizationConfigurationScript
 			// Include Paths
 			for (const auto& IncludePath : Target->Settings.GatherFromTextFiles.SearchDirectories)
 			{
-				ConfigSection.Add( TEXT("SearchDirectoryPaths"), IncludePath.Path );
+				ConfigSection.Add( TEXT("SearchDirectoryPaths"), FString::Printf(TEXT("%s%s"), *FLocalizationGatherPathRootUtil::GetResolvedPathRootToken(IncludePath.PathRoot), *IncludePath.Path) );
 			}
 
 			// Exclude Paths
 			ConfigSection.Add( TEXT("ExcludePathFilters"), TEXT("Config/Localization/*") );
 			for (const auto& ExcludePath : Target->Settings.GatherFromTextFiles.ExcludePathWildcards)
 			{
-				ConfigSection.Add( TEXT("ExcludePathFilters"), ExcludePath.Pattern );
+				ConfigSection.Add( TEXT("ExcludePathFilters"), FString::Printf(TEXT("%s%s"), *FLocalizationGatherPathRootUtil::GetResolvedPathRootToken(ExcludePath.PathRoot), *ExcludePath.Pattern) );
 			}
 
 			// Source File Search Filters
@@ -363,14 +364,14 @@ namespace LocalizationConfigurationScript
 			// Include Paths
 			for (const auto& IncludePath : Target->Settings.GatherFromPackages.IncludePathWildcards)
 			{
-				ConfigSection.Add( TEXT("IncludePathFilters"), IncludePath.Pattern );
+				ConfigSection.Add( TEXT("IncludePathFilters"), FString::Printf(TEXT("%s%s"), *FLocalizationGatherPathRootUtil::GetResolvedPathRootToken(IncludePath.PathRoot), *IncludePath.Pattern) );
 			}
 
 			// Exclude Paths
 			ConfigSection.Add( TEXT("ExcludePathFilters"), TEXT("Content/Localization/*") );
 			for (const auto& ExcludePath : Target->Settings.GatherFromPackages.ExcludePathWildcards)
 			{
-				ConfigSection.Add( TEXT("ExcludePathFilters"), ExcludePath.Pattern );
+				ConfigSection.Add( TEXT("ExcludePathFilters"), FString::Printf(TEXT("%s%s"), *FLocalizationGatherPathRootUtil::GetResolvedPathRootToken(ExcludePath.PathRoot), *ExcludePath.Pattern) );
 			}
 
 			// Package Extensions
@@ -383,6 +384,17 @@ namespace LocalizationConfigurationScript
 			{
 				ConfigSection.Add( TEXT("CollectionFilters"), CollectionName.ToString() );
 			}
+
+			// Class filters
+			for (const FSoftClassPath& ExcludeClass : Target->Settings.GatherFromPackages.ExcludeClasses)
+			{
+				if (ExcludeClass.IsValid())
+				{
+					// These are expected to be the short class name (eg, Texture2D) rather than the path name (eg, /Script/Engine.Texture2D)
+					ConfigSection.Add(TEXT("ExcludeClasses"), ExcludeClass.GetAssetName());
+				}
+			}
+			ConfigSection.Add(TEXT("ShouldExcludeDerivedClasses"), Target->Settings.GatherFromPackages.ShouldExcludeDerivedClasses ? TEXT("true") : TEXT("false"));
 
 			ConfigSection.Add( TEXT("ShouldGatherFromEditorOnlyData"), Target->Settings.GatherFromPackages.ShouldGatherFromEditorOnlyData ? TEXT("true") : TEXT("false") );
 			ConfigSection.Add( TEXT("SkipGatherCache"), Target->Settings.GatherFromPackages.SkipGatherCache ? TEXT("true") : TEXT("false") );
@@ -399,13 +411,13 @@ namespace LocalizationConfigurationScript
 			// Include Paths
 			for (const auto& IncludePath : Target->Settings.GatherFromMetaData.IncludePathWildcards)
 			{
-				ConfigSection.Add( TEXT("IncludePathFilters"), IncludePath.Pattern );
+				ConfigSection.Add( TEXT("IncludePathFilters"), FString::Printf(TEXT("%s%s"), *FLocalizationGatherPathRootUtil::GetResolvedPathRootToken(IncludePath.PathRoot), *IncludePath.Pattern) );
 			}
 
 			// Exclude Paths
 			for (const auto& ExcludePath : Target->Settings.GatherFromMetaData.ExcludePathWildcards)
 			{
-				ConfigSection.Add( TEXT("ExcludePathFilters"), ExcludePath.Pattern );
+				ConfigSection.Add( TEXT("ExcludePathFilters"), FString::Printf(TEXT("%s%s"), *FLocalizationGatherPathRootUtil::GetResolvedPathRootToken(ExcludePath.PathRoot), *ExcludePath.Pattern) );
 			}
 
 			// Package Extensions
@@ -463,7 +475,8 @@ namespace LocalizationConfigurationScript
 	{
 		FLocalizationConfigurationScript Script;
 
-		const FString ContentDirRelativeToGameDir = MakePathRelativeForCommandletProcess(GetContentDir(Target), !Target->IsMemberOfEngineTargetSet());
+		const bool bIsEngineTarget = Target->IsMemberOfEngineTargetSet();
+		const FString ContentDirRelativeToGameDir = MakePathRelativeForCommandletProcess(GetContentDir(Target), !bIsEngineTarget);
 
 		// CommonSettings
 		{
@@ -476,12 +489,12 @@ namespace LocalizationConfigurationScript
 				// The output path for a specific culture is a file path.
 				if (CultureName.IsSet())
 				{
-					SourcePath = MakePathRelativeForCommandletProcess( FPaths::GetPath(ImportPathOverride.GetValue()), !Target->IsMemberOfEngineTargetSet() );
+					SourcePath = MakePathRelativeForCommandletProcess( FPaths::GetPath(ImportPathOverride.GetValue()), !bIsEngineTarget );
 				}
 				// Otherwise, it is a directory path.
 				else
 				{
-					SourcePath = MakePathRelativeForCommandletProcess( ImportPathOverride.GetValue(), !Target->IsMemberOfEngineTargetSet() );
+					SourcePath = MakePathRelativeForCommandletProcess( ImportPathOverride.GetValue(), !bIsEngineTarget );
 				}
 			}
 			// Use the default PO file's directory path.
@@ -582,7 +595,8 @@ namespace LocalizationConfigurationScript
 	{
 		FLocalizationConfigurationScript Script;
 
-		const FString ContentDirRelativeToGameDir = MakePathRelativeForCommandletProcess(GetContentDir(Target), !Target->IsMemberOfEngineTargetSet());
+		const bool bIsEngineTarget = Target->IsMemberOfEngineTargetSet();
+		const FString ContentDirRelativeToGameDir = MakePathRelativeForCommandletProcess(GetContentDir(Target), !bIsEngineTarget);
 
 		// CommonSettings
 		{
@@ -598,12 +612,12 @@ namespace LocalizationConfigurationScript
 				// The output path for a specific culture is a file path.
 				if (CultureName.IsSet())
 				{
-					DestinationPath = MakePathRelativeForCommandletProcess( FPaths::GetPath(ExportPathOverride.GetValue()), !Target->IsMemberOfEngineTargetSet() );
+					DestinationPath = MakePathRelativeForCommandletProcess( FPaths::GetPath(ExportPathOverride.GetValue()), !bIsEngineTarget );
 				}
 				// Otherwise, it is a directory path.
 				else
 				{
-					DestinationPath = MakePathRelativeForCommandletProcess( ExportPathOverride.GetValue(), !Target->IsMemberOfEngineTargetSet() );
+					DestinationPath = MakePathRelativeForCommandletProcess( ExportPathOverride.GetValue(), !bIsEngineTarget );
 				}
 			}
 			// Use the default PO file's directory path.
@@ -705,7 +719,8 @@ namespace LocalizationConfigurationScript
 	{
 		FLocalizationConfigurationScript Script;
 
-		const FString ContentDirRelativeToGameDir = MakePathRelativeForCommandletProcess(GetContentDir(Target), !Target->IsMemberOfEngineTargetSet());
+		const bool bIsEngineTarget = Target->IsMemberOfEngineTargetSet();
+		const FString ContentDirRelativeToGameDir = MakePathRelativeForCommandletProcess(GetContentDir(Target), !bIsEngineTarget);
 
 		// CommonSettings
 		{
@@ -718,12 +733,12 @@ namespace LocalizationConfigurationScript
 				// The output path for a specific culture is a file path.
 				if (CultureName.IsSet())
 				{
-					SourcePath = MakePathRelativeForCommandletProcess(FPaths::GetPath(ImportPathOverride.GetValue()), !Target->IsMemberOfEngineTargetSet());
+					SourcePath = MakePathRelativeForCommandletProcess(FPaths::GetPath(ImportPathOverride.GetValue()), !bIsEngineTarget);
 				}
 				// Otherwise, it is a directory path.
 				else
 				{
-					SourcePath = MakePathRelativeForCommandletProcess(ImportPathOverride.GetValue(), !Target->IsMemberOfEngineTargetSet());
+					SourcePath = MakePathRelativeForCommandletProcess(ImportPathOverride.GetValue(), !bIsEngineTarget);
 				}
 			}
 			// Use the default dialogue script file's directory path.
@@ -815,7 +830,8 @@ namespace LocalizationConfigurationScript
 	{
 		FLocalizationConfigurationScript Script;
 
-		const FString ContentDirRelativeToGameDir = MakePathRelativeForCommandletProcess(GetContentDir(Target), !Target->IsMemberOfEngineTargetSet());
+		const bool bIsEngineTarget = Target->IsMemberOfEngineTargetSet();
+		const FString ContentDirRelativeToGameDir = MakePathRelativeForCommandletProcess(GetContentDir(Target), !bIsEngineTarget);
 
 		// CommonSettings
 		{
@@ -831,12 +847,12 @@ namespace LocalizationConfigurationScript
 				// The output path for a specific culture is a file path.
 				if (CultureName.IsSet())
 				{
-					DestinationPath = MakePathRelativeForCommandletProcess(FPaths::GetPath(ExportPathOverride.GetValue()), !Target->IsMemberOfEngineTargetSet());
+					DestinationPath = MakePathRelativeForCommandletProcess(FPaths::GetPath(ExportPathOverride.GetValue()), !bIsEngineTarget);
 				}
 				// Otherwise, it is a directory path.
 				else
 				{
-					DestinationPath = MakePathRelativeForCommandletProcess(ExportPathOverride.GetValue(), !Target->IsMemberOfEngineTargetSet());
+					DestinationPath = MakePathRelativeForCommandletProcess(ExportPathOverride.GetValue(), !bIsEngineTarget);
 				}
 			}
 			// Use the default dialogue script file's directory path.
@@ -926,7 +942,8 @@ namespace LocalizationConfigurationScript
 	{
 		FLocalizationConfigurationScript Script;
 
-		const FString ContentDirRelativeToGameDir = MakePathRelativeForCommandletProcess(GetContentDir(Target), !Target->IsMemberOfEngineTargetSet());
+		const bool bIsEngineTarget = Target->IsMemberOfEngineTargetSet();
+		const FString ContentDirRelativeToGameDir = MakePathRelativeForCommandletProcess(GetContentDir(Target), !bIsEngineTarget);
 
 		// CommonSettings
 		{
@@ -998,7 +1015,8 @@ namespace LocalizationConfigurationScript
 	{
 		FLocalizationConfigurationScript Script;
 
-		const FString ContentDirRelativeToGameDir = MakePathRelativeForCommandletProcess(GetContentDir(Target), !Target->IsMemberOfEngineTargetSet());
+		const bool bIsEngineTarget = Target->IsMemberOfEngineTargetSet();
+		const FString ContentDirRelativeToGameDir = MakePathRelativeForCommandletProcess(GetContentDir(Target), !bIsEngineTarget);
 
 		// CommonSettings
 		{
@@ -1044,7 +1062,8 @@ namespace LocalizationConfigurationScript
 	{
 		FLocalizationConfigurationScript Script;
 
-		const FString ContentDirRelativeToGameDir = MakePathRelativeForCommandletProcess(GetContentDir(Target), !Target->IsMemberOfEngineTargetSet());
+		const bool bIsEngineTarget = Target->IsMemberOfEngineTargetSet();
+		const FString ContentDirRelativeToGameDir = MakePathRelativeForCommandletProcess(GetContentDir(Target), !bIsEngineTarget);
 
 		// CommonSettings
 		{
@@ -1060,6 +1079,8 @@ namespace LocalizationConfigurationScript
 			ConfigSection.Add( TEXT("ResourceName"), GetLocResFileName(Target) );
 
 			ConfigSection.Add( TEXT("bSkipSourceCheck"), Target->Settings.CompileSettings.SkipSourceCheck ? TEXT("true") : TEXT("false") );
+			ConfigSection.Add( TEXT("bValidateFormatPatterns"), Target->Settings.CompileSettings.ValidateFormatPatterns ? TEXT("true") : TEXT("false") );
+			ConfigSection.Add( TEXT("bValidateSafeWhitespace"), Target->Settings.CompileSettings.ValidateSafeWhitespace ? TEXT("true") : TEXT("false") );
 
 			if (Target->Settings.SupportedCulturesStatistics.IsValidIndex(Target->Settings.NativeCultureIndex))
 			{
@@ -1119,7 +1140,8 @@ namespace LocalizationConfigurationScript
 	{
 		FLocalizationConfigurationScript Script;
 
-		const FString ContentDirRelativeToGameDir = MakePathRelativeForCommandletProcess(GetContentDir(Target), !Target->IsMemberOfEngineTargetSet());
+		const bool bIsEngineTarget = Target->IsMemberOfEngineTargetSet();
+		const FString ContentDirRelativeToGameDir = MakePathRelativeForCommandletProcess(GetContentDir(Target), !bIsEngineTarget);
 
 		// RegenerateResources
 		{

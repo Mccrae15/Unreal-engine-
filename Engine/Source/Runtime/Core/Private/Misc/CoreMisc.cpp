@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 // Core includes.
 #include "Misc/CoreMisc.h"
@@ -8,7 +8,11 @@
 #include "HAL/IConsoleManager.h"
 #include "HAL/PlatformTime.h"
 #include "Misc/App.h"
+#include "Misc/LazySingleton.h"
+#include "Misc/OutputDeviceError.h"
 #include "Misc/ScopeLock.h"
+#include "CoreGlobals.h"
+#include "Templates/RefCounting.h"
 
 /** For FConfigFile in appInit							*/
 #include "Misc/ConfigCacheIni.h"
@@ -35,36 +39,37 @@ DEFINE_LOG_CATEGORY(LogCore);
 	FSelfRegisteringExec implementation.
 -----------------------------------------------------------------------------*/
 
+using FSelfRegisteredExecArray = TArray<FSelfRegisteringExec*, TInlineAllocator<8>>;
+
+FSelfRegisteredExecArray& GetExecRegistry()
+{
+	static FSelfRegisteredExecArray Execs;
+	return Execs;
+}
+
 /** Constructor, registering this instance. */
 FSelfRegisteringExec::FSelfRegisteringExec()
 {
-	GetRegisteredExecs().Add( this );
+	GetExecRegistry().Add( this );
 }
 
 /** Destructor, unregistering this instance. */
 FSelfRegisteringExec::~FSelfRegisteringExec()
 {
-	verify( GetRegisteredExecs().Remove( this ) == 1 );
+	verify(GetExecRegistry().Remove( this ) == 1 );
 }
 
 bool FSelfRegisteringExec::StaticExec( UWorld* InWorld, const TCHAR* Cmd, FOutputDevice& Ar )
 {
-	const TArray<FSelfRegisteringExec*>& RegisteredExecs = GetRegisteredExecs();
-	for(int32 ExecIndex = 0;ExecIndex < RegisteredExecs.Num();++ExecIndex)
+	for (FSelfRegisteringExec* Exe : GetExecRegistry())
 	{
-		if(RegisteredExecs[ExecIndex]->Exec( InWorld, Cmd,Ar ))
+		if (Exe->Exec( InWorld, Cmd,Ar ))
 		{
 			return true;
 		}
 	}
 
 	return false;
-}
-
-TArray<FSelfRegisteringExec*>& FSelfRegisteringExec::GetRegisteredExecs()
-{
-	static TArray<FSelfRegisteringExec*>* RegisteredExecs = new TArray<FSelfRegisteringExec*>();
-	return *RegisteredExecs;
 }
 
 FStaticSelfRegisteringExec::FStaticSelfRegisteringExec(bool (*InStaticExecFunc)(UWorld* Inworld, const TCHAR* Cmd,FOutputDevice& Ar))
@@ -115,7 +120,7 @@ class FDerivedDataCacheInterface& GetDerivedDataCacheRef()
 	return *SingletonInterface;
 }
 
-class ITargetPlatformManagerModule* GetTargetPlatformManager()
+class ITargetPlatformManagerModule* GetTargetPlatformManager(bool bFailOnInitErrors)
 {
 	static class ITargetPlatformManagerModule* SingletonInterface = NULL;
 	if (!FPlatformProperties::RequiresCookedData())
@@ -126,6 +131,12 @@ class ITargetPlatformManagerModule* GetTargetPlatformManager()
 			check(IsInGameThread());
 			bInitialized = true;
 			SingletonInterface = FModuleManager::LoadModulePtr<ITargetPlatformManagerModule>("TargetPlatform");
+
+			FString InitErrors;
+			if (bFailOnInitErrors && SingletonInterface && SingletonInterface->HasInitErrors(&InitErrors))
+			{
+				GError->Log(*InitErrors);
+			}
 		}
 	}
 	return SingletonInterface;
@@ -144,13 +155,17 @@ class ITargetPlatformManagerModule& GetTargetPlatformManagerRef()
 
 //-----------------------------------------------------------------------------
 
+class FCoreTicker : public FTicker {};
 
 FTicker& FTicker::GetCoreTicker()
 {
-	static FTicker Singleton;
-	return Singleton;
+	return TLazySingleton<FCoreTicker>::Get();
 }
 
+void FTicker::TearDownCoreTicker()
+{
+	TLazySingleton<FCoreTicker>::TearDown();
+}
 
 /*----------------------------------------------------------------------------
 	Runtime functions.

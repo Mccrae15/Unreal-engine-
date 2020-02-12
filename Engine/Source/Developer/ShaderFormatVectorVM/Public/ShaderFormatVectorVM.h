@@ -1,28 +1,31 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
 #include "VectorVM.h"
 
+/** Ordered table of functions actually called by the VM script. */
+struct FCalledVMFunction
+{
+	FString Name;
+	TArray<bool> InputParamLocations;
+	int32 NumOutputs;
+	FCalledVMFunction() :NumOutputs(0) {}
+};
+
 /** Data which is generated from the hlsl by the VectorVMBackend and fed back into the */
 struct FVectorVMCompilationOutput
 {
-	FVectorVMCompilationOutput(): NumOps(0){}
+	FVectorVMCompilationOutput(): MaxTempRegistersUsed(0), NumOps(0) {}
 
 	TArray<uint8> ByteCode;
+
+	int32 MaxTempRegistersUsed;
 
 	TArray<int32> InternalConstantOffsets;
 	TArray<uint8> InternalConstantData;
 	TArray<EVectorVMBaseTypes> InternalConstantTypes;
-
-	/** Ordered table of functions actually called by the VM script. */
-	struct FCalledVMFunction
-	{
-		FString Name;
-		TArray<bool> InputParamLocations;
-		int32 NumOutputs;
-		FCalledVMFunction() :NumOutputs(0) {}
-	};
+	
 	TArray<FCalledVMFunction> CalledVMFunctionTable;
 
 	FString AssemblyAsString;
@@ -30,6 +33,28 @@ struct FVectorVMCompilationOutput
 
 	FString Errors;
 };
+
+inline FArchive& operator<<(FArchive& Ar, FCalledVMFunction& Function)
+{
+	Ar << Function.Name;
+	Ar << Function.InputParamLocations;
+	Ar << Function.NumOutputs;
+	return Ar;
+}
+
+inline FArchive& operator<<(FArchive& Ar, FVectorVMCompilationOutput& Output)
+{
+	Ar << Output.ByteCode;
+	Ar << Output.MaxTempRegistersUsed;
+	Ar << Output.InternalConstantOffsets;
+	Ar << Output.InternalConstantData;
+	Ar << Output.InternalConstantTypes;
+	Ar << Output.CalledVMFunctionTable;
+	Ar << Output.AssemblyAsString;
+	Ar << Output.NumOps;
+	Ar << Output.Errors;
+	return Ar;
+}
 
 extern bool SHADERFORMATVECTORVM_API CompileShader_VectorVM(const struct FShaderCompilerInput& Input, struct FShaderCompilerOutput& Output, const class FString& WorkingDirectory, uint8 Version);
 

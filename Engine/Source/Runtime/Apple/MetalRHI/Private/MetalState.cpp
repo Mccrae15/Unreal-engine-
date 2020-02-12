@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 /*=============================================================================
 	MetalState.cpp: Metal state implementation.
@@ -103,6 +103,10 @@ static mtlpp::BlendFactor TranslateBlendFactor(EBlendFactor BlendFactor)
 		case BF_InverseDestAlpha:		return mtlpp::BlendFactor::OneMinusDestinationAlpha;
 		case BF_DestColor:				return mtlpp::BlendFactor::DestinationColor;
 		case BF_InverseDestColor:		return mtlpp::BlendFactor::OneMinusDestinationColor;
+		case BF_Source1Color:			return mtlpp::BlendFactor::Source1Color;
+		case BF_InverseSource1Color:	return mtlpp::BlendFactor::OneMinusSource1Color;
+		case BF_Source1Alpha:			return mtlpp::BlendFactor::Source1Alpha;
+		case BF_InverseSource1Alpha:	return mtlpp::BlendFactor::OneMinusSource1Alpha;
 		default:						return mtlpp::BlendFactor::Zero;
 	};
 }
@@ -143,6 +147,10 @@ static EBlendFactor TranslateBlendFactor(MTLBlendFactor BlendFactor)
 		case MTLBlendFactorOneMinusDestinationAlpha:	return BF_InverseDestAlpha;
 		case MTLBlendFactorDestinationColor:			return BF_DestColor;
 		case MTLBlendFactorOneMinusDestinationColor:	return BF_InverseDestColor;
+		case MTLBlendFactorSource1Color:				return BF_Source1Color;
+		case MTLBlendFactorOneMinusSource1Color:		return BF_InverseSource1Color;
+		case MTLBlendFactorSource1Alpha:				return BF_Source1Alpha;
+		case MTLBlendFactorOneMinusSource1Alpha:		return BF_InverseSource1Alpha;
 		case MTLBlendFactorZero: default:				return BF_Zero;
 	};
 }
@@ -522,8 +530,8 @@ FMetalBlendState::FMetalBlendState(const FBlendStateInitializerRHI& Initializer)
 		{
 			Key = &BlendSettingsToUniqueKeyMap.Add(BlendBitMask, NextKey++);
 
-			// only giving 5 bits to the key, since we need to pack a bunch of them into 64 bits
-			checkf(NextKey < 32, TEXT("Too many unique blend states to fit into the PipelineStateHash"));
+			// only giving limited bits to the key, since we need to pack 8 of them into a key
+			checkf(NextKey < (1 << NumBits_BlendState), TEXT("Too many unique blend states to fit into the PipelineStateHash [%d allowed]"), 1 << NumBits_BlendState);
 		}
 		// set the key
 		RenderTargetStates[RenderTargetIndex].BlendStateKey = *Key;

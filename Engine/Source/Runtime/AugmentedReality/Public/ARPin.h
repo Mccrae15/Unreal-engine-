@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -81,6 +81,10 @@ public:
 	/** Notify the UARPin that the AlignmentTransform has changing. */
 	void UpdateAlignmentTransform( const FTransform& NewAlignmentTransform );
 	
+	void SetPinnedComponent(USceneComponent* InComponentToPin)
+	{
+		PinnedComponent = InComponentToPin;
+	}
 	
 protected:
 	TSharedPtr<FARSupportInterface , ESPMode::ThreadSafe> GetARSystem() const;

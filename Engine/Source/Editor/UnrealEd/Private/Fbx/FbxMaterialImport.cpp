@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "CoreMinimal.h"
 #include "HAL/FileManager.h"
@@ -96,7 +96,7 @@ UTexture* UnFbx::FFbxImporter::ImportTexture(FbxFileTexture* FbxTexture, bool bS
 	}
 	else
 	{
-		UE_LOG(LogFbxMaterialImport, Warning, TEXT("Unable to find Texture file %s"), *AbsoluteFilename);
+		UE_LOG(LogFbxMaterialImport, Display, TEXT("Unable to find Texture file %s"), *AbsoluteFilename);
 	}
 
 	TArray<uint8> DataBinary;
@@ -284,13 +284,38 @@ bool UnFbx::FFbxImporter::CreateAndLinkExpressionForMaterialProperty(
 					{
 						float ScaleU = FbxTexture->GetScaleU();
 						float ScaleV = FbxTexture->GetScaleV();
+						bool bIsVirtualTexture = UnrealTexture->VirtualTextureStreaming;
+
+#if MATERIAL_OPACITYMASK_DOESNT_SUPPORT_VIRTUALTEXTURE
+						if (bIsVirtualTexture && MaterialProperty == FbxSurfaceMaterial::sTransparencyFactor)
+						{
+							//TODO, add a tracking of the materials created during the import so we can refresh here them if the TextureFactory actually found a existing asset instead of creating a new one.
+							if (UTexture2D* UnrealTexture2D = Cast<UTexture2D>(UnrealTexture))
+							{
+								TArray<UTexture2D*> TexturesToConvert = { UnrealTexture2D };
+								FAssetToolsModule& AssetToolsModule = FModuleManager::LoadModuleChecked<FAssetToolsModule>("AssetTools");
+								AssetToolsModule.Get().ConvertVirtualTextures(TexturesToConvert, true);
+							}
+							else
+							{
+								UnrealTexture->VirtualTextureStreaming = false;
+							}
+							bIsVirtualTexture = false;
+
+							FString TextureName = UnrealTexture->GetName();
+							UE_LOG(LogFbxMaterialImport, Warning, TEXT("Texture %s could not be imported as a Virtual Texture as they are not supported in OpacityMask property (material %s)."), *TextureName, UTF8_TO_TCHAR(FbxMaterial.GetName()));
+						}
+#endif
 
 						// and link it to the material 
 						UMaterialExpressionTextureSample* UnrealTextureExpression = NewObject<UMaterialExpressionTextureSample>(UnrealMaterial);
 						UnrealMaterial->Expressions.Add( UnrealTextureExpression );
 						MaterialInput.Expression = UnrealTextureExpression;
 						UnrealTextureExpression->Texture = UnrealTexture;
-						UnrealTextureExpression->SamplerType = bSetupAsNormalMap ? SAMPLERTYPE_Normal : SAMPLERTYPE_Color;
+						UnrealTextureExpression->SamplerType = bSetupAsNormalMap ? 
+							(bIsVirtualTexture ? SAMPLERTYPE_VirtualNormal : SAMPLERTYPE_Normal) :
+							(bIsVirtualTexture ? SAMPLERTYPE_VirtualColor : SAMPLERTYPE_Color);
+
 						UnrealTextureExpression->MaterialExpressionEditorX = FMath::TruncToInt(Location.X);
 						UnrealTextureExpression->MaterialExpressionEditorY = FMath::TruncToInt(Location.Y);
 
@@ -408,7 +433,7 @@ FString UnFbx::FFbxImporter::GetMaterialFullName(FbxSurfaceMaterial& FbxMaterial
 			if (SkinXXNumber.IsNumeric())
 			{
 				// remove the '_skinXX' suffix from the material name					
-				MaterialFullName = MaterialFullName.LeftChop(MaterialFullName.Len() - Offset);
+				MaterialFullName.LeftChopInline(MaterialFullName.Len() - Offset, false);
 			}
 		}
 	}
@@ -603,6 +628,7 @@ void UnFbx::FFbxImporter::CreateUnrealMaterial(FbxSurfaceMaterial& FbxMaterial, 
 		}
 		bCanInstance &= CanUseMaterialWithInstance(FbxMaterial, FbxSurfaceMaterial::sSpecular, FbxImportOptions->BaseSpecularTextureName, FbxImportOptions->BaseMaterial, UVSets);
 		bCanInstance &= CanUseMaterialWithInstance(FbxMaterial, FbxSurfaceMaterial::sNormalMap, FbxImportOptions->BaseNormalTextureName, FbxImportOptions->BaseMaterial, UVSets);
+		bCanInstance &= CanUseMaterialWithInstance(FbxMaterial, FbxSurfaceMaterial::sTransparentColor, FbxImportOptions->BaseOpacityTextureName, FbxImportOptions->BaseMaterial, UVSets);
 	}
 
 	UMaterialInterface* UnrealMaterialFinal = nullptr;
@@ -625,6 +651,7 @@ void UnFbx::FFbxImporter::CreateUnrealMaterial(FbxSurfaceMaterial& FbxMaterial, 
 			// textures and properties
 			bool bDiffuseTextureCreated = LinkMaterialProperty(FbxMaterial, UnrealMaterialConstant, FbxSurfaceMaterial::sDiffuse, FName(*FbxImportOptions->BaseDiffuseTextureName), false);
 			bool bEmissiveTextureCreated = LinkMaterialProperty(FbxMaterial, UnrealMaterialConstant, FbxSurfaceMaterial::sEmissive, FName(*FbxImportOptions->BaseEmmisiveTextureName), false);
+			bool bOpacityTextureCreated = LinkMaterialProperty(FbxMaterial, UnrealMaterialConstant, FbxSurfaceMaterial::sTransparentColor, FName(*FbxImportOptions->BaseOpacityTextureName), false);
 			LinkMaterialProperty(FbxMaterial, UnrealMaterialConstant, FbxSurfaceMaterial::sSpecular, FName(*FbxImportOptions->BaseSpecularTextureName), false);
 			if (!LinkMaterialProperty(FbxMaterial, UnrealMaterialConstant, FbxSurfaceMaterial::sNormalMap, FName(*FbxImportOptions->BaseNormalTextureName), true))
 			{
@@ -691,6 +718,14 @@ void UnFbx::FFbxImporter::CreateUnrealMaterial(FbxSurfaceMaterial& FbxMaterial, 
 						}
 					}
 				}
+			}
+			if (bOpacityTextureCreated)
+			{
+				FMaterialInstanceBasePropertyOverrides Overrides;
+				Overrides.bOverride_BlendMode = true;
+				Overrides.BlendMode = BLEND_Translucent;
+
+				UnrealMaterialConstant->BasePropertyOverrides = Overrides;
 			}
 		}
 	}

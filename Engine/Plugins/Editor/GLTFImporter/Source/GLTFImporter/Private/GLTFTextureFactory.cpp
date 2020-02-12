@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "GLTFTextureFactory.h"
 
@@ -102,7 +102,7 @@ GLTF::ITextureElement* FGLTFTextureFactory::CreateTexture(const GLTF::FTexture& 
 	// save texture settings if texture exists
 	Factory->SuppressImportOverwriteDialog();
 
-	const FString PackageName  = UPackageTools::SanitizePackageName(FPaths::Combine(ParentPackage->GetName(), TextureName));
+	const FString PackageName  = UPackageTools::SanitizePackageName(FPaths::Combine(ParentPackage->GetName(), TEXT("Textures"), TextureName));
 	UPackage*     AssetPackage = CreatePackage(nullptr, *PackageName);
 
 	UTexture2D* Texture = nullptr;
@@ -112,7 +112,10 @@ GLTF::ITextureElement* FGLTFTextureFactory::CreateTexture(const GLTF::FTexture& 
 		bool bOperationCanceled = false;
 		Texture                 = static_cast<UTexture2D*>(Factory->FactoryCreateFile(UTexture2D::StaticClass(), AssetPackage, *TextureName, Flags,
                                                                       GltfTexture.Source.FilePath, nullptr, nullptr, bOperationCanceled));
-		Texture->AssetImportData->Update(GltfTexture.Source.FilePath);
+		if (Texture)
+		{
+			Texture->AssetImportData->Update(GltfTexture.Source.FilePath);
+		}
 	}
 	else if (GltfTexture.Source.Format != GLTF::FImage::EFormat::Unknown)
 	{

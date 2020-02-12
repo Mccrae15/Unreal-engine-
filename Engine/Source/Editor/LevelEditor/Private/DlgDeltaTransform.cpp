@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "DlgDeltaTransform.h"
 #include "InputCoreTypes.h"
@@ -72,6 +72,7 @@ public:
 							.Z( this, &SDlgDeltaTransform::GetDeltaZ )
 							.bColorAxisLabels( true )
 							.AllowResponsiveLayout( true )
+							.AllowSpin( false )
 							.OnXCommitted( this, &SDlgDeltaTransform::OnSetDelta, 0 )
 							.OnYCommitted( this, &SDlgDeltaTransform::OnSetDelta, 1 )
 							.OnZCommitted( this, &SDlgDeltaTransform::OnSetDelta, 2 )

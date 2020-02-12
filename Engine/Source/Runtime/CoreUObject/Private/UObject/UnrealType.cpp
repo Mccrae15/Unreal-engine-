@@ -1,11 +1,11 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "UObject/UnrealType.h"
 #include "Serialization/ArchiveUObjectFromStructuredArchive.h"
 
 DEFINE_LOG_CATEGORY(LogType);
 
-bool FPropertyValueIterator::NextValue(EPropertyValueIteratorFlags InRecursionFlags, bool bReturningFromStruct)
+bool FPropertyValueIterator::NextValue(EPropertyValueIteratorFlags InRecursionFlags)
 {
 	if (PropertyIteratorStack.Num() == 0)
 	{
@@ -15,24 +15,18 @@ bool FPropertyValueIterator::NextValue(EPropertyValueIteratorFlags InRecursionFl
 
 	FPropertyValueStackEntry& Entry = PropertyIteratorStack.Last();
 
-	// If we are returning from struct, increment value index as we delayed incrementing it when entering recursion
-	if (bReturningFromStruct)
-	{
-		Entry.ValueIndex++;
-	}
-
 	// If we have pending values, deal with them
 	if (Entry.ValueIndex < Entry.ValueArray.Num())
 	{
 		// Look for recursion on current value first
-		const UProperty* Property = Entry.ValueArray[Entry.ValueIndex].Key;
+		const FProperty* Property = Entry.ValueArray[Entry.ValueIndex].Key;
 		const void* PropertyValue = Entry.ValueArray[Entry.ValueIndex].Value;
 
 		// For containers, insert at next index ahead of others
 		int32 InsertIndex = Entry.ValueIndex + 1;
 
 		// Handle container properties
-		if (const UArrayProperty* ArrayProperty = Cast<UArrayProperty>(Property))
+		if (const FArrayProperty* ArrayProperty = CastField<FArrayProperty>(Property))
 		{
 			if (InRecursionFlags == EPropertyValueIteratorFlags::FullRecursion)
 			{
@@ -43,7 +37,7 @@ bool FPropertyValueIterator::NextValue(EPropertyValueIteratorFlags InRecursionFl
 				}
 			}
 		}
-		else if (const UMapProperty* MapProperty = Cast<UMapProperty>(Property))
+		else if (const FMapProperty* MapProperty = CastField<FMapProperty>(Property))
 		{
 			if (InRecursionFlags == EPropertyValueIteratorFlags::FullRecursion)
 			{
@@ -61,7 +55,7 @@ bool FPropertyValueIterator::NextValue(EPropertyValueIteratorFlags InRecursionFl
 				}
 			}
 		}
-		else if (const USetProperty* SetProperty = Cast<USetProperty>(Property))
+		else if (const FSetProperty* SetProperty = CastField<FSetProperty>(Property))
 		{
 			if (InRecursionFlags == EPropertyValueIteratorFlags::FullRecursion)
 			{
@@ -78,25 +72,23 @@ bool FPropertyValueIterator::NextValue(EPropertyValueIteratorFlags InRecursionFl
 				}
 			}
 		}
-		else if (const UStructProperty* StructProperty = Cast<UStructProperty>(Property))
+		else if (const FStructProperty* StructProperty = CastField<FStructProperty>(Property))
 		{
 			if (InRecursionFlags == EPropertyValueIteratorFlags::FullRecursion)
 			{
-				// And child to stack and rerun. This invalidates Entry. We leave ValueIndex the same so it can be used for recursive property lookup
-				PropertyIteratorStack.Emplace(StructProperty->Struct, PropertyValue, DeprecatedPropertyFlags);
-
-				return NextValue(InRecursionFlags, false);
+				// We don't need recursion on these - this will happen naturally as we process these values
+				for (FPropertyValueIterator Iter(FProperty::StaticClass(), StructProperty->Struct, PropertyValue, EPropertyValueIteratorFlags::NoRecursion, DeprecatedPropertyFlags); Iter; ++Iter)
+				{
+					Entry.ValueArray.EmplaceAt(InsertIndex++, Iter->Key, Iter->Value);
+				}
 			}
 		}
 
 		// Else this is a normal property and has nothing to expand
 		// We don't expand enum properties because EnumProperty handles value wrapping for us
 
-		// We didn't recurse into a struct, so increment next value to check, unless we we just popped a struct off the stack
-		if (!bReturningFromStruct)
-		{
-			Entry.ValueIndex++;
-		}
+		// Increment next value to check
+		Entry.ValueIndex++;
 	}
 
 	// Out of pending values, try to add more
@@ -109,14 +101,17 @@ bool FPropertyValueIterator::NextValue(EPropertyValueIteratorFlags InRecursionFl
 
 			if (PropertyIteratorStack.Num() > 0)
 			{
-				return NextValue(InRecursionFlags, true);
+				// Increment value index as we delayed incrementing it when entering recursion
+				PropertyIteratorStack.Last().ValueIndex++;
+
+				return NextValue(InRecursionFlags);
 			}
 
 			return false;
 		}
 
 		// If nothing left in value array, add base properties for current field and increase field iterator
-		const UProperty* Property = *Entry.FieldIterator;
+		const FProperty* Property = *Entry.FieldIterator;
 		++Entry.FieldIterator;
 
 		// Clear out existing value array
@@ -146,7 +141,7 @@ void FPropertyValueIterator::IterateToNext()
 		bSkipRecursionOnce = false;
 	}
 
-	while (NextValue(LocalRecursionFlags, false))
+	while (NextValue(LocalRecursionFlags))
 	{
 		// If this property is valid type, stop iteration
 		FPropertyValueStackEntry& Entry = PropertyIteratorStack.Last();
@@ -160,7 +155,7 @@ void FPropertyValueIterator::IterateToNext()
 	}
 }
 
-void FPropertyValueIterator::GetPropertyChain(TArray<const UProperty*>& PropertyChain) const
+void FPropertyValueIterator::GetPropertyChain(TArray<const FProperty*>& PropertyChain) const
 {
 	// Iterate over UStruct nesting, starting at the inner most property
 	for (int32 StackIndex = PropertyIteratorStack.Num() - 1; StackIndex >= 0; StackIndex--)
@@ -168,14 +163,13 @@ void FPropertyValueIterator::GetPropertyChain(TArray<const UProperty*>& Property
 		const FPropertyValueStackEntry& Entry = PropertyIteratorStack[StackIndex];
 
 		// Index should always be valid
-		const UProperty* Property = Entry.ValueArray[Entry.ValueIndex].Key;
+		const FProperty* Property = Entry.ValueArray[Entry.ValueIndex].Key;
 
 		while (Property)
 		{
 			// This handles container property nesting
 			PropertyChain.Add(Property);
-
-			Property = Cast<UProperty>(Property->GetOuter());
+			Property = Property->GetOwner<FProperty>();
 		}
 	}
 }

@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "SAnimationOutlinerTreeNode.h"
 #include "Fonts/SlateFontInfo.h"
@@ -19,7 +19,9 @@
 #include "SSequencerTreeView.h"
 #include "Widgets/Colors/SColorPicker.h"
 #include "SequencerSectionPainter.h"
+#include "ObjectBindingTagCache.h"
 #include "Widgets/Text/SInlineEditableTextBlock.h"
+#include "Framework/SlateDelegates.h"
 
 #define LOCTEXT_NAMESPACE "AnimationOutliner"
 
@@ -59,17 +61,37 @@ void SAnimationOutlinerTreeNode::Construct( const FArguments& InArgs, TSharedRef
 
 	TableRowStyle = &FEditorStyle::Get().GetWidgetStyle<FTableRowStyle>("TableView.Row");
 
-	FSlateFontInfo NodeFont = FEditorStyle::GetFontStyle("Sequencer.AnimationOutliner.RegularFont");
-
 	EditableLabel = SNew(SInlineEditableTextBlock)
 		.IsReadOnly(this, &SAnimationOutlinerTreeNode::IsNodeLabelReadOnly)
-		.Font(NodeFont)
+		.Font(this, &SAnimationOutlinerTreeNode::GetDisplayNameFont)
 		.ColorAndOpacity(this, &SAnimationOutlinerTreeNode::GetDisplayNameColor)
+		.OnVerifyTextChanged(this, &SAnimationOutlinerTreeNode::VerifyNodeTextChanged)
 		.OnTextCommitted(this, &SAnimationOutlinerTreeNode::HandleNodeLabelTextCommitted)
 		.Text(this, &SAnimationOutlinerTreeNode::GetDisplayName)
 		.ToolTipText(this, &SAnimationOutlinerTreeNode::GetDisplayNameToolTipText)
-		.Clipping(EWidgetClipping::ClipToBounds);
+		.Clipping(EWidgetClipping::ClipToBounds)
+		.IsSelected(FIsSelected::CreateSP(InTableRow, &SSequencerTreeViewRow::IsSelectedExclusively));
 
+	TSharedRef<SWidget> LabelContent = EditableLabel.ToSharedRef();
+
+	if (TSharedPtr<SWidget> AdditionalLabelContent = Node->GetAdditionalOutlinerLabel())
+	{
+		LabelContent = SNew(SHorizontalBox)
+
+		+ SHorizontalBox::Slot()
+		.AutoWidth()
+		.Padding(FMargin(0.f, 0.f, 5.f, 0.f))
+		[
+			LabelContent
+		]
+
+		+ SHorizontalBox::Slot()
+		[
+			AdditionalLabelContent.ToSharedRef()
+		];
+
+		LabelContent->SetClipping(EWidgetClipping::ClipToBounds);
+	}
 
 	Node->OnRenameRequested().AddRaw(this, &SAnimationOutlinerTreeNode::EnterRenameMode);
 
@@ -149,7 +171,7 @@ void SAnimationOutlinerTreeNode::Construct( const FArguments& InArgs, TSharedRef
 							.VAlign(VAlign_Center)
 							.Padding(FMargin(0.f, 0.f, 4.f, 0.f))
 							[
-								EditableLabel.ToSharedRef()
+								LabelContent
 							]
 
 							// Arbitrary customization slot
@@ -405,6 +427,10 @@ FSlateColor SAnimationOutlinerTreeNode::GetDisplayNameColor() const
 	return DisplayNode->GetDisplayNameColor();
 }
 
+FSlateFontInfo SAnimationOutlinerTreeNode::GetDisplayNameFont() const
+{
+	return DisplayNode->GetDisplayNameFont();
+}
 
 FText SAnimationOutlinerTreeNode::GetDisplayNameToolTipText() const
 {
@@ -423,6 +449,10 @@ bool SAnimationOutlinerTreeNode::IsNodeLabelReadOnly() const
 	return DisplayNode->GetSequencer().IsReadOnly() || !DisplayNode->CanRenameNode();
 }
 
+bool SAnimationOutlinerTreeNode::VerifyNodeTextChanged(const FText& NewLabel, FText& OutErrorMessage)
+{
+	return DisplayNode->ValidateDisplayName(NewLabel, OutErrorMessage);
+}
 
 void SAnimationOutlinerTreeNode::HandleNodeLabelTextCommitted(const FText& NewLabel, ETextCommit::Type CommitType)
 {

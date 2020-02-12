@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "Stack/SNiagaraStackTableRow.h"
 #include "NiagaraEditorWidgetsStyle.h"
@@ -8,19 +8,18 @@
 #include "ViewModels/Stack/NiagaraStackItemGroup.h"
 #include "ViewModels/Stack/NiagaraStackEntry.h"
 #include "NiagaraEditorWidgetsUtilities.h"
+#include "NiagaraStackCommandContext.h"
+#include "Stack/SNiagaraStackIssueIcon.h"
 #include "Widgets/Input/SButton.h"
 #include "Widgets/Images/SImage.h"
 #include "Widgets/Layout/SBox.h"
-#include "IContentBrowserSingleton.h"
-#include "ContentBrowserModule.h"
-#include "Toolkits/AssetEditorManager.h"
 #include "Framework/Application/SlateApplication.h"
 
 #define LOCTEXT_NAMESPACE "NiagaraStackTableRow"
 
 const float IndentSize = 12;
 
-void SNiagaraStackTableRow::Construct(const FArguments& InArgs, UNiagaraStackViewModel* InStackViewModel, UNiagaraStackEntry* InStackEntry, const TSharedRef<STreeView<UNiagaraStackEntry*>>& InOwnerTree)
+void SNiagaraStackTableRow::Construct(const FArguments& InArgs, UNiagaraStackViewModel* InStackViewModel, UNiagaraStackEntry* InStackEntry, TSharedRef<FNiagaraStackCommandContext> InStackCommandContext, const TSharedRef<STreeView<UNiagaraStackEntry*>>& InOwnerTree)
 {
 	ContentPadding = InArgs._ContentPadding;
 	bIsCategoryIconHighlighted = InArgs._IsCategoryIconHighlighted;
@@ -29,15 +28,18 @@ void SNiagaraStackTableRow::Construct(const FArguments& InArgs, UNiagaraStackVie
 	ValueColumnWidth = InArgs._ValueColumnWidth;
 	NameColumnWidthChanged = InArgs._OnNameColumnWidthChanged;
 	ValueColumnWidthChanged = InArgs._OnValueColumnWidthChanged;
+	IssueIconVisibility = InArgs._IssueIconVisibility;
+	RowPadding = InArgs._RowPadding;
 	StackViewModel = InStackViewModel;
 	StackEntry = InStackEntry;
+	StackCommandContext = InStackCommandContext;
 	OwnerTree = InOwnerTree;
 
 	ExpandedImage = FCoreStyle::Get().GetBrush("TreeArrow_Expanded");
 	CollapsedImage = FCoreStyle::Get().GetBrush("TreeArrow_Collapsed");
 
-	InactiveItemBackgroundColor = InArgs._ItemBackgroundColor;
-	ActiveItemBackgroundColor = InactiveItemBackgroundColor + FLinearColor(.05f, .05f, .05f, 0.0f);
+	ItemBackgroundColor = InArgs._ItemBackgroundColor;
+	DisabledItemBackgroundColor = ItemBackgroundColor + FLinearColor(.02f, .02f, .02f, 0.0f);
 	ForegroundColor = InArgs._ItemForegroundColor;
 
 	ExecutionCategoryToolTipText = InStackEntry->GetExecutionSubcategoryName() != NAME_None
@@ -46,7 +48,9 @@ void SNiagaraStackTableRow::Construct(const FArguments& InArgs, UNiagaraStackVie
 
 	ConstructInternal(
 		STableRow<UNiagaraStackEntry*>::FArguments()
+			.Style(FNiagaraEditorWidgetsStyle::Get(), "NiagaraEditor.Stack.TableViewRow")
 			.OnDragDetected(InArgs._OnDragDetected)
+			.OnDragLeave(InArgs._OnDragLeave)
 			.OnCanAcceptDrop(InArgs._OnCanAcceptDrop)
 			.OnAcceptDrop(InArgs._OnAcceptDrop)
 		, OwnerTree.ToSharedRef());
@@ -138,6 +142,7 @@ void SNiagaraStackTableRow::SetNameAndValueContent(TSharedRef<SWidget> InNameWid
 		.VAlign(EVerticalAlignment::VAlign_Center)
 		.ToolTipText(ExecutionCategoryToolTipText)
 		.Visibility(this, &SNiagaraStackTableRow::GetExecutionCategoryIconVisibility)
+		.IsEnabled_UObject(StackEntry, &UNiagaraStackEntry::GetIsEnabledAndOwnerIsEnabled)
 		[
 			SNew(SImage)
 			.Visibility(this, &SNiagaraStackTableRow::GetExecutionCategoryIconVisibility)
@@ -204,16 +209,32 @@ void SNiagaraStackTableRow::SetNameAndValueContent(TSharedRef<SWidget> InNameWid
 		];
 	}
 
+	FName AccentColorName = FNiagaraStackEditorWidgetsUtilities::GetIconColorNameForExecutionCategory(StackEntry->GetExecutionCategoryName());
+	FLinearColor AccentColor = AccentColorName != NAME_None ? FNiagaraEditorWidgetsStyle::Get().GetColor(AccentColorName) : FLinearColor::Transparent;
 	ChildSlot
 	[
-		SNew(SOverlay)
-		+ SOverlay::Slot()
+		SNew(SHorizontalBox)
+		.Visibility(this, &SNiagaraStackTableRow::GetRowVisibility)
+		// Accent color.
+		+ SHorizontalBox::Slot()
+		.AutoWidth()
+		.Padding(1, 0, 6, 0)
 		[
 			SNew(SBorder)
 			.BorderImage(FEditorStyle::GetBrush("WhiteBrush"))
-			.BorderBackgroundColor(FNiagaraEditorWidgetsStyle::Get().GetColor(FNiagaraStackEditorWidgetsUtilities::GetColorNameForExecutionCategory(StackEntry->GetExecutionCategoryName())))
-			.Visibility(this, &SNiagaraStackTableRow::GetRowVisibility)
-			.Padding(FMargin(9, 0, 9, 0))
+			.BorderBackgroundColor(AccentColor)
+			.Padding(0)
+			[
+				SNew(SBox)
+				.WidthOverride(4)
+			]
+		]
+		// Content
+		+ SHorizontalBox::Slot()
+		[
+			// Row content
+			SNew(SBox)
+			.Padding(RowPadding)
 			[
 				SNew(SBorder)
 				.BorderImage(FEditorStyle::GetBrush("WhiteBrush"))
@@ -221,27 +242,29 @@ void SNiagaraStackTableRow::SetNameAndValueContent(TSharedRef<SWidget> InNameWid
 				.ForegroundColor(ForegroundColor)
 				.Padding(0)
 				[
-					ChildContent.ToSharedRef()
+					SNew(SBorder)
+					.BorderImage(this, &SNiagaraStackTableRow::GetSearchResultBorderBrush)
+					.BorderBackgroundColor(FNiagaraEditorWidgetsStyle::Get().GetColor("NiagaraEditor.Stack.SearchHighlightColor"))
+					.Padding(0)
+					[
+						SNew(SBorder)
+						.BorderImage(this, &SNiagaraStackTableRow::GetSelectionBorderBrush)
+						.Padding(0)
+						[
+							ChildContent.ToSharedRef()
+						]
+					]
 				]
 			]
 		]
-		+ SOverlay::Slot()
+		+ SHorizontalBox::Slot()
+		.AutoWidth()
+		.Padding(3, 0, 0, 0)
 		[
-			SNew(SBorder)
-			.BorderImage(FNiagaraEditorWidgetsStyle::Get().GetBrush("NiagaraEditor.Stack.SearchResult"))
-			.BorderBackgroundColor(FNiagaraEditorWidgetsStyle::Get().GetColor("NiagaraEditor.Stack.SearchHighlightColor"))
-			.Visibility(this, &SNiagaraStackTableRow::GetSearchResultBorderVisibility)
-			.Padding(FMargin(0))
-			[
-				SNullWidget::NullWidget
-			]
+			SNew(SNiagaraStackIssueIcon, StackViewModel, StackEntry)
+			.Visibility(IssueIconVisibility)
 		]
 	];
-}
-
-bool SNiagaraStackTableRow::GetIsRowActive() const
-{
-	return IsHovered();
 }
 
 void SNiagaraStackTableRow::AddFillRowContextMenuHandler(FOnFillRowContextMenu FillRowContextMenuHandler)
@@ -258,28 +281,26 @@ FReply SNiagaraStackTableRow::OnMouseButtonUp(const FGeometry& MyGeometry, const
 {
 	if (MouseEvent.GetEffectingButton() == EKeys::RightMouseButton)
 	{
-		FMenuBuilder MenuBuilder(true, nullptr);
-		MenuBuilder.BeginSection("ModuleActions", LOCTEXT("ModuleActions", "Module Actions"));
+		TSharedPtr<ITypedTableView<UNiagaraStackEntry*>> OwnerTable = OwnerTablePtr.Pin();
+		if (OwnerTable.IsValid())
+		{
+			if (OwnerTable->GetSelectedItems().Contains(StackEntry) == false)
+			{
+				OwnerTable->Private_ClearSelection();
+				OwnerTable->Private_SetItemSelection(StackEntry, true, true);
+				OwnerTable->Private_SignalSelectionChanged(ESelectInfo::OnMouseClick);
+			}
+		}
+
+		FMenuBuilder MenuBuilder(true, StackCommandContext->GetCommands());
 		for (FOnFillRowContextMenu& OnFillRowContextMenuHandler : OnFillRowContextMenuHanders)
 		{
 			OnFillRowContextMenuHandler.ExecuteIfBound(MenuBuilder);
 		}
-		MenuBuilder.EndSection();
-		if (StackEntry->GetExternalAsset() != nullptr)
-		{
-			MenuBuilder.BeginSection("AssetActions", LOCTEXT("AssetActions", "Asset Actions"));
-			MenuBuilder.AddMenuEntry(
-				LOCTEXT("OpenAndFocusAsset", "Open and Focus Asset"),
-				FText::Format(LOCTEXT("OpenAndFocusAssetTooltip", "Open {0} in separate editor"), StackEntry->GetDisplayName()),
-				FSlateIcon(),
-				FUIAction(FExecuteAction::CreateSP(this, &SNiagaraStackTableRow::OpenSourceAsset)));
-			MenuBuilder.AddMenuEntry(
-				LOCTEXT("ShowAssetInContentBrowser", "Show in Content Browser"),
-				FText::Format(LOCTEXT("ShowAssetInContentBrowserToolTip", "Navigate to {0} in the Content Browser window"), StackEntry->GetDisplayName()),
-				FSlateIcon(),
-				FUIAction(FExecuteAction::CreateSP(this, &SNiagaraStackTableRow::ShowAssetInContentBrowser)));
-			MenuBuilder.EndSection();
-		}
+
+		FNiagaraStackEditorWidgetsUtilities::AddStackEntryAssetContextMenuActions(MenuBuilder, *StackEntry);
+		StackCommandContext->AddEditMenuItems(MenuBuilder);
+
 		TArray<UNiagaraStackEntry*> EntriesToProcess;
 		TArray<UNiagaraStackEntry*> NavigationEntries;
 		StackViewModel->GetPathForEntry(StackEntry, EntriesToProcess);
@@ -287,25 +308,27 @@ FReply SNiagaraStackTableRow::OnMouseButtonUp(const FGeometry& MyGeometry, const
 		{
 			UNiagaraStackItemGroup* GroupParent = Cast<UNiagaraStackItemGroup>(Parent);
 			UNiagaraStackItem* ItemParent = Cast<UNiagaraStackItem>(Parent);
-			if (GroupParent != nullptr)
+			if (GroupParent != nullptr || ItemParent != nullptr)
 			{
-				MenuBuilder.BeginSection("StackRowNavigateTo", LOCTEXT("NavigateToSection", "Navigate to:"));
-				MenuBuilder.AddMenuEntry(
-					LOCTEXT("TopOfSection", "Top of Section"),
-					FText::Format(LOCTEXT("NavigateToFormatted", "Navigate to {0}"), Parent->GetDisplayName()),
-					FSlateIcon(),
-					FUIAction(FExecuteAction::CreateSP(this, &SNiagaraStackTableRow::NavigateTo, Parent)));
-			}
-			if (ItemParent != nullptr)
-			{
-				MenuBuilder.AddMenuEntry(
-					LOCTEXT("TopOfModule", "Top of Module"),
-					FText::Format(LOCTEXT("NavigateToFormatted", "Navigate to {0}"), Parent->GetDisplayName()),
-					FSlateIcon(),
-					FUIAction(FExecuteAction::CreateSP(this, &SNiagaraStackTableRow::NavigateTo, Parent)));
-			}
-			if (GroupParent != nullptr)
-			{
+				MenuBuilder.BeginSection("StackRowNavigation", LOCTEXT("NavigationMenuSection", "Navigation"));
+				{
+					if (GroupParent != nullptr)
+					{
+						MenuBuilder.AddMenuEntry(
+							LOCTEXT("TopOfSection", "Top of Section"),
+							FText::Format(LOCTEXT("NavigateToFormatted", "Navigate to {0}"), Parent->GetDisplayName()),
+							FSlateIcon(),
+							FUIAction(FExecuteAction::CreateSP(this, &SNiagaraStackTableRow::NavigateTo, Parent)));
+					}
+					if (ItemParent != nullptr)
+					{
+						MenuBuilder.AddMenuEntry(
+							LOCTEXT("TopOfModule", "Top of Module"),
+							FText::Format(LOCTEXT("NavigateToFormatted", "Navigate to {0}"), Parent->GetDisplayName()),
+							FSlateIcon(),
+							FUIAction(FExecuteAction::CreateSP(this, &SNiagaraStackTableRow::NavigateTo, Parent)));
+					}
+				}
 				MenuBuilder.EndSection();
 			}
 		}
@@ -328,6 +351,12 @@ FReply SNiagaraStackTableRow::OnMouseButtonUp(const FGeometry& MyGeometry, const
 		return FReply::Handled();
 	}
 	return STableRow<UNiagaraStackEntry*>::OnMouseButtonUp(MyGeometry, MouseEvent);
+}
+
+const FSlateBrush* SNiagaraStackTableRow::GetBorder() const
+{
+	// Return no brush here so that the background doesn't change.  The border color changing will be handled by an internal border.
+	return FEditorStyle::GetBrush("NoBrush");
 }
 
 void SNiagaraStackTableRow::CollapseChildren()
@@ -400,7 +429,17 @@ EVisibility SNiagaraStackTableRow::GetExpanderVisibility() const
 
 FReply SNiagaraStackTableRow::ExpandButtonClicked()
 {
-	StackEntry->SetIsExpanded(!StackEntry->GetIsExpanded());
+	const bool bWillBeExpanded = !StackEntry->GetIsExpanded();
+	// Recurse the expansion if "shift" is being pressed
+	const FModifierKeysState ModKeyState = FSlateApplication::Get().GetModifierKeys();
+	if (ModKeyState.IsShiftDown())
+	{
+		StackEntry->SetIsExpanded_Recursive(bWillBeExpanded);
+	}
+	else
+	{
+		StackEntry->SetIsExpanded(bWillBeExpanded);
+	}
 	// Calling SetIsExpanded doesn't broadcast structure change automatically due to the expense of synchronizing
 	// expanded state with the tree to prevent items being expanded on tick, so we call this manually here.
 	StackEntry->OnStructureChanged().Broadcast();
@@ -424,32 +463,26 @@ void SNiagaraStackTableRow::OnValueColumnWidthChanged(float Width)
 
 FSlateColor SNiagaraStackTableRow::GetItemBackgroundColor() const
 {
-	return GetIsRowActive() ? ActiveItemBackgroundColor : InactiveItemBackgroundColor;
+	return StackEntry->GetIsEnabledAndOwnerIsEnabled() 
+		? ItemBackgroundColor 
+		: DisabledItemBackgroundColor;
 }
 
-EVisibility SNiagaraStackTableRow::GetSearchResultBorderVisibility() const
+const FSlateBrush* SNiagaraStackTableRow::GetSelectionBorderBrush() const
+{
+	return STableRow<UNiagaraStackEntry*>::GetBorder();
+}
+
+const FSlateBrush* SNiagaraStackTableRow::GetSearchResultBorderBrush() const
 {
 	return StackViewModel->GetCurrentFocusedEntry() == StackEntry
-		? EVisibility::HitTestInvisible
-		: EVisibility::Hidden;
+		? FNiagaraEditorWidgetsStyle::Get().GetBrush("NiagaraEditor.Stack.SearchResult")
+		: FEditorStyle::GetBrush("NoBrush");
 }
 
 void SNiagaraStackTableRow::NavigateTo(UNiagaraStackEntry* Item)
 {
 	OwnerTree->RequestNavigateToItem(Item, 0);
-}
-
-void SNiagaraStackTableRow::OpenSourceAsset()
-{
-	FAssetEditorManager::Get().OpenEditorForAsset(StackEntry->GetExternalAsset());
-}
-
-void SNiagaraStackTableRow::ShowAssetInContentBrowser()
-{
-	FContentBrowserModule& ContentBrowserModule = FModuleManager::Get().LoadModuleChecked<FContentBrowserModule>(TEXT("ContentBrowser"));
-	TArray<FAssetData> Assets;
-	Assets.Add(FAssetData(StackEntry->GetExternalAsset()));
-	ContentBrowserModule.Get().SyncBrowserToAssets(Assets);
 }
 
 #undef LOCTEXT_NAMESPACE

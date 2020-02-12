@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -174,6 +174,10 @@ public:
 	TArray<FSoftClassPath> WidgetClassesToHide;
 
 public:
+
+	/** Enables a dialog that lets you select a root widget before creating a widget blueprint */
+	UPROPERTY(EditAnywhere, config, Category = Designer)
+	bool bUseWidgetTemplateSelector;
 
 	/** The panel widget to place at the root of all newly constructed widget blueprints. Can be empty. */
 	UPROPERTY(EditAnywhere, config, Category = Designer)

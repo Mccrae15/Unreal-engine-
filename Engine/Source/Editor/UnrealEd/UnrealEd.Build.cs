@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 using UnrealBuildTool;
 using System.IO;
@@ -7,6 +7,11 @@ public class UnrealEd : ModuleRules
 {
 	public UnrealEd(ReadOnlyTargetRules Target) : base(Target)
 	{
+		if(Target.Type != TargetType.Editor)
+		{
+			throw new BuildException("Unable to instantiate UnrealEd module for non-editor targets.");
+		}
+
 		PrivatePCHHeaderFile = "Private/UnrealEdPrivatePCH.h";
 
 		SharedPCHHeaderFile = "Public/UnrealEdSharedPCH.h";
@@ -27,6 +32,7 @@ public class UnrealEd : ModuleRules
 			{
 				"BehaviorTreeEditor",
 				"ClassViewer",
+				"StructViewer",
 				"ContentBrowser",
 				"DerivedDataCache",
 				"DesktopPlatform",
@@ -63,13 +69,13 @@ public class UnrealEd : ModuleRules
 				"ClothingSystemEditorInterface",
 				"NavigationSystem",
 				"Media",
+				"VirtualTexturingEditor",
 			}
 		);
 
 		PublicDependencyModuleNames.AddRange(
 			new string[]
 			{
-				"BspMode",
 				"Core",
 				"CoreUObject",
 				"ApplicationCore",
@@ -95,11 +101,13 @@ public class UnrealEd : ModuleRules
 				"NetworkFileSystem",
 				"UMG",
 				"NavigationSystem",
-                "MeshDescription",
-                "MeshDescriptionOperations",
+				"MeshDescription",
+                "StaticMeshDescription",
                 "MeshBuilder",
                 "MaterialShaderQualitySettings",
                 "EditorSubsystem",
+                "InteractiveToolsFramework",
+				"ToolMenusEditor",
             }
 		);
 
@@ -107,6 +115,7 @@ public class UnrealEd : ModuleRules
 			new string[]
 			{
 				"AssetRegistry",
+				"AssetTagsEditor",
 				"LevelSequence",
 				"AnimGraph",
 				"AppFramework",
@@ -128,7 +137,8 @@ public class UnrealEd : ModuleRules
 				"Projects",
 				"RawMesh",
 				"MeshUtilitiesCommon",
-				"RenderCore",
+                "SkeletalMeshUtilitiesCommon",
+                "RenderCore",
 				"RHI",
 				"Sockets",
 				"SourceControlWindows",
@@ -162,12 +172,19 @@ public class UnrealEd : ModuleRules
 				"ViewportInteraction",
 				"VREditor",
 				"ClothingSystemEditor",
-				"ClothingSystemRuntime",
-				"ClothingSystemRuntimeInterface",
+                "ClothingSystemRuntimeInterface",
+                "ClothingSystemRuntimeCommon",
+                "ClothingSystemRuntimeNv",
 				"PIEPreviewDeviceProfileSelector",
 				"PakFileUtilities",
 				"TimeManagement",
-			}
+                "LandscapeEditorUtilities",
+                "DerivedDataCache",
+				"ScriptDisassembler",
+				"ToolMenus",
+				"FreeImage",
+				"IoStoreUtilities",
+            }
 		);
 
 		DynamicallyLoadedModuleNames.AddRange(
@@ -181,6 +198,7 @@ public class UnrealEd : ModuleRules
 				"Matinee",
 				"AssetTools",
 				"ClassViewer",
+				"StructViewer",
 				"CollectionManager",
 				"ContentBrowser",
 				"CurveTableEditor",
@@ -199,10 +217,7 @@ public class UnrealEd : ModuleRules
 				"DeviceManager",
 				"SettingsEditor",
 				"SessionFrontend",
-				"Sequencer",
 				"StringTableEditor",
-				"GeometryMode",
-				"TextureAlignMode",
 				"FoliageEdit",
 				"ImageWrapper",
 				"Blutility",
@@ -221,7 +236,6 @@ public class UnrealEd : ModuleRules
 				"UndoHistory",
 				"SourceCodeAccess",
 				"HotReload",
-				"HTML5PlatformEditor",
 				"PortalProxies",
 				"PortalServices",
 				"BlueprintNativeCodeGen",
@@ -230,6 +244,9 @@ public class UnrealEd : ModuleRules
 				"ClothPainter",
 				"Media",
 				"TimeManagementEditor",
+				"VirtualTexturingEditor",
+				"EditorInteractiveToolsFramework",
+				"TraceInsights",
 			}
 		);
 
@@ -263,11 +280,12 @@ public class UnrealEd : ModuleRules
 		// Add include directory for Lightmass
 		PublicIncludePaths.Add("Programs/UnrealLightmass/Public");
 
-        PublicIncludePaths.Add("Developer/Android/AndroidDeviceDetection/Public/Interfaces");
+		PublicIncludePaths.Add("Developer/Android/AndroidDeviceDetection/Public/Interfaces");
 
 		PublicIncludePathModuleNames.AddRange(
 			new string[] {
 				"AssetRegistry",
+				"AssetTagsEditor",
 				"CollectionManager",
 				"BlueprintGraph",
 				"AddContentDialog",
@@ -280,7 +298,7 @@ public class UnrealEd : ModuleRules
 				"Engine",
 				"SourceControl",
 			}
-			);
+		);
 
 
 		if ((Target.Platform == UnrealTargetPlatform.Win64) ||
@@ -289,18 +307,15 @@ public class UnrealEd : ModuleRules
 			PublicDependencyModuleNames.Add("XAudio2");
 			PublicDependencyModuleNames.Add("AudioMixerXAudio2");
 
+			PrivateDependencyModuleNames.Add("WindowsPlatformFeatures");
+			PrivateDependencyModuleNames.Add("GameplayMediaEncoder");
+
 			AddEngineThirdPartyPrivateStaticDependencies(Target,
 				"UEOgg",
 				"Vorbis",
 				"VorbisFile",
 				"DX11Audio"
-				);
-		}
-
-		if (Target.Platform == UnrealTargetPlatform.HTML5)
-		{
-			PublicDependencyModuleNames.Add("ALAudio");
-            PublicDependencyModuleNames.Add("AudioMixerSDL");
+			);
 		}
 
 		AddEngineThirdPartyPrivateStaticDependencies(Target,
@@ -320,5 +335,10 @@ public class UnrealEd : ModuleRules
 		{
 			PublicDefinitions.Add( "WITH_RECAST=0" );
 		}
-	}
+
+		if (Target.bWithLiveCoding)
+		{
+			PrivateIncludePathModuleNames.Add("LiveCoding");
+		}
+    }
 }

@@ -1,7 +1,8 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "UObject/LinkerSave.h"
 #include "HAL/FileManager.h"
+#include "Misc/ConfigCacheIni.h"
 #include "Serialization/LargeMemoryWriter.h"
 #include "UObject/Package.h"
 #include "UObject/Class.h"
@@ -21,7 +22,7 @@
 TMap<FString, TArray<uint8> > FLinkerSave::PackagesToScriptSHAMap;
 
 FLinkerSave::FLinkerSave(UPackage* InParent, const TCHAR* InFilename, bool bForceByteSwapping, bool bInSaveUnversioned)
-:	FLinker(ELinkerType::Save, InParent, InFilename )
+:	FLinker(ELinkerType::Save, InParent, InFilename)
 ,	Saver(nullptr)
 {
 	if (FPlatformProperties::HasEditorOnlyData())
@@ -125,7 +126,7 @@ FLinkerSave::FLinkerSave(UPackage* InParent, FArchive *InSaver, bool bForceByteS
 }
 
 FLinkerSave::FLinkerSave(UPackage* InParent, bool bForceByteSwapping, bool bInSaveUnversioned )
-:	FLinker(ELinkerType::Save, InParent,TEXT("$$Memory$$"))
+:	FLinker(ELinkerType::Save, InParent, TEXT("$$Memory$$"))
 ,	Saver(nullptr)
 {
 	if (FPlatformProperties::HasEditorOnlyData())
@@ -171,27 +172,29 @@ FLinkerSave::FLinkerSave(UPackage* InParent, bool bForceByteSwapping, bool bInSa
 #endif // USE_STABLE_LOCALIZATION_KEYS
 	}
 }
-/**
- * Detaches file saver and hence file handle.
- */
-void FLinkerSave::Detach()
+
+bool FLinkerSave::CloseAndDestroySaver()
 {
+	bool bSuccess = true;
 	if (Saver)
 	{
+		// first, do an explicit close to check for archive errors
+		bSuccess = Saver->Close();
+		// then, destroy it
 		delete Saver;
 	}
 	Saver = nullptr;
+	return bSuccess;
 }
 
 FLinkerSave::~FLinkerSave()
 {
-	// Detach file saver/ handle.
-	Detach();
+	CloseAndDestroySaver();
 }
 
-int32 FLinkerSave::MapName(const FName& Name) const
+int32 FLinkerSave::MapName(FNameEntryId Id) const
 {
-	const int32* IndexPtr = NameIndices.Find(Name);
+	const int32* IndexPtr = NameIndices.Find(Id);
 
 	if (IndexPtr)
 	{
@@ -275,14 +278,14 @@ FString FLinkerSave::GetArchiveName() const
 
 FArchive& FLinkerSave::operator<<( FName& InName )
 {
-	int32 Save = MapName(InName);
+	int32 Save = MapName(InName.GetDisplayIndex());
 
 	check(GetSerializeContext());
 	ensureMsgf(Save != INDEX_NONE, TEXT("Name \"%s\" is not mapped when saving %s (object: %s, property: %s)"), 
 		*InName.ToString(),
 		*GetArchiveName(),
 		*GetSerializeContext()->SerializedObject->GetFullName(),
-		*GetSerializedProperty()->GetFullName());
+		*GetFullNameSafe(GetSerializedProperty()));
 
 	int32 Number = InName.GetNumber();
 	FArchive& Ar = *this;
@@ -326,11 +329,10 @@ void FLinkerSave::UsingCustomVersion(const struct FGuid& Guid)
 	// Here we're going to try and dump the callstack that added a new custom version after package summary has been serialized
 	if (Summary.GetCustomVersionContainer().GetVersion(Guid) == nullptr)
 	{
-		const FCustomVersion* RegisteredVersion = FCustomVersionContainer::GetRegistered().GetVersion(Guid);
-		check(RegisteredVersion);
+		FCustomVersion RegisteredVersion = FCurrentCustomVersions::Get(Guid).GetValue();
 
 		FString CustomVersionWarning = FString::Printf(TEXT("Unexpected custom version \"%s\" used after package %s summary has been serialized. Callstack:\n"),
-			*RegisteredVersion->GetFriendlyName().ToString(), *LinkerRoot->GetName());
+			*RegisteredVersion.GetFriendlyName().ToString(), *LinkerRoot->GetName());
 
 		const int32 MaxStackFrames = 100;
 		uint64 StackFrames[MaxStackFrames];

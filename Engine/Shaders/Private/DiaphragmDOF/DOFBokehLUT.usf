@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 /*=============================================================================
 	DiaphragmDOF/DOFBokehLUT.usf: Generate LUT according to bokeh shape.
@@ -77,7 +77,7 @@ float DiaphragmBladeCenterOffset;
 float ComputeCocRadiusToBokehEdgeFactor(float PixelAngle)
 {
 	float EdgeId = floor(PixelAngle * rcp(2 * PI) * float(BladeCount));
-	float EdgeAngle = (EdgeId + 0.5) * (2 * PI) * rcp(BladeCount);
+	float EdgeAngle = (EdgeId + 0.5) * (2 * PI) * rcp(float(BladeCount));
 	
 	float Alpha = PixelAngle - EdgeAngle;
 
@@ -153,7 +153,7 @@ void RingCoordinateFromCartesianCoordinate(const float2 C, out float OutRingRadi
 
 //------------------------------------------------------- OUTPUTS
 
-RWTexture2D<float4>	Output0;
+RWTexture2D<float4>	BokehLUTOutput;
 
 
 //------------------------------------------------------- ENTRY POINT
@@ -190,7 +190,7 @@ void BuildBokehLUTMainCS(uint2 DispatchThreadId : SV_DispatchThreadID)
 
 		float CocRadiusToBokehEdgeFactor = ComputeCocRadiusToBokehEdgeFactor(PixelAngle);
 
-		Output0[DispatchThreadId] = float4(CocRadiusToBokehEdgeFactor, 0, 0, 0);
+		BokehLUTOutput[DispatchThreadId] = float4(CocRadiusToBokehEdgeFactor, 0, 0, 0);
 	}
 	#elif DIM_LUT_FORMAT == LUT_FORMAT_FULL_RES_TO_COC_DISTANCE
 	{
@@ -203,7 +203,7 @@ void BuildBokehLUTMainCS(uint2 DispatchThreadId : SV_DispatchThreadID)
 		}
 
 		float PixelCocDistanceFromBokehCenter = FullResPixelDistanceToCocDistance(length(RelativePosFromCenter) / CocRadiusToBokehEdgeFactor);
-		Output0[DispatchThreadId] = float4(PixelCocDistanceFromBokehCenter, 0, 0, 0);
+		BokehLUTOutput[DispatchThreadId] = float4(PixelCocDistanceFromBokehCenter, 0, 0, 0);
 	}
 	#elif DIM_LUT_FORMAT == LUT_FORMAT_GATHER_SAMPLE_POS
 	{
@@ -259,7 +259,7 @@ void BuildBokehLUTMainCS(uint2 DispatchThreadId : SV_DispatchThreadID)
 		// Final position of the sample in kernel.
 		float2 SamplePos = KernelUnitPos * RingRadius;
 
-		Output0[DispatchThreadId] = float4(SamplePos, 0, 0);
+		BokehLUTOutput[DispatchThreadId] = float4(SamplePos, 0, 0);
 	}
 	#else
 		#error Unknown LUT format.

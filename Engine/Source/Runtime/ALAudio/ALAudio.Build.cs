@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 using UnrealBuildTool;
 
@@ -10,10 +10,10 @@ public class ALAudio : ModuleRules
 
         PrivateDependencyModuleNames.AddRange(new string[]
         {
-			"Core",
-			"CoreUObject",
-			"Engine",
-		});
+            "Core",
+            "CoreUObject",
+            "Engine",
+        });
 
         AddEngineThirdPartyPrivateStaticDependencies(Target, "OpenAL");
         AddEngineThirdPartyPrivateStaticDependencies(Target,
@@ -23,9 +23,6 @@ public class ALAudio : ModuleRules
             "VorbisFile"
         );
 
-		if(Target.Platform != UnrealTargetPlatform.HTML5)
-		{
-			PrecompileForTargets = PrecompileTargetsType.None;
-		}
+        PrecompileForTargets = PrecompileTargetsType.None;
     }
 }

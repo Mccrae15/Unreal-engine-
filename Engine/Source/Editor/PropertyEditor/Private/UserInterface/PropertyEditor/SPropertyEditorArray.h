@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 #pragma once
 
 #include "CoreMinimal.h"
@@ -11,6 +11,8 @@
 #include "PropertyEditorHelpers.h"
 #include "UserInterface/PropertyEditor/PropertyEditorConstants.h"
 #include "Widgets/Text/STextBlock.h"
+#include "DragAndDrop/AssetDragDropOp.h"
+#include "SDropTarget.h"
 
 
 #define LOCTEXT_NAMESPACE "PropertyEditor"
@@ -43,9 +45,17 @@ public:
 		ChildSlot
 		.Padding( 0.0f, 0.0f, 2.0f, 0.0f )
 		[
-			SNew( STextBlock )
-			.Text( TextAttr )
-			.Font( InArgs._Font )
+			SNew(SDropTarget)
+			.OnDrop(this, &SPropertyEditorArray::OnDragDropTarget)
+			.OnAllowDrop(this, &SPropertyEditorArray::WillAddValidElements)
+			.OnIsRecognized(this, &SPropertyEditorArray::IsValidAssetDropOp)
+			.Content()
+			[
+				SNew(STextBlock)
+				.Margin(FMargin(4.0f, 2.0f))
+				.Text(TextAttr)
+				.Font(InArgs._Font)
+			]
 		];
 
 		SetEnabled( TAttribute<bool>( this, &SPropertyEditorArray::CanEdit ) );
@@ -53,7 +63,7 @@ public:
 
 	static bool Supports( const TSharedRef<FPropertyEditor>& InPropertyEditor )
 	{
-		const UProperty* NodeProperty = InPropertyEditor->GetProperty();
+		const FProperty* NodeProperty = InPropertyEditor->GetProperty();
 
 		return PropertyEditorHelpers::IsStaticArray( *InPropertyEditor->GetPropertyNode() ) 
 			|| PropertyEditorHelpers::IsDynamicArray( *InPropertyEditor->GetPropertyNode() );
@@ -82,6 +92,85 @@ private:
 	{
 		return PropertyEditor.IsValid() ? !PropertyEditor->IsEditConst() : true;
 	}
+
+	FReply OnDragDropTarget(TSharedPtr<FDragDropOperation> InOperation)
+	{
+		FObjectProperty* ObjectProperty = nullptr;
+		if (const FArrayProperty* ArrayProperty = CastField<FArrayProperty>(PropertyEditor->GetProperty()))
+		{
+			ObjectProperty = CastField<FObjectProperty>(ArrayProperty->Inner);
+		}
+
+		// Only try to add entries if we are dropping on an asset array
+		if (ObjectProperty && InOperation->IsOfType<FAssetDragDropOp>())
+		{
+			TSharedPtr<FAssetDragDropOp> DragDropOp = StaticCastSharedPtr<FAssetDragDropOp>(InOperation);
+			if (DragDropOp.IsValid())
+			{
+				for (FAssetData AssetData : DragDropOp->GetAssets())
+				{
+					// if the type matches
+					if (AssetData.GetClass()->IsChildOf(ObjectProperty->PropertyClass))
+					{
+						PropertyEditor->AddGivenItem(AssetData.ObjectPath.ToString());
+					}
+				}
+				// Let this bubble up to the rest of the row
+				return FReply::Unhandled();
+
+			}
+		}
+		return FReply::Unhandled();
+	}
+
+	bool IsValidAssetDropOp(TSharedPtr<FDragDropOperation> InOperation)
+	{
+		FObjectProperty* ObjectProperty = nullptr;
+		if (const FArrayProperty* ArrayProperty = CastField<FArrayProperty>(PropertyEditor->GetProperty()))
+		{
+			ObjectProperty = CastField<FObjectProperty>(ArrayProperty->Inner);
+		}
+
+		// Only try to add entries if we are dropping on an asset array
+		if (ObjectProperty && InOperation->IsOfType<FAssetDragDropOp>())
+		{
+			return true;
+		}
+		return false;
+	}
+
+	bool WillAddValidElements(TSharedPtr<FDragDropOperation> InOperation)
+	{
+		FObjectProperty* ObjectProperty = nullptr;
+
+		if (const FArrayProperty* ArrayProperty = CastField<FArrayProperty>(PropertyEditor->GetProperty()))
+		{
+			ObjectProperty = CastField<FObjectProperty>(ArrayProperty->Inner);
+		}
+
+		// Only try to add entries if we are dropping on an asset array
+		if (ObjectProperty && InOperation->IsOfType<FAssetDragDropOp>())
+		{
+			bool bHasOnlyValidElements = true;
+			TSharedPtr<FAssetDragDropOp> DragDropOp = StaticCastSharedPtr<FAssetDragDropOp>(InOperation);
+			if (DragDropOp.IsValid())
+			{
+				for (FAssetData AssetData : DragDropOp->GetAssets())
+				{
+					// if the type does not match
+					if (!AssetData.GetClass()->IsChildOf(ObjectProperty->PropertyClass))
+					{
+						bHasOnlyValidElements = false;
+						break;
+					}
+				}
+			}
+			return bHasOnlyValidElements;
+		}
+		
+		return false;
+	}
+
 private:
 	TSharedPtr<FPropertyEditor> PropertyEditor;
 };

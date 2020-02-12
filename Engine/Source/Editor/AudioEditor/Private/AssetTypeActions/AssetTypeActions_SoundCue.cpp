@@ -1,10 +1,10 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "AssetTypeActions/AssetTypeActions_SoundCue.h"
 #include "Sound/SoundAttenuation.h"
 #include "Misc/PackageName.h"
 #include "Sound/SoundCue.h"
-#include "Framework/MultiBox/MultiBoxBuilder.h"
+#include "ToolMenus.h"
 #include "Factories/SoundAttenuationFactory.h"
 #include "ContentBrowserModule.h"
 #include "IContentBrowserSingleton.h"
@@ -17,12 +17,13 @@ UClass* FAssetTypeActions_SoundCue::GetSupportedClass() const
 	return USoundCue::StaticClass();
 }
 
-void FAssetTypeActions_SoundCue::GetActions( const TArray<UObject*>& InObjects, FMenuBuilder& MenuBuilder )
+void FAssetTypeActions_SoundCue::GetActions(const TArray<UObject*>& InObjects, FToolMenuSection& Section)
 {
 	auto SoundCues = GetTypedWeakObjectPtrs<USoundCue>(InObjects);
-	FAssetTypeActions_SoundBase::GetActions(InObjects, MenuBuilder);
+	FAssetTypeActions_SoundBase::GetActions(InObjects, Section);
 
-	MenuBuilder.AddMenuEntry(
+	Section.AddMenuEntry(
+		"SoundCue_ConsolidateAttenuation",
 		LOCTEXT("SoundCue_ConsolidateAttenuation", "Consolidate Attenuation"),
 		LOCTEXT("SoundCue_ConsolidateAttenuationTooltip", "Creates shared attenuation packages for sound cues with identical override attenuation settings."),
 		FSlateIcon(),

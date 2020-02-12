@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 
 #include "GameFramework/DefaultPawn.h"
@@ -21,7 +21,7 @@ FName ADefaultPawn::MeshComponentName(TEXT("MeshComponent0"));
 ADefaultPawn::ADefaultPawn(const FObjectInitializer& ObjectInitializer)
 	: Super(ObjectInitializer)
 {
-	bCanBeDamaged = true;
+	SetCanBeDamaged(true);
 
 	SetRemoteRoleForBackwardsCompat(ROLE_SimulatedProxy);
 	bReplicates = true;
@@ -65,6 +65,7 @@ ADefaultPawn::ADefaultPawn(const FObjectInitializer& ObjectInitializer)
 		MeshComponent->bCastDynamicShadow = true;
 		MeshComponent->bAffectDynamicIndirectLighting = false;
 		MeshComponent->bAffectDistanceFieldLighting = false;
+		MeshComponent->bVisibleInRayTracing = false;
 		MeshComponent->PrimaryComponentTick.TickGroup = TG_PrePhysics;
 		MeshComponent->SetupAttachment(RootComponent);
 		MeshComponent->SetCollisionProfileName(UCollisionProfile::Pawn_ProfileName);

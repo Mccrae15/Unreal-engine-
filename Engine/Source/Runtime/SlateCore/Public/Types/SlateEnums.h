@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -109,11 +109,33 @@ enum class EUINavigation : uint8
 
 	/** Number of navigation types*/
 	Num UMETA(Hidden),
+
 	/** Denotes an invalid navigation, more important used to denote no specified navigation*/
-	Invalid UMETA(Hidden),
+	Invalid,
 };
 
 ENUM_RANGE_BY_COUNT(EUINavigation, EUINavigation::Num);
+
+/**
+ * Generic UI navigation action that are usually bound to a gamepad or other input device
+ */
+UENUM(BlueprintType)
+enum class EUINavigationAction : uint8
+{
+	/** Accept, normally acts like a mouse click. Corresponds to Virtual_Accept key */
+	Accept,
+
+	/** Back/Cancel, normally acts like escape. Corresponds to Virtual_Back key */
+	Back,
+
+	/** Number of navigation actions */
+	Num UMETA(Hidden),
+
+	/** Invalid action */
+	Invalid,
+};
+
+ENUM_RANGE_BY_COUNT(EUINavigationAction, EUINavigationAction::Num);
 
 /**
  * Enumerates the source of the navigation

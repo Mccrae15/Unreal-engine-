@@ -1,7 +1,16 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "SocialSettings.h"
 #include "SocialManager.h"
+#include "Misc/CommandLine.h"
+
+#if !UE_BUILD_SHIPPING
+int32 MaxPartySizeOverride = INDEX_NONE;
+FAutoConsoleVariableRef CVarMaxPartySize(
+	TEXT("SocialSettings.MaxPartySize"),
+	MaxPartySizeOverride,
+	TEXT("Override the maximum persistent party size allowed by the social system"));
+#endif
 
 USocialSettings::USocialSettings()
 {
@@ -28,8 +37,51 @@ bool USocialSettings::ShouldPreferPlatformInvites()
 	return SettingsCDO.bPreferPlatformInvites;
 }
 
-int32 USocialSettings::GetDefaultMaxPartySize()
+bool USocialSettings::MustSendPrimaryInvites()
 {
 	const USocialSettings& SettingsCDO = *GetDefault<USocialSettings>();
+	return SettingsCDO.bMustSendPrimaryInvites;
+}
+
+bool USocialSettings::ShouldLeavePartyOnDisconnect()
+{
+	const USocialSettings& SettingsCDO = *GetDefault<USocialSettings>();
+	return SettingsCDO.bLeavePartyOnDisconnect;
+}
+
+int32 USocialSettings::GetDefaultMaxPartySize()
+{
+#if !UE_BUILD_SHIPPING
+	if (MaxPartySizeOverride > 0)
+	{
+		return MaxPartySizeOverride;
+	}
+
+	static FString CommandLineOverridePartySize;
+	if (FParse::Value(FCommandLine::Get(), TEXT("MaxPartySize="), CommandLineOverridePartySize))
+	{
+		return FCString::Atoi(*CommandLineOverridePartySize);
+	}
+#endif
+
+	const USocialSettings& SettingsCDO = *GetDefault<USocialSettings>();
 	return SettingsCDO.DefaultMaxPartySize;
+}
+
+float USocialSettings::GetUserListAutoUpdateRate()
+{
+	const USocialSettings& SettingsCDO = *GetDefault<USocialSettings>();
+	return SettingsCDO.UserListAutoUpdateRate;
+}
+
+int32 USocialSettings::GetMinNicknameLength()
+{
+	const USocialSettings& SettingsCDO = *GetDefault<USocialSettings>();
+	return SettingsCDO.MinNicknameLength;
+}
+
+int32 USocialSettings::GetMaxNicknameLength()
+{
+	const USocialSettings& SettingsCDO = *GetDefault<USocialSettings>();
+	return SettingsCDO.MaxNicknameLength;
 }

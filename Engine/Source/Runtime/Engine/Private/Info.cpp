@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "GameFramework/Info.h"
 #include "UObject/ConstructorHelpers.h"
@@ -40,9 +40,9 @@ AInfo::AInfo(const FObjectInitializer& ObjectInitializer)
 	bAllowTickBeforeBeginPlay = true;
 	bReplicates = false;
 	NetUpdateFrequency = 10.0f;
-	bHidden = true;
-	bReplicateMovement = false;
-	bCanBeDamaged = false;
+	SetHidden(true);
+	SetReplicatingMovement(false);
+	SetCanBeDamaged(false);
 }
 
 #if WITH_EDITORONLY_DATA

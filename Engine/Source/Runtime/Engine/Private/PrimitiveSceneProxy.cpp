@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 /*=============================================================================
 	PrimitiveSceneProxy.cpp: Primitive scene proxy implementation.
@@ -7,12 +7,17 @@
 #include "PrimitiveSceneProxy.h"
 #include "Engine/Brush.h"
 #include "UObject/Package.h"
+#include "EngineModule.h"
 #include "EngineUtils.h"
 #include "Components/BrushComponent.h"
 #include "SceneManagement.h"
 #include "PrimitiveSceneInfo.h"
 #include "Materials/Material.h"
 #include "SceneManagement.h"
+#include "VT/RuntimeVirtualTexture.h"
+#if WITH_EDITOR
+#include "FoliageHelper.h"
+#endif
 
 static TAutoConsoleVariable<int32> CVarForceSingleSampleShadowingFromStationary(
 	TEXT("r.Shadow.ForceSingleSampleShadowingFromStationary"),
@@ -34,11 +39,37 @@ bool CacheShadowDepthsFromPrimitivesUsingWPO()
 	return CVarCacheWPOPrimitives.GetValueOnAnyThread(true) != 0;
 }
 
-bool SupportsCachingMeshDrawCommands(const FVertexFactory* RESTRICT VertexFactory, const FPrimitiveSceneProxy* RESTRICT PrimitiveSceneProxy)
+bool SupportsCachingMeshDrawCommands(const FMeshBatch& MeshBatch)
 {
-	// Volumetric self shadow mesh commands need to be generated every frame, as they depend on single frame uniform buffers with self shadow data.
-	return VertexFactory->GetType()->SupportsCachingMeshDrawCommands() 
-		&& !PrimitiveSceneProxy->CastsVolumetricTranslucentShadow();
+	return
+		// Cached mesh commands only allow for a single mesh element per batch.
+		(MeshBatch.Elements.Num() == 1) &&
+
+		// Vertex factory needs to support caching.
+		MeshBatch.VertexFactory->GetType()->SupportsCachingMeshDrawCommands();
+}
+
+bool SupportsCachingMeshDrawCommands(const FMeshBatch& MeshBatch, ERHIFeatureLevel::Type FeatureLevel)
+{
+	if (SupportsCachingMeshDrawCommands(MeshBatch))
+	{
+		// External textures get mapped to immutable samplers (which are part of the PSO); the mesh must go through the dynamic path, as the media player might not have
+		// valid textures/samplers the first few calls; once they're available the PSO needs to get invalidated and recreated with the immutable samplers.
+		const FMaterial* Material = MeshBatch.MaterialRenderProxy->GetMaterial(FeatureLevel);
+		const FMaterialShaderMap* ShaderMap = Material->GetRenderingThreadShaderMap();
+		if (ShaderMap)
+		{
+			const FUniformExpressionSet& ExpressionSet = ShaderMap->GetUniformExpressionSet();
+			if (ExpressionSet.HasExternalTextureExpressions())
+			{
+				return false;
+			}
+		}
+
+		return true;
+	}
+
+	return false;
 }
 
 FPrimitiveSceneProxy::FPrimitiveSceneProxy(const UPrimitiveComponent* InComponent, FName InResourceName)
@@ -49,12 +80,13 @@ FPrimitiveSceneProxy::FPrimitiveSceneProxy(const UPrimitiveComponent* InComponen
 ,	PropertyColor(FLinearColor::White)
 ,	
 #endif
-	TranslucencySortPriority(FMath::Clamp(InComponent->TranslucencySortPriority, SHRT_MIN, SHRT_MAX))
+	CustomPrimitiveData(InComponent->GetCustomPrimitiveData())
+,	TranslucencySortPriority(FMath::Clamp(InComponent->TranslucencySortPriority, SHRT_MIN, SHRT_MAX))
 ,	Mobility(InComponent->Mobility)
 ,	LightmapType(InComponent->LightmapType)
 ,	StatId()
 ,	DrawInGame(InComponent->IsVisible())
-,	DrawInEditor(InComponent->bVisible)
+,	DrawInEditor(InComponent->GetVisibleFlag())
 ,	bReceivesDecals(InComponent->bReceivesDecals)
 ,	bOnlyOwnerSee(InComponent->bOnlyOwnerSee)
 ,	bOwnerNoSee(InComponent->bOwnerNoSee)
@@ -67,6 +99,8 @@ FPrimitiveSceneProxy::FPrimitiveSceneProxy(const UPrimitiveComponent* InComponen
 ,	ViewOwnerDepthPriorityGroup(InComponent->ViewOwnerDepthPriorityGroup)
 ,	bStaticLighting(InComponent->HasStaticLighting())
 ,	bVisibleInReflectionCaptures(InComponent->bVisibleInReflectionCaptures)
+,	bVisibleInRayTracing(InComponent->bVisibleInRayTracing)
+,	bRenderInDepthPass(InComponent->bRenderInDepthPass)
 ,	bRenderInMainPass(InComponent->bRenderInMainPass)
 ,	bRequiresVisibleLevelToRender(false)
 ,	bIsComponentLevelVisible(false)
@@ -96,7 +130,6 @@ FPrimitiveSceneProxy::FPrimitiveSceneProxy(const UPrimitiveComponent* InComponen
 ,	bStaticElementsAlwaysUseProxyPrimitiveUniformBuffer(false)
 ,	bVFRequiresPrimitiveUniformBuffer(true)
 ,	bAlwaysHasVelocity(false)
-,	bUseEditorDepthTest(true)
 ,	bSupportsDistanceFieldRepresentation(false)
 ,	bSupportsHeightfieldRepresentation(false)
 ,	bNeedsLevelAddedToWorldNotification(false)
@@ -113,6 +146,9 @@ FPrimitiveSceneProxy::FPrimitiveSceneProxy(const UPrimitiveComponent* InComponen
 ,	CustomDepthStencilWriteMask(FRendererStencilMaskEvaluation::ToStencilMask(InComponent->CustomDepthStencilWriteMask))
 ,	LightingChannelMask(GetLightingChannelMaskForStruct(InComponent->LightingChannels))
 ,	IndirectLightingCacheQuality(InComponent->IndirectLightingCacheQuality)
+,	VirtualTextureLodBias(InComponent->VirtualTextureLodBias)
+,	VirtualTextureCullMips(InComponent->VirtualTextureCullMips)
+,	VirtualTextureMinCoverage(InComponent->VirtualTextureMinCoverage)
 ,	LpvBiasMultiplier(InComponent->LpvBiasMultiplier)
 ,	DynamicIndirectShadowMinVisibility(0)
 ,	PrimitiveComponentId(InComponent->ComponentId)
@@ -125,6 +161,7 @@ FPrimitiveSceneProxy::FPrimitiveSceneProxy(const UPrimitiveComponent* InComponen
 // by default we are always drawn
 ,	HiddenEditorViews(0)
 ,	DrawInAnyEditMode(0)
+,   bIsFoliage(false)
 #endif
 ,	VisibilityId(InComponent->VisibilityId)
 ,	MaxDrawDistance(InComponent->CachedMaxDrawDistance > 0 ? InComponent->CachedMaxDrawDistance : FLT_MAX)
@@ -156,7 +193,7 @@ FPrimitiveSceneProxy::FPrimitiveSceneProxy(const UPrimitiveComponent* InComponen
 	
 	if(InComponent->GetOwner())
 	{
-		DrawInGame &= !(InComponent->GetOwner()->bHidden);
+		DrawInGame &= !(InComponent->GetOwner()->IsHidden());
 		#if WITH_EDITOR
 			DrawInEditor &= !InComponent->GetOwner()->IsHiddenEd();
 		#endif
@@ -174,6 +211,7 @@ FPrimitiveSceneProxy::FPrimitiveSceneProxy(const UPrimitiveComponent* InComponen
 		// cache the actor's group membership
 		HiddenEditorViews = InComponent->GetHiddenEditorViews();
 		DrawInAnyEditMode = InComponent->GetOwner()->IsEditorOnly();
+		bIsFoliage = FFoliageHelper::IsOwnedByFoliage(InComponent->GetOwner());
 #endif
 	}
 	
@@ -184,10 +222,72 @@ FPrimitiveSceneProxy::FPrimitiveSceneProxy(const UPrimitiveComponent* InComponen
 	bRequiresVisibleLevelToRender = (ComponentLevel && ComponentLevel->bRequireFullVisibilityToRender);
 	bIsComponentLevelVisible = (!ComponentLevel || ComponentLevel->bIsVisible);
 
+	// Setup the runtime virtual texture information
+	if (UseVirtualTexturing(GetScene().GetFeatureLevel()))
+	{
+		for (URuntimeVirtualTexture* VirtualTexture : InComponent->GetRuntimeVirtualTextures())
+		{
+			if (VirtualTexture != nullptr && VirtualTexture->GetEnabled())
+			{
+				RuntimeVirtualTextures.Add(VirtualTexture);
+				RuntimeVirtualTextureMaterialTypes.AddUnique(VirtualTexture->GetMaterialType());
+			}
+		}
+	}
+
+	// Conditionally remove from the main render pass based on the runtime virtual texture setup
+	ERuntimeVirtualTextureMainPassType MainPassType = InComponent->GetVirtualTextureRenderPassType();
+	const bool bRequestVirtualTexture = InComponent->GetRuntimeVirtualTextures().Num() > 0;
+	const bool bUseVirtualTexture = RuntimeVirtualTextures.Num() > 0;
+	if ((MainPassType == ERuntimeVirtualTextureMainPassType::Never && bRequestVirtualTexture) ||
+		(MainPassType == ERuntimeVirtualTextureMainPassType::Exclusive && bUseVirtualTexture))
+	{
+		bRenderInMainPass = false;
+	}
+
+	// Modify max draw distance for main pass if we are using virtual texturing
+	if (bUseVirtualTexture && bRenderInMainPass && InComponent->GetVirtualTextureMainPassMaxDrawDistance() > 0.f)
+	{
+		MaxDrawDistance = FMath::Min(MaxDrawDistance, InComponent->GetVirtualTextureMainPassMaxDrawDistance());
+	}
+
 #if WITH_EDITOR
 	const bool bGetDebugMaterials = true;
 	InComponent->GetUsedMaterials(UsedMaterialsForVerification, bGetDebugMaterials);
-#endif	
+#endif
+
+	static const auto CVarVertexDeformationOutputsVelocity = IConsoleManager::Get().FindConsoleVariable(TEXT("r.VertexDeformationOutputsVelocity"));
+
+	if (!bAlwaysHasVelocity && IsMovable() && CVarVertexDeformationOutputsVelocity && CVarVertexDeformationOutputsVelocity->GetInt())
+	{
+		ERHIFeatureLevel::Type FeatureLevel = GetScene().GetFeatureLevel();
+
+		TArray<UMaterialInterface*> UsedMaterials;
+		InComponent->GetUsedMaterials(UsedMaterials);
+
+		for (auto& MaterialInterface : UsedMaterials)
+		{
+			if (MaterialInterface)
+			{
+				UMaterial* Material = MaterialInterface->GetMaterial();
+				const FMaterialResource* MaterialResource = Material->GetMaterialResource(FeatureLevel);
+
+				if (IsInGameThread())
+				{
+					bAlwaysHasVelocity = MaterialResource->MaterialModifiesMeshPosition_GameThread();
+				}
+				else
+				{
+					bAlwaysHasVelocity = MaterialResource->MaterialModifiesMeshPosition_RenderThread();
+				}
+
+				if (bAlwaysHasVelocity)
+				{
+					break;
+				}
+			}
+		}
+	}
 }
 
 #if WITH_EDITOR
@@ -232,41 +332,6 @@ FPrimitiveViewRelevance FPrimitiveSceneProxy::GetViewRelevance(const FSceneView*
 	return FPrimitiveViewRelevance();
 }
 
-static TAutoConsoleVariable<int32> CVarDeferUniformBufferUpdatesUntilVisible(
-	TEXT("r.DeferUniformBufferUpdatesUntilVisible"),
-	0,
-	TEXT("If > 0, then don't update the primitive uniform buffer until it is visible. Incompatible with the Mesh Draw Command pipeline."));
-
-void FPrimitiveSceneProxy::UpdateUniformBufferMaybeLazy()
-{
-	//@todo MeshCommandPipeline r.DeferUniformBufferUpdatesUntilVisible isn't currently supported.
-	/*
-	if (PrimitiveSceneInfo && CVarDeferUniformBufferUpdatesUntilVisible.GetValueOnAnyThread() > 0)
-	{
-		PrimitiveSceneInfo->SetNeedsUniformBufferUpdate(true);
-	}
-	else
-	{
-		UpdateUniformBuffer();
-	}
-	*/
-
-	UpdateUniformBuffer();
-}
-
-bool FPrimitiveSceneProxy::NeedsUniformBufferUpdate() const
-{
-	//@todo MeshCommandPipeline r.DeferUniformBufferUpdatesUntilVisible isn't currently supported.
-	/*
-	if (PrimitiveSceneInfo && CVarDeferUniformBufferUpdatesUntilVisible.GetValueOnAnyThread() > 0)
-	{
-		return PrimitiveSceneInfo->NeedsUniformBufferUpdate();
-	}
-	*/
-
-	return false;
-}
-
 void FPrimitiveSceneProxy::UpdateUniformBuffer()
 {
 	QUICK_SCOPE_CYCLE_COUNTER(STAT_FPrimitiveSceneProxy_UpdateUniformBuffer);
@@ -277,8 +342,12 @@ void FPrimitiveSceneProxy::UpdateUniformBuffer()
 		bool bHasPrecomputedVolumetricLightmap;
 		FMatrix PreviousLocalToWorld;
 		int32 SingleCaptureIndex;
+		bool bOutputVelocity;
 
-		Scene->GetPrimitiveUniformShaderParameters_RenderThread(PrimitiveSceneInfo, bHasPrecomputedVolumetricLightmap, PreviousLocalToWorld, SingleCaptureIndex);
+		Scene->GetPrimitiveUniformShaderParameters_RenderThread(PrimitiveSceneInfo, bHasPrecomputedVolumetricLightmap, PreviousLocalToWorld, SingleCaptureIndex, bOutputVelocity);
+
+		FBoxSphereBounds PreSkinnedLocalBounds;
+		GetPreSkinnedLocalBounds(PreSkinnedLocalBounds);
 
 		// Update the uniform shader parameters.
 		const FPrimitiveUniformShaderParameters PrimitiveUniformShaderParameters = 
@@ -288,16 +357,19 @@ void FPrimitiveSceneProxy::UpdateUniformBuffer()
 				ActorPosition, 
 				Bounds, 
 				LocalBounds, 
+				PreSkinnedLocalBounds,
 				bReceivesDecals, 
 				HasDistanceFieldRepresentation(), 
 				HasDynamicIndirectShadowCasterRepresentation(), 
 				UseSingleSampleShadowFromStationaryLights(),
 				bHasPrecomputedVolumetricLightmap,
-				UseEditorDepthTest(), 
+				DrawsVelocity(), 
 				GetLightingChannelMask(),
 				LpvBiasMultiplier,
 				PrimitiveSceneInfo ? PrimitiveSceneInfo->GetLightmapDataOffset() : 0,
-				SingleCaptureIndex);
+				SingleCaptureIndex, 
+				bOutputVelocity || AlwaysHasVelocity(),
+				GetCustomPrimitiveData());
 
 		if (UniformBuffer.GetReference())
 		{
@@ -328,7 +400,7 @@ void FPrimitiveSceneProxy::SetTransform(const FMatrix& InLocalToWorld, const FBo
 	LocalBounds = InLocalBounds;
 	ActorPosition = InActorPosition;
 	
-	UpdateUniformBufferMaybeLazy();
+	UpdateUniformBuffer();
 	
 	// Notify the proxy's implementation of the change.
 	OnTransformChanged();
@@ -493,12 +565,25 @@ void FPrimitiveSceneProxy::SetHovered_GameThread(const bool bInHovered)
 	check(IsInGameThread());
 
 	// Enqueue a message to the rendering thread containing the interaction to add.
-	ENQUEUE_UNIQUE_RENDER_COMMAND_TWOPARAMETER(
-		SetNewHovered,
-		FPrimitiveSceneProxy*,PrimitiveSceneProxy,this,
-		const bool,bNewHovered,bInHovered,
+	FPrimitiveSceneProxy* PrimitiveSceneProxy = this;
+	ENQUEUE_RENDER_COMMAND(SetNewHovered)(
+		[PrimitiveSceneProxy, bInHovered](FRHICommandListImmediate& RHICmdList)
+		{
+			PrimitiveSceneProxy->SetHovered_RenderThread(bInHovered);
+		});
+}
+
+void FPrimitiveSceneProxy::SetLightingChannels_GameThread(FLightingChannels LightingChannels)
+{
+	check(IsInGameThread());
+
+	FPrimitiveSceneProxy* PrimitiveSceneProxy = this;
+	const uint8 LocalLightingChannelMask = GetLightingChannelMaskForStruct(LightingChannels);
+	ENQUEUE_RENDER_COMMAND(SetLightingChannelsCmd)(
+		[PrimitiveSceneProxy, LocalLightingChannelMask](FRHICommandListImmediate& RHICmdList)
 	{
-		PrimitiveSceneProxy->SetHovered_RenderThread(bNewHovered);
+		PrimitiveSceneProxy->LightingChannelMask = LocalLightingChannelMask;
+		PrimitiveSceneProxy->GetPrimitiveSceneInfo()->SetNeedsUniformBufferUpdate(true);
 	});
 }
 
@@ -539,13 +624,12 @@ void FPrimitiveSceneProxy::SetHiddenEdViews_GameThread( uint64 InHiddenEditorVie
 {
 	check(IsInGameThread());
 
-	ENQUEUE_UNIQUE_RENDER_COMMAND_TWOPARAMETER(
-		SetEditorVisibility,
-		FPrimitiveSceneProxy*,PrimitiveSceneProxy,this,
-		const uint64,NewHiddenEditorViews,InHiddenEditorViews,
-	{
-		PrimitiveSceneProxy->SetHiddenEdViews_RenderThread(NewHiddenEditorViews);
-	});
+	FPrimitiveSceneProxy* PrimitiveSceneProxy = this;
+	ENQUEUE_RENDER_COMMAND(SetEditorVisibility)(
+		[PrimitiveSceneProxy, InHiddenEditorViews](FRHICommandListImmediate& RHICmdList)
+		{
+			PrimitiveSceneProxy->SetHiddenEdViews_RenderThread(InHiddenEditorViews);
+		});
 }
 
 /**
@@ -564,13 +648,12 @@ void FPrimitiveSceneProxy::SetCollisionEnabled_GameThread(const bool bNewEnabled
 	check(IsInGameThread());
 
 	// Enqueue a message to the rendering thread to change draw state
-	ENQUEUE_UNIQUE_RENDER_COMMAND_TWOPARAMETER(
-		SetCollisionEnabled,
-		FPrimitiveSceneProxy*,PrimSceneProxy,this,
-		const bool,bEnabled,bNewEnabled,
-	{
-		PrimSceneProxy->SetCollisionEnabled_RenderThread(bEnabled);
-	});
+	FPrimitiveSceneProxy* PrimSceneProxy = this;
+	ENQUEUE_RENDER_COMMAND(SetCollisionEnabled)(
+		[PrimSceneProxy, bNewEnabled](FRHICommandListImmediate& RHICmdList)
+		{
+			PrimSceneProxy->SetCollisionEnabled_RenderThread(bNewEnabled);
+		});
 }
 
 void FPrimitiveSceneProxy::SetCollisionEnabled_RenderThread(const bool bNewEnabled)
@@ -590,6 +673,11 @@ bool FPrimitiveSceneProxy::IsShown(const FSceneView* View) const
 		{
 			return false;
 		}
+	}
+
+	if (bIsFoliage && !View->Family->EngineShowFlags.InstancedFoliage)
+	{
+		return false;
 	}
 
 	// After checking for VR/Desktop Edit mode specific actors, check for Editor vs. Game

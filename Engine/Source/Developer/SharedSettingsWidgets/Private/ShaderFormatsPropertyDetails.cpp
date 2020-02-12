@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "ShaderFormatsPropertyDetails.h"
 #include "Misc/Paths.h"
@@ -32,30 +32,17 @@ FText FShaderFormatsPropertyDetails::GetFriendlyNameFromRHINameMac(const FString
 		case SP_PCD3D_SM5:
 			FriendlyRHIName = LOCTEXT("D3DSM5", "Direct3D 11+ (SM5)");
 			break;
-		case SP_PCD3D_SM4:
-			FriendlyRHIName = LOCTEXT("D3DSM4", "Direct3D 10 (SM4)");
-			break;
 		case SP_PCD3D_ES3_1:
 			FriendlyRHIName = LOCTEXT("D3DES31", "Direct3D (ES3.1, Mobile Preview)");
 			break;
-		case SP_PCD3D_ES2:
-			FriendlyRHIName = LOCTEXT("D3DES2", "Direct3D (ES2, Mobile Preview)");
-			break;
-		case SP_OPENGL_SM4:
-			FriendlyRHIName = LOCTEXT("OpenGL3", "OpenGL 3 (SM4)");
-			break;
 		case SP_OPENGL_SM5:
 			FriendlyRHIName = LOCTEXT("OpenGL4", "OpenGL 4.3+ (SM5)");
-			break;
-		case SP_OPENGL_PCES2:
-			FriendlyRHIName = LOCTEXT("OpenGLES2PC", "OpenGL (ES2, Mobile Preview)");
 			break;
 		case SP_OPENGL_PCES3_1:
 			FriendlyRHIName = LOCTEXT("OpenGLES31PC", "OpenGL (ES3.1, Mobile Preview)");
 			break;
 		case SP_OPENGL_ES2_ANDROID:
 		case SP_OPENGL_ES2_WEBGL:
-		case SP_OPENGL_ES2_IOS:
 			FriendlyRHIName = LOCTEXT("OpenGLES2", "OpenGLES 2 (Mobile)");
 			break;
 		case SP_OPENGL_ES31_EXT:
@@ -75,22 +62,16 @@ FText FShaderFormatsPropertyDetails::GetFriendlyNameFromRHINameMac(const FString
 			FriendlyRHIName = LOCTEXT("MetalMRTTV", "tvOS Metal Desktop Renderer (SM5, Metal 1.2+, tvOS 10.0 or later)");
 			break;
 		case SP_METAL_SM5_NOTESS:
-			FriendlyRHIName = LOCTEXT("MetalSM5_NOTESS", "Mac Metal Desktop Renderer without Tessellation (SM5, Metal 1.2+, macOS Sierra 10.12.6 or later)");
+			FriendlyRHIName = LOCTEXT("MetalSM5_NOTESS", "Mac Metal Desktop Renderer without Tessellation (SM5, Metal 2.0+, macOS High Sierra 10.13.6 or later)");
 			break;
 		case SP_METAL_SM5:
-			FriendlyRHIName = LOCTEXT("MetalSM5", "Mac Metal Desktop Renderer with Tessellation (SM5, Metal 1.2+, macOS Sierra 10.12.6 or later)");
+			FriendlyRHIName = LOCTEXT("MetalSM5", "Mac Metal Desktop Renderer with Tessellation (SM5, Metal 2.0+, macOS High Sierra 10.13.6 or later)");
 			break;
 		case SP_METAL_MACES3_1:
 			FriendlyRHIName = LOCTEXT("MetalES3.1", "Mac Metal High-End Mobile Preview (ES3.1)");
 			break;
-		case SP_METAL_MACES2:
-		FriendlyRHIName = LOCTEXT("MetalES2", "Mac Metal Low-End Mobile Preview (ES2)");
-			break;
 		case SP_METAL_MRT_MAC:
 			FriendlyRHIName = LOCTEXT("MetalMRTMac", "Mac Metal iOS/tvOS Desktop Renderer Preview (SM5)");
-			break;
-		case SP_VULKAN_SM4:
-			FriendlyRHIName = LOCTEXT("VulkanSM4", "Vulkan (SM4)");
 			break;
 		case SP_VULKAN_SM5:
 		case SP_VULKAN_SM5_LUMIN:
@@ -184,7 +165,8 @@ void FShaderFormatsPropertyDetails::OnTargetedRHIChanged(ECheckBoxState InNewVal
 				int32 InsertIndex = 0;
 				for (; InsertIndex < Array.Num(); ++InsertIndex)
 				{
-					if (InIndex < ShaderFormatOrder[*Array[InsertIndex]])
+					const int32* ShaderFormatIndex = ShaderFormatOrder.Find(*Array[InsertIndex]);
+					if (ShaderFormatIndex != nullptr && InIndex < *ShaderFormatIndex) 
 					{
 						break;
 					}

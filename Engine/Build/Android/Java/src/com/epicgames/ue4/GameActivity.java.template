@@ -1,8 +1,9 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 //This file needs to be here so the "ant" build step doesnt fail when looking for a /src folder.
 
 package com.epicgames.ue4;
 
+import android.app.NotificationManager;
 import android.opengl.EGL14;
 import android.opengl.EGLConfig;
 import android.opengl.EGLContext;
@@ -38,7 +39,9 @@ import java.util.HashMap;
 import java.util.ArrayList;
 import java.text.DecimalFormat;
 import java.text.DecimalFormatSymbols;
+import java.text.BreakIterator;
 import java.util.zip.Inflater;
+import java.util.Stack;
 import java.util.Timer;
 import java.util.TimerTask;
 import java.lang.Runnable;
@@ -139,11 +142,13 @@ import android.view.WindowManager;
 import android.view.Window;
 import android.widget.LinearLayout;
 import android.widget.PopupWindow;
+import android.text.TextUtils;
 
 import android.media.AudioManager;
 
 import android.net.ConnectivityManager;
 import android.net.NetworkInfo;
+import android.net.Uri;
 
 import com.google.android.gms.auth.GoogleAuthUtil;
 import com.google.android.gms.common.api.GoogleApiClient;
@@ -158,6 +163,7 @@ import com.google.vr.sdk.samples.permission.PermissionHelper;
 import java.nio.charset.StandardCharsets;
 import java.net.URL;
 import java.net.URLEncoder;
+import java.net.URLConnection;
 import java.net.HttpURLConnection;
 import java.net.MalformedURLException;
 
@@ -185,6 +191,7 @@ import com.epicgames.ue4.DownloadShim;
 import android.view.inputmethod.InputMethodManager;
 
 import android.graphics.Rect;
+import android.graphics.RectF;
 import android.view.ViewTreeObserver;
 
 import java.lang.reflect.Method;
@@ -199,6 +206,8 @@ import android.graphics.Color;
 import android.widget.TextView;
 import android.widget.TextView.OnEditorActionListener;
 import android.content.BroadcastReceiver;
+import android.support.v4.app.NotificationManagerCompat;
+import android.support.v4.content.FileProvider;
 //$${gameActivityImportAdditions}$$
 
 //$${gameActivityPostImportAdditions}$$
@@ -213,7 +222,7 @@ import android.content.BroadcastReceiver;
 //  Java libraries at the startup of the program and store references 
 //  to them in this class.
 
-public class GameActivity extends NativeActivity implements SurfaceHolder.Callback2,
+public class GameActivity extends $${gameActivitySuperClass}$$ implements SurfaceHolder.Callback2,
 															GoogleApiClient.ConnectionCallbacks,
 															GoogleApiClient.OnConnectionFailedListener,
 															SensorEventListener,
@@ -221,6 +230,7 @@ public class GameActivity extends NativeActivity implements SurfaceHolder.Callba
 //$${gameActivityImplementsAdditions}$$
 															ComponentCallbacks2
 {
+	public int VersionCode = 0;
 	private boolean bAllowIMU = true;
 	private SensorManager sensorManager;
 	private Sensor accelerometer;
@@ -228,7 +238,10 @@ public class GameActivity extends NativeActivity implements SurfaceHolder.Callba
 	private Sensor gyroscope;
 	static boolean first_acceleration_sample = true;
 	static final float SampleDecayRate = 0.85f;
-	
+
+	private Rect safezone = new Rect(0, 0, 0, 0);
+	private RectF safezoneF = new RectF(0.0f, 0.0f, 0.0f, 0.0f);
+
 	private final float[] rotationMatrix = new float[9];
 	private final float[] orientationAngles = new float[3];
 
@@ -247,7 +260,7 @@ public class GameActivity extends NativeActivity implements SurfaceHolder.Callba
 	static float[] current_gravity = new float[]{0, 0, 0};
 	static float[] current_acceleration = new float[]{0, 0, 0};
 
-	public static Logger Log = new Logger("UE4");
+	public static Logger Log = new Logger("UE4", "GameActivity");
 
 	// From cpufeatures.h AndroidCpuFamily enum
 	private static final int ANDROID_CPU_FAMILY_UNKNOWN = 0;
@@ -277,6 +290,12 @@ public class GameActivity extends NativeActivity implements SurfaceHolder.Callba
 	public static final int DOWNLOAD_NO_PLAY_KEY = 6;
 	public static final String DOWNLOAD_RETURN_NAME = "Result";
 
+	private static final int CONFIGRULES_STATE_RUN = 0;
+	private static final int CONFIGRULES_STATE_EXECTRUE = 1;
+	private static final int CONFIGRULES_STATE_FINDELSE = 2;
+	private static final int CONFIGRULES_STATE_EXECFALSE = 3;
+	private static final int CONFIGRULES_STATE_FINDEND = 4;
+
 	public static enum VirtualKeyboardCommand { VK_CMD_NONE, VK_CMD_SHOW, VK_CMD_HIDE };
 	public static VirtualKeyboardCommand lastVirtualKeyboardCommand = VirtualKeyboardCommand.VK_CMD_NONE;
 	public static final int lastVirtualKeyboardCommandDelay = 200;
@@ -301,9 +320,10 @@ public class GameActivity extends NativeActivity implements SurfaceHolder.Callba
 	protected ProgressDialog mProgressDialog;
 
 	// Commandline arguments and flags
-	String CommandLineFull = "";
-	ArrayList<String> CommandLineArguments = new ArrayList<String>();
-	HashMap<String, String> CommandLineFlags = new HashMap<String, String>();
+	private boolean bHaveParsedCommandline = false;
+	public String CommandLineFull = "";
+	public ArrayList<String> CommandLineArguments = new ArrayList<String>();
+	public HashMap<String, String> CommandLineFlags = new HashMap<String, String>();
 
 	// Engine branch from manifest
 	String EngineBranch = "UE4";
@@ -391,10 +411,14 @@ public class GameActivity extends NativeActivity implements SurfaceHolder.Callba
 	/** Use ExternalFilesDir for UE4Game files */
     private boolean UseExternalFilesDir = false;
 
+	/** Make log files public */
+    private boolean PublicLogFiles = false;
+
 	/** Flag to ensure we have finished startup before allowing nativeOnActivityResult to get called */
 	private boolean InitCompletedOK = false;
 
 	private boolean bConfigRulesError = false;
+	private String ConfigRulesStatus = "UNSET";
 
 	/** Dialog for force game dialog */
 	private AlertDialog ForceGameDialog = null;
@@ -450,14 +474,16 @@ public class GameActivity extends NativeActivity implements SurfaceHolder.Callba
 	public String OpenGLDriver = "";
 	public String TextureFormats = "ETC1";
 	public boolean bSupportsFloatingPointRenderTargets = false;
+	private String EGLErrorStatus = "UNSET";
+	
+	/** Flag for not officially supported devices */
+	public static boolean bSupportedDevice = true;
 
 	/** Used for LocalNotification support*/
 	private boolean localNotificationAppLaunched = false;
 	private String	localNotificationLaunchActivationEvent = "";
 	private int		localNotificationLaunchFireDate = 0;
 	
-	public int DeviceRotation = -1;
-
 	enum EAlertDialogType
 	{
 		None,
@@ -518,14 +544,6 @@ public class GameActivity extends NativeActivity implements SurfaceHolder.Callba
 		Configuration config = getResources().getConfiguration();
 
 		int rotation = windowManager.getDefaultDisplay().getRotation();
-		switch (rotation)
-		{
-			case Surface.ROTATION_0:	DeviceRotation = 0;		break;
-			case Surface.ROTATION_90:	DeviceRotation = 90;	break;
-			case Surface.ROTATION_180:	DeviceRotation = 180;	break;
-			case Surface.ROTATION_270:	DeviceRotation = 270;	break;
-		}
-
 		if ( ((rotation == android.view.Surface.ROTATION_0 || rotation == android.view.Surface.ROTATION_180) &&
 				config.orientation == Configuration.ORIENTATION_LANDSCAPE)
 			|| ((rotation == android.view.Surface.ROTATION_90 || rotation == android.view.Surface.ROTATION_270) &&    
@@ -537,6 +555,23 @@ public class GameActivity extends NativeActivity implements SurfaceHolder.Callba
 		{
 			return Configuration.ORIENTATION_PORTRAIT;
 		}
+	}
+
+	public int getCurrentDeviceRotationDegree() 
+	{
+		// onConfigurationChanged won't be called if orientation changes from landscape/portrait to reverse landscape/portrait
+		// use this function instead of caching DeviceRotation
+		int orientation = AndroidThunkJava_GetDeviceOrientation();
+
+		switch (orientation)
+		{
+			case Surface.ROTATION_0:	return 0;
+			case Surface.ROTATION_90:	return 90;
+			case Surface.ROTATION_180:	return 180;
+			case Surface.ROTATION_270:	return 270;
+		}
+
+		return 0;
 	}
 
 	private int getResourceId(String VariableName, String ResourceName, String PackageName)
@@ -609,14 +644,18 @@ public class GameActivity extends NativeActivity implements SurfaceHolder.Callba
         return packages.contains(packagename);
     }
 
-	private void ParseCommandline(String ProjectName)
+	public String AndroidThunkJava_GetCommandLine()
 	{
-		File file;
-		InputStream stream = null;
-		BufferedReader reader = null;
+		String commandLine = "";
+		//$${gameActivityGetCommandLineAdditions}$$
+		return commandLine;
+	}
 
-		// first look for an override in the project directory
-		file = new File(android.os.Environment.getExternalStorageDirectory().getAbsolutePath() + "/UE4Game/" + ProjectName + "/UE4CommandLine.txt");
+	private BufferedReader TryOpenFileReader(String Filename)
+	{
+		BufferedReader reader = null;
+		File file = new File(Filename);
+
 		if (file.exists())
 		{
 			try
@@ -628,14 +667,56 @@ public class GameActivity extends NativeActivity implements SurfaceHolder.Callba
 				reader = null;
 			}
 		}
+		return reader;
+	}
+
+	public void ParseCommandline(String ProjectName, boolean bUseExternalFilesDir)
+	{
+		if (bHaveParsedCommandline)
+		{
+			return;
+		}
+		bHaveParsedCommandline = true;
+		
+		String tempCommandLine = AndroidThunkJava_GetCommandLine();
+		if(!TextUtils.isEmpty(tempCommandLine)) {
+			Log.debug("Using alternative commandline source");
+			// remember full commandline for regex checks by configrules
+			CommandLineFull = tempCommandLine;
+			parseCommandLineParams(tempCommandLine);
+			return;
+		}
+
+		BufferedReader reader = null;
+
+		// determine the proper place to look for UE4CommandLine.txt as override outside APK
+		String BaseDirectory = android.os.Environment.getExternalStorageDirectory().getAbsolutePath();
+		if (bUseExternalFilesDir)
+		{
+			BaseDirectory = getExternalFilesDir(null).getAbsolutePath();
+			if (nativeIsShippingBuild())
+			{
+				BaseDirectory = getFilesDir().getAbsolutePath();
+			}
+		}
+
+		// first look for an override in the project directory
+		String filename = BaseDirectory + "/UE4Game/" + ProjectName + "/UE4CommandLine.txt";
+		reader = TryOpenFileReader(filename);
+		if (reader == null)
+		{
+			filename = BaseDirectory + "/UE4Game/" + ProjectName + "/ue4commandline.txt";
+			reader = TryOpenFileReader(filename);
+		}
 
 		// then look in assets in APK
 		if (reader == null)
 		{
 			try
 			{
-				stream = AssetManagerReference.open("UE4CommandLine.txt");
+				InputStream stream = AssetManagerReference.open("UE4CommandLine.txt");
 				reader = new BufferedReader(new InputStreamReader(stream));
+				Log.debug("Using APK commandline");
 			}
 			catch (FileNotFoundException fe)
 			{
@@ -643,6 +724,8 @@ public class GameActivity extends NativeActivity implements SurfaceHolder.Callba
 			catch (IOException ie)
 			{
 			}
+		} else {
+			Log.debug("Using commandline from: " + filename);
 		}
 
 		// parse the commandline
@@ -658,31 +741,7 @@ public class GameActivity extends NativeActivity implements SurfaceHolder.Callba
 					{
 						// remember full commandline for regex checks by configrules
 						CommandLineFull = line;
-
-						// parse the line
-						ArrayList<String> sets = ParseSegments(line, " ", "\"", "\"");
-						for (String set : sets)
-						{
-							String argument = set.trim();
-
-							if (argument.startsWith("-"))
-							{
-								argument = argument.substring(1);
-								ArrayList<String> keyvalues = ParseSegments(argument, "=", "\"", "\"");
-								if (keyvalues.size() == 2)
-								{
-									CommandLineFlags.put(keyvalues.get(0).toLowerCase(), RemoveSurrounds(keyvalues.get(1), "\"", "\""));
-								}
-								else
-								{
-									CommandLineFlags.put(argument.toLowerCase(), "");
-								}
-							}
-							else
-							{
-								CommandLineArguments.add(RemoveSurrounds(argument, "\"", "\""));
-							}
-						}
+						parseCommandLineParams(line);
 					}
 				}
 			}
@@ -703,7 +762,36 @@ public class GameActivity extends NativeActivity implements SurfaceHolder.Callba
 		}
 	}
 
-	private byte[] getByteArrayFromFile(String filename)
+	private void parseCommandLineParams(String line) {
+		Log.debug("Parsing commandline: " + line);
+
+		// parse the line
+		ArrayList<String> sets = ParseSegments(line, " ", "\"", "\"");
+		for (String set : sets)
+		{
+			String argument = set.trim();
+
+			if (argument.startsWith("-"))
+			{
+				argument = argument.substring(1);
+				ArrayList<String> keyvalues = ParseSegments(argument, "=", "\"", "\"");
+				if (keyvalues.size() == 2)
+				{
+					CommandLineFlags.put(keyvalues.get(0).toLowerCase(), RemoveSurrounds(keyvalues.get(1), "\"", "\""));
+				}
+				else
+				{
+					CommandLineFlags.put(argument.toLowerCase(), "");
+				}
+			}
+			else
+			{
+				CommandLineArguments.add(RemoveSurrounds(argument, "\"", "\""));
+			}
+		}
+	}
+
+	public static byte[] getByteArrayFromFile(String filename)
 	{
 		try
 		{
@@ -864,6 +952,8 @@ public class GameActivity extends NativeActivity implements SurfaceHolder.Callba
 	// returns InputStream to most up to date version of configrules
 	private InputStream getConfigRulesStream(String ProjectName)
 	{
+		ConfigRulesStatus = "";
+
 		byte[] configBytesAssets = getByteArrayFromAssets("configrules.bin.png");
 		byte[] configBytesInternal = getByteArrayFromFile(InternalFilesDir + "configrules.bin.png");
 		byte[] configBytesExternal = getByteArrayFromFile(android.os.Environment.getExternalStorageDirectory().getAbsolutePath() + "/UE4Game/" + ProjectName + "/configrules.bin.png");
@@ -875,6 +965,7 @@ public class GameActivity extends NativeActivity implements SurfaceHolder.Callba
 		// is there one at all?
 		if (assetsVersion == -1 && internalVersion == -1 && externalVersion == -1)
 		{
+			ConfigRulesStatus = "Not found. ";
 			return null;
 		}
 
@@ -909,6 +1000,7 @@ public class GameActivity extends NativeActivity implements SurfaceHolder.Callba
 		}
 		if (result == null)
 		{
+			ConfigRulesStatus = "failed to find config rules. ";
 			bConfigRulesError = true;
 		}
 		return result;
@@ -1039,9 +1131,15 @@ public class GameActivity extends NativeActivity implements SurfaceHolder.Callba
 
 	private void getGraphicsInformation()
     {
+		int initialError = EGL14.eglGetError();
+		EGLErrorStatus = (initialError == EGL14.EGL_SUCCESS) ? "" : "InitialEGLError = " + initialError + " ";
+
 		EGLDisplay display = EGL14.eglGetDisplay(EGL14.EGL_DEFAULT_DISPLAY);
+		EGLErrorStatus += (display != EGL14.EGL_NO_DISPLAY) ? "" : "eglGetDisplay = " + EGL14.eglGetError() + " ";
+
 		int[] version = new int[2];
-		EGL14.eglInitialize(display, version, 0, version, 1);
+		boolean bEglInitialized = EGL14.eglInitialize(display, version, 0, version, 1);
+		EGLErrorStatus += (bEglInitialized) ? "" : "eglInitialize = " + EGL14.eglGetError() + " ";
 
 		// find a config from EGL
 		int[] configAttr = {EGL14.EGL_COLOR_BUFFER_TYPE, EGL14.EGL_RGB_BUFFER,
@@ -1054,6 +1152,7 @@ public class GameActivity extends NativeActivity implements SurfaceHolder.Callba
 		EGL14.eglChooseConfig(display, configAttr, 0, configs, 0, 1, numConfig, 0);
 		if (numConfig[0] == 0)
 		{
+			EGLErrorStatus += "eglChooseConfig = " + EGL14.eglGetError() + " ";
 			Log.debug("Did not find an EGL config");
 			return;
 		}
@@ -1062,13 +1161,16 @@ public class GameActivity extends NativeActivity implements SurfaceHolder.Callba
 		// small surface just to make a context
 		int[] surfAttr = {EGL14.EGL_WIDTH, 8, EGL14.EGL_HEIGHT, 8, EGL14.EGL_NONE};
 		EGLSurface surface = EGL14.eglCreatePbufferSurface(display, config, surfAttr, 0);
+		EGLErrorStatus += (surface != EGL14.EGL_NO_SURFACE) ? "" : "eglCreatePbufferSurface = " + EGL14.eglGetError() + " ";
 
 		// create the context (ES 2)
 		int[] contextAttr = {EGL14.EGL_CONTEXT_CLIENT_VERSION, 2, EGL14.EGL_NONE};
 		EGLContext context = EGL14.eglCreateContext(display, config, EGL14.EGL_NO_CONTEXT, contextAttr, 0);
-
+		EGLErrorStatus += (context != EGL14.EGL_NO_CONTEXT) ? "" : "eglCreateContext = " + EGL14.eglGetError() + " ";
+		
 		// make context to gather information
-		EGL14.eglMakeCurrent(display, surface, surface, context);
+		boolean bMakeCurrent = EGL14.eglMakeCurrent(display, surface, surface, context);
+		EGLErrorStatus += bMakeCurrent ? "" : "eglMakeCurrent = " + EGL14.eglGetError() + " ";
 
 		// grab info now
 		String Extensions = GLES20.glGetString(GLES20.GL_EXTENSIONS);
@@ -1076,6 +1178,10 @@ public class GameActivity extends NativeActivity implements SurfaceHolder.Callba
 		OpenGLDevice = GLES20.glGetString(GLES20.GL_RENDERER);
 		OpenGLDriver = GLES20.glGetString(GLES20.GL_VERSION);
 		boolean bES30Support = OpenGLDriver.contains("OpenGL ES 3.");
+
+		// write any gl error to status
+		int finalGLESError = GLES20.glGetError();
+		EGLErrorStatus += finalGLESError == GLES20.GL_NO_ERROR ? "getGraphicsInformation completed. " : "gl error = " + finalGLESError;
 
 		// tear it down
 		EGL14.eglMakeCurrent(display, EGL14.EGL_NO_SURFACE, EGL14.EGL_NO_SURFACE, EGL14.EGL_NO_CONTEXT);
@@ -1244,6 +1350,222 @@ public class GameActivity extends NativeActivity implements SurfaceHolder.Callba
 		return Result;
 	}
 
+	private boolean EvaluateConditions(Map<String, String> variables, ArrayList<String> conditions, String PreviousRegexMatch)
+	{
+		boolean bConditionTrue = true;
+		for (String condition : conditions)
+		{
+			String SourceType = "";
+			String CompareType = "";
+			String MatchString = "";
+
+			// deal with condition group (src,cmp,match)
+			ArrayList<String> groups = ParseSegments(RemoveSurrounds(condition, "(", ")"), ",", "\"", "\"");
+			for (String group : groups)
+			{
+				ArrayList<String> keyvalue = ParseSegments(group, "=", "\"", "\"");
+				if (keyvalue.size() == 2)
+				{
+					String key = RemoveSurrounds(keyvalue.get(0), "\"", "\"");
+					String value = RemoveSurrounds(keyvalue.get(1), "\"", "\"");
+
+					if (key.equals("SourceType"))
+					{
+						SourceType = value;
+					}
+					else if (key.equals("CompareType"))
+					{
+						CompareType = value;
+					}
+					else if (key.equals("MatchString"))
+					{
+						MatchString = value;
+					}
+				}
+			}
+
+			String Source = "";
+			boolean bSourceIsCommandLine = false;
+			if (SourceType.equals("SRC_PreviousRegexMatch"))
+			{
+				Source = PreviousRegexMatch;
+			}
+			else if (SourceType.equals("SRC_CommandLine"))
+			{
+				bSourceIsCommandLine = true;
+				Source = CommandLineFull;;
+			}
+			else if (variables.containsKey(SourceType))
+			{
+				Source = variables.get(SourceType);
+			}
+			else if (SourceType.equals("[EXIST]"))
+			{
+				Source = MatchString;
+			}
+			else
+			{
+				bConditionTrue = false;
+				break;
+			}
+
+			// apply operation
+			if (CompareType.equals("CMP_Exist"))
+			{
+				if (!variables.containsKey(Source))
+				{
+					bConditionTrue = false;
+					break;
+				}
+			}
+			else if (CompareType.equals("CMP_NotExist"))
+			{
+				if (variables.containsKey(Source))
+				{
+					bConditionTrue = false;
+					break;
+				}
+			}
+			else if (CompareType.equals("CMP_Equal"))
+			{
+				if (bSourceIsCommandLine)
+				{
+					if (!CommandLineFlags.containsKey(MatchString))
+					{
+						bConditionTrue = false;
+						break;
+					}
+				}
+				else if (!Source.equals(MatchString))
+				{
+					bConditionTrue = false;
+					break;
+				}
+			}
+			else if (CompareType.equals("CMP_NotEqual"))
+			{
+				if (bSourceIsCommandLine)
+				{
+					if (CommandLineFlags.containsKey(MatchString))
+					{
+						bConditionTrue = false;
+						break;
+					}
+				}
+				else if (Source.equals(MatchString))
+				{
+					bConditionTrue = false;
+					break;
+				}
+			}
+			else if (CompareType.equals("CMP_EqualIgnore"))
+			{
+				if (!Source.toLowerCase().equals(MatchString.toLowerCase()))
+				{
+					bConditionTrue = false;
+					break;
+				}
+			}
+			else if (CompareType.equals("CMP_NotEqualIgnore"))
+			{
+				if (Source.toLowerCase().equals(MatchString.toLowerCase()))
+				{
+					bConditionTrue = false;
+					break;
+				}
+			}
+			else if (CompareType.equals("CMP_Regex"))
+			{
+				Pattern pattern = Pattern.compile(MatchString);
+				Matcher matcher = pattern.matcher(Source);
+				if (matcher.find())
+				{
+					int groupCount = matcher.groupCount();
+					PreviousRegexMatch = matcher.group(groupCount >= 1 ? 1 : 0);
+				}
+				else
+				{
+					bConditionTrue = false;
+					break;
+				}
+			}
+			else
+			{
+				boolean bNumericOperands = true;
+				float SourceFloat = 0.0f;
+				float MatchFloat = 0.0f;
+
+				// convert source and match to float if numeric
+				try
+				{
+					SourceFloat = Float.parseFloat(Source);
+				}
+				catch (NumberFormatException ne)
+				{
+					bNumericOperands = false;
+				}
+				try
+				{
+					MatchFloat = Float.parseFloat(MatchString);
+				}
+				catch (NumberFormatException ne)
+				{
+					bNumericOperands = false;
+				}
+
+				// if comparison ends with Ignore, do case-insensitive compare by converting both to lowercase
+				if (CompareType.endsWith("Ignore"))
+				{
+					bNumericOperands = false;
+					CompareType = CompareType.substring(0, CompareType.length() - 6);
+
+					Source = Source.toLowerCase();
+					MatchString = MatchString.toLowerCase();
+				}
+
+				if (CompareType.equals("CMP_Less"))
+				{
+					if ((bNumericOperands && (SourceFloat >= MatchFloat)) || (!bNumericOperands && (Source.compareTo(MatchString) >= 0)))
+					{
+						bConditionTrue = false;
+						break;
+					}
+				}
+				else if (CompareType.equals("CMP_LessEqual"))
+				{
+					if ((bNumericOperands && (SourceFloat > MatchFloat)) || (!bNumericOperands && (Source.compareTo(MatchString) > 0)))
+					{
+						bConditionTrue = false;
+						break;
+					}
+				}
+				else if (CompareType.equals("CMP_Greater"))
+				{
+					if ((bNumericOperands && (SourceFloat <= MatchFloat)) || (!bNumericOperands && (Source.compareTo(MatchString) <= 0)))
+					{
+						bConditionTrue = false;
+						break;
+					}
+				}
+				else if (CompareType.equals("CMP_GreaterEqual"))
+				{
+					if ((bNumericOperands && (SourceFloat < MatchFloat)) || (!bNumericOperands && (Source.compareTo(MatchString) < 0)))
+					{
+						bConditionTrue = false;
+						break;
+					}
+				}
+				else
+				{
+					bConditionTrue = false;
+					break;
+				}
+			}
+		}
+
+		return bConditionTrue;
+	}
+
 	private boolean processSystemInfo(String ProjectName, String PackageName)
 	{
 		// check OpenGL information
@@ -1274,6 +1596,12 @@ public class GameActivity extends NativeActivity implements SurfaceHolder.Callba
 			bIsARM64 = true;
 			bHasNEON = true;
 		}
+
+        String abilist = getProp("ro.product.cpu.abilist");
+        if (abilist.contains("arm64-v8a"))
+        {
+            bIsARM64 = true;
+        }
 
 		// check each processor featureset
 		for (int id=0; id < processorCount; id++)
@@ -1319,6 +1647,8 @@ public class GameActivity extends NativeActivity implements SurfaceHolder.Callba
 		variables.put("memory", Integer.toString(totalMemory));
 
 		//variables.put("Profile", "Android");
+		variables.put("unsupportedDevice", "false");
+		variables.put("OverrideProfile", "true");
 		variables.put("hardware", hardware);
 		variables.put("ro.hardware", roHardware);
 		variables.put("processor", processor);
@@ -1388,6 +1718,8 @@ public class GameActivity extends NativeActivity implements SurfaceHolder.Callba
 		// commandline flag may be used to skip dialog if not a shipping build
 		boolean bIgnoreDialog = !nativeIsShippingBuild() && CommandLineFlags.containsKey("noconfigrulesdialog");
 
+//$${gameActivityPreConfigRulesParseAdditions}$$
+		
 		// read the configuration file (configrules.bin.png)
 		int configRulesVersion = 0;
 		BufferedReader reader = null;
@@ -1400,6 +1732,7 @@ public class GameActivity extends NativeActivity implements SurfaceHolder.Callba
 			}
 			catch (Exception e)
 			{
+				ConfigRulesStatus += "failed to create config rules reader. " + e;
 				reader = null;
 			}
 		}
@@ -1407,8 +1740,15 @@ public class GameActivity extends NativeActivity implements SurfaceHolder.Callba
 		// process the rules
 		if (reader != null)
 		{
+			// convert to lowercase once to check against chipset key
+			String hardwareCheck = hardware.toLowerCase();
+			
 			try
 			{
+				Stack<Integer> StateStack = new Stack<Integer>();
+
+				int currentState = CONFIGRULES_STATE_RUN;
+				int nestDepth = 0;
 				String line;
 				while ((line = reader.readLine()) != null)
 				{
@@ -1434,6 +1774,105 @@ public class GameActivity extends NativeActivity implements SurfaceHolder.Callba
 					}
 					String command = line.substring(0, index).trim();
 					line = line.substring(index + 1).trim();
+
+					// handle states
+					switch (currentState)
+					{
+						case CONFIGRULES_STATE_RUN:
+							if (command.equals("else") || command.equals("elseif") || command.equals("endif"))
+							{
+								Log.debug("ConfigRules: unexpected " + command + " encountered!");
+							}
+							break;
+
+						case CONFIGRULES_STATE_EXECTRUE:
+							if (command.equals("else"))
+							{
+								currentState = CONFIGRULES_STATE_FINDEND;
+								continue;
+							}
+							if (command.equals("endif"))
+							{
+								currentState = StateStack.pop();
+								continue;
+							}
+							break;
+
+						case CONFIGRULES_STATE_FINDELSE:
+							if (command.equals("if"))
+							{
+								nestDepth++;
+								continue;
+							}
+							if (nestDepth > 0)
+							{
+								if (command.equals("endif"))
+								{
+									nestDepth--;
+								}
+								continue;
+							}
+							if (command.equals("endif"))
+							{
+								currentState = StateStack.pop();
+								continue;
+							}
+							if (command.equals("else"))
+							{
+								currentState = CONFIGRULES_STATE_EXECFALSE;
+								continue;
+							}
+							if (command.equals("elseif"))
+							{
+								currentState = CONFIGRULES_STATE_FINDEND;
+
+								ArrayList<String> conditions = ParseSegments(line, ",", "(\"", ")\"");
+								int setsize = conditions.size();
+								if (setsize > 0)
+								{
+									boolean bConditionTrue = EvaluateConditions(variables, conditions, "");
+									currentState = bConditionTrue ? CONFIGRULES_STATE_EXECTRUE : CONFIGRULES_STATE_FINDELSE;
+								}
+							}
+							continue;
+
+						case CONFIGRULES_STATE_EXECFALSE:
+							if (command.equals("endif"))
+							{
+								currentState = StateStack.pop();
+								continue;
+							}
+							if (command.equals("else") || command.equals("elseif"))
+							{
+								Log.debug("ConfigRules: unexpected " + command + " while handling false condition!");
+								continue;
+							}
+							break;
+
+						case CONFIGRULES_STATE_FINDEND:
+							if (command.equals("if"))
+							{
+								nestDepth++;
+								continue;
+							}
+							if (nestDepth > 0)
+							{
+								if (command.equals("endif"))
+								{
+									nestDepth--;
+								}
+								continue;
+							}
+							if (command.equals("endif"))
+							{
+								currentState = StateStack.pop();
+							}
+							continue;
+
+						default:
+							Log.debug("ConfigRules: unknown state!");
+							continue;
+					}
 
 					// handle commands
 					if (command.equals("set"))
@@ -1483,7 +1922,7 @@ public class GameActivity extends NativeActivity implements SurfaceHolder.Callba
 							if (values.size() == 7)
 							{
 								String key = RemoveSurrounds(values.get(0), "\"", "\"");
-								if (hardware.contains(key))
+								if (hardwareCheck.contains(key.toLowerCase()))
 								{
 									variables.put("useAffinity", RemoveSurrounds(values.get(1), "\"", "\""));
 									variables.put("chipset", RemoveSurrounds(values.get(2), "\"", "\""));
@@ -1498,6 +1937,26 @@ public class GameActivity extends NativeActivity implements SurfaceHolder.Callba
 							}
 						}
 					}
+					else if (command.equals("if"))
+					{
+						// if:(SourceType=SRC_DeviceMake,CompareType=CMP_Equal,MatchString="samsung")
+						// ... commands for true for all conditions
+						// elseif:(SourceType=SRC_DeviceMake,CompareType=CMP_Equal,MatchString="Google")
+						// ... commands for true for all conditions
+						// else:
+						// ... commands for false for any condition
+						// end:
+						StateStack.push(currentState);
+						currentState = CONFIGRULES_STATE_FINDEND;
+
+						ArrayList<String> conditions = ParseSegments(line, ",", "(\"", ")\"");
+						int setsize = conditions.size();
+						if (setsize > 0)
+						{
+							boolean bConditionTrue = EvaluateConditions(variables, conditions, "");
+							currentState = bConditionTrue ? CONFIGRULES_STATE_EXECTRUE : CONFIGRULES_STATE_FINDELSE;
+						}
+					}
 					else if (command.equals("condition"))
 					{
 						// condition:((SourceType=SRC_DeviceMake,CompareType=CMP_Equal,MatchString="samsung")),(SourceType=,CompareType=,MatchString=),...]),(a=b[,c=d,...]),(a[,b,...])
@@ -1510,217 +1969,7 @@ public class GameActivity extends NativeActivity implements SurfaceHolder.Callba
 							ArrayList<String> sets = ParseSegments(RemoveSurrounds(conditionAndSets.get(1), "(", ")"), ",", "(\"", ")\"");
 							ArrayList<String> clears = (setsize == 3) ? ParseSegments(RemoveSurrounds(conditionAndSets.get(2), "(", ")"), ",", "(\"", ")\"") : new ArrayList<String>();
 
-							String PreviousRegexMatch = "";
-							boolean bConditionTrue = true;
-							for (String condition : conditions)
-							{
-								String SourceType = "";
-								String CompareType = "";
-								String MatchString = "";
-
-								// deal with condition group (src,cmp,match)
-								ArrayList<String> groups = ParseSegments(RemoveSurrounds(condition, "(", ")"), ",", "\"", "\"");
-								for (String group : groups)
-								{
-									ArrayList<String> keyvalue = ParseSegments(group, "=", "\"", "\"");
-									if (keyvalue.size() == 2)
-									{
-										String key = RemoveSurrounds(keyvalue.get(0), "\"", "\"");
-										String value = RemoveSurrounds(keyvalue.get(1), "\"", "\"");
-
-										if (key.equals("SourceType"))
-										{
-											SourceType = value;
-										}
-										else if (key.equals("CompareType"))
-										{
-											CompareType = value;
-										}
-										else if (key.equals("MatchString"))
-										{
-											MatchString = value;
-										}
-									}
-								}
-
-								String Source = "";
-								boolean bSourceIsCommandLine = false;
-								if (SourceType.equals("SRC_PreviousRegexMatch"))
-								{
-									Source = PreviousRegexMatch;
-								}
-								else if (SourceType.equals("SRC_CommandLine"))
-								{
-									bSourceIsCommandLine = true;
-									Source = CommandLineFull;;
-								}
-								else if (variables.containsKey(SourceType))
-								{
-									Source = variables.get(SourceType);
-								}
-								else if (SourceType.equals("[EXIST]"))
-								{
-									Source = MatchString;
-								}
-								else
-								{
-									bConditionTrue = false;
-									break;
-								}
-
-								// apply operation
-								if (CompareType.equals("CMP_Exist"))
-								{
-									if (!variables.containsKey(Source))
-									{
-										bConditionTrue = false;
-										break;
-									}
-								}
-								else if (CompareType.equals("CMP_NotExist"))
-								{
-									if (variables.containsKey(Source))
-									{
-										bConditionTrue = false;
-										break;
-									}
-								}
-								else if (CompareType.equals("CMP_Equal"))
-								{
-									if (bSourceIsCommandLine)
-									{
-										if (!CommandLineFlags.containsKey(MatchString))
-										{
-											bConditionTrue = false;
-											break;
-										}
-									}
-									else if (!Source.equals(MatchString))
-									{
-										bConditionTrue = false;
-										break;
-									}
-								}
-								else if (CompareType.equals("CMP_NotEqual"))
-								{
-									if (bSourceIsCommandLine)
-									{
-										if (CommandLineFlags.containsKey(MatchString))
-										{
-											bConditionTrue = false;
-											break;
-										}
-									}
-									else if (Source.equals(MatchString))
-									{
-										bConditionTrue = false;
-										break;
-									}
-								}
-								else if (CompareType.equals("CMP_EqualIgnore"))
-								{
-									if (!Source.toLowerCase().equals(MatchString.toLowerCase()))
-									{
-										bConditionTrue = false;
-										break;
-									}
-								}
-								else if (CompareType.equals("CMP_NotEqualIgnore"))
-								{
-									if (Source.toLowerCase().equals(MatchString.toLowerCase()))
-									{
-										bConditionTrue = false;
-										break;
-									}
-								}
-								else if (CompareType.equals("CMP_Regex"))
-								{
-									Pattern pattern = Pattern.compile(MatchString);
-									Matcher matcher = pattern.matcher(Source);
-									if (matcher.find())
-									{
-										int groupCount = matcher.groupCount();
-										PreviousRegexMatch = matcher.group(groupCount >= 1 ? 1 : 0);
-									}
-									else
-									{
-										bConditionTrue = false;
-										break;
-									}
-								}
-								else
-								{
-									boolean bNumericOperands = true;
-									float SourceFloat = 0.0f;
-									float MatchFloat = 0.0f;
-
-									// convert source and match to float if numeric
-									try
-									{
-										SourceFloat = Float.parseFloat(Source);
-									}
-									catch (NumberFormatException ne)
-									{
-										bNumericOperands = false;
-									}
-									try
-									{
-										MatchFloat = Float.parseFloat(MatchString);
-									}
-									catch (NumberFormatException ne)
-									{
-										bNumericOperands = false;
-									}
-
-									// if comparison ends with Ignore, do case-insensitive compare by converting both to lowercase
-									if (CompareType.endsWith("Ignore"))
-									{
-										bNumericOperands = false;
-										CompareType = CompareType.substring(0, CompareType.length() - 6);
-
-										Source = Source.toLowerCase();
-										MatchString = MatchString.toLowerCase();
-									}
-
-									if (CompareType.equals("CMP_Less"))
-									{
-										if ((bNumericOperands && (SourceFloat >= MatchFloat)) || (!bNumericOperands && (Source.compareTo(MatchString) >= 0)))
-										{
-											bConditionTrue = false;
-											break;
-										}
-									}
-									else if (CompareType.equals("CMP_LessEqual"))
-									{
-										if ((bNumericOperands && (SourceFloat > MatchFloat)) || (!bNumericOperands && (Source.compareTo(MatchString) > 0)))
-										{
-											bConditionTrue = false;
-											break;
-										}
-									}
-									else if (CompareType.equals("CMP_Greater"))
-									{
-										if ((bNumericOperands && (SourceFloat <= MatchFloat)) || (!bNumericOperands && (Source.compareTo(MatchString) <= 0)))
-										{
-											bConditionTrue = false;
-											break;
-										}
-									}
-									else if (CompareType.equals("CMP_GreaterEqual"))
-									{
-										if ((bNumericOperands && (SourceFloat <= MatchFloat)) || (!bNumericOperands && (Source.compareTo(MatchString) < 0)))
-										{
-											bConditionTrue = false;
-											break;
-										}
-									}
-									else
-									{
-										bConditionTrue = false;
-										break;
-									}
-								}
-							}
+							boolean bConditionTrue = EvaluateConditions(variables, conditions, "");
 
 							if (bConditionTrue)
 							{
@@ -1874,9 +2123,11 @@ public class GameActivity extends NativeActivity implements SurfaceHolder.Callba
 			catch (IOException ie)
 			{
 				Log.debug("failed to read configuration rules: " + ie);
+				ConfigRulesStatus += "failed to read configuration rules : " + ie+ " ";
 			}
 			if (reader != null)
 			{
+				ConfigRulesStatus += "configuration rules finished. " + ForceExitMessage;
 				try
 				{
 					reader.close();
@@ -1906,7 +2157,20 @@ public class GameActivity extends NativeActivity implements SurfaceHolder.Callba
 			}
 		}
 
+		// clear Profile if OverrideProfile was not left set as well
+		if (variables.containsKey("Profile"))
+		{
+			if (!variables.containsKey("OverrideProfile"))
+			{
+				variables.remove("Profile");
+			}
+		}
+
 		// notify AndroidProcess of the core masks and affinity enable state
+		if (variables.containsKey("unsupportedDevice"))
+		{
+			bSupportedDevice = variables.get("unsupportedDevice").equals("false");
+		}
 		boolean bUseAffinity = variables.get("useAffinity").equals("true");
 		int littleCoreMask = Integer.decode(variables.get("littleCoreMask"));
 		int bigCoreMask = Integer.decode(variables.get("bigCoreMask"));
@@ -1926,6 +2190,7 @@ public class GameActivity extends NativeActivity implements SurfaceHolder.Callba
 		nativeSetConfigRulesVariables(keyValues);
 
 //$${gameActivityPostConfigRulesAdditions}$$
+//$${gameActivityFinalizeConfigRulesAdditions}$$
 
 		return !bForceGameEndWithError;
 	}
@@ -1935,10 +2200,30 @@ public class GameActivity extends NativeActivity implements SurfaceHolder.Callba
 //$${gameActivityLoggerCallbackAdditions}$$
 	}
 
+	protected View GetMainView()
+	{
+		return mainView;
+	}
+
+	protected Rect GetSafezone()
+	{
+		return safezone;
+	}
+
+	protected FrameLayout GetContainerFrameLayout()
+	{
+		return containerFrameLayout;
+	}
+
 	@Override
 	public void onCreate(Bundle savedInstanceState)
 	{
+		// Grab a reference to the asset manager
+		AssetManagerReference = this.getAssets();
+
+		_activity = this;
 		super.onCreate(savedInstanceState);
+
 		sensorManager = (SensorManager) getSystemService(Context.SENSOR_SERVICE);
 		accelerometer = sensorManager.getDefaultSensor(Sensor.TYPE_ACCELEROMETER);
 		magnetometer = sensorManager.getDefaultSensor(Sensor.TYPE_MAGNETIC_FIELD);
@@ -2018,25 +2303,30 @@ public class GameActivity extends NativeActivity implements SurfaceHolder.Callba
 			Log.debug(e.getMessage());
 		}
 
+		boolean bIsShipping = nativeIsShippingBuild();
 		if (ANDROID_BUILD_VERSION >= 23 && targetSdkVersion >= 23) //23 is the API level (Marshmallow) where runtime permission handling is available
 		{
-			Log.debug("Target SDK is " + targetSdkVersion + ".  This may cause issues if permissions are denied by the user." );				
+			Log.debug("Target SDK is " + targetSdkVersion + ".  This may cause issues if permissions are denied by the user." );	
+			if (!bIsShipping)
+			{
+				// For non-shipping builds we may need this permission because we write to the sdcard for logs
+				if (!PermissionHelper.checkPermission("android.permission.WRITE_EXTERNAL_STORAGE"))
+				{
+					Log.debug("android.permission.WRITE_EXTERNAL_STORAGE was not granted; this may cause issues with file access." );
+					// we do not do this currently since we must wait until it is granted before accessing files
+					// SplashActivity takes care of properly gating this in the cases it is needed
+					//PermissionHelper.acquirePermissions(new String[] {"android.permission.WRITE_EXTERNAL_STORAGE"}, this);
+				}
+			}
 		}
 
-
+		Logger.RegisterCallback(this);
 		
 		// Suppress java logs in Shipping builds
-		if (nativeIsShippingBuild())
+		if (bIsShipping)
 		{
 			Logger.SuppressLogs();
 		}
-		else
-		{
-			//For non-shipping builds we need to request this permission bc we write to the sdcard for logs
-			PermissionHelper.acquirePermissions(new String[] {"android.permission.WRITE_EXTERNAL_STORAGE"}, this);
-		}
-
-		_activity = this;
 
 		// update memory stats every 10 seconds
 		memoryRunnable = new Runnable() {
@@ -2229,9 +2519,6 @@ public class GameActivity extends NativeActivity implements SurfaceHolder.Callba
 			}
 		}
 		
-		// Grab a reference to the asset manager
-		AssetManagerReference = this.getAssets();
-
 		// Read metadata from AndroidManifest.xml
 		appPackageName = getPackageName();
 		String ProjectName = getPackageName();
@@ -2357,6 +2644,16 @@ public class GameActivity extends NativeActivity implements SurfaceHolder.Callba
                 Log.debug( "bUseExternalFilesDir not found. Leaving as " + UseExternalFilesDir);
             }
 
+			if (bundle.containsKey("com.epicgames.ue4.GameActivity.bPublicLogFiles"))
+            {
+                PublicLogFiles = bundle.getBoolean("com.epicgames.ue4.GameActivity.bPublicLogFiles");
+                Log.debug( "PublicLogFiles set to " + PublicLogFiles);
+            }
+            else
+            {
+                Log.debug( "PublicLogFiles not found. Leaving as " + PublicLogFiles);
+            }
+
 			if(bundle.containsKey("com.epicgames.ue4.GameActivity.bAllowIMU"))
 			{
 				bAllowIMU = bundle.getBoolean("com.epicgames.ue4.GameActivity.bAllowIMU");
@@ -2391,7 +2688,7 @@ public class GameActivity extends NativeActivity implements SurfaceHolder.Callba
 		}
 
 		// parse the commandline
-		ParseCommandline(ProjectName);
+		ParseCommandline(ProjectName, UseExternalFilesDir);
 
 //$${gameActivityBeforeConfigRulesAppliedAdditions}$$
 
@@ -2404,7 +2701,7 @@ public class GameActivity extends NativeActivity implements SurfaceHolder.Callba
 
 		Log.debug("APK path: " + getPackageResourcePath());
 		Log.debug("OBB in APK: " + (PackageDataInsideApkValue==1));
-		nativeSetGlobalActivity(UseExternalFilesDir, getFilesDir().getPath(), getExternalFilesDir(null).getPath(), PackageDataInsideApkValue==1, getPackageResourcePath());
+		nativeSetGlobalActivity(UseExternalFilesDir, PublicLogFiles, getFilesDir().getPath(), getExternalFilesDir(null).getPath(), PackageDataInsideApkValue==1, getPackageResourcePath());
 
 		// tell the engine if this is a portrait app
 		nativeSetWindowInfo(getResources().getConfiguration().orientation == Configuration.ORIENTATION_PORTRAIT, DepthBufferPreference);
@@ -2427,9 +2724,9 @@ public class GameActivity extends NativeActivity implements SurfaceHolder.Callba
 
 		try
 		{
-			int Version = getPackageManager().getPackageInfo(getPackageName(), 0).versionCode;
+			VersionCode = getPackageManager().getPackageInfo(getPackageName(), 0).versionCode;
 			int PatchVersion = 0;
-			nativeSetObbInfo(ProjectName, getApplicationContext().getPackageName(), Version, PatchVersion, AppType);
+			nativeSetObbInfo(ProjectName, getApplicationContext().getPackageName(), VersionCode, PatchVersion, AppType);
 		}
 		catch (Exception e)
 		{
@@ -2474,6 +2771,7 @@ public class GameActivity extends NativeActivity implements SurfaceHolder.Callba
 						// remember down time and position
 						downTime = System.currentTimeMillis();
 						downX = event.getX();
+						consoleInputBox.requestFocus();
 						return true;
 					}
 					case MotionEvent.ACTION_UP: {
@@ -2617,7 +2915,7 @@ public class GameActivity extends NativeActivity implements SurfaceHolder.Callba
 		// check for OBB file present if we don't have all the files and don't need to verify
 		if (!HasAllFiles && !VerifyOBBOnStartUp)
 		{
-			HasAllFiles = DownloadShim.expansionFilesDelivered(this);
+			HasAllFiles = DownloadShim.expansionFilesDelivered(this, VersionCode);
 		}
 
 		containerFrameLayout = new FrameLayout(_activity);
@@ -2639,6 +2937,52 @@ public class GameActivity extends NativeActivity implements SurfaceHolder.Callba
 
         mainDecorView = getWindow().getDecorView();
 		mainDecorViewRect = new Rect();
+		
+		// check for display cutouts to set safe zone
+		View mainRootView = mainDecorView.findViewById(android.R.id.content).getRootView();
+		if (Build.VERSION.SDK_INT > 19)
+		{
+			mainRootView.setOnApplyWindowInsetsListener(new View.OnApplyWindowInsetsListener() {
+				@Override
+       			public WindowInsets onApplyWindowInsets(View v, WindowInsets insets) {
+					if (Build.VERSION.SDK_INT >= 28)
+					{
+						DisplayCutout cutout = insets.getDisplayCutout();
+						if (cutout != null)
+						{
+							Rect fullViewRect = new Rect();
+							mainDecorView.getDrawingRect( mainDecorViewRect );
+
+							android.view.Display display = getWindowManager().getDefaultDisplay();
+							android.graphics.Point displaySize = new android.graphics.Point();
+							display.getRealSize(displaySize);
+
+							// store safezone independent of resolution
+							float invX = 1.0f / (displaySize.x != 0.0f ? displaySize.x : 1.0f);
+							float invY = 1.0f / (displaySize.y != 0.0f ? displaySize.y : 1.0f);
+							safezoneF.left = (safezone.left = cutout.getSafeInsetLeft()) * invX;
+							safezoneF.top = (safezone.top = cutout.getSafeInsetTop()) * invY;
+							safezoneF.right = (safezone.right = cutout.getSafeInsetRight()) * invX;
+							safezoneF.bottom = (safezone.bottom = cutout.getSafeInsetBottom()) *invY;
+							nativeSetSafezoneInfo(displaySize.y > displaySize.x, safezoneF.left, safezoneF.top, safezoneF.right, safezoneF.bottom);
+
+							//Log.debug("FullViewRect: " + fullViewRect.toString());	
+							//Log.debug("DisplayCutout: " + cutout.toString());
+							//Log.debug("SafeTop: " + cutout.getSafeInsetTop());
+							//Log.debug("SafeBottom: " + cutout.getSafeInsetBottom());
+							//Log.debug("SafeLeft: " + cutout.getSafeInsetLeft());
+							//Log.debug("SafeRight: " + cutout.getSafeInsetRight());
+							//List<Rect>bounds = cutout.getBoundingRects();
+							//for (Rect r : bounds)
+							//{
+							//	Log.debug("Rect: " + r.toString());
+							//}
+						}
+					}
+					return insets;
+				}
+			});
+		}
 
 		createVirtualKeyboardInput();
 		
@@ -2648,7 +2992,7 @@ public class GameActivity extends NativeActivity implements SurfaceHolder.Callba
         	public void onGlobalLayout()
         	{
 				//Log.debug("VK: onGlobalLayout " + bKeyboardShowing);
-        		if( bKeyboardShowing )
+        		//if( bKeyboardShowing )
         		{
         			Rect visibleRect = new Rect();
         			View visibleView = mainView.getRootView();
@@ -2682,36 +3026,61 @@ public class GameActivity extends NativeActivity implements SurfaceHolder.Callba
 
                     int visibleScreenYOffset = Math.max(bottomDiff, topDiff);
 
-        			nativeVirtualKeyboardShown( keyboardRect.left, keyboardRect.top, keyboardRect.right, keyboardRect.bottom );
 					//Log.debug("VK: show?" + visibleScreenYOffset + "," + newVirtualKeyboardInput.getY());
 
 					// Samsung Game Tools floating keyboard is only 1 pixel tall
 					if(visibleScreenYOffset > 200 || (bSamsungDevice && visibleScreenYOffset > 0))
                     {
-						//Log.debug("VK: show");
-						//#jira UE-55117 Android virtual keyboard can have text input hidden by software buttons
-						newVirtualKeyboardInput.getLayoutParams().width = Math.abs(visibleRect.right - visibleRect.left );
-						newVirtualKeyboardInput.setX(leftDiff);
-                    	newVirtualKeyboardInput.setY(keyboardYPos);
-                    	newVirtualKeyboardInput.setVisibility(View.VISIBLE);
-						newVirtualKeyboardInput.requestFocus();
+						if (bKeyboardShowing)
+						{
+							nativeVirtualKeyboardShown( keyboardRect.left, keyboardRect.top, keyboardRect.right, keyboardRect.bottom );
+
+							//Log.debug("VK: show");
+							//#jira UE-55117 Android virtual keyboard can have text input hidden by software buttons
+							newVirtualKeyboardInput.getLayoutParams().width = Math.abs(visibleRect.right - visibleRect.left);
+							newVirtualKeyboardInput.setX(leftDiff);
+							newVirtualKeyboardInput.setY(keyboardYPos);
+							newVirtualKeyboardInput.setVisibility(View.VISIBLE);
+							newVirtualKeyboardInput.requestFocus();
+						}
+
+						AndroidThunkJava_ResizeKeyboard(true, keyboardRect, visibleRect);
                     }
-                    else if(newVirtualKeyboardInput.getY() > 0)
+                    else
                     {
-						//Log.debug("VK: hide");
-						newVirtualKeyboardInput.setVisibility(View.GONE);
-						//set offscreen
-        				newVirtualKeyboardInput.setY(-1000); 
+						if (bKeyboardShowing)
+						{
+							nativeVirtualKeyboardShown( keyboardRect.left, keyboardRect.top, keyboardRect.right, keyboardRect.bottom );
+							
+							if (newVirtualKeyboardInput.getY() > 0)
+							{
+
+								//Log.debug("VK: hide");
+								newVirtualKeyboardInput.setVisibility(View.GONE);
+								//set offscreen
+								newVirtualKeyboardInput.setY(-1000);
+							}
+						}
+
+						AndroidThunkJava_ResizeKeyboard(false, keyboardRect, visibleRect);
                     }
         		}
         	}
         });
 
+//$${gameActivityAfterMainViewCreatedAdditions}$$
+
 		clipboardManager = (ClipboardManager) getSystemService(CLIPBOARD_SERVICE);
 
 //$${gameActivityOnCreateAdditions}$$
+//$${gameActivityOnCreateFinalAdditions}$$
 		
 		Log.debug("==============> GameActive.onCreate complete!");
+	}
+
+	public void AndroidThunkJava_ResizeKeyboard(boolean bShow, Rect keyboardRect, Rect visibleRect)
+	{
+		//$${gameActivityResizeKeyboardAdditions}$$
 	}
 
 	@Override
@@ -3264,14 +3633,6 @@ public class GameActivity extends NativeActivity implements SurfaceHolder.Callba
 	{
 		super.onConfigurationChanged(newConfig);
 
-		switch (getWindowManager().getDefaultDisplay().getRotation())
-		{
-			case Surface.ROTATION_0:	DeviceRotation = 0;		break;
-			case Surface.ROTATION_90:	DeviceRotation = 90;	break;
-			case Surface.ROTATION_180:	DeviceRotation = 180;	break;
-			case Surface.ROTATION_270:	DeviceRotation = 270;	break;
-		}
-
 		// forward the orientation
 		boolean bPortrait = newConfig.orientation == Configuration.ORIENTATION_PORTRAIT;
 		nativeOnConfigurationChanged(bPortrait);
@@ -3614,7 +3975,7 @@ public class GameActivity extends NativeActivity implements SurfaceHolder.Callba
 				break;
 				case VK_CMD_HIDE:
 				{
-						if(bKeyboardShowing)
+						if (bKeyboardShowing || newVirtualKeyboardInput.getVisibility() != View.GONE)
 						{
 							//Log.debug("VK: Hide newVirtualKeyboardInput");
 
@@ -3718,9 +4079,18 @@ public class GameActivity extends NativeActivity implements SurfaceHolder.Callba
 		return null;
 	}
 
+	public String AndroidThunkJava_GetFunnelId()
+	{
+		String funnelId = "";
+		//$${gameActivityGetFunnelIdAdditions}$$
+		return funnelId;
+	}
+
 	public String AndroidThunkJava_GetLoginId()
 	{
 		String loginId = null;
+
+	//$${gameActivityGetLoginIdAdditions}$$
 
 		// check for existing GUID fallback in internal
 		File file = new File(InternalFilesDir + "login-identifier.txt");
@@ -3761,7 +4131,7 @@ public class GameActivity extends NativeActivity implements SurfaceHolder.Callba
 		return loginId;
 	}
 
-	public boolean writeFile(String filename, String contents)
+	public static boolean writeFile(String filename, String contents)
 	{
 		File file = new File(filename);
 
@@ -3791,7 +4161,10 @@ public class GameActivity extends NativeActivity implements SurfaceHolder.Callba
 	{
 		Log.debug("[JAVA} AndroidThunkJava_ShareURL: URL = " + URL);
 
-		if (!URL.contains("://"))
+		File SharedFile = new File(URL);
+		boolean bIsFile = SharedFile.exists();
+
+		if (!bIsFile && !URL.contains("://"))
 		{
 			URL = "http://" + URL;
 			Log.debug("[JAVA} AndroidThunkJava_ShareURL: corrected URL = " + URL);
@@ -3800,9 +4173,22 @@ public class GameActivity extends NativeActivity implements SurfaceHolder.Callba
 		try
 		{
 			Intent SendIntent = new Intent(Intent.ACTION_SEND);
-			SendIntent.setType("text/plain");
-			SendIntent.putExtra(Intent.EXTRA_SUBJECT, Description);
-			SendIntent.putExtra(Intent.EXTRA_TEXT, URL);
+			if (bIsFile)
+			{
+				// Note that the ".fileprovider" suffix is hardcoded
+				String Authority = getApplicationContext().getPackageName() + ".fileprovider";
+				Uri FileUri = FileProvider.getUriForFile(this, Authority, SharedFile);
+				
+				SendIntent.putExtra(Intent.EXTRA_STREAM, FileUri);
+				SendIntent.setType(URLConnection.guessContentTypeFromName(URL));
+				SendIntent.putExtra(Intent.EXTRA_TEXT, Description);
+			}
+			else
+			{
+				SendIntent.setType("text/plain");
+				SendIntent.putExtra(Intent.EXTRA_SUBJECT, Description);
+				SendIntent.putExtra(Intent.EXTRA_TEXT, URL);
+			}
 			
 			Log.debug("[JAVA} AndroidThunkJava_ShareURL: Sharing URL");
 			startActivity(Intent.createChooser(SendIntent, Prompt));
@@ -4138,14 +4524,7 @@ public class GameActivity extends NativeActivity implements SurfaceHolder.Callba
 		}
 		else if( IapStoreHelper != null )
 		{
-			if(!IapStoreHelper.onActivityResult(requestCode, resultCode, data))
-			{
 				super.onActivityResult(requestCode, resultCode, data);
-			}
-			else
-			{
-				Log.debug("[JAVA] - Store Helper handled onActivityResult");
-			}
 		}
 		else
 		{
@@ -4317,35 +4696,39 @@ public class GameActivity extends NativeActivity implements SurfaceHolder.Callba
 
 	private void LocalNotificationCheckAppOpen()
 	{
+		localNotificationAppLaunched = false;
+		localNotificationLaunchActivationEvent = "";
+		localNotificationLaunchFireDate = 0;
+
 		Intent launchIntent = getIntent();
 		if (launchIntent != null)
 		{	
 			Bundle extrasBundle = launchIntent.getExtras();
 
 			localNotificationAppLaunched = launchIntent.getBooleanExtra("localNotificationAppLaunched", false);
-
-			if(localNotificationAppLaunched)
+			if (localNotificationAppLaunched)
 			{
-				localNotificationLaunchActivationEvent = extrasBundle.get("localNotificationLaunchActivationEvent").toString();
-				int notificationID = extrasBundle.getInt("localNotificationID");
+				localNotificationLaunchActivationEvent = extrasBundle.getString("localNotificationLaunchActivationEvent");
+				if (localNotificationLaunchActivationEvent != null)
+				{
+					int notificationID = extrasBundle.getInt("localNotificationID");
+					LocalNotificationRemoveID(this, notificationID);
 
-				LocalNotificationRemoveID(notificationID);
-
-				// TODO
-				localNotificationLaunchFireDate = 0; 
+					// TODO
+					localNotificationLaunchFireDate = 0; 
+				}
+				else
+				{
+					localNotificationAppLaunched = false;
+					localNotificationLaunchActivationEvent = "";
+				}
 			}
-		}
-		else
-		{
-			localNotificationAppLaunched = false;
-			localNotificationLaunchActivationEvent = "";
-			localNotificationLaunchFireDate = 0;
 		}
 	}
 
-	private int LocalNotificationGetID()
+	public static int LocalNotificationGetID(Context context)
 	{
-		SharedPreferences preferences = getApplicationContext().getSharedPreferences("LocalNotificationPreferences", MODE_PRIVATE);
+		SharedPreferences preferences = context.getSharedPreferences("LocalNotificationPreferences", MODE_PRIVATE);
 		SharedPreferences.Editor editor = preferences.edit();
 		String notificationIDs = preferences.getString("notificationIDs", "");
 
@@ -4375,9 +4758,6 @@ public class GameActivity extends NativeActivity implements SurfaceHolder.Callba
 			}
 			editor.putString("notificationIDs", notificationIDs + "-" + idToReturn);
 		}
-
-		notificationIDs = preferences.getString("notificationIDs", "");
-
 		editor.commit();
 
 		return idToReturn;
@@ -4402,11 +4782,30 @@ public class GameActivity extends NativeActivity implements SurfaceHolder.Callba
 		return iParts;
 	}
 
-	private void LocalNotificationRemoveID(int notificationID)
+	private boolean LocalNotificationIDExists(int notificationID)
 	{
-		SharedPreferences preferences = getApplicationContext().getSharedPreferences("LocalNotificationPreferences", MODE_PRIVATE);
+		if (notificationID == -1)
+		{
+			return false;
+		}
+
+		ArrayList<Integer> notificationIDs = LocalNotificationGetIDList();
+
+		for(int id : notificationIDs)
+		{
+			if (id == notificationID)
+			{
+				return true;
+			}
+		}
+		return false;
+	}
+
+	public static void LocalNotificationRemoveID(Context context, int notificationID)
+	{
+		SharedPreferences preferences = context.getSharedPreferences("LocalNotificationPreferences", MODE_PRIVATE);
 		SharedPreferences.Editor editor = preferences.edit();
-		String notificationIDs = preferences.getString("notificationIDs", null);
+		String notificationIDs = preferences.getString("notificationIDs", "");
 
 		ArrayList<String> iParts = new ArrayList<String>();
 
@@ -4443,13 +4842,72 @@ public class GameActivity extends NativeActivity implements SurfaceHolder.Callba
 		editor.putString("notificationIDs", newNotificationIDs);
 		editor.commit();
 	}
-
-	public void AndroidThunkJava_LocalNotificationScheduleAtTime(String targetDateTime, boolean localTime, String title, String body, String action, String activationEvent) 
+	
+	public static void LocalNotificationRemoveDetails(Context context, int notificationID)
 	{
-		int notificationID = LocalNotificationGetID();
+		SharedPreferences preferences = context.getSharedPreferences("LocalNotificationPreferences", MODE_PRIVATE);
+		SharedPreferences.Editor editor = preferences.edit();
 
+		try
+		{
+			JSONObject notificationDetails = new JSONObject(preferences.getString("notificationDetails", "{}"));
+			notificationDetails.remove(String.valueOf(notificationID));
+			editor.putString("notificationDetails", notificationDetails.toString());
+			editor.commit();
+		}
+		catch (JSONException e)
+		{
+			e.printStackTrace();
+		}
+	}
+
+	public int AndroidThunkJava_LocalNotificationScheduleAtTime(String targetDateTime, boolean localTime, String title, String body, String action, String activationEvent) 
+	{
+		int notificationID = LocalNotificationGetID(this);
+
+		if (!LocalNotificationScheduleAtTime(this, notificationID, targetDateTime, localTime, title, body, action, activationEvent))
+		{
+			return -1;
+		}
+
+		// Store notification details
+		SharedPreferences preferences = getSharedPreferences("LocalNotificationPreferences", MODE_PRIVATE);
+		SharedPreferences.Editor editor = preferences.edit();
+		JSONObject notificationDetails;
+		try
+		{
+			notificationDetails = new JSONObject(preferences.getString("notificationDetails", "{}"));
+		}
+		catch (JSONException e)
+		{
+			e.printStackTrace(); 
+			notificationDetails = new JSONObject();
+		}
+		JSONObject details = new JSONObject();
+		try
+		{
+			details.put("local-notification-targetDateTime", targetDateTime);
+			details.put("local-notification-localTime", localTime);
+			details.put("local-notification-title", title);
+			details.put("local-notification-body", body);
+			details.put("local-notification-action", action);
+			details.put("local-notification-activationEvent", activationEvent);
+			notificationDetails.put(String.valueOf(notificationID), details);
+			editor.putString("notificationDetails", notificationDetails.toString());
+			editor.commit();
+		}
+		catch (JSONException e)
+		{
+			e.printStackTrace();
+		}
+
+		return notificationID;
+	}
+
+	public static boolean LocalNotificationScheduleAtTime(Context context, int notificationID, String targetDateTime, boolean localTime, String title, String body, String action, String activationEvent)
+	{
 		// Create callback for PendingIntent
-		Intent notificationIntent = new Intent(this, LocalNotificationReceiver.class); 
+		Intent notificationIntent = new Intent(context, LocalNotificationReceiver.class);
 
 		// Add user-provided data
 		notificationIntent.putExtra("local-notification-ID", notificationID);
@@ -4457,9 +4915,9 @@ public class GameActivity extends NativeActivity implements SurfaceHolder.Callba
 		notificationIntent.putExtra("local-notification-body", body);
 		notificationIntent.putExtra("local-notification-action", action);
 		notificationIntent.putExtra("local-notification-activationEvent", activationEvent);
-		
+
 		// Designate the callback as a PendingIntent
-		PendingIntent pendingIntent = PendingIntent.getBroadcast(this, notificationID, notificationIntent, PendingIntent.FLAG_UPDATE_CURRENT);
+		PendingIntent pendingIntent = PendingIntent.getBroadcast(context, notificationID, notificationIntent, PendingIntent.FLAG_UPDATE_CURRENT);
 
 		TimeZone targetTimeZone = TimeZone.getTimeZone("UTC");
 
@@ -4481,7 +4939,8 @@ public class GameActivity extends NativeActivity implements SurfaceHolder.Callba
 		catch (ParseException e) 
 		{
 			e.printStackTrace();
-			return;
+			LocalNotificationRemoveID(context, notificationID);
+			return false;
 		}
 
 		Date currentDate = new Date();
@@ -4490,14 +4949,17 @@ public class GameActivity extends NativeActivity implements SurfaceHolder.Callba
 
 		if(msDiff < 0)
 		{
-			return;
+			LocalNotificationRemoveID(context, notificationID);
+			return false;
 		}
 
 		long futureTimeInMillis = SystemClock.elapsedRealtime() + msDiff;//Calculate the time to run the callback
-		AlarmManager alarmManager = (AlarmManager)getSystemService(Context.ALARM_SERVICE);
+		AlarmManager alarmManager = (AlarmManager)context.getSystemService(Context.ALARM_SERVICE);
 
 		//Schedule the operation by using AlarmService
 		alarmManager.set(AlarmManager.ELAPSED_REALTIME_WAKEUP, futureTimeInMillis, pendingIntent);
+
+		return true;
 	}
 
 	public class LaunchNotification {
@@ -4529,24 +4991,41 @@ public class GameActivity extends NativeActivity implements SurfaceHolder.Callba
 			pendingIntent.cancel();
 			alarmManager.cancel(pendingIntent);
 		}
+
+		// clear them all
+		SharedPreferences preferences = getApplicationContext().getSharedPreferences("LocalNotificationPreferences", MODE_PRIVATE);
+		SharedPreferences.Editor editor = preferences.edit();
+		editor.putString("notificationIDs", "");
+		editor.putString("notificationDetails", "{}");
+		editor.commit();
 	}
 
-	/*
+	public boolean AndroidThunkJava_LocalNotificationExists(int notificationId)
+	{
+		return LocalNotificationIDExists(notificationId);
+	}
+
 	// Returns true only if the scheduled notification exists and gets destoyed successfully
 	public boolean AndroidThunkJava_LocalNotificationDestroyIfExists(int notificationId)
 	{
-		if (AndroidThunkJava_ScheduledNotificationExists(notificationId))
+		if (AndroidThunkJava_LocalNotificationExists(notificationId))
 		{
+			LocalNotificationRemoveID(this, notificationId);
+			LocalNotificationRemoveDetails(this, notificationId);
+
 			//Cancel the intent itself as well as from the alarm manager
 			AlarmManager alarmManager = (AlarmManager)getSystemService(Context.ALARM_SERVICE);
-			PendingIntent pendingIntent = PendingIntent.getBroadcast(this, notificationId, new Intent(this, ScheduledNotificationReceiver.class), PendingIntent.FLAG_UPDATE_CURRENT);
+			PendingIntent pendingIntent = PendingIntent.getBroadcast(this, notificationId, new Intent(this, LocalNotificationReceiver.class), PendingIntent.FLAG_UPDATE_CURRENT);
 			pendingIntent.cancel();
 			alarmManager.cancel(pendingIntent);
+			
+			//Also clear the notification if currently displayed
+			NotificationManager notificationManager = (NotificationManager)getSystemService(Context.NOTIFICATION_SERVICE);
+			notificationManager.cancel(notificationId);
 			return true;
 		}
 		return false;
 	}
-	*/
 
 	// List of vendor/product ids
 	private static final DeviceInfoData[] DeviceInfoList = {
@@ -4652,6 +5131,13 @@ public class GameActivity extends NativeActivity implements SurfaceHolder.Callba
 		}
 	}
 
+	public boolean AndroidThunkJava_IsAllowedRemoteNotifications()
+	{
+		boolean bPluginEnabled = false;
+//$${gameActivityAllowedRemoteNotificationsAdditions}$$
+		return bPluginEnabled && NotificationManagerCompat.from(getApplicationContext()).areNotificationsEnabled();
+	}
+
 	public void AndroidThunkJava_SetDesiredViewSize(int width, int height)
 	{
 		if (width == DesiredHolderWidth && height == DesiredHolderHeight)
@@ -4684,8 +5170,7 @@ public class GameActivity extends NativeActivity implements SurfaceHolder.Callba
 			InputDevice inputDevice = InputDevice.getDevice(deviceIds[deviceIndex]);
 			// is it a joystick, dpad, or gamepad?
 			if (((inputDevice.getSources() & InputDevice.SOURCE_GAMEPAD) == InputDevice.SOURCE_GAMEPAD)
-                || ((inputDevice.getSources() & InputDevice.SOURCE_JOYSTICK) == InputDevice.SOURCE_JOYSTICK)
-				|| ((inputDevice.getSources() & InputDevice.SOURCE_DPAD) == InputDevice.SOURCE_DPAD))
+                || ((inputDevice.getSources() & InputDevice.SOURCE_JOYSTICK) == InputDevice.SOURCE_JOYSTICK))
 			{
 				return true;
 			}
@@ -4808,7 +5293,7 @@ public class GameActivity extends NativeActivity implements SurfaceHolder.Callba
 		{
 			AudioManager am = (AudioManager) getSystemService(Context.AUDIO_SERVICE);
 			String framesPerBuffer = am.getProperty(AudioManager.PROPERTY_OUTPUT_FRAMES_PER_BUFFER);
-			int framesPerBufferInt = Integer.parseInt(framesPerBuffer);
+			int framesPerBufferInt = framesPerBuffer == null ? 0 : Integer.parseInt(framesPerBuffer);
 			if (framesPerBufferInt == 0) framesPerBufferInt = 256; // Use default
 			Log.debug("[JAVA] audiomanager.framesPerBuffer = " + framesPerBufferInt);
 			return framesPerBufferInt;
@@ -4818,7 +5303,7 @@ public class GameActivity extends NativeActivity implements SurfaceHolder.Callba
 		{
 			AudioManager am = (AudioManager) getSystemService(Context.AUDIO_SERVICE);
 			String sampleRateStr = am.getProperty(AudioManager.PROPERTY_OUTPUT_SAMPLE_RATE);
-			int sampleRateInt = Integer.parseInt(sampleRateStr);
+			int sampleRateInt = sampleRateStr == null ? 0 : Integer.parseInt(sampleRateStr);
 			if (sampleRateInt == 0) sampleRateInt = 44100; // Use a default value if property not found
 			Log.debug("[JAVA] audiomanager.optimalSampleRate = " + sampleRateInt);
 			return sampleRateInt;
@@ -5005,7 +5490,7 @@ public class GameActivity extends NativeActivity implements SurfaceHolder.Callba
 			{
 				emojiExcludeFilter = new EmojiExcludeFilter();
 			}
-			setFilters(new InputFilter[]{emojiExcludeFilter});
+			//setFilters(new InputFilter[]{emojiExcludeFilter});
 		}
 
 		@Override
@@ -5103,13 +5588,23 @@ public class GameActivity extends NativeActivity implements SurfaceHolder.Callba
 				{ 
 					//insert
 					text.insert(selStart, newString);
-				} 
+				}
 				else if(selStart > 0) 
-				{ 
-					//delete last character
-					selStart--;
-					text.replace(selStart, selStart + 1, "");
-				} 
+				{
+					// selection start and end are the same, but in the middle of the string
+					// this means we want a single "delete character to left of selection" (backspace)
+
+					// using BreakIterator to ensure we capture proper emoji / Unicode grapheme boundaries
+					BreakIterator finder = BreakIterator.getCharacterInstance();
+					finder.setText(owner.getText().toString());
+
+					selStart = finder.preceding(selStart);
+					if (selStart == BreakIterator.DONE)
+					{
+						selStart = 0;
+					}
+					text.replace(selStart, selEnd, "");
+				}
 
 				if(newString.length() == 0)
 				{
@@ -5301,6 +5796,11 @@ public class GameActivity extends NativeActivity implements SurfaceHolder.Callba
 
 	}
 
+	protected List<View> GetExtraIgnoreViews()
+	{
+		return null;
+	}
+
 	//check if the new virtual keyboard input has received a MOUSE_DOWN event
 	// or the keyboard animation is playing
 	public boolean AndroidThunkJava_VirtualInputIgnoreClick(int x, int y) 
@@ -5316,6 +5816,24 @@ public class GameActivity extends NativeActivity implements SurfaceHolder.Callba
 				return true;
 			}
 		}
+		else
+		{
+			List<View> ExtraIgnoreViews = GetExtraIgnoreViews();
+			if (ExtraIgnoreViews != null)
+			{
+				for (int i = 0; i < ExtraIgnoreViews.size(); i++)
+				{
+					Rect r = new Rect();
+					ExtraIgnoreViews.get(i).getGlobalVisibleRect(r);
+					if (r.contains(x, y))
+					{
+						//Log.debug("Webview: AndroidThunkJava_VirtualInputIgnoreClick true");
+						return true;
+					}
+				}
+			}
+		}
+
 		//Log.debug("VK: AndroidThunkJava_VirtualInputIgnoreClick false");
 		return false;
 	}
@@ -5447,7 +5965,7 @@ public class GameActivity extends NativeActivity implements SurfaceHolder.Callba
 		return true;
 	}
 
-	public void AndroidThunkJava_RestartApplication() 
+	public void AndroidThunkJava_RestartApplication(String RestartExtra) 
 	{
 		Context context = getApplicationContext();
 	
@@ -5457,6 +5975,7 @@ public class GameActivity extends NativeActivity implements SurfaceHolder.Callba
 
 		// make an "restart intent", to be used to re-launch an application's task in its base state
 		intent.addFlags(Intent.FLAG_ACTIVITY_CLEAR_TOP | Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_CLEAR_TASK);
+		intent.putExtra("RestartExtra", RestartExtra);
 		context.startActivity(intent);
 
 		// kill the current application instance. Undefined behaviour after this!
@@ -5477,6 +5996,11 @@ public class GameActivity extends NativeActivity implements SurfaceHolder.Callba
 			return item.getText().toString();
 		} 
 		return "";
+	}
+
+	public int AndroidThunkJava_GetDeviceOrientation() 
+	{
+		return getWindowManager().getDefaultDisplay().getRotation();
 	}
 
 	@SuppressWarnings("deprecation")
@@ -5583,12 +6107,13 @@ public class GameActivity extends NativeActivity implements SurfaceHolder.Callba
 
 	public native boolean nativeIsShippingBuild();
 	public native void nativeSetAndroidStartupState(boolean bDebuggerAttached);
-	public native void nativeSetGlobalActivity(boolean bUseExternalFilesDir, String internalFilePath, String externalFilePath, boolean bOBBInAPK, String APKPath);
+	public native void nativeSetGlobalActivity(boolean bUseExternalFilesDir, boolean bPublicLogFiles, String internalFilePath, String externalFilePath, boolean bOBBInAPK, String APKPath);
 	public native void nativeSetWindowInfo(boolean bIsPortrait, int DepthBufferPreference);
 	public native void nativeSetObbInfo(String ProjectName, String PackageName, int Version, int PatchVersion, String AppType);
 	public native void nativeSetAndroidVersionInformation( String AndroidVersion, String PhoneMake, String PhoneModel, String PhoneBuildNumber, String OSLanguage );
 
 	public native void nativeSetSurfaceViewInfo(int width, int height);
+	public native void nativeSetSafezoneInfo(boolean bIsPortrait, float left, float top, float right, float bottom);
 
 	public native void nativeConsoleCommand(String commandString);
 	public native void nativeVirtualKeyboardChanged(String contents);

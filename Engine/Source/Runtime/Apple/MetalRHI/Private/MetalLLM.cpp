@@ -1,8 +1,9 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "MetalLLM.h"
 #include "MetalProfiler.h"
 #include "RenderUtils.h"
+#include "HAL/LowLevelMemStats.h"
 
 #include <objc/runtime.h>
 
@@ -18,6 +19,7 @@ struct FLLMTagInfoMetal
 DECLARE_LLM_MEMORY_STAT(TEXT("Metal Buffers"), STAT_MetalBuffersLLM, STATGROUP_LLMPlatform);
 DECLARE_LLM_MEMORY_STAT(TEXT("Metal Textures"), STAT_MetalTexturesLLM, STATGROUP_LLMPlatform);
 DECLARE_LLM_MEMORY_STAT(TEXT("Metal Heaps"), STAT_MetalHeapsLLM, STATGROUP_LLMPlatform);
+DECLARE_LLM_MEMORY_STAT(TEXT("Metal RenderTargets"), STAT_MetalRenderTargetsLLM, STATGROUP_LLMPlatform);
 
 // *** order must match ELLMTagMetal enum ***
 const FLLMTagInfoMetal ELLMTagNamesMetal[] =
@@ -26,6 +28,7 @@ const FLLMTagInfoMetal ELLMTagNamesMetal[] =
 	{ TEXT("Metal Buffers"),		GET_STATFNAME(STAT_MetalBuffersLLM),		GET_STATFNAME(STAT_EngineSummaryLLM) },		// ELLMTagMetal::Buffers
 	{ TEXT("Metal Textures"),		GET_STATFNAME(STAT_MetalTexturesLLM),		GET_STATFNAME(STAT_EngineSummaryLLM) },		// ELLMTagMetal::Textures
 	{ TEXT("Metal Heaps"),			GET_STATFNAME(STAT_MetalHeapsLLM),			GET_STATFNAME(STAT_EngineSummaryLLM) },		// ELLMTagMetal::Heaps
+	{ TEXT("Metal Render Targets"),	GET_STATFNAME(STAT_MetalRenderTargetsLLM),	GET_STATFNAME(STAT_EngineSummaryLLM) },		// ELLMTagMetal::RenderTargets
 };
 
 /*
@@ -147,29 +150,30 @@ static mtlpp::SizeAndAlign TextureSizeAndAlign(mtlpp::TextureType TextureType, u
 	SizeAlign.Align = 0;
 	
 	uint32 Align = 0;
+	FRHIResourceCreateInfo CreateInfo;
 	switch (TextureType)
 	{
 		case mtlpp::TextureType::Texture2D:
 		case mtlpp::TextureType::Texture2DMultisample:
-			SizeAlign.Size = RHICalcTexture2DPlatformSize(Width, Height, MetalToRHIPixelFormat(Format), MipCount, SampleCount, 0, Align);
+			SizeAlign.Size = RHICalcTexture2DPlatformSize(Width, Height, MetalToRHIPixelFormat(Format), MipCount, SampleCount, 0, CreateInfo, Align);
 			SizeAlign.Align = Align;
 			break;
 		case mtlpp::TextureType::Texture2DArray:
-			SizeAlign.Size = RHICalcTexture2DPlatformSize(Width, Height, MetalToRHIPixelFormat(Format), MipCount, SampleCount, 0, Align) * ArrayCount;
+			SizeAlign.Size = RHICalcTexture2DPlatformSize(Width, Height, MetalToRHIPixelFormat(Format), MipCount, SampleCount, 0, CreateInfo, Align) * ArrayCount;
 			SizeAlign.Align = Align;
 			break;
 		case mtlpp::TextureType::TextureCube:
-			SizeAlign.Size = RHICalcTextureCubePlatformSize(Width, MetalToRHIPixelFormat(Format), MipCount, 0, Align);
+			SizeAlign.Size = RHICalcTextureCubePlatformSize(Width, MetalToRHIPixelFormat(Format), MipCount, 0, CreateInfo, Align);
 			SizeAlign.Align = Align;
 			break;
 #if PLATFORM_MAC || __IPHONE_OS_VERSION_MAX_ALLOWED >= 110000
 		case mtlpp::TextureType::TextureCubeArray:
-			SizeAlign.Size = RHICalcTextureCubePlatformSize(Width, MetalToRHIPixelFormat(Format), MipCount, 0, Align) * ArrayCount;
+			SizeAlign.Size = RHICalcTextureCubePlatformSize(Width, MetalToRHIPixelFormat(Format), MipCount, 0, CreateInfo, Align) * ArrayCount;
 			SizeAlign.Align = Align;
 			break;
 #endif
 		case mtlpp::TextureType::Texture3D:
-			SizeAlign.Size = RHICalcTexture3DPlatformSize(Width, Height, Depth, MetalToRHIPixelFormat(Format), MipCount, 0, Align);
+			SizeAlign.Size = RHICalcTexture3DPlatformSize(Width, Height, Depth, MetalToRHIPixelFormat(Format), MipCount, 0, CreateInfo, Align);
 			SizeAlign.Align = Align;
 			break;
 		case mtlpp::TextureType::Texture1D:
@@ -213,21 +217,42 @@ void MetalLLM::LogAllocTexture(mtlpp::Device& Device, mtlpp::TextureDescriptor c
 	{
 		LLM_SCOPED_PAUSE_TRACKING(ELLMAllocType::System);
 		
-		objc_setAssociatedObject(Texture.GetPtr(), (void*)&MetalLLM::LogAllocTexture,
-		[[[FMetalDeallocHandler alloc] initWithBlock:^{
-			LLM_PLATFORM_SCOPE_METAL(ELLMTagMetal::Textures);
+		if (Desc.GetUsage() & mtlpp::TextureUsage::RenderTarget)
+		{
+			objc_setAssociatedObject(Texture.GetPtr(), (void*)&MetalLLM::LogAllocTexture,
+			[[[FMetalDeallocHandler alloc] initWithBlock:^{
+				LLM_PLATFORM_SCOPE_METAL(ELLMTagMetal::RenderTargets);
+				
+				LLM(FLowLevelMemTracker::Get().OnLowLevelFree(ELLMTracker::Platform, Ptr, ELLMAllocType::System));
+				
+#if PLATFORM_IOS
+				if (!bMemoryless)
+#endif
+				{
+					DEC_MEMORY_STAT_BY(STAT_MetalTextureMemory, Size);
+				}
+				DEC_DWORD_STAT(STAT_MetalTextureCount);
+			}] autorelease],
+			OBJC_ASSOCIATION_RETAIN);
+		}
+		else
+		{
+			objc_setAssociatedObject(Texture.GetPtr(), (void*)&MetalLLM::LogAllocTexture,
+			[[[FMetalDeallocHandler alloc] initWithBlock:^{
+				LLM_PLATFORM_SCOPE_METAL(ELLMTagMetal::Textures);
 			
-			LLM(FLowLevelMemTracker::Get().OnLowLevelFree(ELLMTracker::Platform, Ptr, ELLMAllocType::System));
+				LLM(FLowLevelMemTracker::Get().OnLowLevelFree(ELLMTracker::Platform, Ptr, ELLMAllocType::System));
 			
 #if PLATFORM_IOS
-			if (!bMemoryless)
+				if (!bMemoryless)
 #endif
-			{
-				DEC_MEMORY_STAT_BY(STAT_MetalTextureMemory, Size);
-			}
-			DEC_DWORD_STAT(STAT_MetalTextureCount);
-		}] autorelease],
-		OBJC_ASSOCIATION_RETAIN);
+				{
+					DEC_MEMORY_STAT_BY(STAT_MetalTextureMemory, Size);
+				}
+				DEC_DWORD_STAT(STAT_MetalTextureCount);
+			}] autorelease],
+			OBJC_ASSOCIATION_RETAIN);
+		}
 	}
 }
 

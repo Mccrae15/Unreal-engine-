@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 namespace UnrealBuildTool.Rules
 {
@@ -11,6 +11,7 @@ namespace UnrealBuildTool.Rules
 				{
 					"AssetRegistry",
 					"AssetTools",
+					"ClassViewer",
 					"Core",
 					"CoreUObject",
 					"EditorStyle",
@@ -18,6 +19,7 @@ namespace UnrealBuildTool.Rules
 					"Engine",
 					"InputCore",
 					"LevelEditor",
+					"MainFrame",
 					"MaterialEditor",
 					"MediaAssets",
 					"MediaFrameworkUtilities",

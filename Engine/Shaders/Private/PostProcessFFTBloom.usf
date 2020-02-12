@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 /*=============================================================================
 PostProcessFFTBloom.usf: Compute Shaders needed for the FFT bloom management
@@ -258,7 +258,6 @@ Texture2DType PhysicalSrcTexture;
 SamplerState  PhysicalSrcSampler;
 
 Texture2DType HalfResSrcTexture;
-SamplerState  HalfResSrcSampler;
 
 RWTexture2DType DstTexture;
 

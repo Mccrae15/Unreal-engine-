@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "SSourceControlSubmit.h"
 #include "ISourceControlOperation.h"
@@ -69,6 +69,12 @@ TSharedRef<SWidget> SSourceControlSubmitListRow::GenerateWidgetForColumn(const F
 	return SNullWidget::NullWidget;
 }
 
+FText SSourceControlSubmitWidget::SavedChangeListDescription;
+
+SSourceControlSubmitWidget::~SSourceControlSubmitWidget()
+{
+	SavedChangeListDescription = ChangeListDescriptionTextCtrl->GetText();
+}
 
 void SSourceControlSubmitWidget::Construct(const FArguments& InArgs)
 {
@@ -133,6 +139,7 @@ void SSourceControlSubmitWidget::Construct(const FArguments& InArgs)
 				[
 					SAssignNew( ChangeListDescriptionTextCtrl, SMultiLineEditableTextBox )
 					.SelectAllTextWhenFocused( true )
+					.Text(SavedChangeListDescription)
 					.AutoWrapText( true )
 				]
 			]
@@ -384,6 +391,7 @@ void SSourceControlSubmitWidget::OnToggleSelectedCheckBox(ECheckBoxState InNewSt
 void SSourceControlSubmitWidget::FillChangeListDescription(FChangeListDescription& OutDesc)
 {
 	OutDesc.Description = ChangeListDescriptionTextCtrl->GetText();
+
 	OutDesc.FilesForAdd.Empty();
 	OutDesc.FilesForSubmit.Empty();
 
@@ -409,6 +417,10 @@ bool SSourceControlSubmitWidget::WantToKeepCheckedOut()
 	return KeepCheckedOut == ECheckBoxState::Checked ? true : false;
 }
 
+void SSourceControlSubmitWidget::ClearChangeListDescription()
+{
+	ChangeListDescriptionTextCtrl->SetText(FText());
+}
 
 FReply SSourceControlSubmitWidget::OKClicked()
 {

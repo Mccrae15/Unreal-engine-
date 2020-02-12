@@ -1,5 +1,5 @@
 /**
- * Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+ * Copyright Epic Games, Inc. All Rights Reserved.
  */
 
 using System;
@@ -27,14 +27,22 @@ namespace DeploymentServer
 	{
 		static int ExitCode = 0;
 		const int DefaultPort = 41000;
+		const int InternalVersion = 2;
 		static int Port = DefaultPort;
 		static bool IsRunningCommand = false;
 		static bool IsStopping = false;
 		static int ClientCounter = 0;
-		static long TimeOut = 120000;
+		static long TimeOut = 30000;
 		static Stopwatch GlobalTimer = Stopwatch.StartNew();
 		static int ParentPID = 0;
 		static string TestStartPath = null;
+
+		static TextWriter LocalConsole;
+		static public void LocalLog(string s)
+		{
+			LocalConsole.WriteLine(s);
+			LocalConsole.Flush();
+		}
 
 		class TCPPortForwarding
 		{
@@ -215,7 +223,7 @@ namespace DeploymentServer
 										if (ArgTime > 0)
 										{
 											TimeOut = ArgTime;
-											Console.WriteLine(string.Format("Deployment Server timeout set to {0} (remote)", TimeOut.ToString()));
+											LocalLog(string.Format("Deployment Server timeout set to {0} (remote)", TimeOut.ToString()));
 										}
 									}
 									break;
@@ -244,8 +252,7 @@ namespace DeploymentServer
 
 				LastResult = true;
 				bCommandComplete = false;
-				bool bWaitForCompletion = ShouldWaitForCompletion(Command);
-				bNeedsResponse = !bWaitForCompletion;
+				bNeedsResponse = true;
 
 				runLoop = new System.Threading.Thread(delegate ()
 				{
@@ -257,7 +264,7 @@ namespace DeploymentServer
 						{
 							case "stop":
 								Console.SetOut(Writer);
-								Console.WriteLine("Deployment Server Stopping ...");
+								//LocalLog("Deployment Server Stopping ...");
 								IsStopping = true;
 								int StopTimeout = 12;
 								while (ClientCounter > 1) // wait for other threads to stop so the client requesting to stop to block until safely stopped
@@ -267,60 +274,72 @@ namespace DeploymentServer
 									StopTimeout--;
 									if (StopTimeout <= 0)
 									{
-										Console.WriteLine("Deployment Server Forced Stopping ...");
+										//LocalLog("Deployment Server Forced Stopping ...");
 										ClientCounter = 0;
 										TCPForwarding.Clear();
 										break;
 									}
 								}
-								ForceKillProcesses();
 								break;
 
                             case "backupdocuments":
                             case "backupdocs":
                                 Console.SetOut(Writer);
                                 LastResult = DeploymentProxy.Deployer.BackupDocumentsDirectory(Bundle, FileList.Count > 0 ? FileList[0] : ".");
-                                break;
+								Writer.Flush();
+								break;
 
 							case "backup":
 								Console.SetOut(Writer);
 								LastResult = DeploymentProxy.Deployer.BackupFiles(Bundle, FileList.ToArray());
+								Writer.Flush();
 								break;
 
 							case "deploy":
 								Console.SetOut(Writer);
 								LastResult = DeploymentProxy.Deployer.InstallFilesOnDevice(Bundle, Manifest);
+								Writer.Flush();
 								break;
 
 							case "copyfile":
 								Console.SetOut(Writer);
 								LastResult = DeploymentProxy.Deployer.CopyFileToDevice(Bundle, FileList[0], FileList[1]);
+								Writer.Flush();
+								break;
+
+							case "copyfileout":
+								Console.SetOut(Writer);
+								LastResult = DeploymentProxy.Deployer.CopyFileFromDevice(Bundle, FileList[0], FileList[1]);
+								Writer.Flush();
 								break;
 
 							case "install":
 								Console.SetOut(Writer);
 								LastResult = DeploymentProxy.Deployer.InstallIPAOnDevice(IpaPath);
+								Writer.Flush();
 								break;
 
 							case "enumerate":
 								Console.SetOut(Writer);
 								DeploymentProxy.Deployer.EnumerateConnectedDevices();
+								Writer.Flush();
 								break;
 
 							case "listdevices":
 								Console.SetOut(Writer);
 								DeploymentProxy.Deployer.ListDevices();
+								Writer.Flush();
 								break;
 
 							case "command":
 								if (Device.Length < 5)
 								{
-									Console.WriteLine("Device ID not present.");
+									LocalLog("Device ID not present.");
 									Writer.WriteLine("[command] Device ID not present.");
 								}
 								else if (Param1.Length < 1)
 								{
-									Console.WriteLine("Parameter not present.");
+									LocalLog("Parameter not present.");
 									Writer.WriteLine("[command] Device ID not present.");
 								}
 								else
@@ -334,32 +353,36 @@ namespace DeploymentServer
 											int Ret = targetDevice.TunnelData(Param1, TCPService);
 											targetDevice.CloseTunnel(TCPService);
 
-											Writer.WriteLine("[command] Sennt '{0}' bytes.", Ret);
+											LocalLog("[UE4][command] Sent '" + Ret.ToString() + "' bytes. (" + Param1.ToString() + ")");
+											Writer.WriteLine("[UE4][command] Sent '{0}' bytes. ({1})", Ret, Param1);
 										}
+										else
 										{
-											Writer.WriteLine("[command] Device '{0}' not detected.", Device);
+											LocalLog("[UE4][command] Sent '" + Device.ToString() + "' bytes. (" + Param1.ToString() + ")");
+											Writer.WriteLine("[UE4][command] Device '{0}' not detected. ({1})", Device, Param1);
 										}
 									}
 									catch
 									{
-										Console.WriteLine("Errors encountered while tunneling to device.");
+										LocalLog("Errors encountered while tunneling to device.");
 										Writer.WriteLine("[command] Errors encountered while tunneling to device.");
 									}
 								}
+								Writer.Flush();
 								break;
 
 							case "forward":
 								if (Device.Length < 5)
 								{
-									Console.WriteLine("Device ID not present.");
+									LocalLog("Device ID not present.");
 								}
 								else if (Param1.Length < 1)
 								{
-									Console.WriteLine("Start TCP port not present.");
+									LocalLog("Start TCP port not present.");
 								}
 								else if (Param2.Length < 1)
 								{
-									Console.WriteLine("Destination TCP port not present.");
+									LocalLog("Destination TCP port not present.");
 								}
 								else
 								{
@@ -372,32 +395,40 @@ namespace DeploymentServer
 									Writer.WriteLine("{0}\r{1}\r{2}", P.DeviceID, P.TCPPort, P.DevicePort);
 								}
 								Writer.WriteLine("");
+								Writer.Flush();
 								break;
 
 							case "listentodevice":
 								if (Device.Length < 5)
 								{
-									Console.WriteLine("Device ID not present.");
+									LocalLog("Device ID not present.");
 								}
 								else
 								{
-									DeploymentProxy.Deployer.ListenToDevice(Device, Writer);
+									LastResult = DeploymentProxy.Deployer.ListenToDevice(Device, Writer);
 								}
 								break;
 						}
+					}
+					catch (IOException)
+					{
+						// we expect this to happen so we don't log it
+					}
+					catch (ThreadAbortException)
+					{
+						// we expect this to happen so we don't log it
 					}
 					catch (Exception e)
 					{
 						Console.SetOut(ConsoleOld);
 						if (Command != "stop")
 						{
-							Console.WriteLine("Exception: {0}", e);
+							LocalLog("Exception: " + e.ToString());
 						}
 						LastResult = false;
 					}
 					finally
 					{
-						Writer.Flush();
 						Console.SetOut(ConsoleOld);
 						bCommandComplete = true;
 					}
@@ -406,27 +437,27 @@ namespace DeploymentServer
 				try
 				{
 					runLoop.Start();
-					if (bWaitForCompletion)
+					while (!bCommandComplete)
 					{
-						while (!bCommandComplete)
-						{
-							CoreFoundationRunLoop.RunLoopRunInMode(CoreFoundationRunLoop.kCFRunLoopDefaultMode(), 1.0, 0);
-						}
+						CoreFoundationRunLoop.RunLoopRunInMode(CoreFoundationRunLoop.kCFRunLoopDefaultMode(), 1.0, 0);
+						System.Threading.Thread.Sleep(100);
+					}
+					if (runLoop.ThreadState == System.Threading.ThreadState.Running)
+					{
+						runLoop.Abort();
 					}
 				}
 				catch (Exception e)
-				{
-					
+				{			
 					if (Command != "stop")
 					{
-						Console.WriteLine("Exception: {0}", e);
+						LocalLog("Exception: " + e.ToString());
 					}
 					bCommandComplete = false;
 					LastResult = false;
 				}
 				finally
-				{
-						
+				{					
 				}
 
 				return LastResult ? 0 : 1;
@@ -491,16 +522,16 @@ namespace DeploymentServer
 							try
 							{
 								TcpClient Client = Server.AcceptTcpClient();
-								Console.WriteLine("Got TCP connection.");
+								//LocalLog("Got TCP connection.");
 								NetworkStream ClStream = Client.GetStream();
 
 								TargetDevice = DeploymentProxy.Deployer.StartTCPTunnel(Device, ref TCPService);
 								if (TargetDevice == null)
 								{
-									Console.WriteLine("Cannot connect to device {0} for port forwarding.", Device);
+									LocalLog("Cannot connect to device " + Device + " for port forwarding.");
 									break;
 								}
-								Console.WriteLine("Connected to device.");
+								//LocalLog("Connected to device.");
 
 								Byte[] Buffer = new Byte[1024];
 
@@ -515,7 +546,7 @@ namespace DeploymentServer
 									{
 										if (Client.Client.Poll(10, SelectMode.SelectRead))
 										{
-											Console.WriteLine("TCP disconnected.");
+											//LocalLog("TCP disconnected.");
 											break;
 										}
 										System.Threading.Thread.Sleep(100);
@@ -528,7 +559,7 @@ namespace DeploymentServer
 							}
 							finally
 							{
-								Console.WriteLine("Port forwarding disconnected.");
+								//LocalLog("Port forwarding disconnected.");
 								if (TargetDevice != null)
 								{
 									TargetDevice.CloseTunnel(TCPService);
@@ -562,15 +593,6 @@ namespace DeploymentServer
 				{
 					case "stop":
 					case "listdevices":
-					case "listentodevice":
-						return false;
-				}
-				return true;
-			}
-			public static bool ShouldWaitForCompletion(String Command)
-			{
-				switch (Command)
-				{
 					case "listentodevice":
 						return false;
 				}
@@ -611,24 +633,57 @@ namespace DeploymentServer
 			}
 			catch (System.Exception ex)
 			{
-				Console.WriteLine("Failed to create deployment server process ({0})", ex.Message);
+				LocalLog("Failed to create deployment server process: " + ex.Message);
 			}
 		}
 
-		static TcpClient IsServiceRegistered()
+		static TcpClient GetServiceClient(string LocalCommand)
 		{
 			TcpClient Client = null;
-			try
+			int RetryCount = 10;
+			while (RetryCount > 0 && Client == null)
 			{
-				Client = new TcpClient("localhost", Port);
-			}
-			catch
-			{
-				if (Client != null)
+				if (!IsServerMutexPresent())
 				{
-					Client.Close();
+					if (LocalCommand == "stop")
+					{
+						LocalLog("Deployment Server not running ...");
+						return null;
+					}
+					LocalLog("Creating Deployment Server ...");
+					CreateDeploymentServerProcess();
 				}
-				Client = null;
+				else
+				{
+					if (RetryCount == 5)
+					{
+						ForceKillProcesses();
+						LocalLog("Creating Deployment Server ...");
+						CreateDeploymentServerProcess();
+					}
+				}
+				try
+				{
+					if (Client == null)
+					{
+						Client = new TcpClient("localhost", Port); //The client gets here
+					}
+				}
+				catch (Exception e)
+				{
+					//LocalLog("Retrying count {0} {1}", RetryCount.ToString(), e.Message);
+					RetryCount--;
+					if (Client != null)
+					{
+						Client.Close();
+					}
+					Client = null;
+					if (RetryCount <= 0)
+					{
+						throw (e);
+					}
+					System.Threading.Thread.Sleep(750);
+				}
 			}
 
 			return Client;
@@ -649,9 +704,9 @@ namespace DeploymentServer
 			RemotingConfiguration.RegisterWellKnownServiceType(typeof(DeploymentProxy), URI, WellKnownObjectMode.Singleton);
 		}
 
-		protected static void ParseServerParam(string[] Arguments)
+		protected static void ParseServerParam(List<string> Arguments)
 		{
-			if (Arguments.Length > 2)
+			if (Arguments.Count > 2)
 			{
 				TestStartPath = Arguments[2];
 			}
@@ -659,9 +714,9 @@ namespace DeploymentServer
 			{
 				TestStartPath = GetDeploymentServerPath();
 			}
-			if (Arguments.Length > 3)
+			if (Arguments.Count > 3)
 			{
-				for (int ArgIndex = 3; ArgIndex < Arguments.Length; ArgIndex++)
+				for (int ArgIndex = 3; ArgIndex < Arguments.Count; ArgIndex++)
 				{
 					string Arg = Arguments[ArgIndex].ToLowerInvariant();
 					if (Arg.StartsWith("-"))
@@ -670,14 +725,14 @@ namespace DeploymentServer
 						{
 							case "-timeout":
 								{
-									if (Arguments.Length > ArgIndex + 1)
+									if (Arguments.Count > ArgIndex + 1)
 									{
 										long ArgTime = TimeOut;
 										long.TryParse(Arguments[++ArgIndex], out ArgTime);
 										if (ArgTime > 0)
 										{
 											TimeOut = ArgTime;
-											Console.WriteLine(string.Format("Deployment Server timeout set to {0}", TimeOut.ToString()));
+											LocalLog(string.Format("Deployment Server timeout set to {0}", TimeOut.ToString()));
 										}
 									}
 									break;
@@ -688,31 +743,39 @@ namespace DeploymentServer
 			}
 		}
 
+		private static String ServerMutexName = "Global\\DeploymentServer_Mutex_SERVERINSTANCE";
+
+		static bool IsServerMutexPresent()
+		{
+			Mutex DSBlockMutex = null;
+			bool ret = Mutex.TryOpenExisting(ServerMutexName, out DSBlockMutex);
+			if (ret)
+			{
+				DSBlockMutex.Close();
+			}
+			return ret;
+		}
+
 		/**
 		 *	Main Server Loop
 		 */
-		static void ServerLoop(TcpClient IsServiceRunning, string[] Args)
+		static void ServerLoop(string[] Args)
 		{
 			Program.ExitCode = 0;
-
-			if (IsServiceRunning != null)
+			if (IsServerMutexPresent())
 				return;
 
 			bool bCreatedMutex = false;
-			String MutexName = "Global\\DeploymentServer_Mutex_SERVERINSTANCE";
 			Mutex DSBlockMutex = null;
 
 			try
 			{
-				DSBlockMutex = new Mutex(true, MutexName, out bCreatedMutex);
-				if (!bCreatedMutex)
-				{
-					// running is not allowed (perhaps a another server instance is running, but on a different port or is not responding to a connection request)
-					return;
-				}
+				DSBlockMutex = new Mutex(false, ServerMutexName, out bCreatedMutex);
+				DSBlockMutex.WaitOne();
 			}
 			catch
 			{
+				LocalLog("Exception creating Deployment Server Mutex. ");
 				return;
 			}
 
@@ -723,9 +786,9 @@ namespace DeploymentServer
 			System.Threading.Thread ProcessClient = null;
 			try
 			{
-				OutSm = new FileStream("DeploymentServer.log", FileMode.Create, FileAccess.Write);
+				OutSm = new FileStream("DeploymentServer.log", FileMode.Append, FileAccess.Write);
 				Writer = new StreamWriter(OutSm);
-				Console.SetOut(Writer);
+				LocalConsole = Writer;
 
 				DeploymentProxy.Deployer = new DeploymentImplementation();
 				long.TryParse(ConfigurationManager.AppSettings["DSTimeOut"], out TimeOut);
@@ -735,12 +798,23 @@ namespace DeploymentServer
 				}
 				Server = new TcpListener(IPAddress.Any, Port);
 				Server.Start();
-				
 
-				ParseServerParam(Args);
-				Console.WriteLine(string.Format("Deployment Server listening to port {0}", Port.ToString()));
-				Console.WriteLine(string.Format("Deployment Server inactivity timeout {0}", TimeOut.ToString()));
-				Console.WriteLine("---------------------------------------------------------");
+				string CommandLine = "";
+				foreach (string Arg in Args)
+				{
+					CommandLine += Arg + " ";
+				}
+				List<string> Arguments = Regex.Matches(CommandLine, @"[\""].+?[\""]|[^ ]+")
+												.Cast<Match>()
+												.Select(m => m.Value)
+												.ToList();
+				ParseServerParam(Arguments);
+
+				LocalLog(string.Format("Deployment Server internal version {0}", InternalVersion.ToString()));
+				LocalLog(string.Format("Deployment Server listening to port {0}", Port.ToString()));
+				LocalLog(string.Format("Deployment Server inactivity timeout {0}", TimeOut.ToString()));
+				LocalLog(string.Format("Deployment Server starting from {0}", TestStartPath));
+				LocalLog("---------------------------------------------------------");
 
 				// Processing commands
 
@@ -769,7 +843,7 @@ namespace DeploymentServer
 				while (true)
 				{
 					CoreFoundationRunLoop.RunLoopRunInMode(CoreFoundationRunLoop.kCFRunLoopDefaultMode(), 1.0, 0);
-					System.Threading.Thread.Sleep(50);
+					System.Threading.Thread.Sleep(100);
 					Writer.Flush();
 					OutSm.Flush();
 					if (TCPForwarding.Count > 0)
@@ -780,12 +854,12 @@ namespace DeploymentServer
 					{
 						if (IsStopping)
 						{
-							Console.WriteLine("Deployment Server IsStopping exit.");
+							LocalLog("Deployment Server IsStopping exit.");
 							break;
 						}
 						if (GlobalTimer.ElapsedMilliseconds > TimeOut)
 						{
-							Console.WriteLine("Deployment Server inactivity timeout.");
+							LocalLog("Deployment Server inactivity timeout.");
 							IsStopping = true;
 							break;
 						}
@@ -794,21 +868,39 @@ namespace DeploymentServer
 			}
 			catch (SocketException e)
 			{
-				Console.WriteLine("SocketException: {0}", e);
+				LocalLog("SocketException: " + e.ToString());
 			}
 			catch (System.Exception Ex)
 			{
-				Console.WriteLine("Exception: {0}", Ex);
-				Console.WriteLine("Stack: {0}", Ex.StackTrace);
-				Console.WriteLine("Inner: {0}", Ex.InnerException.Message);
+				LocalLog("Exception: " + Ex.ToString());
+				LocalLog("Stack: " + Ex.StackTrace.ToString());
+				LocalLog("Inner: " + Ex.InnerException.Message.ToString());
 			}
 			finally
 			{
 				if (DSBlockMutex != null)
 				{
-					DSBlockMutex.ReleaseMutex();
-					DSBlockMutex.Dispose();
-					DSBlockMutex = null;
+					try
+					{
+						DSBlockMutex.ReleaseMutex();
+						DSBlockMutex.Close();
+						DSBlockMutex = null;
+					}
+					catch (AbandonedMutexException)
+					{
+						//This catch is included to insure the program keeps running in the event this exception occurs.
+						LocalLog("Deployment Server Mutex abandoned.");
+					}
+					catch (ApplicationException)
+					{
+						//This catch is included to insure the program keeps running in the event this exception occurs.
+						LocalLog("Deployment Server Mutex abandoned 1.");
+					}
+					catch (SynchronizationLockException)
+					{
+						//This catch is included to insure the program keeps running in the event this exception occurs.
+						LocalLog("Deployment Server Mutex abandoned. 2");
+					}
 				}
 				if (ProcessClient != null)
 				{
@@ -818,7 +910,7 @@ namespace DeploymentServer
 				{
 					Server.Stop();
 				}
-				Console.WriteLine("Deployment Server Stopped.");
+				LocalLog("Deployment Server Stopped.");
 				Console.SetOut(OldConsole);
 				if (Writer != null)
 				{
@@ -854,7 +946,7 @@ namespace DeploymentServer
 				}
 				catch (System.Exception Ex)
 				{
-					Console.WriteLine(Ex.Message);
+					LocalLog(Ex.Message);
 				}
 			}
 			else
@@ -862,7 +954,7 @@ namespace DeploymentServer
 				if (LocalClientInfo.ParseCommand(Arguments))
 				{
 					LocalClientInfo.HasCommand = true;
-					Console.WriteLine("Running as local instance");
+					LocalLog("Running as local instance");
 					LocalClientInfo.RunCommand(Console.Out);
 					while (LocalClientInfo.IsStillRunning)
 					{
@@ -876,62 +968,28 @@ namespace DeploymentServer
 		/**
 		 * Main Client loop
 		 */
-		static void ClientLoop(TcpClient IsServiceRunning, string[] Args, string LocalCommand)
+		static void ClientLoop(string[] Args, string LocalCommand)
 		{
-			if (IsServiceRunning == null)
+			// on mac we only start one local instance due to mono limitations
+			if (Environment.OSVersion.Platform == PlatformID.MacOSX || Environment.OSVersion.Platform == PlatformID.Unix || Args.Contains("-standalone"))
 			{
-				if (Args.Length < 1 || LocalCommand == "stop")
-				{
-					Console.WriteLine("Deployment Server not running ...");
-					ForceKillProcesses();
-					return;
-				}
-				// on mac we only start one local instance due to mono limitations
-				if (Environment.OSVersion.Platform == PlatformID.MacOSX || Environment.OSVersion.Platform == PlatformID.Unix || Args[0].Equals("-standalone"))
-				{
-					RunLocalInstance(Args);
-					return;
-				}
-				else
-				{
-					CreateDeploymentServerProcess();
-				}
+				RunLocalInstance(Args);
+				return;
 			}
-			// Parse the command
-			TcpClient Client = IsServiceRunning;
+
+			TcpClient Client = GetServiceClient(LocalCommand);
+
 			try
 			{
-				int RetryCount = 3;
-				while (RetryCount > 0 && Client == null)
-				{
-					try
-					{
-						if (Client == null)
-						{
-							Client = new TcpClient("localhost", Port); //The client gets here
-						}
-					}
-					catch (Exception e)
-					{
-						RetryCount--;
-						Client = null;
-						if (RetryCount <= 0)
-						{
-							throw (e);
-						}
-						System.Threading.Thread.Sleep(500);
-					}
-				}
 				StreamReader clientIn = new StreamReader(Client.GetStream());
 				StreamWriter clientOut = new StreamWriter(Client.GetStream());
 				{
 					string Response = clientIn.ReadLine();
 					if (TcpClientInfo.NeedsVersionCheck(LocalCommand))
 					{
-
-						if (!Response.Equals("DIR" + GetDeploymentServerPath(), StringComparison.InvariantCultureIgnoreCase))
+						if (!Response.Equals("[DSDIR]\"" + GetDeploymentServerPath() + "\"", StringComparison.InvariantCultureIgnoreCase))
 						{
-							Console.WriteLine("Wrong server running, restarting the server ...");
+							LocalLog("Wrong server running, restarting the server ...");
 							clientOut.Write("stop");
 							clientOut.Write("\r");
 							clientOut.Flush();
@@ -944,18 +1002,15 @@ namespace DeploymentServer
 								}
 								else
 								{
-									Console.WriteLine(Response);
+									LocalLog(Response);
 								}
-								ForceKillProcesses();
 							}
 							if (Client != null)
 							{
 								Client.Close();
 							}
-							Client = null;
-							CreateDeploymentServerProcess();
-							IsServiceRunning = IsServiceRegistered();
-							Client = IsServiceRunning;
+							Thread.Sleep(2500);
+							Client = GetServiceClient("");
 							clientIn = new StreamReader(Client.GetStream());
 							clientOut = new StreamWriter(Client.GetStream());
 						}
@@ -979,7 +1034,11 @@ namespace DeploymentServer
 				while (true)
 				{
 					string Response = clientIn.ReadLine();
-					if (Response.EndsWith("CMDOK"))
+					if (Response == "" || Response == null)
+					{
+						Thread.Sleep(10);
+					}
+					else if (Response.EndsWith("CMDOK"))
 					{
 						Program.ExitCode = 0;
 						break;
@@ -991,16 +1050,15 @@ namespace DeploymentServer
 					}
 					else
 					{
-						Console.WriteLine(Response);
+						LocalLog(Response);
 					}
-					Thread.Sleep(10);
 				}
 			}
 			catch (Exception e)
 			{
 				if (LocalCommand != "stop")
 				{
-					Console.WriteLine("Exception: {0}", e);
+					LocalLog("Exception: " + e.ToString());
 				}
 			}
 			finally
@@ -1014,6 +1072,7 @@ namespace DeploymentServer
 
 		static int Main(string[] Args)
 		{
+			LocalConsole = Console.Out;
 			string LocalCommand = "";
 			if (Args.Length > 0)
 			{
@@ -1028,6 +1087,7 @@ namespace DeploymentServer
 				Console.WriteLine("\t backup");
 				Console.WriteLine("\t deploy");
 				Console.WriteLine("\t copyfile");
+				Console.WriteLine("\t copyfileout");
 				Console.WriteLine("\t install");
 				Console.WriteLine("\t enumerate");
 				Console.WriteLine("\t listdevices");
@@ -1049,29 +1109,6 @@ namespace DeploymentServer
 
 				return 0;
 			}
-			try
-			{
-				if (LocalCommand != "stop" && LocalCommand != "-iphonepackager")
-				{
-					bool bCreatedMutex = false;
-					String MutexName = "Global\\DeploymentServer_Mutex_RestartNotAllowed";
-					Mutex DSBlockMutex = new Mutex(true, MutexName, out bCreatedMutex);
-					if (!bCreatedMutex)
-					{
-						// running is not allowed (perhaps a build command is in progress)
-						Program.ExitCode = 1;
-						return 1;
-					}
-					DSBlockMutex.ReleaseMutex();
-					DSBlockMutex.Dispose();
-					DSBlockMutex = null;
-				}
-			}
-			catch
-			{
-				Program.ExitCode = 0;
-				return 0;
-			}
 			int.TryParse(ConfigurationManager.AppSettings["DSPort"], out Port);
 			if (Port < 1 || Port > 65535)
 			{
@@ -1081,8 +1118,7 @@ namespace DeploymentServer
 			// parrent ID not needed anymore
 			if (Args[0].Equals("server"))
 			{
-				TcpClient IsServiceRunning = IsServiceRegistered();
-				ServerLoop(IsServiceRunning, Args);
+				ServerLoop(Args);
 			}
 			else if (Args[0].Equals("-iphonepackager"))
 			{
@@ -1091,8 +1127,7 @@ namespace DeploymentServer
 			}
 			else
 			{
-				TcpClient IsServiceRunning = IsServiceRegistered();
-				ClientLoop(IsServiceRunning, Args, LocalCommand);
+				ClientLoop(Args, LocalCommand);
 			}
 
 			Environment.ExitCode = Program.ExitCode;
@@ -1110,7 +1145,7 @@ namespace DeploymentServer
 				{
 					if (i < Commands.Length - 1 || Commands[i].EndsWith("\r"))
 					{
-						List<string> Arguments = Regex.Matches(Commands[i], @"[\""].+?[\""]|[^ ]+")
+						List<string> Arguments = Regex.Matches(Commands[i].TrimEnd('\r'), @"[\""].+?[\""]|[^ ]+")
 												.Cast<Match>()
 												.Select(m => m.Value)
 												.ToList();
@@ -1139,23 +1174,24 @@ namespace DeploymentServer
 				{
 					NetworkStream ClStream = Client.GetStream();
 					string ClientIP = ((IPEndPoint)Client.Client.RemoteEndPoint).Address.ToString();
-					Console.WriteLine("Client [{0}] IP:{1} connected.", localID, ClientIP);
+					//LocalLog("Client [" + localID.ToString() + "] IP:" + ClientIP.ToString() + " connected.");
 
-					TextWriter Writer = new StreamWriter(ClStream);
+					StreamWriter Writer = new StreamWriter(ClStream);
+					Writer.AutoFlush = true;
 					
-					Writer.WriteLine("DIR" + TestStartPath);
+					Writer.WriteLine("[DSDIR]" + TestStartPath);
 					Writer.Flush();
-
+					
 					Byte[] Buffer = new Byte[2048];
 					string Unprocessed = "";
 					ClientInfo = new TcpClientInfo();
+					bool IsCommandStarted = false;
 					
 					while (true)
 					{
-						//Console.WriteLine("Looping [{0}]", localID);
+						//LocalLog("Looping [{0}]", localID);
 						if (ClientInfo.HasCommand && !IsStopping)
 						{
-							//Console.WriteLine("Got command [{0}]", localID);
 							if (!IsRunningCommand && !ClientInfo.IsStillRunning)
 							{
 								ClientInfo.HasCommand = false;
@@ -1165,6 +1201,7 @@ namespace DeploymentServer
 								{
 									LastCommand = ClientInfo.LastCommand;
 									ClientInfo.RunCommand(Writer);
+									IsCommandStarted = true;
 								}
 								catch
 								{
@@ -1173,7 +1210,10 @@ namespace DeploymentServer
 								IsRunningCommand = false;
 								if (!ClientInfo.IsStillRunning)
 								{
-									Writer.WriteLine(ClientInfo.GetLastResult ? "\nCMDOK" : "\nCMDFAIL");
+									if (ClientInfo.NeedsResponse || !ClientInfo.GetLastResult)
+									{
+										Writer.WriteLine(ClientInfo.GetLastResult ? "\nCMDOK" : "\nCMDFAIL");
+									}
 									Writer.Flush();
 									ClStream.Flush();
 									break;
@@ -1214,7 +1254,7 @@ namespace DeploymentServer
 								// 10035 == WSAEWOULDBLOCK
 								if (e.NativeErrorCode.Equals(10035))
 								{
-									//Console.WriteLine("Still Connected, but the Send would block");
+									//LocalLog("Still Connected, but the Send would block");
 								}
 								else
 								{
@@ -1227,11 +1267,9 @@ namespace DeploymentServer
 								Client.Client.Blocking = BlockingState;
 							}
 						}
-						else if (ClientInfo.NeedsResponse)
+						else if (IsCommandStarted)
 						{
-							Writer.WriteLine("\nCMDOK");
-							Writer.Flush();
-							ClStream.Flush();
+							// long running command has stopped
 							break;
 						}
 						if (IsStopping)
@@ -1258,9 +1296,19 @@ namespace DeploymentServer
 						}
 					}
 				}
+				catch (IOException /*ie*/)
+				{
+					// we expect this to happen so we don't log it
+					//LocalLog("IOException: " + ie.ToString());
+				}
+				catch (SocketException /*se*/)
+				{
+					// we expect this to happen so we don't log it
+					//LocalLog("SocketException: " + se.ToString());
+				}
 				catch (Exception e)
 				{
-					Console.WriteLine("Exception: {0}", e);
+					LocalLog("Exception: " + e.ToString());
 				}
 				finally
 				{
@@ -1272,7 +1320,7 @@ namespace DeploymentServer
 					{
 						if (Client.Client != null && Client.Client.RemoteEndPoint != null)
 						{
-							Console.WriteLine("Client [{0}] disconnected ({1}).", localID, LastCommand);
+							//LocalLog("Client [" + localID.ToString() + "] disconnected (" + LastCommand.ToString() + ").");
 						}
 						Client.Close();
 					}
@@ -1285,6 +1333,13 @@ namespace DeploymentServer
 		static void ForceKillProcesses()
 		{
 			foreach (var process in Process.GetProcessesByName("DeploymentServer"))
+			{
+				if (process.Id != Process.GetCurrentProcess().Id)
+				{
+					process.Kill();
+				}
+			}
+			foreach (var process in Process.GetProcessesByName("DeploymentServerLauncher"))
 			{
 				if (process.Id != Process.GetCurrentProcess().Id)
 				{

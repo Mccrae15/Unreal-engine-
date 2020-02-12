@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "Evaluation/MovieSceneParameterTemplate.h"
 #include "Tracks/MovieSceneMaterialTrack.h"
@@ -8,8 +8,11 @@
 
 FMovieSceneParameterSectionTemplate::FMovieSceneParameterSectionTemplate(const UMovieSceneParameterSection& Section)
 	: Scalars(Section.GetScalarParameterNamesAndCurves())
+	, Bools(Section.GetBoolParameterNamesAndCurves())
+	, Vector2Ds(Section.GetVector2DParameterNamesAndCurves())
 	, Vectors(Section.GetVectorParameterNamesAndCurves())
 	, Colors(Section.GetColorParameterNamesAndCurves())
+	, Transforms(Section.GetTransformParameterNamesAndCurves())
 {
 }
 
@@ -25,6 +28,30 @@ void FMovieSceneParameterSectionTemplate::EvaluateCurves(const FMovieSceneContex
 			Values.ScalarValues.Emplace(Scalar.ParameterName, Value);
 		}
 	}
+
+	for (const FBoolParameterNameAndCurve& Bool : Bools)
+	{
+		bool Value = false;
+		if (Bool.ParameterCurve.Evaluate(Time, Value))
+		{
+			Values.BoolValues.Emplace(Bool.ParameterName, Value);
+		}
+	}
+
+	for (const FVector2DParameterNameAndCurves& Vector : Vector2Ds)
+	{
+		FVector2D Value(ForceInitToZero);
+
+		bool bAnyEvaluated = false;
+		bAnyEvaluated |= Vector.XCurve.Evaluate(Time, Value.X);
+		bAnyEvaluated |= Vector.YCurve.Evaluate(Time, Value.Y);
+
+		if (bAnyEvaluated)
+		{
+			Values.Vector2DValues.Emplace(Vector.ParameterName, Value);
+		}
+	}
+
 
 	for ( const FVectorParameterNameAndCurves& Vector : Vectors )
 	{
@@ -54,6 +81,32 @@ void FMovieSceneParameterSectionTemplate::EvaluateCurves(const FMovieSceneContex
 		if (bAnyEvaluated)
 		{
 			Values.ColorValues.Emplace(Color.ParameterName, ColorValue);
+		}
+	}
+
+	for (const FTransformParameterNameAndCurves& Transform : Transforms)
+	{
+		FVector Translation, Scale(FVector::OneVector);
+		FRotator Rotator;
+		bool bAnyEvaluated = false;
+		bAnyEvaluated |= Transform.Translation[0].Evaluate(Time,Translation[0]);
+		bAnyEvaluated |= Transform.Translation[1].Evaluate(Time, Translation[1]);
+		bAnyEvaluated |= Transform.Translation[2].Evaluate(Time, Translation[2]);
+
+		bAnyEvaluated |= Transform.Rotation[0].Evaluate(Time, Rotator.Roll);
+		bAnyEvaluated |= Transform.Rotation[1].Evaluate(Time, Rotator.Pitch);
+		bAnyEvaluated |= Transform.Rotation[2].Evaluate(Time, Rotator.Yaw);
+
+		//mz todo quat interp...
+
+		bAnyEvaluated |= Transform.Scale[0].Evaluate(Time, Scale[0]);
+		bAnyEvaluated |= Transform.Scale[1].Evaluate(Time, Scale[1]);
+		bAnyEvaluated |= Transform.Scale[2].Evaluate(Time, Scale[2]);
+
+		if (bAnyEvaluated)
+		{
+			FTransformParameterNameAndValue NameAndValue(Transform.ParameterName, Translation, Rotator, Scale);
+			Values.TransformValues.Emplace(NameAndValue);
 		}
 	}
 }

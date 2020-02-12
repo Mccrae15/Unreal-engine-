@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 /*=============================================================================
 Texture2DStreamIn_DDC_AsyncCreate.h: Load texture 2D mips from the DDC using async create.
@@ -23,6 +23,10 @@ protected:
 	// ******* Update Steps *******
 	// ****************************
 
+	// Create DDC requests for each mips. (AsyncThread)
+	void AsyncDDC(const FContext& Context);
+	// Poll DDC requests completion for each mips. (AsyncThread)
+	void PollDDC(const FContext& Context);
 	// Allocate the MipData (AsyncThread)
 	void AllocateAndLoadMips(const FContext& Context);
 	// Create load requests into each locked mips. (AsyncThread)

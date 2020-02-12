@@ -6,32 +6,40 @@
 
 USteamAudioSettings::USteamAudioSettings()
 	: AudioEngine(EIplAudioEngine::UNREAL)
+	, RayTracer(EIplRayTracerType::PHONON)
 	, ConvolutionType(EIplConvolutionType::PHONON)
-	, MinComputeUnits(4)
-	, MaxComputeUnits(8)
 	, ExportBSPGeometry(true)
 	, ExportLandscapeGeometry(true)
 	, StaticMeshMaterialPreset(EPhononMaterial::GENERIC)
 	, BSPMaterialPreset(EPhononMaterial::GENERIC)
 	, LandscapeMaterialPreset(EPhononMaterial::GENERIC)
+	, OcclusionSampleCount(128)
+	, ListenerReverbSimulationType(EIplSimulationType::DISABLED)
+	, ListenerReverbContribution(1.0f)
 	, IndirectImpulseResponseOrder(1)
 	, IndirectImpulseResponseDuration(1.0f)
 	, IndirectSpatializationMethod(EIplSpatializationMethod::PANNING)
-	, ReverbSimulationType(EIplSimulationType::DISABLED)
-	, IndirectContribution(1.0f)
+	, IrradianceMinDistance(1.0f)
 	, MaxSources(32)
-	, TANIndirectImpulseResponseOrder(1)
-	, TANIndirectImpulseResponseDuration(1.0f)
-	, TANMaxSources(32)
 	, RealtimeQualityPreset(EQualitySettings::LOW)
+	, RealTimeCPUCoresPercentage(5)
 	, RealtimeBounces(2)
 	, RealtimeRays(8192)
 	, RealtimeSecondaryRays(512)
 	, BakedQualityPreset(EQualitySettings::LOW)
+	, BakingCPUCoresPercentage(5)
 	, BakedBounces(128)
 	, BakedRays(16384)
 	, BakedSecondaryRays(2048)
+	, MaxComputeUnits(8)
+	, FractionComputeUnitsForIRUpdate(0.5f)
+	, TANIndirectImpulseResponseOrder(1)
+	, TANIndirectImpulseResponseDuration(1.0f)
+	, TANMaxSources(32)
+	, RadeonRaysBakingBatchSize(1)
 {
+	OutputSubmix = FString(TEXT("/SteamAudio/PhononSubmixDefault.PhononSubmixDefault"));
+
 	auto MaterialPreset = SteamAudio::MaterialPresets[StaticMeshMaterialPreset];
 	StaticMeshLowFreqAbsorption = MaterialPreset.lowFreqAbsorption;
 	StaticMeshMidFreqAbsorption = MaterialPreset.midFreqAbsorption;
@@ -102,6 +110,69 @@ IPLMaterial USteamAudioSettings::GetDefaultLandscapeMaterial() const
 	return DAM;
 }
 
+int32 USteamAudioSettings::GetIndirectImpulseResponseOrder() const
+{
+	return ConvolutionType == EIplConvolutionType::TRUEAUDIONEXT ? TANIndirectImpulseResponseOrder : IndirectImpulseResponseOrder;
+}
+
+float USteamAudioSettings::GetIndirectImpulseResponseDuration() const
+{
+	return ConvolutionType == EIplConvolutionType::TRUEAUDIONEXT ? TANIndirectImpulseResponseDuration : IndirectImpulseResponseDuration;
+}
+
+uint32 USteamAudioSettings::GetMaxSources() const
+{
+	return ConvolutionType == EIplConvolutionType::TRUEAUDIONEXT ? TANMaxSources : MaxSources;
+}
+
+int32 USteamAudioSettings::GetBakingBatchSize() const
+{
+	return RayTracer == EIplRayTracerType::RADEONRAYS ? RadeonRaysBakingBatchSize : 1;
+}
+
+float USteamAudioSettings::GetFractionComputeUnitsForIRUpdate() const
+{
+	return ConvolutionType == EIplConvolutionType::TRUEAUDIONEXT ? FractionComputeUnitsForIRUpdate : 1.0f;
+}
+
+IPLSimulationSettings USteamAudioSettings::GetRealtimeSimulationSettings() const
+{
+	IPLSimulationSettings SimulationSettings;
+	SimulationSettings.numBounces = RealtimeBounces;
+	SimulationSettings.numDiffuseSamples = RealtimeSecondaryRays;
+	SimulationSettings.numRays = RealtimeRays;
+	SimulationSettings.numOcclusionSamples = OcclusionSampleCount;
+	SimulationSettings.maxConvolutionSources = GetMaxSources();
+	SimulationSettings.ambisonicsOrder = GetIndirectImpulseResponseOrder();
+	SimulationSettings.irDuration = GetIndirectImpulseResponseDuration();
+	SimulationSettings.irradianceMinDistance = IrradianceMinDistance;
+	SimulationSettings.sceneType = static_cast<IPLSceneType>(RayTracer);
+	SimulationSettings.numThreads = FMath::Clamp<int32>(FPlatformMisc::NumberOfCoresIncludingHyperthreads() * (static_cast<float>(RealTimeCPUCoresPercentage) / 100.0f), 1, FPlatformMisc::NumberOfCoresIncludingHyperthreads());
+	SimulationSettings.bakingBatchSize = GetBakingBatchSize();
+
+	return SimulationSettings;
+}
+
+IPLSimulationSettings USteamAudioSettings::GetBakedSimulationSettings() const
+{
+	bool bUseTANOverrides = ConvolutionType == EIplConvolutionType::TRUEAUDIONEXT;
+
+	IPLSimulationSettings SimulationSettings;
+	SimulationSettings.numBounces = BakedBounces;
+	SimulationSettings.numDiffuseSamples = BakedSecondaryRays;
+	SimulationSettings.numRays = BakedRays;
+	SimulationSettings.numOcclusionSamples = OcclusionSampleCount;
+	SimulationSettings.maxConvolutionSources = GetMaxSources();
+	SimulationSettings.ambisonicsOrder = GetIndirectImpulseResponseOrder();
+	SimulationSettings.irDuration = GetIndirectImpulseResponseDuration();
+	SimulationSettings.irradianceMinDistance = IrradianceMinDistance;
+	SimulationSettings.sceneType = static_cast<IPLSceneType>(RayTracer);
+	SimulationSettings.numThreads = FMath::Clamp<int32>(FPlatformMisc::NumberOfCoresIncludingHyperthreads() * (static_cast<float>(BakingCPUCoresPercentage) / 100.0f), 1, FPlatformMisc::NumberOfCoresIncludingHyperthreads());
+	SimulationSettings.bakingBatchSize = GetBakingBatchSize();
+
+	return SimulationSettings;
+}
+
 #if WITH_EDITOR
 void USteamAudioSettings::PostEditChangeProperty(FPropertyChangedEvent& PropertyChangedEvent)
 {
@@ -121,9 +192,9 @@ void USteamAudioSettings::PostEditChangeProperty(FPropertyChangedEvent& Property
 		StaticMeshHighFreqTransmission = MaterialPreset.highFreqTransmission;
 		StaticMeshScattering = MaterialPreset.scattering;
 
-		for (TFieldIterator<UProperty> PropIt(GetClass()); PropIt; ++PropIt) 
+		for (TFieldIterator<FProperty> PropIt(GetClass()); PropIt; ++PropIt) 
 		{
-			UProperty* Property = *PropIt;
+			FProperty* Property = *PropIt;
 			if (Property->GetFName() == GET_MEMBER_NAME_CHECKED(USteamAudioSettings, StaticMeshLowFreqAbsorption) ||
 				Property->GetFName() == GET_MEMBER_NAME_CHECKED(USteamAudioSettings, StaticMeshMidFreqAbsorption) ||
 				Property->GetFName() == GET_MEMBER_NAME_CHECKED(USteamAudioSettings, StaticMeshHighFreqAbsorption) ||
@@ -147,9 +218,9 @@ void USteamAudioSettings::PostEditChangeProperty(FPropertyChangedEvent& Property
 		BSPHighFreqTransmission = MaterialPreset.highFreqTransmission;
 		BSPScattering = MaterialPreset.scattering;
 
-		for (TFieldIterator<UProperty> PropIt(GetClass()); PropIt; ++PropIt)
+		for (TFieldIterator<FProperty> PropIt(GetClass()); PropIt; ++PropIt)
 		{
-			UProperty* Property = *PropIt;
+			FProperty* Property = *PropIt;
 			if (Property->GetFName() == GET_MEMBER_NAME_CHECKED(USteamAudioSettings, BSPLowFreqAbsorption) ||
 				Property->GetFName() == GET_MEMBER_NAME_CHECKED(USteamAudioSettings, BSPMidFreqAbsorption) ||
 				Property->GetFName() == GET_MEMBER_NAME_CHECKED(USteamAudioSettings, BSPHighFreqAbsorption) ||
@@ -173,9 +244,9 @@ void USteamAudioSettings::PostEditChangeProperty(FPropertyChangedEvent& Property
 		LandscapeHighFreqTransmission = MaterialPreset.highFreqTransmission;
 		LandscapeScattering = MaterialPreset.scattering;
 
-		for (TFieldIterator<UProperty> PropIt(GetClass()); PropIt; ++PropIt)
+		for (TFieldIterator<FProperty> PropIt(GetClass()); PropIt; ++PropIt)
 		{
-			UProperty* Property = *PropIt;
+			FProperty* Property = *PropIt;
 			if (Property->GetFName() == GET_MEMBER_NAME_CHECKED(USteamAudioSettings, LandscapeLowFreqAbsorption) ||
 				Property->GetFName() == GET_MEMBER_NAME_CHECKED(USteamAudioSettings, LandscapeMidFreqAbsorption) ||
 				Property->GetFName() == GET_MEMBER_NAME_CHECKED(USteamAudioSettings, LandscapeHighFreqAbsorption) ||
@@ -194,9 +265,9 @@ void USteamAudioSettings::PostEditChangeProperty(FPropertyChangedEvent& Property
 		RealtimeRays = RealtimeSimulationQuality.Rays;
 		RealtimeSecondaryRays = RealtimeSimulationQuality.SecondaryRays;
 
-		for (TFieldIterator<UProperty> PropIt(GetClass()); PropIt; ++PropIt)
+		for (TFieldIterator<FProperty> PropIt(GetClass()); PropIt; ++PropIt)
 		{
-			UProperty* Property = *PropIt;
+			FProperty* Property = *PropIt;
 			if (Property->GetFName() == GET_MEMBER_NAME_CHECKED(USteamAudioSettings, RealtimeBounces) ||
 				Property->GetFName() == GET_MEMBER_NAME_CHECKED(USteamAudioSettings, RealtimeRays) ||
 				Property->GetFName() == GET_MEMBER_NAME_CHECKED(USteamAudioSettings, RealtimeSecondaryRays))
@@ -211,9 +282,9 @@ void USteamAudioSettings::PostEditChangeProperty(FPropertyChangedEvent& Property
 		BakedRays = BakedSimulationQuality.Rays;
 		BakedSecondaryRays = BakedSimulationQuality.SecondaryRays;
 
-		for (TFieldIterator<UProperty> PropIt(GetClass()); PropIt; ++PropIt)
+		for (TFieldIterator<FProperty> PropIt(GetClass()); PropIt; ++PropIt)
 		{
-			UProperty* Property = *PropIt;
+			FProperty* Property = *PropIt;
 			if (Property->GetFName() == GET_MEMBER_NAME_CHECKED(USteamAudioSettings, BakedBounces) ||
 				Property->GetFName() == GET_MEMBER_NAME_CHECKED(USteamAudioSettings, BakedRays) ||
 				Property->GetFName() == GET_MEMBER_NAME_CHECKED(USteamAudioSettings, BakedSecondaryRays))
@@ -224,17 +295,24 @@ void USteamAudioSettings::PostEditChangeProperty(FPropertyChangedEvent& Property
 	}
 }
 
-bool USteamAudioSettings::CanEditChange(const UProperty* InProperty) const
+bool USteamAudioSettings::CanEditChange(const FProperty* InProperty) const
 {
 	const bool ParentVal = Super::CanEditChange(InProperty);
 
-	if (InProperty->GetFName() == GET_MEMBER_NAME_CHECKED(USteamAudioSettings, MinComputeUnits) ||
-		InProperty->GetFName() == GET_MEMBER_NAME_CHECKED(USteamAudioSettings, MaxComputeUnits) ||
+	if (InProperty->GetFName() == GET_MEMBER_NAME_CHECKED(USteamAudioSettings, FractionComputeUnitsForIRUpdate) ||
 		InProperty->GetFName() == GET_MEMBER_NAME_CHECKED(USteamAudioSettings, TANIndirectImpulseResponseOrder) ||
 		InProperty->GetFName() == GET_MEMBER_NAME_CHECKED(USteamAudioSettings, TANIndirectImpulseResponseDuration) ||
 		InProperty->GetFName() == GET_MEMBER_NAME_CHECKED(USteamAudioSettings, TANMaxSources))
 	{
 		return ParentVal && ConvolutionType == EIplConvolutionType::TRUEAUDIONEXT;
+	}
+	else if (InProperty->GetFName() == GET_MEMBER_NAME_CHECKED(USteamAudioSettings, MaxComputeUnits))
+	{
+		return ParentVal && (ConvolutionType == EIplConvolutionType::TRUEAUDIONEXT || RayTracer == EIplRayTracerType::RADEONRAYS);
+	}
+	else if (InProperty->GetFName() == GET_MEMBER_NAME_CHECKED(USteamAudioSettings, RadeonRaysBakingBatchSize))
+	{
+		return ParentVal && RayTracer == EIplRayTracerType::RADEONRAYS;
 	}
 	else if (InProperty->GetFName() == GET_MEMBER_NAME_CHECKED(USteamAudioSettings, StaticMeshLowFreqAbsorption) ||
 			 InProperty->GetFName() == GET_MEMBER_NAME_CHECKED(USteamAudioSettings, StaticMeshMidFreqAbsorption) ||
@@ -278,9 +356,9 @@ bool USteamAudioSettings::CanEditChange(const UProperty* InProperty) const
 	{
 		return ParentVal && (BakedQualityPreset == EQualitySettings::CUSTOM);
 	}
-	else if (InProperty->GetFName() == GET_MEMBER_NAME_CHECKED(USteamAudioSettings, IndirectContribution))
+	else if (InProperty->GetFName() == GET_MEMBER_NAME_CHECKED(USteamAudioSettings, ListenerReverbContribution))
 	{
-		return ParentVal && ReverbSimulationType != EIplSimulationType::DISABLED;
+		return ParentVal && ListenerReverbSimulationType != EIplSimulationType::DISABLED;
 	}
 	else
 	{

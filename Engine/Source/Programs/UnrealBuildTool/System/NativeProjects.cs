@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 using System;
 using System.Collections.Generic;
@@ -34,6 +34,16 @@ namespace UnrealBuildTool
 		/// Cached map of target names to the project file they belong to
 		/// </summary>
 		static Dictionary<string, FileReference> CachedTargetNameToProjectFile;
+
+		/// <summary>
+		/// Clear our cached properties. Generally only needed if your script has modified local files...
+		/// </summary>
+		public static void ClearCache()
+		{
+			CachedBaseDirectories = null;
+			CachedProjectFiles = null;
+			CachedTargetNameToProjectFile = null;
+		}
 
 		/// <summary>
 		/// Retrieve the list of base directories for native projects

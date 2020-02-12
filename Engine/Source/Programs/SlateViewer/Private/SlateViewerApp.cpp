@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "SlateViewerApp.h"
 #include "RequiredProgramMainCPPInclude.h"
@@ -72,7 +72,7 @@ int RunSlateViewer( const TCHAR* CommandLine )
 #endif
 
 	// loop while the server does the rest
-	while (!GIsRequestingExit)
+	while (!IsEngineExitRequested())
 	{
 		FTaskGraphInterface::Get().ProcessThreadUntilIdle(ENamedThreads::GameThread);
 		FStats::AdvanceFrame(false);

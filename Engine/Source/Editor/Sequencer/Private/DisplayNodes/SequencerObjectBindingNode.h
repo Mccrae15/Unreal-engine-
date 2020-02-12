@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -11,6 +11,8 @@
 class FSequencerTrackNode;
 class FMenuBuilder;
 struct FSlateBrush;
+
+enum class ECheckBoxState : uint8;
 
 /** Enumeration specifying what kind of object binding this is */
 enum class EObjectBindingType
@@ -30,12 +32,10 @@ public:
 	 * Create and initialize a new instance.
 	 * 
 	 * @param InNodeName The name identifier of then node.
-	 * @param InObjectName The name of the object we're binding to.
 	 * @param InObjectBinding Object binding guid for associating with live objects.
-	 * @param InParentNode The parent of this node, or nullptr if this is a root node.
 	 * @param InParentTree The tree this node is in.
 	 */
-	FSequencerObjectBindingNode(FName NodeName, const FText& InDisplayName, const FGuid& InObjectBinding, TSharedPtr<FSequencerDisplayNode> InParentNode, FSequencerNodeTree& InParentTree);
+	FSequencerObjectBindingNode(FName InNodeName, const FGuid& InObjectBinding, FSequencerNodeTree& InParentTree);
 
 public:
 
@@ -51,13 +51,6 @@ public:
 		return BindingType;
 	}
 
-	/**
-	 * Adds a new externally created node to this display node
-	 *
-	 * @param NewChild		The child node to add
-	 */
-	void AddTrackNode( TSharedRef<FSequencerTrackNode> NewChild );
-
 public:
 
 	// FSequencerDisplayNode interface
@@ -65,6 +58,7 @@ public:
 	virtual void BuildContextMenu(FMenuBuilder& MenuBuilder) override;
 	virtual bool CanRenameNode() const override;
 	virtual TSharedRef<SWidget> GetCustomOutlinerContent() override;
+	virtual TSharedPtr<SWidget> GetAdditionalOutlinerLabel() override;
 	virtual FText GetDisplayName() const override;
 	virtual FLinearColor GetDisplayNameColor() const override;
 	virtual FText GetDisplayNameToolTipText() const override;
@@ -89,6 +83,7 @@ protected:
 	void AddSpawnOwnershipMenu(FMenuBuilder& MenuBuilder);
 	void AddSpawnLevelMenu(FMenuBuilder& MenuBuilder);
 	void AddAssignActorMenu(FMenuBuilder& MenuBuilder);
+	void AddTagMenu(FMenuBuilder& MenuBuilder);
 
 	/** Get class for object binding */
 	const UClass* GetClassForObjectBinding() const;
@@ -99,17 +94,20 @@ private:
 	
 	void HandleAddTrackSubMenuNew(FMenuBuilder& AddTrackMenuBuilder, TArray<FPropertyPath> KeyablePropertyPath, int32 PropertyNameIndexStart = 0);
 
-	void HandleLabelsSubMenuCreate(FMenuBuilder& MenuBuilder);
-	
 	void HandlePropertyMenuItemExecute(FPropertyPath PropertyPath);
+
+	ECheckBoxState GetTagCheckState(FName TagName);
+
+	void ToggleTag(FName TagName);
+
+	void HandleDeleteTag(FName TagName);
+
+	void HandleAddTag(FName TagName);
 
 private:
 
 	/** The binding to live objects */
 	FGuid ObjectBinding;
-
-	/** The default display name of the object which is used if the binding manager doesn't provide one. */
-	FText DefaultDisplayName;
 
 	/** Enumeration specifying what kind of object binding this is */
 	EObjectBindingType BindingType;

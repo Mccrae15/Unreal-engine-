@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 /*=============================================================================
 	ContentBrowserSettings.h: Declares the UContentBrowserSettings class.
@@ -41,6 +41,10 @@ public:
 	/** Whether to empty display folders in the asset view of the content browser. */
 	UPROPERTY(config)
 	bool DisplayEmptyFolders;
+
+	/** Whether to filter recursively when a filter is applied in the asset view of the content browser. */
+	UPROPERTY(config)
+	bool FilterRecursively = true;
 
 	/** The number of objects to keep in the Content Browser Recently Opened filter */
 	UPROPERTY(EditAnywhere, config, Category = ContentBrowser, meta = (DisplayName = "Number of Assets to Keep in the Recently Opened Filter", ClampMin = "1", ClampMax = "30"))
@@ -100,18 +104,6 @@ public:
 		return ( ( bExcludeOverride ? false : OverrideDisplayPluginFolders ) || DisplayPluginFolders );
 	}
 
-	/** Sets whether we are allowed to display collection folders or not */
-	void SetDisplayCollections(bool bInDisplayCollections)
-	{
-		DisplayCollections = bInDisplayCollections;
-	}
-
-	/** Gets whether we are allowed to display the collection folders or not*/
-	bool GetDisplayCollections() const
-	{
-		return DisplayCollections;
-	}
-
 	/** Sets whether we are allowed to display favorite folders or not */
 	void SetDisplayFavorites(bool bInDisplayFavorites)
 	{
@@ -122,6 +114,18 @@ public:
 	bool GetDisplayFavorites() const
 	{
 		return DisplayFavorites;
+	}
+
+	/** Sets whether we should dock the collections view under the paths view */
+	void SetDockCollections(bool bInDockCollections)
+	{
+		DockCollections = bInDockCollections;
+	}
+
+	/** Gets whether we should dock the collections view under the paths view */
+	bool GetDockCollections() const
+	{
+		return DockCollections;
 	}
 
 	/** Sets whether we are allowed to display C++ folders or not */
@@ -213,10 +217,10 @@ private:
 	bool OverrideDisplayPluginFolders;
 
 	UPROPERTY(config)
-	bool DisplayCollections;
+	bool DisplayFavorites;
 
 	UPROPERTY(config)
-	bool DisplayFavorites;
+	bool DockCollections;
 
 	UPROPERTY(config)
 	bool DisplayCppFolders;

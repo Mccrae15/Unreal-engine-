@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 /** Factory which allows import of an GeometryCollectionAsset */
 
@@ -11,6 +11,10 @@
 
 #include "GeometryCollectionFactory.generated.h"
 
+class UGeometryCollection;
+class UGeometryCollectionComponent;
+
+typedef TTuple<const UGeometryCollection *, const UGeometryCollectionComponent *, FTransform> GeometryCollectionTuple;
 
 /**
 * Factory for Simple Cube

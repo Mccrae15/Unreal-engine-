@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -9,7 +9,7 @@
 #include "Curves/RichCurve.h"
 #include "Serializers/MovieSceneTransformSerialization.h"
 #include "Sections/MovieScene3DTransformSection.h"
-#include "TakesCoreFwd.h"
+#include "TakesCoreLog.h"
 #include "MovieScene3DTransformTrackRecorder.generated.h"
 
 class FMovieScene3DTransformTrackRecorder;
@@ -30,7 +30,7 @@ public:
 	virtual UMovieSceneTrackRecorder* CreateTrackRecorderForObject() const override;
 
 	// takerecorder-todo: This should also record "Transform" variable properties, because they can be marked as interp
-	virtual bool CanRecordProperty(class UObject* InObjectToRecord, class UProperty* InPropertyToRecord) const override { return false; }
+	virtual bool CanRecordProperty(class UObject* InObjectToRecord, class FProperty* InPropertyToRecord) const override { return false; }
 	virtual UMovieSceneTrackRecorder* CreateTrackRecorderForProperty(UObject* InObjectToRecord, const FName& InPropertyToRecord) const override { return nullptr; }
 
 	virtual FText GetDisplayName() const override { return NSLOCTEXT("MovieScene3DTransformTrackRecorderFactory", "DisplayName", "Transform Track"); }
@@ -105,6 +105,7 @@ struct FBufferedTransformKeys
 		}
 	}
 
+
 	void GetValueFromIndex(int32 CurIndex, FVector& OutLocation, FQuat& OutQuat, FVector& OutScale)
 	{
 		OutLocation.X = LocationX[CurIndex];
@@ -175,6 +176,34 @@ struct FBufferedTransformKeys
 				UE_LOG(LogTakesCore, Log, TEXT("Error When Collapsing Animation and Transform"));
 
 			}
+		}
+	}
+
+	void PostMultTransform(const FTransform &Transform)
+	{
+		CreateCachedQuats(); //do stuff in quat space to avoid flips
+		FVector OurLocation, OurScale;
+		FQuat OurQuat;
+		FTransform OurTransform;
+		for (int32 CurIndex = 0; CurIndex < Times.Num(); ++CurIndex)
+		{
+			GetValueFromIndex(CurIndex, OurLocation, OurQuat, OurScale);
+			OurTransform = FTransform(OurQuat, OurLocation, OurScale);
+
+			OurTransform = OurTransform * Transform;
+			//OurTransform = OurTransform * Transform.Inverse();
+			LocationX[CurIndex] = OurTransform.GetTranslation().X;
+			LocationY[CurIndex] = OurTransform.GetTranslation().Y;
+			LocationZ[CurIndex] = OurTransform.GetTranslation().Z;
+
+			FRotator WoundRoation = OurTransform.Rotator();
+			RotationX[CurIndex] = WoundRoation.Roll;
+			RotationY[CurIndex] = WoundRoation.Pitch;
+			RotationZ[CurIndex] = WoundRoation.Yaw;
+
+			ScaleX[CurIndex] = OurTransform.GetScale3D().X;
+			ScaleY[CurIndex] = OurTransform.GetScale3D().Y;
+			ScaleZ[CurIndex] = OurTransform.GetScale3D().Z;
 		}
 	}
 	/**

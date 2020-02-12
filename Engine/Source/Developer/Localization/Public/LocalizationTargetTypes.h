@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -23,15 +23,41 @@ enum class ELocalizationTargetConflictStatus : uint8
 	Clear,
 };
 
+UENUM()
+enum class ELocalizationGatherPathRoot : uint8
+{
+	/** Automatically select Engine or Project based on which set the target belongs to */
+	Auto,
+	/** Path is relative to the Engine directory */
+	Engine,
+	/** Path is relative to the Project directory */
+	Project,
+};
+
+struct LOCALIZATION_API FLocalizationGatherPathRootUtil
+{
+	/** Get the resolved placeholder token of the path root ("%LOCENGINEROOT%" for Engine or "%LOCPROJECTROOT%" for Project; empty for Auto) */
+	static FString GetResolvedPathRootToken(const ELocalizationGatherPathRoot InPathRoot);
+
+	/** Get the path name of the resolved path root (either FPaths::EngineDir() or FPaths::ProjectDir() depending on the setting and target type */
+	static FString GetResolvedPathRoot(const ELocalizationGatherPathRoot InPathRoot, const bool bIsEngineTarget);
+
+	/** Get the display name of the resolved path root (either "Engine/" or "{ProjectName/" depending on the setting and target type */
+	static FText GetResolvedPathRootDisplayName(const ELocalizationGatherPathRoot InPathRoot, const bool bIsEngineTarget);
+};
+
 USTRUCT()
 struct FGatherTextSearchDirectory
 {
 	GENERATED_USTRUCT_BODY()
 
 	UPROPERTY(config, EditAnywhere, Category="Path")
+	ELocalizationGatherPathRoot PathRoot = ELocalizationGatherPathRoot::Auto;
+
+	UPROPERTY(config, EditAnywhere, Category="Path")
 	FString Path;
 
-	LOCALIZATION_API bool Validate(const FString& RootDirectory, FText& OutError) const;
+	LOCALIZATION_API bool Validate(const bool bIsEngineTarget, FText& OutError) const;
 };
 
 USTRUCT()
@@ -39,10 +65,13 @@ struct FGatherTextIncludePath
 {
 	GENERATED_USTRUCT_BODY()
 
+	UPROPERTY(config, EditAnywhere, Category="Path")
+	ELocalizationGatherPathRoot PathRoot = ELocalizationGatherPathRoot::Auto;
+
 	UPROPERTY(config, EditAnywhere, Category="Pattern")
 	FString Pattern;
 
-	LOCALIZATION_API bool Validate(const FString& RootDirectory, FText& OutError) const;
+	LOCALIZATION_API bool Validate(const bool bIsEngineTarget, FText& OutError) const;
 };
 
 USTRUCT()
@@ -50,10 +79,13 @@ struct FGatherTextExcludePath
 {
 	GENERATED_USTRUCT_BODY()
 
+	UPROPERTY(config, EditAnywhere, Category="Path")
+	ELocalizationGatherPathRoot PathRoot = ELocalizationGatherPathRoot::Auto;
+
 	UPROPERTY(config, EditAnywhere, Category="Pattern")
 	FString Pattern;
 
-	LOCALIZATION_API bool Validate(FText& OutError) const;
+	LOCALIZATION_API bool Validate(const bool bIsEngineTarget, FText& OutError) const;
 };
 
 USTRUCT()
@@ -64,7 +96,7 @@ struct FGatherTextFileExtension
 	UPROPERTY(config, EditAnywhere, Category="Pattern")
 	FString Pattern;
 
-	LOCALIZATION_API bool Validate(FText& OutError) const;
+	LOCALIZATION_API bool Validate(const bool bIsEngineTarget, FText& OutError) const;
 };
 
 USTRUCT()
@@ -101,7 +133,7 @@ struct FGatherTextFromTextFilesConfiguration
 	UPROPERTY(config, EditAnywhere, Category = "Filter")
 	bool ShouldGatherFromEditorOnlyData;
 
-	LOCALIZATION_API bool Validate(const FString& RootDirectory, FText& OutError) const;
+	LOCALIZATION_API bool Validate(const bool bIsEngineTarget, FText& OutError) const;
 };
 
 
@@ -115,6 +147,7 @@ struct FGatherTextFromPackagesConfiguration
 	FGatherTextFromPackagesConfiguration()
 		: IsEnabled(true)
 		, FileExtensions(GetDefaultPackageFileExtensions())
+		, ShouldExcludeDerivedClasses(false)
 		, ShouldGatherFromEditorOnlyData(false)
 		, SkipGatherCache(false)
 	{
@@ -145,6 +178,14 @@ struct FGatherTextFromPackagesConfiguration
 	UPROPERTY(config, EditAnywhere, Category = "Filter")
 	TArray<FName> Collections;
 
+	/* Classes that should be excluded from gathering. */
+	UPROPERTY(config, EditAnywhere, Category = "Filter")
+	TArray<FSoftClassPath> ExcludeClasses;
+
+	/* Should classes derived from those in the exclude classes list also be excluded from gathering? */
+	UPROPERTY(config, EditAnywhere, Category = "Filter")
+	bool ShouldExcludeDerivedClasses;
+
 	/* If enabled, data that is specified as editor-only may be processed for gathering. */
 	UPROPERTY(config, EditAnywhere, Category = "Gather Text")
 	bool ShouldGatherFromEditorOnlyData;
@@ -153,7 +194,7 @@ struct FGatherTextFromPackagesConfiguration
 	UPROPERTY(config, EditAnywhere, Category = "Gather Text", AdvancedDisplay)
 	bool SkipGatherCache;
 
-	LOCALIZATION_API bool Validate(const FString& RootDirectory, FText& OutError) const;
+	LOCALIZATION_API bool Validate(const bool bIsEngineTarget, FText& OutError) const;
 };
 
 USTRUCT()
@@ -164,7 +205,7 @@ struct FMetaDataTextKeyPattern
 	UPROPERTY(config, EditAnywhere, Category="Pattern")
 	FString Pattern;
 
-	LOCALIZATION_API bool Validate(FText& OutError) const;
+	LOCALIZATION_API bool Validate(const bool bIsEngineTarget, FText& OutError) const;
 
 	LOCALIZATION_API static const TArray<FString>& GetPossiblePlaceHolders();
 };
@@ -177,7 +218,7 @@ struct FMetaDataKeyName
 	UPROPERTY(config, EditAnywhere, Category="Name")
 	FString Name;
 
-	LOCALIZATION_API bool Validate(FText& OutError) const;
+	LOCALIZATION_API bool Validate(const bool bIsEngineTarget, FText& OutError) const;
 };
 
 USTRUCT()
@@ -200,7 +241,7 @@ struct FMetaDataKeyGatherSpecification
 	UPROPERTY(config, EditAnywhere, Category = "Output")
 	FMetaDataTextKeyPattern TextKeyPattern;
 
-	LOCALIZATION_API bool Validate(FText& OutError) const;
+	LOCALIZATION_API bool Validate(const bool bIsEngineTarget, FText& OutError) const;
 };
 
 USTRUCT()
@@ -234,7 +275,7 @@ struct FGatherTextFromMetaDataConfiguration
 	UPROPERTY(config, EditAnywhere, Category = "Filter")
 	bool ShouldGatherFromEditorOnlyData;
 
-	LOCALIZATION_API bool Validate(const FString& RootDirectory, FText& OutError) const;
+	LOCALIZATION_API bool Validate(const bool bIsEngineTarget, FText& OutError) const;
 };
 
 USTRUCT()
@@ -269,12 +310,22 @@ struct FLocalizationCompilationSettings
 
 	FLocalizationCompilationSettings()
 		: SkipSourceCheck(false)
+		, ValidateFormatPatterns(true)
+		, ValidateSafeWhitespace(false)
 	{
 	}
 
 	/* Should we skip the source check when compiling translations? This will allow translations whose source no longer matches the active source to still be used by the game at runtime. */
 	UPROPERTY(config, EditAnywhere, Category="Source")
 	bool SkipSourceCheck;
+
+	/* Should we validate that format patterns are valid for the culture being compiled (eg, detect invalid plural rules or broken syntax). */
+	UPROPERTY(config, EditAnywhere, Category="Validation")
+	bool ValidateFormatPatterns;
+
+	/* Should we validate that text doesn't contain any unsafe whitespace (leading or trailing whitespace) that could get lost during the translation process. */
+	UPROPERTY(config, EditAnywhere, Category="Validation")
+	bool ValidateSafeWhitespace;
 };
 
 USTRUCT()

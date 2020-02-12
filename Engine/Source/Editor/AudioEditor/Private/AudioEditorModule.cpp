@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "AudioEditorModule.h"
 #include "Modules/ModuleManager.h"
@@ -11,6 +11,7 @@
 #include "SoundCueGraphNodeFactory.h"
 #include "Factories/ReimportSoundSurroundFactory.h"
 #include "AssetToolsModule.h"
+#include "PropertyEditorModule.h"
 #include "SoundClassEditor.h"
 #include "Sound/SoundCue.h"
 #include "Sound/SoundWave.h"
@@ -37,6 +38,7 @@
 #include "Styling/SlateStyle.h"
 #include "Styling/SlateStyleRegistry.h"
 #include "SoundFileIO/SoundFileIO.h"
+#include "SoundSubmixGraph/SoundSubmixGraphSchema.h"
 
 const FName AudioEditorAppIdentifier = FName(TEXT("AudioEditorApp"));
 
@@ -55,7 +57,7 @@ static const FVector2D Icon64 = FVector2D(64.0f, 64.0f);
 // ICON_NAME - base-name of the icon to use. Not necessarily based off class name
 #define SET_AUDIO_ICON(CLASS_NAME, ICON_NAME) \
 		AudioStyleSet->Set( *FString::Printf(TEXT("ClassIcon.%s"), TEXT(#CLASS_NAME)), new FSlateImageBrush(FPaths::EngineContentDir() / FString::Printf(TEXT("Editor/Slate/Icons/AssetIcons/%s_16x.png"), TEXT(#ICON_NAME)), Icon16)); \
-		AudioStyleSet->Set( *FString::Printf(TEXT("ClassThumbnail.%s"), TEXT(#CLASS_NAME)), new FSlateImageBrush(FPaths::EngineContentDir() / FString::Printf(TEXT("Editor/Slate/Icons/AssetIcons/%s_64x.png"), TEXT(#ICON_NAME)), Icon64)); 
+		AudioStyleSet->Set( *FString::Printf(TEXT("ClassThumbnail.%s"), TEXT(#CLASS_NAME)), new FSlateImageBrush(FPaths::EngineContentDir() / FString::Printf(TEXT("Editor/Slate/Icons/AssetIcons/%s_64x.png"), TEXT(#ICON_NAME)), Icon64));
 
 // Simpler version of SET_AUDIO_ICON, assumes same name of icon png and class name
 #define SET_AUDIO_ICON_SIMPLE(CLASS_NAME) SET_AUDIO_ICON(CLASS_NAME, CLASS_NAME)
@@ -77,10 +79,14 @@ public:
 		SoundSubmixExtensibility.Init();
 
 		// Register the sound cue graph connection policy with the graph editor
-		SoundCueGraphConnectionFactory = MakeShareable(new FSoundCueGraphConnectionDrawingPolicyFactory);
+		SoundCueGraphConnectionFactory = MakeShared<FSoundCueGraphConnectionDrawingPolicyFactory>();
 		FEdGraphUtilities::RegisterVisualPinConnectionFactory(SoundCueGraphConnectionFactory);
 
-		TSharedPtr<FSoundCueGraphNodeFactory> SoundCueGraphNodeFactory = MakeShareable(new FSoundCueGraphNodeFactory());
+		// Register the sound cue graph connection policy with the graph editor
+		SoundSubmixGraphConnectionFactory = MakeShared<FSoundSubmixGraphConnectionDrawingPolicyFactory>();
+		FEdGraphUtilities::RegisterVisualPinConnectionFactory(SoundSubmixGraphConnectionFactory);
+
+		TSharedPtr<FSoundCueGraphNodeFactory> SoundCueGraphNodeFactory = MakeShared<FSoundCueGraphNodeFactory>();
 		FEdGraphUtilities::RegisterVisualNodeFactory(SoundCueGraphNodeFactory);
 
 		// Create reimport handler for sound node waves
@@ -90,9 +96,11 @@ public:
 		UReimportSoundSurroundFactory::StaticClass();
 
 		SetupIcons();
-
 #if WITH_SNDFILE_IO
-		Audio::InitSoundFileIOManager();
+		if (!Audio::InitSoundFileIOManager())
+		{
+			UE_LOG(LogAudioEditor, Display, TEXT("LibSoundFile failed to load. Importing audio will not work correctly."));
+		}
 #endif // WITH_SNDFILE_IO
 	}
 
@@ -109,6 +117,11 @@ public:
 		if (SoundCueGraphConnectionFactory.IsValid())
 		{
 			FEdGraphUtilities::UnregisterVisualPinConnectionFactory(SoundCueGraphConnectionFactory);
+		}
+
+		if (SoundSubmixGraphConnectionFactory.IsValid())
+		{
+			FEdGraphUtilities::UnregisterVisualPinConnectionFactory(SoundSubmixGraphConnectionFactory);
 		}
 	}
 
@@ -136,24 +149,19 @@ public:
 		{
 			IAssetTools& AssetTools = FModuleManager::LoadModuleChecked<FAssetToolsModule>("AssetTools").Get();
 			AssetTools.RegisterAssetTypeActions(MakeShareable(new FAssetTypeActions_SoundSubmix));
+			AssetTools.RegisterAssetTypeActions(MakeShareable(new FAssetTypeActions_SoundfieldSubmix));
+			AssetTools.RegisterAssetTypeActions(MakeShareable(new FAssetTypeActions_EndpointSubmix));
+			AssetTools.RegisterAssetTypeActions(MakeShareable(new FAssetTypeActions_SoundfieldEndpointSubmix));
+			AssetTools.RegisterAssetTypeActions(MakeShareable(new FAssetTypeActions_SoundfieldEncodingSettings));
+			AssetTools.RegisterAssetTypeActions(MakeShareable(new FAssetTypeActions_SoundfieldEffectSettings));
+			AssetTools.RegisterAssetTypeActions(MakeShareable(new FAssetTypeActions_SoundfieldEffect));
+			AssetTools.RegisterAssetTypeActions(MakeShareable(new FAssetTypeActions_AudioEndpointSettings));
+			AssetTools.RegisterAssetTypeActions(MakeShareable(new FAssetTypeActions_SoundfieldEndpointSettings));
 			AssetTools.RegisterAssetTypeActions(MakeShareable(new FAssetTypeActions_SoundEffectSubmixPreset));
 			AssetTools.RegisterAssetTypeActions(MakeShareable(new FAssetTypeActions_SoundEffectSourcePreset));
 			AssetTools.RegisterAssetTypeActions(MakeShareable(new FAssetTypeActions_SoundEffectSourcePresetChain));
 			AssetTools.RegisterAssetTypeActions(MakeShareable(new FAssetTypeActions_SoundSourceBus));
 		}
-	}
-
-	virtual void AddSoundWaveActionExtender(TSharedPtr<ISoundWaveAssetActionExtensions> InSoundWaveAssetActionExtender) override
-	{
-		if (InSoundWaveAssetActionExtender.IsValid())
-		{
-			SoundWaveAssetActionExtensions.AddUnique(InSoundWaveAssetActionExtender);
-		}
-	}
-
-	virtual void GetSoundWaveActionExtenders(TArray<TSharedPtr<ISoundWaveAssetActionExtensions>>& OutSoundwaveActionExtensions) override
-	{
-		OutSoundwaveActionExtensions = SoundWaveAssetActionExtensions;
 	}
 
 	virtual void RegisterEffectPresetAssetActions() override
@@ -195,11 +203,11 @@ public:
 		return NewSoundClassEditor;
 	}
 
-	virtual TSharedRef<FAssetEditorToolkit> CreateSoundSubmixEditor(const EToolkitMode::Type Mode, const TSharedPtr< IToolkitHost >& InitToolkitHost, USoundSubmix* InSoundSubmix) override
+	virtual TSharedRef<FAssetEditorToolkit> CreateSoundSubmixEditor(const EToolkitMode::Type Mode, const TSharedPtr< IToolkitHost >& InitToolkitHost, USoundSubmixBase* InSoundSubmix) override
 	{
-		TSharedRef<FSoundSubmixEditor> NewSoundSubmixEditor(new FSoundSubmixEditor());
-		NewSoundSubmixEditor->InitSoundSubmixEditor(Mode, InitToolkitHost, InSoundSubmix);
-		return NewSoundSubmixEditor;
+		TSharedPtr<FSoundSubmixEditor> NewSubmixEditor = MakeShared<FSoundSubmixEditor>();
+		NewSubmixEditor->Init(Mode, InitToolkitHost, InSoundSubmix);
+		return StaticCastSharedPtr<FAssetEditorToolkit>(NewSubmixEditor).ToSharedRef();
 	}
 
 	virtual TSharedPtr<FExtensibilityManager> GetSoundClassMenuExtensibilityManager() override
@@ -280,7 +288,7 @@ public:
 
 		// Setup sane defaults for importing localized sound waves
 		SoundWaveFactory->bAutoCreateCue = false;
-		SoundWaveFactory->SuppressImportOverwriteDialog();
+		SoundWaveFactory->SuppressImportDialogs();
 
 		return ImportObject<USoundWave>(SoundWavePackage, *InSoundWaveAssetName, RF_Public | RF_Standalone, *InWavFilename, nullptr, SoundWaveFactory);
 	}
@@ -304,6 +312,7 @@ private:
 		SET_AUDIO_ICON(SoundEffectSourcePreset, SourceEffectPreset);
 		SET_AUDIO_ICON(SoundEffectSourcePresetChain, SourceEffectPresetChain_1);
 		SET_AUDIO_ICON(ModularSynthPresetBank, SoundGenericIcon_2);
+		SET_AUDIO_ICON(MonoWaveTableSynthPreset, SoundGenericIcon_2);
 		SET_AUDIO_ICON(TimeSynthClip, SoundGenericIcon_2);
 		SET_AUDIO_ICON(TimeSynthVolumeGroup, SoundGenericIcon_1);
 
@@ -331,11 +340,10 @@ private:
 	FExtensibilityManagers SoundCueExtensibility;
 	FExtensibilityManagers SoundClassExtensibility;
 	FExtensibilityManagers SoundSubmixExtensibility;
-	TArray<TSharedPtr<ISoundWaveAssetActionExtensions>> SoundWaveAssetActionExtensions;
 	TSet<USoundEffectPreset*> RegisteredActions;
 	TSharedPtr<FGraphPanelPinConnectionFactory> SoundCueGraphConnectionFactory;
+	TSharedPtr<FGraphPanelPinConnectionFactory> SoundSubmixGraphConnectionFactory;
 	TSharedPtr<FSlateStyleSet> AudioStyleSet;
-
 };
 
 IMPLEMENT_MODULE( FAudioEditorModule, AudioEditor );

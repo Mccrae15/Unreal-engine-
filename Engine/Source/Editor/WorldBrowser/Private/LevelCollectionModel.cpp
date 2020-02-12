@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "LevelCollectionModel.h"
 #include "Misc/PackageName.h"
@@ -52,6 +52,7 @@ FLevelCollectionModel::FLevelCollectionModel()
 	, bSelectionHasChanged(true)
 	, bUpdatingLevelsSelection(false)
 {
+	FEditorDelegates::RefreshLevelBrowser.AddRaw(this, &FLevelCollectionModel::PopulateLevelsList);
 }
 
 FLevelCollectionModel::~FLevelCollectionModel()
@@ -68,6 +69,8 @@ FLevelCollectionModel::~FLevelCollectionModel()
 	{
 		CurrentWorld->OnSelectedLevelsChanged().RemoveAll(this);
 	}
+
+	FEditorDelegates::RefreshLevelBrowser.RemoveAll(this);
 }
 
 void FLevelCollectionModel::Initialize(UWorld* InWorld)
@@ -457,10 +460,15 @@ void FLevelCollectionModel::HideLevels(const FLevelModelList& InLevelList)
 		return;
 	}
 	
+	// For efficiency, set visibility of all levels at once
+	TArray<FLevelModel*> LevelModels;
+	TArray<bool> bVisible;
 	for (auto It = InLevelList.CreateConstIterator(); It; ++It)
 	{
-		(*It)->SetVisible(false);
+		LevelModels.Add(It->Get());
+		bVisible.Add(false);
 	}
+	FLevelModel::SetVisible(LevelModels, bVisible);
 
 	RequestUpdateAllLevels();
 }
@@ -474,10 +482,15 @@ void FLevelCollectionModel::ShowLevels(const FLevelModelList& InLevelList)
 	
 	OnPreShowLevels(InLevelList);
 
+	// For efficiency, set visibility of all levels at once
+	TArray<FLevelModel*> LevelModels;
+	TArray<bool> bVisible;
 	for (auto It = InLevelList.CreateConstIterator(); It; ++It)
 	{
-		(*It)->SetVisible(true);
+		LevelModels.Add(It->Get());
+		bVisible.Add(true);
 	}
+	FLevelModel::SetVisible(LevelModels, bVisible);
 
 	RequestUpdateAllLevels();
 }
@@ -794,7 +807,7 @@ void FLevelCollectionModel::CustomizeFileMainMenu(FMenuBuilder& InMenuBuilder) c
 	InMenuBuilder.AddSubMenu( 
 		LOCTEXT("SourceControl", "Source Control"),
 		LOCTEXT("SourceControl_ToolTip", "Source Control Options"),
-		FNewMenuDelegate::CreateSP(this, &FLevelCollectionModel::FillSourceControlSubMenu));
+		FNewMenuDelegate::CreateSP(const_cast<FLevelCollectionModel*>(this), &FLevelCollectionModel::FillSourceControlSubMenu));
 		
 	if (AreAnyLevelsSelected())
 	{
@@ -1258,7 +1271,7 @@ void FLevelCollectionModel::SCCDiffAgainstDepot(const FLevelModelList& InList, U
 					{
 						// Try and load that package
 						FText NotMapReason;
-						UPackage* OldPackage = LoadPackage(NULL, *TempFileName, LOAD_DisableCompileOnLoad);
+						UPackage* OldPackage = LoadPackage(NULL, *TempFileName, LOAD_ForDiff|LOAD_DisableCompileOnLoad);
 						if(OldPackage != NULL && InEditor->PackageIsAMapFile(*TempFileName, NotMapReason))
 						{
 							/* Set the revision information*/
@@ -1419,7 +1432,7 @@ FBox FLevelCollectionModel::GetVisibleLevelsBoundingBox(const FLevelModelList& I
 	return TotalBounds;
 }
 
-const TSharedRef<const FUICommandList> FLevelCollectionModel::GetCommandList() const
+const TSharedRef<FUICommandList> FLevelCollectionModel::GetCommandList() const
 {
 	return CommandList;
 }
@@ -1729,7 +1742,7 @@ void FLevelCollectionModel::MoveActorsToSelected_Executed()
 
 		if (Actor != nullptr)
 		{
-			FFoliageEditUtility::MoveActorFoliageInstancesToLevel(GetWorld()->GetCurrentLevel());
+			FFoliageEditUtility::MoveActorFoliageInstancesToLevel(GetWorld()->GetCurrentLevel(), Actor);
 		}
 	}
 

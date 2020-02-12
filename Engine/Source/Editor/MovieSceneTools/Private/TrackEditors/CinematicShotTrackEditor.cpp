@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "TrackEditors/CinematicShotTrackEditor.h"
 #include "Misc/Paths.h"
@@ -125,8 +125,9 @@ TSharedPtr<SWidget> FCinematicShotTrackEditor::BuildOutlinerEditWidget(const FGu
 TSharedRef<ISequencerSection> FCinematicShotTrackEditor::MakeSectionInterface(UMovieSceneSection& SectionObject, UMovieSceneTrack& Track, FGuid ObjectBinding)
 {
 	check(SupportsType(SectionObject.GetOuter()->GetClass()));
-
-	return MakeShareable(new FCinematicShotSection(GetSequencer(), ThumbnailPool, SectionObject, SharedThis(this)));
+	
+	UMovieSceneCinematicShotSection& SectionObjectImpl = *CastChecked<UMovieSceneCinematicShotSection>(&SectionObject);
+	return MakeShareable(new FCinematicShotSection(GetSequencer(), SectionObjectImpl, SharedThis(this), ThumbnailPool));
 }
 
 
@@ -149,6 +150,14 @@ bool FCinematicShotTrackEditor::HandleAssetAdded(UObject* Asset, const FGuid& Ta
 
 	if (FocusedMovieScene != nullptr && FocusedMovieScene->FindMasterTrack<UMovieSceneSubTrack>() != nullptr)
 	{
+		return false;
+	}
+
+	if (Sequence->GetMovieScene()->GetPlaybackRange().IsEmpty())
+	{
+		FNotificationInfo Info(FText::Format(LOCTEXT("InvalidSequenceDuration", "Invalid level sequence {0}. The sequence has no duration."), Sequence->GetDisplayName()));
+		Info.bUseLargeFont = false;
+		FSlateNotificationManager::Get().AddNotification(Info);
 		return false;
 	}
 
@@ -462,13 +471,21 @@ void FCinematicShotTrackEditor::NewTake(UMovieSceneCinematicShotSection* Section
 	uint32 TakeNumber = INDEX_NONE;
 	if (MovieSceneToolHelpers::ParseShotName(Section->GetShotDisplayName(), ShotPrefix, ShotNumber, TakeNumber))
 	{
-		TArray<uint32> TakeNumbers;
-		uint32 CurrentTakeNumber;
-		MovieSceneToolHelpers::GatherTakes(Section, TakeNumbers, CurrentTakeNumber);
+		TArray<FAssetData> AssetData;
+		uint32 CurrentTakeNumber = INDEX_NONE;
+		MovieSceneToolHelpers::GatherTakes(Section, AssetData, CurrentTakeNumber);
 		uint32 NewTakeNumber = CurrentTakeNumber;
-		if (TakeNumbers.Num() > 0)
+
+		for (auto ThisAssetData : AssetData)
 		{
-			NewTakeNumber = TakeNumbers[TakeNumbers.Num()-1] + 1;
+			uint32 ThisTakeNumber = INDEX_NONE;
+			if (MovieSceneToolHelpers::GetTakeNumber(Section, ThisAssetData, ThisTakeNumber))
+			{
+				if (ThisTakeNumber >= NewTakeNumber)
+				{
+					NewTakeNumber = ThisTakeNumber + 1;
+				}
+			}
 		}
 
 		FString NewShotName = MovieSceneToolHelpers::ComposeShotName(ShotPrefix, ShotNumber, NewTakeNumber);
@@ -493,6 +510,8 @@ void FCinematicShotTrackEditor::NewTake(UMovieSceneCinematicShotSection* Section
 			NewShot->SetPreRollFrames(NewShotPrerollFrames);
 			NewShot->SetRowIndex(NewRowIndex);
 
+			MovieSceneToolHelpers::SetTakeNumber(NewShot, NewTakeNumber);
+
 			GetSequencer()->NotifyMovieSceneDataChanged( EMovieSceneDataChangeType::MovieSceneStructureItemsChanged );
 			GetSequencer()->EmptySelection();
 			GetSequencer()->SelectSection(NewShot);
@@ -502,7 +521,7 @@ void FCinematicShotTrackEditor::NewTake(UMovieSceneCinematicShotSection* Section
 }
 
 
-void FCinematicShotTrackEditor::SwitchTake(uint32 TakeNumber)
+void FCinematicShotTrackEditor::SwitchTake(UObject* TakeObject)
 {
 	bool bSwitchedTake = false;
 
@@ -519,8 +538,6 @@ void FCinematicShotTrackEditor::SwitchTake(uint32 TakeNumber)
 		}
 
 		UMovieSceneSubSection* Section = Cast<UMovieSceneSubSection>(Sections[SectionIndex]);
-
-		UObject* TakeObject = MovieSceneToolHelpers::GetTake(Section, TakeNumber);
 
 		if (TakeObject && TakeObject->IsA(UMovieSceneSequence::StaticClass()))
 		{
@@ -578,9 +595,9 @@ void FCinematicShotTrackEditor::HandleAddCinematicShotTrackMenuEntryExecute()
 	{
 		if (GetSequencer().IsValid())
 		{
-			GetSequencer()->OnAddTrack(ShotTrack);
+			// Cinematic Shot Tracks can't be placed in folders, they're only allowed in the root.
+			GetSequencer()->OnAddTrack(ShotTrack, FGuid());
 		}
-		GetSequencer()->NotifyMovieSceneDataChanged(EMovieSceneDataChangeType::MovieSceneStructureItemAdded);
 	}
 }
 
@@ -653,6 +670,14 @@ void FCinematicShotTrackEditor::HandleAddCinematicShotComboButtonMenuEntryEnterP
 FKeyPropertyResult FCinematicShotTrackEditor::AddKeyInternal(FFrameNumber KeyTime, UMovieSceneSequence* InMovieSceneSequence, int32 RowIndex)
 {	
 	FKeyPropertyResult KeyPropertyResult;
+
+	if (InMovieSceneSequence->GetMovieScene()->GetPlaybackRange().IsEmpty())
+	{
+		FNotificationInfo Info(FText::Format(LOCTEXT("InvalidSequenceDuration", "Invalid level sequence {0}. The sequence has no duration."), InMovieSceneSequence->GetDisplayName()));
+		Info.bUseLargeFont = false;
+		FSlateNotificationManager::Get().AddNotification(Info);
+		return KeyPropertyResult;
+	}
 
 	if (CanAddSubSequence(*InMovieSceneSequence))
 	{
@@ -754,7 +779,7 @@ void FCinematicShotTrackEditor::OnLockShotsClicked(ECheckBoxState CheckBoxState)
 	}
 	else
 	{
-		GetSequencer()->UpdateCameraCut(nullptr, nullptr);
+		GetSequencer()->UpdateCameraCut(nullptr, EMovieSceneCameraCutParams());
 		GetSequencer()->SetPerspectiveViewportCameraCutEnabled(false);
 	}
 

@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -355,6 +355,9 @@ struct ICaptureProtocolHost
 {
 	/** Get shared settings for the capture */
 	virtual const FMovieSceneCaptureSettings& GetSettings() const = 0;
+
+	/** Access Frame number index offset when saving out frames. */
+	virtual const int32 GetFrameNumberOffset() const = 0;
 
 	/** Get the capture frequency */
 	virtual FFrameRate GetCaptureFrameRate() const = 0;

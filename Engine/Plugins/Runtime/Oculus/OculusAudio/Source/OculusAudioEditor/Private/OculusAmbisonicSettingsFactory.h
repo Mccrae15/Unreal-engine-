@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -13,6 +13,7 @@ class FAssetTypeActions_OculusAmbisonicsSettings : public FAssetTypeActions_Base
 public:
     virtual FText GetName() const override;
     virtual FColor GetTypeColor() const override;
+	virtual const TArray<FText>& GetSubMenus() const override;
     virtual UClass* GetSupportedClass() const override;
     virtual uint32 GetCategories() override;
 };

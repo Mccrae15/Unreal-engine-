@@ -7,6 +7,7 @@
 #include "ResonanceAudioCommon.h"
 #include "ResonanceAudioModule.h"
 #include "ResonanceAudioSettings.h"
+#include "Sound/SoundSubmix.h"
 
 namespace ResonanceAudio
 {
@@ -26,8 +27,12 @@ namespace ResonanceAudio
 	{
 		if (GlobalReverbPluginPreset)
 		{
+#if !WITH_EDITOR
 			GlobalReverbPluginPreset->RemoveFromRoot();
+#endif
+			GlobalReverbPluginPreset = nullptr;
 		}
+		ReverbPluginPreset = nullptr;
 	}
 
 	void FResonanceAudioReverb::Initialize(const FAudioPluginInitializationParams InitializationParams)
@@ -103,8 +108,10 @@ namespace ResonanceAudio
 		}
 	}
 
-	FSoundEffectSubmix* FResonanceAudioReverb::GetEffectSubmix(USoundSubmix* Submix)
+	void FResonanceAudioReverb::InitEffectSubmix()
 	{
+		check(!SubmixEffect.IsValid());
+
 		// Load the global reverb preset settings:
 		const FSoftObjectPath ReverbPluginPresetName = GetDefault<UResonanceAudioSettings>()->GlobalReverbPreset;
 		if (ReverbPluginPresetName.IsValid())
@@ -115,7 +122,7 @@ namespace ResonanceAudio
 		// If loading of the Reverb Plugin Preset asset fails, create a temporary preset. No reverb will be applied.
 		if (GlobalReverbPluginPreset == nullptr)
 		{
-			GlobalReverbPluginPreset = NewObject<UResonanceAudioReverbPluginPreset>(Submix, TEXT("Resonance Audio Reverb Plugin Preset"));
+			GlobalReverbPluginPreset = NewObject<UResonanceAudioReverbPluginPreset>(UResonanceAudioReverbPluginPreset::StaticClass(), TEXT("Resonance Audio Reverb Plugin Preset"));
 		}
 
 		if (GlobalReverbPluginPreset)
@@ -123,15 +130,75 @@ namespace ResonanceAudio
 			GlobalReverbPluginPreset->AddToRoot();
 			ReverbPluginPreset = GlobalReverbPluginPreset;
 
-			FResonanceAudioReverbPlugin* Effect = static_cast<FResonanceAudioReverbPlugin*>(GlobalReverbPluginPreset->CreateNewEffect());
-			Effect->SetPreset(GlobalReverbPluginPreset);
-			Effect->SetResonanceAudioReverbPlugin(this);
-			return static_cast<FSoundEffectSubmix*>(Effect);
+			FResonanceAudioReverbPlugin* ReverbSubmixEffect = static_cast<FResonanceAudioReverbPlugin*>(ReverbPluginPreset->CreateNewEffect());
+			ReverbSubmixEffect->SetPreset(GlobalReverbPluginPreset);
+			ReverbSubmixEffect->SetResonanceAudioReverbPlugin(this);
+
+			ReverbSubmixEffect->SetEnabled(true);
+			SubmixEffect = MakeShareable(static_cast<FSoundEffectSubmix*>(ReverbSubmixEffect));
 		}
 		else
 		{
-			return nullptr;
+			ReverbPluginPreset = nullptr;
 		}
+	}
+
+	FSoundEffectSubmixPtr FResonanceAudioReverb::GetEffectSubmix()
+	{
+		if (!SubmixEffect.IsValid())
+		{
+			InitEffectSubmix();
+		}
+
+		return SubmixEffect;
+	}
+
+	USoundSubmix* FResonanceAudioReverb::GetSubmix()
+	{
+		const UResonanceAudioSettings* Settings = GetDefault<UResonanceAudioSettings>();
+		check(Settings);
+
+		USoundSubmix* ReverbSubmix = Cast<USoundSubmix>(Settings->OutputSubmix.TryLoad());
+		if (!ReverbSubmix)
+		{
+			static const FString DefaultSubmixName = TEXT("Resonance Reverb Submix");
+			UE_LOG(LogResonanceAudio, Error, TEXT("Failed to load Resonance Reverb Submix from object path '%s' in ResonanceSettings. Creating '%s' as stub."),
+				*Settings->OutputSubmix.GetAssetPathString(),
+				*DefaultSubmixName);
+
+			ReverbSubmix = NewObject<USoundSubmix>(USoundSubmix::StaticClass(), *DefaultSubmixName);
+			ReverbSubmix->bMuteWhenBackgrounded = true;
+		}
+
+		// SubmixEffect is required to be initialized for ReverbPluginPreset to be set
+		if (!SubmixEffect.IsValid())
+		{
+			InitEffectSubmix();
+		}
+
+		if (ReverbPluginPreset)
+		{
+			bool bFoundPreset = false;
+			for (USoundEffectSubmixPreset* Preset : ReverbSubmix->SubmixEffectChain)
+			{
+				if (UResonanceAudioReverbPluginPreset* PluginPreset = Cast<UResonanceAudioReverbPluginPreset>(Preset))
+				{
+					bFoundPreset = true;
+					break;
+				}
+			}
+
+			if (!bFoundPreset)
+			{
+				static const FString DefaultPresetName = TEXT("ResonanceReverbDefault_0");
+				UE_LOG(LogResonanceAudio, Error, TEXT("Failed to find Resonance UResonanceAudioReverbPluginPreset on default reverb submix. Creating stub '%s'."),
+					*Settings->OutputSubmix.GetAssetPathString(),
+					*DefaultPresetName);
+				ReverbSubmix->SubmixEffectChain.Add(ReverbPluginPreset);
+			}
+		}
+
+		return ReverbSubmix;
 	}
 
 	void FResonanceAudioReverb::SetPreset(UResonanceAudioReverbPluginPreset* InPreset)
@@ -165,7 +232,11 @@ namespace ResonanceAudio
 					SetReverbTimeModifier();
 					SetReverbBrightness();
 
-					ResonanceAudioApi->SetRoomProperties(RoomProperties);
+					ReflectionProperties = vraudio::ComputeReflectionProperties(RoomProperties);
+					ReverbProperties = vraudio::ComputeReverbProperties(RoomProperties);
+
+					ResonanceAudioApi->SetReflectionProperties(ReflectionProperties);
+					ResonanceAudioApi->SetReverbProperties(ReverbProperties);
 				}
 			}
 			else
@@ -217,32 +288,32 @@ namespace ResonanceAudio
 		if (ReverbSettings.LeftWallMaterial != ReverbPluginPreset->Settings.LeftWallMaterial)
 		{
 			ReverbSettings.LeftWallMaterial = ReverbPluginPreset->Settings.LeftWallMaterial;
-			RoomProperties.material_names[0] = ConvertToResonanceAudioMaterialName(ReverbSettings.LeftWallMaterial);
+			RoomProperties.material_names[0] = ConvertToResonanceMaterialName(ReverbSettings.LeftWallMaterial);
 		}
 		if (ReverbSettings.RightWallMaterial != ReverbPluginPreset->Settings.RightWallMaterial)
 		{
 			ReverbSettings.RightWallMaterial = ReverbPluginPreset->Settings.RightWallMaterial;
-			RoomProperties.material_names[1] = ConvertToResonanceAudioMaterialName(ReverbSettings.RightWallMaterial);
+			RoomProperties.material_names[1] = ConvertToResonanceMaterialName(ReverbSettings.RightWallMaterial);
 		}
 		if (ReverbSettings.FloorMaterial != ReverbPluginPreset->Settings.FloorMaterial)
 		{
 			ReverbSettings.FloorMaterial = ReverbPluginPreset->Settings.FloorMaterial;
-			RoomProperties.material_names[2] = ConvertToResonanceAudioMaterialName(ReverbSettings.FloorMaterial);
+			RoomProperties.material_names[2] = ConvertToResonanceMaterialName(ReverbSettings.FloorMaterial);
 		}
 		if (ReverbSettings.CeilingMaterial != ReverbPluginPreset->Settings.CeilingMaterial)
 		{
 			ReverbSettings.CeilingMaterial = ReverbPluginPreset->Settings.CeilingMaterial;
-			RoomProperties.material_names[3] = ConvertToResonanceAudioMaterialName(ReverbSettings.CeilingMaterial);
+			RoomProperties.material_names[3] = ConvertToResonanceMaterialName(ReverbSettings.CeilingMaterial);
 		}
 		if (ReverbSettings.FrontWallMaterial != ReverbPluginPreset->Settings.FrontWallMaterial)
 		{
 			ReverbSettings.FrontWallMaterial = ReverbPluginPreset->Settings.FrontWallMaterial;
-			RoomProperties.material_names[4] = ConvertToResonanceAudioMaterialName(ReverbSettings.FrontWallMaterial);
+			RoomProperties.material_names[4] = ConvertToResonanceMaterialName(ReverbSettings.FrontWallMaterial);
 		}
 		if (ReverbSettings.BackWallMaterial != ReverbPluginPreset->Settings.BackWallMaterial)
 		{
 			ReverbSettings.BackWallMaterial = ReverbPluginPreset->Settings.BackWallMaterial;
-			RoomProperties.material_names[5] = ConvertToResonanceAudioMaterialName(ReverbSettings.BackWallMaterial);
+			RoomProperties.material_names[5] = ConvertToResonanceMaterialName(ReverbSettings.BackWallMaterial);
 		}
 	}
 
@@ -265,7 +336,6 @@ namespace ResonanceAudio
 	{
 		RoomProperties.reverb_brightness = ReverbPluginPreset->Settings.ReverbBrightness;
 	}
-
 } // namespace ResonanceAudio
 
   /******************************************************/
@@ -283,7 +353,10 @@ void FResonanceAudioReverbPlugin::Init(const FSoundEffectSubmixInitData& InData)
 void FResonanceAudioReverbPlugin::OnPresetChanged()
 {
 	GET_EFFECT_SETTINGS(ResonanceAudioReverbPlugin);
-	ResonanceAudioReverb->UpdateRoomEffects();
+	if (ResonanceAudioReverb)
+	{
+		ResonanceAudioReverb->UpdateRoomEffects();
+	}
 }
 
 uint32 FResonanceAudioReverbPlugin::GetDesiredInputChannelCountOverride() const
@@ -293,7 +366,10 @@ uint32 FResonanceAudioReverbPlugin::GetDesiredInputChannelCountOverride() const
 
 void FResonanceAudioReverbPlugin::OnProcessAudio(const FSoundEffectSubmixInputData& InData, FSoundEffectSubmixOutputData& OutData)
 {
-	ResonanceAudioReverb->ProcessMixedAudio(InData, OutData);
+	if (ResonanceAudioReverb)
+	{
+		ResonanceAudioReverb->ProcessMixedAudio(InData, OutData);
+	}
 }
 
 void FResonanceAudioReverbPlugin::SetResonanceAudioReverbPlugin(ResonanceAudio::FResonanceAudioReverb* InResonanceAudioReverbPlugin)

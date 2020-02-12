@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 using System;
 using System.Collections.Generic;
 using System.IO;
@@ -21,8 +21,6 @@ using Tools.DotNETCommon;
 /// </remarks>
 public partial class Project : CommandUtils
 {
-    #region Cook Command
-
     public static void Cook(ProjectParams Params)
 	{
 		if ((!Params.Cook && !(Params.CookOnTheFly && !Params.SkipServer)) || Params.SkipCook)
@@ -161,8 +159,8 @@ public partial class Project : CommandUtils
                 }
 				if ( Params.HasIterateSharedCookedBuild)
 				{
-					SharedCookedBuild.CopySharedCookedBuild(Params);
-					CommandletParams += " -iteratesharedcookedbuild";					
+					new SharedCookedBuild(Params).CopySharedCookedBuilds();
+					CommandletParams += " -iteratesharedcookedbuild";
 				}
 
 				if (Params.CookMapsOnly)
@@ -247,8 +245,6 @@ public partial class Project : CommandUtils
 				}
 
                 CookCommandlet(Params.RawProjectPath, Params.UE4Exe, Maps, Dirs, InternationalizationPreset, CulturesToCook, CombineCommandletParams(PlatformsToCook.ToArray()), CommandletParams);
-
-				SharedCookedBuild.WaitForCopy();
             }
 			catch (Exception Ex)
 			{
@@ -597,6 +593,4 @@ public partial class Project : CommandUtils
 			DeleteDirectory(bQuiet, CleanDir);
 		}
 	}
-
-	#endregion
 }

@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "LevelSequencePlayer.h"
 #include "GameFramework/Actor.h"
@@ -22,6 +22,7 @@
 #include "LevelSequenceActor.h"
 #include "Modules/ModuleManager.h"
 #include "LevelUtils.h"
+#include "Core/Public/ProfilingDebugging/CsvProfiler.h"
 
 /* ULevelSequencePlayer structors
  *****************************************************************************/
@@ -72,13 +73,14 @@ ULevelSequencePlayer* ULevelSequencePlayer::CreateLevelSequencePlayer(UObject* W
 /* ULevelSequencePlayer implementation
  *****************************************************************************/
 
-void ULevelSequencePlayer::Initialize(ULevelSequence* InLevelSequence, ULevel* InLevel, const FMovieSceneSequencePlaybackSettings& Settings)
+void ULevelSequencePlayer::Initialize(ULevelSequence* InLevelSequence, ULevel* InLevel, const FMovieSceneSequencePlaybackSettings& Settings, const FLevelSequenceCameraSettings& InCameraSettings)
 {
 	// Never use the level to resolve bindings unless we're playing back within a streamed or instanced level
 	StreamedLevelAssetPath = NAME_None;
 
 	World = InLevel->OwningWorld;
 	Level = InLevel;
+	CameraSettings = InCameraSettings;
 
 	// Construct the path to the level asset that the streamed level relates to
 	ULevelStreaming* LevelStreaming = FLevelUtils::FindStreamingLevel(InLevel);
@@ -130,29 +132,6 @@ void ULevelSequencePlayer::OnStopped()
 {
 	EnableCinematicMode(false);
 
-	AActor* LevelSequenceActor = Cast<AActor>(GetOuter());
-	if (LevelSequenceActor == nullptr)
-	{
-		return;
-	}
-
-	for (FObjectKey WeakActor : PrerequisiteActors)
-	{
-		AActor* Actor = Cast<AActor>(WeakActor.ResolveObjectPtr());
-		if (Actor)
-		{
-			for (UActorComponent* Component : Actor->GetComponents())
-			{
-				if (Component)
-				{
-					Component->PrimaryComponentTick.RemovePrerequisite(LevelSequenceActor, LevelSequenceActor->PrimaryActorTick);
-				}
-			}
-
-			Actor->PrimaryActorTick.RemovePrerequisite(LevelSequenceActor, LevelSequenceActor->PrimaryActorTick);
-		}
-	}
-
 	if (World != nullptr && World->GetGameInstance() != nullptr)
 	{
 		APlayerController* PC = World->GetGameInstance()->GetFirstLocalPlayerController();
@@ -166,14 +145,80 @@ void ULevelSequencePlayer::OnStopped()
 		}
 	}
 
-	PrerequisiteActors.Reset();
 	LastViewTarget.Reset();
+}
+
+void ULevelSequencePlayer::UpdateMovieSceneInstance(FMovieSceneEvaluationRange InRange, EMovieScenePlayerStatus::Type PlayerStatus, bool bHasJumped)
+{
+	UMovieSceneSequencePlayer::UpdateMovieSceneInstance(InRange, PlayerStatus, bHasJumped);
+
+	FLevelSequencePlayerSnapshot NewSnapshot;
+	TakeFrameSnapshot(NewSnapshot);
+
+	if (!PreviousSnapshot.IsSet() || PreviousSnapshot.GetValue().CurrentShotName != NewSnapshot.CurrentShotName)
+	{
+		CSV_EVENT_GLOBAL(TEXT("%s"), *NewSnapshot.CurrentShotName);
+		//UE_LOG(LogMovieScene, Log, TEXT("Shot evaluated: '%s'"), *NewSnapshot.CurrentShotName);
+	}
+
+	PreviousSnapshot = NewSnapshot;
 }
 
 /* IMovieScenePlayer interface
  *****************************************************************************/
 
-void ULevelSequencePlayer::UpdateCameraCut(UObject* CameraObject, UObject* UnlockIfCameraObject, bool bJumpCut)
+TTuple<EViewTargetBlendFunction, float> BuiltInEasingTypeToBlendFunction(EMovieSceneBuiltInEasing EasingType)
+{
+	using Return = TTuple<EViewTargetBlendFunction, float>;
+	switch (EasingType)
+	{
+		case EMovieSceneBuiltInEasing::Linear:
+			return Return(EViewTargetBlendFunction::VTBlend_Linear, 1.f);
+
+		case EMovieSceneBuiltInEasing::QuadIn:
+			return Return(EViewTargetBlendFunction::VTBlend_EaseIn, 2);
+		case EMovieSceneBuiltInEasing::QuadOut:
+			return Return(EViewTargetBlendFunction::VTBlend_EaseOut, 2);
+		case EMovieSceneBuiltInEasing::QuadInOut:
+			return Return(EViewTargetBlendFunction::VTBlend_EaseInOut, 2);
+
+		case EMovieSceneBuiltInEasing::CubicIn:
+			return Return(EViewTargetBlendFunction::VTBlend_EaseIn, 3);
+		case EMovieSceneBuiltInEasing::CubicOut:
+			return Return(EViewTargetBlendFunction::VTBlend_EaseOut, 3);
+		case EMovieSceneBuiltInEasing::CubicInOut:
+			return Return(EViewTargetBlendFunction::VTBlend_EaseInOut, 3);
+
+		case EMovieSceneBuiltInEasing::QuartIn:
+			return Return(EViewTargetBlendFunction::VTBlend_EaseIn, 4);
+		case EMovieSceneBuiltInEasing::QuartOut:
+			return Return(EViewTargetBlendFunction::VTBlend_EaseOut, 4);
+		case EMovieSceneBuiltInEasing::QuartInOut:
+			return Return(EViewTargetBlendFunction::VTBlend_EaseInOut, 4);
+
+		case EMovieSceneBuiltInEasing::QuintIn:
+			return Return(EViewTargetBlendFunction::VTBlend_EaseIn, 5);
+		case EMovieSceneBuiltInEasing::QuintOut:
+			return Return(EViewTargetBlendFunction::VTBlend_EaseOut, 5);
+		case EMovieSceneBuiltInEasing::QuintInOut:
+			return Return(EViewTargetBlendFunction::VTBlend_EaseInOut, 5);
+
+		// UNSUPPORTED
+		case EMovieSceneBuiltInEasing::SinIn:
+		case EMovieSceneBuiltInEasing::SinOut:
+		case EMovieSceneBuiltInEasing::SinInOut:
+		case EMovieSceneBuiltInEasing::CircIn:
+		case EMovieSceneBuiltInEasing::CircOut:
+		case EMovieSceneBuiltInEasing::CircInOut:
+		case EMovieSceneBuiltInEasing::ExpoIn:
+		case EMovieSceneBuiltInEasing::ExpoOut:
+		case EMovieSceneBuiltInEasing::ExpoInOut:
+			break;
+	}
+	return Return(EViewTargetBlendFunction::VTBlend_Linear, 1.f);
+}
+
+void ULevelSequencePlayer::UpdateCameraCut(UObject* CameraObject, const EMovieSceneCameraCutParams& CameraCutParams)
 {
 	if (World == nullptr || World->GetGameInstance() == nullptr)
 	{
@@ -191,16 +236,6 @@ void ULevelSequencePlayer::UpdateCameraCut(UObject* CameraObject, UObject* Unloc
 	// skip same view target
 	AActor* ViewTarget = PC->GetViewTarget();
 
-	// save the last view target so that it can be restored when the camera object is null
-	if (!LastViewTarget.IsValid())
-	{
-		LastViewTarget = ViewTarget;
-		if (PC->GetLocalPlayer())
-		{
-			LastAspectRatioAxisConstraint = PC->GetLocalPlayer()->AspectRatioAxisConstraint;
-		}
-	}
-
 	UCameraComponent* CameraComponent = MovieSceneHelpers::CameraComponentFromRuntimeObject(CameraObject);
 	if (CameraComponent && CameraComponent->GetOwner() != CameraObject)
 	{
@@ -216,11 +251,11 @@ void ULevelSequencePlayer::UpdateCameraCut(UObject* CameraObject, UObject* Unloc
 
 	if (CameraObject == ViewTarget)
 	{
-		if ( bJumpCut )
+		if (CameraCutParams.bJumpCut)
 		{
 			if (PC->PlayerCameraManager)
 			{
-				PC->PlayerCameraManager->bGameCameraCutThisFrame = true;
+				PC->PlayerCameraManager->SetGameCameraCutThisFrame();
 			}
 
 			if (CameraComponent)
@@ -232,7 +267,7 @@ void ULevelSequencePlayer::UpdateCameraCut(UObject* CameraObject, UObject* Unloc
 	}
 
 	// skip unlocking if the current view target differs
-	AActor* UnlockIfCameraActor = Cast<AActor>(UnlockIfCameraObject);
+	AActor* UnlockIfCameraActor = Cast<AActor>(CameraCutParams.UnlockIfCameraObject);
 
 	// if unlockIfCameraActor is valid, release lock if currently locked to object
 	if (CameraObject == nullptr && UnlockIfCameraActor != nullptr && UnlockIfCameraActor != ViewTarget)
@@ -244,9 +279,11 @@ void ULevelSequencePlayer::UpdateCameraCut(UObject* CameraObject, UObject* Unloc
 	AActor* CameraActor = Cast<AActor>(CameraObject);
 
 	// if the camera object is null, use the last view target so that it is restored to the state before the sequence takes control
+	bool bRestoreAspectRatioConstraint = false;
 	if (CameraActor == nullptr)
 	{
 		CameraActor = LastViewTarget.Get();
+		bRestoreAspectRatioConstraint = true;
 
 		// Skip if the last view target is the same as the current view target so that there's no additional camera cut
 		if (CameraActor == ViewTarget)
@@ -255,12 +292,64 @@ void ULevelSequencePlayer::UpdateCameraCut(UObject* CameraObject, UObject* Unloc
 		}
 	}
 
-	FViewTargetTransitionParams TransitionParams;
-	PC->SetViewTarget(CameraActor, TransitionParams);
+	// Save the last view target/aspect ratio constraint/etc. so that it can all be restored when the camera object is null.
+	ULocalPlayer* LocalPlayer = PC->GetLocalPlayer();
 
-	if (PC->GetLocalPlayer())
+	if (!LastViewTarget.IsValid())
 	{
-		PC->GetLocalPlayer()->AspectRatioAxisConstraint = EAspectRatioAxisConstraint::AspectRatio_MaintainXFOV;
+		LastViewTarget = ViewTarget;
+	}
+	if (!LastAspectRatioAxisConstraint.IsSet())
+	{
+		if (LocalPlayer != nullptr)
+		{
+			LastAspectRatioAxisConstraint = LocalPlayer->AspectRatioAxisConstraint;
+		}
+	}
+
+	bool bDoSetViewTarget = true;
+	FViewTargetTransitionParams TransitionParams;
+	if (CameraCutParams.BlendType.IsSet())
+	{
+		// Convert known easing functions to their corresponding view target blend parameters.
+		TTuple<EViewTargetBlendFunction, float> BlendFunctionAndExp = BuiltInEasingTypeToBlendFunction(CameraCutParams.BlendType.GetValue());
+		TransitionParams.BlendTime = CameraCutParams.BlendTime;
+		TransitionParams.BlendFunction = BlendFunctionAndExp.Get<0>();
+		TransitionParams.BlendExp = BlendFunctionAndExp.Get<1>();
+
+		// Calling SetViewTarget on a camera that we are currently transitioning to will 
+		// result in that transition being aborted, and the view target being set immediately.
+		// We want to avoid that, so let's leave the transition running if it's the case.
+		if (PC->PlayerCameraManager != nullptr)
+		{
+			const AActor* CurViewTarget = PC->PlayerCameraManager->ViewTarget.Target;
+			const AActor* PendingViewTarget = PC->PlayerCameraManager->PendingViewTarget.Target;
+			if (CameraActor != nullptr && PendingViewTarget == CameraActor)
+			{
+				bDoSetViewTarget = false;
+			}
+		}
+	}
+	if (bDoSetViewTarget)
+	{
+		PC->SetViewTarget(CameraActor, TransitionParams);
+	}
+
+	// Set or restore the aspect ratio constraint if we were overriding it for this sequence.
+	if (LocalPlayer != nullptr && CameraSettings.bOverrideAspectRatioAxisConstraint)
+	{
+		if (bRestoreAspectRatioConstraint)
+		{
+			check(LastAspectRatioAxisConstraint.IsSet());
+			if (LastAspectRatioAxisConstraint.IsSet())
+			{
+				LocalPlayer->AspectRatioAxisConstraint = LastAspectRatioAxisConstraint.GetValue();
+			}
+		}
+		else
+		{
+			LocalPlayer->AspectRatioAxisConstraint = CameraSettings.AspectRatioAxisConstraint;
+		}
 	}
 
 	if (CameraComponent)
@@ -271,44 +360,12 @@ void ULevelSequencePlayer::UpdateCameraCut(UObject* CameraObject, UObject* Unloc
 	if (PC->PlayerCameraManager)
 	{
 		PC->PlayerCameraManager->bClientSimulatingViewTarget = (CameraActor != nullptr);
-		PC->PlayerCameraManager->bGameCameraCutThisFrame = true;
+		PC->PlayerCameraManager->SetGameCameraCutThisFrame();
 	}
 
 	if (OnCameraCut.IsBound())
 	{
 		OnCameraCut.Broadcast(CameraComponent);
-	}
-}
-
-void ULevelSequencePlayer::NotifyBindingUpdate(const FGuid& InGuid, FMovieSceneSequenceIDRef InSequenceID, TArrayView<TWeakObjectPtr<>> Objects)
-{
-	AActor* LevelSequenceActor = Cast<AActor>(GetOuter());
-	if (LevelSequenceActor == nullptr)
-	{
-		return;
-	}
-
-	for (TWeakObjectPtr<> WeakObject : Objects)
-	{
-		if (AActor* Actor = Cast<AActor>(WeakObject.Get()))
-		{
-			
-			if (Actor == LevelSequenceActor)
-			{
-				continue;
-			}
-
-			for (UActorComponent* Component : Actor->GetComponents())
-			{
-				if (Component)
-				{
-					Component->PrimaryComponentTick.AddPrerequisite(LevelSequenceActor, LevelSequenceActor->PrimaryActorTick);
-				}
-			}
-
-			Actor->PrimaryActorTick.AddPrerequisite(LevelSequenceActor, LevelSequenceActor->PrimaryActorTick);
-			PrerequisiteActors.Add(Actor);
-		}
 	}
 }
 
@@ -378,9 +435,16 @@ void ULevelSequencePlayer::TakeFrameSnapshot(FLevelSequencePlayerSnapshot& OutSn
 	OutSnapshot.CurrentShotLocalTime = FQualifiedFrameTime(CurrentPlayTime, PlayPosition.GetInputRate());
 	OutSnapshot.CameraComponent = CachedCameraComponent.IsValid() ? CachedCameraComponent.Get() : nullptr;
 	OutSnapshot.ShotID = MovieSceneSequenceID::Invalid;
-	OutSnapshot.ActiveShot = nullptr;
 
-	UMovieSceneCinematicShotTrack* ShotTrack = Sequence->GetMovieScene()->FindMasterTrack<UMovieSceneCinematicShotTrack>();
+	OutSnapshot.ActiveShot = Cast<ULevelSequence>(Sequence);
+
+	UMovieScene* MovieScene = Sequence->GetMovieScene();
+
+#if WITH_EDITORONLY_DATA
+	OutSnapshot.SourceTimecode = MovieScene->TimecodeSource.Timecode.ToString();
+#endif
+
+	UMovieSceneCinematicShotTrack* ShotTrack = MovieScene->FindMasterTrack<UMovieSceneCinematicShotTrack>();
 	if (ShotTrack)
 	{
 		UMovieSceneCinematicShotSection* ActiveShot = nullptr;
@@ -469,3 +533,14 @@ void ULevelSequencePlayer::EnableCinematicMode(bool bEnable)
 	}
 }
 
+void ULevelSequencePlayer::RewindForReplay()
+{
+	// Stop the sequence when starting to seek through a replay. This restores our state to be unmodified
+	// in case the replay is seeking to before playback. If we're in the middle of playback after rewinding,
+	// the replay will feed the correct packets to synchronize our playback time and state.
+	Stop();
+
+	NetSyncProps.LastKnownPosition = FFrameTime(0);
+	NetSyncProps.LastKnownStatus = EMovieScenePlayerStatus::Stopped;
+	NetSyncProps.LastKnownNumLoops = 0;
+}

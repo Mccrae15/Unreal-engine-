@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 /*=============================================================================
 	Lightmass.h: lightmass import/export implementation.
@@ -27,7 +27,9 @@
 #include "Components/RectLightComponent.h"
 #include "Engine/GeneratedMeshAreaLight.h"
 #include "Components/DirectionalLightComponent.h"
+#include "Renderer/Private/AtmosphereRendering.h"
 #include "Components/SkyLightComponent.h"
+#include "Rendering/SkyAtmosphereCommonData.h"
 #include "Components/ModelComponent.h"
 #include "Materials/MaterialInstanceConstant.h"
 #include "EngineUtils.h"
@@ -53,10 +55,11 @@
 #include "ComponentRecreateRenderStateContext.h"
 #include "EditorLevelUtils.h"
 #include "Misc/MessageDialog.h"
+#include "Modules/ModuleManager.h"
 
 extern FSwarmDebugOptions GSwarmDebugOptions;
 
-DEFINE_LOG_CATEGORY_STATIC(LogLightmassSolver, Error, All);
+DEFINE_LOG_CATEGORY_STATIC(LogLightmassSolver, Warning, All);
 /**
  * If false (default behavior), Lightmass is launched automatically when a lighting build starts.
  * If true, it must be launched manually (e.g. through a debugger).
@@ -240,7 +243,7 @@ void CopyLightProfile( const ULightComponent* In, Lightmass::FLightData& Out, TA
 		{
 			Out.LightFlags |= Lightmass::GI_LIGHT_USE_LIGHTPROFILE;
 
-			TArray<uint8> MipData;
+			TArray64<uint8> MipData;
 
 			Source.GetMipData(MipData, 0);
 
@@ -486,6 +489,8 @@ void FLightmassProcessor::SwarmCallback( NSwarm::FMessage* CallbackMessage, void
 -----------------------------------------------------------------------------*/
 FLightmassExporter::FLightmassExporter( UWorld* InWorld )
 	: Swarm( NSwarm::FSwarmInterface::Get() ) 
+	, AtmosphericFogComponent(nullptr)
+	, SkyAtmosphereComponent(nullptr)
 	, ExportStage(NotRunning)
 	, CurrentAmortizationIndex(0)
 	, OpenedMaterialExportChannels()
@@ -1021,6 +1026,50 @@ void FLightmassExporter::WriteVolumetricLightmapData( int32 Channel )
 
 void FLightmassExporter::WriteLights( int32 Channel )
 {
+	// Search for the sun light component the same way as in FScene::RemoveLightSceneInfo_RenderThread.
+	// If found, we keep the pointer to apply atmosphere transmittance to it in the light loop.
+	const UDirectionalLightComponent* AtmosphereLights[NUM_ATMOSPHERE_LIGHTS];
+	float AtmosphereLightsBrightness[NUM_ATMOSPHERE_LIGHTS];
+	FLinearColor SunLightAtmosphereTransmittance[NUM_ATMOSPHERE_LIGHTS];
+	for (uint8 Index = 0; Index < NUM_ATMOSPHERE_LIGHTS; ++Index)
+	{
+		AtmosphereLights[Index] = nullptr;
+		AtmosphereLightsBrightness[Index] = 0.0f;
+		SunLightAtmosphereTransmittance[Index] = FLinearColor::White;
+	}
+
+	// Compute a mapping between directional light and trnasmittance to apply. For each AtmosphereSunLightIndex, the brightest lights is kept.
+	if ((AtmosphericFogComponent && AtmosphericFogComponent->bAtmosphereAffectsSunIlluminance) || SkyAtmosphereComponent)
+	{
+		for (int32 LightIndex = 0; LightIndex < DirectionalLights.Num(); ++LightIndex)
+		{
+			const UDirectionalLightComponent* Light = DirectionalLights[LightIndex];
+			if (Light->IsUsedAsAtmosphereSunLight() && Light->GetColoredLightBrightness().ComputeLuminance() > AtmosphereLightsBrightness[Light->GetAtmosphereSunLightIndex()])
+			{
+				AtmosphereLights[Light->GetAtmosphereSunLightIndex()] = Light;
+				AtmosphereLightsBrightness[Light->GetAtmosphereSunLightIndex()] = Light->GetColoredLightBrightness().ComputeLuminance();
+			}
+		}
+
+		for (uint8 Index = 0; Index < NUM_ATMOSPHERE_LIGHTS; ++Index)
+		{
+			if (AtmosphereLights[Index])
+			{
+				const FVector SunDirection = -AtmosphereLights[Index]->GetDirection();
+				if (SkyAtmosphereComponent)
+				{
+					FAtmosphereSetup AtmosphereSetup(*SkyAtmosphereComponent);
+					SunLightAtmosphereTransmittance[Index] = AtmosphereSetup.GetTransmittanceAtGroundLevel(SunDirection);
+				}
+				else if (AtmosphericFogComponent && Index==0)	// Legacy AtmosphericFogComponent only takes into account Index 0
+				{
+					SunLightAtmosphereTransmittance[Index] = AtmosphericFogComponent->GetTransmittance(SunDirection);
+				}
+				break;
+			}
+		}
+	}
+
 	// Export directional lights.
 	for ( int32 LightIndex = 0; LightIndex < DirectionalLights.Num(); ++LightIndex )
 	{
@@ -1033,6 +1082,16 @@ void FLightmassExporter::WriteLights( int32 Channel )
 		LightData.ShadowResolutionScale = Light->ShadowResolutionScale;
 		LightData.LightSourceRadius = 0;
 		LightData.LightSourceLength = 0;
+
+		// Apply atmosphere transmittance if needed.
+		for (uint8 Index = 0; Index < NUM_ATMOSPHERE_LIGHTS; ++Index)
+		{
+			if (AtmosphereLights[Index] && AtmosphereLights[Index] == Light)
+			{
+				LightData.Color *= SunLightAtmosphereTransmittance[Index];
+				break;
+			}
+		}
 
 		TArray< uint8 > LightProfileTextureData;
 		CopyLightProfile( Light, LightData, LightProfileTextureData );
@@ -1144,7 +1203,7 @@ void FLightmassExporter::WriteLights( int32 Channel )
 				{
 					//int32 i = SourceTexture.AddUninitialized( SizeX * SizeY );
 					
-					TArray< uint8 > MipData;
+					TArray64< uint8 > MipData;
 					Source.GetMipData( MipData, MipLevel );
 
 					uint8* Pixel = MipData.GetData();
@@ -1453,6 +1512,7 @@ void FLightmassExporter::ExportMaterial(UMaterialInterface* Material, const FLig
 		TArray<FFloat16Color> MaterialNormal;
 
 		if (MaterialRenderer.GenerateMaterialData(
+			World->Scene,
 			*Material,
 			ExportSettings,
 			MaterialData,
@@ -2088,24 +2148,26 @@ void FLightmassExporter::SetVolumetricLightmapSettings(Lightmass::FVolumetricLig
 	const float TargetDetailCellSize = WorldInfoSettings.VolumetricLightmapDetailCellSize;
 
 	FIntVector FullGridSize(
-		FMath::TruncToInt(RequiredVolumeSize.X / TargetDetailCellSize) + 1,
-		FMath::TruncToInt(RequiredVolumeSize.Y / TargetDetailCellSize) + 1,
-		FMath::TruncToInt(RequiredVolumeSize.Z / TargetDetailCellSize) + 1);
+		FMath::TruncToInt(2 * ImportanceExtent.X / TargetDetailCellSize) + 1,
+		FMath::TruncToInt(2 * ImportanceExtent.Y / TargetDetailCellSize) + 1,
+		FMath::TruncToInt(2 * ImportanceExtent.Z / TargetDetailCellSize) + 1);
 
-	if (FullGridSize.GetMax() > 800)
+	// Make sure size of indirection texture does not exceed INT_MAX
+	const int32 MaxGridDimension = FMath::Pow(2048000000 / 4, 1.0f / 3) * OutSettings.BrickSize;
+	if (FullGridSize.GetMax() > MaxGridDimension)
 	{
 		UE_LOG(LogLightmassSolver, Warning, 
 			TEXT("Volumetric lightmap grid size is too large which can cause potential crashes or long build time, clamping from (%d, %d, %d) to (%d, %d, %d)"),
 			FullGridSize.X,
 			FullGridSize.Y,
 			FullGridSize.Z,
-			FMath::Min(FullGridSize.X, 800),
-			FMath::Min(FullGridSize.Y, 800),
-			FMath::Min(FullGridSize.Z, 800)
+			FMath::Min(FullGridSize.X, MaxGridDimension),
+			FMath::Min(FullGridSize.Y, MaxGridDimension),
+			FMath::Min(FullGridSize.Z, MaxGridDimension)
 			);
-		FullGridSize.X = FMath::Min(FullGridSize.X, 800);
-		FullGridSize.Y = FMath::Min(FullGridSize.Y, 800);
-		FullGridSize.Z = FMath::Min(FullGridSize.Z, 800);
+		FullGridSize.X = FMath::Min(FullGridSize.X, MaxGridDimension);
+		FullGridSize.Y = FMath::Min(FullGridSize.Y, MaxGridDimension);
+		FullGridSize.Z = FMath::Min(FullGridSize.Z, MaxGridDimension);
 	}
 
 	const int32 BrickSizeLog2 = FMath::FloorLog2(OutSettings.BrickSize);
@@ -2149,6 +2211,8 @@ void FLightmassExporter::WriteSceneSettings( Lightmass::FSceneFileHeader& Scene 
 		VERIFYLIGHTMASSINI(GConfig->GetBool(TEXT("DevOptions.StaticLighting"), TEXT("bVerifyEmbree"), bConfigBool, GLightmassIni));
 		Scene.GeneralSettings.bVerifyEmbree = Scene.GeneralSettings.bUseEmbree && bConfigBool;
 		VERIFYLIGHTMASSINI(GConfig->GetBool(TEXT("DevOptions.StaticLighting"), TEXT("bUseEmbreePacketTracing"), Scene.GeneralSettings.bUseEmbreePacketTracing, GLightmassIni));
+		VERIFYLIGHTMASSINI(GConfig->GetBool(TEXT("DevOptions.StaticLighting"), TEXT("bUseFastVoxelization"), Scene.GeneralSettings.bUseFastVoxelization, GLightmassIni));
+		VERIFYLIGHTMASSINI(GConfig->GetBool(TEXT("DevOptions.StaticLighting"), TEXT("bUseEmbreeInstancing"), Scene.GeneralSettings.bUseEmbreeInstancing, GLightmassIni));
 		VERIFYLIGHTMASSINI(GConfig->GetInt(TEXT("DevOptions.StaticLighting"), TEXT("MappingSurfaceCacheDownsampleFactor"), Scene.GeneralSettings.MappingSurfaceCacheDownsampleFactor, GLightmassIni));
 
 		int32 CheckQualityLevel;
@@ -2860,6 +2924,40 @@ void FLightmassProcessor::IssueStaticShadowDepthMapTask(const ULightComponent* L
 	}
 }
 
+// Helper class for creating a list of paths relative to the engine directory, which can be queried as a list of raw strings.
+class FEngineDependencyPaths
+{
+public:
+	FEngineDependencyPaths(std::initializer_list<const TCHAR*> Paths)
+	{
+		Strings.Reserve(Paths.size());
+		for(const TCHAR* Path : Paths)
+		{
+			Strings.Add(FPaths::EngineDir() / Path);
+		}
+
+		RawStrings.Reserve(Strings.Num());
+		for(const FString& String : Strings)
+		{
+			RawStrings.Add(*String);
+		}
+	}
+
+	const TCHAR** GetArray() const
+	{
+		return const_cast<const TCHAR**>(RawStrings.GetData());
+	}
+
+	int32 Num() const
+	{
+		return RawStrings.Num();
+	}
+
+private:
+	TArray<FString> Strings;
+	TArray<const TCHAR*> RawStrings;
+};
+
 bool FLightmassProcessor::BeginRun()
 {
 	{
@@ -2887,88 +2985,84 @@ bool FLightmassProcessor::BeginRun()
 	}
 
 	// Setup dependencies for 32bit.
-	const TCHAR* LightmassExecutable32 = TEXT("../Win32/UnrealLightmass.exe");
-	const TCHAR* RequiredDependencyPaths32[] =
+	static const FString LightmassExecutable32 = FPaths::EngineDir() / TEXT("Binaries/Win32/UnrealLightmass.exe");
+	static const FEngineDependencyPaths RequiredDependencyPaths32 =
 	{
-		TEXT("../DotNET/SwarmInterface.dll"),
-		TEXT("../Win32/AgentInterface.dll"),
-		TEXT("../Win32/UnrealLightmass-SwarmInterface.dll"),
-		TEXT("../Win32/UnrealLightmass-ApplicationCore.dll"),
-		TEXT("../Win32/UnrealLightmass-Core.dll"),
-		TEXT("../Win32/UnrealLightmass-CoreUObject.dll"),
-		TEXT("../Win32/UnrealLightmass-Projects.dll"),
-		TEXT("../Win32/UnrealLightmass-Json.dll"),
-		TEXT("../Win32/UnrealLightmass-BuildSettings.dll")
+		TEXT("Binaries/DotNET/SwarmInterface.dll"),
+		TEXT("Binaries/Win32/AgentInterface.dll"),
+		TEXT("Binaries/Win32/UnrealLightmass-SwarmInterface.dll"),
+		TEXT("Binaries/Win32/UnrealLightmass-ApplicationCore.dll"),
+		TEXT("Binaries/Win32/UnrealLightmass-Core.dll"),
+		TEXT("Binaries/Win32/UnrealLightmass-CoreUObject.dll"),
+		TEXT("Binaries/Win32/UnrealLightmass-Projects.dll"),
+		TEXT("Binaries/Win32/UnrealLightmass-Json.dll"),
+		TEXT("Binaries/Win32/UnrealLightmass-BuildSettings.dll")
 	};
-	const int32 RequiredDependencyPaths32Count = ARRAY_COUNT(RequiredDependencyPaths32);
 
 	// Setup dependencies for 64bit.
 #if PLATFORM_WINDOWS
-	const TCHAR* LightmassExecutable64 = TEXT("../Win64/UnrealLightmass.exe");
-	const TCHAR* RequiredDependencyPaths64[] =
+	static const FString LightmassExecutable64 = FPaths::EngineDir() / TEXT("Binaries/Win64/UnrealLightmass.exe");
+	static const FEngineDependencyPaths RequiredDependencyPaths64 =
 	{
-		TEXT("../DotNET/SwarmInterface.dll"),
-		TEXT("../Win64/AgentInterface.dll"),
-		TEXT("../Win64/UnrealLightmass-SwarmInterface.dll"),
-		TEXT("../Win64/UnrealLightmass-ApplicationCore.dll"),
-		TEXT("../Win64/UnrealLightmass-Core.dll"),
-		TEXT("../Win64/UnrealLightmass-CoreUObject.dll"),
-		TEXT("../Win64/UnrealLightmass-Projects.dll"),
-		TEXT("../Win64/UnrealLightmass-Json.dll"),
-		TEXT("../Win64/UnrealLightmass-BuildSettings.dll"),
-		TEXT("../Win64/embree.dll"),
-		TEXT("../Win64/tbb.dll"),
-		TEXT("../Win64/tbbmalloc.dll")
+		TEXT("Binaries/DotNET/SwarmInterface.dll"),
+		TEXT("Binaries/Win64/AgentInterface.dll"),
+		TEXT("Binaries/Win64/UnrealLightmass-SwarmInterface.dll"),
+		TEXT("Binaries/Win64/UnrealLightmass-ApplicationCore.dll"),
+		TEXT("Binaries/Win64/UnrealLightmass-Core.dll"),
+		TEXT("Binaries/Win64/UnrealLightmass-CoreUObject.dll"),
+		TEXT("Binaries/Win64/UnrealLightmass-Projects.dll"),
+		TEXT("Binaries/Win64/UnrealLightmass-Json.dll"),
+		TEXT("Binaries/Win64/UnrealLightmass-BuildSettings.dll"),
+		TEXT("Binaries/Win64/embree.dll"),
+		TEXT("Binaries/Win64/tbb.dll"),
+		TEXT("Binaries/Win64/tbbmalloc.dll")
 	};
 #elif PLATFORM_MAC
-	const TCHAR* LightmassExecutable64 = TEXT("../Mac/UnrealLightmass");
-	const TCHAR* RequiredDependencyPaths64[] =
+	static const FString LightmassExecutable64 = FPaths::EngineDir() / TEXT("Binaries/Mac/UnrealLightmass");
+	static const FEngineDependencyPaths RequiredDependencyPaths64 =
 	{
-		TEXT("../DotNET/Mac/AgentInterface.dll"),
-		TEXT("../Mac/UnrealLightmass-ApplicationCore.dylib"),
-		TEXT("../Mac/UnrealLightmass-Core.dylib"),
-		TEXT("../Mac/UnrealLightmass-CoreUObject.dylib"),
-		TEXT("../Mac/UnrealLightmass-Json.dylib"),
-		TEXT("../Mac/UnrealLightmass-Projects.dylib"),
-		TEXT("../Mac/UnrealLightmass-SwarmInterface.dylib"),
-		TEXT("../Mac/UnrealLightmass-BuildSettings.dylib"),
-		TEXT("../Mac/libembree.2.dylib"),
-		TEXT("../Mac/libtbb.dylib"),
-		TEXT("../Mac/libtbbmalloc.dylib")
+		TEXT("Binaries/DotNET/Mac/AgentInterface.dll"),
+		TEXT("Binaries/Mac/UnrealLightmass-ApplicationCore.dylib"),
+		TEXT("Binaries/Mac/UnrealLightmass-Core.dylib"),
+		TEXT("Binaries/Mac/UnrealLightmass-CoreUObject.dylib"),
+		TEXT("Binaries/Mac/UnrealLightmass-Json.dylib"),
+		TEXT("Binaries/Mac/UnrealLightmass-Projects.dylib"),
+		TEXT("Binaries/Mac/UnrealLightmass-SwarmInterface.dylib"),
+		TEXT("Binaries/Mac/UnrealLightmass-BuildSettings.dylib"),
+		TEXT("Binaries/Mac/libembree.2.dylib"),
+		TEXT("Binaries/Mac/libtbb.dylib"),
+		TEXT("Binaries/Mac/libtbbmalloc.dylib")
 	};
 #elif PLATFORM_LINUX
-	const TCHAR* LightmassExecutable64 = TEXT("../Linux/UnrealLightmass");
-	const TCHAR* RequiredDependencyPaths64[] =
+	static const FString LightmassExecutable64 = FPaths::EngineDir() / TEXT("Binaries/Linux/UnrealLightmass");
+	static const FEngineDependencyPaths RequiredDependencyPaths64 =
 	{
-		TEXT("../DotNET/Linux/AgentInterface.dll"),
-		TEXT("../Linux/libUnrealLightmass-ApplicationCore.so"),
-		TEXT("../Linux/libUnrealLightmass-Core.so"),
-		TEXT("../Linux/libUnrealLightmass-CoreUObject.so"),
-		TEXT("../Linux/libUnrealLightmass-Json.so"),
-		TEXT("../Linux/libUnrealLightmass-Projects.so"),
-		TEXT("../Linux/libUnrealLightmass-SwarmInterface.so"),
-		TEXT("../Linux/libUnrealLightmass-Networking.so"),
-		TEXT("../Linux/libUnrealLightmass-Messaging.so"),
-		TEXT("../Linux/libUnrealLightmass-BuildSettings.so"),
-		TEXT("../../Plugins/Messaging/UdpMessaging/Binaries/Linux/libUnrealLightmass-UdpMessaging.so")
+		TEXT("Binaries/DotNET/Linux/AgentInterface.dll"),
+		TEXT("Binaries/Linux/libUnrealLightmass-ApplicationCore.so"),
+		TEXT("Binaries/Linux/libUnrealLightmass-Core.so"),
+		TEXT("Binaries/Linux/libUnrealLightmass-CoreUObject.so"),
+		TEXT("Binaries/Linux/libUnrealLightmass-Json.so"),
+		TEXT("Binaries/Linux/libUnrealLightmass-Projects.so"),
+		TEXT("Binaries/Linux/libUnrealLightmass-SwarmInterface.so"),
+		TEXT("Binaries/Linux/libUnrealLightmass-Networking.so"),
+		TEXT("Binaries/Linux/libUnrealLightmass-Messaging.so"),
+		TEXT("Binaries/Linux/libUnrealLightmass-BuildSettings.so"),
+		TEXT("Plugins/Messaging/UdpMessaging/Binaries/Linux/libUnrealLightmass-UdpMessaging.so")
 	};
 #else // PLATFORM_LINUX
 #error "Unknown Lightmass platform"
 #endif
-	const int32 RequiredDependencyPaths64Count = ARRAY_COUNT(RequiredDependencyPaths64);
 
 	// Set up optional dependencies.  These might not exist in Launcher distributions, for example.
-	const TCHAR* OptionalDependencyPaths32[] =
+	const FEngineDependencyPaths OptionalDependencyPaths32 =
 	{
-		TEXT("../Win32/UnrealLightmass.pdb")
+		TEXT("Binaries/Win32/UnrealLightmass.pdb")
 	};
-	const int32 OptionalDependencyPaths32Count = ARRAY_COUNT(OptionalDependencyPaths32);
 
-	const TCHAR* OptionalDependencyPaths64[] =
+	const FEngineDependencyPaths OptionalDependencyPaths64 =
 	{
-		TEXT("../Win64/UnrealLightmass.pdb")
+		TEXT("Binaries/Win64/UnrealLightmass.pdb")
 	};
-	const int32 OptionalDependencyPaths64Count = ARRAY_COUNT(OptionalDependencyPaths64);
 
 	// Set up the description for the Job
 	const TCHAR* DescriptionKeys[] =
@@ -3003,7 +3097,7 @@ bool FLightmassProcessor::BeginRun()
 	
 	Statistics.SwarmJobOpenTime += FPlatformTime::Seconds() - SwarmJobStartTime;
 	
-	UE_LOG(LogLightmassSolver, Log,  TEXT("Swarm launching: %s %s"), bUse64bitProcess ? LightmassExecutable64 : LightmassExecutable32, *Exporter->SceneGuid.ToString() );
+	UE_LOG(LogLightmassSolver, Log,  TEXT("Swarm launching: %s %s"), bUse64bitProcess ? *LightmassExecutable64 : *LightmassExecutable32, *Exporter->SceneGuid.ToString() );
 
 	SwarmJobStartTime = FPlatformTime::Seconds();
 
@@ -3052,15 +3146,15 @@ bool FLightmassProcessor::BeginRun()
 	NSwarm::FJobSpecification JobSpecification32, JobSpecification64;
 	if ( !bUse64bitProcess )
 	{
-		JobSpecification32 = NSwarm::FJobSpecification( LightmassExecutable32, *CommandLineParameters, ( NSwarm::TJobTaskFlags )JobFlags );
-		JobSpecification32.AddDependencies( RequiredDependencyPaths32, RequiredDependencyPaths32Count, OptionalDependencyPaths32, OptionalDependencyPaths32Count );
-		JobSpecification32.AddDescription( DescriptionKeys, DescriptionValues, ARRAY_COUNT(DescriptionKeys) );
+		JobSpecification32 = NSwarm::FJobSpecification( *LightmassExecutable32, *CommandLineParameters, ( NSwarm::TJobTaskFlags )JobFlags );
+		JobSpecification32.AddDependencies( RequiredDependencyPaths32.GetArray(), RequiredDependencyPaths32.Num(), OptionalDependencyPaths32.GetArray(), OptionalDependencyPaths32.Num() );
+		JobSpecification32.AddDescription( DescriptionKeys, DescriptionValues, UE_ARRAY_COUNT(DescriptionKeys) );
 	}
 	else
 	{
-		JobSpecification64 = NSwarm::FJobSpecification( LightmassExecutable64, *CommandLineParameters, ( NSwarm::TJobTaskFlags )JobFlags );
-		JobSpecification64.AddDependencies( RequiredDependencyPaths64, RequiredDependencyPaths64Count, OptionalDependencyPaths64, OptionalDependencyPaths64Count );
-		JobSpecification64.AddDescription( DescriptionKeys, DescriptionValues, ARRAY_COUNT(DescriptionKeys) );
+		JobSpecification64 = NSwarm::FJobSpecification( *LightmassExecutable64, *CommandLineParameters, ( NSwarm::TJobTaskFlags )JobFlags );
+		JobSpecification64.AddDependencies( RequiredDependencyPaths64.GetArray(), RequiredDependencyPaths64.Num(), OptionalDependencyPaths64.GetArray(), OptionalDependencyPaths64.Num() );
+		JobSpecification64.AddDescription( DescriptionKeys, DescriptionValues, UE_ARRAY_COUNT(DescriptionKeys) );
 	}
 	int32 ErrorCode = Swarm.BeginJobSpecification( JobSpecification32, JobSpecification64 );
 	if( ErrorCode < 0 )
@@ -4414,7 +4508,7 @@ UStaticMesh* FLightmassProcessor::FindStaticMesh(FGuid& Guid)
 	return NULL;
 }
 
-ULevel* FLightmassProcessor::FindLevel(FGuid& Guid)
+ULevel* FLightmassProcessor::FindLevel(const FGuid& Guid)
 {
 	if (Exporter)
 	{

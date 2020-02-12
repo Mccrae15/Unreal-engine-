@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 /*=============================================================================
 	AVIWriter.cpp: AVI creation implementation.
@@ -476,7 +476,7 @@ public:
 			if (Options.CompressionQuality.IsSet())
 			{
 				VideoSettings = [NSDictionary dictionaryWithObjectsAndKeys:
-								 AVVideoCodecJPEG, AVVideoCodecKey,
+								 AVVideoCodecTypeJPEG, AVVideoCodecKey,
 								 [NSDictionary dictionaryWithObjectsAndKeys:[NSNumber numberWithFloat:Options.CompressionQuality.GetValue()], AVVideoQualityKey, nil], AVVideoCompressionPropertiesKey,
 								 [NSNumber numberWithInt:Options.Width], AVVideoWidthKey,
 								 [NSNumber numberWithInt:Options.Height], AVVideoHeightKey,
@@ -485,7 +485,7 @@ public:
 			else
 			{
 				VideoSettings = [NSDictionary dictionaryWithObjectsAndKeys:
-								 AVVideoCodecH264, AVVideoCodecKey,
+								 AVVideoCodecTypeH264, AVVideoCodecKey,
 								 [NSNumber numberWithInt:Options.Width], AVVideoWidthKey,
 								 [NSNumber numberWithInt:Options.Height], AVVideoHeightKey,
 								 nil];
@@ -517,7 +517,7 @@ public:
 			CapturedFrames.Reset(new FCapturedFrames(Directory.LeftChop(Ext.Len()) + TEXT("_tmp"), FPS * 3));
 
 			bCapturing = true;
-			ThreadTaskFuture = Async<void>(EAsyncExecution::Thread, [this]{	TaskThread(); });
+			ThreadTaskFuture = Async(EAsyncExecution::Thread, [this]{	TaskThread(); });
 		}
 	}
 	
@@ -735,7 +735,7 @@ void FCapturedFrames::StartUnArchiving()
 		return;
 	}
 
-	UnarchiveTask = Async<void>(EAsyncExecution::Thread, [this]{
+	UnarchiveTask = Async(EAsyncExecution::Thread, [this]{
 
 		// Attempt to unarchive any archived frames
 		ArchiveFrameMutex.Lock();

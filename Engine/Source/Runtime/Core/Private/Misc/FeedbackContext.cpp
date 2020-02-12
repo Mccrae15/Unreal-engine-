@@ -1,11 +1,10 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "Misc/FeedbackContext.h"
 #include "HAL/PlatformTime.h"
 
 FFeedbackContext::FFeedbackContext()
 	: TreatWarningsAsErrors(0)
-	, ScopeStack(MakeShareable(new FSlowTaskStack))
 {
 }
 
@@ -33,9 +32,9 @@ void FFeedbackContext::UpdateUI()
 {
 	ensure(IsInGameThread());
 
-	if (ScopeStack->Num() != 0)
+	if (ScopeStack.Num() != 0)
 	{
-		ProgressReported(ScopeStack->GetProgressFraction(0), (*ScopeStack)[0]->GetCurrentMessage());
+		ProgressReported(ScopeStack.GetProgressFraction(0), ScopeStack[0]->GetCurrentMessage());
 	}
 }
 
@@ -60,9 +59,9 @@ void FFeedbackContext::UpdateProgress( int32 Numerator, int32 Denominator )
 
 	if (LegacyAPIScopes.Num() != 0)
 	{
-		LegacyAPIScopes.Last()->TotalAmountOfWork = Denominator;
-		LegacyAPIScopes.Last()->CompletedWork = Numerator;
-		LegacyAPIScopes.Last()->CurrentFrameScope = Denominator - Numerator;
+		LegacyAPIScopes.Last()->TotalAmountOfWork = (float)Denominator;
+		LegacyAPIScopes.Last()->CompletedWork = (float)Numerator;
+		LegacyAPIScopes.Last()->CurrentFrameScope = (float)(Denominator - Numerator);
 		RequestUpdateUI();
 	}
 }

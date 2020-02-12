@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "LogVisualizerSettings.h"
 #include "Materials/Material.h"
@@ -19,6 +19,7 @@ ULogVisualizerSettings::ULogVisualizerSettings(const FObjectInitializer& ObjectI
 	bResetDataWithNewSession = false;
 	bDrawExtremesOnGraphs = false;
 	bUsePlayersOnlyForPause = true;
+	bConstrainGraphToLocalMinMax = false;
 }
 
 class UMaterial* ULogVisualizerSettings::GetDebugMeshMaterial()

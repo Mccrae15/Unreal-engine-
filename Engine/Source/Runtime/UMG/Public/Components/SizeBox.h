@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -22,36 +22,10 @@ class UMG_API USizeBox : public UContentWidget
 {
 	GENERATED_UCLASS_BODY()
 
+protected:
+	TSharedPtr<SBox> MySizeBox;
+
 public:
-
-	/**  */
-	UPROPERTY(EditAnywhere, Category="Child Layout", meta=(InlineEditConditionToggle))
-	uint32 bOverride_WidthOverride : 1;
-
-	/**  */
-	UPROPERTY(EditAnywhere, Category="Child Layout", meta=(InlineEditConditionToggle))
-	uint32 bOverride_HeightOverride : 1;
-
-	/**  */
-	UPROPERTY(EditAnywhere, Category="Child Layout", meta=(InlineEditConditionToggle))
-	uint32 bOverride_MinDesiredWidth : 1;
-
-	/**  */
-	UPROPERTY(EditAnywhere, Category="Child Layout", meta=(InlineEditConditionToggle))
-	uint32 bOverride_MinDesiredHeight : 1;
-
-	/**  */
-	UPROPERTY(EditAnywhere, Category="Child Layout", meta=(InlineEditConditionToggle))
-	uint32 bOverride_MaxDesiredWidth : 1;
-
-	/**  */
-	UPROPERTY(EditAnywhere, Category="Child Layout", meta=(InlineEditConditionToggle))
-	uint32 bOverride_MaxDesiredHeight : 1;
-
-	/**  */
-	UPROPERTY(EditAnywhere, Category="Child Layout", meta=(InlineEditConditionToggle))
-	uint32 bOverride_MaxAspectRatio : 1;
-
 
 	/** When specified, ignore the content's desired size and report the WidthOverride as the Box's desired width. */
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category="Child Layout", meta=( editcondition="bOverride_WidthOverride" ))
@@ -78,10 +52,45 @@ public:
 	float MaxDesiredHeight;
 
 	/** */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Child Layout", meta = (editcondition = "bOverride_MinAspectRatio"))
+	float MinAspectRatio;
+
+	/** */
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category="Child Layout", meta=( editcondition="bOverride_MaxAspectRatio" ))
 	float MaxAspectRatio;
 
-public:
+	/**  */
+	UPROPERTY(EditAnywhere, Category="Child Layout", meta=(InlineEditConditionToggle))
+	uint8 bOverride_WidthOverride : 1;
+
+	/**  */
+	UPROPERTY(EditAnywhere, Category="Child Layout", meta=(InlineEditConditionToggle))
+	uint8 bOverride_HeightOverride : 1;
+
+	/**  */
+	UPROPERTY(EditAnywhere, Category="Child Layout", meta=(InlineEditConditionToggle))
+	uint8 bOverride_MinDesiredWidth : 1;
+
+	/**  */
+	UPROPERTY(EditAnywhere, Category="Child Layout", meta=(InlineEditConditionToggle))
+	uint8 bOverride_MinDesiredHeight : 1;
+
+	/**  */
+	UPROPERTY(EditAnywhere, Category="Child Layout", meta=(InlineEditConditionToggle))
+	uint8 bOverride_MaxDesiredWidth : 1;
+
+	/**  */
+	UPROPERTY(EditAnywhere, Category="Child Layout", meta=(InlineEditConditionToggle))
+	uint8 bOverride_MaxDesiredHeight : 1;
+
+	/**  */
+	UPROPERTY(EditAnywhere, Category="Child Layout", meta=(InlineEditConditionToggle))
+	uint8 bOverride_MinAspectRatio : 1;
+
+	/**  */
+	UPROPERTY(EditAnywhere, Category = "Child Layout", meta=(InlineEditConditionToggle))
+	uint8 bOverride_MaxAspectRatio : 1;
+
 		
 	/** When specified, ignore the content's desired size and report the WidthOverride as the Box's desired width. */
 	UFUNCTION(BlueprintCallable, Category="Layout|Size Box")
@@ -126,12 +135,17 @@ public:
 	void ClearMaxDesiredHeight();
 
 	UFUNCTION(BlueprintCallable, Category="Layout|Size Box")
+	void SetMinAspectRatio(float InMinAspectRatio);
+
+	UFUNCTION(BlueprintCallable, Category="Layout|Size Box")
 	void SetMaxAspectRatio(float InMaxAspectRatio);
+
+	UFUNCTION(BlueprintCallable, Category="Layout|Size Box")
+	void ClearMinAspectRatio();
 
 	UFUNCTION(BlueprintCallable, Category="Layout|Size Box")
 	void ClearMaxAspectRatio();
 
-public:
 
 	// UWidget interface
 	virtual void SynchronizeProperties() override;
@@ -153,10 +167,6 @@ protected:
 	virtual void OnSlotRemoved(UPanelSlot* Slot) override;
 	// End UPanelWidget
 
-protected:
-	TSharedPtr<SBox> MySizeBox;
-
-protected:
 	// UWidget interface
 	virtual TSharedRef<SWidget> RebuildWidget() override;
 	// End of UWidget interface

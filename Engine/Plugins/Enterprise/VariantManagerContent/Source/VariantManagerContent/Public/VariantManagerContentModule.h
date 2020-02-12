@@ -1,11 +1,11 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
 #include "Modules/ModuleInterface.h"
 #include "Modules/ModuleManager.h"		// For inline LoadModuleChecked()
 
-#define VARIANTMANAGERCONTENTMODULE_MODULE_NAME TEXT("VariantManagerContentModule")
+#define VARIANTMANAGERCONTENTMODULE_MODULE_NAME TEXT("VariantManagerContent")
 
 
 class IVariantManagerContentModule : public IModuleInterface

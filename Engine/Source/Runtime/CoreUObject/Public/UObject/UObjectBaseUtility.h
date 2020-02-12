@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 /*=============================================================================
 	UObjectBaseUtility.h: Unreal UObject functions that only depend on UObjectBase
@@ -18,6 +18,20 @@
 		PRAGMA_DISABLE_SHADOW_VARIABLE_WARNINGS
 	#endif
 #endif
+
+/**
+* Enum which specifies the mode in which full object names are constructed
+*/
+enum class EObjectFullNameFlags
+{
+	// Standard object full name (i.e. "Type PackageName.ObjectName:SubobjectName")
+	None = 0,
+
+	// Adds package to the type portion (i.e. "TypePackage.TypeName PackageName.ObjectName:SubobjectName")
+	IncludeClassPackage = 1,
+};
+
+ENUM_CLASS_FLAGS(EObjectFullNameFlags);
 
 /**
  * Provides utility functions for UObject, this class should not be used directly
@@ -188,7 +202,7 @@ public:
 	 *
 	 * @return true if the object was explicitly added as part of the root set.
 	 */
-	FORCEINLINE bool IsRooted()
+	FORCEINLINE bool IsRooted() const
 	{
 		return GUObjectArray.IndexToObject(InternalIndex)->IsRootSet();
 	}
@@ -287,10 +301,16 @@ public:
 	 *
 	 * @param	StopOuter	if specified, indicates that the output string should be relative to this object.  if StopOuter
 	 *						does not exist in this object's Outer chain, the result would be the same as passing NULL.
+	 * @param	Flags		flags that control the behavior of full name generation
 	 *
 	 * @note	safe to call on NULL object pointers!
 	 */
-	FString GetFullName( const UObject* StopOuter=NULL ) const;
+	FString GetFullName( const UObject* StopOuter=NULL, EObjectFullNameFlags Flags = EObjectFullNameFlags::None ) const;
+
+	/**
+	 * Version of GetFullName() that eliminates unnecessary copies.
+	 */
+	void GetFullName( const UObject* StopOuter, FString& ResultString, EObjectFullNameFlags Flags = EObjectFullNameFlags::None ) const;
 
 	/**
 	 * Returns the fully qualified pathname for this object, in the format:
@@ -302,6 +322,11 @@ public:
 	 * @note	safe to call on NULL object pointers!
 	 */
 	FString GetPathName( const UObject* StopOuter=NULL ) const;
+
+	/**
+	 * Version of GetPathName() that eliminates unnecessary copies.
+	 */
+	void GetPathName(const UObject* StopOuter, FString& ResultString) const;
 
 public:
 	/**
@@ -341,11 +366,6 @@ public:
 protected:
 	/** Helper function to create a cluster from UObject */
 	static void CreateClusterFromObject(UObjectBaseUtility* ClusterRootObject, UObjectBaseUtility* ReferencingObject);
-
-	/**
-	 * Internal version of GetPathName() that eliminates lots of copies.
-	 */
-	void GetPathName( const UObject* StopOuter, FString& ResultString ) const;
 
 public:
 	/**
@@ -470,8 +490,8 @@ public:
 		const UClass* ThisClass = GetClass();
 
 		// Stop the compiler doing some unnecessary branching for nullptr checks
-		ASSUME(SomeBaseClass);
-		ASSUME(ThisClass);
+		UE_ASSUME(SomeBaseClass);
+		UE_ASSUME(ThisClass);
 
 		return IsChildOfWorkaround(ThisClass, SomeBaseClass);
 	}
@@ -586,6 +606,57 @@ public:
 	{
 		return GetName() < Other.GetName();
 	}
+
+
+
+	/*******
+	 * Stats
+	 *******/
+#if STATS || ENABLE_STATNAMEDEVENTS_UOBJECT
+	FORCEINLINE void ResetStatID()
+	{
+		GUObjectArray.IndexToObject(InternalIndex)->StatID = TStatId();
+	}
+#endif
+	/**
+	  * Returns the stat ID of the object, used for profiling. This will create a stat ID if needed.
+	  *
+	  * @param bForDeferred If true, a stat ID will be created even if a group is disabled
+	  */
+	FORCEINLINE TStatId GetStatID(bool bForDeferredUse = false) const
+	{
+#if STATS
+		const TStatId& StatID = GUObjectArray.IndexToObject(InternalIndex)->StatID;
+
+		// this is done to avoid even registering stats for a disabled group (unless we plan on using it later)
+		if (bForDeferredUse || FThreadStats::IsCollectingData(GET_STATID(STAT_UObjectsStatGroupTester)))
+		{
+			if (!StatID.IsValidStat())
+			{
+				CreateStatID();
+			}
+			return StatID;
+		}
+#elif ENABLE_STATNAMEDEVENTS_UOBJECT
+		const TStatId& StatID = GUObjectArray.IndexToObject(InternalIndex)->StatID;
+		if (!StatID.IsValidStat() && (bForDeferredUse || GCycleStatsShouldEmitNamedEvents))
+		{
+			CreateStatID();
+		}
+		return StatID;
+#endif // STATS
+		return TStatId(); // not doing stats at the moment, or ever
+	}
+
+private:
+#if STATS || ENABLE_STATNAMEDEVENTS_UOBJECT
+	/** Creates a stat ID for this object */
+	void CreateStatID() const
+	{
+		GUObjectArray.IndexToObject(InternalIndex)->CreateStatID();
+	}
+#endif
+
 };
 
 /** Returns false if this pointer cannot be a valid pointer to a UObject */
@@ -675,8 +746,9 @@ COREUOBJECT_API UClass* GetParentNativeClass(UClass* Class);
 #if STATS
 
 /** Structure used to track time spent by a UObject */
-struct FScopeCycleCounterUObject : public FCycleCounter
+class FScopeCycleCounterUObject : public FCycleCounter
 {
+public:
 #if USE_MALLOC_PROFILER
 	/** Package path being tracked */
 	FName PackageTag;
@@ -754,8 +826,9 @@ struct FScopeCycleCounterUObject : public FCycleCounter
 
 #elif ENABLE_STATNAMEDEVENTS
 
-struct FScopeCycleCounterUObject
+class FScopeCycleCounterUObject
 {
+public:
 	FScopeCycleCounter ScopeCycleCounter;
 	FORCEINLINE_STATS FScopeCycleCounterUObject(const UObjectBaseUtility *Object)
 	: ScopeCycleCounter(Object ? Object->GetStatID().StatString : nullptr)
@@ -797,8 +870,9 @@ public:
 #define SCOPE_CYCLE_UOBJECT(Name, Object) \
 	FScopeCycleCounterUObject ObjCycleCount_##Name(Object);
 #else
-struct FScopeCycleCounterUObject
+class FScopeCycleCounterUObject
 {
+public:
 	FORCEINLINE_STATS FScopeCycleCounterUObject(const UObjectBaseUtility *Object)
 	{
 	}

@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 #include "UObject/DevObjectVersion.h"
 #include "Logging/LogMacros.h"
 #include "UObject/BlueprintsObjectVersion.h"
@@ -24,17 +24,20 @@
 #include "UObject/AutomationObjectVersion.h"
 #include "UObject/NiagaraObjectVersion.h"
 #include "UObject/DestructionObjectVersion.h"
+#include "UObject/ExternalPhysicsCustomObjectVersion.h"
+#include "UObject/ExternalPhysicsMaterialCustomObjectVersion.h"
+#include "UObject/CineCameraObjectVersion.h"
 
 DEFINE_LOG_CATEGORY_STATIC(LogDevObjectVersion, Log, All);
 
 #if !UE_BUILD_SHIPPING
-static TArray<FGuid> GDevVersions;
+static TArray<FGuid, TInlineAllocator<64>> GDevVersions;
 #endif
-FDevVersionRegistration::FDevVersionRegistration(FGuid InKey, int32 Version, FName InFriendlyName)
-: FCustomVersionRegistration(InKey, Version, InFriendlyName)
+
+void FDevVersionRegistration::RecordDevVersion(FGuid Key)
 {
 #if !UE_BUILD_SHIPPING
-	GDevVersions.Add(InKey);
+	GDevVersions.Add(Key);
 #endif
 }
 void FDevVersionRegistration::DumpVersionsToLog()
@@ -43,9 +46,8 @@ void FDevVersionRegistration::DumpVersionsToLog()
 	UE_LOG(LogDevObjectVersion, Log, TEXT("Number of dev versions registered: %d"), GDevVersions.Num());
 	for (FGuid& Guid : GDevVersions)
 	{
-		const FCustomVersion* Version = FCustomVersionContainer::GetRegistered().GetVersion(Guid);
-		check(Version);
-		UE_LOG(LogDevObjectVersion, Log, TEXT("  %s (%s): %d"), *Version->GetFriendlyName().ToString(), *Version->Key.ToString(EGuidFormats::DigitsWithHyphens), Version->Version);
+		FCustomVersion Version = FCurrentCustomVersions::Get(Guid).GetValue();
+		UE_LOG(LogDevObjectVersion, Log, TEXT("  %s (%s): %d"), *Version.GetFriendlyName().ToString(), *Version.Key.ToString(EGuidFormats::DigitsWithHyphens), Version.Version);
 	}
 #endif
 }
@@ -163,4 +165,21 @@ FDevVersionRegistration GRegisterNiagaraObjectVersion(FNiagaraObjectVersion::GUI
 const FGuid FDestructionObjectVersion::GUID(0x174F1F0B, 0xB4C645A5, 0xB13F2EE8, 0xD0FB917D);
 // Register Destruction custom version with Core
 FDevVersionRegistration GRegisterDestructionObjectVersion(FDestructionObjectVersion::GUID, FDestructionObjectVersion::LatestVersion, TEXT("Dev-Destruction"));
+
+// Unique Physics Object version id
+const FGuid FExternalPhysicsCustomObjectVersion::GUID(0x35F94A83, 0xE258406C, 0xA31809F5, 0x9610247C);
+// Register Physics custom version with Core
+FDevVersionRegistration GRegisterExternalPhysicsCustomVersion(FExternalPhysicsCustomObjectVersion::GUID, FExternalPhysicsCustomObjectVersion::LatestVersion, TEXT("Dev-Physics-Ext"));
+// Unique Physics Object version id
+
+// Unique Physics Material Object version id
+const FGuid FExternalPhysicsMaterialCustomObjectVersion::GUID(0xB68FC16E, 0x8B1B42E2, 0xB453215C, 0x058844FE);
+// Register Physics custom version with Core
+FDevVersionRegistration GRegisterExternalPhysicsMaterialCustomVersion(FExternalPhysicsMaterialCustomObjectVersion::GUID, FExternalPhysicsMaterialCustomObjectVersion::LatestVersion, TEXT("Dev-PhysicsMaterial-Chaos"));
+// Unique PhysicsMaterial  Object version id
+
+// Unique CineCamera Object version id
+const FGuid FCineCameraObjectVersion::GUID(0xB2E18506, 0x4273CFC2, 0xA54EF4BB, 0x758BBA07);
+// Register CineCamera custom version with Core
+FDevVersionRegistration GRegisterCineCameraObjectVersion(FCineCameraObjectVersion::GUID, FCineCameraObjectVersion::LatestVersion, TEXT("Dev-CineCamera"));
 

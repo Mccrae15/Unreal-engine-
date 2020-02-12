@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "MovieSceneImagePlateTrack.h"
 #include "MovieSceneImagePlateSection.h"
@@ -40,6 +40,11 @@ const TArray<UMovieSceneSection*>& UMovieSceneImagePlateTrack::GetAllSections() 
 void UMovieSceneImagePlateTrack::RemoveSection(UMovieSceneSection& Section)
 {
 	Sections.Remove(&Section);
+}
+
+void UMovieSceneImagePlateTrack::RemoveSectionAt(int32 SectionIndex)
+{
+	Sections.RemoveAt(SectionIndex);
 }
 
 FMovieSceneEvalTemplatePtr UMovieSceneImagePlateTrack::CreateTemplateForSection(const UMovieSceneSection& InSection) const

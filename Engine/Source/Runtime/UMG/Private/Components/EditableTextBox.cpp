@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "Components/EditableTextBox.h"
 #include "UObject/ConstructorHelpers.h"
@@ -10,6 +10,8 @@
 
 /////////////////////////////////////////////////////
 // UEditableTextBox
+
+static FEditableTextBoxStyle* DefaultEditableTextBoxStyle = nullptr;
 
 UEditableTextBox::UEditableTextBox(const FObjectInitializer& ObjectInitializer)
 	: Super(ObjectInitializer)
@@ -24,21 +26,33 @@ UEditableTextBox::UEditableTextBox(const FObjectInitializer& ObjectInitializer)
 		Font_DEPRECATED = FSlateFontInfo(RobotoFontObj.Object, 12, FName("Bold"));
 	}
 
-	// Grab other defaults from slate arguments.
-	SEditableTextBox::FArguments Defaults;
-	IsReadOnly = Defaults._IsReadOnly.Get();
-	IsPassword = Defaults._IsPassword.Get();
-	MinimumDesiredWidth = Defaults._MinDesiredWidth.Get();
-	Padding_DEPRECATED = Defaults._Padding.Get();
-	IsCaretMovedWhenGainFocus = Defaults._IsCaretMovedWhenGainFocus.Get();
-	SelectAllTextWhenFocused = Defaults._SelectAllTextWhenFocused.Get();
-	RevertTextOnEscape = Defaults._RevertTextOnEscape.Get();
-	ClearKeyboardFocusOnCommit = Defaults._ClearKeyboardFocusOnCommit.Get();
-	SelectAllTextOnCommit = Defaults._SelectAllTextOnCommit.Get();
-	AllowContextMenu = Defaults._AllowContextMenu.Get();
-	VirtualKeyboardDismissAction = Defaults._VirtualKeyboardDismissAction.Get();
+	IsReadOnly = false;
+	IsPassword = false;
+	MinimumDesiredWidth = 0.0f;
+	Padding_DEPRECATED = FMargin(0, 0, 0, 0);
+	IsCaretMovedWhenGainFocus = true;
+	SelectAllTextWhenFocused = false;
+	RevertTextOnEscape = false;
+	ClearKeyboardFocusOnCommit = true;
+	SelectAllTextOnCommit = false;
+	AllowContextMenu = true;
+	VirtualKeyboardDismissAction = EVirtualKeyboardDismissAction::TextChangeOnDismiss;
 
-	WidgetStyle = *Defaults._Style;
+	if (DefaultEditableTextBoxStyle == nullptr)
+	{
+		// HACK: THIS SHOULD NOT COME FROM CORESTYLE AND SHOULD INSTEAD BE DEFINED BY ENGINE TEXTURES/PROJECT SETTINGS
+		DefaultEditableTextBoxStyle = new FEditableTextBoxStyle(FCoreStyle::Get().GetWidgetStyle<FEditableTextBoxStyle>("NormalEditableTextBox"));
+
+		// Unlink UMG default colors from the editor settings colors.
+		DefaultEditableTextBoxStyle->UnlinkColors();
+	}
+
+	WidgetStyle = *DefaultEditableTextBoxStyle;
+
+#if WITH_EDITORONLY_DATA
+	AccessibleBehavior = ESlateAccessibleBehavior::Auto;
+	bCanChildrenBeAccessible = false;
+#endif
 }
 
 void UEditableTextBox::ReleaseSlateResources(bool bReleaseChildren)
@@ -63,6 +77,7 @@ TSharedRef<SWidget> UEditableTextBox::RebuildWidget()
 		.OnTextCommitted(BIND_UOBJECT_DELEGATE(FOnTextCommitted, HandleOnTextCommitted))
 		.VirtualKeyboardType(EVirtualKeyboardType::AsKeyboardType(KeyboardType.GetValue()))
 		.VirtualKeyboardOptions(VirtualKeyboardOptions)
+		.VirtualKeyboardTrigger(VirtualKeyboardTrigger)
 		.VirtualKeyboardDismissAction(VirtualKeyboardDismissAction)
 		.Justification(Justification);
 
@@ -166,6 +181,15 @@ bool UEditableTextBox::HasError() const
 	return false;
 }
 
+void UEditableTextBox::SetJustification(ETextJustify::Type InJustification)
+{
+	Justification = InJustification;
+	if (MyEditableTextBlock.IsValid())
+	{
+		MyEditableTextBlock->SetJustification(InJustification);
+	}
+}
+
 void UEditableTextBox::HandleOnTextChanged(const FText& InText)
 {
 	Text = InText;
@@ -227,11 +251,18 @@ void UEditableTextBox::PostLoad()
 	}
 }
 
+#if WITH_ACCESSIBILITY
+TSharedPtr<SWidget> UEditableTextBox::GetAccessibleWidget() const
+{
+	return MyEditableTextBlock;
+}
+#endif
+
 #if WITH_EDITOR
 
 const FText UEditableTextBox::GetPaletteCategory()
 {
-	return LOCTEXT("Common", "Common");
+	return LOCTEXT("Input", "Input");
 }
 
 #endif

@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #if WITH_IMMEDIATE_PHYSX
 
@@ -21,7 +21,7 @@
 
 #include "PhysicsEngine/ConstraintDrives.h"
 #include "PhysicsEngine/AggregateGeom.h"
-#include "Physics/PhysicsGeometryPhysX.h"
+#include "Physics/PhysicsGeometry.h"
 #include "Engine/Engine.h"
 #include "PhysicalMaterials/PhysicalMaterial.h"
 
@@ -61,7 +61,7 @@ private:
 	EPhysicsInterfaceScopedLockType LockType;
 };
 
-FPhysicsActorHandle FPhysicsInterface_ImmediatePhysX::CreateActor(const FActorCreationParams& Params)
+void FPhysicsInterface_ImmediatePhysX::CreateActor(const FActorCreationParams& Params, FPhysicsActorHandle& Handle)
 {
 	FPhysicsActorReference_ImmediatePhysX NewBody;
 	NewBody.Scene = Params.Scene;
@@ -87,7 +87,7 @@ FPhysicsActorHandle FPhysicsInterface_ImmediatePhysX::CreateActor(const FActorCr
 	    Params.Scene->SwapActorData(Params.Scene->SolverBodiesData.Num() - 1, Params.Scene->NumSimulatedBodies++);
 	}
 	
-	return NewBody;
+	Handle = NewBody;
 }
 
 void FPhysicsInterface_ImmediatePhysX::ReleaseActor(FPhysicsActorHandle& InActorReference, FPhysScene* InScene)
@@ -704,25 +704,6 @@ bool FPhysicsInterface_ImmediatePhysX::IsSimulationShape(const FPhysicsShapeHand
 bool FPhysicsInterface_ImmediatePhysX::IsQueryShape(const FPhysicsShapeHandle& InShape)
 {
     return InShape.Actor != nullptr;
-}
-
-bool FPhysicsInterface_ImmediatePhysX::IsShapeType(const FPhysicsShapeHandle& InShape, ECollisionShapeType InType)
-{
-    if (!InShape.Actor)
-    {
-        return false;
-    }
-    const FPhysScene_ImmediatePhysX::FShape& Shape = InShape.Actor->Scene->Actors[InShape.Actor->Index].Shapes[InShape.Index];
-    if ((Shape.Geometry->getType() == PxGeometryType::Enum::eSPHERE && InType == ECollisionShapeType::Sphere)
-        || (Shape.Geometry->getType() == PxGeometryType::Enum::eBOX && InType == ECollisionShapeType::Box)
-        || (Shape.Geometry->getType() == PxGeometryType::Enum::eCONVEXMESH && InType == ECollisionShapeType::Convex)
-        || (Shape.Geometry->getType() == PxGeometryType::Enum::eTRIANGLEMESH && InType == ECollisionShapeType::Trimesh)
-        || (Shape.Geometry->getType() == PxGeometryType::Enum::eHEIGHTFIELD && InType == ECollisionShapeType::Heightfield)
-        || (Shape.Geometry->getType() == PxGeometryType::Enum::eCAPSULE && InType == ECollisionShapeType::TCapsule))
-    {
-        return true;
-    }
-    return false;
 }
 
 ECollisionShapeType FPhysicsInterface_ImmediatePhysX::GetShapeType(const FPhysicsShapeHandle& InShape)
@@ -1604,7 +1585,7 @@ bool FPhysicsInterface_ImmediatePhysX::LineTrace_Geom(FHitResult& OutHit, const 
 						const bool bShapeIsComplex = ShapeRef.Shape.Geometry->getType() == PxGeometryType::Enum::eTRIANGLEMESH;
 						if((bTraceComplex && bShapeIsComplex) || (!bTraceComplex && !bShapeIsComplex))
 						{
-							const int32 ArraySize = ARRAY_COUNT(PHits);
+							const int32 ArraySize = UE_ARRAY_COUNT(PHits);
 							// #PHYS2 This may not work with shared shapes (GetTransform requires getActor to return non-nullptr) verify
 							PxTransform ShapeTransform = ShapeRef.Shape.LocalTM;
 							const PxI32 NumHits = PxGeometryQuery::raycast(U2PVector(InStart), U2PVector(Delta / DeltaMag), *ShapeRef.Shape.Geometry, ShapeTransform, DeltaMag, PHitFlags, ArraySize, PHits);
@@ -1662,7 +1643,7 @@ bool FPhysicsInterface_ImmediatePhysX::Sweep_Geom(FHitResult& OutHit, const FBod
 		{
 			if(Actor.IsValid() && InInstance->OwnerComponent != nullptr)
 			{
-				FPhysXShapeAdaptor ShapeAdaptor(InShapeRotation, InShape);
+				FPhysXShapeAdapter ShapeAdaptor(InShapeRotation, InShape);
 				
 				const FVector Delta = InEnd - InStart;
 				const float DeltaMag = Delta.Size();
@@ -1776,7 +1757,7 @@ bool FPhysicsInterface_ImmediatePhysX::Overlap_Geom(const FBodyInstance* InBodyI
 
 bool FPhysicsInterface_ImmediatePhysX::Overlap_Geom(const FBodyInstance* InBodyInstance, const FCollisionShape& InCollisionShape, const FQuat& InShapeRotation, const FTransform& InShapeTransform, FMTDResult* OutOptResult)
 {
-	FPhysXShapeAdaptor Adaptor(InShapeRotation, InCollisionShape);
+	FPhysXShapeAdapter Adaptor(InShapeRotation, InCollisionShape);
 
 	return Overlap_GeomInternal(InBodyInstance, Adaptor.GetGeometry(), InShapeTransform, OutOptResult);
 }

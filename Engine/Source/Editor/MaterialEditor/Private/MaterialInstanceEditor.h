@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -15,6 +15,7 @@
 #include "TickableEditorObject.h"
 
 class FCanvas;
+class UToolMenu;
 class UMaterialEditorInstanceConstant;
 class UMaterialInterface;
 class UMaterialInstanceConstant;
@@ -66,10 +67,10 @@ public:
 	virtual UMaterialInterface* GetMaterialInterface() const override;
 
 	/** Pre edit change notify for properties. */
-	virtual void NotifyPreChange( UProperty* PropertyAboutToChange ) override;
+	virtual void NotifyPreChange( FProperty* PropertyAboutToChange ) override;
 
 	/** Post edit change notify for properties. */
-	virtual void NotifyPostChange( const FPropertyChangedEvent& PropertyChangedEvent, UProperty* PropertyThatChanged ) override;
+	virtual void NotifyPostChange( const FPropertyChangedEvent& PropertyChangedEvent, FProperty* PropertyThatChanged ) override;
 
 	void PreSavePackage(UPackage* Obj);
 
@@ -144,12 +145,6 @@ private:
 	void ToggleShowAllMaterialParameters();
 	bool IsShowAllMaterialParametersChecked() const;
 
-	/** Commands for the Parents menu */
-	void OnOpenMaterial(TWeakObjectPtr<UMaterialInterface> InMaterial);
-	void OnOpenFunction(TWeakObjectPtr<UMaterialFunctionInterface> InFunction);
-	void OnShowMaterialInContentBrowser(TWeakObjectPtr<UMaterialInterface> InMaterial);
-	void OnShowFunctionInContentBrowser(TWeakObjectPtr<UMaterialFunctionInterface> InFunction);
-
 	/** Creates all internal widgets for the tabs to point at */
 	void CreateInternalWidgets();
 
@@ -159,11 +154,11 @@ private:
 	/** Updates the 3D and UI preview viewport visibility based on material domain */
 	void UpdatePreviewViewportsVisibility();
 
-	void FillToolbar(FToolBarBuilder& ToolbarBuilder);
+	void RegisterToolBar();
 	/** Builds the toolbar widget for the material editor */
 	void ExtendToolbar();
 
-	TSharedRef<SWidget> GenerateInheritanceMenu();
+	void GenerateInheritanceMenu(UToolMenu* Menu);
 
 	/** If re-initializing for a material function instance re-generate the proxy materials */
 	void ReInitMaterialFunctionProxies();
@@ -218,10 +213,16 @@ private:
 	TSharedPtr<class SMaterialLayersFunctionsInstanceWrapper> MaterialLayersFunctionsInstance;
 
 	/** List of parents used to populate the inheritance list chain. */
-	TArray< TWeakObjectPtr<UMaterialInterface> > MaterialParentList;
+	TArray< FAssetData > MaterialParentList;
 
 	/** List of parents used to populate the inheritance list chain. */
-	TArray< TWeakObjectPtr<UMaterialFunctionInterface> > FunctionParentList;
+	TArray< FAssetData > FunctionParentList;
+
+	/** List of children used to populate the inheritance list chain. */
+	TArray< FAssetData > MaterialChildList;
+
+	/** List of children used to populate the inheritance list chain. */
+	TArray< FAssetData > FunctionChildList;
 
 	/** Object that stores all of the possible parameters we can edit. */
 	UMaterialEditorInstanceConstant* MaterialEditorInstance;

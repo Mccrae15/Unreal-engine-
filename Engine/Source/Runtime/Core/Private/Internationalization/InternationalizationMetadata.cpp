@@ -1,11 +1,11 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "Internationalization/InternationalizationMetadata.h"
-#include "Serialization/StructuredArchiveFromArchive.h"
+#include "Serialization/StructuredArchive.h"
 
 DEFINE_LOG_CATEGORY_STATIC(LogInternationalizationMetadata, Log, All);
 
-const FString FLocMetadataObject::COMPARISON_MODIFIER_PREFIX = TEXT("*");
+const TCHAR* FLocMetadataObject::COMPARISON_MODIFIER_PREFIX = TEXT("*");
 
 FLocMetadataValue::~FLocMetadataValue() = default;
 
@@ -293,10 +293,10 @@ namespace
 		}
 
 		int32 MetaDataTypeAsInt = static_cast<int32>(MetaDataType);
-		Record << NAMED_ITEM("Type", MetaDataTypeAsInt);
+		Record << SA_VALUE(TEXT("Type"), MetaDataTypeAsInt);
 		MetaDataType = static_cast<ELocMetadataType>(MetaDataTypeAsInt);
 
-		FStructuredArchive::FSlot ValueSlot = Record.EnterField(FIELD_NAME_TEXT("Value"));
+		FStructuredArchive::FSlot ValueSlot = Record.EnterField(SA_FIELD_NAME(TEXT("Value")));
 
 		switch (MetaDataType)
 		{
@@ -350,16 +350,16 @@ void operator<<(FStructuredArchive::FSlot Slot, FLocMetadataObject& Object)
 {
 	FStructuredArchive::FRecord Record = Slot.EnterRecord();
 	int32 ValueCount = Object.Values.Num();
-	Record << NAMED_FIELD(ValueCount);
+	Record << SA_VALUE(TEXT("ValueCount"), ValueCount);
 
-	bool bIsLoading = Slot.GetUnderlyingArchive().IsLoading();
+	bool bIsLoading = Slot.GetArchiveState().IsLoading();
 
 	if (bIsLoading)
 	{
 		Object.Values.Reserve(ValueCount);
 	}
 
-	FStructuredArchive::FStream Stream = Record.EnterStream(FIELD_NAME_TEXT("Values"));
+	FStructuredArchive::FStream Stream = Record.EnterStream(SA_FIELD_NAME(TEXT("Values")));
 	TArray<FString> MapKeys;
 	Object.Values.GetKeys(MapKeys);
 	for (int32 i = 0; i < ValueCount; ++i)
@@ -373,9 +373,9 @@ void operator<<(FStructuredArchive::FSlot Slot, FLocMetadataObject& Object)
 			Key = MapKeys[i];
 		}
 
-		ValueRecord << NAMED_FIELD(Key);
+		ValueRecord << SA_VALUE(TEXT("Key"), Key);
 
-		FStructuredArchive::FSlot ValueSlot = ValueRecord.EnterField(FIELD_NAME_TEXT("Value"));
+		FStructuredArchive::FSlot ValueSlot = ValueRecord.EnterField(SA_FIELD_NAME(TEXT("Value")));
 		if (bIsLoading)
 		{
 			TSharedPtr<FLocMetadataValue> Value;
@@ -414,13 +414,13 @@ TSharedRef<FLocMetadataValue> FLocMetadataValueString::Clone() const
 
 FLocMetadataValueString::FLocMetadataValueString(FStructuredArchive::FSlot Slot)
 {
-	check(Slot.GetUnderlyingArchive().IsLoading());
+	check(Slot.GetArchiveState().IsLoading());
 	Slot << Value;
 }
 
 void FLocMetadataValueString::Serialize( FLocMetadataValueString& Value, FStructuredArchive::FSlot Slot )
 {
-	check(!Slot.GetUnderlyingArchive().IsLoading());
+	check(!Slot.GetArchiveState().IsLoading());
 
 	FString StringValue = Value.Value;
 	Slot << StringValue;
@@ -445,14 +445,14 @@ TSharedRef<FLocMetadataValue> FLocMetadataValueBoolean::Clone() const
 
 FLocMetadataValueBoolean::FLocMetadataValueBoolean(FStructuredArchive::FSlot Slot)
 {
-	check(Slot.GetUnderlyingArchive().IsLoading());
+	check(Slot.GetArchiveState().IsLoading());
 
 	Slot << Value;
 }
 
 void FLocMetadataValueBoolean::Serialize( FLocMetadataValueBoolean& Value, FStructuredArchive::FSlot Slot )
 {
-	check(!Slot.GetUnderlyingArchive().IsLoading());
+	check(!Slot.GetArchiveState().IsLoading());
 
 	bool BoolValue = Value.Value;
 	Slot << BoolValue;
@@ -552,7 +552,7 @@ FString FLocMetadataValueArray::ToString() const
 
 FLocMetadataValueArray::FLocMetadataValueArray(FStructuredArchive::FSlot Slot)
 {
-	check(Slot.GetUnderlyingArchive().IsLoading());
+	check(Slot.GetArchiveState().IsLoading());
 
 	int32 ElementCount;
 	FStructuredArchive::FArray Array = Slot.EnterArray(ElementCount);
@@ -566,7 +566,7 @@ FLocMetadataValueArray::FLocMetadataValueArray(FStructuredArchive::FSlot Slot)
 
 void FLocMetadataValueArray::Serialize(FLocMetadataValueArray& Value, FStructuredArchive::FSlot Slot)
 {
-	check(!Slot.GetUnderlyingArchive().IsLoading());
+	check(!Slot.GetArchiveState().IsLoading());
 
 	int32 ElementCount = Value.Value.Num();
 	FStructuredArchive::FArray Array = Slot.EnterArray(ElementCount);
@@ -619,14 +619,14 @@ FString FLocMetadataValueObject::ToString() const
 FLocMetadataValueObject::FLocMetadataValueObject(FStructuredArchive::FSlot Slot)
 	: Value(new FLocMetadataObject)
 {
-	check(Slot.GetUnderlyingArchive().IsLoading());
+	check(Slot.GetArchiveState().IsLoading());
 
 	Slot << *Value;
 }
 
 void FLocMetadataValueObject::Serialize( FLocMetadataValueObject& Value, FStructuredArchive::FSlot Slot )
 {
-	check(!Slot.GetUnderlyingArchive().IsLoading());
+	check(!Slot.GetArchiveState().IsLoading());
 
 	Slot << *(Value.Value);
 }

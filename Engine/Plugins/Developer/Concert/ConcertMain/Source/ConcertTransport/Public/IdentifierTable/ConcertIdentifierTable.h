@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -19,7 +19,7 @@ struct TConcertIdentifierTable_CaseSensitivePlainNameKeyFuncs : BaseKeyFuncs<Val
 	}
 	static FORCEINLINE uint32 GetKeyHash(const FName& Key)
 	{
-		return Key.GetDisplayIndex();
+		return GetTypeHash(Key.GetDisplayIndex());
 	}
 };
 

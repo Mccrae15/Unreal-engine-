@@ -1,71 +1,89 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "LateUpdateManager.h"
 #include "PrimitiveSceneProxy.h"
 #include "Components/PrimitiveComponent.h"
 #include "PrimitiveSceneInfo.h"
+#include "HeadMountedDisplayTypes.h"
 
-FLateUpdateManager::FLateUpdateManager() 
+FLateUpdateManager::FLateUpdateManager()
 	: LateUpdateGameWriteIndex(0)
 	, LateUpdateRenderReadIndex(0)
 {
-	SkipLateUpdate[0] = false;
-	SkipLateUpdate[1] = false;
 }
 
 void FLateUpdateManager::Setup(const FTransform& ParentToWorld, USceneComponent* Component, bool bSkipLateUpdate)
 {
 	check(IsInGameThread());
 
-	LateUpdateParentToWorld[LateUpdateGameWriteIndex] = ParentToWorld;
-	LateUpdatePrimitives[LateUpdateGameWriteIndex].Reset();
+	UpdateStates[LateUpdateGameWriteIndex].Primitives.Reset();
+	UpdateStates[LateUpdateGameWriteIndex].ParentToWorld = ParentToWorld;
 	GatherLateUpdatePrimitives(Component);
-	SkipLateUpdate[LateUpdateGameWriteIndex] = bSkipLateUpdate;
+	UpdateStates[LateUpdateGameWriteIndex].bSkip = bSkipLateUpdate;
+	++UpdateStates[LateUpdateGameWriteIndex].TrackingNumber;
 
-	LateUpdateGameWriteIndex = (LateUpdateGameWriteIndex + 1) % 2;
-}
+	int32 NextFrameRenderReadIndex = LateUpdateGameWriteIndex;
+	LateUpdateGameWriteIndex = 1 - LateUpdateGameWriteIndex;
 
-bool FLateUpdateManager::GetSkipLateUpdate_RenderThread() const
-{
-	return SkipLateUpdate[LateUpdateRenderReadIndex];
+	ENQUEUE_RENDER_COMMAND(UpdateLateUpdateRenderReadIndexCommand)(
+		[NextFrameRenderReadIndex, this](FRHICommandListImmediate& RHICmdList)
+	{
+		LateUpdateRenderReadIndex = NextFrameRenderReadIndex;
+	});
+
 }
 
 void FLateUpdateManager::Apply_RenderThread(FSceneInterface* Scene, const FTransform& OldRelativeTransform, const FTransform& NewRelativeTransform)
 {
 	check(IsInRenderingThread());
 
-	if (!LateUpdatePrimitives[LateUpdateRenderReadIndex].Num())
+	if (!UpdateStates[LateUpdateRenderReadIndex].Primitives.Num() || UpdateStates[LateUpdateRenderReadIndex].bSkip)
 	{
 		return;
 	}
 
-	if (GetSkipLateUpdate_RenderThread())
-	{
-		return;
-	}
-
-	const FTransform OldCameraTransform = OldRelativeTransform * LateUpdateParentToWorld[LateUpdateRenderReadIndex];
-	const FTransform NewCameraTransform = NewRelativeTransform * LateUpdateParentToWorld[LateUpdateRenderReadIndex];
+	const FTransform OldCameraTransform = OldRelativeTransform * UpdateStates[LateUpdateRenderReadIndex].ParentToWorld;
+	const FTransform NewCameraTransform = NewRelativeTransform * UpdateStates[LateUpdateRenderReadIndex].ParentToWorld;
 	const FMatrix LateUpdateTransform = (OldCameraTransform.Inverse() * NewCameraTransform).ToMatrixWithScale();
 
-	// Apply delta to the affected scene proxies
-	for (auto PrimitiveInfo : LateUpdatePrimitives[LateUpdateRenderReadIndex])
+	bool bIndicesHaveChanged = false;
+
+	// Apply delta to the cached scene proxies
+	// Also check whether any primitive indices have changed, in case the scene has been modified in the meantime.
+	for (auto& PrimitivePair : UpdateStates[LateUpdateRenderReadIndex].Primitives)
 	{
-		FPrimitiveSceneInfo* RetrievedSceneInfo = Scene->GetPrimitiveSceneInfo(*PrimitiveInfo.IndexAddress);
-		FPrimitiveSceneInfo* CachedSceneInfo = PrimitiveInfo.SceneInfo;
-		// If the retrieved scene info is different than our cached scene info then the primitive was removed from the scene
-		if (CachedSceneInfo == RetrievedSceneInfo && CachedSceneInfo->Proxy)
+		FPrimitiveSceneInfo* RetrievedSceneInfo = Scene->GetPrimitiveSceneInfo(PrimitivePair.Value);
+		FPrimitiveSceneInfo* CachedSceneInfo = PrimitivePair.Key;
+
+		// If the retrieved scene info is different than our cached scene info then the scene has changed in the meantime
+		// and we need to search through the entire scene to make sure it still exists.
+		if (CachedSceneInfo != RetrievedSceneInfo)
+		{
+			bIndicesHaveChanged = true;
+			break; // No need to continue here, as we are going to brute force the scene primitives below anyway.
+		}
+		else if (CachedSceneInfo->Proxy)
 		{
 			CachedSceneInfo->Proxy->ApplyLateUpdateTransform(LateUpdateTransform);
+			PrimitivePair.Value = -1; // Set the cached index to -1 to indicate that this primitive was already processed
 		}
 	}
-}
 
-void FLateUpdateManager::PostRender_RenderThread()
-{
-	LateUpdatePrimitives[LateUpdateRenderReadIndex].Reset();
-	SkipLateUpdate[LateUpdateRenderReadIndex] = false;
-	LateUpdateRenderReadIndex = (LateUpdateRenderReadIndex + 1) % 2;
+	// Indices have changed, so we need to scan the entire scene for primitives that might still exist
+	if (bIndicesHaveChanged)
+	{
+		int32 Index = 0;
+		FPrimitiveSceneInfo* RetrievedSceneInfo;
+		RetrievedSceneInfo = Scene->GetPrimitiveSceneInfo(Index++);
+		while(RetrievedSceneInfo)
+		{
+			if (RetrievedSceneInfo->Proxy && UpdateStates[LateUpdateRenderReadIndex].Primitives.Contains(RetrievedSceneInfo) && UpdateStates[LateUpdateRenderReadIndex].Primitives[RetrievedSceneInfo] >= 0)
+			{
+				RetrievedSceneInfo->Proxy->ApplyLateUpdateTransform(LateUpdateTransform);
+			}
+			RetrievedSceneInfo = Scene->GetPrimitiveSceneInfo(Index++);
+		}
+	}
 }
 
 void FLateUpdateManager::CacheSceneInfo(USceneComponent* Component)
@@ -75,12 +93,9 @@ void FLateUpdateManager::CacheSceneInfo(USceneComponent* Component)
 	if (PrimitiveComponent && PrimitiveComponent->SceneProxy)
 	{
 		FPrimitiveSceneInfo* PrimitiveSceneInfo = PrimitiveComponent->SceneProxy->GetPrimitiveSceneInfo();
-		if (PrimitiveSceneInfo)
+		if (PrimitiveSceneInfo && PrimitiveSceneInfo->IsIndexValid())
 		{
-			LateUpdatePrimitiveInfo PrimitiveInfo;
-			PrimitiveInfo.IndexAddress = PrimitiveSceneInfo->GetIndexAddress();
-			PrimitiveInfo.SceneInfo = PrimitiveSceneInfo;
-			LateUpdatePrimitives[LateUpdateGameWriteIndex].Add(PrimitiveInfo);
+			UpdateStates[LateUpdateGameWriteIndex].Primitives.Emplace(PrimitiveSceneInfo, PrimitiveSceneInfo->GetIndex());
 		}
 	}
 }

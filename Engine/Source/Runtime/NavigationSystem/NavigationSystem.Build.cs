@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 namespace UnrealBuildTool.Rules
 {
@@ -48,6 +48,16 @@ namespace UnrealBuildTool.Rules
             }
 
             SetupModulePhysicsSupport(Target);
+
+			if (Target.bCompileChaos || Target.bUseChaos)
+            {
+                PublicDependencyModuleNames.AddRange(
+                    new string[] {
+                        "GeometryCollectionCore",
+                        "GeometryCollectionEngine",
+                    }
+					);
+            }
 
             if (Target.bCompileRecast)
             {

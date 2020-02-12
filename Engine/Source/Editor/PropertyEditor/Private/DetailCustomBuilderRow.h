@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -28,7 +28,9 @@ public:
 	void OnGenerateChildren( FDetailNodeList& OutChildren );
 	bool IsInitiallyCollapsed() const;
 	FDetailWidgetRow GetWidgetRow();
-private:	
+	bool AreChildCustomizationsHidden() const;
+
+private:
 	/** Whether or not our parent is enabled */
 	TAttribute<bool> IsParentEnabled;
 	TSharedPtr<FDetailWidgetRow> HeaderRow;

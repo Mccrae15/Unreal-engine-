@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -14,10 +14,15 @@ struct FNiagaraScriptExecutionPaddingInfo
 public:
 	FNiagaraScriptExecutionPaddingInfo() : SrcOffset(0), DestOffset(0), SrcSize(0), DestSize(0) {}
 	FNiagaraScriptExecutionPaddingInfo(uint32 InSrcOffset, uint32 InDestOffset, uint32 InSrcSize, uint32 InDestSize) : SrcOffset(InSrcOffset), DestOffset(InDestOffset), SrcSize(InSrcSize), DestSize(InDestSize) {}
-	uint32 SrcOffset;
-	uint32 DestOffset;
-	uint32 SrcSize;
-	uint32 DestSize;
+
+	UPROPERTY()
+	uint16 SrcOffset;
+	UPROPERTY()
+	uint16 DestOffset;
+	UPROPERTY()
+	uint16 SrcSize;
+	UPROPERTY()
+	uint16 DestSize;
 };
 
 /**
@@ -44,14 +49,19 @@ public:
 	void AddScriptParams(UNiagaraScript* Script, ENiagaraSimTarget SimTarget, bool bTriggerRebind);
 	void CopyCurrToPrev();
 
-	virtual bool AddParameter(const FNiagaraVariable& Param, bool bInitInterfaces = true, bool bTriggerRebind = true) override
+	virtual bool AddParameter(const FNiagaraVariable& Param, bool bInitInterfaces = true, bool bTriggerRebind = true, int32* OutOffset = nullptr) override
 	{
-		if (FNiagaraParameterStore::AddParameter(Param, bInitInterfaces, bTriggerRebind))
+		int32 NewParamOffset = INDEX_NONE;
+		const bool bAdded = FNiagaraParameterStore::AddParameter(Param, bInitInterfaces, bTriggerRebind, &NewParamOffset);
+		if (bAdded)
 		{
-			AddPaddedParamSize(Param.GetType(), IndexOf(Param));
-			return true;
+			AddPaddedParamSize(Param.GetType(), NewParamOffset);
 		}
-		return false;
+		if (OutOffset)
+		{
+			*OutOffset = NewParamOffset;
+		}
+		return bAdded;
 	}
 
 	virtual bool RemoveParameter(const FNiagaraVariable& Param) override
@@ -74,19 +84,20 @@ public:
 	}
 
 	// Just the external parameters, not previous or internal...
-	uint32 GetExternalParameterSize() { return ParameterSize; }
+	uint32 GetExternalParameterSize() const { return ParameterSize; }
 
 	// The entire buffer padded out by the required alignment of the types..
-	uint32 GetPaddedParameterSizeInBytes() { return PaddedParameterSize; }
+	uint32 GetPaddedParameterSizeInBytes() const { return PaddedParameterSize; }
 
 	// Helper that converts the data from the base type array internally into the padded out renderer-ready format.
 	void CopyParameterDataToPaddedBuffer(uint8* InTargetBuffer, uint32 InTargetBufferSizeInBytes);
 
 
 	bool IsInitialized() const {return bInitialized;}
-
+	void SetAsInitialized() { bInitialized = true; }
 protected:
 	void AddPaddedParamSize(const FNiagaraTypeDefinition& InParamType, uint32 InOffset);
+	void AddAlignmentPadding();
 
 private:
 
@@ -97,7 +108,7 @@ private:
 	UPROPERTY()
 	uint32 PaddedParameterSize;
 
-	static void GenerateLayoutInfoInternal(TArray<FNiagaraScriptExecutionPaddingInfo>& Members, uint32& NextMemberOffset, const UStruct* InSrcStruct, uint32 InSrcOffset);
+	static uint32 GenerateLayoutInfoInternal(TArray<FNiagaraScriptExecutionPaddingInfo>& Members, uint32& NextMemberOffset, const UStruct* InSrcStruct, uint32 InSrcOffset);
 
 	UPROPERTY()
 	TArray<FNiagaraScriptExecutionPaddingInfo> PaddingInfo;

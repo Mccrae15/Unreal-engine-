@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 namespace UnrealBuildTool.Rules
 {
@@ -11,7 +11,7 @@ namespace UnrealBuildTool.Rules
 				{
 					"Core",
 					"CoreUObject",
-                }
+				}
 			);
 
 			PrivateDependencyModuleNames.AddRange(
@@ -19,6 +19,7 @@ namespace UnrealBuildTool.Rules
 				{
 					"Concert",
 					"ConcertTransport",
+					"SQLiteCore",
 				}
 			);
 
@@ -32,5 +33,5 @@ namespace UnrealBuildTool.Rules
 				);
 			}
 		}
-    }
+	}
 }

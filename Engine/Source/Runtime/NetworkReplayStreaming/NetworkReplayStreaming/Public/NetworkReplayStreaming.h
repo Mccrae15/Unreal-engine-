@@ -1,15 +1,16 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
 // Dependencies.
 
 #include "CoreMinimal.h"
+#include "Misc/NetworkVersion.h"
 #include "Modules/ModuleInterface.h"
 #include "Modules/ModuleManager.h"
 #include "Serialization/JsonSerializerMacros.h"
 
-class FNetworkReplayVersion;
+class IAnalyticsProvider;
 
 class FReplayEventListItem : public FJsonSerializable
 {
@@ -371,6 +372,16 @@ static FORCEINLINE FRequestEventDataCallback UpgradeRequestEventDelegate(const F
 }
 /** End RequestEventData Types */
 
+/** Start RequestEventGroupData Types */
+struct FRequestEventGroupDataResult : public FStreamingResultBase
+{
+	TArray<FReplayEventListItem> ReplayEventListItems;
+	TArray<FRequestEventDataResult> ReplayEventListResults;
+};
+
+DECLARE_DELEGATE_OneParam(FRequestEventGroupDataCallback, const FRequestEventGroupDataResult&);
+/** End RequestEventGroupData Types */
+
 /** Start DownloadHeader Types */
 struct FDownloadHeaderResult : public FStreamingResultBase
 {
@@ -446,6 +457,21 @@ struct FRenameReplayResult : public FStreamingResultBase
 DECLARE_DELEGATE_OneParam(FRenameReplayCallback, const FRenameReplayResult&);
 /** End KeepReplay Types */
 
+enum class EReplayCheckpointType : uint8
+{
+	Full,
+	Delta
+};
+
+struct FStartStreamingParameters
+{
+	FString CustomName;
+	FString FriendlyName;
+	FString DemoURL;
+	TArray<int32> UserIndices;
+	FNetworkReplayVersion ReplayVersion;
+	bool bRecord;
+};
 
 /**
  * Generic interface for network replay streaming
@@ -454,13 +480,12 @@ DECLARE_DELEGATE_OneParam(FRenameReplayCallback, const FRenameReplayResult&);
  * that delegate upon completion, and indicates success / failure through an appropriate
  * result type passed into the delegate.
  */
-class INetworkReplayStreamer 
+class NETWORKREPLAYSTREAMING_API INetworkReplayStreamer 
 {
 public:
 	virtual ~INetworkReplayStreamer() {}
 
-	virtual void StartStreaming(const FString& CustomName, const FString& FriendlyName, const TArray< FString >& UserNames, bool bRecord, const FNetworkReplayVersion& ReplayVersion, const FStartStreamingCallback& Delegate) = 0;
-	virtual void StartStreaming(const FString& CustomName, const FString& FriendlyName, const TArray< int32 >& UserIndices, bool bRecord, const FNetworkReplayVersion& ReplayVersion, const FStartStreamingCallback& Delegate) = 0;
+	virtual void StartStreaming(const FStartStreamingParameters& Params, const FStartStreamingCallback& Delegate) = 0;
 
 	virtual void StopStreaming() = 0;
 	virtual FArchive* GetHeaderArchive() = 0;
@@ -468,11 +493,15 @@ public:
 	virtual FArchive* GetCheckpointArchive() = 0;
 	virtual void FlushCheckpoint(const uint32 TimeInMS) = 0;
 
-	virtual void GotoCheckpointIndex(const int32 CheckpointIndex, const FGotoCallback& Delegate) = 0;
+	virtual void GotoCheckpointIndex(const int32 CheckpointIndex, const FGotoCallback& Delegate, EReplayCheckpointType CheckpointType) = 0;
 
-	virtual void GotoTimeInMS(const uint32 TimeInMS, const FGotoCallback& Delegate) = 0;
+	virtual void GotoTimeInMS(const uint32 TimeInMS, const FGotoCallback& Delegate, EReplayCheckpointType CheckpointType) = 0;
+
+	virtual bool IsCheckpointTypeSupported(EReplayCheckpointType CheckpointType) const = 0;
 
 	virtual void UpdateTotalDemoTime(uint32 TimeInMS) = 0;
+	virtual void UpdatePlaybackTime(uint32 TimeInMS) = 0;
+
 	virtual uint32 GetTotalDemoTime() const = 0;
 	virtual bool IsDataAvailable() const = 0;
 	virtual void SetHighPriorityTimeRange(const uint32 StartTimeInMS, const uint32 EndTimeInMS) = 0;
@@ -488,7 +517,11 @@ public:
 
 	virtual void RequestEventData(const FString& EventID, const FRequestEventDataCallback& Delegate) = 0;
 	virtual void RequestEventData(const FString& ReplayName, const FString& EventID, const FRequestEventDataCallback& Delegate) = 0;
-	virtual void RequestEventData(const FString& ReplayName, const FString& EventId, const int32 UserIndex, const FRequestEventDataCallback& Delegate) = 0;
+	virtual void RequestEventData(const FString& ReplayName, const FString& EventID, const int32 UserIndex, const FRequestEventDataCallback& Delegate) = 0;
+
+	virtual void RequestEventGroupData(const FString& Group, const FRequestEventGroupDataCallback& Delegate) = 0;
+	virtual void RequestEventGroupData(const FString& ReplayName, const FString& Group, const FRequestEventGroupDataCallback& Delegate) = 0;
+	virtual void RequestEventGroupData(const FString& ReplayName, const FString& Group, const int32 UserIndex, const FRequestEventGroupDataCallback& Delegate) = 0;
 
 	virtual void SearchEvents(const FString& EventGroup, const FSearchEventsCallback& Delegate) = 0;
 	virtual void RefreshHeader() = 0;
@@ -526,6 +559,8 @@ public:
 
 	/** Returns true if the playing stream is currently in progress */
 	virtual bool IsLive() const = 0;
+
+	/** Returns the active replay name */
 	virtual FString	GetReplayID() const = 0;
 
 	/**
@@ -535,29 +570,20 @@ public:
 	 * @param Delegate A delegate that will be executed if bound when the delete operation completes
 	 */
 	virtual void DeleteFinishedStream(const FString& StreamName, const FDeleteFinishedStreamCallback& Delegate) = 0;
-	virtual void DeleteFinishedStream( const FString& StreamName, const int32 UserIndex, const FDeleteFinishedStreamCallback& Delegate ) = 0;
-
-	/**
-	 * Retrieves the streams that are available for viewing. May execute asynchronously.
-	 *
-	 * @param Delegate A delegate that will be executed if bound when the list of streams is available
-	 */
-	virtual void EnumerateStreams(const FNetworkReplayVersion& ReplayVersion, const FString& UserString, const FString& MetaString, const FEnumerateStreamsCallback& Delegate) = 0;
+	virtual void DeleteFinishedStream(const FString& StreamName, const int32 UserIndex, const FDeleteFinishedStreamCallback& Delegate) = 0;
 
 	/**
 	* Retrieves the streams that are available for viewing. May execute asynchronously.
 	* Allows the caller to pass in a custom list of query parameters
 	*/
-	virtual void EnumerateStreams(const FNetworkReplayVersion& ReplayVersion, const FString& UserString, const FString& MetaString, const TArray<FString>& ExtraParms, const FEnumerateStreamsCallback& Delegate) = 0;
-	virtual void EnumerateStreams( const FNetworkReplayVersion& InReplayVersion, const int32 UserIndex, const FString& MetaString, const TArray< FString >& ExtraParms, const FEnumerateStreamsCallback& Delegate ) = 0;
+	virtual void EnumerateStreams(const FNetworkReplayVersion& ReplayVersion, const int32 UserIndex, const FString& MetaString, const TArray< FString >& ExtraParms, const FEnumerateStreamsCallback& Delegate) = 0;
 
 	/**
 	 * Retrieves the streams that have been recently viewed. May execute asynchronously.
 	 *
 	 * @param Delegate A delegate that will be executed if bound when the list of streams is available
 	 */
-	virtual void EnumerateRecentStreams(const FNetworkReplayVersion& ReplayVersion, const FString& RecentViewer, const FEnumerateStreamsCallback& Delegate) = 0;
-	virtual void EnumerateRecentStreams( const FNetworkReplayVersion& ReplayVersion, const int32 UserIndex, const FEnumerateStreamsCallback& Delegate ) = 0;
+	virtual void EnumerateRecentStreams(const FNetworkReplayVersion& ReplayVersion, const int32 UserIndex, const FEnumerateStreamsCallback& Delegate) = 0;
 
 	/** Returns the last error that occurred while streaming replays */
 	virtual ENetworkReplayError::Type GetLastError() const = 0;
@@ -592,23 +618,33 @@ public:
 	 * Note, this will always fail for streamers that don't support replays stored on disk.
 	 */
 	virtual EStreamingOperationResult GetDemoPath(FString& DemoPath) const = 0;
+
+	virtual void SetAnalyticsProvider(TSharedPtr<IAnalyticsProvider>& InProvider) {}
+
+	virtual void Exec(const TCHAR* Cmd, FOutputDevice& Ar) {}
 };
 
 /** Replay streamer factory */
 class INetworkReplayStreamingFactory : public IModuleInterface
 {
 public:
-	virtual TSharedPtr< INetworkReplayStreamer > CreateReplayStreamer() = 0;
+	virtual TSharedPtr<INetworkReplayStreamer> CreateReplayStreamer() = 0;
+	virtual void Flush() {}
 };
 
 /** Replay streaming factory manager */
-class FNetworkReplayStreaming : public IModuleInterface
+class FNetworkReplayStreaming : public IModuleInterface, public FSelfRegisteringExec
 {
 public:
+	FNetworkReplayStreaming() {}
+	virtual ~FNetworkReplayStreaming() {}
+
 	static inline FNetworkReplayStreaming& Get()
 	{
-		return FModuleManager::LoadModuleChecked< FNetworkReplayStreaming >( "NetworkReplayStreaming" );
+		return FModuleManager::LoadModuleChecked<FNetworkReplayStreaming>("NetworkReplayStreaming");
 	}
+
+	NETWORKREPLAYSTREAMING_API void Flush();
 
 	virtual INetworkReplayStreamingFactory& GetFactory(const TCHAR* FactoryNameOverride = nullptr);
 
@@ -627,4 +663,14 @@ public:
 	// Gets the configured value for whether or not we should use FDateTime::Now as the automatic replay postfix.
 	// If false, it's up to the streamer to determine a proper postfix.
 	static NETWORKREPLAYSTREAMING_API bool UseDateTimeAsAutomaticReplayPostfix();
+
+	// Gets the file extension for replay streamers to use when recording replay files to the local file system.
+	// Includes the "." prefix
+	static NETWORKREPLAYSTREAMING_API FString GetReplayFileExtension();
+
+	// FSelfRegisteringExec interface
+	virtual bool Exec(UWorld* InWorld, const TCHAR* Cmd, FOutputDevice& Ar) override;
+
+private:
+	TSet<FName> LoadedFactories;
 };

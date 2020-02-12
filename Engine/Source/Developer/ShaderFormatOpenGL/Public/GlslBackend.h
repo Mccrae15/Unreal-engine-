@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -11,9 +11,14 @@ class SHADERFORMATOPENGL_API FGlslLanguageSpec : public ILanguageSpec
 protected:
 	bool bIsES2;
 	bool bIsWebGL;
+	bool bIsES31;
 
 public:
-	FGlslLanguageSpec(bool bInIsES2, bool bInIsWebGL) : bIsES2(bInIsES2), bIsWebGL(bInIsWebGL) {}
+	FGlslLanguageSpec(bool bInIsES2, bool bInIsWebGL, bool bInIsES31) 
+		: bIsES2(bInIsES2)
+		, bIsWebGL(bInIsWebGL) 
+		, bIsES31(bInIsES31)
+	{}
 
 	virtual bool SupportsDeterminantIntrinsic() const override
 	{
@@ -50,7 +55,8 @@ struct SHADERFORMATOPENGL_API FGlslCodeBackend : public FCodeBackend
 {
 	FGlslCodeBackend(unsigned int InHlslCompileFlags, EHlslCompileTarget InTarget, bool bInIsWebGL) :
 		FCodeBackend(InHlslCompileFlags, InTarget),
-		bIsWebGL(bInIsWebGL)
+		bIsWebGL(bInIsWebGL),
+		bExplicitDepthWrites(false)
 	{
 	}
 
@@ -93,6 +99,7 @@ struct SHADERFORMATOPENGL_API FGlslCodeBackend : public FCodeBackend
 	}
 
 	bool bIsWebGL;
+	bool bExplicitDepthWrites;
 };
 
 

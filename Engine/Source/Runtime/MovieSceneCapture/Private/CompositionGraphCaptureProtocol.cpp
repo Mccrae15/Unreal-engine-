@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "Protocols/CompositionGraphCaptureProtocol.h"
 #include "Misc/CommandLine.h"
@@ -11,6 +11,7 @@
 #include "SceneViewExtension.h"
 #include "Materials/Material.h"
 #include "BufferVisualizationData.h"
+#include "MovieSceneCaptureModule.h"
 #include "MovieSceneCaptureSettings.h"
 
 struct FFrameCaptureViewExtension : public FSceneViewExtensionBase
@@ -31,6 +32,11 @@ struct FFrameCaptureViewExtension : public FSceneViewExtensionBase
 		CVarDumpGamut = IConsoleManager::Get().FindConsoleVariable(TEXT("r.HDR.Display.ColorGamut"));
 		CVarDumpDevice = IConsoleManager::Get().FindConsoleVariable(TEXT("r.HDR.Display.OutputDevice"));
 
+		RestoreDumpHDR = CVarDumpFramesAsHDR->GetInt();
+		RestoreHDRCompressionQuality = CVarHDRCompressionQuality->GetInt();
+		RestoreDumpGamut = CVarDumpGamut->GetInt();
+		RestoreDumpDevice = CVarDumpDevice->GetInt();
+
 		if (CaptureGamut == HCGM_Linear)
 		{
 			CVarDumpGamut->Set(1);
@@ -40,11 +46,6 @@ struct FFrameCaptureViewExtension : public FSceneViewExtensionBase
 		{
 			CVarDumpGamut->Set(CaptureGamut);
 		}
-
-		RestoreDumpHDR = CVarDumpFramesAsHDR->GetInt();
-		RestoreHDRCompressionQuality = CVarHDRCompressionQuality->GetInt();
-		RestoreDumpGamut = CVarDumpGamut->GetInt();
-		RestoreDumpDevice = CVarDumpDevice->GetInt();
 
 		Disable();
 	}
@@ -109,7 +110,7 @@ struct FFrameCaptureViewExtension : public FSceneViewExtensionBase
 				: FinalPostProcessSettings(InFinalPostProcessSettings), RenderPasses(InRenderPasses)
 			{}
 
-			void ProcessValue(const FString& InName, UMaterial* Material, const FText& InText)
+			void ProcessValue(const FString& InName, UMaterialInterface* Material, const FText& InText)
 			{
 				if (!RenderPasses.Num() || RenderPasses.Contains(InName) || RenderPasses.Contains(InText.ToString()))
 				{
@@ -174,7 +175,7 @@ bool UCompositionGraphCaptureProtocol::SetupImpl()
 	SceneViewport = InitSettings->SceneViewport;
 
 	FString OverrideRenderPasses;
-	if (FParse::Value(FCommandLine::Get(), TEXT("-CustomRenderPasses="), OverrideRenderPasses))
+	if (FParse::Value(FCommandLine::Get(), TEXT("-CustomRenderPasses="), OverrideRenderPasses, /*bShouldStopOnSeparator*/ false))
 	{
 		OverrideRenderPasses.ParseIntoArray(IncludeRenderPasses.Value, TEXT(","), true);
 	}
@@ -212,7 +213,7 @@ void UCompositionGraphCaptureProtocol::OnLoadConfigImpl(FMovieSceneCaptureSettin
 		OutputFormat.Append(TEXT(".{frame}"));
 
 		InSettings.OutputFormat = OutputFormat;
-		UE_LOG(LogTemp, Warning, TEXT("Automatically appended .{frame} to the format string as specified format string did not provide a way to differentiate between frames via {frame} or {shot_frame}!"));
+		UE_LOG(LogMovieSceneCapture, Display, TEXT("Automatically appended .{frame} to the format string as specified format string did not provide a way to differentiate between frames via {frame} or {shot_frame}!"));
 	}
 
 	// Add {material} if it doesn't already exist

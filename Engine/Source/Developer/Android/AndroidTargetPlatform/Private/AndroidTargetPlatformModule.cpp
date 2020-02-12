@@ -1,8 +1,8 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "CoreMinimal.h"
 #include "Modules/ModuleManager.h"
-#include "Android/AndroidProperties.h"
+#include "Android/AndroidPlatformProperties.h"
 #include "Interfaces/ITargetPlatformModule.h"
 #include "Common/TargetPlatformBase.h"
 #include "Interfaces/IAndroidDeviceDetection.h"
@@ -40,7 +40,7 @@ public:
 
 	virtual TArray<ITargetPlatform*> GetTargetPlatforms() override
 	{
-		if (TargetPlatforms.Num() == 0)
+		if (TargetPlatforms.Num() == 0 && FAndroidTargetPlatform::IsUsable())
 		{
 			for (int32 Type = 0; Type < 2; Type++)
 			{

@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -24,6 +24,10 @@ class USceneOutlinerSettings
 	/** True when the Scene Outliner is showing only Actors that exist in the current level */
 	UPROPERTY(config)
 	uint32 bShowOnlyActorsInCurrentLevel:1;
+
+	/** True when the Scene Outliner is showing only Folders containing  non-hidden Actors */
+	UPROPERTY(config)
+	uint32 bHideFoldersContainingHiddenActors : 1;
 
 	/** True when the Scene Outliner is only displaying selected Actors */
 	UPROPERTY(config)

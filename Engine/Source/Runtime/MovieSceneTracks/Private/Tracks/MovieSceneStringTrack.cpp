@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "Tracks/MovieSceneStringTrack.h"
 #include "MovieSceneCommonHelpers.h"
@@ -63,6 +63,11 @@ void UMovieSceneStringTrack::RemoveSection(UMovieSceneSection& Section)
 	Sections.Remove(&Section);
 }
 
+
+void UMovieSceneStringTrack::RemoveSectionAt(int32 SectionIndex)
+{
+	Sections.RemoveAt(SectionIndex);
+}
 
 #if WITH_EDITORONLY_DATA
 

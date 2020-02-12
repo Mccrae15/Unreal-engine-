@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "OnlineHotfixManager.h"
 #include "OnlineSubsystemUtils.h"
@@ -13,6 +13,7 @@
 
 #include "Misc/PackageName.h"
 #include "Misc/CommandLine.h"
+#include "Misc/EngineVersion.h"
 #include "Misc/FileHelper.h"
 #include "Misc/CoreDelegates.h"
 #include "Misc/App.h"
@@ -22,12 +23,18 @@
 #include "Curves/CurveFloat.h"
 #include "Engine/BlueprintGeneratedClass.h"
 
+#ifdef WITH_ONLINETRACING
+#include "OnlineTracingModule.h"
+#endif
+
 DEFINE_LOG_CATEGORY(LogHotfixManager);
 
 /** This character must be between important pieces of file information (platform, initype, version) */
 #define HOTFIX_SEPARATOR TEXT("_")
 /** The prefix for any hotfix file that expects to indicate version information */
 #define HOTFIX_VERSION_TAG TEXT("Ver-")
+/** The prefix for any hotfix file that expects to indicate branch version information */
+#define HOTFIX_BRANCH_VERSION_TAG TEXT("Branch-")
 
 FName NAME_HotfixManager(TEXT("HotfixManager"));
 
@@ -60,14 +67,26 @@ namespace
 		return NetVerStr;
 	}
 
+	/** @return the expected branch version for hotfix files determined at compile time */
+	FString GetBranchVersion()
+	{
+		static FString BranchVersion;
+		if (BranchVersion.IsEmpty())
+		{
+			BranchVersion = HOTFIX_BRANCH_VERSION_TAG + FPaths::GetCleanFilename(FEngineVersion::Current().GetBranch());
+		}
+		return BranchVersion;
+	}
+
 	/**
 	 * Given a hotfix file name, return the file name with version stripped out and exposed separately
 	 *
 	 * @param InFilename name of file to search for version information
 	 * @param OutFilename name with version information removed
-	 * @param OutVersion version of the hotfix file it present in the name
+	 * @param OutNetVersion version of the hotfix file it present in the name
+	 * @param OutBranchVersion version of the hotfix file it present in the name
 	 */
-	void GetFilenameAndVersion(const FString& InFilename, FString& OutFilename, FString& OutVersion)
+	void GetFilenameAndVersion(const FString& InFilename, FString& OutFilename, FString& OutNetVersion, FString& OutBranchVersion)
 	{
 		TArray<FString> FileParts;
 		int32 NumTokens = InFilename.ParseIntoArray(FileParts, HOTFIX_SEPARATOR);
@@ -77,7 +96,11 @@ namespace
 			{
 				if (FileParts[i].StartsWith(HOTFIX_VERSION_TAG))
 				{
-					OutVersion = FileParts[i];
+					OutNetVersion = FileParts[i];
+				}
+				else if (FileParts[i].StartsWith(HOTFIX_BRANCH_VERSION_TAG))
+				{
+					OutBranchVersion = FileParts[i];
 				}
 				else
 				{
@@ -103,22 +126,35 @@ namespace
 	 */
 	bool IsCompatibleHotfixFile(const FString& InFilename, FString& OutFilename)
 	{
-		bool bHasVersion = false;
-		bool bCompatibleHotfix = false;
-		const FString NetworkVersion = GetNetworkVersion();
-		FString OutVersion;
-		GetFilenameAndVersion(InFilename, OutFilename, OutVersion);
+		bool bHasNetVersion = false;
+		bool bCompatibleNetHotfix = false;
+		bool bHasBranchVersion = false;
+		bool bCompatibleBranchHotfix = false;
+		FString OutNetVersion;
+		FString OutBranchVersion;
+		GetFilenameAndVersion(InFilename, OutFilename, OutNetVersion, OutBranchVersion);
 
-		if (!OutVersion.IsEmpty())
+		if (!OutNetVersion.IsEmpty())
 		{
-			bHasVersion = true;
-			if (OutVersion == NetworkVersion)
+			bHasNetVersion = true;
+			const FString NetworkVersion = GetNetworkVersion();
+			if (OutNetVersion == NetworkVersion)
 			{
-				bCompatibleHotfix = true;
+				bCompatibleNetHotfix = true;
 			}
 		}
 
-		return bCompatibleHotfix || !bHasVersion;
+		if (!OutBranchVersion.IsEmpty())
+		{
+			bHasBranchVersion = true;
+			const FString BranchVersion = GetBranchVersion();
+			if (OutBranchVersion == BranchVersion)
+			{
+				bCompatibleBranchHotfix = true;
+			}
+		}
+
+		return (bCompatibleNetHotfix || !bHasNetVersion) && (bCompatibleBranchHotfix || !bHasBranchVersion);
 	}
 }
 
@@ -271,8 +307,8 @@ struct FHotfixFileSortPredicate
 
 			if (InHotfixName.EndsWith(TEXT("INI")))
 			{
-				FString HotfixName, NetworkVersion;
-				GetFilenameAndVersion(InHotfixName, HotfixName, NetworkVersion);
+				FString HotfixName, NetworkVersion, BranchVersion;
+				GetFilenameAndVersion(InHotfixName, HotfixName, NetworkVersion, BranchVersion);
 
 				// Defaults are applied first
 				if (HotfixName.StartsWith(DefaultPrefix))
@@ -295,9 +331,15 @@ struct FHotfixFileSortPredicate
 					Priority = 40;
 				}
 
+				if (!BranchVersion.IsEmpty())
+				{
+					// Branch versioned hotfixes apply after all but net versioned hotfixes within their type
+					Priority += 3;
+				}
+
 				if (!NetworkVersion.IsEmpty())
 				{
-					// Versioned hotfixes apply last within their type
+					// Network versioned hotfixes apply last within their type
 					Priority += 5;
 				}
 			}
@@ -423,6 +465,11 @@ void UOnlineHotfixManager::CheckAvailability(FOnHotfixAvailableComplete& InCompl
 	}
 }
 
+void UOnlineHotfixManager::OnHotfixAvailablityCheck(const TArray<FCloudFileHeader>& PendingChangedFiles, const TArray<FCloudFileHeader>& PendingRemoveFiles)
+{
+	// empty in base class
+}
+
 void UOnlineHotfixManager::OnEnumerateFilesForAvailabilityComplete(bool bWasSuccessful, const FString& ErrorStr, FOnHotfixAvailableComplete InCompletionDelegate)
 {
 	if (OnlineTitleFile.IsValid())
@@ -459,6 +506,8 @@ void UOnlineHotfixManager::OnEnumerateFilesForAvailabilityComplete(bool bWasSucc
 			UE_LOG(LogHotfixManager, Display, TEXT("Returned hotfix data is the same as last application, returning nothing to do"));
 			Result = EHotfixResult::SuccessNoChange;
 		}
+
+		OnHotfixAvailablityCheck(ChangedHotfixFileList, RemovedHotfixFileList);
 
 		// Restore state to before the check
 		RemovedHotfixFileList.Empty();
@@ -741,7 +790,8 @@ FString UOnlineHotfixManager::GetStrippedConfigFileName(const FString& IniName)
 {
 	FString StrippedIniName;
 	FString NetworkVersion;
-	GetFilenameAndVersion(IniName, StrippedIniName, NetworkVersion);
+	FString BranchVersion;
+	GetFilenameAndVersion(IniName, StrippedIniName, NetworkVersion, BranchVersion);
 
 	if (StrippedIniName.StartsWith(PlatformPrefix))
 	{
@@ -810,6 +860,7 @@ bool UOnlineHotfixManager::HotfixIniFile(const FString& FileName, const FString&
 	bool bUpdateLogSuppression = false;
 	bool bUpdateConsoleVariables = false;
 	bool bUpdateHttpConfigs = false;
+	bool bUpdateOnlineTracing = false;
 	TSet<FString> OnlineSubSections;
 	// Find the set of object classes that were affected
 	while (StartIndex >= 0 && StartIndex < IniData.Len() && EndIndex >= StartIndex)
@@ -865,8 +916,9 @@ bool UOnlineHotfixManager::HotfixIniFile(const FString& FileName, const FString&
 				{
 					const TCHAR* LogConfigSection = TEXT("[Core.Log]");
 					const TCHAR* ConsoleVariableSection = TEXT("[ConsoleVariables]");
-					const TCHAR* HttpSection = TEXT("[HTTP]");
+					const TCHAR* HttpSection = TEXT("[HTTP"); // note "]" omitted on purpose since we want a partial match
 					const TCHAR* OnlineSubSectionKey = TEXT("[OnlineSubsystem"); // note "]" omitted on purpose since we want a partial match
+					const TCHAR* OnlineTracingSection = TEXT("[OnlineTracing]");
 					if (!bUpdateLogSuppression && FCString::Strnicmp(*IniData + StartIndex, LogConfigSection, FCString::Strlen(LogConfigSection)) == 0)
 					{
 						bUpdateLogSuppression = true;
@@ -878,6 +930,10 @@ bool UOnlineHotfixManager::HotfixIniFile(const FString& FileName, const FString&
 					else if (!bUpdateHttpConfigs &&	FCString::Strnicmp(*IniData + StartIndex, HttpSection, FCString::Strlen(HttpSection)) == 0)
 					{
 						bUpdateHttpConfigs = true;
+					}
+					else if (!bUpdateOnlineTracing && FCString::Strnicmp(*IniData + StartIndex, OnlineTracingSection, FCString::Strlen(OnlineTracingSection)) == 0)
+					{
+						bUpdateOnlineTracing = true;
 					}
 					else if (FCString::Strnicmp(*IniData + StartIndex, OnlineSubSectionKey, FCString::Strlen(OnlineSubSectionKey)) == 0)
 					{
@@ -999,11 +1055,30 @@ bool UOnlineHotfixManager::HotfixIniFile(const FString& FileName, const FString&
 		FHttpModule::Get().UpdateConfigs();
 	}
 
+	// Reload configs for tracing system, this may init or tear it down if enable is toggled
+#ifdef WITH_ONLINETRACING
+	if (bUpdateOnlineTracing && 
+		FOnlineTracingModule::IsAvailable())
+	{
+		FOnlineTracingModule::Get().UpdateConfig();
+	}
+#endif
+
 	// Reload configs relevant to OSS config sections that were updated
 	IOnlineSubsystem* OnlineSub = IOnlineSubsystem::Get(OSSName.Len() ? FName(*OSSName, FNAME_Find) : NAME_None);
 	if (OnlineSub != nullptr)
 	{
 		OnlineSub->ReloadConfigs(OnlineSubSections);
+	}
+
+	// If there is an embedded MCP and it's loaded, Reload configs relevant to OSS config sections that were updated
+	if (IOnlineSubsystem::IsLoaded(MCP_SUBSYSTEM_EMBEDDED))
+	{
+		IOnlineSubsystem* OnlineSubEmbedded = IOnlineSubsystem::Get(MCP_SUBSYSTEM_EMBEDDED);
+		if (OnlineSubEmbedded != nullptr)
+		{
+			OnlineSubEmbedded->ReloadConfigs(OnlineSubSections);
+		}
 	}
 
 	UE_LOG(LogHotfixManager, Log, TEXT("Updating config from %s took %f seconds and reloaded %d objects"),
@@ -1459,14 +1534,14 @@ void UOnlineHotfixManager::HotfixRowUpdate(UObject* Asset, const FString& AssetP
 	{
 		// Edit the row with the new value.
 		bool bWasDataTableChanged = false;
-		UProperty* DataTableRowProperty = DataTable->GetRowStruct()->FindPropertyByName(FName(*ColumnName));
+		FProperty* DataTableRowProperty = DataTable->GetRowStruct()->FindPropertyByName(FName(*ColumnName));
 		if (DataTableRowProperty)
 		{
 			// See what type of property this is.
-			UNumericProperty* NumProp = Cast<UNumericProperty>(DataTableRowProperty);
-			UStrProperty* StrProp = Cast<UStrProperty>(DataTableRowProperty);
-			UNameProperty* NameProp = Cast<UNameProperty>(DataTableRowProperty);
-			USoftObjectProperty* SoftObjProp = Cast<USoftObjectProperty>(DataTableRowProperty);
+			FNumericProperty* NumProp = CastField<FNumericProperty>(DataTableRowProperty);
+			FStrProperty* StrProp = CastField<FStrProperty>(DataTableRowProperty);
+			FNameProperty* NameProp = CastField<FNameProperty>(DataTableRowProperty);
+			FSoftObjectProperty* SoftObjProp = CastField<FSoftObjectProperty>(DataTableRowProperty);
 
 			// Get the row data by name.
 			static const FString Context = FString(TEXT("UOnlineHotfixManager::PatchAssetsFromIniFiles"));
@@ -1542,7 +1617,7 @@ void UOnlineHotfixManager::HotfixRowUpdate(UObject* Asset, const FString& AssetP
 
 						if (Error.Len() > 0)
 						{
-							const FString Problem(FString::Printf(TEXT("The data table row property named %s is not a UNumericProperty, UStrProperty, UNameProperty, or USoftObjectProperty and it should be."), *ColumnName));
+							const FString Problem(FString::Printf(TEXT("The data table row property named %s is not a FNumericProperty, FStrProperty, FNameProperty, or FSoftObjectProperty and it should be."), *ColumnName));
 							ProblemStrings.Add(Problem);
 							ProblemStrings.Add(FString::Printf(TEXT("%s"), *Error));
 						}

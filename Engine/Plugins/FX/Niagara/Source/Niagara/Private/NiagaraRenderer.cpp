@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "NiagaraRenderer.h"
 #include "ParticleResources.h"
@@ -8,320 +8,424 @@
 #include "NiagaraVertexFactory.h"
 #include "Engine/Engine.h"
 #include "DynamicBufferAllocator.h"
+#include "NiagaraEmitterInstanceBatcher.h"
+#include "NiagaraGPUSortInfo.h"
 
-DECLARE_CYCLE_STAT(TEXT("Generate Particle Lights"), STAT_NiagaraGenLights, STATGROUP_Niagara);
 DECLARE_CYCLE_STAT(TEXT("Sort Particles"), STAT_NiagaraSortParticles, STATGROUP_Niagara);
+DECLARE_CYCLE_STAT(TEXT("Global Float Alloc - All"), STAT_NiagaraAllocateGlobalFloatAll, STATGROUP_Niagara);
+DECLARE_CYCLE_STAT(TEXT("Global Float Alloc - InsideLock"), STAT_NiagaraAllocateGlobalFloatInsideLock, STATGROUP_Niagara);
+DECLARE_CYCLE_STAT(TEXT("Global Float Alloc - Alloc New Buffer"), STAT_NiagaraAllocateGlobalFloatAllocNew, STATGROUP_Niagara);
+DECLARE_CYCLE_STAT(TEXT("Global Float Alloc - Map Buffer"), STAT_NiagaraAllocateGlobalFloatMapBuffer, STATGROUP_Niagara);
 
-
-/** Enable/disable parallelized System renderers */
-int32 GbNiagaraParallelEmitterRenderers = 1;
-static FAutoConsoleVariableRef CVarParallelEmitterRenderers(
-	TEXT("niagara.ParallelEmitterRenderers"),
-	GbNiagaraParallelEmitterRenderers,
-	TEXT("Whether to run Niagara System renderers in parallel"),
+int32 GNiagaraRadixSortThreshold = 400;
+static FAutoConsoleVariableRef CVarNiagaraRadixSortThreshold(
+	TEXT("Niagara.RadixSortThreshold"),
+	GNiagaraRadixSortThreshold,
+	TEXT("Instance count at which radix sort gets used instead of introspective sort.\n")
+	TEXT("Set to  -1 to never use radixsort. (default=400)"),
 	ECVF_Default
-	);
+);
 
-
-
-void FNiagaraDummyRWBufferFloat::InitRHI() 
+class FNiagaraDummyRWBufferFloat : public FRenderResource
 {
-	UE_LOG(LogNiagara, Log, TEXT("FNiagaraDummyRWBufferFloat InitRHI %s"), *DebugId);
-	Buffer.Initialize(sizeof(float), 1, EPixelFormat::PF_R32_FLOAT, BUF_Static);
-}
+public:
+	FNiagaraDummyRWBufferFloat(const FString InDebugId) : DebugId(InDebugId) {}
+	FString DebugId;
+	FRWBuffer Buffer;
 
-void FNiagaraDummyRWBufferFloat::ReleaseRHI() 
+	virtual void InitRHI() override
+	{
+		UE_LOG(LogNiagara, Log, TEXT("FNiagaraDummyRWBufferFloat InitRHI %s"), *DebugId);
+		Buffer.Initialize(sizeof(float), 1, EPixelFormat::PF_R32_FLOAT, BUF_Static, *DebugId);
+	}
+
+	virtual void ReleaseRHI() override
+	{
+		UE_LOG(LogNiagara, Log, TEXT("FNiagaraDummyRWBufferFloat ReleaseRHI %s"), *DebugId);
+		Buffer.Release();
+	}
+};
+
+class FNiagaraDummyRWBufferFloat4 : public FRenderResource
 {
-	UE_LOG(LogNiagara, Log, TEXT("FNiagaraDummyRWBufferFloat ReleaseRHI %s"), *DebugId);
-	Buffer.Release();
-}
+public:
+	FNiagaraDummyRWBufferFloat4(const FString InDebugId) : DebugId(InDebugId) {}
+	FString DebugId;
+	FRWBuffer Buffer;
 
-void FNiagaraDummyRWBufferInt::InitRHI() 
+	virtual void InitRHI() override
+	{
+		UE_LOG(LogNiagara, Log, TEXT("FNiagaraDummyRWBufferFloat InitRHI %s"), *DebugId);
+		Buffer.Initialize(sizeof(float) * 4, 1, EPixelFormat::PF_A32B32G32R32F, BUF_Static, *DebugId);
+	}
+
+	virtual void ReleaseRHI() override
+	{
+		UE_LOG(LogNiagara, Log, TEXT("FNiagaraDummyRWBufferFloat4 ReleaseRHI %s"), *DebugId);
+		Buffer.Release();
+	}
+};
+
+class FNiagaraDummyRWBufferInt : public FRenderResource
 {
-	UE_LOG(LogNiagara, Log, TEXT("FNiagaraDummyRWBufferInt InitRHI %s"), *DebugId);
-	Buffer.Initialize(sizeof(int32), 1, EPixelFormat::PF_R32_SINT, BUF_Static);
-}
-void FNiagaraDummyRWBufferInt::ReleaseRHI() 
+public:
+	FNiagaraDummyRWBufferInt(const FString InDebugId) : DebugId(InDebugId) {}
+	FString DebugId;
+	FRWBuffer Buffer;
+
+	virtual void InitRHI() override
+	{
+		UE_LOG(LogNiagara, Log, TEXT("FNiagaraDummyRWBufferInt InitRHI %s"), *DebugId);
+		Buffer.Initialize(sizeof(int32), 1, EPixelFormat::PF_R32_SINT, BUF_Static, *DebugId);
+	}
+
+	virtual void ReleaseRHI() override
+	{
+		UE_LOG(LogNiagara, Log, TEXT("FNiagaraDummyRWBufferInt ReleaseRHI %s"), *DebugId);
+		Buffer.Release();
+	}
+};
+
+class FNiagaraDummyRWBufferUInt : public FRenderResource
 {
-	UE_LOG(LogNiagara, Log, TEXT("FNiagaraDummyRWBufferInt ReleaseRHI %s"), *DebugId);
-	Buffer.Release();
-}
+public:
+	FNiagaraDummyRWBufferUInt(const FString InDebugId) : DebugId(InDebugId) {}
+	FString DebugId;
+	FRWBuffer Buffer;
 
+	virtual void InitRHI() override
+	{
+		UE_LOG(LogNiagara, Log, TEXT("FNiagaraDummyRWBufferUInt InitRHI %s"), *DebugId);
+		Buffer.Initialize(sizeof(uint32), 1, EPixelFormat::PF_R32_UINT, BUF_Static, *DebugId);
+	}
 
-FRWBuffer& NiagaraRenderer::GetDummyFloatBuffer()
+	virtual void ReleaseRHI() override
+	{
+		UE_LOG(LogNiagara, Log, TEXT("FNiagaraDummyRWBufferUInt ReleaseRHI %s"), *DebugId);
+		Buffer.Release();
+	}
+};
+
+FRWBuffer& FNiagaraRenderer::GetDummyFloatBuffer()
 {
 	check(IsInRenderingThread());
 	static TGlobalResource<FNiagaraDummyRWBufferFloat> DummyFloatBuffer(TEXT("NiagaraRenderer::DummyFloat"));
 	return DummyFloatBuffer.Buffer;
 }
 
-FRWBuffer& NiagaraRenderer::GetDummyIntBuffer()
+FRWBuffer& FNiagaraRenderer::GetDummyFloat4Buffer()
+{
+	check(IsInRenderingThread());
+	static TGlobalResource<FNiagaraDummyRWBufferFloat4> GetDummyFloat4Buffer(TEXT("NiagaraRenderer::DummyFloat4"));
+	return GetDummyFloat4Buffer.Buffer;
+}
+
+FRWBuffer& FNiagaraRenderer::GetDummyIntBuffer()
 {
 	check(IsInRenderingThread());
 	static TGlobalResource<FNiagaraDummyRWBufferInt> DummyIntBuffer(TEXT("NiagaraRenderer::DummyInt"));
 	return DummyIntBuffer.Buffer;
 }
 
-NiagaraRenderer::NiagaraRenderer()
-	: CPUTimeMS(0.0f)
-	, bLocalSpace(false)
-	, bEnabled(true)
-	, DynamicDataRender(nullptr)
-	, BaseExtents(1.0f, 1.0f, 1.0f)
+FRWBuffer& FNiagaraRenderer::GetDummyUIntBuffer()
 {
-	Material = UMaterial::GetDefaultMaterial(MD_Surface);
+	check(IsInRenderingThread());
+	static TGlobalResource<FNiagaraDummyRWBufferUInt> DummyUIntBuffer(TEXT("NiagaraRenderer::DummyUInt"));
+	return DummyUIntBuffer.Buffer;
 }
 
-
-NiagaraRenderer::~NiagaraRenderer() 
+bool FNiagaraRenderer::SetVertexFactoryVariable(const FNiagaraDataSet& DataSet, const FNiagaraVariable& Var, int32 VFVarOffset)
 {
-}
+	int32 FloatOffset;
+	int32 IntOffset;//TODO: No VF uses ints atm but it should be trivial to copy the float path if some vf should need to.
+	DataSet.GetVariableComponentOffsets(Var, FloatOffset, IntOffset);
+	int32 NumComponents = Var.GetSizeInBytes() / sizeof(float);
 
-void NiagaraRenderer::Release()
-{
-	check(IsInGameThread());
-	ENQUEUE_UNIQUE_RENDER_COMMAND_ONEPARAMETER(
-		NiagaraRendererDeletion,
-		NiagaraRenderer*, Renderer, this,
+	int32 GPULocation = INDEX_NONE;
+	bool bUpload = true;
+	if (FloatOffset != INDEX_NONE)
+	{
+		if (FNiagaraRendererVariableInfo* ExistingVarInfo = VFVariables.FindByPredicate([&](const FNiagaraRendererVariableInfo& VarInfo) { return VarInfo.DatasetOffset == FloatOffset; }))
 		{
-			delete Renderer;
+			//Don't need to upload this var again if it's already been uploaded for another var info. Just point to that.
+			//E.g. when custom sorting uses age.
+			GPULocation = ExistingVarInfo->GPUBufferOffset;
+			bUpload = false;
 		}
-	);
+		else
+		{
+			//For CPU Sims we pack just the required data tightly in a GPU buffer we upload. For GPU sims the data is there already so we just provide the real data location.
+			GPULocation = SimTarget == ENiagaraSimTarget::CPUSim ? TotalVFComponents : FloatOffset;
+			TotalVFComponents += NumComponents;
+		}
+	}
+
+	VFVariables[VFVarOffset] = FNiagaraRendererVariableInfo(FloatOffset, GPULocation, NumComponents, bUpload);
+
+	return FloatOffset != INDEX_NONE;
 }
 
-void NiagaraRenderer::SortIndices(ENiagaraSortMode SortMode, int32 SortAttributeOffset, const FNiagaraDataBuffer& Buffer, const FMatrix& LocalToWorld, const FSceneView* View, FGlobalDynamicReadBuffer::FAllocation& OutIndices)const
+FGlobalDynamicReadBuffer::FAllocation FNiagaraRenderer::TransferDataToGPU(FGlobalDynamicReadBuffer& DynamicReadBuffer, FNiagaraDataBuffer* SrcData)const
+{
+	int32 TotalFloatSize = TotalVFComponents * SrcData->GetNumInstances();
+	int32 ComponentStrideDest = SrcData->GetNumInstances() * sizeof(float);
+	FGlobalDynamicReadBuffer::FAllocation Allocation = DynamicReadBuffer.AllocateFloat(TotalFloatSize);
+	for (const FNiagaraRendererVariableInfo& VarInfo : VFVariables)
+	{
+		int32 GpuOffset = VarInfo.GetGPUOffset();
+		if (GpuOffset != INDEX_NONE && VarInfo.bUpload)
+		{
+			for (int32 CompIdx = 0; CompIdx < VarInfo.NumComponents; ++CompIdx)
+			{
+				float* SrcComponent = (float*)SrcData->GetComponentPtrFloat(VarInfo.DatasetOffset + CompIdx);
+				void* Dest = Allocation.Buffer + ComponentStrideDest * (GpuOffset + CompIdx);
+				FMemory::Memcpy(Dest, SrcComponent, ComponentStrideDest);
+			}
+		}
+	}
+	return Allocation;
+}
+
+//////////////////////////////////////////////////////////////////////////
+
+FNiagaraDynamicDataBase::FNiagaraDynamicDataBase(const FNiagaraEmitterInstance* InEmitter)
+{
+	check(InEmitter);
+
+	FNiagaraDataSet& DataSet = InEmitter->GetData();
+	SimTarget = DataSet.GetSimTarget();
+
+	if (SimTarget == ENiagaraSimTarget::CPUSim)
+	{
+		//On CPU we pass through direct ptr to the most recent data buffer.
+		Data.CPUParticleData = &DataSet.GetCurrentDataChecked();
+
+		//Mark this buffer as in use by this renderer. Prevents this buffer being reused to write new simulation data while it's inuse by the renderer.
+		Data.CPUParticleData->AddReadRef();
+	}
+	else
+	{
+		//On GPU we must access the correct buffer via the GPUExecContext. Probably a way to route this data better outside the dynamic data in future.
+		//During simulation, the correct data buffer for rendering will be placed in the GPUContext and AddReadRef called.
+		check(SimTarget == ENiagaraSimTarget::GPUComputeSim);
+		Data.GPUExecContext = InEmitter->GetGPUContext();
+	}
+}
+
+FNiagaraDynamicDataBase::~FNiagaraDynamicDataBase()
+{
+	if (SimTarget == ENiagaraSimTarget::CPUSim)
+	{
+		check(Data.CPUParticleData);
+		//Release our ref on the buffer so it can be reused as a destination for a new simulation tick.
+		Data.CPUParticleData->ReleaseReadRef();
+	}
+}
+
+FNiagaraDataBuffer* FNiagaraDynamicDataBase::GetParticleDataToRender()const
+{
+	FNiagaraDataBuffer* Ret = nullptr;
+
+	if (SimTarget == ENiagaraSimTarget::CPUSim)
+	{
+		Ret = Data.CPUParticleData;
+	}
+	else
+	{
+		Ret = Data.GPUExecContext->GetDataToRender();
+	}
+
+	checkSlow(Ret == nullptr || Ret->IsBeingRead());
+	return Ret;
+}
+
+//////////////////////////////////////////////////////////////////////////
+
+
+FNiagaraRenderer::FNiagaraRenderer(ERHIFeatureLevel::Type InFeatureLevel, const UNiagaraRendererProperties *InProps, const FNiagaraEmitterInstance* Emitter)
+	: DynamicDataRender(nullptr)
+	, bLocalSpace(Emitter->GetCachedEmitter()->bLocalSpace)
+	, bHasLights(false)
+	, bMotionBlurEnabled(InProps ? InProps->bMotionBlurEnabled : false)
+	, SimTarget(Emitter->GetCachedEmitter()->SimTarget)
+	, NumIndicesPerInstance(InProps ? InProps->GetNumIndicesPerInstance() : 0)
+	, FeatureLevel(InFeatureLevel)
+	, TotalVFComponents(0)
+{
+#if STATS
+	EmitterStatID = Emitter->GetCachedEmitter()->GetStatID(false, false);
+#endif
+}
+
+void FNiagaraRenderer::Initialize(const UNiagaraRendererProperties *InProps, const FNiagaraEmitterInstance* Emitter)
+{
+	//Get our list of valid base materials. Fall back to default material if they're not valid.
+	InProps->GetUsedMaterials(Emitter, BaseMaterials_GT);
+	for (UMaterialInterface*& Mat : BaseMaterials_GT)
+	{
+		if (!IsMaterialValid(Mat))
+		{
+			Mat = UMaterial::GetDefaultMaterial(MD_Surface);
+		}
+		BaseMaterialRelevance_GT |= Mat->GetRelevance(FeatureLevel);
+	}
+}
+
+FNiagaraRenderer::~FNiagaraRenderer()
+{
+	ReleaseRenderThreadResources();
+	SetDynamicData_RenderThread(nullptr);
+}
+
+void FNiagaraRenderer::CreateRenderThreadResources(NiagaraEmitterInstanceBatcher* Batcher) 
+{
+	if (Batcher && SimTarget == ENiagaraSimTarget::GPUComputeSim)
+	{
+		NumRegisteredGPURenderers = Batcher->GetGPUInstanceCounterManager().GetGPURendererCount();
+		if (NumRegisteredGPURenderers)
+		{
+			NumRegisteredGPURenderers->Value += GetMaxIndirectArgs();
+		}
+	}
+}
+
+void FNiagaraRenderer::ReleaseRenderThreadResources()
+{
+	if (NumRegisteredGPURenderers)
+	{
+		NumRegisteredGPURenderers->Value -= GetMaxIndirectArgs();
+		NumRegisteredGPURenderers.SafeRelease();
+	}
+}
+
+FPrimitiveViewRelevance FNiagaraRenderer::GetViewRelevance(const FSceneView* View, const FNiagaraSceneProxy *SceneProxy)const
+{
+	FPrimitiveViewRelevance Result;
+	bool bHasDynamicData = HasDynamicData();
+
+	//Always draw so our LastRenderTime is updated. We may not have dynamic data if we're disabled from visibility culling.
+	Result.bDrawRelevance =/* bHasDynamicData && */SceneProxy->IsShown(View) && View->Family->EngineShowFlags.Particles;
+	Result.bShadowRelevance = bHasDynamicData && SceneProxy->IsShadowCast(View);
+	Result.bDynamicRelevance = bHasDynamicData;
+	if (bHasDynamicData)
+	{
+		Result.bOpaque = View->Family->EngineShowFlags.Bounds;
+		DynamicDataRender->GetMaterialRelevance().SetPrimitiveViewRelevance(Result);
+	}
+
+	return Result;
+}
+
+void FNiagaraRenderer::SetDynamicData_RenderThread(FNiagaraDynamicDataBase* NewDynamicData)
+{
+	check(IsInRenderingThread());
+	if (DynamicDataRender)
+	{
+		delete DynamicDataRender;
+		DynamicDataRender = NULL;
+	}
+	DynamicDataRender = NewDynamicData;
+}
+
+struct FParticleOrderAsUint
+{
+	uint32 OrderAsUint;
+	int32 Index;
+
+	template <bool bStrictlyPositive, bool bAscending>
+	FORCEINLINE void SetAsUint(int32 InIndex, float InOrder) 
+	{
+		const uint32 SortKeySignBit = 0x80000000;
+		uint32 InOrderAsUint = reinterpret_cast<uint32&>(InOrder);
+		InOrderAsUint = (bStrictlyPositive || InOrder >= 0) ? (InOrderAsUint | SortKeySignBit) : ~InOrderAsUint;
+		OrderAsUint = bAscending ? InOrderAsUint : ~InOrderAsUint;
+
+		Index = InIndex;
+	}
+		
+	FORCEINLINE operator uint32() const { return OrderAsUint; }
+};
+
+void FNiagaraRenderer::SortIndices(const FNiagaraGPUSortInfo& SortInfo, int32 SortVarIdx, const FNiagaraDataBuffer& Buffer, FGlobalDynamicReadBuffer::FAllocation& OutIndices)const
 {
 	SCOPE_CYCLE_COUNTER(STAT_NiagaraSortParticles);
 
 	uint32 NumInstances = Buffer.GetNumInstances();
-	check(OutIndices.ReadBuffer->NumBytes >= OutIndices.FirstIndex + NumInstances * sizeof(int32));
-	check(SortMode != ENiagaraSortMode::None);
-	check(SortAttributeOffset != INDEX_NONE);
+	check(OutIndices.ReadBuffer->NumBytes >= (OutIndices.Buffer - OutIndices.ReadBuffer->MappedBuffer) + NumInstances * sizeof(int32));
+	check(SortInfo.SortMode != ENiagaraSortMode::None);
+	check(VFVariables.IsValidIndex(SortVarIdx));
+	check(SortInfo.SortAttributeOffset != INDEX_NONE);
+
+	const bool bUseRadixSort = GNiagaraRadixSortThreshold != -1 && (int32)NumInstances  > GNiagaraRadixSortThreshold;
 
 	int32* RESTRICT IndexBuffer = (int32*)(OutIndices.Buffer);
 
-	struct FParticleOrder
-	{
-		int32 Index;
-		float Order;
-	};
 	FMemMark Mark(FMemStack::Get());
-	FParticleOrder* RESTRICT ParticleOrder = (FParticleOrder*)FMemStack::Get().Alloc(sizeof(FParticleOrder) * NumInstances, alignof(FParticleOrder));
+	FParticleOrderAsUint* RESTRICT ParticleOrder = (FParticleOrderAsUint*)FMemStack::Get().Alloc(sizeof(FParticleOrderAsUint) * NumInstances, alignof(FParticleOrderAsUint));
 
-	auto SortAscending = [](const FParticleOrder& A, const FParticleOrder& B) { return A.Order < B.Order; };
-	auto SortDescending = [](const FParticleOrder& A, const FParticleOrder& B) { return A.Order > B.Order; };
-
-	if (SortMode == ENiagaraSortMode::ViewDepth || SortMode == ENiagaraSortMode::ViewDistance)
+	if (SortInfo.SortMode == ENiagaraSortMode::ViewDepth || SortInfo.SortMode == ENiagaraSortMode::ViewDistance)
 	{
-		float* RESTRICT PositionX = (float*)Buffer.GetComponentPtrFloat(SortAttributeOffset);
-		float* RESTRICT PositionY = (float*)Buffer.GetComponentPtrFloat(SortAttributeOffset + 1);
-		float* RESTRICT PositionZ = (float*)Buffer.GetComponentPtrFloat(SortAttributeOffset + 2);
+		int32 BaseCompOffset = VFVariables[SortVarIdx].DatasetOffset;
+		float* RESTRICT PositionX = (float*)Buffer.GetComponentPtrFloat(BaseCompOffset);
+		float* RESTRICT PositionY = (float*)Buffer.GetComponentPtrFloat(BaseCompOffset + 1);
+		float* RESTRICT PositionZ = (float*)Buffer.GetComponentPtrFloat(BaseCompOffset + 2);
 		auto GetPos = [&PositionX, &PositionY, &PositionZ](int32 Idx)
 		{
 			return FVector(PositionX[Idx], PositionY[Idx], PositionZ[Idx]);
 		};
 
-		//TODO Parallelize in batches? Move to GPU for large emitters?
-		if (SortMode == ENiagaraSortMode::ViewDepth)
+		if (SortInfo.SortMode == ENiagaraSortMode::ViewDepth)
 		{
-			FMatrix ViewProjMatrix = View->ViewMatrices.GetViewProjectionMatrix();
-			if (bLocalSpace)
+			for (uint32 i = 0; i < NumInstances; ++i)
 			{
-				for (uint32 i = 0; i < NumInstances; ++i)
-				{
-					ParticleOrder[i].Index = i;
-					ParticleOrder[i].Order = ViewProjMatrix.TransformPosition(LocalToWorld.TransformPosition(GetPos(i))).W;
-				}
+				ParticleOrder[i].SetAsUint<true, false>(i, FVector::DotProduct(GetPos(i) - SortInfo.ViewOrigin, SortInfo.ViewDirection));
 			}
-			else
-			{
-				for (uint32 i = 0; i < NumInstances; ++i)
-				{
-					ParticleOrder[i].Index = i;
-					ParticleOrder[i].Order = ViewProjMatrix.TransformPosition(GetPos(i)).W;
-				}
-			}
-
-			Sort(ParticleOrder, NumInstances, SortDescending);
 		}
-		else 
+		else
 		{
-			// check(SortMode == ENiagaraSortMode::ViewDistance); Should always be true because we are within this block. If code is moved or copied, please change.
-			FVector ViewOrigin = View->ViewMatrices.GetViewOrigin();
-			if (bLocalSpace)
+			for (uint32 i = 0; i < NumInstances; ++i)
 			{
-				for (uint32 i = 0; i < NumInstances; ++i)
-				{
-					ParticleOrder[i].Index = i;
-					ParticleOrder[i].Order = (ViewOrigin - LocalToWorld.TransformPosition(GetPos(i))).SizeSquared();
-				}
+				ParticleOrder[i].SetAsUint<true, false>(i, (GetPos(i) - SortInfo.ViewOrigin).SizeSquared());
 			}
-			else
-			{
-				for (uint32 i = 0; i < NumInstances; ++i)
-				{
-					ParticleOrder[i].Index = i;
-					ParticleOrder[i].Order = (ViewOrigin - GetPos(i)).SizeSquared();
-				}
-			}
-
-			Sort(ParticleOrder, NumInstances, SortDescending);
 		}
 	}
 	else
 	{
-		float* RESTRICT CustomSorting = (float*)Buffer.GetComponentPtrFloat(SortAttributeOffset);
+		float* RESTRICT CustomSorting = (float*)Buffer.GetComponentPtrFloat(VFVariables[SortVarIdx].DatasetOffset);
+
+		if (SortInfo.SortMode == ENiagaraSortMode::CustomAscending)
+		{
+			for (uint32 i = 0; i < NumInstances; ++i)
+			{
+				ParticleOrder[i].SetAsUint<false, true>(i, CustomSorting[i]);
+			}
+		}
+		else // ENiagaraSortMode::CustomDecending
+		{
+			for (uint32 i = 0; i < NumInstances; ++i)
+			{
+				ParticleOrder[i].SetAsUint<false, false>(i, CustomSorting[i]);
+			}
+		}
+	}
+
+	if (!bUseRadixSort)
+	{
+		Sort(ParticleOrder, NumInstances, [](const FParticleOrderAsUint& A, const FParticleOrderAsUint& B) { return A.OrderAsUint < B.OrderAsUint; });
+		//Now transfer to the real index buffer.
 		for (uint32 i = 0; i < NumInstances; ++i)
 		{
-			ParticleOrder[i].Index = i;
-			ParticleOrder[i].Order = CustomSorting[i];
+			IndexBuffer[i] = ParticleOrder[i].Index;
 		}
-		if (SortMode == ENiagaraSortMode::CustomAscending)
+	}
+	else
+	{
+		FParticleOrderAsUint* RESTRICT ParticleOrderResult = bUseRadixSort ? (FParticleOrderAsUint*)FMemStack::Get().Alloc(sizeof(FParticleOrderAsUint) * NumInstances, alignof(FParticleOrderAsUint)) : nullptr;
+		RadixSort32(ParticleOrderResult, ParticleOrder, NumInstances);
+		//Now transfer to the real index buffer.
+		for (uint32 i = 0; i < NumInstances; ++i)
 		{
-			Sort(ParticleOrder, NumInstances, SortAscending);
-		}
-		else if (SortMode == ENiagaraSortMode::CustomDecending)
-		{
-			Sort(ParticleOrder, NumInstances, SortDescending);
+			IndexBuffer[i] = ParticleOrderResult[i].Index;
 		}
 	}
-
-	//Now transfer to the real index buffer.
-	for (uint32 i = 0; i < NumInstances; ++i)
-	{
-		IndexBuffer[i] = ParticleOrder[i].Index;
-	}
 }
-
-	
-//////////////////////////////////////////////////////////////////////////
-// Light renderer
-
-NiagaraRendererLights::NiagaraRendererLights(ERHIFeatureLevel::Type FeatureLevel, UNiagaraRendererProperties *InProps) :
-	NiagaraRenderer()
-{
-	Properties = Cast<UNiagaraLightRendererProperties>(InProps);
-}
-
-
-void NiagaraRendererLights::ReleaseRenderThreadResources()
-{
-}
-
-void NiagaraRendererLights::CreateRenderThreadResources()
-{
-}
-
-
-
-/** Update render data buffer from attributes */
-FNiagaraDynamicDataBase *NiagaraRendererLights::GenerateVertexData(const FNiagaraSceneProxy* Proxy, FNiagaraDataSet &Data, const ENiagaraSimTarget Target)
-{
-	SCOPE_CYCLE_COUNTER(STAT_NiagaraGenLights);
-
-	SimpleTimer VertexDataTimer;
-
-	//Bail if we don't have the required attributes to render this emitter.
-	if (!bEnabled || !Properties)
-	{
-		return nullptr;
-	}
-
-	//I'm not a great fan of pulling scalar components out to a structured vert buffer like this.
-	//TODO: Experiment with a new VF that reads the data directly from the scalar layout.
-	FNiagaraDataSetIterator<FVector> PosItr(Data, Properties->PositionBinding.DataSetVariable);
-	FNiagaraDataSetIterator<FLinearColor> ColItr(Data, Properties->ColorBinding.DataSetVariable);
-	FNiagaraDataSetIterator<float> RadiusItr(Data, Properties->RadiusBinding.DataSetVariable);
-	FNiagaraDataSetIterator<float> ExponentItr(Data, Properties->LightExponentBinding.DataSetVariable);
-	FNiagaraDataSetIterator<float> ScatteringItr(Data, Properties->VolumetricScatteringBinding.DataSetVariable);
-	FNiagaraDataSetIterator<int32> EnabledItr(Data, Properties->LightRenderingEnabledBinding.DataSetVariable);
-
-	FNiagaraDynamicDataLights *DynamicData = new FNiagaraDynamicDataLights;
-	const FMatrix& LocalToWorldMatrix = Proxy->GetLocalToWorld();
-	FVector DefaultColor = FVector(Properties->ColorBinding.DefaultValueIfNonExistent.GetValue<FLinearColor>());
-	FVector DefaultPos = FVector4(LocalToWorldMatrix.GetOrigin());
-	float DefaultRadius = Properties->RadiusBinding.DefaultValueIfNonExistent.GetValue<float>();
-	float DefaultScattering = Properties->VolumetricScatteringBinding.DefaultValueIfNonExistent.GetValue<float>();
-
-	DynamicData->LightArray.Empty();
-
-	for (uint32 ParticleIndex = 0; ParticleIndex < Data.GetNumInstances(); ParticleIndex++)
-	{
-		bool ShouldRenderParticleLight = !Properties->bOverrideRenderingEnabled || (EnabledItr.IsValid() ? (*EnabledItr) : true);
-		float LightRadius = (RadiusItr.IsValid() ? (*RadiusItr) : DefaultRadius) * Properties->RadiusScale;
-		if (ShouldRenderParticleLight && LightRadius > 0)
-		{
-			SimpleLightData LightData;
-			LightData.LightEntry.Radius = LightRadius;
-			LightData.LightEntry.Color = (ColItr.IsValid() ? FVector((*ColItr)) : DefaultColor) + Properties->ColorAdd;
-			LightData.LightEntry.Exponent = Properties->bUseInverseSquaredFalloff ? 0 : (ExponentItr.IsValid() ? (*ExponentItr) : 1);
-			LightData.LightEntry.bAffectTranslucency = Properties->bAffectsTranslucency;
-			LightData.LightEntry.VolumetricScatteringIntensity = ScatteringItr.IsValid() ? (*ScatteringItr) : DefaultScattering;
-			LightData.PerViewEntry.Position = PosItr.IsValid() ? (*PosItr) : DefaultPos;
-			if (bLocalSpace)
-			{
-				LightData.PerViewEntry.Position = LocalToWorldMatrix.TransformPosition(LightData.PerViewEntry.Position);
-			}
-
-			DynamicData->LightArray.Add(LightData);
-		}
-
-		PosItr.Advance();
-		ColItr.Advance();
-		RadiusItr.Advance();
-		ExponentItr.Advance();
-		ScatteringItr.Advance();
-		EnabledItr.Advance();
-	}
-
-	CPUTimeMS = VertexDataTimer.GetElapsedMilliseconds();
-	return DynamicData;
-}
-
-
-void NiagaraRendererLights::GetDynamicMeshElements(const TArray<const FSceneView*>& Views, const FSceneViewFamily& ViewFamily, uint32 VisibilityMap, FMeshElementCollector& Collector, const FNiagaraSceneProxy *SceneProxy) const
-{
-
-}
-
-void NiagaraRendererLights::SetDynamicData_RenderThread(FNiagaraDynamicDataBase* NewDynamicData)
-{
-	if (DynamicDataRender)
-	{
-		delete static_cast<FNiagaraDynamicDataLights*>(DynamicDataRender);
-		DynamicDataRender = NULL;
-	}
-	DynamicDataRender = static_cast<FNiagaraDynamicDataLights*>(NewDynamicData);
-}
-
-int NiagaraRendererLights::GetDynamicDataSize()
-{
-	return 0;
-}
-bool NiagaraRendererLights::HasDynamicData()
-{
-	return false;
-}
-
-bool NiagaraRendererLights::SetMaterialUsage()
-{
-	return false;
-}
-
-void NiagaraRendererLights::TransformChanged()
-{
-}
-
-#if WITH_EDITORONLY_DATA
-
-const TArray<FNiagaraVariable>& NiagaraRendererLights::GetRequiredAttributes()
-{
-	return Properties->GetRequiredAttributes();
-}
-
-const TArray<FNiagaraVariable>& NiagaraRendererLights::GetOptionalAttributes()
-{
-	return Properties->GetOptionalAttributes();
-}
-
-#endif

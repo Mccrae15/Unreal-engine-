@@ -1,8 +1,9 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "HierarchicalLODUtilities.h"
 #include "GameFramework/Actor.h"
 #include "Components/StaticMeshComponent.h"
+#include "StaticMeshAttributes.h"
 #include "Modules/ModuleManager.h"
 #include "Misc/PackageName.h"
 #include "GameFramework/WorldSettings.h"
@@ -135,17 +136,22 @@ UHLODProxy* FHierarchicalLODUtilities::CreateOrRetrieveLevelHLODProxy(const ULev
 {
 	UPackage* HLODPackage = CreateOrRetrieveLevelHLODPackage(InLevel, HLODLevelIndex);
 
-	// check if our asset exists
+	// Check if our asset exists
 	const FString HLODProxyName = GetHLODProxyName(InLevel, HLODLevelIndex);
 	UHLODProxy* Proxy = FindObject<UHLODProxy>(HLODPackage, *HLODProxyName);
-	if(Proxy == nullptr)
+
+	// Get the world associated with this level
+	UWorld* LevelWorld = UWorld::FindWorldInPackage(InLevel->GetOutermost());
+
+	// If proxy doesn't exist or is pointing to another world (could happen if package is duplicated)
+	if(Proxy == nullptr || Proxy->GetMap() != LevelWorld)
 	{
-		// make sure that the package doesnt have any standalone meshes etc. (i.e. this is an old style package)
+		// Make sure that the package doesn't have any standalone meshes etc. (i.e. this is an old style package)
 		CleanStandaloneAssetsInPackage(HLODPackage);
 
-		// create the new asset
+		// Create the new asset
 		Proxy = NewObject<UHLODProxy>(HLODPackage, *HLODProxyName, RF_Public | RF_Standalone);
-		Proxy->SetMap(UWorld::FindWorldInPackage(InLevel->GetOutermost()));
+		Proxy->SetMap(LevelWorld);
 	}
 
 	return Proxy;	
@@ -232,165 +238,334 @@ bool FHierarchicalLODUtilities::BuildStaticMeshForLODActor(ALODActor* LODActor, 
 	return BuildStaticMeshForLODActor(LODActor, Proxy, LODSetup, InBaseMaterial);
 }
 
+static FString GetImposterMeshName(const UMaterialInterface* InImposterMaterial)
+{
+	UPackage* MaterialOuterMost = InImposterMaterial->GetOutermost();
+
+	const FString BaseName = FPackageName::GetShortName(MaterialOuterMost->GetPathName());
+	return FString::Printf(TEXT("%s_ImposterMesh"), *BaseName);
+}
+
+static FString GetImposterMeshPackageName(const UMaterialInterface* InImposterMaterial)
+{
+	UPackage* MaterialOuterMost = InImposterMaterial->GetOutermost();
+
+	const FString PathName = FPackageName::GetLongPackagePath(MaterialOuterMost->GetPathName());
+	const FString BaseName = FPackageName::GetShortName(MaterialOuterMost->GetPathName());
+	return FString::Printf(TEXT("%s/%s_ImposterMesh"), *PathName, *BaseName);
+}
+
+UPackage* CreateOrRetrieveImposterMeshPackage(const UMaterialInterface* InImposterMaterial)
+{
+	checkf(InImposterMaterial != nullptr, TEXT("Invalid material supplied"));
+
+	const FString MeshPackageName = GetImposterMeshPackageName(InImposterMaterial);
+
+	UPackage* MeshPackage = CreatePackage(NULL, *MeshPackageName);
+	MeshPackage->FullyLoad();
+
+	// Target filename
+	const FString MeshPackageFileName = FPackageName::LongPackageNameToFilename(MeshPackageName);
+	// This is a hack to avoid save file dialog when we will be saving imposter mesh package
+	MeshPackage->FileName = FName(*MeshPackageFileName);
+
+	return MeshPackage;
+}
+
+UStaticMesh* CreateImposterStaticMesh(UStaticMeshComponent* InComponent, UMaterialInterface* InMaterial, const FMeshProxySettings& InProxySettings)
+{
+	UPackage* MeshPackage = CreateOrRetrieveImposterMeshPackage(InMaterial);
+
+	// check if our asset exists
+	const FString ImposterMeshName = GetImposterMeshName(InMaterial);
+	UStaticMesh* StaticMesh = FindObject<UStaticMesh>(MeshPackage, *ImposterMeshName);
+	if (StaticMesh == nullptr)
+	{
+		// Create the UStaticMesh object.
+		StaticMesh = NewObject<UStaticMesh>(MeshPackage, *ImposterMeshName, RF_Public | RF_Standalone);
+		StaticMesh->InitResources();
+
+		// make sure it has a new lighting guid
+		StaticMesh->LightingGuid = FGuid::NewGuid();
+
+		// Set it to use textured lightmaps. Note that Build Lighting will do the error-checking (texcoordindex exists for all LODs, etc).
+		StaticMesh->LightMapResolution = InProxySettings.LightMapResolution;
+		StaticMesh->LightMapCoordinateIndex = 1;
+
+		// Add one LOD for the base mesh
+		StaticMesh->SetNumSourceModels(0);
+		FStaticMeshSourceModel& SrcModel = StaticMesh->AddSourceModel();
+		/*Don't allow the engine to recalculate normals*/
+		SrcModel.BuildSettings.bRecomputeNormals = false;
+		SrcModel.BuildSettings.bRecomputeTangents = false;
+		SrcModel.BuildSettings.bComputeWeightedNormals = true;
+		SrcModel.BuildSettings.bRemoveDegenerates = true;
+		SrcModel.BuildSettings.bUseHighPrecisionTangentBasis = false;
+		SrcModel.BuildSettings.bUseFullPrecisionUVs = false;
+		SrcModel.BuildSettings.bGenerateLightmapUVs = InProxySettings.bGenerateLightmapUVs;
+		SrcModel.BuildSettings.bBuildReversedIndexBuffer = false;
+		SrcModel.BuildSettings.bBuildAdjacencyBuffer = InProxySettings.bAllowAdjacency;
+		if (!InProxySettings.bAllowDistanceField)
+		{
+			SrcModel.BuildSettings.DistanceFieldResolutionScale = 0.0f;
+		}
+
+		FMeshDescription* ImposterMesh = StaticMesh->CreateMeshDescription(0);
+		const IMeshMergeUtilities& MeshMergeUtilities = FModuleManager::Get().LoadModuleChecked<IMeshMergeModule>("MeshMergeUtilities").GetUtilities();
+		MeshMergeUtilities.ExtractImposterToRawMesh(InComponent, *ImposterMesh);
+
+		// Disable collisions on imposters
+		FMeshSectionInfo Info = StaticMesh->GetSectionInfoMap().Get(0, 0);
+		Info.bEnableCollision = false;
+		StaticMesh->GetSectionInfoMap().Set(0, 0, Info);
+
+		// Commit mesh description and materials list to static mesh
+		StaticMesh->CommitMeshDescription(0);
+		StaticMesh->StaticMaterials = { InMaterial };
+
+		//Set the Imported version before calling the build
+		StaticMesh->ImportVersion = EImportStaticMeshVersion::LastVersion;
+
+		StaticMesh->PostEditChange();
+
+		// Our imposters meshes are flat, but they actually represent a volume.
+		// Extend the imposter bounds using the original mesh bounds.
+		if (StaticMesh->GetBoundingBox().GetVolume() == 0)
+		{
+			const FBox StaticMeshBox = StaticMesh->GetBoundingBox();
+			const FBox CombinedBox = StaticMeshBox + InComponent->GetStaticMesh()->GetBoundingBox();
+			StaticMesh->PositiveBoundsExtension = (CombinedBox.Max - StaticMeshBox.Max);
+			StaticMesh->NegativeBoundsExtension = (StaticMeshBox.Min - CombinedBox.Min);
+			StaticMesh->CalculateExtendedBounds();
+		}	
+	
+		StaticMesh->MarkPackageDirty();
+	}
+
+	return StaticMesh;
+}
+
 bool FHierarchicalLODUtilities::BuildStaticMeshForLODActor(ALODActor* LODActor, UHLODProxy* Proxy, const FHierarchicalSimplification& LODSetup, UMaterialInterface* InBaseMaterial)
 {
-	if (Proxy && LODActor)
+	if (!Proxy || !LODActor)
+	{	
+		return false;
+	}
+
+	UE_LOG(LogHierarchicalLODUtilities, Log, TEXT("Building Proxy Mesh for Cluster %s"), *LODActor->GetName());
+	const FScopedTransaction Transaction(LOCTEXT("UndoAction_BuildProxyMesh", "Building Proxy Mesh for Cluster"));
+
+	// Pass false here and dirty package later if values have changed
+	LODActor->Modify(false);
+	Proxy->Modify();
+
+	// Clean out the proxy as we are rebuilding meshes
+	Proxy->Clean();
+	UPackage* AssetsOuter = Proxy->GetOutermost();
+
+	TArray<UPrimitiveComponent*> AllComponents;
+	UHLODProxy::ExtractComponents(LODActor, AllComponents);
+
+	// It shouldn't even have come here if it didn't have any static meshes
+	if(!ensure(AllComponents.Num() > 0))
 	{
-		UE_LOG(LogHierarchicalLODUtilities, Log, TEXT("Building Proxy Mesh for Cluster %s"), *LODActor->GetName());
-		const FScopedTransaction Transaction(LOCTEXT("UndoAction_BuildProxyMesh", "Building Proxy Mesh for Cluster"));
+		return false;
+	}
 
-		// Pass false here and dirty package later if values have changed
-		LODActor->Modify(false);
-		Proxy->Modify();
+	TArray<UStaticMeshComponent*> AllImposters;
+	if (LODSetup.MergeSetting.bIncludeImposters)
+	{			
+		// Retrieve all imposters.
+		for (UPrimitiveComponent* Component : AllComponents)
+		{
+			if (UStaticMeshComponent* StaticMeshComponent = Cast<UStaticMeshComponent>(Component))
+			{
+				if (LODActor->GetImposterMaterial(StaticMeshComponent))
+				{
+					AllImposters.Add(StaticMeshComponent);
+				}
+			}
+		}
 
-		// Clean out the proxy as we are rebuilding meshes
-		Proxy->Clean();
-		UPackage* AssetsOuter = Proxy->GetOutermost();
+		// Imposters won't be merged in the HLOD mesh
+		AllComponents.RemoveAll([&](UPrimitiveComponent* Component) { return AllImposters.Contains(Component); });
+	}
 
-		TArray<UPrimitiveComponent*> AllComponents;
-		UHLODProxy::ExtractComponents(LODActor, AllComponents);
+	if (AllComponents.Num() > 0)
+	{
+		TArray<UObject*> OutAssets;
+		FVector OutProxyLocation = FVector::ZeroVector;
+		UStaticMesh* MainMesh = nullptr;
 
-		// it shouldn't even have come here if it didn't have any staticmesh
-		if (ensure(AllComponents.Num() > 0))
+		// Generate proxy mesh and proxy material assets
+		IMeshReductionManagerModule& MeshReductionModule = FModuleManager::Get().LoadModuleChecked<IMeshReductionManagerModule>("MeshReductionInterface");
+		const bool bHasMeshReductionCapableModule = (MeshReductionModule.GetMeshMergingInterface() != NULL);
+
+		const IMeshMergeUtilities& MeshMergeUtilities = FModuleManager::Get().LoadModuleChecked<IMeshMergeModule>("MeshMergeUtilities").GetUtilities();
+		
+		// Should give a unique name, so use the LODActor tag, or if empty, the first actor name
+		FString LODActorTag = LODActor->GetLODActorTag();
+		if (LODActorTag.IsEmpty())
 		{
 			const AActor* FirstActor = UHLODProxy::FindFirstActor(LODActor);
+			LODActorTag = *FirstActor->GetName();
+		}
+		const FString PackageName = FString::Printf(TEXT("LOD_%s_%i_%s"), *(AssetsOuter->GetName()), LODActor->LODLevel - 1, *LODActorTag);
 
-			TArray<UObject*> OutAssets;
-			FVector OutProxyLocation = FVector::ZeroVector;
-			UStaticMesh* MainMesh = nullptr;
+		if (bHasMeshReductionCapableModule && LODSetup.bSimplifyMesh)
+		{
+			FHierarchicalLODUtilitiesModule& Module = FModuleManager::LoadModuleChecked<FHierarchicalLODUtilitiesModule>("HierarchicalLODUtilities");
+			FHierarchicalLODProxyProcessor* Processor = Module.GetProxyProcessor();
 
-			// Generate proxy mesh and proxy material assets
-			IMeshReductionManagerModule& MeshReductionModule = FModuleManager::Get().LoadModuleChecked<IMeshReductionManagerModule>("MeshReductionInterface");
-			const bool bHasMeshReductionCapableModule = (MeshReductionModule.GetMeshMergingInterface() != NULL);
+			FHierarchicalSimplification OverrideLODSetup = LODSetup;
 
-			const IMeshMergeUtilities& MeshMergeUtilities = FModuleManager::Get().LoadModuleChecked<IMeshMergeModule>("MeshMergeUtilities").GetUtilities();
-			// should give unique name, so use level + actor name
-			
-			const FString PackageName = FString::Printf(TEXT("LOD_%s_%i_%s"), *FirstActor->GetOutermost()->GetName(), LODActor->LODLevel - 1, *FirstActor->GetName());
-			if (bHasMeshReductionCapableModule && LODSetup.bSimplifyMesh)
+			FMeshProxySettings ProxySettings = LODSetup.ProxySetting;
+			if (LODActor->bOverrideMaterialMergeSettings)
 			{
-				FHierarchicalLODUtilitiesModule& Module = FModuleManager::LoadModuleChecked<FHierarchicalLODUtilitiesModule>("HierarchicalLODUtilities");
-				FHierarchicalLODProxyProcessor* Processor = Module.GetProxyProcessor();
+				ProxySettings.MaterialSettings = LODActor->MaterialSettings;
+			}
 
-				FHierarchicalSimplification OverrideLODSetup = LODSetup;
+			if (LODActor->bOverrideScreenSize)
+			{
+				ProxySettings.ScreenSize = LODActor->ScreenSize;
+			}
 
-				FMeshProxySettings ProxySettings = LODSetup.ProxySetting;
-				if (LODActor->bOverrideMaterialMergeSettings)
+			if (LODActor->bOverrideTransitionScreenSize)
+			{
+				OverrideLODSetup.TransitionScreenSize = LODActor->TransitionScreenSize;
+			}
+
+			FGuid JobID = Processor->AddProxyJob(LODActor, Proxy, OverrideLODSetup);
+
+			TArray<UStaticMeshComponent*> StaticMeshComponents;
+			Algo::Transform(AllComponents, StaticMeshComponents, [](UPrimitiveComponent* InPrimitiveComponent) { return Cast<UStaticMeshComponent>(InPrimitiveComponent); });
+
+			MeshMergeUtilities.CreateProxyMesh(StaticMeshComponents, ProxySettings, InBaseMaterial, AssetsOuter, PackageName, JobID, Processor->GetCallbackDelegate(), true, OverrideLODSetup.TransitionScreenSize);
+		}
+		else
+		{
+			FMeshMergingSettings MergeSettings = LODSetup.MergeSetting;
+			if (LODActor->bOverrideMaterialMergeSettings)
+			{
+				MergeSettings.MaterialSettings = LODActor->MaterialSettings;
+			}
+
+			// update LOD parents before rebuild to ensure they are valid when mesh merge extensions are called.
+			LODActor->UpdateSubActorLODParents();
+
+			MeshMergeUtilities.MergeComponentsToStaticMesh(AllComponents, LODActor->GetWorld(), MergeSettings, InBaseMaterial, AssetsOuter, PackageName, OutAssets, OutProxyLocation, LODSetup.TransitionScreenSize, true);
+
+			// set staticmesh
+			for (UObject* Asset : OutAssets)
+			{
+				UStaticMesh* StaticMesh = Cast<UStaticMesh>(Asset);
+
+				if (StaticMesh)
 				{
-					ProxySettings.MaterialSettings = LODActor->MaterialSettings;
+					MainMesh = StaticMesh;
 				}
+			}
 
-				if (LODActor->bOverrideScreenSize)
+			if (!MainMesh)
+			{
+				return false;
+			}
+
+			// make sure the mesh won't affect navmesh generation
+			MainMesh->MarkAsNotHavingNavigationData();
+
+			bool bDirtyPackage = false;
+			UStaticMesh* PreviousStaticMesh = LODActor->GetStaticMeshComponent()->GetStaticMesh();
+			bDirtyPackage |= (MainMesh != PreviousStaticMesh);
+			LODActor->SetStaticMesh(MainMesh);
+			bDirtyPackage |= (LODActor->GetActorLocation() != OutProxyLocation);
+			LODActor->SetActorLocation(OutProxyLocation);
+
+			// Check resulting mesh and give a warning if it exceeds the vertex / triangle cap for certain platforms
+			FProjectStatus ProjectStatus;
+			if (IProjectManager::Get().QueryStatusForCurrentProject(ProjectStatus) && (ProjectStatus.IsTargetPlatformSupported(TEXT("Android")) || ProjectStatus.IsTargetPlatformSupported(TEXT("IOS"))))
+			{
+				if (MainMesh->RenderData.IsValid() && MainMesh->RenderData->LODResources.Num() && MainMesh->RenderData->LODResources[0].IndexBuffer.Is32Bit())
 				{
-					ProxySettings.ScreenSize = LODActor->ScreenSize;
+					FMessageLog("HLODResults").Warning()
+						->AddToken(FUObjectToken::Create(LODActor))
+						->AddToken(FTextToken::Create(LOCTEXT("HLODError_MeshNotBuildTwo", " Mesh has more that 65535 vertices, incompatible with mobile; forcing 16-bit (will probably cause rendering issues).")));
 				}
+			}
 
-				if (LODActor->bOverrideTransitionScreenSize)
-				{
-					OverrideLODSetup.TransitionScreenSize = LODActor->TransitionScreenSize;
-				}
+			// At the moment this assumes a fixed field of view of 90 degrees (horizontal and vertical axi)
+			static const float FOVRad = 90.0f * (float)PI / 360.0f;
+			static const FMatrix ProjectionMatrix = FPerspectiveMatrix(FOVRad, 1920, 1080, 0.01f);
+			FBoxSphereBounds Bounds = LODActor->GetStaticMeshComponent()->CalcBounds(FTransform());
 
-				FGuid JobID = Processor->AddProxyJob(LODActor, Proxy, OverrideLODSetup);
-
-				TArray<UStaticMeshComponent*> StaticMeshComponents;
-				Algo::Transform(AllComponents, StaticMeshComponents, [](UPrimitiveComponent* InPrimitiveComponent) { return Cast<UStaticMeshComponent>(InPrimitiveComponent); });
-
-				MeshMergeUtilities.CreateProxyMesh(StaticMeshComponents, ProxySettings, InBaseMaterial, AssetsOuter, PackageName, JobID, Processor->GetCallbackDelegate(), true, OverrideLODSetup.TransitionScreenSize);
-				return true;
+			float DrawDistance;
+			if (LODSetup.bUseOverrideDrawDistance)
+			{
+				DrawDistance = LODSetup.OverrideDrawDistance;
 			}
 			else
 			{
-				FMeshMergingSettings MergeSettings = LODSetup.MergeSetting;
-				if (LODActor->bOverrideMaterialMergeSettings)
-				{
-					MergeSettings.MaterialSettings = LODActor->MaterialSettings;
-				}
-
-				// update LOD parents before rebuild to ensure they are valid when mesh merge extensions are called.
-				LODActor->UpdateSubActorLODParents();
-
-				MeshMergeUtilities.MergeComponentsToStaticMesh(AllComponents, FirstActor->GetWorld(), MergeSettings, InBaseMaterial, AssetsOuter, PackageName, OutAssets, OutProxyLocation, LODSetup.TransitionScreenSize, true);
-
-				// set staticmesh
-				for (UObject* Asset : OutAssets)
-				{
-					UStaticMesh* StaticMesh = Cast<UStaticMesh>(Asset);
-
-					if (StaticMesh)
-					{
-						MainMesh = StaticMesh;
-					}
-				}
-
-				if (!MainMesh)
-				{
-					return false;
-				}
-
-				// make sure the mesh won't affect navmesh generation
-				MainMesh->MarkAsNotHavingNavigationData();
-
-				bool bDirtyPackage = false;
-				UStaticMesh* PreviousStaticMesh = LODActor->GetStaticMeshComponent()->GetStaticMesh();
-				bDirtyPackage |= (MainMesh != PreviousStaticMesh);
-				LODActor->SetStaticMesh(MainMesh);
-				bDirtyPackage |= (LODActor->GetActorLocation() != OutProxyLocation);
-				LODActor->SetActorLocation(OutProxyLocation);
-
-				// Check resulting mesh and give a warning if it exceeds the vertex / triangle cap for certain platforms
-				FProjectStatus ProjectStatus;
-				if (IProjectManager::Get().QueryStatusForCurrentProject(ProjectStatus) && (ProjectStatus.IsTargetPlatformSupported(TEXT("Android")) || ProjectStatus.IsTargetPlatformSupported(TEXT("IOS"))))
-				{
-					if (MainMesh->RenderData.IsValid() && MainMesh->RenderData->LODResources.Num() && MainMesh->RenderData->LODResources[0].IndexBuffer.Is32Bit())
-					{
-						FMessageLog("HLODResults").Warning()
-							->AddToken(FUObjectToken::Create(LODActor))
-							->AddToken(FTextToken::Create(LOCTEXT("HLODError_MeshNotBuildTwo", " Mesh has more that 65535 vertices, incompatible with mobile; forcing 16-bit (will probably cause rendering issues).")));
-					}
-				}
-
-				// At the moment this assumes a fixed field of view of 90 degrees (horizontal and vertical axi)
-				static const float FOVRad = 90.0f * (float)PI / 360.0f;
-				static const FMatrix ProjectionMatrix = FPerspectiveMatrix(FOVRad, 1920, 1080, 0.01f);
-				FBoxSphereBounds Bounds = LODActor->GetStaticMeshComponent()->CalcBounds(FTransform());
-
-				float DrawDistance;
-				if (LODSetup.bUseOverrideDrawDistance)
-				{
-					DrawDistance = LODSetup.OverrideDrawDistance;
-				}
-				else
-				{
-					DrawDistance = CalculateDrawDistanceFromScreenSize(Bounds.SphereRadius, LODSetup.TransitionScreenSize, ProjectionMatrix);
-				}
-
-				bDirtyPackage |= (LODActor->GetDrawDistance() != DrawDistance);
-				LODActor->SetDrawDistance(DrawDistance);
-			
-				LODActor->DetermineShadowingFlags();
-
-				// Link proxy to actor
-				UHLODProxy* PreviousProxy = LODActor->GetProxy();
-				Proxy->AddMesh(LODActor, MainMesh, UHLODProxy::GenerateKeyForActor(LODActor));
-				bDirtyPackage |= (LODActor->GetProxy() != PreviousProxy);
-
-				if(bDirtyPackage)
-				{
-					LODActor->MarkPackageDirty();
-				}
-
-				// Clean out standalone meshes from the proxy package as we are about to GC, and mesh merging creates assets that are 
-				// supposed to be standalone
-				CleanStandaloneAssetsInPackage(AssetsOuter);
-
-				// Collect garbage to clean up old unreferenced data in the HLOD package
-				CollectGarbage(GARBAGE_COLLECTION_KEEPFLAGS);
-
-				return true;
+				DrawDistance = CalculateDrawDistanceFromScreenSize(Bounds.SphereRadius, LODSetup.TransitionScreenSize, ProjectionMatrix);
 			}
+
+			bDirtyPackage |= (LODActor->GetDrawDistance() != DrawDistance);
+			LODActor->SetDrawDistance(DrawDistance);
+			
+			LODActor->DetermineShadowingFlags();
+
+			// Link proxy to actor
+			UHLODProxy* PreviousProxy = LODActor->GetProxy();
+			Proxy->AddMesh(LODActor, MainMesh, UHLODProxy::GenerateKeyForActor(LODActor));
+			bDirtyPackage |= (LODActor->GetProxy() != PreviousProxy);
+
+			if(bDirtyPackage)
+			{
+				LODActor->MarkPackageDirty();
+			}
+
+			// Clean out standalone meshes from the proxy package as we are about to GC, and mesh merging creates assets that are 
+			// supposed to be standalone
+			CleanStandaloneAssetsInPackage(AssetsOuter);
+
+			// Collect garbage to clean up old unreferenced data in the HLOD package
+			CollectGarbage(GARBAGE_COLLECTION_KEEPFLAGS);
 		}
 	}
-	return false;
+
+	// Add imposters
+	if (AllImposters.Num() > 0)
+	{
+		struct FLODImposterBatch
+		{
+			UStaticMesh*		StaticMesh;
+			TArray<FTransform>	Transforms;
+		};
+
+		// Get all meshes + transforms for all imposters type (per material)
+		TMap<UMaterialInterface*, FLODImposterBatch> ImposterBatches;
+		for (UStaticMeshComponent* Imposter : AllImposters)
+		{
+			UMaterialInterface* Material = LODActor->GetImposterMaterial(Imposter);
+			check(Material);
+
+			FLODImposterBatch& LODImposterBatch = ImposterBatches.FindOrAdd(Material);
+			LODImposterBatch.Transforms.Add(Imposter->GetOwner()->GetActorTransform());
+
+			// The static mesh hasn't been created yet, do it.
+			if (LODImposterBatch.StaticMesh == nullptr)
+			{
+				LODImposterBatch.StaticMesh = CreateImposterStaticMesh(Imposter, Material, LODSetup.ProxySetting);
+			}
+		}
+
+		// Add imposters to the LODActor
+		for (const TPair<UMaterialInterface*, FLODImposterBatch> ImposterBatch : ImposterBatches)
+		{
+			LODActor->SetupImposters(ImposterBatch.Key, ImposterBatch.Value.StaticMesh, ImposterBatch.Value.Transforms);
+		}
+	}
+
+	return true;
 }
 
 bool FHierarchicalLODUtilities::BuildStaticMeshForLODActor(ALODActor* LODActor, UPackage* AssetsOuter, const FHierarchicalSimplification& LODSetup)
@@ -409,7 +584,7 @@ EClusterGenerationError FHierarchicalLODUtilities::ShouldGenerateCluster(AActor*
 		return EClusterGenerationError::InvalidActor;
 	}
 
-	if (Actor->bHidden)
+	if (Actor->IsHidden())
 	{
 		return EClusterGenerationError::ActorHiddenInGame;
 	}
@@ -779,7 +954,6 @@ void FHierarchicalLODUtilities::DestroyLODActor(ALODActor* InActor)
 	ALODActor* ParentActor = GetParentLODActor(InActor);
 
 	DestroyCluster(InActor);
-	World->DestroyActor(InActor);
 
 	if (ParentActor && !ParentActor->HasAnySubActors())
 	{
@@ -816,7 +990,6 @@ void FHierarchicalLODUtilities::DeleteLODActorsInHLODLevel(UWorld* InWorld, cons
 		if (LodActor && LodActor->LODLevel == (HLODLevelIndex + 1))
 		{
 			DestroyCluster(LodActor);
-			InWorld->DestroyActor(LodActor);
 		}
 	}
 }
@@ -842,9 +1015,9 @@ int32 FHierarchicalLODUtilities::GetLODLevelForScreenSize(const UStaticMeshCompo
 
 	const FStaticMeshRenderData* RenderData = StaticMeshComponent->GetStaticMesh()->RenderData.Get();
 	checkf(RenderData != nullptr, TEXT("StaticMesh in StaticMeshComponent %s contains invalid render data"), *StaticMeshComponent->GetName());
-	checkf(StaticMeshComponent->GetStaticMesh()->SourceModels.Num() > 0, TEXT("StaticMesh in StaticMeshComponent %s contains no SourceModels"), *StaticMeshComponent->GetName());
+	checkf(StaticMeshComponent->GetStaticMesh()->GetNumSourceModels() > 0, TEXT("StaticMesh in StaticMeshComponent %s contains no SourceModels"), *StaticMeshComponent->GetName());
 
-	return ComputeStaticMeshLODLevel(StaticMeshComponent->GetStaticMesh()->SourceModels, RenderData, ScreenSize);
+	return ComputeStaticMeshLODLevel(StaticMeshComponent->GetStaticMesh()->GetSourceModels(), RenderData, ScreenSize);
 }
 
 AHierarchicalLODVolume* FHierarchicalLODUtilities::CreateVolumeForLODActor(ALODActor* InLODActor, UWorld* InWorld)

@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -239,6 +239,36 @@ public:
 		return WebBrowserHandler->OnBeforePopup();
 	}
 
+	virtual FOnBeforeResourceLoadDelegate& OnBeforeResourceLoad() override
+	{
+		if (!WebBrowserHandler->OnBeforeResourceLoad().IsBoundToObject(this))
+		{
+			WebBrowserHandler->OnBeforeResourceLoad().BindSP(this, &FCEFWebBrowserWindow::HandleOnBeforeResourceLoad);
+		}
+
+		return BeforeResourceLoadDelegate;
+	}
+
+	virtual FOnResourceLoadCompleteDelegate& OnResourceLoadComplete() override
+	{
+		if (!WebBrowserHandler->OnResourceLoadComplete().IsBoundToObject(this))
+		{
+			WebBrowserHandler->OnResourceLoadComplete().BindSP(this, &FCEFWebBrowserWindow::HandleOnResourceLoadComplete);
+		}
+
+		return ResourceLoadCompleteDelegate;
+	}
+
+	virtual FOnConsoleMessageDelegate& OnConsoleMessage() override
+	{
+		if (!WebBrowserHandler->OnConsoleMessage().IsBoundToObject(this))
+		{
+			WebBrowserHandler->OnConsoleMessage().BindSP(this, &FCEFWebBrowserWindow::HandleOnConsoleMessage);
+		}
+
+		return ConsoleMessageDelegate;
+	}
+
 	DECLARE_DERIVED_EVENT(FCEFWebBrowserWindow, IWebBrowserWindow::FOnShowPopup, FOnShowPopup);
 	virtual FOnShowPopup& OnShowPopup() override
 	{
@@ -269,6 +299,21 @@ public:
 	virtual FOnDragWindow& OnDragWindow() override
 	{
 		return DragWindowDelegate;
+	}
+		
+	virtual FOnUnhandledKeyDown& OnUnhandledKeyDown() override
+	{
+		return UnhandledKeyDownDelegate;
+	}
+
+	virtual FOnUnhandledKeyUp& OnUnhandledKeyUp() override
+	{
+		return UnhandledKeyUpDelegate;
+	}
+
+	virtual FOnUnhandledKeyChar& OnUnhandledKeyChar() override
+	{
+		return UnhandledKeyCharDelegate;
 	}
 
 private:
@@ -361,12 +406,21 @@ private:
 	 */
 	bool OnBeforeBrowse(CefRefPtr<CefBrowser> Browser, CefRefPtr<CefFrame> Frame, CefRefPtr<CefRequest> Request, bool bIsRedirect);
 
+	void HandleOnBeforeResourceLoad(const CefString& URL, CefRequest::ResourceType Type, FRequestHeaders& AdditionalHeaders);
+	void HandleOnResourceLoadComplete(const CefString& URL, CefRequest::ResourceType Type, CefRequestHandler::URLRequestStatus Status, int64 ContentLength);
+	void HandleOnConsoleMessage(CefRefPtr<CefBrowser> Browser, const CefString& Message, const CefString& Source, int Line);
+
 	/**
 	 * Called before loading a resource to allow overriding the content for a request.
 	 *
 	 * @return string content representing the content to show for the URL or an unset value to fetch the URL normally.
 	 */
 	TOptional<FString> GetResourceContent( CefRefPtr< CefFrame > Frame, CefRefPtr< CefRequest > Request);
+
+	/**
+	* Convenience function to translate modifier keys from Cef keyboard event
+	*/
+	FModifierKeysState SlateModifiersFromCefModifiers(const CefKeyEvent& CefEvent);
 
 	/**
 	 * Called when browser reports a key event that was not handled by it
@@ -478,6 +532,13 @@ public:
 	 * Called from the WebBrowserViewport tick event. Allows us to cache the geometry and use it for coordinate transformations.
 	 */
 	void UpdateCachedGeometry(const FGeometry& AllottedGeometry);
+
+	/**
+	* Set the Zoom Level of CEF based on the provided percentage
+	*
+	* @param Percentage The percentage to base the web browsers zoom level
+	*/
+	void SetZoomLevelByPercentage(float Percentage);
 
 	/**
 	 * Called from the WebBrowserSingleton tick event. Should test wether the widget got a tick from Slate last frame and set the state to hidden if not.
@@ -601,6 +662,15 @@ private:
 	/** Delegate for handling requests to close new windows that were created. */
 	FOnCloseWindow CloseWindowDelegate;
 
+	/** Delegate for handling resource load requests */
+	FOnBeforeResourceLoadDelegate BeforeResourceLoadDelegate;
+
+	/** Delegate that allows for responses to resource loads */
+	FOnResourceLoadCompleteDelegate ResourceLoadCompleteDelegate;
+
+	/** Delegate that allows for response to console logs.  Typically used to capture and mirror web logs in client application logs. */
+	FOnConsoleMessageDelegate ConsoleMessageDelegate;
+
 	/** Delegate for handling requests to show the popup menu. */
 	FOnShowPopup ShowPopupEvent;
 
@@ -618,6 +688,15 @@ private:
 
 	/** Delegate that is executed when a drag event is detected in an area of the web page tagged as a drag region. */
 	FOnDragWindow DragWindowDelegate;
+	
+	/** Delegate for handling key down events not handled by the browser. */
+	FOnUnhandledKeyDown UnhandledKeyDownDelegate;
+
+	/** Delegate for handling key up events not handled by the browser. */
+	FOnUnhandledKeyUp UnhandledKeyUpDelegate;
+
+	/** Delegate for handling key char events not handled by the browser. */
+	FOnUnhandledKeyChar UnhandledKeyCharDelegate;
 
 	/** Tracks the current mouse cursor */
 	EMouseCursor::Type Cursor;

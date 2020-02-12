@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "SSettingsEditorCheckoutNotice.h"
 #include "Misc/Paths.h"
@@ -149,10 +149,10 @@ namespace SettingsHelpers
 
 			if (ShowErrorInNotification)
 			{
-				FNotificationInfo MakeWritiableNotification(ErrorMessage);
-				MakeWritiableNotification.ExpireDuration = 3.0f;
+				FNotificationInfo MakeWritableNotification(ErrorMessage);
+				MakeWritableNotification.ExpireDuration = 3.0f;
 
-				FSlateNotificationManager::Get().AddNotification(MakeWritiableNotification);
+				FSlateNotificationManager::Get().AddNotification(MakeWritableNotification);
 			}
 		}
 

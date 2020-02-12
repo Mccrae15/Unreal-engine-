@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "CoreMinimal.h"
 #include "Stats/Stats.h"
@@ -867,20 +867,26 @@ void UPrimitiveComponent::SetCollisionObjectType(ECollisionChannel Channel)
 
 void UPrimitiveComponent::SetCollisionResponseToChannel(ECollisionChannel Channel, ECollisionResponse NewResponse)
 {
-	BodyInstance.SetResponseToChannel(Channel, NewResponse);
-	OnComponentCollisionSettingsChanged();
+	if (BodyInstance.SetResponseToChannel(Channel, NewResponse))
+	{ 
+		OnComponentCollisionSettingsChanged();
+	}
 }
 
 void UPrimitiveComponent::SetCollisionResponseToAllChannels(enum ECollisionResponse NewResponse)
 {
-	BodyInstance.SetResponseToAllChannels(NewResponse);
-	OnComponentCollisionSettingsChanged();
+	if (BodyInstance.SetResponseToAllChannels(NewResponse))
+	{
+		OnComponentCollisionSettingsChanged();
+	}
 }
 
 void UPrimitiveComponent::SetCollisionResponseToChannels(const FCollisionResponseContainer& NewReponses)
-{
-	BodyInstance.SetResponseToChannels(NewReponses);
-	OnComponentCollisionSettingsChanged();
+{	
+	if (BodyInstance.SetResponseToChannels(NewReponses))
+	{ 
+		OnComponentCollisionSettingsChanged();
+	}
 }
 
 void UPrimitiveComponent::SetCollisionEnabled(ECollisionEnabled::Type NewType)
@@ -902,7 +908,7 @@ void UPrimitiveComponent::SetCollisionEnabled(ECollisionEnabled::Type NewType)
 }
 
 // @todo : implement skeletalmeshcomponent version
-void UPrimitiveComponent::SetCollisionProfileName(FName InCollisionProfileName)
+void UPrimitiveComponent::SetCollisionProfileName(FName InCollisionProfileName, bool bUpdateOverlaps)
 {
 	SCOPE_CYCLE_COUNTER(STAT_PrimComp_SetCollisionProfileName);
 
@@ -913,7 +919,7 @@ void UPrimitiveComponent::SetCollisionProfileName(FName InCollisionProfileName)
 		// may call SetCollisionProfileName more than once.
 		BodyInstance.SetCollisionProfileNameDeferred(InCollisionProfileName);
 	}
-	else
+	else if (InCollisionProfileName != BodyInstance.GetCollisionProfileName())
 	{
 		ECollisionEnabled::Type OldCollisionEnabled = BodyInstance.GetCollisionEnabled();
 		BodyInstance.SetCollisionProfileName(InCollisionProfileName);
@@ -924,7 +930,7 @@ void UPrimitiveComponent::SetCollisionProfileName(FName InCollisionProfileName)
 		{
 			EnsurePhysicsStateCreated();
 		}
-		OnComponentCollisionSettingsChanged();
+		OnComponentCollisionSettingsChanged(bUpdateOverlaps);
 	}
 }
 
@@ -936,10 +942,10 @@ FName UPrimitiveComponent::GetCollisionProfileName() const
 void UPrimitiveComponent::OnActorEnableCollisionChanged()
 {
 	BodyInstance.UpdatePhysicsFilterData();
-	OnComponentCollisionSettingsChanged();
+	OnComponentCollisionSettingsChanged(false);
 }
 
-void UPrimitiveComponent::OnComponentCollisionSettingsChanged()
+void UPrimitiveComponent::OnComponentCollisionSettingsChanged(bool bUpdateOverlaps)
 {
 	if (IsRegistered() && !IsTemplate())			// not for CDOs
 	{
@@ -949,7 +955,10 @@ void UPrimitiveComponent::OnComponentCollisionSettingsChanged()
 			ClearSkipUpdateOverlaps();
 		}
 
-		UpdateOverlaps();
+		if (bUpdateOverlaps)
+		{
+			UpdateOverlaps();
+		}
 
 		// update navigation data if needed
 		const bool bNewNavRelevant = IsNavigationRelevant();

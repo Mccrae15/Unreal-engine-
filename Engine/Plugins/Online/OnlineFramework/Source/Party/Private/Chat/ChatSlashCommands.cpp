@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "Chat/ChatSlashCommands.h"
 #include "Chat/SocialChatManager.h"
@@ -119,7 +119,7 @@ bool FRegisteredSlashCommands::NotifyUserTextChanged(const FText& InText)
 					{
 						if (Cmd->RequiresUserForExecution())
 						{
-							if (!AutoCompleteDatum->OptionalTargetUser.IsValid())
+							if (AutoCompleteDatum->OptionalTargetUser.IsValid())
 							{
 								Cmd->ExecuteSlashCommand(AutoCompleteDatum->OptionalTargetUser.Get());
 								return true;

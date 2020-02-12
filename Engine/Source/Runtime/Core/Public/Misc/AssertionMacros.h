@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -26,7 +26,7 @@ namespace ELogVerbosity
  * C Exposed function to print the callstack to ease debugging needs.  In an 
  * editor build you can call this in the Immediate Window by doing, {,,UE4Editor-Core}::PrintScriptCallstack()
  */
-extern "C" DLLEXPORT void PrintScriptCallstack();
+extern "C" CORE_API void PrintScriptCallstack();
 
 /**
  * FDebug
@@ -38,6 +38,9 @@ struct CORE_API FDebug
 	/** Logs final assert message and exits the program. */
 	static void VARARGS AssertFailed(const ANSICHAR* Expr, const ANSICHAR* File, int32 Line, const TCHAR* Format = TEXT(""), ...);
 
+	/** Triggers a fatal error, using the error formatted to GErrorHist via a previous call to FMsg*/
+	static void ProcessFatalError();
+
 	// returns true if an assert has occurred
 	static bool HasAsserted();
 
@@ -46,6 +49,9 @@ struct CORE_API FDebug
 
 	/** Dumps the stack trace into the log, meant to be used for debugging purposes. */
 	static void DumpStackTraceToLog();
+
+	/** Dumps the stack trace into the log with a custom heading, meant to be used for debugging purposes. */
+	static void DumpStackTraceToLog(const TCHAR* Heading);
 
 #if DO_CHECK || DO_GUARD_SLOW
 private:
@@ -96,18 +102,6 @@ public:
 	static FORCEINLINE typename TEnableIf<TIsArrayOrRefOfType<FmtType, TCHAR>::Value, bool>::Type OptionallyLogFormattedEnsureMessageReturningFalse(bool bLog, const ANSICHAR* Expr, const ANSICHAR* File, int32 Line, const FmtType& FormattedMsg, Types... Args)
 	{
 		static_assert(TIsArrayOrRefOfType<FmtType, TCHAR>::Value, "Formatting string must be a TCHAR array.");
-		static_assert(TAnd<TIsValidVariadicFunctionArg<Types>...>::Value, "Invalid argument(s) passed to ensureMsgf");
-
-		return OptionallyLogFormattedEnsureMessageReturningFalseImpl(bLog, Expr, File, Line, FormattedMsg, Args...);
-	}
-
-	template <typename FmtType, typename... Types>
-	UE_DEPRECATED(4.20, "The formatting string must now be a TCHAR string literal.")
-	static FORCEINLINE typename TEnableIf<!TIsArrayOrRefOfType<FmtType, TCHAR>::Value, bool>::Type OptionallyLogFormattedEnsureMessageReturningFalse(bool bLog, const ANSICHAR* Expr, const ANSICHAR* File, int32 Line, const FmtType& FormattedMsg, Types... Args)
-	{
-		// NOTE: When this deprecated function is removed, the return type of the overload above
-		//       should be set to simply bool.
-
 		static_assert(TAnd<TIsValidVariadicFunctionArg<Types>...>::Value, "Invalid argument(s) passed to ensureMsgf");
 
 		return OptionallyLogFormattedEnsureMessageReturningFalseImpl(bLog, Expr, File, Line, FormattedMsg, Args...);
@@ -169,10 +163,17 @@ public:
 	#define _DebugBreakAndPromptForRemote()
 #endif // !UE_BUILD_SHIPPING
 
+
 #if DO_CHECK
+#ifndef checkCode
 	#define checkCode( Code )		do { Code; } while ( false );
+#endif
+#ifndef verify
 	#define verify(expr)			UE_CHECK_IMPL(expr)
+#endif
+#ifndef check
 	#define check(expr)				UE_CHECK_IMPL(expr)
+#endif
 
 	// Technically we could use just the _F version (lambda-based) for asserts
 	// both with and without formatted messages. However MSVC emits extra
@@ -198,8 +199,12 @@ public:
 	 * verifyf, checkf: Same as verify, check but with printf style additional parameters
 	 * Read about __VA_ARGS__ (variadic macros) on http://gcc.gnu.org/onlinedocs/gcc-3.4.4/cpp.pdf.
 	 */
+#ifndef verifyf
 	#define verifyf(expr, format,  ...)		UE_CHECK_F_IMPL(expr, format, ##__VA_ARGS__)
+#endif
+#ifndef checkf
 	#define checkf(expr, format,  ...)		UE_CHECK_F_IMPL(expr, format, ##__VA_ARGS__)
+#endif
 
 	#define UE_CHECK_F_IMPL(expr, format, ...) \
 		{ \
@@ -217,14 +222,18 @@ public:
 	/**
 	 * Denotes code paths that should never be reached.
 	 */
+#ifndef checkNoEntry
 	#define checkNoEntry()       check(!"Enclosing block should never be called")
+#endif
 
 	/**
 	 * Denotes code paths that should not be executed more than once.
 	 */
+#ifndef checkNoReentry
 	#define checkNoReentry()     { static bool s_beenHere##__LINE__ = false;                                         \
 	                               check( !"Enclosing block was called more than once" || !s_beenHere##__LINE__ );   \
 								   s_beenHere##__LINE__ = true; }
+#endif
 
 	class FRecursionScopeMarker
 	{
@@ -238,11 +247,15 @@ public:
 	/**
 	 * Denotes code paths that should never be called recursively.
 	 */
+#ifndef checkNoRecursion
 	#define checkNoRecursion()  static uint16 RecursionCounter##__LINE__ = 0;                                            \
 	                            check( !"Enclosing block was entered recursively" || RecursionCounter##__LINE__ == 0 );  \
 	                            const FRecursionScopeMarker ScopeMarker##__LINE__( RecursionCounter##__LINE__ )
+#endif
 
+#ifndef unimplemented
 	#define unimplemented()		check(!"Unimplemented function called")
+#endif
 
 #else
 	#define checkCode(...)
@@ -370,6 +383,6 @@ CORE_API void VARARGS LowLevelFatalErrorHandler(const ANSICHAR* File, int32 Line
 		static_assert(TIsArrayOrRefOfType<decltype(Format), TCHAR>::Value, "Formatting string must be a TCHAR array."); \
 		LowLevelFatalErrorHandler(__FILE__, __LINE__, Format, ##__VA_ARGS__); \
 		_DebugBreakAndPromptForRemote(); \
-		FDebug::AssertFailed("", __FILE__, __LINE__, Format, ##__VA_ARGS__); \
+		FDebug::ProcessFatalError(); \
 	}
 

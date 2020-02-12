@@ -1,25 +1,36 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 /*=============================================================================
 ShaderCodeLibrary.cpp: Bound shader state cache implementation.
 =============================================================================*/
 
 #include "ShaderCodeLibrary.h"
+#include "ShaderCodeArchive.h"
 #include "Shader.h"
+#include "Algo/Replace.h"
+#include "Containers/StringView.h"
 #include "Misc/SecureHash.h"
 #include "Misc/Paths.h"
 #include "Math/UnitConversion.h"
 #include "HAL/FileManagerGeneric.h"
 #include "HAL/LowLevelMemTracker.h"
+#include "HAL/PlatformSplash.h"
 #include "Misc/ScopeLock.h"
 #include "Misc/ScopeRWLock.h"
+#include "Misc/StringBuilder.h"
+#include "String/ParseTokens.h"
 #include "Async/AsyncFileHandle.h"
 #include "PipelineFileCache.h"
 #include "Interfaces/IPluginManager.h"
+#include "Hash/CityHash.h"
+#include "Containers/HashTable.h"
+#include "FileCache/FileCache.h"
 
-#include "Interfaces/IShaderFormatArchive.h"
 #include "ShaderPipelineCache.h"
 #include "Misc/FileHelper.h"
+#include "Misc/ConfigCacheIni.h"
+#include "Misc/CommandLine.h"
+#include "ProfilingDebugging/LoadTimeTracker.h"
 
 #if WITH_EDITORONLY_DATA
 #include "Modules/ModuleManager.h"
@@ -34,14 +45,38 @@ ShaderCodeLibrary.cpp: Bound shader state cache implementation.
 
 DEFINE_LOG_CATEGORY(LogShaderLibrary);
 
-static const FName ShaderLibraryCompressionFormat = NAME_Zlib;
-
-static uint32 GShaderCodeArchiveVersion = 1;
+static uint32 GShaderCodeArchiveVersion = 2;
 static uint32 GShaderPipelineArchiveVersion = 1;
 
 static FString ShaderExtension = TEXT(".ushaderbytecode");
 static FString StableExtension = TEXT(".scl.csv");
 static FString PipelineExtension = TEXT(".ushaderpipelines");
+
+int32 GShaderCodeLibrarySeperateLoadingCache = 0;
+static FAutoConsoleVariableRef CVarShaderCodeLibrarySeperateLoadingCache(
+	TEXT("r.ShaderCodeLibrary.SeperateLoadingCache"),
+	GShaderCodeLibrarySeperateLoadingCache,
+	TEXT("if > 0, each shader code library has it's own loading cache."),
+	ECVF_Default
+);
+
+class FShaderMapResource_SharedCode final : public FShaderMapResource
+{
+public:
+	FShaderMapResource_SharedCode(class FShaderLibraryInstance* InLibraryInstance, int32 InShaderMapIndex);
+	virtual ~FShaderMapResource_SharedCode();
+
+	// FRenderResource interface.
+	virtual void ReleaseRHI() override;
+
+	// FShaderMapResource interface
+	virtual TRefCountPtr<FRHIShader> CreateRHIShader(int32 ShaderIndex) override;
+	virtual bool TryRelease() override;
+	virtual uint32 GetSizeBytes() const override { return sizeof(*this) + GetAllocatedSize(); }
+
+	class FShaderLibraryInstance* LibraryInstance;
+	int32 ShaderMapIndex;
+};
 
 static FString GetCodeArchiveFilename(const FString& BaseDir, const FString& LibraryName, FName Platform)
 {
@@ -68,85 +103,125 @@ static FString GetShaderDebugFolder(const FString& BaseDir, const FString& Libra
 	return BaseDir / FString::Printf(TEXT("ShaderDebug-%s-"), *LibraryName) + Platform.ToString();
 }
 
-static TArray<uint8>& FShaderLibraryHelperUncompressCode(EShaderPlatform Platform, int32 UncompressedSize, TArray<uint8>& Code, TArray<uint8>& UncompressedCode)
+FORCEINLINE FName ParseFNameCached(const FStringView& Src, TMap<uint32,FName>& NameCache)
 {
-	if (Code.Num() != UncompressedSize)
+	uint32 SrcHash = CityHash32(reinterpret_cast<const char*>(Src.GetData()), Src.Len() * sizeof(TCHAR));
+	if (FName* Name = NameCache.Find(SrcHash))
 	{
-		UncompressedCode.SetNum(UncompressedSize);
-		bool bSucceed = FCompression::UncompressMemory(ShaderLibraryCompressionFormat, UncompressedCode.GetData(), UncompressedSize, Code.GetData(), Code.Num());
-		check(bSucceed);
-		return UncompressedCode;
+		return *Name;
 	}
 	else
 	{
-		return Code;
+		return NameCache.Emplace(SrcHash, FName(Src.Len(), Src.GetData()));
 	}
 }
 
-static void FShaderLibraryHelperCompressCode(EShaderPlatform Platform, const TArray<uint8>& UncompressedCode, TArray<uint8>& CompressedCode)
+static void AppendFNameAsUTF8(FAnsiStringBuilderBase& Out, const FName& InName)
 {
-		int32 CompressedSize = UncompressedCode.Num() * 4.f / 3.f;
-		CompressedCode.SetNumUninitialized(CompressedSize); // Allocate large enough buffer for compressed code
+	if (!InName.TryAppendAnsiString(Out))
+	{
+		TStringBuilder<128> WideName;
+		InName.AppendString(WideName);
+		Out << TCHAR_TO_UTF8(WideName.ToString());
+	}
+}
 
-		if (FCompression::CompressMemory(ShaderLibraryCompressionFormat, CompressedCode.GetData(), CompressedSize, UncompressedCode.GetData(), UncompressedCode.Num()))
-		{
-			CompressedCode.SetNum(CompressedSize);
-		}
-		else
-		{
-			CompressedCode = UncompressedCode;
-		}
-		CompressedCode.Shrink();
+static void AppendSanitizedFNameAsUTF8(FAnsiStringBuilderBase& Out, const FName& InName, ANSICHAR Delim)
+{
+	const int32 Offset = Out.Len();
+	AppendFNameAsUTF8(Out, InName);
+	Algo::Replace(MakeArrayView(Out).Slice(Offset, Out.Len() - Offset), Delim, ' ');
+}
+
+static void AppendSanitizedFName(FStringBuilderBase& Out, const FName& InName, TCHAR Delim)
+{
+	const int32 Offset = Out.Len();
+	InName.AppendString(Out);
+	Algo::Replace(MakeArrayView(Out).Slice(Offset, Out.Len() - Offset), Delim, TEXT(' '));
 }
 
 FString FCompactFullName::ToString() const
 {
-	FString RetString;
-	if (!ObjectClassAndPath.Num())
+	TStringBuilder<256> RetString;
+	AppendString(RetString);
+	return FString(FStringView(RetString));
+}
+
+void FCompactFullName::AppendString(FStringBuilderBase& Out) const
+{
+	const int32 ObjectClassAndPathCount = ObjectClassAndPath.Num();
+	if (!ObjectClassAndPathCount)
 	{
-		RetString += TEXT("empty");
+		Out << TEXT("empty");
 	}
 	else
 	{
-		for (int32 NameIdx = 0; NameIdx < ObjectClassAndPath.Num(); NameIdx++)
+		for (int32 NameIdx = 0; NameIdx < ObjectClassAndPathCount; NameIdx++)
 		{
-			RetString += ObjectClassAndPath[NameIdx].ToString();
+			Out << ObjectClassAndPath[NameIdx];
 			if (NameIdx == 0)
 			{
-				RetString += TEXT(" ");
+				Out << TEXT(' ');
 			}
-			else if (NameIdx < ObjectClassAndPath.Num() - 1)
+			else if (NameIdx < ObjectClassAndPathCount - 1)
 			{
-				if (NameIdx == ObjectClassAndPath.Num() - 2)
+				if (NameIdx == ObjectClassAndPathCount - 2)
 				{
-					RetString += TEXT(".");
+					Out << TEXT('.');
 				}
 				else
 				{
-					RetString += TEXT("/");
+					Out << TEXT('/');
 				}
 			}
 		}
 	}
-	return RetString;
 }
 
-void FCompactFullName::ParseFromString(const FString& InSrc)
+void FCompactFullName::AppendString(FAnsiStringBuilderBase& Out) const
 {
-	FString Src = InSrc;
-	Src.ReplaceInline(TEXT("\t"), TEXT(" "));
-	Src.ReplaceInline(TEXT("."), TEXT(" "));
-	Src.ReplaceInline(TEXT("/"), TEXT(" "));
-	TArray<FString> Fields;
-	Src.TrimStartAndEnd().ParseIntoArray(Fields, TEXT(" "), true);
-	if (Fields.Num() == 1 && Fields[0] == TEXT("empty"))
+	const int32 ObjectClassAndPathCount = ObjectClassAndPath.Num();
+	if (!ObjectClassAndPathCount)
+	{
+		Out << "empty";
+	}
+	else
+	{
+		for (int32 NameIdx = 0; NameIdx < ObjectClassAndPathCount; NameIdx++)
+		{
+			AppendFNameAsUTF8(Out, ObjectClassAndPath[NameIdx]);
+			if (NameIdx == 0)
+			{
+				Out << ' ';
+			}
+			else if (NameIdx < ObjectClassAndPathCount - 1)
+			{
+				if (NameIdx == ObjectClassAndPathCount - 2)
+				{
+					Out << '.';
+				}
+				else
+				{
+					Out << '/';
+				}
+			}
+		}
+	}
+}
+
+void FCompactFullName::ParseFromString(const FStringView& InSrc)
+{
+	TArray<FStringView, TInlineAllocator<64>> Fields;
+	UE::String::ParseTokensMultiple(InSrc.TrimStartAndEnd(), {TEXT(' '), TEXT('.'), TEXT('/'), TEXT('\t')},
+		[&Fields](FStringView Field) { if (!Field.IsEmpty()) { Fields.Add(Field); } });
+	if (Fields.Num() == 1 && Fields[0] == TEXT("empty"_SV))
 	{
 		Fields.Empty();
 	}
 	ObjectClassAndPath.Empty(Fields.Num());
-	for (const FString& Item : Fields)
+	for (const FStringView& Item : Fields)
 	{
-		ObjectClassAndPath.Add(FName(*Item));
+		ObjectClassAndPath.Emplace(Item);
 	}
 }
 
@@ -158,6 +233,29 @@ uint32 GetTypeHash(const FCompactFullName& A)
 		Hash = HashCombine(Hash, GetTypeHash(Name));
 	}
 	return Hash;
+}
+
+void FixupUnsanitizedNames(const FString& Src, TArray<FString>& OutFields) 
+{
+	FString NewSrc(Src);
+
+	int32 ParenOpen = -1;
+	int32 ParenClose = -1;
+
+	if (NewSrc.FindChar(TCHAR('('), ParenOpen) && NewSrc.FindChar(TCHAR(')'), ParenClose) && ParenOpen < ParenClose && ParenOpen >= 0 && ParenClose >= 0)
+	{
+		for (int32 Index = ParenOpen + 1; Index < ParenClose; Index++)
+		{
+			if (NewSrc[Index] == TCHAR(','))
+			{
+				NewSrc[Index] = ' ';
+			}
+		}
+		OutFields.Empty();
+		NewSrc.TrimStartAndEnd().ParseIntoArray(OutFields, TEXT(","), false);
+		// allow formats both with and without pipeline hash
+		check(OutFields.Num() == 11 || OutFields.Num() == 12);
+	}
 }
 
 void FStableShaderKeyAndValue::ComputeKeyHash()
@@ -175,57 +273,102 @@ void FStableShaderKeyAndValue::ComputeKeyHash()
 
 	KeyHash = HashCombine(KeyHash, GetTypeHash(VFType));
 	KeyHash = HashCombine(KeyHash, GetTypeHash(PermutationId));
+	KeyHash = HashCombine(KeyHash, GetTypeHash(PipelineHash));
 }
 
-void FStableShaderKeyAndValue::ParseFromString(const FString& Src)
+void FStableShaderKeyAndValue::ParseFromString(const FStringView& Src)
 {
-	TArray<FString> Fields;
-	Src.TrimStartAndEnd().ParseIntoArray(Fields, TEXT(","), false);
-	if (Fields.Num() > 11)
+	TArray<FStringView, TInlineAllocator<12>> Fields;
+	UE::String::ParseTokens(Src.TrimStartAndEnd(), TEXT(','), [&Fields](FStringView Field) { Fields.Add(Field); });
+
+	/* disabled, should not be happening since 1H 2018
+	if (Fields.Num() > 12)
 	{
 		// hack fix for unsanitized names, should not occur anymore.
-
-		FString NewSrc(Src);
-
-		int32 ParenOpen = -1;
-		int32 ParenClose = -1;
-
-		if (NewSrc.FindChar(TCHAR('('), ParenOpen) && NewSrc.FindChar(TCHAR(')'), ParenClose) && ParenOpen < ParenClose && ParenOpen >= 0 && ParenClose >= 0)
-		{
-			for (int32 Index = ParenOpen + 1; Index < ParenClose; Index++)
-			{
-				if (NewSrc[Index] == TCHAR(','))
-				{
-					NewSrc[Index] = ' ';
-				}
-			}
-			Fields.Empty();
-			NewSrc.TrimStartAndEnd().ParseIntoArray(Fields, TEXT(","), false);
-			check(Fields.Num() == 11);
-		}
+		FixupUnsanitizedNames(Src, Fields);
 	}
+	*/
 
-
-	check(Fields.Num() == 11);
+	// for a while, accept old .scl.csv without pipelinehash
+	check(Fields.Num() == 11 || Fields.Num() == 12);
 
 	int32 Index = 0;
 	ClassNameAndObjectPath.ParseFromString(Fields[Index++]);
 
-	ShaderType = FName(*Fields[Index++]);
-	ShaderClass = FName(*Fields[Index++]);
-	MaterialDomain = FName(*Fields[Index++]);
-	FeatureLevel = FName(*Fields[Index++]);
+	ShaderType = FName(Fields[Index++]);
+	ShaderClass = FName(Fields[Index++]);
+	MaterialDomain = FName(Fields[Index++]);
+	FeatureLevel = FName(Fields[Index++]);
 
-	QualityLevel = FName(*Fields[Index++]);
-	TargetFrequency = FName(*Fields[Index++]);
-	TargetPlatform = FName(*Fields[Index++]);
+	QualityLevel = FName(Fields[Index++]);
+	TargetFrequency = FName(Fields[Index++]);
+	TargetPlatform = FName(Fields[Index++]);
 
-	VFType = FName(*Fields[Index++]);
-	PermutationId = FName(*Fields[Index++]);
+	VFType = FName(Fields[Index++]);
+	PermutationId = FName(Fields[Index++]);
 
 	OutputHash.FromString(Fields[Index++]);
 
 	check(Index == 11);
+
+	if (Fields.Num() == 12)
+	{
+		PipelineHash.FromString(Fields[Index++]);
+	}
+	else
+	{
+		PipelineHash = FSHAHash();
+	}
+
+	ComputeKeyHash();
+}
+
+
+void FStableShaderKeyAndValue::ParseFromStringCached(const FStringView& Src, TMap<uint32, FName>& NameCache)
+{
+	TArray<FStringView, TInlineAllocator<12>> Fields;
+	UE::String::ParseTokens(Src.TrimStartAndEnd(), TEXT(','), [&Fields](FStringView Field) { Fields.Add(Field); });
+
+	/* disabled, should not be happening since 1H 2018
+	if (Fields.Num() > 11)
+	{
+		// hack fix for unsanitized names, should not occur anymore.
+		FixupUnsanitizedNames(Src, Fields);
+	}
+	*/
+
+	// for a while, accept old .scl.csv without pipelinehash
+	check(Fields.Num() == 11 || Fields.Num() == 12);
+
+	int32 Index = 0;
+	ClassNameAndObjectPath.ParseFromString(Fields[Index++]);
+
+	// There is a high level of uniformity on the following FNames, use
+	// the local name cache to accelerate lookup
+	ShaderType = ParseFNameCached(Fields[Index++], NameCache);
+	ShaderClass = ParseFNameCached(Fields[Index++], NameCache);
+	MaterialDomain = ParseFNameCached(Fields[Index++], NameCache);
+	FeatureLevel = ParseFNameCached(Fields[Index++], NameCache);
+
+	QualityLevel = ParseFNameCached(Fields[Index++], NameCache);
+	TargetFrequency = ParseFNameCached(Fields[Index++], NameCache);
+	TargetPlatform = ParseFNameCached(Fields[Index++], NameCache);
+
+	VFType = ParseFNameCached(Fields[Index++], NameCache);
+	PermutationId = ParseFNameCached(Fields[Index++], NameCache);
+
+	OutputHash.FromString(Fields[Index++]);
+
+	check(Index == 11);
+
+	if (Fields.Num() == 12)
+	{
+		PipelineHash.FromString(Fields[Index++]);
+	}
+	else
+	{
+		PipelineHash = FSHAHash();
+	}
 
 	ComputeKeyHash();
 }
@@ -239,35 +382,65 @@ FString FStableShaderKeyAndValue::ToString() const
 
 void FStableShaderKeyAndValue::ToString(FString& OutResult) const
 {
-	const TCHAR* Delim = TEXT(",");
+	TStringBuilder<384> Out;
+	const TCHAR Delim = TEXT(',');
 
-	OutResult.Reset(255);
+	const int32 ClassNameAndObjectPathOffset = Out.Len();
+	ClassNameAndObjectPath.AppendString(Out);
+	Algo::Replace(MakeArrayView(Out).Slice(ClassNameAndObjectPathOffset, Out.Len() - ClassNameAndObjectPathOffset), Delim, TEXT(' '));
+	Out << Delim;
 
-	OutResult += ClassNameAndObjectPath.ToString().Replace(Delim, TEXT(" "));
-	OutResult += Delim;
+	AppendSanitizedFName(Out, ShaderType, Delim);
+	Out << Delim;
+	AppendSanitizedFName(Out, ShaderClass, Delim);
+	Out << Delim;
 
-	OutResult += ShaderType.ToString().Replace(Delim, TEXT(" "));
-	OutResult += Delim;
-	OutResult += ShaderClass.ToString().Replace(Delim, TEXT(" "));
-	OutResult += Delim;
-	OutResult += MaterialDomain.ToString();
-	OutResult += Delim;
-	OutResult += FeatureLevel.ToString();
-	OutResult += Delim;
+	Out << MaterialDomain << Delim;
+	Out << FeatureLevel << Delim;
+	Out << QualityLevel << Delim;
+	Out << TargetFrequency << Delim;
+	Out << TargetPlatform << Delim;
+	Out << VFType << Delim;
+	Out << PermutationId << Delim;
 
-	OutResult += QualityLevel.ToString();
-	OutResult += Delim;
-	OutResult += TargetFrequency.ToString();
-	OutResult += Delim;
-	OutResult += TargetPlatform.ToString();
-	OutResult += Delim;
+	Out << OutputHash << Delim;
+	Out << PipelineHash;
 
-	OutResult += VFType.ToString();
-	OutResult += Delim;
-	OutResult += PermutationId.ToString();
-	OutResult += Delim;
+	OutResult = FStringView(Out);
+}
 
-	OutResult += OutputHash.ToString();
+void FStableShaderKeyAndValue::AppendString(FAnsiStringBuilderBase& Out) const
+{
+	const ANSICHAR Delim = ',';
+
+	const int32 ClassNameAndObjectPathOffset = Out.Len();
+	ClassNameAndObjectPath.AppendString(Out);
+	Algo::Replace(MakeArrayView(Out).Slice(ClassNameAndObjectPathOffset, Out.Len() - ClassNameAndObjectPathOffset), Delim, ' ');
+	Out << Delim;
+
+	AppendSanitizedFNameAsUTF8(Out, ShaderType, Delim);
+	Out << Delim;
+	AppendSanitizedFNameAsUTF8(Out, ShaderClass, Delim);
+	Out << Delim;
+
+	AppendFNameAsUTF8(Out, MaterialDomain);
+	Out << Delim;
+	AppendFNameAsUTF8(Out, FeatureLevel);
+	Out << Delim;
+	AppendFNameAsUTF8(Out, QualityLevel);
+	Out << Delim;
+	AppendFNameAsUTF8(Out, TargetFrequency);
+	Out << Delim;
+	AppendFNameAsUTF8(Out, TargetPlatform);
+	Out << Delim;
+	AppendFNameAsUTF8(Out, VFType);
+	Out << Delim;
+	AppendFNameAsUTF8(Out, PermutationId);
+	Out << Delim;
+
+	Out << OutputHash;
+	Out << Delim;
+	Out << PipelineHash;
 }
 
 FString FStableShaderKeyAndValue::HeaderLine()
@@ -301,488 +474,330 @@ FString FStableShaderKeyAndValue::HeaderLine()
 	Result += Delim;
 
 	Result += TEXT("OutputHash");
+	Result += Delim;
+
+	Result += TEXT("PipelineHash");
 
 	return Result;
 }
 
-
-struct FShaderCodeEntry
+void FStableShaderKeyAndValue::SetPipelineHash(const FShaderPipeline* Pipeline)
 {
-	// Serialized
-	uint32 Size;
-	uint64 Offset;
-	uint32 UncompressedSize;
-	uint8 Frequency;
-
-	// Transient
-	TArray<uint8> LoadedCode;
-	int32 NumRefs;
-	TWeakPtr<IAsyncReadRequest, ESPMode::ThreadSafe> ReadRequest;
-#if DO_CHECK	
-	volatile int32 bReadCompleted;
-#endif
-
-	FShaderCodeEntry()
-		: Size(0)
-		, Offset(0)
-		, UncompressedSize(0)
-		, Frequency(0)
-		, NumRefs(0)
-#if DO_CHECK
-		, bReadCompleted(0)
-#endif
-	{}
-};
-
-static FArchive& operator <<(FArchive& Ar, FShaderCodeEntry& Ref)
-{
-	return Ar << Ref.Offset << Ref.Size << Ref.UncompressedSize << Ref.Frequency;
+	if (LIKELY(Pipeline))
+	{
+		// cache this?
+		FShaderCodeLibraryPipeline LibraryPipeline;
+		LibraryPipeline.Initialize(Pipeline);
+		LibraryPipeline.GetPipelineHash(PipelineHash); 
+	}
+	else
+	{
+		PipelineHash = FSHAHash();
+	}
 }
 
-class FShaderCodeArchive final : public FShaderFactoryInterface
+void FShaderCodeLibraryPipeline::Initialize(const FShaderPipeline* Pipeline)
+{
+	check(Pipeline != nullptr);
+
+	if (Pipeline->VertexShader.IsValid())
+	{
+		VertexShader = Pipeline->VertexShader->GetOutputHash();
+	}
+	if (Pipeline->GeometryShader.IsValid())
+	{
+		GeometryShader = Pipeline->GeometryShader->GetOutputHash();
+	}
+	if (Pipeline->HullShader.IsValid())
+	{
+		HullShader = Pipeline->HullShader->GetOutputHash();
+	}
+	if (Pipeline->DomainShader.IsValid())
+	{
+		DomainShader = Pipeline->DomainShader->GetOutputHash();
+	}
+	if (Pipeline->PixelShader.IsValid())
+	{
+		PixelShader = Pipeline->PixelShader->GetOutputHash();
+	}
+}
+
+void FShaderCodeLibraryPipeline::GetPipelineHash(FSHAHash& Output)
+{
+	FSHA1 Hasher;
+	Hasher.Update(&VertexShader.Hash[0], sizeof(VertexShader.Hash));
+	Hasher.Update(&PixelShader.Hash[0], sizeof(PixelShader.Hash));
+	Hasher.Update(&GeometryShader.Hash[0], sizeof(GeometryShader.Hash));
+	Hasher.Update(&HullShader.Hash[0], sizeof(HullShader.Hash));
+	Hasher.Update(&DomainShader.Hash[0], sizeof(DomainShader.Hash));
+
+	Hasher.Final();
+	Hasher.GetHash(&Output.Hash[0]);
+}
+
+class FShaderLibraryInstance
 {
 public:
-	FShaderCodeArchive(EShaderPlatform InPlatform, const FString& InLibraryDir, const FString& InLibraryName)
-		: FShaderFactoryInterface(InPlatform, InLibraryName)
-		, LibraryDir(InLibraryDir)
-		, LibraryCodeOffset(0)
-		, LibraryAsyncFileHandle(nullptr)
+	static FShaderLibraryInstance* Create(EShaderPlatform InShaderPlatform, const FString& ShaderCodeDir, FString const& InLibraryName)
 	{
-		FName PlatformName = LegacyShaderPlatformToShaderFormat(InPlatform);
-		FString DestFilePath = GetCodeArchiveFilename(LibraryDir, LibraryName, PlatformName);
-
-		FArchive* Ar = IFileManager::Get().CreateFileReader(*DestFilePath);
-		if (Ar)
+		FRHIShaderLibraryRef Library;
+		if (RHISupportsNativeShaderLibraries(InShaderPlatform))
 		{
-			uint32 Version = 0;
-			*Ar << Version;
-
-			if (Version == GShaderCodeArchiveVersion)
-			{
-				*Ar << Shaders;
-				LibraryCodeOffset = Ar->Tell();
-			}
-			Ar->Close();
-			delete Ar;
-
-			// Open library for async reads
-			LibraryAsyncFileHandle = FPlatformFileManager::Get().GetPlatformFile().OpenAsyncRead(*DestFilePath);
-
-			UE_LOG(LogShaderLibrary, Display, TEXT("Using %s for material shader code. Total %d unique shaders."), *DestFilePath, Shaders.Num());
-		}
-	}
-
-	virtual ~FShaderCodeArchive()
-	{
-	}
-
-	virtual bool IsLibraryNativeFormat() const { return false; }
-
-	TArray<uint8>* LookupShaderCode(const FSHAHash& Hash, int32& OutSize, bool& bWasSynchronous)
-	{
-		FShaderCodeEntry* Entry = Shaders.Find(Hash);
-		bWasSynchronous = false;
-		if (Entry)
-		{
-			FScopeLock ScopeLock(&ReadRequestLock);
-
-			check(Entry->NumRefs >= 0);
-			if (Entry->NumRefs == 0 && Entry->LoadedCode.Num() == 0)
-			{
-				static FThreadSafeCounter SyncCount;
-				SyncCount.Increment();
-				// Someone has asked for a shader without previously invoking RequestEntry, we cannot afford to crash because this happens all too frequently.
-				double StartTime = FPlatformTime::Seconds();
-				bool bFound = RequestEntryInternal(Hash, nullptr, true);
-				check(bFound);
-				float ThisTimeMS = (FPlatformTime::Seconds() - StartTime) * 1000.0;
-				UE_LOG(LogShaderLibrary, Warning, TEXT("Took %6.2fms (%d total sync shader loads) to synchronously load shader %s from library: %s"), ThisTimeMS, SyncCount.GetValue(), *Hash.ToString(), *GetName());
-				bWasSynchronous = bFound;
-
-				check(Entry->NumRefs > 0);
-				check(Entry->LoadedCode.Num() != 0);
-				check(Entry->bReadCompleted == 1);
-			}
-
-			check(Entry->NumRefs > 0);
-			check(Entry->LoadedCode.Num() != 0);
-			check(Entry->bReadCompleted == 1);
-
-			OutSize = Entry->UncompressedSize;
-			return &Entry->LoadedCode;
-		}
-		return nullptr;
-	}
-
-	virtual bool ContainsEntry(const FSHAHash& Hash) final override
-	{
-		FShaderCodeEntry* Entry = Shaders.Find(Hash);
-		return (Entry != nullptr);
-	}
-
-	virtual bool RequestEntry(const FSHAHash& Hash, FArchive* Ar) final override
-	{
-		return RequestEntryInternal(Hash, Ar, false);
-	}
-	virtual bool RequestEntry(const FSHAHash& Hash, TArray<uint8>& OutRaw) final override
-	{
-		int32 Size = -1;
-		bool bWasSync = false;
-		TArray<uint8>* Code = LookupShaderCode(Hash, Size, bWasSync);
-		if (Code)
-		{
-			TArray<uint8>& UncompressedCode = FShaderLibraryHelperUncompressCode(Platform, Size, *Code, OutRaw);
-			if (bWasSync)
-			{
-				ReleaseShaderCode(Hash);
-			}
-			return true;
-		}
-		return false;
-	}
-
-	bool RequestEntryInternal(const FSHAHash& Hash, FArchive* Ar, bool bHiPriSync)
-	{
-		FShaderCodeEntry* Entry = Shaders.Find(Hash);
-		if (Entry)
-		{
-			FScopeLock ScopeLock(&ReadRequestLock);
-
-			int32 CodeNumRefs = Entry->NumRefs++;
-			TSharedPtr<IAsyncReadRequest, ESPMode::ThreadSafe> LocalReadRequest = Entry->ReadRequest.Pin();
-			bool bHasReadRequest = LocalReadRequest.IsValid();
-
-			if (CodeNumRefs == 0 && !bHasReadRequest)
-			{
-				// should not have allocated mem for code if there is no active read request
-				check(Entry->LoadedCode.Num() == 0);
-
-				int64 ReadSize = Entry->Size;
-				int64 ReadOffset = LibraryCodeOffset + Entry->Offset;
-				Entry->LoadedCode.SetNumUninitialized(ReadSize);
-				LocalReadRequest = MakeShareable(LibraryAsyncFileHandle->ReadRequest(ReadOffset, ReadSize, bHiPriSync ? AIOP_CriticalPath : AIOP_Normal, nullptr, Entry->LoadedCode.GetData()));
-
-				Entry->ReadRequest = LocalReadRequest;
-				bHasReadRequest = true;
-			}
-
-			if (bHasReadRequest)
-			{
-				FExternalReadCallback ExternalReadCallback = [this, Entry, LocalReadRequest](double ReaminingTime)
-				{
-					return this->OnExternalReadCallback(LocalReadRequest, Entry, ReaminingTime);
-				};
-
-				if (!Ar || !Ar->AttachExternalReadDependency(ExternalReadCallback))
-				{
-					// Archive does not support async loading 
-					// do a blocking load
-					ExternalReadCallback(0.0);
-					// Should be loaded now
-					check(Entry->LoadedCode.Num() != 0);
-					check(Entry->bReadCompleted == 1);
-				}
-			}
-			else
-			{
-				// already loaded
-				check(Entry->LoadedCode.Num() != 0);
-				check(Entry->bReadCompleted == 1);
-			}
-
-			return true;
+			Library = RHICreateShaderLibrary(InShaderPlatform, ShaderCodeDir, InLibraryName);
 		}
 
-		return false;
-	}
-
-	bool OnExternalReadCallback(const TSharedPtr<IAsyncReadRequest, ESPMode::ThreadSafe>& AsyncReadRequest, FShaderCodeEntry* Entry, double RemainingTime)
-	{
-		if (RemainingTime < 0.0 && !AsyncReadRequest->PollCompletion())
+		if (!Library)
 		{
-			return false;
-		}
-		else if (RemainingTime >= 0.0 && !AsyncReadRequest->WaitCompletion(RemainingTime))
-		{
-			return false;
-		}
-#if DO_CHECK
-		Entry->bReadCompleted = 1;
-#endif
-		return true;
-	}
-
-	void ReleaseShaderCode(const FSHAHash& Hash)
-	{
-		FShaderCodeEntry* Entry = Shaders.Find(Hash);
-		if (Entry)
-		{
-			FScopeLock ScopeLock(&ReadRequestLock);
-
-			Entry->NumRefs--;
-			check(Entry->NumRefs >= 0);
-			if (Entry->NumRefs == 0)
-			{
-				// should not attempt to release shader code while it's loading
-				check(Entry->ReadRequest.IsValid() == false);
-
-				Entry->LoadedCode.Empty();
-#if DO_CHECK
-				Entry->bReadCompleted = 0;
-#endif
-			}
-		}
-	}
-
-	FPixelShaderRHIRef CreatePixelShader(const FSHAHash& Hash) override final
-	{
-		FPixelShaderRHIRef Shader;
-
-		int32 Size = 0;
-		bool bWasSync = false;
-		TArray<uint8>* Code = LookupShaderCode(Hash, Size, bWasSync);
-		if (Code)
-		{
-			TArray<uint8> UCode;
-			TArray<uint8>& UncompressedCode = FShaderLibraryHelperUncompressCode(Platform, Size, *Code, UCode);
-			Shader = RHICreatePixelShader(UncompressedCode);
-			CheckShaderCreation(Shader.GetReference(), Hash);
-			if (bWasSync)
-			{
-				ReleaseShaderCode(Hash);
-			}
-		}
-		return Shader;
-	}
-
-	FVertexShaderRHIRef CreateVertexShader(const FSHAHash& Hash) override final
-	{
-		FVertexShaderRHIRef Shader;
-
-		int32 Size = 0;
-		bool bWasSync = false;
-		TArray<uint8>* Code = LookupShaderCode(Hash, Size, bWasSync);
-		if (Code)
-		{
-			TArray<uint8> UCode;
-			TArray<uint8>& UncompressedCode = FShaderLibraryHelperUncompressCode(Platform, Size, *Code, UCode);
-			Shader = RHICreateVertexShader(UncompressedCode);
-			CheckShaderCreation(Shader.GetReference(), Hash);
-			if (bWasSync)
-			{
-				ReleaseShaderCode(Hash);
-			}
-		}
-		return Shader;
-	}
-
-	FHullShaderRHIRef CreateHullShader(const FSHAHash& Hash) override final
-	{
-		FHullShaderRHIRef Shader;
-
-		int32 Size = 0;
-		bool bWasSync = false;
-		TArray<uint8>* Code = LookupShaderCode(Hash, Size, bWasSync);
-		if (Code)
-		{
-			TArray<uint8> UCode;
-			TArray<uint8>& UncompressedCode = FShaderLibraryHelperUncompressCode(Platform, Size, *Code, UCode);
-			Shader = RHICreateHullShader(UncompressedCode);
-			CheckShaderCreation(Shader.GetReference(), Hash);
-			if (bWasSync)
-			{
-				ReleaseShaderCode(Hash);
-			}
-		}
-		return Shader;
-	}
-
-	FDomainShaderRHIRef CreateDomainShader(const FSHAHash& Hash) override final
-	{
-		FDomainShaderRHIRef Shader;
-
-		int32 Size = 0;
-		bool bWasSync = false;
-		TArray<uint8>* Code = LookupShaderCode(Hash, Size, bWasSync);
-		if (Code)
-		{
-			TArray<uint8> UCode;
-			TArray<uint8>& UncompressedCode = FShaderLibraryHelperUncompressCode(Platform, Size, *Code, UCode);
-			Shader = RHICreateDomainShader(UncompressedCode);
-			CheckShaderCreation(Shader.GetReference(), Hash);
-			if (bWasSync)
-			{
-				ReleaseShaderCode(Hash);
-			}
-		}
-		return Shader;
-	}
-
-	FGeometryShaderRHIRef CreateGeometryShader(const FSHAHash& Hash) override final
-	{
-		FGeometryShaderRHIRef Shader;
-
-		int32 Size = 0;
-		bool bWasSync = false;
-		TArray<uint8>* Code = LookupShaderCode(Hash, Size, bWasSync);
-		if (Code)
-		{
-			TArray<uint8> UCode;
-			TArray<uint8>& UncompressedCode = FShaderLibraryHelperUncompressCode(Platform, Size, *Code, UCode);
-			Shader = RHICreateGeometryShader(UncompressedCode);
-			CheckShaderCreation(Shader.GetReference(), Hash);
-			if (bWasSync)
-			{
-				ReleaseShaderCode(Hash);
-			}
-		}
-		return Shader;
-	}
-
-	FGeometryShaderRHIRef CreateGeometryShaderWithStreamOutput(const FSHAHash& Hash, const FStreamOutElementList& ElementList, uint32 NumStrides, const uint32* Strides, int32 RasterizedStream) override final
-	{
-		FGeometryShaderRHIRef Shader;
-
-		int32 Size = 0;
-		bool bWasSync = false;
-		TArray<uint8>* Code = LookupShaderCode(Hash, Size, bWasSync);
-		if (Code)
-		{
-			TArray<uint8> UCode;
-			TArray<uint8>& UncompressedCode = FShaderLibraryHelperUncompressCode(Platform, Size, *Code, UCode);
-			Shader = RHICreateGeometryShaderWithStreamOutput(UncompressedCode, ElementList, NumStrides, Strides, RasterizedStream);
-			CheckShaderCreation(Shader.GetReference(), Hash);
-			if (bWasSync)
-			{
-				ReleaseShaderCode(Hash);
-			}
-		}
-		return Shader;
-	}
-
-	FComputeShaderRHIRef CreateComputeShader(const FSHAHash& Hash) override final
-	{
-		FComputeShaderRHIRef Shader;
-
-		int32 Size = 0;
-		bool bWasSync = false;
-		TArray<uint8>* Code = LookupShaderCode(Hash, Size, bWasSync);
-		if (Code)
-		{
-			TArray<uint8> UCode;
-			TArray<uint8>& UncompressedCode = FShaderLibraryHelperUncompressCode(Platform, Size, *Code, UCode);
-			Shader = RHICreateComputeShader(UncompressedCode);
-			CheckShaderCreation(Shader.GetReference(), Hash);
-			if (bWasSync)
-			{
-				ReleaseShaderCode(Hash);
-			}
-		}
-		return Shader;
-	}
-
-	class FShaderCodeLibraryIterator : public FRHIShaderLibrary::FShaderLibraryIterator
-	{
-	public:
-		FShaderCodeLibraryIterator(FShaderCodeArchive* Owner, EShaderPlatform Plat, TMap<FSHAHash, FShaderCodeEntry>::TIterator It)
-			: FRHIShaderLibrary::FShaderLibraryIterator(Owner)
-			, Platform(Plat)
-			, IteratorImpl(It)
-		{}
-
-		virtual bool IsValid() const final override
-		{
-			return !!IteratorImpl;
-		}
-
-		virtual FRHIShaderLibrary::FShaderLibraryEntry operator*() const final override
-		{
-			FRHIShaderLibrary::FShaderLibraryEntry Entry;
-			TPair<FSHAHash, FShaderCodeEntry> const& Pair = *IteratorImpl;
-			Entry.Hash = Pair.Key;
-			Entry.Frequency = (EShaderFrequency)Pair.Value.Frequency;
-			Entry.Platform = Platform;
-			return Entry;
-		}
-
-		virtual FRHIShaderLibrary::FShaderLibraryIterator& operator++() final override
-		{
-			++IteratorImpl;
-			return *this;
-		}
-
-	private:
-		EShaderPlatform Platform;
-		TMap<FSHAHash, FShaderCodeEntry>::TIterator IteratorImpl;
-	};
-
-	virtual TRefCountPtr<FRHIShaderLibrary::FShaderLibraryIterator> CreateIterator(void) override final
-	{
-		return new FShaderCodeLibraryIterator(this, Platform, Shaders.CreateIterator());
-	}
-
-	TSet<FShaderCodeLibraryPipeline> const* GetShaderPipelines(EShaderPlatform InPlatform)
-	{
-		if (Pipelines.Num() == 0)
-		{
-			FName PlatformName = LegacyShaderPlatformToShaderFormat(InPlatform);
-			FString DestFilePath = GetPipelinesArchiveFilename(LibraryDir, LibraryName, PlatformName);
-
-			FArchive* Ar = IFileManager::Get().CreateFileReader(*DestFilePath);
+			const FName PlatformName = LegacyShaderPlatformToShaderFormat(InShaderPlatform);
+			const FString DestFilePath = GetCodeArchiveFilename(ShaderCodeDir, InLibraryName, PlatformName);
+			TUniquePtr<FArchive> Ar(IFileManager::Get().CreateFileReader(*DestFilePath));
 			if (Ar)
 			{
 				uint32 Version = 0;
 				*Ar << Version;
-
-				if (Version == GShaderPipelineArchiveVersion)
+				if (Version == GShaderCodeArchiveVersion)
 				{
-					*Ar << Pipelines;
+					Library = FShaderCodeArchive::Create(InShaderPlatform, *Ar, DestFilePath, ShaderCodeDir, InLibraryName);
+					if (Library)
+					{
+						bool ShaderCodeLibrarySeperateLoadingCacheCommandLineOverride = FParse::Param(FCommandLine::Get(), TEXT("ShaderCodeLibrarySeperateLoadingCache"));;
+						if (GShaderCodeLibrarySeperateLoadingCache || ShaderCodeLibrarySeperateLoadingCacheCommandLineOverride)
+						{
+							TArray<TArray<FString>> FilesToMakeUnique;
+							FilesToMakeUnique.AddDefaulted(1);
+							FilesToMakeUnique[0].Add(DestFilePath);
+							FPlatformFileManager::Get().GetPlatformFile().MakeUniquePakFilesForTheseFiles(FilesToMakeUnique);
+						}
+					}
 				}
-
-				Ar->Close();
-				delete Ar;
 			}
 		}
 
-		return &Pipelines;
+		if (!Library)
+		{
+			return nullptr;
+		}
+
+		FShaderLibraryInstance* Instance = new FShaderLibraryInstance();
+		Instance->Library = Library;
+
+		const int32 NumResources = Library->GetNumShaderMaps();
+		Instance->Resources.AddZeroed(NumResources);
+
+		const int32 NumShaders = Library->GetNumShaders();
+		Instance->RHIShaders.AddZeroed(NumShaders);
+
+		INC_DWORD_STAT_BY(STAT_Shaders_ShaderResourceMemory, Instance->GetSizeBytes());
+
+		return Instance;
 	}
 
-	virtual uint32 GetShaderCount(void) const override final
+	~FShaderLibraryInstance()
 	{
-		return Shaders.Num();
+		DEC_DWORD_STAT_BY(STAT_Shaders_ShaderResourceMemory, GetSizeBytes());
 	}
+
+	EShaderPlatform GetPlatform() const { return Library->GetPlatform(); }
+	const int32 GetNumResources() const { return Resources.Num(); }
+	const int32 GetNumShaders() const { return RHIShaders.Num(); }
+
+	uint32 GetSizeBytes() const
+	{
+		return sizeof(*this) + RHIShaders.GetAllocatedSize() + Resources.GetAllocatedSize();
+	}
+
+	const int32 GetNumShadersForShaderMap(int32 ShaderMapIndex) const
+	{
+		return Library->GetNumShadersForShaderMap(ShaderMapIndex);
+	}
+
+	void PreloadShader(int32 ShaderIndex, FArchive* Ar)
+	{
+		SCOPED_LOADTIMER(FShaderLibraryInstance_PreloadShader);
+		FGraphEventRef Event = Library->PreloadShader(ShaderIndex);
+		if (Ar && Event.IsValid())
+		{
+			FExternalReadCallback ExternalReadCallback = [this, Event](double ReaminingTime)
+			{
+				return this->OnExternalReadCallback(Event, ReaminingTime);
+			};
+			Ar->AttachExternalReadDependency(ExternalReadCallback);
+		}
+	}
+
+	void PreloadShaderMap(int32 ShaderMapIndex, FArchive* Ar)
+	{
+		SCOPED_LOADTIMER(FShaderLibraryInstance_PreloadShaderMap);
+		FGraphEventRef Event = Library->PreloadShaderMap(ShaderMapIndex);
+		if (Ar && Event.IsValid())
+		{
+			FExternalReadCallback ExternalReadCallback = [this, Event](double ReaminingTime)
+			{
+				return this->OnExternalReadCallback(Event, ReaminingTime);
+			};
+			Ar->AttachExternalReadDependency(ExternalReadCallback);
+		}
+	}
+
+	TRefCountPtr<FShaderMapResource_SharedCode> GetResource(int32 ShaderMapIndex)
+	{
+		FRWScopeLock Locker(ResourceLock, SLT_ReadOnly);
+		return Resources[ShaderMapIndex];
+	}
+
+	TRefCountPtr<FShaderMapResource_SharedCode> AddOrDeleteResource(FShaderMapResource_SharedCode* Resource)
+	{
+		const int32 ShaderMapIndex = Resource->ShaderMapIndex;
+		TRefCountPtr<FShaderMapResource_SharedCode> OutResource(Resource);
+
+		FRWScopeLock Locker(ResourceLock, SLT_Write);
+		FShaderMapResource_SharedCode* PrevResource = Resources[ShaderMapIndex];
+		if (!PrevResource)
+		{
+			Resources[ShaderMapIndex] = Resource;
+		}
+		else
+		{
+			OutResource = PrevResource;
+		}
+		return OutResource;
+	}
+
+	bool TryRemoveResource(FShaderMapResource_SharedCode* Resource)
+	{
+		FRWScopeLock Locker(ResourceLock, SLT_Write);
+
+		if (Resource->GetNumRefs() == 0)
+		{
+			const int32 ShaderMapIndex = Resource->ShaderMapIndex;
+			check(Resources[ShaderMapIndex] == Resource);
+			Resources[ShaderMapIndex] = nullptr;
+			return true;
+		}
+
+		// Another thread found the resource after ref-count was decremented to zero
+		return false;
+	}
+
+	TRefCountPtr<FRHIShader> GetOrCreateShader(int32 ShaderIndex)
+	{
+		const int32 LockIndex = ShaderIndex % NumShaderLocks;
+		TRefCountPtr<FRHIShader> Shader;
+		{
+			FRWScopeLock Locker(ShaderLocks[LockIndex], SLT_ReadOnly);
+			Shader = RHIShaders[ShaderIndex];
+		}
+		if (!Shader)
+		{
+			FRWScopeLock Locker(ShaderLocks[LockIndex], SLT_Write);
+			Shader = Library->CreateShader(ShaderIndex);
+			RHIShaders[ShaderIndex] = Shader;
+		}
+		return Shader;
+	}
+
+	void ReleaseShader(int32 ShaderIndex)
+	{
+		const int32 LockIndex = ShaderIndex % NumShaderLocks;
+		FRWScopeLock Locker(ShaderLocks[LockIndex], SLT_Write);
+		FRHIShader* Shader = RHIShaders[ShaderIndex];
+		if(Shader)
+		{
+			// The library instance is holding one ref
+			// External caller of this method must be holding a ref as well, so there must be at least 2 refs
+			// If those are the only 2 refs, we release the ref held by the library instance, to allow the shader to be destroyed once caller releases its ref
+			const uint32 NumRefs = Shader->GetRefCount();
+			check(NumRefs > 1u);
+			if(NumRefs == 2u)
+			{
+				RHIShaders[ShaderIndex].SafeRelease();
+			}
+		}
+	}
+
+public:
+	FRHIShaderLibraryRef Library;
 
 private:
-	// Library directory
-	FString LibraryDir;
+	static const int32 NumShaderLocks = 32;
 
-	// Offset at where shader code starts in a code library
-	int64 LibraryCodeOffset;
+	FShaderLibraryInstance() {}
 
-	// Library file handle for async reads
-	IAsyncReadFileHandle* LibraryAsyncFileHandle;
-	FCriticalSection ReadRequestLock;
-
-	// The shader code present in the library
-	TMap<FSHAHash, FShaderCodeEntry> Shaders;
-
-	// De-serialised pipeline map
-	TSet<FShaderCodeLibraryPipeline> Pipelines;
-
-	FORCENOINLINE void CheckShaderCreation(void* ShaderPtr, const FSHAHash& Hash)
+	bool OnExternalReadCallback(const FGraphEventRef& Event, double RemainingTime)
 	{
-#if CHECK_SHADER_CREATION
-		if (!ShaderPtr)
+		if (Event)
 		{
-			FSHAHash DebugCopy;
-			FMemory::Memcpy(DebugCopy.Hash, Hash.Hash, sizeof(Hash.Hash));
-			UE_LOG(LogShaderLibrary, Fatal, TEXT("Failed to create shader %s, %s, %s"), *DebugCopy.ToString(), *LibraryName, *LibraryDir);
-		}
-#endif
+			if (RemainingTime < 0.0)
+			{
+				return Event->IsComplete();
 			}
+			FTaskGraphInterface::Get().WaitUntilTaskCompletes(Event);
+		}
+		return true;
+	}
+
+	TArray<TRefCountPtr<FRHIShader>> RHIShaders;
+	TArray<FShaderMapResource_SharedCode*> Resources;
+	FRWLock ShaderLocks[NumShaderLocks];
+	FRWLock ResourceLock;
 };
 
+FShaderMapResource_SharedCode::FShaderMapResource_SharedCode(FShaderLibraryInstance* InLibraryInstance, int32 InShaderMapIndex)
+	: FShaderMapResource(InLibraryInstance->GetPlatform(), InLibraryInstance->GetNumShadersForShaderMap(InShaderMapIndex))
+	, LibraryInstance(InLibraryInstance)
+	, ShaderMapIndex(InShaderMapIndex)
+{
+}
+
+FShaderMapResource_SharedCode::~FShaderMapResource_SharedCode()
+{
+	
+}
+
+TRefCountPtr<FRHIShader> FShaderMapResource_SharedCode::CreateRHIShader(int32 ShaderIndex)
+{
+	SCOPED_LOADTIMER(FShaderMapResource_SharedCode_InitRHI);
+
+	const int32 LibraryShaderIndex = LibraryInstance->Library->GetShaderIndex(ShaderMapIndex, ShaderIndex);
+	return LibraryInstance->GetOrCreateShader(LibraryShaderIndex);
+}
+
+void FShaderMapResource_SharedCode::ReleaseRHI()
+{
+	const int32 NumShaders = GetNumShaders();
+	for (int32 i = 0; i < NumShaders; ++i)
+	{
+		if (HasShader(i))
+		{
+			const int32 ShaderIndex = LibraryInstance->Library->GetShaderIndex(ShaderMapIndex, i);
+			LibraryInstance->ReleaseShader(ShaderIndex);
+		}
+	}
+
+	FShaderMapResource::ReleaseRHI();
+}
+
+bool FShaderMapResource_SharedCode::TryRelease()
+{
+	if (LibraryInstance->TryRemoveResource(this))
+	{
+		return true;
+	}
+
+	return false;
+}
+
 #if WITH_EDITOR
+struct FShaderCodeStats
+{
+	int64 ShadersSize;
+	int64 ShadersUniqueSize;
+	int32 NumShaders;
+	int32 NumUniqueShaders;
+	//int32 NumPipelines;
+	//int32 NumUniquePipelines;
+};
+
 struct FEditorShaderCodeArchive
 {
 	FEditorShaderCodeArchive(FName InFormat)
@@ -791,6 +806,9 @@ struct FEditorShaderCodeArchive
 	{
 		Format = GetTargetPlatformManagerRef().FindShaderFormat(InFormat);
 		check(Format);
+
+		SerializedShaders.ShaderHashTable.Initialize(0x10000);
+		SerializedShaders.ShaderMapHashTable.Initialize(0x10000);
 	}
 
 	~FEditorShaderCodeArchive() {}
@@ -805,9 +823,8 @@ struct FEditorShaderCodeArchive
 		check(LibraryName.Len() == 0);
 		check(Name.Len() > 0);
 		LibraryName = Name;
-		Offset = 0;
-		Shaders.Empty();
-		Pipelines.Empty();
+		SerializedShaders.Empty();
+		ShaderCode.Empty();
 	}
 
 	void CloseLibrary(FString const& Name)
@@ -816,72 +833,178 @@ struct FEditorShaderCodeArchive
 		LibraryName = TEXT("");
 	}
 
-	bool HasShader(const FSHAHash& Hash) const
+	bool HasShaderMap(const FSHAHash& Hash) const
 	{
-		return Shaders.Contains(Hash);
+		return SerializedShaders.FindShaderMap(Hash) != INDEX_NONE;
 	}
 
-	bool AddShader(uint8 Frequency, const FSHAHash& Hash, TArray<uint8> const& InCode, int32 const UncompressedSize)
+	int32 AddShaderCode(FShaderCodeStats& CodeStats, const FShaderMapResourceCode* Code)
 	{
-		bool bAdd = false;
-		if (!Shaders.Contains(Hash))
+		int32 ShaderMapIndex = INDEX_NONE;
+		if (SerializedShaders.FindOrAddShaderMap(Code->ResourceHash, ShaderMapIndex))
 		{
-#if DO_CHECK
-			uint8 Count = 0;
-			for (uint8 i : InCode)
+			const int32 NumShaders = Code->ShaderEntries.Num();
+			FShaderMapEntry& ShaderMapEntry = SerializedShaders.ShaderMapEntries[ShaderMapIndex];
+			ShaderMapEntry.NumShaders = NumShaders;
+			ShaderMapEntry.ShaderIndicesOffset = SerializedShaders.ShaderIndices.AddZeroed(NumShaders);
+
+			for(int32 i = 0; i < NumShaders; ++i)
 			{
-				Count |= i;
+				int32 ShaderIndex = INDEX_NONE;
+				if (SerializedShaders.FindOrAddShader(Code->ShaderHashes[i], ShaderIndex))
+				{
+					const FShaderMapResourceCode::FShaderEntry& SourceShaderEntry = Code->ShaderEntries[i];
+					FShaderCodeEntry& SerializedShaderEntry = SerializedShaders.ShaderEntries[ShaderIndex];
+					SerializedShaderEntry.Frequency = SourceShaderEntry.Frequency;
+					SerializedShaderEntry.Size = SourceShaderEntry.CompressedSize;
+					SerializedShaderEntry.UncompressedSize = SourceShaderEntry.UncompressedSize;
+					ShaderCode.Emplace(Code->ShaderCode.GetData() + SourceShaderEntry.Offset, SourceShaderEntry.CompressedSize);
+					check(ShaderCode.Num() == SerializedShaders.ShaderEntries.Num());
+
+					CodeStats.NumUniqueShaders++;
+					CodeStats.ShadersUniqueSize += SourceShaderEntry.CompressedSize;
+				}
+				SerializedShaders.ShaderIndices[ShaderMapEntry.ShaderIndicesOffset + i] = ShaderIndex;
 			}
-			check(Count > 0);
-#endif
-
-			FShaderCodeEntry Entry;
-			Entry.Size = InCode.Num();
-			Entry.Offset = Offset;
-			Entry.UncompressedSize = UncompressedSize;
-			Entry.Frequency = Frequency;
-			Entry.LoadedCode = InCode;
-
-			Offset += Entry.Size;
-
-			Shaders.Add(Hash, Entry);
-			bAdd = true;
 		}
-		return bAdd;
+		return ShaderMapIndex;
 	}
 
-	bool AddPipeline(FShaderPipeline* Pipeline)
+	int32 AddShaderCode(int32 OtherShaderMapIndex, const FEditorShaderCodeArchive& OtherArchive)
 	{
-		check(LibraryName.Len() != 0);
-		EShaderPlatform ShaderPlatform = ShaderFormatToLegacyShaderPlatform(FormatName);
+		int32 ShaderMapIndex = 0;
+		if (SerializedShaders.FindOrAddShaderMap(OtherArchive.SerializedShaders.ShaderMapHashes[OtherShaderMapIndex], ShaderMapIndex))
+		{
+			const FShaderMapEntry& PrevShaderMapEntry = OtherArchive.SerializedShaders.ShaderMapEntries[OtherShaderMapIndex];
+			FShaderMapEntry& ShaderMapEntry = SerializedShaders.ShaderMapEntries[ShaderMapIndex];
+			ShaderMapEntry.NumShaders = PrevShaderMapEntry.NumShaders;
+			ShaderMapEntry.ShaderIndicesOffset = SerializedShaders.ShaderIndices.AddZeroed(ShaderMapEntry.NumShaders);
 
-		FShaderCodeLibraryPipeline LibraryPipeline;
-		if (IsValidRef(Pipeline->VertexShader))
-		{
-			LibraryPipeline.VertexShader = Pipeline->VertexShader->GetOutputHash();
+			for (uint32 i = 0; i < ShaderMapEntry.NumShaders; ++i)
+			{
+				const int32 OtherShaderIndex = OtherArchive.SerializedShaders.ShaderIndices[PrevShaderMapEntry.ShaderIndicesOffset + i];
+				int32 ShaderIndex = 0;
+				if (SerializedShaders.FindOrAddShader(OtherArchive.SerializedShaders.ShaderHashes[OtherShaderIndex], ShaderIndex))
+				{
+					const FShaderCodeEntry& OtherShaderEntry = OtherArchive.SerializedShaders.ShaderEntries[OtherShaderIndex];
+					SerializedShaders.ShaderEntries[ShaderIndex] = OtherShaderEntry;
+
+					ShaderCode.Add(OtherArchive.ShaderCode[OtherShaderIndex]);
+					check(ShaderCode.Num() == SerializedShaders.ShaderEntries.Num());
+				}
+				SerializedShaders.ShaderIndices[ShaderMapEntry.ShaderIndicesOffset + i] = ShaderIndex;
+			}
 		}
-		if (IsValidRef(Pipeline->GeometryShader))
+		return ShaderMapIndex;
+	}
+
+	int32 AddShaderCode(int32 OtherShaderMapIndex,
+		const FSerializedShaderArchive& OtherShaders,
+		int64 OtherShaderCodeOffset,
+		FArchive& Ar)
+	{
+		int32 ShaderMapIndex = 0;
+		if (SerializedShaders.FindOrAddShaderMap(OtherShaders.ShaderMapHashes[OtherShaderMapIndex], ShaderMapIndex))
 		{
-			LibraryPipeline.GeometryShader = Pipeline->GeometryShader->GetOutputHash();
+			const FShaderMapEntry& PrevShaderMapEntry = OtherShaders.ShaderMapEntries[OtherShaderMapIndex];
+			FShaderMapEntry& ShaderMapEntry = SerializedShaders.ShaderMapEntries[ShaderMapIndex];
+			ShaderMapEntry.NumShaders = PrevShaderMapEntry.NumShaders;
+			ShaderMapEntry.ShaderIndicesOffset = SerializedShaders.ShaderIndices.AddZeroed(ShaderMapEntry.NumShaders);
+
+			for (uint32 i = 0; i < ShaderMapEntry.NumShaders; ++i)
+			{
+				const int32 OtherShaderIndex = OtherShaders.ShaderIndices[PrevShaderMapEntry.ShaderIndicesOffset + i];
+				int32 ShaderIndex = 0;
+				if (SerializedShaders.FindOrAddShader(OtherShaders.ShaderHashes[OtherShaderIndex], ShaderIndex))
+				{
+					const FShaderCodeEntry& OtherShaderEntry = OtherShaders.ShaderEntries[OtherShaderIndex];
+					SerializedShaders.ShaderEntries[ShaderIndex] = OtherShaderEntry;
+
+					TArray<uint8>& Code = ShaderCode.AddDefaulted_GetRef();
+					check(ShaderCode.Num() == SerializedShaders.GetNumShaders());
+
+					// Read shader code from archive and add shader to set
+					const int64 ReadSize = OtherShaderEntry.Size;
+					const int64 ReadOffset = OtherShaderCodeOffset + OtherShaderEntry.Offset;
+					Code.SetNumUninitialized(ReadSize);
+					Ar.Seek(ReadOffset);
+					Ar.Serialize(Code.GetData(), ReadSize);
+				}
+				SerializedShaders.ShaderIndices[ShaderMapEntry.ShaderIndicesOffset + i] = ShaderIndex;
+			}
 		}
-		if (IsValidRef(Pipeline->HullShader))
+		return ShaderMapIndex;
+	}
+
+	bool LoadExistingShaderCodeLibrary(FString const& MetaDataDir)
+	{
+		FString IntermediateFormatPath = GetCodeArchiveFilename(MetaDataDir / TEXT("ShaderLibrarySource"), LibraryName, FormatName);
+		FArchive* PrevCookedAr = IFileManager::Get().CreateFileReader(*IntermediateFormatPath);
+		bool bOK = true;
+		if (PrevCookedAr)
 		{
-			LibraryPipeline.HullShader = Pipeline->HullShader->GetOutputHash();
+			uint32 ArchiveVersion = 0;
+			*PrevCookedAr << ArchiveVersion;
+			if (ArchiveVersion == GShaderCodeArchiveVersion)
+			{
+				// Read shader library
+				*PrevCookedAr << SerializedShaders;
+
+				ShaderCode.AddDefaulted(SerializedShaders.ShaderEntries.Num());
+				for(int32 Index = 0; Index < ShaderCode.Num(); ++Index)
+				{
+					const FShaderCodeEntry& Entry = SerializedShaders.ShaderEntries[Index];
+					TArray<uint8>& Code = ShaderCode[Index];
+					Code.SetNumUninitialized(Entry.Size);
+					PrevCookedAr->Serialize(Code.GetData(), Entry.Size);
+					bOK = !PrevCookedAr->GetError();
+					if (!bOK)
+					{
+						UE_LOG(LogShaderLibrary, Error, TEXT("Failed to deserialize shader code for %s from %s"), *SerializedShaders.ShaderHashes[Index].ToString(), *IntermediateFormatPath);
+						break;
+					}
+				}
+			}
+			else
+			{
+				bOK = false;
+				UE_LOG(LogShaderLibrary, Warning, TEXT("Failed to deserialize shader code from %s because the archive format %u is incompatible with the current version %u"), *IntermediateFormatPath, ArchiveVersion, GShaderCodeArchiveVersion);
+			}
+			
+			PrevCookedAr->Close();
+			delete PrevCookedAr;
 		}
-		if (IsValidRef(Pipeline->DomainShader))
+		else
 		{
-			LibraryPipeline.DomainShader = Pipeline->DomainShader->GetOutputHash();
+			bOK = false;
+			UE_LOG(LogShaderLibrary, Error, TEXT("Failed to open shader code library from %s"), *IntermediateFormatPath);
 		}
-		if (IsValidRef(Pipeline->PixelShader))
+		
+#if 0
+		if (bOK)
 		{
-			LibraryPipeline.PixelShader = Pipeline->PixelShader->GetOutputHash();
+			FString PipelinesPath = GetPipelinesArchiveFilename(MetaDataDir / TEXT("ShaderLibrarySource"), LibraryName, FormatName);
+			FArchive* PipelinesArchive = IFileManager::Get().CreateFileReader(*PipelinesPath);
+			if (PipelinesArchive)
+			{
+				uint32 ArchiveVersion = 0;
+				*PipelinesArchive << ArchiveVersion;
+				if (ArchiveVersion == GShaderPipelineArchiveVersion)
+				{
+					*PipelinesArchive << Pipelines;
+				}
+				else
+				{
+					bOK = false;
+					UE_LOG(LogShaderLibrary, Warning, TEXT("Failed to deserialize shader pipelines from %s because the archive format %u is incompatible with the current version %u"), *PipelinesPath, ArchiveVersion, GShaderPipelineArchiveVersion);
+				}
+				
+				PipelinesArchive->Close();
+				delete PipelinesArchive;
+			}
 		}
-		if (!Pipelines.Contains(LibraryPipeline))
-		{
-			Pipelines.Add(LibraryPipeline);
-			return true;
-		}
-		return false;
+#endif
+		return bOK;
 	}
 
 	void AddExistingShaderCodeLibrary(FString const& OutputDir)
@@ -906,31 +1029,14 @@ struct FEditorShaderCodeArchive
 
 					if (Version == GShaderCodeArchiveVersion)
 					{
-						TMap<FSHAHash, FShaderCodeEntry> PrevCookedShaders;
+						FSerializedShaderArchive PrevCookedShaders;
 
 						*PrevCookedAr << PrevCookedShaders;
 						int64 PrevCookedShadersCodeStart = PrevCookedAr->Tell();
 
-						for (TMap<FSHAHash, FShaderCodeEntry>::TIterator It(PrevCookedShaders); It; ++It)
+						for(int32 PrevShaderMapIndex = 0; PrevShaderMapIndex < PrevCookedShaders.ShaderMapEntries.Num(); ++PrevShaderMapIndex)
 						{
-							FSHAHash& Hash = It.Key();
-
-							if (!Shaders.Contains(Hash))
-							{
-								// Shader not in list - lazy load shader code
-								FShaderCodeEntry& CodeEntry = It.Value();
-
-								int64 ReadSize = CodeEntry.Size;
-								int64 ReadOffset = PrevCookedShadersCodeStart + CodeEntry.Offset;
-
-								CodeEntry.LoadedCode.SetNumUninitialized(ReadSize);
-
-								// Read shader code from archive and add shader to set
-								PrevCookedAr->Seek(ReadOffset);
-								PrevCookedAr->Serialize(CodeEntry.LoadedCode.GetData(), ReadSize);
-
-								AddShader(CodeEntry.Frequency, Hash, CodeEntry.LoadedCode, CodeEntry.UncompressedSize);
-							}
+							AddShaderCode(PrevShaderMapIndex, PrevCookedShaders, PrevCookedShadersCodeStart, *PrevCookedAr);
 						}
 					}
 
@@ -943,6 +1049,7 @@ struct FEditorShaderCodeArchive
 		TArray<FString> PipelineFiles;
 		IFileManager::Get().FindFiles(PipelineFiles, *ShaderIntermediateLocation, *PipelineExtension);
 
+#if 0
 		for (const FString& ShaderFileName : PipelineFiles)
 		{
 			if (ShaderFileName.Contains(LibraryName + TEXT("-") + FormatName.ToString() + TEXT(".")))
@@ -969,9 +1076,10 @@ struct FEditorShaderCodeArchive
 				}
 			}
 		}
+#endif
 	}
 
-	bool Finalize(FString OutputDir, bool bNativeFormat, bool bMasterCooker)
+	bool Finalize(FString OutputDir, const FString& MetaOutputDir, bool bNativeFormat, bool bMasterCooker)
 	{
 		check(LibraryName.Len() > 0);
 
@@ -985,7 +1093,7 @@ struct FEditorShaderCodeArchive
 		EShaderPlatform Platform = ShaderFormatToLegacyShaderPlatform(FormatName);
 
 		// Shader library
-		if (bSuccess && Shaders.Num() > 0)
+		if (bSuccess && SerializedShaders.GetNumShaderMaps() > 0)
 		{
 			// Write to a intermediate file
 			FString IntermediateFormatPath = GetShaderCodeFilename(FPaths::ProjectSavedDir() / TEXT("Shaders") / FormatName.ToString(), LibraryName, FormatName);
@@ -995,63 +1103,16 @@ struct FEditorShaderCodeArchive
 			{
 				check(Format);
 
+				SerializedShaders.Finalize();
+
 				*FileWriter << GShaderCodeArchiveVersion;
 
-				if (Format->CanStripShaderCode(bNativeFormat) && !bNativeFormat)
-				{
-					FString DebugPlatformDir = GetShaderDebugFolder(FPaths::ProjectSavedDir() / TEXT("Shaders") / FormatName.ToString(), LibraryName, FormatName);
-					IFileManager::Get().MakeDirectory(*DebugPlatformDir, true);
-
-					TMap<FSHAHash, FShaderCodeEntry> StrippedShaders;
-					uint64 TotalSize = 0;
-					for (const auto& Pair : Shaders)
-					{
-						TArray<uint8> CompressedCode;
-						CompressedCode.Append(Pair.Value.LoadedCode.GetData(), Pair.Value.Size);
-
-						int32 UncompressedSize = Pair.Value.UncompressedSize;
-
-						TArray<uint8> UCode;
-						TArray<uint8>& UncompressedCode = FShaderLibraryHelperUncompressCode(Platform, UncompressedSize, CompressedCode, UCode);
-
-						if (!Format->StripShaderCode(UncompressedCode, DebugPlatformDir, bNativeFormat))
-						{
-							bSuccess = false;
-						}
-
-						FShaderLibraryHelperCompressCode(Platform, UncompressedCode, CompressedCode);
-
-						FShaderCodeEntry StrippedEntry;
-						StrippedEntry.Size = CompressedCode.Num();
-						StrippedEntry.Offset = TotalSize;
-						StrippedEntry.UncompressedSize = UncompressedCode.Num();
-						StrippedEntry.Frequency = Pair.Value.Frequency;
-						StrippedEntry.LoadedCode = CompressedCode;
-
-						TotalSize += StrippedEntry.Size;
-
-						StrippedShaders.Add(Pair.Key, StrippedEntry);
-					}
-
-					// Write stripped shader library
-					*FileWriter << StrippedShaders;
-					for (auto& Pair : StrippedShaders)
-					{
-						FileWriter->Serialize(Pair.Value.LoadedCode.GetData(), Pair.Value.Size);
-					}
-
-					// Delete the temp dir
-					IFileManager::Get().DeleteDirectory(*DebugPlatformDir, false, true);
-				}
-				else
-				{
-					// Write shader library
-					*FileWriter << Shaders;
-					for (auto& Pair : Shaders)
-					{
-						FileWriter->Serialize(Pair.Value.LoadedCode.GetData(), Pair.Value.Size);
-					}
-				}
+                // Write shader library
+                *FileWriter << SerializedShaders;
+                for (auto& Code : ShaderCode)
+                {
+                    FileWriter->Serialize(Code.GetData(), Code.Num());
+                }
 
 				FileWriter->Close();
 				delete FileWriter;
@@ -1062,11 +1123,28 @@ struct FEditorShaderCodeArchive
 					FString OutputFilePath = GetCodeArchiveFilename(OutputDir, LibraryName, FormatName);
 
 					// Copy to output location - support for iterative native library cooking
-					IFileManager::Get().Copy(*OutputFilePath, *IntermediateFormatPath, true, true);
+					uint32 Result = IFileManager::Get().Copy(*OutputFilePath, *IntermediateFormatPath, true, true);
+					if (Result != COPY_OK)
+					{
+						UE_LOG(LogShaderLibrary, Error, TEXT("FEditorShaderCodeArchive shader library copy failed to %s. Failed to finalize Shared Shader Library %s with format %s"), *OutputFilePath, *LibraryName, *FormatName.ToString());
+						bSuccess = false;
+                    }
+                    
+                    if (MetaOutputDir.Len())
+                    {
+                        FString MetaFormatPath = GetCodeArchiveFilename(MetaOutputDir / TEXT("../ShaderLibrarySource"), LibraryName, FormatName);
+                        Result = IFileManager::Get().Copy(*MetaFormatPath, *IntermediateFormatPath, true, true);
+                        if (Result != COPY_OK)
+                        {
+                            UE_LOG(LogShaderLibrary, Error, TEXT("FEditorShaderCodeArchive shader library copy failed to %s. Failed to saved metadata copy of Shared Shader Library %s with format %s"), *OutputFilePath, *LibraryName, *FormatName.ToString());
+                            bSuccess = false;
+                        }
+                    }
 				}
 			}
 		}
 
+#if 0
 		// Pipelines
 		if (bSuccess && Pipelines.Num() > 0)
 		{
@@ -1087,21 +1165,36 @@ struct FEditorShaderCodeArchive
 				FString OutputFilePath = GetPipelinesArchiveFilename(OutputDir, LibraryName, FormatName);
 
 				// Copy to output location - support for iterative native library cooking
-				IFileManager::Get().Copy(*OutputFilePath, *TempFilePath, true, true);
+				uint32 Result = IFileManager::Get().Copy(*OutputFilePath, *TempFilePath, true, true);
+				if (Result != COPY_OK)
+				{
+					UE_LOG(LogShaderLibrary, Error, TEXT("FEditorShaderCodeArchive pipeline copy failed to %s. Failed to finalize Shared Shader Library %s with format %s"), *OutputFilePath, *LibraryName, *FormatName.ToString());
+					bSuccess = false;
+				}
+                
+                if (MetaOutputDir.Len())
+                {
+                    FString MetaFormatPath = GetPipelinesArchiveFilename(MetaOutputDir / TEXT("../ShaderLibrarySource"), LibraryName, FormatName);
+                    Result = IFileManager::Get().Copy(*MetaFormatPath, *TempFilePath, true, true);
+                    if (Result != COPY_OK)
+                    {
+                        UE_LOG(LogShaderLibrary, Error, TEXT("FEditorShaderCodeArchive pipeline copy failed to %s. Failed to save metadata copy of Shared Shader Library %s with format %s"), *OutputFilePath, *LibraryName, *FormatName.ToString());
+                        bSuccess = false;
+                    }
+                }
 			}
 		}
+#endif
 
 		return bSuccess;
 	}
 
 	bool PackageNativeShaderLibrary(const FString& ShaderCodeDir)
 	{
-		if (Shaders.Num() == 0)
+		if (SerializedShaders.GetNumShaders() == 0)
 		{
 			return true;
 		}
-
-		bool bOK = false;
 
 		FString IntermediateFormatPath = GetShaderDebugFolder(FPaths::ProjectSavedDir() / TEXT("Shaders") / FormatName.ToString(), LibraryName, FormatName);
 		FString TempPath = IntermediateFormatPath / TEXT("NativeLibrary");
@@ -1110,49 +1203,17 @@ struct FEditorShaderCodeArchive
 		IFileManager::Get().MakeDirectory(*ShaderCodeDir, true);
 
 		EShaderPlatform Platform = ShaderFormatToLegacyShaderPlatform(FormatName);
-		IShaderFormatArchive* Archive = Format->CreateShaderArchive(LibraryName, FormatName, TempPath);
-		if (Archive)
+		const bool bOK = Format->CreateShaderArchive(LibraryName, FormatName, TempPath, ShaderCodeDir, IntermediateFormatPath, SerializedShaders, ShaderCode, nullptr);
+		if (bOK)
 		{
-			bOK = true;
-
-			// Add the shaders to the archive.
-			for (auto& Pair : Shaders)
+			// Delete Shader code library / pipelines as we now have native versions
 			{
-				FSHAHash& Hash = Pair.Key;
-				FShaderCodeEntry& Entry = Pair.Value;
-
-				TArray<uint8> UCode;
-				TArray<uint8>& UncompressedCode = FShaderLibraryHelperUncompressCode(Platform, Entry.UncompressedSize, Entry.LoadedCode, UCode);
-
-				if (Format->CanStripShaderCode(true))
-				{
-					if (!Format->StripShaderCode(UncompressedCode, IntermediateFormatPath, true))
-					{
-						bOK = false;
-						break;
-					}
-				}
-
-				if (!Archive->AddShader(Entry.Frequency, Hash, UncompressedCode))
-				{
-					bOK = false;
-					break;
-				}
+				FString OutputFilePath = GetCodeArchiveFilename(ShaderCodeDir, LibraryName, FormatName);
+				IFileManager::Get().Delete(*OutputFilePath);
 			}
-
-			if (bOK)
 			{
-				bOK = Archive->Finalize(ShaderCodeDir, IntermediateFormatPath, nullptr);
-
-				// Delete Shader code library / pipelines as we now have native versions
-				{
-					FString OutputFilePath = GetCodeArchiveFilename(ShaderCodeDir, LibraryName, FormatName);
-					IFileManager::Get().Delete(*OutputFilePath);
-				}
-				{
-					FString OutputFilePath = GetPipelinesArchiveFilename(ShaderCodeDir, LibraryName, FormatName);
-					IFileManager::Get().Delete(*OutputFilePath);
-				}
+				FString OutputFilePath = GetPipelinesArchiveFilename(ShaderCodeDir, LibraryName, FormatName);
+				IFileManager::Get().Delete(*OutputFilePath);
 			}
 		}
 
@@ -1163,12 +1224,86 @@ struct FEditorShaderCodeArchive
 		return bOK;
 	}
 
+	void MakePatchLibrary(TArray<FEditorShaderCodeArchive*> const& OldLibraries, FEditorShaderCodeArchive const& NewLibrary)
+	{
+		for(int32 NewShaderMapIndex = 0; NewShaderMapIndex < NewLibrary.SerializedShaders.ShaderMapHashes.Num(); ++NewShaderMapIndex)
+		{
+			const FSHAHash& Hash = NewLibrary.SerializedShaders.ShaderMapHashes[NewShaderMapIndex];
+			if (!HasShaderMap(Hash))
+			{
+				bool bInPreviousPatch = false;
+				for (FEditorShaderCodeArchive const* OldLibrary : OldLibraries)
+				{
+					bInPreviousPatch |= OldLibrary->HasShaderMap(Hash);
+					if (bInPreviousPatch)
+					{
+						break;
+					}
+				}
+				if (!bInPreviousPatch)
+				{
+					AddShaderCode(NewShaderMapIndex, NewLibrary);
+				}
+			}
+		}
+	}
+	
+	static bool CreatePatchLibrary(FName FormatName, FString const& LibraryName, TArray<FString> const& OldMetaDataDirs, FString const& NewMetaDataDir, FString const& OutDir, bool bNativeFormat)
+	{
+		TArray<FEditorShaderCodeArchive*> OldLibraries;
+		for (FString const& OldMetaDataDir : OldMetaDataDirs)
+		{
+			FEditorShaderCodeArchive* OldLibrary = new FEditorShaderCodeArchive(FormatName);
+			OldLibrary->OpenLibrary(LibraryName);
+			if (OldLibrary->LoadExistingShaderCodeLibrary(OldMetaDataDir))
+			{
+				OldLibraries.Add(OldLibrary);
+			}
+		}
+
+		FEditorShaderCodeArchive NewLibrary(FormatName);
+		NewLibrary.OpenLibrary(LibraryName);
+		bool bOK = NewLibrary.LoadExistingShaderCodeLibrary(NewMetaDataDir);
+		if (bOK)
+		{
+			FEditorShaderCodeArchive OutLibrary(FormatName);
+			OutLibrary.OpenLibrary(LibraryName);
+			OutLibrary.MakePatchLibrary(OldLibraries, NewLibrary);
+			bOK = OutLibrary.SerializedShaders.GetNumShaderMaps() > 0;
+			if (bOK)
+			{
+				FString Empty;
+				bOK = OutLibrary.Finalize(OutDir, Empty, bNativeFormat, true);
+				UE_CLOG(!bOK, LogShaderLibrary, Error, TEXT("Failed to save %s shader patch library %s, %s, %s"), bNativeFormat ? TEXT("native") : TEXT(""), *FormatName.ToString(), *LibraryName, *OutDir);
+				
+				if (bOK && bNativeFormat && OutLibrary.GetFormat()->SupportsShaderArchives())
+				{
+					bOK = OutLibrary.PackageNativeShaderLibrary(OutDir);
+					UE_CLOG(!bOK, LogShaderLibrary, Error, TEXT("Failed to package native shader patch library %s, %s, %s"), *FormatName.ToString(), *LibraryName, *OutDir);
+				}
+			}
+			else
+			{
+				UE_LOG(LogShaderLibrary, Verbose, TEXT("No shaders to patch for library %s, %s, %s"), *FormatName.ToString(), *LibraryName, *OutDir);
+			}
+		}
+		else
+		{
+			UE_LOG(LogShaderLibrary, Error, TEXT("Failed to open the shader library to patch against %s, %s, %s"), *FormatName.ToString(), *LibraryName, *NewMetaDataDir);
+		}
+		
+		for (FEditorShaderCodeArchive* Lib : OldLibraries)
+		{
+			delete Lib;
+		}
+		return bOK;
+	}
+
 private:
 	FName FormatName;
 	FString LibraryName;
-	TMap<FSHAHash, FShaderCodeEntry> Shaders;
-	TSet<FShaderCodeLibraryPipeline> Pipelines;
-	uint64 Offset;
+	FSerializedShaderArchive SerializedShaders;
+	TArray<TArray<uint8>> ShaderCode;
 	const IShaderFormat* Format;
 };
 
@@ -1184,7 +1319,6 @@ struct FEditorShaderStableInfo
 		check(LibraryName.Len() == 0);
 		check(Name.Len() > 0);
 		LibraryName = Name;
-		Offset = 0;
 		StableMap.Empty();
 	}
 
@@ -1211,6 +1345,9 @@ struct FEditorShaderStableInfo
 	{
 		check(LibraryName.Len() > 0);
 
+		TMap<uint32, FName> NameCache;
+		NameCache.Reserve(2048);
+
 		const FString ShaderIntermediateLocation = FPaths::ProjectSavedDir() / TEXT("Shaders") / FormatName.ToString();
 
 		TArray<FString> ShaderFiles;
@@ -1226,7 +1363,7 @@ struct FEditorShaderStableInfo
 					for (int32 Index = 1; Index < SourceFileContents.Num(); Index++)
 					{
 						FStableShaderKeyAndValue Item;
-						Item.ParseFromString(SourceFileContents[Index]);
+						Item.ParseFromStringCached(SourceFileContents[Index], NameCache);
 						AddShader(Item);
 					}
 				}
@@ -1254,17 +1391,26 @@ struct FEditorShaderStableInfo
 			// Write to a intermediate file
 			FString IntermediateFormatPath = GetStableInfoArchiveFilename(FPaths::ProjectSavedDir() / TEXT("Shaders") / FormatName.ToString(), LibraryName, FormatName);
 
-			TArray<FString> FileContents;
-			FileContents.Reserve(StableMap.Num() + 1);
-
-			FileContents.Add(FStableShaderKeyAndValue::HeaderLine());
-
-			for (const FStableShaderKeyAndValue& Item : StableMap)
+			// Write directly to the file
 			{
-				FString& LineBuffer = FileContents.Emplace_GetRef();
-				Item.ToString(LineBuffer);
+				TUniquePtr<FArchive> IntermediateFormatAr(IFileManager::Get().CreateFileWriter(*IntermediateFormatPath));
+
+				FString HeaderText = FStableShaderKeyAndValue::HeaderLine();
+				HeaderText += TCHAR('\n');
+				auto HeaderSrc = StringCast<ANSICHAR>(*HeaderText, HeaderText.Len());
+
+				IntermediateFormatAr->Serialize((ANSICHAR*)HeaderSrc.Get(), HeaderSrc.Length() * sizeof(ANSICHAR));
+
+				TAnsiStringBuilder<512> LineBuffer;
+
+				for (const FStableShaderKeyAndValue& Item : StableMap)
+				{
+					LineBuffer.Reset();
+					Item.AppendString(LineBuffer);
+					LineBuffer << '\n';
+					IntermediateFormatAr->Serialize(const_cast<ANSICHAR*>(LineBuffer.ToString()), LineBuffer.Len() * sizeof(ANSICHAR));
+				}
 			}
-			FFileHelper::SaveStringArrayToFile(FileContents, *IntermediateFormatPath);
 
 			// Only the master cooker needs to write to the output directory, child cookers only write to the Saved directory
 			if (bMasterCooker)
@@ -1272,8 +1418,16 @@ struct FEditorShaderStableInfo
 				FString OutputFilePath = GetStableInfoArchiveFilename(OutputDir, LibraryName, FormatName);
 
 				// Copy to output location - support for iterative native library cooking
-				IFileManager::Get().Copy(*OutputFilePath, *IntermediateFormatPath, true, true);
-				OutSCLCSVPath = OutputFilePath;
+				uint32 Result = IFileManager::Get().Copy(*OutputFilePath, *IntermediateFormatPath, true, true);
+				if (Result == COPY_OK)
+				{
+					OutSCLCSVPath = OutputFilePath;
+				}
+				else
+				{
+					UE_LOG(LogShaderLibrary, Error, TEXT("FEditorShaderStableInfo copy failed to %s. Failed to finalize Shared Shader Library %s with format %s"), *OutputFilePath, *LibraryName, *FormatName.ToString());
+					bSuccess = false;
+				}
 			}
 		}
 
@@ -1284,25 +1438,14 @@ private:
 	FName FormatName;
 	FString LibraryName;
 	TSet<FStableShaderKeyAndValue> StableMap;
-	uint64 Offset;
-};
-
-struct FShaderCodeStats
-{
-	int64 ShadersSize;
-	int64 ShadersUniqueSize;
-	int32 NumShaders;
-	int32 NumUniqueShaders;
-	int32 NumPipelines;
-	int32 NumUniquePipelines;
 };
 #endif //WITH_EDITOR
 
 class FShaderCodeLibraryImpl
 {
 	// At runtime, shader code collection for current shader platform
-	TArray<FRHIShaderLibraryRef> ShaderCodeArchiveStack;
-	TSet<FShaderCodeLibraryPipeline> Pipelines;
+	TArray<TUniquePtr<FShaderLibraryInstance>> ShaderCodeArchiveStack;
+
 	EShaderPlatform ShaderPlatform;
 	uint64 ShaderCount;
 	FRWLock LibraryMutex;
@@ -1312,6 +1455,8 @@ class FShaderCodeLibraryImpl
 	FEditorShaderCodeArchive* EditorShaderCodeArchive[EShaderPlatform::SP_NumPlatforms];
 	// At cook time, shader code collection for each shader platform
 	FEditorShaderStableInfo* EditorShaderStableInfo[EShaderPlatform::SP_NumPlatforms];
+	// Cached bit field for shader formats that require stable keys
+	uint64_t bShaderFormatsThatNeedStableKeys = 0;
 	// At cook time, shader stats for each shader platform
 	FShaderCodeStats EditorShaderCodeStats[EShaderPlatform::SP_NumPlatforms];
 	// At cook time, whether the shader archive supports pipelines (only OpenGL should)
@@ -1319,52 +1464,6 @@ class FShaderCodeLibraryImpl
 #endif //WITH_EDITOR
 	bool bSupportsPipelines;
 	bool bNativeFormat;
-
-	class FShaderCodeLibraryIterator : public FRHIShaderLibrary::FShaderLibraryIterator
-	{
-	public:
-		FShaderCodeLibraryIterator(TArray<FRHIShaderLibraryRef>& Stack, FRWLock& InLibraryMutex)
-			: FShaderLibraryIterator(nullptr)
-			, LibraryMutex(InLibraryMutex, SLT_ReadOnly)
-			, IteratorImpl(Stack.CreateIterator())
-		{
-			if (Stack.Num() > 0)
-			{
-				Current = (*IteratorImpl)->CreateIterator();
-				ShaderLibrarySource = *IteratorImpl;
-			}
-		}
-
-		virtual bool IsValid() const final override
-		{
-			return IsValidRef(Current) && Current->IsValid();
-		}
-
-		virtual FRHIShaderLibrary::FShaderLibraryEntry operator*() const final override
-		{
-			check(IsValid());
-			return *(*Current);
-		}
-		virtual FShaderLibraryIterator& operator++() final override
-		{
-			++(*Current);
-			if (!Current->IsValid())
-			{
-				++IteratorImpl;
-				if (!!IteratorImpl)
-				{
-					Current = (*IteratorImpl)->CreateIterator();
-					ShaderLibrarySource = *IteratorImpl;
-				}
-			}
-			return *this;
-		}
-
-	private:
-		FRWScopeLock LibraryMutex;
-		TArray<FRHIShaderLibraryRef>::TIterator IteratorImpl;
-		TRefCountPtr<FRHIShaderLibrary::FShaderLibraryIterator> Current;
-	};
 
 public:
 	static FShaderCodeLibraryImpl* Impl;
@@ -1402,25 +1501,24 @@ public:
 #endif
 	}
 
-	void OpenLibrary(FString const& Name, FString const& Directory)
+	bool OpenLibrary(FString const& Name, FString const& Directory)
 	{
 		LLM_SCOPE(ELLMTag::Shaders);
+		
+		bool bResult = false;
 
 		if (ShaderPlatform < SP_NumPlatforms)
 		{
 			if (OpenShaderCode(Directory, ShaderPlatform, Name))
 			{
+				bResult = true;
+				
 				// Attempt to open the shared-cooked override code library if there is one.
 				// This is probably not ideal, but it should get shared-cooks working.
 				OpenShaderCode(Directory, ShaderPlatform, Name + TEXT("_SC"));
 
 				// Inform the pipeline cache that the state of loaded libraries has changed
 				FShaderPipelineCache::ShaderLibraryStateChanged(FShaderPipelineCache::Opened, ShaderPlatform, Name);
-			}
-			else
-			{
-				FName PlatformName = LegacyShaderPlatformToShaderFormat(ShaderPlatform);
-				UE_LOG(LogShaderLibrary, Error, TEXT("Cooked Context: Failed to load Shared Shader Library %s from %s for %s"), *Name, *Directory, *PlatformName.GetPlainNameString());
 			}
 		}
 
@@ -1442,6 +1540,8 @@ public:
 			}
 		}
 #endif
+		
+		return bResult;
 	}
 
 	void CloseLibrary(FString const& Name)
@@ -1450,8 +1550,8 @@ public:
 			FRWScopeLock(LibraryMutex, SLT_Write);
 			for (uint32 i = ShaderCodeArchiveStack.Num(); i > 0; i--)
 			{
-				FRHIShaderLibraryParamRef ShaderCodeArchive = ShaderCodeArchiveStack[i - 1];
-				if (ShaderCodeArchive->GetName() == Name)
+				FShaderLibraryInstance* LibraryInstance = ShaderCodeArchiveStack[i - 1].Get();
+				if (LibraryInstance->Library->GetName() == Name)
 				{
 					ShaderCodeArchiveStack.RemoveAt(i - 1);
 					break;
@@ -1482,170 +1582,28 @@ public:
 	{
 		check(ShaderPlatform == SP_NumPlatforms || InShaderPlatform == ShaderPlatform);
 
+		FShaderLibraryInstance* LibraryInstance = FShaderLibraryInstance::Create(InShaderPlatform, ShaderCodeDir, Library);
+		if(!LibraryInstance)
+		{
+			UE_LOG(LogShaderLibrary, Display, TEXT("Cooked Context: No Shared Shader Library for: %s and native library not supported."), *Library);
+			return false;
+		}
+
 		ShaderPlatform = InShaderPlatform;
 
-		FRHIShaderLibraryRef ShaderCodeArchive = new FShaderCodeArchive(ShaderPlatform, ShaderCodeDir, Library);
-		if (ShaderCodeArchive->GetShaderCount() > 0)
+		if (LibraryInstance->Library->IsNativeLibrary())
 		{
-			bSupportsPipelines = true;
-			UE_LOG(LogShaderLibrary, Display, TEXT("Cooked Context: Using Shared Shader Library %s"), *Library);
-		}
-		else if (RHISupportsNativeShaderLibraries(ShaderPlatform))
-		{
-			ShaderCodeArchive = RHICreateShaderLibrary(ShaderPlatform, ShaderCodeDir, Library);
-
-			if (ShaderCodeArchive.IsValid())
-			{
-				bNativeFormat = true;
-
-				UE_LOG(LogShaderLibrary, Display, TEXT("Cooked Context: Loaded Native Shared Shader Library %s"), *Library);
-			}
-			else
-			{
-				UE_LOG(LogShaderLibrary, Display, TEXT("Failed to load Native Shared Shader Library: %s."), *Library);
-			}
+			UE_LOG(LogShaderLibrary, Display, TEXT("Cooked Context: Loaded Native Shared Shader Library %s"), *Library);
 		}
 		else
 		{
-			UE_LOG(LogShaderLibrary, Display, TEXT("Failed to load Shared Shader Library: %s and no native library supported."), *Library);
+			UE_LOG(LogShaderLibrary, Display, TEXT("Cooked Context: Using Shared Shader Library %s"), *Library);
 		}
 
-		bool const bOK = IsValidRef(ShaderCodeArchive);
-		if (bOK)
-		{
-			FRWScopeLock(LibraryMutex, SLT_Write);
-
-			ShaderCodeArchiveStack.Add(ShaderCodeArchive);
-
-			ShaderCount += ShaderCodeArchive->GetShaderCount();
-
-			if (bSupportsPipelines && !bNativeFormat)
-			{
-				TSet<FShaderCodeLibraryPipeline> const* NewPipelines = ((FShaderCodeArchive*)ShaderCodeArchive.GetReference())->GetShaderPipelines(ShaderPlatform);
-				if (NewPipelines)
-				{
-					Pipelines.Append(*NewPipelines);
-				}
-			}
-		}
-		return bOK;
-	}
-
-	FVertexShaderRHIRef CreateVertexShader(EShaderPlatform Platform, FSHAHash Hash)
-	{
-		checkSlow(Platform == GetRuntimeShaderPlatform());
-
-		FVertexShaderRHIRef Result;
-		FRHIShaderLibraryParamRef ShaderCodeArchive = FindShaderLibrary(Hash);
-		if (ShaderCodeArchive)
-		{
-			if (bNativeFormat || GRHILazyShaderCodeLoading)
-				Result = RHICreateVertexShader(ShaderCodeArchive, Hash);
-			else
-				Result = ((FShaderCodeArchive*)ShaderCodeArchive)->CreateVertexShader(Hash);
-		}
-		return Result;
-	}
-
-	FPixelShaderRHIRef CreatePixelShader(EShaderPlatform Platform, FSHAHash Hash)
-	{
-		checkSlow(Platform == GetRuntimeShaderPlatform());
-
-		FPixelShaderRHIRef Result;
-		FRHIShaderLibraryParamRef ShaderCodeArchive = FindShaderLibrary(Hash);
-		if (ShaderCodeArchive)
-		{
-			if (bNativeFormat || GRHILazyShaderCodeLoading)
-				Result = RHICreatePixelShader(ShaderCodeArchive, Hash);
-			else
-				Result = ((FShaderCodeArchive*)ShaderCodeArchive)->CreatePixelShader(Hash);
-		}
-		return Result;
-	}
-
-	FGeometryShaderRHIRef CreateGeometryShader(EShaderPlatform Platform, FSHAHash Hash)
-	{
-		checkSlow(Platform == GetRuntimeShaderPlatform());
-
-		FGeometryShaderRHIRef Result;
-		FRHIShaderLibraryParamRef ShaderCodeArchive = FindShaderLibrary(Hash);
-		if (ShaderCodeArchive)
-		{
-			if (bNativeFormat || GRHILazyShaderCodeLoading)
-				Result = RHICreateGeometryShader(ShaderCodeArchive, Hash);
-			else
-				Result = ((FShaderCodeArchive*)ShaderCodeArchive)->CreateGeometryShader(Hash);
-		}
-		return Result;
-	}
-
-	FGeometryShaderRHIRef CreateGeometryShaderWithStreamOutput(EShaderPlatform Platform, FSHAHash Hash, const FStreamOutElementList& ElementList, uint32 NumStrides, const uint32* Strides, int32 RasterizedStream)
-	{
-		checkSlow(Platform == GetRuntimeShaderPlatform());
-
-		FGeometryShaderRHIRef Result;
-		FRHIShaderLibraryParamRef ShaderCodeArchive = FindShaderLibrary(Hash);
-		if (ShaderCodeArchive)
-		{
-			if (bNativeFormat || GRHILazyShaderCodeLoading)
-				Result = RHICreateGeometryShaderWithStreamOutput(ElementList, NumStrides, Strides, RasterizedStream, ShaderCodeArchive, Hash);
-			else
-				Result = ((FShaderCodeArchive*)ShaderCodeArchive)->CreateGeometryShaderWithStreamOutput(Hash, ElementList, NumStrides, Strides, RasterizedStream);
-		}
-		return Result;
-	}
-
-	FHullShaderRHIRef CreateHullShader(EShaderPlatform Platform, FSHAHash Hash)
-	{
-		checkSlow(Platform == GetRuntimeShaderPlatform());
-
-		FHullShaderRHIRef Result;
-		FRHIShaderLibraryParamRef ShaderCodeArchive = FindShaderLibrary(Hash);
-		if (ShaderCodeArchive)
-		{
-			if (bNativeFormat || GRHILazyShaderCodeLoading)
-				Result = RHICreateHullShader(ShaderCodeArchive, Hash);
-			else
-				Result = ((FShaderCodeArchive*)ShaderCodeArchive)->CreateHullShader(Hash);
-		}
-		return Result;
-	}
-
-	FDomainShaderRHIRef CreateDomainShader(EShaderPlatform Platform, FSHAHash Hash)
-	{
-		checkSlow(Platform == GetRuntimeShaderPlatform());
-
-		FDomainShaderRHIRef Result;
-		FRHIShaderLibraryParamRef ShaderCodeArchive = FindShaderLibrary(Hash);
-		if (ShaderCodeArchive)
-		{
-			if (bNativeFormat || GRHILazyShaderCodeLoading)
-				Result = RHICreateDomainShader(ShaderCodeArchive, Hash);
-			else
-				Result = ((FShaderCodeArchive*)ShaderCodeArchive)->CreateDomainShader(Hash);
-		}
-		return Result;
-	}
-
-	FComputeShaderRHIRef CreateComputeShader(EShaderPlatform Platform, FSHAHash Hash)
-	{
-		checkSlow(Platform == GetRuntimeShaderPlatform());
-
-		FComputeShaderRHIRef Result;
-		FRHIShaderLibraryParamRef ShaderCodeArchive = FindShaderLibrary(Hash);
-		if (ShaderCodeArchive)
-		{
-			if (bNativeFormat || GRHILazyShaderCodeLoading)
-				Result = RHICreateComputeShader(ShaderCodeArchive, Hash);
-			else
-				Result = ((FShaderCodeArchive*)ShaderCodeArchive)->CreateComputeShader(Hash);
-		}
-		return Result;
-	}
-
-	TRefCountPtr<FRHIShaderLibrary::FShaderLibraryIterator> CreateIterator(void)
-	{
-		return new FShaderCodeLibraryIterator(ShaderCodeArchiveStack, LibraryMutex);
+		FRWScopeLock(LibraryMutex, SLT_Write);
+		ShaderCodeArchiveStack.Emplace(LibraryInstance);
+		ShaderCount += LibraryInstance->GetNumShaders();
+		return true;
 	}
 
 	uint32 GetShaderCount(void)
@@ -1658,61 +1616,96 @@ public:
 		return ShaderPlatform;
 	}
 
-	TSet<FShaderCodeLibraryPipeline> const* GetShaderPipelines(EShaderPlatform Platform)
+	FShaderLibraryInstance* FindShaderLibraryForShaderMap(const FSHAHash& Hash, int32& OutShaderMapIndex)
 	{
-		if (bSupportsPipelines)
+		FRWScopeLock(LibraryMutex, SLT_ReadOnly);
+
+		// Search in library opened order
+		for (const TUniquePtr<FShaderLibraryInstance>& Instance : ShaderCodeArchiveStack)
 		{
-			FRWScopeLock(LibraryMutex, SLT_ReadOnly);
-			checkSlow(Platform == GetRuntimeShaderPlatform());
-			return &Pipelines;
+			const int32 ShaderMapIndex = Instance->Library->FindShaderMapIndex(Hash);
+			if(ShaderMapIndex != INDEX_NONE)
+			{
+				OutShaderMapIndex = ShaderMapIndex;
+				return Instance.Get();
+			}
 		}
 		return nullptr;
 	}
 
-	FRHIShaderLibraryParamRef FindShaderLibrary(const FSHAHash& Hash)
+	FShaderLibraryInstance* FindShaderLibraryForShader(const FSHAHash& Hash, int32& OutShaderIndex)
 	{
 		FRWScopeLock(LibraryMutex, SLT_ReadOnly);
-		FRHIShaderLibraryParamRef Result = nullptr;
 
 		// Search in library opened order
-		for (int32 i = 0; i < ShaderCodeArchiveStack.Num(); ++i)
+		for (const TUniquePtr<FShaderLibraryInstance>& Instance : ShaderCodeArchiveStack)
 		{
-			FRHIShaderLibraryParamRef ShaderCodeArchive = ShaderCodeArchiveStack[i];
-			if (ShaderCodeArchive->ContainsEntry(Hash))
+			const int32 ShaderIndex = Instance->Library->FindShaderIndex(Hash);
+			if (ShaderIndex != INDEX_NONE)
 			{
-				Result = ShaderCodeArchive;
-				break;
+				OutShaderIndex = ShaderIndex;
+				return Instance.Get();
 			}
 		}
-		return Result;
+		return nullptr;
+	}
+
+	TRefCountPtr<FShaderMapResource_SharedCode> LoadResource(const FSHAHash& Hash, FArchive* Ar)
+	{
+		int32 ShaderMapIndex = INDEX_NONE;
+		FShaderLibraryInstance* LibraryInstance = FindShaderLibraryForShaderMap(Hash, ShaderMapIndex);
+		if (LibraryInstance)
+		{
+			SCOPED_LOADTIMER(LoadShaderResource_Internal);
+
+			TRefCountPtr<FShaderMapResource_SharedCode> Resource = LibraryInstance->GetResource(ShaderMapIndex);
+			if (!Resource)
+			{
+				SCOPED_LOADTIMER(LoadShaderResource_AddOrDeleteResource);
+				Resource = LibraryInstance->AddOrDeleteResource(new FShaderMapResource_SharedCode(LibraryInstance, ShaderMapIndex));
+			}
+
+			if (!GRHILazyShaderCodeLoading)
+			{
+				LibraryInstance->PreloadShaderMap(ShaderMapIndex, Ar);
+			}
+
+			return Resource;
+		}
+
+		return TRefCountPtr<FShaderMapResource_SharedCode>();
+	}
+
+	TRefCountPtr<FRHIShader> CreateShader(EShaderFrequency Frequency, const FSHAHash& Hash)
+	{
+		int32 ShaderIndex = INDEX_NONE;
+		FShaderLibraryInstance* LibraryInstance = FindShaderLibraryForShader(Hash, ShaderIndex);
+		if (LibraryInstance)
+		{
+			TRefCountPtr<FRHIShader> Shader = LibraryInstance->GetOrCreateShader(ShaderIndex);
+			check(Shader->GetFrequency() == Frequency);
+			return Shader;
+		}
+		return TRefCountPtr<FRHIShader>();
+	}
+
+	bool PreloadShader(const FSHAHash& Hash, FArchive* Ar)
+	{
+		int32 ShaderIndex = INDEX_NONE;
+		FShaderLibraryInstance* LibraryInstance = FindShaderLibraryForShader(Hash, ShaderIndex);
+		if (LibraryInstance)
+		{
+			LibraryInstance->PreloadShader(ShaderIndex, Ar);
+			return true;
+		}
+		return false;
 	}
 
 	bool ContainsShaderCode(const FSHAHash& Hash)
 	{
-		FRHIShaderLibraryParamRef ShaderCodeArchive = FindShaderLibrary(Hash);
-		if (ShaderCodeArchive)
-			return true;
-		else
-			return false;
-	}
-
-	bool RequestShaderCode(const FSHAHash& Hash, FArchive* Ar)
-	{
-		FRHIShaderLibraryParamRef ShaderCodeArchive = FindShaderLibrary(Hash);
-		if (ShaderCodeArchive)
-			return ShaderCodeArchive->RequestEntry(Hash, Ar);
-		else
-			return false;
-	}
-
-	void ReleaseShaderCode(const FSHAHash& Hash)
-	{
-		if (!bNativeFormat)
-		{
-			FRHIShaderLibraryParamRef ShaderCodeArchive = FindShaderLibrary(Hash);
-			if (ShaderCodeArchive)
-				((FShaderCodeArchive*)ShaderCodeArchive)->ReleaseShaderCode(Hash);
-		}
+		int32 ShaderIndex = INDEX_NONE;
+		FShaderLibraryInstance* LibraryInstance = FindShaderLibraryForShader(Hash, ShaderIndex);
+		return LibraryInstance != nullptr;
 	}
 
 #if WITH_EDITOR
@@ -1725,97 +1718,75 @@ public:
 		}
 	}
 
-	void CookShaderFormats(TArray<FName> const& ShaderFormats)
+	void CookShaderFormats(TArray<TTuple<FName,bool>> const& ShaderFormats)
 	{
-		for (FName const& Format : ShaderFormats)
+		for (auto Pair : ShaderFormats)
 		{
+			FName const& Format = Pair.Get<0>();
+
 			EShaderPlatform Platform = ShaderFormatToLegacyShaderPlatform(Format);
+			FName PossiblyAdjustedFormat = LegacyShaderPlatformToShaderFormat(Platform);	// Vulkan and GL switch between name variants depending on CVars (e.g. see r.Vulkan.UseRealUBs)
 			FEditorShaderCodeArchive* CodeArchive = EditorShaderCodeArchive[Platform];
 			if (!CodeArchive)
 			{
-				CodeArchive = new FEditorShaderCodeArchive(Format);
+				CodeArchive = new FEditorShaderCodeArchive(PossiblyAdjustedFormat);
 				EditorShaderCodeArchive[Platform] = CodeArchive;
 				EditorArchivePipelines[Platform] = !bNativeFormat;
 			}
 			check(CodeArchive);
 		}
-		for (FName const& Format : ShaderFormats)
+		for (auto Pair : ShaderFormats)
 		{
+			FName const& Format = Pair.Get<0>();
+			bool bUseStableKeys = Pair.Get<1>();
+
 			EShaderPlatform Platform = ShaderFormatToLegacyShaderPlatform(Format);
+			FName PossiblyAdjustedFormat = LegacyShaderPlatformToShaderFormat(Platform);	// Vulkan and GL switch between name variants depending on CVars (e.g. see r.Vulkan.UseRealUBs)
 			FEditorShaderStableInfo* StableArchive = EditorShaderStableInfo[Platform];
-			if (!StableArchive)
+			if (!StableArchive && bUseStableKeys)
 			{
-				StableArchive = new FEditorShaderStableInfo(Format);
+				StableArchive = new FEditorShaderStableInfo(PossiblyAdjustedFormat);
 				EditorShaderStableInfo[Platform] = StableArchive;
+				bShaderFormatsThatNeedStableKeys |= (uint64_t(1u) << (uint32_t)Platform);
+				static_assert(SP_NumPlatforms < 64u, "ShaderPlatform will no longer fit into bitfield.");
 			}
-			check(StableArchive);
 		}
 	}
 
-	void AddShaderCode(EShaderPlatform Platform, EShaderFrequency Frequency, const FSHAHash& Hash, const TArray<uint8>& InCode, uint32 const UncompressedSize)
+	bool NeedsShaderStableKeys(EShaderPlatform Platform) 
+	{
+		if (Platform == EShaderPlatform::SP_NumPlatforms)
+		{
+			return bShaderFormatsThatNeedStableKeys != 0;
+		}
+		return (bShaderFormatsThatNeedStableKeys & (uint64_t(1u) << (uint32_t) Platform)) != 0;
+	}
+
+	void AddShaderCode(EShaderPlatform Platform, const FShaderMapResourceCode* Code)
 	{
 		FScopeLock ScopeLock(&ShaderCodeCS);
 		FShaderCodeStats& CodeStats = EditorShaderCodeStats[Platform];
-		CodeStats.NumShaders++;
-		CodeStats.ShadersSize += InCode.Num();
+		CodeStats.NumShaders += Code->ShaderEntries.Num();
+		CodeStats.ShadersSize += Code->ShaderCode.Num();
 
 		FEditorShaderCodeArchive* CodeArchive = EditorShaderCodeArchive[Platform];
 		check(CodeArchive);
 
-		if (CodeArchive->AddShader((uint8)Frequency, Hash, InCode, UncompressedSize))
-		{
-			CodeStats.NumUniqueShaders++;
-			CodeStats.ShadersUniqueSize += InCode.Num();
-		}
+		CodeArchive->AddShaderCode(CodeStats, Code);
 	}
 
 	void AddShaderStableKeyValue(EShaderPlatform InShaderPlatform, FStableShaderKeyAndValue& StableKeyValue)
 	{
+		FEditorShaderStableInfo* StableArchive = EditorShaderStableInfo[InShaderPlatform];
+		if (!StableArchive)
+		{
+			return;
+		}
+
 		FScopeLock ScopeLock(&ShaderCodeCS);
 
 		StableKeyValue.ComputeKeyHash();
-
-		FEditorShaderStableInfo* StableArchive = EditorShaderStableInfo[InShaderPlatform];
-		check(StableArchive);
-
 		StableArchive->AddShader(StableKeyValue);
-	}
-
-	bool AddShaderPipeline(FShaderPipeline* Pipeline)
-	{
-		check(Pipeline);
-
-		EShaderPlatform SPlatform = SP_NumPlatforms;
-		for (uint8 Freq = 0; Freq < SF_Compute; Freq++)
-		{
-			FShader* Shader = Pipeline->GetShader((EShaderFrequency)Freq);
-			if (Shader)
-			{
-				if (SPlatform == SP_NumPlatforms)
-				{
-					SPlatform = (EShaderPlatform)Shader->GetTarget().Platform;
-				}
-				else
-				{
-					check(SPlatform == (EShaderPlatform)Shader->GetTarget().Platform);
-				}
-			}
-		}
-
-		FScopeLock ScopeLock(&ShaderCodeCS);
-		FShaderCodeStats& CodeStats = EditorShaderCodeStats[SPlatform];
-		CodeStats.NumPipelines++;
-
-		FEditorShaderCodeArchive* CodeArchive = EditorShaderCodeArchive[SPlatform];
-		check(CodeArchive);
-
-		bool bAdded = false;
-		if (EditorArchivePipelines[SPlatform] && ((FEditorShaderCodeArchive*)CodeArchive)->AddPipeline(Pipeline))
-		{
-			CodeStats.NumUniquePipelines++;
-			bAdded = true;
-		}
-		return bAdded;
 	}
 
 	bool SaveShaderCode(const FString& ShaderCodeDir, const FString& MetaOutputDir, const TArray<FName>& ShaderFormats, bool bMaster, TArray<FString>& OutSCLCSVPath)
@@ -1832,7 +1803,7 @@ public:
 				FEditorShaderCodeArchive* CodeArchive = EditorShaderCodeArchive[SPlatform];
 				if (CodeArchive)
 				{
-					bOk &= CodeArchive->Finalize(ShaderCodeDir, bNativeFormat, bMaster);
+					bOk &= CodeArchive->Finalize(ShaderCodeDir, MetaOutputDir, bNativeFormat, bMaster);
 				}
 			}
 			{
@@ -1893,7 +1864,6 @@ public:
 };
 
 static FSharedShaderCodeRequest OnSharedShaderCodeRequest;
-static FSharedShaderCodeRelease OnSharedShaderCodeRelease;
 
 FShaderCodeLibraryImpl* FShaderCodeLibraryImpl::Impl = nullptr;
 
@@ -1908,8 +1878,6 @@ static void FShaderCodeLibraryPluginMountedCallback(IPlugin& Plugin)
 
 void FShaderCodeLibrary::InitForRuntime(EShaderPlatform ShaderPlatform)
 {
-	check(FPlatformProperties::RequiresCookedData());
-
 	if (FShaderCodeLibraryImpl::Impl != nullptr)
 	{
 		//cooked, can't change shader platform on the fly
@@ -1918,7 +1886,10 @@ void FShaderCodeLibrary::InitForRuntime(EShaderPlatform ShaderPlatform)
 	}
 
 	// Cannot be enabled by the server, pointless if we can't ever render and not compatible with cook-on-the-fly
-	bool bEnable = !FPlatformProperties::IsServerOnly() && FApp::CanEverRender();
+	bool bArchive = false;
+	GConfig->GetBool(TEXT("/Script/UnrealEd.ProjectPackagingSettings"), TEXT("bShareMaterialShaderCode"), bArchive, GGameIni);
+
+	bool bEnable = !FPlatformProperties::IsServerOnly() && FApp::CanEverRender() && bArchive;
 #if !UE_BUILD_SHIPPING
 	FString FileHostIP;
 	const bool bCookOnTheFly = FParse::Value(FCommandLine::Get(), TEXT("filehostip"), FileHostIP);
@@ -1946,7 +1917,23 @@ void FShaderCodeLibrary::InitForRuntime(EShaderPlatform ShaderPlatform)
 		}
 		else
 		{
+#if !WITH_EDITOR
+			if (FPlatformProperties::SupportsWindowedMode())
+			{
+				FPlatformSplash::Hide();
+
+				UE_LOG(LogShaderLibrary, Error, TEXT("Failed to initialize ShaderCodeLibrary required by the project because part of the Global shader library is missing from %s."), *FPaths::ProjectContentDir());
+
+				FText LocalizedMsg = FText::Format(NSLOCTEXT("MessageDialog", "MissingGlobalShaderLibraryFiles_Body", "Game files required to initialize the global shader library are missing from:\n\n{0}\n\nPlease make sure the game is installed correctly."), FText::FromString(FPaths::ConvertRelativePathToFull(FPaths::ProjectContentDir())));
+				FPlatformMisc::MessageBoxExt(EAppMsgType::Ok, *LocalizedMsg.ToString(), *NSLOCTEXT("MessageDialog", "MissingGlobalShaderLibraryFiles_Title", "Missing game files").ToString());
+			}
+			else
+			{
+				UE_LOG(LogShaderLibrary, Fatal, TEXT("Failed to initialize ShaderCodeLibrary required by the project because part of the Global shader library is missing from %s."), *FPaths::ProjectContentDir());
+			}
+#endif
 			Shutdown();
+			FPlatformMisc::RequestExit(true);
 		}
 	}
 }
@@ -1977,196 +1964,109 @@ bool FShaderCodeLibrary::ContainsShaderCode(const FSHAHash& Hash)
 	return false;
 }
 
-bool FShaderCodeLibrary::RequestShaderCode(const FSHAHash& Hash, FArchive* Ar)
+TRefCountPtr<FShaderMapResource> FShaderCodeLibrary::LoadResource(const FSHAHash& Hash, FArchive* Ar)
+{
+	if (FShaderCodeLibraryImpl::Impl)
+	{
+		SCOPED_LOADTIMER(FShaderCodeLibrary_LoadResource);
+		OnSharedShaderCodeRequest.Broadcast(Hash, Ar);
+		return TRefCountPtr<FShaderMapResource>(FShaderCodeLibraryImpl::Impl->LoadResource(Hash, Ar));
+	}
+	return TRefCountPtr<FShaderMapResource>();
+}
+
+bool FShaderCodeLibrary::PreloadShader(const FSHAHash& Hash, FArchive* Ar)
 {
 	if (FShaderCodeLibraryImpl::Impl)
 	{
 		OnSharedShaderCodeRequest.Broadcast(Hash, Ar);
-		return FShaderCodeLibraryImpl::Impl->RequestShaderCode(Hash, Ar);
+		return FShaderCodeLibraryImpl::Impl->PreloadShader(Hash, Ar);
 	}
 	return false;
 }
 
-bool FShaderCodeLibrary::LazyRequestShaderCode(const FSHAHash& Hash, FArchive* Ar)
+FVertexShaderRHIRef FShaderCodeLibrary::CreateVertexShader(EShaderPlatform Platform, const FSHAHash& Hash)
 {
 	if (FShaderCodeLibraryImpl::Impl)
 	{
-		OnSharedShaderCodeRequest.Broadcast(Hash, Ar);
-		return true;
+		return FVertexShaderRHIRef(FShaderCodeLibraryImpl::Impl->CreateShader(SF_Vertex, Hash));
 	}
-	return false;
+	return nullptr;
 }
 
-void FShaderCodeLibrary::ReleaseShaderCode(const FSHAHash& Hash)
+FPixelShaderRHIRef FShaderCodeLibrary::CreatePixelShader(EShaderPlatform Platform, const FSHAHash& Hash)
 {
 	if (FShaderCodeLibraryImpl::Impl)
 	{
-		OnSharedShaderCodeRelease.Broadcast(Hash);
-		return FShaderCodeLibraryImpl::Impl->ReleaseShaderCode(Hash);
+		return FPixelShaderRHIRef(FShaderCodeLibraryImpl::Impl->CreateShader(SF_Pixel, Hash));
 	}
+	return nullptr;
 }
 
-void FShaderCodeLibrary::LazyReleaseShaderCode(const FSHAHash& Hash)
+FHullShaderRHIRef FShaderCodeLibrary::CreateHullShader(EShaderPlatform Platform, const FSHAHash& Hash)
 {
 	if (FShaderCodeLibraryImpl::Impl)
 	{
-		OnSharedShaderCodeRelease.Broadcast(Hash);
+		return FHullShaderRHIRef(FShaderCodeLibraryImpl::Impl->CreateShader(SF_Hull, Hash));
 	}
+	return nullptr;
 }
 
-FVertexShaderRHIRef FShaderCodeLibrary::CreateVertexShader(EShaderPlatform Platform, FSHAHash Hash, TArray<uint8> const& Code)
+FDomainShaderRHIRef FShaderCodeLibrary::CreateDomainShader(EShaderPlatform Platform, const FSHAHash& Hash)
 {
-	FVertexShaderRHIRef Shader;
-	if (FShaderCodeLibraryImpl::Impl && FPlatformProperties::RequiresCookedData())
+	if (FShaderCodeLibraryImpl::Impl)
 	{
-		Shader = FShaderCodeLibraryImpl::Impl->CreateVertexShader(Platform, Hash);
+		return FDomainShaderRHIRef(FShaderCodeLibraryImpl::Impl->CreateShader(SF_Domain, Hash));
 	}
-	if (!IsValidRef(Shader))
-	{
-		Shader = RHICreateVertexShader(Code);
-	}
-	SafeAssignHash(Shader, Hash);
-	return Shader;
+	return nullptr;
 }
 
-FPixelShaderRHIRef FShaderCodeLibrary::CreatePixelShader(EShaderPlatform Platform, FSHAHash Hash, TArray<uint8> const& Code)
+FGeometryShaderRHIRef FShaderCodeLibrary::CreateGeometryShader(EShaderPlatform Platform, const FSHAHash& Hash)
 {
-	FPixelShaderRHIRef Shader;
-	if (FShaderCodeLibraryImpl::Impl && FPlatformProperties::RequiresCookedData())
+	if (FShaderCodeLibraryImpl::Impl)
 	{
-		Shader = FShaderCodeLibraryImpl::Impl->CreatePixelShader(Platform, Hash);
+		return FGeometryShaderRHIRef(FShaderCodeLibraryImpl::Impl->CreateShader(SF_Geometry, Hash));
 	}
-	if (!IsValidRef(Shader))
-	{
-		Shader = RHICreatePixelShader(Code);
-	}
-	SafeAssignHash(Shader, Hash);
-	return Shader;
+	return nullptr;
 }
 
-FGeometryShaderRHIRef FShaderCodeLibrary::CreateGeometryShader(EShaderPlatform Platform, FSHAHash Hash, TArray<uint8> const& Code)
+FComputeShaderRHIRef FShaderCodeLibrary::CreateComputeShader(EShaderPlatform Platform, const FSHAHash& Hash)
 {
-	FGeometryShaderRHIRef Shader;
-	if (FShaderCodeLibraryImpl::Impl && FPlatformProperties::RequiresCookedData())
+	if (FShaderCodeLibraryImpl::Impl)
 	{
-		Shader = FShaderCodeLibraryImpl::Impl->CreateGeometryShader(Platform, Hash);
+		return FComputeShaderRHIRef(FShaderCodeLibraryImpl::Impl->CreateShader(SF_Compute, Hash));
 	}
-	if (!IsValidRef(Shader))
-	{
-		Shader = RHICreateGeometryShader(Code);
-	}
-	SafeAssignHash(Shader, Hash);
-	return Shader;
-}
-
-FGeometryShaderRHIRef FShaderCodeLibrary::CreateGeometryShaderWithStreamOutput(EShaderPlatform Platform, FSHAHash Hash, const TArray<uint8>& Code, const FStreamOutElementList& ElementList, uint32 NumStrides, const uint32* Strides, int32 RasterizedStream)
-{
-	FGeometryShaderRHIRef Shader;
-	if (FShaderCodeLibraryImpl::Impl && FPlatformProperties::RequiresCookedData())
-	{
-		Shader = FShaderCodeLibraryImpl::Impl->CreateGeometryShaderWithStreamOutput(Platform, Hash, ElementList, NumStrides, Strides, RasterizedStream);
-	}
-	if (!IsValidRef(Shader))
-	{
-		Shader = RHICreateGeometryShaderWithStreamOutput(Code, ElementList, NumStrides, Strides, RasterizedStream);
-	}
-	SafeAssignHash(Shader, Hash);
-	return Shader;
-}
-
-FHullShaderRHIRef FShaderCodeLibrary::CreateHullShader(EShaderPlatform Platform, FSHAHash Hash, TArray<uint8> const& Code)
-{
-	FHullShaderRHIRef Shader;
-	if (FShaderCodeLibraryImpl::Impl && FPlatformProperties::RequiresCookedData())
-	{
-		Shader = FShaderCodeLibraryImpl::Impl->CreateHullShader(Platform, Hash);
-	}
-	if (!IsValidRef(Shader))
-	{
-		Shader = RHICreateHullShader(Code);
-	}
-	SafeAssignHash(Shader, Hash);
-	return Shader;
-}
-
-FDomainShaderRHIRef FShaderCodeLibrary::CreateDomainShader(EShaderPlatform Platform, FSHAHash Hash, TArray<uint8> const& Code)
-{
-	FDomainShaderRHIRef Shader;
-	if (FShaderCodeLibraryImpl::Impl && FPlatformProperties::RequiresCookedData())
-	{
-		Shader = FShaderCodeLibraryImpl::Impl->CreateDomainShader(Platform, Hash);
-	}
-	if (!IsValidRef(Shader))
-	{
-		Shader = RHICreateDomainShader(Code);
-	}
-	SafeAssignHash(Shader, Hash);
-	return Shader;
-}
-
-FComputeShaderRHIRef FShaderCodeLibrary::CreateComputeShader(EShaderPlatform Platform, FSHAHash Hash, TArray<uint8> const& Code)
-{
-	FComputeShaderRHIRef Shader;
-	if (FShaderCodeLibraryImpl::Impl && FPlatformProperties::RequiresCookedData())
-	{
-		Shader = FShaderCodeLibraryImpl::Impl->CreateComputeShader(Platform, Hash);
-	}
-	if (!IsValidRef(Shader))
-	{
-		Shader = RHICreateComputeShader(Code);
-	}
-	SafeAssignHash(Shader, Hash);
-	FPipelineFileCache::CacheComputePSO(GetTypeHash(Shader.GetReference()), Shader.GetReference());
-	Shader->SetStats(FPipelineFileCache::RegisterPSOStats(GetTypeHash(Shader.GetReference())));
-	return Shader;
-}
-
-TRefCountPtr<FRHIShaderLibrary::FShaderLibraryIterator> FShaderCodeLibrary::CreateIterator(void)
-{
-	TRefCountPtr<FRHIShaderLibrary::FShaderLibraryIterator> It;
-	if (FShaderCodeLibraryImpl::Impl && FPlatformProperties::RequiresCookedData())
-	{
-		It = FShaderCodeLibraryImpl::Impl->CreateIterator();
-	}
-	return It;
+	return nullptr;
 }
 
 uint32 FShaderCodeLibrary::GetShaderCount(void)
 {
 	uint32 Num = 0;
-	if (FShaderCodeLibraryImpl::Impl && FPlatformProperties::RequiresCookedData())
+	if (FShaderCodeLibraryImpl::Impl)
 	{
 		Num = FShaderCodeLibraryImpl::Impl->GetShaderCount();
 	}
 	return Num;
 }
 
-TSet<FShaderCodeLibraryPipeline> const* FShaderCodeLibrary::GetShaderPipelines(EShaderPlatform Platform)
-{
-	TSet<FShaderCodeLibraryPipeline> const* Pipelines = nullptr;
-	if (FShaderCodeLibraryImpl::Impl && FPlatformProperties::RequiresCookedData())
-	{
-		Pipelines = FShaderCodeLibraryImpl::Impl->GetShaderPipelines(Platform);
-	}
-	return Pipelines;
-}
-
 EShaderPlatform FShaderCodeLibrary::GetRuntimeShaderPlatform(void)
 {
 	EShaderPlatform Platform = SP_NumPlatforms;
-	if (FShaderCodeLibraryImpl::Impl && FPlatformProperties::RequiresCookedData())
+	if (FShaderCodeLibraryImpl::Impl)
 	{
 		Platform = FShaderCodeLibraryImpl::Impl->GetRuntimeShaderPlatform();
 	}
 	return Platform;
 }
 
-void FShaderCodeLibrary::OpenLibrary(FString const& Name, FString const& Directory)
+bool FShaderCodeLibrary::OpenLibrary(FString const& Name, FString const& Directory)
 {
+	bool bResult = false;
 	if (FShaderCodeLibraryImpl::Impl)
 	{
-		FShaderCodeLibraryImpl::Impl->OpenLibrary(Name, Directory);
+		bResult = FShaderCodeLibraryImpl::Impl->OpenLibrary(Name, Directory);
 	}
+	return bResult;
 }
 
 void FShaderCodeLibrary::CloseLibrary(FString const& Name)
@@ -2191,7 +2091,7 @@ void FShaderCodeLibrary::CleanDirectories(TArray<FName> const& ShaderFormats)
 	}
 }
 
-void FShaderCodeLibrary::CookShaderFormats(TArray<FName> const& ShaderFormats)
+void FShaderCodeLibrary::CookShaderFormats(TArray<TTuple<FName,bool>> const& ShaderFormats)
 {
 	if (FShaderCodeLibraryImpl::Impl)
 	{
@@ -2199,12 +2099,12 @@ void FShaderCodeLibrary::CookShaderFormats(TArray<FName> const& ShaderFormats)
 	}
 }
 
-bool FShaderCodeLibrary::AddShaderCode(EShaderPlatform ShaderPlatform, EShaderFrequency Frequency, const FSHAHash& Hash, const TArray<uint8>& InCode, uint32 const UncompressedSize)
+bool FShaderCodeLibrary::AddShaderCode(EShaderPlatform ShaderPlatform, const FShaderMapResourceCode* Code)
 {
 #if WITH_EDITOR
 	if (FShaderCodeLibraryImpl::Impl)
 	{
-		FShaderCodeLibraryImpl::Impl->AddShaderCode(ShaderPlatform, Frequency, Hash, InCode, UncompressedSize);
+		FShaderCodeLibraryImpl::Impl->AddShaderCode(ShaderPlatform, Code);
 		return true;
 	}
 #endif// WITH_EDITOR
@@ -2212,12 +2112,12 @@ bool FShaderCodeLibrary::AddShaderCode(EShaderPlatform ShaderPlatform, EShaderFr
 	return false;
 }
 
-bool FShaderCodeLibrary::NeedsShaderStableKeys()
+bool FShaderCodeLibrary::NeedsShaderStableKeys(EShaderPlatform ShaderPlatform)
 {
 #if WITH_EDITOR
 	if (FShaderCodeLibraryImpl::Impl)
 	{
-		return true;
+		return FShaderCodeLibraryImpl::Impl->NeedsShaderStableKeys(ShaderPlatform);
 	}
 #endif// WITH_EDITOR
 	return false;
@@ -2231,19 +2131,6 @@ void FShaderCodeLibrary::AddShaderStableKeyValue(EShaderPlatform ShaderPlatform,
 		FShaderCodeLibraryImpl::Impl->AddShaderStableKeyValue(ShaderPlatform, StableKeyValue);
 	}
 #endif// WITH_EDITOR
-}
-
-bool FShaderCodeLibrary::AddShaderPipeline(FShaderPipeline* Pipeline)
-{
-#if WITH_EDITOR
-	if (FShaderCodeLibraryImpl::Impl && Pipeline)
-	{
-		FShaderCodeLibraryImpl::Impl->AddShaderPipeline(Pipeline);
-		return true;
-	}
-#endif// WITH_EDITOR
-
-	return false;
 }
 
 bool FShaderCodeLibrary::SaveShaderCodeMaster(const FString& OutputDir, const FString& MetaOutputDir, const TArray<FName>& ShaderFormats, TArray<FString>& OutSCLCSVPath)
@@ -2284,6 +2171,38 @@ void FShaderCodeLibrary::DumpShaderCodeStats()
 		FShaderCodeLibraryImpl::Impl->DumpShaderCodeStats();
 	}
 }
+
+bool FShaderCodeLibrary::CreatePatchLibrary(TArray<FString> const& OldMetaDataDirs, FString const& NewMetaDataDir, FString const& OutDir, bool bNativeFormat)
+{
+	TMap<FName, TSet<FString>> FormatLibraryMap;
+	TArray<FString> LibraryFiles;
+	IFileManager::Get().FindFiles(LibraryFiles, *(NewMetaDataDir / TEXT("ShaderLibrarySource")), *ShaderExtension);
+	
+	for (FString const& Path : LibraryFiles)
+	{
+		FString Name = FPaths::GetBaseFilename(Path);
+		if (Name.RemoveFromStart(TEXT("ShaderArchive-")))
+		{
+			TArray<FString> Components;
+			if (Name.ParseIntoArray(Components, TEXT("-")) == 2)
+			{
+				FName Format(*Components[1]);
+				TSet<FString>& Libraries = FormatLibraryMap.FindOrAdd(Format);
+				Libraries.Add(Components[0]);
+			}
+		}
+	}
+	
+	bool bOK = true;
+	for (auto const& Entry : FormatLibraryMap)
+	{
+		for (auto const& Library : Entry.Value)
+		{
+			bOK |= FEditorShaderCodeArchive::CreatePatchLibrary(Entry.Key, Library, OldMetaDataDirs, NewMetaDataDir, OutDir, bNativeFormat);
+		}
+	}
+	return bOK;
+}
 #endif// WITH_EDITOR
 
 void FShaderCodeLibrary::SafeAssignHash(FRHIShader* InShader, const FSHAHash& Hash)
@@ -2304,13 +2223,3 @@ void FShaderCodeLibrary::UnregisterSharedShaderCodeRequestDelegate_Handle(FDeleg
 	OnSharedShaderCodeRequest.Remove(Handle);
 }
 
-FDelegateHandle FShaderCodeLibrary::RegisterSharedShaderCodeReleaseDelegate_Handle(const FSharedShaderCodeRelease::FDelegate& Delegate)
-{
-	return OnSharedShaderCodeRelease.Add(Delegate);
-
-}
-
-void FShaderCodeLibrary::UnregisterSharedShaderCodeReleaseDelegate_Handle(FDelegateHandle Handle)
-{
-	OnSharedShaderCodeRelease.Remove(Handle);
-}

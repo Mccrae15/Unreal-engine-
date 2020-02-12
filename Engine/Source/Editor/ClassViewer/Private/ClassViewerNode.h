@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -13,6 +13,8 @@ class UBlueprint;
 class FClassViewerNode
 {
 public:
+	FClassViewerNode(UClass* Class);
+
 	/**
 	 * Creates a node for the widget's tree.
 	 *
@@ -66,6 +68,9 @@ public:
 	/** Checks if this is a blueprint */
 	bool IsBlueprintClass() const;
 
+	/** Checks if this is an editor module class */
+	bool IsEditorOnlyClass() const;
+
 	/** Rather this class is not allowed for the specific context */
 	bool IsRestricted() const;
 
@@ -98,8 +103,11 @@ public:
 	/** true if the class passed the filter. */
 	bool bPassesFilter;
 
-	/** true if the class is a "normal type", this is used to identify unloaded blueprints as blueprint bases. */
-	bool bIsBPNormalType;
+	/** 
+	 * true if the class passed all the sub-filters of the filter (regardless of the TextFilter one).
+	 * This could be useful to verify e.g., that the parent class of a IsNodeAllowed() object is also valid (even though that parent will not likely pass the TextFilter).
+	 */
+	bool bPassesFilterRegardlessTextFilter;
 
 	/** Pointer to the parent to this object. */
 	TWeakPtr< FClassViewerNode > ParentNode;

@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "UnrealWatchdog.h"
 #include "HAL/ExceptionHandling.h"
@@ -34,7 +34,7 @@ static FString GSavedCommandLine;
 
 -(IBAction)requestQuit : (id)Sender
 {
-	GIsRequestingExit = true;
+	RequestEngineExit(TEXT("requestQuit"));
 }
 
 -(void)runGameThread : (id)Arg
@@ -55,7 +55,7 @@ static FString GSavedCommandLine;
 
 -(NSApplicationTerminateReply)applicationShouldTerminate:(NSApplication *)Sender;
 {
-	if (!GIsRequestingExit || ([NSThread gameThread] && [NSThread gameThread] != [NSThread mainThread]))
+	if (!IsEngineExitRequested() || ([NSThread gameThread] && [NSThread gameThread] != [NSThread mainThread]))
 	{
 		[self requestQuit : self];
 		return NSTerminateLater;

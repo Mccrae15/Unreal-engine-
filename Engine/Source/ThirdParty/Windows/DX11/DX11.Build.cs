@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 using UnrealBuildTool;
 
 public class DX11 : ModuleRules
@@ -7,41 +7,63 @@ public class DX11 : ModuleRules
 	{
 		Type = ModuleType.External;
 
-		string DirectXSDKDir = Target.UEThirdPartySourceDirectory + "Windows/DirectX";
+		string DirectXSDKDir = "";
+		if (Target.Platform == UnrealTargetPlatform.HoloLens)
+		{
+			DirectXSDKDir = Target.WindowsPlatform.bUseWindowsSDK10 ?
+			Target.UEThirdPartySourceDirectory + "Windows/DirectXLegacy" :
+			Target.UEThirdPartySourceDirectory + "Windows/DirectX";
+		}
+		else
+		{
+			DirectXSDKDir = Target.UEThirdPartySourceDirectory + "Windows/DirectX";
+		}
 		PublicSystemIncludePaths.Add(DirectXSDKDir + "/Include");
 
 		if (Target.Platform == UnrealTargetPlatform.Win64 || Target.Platform == UnrealTargetPlatform.Win32)
 		{
 			PublicDefinitions.Add("WITH_D3DX_LIBS=1");
 
+			string LibDir = null;
 			if (Target.Platform == UnrealTargetPlatform.Win64)
 			{
-				PublicLibraryPaths.Add(DirectXSDKDir + "/Lib/x64");
+				LibDir = DirectXSDKDir + "/Lib/x64/";
 			}
 			else if (Target.Platform == UnrealTargetPlatform.Win32)
 			{
-				PublicLibraryPaths.Add(DirectXSDKDir + "/Lib/x86");
+				LibDir = DirectXSDKDir + "/Lib/x86/";
 			}
 
 			PublicAdditionalLibraries.AddRange(
 				new string[] {
-				"dxgi.lib",
-				"d3d9.lib",
-				"d3d11.lib",
-				"dxguid.lib",
-				"d3dcompiler.lib",
-				(Target.Configuration == UnrealTargetConfiguration.Debug && Target.bDebugBuildsActuallyUseDebugCRT) ? "d3dx11d.lib" : "d3dx11.lib",
-				"dinput8.lib",
-				"X3DAudio.lib",
-				"xapobase.lib",
-				"XAPOFX.lib"
-				}
+					LibDir + "dxgi.lib",
+					LibDir + "d3d9.lib",
+					LibDir + "d3d11.lib",
+					LibDir + "dxguid.lib",
+					LibDir + "d3dcompiler.lib",
+					(Target.Configuration == UnrealTargetConfiguration.Debug && Target.bDebugBuildsActuallyUseDebugCRT) ? LibDir + "d3dx11d.lib" : LibDir + "d3dx11.lib",
+					LibDir + "dinput8.lib",
+					LibDir + "X3DAudio.lib",
+					LibDir + "xapobase.lib",
+					LibDir + "XAPOFX.lib"
+					}
 				);
 		}
 		else if (Target.Platform == UnrealTargetPlatform.XboxOne)
 		{
 			PublicDefinitions.Add("WITH_D3DX_LIBS=0");
 		}
+
+		else if (Target.Platform == UnrealTargetPlatform.HoloLens)
+		{
+			PublicDefinitions.Add("WITH_D3DX_LIBS=0");
+			PublicSystemLibraries.AddRange(
+				new string[] {
+				"dxguid.lib",
+				}
+				);
+		}
+
 	}
 }
 

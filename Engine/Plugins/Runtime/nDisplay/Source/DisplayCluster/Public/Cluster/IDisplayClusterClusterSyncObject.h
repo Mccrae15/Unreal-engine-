@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -15,6 +15,8 @@ public:
 	virtual ~IDisplayClusterClusterSyncObject()
 	{ }
 
+	// Need to sync this object?
+	virtual bool IsActive() const = 0;
 	// Unique ID of synced object
 	virtual FString GetSyncId() const = 0;
 	// Check if object has changed since last ClearDirty call

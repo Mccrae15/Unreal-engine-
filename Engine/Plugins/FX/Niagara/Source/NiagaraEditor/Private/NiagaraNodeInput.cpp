@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "NiagaraNodeInput.h"
 #include "UObject/UnrealType.h"
@@ -20,7 +20,7 @@ DECLARE_CYCLE_STAT(TEXT("NiagaraEditor - UNiagaraNodeInput - SortNodes"), STAT_N
 
 UNiagaraNodeInput::UNiagaraNodeInput(const FObjectInitializer& ObjectInitializer)
 	: Super(ObjectInitializer)
-	, Usage(ENiagaraInputNodeUsage::Undefined)
+	, Usage(ENiagaraInputNodeUsage::Parameter)
 	, CallSortPriority(0)
 	, DataInterface(nullptr)
 {
@@ -70,9 +70,11 @@ void UNiagaraNodeInput::PostLoad()
 	{
 		DataInterface->OnChanged().AddUObject(this, &UNiagaraNodeInput::DataInterfaceChanged);
 	}
+
+	ValidateDataInterface();
 }
 
-void UNiagaraNodeInput::BuildParameterMapHistory(FNiagaraParameterMapHistoryBuilder& OutHistory, bool bRecursive)
+void UNiagaraNodeInput::BuildParameterMapHistory(FNiagaraParameterMapHistoryBuilder& OutHistory, bool bRecursive /*= true*/, bool bFilterForCompilation /*= true*/) const
 {
 	if (!IsNodeEnabled() && OutHistory.GetIgnoreDisabled())
 	{
@@ -187,84 +189,6 @@ FName UNiagaraNodeInput::GenerateUniqueName(const UNiagaraGraph* Graph, FName& P
 	return FNiagaraUtilities::GetUniqueName(ProposedName, FNiagaraEditorUtilities::GetSystemConstantNames().Union(InputNames));
 }
 
-bool UNiagaraNodeInput::VerifyNodeRenameTextCommit(const FText& NewText, UNiagaraNode* NodeBeingChanged, FText& OutErrorMessage)
-{
-	FName NewName = *NewText.ToString();
-	TSet<FName> SystemConstantNames = FNiagaraEditorUtilities::GetSystemConstantNames();
-
-	// Disallow empty names
-	if (NewName == FName())
-	{
-		OutErrorMessage = LOCTEXT("NiagaraInputNameEmptyWarn", "Cannot have empty name!");
-		return false;
-	}
-
-	// Disallow name changes to system constants
-	if (SystemConstantNames.Contains(NewName))
-	{
-		OutErrorMessage = FText::Format(LOCTEXT("NiagaraInputNameSystemWarn", "\"{0}\" is a system constant name."), FText::FromName(NewName));
-		return false;
-	}
-
-	// @TODO: Prevent any hlsl keywords or invalid hlsl characters from being used as names!
-
-	UNiagaraNodeInput* InputNodeBeingChanged = Cast<UNiagaraNodeInput>(NodeBeingChanged);
-	UNiagaraNodeOutput* OutputNodeBeingChanged = Cast<UNiagaraNodeOutput>(NodeBeingChanged);
-
-	// Make sure that we aren't changing names to something already in the graph.
-	if (NodeBeingChanged != nullptr)
-	{
-		UNiagaraGraph* Graph = CastChecked<UNiagaraGraph>(NodeBeingChanged->GetGraph());
-
-		// If dealing with parameter, check to make sure that we don't conflict with any other parameter name.
-		if (InputNodeBeingChanged != nullptr && InputNodeBeingChanged->Usage == ENiagaraInputNodeUsage::Parameter)
-		{
-			TArray<UNiagaraNodeInput*> InputNodes;
-			Graph->GetNodesOfClass<UNiagaraNodeInput>(InputNodes);
-
-			for (UNiagaraNodeInput* Node : InputNodes)
-			{
-				if (Node == nullptr || Node == InputNodeBeingChanged || Node->Usage != InputNodeBeingChanged->Usage)
-				{
-					continue;
-				}
-
-				bool bIsSame = Node->ReferencesSameInput(InputNodeBeingChanged);
-				// This should still allow case changes b/c we test to make sure that they aren't referencing the same node.
-				if (bIsSame == false && Node->Input.GetName().IsEqual(NewName, ENameCase::IgnoreCase))
-				{
-					OutErrorMessage = FText::Format(LOCTEXT("NiagaraInputNameSameParameterWarn", "\"{0}\" is the name of another parameter."), FText::FromName(NewName));
-					return false;
-				}
-			}
-		}
-
-		// If dealing with Attributes, check to make sure that we don't conflict with any other attribute name.
-		if ((InputNodeBeingChanged != nullptr && InputNodeBeingChanged->Usage == ENiagaraInputNodeUsage::Attribute) || OutputNodeBeingChanged != nullptr)
-		{
-			TArray<UNiagaraNodeOutput*> OutputNodes;
-			Graph->GetNodesOfClass<UNiagaraNodeOutput>(OutputNodes);
-			for (UNiagaraNodeOutput* Node : OutputNodes)
-			{
-				for (const FNiagaraVariable& Output : Node->Outputs)
-				{
-					if (InputNodeBeingChanged != nullptr && Output.GetName().IsEqual(InputNodeBeingChanged->Input.GetName(), ENameCase::IgnoreCase))
-					{
-						continue;
-					}
-
-					if (Output.GetName().IsEqual(NewName, ENameCase::IgnoreCase))
-					{
-						OutErrorMessage = FText::Format(LOCTEXT("NiagaraInputNameSameAttributeWarn", "\"{0}\" is the name of another attribute. Hit \"Escape\" to cancel edit."), FText::FromName(NewName));
-						return false;
-					}
-				}
-			}
-		}
-	}
-	return true;
-}
-
 void UNiagaraNodeInput::OnRenameNode(const FString& NewName)
 {
 	UNiagaraGraph* Graph = CastChecked<UNiagaraGraph>(GetGraph());
@@ -295,10 +219,9 @@ void UNiagaraNodeInput::OnRenameNode(const FString& NewName)
 		{
 			Node->GetDataInterface()->Rename(*NewName);
 		}
-		Node->ReallocatePins();
+		Node->ReallocatePins(false);
+		Node->MarkNodeRequiresSynchronization("Input renamed", true);
 	}
-
-	Graph->MarkGraphRequiresSynchronization(TEXT("Input node renamed"));
 }
 
 TSharedPtr<SGraphNode> UNiagaraNodeInput::CreateVisualWidget()
@@ -532,6 +455,8 @@ void UNiagaraNodeInput::SetDataInterface(UNiagaraDataInterface* InDataInterface)
 	{
 		DataInterface->OnChanged().AddUObject(this, &UNiagaraNodeInput::DataInterfaceChanged);
 	}
+
+	ValidateDataInterface();
 	DataInterfaceChanged();
 }
 
@@ -543,6 +468,17 @@ void UNiagaraNodeInput::DataInterfaceChanged()
 	if (NiagaraGraph != nullptr)
 	{
 		NiagaraGraph->NotifyGraphDataInterfaceChanged();
+	}
+}
+
+void UNiagaraNodeInput::ValidateDataInterface()
+{
+	if (DataInterface != nullptr &&
+		DataInterface->GetClass()->GetMetaData("DevelopmentStatus") == TEXT("Experimental"))
+	{
+		UEdGraphNode::bHasCompilerMessage = true;
+		UEdGraphNode::ErrorType = EMessageSeverity::Info;
+		UEdGraphNode::NodeUpgradeMessage = LOCTEXT("DataInterfaceExperimental", "This data interface is marked as experimental, use with care!");
 	}
 }
 

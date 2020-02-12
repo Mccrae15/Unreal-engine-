@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "MeshProxyTool/SMeshProxyDialog.h"
 #include "Editor.h"
@@ -116,7 +116,7 @@ void  SMeshProxyDialog::Construct(const FArguments& InArgs, FMeshProxyTool* InTo
 			.Visibility_Lambda([this]()->EVisibility { return this->GetContentEnabledState() ? EVisibility::Collapsed : EVisibility::Visible; })
 			[
 				SNew(STextBlock)
-				.Text(LOCTEXT("DeleteUndo", "Insufficient mesh components found for merging."))
+				.Text(LOCTEXT("DeleteUndo", "Insufficient mesh components found for ProxyLOD merging."))
 			]
 		]
 	];
@@ -191,6 +191,7 @@ void SMeshProxyDialog::CreateSettingsView()
 	DetailsViewArgs.bCustomNameAreaLocation = false;
 	DetailsViewArgs.bCustomFilterAreaLocation = true;
 	DetailsViewArgs.DefaultsOnlyVisibility = EEditDefaultsOnlyNodeVisibility::Hide;
+	DetailsViewArgs.NameAreaSettings = FDetailsViewArgs::ENameAreaSettings::HideNameArea;
 
 
 	// Tiny hack to hide this setting, since we have no way / value to go off to 
@@ -535,7 +536,7 @@ int32 SThirdPartyMeshProxyDialog::FindTextureResolutionEntryIndex(int32 InResolu
 
 FText SThirdPartyMeshProxyDialog::GetPropertyToolTipText(const FName& PropertyName) const
 {
-	UProperty* Property = FMeshProxySettings::StaticStruct()->FindPropertyByName(PropertyName);
+	FProperty* Property = FMeshProxySettings::StaticStruct()->FindPropertyByName(PropertyName);
 	if (Property)
 	{
 		return Property->GetToolTipText();

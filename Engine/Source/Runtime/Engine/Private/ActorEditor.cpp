@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "CoreMinimal.h"
 #include "Misc/CoreDelegates.h"
@@ -27,11 +27,11 @@
 
 #define LOCTEXT_NAMESPACE "ErrorChecking"
 
-void AActor::PreEditChange(UProperty* PropertyThatWillChange)
+void AActor::PreEditChange(FProperty* PropertyThatWillChange)
 {
 	Super::PreEditChange(PropertyThatWillChange);
 
-	UObjectProperty* ObjProp = Cast<UObjectProperty>(PropertyThatWillChange);
+	FObjectProperty* ObjProp = CastField<FObjectProperty>(PropertyThatWillChange);
 	UBlueprintGeneratedClass* BPGC = Cast<UBlueprintGeneratedClass>(GetClass());
 	if ( BPGC != nullptr && ObjProp != nullptr )
 	{
@@ -45,13 +45,13 @@ void AActor::PreEditChange(UProperty* PropertyThatWillChange)
 	}
 }
 
-static FName Name_RelativeLocation = GET_MEMBER_NAME_CHECKED(USceneComponent, RelativeLocation);
-static FName Name_RelativeRotation = GET_MEMBER_NAME_CHECKED(USceneComponent, RelativeRotation);
-static FName Name_RelativeScale3D = GET_MEMBER_NAME_CHECKED(USceneComponent, RelativeScale3D);
+static FName Name_RelativeLocation = USceneComponent::GetRelativeLocationPropertyName();
+static FName Name_RelativeRotation = USceneComponent::GetRelativeRotationPropertyName();
+static FName Name_RelativeScale3D = USceneComponent::GetRelativeScale3DPropertyName();
 
 void AActor::PostEditChangeProperty(FPropertyChangedEvent& PropertyChangedEvent)
 {
-	UProperty* MemberPropertyThatChanged = PropertyChangedEvent.MemberProperty;
+	FProperty* MemberPropertyThatChanged = PropertyChangedEvent.MemberProperty;
 	const FName MemberPropertyName = MemberPropertyThatChanged != NULL ? MemberPropertyThatChanged->GetFName() : NAME_None;
 	
 	const bool bTransformationChanged = (MemberPropertyName == Name_RelativeLocation || MemberPropertyName == Name_RelativeRotation || MemberPropertyName == Name_RelativeScale3D);
@@ -148,6 +148,11 @@ void AActor::PostEditMove(bool bFinished)
 		}
 	}
 
+	if (!FLevelUtils::IsMovingLevel())
+	{
+		GEngine->BroadcastOnActorMoving(this);
+	}
+
 	if ( bFinished )
 	{
 		UWorld* World = GetWorld();
@@ -185,7 +190,13 @@ void AActor::PostEditMove(bool bFinished)
 
 bool AActor::ReregisterComponentsWhenModified() const
 {
-	return !IsTemplate() && !GetOutermost()->HasAnyPackageFlags(PKG_PlayInEditor) && GetWorld() != nullptr;
+	// For child actors, redirect to the parent's owner (we do the same in RerunConstructionScripts).
+	if (const AActor* ParentActor = GetParentActor())
+	{
+		return ParentActor->ReregisterComponentsWhenModified();
+	}
+
+	return !bActorIsBeingConstructed && !IsTemplate() && !GetOutermost()->HasAnyPackageFlags(PKG_PlayInEditor) && GetWorld() != nullptr;
 }
 
 void AActor::DebugShowComponentHierarchy(  const TCHAR* Info, bool bShowPosition )
@@ -228,7 +239,7 @@ void AActor::DebugShowOneComponentHierarchy( USceneComponent* SceneComp, int32& 
 	{
 		FVector Posn = SceneComp->GetComponentTransform().GetLocation();
 		//PosString = FString::Printf( TEXT("{R:%f,%f,%f- W:%f,%f,%f}"), SceneComp->RelativeLocation.X, SceneComp->RelativeLocation.Y, SceneComp->RelativeLocation.Z, Posn.X, Posn.Y, Posn.Z );
-		PosString = FString::Printf( TEXT("{R:%f- W:%f}"), SceneComp->RelativeLocation.Z, Posn.Z );
+		PosString = FString::Printf( TEXT("{R:%f- W:%f}"), SceneComp->GetRelativeLocation().Z, Posn.Z );
 	}
 	else
 	{
@@ -249,7 +260,7 @@ void AActor::DebugShowOneComponentHierarchy( USceneComponent* SceneComp, int32& 
 		{
 			FVector Posn = SceneComp->GetComponentTransform().GetLocation();
 			//PosString = FString::Printf( TEXT("{R:%f,%f,%f- W:%f,%f,%f}"), SceneComp->RelativeLocation.X, SceneComp->RelativeLocation.Y, SceneComp->RelativeLocation.Z, Posn.X, Posn.Y, Posn.Z );
-			PosString = FString::Printf( TEXT("{R:%f- W:%f}"), SceneComp->RelativeLocation.Z, Posn.Z );
+			PosString = FString::Printf( TEXT("{R:%f- W:%f}"), SceneComp->GetRelativeLocation().Z, Posn.Z );
 		}
 		else
 		{
@@ -553,6 +564,15 @@ bool AActor::InternalPostEditUndo()
 	return true;
 }
 
+void AActor::PostTransacted(const FTransactionObjectEvent& TransactionEvent)
+{
+	Super::PostTransacted(TransactionEvent);
+	if (TransactionEvent.HasOuterChange())
+	{
+		GEngine->BroadcastLevelActorOuterChanged(this, StaticFindObject(ULevel::StaticClass(), nullptr, *TransactionEvent.GetOriginalObjectOuterPathName().ToString()));
+	}
+}
+
 void AActor::PostEditUndo()
 {
 	if (InternalPostEditUndo())
@@ -592,7 +612,7 @@ void AActor::EditorApplyRotation(const FRotator& DeltaRotation, bool bAltDown, b
 {
 	if( RootComponent != NULL )
 	{
-		FRotator Rot = RootComponent->GetAttachParent() != NULL ? GetActorRotation() : RootComponent->RelativeRotation;
+		FRotator Rot = RootComponent->GetAttachParent() != NULL ? GetActorRotation() : RootComponent->GetRelativeRotation();
 		FRotator ActorRotWind, ActorRotRem;
 		Rot.GetWindingAndRemainder(ActorRotWind, ActorRotRem);
 		const FQuat ActorQ = ActorRotRem.Quaternion();
@@ -610,7 +630,7 @@ void AActor::EditorApplyRotation(const FRotator& DeltaRotation, bool bAltDown, b
 			NewRelRotation = RootComponent->GetRelativeRotationFromWorld(NewRelRotation);
 			NewActorRotRem = FRotator(NewRelRotation);
 			//now we need to get current relative rotation to find the diff
-			Rot = RootComponent->RelativeRotation;
+			Rot = RootComponent->GetRelativeRotation();
 			Rot.GetWindingAndRemainder(ActorRotWind, ActorRotRem);
 		}
 		else
@@ -635,7 +655,7 @@ void AActor::EditorApplyScale( const FVector& DeltaScale, const FVector* PivotLo
 {
 	if( RootComponent != NULL )
 	{
-		const FVector CurrentScale = GetRootComponent()->RelativeScale3D;
+		const FVector CurrentScale = GetRootComponent()->GetRelativeScale3D();
 
 		// @todo: Remove this hack once we have decided on the scaling method to use.
 		FVector ScaleToApply;
@@ -694,7 +714,7 @@ void AActor::EditorApplyMirror(const FVector& MirrorScale, const FVector& PivotL
 		Loc += PivotLocation;
 		GetRootComponent()->SetRelativeLocation( Loc );
 
-		FVector Scale3D = GetRootComponent()->RelativeScale3D;
+		FVector Scale3D = GetRootComponent()->GetRelativeScale3D();
 		Scale3D.X = -Scale3D.X;
 		GetRootComponent()->SetRelativeScale3D(Scale3D);
 	}
@@ -862,7 +882,7 @@ void AActor::SetActorLabelInternal(const FString& NewActorLabelDirty, bool bMake
 		}
 	}
 
-	FPropertyChangedEvent PropertyEvent( FindField<UProperty>( AActor::StaticClass(), "ActorLabel" ) );
+	FPropertyChangedEvent PropertyEvent( FindField<FProperty>( AActor::StaticClass(), "ActorLabel" ) );
 	PostEditChangeProperty(PropertyEvent);
 
 	FCoreDelegates::OnActorLabelChanged.Broadcast(this);
@@ -885,7 +905,7 @@ const FName& AActor::GetFolderPath() const
 
 void AActor::SetFolderPath(const FName& NewFolderPath)
 {
-	if (NewFolderPath != FolderPath)
+	if (!NewFolderPath.IsEqual(FolderPath, ENameCase::CaseSensitive))
 	{
 		Modify();
 
@@ -940,7 +960,7 @@ void AActor::CheckForErrors()
 	}
 
 	UPrimitiveComponent* PrimComp = Cast<UPrimitiveComponent>(RootComponent);
-	if( PrimComp && (PrimComp->Mobility != EComponentMobility::Movable) && PrimComp->BodyInstance.bSimulatePhysics)
+	if (PrimComp && (PrimComp->Mobility != EComponentMobility::Movable) && PrimComp->BodyInstance.bSimulatePhysics)
 	{
 		FFormatNamedArguments Arguments;
 		Arguments.Add(TEXT("ActorName"), FText::FromString(GetPathName()));
@@ -950,14 +970,18 @@ void AActor::CheckForErrors()
 			->AddToken(FMapErrorToken::Create(FMapErrors::StaticPhysNone));
 	}
 
-	if( RootComponent && FMath::IsNearlyZero( GetRootComponent()->RelativeScale3D.X * GetRootComponent()->RelativeScale3D.Y * GetRootComponent()->RelativeScale3D.Z ) )
+	if (RootComponent)
 	{
-		FFormatNamedArguments Arguments;
-		Arguments.Add(TEXT("ActorName"), FText::FromString(GetPathName()));
-		FMessageLog("MapCheck").Error()
-			->AddToken(FUObjectToken::Create(this))
-			->AddToken(FTextToken::Create(FText::Format(LOCTEXT( "MapCheck_Message_InvalidDrawscale", "{ActorName} : Invalid DrawScale/DrawScale3D" ), Arguments) ))
-			->AddToken(FMapErrorToken::Create(FMapErrors::InvalidDrawscale));
+		const FVector LocalRelativeScale3D = RootComponent->GetRelativeScale3D();
+		if (FMath::IsNearlyZero(LocalRelativeScale3D.X * LocalRelativeScale3D.Y * LocalRelativeScale3D.Z))
+		{
+			FFormatNamedArguments Arguments;
+			Arguments.Add(TEXT("ActorName"), FText::FromString(GetPathName()));
+			FMessageLog("MapCheck").Error()
+				->AddToken(FUObjectToken::Create(this))
+				->AddToken(FTextToken::Create(FText::Format(LOCTEXT("MapCheck_Message_InvalidDrawscale", "{ActorName} : Invalid DrawScale/DrawScale3D"), Arguments)))
+				->AddToken(FMapErrorToken::Create(FMapErrors::InvalidDrawscale));
+		}
 	}
 
 	// Route error checking to components.
@@ -1001,7 +1025,24 @@ EDataValidationResult AActor::IsDataValid(TArray<FText>& ValidationErrors)
 		bSuccess = false;
 	}
 
-	return bSuccess ? EDataValidationResult::Valid : EDataValidationResult::Invalid;
+	EDataValidationResult Result = bSuccess ? EDataValidationResult::Valid : EDataValidationResult::Invalid;
+
+	// check the components
+	for (UActorComponent* Component : GetComponents())
+	{
+		if (Component)
+		{
+			// if any component is invalid, our result is invalid
+			// in the future we may want to update this to say that the actor was not validated if any of its components returns EDataValidationResult::NotValidated
+			EDataValidationResult ComponentResult = Component->IsDataValid(ValidationErrors);
+			if (ComponentResult == EDataValidationResult::Invalid)
+			{
+				Result = EDataValidationResult::Invalid;
+			}
+		}
+	}
+
+	return Result;
 }
 #undef LOCTEXT_NAMESPACE
 

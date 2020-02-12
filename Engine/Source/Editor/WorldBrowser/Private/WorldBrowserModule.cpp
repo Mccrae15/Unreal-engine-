@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 #include "WorldBrowserModule.h"
 #include "Widgets/SWidget.h"
 #include "Widgets/DeclarativeSyntaxSupport.h"
@@ -44,22 +44,22 @@ void FWorldBrowserModule::BuildLevelMenu(FMenuBuilder& MenuBuilder)
 		FLevelModelList ModelList = Model->GetFilteredLevels();
 		for (TSharedPtr<FLevelModel> LevelModel : ModelList)
 		{
-			FUIAction Action(FExecuteAction::CreateRaw(this, &FWorldBrowserModule::SetCurrentSublevel, LevelModel->GetLevelObject()),
+			FUIAction Action(FExecuteAction::CreateRaw(this, &FWorldBrowserModule::SetCurrentSublevel, LevelModel),
 				FCanExecuteAction(),
-				FIsActionChecked::CreateRaw(this, &FWorldBrowserModule::IsCurrentSublevel, LevelModel->GetLevelObject()));
+				FIsActionChecked::CreateRaw(this, &FWorldBrowserModule::IsCurrentSublevel, LevelModel));
 			MenuBuilder.AddMenuEntry(FText::FromString(LevelModel->GetDisplayName()), FText::GetEmpty(), FSlateIcon(), Action, NAME_None, EUserInterfaceActionType::Button);
 		}
 	}
 }
 
-bool FWorldBrowserModule::IsCurrentSublevel(ULevel* InLevel)
+bool FWorldBrowserModule::IsCurrentSublevel(TSharedPtr<FLevelModel> InLevelModel)
 {
-	return InLevel->IsCurrentLevel();
+	return InLevelModel->IsCurrent();
 }
 
-void FWorldBrowserModule::SetCurrentSublevel(ULevel* InLevel)
+void FWorldBrowserModule::SetCurrentSublevel(TSharedPtr<FLevelModel> InLevelModel)
 {
-	EditorLevelUtils::MakeLevelCurrent(InLevel);
+	InLevelModel->MakeLevelCurrent();
 }
 
 void FWorldBrowserModule::StartupModule()
@@ -97,6 +97,8 @@ void FWorldBrowserModule::StartupModule()
 
 void FWorldBrowserModule::ShutdownModule()
 {
+	ReleaseWorldModel();
+
 	FLevelFolders::Cleanup();
 
 	if (GEngine)
@@ -111,6 +113,16 @@ void FWorldBrowserModule::ShutdownModule()
 
 	// unregister the editor mode
 	FEditorModeRegistry::Get().UnregisterMode(FBuiltinEditorModes::EM_StreamingLevel);
+}
+
+void FWorldBrowserModule::ReleaseWorldModel()
+{
+	if (WorldModel)
+	{
+		// So we have to be the last owner of this model
+		check(WorldModel.IsUnique());
+		WorldModel.Reset();
+	}
 }
 
 TSharedRef<SWidget> FWorldBrowserModule::CreateWorldBrowserHierarchy()
@@ -146,50 +158,46 @@ void FWorldBrowserModule::OnWorldCompositionChanged(UWorld* InWorld)
 		InWorld->WorldType == EWorldType::Editor)
 	{
 		OnBrowseWorld.Broadcast(NULL);
+		// Release World Model here so that a new one gets created in ShareWorldModel even if the World is the same.
+		ReleaseWorldModel();
 		OnBrowseWorld.Broadcast(InWorld);
 	}
 }
 
 void FWorldBrowserModule::OnWorldDestroyed(UWorld* InWorld)
 {
-	TSharedPtr<FLevelCollectionModel> SharedWorldModel = WorldModel.Pin();
 	// Is there any editors alive?
-	if (SharedWorldModel.IsValid())
+	if (WorldModel.IsValid())
 	{
-		UWorld* ManagedWorld = SharedWorldModel->GetWorld(/*bEvenIfPendingKill*/true);
+		UWorld* ManagedWorld = WorldModel->GetWorld(/*bEvenIfPendingKill*/true);
 		// Is it our world gets cleaned up?
 		if (ManagedWorld == InWorld)
 		{
 			// Will reset all references to a shared world model
 			OnBrowseWorld.Broadcast(NULL);
-			// So we have to be the last owner of this model
-			check(SharedWorldModel.IsUnique());
+			ReleaseWorldModel();
 		}
 	}
 }
 
 TSharedPtr<FLevelCollectionModel> FWorldBrowserModule::SharedWorldModel(UWorld* InWorld)
 {
-	TSharedPtr<FLevelCollectionModel> SharedWorldModel = WorldModel.Pin();
-	if (!SharedWorldModel.IsValid() || SharedWorldModel->GetWorld() != InWorld)
+	if (!WorldModel.IsValid() || WorldModel->GetWorld() != InWorld)
 	{
 		if (InWorld)
 		{
 			if (InWorld->WorldComposition)
 			{
-				SharedWorldModel = FWorldTileCollectionModel::Create(InWorld);
+				WorldModel = FWorldTileCollectionModel::Create(InWorld);
 			}
 			else
 			{
-				SharedWorldModel = FStreamingLevelCollectionModel::Create(InWorld);
+				WorldModel = FStreamingLevelCollectionModel::Create(InWorld);
 			}
 		}
-
-		// Hold weak reference to shared world model
-		WorldModel = SharedWorldModel;
 	}
 	
-	return SharedWorldModel;
+	return WorldModel;
 }
 
 #undef LOCTEXT_NAMESPACE

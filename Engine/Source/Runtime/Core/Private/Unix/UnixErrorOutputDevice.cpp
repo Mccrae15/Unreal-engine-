@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "Unix/UnixErrorOutputDevice.h"
 #include "Containers/StringConv.h"
@@ -12,6 +12,8 @@
 #include "Misc/CoreDelegates.h"
 #include "Misc/App.h"
 #include "HAL/ExceptionHandling.h"
+
+extern CORE_API bool GIsGPUCrashed;
 
 FUnixErrorOutputDevice::FUnixErrorOutputDevice()
 :	ErrorPos(0)
@@ -39,8 +41,8 @@ void FUnixErrorOutputDevice::Serialize(const TCHAR* Msg, ELogVerbosity::Type Ver
 		{
 			UE_LOG(LogCore, Error, TEXT("appError called: %s"), Msg );
 		}
-		FCString::Strncpy( GErrorHist, Msg, ARRAY_COUNT(GErrorHist) - 5 );
-		FCString::Strncat( GErrorHist, TEXT("\r\n\r\n"), ARRAY_COUNT(GErrorHist) - 1 );
+		FCString::Strncpy( GErrorHist, Msg, UE_ARRAY_COUNT(GErrorHist) - 5 );
+		FCString::Strncat( GErrorHist, TEXT("\r\n\r\n"), UE_ARRAY_COUNT(GErrorHist) - 1 );
 		ErrorPos = FCString::Strlen(GErrorHist);
 	}
 	else
@@ -50,11 +52,23 @@ void FUnixErrorOutputDevice::Serialize(const TCHAR* Msg, ELogVerbosity::Type Ver
 
 	if( GIsGuarded )
 	{
-		// Propagate error so structured exception handler can perform necessary work.
 #if PLATFORM_EXCEPTIONS_DISABLED
 		UE_DEBUG_BREAK();
 #endif
-		ReportAssert(Msg, 0);
+		// Generate the callstack.
+		// We do not ignore any stack frames since the optimization is
+		// brittle and the risk of trimming the valid frames is too high.
+		// The common frames will be instead filtered out in the web UI
+		const int32 NumStackFramesToIgnore = 0;
+
+		if (GIsGPUCrashed)
+		{
+			ReportGPUCrash(Msg, NumStackFramesToIgnore);
+		}
+		else
+		{
+			ReportAssert(Msg, NumStackFramesToIgnore);
+		}
 	}
 	else
 	{
@@ -86,11 +100,11 @@ void FUnixErrorOutputDevice::HandleError()
 		GIsRunning = 0;
 		GIsCriticalError = 1;
 		GLogConsole = NULL;
-		GErrorHist[ARRAY_COUNT(GErrorHist)-1] = 0;
+		GErrorHist[UE_ARRAY_COUNT(GErrorHist)-1] = 0;
 
 		// Dump the error and flush the log.
 		UE_LOG(LogCore, Log, TEXT("=== Critical error: ===") LINE_TERMINATOR TEXT("%s") LINE_TERMINATOR, GErrorExceptionDescription);
-		UE_LOG(LogCore, Log, GErrorHist);
+		UE_LOG(LogCore, Log, TEXT("%s"), GErrorHist);
 
 		GLog->Flush();
 

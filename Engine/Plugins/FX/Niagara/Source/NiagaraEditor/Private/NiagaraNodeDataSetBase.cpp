@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "NiagaraNodeDataSetBase.h"
 #include "UObject/UnrealType.h"
@@ -102,11 +102,11 @@ bool UNiagaraNodeDataSetBase::IsSynchronizedWithStruct(bool bIgnoreConditionVari
 		bool bFoundIssues = false;
 		// First check to see if any variables have been added...
 		{
-			for (TFieldIterator<UProperty> PropertyIt(ExternalStructAsset, EFieldIteratorFlags::IncludeSuper); PropertyIt; ++PropertyIt)
+			for (TFieldIterator<FProperty> PropertyIt(ExternalStructAsset, EFieldIteratorFlags::IncludeSuper); PropertyIt; ++PropertyIt)
 			{
-				const UProperty* Property = *PropertyIt;
+				const FProperty* Property = *PropertyIt;
 
-				if (bIgnoreConditionVariable && Property->IsA<UBoolProperty>() && Property->GetFName() == ConditionVarName)
+				if (bIgnoreConditionVariable && Property->IsA<FBoolProperty>() && Property->GetFName() == ConditionVarName)
 				{
 					continue;
 				}
@@ -117,7 +117,7 @@ bool UNiagaraNodeDataSetBase::IsSynchronizedWithStruct(bool bIgnoreConditionVari
 					bFoundIssues = true;
 					if (bLogIssues)
 					{
-						UE_LOG(LogNiagaraEditor, Warning, TEXT("Unable to find matching variable for struct property: '%s' ... possible add?"), *Property->GetName());
+						UE_LOG(LogNiagaraEditor, Warning, TEXT("%s Unable to find matching variable for struct property: '%s' ... possible add?"), *GetPathNameSafe(this), *GetPathNameSafe(Property));
 					}
 					if (Issues != nullptr)
 					{
@@ -134,7 +134,7 @@ bool UNiagaraNodeDataSetBase::IsSynchronizedWithStruct(bool bIgnoreConditionVari
 							bFoundIssues = true;
 							if (bLogIssues)
 							{
-								UE_LOG(LogNiagaraEditor, Warning, TEXT("Matching variable for struct property '%s', but different type:  Existing Type:'%s' vs New Type:'%s' ... possible type change in user-defined struct?"), *Property->GetName(), *VarFound->GetType().GetName(), *TypeDefFound.GetName());
+								UE_LOG(LogNiagaraEditor, Warning, TEXT("%s Matching variable for struct property '%s', but different type:  Existing Type:'%s' vs New Type:'%s' ... possible type change in user-defined struct?"), *GetPathNameSafe(this), *GetPathNameSafe(Property), *VarFound->GetType().GetName(), *TypeDefFound.GetName());
 							}
 							if (Issues != nullptr)
 							{
@@ -147,7 +147,7 @@ bool UNiagaraNodeDataSetBase::IsSynchronizedWithStruct(bool bIgnoreConditionVari
 						bFoundIssues = true;
 						if (bLogIssues)
 						{
-							UE_LOG(LogNiagaraEditor, Warning, TEXT("Matching variable for struct property '%s', but different type:  Existing Type:'%s' vs New Type:'Unsupported' ... possible type change in user-defined struct?"), *Property->GetName(), *VarFound->GetType().GetName());
+							UE_LOG(LogNiagaraEditor, Warning, TEXT("%s Matching variable for struct property '%s', but different type:  Existing Type:'%s' vs New Type:'Unsupported' ... possible type change in user-defined struct?"), *GetPathNameSafe(this), *GetPathNameSafe(Property), *VarFound->GetType().GetName());
 						}
 						if (Issues != nullptr)
 						{
@@ -163,10 +163,10 @@ bool UNiagaraNodeDataSetBase::IsSynchronizedWithStruct(bool bIgnoreConditionVari
 			for (const FNiagaraVariable& Var : Variables)
 			{
 				bool bFound = false;
-				for (TFieldIterator<UProperty> PropertyIt(ExternalStructAsset, EFieldIteratorFlags::IncludeSuper); PropertyIt; ++PropertyIt)
+				for (TFieldIterator<FProperty> PropertyIt(ExternalStructAsset, EFieldIteratorFlags::IncludeSuper); PropertyIt; ++PropertyIt)
 				{
-					const UProperty* Property = *PropertyIt;
-					if (Property->GetFName() == Var.GetName())
+					const FProperty* Property = *PropertyIt;
+					if (Property->GetName() == Var.GetName().ToString())
 					{
 						bFound = true;
 						break;
@@ -178,7 +178,7 @@ bool UNiagaraNodeDataSetBase::IsSynchronizedWithStruct(bool bIgnoreConditionVari
 					bFoundIssues = true;
 					if (bLogIssues)
 					{
-						UE_LOG(LogNiagaraEditor, Warning, TEXT("Unable to find matching struct property for variable: '%s' ... possible removal?"), *Var.GetName().ToString());
+						UE_LOG(LogNiagaraEditor, Warning, TEXT("%s Unable to find matching struct property for variable: '%s' ... possible removal?"), *GetPathNameSafe(this), *Var.GetName().ToString());
 					}
 
 					if (Issues != nullptr)
@@ -194,7 +194,7 @@ bool UNiagaraNodeDataSetBase::IsSynchronizedWithStruct(bool bIgnoreConditionVari
 	{
 		if (bLogIssues)
 		{
-			UE_LOG(LogNiagaraEditor, Warning, TEXT("Unable to find matching Niagara Type: %s"), *DataSet.Name.ToString());
+			UE_LOG(LogNiagaraEditor, Warning, TEXT("%s Unable to find matching Niagara Type: %s"), *GetPathNameSafe(this), *DataSet.Name.ToString());
 		}
 
 		if (Issues != nullptr)
@@ -216,20 +216,20 @@ bool UNiagaraNodeDataSetBase::RefreshFromExternalChanges()
 	return false;
 }
 
-bool UNiagaraNodeDataSetBase::GetSupportedNiagaraTypeDef(const UProperty* Property, FNiagaraTypeDefinition& TypeDef)
+bool UNiagaraNodeDataSetBase::GetSupportedNiagaraTypeDef(const FProperty* Property, FNiagaraTypeDefinition& TypeDef)
 {
-	const UStructProperty* StructProp = Cast<UStructProperty>(Property);
-	if (Property->IsA(UFloatProperty::StaticClass()))
+	const FStructProperty* StructProp = CastField<FStructProperty>(Property);
+	if (Property->IsA(FFloatProperty::StaticClass()))
 	{
 		TypeDef = FNiagaraTypeDefinition::GetFloatDef();
 		return true;
 	}
-	else if (Property->IsA(UBoolProperty::StaticClass()))
+	else if (Property->IsA(FBoolProperty::StaticClass()))
 	{
 		TypeDef = FNiagaraTypeDefinition::GetBoolDef();
 		return true;
 	}
-	else if (Property->IsA(UIntProperty::StaticClass()))
+	else if (Property->IsA(FIntProperty::StaticClass()))
 	{
 		TypeDef = FNiagaraTypeDefinition::GetIntDef();
 		return true;
@@ -277,13 +277,13 @@ bool UNiagaraNodeDataSetBase::SynchronizeWithStruct()
 	// TODO: need to add valid as a variable separately for now; compiler support to validate index is missing	
 	//Variables.Add(FNiagaraVariable(FNiagaraTypeDefinition::GetBoolDef(), "Valid"));
 
-	//UGH! Why do we have our own custom type rep again. Why aren't we just using the UPropertySystem?
+	//UGH! Why do we have our own custom type rep again. Why aren't we just using the FPropertySystem?
 	//
 	// [OP] not really different from anywhere else, nodes everywhere else hold FNiagaraVariables as their outputs; 
 	//  just traversing the ustruct here to build an array of those; this is temporary and should be genericised, of course
-	for (TFieldIterator<UProperty> PropertyIt(ExternalStructAsset, EFieldIteratorFlags::IncludeSuper); PropertyIt; ++PropertyIt)
+	for (TFieldIterator<FProperty> PropertyIt(ExternalStructAsset, EFieldIteratorFlags::IncludeSuper); PropertyIt; ++PropertyIt)
 	{
-		const UProperty* Property = *PropertyIt;
+		const FProperty* Property = *PropertyIt;
 		FText DisplayNameText = Property->GetDisplayNameText();
 		FString DisplayName = DisplayNameText.ToString();
 		FNiagaraTypeDefinition TypeDef;

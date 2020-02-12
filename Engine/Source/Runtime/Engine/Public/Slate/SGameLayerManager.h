@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -12,6 +12,7 @@
 #include "Widgets/SCanvas.h"
 #include "Widgets/Layout/SBox.h"
 #include "Styling/SlateTypes.h"
+#include "UObject/ObjectKey.h"
 
 class FPaintArgs;
 class FSceneViewport;
@@ -56,8 +57,8 @@ class IGameLayerManager
 public:
 	virtual void SetSceneViewport(FSceneViewport* SceneViewport) = 0;
 
-	virtual const FGeometry& GetViewportWidgetHostGeometry() const = 0;
-	virtual const FGeometry& GetPlayerWidgetHostGeometry(ULocalPlayer* Player) const = 0;
+	virtual FGeometry GetViewportWidgetHostGeometry() const = 0;
+	virtual FGeometry GetPlayerWidgetHostGeometry(ULocalPlayer* Player) const = 0;
 
 	virtual void NotifyPlayerAdded(int32 PlayerIndex, ULocalPlayer* AddedPlayer) = 0;
 	virtual void NotifyPlayerRemoved(int32 PlayerIndex, ULocalPlayer* RemovedPlayer) = 0;
@@ -107,8 +108,8 @@ public:
 
 	// Begin IGameLayerManager
 	virtual void SetSceneViewport(FSceneViewport* InSceneViewport) override;
-	virtual const FGeometry& GetViewportWidgetHostGeometry() const override;
-	virtual const FGeometry& GetPlayerWidgetHostGeometry(ULocalPlayer* Player) const override;
+	virtual FGeometry GetViewportWidgetHostGeometry() const override;
+	virtual FGeometry GetPlayerWidgetHostGeometry(ULocalPlayer* Player) const override;
 
 	virtual void NotifyPlayerAdded(int32 PlayerIndex, ULocalPlayer* AddedPlayer) override;
 	virtual void NotifyPlayerRemoved(int32 PlayerIndex, ULocalPlayer* RemovedPlayer) override;
@@ -169,7 +170,7 @@ private:
 	void RemoveMissingPlayerLayers(const TArray<ULocalPlayer*>& GamePlayers);
 	void RemovePlayerWidgets(ULocalPlayer* LocalPlayer);
 	void AddOrUpdatePlayerLayers(const FGeometry& AllottedGeometry, UGameViewportClient* ViewportClient, const TArray<ULocalPlayer*>& GamePlayers);
-	FVector2D GetAspectRatioInset(ULocalPlayer* LocalPlayer) const;
+	bool GetNormalizeRect(ULocalPlayer* LocalPlayer, FVector2D& OutPosition, FVector2D& OutSize) const;
 
 	void UpdateWindowTitleBar();
 	void UpdateWindowTitleBarVisibility();
@@ -178,7 +179,7 @@ private:
 private:
 	FGeometry CachedGeometry;
 
-	TMap < ULocalPlayer*, TSharedPtr<FPlayerLayer> > PlayerLayers;
+	TMap<FObjectKey, TSharedPtr<FPlayerLayer>> PlayerLayers;
 
 	TAttribute<FSceneViewport*> SceneViewport;
 	TSharedPtr<SVerticalBox> WidgetHost;
@@ -214,7 +215,7 @@ private:
 	TSharedPtr<SWidget> DefaultTitleBarContentWidget;
 	float DefaultWindowTitleBarHeight;
 	bool bIsGameUsingBorderlessWindow;
-
 	FIntPoint ScaledDPIViewportReference;
 	bool bUseScaledDPI;
+	float CachedInverseDPIScale;
 };

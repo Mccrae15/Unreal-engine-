@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -14,9 +14,11 @@ struct FNiagaraParameters
 	GENERATED_USTRUCT_BODY()
 	
 public:
-	//TODO: Make this a map?
+	//TODO: Sort the array so we can binary search, do not change to a TMap to avoid memory bloat!
 	UPROPERTY(EditAnywhere, EditFixedSize, Category = "Uniform")
 	TArray<FNiagaraVariable> Parameters;
+
+#if WITH_EDITORONLY_DATA
 
 	NIAGARA_API void Empty();
 
@@ -75,4 +77,6 @@ public:
 	}
 
 	NIAGARA_API void DumpParameters();
+
+#endif // WITH_EDITORONLY_DATA
 };

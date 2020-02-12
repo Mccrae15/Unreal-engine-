@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "AIController.h"
 #include "CollisionQueryParams.h"
@@ -47,6 +47,7 @@ AAIController::AAIController(const FObjectInitializer& ObjectInitializer)
 	bWantsPlayerState = false;
 	TeamID = FGenericTeamId::NoTeam;
 
+	bStartAILogicOnPossess = false;
 	bStopAILogicOnUnposses = true;
 }
 
@@ -64,6 +65,15 @@ void AAIController::PostInitializeComponents()
 	if (bWantsPlayerState && !IsPendingKill() && (GetNetMode() != NM_Client))
 	{
 		InitPlayerState();
+	}
+
+	if (BrainComponent == nullptr)
+	{
+		BrainComponent = FindComponentByClass<UBrainComponent>();
+	}
+	if (Blackboard == nullptr)
+	{
+		Blackboard = FindComponentByClass<UBlackboardComponent>();
 	}
 
 #if ENABLE_VISUAL_LOG
@@ -501,6 +511,16 @@ void AAIController::OnPossess(APawn* InPawn)
 
 		REDIRECT_OBJECT_TO_VLOG(CachedGameplayTasksComponent, this);
 	}
+
+	if (Blackboard && Blackboard->GetBlackboardAsset())
+	{
+		InitializeBlackboard(*Blackboard, *Blackboard->GetBlackboardAsset());
+	}
+
+	if (bStartAILogicOnPossess && BrainComponent)
+	{
+		BrainComponent->StartLogic();
+	}
 }
 
 void AAIController::OnUnPossess()
@@ -514,12 +534,9 @@ void AAIController::OnUnPossess()
 		PathFollowingComponent->Cleanup();
 	}
 
-	if (bStopAILogicOnUnposses)
+	if (bStopAILogicOnUnposses && BrainComponent)
 	{
-		if (BrainComponent)
-		{
-			BrainComponent->Cleanup();
-		}
+		BrainComponent->Cleanup();
 	}
 
 	if (CachedGameplayTasksComponent && (CachedGameplayTasksComponent->GetOwner() == CurrentPawn))
@@ -633,7 +650,15 @@ FPathFollowingRequestResult AAIController::MoveTo(const FAIMoveRequest& MoveRequ
 
 			if (NavSys && !NavSys->ProjectPointToNavigation(MoveRequest.GetGoalLocation(), ProjectedLocation, INVALID_NAVEXTENT, &AgentProps))
 			{
-				UE_VLOG_LOCATION(this, LogAINavigation, Error, MoveRequest.GetGoalLocation(), 30.f, FColor::Red, TEXT("AAIController::MoveTo failed to project destination location to navmesh"));
+				if (MoveRequest.IsUsingPathfinding())
+				{
+					UE_VLOG_LOCATION(this, LogAINavigation, Error, MoveRequest.GetGoalLocation(), 30.f, FColor::Red, TEXT("AAIController::MoveTo failed to project destination location to navmesh"));
+				}
+				else
+				{
+					UE_VLOG_LOCATION(this, LogAINavigation, Error, MoveRequest.GetGoalLocation(), 30.f, FColor::Red, TEXT("AAIController::MoveTo failed to project destination location to navmesh, path finding is disabled perhaps disable goal projection ?"));
+				}
+
 				bCanRequestMove = false;
 			}
 
@@ -735,7 +760,7 @@ bool AAIController::BuildPathfindingQuery(const FAIMoveRequest& MoveRequest, FPa
 
 	UNavigationSystemV1* NavSys = FNavigationSystem::GetCurrent<UNavigationSystemV1>(GetWorld());
 	const ANavigationData* NavData = (NavSys == nullptr) ? nullptr :
-		MoveRequest.IsUsingPathfinding() ? NavSys->GetNavDataForProps(GetNavAgentPropertiesRef()) :
+		MoveRequest.IsUsingPathfinding() ? NavSys->GetNavDataForProps(GetNavAgentPropertiesRef(), GetNavAgentLocation()) :
 		NavSys->GetAbstractNavData();
 
 	if (NavData)
@@ -880,7 +905,6 @@ bool AAIController::RunBehaviorTree(UBehaviorTree* BTAsset)
 	}
 
 	bool bSuccess = true;
-	bool bShouldInitializeBlackboard = false;
 
 	// see if need a blackboard component at all
 	UBlackboardComponent* BlackboardComp = Blackboard;

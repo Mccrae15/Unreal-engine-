@@ -1,6 +1,7 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "BlueprintNativeCodeGenUtils.h"
+#include "BlueprintCompilationManager.h"
 #include "Engine/Blueprint.h"
 #include "HAL/FileManager.h"
 #include "Misc/Paths.h"
@@ -122,41 +123,45 @@ static bool BlueprintNativeCodeGenUtilsImpl::GeneratePluginDescFile(const FBluep
 		ModuleDesc->LoadingPhase = ELoadingPhase::Default;
 
 		const FName PlatformName = TargetPaths.GetTargetPlatformName();
-		for (PlatformInfo::FPlatformEnumerator PlatformIt = PlatformInfo::EnumeratePlatformInfoArray(); PlatformIt; ++PlatformIt)
+		for (const PlatformInfo::FPlatformInfo& PlatformInfo : PlatformInfo::GetPlatformInfoArray())
 		{
-			if (PlatformIt->TargetPlatformName == PlatformName)
+			if (PlatformInfo.TargetPlatformName == PlatformName)
 			{
 				// We use the 'UBTTargetId' because this white-list expects the 
 				// string to correspond to UBT's UnrealTargetPlatform enum (and by proxy, FPlatformMisc::GetUBTPlatform)
-				ModuleDesc->WhitelistPlatforms.AddUnique(PlatformIt->UBTTargetId.ToString());
+				ModuleDesc->WhitelistPlatforms.AddUnique(PlatformInfo.UBTTargetId.ToString());
 
 				// Hack to allow clients for PS4/XboxOne (etc.) to build the nativized assets plugin
-				const bool bIsClientValidForPlatform = PlatformIt->UBTTargetId == TEXT("Win32") || PlatformIt->UBTTargetId == TEXT("Win64") || PlatformIt->UBTTargetId == TEXT("Linux") || PlatformIt->UBTTargetId == TEXT("Mac");
+				const bool bIsClientValidForPlatform = PlatformInfo.UBTTargetId == TEXT("Win32") ||
+					PlatformInfo.UBTTargetId == TEXT("Win64") ||
+					PlatformInfo.UBTTargetId == TEXT("Linux") ||
+					PlatformInfo.UBTTargetId == TEXT("LinuxAArch64") ||
+					PlatformInfo.UBTTargetId == TEXT("Mac");
 
 				// should correspond to UnrealBuildTool::TargetType in TargetRules.cs
-				switch (PlatformIt->PlatformType)
+				switch (PlatformInfo.PlatformType)
 				{
-				case PlatformInfo::EPlatformType::Game:
-					ModuleDesc->WhitelistTargets.AddUnique(TEXT("Game"));
+				case EBuildTargetType::Game:
+					ModuleDesc->WhitelistTargets.AddUnique(EBuildTargetType::Game);
 
 					// Hack to allow clients for PS4/XboxOne (etc.) to build the nativized assets plugin
 					if(!bIsClientValidForPlatform)
 					{
 						// Also add "Client" target
-						ModuleDesc->WhitelistTargets.AddUnique(TEXT("Client"));
+						ModuleDesc->WhitelistTargets.AddUnique(EBuildTargetType::Client);
 					}
 					break;
 
-				case PlatformInfo::EPlatformType::Client:
-					ModuleDesc->WhitelistTargets.AddUnique(TEXT("Client"));
+				case EBuildTargetType::Client:
+					ModuleDesc->WhitelistTargets.AddUnique(EBuildTargetType::Client);
 					break;
 
-				case PlatformInfo::EPlatformType::Server:
-					ModuleDesc->WhitelistTargets.AddUnique(TEXT("Server"));
+				case EBuildTargetType::Server:
+					ModuleDesc->WhitelistTargets.AddUnique(EBuildTargetType::Server);
 					break;
 
-				case PlatformInfo::EPlatformType::Editor:
-					ensureMsgf(PlatformIt->PlatformType != PlatformInfo::EPlatformType::Editor, TEXT("Nativized Blueprint plugin is for cooked projects only - it isn't supported in editor builds."));
+				case EBuildTargetType::Editor:
+					ensureMsgf(PlatformInfo.PlatformType != EBuildTargetType::Editor, TEXT("Nativized Blueprint plugin is for cooked projects only - it isn't supported in editor builds."));
 					break;
 				};				
 			}
@@ -418,7 +423,7 @@ void FBlueprintNativeCodeGenUtils::GenerateCppCode(UObject* Obj, TSharedPtr<FStr
 
 		FDisableGatheringDataOnScope DisableFib;
 
-		const FString TempPackageName = FString::Printf(TEXT("/Temp/__TEMP_BP__%s"), *InBlueprintObj->GetOutermost()->GetPathName());
+		const FString TempPackageName = FString::Printf(TEXT("%s%s"), *UDynamicClass::GetTempPackagePrefix(), *InBlueprintObj->GetOutermost()->GetPathName());
 		UPackage* TempPackage = CreatePackage(nullptr, *TempPackageName);
 		check(TempPackage);
 		ON_SCOPE_EXIT
@@ -449,19 +454,9 @@ void FBlueprintNativeCodeGenUtils::GenerateCppCode(UObject* Obj, TSharedPtr<FStr
 		CodeGenBackend.NativizationSummary() = NativizationSummary;
 
 		{
-			TSharedPtr<FBlueprintCompileReinstancer> Reinstancer = FBlueprintCompileReinstancer::Create(DuplicateBP->GeneratedClass);
+			FBlueprintCompilationManager::CompileSynchronouslyToCpp( DuplicateBP, OutHeaderSource, OutCppSource, NativizationOptions );
+			
 			IKismetCompilerInterface& Compiler = FModuleManager::LoadModuleChecked<IKismetCompilerInterface>(KISMET_COMPILER_MODULENAME);
-			TGuardValue<bool> GuardTemplateNameFlag(GCompilingBlueprint, true);
-			FCompilerResultsLog Results;
-
-			FKismetCompilerOptions CompileOptions;
-			CompileOptions.CompileType = EKismetCompileType::Cpp;
-			CompileOptions.OutCppSourceCode = OutCppSource;
-			CompileOptions.OutHeaderSourceCode = OutHeaderSource;
-			CompileOptions.NativizationOptions = NativizationOptions;
-
-			Compiler.CompileBlueprint(DuplicateBP, CompileOptions, Results);
-
 			Compiler.RemoveBlueprintGeneratedClasses(DuplicateBP);
 		}
 

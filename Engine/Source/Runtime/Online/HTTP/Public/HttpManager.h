@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -28,7 +28,7 @@ public:
 	/**
 	 * Destructor
 	 */
-	~FHttpManager();
+	virtual ~FHttpManager();
 
 	/**
 	 * Initialize
@@ -136,6 +136,21 @@ public:
 	 */
 	static TFunction<FString()> GetDefaultCorrelationIdMethod();
 
+	/**
+	 * Inform that HTTP Manager that we are about to fork(). Will block to flush all outstanding http requests
+	 */
+	virtual void OnBeforeFork();
+
+	/**
+	 * Inform that HTTP Manager that we have completed a fork(). Must be called in both the client and parent process
+	 */
+	virtual void OnAfterFork();
+
+	/**
+	 * Update configuration. Called when config has been updated and we need to apply any changes.
+	 */
+	virtual void UpdateConfigs();
+
 protected:
 	/** 
 	 * Create HTTP thread object
@@ -149,27 +164,6 @@ protected:
 	/** List of Http requests that are actively being processed */
 	TArray<TSharedRef<IHttpRequest>> Requests;
 
-	/** Keep track of a request that should be deleted later */
-	class FRequestPendingDestroy
-	{
-	public:
-		FRequestPendingDestroy(float InTimeLeft, const TSharedPtr<IHttpRequest>& InHttpRequest)
-			: TimeLeft(InTimeLeft)
-			, HttpRequest(InHttpRequest)
-		{}
-
-		FORCEINLINE bool operator==(const FRequestPendingDestroy& Other) const
-		{
-			return Other.HttpRequest == HttpRequest;
-		}
-
-		float TimeLeft;
-		TSharedPtr<IHttpRequest> HttpRequest;
-	};
-
-	/** Dead requests that need to be destroyed */
-	TArray<FRequestPendingDestroy> PendingDestroyRequests;
-
 	FHttpThread* Thread;
 
 	/** This method will be called to generate a CorrelationId on all requests being sent if one is not already set */
@@ -179,6 +173,4 @@ PACKAGE_SCOPE:
 
 	/** Used to lock access to add/remove/find requests */
 	static FCriticalSection RequestLock;
-	/** Delay in seconds to defer deletion of requests */
-	float DeferredDestroyDelay;
 };

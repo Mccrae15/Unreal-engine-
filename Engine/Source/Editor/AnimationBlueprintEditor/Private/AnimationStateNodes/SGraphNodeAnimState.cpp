@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "AnimationStateNodes/SGraphNodeAnimState.h"
 #include "AnimStateNodeBase.h"
@@ -15,6 +15,8 @@
 #include "Animation/AnimNode_StateMachine.h"
 #include "AnimGraphNode_StateMachineBase.h"
 #include "Widgets/Text/SInlineEditableTextBlock.h"
+
+#define LOCTEXT_NAMESPACE "SGraphNodeAnimState"
 
 /////////////////////////////////////////////////////
 // SStateMachineOutputPin
@@ -83,37 +85,43 @@ void SGraphNodeAnimState::Construct(const FArguments& InArgs, UAnimStateNodeBase
 
 void SGraphNodeAnimState::GetStateInfoPopup(UEdGraphNode* GraphNode, TArray<FGraphInformationPopupInfo>& Popups)
 {
-	UAnimBlueprint* AnimBlueprint = Cast<UAnimBlueprint>(FBlueprintEditorUtils::FindBlueprintForNodeChecked(GraphNode));
-	check(AnimBlueprint);
-	UAnimInstance* ActiveObject = Cast<UAnimInstance>(AnimBlueprint->GetObjectBeingDebugged());
-	UAnimBlueprintGeneratedClass* Class = AnimBlueprint->GetAnimBlueprintGeneratedClass();
-
-	//FKismetNodeInfoContext* K2Context = (FKismetNodeInfoContext*)Context;
-	FLinearColor CurrentStateColor(1.f, 0.5f, 0.25f);
-
-	// Display various types of debug data
-	if ((ActiveObject != NULL) && (Class != NULL))
+	UAnimBlueprint* AnimBlueprint = Cast<UAnimBlueprint>(FBlueprintEditorUtils::FindBlueprintForNode(GraphNode));
+	if(AnimBlueprint)
 	{
-		if (FStateMachineDebugData* DebugInfo = Class->GetAnimBlueprintDebugData().StateMachineDebugData.Find(GraphNode->GetGraph()))
+		UAnimInstance* ActiveObject = Cast<UAnimInstance>(AnimBlueprint->GetObjectBeingDebugged());
+		UAnimBlueprintGeneratedClass* Class = AnimBlueprint->GetAnimBlueprintGeneratedClass();
+
+		FLinearColor CurrentStateColor(1.f, 0.5f, 0.25f);
+
+		// Display various types of debug data
+		if ((ActiveObject != NULL) && (Class != NULL))
 		{
 			if (Class->AnimNodeProperties.Num())
 			{
-				UAnimationStateMachineGraph* TypedGraph = CastChecked<UAnimationStateMachineGraph>(GraphNode->GetGraph());
-
-				if (FAnimNode_StateMachine* CurrentInstance = Class->GetPropertyInstance<FAnimNode_StateMachine>(ActiveObject, TypedGraph->OwnerAnimGraphNode))  
+				if (FStateMachineDebugData* DebugInfo = Class->GetAnimBlueprintDebugData().StateMachineDebugData.Find(GraphNode->GetGraph()))
 				{
-					if (int32* pStateIndex = DebugInfo->NodeToStateIndex.Find(GraphNode))
+					if(int32* StateIndexPtr = DebugInfo->NodeToStateIndex.Find(GraphNode))
 					{
-						const float Weight = CurrentInstance->GetStateWeight(*pStateIndex);
-						if (Weight > 0.0f)
+						for(const FStateMachineStateDebugData& StateData : Class->GetAnimBlueprintDebugData().StateData)
 						{
-							FString StateText = FString::Printf(TEXT("%.1f%%"), Weight * 100.0f);
-							if (*pStateIndex == CurrentInstance->GetCurrentState())
+							if(StateData.StateMachineIndex == DebugInfo->MachineIndex && StateData.StateIndex == *StateIndexPtr)
 							{
-								StateText += FString::Printf(TEXT("\nActive for %.2f secs"), CurrentInstance->GetCurrentStateElapsedTime());
-							}
+								if (StateData.Weight > 0.0f)
+								{
+									FText StateText;
+									if (StateData.ElapsedTime > 0.0f)
+									{
+										StateText = FText::Format(LOCTEXT("ActiveStateWeightFormat", "{0}\nActive for {1}s"), FText::AsPercent(StateData.Weight), FText::AsNumber(StateData.ElapsedTime));
+									}
+									else
+									{
+										StateText = FText::Format(LOCTEXT("StateWeightFormat", "{0}"), FText::AsPercent(StateData.Weight));
+									}
 
-							new (Popups) FGraphInformationPopupInfo(NULL, CurrentStateColor, StateText);
+									Popups.Emplace(nullptr, CurrentStateColor, StateText.ToString());
+									break;
+								}
+							}
 						}
 					}
 				}
@@ -129,34 +137,31 @@ void SGraphNodeAnimState::GetNodeInfoPopups(FNodeInfoContext* Context, TArray<FG
 
 FSlateColor SGraphNodeAnimState::GetBorderBackgroundColor() const
 {
-	UAnimBlueprint* AnimBlueprint = Cast<UAnimBlueprint>(FBlueprintEditorUtils::FindBlueprintForNodeChecked(GraphNode));
-	check(AnimBlueprint);
-	UAnimInstance* ActiveObject = Cast<UAnimInstance>(AnimBlueprint->GetObjectBeingDebugged());
-	UAnimBlueprintGeneratedClass* Class = AnimBlueprint->GetAnimBlueprintGeneratedClass();
-
-	//FKismetNodeInfoContext* K2Context = (FKismetNodeInfoContext*)Context;
-
 	FLinearColor InactiveStateColor(0.08f, 0.08f, 0.08f);
 	FLinearColor ActiveStateColorDim(0.4f, 0.3f, 0.15f);
 	FLinearColor ActiveStateColorBright(1.f, 0.6f, 0.35f);
 
-	// Display various types of debug data
-	if ((ActiveObject != NULL) && (Class != NULL))
+	UAnimBlueprint* AnimBlueprint = Cast<UAnimBlueprint>(FBlueprintEditorUtils::FindBlueprintForNode(GraphNode));
+	if(AnimBlueprint)
 	{
-		if (FStateMachineDebugData* DebugInfo = Class->GetAnimBlueprintDebugData().StateMachineDebugData.Find(GraphNode->GetGraph()))
-		{
-			if (Class->AnimNodeProperties.Num())
-			{
-				UAnimationStateMachineGraph* TypedGraph = CastChecked<UAnimationStateMachineGraph>(GraphNode->GetGraph());
+		UAnimInstance* ActiveObject = Cast<UAnimInstance>(AnimBlueprint->GetObjectBeingDebugged());
+		UAnimBlueprintGeneratedClass* Class = AnimBlueprint->GetAnimBlueprintGeneratedClass();
 
-				if (FAnimNode_StateMachine* CurrentInstance = Class->GetPropertyInstance<FAnimNode_StateMachine>(ActiveObject, TypedGraph->OwnerAnimGraphNode))
+		// Display various types of debug data
+		if ((ActiveObject != NULL) && (Class != NULL))
+		{
+			if (FStateMachineDebugData* DebugInfo = Class->GetAnimBlueprintDebugData().StateMachineDebugData.Find(GraphNode->GetGraph()))
+			{
+				if(int32* StateIndexPtr = DebugInfo->NodeToStateIndex.Find(GraphNode))
 				{
-					if (int32* pStateIndex = DebugInfo->NodeToStateIndex.Find(GraphNode))
+					for(const FStateMachineStateDebugData& StateData : Class->GetAnimBlueprintDebugData().StateData)
 					{
-						const float Weight = CurrentInstance->GetStateWeight(*pStateIndex);
-						if (Weight > 0.0f)
+						if(StateData.StateMachineIndex == DebugInfo->MachineIndex && StateData.StateIndex == *StateIndexPtr)
 						{
-							return FMath::Lerp<FLinearColor>(ActiveStateColorDim, ActiveStateColorBright, Weight);
+							if (StateData.Weight > 0.0f)
+							{
+								return FMath::Lerp<FLinearColor>(ActiveStateColorDim, ActiveStateColorBright, StateData.Weight);
+							}
 						}
 					}
 				}
@@ -352,3 +357,5 @@ const FSlateBrush* SGraphNodeAnimConduit::GetNameIcon() const
 {
 	return FEditorStyle::GetBrush( TEXT("Graph.ConduitNode.Icon") );
 }
+
+#undef LOCTEXT_NAMESPACE

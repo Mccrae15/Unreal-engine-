@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -80,7 +80,7 @@ struct FLevelSequencePlayerSnapshot
 	FString SourceTimecode;
 
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category="General")
-	UCameraComponent* CameraComponent;
+	TSoftObjectPtr<UCameraComponent> CameraComponent;
 
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "General")
 	FLevelSequenceSnapshotSettings Settings;
@@ -90,6 +90,18 @@ struct FLevelSequencePlayerSnapshot
 
 	UPROPERTY()
 	FMovieSceneSequenceID ShotID;
+};
+
+USTRUCT(BlueprintType)
+struct FLevelSequenceCameraSettings
+{
+	GENERATED_BODY()
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Aspect Ratio")
+	bool bOverrideAspectRatioAxisConstraint = true;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Aspect Ratio", meta = (EditCondition = bOverrideAspectRatioAxisConstraint))
+	TEnumAsByte<enum EAspectRatioAxisConstraint> AspectRatioAxisConstraint = EAspectRatioAxisConstraint::AspectRatio_MaintainXFOV;
 };
 
 /**
@@ -114,7 +126,10 @@ public:
 	 * @param InLevel The level that the animation is played in.
 	 * @param Settings The desired playback settings
 	 */
-	void Initialize(ULevelSequence* InLevelSequence, ULevel* InLevel, const FMovieSceneSequencePlaybackSettings& Settings);
+	void Initialize(ULevelSequence* InLevelSequence, ULevel* InLevel, const FMovieSceneSequencePlaybackSettings& Settings, const FLevelSequenceCameraSettings& InCameraSettings);
+
+	UE_DEPRECATED(4.23, "Added camera settings to Initialize.")
+	void Initialize(ULevelSequence* InLevelSequence, ULevel* InLevel, const FMovieSceneSequencePlaybackSettings& Settings) { Initialize(InLevelSequence, InLevel, Settings, FLevelSequenceCameraSettings()); }
 
 public:
 
@@ -153,17 +168,19 @@ public:
 	virtual UObject* GetPlaybackContext() const override;
 	virtual TArray<UObject*> GetEventContexts() const override;
 
+	void RewindForReplay();
+
 protected:
 
 	// IMovieScenePlayer interface
-	virtual void UpdateCameraCut(UObject* CameraObject, UObject* UnlockIfCameraObject, bool bJumpCut) override;
-	virtual void NotifyBindingUpdate(const FGuid& InGuid, FMovieSceneSequenceIDRef InSequenceID, TArrayView<TWeakObjectPtr<>> Objects) override;
+	virtual void UpdateCameraCut(UObject* CameraObject, const EMovieSceneCameraCutParams& CameraCutParams) override;
 	virtual void ResolveBoundObjects(const FGuid& InBindingId, FMovieSceneSequenceID SequenceID, UMovieSceneSequence& InSequence, UObject* ResolutionContext, TArray<UObject*, TInlineAllocator<1>>& OutObjects) const override;
 
 	//~ UMovieSceneSequencePlayer interface
 	virtual bool CanPlay() const override;
 	virtual void OnStartedPlaying() override;
 	virtual void OnStopped() override;
+	virtual void UpdateMovieSceneInstance(FMovieSceneEvaluationRange InRange, EMovieScenePlayerStatus::Type PlayerStatus, bool bHasJumped = false) override;
 
 public:
 
@@ -191,11 +208,14 @@ private:
 	/** The full asset path (/Game/Folder/MapName.MapName) of the streaming level this player resides within. Bindings to actors with the same FSoftObjectPath::GetAssetPathName are resolved within the cached level, rather than globally.. */
 	FName StreamedLevelAssetPath;
 
+	/** The camera settings to use when playing the sequence */
+	FLevelSequenceCameraSettings CameraSettings;
+
 	/** The last view target to reset to when updating camera cuts to null */
 	TWeakObjectPtr<AActor> LastViewTarget;
 
 	/** The last aspect ratio axis constraint to reset to when the camera cut is null */
-	EAspectRatioAxisConstraint LastAspectRatioAxisConstraint;
+	TOptional<EAspectRatioAxisConstraint> LastAspectRatioAxisConstraint;
 
 protected:
 
@@ -206,6 +226,7 @@ protected:
 
 	TWeakObjectPtr<UCameraComponent> CachedCameraComponent;
 
-	/** Set of actors that have been added as tick prerequisites to the parent actor */
-	TSet<FObjectKey> PrerequisiteActors;
+private:
+
+	TOptional<FLevelSequencePlayerSnapshot> PreviousSnapshot;
 };

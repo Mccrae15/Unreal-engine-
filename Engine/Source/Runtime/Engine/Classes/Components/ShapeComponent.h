@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -28,6 +28,10 @@ class ENGINE_API UShapeComponent : public UPrimitiveComponent
 	/** Description of collision */
 	UPROPERTY(transient, duplicatetransient)
 	class UBodySetup* ShapeBodySetup;
+
+	/** Navigation area type (empty = default obstacle) */
+	UPROPERTY(EditAnywhere, Category = Navigation)
+	TSubclassOf<class UNavAreaBase> AreaClass;
 
 	/** Color used to draw the shape. */
 	UPROPERTY(EditAnywhere, AdvancedDisplay, BlueprintReadOnly, Category=Shape)
@@ -69,10 +73,6 @@ protected:
 
 public:
 
-	/** Navigation area type (empty = default obstacle) */
-	UPROPERTY(EditAnywhere, Category = Navigation)
-	TSubclassOf<class UNavAreaBase> AreaClass;
-
 	//~ Begin UPrimitiveComponent Interface.
 	virtual FPrimitiveSceneProxy* CreateSceneProxy() override;
 	virtual class UBodySetup* GetBodySetup() override;
@@ -95,6 +95,7 @@ public:
 	//~ Begin UObject Interface.
 #if WITH_EDITOR
 	virtual void PostEditChangeProperty(FPropertyChangedEvent& PropertyChangedEvent) override;
+	virtual bool IgnoreBoundsForEditorFocus() const override { return true; }
 #endif // WITH_EDITOR
 	//~ End UObject Interface.
 

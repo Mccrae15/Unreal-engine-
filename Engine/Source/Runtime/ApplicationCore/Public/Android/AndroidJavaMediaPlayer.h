@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -67,7 +67,8 @@ public:
 	};
 
 public:
-	FJavaAndroidMediaPlayer(bool swizzlePixels, bool vulkanRenderer);
+	FJavaAndroidMediaPlayer(bool swizzlePixels, bool vulkanRenderer, bool needTrackInfo);
+	virtual ~FJavaAndroidMediaPlayer();
 	int32 GetDuration();
 	void Reset();
 	void Stop();
@@ -216,10 +217,10 @@ public:
 
 protected:
 	static FCriticalSection MediaDataSourcesCS;
-	static TMap<int64, TWeakPtr<FJavaAndroidMediaDataSource>> AllMediaDataSources;
+	static TMap<int64, TWeakPtr<FJavaAndroidMediaDataSource, ESPMode::ThreadSafe>> AllMediaDataSources;
 
 public:
-	static TSharedPtr<FJavaAndroidMediaDataSource> GetMediaDataSourcePtr(int64 Identifier);
+	static TSharedPtr<FJavaAndroidMediaDataSource, ESPMode::ThreadSafe> GetMediaDataSourcePtr(int64 Identifier);
 	static void AddMediaDataSourcePtr(int64 Identifier, TSharedPtr<FJavaAndroidMediaDataSource, ESPMode::ThreadSafe> MediaDataSource);
 };
 

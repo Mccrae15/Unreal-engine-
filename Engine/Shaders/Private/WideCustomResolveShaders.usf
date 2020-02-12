@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 /*=============================================================================
 	WideCustomResolveShaders.usf: Custom wider filter resolve shaders
@@ -6,7 +6,9 @@
 
 #include "Common.ush"
 
-#if PS4_PROFILE
+#ifdef PLATFORM_WIDECUSTOMRESOLVESHADERS_USH
+# include PLATFORM_WIDECUSTOMRESOLVESHADERS_USH
+#elif PS4_PROFILE
 # include "Platform/PS4/WideCustomResolveShaders.ush"
 #else
 

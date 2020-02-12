@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -11,15 +11,16 @@
 #include "Framework/Docking/TabManager.h"
 #include "Framework/Docking/LayoutService.h"
 #include "EngineGlobals.h"
-#include "Toolkits/AssetEditorManager.h"
+#include "Interfaces/IMainFrameModule.h"
 #include "Editor/UnrealEdEngine.h"
 #include "EditorModeManager.h"
 #include "EditorModes.h"
 #include "FileHelpers.h"
 #include "UnrealEdGlobals.h"
 #include "LevelEditor.h"
-#include "ILevelViewport.h"
+#include "IAssetViewport.h"
 #include "MainFrameLog.h"
+#include "Subsystems/AssetEditorSubsystem.h"
 
 const FText StaticGetApplicationTitle( const bool bIncludeGameName );
 
@@ -50,7 +51,7 @@ public:
 	 */
 	bool CanCloseTab()
 	{
-		if ( GIsRequestingExit )
+		if ( IsEngineExitRequested() )
 		{
 			UE_LOG(LogMainFrame, Warning, TEXT("MainFrame: Shutdown already in progress when CanCloseTab was queried, approve tab for closure."));
 			return true;
@@ -107,7 +108,8 @@ public:
 			// We can't close if lightmass is currently building
 			if (GUnrealEd->WarnIfLightingBuildIsCurrentlyRunning()) {return false;}
 
-			bool bOkToExit = true;
+			// We can't close if a modal dialog is on screen. (Clicking on the Editor window top right 'X' already prevent that, but closing from the Windows task bar preview does not)
+			bool bOkToExit = FSlateApplication::IsInitialized() ? !FSlateApplication::Get().GetActiveModalWindow().IsValid() : true;
 
 			// Check if level Mode is open this does PostEditMove processing on actors when it closes so need to do this first before save dialog
 			if( GLevelEditorModeTools().IsModeActive( FBuiltinEditorModes::EM_Level ) || 
@@ -183,8 +185,10 @@ public:
 		// Persistent layouts should get stored using the specified method.
 		GlobalTabManager->SetOnPersistLayout(FTabManager::FOnPersistLayout::CreateRaw(this, &FMainFrameHandler::HandleTabManagerPersistLayout));
 		
+		IMainFrameModule& MainFrameModule = FModuleManager::LoadModuleChecked<IMainFrameModule>(TEXT("MainFrame"));
+
 		const bool bIncludeGameName = true;
-		GlobalTabManager->SetApplicationTitle( StaticGetApplicationTitle( bIncludeGameName ) );
+		GlobalTabManager->SetApplicationTitle( MainFrameModule.GetApplicationTitle( bIncludeGameName ) );
 		
 		InRootWindow->SetRequestDestroyWindowOverride( FRequestDestroyWindowOverride::CreateRaw( this, &FMainFrameHandler::CloseRootWindowOverride ) );
 
@@ -225,7 +229,7 @@ public:
 			Window->BringToFront( bForceWindowToFront );
 
 			// Need to register after the window is shown or else we cant capture the mouse
-			TSharedPtr<ILevelViewport> Viewport = LevelEditor.GetFirstActiveViewport();
+			TSharedPtr<IAssetViewport> Viewport = LevelEditor.GetFirstActiveViewport();
 			Viewport->RegisterGameViewportIfPIE();
 		}
 		else
@@ -254,7 +258,7 @@ public:
 				LevelEditor.FocusViewport();
 
 				// Restore any assets we had open. Note we don't do this on immersive PIE as its annoying to the user.
-				FAssetEditorManager::Get().RequestRestorePreviouslyOpenAssets();
+				GEditor->GetEditorSubsystem<UAssetEditorSubsystem>()->RequestRestorePreviouslyOpenAssets();
 			}
 		}
 	}

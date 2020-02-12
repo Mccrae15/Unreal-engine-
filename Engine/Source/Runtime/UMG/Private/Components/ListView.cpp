@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "Components/ListView.h"
 #include "Widgets/Views/SListView.h"
@@ -14,6 +14,7 @@
 
 UListView::UListView(const FObjectInitializer& ObjectInitializer)
 	: Super(ObjectInitializer)
+	, Orientation(EOrientation::Orient_Vertical)
 {
 }
 
@@ -34,6 +35,24 @@ void UListView::OnRefreshDesignerItems()
 void UListView::AddItem(UObject* Item)
 {
 	ListItems.Add(Item);
+
+	TArray<UObject*> Added;
+	TArray<UObject*> Removed;
+	Added.Add(Item);
+	OnItemsChanged(Added, Removed);
+
+	RequestRefresh();
+}
+
+void UListView::RemoveItem(UObject* Item)
+{
+	ListItems.Remove(Item);
+
+	TArray<UObject*> Added;
+	TArray<UObject*> Removed;
+	Removed.Add(Item);
+	OnItemsChanged(Added, Removed);
+
 	RequestRefresh();
 }
 
@@ -54,31 +73,22 @@ int32 UListView::GetIndexForItem(UObject* Item) const
 
 void UListView::ClearListItems()
 {
+	TArray<UObject*> Added;
+	TArray<UObject*> Removed = MoveTemp(ListItems);
+
 	ListItems.Reset();
+
+	OnItemsChanged(Added, Removed);
+
 	RequestRefresh();
 }
 
 void UListView::SetSelectionMode(TEnumAsByte<ESelectionMode::Type> InSelectionMode)
 {
-	if (InSelectionMode != SelectionMode)
+	SelectionMode = InSelectionMode;
+	if (MyListView)
 	{
-		SelectionMode = InSelectionMode;
-
-		if (InSelectionMode == ESelectionMode::None)
-		{
-			ClearSelection();
-		}
-		else if (InSelectionMode == ESelectionMode::Single || InSelectionMode == ESelectionMode::SingleToggle)
-		{
-			// Try to preserve the last selected item.
-			TArray<UObject*> CurrentlySelectedItems;
-			GetSelectedItems(CurrentlySelectedItems);
-			UObject* const LastSelectedItem = CurrentlySelectedItems.Num() > 0 ? CurrentlySelectedItems.Last(0) : nullptr;
-			if (LastSelectedItem)
-			{
-				SetSelectedItem(LastSelectedItem);
-			}
-		}
+		MyListView->SetSelectionMode(InSelectionMode);
 	}
 }
 
@@ -95,6 +105,11 @@ void UListView::BP_SetListItems(const TArray<UObject*>& InListItems)
 UObject* UListView::BP_GetSelectedItem() const
 {
 	return GetSelectedItem();
+}
+
+void UListView::HandleOnEntryInitializedInternal(UObject* Item, const TSharedRef<ITableRow>& TableRow)
+{
+	BP_OnEntryInitialized.Broadcast(Item, GetEntryWidgetFromItem(Item));
 }
 
 bool UListView::BP_GetSelectedItems(TArray<UObject*>& Items) const
@@ -178,6 +193,11 @@ void UListView::BP_ClearSelection()
 	ClearSelection();
 }
 
+void UListView::OnItemsChanged(const TArray<UObject*>& AddedItems, const TArray<UObject*>& RemovedItems)
+{
+	// Allow subclasses to do special things when objects are added or removed from the list.
+}
+
 TSharedRef<STableViewBase> UListView::RebuildListWidget()
 {
 	return ConstructListView<SListView>();
@@ -185,19 +205,19 @@ TSharedRef<STableViewBase> UListView::RebuildListWidget()
 
 void UListView::HandleListEntryHovered(UUserWidget& EntryWidget)
 {
-	if (UObject* ListItem = IUserObjectListEntry::GetListItem(EntryWidget))
+	if (UObject* const* ListItem = ItemFromEntryWidget(EntryWidget))
 	{
-		OnItemIsHoveredChanged().Broadcast(ListItem, true);
-		BP_OnItemIsHoveredChanged.Broadcast(ListItem, true);
+		OnItemIsHoveredChanged().Broadcast(*ListItem, true);
+		BP_OnItemIsHoveredChanged.Broadcast(*ListItem, true);
 	}
 }
 
 void UListView::HandleListEntryUnhovered(UUserWidget& EntryWidget)
 {
-	if (UObject* ListItem = IUserObjectListEntry::GetListItem(EntryWidget))
+	if (UObject* const* ListItem = ItemFromEntryWidget(EntryWidget))
 	{
-		OnItemIsHoveredChanged().Broadcast(ListItem, false);
-		BP_OnItemIsHoveredChanged.Broadcast(ListItem, false);
+		OnItemIsHoveredChanged().Broadcast(*ListItem, false);
+		BP_OnItemIsHoveredChanged.Broadcast(*ListItem, false);
 	}
 }
 
@@ -205,9 +225,18 @@ FMargin UListView::GetDesiredEntryPadding(UObject* Item) const
 {
 	if (ListItems.Num() > 0 && ListItems[0] != Item)
 	{
-		// For all entries after the first one, add the spacing as top padding
-		return FMargin(0.f, EntrySpacing, 0.f, 0.f);
+		if (Orientation == EOrientation::Orient_Horizontal)
+		{
+			// For all entries after the first one, add the spacing as left padding
+			return FMargin(EntrySpacing, 0.f, 0.0f, 0.f);
+		}
+		else
+		{
+			// For all entries after the first one, add the spacing as top padding
+			return FMargin(0.f, EntrySpacing, 0.f, 0.f);
+		}
 	}
+
 	return FMargin(0.f);
 }
 

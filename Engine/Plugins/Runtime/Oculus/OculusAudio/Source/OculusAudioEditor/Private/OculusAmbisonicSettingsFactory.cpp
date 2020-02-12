@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "OculusAmbisonicSettingsFactory.h"
 #include "OculusAmbisonicsSettings.h"
@@ -6,9 +6,11 @@
 #include "UObject/ObjectMacros.h"
 #include "UObject/Object.h"
 
+#define LOCTEXT_NAMESPACE "AssetTypeActions"
+
 FText FAssetTypeActions_OculusAmbisonicsSettings::GetName() const
 {
-    return NSLOCTEXT("AssetTypeActions", "AssetTypeActions_OculusAmbisonicsSettings", "Oculus Audio Source Settings");
+    return LOCTEXT("AssetTypeActions_OculusAmbisonicsSettings", "Oculus Audio Source Settings");
 }
 
 FColor FAssetTypeActions_OculusAmbisonicsSettings::GetTypeColor() const
@@ -16,9 +18,19 @@ FColor FAssetTypeActions_OculusAmbisonicsSettings::GetTypeColor() const
     return FColor(100, 100, 100);
 }
 
+const TArray<FText>& FAssetTypeActions_OculusAmbisonicsSettings::GetSubMenus() const
+{
+	static const TArray<FText> SubMenus
+	{
+		LOCTEXT("AssetSoundOculusSubMenu", "Oculus")
+	};
+
+	return SubMenus;
+}
+
 UClass* FAssetTypeActions_OculusAmbisonicsSettings::GetSupportedClass() const
 {
-    return UOculusAmbisonicsSettings::StaticClass();
+    return UOculusAudioSoundfieldSettings::StaticClass();
 }
 
 uint32 FAssetTypeActions_OculusAmbisonicsSettings::GetCategories()
@@ -29,7 +41,7 @@ uint32 FAssetTypeActions_OculusAmbisonicsSettings::GetCategories()
 UOculusAmbisonicsSettingsFactory::UOculusAmbisonicsSettingsFactory(const FObjectInitializer& ObjectInitializer)
 	: Super(ObjectInitializer)
 {
-	SupportedClass = UOculusAmbisonicsSettings::StaticClass();
+	SupportedClass = UOculusAudioSoundfieldSettings::StaticClass();
 
 	bCreateNew = true;
 	bEditorImport = true;
@@ -39,10 +51,11 @@ UOculusAmbisonicsSettingsFactory::UOculusAmbisonicsSettingsFactory(const FObject
 UObject* UOculusAmbisonicsSettingsFactory::FactoryCreateNew(UClass* Class, UObject* InParent, FName Name, EObjectFlags Flags, UObject* Context,
     FFeedbackContext* Warn)
 {
-    return NewObject<UOculusAmbisonicsSettings>(InParent, Name, Flags);
+    return NewObject<UOculusAudioSoundfieldSettings>(InParent, Name, Flags);
 }
 
 uint32 UOculusAmbisonicsSettingsFactory::GetMenuCategories() const
 {
     return EAssetTypeCategories::Sounds;
 }
+#undef LOCTEXT_NAMESPACE

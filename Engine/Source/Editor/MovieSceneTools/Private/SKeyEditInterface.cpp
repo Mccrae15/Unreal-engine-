@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "SKeyEditInterface.h"
 #include "MovieSceneObjectBindingIDCustomization.h"
@@ -90,6 +90,12 @@ void SKeyEditInterface::Initialize()
 	];
 }
 
+FVector2D SKeyEditInterface::ComputeDesiredSize(float LayoutScaleMultiplier) const
+{
+	FVector2D ChildSize = SCompoundWidget::ComputeDesiredSize(LayoutScaleMultiplier);
+	return FVector2D::Max(ChildSize, FVector2D(350.f, 0.f));
+}
+
 TSharedRef<IPropertyTypeCustomization> SKeyEditInterface::CreateBindingIDCustomization()
 {
 	TSharedPtr<ISequencer> SequencerPtr = WeakSequencer.Pin();
@@ -140,7 +146,7 @@ void SKeyEditInterface::OnFinishedChangingProperties(const FPropertyChangedEvent
 	}
 }
 
-void SKeyEditInterface::NotifyPreChange( UProperty* PropertyAboutToChange )
+void SKeyEditInterface::NotifyPreChange( FProperty* PropertyAboutToChange )
 {
 	if (UMovieSceneSection* Section = WeakSection.Get())
 	{

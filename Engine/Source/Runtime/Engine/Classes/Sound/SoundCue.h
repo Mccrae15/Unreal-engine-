@@ -1,5 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
-
+// Copyright Epic Games, Inc. All Rights Reserved.
 #pragma once
 
 #include "CoreMinimal.h"
@@ -8,7 +7,14 @@
 #include "Sound/SoundAttenuation.h"
 #include "Sound/SoundBase.h"
 #include "Sound/SoundNode.h"
+
+#if WITH_EDITOR
+#include "EdGraph/EdGraph.h"
+#endif
+
 #include "SoundCue.generated.h"
+
+
 
 class USoundCue;
 class USoundNode;
@@ -73,21 +79,17 @@ public:
 /**
  * The behavior of audio playback is defined within Sound Cues.
  */
-UCLASS(hidecategories=object, MinimalAPI, BlueprintType)
-class USoundCue : public USoundBase
+UCLASS(hidecategories=object, BlueprintType)
+class ENGINE_API USoundCue : public USoundBase
 {
 	GENERATED_UCLASS_BODY()
 
-	/* Indicates whether attenuation should use the Attenuation Overrides or the Attenuation Settings asset */
-	UPROPERTY(EditAnywhere, Category=Attenuation)
-	uint32 bOverrideAttenuation:1;
-
-	/* Makes this sound cue ignore per-platform random node culling for memory purposes */
-	UPROPERTY(EditAnywhere, Category=Culling)
-	uint32 bExcludeFromRandomNodeBranchCulling:1;
+	/* Makes this sound cue automatically load any sound waves it can play into the cache when it is loaded. */
+	UPROPERTY(EditAnywhere, Category = Caching)
+	uint32 bPrimeOnLoad : 1;
 
 	UPROPERTY()
-	class USoundNode* FirstNode;
+	USoundNode* FirstNode;
 
 	/* Volume multiplier for the Sound Cue */
 	UPROPERTY(EditAnywhere, Category=Sound, AssetRegistrySearchable)
@@ -115,14 +117,30 @@ protected:
 	float SubtitlePriority;
 
 private:
-	float MaxAudibleDistance;
+	float MaxAudibleDistance;	
 
-	uint32 bHasVirtualizedSoundWaves:1;
-	uint32 bVirtualizeSoundWavesInitialized:1;
-	uint32 bHasAttenuationNode:1;
-	uint32 bHasAttenuationNodeInitialized:1;
-	uint32 bShouldApplyInteriorVolumes:1;
-	uint32 bShouldApplyInteriorVolumesCached:1;
+public:
+	/* Indicates whether attenuation should use the Attenuation Overrides or the Attenuation Settings asset */
+	UPROPERTY(EditAnywhere, Category=Attenuation)
+	uint8 bOverrideAttenuation : 1;
+
+	/* Makes this sound cue ignore per-platform random node culling for memory purposes */
+	UPROPERTY(EditAnywhere, Category=Culling)
+	uint8 bExcludeFromRandomNodeBranchCulling : 1;
+
+private:
+	UPROPERTY()
+	int32 CookedQualityIndex = INDEX_NONE;
+	
+	/** Whether a sound has play when silent enabled (i.e. for a sound cue, if any sound wave player has it enabled). */
+	UPROPERTY()
+	uint8 bHasPlayWhenSilent : 1;
+
+	uint8 bHasAttenuationNode : 1;
+	uint8 bHasAttenuationNodeInitialized : 1;
+	uint8 bShouldApplyInteriorVolumes : 1;
+	uint8 bShouldApplyInteriorVolumesCached : 1;
+	uint8 bIsRetainingAudio : 1;
 
 public:
 
@@ -137,10 +155,12 @@ public:
 	virtual void Serialize(FStructuredArchive::FRecord Record) override;
 	virtual bool CanBeClusterRoot() const override;
 	virtual bool CanBeInCluster() const override;
+	virtual void BeginDestroy() override;
 	//~ End UObject Interface.
 
 	//~ Begin USoundBase Interface.
 	virtual bool IsPlayable() const override;
+	virtual bool IsPlayWhenSilent() const override;
 	virtual bool ShouldApplyInteriorVolumes() override;
 	virtual void Parse( class FAudioDevice* AudioDevice, const UPTRINT NodeWaveInstanceHash, FActiveSound& ActiveSound, const FSoundParseParameters& ParseParams, TArray<FWaveInstance*>& WaveInstances ) override;
 	virtual float GetVolumeMultiplier() override;
@@ -177,12 +197,12 @@ public:
 	/**
 	 * Recursively finds all Nodes in the Tree
 	 */
-	ENGINE_API void RecursiveFindAllNodes( USoundNode* Node, TArray<class USoundNode*>& OutNodes );
+	void RecursiveFindAllNodes( USoundNode* Node, TArray<USoundNode*>& OutNodes );
 
 	/**
 	 * Recursively finds sound nodes of type T
 	 */
-	template<typename T> 
+	template<typename T>
 	void RecursiveFindNode(USoundNode* Node, TArray<T*>& OutNodes)
 	{
 		if (Node)
@@ -224,15 +244,25 @@ public:
 
 
 	/** Find the path through the sound cue to a node identified by its hash */
-	ENGINE_API bool FindPathToNode(const UPTRINT NodeHashToFind, TArray<USoundNode*>& OutPath) const;
+	bool FindPathToNode(const UPTRINT NodeHashToFind, TArray<USoundNode*>& OutPath) const;
 
 	/** Call when the audio quality has been changed */
-	ENGINE_API static void StaticAudioQualityChanged(int32 NewQualityLevel);
+	static void StaticAudioQualityChanged(int32 NewQualityLevel);
 
 	FORCEINLINE static int32 GetCachedQualityLevel() { return CachedQualityLevel; }
+	
+	/** Set the Quality level that the Cue was cooked at, called by the SoundQualityNodes */
+	int32 GetCookedQualityIndex() const { return CookedQualityIndex; }
 
 	/** Call to cache any values which need to be computed from the sound cue graph. e.g. MaxDistance, Duration, etc. */
-	ENGINE_API void CacheAggregateValues();
+	void CacheAggregateValues();
+
+	/** Call this when stream caching is enabled to prime all SoundWave assets referenced by this Sound Cue. */
+	void PrimeSoundCue();
+
+	/** Call this when stream caching is enabled to retain all soundwave assets referenced by this sound cue. */
+	void RetainSoundCue();
+	void ReleaseRetainedAudio();
 
 protected:
 	bool RecursiveFindPathToNode(USoundNode* CurrentNode, const UPTRINT CurrentHash, const UPTRINT NodeHashToFind, TArray<USoundNode*>& OutPath) const;
@@ -241,42 +271,47 @@ private:
 	void AudioQualityChanged();
 	void OnPostEngineInit();
 	void EvaluateNodes(bool bAddToRoot);
-
+	float FindMaxDistanceInternal() const;
 
 	FDelegateHandle OnPostEngineInitHandle;
 	static int32 CachedQualityLevel;
+
+	void ApplySoundClassLoadingBehaviorToSoundWaves();
 
 public:
 
 	/**
 	 * Instantiate certain functions to work around a linker issue
 	 */
-	ENGINE_API void RecursiveFindAttenuation( USoundNode* Node, TArray<class USoundNodeAttenuation*> &OutNodes );
+	void RecursiveFindAttenuation( USoundNode* Node, TArray<class USoundNodeAttenuation*> &OutNodes );
 
 #if WITH_EDITOR
 	/** Create the basic sound graph */
-	ENGINE_API void CreateGraph();
+	void CreateGraph();
 
 	/** Clears all nodes from the graph (for old editor's buffer soundcue) */
-	ENGINE_API void ClearGraph();
+	void ClearGraph();
 
 	/** Set up EdGraph parts of a SoundNode */
-	ENGINE_API void SetupSoundNode(class USoundNode* InSoundNode, bool bSelectNewNode = true);
+	void SetupSoundNode(USoundNode* InSoundNode, bool bSelectNewNode = true);
 
 	/** Use the SoundCue's children to link EdGraph Nodes together */
-	ENGINE_API void LinkGraphNodesFromSoundNodes();
+	void LinkGraphNodesFromSoundNodes();
 
 	/** Use the EdGraph representation to compile the SoundCue */
-	ENGINE_API void CompileSoundNodesFromGraphNodes();
+	void CompileSoundNodesFromGraphNodes();
 
 	/** Get the EdGraph of SoundNodes */
-	ENGINE_API class UEdGraph* GetGraph();
+	class UEdGraph* GetGraph();
+
+	/** Resets all graph data and nodes */
+	void ResetGraph();
 
 	/** Sets the sound cue graph editor implementation.* */
-	static ENGINE_API void SetSoundCueAudioEditor(TSharedPtr<ISoundCueAudioEditor> InSoundCueGraphEditor);
+	static void SetSoundCueAudioEditor(TSharedPtr<ISoundCueAudioEditor> InSoundCueGraphEditor);
 
 	/** Gets the sound cue graph editor implementation. */
-	static TSharedPtr<ISoundCueAudioEditor> ENGINE_API GetSoundCueAudioEditor();
+	static TSharedPtr<ISoundCueAudioEditor> GetSoundCueAudioEditor();
 
 private:
 
@@ -284,9 +319,8 @@ private:
 	void RecursivelySetExcludeBranchCulling(USoundNode* CurrentNode);
 
 	/** Ptr to interface to sound cue editor operations. */
-	static ENGINE_API TSharedPtr<ISoundCueAudioEditor> SoundCueAudioEditor;
-#endif
+	static TSharedPtr<ISoundCueAudioEditor> SoundCueAudioEditor;
+
+	FCriticalSection EditorOnlyCs;
+#endif // WITH_EDITOR
 };
-
-
-

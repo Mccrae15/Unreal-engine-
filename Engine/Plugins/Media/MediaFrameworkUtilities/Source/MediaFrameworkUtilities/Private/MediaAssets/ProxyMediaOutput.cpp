@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "MediaAssets/ProxyMediaOutput.h"
 #include "MediaFrameworkUtilitiesModule.h"
@@ -73,7 +73,7 @@ EPixelFormat UProxyMediaOutput::GetRequestedPixelFormat() const
 }
 
 
-EMediaCaptureConversionOperation UProxyMediaOutput::GetConversionOperation() const
+EMediaCaptureConversionOperation UProxyMediaOutput::GetConversionOperation(EMediaCaptureSourceType InSourceType) const
 {
 	// Guard against reentrant calls.
 	if (bRequestedPixelFormatGuard)
@@ -84,7 +84,7 @@ EMediaCaptureConversionOperation UProxyMediaOutput::GetConversionOperation() con
 	TGuardValue<bool> GettingUrlGuard(bRequestedPixelFormatGuard, true);
 
 	UMediaOutput* CurrentProxy = GetMediaOutput();
-	return (CurrentProxy != nullptr) ? CurrentProxy->GetConversionOperation() : EMediaCaptureConversionOperation::NONE;
+	return (CurrentProxy != nullptr) ? CurrentProxy->GetConversionOperation(InSourceType) : EMediaCaptureConversionOperation::NONE;
 }
 
 
@@ -139,5 +139,13 @@ bool UProxyMediaOutput::IsProxyValid() const
 
 void UProxyMediaOutput::SetDynamicMediaOutput(UMediaOutput* InProxy)
 {
-	DynamicProxy = (Proxy == InProxy) ? nullptr : InProxy;
+	DynamicProxy = InProxy;
 }
+
+
+#if WITH_EDITOR
+void UProxyMediaOutput::SetMediaOutput(UMediaOutput* InProxy)
+{
+	Proxy = InProxy;
+}
+#endif

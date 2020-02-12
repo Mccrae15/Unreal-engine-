@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 
 #pragma once
@@ -21,6 +21,10 @@ class ENGINE_API USceneCaptureComponentCube : public USceneCaptureComponent
 	/** Temporary render target that can be used by the editor. */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = SceneCapture)
 	class UTextureRenderTargetCube* TextureTarget;
+
+	/** Preserve the rotation of the actor when updating the capture. The default behavior is to capture the cube aligned to the world axis system.  */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = SceneCapture)
+	bool bCaptureRotation;
 
 	/**
 		Omni-directional Stereo Capture

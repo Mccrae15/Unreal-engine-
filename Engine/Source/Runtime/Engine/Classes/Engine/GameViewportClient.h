@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -18,6 +18,7 @@
 #include "Engine/DebugDisplayProperty.h"
 #include "UObject/SoftObjectPath.h"
 #include "StereoRendering.h"
+#include "AudioDeviceManager.h"
 
 #include "GameViewportClient.generated.h"
 
@@ -31,11 +32,11 @@ class UCanvas;
 class UGameInstance;
 class ULocalPlayer;
 class UNetDriver;
-class FHardwareCursor;
-
 
 /** Delegate for overriding the behavior when a navigation action is taken, Not to be confused with FNavigationDelegate which allows a specific widget to override behavior for itself */
 DECLARE_DELEGATE_RetVal_TwoParams(bool, FCustomNavigationHandler, const uint32, TSharedPtr<SWidget>);
+DECLARE_MULTICAST_DELEGATE_SevenParams(FOnInputAxisSignature, FViewport* /*InViewport*/, int32 /*ControllerId*/, FKey /*Key*/, float /*Delta*/, float /*DeltaTime*/, int32 /*NumSamples*/, bool /*bGamepad*/);
+DECLARE_MULTICAST_DELEGATE_OneParam(FOnInputKeySignature, const FInputKeyEventArgs& /*EventArgs*/);
 
 /**
  * A game viewport (FViewport) is a high-level abstract interface for the
@@ -66,14 +67,15 @@ public:
 	UPROPERTY()
 	class UConsole* ViewportConsole;
 
-	/** @todo document */
+	/** Debug properties that have been added via one of the "displayall" commands */
 	UPROPERTY()
 	TArray<struct FDebugDisplayProperty> DebugProperties;
 
 	/** Array of the screen data needed for all the different splitscreen configurations */
 	TArray<struct FSplitscreenData> SplitscreenInfo;
 
-	int32 MaxSplitscreenPlayers;
+	UPROPERTY(Config)
+	int32 MaxSplitscreenPlayers = 4;
 
 	/** if true then the title safe border is drawn */
 	uint32 bShowTitleSafeZone:1;
@@ -100,6 +102,9 @@ protected:
 
 	/** If true will suppress the blue transition text messages. */
 	bool bSuppressTransitionMessage;
+
+	/** Strong handle to the audio device used by this viewport. */
+	FAudioDeviceHandle AudioDevice;
 
 public:
 
@@ -140,6 +145,7 @@ public:
 	//~ Begin UObject Interface
 	virtual void PostInitProperties() override;
 	virtual void BeginDestroy() override;
+	virtual bool IsDestructionThreadSafe() const override { return false; }
 	//~ End UObject Interface
 
 	//~ Begin FViewportClient Interface.
@@ -155,13 +161,14 @@ public:
 	virtual TOptional<TSharedRef<SWidget>> MapCursor(FViewport* Viewport, const FCursorReply& CursorReply) override;
 	virtual void Precache() override;
 	virtual void Draw(FViewport* Viewport,FCanvas* SceneCanvas) override;
-	virtual void ProcessScreenShots(FViewport* Viewport) override;
+	virtual bool ProcessScreenShots(FViewport* Viewport) override;
 	virtual TOptional<bool> QueryShowFocus(const EFocusCause InFocusCause) const override;
 	virtual void LostFocus(FViewport* Viewport) override;
 	virtual void ReceivedFocus(FViewport* Viewport) override;
 	virtual bool IsFocused(FViewport* Viewport) override;
 	virtual void Activated(FViewport* InViewport, const FWindowActivateEvent& InActivateEvent) override;
 	virtual void Deactivated(FViewport* InViewport, const FWindowActivateEvent& InActivateEvent) override;
+	virtual bool IsInPermanentCapture() override;
 	virtual bool WindowCloseRequested() override;
 	virtual void CloseRequested(FViewport* Viewport) override;
 	virtual bool RequiresHitProxyStorage() override { return 0; }
@@ -336,7 +343,7 @@ public:
 	bool IsExclusiveFullscreenViewport() const;
 
 	/** @return mouse position in game viewport coordinates (does not account for splitscreen) */
-	bool GetMousePosition(FVector2D& MousePosition) const;
+	virtual bool GetMousePosition(FVector2D& MousePosition) const;
 
 	/**
 	 * Determine whether a fullscreen viewport should be used in cases where there are multiple players.
@@ -368,7 +375,27 @@ public:
 	virtual void LayoutPlayers();
 
 	/** Allows game code to disable splitscreen (useful when in menus) */
-	void SetDisableSplitscreenOverride( const bool bDisabled );
+	void SetForceDisableSplitscreen(const bool bDisabled);
+
+	/** Determines whether splitscreen is forced to be turned off */
+	bool IsSplitscreenForceDisabled() const
+	{
+		return bDisableSplitScreenOverride;
+	}
+
+	/** Allows game code to disable splitscreen (useful when in menus) */
+	UE_DEPRECATED(4.24, "SetDisableSplitscreenOverride is deprecated. Please call UGameViewportClient::SetForceDisableSplitscreen(bDisabled) instead.")
+	void SetDisableSplitscreenOverride( const bool bDisabled )
+	{
+		SetForceDisableSplitscreen(bDisabled);
+	}
+
+	/** Determines whether splitscreen is forced to be turned off */
+	UE_DEPRECATED(4.24, "GetDisableSplitscreenOverride is deprecated. Please call UGameViewportClient::IsSplitscreenForceDisabled() instead.")
+	bool GetDisableSplitscreenOverride() const
+	{
+		return IsSplitscreenForceDisabled();
+	}
 
 	/** called before rending subtitles to allow the game viewport to determine the size of the subtitle area
 	 * @param Min top left bounds of subtitle region (0 to 1)
@@ -484,7 +511,13 @@ public:
 	{
 		return ScreenshotCapturedDelegate;
 	}
-
+	
+	/** Accessor for delegate called when a viewport is rendered */
+	static FOnViewportRendered& OnViewportRendered()
+	{
+		return ViewportRenderedDelegate;
+	}
+	
 	/* Accessor for the delegate called when a viewport is asked to close. */
 	FOnCloseRequested& OnCloseRequested()
 	{
@@ -545,6 +578,18 @@ public:
 		return CustomNavigationEvent;
 	}
 
+	/** fetches OnInputKeyEvent reference */
+	FOnInputKeySignature& OnInputKey()
+	{
+		return OnInputKeyEvent;
+	}
+
+	/** fetches OnInputAxisEvent reference */
+	FOnInputAxisSignature& OnInputAxis()
+	{
+		return OnInputAxisEvent;
+	}
+
 	/** Return the engine show flags for this viewport */
 	virtual FEngineShowFlags* GetEngineShowFlags() override
 	{ 
@@ -568,6 +613,9 @@ public:
 protected:
 
 	bool GetUseMouseForTouch() const;
+	void SetCurrentBufferVisualizationMode(FName NewBufferVisualizationMode) { CurrentBufferVisualizationMode = NewBufferVisualizationMode; }
+	FName GetCurrentBufferVisualizationMode() const { return CurrentBufferVisualizationMode; }
+	bool HasAudioFocus() const { return bHasAudioFocus; }
 
 protected:
 	/** FCommonViewportClient interface */
@@ -632,22 +680,6 @@ public:
 	virtual bool IsStatEnabled(const FString& InName) const override
 	{
 		return EnabledStats.Contains(InName);
-	}
-
-	/**
-	 * Get the sound stat flags enabled for this viewport
-	 */
-	virtual ESoundShowFlags::Type GetSoundShowFlags() const override
-	{ 
-		return SoundShowFlags;
-	}
-
-	/**
-	 * Set the sound stat flags enabled for this viewport
-	 */
-	virtual void SetSoundShowFlags(const ESoundShowFlags::Type InSoundShowFlags) override
-	{
-		SoundShowFlags = InSoundShowFlags;
 	}
 
 	/**
@@ -830,6 +862,35 @@ private:
 	/** Delegate handler for when a window DPI changes and we might need to adjust the scenes resolution */
 	void HandleWindowDPIScaleChanged(TSharedRef<SWindow> InWindow);
 
+	struct FPngFileData
+	{
+		FString FileName;
+		double ScaleFactor;
+		TArray<uint8> FileData;
+
+		FPngFileData()
+			: ScaleFactor(1.0)
+		{
+		}
+	};
+
+	/** Tries to create a hardware cursor from supplied PNGs images */
+	void* LoadCursorFromPngs(ICursor& PlatformCursor, const FString& InPathToCursorWithoutExtension, FVector2D InHotSpot);
+
+	/** Finds available PNG cursor images */
+	bool LoadAvailableCursorPngs(TArray<TSharedPtr<FPngFileData>>& Results, const FString& InPathToCursorWithoutExtension);
+
+	/**
+	* Adds a DebugDisplayProperty to the DebugProperties array if it does not already exist. 
+	* @see FDebugDisplayProperty for more info on debug properties
+	* 
+	* @param Obj				Object that the debug property is on
+	* @param WithinClass		further limit the display to objects that have an Outer of WithinClass
+	* @param PropertyName		name of the property to display
+	* @param bSpecialProperty	whether PropertyName is a "special" value not directly mapping to a real property (e.g. state name)
+	*/
+	void AddDebugDisplayProperty(class UObject* Obj, TSubclassOf<class UObject> WithinClass, const FName& PropertyName, bool bSpecialProperty = false);
+
 private:
 	/** Slate window associated with this viewport client.  The same window may host more than one viewport client. */
 	TWeakPtr<SWindow> Window;
@@ -847,13 +908,13 @@ private:
 	TWeakPtr<SWindow> HighResScreenshotDialog;
 
 	/** Hardware Cursor Cache */
-	TMap<FName, TSharedPtr<FHardwareCursor>> HardwareCursorCache;
+	TMap<FName, void*> HardwareCursorCache;
 
 	/** Hardware cursor mapping for default cursor shapes. */
-	TMap<EMouseCursor::Type, TSharedPtr<FHardwareCursor>> HardwareCursors;
+	TMap<EMouseCursor::Type, void*> HardwareCursors;
 
 	/** Map of Software Cursor Widgets*/
-	TMap<EMouseCursor::Type, TSharedRef<SWidget>> CursorWidgets;
+	TMap<EMouseCursor::Type, TSharedPtr<SWidget>> CursorWidgets;
 
 	/** Controls if the Map of Software Cursor Widgets is used */
 	bool bUseSoftwareCursorWidgets;
@@ -868,6 +929,9 @@ private:
 	 */
 	bool SetDisplayConfiguration( const FIntPoint* Dimensions, EWindowMode::Type WindowMode);
 
+	/** Updates CSVProfiler camera stats */
+	void UpdateCsvCameraStats(const FSceneView* View);
+
 #if WITH_EDITOR
 	/** Delegate called when game viewport client received input key */
 	FOnGameViewportInputKey GameViewportInputKeyDelegate;
@@ -875,6 +939,9 @@ private:
 
 	/** Delegate called at the end of the frame when a screenshot is captured */
 	static FOnScreenshotCaptured ScreenshotCapturedDelegate;
+	
+	/** Delegate called right after the viewport is rendered */
+	static FOnViewportRendered ViewportRenderedDelegate;
 
 	/** Delegate called when a request to close the viewport is received */
 	FOnCloseRequested CloseRequestedDelegate;
@@ -909,6 +976,12 @@ private:
 	/** Delegate for custom navigation behavior */
 	FCustomNavigationHandler CustomNavigationEvent;
 
+	/** A broadcast delegate broadcasting from UGameViewportClient::InputKey */
+	FOnInputKeySignature OnInputKeyEvent;
+
+	/** A broadcast delegate broadcasting from UGameViewportClient::InputAxis */
+	FOnInputAxisSignature OnInputAxisEvent;
+
 	/** Data needed to display perframe stat tracking when STAT UNIT is enabled */
 	FStatUnitData* StatUnitData;
 
@@ -917,9 +990,6 @@ private:
 
 	/** A list of all the stat names which are enabled for this viewport (static so they persist between runs) */
 	static TArray<FString> EnabledStats;
-
-	/** Those sound stat flags which are enabled on this viewport */
-	static ESoundShowFlags::Type SoundShowFlags;
 
 	/** Disables splitscreen, useful when game code is in menus, and doesn't want splitscreen on */
 	bool bDisableSplitScreenOverride;
@@ -935,9 +1005,6 @@ private:
 
 	/** Mouse cursor locking behavior when the viewport is clicked */
 	EMouseLockMode MouseLockMode;
-
-	/** Handle to the audio device created for this viewport. Each viewport (for multiple PIE) will have its own audio device. */
-	uint32 AudioDeviceHandle;
 
 	/** Whether or not this audio device is in audio-focus */
 	bool bHasAudioFocus;

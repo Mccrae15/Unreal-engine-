@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 namespace UnrealBuildTool.Rules
 {
@@ -6,6 +6,7 @@ namespace UnrealBuildTool.Rules
     {
         public ControlRigDeveloper(ReadOnlyTargetRules Target) : base(Target)
         {
+            PrivateIncludePaths.Add("ControlRig/Private");
             PrivateIncludePaths.Add("ControlRigDeveloper/Private");
 
             // Copying some these from ControlRig.build.cs, our deps are likely leaner
@@ -14,6 +15,7 @@ namespace UnrealBuildTool.Rules
                 new string[]
                 {
                     "AnimGraphRuntime",
+                    "AnimationCore",
                     "ControlRig",
                     "Core",
                     "CoreUObject",
@@ -24,7 +26,18 @@ namespace UnrealBuildTool.Rules
                     "PropertyPath",
                     "Slate",
                     "SlateCore",
-					"TimeManagement"
+                    "InputCore",
+                    "TimeManagement",
+					"EditorWidgets",
+					"MessageLog",
+                    "RigVM",
+                }
+            );
+
+            PublicDependencyModuleNames.AddRange(
+                new string[]
+                {
+                    "AnimationCore",
                 }
             );
 
@@ -34,8 +47,11 @@ namespace UnrealBuildTool.Rules
                     new string[]
                     {
                         "UnrealEd",
+						"Kismet",
+                        "AnimGraph",
                         "BlueprintGraph",
                         "PropertyEditor",
+                        "RigVMDeveloper",
                     }
                 );
 

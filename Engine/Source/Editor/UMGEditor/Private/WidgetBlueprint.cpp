@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "WidgetBlueprint.h"
 #include "Components/Widget.h"
@@ -25,6 +25,7 @@
 #if WITH_EDITOR
 #include "Interfaces/ITargetPlatform.h"
 #include "Modules/ModuleManager.h"
+#include "DiffResults.h"
 #endif
 #include "Kismet2/BlueprintEditorUtils.h"
 #include "K2Node_CallFunction.h"
@@ -44,7 +45,7 @@ FEditorPropertyPathSegment::FEditorPropertyPathSegment()
 {
 }
 
-FEditorPropertyPathSegment::FEditorPropertyPathSegment(const UProperty* InProperty)
+FEditorPropertyPathSegment::FEditorPropertyPathSegment(const FProperty* InProperty)
 {
 	IsProperty = true;
 	MemberName = InProperty->GetFName();
@@ -56,7 +57,7 @@ FEditorPropertyPathSegment::FEditorPropertyPathSegment(const UProperty* InProper
 	else if ( InProperty->GetOwnerClass() )
 	{
 		Struct = InProperty->GetOwnerClass();
-		UBlueprint::GetGuidFromClassByFieldName<UProperty>(InProperty->GetOwnerClass(), InProperty->GetFName(), MemberGuid);
+		UBlueprint::GetGuidFromClassByFieldName<FProperty>(InProperty->GetOwnerClass(), InProperty->GetFName(), MemberGuid);
 	}
 	else
 	{
@@ -96,12 +97,12 @@ void FEditorPropertyPathSegment::Rebase(UBlueprint* SegmentBase)
 	Struct = SegmentBase->GeneratedClass;
 }
 
-bool FEditorPropertyPathSegment::ValidateMember(UDelegateProperty* DelegateProperty, FText& OutError) const
+bool FEditorPropertyPathSegment::ValidateMember(FDelegateProperty* DelegateProperty, FText& OutError) const
 {
 	// We may be binding to a function that doesn't have a explicit binder system that can handle it.  In that case
 	// check to see if the function signatures are compatible, if it is, even if we don't have a binder we can just
 	// directly bind the function to the delegate.
-	if ( UFunction* Function = Cast<UFunction>(GetMember()) )
+	if ( UFunction* Function = GetMember().Get<UFunction>() )
 	{
 		// Check the signatures to ensure these functions match.
 		if ( Function->IsSignatureCompatibleWith(DelegateProperty->SignatureFunction, UFunction::GetDefaultIgnoredSignatureCompatibilityFlags() | CPF_ReturnParm) )
@@ -113,7 +114,7 @@ bool FEditorPropertyPathSegment::ValidateMember(UDelegateProperty* DelegatePrope
 	// Next check to see if we have a binder suitable for handling this case.
 	if ( DelegateProperty->SignatureFunction->NumParms == 1 )
 	{
-		if ( UProperty* ReturnProperty = DelegateProperty->SignatureFunction->GetReturnProperty() )
+		if ( FProperty* ReturnProperty = DelegateProperty->SignatureFunction->GetReturnProperty() )
 		{
 			// TODO I don't like having the path segment system needing to have knowledge of the binding layer.
 			// think about divorcing the two.
@@ -128,9 +129,10 @@ bool FEditorPropertyPathSegment::ValidateMember(UDelegateProperty* DelegatePrope
 				return false;
 			}
 
-			if ( UField* Field = GetMember() )
+			FFieldVariant Field = GetMember();
+			if (Field.IsValid())
 			{
-				if ( UProperty* Property = Cast<UProperty>(Field) )
+				if ( FProperty* Property = Field.Get<FProperty>() )
 				{
 					// Ensure that the binder also can handle binding from the property we care about.
 					if ( Binder->GetDefaultObject<UPropertyBinding>()->IsSupportedSource(Property) )
@@ -145,13 +147,13 @@ bool FEditorPropertyPathSegment::ValidateMember(UDelegateProperty* DelegatePrope
 						return false;
 					}
 				}
-				else if ( UFunction* Function = Cast<UFunction>(Field) )
+				else if ( UFunction* Function = Field.Get<UFunction>() )
 				{
 					if ( Function->NumParms == 1 )
 					{
 						if ( Function->HasAnyFunctionFlags(FUNC_Const | FUNC_BlueprintPure) )
 						{
-							if ( UProperty* MemberReturn = Function->GetReturnProperty() )
+							if ( FProperty* MemberReturn = Function->GetReturnProperty() )
 							{
 								// Ensure that the binder also can handle binding from the property we care about.
 								if ( Binder->GetDefaultObject<UPropertyBinding>()->IsSupportedSource(MemberReturn) )
@@ -196,12 +198,16 @@ bool FEditorPropertyPathSegment::ValidateMember(UDelegateProperty* DelegatePrope
 	return false;
 }
 
-UField* FEditorPropertyPathSegment::GetMember() const
+FFieldVariant FEditorPropertyPathSegment::GetMember() const
 {
 	FName FieldName = GetMemberName();
 	if ( FieldName != NAME_None )
 	{
-		UField* Field = FindField<UField>(Struct, FieldName);
+		FFieldVariant Field = FindField<UField>(Struct, FieldName);
+		if (!Field.IsValid())
+		{
+			Field = FindField<FField>(Struct, FieldName);
+		}
 		//if ( Field == nullptr )
 		//{
 		//	if ( UClass* Class = Cast<UClass>(Struct) )
@@ -219,7 +225,7 @@ UField* FEditorPropertyPathSegment::GetMember() const
 		return Field;
 	}
 
-	return nullptr;
+	return FFieldVariant();
 }
 
 FName FEditorPropertyPathSegment::GetMemberName() const
@@ -234,7 +240,7 @@ FName FEditorPropertyPathSegment::GetMemberName() const
 			{
 				if ( IsProperty )
 				{
-					NameFromGuid = UBlueprint::GetFieldNameFromClassByGuid<UProperty>(Class, MemberGuid);
+					NameFromGuid = UBlueprint::GetFieldNameFromClassByGuid<FProperty>(Class, MemberGuid);
 				}
 				else
 				{
@@ -244,7 +250,7 @@ FName FEditorPropertyPathSegment::GetMemberName() const
 		}
 		else if ( UUserDefinedStruct* UserStruct = Cast<UUserDefinedStruct>(Struct) )
 		{
-			if ( UProperty* Property = FStructureEditorUtils::GetPropertyByGuid(UserStruct, MemberGuid) )
+			if ( FProperty* Property = FStructureEditorUtils::GetPropertyByGuid(UserStruct, MemberGuid) )
 			{
 				NameFromGuid = Property->GetFName();
 			}
@@ -268,7 +274,7 @@ FText FEditorPropertyPathSegment::GetMemberDisplayText() const
 			{
 				if ( IsProperty )
 				{
-					return FText::FromName(UBlueprint::GetFieldNameFromClassByGuid<UProperty>(Class, MemberGuid));
+					return FText::FromName(UBlueprint::GetFieldNameFromClassByGuid<FProperty>(Class, MemberGuid));
 				}
 				else
 				{
@@ -278,7 +284,7 @@ FText FEditorPropertyPathSegment::GetMemberDisplayText() const
 		}
 		else if ( UUserDefinedStruct* UserStruct = Cast<UUserDefinedStruct>(Struct) )
 		{
-			if ( UProperty* Property = FStructureEditorUtils::GetPropertyByGuid(UserStruct, MemberGuid) )
+			if ( FProperty* Property = FStructureEditorUtils::GetPropertyByGuid(UserStruct, MemberGuid) )
 			{
 				return Property->GetDisplayNameText();
 			}
@@ -297,15 +303,15 @@ FEditorPropertyPath::FEditorPropertyPath()
 {
 }
 
-FEditorPropertyPath::FEditorPropertyPath(const TArray<UField*>& BindingChain)
+FEditorPropertyPath::FEditorPropertyPath(const TArray<FFieldVariant>& BindingChain)
 {
-	for ( const UField* Field : BindingChain )
+	for ( FFieldVariant Field : BindingChain )
 	{
-		if ( const UProperty* Property = Cast<UProperty>(Field) )
+		if ( const FProperty* Property = Field.Get<FProperty>())
 		{
 			Segments.Add(FEditorPropertyPathSegment(Property));
 		}
-		else if ( const UFunction* Function = Cast<UFunction>(Field) )
+		else if ( const UFunction* Function = Field.Get<UFunction>())
 		{
 			Segments.Add(FEditorPropertyPathSegment(Function));
 		}
@@ -328,7 +334,7 @@ bool FEditorPropertyPath::Rebase(UBlueprint* SegmentBase)
 	return false;
 }
 
-bool FEditorPropertyPath::Validate(UDelegateProperty* Destination, FText& OutError) const
+bool FEditorPropertyPath::Validate(FDelegateProperty* Destination, FText& OutError) const
 {
 	if ( IsEmpty() )
 	{
@@ -386,12 +392,10 @@ FText FEditorPropertyPath::GetDisplayText() const
 FDynamicPropertyPath FEditorPropertyPath::ToPropertyPath() const
 {
 	TArray<FString> PropertyChain;
-
-	for ( const FEditorPropertyPathSegment& Segment : Segments )
+	for (const FEditorPropertyPathSegment& Segment : Segments)
 	{
 		FName SegmentName = Segment.GetMemberName();
-
-		if ( SegmentName != NAME_None )
+		if (SegmentName != NAME_None)
 		{
 			PropertyChain.Add(SegmentName.ToString());
 		}
@@ -400,7 +404,6 @@ FDynamicPropertyPath FEditorPropertyPath::ToPropertyPath() const
 			return FDynamicPropertyPath();
 		}
 	}
-
 	return FDynamicPropertyPath(PropertyChain);
 }
 
@@ -411,7 +414,7 @@ bool FDelegateEditorBinding::IsAttributePropertyBinding(UWidgetBlueprint* Bluepr
 	{
 		// Next find the underlying delegate we're actually binding to, if it's an event the name will be the same,
 		// for properties we need to lookup the delegate property we're actually going to be binding to.
-		UDelegateProperty* BindableProperty = FindField<UDelegateProperty>(TargetWidget->GetClass(), FName(*(PropertyName.ToString() + TEXT("Delegate"))));
+		FDelegateProperty* BindableProperty = FindField<FDelegateProperty>(TargetWidget->GetClass(), FName(*(PropertyName.ToString() + TEXT("Delegate"))));
 		return BindableProperty != nullptr;
 	}
 
@@ -438,11 +441,11 @@ bool FDelegateEditorBinding::IsBindingValid(UClass* BlueprintGeneratedClass, UWi
 	{
 		// Next find the underlying delegate we're actually binding to, if it's an event the name will be the same,
 		// for properties we need to lookup the delegate property we're actually going to be binding to.
-		UDelegateProperty* BindableProperty = FindField<UDelegateProperty>(TargetWidget->GetClass(), FName(*( PropertyName.ToString() + TEXT("Delegate") )));
-		UDelegateProperty* EventProperty = FindField<UDelegateProperty>(TargetWidget->GetClass(), PropertyName);
+		FDelegateProperty* BindableProperty = FindField<FDelegateProperty>(TargetWidget->GetClass(), FName(*( PropertyName.ToString() + TEXT("Delegate") )));
+		FDelegateProperty* EventProperty = FindField<FDelegateProperty>(TargetWidget->GetClass(), PropertyName);
 
 		bool bNeedsToBePure = BindableProperty ? true : false;
-		UDelegateProperty* DelegateProperty = BindableProperty ? BindableProperty : EventProperty;
+		FDelegateProperty* DelegateProperty = BindableProperty ? BindableProperty : EventProperty;
 
 		// Locate the delegate property on the widget that's a delegate for a property we want to bind.
 		if ( DelegateProperty )
@@ -536,8 +539,8 @@ bool FWidgetAnimation_DEPRECATED::SerializeFromMismatchedTag(struct FPropertyTag
 	if(Tag.Type == NAME_StructProperty && Tag.Name == AnimationDataName)
 	{
 		FStructuredArchive::FRecord Record = Slot.EnterRecord();
-		Record << NAMED_FIELD(MovieScene);
-		Record << NAMED_FIELD(AnimationBindings);
+		Record << SA_VALUE(TEXT("MovieScene"), MovieScene);
+		Record << SA_VALUE(TEXT("AnimationBindings"), AnimationBindings);
 		return true;
 	}
 
@@ -599,6 +602,139 @@ void UWidgetBlueprint::NotifyGraphRenamed(class UEdGraph* Graph, FName OldName, 
 			Widget->Navigation->TryToRenameBinding(OldName, NewName);
 		}
 	});
+}
+
+bool UWidgetBlueprint::FindDiffs(const UBlueprint* OtherBlueprint, FDiffResults& Results) const
+{
+	const UWidgetBlueprint* OtherWidgetBP = Cast<UWidgetBlueprint>(OtherBlueprint);
+	if (!OtherWidgetBP)
+	{
+		return false;
+	}
+
+	// Look for all widget instances in both, add shared ones to ObjectsToDiff and add notes for add/remove
+	TMap<FString, UWidget*> WidgetMap;
+	TMap<FString, UWidget*> OtherWidgetMap;
+
+	WidgetTree->ForEachWidget([&](UWidget* Widget) 
+	{
+		FString WidgetPath = Widget->GetPathName(this);
+		WidgetMap.Add(WidgetPath, Widget);
+	});
+
+	OtherWidgetBP->WidgetTree->ForEachWidget([&](UWidget* Widget)
+	{
+		FString WidgetPath = Widget->GetPathName(OtherWidgetBP);
+		OtherWidgetMap.Add(WidgetPath, Widget);
+	});
+
+	for (TPair<FString, UWidget*> Pair : WidgetMap)
+	{
+		UWidget** FoundOtherWidget = OtherWidgetMap.Find(Pair.Key);
+		UWidget* Widget = Pair.Value;
+
+		if (FoundOtherWidget)
+		{
+			if (Results.CanStoreResults())
+			{
+				// Add to general object diff map
+				FDiffSingleResult Diff;
+				Diff.Diff = EDiffType::OBJECT_REQUEST_DIFF;
+				Diff.Object1 = Widget;
+				Diff.Object2 = *FoundOtherWidget;
+				Diff.OwningObjectPath = Pair.Key;			
+				FFormatNamedArguments Args;
+				Args.Add(TEXT("WidgetTitle"), Widget->GetLabelTextWithMetadata());
+				Args.Add(TEXT("WidgetPath"), FText::FromString(Pair.Key));
+				Diff.ToolTip = FText::Format(LOCTEXT("DIF_RequestWidgetTooltip", "Widget {WidgetTitle}\nPath: {WidgetPath}"), Args);
+				Diff.DisplayString = FText::Format(LOCTEXT("DIF_RequestWidgetLabel", "Widget {WidgetTitle}"), Args);
+				Diff.DisplayColor = FLinearColor(1.f, 0.4f, 0.4f);
+
+				Results.Add(Diff);
+
+				UPanelSlot* Slot = Widget->Slot;
+				UPanelSlot* OtherSlot = (*FoundOtherWidget)->Slot;
+
+				if (Slot && OtherSlot)
+				{
+					FDiffSingleResult SlotDiff;
+					SlotDiff.Diff = EDiffType::OBJECT_REQUEST_DIFF;
+					SlotDiff.Object1 = Slot;
+					SlotDiff.Object2 = OtherSlot;
+					SlotDiff.OwningObjectPath = Pair.Key;
+					FFormatNamedArguments SlotArgs;
+					SlotArgs.Add(TEXT("WidgetTitle"), Widget->GetLabelTextWithMetadata());
+					SlotArgs.Add(TEXT("WidgetPath"), FText::FromString(Pair.Key));
+					SlotDiff.ToolTip = FText::Format(LOCTEXT("DIF_RequestSlotTooltip", "Slot for {WidgetTitle}\nPath: {WidgetPath}"), SlotArgs);
+					SlotDiff.DisplayString = FText::Format(LOCTEXT("DIF_RequestSlotLabel", "Slot for {WidgetTitle}"), SlotArgs);
+					SlotDiff.DisplayColor = FLinearColor(1.f, 0.4f, 0.4f);
+
+					Results.Add(SlotDiff);
+				}
+			}
+		}
+		else
+		{
+			// This is newly added
+			FDiffSingleResult Diff;
+			Diff.Diff = EDiffType::OBJECT_ADDED;
+			Diff.Object1 = Widget;
+			Diff.OwningObjectPath = Pair.Key;
+
+			if (Results.CanStoreResults())
+			{
+				FFormatNamedArguments Args;
+				Args.Add(TEXT("WidgetTitle"), Widget->GetLabelTextWithMetadata());
+				Args.Add(TEXT("WidgetPath"), FText::FromString(Pair.Key));
+				Diff.ToolTip = FText::Format(LOCTEXT("DIF_AddedWidgetTooltip", "Added Widget {WidgetTitle}\nPath: {WidgetPath}"), Args);
+				Diff.DisplayString = FText::Format(LOCTEXT("DIF_AddedWidgetLabel", "Added Widget {WidgetTitle}"), Args);
+				Diff.DisplayColor = FLinearColor(1.f, 0.4f, 0.4f);
+			}
+
+			Results.Add(Diff);
+		}
+	}
+
+	for (TPair<FString, UWidget*> Pair : OtherWidgetMap)
+	{
+		UWidget** FoundMyWidget = WidgetMap.Find(Pair.Key);
+		UWidget* OtherWidget = Pair.Value;
+
+		if (!FoundMyWidget)
+		{
+			// This is newly added
+			FDiffSingleResult Diff;
+			Diff.Diff = EDiffType::OBJECT_REMOVED;
+			Diff.Object1 = OtherWidget;
+			Diff.OwningObjectPath = Pair.Key;
+
+			if (Results.CanStoreResults())
+			{
+				FFormatNamedArguments Args;
+				Args.Add(TEXT("WidgetTitle"), OtherWidget->GetLabelTextWithMetadata());
+				Args.Add(TEXT("WidgetPath"), FText::FromString(Pair.Key));
+				Diff.ToolTip = FText::Format(LOCTEXT("DIF_RemovedWidgetTooltip", "Removed Widget {WidgetTitle}\nPath:{WidgetPath}"), Args);
+				Diff.DisplayString = FText::Format(LOCTEXT("DIF_RemovedWidgetLabel", "Removed Widget {WidgetTitle}"), Args);
+				Diff.DisplayColor = FLinearColor(1.f, 0.4f, 0.4f);
+			}
+
+			Results.Add(Diff);
+		}
+	}
+
+	// Add info warning
+	if (Results.CanStoreResults())
+	{
+		FDiffSingleResult Diff;
+		Diff.Diff = EDiffType::INFO_MESSAGE;
+		Diff.DisplayColor = FLinearColor(.7f, .7f, .7f);
+		Diff.ToolTip = LOCTEXT("DIF_WidgetWarningMessage", "Warning: This may be missing changes to Animations and Bindings");
+		Diff.DisplayString = Diff.ToolTip;
+
+		Results.Add(Diff);
+	}
+
+	return true;
 }
 
 #endif

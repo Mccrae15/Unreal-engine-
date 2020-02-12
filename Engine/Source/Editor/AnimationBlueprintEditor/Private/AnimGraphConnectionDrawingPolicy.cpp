@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "AnimGraphConnectionDrawingPolicy.h"
 #include "Animation/AnimBlueprint.h"
@@ -24,7 +24,8 @@ bool FAnimGraphConnectionDrawingPolicy::TreatWireAsExecutionPin(UEdGraphPin* Inp
 
 void FAnimGraphConnectionDrawingPolicy::BuildExecutionRoadmap()
 {
-	UAnimBlueprint* TargetBP = CastChecked<UAnimBlueprint>(FBlueprintEditorUtils::FindBlueprintForGraphChecked(GraphObj));
+	if(UAnimBlueprint* TargetBP = Cast<UAnimBlueprint>(FBlueprintEditorUtils::FindBlueprintForGraph(GraphObj)))
+	{
 	UAnimBlueprintGeneratedClass* AnimBlueprintClass = (UAnimBlueprintGeneratedClass*)(*(TargetBP->GeneratedClass));
 
 	if (TargetBP->GetObjectBeingDebugged() == NULL)
@@ -32,7 +33,7 @@ void FAnimGraphConnectionDrawingPolicy::BuildExecutionRoadmap()
 		return;
 	}
 
-	TMap<UProperty*, UObject*> PropertySourceMap;
+	TMap<FProperty*, UObject*> PropertySourceMap;
 	AnimBlueprintClass->GetDebugData().GenerateReversePropertyMap(/*out*/ PropertySourceMap);
 
 	FAnimBlueprintDebugData& DebugInfo = AnimBlueprintClass->GetAnimBlueprintDebugData();
@@ -42,9 +43,9 @@ void FAnimGraphConnectionDrawingPolicy::BuildExecutionRoadmap()
 
 		if ((VisitRecord.SourceID >= 0) && (VisitRecord.SourceID < AnimBlueprintClass->AnimNodeProperties.Num()) && (VisitRecord.TargetID >= 0) && (VisitRecord.TargetID < AnimBlueprintClass->AnimNodeProperties.Num()))
 		{
-			if (UAnimGraphNode_Base* SourceNode = Cast<UAnimGraphNode_Base>(PropertySourceMap.FindRef(AnimBlueprintClass->AnimNodeProperties[VisitRecord.SourceID])))
+			if (UAnimGraphNode_Base* SourceNode = Cast<UAnimGraphNode_Base>(PropertySourceMap.FindRef(AnimBlueprintClass->AnimNodeProperties[VisitRecord.SourceID].Get())))
 			{
-				if (UAnimGraphNode_Base* TargetNode = Cast<UAnimGraphNode_Base>(PropertySourceMap.FindRef(AnimBlueprintClass->AnimNodeProperties[VisitRecord.TargetID])))
+				if (UAnimGraphNode_Base* TargetNode = Cast<UAnimGraphNode_Base>(PropertySourceMap.FindRef(AnimBlueprintClass->AnimNodeProperties[VisitRecord.TargetID].Get())))
 				{
 					UEdGraphPin* PoseNet = NULL;
 
@@ -71,6 +72,7 @@ void FAnimGraphConnectionDrawingPolicy::BuildExecutionRoadmap()
 				}
 			}
 		}
+	}
 	}
 }
 

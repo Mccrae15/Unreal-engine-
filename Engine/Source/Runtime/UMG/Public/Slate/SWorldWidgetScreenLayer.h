@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -8,6 +8,7 @@
 #include "Engine/LocalPlayer.h"
 #include "Widgets/SCompoundWidget.h"
 #include "Widgets/Layout/SConstraintCanvas.h"
+#include "UObject/ObjectKey.h"
 
 class USceneComponent;
 
@@ -23,12 +24,13 @@ public:
 	void Construct(const FArguments& InArgs, const FLocalPlayerContext& InPlayerContext);
 
 	virtual void Tick(const FGeometry& AllottedGeometry, const double InCurrentTime, const float InDeltaTime) override;
+	virtual FVector2D ComputeDesiredSize(float) const override;
 
 	void SetWidgetDrawSize(FVector2D DrawSize);
 
 	void SetWidgetPivot(FVector2D Pivot);
 
-	void AddComponent(USceneComponent* Component, TSharedPtr<SWidget> Widget);
+	void AddComponent(USceneComponent* Component, TSharedRef<SWidget> Widget);
 
 	void RemoveComponent(USceneComponent* Component);
 
@@ -41,13 +43,12 @@ private:
 	class FComponentEntry
 	{
 	public:
-		FComponentEntry()
-			: Slot(nullptr)
-		{
-		}
+		FComponentEntry();
+		~FComponentEntry();
 
 	public:
 
+		bool bRemoving = false;
 		TWeakObjectPtr<USceneComponent> Component;
 		class UWidgetComponent* WidgetComponent;
 
@@ -56,6 +57,8 @@ private:
 		SConstraintCanvas::FSlot* Slot;
 	};
 
-	TMap<USceneComponent*, FComponentEntry> ComponentMap;
+	void RemoveEntryFromCanvas(SWorldWidgetScreenLayer::FComponentEntry& Entry);
+
+	TMap<FObjectKey, FComponentEntry> ComponentMap;
 	TSharedPtr<SConstraintCanvas> Canvas;
 };

@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 /*=============================================================================
 	ParticleEmitterInstances.cpp: Particle emitter instance implementations.
@@ -45,7 +45,6 @@ DEFINE_STAT(STAT_SortingTime);
 DEFINE_STAT(STAT_SpriteRenderingTime);
 DEFINE_STAT(STAT_SpriteTickTime);
 DEFINE_STAT(STAT_SpriteSpawnTime);
-DEFINE_STAT(STAT_SpriteUpdateTime);
 DEFINE_STAT(STAT_PSysCompTickTime);
 DEFINE_STAT(STAT_ParticlePoolTime);
 DEFINE_STAT(STAT_ParticleComputeTickTime);
@@ -94,7 +93,6 @@ DEFINE_STAT(STAT_GPUParticlesSimulationCommands);
 
 /** Particle memory stats */
 
-DEFINE_STAT(STAT_ParticleMemTime);
 DEFINE_STAT(STAT_GTParticleData);
 DEFINE_STAT(STAT_DynamicSpriteGTMem);
 DEFINE_STAT(STAT_DynamicSubUVGTMem);
@@ -226,9 +224,6 @@ FORCEINLINE static void* FastParticleSmallBlockAlloc(size_t AllocSize)
 
 FORCEINLINE static void FastParticleSmallBlockFree(void *RawMemory, size_t AllocSize)
 {
-	QUICK_SCOPE_CYCLE_COUNTER(STAT_PARTALLOC);
-
-
 #if FASTPARTICLEALLOC_CHECKSIZE
 	{
 		FScopeLock S(&GFastPoolSizeMapCriticalSection);
@@ -289,13 +284,11 @@ FORCEINLINE static void FastParticleSmallBlockFree(void *RawMemory, size_t Alloc
 #else
 FORCEINLINE static void* FastParticleSmallBlockAlloc(size_t AllocSize)
 {
-	QUICK_SCOPE_CYCLE_COUNTER(STAT_PARTALLOC);
 	return FMemory::Malloc(AllocSize);
 }
 
 FORCEINLINE static void FastParticleSmallBlockFree(void *RawMemory, size_t AllocSize)
 {
-	QUICK_SCOPE_CYCLE_COUNTER(STAT_PARTALLOC);
 	FMemory::Free(RawMemory);
 }
 
@@ -528,12 +521,21 @@ void FParticleEmitterInstance::Init()
     
 	    for (UParticleModule* ParticleModule : SpriteTemplate->ModulesNeedingInstanceData)
 	    {
-		    check(ParticleModule);
-		    uint8* PrepInstData = GetModuleInstanceData(ParticleModule);
-			    check(PrepInstData != nullptr); // Shouldn't be in the list if it doesn't have data
-			    ParticleModule->PrepPerInstanceBlock(this, (void*)PrepInstData);
+			check(ParticleModule);
+			uint8* PrepInstData = GetModuleInstanceData(ParticleModule);
+			check(PrepInstData != nullptr); // Shouldn't be in the list if it doesn't have data
+			ParticleModule->PrepPerInstanceBlock(this, (void*)PrepInstData);
 	    }
-    
+
+		for (UParticleModule* ParticleModule : SpriteTemplate->ModulesNeedingRandomSeedInstanceData)
+		{
+			check(ParticleModule);
+			FParticleRandomSeedInstancePayload* SeedInstancePayload = GetModuleRandomSeedInstanceData(ParticleModule);
+			check(SeedInstancePayload != nullptr); // Shouldn't be in the list if it doesn't have data
+			FParticleRandomSeedInfo* RandomSeedInfo = ParticleModule->GetRandomSeedInfo();
+			ParticleModule->PrepRandomSeedInstancePayload(this, SeedInstancePayload, RandomSeedInfo ? *RandomSeedInfo : FParticleRandomSeedInfo());
+		}
+
 	    // Offset into emitter specific payload (e.g. TrailComponent requires extra bytes).
 	    PayloadOffset = ParticleSize;
 	    
@@ -544,7 +546,7 @@ void FParticleEmitterInstance::Init()
 	    ParticleSize = Align(ParticleSize, 16);
     
 	    // E.g. trail emitters store trailing particles directly after leading one.
-	    ParticleStride			= CalculateParticleStride(ParticleSize);
+	    ParticleStride = CalculateParticleStride(ParticleSize);
 	}
 
 	// Setup the emitter instance material array...
@@ -751,18 +753,16 @@ bool FParticleEmitterInstance::Resize(int32 NewMaxActiveParticles, bool bSetMaxA
 #endif
 
 		{
-			SCOPE_CYCLE_COUNTER(STAT_ParticleMemTime);
+			ParticleData = (uint8*) FMemory::Realloc(ParticleData, ParticleStride * NewMaxActiveParticles);
+			check(ParticleData);
 
-		ParticleData = (uint8*) FMemory::Realloc(ParticleData, ParticleStride * NewMaxActiveParticles);
-		check(ParticleData);
-
-		// Allocate memory for indices.
-		if (ParticleIndices == NULL)
-		{
-			// Make sure that we clear all when it is the first alloc
-			MaxActiveParticles = 0;
-		}
-		ParticleIndices	= (uint16*) FMemory::Realloc(ParticleIndices, sizeof(uint16) * (NewMaxActiveParticles + 1));
+			// Allocate memory for indices.
+			if (ParticleIndices == NULL)
+			{
+				// Make sure that we clear all when it is the first alloc
+				MaxActiveParticles = 0;
+			}
+			ParticleIndices	= (uint16*) FMemory::Realloc(ParticleIndices, sizeof(uint16) * (NewMaxActiveParticles + 1));
 		}
 
 		// Fill in default 1:1 mapping.
@@ -829,7 +829,6 @@ void FParticleEmitterInstance::Tick(float DeltaTime, bool bSuppressSpawning)
 		ResetParticleParameters(DeltaTime);
 
 		// Update the particles
-		SCOPE_CYCLE_COUNTER(STAT_SpriteUpdateTime);
 		CurrentMaterial = LODLevel->RequiredModule->Material;
 		Tick_ModuleUpdate(DeltaTime, LODLevel);
 
@@ -1038,7 +1037,6 @@ float FParticleEmitterInstance::Tick_SpawnParticles(float DeltaTime, UParticleLO
 {
 	if (!bHaltSpawning && !bHaltSpawningExternal && !bSuppressSpawning && (EmitterTime >= 0.0f))
 	{
-		SCOPE_CYCLE_COUNTER(STAT_SpriteSpawnTime);
 		// If emitter is not done - spawn at current rate.
 		// If EmitterLoops is 0, then we loop forever, so always spawn.
 		if ((InCurrentLODLevel->RequiredModule->EmitterLoops == 0) ||
@@ -1555,9 +1553,25 @@ uint8* FParticleEmitterInstance::GetModuleInstanceData(UParticleModule* Module)
 		if (Offset)
 		{
 			check(*Offset < (uint32)InstancePayloadSize);
-				return &(InstanceData[*Offset]);
-			}
+			return &(InstanceData[*Offset]);
 		}
+	}
+	return NULL;
+}
+
+/** Get pointer to emitter instance random seed payload data for a particular module */
+FParticleRandomSeedInstancePayload* FParticleEmitterInstance::GetModuleRandomSeedInstanceData(UParticleModule* Module)
+{
+	// If there is instance data present, look up the modules offset
+	if (InstanceData)
+	{
+		uint32* Offset = SpriteTemplate->ModuleRandomSeedInstanceOffsetMap.Find(Module);
+		if (Offset)
+		{
+			check(*Offset < (uint32)InstancePayloadSize);
+			return (FParticleRandomSeedInstancePayload*)&(InstanceData[*Offset]);
+		}
+	}
 	return NULL;
 }
 
@@ -1620,6 +1634,8 @@ float FParticleEmitterInstance::GetCurrentBurstRateOffset(float& DeltaTime, int3
 	UParticleLODLevel* LODLevel	= GetCurrentLODLevelChecked();
 	if (LODLevel->SpawnModule->BurstList.Num() > 0)
 	{
+		FRandomStream& RandomStream = LODLevel->SpawnModule->GetRandomStream(this);
+
 		// For each burst in the list
 		for (int32 BurstIdx = 0; BurstIdx < LODLevel->SpawnModule->BurstList.Num(); BurstIdx++)
 		{
@@ -1644,7 +1660,7 @@ float FParticleEmitterInstance::GetCurrentBurstRateOffset(float& DeltaTime, int3
 							int32 Count = BurstEntry->Count;
 							if (BurstEntry->CountLow > -1)
 							{
-								Count = BurstEntry->CountLow + FMath::RoundToInt(FMath::SRand() * (float)(BurstEntry->Count - BurstEntry->CountLow));
+								Count = RandomStream.RandRange(BurstEntry->CountLow, BurstEntry->Count);
 							}
 							// Take in to account scale.
 							float Scale = LODLevel->SpawnModule->BurstScale.GetValue(EmitterTime, Component);
@@ -1957,6 +1973,7 @@ void FParticleEmitterInstance::CheckSpawnCount(int32 InNewCount, int32 InMaxCoun
  */
 float FParticleEmitterInstance::Spawn(float DeltaTime)
 {
+	SCOPE_CYCLE_COUNTER(STAT_SpriteSpawnTime);
 	UParticleLODLevel* LODLevel = GetCurrentLODLevelChecked();
 
 	// For beams, we probably want to ignore the SpawnRate distribution,
@@ -2104,6 +2121,49 @@ float FParticleEmitterInstance::Spawn(float DeltaTime)
 }
 
 /**
+* Fixup particle indices to only have valid entries.
+*/
+void FParticleEmitterInstance::FixupParticleIndices()
+{
+	// Something is wrong and particle data are be invalid. Try to fix-up things.
+	TBitArray<> UsedIndices(false, MaxActiveParticles);
+
+	for (int32 i = 0; i < ActiveParticles; ++i)
+	{
+		const uint16 UsedIndex = ParticleIndices[i];
+		if (UsedIndex < MaxActiveParticles && UsedIndices[UsedIndex] == 0)
+		{
+			UsedIndices[UsedIndex] = 1;
+		}
+		else
+		{
+			if (i != ActiveParticles - 1)
+			{
+				// Remove this bad or duplicated index
+				ParticleIndices[i] = ParticleIndices[ActiveParticles - 1];
+			}
+			// Decrease particle count.
+			--ActiveParticles;
+
+			// Retry the new index.
+			--i;
+		}
+	}
+
+	for (int32 i = ActiveParticles; i < MaxActiveParticles; ++i)
+	{
+		const int32 FreeIndex = UsedIndices.FindAndSetFirstZeroBit();
+		if (ensure(FreeIndex != INDEX_NONE))
+		{
+			ParticleIndices[i] =  (uint16)FreeIndex;
+		}
+		else // Can't really handle that.
+		{
+			ParticleIndices[i] = (uint16)i;
+		}
+	}
+}
+/**
  * Spawn the indicated number of particles.
  *
  * @param Count The number of particles to spawn.
@@ -2117,8 +2177,12 @@ void FParticleEmitterInstance::SpawnParticles( int32 Count, float StartTime, flo
 {
 	UParticleLODLevel* LODLevel = GetCurrentLODLevelChecked();
 
-	check( ActiveParticles + Count <= MaxActiveParticles );
-	check( LODLevel->EventGenerator != NULL || EventPayload == NULL );
+	check(ActiveParticles <= MaxActiveParticles);
+	check(LODLevel->EventGenerator != NULL || EventPayload == NULL);
+
+	// Ensure we don't access particle beyond what is allocated.
+	ensure( ActiveParticles + Count <= MaxActiveParticles );
+	Count = FMath::Min<int32>(Count, MaxActiveParticles - ActiveParticles);
 
 	if (EventPayload && EventPayload->bBurstEventsPresent && Count > 0)
 	{
@@ -2133,8 +2197,30 @@ void FParticleEmitterInstance::SpawnParticles( int32 Count, float StartTime, flo
 		const float InterpIncrement = (Count > 0 && Increment > 0.0f) ? (1.0f / (float)Count) : 0.0f;
 		for (int32 i = 0; i < Count; i++)
 		{
-			check(ActiveParticles <= MaxActiveParticles);
-			DECLARE_PARTICLE_PTR(Particle, ParticleData + ParticleStride * ParticleIndices[ActiveParticles]);
+			// Workaround to released data.
+			if (!ensure(ParticleData && ParticleIndices))
+			{
+				static bool bErrorReported = false;
+				if (!bErrorReported)
+				{
+					UE_LOG(LogParticles, Error, TEXT("Detected null particles. Template : %s, Component %s"), *GetNameSafe(Component && Component->IsValidLowLevel() ? Component->Template : nullptr), *GetFullNameSafe(Component));
+					bErrorReported = true;
+				}
+				ActiveParticles = 0;
+				Count = 0;
+				continue;
+			}
+
+			// Workaround to corrupted indices.
+			uint16 NextFreeIndex = ParticleIndices[ActiveParticles];
+			if (!ensure(NextFreeIndex < MaxActiveParticles))
+			{
+				UE_LOG(LogParticles, Error, TEXT("Detected corrupted particle indices. Template : %s, Component %s"), *GetNameSafe(Component && Component->IsValidLowLevel() ? Component->Template : nullptr), *GetFullNameSafe(Component));
+				FixupParticleIndices();
+				NextFreeIndex = ParticleIndices[ActiveParticles];
+			}
+
+			DECLARE_PARTICLE_PTR(Particle, ParticleData + ParticleStride * NextFreeIndex);
 			const uint32 CurrentParticleIndex = ActiveParticles++;
 
 			if (bLegacySpawnBehavior)
@@ -2372,26 +2458,41 @@ void FParticleEmitterInstance::KillParticles()
 			}
 		}
 
+		bool bFoundCorruptIndices = false;
 		// Loop over the active particles... If their RelativeTime is > 1.0f (indicating they are dead),
 		// move them to the 'end' of the active particle list.
 		for (int32 i=ActiveParticles-1; i>=0; i--)
 		{
 			const int32	CurrentIndex	= ParticleIndices[i];
-			const uint8* ParticleBase	= ParticleData + CurrentIndex * ParticleStride;
-			FBaseParticle& Particle		= *((FBaseParticle*) ParticleBase);
-			if (Particle.RelativeTime > 1.0f)
-			{
-				if (EventPayload)
-				{
-					LODLevel->EventGenerator->HandleParticleKilled(this, EventPayload, &Particle);
-				}
-				// Move it to the 'back' of the list
-				ParticleIndices[i] = ParticleIndices[ActiveParticles-1];
-				ParticleIndices[ActiveParticles-1]	= CurrentIndex;
-				ActiveParticles--;
+			if (ensure(CurrentIndex < MaxActiveParticles))
+			{ 
+				const uint8* ParticleBase = ParticleData + CurrentIndex * ParticleStride;
+				FBaseParticle& Particle = *((FBaseParticle*)ParticleBase);
 
-				INC_DWORD_STAT(STAT_SpriteParticlesKilled);
+				if (Particle.RelativeTime > 1.0f)
+				{
+					if (EventPayload)
+					{
+						LODLevel->EventGenerator->HandleParticleKilled(this, EventPayload, &Particle);
+					}
+					// Move it to the 'back' of the list
+					ParticleIndices[i] = ParticleIndices[ActiveParticles-1];
+					ParticleIndices[ActiveParticles-1]	= CurrentIndex;
+					ActiveParticles--;
+
+					INC_DWORD_STAT(STAT_SpriteParticlesKilled);
+				}
 			}
+			else
+			{
+				bFoundCorruptIndices = true;
+			}
+		}
+
+		if (bFoundCorruptIndices)
+		{
+			UE_LOG(LogParticles, Error, TEXT("Detected corrupted particle indices. Template : %s, Component %s"), *GetNameSafe(Component && Component->IsValidLowLevel() ? Component->Template : nullptr), *GetFullNameSafe(Component));			
+			FixupParticleIndices();
 		}
 	}
 }
@@ -2561,10 +2662,12 @@ void FParticleEmitterInstance::SetupEmitterDuration()
 		UParticleLODLevel* TempLOD = SpriteTemplate->LODLevels[LODIndex];
 		UParticleModuleRequired* RequiredModule = TempLOD->RequiredModule;
 
+		FRandomStream& RandomStream = RequiredModule->GetRandomStream(this);
+
 		CurrentDelay = RequiredModule->EmitterDelay + Component->EmitterDelay;
 		if (RequiredModule->bEmitterDelayUseRange)
 		{
-			const float	Rand	= FMath::FRand();
+			const float	Rand	= RandomStream.FRand();
 			CurrentDelay	    = RequiredModule->EmitterDelayLow + 
 				((RequiredModule->EmitterDelay - RequiredModule->EmitterDelayLow) * Rand) + Component->EmitterDelay;
 		}
@@ -2572,7 +2675,7 @@ void FParticleEmitterInstance::SetupEmitterDuration()
 
 		if (RequiredModule->bEmitterDurationUseRange)
 		{
-			const float	Rand		= FMath::FRand();
+			const float	Rand		= RandomStream.FRand();
 			const float	Duration	= RequiredModule->EmitterDurationLow + 
 				((RequiredModule->EmitterDuration - RequiredModule->EmitterDurationLow) * Rand);
 			EmitterDurations[TempLOD->Level] = Duration + CurrentDelay;
@@ -2811,16 +2914,16 @@ void FParticleEmitterInstance::GatherMaterialRelevance(FMaterialRelevance* OutMa
 	// These will catch the sprite cases...
 	if (CurrentMaterial)
 	{
-		(*OutMaterialRelevance) |= CurrentMaterial->GetRelevance(InFeatureLevel);
+		(*OutMaterialRelevance) |= CurrentMaterial->GetRelevance_Concurrent(InFeatureLevel);
 	}
 	else if (LODLevel->RequiredModule->Material)
 	{
-		(*OutMaterialRelevance) |= LODLevel->RequiredModule->Material->GetRelevance(InFeatureLevel);
+		(*OutMaterialRelevance) |= LODLevel->RequiredModule->Material->GetRelevance_Concurrent(InFeatureLevel);
 	}
 	else
 	{
 		check( UMaterial::GetDefaultMaterial(MD_Surface) );
-		(*OutMaterialRelevance) |= UMaterial::GetDefaultMaterial(MD_Surface)->GetRelevance(InFeatureLevel);
+		(*OutMaterialRelevance) |= UMaterial::GetDefaultMaterial(MD_Surface)->GetRelevance_Concurrent(InFeatureLevel);
 	}
 }
 
@@ -2944,7 +3047,6 @@ FDynamicEmitterDataBase* FParticleSpriteEmitterInstance::GetDynamicData(bool bSe
 	// Allocate the dynamic data
 	FDynamicSpriteEmitterData* NewEmitterData = new FDynamicSpriteEmitterData(LODLevel->RequiredModule);
 	{
-		SCOPE_CYCLE_COUNTER(STAT_ParticleMemTime);
 		INC_DWORD_STAT(STAT_DynamicEmitterCount);
 		INC_DWORD_STAT(STAT_DynamicSpriteCount);
 		INC_DWORD_STAT_BY(STAT_DynamicEmitterMem, sizeof(FDynamicSpriteEmitterData));
@@ -3590,7 +3692,6 @@ FDynamicEmitterDataBase* FParticleMeshEmitterInstance::GetDynamicData(bool bSele
 	// Allocate the dynamic data
 	FDynamicMeshEmitterData* NewEmitterData = new FDynamicMeshEmitterData(LODLevel->RequiredModule);
 	{
-		SCOPE_CYCLE_COUNTER(STAT_ParticleMemTime);
 		INC_DWORD_STAT(STAT_DynamicEmitterCount);
 		INC_DWORD_STAT(STAT_DynamicMeshCount);
 		INC_DWORD_STAT_BY(STAT_DynamicEmitterMem, sizeof(FDynamicMeshEmitterData));
@@ -3699,7 +3800,7 @@ void FParticleMeshEmitterInstance::GatherMaterialRelevance( FMaterialRelevance* 
 	GetMeshMaterials(Materials, LODLevel, InFeatureLevel, true); // Allow log issues since GatherMaterialRelevance is only called when the proxy is created.
 	for (int32 MaterialIndex = 0; MaterialIndex < Materials.Num(); ++MaterialIndex)
 	{
-		(*OutMaterialRelevance) |= Materials[MaterialIndex]->GetRelevance(InFeatureLevel);
+		(*OutMaterialRelevance) |= Materials[MaterialIndex]->GetRelevance_Concurrent(InFeatureLevel);
 	}
 }
 

@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "NiagaraFloatTypeEditorUtilities.h"
 #include "SNiagaraParameterEditor.h"
@@ -48,6 +48,8 @@ public:
 		checkf(Struct->GetStruct() == FNiagaraTypeDefinition::GetFloatStruct(), TEXT("Struct type not supported."));
 		((FNiagaraFloat*)Struct->GetStructMemory())->Value = FloatValue;
 	}
+
+	virtual bool CanChangeContinuously() const override { return true; }
 
 private:
 	void BeginSliderMovement()
@@ -102,10 +104,15 @@ FString FNiagaraEditorFloatTypeUtilities::GetPinDefaultStringFromValue(const FNi
 bool FNiagaraEditorFloatTypeUtilities::SetValueFromPinDefaultString(const FString& StringValue, FNiagaraVariable& Variable) const
 {
 	FNiagaraFloat FloatValue;
-	if (LexTryParseString(FloatValue.Value, *StringValue))
+	if (LexTryParseString(FloatValue.Value, *StringValue) || !Variable.IsDataAllocated())
 	{
 		Variable.SetValue<FNiagaraFloat>(FloatValue);
 		return true;
 	}
 	return false;
+}
+
+FText FNiagaraEditorFloatTypeUtilities::GetSearchTextFromValue(const FNiagaraVariable& AllocatedVariable) const
+{
+	return FText::FromString(GetPinDefaultStringFromValue(AllocatedVariable));
 }

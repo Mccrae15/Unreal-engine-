@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -15,6 +15,7 @@ class FImgMediaScheduler;
 class IImgMediaReader;
 class IMediaEventSink;
 class IMediaTextureSample;
+class FImgMediaGlobalCache;
 
 
 /**
@@ -36,7 +37,8 @@ public:
 	 * @param InEventSink The object that receives media events from this player.
 	 * @param InScheduler The image loading scheduler to use.
 	 */
-	FImgMediaPlayer(IMediaEventSink& InEventSink, const TSharedRef<FImgMediaScheduler, ESPMode::ThreadSafe>& InScheduler);
+	FImgMediaPlayer(IMediaEventSink& InEventSink, const TSharedRef<FImgMediaScheduler, ESPMode::ThreadSafe>& InScheduler,
+		const TSharedRef<FImgMediaGlobalCache, ESPMode::ThreadSafe>& InGlobalCache);
 
 	/** Virtual destructor. */
 	virtual ~FImgMediaPlayer();
@@ -58,6 +60,7 @@ public:
 	virtual bool Open(const FString& Url, const IMediaOptions* Options) override;
 	virtual bool Open(const TSharedRef<FArchive, ESPMode::ThreadSafe>& Archive, const FString& OriginalUrl, const IMediaOptions* Options) override;
 	virtual void TickInput(FTimespan DeltaTime, FTimespan Timecode) override;
+	virtual void ProcessVideoSamples() override;
 
 protected:
 
@@ -153,4 +156,10 @@ private:
 
 	/** Should the video loop to the beginning at completion */
     bool ShouldLoop;
+
+	/** The global cache to use. */
+	TSharedPtr<FImgMediaGlobalCache, ESPMode::ThreadSafe> GlobalCache;
+
+	/** True if we have run RequestFrame already for this frame. */
+	bool RequestFrameHasRun;
 };

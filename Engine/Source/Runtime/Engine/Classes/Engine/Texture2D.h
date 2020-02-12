@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -8,6 +8,7 @@
 #include "UObject/ScriptMacros.h"
 #include "Engine/Texture.h"
 #include "TextureResource.h"
+#include "RenderAssetUpdate.h"
 #include "Texture2D.generated.h"
 
 class FTexture2DResourceMem;
@@ -41,7 +42,7 @@ public:
 	FORCEINLINE FIntPoint GetImportedSize() const
 	{
 #if WITH_EDITOR
-		return FIntPoint(Source.GetSizeX(),Source.GetSizeY());
+		return Source.GetLogicalSize();
 #else // #if WITH_EDITOR
 		return ImportedSize;
 #endif // #if WITH_EDITOR
@@ -90,7 +91,7 @@ public:
 protected:
 
 	/** Helper to manage the current pending update following a call to StreamIn() or StreamOut(). */
-	class FTexture2DUpdate* PendingUpdate;
+	TRefCountPtr<FRenderAssetUpdate> PendingUpdate;
 	friend class FTexture2DUpdate;
 
 public:
@@ -102,6 +103,7 @@ public:
 	virtual void PostEditChangeProperty(FPropertyChangedEvent& PropertyChangedEvent) override;
 #endif // WITH_EDITOR
 	virtual void BeginDestroy() override;
+	virtual bool IsReadyForAsyncPostLoad() const override;
 	virtual void PostLoad() override;
 	virtual void PreSave(const class ITargetPlatform* TargetPlatform) override;
 	virtual void GetAssetRegistryTags(TArray<FAssetRegistryTag>& OutTags) const override;
@@ -112,10 +114,10 @@ public:
 	virtual float GetSurfaceWidth() const override { return GetSizeX(); }
 	virtual float GetSurfaceHeight() const override { return GetSizeY(); }
 	virtual FTextureResource* CreateResource() override;
-	virtual EMaterialValueType GetMaterialType() const override { return MCT_Texture2D; }
+	virtual EMaterialValueType GetMaterialType() const override;
 	virtual void UpdateResource() override;
 	virtual float GetAverageBrightness(bool bIgnoreTrueBlack, bool bUseGrayscale) override;
-	virtual FTexturePlatformData** GetRunningPlatformData() override { return &PlatformData; }
+	virtual FTexturePlatformData** GetRunningPlatformData() final override { return &PlatformData; }
 #if WITH_EDITOR
 	virtual TMap<FString,FTexturePlatformData*>* GetCookedPlatformData() override { return &CookedPlatformData; }
 #endif
@@ -127,19 +129,9 @@ public:
 	virtual int32 CalcNumOptionalMips() const final override;
 	virtual int32 CalcCumulativeLODSize(int32 NumLODs) const final override { return CalcTextureMemorySize(NumLODs); }
 
-	virtual bool GetMipDataFilename(const int32 MipIndex, FString& OutBulkDataFilename) const final override
-	{
-		if (PlatformData)
-		{
-			if (MipIndex < PlatformData->Mips.Num() && MipIndex >= 0)
-			{
-				OutBulkDataFilename = PlatformData->Mips[MipIndex].BulkData.GetFilename();
-				return true;
-			}
-		}
-		return false;
-	}
-
+	virtual bool GetMipDataFilename(const int32 MipIndex, FString& OutBulkDataFilename) const final override;
+	virtual bool DoesMipDataExist(const int32 MipIndex) const final override;
+	
 	/**
 	* Returns whether the texture is ready for streaming aka whether it has had InitRHI called on it.
 	*
@@ -157,6 +149,7 @@ public:
 
 	/** true if the texture is currently being updated through StreamIn() or StreamOut(). */
 	virtual bool HasPendingUpdate() const final override { return PendingUpdate != nullptr; }
+	virtual bool IsPendingUpdateLocked() const final override;
 
 	virtual bool StreamOut(int32 NewMipCount) final override;
 	virtual bool StreamIn(int32 NewMipCount, bool bHighPrio) final override;
@@ -187,16 +180,20 @@ public:
 	{
 		if (PlatformData)
 		{
+			if (IsCurrentlyVirtualTextured())
+			{
+				return PlatformData->GetNumVTMips();
+			}
 			return PlatformData->Mips.Num();
 		}
 		return 0;
 	}
 
-	FORCEINLINE EPixelFormat GetPixelFormat() const
+	FORCEINLINE EPixelFormat GetPixelFormat(uint32 LayerIndex = 0u) const
 	{
 		if (PlatformData)
 		{
-			return PlatformData->PixelFormat;
+			return PlatformData->GetLayerPixelFormat(LayerIndex);
 		}
 		return PF_Unknown;
 	}
@@ -204,7 +201,7 @@ public:
 	{
 		if (PlatformData)
 		{
-			return FMath::Max(0, PlatformData->Mips.Num() - 1);
+			return FMath::Max(0, PlatformData->Mips.Num() - (int32)PlatformData->GetNumMipsInTail());
 		}
 		return 0;
 	}
@@ -212,6 +209,14 @@ public:
 	{
 		check(PlatformData);
 		return PlatformData->Mips;
+	}
+	FORCEINLINE int32 GetExtData() const
+	{
+		if (PlatformData)
+		{
+			return PlatformData->GetExtData();
+		}
+		return 0;
 	}
 
 	FORCEINLINE int32 GetStreamingIndex() const { return StreamingIndex; }
@@ -233,7 +238,13 @@ private:
 
 public:
 	/** Returns the minimum number of mips that must be resident in memory (cannot be streamed). */
-	static FORCEINLINE int32 GetMinTextureResidentMipCount()
+	FORCEINLINE int32 GetMinTextureResidentMipCount() const
+	{
+		return FMath::Max(GMinTextureResidentMipCount, PlatformData ? (int32)PlatformData->GetNumMipsInTail() : 0);
+	}
+
+	/** Returns the minimum number of mips that must be resident in memory (cannot be streamed). */
+	static FORCEINLINE int32 GetStaticMinTextureResidentMipCount()
 	{
 		return GMinTextureResidentMipCount;
 	}
@@ -379,7 +390,7 @@ public:
 	friend struct FStreamingRenderAsset;
 	
 	/** creates and initializes a new Texture2D with the requested settings */
-	ENGINE_API static class UTexture2D* CreateTransient(int32 InSizeX, int32 InSizeY, EPixelFormat InFormat = PF_B8G8R8A8);
+	ENGINE_API static class UTexture2D* CreateTransient(int32 InSizeX, int32 InSizeY, EPixelFormat InFormat = PF_B8G8R8A8, const FName InName = NAME_None);
 
 	/**
 	 * Gets the X size of the texture, in pixels
@@ -398,4 +409,25 @@ public:
 	 * This is added to any existing mip bias values.
 	 */
 	virtual void RefreshSamplerStates();
+
+	/**
+	 * Returns if the texture is actually being rendered using virtual texturing right now.
+	 * Unlike the 'VirtualTextureStreaming' property which reflects the user's desired state
+	 * this reflects the actual current state on the renderer depending on the platform, VT
+	 * data being built, project settings, ....
+	 */
+	virtual bool IsCurrentlyVirtualTextured() const override
+	{
+		if (VirtualTextureStreaming && PlatformData && PlatformData->VTData)
+		{
+			return true;
+		}
+		return false;
+	}
+
+	/**
+	 * Returns true if this virtual texture uses a single physical space all of its texture layers.
+	 * This can reduce page table overhead but potentially increase the number of physical pools allocated.
+	 */
+	virtual bool IsVirtualTexturedWithSinglePhysicalSpace() const { return false;  }
 };

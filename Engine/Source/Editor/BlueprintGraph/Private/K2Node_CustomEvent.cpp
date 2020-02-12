@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 
 #include "K2Node_CustomEvent.h"
@@ -107,6 +107,7 @@ UK2Node_CustomEvent::UK2Node_CustomEvent(const FObjectInitializer& ObjectInitial
 	bOverrideFunction = false;
 	bIsEditable = true;
 	bCanRenameNode = true;
+	bIsDeprecated = false;
 	bCallInEditor = false;
 }
 
@@ -342,6 +343,31 @@ void UK2Node_CustomEvent::GetMenuActions(FBlueprintActionDatabaseRegistrar& Acti
 	}
 }
 
+void UK2Node_CustomEvent::FixupPinStringDataReferences(FArchive* SavingArchive)
+{
+	Super::FixupPinStringDataReferences(SavingArchive);
+	if (SavingArchive)
+	{ 
+		// If any of our pins got fixed up, we need to refresh our user pin default values
+		// For custom events, the Pin default values are authoritative
+		for (TSharedPtr<FUserPinInfo> PinInfo : UserDefinedPins)
+		{
+			if (UEdGraphPin* Pin = FindPin(PinInfo->PinName))
+			{
+				if (Pin->Direction == PinInfo->DesiredPinDirection)
+				{
+					FString DefaultsString = Pin->GetDefaultAsString();
+
+					if (DefaultsString != PinInfo->PinDefaultValue)
+					{
+						ModifyUserDefinedPinDefaultValue(PinInfo, DefaultsString);
+					}
+				}
+			}
+		}
+	}
+}
+
 void UK2Node_CustomEvent::ReconstructNode()
 {
 	CachedNodeTitle.MarkDirty();
@@ -369,10 +395,25 @@ void UK2Node_CustomEvent::ReconstructNode()
 
 	if (bUseDelegateSignature)
 	{
+		SetDelegateSignature(DelegateSignature);
+	}
+
+	Super::ReconstructNode();
+}
+
+void UK2Node_CustomEvent::SetDelegateSignature(const UFunction* DelegateSignature)
+{
+	if (DelegateSignature == nullptr)
+	{
+		return;
+	}
+
+	const UEdGraphSchema_K2* K2Schema = GetDefault<UEdGraphSchema_K2>();
+	
 		UserDefinedPins.Empty();
-		for (TFieldIterator<UProperty> PropIt(DelegateSignature); PropIt && (PropIt->PropertyFlags & CPF_Parm); ++PropIt)
+		for (TFieldIterator<FProperty> PropIt(DelegateSignature); PropIt && (PropIt->PropertyFlags & CPF_Parm); ++PropIt)
 		{
-			const UProperty* Param = *PropIt;
+			const FProperty* Param = *PropIt;
 			if (!Param->HasAnyPropertyFlags(CPF_OutParm) || Param->HasAnyPropertyFlags(CPF_ReferenceParm))
 			{
 				FEdGraphPinType PinType;
@@ -385,16 +426,13 @@ void UK2Node_CustomEvent::ReconstructNode()
 					++Index;
 					NewPinName = *FString::Printf(TEXT("%s%d"), *NewPinName.ToString(), Index);
 				}
-				TSharedPtr<FUserPinInfo> NewPinInfo = MakeShareable( new FUserPinInfo() );
+			TSharedPtr<FUserPinInfo> NewPinInfo = MakeShareable(new FUserPinInfo());
 				NewPinInfo->PinName = NewPinName;
 				NewPinInfo->PinType = PinType;
 				NewPinInfo->DesiredPinDirection = EGPD_Output;
 				UserDefinedPins.Add(NewPinInfo);
 			}
 		}
-	}
-
-	Super::ReconstructNode();
 }
 
 UK2Node_CustomEvent* UK2Node_CustomEvent::CreateFromFunction(FVector2D GraphPosition, UEdGraph* ParentGraph, const FString& Name, const UFunction* Function, bool bSelectNewNode/* = true*/)
@@ -412,9 +450,9 @@ UK2Node_CustomEvent* UK2Node_CustomEvent::CreateFromFunction(FVector2D GraphPosi
 		CustomEventNode->AllocateDefaultPins();
 
 		const UEdGraphSchema_K2* K2Schema = GetDefault<UEdGraphSchema_K2>();
-		for (TFieldIterator<UProperty> PropIt(Function); PropIt && (PropIt->PropertyFlags & CPF_Parm); ++PropIt)
+		for (TFieldIterator<FProperty> PropIt(Function); PropIt && (PropIt->PropertyFlags & CPF_Parm); ++PropIt)
 		{
-			const UProperty* Param = *PropIt;
+			const FProperty* Param = *PropIt;
 			if (!Param->HasAnyPropertyFlags(CPF_OutParm) || Param->HasAnyPropertyFlags(CPF_ReferenceParm))
 			{
 				FEdGraphPinType PinType;
@@ -516,6 +554,29 @@ FText UK2Node_CustomEvent::GetKeywords() const
 	FFormatNamedArguments Args;
 	Args.Add(TEXT("ParentKeywords"), ParentKeywords);
 	return FText::Format(LOCTEXT("CustomEventKeywords", "{ParentKeywords} Custom"), Args);
+}
+
+FEdGraphNodeDeprecationResponse UK2Node_CustomEvent::GetDeprecationResponse(EEdGraphNodeDeprecationType DeprecationType) const
+{
+	FEdGraphNodeDeprecationResponse Response = Super::GetDeprecationResponse(DeprecationType);
+	if (DeprecationType == EEdGraphNodeDeprecationType::NodeHasDeprecatedReference)
+	{
+		// Only warn on override usage.
+		if (IsOverride())
+		{
+			FText EventName = FText::FromName(GetFunctionName());
+			FText DetailedMessage = FText::FromString(DeprecationMessage);
+			Response.MessageText = FBlueprintEditorUtils::GetDeprecatedMemberUsageNodeWarning(EventName, DetailedMessage);
+		}
+		else
+		{
+			// Allow the source event to be marked as deprecated in the class that defines it without warning, but use a note to visually indicate that the definition itself has been deprecated.
+			Response.MessageType = EEdGraphNodeDeprecationMessageType::Note;
+			Response.MessageText = LOCTEXT("DeprecatedCustomEventMessage", "@@: This custom event has been marked as deprecated. It can be safely deleted if all references have been replaced or removed.");
+		}
+	}
+
+	return Response;
 }
 
 #undef LOCTEXT_NAMESPACE

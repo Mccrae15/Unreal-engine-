@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "Sections/TransformPropertySection.h"
 #include "ISectionLayoutBuilder.h"
@@ -136,7 +136,7 @@ bool FTransformSection::RequestDeleteCategory(const TArray<FName>& CategoryNameP
 		EMovieSceneTransformChannel Channel = TransformSection->GetMask().GetChannels();
 		EMovieSceneTransformChannel ChannelToRemove = TransformSection->GetMaskByName(CategoryName).GetChannels();
 
-		Channel = Channel ^ ChannelToRemove;
+		Channel &= ~ChannelToRemove;
 
 		TransformSection->SetMask(Channel);
 			
@@ -162,7 +162,7 @@ bool FTransformSection::RequestDeleteKeyArea(const TArray<FName>& KeyAreaNamePat
 		EMovieSceneTransformChannel Channel = TransformSection->GetMask().GetChannels();
 		EMovieSceneTransformChannel ChannelToRemove = TransformSection->GetMaskByName(KeyAreaName).GetChannels();
 
-		Channel = Channel ^ ChannelToRemove;
+		Channel &= ~ChannelToRemove;
 
 		TransformSection->SetMask(Channel);
 					

@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -170,6 +170,8 @@ private:
 	static const FString QosStats_NetworkType;
 	static const FString QosStats_BestRegionId;
 	static const FString QosStats_BestRegionPing;
+	static const FString QosStats_BestEndpointId;
+	static const FString QosStats_BestEndpointPing;
 
 	/** Version of the stats for separation */
 	int32 StatsVersion;

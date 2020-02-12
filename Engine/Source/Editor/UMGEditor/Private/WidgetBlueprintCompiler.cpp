@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "WidgetBlueprintCompiler.h"
 #include "Components/SlateWrapperTypes.h"
@@ -120,7 +120,7 @@ void FWidgetBlueprintCompilerContext::CreateFunctionList()
 		{
 			const FName PropertyName = EditorBinding.SourceProperty;
 
-			UProperty* Property = FindField<UProperty>(Blueprint->SkeletonGeneratedClass, PropertyName);
+			FProperty* Property = FindField<FProperty>(Blueprint->SkeletonGeneratedClass, PropertyName);
 			if ( Property )
 			{
 				// Create the function graph.
@@ -278,18 +278,41 @@ void FWidgetBlueprintCompilerContext::CreateClassVariablesFromBlueprint()
 	Super::CreateClassVariablesFromBlueprint();
 
 	UWidgetBlueprint* WidgetBP = WidgetBlueprint();
+	if (WidgetBP == nullptr)
+	{
+		return;
+	}
+
 	UClass* ParentClass = WidgetBP->ParentClass;
 
 	ValidateWidgetNames();
 
-	// Build the set of variables based on the variable widgets in the widget tree.
-	TArray<UWidget*> Widgets = WidgetBP->GetAllSourceWidgets();
+	// Build the set of variables based on the variable widgets in the first Widget Tree we find:
+	// in the current blueprint, the parent blueprint, and so on, until we find one.
+	TArray<UWidget*> Widgets;
+	UWidgetBlueprint* WidgetBPToScan = WidgetBP;
+	bool bSkipVariableCreation = false;
+	while (WidgetBPToScan != nullptr)
+	{
+		Widgets = WidgetBPToScan->GetAllSourceWidgets();
+		if (Widgets.Num() != 0)
+		{
+			// We found widgets.
+			break;
+		}
+		// We don't want to create variables for widgets that are in a parent blueprint. They will be created at the Parent compilation.
+		// But we want them to be added to the Member variable map for validation of the BindWidget property
+		bSkipVariableCreation = true;
+		
+		// Get the parent WidgetBlueprint
+		WidgetBPToScan = WidgetBPToScan->ParentClass && WidgetBPToScan->ParentClass->ClassGeneratedBy ? Cast<UWidgetBlueprint>(WidgetBPToScan->ParentClass->ClassGeneratedBy):nullptr;
+	}
 
 	// Sort the widgets alphabetically
-	Widgets.Sort( []( const UWidget& Lhs, const UWidget& Rhs ) { return Rhs.GetFName() < Lhs.GetFName(); } );
+	Widgets.Sort( []( const UWidget& Lhs, const UWidget& Rhs ) { return Rhs.GetFName().LexicalLess(Lhs.GetFName()); } );
 
 	// Add widget variables
-	for ( UWidget* Widget : Widgets )
+	for ( UWidget* Widget : Widgets ) 
 	{
 		bool bIsVariable = Widget->bIsVariable;
 
@@ -311,7 +334,8 @@ void FWidgetBlueprintCompilerContext::CreateClassVariablesFromBlueprint()
 			WidgetClass = BPWidgetClass->GetAuthoritativeClass();
 		}
 
-		UObjectPropertyBase* ExistingProperty = Cast<UObjectPropertyBase>(ParentClass->FindPropertyByName(Widget->GetFName()));
+		// Look in the Parent class properties to find a property with the BindWidget meta tag of the same name and Type.
+		FObjectPropertyBase* ExistingProperty = CastField<FObjectPropertyBase>(ParentClass->FindPropertyByName(Widget->GetFName()));
 		if (ExistingProperty && 
 			FWidgetBlueprintEditorUtils::IsBindWidgetProperty(ExistingProperty) && 
 			Widget->IsA(ExistingProperty->PropertyClass))
@@ -326,10 +350,16 @@ void FWidgetBlueprintCompilerContext::CreateClassVariablesFromBlueprint()
 			continue;
 		}
 
+        // We skip variable creation if the Widget Tree was in the Parent Blueprint.
+		if (bSkipVariableCreation)
+		{
+			continue;
+		}
+
 		FEdGraphPinType WidgetPinType(UEdGraphSchema_K2::PC_Object, NAME_None, WidgetClass, EPinContainerType::None, false, FEdGraphTerminalType());
 		
 		// Always name the variable according to the underlying FName of the widget object
-		UProperty* WidgetProperty = CreateVariable(Widget->GetFName(), WidgetPinType);
+		FProperty* WidgetProperty = CreateVariable(Widget->GetFName(), WidgetPinType);
 		if ( WidgetProperty != nullptr )
 		{
 			const FString DisplayName = Widget->IsGeneratedName() ? Widget->GetName() : Widget->GetLabelText().ToString();
@@ -356,7 +386,7 @@ void FWidgetBlueprintCompilerContext::CreateClassVariablesFromBlueprint()
 	// Add movie scenes variables here
 	for (UWidgetAnimation* Animation : WidgetBP->Animations)
 	{
-		UObjectPropertyBase* ExistingProperty = Cast<UObjectPropertyBase>(ParentClass->FindPropertyByName(Animation->GetFName()));
+		FObjectPropertyBase* ExistingProperty = CastField<FObjectPropertyBase>(ParentClass->FindPropertyByName(Animation->GetFName()));
 		if (ExistingProperty &&
 			FWidgetBlueprintEditorUtils::IsBindWidgetAnimProperty(ExistingProperty) &&
 			ExistingProperty->PropertyClass->IsChildOf(UWidgetAnimation::StaticClass()))
@@ -366,7 +396,7 @@ void FWidgetBlueprintCompilerContext::CreateClassVariablesFromBlueprint()
 		}
 
 		FEdGraphPinType WidgetPinType(UEdGraphSchema_K2::PC_Object, NAME_None, Animation->GetClass(), EPinContainerType::None, true, FEdGraphTerminalType());
-		UProperty* AnimationProperty = CreateVariable(Animation->GetFName(), WidgetPinType);
+		FProperty* AnimationProperty = CreateVariable(Animation->GetFName(), WidgetPinType);
 
 		if ( AnimationProperty != nullptr )
 		{
@@ -579,9 +609,10 @@ void FWidgetBlueprintCompilerContext::FinishCompilingClass(UClass* Class)
 	UWidgetBlueprint* WidgetBP = WidgetBlueprint();
 	UWidgetBlueprintGeneratedClass* BPGClass = CastChecked<UWidgetBlueprintGeneratedClass>(Class);
 	UClass* ParentClass = WidgetBP->ParentClass;
+	const bool bIsSkeletonOnly = CompileOptions.CompileType == EKismetCompileType::SkeletonOnly;
 
 	// Don't do a bunch of extra work on the skeleton generated class.
-	if ( CompileOptions.CompileType != EKismetCompileType::SkeletonOnly )
+	if ( !bIsSkeletonOnly )
 	{
 		if( !WidgetBP->bHasBeenRegenerated )
 		{
@@ -592,7 +623,10 @@ void FWidgetBlueprintCompilerContext::FinishCompilingClass(UClass* Class)
 
 		BPGClass->bCookSlowConstructionWidgetTree = GetDefault<UUMGEditorProjectSettings>()->CompilerOption_CookSlowConstructionWidgetTree(WidgetBP);
 
-		BPGClass->WidgetTree = Cast<UWidgetTree>(StaticDuplicateObject(WidgetBP->WidgetTree, BPGClass, NAME_None, RF_AllFlags & ~RF_DefaultSubObject));
+		{
+			TGuardValue<uint32> DisableInitializeFromWidgetTree(UUserWidget::bInitializingFromWidgetTree, 0);
+			BPGClass->WidgetTree = Cast<UWidgetTree>(StaticDuplicateObject(WidgetBP->WidgetTree, BPGClass, NAME_None, RF_AllFlags & ~RF_DefaultSubObject));
+		}
 
 		for ( const UWidgetAnimation* Animation : WidgetBP->Animations )
 		{
@@ -705,7 +739,7 @@ void FWidgetBlueprintCompilerContext::FinishCompilingClass(UClass* Class)
 		bool bCanCallPreConstruct = true;
 
 		// Check that all BindWidget properties are present and of the appropriate type
-		for (TUObjectPropertyBase<UWidget*>* WidgetProperty : TFieldRange<TUObjectPropertyBase<UWidget*>>(ParentClass))
+		for (TFObjectPropertyBase<UWidget*>* WidgetProperty : TFieldRange<TFObjectPropertyBase<UWidget*>>(ParentClass))
 		{
 			bool bIsOptional = false;
 
@@ -755,7 +789,7 @@ void FWidgetBlueprintCompilerContext::FinishCompilingClass(UClass* Class)
 		}
 
 		// Check that all BindWidgetAnim properties are present
-		for (TUObjectPropertyBase<UWidgetAnimation*>* WidgetAnimProperty : TFieldRange<TUObjectPropertyBase<UWidgetAnimation*>>(ParentClass))
+		for (TFObjectPropertyBase<UWidgetAnimation*>* WidgetAnimProperty : TFieldRange<TFObjectPropertyBase<UWidgetAnimation*>>(ParentClass))
 		{
 			bool bIsOptional = false;
 
@@ -807,9 +841,9 @@ private:
 };
 
 
-void FWidgetBlueprintCompilerContext::PostCompile()
+void FWidgetBlueprintCompilerContext::OnPostCDOCompiled()
 {
-	Super::PostCompile();
+	Super::OnPostCDOCompiled();
 
 	WidgetToMemberVariableMap.Empty();
 	WidgetAnimToMemberVariableMap.Empty();

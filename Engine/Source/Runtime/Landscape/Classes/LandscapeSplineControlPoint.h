@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -60,13 +60,29 @@ class ULandscapeSplineControlPoint : public UObject
 	UPROPERTY(EditAnywhere, Category=LandscapeSpline)
 	FRotator Rotation;
 
-	/** Width of the spline at this point. */
-	UPROPERTY(EditAnywhere, Category=LandscapeSpline)
+	/** Half-Width of the spline at this point. */
+	UPROPERTY(EditAnywhere, Category=LandscapeSpline, meta = (DisplayName = "Half-Width"))
 	float Width;
+
+	/** Layer Width ratio of the spline at this point. */
+	UPROPERTY(EditAnywhere, Category = LandscapeSpline)
+	float LayerWidthRatio = 1.f;
 
 	/** Falloff at the sides of the spline at this point. */
 	UPROPERTY(EditAnywhere, Category=LandscapeSpline)
 	float SideFalloff;
+
+	UPROPERTY(EditAnywhere, Category = LandscapeSpline, meta=(UIMin = 0, ClampMin = 0, UIMax = 1, ClampMax = 1))
+	float LeftSideFalloffFactor = 1.f;
+
+	UPROPERTY(EditAnywhere, Category = LandscapeSpline, meta = (UIMin = 0, ClampMin = 0, UIMax = 1, ClampMax = 1))
+	float RightSideFalloffFactor = 1.f;
+
+	UPROPERTY(EditAnywhere, Category = LandscapeSpline, meta = (UIMin = 0, ClampMin = 0, UIMax = 1, ClampMax = 1))
+	float LeftSideLayerFalloffFactor = 0.5f;
+
+	UPROPERTY(EditAnywhere, Category = LandscapeSpline, meta = (UIMin = 0, ClampMin = 0, UIMax = 1, ClampMax = 1))
+	float RightSideLayerFalloffFactor = 0.5f;
 
 	/** Falloff at the start/end of the spline (if this point is a start or end point, otherwise ignored). */
 	UPROPERTY(EditAnywhere, Category=LandscapeSpline)
@@ -126,6 +142,7 @@ class ULandscapeSplineControlPoint : public UObject
 	/**
 	 * Translucent objects with a lower sort priority draw behind objects with a higher priority.
 	 * Translucent objects with the same priority are rendered from back-to-front based on their bounds origin.
+	 * This setting is also used to sort objects being drawn into a runtime virtual texture.
 	 *
 	 * Ignored if the object is not translucent.  The default priority is zero.
 	 * Warning: This should never be set to a non-default value unless you know what you are doing, as it will prevent the renderer from sorting correctly.
@@ -136,6 +153,33 @@ class ULandscapeSplineControlPoint : public UObject
 	/** Whether control point mesh should be placed in landscape proxy streaming level (true) or the spline's level (false) */
 	UPROPERTY(EditAnywhere, Category=Mesh, AdvancedDisplay)
 	uint32 bPlaceSplineMeshesInStreamingLevels : 1;
+
+	/** 
+	 * Array of runtime virtual textures into which we render the spline segment. 
+	 * The material also needs to be set up to output to a virtual texture. 
+	 */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = VirtualTexture, meta = (DisplayName = "Render to Virtual Textures"))
+	TArray<URuntimeVirtualTexture*> RuntimeVirtualTextures;
+
+	/** Lod bias for rendering to runtime virtual texture. */
+	UPROPERTY(EditAnywhere, AdvancedDisplay, BlueprintReadOnly, Category = VirtualTexture, meta = (DisplayName = "Virtual Texture LOD Bias", UIMin = "-7", UIMax = "8"))
+	int32 VirtualTextureLodBias = 0;
+
+	/**
+	 * Number of lower mips in the runtime virtual texture to skip for rendering this primitive.
+	 * Larger values reduce the effective draw distance in the runtime virtual texture.
+	 * This culling method doesn't take into account primitive size or virtual texture size.
+	 */
+	UPROPERTY(EditAnywhere, AdvancedDisplay, BlueprintReadOnly, Category = VirtualTexture, meta = (DisplayName = "Virtual Texture Skip Mips", UIMin = "0", UIMax = "7"))
+	int32 VirtualTextureCullMips = 0;
+
+	/** Desired cull distance in the main pass if we are rendering to both the virtual texture AND the main pass. A value of 0 has no effect. */
+	UPROPERTY(EditAnywhere, AdvancedDisplay, BlueprintReadOnly, Category = VirtualTexture, meta = (DisplayName = "Max Draw Distance in Main Pass"))
+	float VirtualTextureMainPassMaxDrawDistance = 0.f;
+
+	/** Render to the main pass based on the virtual texture settings. */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = VirtualTexture, meta = (DisplayName = "Virtual Texture Pass Type"))
+	ERuntimeVirtualTextureMainPassType VirtualTextureRenderPassType = ERuntimeVirtualTextureMainPassType::Exclusive;
 
 	/** Mesh Collision Settings */
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = Collision, meta = (ShowOnlyInnerProperties))
@@ -202,10 +246,10 @@ public:
 
 	virtual void AutoSetConnections(bool bIncludingValid);
 
-	TMap<ULandscapeSplinesComponent*, UControlPointMeshComponent*> GetForeignMeshComponents();
+	LANDSCAPE_API TMap<ULandscapeSplinesComponent*, UControlPointMeshComponent*> GetForeignMeshComponents();
 
 	/** Update spline points */
-	virtual void UpdateSplinePoints(bool bUpdateCollision = true, bool bUpdateAttachedSegments = true);
+	virtual void UpdateSplinePoints(bool bUpdateCollision = true, bool bUpdateAttachedSegments = true, bool bUpdateMeshLevel = false);
 
 	/** Delete spline points */
 	virtual void DeleteSplinePoints();
@@ -226,4 +270,5 @@ public:
 #endif // WITH_EDITOR
 
 	friend class FLandscapeToolSplines;
+	friend class ULandscapeInfo;
 };

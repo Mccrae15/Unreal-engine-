@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "MeshEditorModeToolkit.h"
 #include "IMeshEditorModeUIContract.h"
@@ -304,12 +304,14 @@ void SMeshEditorModeControls::Construct( const FArguments& InArgs, IMeshEditorMo
 				[
 					SNew( SMeshEditorSelectionModeWidget, MeshEditorMode, EEditableMeshElementType::Vertex, LOCTEXT( "Vertex", "Vertex" ) )
 				]
+
+				/* // Remove access to the Fracture Sub-Mode
 				+ SHorizontalBox::Slot()
 				.FillWidth(1)
 				.Padding(2)
 				[
 					SNew(SMeshEditorSelectionModeWidget, MeshEditorMode, EEditableMeshElementType::Fracture, LOCTEXT("Fracture", "Fracture"))
-				]
+				]*/
 
 			]
 			+SVerticalBox::Slot()

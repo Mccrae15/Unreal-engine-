@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 /*=============================================================================
 	RendererInterface.h: Renderer interface definition.
@@ -15,6 +15,7 @@
 #include "RenderUtils.h"
 #include "Misc/EnumClassFlags.h"
 #include "UniformBuffer.h"
+#include "VirtualTexturing.h"
 
 class FCanvas;
 class FMaterial;
@@ -26,8 +27,9 @@ class FSceneTexturesUniformParameters;
 class FGlobalDistanceFieldParameterData;
 struct FMeshBatch;
 struct FSynthBenchmarkResults;
-class IVirtualTextureSpace;
-struct FVirtualTextureSpaceDesc;
+class FShader;
+class FShaderMapPointerTable;
+template<typename ShaderType, typename PointerTableType> class TShaderRefBase;
 
 // Shortcut for the allocator used by scene rendering.
 typedef TMemStackAllocator<> SceneRenderingAllocator;
@@ -66,9 +68,11 @@ public:
 		, Flags(TexCreate_None)
 		, TargetableFlags(TexCreate_None)
 		, bForceSeparateTargetAndShaderResource(false)
+		, bForceSharedTargetAndShaderResource(false)
 		, DebugName(TEXT("UnknownTexture"))
 		, AutoWritable(true)
 		, bCreateRenderTargetWriteMask(false)
+		, bCreateRenderTargetFmask(false)
 	{
 		check(!IsValid());
 	}
@@ -86,7 +90,8 @@ public:
 		bool bInForceSeparateTargetAndShaderResource,
 		uint16 InNumMips = 1,
 		bool InAutowritable = true,
-		bool InCreateRTWriteMask = false)
+		bool InCreateRTWriteMask = false,
+		bool InCreateFmask = false)
 	{
 		check(InExtent.X);
 		check(InExtent.Y);
@@ -107,6 +112,7 @@ public:
 		NewDesc.DebugName = TEXT("UnknownTexture2D");
 		NewDesc.AutoWritable = InAutowritable;
 		NewDesc.bCreateRenderTargetWriteMask = InCreateRTWriteMask;
+		NewDesc.bCreateRenderTargetFmask = InCreateFmask;
 		check(NewDesc.Is2DTexture());
 		return NewDesc;
 	}
@@ -187,6 +193,43 @@ public:
 		return NewDesc;
 	}
 
+	/**
+	 * Factory function to create cube map array texture description
+	 * @param InFlags bit mask combined from elements of ETextureCreateFlags e.g. TexCreate_UAV
+	 */
+	static FPooledRenderTargetDesc CreateCubemapArrayDesc(
+		uint32 InExtent,
+		EPixelFormat InFormat,
+		const FClearValueBinding& InClearValue,
+		uint32 InFlags,
+		uint32 InTargetableFlags,
+		bool bInForceSeparateTargetAndShaderResource,
+		uint32 InArraySize,
+		uint16 InNumMips = 1,
+		bool InAutowritable = true)
+	{
+		check(InExtent);
+
+		FPooledRenderTargetDesc NewDesc;
+		NewDesc.ClearValue = InClearValue;
+		NewDesc.Extent = FIntPoint(InExtent, InExtent);
+		NewDesc.Depth = 0;
+		NewDesc.ArraySize = InArraySize;
+		NewDesc.bIsArray = true;
+		NewDesc.bIsCubemap = true;
+		NewDesc.NumMips = InNumMips;
+		NewDesc.NumSamples = 1;
+		NewDesc.Format = InFormat;
+		NewDesc.Flags = InFlags;
+		NewDesc.TargetableFlags = InTargetableFlags;
+		NewDesc.bForceSeparateTargetAndShaderResource = bInForceSeparateTargetAndShaderResource;
+		NewDesc.DebugName = TEXT("UnknownTextureCubeArray");
+		NewDesc.AutoWritable = InAutowritable;
+		check(NewDesc.IsCubemap());
+
+		return NewDesc;
+	}
+
 	/** Comparison operator to test if a render target can be reused */
 	bool Compare(const FPooledRenderTargetDesc& rhs, bool bExact) const
 	{
@@ -210,6 +253,7 @@ public:
 			&& LhsFlags == RhsFlags
 			&& TargetableFlags == rhs.TargetableFlags
 			&& bForceSeparateTargetAndShaderResource == rhs.bForceSeparateTargetAndShaderResource
+			&& bForceSharedTargetAndShaderResource == rhs.bForceSharedTargetAndShaderResource
 			&& ClearValue == rhs.ClearValue
 			&& AutoWritable == rhs.AutoWritable;
 	}
@@ -252,7 +296,7 @@ public:
 		}
 
 		return Extent.X != 0 && NumMips != 0 && NumSamples >=1 && NumSamples <=16 && Format != PF_Unknown
-			&& ((TargetableFlags & TexCreate_UAV) == 0 || GMaxRHIFeatureLevel == ERHIFeatureLevel::SM5);
+			&& ((TargetableFlags & TexCreate_UAV) == 0 || GMaxRHIFeatureLevel == ERHIFeatureLevel::SM5 || GMaxRHIFeatureLevel == ERHIFeatureLevel::ES3_1);
 	}
 
 	FIntVector GetSize() const
@@ -331,6 +375,7 @@ public:
 		NumSamples = 1;
 
 		bForceSeparateTargetAndShaderResource = false;
+		bForceSharedTargetAndShaderResource = false;
 		AutoWritable = true;
 
 		// Remove UAV flag for rendertargets that don't need it (some formats are incompatible)
@@ -364,12 +409,16 @@ public:
 	uint32 TargetableFlags;
 	/** Whether the shader-resource and targetable texture must be separate textures. */
 	bool bForceSeparateTargetAndShaderResource;
+	/** Whether the shader-resource and targetable texture must be the same resource. */
+	bool bForceSharedTargetAndShaderResource;
 	/** only set a pointer to memory that never gets released */
 	const TCHAR* DebugName;
 	/** automatically set to writable via barrier during */
 	bool AutoWritable;
 	/** create render target write mask (supported only on specific platforms) */
 	bool bCreateRenderTargetWriteMask;
+	/** create render target fmask (supported only on specific platforms) */
+	bool bCreateRenderTargetFmask;
 };
 
 
@@ -382,26 +431,21 @@ struct FSceneRenderTargetItem
 	FSceneRenderTargetItem() {}
 
 	/** constructor */
-	FSceneRenderTargetItem(FTextureRHIParamRef InTargetableTexture, FTextureRHIParamRef InShaderResourceTexture, FUnorderedAccessViewRHIRef InUAV)
+	FSceneRenderTargetItem(FRHITexture* InTargetableTexture, FRHITexture* InShaderResourceTexture, FUnorderedAccessViewRHIRef InUAV)
 		:	TargetableTexture(InTargetableTexture)
 		,	ShaderResourceTexture(InShaderResourceTexture)
 		,	UAV(InUAV)
 	{}
 
-	/** */
 	void SafeRelease()
 	{
 		TargetableTexture.SafeRelease();
 		ShaderResourceTexture.SafeRelease();
 		UAV.SafeRelease();
-		for (int32 i = 0; i < MipUAVs.Num(); i++)
-		{
-			MipUAVs[i].SafeRelease();
-		}
-		for( int32 i = 0; i < MipSRVs.Num(); i++ )
-		{
-			MipSRVs[i].SafeRelease();
-		}
+		MipUAVs.Empty();
+		SRVs.Empty();
+		HTileUAV.SafeRelease();
+		HTileSRV.SafeRelease();
 	}
 
 	bool IsValid() const
@@ -413,18 +457,26 @@ struct FSceneRenderTargetItem
 
 	/** The 2D or cubemap texture that may be used as a render or depth-stencil target. */
 	FTextureRHIRef TargetableTexture;
+
 	/** The 2D or cubemap shader-resource 2D texture that the targetable textures may be resolved to. */
 	FTextureRHIRef ShaderResourceTexture;
+	
 	/** only created if requested through the flag, same as MipUAVs[0] */
 	// TODO: refactor all the code to only use MipUAVs?
 	FUnorderedAccessViewRHIRef UAV;
+	
 	/** only created if requested through the flag  */
 	TArray< FUnorderedAccessViewRHIRef, TInlineAllocator<1> > MipUAVs;
-	/** only created if requested through the flag  */
-	TArray< FShaderResourceViewRHIRef > MipSRVs;
 
-	FShaderResourceViewRHIRef RTWriteMaskBufferRHI_SRV;
-	FStructuredBufferRHIRef RTWriteMaskDataBufferRHI;
+	/** All SRVs that has been created on for that ShaderResourceTexture.  */
+	TArray<TPair<FRHITextureSRVCreateInfo, FShaderResourceViewRHIRef>, TInlineAllocator<1>> SRVs;
+
+	FShaderResourceViewRHIRef RTWriteMaskSRV;
+	FShaderResourceViewRHIRef FmaskSRV;
+
+	/** only created if requested through meta data access flags */
+	FUnorderedAccessViewRHIRef HTileUAV;
+	FShaderResourceViewRHIRef  HTileSRV;
 };
 
 /**
@@ -449,6 +501,8 @@ struct IPooledRenderTarget
 	inline FSceneRenderTargetItem& GetRenderTargetItem() { return RenderTargetItem; }
 	/** Get the low level internals (texture/surface) */
 	inline const FSceneRenderTargetItem& GetRenderTargetItem() const { return RenderTargetItem; }
+	/** Returns if the render target is tracked by a pool. */
+	virtual bool IsTracked() const = 0;
 
 	// Refcounting
 	virtual uint32 AddRef() const = 0;
@@ -479,13 +533,6 @@ enum EDrawRectangleFlags
 	EDRF_UseTesselatedIndexBuffer
 };
 
-class FPreSceneRenderValues
-{
-	public:
-		bool bUsesGlobalDistanceField = false;
-};
-DECLARE_MULTICAST_DELEGATE_OneParam(FPreSceneRenderDelegate, class FPreSceneRenderValues&);
-
 class FPostOpaqueRenderParameters
 {
 public:
@@ -496,7 +543,7 @@ public:
 	FRHITexture2D* NormalTexture;
 	FRHITexture2D* SmallDepthTexture;
 	FRHICommandListImmediate* RHICmdList;
-	FUniformBufferRHIParamRef ViewUniformBuffer;
+	FRHIUniformBuffer* ViewUniformBuffer;
 	TUniformBufferRef<FSceneTexturesUniformParameters> SceneTexturesUniformParams;
 	const FGlobalDistanceFieldParameterData* GlobalDistanceFieldParams;
 	void* Uid; // A unique identifier for the view.
@@ -579,67 +626,13 @@ public:
 	float PreExposure;
 };
 
-#define VIRTUALTEXTURESPACE_MAXLAYERS 4
-struct FVirtualTextureSpaceDesc
-{
-	uint32 Size;
-	uint8 Dimensions;
-	EPixelFormat PageTableFormat;
-
-	uint32 PhysicalTileSize;
-	uint32 Poolsize;
-	EPixelFormat PhysicalTextureFormats[VIRTUALTEXTURESPACE_MAXLAYERS];
-};
-
-class IVirtualTextureProducer
+class IPersistentViewUniformBufferExtension
 {
 public:
-	virtual void Finalize() = 0;
-};
-
-/**
-* Interface of a virtual texture
-*/
-class IVirtualTexture
-{
-public:
-	inline IVirtualTexture(uint32 InSizeX, uint32 InSizeY, uint32 InSizeZ)
-		: SizeX(InSizeX)
-		, SizeY(InSizeY)
-		, SizeZ(InSizeZ)
-	{
-		static FThreadSafeCounter IVirtualTexture_UniqueID;
-		UniqueId = IVirtualTexture_UniqueID.Increment();
-	}
-
-	virtual	~IVirtualTexture() {}
-
-	/**
-	* Locates page and returns if page data can be provided at this moment.
-	* @param vLevel The mipmap level of the data
-	* @param vAddress Bit-interleaved x,y page indexes
-	* @param Location A pointer to the data will be returned in this variable
-	* @return True if the data is available
-	*/
-	virtual bool	LocatePageData(uint8 vLevel, uint64 vAddress, void* RESTRICT& Location) /*const*/ = 0;
-
-	/**
-	* Upload page data to the cache!?
-	* @param vLevel The mipmap level of the data
-	* @param vAddress Bit-interleaved x,y page indexes
-	* @param pAddress Bit-interleaved x,y location to store in the cache
-	* @param Location The pointer previously returned by LocatePageData for the same vLevel and vAddress
-	* @return True if the data is available
-	*/
-	virtual IVirtualTextureProducer* ProducePageData(FRHICommandList& RHICmdList, ERHIFeatureLevel::Type FeatureLevel, uint8 vLevel, uint64 vAddress, uint16 pAddress, void* RESTRICT Location) /*const*/ = 0;
-
-	virtual void DumpToConsole() {}
-
-	// Size in pages
-	uint32	SizeX;
-	uint32	SizeY;
-	uint32	SizeZ;
-	uint32  UniqueId : 24; // 24 because of TileID (TODO custom type ?)
+	virtual void BeginFrame() {}
+	virtual void PrepareView(const FSceneView* View) {}
+	virtual void BeginRenderView(const FSceneView* View, bool bShouldWaitForJobs = true) {}
+	virtual void EndFrame() {}
 };
 
 /**
@@ -683,6 +676,8 @@ public:
 	/** Forces reallocation of scene render targets. */
 	virtual void ReallocateSceneRenderTargets() = 0;
 
+	virtual void OnWorldCleanup(UWorld* World, bool bSessionEnded, bool bCleanupResources) = 0;
+
 	/** Sets the buffer size of the render targets. */
 	virtual void SceneRenderTargetsSetBufferSize(uint32 SizeX, uint32 SizeY) = 0;
 
@@ -690,14 +685,6 @@ public:
 
 	/** Draws a tile mesh element with the specified view. */
 	virtual void DrawTileMesh(FRHICommandListImmediate& RHICmdList, struct FMeshPassProcessorRenderState& DrawRenderState, const FSceneView& View, FMeshBatch& Mesh, bool bIsHitTesting, const class FHitProxyId& HitProxyId) = 0;
-
-	/** Render thread side, use TRefCountPtr<IPooledRenderTarget>, allows to use sharing and VisualizeTexture */
-	// TODO(RDG): Kill that guy.
-	virtual void RenderTargetPoolFindFreeElement(FRHICommandListImmediate& RHICmdList, const FPooledRenderTargetDesc& Desc, TRefCountPtr<IPooledRenderTarget> &Out, const TCHAR* InDebugName) = 0;
-	
-	/** Render thread side, to age the pool elements so they get released at some point */
-	// TODO(RDG): Kill that guy.
-	virtual void TickRenderTargetPool() = 0;
 
 	virtual const TSet<FSceneInterface*>& GetAllocatedScenes() = 0;
 
@@ -738,7 +725,7 @@ public:
 		float SizeV,
 		FIntPoint TargetSize,
 		FIntPoint TextureSize,
-		class FShader* VertexShader,
+		const TShaderRefBase<FShader, FShaderMapPointerTable>& VertexShader,
 		EDrawRectangleFlags Flags = EDRF_Default
 		) = 0;
 
@@ -746,12 +733,10 @@ public:
 	virtual void RegisterCustomCullingImpl(ICustomCulling* impl) = 0;
 	virtual void UnregisterCustomCullingImpl(ICustomCulling* impl) = 0;
 
-	virtual FPreSceneRenderDelegate& OnPreSceneRender() = 0;
 	virtual void RegisterPostOpaqueRenderDelegate(const FPostOpaqueRenderDelegate& PostOpaqueRenderDelegate) = 0;
 	virtual void RegisterOverlayRenderDelegate(const FPostOpaqueRenderDelegate& OverlayRenderDelegate) = 0;
 	virtual void RenderPostOpaqueExtensions(const class FViewInfo& View, FRHICommandListImmediate& RHICmdList, class FSceneRenderTargets& SceneContext, TUniformBufferRef<FSceneTexturesUniformParameters>& SceneTextureUniformParams) = 0;
 	virtual void RenderOverlayExtensions(const class FViewInfo& View, FRHICommandListImmediate& RHICmdList, FSceneRenderTargets& SceneContext) = 0;
-	virtual FPreSceneRenderValues PreSceneRenderExtension() = 0;
 	virtual bool HasPostOpaqueExtentions() const = 0;
 
 	/** Delegate that is called upon resolving scene color. */
@@ -765,9 +750,27 @@ public:
 
 	virtual void PostRenderAllViewports() = 0;
 
-	/** Create/Destroy renderer virtual texture objects */
-	virtual IVirtualTextureSpace *CreateVirtualTextureSpace(const FVirtualTextureSpaceDesc &Desc) = 0;
-	virtual void DestroyVirtualTextureSpace(IVirtualTextureSpace *Space) = 0;
+	/** Performs necessary per-frame cleanup. Only use when rendering through scene renderer (i.e. BeginRenderingViewFamily) is skipped */
+	virtual void PerFrameCleanupIfSkipRenderer() = 0;
 
+	virtual IAllocatedVirtualTexture* AllocateVirtualTexture(const FAllocatedVTDescription& Desc) = 0;
+	virtual void DestroyVirtualTexture(IAllocatedVirtualTexture* AllocatedVT) = 0;
+
+	virtual FVirtualTextureProducerHandle RegisterVirtualTextureProducer(const FVTProducerDescription& Desc, IVirtualTexture* Producer) = 0;
+	virtual void ReleaseVirtualTextureProducer(const FVirtualTextureProducerHandle& Handle) = 0;
+	virtual void AddVirtualTextureProducerDestroyedCallback(const FVirtualTextureProducerHandle& Handle, FVTProducerDestroyedFunction* Function, void* Baton) = 0;
+	virtual uint32 RemoveAllVirtualTextureProducerDestroyedCallbacks(const void* Baton) = 0;
+
+	/**	Provided a list of packed virtual texture tile ids, let the VT system request them. Note this should be called as long as the tiles are needed.*/
+	virtual void RequestVirtualTextureTiles(const FVector2D& InScreenSpaceSize, int32 InMipLevel) = 0;
+	virtual void RequestVirtualTextureTilesForRegion(IAllocatedVirtualTexture* AllocatedVT, const FVector2D& InScreenSpaceSize, const FIntRect& InTextureRegion, int32 InMipLevel) = 0;
+
+	/** Ensure that any tiles requested by 'RequestVirtualTextureTilesForRegion' are loaded, must be called from render thread */
+	virtual void LoadPendingVirtualTextureTiles(FRHICommandListImmediate& RHICmdList, ERHIFeatureLevel::Type FeatureLevel) = 0;
+
+	/** Evict all data from virtual texture caches*/
+	virtual void FlushVirtualTextureCache() = 0;
+
+	virtual void RegisterPersistentViewUniformBufferExtension(IPersistentViewUniformBufferExtension* Extension) = 0;
 };
 

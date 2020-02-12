@@ -1,13 +1,13 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
-
+// Copyright Epic Games, Inc. All Rights Reserved.
 #pragma once
 
-#include "CoreMinimal.h"
-#include "Components/AudioComponent.h"
-#include "UObject/ObjectMacros.h"
-#include "Engine/EngineTypes.h"
-#include "Sound/SoundWaveProcedural.h"
 #include "AudioMixerTypes.h"
+#include "Components/AudioComponent.h"
+#include "CoreMinimal.h"
+#include "Engine/EngineTypes.h"
+#include "IAudioExtensionPlugin.h"
+#include "Sound/SoundWaveProcedural.h"
+#include "UObject/ObjectMacros.h"
 
 #include "SynthComponent.generated.h"
 
@@ -16,6 +16,13 @@
 #if SYNTH_GENERATOR_TEST_TONE
 #include "DSP/SinOsc.h"
 #endif
+
+/** Simple interface class to allow objects to route audio between them. */
+class IAudioBufferListener
+{
+public:
+	virtual void OnGeneratedBuffer(const float* AudioBuffer, const int32 NumSamples, const int32 NumChannels) = 0;
+};
 
 class USynthComponent;
 class USoundConcurrency;
@@ -46,9 +53,17 @@ class AUDIOMIXER_API USynthSound : public USoundWaveProcedural
 	/** End USoundWave */
 
 protected:
+	UPROPERTY()
 	USynthComponent* OwningSynthComponent;
+
 	TArray<float> FloatBuffer;
 	bool bAudioMixer;
+
+public:
+	USynthComponent* GetOwningSynthComponent()
+	{
+		return OwningSynthComponent;
+	}
 };
 
 UCLASS(ClassGroup = Synth, hidecategories = (Object, ActorComponent, Physics, Rendering, Mobility, LOD))
@@ -95,7 +110,7 @@ public:
 
 	/** Sets how much audio the sound should send to the given submix. */
 	UFUNCTION(BlueprintCallable, Category = "Audio|Components|Audio")
-	void SetSubmixSend(USoundSubmix* Submix, float SendLevel);
+	void SetSubmixSend(USoundSubmixBase* Submix, float SendLevel);
 
 	/** Auto destroy this component on completion */
 	UPROPERTY()
@@ -143,7 +158,7 @@ public:
 
 	/** Submix this sound belongs to */
 	UPROPERTY(EditAnywhere, Category = Effects)
-	USoundSubmix* SoundSubmix;
+	USoundSubmixBase* SoundSubmix;
 
 	/** An array of submix sends. Audio from this sound will send a portion of its audio to these effects.  */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = Effects)
@@ -152,6 +167,10 @@ public:
 	/** This sound will send its audio output to this list of buses if there are bus instances playing after source effects are processed.  */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = Effects, meta = (DisplayName = "Post-Effect Bus Sends"))
 	TArray<FSoundSourceBusSendInfo> BusSends;
+
+	/** Modulation for the sound */
+	UPROPERTY(EditAnywhere, Category = Modulation)
+	FSoundModulation Modulation;
 
 	/** This sound will send its audio output to this list of buses if there are bus instances playing before source effects are processed.  */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = Effects, meta = (DisplayName = "Pre-Effect Bus Sends"))
@@ -164,6 +183,9 @@ public:
 	/** Whether or not this synth is playing as a preview sound */
 	UPROPERTY()
 	uint8 bIsPreviewSound : 1;
+
+	/** Whether to artificially prioritize the component to play */
+	uint8 bAlwaysPlay : 1;
 
 	/** Call if creating this synth component not via an actor component in BP, but in code or some other location. Optionally override the sample rate of the sound wave, otherwise it uses the audio device's sample rate. */
 	void Initialize(int32 SampleRateOverride = INDEX_NONE);
@@ -189,6 +211,13 @@ public:
 	FOnSynthEnvelopeValueNative OnAudioEnvelopeValueNative;
 
 	void OnAudioComponentEnvelopeValue(const UAudioComponent* AudioComponent, const USoundWave* SoundWave, const float EnvelopeValue);
+
+	// Adds and removes audio buffer listener
+	void AddAudioBufferListener(IAudioBufferListener* InAudioBufferListener);
+	void RemoveAudioBufferListener(IAudioBufferListener* InAudioBufferListener);
+
+
+	virtual void BeginDestroy() override;
 
 protected:
 
@@ -218,7 +247,7 @@ protected:
 	int32 OnGeneratePCMAudio(float* GeneratedPCMData, int32 NumSamples);
 
 	// Gets the audio device associated with this synth component
-	FAudioDevice* GetAudioDevice() { return AudioComponent ? AudioComponent->GetAudioDevice() : nullptr; }
+	FAudioDevice* GetAudioDevice();
 
 	// Can be set by the derived class, defaults to 2
 	int32 NumChannels;

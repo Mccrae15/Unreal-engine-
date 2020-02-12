@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "Layout/WidgetPath.h"
 #include "SlateGlobals.h"
@@ -104,16 +104,6 @@ TOptional<FWidgetAndPointer> FWidgetPath::FindArrangedWidgetAndCursor( TSharedRe
 		: FWidgetAndPointer();
 }
 
-	
-TSharedRef<SWindow> FWidgetPath::GetWindow()
-{
-	check(IsValid());
-
-	TSharedRef<SWindow> FirstWidgetWindow = StaticCastSharedRef<SWindow>(Widgets[0].Widget);
-	return FirstWidgetWindow;
-}
-
-
 TSharedRef<SWindow> FWidgetPath::GetWindow() const
 {
 	check(IsValid());
@@ -122,6 +112,17 @@ TSharedRef<SWindow> FWidgetPath::GetWindow() const
 	return FirstWidgetWindow;
 }
 
+TSharedRef<SWindow> FWidgetPath::GetDeepestWindow() const
+{
+	check(IsValid());
+	const int32 WindowIndex = Widgets.FindLastByPredicate([](const FArrangedWidget& SomeWidget)
+	{
+		return SomeWidget.Widget->Advanced_IsWindow();
+	});
+	check(WindowIndex != INDEX_NONE);
+	TSharedRef<SWindow> FirstWidgetWindow = StaticCastSharedRef<SWindow>(Widgets[WindowIndex].Widget);
+	return FirstWidgetWindow;
+}
 
 bool FWidgetPath::IsValid() const
 {
@@ -262,17 +263,29 @@ FWeakWidgetPath::EPathResolutionResult::Result FWeakWidgetPath::ToWidgetPath( FW
 {
 	SCOPE_CYCLE_COUNTER(STAT_WeakToStrong_WidgetPath);
 
-	if (GSlateFastWidgetPath)
-	{
-		TArray<FWidgetAndPointer> PathWithGeometries;
-		TArray< TSharedPtr<SWidget> > WidgetPtrs;
+	TArray< TSharedPtr<SWidget> > WidgetPtrs;
 
-		// Convert the weak pointers into shared pointers because we are about to do something with this path instead of just observe it.
-		TSharedPtr<SWindow> TopLevelWindowPtr = Window.Pin();
-		for (TArray< TWeakPtr<SWidget> >::TConstIterator SomeWeakWidgetPtr(Widgets); SomeWeakWidgetPtr; ++SomeWeakWidgetPtr)
+	// Convert the weak pointers into shared pointers because we are about to do something with this path instead of just observe it.
+	TSharedPtr<SWindow> TopLevelWindowPtr = Window.Pin();
+	int PathSize = 0;
+	for (TArray< TWeakPtr<SWidget> >::TConstIterator SomeWeakWidgetPtr(Widgets); SomeWeakWidgetPtr; ++SomeWeakWidgetPtr)
+	{
+		const int MaxWidgetPath = 1000;
+		++PathSize;
+		if (ensureMsgf(PathSize < MaxWidgetPath, TEXT("Converting a Widget Path of more that 1000 Widget deep.")))
 		{
 			WidgetPtrs.Add(SomeWeakWidgetPtr->Pin());
 		}
+		else
+		{
+			WidgetPath = FWidgetPath();
+			return EPathResolutionResult::Truncated;
+		}
+	}
+
+	if (GSlateFastWidgetPath)
+	{
+		TArray<FWidgetAndPointer> PathWithGeometries;
 
 		// The path can get interrupted if some subtree of widgets disappeared, but we still maintain weak references to it.
 		bool bPathUninterrupted = false;
@@ -304,7 +317,7 @@ FWeakWidgetPath::EPathResolutionResult::Result FWeakWidgetPath::ToWidgetPath( FW
 					{
 						if (PointerEvent && !VirtualPointerPos.IsValid())
 						{
-							VirtualPointerPos = CurWidget->TranslateMouseCoordinateFor3DChild(CurWidgetRef, ParentGeometry, PointerEvent->GetScreenSpacePosition(), PointerEvent->GetLastScreenSpacePosition());
+							VirtualPointerPos = CurWidget->TranslateMouseCoordinateFor3DChild(ChildWidgetPtr.ToSharedRef(), ParentGeometry, PointerEvent->GetScreenSpacePosition(), PointerEvent->GetLastScreenSpacePosition());
 						}
 
 						bFoundChild = true;
@@ -328,15 +341,7 @@ FWeakWidgetPath::EPathResolutionResult::Result FWeakWidgetPath::ToWidgetPath( FW
 	}
 	else
 	{
-		TArray<FWidgetAndPointer> PathWithGeometries;
-		TArray< TSharedPtr<SWidget> > WidgetPtrs;
-
-		// Convert the weak pointers into shared pointers because we are about to do something with this path instead of just observe it.
-		TSharedPtr<SWindow> TopLevelWindowPtr = Window.Pin();
-		for (TArray< TWeakPtr<SWidget> >::TConstIterator SomeWeakWidgetPtr(Widgets); SomeWeakWidgetPtr; ++SomeWeakWidgetPtr)
-		{
-			WidgetPtrs.Add(SomeWeakWidgetPtr->Pin());
-		}
+		TArray<FWidgetAndPointer> PathWithGeometries;		
 
 		// The path can get interrupted if some subtree of widgets disappeared, but we still maintain weak references to it.
 		bool bPathUninterrupted = false;
@@ -416,7 +421,7 @@ bool FWeakWidgetPath::ContainsWidget( const TSharedRef< const SWidget >& SomeWid
 
 FWidgetPath FWeakWidgetPath::ToNextFocusedPath(EUINavigation NavigationType) const
 {
-	return ToNextFocusedPath(NavigationType, FNavigationReply::Escape(), FArrangedWidget::NullWidget);
+	return ToNextFocusedPath(NavigationType, FNavigationReply::Escape(), FArrangedWidget::GetNullWidget());
 }
 
 FWidgetPath FWeakWidgetPath::ToNextFocusedPath(EUINavigation NavigationType, const FNavigationReply& NavigationReply, const FArrangedWidget& RuleWidget) const

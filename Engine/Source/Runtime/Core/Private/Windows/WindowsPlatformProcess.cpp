@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "Windows/WindowsPlatformProcess.h"
 #include "HAL/PlatformMisc.h"
@@ -31,19 +31,12 @@
 	#include <LM.h>
 	#include <Psapi.h>
 	#include <TlHelp32.h>
-
-	namespace ProcessConstants
-	{
-		uint32 WIN_STD_INPUT_HANDLE = STD_INPUT_HANDLE;
-		uint32 WIN_STD_OUTPUT_HANDLE = STD_OUTPUT_HANDLE;
-		uint32 WIN_ATTACH_PARENT_PROCESS = ATTACH_PARENT_PROCESS;		
-		uint32 WIN_STILL_ACTIVE = STILL_ACTIVE;
-	}
-
 #include "Windows/HideWindowsPlatformTypes.h"
 #include "Windows/WindowsPlatformMisc.h"
 
 #pragma comment(lib, "psapi.lib")
+
+PRAGMA_DISABLE_UNSAFE_TYPECAST_WARNINGS
 
 // static variables
 TArray<FString> FWindowsPlatformProcess::DllDirectoryStack;
@@ -56,6 +49,11 @@ void FWindowsPlatformProcess::AddDllDirectory(const TCHAR* Directory)
 	FPaths::NormalizeDirectoryName(NormalizedDirectory);
 	FPaths::MakePlatformFilename(NormalizedDirectory);
 	DllDirectories.AddUnique(NormalizedDirectory);
+}
+
+void FWindowsPlatformProcess::GetDllDirectories(TArray<FString>& OutDllDirectories)
+{
+	OutDllDirectories = DllDirectories;
 }
 
 void* FWindowsPlatformProcess::GetDllHandle( const TCHAR* FileName )
@@ -105,14 +103,15 @@ void FWindowsPlatformProcess::FreeDllHandle( void* DllHandle )
 	::FreeLibrary((HMODULE)DllHandle);
 }
 
-FString FWindowsPlatformProcess::GenerateApplicationPath( const FString& AppName, EBuildConfigurations::Type BuildConfiguration)
+FString FWindowsPlatformProcess::GenerateApplicationPath( const FString& AppName, EBuildConfiguration BuildConfiguration)
 {
 	FString PlatformName = GetBinariesSubdirectory();
-	FString ExecutablePath = FString::Printf(TEXT("..\\..\\..\\Engine\\Binaries\\%s\\%s"), *PlatformName, *AppName);
+	FString ExecutablePath = FPaths::EngineDir() / FString::Printf(TEXT("Binaries/%s/%s"), *PlatformName, *AppName);
+	FPaths::MakePlatformFilename(ExecutablePath);
 
-	if (BuildConfiguration != EBuildConfigurations::Development)
+	if (BuildConfiguration != EBuildConfiguration::Development)
 	{
-		ExecutablePath += FString::Printf(TEXT("-%s-%s"), *PlatformName, EBuildConfigurations::ToString(BuildConfiguration));
+		ExecutablePath += FString::Printf(TEXT("-%s-%s"), *PlatformName, LexToString(BuildConfiguration));
 	}
 
 	ExecutablePath += TEXT(".exe");
@@ -455,6 +454,11 @@ uint32 FWindowsPlatformProcess::GetCurrentProcessId()
 	return ::GetCurrentProcessId();
 }
 
+uint32 FWindowsPlatformProcess::GetCurrentCoreNumber()
+{
+	return ::GetCurrentProcessorNumber();
+}
+
 void FWindowsPlatformProcess::SetThreadAffinityMask( uint64 AffinityMask )
 {
 	if( AffinityMask != FPlatformAffinity::GetNoAffinityMask() )
@@ -465,7 +469,16 @@ void FWindowsPlatformProcess::SetThreadAffinityMask( uint64 AffinityMask )
 
 bool FWindowsPlatformProcess::GetProcReturnCode( FProcHandle & ProcHandle, int32* ReturnCode )
 {
-	return ::GetExitCodeProcess( ProcHandle.Get(), (::DWORD *)ReturnCode ) && *((uint32*)ReturnCode) != ProcessConstants::WIN_STILL_ACTIVE;
+	DWORD ExitCode = 0;
+	if (::GetExitCodeProcess(ProcHandle.Get(), &ExitCode) && ExitCode != STILL_ACTIVE)
+	{
+		if (ReturnCode)
+		{
+			*ReturnCode = (int32)ExitCode;
+		}
+		return true;
+	}
+	return false;
 }
 
 bool FWindowsPlatformProcess::GetApplicationMemoryUsage(uint32 ProcessId, SIZE_T* OutMemoryUsage)
@@ -484,6 +497,100 @@ bool FWindowsPlatformProcess::GetApplicationMemoryUsage(uint32 ProcessId, SIZE_T
 		}
 
 		::CloseHandle(ProcessHandle);
+	}
+
+	return bSuccess;
+}
+
+bool FWindowsPlatformProcess::GetPerFrameProcessorUsage(uint32 ProcessId, float& ProcessUsageFraction, float& IdleUsageFraction)
+{
+	bool bSuccess = true;
+
+	static double LastProcessTime = 0.f;
+	static double LastIdleTime = 0.f;
+	static uint32 LastFrameNumber = 0;
+
+	if (LastFrameNumber != GFrameNumber)
+	{
+		LastFrameNumber = GFrameNumber;
+
+		// Get queryable process handle
+		HANDLE ProcessHandle = ::OpenProcess(PROCESS_QUERY_INFORMATION | PROCESS_VM_READ, false, ProcessId);
+
+		if (ProcessHandle != nullptr)
+		{
+			const uint64 NumCores = FPlatformMisc::NumberOfCoresIncludingHyperthreads();
+			const uint32 CurrFrameIndex = LastFrameNumber % 2;
+			const uint32 PrevFrameIndex = 1 - CurrFrameIndex;
+
+			// Get total processor cycles per second
+			static double DeltaCyclesPerSecond = 0.0;
+			if (DeltaCyclesPerSecond == 0.0)
+			{
+				LARGE_INTEGER Frequency;
+				QueryPerformanceFrequency(&Frequency);
+				DeltaCyclesPerSecond = (double)(Frequency.QuadPart) * 1000.0;
+				DeltaCyclesPerSecond *= NumCores;
+			}
+
+			// Calculate total number of cycles that have passed this frame
+			static double PrevTotalSeconds = 0.0;
+			double TotalSeconds = FPlatformTime::Seconds();
+			double DeltaSecondsPerFrame = (double)(TotalSeconds - PrevTotalSeconds);
+			PrevTotalSeconds = TotalSeconds;
+
+			double DeltaCyclesPerFrame = DeltaSecondsPerFrame * DeltaCyclesPerSecond;
+
+			// Grab cycle time for this process as fraction of total processor time
+			static uint64 ProcessCycleTimeBuffers[2] = {0};
+			uint64& ProcessCycleTime = ProcessCycleTimeBuffers[CurrFrameIndex];
+			uint64& PrevProcessCycleTime = ProcessCycleTimeBuffers[PrevFrameIndex];
+
+			if (!QueryProcessCycleTime(ProcessHandle, (PULONG64)&ProcessCycleTime))
+			{
+				bSuccess = false;
+			}
+			uint64 DeltaProcessCycleTime = ProcessCycleTime - PrevProcessCycleTime;
+			LastProcessTime = (double)DeltaProcessCycleTime / DeltaCyclesPerFrame;
+
+			// Idle cycles are stored per core and flipped to allow per-frame calculation
+			const uint32 BufferLength = 512;
+			check(BufferLength >= NumCores * 8);
+
+			static uint64 IdleCycleTimeBuffers[2][BufferLength] = {{0}};
+			uint64* IdleCycleTime = IdleCycleTimeBuffers[CurrFrameIndex];
+			uint64* PrevIdleCycleTime = IdleCycleTimeBuffers[PrevFrameIndex];
+
+			// Grab idle cycle time as percentage of total processor time
+			// Note: Idle processes are specified per core and accumulated
+			if (!QueryIdleProcessorCycleTime((PULONG)&BufferLength, (PULONG64)IdleCycleTime))
+			{
+				bSuccess = false;
+			}
+
+			uint64 DeltaIdleTime = 0;
+			for (int Core = 0; Core < NumCores; ++Core)
+			{
+				DeltaIdleTime += IdleCycleTime[Core] - PrevIdleCycleTime[Core];
+			}
+			LastIdleTime = (double)DeltaIdleTime / DeltaCyclesPerFrame;
+
+			::CloseHandle(ProcessHandle);
+		}
+		else
+		{
+			bSuccess = false;
+		}
+	}
+
+	if (bSuccess)
+	{
+		ProcessUsageFraction = LastProcessTime;
+		IdleUsageFraction = LastIdleTime;
+	}
+	else
+	{
+		ProcessUsageFraction = IdleUsageFraction = 0.f;
 	}
 
 	return bSuccess;
@@ -554,13 +661,19 @@ FString FWindowsPlatformProcess::GetApplicationName( uint32 ProcessId )
 		int32 InOutSize = ProcessNameBufferSize;
 		static_assert(sizeof(::DWORD) == sizeof(int32), "DWORD size doesn't match int32. Is it the future or the past?");
 
+		if(
 #if WINVER == 0x0502
-		GetProcessImageFileName(ProcessHandle, ProcessNameBuffer, InOutSize);
+		GetProcessImageFileName(ProcessHandle, ProcessNameBuffer, InOutSize)
 #else
-		QueryFullProcessImageName(ProcessHandle, 0, ProcessNameBuffer, (PDWORD)(&InOutSize));
+		QueryFullProcessImageName(ProcessHandle, 0, ProcessNameBuffer, (PDWORD)(&InOutSize))
 #endif
+			)
+		{
+			// TODO no null termination guarantee on GetProcessImageFileName?  it returns size as well, whereas QueryFullProcessImageName just returns non-zero on success
+			Output = ProcessNameBuffer;
+		}
 
-		Output = ProcessNameBuffer;
+		::CloseHandle(ProcessHandle);
 	}
 
 	return Output;
@@ -625,22 +738,64 @@ bool FWindowsPlatformProcess::ExecProcess(const TCHAR* URL, const TCHAR* Params,
 
 	bool bSuccess = false;
 
-	FString CommandLine = FString::Printf(TEXT("%s %s"), URL, Params);
+	FString CommandLine;
+	if (URL[0] != '\"') // Don't quote executable name if it's already quoted
+	{
+		CommandLine = FString::Printf(TEXT("\"%s\" %s"), URL, Params); 
+	}
+	else
+	{
+		CommandLine = FString::Printf(TEXT("%s %s"), URL, Params);
+	}
+
+	// We only want to add the EXTENDED_STARTUPINFO_PRESENT flag if StartupInfoEx.lpAttributeList is actually setup.
+	// If StartupInfoEx.lpAttributeList is NULL when the EXTENDED_STARTUPINFO_PRESENT flag is used, then CreateProcess causes an Access Violation crash on some Win32 configurations.
+	// This is specific to when the call is redirected to APIHook_CreateProcessW in AcLayers.dll rather than the standard CreateProcessW implementation in kernel32.dll.
+	uint32 CreateFlags = NORMAL_PRIORITY_CLASS | DETACHED_PROCESS;
+	if (StartupInfoEx.lpAttributeList != NULL)
+	{
+		CreateFlags |= EXTENDED_STARTUPINFO_PRESENT;
+	}
 
 	PROCESS_INFORMATION ProcInfo;
-	if (CreateProcess(NULL, CommandLine.GetCharArray().GetData(), NULL, NULL, TRUE, NORMAL_PRIORITY_CLASS | DETACHED_PROCESS | EXTENDED_STARTUPINFO_PRESENT, NULL, OptionalWorkingDirectory, &StartupInfoEx.StartupInfo, &ProcInfo))
+	if (CreateProcess(NULL, CommandLine.GetCharArray().GetData(), NULL, NULL, TRUE, CreateFlags, NULL, OptionalWorkingDirectory, &StartupInfoEx.StartupInfo, &ProcInfo))
 	{
 		if (hStdOutRead != NULL)
 		{
 			HANDLE ReadablePipes[2] = { hStdOutRead, hStdErrRead };
 			FString* OutStrings[2] = { OutStdOut, OutStdErr };
+			TArray<uint8> PipeBytes[2];
+
+			auto ReadPipes = [&]()
+			{
+				for (int32 PipeIndex = 0; PipeIndex < 2; ++PipeIndex)
+				{
+					if (ReadablePipes[PipeIndex] && OutStrings[PipeIndex])
+					{
+						TArray<uint8> BinaryData;
+						ReadPipeToArray(ReadablePipes[PipeIndex], BinaryData);
+						PipeBytes[PipeIndex].Append(BinaryData);
+					}
+				}
+			};
+
 			FProcHandle ProcHandle(ProcInfo.hProcess);
 			do 
 			{
-				ReadFromPipes(OutStrings, ReadablePipes, 2);
+				ReadPipes();
 				FPlatformProcess::Sleep(0);
 			} while (IsProcRunning(ProcHandle));
-			ReadFromPipes(OutStrings, ReadablePipes, 2);
+			ReadPipes();
+
+			// Convert only after all bytes are available to prevent string corruption
+			for (int32 PipeIndex = 0; PipeIndex < 2; ++PipeIndex)
+			{
+				if (OutStrings[PipeIndex] && PipeBytes[PipeIndex].Num() > 0)
+				{
+					PipeBytes[PipeIndex].Add('\0');
+					*OutStrings[PipeIndex] = FUTF8ToTCHAR((const ANSICHAR*)PipeBytes[PipeIndex].GetData()).Get();
+				}
+			}
 		}
 		else
 		{
@@ -765,7 +920,7 @@ const TCHAR* FWindowsPlatformProcess::BaseDir()
 			{
 				hCurrentModule = hInstance;
 			}
-			GetModuleFileName(hCurrentModule, Result, ARRAY_COUNT(Result));
+			GetModuleFileName(hCurrentModule, Result, UE_ARRAY_COUNT(Result));
 			FString TempResult(Result);
 			TempResult = TempResult.Replace(TEXT("\\"), TEXT("/"));
 			FCString::Strcpy(Result, *TempResult);
@@ -880,7 +1035,7 @@ const TCHAR* FWindowsPlatformProcess::ComputerName()
 	static TCHAR Result[256]=TEXT("");
 	if( !Result[0] )
 	{
-		uint32 Size=ARRAY_COUNT(Result);
+		uint32 Size=UE_ARRAY_COUNT(Result);
 		GetComputerName( Result, (::DWORD*)&Size );
 	}
 	return Result;
@@ -894,7 +1049,7 @@ const TCHAR* FWindowsPlatformProcess::UserName(bool bOnlyAlphaNumeric/* = true*/
 	{
 		if( !ResultAlpha[0] )
 		{
-			uint32 Size=ARRAY_COUNT(ResultAlpha);
+			uint32 Size=UE_ARRAY_COUNT(ResultAlpha);
 			GetUserName( ResultAlpha, (::DWORD*)&Size );
 			TCHAR *c, *d;
 			for( c=ResultAlpha, d=ResultAlpha; *c!=0; c++ )
@@ -908,7 +1063,7 @@ const TCHAR* FWindowsPlatformProcess::UserName(bool bOnlyAlphaNumeric/* = true*/
 	{
 		if( !Result[0] )
 		{
-			uint32 Size=ARRAY_COUNT(Result);
+			uint32 Size=UE_ARRAY_COUNT(Result);
 			GetUserName( Result, (::DWORD*)&Size );
 		}
 		return Result;
@@ -917,8 +1072,12 @@ const TCHAR* FWindowsPlatformProcess::UserName(bool bOnlyAlphaNumeric/* = true*/
 
 void FWindowsPlatformProcess::SetCurrentWorkingDirectoryToBaseDir()
 {
+#if defined(DISABLE_CWD_CHANGES) && DISABLE_CWD_CHANGES != 0
+	check(false);
+#else
 	FPlatformMisc::CacheLaunchDir();
 	verify(SetCurrentDirectoryW(BaseDir()));
+#endif
 }
 
 /** Get the current working directory (only really makes sense on desktop platforms) */
@@ -952,6 +1111,19 @@ const FString FWindowsPlatformProcess::ShaderWorkingDir()
 }
 
 
+const TCHAR* FWindowsPlatformProcess::ExecutablePath()
+{
+	static TCHAR Result[512]=TEXT("");
+	if( !Result[0] )
+	{
+		if ( !GetModuleFileName( hInstance, Result, UE_ARRAY_COUNT(Result) ) )
+		{
+			Result[0] = 0;
+		}
+	}
+	return Result;
+}
+
 const TCHAR* FWindowsPlatformProcess::ExecutableName(bool bRemoveExtension)
 {
 	static TCHAR Result[512]=TEXT("");
@@ -959,13 +1131,13 @@ const TCHAR* FWindowsPlatformProcess::ExecutableName(bool bRemoveExtension)
 	if( !Result[0] )
 	{
 		// Get complete path for the executable
-		if ( GetModuleFileName( hInstance, Result, ARRAY_COUNT(Result) ) != 0 )
+		if ( GetModuleFileName( hInstance, Result, UE_ARRAY_COUNT(Result) ) != 0 )
 		{
 			// Remove all of the path information by finding the base filename
 			FString FileName = Result;
 			FString FileNameWithExt = Result;
-			FCString::Strncpy( Result, *( FPaths::GetBaseFilename(FileName) ), ARRAY_COUNT(Result) );
-			FCString::Strncpy( ResultWithExt, *( FPaths::GetCleanFilename(FileNameWithExt) ), ARRAY_COUNT(ResultWithExt) );
+			FCString::Strncpy( Result, *( FPaths::GetBaseFilename(FileName) ), UE_ARRAY_COUNT(Result) );
+			FCString::Strncpy( ResultWithExt, *( FPaths::GetCleanFilename(FileNameWithExt) ), UE_ARRAY_COUNT(ResultWithExt) );
 		}
 		// If the call failed, zero out the memory to be safe
 		else
@@ -994,8 +1166,8 @@ const TCHAR* FWindowsPlatformProcess::GetBinariesSubdirectory()
 
 const FString FWindowsPlatformProcess::GetModulesDirectory()
 {
-	static FString Result;
-	if(Result.Len() == 0)
+	static TCHAR Result[MAX_PATH];
+	if(Result[0] == 0)
 	{
 		// Get the handle to the current module
 		HMODULE hCurrentModule;
@@ -1005,13 +1177,13 @@ const FString FWindowsPlatformProcess::GetModulesDirectory()
 		}
 
 		// Get the directory for it
-		TCHAR Buffer[MAX_PATH] = TEXT("");
-		GetModuleFileName(hCurrentModule, Buffer, ARRAY_COUNT(Buffer));
-		*FCString::Strrchr(Buffer, '\\') = 0;
+		GetModuleFileName(hCurrentModule, Result, UE_ARRAY_COUNT(Result));
+		*FCString::Strrchr(Result, '\\') = 0;
 
 		// Normalize the resulting path
-		Result = Buffer;
-		FPaths::MakeStandardFilename(Result);
+		FString Buffer = Result;
+		FPaths::MakeStandardFilename(Buffer);
+		FCString::Strcpy(Result, *Buffer);
 	}
 	return Result;
 }
@@ -1113,7 +1285,10 @@ void FWindowsPlatformProcess::SleepNoStats(float Seconds)
 	{
 		::SwitchToThread();
 	}
-	::Sleep(Milliseconds);
+	else
+	{
+		::Sleep(Milliseconds);
+	}
 }
 
 void FWindowsPlatformProcess::SleepInfinite()
@@ -1153,8 +1328,8 @@ bool FEventWin::Wait(uint32 WaitTime, const bool bIgnoreThreadIdleStats /*= fals
 	WaitForStats();
 
 	SCOPE_CYCLE_COUNTER( STAT_EventWait );
-	CSV_SCOPED_TIMING_STAT_EXCLUSIVE_CONDITIONAL(EventWait, IsInGameThread());
-	check( Event );
+	CSV_SCOPED_WAIT_CONDITIONAL(WaitTime > 0 && IsInGameThread());
+	check(Event);
 
 	FThreadIdleStats::FScopeIdle Scope( bIgnoreThreadIdleStats );
 	return (WaitForSingleObject( Event, WaitTime ) == WAIT_OBJECT_0);
@@ -1216,6 +1391,7 @@ FString FWindowsPlatformProcess::ReadPipe( void* ReadPipe )
 {
 	FString Output;
 
+	// Note: String becomes corrupted when more than one byte per character and all bytes are not available
 	uint32 BytesAvailable = 0;
 	if (::PeekNamedPipe(ReadPipe, NULL, 0, NULL, (::DWORD*)&BytesAvailable, NULL) && (BytesAvailable > 0))
 	{
@@ -1270,7 +1446,7 @@ bool FWindowsPlatformProcess::WritePipe(void* WritePipe, const FString& Message,
 
 	// Convert input to UTF8CHAR
 	uint32 BytesAvailable = Message.Len();
-	UTF8CHAR * Buffer = new UTF8CHAR[BytesAvailable + 1];
+	UTF8CHAR * Buffer = new UTF8CHAR[BytesAvailable + 2];
 	for (uint32 i = 0; i < BytesAvailable; i++)
 	{
 		Buffer[i] = Message[i];
@@ -1316,9 +1492,15 @@ bool FWindowsPlatformProcess::WritePipe(void* WritePipe, const uint8* Data, cons
 #include "Windows/AllowWindowsPlatformTypes.h"
 
 FWindowsPlatformProcess::FWindowsSemaphore::FWindowsSemaphore(const FString & InName, HANDLE InSemaphore)
-	:	FSemaphore(InName)
-	,	Semaphore(InSemaphore)
+	: FWindowsSemaphore(*InName, InSemaphore)
 {
+}
+
+FWindowsPlatformProcess::FWindowsSemaphore::FWindowsSemaphore(const TCHAR* InName, Windows::HANDLE InSemaphore)
+	: FSemaphore(InName)
+	, Semaphore(InSemaphore)
+{
+
 }
 
 FWindowsPlatformProcess::FWindowsSemaphore::~FWindowsSemaphore()
@@ -1369,19 +1551,24 @@ void FWindowsPlatformProcess::FWindowsSemaphore::Unlock()
 	}
 }
 
-FWindowsPlatformProcess::FSemaphore * FWindowsPlatformProcess::NewInterprocessSynchObject(const FString & Name, bool bCreate, uint32 MaxLocks)
+FWindowsPlatformProcess::FSemaphore* FWindowsPlatformProcess::NewInterprocessSynchObject(const FString & Name, bool bCreate, uint32 MaxLocks)
+{
+	return NewInterprocessSynchObject(*Name, bCreate, MaxLocks);
+}
+
+FWindowsPlatformProcess::FSemaphore* FWindowsPlatformProcess::NewInterprocessSynchObject(const TCHAR* Name, bool bCreate, uint32 MaxLocks)
 {
 	HANDLE Semaphore = NULL;
 	
 	if (bCreate)
 	{
-		Semaphore = CreateSemaphore(NULL, MaxLocks, MaxLocks, *Name);
+		Semaphore = CreateSemaphore(NULL, MaxLocks, MaxLocks, Name);
 		if (NULL == Semaphore)
 		{
 			DWORD ErrNo = GetLastError();
 			UE_LOG(LogHAL, Warning, TEXT("CreateSemaphore(Attrs=NULL, InitialValue=%d, MaxValue=%d, Name='%s') failed with LastError = %d"),
 				MaxLocks, MaxLocks,
-				*Name,
+				Name,
 				ErrNo);
 			return NULL;
 		}
@@ -1389,13 +1576,13 @@ FWindowsPlatformProcess::FSemaphore * FWindowsPlatformProcess::NewInterprocessSy
 	else
 	{
 		DWORD AccessRights = SYNCHRONIZE | SEMAPHORE_MODIFY_STATE;
-		Semaphore = OpenSemaphore(AccessRights, false, *Name);
+		Semaphore = OpenSemaphore(AccessRights, false, Name);
 		if (NULL == Semaphore)
 		{
 			DWORD ErrNo = GetLastError();
 			UE_LOG(LogHAL, Warning, TEXT("OpenSemaphore(AccessRights=0x%08x, bInherit=false, Name='%s') failed with LastError = %d"),
 				AccessRights,
-				*Name,
+				Name,
 				ErrNo);
 			return NULL;
 		}
@@ -1738,5 +1925,74 @@ FString FWindowsPlatformProcess::FProcEnumInfo::GetFullPath() const
 {
 	return GetApplicationName(GetPID());
 }
+
+namespace WindowsPlatformProcessImpl
+{
+	static void SetThreadName(LPCSTR ThreadName)
+	{
+#if !PLATFORM_SEH_EXCEPTIONS_DISABLED
+		/**
+		 * Code setting the thread name for use in the debugger.
+		 *
+		 * http://msdn.microsoft.com/en-us/library/xcb2z8hs.aspx
+		 */
+		const uint32 MS_VC_EXCEPTION=0x406D1388;
+
+		struct THREADNAME_INFO
+		{
+			uint32 dwType;		// Must be 0x1000.
+			LPCSTR szName;		// Pointer to name (in user addr space).
+			uint32 dwThreadID;	// Thread ID (-1=caller thread).
+			uint32 dwFlags;		// Reserved for future use, must be zero.
+		};
+
+		THREADNAME_INFO ThreadNameInfo;
+		ThreadNameInfo.dwType		= 0x1000;
+		ThreadNameInfo.szName		= ThreadName;
+		ThreadNameInfo.dwThreadID	= ::GetCurrentThreadId();
+		ThreadNameInfo.dwFlags		= 0;
+
+		__try
+		{
+			RaiseException( MS_VC_EXCEPTION, 0, sizeof(ThreadNameInfo)/sizeof(ULONG_PTR), (ULONG_PTR*)&ThreadNameInfo );
+		}
+		__except( EXCEPTION_EXECUTE_HANDLER )
+		CA_SUPPRESS(6322)
+		{
+		}
+#endif
+	}
+
+	static void SetThreadDescription(PCWSTR lpThreadDescription)
+	{
+		// SetThreadDescription is only available from Windows 10 version 1607 / Windows Server 2016
+		//
+		// So in order to be compatible with older Windows versions we probe for the API at runtime
+		// and call it only if available.
+
+		typedef HRESULT(WINAPI *SetThreadDescriptionFnPtr)(HANDLE hThread, PCWSTR lpThreadDescription);
+
+	#pragma warning( push )
+	#pragma warning( disable: 4191 )	// unsafe conversion from 'type of expression' to 'type required'
+		static SetThreadDescriptionFnPtr RealSetThreadDescription = (SetThreadDescriptionFnPtr) GetProcAddress(GetModuleHandle(TEXT("kernel32.dll")), "SetThreadDescription");
+	#pragma warning( pop )
+
+		if (RealSetThreadDescription)
+		{
+			RealSetThreadDescription(::GetCurrentThread(), lpThreadDescription);
+		}
+	}
+}
+
+void FWindowsPlatformProcess::SetThreadName( const TCHAR* ThreadName )
+{
+	// We try to use the SetThreadDescription API where possible since this
+	// enables thread names in crashdumps and ETW traces
+	WindowsPlatformProcessImpl::SetThreadDescription(TCHAR_TO_WCHAR(ThreadName));
+
+	WindowsPlatformProcessImpl::SetThreadName(TCHAR_TO_ANSI(ThreadName));
+}
+
+PRAGMA_ENABLE_UNSAFE_TYPECAST_WARNINGS
 
 #include "Windows/HideWindowsPlatformTypes.h"

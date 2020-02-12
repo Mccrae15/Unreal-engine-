@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 /*=============================================================================
 	XAudio2Support.h: XAudio2 specific structures.
@@ -7,13 +7,13 @@
 #pragma once
 
 #ifndef XAUDIO_SUPPORTS_XMA2WAVEFORMATEX
-	#define XAUDIO_SUPPORTS_XMA2WAVEFORMATEX	1
+	#define XAUDIO_SUPPORTS_XMA2WAVEFORMATEX	0
 #endif	//XAUDIO_SUPPORTS_XMA2WAVEFORMATEX
 #ifndef XAUDIO_SUPPORTS_DEVICE_DETAILS
 	#define XAUDIO_SUPPORTS_DEVICE_DETAILS		1
 #endif	//XAUDIO_SUPPORTS_DEVICE_DETAILS
 #ifndef XAUDIO2_SUPPORTS_MUSIC
-	#define XAUDIO2_SUPPORTS_MUSIC				1
+	#define XAUDIO2_SUPPORTS_MUSIC				0
 #endif	//XAUDIO2_SUPPORTS_MUSIC
 #ifndef X3DAUDIO_VECTOR_IS_A_D3DVECTOR
 	#define X3DAUDIO_VECTOR_IS_A_D3DVECTOR		1
@@ -23,8 +23,10 @@
 /*------------------------------------------------------------------------------------
 	XAudio2 system headers
 ------------------------------------------------------------------------------------*/
+#include "XAudio2Device.h"
 #include "AudioDecompress.h"
 #include "AudioEffect.h"
+#if PLATFORM_WINDOWS || PLATFORM_HOLOLENS || PLATFORM_XBOXONE
 #include "Windows/WindowsHWrapper.h"
 #include "Windows/AllowWindowsPlatformTypes.h"
 #include "Windows/AllowWindowsPlatformAtomics.h"
@@ -32,6 +34,7 @@
 	#include <X3Daudio.h>
 #include "Windows/HideWindowsPlatformAtomics.h"
 #include "Windows/HideWindowsPlatformTypes.h"
+#endif
 
 #if PLATFORM_WINDOWS
 #include "Windows/AllowWindowsPlatformTypes.h"
@@ -70,6 +73,7 @@ public:
 
 	HRESULT STDMETHODCALLTYPE OnDefaultDeviceChanged(EDataFlow flow, ERole role, LPCWSTR pwstrDeviceId) override
 	{
+		FScopeLock ScopeLock(&ListenerArrayMutationLock);
 		for (IDeviceChangedListener* Listener : Listeners)
 		{
 			Listener->OnDefaultDeviceChanged();
@@ -84,6 +88,7 @@ public:
 
 	HRESULT STDMETHODCALLTYPE OnDeviceRemoved(LPCWSTR pwstrDeviceId) override
 	{
+		FScopeLock ScopeLock(&ListenerArrayMutationLock);
 		for (IDeviceChangedListener* Listener : Listeners)
 		{
 			Listener->OnDeviceRemoved(FString(pwstrDeviceId));
@@ -95,6 +100,7 @@ public:
 	{
 		if (dwNewState == DEVICE_STATE_DISABLED || dwNewState == DEVICE_STATE_UNPLUGGED || dwNewState == DEVICE_STATE_NOTPRESENT)
 		{
+			FScopeLock ScopeLock(&ListenerArrayMutationLock);
 			for (IDeviceChangedListener* Listener : Listeners)
 			{
 				Listener->OnDeviceRemoved(FString(pwstrDeviceId));
@@ -130,17 +136,20 @@ public:
 
 	void RegisterDeviceChangedListener(IDeviceChangedListener* DeviceChangedListener)
 	{
+		FScopeLock ScopeLock(&ListenerArrayMutationLock);
 		Listeners.Add(DeviceChangedListener);
 	}
 
 	void UnRegisterDeviceDeviceChangedListener(IDeviceChangedListener* DeviceChangedListener)
 	{
+		FScopeLock ScopeLock(&ListenerArrayMutationLock);
 		Listeners.Remove(DeviceChangedListener);
 	}
 
 private:
 	LONG Ref;
 	TSet<IDeviceChangedListener*> Listeners;
+	FCriticalSection ListenerArrayMutationLock;
 	IMMDeviceEnumerator* DeviceEnumerator;
 	bool bComInitialized;
 };
@@ -199,6 +208,7 @@ struct FXWMABufferInfo
 	UINT32						XWMASeekDataSize;
 };
 
+class FXAudio2SoundBuffer;
 typedef FAsyncRealtimeAudioTaskProxy<FXAudio2SoundBuffer> FAsyncRealtimeAudioTask;
 
 /**
@@ -409,9 +419,14 @@ public:
 	virtual ~FXAudio2SoundSource();
 
 	/**
-	 * Frees existing resources. Called from destructor and therefore not virtual.
+	 * Frees existing resources except for the buffer. Called from destructor and therefore not virtual.
 	 */
 	void FreeResources();
+
+	/**
+	 * Frees the source's underlying buffer, if neccessary. 
+	 */
+	void FreeBuffer();
 
 	/**
 	* Initializes any effects used with this source voice
@@ -815,7 +830,7 @@ struct FXAudioDeviceProperties final : public IDeviceChangedListener
 
 #if PLATFORM_WINDOWS && PLATFORM_64BITS
 		// Only free the library if we're shutting down
-		if (XAudio2Dll != nullptr && GIsRequestingExit)
+		if (XAudio2Dll != nullptr && IsEngineExitRequested())
 		{
 			UE_LOG(LogAudio, Verbose, TEXT("Freeing XAudio2 dll"));
 			if (!FreeLibrary(XAudio2Dll))

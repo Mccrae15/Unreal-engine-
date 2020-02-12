@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "VisualLoggerHUD.h"
 #include "CollisionQueryParams.h"
@@ -17,7 +17,7 @@
 AVisualLoggerHUD::AVisualLoggerHUD(const FObjectInitializer& ObjectInitializer)
 	: Super(ObjectInitializer)
 {
-	bHidden = false;
+	SetHidden(false);
 
 	TextRenderInfo.bEnableShadow = true;
 }

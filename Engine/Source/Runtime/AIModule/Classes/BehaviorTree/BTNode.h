@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -7,6 +7,7 @@
 #include "UObject/Object.h"
 #include "BehaviorTree/BehaviorTreeTypes.h"
 #include "BehaviorTree/BehaviorTreeComponent.h"
+#include "BehaviorTree/BlackboardAssetProvider.h"
 #include "GameplayTaskOwnerInterface.h"
 #include "Tasks/AITask.h"
 #include "BTNode.generated.h"
@@ -91,6 +92,9 @@ class AIMODULE_API UBTNode : public UObject, public IGameplayTaskOwnerInterface
 
 	template<typename T>
 	const T* GetNodeMemory(const FBehaviorTreeInstance& BTInstance) const;
+
+	template<typename T>
+	T* CastInstanceNodeMemory(uint8* NodeMemory) const;
 
 	/** get special memory block used for hidden shared data (e.g. node instancing) */
 	template<typename T>
@@ -303,6 +307,13 @@ template<typename T>
 const T* UBTNode::GetNodeMemory(const FBehaviorTreeInstance& BTInstance) const
 {
 	return (const T*)(BTInstance.InstanceMemory.GetData() + MemoryOffset);
+}
+
+template<typename T>
+T* UBTNode::CastInstanceNodeMemory(uint8* NodeMemory) const
+{
+	checkf(sizeof(T) == GetInstanceMemorySize(), TEXT("Requesting type of %zu bytes but GetInstanceMemorySize returns %u. Make sure GetInstanceMemorySize is implemented properly in %s class hierarchy."), sizeof(T), GetInstanceMemorySize(), *GetFName().ToString());
+	return reinterpret_cast<T*>(NodeMemory);
 }
 
 template<typename T>

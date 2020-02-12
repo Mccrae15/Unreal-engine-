@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "TrackEditors/EventTrackEditor.h"
 #include "Framework/MultiBox/MultiBoxBuilder.h"
@@ -65,6 +65,27 @@ FEventTrackEditor::FEventTrackEditor(TSharedRef<ISequencer> InSequencer)
 /* ISequencerTrackEditor interface
  *****************************************************************************/
 
+void FEventTrackEditor::AddEventSubMenu(FMenuBuilder& MenuBuilder, TArray<FGuid> ObjectBindings)
+{
+	MenuBuilder.AddMenuEntry(
+		LOCTEXT("AddNewTriggerSection", "Trigger"),
+		LOCTEXT("AddNewTriggerSectionTooltip", "Adds a new section that can trigger a specific event at a specific time"),
+		FSlateIcon(),
+		FUIAction(
+			FExecuteAction::CreateRaw(this, &FEventTrackEditor::HandleAddEventTrackMenuEntryExecute, ObjectBindings, UMovieSceneEventTriggerSection::StaticClass())
+		)
+	);
+
+	MenuBuilder.AddMenuEntry(
+		LOCTEXT("AddNewRepeaterSection", "Repeater"),
+		LOCTEXT("AddNewRepeaterSectionTooltip", "Adds a new section that triggers an event every time it's evaluated"),
+		FSlateIcon(),
+		FUIAction(
+			FExecuteAction::CreateRaw(this, &FEventTrackEditor::HandleAddEventTrackMenuEntryExecute, ObjectBindings, UMovieSceneEventRepeaterSection::StaticClass())
+		)
+	);
+}
+
 void FEventTrackEditor::BuildAddTrackMenu(FMenuBuilder& MenuBuilder)
 {
 	UMovieSceneSequence*       RootMovieSceneSequence = GetSequencer()->GetRootMovieSceneSequence();
@@ -72,31 +93,27 @@ void FEventTrackEditor::BuildAddTrackMenu(FMenuBuilder& MenuBuilder)
 
 	if (SequenceEditor && SequenceEditor->SupportsEvents(RootMovieSceneSequence))
 	{
-		MenuBuilder.AddMenuEntry(
+		MenuBuilder.AddSubMenu(
 			LOCTEXT("AddEventTrack", "Event Track"),
 			LOCTEXT("AddEventTooltip", "Adds a new event track that can trigger events on the timeline."),
-			FSlateIcon(FEditorStyle::GetStyleSetName(), "Sequencer.Tracks.Event"),
-			FUIAction(
-				FExecuteAction::CreateRaw(this, &FEventTrackEditor::HandleAddEventTrackMenuEntryExecute, FGuid())
-			)
+			FNewMenuDelegate::CreateRaw(this, &FEventTrackEditor::AddEventSubMenu, TArray<FGuid>()),
+			false,
+			FSlateIcon(FEditorStyle::GetStyleSetName(), "Sequencer.Tracks.Event")
 		);
 	}
 }
 
-void FEventTrackEditor::BuildObjectBindingTrackMenu(FMenuBuilder& MenuBuilder, const FGuid& ObjectBinding, const UClass* ObjectClass)
+void FEventTrackEditor::BuildObjectBindingTrackMenu(FMenuBuilder& MenuBuilder, const TArray<FGuid>& ObjectBindings, const UClass* ObjectClass)
 {
 	UMovieSceneSequence*       RootMovieSceneSequence = GetSequencer()->GetRootMovieSceneSequence();
 	FMovieSceneSequenceEditor* SequenceEditor         = FMovieSceneSequenceEditor::Find(RootMovieSceneSequence);
 
 	if (SequenceEditor && SequenceEditor->SupportsEvents(RootMovieSceneSequence))
 	{
-		MenuBuilder.AddMenuEntry(
+		MenuBuilder.AddSubMenu(
 			LOCTEXT("AddEventTrack_ObjectBinding", "Event"),
 			LOCTEXT("AddEventTooltip_ObjectBinding", "Adds a new event track that will trigger events on this object binding."),
-			FSlateIcon(),
-			FUIAction( 
-				FExecuteAction::CreateSP( this, &FEventTrackEditor::HandleAddEventTrackMenuEntryExecute, ObjectBinding )
-			)
+			FNewMenuDelegate::CreateRaw(this, &FEventTrackEditor::AddEventSubMenu, ObjectBindings)
 		);
 	}
 }
@@ -124,14 +141,14 @@ TSharedPtr<SWidget> FEventTrackEditor::BuildOutlinerEditWidget(const FGuid& Obje
 				LOCTEXT("AddNewTriggerSection", "Trigger"),
 				LOCTEXT("AddNewTriggerSectionTooltip", "Adds a new section that can trigger a specific event at a specific time"),
 				FSlateIcon(),
-				FUIAction(FExecuteAction::CreateSP(this, &FEventTrackEditor::CreateNewSection, TrackPtr, RowIndex + 1, UMovieSceneEventTriggerSection::StaticClass()))
+				FUIAction(FExecuteAction::CreateSP(this, &FEventTrackEditor::CreateNewSection, TrackPtr, RowIndex + 1, UMovieSceneEventTriggerSection::StaticClass(), true))
 			);
 
 			MenuBuilder.AddMenuEntry(
 				LOCTEXT("AddNewRepeaterSection", "Repeater"),
 				LOCTEXT("AddNewRepeaterSectionTooltip", "Adds a new section that triggers an event every time it's evaluated"),
 				FSlateIcon(),
-				FUIAction(FExecuteAction::CreateSP(this, &FEventTrackEditor::CreateNewSection, TrackPtr, RowIndex + 1, UMovieSceneEventRepeaterSection::StaticClass()))
+				FUIAction(FExecuteAction::CreateSP(this, &FEventTrackEditor::CreateNewSection, TrackPtr, RowIndex + 1, UMovieSceneEventRepeaterSection::StaticClass(), true))
 			);
 		}
 		else
@@ -154,23 +171,40 @@ TSharedPtr<SWidget> FEventTrackEditor::BuildOutlinerEditWidget(const FGuid& Obje
 void FEventTrackEditor::BuildTrackContextMenu(FMenuBuilder& MenuBuilder, UMovieSceneTrack* Track)
 {
 	UMovieSceneEventTrack* EventTrack = CastChecked<UMovieSceneEventTrack>(Track);
-	UProperty* EventPositionProperty = FindField<UProperty>(Track->GetClass(), GET_MEMBER_NAME_STRING_CHECKED(UMovieSceneEventTrack, EventPosition));
+	FProperty* EventPositionProperty = FindField<FProperty>(Track->GetClass(), GET_MEMBER_NAME_STRING_CHECKED(UMovieSceneEventTrack, EventPosition));
+
+	FGuid ObjectBinding;
+	EventTrack->GetTypedOuter<UMovieScene>()->FindTrackBinding(*EventTrack, ObjectBinding);
 
 	/** Specific details customization for the event track */
 	class FEventTrackCustomization : public IDetailCustomization
 	{
 	public:
+		FGuid ObjectBindingID;
+
+		FEventTrackCustomization(const FGuid& InObjectBindingID)
+			: ObjectBindingID(InObjectBindingID)
+		{}
+
 		virtual void CustomizeDetails(IDetailLayoutBuilder& DetailBuilder) override
 		{
 			DetailBuilder.HideCategory("Track");
 			DetailBuilder.HideCategory("General");
 
-			IDetailCategoryBuilder& Category = DetailBuilder.EditCategory("TrackEvent");
-			Category.AddProperty("EventReceivers").ShouldAutoExpand(true);
+			if (ObjectBindingID.IsValid())
+			{
+				// Do not show event receivers for tracks that exist on object bindings
+				DetailBuilder.HideProperty("EventReceivers");
+			}
+			else
+			{
+				IDetailCategoryBuilder& Category = DetailBuilder.EditCategory("TrackEvent");
+				Category.AddProperty("EventReceivers").ShouldAutoExpand(true);
+			}
 		}
 	};
 
-	auto PopulateSubMenu = [this, EventTrack](FMenuBuilder& SubMenuBuilder)
+	auto PopulateSubMenu = [this, EventTrack, ObjectBinding](FMenuBuilder& SubMenuBuilder)
 	{
 		FPropertyEditorModule& PropertyEditor = FModuleManager::Get().LoadModuleChecked<FPropertyEditorModule>("PropertyEditor");
 
@@ -183,7 +217,7 @@ void FEventTrackEditor::BuildTrackContextMenu(FMenuBuilder& MenuBuilder, UMovieS
 		TSharedRef<IDetailsView> DetailsView = PropertyEditor.CreateDetailView(DetailsViewArgs);
 		
 		// Register the custom type layout for the class
-		FOnGetDetailCustomizationInstance CreateInstance = FOnGetDetailCustomizationInstance::CreateLambda(&MakeShared<FEventTrackCustomization>);
+		FOnGetDetailCustomizationInstance CreateInstance = FOnGetDetailCustomizationInstance::CreateLambda([ObjectBinding]{ return MakeShared<FEventTrackCustomization>(ObjectBinding); });
 		DetailsView->RegisterInstancedCustomPropertyLayout(UMovieSceneEventTrack::StaticClass(), CreateInstance);
 
 		GetSequencer()->OnInitializeDetailsPanel().Broadcast(DetailsView, GetSequencer().ToSharedRef());
@@ -229,7 +263,7 @@ const FSlateBrush* FEventTrackEditor::GetIconBrush() const
 /* FEventTrackEditor callbacks
  *****************************************************************************/
 
-void FEventTrackEditor::HandleAddEventTrackMenuEntryExecute(FGuid InObjectBindingID)
+void FEventTrackEditor::HandleAddEventTrackMenuEntryExecute(TArray<FGuid> InObjectBindingIDs, UClass* SectionType)
 {
 	UMovieScene* FocusedMovieScene = GetFocusedMovieScene();
 
@@ -246,39 +280,51 @@ void FEventTrackEditor::HandleAddEventTrackMenuEntryExecute(FGuid InObjectBindin
 	const FScopedTransaction Transaction(NSLOCTEXT("Sequencer", "AddEventTrack_Transaction", "Add Event Track"));
 	FocusedMovieScene->Modify();
 
-	UMovieSceneEventTrack* NewTrack = nullptr;
-	if (InObjectBindingID.IsValid())
+	TArray<UMovieSceneEventTrack*> NewTracks;
+
+	for (FGuid InObjectBindingID : InObjectBindingIDs)
 	{
-		NewTrack = FocusedMovieScene->AddTrack<UMovieSceneEventTrack>(InObjectBindingID);
-	}
-	else
-	{
-		NewTrack = FocusedMovieScene->AddMasterTrack<UMovieSceneEventTrack>();
-	}
-
-	check(NewTrack);
-
-	UMovieSceneSection* NewSection = NewTrack->CreateNewSection();
-	check(NewSection);
-
-	NewTrack->AddSection(*NewSection);
-	NewTrack->SetDisplayName(LOCTEXT("TrackName", "Events"));
-
-	if (GetSequencer().IsValid())
-	{
-		GetSequencer()->OnAddTrack(NewTrack);
+		if (InObjectBindingID.IsValid())
+		{
+			UMovieSceneEventTrack* NewObjectTrack = FocusedMovieScene->AddTrack<UMovieSceneEventTrack>(InObjectBindingID);
+			NewTracks.Add(NewObjectTrack);
+		
+			if (GetSequencer().IsValid())
+			{
+				GetSequencer()->OnAddTrack(NewObjectTrack, InObjectBindingID);
+			}
+		}
 	}
 
-	GetSequencer()->NotifyMovieSceneDataChanged( EMovieSceneDataChangeType::MovieSceneStructureItemAdded );
+	if (!NewTracks.Num())
+	{
+		UMovieSceneEventTrack* NewMasterTrack = FocusedMovieScene->AddMasterTrack<UMovieSceneEventTrack>();
+		NewTracks.Add(NewMasterTrack);
+		if (GetSequencer().IsValid())
+		{
+			GetSequencer()->OnAddTrack(NewMasterTrack, FGuid());
+		}
+	}
+
+	check(NewTracks.Num() != 0);
+
+	for (UMovieSceneEventTrack* NewTrack : NewTracks)
+	{
+		CreateNewSection(NewTrack, 0, SectionType, false);
+
+		NewTrack->SetDisplayName(LOCTEXT("TrackName", "Events"));
+
+		
+	}
 }
 
-void FEventTrackEditor::CreateNewSection(UMovieSceneTrack* Track, int32 RowIndex, UClass* SectionType)
+void FEventTrackEditor::CreateNewSection(UMovieSceneTrack* Track, int32 RowIndex, UClass* SectionType, bool bSelect)
 {
 	TSharedPtr<ISequencer> SequencerPtr = GetSequencer();
 	if (SequencerPtr.IsValid())
 	{
+		UMovieScene* FocusedMovieScene = GetFocusedMovieScene();
 		FQualifiedFrameTime CurrentTime = SequencerPtr->GetLocalTime();
-		TRange<double> VisibleRange = SequencerPtr->GetViewRange();
 
 		FScopedTransaction Transaction(LOCTEXT("CreateNewSectionTransactionText", "Add Section"));
 
@@ -297,18 +343,42 @@ void FEventTrackEditor::CreateNewSection(UMovieSceneTrack* Track, int32 RowIndex
 
 		Track->Modify();
 
-		int32 DurationFrames = ( (VisibleRange.Size<double>() * 0.75) * CurrentTime.Rate ).FloorToFrame().Value;
-		NewSection->SetRange(TRange<FFrameNumber>(CurrentTime.Time.FrameNumber, CurrentTime.Time.FrameNumber + DurationFrames));
+		if (SectionType == UMovieSceneEventTriggerSection::StaticClass())
+		{
+			NewSection->SetRange(TRange<FFrameNumber>::All());
+		}
+		else
+		{
+
+			TRange<FFrameNumber> NewSectionRange;
+
+			if (CurrentTime.Time.FrameNumber < FocusedMovieScene->GetPlaybackRange().GetUpperBoundValue())
+			{
+				NewSectionRange = TRange<FFrameNumber>(CurrentTime.Time.FrameNumber, FocusedMovieScene->GetPlaybackRange().GetUpperBoundValue());
+			}
+			else
+			{
+				const float DefaultLengthInSeconds = 5.f;
+				NewSectionRange = TRange<FFrameNumber>(CurrentTime.Time.FrameNumber, CurrentTime.Time.FrameNumber + (DefaultLengthInSeconds * SequencerPtr->GetFocusedTickResolution()).FloorToFrame());
+			}
+
+			NewSection->SetRange(NewSectionRange);
+		}
+
 		NewSection->SetOverlapPriority(OverlapPriority);
 		NewSection->SetRowIndex(RowIndex);
 
 		Track->AddSection(*NewSection);
 		Track->UpdateEasing();
 
+		if (bSelect)
+		{
+			SequencerPtr->EmptySelection();
+			SequencerPtr->SelectSection(NewSection);
+			SequencerPtr->ThrobSectionSelection();
+		}
+
 		SequencerPtr->NotifyMovieSceneDataChanged(EMovieSceneDataChangeType::MovieSceneStructureItemAdded);
-		SequencerPtr->EmptySelection();
-		SequencerPtr->SelectSection(NewSection);
-		SequencerPtr->ThrobSectionSelection();
 	}
 }
 

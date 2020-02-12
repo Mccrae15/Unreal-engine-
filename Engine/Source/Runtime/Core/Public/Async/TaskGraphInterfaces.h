@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 /*=============================================================================
 	TaskGraphInterfaces.h: TaskGraph library
@@ -18,6 +18,7 @@
 #include "Stats/Stats.h"
 #include "HAL/IConsoleManager.h"
 #include "HAL/Event.h"
+#include "HAL/LowLevelMemTracker.h"
 #include "Templates/RefCounting.h"
 #include "Containers/LockFreeFixedSizeAllocator.h"
 #include "Misc/MemStack.h"
@@ -209,6 +210,8 @@ namespace ENamedThreads
 
 }
 
+DECLARE_INTRINSIC_TYPE_LAYOUT(ENamedThreads::Type);
+
 extern CORE_API int32 GEnablePowerSavingThreadPriorityReductionCVar;
 
 enum class EPowerSavingEligibility : uint8
@@ -339,7 +342,7 @@ public:
 	 *	Requests that a named thread, which must be this thread, run until idle, then return.
 	 *	@param	CurrentThread; The name of this thread
 	**/
-	virtual void ProcessThreadUntilIdle(ENamedThreads::Type CurrentThread)=0;
+	virtual uint64 ProcessThreadUntilIdle(ENamedThreads::Type CurrentThread)=0;
 
 	/** 
 	 *	Requests that a named thread, which must be this thread, run until an explicit return request is received, then return.
@@ -421,7 +424,7 @@ public:
 		/** Total size in bytes for a small task that will use the custom allocator **/
 		SMALL_TASK_SIZE = 256
 	};
-	typedef TLockFreeFixedSizeAllocator_TLSCache<SMALL_TASK_SIZE, PLATFORM_CACHE_LINE_SIZE> TSmallTaskAllocator;
+	typedef TLockFreeFixedSizeAllocator_TLSCache<SMALL_TASK_SIZE, PLATFORM_CACHE_LINE_SIZE, FNoopCounter, true> TSmallTaskAllocator;
 protected:
 	/** 
 	 *	Constructor
@@ -432,6 +435,7 @@ protected:
 		, NumberOfPrerequistitesOutstanding(InNumberOfPrerequistitesOutstanding + 1) // + 1 is not a prerequisite, it is a lock to prevent it from executing while it is getting prerequisites, one it is safe to execute, call PrerequisitesComplete
 	{
 		checkThreadGraph(LifeStage.Increment() == int32(LS_Contructed));
+		LLM(InheritedLLMTag = FLowLevelMemTracker::bIsDisabled ? ELLMTag::Untagged : (ELLMTag)FLowLevelMemTracker::Get().GetActiveTag(ELLMTracker::Default));
 	}
 	/** 
 	 *	Sets the desired execution thread. This is not part of the constructor because this information may not be known quite yet duiring construction.
@@ -507,6 +511,7 @@ private:
 	 **/
 	FORCEINLINE void Execute(TArray<FBaseGraphTask*>& NewTasks, ENamedThreads::Type CurrentThread)
 	{
+		LLM_SCOPE(InheritedLLMTag);
 		checkThreadGraph(LifeStage.Increment() == int32(LS_Executing));
 		ExecuteTask(NewTasks, CurrentThread);
 	}
@@ -545,6 +550,8 @@ private:
 	FThreadSafeCounter			LifeStage;
 
 #endif
+
+	LLM(ELLMTag InheritedLLMTag);
 };
 
 /** 
@@ -727,7 +734,7 @@ public:
  *	Embeds a user defined task, as exemplified above, for doing the work and provides the functionality for setting up and handling prerequisites and subsequents
  **/
 template<typename TTask>
-class TGraphTask : public FBaseGraphTask
+class TGraphTask final : public FBaseGraphTask
 {
 public:
 	/** 
@@ -823,7 +830,7 @@ private:
 	 *	Dispatches the subsequents.
 	 *	Destroys myself.
 	 **/
-	virtual void ExecuteTask(TArray<FBaseGraphTask*>& NewTasks, ENamedThreads::Type CurrentThread) final override
+	void ExecuteTask(TArray<FBaseGraphTask*>& NewTasks, ENamedThreads::Type CurrentThread) override
 	{
 		checkThreadGraph(TaskConstructed);
 
@@ -880,7 +887,7 @@ private:
 	/** 
 	 *	Private destructor, just checks that the task appears to be completed
 	**/
-	virtual ~TGraphTask() final override
+	~TGraphTask() override
 	{
 		checkThreadGraph(!TaskConstructed);
 	}

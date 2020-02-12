@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 
 #pragma once
@@ -9,8 +9,10 @@
 #include "Camera/CameraComponent.h"
 #include "UnrealWidget.h"
 #include "EditorViewportClient.h"
+#include "UObject/ObjectKey.h"
 
 struct FAssetData;
+struct FMinimalViewInfo;
 class FCanvas;
 class FDragTool;
 class HModel;
@@ -82,7 +84,7 @@ struct UNREALED_API FTrackingTransaction
 	/**
 	 * Initiates a transaction.
 	 */
-	void Begin(const FText& Description);
+	void Begin(const FText& Description, AActor* AdditionalActor = nullptr);
 
 	void End();
 
@@ -118,7 +120,6 @@ private:
 	TMap<UPackage*, bool> InitialPackageDirtyStates;
 	
 };
-
 
 /** */
 class UNREALED_API FLevelEditorViewportClient : public FEditorViewportClient
@@ -156,7 +157,8 @@ public:
 	virtual bool InputKey(FViewport* Viewport, int32 ControllerId, FKey Key, EInputEvent Event, float AmountDepressed = 1.f, bool bGamepad=false) override;
 	virtual bool InputAxis(FViewport* Viewport, int32 ControllerId, FKey Key, float Delta, float DeltaTime, int32 NumSamples=1, bool bGamepad=false) override;
 	virtual EMouseCursor::Type GetCursor(FViewport* Viewport,int32 X,int32 Y) override;
-	virtual void CapturedMouseMove( FViewport* InViewport, int32 InMouseX, int32 InMouseY ) override;
+	virtual void CapturedMouseMove(FViewport* InViewport, int32 InMouseX, int32 InMouseY) override;
+	virtual void MouseMove(FViewport* InViewport, int32 x, int32 y) override;
 	virtual void Tick(float DeltaSeconds) override;
 	virtual bool InputWidgetDelta( FViewport* Viewport, EAxisList::Type CurrentAxis, FVector& Drag, FRotator& Rot, FVector& Scale ) override;
 	virtual TSharedPtr<FDragTool> MakeDragTool( EDragTool::Type DragToolType ) override;
@@ -181,6 +183,7 @@ public:
 	virtual void EndCameraMovement() override;
 	virtual void SetVREditView(bool bGameViewEnable) override;
 	virtual bool GetPivotForOrbit(FVector& Pivot) const override;
+	virtual bool ShouldScaleCameraSpeedByDistance() const override;
 
 	virtual bool OverrideHighResScreenshotCaptureRegion(FIntRect& OutCaptureRegion) override;
 
@@ -495,22 +498,6 @@ public:
 		return ActorLockedByMatinee.IsValid();
 	}
 
-	/**
-	 * Get the sound stat flags enabled for this viewport
-	 */
-	virtual ESoundShowFlags::Type GetSoundShowFlags() const override
-	{ 
-		return SoundShowFlags;
-	}
-
-	/**
-	 * Set the sound stat flags enabled for this viewport
-	 */
-	virtual void SetSoundShowFlags(const ESoundShowFlags::Type InSoundShowFlags) override
-	{
-		SoundShowFlags = InSoundShowFlags;
-	}
-
 	void UpdateHoveredObjects( const TSet<FViewportHoverTarget>& NewHoveredObjects );
 
 	/**
@@ -528,10 +515,11 @@ public:
 	 * @param	bSelectActors	If true, select the newly dropped actors (defaults: true)
 	 * @param	ObjectFlags		The flags to place on the actor when it is spawned
 	 * @param	FactoryToUse	The preferred actor factory to use (optional)
+	 * @param	Cursor			Optional pre-calculated cursor location
 	 *
 	 * @return	true if the object was successfully used to place an actor; false otherwise
 	 */
-	static TArray<AActor*> TryPlacingActorFromObject( ULevel* InLevel, UObject* ObjToUse, bool bSelectActors, EObjectFlags ObjectFlags, UActorFactory* FactoryToUse, const FName Name = NAME_None );
+	static TArray<AActor*> TryPlacingActorFromObject( ULevel* InLevel, UObject* ObjToUse, bool bSelectActors, EObjectFlags ObjectFlags, UActorFactory* FactoryToUse, const FName Name = NAME_None, const FViewportCursorLocation* Cursor = nullptr);
 
 	/** 
 	 * Returns true if creating a preview actor in the viewport. 
@@ -760,6 +748,7 @@ public:
 
 	/** When enabled, the Unreal transform widget will become visible after an actor is selected, even if it was turned off via a show flag */
 	bool bAlwaysShowModeWidgetAfterSelectionChanges;
+
 private:
 	/** The actors that are currently being placed in the viewport via dragging */
 	static TArray< TWeakObjectPtr< AActor > > DropPreviewActors;
@@ -792,12 +781,14 @@ private:
 	TWeakObjectPtr<AActor>	ActorLockedByMatinee;
 	TWeakObjectPtr<AActor>	ActorLockedToCamera;
 
-	/** Those sound stat flags which are enabled on this viewport */
-	ESoundShowFlags::Type	SoundShowFlags;
+	/** Caching for expensive FindViewComponentForActor. Invalidated once per Tick. */
+	static TMap<TObjectKey<AActor>, TWeakObjectPtr<UActorComponent>> ViewComponentForActorCache;
 
 	/** If true, we switched between two different cameras. Set by matinee, used by the motion blur to invalidate this frames motion vectors */
 	bool					bEditorCameraCut;
 
 	/** Stores the previous frame's value of bEditorCameraCut in order to reset it back to false on the next frame */
 	bool					bWasEditorCameraCut;
+
+	bool bApplyCameraSpeedScaleByDistance;
 };

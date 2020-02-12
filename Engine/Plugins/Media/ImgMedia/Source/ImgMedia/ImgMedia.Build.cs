@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 namespace UnrealBuildTool.Rules
 {
@@ -32,6 +32,7 @@ namespace UnrealBuildTool.Rules
 				new string[] {
 					"ImgMedia/Private",
 					"ImgMedia/Private/Assets",
+					"ImgMedia/Private/GlobalCache",
 					"ImgMedia/Private/Loader",
 					"ImgMedia/Private/Player",
 					"ImgMedia/Private/Readers",

@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -29,9 +29,11 @@ public:
 	}
 
 	virtual void Initialize(UAnimInstance* InAnimInstance) override;
+	virtual void PreUpdate(UAnimInstance* InAnimInstance, float DeltaSeconds) override;
 	virtual bool Evaluate(FPoseContext& Output) override;
-	virtual void UpdateAnimationNode(float DeltaSeconds) override;
+	virtual void UpdateAnimationNode(const FAnimationUpdateContext& InContext) override;
 
+	UPROPERTY(EditAnywhere, Category = Settings)
 	FAnimNode_LiveLinkPose PoseNode;
 };
 
@@ -40,9 +42,9 @@ class LIVELINK_API ULiveLinkInstance : public UAnimInstance
 {
 	GENERATED_UCLASS_BODY()
 
-	void SetSubject(FName SubjectName)
+	void SetSubject(FLiveLinkSubjectName SubjectName)
 	{
-		GetProxyOnGameThread<FLiveLinkInstanceProxy>().PoseNode.SubjectName = SubjectName;
+		GetProxyOnGameThread<FLiveLinkInstanceProxy>().PoseNode.LiveLinkSubjectName = SubjectName;
 	}
 
 	void SetRetargetAsset(TSubclassOf<ULiveLinkRetargetAsset> RetargetAsset)

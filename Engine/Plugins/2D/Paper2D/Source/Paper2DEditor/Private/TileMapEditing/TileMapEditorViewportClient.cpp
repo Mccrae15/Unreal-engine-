@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "TileMapEditing/TileMapEditorViewportClient.h"
 #include "Components/PrimitiveComponent.h"
@@ -190,6 +190,7 @@ void FTileMapEditorViewportClient::DrawCanvas(FViewport& InViewport, FSceneView&
 					case EBlendMode::BLEND_Additive:
 					case EBlendMode::BLEND_Modulate:
 					case EBlendMode::BLEND_AlphaComposite:
+					case EBlendMode::BLEND_AlphaHoldout:
 						MaterialType = Translucent;
 						break;
 					case EBlendMode::BLEND_Masked:

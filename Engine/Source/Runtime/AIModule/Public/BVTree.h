@@ -1,7 +1,9 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
+#include "Containers/ContainersFwd.h"
+#include "Math/Box.h"
 
 template<typename InElementType, typename InAllocator = FDefaultAllocator>
 struct TBVTree

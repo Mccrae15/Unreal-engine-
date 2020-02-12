@@ -1,6 +1,6 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
-#include "NiagaraScriptViewModel.h"
+#include "ViewModels/NiagaraScriptViewModel.h"
 #include "NiagaraScript.h"
 #include "NiagaraScriptSource.h"
 #include "NiagaraGraph.h"
@@ -8,7 +8,6 @@
 #include "NiagaraEmitter.h"
 #include "NiagaraScriptInputCollectionViewModel.h"
 #include "NiagaraScriptOutputCollectionViewModel.h"
-#include "NiagaraMetaDataCollectionViewModel.h"
 #include "NiagaraNodeInput.h"
 #include "INiagaraCompiler.h"
 #include "Kismet2/CompilerResultsLog.h"
@@ -20,137 +19,19 @@
 
 template<> TMap<UNiagaraScript*, TArray<FNiagaraScriptViewModel*>> TNiagaraViewModelManager<UNiagaraScript, FNiagaraScriptViewModel>::ObjectsToViewModels{};
 
-FNiagaraScriptViewModel::FNiagaraScriptViewModel(UNiagaraScript* InScript, FText DisplayName, ENiagaraParameterEditMode InParameterEditMode)
-	: InputCollectionViewModel(MakeShareable(new FNiagaraScriptInputCollectionViewModel(InScript, DisplayName, InParameterEditMode)))
-	, OutputCollectionViewModel(MakeShareable(new FNiagaraScriptOutputCollectionViewModel(InScript, InParameterEditMode)))
-	, MetaDataCollectionViewModel(MakeShareable(new FNiagaraMetaDataCollectionViewModel()))
-	, GraphViewModel(MakeShareable(new FNiagaraScriptGraphViewModel(Cast<UNiagaraScriptSource>(InScript->GetSource()), DisplayName)))
+FNiagaraScriptViewModel::FNiagaraScriptViewModel(TAttribute<FText> DisplayName, ENiagaraParameterEditMode InParameterEditMode)
+	: InputCollectionViewModel(MakeShareable(new FNiagaraScriptInputCollectionViewModel(DisplayName, InParameterEditMode)))
+	, OutputCollectionViewModel(MakeShareable(new FNiagaraScriptOutputCollectionViewModel(InParameterEditMode)))
+	, GraphViewModel(MakeShareable(new FNiagaraScriptGraphViewModel(DisplayName)))
+	, VariableSelection(MakeShareable(new FNiagaraObjectSelection()))
 	, bUpdatingSelectionInternally(false)
 	, LastCompileStatus(ENiagaraScriptCompileStatus::NCS_Unknown)
 {
-	if (InScript != nullptr)
-	{
-		Scripts.Add(InScript);
-		Source = Cast<UNiagaraScriptSource>(InScript->GetSource());
-		Scripts[0]->OnVMScriptCompiled().AddRaw(this, &FNiagaraScriptViewModel::OnVMScriptCompiled);
-	}
-
 	InputCollectionViewModel->GetSelection().OnSelectedObjectsChanged().AddRaw(this, &FNiagaraScriptViewModel::InputViewModelSelectionChanged);
 	InputCollectionViewModel->OnParameterValueChanged().AddRaw(this, &FNiagaraScriptViewModel::InputParameterValueChanged);
 	OutputCollectionViewModel->OnParameterValueChanged().AddRaw(this, &FNiagaraScriptViewModel::OutputParameterValueChanged);
-	GraphViewModel->GetSelection()->OnSelectedObjectsChanged().AddRaw(this, &FNiagaraScriptViewModel::GraphViewModelSelectedNodesChanged);
+	GraphViewModel->GetNodeSelection()->OnSelectedObjectsChanged().AddRaw(this, &FNiagaraScriptViewModel::GraphViewModelSelectedNodesChanged);
 	GEditor->RegisterForUndo(this);
-
-	if (Source != nullptr)
-	{
-		UNiagaraGraph* Graph = Source->NodeGraph;
-		MetaDataCollectionViewModel->SetGraph(Graph);
-	}
-
-	// Guess at initial compile status
-	if (InScript != nullptr && InScript->GetVMExecutableData().IsValid() && InScript->GetVMExecutableData().ByteCode.Num() == 0) // This is either a brand new script or failed in the past. Since we create a default working script, assume invalid.
-	{
-		LastCompileStatus = InScript->GetLastCompileStatus();
-		GraphViewModel->SetErrorTextToolTip("Please recompile for full error stack.");
-	}
-	else // Possibly warnings previously, but still compiled. It *could* have been dirtied somehow, but we assume that it is up-to-date.
-	{
-		if (InScript != nullptr && InScript->AreScriptAndSourceSynchronized())
-		{
-			LastCompileStatus = InScript->GetLastCompileStatus();
-		}
-		else
-		{
-			LastCompileStatus = ENiagaraScriptCompileStatus::NCS_Unknown;
-			GraphViewModel->SetErrorTextToolTip("Please recompile for full error stack.");
-		}
-	}
-
-	RegisteredHandles.Add(RegisterViewModelWithMap(InScript, this));
-	//UE_LOG(LogNiagaraEditor, Warning, TEXT("FNiagaraScriptViewModel %p"), this);
-
-}
-
-FNiagaraScriptViewModel::FNiagaraScriptViewModel(UNiagaraEmitter* InEmitter, FText DisplayName, ENiagaraParameterEditMode InParameterEditMode)
-	: InputCollectionViewModel(MakeShareable(new FNiagaraScriptInputCollectionViewModel(InEmitter, DisplayName, InParameterEditMode)))
-	, OutputCollectionViewModel(MakeShareable(new FNiagaraScriptOutputCollectionViewModel(InEmitter, InParameterEditMode)))
-	, MetaDataCollectionViewModel(MakeShareable(new FNiagaraMetaDataCollectionViewModel()))
-	, GraphViewModel(MakeShareable(new FNiagaraScriptGraphViewModel(Cast<UNiagaraScriptSource>(InEmitter->GraphSource), DisplayName)))
-	, bUpdatingSelectionInternally(false)
-	, LastCompileStatus(ENiagaraScriptCompileStatus::NCS_Unknown)
-{
-	TArray<UNiagaraScript*> InScripts;
-	InEmitter->GetScripts(InScripts);
-	// Because of weak pointers, we need to copy ourselves..
-	for (UNiagaraScript* Script : InScripts)
-	{
-		int32 i = Scripts.Add(Script);
-		check(Script->GetSource() == InEmitter->GraphSource);
-		Scripts[i]->OnVMScriptCompiled().AddRaw(this, &FNiagaraScriptViewModel::OnVMScriptCompiled);
-	}
-	Source = Cast<UNiagaraScriptSource>(InEmitter->GraphSource);
-
-	InputCollectionViewModel->GetSelection().OnSelectedObjectsChanged().AddRaw(this, &FNiagaraScriptViewModel::InputViewModelSelectionChanged);
-	InputCollectionViewModel->OnParameterValueChanged().AddRaw(this, &FNiagaraScriptViewModel::InputParameterValueChanged);
-	OutputCollectionViewModel->OnParameterValueChanged().AddRaw(this, &FNiagaraScriptViewModel::OutputParameterValueChanged);
-	GraphViewModel->GetSelection()->OnSelectedObjectsChanged().AddRaw(this, &FNiagaraScriptViewModel::GraphViewModelSelectedNodesChanged);
-	GEditor->RegisterForUndo(this);
-
-	UNiagaraGraph* Graph = Source->NodeGraph;
-
-	MetaDataCollectionViewModel->SetGraph(Graph);
-
-	// Guess at initial compile status
-	LastCompileStatus = ENiagaraScriptCompileStatus::NCS_UpToDate;
-
-	CompileStatuses.Empty();
-	CompileErrors.Empty();
-	CompilePaths.Empty();
-
-	for (int32 i = 0; i < Scripts.Num(); i++)
-	{
-		FString Message;
-		ENiagaraScriptCompileStatus ScriptStatus = Scripts[i]->GetLastCompileStatus();
-		if (Scripts[i].IsValid() && Scripts[i]->IsCompilable() && Scripts[i]->GetVMExecutableData().IsValid() && Scripts[i]->GetVMExecutableData().ByteCode.Num() == 0) // This is either a brand new script or failed in the past. Since we create a default working script, assume invalid.
-		{
-			LastCompileStatus = ScriptStatus;
-			Message = TEXT("Please recompile for full error stack.");
-			GraphViewModel->SetErrorTextToolTip(Message);
-		}
-		else // Possibly warnings previously, but still compiled. It *could* have been dirtied somehow, but we assume that it is up-to-date.
-		{
-			if (Scripts[i].IsValid() && Scripts[i]->IsCompilable()&& Scripts[i]->AreScriptAndSourceSynchronized())
-			{
-				LastCompileStatus = FNiagaraEditorUtilities::UnionCompileStatus(LastCompileStatus, Scripts[i]->GetLastCompileStatus());
-			}
-			else if (Scripts[i].IsValid() && !Scripts[i]->IsCompilable())
-			{
-				// Do nothing..
-				ScriptStatus = ENiagaraScriptCompileStatus::NCS_UpToDate;
-			}
-			else
-			{
-				LastCompileStatus = FNiagaraEditorUtilities::UnionCompileStatus(LastCompileStatus, ENiagaraScriptCompileStatus::NCS_Error);
-				ScriptStatus = ENiagaraScriptCompileStatus::NCS_Error;
-				Message = TEXT("Please recompile for full error stack.");
-				GraphViewModel->SetErrorTextToolTip(Message);
-			}
-		}
-
-		CompilePaths.Add(Scripts[i]->GetPathName());
-		CompileErrors.Add(Message);
-		CompileStatuses.Add(ScriptStatus);
-
-		RegisteredHandles.Add(RegisterViewModelWithMap(Scripts[i].Get(), this));
-	}
-
-	CompileTypes.SetNum(CompileStatuses.Num());
-	for (int32 i = 0; i < CompileStatuses.Num(); i++)
-	{
-		CompileTypes[i].Key = Scripts[i]->GetUsage();
-		CompileTypes[i].Value = Scripts[i]->GetUsageId();
-	}
-	//UE_LOG(LogNiagaraEditor, Warning, TEXT("FNiagaraScriptViewModel %p"), this);
 }
 
 void FNiagaraScriptViewModel::OnVMScriptCompiled(UNiagaraScript* InScript)
@@ -183,6 +64,11 @@ void FNiagaraScriptViewModel::OnVMScriptCompiled(UNiagaraScript* InScript)
 	}
 }
 
+void FNiagaraScriptViewModel::OnGPUScriptCompiled(UNiagaraScript* InScript)
+{
+	// Do nothing in base implementation
+}
+
 bool FNiagaraScriptViewModel::IsGraphDirty() const
 {
 	for (int32 i = 0; i < Scripts.Num(); i++)
@@ -204,7 +90,7 @@ bool FNiagaraScriptViewModel::IsGraphDirty() const
 FNiagaraScriptViewModel::~FNiagaraScriptViewModel()
 {
 	InputCollectionViewModel->GetSelection().OnSelectedObjectsChanged().RemoveAll(this);
-	GraphViewModel->GetSelection()->OnSelectedObjectsChanged().RemoveAll(this);
+	GraphViewModel->GetNodeSelection()->OnSelectedObjectsChanged().RemoveAll(this);
 
 	if (Source.IsValid() && Source != nullptr)
 	{
@@ -220,6 +106,7 @@ FNiagaraScriptViewModel::~FNiagaraScriptViewModel()
 		if (Scripts[i].IsValid())
 		{
 			Scripts[i]->OnVMScriptCompiled().RemoveAll(this);
+			Scripts[i]->OnGPUScriptCompiled().RemoveAll(this);
 		}
 	}
 
@@ -233,6 +120,15 @@ FNiagaraScriptViewModel::~FNiagaraScriptViewModel()
 
 }
 
+FText FNiagaraScriptViewModel::GetDisplayName() const
+{
+	return GraphViewModel->GetDisplayName();
+}
+
+const TArray<TWeakObjectPtr<UNiagaraScript>>& FNiagaraScriptViewModel::GetScripts() const
+{
+	return Scripts;
+}
 
 void FNiagaraScriptViewModel::SetScripts(UNiagaraScriptSource* InScriptSource, TArray<UNiagaraScript*>& InScripts)
 {
@@ -255,6 +151,7 @@ void FNiagaraScriptViewModel::SetScripts(UNiagaraScriptSource* InScriptSource, T
 		if (Scripts[i].IsValid())
 		{
 			Scripts[i]->OnVMScriptCompiled().RemoveAll(this);
+			Scripts[i]->OnGPUScriptCompiled().RemoveAll(this);
 		}
 	}
 
@@ -269,21 +166,14 @@ void FNiagaraScriptViewModel::SetScripts(UNiagaraScriptSource* InScriptSource, T
 	{
 		int32 i = Scripts.Add(Script);
 		check(Script->GetSource() == InScriptSource);
-		Scripts[i]->OnVMScriptCompiled().AddRaw(this, &FNiagaraScriptViewModel::OnVMScriptCompiled);
+		Scripts[i]->OnVMScriptCompiled().AddSP(this, &FNiagaraScriptViewModel::OnVMScriptCompiled);
+		Scripts[i]->OnGPUScriptCompiled().AddSP(this, &FNiagaraScriptViewModel::OnGPUScriptCompiled);
 	}
 	Source = InScriptSource;
 
 	InputCollectionViewModel->SetScripts(InScripts);
 	OutputCollectionViewModel->SetScripts(InScripts);
 	GraphViewModel->SetScriptSource(Source.Get());
-
-	UNiagaraGraph* Graph = nullptr;
-	if (Source.IsValid() && Source != nullptr)
-	{
-		// The underlying graph may have changed after the previous call.
-		Graph = Source->NodeGraph;
-	}
-	MetaDataCollectionViewModel->SetGraph(Graph);
 
 	// Guess at initial compile status
 	LastCompileStatus = ENiagaraScriptCompileStatus::NCS_UpToDate;
@@ -385,19 +275,14 @@ TSharedRef<FNiagaraScriptOutputCollectionViewModel> FNiagaraScriptViewModel::Get
 	return OutputCollectionViewModel;
 }
 
-TSharedRef<FNiagaraMetaDataCollectionViewModel> FNiagaraScriptViewModel::GetMetadataCollectionViewModel()
-{
-	return MetaDataCollectionViewModel;
-}
-
-void FNiagaraScriptViewModel::RefreshMetadataCollection()
-{
-	MetaDataCollectionViewModel->RequestRefresh();
-}
-
 TSharedRef<FNiagaraScriptGraphViewModel> FNiagaraScriptViewModel::GetGraphViewModel()
 {
 	return GraphViewModel;
+}
+
+TSharedRef<FNiagaraObjectSelection> FNiagaraScriptViewModel::GetVariableSelection()
+{
+	return VariableSelection;
 }
 
 UNiagaraScript* FNiagaraScriptViewModel::GetStandaloneScript()
@@ -412,7 +297,6 @@ UNiagaraScript* FNiagaraScriptViewModel::GetStandaloneScript()
 	}
 	return nullptr;
 }
-
 
 void FNiagaraScriptViewModel::UpdateCompileStatus(ENiagaraScriptCompileStatus InAggregateCompileStatus, const FString& InAggregateCompileErrorString,
 	const TArray<ENiagaraScriptCompileStatus>& InCompileStatuses, const TArray<FString>& InCompileErrors, const TArray<FString>& InCompilePaths,
@@ -497,13 +381,13 @@ UNiagaraScript* FNiagaraScriptViewModel::GetScript(ENiagaraScriptUsage InUsage, 
 	return nullptr;
 }
 
-void FNiagaraScriptViewModel::CompileStandaloneScript()
+void FNiagaraScriptViewModel::CompileStandaloneScript(bool bForceCompile)
 {
 	if (Source.IsValid() && Source != nullptr && Scripts.Num() == 1 && Scripts[0].IsValid ())
 	{
 		if (Scripts[0]->IsStandaloneScript() && Scripts[0]->IsCompilable())
 		{
-			Scripts[0]->RequestCompile();
+			Scripts[0]->RequestCompile(bForceCompile);
 		}
 		else if (!Scripts[0]->IsCompilable())
 		{
@@ -524,7 +408,9 @@ void FNiagaraScriptViewModel::CompileStandaloneScript()
 ENiagaraScriptCompileStatus FNiagaraScriptViewModel::GetLatestCompileStatus()
 {
 	if (GraphViewModel->GetGraph() && IsGraphDirty())
+	{
 		return ENiagaraScriptCompileStatus::NCS_Dirty;
+	}
 	return LastCompileStatus;
 }
 
@@ -563,7 +449,7 @@ void FNiagaraScriptViewModel::GraphViewModelSelectedNodesChanged()
 		bUpdatingSelectionInternally = true;
 		{
 			TSet<FName> SelectedInputIds;
-			for (UObject* SelectedObject : GraphViewModel->GetSelection()->GetSelectedObjects())
+			for (UObject* SelectedObject : GraphViewModel->GetNodeSelection()->GetSelectedObjects())
 			{
 				UNiagaraNodeInput* InputNode = Cast<UNiagaraNodeInput>(SelectedObject);
 				if (InputNode != nullptr)
@@ -613,7 +499,7 @@ void FNiagaraScriptViewModel::InputViewModelSelectionChanged()
 				}
 			}
 
-			GraphViewModel->GetSelection()->SetSelectedObjects(NodesToSelect);
+			GraphViewModel->GetNodeSelection()->SetSelectedObjects(NodesToSelect);
 		}
 		bUpdatingSelectionInternally = false;
 	}

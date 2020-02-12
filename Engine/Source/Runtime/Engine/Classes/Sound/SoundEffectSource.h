@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 #pragma once
 
 #include "CoreMinimal.h"
@@ -12,7 +12,7 @@
 class FSoundEffectSource;
 class FSoundEffectBase;
 
-/** This is here to make sure users don't mix up source and submix effects in the editor. Asset sorting, drag-n-drop, etc. */
+/** Preset of a source effect that can be shared between chains. */
 UCLASS(config = Engine, abstract, editinlinenew, BlueprintType)
 class ENGINE_API USoundEffectSourcePreset : public USoundEffectPreset
 {
@@ -31,7 +31,7 @@ struct ENGINE_API FSourceEffectChainEntry
 	uint32 bBypass : 1;
 };
 
-
+/** Chain of source effect presets that can be shared between referencing sounds. */
 UCLASS(BlueprintType)
 class ENGINE_API USoundEffectSourcePresetChain : public UObject
 {
@@ -47,6 +47,8 @@ public:
 	UPROPERTY(EditAnywhere, Category = Effects)
 	uint32 bPlayEffectChainTails : 1;
 
+	void AddReferencedEffects(FReferenceCollector& Collector);
+
 protected:
 
 #if WITH_EDITORONLY_DATA
@@ -55,7 +57,7 @@ protected:
 
 };
 
-/** Struct which has data needed to initialize the source effect. */
+/** Data required to initialize the source effect. */
 struct FSoundEffectSourceInitData
 {
 	float SampleRate;
@@ -73,7 +75,7 @@ struct FSoundEffectSourceInitData
 	{}
 };
 
-/** Struct which has data to initialize the source effect. */
+/** Data required to update the source effect. */
 struct FSoundEffectSourceInputData
 {
 	float CurrentVolume;
@@ -105,5 +107,7 @@ public:
 
 	/** Process the input block of audio. Called on audio thread. */
 	virtual void ProcessAudio(const FSoundEffectSourceInputData& InData, float* OutAudioBufferData) = 0;
-};
 
+	/** Process modulation controls if enabled */
+	virtual void ProcessControls(const FSoundModulationControls& InControls) { }
+};

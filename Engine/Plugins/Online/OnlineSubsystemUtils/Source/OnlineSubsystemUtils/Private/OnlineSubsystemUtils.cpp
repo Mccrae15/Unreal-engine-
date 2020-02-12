@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "OnlineSubsystemUtils.h"
 #include "Logging/LogScopedVerbosityOverride.h"
@@ -37,12 +37,80 @@
 #include "Tests/TestExternalUIInterface.h"
 #include "Tests/TestPresenceInterface.h"
 
+
+static FAutoConsoleCommand GSendRemoteTalkersToEndpointCommand(
+	TEXT("voice.sendRemoteTalkersToEndpoint"),
+	TEXT("This will send audio output for all incoming voip audio to the named endpoint. if given no arguments, this will route voice output through the game engine."),
+	FConsoleCommandWithArgsDelegate::CreateStatic(
+		[](const TArray< FString >& Args)
+{
+	IOnlineSubsystem* PlatformSubsystem = IOnlineSubsystem::Get();
+	IOnlineVoicePtr PlatformVoiceInterface = PlatformSubsystem ? PlatformSubsystem->GetVoiceInterface() : nullptr;
+
+	check(PlatformVoiceInterface.IsValid());
+
+	if (Args.Num() == 0)
+	{
+		PlatformVoiceInterface->DisconnectAllEndpoints();
+	}
+	else
+	{
+		FString DeviceName;
+		for (int32 Index = 0; Index < Args.Num(); Index++)
+		{
+			DeviceName.Append(Args[Index]);
+			DeviceName.Append(TEXT(" "), 1);
+		}
+
+		PlatformVoiceInterface->PatchRemoteTalkerOutputToEndpoint(DeviceName);
+	}
+})
+);
+
+static FAutoConsoleCommand GSendLocalTalkersToEndpointCommand(
+	TEXT("voice.sendLocalTalkersToEndpoint"),
+	TEXT("This will send audio output for all outgoing voip audio to the named endpoint. if given no arguments, this will disconnect all external endpoints."),
+	FConsoleCommandWithArgsDelegate::CreateStatic(
+		[](const TArray< FString >& Args)
+{
+	IOnlineSubsystem* PlatformSubsystem = IOnlineSubsystem::Get();
+	IOnlineVoicePtr PlatformVoiceInterface = PlatformSubsystem ? PlatformSubsystem->GetVoiceInterface() : nullptr;
+
+	check(PlatformVoiceInterface.IsValid());
+
+
+	if (Args.Num() == 0)
+	{
+		PlatformVoiceInterface->DisconnectAllEndpoints();
+	}
+	else
+	{
+		FString DeviceName;
+		for (int32 Index = 0; Index < Args.Num(); Index++)
+		{
+			DeviceName.Append(Args[Index]);
+			DeviceName.Append(TEXT(" "), 1);
+		}
+
+		PlatformVoiceInterface->PatchLocalTalkerOutputToEndpoint(DeviceName);
+	}
+})
+);
+
+static int32 CvarAlwaysPlayVoipComponent = 1;
+FAutoConsoleVariableRef CVarAlwaysPlayVoipComponent(
+	TEXT("au.voip.AlwaysPlayVoiceComponent"),
+	CvarAlwaysPlayVoipComponent,
+	TEXT("When set to 1, guarantees that voip components won't get deprioritized. \n")
+	TEXT("0: Let voip components get killed, 1: force VOIP components to be higher priority than all other audio sources."),
+	ECVF_Default);
+
 UAudioComponent* CreateVoiceAudioComponent(uint32 SampleRate, int32 NumChannels)
 {
 	UAudioComponent* AudioComponent = nullptr;
 	if (GEngine != nullptr)
 	{
-		if (FAudioDevice* AudioDevice = GEngine->GetMainAudioDevice())
+		if (FAudioDeviceHandle AudioDevice = GEngine->GetMainAudioDevice())
 		{
 			USoundWaveProcedural* SoundStreaming = NewObject<USoundWaveProcedural>();
 			SoundStreaming->SetSampleRate(SampleRate);
@@ -89,7 +157,7 @@ UAudioComponent* CreateVoiceAudioComponent(uint32 SampleRate, int32 NumChannels)
 UVoipListenerSynthComponent* CreateVoiceSynthComponent(uint32 SampleRate)
 {
 	UVoipListenerSynthComponent* SynthComponentPtr = nullptr;
-	if (FAudioDevice* AudioDevice = GEngine->GetMainAudioDevice())
+	if (FAudioDeviceHandle AudioDevice = GEngine->GetMainAudioDevice())
 	{
 		SynthComponentPtr = NewObject<UVoipListenerSynthComponent>();
 		if (SynthComponentPtr)
@@ -100,11 +168,44 @@ UVoipListenerSynthComponent* CreateVoiceSynthComponent(uint32 SampleRate)
 				SynthComponentPtr->SoundClass = LoadObject<USoundClass>(nullptr, *VoiPSoundClassName.ToString());
 			}
 
+			SynthComponentPtr->bAlwaysPlay = CvarAlwaysPlayVoipComponent;
 			SynthComponentPtr->Initialize(SampleRate);
 		}
 		else
 		{
 			UE_LOG(LogVoiceDecode, Warning, TEXT("Unable to create voice synth component!"));
+		}
+	}
+
+	return SynthComponentPtr;
+}
+
+
+UVoipListenerSynthComponent* CreateVoiceSynthComponent(UWorld* World, uint32 SampleRate)
+{
+	UVoipListenerSynthComponent* SynthComponentPtr = nullptr;
+
+	if (World)
+	{
+		if (FAudioDeviceHandle AudioDeviceHandle = World->GetAudioDevice())
+		{
+			SynthComponentPtr = NewObject<UVoipListenerSynthComponent>();
+			if (SynthComponentPtr)
+			{
+				const FSoftObjectPath VoiPSoundClassName = GetDefault<UAudioSettings>()->VoiPSoundClass;
+				if (VoiPSoundClassName.IsValid())
+				{
+					SynthComponentPtr->SoundClass = LoadObject<USoundClass>(nullptr, *VoiPSoundClassName.ToString());
+				}
+
+				SynthComponentPtr->bAlwaysPlay = CvarAlwaysPlayVoipComponent;
+				SynthComponentPtr->RegisterComponentWithWorld(World);
+				SynthComponentPtr->Initialize(SampleRate);
+			}
+			else
+			{
+				UE_LOG(LogVoiceDecode, Warning, TEXT("Unable to create voice synth component!"));
+			}
 		}
 	}
 
@@ -142,7 +243,7 @@ void ApplyVoiceSettings(UVoipListenerSynthComponent* InSynthComponent, const FVo
 
 			// By ensuring that this Audio Component's device handle is INDEX_NONE, we ensure that we will revert to
 			// using the audio device associated with the World we just registered this audio component on.
-			AudioComponent->AudioDeviceHandle = INDEX_NONE;
+			AudioComponent->AudioDeviceID = INDEX_NONE;
 		}
 	}
 
@@ -218,7 +319,14 @@ int32 GetClientPeerIp(FName InstanceName, const FUniqueNetId& UserId)
 				if (ClientConnection && 
 					ClientConnection->PlayerId.ToString() == UserId.ToString())
 				{
-					PeerIp = ClientConnection->GetAddrAsInt();
+					TSharedPtr<const FInternetAddr> ClientAddr = ClientConnection->GetRemoteAddr();
+					if (ClientAddr.IsValid())
+					{
+						uint32 TempAddr = 0;
+						ClientAddr->GetIp(TempAddr);
+						PeerIp = static_cast<int32>(TempAddr);
+					}
+
 					break;
 				}
 			}
@@ -588,6 +696,8 @@ static bool OnlineExec( UWorld* InWorld, const TCHAR* Cmd, FOutputDevice& Ar )
 					{
 						// Full command usage:    EXTERNALUI ACHIEVEMENTS FRIENDS INVITE LOGIN PROFILE WEBURL
 						// Example for one test:  EXTERNALUI WEBURL
+						// Example for store: EXTERNALUI STORE productid true
+						// Example for send message: EXTERNALUI MESSAGE user "message"
 						// Note that tests are enabled in alphabetical order
 						bool bTestAchievementsUI = FParse::Command(&Cmd, TEXT("ACHIEVEMENTS")) ? true : false;
 						bool bTestFriendsUI = FParse::Command(&Cmd, TEXT("FRIENDS")) ? true : false;
@@ -597,7 +707,26 @@ static bool OnlineExec( UWorld* InWorld, const TCHAR* Cmd, FOutputDevice& Ar )
 						bool bTestWebURL = FParse::Command(&Cmd, TEXT("WEBURL")) ? true : false;
 
 						// This class also deletes itself once done
-						(new FTestExternalUIInterface(SubName, bTestLoginUI, bTestFriendsUI, bTestInviteUI, bTestAchievementsUI, bTestWebURL, bTestProfileUI))->Test();
+						FTestExternalUIInterface* TestHarness = (new FTestExternalUIInterface(SubName, bTestLoginUI, bTestFriendsUI, 
+							bTestInviteUI, bTestAchievementsUI, bTestWebURL, bTestProfileUI));
+
+						if (FParse::Command(&Cmd, TEXT("STORE")))
+						{
+							FString AppID = FParse::Token(Cmd, false);
+							bool bAddCart = FCString::ToBool(*FParse::Token(Cmd, false));
+							TestHarness->TestStorePage(AppID, bAddCart);
+						}
+						else if (FParse::Command(&Cmd, TEXT("MESSAGE")))
+						{
+							FString UserID = FParse::Token(Cmd, false);
+							FString Message = FParse::Token(Cmd, false);
+							TestHarness->TestSendMessage(UserID, Message);
+						}
+						else
+						{
+							TestHarness->Test();
+						}
+
 						bWasHandled = true;
 					}
 #endif //WITH_DEV_AUTOMATION_TESTS
@@ -634,7 +763,7 @@ void FOnlineSubsystemBPCallHelper::QueryIDFromPlayerController(APlayerController
 
 	if (APlayerState* PlayerState = (PlayerController != NULL) ? PlayerController->PlayerState : NULL)
 	{
-		UserID = PlayerState->UniqueId.GetUniqueNetId();
+		UserID = PlayerState->GetUniqueId().GetUniqueNetId();
 		if (!UserID.IsValid())
 		{
 			FFrame::KismetExecutionMessage(*FString::Printf(TEXT("%s - Cannot map local player to unique net ID"), FunctionContext), ELogVerbosity::Warning);

@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 /*=============================================================================
 	RHIShaderPlatformDefinitions.h: Localizable Friendly Names for Shader Platforms
@@ -26,15 +26,6 @@ static const FText& GetFriendlyShaderPlatformName(const EShaderPlatform InShader
 	case SP_METAL_MRT:
 	{
 		static const FText Description = NSLOCTEXT("FriendlyShaderPlatformNames", "Metal_SM5_loc", "Metal SM5");
-		return Description;
-	}
-	break;
-
-	case SP_PCD3D_SM4:
-	case SP_OPENGL_SM4:
-	case SP_VULKAN_SM4:
-	{
-		static const FText Description = NSLOCTEXT("FriendlyShaderPlatformNames", "Generic_SM4_loc", "SM4");
 		return Description;
 	}
 	break;
@@ -112,14 +103,6 @@ static const FText& GetFriendlyShaderPlatformName(const EShaderPlatform InShader
 	}
 	break;
 
-	case SP_PCD3D_ES2:
-	case SP_OPENGL_PCES2:
-	{
-		static const FText Description = NSLOCTEXT("FriendlyShaderPlatformNames", "Generic_ES2_loc", "ES2");
-		return Description;
-	}
-	break;
-
 	case SP_OPENGL_ES2_ANDROID:
 	{
 		static const FText Description = NSLOCTEXT("FriendlyShaderPlatformNames", "Android_ES2_loc", "Android ES2");
@@ -130,20 +113,6 @@ static const FText& GetFriendlyShaderPlatformName(const EShaderPlatform InShader
 	case SP_OPENGL_ES2_WEBGL:
 	{
 		static const FText Description = NSLOCTEXT("FriendlyShaderPlatformNames", "WebGL_ES2_loc", "WebGL ES2");
-		return Description;
-	}
-	break;
-
-	case SP_OPENGL_ES2_IOS:
-	{
-		static const FText Description = NSLOCTEXT("FriendlyShaderPlatformNames", "iOS_ES2_loc", "iOS ES2");
-		return Description;
-	}
-	break;
-
-	case SP_METAL_MACES2:
-	{
-		static const FText Description = NSLOCTEXT("FriendlyShaderPlatformNames", "iOS_Metal_Mace_2_loc", "iOS Metal ES2");
 		return Description;
 	}
 	break;

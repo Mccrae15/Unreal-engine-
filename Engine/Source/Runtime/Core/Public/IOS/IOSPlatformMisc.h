@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 /*=============================================================================================
 	IOSPlatformMisc.h: iOS platform misc functions
@@ -34,6 +34,7 @@ struct CORE_API FIOSPlatformMisc : public FApplePlatformMisc
 
 	static EAppReturnType::Type MessageBoxExt( EAppMsgType::Type MsgType, const TCHAR* Text, const TCHAR* Caption );
 	static void SetMemoryWarningHandler(void (* Handler)(const FGenericMemoryWarningContext& Context));
+	static bool HasMemoryWarningHandler();
 	static bool HasPlatformFeature(const TCHAR* FeatureName);
 	static bool SetStoredValue(const FString& InStoreId, const FString& InSectionName, const FString& InKeyName, const FString& InValue);
 	static bool GetStoredValue(const FString& InStoreId, const FString& InSectionName, const FString& InKeyName, FString& OutValue);
@@ -42,6 +43,7 @@ struct CORE_API FIOSPlatformMisc : public FApplePlatformMisc
 	static ENetworkConnectionType GetNetworkConnectionType();
 	static bool HasActiveWiFiConnection();
 	static const TCHAR* GamePersistentDownloadDir();
+    static bool HasSeparateChannelForDebugOutput();
 
 	UE_DEPRECATED(4.21, "Use GetDeviceVolume, it is now callable on all platforms.")
 	static int GetAudioVolume();
@@ -77,6 +79,7 @@ struct CORE_API FIOSPlatformMisc : public FApplePlatformMisc
 	static void ShareURL(const FString& URL, const FText& Description, int32 LocationHintX, int32 LocationHintY);
 
 	static FString LoadTextFileFromPlatformPackage(const FString& RelativePath);
+	static bool FileExistsInPlatformPackage(const FString& RelativePath);
 
 	static void EnableVoiceChat(bool bEnable);
 	static bool IsVoiceChatEnabled();
@@ -98,6 +101,8 @@ struct CORE_API FIOSPlatformMisc : public FApplePlatformMisc
 	
 	static void RequestStoreReview();
 
+	static bool IsUpdateAvailable();
+	
 	// Possible iOS devices
 	enum EIOSDevice
 	{
@@ -137,9 +142,16 @@ struct CORE_API FIOSPlatformMisc : public FApplePlatformMisc
         IOS_IPhoneXS,
         IOS_IPhoneXSMax,
         IOS_IPhoneXR,
+		IOS_IPhone11,
+		IOS_IPhone11Pro,
+		IOS_IPhone11ProMax,
 		IOS_IPad6,
 		IOS_IPadPro_11,
 		IOS_IPadPro3_129,
+        IOS_IPadAir3,
+        IOS_IPadMini5,
+		IOS_IPodTouch7,
+		IOS_IPad7,
 		IOS_Unknown,
 	};
 
@@ -184,9 +196,16 @@ struct CORE_API FIOSPlatformMisc : public FApplePlatformMisc
             TEXT("IPhoneXS"),
             TEXT("IPhoneXSMax"),
             TEXT("IPhoneXR"),
+			TEXT("IPhone11"),
+			TEXT("IPhone11Pro"),
+			TEXT("IPhone11ProMax"),
 			TEXT("IPad6"),
 			TEXT("IPadPro11"),
 			TEXT("IPadPro3_129"),
+            TEXT("IPadAir3"),
+            TEXT("IPadMini5"),
+			TEXT("IPodTouch7"),
+			TEXT("IPad7"),
 			TEXT("Unknown"),
 		};
 		static_assert((sizeof(IOSDeviceNames) / sizeof(IOSDeviceNames[0])) == ((int32)IOS_Unknown + 1), "Mismatched IOSDeviceNames and EIOSDevice.");
@@ -199,7 +218,8 @@ struct CORE_API FIOSPlatformMisc : public FApplePlatformMisc
 	static FString GetCPUBrand();
 	static void GetOSVersions(FString& out_OSVersionLabel, FString& out_OSSubVersionLabel);
 	static int32 IOSVersionCompare(uint8 Major, uint8 Minor, uint8 Revision);
-	
+	static FString GetProjectVersion();
+
 	static void SetGracefulTerminationHandler();
 	static void SetCrashHandler(void(*CrashHandler)(const FGenericCrashContext& Context));
 
@@ -209,6 +229,17 @@ struct CORE_API FIOSPlatformMisc : public FApplePlatformMisc
 	}
 
 	static bool RequestDeviceCheckToken(TFunction<void(const TArray<uint8>&)> QuerySucceededFunc, TFunction<void(const FString&, const FString&)> QueryFailedFunc);
+    
+	FORCEINLINE static void ChooseHDRDeviceAndColorGamut(uint32 DeviceId, uint32 DisplayNitLevel, int32& OutputDevice, int32& ColorGamut)
+	{
+		// Linear output to Apple's specific format.
+		OutputDevice = 7;
+		ColorGamut = 0;
+	}
+
+    // added these for now because Crashlytics doesn't properly break up different callstacks all ending in UE_LOG(LogXXX, Fatal, ...)
+    static FORCENOINLINE CA_NO_RETURN void GPUAssert();
+    static FORCENOINLINE CA_NO_RETURN void MetalAssert();
 };
 
 typedef FIOSPlatformMisc FPlatformMisc;

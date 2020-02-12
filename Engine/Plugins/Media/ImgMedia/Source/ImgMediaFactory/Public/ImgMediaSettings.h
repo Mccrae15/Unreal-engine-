@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -44,6 +44,14 @@ public:
 	UPROPERTY(config, EditAnywhere, Category=Caching, meta=(ClampMin=128), AdvancedDisplay)
 	int32 CacheThreadStackSizeKB;
 
+	/** Maximum size of the global look-ahead cache (in GB; default = 1 GB). */
+	UPROPERTY(config, EditAnywhere, Category = Caching, meta = (ClampMin = 0))
+	float GlobalCacheSizeGB;
+
+	/** Whether to use the global cache or not. */
+	UPROPERTY(config, EditAnywhere, Category = Caching)
+	bool UseGlobalCache;
+
 public:
 
 	/** Number of worker threads to use when decoding EXR images (0 = auto). */
@@ -71,6 +79,19 @@ public:
 
 		return FString();
 	}
+
+#if WITH_EDITOR
+	virtual void PostEditChangeProperty(FPropertyChangedEvent& PropertyChangedEvent) override;
+
+public:
+	DECLARE_MULTICAST_DELEGATE_OneParam(FOnImgMediaSettingsChanged, const UImgMediaSettings*);
+
+	/** Gets a multicast delegate which is called whenever one of the parameters in this settings object changes. */
+	static FOnImgMediaSettingsChanged& OnSettingsChanged();
+
+protected:
+	static FOnImgMediaSettingsChanged SettingsChangedDelegate;
+#endif
 
 private:
 

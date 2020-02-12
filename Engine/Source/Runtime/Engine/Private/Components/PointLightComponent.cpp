@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 /*=============================================================================
 	PointLightComponent.cpp: PointLightComponent implementation.
@@ -44,6 +44,8 @@ void FPointLightSceneProxy::GetLightShaderParameters(FLightShaderParameters& Lig
 	LightParameters.SoftSourceRadius = SoftSourceRadius;
 	LightParameters.SourceLength = SourceLength;
 	LightParameters.SourceTexture = GWhiteTexture->TextureRHI;
+	LightParameters.RectLightBarnCosAngle = 0.0f;
+	LightParameters.RectLightBarnLength = -2.0f;
 }
 
 /**
@@ -52,7 +54,7 @@ void FPointLightSceneProxy::GetLightShaderParameters(FLightShaderParameters& Lig
 */
 bool FPointLightSceneProxy::GetWholeSceneProjectedShadowInitializer(const FSceneViewFamily& ViewFamily, TArray<FWholeSceneProjectedShadowInitializer, TInlineAllocator<6> >& OutInitializers) const
 {
-	if (ViewFamily.GetFeatureLevel() >= ERHIFeatureLevel::SM4
+	if (ViewFamily.GetFeatureLevel() >= ERHIFeatureLevel::SM5
 		&& GAllowPointLightCubemapShadows != 0)
 	{
 		FWholeSceneProjectedShadowInitializer& OutInitializer = *new(OutInitializers) FWholeSceneProjectedShadowInitializer;
@@ -95,9 +97,25 @@ UPointLightComponent::UPointLightComponent(const FObjectInitializer& ObjectIniti
 	bUseInverseSquaredFalloff = true;
 }
 
+static bool IsPointLightSupported(const UPointLightComponent* InLight)
+{
+	if (GMaxRHIFeatureLevel <= ERHIFeatureLevel::ES3_1 && InLight->IsMovable())
+	{
+		// if project does not support dynamic point lights on mobile do not add them to the renderer 
+		static auto* CVarPointLights = IConsoleManager::Get().FindTConsoleVariableDataInt(TEXT("r.MobileNumDynamicPointLights"));
+		const bool bPointLights = CVarPointLights->GetValueOnAnyThread() > 0;
+		return bPointLights;
+	}
+	return true;
+}
+
 FLightSceneProxy* UPointLightComponent::CreateSceneProxy() const
 {
-	return new FPointLightSceneProxy(this);
+	if (IsPointLightSupported(this))
+	{
+		return new FPointLightSceneProxy(this);
+	}
+	return nullptr;
 }
 
 void UPointLightComponent::SetLightFalloffExponent(float NewLightFalloffExponent)
@@ -231,7 +249,7 @@ void UPointLightComponent::Serialize(FArchive& Ar)
 
 #if WITH_EDITOR
 
-bool UPointLightComponent::CanEditChange(const UProperty* InProperty) const
+bool UPointLightComponent::CanEditChange(const FProperty* InProperty) const
 {
 	if (InProperty)
 	{
@@ -252,7 +270,7 @@ bool UPointLightComponent::CanEditChange(const UProperty* InProperty) const
 /**
  * Called after property has changed via e.g. property window or set command.
  *
- * @param	PropertyThatChanged	UProperty that has been changed, NULL if unknown
+ * @param	PropertyThatChanged	FProperty that has been changed, NULL if unknown
  */
 void UPointLightComponent::PostEditChangeProperty(FPropertyChangedEvent& PropertyChangedEvent)
 {
@@ -271,7 +289,7 @@ void UPointLightComponent::PostEditChangeProperty(FPropertyChangedEvent& Propert
 }
 #endif // WITH_EDITOR
 
-void UPointLightComponent::PostInterpChange(UProperty* PropertyThatChanged)
+void UPointLightComponent::PostInterpChange(FProperty* PropertyThatChanged)
 {
 	static FName LightFalloffExponentName(TEXT("LightFalloffExponent"));
 	FName PropertyName = PropertyThatChanged->GetFName();

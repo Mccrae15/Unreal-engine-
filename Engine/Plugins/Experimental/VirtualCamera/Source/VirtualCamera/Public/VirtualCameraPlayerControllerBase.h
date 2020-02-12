@@ -1,20 +1,22 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
 #include "GameFramework/PlayerController.h"
 
+#include "CineCameraActor.h"
+#include "ILiveLinkClient.h"
+#include "InputCore.h"
+#include "IVirtualCameraController.h"
+#include "LevelSequencePlaybackController.h"
+#include "Math/UnitConversion.h"
 #include "Misc/FrameNumber.h"
 #include "Misc/FrameRate.h"
 #include "Misc/Timecode.h"
-#include "ILiveLinkClient.h"
-#include "InputCore.h"
-#include "LevelSequencePlaybackController.h"
-#include "Math/UnitConversion.h"
 #include "VirtualCameraPawnBase.h"
-
 #include "VirtualCameraPlayerControllerBase.generated.h"
 
+class AVPRootActor;
 
 UENUM(BlueprintType)
 enum class ETrackerInputSource : uint8
@@ -26,118 +28,16 @@ enum class ETrackerInputSource : uint8
 	Custom,
 
 	/* Livelink plugin tracker */
-	LiveLink,
-
-	/* Vive tracker */
-	Vive,
+	LiveLink
 };
 
-UENUM(BlueprintType)
-enum class ETouchInputState : uint8
-{
-	/* Allows user to select an actor to always be in focus */
-	ActorFocusTargeting,
-
-	/* Allows user to select a point on the screen to auto-focus through */
-	AutoFocusTargeting,
-
-	/* Allows the touch input to be handled in the blueprint event. This should be the default */
-	BlueprintDefined,
-
-	/* Allows for the user to focus on target on touch without exiting manual focus */
-	ManualTouchFocus,
-
-	/* Touch support for scrubbing through a sequence */
-	Scrubbing,
-
-	/* Touch and hold for attach targeting */
-	TouchAndHold,
-};
-
-USTRUCT(BlueprintType)
-struct FTrackingOffset
-{
-public:
-	GENERATED_BODY()
-	
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Camera Settings")
-	FVector Translation;
-	
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Camera Settings")
-	FRotator Rotation;
-	
-	FTransform AsTransform() const
-	{
-		return FTransform(Rotation, Translation);
-	}
-	
-	FTrackingOffset()
-		: Translation(EForceInit::ForceInitToZero), Rotation(EForceInit::ForceInitToZero)
-	{
-		
-	};
-};
-
-USTRUCT(BlueprintType)
-struct FVirtualCameraPlayerControllerMultiUserOptions
-{
-public:
-	GENERATED_BODY()
-
-	FVirtualCameraPlayerControllerMultiUserOptions();
-	
-	/** Should the controller update the target camera settings from the pawn's camera. */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Camera")
-	bool bUpdateTargetCameraProperties;
-
-	/** Should the controller update the camera transform from the pawn's camera. */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Camera")
-	bool bUpdateTargetCameraTransform;
-
-	/** Should the controller update use the Transition actor to transfer the camera settings. */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Camera")
-	bool bUseTransactionActor;
-
-	/**
-	 * Create a transaction when a camera settings has been modified.
-	 * @note Transaction can only be created in the editor.
-	 */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Camera")
-	bool bCreateTransactionTargetCameraProperties;
-
-	/**
-	 * Create a transaction when a camera transform has been modified.
-	 * @note Transaction can only be created in the editor.
-	 */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Camera")
-	bool bCreateTransactionTargetCameraTransform;
-};
-
-// To do a transition with Concert. Normally it should be done via the Component.
-UCLASS()
-class VIRTUALCAMERA_API AVirtualCameraPlayerControllerTransaction : public AActor
-{
-	GENERATED_BODY()
-
-public:
-	UPROPERTY(EditAnywhere, Category = "Transaction")
-	float Aperture;
-	UPROPERTY(EditAnywhere, Category = "Transaction")
-	float FocalLength;
-	UPROPERTY(EditAnywhere, Category = "Transaction")
-	FCameraFilmbackSettings FilmbackSettings;
-	UPROPERTY(EditAnywhere, Category = "Transaction")
-	FCameraFocusSettings FocusSettings;
-	UPROPERTY(EditAnywhere, Category = "Transaction")
-	FCameraLensSettings LensSettings;
-};
-
-UCLASS()
-class VIRTUALCAMERA_API AVirtualCameraPlayerControllerBase : public APlayerController
+UCLASS(Abstract)
+class VIRTUALCAMERA_API AVirtualCameraPlayerControllerBase : public APlayerController, public IVirtualCameraController
 {
 	GENERATED_UCLASS_BODY()
 
 public:
+	virtual void OnPossess(APawn* InPawn) override;
 	virtual void BeginPlay() override;
 	virtual void Tick(float DeltaSeconds) override;
 	virtual void SetupInputComponent() override;
@@ -145,27 +45,24 @@ public:
 	FScriptDelegate OnStop;
 
 	/** Allows user to select which tracker input should be used */
-	UPROPERTY(EditDefaultsOnly, BlueprintReadWrite, Category = "Camera Settings")
+	UPROPERTY(EditDefaultsOnly, BlueprintReadWrite, BlueprintSetter="SetInputSource", Category = "Camera Settings")
 	ETrackerInputSource InputSource;
 
 	/** Controller for level sequence playback */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Camera Settings")
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Camera Settings")
 	FName LiveLinkTargetName;
 
 	/** Offset applied to calculated location before tracker transform is added */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Camera Settings")
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Camera Settings")
 	FTrackingOffset TrackerPreOffset;
 
 	/** Offset applied to calculated location after tracker transform is added */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Camera Settings")
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Camera Settings")
 	FTrackingOffset TrackerPostOffset;
 
 	/** Class of CameraActor to spawn to allow user to use their own customized camera */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, NoClear, Category = "Camera Settings")
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, NoClear, Category = "Camera Settings")
 	TSubclassOf<ACineCameraActor> TargetCameraActorClass;
-
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, NoClear, Category = "Transaction")
-	FVirtualCameraPlayerControllerMultiUserOptions MultiUserOptions;
 
 	/** Array of any properties that should be recorded */
 	UPROPERTY(EditAnywhere, Category = "Recording")
@@ -174,8 +71,8 @@ public:
 	UPROPERTY(BlueprintAssignable, Category = "Movement")
 	FVirtualCameraResetOffsetsDelegate OnOffsetReset;
 
-	UPROPERTY(transient)
-	AVirtualCameraPlayerControllerTransaction* TransactionActor;
+	UPROPERTY(transient, BlueprintReadOnly, Category = "VirtualCamera")
+	AVPRootActor* RootActor;
 
 	/**
 	 * Overridable function to allow user to get tracker data from blueprints.
@@ -216,6 +113,12 @@ public:
 	 */
 	UFUNCTION(BlueprintCallable, Category = "VirtualCamera")
 	ACineCameraActor* GetTargetCamera();
+
+	/**
+	 * Set the input source
+	 */
+	UFUNCTION(BlueprintSetter, Category = "Camera Settings")
+	void SetInputSource(ETrackerInputSource InInputSource);
 
 	/**
 	 * Blueprint event for when the focus method is changed.
@@ -259,9 +162,18 @@ protected:
 	UPROPERTY(Transient)
 	ULevelSequencePlaybackController* LevelSequencePlaybackController;
 	
-	/** Target camera that is spawned on begin play for the sequence controller */
+	/** Target camera that is spawned or possessed on begin play for the sequence controller */
 	UPROPERTY(Transient)
 	ACineCameraActor* TargetCameraActor;
+
+	/** Cached value for IsVirtualCameraControlledByRemoteSession() */
+	UPROPERTY(Transient, BlueprintReadOnly, Category = "VirtualCamera")
+	bool bCachedIsVirtualCameraControlledByRemoteSession;
+
+	/** Cached value for IsVirtualCameraControlledByRemoteSession() */
+	UPROPERTY(Transient, BlueprintReadOnly, Category = "VirtualCamera")
+	bool bCachedShouldUpdateTargetCameraTransform;
+	
 
 protected:
 
@@ -307,7 +219,7 @@ protected:
 	/**
 	 * Pilot the controlled camera during recording, copying over settings from the pawn.
 	 */
-	void PilotTargetedCamera(UVirtualCameraCineCameraComponent* CameraToFollow);
+	void PilotTargetedCamera(AVirtualCameraPawnBase* PawnToFollow, UVirtualCameraCineCameraComponent* CameraToFollow);
 
 	/**
 	 * Override of InputTouch, used to handle touch and hold events.
@@ -366,6 +278,18 @@ protected:
 	 */
 	UFUNCTION()
 	void BroadcastOffsetReset() { OnOffsetReset.Broadcast(); }
+
+	/*
+	 * Is this machine should display the Virtual Camera UI and establish a connection with the remote session app.
+	 */
+	UFUNCTION(BlueprintNativeEvent, Category = "VirtualCamera")
+	bool IsVirtualCameraControlledByRemoteSession() const;
+
+	/*
+	 * In multi user session, how should we update the information across different sessions.
+	 */
+	UFUNCTION(BlueprintNativeEvent, Category = "VirtualCamera")
+	bool ShouldUpdateTargetCameraTransform() const;
 
 	/***** UI Interface *****/
 public:
@@ -523,8 +447,8 @@ public:
 	FFrameRate GetCurrentSequenceFrameRate();
 
 	/**
-	 * Set the matte aspect ratio to a new value.
-	 * @return DesiredUnits - The new unit to use for distance measures like focus distance
+	 * Returns previously set unit of distance.
+	 * @return DesiredUnits - The unit that is used for distance measures like focus distance
 	 */
 	UFUNCTION(BlueprintPure, Category = "Virtual Camera|Settings")
 	EUnit GetDesiredDistanceUnits();
@@ -808,7 +732,7 @@ public:
 	void SetCurrentFocusDistance(const float NewFocusDistance);
 
 	/**
-	 * Set the matte aspect ratio to a new value.
+	 * Sets unit of distance.
 	 * @param DesiredUnits - The new unit to use for distance measures like focus distance
 	 */
 	UFUNCTION(BlueprintCallable, Category = "Virtual Camera|Settings")
@@ -973,4 +897,19 @@ public:
 	 */
 	UFUNCTION(BlueprintCallable, Category = "Virtual Camera|Movement")
 	bool ToggleAxisLock(const EVirtualCameraAxis AxisToToggle);
+
+	/**
+	 * Helper to bring the game viewport to front.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "Virtual Camera")
+	void ActivateGameViewport();
+
+private:
+	//~ Begin IVirtualCameraController Interface
+	virtual UCineCameraComponent* GetStreamedCameraComponent_Implementation() const override;
+	virtual UCineCameraComponent* GetRecordingCameraComponent_Implementation() const override;
+	virtual ULevelSequencePlaybackController* GetSequenceController_Implementation() const override;
+	virtual TScriptInterface<IVirtualCameraPresetContainer> GetPresetContainer_Implementation() const override;
+	virtual TScriptInterface<IVirtualCameraOptions> GetOptions_Implementation() const override;
+	//~ End  IVirtualCameraController Interface
 };

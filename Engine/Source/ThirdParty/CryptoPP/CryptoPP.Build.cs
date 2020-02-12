@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 using UnrealBuildTool;
 
@@ -19,10 +19,9 @@ public class CryptoPP : ModuleRules
             PublicIncludePaths.Add(Target.UEThirdPartySourceDirectory);
             LibFolder += "Win64/VS2015/";
             LibPostfixAndExt += "lib";
-            PublicLibraryPaths.Add(CryptoPPPath + LibFolder);
         }
 
-        PublicAdditionalLibraries.Add(LibPrefix + "cryptlib" + LibPostfixAndExt);
+        PublicAdditionalLibraries.Add(CryptoPPPath + LibFolder + LibPrefix + "cryptlib" + LibPostfixAndExt);
 	}
 
 }

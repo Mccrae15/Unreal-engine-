@@ -8,8 +8,15 @@
 #include "SceneViewExtension.h"
 #include "DefaultXRCamera.h"
 
+#if !PLATFORM_HOLOLENS
 #include "Windows/WindowsApplication.h"
+#endif
+#if PLATFORM_HOLOLENS
+#include "HoloLens/HoloLensApplication.h"
+#endif
+
 #include "Framework/Application/SlateApplication.h"
+#include "GameFramework/PlayerInput.h"
 
 #include "WindowsMixedRealityCustomPresent.h"
 
@@ -20,10 +27,12 @@
 #include "MixedRealityInterop.h"
 #endif
 
+DECLARE_LOG_CATEGORY_EXTERN(LogWmrHmd, Log, All);
+
 namespace WindowsMixedReality
 {
 	// Plugin for stereo rendering on Windows Mixed Reality devices.
-	class FWindowsMixedRealityHMD
+	class WINDOWSMIXEDREALITYHMD_API FWindowsMixedRealityHMD
 		: public FHeadMountedDisplayBase
 		, public FXRRenderTargetManager
 		, public FSceneViewExtensionBase
@@ -43,7 +52,7 @@ namespace WindowsMixedReality
 		virtual void OnEndPlay(FWorldContext& InWorldContext) override;
 		virtual bool OnStartGameFrame(FWorldContext& WorldContext) override;
 		virtual void SetTrackingOrigin(EHMDTrackingOrigin::Type NewOrigin) override;
-		virtual EHMDTrackingOrigin::Type GetTrackingOrigin() override;
+		virtual EHMDTrackingOrigin::Type GetTrackingOrigin() const override;
 
 		virtual bool EnumerateTrackedDevices(
 			TArray<int32>& OutDevices,
@@ -55,6 +64,9 @@ namespace WindowsMixedReality
 		virtual void ResetOrientationAndPosition(float yaw = 0.f) override;
 		virtual void ResetOrientation(float yaw = 0.f) override { }
 		virtual void ResetPosition() override { }
+
+		virtual void OnBeginRendering_RenderThread(FRHICommandListImmediate& RHICmdList, FSceneViewFamily& ViewFamily) override;
+		virtual void OnBeginRendering_GameThread() override;
 
 		virtual bool GetCurrentPose(
 			int32 DeviceId,
@@ -71,6 +83,11 @@ namespace WindowsMixedReality
 		{
 			return SharedThis(this);
 		}
+
+		// Tracking status
+		virtual bool DoesSupportPositionalTracking() const override { return true; }
+		virtual bool HasValidTrackingPosition() override;
+
 	protected:
 		/** FXRTrackingSystemBase protected interface */
 		virtual float GetWorldToMetersScale() const override;
@@ -98,16 +115,21 @@ namespace WindowsMixedReality
 			EStereoscopicPass StereoPass,
 			int32& X, int32& Y,
 			uint32& SizeX, uint32& SizeY) const override;
-		virtual void CalculateStereoViewOffset(const EStereoscopicPass StereoPassType, FRotator& ViewRotation,
-			const float MetersToWorld, FVector& ViewLocation) override;
 		virtual FMatrix GetStereoProjectionMatrix(const enum EStereoscopicPass StereoPassType) const override;
 		virtual IStereoRenderTargetManager* GetRenderTargetManager() override { return this; }
+		virtual class IStereoLayers* GetStereoLayers() override;
+		virtual int32 GetDesiredNumberOfViews(bool bStereoRequested) const override { return (bStereoRequested) ? 2 : 1; }
 
 		virtual bool HasHiddenAreaMesh() const override;
 		virtual void DrawHiddenAreaMesh_RenderThread(FRHICommandList& RHICmdList, EStereoscopicPass StereoPass) const override;
 
 		virtual bool HasVisibleAreaMesh() const override;
 		virtual void DrawVisibleAreaMesh_RenderThread(FRHICommandList& RHICmdList, EStereoscopicPass StereoPass) const override;
+
+		// Spectator screen Hooks.
+		virtual FIntRect GetFullFlatEyeRect_RenderThread(FTexture2DRHIRef EyeTexture) const override;
+		// Helper to copy one render target into another for spectator screen display
+		virtual void CopyTexture_RenderThread(FRHICommandListImmediate& RHICmdList, FRHITexture2D* SrcTexture, FIntRect SrcRect, FRHITexture2D* DstTexture, FIntRect DstRect, bool bClearBlack, bool bNoAlpha) const override;
 
 		/** ISceneViewExtension interface */
 		virtual void SetupViewFamily(FSceneViewFamily& InViewFamily) override;
@@ -120,13 +142,17 @@ namespace WindowsMixedReality
 			FSceneView& InView) override { }
 		virtual void PreRenderViewFamily_RenderThread(
 			FRHICommandListImmediate& RHICmdList,
-			FSceneViewFamily& InViewFamily) override;
+			FSceneViewFamily& InViewFamily) override { }
 		virtual bool IsActiveThisFrame(class FViewport* InViewport) const;
 
 		void CreateHMDDepthTexture(FRHICommandListImmediate& RHICmdList);
 
+		void SetFocusPointForFrame(FVector Position);
+		void SetFocustPointForFrame_RenderThread(FVector TrackingSpacePosition);
 	public:
-		FWindowsMixedRealityHMD(const FAutoRegister&);
+#if WITH_WINDOWS_MIXED_REALITY
+		FWindowsMixedRealityHMD(const FAutoRegister&, IARSystemSupport* InARSystem, MixedRealityInterop* InHMD);
+#endif
 		virtual ~FWindowsMixedRealityHMD();
 		bool IsInitialized() const;
 
@@ -134,16 +160,21 @@ namespace WindowsMixedReality
 		void ShutdownHolographic();
 
 		bool IsCurrentlyImmersive();
+		bool IsDisplayOpaque();
 
 	private:
 		void StartCustomPresent();
 
 		TRefCountPtr<ID3D11Device> InternalGetD3D11Device();
+#if WITH_WINDOWS_MIXED_REALITY
+		MixedRealityInterop* HMD = nullptr;
+#endif
 
 		bool bIsStereoEnabled = false;
 		bool bIsStereoDesired = true;
 
 		bool bRequestRestart = false;
+		bool bRequestShutdown = false;
 
 		float ScreenScalePercentage = 1.0f;
 		float CachedWorldToMetersScale = 100.0f;
@@ -152,22 +183,38 @@ namespace WindowsMixedReality
 
 		FTexture2DRHIRef remappedDepthTexture = nullptr;
 		ID3D11Texture2D* stereoDepthTexture = nullptr;
-		const float farPlaneDistance = 100000.0f;
+		const float farPlaneDistance = 650.0f;
 
-		// The back buffer for this frame
-		FTexture2DRHIRef CurrentBackBuffer;
+		bool bNeedReallocateDepthTexture = false;
+		FTexture2DRHIRef CurrentDepthBuffer;
 		void InitTrackingFrame();
 		TRefCountPtr<FWindowsMixedRealityCustomPresent> mCustomPresent = nullptr;
 
 		EHMDTrackingOrigin::Type HMDTrackingOrigin;
 		FIntRect EyeRenderViewport;
 
-		FQuat CurrOrientation = FQuat::Identity;
-		FVector CurrPosition = FVector::ZeroVector;
-		FQuat RotationL = FQuat::Identity;
-		FQuat RotationR = FQuat::Identity;
-		FVector PositionL = FVector::ZeroVector;
-		FVector PositionR = FVector::ZeroVector;
+		struct Frame
+		{
+			FQuat HeadOrientation = FQuat::Identity;
+			FVector HeadPosition = FVector::ZeroVector;
+			FQuat RotationL = FQuat::Identity;
+			FQuat RotationR = FQuat::Identity;
+			FVector PositionL = FVector::ZeroVector;
+			FVector PositionR = FVector::ZeroVector;
+			FTransform LeftTransform = FTransform::Identity;
+			FTransform RightTransform = FTransform::Identity;
+			FTransform HeadTransform = FTransform::Identity;
+			FMatrix ProjectionMatrixR = FMatrix::Identity;
+			FMatrix ProjectionMatrixL = FMatrix::Identity;
+			bool bPositionalTrackingUsed = false;
+
+		};
+		Frame Frame_NextGameThread;
+		FCriticalSection Frame_NextGameThreadLock;
+		Frame Frame_GameThread;
+		Frame Frame_RenderThread;
+		Frame& GetFrame() { return IsInRenderingThread() ? Frame_RenderThread : Frame_GameThread; }
+		const Frame& GetFrame() const { return IsInRenderingThread() ? Frame_RenderThread : Frame_GameThread; }
 
 		float ipd = 0;
 
@@ -205,6 +252,20 @@ namespace WindowsMixedReality
 			FTexture2DRHIRef& outShaderResourceTexture,
 			uint32 numSamples = 1) override;
 
+		virtual bool NeedReAllocateDepthTexture(const TRefCountPtr<IPooledRenderTarget>& DepthTarget) override;
+
+		virtual bool AllocateDepthTexture(
+			uint32 Index,
+			uint32 SizeX,
+			uint32 SizeY,
+			uint8 Format,
+			uint32 NumMips,
+			uint32 InTexFlags,
+			uint32 TargetableTextureFlags,
+			FTexture2DRHIRef& OutTargetableTexture,
+			FTexture2DRHIRef& OutShaderResourceTexture,
+			uint32 NumSamples = 1) override;
+
 		virtual bool GetHMDDistortionEnabled(EShadingPath ShadingPath) const override
 		{
 			return false;
@@ -218,7 +279,12 @@ namespace WindowsMixedReality
 	private:
 		// Handle app suspend requests.
 		FDelegateHandle PauseHandle;
+		FDelegateHandle ResumeHandle;
+
 		void AppServicePause();
+
+		void StartSpeechRecognition();
+		void StopSpeechRecognition();
 
 		IRendererModule* RendererModule = nullptr;
 
@@ -230,19 +296,27 @@ namespace WindowsMixedReality
 		bool IsAvailable();
 		bool SupportsSpatialInput();
 #if WITH_WINDOWS_MIXED_REALITY
-		static MixedRealityInterop::HMDTrackingStatus GetControllerTrackingStatus(MixedRealityInterop::HMDHand hand);
-		bool GetControllerOrientationAndPosition(MixedRealityInterop::HMDHand hand, FRotator & OutOrientation, FVector & OutPosition);
+		HMDTrackingStatus GetControllerTrackingStatus(HMDHand hand);
+		bool SupportsHandTracking();
+		bool SupportsHandedness();
+		bool GetControllerOrientationAndPosition(HMDHand hand, FRotator & OutOrientation, FVector & OutPosition);
+		bool GetHandJointOrientationAndPosition(HMDHand hand, HMDHandJoint joint, FRotator& OutOrientation, FVector& OutPosition);
 		bool PollInput();
+		bool PollHandTracking();
 
-		MixedRealityInterop::HMDInputPressState GetPressState(
-			MixedRealityInterop::HMDHand hand,
-			MixedRealityInterop::HMDInputControllerButtons button);
+		HMDInputPressState GetPressState(
+			HMDHand hand,
+			HMDInputControllerButtons button);
 		float GetAxisPosition(
-			MixedRealityInterop::HMDHand hand,
-			MixedRealityInterop::HMDInputControllerAxes axis);
+			HMDHand hand,
+			HMDInputControllerAxes axis);
 		void SubmitHapticValue(
-			MixedRealityInterop::HMDHand hand,
+			HMDHand hand,
 			float value);
+		bool QueryCoordinateSystem(ABI::Windows::Perception::Spatial::ISpatialCoordinateSystem *& pCoordinateSystem, WindowsMixedReality::HMDTrackingOrigin& trackingOrigin);
+		bool IsTrackingAvailable();
+
+		void GetPointerPose(EControllerHand hand, PointerPoseInfo& pi);
 #endif
 		void LockMouseToCenter(bool locked)
 		{
@@ -251,8 +325,22 @@ namespace WindowsMixedReality
 
 	public:
 		// Remoting
-		void ConnectToRemoteHoloLens(const wchar_t* ip, unsigned int bitrate);
+		void ConnectToRemoteHoloLens(const wchar_t* ip, unsigned int bitrate, bool isHoloLens1);
 		void DisconnectFromRemoteHoloLens();
+
+	public:
+#if WITH_WINDOWS_MIXED_REALITY
+
+	public:
+		// Speech Recognition
+		SpeechRecognizerInterop* CreateSpeechRecognizer()
+		{
+			return new SpeechRecognizerInterop();
+		}
+#endif
+
+	private:
+		void CreateSpectatorScreenController();
 	};
 }
 

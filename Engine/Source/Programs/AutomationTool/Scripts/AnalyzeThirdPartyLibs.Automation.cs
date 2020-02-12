@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 using System;
 using System.Collections.Generic;
 using System.Text;
@@ -130,14 +130,11 @@ class AnalyzeThirdPartyLibs : BuildCommand
 		LogInformation("************************* Analyze Third Party Libs");
 
 		// figure out what batch/script to run
-		switch (UnrealBuildTool.BuildHostPlatform.Current.Platform)
+		if (UnrealBuildTool.BuildHostPlatform.Current.Platform != UnrealTargetPlatform.Win64 &&
+			UnrealBuildTool.BuildHostPlatform.Current.Platform != UnrealTargetPlatform.Mac &&
+			UnrealBuildTool.BuildHostPlatform.Current.Platform != UnrealTargetPlatform.Linux)
 		{
-			case UnrealTargetPlatform.Win64:
-			case UnrealTargetPlatform.Mac:
-			case UnrealTargetPlatform.Linux:
-				break;
-			default:
-				throw new AutomationException("Unknown runtime platform!");
+			throw new AutomationException("Unknown runtime platform!");
 		}
 
 		// go to the third party lib dir
@@ -174,7 +171,6 @@ class AnalyzeThirdPartyLibs : BuildCommand
 		Platforms.Add(new PlatformLibraryInfo("Android", "Android"));
 		Platforms.Add(new PlatformLibraryInfo("PS4", "PS4"));
 		Platforms.Add(new PlatformLibraryInfo("XB1", "XBoxOne"));
-		Platforms.Add(new PlatformLibraryInfo("HTML5", "HTML5"));
 		Platforms.Add(new PlatformLibraryInfo("Linux", "Linux"));
 
 		Platforms.Add(new PlatformLibraryInfo("VS2013", "VS2013", "vs12"));

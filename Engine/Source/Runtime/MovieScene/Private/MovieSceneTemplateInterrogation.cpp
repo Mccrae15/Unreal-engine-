@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "Compilation/MovieSceneTemplateInterrogation.h"
 #include "Evaluation/Blending/MovieSceneBlendingAccumulator.h"
@@ -19,4 +19,10 @@ FMovieSceneBlendingAccumulator& FMovieSceneInterrogationData::GetAccumulator()
 	}
 
 	return *Accumulator;
+}
+
+FMovieSceneInterrogationKey FMovieSceneInterrogationKey::GetTransformInterrogationKey()
+{
+	static FMovieSceneAnimTypeID TypeID = FMovieSceneAnimTypeID::Unique();
+	return TypeID;
 }

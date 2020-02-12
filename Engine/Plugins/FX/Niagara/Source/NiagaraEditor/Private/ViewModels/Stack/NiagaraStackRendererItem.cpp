@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "ViewModels/Stack/NiagaraStackRendererItem.h"
 #include "ViewModels/Stack/NiagaraStackObject.h"
@@ -8,7 +8,7 @@
 #include "NiagaraScript.h"
 #include "ViewModels/NiagaraSystemViewModel.h"
 #include "ViewModels/NiagaraEmitterViewModel.h"
-#include "NiagaraScriptViewModel.h"
+#include "ViewModels/NiagaraScriptViewModel.h"
 #include "Internationalization/Internationalization.h"
 #include "NiagaraNodeAssignment.h"
 #include "NiagaraNodeOutput.h"
@@ -24,6 +24,9 @@
 #include "Widgets/Notifications/SNotificationList.h"
 #include "ViewModels/Stack/NiagaraStackGraphUtilities.h"
 #include "NiagaraScriptMergeManager.h"
+#include "NiagaraClipboard.h"
+
+#include "Styling/SlateIconFinder.h"
 
 #define LOCTEXT_NAMESPACE "UNiagaraStackRendererItem"
 
@@ -39,17 +42,6 @@ void UNiagaraStackRendererItem::Initialize(FRequiredEntryData InRequiredEntryDat
 	Super::Initialize(InRequiredEntryData, RendererStackEditorDataKey);
 	RendererProperties = InRendererProperties;
 	RendererProperties->OnChanged().AddUObject(this, &UNiagaraStackRendererItem::RendererChanged);
-
-	if (GetSystemViewModel()->GetEditMode() == ENiagaraSystemViewModelEditMode::EmitterAsset)
-	{
-		bHasBaseRenderer = false;
-	}
-	else
-	{
-		TSharedRef<FNiagaraScriptMergeManager> MergeManager = FNiagaraScriptMergeManager::Get();
-		const UNiagaraEmitter* BaseEmitter = FNiagaraStackGraphUtilities::GetBaseEmitter(*GetEmitterViewModel()->GetEmitter(), GetSystemViewModel()->GetSystem());
-		bHasBaseRenderer = BaseEmitter != nullptr && MergeManager->HasBaseRenderer(*BaseEmitter, RendererProperties->GetMergeId());
-	}
 }
 
 void UNiagaraStackRendererItem::FinalizeInternal()
@@ -147,7 +139,7 @@ FText UNiagaraStackRendererItem::GetDisplayName() const
 {
 	if (RendererProperties != nullptr)
 	{
-		return FText::FromString(RendererProperties->GetClass()->GetName());
+		return RendererProperties->GetClass()->GetDisplayNameText();
 	}
 	else
 	{
@@ -155,51 +147,157 @@ FText UNiagaraStackRendererItem::GetDisplayName() const
 	}
 }
 
-bool UNiagaraStackRendererItem::CanDelete() const
+bool UNiagaraStackRendererItem::TestCanCutWithMessage(FText& OutMessage) const
 {
-	return bHasBaseRenderer == false;
+	FText CanCopyMessage;
+	if (TestCanCopyWithMessage(CanCopyMessage) == false)
+	{
+		OutMessage = FText::Format(LOCTEXT("CantCutBecauseCantCopyFormat", "This renderer can not be cut because it can't be copied.  {0}"), CanCopyMessage);
+		return false;
+	}
+
+	FText CanDeleteMessage;
+	if (TestCanDeleteWithMessage(CanDeleteMessage) == false)
+	{
+		OutMessage = FText::Format(LOCTEXT("CantCutBecauseCantDeleteFormat", "This renderer can't be cut because it can't be deleted.  {0}"), CanDeleteMessage);
+		return false;
+	}
+
+	OutMessage = LOCTEXT("CanCut", "Cut this renderer.");
+	return true;
+}
+
+FText UNiagaraStackRendererItem::GetCutTransactionText() const
+{
+	return LOCTEXT("CutRendererTransactionText", "Cut renderers");
+}
+
+void UNiagaraStackRendererItem::CopyForCut(UNiagaraClipboardContent* ClipboardContent) const
+{
+	Copy(ClipboardContent);
+}
+
+void UNiagaraStackRendererItem::RemoveForCut()
+{
+	Delete();
+}
+
+bool UNiagaraStackRendererItem::TestCanCopyWithMessage(FText& OutMessage) const
+{
+	OutMessage = LOCTEXT("CopyRenderer", "Copy this renderer.");
+	return true;
+}
+
+void UNiagaraStackRendererItem::Copy(UNiagaraClipboardContent* ClipboardContent) const
+{
+	ClipboardContent->Renderers.Add(CastChecked<UNiagaraRendererProperties>(StaticDuplicateObject(RendererProperties.Get(), ClipboardContent)));
+}
+
+bool UNiagaraStackRendererItem::TestCanPasteWithMessage(const UNiagaraClipboardContent* ClipboardContent, FText& OutMessage) const
+{
+	if (RequestCanPasteDelegete.IsBound())
+	{
+		return RequestCanPasteDelegete.Execute(ClipboardContent, OutMessage);
+	}
+	OutMessage = FText();
+	return false;
+}
+
+FText UNiagaraStackRendererItem::GetPasteTransactionText(const UNiagaraClipboardContent* ClipboardContent) const
+{
+	return LOCTEXT("PasteRenderersTransactionText", "Paste renderers");
+}
+
+void UNiagaraStackRendererItem::Paste(const UNiagaraClipboardContent* ClipboardContent, FText& OutPasteWarning)
+{
+	RequestPasteDelegate.ExecuteIfBound(ClipboardContent, INDEX_NONE, OutPasteWarning);
+}
+
+bool UNiagaraStackRendererItem::TestCanDeleteWithMessage(FText& OutCanDeleteMessage) const
+{
+	if (GetOwnerIsEnabled() == false)
+	{
+		OutCanDeleteMessage = LOCTEXT("CantDeleteOwnerDisabledToolTip", "This renderer can not be deleted because its owner is disabled.");
+		return false;
+	}
+	else if (HasBaseRenderer() == false)
+	{
+		OutCanDeleteMessage = LOCTEXT("DeleteToolTip", "Delete this renderer.");
+		return true;
+	}
+	else
+	{
+		OutCanDeleteMessage = LOCTEXT("CantDeleteToolTip", "This renderer can not be deleted becaue it is inherited.");
+		return false;
+	}
+}
+
+FText UNiagaraStackRendererItem::GetDeleteTransactionText() const
+{
+	return LOCTEXT("DeleteRenderer", "Delete Renderer");
 }
 
 void UNiagaraStackRendererItem::Delete()
 {
-	const FScopedTransaction Transaction(LOCTEXT("DeleteRenderer", "Delete Renderer"));
-
 	UNiagaraEmitter* Emitter = GetEmitterViewModel()->GetEmitter();
 	Emitter->Modify();
 	Emitter->RemoveRenderer(RendererProperties.Get());
 
 	OnDataObjectModified().Broadcast(RendererProperties.Get());
-	ModifiedGroupItemsDelegate.ExecuteIfBound();
+	Finalize();
 }
 
-bool UNiagaraStackRendererItem::CanHaveBase() const
+bool UNiagaraStackRendererItem::HasBaseRenderer() const
 {
-	return GetSystemViewModel()->GetEditMode() == ENiagaraSystemViewModelEditMode::SystemAsset;
-}
-
-bool UNiagaraStackRendererItem::CanResetToBase() const
-{
-	if (CanHaveBase())
+	if (HasBaseEmitter())
 	{
-		if (bCanResetToBase.IsSet() == false)
+		if (bHasBaseRendererCache.IsSet() == false)
 		{
 			TSharedRef<FNiagaraScriptMergeManager> MergeManager = FNiagaraScriptMergeManager::Get();
-			const UNiagaraEmitter* BaseEmitter = FNiagaraStackGraphUtilities::GetBaseEmitter(*GetEmitterViewModel()->GetEmitter(), GetSystemViewModel()->GetSystem());
-			bCanResetToBase = BaseEmitter != nullptr && MergeManager->IsRendererDifferentFromBase(*GetEmitterViewModel()->GetEmitter(), *BaseEmitter, RendererProperties->GetMergeId());
+			const UNiagaraEmitter* BaseEmitter = GetEmitterViewModel()->GetEmitter()->GetParent();
+			bHasBaseRendererCache = BaseEmitter != nullptr && MergeManager->HasBaseRenderer(*BaseEmitter, RendererProperties->GetMergeId());
 		}
-		return bCanResetToBase.GetValue();
+		return bHasBaseRendererCache.GetValue();
 	}
 	return false;
 }
 
+bool UNiagaraStackRendererItem::TestCanResetToBaseWithMessage(FText& OutCanResetToBaseMessage) const
+{
+	if (bCanResetToBaseCache.IsSet() == false)
+	{
+		if (HasBaseRenderer())
+		{
+			TSharedRef<FNiagaraScriptMergeManager> MergeManager = FNiagaraScriptMergeManager::Get();
+			const UNiagaraEmitter* BaseEmitter = GetEmitterViewModel()->GetEmitter()->GetParent();
+			bCanResetToBaseCache = BaseEmitter != nullptr && MergeManager->IsRendererDifferentFromBase(*GetEmitterViewModel()->GetEmitter(), *BaseEmitter, RendererProperties->GetMergeId());
+		}
+		else
+		{
+			bCanResetToBaseCache = false;
+		}
+	}
+	if (bCanResetToBaseCache.GetValue())
+	{
+		OutCanResetToBaseMessage = LOCTEXT("CanResetToBase", "Reset this renderer to the state defined by the parent emitter.");
+		return true;
+	}
+	else
+	{
+		OutCanResetToBaseMessage = LOCTEXT("CanNotResetToBase", "No parent to reset to, or not different from parent.");
+		return false;
+	}
+}
+
 void UNiagaraStackRendererItem::ResetToBase()
 {
-	if (CanResetToBase())
+	FText Unused;
+	if (TestCanResetToBaseWithMessage(Unused))
 	{
 		TSharedRef<FNiagaraScriptMergeManager> MergeManager = FNiagaraScriptMergeManager::Get();
-		const UNiagaraEmitter* BaseEmitter = FNiagaraStackGraphUtilities::GetBaseEmitter(*GetEmitterViewModel()->GetEmitter(), GetSystemViewModel()->GetSystem());
+		const UNiagaraEmitter* BaseEmitter = GetEmitterViewModel()->GetEmitter()->GetParent();
 		MergeManager->ResetRendererToBase(*GetEmitterViewModel()->GetEmitter(), *BaseEmitter, RendererProperties->GetMergeId());
-		ModifiedGroupItemsDelegate.ExecuteIfBound();
+		ModifiedGroupItemsDelegate.Broadcast();
 	}
 }
 
@@ -208,12 +306,18 @@ bool UNiagaraStackRendererItem::GetIsEnabled() const
 	return RendererProperties->GetIsEnabled();
 }
 
-void UNiagaraStackRendererItem::SetIsEnabled(bool bInIsEnabled)
+void UNiagaraStackRendererItem::SetIsEnabledInternal(bool bInIsEnabled)
 {
 	FScopedTransaction ScopedTransaction(LOCTEXT("SetRendererEnabledState", "Set renderer enabled/disabled state."));
 	RendererProperties->Modify();
 	RendererProperties->SetIsEnabled(bInIsEnabled);
 	OnDataObjectModified().Broadcast(RendererProperties.Get());
+	RefreshChildren();
+}
+
+const FSlateBrush* UNiagaraStackRendererItem::GetIconBrush() const
+{
+	return FSlateIconFinder::FindIconBrushForClass(RendererProperties->GetClass());
 }
 
 void UNiagaraStackRendererItem::RefreshChildrenInternal(const TArray<UNiagaraStackEntry*>& CurrentChildren, TArray<UNiagaraStackEntry*>& NewChildren, TArray<FStackIssue>& NewIssues)
@@ -226,7 +330,8 @@ void UNiagaraStackRendererItem::RefreshChildrenInternal(const TArray<UNiagaraSta
 
 	NewChildren.Add(RendererObject);
 	MissingAttributes = GetMissingVariables(RendererProperties.Get(), GetEmitterViewModel()->GetEmitter());
-	bCanResetToBase.Reset();
+	bHasBaseRendererCache.Reset();
+	bCanResetToBaseCache.Reset();
 	Super::RefreshChildrenInternal(CurrentChildren, NewChildren, NewIssues);
 	
 	RefreshIssues(NewIssues);
@@ -279,11 +384,12 @@ void UNiagaraStackRendererItem::RefreshIssues(TArray<FStackIssue>& NewIssues)
 
 		NewIssues.Add(TargetSupportError);
 	}
+
 }
 
 void UNiagaraStackRendererItem::RendererChanged()
 {
-	bCanResetToBase.Reset();
+	bCanResetToBaseCache.Reset();
 }
 
 #undef LOCTEXT_NAMESPACE

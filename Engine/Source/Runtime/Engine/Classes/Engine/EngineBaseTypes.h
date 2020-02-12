@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -190,13 +190,6 @@ public:
 	UPROPERTY(EditDefaultsOnly, Category="Tick", AdvancedDisplay)
 	TEnumAsByte<enum ETickingGroup> EndTickGroup;
 
-protected:
-	/** Internal data that indicates the tick group we actually started in (it may have been delayed due to prerequisites) **/
-	TEnumAsByte<enum ETickingGroup> ActualStartTickGroup;
-
-	/** Internal data that indicates the tick group we actually started in (it may have been delayed due to prerequisites) **/
-	TEnumAsByte<enum ETickingGroup> ActualEndTickGroup;
-
 public:
 	/** Bool indicating that this function should execute even if the game is paused. Pause ticks are very limited in capabilities. **/
 	UPROPERTY(EditDefaultsOnly, Category="Tick", AdvancedDisplay)
@@ -221,11 +214,6 @@ public:
 	uint8 bRunOnAnyThread:1;
 
 private:
-	/** If true, means that this tick function is in the master array of tick functions */
-	bool bRegistered;
-
-	/** Cache whether this function was rescheduled as an interval function during StartParallel */
-	bool bWasInterval;
 
 	enum class ETickState : uint8
 	{
@@ -241,42 +229,65 @@ private:
 	 **/
 	ETickState TickState;
 
-	/** Internal data to track if we have started visiting this tick function yet this frame **/
-	int32 TickVisitedGFrameCounter;
-
-	/** Internal data to track if we have finshed visiting this tick function yet this frame **/
-	int32 TickQueuedGFrameCounter;
-
-	/** Pointer to the task, only used during setup. This is often stale. **/
-	void *TaskPointer;
-
-	/** Prerequisites for this tick function **/
-	TArray<struct FTickPrerequisite> Prerequisites;
-
-	/** The next function in the cooling down list for ticks with an interval*/
-	FTickFunction* Next;
-
-	/** 
-	  * If TickFrequency is greater than 0 and tick state is CoolingDown, this is the time, 
-	  * relative to the element ahead of it in the cooling down list, remaining until the next time this function will tick 
-	  */
-	float RelativeTickCooldown;
-
-	/** 
-	* The last world game time at which we were ticked. Game time used is dependent on bTickEvenWhenPaused
-	* Valid only if we've been ticked at least once since having a tick interval; otherwise set to -1.f
-	*/
-	float LastTickGameTimeSeconds;
-
 public:
-
 	/** The frequency in seconds at which this tick function will be executed.  If less than or equal to 0 then it will tick every frame */
 	UPROPERTY(EditDefaultsOnly, Category="Tick", meta=(DisplayName="Tick Interval (secs)"))
 	float TickInterval;
 
-	/** Back pointer to the FTickTaskLevel containing this tick function if it is registered **/
-	class FTickTaskLevel*						TickTaskLevel;
+private:
 
+	/** Prerequisites for this tick function **/
+	TArray<struct FTickPrerequisite> Prerequisites;
+
+	/** Internal Data structure that contains members only required for a registered tick function **/
+	struct FInternalData
+	{
+		FInternalData();
+
+		/** Whether the tick function is registered. */
+		bool bRegistered : 1;
+
+		/** Cache whether this function was rescheduled as an interval function during StartParallel */
+		bool bWasInterval:1;
+
+		/** Internal data that indicates the tick group we actually started in (it may have been delayed due to prerequisites) **/
+		TEnumAsByte<enum ETickingGroup> ActualStartTickGroup;
+
+		/** Internal data that indicates the tick group we actually started in (it may have been delayed due to prerequisites) **/
+		TEnumAsByte<enum ETickingGroup> ActualEndTickGroup;
+		
+		/** Internal data to track if we have started visiting this tick function yet this frame **/
+		int32 TickVisitedGFrameCounter;
+
+		/** Internal data to track if we have finshed visiting this tick function yet this frame **/
+		int32 TickQueuedGFrameCounter;
+
+		/** Pointer to the task, only used during setup. This is often stale. **/
+		void* TaskPointer;
+
+		/** The next function in the cooling down list for ticks with an interval*/
+		FTickFunction* Next;
+
+		/** 
+		 * If TickFrequency is greater than 0 and tick state is CoolingDown, this is the time, 
+		 * relative to the element ahead of it in the cooling down list, remaining until the next time this function will tick 
+		 **/
+		float RelativeTickCooldown;
+
+		/** 
+		 * The last world game time at which we were ticked. Game time used is dependent on bTickEvenWhenPaused
+		 * Valid only if we've been ticked at least once since having a tick interval; otherwise set to -1.f
+		 **/
+		float LastTickGameTimeSeconds;
+
+		/** Back pointer to the FTickTaskLevel containing this tick function if it is registered **/
+		class FTickTaskLevel*						TickTaskLevel;
+	};
+
+	/** Lazily allocated struct that contains the necessary data for a tick function that is registered. **/
+	TUniquePtr<FInternalData> InternalData;
+
+public:
 	/** Default constructor, intitalizes to reasonable defaults **/
 	FTickFunction();
 	/** Destructor, unregisters the tick function **/
@@ -290,14 +301,14 @@ public:
 	/** Removes the tick function from the master list of tick functions. **/
 	void UnRegisterTickFunction();
 	/** See if the tick function is currently registered */
-	bool IsTickFunctionRegistered() const { return bRegistered; }
+	bool IsTickFunctionRegistered() const { return (InternalData && InternalData->bRegistered); }
 
 	/** Enables or disables this tick function. **/
 	void SetTickFunctionEnable(bool bInEnabled);
 	/** Returns whether the tick function is currently enabled */
 	bool IsTickFunctionEnabled() const { return TickState != ETickState::Disabled; }
 	/** Returns whether it is valid to access this tick function's completion handle */
-	bool IsCompletionHandleValid() const { return TaskPointer != nullptr; }
+	bool IsCompletionHandleValid() const { return (InternalData && InternalData->TaskPointer); }
 	/**
 	* Gets the current completion handle of this tick function, so it can be delayed until a later point when some additional
 	* tasks have been completed.  Only valid after TG_PreAsyncWork has started and then only until the TickFunction finishes
@@ -311,7 +322,7 @@ public:
 	**/
 	TEnumAsByte<enum ETickingGroup> GetActualTickGroup() const
 	{
-		return ActualStartTickGroup;
+		return (InternalData ? InternalData->ActualStartTickGroup : TickGroup);
 	}
 
 	/** 
@@ -320,7 +331,7 @@ public:
 	**/
 	TEnumAsByte<enum ETickingGroup> GetActualEndTickGroup() const
 	{
-		return ActualEndTickGroup;
+		return (InternalData ? InternalData->ActualEndTickGroup : EndTickGroup);
 	}
 
 
@@ -357,6 +368,8 @@ public:
 	{
 		return Prerequisites;
 	}
+
+	float GetLastTickGameTime() const { return (InternalData ? InternalData->LastTickGameTimeSeconds : -1.f); }
 
 private:
 	/**
@@ -425,7 +438,7 @@ struct TStructOpsTypeTraits<FTickFunction> : public TStructOpsTypeTraitsBase2<FT
 * Tick function that calls AActor::TickActor
 **/
 USTRUCT()
-struct FActorTickFunction : public FTickFunction
+struct ENGINE_VTABLE FActorTickFunction : public FTickFunction
 {
 	GENERATED_USTRUCT_BODY()
 
@@ -478,7 +491,7 @@ struct FActorComponentTickFunction : public FTickFunction
 	ENGINE_API virtual FName DiagnosticContext(bool bDetailed) override;
 
 	/**
-	 * Conditionally calls ExecuteTickFunc if bRegistered == true and a bunch of other criteria are met
+	 * Conditionally calls ExecuteTickFunc if registered and a bunch of other criteria are met
 	 * @param Target - the actor component we are ticking
 	 * @param bTickInEditor - whether the target wants to tick in the editor
 	 * @param DeltaTime - The time since the last tick.
@@ -854,6 +867,11 @@ struct ENGINE_API FURL
 	FString ToString( bool FullyQualified=0 ) const;
 
 	/**
+	 * Prepares the Host and Port values into a standards compliant string
+	 */
+	FString GetHostPortString() const;
+
+	/**
 	 * Serializes a FURL to or from an archive.
 	 */
 	ENGINE_API friend FArchive& operator<<( FArchive& Ar, FURL& U );
@@ -893,66 +911,82 @@ enum ENetMode
  * Don't change the order, the ID is serialized with the editor
  */
 UENUM()
-enum EViewModeIndex 
+enum EViewModeIndex
 {
 	/** Wireframe w/ brushes. */
-	VMI_BrushWireframe = 0,
+	VMI_BrushWireframe = 0 UMETA(DisplayName = "Brush Wireframe"),
 	/** Wireframe w/ BSP. */
-	VMI_Wireframe = 1,
+	VMI_Wireframe = 1 UMETA(DisplayName = "Wireframe"),
 	/** Unlit. */
-	VMI_Unlit = 2,
+	VMI_Unlit = 2 UMETA(DisplayName = "Unlit"),
 	/** Lit. */
-	VMI_Lit = 3,
-	VMI_Lit_DetailLighting = 4,
+	VMI_Lit = 3 UMETA(DisplayName = "Lit"),
+	VMI_Lit_DetailLighting = 4 UMETA(DisplayName = "Detail Lighting"),
 	/** Lit wo/ materials. */
-	VMI_LightingOnly = 5,
+	VMI_LightingOnly = 5 UMETA(DisplayName = "Lighting Only"),
 	/** Colored according to light count. */
-	VMI_LightComplexity = 6,
+	VMI_LightComplexity = 6 UMETA(DisplayName = "Light Complexity"),
 	/** Colored according to shader complexity. */
-	VMI_ShaderComplexity = 8,
+	VMI_ShaderComplexity = 8 UMETA(DisplayName = "Shader Complexity"),
 	/** Colored according to world-space LightMap texture density. */
-	VMI_LightmapDensity = 9,
+	VMI_LightmapDensity = 9 UMETA(DisplayName = "Lightmap Density"),
 	/** Colored according to light count - showing lightmap texel density on texture mapped objects. */
-	VMI_LitLightmapDensity = 10,
-	VMI_ReflectionOverride = 11,
-	VMI_VisualizeBuffer = 12,
+	VMI_LitLightmapDensity = 10 UMETA(DisplayName = "Lit Lightmap Density"),
+	VMI_ReflectionOverride = 11 UMETA(DisplayName = "Reflections"),
+	VMI_VisualizeBuffer = 12 UMETA(DisplayName = "Buffer Visualization"),
 	//	VMI_VoxelLighting = 13,
 
 	/** Colored according to stationary light overlap. */
-	VMI_StationaryLightOverlap = 14,
+	VMI_StationaryLightOverlap = 14 UMETA(DisplayName = "Stationary Light Overlap"),
 
-	VMI_CollisionPawn = 15, 
-	VMI_CollisionVisibility = 16, 
+	VMI_CollisionPawn = 15 UMETA(DisplayName = "Player Collision"),
+	VMI_CollisionVisibility = 16 UMETA(DisplayName = "Visibility Collision"),
 	//VMI_UNUSED = 17,
 	/** Colored according to the current LOD index. */
-	VMI_LODColoration = 18,
+	VMI_LODColoration = 18 UMETA(DisplayName = "Mesh LOD Coloration"),
 	/** Colored according to the quad coverage. */
-	VMI_QuadOverdraw = 19,
+	VMI_QuadOverdraw = 19 UMETA(DisplayName = "Quad Overdraw"),
 	/** Visualize the accuracy of the primitive distance computed for texture streaming. */
-	VMI_PrimitiveDistanceAccuracy = 20,
+	VMI_PrimitiveDistanceAccuracy = 20 UMETA(DisplayName = "Primitive Distance"),
 	/** Visualize the accuracy of the mesh UV densities computed for texture streaming. */
-	VMI_MeshUVDensityAccuracy = 21,
+	VMI_MeshUVDensityAccuracy = 21  UMETA(DisplayName = "Mesh UV Density"),
 	/** Colored according to shader complexity, including quad overdraw. */
-	VMI_ShaderComplexityWithQuadOverdraw = 22,
+	VMI_ShaderComplexityWithQuadOverdraw = 22 UMETA(DisplayName = "Shader Complexity & Quads"),
 	/** Colored according to the current HLOD index. */
-	VMI_HLODColoration = 23,
+	VMI_HLODColoration = 23  UMETA(DisplayName = "Hierarchical LOD Coloration"),
 	/** Group item for LOD and HLOD coloration*/
-	VMI_GroupLODColoration = 24,
+	VMI_GroupLODColoration = 24  UMETA(DisplayName = "Group LOD Coloration"),
 	/** Visualize the accuracy of the material texture scales used for texture streaming. */
-	VMI_MaterialTextureScaleAccuracy = 25,
+	VMI_MaterialTextureScaleAccuracy = 25 UMETA(DisplayName = "Material Texture Scales"),
 	/** Compare the required texture resolution to the actual resolution. */
-	VMI_RequiredTextureResolution = 26,
+	VMI_RequiredTextureResolution = 26 UMETA(DisplayName = "Required Texture Resolution"),
 
 	// Ray tracing modes
 
 	/** Run path tracing pipeline */
-	VMI_PathTracing = 27,
+	VMI_PathTracing = 27 UMETA(DisplayName = "Path Tracing"),
 	/** Run ray tracing debug pipeline */
-	VMI_RayTracingDebug = 28,
+	VMI_RayTracingDebug = 28 UMETA(DisplayName = "Ray Tracing Debug"),
 
 	VMI_Max UMETA(Hidden),
 
-	VMI_Unknown = 255 UMETA(Hidden),
+	// VMI_Unknown - The value assigned to VMI_Unknown must be the highest possible of any member of EViewModeIndex, or GetViewModeName might seg-fault
+	VMI_Unknown = 255 UMETA(DisplayName = "Unknown"),
+};
+
+/**
+ * Class containing a static util function to help with EViewModeIndex
+ */
+UCLASS(config = Engine)
+class ENGINE_API UViewModeUtils : public UObject
+{
+	GENERATED_BODY()
+
+public:
+	/**
+	 * Get the display name associated with a particular EViewModeIndex
+	 */
+	static FText GetViewModeDisplayName(const EViewModeIndex ViewModeIndex);
 };
 
 

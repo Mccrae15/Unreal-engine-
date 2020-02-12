@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "SMergeActorsToolbar.h"
 #include "IMergeActorsTool.h"
@@ -138,6 +138,7 @@ FReply SMergeActorsToolbar::OnMergeActorsClicked()
 			SaveAssetDialogConfig.DefaultPath = DefaultPath;
 			SaveAssetDialogConfig.DefaultAssetName = DefaultName;
 			SaveAssetDialogConfig.ExistingAssetPolicy = ESaveAssetDialogExistingAssetPolicy::AllowButWarn;
+			SaveAssetDialogConfig.AssetClassNames = { UStaticMesh::StaticClass()->GetFName() };
 
 			FContentBrowserModule& ContentBrowserModule = FModuleManager::LoadModuleChecked<FContentBrowserModule>("ContentBrowser");
 			FString SaveObjectPath = ContentBrowserModule.Get().CreateModalSaveAssetDialog(SaveAssetDialogConfig);

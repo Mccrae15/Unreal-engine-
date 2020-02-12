@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "MeshInstancingTool/MeshInstancingTool.h"
 #include "Misc/Paths.h"
@@ -12,7 +12,7 @@
 #include "Engine/StaticMeshActor.h"
 #include "Engine/Selection.h"
 #include "Editor.h"
-#include "Dialogs/Dialogs.h"
+#include "Misc/MessageDialog.h"
 #include "MeshUtilities.h"
 #include "MeshInstancingTool/SMeshInstancingDialog.h"
 #include "IContentBrowserSingleton.h"
@@ -21,12 +21,20 @@
 #include "ScopedTransaction.h"
 #include "MeshMergeModule.h"
 
-
 #define LOCTEXT_NAMESPACE "MeshInstancingTool"
+
+bool UMeshInstancingSettingsObject::bInitialized = false;
+UMeshInstancingSettingsObject* UMeshInstancingSettingsObject::DefaultSettings = nullptr;
 
 FMeshInstancingTool::FMeshInstancingTool()
 {
 	SettingsObject = UMeshInstancingSettingsObject::Get();
+}
+
+FMeshInstancingTool::~FMeshInstancingTool()
+{
+	UMeshInstancingSettingsObject::Destroy();
+	SettingsObject = nullptr;
 }
 
 TSharedRef<SWidget> FMeshInstancingTool::GetWidget()
@@ -65,7 +73,8 @@ bool FMeshInstancingTool::RunMerge(const FString& PackageName)
 	if (UniqueLevels.Num() > 1)
 	{
 		FText Message = NSLOCTEXT("UnrealEd", "FailedToInstanceActorsSublevels_Msg", "The selected actors should be in the same level");
-		OpenMsgDlgInt(EAppMsgType::Ok, Message, NSLOCTEXT("UnrealEd", "FailedToInstanceActors_Title", "Unable to replace actors with instanced meshes"));
+		FText Title = NSLOCTEXT("UnrealEd", "FailedToInstanceActors_Title", "Unable to replace actors with instanced meshes");
+		FMessageDialog::Open(EAppMsgType::Ok, Message, &Title);
 		return false;
 	}
 
@@ -155,5 +164,4 @@ bool FMeshInstancingTool::CanMerge() const
 {	
 	return InstancingDialog->GetNumSelectedMeshComponents() >= 1;
 }
-
 #undef LOCTEXT_NAMESPACE

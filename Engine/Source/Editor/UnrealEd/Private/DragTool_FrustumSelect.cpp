@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 
 #include "DragTool_FrustumSelect.h"
@@ -6,6 +6,8 @@
 #include "CanvasItem.h"
 #include "Settings/LevelEditorViewportSettings.h"
 #include "GameFramework/Volume.h"
+#include "Editor/UnrealEdEngine.h"
+#include "UnrealEdGlobals.h"
 #include "EngineUtils.h"
 #include "Engine/Selection.h"
 #include "EditorModeManager.h"
@@ -14,6 +16,7 @@
 #include "ScopedTransaction.h"
 #include "HModel.h"
 #include "CanvasTypes.h"
+#include "Subsystems/BrushEditingSubsystem.h"
 
 ///////////////////////////////////////////////////////////////////////////////
 //
@@ -50,7 +53,8 @@ void FDragTool_ActorFrustumSelect::StartDrag(FEditorViewportClient* InViewportCl
 
 void FDragTool_ActorFrustumSelect::EndDrag()
 {
-	const bool bGeometryMode = ModeTools->IsModeActive(FBuiltinEditorModes::EM_Geometry);
+	UBrushEditingSubsystem* BrushSubsystem = GEditor->GetEditorSubsystem<UBrushEditingSubsystem>();
+	const bool bGeometryMode = BrushSubsystem ? BrushSubsystem->IsGeometryEditorModeActive() : false;
 
 	FSceneViewFamilyContext ViewFamily(FSceneViewFamily::ConstructionValues(LevelViewportClient->Viewport, LevelViewportClient->GetScene(), LevelViewportClient->EngineShowFlags ));
 	FSceneView* SceneView = LevelViewportClient->CalcSceneView(&ViewFamily);
@@ -77,7 +81,10 @@ void FDragTool_ActorFrustumSelect::EndDrag()
 	// Let the editor mode try to handle the selection.
 	const bool bEditorModeHandledSelection = ModeTools->FrustumSelect(Frustum, LevelViewportClient, bLeftMouseButtonDown);
 
-	if( !bEditorModeHandledSelection )
+	// Let the component visualizers try to handle the selection.
+	const bool bComponentVisHandledSelection = !bEditorModeHandledSelection && GUnrealEd->ComponentVisManager.HandleFrustumSelect(Frustum, LevelViewportClient, LevelViewportClient->Viewport);
+
+	if( !bEditorModeHandledSelection && !bComponentVisHandledSelection)
 	{
 		if( !bShiftDown )
 		{
@@ -185,7 +192,8 @@ bool FDragTool_ActorFrustumSelect::IntersectsFrustum( AActor& InActor, const FCo
 {	
 	bool bActorHitByBox = false;
 
-	const bool bGeometryMode = ModeTools->IsModeActive(FBuiltinEditorModes::EM_Geometry);
+	UBrushEditingSubsystem* BrushSubsystem = GEditor->GetEditorSubsystem<UBrushEditingSubsystem>();
+	const bool bGeometryMode = BrushSubsystem ? BrushSubsystem->IsGeometryEditorModeActive() : false;
 
 	// Check for special cases (like certain show flags that might hide an actor)
 	bool bActorIsHiddenByShowFlags = false;

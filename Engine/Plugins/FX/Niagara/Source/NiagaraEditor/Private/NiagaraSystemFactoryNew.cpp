@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "NiagaraSystemFactoryNew.h"
 #include "CoreMinimal.h"
@@ -15,6 +15,7 @@
 #include "Modules/ModuleManager.h"
 #include "Interfaces/IMainFrameModule.h"
 #include "Framework/Application/SlateApplication.h"
+#include "NiagaraEditorUtilities.h"
 
 #define LOCTEXT_NAMESPACE "NiagaraSystemFactory"
 
@@ -116,6 +117,10 @@ UObject* UNiagaraSystemFactoryNew::FactoryCreateNew(UClass* Class, UObject* InPa
 	
 	if (SystemToCopy != nullptr)
 	{
+		if (SystemToCopy->IsReadyToRun() == false)
+		{
+			SystemToCopy->WaitForCompilationComplete();
+		}
 		NewSystem = Cast<UNiagaraSystem>(StaticDuplicateObject(SystemToCopy, InParent, Name, Flags, Class));
 		NewSystem->bIsTemplateAsset = false;
 		NewSystem->TemplateAssetDescription = FText();
@@ -125,15 +130,9 @@ UObject* UNiagaraSystemFactoryNew::FactoryCreateNew(UClass* Class, UObject* InPa
 		NewSystem = NewObject<UNiagaraSystem>(InParent, Class, Name, Flags | RF_Transactional);
 		InitializeSystem(NewSystem, true);
 
-		FNiagaraSystemViewModelOptions SystemViewModelOptions;
-		SystemViewModelOptions.bCanAutoCompile = false;
-		SystemViewModelOptions.bCanSimulate = false;
-		SystemViewModelOptions.EditMode = ENiagaraSystemViewModelEditMode::SystemAsset;
-
-		TSharedRef<FNiagaraSystemViewModel> NewSystemViewModel = MakeShared<FNiagaraSystemViewModel>(*NewSystem, SystemViewModelOptions);
 		for (UNiagaraEmitter* EmitterToAddToNewSystem : EmittersToAddToNewSystem)
 		{
-			NewSystemViewModel->AddEmitter(*EmitterToAddToNewSystem);
+			FNiagaraEditorUtilities::AddEmitterToSystem(*NewSystem, *EmitterToAddToNewSystem);
 		}
 	}
 	else
@@ -141,6 +140,8 @@ UObject* UNiagaraSystemFactoryNew::FactoryCreateNew(UClass* Class, UObject* InPa
 		NewSystem = NewObject<UNiagaraSystem>(InParent, Class, Name, Flags | RF_Transactional);
 		InitializeSystem(NewSystem, true);
 	}
+
+	NewSystem->RequestCompile(false);
 
 	return NewSystem;
 }
@@ -162,7 +163,7 @@ void UNiagaraSystemFactoryNew::InitializeSystem(UNiagaraSystem* System, bool bCr
 
 	if (bCreateDefaultNodes)
 	{
-		FSoftObjectPath SystemUpdateScriptRef(TEXT("/Niagara/Modules/System/SystemLifeCycle.SystemLifeCycle"));
+		FSoftObjectPath SystemUpdateScriptRef = GetDefault<UNiagaraEditorSettings>()->RequiredSystemUpdateScript;
 		UNiagaraScript* Script = Cast<UNiagaraScript>(SystemUpdateScriptRef.TryLoad());
 
 		FAssetData ModuleScriptAsset(Script);

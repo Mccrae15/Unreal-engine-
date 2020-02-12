@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "NiagaraSystemScriptViewModel.h"
 #include "NiagaraSystem.h"
@@ -6,7 +6,7 @@
 #include "NiagaraGraph.h"
 #include "NiagaraTypes.h"
 #include "NiagaraScriptSource.h"
-#include "NiagaraScriptViewModel.h"
+#include "ViewModels/NiagaraScriptViewModel.h"
 #include "NiagaraScriptGraphViewModel.h"
 #include "NiagaraScriptInputCollectionViewModel.h"
 #include "NiagaraNodeEmitter.h"
@@ -22,41 +22,29 @@
 #include "ViewModels/NiagaraEmitterHandleViewModel.h"
 #include "ViewModels/NiagaraEmitterViewModel.h"
 
-FNiagaraSystemScriptViewModel::FNiagaraSystemScriptViewModel(UNiagaraSystem& InSystem, FNiagaraSystemViewModel* InParent)
-	: FNiagaraScriptViewModel(InSystem.GetSystemSpawnScript(), NSLOCTEXT("SystemScriptViewModel", "GraphName", "System"), ENiagaraParameterEditMode::EditAll)
-	, Parent(InParent)
-	, System(InSystem)
+FNiagaraSystemScriptViewModel::FNiagaraSystemScriptViewModel()
+	: FNiagaraScriptViewModel(NSLOCTEXT("SystemScriptViewModel", "GraphName", "System"), ENiagaraParameterEditMode::EditAll)
 {
-	Scripts.Add(InSystem.GetSystemUpdateScript());
+}
 
-	if (GetGraphViewModel()->GetGraph())
-	{
-		OnGraphChangedHandle = GetGraphViewModel()->GetGraph()->AddOnGraphChangedHandler(
-			FOnGraphChanged::FDelegate::CreateRaw(this, &FNiagaraSystemScriptViewModel::OnGraphChanged));
-
-		OnRecompileHandle = GetGraphViewModel()->GetGraph()->AddOnGraphNeedsRecompileHandler(
-			FOnGraphChanged::FDelegate::CreateRaw(this, &FNiagaraSystemScriptViewModel::OnGraphChanged));
-		
-		GetGraphViewModel()->SetErrorTextToolTip("");
-	}
-
-	System.OnSystemCompiled().AddRaw(this, &FNiagaraSystemScriptViewModel::OnSystemVMCompiled);
+void FNiagaraSystemScriptViewModel::Initialize(UNiagaraSystem& InSystem)
+{
+	System = &InSystem;
+	SetScript(System->GetSystemSpawnScript());
+	System->OnSystemCompiled().AddSP(this, &FNiagaraSystemScriptViewModel::OnSystemVMCompiled);
 }
 
 FNiagaraSystemScriptViewModel::~FNiagaraSystemScriptViewModel()
 {
-	System.OnSystemCompiled().RemoveAll(this);
-	if (GetGraphViewModel()->GetGraph())
+	if (System.IsValid())
 	{
-		GetGraphViewModel()->GetGraph()->RemoveOnGraphChangedHandler(OnGraphChangedHandle);
-		GetGraphViewModel()->GetGraph()->RemoveOnGraphNeedsRecompileHandler(OnRecompileHandle);
-		
+		System->OnSystemCompiled().RemoveAll(this);
 	}
 }
 
 void FNiagaraSystemScriptViewModel::OnSystemVMCompiled(UNiagaraSystem* InSystem)
 {
-	if (InSystem != &System)
+	if (InSystem != System.Get())
 	{
 		return;
 	}
@@ -70,21 +58,56 @@ void FNiagaraSystemScriptViewModel::OnSystemVMCompiled(UNiagaraSystem* InSystem)
 	FString AggregateErrors;
 
 	TArray<UNiagaraScript*> SystemScripts;
+	TArray<bool> ScriptsEnabled;
 	SystemScripts.Add(InSystem->GetSystemSpawnScript());
 	SystemScripts.Add(InSystem->GetSystemUpdateScript());
+	ScriptsEnabled.Add(true);
+	ScriptsEnabled.Add(true);
+
+	
 	for (const FNiagaraEmitterHandle& Handle : InSystem->GetEmitterHandles())
 	{
+		int32 NumScripts = SystemScripts.Num();
 		Handle.GetInstance()->GetScripts(SystemScripts, true);
+		for (; NumScripts < SystemScripts.Num(); NumScripts++)
+		{
+			if (Handle.GetIsEnabled())
+			{
+				ScriptsEnabled.Add(true);
+			}
+			else
+			{
+				ScriptsEnabled.Add(false);
+			}
+		}
 	}
+
+	check(ScriptsEnabled.Num() == SystemScripts.Num());
 
 	int32 EventsFound = 0;
 	for (int32 i = 0; i < SystemScripts.Num(); i++)
 	{
 		UNiagaraScript* Script = SystemScripts[i];
-		if (Script != nullptr && Script->GetVMExecutableData().IsValid())
+		if (Script != nullptr && Script->GetVMExecutableData().IsValid() && ScriptsEnabled[i])
 		{
 			InCompileStatuses.Add(Script->GetVMExecutableData().LastCompileStatus);
 			InCompileErrors.Add(Script->GetVMExecutableData().ErrorMsg);
+			InCompilePaths.Add(Script->GetPathName());
+
+			if (Script->GetUsage() == ENiagaraScriptUsage::ParticleEventScript)
+			{
+				InUsages.Add(TPair<ENiagaraScriptUsage, int32>(Script->GetUsage(), EventsFound));
+				EventsFound++;
+			}
+			else
+			{
+				InUsages.Add(TPair<ENiagaraScriptUsage, int32>(Script->GetUsage(), 0));
+			}
+		}
+		else if (Script != nullptr && ScriptsEnabled[i] == false)
+		{
+			InCompileStatuses.Add(ENiagaraScriptCompileStatus::NCS_UpToDate);
+			InCompileErrors.Add(FString());
 			InCompilePaths.Add(Script->GetPathName());
 
 			if (Script->GetUsage() == ENiagaraScriptUsage::ParticleEventScript)
@@ -123,153 +146,6 @@ void FNiagaraSystemScriptViewModel::OnSystemVMCompiled(UNiagaraSystem* InSystem)
 	}
 }
 
-float EmitterNodeVerticalOffset = 150.0f;
-
-FVector2D CalculateNewEmitterNodePlacementPosition(UNiagaraGraph* Graph, UNiagaraNodeEmitter* NewEmitterNode)
-{
-	FVector2D PlacementLocation(0.0f, 0.0f);
-	TArray<UNiagaraNodeEmitter*> EmitterNodes;
-	Graph->GetNodesOfClass(EmitterNodes);
-	if (EmitterNodes.Num() > 1)
-	{
-		// If there are Emitter nodes, try to put it under the lowest one.
-		UNiagaraNodeEmitter* LowestNode = nullptr;
-		for (UNiagaraNodeEmitter* EmitterNode : EmitterNodes)
-		{
-			if (EmitterNode != NewEmitterNode && (LowestNode == nullptr || EmitterNode->NodePosY > LowestNode->NodePosY))
-			{
-				LowestNode = EmitterNode;
-			}
-		}
-		check(LowestNode);
-		PlacementLocation = FVector2D(
-			LowestNode->NodePosX,
-			LowestNode->NodePosY + EmitterNodeVerticalOffset);
-	}
-	return PlacementLocation;
-}
-
-void FNiagaraSystemScriptViewModel::RebuildEmitterNodes()
-{
-	UNiagaraGraph* SystemGraph = GetGraphViewModel()->GetGraph();
-	if (SystemGraph == nullptr)
-	{
-		return;
-	}
-	
-	TArray<UNiagaraNodeEmitter*> CurrentEmitterNodes;
-	SystemGraph->GetNodesOfClass<UNiagaraNodeEmitter>(CurrentEmitterNodes);
-
-	const UEdGraphSchema_Niagara* Schema = Cast<UEdGraphSchema_Niagara>(SystemGraph->GetSchema());
-
-	// Remove the old emitter nodes since they will be rebuilt below.
-	for (UNiagaraNodeEmitter* CurrentEmitterNode : CurrentEmitterNodes)
-	{
-		CurrentEmitterNode->Modify();
-		UEdGraphPin* InPin = CurrentEmitterNode->GetInputPin(0);
-		UEdGraphPin* OutPin = CurrentEmitterNode->GetOutputPin(0);
-		UEdGraphPin* InPinLinkedPin = InPin != nullptr && InPin->LinkedTo.Num() == 1 ? InPin->LinkedTo[0] : nullptr;
-		UEdGraphPin* OutPinLinkedPin = OutPin != nullptr && OutPin->LinkedTo.Num() == 1 ? OutPin->LinkedTo[0] : nullptr;
-		CurrentEmitterNode->DestroyNode();
-
-		if (InPinLinkedPin != nullptr &&& OutPinLinkedPin != nullptr)
-		{
-			InPinLinkedPin->MakeLinkTo(OutPinLinkedPin);
-		}
-	}
-
-	// Add output nodes if they don't exist.
-	TArray<UNiagaraNodeInput*> TempInputNodes;
-	TArray<UNiagaraNodeInput*> InputNodes;
-	TArray<UNiagaraNodeOutput*> OutputNodes;
-	OutputNodes.SetNum(2);
-	OutputNodes[0] = SystemGraph->FindOutputNode(ENiagaraScriptUsage::SystemSpawnScript);
-	OutputNodes[1] = SystemGraph->FindOutputNode(ENiagaraScriptUsage::SystemUpdateScript);
-
-	// Add input nodes if they don't exist
-	UNiagaraGraph::FFindInputNodeOptions Options;
-	Options.bFilterDuplicates = false;
-	Options.bIncludeParameters = true;
-	SystemGraph->FindInputNodes(TempInputNodes);
-	for (int32 i = 0; i < TempInputNodes.Num(); i++)
-	{
-		if (Schema->PinToTypeDefinition(TempInputNodes[i]->GetOutputPin(0)) == FNiagaraTypeDefinition::GetParameterMapDef())
-		{
-			InputNodes.Add(TempInputNodes[i]);
-		}
-	}
-
-	// Create a default id variable for the input nodes.
-	FNiagaraVariable SharedInputVar(FNiagaraTypeDefinition::GetParameterMapDef(), TEXT("InputMap"));	
-	InputNodes.SetNum(2);
-
-	// Now create the nodes if they are needed, synchronize if already created.
-	for (int32 i = 0; i < 2; i++)
-	{
-		if (OutputNodes[i] == nullptr)
-		{
-			FGraphNodeCreator<UNiagaraNodeOutput> OutputNodeCreator(*SystemGraph);
-			OutputNodes[i] = OutputNodeCreator.CreateNode();
-			OutputNodes[i]->SetUsage((ENiagaraScriptUsage)(i + (int32)ENiagaraScriptUsage::SystemSpawnScript));
-			
-			OutputNodes[i]->Outputs.Add(FNiagaraVariable(FNiagaraTypeDefinition::GetParameterMapDef(), TEXT("Out")));
-			OutputNodes[i]->NodePosX = 0;
-			OutputNodes[i]->NodePosY = 0 + i*25;
-
-			OutputNodeCreator.Finalize();
-		}
-		if (InputNodes[i] == nullptr)
-		{
-			FGraphNodeCreator<UNiagaraNodeInput> InputNodeCreator(*SystemGraph);
-			InputNodes[i] =  InputNodeCreator.CreateNode();
-			InputNodes[i]->Input = SharedInputVar;
-			InputNodes[i]->Usage = ENiagaraInputNodeUsage::Parameter;
-			InputNodes[i]->NodePosX = -50;
-			InputNodes[i]->NodePosY = 0 + i * 25;
-
-			InputNodeCreator.Finalize();
-
-			InputNodes[i]->GetOutputPin(0)->MakeLinkTo(OutputNodes[i]->GetInputPin(0));
-		}
-	}
-
-	// Add new nodes.
-	UNiagaraNode* TargetNodes[2];
-	TargetNodes[0] = OutputNodes[0];
-	TargetNodes[1] = OutputNodes[1];
-
-	for (const FNiagaraEmitterHandle& EmitterHandle : System.GetEmitterHandles())
-	{
-		for (int32 i = 0; i < 2; i++)
-		{
-			FGraphNodeCreator<UNiagaraNodeEmitter> EmitterNodeCreator(*SystemGraph);
-			UNiagaraNodeEmitter* EmitterNode = EmitterNodeCreator.CreateNode();
-			EmitterNode->SetOwnerSystem(&System);
-			EmitterNode->SetEmitterHandleId(EmitterHandle.GetId());
-			EmitterNode->SetUsage((ENiagaraScriptUsage)(i + (int32)ENiagaraScriptUsage::EmitterSpawnScript));
-
-			FVector2D NewLocation = CalculateNewEmitterNodePlacementPosition(SystemGraph, EmitterNode);
-			EmitterNode->NodePosX = NewLocation.X;
-			EmitterNode->NodePosY = NewLocation.Y;
-			EmitterNode->AllocateDefaultPins();
-			EmitterNodeCreator.Finalize();
-
-			TArray<FNiagaraStackGraphUtilities::FStackNodeGroup> StackNodeGroups;
-			FNiagaraStackGraphUtilities::GetStackNodeGroups(*OutputNodes[i], StackNodeGroups);
-
-			FNiagaraStackGraphUtilities::FStackNodeGroup EmitterGroup;
-			EmitterGroup.StartNodes.Add(EmitterNode);
-			EmitterGroup.EndNode = EmitterNode;
-
-			FNiagaraStackGraphUtilities::FStackNodeGroup& OutputGroup = StackNodeGroups[StackNodeGroups.Num() - 1];
-			FNiagaraStackGraphUtilities::FStackNodeGroup& OutputGroupPrevious = StackNodeGroups[StackNodeGroups.Num() - 2];
-			FNiagaraStackGraphUtilities::ConnectStackNodeGroup(EmitterGroup, OutputGroupPrevious, OutputGroup);
-		}
-	}
-	
-	FNiagaraStackGraphUtilities::RelayoutGraph(*SystemGraph);
-}
-
 FNiagaraSystemScriptViewModel::FOnSystemCompiled& FNiagaraSystemScriptViewModel::OnSystemCompiled()
 {
 	return OnSystemCompiledDelegate;
@@ -277,13 +153,42 @@ FNiagaraSystemScriptViewModel::FOnSystemCompiled& FNiagaraSystemScriptViewModel:
 
 void FNiagaraSystemScriptViewModel::CompileSystem(bool bForce)
 {
-	System.RequestCompile(bForce);
+	System->RequestCompile(bForce);
 }
 
-void FNiagaraSystemScriptViewModel::OnGraphChanged(const struct FEdGraphEditAction& InAction)
+ENiagaraScriptCompileStatus FNiagaraSystemScriptViewModel::GetLatestCompileStatus()
 {
-	if (InAction.Action == GRAPHACTION_SelectNode)
+	TArray<UNiagaraScript*> SystemScripts;
+	SystemScripts.Add(System->GetSystemSpawnScript());
+	SystemScripts.Add(System->GetSystemUpdateScript());
+
+	for (const FNiagaraEmitterHandle& Handle : System->GetEmitterHandles())
 	{
-		return;
+		if (Handle.GetIsEnabled())
+		{
+			Handle.GetInstance()->GetScripts(SystemScripts, true);
+		}
 	}
+
+	bool bDirty = false;
+	for (int32 i = 0; i < SystemScripts.Num(); i++)
+	{
+		if (!SystemScripts[i])
+		{
+			continue;
+		}
+
+		if (SystemScripts[i]->IsCompilable() && !SystemScripts[i]->AreScriptAndSourceSynchronized())
+		{
+			bDirty = true;
+			break;
+		}
+	}
+
+	if (bDirty)
+	{
+		return ENiagaraScriptCompileStatus::NCS_Dirty;
+	}
+	return LastCompileStatus;
 }
+

@@ -1,8 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
-
-/*=============================================================================
-	MallocBinned.cpp: Binned memory allocator
-=============================================================================*/
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "HAL/MallocBinned2.h"
 #include "Logging/LogMacros.h"
@@ -13,6 +9,9 @@
 #include "HAL/IConsoleManager.h"
 #include "HAL/MemoryMisc.h"
 #include "HAL/PlatformMisc.h"
+#include "Misc/App.h"
+
+PRAGMA_DISABLE_UNSAFE_TYPECAST_WARNINGS
 
 #if BINNED2_ALLOW_RUNTIME_TWEAKING
 
@@ -654,8 +653,8 @@ FMallocBinned2::FMallocBinned2()
 	checkf(SmallBlockSizes[BINNED2_SMALL_POOL_COUNT - 1] == BINNED2_MAX_SMALL_POOL_SIZE, TEXT("BINNED2_MAX_SMALL_POOL_SIZE must equal the smallest block size"));
 	checkf(PageSize % BINNED2_LARGE_ALLOC == 0, TEXT("OS page size must be a multiple of BINNED2_LARGE_ALLOC"));
 	checkf(sizeof(FMallocBinned2::FFreeBlock) <= SmallBlockSizes[0], TEXT("Pool header must be able to fit into the smallest block"));
-	static_assert(ARRAY_COUNT(SmallBlockSizes) == BINNED2_SMALL_POOL_COUNT, "Small block size array size must match BINNED2_SMALL_POOL_COUNT");
-	static_assert(ARRAY_COUNT(SmallBlockSizes) <= 256, "Small block size array size must fit in a byte");
+	static_assert(UE_ARRAY_COUNT(SmallBlockSizes) == BINNED2_SMALL_POOL_COUNT, "Small block size array size must match BINNED2_SMALL_POOL_COUNT");
+	static_assert(UE_ARRAY_COUNT(SmallBlockSizes) <= 256, "Small block size array size must fit in a byte");
 	static_assert(sizeof(FFreeBlock) <= BINNED2_MINIMUM_ALIGNMENT, "Free block struct must be small enough to fit into a block.");
 
 	// Init pool tables.
@@ -1052,8 +1051,8 @@ void FMallocBinned2::FlushCurrentThreadCache()
 	QUICK_SCOPE_CYCLE_COUNTER(STAT_FMallocBinned2_FlushCurrentThreadCache);
 	FPerThreadFreeBlockLists* Lists = FPerThreadFreeBlockLists::Get();
 
-	float WaitForMutexTime = 0.0f;
-	float WaitForMutexAndTrimTime = 0.0f;
+	double WaitForMutexTime = 0.0;
+	double WaitForMutexAndTrimTime = 0.0;
 
 	if (Lists)
 	{
@@ -1096,7 +1095,14 @@ void FMallocBinned2::Trim(bool bTrimThreadCaches)
 			FlushCurrentThreadCache();
 		};
 		// Skip task threads on desktop platforms as it is too slow and they don't have much memory
-		FTaskGraphInterface::BroadcastSlow_OnlyUseForSpecialPurposes(!PLATFORM_DESKTOP, false, Broadcast);
+		if (PLATFORM_DESKTOP)
+		{
+			FTaskGraphInterface::BroadcastSlow_OnlyUseForSpecialPurposes(false, false, Broadcast);
+		}
+		else
+		{
+			FTaskGraphInterface::BroadcastSlow_OnlyUseForSpecialPurposes(FPlatformProcess::SupportsMultithreading() && FApp::ShouldUseThreadingForPerformance(), false, Broadcast);
+		}
 		//UE_LOG(LogTemp, Display, TEXT("Trim Broadcast = %6.2fms"), 1000.0f * float(FPlatformTime::Seconds() - StartTime));
 	}
 	{
@@ -1301,3 +1307,5 @@ void FMallocBinned2::DumpAllocatorStats(class FOutputDevice& Ar)
 		#include "FMemory.inl"
 	#endif
 #endif
+
+PRAGMA_ENABLE_UNSAFE_TYPECAST_WARNINGS

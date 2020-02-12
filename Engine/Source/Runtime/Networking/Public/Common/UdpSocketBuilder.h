@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -275,14 +275,15 @@ public:
 		}
 
 		// create socket
-		FSocket* Socket = SocketSubsystem->CreateSocket(NAME_DGram, *Description, true);
+		TSharedRef<FInternetAddr> RemoteAddr = BoundEndpoint.ToInternetAddr();
+		FSocket* Socket = SocketSubsystem->CreateSocket(NAME_DGram, *Description, RemoteAddr->GetProtocolType());
 
 		if (Socket == nullptr)
 		{
 			GLog->Logf(TEXT("FUdpSocketBuilder: Failed to create socket %s"), *Description);
 			return nullptr;
 		}
-
+		
 		// configure socket
 		bool Error =
 			!Socket->SetNonBlocking(!Blocking) ||
@@ -297,7 +298,7 @@ public:
 		}
 		else
 		{
-			Error = Bound && !Socket->Bind(*BoundEndpoint.ToInternetAddr());
+			Error = Bound && !Socket->Bind(*RemoteAddr);
 		}
 
 		// configure multicast
@@ -317,9 +318,25 @@ public:
 		}
 		else
 		{
+			TSharedRef<FInternetAddr> MulticastAddress = SocketSubsystem->CreateInternetAddr(RemoteAddr->GetProtocolType());
+			MulticastAddress->SetBroadcastAddress();
+			TSharedPtr<FInternetAddr> AddressToUse = nullptr;
+
 			for (const auto& Group : JoinedGroups)
 			{
-				if (!Socket->JoinMulticastGroup(*FIPv4Endpoint(Group.GroupAddress, 0).ToInternetAddr(), *FIPv4Endpoint(Group.InterfaceAddress, 0).ToInternetAddr()))
+				// The Socket code no longer has the multicast address hack handled anymore, as such, we need to properly determine the address ourselves.
+				if (Group.GroupAddress.IsSessionFrontendMulticast() && MulticastAddress->GetProtocolType() != FNetworkProtocolTypes::IPv4)
+				{
+					// This will use the address protocol that we figured out earlier.
+					AddressToUse = MulticastAddress;
+				}
+				else
+				{
+					// Otherwise, we'll use the address we use all the time.
+					AddressToUse = FIPv4Endpoint(Group.GroupAddress, 0).ToInternetAddr();
+				}
+
+				if (!Socket->JoinMulticastGroup(*AddressToUse, *FIPv4Endpoint(Group.InterfaceAddress, 0).ToInternetAddr()))
 				{
 					GLog->Logf(TEXT("FUdpSocketBuilder: Failed to subscribe %s to multicast group %s on interface %s"), *Description, *Group.GroupAddress.ToString(), *Group.InterfaceAddress.ToString());
 					Error = true;

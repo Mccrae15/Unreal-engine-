@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "Internationalization/StringTableCore.h"
 #include "Misc/ScopeLock.h"
@@ -577,7 +577,10 @@ void FStringTableRedirects::RedirectTableId(FName& InOutTableId)
 	}
 
 	// Process the asset redirect (only works if the asset is loaded)
-	IStringTableEngineBridge::RedirectStringTableAsset(InOutTableId);
+	if (IStringTableEngineBridge::CanFindOrLoadStringTableAsset())
+	{
+		IStringTableEngineBridge::RedirectStringTableAsset(InOutTableId);
+	}
 }
 
 void FStringTableRedirects::RedirectKey(const FName InTableId, FString& InOutKey)

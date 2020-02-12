@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 /*=============================================================================
 D3D12Device.h: D3D12 Device Interfaces
@@ -11,6 +11,7 @@ D3D12Device.h: D3D12 Device Interfaces
 class FD3D12DynamicRHI;
 class FD3D12BasicRayTracingPipeline;
 class FD3D12RayTracingDescriptorHeapCache;
+class FD3D12RayTracingPipelineCache;
 
 class FD3D12Device : public FD3D12SingleNodeGPUObject, public FNoncopyable, public FD3D12AdapterChild
 {
@@ -47,12 +48,14 @@ public:
 	ID3D12Device5*							GetRayTracingDevice();
 	const FD3D12BasicRayTracingPipeline*	GetBasicRayTracingPipeline() const { return BasicRayTracingPipeline; }
 	FD3D12RayTracingDescriptorHeapCache*	GetRayTracingDescriptorHeapCache() { return RayTracingDescriptorHeapCache; }
+	FD3D12RayTracingPipelineCache*			GetRayTracingPipelineCache() { return RayTracingPipelineCache; }
 #endif // D3D12_RHI_RAYTRACING
 
 	FD3D12DynamicRHI* GetOwningRHI();
 
 	inline FD3D12QueryHeap* GetOcclusionQueryHeap() { return &OcclusionQueryHeap; }
 	inline FD3D12QueryHeap* GetTimestampQueryHeap() { return &TimestampQueryHeap; }
+	FD3D12LinearQueryHeap* GetCmdListExecTimeQueryHeap();
 
 	template <typename TViewDesc> FD3D12OfflineDescriptorManager& GetViewDescriptorAllocator();
 	template<> FD3D12OfflineDescriptorManager& GetViewDescriptorAllocator<D3D12_SHADER_RESOURCE_VIEW_DESC>() { return SRVAllocator; }
@@ -107,8 +110,13 @@ public:
 	TArray<FD3D12CommandListHandle> PendingCommandLists;
 
 	void RegisterGPUWork(uint32 NumPrimitives = 0, uint32 NumVertices = 0);
+	void RegisterGPUDispatch(FIntVector GroupCount);
 	void PushGPUEvent(const TCHAR* Name, FColor Color);
 	void PopGPUEvent();
+
+#if NV_AFTERMATH
+	void PushGPUEvent(const TCHAR* Name, FColor Color, GFSDK_Aftermath_ContextHandle Context);
+#endif
 
 	FD3D12SamplerState* CreateSampler(const FSamplerStateInitializerRHI& Initializer);
 	void CreateSamplerInternal(const D3D12_SAMPLER_DESC& Desc, D3D12_CPU_DESCRIPTOR_HANDLE Descriptor);
@@ -140,6 +148,9 @@ protected:
 
 	FD3D12QueryHeap OcclusionQueryHeap;
 	FD3D12QueryHeap TimestampQueryHeap;
+#if WITH_PROFILEGPU
+	FD3D12LinearQueryHeap CmdListExecTimeQueryHeap;
+#endif
 
 	FD3D12DefaultBufferAllocator DefaultBufferAllocator;
 
@@ -179,9 +190,34 @@ protected:
 
 #if D3D12_RHI_RAYTRACING
 	FD3D12BasicRayTracingPipeline* BasicRayTracingPipeline = nullptr;
-
-	// #dxr_todo: unify RT descriptor cache with main FD3D12DescriptorCache
+	FD3D12RayTracingPipelineCache* RayTracingPipelineCache = nullptr;
+	// #dxr_todo UE-72158: unify RT descriptor cache with main FD3D12DescriptorCache
 	FD3D12RayTracingDescriptorHeapCache* RayTracingDescriptorHeapCache = nullptr;
 	void DestroyRayTracingDescriptorCache();
 #endif
 };
+
+template <typename TDesc> 
+void TD3D12ViewDescriptorHandle<TDesc>::AllocateDescriptorSlot()
+{
+	if (Parent)
+	{
+		FD3D12Device* Device = GetParentDevice();
+		FD3D12OfflineDescriptorManager& DescriptorAllocator = Device->template GetViewDescriptorAllocator<TDesc>();
+		Handle = DescriptorAllocator.AllocateHeapSlot(Index);
+		check(Handle.ptr != 0);
+	}
+}
+
+template <typename TDesc> 
+void TD3D12ViewDescriptorHandle<TDesc>::FreeDescriptorSlot()
+{
+	if (Parent)
+	{
+		FD3D12Device* Device = GetParentDevice();
+		FD3D12OfflineDescriptorManager& DescriptorAllocator = Device->template GetViewDescriptorAllocator<TDesc>();
+		DescriptorAllocator.FreeHeapSlot(Handle, Index);
+		Handle.ptr = 0;
+	}
+	check(!Handle.ptr);
+}

@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "Linux/LinuxApplication.h"
 
@@ -838,6 +838,9 @@ void FLinuxApplication::ProcessDeferredMessage( SDL_Event Event )
 						UE_LOG(LogLinuxWindowEvent, Verbose, TEXT("WM_SETFOCUS                                 : %d"), CurrentEventWindow->GetID());
 
 						CurrentFocusWindow = CurrentEventWindow;
+
+						// We have gained focus, we can stop trying to check if we need to deactivate
+						FocusOutDeactivationTime = 0.0;
 					}
 					break;
 
@@ -855,11 +858,6 @@ void FLinuxApplication::ProcessDeferredMessage( SDL_Event Event )
 							if(bActivateApp)
 							{
 								FocusOutDeactivationTime = FPlatformTime::Seconds() + DeactivationThreadshold;
-
-								SDL_Event event;
-								event.type = SDL_USEREVENT;
-								event.user.code = CheckForDeactivation;
-								SDL_PushEvent(&event);
 							}
 						}
 						CurrentFocusWindow = nullptr;
@@ -918,28 +916,6 @@ void FLinuxApplication::ProcessDeferredMessage( SDL_Event Event )
 				DragAndDropTextQueue.Empty();
 			}
 			UE_LOG(LogLinuxWindowEvent, Verbose, TEXT("DragAndDrop finished for Window              : %d"), CurrentEventWindow->GetID());
-		}
-		break;
-
-	case SDL_USEREVENT:
-		{
-			if(Event.user.code == CheckForDeactivation)
-			{
-				// We still havent hit our timeout limit, try again
-				if (FocusOutDeactivationTime > FPlatformTime::Seconds())
-				{
-					SDL_Event event;
-					event.type = SDL_USEREVENT;
-					event.user.code = CheckForDeactivation;
-					SDL_PushEvent(&event);
-				}
-				// If we don't use bIsDragWindowButtonPressed the draged window will be destroyed because we
-				// deactivate the whole appliacton. TODO Is that a bug? Do we have to do something?
-				else if (!CurrentFocusWindow.IsValid() && !bIsDragWindowButtonPressed)
-				{
-					DeactivateApplication();
-				}
-			}
 		}
 		break;
 
@@ -1042,6 +1018,31 @@ void FLinuxApplication::ProcessDeferredMessage( SDL_Event Event )
 	default:
 		UE_LOG(LogLinuxWindow, Verbose, TEXT("Received unknown SDL event type=%d"), Event.type);
 		break;
+	}
+}
+
+void FLinuxApplication::CheckIfApplicatioNeedsDeactivation()
+{
+	// If FocusOutDeactivationTime is set we have had a focus out event and are waiting to see if we need to Deactivate the Application
+	if (!FMath::IsNearlyZero(FocusOutDeactivationTime))
+	{
+		// We still havent hit our timeout limit, keep waiting
+		if (FocusOutDeactivationTime > FPlatformTime::Seconds())
+		{
+			return;
+		}
+		// If we don't use bIsDragWindowButtonPressed the draged window will be destroyed because we
+		// deactivate the whole appliacton. TODO Is that a bug? Do we have to do something?
+		else if (!CurrentFocusWindow.IsValid() && !bIsDragWindowButtonPressed)
+		{
+			DeactivateApplication();
+
+			FocusOutDeactivationTime = 0.0;
+		}
+		else
+		{
+			FocusOutDeactivationTime = 0.0;
+		}
 	}
 }
 
@@ -1443,15 +1444,42 @@ void FDisplayMetrics::RebuildDisplayMetrics(FDisplayMetrics& OutDisplayMetrics)
 
 	OutDisplayMetrics.MonitorInfo.Empty();
 
-	// exit early if no displays connected
 	if (NumDisplays <= 0)
 	{
-		OutDisplayMetrics.PrimaryDisplayWorkAreaRect = FPlatformRect(0, 0, 0, 0);
-		OutDisplayMetrics.VirtualDisplayRect = OutDisplayMetrics.PrimaryDisplayWorkAreaRect;
-		OutDisplayMetrics.PrimaryDisplayWidth = 0;
-		OutDisplayMetrics.PrimaryDisplayHeight = 0;
+		if (IsRunningDedicatedServer())
+		{
+			// dedicated servers has always been exiting early
+			OutDisplayMetrics.PrimaryDisplayWorkAreaRect = FPlatformRect(0, 0, 0, 0);
+			OutDisplayMetrics.VirtualDisplayRect = OutDisplayMetrics.PrimaryDisplayWorkAreaRect;
+			OutDisplayMetrics.PrimaryDisplayWidth = 0;
+			OutDisplayMetrics.PrimaryDisplayHeight = 0;
 
-		return;
+			return;
+		}
+		else
+		{
+			// headless clients need some plausible values because high level logic depends on viewport sizes not being 0 (see e.g. UnrealClient.cpp)
+			int32 Width = 1920;
+			int32 Height = 1080;
+
+			FMonitorInfo Display;
+			Display.bIsPrimary = true;
+			if (FPlatformApplicationMisc::IsHighDPIAwarenessEnabled())
+			{
+				Display.DPI = 96;
+			}
+			Display.ID = TEXT("fakedisplay");
+			Display.NativeWidth = Width;
+			Display.NativeHeight = Height;
+			Display.DisplayRect = FPlatformRect(0, 0, Width, Height);
+			Display.WorkArea = FPlatformRect(0, 0, Width, Height);
+
+			OutDisplayMetrics.PrimaryDisplayWorkAreaRect = Display.WorkArea;
+			OutDisplayMetrics.VirtualDisplayRect = OutDisplayMetrics.PrimaryDisplayWorkAreaRect;
+			OutDisplayMetrics.PrimaryDisplayWidth = Display.NativeWidth;
+			OutDisplayMetrics.PrimaryDisplayHeight = Display.NativeHeight;
+			OutDisplayMetrics.MonitorInfo.Add(Display);
+		}
 	}
 
 	for (int32 DisplayIdx = 0; DisplayIdx < NumDisplays; ++DisplayIdx)
@@ -1717,6 +1745,33 @@ void FLinuxApplication::SaveWindowPropertiesForEventLoop(void)
 void FLinuxApplication::ClearWindowPropertiesAfterEventLoop(void)
 {
 	SavedWindowPropertiesForEventLoop.Empty();
+
+	// This is a hack for 4.22.1 to avoid changing a header. We will be calling in from here at
+	// LinuxPlatformApplicationMisc.cpp in FLinuxPlatformApplicationMisc::PumpMessages
+	//
+	// In 4.23 this will be in a function: void FLinuxApplication::CheckIfApplicatioNeedsDeactivation()
+
+	// If FocusOutDeactivationTime is set we have had a focus out event and are waiting to see if we need to Deactivate the Application
+	if (!FMath::IsNearlyZero(FocusOutDeactivationTime))
+	{
+		// We still havent hit our timeout limit, keep waiting
+		if (FocusOutDeactivationTime > FPlatformTime::Seconds())
+		{
+			return;
+		}
+		// If we don't use bIsDragWindowButtonPressed the draged window will be destroyed because we
+		// deactivate the whole appliacton. TODO Is that a bug? Do we have to do something?
+		else if (!CurrentFocusWindow.IsValid() && !bIsDragWindowButtonPressed)
+		{
+			DeactivateApplication();
+
+			FocusOutDeactivationTime = 0.0;
+		}
+		else
+		{
+			FocusOutDeactivationTime = 0.0;
+		}
+	}
 }
 
 void FLinuxApplication::GetWindowPropertiesInEventLoop(SDL_HWindow NativeWindow, FWindowProperties& Properties)

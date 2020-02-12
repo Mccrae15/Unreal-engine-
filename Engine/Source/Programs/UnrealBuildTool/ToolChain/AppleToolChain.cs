@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 using System;
 using System.Collections;
@@ -51,6 +51,30 @@ namespace UnrealBuildTool
 				Log.TraceInformationOnce("Compiling with non-standard Xcode ({0}): {1}", Reason, DeveloperDir);
 			}
 
+			// Installed engine requires Xcode 11
+			if (UnrealBuildTool.IsEngineInstalled())
+			{
+				string XcodeBuilderVersionOutput = Utils.RunLocalProcessAndReturnStdOut("xcodebuild", "-version");
+				if (XcodeBuilderVersionOutput.Length > 10)
+				{
+					string[] Version = XcodeBuilderVersionOutput.Substring(6, 4).Split('.');
+					if (Version.Length == 2)
+					{
+						if (int.Parse(Version[0]) < 11)
+						{
+							throw new BuildException("Building for macOS, iOS and tvOS requires Xcode 11 or newer, Xcode " + Version[0] + "." + Version[1] + " detected");
+						}
+					}
+					else
+					{
+						Log.TraceWarning("Failed to query Xcode version");
+					}
+				}
+				else
+				{
+					Log.TraceWarning("Failed to query Xcode version");
+				}
+			}
 		}
 
 		protected void SelectSDK(string BaseSDKDir, string OSPrefix, ref string PlatformSDKVersion, bool bVerbose)
@@ -130,12 +154,11 @@ namespace UnrealBuildTool
 		}
 	}
 
-	abstract class AppleToolChain : UEToolChain
+	abstract class AppleToolChain : ISPCToolChain
 	{
 		protected FileReference ProjectFile;
 
-		public AppleToolChain(CppPlatform InCppPlatform, FileReference InProjectFile)
-			: base(InCppPlatform)
+		public AppleToolChain(FileReference InProjectFile)
 		{
 			ProjectFile = InProjectFile;
 		}
@@ -161,20 +184,75 @@ namespace UnrealBuildTool
 			Utils.RunLocalProcessAndLogOutput(StartInfo);
 		}
 		
-		protected string GetDsymutilPath()
+		protected string GetDsymutilPath(out string ExtraOptions, bool bIsForLTOBuild=false)
 		{
 			FileReference DsymutilLocation = new FileReference("/usr/bin/dsymutil");
 
-			DirectoryReference AutoSdkDir;
-			if (UEBuildPlatformSDK.TryGetHostPlatformAutoSDKDir(out AutoSdkDir))
+			// dsymutil before 10.0.1 has a bug that causes issues, it's fixed in autosdks but not everyone has those set up so for the timebeing we have
+			// a version in P4 - first determine if we need it
+			string DsymutilVersionString = Utils.RunLocalProcessAndReturnStdOut(DsymutilLocation.FullName, "-version");
+
+			bool bUseInstalledDsymutil = true;
+			int Major = 0, Minor = 0, Patch = 0;
+
+			// tease out the version number
+			string[] Tokens = DsymutilVersionString.Split(" ".ToCharArray());
+			
+			// sanity check
+			if (Tokens.Length < 4 || Tokens[3].Contains(".") == false)
 			{
-				FileReference AutoSdkDsymutilLocation = FileReference.Combine(AutoSdkDir, "Mac", "LLVM", "bin", "dsymutil");
-				if (FileReference.Exists(AutoSdkDsymutilLocation))
+				Log.TraceInformationOnce("Unable to parse dsymutil version out of: {0}", DsymutilVersionString);
+
+				bUseInstalledDsymutil = false;
+			}
+			else
+			{
+				string[] Versions = Tokens[3].Split(".".ToCharArray());
+				if (Versions.Length < 3)
 				{
-					DsymutilLocation = AutoSdkDsymutilLocation;
+					Log.TraceInformationOnce("Unable to parse version token: {0}", Tokens[3]);
+				}
+				else
+				{
+					if (!int.TryParse(Versions[0], out Major) || !int.TryParse(Versions[1], out Minor) || !int.TryParse(Versions[2], out Patch))
+					{
+						Log.TraceInformationOnce("Unable to parse version tokens: {0}", Tokens[3]);
+					}
+					else
+					{
+						Log.TraceInformationOnce("Parsed dsymutil version as {0}.{1}.{2}", Major, Minor, Patch);
+
+						if (Major < 10 || (Minor == 0 && Patch == 0))
+						{
+							bUseInstalledDsymutil = false;
+						}
+					}
 				}
 			}
 
+			// if the installed one is too old, use a fixed up one if it can
+			if (bUseInstalledDsymutil == false)
+			{
+				FileReference PatchedDsymutilLocation = FileReference.Combine(UnrealBuildTool.EngineDirectory, "Binaries/Mac/NotForLicensees/LLVM/bin/dsymutil");
+
+				if (File.Exists(PatchedDsymutilLocation.FullName))
+				{
+					DsymutilLocation = PatchedDsymutilLocation;
+				}
+
+				DirectoryReference AutoSdkDir;
+				if (UEBuildPlatformSDK.TryGetHostPlatformAutoSDKDir(out AutoSdkDir))
+				{
+					FileReference AutoSdkDsymutilLocation = FileReference.Combine(AutoSdkDir, "Mac", "LLVM", "bin", "dsymutil");
+					if (FileReference.Exists(AutoSdkDsymutilLocation))
+					{
+						DsymutilLocation = AutoSdkDsymutilLocation;
+					}
+				}
+			}
+
+			// 10.0.1 has an issue with LTO builds where we need to limit the number of threads
+			ExtraOptions = (bIsForLTOBuild && Major == 10 && Minor == 0 && Patch == 1) ? "-j 1" : "";
 			return DsymutilLocation.FullName;
 		}
 	};

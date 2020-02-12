@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -14,7 +14,7 @@ class FPartyPlatformSessionMonitor;
 
 struct FPartyRepData;
 struct FPartyConfiguration;
-enum class EMemberExitedReason;
+enum class EMemberExitedReason : uint8;
 
 class FPartyPlatformSessionManager : public TSharedFromThis<FPartyPlatformSessionManager>
 {

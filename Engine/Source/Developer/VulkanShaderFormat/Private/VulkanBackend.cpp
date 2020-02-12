@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 // This code is largely based on that in ir_print_glsl_visitor.cpp from
 // glsl-optimizer.
@@ -136,6 +136,18 @@ static inline std::string FixHlslName(const glsl_type* Type, bool bUseTextureIns
 			else if (!FCStringAnsi::Strcmp(Type->HlslName, "texturecubearray"))
 			{
 				return "textureCubeArray";
+			}
+			else if (!FCStringAnsi::Strcmp(Type->HlslName, "texture2darray"))
+			{
+				return "texture2DArray";
+			}
+			else if (!FCStringAnsi::Strcmp(Type->HlslName, "texture2dms"))
+			{
+				return "texture2DArray";
+			}
+			else if (!FCStringAnsi::Strcmp(Type->HlslName, "texture2dmsarray"))
+			{
+				return "texture2DMSArray";
 			}
 
 			return Type->HlslName;
@@ -401,6 +413,15 @@ static const char* OutputTopologyStrings[5] = {
 	"ccw",
 };
 
+static const char* GLSLIntCastTypes[5] =
+{
+	"!invalid!",
+	"int",
+	"ivec2",
+	"ivec3",
+	"ivec4",
+};
+
 static_assert((sizeof(GLSLExpressionTable) / sizeof(GLSLExpressionTable[0])) == ir_opcode_count, "GLSLExpressionTableSizeMismatch");
 
 // Holds information required for knowing if samplerstates should be shared
@@ -408,7 +429,7 @@ struct FSamplerMappingGatherData
 {
 	struct FEntry
 	{
-		bool bUsingLoad = false;
+		bool bUsingLoadOrDim = false; // either "Load" or "GetDimensions" intrinsics are used
 		TStringSet SamplerStates;
 	};
 	std::map<std::string, FEntry> Entries;
@@ -430,7 +451,7 @@ struct FSamplerMapping
 		// First find all samplers using T.Load()
 		for (auto EntryPair : GatherData.Entries)
 		{
-			if (EntryPair.second.bUsingLoad)
+			if (EntryPair.second.bUsingLoadOrDim)
 			{
 				CombinedSamplers.insert(EntryPair.first);
 			}
@@ -748,8 +769,14 @@ class FGenerateVulkanVisitor : public ir_visitor
 	/** Whether the shader being cross compiled needs EXT_shader_texture_lod. */
 	bool bUsesES2TextureLODExtension;
 
-	// Found dFdx or dFdy
+	/** Found dFdx or dFdy */
 	bool bUsesDXDY;
+
+	// True if the discard instruction was encountered.
+	bool bUsesDiscard;
+
+	/** Found image atomic functions (e.g. imageAtomicAdd) */
+	bool bUsesImageWriteAtomic;
 
 	std::vector<std::string> SamplerStateNames;
 	TIRVarSet AtomicVariables;
@@ -1241,7 +1268,7 @@ class FGenerateVulkanVisitor : public ir_visitor
 			}
 			else if (var->type->is_image())
 			{
-				if (!strncmp(var->type->name, "RWStructuredBuffer<", 19) || !strncmp(var->type->name, "StructuredBuffer<", 17))
+				if (var->type->HlslName && (!strncmp(var->type->HlslName, "RWStructuredBuffer<", 19) || !strncmp(var->type->HlslName, "StructuredBuffer<", 17)))
 				{
 					ralloc_asprintf_append(
 						buffer,
@@ -1255,7 +1282,7 @@ class FGenerateVulkanVisitor : public ir_visitor
 					const bool bSingleComp = (var->type->inner_type->vector_elements == 1);
 					const char * const coherent_str[] ={"", "coherent "};
 					const char * const writeonly_str[] ={"", "writeonly "};
-					const char * const type_str[] ={"32ui", "32i", "16f", (bIsES31 && !bSingleComp) ? "16f" : "32f"};
+					const char * const type_str[] ={"32ui", "32i", "16f", "32f"};
 					const char * const comp_str = bSingleComp ? "r" : "rgba";
 					const int writeonly = var->image_write && !(var->image_read);
 
@@ -1359,7 +1386,7 @@ class FGenerateVulkanVisitor : public ir_visitor
 				}
 			}
 
-			if (var->type->is_image() && (!strncmp(var->type->name, "RWStructuredBuffer<", 19) || !strncmp(var->type->name, "StructuredBuffer<", 17)))
+			if (var->type->is_image() && (var->type->HlslName && (!strncmp(var->type->HlslName, "RWStructuredBuffer<", 19) || !strncmp(var->type->HlslName, "StructuredBuffer<", 17))))
 			{
 				AddTypeToUsedStructs(var->type->inner_type);
 				// DO NOT change _BUFFER (or update when reading the spir-v reflection)
@@ -1872,14 +1899,10 @@ class FGenerateVulkanVisitor : public ir_visitor
 		{
 			"xxxx", "xyxx", "xyzx", "xyzw"
 		};
-		const char* int_cast[] =
-		{
-			"int", "ivec2", "ivec3", "ivec4"
-		};
 		const int dst_elements = deref->type->vector_elements;
 		const int src_elements = (src) ? src->type->vector_elements : 1;
 
-		bool bIsStructured = deref->type->is_record() || (!strncmp(deref->image->type->name, "RWStructuredBuffer<", 19) || !strncmp(deref->image->type->name, "StructuredBuffer<", 17));
+		bool bIsStructured = deref->type->is_record() || (deref->image->type->HlslName && (!strncmp(deref->image->type->HlslName, "RWStructuredBuffer<", 19) || !strncmp(deref->image->type->HlslName, "StructuredBuffer<", 17)));
 
 		//!strncmp(var->type->name, "RWStructuredBuffer<")
 		check(bIsStructured || (1 <= dst_elements && dst_elements <= 4));
@@ -1912,18 +1935,19 @@ class FGenerateVulkanVisitor : public ir_visitor
 				{
 					ralloc_asprintf_append(buffer, "imageLoad( ");
 					deref->image->accept(this);
-					ralloc_asprintf_append(buffer, ", ");
+					ralloc_asprintf_append(buffer, ", %s(", GLSLIntCastTypes[deref->image_index->type->vector_elements]);
 					deref->image_index->accept(this);
-					ralloc_asprintf_append(buffer, ").%s", swizzle[dst_elements - 1]);
+					ralloc_asprintf_append(buffer, ")).%s", swizzle[dst_elements - 1]);
 				}
 				else
 				{
 					ralloc_asprintf_append(buffer, "imageStore( ");
 					deref->image->accept(this);
-					ralloc_asprintf_append(buffer, ", ");
+					ralloc_asprintf_append(buffer, ", %s(", GLSLIntCastTypes[deref->image_index->type->vector_elements]);
 					deref->image_index->accept(this);
-					ralloc_asprintf_append(buffer, ", ");
-					if (src->as_constant() && src_elements == 1)
+					ralloc_asprintf_append(buffer, "), ");
+					// avoid 'scalar swizzle'
+					if (/*src->as_constant() && */src_elements == 1)
 					{
 						// Add cast if missing and avoid swizzle
 						if (deref->image->type->inner_type)
@@ -1945,12 +1969,6 @@ class FGenerateVulkanVisitor : public ir_visitor
 							}
 						}
 
-						src->accept(this);
-						ralloc_asprintf_append(buffer, ",");
-						src->accept(this);
-						ralloc_asprintf_append(buffer, ",");
-						src->accept(this);
-						ralloc_asprintf_append(buffer, ",");
 						src->accept(this);
 						ralloc_asprintf_append(buffer, "))");
 					}
@@ -2310,6 +2328,7 @@ class FGenerateVulkanVisitor : public ir_visitor
 			ralloc_asprintf_append(buffer, ") ");
 		}
 		ralloc_asprintf_append(buffer, "discard");
+		bUsesDiscard = true;
 	}
 
 	bool try_conditional_move(ir_if *expr)
@@ -2332,7 +2351,7 @@ class FGenerateVulkanVisitor : public ir_visitor
 
 			ir_instruction *const inst = (ir_instruction *)iter.get();
 			ir_assignment *assignment = inst->as_assignment();
-			if (assignment && (assignment->rhs->ir_type == ir_type_dereference_variable || assignment->rhs->ir_type == ir_type_constant))
+			if (assignment && (assignment->rhs->ir_type == ir_type_dereference_variable || assignment->rhs->ir_type == ir_type_constant || assignment->rhs->ir_type == ir_type_swizzle))
 			{
 				dest_deref = assignment->lhs->as_dereference_variable();
 				true_value = assignment->rhs;
@@ -2355,7 +2374,7 @@ class FGenerateVulkanVisitor : public ir_visitor
 
 			ir_instruction *const inst = (ir_instruction *)iter.get();
 			ir_assignment *assignment = inst->as_assignment();
-			if (assignment && (assignment->rhs->ir_type == ir_type_dereference_variable || assignment->rhs->ir_type == ir_type_constant))
+			if (assignment && (assignment->rhs->ir_type == ir_type_dereference_variable || assignment->rhs->ir_type == ir_type_constant || assignment->rhs->ir_type == ir_type_swizzle))
 			{
 				ir_dereference_variable *tmp_deref = assignment->lhs->as_dereference_variable();
 				if (tmp_deref
@@ -2531,10 +2550,10 @@ class FGenerateVulkanVisitor : public ir_visitor
 			"imageAtomicCompSwap"
 		};
 		check(scope_depth > 0);
-		const bool is_image = ir->memory_ref->as_dereference_image() != NULL;
+		ir_dereference_image* image = ir->memory_ref->as_dereference_image();
 
 		ir->lhs->accept(this);
-		if (!is_image)
+		if (!image || (image->image->type && image->image->type->shader_storage_buffer))
 		{
 			ralloc_asprintf_append(buffer, " = %s(",
 				sharedAtomicFunctions[ir->operation]);
@@ -2550,13 +2569,12 @@ class FGenerateVulkanVisitor : public ir_visitor
 		}
 		else
 		{
-			ir_dereference_image *image = ir->memory_ref->as_dereference_image();
 			ralloc_asprintf_append(buffer, " = %s(",
 				imageAtomicFunctions[ir->operation]);
 			image->image->accept(this);
-			ralloc_asprintf_append(buffer, ", ");
+			ralloc_asprintf_append(buffer, ", %s(", GLSLIntCastTypes[image->image_index->type->vector_elements]);
 			image->image_index->accept(this);
-			ralloc_asprintf_append(buffer, ", ");
+			ralloc_asprintf_append(buffer, "), ");
 			ir->operands[0]->accept(this);
 			if (ir->operands[1])
 			{
@@ -2564,6 +2582,8 @@ class FGenerateVulkanVisitor : public ir_visitor
 				ir->operands[1]->accept(this);
 			}
 			ralloc_asprintf_append(buffer, ")");
+
+			bUsesImageWriteAtomic = true;
 		}
 	}
 
@@ -3243,7 +3263,7 @@ class FGenerateVulkanVisitor : public ir_visitor
 		if (!ExternalSamplersList.empty())
 		{
 			ralloc_asprintf_append(buffer, "// @ExternalTextures: ");
-			for (int Index = 0; Index < ExternalSamplersList.size(); ++Index)
+			for (uint32 Index = 0; Index < ExternalSamplersList.size(); ++Index)
 			{
 				ralloc_asprintf_append(buffer, "%s%s", Index == 0 ? "" : ",", ExternalSamplersList[Index].c_str());
 			}
@@ -3256,7 +3276,7 @@ class FGenerateVulkanVisitor : public ir_visitor
 	*/
 	void print_layout(_mesa_glsl_parse_state *state)
 	{
-		if (early_depth_stencil)
+		if (early_depth_stencil && this->bUsesDiscard == false)
 		{
 			ralloc_asprintf_append(buffer, "layout(early_fragment_tests) in;\n");
 		}
@@ -3333,7 +3353,7 @@ class FGenerateVulkanVisitor : public ir_visitor
 #endif		
 	}
 
-	void print_extensions(_mesa_glsl_parse_state* state, bool bUsesES31Extensions)
+	void print_extensions(_mesa_glsl_parse_state* state, bool bUsesES31Extensions, bool bShouldEmitOESExtensions, bool bShouldEmitMultiview)
 	{
 		if (bUsesES2TextureLODExtension)
 		{
@@ -3353,6 +3373,11 @@ class FGenerateVulkanVisitor : public ir_visitor
 			ralloc_asprintf_append(buffer, "#extension GL_OES_standard_derivatives : enable\n");
 		}
 
+		if (bUsesImageWriteAtomic && bShouldEmitOESExtensions)
+		{
+			ralloc_asprintf_append(buffer, "#extension GL_OES_shader_image_atomic : enable\n");
+		}
+
 		if (bUsesES31Extensions)
 		{
 			ralloc_asprintf_append(buffer, "#extension GL_EXT_gpu_shader5 : enable\n");
@@ -3368,7 +3393,15 @@ class FGenerateVulkanVisitor : public ir_visitor
 			{
 				ralloc_asprintf_append(buffer, "#extension GL_EXT_tessellation_shader : enable\n");
 			}
+			else if (ParseState->target == compute_shader)
+			{
+				ralloc_asprintf_append(buffer, "#extension GL_OES_shader_image_atomic : enable\n");
+			}
+		}
 
+		if (bShouldEmitMultiview && (state->target == vertex_shader || state->target == fragment_shader))
+		{
+			ralloc_asprintf_append(buffer, "#extension GL_EXT_multiview : enable\n");
 		}
 	}
 
@@ -3400,6 +3433,8 @@ public:
 		, loop_count(0)
 		, bUsesES2TextureLODExtension(false)
 		, bUsesDXDY(false)
+		, bUsesDiscard(false)
+		, bUsesImageWriteAtomic(false)
 	{
 		printable_names = hash_table_ctor(32, hash_table_pointer_hash, hash_table_pointer_compare);
 		used_structures = hash_table_ctor(32, hash_table_pointer_hash, hash_table_pointer_compare);
@@ -3459,7 +3494,8 @@ public:
 
 			const char* DefaultPrecision = bDefaultPrecisionIsHalf ? "mediump" : "highp";
 			ralloc_asprintf_append(buffer, "precision %s float;\n", DefaultPrecision);
-			ralloc_asprintf_append(buffer, "precision %s int;\n", DefaultPrecision);
+			// always use highp for integers as shaders use them as bit storage
+			ralloc_asprintf_append(buffer, "precision %s int;\n", "highp");
 			//ralloc_asprintf_append(buffer, "\n#ifndef DONTEMITSAMPLERDEFAULTPRECISION\n");
 			ralloc_asprintf_append(buffer, "precision %s sampler;\n", DefaultPrecision);
 			ralloc_asprintf_append(buffer, "precision %s sampler2D;\n", DefaultPrecision);
@@ -3501,9 +3537,14 @@ public:
 		print_layout(state);
 		buffer = 0;
 
+		const FVulkanLanguageSpec* LanguageSpec = static_cast<const FVulkanLanguageSpec*>(state->LanguageSpec);
+
+		const bool bShouldEmitOESExtensions = LanguageSpec->RequiresOESExtensions();
+		const bool bShouldEmitMultiview = strstr(signature, "gl_ViewIndex") != nullptr;
+
 		char* Extensions = ralloc_asprintf(mem_ctx, "");
 		buffer = &Extensions;
-		print_extensions(state, state->language_version == 310);
+		print_extensions(state, state->language_version == 310, bShouldEmitOESExtensions, bShouldEmitMultiview);
 		if (state->bSeparateShaderObjects && !state->bGenerateES)
 		{
 			switch (state->target)
@@ -3513,7 +3554,7 @@ public:
 				ralloc_asprintf_append(buffer, "in gl_PerVertex\n"
 					"{\n"
 					"\tvec4 gl_Position;\n"
-					"\tfloat gl_ClipDistance[6];\n"
+					"\tfloat gl_ClipDistance[];\n"
 					"} gl_in[];\n"
 					);
 #endif
@@ -3523,7 +3564,7 @@ public:
 				ralloc_asprintf_append(buffer, "out gl_PerVertex\n"
 					"{\n"
 					"\tvec4 gl_Position;\n"
-					"\tfloat gl_ClipDistance[6];\n"
+					"\tfloat gl_ClipDistance[];\n"
 					"};\n"
 					);
 #endif
@@ -3532,13 +3573,13 @@ public:
 				ralloc_asprintf_append(buffer, "in gl_PerVertex\n"
 					"{\n"
 					"\tvec4 gl_Position;\n"
-					"\tfloat gl_ClipDistance[6];\n"
+					"\tfloat gl_ClipDistance[];\n"
 					"} gl_in[gl_MaxPatchVertices];\n"
 					);
 				ralloc_asprintf_append(buffer, "out gl_PerVertex\n"
 					"{\n"
 					"\tvec4 gl_Position;\n"
-					"\tfloat gl_ClipDistance[6];\n"
+					"\tfloat gl_ClipDistance[];\n"
 					"} gl_out[];\n"
 					);
 				break;
@@ -3546,13 +3587,13 @@ public:
 				ralloc_asprintf_append(buffer, "in gl_PerVertex\n"
 					"{\n"
 					"\tvec4 gl_Position;\n"
-					"\tfloat gl_ClipDistance[6];\n"
+					"\tfloat gl_ClipDistance[];\n"
 					"} gl_in[gl_MaxPatchVertices];\n"
 					);
 				ralloc_asprintf_append(buffer, "out gl_PerVertex\n"
 					"{\n"
 					"\tvec4 gl_Position;\n"
-					"\tfloat gl_ClipDistance[6];\n"
+					"\tfloat gl_ClipDistance[];\n"
 					"};\n"
 					);
 				break;
@@ -3814,23 +3855,16 @@ struct FGenerateSamplerToTextureMapVisitor : public ir_hierarchical_visitor
 			}
 			else
 			{
-				if (IR->op == ir_txf)
+				if (IR->op == ir_txf || IR->op == ir_txs || IR->op == ir_txm)
 				{
-					GatherData.Entries[Sampler->name].bUsingLoad = true;
+					GatherData.Entries[Sampler->name].bUsingLoadOrDim = true;
 				}
 				else
 				{
-					if (IR->op == ir_txs || IR->op == ir_txm)
-					{
-						// Will be patched later
-					}
-					else
-					{
 #if UE_BUILD_DEBUG
-						// Internal error!!!
-						ensure(0);
+					// Internal error!!!
+					ensure(0);
 #endif
-					}
 					GatherData.Entries[Sampler->name].SamplerStates.insert("");
 				}
 			}
@@ -4058,6 +4092,7 @@ struct FSystemValue
 /** Vertex shader system values. */
 static FSystemValue VertexSystemValueTable[] =
 {
+	{ "SV_ViewID", glsl_type::int_type, "gl_ViewIndex", ir_var_in, false, false, false, false },
 	{ "SV_VertexID", glsl_type::int_type, "gl_VertexIndex", ir_var_in, false, false, false, false },
 	{ "SV_InstanceID", glsl_type::int_type, "gl_InstanceIndex", ir_var_in, false, false, false, false },
 	{ "SV_Position", glsl_type::vec4_type, "gl_Position", ir_var_out, false, false, true, false },
@@ -4067,6 +4102,7 @@ static FSystemValue VertexSystemValueTable[] =
 /** Pixel shader system values. */
 static FSystemValue PixelSystemValueTable[] =
 {
+	{ "SV_ViewID", glsl_type::int_type, "gl_ViewIndex", ir_var_in, false, false, false, false },
 	{ "SV_Depth", glsl_type::float_type, "gl_FragDepth", ir_var_out, false, false, false, false },
 	{ "SV_Position", glsl_type::vec4_type, "gl_FragCoord", ir_var_in, true, false, false, false },
 	{ "SV_IsFrontFace", glsl_type::bool_type, "gl_FrontFacing", ir_var_in, false, false, true, false },
@@ -4082,6 +4118,7 @@ static FSystemValue PixelSystemValueTable[] =
 /** Geometry shader system values. */
 static FSystemValue GeometrySystemValueTable[] =
 {
+	{ "SV_ViewID", glsl_type::int_type, "gl_ViewIndex", ir_var_in, false, false, false, false },
 	{ "SV_VertexID", glsl_type::int_type, "gl_VertexID", ir_var_in, false, false, false, false },
 	{ "SV_InstanceID", glsl_type::int_type, "gl_InstanceID", ir_var_in, false, false, false, false },
 	{ "SV_Position", glsl_type::vec4_type, "gl_Position", ir_var_in, false, true, true, false },
@@ -4096,6 +4133,7 @@ static FSystemValue GeometrySystemValueTable[] =
 /** Hull shader system values. */
 static FSystemValue HullSystemValueTable[] =
 {
+	{ "SV_ViewID", glsl_type::int_type, "gl_ViewIndex", ir_var_in, false, false, false, false },
 	{ "SV_OutputControlPointID", glsl_type::int_type, "gl_InvocationID", ir_var_in, false, false, false, false },
 	{ NULL, NULL, NULL, ir_var_auto, false, false, false, false }
 };
@@ -4103,7 +4141,7 @@ static FSystemValue HullSystemValueTable[] =
 /** Domain shader system values. */
 static FSystemValue DomainSystemValueTable[] =
 {
-
+	{ "SV_ViewID", glsl_type::int_type, "gl_ViewIndex", ir_var_in, false, false, false, false },
 	// TODO : SV_DomainLocation has types float2 or float3 depending on the input topology
 	{ "SV_Position", glsl_type::vec4_type, "gl_Position", ir_var_in, false, true, true, false },
 	{ "SV_Position", glsl_type::vec4_type, "gl_Position", ir_var_out, false, false, true, false },
@@ -4339,6 +4377,18 @@ static ir_rvalue* GenShaderInputSemantic(
 		}
 	}
 
+	if (Variable == NULL && (Frequency == HSF_VertexShader || Frequency == HSF_PixelShader))
+	{
+		if (FCStringAnsi::Stricmp(Semantic, "SV_ViewId") == 0)
+		{
+			Variable = new(ParseState)ir_variable(
+				Type,
+				ralloc_asprintf(ParseState, "gl_ViewIndex"),
+				ir_var_in
+			);
+		}
+	}
+
 	if (Variable)
 	{
 		// Up to this point, variables aren't contained in structs
@@ -4420,7 +4470,7 @@ static ir_rvalue* GenShaderInputSemantic(
 		Variable->interpolation = InputQualifier.Fields.InterpolationMode;
 		Variable->is_patch_constant = InputQualifier.Fields.bIsPatchConstant;
 
-		if (ParseState->bGenerateLayoutLocations && !InputQualifier.Fields.bIsPatchConstant)
+		if (ParseState->bGenerateLayoutLocations)
 		{
 			ConfigureInOutVariableLayout(Frequency, ParseState, Semantic, Variable, ir_var_in);
 		}
@@ -4452,7 +4502,7 @@ static ir_rvalue* GenShaderInputSemantic(
 		Variable->interpolation = InputQualifier.Fields.InterpolationMode;
 		Variable->is_patch_constant = InputQualifier.Fields.bIsPatchConstant;
 
-		if (ParseState->bGenerateLayoutLocations && !InputQualifier.Fields.bIsPatchConstant)
+		if (ParseState->bGenerateLayoutLocations)
 		{
 			ConfigureInOutVariableLayout(Frequency, ParseState, Semantic, Variable, ir_var_in);
 		}
@@ -4529,7 +4579,7 @@ static ir_rvalue* GenShaderOutputSemantic(
 		}
 	}
 
-	if (Variable == NULL && Frequency == HSF_VertexShader)
+	if (Variable == NULL && (Frequency == HSF_VertexShader || Frequency == HSF_GeometryShader || Frequency == HSF_HullShader || Frequency == HSF_DomainShader))
 	{
 		const int PrefixLength = 15;
 		// Match SV_ClipDistance or SV_ClipDistanceN
@@ -4641,21 +4691,26 @@ static ir_rvalue* GenShaderOutputSemantic(
 
 	*DestVariableType = Type;
 
-	// This code-section replacces "layout(location=0) out struct { vec4 Data; } out_TEXCOORD0;" pattern to
+	if (Frequency == HSF_HullShader && !OutputQualifier.Fields.bIsPatchConstant)
+	{
+		Type = glsl_type::get_array_instance(Type, ParseState->tessellation.outputcontrolpoints);
+	}
+
+	// This code-section replaces "layout(location=0) out struct { vec4 Data; } out_TEXCOORD0;" pattern to
 	// "layout(location=0) out vec4 out_TEXCOORD0;".
 
 	// Regular attribute
 	Variable = new(ParseState)ir_variable(
 		Type,
-		ralloc_asprintf(ParseState, "%s_%s", "out", Semantic),
+		ralloc_asprintf(ParseState, "out_%s", Semantic),
 		ir_var_out
 		);
-	Variable->read_only = true;
+	//Variable->read_only = true;
 	Variable->centroid = OutputQualifier.Fields.bCentroid;
 	Variable->interpolation = OutputQualifier.Fields.InterpolationMode;
 	Variable->is_patch_constant = OutputQualifier.Fields.bIsPatchConstant;
 
-	if (ParseState->bGenerateLayoutLocations && !OutputQualifier.Fields.bIsPatchConstant)
+	if (ParseState->bGenerateLayoutLocations)
 	{
 		ConfigureInOutVariableLayout(Frequency, ParseState, Semantic, Variable, ir_var_out);
 	}
@@ -4663,7 +4718,13 @@ static ir_rvalue* GenShaderOutputSemantic(
 	DeclInstructions->push_tail(Variable);
 	ParseState->symbols->add_variable(Variable);
 
-	ir_dereference_variable* VariableDeref = new(ParseState)ir_dereference_variable(Variable);
+	ir_dereference* VariableDeref = new(ParseState)ir_dereference_variable(Variable);
+
+	if (Frequency == HSF_HullShader && !OutputQualifier.Fields.bIsPatchConstant)
+	{
+		VariableDeref = new(ParseState)ir_dereference_array(VariableDeref, new(ParseState)ir_dereference_variable(ParseState->symbols->get_variable("gl_InvocationID")));
+	}
+
 	return VariableDeref;
 }
 
@@ -4985,9 +5046,7 @@ static void GenShaderOutputForVariable(
 	FSemanticQualifier OutputQualifier,
 	ir_dereference* OutputVariableDeref,
 	exec_list* DeclInstructions,
-	exec_list* PostCallInstructions,
-	int SemanticArraySize,
-	int SemanticArrayIndex
+	exec_list* PostCallInstructions
 	)
 {
 	const glsl_type* OutputType = OutputVariableDeref->type;
@@ -5047,9 +5106,7 @@ static void GenShaderOutputForVariable(
 					Qualifier,
 					FieldDeref,
 					DeclInstructions,
-					PostCallInstructions,
-					SemanticArraySize,
-					SemanticArrayIndex
+					PostCallInstructions
 					);
 			}
 			else
@@ -5088,9 +5145,7 @@ static void GenShaderOutputForVariable(
 					OutputQualifier,
 					ArrayDeref,
 					DeclInstructions,
-					PostCallInstructions,
-					SemanticArraySize,
-					SemanticArrayIndex
+					PostCallInstructions
 					);
 			}
 		}
@@ -5177,7 +5232,7 @@ static void GenShaderOutputForVariable(
 * @param OutputQualifier - Qualifiers applied to the semantic.
 * @param OutputType - Value type.
 * @param DeclInstructions - IR to which declarations may be added.
-* @param PreCallInstructions - IR to which isntructions may be added before the
+* @param PreCallInstructions - IR to which instructions may be added before the
 entry point is called.
 * @param PostCallInstructions - IR to which instructions may be added after the
 *                               entry point returns.
@@ -5208,10 +5263,7 @@ static ir_dereference_variable* GenShaderOutput(
 		OutputQualifier,
 		TempVariableDeref,
 		DeclInstructions,
-		PostCallInstructions,
-		0,
-		0
-		);
+		PostCallInstructions);
 	return TempVariableDeref;
 }
 
@@ -5253,10 +5305,7 @@ static void GenerateAppendFunctionBody(
 		OutputQualifier,
 		TempVariableDeref,
 		DeclInstructions,
-		&sig->body,
-		0,
-		0
-		);
+		&sig->body);
 
 	// If the output structure type contains a SV_RenderTargetArrayIndex semantic, add a custom user output semantic.
 	// It's used to pass layer index to pixel shader, as GLSL 1.50 doesn't allow pixel shader to read from gl_Layer.
@@ -5435,6 +5484,11 @@ bool FVulkanCodeBackend::GenerateMain(
 						);
 					break;
 				case ir_var_out:
+					if (Frequency == HSF_PixelShader && Variable->semantic && (strcmp(Variable->semantic, "SV_Depth") == 0))
+					{
+						bExplicitDepthWrites = true;
+					}
+					
 					ArgVarDeref = GenShaderOutput(
 						Frequency,
 						ParseState,
@@ -5583,7 +5637,7 @@ bool FVulkanCodeBackend::GenerateMain(
 		MainSig->body.push_tail(new(ParseState)ir_call(EntryPointSig, EntryPointReturn, &ArgInstructions));
 		MainSig->body.append_list(&PostCallInstructions);
 		MainSig->maxvertexcount = EntryPointSig->maxvertexcount;
-		MainSig->is_early_depth_stencil = EntryPointSig->is_early_depth_stencil;
+		MainSig->is_early_depth_stencil = (EntryPointSig->is_early_depth_stencil && !bExplicitDepthWrites);
 		MainSig->wg_size_x = EntryPointSig->wg_size_x;
 		MainSig->wg_size_y = EntryPointSig->wg_size_y;
 		MainSig->wg_size_z = EntryPointSig->wg_size_z;
@@ -5643,7 +5697,8 @@ bool FVulkanCodeBackend::GenerateMain(
 			_mesa_glsl_warning(ParseState, "'patchconstantfunc' attribute only applies to hull shaders");
 		}
 
-		ir_function* MainFunction = new(ParseState)ir_function("main");
+		// Values that will be patched in later from the SPIRV
+		ir_function* MainFunction = new(ParseState)ir_function("main_00000000_00000000");
 		MainFunction->add_signature(MainSig);
 
 		Instructions->append_list(&DeclInstructions);
@@ -5773,17 +5828,22 @@ void FVulkanCodeBackend::GenShaderPatchConstantFunctionInputs(_mesa_glsl_parse_s
 		ir_dereference_record* lhs = assignment->lhs->as_dereference_record();
 		ir_rvalue* rhs = assignment->rhs;
 
-		if (!lhs)
-		{
-			continue;
-		}
-
 		if (!rhs)
 		{
 			continue;
 		}
 
-		ir_dereference_array* lhs_array = lhs->record->as_dereference_array();
+		// Check whether LHS is wrapped into an array.
+		// This might be the case on the OpenGL backend, but not necessarily on the Vulkan backend.
+		ir_dereference_array* lhs_array = nullptr;
+		if (lhs)
+		{
+			lhs_array = lhs->record->as_dereference_array();
+		}
+		else
+		{
+			lhs_array = assignment->lhs->as_dereference_array();
+		}
 
 		if (!lhs_array)
 		{
@@ -5807,8 +5867,6 @@ void FVulkanCodeBackend::GenShaderPatchConstantFunctionInputs(_mesa_glsl_parse_s
 		{
 			continue;
 		}
-
-		const char* OutArrayFieldName = lhs->field;
 
 		for (int OutputVertex = 0; OutputVertex < ParseState->tessellation.outputcontrolpoints; ++OutputVertex)
 		{
@@ -5857,18 +5915,34 @@ void FVulkanCodeBackend::GenShaderPatchConstantFunctionInputs(_mesa_glsl_parse_s
 			ir_rvalue* OutputPatchElement = rhs->clone(ParseState, 0);
 			Helper::ReplaceVariableDerefWithArrayDeref(OutputPatchElement, OutputPatchElementIndex);
 
-			PostCallInstructions.push_tail(
-				new (ParseState)ir_assignment(
-				OutputPatchElement,
-				new(ParseState)ir_dereference_record(
-				new(ParseState)ir_dereference_array(
-				OutputPatchArray->clone(ParseState, 0),
-				new(ParseState)ir_constant(OutputVertex)
-				),
-				OutArrayFieldName
-				)
-				)
+			if (lhs)
+			{
+				// Wrap LHS into a record again
+				PostCallInstructions.push_tail(
+					new (ParseState)ir_assignment(
+						OutputPatchElement,
+						new(ParseState)ir_dereference_record(
+							new(ParseState)ir_dereference_array(
+								OutputPatchArray->clone(ParseState, 0),
+								new(ParseState)ir_constant(OutputVertex)
+							),
+							lhs->field
+						)
+					)
 				);
+			}
+			else
+			{
+				PostCallInstructions.push_tail(
+					new (ParseState)ir_assignment(
+						OutputPatchElement,
+						new(ParseState)ir_dereference_array(
+							OutputPatchArray->clone(ParseState, 0),
+							new(ParseState)ir_constant(OutputVertex)
+						)
+					)
+				);
+			}
 		}
 	}
 }

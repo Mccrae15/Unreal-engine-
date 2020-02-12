@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "OpenColorIORendering.h"
 
@@ -45,14 +45,6 @@ public:
 		: FGlobalShader(Initializer)
 	{
 	}
-
-public:
-
-	virtual bool Serialize(FArchive& Ar) override
-	{
-		bool bShaderHasOutdatedParameters = FGlobalShader::Serialize(Ar);
-		return bShaderHasOutdatedParameters;
-	}
 };
 
 
@@ -71,13 +63,10 @@ static void ProcessOCIOColorSpaceTransform_RenderThread(
 
 	SCOPED_DRAW_EVENT(InRHICmdList, ProcessOCIOColorSpaceTransform);
 
-	// Set render target.
-	SetRenderTarget(
-		InRHICmdList,
-		OutputSpaceColorResource->TextureRHI,
-		FTextureRHIRef(),
-		ESimpleRenderTargetMode::EUninitializedColorAndDepth,
-		FExclusiveDepthStencil::DepthNop_StencilNop);
+	InRHICmdList.TransitionResource(EResourceTransitionAccess::EWritable, OutputSpaceColorResource->TextureRHI);
+
+	FRHIRenderPassInfo RPInfo(OutputSpaceColorResource->TextureRHI, ERenderTargetActions::DontLoad_Store);
+	InRHICmdList.BeginRenderPass(RPInfo, TEXT("ProcessOCIOColorSpaceXfrm"));
 
 	FIntPoint Resolution(OutputSpaceColorResource->GetSizeX(), OutputSpaceColorResource->GetSizeY());
 
@@ -85,9 +74,9 @@ static void ProcessOCIOColorSpaceTransform_RenderThread(
 	InRHICmdList.SetViewport(0, 0, 0.f, Resolution.X, Resolution.Y, 1.f);
 
 	// Get shader from shader map.
-	TShaderMap<FGlobalShaderType>* GlobalShaderMap = GetGlobalShaderMap(InFeatureLevel);
+	FGlobalShaderMap* GlobalShaderMap = GetGlobalShaderMap(InFeatureLevel);
 	TShaderMapRef<FOpenColorIOVertexShader> VertexShader(GlobalShaderMap);
-	FOpenColorIOPixelShader* OCIOPixelShader = InOCIOColorTransformResource->GetShader();
+	TShaderRef<FOpenColorIOPixelShader> OCIOPixelShader = InOCIOColorTransformResource->GetShader();
 
 	// Set the graphic pipeline state.
 	FGraphicsPipelineStateInitializer GraphicsPSOInit;
@@ -97,8 +86,8 @@ static void ProcessOCIOColorSpaceTransform_RenderThread(
 	GraphicsPSOInit.RasterizerState = TStaticRasterizerState<>::GetRHI();
 	GraphicsPSOInit.PrimitiveType = PT_TriangleList;
 	GraphicsPSOInit.BoundShaderState.VertexDeclarationRHI = GetVertexDeclarationFVector4();
-	GraphicsPSOInit.BoundShaderState.VertexShaderRHI = GETSAFERHISHADER_VERTEX(*VertexShader);
-	GraphicsPSOInit.BoundShaderState.PixelShaderRHI = GETSAFERHISHADER_PIXEL(OCIOPixelShader);
+	GraphicsPSOInit.BoundShaderState.VertexShaderRHI = VertexShader.GetVertexShader();
+	GraphicsPSOInit.BoundShaderState.PixelShaderRHI = OCIOPixelShader.GetPixelShader();
 	SetGraphicsPipelineState(InRHICmdList, GraphicsPSOInit);
 
 	// Update pixel shader parameters
@@ -115,7 +104,7 @@ static void ProcessOCIOColorSpaceTransform_RenderThread(
 	InRHICmdList.DrawPrimitive(0, 2, 1);
 
 	// Resolve render target.
-	InRHICmdList.CopyToResolveTarget(OutputSpaceColorResource->TextureRHI, OutputSpaceColorResource->TextureRHI, FResolveParams());
+	InRHICmdList.EndRenderPass();
 }
 
 // static
@@ -168,7 +157,7 @@ bool FOpenColorIORendering::ApplyColorTransform(UWorld* InWorld, const FOpenColo
 
 	check(ShaderResource);
 
-	if (ShaderResource->GetShaderGameThread() == nullptr)
+	if (ShaderResource->GetShaderGameThread().IsNull())
 	{
 		UE_LOG(LogOpenColorIO, Warning, TEXT("OCIOPass - Shader was invalid for Resource %s"), *ShaderResource->GetFriendlyName());
 		return false;

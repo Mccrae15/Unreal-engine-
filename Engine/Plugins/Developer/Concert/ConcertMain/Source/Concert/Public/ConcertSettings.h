@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -10,20 +10,26 @@
 #include "ConcertTransportSettings.h"
 #include "ConcertSettings.generated.h"
 
+namespace ConcertSettingsUtils
+{
+
+/** Returns an error messages if the user display name is invalid, otherwise, returns an empty text. */
+FText CONCERT_API ValidateDisplayName(const FString& Name);
+
+/** Returns an error messages if the specified session name is invalid, otherwise, returns an empty text. */
+FText CONCERT_API ValidateSessionName(const FString& Name);
+
+}
+
 USTRUCT()
 struct FConcertSessionSettings
 {
 	GENERATED_BODY()
 
-	FConcertSessionSettings()
-		: BaseRevision(0)
-	{}
-
 	void Initialize()
 	{
 		ProjectName = FApp::GetProjectName();
-		CompatibleVersion = FEngineVersion::CompatibleWith().ToString(EVersionComponent::Changelist);
-		BaseRevision = FEngineVersion::Current().GetChangelist(); // TODO: This isn't good enough for people using binary builds
+		// TODO: BaseRevision should have a robust way to know which content version a project is on, as we currently check this using the current build version (see EngineVersion in FConcertSessionVersionInfo), which works for UGS but isn't reliable for public binary builds
 	}
 
 	bool ValidateRequirements(const FConcertSessionSettings& Other, FText* OutFailureReason = nullptr) const
@@ -33,15 +39,6 @@ struct FConcertSessionSettings
 			if (OutFailureReason)
 			{
 				*OutFailureReason = FText::Format(NSLOCTEXT("ConcertMain", "Error_InvalidProjectNameFmt", "Invalid project name (expected '{0}', got '{1}')"), FText::AsCultureInvariant(ProjectName), FText::AsCultureInvariant(Other.ProjectName));
-			}
-			return false;
-		}
-
-		if (CompatibleVersion != Other.CompatibleVersion)
-		{
-			if (OutFailureReason)
-			{
-				*OutFailureReason = FText::Format(NSLOCTEXT("ConcertMain", "Error_InvalidEngineVersionFmt", "Invalid engine version (expected '{0}', got '{1}')"), FText::AsCultureInvariant(CompatibleVersion), FText::AsCultureInvariant(Other.CompatibleVersion));
 			}
 			return false;
 		}
@@ -66,36 +63,18 @@ struct FConcertSessionSettings
 	FString ProjectName;
 
 	/**
-	 * Compatible editor version for the session.
-	 * Can be specified on the server cmd with `-CONCERTVERSION=`
-	 */
-	UPROPERTY(config, VisibleAnywhere, Category="Session Settings")
-	FString CompatibleVersion;
-
-	/**
-	 * Base Revision the session is created at.
+	 * Base Revision the session was created at.
 	 * Can be specified on the server cmd with `-CONCERTREVISION=`
 	 */
 	UPROPERTY(config, VisibleAnywhere, Category="Session Settings")
-	uint32 BaseRevision;
+	uint32 BaseRevision = 0;
 
 	/**
-	 * This allow the session to be created with the data from a saved session.
-	 * Set the name of the desired save to restore its content in your session.
-	 * Leave this blank if you want to create an empty session.
-	 * Can be specified on the server cmd with `-CONCERTSESSIONTORESTORE=`
-	 */
-	UPROPERTY(config, VisibleAnywhere, Category="Session Settings")
-	FString SessionToRestore;
-
-	/**
-	 * This allow the session data to be saved when the session is deleted.
-	 * Set the name desired for the save and the session data will be moved in that save when the session is deleted
-	 * Leave this blank if you don't want to save the session data.
+	 * Override the default name chosen when archiving this session.
 	 * Can be specified on the server cmd with `-CONCERTSAVESESSIONAS=`
 	 */
 	UPROPERTY(config, VisibleAnywhere, Category="Session Settings")
-	FString SaveSessionAs;
+	FString ArchiveNameOverride;
 
 	// TODO: private session, password, etc etc,
 };
@@ -105,18 +84,13 @@ struct FConcertServerSettings
 {
 	GENERATED_BODY()
 
-	FConcertServerSettings()
-		: bIgnoreSessionSettingsRestriction(false)
-		, SessionTickFrequencySeconds(1)
-	{}
-
 	/** The server will allow client to join potentially incompatible sessions */
 	UPROPERTY(config, EditAnywhere, AdvancedDisplay, Category="Server Settings")
-	bool bIgnoreSessionSettingsRestriction;
+	bool bIgnoreSessionSettingsRestriction = false;
 
 	/** The timespan at which session updates are processed. */
 	UPROPERTY(config, EditAnywhere, DisplayName="Session Tick Frequency", AdvancedDisplay, Category="Server Settings", meta=(ForceUnits=s))
-	int32 SessionTickFrequencySeconds;
+	int32 SessionTickFrequencySeconds = 1;
 };
 
 UCLASS(config=Engine)
@@ -127,11 +101,31 @@ public:
 	UConcertServerConfig();
 
 	/**
+	 * If true, instruct the server to auto-archive sessions that were left in the working directory because the server did not exit properly rather than
+	 * restoring them as 'live' (the default).
+	 */
+	UPROPERTY(config)
+	bool bAutoArchiveOnReboot = false;
+
+	/**
 	 * Clean server sessions working directory when booting
 	 * Can be specified on the server cmd with `-CONCERTCLEAN`
 	 */
 	UPROPERTY(config, EditAnywhere, Category="Server Settings")
 	bool bCleanWorkingDir;
+
+	/**
+	 * Number of archived sessions to keep when booting, or <0 to keep all archived sessions
+	 */
+	UPROPERTY(config, EditAnywhere, Category="Server Settings")
+	int32 NumSessionsToKeep;
+
+	/** 
+	 * Name of the server, or empty to use the default name.
+	 * Can be specified on the server cmd with `-CONCERTSERVER=`
+	 */
+	UPROPERTY(config, EditAnywhere, Category="Server Settings")
+	FString ServerName;
 
 	/** 
 	 * Name of the default session created on the server.
@@ -139,6 +133,21 @@ public:
 	 */
 	UPROPERTY(config, EditAnywhere, Category="Session Settings")
 	FString DefaultSessionName;
+
+	/** 
+	 * A set of keys identifying the clients that can discover and access the server. If empty, the server can be discovered and used by any clients.
+	 */
+	UPROPERTY(config)
+	TSet<FString> AuthorizedClientKeys;
+
+	/**
+	 * Name of the default session to restore on the server.
+	 * Set the name of the desired save to restore its content in your session.
+	 * Leave this blank if you want to create an empty session.
+	 * Can be specified on the editor cmd with `-CONCERTSESSIONTORESTORE=`.
+	 */
+	UPROPERTY(config, EditAnywhere, Category="Session Settings")
+	FString DefaultSessionToRestore;
 
 	/** Default server session settings */
 	UPROPERTY(config, EditAnywhere, Category="Session Settings")
@@ -151,6 +160,22 @@ public:
 	/** Endpoint settings passed down to endpoints on creation */
 	UPROPERTY(config, EditAnywhere, AdvancedDisplay, Category="Endpoint Settings", meta=(ShowOnlyInnerProperties))
 	FConcertEndpointSettings EndpointSettings;
+
+	/** The default directory where the server keeps the live session files. Can be specified on the server command line with `-CONCERTWORKINGDIR=`*/
+	UPROPERTY(config)
+	FString WorkingDir;
+
+	/** The default directory where the server keeps the archived session files. Can be specified on the server command line with `-CONCERTSAVEDDIR=`*/
+	UPROPERTY(config)
+	FString ArchiveDir;
+
+	/** The root directory where the server creates new session repositories (unless the client request specifies its own root). If empty or invalid, the server will use a default. */
+	UPROPERTY(config)
+	FString SessionRepositoryRootDir;
+
+	/** If neither of WorkingDir and ArchiveDir are set, determine whether the server should mount a standard default session repository where new session will be created. */
+	UPROPERTY(config)
+	bool bMountDefaultSessionRepository = true;
 };
 
 USTRUCT()
@@ -161,8 +186,8 @@ struct FConcertClientSettings
 	FConcertClientSettings()
 		: DisplayName()
 		, AvatarColor(1.0f, 1.0f, 1.0f, 1.0f)
-		, DesktopAvatarActorClass(TEXT("/ConcertSyncClient/ConcertSyncClient.ConcertClientDesktopPresenceActor"))
-		, VRAvatarActorClass(TEXT("/ConcertSyncClient/ConcertSyncClient.ConcertClientVRPresenceActor"))
+		, DesktopAvatarActorClass(TEXT("/ConcertSyncClient/DesktopPresence.DesktopPresence_C"))
+		, VRAvatarActorClass(TEXT("/ConcertSyncClient/VRPresence.VRPresence_C"))
 		, DiscoveryTimeoutSeconds(5)
 		, SessionTickFrequencySeconds(1)
 		, LatencyCompensationMs(0)
@@ -180,11 +205,11 @@ struct FConcertClientSettings
 	FLinearColor AvatarColor;
 
 	/** The desktop representation of this editor's user to other connected users */
-	UPROPERTY(config, EditAnywhere, NoClear, Category = "Client Settings", meta = (MetaClass = "ConcertClientPresenceActor"))
+	UPROPERTY(config, EditAnywhere, NoClear, Category = "Client Settings", meta = (MetaClass = "ConcertClientDesktopPresenceActor"))
 	FSoftClassPath DesktopAvatarActorClass;
 
 	/** The VR representation of this editor's user to other connected users */
-	UPROPERTY(config, EditAnywhere, NoClear, Category = "Client Settings", meta = (MetaClass = "ConcertClientPresenceActor"))
+	UPROPERTY(config, EditAnywhere, NoClear, Category = "Client Settings", meta = (MetaClass = "ConcertClientVRPresenceActor", DisplayName = "VR Avatar Actor Class"))
 	FSoftClassPath VRAvatarActorClass;
 
 	/** The timespan at which discovered Concert server are considered stale if they haven't answered back */
@@ -198,6 +223,42 @@ struct FConcertClientSettings
 	/** Amount of latency compensation to apply to time-synchronization sensitive interactions */
 	UPROPERTY(config, EditAnywhere, DisplayName="Latency Compensation", AdvancedDisplay, Category="Client Settings", meta=(ForceUnits=ms))
 	float LatencyCompensationMs;
+
+	/** Array of tags that can be used for grouping and categorizing. */
+	UPROPERTY(config, EditAnywhere, AdvancedDisplay, Category = "Client Settings")
+	TArray<FName> Tags;
+
+	/** A key used to identify the clients during server discovery. If the server was configured to restrict access, the client key must be know of the server. Can be left empty. */
+	UPROPERTY(config)
+	FString ClientAuthenticationKey;
+};
+
+UENUM()
+enum class EConcertSourceValidationMode : uint8
+{
+	/** Source control validation will fail on any changes when connecting to a Multi-User Session. */
+	Hard = 0,
+	/** 
+	 * Source control validation will warn and prompt on any changes when connecting to a Multi-User session. 
+	 * In Memory changes will be hot-reloaded.
+	 * Source control changes aren't affected but will be stashed/shelved in the future.
+	 */
+	Soft,
+	/** Soft validation mode with auto proceed on prompts. */
+	SoftAutoProceed
+};
+
+USTRUCT()
+struct FConcertSourceControlSettings
+{
+	GENERATED_BODY()
+
+	FConcertSourceControlSettings()
+		: ValidationMode(EConcertSourceValidationMode::Hard)
+	{}
+
+	UPROPERTY(config, EditAnywhere, Category="Source Control Settings")
+	EConcertSourceValidationMode ValidationMode;
 };
 
 UCLASS(config=Engine)
@@ -207,12 +268,42 @@ class CONCERT_API UConcertClientConfig : public UObject
 public:
 	UConcertClientConfig();
 
+	/*
+	 * Mark this setting object as editor only.
+	 * This so soft object path reference made by this setting object won't be automatically grabbed by the cooker.
+	 * @see UPackage::Save, FSoftObjectPathThreadContext::GetSerializationOptions, FSoftObjectPath::ImportTextItem
+	 * @todo: cooker should have a better way to filter editor only objects for 'unsolicited' references.
+	 */
+	virtual bool IsEditorOnly() const
+	{
+		return true;
+	}
+
+	/**
+	 * True if this client should be "headless"? (ie, not display any UI).
+	 */
+	UPROPERTY(config)
+	bool bIsHeadless;
+
+	/**
+	 * True if the Multi-User module should install shortcut button and its drop-down menu in the level editor toolbar.
+	 */
+	UPROPERTY(config, EditAnywhere, Category="Client Settings", Meta=(ConfigRestartRequired=true, DisplayName="Enable Multi-User Toolbar Button"))
+	bool bInstallEditorToolbarButton;
+
 	/** 
-	 * Automatically connect or create default session on default server. 
+	 * Automatically connect or create default session on default server.
 	 * Can be specified on the editor cmd with `-CONCERTAUTOCONNECT` or `-CONCERTAUTOCONNECT=<true/false>`.
 	 */
 	UPROPERTY(config, EditAnywhere, Category="Client Settings")
 	bool bAutoConnect;
+
+	/** 
+	 * If auto-connect is on, retry connecting to the default server/session until it succeeds or the user cancels.
+	 * Can be specified on the editor cmd with `-CONCERTRETRYAUTOCONNECTONERROR` or `-CONCERTRETRYAUTOCONNECTONERROR=<true/false>`.
+	 */
+	UPROPERTY(config, EditAnywhere, Category="Client Settings")
+	bool bRetryAutoConnectOnError = false;
 
 	/** 
 	 * Default server url (just a name for now) to look for on auto or default connect. 
@@ -249,6 +340,9 @@ public:
 	/** Client & client session settings */
 	UPROPERTY(config, EditAnywhere, Category="Client Settings", meta=(ShowOnlyInnerProperties))
 	FConcertClientSettings ClientSettings;
+
+	UPROPERTY(config, EditAnywhere, Category = "Source Control Settings", meta=(ShowOnlyInnerProperties))
+	FConcertSourceControlSettings SourceControlSettings;
 
 	/** Endpoint settings passed down to endpoints on creation */
 	UPROPERTY(config, EditAnywhere, AdvancedDisplay, Category="Endpoint Settings", meta=(ShowOnlyInnerProperties))

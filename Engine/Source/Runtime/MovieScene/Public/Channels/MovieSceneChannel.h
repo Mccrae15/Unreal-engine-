@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -82,6 +82,15 @@ struct MOVIESCENE_API FMovieSceneChannel
 	 * @param InHandles             Array of handles to delete
 	 */
 	virtual void DeleteKeys(TArrayView<const FKeyHandle> InHandles)
+	{}
+
+	/**
+	 * Delete keys before or after a specified time
+	 *
+	 * @param InTime				Delete keys after this time
+	 * @param bDeleteKeysBefore     Whether to delete keys before the specified time
+	 */
+	virtual void DeleteKeysFrom(FFrameNumber InTime, bool bDeleteKeysBefore)
 	{}
 
 	/**

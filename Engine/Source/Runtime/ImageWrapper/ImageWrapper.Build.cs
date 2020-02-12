@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 using UnrealBuildTool;
 
@@ -16,6 +16,7 @@ public class ImageWrapper : ModuleRules
 		PublicDefinitions.Add("WITH_UNREALJPEG=1");
 
 		PrivateDependencyModuleNames.Add("Core");
+        PublicDependencyModuleNames.Add("CoreUObject");
 
 		AddEngineThirdPartyPrivateStaticDependencies(Target,
 			"zlib",
@@ -36,8 +37,6 @@ public class ImageWrapper : ModuleRules
 		{
 			PublicDefinitions.Add("WITH_UNREALEXR=0");
 		}
-
-		bEnableShadowVariableWarnings = false;
 
 		// Enable exceptions to allow error handling
 		bEnableExceptions = true;

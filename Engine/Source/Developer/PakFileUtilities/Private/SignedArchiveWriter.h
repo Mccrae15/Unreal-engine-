@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 #pragma once
 
 #include "CoreMinimal.h"
@@ -24,10 +24,8 @@ class FSignedArchiveWriter : public FArchive
 	int64 SizeOnDisk;
 	/** Data size (excluding signatures) */
 	int64 PakSize;
-	/** Decryption key */
-	FEncryptionKey PublicKey;
-	/** Encryption key */
-	FEncryptionKey PrivateKey;
+	/** Signing key */
+	const FRSAKeyHandle SigningKey;
 	/** Hashes */
 	TArray<TPakChunkHash> ChunkHashes;
 
@@ -38,7 +36,7 @@ class FSignedArchiveWriter : public FArchive
 
 public:
 
-	FSignedArchiveWriter(FArchive& InPak, const FString& InPakFilename, const FEncryptionKey& InPublicKey, const FEncryptionKey& InPrivateKey);
+	FSignedArchiveWriter(FArchive& InPak, const FString& InPakFilename, const FRSAKeyHandle InSigningKey);
 	virtual ~FSignedArchiveWriter();
 
 	// FArchive interface

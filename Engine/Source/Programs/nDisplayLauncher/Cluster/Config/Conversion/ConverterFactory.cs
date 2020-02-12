@@ -1,4 +1,4 @@
-﻿// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+﻿// Copyright Epic Games, Inc. All Rights Reserved.
 
 using System;
 using System.Collections.Generic;
@@ -16,6 +16,8 @@ namespace nDisplayLauncher.Cluster.Config.Conversion
 		{
 			switch (Ver)
 			{
+				case ConfigurationVersion.Ver23:
+					return new ConfigConverter_23();
 				case ConfigurationVersion.Ver22:
 					return new ConfigConverter_22();
 

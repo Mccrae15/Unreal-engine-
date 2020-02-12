@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 // Physics engine integration utilities
 
@@ -6,7 +6,6 @@
 #include "EngineDefines.h"
 #include "Engine/EngineTypes.h"
 #include "Engine/World.h"
-#include "EngineUtils.h"
 #include "PhysxUserData.h"
 #include "PhysicsEngine/BodyInstance.h"
 #include "Components/PrimitiveComponent.h"
@@ -16,10 +15,11 @@
 #include "PhysicsEngine/ConvexElem.h"
 #include "PhysicsEngine/BodySetup.h"
 #include "Physics/PhysicsInterfaceCore.h"
-#include "Components/StaticMeshComponent.h"
-#include "Components/SkeletalMeshComponent.h"
-#include "Engine/StaticMesh.h"
-
+#include "PhysXSupportCore.h"
+#include "PhysicsSolver.h"
+#include "Chaos/PBDRigidsEvolutionGBF.h"
+#include "Chaos/ChaosArchive.h"
+#include "Chaos/TrackedGeometryManager.h"
 
 /** Returns false if ModelToHulls operation should halt because of vertex count overflow. */
 static bool AddConvexPrim(FKAggregateGeom* OutGeom, TArray<FPlane> &Planes, UModel* InModel)
@@ -108,7 +108,7 @@ static bool ModelToHullsWorker(FKAggregateGeom* outGeom,
 	return true;
 }
 
-void UBodySetup::CreateFromModel(UModel* InModel, bool bRemoveExisting)
+bool UBodySetup::CreateFromModel(UModel* InModel, bool bRemoveExisting)
 {
 	if ( bRemoveExisting )
 	{
@@ -117,10 +117,12 @@ void UBodySetup::CreateFromModel(UModel* InModel, bool bRemoveExisting)
 
 	const int32 NumHullsAtStart = AggGeom.ConvexElems.Num();
 	
+	bool bSuccess = false;
+
 	if( InModel != NULL && InModel->Nodes.Num() > 0)
 	{
 		TArray<FPlane>	Planes;
-		bool bSuccess = ModelToHullsWorker(&AggGeom, InModel, 0, InModel->RootOutside, Planes);
+		bSuccess = ModelToHullsWorker(&AggGeom, InModel, 0, InModel->RootOutside, Planes);
 		if ( !bSuccess )
 		{
 			// ModelToHullsWorker failed.  Clear out anything that may have been created.
@@ -130,6 +132,7 @@ void UBodySetup::CreateFromModel(UModel* InModel, bool bRemoveExisting)
 
 	// Create new GUID
 	InvalidatePhysicsData();
+	return bSuccess;
 }
 
 //////////////////////////////////////////////////////////////////////////
@@ -196,38 +199,55 @@ void FRigidBodyContactInfo::SwapOrder()
 // FCollisionResponseContainer
 
 /** Set the status of a particular channel in the structure. */
-void FCollisionResponseContainer::SetResponse(ECollisionChannel Channel, ECollisionResponse NewResponse)
+bool FCollisionResponseContainer::SetResponse(ECollisionChannel Channel, ECollisionResponse NewResponse)
 {
-	if (Channel < ARRAY_COUNT(EnumArray))
+	if (Channel < UE_ARRAY_COUNT(EnumArray))
 	{
-		EnumArray[Channel] = NewResponse;
+		uint8& CurrentResponse = EnumArray[Channel];
+		if (CurrentResponse != NewResponse)
+		{
+			CurrentResponse = NewResponse;
+			return true;
+		}
 	}
+	return false;
 }
 
 /** Set all channels to the specified state */
-void FCollisionResponseContainer::SetAllChannels(ECollisionResponse NewResponse)
+bool FCollisionResponseContainer::SetAllChannels(ECollisionResponse NewResponse)
 {
-	for(int32 i=0; i<ARRAY_COUNT(EnumArray); i++)
+	bool bHasChanged = false;
+	for(int32 i=0; i<UE_ARRAY_COUNT(EnumArray); i++)
 	{
-		EnumArray[i] = NewResponse;
-	}
-}
-
-void FCollisionResponseContainer::ReplaceChannels(ECollisionResponse OldResponse, ECollisionResponse NewResponse)
-{
-	for (int32 i = 0; i < ARRAY_COUNT(EnumArray); i++)
-	{
-		if(EnumArray[i] == OldResponse)
+		uint8& CurrentResponse = EnumArray[i];
+		if (CurrentResponse != NewResponse)
 		{
-			EnumArray[i] = NewResponse;
+			CurrentResponse = NewResponse;
+			bHasChanged = true;
 		}
 	}
+	return bHasChanged;
+}
+
+bool FCollisionResponseContainer::ReplaceChannels(ECollisionResponse OldResponse, ECollisionResponse NewResponse)
+{
+	bool bHasChanged = false;
+	for (int32 i = 0; i < UE_ARRAY_COUNT(EnumArray); i++)
+	{
+		uint8& CurrentResponse = EnumArray[i];
+		if(CurrentResponse == OldResponse)
+		{
+			CurrentResponse = NewResponse;
+			bHasChanged = true;
+		}
+	}
+	return bHasChanged;
 }
 
 FCollisionResponseContainer FCollisionResponseContainer::CreateMinContainer(const FCollisionResponseContainer& A, const FCollisionResponseContainer& B)
 {
 	FCollisionResponseContainer Result;
-	for(int32 i=0; i<ARRAY_COUNT(Result.EnumArray); i++)
+	for(int32 i=0; i<UE_ARRAY_COUNT(Result.EnumArray); i++)
 	{
 		Result.EnumArray[i] = FMath::Min(A.EnumArray[i], B.EnumArray[i]);
 	}
@@ -248,7 +268,7 @@ FCollisionResponseContainer::FCollisionResponseContainer(ECollisionResponse Defa
 	SetAllChannels(DefaultResponse);
 }
 
-#if WITH_CHAOS || PHYSICS_INTERFACE_LLIMMEDIATE
+#if WITH_CHAOS
 bool FPhysScene::ExecPxVis(uint32 SceneType, const TCHAR* Cmd, FOutputDevice* Ar)
 {
     return false;
@@ -289,7 +309,7 @@ bool FPhysScene::ExecPxVis(const TCHAR* Cmd, FOutputDevice* Ar)
 	if ( FParse::Command(&Cmd,TEXT("PHYSX_CLEAR_ALL")) )
 	{
 		Ar->Logf(TEXT("Clearing all PhysX Debug Flags."));
-		for (int32 i = 0; i < ARRAY_COUNT(Flags); i++)
+		for (int32 i = 0; i < UE_ARRAY_COUNT(Flags); i++)
 		{
 			PScene->setVisualizationParameter(Flags[i].Flag, 0.0f);
 			bFoundFlag = true;
@@ -297,7 +317,7 @@ bool FPhysScene::ExecPxVis(const TCHAR* Cmd, FOutputDevice* Ar)
 	}
 	else
 	{
-		for (int32 i = 0; i < ARRAY_COUNT(Flags); i++)
+		for (int32 i = 0; i < UE_ARRAY_COUNT(Flags); i++)
 		{
 			// Parse out the command sent in and set only those flags
 			if (FParse::Command(&Cmd, Flags[i].Name))
@@ -346,7 +366,7 @@ bool FPhysScene::ExecPxVis(const TCHAR* Cmd, FOutputDevice* Ar)
 }
 #endif
 
-#if WITH_CHAOS || PHYSICS_INTERFACE_LLIMMEDIATE
+#if WITH_CHAOS
 bool FPhysScene::ExecApexVis(uint32 SceneType, const TCHAR* Cmd, FOutputDevice* Ar)
 {
     return false;
@@ -453,26 +473,50 @@ bool FPhysScene::ExecApexVis(const TCHAR* Cmd, FOutputDevice* Ar)
 }
 #endif
 
-#if WITH_PHYSX
-void PvdConnect(FString Host, bool bVisualization)
+
+#if WITH_CHAOS
+bool FPhysicsInterface::ExecPhysCommands(const TCHAR* Cmd, FOutputDevice* OutputDevice, UWorld* InWorld)
 {
-	int32	Port = 5425;         // TCP port to connect to, where PVD is listening
-	uint32	Timeout = 100;          // timeout in milliseconds to wait for PVD to respond, consoles and remote PCs need a higher timeout.
+	if (FParse::Command(&Cmd, TEXT("ChaosGeometryMemory")))
+	{
+		Chaos::FTrackedGeometryManager::Get().DumpMemoryUsage(OutputDevice);
+		return true;
+	}
+#if CHAOS_MEMORY_TRACKING
+	if (FParse::Command(&Cmd, TEXT("ChaosMemoryDistribution")))
+	{
+		//
+		// NOTE: This is an awful, awful way to do this.
+		//
 
-	PxPvdInstrumentationFlags ConnectionFlags = bVisualization  ? PxPvdInstrumentationFlag::eALL : (PxPvdInstrumentationFlag::ePROFILE | PxPvdInstrumentationFlag::eMEMORY);
+		// Make an archive and serialze the whole scene.
+		// TODO: Don't do this!
+		FArchive BaseAr;
+		BaseAr.SetIsLoading(false);
+		BaseAr.SetIsSaving(true);
+		Chaos::FChaosArchive Ar(BaseAr);
+		FPhysScene* PhysScene = InWorld->GetPhysicsScene();
+		Chaos::FPhysicsSolver* Solver = PhysScene->GetSolver();
+		Chaos::TPBDRigidsEvolutionGBF<float, 3>* Evolution = Solver->GetEvolution();
+		Evolution->Serialize(Ar);
+		TUniquePtr<Chaos::FChaosArchiveContext> ArchiveContext = Ar.StealContext();
 
-	PxPvdTransport* transport = PxDefaultPvdSocketTransportCreate(TCHAR_TO_ANSI(*Host), Port, Timeout);
-	GPhysXVisualDebugger->disconnect();	//make sure we're disconnected first
-	GPhysXVisualDebugger->connect(*transport, ConnectionFlags);
+		// Grab the memory tracking map from the archive context
+		const TMap<FName, Chaos::FChaosArchiveSectionData>& MemoryMap = ArchiveContext->SectionMap;
 
-	// per scene properties (e.g. PxPvdSceneFlag::eTRANSMIT_CONSTRAINTS) are 
-	// set on the PxPvdSceneClient in PhysScene.cpp, FPhysScene::InitPhysScene
-}
+		OutputDevice->Logf(TEXT("Chaos serialized memory distribution:"));
+		int64 TotalBytes = 0;
+		for (auto It : MemoryMap)
+		{
+			const FName SectionName = It.Key;
+			const Chaos::FChaosArchiveSectionData SectionData = It.Value;
+			TotalBytes += SectionData.SizeExclusive;
+			OutputDevice->Logf(TEXT("%s ~ count: %d, bytes: %d, megabytes: %f"), *SectionName.ToString(), SectionData.Count, SectionData.SizeExclusive, (float)SectionData.SizeExclusive * 10e-7f);
+		}
+		OutputDevice->Logf(TEXT("Total bytes: %d, megabytes: %f"), TotalBytes, (float)TotalBytes * 10e-7f);
+	}
 #endif
 
-#if WITH_CHAOS || PHYSICS_INTERFACE_LLIMMEDIATE
-bool FPhysicsInterface::ExecPhysCommands(const TCHAR* Cmd, FOutputDevice* Ar, UWorld* InWorld)
-{
     return false;
 }
 #else
@@ -483,7 +527,7 @@ bool FPhysScene::HandleExecCommands(const TCHAR* Cmd, FOutputDevice* Ar)
 		return ExecPxVis(Cmd, Ar);
 	}
 
-return false;
+	return false;
 }
 
 //// EXEC
@@ -496,15 +540,15 @@ bool FPhysicsInterface::ExecPhysCommands(const TCHAR* Cmd, FOutputDevice* Ar, UW
 	{
 		return true;
 	}
-	else if (!IsRunningCommandlet() && GPhysXSDK && FParse::Command(&Cmd, TEXT("PVD")))
+	else if(!IsRunningCommandlet() && GPhysXSDK && FParse::Command(&Cmd, TEXT("PVD")) )
 	{
 		// check if PvdConnection manager is available on this platform
-		if (GPhysXVisualDebugger != NULL)
+		if(GPhysXVisualDebugger != NULL)
 		{
-			if (FParse::Command(&Cmd, TEXT("CONNECT")))
+			if(FParse::Command(&Cmd, TEXT("CONNECT")))
 			{
-
-
+				
+				
 				const bool bVizualization = !FParse::Command(&Cmd, TEXT("NODEBUG"));
 
 				// setup connection parameters
@@ -514,12 +558,12 @@ bool FPhysicsInterface::ExecPhysCommands(const TCHAR* Cmd, FOutputDevice* Ar, UW
 					Host = Cmd;
 				}
 
-
+				
 
 				PvdConnect(Host, bVizualization);
 
 			}
-			else if (FParse::Command(&Cmd, TEXT("DISCONNECT")))
+			else if(FParse::Command(&Cmd, TEXT("DISCONNECT")))
 			{
 				GPhysXVisualDebugger->disconnect();
 			}
@@ -528,18 +572,18 @@ bool FPhysicsInterface::ExecPhysCommands(const TCHAR* Cmd, FOutputDevice* Ar, UW
 		return 1;
 	}
 #if PHYSX_MEMORY_STATS
-	else if (GPhysXAllocator && FParse::Command(&Cmd, TEXT("PHYSXALLOC")))
+	else if(GPhysXAllocator && FParse::Command(&Cmd, TEXT("PHYSXALLOC")) )
 	{
 		GPhysXAllocator->DumpAllocations(Ar);
 		return 1;
 	}
 #endif
-	else if (FParse::Command(&Cmd, TEXT("PHYSXSHARED")))
+	else if(FParse::Command(&Cmd, TEXT("PHYSXSHARED")) )
 	{
 		FPhysxSharedData::Get().DumpSharedMemoryUsage(Ar);
 		return 1;
 	}
-	else if (FParse::Command(&Cmd, TEXT("PHYSXINFO")))
+	else if(FParse::Command(&Cmd, TEXT("PHYSXINFO")))
 	{
 		Ar->Logf(TEXT("PhysX Info:"));
 		Ar->Logf(TEXT("  Version: %d.%d.%d"), PX_PHYSICS_VERSION_MAJOR, PX_PHYSICS_VERSION_MINOR, PX_PHYSICS_VERSION_BUGFIX);
@@ -550,7 +594,7 @@ bool FPhysicsInterface::ExecPhysCommands(const TCHAR* Cmd, FOutputDevice* Ar, UW
 #else
 		Ar->Logf(TEXT("  Configuration: PROFILE"));
 #endif
-		if (GetPhysXCookingModule())
+		if(GetPhysXCookingModule())
 		{
 			Ar->Logf(TEXT("  Cooking Module: TRUE"));
 		}
@@ -558,61 +602,6 @@ bool FPhysicsInterface::ExecPhysCommands(const TCHAR* Cmd, FOutputDevice* Ar, UW
 		{
 			Ar->Logf(TEXT("  Cooking Module: FALSE"));
 		}
-
-		return 1;
-	}
-	else if (FParse::Command(&Cmd, TEXT("PHYSCOLLISIONACTORS")))
-	{
-
-		TMap<TPair<FName, FName>, int32> ActorCounts;
-
-		static const FName QueryAndPhysName = TEXT("QueryAndPhysics");
-		static const FName PhysOnlyName = TEXT("PhysOnlyName");
-
-		int32 TotalActors = 0;
-		for (TActorIterator<AActor> Itr(InWorld); Itr; ++Itr)
-		{
-			AActor* Actor = *Itr;
-			if (USceneComponent* SC = Actor->GetRootComponent())
-			{
-				ECollisionEnabled::Type Collision = SC->GetCollisionEnabled();
-				const bool bQueryAndPhys = Collision == ECollisionEnabled::QueryAndPhysics;
-				const bool bPhysOnly = Collision == ECollisionEnabled::PhysicsOnly;
-				if (bQueryAndPhys || bPhysOnly)
-				{
-					FName PhysicsName = SC->GetFName();
-
-					if (UStaticMeshComponent* StaticMeshComp = Cast<UStaticMeshComponent>(SC))
-					{
-						if (UStaticMesh* SM = StaticMeshComp->GetStaticMesh())
-						{
-							PhysicsName = SM->GetFName();
-						}
-					}
-					else if (USkeletalMeshComponent* SkelMeshComp = Cast<USkeletalMeshComponent>(SC))
-					{
-						if (USkeletalMesh* SM = SkelMeshComp->SkeletalMesh)
-						{
-							PhysicsName = SM->GetFName();
-						}
-					}
-
-					const TPair<FName, FName> ActorKey(PhysicsName, bQueryAndPhys ? QueryAndPhysName : PhysOnlyName);
-					int32& ActorCount = ActorCounts.FindOrAdd(ActorKey);
-					++ActorCount;
-					++TotalActors;
-				}
-			}
-		}
-
-		ActorCounts.ValueSort([](int32 A, int32 B) { return B < A; });
-
-		Ar->Logf(TEXT("Actors with Physics Enabled:"));
-		for (auto ActorIt = ActorCounts.CreateIterator(); ActorIt; ++ActorIt)
-		{
-			Ar->Logf(TEXT("x%d: %s (%s)"), ActorIt->Value, *(ActorIt->Key.Key.ToString()), *(ActorIt->Key.Value.ToString()));
-		}
-		Ar->Logf(TEXT("Total Physics Actors: %d\n"), TotalActors);
 
 		return 1;
 	}

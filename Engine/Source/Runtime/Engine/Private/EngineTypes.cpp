@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "Engine/EngineTypes.h"
 #include "UObject/UnrealType.h"
@@ -197,9 +197,10 @@ FLightmassDebugOptions::FLightmassDebugOptions()
 	, ExecutionTimeDivisor(15.0f)
 {}
 
-USceneComponent* FComponentReference::GetComponent(AActor* OwningActor) const
+UActorComponent* FComponentReference::GetComponent(AActor* OwningActor) const
 {
-	USceneComponent* Result = NULL;
+	UActorComponent* Result = nullptr;
+
 	// Component is specified directly, use that
 	if(OverrideComponent.IsValid())
 	{
@@ -213,12 +214,16 @@ USceneComponent* FComponentReference::GetComponent(AActor* OwningActor) const
 		{
 			if(ComponentProperty != NAME_None)
 			{
-				UObjectPropertyBase* ObjProp = FindField<UObjectPropertyBase>(SearchActor->GetClass(), ComponentProperty);
+				FObjectPropertyBase* ObjProp = FindField<FObjectPropertyBase>(SearchActor->GetClass(), ComponentProperty);
 				if(ObjProp != NULL)
 				{
 					// .. and return the component that is there
-					Result = Cast<USceneComponent>(ObjProp->GetObjectPropertyValue_InContainer(SearchActor));
+					Result = Cast<UActorComponent>(ObjProp->GetObjectPropertyValue_InContainer(SearchActor));
 				}
+			}
+			else if (!PathToComponent.IsEmpty())
+			{
+				Result = FindObject<UActorComponent>(SearchActor, *PathToComponent);
 			}
 			else
 			{

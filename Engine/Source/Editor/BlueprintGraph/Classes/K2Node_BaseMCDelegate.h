@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 #pragma once
 
 #include "CoreMinimal.h"
@@ -33,6 +33,8 @@ public:
 	virtual bool HasExternalDependencies(TArray<class UStruct*>* OptionalOutput) const override;
 	virtual void GetNodeAttributes( TArray<TKeyValuePair<FString, FString>>& OutNodeAttributes ) const override;
 	virtual void AutowireNewNode(UEdGraphPin* FromPin) override;
+	virtual bool HasDeprecatedReference() const override;
+	virtual FEdGraphNodeDeprecationResponse GetDeprecationResponse(EEdGraphNodeDeprecationType DeprecationType) const override;
 	// End of UK2Node interface
 
 	// UEdGraphNode interface
@@ -41,14 +43,14 @@ public:
 	virtual bool IsCompatibleWithGraph(const UEdGraph* TargetGraph) const override;
 	// End of UEdGraphNode interface
 
-	BLUEPRINTGRAPH_API void SetFromProperty(const UProperty* Property, bool bSelfContext)
+	BLUEPRINTGRAPH_API void SetFromProperty(const FProperty* Property, bool bSelfContext, UClass* OwnerClass)
 	{
-		DelegateReference.SetFromField<UProperty>(Property, bSelfContext);
+		DelegateReference.SetFromField<FProperty>(Property, bSelfContext, OwnerClass);
 	}
 
-	BLUEPRINTGRAPH_API UProperty* GetProperty() const
+	BLUEPRINTGRAPH_API FProperty* GetProperty() const
 	{
-		return DelegateReference.ResolveMember<UMulticastDelegateProperty>(GetBlueprintClassFromNode());
+		return DelegateReference.ResolveMember<FMulticastDelegateProperty>(GetBlueprintClassFromNode());
 	}
 
 	BLUEPRINTGRAPH_API FName GetPropertyName() const
@@ -58,7 +60,7 @@ public:
 
 	BLUEPRINTGRAPH_API FText GetPropertyDisplayName() const
 	{
-		UProperty* Prop = GetProperty();
+		FProperty* Prop = GetProperty();
 		return (Prop ? Prop->GetDisplayNameText() : FText::FromName(GetPropertyName()));
 	}
 

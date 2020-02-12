@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -213,6 +213,13 @@ class ENGINE_API URendererSettings : public UDeveloperSettings
 		ToolTip="Whether to support 'Software Occlusion Culling' on mobile platforms. This will package occluder information and enable Software Occlusion Culling.",
 		ConfigRestartRequired=false))
 	uint32 bMobileAllowSoftwareOcclusionCulling:1;
+
+	UPROPERTY(config, EditAnywhere, Category = Mobile, meta = (
+		EditCondition = "bVirtualTextures",
+		ConsoleVariable = "r.Mobile.VirtualTextures", DisplayName = "Enable virtual texture support on Mobile",
+		ToolTip = "Whether to support Virtual Textures on mobile. Requires general Virtual Texturing option enabled as well. Changing this setting requires restarting the editor.",
+		ConfigRestartRequired = true))
+	uint32 bMobileVirtualTextures : 1;
 	
 	UPROPERTY(config, EditAnywhere, Category = Materials, meta = (
 		ConsoleVariable = "r.DiscardUnusedQuality", DisplayName = "Game Discards Unused Material Quality Levels",
@@ -254,6 +261,57 @@ class ENGINE_API URendererSettings : public UDeveloperSettings
 		ToolTip="Whether to use DXT5 for normal maps, otherwise BC5 will be used, which is not supported on all hardware. Changing this setting requires restarting the editor.",
 		ConfigRestartRequired=true))
 	uint32 bUseDXT5NormalMaps:1;
+
+	/**
+	 * Virtual Texture
+	 */
+	UPROPERTY(config, EditAnywhere, Category = VirtualTextures, meta = (
+		ConsoleVariable = "r.VirtualTextures", DisplayName = "Enable virtual texture support",
+		ToolTip = "When enabled, Textures can be streamed using the virtual texture system. Changing this setting requires restarting the editor.",
+		ConfigRestartRequired = true))
+	uint32 bVirtualTextures : 1;
+
+	UPROPERTY(config, EditAnywhere, Category = VirtualTextures, meta = (
+		EditCondition = "bVirtualTextures",
+		ConsoleVariable = "r.VirtualTexturedLightmaps", DisplayName = "Enable virtual texture lightmaps",
+		ToolTip = "When enabled, lightmaps will be streamed using the virtual texture system. Changing this setting requires restarting the editor.",
+		ConfigRestartRequired = true))
+	uint32 bVirtualTexturedLightmaps : 1;
+
+	UPROPERTY(config, EditAnywhere, Category = VirtualTextures, meta = (
+		EditCondition = "bVirtualTextures",
+		ConsoleVariable = "r.VT.TileSize", DisplayName = "Tile size",
+		ToolTip = "Size in pixels for virtual texture tiles, will be rounded to next power-of-2. Changing this setting requires restarting the editor.",
+		ConfigRestartRequired = true))
+	uint32 VirtualTextureTileSize;
+
+	UPROPERTY(config, EditAnywhere, Category = VirtualTextures, meta = (
+		EditCondition = "bVirtualTextures",
+		ConsoleVariable = "r.VT.TileBorderSize", DisplayName = "Tile border size",
+		ToolTip = "Size in pixels for virtual texture tile borders, will be rounded to next power-of-2. Larger borders allow higher degree of anisotropic filtering, but uses more disk/cache memory. Changing this setting requires restarting the editor.",
+		ConfigRestartRequired = true))
+	uint32 VirtualTextureTileBorderSize;
+
+	UPROPERTY(config, EditAnywhere, Category = VirtualTextures, meta = (
+		EditCondition = "bVirtualTextures",
+		ConsoleVariable = "r.vt.FeedbackFactor", DisplayName = "Feedback resolution factor",
+		ToolTip = "Lower factor will increase virtual texture feedback resolution which increases CPU/GPU overhead, but may decrease streaming latency, especially if materials use many virtual textures. Changing this setting requires restarting the editor.",
+		ConfigRestartRequired = true))
+	uint32 VirtualTextureFeedbackFactor;
+
+	UPROPERTY(config, EditAnywhere, Category = VirtualTextures, meta = (
+		EditCondition = "bVirtualTextures",
+		ConsoleVariable = "r.VT.EnableCompressZlib", DisplayName = "Enable Zlib compression",
+		ToolTip = "Use zlib to compress virtual textures. Changing this setting requires restarting the editor.",
+		ConfigRestartRequired = true))
+	uint32 bVirtualTextureEnableCompressZlib : 1;
+
+	UPROPERTY(config, EditAnywhere, Category = VirtualTextures, meta = (
+		EditCondition = "bVirtualTextures",
+		ConsoleVariable = "r.VT.EnableCompressCrunch", DisplayName = "Enable Crunch compression",
+		ToolTip = "Use Crunch library to compress virtual textures for supported formats, this is a lossy compression format that gives much better ratio than zlib. Changing this setting requires restarting the editor.",
+		ConfigRestartRequired = true))
+	uint32 bVirtualTextureEnableCompressCrunch : 1;
 
 	UPROPERTY(config, EditAnywhere, Category = Materials, meta =(
 		ConfigRestartRequired = true,
@@ -357,11 +415,6 @@ class ENGINE_API URendererSettings : public UDeveloperSettings
 		ConfigRestartRequired = true))
 	TEnumAsByte<EAlphaChannelMode::Type> bEnableAlphaChannelInPostProcessing;
 
-	UPROPERTY(config, EditAnywhere, Category = Postprocessing, meta = (
-		ConsoleVariable = "r.DOF.Algorithm", DisplayName = "Use new DOF algorithm",
-		ToolTip = "Whether to use the new DOF implementation for Circle DOF method."))
-	uint32 bUseNewAlgorithm : 1;
-
 	UPROPERTY(config, EditAnywhere, Category = DefaultSettings, meta = (
 		ConsoleVariable = "r.DefaultFeature.Bloom", DisplayName = "Bloom",
 		ToolTip = "Whether the default for Bloom is enabled or not (postprocess volume/camera/game setting can still override and enable or disable it independently)"))
@@ -400,6 +453,12 @@ class ENGINE_API URendererSettings : public UDeveloperSettings
 	uint32 bUsePreExposure : 1;
 
 	UPROPERTY(config, EditAnywhere, Category = DefaultSettings, meta = (
+		EditCondition = "bUsePreExposure", ConsoleVariable = "r.EyeAdaptation.EditorOnly", DisplayName = "Enable pre-exposure only in the editor",
+		ToolTip = "Whether pre-exposure should be an editor only feature. This is to because it currently has an impact on the renderthread performance.",
+		ConfigRestartRequired=false))
+	uint32 bEnablePreExposureOnlyInTheEditor : 1;
+
+	UPROPERTY(config, EditAnywhere, Category = DefaultSettings, meta = (
 		ConsoleVariable = "r.DefaultFeature.MotionBlur", DisplayName = "Motion Blur",
 		ToolTip = "Whether the default for MotionBlur is enabled or not (postprocess volume/camera/game setting can still override and enable or disable it independently)"))
 	uint32 bDefaultFeatureMotionBlur : 1;
@@ -410,10 +469,15 @@ class ENGINE_API URendererSettings : public UDeveloperSettings
 	uint32 bDefaultFeatureLensFlare : 1;
 
 	UPROPERTY(config, EditAnywhere, Category = DefaultSettings, meta = (
-		EditCondition = "DefaultFeatureAntiAliasing == AAM_TemporalAA",
+		EditCondition = "DefaultFeatureAntiAliasing == EAntiAliasingMethod::AAM_TemporalAA",
 		ConsoleVariable = "r.TemporalAA.Upsampling", DisplayName = "Temporal Upsampling",
 		ToolTip = "Whether to do primary screen percentage with temporal AA or not."))
 	uint32 bTemporalUpsampling : 1;
+
+	UPROPERTY(config, EditAnywhere, Category = Lighting, meta = (
+		ConsoleVariable = "r.SSGI.Enable", DisplayName = "Screen Space Global Illumination (Beta)",
+		ToolTip = "Whether enable screen space global illumination."))
+	uint32 bSSGI : 1;
 
 	UPROPERTY(config, EditAnywhere, Category = DefaultSettings, meta = (
 		ConsoleVariable = "r.DefaultFeature.AntiAliasing", DisplayName = "Anti-Aliasing Method",
@@ -447,13 +511,8 @@ class ENGINE_API URendererSettings : public UDeveloperSettings
 		ToolTip="Whether to use a depth only pass to initialize Z culling for the base pass."))
 	TEnumAsByte<EEarlyZPass::Type> EarlyZPass;
 
-	UPROPERTY(config, EditAnywhere, Category=Optimizations, meta=(
-		ConsoleVariable="r.EarlyZPassMovable",DisplayName="Movables in early Z-pass",
-		ToolTip="Whether to render movable objects in the early Z pass. Need to reload the level!"))
-	uint32 bEarlyZPassMovable:1;
-
 	UPROPERTY(config, EditAnywhere, Category = Optimizations, meta = (
-		EditCondition = "EarlyZPass == OpaqueAndMasked && bEarlyZPassMovable",
+		EditCondition = "EarlyZPass == EEarlyZPass::OpaqueAndMasked",
 		ConsoleVariable = "r.EarlyZPassOnlyMaterialMasking", DisplayName = "Mask material only in early Z-pass",
 		ToolTip = "Whether to compute materials' mask opacity only in early Z pass. Changing this setting requires restarting the editor.",
 		ConfigRestartRequired = true))
@@ -538,14 +597,14 @@ class ENGINE_API URendererSettings : public UDeveloperSettings
 
 	UPROPERTY(config, EditAnywhere, Category = VR, meta = (
 		ConsoleVariable = "vr.MobileMultiView", DisplayName = "Mobile Multi-View",
-		ToolTip = "Enable mobile multi-view rendering (only available on some Gear VR Android devices using OpenGL ES 2.0).",
+		ToolTip = "Enable mobile multi-view rendering (only available on Oculus Mobile and some Gear VR Android devices).",
 		ConfigRestartRequired = true))
 		uint32 bMobileMultiView : 1;
 
 	UPROPERTY(config, EditAnywhere, Category = VR, meta = (
 		EditCondition = "bMobileMultiView",
 		ConsoleVariable = "vr.MobileMultiView.Direct", DisplayName = "Mobile Multi-View Direct",
-		ToolTip = "Enable direct mobile multi-view rendering (only available on multi-view enabled Gear VR and Daydream Android devices).",
+		ToolTip = "Enable direct mobile multi-view rendering (only available on multi-view enabled Oculus Mobile, Gear VR, and Daydream Android devices).",
 		ConfigRestartRequired = true))
 		uint32 bMobileMultiViewDirect : 1;
 
@@ -574,6 +633,12 @@ class ENGINE_API URendererSettings : public UDeveloperSettings
 		ToolTip = "Enable Ray Tracing capabilities.  Requires 'Support Compute Skincache' before project is allowed to set this.",
 		ConfigRestartRequired = true))
 		uint32 bEnableRayTracing : 1;
+
+	UPROPERTY(config, EditAnywhere, Category = RayTracing, meta = (
+		ConsoleVariable = "r.RayTracing.UseTextureLod", DisplayName = "Texture LOD",
+		ToolTip = "Enable automatic texture mip level selection in ray tracing material shaders. Unchecked: highest resolution mip level is used for all texture (default). Checked: texture LOD is approximated based on total ray length, output resolution and texel density at hit point (ray cone method).",
+		ConfigRestartRequired = true))
+		uint32 bEnableRayTracingTextureLOD : 1;
 
 	/**
 	"Stationary skylight requires permutations of the basepass shaders.  Disabling will reduce the number of shader permutations required per material. Changing this setting requires restarting the editor."
@@ -606,6 +671,25 @@ class ENGINE_API URendererSettings : public UDeveloperSettings
 		ConsoleVariable = "r.SupportAtmosphericFog", DisplayName = "Support Atmospheric Fog",	
 		ConfigRestartRequired = true))
 		uint32 bSupportAtmosphericFog : 1;
+
+	/**
+	"The sky atmosphere component requires extra samplers/textures to be bound to apply aerial perspective on transparent surfaces (and all surfaces on mobile via per vertex evaluation)." 
+	*/
+	UPROPERTY(config, EditAnywhere, Category = ShaderPermutationReduction, meta = (
+		ConsoleVariable = "r.SupportSkyAtmosphere", DisplayName = "Support Sky Atmosphere",
+		ToolTip = "The sky atmosphere component requires extra samplers/textures to be bound to apply aerial perspective on transparent surfaces (and all surfaces on mobile via per vertex evaluation).",
+		ConfigRestartRequired = true))
+		uint32 bSupportSkyAtmosphere : 1;
+
+	/**
+	"The sky atmosphere component can light up the height fog but it requires extra samplers/textures to be bound to apply aerial perspective on transparent surfaces (and all surfaces on mobile via per vertex evaluation)."
+	"It requires r.SupportSkyAtmosphere to be true."
+	*/
+	UPROPERTY(config, EditAnywhere, Category = ShaderPermutationReduction, meta = (
+		ConsoleVariable = "r.SupportSkyAtmosphereAffectsHeightFog", DisplayName = "Support Sky Atmosphere Affecting Height Fog",
+		ToolTip = "The sky atmosphere component can light up the height fog but it requires extra samplers/textures to be bound to apply aerial perspective on transparent surfaces (and all surfaces on mobile via per vertex evaluation). It requires r.SupportSkyAtmosphere to be true.",
+		ConfigRestartRequired = true))
+		uint32 bSupportSkyAtmosphereAffectsHeightFog : 1;
 
 	/**
 	"Skincache allows a compute shader to skin once each vertex, save those results into a new buffer and reuse those calculations when later running the depth, base and velocity passes. This also allows opting into the 'recompute tangents' for skinned mesh instance feature. Disabling will reduce the number of shader permutations required per material. Changing this setting requires restarting the editor."
@@ -667,6 +751,12 @@ class ENGINE_API URendererSettings : public UDeveloperSettings
 		float SkinCacheSceneMemoryLimitInMB;
 
 	UPROPERTY(config, EditAnywhere, Category = Optimizations, meta = (
+		ConsoleVariable = "r.GPUSkin.Support16BitBoneIndex", DisplayName = "Support 16-bit Bone Index",
+		ToolTip = "If enabled, a new mesh imported will use 8 bit (if <=256 bones) or 16 bit (if > 256 bones) bone indices for rendering.",
+		ConfigRestartRequired = true))
+		uint32 bSupport16BitBoneIndex : 1;
+
+	UPROPERTY(config, EditAnywhere, Category = Optimizations, meta = (
 		ConsoleVariable = "r.GPUSkin.Limit2BoneInfluences", DisplayName = "Limit GPU skinning to 2 bones influence",
 		ToolTip = "Whether to use 2 bone influences instead of the default of 4 for GPU skinning. This does not change skeletal mesh assets but reduces the number of instructions required by the GPU skin vertex shaders. Changing this setting requires restarting the editor.",
 		ConfigRestartRequired = true))
@@ -684,10 +774,16 @@ class ENGINE_API URendererSettings : public UDeveloperSettings
 		ConfigRestartRequired = true))
 		uint32 bSupportReversedIndexBuffers : 1;
 
-	UPROPERTY(config, EditAnywhere, Category = Experimental, meta = (
-		ConsoleVariable = "r.SupportMaterialLayers", Tooltip = "Support new material layering system. Disabling it reduces some overhead in place to support the experimental feature",
+	UPROPERTY(config, EditAnywhere, Category = Materials, meta = (
+		ConsoleVariable = "r.SupportMaterialLayers", Tooltip = "Support new material layering system.",
 		ConfigRestartRequired = true))
 		uint32 bSupportMaterialLayers : 1;
+
+	UPROPERTY(config, EditAnywhere, Category = Lighting, meta = (
+		ConsoleVariable = "r.LightPropagationVolume", DisplayName = "Light Propagation Volumes",
+		ToolTip = "Whether to allow the usage and compilation of Light Propagation Volumes.",
+		ConfigRestartRequired = true))
+		uint32 bLPV : 1;
 
 public:
 
@@ -696,13 +792,19 @@ public:
 	virtual void PostInitProperties() override;
 
 #if WITH_EDITOR
+	virtual void PreEditChange(FProperty* PropertyAboutToChange) override;
 	virtual void PostEditChangeProperty(FPropertyChangedEvent& PropertyChangedEvent) override;
-	virtual bool CanEditChange(const UProperty* InProperty) const override;
+	virtual bool CanEditChange(const FProperty* InProperty) const override;
 #endif
 
 	//~ End UObject Interface
 
 private:
+#if WITH_EDITOR
+	/** shadow copy saved before effects of PostEditChange() to provide option to roll back edit. */
+	int32 PreEditReflectionCaptureResolution = 128;
+#endif // WITH_EDITOR
+
 	void SanatizeReflectionCaptureResolution();
 };
 

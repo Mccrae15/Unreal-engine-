@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -8,7 +8,6 @@
 #include "AssetTypeActions/AssetTypeActions_ClassTypeBase.h"
 
 struct FAssetData;
-class FMenuBuilder;
 class IClassTypeActions;
 class UFactory;
 
@@ -20,7 +19,7 @@ public:
 	virtual FColor GetTypeColor() const override { return FColor( 63, 126, 255 ); }
 	virtual UClass* GetSupportedClass() const override { return UBlueprint::StaticClass(); }
 	virtual bool HasActions ( const TArray<UObject*>& InObjects ) const override { return true; }
-	virtual void GetActions( const TArray<UObject*>& InObjects, FMenuBuilder& MenuBuilder ) override;
+	virtual void GetActions(const TArray<UObject*>& InObjects, FToolMenuSection& Section) override;
 	virtual void OpenAssetEditor(const TArray<UObject*>& InObjects, TSharedPtr<class IToolkitHost> EditWithinLevelEditor = TSharedPtr<IToolkitHost>()) override;
 	virtual bool CanMerge() const override;
 	virtual void Merge(UObject* InObject) override;
@@ -40,6 +39,12 @@ protected:
 	/** Return the factory responsible for creating this type of Blueprint */
 	virtual UFactory* GetFactoryForBlueprintType(UBlueprint* InBlueprint) const;
 
+	/** Returns the tooltip to display when attempting to derive a Blueprint */
+	FText GetNewDerivedBlueprintTooltip(TWeakObjectPtr<UBlueprint> InObject);
+
+	/** Returns TRUE if you can derive a Blueprint */
+	bool CanExecuteNewDerivedBlueprint(TWeakObjectPtr<UBlueprint> InObject);
+
 private:
 	/** Handler for when EditDefaults is selected */
 	void ExecuteEditDefaults(TArray<TWeakObjectPtr<UBlueprint>> Objects);
@@ -49,10 +54,4 @@ private:
 
 	/** Returns true if the blueprint is data only */
 	bool ShouldUseDataOnlyEditor( const UBlueprint* Blueprint ) const;
-
-	/** Returns the tooltip to display when attempting to derive a Blueprint */
-	FText GetNewDerivedBlueprintTooltip(TWeakObjectPtr<UBlueprint> InObject);
-
-	/** Returns TRUE if you can derive a Blueprint */
-	bool CanExecuteNewDerivedBlueprint(TWeakObjectPtr<UBlueprint> InObject);
 };

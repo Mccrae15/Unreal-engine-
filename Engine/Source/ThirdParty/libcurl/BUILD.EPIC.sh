@@ -5,9 +5,12 @@ set -x
 # UE4 build script for the following ThirdParty libraries:
 
 ZLIB_VERSION=v1.2.8
-SSL_VERSION=OpenSSL_1_0_2h
-CURL_VERSION=curl-7_48_0
+SSL_VERSION=OpenSSL_1_1_1c
+CURL_VERSION=curl-7_65_3
 WEBRTC_HASH=f2eae333a2e42d20e92e7606bfca087fddcaaaa0
+
+# Whether we should build WebRTC
+BUILD_WEBRTC=true
 
 # jump down to build_environment() if this is your first time reading this script
 
@@ -27,7 +30,7 @@ configure_platform()
 			if [ $MACHINE == "x86_64" ]; then
 				PLATFORM=Linux/x86_64-unknown-linux-gnu
 			else
-				PLATFORM=Linux/arm-unknown-linux-gnueabihf
+				PLATFORM=Linux/aarch64-unknown-linux-gnueabi
 			fi
 			;;
 		# - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
@@ -387,7 +390,11 @@ build_openssl()
 	case $SYSTEM in
 		# - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
 		Linux)
-			SSL_ARCH=linux-x86_64
+			if [ $MACHINE == "x86_64" ]; then
+			    SSL_ARCH=linux-x86_64
+			else
+			    SSL_ARCH=linux-aarch64
+			fi
 #			SSL_ARCH=linux-x86_64-clang
 			;;
 		# - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
@@ -598,6 +605,13 @@ path_libcurl()
 	# ----------------------------------------
 	cd -
 }
+patch_libcurl()
+{
+	CUR_PATH=$(pwd)
+	CURL_PATCHES_PATH="$CUR_PATH/patches/$CURL_VERSION"
+	cd libcurl/$CURL_VERSION
+	find "$CURL_PATCHES_PATH" -type f -print0 | xargs -0 -n1 patch -p1 -i 
+}
 build_libcurl()
 {
 	path_zlib
@@ -712,6 +726,8 @@ deadcode_libcurl_graveyard()
 # libCurl }}}
 # webRTC {{{
 # ================================================================================
+
+if $BUILD_WEBRTC; then
 
 get_webrtc()
 {
@@ -956,6 +972,16 @@ graveyard_webrtc()
 	echo X
 }
 
+else
+
+get_webrtc() { :; }
+path_webrtc() { :; }
+build_webrtc() { :; }
+modify_webrtc() { :; }
+graveyard_webrtc() { :; }
+
+fi
+
 # ================================================================================
 # webRTC }}}
 # kitchen sink {{{
@@ -1088,6 +1114,10 @@ get_openssl
 get_libcurl
 get_webrtc
 	#reset_hard
+
+# --------------------
+# patch
+patch_libcurl
 
 # --------------------
 # build

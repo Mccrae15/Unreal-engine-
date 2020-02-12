@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 /*=============================================================================
 	UObjectGlobals.cpp: Unreal object global data and functions
@@ -37,6 +37,7 @@
 #include "Serialization/DuplicatedObject.h"
 #include "Serialization/DuplicatedDataReader.h"
 #include "Serialization/DuplicatedDataWriter.h"
+#include "Serialization/LoadTimeTracePrivate.h"
 #include "Misc/PackageName.h"
 #include "UObject/LinkerLoad.h"
 #include "Blueprint/BlueprintSupport.h"
@@ -49,8 +50,10 @@
 #include "Modules/ModuleManager.h"
 #include "UObject/EnumProperty.h"
 #include "UObject/TextProperty.h"
+#include "UObject/FieldPathProperty.h"
 #include "UObject/MetaData.h"
 #include "HAL/LowLevelMemTracker.h"
+#include "HAL/LowLevelMemStats.h"
 #include "Misc/CoreDelegates.h"
 #include "ProfilingDebugging/CsvProfiler.h"
 
@@ -61,7 +64,15 @@ DEFINE_LOG_CATEGORY(LogUObjectGlobals);
 #endif
 
 bool GIsSavingPackage = false;
-bool GAllowUnversionedContentInEditor = false;
+
+int32 GAllowUnversionedContentInEditor = 0;
+
+static FAutoConsoleVariableRef CVarAllowUnversionedContentInEditor(
+	TEXT("s.AllowUnversionedContentInEditor"),
+	GAllowUnversionedContentInEditor,
+	TEXT("If true, allows unversioned content to be loaded by the editor."),
+	ECVF_Default
+);
 
 /** Object annotation used by the engine to keep track of which objects are selected */
 FUObjectAnnotationSparseBool GSelectedObjectAnnotation;
@@ -250,7 +261,7 @@ struct FPerClassNumberSuffixAnnotation
 		return false;
 	}
 
-	TMap<UClass*, int32> Suffixes;
+	TMap<const UClass*, int32> Suffixes;
 };
 
 /**
@@ -258,7 +269,7 @@ struct FPerClassNumberSuffixAnnotation
  *
  * Updating is done via a callback because a lock needs to be maintained while this happens.
  */
-int32 UpdateSuffixForNextNewObject(UObject* Parent, UClass* Class, TFunctionRef<void(int32&)> IndexMutator)
+int32 UpdateSuffixForNextNewObject(UObject* Parent, const UClass* Class, TFunctionRef<void(int32&)> IndexMutator)
 {
 	static FCriticalSection PerClassNumberSuffixAnnotationMutex;
 	static FUObjectAnnotationDense<FPerClassNumberSuffixAnnotation, true> PerClassNumberSuffixAnnotation;
@@ -398,7 +409,7 @@ UObject* StaticFindObjectSafe( UClass* ObjectClass, UObject* ObjectParent, const
 //
 // Global property setting.
 //
-void GlobalSetProperty( const TCHAR* Value, UClass* Class, UProperty* Property, bool bNotifyObjectOfChange )
+void GlobalSetProperty( const TCHAR* Value, UClass* Class, FProperty* Property, bool bNotifyObjectOfChange )
 {
 	if ( Property != NULL && Class != NULL )
 	{
@@ -467,9 +478,9 @@ void StaticTick( float DeltaTime, bool bUseFullTimeLimit, float AsyncLoadingTime
 
 #if STATS
 	// Set name table stats.
-	int32 NameTableEntries = FName::GetMaxNames();
 	int32 NameTableAnsiEntries = FName::GetNumAnsiNames();
 	int32 NameTableWideEntries = FName::GetNumWideNames();
+	int32 NameTableEntries = NameTableAnsiEntries + NameTableWideEntries;
 	int32 NameTableMemorySize = FName::GetNameTableMemorySize();
 	SET_DWORD_STAT( STAT_NameTableEntries, NameTableEntries );
 	SET_DWORD_STAT( STAT_NameTableAnsiEntries, NameTableAnsiEntries );
@@ -513,13 +524,15 @@ void StaticTick( float DeltaTime, bool bUseFullTimeLimit, float AsyncLoadingTime
 -----------------------------------------------------------------------------*/
 
 //
-// Safe load error-handling.
+// Safe load error-handling. Returns true if a message was emitted.
 //
-void SafeLoadError( UObject* Outer, uint32 LoadFlags, const TCHAR* ErrorMessage)
+bool SafeLoadError( UObject* Outer, uint32 LoadFlags, const TCHAR* ErrorMessage)
 {
+	bool bRetVal = false;
 	if( FParse::Param( FCommandLine::Get(), TEXT("TREATLOADWARNINGSASERRORS") ) == true )
 	{
 		UE_LOG(LogUObjectGlobals, Error, TEXT("%s"), ErrorMessage);
+		bRetVal = true;
 	}
 	else
 	{
@@ -527,8 +540,11 @@ void SafeLoadError( UObject* Outer, uint32 LoadFlags, const TCHAR* ErrorMessage)
 		if( (LoadFlags & LOAD_Quiet) == 0 && (LoadFlags & LOAD_NoWarn) == 0)
 		{ 
 			UE_LOG(LogUObjectGlobals, Warning, TEXT("%s"), ErrorMessage);
+			bRetVal = true;
 		}
 	}
+
+	return bRetVal;
 }
 
 UPackage* FindPackage( UObject* InOuter, const TCHAR* PackageName )
@@ -634,7 +650,7 @@ FString ResolveIniObjectsReference(const FString& ObjectReference, const FString
 	if (i != -1)
 	{
 		Key = Section.Mid(i + 1);
-		Section = Section.Left(i);
+		Section.LeftInline(i, false);
 	}
 
 	FString Output;
@@ -766,7 +782,7 @@ bool ResolveName(UObject*& InPackage, FString& InOutName, bool Create, bool Thro
 bool ParseObject( const TCHAR* Stream, const TCHAR* Match, UClass* Class, UObject*& DestRes, UObject* InParent, bool* bInvalidObject )
 {
 	TCHAR TempStr[1024];
-	if( !FParse::Value( Stream, Match, TempStr, ARRAY_COUNT(TempStr) ) )
+	if( !FParse::Value( Stream, Match, TempStr, UE_ARRAY_COUNT(TempStr) ) )
 	{
 		// Match not found
 		return 0;
@@ -1026,7 +1042,7 @@ public:
 
 		
 
-		while ( Tick(0.0, false, false) == FLinkerLoad::LINKER_TimedOut ) 
+		while ( Tick(0.0, false, false, nullptr) == FLinkerLoad::LINKER_TimedOut ) 
 		{ 
 		}
 
@@ -1038,6 +1054,10 @@ public:
 };
 
 #endif
+
+// Temporary load counter for the game thread, used mostly for checking if we're still loading
+// @todo: remove this in the new loader
+static int32 GGameThreadLoadCounter = 0;
 
 UPackage* LoadPackageInternal(UPackage* InOuter, const TCHAR* InLongPackageNameOrFilename, uint32 LoadFlags, FLinkerLoad* ImportLinker, FArchive* InReaderOverride, FUObjectSerializeContext* InLoadContext)
 {
@@ -1151,30 +1171,7 @@ UPackage* LoadPackageInternal(UPackage* InOuter, const TCHAR* InLongPackageNameO
 	}
 	
 	// Set up a load context
-	TRefCountPtr<FUObjectSerializeContext> LoadContext;
-	if (InLoadContext)
-	{
-		// Use the privided context
-		LoadContext = InLoadContext;
-	}
-	else
-	{
-		// Try to get the context from the callstack
-		FUObjectThreadContext& ThreadContext = FUObjectThreadContext::Get();
-		if (ThreadContext.SerializeContext)
-		{
-			LoadContext = ThreadContext.SerializeContext;
-		}
-		else
-		{
-			// Create a new context
-			LoadContext = new FUObjectSerializeContext();
-			if (!IsInAsyncLoadingThread())
-			{
-				ThreadContext.SerializeContext = LoadContext;
-			}
-		}
-	}
+	TRefCountPtr<FUObjectSerializeContext> LoadContext = FUObjectThreadContext::Get().GetSerializeContext();
 
 	// Try to load.
 	BeginLoad(LoadContext, InLongPackageNameOrFilename);
@@ -1238,7 +1235,7 @@ UPackage* LoadPackageInternal(UPackage* InOuter, const TCHAR* InLongPackageNameO
 		if (!(LoadFlags & (LOAD_IsVerifying|LOAD_EditorOnly)))
 		{
 			bool bIsEditorOnly = false;
-			UProperty* SerializingProperty = ImportLinker ? ImportLinker->GetSerializedProperty() : nullptr;
+			FProperty* SerializingProperty = ImportLinker ? ImportLinker->GetSerializedProperty() : nullptr;
 			
 			// Check property parent chain
 			while (SerializingProperty)
@@ -1248,7 +1245,7 @@ UPackage* LoadPackageInternal(UPackage* InOuter, const TCHAR* InLongPackageNameO
 					bIsEditorOnly = true;
 					break;
 				}
-				SerializingProperty = Cast<UProperty>(SerializingProperty->GetOuter());
+				SerializingProperty = SerializingProperty->GetOwner<FProperty>();
 			}
 
 			if (!bIsEditorOnly)
@@ -1371,9 +1368,8 @@ UPackage* LoadPackageInternal(UPackage* InOuter, const TCHAR* InLongPackageNameO
 		if (FPlatformProperties::RequiresCookedData())
 		{
 			if (!IsInAsyncLoadingThread())
-			{
-				check(Linker->GetSerializeContext());
-				if (!Linker->GetSerializeContext()->HasStartedLoading())
+			{				
+				if (GGameThreadLoadCounter == 0)
 				{
 					// Sanity check to make sure that Linker is the linker that loaded our Result package or the linker has already been detached
 					check(!Result || Result->LinkerLoad == Linker || Result->LinkerLoad == nullptr);
@@ -1430,8 +1426,6 @@ UPackage* LoadPackage(UPackage* InOuter, const TCHAR* InLongPackageName, uint32 
 	LLM_SCOPED_TAG_WITH_STAT_NAME_IN_SET(FLowLevelMemTracker::Get().IsTagSetActive(ELLMTagSet::Assets) ? FDynamicStats::CreateMemoryStatId<FStatGroup_STATGROUP_LLMAssets>(FName(*FakePackageName)).GetName() : NAME_None, ELLMTagSet::Assets, ELLMTracker::Default);
 	return LoadPackageInternal(InOuter, InLongPackageName, LoadFlags, /*ImportLinker =*/ nullptr, InReaderOverride, InLoadContext);
 }
-
-static int32 GGameThreadLoadCounter = 0;
 
 /**
  * Returns whether we are currently loading a package (sync or async)
@@ -1645,8 +1639,7 @@ void EndLoad(FUObjectSerializeContext* LoadContext)
 				}
 			}
 			// Create clusters after all objects have been loaded
-			extern int32 GCreateGCClusters;
-			if (FPlatformProperties::RequiresCookedData() && !GIsInitialLoad && GCreateGCClusters && !GUObjectArray.IsOpenForDisregardForGC())
+			if (FPlatformProperties::RequiresCookedData() && !GIsInitialLoad && GCreateGCClusters && GAssetClustreringEnabled && !GUObjectArray.IsOpenForDisregardForGC())
 			{
 				for (UObject* Obj : ObjLoaded)
 				{
@@ -1756,16 +1749,6 @@ void EndLoad(FUObjectSerializeContext* LoadContext)
 		{
 			LoadContext->DetachFromLinkers();
 		}
-
-		FUObjectThreadContext& ThreadContext = FUObjectThreadContext::Get();
-		if (ThreadContext.SerializeContext == LoadContext)
-		{
-			ThreadContext.SerializeContext = nullptr;
-		}
-		else
-		{
-			check(!ThreadContext.SerializeContext);
-		}
 	}
 }
 
@@ -1773,7 +1756,7 @@ void EndLoad(FUObjectSerializeContext* LoadContext)
 	Object name functions.
 -----------------------------------------------------------------------------*/
 
-FName MakeUniqueObjectName( UObject* Parent, UClass* Class, FName InBaseName/*=NAME_None*/ )
+FName MakeUniqueObjectName( UObject* Parent, const UClass* Class, FName InBaseName/*=NAME_None*/ )
 {
 	CSV_SCOPED_TIMING_STAT(UObject, MakeUniqueObjectName);
 	check(Class);
@@ -1788,12 +1771,13 @@ FName MakeUniqueObjectName( UObject* Parent, UClass* Class, FName InBaseName/*=N
 		do
 		{
 			// create the next name in the sequence for this class
-			if (BaseName.GetComparisonIndex() == NAME_Package)
+			static const FName NamePackage(NAME_Package);
+			if (BaseName == NamePackage)
 			{
 				if (Parent == NULL)
 				{
 					//package names should default to "/Temp/Untitled" when their parent is NULL. Otherwise they are a group.
-					TestName = FName(*FString::Printf(TEXT("/Temp/%s"), *FName(NAME_Untitled).ToString()), ++Class->ClassUnique);
+					TestName = FName(*FString::Printf(TEXT("/Temp/%s"), LexToString(NAME_Untitled)), ++Class->ClassUnique);
 				}
 				else
 				{
@@ -2071,7 +2055,7 @@ UObject* StaticDuplicateObjectEx( FObjectDuplicationParameters& Parameters )
 		SerializedObjects.Add(Object);
 	};
 
-	TRefCountPtr<FUObjectSerializeContext> LoadContext(new FUObjectSerializeContext());
+	TRefCountPtr<FUObjectSerializeContext> LoadContext(FUObjectThreadContext::Get().GetSerializeContext());
 	FDuplicateDataReader Reader(DuplicatedObjectAnnotation, ObjectData, Parameters.PortFlags, Parameters.DestOuter);
 	Reader.SetSerializeContext(LoadContext);
 	for(int32 ObjectIndex = 0;ObjectIndex < SerializedObjects.Num();ObjectIndex++)
@@ -2184,6 +2168,11 @@ bool SaveToTransactionBuffer(UObject* Object, bool bMarkDirty)
 
 void SnapshotTransactionBuffer(UObject* Object)
 {
+	SnapshotTransactionBuffer(Object, TArrayView<const FProperty*>());
+}
+
+void SnapshotTransactionBuffer(UObject* Object, TArrayView<const FProperty*> Properties)
+{
 	// Script packages should not end up in the transaction buffer.
 	// PIE objects should go through however. Additionally, in order
 	// to save a copy of the object, we must have a transactor and the object must be transactional.
@@ -2192,11 +2181,11 @@ void SnapshotTransactionBuffer(UObject* Object)
 
 	if (GUndo && bIsTransactional && bIsNotScriptPackage)
 	{
-		GUndo->SnapshotObject(Object);
+		GUndo->SnapshotObject(Object, Properties);
 	}
 }
 
-bool StaticAllocateObjectErrorTests( UClass* InClass, UObject* InOuter, FName InName, EObjectFlags InFlags)
+bool StaticAllocateObjectErrorTests( const UClass* InClass, UObject* InOuter, FName InName, EObjectFlags InFlags)
 {
 	// Validation checks.
 	if( !InClass )
@@ -2264,7 +2253,7 @@ COREUOBJECT_API bool GOutputCookingWarnings = false;
 
 UObject* StaticAllocateObject
 (
-	UClass*			InClass,
+	const UClass*	InClass,
 	UObject*		InOuter,
 	FName			InName,
 	EObjectFlags	InFlags,
@@ -2459,8 +2448,8 @@ UObject* StaticAllocateObject
 
 	if (!bSubObject)
 	{
-		FMemory::Memzero((void *)Obj, TotalSize);
-		new ((void *)Obj) UObjectBase(InClass, InFlags|RF_NeedInitialization, InternalSetFlags, InOuter, InName);
+			FMemory::Memzero((void *)Obj, TotalSize);
+		new ((void *)Obj) UObjectBase(const_cast<UClass*>(InClass), InFlags|RF_NeedInitialization, InternalSetFlags, InOuter, InName);
 	}
 	else
 	{
@@ -2525,7 +2514,7 @@ UObject::UObject()
 	EnsureNotRetrievingVTablePtr();
 
 	FObjectInitializer* ObjectInitializerPtr = FUObjectThreadContext::Get().TopInitializer();
-	UE_CLOG(!ObjectInitializerPtr, LogUObjectGlobals, Fatal, TEXT("%s is not being constructed with either NewObject, NewNamedObject or ConstructObject."), *GetName());
+	UE_CLOG(!ObjectInitializerPtr, LogUObjectGlobals, Fatal, TEXT("%s is not being constructed with NewObject."), *GetName());
 	FObjectInitializer& ObjectInitializer = *ObjectInitializerPtr;
 	UE_CLOG(ObjectInitializer.Obj != nullptr && ObjectInitializer.Obj != this, LogUObjectGlobals, Fatal, TEXT("UObject() constructor called but it's not the object that's currently being constructed with NewObject. Maybe you are trying to construct it on the stack, which is not supported."));
 	const_cast<FObjectInitializer&>(ObjectInitializer).Obj = this;
@@ -2582,6 +2571,11 @@ FObjectInitializer::FObjectInitializer(UObject* InObj, UObject* InObjectArchetyp
 	LastConstructedObject = ThreadContext.ConstructedObject;
 	ThreadContext.ConstructedObject = Obj;
 	ThreadContext.PushInitializer(this);
+
+	if (Obj)
+	{
+		Obj->GetClass()->SetupObjectInitializer(*this);
+	}
 }
 
 /**
@@ -2821,11 +2815,11 @@ void FObjectInitializer::PostConstructInit()
 	if (!Obj->HasAnyFlags(RF_NeedLoad) || bIsDeferredInitializer)
 #endif // !USE_CIRCULAR_DEPENDENCY_LOAD_DEFERRING
 	{
-		for (UProperty* P = Class->RefLink; P; P = P->NextRef)
+		for (FProperty* P = Class->RefLink; P; P = P->NextRef)
 		{
 			if (P->HasAnyPropertyFlags(CPF_SubobjectReference))
 			{
-				UObjectProperty* ObjProp = CastChecked<UObjectProperty>(P);
+				FObjectProperty* ObjProp = CastFieldChecked<FObjectProperty>(P);
 				UObject* PropertyValue = ObjProp->GetObjectPropertyValue(ObjProp->ContainerPtrToValuePtr<void>(Obj));
 				if (!FSubobjectPtr::IsInitialized(PropertyValue))
 				{
@@ -2986,18 +2980,32 @@ void FObjectInitializer::InitProperties(UObject* Obj, UClass* DefaultsClass, UOb
 			if (Class->GetDefaultObject(false) != DefaultData)
 			{
 				QUICK_SCOPE_CYCLE_COUNTER(STAT_InitProperties_FromTemplate);
-				for (UProperty* P = Class->PropertyLink; P; P = P->PropertyLinkNext)
+				for (FProperty* P = Class->PropertyLink; P; P = P->PropertyLinkNext)
 				{
-					P->CopyCompleteValue_InContainer(Obj, DefaultData);
+					bool bIsTransient = P->HasAnyPropertyFlags(CPF_Transient | CPF_DuplicateTransient | CPF_NonPIEDuplicateTransient);
+					if (!bIsTransient || !P->ContainsInstancedObjectProperty())
+					{
+						if (P->IsInContainer(DefaultsClass))
+						{
+							P->CopyCompleteValue_InContainer(Obj, DefaultData);
+						}
+					}
 				}
 			}
 			else
 			{
 				QUICK_SCOPE_CYCLE_COUNTER(STAT_InitProperties_ConfigEtcOnly);
 				// Copy all properties that require additional initialization (e.g. CPF_Config).
-				for (UProperty* P = Class->PostConstructLink; P; P = P->PostConstructLinkNext)
+				for (FProperty* P = Class->PostConstructLink; P; P = P->PostConstructLinkNext)
 				{
-					P->CopyCompleteValue_InContainer(Obj, DefaultData);
+					bool bIsTransient = P->HasAnyPropertyFlags(CPF_Transient | CPF_DuplicateTransient | CPF_NonPIEDuplicateTransient);
+					if (!bIsTransient || !P->ContainsInstancedObjectProperty())
+					{
+						if (P->IsInContainer(DefaultsClass))
+						{
+							P->CopyCompleteValue_InContainer(Obj, DefaultData);
+						}
+					}
 				}
 			}
 		}
@@ -3012,17 +3020,17 @@ void FObjectInitializer::InitProperties(UObject* Obj, UClass* DefaultsClass, UOb
 		UObject* ClassDefaults = bCopyTransientsFromClassDefaults ? DefaultsClass->GetDefaultObject() : NULL;	
 		check(!GEventDrivenLoaderEnabled || !bCopyTransientsFromClassDefaults || !DefaultsClass->GetDefaultObject()->HasAnyFlags(RF_NeedLoad));
 
-		for (UProperty* P = bCanUsePostConstructLink ? Class->PostConstructLink : Class->PropertyLink; P; P = bCanUsePostConstructLink ? P->PostConstructLinkNext : P->PropertyLinkNext)
+		for (FProperty* P = bCanUsePostConstructLink ? Class->PostConstructLink : Class->PropertyLink; P; P = bCanUsePostConstructLink ? P->PostConstructLinkNext : P->PropertyLinkNext)
 		{
 			if (bNeedInitialize)
 			{		
 				bNeedInitialize = InitNonNativeProperty(P, Obj);
 			}
 
-			bool IsTransient = P->HasAnyPropertyFlags(CPF_Transient | CPF_DuplicateTransient | CPF_NonPIEDuplicateTransient);
-			if (!IsTransient || !P->ContainsInstancedObjectProperty())
+			bool bIsTransient = P->HasAnyPropertyFlags(CPF_Transient | CPF_DuplicateTransient | CPF_NonPIEDuplicateTransient);
+			if (!bIsTransient || !P->ContainsInstancedObjectProperty())
 			{
-				if (bCopyTransientsFromClassDefaults && IsTransient)
+				if (bCopyTransientsFromClassDefaults && bIsTransient)
 				{
 					// This is a duplicate. The value for all transient or non-duplicatable properties should be copied
 					// from the source class's defaults.
@@ -3044,25 +3052,69 @@ void FObjectInitializer::InitProperties(UObject* Obj, UClass* DefaultsClass, UOb
 	}
 }
 
-bool FObjectInitializer::IslegalOverride(FName InComponentName, class UClass *DerivedComponentClass, class UClass *BaseComponentClass) const
+/**  Add an override, make sure it is legal **/
+void FObjectInitializer::FOverrides::Add(FName InComponentName, UClass* InComponentClass, FObjectInitializer const& ObjectInitializer)
 {
-	if (DerivedComponentClass && BaseComponentClass && !DerivedComponentClass->IsChildOf(BaseComponentClass) )
+	const int32 Index = Find(InComponentName);
+	if (Index == INDEX_NONE)
 	{
-		UE_LOG(LogUObjectGlobals, Fatal, TEXT("%s is not a legal override for component %s because it does not derive from %s."), 
-			*DerivedComponentClass->GetFullName(), *InComponentName.ToString(), *BaseComponentClass->GetFullName());
+		Overrides.Emplace(FOverride(InComponentName, InComponentClass));
+	}
+	else if (InComponentClass && Overrides[Index].ComponentClass)
+	{
+		// if a base class is asking for an override, the existing override (which we are going to use) had better be derived
+		if (!IsLegalOverride(Overrides[Index].ComponentClass, InComponentClass))
+		{
+			UE_LOG(LogUObjectGlobals, Error, TEXT("%s is not a legal override for component %s because it does not derive from %s. Will use %s when constructing component."),
+				*Overrides[Index].ComponentClass->GetFullName(), *InComponentName.ToString(), *InComponentClass->GetFullName(), *InComponentClass->GetFullName());
+
+			Overrides[Index].ComponentClass = InComponentClass;
+		}
+	}
+}
+
+/**  Retrieve an override, or TClassToConstructByDefault::StaticClass or nullptr if this was removed by a derived class **/
+UClass* FObjectInitializer::FOverrides::Get(FName InComponentName, UClass* ReturnType, UClass* ClassToConstructByDefault, FObjectInitializer const& ObjectInitializer) const
+{
+	const int32 Index = Find(InComponentName);
+	UClass* BaseComponentClass = ClassToConstructByDefault;
+	if (Index == INDEX_NONE)
+	{
+		return BaseComponentClass; // no override so just do what the base class wanted
+	}
+	else if (Overrides[Index].ComponentClass)
+	{
+		if (IsLegalOverride(Overrides[Index].ComponentClass, ReturnType)) // if THE base class is asking for a T, the existing override (which we are going to use) had better be derived
+		{
+			return Overrides[Index].ComponentClass; // the override is of an acceptable class, so use it
+		}
+		else
+		{
+			UE_LOG(LogUObjectGlobals, Error, TEXT("%s is not a legal override for component %s because it does not derive from %s. Using %s to construct component."),
+				*Overrides[Index].ComponentClass->GetFullName(), *InComponentName.ToString(), *ReturnType->GetFullName(), *ClassToConstructByDefault->GetFullName());
+
+			return ClassToConstructByDefault;
+		}
+	}
+	return nullptr;  // the override is of nullptr, which means "don't create this component"
+}
+bool FObjectInitializer::FOverrides::IsLegalOverride(const UClass* DerivedComponentClass, const UClass* BaseComponentClass)
+{
+	if (DerivedComponentClass && BaseComponentClass && !DerivedComponentClass->IsChildOf(BaseComponentClass))
+	{
 		return false;
 	}
 	return true;
 }
 
-void FObjectInitializer::AssertIfSubobjectSetupIsNotAllowed(const TCHAR* SubobjectName) const
+void FObjectInitializer::AssertIfSubobjectSetupIsNotAllowed(const FName SubobjectName) const
 {
 	UE_CLOG(!bSubobjectClassInitializationAllowed, LogUObjectGlobals, Fatal,
-		TEXT("%s.%s: Subobject class setup is only allowed in base class constructor call (in the initialization list)"), Obj ? *Obj->GetFullName() : TEXT("NULL"), SubobjectName);
+		TEXT("%s.%s: Subobject class setup is only allowed in base class constructor call (in the initialization list)"), Obj ? *Obj->GetFullName() : TEXT("NULL"), *SubobjectName.GetPlainNameString());
 }
 
 #if DO_CHECK
-void CheckIsClassChildOf_Internal(UClass* Parent, UClass* Child)
+void CheckIsClassChildOf_Internal(const UClass* Parent, const UClass* Child)
 {
 	// This is a function to avoid platform compilation issues
 	checkf(Child, TEXT("NewObject called with a nullptr class object"));
@@ -3072,13 +3124,13 @@ void CheckIsClassChildOf_Internal(UClass* Parent, UClass* Child)
 
 UObject* StaticConstructObject_Internal
 (
-	UClass*			InClass,
+	const UClass*	InClass,
 	UObject*		InOuter								/*=GetTransientPackage()*/,
 	FName			InName								/*=NAME_None*/,
 	EObjectFlags	InFlags								/*=0*/,
-	EInternalObjectFlags InternalSetFlags /*=0*/,
+	EInternalObjectFlags InternalSetFlags				/*=0*/,
 	UObject*		InTemplate							/*=NULL*/,
-	bool bCopyTransientsFromClassDefaults	/*=false*/,
+	bool bCopyTransientsFromClassDefaults				/*=false*/,
 	FObjectInstancingGraph* InInstanceGraph				/*=NULL*/,
 	bool bAssumeTemplateIsArchetype	/*=false*/
 )
@@ -3102,19 +3154,20 @@ UObject* StaticConstructObject_Internal
 			!InTemplate || 
 			(InName != NAME_None && (bAssumeTemplateIsArchetype || InTemplate == UObject::GetArchetypeFromRequiredInfo(InClass, InOuter, InName, InFlags)))
 			);
+	const bool bCanRecycleSubobjects = bIsNativeFromCDO && (!(InFlags & RF_DefaultSubObject) || !FUObjectThreadContext::Get().IsInConstructor)
 #if WITH_HOT_RELOAD
 	// Do not recycle subobjects when performing hot-reload as they may contain old property values.
-	const bool bCanRecycleSubobjects = bIsNativeFromCDO && !GIsHotReload;
-#else
-	const bool bCanRecycleSubobjects = bIsNativeFromCDO;
+	&& !GIsHotReload
 #endif
+		;
+
 	bool bRecycledSubobject = false;	
 	Result = StaticAllocateObject(InClass, InOuter, InName, InFlags, InternalSetFlags, bCanRecycleSubobjects, &bRecycledSubobject);
 	check(Result != NULL);
 	// Don't call the constructor on recycled subobjects, they haven't been destroyed.
 	if (!bRecycledSubobject)
 	{		
-		FScopeCycleCounterUObject ConstructorScope(InClass, GET_STATID(STAT_ConstructObject));
+		STAT(FScopeCycleCounterUObject ConstructorScope(InClass, GET_STATID(STAT_ConstructObject)));
 		(*InClass->ClassConstructor)( FObjectInitializer(Result, InTemplate, bCopyTransientsFromClassDefaults, true, InInstanceGraph) );
 	}
 	
@@ -3220,7 +3273,7 @@ void ConstructorHelpers::StripObjectClass( FString& PathName, bool bAssertOnBadP
 		PathName.FindLastChar( TCHAR('\''), NameEndIndex );
 		if(NameEndIndex > NameStartIndex)
 		{
-			PathName = PathName.Mid( NameStartIndex+1, NameEndIndex-NameStartIndex-1 );
+			PathName.MidInline( NameStartIndex+1, NameEndIndex-NameStartIndex-1, false );
 		}
 		else
 		{
@@ -3262,7 +3315,7 @@ protected:
 		if (Object)
 		{
 			FReferenceCollector& CurrentCollector = GetCollector();
-			UProperty* OldCollectorSerializedProperty = CurrentCollector.GetSerializedProperty();
+			FProperty* OldCollectorSerializedProperty = CurrentCollector.GetSerializedProperty();
 			CurrentCollector.SetSerializedProperty(GetSerializedProperty());
 			CurrentCollector.AddReferencedObject(Object, GetSerializingObject(), GetSerializedProperty());
 			CurrentCollector.SetSerializedProperty(OldCollectorSerializedProperty);
@@ -3347,11 +3400,11 @@ protected:
 			// If the property that serialized us is not an object property we are in some native serializer, we have to treat these as strong
 			if (!Object->HasAnyFlags(RF_StrongRefOnFrame))
 			{
-				UObjectProperty* ObjectProperty = Cast<UObjectProperty>(GetSerializedProperty());
+				FObjectProperty* ObjectProperty = CastField<FObjectProperty>(GetSerializedProperty());
 
 				if (ObjectProperty)
 				{
-					// This was a raw UObject* serialized by UObjectProperty, so just save the address
+					// This was a raw UObject* serialized by FObjectProperty, so just save the address
 					bWeakRef = true;
 				}
 			}
@@ -3505,15 +3558,19 @@ private:
 	 *
 	 * @param	Object	object to add
 	 */
-	void AddToObjectList( const UObject* ReferencingObject, const UObject* ReferencingProperty, UObject* Object )
+	void AddToObjectList( const UObject* ReferencingObject, const FProperty* ReferencingProperty, UObject* Object )
 	{
 #if ENABLE_GC_DEBUG_OUTPUT
 		// this message is to help track down culprits behind "Object in PIE world still referenced" errors
-		if ( GIsEditor && !GIsPlayInEditorWorld && !CurrentObject->RootPackageHasAnyFlags(PKG_PlayInEditor) && Object->RootPackageHasAnyFlags(PKG_PlayInEditor) )
+		if ( GIsEditor && !GIsPlayInEditorWorld && !CurrentObject->HasAnyFlags(RF_Transient) && Object->RootPackageHasAnyFlags(PKG_PlayInEditor) )
 		{
-			UE_LOG(LogGarbage, Warning, TEXT("GC detected illegal reference to PIE object from content [possibly via %s]:"), *ReferencingProperty->GetFullName());
-			UE_LOG(LogGarbage, Warning, TEXT("      PIE object: %s"), *Object->GetFullName());
-			UE_LOG(LogGarbage, Warning, TEXT("  NON-PIE object: %s"), *CurrentObject->GetFullName());
+			UPackage* ReferencingPackage = CurrentObject->GetOutermost();
+			if (!ReferencingPackage->HasAnyPackageFlags(PKG_PlayInEditor) && !ReferencingPackage->HasAnyFlags(RF_Transient))
+			{
+				UE_LOG(LogGarbage, Warning, TEXT("GC detected illegal reference to PIE object from content [possibly via %s]:"), *ReferencingProperty->GetFullName());
+				UE_LOG(LogGarbage, Warning, TEXT("      PIE object: %s"), *Object->GetFullName());
+				UE_LOG(LogGarbage, Warning, TEXT("  NON-PIE object: %s"), *CurrentObject->GetFullName());
+			}
 		}
 #endif
 
@@ -3524,7 +3581,7 @@ private:
 		ObjectsToSerialize.Add( Object );
 	}
 
-	virtual void HandleObjectReference(UObject*& InObject, const UObject* InReferencingObject, const UProperty* InReferencingProperty) override
+	virtual void HandleObjectReference(UObject*& InObject, const UObject* InReferencingObject, const FProperty* InReferencingProperty) override
 	{
 		checkSlow(!InObject || InObject->IsValidLowLevel());
 		if (InObject)
@@ -3662,7 +3719,7 @@ UScriptStruct* GetFallbackStruct()
 	return TBaseStructure<FFallbackStruct>::Get();
 }
 
-UObject* FObjectInitializer::CreateDefaultSubobject(UObject* Outer, FName SubobjectFName, UClass* ReturnType, UClass* ClassToCreateByDefault, bool bIsRequired, bool bAbstract, bool bIsTransient) const
+UObject* FObjectInitializer::CreateDefaultSubobject(UObject* Outer, FName SubobjectFName, UClass* ReturnType, UClass* ClassToCreateByDefault, bool bIsRequired, bool bIsTransient) const
 {
 	UE_CLOG(!FUObjectThreadContext::Get().IsInConstructor, LogClass, Fatal, TEXT("Subobjects cannot be created outside of UObject constructors. UObject constructing subobjects cannot be created using new or placement new operator."));
 	if (SubobjectFName == NAME_None)
@@ -3681,11 +3738,18 @@ UObject* FObjectInitializer::CreateDefaultSubobject(UObject* Outer, FName Subobj
 	{
 		check(OverrideClass->IsChildOf(ReturnType));
 
-		// Abstract sub-objects are only allowed when explicitly created with CreateAbstractDefaultSubobject.
-		if (!OverrideClass->HasAnyClassFlags(CLASS_Abstract) || !bAbstract)
+		if (OverrideClass->HasAnyClassFlags(CLASS_Abstract))
+		{
+			// Attempts to create an abstract class will return null. If it is not optional or the owning class is not also abstract report a warning.
+			if (!bIsRequired && !Outer->GetClass()->HasAnyClassFlags(CLASS_Abstract))
+			{
+				UE_LOG(LogClass, Warning, TEXT("Required default subobject %s not created as requested class %s is abstract. Returning null."), *SubobjectFName.ToString(), *OverrideClass->GetName());
+			}
+		}
+		else
 		{
 			UObject* Template = OverrideClass->GetDefaultObject(); // force the CDO to be created if it hasn't already
-			EObjectFlags SubobjectFlags = Outer->GetMaskedFlags(RF_PropagateToSubObjects);
+			EObjectFlags SubobjectFlags = Outer->GetMaskedFlags(RF_PropagateToSubObjects) | RF_DefaultSubObject;
 			bool bOwnerArchetypeIsNotNative;
 			UClass* OuterArchetypeClass;
 
@@ -3735,7 +3799,6 @@ UObject* FObjectInitializer::CreateDefaultSubobject(UObject* Outer, FName Subobj
 #endif
 				Outer->GetClass()->AddDefaultSubobject(Result, ReturnType);
 			}
-			Result->SetFlags(RF_DefaultSubObject);
 			// Clear PendingKill flag in case we recycled a subobject of a dead object.
 			// @todo: we should not be recycling subobjects unless we're currently loading from a package
 			Result->ClearInternalFlags(EInternalObjectFlags::PendingKill);
@@ -3748,7 +3811,7 @@ UObject* FObjectInitializer::CreateEditorOnlyDefaultSubobject(UObject* Outer, FN
 #if WITH_EDITOR
 	if (GIsEditor)
 	{
-		UObject* EditorSubobject = CreateDefaultSubobject(Outer, SubobjectName, ReturnType, ReturnType, /*bIsRequired =*/ false, /*bIsAbstract =*/ false, bTransient);
+		UObject* EditorSubobject = CreateDefaultSubobject(Outer, SubobjectName, ReturnType, ReturnType, /*bIsRequired =*/ false, bTransient);
 		if (EditorSubobject)
 		{
 			EditorSubobject->MarkAsEditorOnlySubobject();
@@ -3833,7 +3896,7 @@ FString FAssetMsg::FormatPathForAssetLog(const UObject* Object)
 
 namespace UE4CodeGen_Private
 {
-	void ConstructUProperty(UObject* Outer, const FPropertyParamsBase* const*& PropertyArray, int32& NumProperties)
+	void ConstructFProperty(FFieldVariant Outer, const FPropertyParamsBase* const*& PropertyArray, int32& NumProperties)
 	{
 		const FPropertyParamsBase* PropBase = *PropertyArray++;
 
@@ -3844,7 +3907,7 @@ namespace UE4CodeGen_Private
 		int32                     NumMetaData   = 0;
 #endif
 
-		UProperty* NewProp = nullptr;
+		FProperty* NewProp = nullptr;
 		switch (PropBase->Flags & PropertyTypeMask)
 		{
 			default:
@@ -3856,7 +3919,7 @@ namespace UE4CodeGen_Private
 			case EPropertyGenFlags::Byte:
 			{
 				const FBytePropertyParams* Prop = (const FBytePropertyParams*)PropBase;
-				NewProp = new (EC_InternalUseOnlyConstructor, Outer, UTF8_TO_TCHAR(Prop->NameUTF8), Prop->ObjectFlags) UByteProperty(FObjectInitializer(), EC_CppProperty, Prop->Offset, Prop->PropertyFlags, Prop->EnumFunc ? Prop->EnumFunc() : nullptr);
+				NewProp = new FByteProperty(Outer, UTF8_TO_TCHAR(Prop->NameUTF8), Prop->ObjectFlags, Prop->Offset, Prop->PropertyFlags, Prop->EnumFunc ? Prop->EnumFunc() : nullptr);
 
 #if WITH_METADATA
 				MetaDataArray = Prop->MetaDataArray;
@@ -3868,7 +3931,7 @@ namespace UE4CodeGen_Private
 			case EPropertyGenFlags::Int8:
 			{
 				const FInt8PropertyParams* Prop = (const FInt8PropertyParams*)PropBase;
-				NewProp = new (EC_InternalUseOnlyConstructor, Outer, UTF8_TO_TCHAR(Prop->NameUTF8), Prop->ObjectFlags) UInt8Property(FObjectInitializer(), EC_CppProperty, Prop->Offset, Prop->PropertyFlags);
+				NewProp = new FInt8Property(Outer, UTF8_TO_TCHAR(Prop->NameUTF8), Prop->ObjectFlags, Prop->Offset, Prop->PropertyFlags);
 
 #if WITH_METADATA
 				MetaDataArray = Prop->MetaDataArray;
@@ -3880,7 +3943,7 @@ namespace UE4CodeGen_Private
 			case EPropertyGenFlags::Int16:
 			{
 				const FInt16PropertyParams* Prop = (const FInt16PropertyParams*)PropBase;
-				NewProp = new (EC_InternalUseOnlyConstructor, Outer, UTF8_TO_TCHAR(Prop->NameUTF8), Prop->ObjectFlags) UInt16Property(FObjectInitializer(), EC_CppProperty, Prop->Offset, Prop->PropertyFlags);
+				NewProp = new FInt16Property(Outer, UTF8_TO_TCHAR(Prop->NameUTF8), Prop->ObjectFlags, Prop->Offset, Prop->PropertyFlags);
 
 #if WITH_METADATA
 				MetaDataArray = Prop->MetaDataArray;
@@ -3892,7 +3955,7 @@ namespace UE4CodeGen_Private
 			case EPropertyGenFlags::Int:
 			{
 				const FIntPropertyParams* Prop = (const FIntPropertyParams*)PropBase;
-				NewProp = new (EC_InternalUseOnlyConstructor, Outer, UTF8_TO_TCHAR(Prop->NameUTF8), Prop->ObjectFlags) UIntProperty(FObjectInitializer(), EC_CppProperty, Prop->Offset, Prop->PropertyFlags);
+				NewProp = new FIntProperty(Outer, UTF8_TO_TCHAR(Prop->NameUTF8), Prop->ObjectFlags, Prop->Offset, Prop->PropertyFlags);
 
 #if WITH_METADATA
 				MetaDataArray = Prop->MetaDataArray;
@@ -3904,7 +3967,7 @@ namespace UE4CodeGen_Private
 			case EPropertyGenFlags::Int64:
 			{
 				const FInt64PropertyParams* Prop = (const FInt64PropertyParams*)PropBase;
-				NewProp = new (EC_InternalUseOnlyConstructor, Outer, UTF8_TO_TCHAR(Prop->NameUTF8), Prop->ObjectFlags) UInt64Property(FObjectInitializer(), EC_CppProperty, Prop->Offset, Prop->PropertyFlags);
+				NewProp = new FInt64Property(Outer, UTF8_TO_TCHAR(Prop->NameUTF8), Prop->ObjectFlags, Prop->Offset, Prop->PropertyFlags);
 
 #if WITH_METADATA
 				MetaDataArray = Prop->MetaDataArray;
@@ -3915,8 +3978,8 @@ namespace UE4CodeGen_Private
 
 			case EPropertyGenFlags::UInt16:
 			{
-				const FUInt16PropertyParams* Prop = (const FUInt16PropertyParams*)PropBase;
-				NewProp = new (EC_InternalUseOnlyConstructor, Outer, UTF8_TO_TCHAR(Prop->NameUTF8), Prop->ObjectFlags) UUInt16Property(FObjectInitializer(), EC_CppProperty, Prop->Offset, Prop->PropertyFlags);
+				const FFInt16PropertyParams* Prop = (const FFInt16PropertyParams*)PropBase;
+				NewProp = new FUInt16Property(Outer, UTF8_TO_TCHAR(Prop->NameUTF8), Prop->ObjectFlags, Prop->Offset, Prop->PropertyFlags);
 
 #if WITH_METADATA
 				MetaDataArray = Prop->MetaDataArray;
@@ -3928,7 +3991,7 @@ namespace UE4CodeGen_Private
 			case EPropertyGenFlags::UInt32:
 			{
 				const FUInt32PropertyParams* Prop = (const FUInt32PropertyParams*)PropBase;
-				NewProp = new (EC_InternalUseOnlyConstructor, Outer, UTF8_TO_TCHAR(Prop->NameUTF8), Prop->ObjectFlags) UUInt32Property(FObjectInitializer(), EC_CppProperty, Prop->Offset, Prop->PropertyFlags);
+				NewProp = new FUInt32Property(Outer, UTF8_TO_TCHAR(Prop->NameUTF8), Prop->ObjectFlags, Prop->Offset, Prop->PropertyFlags);
 
 #if WITH_METADATA
 				MetaDataArray = Prop->MetaDataArray;
@@ -3939,8 +4002,8 @@ namespace UE4CodeGen_Private
 
 			case EPropertyGenFlags::UInt64:
 			{
-				const FUInt64PropertyParams* Prop = (const FUInt64PropertyParams*)PropBase;
-				NewProp = new (EC_InternalUseOnlyConstructor, Outer, UTF8_TO_TCHAR(Prop->NameUTF8), Prop->ObjectFlags) UUInt64Property(FObjectInitializer(), EC_CppProperty, Prop->Offset, Prop->PropertyFlags);
+				const FFInt64PropertyParams* Prop = (const FFInt64PropertyParams*)PropBase;
+				NewProp = new FUInt64Property(Outer, UTF8_TO_TCHAR(Prop->NameUTF8), Prop->ObjectFlags, Prop->Offset, Prop->PropertyFlags);
 
 #if WITH_METADATA
 				MetaDataArray = Prop->MetaDataArray;
@@ -3952,7 +4015,7 @@ namespace UE4CodeGen_Private
 			case EPropertyGenFlags::UnsizedInt:
 			{
 				const FUnsizedIntPropertyParams* Prop = (const FUnsizedIntPropertyParams*)PropBase;
-				NewProp = new (EC_InternalUseOnlyConstructor, Outer, UTF8_TO_TCHAR(Prop->NameUTF8), Prop->ObjectFlags) UUInt64Property(FObjectInitializer(), EC_CppProperty, Prop->Offset, Prop->PropertyFlags);
+				NewProp = new FUInt64Property(Outer, UTF8_TO_TCHAR(Prop->NameUTF8), Prop->ObjectFlags, Prop->Offset, Prop->PropertyFlags);
 
 #if WITH_METADATA
 				MetaDataArray = Prop->MetaDataArray;
@@ -3963,8 +4026,8 @@ namespace UE4CodeGen_Private
 
 			case EPropertyGenFlags::UnsizedUInt:
 			{
-				const FUnsizedUIntPropertyParams* Prop = (const FUnsizedUIntPropertyParams*)PropBase;
-				NewProp = new (EC_InternalUseOnlyConstructor, Outer, UTF8_TO_TCHAR(Prop->NameUTF8), Prop->ObjectFlags) UUInt64Property(FObjectInitializer(), EC_CppProperty, Prop->Offset, Prop->PropertyFlags);
+				const FUnsizedFIntPropertyParams* Prop = (const FUnsizedFIntPropertyParams*)PropBase;
+				NewProp = new FUInt64Property(Outer, UTF8_TO_TCHAR(Prop->NameUTF8), Prop->ObjectFlags, Prop->Offset, Prop->PropertyFlags);
 
 #if WITH_METADATA
 				MetaDataArray = Prop->MetaDataArray;
@@ -3976,7 +4039,7 @@ namespace UE4CodeGen_Private
 			case EPropertyGenFlags::Float:
 			{
 				const FFloatPropertyParams* Prop = (const FFloatPropertyParams*)PropBase;
-				NewProp = new (EC_InternalUseOnlyConstructor, Outer, UTF8_TO_TCHAR(Prop->NameUTF8), Prop->ObjectFlags) UFloatProperty(FObjectInitializer(), EC_CppProperty, Prop->Offset, Prop->PropertyFlags);
+				NewProp = new FFloatProperty(Outer, UTF8_TO_TCHAR(Prop->NameUTF8), Prop->ObjectFlags, Prop->Offset, Prop->PropertyFlags);
 
 #if WITH_METADATA
 				MetaDataArray = Prop->MetaDataArray;
@@ -3988,7 +4051,7 @@ namespace UE4CodeGen_Private
 			case EPropertyGenFlags::Double:
 			{
 				const FDoublePropertyParams* Prop = (const FDoublePropertyParams*)PropBase;
-				NewProp = new (EC_InternalUseOnlyConstructor, Outer, UTF8_TO_TCHAR(Prop->NameUTF8), Prop->ObjectFlags) UDoubleProperty(FObjectInitializer(), EC_CppProperty, Prop->Offset, Prop->PropertyFlags);
+				NewProp = new FDoubleProperty(Outer, UTF8_TO_TCHAR(Prop->NameUTF8), Prop->ObjectFlags, Prop->Offset, Prop->PropertyFlags);
 
 #if WITH_METADATA
 				MetaDataArray = Prop->MetaDataArray;
@@ -4029,7 +4092,7 @@ namespace UE4CodeGen_Private
 					check(BitMask);
 				}
 
-				NewProp = new (EC_InternalUseOnlyConstructor, Outer, UTF8_TO_TCHAR(Prop->NameUTF8), Prop->ObjectFlags) UBoolProperty(FObjectInitializer(), EC_CppProperty, Offset, Prop->PropertyFlags, BitMask, Prop->ElementSize, !!(Prop->Flags & EPropertyGenFlags::NativeBool));
+				NewProp = new FBoolProperty(Outer, UTF8_TO_TCHAR(Prop->NameUTF8), Prop->ObjectFlags, Offset, Prop->PropertyFlags, BitMask, Prop->ElementSize, !!(Prop->Flags & EPropertyGenFlags::NativeBool));
 
 #if WITH_METADATA
 				MetaDataArray = Prop->MetaDataArray;
@@ -4041,7 +4104,7 @@ namespace UE4CodeGen_Private
 			case EPropertyGenFlags::Object:
 			{
 				const FObjectPropertyParams* Prop = (const FObjectPropertyParams*)PropBase;
-				NewProp = new (EC_InternalUseOnlyConstructor, Outer, UTF8_TO_TCHAR(Prop->NameUTF8), Prop->ObjectFlags) UObjectProperty(FObjectInitializer(), EC_CppProperty, Prop->Offset, Prop->PropertyFlags, Prop->ClassFunc ? Prop->ClassFunc() : nullptr);
+				NewProp = new FObjectProperty(Outer, UTF8_TO_TCHAR(Prop->NameUTF8), Prop->ObjectFlags, Prop->Offset, Prop->PropertyFlags, Prop->ClassFunc ? Prop->ClassFunc() : nullptr);
 
 #if WITH_METADATA
 				MetaDataArray = Prop->MetaDataArray;
@@ -4053,7 +4116,7 @@ namespace UE4CodeGen_Private
 			case EPropertyGenFlags::WeakObject:
 			{
 				const FWeakObjectPropertyParams* Prop = (const FWeakObjectPropertyParams*)PropBase;
-				NewProp = new (EC_InternalUseOnlyConstructor, Outer, UTF8_TO_TCHAR(Prop->NameUTF8), Prop->ObjectFlags) UWeakObjectProperty(FObjectInitializer(), EC_CppProperty, Prop->Offset, Prop->PropertyFlags, Prop->ClassFunc ? Prop->ClassFunc() : nullptr);
+				NewProp = new FWeakObjectProperty(Outer, UTF8_TO_TCHAR(Prop->NameUTF8), Prop->ObjectFlags, Prop->Offset, Prop->PropertyFlags, Prop->ClassFunc ? Prop->ClassFunc() : nullptr);
 
 #if WITH_METADATA
 				MetaDataArray = Prop->MetaDataArray;
@@ -4065,7 +4128,7 @@ namespace UE4CodeGen_Private
 			case EPropertyGenFlags::LazyObject:
 			{
 				const FLazyObjectPropertyParams* Prop = (const FLazyObjectPropertyParams*)PropBase;
-				NewProp = new (EC_InternalUseOnlyConstructor, Outer, UTF8_TO_TCHAR(Prop->NameUTF8), Prop->ObjectFlags) ULazyObjectProperty(FObjectInitializer(), EC_CppProperty, Prop->Offset, Prop->PropertyFlags, Prop->ClassFunc ? Prop->ClassFunc() : nullptr);
+				NewProp = new FLazyObjectProperty(Outer, UTF8_TO_TCHAR(Prop->NameUTF8), Prop->ObjectFlags, Prop->Offset, Prop->PropertyFlags, Prop->ClassFunc ? Prop->ClassFunc() : nullptr);
 
 #if WITH_METADATA
 				MetaDataArray = Prop->MetaDataArray;
@@ -4077,7 +4140,7 @@ namespace UE4CodeGen_Private
 			case EPropertyGenFlags::SoftObject:
 			{
 				const FSoftObjectPropertyParams* Prop = (const FSoftObjectPropertyParams*)PropBase;
-				NewProp = new (EC_InternalUseOnlyConstructor, Outer, UTF8_TO_TCHAR(Prop->NameUTF8), Prop->ObjectFlags) USoftObjectProperty(FObjectInitializer(), EC_CppProperty, Prop->Offset, Prop->PropertyFlags, Prop->ClassFunc ? Prop->ClassFunc() : nullptr);
+				NewProp = new FSoftObjectProperty(Outer, UTF8_TO_TCHAR(Prop->NameUTF8), Prop->ObjectFlags, Prop->Offset, Prop->PropertyFlags, Prop->ClassFunc ? Prop->ClassFunc() : nullptr);
 
 #if WITH_METADATA
 				MetaDataArray = Prop->MetaDataArray;
@@ -4089,7 +4152,7 @@ namespace UE4CodeGen_Private
 			case EPropertyGenFlags::Class:
 			{
 				const FClassPropertyParams* Prop = (const FClassPropertyParams*)PropBase;
-				NewProp = new (EC_InternalUseOnlyConstructor, Outer, UTF8_TO_TCHAR(Prop->NameUTF8), Prop->ObjectFlags) UClassProperty(FObjectInitializer(), EC_CppProperty, Prop->Offset, Prop->PropertyFlags, Prop->MetaClassFunc ? Prop->MetaClassFunc() : nullptr, Prop->ClassFunc ? Prop->ClassFunc() : nullptr);
+				NewProp = new FClassProperty(Outer, UTF8_TO_TCHAR(Prop->NameUTF8), Prop->ObjectFlags, Prop->Offset, Prop->PropertyFlags, Prop->MetaClassFunc ? Prop->MetaClassFunc() : nullptr, Prop->ClassFunc ? Prop->ClassFunc() : nullptr);
 
 #if WITH_METADATA
 				MetaDataArray = Prop->MetaDataArray;
@@ -4101,7 +4164,7 @@ namespace UE4CodeGen_Private
 			case EPropertyGenFlags::SoftClass:
 			{
 				const FSoftClassPropertyParams* Prop = (const FSoftClassPropertyParams*)PropBase;
-				NewProp = new (EC_InternalUseOnlyConstructor, Outer, UTF8_TO_TCHAR(Prop->NameUTF8), Prop->ObjectFlags) USoftClassProperty(FObjectInitializer(), EC_CppProperty, Prop->Offset, Prop->PropertyFlags, Prop->MetaClassFunc ? Prop->MetaClassFunc() : nullptr);
+				NewProp = new FSoftClassProperty(Outer, UTF8_TO_TCHAR(Prop->NameUTF8), Prop->ObjectFlags, Prop->Offset, Prop->PropertyFlags, Prop->MetaClassFunc ? Prop->MetaClassFunc() : nullptr);
 
 #if WITH_METADATA
 				MetaDataArray = Prop->MetaDataArray;
@@ -4113,7 +4176,7 @@ namespace UE4CodeGen_Private
 			case EPropertyGenFlags::Interface:
 			{
 				const FInterfacePropertyParams* Prop = (const FInterfacePropertyParams*)PropBase;
-				NewProp = new (EC_InternalUseOnlyConstructor, Outer, UTF8_TO_TCHAR(Prop->NameUTF8), Prop->ObjectFlags) UInterfaceProperty(FObjectInitializer(), EC_CppProperty, Prop->Offset, Prop->PropertyFlags, Prop->InterfaceClassFunc ? Prop->InterfaceClassFunc() : nullptr);
+				NewProp = new FInterfaceProperty(Outer, UTF8_TO_TCHAR(Prop->NameUTF8), Prop->ObjectFlags, Prop->Offset, Prop->PropertyFlags, Prop->InterfaceClassFunc ? Prop->InterfaceClassFunc() : nullptr);
 
 #if WITH_METADATA
 				MetaDataArray = Prop->MetaDataArray;
@@ -4125,7 +4188,7 @@ namespace UE4CodeGen_Private
 			case EPropertyGenFlags::Name:
 			{
 				const FNamePropertyParams* Prop = (const FNamePropertyParams*)PropBase;
-				NewProp = new (EC_InternalUseOnlyConstructor, Outer, UTF8_TO_TCHAR(Prop->NameUTF8), Prop->ObjectFlags) UNameProperty(FObjectInitializer(), EC_CppProperty, Prop->Offset, Prop->PropertyFlags);
+				NewProp = new FNameProperty(Outer, UTF8_TO_TCHAR(Prop->NameUTF8), Prop->ObjectFlags, Prop->Offset, Prop->PropertyFlags);
 
 #if WITH_METADATA
 				MetaDataArray = Prop->MetaDataArray;
@@ -4137,7 +4200,7 @@ namespace UE4CodeGen_Private
 			case EPropertyGenFlags::Str:
 			{
 				const FStrPropertyParams* Prop = (const FStrPropertyParams*)PropBase;
-				NewProp = new (EC_InternalUseOnlyConstructor, Outer, UTF8_TO_TCHAR(Prop->NameUTF8), Prop->ObjectFlags) UStrProperty(FObjectInitializer(), EC_CppProperty, Prop->Offset, Prop->PropertyFlags);
+				NewProp = new FStrProperty(Outer, UTF8_TO_TCHAR(Prop->NameUTF8), Prop->ObjectFlags, Prop->Offset, Prop->PropertyFlags);
 
 #if WITH_METADATA
 				MetaDataArray = Prop->MetaDataArray;
@@ -4149,7 +4212,7 @@ namespace UE4CodeGen_Private
 			case EPropertyGenFlags::Array:
 			{
 				const FArrayPropertyParams* Prop = (const FArrayPropertyParams*)PropBase;
-				NewProp = new (EC_InternalUseOnlyConstructor, Outer, UTF8_TO_TCHAR(Prop->NameUTF8), Prop->ObjectFlags) UArrayProperty(FObjectInitializer(), EC_CppProperty, Prop->Offset, Prop->PropertyFlags);
+				NewProp = new FArrayProperty(Outer, UTF8_TO_TCHAR(Prop->NameUTF8), Prop->ObjectFlags, Prop->Offset, Prop->PropertyFlags, Prop->ArrayFlags);
 
 				// Next property is the array inner
 				ReadMore = 1;
@@ -4164,7 +4227,7 @@ namespace UE4CodeGen_Private
 			case EPropertyGenFlags::Map:
 			{
 				const FMapPropertyParams* Prop = (const FMapPropertyParams*)PropBase;
-				NewProp = new (EC_InternalUseOnlyConstructor, Outer, UTF8_TO_TCHAR(Prop->NameUTF8), Prop->ObjectFlags) UMapProperty(FObjectInitializer(), EC_CppProperty, Prop->Offset, Prop->PropertyFlags);
+				NewProp = new FMapProperty(Outer, UTF8_TO_TCHAR(Prop->NameUTF8), Prop->ObjectFlags, Prop->Offset, Prop->PropertyFlags, Prop->MapFlags);
 
 				// Next two properties are the map key and value inners
 				ReadMore = 2;
@@ -4179,7 +4242,7 @@ namespace UE4CodeGen_Private
 			case EPropertyGenFlags::Set:
 			{
 				const FSetPropertyParams* Prop = (const FSetPropertyParams*)PropBase;
-				NewProp = new (EC_InternalUseOnlyConstructor, Outer, UTF8_TO_TCHAR(Prop->NameUTF8), Prop->ObjectFlags) USetProperty(FObjectInitializer(), EC_CppProperty, Prop->Offset, Prop->PropertyFlags);
+				NewProp = new FSetProperty(Outer, UTF8_TO_TCHAR(Prop->NameUTF8), Prop->ObjectFlags, Prop->Offset, Prop->PropertyFlags);
 
 				// Next property is the set inner
 				ReadMore = 1;
@@ -4194,7 +4257,7 @@ namespace UE4CodeGen_Private
 			case EPropertyGenFlags::Struct:
 			{
 				const FStructPropertyParams* Prop = (const FStructPropertyParams*)PropBase;
-				NewProp = new (EC_InternalUseOnlyConstructor, Outer, UTF8_TO_TCHAR(Prop->NameUTF8), Prop->ObjectFlags) UStructProperty(FObjectInitializer(), EC_CppProperty, Prop->Offset, Prop->PropertyFlags, Prop->ScriptStructFunc ? Prop->ScriptStructFunc() : nullptr);
+				NewProp = new FStructProperty(Outer, UTF8_TO_TCHAR(Prop->NameUTF8), Prop->ObjectFlags, Prop->Offset, Prop->PropertyFlags, Prop->ScriptStructFunc ? Prop->ScriptStructFunc() : nullptr);
 
 #if WITH_METADATA
 				MetaDataArray = Prop->MetaDataArray;
@@ -4206,7 +4269,7 @@ namespace UE4CodeGen_Private
 			case EPropertyGenFlags::Delegate:
 			{
 				const FDelegatePropertyParams* Prop = (const FDelegatePropertyParams*)PropBase;
-				NewProp = new (EC_InternalUseOnlyConstructor, Outer, UTF8_TO_TCHAR(Prop->NameUTF8), Prop->ObjectFlags) UDelegateProperty(FObjectInitializer(), EC_CppProperty, Prop->Offset, Prop->PropertyFlags, Prop->SignatureFunctionFunc ? Prop->SignatureFunctionFunc() : nullptr);
+				NewProp = new FDelegateProperty(Outer, UTF8_TO_TCHAR(Prop->NameUTF8), Prop->ObjectFlags, Prop->Offset, Prop->PropertyFlags, Prop->SignatureFunctionFunc ? Prop->SignatureFunctionFunc() : nullptr);
 
 #if WITH_METADATA
 				MetaDataArray = Prop->MetaDataArray;
@@ -4215,14 +4278,26 @@ namespace UE4CodeGen_Private
 			}
 			break;
 
-			case EPropertyGenFlags::MulticastDelegate:
+			case EPropertyGenFlags::InlineMulticastDelegate:
 			{
 				const FMulticastDelegatePropertyParams* Prop = (const FMulticastDelegatePropertyParams*)PropBase;
-				NewProp = new (EC_InternalUseOnlyConstructor, Outer, UTF8_TO_TCHAR(Prop->NameUTF8), Prop->ObjectFlags) UMulticastDelegateProperty(FObjectInitializer(), EC_CppProperty, Prop->Offset, Prop->PropertyFlags, Prop->SignatureFunctionFunc ? Prop->SignatureFunctionFunc() : nullptr);
+				NewProp = new FMulticastInlineDelegateProperty(Outer, UTF8_TO_TCHAR(Prop->NameUTF8), Prop->ObjectFlags, Prop->Offset, Prop->PropertyFlags, Prop->SignatureFunctionFunc ? Prop->SignatureFunctionFunc() : nullptr);
 
 #if WITH_METADATA
 				MetaDataArray = Prop->MetaDataArray;
 				NumMetaData   = Prop->NumMetaData;
+#endif
+			}
+			break;
+
+			case EPropertyGenFlags::SparseMulticastDelegate:
+			{
+				const FMulticastDelegatePropertyParams* Prop = (const FMulticastDelegatePropertyParams*)PropBase;
+				NewProp = new FMulticastSparseDelegateProperty(Outer, UTF8_TO_TCHAR(Prop->NameUTF8), Prop->ObjectFlags, Prop->Offset, Prop->PropertyFlags, Prop->SignatureFunctionFunc ? Prop->SignatureFunctionFunc() : nullptr);
+
+#if WITH_METADATA
+				MetaDataArray = Prop->MetaDataArray;
+				NumMetaData = Prop->NumMetaData;
 #endif
 			}
 			break;
@@ -4230,7 +4305,7 @@ namespace UE4CodeGen_Private
 			case EPropertyGenFlags::Text:
 			{
 				const FTextPropertyParams* Prop = (const FTextPropertyParams*)PropBase;
-				NewProp = new (EC_InternalUseOnlyConstructor, Outer, UTF8_TO_TCHAR(Prop->NameUTF8), Prop->ObjectFlags) UTextProperty(FObjectInitializer(), EC_CppProperty, Prop->Offset, Prop->PropertyFlags);
+				NewProp = new FTextProperty(Outer, UTF8_TO_TCHAR(Prop->NameUTF8), Prop->ObjectFlags, Prop->Offset, Prop->PropertyFlags);
 
 #if WITH_METADATA
 				MetaDataArray = Prop->MetaDataArray;
@@ -4242,7 +4317,7 @@ namespace UE4CodeGen_Private
 			case EPropertyGenFlags::Enum:
 			{
 				const FEnumPropertyParams* Prop = (const FEnumPropertyParams*)PropBase;
-				NewProp = new (EC_InternalUseOnlyConstructor, Outer, UTF8_TO_TCHAR(Prop->NameUTF8), Prop->ObjectFlags) UEnumProperty(FObjectInitializer(), EC_CppProperty, Prop->Offset, Prop->PropertyFlags, Prop->EnumFunc ? Prop->EnumFunc() : nullptr);
+				NewProp = new FEnumProperty(Outer, UTF8_TO_TCHAR(Prop->NameUTF8), Prop->ObjectFlags, Prop->Offset, Prop->PropertyFlags, Prop->EnumFunc ? Prop->EnumFunc() : nullptr);
 
 				// Next property is the underlying integer property
 				ReadMore = 1;
@@ -4253,15 +4328,26 @@ namespace UE4CodeGen_Private
 #endif
 			}
 			break;
+
+			case EPropertyGenFlags::FieldPath:
+			{
+				const FFieldPathPropertyParams* Prop = (const FFieldPathPropertyParams*)PropBase;
+				NewProp = new FFieldPathProperty(Outer, UTF8_TO_TCHAR(Prop->NameUTF8), Prop->ObjectFlags, Prop->Offset, Prop->PropertyFlags, Prop->PropertyClassFunc());
+
+#if WITH_METADATA
+				MetaDataArray = Prop->MetaDataArray;
+				NumMetaData = Prop->NumMetaData;
+#endif
+			}
+			break;
 		}
 
 #if WITH_METADATA
 		if (NumMetaData)
 		{
-			UMetaData* MetaData = NewProp->GetOutermost()->GetMetaData();
 			for (const FMetaDataPairParam* MetaDataData = MetaDataArray, *MetaDataEnd = MetaDataData + NumMetaData; MetaDataData != MetaDataEnd; ++MetaDataData)
 			{
-				MetaData->SetValue(NewProp, UTF8_TO_TCHAR(MetaDataData->NameUTF8), UTF8_TO_TCHAR(MetaDataData->ValueUTF8));
+				NewProp->SetMetaData(UTF8_TO_TCHAR(MetaDataData->NameUTF8), UTF8_TO_TCHAR(MetaDataData->ValueUTF8));
 			}
 		}
 #endif
@@ -4276,7 +4362,7 @@ namespace UE4CodeGen_Private
 
 		for (; ReadMore; --ReadMore)
 		{
-			ConstructUProperty(NewProp, PropertyArray, NumProperties);
+			ConstructFProperty(NewProp, PropertyArray, NumProperties);
 		}
 	}
 
@@ -4284,7 +4370,7 @@ namespace UE4CodeGen_Private
 	{
 		while (NumProperties)
 		{
-			ConstructUProperty(Outer, PropertyArray, NumProperties);
+			ConstructFProperty(Outer, PropertyArray, NumProperties);
 		}
 	}
 
@@ -4318,12 +4404,27 @@ namespace UE4CodeGen_Private
 		UFunction* NewFunction;
 		if (Params.FunctionFlags & FUNC_Delegate)
 		{
-			NewFunction = new (EC_InternalUseOnlyConstructor, Outer, UTF8_TO_TCHAR(Params.NameUTF8), Params.ObjectFlags) UDelegateFunction(
-				FObjectInitializer(),
-				Super,
-				Params.FunctionFlags,
-				Params.StructureSize
-			);
+			if (Params.OwningClassName == nullptr)
+			{
+				NewFunction = new (EC_InternalUseOnlyConstructor, Outer, UTF8_TO_TCHAR(Params.NameUTF8), Params.ObjectFlags) UDelegateFunction(
+					FObjectInitializer(),
+					Super,
+					Params.FunctionFlags,
+					Params.StructureSize
+				);
+			}
+			else
+			{
+				USparseDelegateFunction* NewSparseFunction = new (EC_InternalUseOnlyConstructor, Outer, UTF8_TO_TCHAR(Params.NameUTF8), Params.ObjectFlags) USparseDelegateFunction(
+					FObjectInitializer(),
+					Super,
+					Params.FunctionFlags,
+					Params.StructureSize
+				);
+				NewSparseFunction->OwningClassName = FName(Params.OwningClassName);
+				NewSparseFunction->DelegateName = FName(Params.DelegateName);
+				NewFunction = NewSparseFunction;
+			}
 		}
 		else
 		{
@@ -4339,6 +4440,8 @@ namespace UE4CodeGen_Private
 #if WITH_METADATA
 		AddMetaData(NewFunction, Params.MetaDataArray, Params.NumMetaData);
 #endif
+		NewFunction->RPCId = Params.RPCId;
+		NewFunction->RPCResponseId = Params.RPCResponseId;
 
 		ConstructUProperties(NewFunction, Params.PropertyArray, Params.NumProperties);
 
@@ -4414,7 +4517,20 @@ namespace UE4CodeGen_Private
 			return;
 		}
 
-		UPackage* NewPackage = CastChecked<UPackage>(StaticFindObjectFast(UPackage::StaticClass(), nullptr, FName(UTF8_TO_TCHAR(Params.NameUTF8)), false, false));
+		UObject* FoundPackage = StaticFindObjectFast(UPackage::StaticClass(), nullptr, FName(UTF8_TO_TCHAR(Params.NameUTF8)), false, false);
+
+#if USE_PER_MODULE_UOBJECT_BOOTSTRAP
+		if (!FoundPackage)
+		{
+			UE_LOG(LogUObjectGlobals, Log, TEXT("Creating package on the fly %s"), UTF8_TO_TCHAR(Params.NameUTF8));
+			ProcessNewlyLoadedUObjects(FName(UTF8_TO_TCHAR(Params.NameUTF8)), false);
+			FoundPackage = CreatePackage(nullptr, UTF8_TO_TCHAR(Params.NameUTF8));
+		}
+#endif
+
+		checkf(FoundPackage, TEXT("Code not found for generated code (package %s)."), UTF8_TO_TCHAR(Params.NameUTF8));
+
+		UPackage* NewPackage = CastChecked<UPackage>(FoundPackage);
 		OutPackage = NewPackage;
 
 #if WITH_METADATA
@@ -4465,9 +4581,6 @@ namespace UE4CodeGen_Private
 		{
 			check((NewClass->ClassFlags & CLASS_TokenStreamAssembled) != CLASS_TokenStreamAssembled);
 			NewClass->ReferenceTokenStream.Empty();
-#if ENABLE_GC_OBJECT_CHECKS
-			NewClass->DebugTokenMap.Empty();
-#endif
 		}
 		NewClass->CreateLinkAndAddChildFunctionsToMap(Params.FunctionLinkArray, Params.NumFunctions);
 
@@ -4497,5 +4610,35 @@ namespace UE4CodeGen_Private
 #endif
 
 		NewClass->StaticLink();
+
+		NewClass->SetSparseClassDataStruct(NewClass->GetSparseClassDataArchetypeStruct());
 	}
+}
+
+EDataValidationResult CombineDataValidationResults(EDataValidationResult Result1, EDataValidationResult Result2)
+{
+	/**
+	 * Anything combined with an Invalid result is Invalid. Any result combined with a NotValidated result is the same result
+	 *
+	 * The combined results should match the following matrix
+	 *
+	 *				|	NotValidated	|	Valid	|	Invalid
+	 * -------------+-------------------+-----------+----------
+	 * NotValidated	|	NotValidated	|	Valid	|	Invalid
+	 * Valid		|	Valid			|	Valid	|	Invalid
+	 * Invalid		|	Invalid			|	Invalid	|	Invalid
+	 *
+	 */
+
+	if (Result1 == EDataValidationResult::Invalid || Result2 == EDataValidationResult::Invalid)
+	{
+		return EDataValidationResult::Invalid;
+	}
+
+	if (Result1 == EDataValidationResult::Valid || Result2 == EDataValidationResult::Valid)
+	{
+		return EDataValidationResult::Valid;
+	}
+
+	return EDataValidationResult::NotValidated;
 }

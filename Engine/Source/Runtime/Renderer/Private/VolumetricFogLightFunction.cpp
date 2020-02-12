@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 /*=============================================================================
 	VolumetricFogLightFunction.cpp
@@ -26,9 +26,9 @@ class FVolumetricFogLightFunctionPS : public FMaterialShader
 	DECLARE_SHADER_TYPE(FVolumetricFogLightFunctionPS,Material);
 public:
 
-	static bool ShouldCompilePermutation(EShaderPlatform Platform, const FMaterial* Material)
+	static bool ShouldCompilePermutation(const FMaterialShaderPermutationParameters& Parameters)
 	{
-		return Material->IsLightFunction() && DoesPlatformSupportVolumetricFog(Platform);
+		return Parameters.MaterialParameters.MaterialDomain == MD_LightFunction && DoesPlatformSupportVolumetricFog(Parameters.Platform);
 	}
 
 	FVolumetricFogLightFunctionPS() {}
@@ -50,7 +50,7 @@ public:
 		FVector2D LightFunctionTexelSizeValue,
 		const FMatrix& ShadowToWorldValue)
 	{
-		const FPixelShaderRHIParamRef ShaderRHI = GetPixelShader();
+		FRHIPixelShader* ShaderRHI = RHICmdList.GetBoundPixelShader();
 
 		FMaterialShader::SetParameters(RHICmdList, ShaderRHI, MaterialProxy, *MaterialProxy->GetMaterial(View.GetFeatureLevel()), View, View.ViewUniformBuffer, ESceneTextureSetupMode::None);
 
@@ -76,23 +76,12 @@ public:
 		SetShaderValue(RHICmdList, ShaderRHI, ShadowToWorld, ShadowToWorldValue);
 	}
 
-	virtual bool Serialize(FArchive& Ar) override
-	{
-		bool bShaderHasOutdatedParameters = FMaterialShader::Serialize(Ar);
-		Ar << LightFunctionParameters;
-		Ar << LightFunctionParameters2;
-		Ar << LightFunctionWorldToLight;
-		Ar << LightFunctionTexelSize;
-		Ar << ShadowToWorld;
-		return bShaderHasOutdatedParameters;
-	}
-
 private:
-	FLightFunctionSharedParameters LightFunctionParameters;
-	FShaderParameter LightFunctionParameters2;
-	FShaderParameter LightFunctionWorldToLight;
-	FShaderParameter LightFunctionTexelSize;
-	FShaderParameter ShadowToWorld;
+	LAYOUT_FIELD(FLightFunctionSharedParameters, LightFunctionParameters);
+	LAYOUT_FIELD(FShaderParameter, LightFunctionParameters2);
+	LAYOUT_FIELD(FShaderParameter, LightFunctionWorldToLight);
+	LAYOUT_FIELD(FShaderParameter, LightFunctionTexelSize);
+	LAYOUT_FIELD(FShaderParameter, ShadowToWorld);
 };
 
 IMPLEMENT_MATERIAL_SHADER_TYPE(,FVolumetricFogLightFunctionPS,TEXT("/Engine/Private/VolumetricFogLightFunction.usf"),TEXT("Main"),SF_Pixel);
@@ -103,7 +92,7 @@ void FDeferredShadingSceneRenderer::RenderLightFunctionForVolumetricFog(
 	FIntVector VolumetricFogGridSize,
 	float VolumetricFogMaxDistance,
 	FMatrix& OutLightFunctionWorldToShadow,
-	const FRDGTexture*& OutLightFunctionTexture,
+	FRDGTexture*& OutLightFunctionTexture,
 	bool& bOutUseDirectionalLightShadowing)
 {
 	OutLightFunctionWorldToShadow = FMatrix::Identity;
@@ -118,6 +107,8 @@ void FDeferredShadingSceneRenderer::RenderLightFunctionForVolumetricFog(
 
 		if (ViewFamily.EngineShowFlags.LightFunctions
 			&& LightSceneInfo->Proxy->GetLightType() == LightType_Directional
+			// Band-aid fix for extremely rare case that light scene proxy contains NaNs.
+			&& !LightSceneInfo->Proxy->GetDirection().ContainsNaN()
 			&& LightSceneInfo->ShouldRenderLightViewIndependent()
 			&& LightSceneInfo->ShouldRenderLight(View))
 		{
@@ -154,6 +145,25 @@ void FDeferredShadingSceneRenderer::RenderLightFunctionForVolumetricFog(
 			const int32 ResolutionSnapFactor = 32;
 			LightFunctionResolution.X = FMath::DivideAndRoundUp(LightFunctionResolution.X, ResolutionSnapFactor) * ResolutionSnapFactor;
 			LightFunctionResolution.Y = FMath::DivideAndRoundUp(LightFunctionResolution.Y, ResolutionSnapFactor) * ResolutionSnapFactor;
+
+			// Guard against invalid resolutions
+			const uint32 LiFuncResXU32 = (uint32)LightFunctionResolution.X;
+			const uint32 LiFuncResYU32 = (uint32)LightFunctionResolution.Y;
+			const uint32 MaxTextureResU32 = GMaxTextureDimensions;
+			if (LiFuncResXU32 > MaxTextureResU32 || LiFuncResYU32 > MaxTextureResU32)
+			{
+#if !(UE_BUILD_SHIPPING)
+				UE_LOG(LogRenderer, Error,
+					TEXT("Invalid LightFunctionResolution %dx%d, View={ %s}, LightDirection={ %s }"),
+					LightFunctionResolution.X,
+					LightFunctionResolution.Y,
+					*View.ViewMatrices.GetOverriddenTranslatedViewMatrix().ToString(),
+					*LightDirection.ToString());
+#endif
+				const uint32 ClampedRes = FMath::Max(FMath::Min3(LiFuncResXU32, LiFuncResYU32, MaxTextureResU32), (uint32)ResolutionSnapFactor);
+				LightFunctionResolution.X = ClampedRes;
+				LightFunctionResolution.Y = ClampedRes;
+			}
 
 			FWholeSceneProjectedShadowInitializer ShadowInitializer;
 
@@ -200,12 +210,12 @@ void FDeferredShadingSceneRenderer::RenderLightFunctionForVolumetricFog(
 			OutLightFunctionWorldToShadow = WorldToShadowValue;
 
 			FRenderTargetParameters* PassParameters = GraphBuilder.AllocParameters<FRenderTargetParameters>();
-			PassParameters->RenderTargets[0] = FRenderTargetBinding(OutLightFunctionTexture, ERenderTargetLoadAction::ENoAction, ERenderTargetStoreAction::EStore);
+			PassParameters->RenderTargets[0] = FRenderTargetBinding(OutLightFunctionTexture, ERenderTargetLoadAction::ENoAction);
 
 			GraphBuilder.AddPass(
 				RDG_EVENT_NAME("LightFunction"),
 				PassParameters,
-				ERenderGraphPassFlags::None,
+				ERDGPassFlags::Raster,
 				[PassParameters, &View, MaterialProxy, LightFunctionResolution, DirectionalLightSceneInfo, WorldToShadowValue, this](FRHICommandListImmediate& RHICmdList)
 			{
 				const FMaterial* Material = MaterialProxy->GetMaterial(Scene->GetFeatureLevel());
@@ -222,11 +232,11 @@ void FDeferredShadingSceneRenderer::RenderLightFunctionForVolumetricFog(
 
 				const FMaterialShaderMap* MaterialShaderMap = Material->GetRenderingThreadShaderMap();
 				TShaderMapRef<FPostProcessVS> VertexShader(View.ShaderMap);
-				FVolumetricFogLightFunctionPS* PixelShader = MaterialShaderMap->GetShader<FVolumetricFogLightFunctionPS>();
+				TShaderRef<FVolumetricFogLightFunctionPS> PixelShader = MaterialShaderMap->GetShader<FVolumetricFogLightFunctionPS>();
 
 				GraphicsPSOInit.BoundShaderState.VertexDeclarationRHI = GFilterVertexDeclaration.VertexDeclarationRHI;
-				GraphicsPSOInit.BoundShaderState.VertexShaderRHI = GETSAFERHISHADER_VERTEX(*VertexShader);
-				GraphicsPSOInit.BoundShaderState.PixelShaderRHI = GETSAFERHISHADER_PIXEL(PixelShader);
+				GraphicsPSOInit.BoundShaderState.VertexShaderRHI = VertexShader.GetVertexShader();
+				GraphicsPSOInit.BoundShaderState.PixelShaderRHI = PixelShader.GetPixelShader();
 
 				SetGraphicsPipelineState(RHICmdList, GraphicsPSOInit);
 
@@ -241,7 +251,7 @@ void FDeferredShadingSceneRenderer::RenderLightFunctionForVolumetricFog(
 					LightFunctionResolution.X, LightFunctionResolution.Y,
 					LightFunctionResolution,
 					LightFunctionResolution,
-					*VertexShader);
+					VertexShader);
 			});
 		}
 	}

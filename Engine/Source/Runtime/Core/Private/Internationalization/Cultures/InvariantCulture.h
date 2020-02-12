@@ -1,9 +1,10 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 #pragma once
 
 #if !UE_ENABLE_ICU
 
 #include "Internationalization/Culture.h"
+#include "Internationalization/LegacyCulture.h"
 #include "Internationalization/Internationalization.h"
 #include "Internationalization/FastDecimalFormat.h"
 
@@ -47,7 +48,7 @@ public:
 		BaseCurrencyFormattingRules.PrimaryGroupingSize = 3;
 		BaseCurrencyFormattingRules.SecondaryGroupingSize = 3;
 
-		FCultureRef Culture = FCulture::Create(
+		FCultureRef Culture = FCulture::Create(MakeUnique<FLegacyCultureImplementation>(
 			LOCTEXT("InvariantCultureDisplayName", "Invariant Language (Invariant Country)"),	//const FText DisplayName
 			FString(TEXT("Invariant Language (Invariant Country)")),							//const FString EnglishName
 			1033,																				//const int KeyboardLayoutId
@@ -59,8 +60,9 @@ public:
 			FString(TEXT("iv")),																//const FString TwoLetterISOLanguageName
 			DecimalNumberFormattingRules,														//const FDecimalNumberFormattingRules InDecimalNumberFormattingRules
 			PercentFormattingRules,																//const FDecimalNumberFormattingRules InPercentFormattingRules
-			BaseCurrencyFormattingRules															//const FDecimalNumberFormattingRules InBaseCurrencyFormattingRules
-			).ToSharedRef();
+			BaseCurrencyFormattingRules,														//const FDecimalNumberFormattingRules InBaseCurrencyFormattingRules
+			false																				//const bool IsRightToLeft
+		));
 
 		return Culture;
 	}

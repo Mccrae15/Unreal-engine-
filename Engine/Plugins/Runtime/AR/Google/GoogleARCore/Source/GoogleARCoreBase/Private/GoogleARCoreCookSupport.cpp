@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "GoogleARCoreCookSupport.h"
 #include "GoogleARCoreBaseLogCategory.h"
@@ -29,7 +29,7 @@
 
 bool FGoogleARCoreSessionConfigCookSupport::SaveTextureToPNG(UTexture2D *Tex, const FString &Filename)
 {
-	TArray<uint8> MipData;
+	TArray64<uint8> MipData;
 	bool Ret = true;
 
 	if (Tex->Source.GetMipData(MipData, 0))

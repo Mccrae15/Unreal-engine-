@@ -1,8 +1,9 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "Factories/FbxSkeletalMeshImportData.h"
 #include "Engine/SkeletalMesh.h"
 #include "UObject/Package.h"
+#include "UObject/EditorObjectVersion.h"
 
 UFbxSkeletalMeshImportData::UFbxSkeletalMeshImportData(const FObjectInitializer& ObjectInitializer)
 	: Super(ObjectInitializer)
@@ -12,6 +13,19 @@ UFbxSkeletalMeshImportData::UFbxSkeletalMeshImportData(const FObjectInitializer&
 	bBakePivotInVertex = false;
 	VertexColorImportOption = EVertexColorImportOption::Replace;
 	LastImportContentType = EFBXImportContentType::FBXICT_All;
+}
+
+void UFbxSkeletalMeshImportData::Serialize(FArchive& Ar)
+{
+	Super::Serialize(Ar);
+	Ar.UsingCustomVersion(FEditorObjectVersion::GUID);
+
+	//bComputeWeightedNormals default is true so old asset should have set to false.
+	if (Ar.CustomVer(FEditorObjectVersion::GUID) < FEditorObjectVersion::ComputeWeightedNormals)
+	{
+		//Old asset are not using weighted normals
+		bComputeWeightedNormals = false;
+	}
 }
 
 UFbxSkeletalMeshImportData* UFbxSkeletalMeshImportData::GetImportDataForSkeletalMesh(USkeletalMesh* SkeletalMesh, UFbxSkeletalMeshImportData* TemplateForCreation)
@@ -35,7 +49,7 @@ UFbxSkeletalMeshImportData* UFbxSkeletalMeshImportData::GetImportDataForSkeletal
 	return ImportData;
 }
 
-bool UFbxSkeletalMeshImportData::CanEditChange(const UProperty* InProperty) const
+bool UFbxSkeletalMeshImportData::CanEditChange(const FProperty* InProperty) const
 {
 	bool bMutable = Super::CanEditChange(InProperty);
 	UObject* Outer = GetOuter();

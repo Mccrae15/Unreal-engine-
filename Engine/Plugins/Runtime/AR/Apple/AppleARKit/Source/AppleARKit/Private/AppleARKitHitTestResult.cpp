@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 // AppleARKit
 #include "AppleARKitHitTestResult.h"
@@ -60,18 +60,6 @@ ARHitTestResultType ToARHitTestResultType(EAppleARKitHitTestResultType InTypes)
     }
     
 	return Types;
-}
-
-FAppleARKitHitTestResult::FAppleARKitHitTestResult( ARHitTestResult* InARHitTestResult, class UDEPRECATED_AppleARKitAnchor* InAnchor /*= nullptr*/, float WorldToMetersScale /*= 100.0f*/ )
-{
-	// Sanity check
-	check( InARHitTestResult );
-
-	// Convert properties
-	Type = ToEAppleARKitHitTestResultType( InARHitTestResult.type );
-    Distance = InARHitTestResult.distance * WorldToMetersScale;
-	Transform = FAppleARKitConversion::ToFTransform( InARHitTestResult.worldTransform );
-	Anchor_DEPRECATED = InAnchor;
 }
 
 #endif

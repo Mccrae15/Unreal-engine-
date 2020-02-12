@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -47,23 +47,22 @@ namespace FHttpRetrySystem
 		TAtomic<int32> ActiveIndex;
 	};
 	typedef TSharedPtr<FRetryDomains, ESPMode::ThreadSafe> FRetryDomainsPtr;
+
+	/**
+	 * Read the number of seconds a HTTP request is throttled for from the response
+	 * @param Response the HTTP response to read the value from
+	 * @return If found, the number of seconds the request is rate limited for.  If not found, an unset TOptional
+	 */
+	TOptional<double> HTTP_API ReadThrottledTimeFromResponseInSeconds(FHttpResponsePtr Response);
 };
 
-/**
-* Delegate called when an Http request will be retried in the future
-*
-* @param first parameter - original Http request that started things
-* @param second parameter - response received from the server if a successful connection was established
-* @param third parameter - seconds in the future when the response will be retried
-*/
-DECLARE_DELEGATE_ThreeParams(FHttpRequestWillRetryDelegate, FHttpRequestPtr, FHttpResponsePtr, float);
 
 namespace FHttpRetrySystem
 {
     /**
      * class FRequest is what the retry system accepts as inputs
      */
-    class FRequest 
+    class HTTP_VTABLE FRequest 
 		: public FHttpRequestAdapterBase
     {
     public:
@@ -85,7 +84,6 @@ namespace FHttpRetrySystem
 		// IHttpRequest interface
 		HTTP_API virtual bool ProcessRequest() override;
 		HTTP_API virtual void CancelRequest() override;
-		virtual FHttpRequestWillRetryDelegate& OnRequestWillRetry() { return OnRequestWillRetryDelegate; }
 		
 		// FRequest
 		EStatus::Type GetRetryStatus() const { return Status; }
@@ -122,8 +120,6 @@ namespace FHttpRetrySystem
 		/** The original URL before replacing anything from RetryDomains */
 		FString								 OriginalUrl;
 
-		FHttpRequestWillRetryDelegate OnRequestWillRetryDelegate;
-
 		FManager& RetryManager;
     };
 }
@@ -147,6 +143,7 @@ namespace FHttpRetrySystem
 			const FRetryDomainsPtr& InRetryDomains = FRetryDomainsPtr()
 			);
 
+		HTTP_API virtual ~FManager() = default;
 
         /**
          * Updates the entries in the list of retry requests. Optional parameters are for future connection health assessment

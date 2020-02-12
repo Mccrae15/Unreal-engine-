@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "Particles/SubUVAnimation.h"
 #include "Misc/Guid.h"
@@ -76,7 +76,7 @@ void USubUVAnimation::Serialize(FStructuredArchive::FRecord Record)
 
 	// Save a bool indicating whether this is cooked data
 	// This is needed when loading cooked data, to know to serialize differently
-	Record << NAMED_FIELD(bCooked);
+	Record << SA_VALUE(TEXT("bCooked"), bCooked);
 
 	if (FPlatformProperties::RequiresCookedData() && !bCooked && UnderlyingArchive.IsLoading())
 	{
@@ -85,7 +85,7 @@ void USubUVAnimation::Serialize(FStructuredArchive::FRecord Record)
 
 	if (bCooked)
 	{
-		DerivedData.Serialize(Record.EnterField(FIELD_NAME_TEXT("DerivedData")));
+		DerivedData.Serialize(Record.EnterField(SA_FIELD_NAME(TEXT("DerivedData"))));
 	}
 }
 
@@ -103,7 +103,7 @@ void USubUVAnimation::CacheDerivedData()
 	TArray<uint8> Data;
 
 	COOK_STAT(auto Timer = SubUVAnimationCookStats::UsageStats.TimeSyncWork());
-	if (GetDerivedDataCacheRef().GetSynchronous(*KeyString, Data))
+	if (GetDerivedDataCacheRef().GetSynchronous(*KeyString, Data, GetPathName()))
 	{
 		COOK_STAT(Timer.AddHit(Data.Num()));
 		DerivedData.BoundingGeometry.Empty(Data.Num() / sizeof(FVector2D));
@@ -117,7 +117,7 @@ void USubUVAnimation::CacheDerivedData()
 		Data.Empty(DerivedData.BoundingGeometry.Num() * sizeof(FVector2D));
 		Data.AddUninitialized(DerivedData.BoundingGeometry.Num() * sizeof(FVector2D));
 		FPlatformMemory::Memcpy(Data.GetData(), DerivedData.BoundingGeometry.GetData(), DerivedData.BoundingGeometry.Num() * DerivedData.BoundingGeometry.GetTypeSize());
-		GetDerivedDataCacheRef().Put(*KeyString, Data);
+		GetDerivedDataCacheRef().Put(*KeyString, Data, GetPathName());
 		COOK_STAT(Timer.AddMiss(Data.Num()));
 	}
 #endif
@@ -138,15 +138,12 @@ void USubUVAnimation::PostLoad()
 	}
 
 	// The SRV is only needed for platforms that can render particles with instancing
-	if (GRHISupportsInstancing)
-	{
-		BeginInitResource(BoundingGeometryBuffer);
-	}
+	BeginInitResource(BoundingGeometryBuffer);
 }
 
 #if WITH_EDITOR
 
-void USubUVAnimation::PreEditChange(UProperty* PropertyThatChanged)
+void USubUVAnimation::PreEditChange(FProperty* PropertyThatChanged)
 {
 	Super::PreEditChange(PropertyThatChanged);
 
@@ -169,10 +166,7 @@ void USubUVAnimation::PostEditChangeProperty(FPropertyChangedEvent& PropertyChan
 	CacheDerivedData();
 
 	// The SRV is only needed for platforms that can render particles with instancing
-	if (GRHISupportsInstancing)
-	{
-		BeginInitResource(BoundingGeometryBuffer);
-	}
+	BeginInitResource(BoundingGeometryBuffer);
 }
 
 #endif // WITH_EDITOR
@@ -479,11 +473,11 @@ uint8 ComputeOpacityValue(const uint8* BGRA, EOpacitySourceMode OpacitySourceMod
 }
 
 /** Counts how many neighbors have non-zero alpha. */
-int32 ComputeNeighborCount(int32 X, int32 Y, int32 GlobalX, int32 GlobalY, int32 SubImageSizeX, int32 SubImageSizeY, int32 TextureSizeX, const TArray<uint8>& MipData, uint8 AlphaThresholdByte, EOpacitySourceMode OpacitySourceMode)
+int32 ComputeNeighborCount(int32 X, int32 Y, int32 GlobalX, int32 GlobalY, int32 SubImageSizeX, int32 SubImageSizeY, int32 TextureSizeX, const TArray64<uint8>& MipData, uint8 AlphaThresholdByte, EOpacitySourceMode OpacitySourceMode)
 {
 	int32 NeighborCount = 0;
 
-	for (int32 NeighborIndex = 0; NeighborIndex < ARRAY_COUNT(GNeighbors); NeighborIndex++)
+	for (int32 NeighborIndex = 0; NeighborIndex < UE_ARRAY_COUNT(GNeighbors); NeighborIndex++)
 	{
 		int32 NeighborX = X + GNeighbors[NeighborIndex].X;
 		int32 NeighborY = Y + GNeighbors[NeighborIndex].Y;
@@ -535,13 +529,16 @@ void FSubUVDerivedData::Build(UTexture2D* SubUVTexture, int32 SubImages_Horizont
 
 	if (SubUVTexture)
 	{
-		TArray<uint8> MipData;
+		TArray64<uint8> MipData;
 		bool bSuccess = SubUVTexture->Source.GetFormat() == TSF_BGRA8 && SubUVTexture->Source.GetMipData(MipData, 0);
 
 		const int32 TextureSizeX = SubUVTexture->Source.GetSizeX();
 		const int32 TextureSizeY = SubUVTexture->Source.GetSizeY();
 		const int32 SubImageSizeX = TextureSizeX / SubImages_Horizontal;
 		const int32 SubImageSizeY = TextureSizeY / SubImages_Vertical;
+		const float SubImageSizeXFloat = TextureSizeX / (float)SubImages_Horizontal;
+		const int32 SubImageSizeYFloat = TextureSizeY / (float)SubImages_Vertical;
+
 		const int32 NumSubImages = SubImages_Horizontal * SubImages_Vertical;
 		const uint8 AlphaThresholdByte = FMath::Clamp(FMath::TruncToInt(AlphaThreshold * 255.0f), 0, 255);
 
@@ -569,13 +566,13 @@ void FSubUVDerivedData::Build(UTexture2D* SubUVTexture, int32 SubImages_Horizont
 
 					for (int32 Y = 0; Y < SubImageSizeY; Y++)
 					{
-						int32 GlobalY = SubImageY * SubImageSizeY + Y;
-						int32 NextGlobalY = NextSubImageY * SubImageSizeY + Y;
+						int32 GlobalY = FMath::RoundToInt(SubImageY * SubImageSizeYFloat) + Y;
+						int32 NextGlobalY = FMath::RoundToInt(NextSubImageY * SubImageSizeYFloat) + Y;
 
 						for (int32 X = 0; X < SubImageSizeX; X++)
 						{
-							int32 GlobalX = SubImageX * SubImageSizeX + X;
-							int32 NextGlobalX = NextSubImageX * SubImageSizeX + X;
+							int32 GlobalX = FMath::RoundToInt(SubImageX * SubImageSizeXFloat) + X;
+							int32 NextGlobalX = FMath::RoundToInt(NextSubImageX * SubImageSizeXFloat) + X;
 							uint8 AlphaValue = ComputeOpacityValue(&MipData[(GlobalY * TextureSizeX + GlobalX) * 4], OpacitySourceMode);
 							uint8 NextAlphaValue = ComputeOpacityValue(&MipData[(NextGlobalY * TextureSizeX + NextGlobalX) * 4], OpacitySourceMode);
 
@@ -610,7 +607,7 @@ void FSubUVDerivedData::Build(UTexture2D* SubUVTexture, int32 SubImages_Horizont
 					{
 						TArray<int32> ConvexHullIndices;
 						// Compute the 2d convex hull of texels with non-zero alpha
-						ConvexHull2D::ComputeConvexHull2(PotentialHullVertices, ConvexHullIndices);
+						ConvexHull2D::ComputeConvexHullLegacy2(PotentialHullVertices, ConvexHullIndices);
 
 						bSubImageSuccess = ConvexHullIndices.Num() >= 3;
 

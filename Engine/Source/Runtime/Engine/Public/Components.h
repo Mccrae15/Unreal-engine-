@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -45,15 +45,15 @@ struct FStaticMeshDataType
 	/** The stream to read the vertex color from. */
 	FVertexStreamComponent ColorComponent;
 
-	FShaderResourceViewRHIParamRef PositionComponentSRV = nullptr;
+	FRHIShaderResourceView* PositionComponentSRV = nullptr;
 
-	FShaderResourceViewRHIParamRef TangentsSRV = nullptr;
+	FRHIShaderResourceView* TangentsSRV = nullptr;
 
 	/** A SRV to manually bind and load TextureCoordinates in the Vertexshader. */
-	FShaderResourceViewRHIParamRef TextureCoordinatesSRV = nullptr;
+	FRHIShaderResourceView* TextureCoordinatesSRV = nullptr;
 
 	/** A SRV to manually bind and load Colors in the Vertexshader. */
-	FShaderResourceViewRHIParamRef ColorComponentsSRV = nullptr;
+	FRHIShaderResourceView* ColorComponentsSRV = nullptr;
 
 	int LightMapCoordinateIndex = -1;
 	int NumTexCoords = -1;

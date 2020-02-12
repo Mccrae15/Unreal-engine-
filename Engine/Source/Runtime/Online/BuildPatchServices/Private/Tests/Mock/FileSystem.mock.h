@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 #pragma once
 
 #include "Common/FileSystem.h"
@@ -39,6 +39,18 @@ namespace BuildPatchServices
 			TUniquePtr<FArchive> Writer(new FMemoryWriter(WriteFile));
 			RxCreateFileWriter.Emplace(FStatsCollector::GetSeconds(), Writer.Get(), Filename, WriteFlags);
 			return Writer;
+		}
+
+		virtual bool LoadFileToString(const TCHAR* Filename, FString& Contents) const override
+		{
+			MOCK_FUNC_NOT_IMPLEMENTED("FMockFileSystem::LoadFileToString");
+			return false;
+		}
+
+		virtual bool SaveStringToFile(const TCHAR* Filename, const FString& Contents) const override
+		{
+			MOCK_FUNC_NOT_IMPLEMENTED("FMockFileSystem::SaveStringToFile");
+			return false;
 		}
 
 		virtual bool DirectoryExists(const TCHAR* DirectoryPath) const override
@@ -133,6 +145,11 @@ namespace BuildPatchServices
 		{
 			MOCK_FUNC_NOT_IMPLEMENTED("FMockFileSystem::FindFilesRecursively");
 			return;
+		}
+
+		virtual void ParallelFindFilesRecursively(TArray<FString>& FoundFiles, const TCHAR* Directory, const TCHAR* FileExtension = nullptr, EAsyncExecution AsyncExecution = EAsyncExecution::ThreadPool) const override
+		{
+			FindFilesRecursively(FoundFiles, Directory, FileExtension);
 		}
 
 	public:

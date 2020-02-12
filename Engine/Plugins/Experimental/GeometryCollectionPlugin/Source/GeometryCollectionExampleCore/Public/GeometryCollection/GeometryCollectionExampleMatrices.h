@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 #pragma once
 
 #include "GeometryCollection/GeometryCollectionExample.h"
@@ -7,12 +7,12 @@ namespace GeometryCollectionExample
 {	
 
 	template<class T>
-	bool GEOMETRYCOLLECTIONEXAMPLECORE_API BasicGlobalMatrices(ExampleResponse&& R);
+	void GEOMETRYCOLLECTIONEXAMPLECORE_API BasicGlobalMatrices();
 
 	template<class T>
-	bool GEOMETRYCOLLECTIONEXAMPLECORE_API ReparentingMatrices(ExampleResponse&& R);
+	void GEOMETRYCOLLECTIONEXAMPLECORE_API ReparentingMatrices();
 
 	template<class T>
-	bool GEOMETRYCOLLECTIONEXAMPLECORE_API TransformMatrixElement(ExampleResponse&& R);
+	void GEOMETRYCOLLECTIONEXAMPLECORE_API TransformMatrixElement();
 
 }

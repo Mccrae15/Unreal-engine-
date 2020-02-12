@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 #pragma once
 
 #include "CoreMinimal.h"
@@ -22,6 +22,7 @@ namespace BuildPatchServices
 		virtual bool IsChunkFeatureLevelMatch(const FGuid& ChunkId) const = 0;
 		virtual const uint64& GetChunkHash(const FGuid& ChunkId) const = 0;
 		virtual const FSHAHash& GetChunkShaHash(const FGuid& ChunkId) const = 0;
+		virtual const TMap<FSHAHash, TSet<FGuid>>& GetIdenticalChunks() const = 0;
 	};
 
 	class FCloudEnumerationFactory

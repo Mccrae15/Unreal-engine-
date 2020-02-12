@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "K2Node_MakeVariable.h"
 #include "EdGraph/EdGraphPin.h"
@@ -88,7 +88,7 @@ UK2Node_MakeVariable::UK2Node_MakeVariable(const FObjectInitializer& ObjectIniti
 {
 }
 
-void UK2Node_MakeVariable::SetupVariable(const FBPVariableDescription& InVariableType, UEdGraphPin* TargetInputPin, FKismetCompilerContext& CompilerContext, UFunction* Scope, const UProperty* Property )
+void UK2Node_MakeVariable::SetupVariable(const FBPVariableDescription& InVariableType, UEdGraphPin* TargetInputPin, FKismetCompilerContext& CompilerContext, UFunction* Scope, const FProperty* Property )
 {
 	const UEdGraphSchema_K2* Schema = CompilerContext.GetSchema();
 
@@ -100,11 +100,11 @@ void UK2Node_MakeVariable::SetupVariable(const FBPVariableDescription& InVariabl
 
 	// make input pins for every value in the default value, for map pins we'll make a pair of inputs:
 	TSharedPtr<FStructOnScope> StructData = MakeShareable(new FStructOnScope(Scope));
-	FBlueprintEditorUtils::PropertyValueFromString(Property, VariableType.DefaultValue, StructData->GetStructMemory());
+	FBlueprintEditorUtils::PropertyValueFromString(Property, VariableType.DefaultValue, StructData->GetStructMemory(), this);
 
 	if(VariableType.VarType.IsArray())
 	{
-		const UArrayProperty* ArrayProperty = CastChecked<UArrayProperty>(Property);
+		const FArrayProperty* ArrayProperty = CastFieldChecked<const FArrayProperty>(Property);
 		FScriptArrayHelper ArrayHelper(ArrayProperty, ArrayProperty->ContainerPtrToValuePtr<void>(StructData->GetStructMemory()));
 		
 		// Go through each element in the array to set the default value
@@ -123,7 +123,7 @@ void UK2Node_MakeVariable::SetupVariable(const FBPVariableDescription& InVariabl
 	}
 	else if( VariableType.VarType.IsSet())
 	{
-		const USetProperty* SetProperty = CastChecked<USetProperty>(Property);
+		const FSetProperty* SetProperty = CastFieldChecked<const FSetProperty>(Property);
 		FScriptSetHelper SetHelper(SetProperty, SetProperty->ContainerPtrToValuePtr<void>(StructData->GetStructMemory()));
 
 		// Go through each element in the array to set the default value
@@ -146,7 +146,7 @@ void UK2Node_MakeVariable::SetupVariable(const FBPVariableDescription& InVariabl
 	}
 	else if( VariableType.VarType.IsMap())
 	{
-		const UMapProperty* MapProperty = CastChecked<UMapProperty>(Property);
+		const FMapProperty* MapProperty = CastFieldChecked<const FMapProperty>(Property);
 		FScriptMapHelper MapHelper(MapProperty, MapProperty->ContainerPtrToValuePtr<void>(StructData->GetStructMemory()));
 		
 		const FEdGraphPinType ValueType = FEdGraphPinType::GetPinTypeForTerminalType(InVariableType.VarType.PinValueType);

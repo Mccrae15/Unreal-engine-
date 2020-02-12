@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -106,9 +106,9 @@ public:
 	/*
 	* Switch take for the selected sections
 	*
-	* @param TakeNumber The take number to switch to.
+	* @param TakeObject The take object to switch to.
 	*/
-	void SwitchTake(uint32 TakeNumber);
+	void SwitchTake(UObject* TakeObject);
 
 private:
 

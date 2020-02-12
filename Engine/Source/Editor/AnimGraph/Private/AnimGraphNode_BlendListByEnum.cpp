@@ -1,9 +1,9 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "AnimGraphNode_BlendListByEnum.h"
 #include "Textures/SlateIcon.h"
 #include "Framework/Commands/UIAction.h"
-#include "Framework/MultiBox/MultiBoxBuilder.h"
+#include "ToolMenus.h"
 #include "Kismet2/BlueprintEditorUtils.h"
 
 #include "ScopedTransaction.h"
@@ -77,16 +77,16 @@ void UAnimGraphNode_BlendListByEnum::GetMenuActions(FBlueprintActionDatabaseRegi
 	}) );
 }
 
-void UAnimGraphNode_BlendListByEnum::GetContextMenuActions(const FGraphNodeContextMenuBuilder& Context) const
+void UAnimGraphNode_BlendListByEnum::GetNodeContextMenuActions(UToolMenu* Menu, UGraphNodeContextMenuContext* Context) const
 {
-	if (!Context.bIsDebugging && BoundEnum)
+	if (!Context->bIsDebugging && BoundEnum)
 	{
-		if (Context.Pin && (Context.Pin->Direction == EGPD_Input))
+		if (Context->Pin && (Context->Pin->Direction == EGPD_Input))
 		{
 			int32 RawArrayIndex = 0;
 			bool bIsPosePin = false;
 			bool bIsTimePin = false;
-			GetPinInformation(Context.Pin->PinName.ToString(), /*out*/ RawArrayIndex, /*out*/ bIsPosePin, /*out*/ bIsTimePin);
+			GetPinInformation(Context->Pin->PinName.ToString(), /*out*/ RawArrayIndex, /*out*/ bIsPosePin, /*out*/ bIsTimePin);
 
 			if (bIsPosePin || bIsTimePin)
 			{
@@ -95,14 +95,15 @@ void UAnimGraphNode_BlendListByEnum::GetContextMenuActions(const FGraphNodeConte
 				if (ExposedEnumIndex != INDEX_NONE)
 				{
 					// Offer to remove this specific pin
-					FUIAction Action = FUIAction( FExecuteAction::CreateUObject( this, &UAnimGraphNode_BlendListByEnum::RemovePinFromBlendList, const_cast<UEdGraphPin*>(Context.Pin)) );
-					Context.MenuBuilder->AddMenuEntry( LOCTEXT("RemovePose", "Remove Pose"), FText::GetEmpty(), FSlateIcon(), Action );
+					FUIAction Action = FUIAction( FExecuteAction::CreateUObject( const_cast<UAnimGraphNode_BlendListByEnum*>(this), &UAnimGraphNode_BlendListByEnum::RemovePinFromBlendList, const_cast<UEdGraphPin*>(Context->Pin)) );
+					FToolMenuSection& Section = Menu->AddSection("RemovePose");
+					Section.AddMenuEntry("RemovePose", LOCTEXT("RemovePose", "Remove Pose"), FText::GetEmpty(), FSlateIcon(), Action);
 				}
 			}
 		}
 
 		// Offer to add any not-currently-visible pins
-		bool bAddedHeader = false;
+		FToolMenuSection* Section = nullptr;
 		const int32 MaxIndex = BoundEnum->NumEnums() - 1; // we don't want to show _MAX enum
 		for (int32 Index = 0; Index < MaxIndex; ++Index)
 		{
@@ -112,21 +113,13 @@ void UAnimGraphNode_BlendListByEnum::GetContextMenuActions(const FGraphNodeConte
 				FText PrettyElementName = BoundEnum->GetDisplayNameTextByIndex(Index);
 
 				// Offer to add this entry
-				if (!bAddedHeader)
+				if (!Section)
 				{
-					bAddedHeader = true;
-					Context.MenuBuilder->BeginSection("AnimGraphNodeAddElementPin", LOCTEXT("ExposeHeader", "Add pin for element"));
-					{
-						FUIAction Action = FUIAction( FExecuteAction::CreateUObject( this, &UAnimGraphNode_BlendListByEnum::ExposeEnumElementAsPin, ElementName) );
-						Context.MenuBuilder->AddMenuEntry(PrettyElementName, PrettyElementName, FSlateIcon(), Action);
-					}
-					Context.MenuBuilder->EndSection();
+					Section = &Menu->AddSection("AnimGraphNodeAddElementPin", LOCTEXT("ExposeHeader", "Add pin for element"));
 				}
-				else
-				{
-					FUIAction Action = FUIAction( FExecuteAction::CreateUObject( this, &UAnimGraphNode_BlendListByEnum::ExposeEnumElementAsPin, ElementName) );
-					Context.MenuBuilder->AddMenuEntry(PrettyElementName, PrettyElementName, FSlateIcon(), Action);
-				}
+
+				FUIAction Action = FUIAction( FExecuteAction::CreateUObject( const_cast<UAnimGraphNode_BlendListByEnum*>(this), &UAnimGraphNode_BlendListByEnum::ExposeEnumElementAsPin, ElementName) );
+				Section->AddMenuEntry(NAME_None, PrettyElementName, PrettyElementName, FSlateIcon(), Action);
 			}
 		}
 	}
@@ -167,7 +160,7 @@ void UAnimGraphNode_BlendListByEnum::RemovePinFromBlendList(UEdGraphPin* Pin)
 		VisibleEnumEntries.RemoveAt(ExposedEnumIndex);
 
 		// Remove the pose from the node
-		UProperty* AssociatedProperty;
+		FProperty* AssociatedProperty;
 		int32 ArrayIndex;
 		GetPinAssociatedProperty(GetFNodeType(), Pin, /*out*/ AssociatedProperty, /*out*/ ArrayIndex);
 

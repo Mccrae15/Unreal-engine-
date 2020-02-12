@@ -1,18 +1,22 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
 #include "CoreMinimal.h"
 #include "NiagaraCommon.h"
 
-DECLARE_LOG_CATEGORY_EXTERN(LogNiagaraEditor, All, All);
+NIAGARAEDITOR_API DECLARE_LOG_CATEGORY_EXTERN(LogNiagaraEditor, All, All);
 
 /** Information about a Niagara operation. */
 class FNiagaraOpInfo
 {
 public:
 	FNiagaraOpInfo()
-		: Keywords(FText()), NumericOuputTypeSelectionMode(ENiagaraNumericOutputTypeSelectionMode::Largest), bSupportsAddedInputs(false)
+		: Keywords(FText())
+		, NumericOuputTypeSelectionMode(ENiagaraNumericOutputTypeSelectionMode::Largest)
+		, bSupportsAddedInputs(false)
+		, bNumericsCanBeIntegers(true)
+		, bNumericsCanBeFloats(true)
 	{}
 
 	FName Name;
@@ -26,6 +30,12 @@ public:
 
 	/** If true then this operation supports a variable number of inputs */
 	bool bSupportsAddedInputs;
+
+	/** If integer pins are allowed on this op's numeric pins. */
+	bool bNumericsCanBeIntegers;
+
+	/** If float pins are allowed on this op's numeric pins. */
+	bool bNumericsCanBeFloats;
 
 	/** 
 	* The format that can generate the hlsl for the given number of inputs.
@@ -50,4 +60,77 @@ public:
 
 	bool CreateHlslForAddedInputs(int32 InputCount, FString& HlslResult) const;
 };
+
+/** Interface for struct representing information about where to focus in a Niagara Script Graph after opening the editor for it. */
+struct INiagaraScriptGraphFocusInfo : public TSharedFromThis<INiagaraScriptGraphFocusInfo>
+{
+public:
+	enum class ENiagaraScriptGraphFocusInfoType : uint8
+	{
+		None = 0,
+		Node,
+		Pin
+	};
+
+	INiagaraScriptGraphFocusInfo(const ENiagaraScriptGraphFocusInfoType InFocusType)
+		: FocusType(InFocusType)
+	{
+	};
+
+	const ENiagaraScriptGraphFocusInfoType& GetFocusType() const { return FocusType; };
+
+	virtual ~INiagaraScriptGraphFocusInfo() = 0;
+	
+private:
+	const ENiagaraScriptGraphFocusInfoType FocusType;
+};
+
+struct FNiagaraScriptGraphNodeToFocusInfo : public INiagaraScriptGraphFocusInfo
+{
+public:
+	FNiagaraScriptGraphNodeToFocusInfo(const FGuid& InNodeGuidToFocus)
+		: INiagaraScriptGraphFocusInfo(ENiagaraScriptGraphFocusInfoType::Node)
+		, NodeGuidToFocus(InNodeGuidToFocus)
+	{
+	};
+
+	const FGuid& GetNodeGuidToFocus() const { return NodeGuidToFocus; };
+
+private:
+	const FGuid NodeGuidToFocus;
+};
+
+struct FNiagaraScriptGraphPinToFocusInfo : public INiagaraScriptGraphFocusInfo
+{
+public:
+	FNiagaraScriptGraphPinToFocusInfo(const FGuid& InPinGuidToFocus)
+		: INiagaraScriptGraphFocusInfo(ENiagaraScriptGraphFocusInfoType::Pin)
+		, PinGuidToFocus(InPinGuidToFocus)
+	{
+	};
+
+	const FGuid& GetPinGuidToFocus() const { return PinGuidToFocus; };
+
+private:
+	const FGuid PinGuidToFocus;
+};
+
+struct FNiagaraScriptIDAndGraphFocusInfo
+{
+public:
+	FNiagaraScriptIDAndGraphFocusInfo(const uint32& InScriptUniqueAssetID, const TSharedPtr<INiagaraScriptGraphFocusInfo>& InScriptGraphFocusInfo)
+		: ScriptUniqueAssetID(InScriptUniqueAssetID)
+		, ScriptGraphFocusInfo(InScriptGraphFocusInfo)
+	{
+	};
+
+	const uint32& GetScriptUniqueAssetID() const { return ScriptUniqueAssetID; };
+
+	const TSharedPtr<INiagaraScriptGraphFocusInfo>& GetScriptGraphFocusInfo() const { return ScriptGraphFocusInfo; };
+
+private:
+	const uint32 ScriptUniqueAssetID;
+	const TSharedPtr<INiagaraScriptGraphFocusInfo> ScriptGraphFocusInfo;
+};
+
 

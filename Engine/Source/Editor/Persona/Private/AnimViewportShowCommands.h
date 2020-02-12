@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -50,6 +50,9 @@ public:
 
 	/** Use in-game Bound of preview mesh */
 	TSharedPtr< FUICommandInfo > UseFixedBounds;
+
+	/** Use pre-skinned Bound of preview mesh */
+	TSharedPtr< FUICommandInfo > UsePreSkinnedBounds;
 
 	/** Show/hide the preview mesh */
 	TSharedPtr< FUICommandInfo > ShowPreviewMesh;

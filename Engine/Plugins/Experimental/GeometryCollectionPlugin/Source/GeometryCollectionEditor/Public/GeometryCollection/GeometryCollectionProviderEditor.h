@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -8,6 +8,6 @@ class FTargetCacheProviderEditor : public ITargetCacheProvider
 {
 public:
 
-	virtual UGeometryCollectionCache* GetCacheForCollection(UGeometryCollection* InCollection) override;
+	virtual UGeometryCollectionCache* GetCacheForCollection(const UGeometryCollection* InCollection) override;
 
 };

@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 #include "PlacementModeModule.h"
 
 #include "Misc/ConfigCacheIni.h"
@@ -21,6 +21,7 @@
 #include "ActorFactories/ActorFactoryEmptyActor.h"
 #include "ActorFactories/ActorFactoryPawn.h"
 #include "ActorFactories/ActorFactoryExponentialHeightFog.h"
+#include "ActorFactories/ActorFactorySkyAtmosphere.h"
 #include "ActorFactories/ActorFactoryPlayerStart.h"
 #include "ActorFactories/ActorFactoryPointLight.h"
 #include "ActorFactories/ActorFactorySpotLight.h"
@@ -47,6 +48,8 @@
 #include "AssetToolsModule.h"
 #include "Kismet2/KismetEditorUtilities.h"
 #include "ActorFactories/ActorFactoryPlanarReflection.h"
+#include "SPlacementModeTools.h"
+#include "Classes/EditorStyleSettings.h"
 
 
 TOptional<FLinearColor> GetBasicShapeColorOverride()
@@ -80,12 +83,11 @@ void FPlacementModeModule::StartupModule()
 		RecentlyPlaced.Add(FActorPlacementInfo(RecentlyPlacedAsStrings[Index]));
 	}
 
-
 	FEditorModeRegistry::Get().RegisterMode<FPlacementMode>(
 		FBuiltinEditorModes::EM_Placement,
 		NSLOCTEXT("PlacementMode", "DisplayName", "Place"),
 		FSlateIcon(FEditorStyle::GetStyleSetName(), "LevelEditor.PlacementMode", "LevelEditor.PlacementMode.Small"),
-		true, 0);
+		GetDefault<UEditorStyleSettings>()->bEnableLegacyEditorModeUI, 0);
 
 	FAssetRegistryModule& AssetRegistryModule = FModuleManager::LoadModuleChecked<FAssetRegistryModule>(TEXT("AssetRegistry"));
 	AssetRegistryModule.Get().OnAssetRemoved().AddRaw(this, &FPlacementModeModule::OnAssetRemoved);
@@ -174,12 +176,13 @@ void FPlacementModeModule::StartupModule()
 
 		FPlacementCategory* Category = Categories.Find(CategoryName);
 		Category->Items.Add(CreateID(), MakeShareable(new FPlaceableItem(PPFactory, FAssetData(APostProcessVolume::StaticClass()), SortOrder += 10)));
-		Category->Items.Add(CreateID(), MakeShareable(new FPlaceableItem(*UActorFactoryAtmosphericFog::StaticClass(), SortOrder += 10)));
+		Category->Items.Add(CreateID(), MakeShareable(new FPlaceableItem(*UActorFactorySkyAtmosphere::StaticClass(), SortOrder += 10)));
 		Category->Items.Add(CreateID(), MakeShareable(new FPlaceableItem(*UActorFactoryExponentialHeightFog::StaticClass(), SortOrder += 10)));
 		Category->Items.Add(CreateID(), MakeShareable(new FPlaceableItem(*UActorFactorySphereReflectionCapture::StaticClass(), SortOrder += 10)));
 		Category->Items.Add(CreateID(), MakeShareable(new FPlaceableItem(*UActorFactoryBoxReflectionCapture::StaticClass(), SortOrder += 10)));
 		Category->Items.Add(CreateID(), MakeShareable(new FPlaceableItem(*UActorFactoryPlanarReflection::StaticClass(), SortOrder += 10)));
 		Category->Items.Add(CreateID(), MakeShareable(new FPlaceableItem(*UActorFactoryDeferredDecal::StaticClass(), SortOrder += 10)));
+		Category->Items.Add(CreateID(), MakeShareable(new FPlaceableItem(*UActorFactoryAtmosphericFog::StaticClass(), SortOrder += 10)));
 	}
 
 	RegisterPlacementCategory(
@@ -320,6 +323,11 @@ void FPlacementModeModule::AddToRecentlyPlaced(UObject* Asset, UActorFactory* Fa
 	AddToRecentlyPlaced(Assets, FactoryUsed);
 }
 
+TSharedRef<SWidget> FPlacementModeModule::CreatePlacementModeBrowser()
+{
+	return SNew(SPlacementModeTools);
+}
+
 bool FPlacementModeModule::RegisterPlacementCategory(const FPlacementCategoryInfo& Info)
 {
 	if (Categories.Contains(Info.UniqueHandle))
@@ -415,7 +423,7 @@ void FPlacementModeModule::RegenerateItemsForCategory(FName Category)
 		RefreshAllPlaceableClasses();
 	}
 
-	BroadcastPlacementModeCategoryRefreshed(Category);
+	PlacementModeCategoryRefreshed.Broadcast(Category);
 }
 
 void FPlacementModeModule::RefreshRecentlyPlaced()

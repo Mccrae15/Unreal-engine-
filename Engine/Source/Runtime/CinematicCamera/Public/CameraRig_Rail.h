@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -35,13 +35,25 @@ public:
 	UPROPERTY(Interp, EditAnywhere, BlueprintReadWrite, Category = "Rail Controls")
 	bool bLockOrientationToRail;
 
+#if WITH_EDITORONLY_DATA
+	/** Determines whether or not to show the rail mesh preview. */
+	UPROPERTY(Transient, EditAnywhere, Category = "Rail Controls")
+	bool bShowRailVisualization;
+
+	/** Determines the scale of the rail mesh preview */
+	UPROPERTY(Transient, EditAnywhere, Category = "Rail Controls")
+	float PreviewMeshScale;
+#endif
+
 	virtual class USceneComponent* GetDefaultAttachComponent() const override;
 #if WITH_EDITOR
 	virtual void PostEditChangeProperty(FPropertyChangedEvent& PropertyChangedEvent) override;
 	virtual void PostEditUndo() override;
+	virtual void PostEditMove(bool bFinished) override;
 #endif
 
 	/** Returns the spline component that defines the rail path */
+	UFUNCTION(BlueprintPure, Category = "Rail Components")
 	USplineComponent* GetRailSplineComponent() { return RailSplineComponent; }
 	
 private:
@@ -66,16 +78,16 @@ private:
 
 #if WITH_EDITORONLY_DATA
 	/** Preview meshes for visualization */
-	UPROPERTY()
+	UPROPERTY(Transient)
 	USplineMeshComponent* PreviewMesh_Rail;
 
-	UPROPERTY()
+	UPROPERTY(Transient)
 	TArray<USplineMeshComponent*> PreviewRailMeshSegments;
 
-	UPROPERTY()
+	UPROPERTY(Transient)
 	UStaticMesh* PreviewRailStaticMesh;
 
-	UPROPERTY()
+	UPROPERTY(Transient)
 	UStaticMeshComponent* PreviewMesh_Mount;
 #endif
 };

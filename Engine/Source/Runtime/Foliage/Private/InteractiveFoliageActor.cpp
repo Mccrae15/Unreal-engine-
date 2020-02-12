@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "InteractiveFoliageActor.h"
 #include "Components/CapsuleComponent.h"
@@ -23,7 +23,7 @@ AInteractiveFoliageActor::AInteractiveFoliageActor(const FObjectInitializer& Obj
 	RootComponent = CapsuleComponent;
 
 	PrimaryActorTick.bCanEverTick = true;
-	bCanBeDamaged = true;
+	SetCanBeDamaged(true);
 	bCollideWhenPlacing = true;
 	SpawnCollisionHandlingMethod = ESpawnActorCollisionHandlingMethod::AdjustIfPossibleButDontSpawnIfColliding;
 	FoliageDamageImpulseScale = 20.0f;

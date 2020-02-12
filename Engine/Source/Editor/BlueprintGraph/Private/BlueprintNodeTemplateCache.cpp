@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "BlueprintNodeTemplateCache.h"
 #include "Engine/Blueprint.h"
@@ -475,6 +475,11 @@ void FBlueprintNodeTemplateCache::AddReferencedObjects(FReferenceCollector& Coll
 		Collector.AddReferencedObject(TemplateEntry.Value);
 	}
 	Collector.AddReferencedObjects(TemplateOuters);
+}
+
+FString FBlueprintNodeTemplateCache::GetReferencerName() const
+{
+	return TEXT("FBlueprintNodeTemplateCache");
 }
 
 //------------------------------------------------------------------------------

@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -216,8 +216,8 @@ struct FBuffers
 		{
 			auto* Var = Buffers[i]->as_variable();
 			check(Var);
-			bool bIsStructuredBuffer = (!strncmp(Var->type->name, "RWStructuredBuffer<", 19) || !strncmp(Var->type->name, "StructuredBuffer<", 17));
-			bool bIsByteAddressBuffer = (!strncmp(Var->type->name, "RWByteAddressBuffer", 19) || !strncmp(Var->type->name, "ByteAddressBuffer", 17));
+			bool bIsStructuredBuffer = (Var->type->HlslName && (!strncmp(Var->type->HlslName, "RWStructuredBuffer<", 19) || !strncmp(Var->type->HlslName, "StructuredBuffer<", 17)));
+			bool bIsByteAddressBuffer = (Var->type->HlslName && (!strncmp(Var->type->HlslName, "RWByteAddressBuffer", 19) || !strncmp(Var->type->HlslName, "ByteAddressBuffer", 17)));
 			if (Var->type->is_image())
 			{
 				IBuffers.push_back(Var);
@@ -313,7 +313,7 @@ struct FBuffers
         // This means you will get holes in the slots where we see a typed-resource on the other array.
         // We always leave a hole for BufferSizes at index 31.
         
-        uint32 TypedBuffers = 0;
+        uint32 TypedBuffers = UAVIndices;
         static const uint32 MaxBuffers = 30;
 		check(MaxTextures > 0);
         

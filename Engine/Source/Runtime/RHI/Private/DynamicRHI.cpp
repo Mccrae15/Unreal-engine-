@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 /*=============================================================================
 	DynamicRHI.cpp: Dynamically bound Render Hardware Interface implementation.
@@ -12,7 +12,11 @@
 #include "RHI.h"
 #include "Modules/ModuleManager.h"
 #include "GenericPlatform/GenericPlatformDriver.h"
+#include "GenericPlatform/GenericPlatformCrashContext.h"
 #include "PipelineStateCache.h"
+
+IMPLEMENT_TYPE_LAYOUT(FRayTracingGeometryInitializer);
+IMPLEMENT_TYPE_LAYOUT(FRayTracingGeometrySegment);
 
 #ifndef PLATFORM_ALLOW_NULL_RHI
 	#define PLATFORM_ALLOW_NULL_RHI		0
@@ -53,6 +57,9 @@ void InitNullRHI()
 	GRHICommandList.GetImmediateAsyncComputeCommandList().SetComputeContext(GDynamicRHI->RHIGetDefaultAsyncComputeContext());
 	GUsingNullRHI = true;
 	GRHISupportsTextureStreaming = false;
+
+	// Update the crash context analytics
+	FGenericCrashContext::SetEngineData(TEXT("RHI.RHIName"), TEXT("NullRHI"));
 }
 
 #if PLATFORM_WINDOWS
@@ -74,7 +81,7 @@ static void RHIDetectAndWarnOfBadDrivers(bool bHasEditorToken)
 	DriverInfo.InternalDriverVersion = GRHIAdapterInternalDriverVersion;
 	DriverInfo.UserDriverVersion = GRHIAdapterUserDriverVersion;
 	DriverInfo.DriverDate = GRHIAdapterDriverDate;
-
+	DriverInfo.RHIName = GDynamicRHI ? GDynamicRHI->GetName() : FString();
 
 #if !(UE_BUILD_SHIPPING || UE_BUILD_TEST)
 	// for testing
@@ -144,7 +151,7 @@ static void RHIDetectAndWarnOfBadDrivers(bool bHasEditorToken)
 			FFormatNamedArguments Args;
 			Args.Add(TEXT("AdapterName"), FText::FromString(DriverInfo.DeviceDescription));
 			Args.Add(TEXT("Vendor"), FText::FromString(VendorString));
-			Args.Add(TEXT("RecommendedVer"), FText::FromString(DetectedGPUHardware.GetSuggestedDriverVersion()));
+			Args.Add(TEXT("RecommendedVer"), FText::FromString(DetectedGPUHardware.GetSuggestedDriverVersion(DriverInfo.RHIName)));
 			Args.Add(TEXT("InstalledVer"), FText::FromString(DriverInfo.UserDriverVersion));
 
 			// this message can be suppressed with r.WarnOfBadDrivers=0
@@ -169,14 +176,13 @@ static void RHIDetectAndWarnOfBadDrivers(bool bHasEditorToken)
 {
 	int32 CVarValue = CVarWarnOfBadDrivers.GetValueOnGameThread();
 
-	if(!GIsRHIInitialized || !CVarValue || GRHIVendorId == 0 || bHasEditorToken)
+	if (!GIsRHIInitialized || !CVarValue || GRHIVendorId == 0 || bHasEditorToken || FApp::IsUnattended())
 	{
 		return;
 	}
 
-	if (FPlatformMisc::MacOSXVersionCompare(10,13,6) < 0)
+	if (FPlatformMisc::MacOSXVersionCompare(10,14,6) < 0)
 	{
-		const FString BaseName = FApp::HasProjectName() ? FApp::GetProjectName() : TEXT("");
 		// this message can be suppressed with r.WarnOfBadDrivers=0
 		FPlatformMisc::MessageBoxExt(EAppMsgType::Ok,
 									 *NSLOCTEXT("MessageDialog", "UpdateMacOSX_Body", "Please update to the latest version of macOS for best performance and stability.").ToString(),
@@ -189,6 +195,9 @@ void RHIInit(bool bHasEditorToken)
 {
 	if(!GDynamicRHI)
 	{
+		// read in any data driven shader platform info structures we can find
+		FGenericDataDrivenShaderPlatformInfo::Initialize();
+
 		GRHICommandList.LatchBypass(); // read commandline for bypass flag
 
 		if (!FApp::CanEverRender())
@@ -204,18 +213,33 @@ void RHIInit(bool bHasEditorToken)
 			{
 				GDynamicRHI->Init();
 
-				GRHICommandList.GetImmediateCommandList().SetContext(GDynamicRHI->RHIGetDefaultContext());
-				GRHICommandList.GetImmediateAsyncComputeCommandList().SetComputeContext(GDynamicRHI->RHIGetDefaultAsyncComputeContext());
+#if WITH_MGPU
+				AFRUtils::StaticInitialize();
+#endif
+
+				// Validation of contexts.
+				GRHICommandList.GetImmediateCommandList().GetContext();
+				GRHICommandList.GetImmediateAsyncComputeCommandList().GetComputeContext();
+				check(GIsRHIInitialized);
+
+				FString FeatureLevelString;
+				GetFeatureLevelName(GMaxRHIFeatureLevel, FeatureLevelString);
 
 				if (bHasEditorToken && GMaxRHIFeatureLevel < ERHIFeatureLevel::SM5)
 				{
-					FString FeatureLevelString;
-					GetFeatureLevelName(GMaxRHIFeatureLevel, FeatureLevelString);
 					FString ShaderPlatformString = LegacyShaderPlatformToShaderFormat(GetFeatureLevelShaderPlatform(GMaxRHIFeatureLevel)).ToString();
 					FString Error = FString::Printf(TEXT("A Feature Level 5 video card is required to run the editor.\nAvailableFeatureLevel = %s, ShaderPlatform = %s"), *FeatureLevelString, *ShaderPlatformString);
 					FMessageDialog::Open(EAppMsgType::Ok, FText::FromString(Error));
 					FPlatformMisc::RequestExit(1);
 				}
+				
+				// Update the crash context analytics
+				FGenericCrashContext::SetEngineData(TEXT("RHI.RHIName"), GDynamicRHI ? GDynamicRHI->GetName() : TEXT("Unknown"));
+				FGenericCrashContext::SetEngineData(TEXT("RHI.AdapterName"), GRHIAdapterName);
+				FGenericCrashContext::SetEngineData(TEXT("RHI.UserDriverVersion"), GRHIAdapterUserDriverVersion);
+				FGenericCrashContext::SetEngineData(TEXT("RHI.InternalDriverVersion"), GRHIAdapterInternalDriverVersion);
+				FGenericCrashContext::SetEngineData(TEXT("RHI.DriverDate"), GRHIAdapterDriverDate);
+				FGenericCrashContext::SetEngineData(TEXT("RHI.FeatureLevel"), FeatureLevelString);
 			}
 #if PLATFORM_ALLOW_NULL_RHI
 			else
@@ -265,7 +289,7 @@ static void BaseRHISetGPUCaptureOptions(const TArray<FString>& Args, UWorld* Wor
 	}
 	else
 	{
-		UE_LOG(LogRHI, Display, TEXT("Usage: r.PS4.EnableCaptureMode 0 or r.PS4.EnableCaptureMode 1"));
+		UE_LOG(LogRHI, Display, TEXT("Usage: r.RHISetGPUCaptureOptions 0 or r.RHISetGPUCaptureOptions 1"));
 	}
 }
 
@@ -318,3 +342,161 @@ void FDynamicRHI::EnableIdealGPUCaptureOptions(bool bEnabled)
 		RHICmdBypassVar->Set(bShouldRHICmdBypass ? 1 : 0, ECVF_SetByConsole);		
 	}	
 }
+
+void FDynamicRHI::RHITransferIndexBufferUnderlyingResource(FRHIIndexBuffer* DestIndexBuffer, FRHIIndexBuffer* SrcIndexBuffer)
+{
+	UE_LOG(LogRHI, Fatal, TEXT("RHITransferIndexBufferUnderlyingResource isn't implemented for the current RHI"));
+}
+
+void FDynamicRHI::RHITransferVertexBufferUnderlyingResource(FRHIVertexBuffer* DestVertexBuffer, FRHIVertexBuffer* SrcVertexBuffer)
+{
+	UE_LOG(LogRHI, Fatal, TEXT("RHITransferVertexBufferUnderlyingResource isn't implemented for the current RHI"));
+}
+
+FUnorderedAccessViewRHIRef FDynamicRHI::RHICreateUnorderedAccessView(FRHITexture* Texture, uint32 MipLevel, uint8 Format)
+{
+	UE_LOG(LogRHI, Fatal, TEXT("RHICreateUnorderedAccessView with Format parameter isn't implemented for the current RHI"));
+	return RHICreateUnorderedAccessView(Texture, MipLevel);
+}
+
+void FDynamicRHI::RHIUpdateShaderResourceView(FRHIShaderResourceView* SRV, FRHIVertexBuffer* VertexBuffer, uint32 Stride, uint8 Format)
+{
+	UE_LOG(LogRHI, Fatal, TEXT("RHIUpdateShaderResourceView isn't implemented for the current RHI"));
+}
+
+void FDynamicRHI::RHIUpdateShaderResourceView(FRHIShaderResourceView* SRV, FRHIIndexBuffer* IndexBuffer)
+{
+	UE_LOG(LogRHI, Fatal, TEXT("RHIUpdateShaderResourceView isn't implemented for the current RHI"));
+}
+
+uint64 FDynamicRHI::RHIGetMinimumAlignmentForBufferBackedSRV(EPixelFormat Format)
+{
+	return 16; // not-Metal requires a minimum alignment of of 16-bytes.
+}
+
+uint64 FDynamicRHI::RHICalcVMTexture2DPlatformSize(uint32 Mip0Width, uint32 Mip0Height, uint8 Format, uint32 NumMips, uint32 FirstMipIdx, uint32 NumSamples, uint32 Flags, uint32& OutAlign)
+{
+	UE_LOG(LogRHI, Fatal, TEXT("RHICalcVMTexture2DPlatformSize isn't implemented for the current RHI"));
+	return -1;
+}
+
+FDefaultRHIRenderQueryPool::FDefaultRHIRenderQueryPool(ERenderQueryType InQueryType, FDynamicRHI* InDynamicRHI, uint32 InNumQueries)
+	: DynamicRHI(InDynamicRHI)
+	, QueryType(InQueryType)
+	, NumQueries(InNumQueries)
+{
+	if (NumQueries != UINT32_MAX && (GSupportsTimestampRenderQueries || InQueryType != RQT_AbsoluteTime))
+	{
+		Queries.Reserve(NumQueries);
+		for (uint32 i = 0; i < NumQueries; i++)
+		{
+			Queries.Push(DynamicRHI->RHICreateRenderQuery(QueryType));
+			check(Queries.Last().IsValid());
+			++AllocatedQueries;
+		}
+	}
+}
+
+FDefaultRHIRenderQueryPool::~FDefaultRHIRenderQueryPool()
+{
+	check(IsInRenderingThread());
+	checkf(AllocatedQueries == Queries.Num(), TEXT("Querypool deleted before all Queries have been released"));
+}
+
+FRHIPooledRenderQuery FDefaultRHIRenderQueryPool::AllocateQuery()
+{
+	check(IsInRenderingThread());
+	if (Queries.Num() > 0)
+	{
+		return FRHIPooledRenderQuery(this, Queries.Pop());
+	}
+	else
+	{
+		FRHIPooledRenderQuery Query = FRHIPooledRenderQuery(this, DynamicRHI->RHICreateRenderQuery(QueryType));
+		if (Query.IsValid())
+		{
+			++AllocatedQueries;
+		}
+		ensure(AllocatedQueries <= NumQueries);
+		return Query;
+	}
+}
+
+void FDefaultRHIRenderQueryPool::ReleaseQuery(TRefCountPtr<FRHIRenderQuery>&& Query)
+{
+	if (QueryType == ERenderQueryType::RQT_Occlusion)
+	{
+		static int dbg = 0;
+		dbg++;
+	}
+	check(IsInRenderingThread());
+	//Hard to validate because of Resource resurrection, better to remove GetQueryRef entirely
+	//checkf(Query.IsValid() && Query.GetRefCount() <= 2, TEXT("Query has been released but reference still held: use FRHIPooledRenderQuery::GetQueryRef() with extreme caution"));
+	
+	checkf(Query.IsValid(), TEXT("Only release valid queries"));
+	checkf((uint32)Queries.Num() < NumQueries, TEXT("Pool contains more queries than it started with, double release somewhere?"));
+
+	Queries.Push(MoveTemp(Query));
+	check(!Query.IsValid());
+}
+
+FRenderQueryPoolRHIRef RHICreateRenderQueryPool(ERenderQueryType QueryType, uint32 NumQueries)
+{
+	return GDynamicRHI->RHICreateRenderQueryPool(QueryType, NumQueries);
+}
+
+EColorSpaceAndEOTF FDynamicRHI::RHIGetColorSpace(FRHIViewport* Viewport)
+{
+	return EColorSpaceAndEOTF::ERec709_sRGB;
+}
+
+void FDynamicRHI::RHICheckViewportHDRStatus(FRHIViewport* Viewport)
+{
+}
+
+
+FShaderResourceViewInitializer::FShaderResourceViewInitializer(FRHIVertexBuffer* InVertexBuffer, uint8 InFormat, uint32 InStartElement, uint32 InNumElements)
+	: VertexBufferInitializer({ InVertexBuffer, InStartElement, InNumElements, InFormat }), Type(EType::VertexBufferSRV)
+{
+	/*if (!VertexBufferInitializer.IsWholeResource())
+	{
+		const uint32 Stride = GPixelFormats[InFormat].BlockBytes;
+		check((VertexBufferInitializer.NumElements + VertexBufferInitializer.StartElement) * Stride <= VertexBufferInitializer.VertexBuffer->GetSize());
+	}*/
+}
+
+FShaderResourceViewInitializer::FShaderResourceViewInitializer(FRHIVertexBuffer* InVertexBuffer, uint8 InFormat)
+	: VertexBufferInitializer({ InVertexBuffer, 0, UINT32_MAX, InFormat }), Type(EType::VertexBufferSRV) 
+{
+}
+
+FShaderResourceViewInitializer::FShaderResourceViewInitializer(FRHIStructuredBuffer* InStructuredBuffer, uint32 InStartElement, uint32 InNumElements)
+	: StructuredBufferInitializer(FStructuredBufferShaderResourceViewInitializer{ InStructuredBuffer, InStartElement, InNumElements }), Type(EType::StructuredBufferSRV) 
+{
+	if (!StructuredBufferInitializer.IsWholeResource())
+	{
+		const uint32 Stride = StructuredBufferInitializer.StructuredBuffer->GetStride();
+		check((StructuredBufferInitializer.NumElements + StructuredBufferInitializer.StartElement) * Stride <= StructuredBufferInitializer.StructuredBuffer->GetSize());
+	}
+}
+
+FShaderResourceViewInitializer::FShaderResourceViewInitializer(FRHIStructuredBuffer* InStructuredBuffer)
+	: StructuredBufferInitializer(FStructuredBufferShaderResourceViewInitializer{ InStructuredBuffer, 0, UINT32_MAX }), Type(EType::StructuredBufferSRV) 
+{
+}
+
+FShaderResourceViewInitializer::FShaderResourceViewInitializer(FRHIIndexBuffer* InIndexBuffer, uint32 InStartElement, uint32 InNumElements)
+	: IndexBufferInitializer(FIndexBufferShaderResourceViewInitializer{ InIndexBuffer, InStartElement, InNumElements }), Type(EType::IndexBufferSRV) 
+{
+	if (!IndexBufferInitializer.IsWholeResource())
+	{
+		const uint32 Stride = IndexBufferInitializer.IndexBuffer->GetStride();
+		check((IndexBufferInitializer.NumElements + IndexBufferInitializer.StartElement) * Stride <= IndexBufferInitializer.IndexBuffer->GetSize());
+	}
+}
+
+FShaderResourceViewInitializer::FShaderResourceViewInitializer(FRHIIndexBuffer* InIndexBuffer)
+	: IndexBufferInitializer(FIndexBufferShaderResourceViewInitializer{ InIndexBuffer, 0, UINT32_MAX }), Type(EType::IndexBufferSRV) 
+{
+}
+

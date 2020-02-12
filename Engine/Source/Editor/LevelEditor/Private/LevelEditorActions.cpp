@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "LevelEditorActions.h"
 #include "SceneView.h"
@@ -36,7 +36,7 @@
 #include "FileHelpers.h"
 #include "EditorModeInterpolation.h"
 #include "UnrealEdGlobals.h"
-#include "Toolkits/AssetEditorManager.h"
+
 #include "LevelEditor.h"
 #include "Matinee/MatineeActor.h"
 #include "Engine/LevelScriptBlueprint.h"
@@ -55,7 +55,7 @@
 #include "Editor/SceneOutliner/Private/SSocketChooser.h"
 #include "SnappingUtils.h"
 #include "LevelEditorViewport.h"
-#include "Layers/ILayers.h"
+#include "Layers/LayersSubsystem.h"
 #include "IPlacementMode.h"
 #include "IPlacementModeModule.h"
 #include "AssetSelection.h"
@@ -90,6 +90,12 @@
 #include "ActorGroupingUtils.h"
 #include "LevelUtils.h"
 #include "ISceneOutliner.h"
+#include "ISettingsModule.h"
+
+#if WITH_LIVE_CODING
+#include "ILiveCodingModule.h"
+#endif
+#include "Subsystems/AssetEditorSubsystem.h"
 
 DEFINE_LOG_CATEGORY_STATIC(LevelEditorActions, Log, All);
 
@@ -125,7 +131,7 @@ namespace LevelEditorActionsHelpers
 		{
 			// @todo Re-enable once world centric works
 			const bool bOpenWorldCentric = false;
-			FAssetEditorManager::Get().OpenEditorForAsset(
+			GEditor->GetEditorSubsystem<UAssetEditorSubsystem>()->OpenEditorForAsset(
 				Blueprint,
 				bOpenWorldCentric ? EToolkitMode::WorldCentric : EToolkitMode::Standalone,
 				InLevelEditor.Pin()  );
@@ -574,11 +580,11 @@ void FLevelEditorActionCallbacks::ToggleFeatureLevelPreview()
 
 bool FLevelEditorActionCallbacks::IsFeatureLevelPreviewEnabled()
 {
-	if (GEditor->PlayWorld || GUnrealEd->bIsSimulatingInEditor)
+	if (GUnrealEd->IsLightingBuildCurrentlyRunning())
 	{
 		return false;
 	}
-	if (GEditor->PreviewFeatureLevel == ERHIFeatureLevel::SM5)
+	if (GEditor->PreviewPlatform.PreviewFeatureLevel == ERHIFeatureLevel::SM5)
 	{
 		return true;
 	}
@@ -587,7 +593,7 @@ bool FLevelEditorActionCallbacks::IsFeatureLevelPreviewEnabled()
 
 bool FLevelEditorActionCallbacks::IsFeatureLevelPreviewActive()
 {
-	if (GEditor->PreviewFeatureLevel == ERHIFeatureLevel::SM5)
+	if (GEditor->PreviewPlatform.PreviewFeatureLevel == ERHIFeatureLevel::SM5)
 	{
 		return false;
 	}
@@ -596,33 +602,23 @@ bool FLevelEditorActionCallbacks::IsFeatureLevelPreviewActive()
 
 bool FLevelEditorActionCallbacks::IsPreviewModeButtonVisible()
 {
-	return GEditor->PreviewFeatureLevel != ERHIFeatureLevel::SM5;
+	return GEditor->PreviewPlatform.PreviewFeatureLevel != ERHIFeatureLevel::SM5;
 }
 
-void FLevelEditorActionCallbacks::SetPreviewPlatform(FName MaterialQualityPlatform, ERHIFeatureLevel::Type PreviewFeatureLevel)
+void FLevelEditorActionCallbacks::SetPreviewPlatform(FPreviewPlatformInfo NewPreviewPlatform)
 {
-	GEditor->SetPreviewPlatform(MaterialQualityPlatform, PreviewFeatureLevel);
+	// When called through SMenuEntryBlock::OnClicked(), the popup menus are not dismissed when
+	// clicking on a checkbox, but they are dismissed when clicking on a button. We need the popup
+	// menus to go away, or SetFeaturePlatform() is unable to display a progress dialog. Force
+	// the dismissal here.
+	FSlateApplication::Get().DismissAllMenus();
+
+	GEditor->SetPreviewPlatform(NewPreviewPlatform, true);
 }
 
-bool FLevelEditorActionCallbacks::IsPreviewPlatformChecked(FName InMaterialQualityPlatform, ERHIFeatureLevel::Type InPreviewFeatureLevel)
+bool FLevelEditorActionCallbacks::IsPreviewPlatformChecked(FPreviewPlatformInfo PreviewPlatform)
 {
-	const FName& PreviewPlatform = UMaterialShaderQualitySettings::Get()->GetPreviewPlatform();
-	return PreviewPlatform == InMaterialQualityPlatform && InPreviewFeatureLevel == GEditor->PreviewFeatureLevel;
-}
-
-void FLevelEditorActionCallbacks::SetFeatureLevelPreview(ERHIFeatureLevel::Type InPreviewFeatureLevel)
-{
-	GEditor->SetPreviewPlatform(NAME_None, InPreviewFeatureLevel);
-}
-
-bool FLevelEditorActionCallbacks::IsFeatureLevelPreviewChecked(ERHIFeatureLevel::Type InPreviewFeatureLevel)
-{
-	return GEditor->PreviewFeatureLevel == InPreviewFeatureLevel;
-}
-
-bool FLevelEditorActionCallbacks::IsFeatureLevelPreviewAvailable(ERHIFeatureLevel::Type InPreviewFeatureLevel)
-{
-	return GShaderPlatformForFeatureLevel[InPreviewFeatureLevel] != SP_NumPlatforms;
+	return GEditor->PreviewPlatform.Matches(PreviewPlatform);
 }
 
 void FLevelEditorActionCallbacks::ConfigureLightingBuildOptions( const FLightingBuildOptions& Options )
@@ -774,6 +770,12 @@ void FLevelEditorActionCallbacks::BuildLODsOnly_Execute()
 void FLevelEditorActionCallbacks::BuildTextureStreamingOnly_Execute()
 {
 	FEditorBuildUtils::EditorBuildTextureStreaming(GetWorld());
+	GEngine->DeferredCommands.AddUnique(TEXT("MAP CHECK NOTIFYRESULTS"));
+}
+
+void FLevelEditorActionCallbacks::BuildVirtualTextureOnly_Execute()
+{
+	FEditorBuildUtils::EditorBuildVirtualTexture(GetWorld());
 	GEngine->DeferredCommands.AddUnique(TEXT("MAP CHECK NOTIFYRESULTS"));
 }
 
@@ -1026,6 +1028,23 @@ bool FLevelEditorActionCallbacks::CanShowSourceCodeActions()
 
 void FLevelEditorActionCallbacks::RecompileGameCode_Clicked()
 {
+#if WITH_LIVE_CODING
+	ILiveCodingModule* LiveCoding = FModuleManager::GetModulePtr<ILiveCodingModule>(LIVE_CODING_MODULE_NAME);
+	if (LiveCoding != nullptr && LiveCoding->IsEnabledByDefault())
+	{
+		LiveCoding->EnableForSession(true);
+		if (LiveCoding->IsEnabledForSession())
+		{
+			LiveCoding->Compile();
+		}
+		else
+		{
+			FMessageDialog::Open(EAppMsgType::Ok, LOCTEXT("NoLiveCodingCompileAfterHotReload", "Live Coding cannot be enabled after hot-reload has been used. Please restart the editor."));
+		}
+		return;
+	}
+#endif
+
 	// Don't allow a recompile while already compiling!
 	IHotReloadInterface& HotReloadSupport = FModuleManager::LoadModuleChecked<IHotReloadInterface>(HotReloadModule);
 	if( !HotReloadSupport.IsCurrentlyCompiling() )
@@ -1037,8 +1056,16 @@ void FLevelEditorActionCallbacks::RecompileGameCode_Clicked()
 
 bool FLevelEditorActionCallbacks::Recompile_CanExecute()
 {
+#if WITH_LIVE_CODING
+	ILiveCodingModule* LiveCoding = FModuleManager::GetModulePtr<ILiveCodingModule>(LIVE_CODING_MODULE_NAME);
+	if (LiveCoding != nullptr && LiveCoding->IsEnabledByDefault())
+	{
+		return !LiveCoding->IsCompiling();
+	}
+#endif
+
 	// We can't recompile while in PIE
-	if (GEditor->bIsPlayWorldQueued || GEditor->PlayWorld)
+	if (GEditor->IsPlaySessionInProgress())
 	{
 		return false;
 	}
@@ -1048,6 +1075,68 @@ bool FLevelEditorActionCallbacks::Recompile_CanExecute()
 	IHotReloadInterface& HotReloadSupport = FModuleManager::LoadModuleChecked<IHotReloadInterface>(HotReloadModule);
 	return !HotReloadSupport.IsCurrentlyCompiling() && !(FApp::GetEngineIsPromotedBuild() && FEngineBuildSettings::IsPerforceBuild());
 }
+
+#if WITH_LIVE_CODING
+void FLevelEditorActionCallbacks::LiveCoding_ToggleEnabled()
+{
+	ILiveCodingModule* LiveCoding = FModuleManager::GetModulePtr<ILiveCodingModule>(LIVE_CODING_MODULE_NAME);
+	if (LiveCoding != nullptr)
+	{
+		LiveCoding->EnableByDefault(!LiveCoding->IsEnabledByDefault());
+
+		if (LiveCoding->IsEnabledByDefault() && !LiveCoding->IsEnabledForSession())
+		{
+			FMessageDialog::Open(EAppMsgType::Ok, LOCTEXT("NoEnableLiveCodingAfterHotReload", "Live Coding cannot be enabled after hot-reload has been used. Please restart the editor."));
+		}
+	}
+}
+
+bool FLevelEditorActionCallbacks::LiveCoding_IsEnabled( )
+{
+	ILiveCodingModule* LiveCoding = FModuleManager::GetModulePtr<ILiveCodingModule>(LIVE_CODING_MODULE_NAME);
+	return LiveCoding != nullptr && LiveCoding->IsEnabledByDefault();
+}
+
+void FLevelEditorActionCallbacks::LiveCoding_StartSession_Clicked()
+{
+	ILiveCodingModule* LiveCoding = FModuleManager::GetModulePtr<ILiveCodingModule>(LIVE_CODING_MODULE_NAME);
+	if (LiveCoding != nullptr)
+	{
+		LiveCoding->EnableForSession(true);
+
+		if (!LiveCoding->IsEnabledForSession())
+		{
+			FMessageDialog::Open(EAppMsgType::Ok, LOCTEXT("NoStartedLiveCodingAfterHotReload", "Live Coding cannot be started after hot-reload has been used. Please restart the editor."));
+		}
+	}
+}
+
+bool FLevelEditorActionCallbacks::LiveCoding_CanStartSession()
+{
+	ILiveCodingModule* LiveCoding = FModuleManager::GetModulePtr<ILiveCodingModule>(LIVE_CODING_MODULE_NAME);
+	return LiveCoding != nullptr && LiveCoding->IsEnabledByDefault() && !LiveCoding->HasStarted();
+}
+
+void FLevelEditorActionCallbacks::LiveCoding_ShowConsole_Clicked()
+{
+	ILiveCodingModule* LiveCoding = FModuleManager::GetModulePtr<ILiveCodingModule>(LIVE_CODING_MODULE_NAME);
+	if (LiveCoding!= nullptr)
+	{
+		LiveCoding->ShowConsole();
+	}
+}
+
+bool FLevelEditorActionCallbacks::LiveCoding_CanShowConsole()
+{
+	ILiveCodingModule* LiveCoding = FModuleManager::GetModulePtr<ILiveCodingModule>(LIVE_CODING_MODULE_NAME);
+	return LiveCoding!= nullptr && LiveCoding->IsEnabledForSession();
+}
+
+void FLevelEditorActionCallbacks::LiveCoding_Settings_Clicked()
+{
+	FModuleManager::LoadModuleChecked<ISettingsModule>("Settings").ShowViewer("Editor", "General", "Live Coding");
+}
+#endif
 
 void FLevelEditorActionCallbacks::ConnectToSourceControl_Clicked()
 {
@@ -1159,7 +1248,7 @@ void FLevelEditorActionCallbacks::EditAsset_Clicked( const EToolkitMode::Type To
 			{
 				for (auto Asset : ReferencedAssets)
 				{
-					FAssetEditorManager::Get().OpenEditorForAsset(Asset, ToolkitMode, LevelEditorSharedPtr);
+					GEditor->GetEditorSubsystem<UAssetEditorSubsystem>()->OpenEditorForAsset(Asset, ToolkitMode, LevelEditorSharedPtr);
 				}
 			}
 		}
@@ -1274,27 +1363,9 @@ bool FLevelEditorActionCallbacks::LockActorMovement_IsChecked()
 	return GEditor->HasLockedActors();
 }
 
-void FLevelEditorActionCallbacks::AddActor_Clicked( UActorFactory* ActorFactory, FAssetData AssetData, bool bUsePlacement )
+void FLevelEditorActionCallbacks::AddActor_Clicked( UActorFactory* ActorFactory, FAssetData AssetData)
 {
-	UObject* Object = AssetData.GetAsset();
-	if(bUsePlacement && IPlacementModeModule::IsAvailable() && Object != NULL)
-	{
-		FLevelEditorModule& LevelEditorModule = FModuleManager::LoadModuleChecked<FLevelEditorModule>("LevelEditor");
-		LevelEditorModule.FocusViewport();
-
-		// Make sure we're in actor placement mode
-		GLevelEditorModeTools().ActivateMode(FBuiltinEditorModes::EM_Placement);
-
-		TArray<UObject*> AssetsToPlace;
-		AssetsToPlace.Add(Object);
-
-		auto* PlacementMode = GLevelEditorModeTools().GetActiveModeTyped<IPlacementMode>(FBuiltinEditorModes::EM_Placement);
-		PlacementMode->StartPlacing(AssetsToPlace, ActorFactory);
-	}
-	else
-	{
-		FLevelEditorActionCallbacks::AddActor(ActorFactory, AssetData, NULL);
-	}
+	FLevelEditorActionCallbacks::AddActor(ActorFactory, AssetData, NULL);
 }
 
 AActor* FLevelEditorActionCallbacks::AddActor( UActorFactory* ActorFactory, const FAssetData& AssetData, const FTransform* ActorTransform )
@@ -1423,19 +1494,14 @@ void FLevelEditorActionCallbacks::ReplaceActorsFromClass_Clicked( UClass* ActorC
 
 bool FLevelEditorActionCallbacks::Duplicate_CanExecute()
 {
-	TArray<FEdMode*> ActiveModes; 
-	GLevelEditorModeTools().GetActiveModes( ActiveModes );
-	for( int32 ModeIndex = 0; ModeIndex < ActiveModes.Num(); ++ModeIndex )
+	const EEditAction::Type CanProcess = GLevelEditorModeTools().GetActionEditDuplicate();
+	if (CanProcess == EEditAction::Process)
 	{
-		const EEditAction::Type CanProcess = ActiveModes[ModeIndex]->GetActionEditDuplicate();
-		if (CanProcess == EEditAction::Process)
-		{
-			return true;
-		}
-		else if (CanProcess == EEditAction::Halt)
-		{
-			return false;
-		}
+		return true;
+	}
+	else if (CanProcess == EEditAction::Halt)
+	{
+		return false;
 	}
 	
 	// If we can copy, we can duplicate
@@ -1461,7 +1527,7 @@ bool FLevelEditorActionCallbacks::Duplicate_CanExecute()
 
 	if (!bCanCopy)
 	{
-		TWeakPtr<class SLevelEditor> LevelEditor = FModuleManager::GetModuleChecked<FLevelEditorModule>(TEXT("LevelEditor")).GetLevelEditorInstance();
+		TWeakPtr<class ILevelEditor> LevelEditor = FModuleManager::GetModuleChecked<FLevelEditorModule>(TEXT("LevelEditor")).GetLevelEditorInstance();
 		if (LevelEditor.IsValid())
 		{
 			TSharedPtr<class ISceneOutliner> SceneOutlinerPtr = LevelEditor.Pin()->GetSceneOutliner();
@@ -1477,19 +1543,14 @@ bool FLevelEditorActionCallbacks::Duplicate_CanExecute()
 
 bool FLevelEditorActionCallbacks::Delete_CanExecute()
 {
-	TArray<FEdMode*> ActiveModes; 
-	GLevelEditorModeTools().GetActiveModes( ActiveModes );
-	for( int32 ModeIndex = 0; ModeIndex < ActiveModes.Num(); ++ModeIndex )
+	const EEditAction::Type CanProcess = GLevelEditorModeTools().GetActionEditDelete();
+	if (CanProcess == EEditAction::Process)
 	{
-		const EEditAction::Type CanProcess = ActiveModes[ModeIndex]->GetActionEditDelete();
-		if (CanProcess == EEditAction::Process)
-		{
-			return true;
-		}
-		else if (CanProcess == EEditAction::Halt)
-		{
-			return false;
-		}
+		return true;
+	}
+	else if (CanProcess == EEditAction::Halt)
+	{
+		return false;
 	}
 
 	bool bCanDelete = false;
@@ -1514,7 +1575,7 @@ bool FLevelEditorActionCallbacks::Delete_CanExecute()
 
 	if (!bCanDelete)
 	{
-		TWeakPtr<class SLevelEditor> LevelEditor = FModuleManager::GetModuleChecked<FLevelEditorModule>(TEXT("LevelEditor")).GetLevelEditorInstance();
+		TWeakPtr<class ILevelEditor> LevelEditor = FModuleManager::GetModuleChecked<FLevelEditorModule>(TEXT("LevelEditor")).GetLevelEditorInstance();
 		if (LevelEditor.IsValid())
 		{
 			TSharedPtr<class ISceneOutliner> SceneOutlinerPtr = LevelEditor.Pin()->GetSceneOutliner();
@@ -1541,7 +1602,7 @@ void FLevelEditorActionCallbacks::Rename_Execute()
 	}
 	else
 	{
-		TWeakPtr<class SLevelEditor> LevelEditor = FModuleManager::GetModuleChecked<FLevelEditorModule>(TEXT("LevelEditor")).GetLevelEditorInstance();
+		TWeakPtr<class ILevelEditor> LevelEditor = FModuleManager::GetModuleChecked<FLevelEditorModule>(TEXT("LevelEditor")).GetLevelEditorInstance();
 		if (LevelEditor.IsValid())
 		{
 			TSharedPtr<class ISceneOutliner> SceneOutlinerPtr = LevelEditor.Pin()->GetSceneOutliner();
@@ -1571,7 +1632,7 @@ bool FLevelEditorActionCallbacks::Rename_CanExecute()
 
 	if (!bCanRename)
 	{
-		TWeakPtr<class SLevelEditor> LevelEditor = FModuleManager::GetModuleChecked<FLevelEditorModule>(TEXT("LevelEditor")).GetLevelEditorInstance();
+		TWeakPtr<class ILevelEditor> LevelEditor = FModuleManager::GetModuleChecked<FLevelEditorModule>(TEXT("LevelEditor")).GetLevelEditorInstance();
 		if (LevelEditor.IsValid())
 		{
 			TSharedPtr<class ISceneOutliner> SceneOutlinerPtr = LevelEditor.Pin()->GetSceneOutliner();
@@ -1587,19 +1648,14 @@ bool FLevelEditorActionCallbacks::Rename_CanExecute()
 
 bool FLevelEditorActionCallbacks::Cut_CanExecute()
 {
-	TArray<FEdMode*> ActiveModes; 
-	GLevelEditorModeTools().GetActiveModes( ActiveModes );
-	for( int32 ModeIndex = 0; ModeIndex < ActiveModes.Num(); ++ModeIndex )
+	const EEditAction::Type CanProcess = GLevelEditorModeTools().GetActionEditCut();
+	if (CanProcess == EEditAction::Process)
 	{
-		const EEditAction::Type CanProcess = ActiveModes[ModeIndex]->GetActionEditCut();
-		if (CanProcess == EEditAction::Process)
-		{
-			return true;
-		}
-		else if (CanProcess == EEditAction::Halt)
-		{
-			return false;
-		}
+		return true;
+	}
+	else if (CanProcess == EEditAction::Halt)
+	{
+		return false;
 	}
 
 	bool bCanCut = false;
@@ -1626,7 +1682,7 @@ bool FLevelEditorActionCallbacks::Cut_CanExecute()
 
 	if (!bCanCut)
 	{
-		TWeakPtr<class SLevelEditor> LevelEditor = FModuleManager::GetModuleChecked<FLevelEditorModule>(TEXT("LevelEditor")).GetLevelEditorInstance();
+		TWeakPtr<class ILevelEditor> LevelEditor = FModuleManager::GetModuleChecked<FLevelEditorModule>(TEXT("LevelEditor")).GetLevelEditorInstance();
 		if (LevelEditor.IsValid())
 		{
 			TSharedPtr<class ISceneOutliner> SceneOutlinerPtr = LevelEditor.Pin()->GetSceneOutliner();
@@ -1642,19 +1698,14 @@ bool FLevelEditorActionCallbacks::Cut_CanExecute()
 
 bool FLevelEditorActionCallbacks::Copy_CanExecute()
 {
-	TArray<FEdMode*> ActiveModes; 
-	GLevelEditorModeTools().GetActiveModes( ActiveModes );
-	for( int32 ModeIndex = 0; ModeIndex < ActiveModes.Num(); ++ModeIndex )
+	const EEditAction::Type CanProcess = GLevelEditorModeTools().GetActionEditCopy();
+	if (CanProcess == EEditAction::Process)
 	{
-		const EEditAction::Type CanProcess = ActiveModes[ModeIndex]->GetActionEditCopy();
-		if (CanProcess == EEditAction::Process)
-		{
-			return true;
-		}
-		else if (CanProcess == EEditAction::Halt)
-		{
-			return false;
-		}
+		return true;
+	}
+	else if (CanProcess == EEditAction::Halt)
+	{
+		return false;
 	}
 
 	bool bCanCopy = false;
@@ -1679,7 +1730,7 @@ bool FLevelEditorActionCallbacks::Copy_CanExecute()
 
 	if (!bCanCopy)
 	{
-		TWeakPtr<class SLevelEditor> LevelEditor = FModuleManager::GetModuleChecked<FLevelEditorModule>(TEXT("LevelEditor")).GetLevelEditorInstance();
+		TWeakPtr<class ILevelEditor> LevelEditor = FModuleManager::GetModuleChecked<FLevelEditorModule>(TEXT("LevelEditor")).GetLevelEditorInstance();
 		if (LevelEditor.IsValid())
 		{
 			TSharedPtr<class ISceneOutliner> SceneOutlinerPtr = LevelEditor.Pin()->GetSceneOutliner();
@@ -1695,19 +1746,14 @@ bool FLevelEditorActionCallbacks::Copy_CanExecute()
 
 bool FLevelEditorActionCallbacks::Paste_CanExecute()
 {
-	TArray<FEdMode*> ActiveModes; 
-	GLevelEditorModeTools().GetActiveModes( ActiveModes );
-	for( int32 ModeIndex = 0; ModeIndex < ActiveModes.Num(); ++ModeIndex )
+	const EEditAction::Type CanProcess = GLevelEditorModeTools().GetActionEditPaste();
+	if (CanProcess == EEditAction::Process)
 	{
-		const EEditAction::Type CanProcess = ActiveModes[ModeIndex]->GetActionEditPaste();
-		if (CanProcess == EEditAction::Process)
-		{
-			return true;
-		}
-		else if (CanProcess == EEditAction::Halt)
-		{
-			return false;
-		}
+		return true;
+	}
+	else if (CanProcess == EEditAction::Halt)
+	{
+		return false;
 	}
 
 	bool bCanPaste = false;
@@ -1730,7 +1776,7 @@ bool FLevelEditorActionCallbacks::Paste_CanExecute()
 
 	if (!bCanPaste)
 	{
-		TWeakPtr<class SLevelEditor> LevelEditor = FModuleManager::GetModuleChecked<FLevelEditorModule>(TEXT("LevelEditor")).GetLevelEditorInstance();
+		TWeakPtr<class ILevelEditor> LevelEditor = FModuleManager::GetModuleChecked<FLevelEditorModule>(TEXT("LevelEditor")).GetLevelEditorInstance();
 		if (LevelEditor.IsValid())
 		{
 			TSharedPtr<class ISceneOutliner> SceneOutlinerPtr = LevelEditor.Pin()->GetSceneOutliner();
@@ -2245,7 +2291,7 @@ void FLevelEditorActionCallbacks::OpenLevelBlueprint( TWeakPtr< SLevelEditor > L
 		{
 			// @todo Re-enable once world centric works
 			const bool bOpenWorldCentric = false;
-			FAssetEditorManager::Get().OpenEditorForAsset(
+			GEditor->GetEditorSubsystem<UAssetEditorSubsystem>()->OpenEditorForAsset(
 				LevelScriptBlueprint,
 				bOpenWorldCentric ? EToolkitMode::WorldCentric : EToolkitMode::Standalone,
 				LevelEditor.Pin()  );
@@ -2273,39 +2319,22 @@ void FLevelEditorActionCallbacks::CreateBlankBlueprintClass()
 		{
 			// @todo Re-enable once world centric works
 			const bool bOpenWorldCentric = false;
-			FAssetEditorManager::Get().OpenEditorForAsset(
+			GEditor->GetEditorSubsystem<UAssetEditorSubsystem>()->OpenEditorForAsset(
 				Blueprint,
 				bOpenWorldCentric ? EToolkitMode::WorldCentric : EToolkitMode::Standalone);
 		}
 	}
 }
 
-bool FLevelEditorActionCallbacks::CanHarvestSelectedActorsIntoBlueprintClass()
+bool FLevelEditorActionCallbacks::CanConvertSelectedActorsIntoBlueprintClass()
 {
 	return GEditor->GetSelectedActorCount() > 0;
 }
 
-void FLevelEditorActionCallbacks::HarvestSelectedActorsIntoBlueprintClass()
+void FLevelEditorActionCallbacks::ConvertSelectedActorsIntoBlueprintClass()
 {
-	const bool bHarvest = true;
-	FCreateBlueprintFromActorDialog::OpenDialog(bHarvest);
-}
-
-bool FLevelEditorActionCallbacks::CanSubclassSelectedActorIntoBlueprintClass()
-{
-	bool bCanSubclass = GEditor->GetSelectedActorCount() == 1;
-	if (bCanSubclass)
-	{
-		AActor* Actor = Cast<AActor>(*GEditor->GetSelectedActorIterator());
-		bCanSubclass = FKismetEditorUtilities::CanCreateBlueprintOfClass(Actor->GetClass());
-	}
-	return bCanSubclass;
-}
-
-void FLevelEditorActionCallbacks::SubclassSelectedActorIntoBlueprintClass()
-{
-	const bool bHarvest = false;
-	FCreateBlueprintFromActorDialog::OpenDialog(bHarvest);
+	const ECreateBlueprintFromActorMode DefaultCreateMode = (GEditor->GetSelectedActorCount() == 1 ? ECreateBlueprintFromActorMode::Subclass : ECreateBlueprintFromActorMode::ChildActor);
+	FCreateBlueprintFromActorDialog::OpenDialog(DefaultCreateMode);
 }
 
 void FLevelEditorActionCallbacks::CheckOutProjectSettingsConfig( )
@@ -2624,27 +2653,6 @@ void FLevelEditorActionCallbacks::OnAddVolume( UClass* VolumeClass )
 	GEditor->RedrawAllViewports();
 }
 
-void FLevelEditorActionCallbacks::OnAddMatinee()
-{
-	// Warn the user prior to creating our actor
-	if ( GEditor->ShouldOpenMatinee( NULL ) )
-	{
-		// Spawn a matinee actor at the origin, and either move infront of the camera or focus camera on it (depending on the viewport) and open for edit
-		UActorFactory* ActorFactory = GEditor->FindActorFactoryForActorClass( AMatineeActor::StaticClass() );
-		check( ActorFactory );
-		AMatineeActor* MatineeActor = CastChecked<AMatineeActor>( FLevelEditorActionCallbacks::AddActor( ActorFactory, FAssetData(), &FTransform::Identity ) );
-		if( GCurrentLevelEditingViewportClient->IsPerspective() )
-		{
-			GEditor->MoveActorInFrontOfCamera( *MatineeActor, GCurrentLevelEditingViewportClient->GetViewLocation(), GCurrentLevelEditingViewportClient->GetViewRotation().Vector() );
-		}
-		else
-		{
-			GEditor->MoveViewportCamerasToActor( *MatineeActor, false );
-		}
-		GEditor->OpenMatinee( MatineeActor, false );
-	}
-}
-
 void FLevelEditorActionCallbacks::SelectActorsInLayers()
 {
 	// Iterate over selected actors and make a list of all layers the selected actors belong to.
@@ -2660,9 +2668,10 @@ void FLevelEditorActionCallbacks::SelectActorsInLayers()
 		}
 	}
 
-	bool bSelect = true;
-	bool bNotify = true;
-	GEditor->Layers->SelectActorsInLayers( SelectedLayers, bSelect, bNotify );
+	ULayersSubsystem* Layers = GEditor->GetEditorSubsystem<ULayersSubsystem>();
+	const bool bSelect = true;
+	const bool bNotify = true;
+	Layers->SelectActorsInLayers( SelectedLayers, bSelect, bNotify );
 }
 
 void FLevelEditorActionCallbacks::SetWidgetMode( FWidget::EWidgetMode WidgetMode )
@@ -2911,7 +2920,14 @@ void FLevelEditorActionCallbacks::SnapTo_Clicked( const bool InAlign, const bool
 	FScopedLevelDirtied		LevelDirtyCallback;
 
 	bool bSnappedComponents = false;
-	if( GEditor->GetSelectedComponentCount() > 0 )
+
+	// Let the component visualizers try to handle the selection.
+	if (GUnrealEd->ComponentVisManager.HandleSnapTo(InAlign, InUseLineTrace, InUseBounds, InUsePivot, InDestination))
+	{
+		bSnappedComponents = true;
+	}
+
+	if( !bSnappedComponents && GEditor->GetSelectedComponentCount() > 0 )
 	{
 		for(FSelectedEditableComponentIterator It(GEditor->GetSelectedEditableComponentIterator()); It; ++It)
 		{
@@ -3078,7 +3094,8 @@ void FLevelEditorCommands::RegisterCommands()
 	UI_COMMAND( BuildPathsOnly, "Build Paths", "Only builds paths (all levels.)", EUserInterfaceActionType::Button, FInputChord() );
 	UI_COMMAND( BuildLODsOnly, "Build LODs", "Only builds LODs (all levels.)", EUserInterfaceActionType::Button, FInputChord() );
 	UI_COMMAND( BuildTextureStreamingOnly, "Build Texture Streaming", "Build texture streaming data", EUserInterfaceActionType::Button, FInputChord() );
-	
+	UI_COMMAND(BuildVirtualTextureOnly, "Build Virtual Textures", "Build runtime virtual texture low mips streaming data", EUserInterfaceActionType::Button, FInputChord());
+
 	UI_COMMAND( LightingQuality_Production, "Production", "Sets precomputed lighting quality to highest possible quality (slowest computation time.)", EUserInterfaceActionType::RadioButton, FInputChord() );
 	UI_COMMAND( LightingQuality_High, "High", "Sets precomputed lighting quality to high quality", EUserInterfaceActionType::RadioButton, FInputChord() );
 	UI_COMMAND( LightingQuality_Medium, "Medium", "Sets precomputed lighting quality to medium quality", EUserInterfaceActionType::RadioButton, FInputChord() );
@@ -3094,6 +3111,13 @@ void FLevelEditorCommands::RegisterCommands()
 	UI_COMMAND( MapCheck, "Open Map Check", "Checks map for errors", EUserInterfaceActionType::Button, FInputChord() );
 
 	UI_COMMAND( RecompileGameCode, "Recompile Game Code", "Recompiles and reloads C++ code for game systems on the fly", EUserInterfaceActionType::Button, FInputChord( EKeys::P, EModifierKey::Alt | EModifierKey::Control | EModifierKey::Shift ) );
+
+#if WITH_LIVE_CODING
+	UI_COMMAND( LiveCoding_Enable, "Enable Live Coding (Experimental)", "Hot-patches C++ function changes into the current process. Currently does not allow class layout changes.", EUserInterfaceActionType::ToggleButton, FInputChord() );
+	UI_COMMAND( LiveCoding_StartSession, "Start Session", "Starts a live coding session.", EUserInterfaceActionType::Button, FInputChord() );
+	UI_COMMAND( LiveCoding_ShowConsole, "Show Console", "Displays the live coding console window.", EUserInterfaceActionType::Button, FInputChord() );
+	UI_COMMAND( LiveCoding_Settings, "Settings...", "Open the live coding settings", EUserInterfaceActionType::Button, FInputChord() );
+#endif
 
 	UI_COMMAND( EditAsset, "Edit Asset", "Edits the asset associated with the selected actor", EUserInterfaceActionType::Button, FInputChord( EKeys::E, EModifierKey::Control ) );
 	UI_COMMAND( EditAssetNoConfirmMultiple, "Edit Asset", "Edits the asset associated with the selected actor", EUserInterfaceActionType::Button, FInputChord( EKeys::E, EModifierKey::Control | EModifierKey::Shift ) );
@@ -3145,6 +3169,7 @@ void FLevelEditorCommands::RegisterCommands()
 	UI_COMMAND( AttachActorIteractive, "Attach Actor Interactive", "Start an interactive actor picker to let you choose a parent for the currently selected actor", EUserInterfaceActionType::Button, FInputChord(EModifierKey::Alt, EKeys::A) );
 	UI_COMMAND( CreateNewOutlinerFolder, "Create Folder", "Place the selected actors in a new folder", EUserInterfaceActionType::Button, FInputChord() );
 	UI_COMMAND( HoldToEnableVertexSnapping, "Hold to Enable Vertex Snapping", "When the key binding is pressed and held vertex snapping will be enabled", EUserInterfaceActionType::ToggleButton, FInputChord(EKeys::V) );
+	UI_COMMAND( HoldToEnablePivotVertexSnapping, "Hold to Enable Pivot Vertex Snapping", "Hold to enable vertex snapping while dragging a pivot. Alt must be a modifier in this command or it will not work.", EUserInterfaceActionType::ToggleButton, FInputChord(EModifierKey::Alt, EKeys::V) );
 
 	//@ todo Slate better tooltips for pivot options
 	UI_COMMAND( SavePivotToPrePivot, "Set as Pivot Offset", "Sets the current pivot location as the pivot offset for this actor", EUserInterfaceActionType::Button, FInputChord() );
@@ -3259,16 +3284,13 @@ void FLevelEditorCommands::RegisterCommands()
 	UI_COMMAND( WorldProperties, "World Settings", "Displays the world settings", EUserInterfaceActionType::Button, FInputChord() );
 	UI_COMMAND( OpenContentBrowser, "Open Content Browser", "Opens the Content Browser", EUserInterfaceActionType::Button, FInputChord(EModifierKey::Control|EModifierKey::Shift, EKeys::F) );
 	UI_COMMAND( OpenMarketplace, "Open Marketplace", "Opens the Marketplace", EUserInterfaceActionType::Button, FInputChord() );
-	UI_COMMAND( AddMatinee, "Add Matinee [Legacy]", "Creates a new matinee actor to edit", EUserInterfaceActionType::Button, FInputChord() );
-	UI_COMMAND( EditMatinee, "Edit Matinee", "Selects a Matinee to edit", EUserInterfaceActionType::Button, FInputChord() );
 
-	UI_COMMAND( ToggleVR, "Toggle VR", "Toggles VR (Virtual Reality) mode", EUserInterfaceActionType::ToggleButton, FInputChord( EModifierKey::Alt, EKeys::V ) );
+	UI_COMMAND( ToggleVR, "Toggle VR", "Toggles VR (Virtual Reality) mode", EUserInterfaceActionType::ToggleButton, FInputChord(EModifierKey::Shift, EKeys::V ) );
 
 	UI_COMMAND( OpenLevelBlueprint, "Open Level Blueprint", "Edit the Level Blueprint for the current level", EUserInterfaceActionType::Button, FInputChord() );
 	UI_COMMAND( CheckOutProjectSettingsConfig, "Check Out", "Checks out the project settings config file so the game mode can be set.", EUserInterfaceActionType::Button, FInputChord() );
 	UI_COMMAND( CreateBlankBlueprintClass, "New Empty Blueprint Class...", "Create a new Blueprint Class", EUserInterfaceActionType::Button, FInputChord() );
-	UI_COMMAND( ConvertSelectionToBlueprintViaHarvest, "Convert Selected Components to Blueprint Class...", "Replace all of the selected actors with a new Blueprint Class based on Actor that contains the components", EUserInterfaceActionType::Button, FInputChord() );
-	UI_COMMAND( ConvertSelectionToBlueprintViaSubclass, "Convert Selected Actor to Blueprint Class...", "Replace the selected actor with a new Blueprint subclass based on the class of the selected Actor", EUserInterfaceActionType::Button, FInputChord() );
+	UI_COMMAND( ConvertSelectionToBlueprint, "Convert Selection to Blueprint Class...", "Replace all of the selected actors with a new Blueprint Class", EUserInterfaceActionType::Button, FInputChord() );
 
 	UI_COMMAND( ShowTransformWidget, "Show Transform Widget", "Toggles the visibility of the transform widgets", EUserInterfaceActionType::ToggleButton, FInputChord() );
 	UI_COMMAND( AllowTranslucentSelection, "Allow Translucent Selection", "Allows translucent objects to be selected", EUserInterfaceActionType::ToggleButton, FInputChord(EKeys::T) );
@@ -3311,16 +3333,13 @@ void FLevelEditorCommands::RegisterCommands()
 	UI_COMMAND(MaterialQualityLevel_Medium, "Medium", "Sets material quality in the scene to medium.", EUserInterfaceActionType::RadioButton, FInputChord());
 	UI_COMMAND(MaterialQualityLevel_High, "High", "Sets material quality in the scene to high.", EUserInterfaceActionType::RadioButton, FInputChord());
 
-	UI_COMMAND(ToggleFeatureLevelPreview, "Preview Platform", "Preview Platform", EUserInterfaceActionType::ToggleButton, FInputChord());
+	UI_COMMAND(ToggleFeatureLevelPreview, "Preview Mode Toggle", "Toggles the Preview Mode on or off for the currently selected Preview target", EUserInterfaceActionType::ToggleButton, FInputChord());
 
-	UI_COMMAND(PreviewPlatformOverride_AndroidGLES2, "Android ES2", "Mobile preview using Android's quality settings.", EUserInterfaceActionType::RadioButton, FInputChord());
-	UI_COMMAND(PreviewPlatformOverride_DefaultES2, "HTML5", "HTML5 preview.", EUserInterfaceActionType::RadioButton, FInputChord());
-
-	UI_COMMAND(PreviewPlatformOverride_DefaultES31, "Default High-End Mobile", "Use default mobile settings (no quality overrides).", EUserInterfaceActionType::RadioButton, FInputChord());
-	UI_COMMAND(PreviewPlatformOverride_AndroidGLES31, "Android ES 3.1", "Mobile preview using Android ES3.1 quality settings.", EUserInterfaceActionType::RadioButton, FInputChord());
-	UI_COMMAND(PreviewPlatformOverride_AndroidVulkanES31, "Android Vulkan", "Mobile preview using Android Vulkan quality settings.", EUserInterfaceActionType::RadioButton, FInputChord());
-	UI_COMMAND(PreviewPlatformOverride_IOSMetalES31, "iOS", "Mobile preview using iOS material quality settings.", EUserInterfaceActionType::RadioButton, FInputChord());
-
+	UI_COMMAND(PreviewPlatformOverride_SM5, "Shader Model 5", "DirectX 11, OpenGL 4.3+, PS4, XB1", EUserInterfaceActionType::Check, FInputChord());
+	UI_COMMAND(PreviewPlatformOverride_AndroidGLES2, "Android ES2", "Mobile preview using Android's quality settings.", EUserInterfaceActionType::Check, FInputChord());
+	UI_COMMAND(PreviewPlatformOverride_AndroidGLES31, "Android ES 3.1", "Mobile preview using Android ES3.1 quality settings.", EUserInterfaceActionType::Check, FInputChord());
+	UI_COMMAND(PreviewPlatformOverride_AndroidVulkanES31, "Android Vulkan", "Mobile preview using Android Vulkan quality settings.", EUserInterfaceActionType::Check, FInputChord());
+	UI_COMMAND(PreviewPlatformOverride_IOSMetalES31, "iOS", "Mobile preview using iOS material quality settings.", EUserInterfaceActionType::Check, FInputChord());
 
 	UI_COMMAND( ConnectToSourceControl, "Connect to Source Control...", "Opens a dialog to connect to source control.", EUserInterfaceActionType::Button, FInputChord());
 	UI_COMMAND( ChangeSourceControlSettings, "Change Source Control Settings...", "Opens a dialog to change source control settings.", EUserInterfaceActionType::Button, FInputChord());
@@ -3330,37 +3349,6 @@ void FLevelEditorCommands::RegisterCommands()
 	UI_COMMAND(GeometryCollectionSelectAllGeometry, "Select All Geometry In Hierarchy", "Select all geometry in hierarchy", EUserInterfaceActionType::Button, FInputChord());
 	UI_COMMAND(GeometryCollectionSelectNone, "Deselect All Geometry In Hierarchy", "Deselect all geometry in hierarchy", EUserInterfaceActionType::Button, FInputChord());
 	UI_COMMAND(GeometryCollectionSelectInverseGeometry, "Select Inverse Geometry In Hierarchy", "Select inverse geometry in hierarchy", EUserInterfaceActionType::Button, FInputChord());
-
-	static const FText FeatureLevelLabels[ERHIFeatureLevel::Num] = 
-	{
-		NSLOCTEXT("LevelEditorCommands", "FeatureLevelPreviewType_ES2", "Mobile / HTML5"),
-		NSLOCTEXT("LevelEditorCommands", "FeatureLevelPreviewType_ES31", "High-End Mobile"),
-		NSLOCTEXT("LevelEditorCommands", "FeatureLevelPreviewType_SM4", "Shader Model 4"),
-		NSLOCTEXT("LevelEditorCommands", "FeatureLevelPreviewType_SM5", "Shader Model 5"),
-	};
-
-	static const FText FeatureLevelToolTips[ERHIFeatureLevel::Num] = 
-	{
-		NSLOCTEXT("LevelEditorCommands", "FeatureLevelPreviewTooltip_ES2", "OpenGLES 2"),
-		NSLOCTEXT("LevelEditorCommands", "FeatureLevelPreviewTooltip_ES3", "OpenGLES 3.1, Metal, Vulkan"),
-		NSLOCTEXT("LevelEditorCommands", "FeatureLevelPreviewTooltip_SM4", "DirectX 10, OpenGL 3.3+"),
-		NSLOCTEXT("LevelEditorCommands", "FeatureLevelPreviewTooltip_SM5", "DirectX 11, OpenGL 4.3+, PS4, XB1"),
-	};
-
-	for (int32 i = 0; i < ERHIFeatureLevel::Num; ++i)
-	{
-		FName Name;
-		GetFeatureLevelName((ERHIFeatureLevel::Type)i, Name);
-
-		FeatureLevelPreview[i] =
-			FUICommandInfoDecl(
-			this->AsShared(),
-			Name,
-			FeatureLevelLabels[i],
-			FeatureLevelToolTips[i])
-			.UserInterfaceType(EUserInterfaceActionType::RadioButton)
-			.DefaultChord(FInputChord());
-	}
 
 	UI_COMMAND(OpenMergeActor, "Merge Actors", "Opens the Merge Actor panel", EUserInterfaceActionType::Button, FInputChord());
 }

@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 /*=============================================================================
 	Editor.h: Unreal editor public header file.
@@ -263,7 +263,7 @@ struct FNativePropertyData
 	}
 
 	/** bool operator */
-	inline operator bool() const
+	inline explicit operator bool() const
 	{
 		return PropertyData.Num() || PropertyText.Num();
 	}

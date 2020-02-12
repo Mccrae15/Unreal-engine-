@@ -1,116 +1,153 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
-#include "UnrealMultiUserServer.h"
-#include "RequiredProgramMainCPPInclude.h"
-
-#include "IConcertModule.h"
-#include "IConcertServer.h"
 #include "ConcertSettings.h"
+#include "ConcertSyncServerLoop.h"
 
-#define IDEAL_FRAMERATE 60;
+#include "RequiredProgramMainCPPInclude.h"
 
 IMPLEMENT_APPLICATION(UnrealMultiUserServer, "UnrealMultiUserServer");
 
-DEFINE_LOG_CATEGORY(LogMultiUserServer);
-
-/**
- * Application entry point
- *
- * @param	ArgC	Command-line argument count
- * @param	ArgV	Argument strings
- */
-INT32_MAIN_INT32_ARGC_TCHAR_ARGV()
+int32 RunUnrealMultiUserServer(int ArgC, TCHAR* ArgV[])
 {
-	// start up the main loop, adding some extra command line arguments:
-	//	-Messaging enables MessageBus transports
-	//	-stdout prevents double display logging
-	int32 Result = GEngineLoop.PreInit(ArgC, ArgV, TEXT(" -Messaging"));
-	//TODO: handle Result error? 
+	FString Role(TEXT("MultiUser"));
+	FConcertSyncServerLoopInitArgs ServerLoopInitArgs;
+	ServerLoopInitArgs.SessionFlags = EConcertSyncSessionFlags::Default_MultiUserSession;
+	ServerLoopInitArgs.ServiceRole = Role;
+	ServerLoopInitArgs.ServiceFriendlyName = TEXT("Multi-User Editing Server");
 
-	GLogConsole->Show(true);
-
-	// TODO: need config? trim engine loop?
-	check(GConfig && GConfig->IsReadyForUse());
-
-	FModuleManager::Get().StartProcessingNewlyLoadedObjects();
-
-	// Load internal Concert plugins in the pre-default phase
-	IPluginManager::Get().LoadModulesForEnabledPlugins(ELoadingPhase::PreDefault);
-
-	// Load Concert Sync plugins in default phase
-	IPluginManager::Get().LoadModulesForEnabledPlugins(ELoadingPhase::Default);
-
-	// Install graceful termination handler, this handles graceful CTRL+C shutdown, 
-	// but not CTRL+CLOSE, which will potentially still exit process before the main thread exits.
-	// Double CTRL+C signal will also cause process to terminate.
-	FPlatformMisc::SetGracefulTerminationHandler();
-
-	// Get the server settings
-	UConcertServerConfig* ServerConfig = IConcertModule::Get().ParseServerSettings(FCommandLine::Get());
-
-
-	// Setup Concert to run in server mode.
-	IConcertServerPtr ConcertServer = IConcertModule::Get().GetServerInstance();
-	ConcertServer->Configure(ServerConfig);
-	ConcertServer->Startup();
-
-	// if we have a default session, set it up properly
-	if (!ServerConfig->DefaultSessionName.IsEmpty())
+	ServerLoopInitArgs.GetServerConfigFunc = [Role]() -> const UConcertServerConfig*
 	{
-		if (!ConcertServer->GetSession(FName(*ServerConfig->DefaultSessionName)).IsValid())
+		UConcertServerConfig* ServerConfig = IConcertSyncServerModule::Get().ParseServerSettings(FCommandLine::Get());
+		if (ServerConfig->WorkingDir.IsEmpty())
 		{
-			FConcertSessionInfo SessionInfo = ConcertServer->CreateSessionInfo();
-			SessionInfo.SessionName = ServerConfig->DefaultSessionName;
-			SessionInfo.Settings = ServerConfig->DefaultSessionSettings;
-			ConcertServer->CreateSession(SessionInfo);
+			ServerConfig->WorkingDir = FPaths::ProjectIntermediateDir() / Role;
+		}
+		if (ServerConfig->ArchiveDir.IsEmpty())
+		{
+			ServerConfig->ArchiveDir = FPaths::ProjectSavedDir() / Role;
+		}
+		return ServerConfig;
+	};
+
+	return ConcertSyncServerLoop(ArgC, ArgV, ServerLoopInitArgs);
+}
+
+
+#if PLATFORM_MAC // On Mac, to get a properly logging console that play nice, we need to build a mac application (.app) rather than a console application.
+
+class CommandLineArguments
+{
+public:
+	CommandLineArguments() : ArgC(0), ArgV(nullptr) {}
+	CommandLineArguments(int InArgC, char* InUtf8ArgV[]) { Init(InArgC, InUtf8ArgV); }
+
+	void Init(int InArgC, char* InUtf8ArgV[])
+	{
+		ArgC = InArgC;
+		ArgV = new TCHAR*[ArgC];
+		for (int32 a = 0; a < ArgC; a++)
+		{
+			FUTF8ToTCHAR ConvertFromUtf8(InUtf8ArgV[a]);
+			ArgV[a] = new TCHAR[ConvertFromUtf8.Length() + 1];
+			FCString::Strcpy(ArgV[a], ConvertFromUtf8.Length() + 1, ConvertFromUtf8.Get());
 		}
 	}
 
-	UE_LOG(LogMultiUserServer, Display, TEXT("Multi-User Editing Server Initialized"));
-
-	double DeltaTime = 0.0;
-	double LastTime = FPlatformTime::Seconds();
-	const float IdealFrameTime = 1.0f / IDEAL_FRAMERATE;
-
-	while (!GIsRequestingExit)
+	~CommandLineArguments()
 	{
-		FTaskGraphInterface::Get().ProcessThreadUntilIdle(ENamedThreads::GameThread);
-
-		// Pump & Tick objects
-		FTicker::GetCoreTicker().Tick(DeltaTime);
-
-		GFrameCounter++;
-		FStats::AdvanceFrame(false);
-		GLog->FlushThreadedLogs();
-
-		// Run garbage collection for the uobjects for the rest of the frame or at least to 2 ms
-		IncrementalPurgeGarbage(true, FMath::Max<float>(0.002f, IdealFrameTime - (FPlatformTime::Seconds() - LastTime)));
-
-		// Throttle main thread main fps by sleeping if we still have time
-		FPlatformProcess::Sleep(FMath::Max<float>(0.0f, IdealFrameTime - (FPlatformTime::Seconds() - LastTime)));
-
-		double CurrentTime = FPlatformTime::Seconds();
-		DeltaTime = CurrentTime - LastTime;
-		LastTime = CurrentTime;
+		for (int32 a = 0; a < ArgC; a++)
+		{
+			delete[] ArgV[a];
+		}
+		delete[] ArgV;
 	}
 
-	ConcertServer->Shutdown();
+	int ArgC;
+	TCHAR** ArgV;
+};
 
-	UE_LOG(LogMultiUserServer, Display, TEXT("Multi-User Editing Server Shutdown"));
+#include "Mac/CocoaThread.h"
 
-	// Allow the game thread to finish processing any latent tasks.
-	// They will be relying on what we are going to shutdown...
-	FTaskGraphInterface::Get().ProcessThreadUntilIdle(ENamedThreads::GameThread);
+static CommandLineArguments GSavedCommandLine;
 
-	FEngineLoop::AppPreExit();
-
-	// Unloading Modules isn't handled by AppExit
-	FModuleManager::Get().UnloadModulesAtShutdown();
-	// Nor is it handling stats, if any
-#if STATS
-	FThreadStats::StopThread();
-#endif
-
-	FEngineLoop::AppExit();
-	return Result;
+@interface UE4AppDelegate : NSObject <NSApplicationDelegate, NSFileManagerDelegate>
+{
 }
+
+@end
+
+@implementation UE4AppDelegate
+
+//handler for the quit apple event used by the Dock menu
+- (void)handleQuitEvent:(NSAppleEventDescriptor*)Event withReplyEvent:(NSAppleEventDescriptor*)ReplyEvent
+{
+	[NSApp terminate:self];
+}
+
+- (void) runGameThread:(id)Arg
+{
+	FPlatformMisc::SetGracefulTerminationHandler();
+	FPlatformMisc::SetCrashHandler(nullptr);
+
+	RunUnrealMultiUserServer(GSavedCommandLine.ArgC, GSavedCommandLine.ArgV);
+
+	[NSApp terminate: self];
+}
+
+- (NSApplicationTerminateReply)applicationShouldTerminate:(NSApplication *)Sender;
+{
+	if(!IsEngineExitRequested() || ([NSThread gameThread] && [NSThread gameThread] != [NSThread mainThread]))
+	{
+		RequestEngineExit(TEXT("UnrealMultiUserServer Requesting Exist"));
+		return NSTerminateLater;
+	}
+	else
+	{
+		return NSTerminateNow;
+	}
+}
+
+- (void)applicationDidFinishLaunching:(NSNotification *)Notification
+{
+	//install the custom quit event handler
+	NSAppleEventManager* appleEventManager = [NSAppleEventManager sharedAppleEventManager];
+	[appleEventManager setEventHandler:self andSelector:@selector(handleQuitEvent:withReplyEvent:) forEventClass:kCoreEventClass andEventID:kAEQuitApplication];
+
+	// Add a menu bar to the application.
+	id menubar = [[NSMenu new] autorelease];
+	id appMenuItem = [[NSMenuItem new] autorelease];
+	[menubar addItem:appMenuItem];
+	[NSApp setMainMenu:menubar];
+
+	// Populate the menu bar.
+	id appMenu = [[NSMenu new] autorelease];
+	id quitMenuItem = [[[NSMenuItem alloc] initWithTitle:NSLOCTEXT("UMUS_Quit", "QuitApp", "Quit").ToString().GetNSString() action:@selector(terminate:) keyEquivalent:@"q"] autorelease];
+	[appMenu addItem:quitMenuItem];
+	[appMenuItem setSubmenu:appMenu];
+
+	RunGameThread(self, @selector(runGameThread:));
+}
+
+int main(int argc, char *argv[])
+{
+	// Record the command line.
+	GSavedCommandLine.Init(argc, argv);
+
+	// Launch the application.
+	SCOPED_AUTORELEASE_POOL;
+	[NSApplication sharedApplication];
+	[NSApp setDelegate:[UE4AppDelegate new]];
+	[NSApp run];
+	return 0;
+}
+
+@end
+
+#else // Windows/Linux
+
+INT32_MAIN_INT32_ARGC_TCHAR_ARGV()
+{
+	return RunUnrealMultiUserServer(ArgC, ArgV);
+}
+
+#endif

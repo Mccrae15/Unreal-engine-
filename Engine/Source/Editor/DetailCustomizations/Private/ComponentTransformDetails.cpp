@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "ComponentTransformDetails.h"
 #include "Widgets/DeclarativeSyntaxSupport.h"
@@ -85,6 +85,7 @@ FComponentTransformDetails::FComponentTransformDetails( const TArray< TWeakObjec
 	, NotifyHook( DetailBuilder.GetPropertyUtilities()->GetNotifyHook() )
 	, bPreserveScaleRatio( false )
 	, bEditingRotationInUI( false )
+	, bIsSliderTransaction( false )
 	, HiddenFieldMask( 0 )
 {
 	GConfig->GetBool(TEXT("SelectionDetails"), TEXT("PreserveScaleRatio"), bPreserveScaleRatio, GEditorPerProjectIni);
@@ -285,15 +286,15 @@ FUIAction FComponentTransformDetails::CreateCopyAction( ETransformField::Type Tr
 	return
 		FUIAction
 		(
-			FExecuteAction::CreateSP(this, &FComponentTransformDetails::OnCopy, TransformField ),
-			FCanExecuteAction::CreateSP(this, &FComponentTransformDetails::OnCanCopy, TransformField )
+			FExecuteAction::CreateSP(const_cast<FComponentTransformDetails*>(this), &FComponentTransformDetails::OnCopy, TransformField ),
+			FCanExecuteAction::CreateSP(const_cast<FComponentTransformDetails*>(this), &FComponentTransformDetails::OnCanCopy, TransformField )
 		);
 }
 
 FUIAction FComponentTransformDetails::CreatePasteAction( ETransformField::Type TransformField ) const
 {
 	return 
-		 FUIAction( FExecuteAction::CreateSP(this, &FComponentTransformDetails::OnPaste, TransformField ) );
+		 FUIAction( FExecuteAction::CreateSP(const_cast<FComponentTransformDetails*>(this), &FComponentTransformDetails::OnPaste, TransformField ) );
 }
 
 BEGIN_SLATE_FUNCTION_BUILD_OPTIMIZATION
@@ -341,12 +342,18 @@ void FComponentTransformDetails::GenerateChildContent( IDetailChildrenBuilder& C
 				.bColorAxisLabels( true )
 				.AllowResponsiveLayout( true )
 				.IsEnabled( this, &FComponentTransformDetails::GetIsEnabled )
+				.OnXChanged( this, &FComponentTransformDetails::OnSetTransformAxis, ETextCommit::Default, ETransformField::Location, EAxisList::X, false )
+				.OnYChanged( this, &FComponentTransformDetails::OnSetTransformAxis, ETextCommit::Default, ETransformField::Location, EAxisList::Y, false )
+				.OnZChanged( this, &FComponentTransformDetails::OnSetTransformAxis, ETextCommit::Default, ETransformField::Location, EAxisList::Z, false )
 				.OnXCommitted( this, &FComponentTransformDetails::OnSetTransformAxis, ETransformField::Location, EAxisList::X, true )
 				.OnYCommitted( this, &FComponentTransformDetails::OnSetTransformAxis, ETransformField::Location, EAxisList::Y, true )
 				.OnZCommitted( this, &FComponentTransformDetails::OnSetTransformAxis, ETransformField::Location, EAxisList::Z, true )
 				.Font( FontInfo )
 				.TypeInterface( TypeInterface )
-				.AllowSpin(false)
+				.AllowSpin( SelectedObjects.Num() == 1 )
+				.SpinDelta( 1 )
+				.OnBeginSliderMovement( this, &FComponentTransformDetails::OnBeginLocationSlider )
+				.OnEndSliderMovement( this, &FComponentTransformDetails::OnEndLocationSlider )
 			]
 			+SHorizontalBox::Slot()
 			.AutoWidth()
@@ -409,7 +416,7 @@ void FComponentTransformDetails::GenerateChildContent( IDetailChildrenBuilder& C
 				.AllowResponsiveLayout( true )
 				.bColorAxisLabels( true )
 				.IsEnabled( this, &FComponentTransformDetails::GetIsEnabled )
-				.OnBeginSliderMovement( this, &FComponentTransformDetails::OnBeginRotatonSlider )
+				.OnBeginSliderMovement( this, &FComponentTransformDetails::OnBeginRotationSlider )
 				.OnEndSliderMovement( this, &FComponentTransformDetails::OnEndRotationSlider )
 				.OnRollChanged( this, &FComponentTransformDetails::OnSetTransformAxis, ETextCommit::Default, ETransformField::Rotation, EAxisList::X, false )
 				.OnPitchChanged( this, &FComponentTransformDetails::OnSetTransformAxis, ETextCommit::Default, ETransformField::Rotation, EAxisList::Y, false )
@@ -417,7 +424,7 @@ void FComponentTransformDetails::GenerateChildContent( IDetailChildrenBuilder& C
 				.OnRollCommitted( this, &FComponentTransformDetails::OnSetTransformAxis, ETransformField::Rotation, EAxisList::X, true )
 				.OnPitchCommitted( this, &FComponentTransformDetails::OnSetTransformAxis, ETransformField::Rotation, EAxisList::Y, true )
 				.OnYawCommitted( this, &FComponentTransformDetails::OnSetTransformAxis, ETransformField::Rotation, EAxisList::Z, true )
-				.TypeInterface(TypeInterface)
+				.TypeInterface( TypeInterface )
 				.Font( FontInfo )
 			]
 			+SHorizontalBox::Slot()
@@ -474,6 +481,9 @@ void FComponentTransformDetails::GenerateChildContent( IDetailChildrenBuilder& C
 				.bColorAxisLabels( true )
 				.AllowResponsiveLayout( true )
 				.IsEnabled( this, &FComponentTransformDetails::GetIsEnabled )
+				.OnXChanged( this, &FComponentTransformDetails::OnSetTransformAxis, ETextCommit::Default, ETransformField::Scale, EAxisList::X, false )
+				.OnYChanged( this, &FComponentTransformDetails::OnSetTransformAxis, ETextCommit::Default, ETransformField::Scale, EAxisList::Y, false )
+				.OnZChanged( this, &FComponentTransformDetails::OnSetTransformAxis, ETextCommit::Default, ETransformField::Scale, EAxisList::Z, false )
 				.OnXCommitted( this, &FComponentTransformDetails::OnSetTransformAxis, ETransformField::Scale, EAxisList::X, true )
 				.OnYCommitted( this, &FComponentTransformDetails::OnSetTransformAxis, ETransformField::Scale, EAxisList::Y, true )
 				.OnZCommitted( this, &FComponentTransformDetails::OnSetTransformAxis, ETransformField::Scale, EAxisList::Z, true )
@@ -481,7 +491,10 @@ void FComponentTransformDetails::GenerateChildContent( IDetailChildrenBuilder& C
 				.ContextMenuExtenderY( this, &FComponentTransformDetails::ExtendYScaleContextMenu )
 				.ContextMenuExtenderZ( this, &FComponentTransformDetails::ExtendZScaleContextMenu )
 				.Font( FontInfo )
-				.AllowSpin(false)
+				.AllowSpin( SelectedObjects.Num() == 1 )
+				.SpinDelta( 0.0025f )
+				.OnBeginSliderMovement( this, &FComponentTransformDetails::OnBeginScaleSlider )
+				.OnEndSliderMovement( this, &FComponentTransformDetails::OnEndScaleSlider )
 			]
 			+SHorizontalBox::Slot()
 			.AutoWidth()
@@ -587,21 +600,21 @@ FText FComponentTransformDetails::GetScaleText() const
 
 void FComponentTransformDetails::OnSetAbsoluteTransform(ETransformField::Type TransformField, bool bAbsoluteEnabled)
 {
-	UBoolProperty* AbsoluteProperty = nullptr;
+	FBoolProperty* AbsoluteProperty = nullptr;
 	FText TransactionText;
 
 	switch (TransformField)
 	{
 	case ETransformField::Location:
-		AbsoluteProperty = FindField<UBoolProperty>(USceneComponent::StaticClass(), GET_MEMBER_NAME_CHECKED(USceneComponent, bAbsoluteLocation));
+		AbsoluteProperty = FindField<FBoolProperty>(USceneComponent::StaticClass(), USceneComponent::GetAbsoluteLocationPropertyName());
 		TransactionText = LOCTEXT("ToggleAbsoluteLocation", "Toggle Absolute Location");
 		break;
 	case ETransformField::Rotation:
-		AbsoluteProperty = FindField<UBoolProperty>(USceneComponent::StaticClass(), GET_MEMBER_NAME_CHECKED(USceneComponent, bAbsoluteRotation));
+		AbsoluteProperty = FindField<FBoolProperty>(USceneComponent::StaticClass(), USceneComponent::GetAbsoluteRotationPropertyName());
 		TransactionText = LOCTEXT("ToggleAbsoluteRotation", "Toggle Absolute Rotation");
 		break;
 	case ETransformField::Scale:
-		AbsoluteProperty = FindField<UBoolProperty>(USceneComponent::StaticClass(), GET_MEMBER_NAME_CHECKED(USceneComponent, bAbsoluteScale));
+		AbsoluteProperty = FindField<FBoolProperty>(USceneComponent::StaticClass(), USceneComponent::GetAbsoluteScalePropertyName());
 		TransactionText = LOCTEXT("ToggleAbsoluteScale", "Toggle Absolute Scale");
 		break;
 	default:
@@ -619,7 +632,7 @@ void FComponentTransformDetails::OnSetAbsoluteTransform(ETransformField::Type Tr
 			USceneComponent* SceneComponent = GetSceneComponentFromDetailsObject(Object);
 			if (SceneComponent)
 			{
-				bool bOldValue = TransformField == ETransformField::Location ? SceneComponent->bAbsoluteLocation : (TransformField == ETransformField::Rotation ? SceneComponent->bAbsoluteRotation : SceneComponent->bAbsoluteScale);
+				bool bOldValue = TransformField == ETransformField::Location ? SceneComponent->IsUsingAbsoluteLocation() : (TransformField == ETransformField::Rotation ? SceneComponent->IsUsingAbsoluteRotation() : SceneComponent->IsUsingAbsoluteScale());
 
 				if (bOldValue == bAbsoluteEnabled)
 				{
@@ -652,28 +665,28 @@ void FComponentTransformDetails::OnSetAbsoluteTransform(ETransformField::Type Tr
 				switch (TransformField)
 				{
 				case ETransformField::Location:
-					SceneComponent->bAbsoluteLocation = bAbsoluteEnabled;
+					SceneComponent->SetUsingAbsoluteLocation(bAbsoluteEnabled);
 
 					// Update RelativeLocation to maintain/stabilize position when switching between relative and world.
 					if (SceneComponent->GetAttachParent())
 					{
-						if (SceneComponent->bAbsoluteLocation)
+						if (SceneComponent->IsUsingAbsoluteLocation())
 						{
-							SceneComponent->RelativeLocation = SceneComponent->GetComponentTransform().GetTranslation();
+							SceneComponent->SetRelativeLocation_Direct(SceneComponent->GetComponentTransform().GetTranslation());
 						}
 						else
 						{
 							FTransform ParentToWorld = SceneComponent->GetAttachParent()->GetSocketTransform(SceneComponent->GetAttachSocketName());
 							FTransform RelativeTM = SceneComponent->GetComponentTransform().GetRelativeTransform(ParentToWorld);
-							SceneComponent->RelativeLocation = RelativeTM.GetTranslation();
+							SceneComponent->SetRelativeLocation_Direct(RelativeTM.GetTranslation());
 						}
 					}
 					break;
 				case ETransformField::Rotation:
-					SceneComponent->bAbsoluteRotation = bAbsoluteEnabled;
+					SceneComponent->SetUsingAbsoluteRotation(bAbsoluteEnabled);
 					break;
 				case ETransformField::Scale:
-					SceneComponent->bAbsoluteScale = bAbsoluteEnabled;
+					SceneComponent->SetUsingAbsoluteScale(bAbsoluteEnabled);
 					break;
 				}
 
@@ -684,7 +697,7 @@ void FComponentTransformDetails::OnSetAbsoluteTransform(ETransformField::Type Tr
 
 	if (bBeganTransaction)
 	{
-		FPropertyChangedEvent PropertyChangedEvent(AbsoluteProperty, EPropertyChangeType::ValueSet, (const TArray<const UObject*>*)&ModifiedObjects);
+		FPropertyChangedEvent PropertyChangedEvent(AbsoluteProperty, EPropertyChangeType::ValueSet, MakeArrayView(ModifiedObjects));
 
 		for (UObject* Object : ModifiedObjects)
 		{
@@ -746,7 +759,7 @@ struct FGetRootComponentArchetype
 EVisibility FComponentTransformDetails::GetLocationResetVisibility() const
 {
 	const USceneComponent* Archetype = FGetRootComponentArchetype::Get(SelectedObjects[0].Get());
-	const FVector Data = Archetype ? Archetype->RelativeLocation : FVector::ZeroVector;
+	const FVector Data = Archetype ? Archetype->GetRelativeLocation() : FVector::ZeroVector;
 
 	// unset means multiple differing values, so show "Reset to Default" in that case
 	return CachedLocation.IsSet() && CachedLocation.X.GetValue() == Data.X && CachedLocation.Y.GetValue() == Data.Y && CachedLocation.Z.GetValue() == Data.Z ? EVisibility::Hidden : EVisibility::Visible;
@@ -758,7 +771,7 @@ FReply FComponentTransformDetails::OnLocationResetClicked()
 	FScopedTransaction Transaction(TransactionName);
 
 	const USceneComponent* Archetype = FGetRootComponentArchetype::Get(SelectedObjects[0].Get());
-	const FVector Data = Archetype ? Archetype->RelativeLocation : FVector::ZeroVector;
+	const FVector Data = Archetype ? Archetype->GetRelativeLocation() : FVector::ZeroVector;
 
 	OnSetTransform(ETransformField::Location, EAxisList::All, Data, false, true);
 
@@ -768,7 +781,7 @@ FReply FComponentTransformDetails::OnLocationResetClicked()
 EVisibility FComponentTransformDetails::GetRotationResetVisibility() const
 {
 	const USceneComponent* Archetype = FGetRootComponentArchetype::Get(SelectedObjects[0].Get());
-	const FVector Data = Archetype ? Archetype->RelativeRotation.Euler() : FVector::ZeroVector;
+	const FVector Data = Archetype ? Archetype->GetRelativeRotation().Euler() : FVector::ZeroVector;
 
 	// unset means multiple differing values, so show "Reset to Default" in that case
 	return CachedRotation.IsSet() && CachedRotation.X.GetValue() == Data.X && CachedRotation.Y.GetValue() == Data.Y && CachedRotation.Z.GetValue() == Data.Z ? EVisibility::Hidden : EVisibility::Visible;
@@ -780,7 +793,7 @@ FReply FComponentTransformDetails::OnRotationResetClicked()
 	FScopedTransaction Transaction(TransactionName);
 
 	const USceneComponent* Archetype = FGetRootComponentArchetype::Get(SelectedObjects[0].Get());
-	const FVector Data = Archetype ? Archetype->RelativeRotation.Euler() : FVector::ZeroVector;
+	const FVector Data = Archetype ? Archetype->GetRelativeRotation().Euler() : FVector::ZeroVector;
 
 	OnSetTransform(ETransformField::Rotation, EAxisList::All, Data, false, true);
 
@@ -790,7 +803,7 @@ FReply FComponentTransformDetails::OnRotationResetClicked()
 EVisibility FComponentTransformDetails::GetScaleResetVisibility() const
 {
 	const USceneComponent* Archetype = FGetRootComponentArchetype::Get(SelectedObjects[0].Get());
-	const FVector Data = Archetype ? Archetype->RelativeScale3D : FVector(1.0f);
+	const FVector Data = Archetype ? Archetype->GetRelativeScale3D() : FVector(1.0f);
 
 	// unset means multiple differing values, so show "Reset to Default" in that case
 	return CachedScale.IsSet() && CachedScale.X.GetValue() == Data.X && CachedScale.Y.GetValue() == Data.Y && CachedScale.Z.GetValue() == Data.Z ? EVisibility::Hidden : EVisibility::Visible;
@@ -802,7 +815,7 @@ FReply FComponentTransformDetails::OnScaleResetClicked()
 	FScopedTransaction Transaction(TransactionName);
 
 	const USceneComponent* Archetype = FGetRootComponentArchetype::Get(SelectedObjects[0].Get());
-	const FVector Data = Archetype ? Archetype->RelativeScale3D : FVector(1.0f);
+	const FVector Data = Archetype ? Archetype->GetRelativeScale3D() : FVector(1.0f);
 
 	OnSetTransform(ETransformField::Scale, EAxisList::All, Data, false, true);
 
@@ -856,14 +869,14 @@ void FComponentTransformDetails::OnYScaleMirrored()
 {
 	FSlateApplication::Get().ClearKeyboardFocus(EFocusCause::Mouse);
 	FScopedTransaction Transaction(LOCTEXT("MirrorActorScaleY", "Mirror actor scale Y"));
-	OnSetTransform(ETransformField::Scale, EAxisList::X, FVector(1.0f), true, true);
+	OnSetTransform(ETransformField::Scale, EAxisList::Y, FVector(1.0f), true, true);
 }
 
 void FComponentTransformDetails::OnZScaleMirrored()
 {
 	FSlateApplication::Get().ClearKeyboardFocus(EFocusCause::Mouse);
 	FScopedTransaction Transaction(LOCTEXT("MirrorActorScaleZ", "Mirror actor scale Z"));
-	OnSetTransform(ETransformField::Scale, EAxisList::X, FVector(1.0f), true, true);
+	OnSetTransform(ETransformField::Scale, EAxisList::Z, FVector(1.0f), true, true);
 }
 
 void FComponentTransformDetails::CacheTransform()
@@ -885,10 +898,10 @@ void FComponentTransformDetails::CacheTransform()
 			FVector Scale;
 			if( SceneComponent )
 			{
-				Loc = SceneComponent->RelativeLocation;
+				Loc = SceneComponent->GetRelativeLocation();
 				FRotator* FoundRotator = ObjectToRelativeRotationMap.Find(SceneComponent);
-				Rot = (bEditingRotationInUI && !Object->IsTemplate() && FoundRotator) ? *FoundRotator : SceneComponent->RelativeRotation;
-				Scale = SceneComponent->RelativeScale3D;
+				Rot = (bEditingRotationInUI && !Object->IsTemplate() && FoundRotator) ? *FoundRotator : SceneComponent->GetRelativeRotation();
+				Scale = SceneComponent->GetRelativeScale3D();
 
 				if( ObjectIndex == 0 )
 				{
@@ -901,9 +914,9 @@ void FComponentTransformDetails::CacheTransform()
 					CachedRotation.Set( Rot );
 					CachedScale.Set( Scale );
 
-					bAbsoluteLocation = SceneComponent->bAbsoluteLocation;
-					bAbsoluteScale = SceneComponent->bAbsoluteScale;
-					bAbsoluteRotation = SceneComponent->bAbsoluteRotation;
+					bAbsoluteLocation = SceneComponent->IsUsingAbsoluteLocation();
+					bAbsoluteScale = SceneComponent->IsUsingAbsoluteScale();
+					bAbsoluteRotation = SceneComponent->IsUsingAbsoluteRotation();
 				}
 				else if( CurLoc != Loc || CurRot != Rot || CurScale != Scale )
 				{
@@ -948,63 +961,63 @@ void FComponentTransformDetails::OnSetTransform(ETransformField::Type TransformF
 	}
 
 	FText TransactionText;
-	UProperty* ValueProperty = nullptr;
-	UProperty* AxisProperty = nullptr;
+	FProperty* ValueProperty = nullptr;
+	FProperty* AxisProperty = nullptr;
 	
 	switch (TransformField)
 	{
 	case ETransformField::Location:
 		TransactionText = LOCTEXT("OnSetLocation", "Set Location");
-		ValueProperty = FindField<UProperty>(USceneComponent::StaticClass(), GET_MEMBER_NAME_CHECKED(USceneComponent, RelativeLocation));
+		ValueProperty = FindField<FProperty>(USceneComponent::StaticClass(), USceneComponent::GetRelativeLocationPropertyName());
 		
 		// Only set axis property for single axis set
 		if (Axis == EAxisList::X)
 		{
-			AxisProperty = FindField<UFloatProperty>(TBaseStructure<FVector>::Get(), GET_MEMBER_NAME_CHECKED(FVector, X));
+			AxisProperty = FindField<FFloatProperty>(TBaseStructure<FVector>::Get(), GET_MEMBER_NAME_CHECKED(FVector, X));
 		}
 		else if (Axis == EAxisList::Y)
 		{
-			AxisProperty = FindField<UFloatProperty>(TBaseStructure<FVector>::Get(), GET_MEMBER_NAME_CHECKED(FVector, Y));
+			AxisProperty = FindField<FFloatProperty>(TBaseStructure<FVector>::Get(), GET_MEMBER_NAME_CHECKED(FVector, Y));
 		}
 		else if (Axis == EAxisList::Z)
 		{
-			AxisProperty = FindField<UFloatProperty>(TBaseStructure<FVector>::Get(), GET_MEMBER_NAME_CHECKED(FVector, Z));
+			AxisProperty = FindField<FFloatProperty>(TBaseStructure<FVector>::Get(), GET_MEMBER_NAME_CHECKED(FVector, Z));
 		}
 		break;
 	case ETransformField::Rotation:
 		TransactionText = LOCTEXT("OnSetRotation", "Set Rotation");
-		ValueProperty = FindField<UProperty>(USceneComponent::StaticClass(), GET_MEMBER_NAME_CHECKED(USceneComponent, RelativeRotation));
+		ValueProperty = FindField<FProperty>(USceneComponent::StaticClass(), USceneComponent::GetRelativeRotationPropertyName());
 		
 		// Only set axis property for single axis set
 		if (Axis == EAxisList::X)
 		{
-			AxisProperty = FindField<UFloatProperty>(TBaseStructure<FRotator>::Get(), GET_MEMBER_NAME_CHECKED(FRotator, Roll));
+			AxisProperty = FindField<FFloatProperty>(TBaseStructure<FRotator>::Get(), GET_MEMBER_NAME_CHECKED(FRotator, Roll));
 		}
 		else if (Axis == EAxisList::Y)
 		{
-			AxisProperty = FindField<UFloatProperty>(TBaseStructure<FRotator>::Get(), GET_MEMBER_NAME_CHECKED(FRotator, Pitch));
+			AxisProperty = FindField<FFloatProperty>(TBaseStructure<FRotator>::Get(), GET_MEMBER_NAME_CHECKED(FRotator, Pitch));
 		}
 		else if (Axis == EAxisList::Z)
 		{
-			AxisProperty = FindField<UFloatProperty>(TBaseStructure<FRotator>::Get(), GET_MEMBER_NAME_CHECKED(FRotator, Yaw));
+			AxisProperty = FindField<FFloatProperty>(TBaseStructure<FRotator>::Get(), GET_MEMBER_NAME_CHECKED(FRotator, Yaw));
 		}
 		break;
 	case ETransformField::Scale:
 		TransactionText = LOCTEXT("OnSetScale", "Set Scale");
-		ValueProperty = FindField<UProperty>(USceneComponent::StaticClass(), GET_MEMBER_NAME_CHECKED(USceneComponent, RelativeScale3D));
+		ValueProperty = FindField<FProperty>(USceneComponent::StaticClass(), USceneComponent::GetRelativeScale3DPropertyName());
 
 		// If keep scale is set, don't set axis property
 		if (!bPreserveScaleRatio && Axis == EAxisList::X)
 		{
-			AxisProperty = FindField<UFloatProperty>(TBaseStructure<FVector>::Get(), GET_MEMBER_NAME_CHECKED(FVector, X));
+			AxisProperty = FindField<FFloatProperty>(TBaseStructure<FVector>::Get(), GET_MEMBER_NAME_CHECKED(FVector, X));
 		}
 		else if (!bPreserveScaleRatio && Axis == EAxisList::Y)
 		{
-			AxisProperty = FindField<UFloatProperty>(TBaseStructure<FVector>::Get(), GET_MEMBER_NAME_CHECKED(FVector, Y));
+			AxisProperty = FindField<FFloatProperty>(TBaseStructure<FVector>::Get(), GET_MEMBER_NAME_CHECKED(FVector, Y));
 		}
 		else if (!bPreserveScaleRatio && Axis == EAxisList::Z)
 		{
-			AxisProperty = FindField<UFloatProperty>(TBaseStructure<FVector>::Get(), GET_MEMBER_NAME_CHECKED(FVector, Z));
+			AxisProperty = FindField<FFloatProperty>(TBaseStructure<FVector>::Get(), GET_MEMBER_NAME_CHECKED(FVector, Z));
 		}
 		break;
 	default:
@@ -1014,7 +1027,7 @@ void FComponentTransformDetails::OnSetTransform(ETransformField::Type TransformF
 	bool bBeganTransaction = false;
 	TArray<UObject*> ModifiedObjects;
 
-	FPropertyChangedEvent PropertyChangedEvent(ValueProperty, !bCommitted ? EPropertyChangeType::Interactive : EPropertyChangeType::ValueSet, (const TArray<const UObject*>*)&ModifiedObjects);
+	FPropertyChangedEvent PropertyChangedEvent(ValueProperty, !bCommitted ? EPropertyChangeType::Interactive : EPropertyChangeType::ValueSet, MakeArrayView(ModifiedObjects));
 	FEditPropertyChain PropertyChain;
 
 	if (AxisProperty)
@@ -1042,37 +1055,37 @@ void FComponentTransformDetails::OnSetTransform(ETransformField::Type TransformF
 				switch (TransformField)
 				{
 				case ETransformField::Location:
-					OldComponentValue = SceneComponent->RelativeLocation;
+					OldComponentValue = SceneComponent->GetRelativeLocation();
 					break;
 				case ETransformField::Rotation:
 					// Pull from the actual component or from the cache
-					OldComponentValue = SceneComponent->RelativeRotation.Euler();
+					OldComponentValue = SceneComponent->GetRelativeRotation().Euler();
 					if (bEditingRotationInUI && !bIsEditingTemplateObject && ObjectToRelativeRotationMap.Find(SceneComponent))
 					{
 						OldComponentValue = ObjectToRelativeRotationMap.Find(SceneComponent)->Euler();
 					}
 					break;
 				case ETransformField::Scale:
-					OldComponentValue = SceneComponent->RelativeScale3D;
+					OldComponentValue = SceneComponent->GetRelativeScale3D();
 					break;
 				}
 
 				// Set the incoming value
 				if (bMirror)
 				{
-					NewComponentValue = -OldComponentValue;
+					NewComponentValue = GetAxisFilteredVector(Axis, -OldComponentValue, OldComponentValue);
 				}
 				else
 				{
 					NewComponentValue = GetAxisFilteredVector(Axis, NewValue, OldComponentValue);
 				}
 
-				// If we're committing during a rotation edit then we need to force it
-				if (OldComponentValue != NewComponentValue || (bCommitted && bEditingRotationInUI))
+				// If we're committing during a slider transaction then we need to force it, in order that PostEditChangeChainProperty be called.
+				// Note: this will even happen if the slider hasn't changed the value.
+				if (OldComponentValue != NewComponentValue || (bCommitted && bIsSliderTransaction))
 				{
 					if (!bBeganTransaction && bCommitted)
 					{
-						// Begin a transaction the first time an actors rotation is about to change.
 						// NOTE: One transaction per change, not per actor
 						GEditor->BeginTransaction(TransactionText);
 						bBeganTransaction = true;
@@ -1119,13 +1132,13 @@ void FComponentTransformDetails::OnSetTransform(ETransformField::Type TransformF
 							if (!bIsEditingTemplateObject)
 							{
 								// Update local cache for restoring later
-								ObjectToRelativeRotationMap.FindOrAdd(SceneComponent) = SceneComponent->RelativeRotation;
+								ObjectToRelativeRotationMap.FindOrAdd(SceneComponent) = SceneComponent->GetRelativeRotation();
 							}
 
 							SceneComponent->SetRelativeLocation(NewComponentValue);
 
 							// Also forcibly set it as the cache may have changed it slightly
-							SceneComponent->RelativeLocation = NewComponentValue;
+							SceneComponent->SetRelativeLocation_Direct(NewComponentValue);
 
 							// If it's a template, propagate the change out to any current instances of the object
 							if (bIsEditingTemplateObject)
@@ -1167,20 +1180,53 @@ void FComponentTransformDetails::OnSetTransform(ETransformField::Type TransformF
 								switch (Axis)
 								{
 								case EAxisList::X:
-									// Account for the previous scale being zero.  Just set to the new value in that case?
-									Ratio = OldComponentValue.X == 0.0f ? NewComponentValue.X : NewComponentValue.X / OldComponentValue.X;
-									NewComponentValue.Y *= Ratio;
-									NewComponentValue.Z *= Ratio;
+									if (bIsSliderTransaction)
+									{
+										Ratio = SliderScaleRatio.X == 0.0f ? SliderScaleRatio.Y : (SliderScaleRatio.Y / SliderScaleRatio.X);
+										NewComponentValue.Y = NewComponentValue.X * Ratio;
+
+										Ratio = SliderScaleRatio.X == 0.0f ? SliderScaleRatio.Z : (SliderScaleRatio.Z / SliderScaleRatio.X);
+										NewComponentValue.Z = NewComponentValue.X * Ratio;
+									}
+									else
+									{
+										Ratio = OldComponentValue.X == 0.0f ? NewComponentValue.Z : NewComponentValue.X / OldComponentValue.X;
+										NewComponentValue.Y *= Ratio;
+										NewComponentValue.Z *= Ratio;
+									}
 									break;
 								case EAxisList::Y:
-									Ratio = OldComponentValue.Y == 0.0f ? NewComponentValue.Y : NewComponentValue.Y / OldComponentValue.Y;
-									NewComponentValue.X *= Ratio;
-									NewComponentValue.Z *= Ratio;
+									if (bIsSliderTransaction)
+									{
+										Ratio = SliderScaleRatio.Y == 0.0f ? SliderScaleRatio.X : (SliderScaleRatio.X / SliderScaleRatio.Y);
+										NewComponentValue.X = NewComponentValue.Y * Ratio;
+
+										Ratio = SliderScaleRatio.Y == 0.0f ? SliderScaleRatio.Z : (SliderScaleRatio.Z / SliderScaleRatio.Y);
+										NewComponentValue.Z = NewComponentValue.Y * Ratio;
+									}
+									else
+									{
+										Ratio = OldComponentValue.Y == 0.0f ? NewComponentValue.Z : NewComponentValue.Y / OldComponentValue.Y;
+										NewComponentValue.X *= Ratio;
+										NewComponentValue.Z *= Ratio;
+									}
 									break;
 								case EAxisList::Z:
-									Ratio = OldComponentValue.Z == 0.0f ? NewComponentValue.Z : NewComponentValue.Z / OldComponentValue.Z;
-									NewComponentValue.X *= Ratio;
-									NewComponentValue.Y *= Ratio;
+									if (bIsSliderTransaction)
+									{
+										Ratio = SliderScaleRatio.Z == 0.0f ? SliderScaleRatio.X : (SliderScaleRatio.X / SliderScaleRatio.Z);
+										NewComponentValue.X = NewComponentValue.Z * Ratio;
+
+										Ratio = SliderScaleRatio.Z == 0.0f ? SliderScaleRatio.Y : (SliderScaleRatio.Y / SliderScaleRatio.Z);
+										NewComponentValue.Y = NewComponentValue.Z * Ratio;
+									}
+									else
+									{
+										Ratio = OldComponentValue.Z == 0.0f ? NewComponentValue.Z : NewComponentValue.Z / OldComponentValue.Z;
+										NewComponentValue.X *= Ratio;
+										NewComponentValue.Y *= Ratio;
+									}
+									break;
 								default:
 									// Do nothing, this set multiple axis at once
 									break;
@@ -1253,12 +1299,12 @@ void FComponentTransformDetails::OnSetTransform(ETransformField::Type TransformF
 						if (FoundRotator)
 						{
 							FQuat OldQuat = FoundRotator->GetDenormalized().Quaternion();
-							FQuat NewQuat = SceneComponent->RelativeRotation.GetDenormalized().Quaternion();
+							FQuat NewQuat = SceneComponent->GetRelativeRotation().GetDenormalized().Quaternion();
 
 							if (OldQuat.Equals(NewQuat))
 							{
 								// Need to restore the manually set rotation as it was modified by quat conversion
-								SceneComponent->RelativeRotation = *FoundRotator;
+								SceneComponent->SetRelativeRotation_Direct(*FoundRotator);
 							}
 						}
 					}
@@ -1300,40 +1346,37 @@ void FComponentTransformDetails::OnSetTransformAxis(float NewValue, ETextCommit:
 	OnSetTransform(TransformField, Axis, NewVector, false, bCommitted);
 }
 
-void FComponentTransformDetails::OnBeginRotatonSlider()
+void FComponentTransformDetails::BeginSliderTransaction(FText ActorTransaction, FText ComponentTransaction) const
 {
-	bEditingRotationInUI = true;
-
 	bool bBeganTransaction = false;
-	for( int32 ObjectIndex = 0; ObjectIndex < SelectedObjects.Num(); ++ObjectIndex )
+	for (TWeakObjectPtr<UObject> ObjectPtr : SelectedObjects)
 	{
-		TWeakObjectPtr<UObject> ObjectPtr = SelectedObjects[ObjectIndex];
-		if( ObjectPtr.IsValid() )
+		if (ObjectPtr.IsValid())
 		{
 			UObject* Object = ObjectPtr.Get();
 
-			// Start a new transation when a rotator slider begins to change
-			// We'll end it when the slider is release
+			// Start a new transaction when a slider begins to change
+			// We'll end it when the slider is released
 			// NOTE: One transaction per change, not per actor
-			if(!bBeganTransaction)
+			if (!bBeganTransaction)
 			{
-				if(Object->IsA<AActor>())
+				if (Object->IsA<AActor>())
 				{
-					GEditor->BeginTransaction( LOCTEXT( "OnSetRotation", "Set Rotation" ) );
+					GEditor->BeginTransaction(ActorTransaction);
 				}
 				else
 				{
-					GEditor->BeginTransaction( LOCTEXT( "OnSetRotation_ComponentDirect", "Modify Component(s)") );
+					GEditor->BeginTransaction(ComponentTransaction);
 				}
 
 				bBeganTransaction = true;
 			}
 
-			USceneComponent* SceneComponent = GetSceneComponentFromDetailsObject( Object );
-			if( SceneComponent )
+			USceneComponent* SceneComponent = GetSceneComponentFromDetailsObject(Object);
+			if (SceneComponent)
 			{
-				FScopedSwitchWorldForObject WorldSwitcher( Object );
-				
+				FScopedSwitchWorldForObject WorldSwitcher(Object);
+
 				if (SceneComponent->HasAnyFlags(RF_DefaultSubObject))
 				{
 					// Default subobjects must be included in any undo/redo operations
@@ -1342,24 +1385,82 @@ void FComponentTransformDetails::OnBeginRotatonSlider()
 
 				// Call modify but not PreEdit, we don't do the proper "Edit" until it's committed
 				SceneComponent->Modify();
-
-				// Add/update cached rotation value prior to slider interaction
-				ObjectToRelativeRotationMap.FindOrAdd(SceneComponent) = SceneComponent->RelativeRotation;
 			}
 		}
 	}
 
 	// Just in case we couldn't start a new transaction for some reason
-	if(!bBeganTransaction)
+	if (!bBeganTransaction)
 	{
-		GEditor->BeginTransaction( LOCTEXT( "OnSetRotation", "Set Rotation" ) );
-	}	
+		GEditor->BeginTransaction(ActorTransaction);
+	}
+}
+
+void FComponentTransformDetails::OnBeginRotationSlider()
+{
+	FText ActorTransaction = LOCTEXT("OnSetRotation", "Set Rotation");
+	FText ComponentTransaction = LOCTEXT("OnSetRotation_ComponentDirect", "Modify Component(s)");
+	BeginSliderTransaction(ActorTransaction, ComponentTransaction);
+
+	bEditingRotationInUI = true;
+	bIsSliderTransaction = true;
+
+	for (TWeakObjectPtr<UObject> ObjectPtr : SelectedObjects)
+	{
+		if (ObjectPtr.IsValid())
+		{
+			UObject* Object = ObjectPtr.Get();
+
+			USceneComponent* SceneComponent = GetSceneComponentFromDetailsObject(Object);
+			if (SceneComponent)
+			{
+				FScopedSwitchWorldForObject WorldSwitcher(Object);
+
+				// Add/update cached rotation value prior to slider interaction
+				ObjectToRelativeRotationMap.FindOrAdd(SceneComponent) = SceneComponent->GetRelativeRotation();
+			}
+		}
+	}
 }
 
 void FComponentTransformDetails::OnEndRotationSlider(float NewValue)
 {
 	// Commit gets called right before this, only need to end the transaction
 	bEditingRotationInUI = false;
+	bIsSliderTransaction = false;
+	GEditor->EndTransaction();
+}
+
+void FComponentTransformDetails::OnBeginLocationSlider()
+{
+	bIsSliderTransaction = true;
+	FText ActorTransaction = LOCTEXT("OnSetLocation", "Set Location");
+	FText ComponentTransaction = LOCTEXT("OnSetLocation_ComponentDirect", "Modify Component Location");
+	BeginSliderTransaction(ActorTransaction, ComponentTransaction);
+}
+
+void FComponentTransformDetails::OnEndLocationSlider(float NewValue)
+{
+	bIsSliderTransaction = false;
+	GEditor->EndTransaction();
+}
+
+void FComponentTransformDetails::OnBeginScaleSlider()
+{
+	// Assumption: slider isn't usable if multiple objects are selected
+	SliderScaleRatio.X = CachedScale.X.GetValue();
+	SliderScaleRatio.Y = CachedScale.Y.GetValue();
+	SliderScaleRatio.Z = CachedScale.Z.GetValue();
+
+	bIsSliderTransaction = true;
+	FText ActorTransaction = LOCTEXT("OnSetScale", "Set Scale");
+	FText ComponentTransaction = LOCTEXT("OnSetScale_ComponentDirect", "Modify Component Scale");
+	BeginSliderTransaction(ActorTransaction, ComponentTransaction);
+}
+
+void FComponentTransformDetails::OnEndScaleSlider(float NewValue)
+{
+	bIsSliderTransaction = false;
 	GEditor->EndTransaction();
 }
 

@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "Components/ChildActorComponent.h"
 #include "Engine/World.h"
@@ -22,7 +22,17 @@ void UChildActorComponent::OnRegister()
 
 	if (ChildActor)
 	{
-		if (bNeedsRecreate || ChildActor->GetClass() != ChildActorClass)
+		if (ChildActor->GetClass() != ChildActorClass)
+		{
+			bNeedsRecreate = true;
+			ChildActorName = NAME_None;
+		}
+		else
+		{
+			ChildActorName = ChildActor->GetFName();
+		}
+
+		if (bNeedsRecreate)
 		{
 			bNeedsRecreate = false;
 			DestroyChildActor();
@@ -30,18 +40,6 @@ void UChildActorComponent::OnRegister()
 		}
 		else
 		{
-			ChildActorName = ChildActor->GetFName();
-			
-			USceneComponent* ChildRoot = ChildActor->GetRootComponent();
-			if (ChildRoot && ChildRoot->GetAttachParent() != this)
-			{
-				// attach new actor to this component
-				// we can't attach in CreateChildActor since it has intermediate Mobility set up
-				// causing spam with inconsistent mobility set up
-				// so moving Attach to happen in Register
-				ChildRoot->AttachToComponent(this, FAttachmentTransformRules::SnapToTargetNotIncludingScale);
-			}
-
 			// Ensure the components replication is correctly initialized
 			SetIsReplicated(ChildActor->GetIsReplicated());
 		}
@@ -425,27 +423,31 @@ void UChildActorComponent::ApplyComponentInstanceData(FChildActorComponentInstan
 	}
 }
 
-void UChildActorComponent::SetChildActorClass(TSubclassOf<AActor> Class)
+void UChildActorComponent::SetChildActorClass(TSubclassOf<AActor> Class, AActor* ActorTemplate)
 {
 	ChildActorClass = Class;
 	if (IsTemplate())
 	{
 		if (ChildActorClass)
 		{
-			if (ChildActorTemplate == nullptr || (ChildActorTemplate->GetClass() != ChildActorClass))
+			if (ChildActorTemplate == nullptr || ActorTemplate || (ChildActorTemplate->GetClass() != ChildActorClass))
 			{
 				Modify();
 
-				AActor* NewChildActorTemplate = NewObject<AActor>(GetTransientPackage(), ChildActorClass, NAME_None, RF_ArchetypeObject | RF_Transactional | RF_Public);
+				AActor* NewChildActorTemplate = NewObject<AActor>(GetTransientPackage(), ChildActorClass, NAME_None, RF_ArchetypeObject | RF_Transactional | RF_Public, ActorTemplate);
 
 				if (ChildActorTemplate)
 				{
-					UEngine::CopyPropertiesForUnrelatedObjects(ChildActorTemplate, NewChildActorTemplate);
-#if WITH_EDITOR
-					NewChildActorTemplate->ClearActorLabel();
-#endif
+					if (ActorTemplate == nullptr)
+					{
+						UEngine::CopyPropertiesForUnrelatedObjects(ChildActorTemplate, NewChildActorTemplate);
+					}
 					ChildActorTemplate->Rename(nullptr, GetTransientPackage(), REN_DontCreateRedirectors);
 				}
+
+#if WITH_EDITOR
+				NewChildActorTemplate->ClearActorLabel();
+#endif
 
 				ChildActorTemplate = NewChildActorTemplate;
 
@@ -466,11 +468,28 @@ void UChildActorComponent::SetChildActorClass(TSubclassOf<AActor> Class)
 			ChildActorTemplate = nullptr;
 		}
 	}
-	else if (IsRegistered())
+	else
 	{
-		ChildActorName = NAME_None;
-		DestroyChildActor();
-		CreateChildActor();
+		// Clear actor template if it no longer matches the set class
+		if (ChildActorTemplate && ChildActorTemplate->GetClass() != ChildActorClass)
+		{
+			ChildActorTemplate = nullptr;
+		}
+
+		if (IsRegistered())
+		{
+			ChildActorName = NAME_None;
+			DestroyChildActor();
+
+			// If an actor template was supplied, temporarily set ChildActorTemplate to create the new Actor with ActorTemplate used as the template
+			TGuardValue<AActor*> ChildActorTemplateGuard(ChildActorTemplate, (ActorTemplate ? ActorTemplate : ChildActorTemplate));
+
+			CreateChildActor();
+		}
+		else if (ActorTemplate)
+		{
+			UE_LOG(LogChildActorComponent, Warning, TEXT("Call to SetChildActorClass on '%s' supplied ActorTemplate '%s', but it will not be used due to the component not being registered."), *GetPathName(), *ActorTemplate->GetPathName());
+		}
 	}
 }
 
@@ -575,7 +594,11 @@ void UChildActorComponent::CreateChildActor()
 					const FComponentInstanceDataCache* ComponentInstanceData = (CachedInstanceData ? CachedInstanceData->ComponentInstanceData.Get() : nullptr);
 					ChildActor->FinishSpawning(GetComponentTransform(), false, ComponentInstanceData);
 
-					ChildActor->AttachToComponent(this, FAttachmentTransformRules::SnapToTargetNotIncludingScale);
+					if (USceneComponent* ChildRoot = ChildActor->GetRootComponent())
+					{
+						TGuardValue<TEnumAsByte<EComponentMobility::Type>> MobilityGuard(ChildRoot->Mobility, Mobility);
+						ChildRoot->AttachToComponent(this, FAttachmentTransformRules::SnapToTargetNotIncludingScale);
+					}
 
 					SetIsReplicated(ChildActor->GetIsReplicated());
 
@@ -680,6 +703,8 @@ void UChildActorComponent::BeginPlay()
 
 	if (ChildActor && !ChildActor->HasActorBegunPlay())
 	{
-		ChildActor->DispatchBeginPlay();
+		const AActor* Owner = GetOwner();
+		const bool bFromLevelStreaming = Owner ? Owner->IsActorBeginningPlayFromLevelStreaming() : false;
+		ChildActor->DispatchBeginPlay(bFromLevelStreaming);
 	}
 }

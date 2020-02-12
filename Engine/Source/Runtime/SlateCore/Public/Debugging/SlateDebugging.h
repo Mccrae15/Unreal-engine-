@@ -1,15 +1,20 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
 #include "CoreMinimal.h"
 #include "Delegates/Delegate.h"
 #include "Input/Reply.h"
+#include "ProfilingDebugging/CsvProfiler.h"
 
 #include "SlateDebugging.generated.h"
 
 #ifndef WITH_SLATE_DEBUGGING
 	#define WITH_SLATE_DEBUGGING !(UE_BUILD_SHIPPING || UE_BUILD_TEST)
+#endif
+
+#ifndef SLATE_CSV_TRACKER
+	#define SLATE_CSV_TRACKER CSV_PROFILER
 #endif
 
 class SWindow;
@@ -22,6 +27,7 @@ class FSlateRect;
 class FWeakWidgetPath;
 class FWidgetPath;
 class FNavigationReply;
+class FSlateInvalidationRoot;
 
 UENUM()
 enum class ESlateDebuggingInputEvent : uint8
@@ -56,6 +62,17 @@ enum class ESlateDebuggingStateChangeEvent : uint8
 	MouseCaptureLost,
 };
 
+UENUM()
+enum class ESlateDebuggingNavigationMethod : uint8
+{
+	Unknown,
+	Explicit,
+	CustomDelegateBound,
+	CustomDelegateUnbound,
+	NextOrPrevious,
+	HitTestGrid
+};
+
 struct SLATECORE_API FSlateDebuggingInputEventArgs
 {
 public:
@@ -74,6 +91,10 @@ enum class ESlateDebuggingFocusEvent : uint8
 	FocusLost,
 	FocusReceived
 };
+
+
+#if WITH_SLATE_DEBUGGING
+
 
 struct SLATECORE_API FSlateDebuggingFocusEventArgs
 {
@@ -102,13 +123,20 @@ public:
 		const FNavigationEvent& InNavigationEvent,
 		const FNavigationReply& InNavigationReply,
 		const FWidgetPath& InNavigationSource,
-		const TSharedPtr<SWidget>& InDestinationWidget
+		const TSharedPtr<SWidget>& InDestinationWidget,
+		const ESlateDebuggingNavigationMethod InNavigationMethod
 	);
 
 	const FNavigationEvent& NavigationEvent;
 	const FNavigationReply& NavigationReply;
 	const FWidgetPath& NavigationSource;
 	const TSharedPtr<SWidget>& DestinationWidget;
+	const ESlateDebuggingNavigationMethod NavigationMethod;
+};
+
+struct SLATECORE_API FSlateDebuggingExecuteNavigationEventArgs
+{
+public:
 };
 
 struct SLATECORE_API FSlateDebuggingWarningEventArgs
@@ -127,14 +155,18 @@ struct SLATECORE_API FSlateDebuggingMouseCaptureEventArgs
 {
 public:
 	FSlateDebuggingMouseCaptureEventArgs(
-		const TSharedPtr<SWidget>& InCapturingWidget
+		bool InCaptured,
+		uint32 InUserIndex,
+		uint32 InPointerIndex,
+		const TSharedPtr<const SWidget>& InCapturingWidget
 	);
 
-	const TSharedPtr<SWidget>& CapturingWidget;
+	bool Captured;
+	uint32 UserIndex;
+	uint32 PointerIndex;
+	const TSharedPtr<const SWidget>& CaptureWidget;
 };
 
-
-#if WITH_SLATE_DEBUGGING
 
 /**
  * 
@@ -192,27 +224,43 @@ public:
 
 public:
 	/**  */
-	DECLARE_MULTICAST_DELEGATE_OneParam(FWidgetNavigationEvent, const FSlateDebuggingNavigationEventArgs& /*EventArgs*/);
-	static FWidgetNavigationEvent NavigationEvent;
+	DECLARE_MULTICAST_DELEGATE_OneParam(FWidgetAttemptNavigationEvent, const FSlateDebuggingNavigationEventArgs& /*EventArgs*/);
+	static FWidgetAttemptNavigationEvent AttemptNavigationEvent;
 
-	static void AttemptNavigation(const FNavigationEvent& InNavigationEvent, const FNavigationReply& InNavigationReply, const FWidgetPath& InNavigationSource, const TSharedPtr<SWidget>& InDestinationWidget);
+	static void BroadcastAttemptNavigation(const FNavigationEvent& InNavigationEvent, const FNavigationReply& InNavigationReply, const FWidgetPath& InNavigationSource, const TSharedPtr<SWidget>& InDestinationWidget, ESlateDebuggingNavigationMethod InNavigationMethod);
+
+	/**  */
+	DECLARE_MULTICAST_DELEGATE_OneParam(FWidgetExecuteNavigationEvent, const FSlateDebuggingExecuteNavigationEventArgs& /*EventArgs*/);
+	static FWidgetExecuteNavigationEvent ExecuteNavigationEvent;
+
+	static void BroadcastExecuteNavigation();
 
 public:
 	/**  */
 	DECLARE_MULTICAST_DELEGATE_OneParam(FWidgetMouseCaptureEvent, const FSlateDebuggingMouseCaptureEventArgs& /*EventArgs*/);
 	static FWidgetMouseCaptureEvent MouseCaptureEvent;
 
-	static void MouseCapture(const TSharedPtr<SWidget>& InCapturingWidget);
+	static void BroadcastMouseCapture(uint32 UserIndex, uint32 PointerIndex, TSharedPtr<const SWidget> InCapturingWidget);
+	static void BroadcastMouseCaptureLost(uint32 UserIndex, uint32 PointerIndex, TSharedPtr<const SWidget> InWidgetLostCapture);
 
 public:
 	/**  */
 	DECLARE_MULTICAST_DELEGATE_TwoParams(FUICommandRun, const FName& /*CommandName*/, const FText& /*CommandLabel*/);
 	static FUICommandRun CommandRun;
 
+	static void WidgetInvalidated(FSlateInvalidationRoot& InvalidationRoot, const class FWidgetProxy& WidgetProxy, const FLinearColor* CustomInvalidationColor = nullptr);
+
+	static void DrawInvalidationRoot(const SWidget& RootWidget, int32 LayerId, FSlateWindowElementList& OutDrawElements);
+
+	static void DrawInvalidatedWidgets(const FSlateInvalidationRoot& Root, const FPaintArgs& PaintArgs, FSlateWindowElementList& OutDrawElements);
+
+	static void ClearInvalidatedWidgets(const FSlateInvalidationRoot& Root);
 private:
 
 	// This class is only for namespace use
 	FSlateDebugging() {}
+
+	static TArray<struct FInvalidatedWidgetDrawer> InvalidatedWidgetDrawers;
 };
 
 #endif

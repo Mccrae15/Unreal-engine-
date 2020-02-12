@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -126,6 +126,10 @@ struct UNREALED_API FLevelEditorViewportInstanceSettings
 	UPROPERTY(config)
 	FName BufferVisualizationMode;
 
+	/** The buffer visualization mode for the viewport. */
+	UPROPERTY(config)
+	FName RayTracingDebugVisualizationMode;
+
 	/** Setting to allow designers to override the automatic expose. */
 	UPROPERTY(config)
 	FExposureSettings ExposureSettings;
@@ -218,6 +222,10 @@ class UNREALED_API ULevelEditorViewportSettings
 	UPROPERTY(EditAnywhere, config, Category=Controls)
 	TEnumAsByte<EWASDType> FlightCameraControlType;
 
+	/** Enable the use of the experimental navigation in the flight camera controls. */
+	UPROPERTY(EditAnywhere, config, Category=Controls)
+	bool FlightCameraControlExperimentalNavigation;
+
 	/** Choose the control scheme for landscape tools (ignored for pen input) */
 	UPROPERTY(EditAnywhere, config, Category=Controls)
 	ELandscapeFoliageEditorControlType LandscapeEditorControlType;
@@ -237,6 +245,14 @@ class UNREALED_API ULevelEditorViewportSettings
 	/** Allow translate/rotate widget */
 	UPROPERTY(EditAnywhere, config, Category=LookAndFeel, meta=( DisplayName = "Enable Combined Translate/Rotate Widget" ))
 	uint32 bAllowTranslateRotateZWidget:1;
+
+	/** Allow arcball rotation with rotate widget */
+	UPROPERTY(EditAnywhere, config, Category = LookAndFeel, meta = (DisplayName = "Enable Arcball Rotate"))
+	uint32 bAllowArcballRotate : 1;
+
+	/** Allow screen rotation with rotate widget */
+	UPROPERTY(EditAnywhere, config, Category = LookAndFeel, meta = (DisplayName = "Enable Screen Rotate"))
+	uint32 bAllowScreenRotate : 1;
 
 	/** If true, Clicking a BSP selects the brush and ctrl+shift+click selects the surface. If false, vice versa */
 	UPROPERTY(EditAnywhere, config, Category=LookAndFeel, meta=( DisplayName = "Clicking BSP Enables Brush" ), AdvancedDisplay)

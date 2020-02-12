@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -95,6 +95,34 @@ public:
 	{
 		return bEnabled;
 	}
+
+	/**
+	 * Delegate callback when a system acquires ownership over an XMPP connection
+	 *
+	 * @param XmppConnection The connection that is acquired
+	 * @param SystemName The name of the system initiating this request
+	 */
+	DECLARE_EVENT_TwoParams(FXmppModule, FOnXmppConnectionAcquired, const TSharedRef<IXmppConnection>& /*XmppConnection*/, const FString& /*SystemName*/);
+	FOnXmppConnectionAcquired OnXmppConnectionAcquired;
+
+	/**
+	 * Delegate callback when a system relinquishes ownership of an XMPP connection
+	 *
+	 * @param XmppConnection The connection that is relinquished
+	 * @param SystemName The name of the system initiating this request
+	 */
+	DECLARE_EVENT_TwoParams(FXmppModule, FOnXmppConnectionRelinquished, const TSharedRef<IXmppConnection>& /*XmppConnection*/, const FString& /*SystemName*/);
+	FOnXmppConnectionRelinquished OnXmppConnectionRelinquished;
+
+	/**
+	* Delegate fired when an Xmpp connection is created.
+	*
+	* @param NewConnection Reference to newly created Xmpp connection
+	*
+	*/
+	DECLARE_MULTICAST_DELEGATE_OneParam(FOnXmppConnectionCreated, const TSharedRef<IXmppConnection>& /*NewConnection*/);
+	FOnXmppConnectionCreated OnXmppConnectionCreated;
+
 
 private:
 

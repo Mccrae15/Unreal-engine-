@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "ConcertClientPresenceMode.h"
 #include "ConcertClientPresenceManager.h"
@@ -24,31 +24,16 @@
 #include "Editor.h"
 #include "EditorWorldExtension.h"
 #include "LevelEditor.h"
-#include "ILevelViewport.h"
+#include "IAssetViewport.h"
 #include "SLevelViewport.h"
 #include "IVREditorModule.h"
 #include "VREditorMode.h"
 #include "VREditorInteractor.h"
+#include "Teleporter/VREditorTeleporter.h"
 #include "ViewportWorldInteraction.h"
 #endif
 
-#if	WITH_EDITOR
-
-TUniquePtr<FConcertClientBasePresenceMode> FConcertClientBasePresenceMode::CreatePresenceMode(const UClass* AvatarActorClass, class FConcertClientPresenceManager* InManager)
-{
-	if (AvatarActorClass)
-	{
-		if (AvatarActorClass->IsChildOf(AConcertClientDesktopPresenceActor::StaticClass()))
-		{
-			return MakeUnique<FConcertClientDesktopPresenceMode>(InManager);
-		}
-		else if (AvatarActorClass->IsChildOf(AConcertClientVRPresenceActor::StaticClass()))
-		{
-			return MakeUnique<FConcertClientVRPresenceMode>(InManager);
-		}
-	}
-	return nullptr;
-}
+#if WITH_EDITOR
 
 void FConcertClientBasePresenceMode::SetUpdateIndex(IConcertClientSession& Session, const FName& InEventName, FConcertClientPresenceEventBase& OutEvent)
 {
@@ -77,19 +62,20 @@ void FConcertClientBasePresenceMode::SendEvents(IConcertClientSession& Session)
 		return;
 	}
 
-	const FTransform PresenceHeadTransform = GetHeadTransform();
+	const FTransform PresenceHeadTransform = GetTransform();
 
+	EEditorPlayMode EditorPlayModePlaceholder;
 	FConcertClientPresenceDataUpdateEvent PresenceDataUpdatedEvent;
-	PresenceDataUpdatedEvent.WorldPath = *World->GetPathName();
+	PresenceDataUpdatedEvent.WorldPath = *ParentManager->GetPresenceWorldPath(Session.GetSessionClientEndpointId(), EditorPlayModePlaceholder); // The Non-PIE world path, i.e. the "UEDPIE_%d_" decoration stripped away.
 	PresenceDataUpdatedEvent.Position = PresenceHeadTransform.GetLocation();
 	PresenceDataUpdatedEvent.Orientation = PresenceHeadTransform.GetRotation();
 
 	SetUpdateIndex(Session, FConcertClientPresenceDataUpdateEvent::StaticStruct()->GetFName(), PresenceDataUpdatedEvent);
 
-	Session.SendCustomEvent(PresenceDataUpdatedEvent, Session.GetSessionClientEndpointIds(), EConcertMessageFlags::None);
+	Session.SendCustomEvent(PresenceDataUpdatedEvent, Session.GetSessionClientEndpointIds(), EConcertMessageFlags::UniqueId);
 }
 
-FTransform FConcertClientBasePresenceMode::GetHeadTransform()
+FTransform FConcertClientBasePresenceMode::GetTransform()
 {
 	check(ParentManager);
 
@@ -217,7 +203,7 @@ void FConcertClientDesktopPresenceMode::SendEvents(IConcertClientSession& Sessio
 
 				SetUpdateIndex(Session, FConcertClientDesktopPresenceUpdateEvent::StaticStruct()->GetFName(), Event);
 
-				Session.SendCustomEvent(Event, Session.GetSessionClientEndpointIds(), EConcertMessageFlags::None);
+				Session.SendCustomEvent(Event, Session.GetSessionClientEndpointIds(), EConcertMessageFlags::UniqueId);
 			}
 		}
 	}
@@ -281,27 +267,31 @@ void FConcertClientVRPresenceMode::SendEvents(IConcertClientSession& Session)
 		// Grab the laser position from VR editor too
 		if (UVREditorMode* VRMode = IVREditorModule::Get().GetVRMode())
 		{
-			UVREditorInteractor* LaserInteractor = nullptr;
+			auto HasLaser = [](UVREditorInteractor* Interactor) -> bool
+			{
+				if (Interactor == nullptr)
+				{
+					return false;
+				}
+				AVREditorTeleporter* Teleporter = Interactor->GetTeleportActor();
+				return Interactor->GetControllerType() == EControllerType::AssistingLaser
+					|| Interactor->GetControllerType() == EControllerType::Laser
+					|| (Teleporter && Teleporter->IsAiming());
+			};
+
 			for (int32 HandIndex = 0; HandIndex < 2; ++HandIndex)
 			{
 				UVREditorInteractor* Interactor = HandIndex == 0 ? VRMode->GetHandInteractor(EControllerHand::Left) : VRMode->GetHandInteractor(EControllerHand::Right);
-				if (Interactor && Interactor->GetControllerType() == EControllerType::Laser)
+				if (HasLaser(Interactor))
 				{
-					LaserInteractor = Cast<UVREditorInteractor>(Interactor);
-					break;
+					Event.Lasers[HandIndex] = FConcertLaserData(Interactor->GetLaserStart(), Interactor->GetLaserEnd());
 				}
-			}
-			if (LaserInteractor)
-			{
-				Event.LaserStart = LaserInteractor->GetLaserStart();
-				Event.LaserEnd = LaserInteractor->GetLaserEnd();
-				Event.bHasLaser = true;
 			}
 		}
 
 		SetUpdateIndex(Session, FConcertClientDesktopPresenceUpdateEvent::StaticStruct()->GetFName(), Event);
 
-		Session.SendCustomEvent(Event, Session.GetSessionClientEndpointIds(), EConcertMessageFlags::None);
+		Session.SendCustomEvent(Event, Session.GetSessionClientEndpointIds(), EConcertMessageFlags::UniqueId);
 	}
 }
 

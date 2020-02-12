@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "SRowEditor.h"
 #include "Modules/ModuleManager.h"
@@ -81,7 +81,7 @@ SRowEditor::~SRowEditor()
 {
 }
 
-void SRowEditor::NotifyPreChange( UProperty* PropertyAboutToChange )
+void SRowEditor::NotifyPreChange( FProperty* PropertyAboutToChange )
 {
 	check(DataTable.IsValid());
 	DataTable->Modify();
@@ -89,7 +89,7 @@ void SRowEditor::NotifyPreChange( UProperty* PropertyAboutToChange )
 	FDataTableEditorUtils::BroadcastPreChange(DataTable.Get(), FDataTableEditorUtils::EDataTableChangeInfo::RowData);
 }
 
-void SRowEditor::NotifyPostChange( const FPropertyChangedEvent& PropertyChangedEvent, UProperty* PropertyThatChanged )
+void SRowEditor::NotifyPostChange( const FPropertyChangedEvent& PropertyChangedEvent, FProperty* PropertyThatChanged )
 {
 	check(DataTable.IsValid());
 
@@ -198,6 +198,7 @@ void SRowEditor::Restore()
 	CurrentRow = MakeShareable(new FStructFromDataTable(DataTable.Get(), FinalName));
 	if (StructureDetailsView.IsValid())
 	{
+		StructureDetailsView->SetCustomName(FText::FromName(FinalName));
 		StructureDetailsView->SetStructureData(CurrentRow);
 	}
 
@@ -241,12 +242,6 @@ void SRowEditor::OnSelectionChanged(TSharedPtr<FName> InItem, ESelectInfo::Type 
 		SelectedName = InItem;
 
 		Restore();
-
-		if (RenameTextBox.IsValid())
-		{
-			// refresh name, in case of a pending rename action
-			RenameTextBox->SetText(TAttribute<FText>(this, &SRowEditor::GetCurrentNameAsText));
-		}
 	}
 }
 
@@ -339,10 +334,13 @@ void SRowEditor::OnRowRenamed(const FText& Text, ETextCommit::Type CommitType)
 	{
 		if (Text.IsEmptyOrWhitespace() || !FName::IsValidXName(Text.ToString(), INVALID_NAME_CHARACTERS))
 		{
-			// popup an error dialog here
-			const FText Message = FText::Format(LOCTEXT("InvalidRowName", "'{0}' is not a valid row name"), Text);
-			FMessageDialog::Open(EAppMsgType::Ok, Message);
-
+			// Only pop up the error dialog if the rename was caused by the user's action
+			if ((CommitType == ETextCommit::OnEnter) || (CommitType == ETextCommit::OnUserMovedFocus ))
+			{
+				// popup an error dialog here
+				const FText Message = FText::Format(LOCTEXT("InvalidRowName", "'{0}' is not a valid row name"), Text);
+				FMessageDialog::Open(EAppMsgType::Ok, Message);
+			}
 			return;
 		}
 		const FName NewName = DataTableUtils::MakeValidName(Text.ToString());
@@ -436,40 +434,6 @@ void SRowEditor::ConstructInternal(UDataTable* Changed)
 			.AutoWidth()
 			.Padding(2)
 			[
-				SNew(SButton)
-				.ButtonStyle(FEditorStyle::Get(), "HoverHintOnly")
-				.ForegroundColor(FSlateColor::UseForeground())
-				.HAlign(HAlign_Center)
-				.VAlign(VAlign_Center)
-				.OnClicked(this, &SRowEditor::OnAddClicked)
-				.IsEnabled(this, &SRowEditor::IsAddRowEnabled)
-				.ToolTipText(LOCTEXT("AddRowTooltip", "Add a new row to the data table"))
-				[
-					SNew(SImage)
-					.Image(FEditorStyle::Get().GetBrush("Plus"))
-				]
-			]
-			+ SHorizontalBox::Slot()
-			.AutoWidth()
-			.Padding(2)
-			[
-				SNew(SButton)
-				.ButtonStyle(FEditorStyle::Get(), "HoverHintOnly")
-				.ForegroundColor(FSlateColor::UseForeground())
-				.HAlign(HAlign_Center)
-				.VAlign(VAlign_Center)
-				.OnClicked(this, &SRowEditor::OnRemoveClicked)
-				.IsEnabled(this, &SRowEditor::IsRemoveRowEnabled)
-				.ToolTipText(LOCTEXT("RemoveRowTooltip", "Remove the currently selected row from the data table"))
-				[
-					SNew(SImage)
-					.Image(FEditorStyle::Get().GetBrush("Cross"))
-				]
-			]
-			+ SHorizontalBox::Slot()
-			.AutoWidth()
-			.Padding(2)
-			[
 				SNew(SBox)
 				.WidthOverride(2 * ButtonWidth)
 				.ToolTipText(LOCTEXT("SelectedRowTooltip", "Select a row to edit"))
@@ -504,107 +468,6 @@ void SRowEditor::ConstructInternal(UDataTable* Changed)
 				]
 			]
 
-			+ SHorizontalBox::Slot()
-			[
-				SNew(SSpacer)
-			]
-			+ SHorizontalBox::Slot()
-			.AutoWidth()
-			.Padding(2)
-			.VAlign(EVerticalAlignment::VAlign_Center)
-			[
-				SNew(SBox)
-				.HAlign(HAlign_Right)
-				.Visibility(this, &SRowEditor::GetRenameVisibility)
-				[
-					SNew(STextBlock).Text(LOCTEXT("RowNameLabel", "Row Name:"))
-				]
-			]
-			+ SHorizontalBox::Slot()
-			.AutoWidth()
-			.Padding(2)
-			[
-				SNew(SBox)
-				.WidthOverride(2 * ButtonWidth)
-				.Visibility(this, &SRowEditor::GetRenameVisibility)
-				[
-					SAssignNew(RenameTextBox, SEditableTextBox)
-					.Text(this, &SRowEditor::GetCurrentNameAsText)
-					.OnTextCommitted(this, &SRowEditor::OnRowRenamed)
-				]
-			]
-			+ SHorizontalBox::Slot()
-			.AutoWidth()
-			.Padding(2)
-			[
-				SNew(SButton)
-				.ButtonStyle(FEditorStyle::Get(), "HoverHintOnly")
-				.ForegroundColor(FSlateColor::UseForeground())
-				.HAlign(HAlign_Center)
-				.VAlign(VAlign_Center)
-				.OnClicked(this, &SRowEditor::OnMoveRowClicked, FDataTableEditorUtils::ERowMoveDirection::Up)
-				.IsEnabled(this, &SRowEditor::IsMoveRowUpEnabled)
-				.ToolTipText(LOCTEXT("MoveUpTooltip", "Move the currently selected row up by one in the data table"))
-				[
-					SNew(STextBlock)
-					.Font(FEditorStyle::Get().GetFontStyle("FontAwesome.14"))
-					.Text(FText::FromString(FString(TEXT("\xf106"))) /*fa-angle-up*/)
-				]
-			]
-			+ SHorizontalBox::Slot()
-			.AutoWidth()
-			.Padding(2)
-			[
-				SNew(SButton)
-				.ButtonStyle(FEditorStyle::Get(), "HoverHintOnly")
-				.ForegroundColor(FSlateColor::UseForeground())
-				.HAlign(HAlign_Center)
-				.VAlign(VAlign_Center)
-				.OnClicked(this, &SRowEditor::OnMoveRowClicked, FDataTableEditorUtils::ERowMoveDirection::Down)
-				.IsEnabled(this, &SRowEditor::IsMoveRowDownEnabled)
-				.ToolTipText(LOCTEXT("MoveDownTooltip", "Move the currently selected row down by one in the data table"))
-				[
-					SNew(STextBlock)
-					.Font(FEditorStyle::Get().GetFontStyle("FontAwesome.14"))
-					.Text(FText::FromString(FString(TEXT("\xf107"))) /*fa-angle-down*/)
-				]
-			]
-			+ SHorizontalBox::Slot()
-			.AutoWidth()
-			.Padding(2)
-			[
-				SNew(SButton)
-				.ButtonStyle(FEditorStyle::Get(), "HoverHintOnly")
-				.ForegroundColor(FSlateColor::UseForeground())
-				.HAlign(HAlign_Center)
-				.VAlign(VAlign_Center)
-				.OnClicked(this, &SRowEditor::OnMoveToExtentClicked, FDataTableEditorUtils::ERowMoveDirection::Up)
-				.IsEnabled(this, &SRowEditor::IsMoveRowUpEnabled)
-				.ToolTipText(LOCTEXT("MoveToTopTooltip", "Move the currently selected row to the top of the data table"))
-				[
-					SNew(STextBlock)
-					.Font(FEditorStyle::Get().GetFontStyle("FontAwesome.14"))
-					.Text(FText::FromString(FString(TEXT("\xf102"))) /*fa-angle-double-up*/)
-				]
-			]
-			+ SHorizontalBox::Slot()
-			.AutoWidth()
-			.Padding(2)
-			[
-				SNew(SButton)
-				.ButtonStyle(FEditorStyle::Get(), "HoverHintOnly")
-				.ForegroundColor(FSlateColor::UseForeground())
-				.HAlign(HAlign_Center)
-				.VAlign(VAlign_Center)
-				.OnClicked(this, &SRowEditor::OnMoveToExtentClicked, FDataTableEditorUtils::ERowMoveDirection::Down)
-				.IsEnabled(this, &SRowEditor::IsMoveRowDownEnabled)
-				.ToolTipText(LOCTEXT("MoveToBottomTooltip", "Move the currently selected row to the bottom of the data table"))
-				[
-					SNew(STextBlock)
-					.Font(FEditorStyle::Get().GetFontStyle("FontAwesome.14"))
-					.Text(FText::FromString(FString(TEXT("\xf103"))) /*fa-angle-double-down*/)
-				]
-			]
 		]
 		+ SVerticalBox::Slot()
 		[

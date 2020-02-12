@@ -1,10 +1,13 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 #include "BackgroundHttpManagerImpl.h"
+#include "PlatformBackgroundHttp.h"
 
+#include "HAL/FileManager.h"
 #include "HAL/PlatformFilemanager.h"
 #include "HAL/PlatformAtomics.h"
 #include "HAL/PlatformFile.h"
 
+#include "Misc/ConfigCacheIni.h"
 #include "Misc/ScopeRWLock.h"
 
 DEFINE_LOG_CATEGORY(LogBackgroundHttpManager);
@@ -15,6 +18,7 @@ FBackgroundHttpManagerImpl::FBackgroundHttpManagerImpl()
 	, ActiveRequests()
 	, ActiveRequestLock()
 	, NumCurrentlyActiveRequests(0)
+	, MaxActiveDownloads(4)
 {
 }
 
@@ -24,6 +28,12 @@ FBackgroundHttpManagerImpl::~FBackgroundHttpManagerImpl()
 
 void FBackgroundHttpManagerImpl::Initialize()
 {
+	ClearAnyTempFilesFromTimeOut();
+
+	// Can't read into an atomic int directly
+	int MaxActiveDownloadsConfig = 4;
+	ensureAlwaysMsgf(GConfig->GetInt(TEXT("BackgroundHttp"), TEXT("BackgroundHttp.MaxActiveDownloads"), MaxActiveDownloadsConfig, GEngineIni), TEXT("No value found for MaxActiveDownloads! Defaulting to 4!"));
+	MaxActiveDownloads = MaxActiveDownloadsConfig;
 }
 
 void FBackgroundHttpManagerImpl::Shutdown()
@@ -39,6 +49,52 @@ void FBackgroundHttpManagerImpl::Shutdown()
 		FRWScopeLock ScopeLock(ActiveRequestLock, SLT_Write);
 		ActiveRequests.Empty();
 		NumCurrentlyActiveRequests = 0;
+	}
+}
+
+void FBackgroundHttpManagerImpl::ClearAnyTempFilesFromTimeOut()
+{
+	const FString DirectoryToCheck = FPlatformBackgroundHttp::GetTemporaryRootPath();
+
+	//Find all files in our temp folder
+	TArray<FString> FilesToCheck;
+	IFileManager::Get().FindFiles(FilesToCheck, *DirectoryToCheck, nullptr);
+
+	double FileAgeTimeOutSettings = -1;
+	GConfig->GetDouble(TEXT("BackgroundHttp"), TEXT("BackgroundHttp.TempFileTimeOutSeconds"), FileAgeTimeOutSettings, GEngineIni);
+
+	UE_LOG(LogBackgroundHttpManager, Log, TEXT("Checking for BackgroundHTTP temp files that should be deleted due to time out. NumTempFilesFound:%d | TempFileTimeOutSeconds:%lf"), FilesToCheck.Num(), FileAgeTimeOutSettings);
+
+	if (FileAgeTimeOutSettings >= 0)
+	{
+		for (const FString& File : FilesToCheck)
+		{
+			const FString FullFilePath = FPaths::Combine(DirectoryToCheck, File);
+			
+			FFileStatData FileData = IFileManager::Get().GetStatData(*FullFilePath);
+			FTimespan TimeSinceCreate = FDateTime::UtcNow() - FileData.CreationTime;
+
+			const double FileAge = TimeSinceCreate.GetTotalSeconds();
+			const bool bShouldDelete = (FileAge > FileAgeTimeOutSettings);
+
+			UE_LOG(LogBackgroundHttpManager, Log, TEXT("FoundTempFile: %s with age %lf -- bShouldDelete:%d"), *FullFilePath, FileAge, (int)bShouldDelete);
+
+			if (bShouldDelete)
+			{
+				if (IFileManager::Get().Delete(*FullFilePath))
+				{
+					UE_LOG(LogBackgroundHttpManager, Log, TEXT("Successfully deleted %s due to time out settings"), *FullFilePath);
+				}
+				else
+				{
+					UE_LOG(LogBackgroundHttpManager, Error, TEXT("File %s failed to delete, but should have as as it is %lld seconds old!"), *FullFilePath, FileAge);
+				}
+			}
+			else
+			{
+				UE_LOG(LogBackgroundHttpManager, Log, TEXT("SKipping Delete of %s as it is more recent then the time out settings."), *FullFilePath);
+			}
+		}
 	}
 }
 
@@ -64,6 +120,16 @@ void FBackgroundHttpManagerImpl::CleanUpTemporaryFiles()
 	}
 }
 
+int FBackgroundHttpManagerImpl::GetMaxActiveDownloads() const
+{
+	return MaxActiveDownloads;
+}
+
+void FBackgroundHttpManagerImpl::SetMaxActiveDownloads(int InMaxActiveDownloads)
+{
+	MaxActiveDownloads = InMaxActiveDownloads;
+}
+
 void FBackgroundHttpManagerImpl::AddRequest(const FBackgroundHttpRequestPtr Request)
 {
 	UE_LOG(LogBackgroundHttpManager, Log, TEXT("AddRequest Called - RequestID:%s"), *Request->GetRequestID());
@@ -85,7 +151,7 @@ void FBackgroundHttpManagerImpl::RemoveRequest(const FBackgroundHttpRequestPtr R
 	//Check if this request was in active list first
 	{
 		FRWScopeLock ScopeLock(ActiveRequestLock, SLT_Write);
-		NumRequestsRemoved = ActiveRequests.RemoveSwap(Request);
+		NumRequestsRemoved = ActiveRequests.Remove(Request);
 
 		//If we removed an active request, lets decrement the NumCurrentlyActiveRequests accordingly
 		if (NumRequestsRemoved != 0)
@@ -98,7 +164,7 @@ void FBackgroundHttpManagerImpl::RemoveRequest(const FBackgroundHttpRequestPtr R
 	if (NumRequestsRemoved == 0)
 	{
 		FRWScopeLock ScopeLock(PendingRequestLock, SLT_Write);
-		NumRequestsRemoved = PendingStartRequests.RemoveSwap(Request);
+		NumRequestsRemoved = PendingStartRequests.Remove(Request);
 	}
 
 	UE_LOG(LogBackgroundHttpManager, Log, TEXT("FGenericPlatformBackgroundHttpManager::RemoveRequest Called - RequestID:%s | NumRequestsActuallyRemoved:%d | NumCurrentlyActiveRequests:%d"), *Request->GetRequestID(), NumRequestsRemoved, NumCurrentlyActiveRequests);
@@ -162,51 +228,55 @@ bool FBackgroundHttpManagerImpl::Tick(float DeltaTime)
 
 void FBackgroundHttpManagerImpl::ActivatePendingRequests()
 {
-	TArray<FBackgroundHttpRequestPtr> RequestsStartingThisTick;
+	FBackgroundHttpRequestPtr HighestPriorityRequestToStart = nullptr;
+	EBackgroundHTTPPriority HighestRequestPriority = EBackgroundHTTPPriority::Num;
 
-	//Handle Populating RequestsStartingThisTick from PendingStartRequests
+	//Go through and find the highest priority request
 	{
-		FRWScopeLock ScopeLock(PendingRequestLock, SLT_Write);
-
-		if (PendingStartRequests.Num() > 0)
+		FRWScopeLock ActiveScopeLock(ActiveRequestLock, SLT_ReadOnly);
+		FRWScopeLock PendingScopeLock(PendingRequestLock, SLT_ReadOnly);
+		const int NumRequestsWeCanProcess = (MaxActiveDownloads - NumCurrentlyActiveRequests);
+		if (NumRequestsWeCanProcess > 0)
 		{
-			UE_LOG(LogBackgroundHttpManager, Verbose, TEXT("Populating Requests to Start from PendingStartRequests - PlatformMaxActiveDownloads:%d | NumCurrentlyActiveRequests:%d | NumPendingStartRequests:%d"), FPlatformBackgroundHttp::GetPlatformMaxActiveDownloads(), NumCurrentlyActiveRequests, PendingStartRequests.Num());
-
-			//See how many more requests we can process and only do anything if we can still process more
-			const int NumRequestsWeCanProcess = (FPlatformBackgroundHttp::GetPlatformMaxActiveDownloads() - NumCurrentlyActiveRequests);
-			if (NumRequestsWeCanProcess > 0)
+			if (PendingStartRequests.Num() > 0)
 			{
-				for (int RequestAddedCount = 0; RequestAddedCount < NumRequestsWeCanProcess; ++RequestAddedCount)
-				{
-					//Don't do anything once we are out of PendingStartRequests
-					if (PendingStartRequests.Num() > 0)
-					{
-						//Lets just always use the first element and then remove it
-						FBackgroundHttpRequestPtr& PendingRequest = PendingStartRequests[0];
-						RequestsStartingThisTick.Add(PendingRequest);
-						PendingStartRequests.RemoveAtSwap(0);
+				UE_LOG(LogBackgroundHttpManager, Verbose, TEXT("Populating Requests to Start from PendingStartRequests - MaxActiveDownloads:%d | NumCurrentlyActiveRequests:%d | NumPendingStartRequests:%d"), MaxActiveDownloads.Load(), NumCurrentlyActiveRequests, PendingStartRequests.Num());
 
-						++NumCurrentlyActiveRequests;
-					}
-					else
+				HighestPriorityRequestToStart = PendingStartRequests[0];
+				HighestRequestPriority = HighestPriorityRequestToStart.IsValid() ? HighestPriorityRequestToStart->GetRequestPriority() : EBackgroundHTTPPriority::Num;
+
+				//See how many more requests we can process and only do anything if we can still process more
+				{
+					for (int RequestIndex = 1; RequestIndex < PendingStartRequests.Num(); ++RequestIndex)
 					{
-						break;
+						FBackgroundHttpRequestPtr PendingRequestToCheck = PendingStartRequests[RequestIndex];
+						EBackgroundHTTPPriority PendingRequestPriority = PendingRequestToCheck.IsValid() ? PendingRequestToCheck->GetRequestPriority() : EBackgroundHTTPPriority::Num;
+
+						//Found a higher priority request, so track that one
+						if (PendingRequestPriority < HighestRequestPriority)
+						{
+							HighestPriorityRequestToStart = PendingRequestToCheck;
+							HighestRequestPriority = PendingRequestPriority;
+						}
 					}
 				}
 			}
 		}
 	}
 
-	UE_LOG(LogBackgroundHttpManager, Verbose, TEXT("Starting %d Requests From PendingStartRequests Queue"), RequestsStartingThisTick.Num());
-
-	//Now actually add request to Active List and call Handle 
-	for (FBackgroundHttpRequestPtr& RequestToStart : RequestsStartingThisTick)
+	if (HighestPriorityRequestToStart.IsValid())
 	{
+		UE_LOG(LogBackgroundHttpManager, Verbose, TEXT("Starting Request: %s Priority:%s"), *HighestPriorityRequestToStart->GetRequestID(), LexToString(HighestRequestPriority));
+
 		//Actually move request to Active list now
-		FRWScopeLock ScopeLock(ActiveRequestLock, SLT_Write);
-		ActiveRequests.Add(RequestToStart);
+		FRWScopeLock ActiveScopeLock(ActiveRequestLock, SLT_Write);
+		FRWScopeLock PendingScopeLock(PendingRequestLock, SLT_Write);
+		ActiveRequests.Add(HighestPriorityRequestToStart);
+		PendingStartRequests.RemoveSingle(HighestPriorityRequestToStart);
+
+		++NumCurrentlyActiveRequests;
 
 		//Call Handle for that task to now kick itself off
-		RequestToStart->HandleDelayedProcess();
+		HighestPriorityRequestToStart->HandleDelayedProcess();
 	}
 }

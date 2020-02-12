@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "Engine/LevelScriptBlueprint.h"
 #include "Misc/PackageName.h"
@@ -14,33 +14,6 @@ ULevelScriptBlueprint::ULevelScriptBlueprint(const FObjectInitializer& ObjectIni
 }
 
 #if WITH_EDITOR
-
-void ULevelScriptBlueprint::SetObjectBeingDebugged(UObject* NewObject)
-{
-	// Only allowed because UWorld::TransferBlueprintDebugReferences needs to get us looking at our duplicated self
-	UBlueprint::SetObjectBeingDebugged(NewObject);
-}
-
-UObject* ULevelScriptBlueprint::GetObjectBeingDebugged()
-{ 
-	UObject* CachedResult = UBlueprint::GetObjectBeingDebugged();
-
-	if (CachedResult != NULL)
-	{
-		return CachedResult;
-	}
-	else
-	{
-		if (ULevel* Level = GetLevel()) 
-		{ 
-			CachedResult = Level->GetLevelScriptActor(); 
-		}
-
-		SetObjectBeingDebugged(CachedResult);
-	}
-
-	return CachedResult; 
-} 
 
 FString ULevelScriptBlueprint::GetFriendlyName() const
 {

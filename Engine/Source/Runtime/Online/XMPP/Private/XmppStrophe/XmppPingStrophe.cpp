@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "XmppStrophe/XmppPingStrophe.h"
 #include "XmppStrophe/StropheStanza.h"
@@ -6,17 +6,27 @@
 #include "XmppStrophe/XmppConnectionStrophe.h"
 #include "XmppLog.h"
 #include "Misc/Guid.h"
+#include "Misc/EmbeddedCommunication.h"
+#include "Containers/BackgroundableTicker.h"
 
 #if WITH_XMPP_STROPHE
 
+#define TickRequesterId FName("StrophePing")
+
 FXmppPingStrophe::FXmppPingStrophe(FXmppConnectionStrophe& InConnectionManager)
-	: ConnectionManager(InConnectionManager)
+	: FTickerObjectBase(0.0f, FBackgroundableTicker::GetCoreTicker())
+	, ConnectionManager(InConnectionManager)
 	, TimeSinceLastClientPing(0.0f)
 	, bWaitingForPong(false)
 	, SecondsSinceLastServerPong(0.0f)
 	, bHasReceievedServerPong(false)
 	, MissedPongs(0)
 {
+}
+
+FXmppPingStrophe::~FXmppPingStrophe()
+{
+	CleanupMessages();
 }
 
 bool FXmppPingStrophe::Tick(float DeltaTime)
@@ -27,6 +37,7 @@ bool FXmppPingStrophe::Tick(float DeltaTime)
 		FXmppPingReceivedInfo ReceivedPing;
 		if (IncomingPings.Dequeue(ReceivedPing))
 		{
+			FEmbeddedCommunication::AllowSleep(TickRequesterId);
 			ReplyToPing(MoveTemp(ReceivedPing));
 		}
 	}
@@ -51,14 +62,18 @@ bool FXmppPingStrophe::Tick(float DeltaTime)
 
 void FXmppPingStrophe::OnDisconnect()
 {
-	// Clear out pending pongs when we disconnect
-	IncomingPings.Empty();
+	CleanupMessages();
 
 	// Reset our client ping timer
 	ResetPingTimer();
 
 	// Reset our client ping response timer
 	ResetPongTimer();
+}
+
+void FXmppPingStrophe::OnReconnect()
+{
+
 }
 
 bool FXmppPingStrophe::ReceiveStanza(const FStropheStanza& IncomingStanza)
@@ -122,6 +137,7 @@ void FXmppPingStrophe::ResetPongTimer()
 
 bool FXmppPingStrophe::HandlePingStanza(const FStropheStanza& PingStanza)
 {
+	FEmbeddedCommunication::KeepAwake(TickRequesterId, false);
 	IncomingPings.Enqueue(FXmppPingReceivedInfo(PingStanza.GetFrom(), PingStanza.GetId()));
 	return true;
 }
@@ -203,5 +219,17 @@ void FXmppPingStrophe::CheckXmppPongTimeout(float DeltaTime)
 		}
 	}
 }
+
+void FXmppPingStrophe::CleanupMessages()
+{
+	while (!IncomingPings.IsEmpty())
+	{
+		FXmppPingReceivedInfo ReceivedPing;
+		IncomingPings.Dequeue(ReceivedPing);
+		FEmbeddedCommunication::AllowSleep(TickRequesterId);
+	}
+}
+
+#undef TickRequesterId
 
 #endif

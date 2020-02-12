@@ -1,7 +1,6 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 #pragma once
 
-#include "Chaos/GeometryParticles.h"
 #include "Chaos/PerParticleRule.h"
 #include "Chaos/Transform.h"
 
@@ -9,7 +8,7 @@
 
 namespace Chaos
 {
-template<class T, int d>
+template<class T, int d, EGeometryParticlesSimType SimType>
 class TPerParticlePBDCollisionConstraint : public TPerParticleRule<T, d>
 {
 	struct VelocityConstraint
@@ -19,8 +18,8 @@ class TPerParticlePBDCollisionConstraint : public TPerParticleRule<T, d>
 	};
 
   public:
-	TPerParticlePBDCollisionConstraint(const TKinematicGeometryParticles<T, d>& InParticles, TArrayCollectionArray<bool>& Collided, const T Thickness = (T)0, const T Friction = (T)0)
-	    : MParticles(InParticles), MCollided(Collided), MThickness(Thickness), MFriction(Friction) {}
+	TPerParticlePBDCollisionConstraint(const TKinematicGeometryParticlesImp<T, d, SimType>& InParticles, TArrayCollectionArray<bool>& Collided, const T Thickness = (T)0, const T Friction = (T)0)
+	    : bFastPositionBasedFriction(true), MParticles(InParticles), MCollided(Collided), MThickness(Thickness), MFriction(Friction) {}
 	virtual ~TPerParticlePBDCollisionConstraint() {}
 
 	inline void Apply(TPBDParticles<T, d>& InParticles, const T Dt, const int32 Index) const override //-V762
@@ -34,14 +33,38 @@ class TPerParticlePBDCollisionConstraint : public TPerParticleRule<T, d>
 			T Phi = MParticles.Geometry(i)->PhiWithNormal(Frame.InverseTransformPosition(InParticles.P(Index)), Normal);
 			if (Phi < MThickness)
 			{
-				InParticles.P(Index) += (-Phi + MThickness) * Frame.TransformVector(Normal);
+				const TVector<T, d> NormalWorld = Frame.TransformVector(Normal);
+				InParticles.P(Index) += (-Phi + MThickness) * NormalWorld;
 				if (MFriction > 0)
 				{
-					VelocityConstraint Constraint;
-					TVector<T, d> VectorToPoint = InParticles.P(Index) - MParticles.X(i);
-					Constraint.Velocity = MParticles.V(i) + TVector<T, d>::CrossProduct(MParticles.W(i), VectorToPoint);
-					Constraint.Normal = Frame.TransformVector(Normal);
-					MVelocityConstraints.Add(Index, Constraint);
+					const T MaximumFrictionCorrectionPerStep = 1.0f; // 1cm absolute maximum correction the friction force can provide
+					if (bFastPositionBasedFriction)
+					{
+						const T Penetration = (-Phi + MThickness); // This is related to the Normal impulse 
+						TVector<T, d> VectorToPoint = InParticles.P(Index) - MParticles.X(i);
+						const TVector<T, d> RelativeDisplacement = (InParticles.P(Index) - InParticles.X(Index)) - (MParticles.V(i) + TVector<T, d>::CrossProduct(MParticles.W(i), VectorToPoint)) * Dt; // This corresponds to the tangential velocity multiplied by dt (friction will drive this to zero if it is high enough)
+						const TVector<T, d> RelativeDisplacementTangent = RelativeDisplacement - TVector<T, d>::DotProduct(RelativeDisplacement, NormalWorld) * NormalWorld; // Project displacement into the tangential plane
+						const T RelativeDisplacementTangentLength = RelativeDisplacementTangent.Size();
+						T PositionCorrection = FMath::Clamp<T>(Penetration * MFriction, 0, RelativeDisplacementTangentLength);
+						if (PositionCorrection > MaximumFrictionCorrectionPerStep)
+						{
+							PositionCorrection = MaximumFrictionCorrectionPerStep;
+						}
+						if (PositionCorrection > 0)
+						{
+							InParticles.P(Index) -= (PositionCorrection / RelativeDisplacementTangentLength) * RelativeDisplacementTangent;
+						}
+					}
+					else
+					{
+						// Note, to fix: Only use fast position based friction for now, since adding to TMaps here is not thread safe when calling Apply on multiple threads (will cause crash)
+						VelocityConstraint Constraint;
+						TVector<T, d> VectorToPoint = InParticles.P(Index) - MParticles.X(i);
+						Constraint.Velocity = MParticles.V(i) + TVector<T, d>::CrossProduct(MParticles.W(i), VectorToPoint);
+						Constraint.Normal = Frame.TransformVector(Normal);
+						
+						MVelocityConstraints.Add(Index, Constraint);
+					}
 				}
 			}
 		}
@@ -49,25 +72,29 @@ class TPerParticlePBDCollisionConstraint : public TPerParticleRule<T, d>
 
 	void ApplyFriction(TPBDParticles<T, d>& InParticles, const T Dt, const int32 Index) const
 	{
-		check(MFriction > 0);
-		if (!MVelocityConstraints.Contains(Index))
+		if (!bFastPositionBasedFriction)
 		{
-			return;
+			check(MFriction > 0);
+			if (!MVelocityConstraints.Contains(Index))
+			{
+				return;
+			}
+			T VN = TVector<T, d>::DotProduct(InParticles.V(Index), MVelocityConstraints[Index].Normal);
+			T VNBody = TVector<T, d>::DotProduct(MVelocityConstraints[Index].Velocity, MVelocityConstraints[Index].Normal);
+			TVector<T, d> VTBody = MVelocityConstraints[Index].Velocity - VNBody * MVelocityConstraints[Index].Normal;
+			TVector<T, d> VTRelative = InParticles.V(Index) - VN * MVelocityConstraints[Index].Normal - VTBody;
+			T VTRelativeSize = VTRelative.Size();
+			T VNMax = FGenericPlatformMath::Max(VN, VNBody);
+			T VNDelta = VNMax - VN;
+			T Friction = MFriction * VNDelta < VTRelativeSize ? MFriction * VNDelta / VTRelativeSize : 1;
+			InParticles.V(Index) = VNMax * MVelocityConstraints[Index].Normal + VTBody + VTRelative * (1 - Friction);
 		}
-		T VN = TVector<T, d>::DotProduct(InParticles.V(Index), MVelocityConstraints[Index].Normal);
-		T VNBody = TVector<T, d>::DotProduct(MVelocityConstraints[Index].Velocity, MVelocityConstraints[Index].Normal);
-		TVector<T, d> VTBody = MVelocityConstraints[Index].Velocity - VNBody * MVelocityConstraints[Index].Normal;
-		TVector<T, d> VTRelative = InParticles.V(Index) - VN * MVelocityConstraints[Index].Normal - VTBody;
-		T VTRelativeSize = VTRelative.Size();
-		T VNMax = FGenericPlatformMath::Max(VN, VNBody);
-		T VNDelta = VNMax - VN;
-		T Friction = MFriction * VNDelta < VTRelativeSize ? MFriction * VNDelta / VTRelativeSize : 1;
-		InParticles.V(Index) = VNMax * MVelocityConstraints[Index].Normal + VTBody + VTRelative * (1 - Friction);
 	}
 
   private:
+	  bool bFastPositionBasedFriction;
 	// TODO(mlentine): Need a bb hierarchy
-	const TKinematicGeometryParticles<T, d>& MParticles;
+	const TKinematicGeometryParticlesImp<T, d, SimType>& MParticles;
 	TArrayCollectionArray<bool>& MCollided;
 	mutable TMap<int32, VelocityConstraint> MVelocityConstraints;
 	const T MThickness, MFriction;

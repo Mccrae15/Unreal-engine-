@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "Customizations/WidgetNavigationCustomization.h"
 #include "Widgets/Text/STextBlock.h"
@@ -419,7 +419,7 @@ void FWidgetNavigationCustomization::SetNav(UWidget* Widget, EUINavigation Nav, 
 		DirectionNavigation->WidgetToFocus = WidgetToFocus.GetValue();
 	}
 
-	if ( WidgetNavigation->IsDefault() )
+	if ( WidgetNavigation->IsDefaultNavigation() )
 	{
 		// If the navigation rules are all set to the defaults, remove the navigation
 		// information from the widget.

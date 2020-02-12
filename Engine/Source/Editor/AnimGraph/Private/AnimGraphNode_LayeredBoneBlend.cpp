@@ -1,7 +1,7 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "AnimGraphNode_LayeredBoneBlend.h"
-#include "Framework/MultiBox/MultiBoxBuilder.h"
+#include "ToolMenus.h"
 #include "Kismet2/BlueprintEditorUtils.h"
 
 #include "GraphEditorActions.h"
@@ -53,7 +53,7 @@ void UAnimGraphNode_LayeredBoneBlend::RemovePinFromBlendByFilter(UEdGraphPin* Pi
 	FScopedTransaction Transaction( LOCTEXT("RemovePinFromBlend", "RemovePinFromBlendByFilter") );
 	Modify();
 
-	UProperty* AssociatedProperty;
+	FProperty* AssociatedProperty;
 	int32 ArrayIndex;
 	GetPinAssociatedProperty(GetFNodeType(), Pin, /*out*/ AssociatedProperty, /*out*/ ArrayIndex);
 
@@ -68,27 +68,26 @@ void UAnimGraphNode_LayeredBoneBlend::RemovePinFromBlendByFilter(UEdGraphPin* Pi
 	}
 }
 
-void UAnimGraphNode_LayeredBoneBlend::GetContextMenuActions(const FGraphNodeContextMenuBuilder& Context) const
+void UAnimGraphNode_LayeredBoneBlend::GetNodeContextMenuActions(UToolMenu* Menu, UGraphNodeContextMenuContext* Context) const
 {
-	if (!Context.bIsDebugging)
+	if (!Context->bIsDebugging)
 	{
-		Context.MenuBuilder->BeginSection("AnimGraphNodeLayeredBoneblend", LOCTEXT("LayeredBoneBlend", "Layered Bone Blend"));
 		{
-			if (Context.Pin != NULL)
+			FToolMenuSection& Section = Menu->AddSection("AnimGraphNodeLayeredBoneblend", LOCTEXT("LayeredBoneBlend", "Layered Bone Blend"));
+			if (Context->Pin != NULL)
 			{
 				// we only do this for normal BlendList/BlendList by enum, BlendList by Bool doesn't support add/remove pins
-				if (Context.Pin->Direction == EGPD_Input)
+				if (Context->Pin->Direction == EGPD_Input)
 				{
 					//@TODO: Only offer this option on arrayed pins
-					Context.MenuBuilder->AddMenuEntry(FGraphEditorCommands::Get().RemoveBlendListPin);
+					Section.AddMenuEntry(FGraphEditorCommands::Get().RemoveBlendListPin);
 				}
 			}
 			else
 			{
-				Context.MenuBuilder->AddMenuEntry(FGraphEditorCommands::Get().AddBlendListPin);
+				Section.AddMenuEntry(FGraphEditorCommands::Get().AddBlendListPin);
 			}
 		}
-		Context.MenuBuilder->EndSection();
 	}
 }
 
@@ -96,5 +95,16 @@ void UAnimGraphNode_LayeredBoneBlend::Serialize(FArchive& Ar)
 {
 	Super::Serialize(Ar);
 	Node.ValidateData();
+}
+
+void UAnimGraphNode_LayeredBoneBlend::ValidateAnimNodeDuringCompilation(class USkeleton* ForSkeleton, class FCompilerResultsLog& MessageLog)
+{
+	UAnimGraphNode_Base::ValidateAnimNodeDuringCompilation(ForSkeleton, MessageLog);
+
+	// ensure to cache the data
+ 	if (Node.IsCacheInvalid(ForSkeleton))
+ 	{
+ 		Node.RebuildCacheData(ForSkeleton);
+ 	}
 }
 #undef LOCTEXT_NAMESPACE

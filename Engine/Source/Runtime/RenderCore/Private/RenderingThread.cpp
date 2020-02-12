@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 /*=============================================================================
 	RenderingThread.cpp: Rendering thread implementation.
@@ -23,12 +23,14 @@
 #include "RenderResource.h"
 #include "Misc/ScopeLock.h"
 #include "HAL/LowLevelMemTracker.h"
+#include "ProfilingDebugging/MiscTrace.h"
+
 
 //
 // Globals
 //
 
-
+UE_TRACE_CHANNEL_DEFINE(RenderCommandsChannel);
 
 RENDERCORE_API bool GIsThreadedRendering = false;
 RENDERCORE_API bool GUseThreadedRendering = false;
@@ -86,6 +88,9 @@ FSuspendRenderingThread::FSuspendRenderingThread( bool bInRecreateThread )
 		SuspendAsyncLoading();
 	}
 
+	// Pause asset streaming to prevent rendercommands from being enqueued.
+	SuspendTextureStreamingRenderTasks();
+
 	bRecreateThread = bInRecreateThread;
 	bUseRenderingThread = GUseThreadedRendering;
 	bWasRenderingThreadRunning = GIsThreadedRendering;
@@ -102,7 +107,6 @@ FSuspendRenderingThread::FSuspendRenderingThread( bool bInRecreateThread )
 		if ( GIsRenderingThreadSuspended.Load(EMemoryOrder::Relaxed) == 0 )
 		{
 			// First tell the render thread to finish up all pending commands and then suspend its activities.
-			
 			// this ensures that async stuff will be completed too
 			FlushRenderingCommands();
 			
@@ -183,6 +187,10 @@ FSuspendRenderingThread::~FSuspendRenderingThread()
 		// Resume the render thread again.
 		--GIsRenderingThreadSuspended;
 	}
+
+	// Resume any asset streaming
+	ResumeTextureStreamingRenderTasks();
+
 	if (IsAsyncLoadingMultithreaded())
 	{
 		ResumeAsyncLoading();
@@ -491,6 +499,21 @@ public:
 TAtomic<bool> GRunRenderingThreadHeartbeat;
 
 FThreadSafeCounter OutstandingHeartbeats;
+
+/** rendering tickables shouldn't be updated during a flush */
+TAtomic<int32> GSuspendRenderingTickables;
+struct FSuspendRenderingTickables
+{
+	FSuspendRenderingTickables()
+	{
+		++GSuspendRenderingTickables;
+	}
+	~FSuspendRenderingTickables()
+	{
+		--GSuspendRenderingTickables;
+	}
+};
+
 /** The rendering thread heartbeat runnable object. */
 class FRenderingThreadTickHeartbeat : public FRunnable
 {
@@ -498,7 +521,8 @@ public:
 
 	// FRunnable interface.
 	virtual bool Init(void) 
-	{ 
+	{
+		GSuspendRenderingTickables = 0;
 		OutstandingHeartbeats.Reset();
 		return true; 
 	}
@@ -524,7 +548,8 @@ public:
 					{
 						OutstandingHeartbeats.Decrement();
 						// make sure that rendering thread tickables get a chance to tick, even if the render thread is starving
-						if (!GIsRenderingThreadSuspended.Load(EMemoryOrder::Relaxed))
+						// but if GSuspendRenderingTickables is != 0 a flush is happening so don't tick during it
+						if (!GIsRenderingThreadSuspended.Load(EMemoryOrder::Relaxed) && !GSuspendRenderingTickables.Load(EMemoryOrder::Relaxed))
 						{
 							TickRenderingTickables();
 						}
@@ -543,46 +568,42 @@ struct FConsoleRenderThreadPropagation : public IConsoleThreadPropagation
 {
 	virtual void OnCVarChange(int32& Dest, int32 NewValue)
 	{
-		ENQUEUE_UNIQUE_RENDER_COMMAND_TWOPARAMETER(
-			OnCVarChange1,
-			int32&, Dest, Dest,
-			int32, NewValue, NewValue,
-		{
-			Dest = NewValue;
-		});
+		int32* DestPtr = &Dest;
+		ENQUEUE_RENDER_COMMAND(OnCVarChange1)(
+			[DestPtr, NewValue](FRHICommandListImmediate& RHICmdList)
+			{
+				*DestPtr = NewValue;
+			});
 	}
 	
 	virtual void OnCVarChange(float& Dest, float NewValue)
 	{
-		ENQUEUE_UNIQUE_RENDER_COMMAND_TWOPARAMETER(
-			OnCVarChange2,
-			float&, Dest, Dest,
-			float, NewValue, NewValue,
-		{
-			Dest = NewValue;
-		});
+		float* DestPtr = &Dest;
+		ENQUEUE_RENDER_COMMAND(OnCVarChange2)(
+			[DestPtr, NewValue](FRHICommandListImmediate& RHICmdList)
+			{
+				*DestPtr = NewValue;
+			});
 	}
 
 	virtual void OnCVarChange(bool& Dest, bool NewValue)
 	{
-		ENQUEUE_UNIQUE_RENDER_COMMAND_TWOPARAMETER(
-			OnCVarChange2,
-			bool&, Dest, Dest,
-			bool, NewValue, NewValue,
-		{
-			Dest = NewValue;
-		});
+		bool* DestPtr = &Dest;
+		ENQUEUE_RENDER_COMMAND(OnCVarChange2)(
+			[DestPtr, NewValue](FRHICommandListImmediate& RHICmdList)
+			{
+				*DestPtr = NewValue;
+			});
 	}
 	
 	virtual void OnCVarChange(FString& Dest, const FString& NewValue)
 	{
-		ENQUEUE_UNIQUE_RENDER_COMMAND_TWOPARAMETER(
-			OnCVarChange3,
-			FString&, Dest, Dest,
-			const FString&, NewValue, NewValue,
-		{
-			Dest = NewValue;
-		});
+		FString* DestPtr = &Dest;
+		ENQUEUE_RENDER_COMMAND(OnCVarChange3)(
+			[DestPtr, NewValue](FRHICommandListImmediate& RHICmdList)
+			{
+				*DestPtr = NewValue;
+			});
 	}
 
 	static FConsoleRenderThreadPropagation& GetSingleton()
@@ -659,6 +680,9 @@ void StartRenderingThread()
 
 	check(!GRHIThread_InternalUseOnly && !GIsRunningRHIInSeparateThread_InternalUseOnly && !GIsRunningRHIInDedicatedThread_InternalUseOnly && !GIsRunningRHIInTaskThread_InternalUseOnly);
 
+	// Pause asset streaming to prevent rendercommands from being enqueued.
+	SuspendTextureStreamingRenderTasks();
+
 	// Flush GT since render commands issued by threads other than GT are sent to
 	// the main queue of GT when RT is disabled. Without this flush, those commands
 	// will run on GT after RT is enabled
@@ -696,6 +720,7 @@ void StartRenderingThread()
 	GRenderingThreadRunnable = new FRenderingThread();
 
 	GRenderingThread = FRunnableThread::Create(GRenderingThreadRunnable, *BuildRenderingThreadName(ThreadCount), 0, FPlatformAffinity::GetRenderingThreadPriority(), FPlatformAffinity::GetRenderingThreadMask());
+	TRACE_SET_THREAD_GROUP(GRenderingThread->GetThreadID(), "Render");
 
 	// Wait for render thread to have taskgraph bound before we dispatch any tasks for it.
 	((FRenderingThread*)GRenderingThreadRunnable)->TaskGraphBoundSyncEvent->Wait();
@@ -715,6 +740,9 @@ void StartRenderingThread()
 	GRenderingThreadHeartbeat = FRunnableThread::Create(GRenderingThreadRunnableHeartbeat, *FString::Printf(TEXT("RTHeartBeat %d"), ThreadCount), 16 * 1024, TPri_AboveNormal, FPlatformAffinity::GetRTHeartBeatMask());
 
 	ThreadCount++;
+
+	// Update can now resume.
+	ResumeTextureStreamingRenderTasks();
 }
 
 
@@ -744,7 +772,7 @@ void StopRenderingThread()
 		FPendingCleanupObjects* PendingCleanupObjects = GetPendingCleanupObjects();
 
 		// Make sure we're not in the middle of streaming textures.
-		(*GFlushStreamingFunc)();
+		SuspendTextureStreamingRenderTasks();
 
 		// Wait for the rendering thread to finish executing all enqueued commands.
 		FlushRenderingCommands();
@@ -807,6 +835,9 @@ void StopRenderingThread()
 
 		// Delete the pending cleanup objects which were in use by the rendering thread.
 		delete PendingCleanupObjects;
+
+		// Update can now resume with renderthread being the gamethread.
+		ResumeTextureStreamingRenderTasks();
 	}
 
 	check(!GRHIThread_InternalUseOnly);
@@ -893,7 +924,7 @@ TAutoConsoleVariable<int32> CVarGTSyncType(
 	TEXT(" 2 - Sync the game thread with the GPU swap chain flip (only on supported platforms).\n"),
 	ECVF_Default);
 
-struct FRHISyncFrameCommand final : public FRHICommand<FRHISyncFrameCommand>
+FRHICOMMAND_MACRO(FRHISyncFrameCommand)
 {
 	FGraphEventRef GraphEvent;
 	int32 GTSyncType;
@@ -1118,9 +1149,9 @@ static void GameThreadWaitForTask(const FGraphEventRef& Task, ENamedThreads::Typ
 #if !WITH_EDITOR
 #if !PLATFORM_IOS && !PLATFORM_MAC // @todo MetalMRT: Timeout isn't long enough...
 				// editor threads can block for quite a while... 
-				if (!bDone && !bRenderThreadEnsured && !FPlatformMisc::IsDebuggerPresent())
+				if (!bDone && !bRenderThreadEnsured)
 				{
-					if (bOverdue && !bDisabled)
+					if (bOverdue && !bDisabled && !FPlatformMisc::IsDebuggerPresent())
 					{
 						UE_LOG(LogRendererCore, Fatal, TEXT("GameThread timed out waiting for RenderThread after %.02f secs"), RenderThreadTimeoutClock.Seconds() - StartTime);
 					}
@@ -1198,6 +1229,7 @@ void FlushRenderingCommands(bool bFlushDeferredDeletes)
 	{
 		return;
 	}
+	FSuspendRenderingTickables SuspendRenderingTickables;
 
 	// Need to flush GT because render commands from threads other than GT are sent to
 	// the main queue of GT when RT is disabled
@@ -1210,9 +1242,9 @@ void FlushRenderingCommands(bool bFlushDeferredDeletes)
 	}
 
 	ENQUEUE_RENDER_COMMAND(FlushPendingDeleteRHIResourcesCmd)(
-		[bFlushDeferredDeletes](FRHICommandList&)
+		[bFlushDeferredDeletes](FRHICommandListImmediate& RHICmdList)
 	{
-		GRHICommandList.GetImmediateCommandList().ImmediateFlush(
+		RHICmdList.ImmediateFlush(
 			bFlushDeferredDeletes ?
 			EImmediateFlushType::FlushRHIThreadFlushResourcesFlushDeferredDeletes :
 			EImmediateFlushType::FlushRHIThreadFlushResources);

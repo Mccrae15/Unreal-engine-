@@ -1,8 +1,8 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
-#include "Misc/DisplayClusterLog.h"
+#include "DisplayClusterLog.h"
 
 class FDisplayClusterMessage;
 class FDisplayClusterSessionBase;

@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "CoreMinimal.h"
 #include "Math/RandomStream.h"
@@ -19,7 +19,7 @@
 /** Emits draw events for a given FMeshBatch and the FPrimitiveSceneProxy corresponding to that mesh element. */
 #if WANTS_DRAW_MESH_EVENTS
 
-void BeginMeshDrawEvent_Inner(FRHICommandList& RHICmdList, const FPrimitiveSceneProxy* PrimitiveSceneProxy, const FMeshBatch& Mesh, TDrawEvent<FRHICommandList>& MeshEvent)
+void BeginMeshDrawEvent_Inner(FRHICommandList& RHICmdList, const FPrimitiveSceneProxy* PrimitiveSceneProxy, const FMeshBatch& Mesh, FDrawEvent& MeshEvent)
 {
 	// Only show material and resource name at the top level
 	if (PrimitiveSceneProxy)
@@ -967,9 +967,9 @@ void DrawWireSphereAutoSides(class FPrimitiveDrawInterface* PDI, const FVector& 
 
 void DrawWireSphere(class FPrimitiveDrawInterface* PDI, const FTransform& Transform, const FLinearColor& Color, float Radius, int32 NumSides, uint8 DepthPriority, float Thickness, float DepthBias, bool bScreenSpace)
 {
-	DrawCircle(PDI, Transform.GetLocation(), Transform.GetScaledAxis(EAxis::X), Transform.GetScaledAxis(EAxis::Y), Color, Radius, NumSides, SDPG_World, Thickness, DepthBias, bScreenSpace);
-	DrawCircle(PDI, Transform.GetLocation(), Transform.GetScaledAxis(EAxis::X), Transform.GetScaledAxis(EAxis::Z), Color, Radius, NumSides, SDPG_World, Thickness, DepthBias, bScreenSpace);
-	DrawCircle(PDI, Transform.GetLocation(), Transform.GetScaledAxis(EAxis::Y), Transform.GetScaledAxis(EAxis::Z), Color, Radius, NumSides, SDPG_World, Thickness, DepthBias, bScreenSpace);
+	DrawCircle(PDI, Transform.GetLocation(), Transform.GetScaledAxis(EAxis::X), Transform.GetScaledAxis(EAxis::Y), Color, Radius, NumSides, DepthPriority, Thickness, DepthBias, bScreenSpace);
+	DrawCircle(PDI, Transform.GetLocation(), Transform.GetScaledAxis(EAxis::X), Transform.GetScaledAxis(EAxis::Z), Color, Radius, NumSides, DepthPriority, Thickness, DepthBias, bScreenSpace);
+	DrawCircle(PDI, Transform.GetLocation(), Transform.GetScaledAxis(EAxis::Y), Transform.GetScaledAxis(EAxis::Z), Color, Radius, NumSides, DepthPriority, Thickness, DepthBias, bScreenSpace);
 }
 
 
@@ -1200,6 +1200,20 @@ void DrawCoordinateSystem(FPrimitiveDrawInterface* PDI, FVector const& AxisLoc, 
 	PDI->DrawLine(AxisLoc, AxisLoc + Z*Scale, FLinearColor::Blue, DepthPriority, Thickness );
 }
 
+
+void DrawCoordinateSystem(FPrimitiveDrawInterface* PDI, FVector const& AxisLoc, FRotator const& AxisRot, float Scale, const FLinearColor& InColor, uint8 DepthPriority, float Thickness)
+{
+	FRotationMatrix R(AxisRot);
+	FVector const X = R.GetScaledAxis(EAxis::X);
+	FVector const Y = R.GetScaledAxis(EAxis::Y);
+	FVector const Z = R.GetScaledAxis(EAxis::Z);
+
+	PDI->DrawLine(AxisLoc, AxisLoc + X * Scale, InColor, DepthPriority, Thickness);
+	PDI->DrawLine(AxisLoc, AxisLoc + Y * Scale, InColor, DepthPriority, Thickness);
+	PDI->DrawLine(AxisLoc, AxisLoc + Z * Scale, InColor, DepthPriority, Thickness);
+}
+
+
 void DrawDirectionalArrow(FPrimitiveDrawInterface* PDI,const FMatrix& ArrowToWorld,const FLinearColor& InColor,float Length,float ArrowSize,uint8 DepthPriority,float Thickness)
 {
 	PDI->DrawLine(ArrowToWorld.TransformPosition(FVector(Length,0,0)),ArrowToWorld.TransformPosition(FVector::ZeroVector),InColor,DepthPriority,Thickness);
@@ -1386,12 +1400,12 @@ void ApplyViewModeOverrides(
 #if !(UE_BUILD_SHIPPING || UE_BUILD_TEST)
 
 	// If debug viewmodes are not allowed, skip all of the debug viewmode handling.
-	// If material has tesselation then also skip it, as we can't just replace it with a simple material.
-	if (!AllowDebugViewmodes()
-		|| Mesh.MaterialRenderProxy->GetMaterial(FeatureLevel)->MaterialModifiesMeshPosition_RenderThread())
+	if (!AllowDebugViewmodes())
 	{
 		return;
 	}
+
+	const bool bMaterialModifiesMeshPosition = Mesh.MaterialRenderProxy->GetMaterial(FeatureLevel)->MaterialModifiesMeshPosition_RenderThread();
 
 	if (EngineShowFlags.Wireframe)
 	{
@@ -1407,14 +1421,29 @@ void ApplyViewModeOverrides(
 			BaseColor = PrimitiveSceneProxy->GetLevelColor();
 		}
 
-		auto WireframeMaterialInstance = new FColoredMaterialRenderProxy(
-			GEngine->WireframeMaterial->GetRenderProxy(),
-			GetSelectionColor( BaseColor, bSelected, PrimitiveSceneProxy->IsHovered(), /*bUseOverlayIntensity=*/false)
+		if (bMaterialModifiesMeshPosition)
+		{
+			// If the material is mesh-modifying, we cannot rely on substitution.
+			auto WireframeMaterialInstance = new FOverrideSelectionColorMaterialRenderProxy(
+				Mesh.MaterialRenderProxy,
+				GetSelectionColor(BaseColor, bSelected, PrimitiveSceneProxy->IsHovered(), /*bUseOverlayIntensity=*/false)
 			);
 
-		Mesh.bWireframe = true;
-		Mesh.MaterialRenderProxy = WireframeMaterialInstance;
-		Collector.RegisterOneFrameMaterialProxy(WireframeMaterialInstance);
+			Mesh.bWireframe = true;
+			Mesh.MaterialRenderProxy = WireframeMaterialInstance;
+			Collector.RegisterOneFrameMaterialProxy(WireframeMaterialInstance);
+		}
+		else
+		{
+			auto WireframeMaterialInstance = new FColoredMaterialRenderProxy(
+				GEngine->WireframeMaterial->GetRenderProxy(),
+				GetSelectionColor(BaseColor, bSelected, PrimitiveSceneProxy->IsHovered(), /*bUseOverlayIntensity=*/false)
+			);
+
+			Mesh.bWireframe = true;
+			Mesh.MaterialRenderProxy = WireframeMaterialInstance;
+			Collector.RegisterOneFrameMaterialProxy(WireframeMaterialInstance);
+		}
 	}
 	else if (EngineShowFlags.LODColoration)
 	{
@@ -1422,7 +1451,7 @@ void ApplyViewModeOverrides(
 		{
 			int32 lodColorationIndex = FMath::Clamp((int32)Mesh.VisualizeLODIndex, 0, GEngine->LODColorationColors.Num() - 1);
 	
-			bool bLit = Mesh.MaterialRenderProxy->GetMaterial(FeatureLevel)->GetShadingModel() != MSM_Unlit;
+			bool bLit = Mesh.MaterialRenderProxy->GetMaterial(FeatureLevel)->GetShadingModels().IsLit();
 			const UMaterial* LODColorationMaterial = (bLit && EngineShowFlags.Lighting) ? GEngine->LevelColorationLitMaterial : GEngine->LevelColorationUnlitMaterial;
 
 			auto LODColorationMaterialInstance = new FColoredMaterialRenderProxy(
@@ -1440,7 +1469,7 @@ void ApplyViewModeOverrides(
 		{
 			int32 hlodColorationIndex = FMath::Clamp((int32)Mesh.VisualizeHLODIndex, 0, GEngine->HLODColorationColors.Num() - 1);
 
-			bool bLit = Mesh.MaterialRenderProxy->GetMaterial(FeatureLevel)->GetShadingModel() != MSM_Unlit;
+			bool bLit = Mesh.MaterialRenderProxy->GetMaterial(FeatureLevel)->GetShadingModels().IsLit();
 			const UMaterial* HLODColorationMaterial = (bLit && EngineShowFlags.Lighting) ? GEngine->LevelColorationLitMaterial : GEngine->LevelColorationUnlitMaterial;
 
 			auto HLODColorationMaterialInstance = new FColoredMaterialRenderProxy(
@@ -1455,7 +1484,7 @@ void ApplyViewModeOverrides(
 	else if (!EngineShowFlags.Materials)
 	{
 		// Don't render unlit translucency when in 'lighting only' viewmode.
-		if (Mesh.MaterialRenderProxy->GetMaterial(FeatureLevel)->GetShadingModel() != MSM_Unlit
+		if (Mesh.MaterialRenderProxy->GetMaterial(FeatureLevel)->GetShadingModels().IsLit()
 			// Don't render translucency in 'lighting only', since the viewmode works by overriding with an opaque material
 			// This would cause a mismatch of the material's blend mode with the primitive's view relevance,
 			// And make faint particles block the view
@@ -1480,14 +1509,18 @@ void ApplyViewModeOverrides(
 
 			if (bTextureMapped == false)
 			{
-				FMaterialRenderProxy* RenderProxy = GEngine->LevelColorationLitMaterial->GetRenderProxy();
-				auto LightingOnlyMaterialInstance = new FColoredMaterialRenderProxy(
-					RenderProxy,
-					GEngine->LightingOnlyBrightness
+				// Tessellated geometry cannot use engine debug LevelColorationLitMaterial as it doesn't support tessellation
+				if (!bMaterialModifiesMeshPosition)
+				{
+					FMaterialRenderProxy* RenderProxy = GEngine->LevelColorationLitMaterial->GetRenderProxy();
+					auto LightingOnlyMaterialInstance = new FColoredMaterialRenderProxy(
+						RenderProxy,
+						GEngine->LightingOnlyBrightness
 					);
 
-				Mesh.MaterialRenderProxy = LightingOnlyMaterialInstance;
-				Collector.RegisterOneFrameMaterialProxy(LightingOnlyMaterialInstance);
+					Mesh.MaterialRenderProxy = LightingOnlyMaterialInstance;
+					Collector.RegisterOneFrameMaterialProxy(LightingOnlyMaterialInstance);
+				}
 			}
 			else
 			{
@@ -1569,49 +1602,40 @@ void ApplyViewModeOverrides(
 			// Avoid infinite recursion
 			MeshEdgeElement.bCanApplyViewModeOverrides = false;
 
+			
 			// Draw the mesh's edges in blue, on top of the base geometry.
-			auto WireframeMaterialInstance = new FColoredMaterialRenderProxy(
-				GEngine->WireframeMaterial->GetRenderProxy(),
-				PrimitiveSceneProxy->GetWireframeColor()
-			);
+			if (bMaterialModifiesMeshPosition)
+			{
+				// If the material is mesh-modifying, we cannot rely on substitution
+				auto WireframeMaterialInstance = new FOverrideSelectionColorMaterialRenderProxy(
+					MeshEdgeElement.MaterialRenderProxy,
+					PrimitiveSceneProxy->GetWireframeColor()
+				);
 
-			MeshEdgeElement.bWireframe = true;
-			MeshEdgeElement.MaterialRenderProxy = WireframeMaterialInstance;
-			Collector.RegisterOneFrameMaterialProxy(WireframeMaterialInstance);
+				MeshEdgeElement.bWireframe = true;
+				MeshEdgeElement.MaterialRenderProxy = WireframeMaterialInstance;
+				Collector.RegisterOneFrameMaterialProxy(WireframeMaterialInstance);
 
-			Collector.AddMesh(ViewIndex, MeshEdgeElement);
+				Collector.AddMesh(ViewIndex, MeshEdgeElement);
+			}
+			else
+			{
+				auto WireframeMaterialInstance = new FColoredMaterialRenderProxy(
+					GEngine->WireframeMaterial->GetRenderProxy(),
+					PrimitiveSceneProxy->GetWireframeColor()
+				);
+
+				MeshEdgeElement.bWireframe = true;
+				MeshEdgeElement.MaterialRenderProxy = WireframeMaterialInstance;
+				Collector.RegisterOneFrameMaterialProxy(WireframeMaterialInstance);
+
+				Collector.AddMesh(ViewIndex, MeshEdgeElement);
+			}
 		}
 	}
 #endif
 }
 
-void ClampUVs(FVector2D* UVs, int32 NumUVs)
-{
-	const float FudgeFactor = 0.1f;
-	FVector2D Bias(0.0f,0.0f);
-
-	float MinU = UVs[0].X;
-	float MinV = UVs[0].Y;
-	for (int32 i = 1; i < NumUVs; ++i)
-	{
-		MinU = FMath::Min(MinU,UVs[i].X);
-		MinV = FMath::Min(MinU,UVs[i].Y);
-	}
-
-	if (MinU < -FudgeFactor || MinU > (1.0f+FudgeFactor))
-	{
-		Bias.X = FMath::FloorToFloat(MinU);
-	}
-	if (MinV < -FudgeFactor || MinV > (1.0f+FudgeFactor))
-	{
-		Bias.Y = FMath::FloorToFloat(MinV);
-	}
-
-	for (int32 i = 0; i < NumUVs; i++)
-	{
-		UVs[i] += Bias;
-	}
-}
 
 bool IsUVOutOfBounds(FVector2D UV)
 {
@@ -1665,9 +1689,6 @@ void DrawUVsInternal(FViewport* InViewport, FCanvas* InCanvas, int32 InTextYPos,
 					bOutOfBounds[Corner] = IsUVOutOfBounds(UVs[Corner]);
 				}
 
-				// Clamp the UV triangle to the [0,1] range (with some fudge).
-				ClampUVs(UVs, 3);
-
 				for (int32 Edge = 0; Edge < 3; Edge++)
 				{
 					int32 Corner1 = Edge;
@@ -1691,7 +1712,6 @@ void DrawUVsInternal(FViewport* InViewport, FCanvas* InCanvas, int32 InTextYPos,
 					FVector2D UVs[2];
 					UVs[0] = (SelectedEdgeTexCoords[UVIndex]);
 					UVs[1] = (SelectedEdgeTexCoords[UVIndex + 1]);
-					ClampUVs(UVs, 2);
 
 					LineItem.Draw(InCanvas, UVs[0] * UVBoxScale + UVBoxOrigin, UVs[1] * UVBoxScale + UVBoxOrigin);
 				}

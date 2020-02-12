@@ -1,8 +1,74 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
-
+// Copyright Epic Games, Inc. All Rights Reserved.
 #pragma once
-#include "EdGraph/EdGraphSchema.h"
+
+#include "AssetData.h"
+#include "ConnectionDrawingPolicy.h"
+#include "EdGraphUtilities.h"
+
 #include "SoundSubmixGraphSchema.generated.h"
+
+
+// Forward Declarations
+class UEdGraph;
+class UEdGraphSchema;
+class FMenuBuilder;
+
+struct FSoundSubmixGraphConnectionDrawingPolicyFactory : public FGraphPanelPinConnectionFactory
+{
+public:
+	virtual ~FSoundSubmixGraphConnectionDrawingPolicyFactory()
+	{
+	}
+
+	// FGraphPanelPinConnectionFactory
+	virtual class FConnectionDrawingPolicy* CreateConnectionPolicy(
+		const UEdGraphSchema* Schema,
+		int32 InBackLayerID,
+		int32 InFrontLayerID,
+		float ZoomFactor,
+		const FSlateRect& InClippingRect,
+		FSlateWindowElementList& InDrawElements,
+		UEdGraph* InGraphObj) const override;
+	// ~FGraphPanelPinConnectionFactory
+};
+
+
+// This class draws the connections for an UEdGraph using a SoundCue schema
+class FSoundSubmixGraphConnectionDrawingPolicy : public FConnectionDrawingPolicy
+{
+protected:
+	// Times for one execution pair within the current graph
+	struct FTimePair
+	{
+		double PredExecTime;
+		double ThisExecTime;
+
+		FTimePair()
+			: PredExecTime(0.0)
+			, ThisExecTime(0.0)
+		{
+		}
+	};
+
+	// Map of pairings
+	typedef TMap<UEdGraphNode*, FTimePair> FExecPairingMap;
+
+	// Map of nodes that preceded before a given node in the execution sequence (one entry for each pairing)
+	TMap<UEdGraphNode*, FExecPairingMap> PredecessorNodes;
+
+	UEdGraph* GraphObj;
+
+	float ActiveWireThickness;
+	float InactiveWireThickness;
+
+public:
+	FSoundSubmixGraphConnectionDrawingPolicy(int32 InBackLayerID, int32 InFrontLayerID, float ZoomFactor, const FSlateRect& InClippingRect, FSlateWindowElementList& InDrawElements, UEdGraph* InGraphObj);
+
+	// FConnectionDrawingPolicy interface
+	virtual void DetermineWiringStyle(UEdGraphPin* OutputPin, UEdGraphPin* InputPin, /*inout*/ FConnectionParams& Params) override;
+	// End of FConnectionDrawingPolicy interface
+};
+
 
 /** Action to add a node to the graph */
 USTRUCT()
@@ -41,11 +107,12 @@ class USoundSubmixGraphSchema : public UEdGraphSchema
 	bool ConnectionCausesLoop(const UEdGraphPin* InputPin, const UEdGraphPin* OutputPin) const;
 
 	/** Get menu for breaking links to specific nodes*/
-	void GetBreakLinkToSubMenuActions(class FMenuBuilder& MenuBuilder, class UEdGraphPin* InGraphPin);
+	void GetBreakLinkToSubMenuActions(UToolMenu* Menu, const FName SectionName, class UEdGraphPin* InGraphPin);
 
 	//~ Begin EdGraphSchema Interface
 	virtual void GetGraphContextActions(FGraphContextMenuBuilder& ContextMenuBuilder) const override;
-	virtual void GetContextMenuActions(const UEdGraph* CurrentGraph, const UEdGraphNode* InGraphNode, const UEdGraphPin* InGraphPin, class FMenuBuilder* MenuBuilder, bool bIsDebugging) const override;
+	virtual void GetContextMenuActions(class UToolMenu* Menu, class UGraphNodeContextMenuContext* Context) const override;
+	virtual FName GetParentContextMenuName() const override { return NAME_None; }
 	virtual const FPinConnectionResponse CanCreateConnection(const UEdGraphPin* PinA, const UEdGraphPin* PinB) const override;
 	virtual bool TryCreateConnection(UEdGraphPin* PinA, UEdGraphPin* PinB) const override;
 	virtual bool ShouldHidePinDefaultValue(UEdGraphPin* Pin) const override;

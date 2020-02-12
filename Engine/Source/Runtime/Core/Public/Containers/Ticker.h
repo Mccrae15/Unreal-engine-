@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -11,7 +11,7 @@
 /**
  * Ticker delegates return true to automatically reschedule at the same delay or false for one-shot.
  * You will not get more than one fire per "frame", which is just a FTicker::Tick call.
- * DeltaTime argument iz the time since the last game frame, *not* since the last tick the
+ * DeltaTime argument is the time since the last game frame, *not* since the last tick the
  * delegate received.
  */
 DECLARE_DELEGATE_RetVal_OneParam(bool, FTickerDelegate, float);
@@ -27,6 +27,7 @@ public:
 
 	/** Singleton used for the ticker in Core / Launch. If you add a new ticker for a different subsystem, do not put that singleton here! **/
 	CORE_API static FTicker& GetCoreTicker();
+	CORE_API static void TearDownCoreTicker();
 
 	CORE_API FTicker();
 	CORE_API ~FTicker();
@@ -71,7 +72,7 @@ public:
 	CORE_API void Tick(float DeltaTime);
 
 
-private:
+protected:
 	/**
 	 * Element of the priority queue
 	 */
@@ -96,9 +97,9 @@ private:
 	/** Current time of the ticker **/
 	double CurrentTime;
 	/** Future delegates to fire **/
-	TArray<FElement> Elements;
+	TArray<FElement, TInlineAllocator<1>> Elements;
 	/** List of delegates that have been considered during Tick. Either they been fired or are not yet ready.*/
-	TArray<FElement> TickedElements;
+	TArray<FElement, TInlineAllocator<1>> TickedElements;
 	/** Current element being ticked (only valid during tick). */
 	FElement CurrentElement;
 	/** State to track whether CurrentElement is valid. */
@@ -111,7 +112,7 @@ private:
 /**
  * Base class for ticker objects
  */
-class FTickerObjectBase
+class CORE_VTABLE FTickerObjectBase
 {
 public:
 

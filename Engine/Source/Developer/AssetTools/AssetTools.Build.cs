@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 using UnrealBuildTool;
 
@@ -32,6 +32,9 @@ public class AssetTools : ModuleRules
 				"Landscape",
                 "Foliage",
                 "Projects",
+				"RHI",
+				"MaterialEditor",
+				"ToolMenus",
             }
 		);
 
@@ -76,7 +79,6 @@ public class AssetTools : ModuleRules
 				"GameProjectGeneration",
                 "ActorPickerMode",
 				"MainFrame",
-				"MaterialEditor",
 				"MessageLog",
 				"Persona",
 				"FontEditor",

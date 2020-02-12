@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -145,6 +145,11 @@ private:
 -(void) connection:(NSURLConnection *)connection didFailWithError:(NSError *)error;
 /** Delegate called with we complete successfully. See Apple docs for when/how this should be used. */
 -(void) connectionDidFinishLoading:(NSURLConnection *)connection;
+
+#if WITH_SSL
+/** Delegate called when the connection is about to validate an auth challenge. We only care about server trust. See Apple docs for when/how this should be used. */
+-(void)connection:(NSURLConnection *)connection willSendRequestForAuthenticationChallenge: (NSURLAuthenticationChallenge *)challenge;
+#endif
 
 - (TArray<uint8>&)getPayload;
 - (int32)getBytesWritten;

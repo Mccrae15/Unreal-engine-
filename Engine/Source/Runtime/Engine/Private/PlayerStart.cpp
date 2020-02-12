@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "GameFramework/PlayerStart.h"
 #include "UObject/ConstructorHelpers.h"
@@ -40,7 +40,7 @@ APlayerStart::APlayerStart(const FObjectInitializer& ObjectInitializer)
 		if (GetGoodSprite())
 		{
 			GetGoodSprite()->Sprite = ConstructorStatics.PlayerStartTextureObject.Get();
-			GetGoodSprite()->RelativeScale3D = FVector(0.5f, 0.5f, 0.5f);
+			GetGoodSprite()->SetRelativeScale3D(FVector(0.5f, 0.5f, 0.5f));
 			GetGoodSprite()->SpriteInfo.Category = ConstructorStatics.ID_PlayerStart;
 			GetGoodSprite()->SpriteInfo.DisplayName = ConstructorStatics.NAME_PlayerStart;
 		}

@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -12,6 +12,8 @@
 #include "GoogleARCoreAPI.h"
 #include "GoogleARCorePassthroughCameraRenderer.h"
 #include "GoogleARCoreAugmentedImageDatabase.h"
+#include "GoogleARCoreOpenGLContext.h"
+
 
 class FGoogleARCoreDevice
 {
@@ -40,6 +42,10 @@ public:
 
 	bool GetARCameraConfig(FGoogleARCoreCameraConfig& OutCurrentCameraConfig);
 
+	bool GetIsFrontCameraSession();
+
+	bool GetShouldInvertCulling();
+
 	// Add image to TargetImageDatabase and return the image index.
 	// Return -1 if the image cannot be processed.
 	int AddRuntimeAugmentedImage(UGoogleARCoreAugmentedImageDatabase* TargetImageDatabase, const TArray<uint8>& ImageGrayscalePixels,
@@ -60,9 +66,11 @@ public:
 	// Passthrough Camera
 	FMatrix GetPassthroughCameraProjectionMatrix(FIntPoint ViewRectSize) const;
 	void GetPassthroughCameraImageUVs(const TArray<float>& InUvs, TArray<float>& OutUVs) const;
+	int64 GetPassthroughCameraTimestamp() const;
 
 	// Frame
 	EGoogleARCoreTrackingState GetTrackingState() const;
+	EGoogleARCoreTrackingFailureReason GetTrackingFailureReason() const;
 	FTransform GetLatestPose() const;
 	FGoogleARCoreLightEstimate GetLatestLightEstimate() const;
 	EGoogleARCoreFunctionStatus GetLatestPointCloud(UGoogleARCorePointCloud*& OutLatestPointCloud) const;
@@ -72,6 +80,9 @@ public:
 #endif
 	UTexture* GetCameraTexture();
 	EGoogleARCoreFunctionStatus AcquireCameraImage(UGoogleARCoreCameraImage *&OutLatestCameraImage);
+
+	void TransformARCoordinates2D(EGoogleARCoreCoordinates2DType InputCoordinatesType, const TArray<FVector2D>& InputCoordinates,
+		EGoogleARCoreCoordinates2DType OutputCoordinatesType, TArray<FVector2D>& OutputCoordinates) const;
 
 	// Hit test
 	void ARLineTrace(const FVector2D& ScreenPosition, EGoogleARCoreLineTraceChannel TraceChannels, TArray<FARTraceResult>& OutHitResults);
@@ -144,10 +155,11 @@ private:
 	void OnModuleLoaded();
 	void OnModuleUnloaded();
 
-	void OnWorldTickStart(ELevelTick TickType, float DeltaTime);
+	void OnWorldTickStart(UWorld* World, ELevelTick TickType, float DeltaTime);
 
 	void CheckAndRequrestPermission(const UARSessionConfig& ConfigurationData);
 
+	TSharedPtr<FGoogleARCoreSession> CreateSession(bool bUseFrontCamera);
 	void StartSession();
 
 	friend class FGoogleARCoreAndroidHelper;
@@ -157,6 +169,9 @@ private:
 
 private:
 	TSharedPtr<FGoogleARCoreSession> ARCoreSession;
+	TSharedPtr<FGoogleARCoreSession> FrontCameraARCoreSession;
+	TSharedPtr<FGoogleARCoreSession> BackCameraARCoreSession;
+
 	FTextureRHIRef PassthroughCameraTexture;
 	uint32 PassthroughCameraTextureId;
 	bool bIsARCoreSessionRunning;
@@ -176,9 +191,12 @@ private:
 	FARSessionStatus CurrentSessionStatus;
 
 	FGoogleARCoreCameraConfig SessionCameraConfig;
-	FGoogleARCoreDeviceCameraBlitter CameraBlitter;
+	
+	TSharedPtr<FGoogleARCoreDeviceCameraBlitter, ESPMode::ThreadSafe> CameraBlitter;
 
 	TQueue<TFunction<void()>> RunOnGameThreadQueue;
 
 	TSharedPtr<FARSupportInterface, ESPMode::ThreadSafe> ARSystem;
+	
+	TSharedPtr<FGoogleARCoreOpenGLContext, ESPMode::ThreadSafe> GLContext;
 };

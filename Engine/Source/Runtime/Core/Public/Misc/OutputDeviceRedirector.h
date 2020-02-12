@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -12,21 +12,40 @@
 FOutputDeviceRedirector.
 -----------------------------------------------------------------------------*/
 
+class FLogAllocator;
+
 /** The type of lines buffered by secondary threads. */
-struct FBufferedLine
+struct CORE_API FBufferedLine
 {
-	const FString Data;
-	const FName Category;
+	enum EBufferedLineInit
+	{
+		EMoveCtor = 0
+	};
+
+	const TCHAR* Data;
+	const FLazyName Category;
 	const double Time;
 	const ELogVerbosity::Type Verbosity;
+	bool bExternalAllocation;
 
-	/** Initialization constructor. */
-	FBufferedLine(const TCHAR* InData, const class FName& InCategory, ELogVerbosity::Type InVerbosity, const double InTime = -1)
-		: Data(InData)
-		, Category(InCategory)
-		, Time(InTime)
-		, Verbosity(InVerbosity)
-	{}
+	FBufferedLine(const TCHAR* InData, const FName& InCategory, ELogVerbosity::Type InVerbosity, const double InTime = -1, FLogAllocator* ExternalAllocator = nullptr);
+	FBufferedLine(const TCHAR* InData, const FLazyName& InCategory, ELogVerbosity::Type InVerbosity, const double InTime = -1, FLogAllocator* ExternalAllocator = nullptr);
+
+	FBufferedLine(FBufferedLine& InBufferedLine, EBufferedLineInit Unused)
+		: Data(InBufferedLine.Data)
+		, Category(InBufferedLine.Category)
+		, Time(InBufferedLine.Time)
+		, Verbosity(InBufferedLine.Verbosity)
+		, bExternalAllocation(InBufferedLine.bExternalAllocation)
+	{
+		InBufferedLine.Data = nullptr;
+		InBufferedLine.bExternalAllocation = false;
+	}
+
+	/** Noncopyable for now, could be made movable */
+	FBufferedLine(const FBufferedLine&) = delete;
+	FBufferedLine& operator=(const FBufferedLine&) = delete;
+	~FBufferedLine();
 };
 
 /**
@@ -34,9 +53,15 @@ struct FBufferedLine
 */
 class CORE_API FOutputDeviceRedirector : public FOutputDevice
 {
+public:
+
+	typedef TArray<FOutputDevice*, TInlineAllocator<16> > TLocalOutputDevicesArray;
+
 private:
+	enum { InlineLogEntries = 16 };
+
 	/** A FIFO of lines logged by non-master threads. */
-	TArray<FBufferedLine> BufferedLines;
+	TArray<FBufferedLine, TInlineAllocator<InlineLogEntries>> BufferedLines;
 
 	/** A FIFO backlog of messages logged before the editor had a chance to intercept them. */
 	TArray<FBufferedLine> BacklogLines;
@@ -53,20 +78,54 @@ private:
 	/** Whether backlogging is enabled. */
 	bool bEnableBacklog;
 
-	/** Object used for synchronization via a scoped lock */
+	FLogAllocator* BufferedLinesAllocator;
+
+	/** Objects used for synchronization via a scoped lock */
 	FCriticalSection	SynchronizationObject;
+	FCriticalSection	BufferSynchronizationObject;
+	FCriticalSection	OutputDevicesMutex;
+	FThreadSafeCounter	OutputDevicesLockCounter;
 
 	/**
 	* The unsynchronized version of FlushThreadedLogs.
 	* Assumes that the caller holds a lock on SynchronizationObject.
 	* @param bUseAllDevices - if true this method will use all output devices
 	*/
-	void UnsynchronizedFlushThreadedLogs(bool bUseAllDevices);
+	void InternalFlushThreadedLogs(TLocalOutputDevicesArray& InBufferedDevices, bool bUseAllDevices);
+	void InternalFlushThreadedLogs(bool bUseAllDevices);
+
+	/** Locks OutputDevices arrays so that nothing can be added or removed from them */
+	void LockOutputDevices(TLocalOutputDevicesArray& OutBufferedDevices, TLocalOutputDevicesArray& OutUnbufferedDevices);
+
+	/** Unlocks OutputDevices arrays */
+	void UnlockOutputDevices();
+
+	friend struct FOutputDevicesLock;
+
+	/** Helper struct for scope locking OutputDevices arrays */
+	struct FOutputDevicesLock
+	{
+		FOutputDeviceRedirector* Redirector;
+		FOutputDevicesLock(FOutputDeviceRedirector* InRedirector, TLocalOutputDevicesArray& OutBufferedDevices, TLocalOutputDevicesArray& OutUnbufferedDevices)
+			: Redirector(InRedirector)
+		{
+			Redirector->LockOutputDevices(OutBufferedDevices, OutUnbufferedDevices);
+		}
+		~FOutputDevicesLock()
+		{
+			Redirector->UnlockOutputDevices();
+		}
+	};
+
+	void EmptyBufferedLines();
+
+	template<class T>
+	void SerializeImpl(const TCHAR* Data, ELogVerbosity::Type Verbosity, T& CategoryName, double Time);
 
 public:
 
 	/** Initialization constructor. */
-	FOutputDeviceRedirector();
+	explicit FOutputDeviceRedirector(FLogAllocator* Allocator = nullptr);
 
 	/**
 	* Get the GLog singleton
@@ -137,6 +196,13 @@ public:
 	* @param	Event	Event name used for suppression purposes
 	*/
 	virtual void Serialize(const TCHAR* Data, ELogVerbosity::Type Verbosity, const class FName& Category) override;
+	
+	/** Same as Serialize() but FName creation. Only needed to support 
+	*
+	*/
+	void RedirectLog(const FLazyName& Category, ELogVerbosity::Type Verbosity, const TCHAR* Data);
+
+	void RedirectLog(const FName& Category, ELogVerbosity::Type Verbosity, const TCHAR* Data);
 
 	/**
 	* Passes on the flush request to all current output devices.

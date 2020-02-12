@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -10,11 +10,12 @@ class FFrameGrabber;
 class IImageWrapper;
 class FRemoteSessionInputChannel;
 
+
 class FRemoteSessionHost : public FRemoteSessionRole, public TSharedFromThis<FRemoteSessionHost>
 {
 public:
 
-    FRemoteSessionHost(int32 InQuality, int32 InFramerate, const TMap<FString, ERemoteSessionChannelMode>& InSupportedChannels);
+	FRemoteSessionHost(TArray<FRemoteSessionChannelInfo> SupportedChannels);
 	~FRemoteSessionHost();
 
 	virtual void Close() override;
@@ -22,8 +23,6 @@ public:
 	bool StartListening(const uint16 Port);
 
 	void SetScreenSharing(const bool bEnabled);
-
-	void SetConsumeInput(const bool bConsume);
 
 	virtual void Tick(float DeltaTime) override;
 
@@ -36,10 +35,7 @@ protected:
 
 	TSharedPtr<IBackChannelConnection> Listener;
 
-	int32		Quality;
-	int32		Framerate;
-    
-    TMap<FString, ERemoteSessionChannelMode> SupportedChannels;
+	TArray<FRemoteSessionChannelInfo> SupportedChannels;
 
 	/** Saved information about the editor and viewport we possessed, so we can restore it after exiting VR mode */
 	float SavedEditorDragTriggerDistance;

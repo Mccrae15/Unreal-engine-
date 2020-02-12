@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 /*=============================================================================
 	Renderer.cpp: Renderer module implementation.
@@ -32,6 +32,7 @@
 #include "EditorPrimitivesRendering.h"
 #include "VisualizeTexturePresent.h"
 #include "ScreenSpaceDenoise.h"
+#include "VT/VirtualTextureSystem.h"
 
 DEFINE_LOG_CATEGORY(LogRenderer);
 
@@ -44,29 +45,22 @@ IMPLEMENT_MODULE(FRendererModule, Renderer);
 	FSystemSettings* GSystemSettingsForVisualizers = &GSystemSettings;
 #endif
 
-// Dummy Reflection capture uniform buffer for translucent tile mesh rendering
-class FDummyReflectionCaptureUniformBuffer : public TUniformBuffer<FReflectionCaptureShaderData>
-{
-	typedef TUniformBuffer< FReflectionCaptureShaderData > Super;
-	
-public:
-	virtual void InitDynamicRHI() override
-	{
-		FReflectionCaptureShaderData DummyPositionsBuffer;
-		FMemory::Memzero(DummyPositionsBuffer);
-		SetContentsNoUpdate(DummyPositionsBuffer);
-		Super::InitDynamicRHI();
-	}
-};
-static TGlobalResource< FDummyReflectionCaptureUniformBuffer > GDummyReflectionCaptureUniformBuffer;
+static int32 bFlushRenderTargetsOnWorldCleanup = 1;
+FAutoConsoleVariableRef CVarFlushRenderTargetsOnWorldCleanup(TEXT("r.bFlushRenderTargetsOnWorldCleanup"), bFlushRenderTargetsOnWorldCleanup, TEXT(""));
+
+
 
 void FRendererModule::StartupModule()
 {
 	GScreenSpaceDenoiser = IScreenSpaceDenoiser::GetDefaultDenoiser();
+
+	FVirtualTextureSystem::Initialize();
 }
 
 void FRendererModule::ShutdownModule()
 {
+	FVirtualTextureSystem::Shutdown();
+
 	// Free up the memory of the default denoiser. Responsibility of the plugin to free up theirs.
 	delete IScreenSpaceDenoiser::GetDefaultDenoiser();
 }
@@ -75,6 +69,18 @@ void FRendererModule::ReallocateSceneRenderTargets()
 {
 	FLightPrimitiveInteraction::InitializeMemoryPool();
 	FSceneRenderTargets::GetGlobalUnsafe().UpdateRHI();
+}
+
+void FRendererModule::OnWorldCleanup(UWorld* World, bool bSessionEnded, bool bCleanupResources)
+{
+	if (bFlushRenderTargetsOnWorldCleanup > 0)
+	{
+		ENQUEUE_RENDER_COMMAND(OnWorldCleanup)(
+			[](FRHICommandListImmediate& RHICmdList)
+		{
+			GRenderTargetPool.FreeUnusedResources();
+		});
+	}
 }
 
 void FRendererModule::SceneRenderTargetsSetBufferSize(uint32 SizeX, uint32 SizeY)
@@ -96,9 +102,16 @@ void FRendererModule::DrawTileMesh(FRHICommandListImmediate& RHICmdList, FMeshPa
 		//@todo - reuse this view for multiple tiles, this is going to be slow for each tile
 		FViewInfo View(&SceneView);
 		View.ViewRect = View.UnscaledViewRect;
-		
+
 		const auto FeatureLevel = View.GetFeatureLevel();
 		const EShadingPath ShadingPath = FSceneInterface::GetShadingPath(FeatureLevel);
+		const FSceneViewFamily* ViewFamily = View.Family;
+		FScene* Scene = nullptr;
+
+		if (ViewFamily->Scene)
+		{
+			Scene = ViewFamily->Scene->GetRenderScene();
+		}
 
 		Mesh.MaterialRenderProxy->UpdateUniformExpressionCacheIfNeeded(FeatureLevel);
 		FMaterialRenderProxy::UpdateDeferredCachedUniformExpressions();
@@ -107,9 +120,9 @@ void FRendererModule::DrawTileMesh(FRHICommandListImmediate& RHICmdList, FMeshPa
 		extern FForwardLightingViewResources* GetMinimalDummyForwardLightingResources();
 		View.ForwardLightingResources = GetMinimalDummyForwardLightingResources();
 
-		FSinglePrimitiveStructuredBuffer SinglePrimitiveStructuredBuffer;
+		FSinglePrimitiveStructured& SinglePrimitiveStructured = GTilePrimitiveBuffer;
 
-		if (Mesh.VertexFactory->GetPrimitiveIdStreamIndex(true) >= 0)
+		if (Mesh.VertexFactory->GetPrimitiveIdStreamIndex(EVertexInputStreamType::PositionOnly) >= 0)
 		{
 			FMeshBatchElement& MeshElement = Mesh.Elements[0];
 
@@ -127,21 +140,36 @@ void FRendererModule::DrawTileMesh(FRHICommandListImmediate& RHICmdList, FMeshPa
 				PrimitiveParams.LightmapDataIndex = 0;
 
 				// Now we just need to fill out the first entry of primitive data in a buffer and bind it
-				SinglePrimitiveStructuredBuffer.PrimitiveSceneData = FPrimitiveSceneShaderData(PrimitiveParams);
+				SinglePrimitiveStructured.PrimitiveSceneData = FPrimitiveSceneShaderData(PrimitiveParams);
+				SinglePrimitiveStructured.ShaderPlatform = View.GetShaderPlatform();
 
 				// Set up the parameters for the LightmapSceneData from the given LCI data 
 				FPrecomputedLightingUniformParameters LightmapParams;
 				GetPrecomputedLightingParameters(FeatureLevel, LightmapParams, Mesh.LCI);
-				SinglePrimitiveStructuredBuffer.LightmapSceneData = FLightmapSceneShaderData(LightmapParams);
+				SinglePrimitiveStructured.LightmapSceneData = FLightmapSceneShaderData(LightmapParams);
 
-				SinglePrimitiveStructuredBuffer.InitResource();
-				View.PrimitiveSceneDataOverrideSRV = SinglePrimitiveStructuredBuffer.PrimitiveSceneDataBufferSRV;
-				View.LightmapSceneDataOverrideSRV = SinglePrimitiveStructuredBuffer.LightmapSceneDataBufferSRV;
+				SinglePrimitiveStructured.UploadToGPU();
+
+				if (!GPUSceneUseTexture2D(View.GetShaderPlatform()))
+				{
+					View.PrimitiveSceneDataOverrideSRV = SinglePrimitiveStructured.PrimitiveSceneDataBufferSRV;
+				}
+				else
+				{
+					View.PrimitiveSceneDataTextureOverrideRHI = SinglePrimitiveStructured.PrimitiveSceneDataTextureRHI;
+				}
+				View.LightmapSceneDataOverrideSRV = SinglePrimitiveStructured.LightmapSceneDataBufferSRV;
 			}
 		}
-		
+
 		View.InitRHIResources();
 		DrawRenderState.SetViewUniformBuffer(View.ViewUniformBuffer);
+
+		if (!DrawRenderState.GetReflectionCaptureUniformBuffer())
+		{
+			FReflectionCaptureShaderData EmptyData;
+			DrawRenderState.SetReflectionCaptureUniformBuffer(TUniformBufferRef<FReflectionCaptureShaderData>::CreateUniformBufferImmediate(EmptyData, UniformBuffer_SingleFrame));
+		}
 
 		if (ShadingPath == EShadingPath::Mobile)
 		{
@@ -157,7 +185,7 @@ void FRendererModule::DrawTileMesh(FRHICommandListImmediate& RHICmdList, FMeshPa
 		FMemMark Mark(FMemStack::Get());
 
 		// handle translucent material blend modes, not relevant in MaterialTexCoordScalesAnalysis since it outputs the scales.
-		if (View.Family->GetDebugViewShaderMode() == DVSM_OutputMaterialTextureScales)
+		if (ViewFamily->GetDebugViewShaderMode() == DVSM_OutputMaterialTextureScales)
 		{
 #if !(UE_BUILD_SHIPPING || UE_BUILD_TEST)
 			// make sure we are doing opaque drawing
@@ -175,9 +203,15 @@ void FRendererModule::DrawTileMesh(FRHICommandListImmediate& RHICmdList, FMeshPa
 				);
 
 				DrawDynamicMeshPass(View, RHICmdList,
-					[&View, &DrawRenderState, &DebugViewModePassUniformBuffer, &Mesh](FMeshPassDrawListContext* InDrawListContext)
+					[Scene, &View, &DrawRenderState, &DebugViewModePassUniformBuffer, &Mesh](FMeshPassDrawListContext* InDrawListContext)
 				{
-					FDebugViewModeMeshProcessor PassMeshProcessor(nullptr, View.GetFeatureLevel(), &View, DebugViewModePassUniformBuffer, false, InDrawListContext);
+					FDebugViewModeMeshProcessor PassMeshProcessor(
+						Scene,
+						View.GetFeatureLevel(),
+						&View,
+						DebugViewModePassUniformBuffer,
+						false,
+						InDrawListContext);
 					const uint64 DefaultBatchElementMask = ~0ull;
 					PassMeshProcessor.AddMeshBatch(Mesh, DefaultBatchElementMask, nullptr);
 				});
@@ -190,12 +224,6 @@ void FRendererModule::DrawTileMesh(FRHICommandListImmediate& RHICmdList, FMeshPa
 
 			if (ShadingPath == EShadingPath::Deferred)
 			{
-				// Crash fix - reflection capture shader parameter is bound but we have no buffer during Build Texture Streaming
-				if(!View.ReflectionCaptureUniformBuffer.IsValid())
-				{
-					View.ReflectionCaptureUniformBuffer = GDummyReflectionCaptureUniformBuffer.GetUniformBufferRef();
-				}
-			
 				TUniformBufferRef<FTranslucentBasePassUniformParameters> TranslucentBasePassUniformBuffer;
 				CreateTranslucentBasePassUniformBuffer(RHICmdList, View, nullptr, ESceneTextureSetupMode::None, TranslucentBasePassUniformBuffer, 0);
 				BasePassUniformBuffer = TranslucentBasePassUniformBuffer;
@@ -203,15 +231,16 @@ void FRendererModule::DrawTileMesh(FRHICommandListImmediate& RHICmdList, FMeshPa
 				DrawRenderState.SetPassUniformBuffer(BasePassUniformBuffer);
 				
 				DrawDynamicMeshPass(View, RHICmdList,
-					[&View, &DrawRenderState, &Mesh](FDynamicPassMeshDrawListContext* DynamicMeshPassContext)
+					[Scene, &View, &DrawRenderState, &Mesh](FDynamicPassMeshDrawListContext* DynamicMeshPassContext)
 				{
 					FBasePassMeshProcessor PassMeshProcessor(
-															 nullptr,
-															 View.GetFeatureLevel(),
-															 &View,
-															 DrawRenderState,
-															 DynamicMeshPassContext,
-															 ETranslucencyPass::TPT_AllTranslucency);
+						Scene,
+						View.GetFeatureLevel(),
+						&View,
+						DrawRenderState,
+						DynamicMeshPassContext,
+						FBasePassMeshProcessor::EFlags::None,
+						ETranslucencyPass::TPT_AllTranslucency);
 					
 					const uint64 DefaultBatchElementMask = ~0ull;
 					PassMeshProcessor.AddMeshBatch(Mesh, DefaultBatchElementMask, nullptr);
@@ -226,23 +255,21 @@ void FRendererModule::DrawTileMesh(FRHICommandListImmediate& RHICmdList, FMeshPa
 				DrawRenderState.SetPassUniformBuffer(BasePassUniformBuffer);
 				
 				DrawDynamicMeshPass(View, RHICmdList,
-					[&View, &DrawRenderState, &Mesh](FDynamicPassMeshDrawListContext* DynamicMeshPassContext)
+					[Scene, &View, &DrawRenderState, &Mesh](FDynamicPassMeshDrawListContext* DynamicMeshPassContext)
 				{
 					FMobileBasePassMeshProcessor PassMeshProcessor(
-															 nullptr,
-															 View.GetFeatureLevel(),
-															 &View,
-															 DrawRenderState,
-															 DynamicMeshPassContext,
-															 false,
-															 ETranslucencyPass::TPT_AllTranslucency); // No CSM?
+						Scene,
+						View.GetFeatureLevel(),
+						&View,
+						DrawRenderState,
+						DynamicMeshPassContext,
+						FMobileBasePassMeshProcessor::EFlags::None,
+						ETranslucencyPass::TPT_AllTranslucency);
 					
 					const uint64 DefaultBatchElementMask = ~0ull;
 					PassMeshProcessor.AddMeshBatch(Mesh, DefaultBatchElementMask, nullptr);
 				});
 			}
-
-			
 		}
 		// handle opaque materials
 		else
@@ -257,10 +284,10 @@ void FRendererModule::DrawTileMesh(FRHICommandListImmediate& RHICmdList, FMeshPa
 
 #if WITH_EDITOR
 				DrawDynamicMeshPass(View, RHICmdList,
-					[&View, &DrawRenderState, &Mesh](FDynamicPassMeshDrawListContext* DynamicMeshPassContext)
+					[Scene, &View, &DrawRenderState, &Mesh](FDynamicPassMeshDrawListContext* DynamicMeshPassContext)
 				{
 					FHitProxyMeshProcessor PassMeshProcessor(
-						nullptr,
+						Scene,
 						&View,
 						false,
 						DrawRenderState,
@@ -278,20 +305,21 @@ void FRendererModule::DrawTileMesh(FRHICommandListImmediate& RHICmdList, FMeshPa
 				if (ShadingPath == EShadingPath::Deferred)
 				{
 					TUniformBufferRef<FOpaqueBasePassUniformParameters> OpaqueBasePassUniformBuffer;
-					CreateOpaqueBasePassUniformBuffer(RHICmdList, View, nullptr, OpaqueBasePassUniformBuffer);
+					CreateOpaqueBasePassUniformBuffer(RHICmdList, View, nullptr, nullptr, nullptr, nullptr, OpaqueBasePassUniformBuffer);
 					BasePassUniformBuffer = OpaqueBasePassUniformBuffer;
 					
 					DrawRenderState.SetPassUniformBuffer(BasePassUniformBuffer);
 					
 					DrawDynamicMeshPass(View, RHICmdList,
-						[&View, &DrawRenderState, &Mesh](FDynamicPassMeshDrawListContext* DynamicMeshPassContext)
+						[Scene, &View, &DrawRenderState, &Mesh](FDynamicPassMeshDrawListContext* DynamicMeshPassContext)
 					{
 						FBasePassMeshProcessor PassMeshProcessor(
-																 nullptr,
-																 View.GetFeatureLevel(),
-																 &View,
-																 DrawRenderState,
-																 DynamicMeshPassContext);
+							Scene,
+							View.GetFeatureLevel(),
+							&View,
+							DrawRenderState,
+							DynamicMeshPassContext,
+							FBasePassMeshProcessor::EFlags::None);
 						
 						const uint64 DefaultBatchElementMask = ~0ull;
 						PassMeshProcessor.AddMeshBatch(Mesh, DefaultBatchElementMask, nullptr);
@@ -306,36 +334,23 @@ void FRendererModule::DrawTileMesh(FRHICommandListImmediate& RHICmdList, FMeshPa
 					DrawRenderState.SetPassUniformBuffer(BasePassUniformBuffer);
 					
 					DrawDynamicMeshPass(View, RHICmdList,
-						[&View, &DrawRenderState, &Mesh](FDynamicPassMeshDrawListContext* DynamicMeshPassContext)
+						[Scene, &View, &DrawRenderState, &Mesh](FDynamicPassMeshDrawListContext* DynamicMeshPassContext)
 					{
 						FMobileBasePassMeshProcessor PassMeshProcessor(
-																 nullptr,
-																 View.GetFeatureLevel(),
-																 &View,
-																 DrawRenderState,
-																 DynamicMeshPassContext, true);
+							Scene,
+							View.GetFeatureLevel(),
+							&View,
+							DrawRenderState,
+							DynamicMeshPassContext,
+							FMobileBasePassMeshProcessor::EFlags::CanReceiveCSM);
 						
 						const uint64 DefaultBatchElementMask = ~0ull;
 						PassMeshProcessor.AddMeshBatch(Mesh, DefaultBatchElementMask, nullptr);
 					});
 				}
-
-				
 			}
 		}
-
-		SinglePrimitiveStructuredBuffer.ReleaseResource();
 	}
-}
-
-void FRendererModule::RenderTargetPoolFindFreeElement(FRHICommandListImmediate& RHICmdList, const FPooledRenderTargetDesc& Desc, TRefCountPtr<IPooledRenderTarget> &Out, const TCHAR* InDebugName)
-{
-	GRenderTargetPool.FindFreeElement(RHICmdList, Desc, Out, InDebugName);
-}
-
-void FRendererModule::TickRenderTargetPool()
-{
-	GRenderTargetPool.TickPoolElements();
 }
 
 void FRendererModule::DebugLogOnCrash()
@@ -534,13 +549,13 @@ static void VisualizeTextureExec( const TCHAR* Cmd, FOutputDevice &Ar )
 		// e.g. mip2 or mip0
 		else if(Parameter.Left(3) == TEXT("mip"))
 		{
-			Parameter = Parameter.Right(Parameter.Len() - 3);
+			Parameter.RightInline(Parameter.Len() - 3, false);
 			GVisualizeTexture.CustomMip = FCString::Atoi(*Parameter);
 		}
 		// e.g. [0] or [2]
 		else if(Parameter.Left(5) == TEXT("index"))
 		{
-			Parameter = Parameter.Right(Parameter.Len() - 5);
+			Parameter.RightInline(Parameter.Len() - 5, false);
 			GVisualizeTexture.ArrayIndex = FCString::Atoi(*Parameter);
 		}
 		// e.g. RGB*6, A, *22, /2.7, A*7
@@ -556,7 +571,7 @@ static void VisualizeTextureExec( const TCHAR* Cmd, FOutputDevice &Ar )
 
 			if(Parameter.Left(3) == TEXT("rgb"))
 			{
-				Parameter = Parameter.Right(Parameter.Len() - 3);
+				Parameter.RightInline(Parameter.Len() - 3, false);
 			}
 			else if(Parameter.Left(1) == TEXT("r")) SingleChannel = 0;
 			else if(Parameter.Left(1) == TEXT("g")) SingleChannel = 1;
@@ -564,7 +579,7 @@ static void VisualizeTextureExec( const TCHAR* Cmd, FOutputDevice &Ar )
 			else if(Parameter.Left(1) == TEXT("a")) SingleChannel = 3;
 			if ( SingleChannel >= 0 )
 			{
-				Parameter = Parameter.Right(Parameter.Len() - 1);
+				Parameter.RightInline(Parameter.Len() - 1, false);
 				GVisualizeTexture.SingleChannel = SingleChannel;
 				GVisualizeTexture.SingleChannelMul = 1;
 				GVisualizeTexture.RGBMul = 0;
@@ -575,12 +590,12 @@ static void VisualizeTextureExec( const TCHAR* Cmd, FOutputDevice &Ar )
 			// * or /
 			if(Parameter.Left(1) == TEXT("*"))
 			{
-				Parameter = Parameter.Right(Parameter.Len() - 1);
+				Parameter.RightInline(Parameter.Len() - 1, false);
 				Mul = FCString::Atof(*Parameter);
 			}
 			else if(Parameter.Left(1) == TEXT("/"))
 			{
-				Parameter = Parameter.Right(Parameter.Len() - 1);
+				Parameter.RightInline(Parameter.Len() - 1, false);
 				Mul = 1.0f / FCString::Atof(*Parameter);
 			}
 			GVisualizeTexture.RGBMul *= Mul;

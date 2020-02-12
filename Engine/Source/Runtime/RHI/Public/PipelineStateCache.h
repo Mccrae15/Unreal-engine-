@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 /*=============================================================================
 	PipelineStateCache.h: Pipeline state cache definition.
@@ -12,7 +12,7 @@
 
 class FComputePipelineState;
 class FGraphicsPipelineState;
-class FRHIRayTracingPipelineState;
+class FRayTracingPipelineState;
 
 // Utility flags for modifying render target behavior on a PSO
 enum class EApplyRendertargetOption : int
@@ -33,9 +33,11 @@ namespace PipelineStateCache
 
 	extern RHI_API FGraphicsPipelineState*	GetAndOrCreateGraphicsPipelineState(FRHICommandList& RHICmdList, const FGraphicsPipelineStateInitializer& OriginalInitializer, EApplyRendertargetOption ApplyFlags);
 
+	extern RHI_API FRHIVertexDeclaration*	GetOrCreateVertexDeclaration(const FVertexDeclarationElementList& Elements);
+
 #if RHI_RAYTRACING
-	extern RHI_API FRHIRayTracingPipelineState* GetAndOrCreateRayTracingPipelineState(const FRayTracingPipelineStateInitializer& Initializer);
-#endif
+	extern RHI_API FRayTracingPipelineState* GetAndOrCreateRayTracingPipelineState(FRHICommandList& RHICmdList, const FRayTracingPipelineStateInitializer& Initializer);
+#endif // RHI_RAYTRACING
 
 	/* Evicts unused state entries based on r.pso.evictiontime time. Called in RHICommandList::BeginFrame */
 	extern RHI_API void FlushResources();

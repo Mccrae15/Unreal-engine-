@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 #pragma once
 
 #include "CoreTypes.h"
@@ -121,6 +121,12 @@ struct CORE_API FFrameworkObjectVersion
 
 		// No longer serialize the legacy flag that indicates this state, as it is now implied since we don't serialize the skeleton CDO
 		BlueprintGeneratedClassIsAlwaysAuthoritative,
+
+		// Enforce visibility of blueprint functions - e.g. raise an error if calling a private function from another blueprint:
+		EnforceBlueprintFunctionVisibility,
+
+		// ActorComponents now store their serialization index
+		StoringUCSSerializationIndex,
 
 		// -----<new versions can be added above this line>-------------------------------------------------
 		VersionPlusOne,

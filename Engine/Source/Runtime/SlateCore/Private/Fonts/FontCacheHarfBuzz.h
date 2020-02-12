@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -10,8 +10,12 @@ class FFreeTypeGlyphCache;
 class FFreeTypeKerningPairCache;
 
 #ifndef WITH_HARFBUZZ
-	#define WITH_HARFBUZZ	0
+	#define WITH_HARFBUZZ 0
 #endif // WITH_HARFBUZZ
+
+#ifndef WITH_HARFBUZZ_V24
+	#define WITH_HARFBUZZ_V24 0
+#endif // WITH_HARFBUZZ_V24
 
 #if PLATFORM_COMPILER_HAS_GENERIC_KEYWORD
 	#define generic __identifier(generic)

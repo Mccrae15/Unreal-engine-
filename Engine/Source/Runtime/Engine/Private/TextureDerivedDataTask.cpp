@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 /*=============================================================================
 	TextureDerivedDataTask.cpp: Tasks to update texture DDC.
@@ -16,17 +16,23 @@
 #include "RenderUtils.h"
 #include "TextureResource.h"
 #include "Engine/Texture.h"
+#include "Engine/Texture2DArray.h"
 #include "DeviceProfiles/DeviceProfile.h"
 #include "DeviceProfiles/DeviceProfileManager.h"
+#include "VT/VirtualTextureBuiltData.h"
 
 #if WITH_EDITOR
 
 #include "DerivedDataCacheInterface.h"
+#include "Engine/TextureCube.h"
+#include "GenericPlatform/GenericPlatformMath.h"
 #include "Interfaces/ITargetPlatform.h"
 #include "Interfaces/ITargetPlatformManagerModule.h"
 #include "Interfaces/ITextureFormat.h"
-#include "Engine/TextureCube.h"
+#include "Math/NumericLimits.h"
+#include "Math/UnrealMathUtility.h"
 #include "ProfilingDebugging/CookStats.h"
+#include "VT/VirtualTextureDataBuilder.h"
 
 class FTextureStatusMessageContext : public FScopedSlowTask
 {
@@ -39,41 +45,87 @@ public:
 };
 
 
-void FTextureCacheDerivedDataWorker::FTextureSourceData::Init(UTexture& InTexture, const FTextureBuildSettings& InBuildSettings, bool bAllowAsyncLoading)
+void FTextureSourceData::Init(UTexture& InTexture, const FTextureBuildSettings* InBuildSettingsPerLayer, bool bAllowAsyncLoading)
 {
-	switch (InTexture.Source.GetFormat())
+	const int32 NumBlocks = InTexture.Source.GetNumBlocks();
+	const int32 NumLayers = InTexture.Source.GetNumLayers();
+	if (NumBlocks < 1 || NumLayers < 1)
 	{
-	case TSF_G8:		ImageFormat = ERawImageFormat::G8;		break;
-	case TSF_BGRA8:		ImageFormat = ERawImageFormat::BGRA8;	break;
-	case TSF_BGRE8:		ImageFormat = ERawImageFormat::BGRE8;	break;
-	case TSF_RGBA16:	ImageFormat = ERawImageFormat::RGBA16;	break;
-	case TSF_RGBA16F:	ImageFormat = ERawImageFormat::RGBA16F; break;
-	default: 
-		UE_LOG(LogTexture,Fatal,TEXT("Texture %s has source art in an invalid format."), *InTexture.GetName());
+		UE_LOG(LogTexture, Warning, TEXT("Texture has no source data: %s"), *InTexture.GetPathName());
 		return;
 	}
 
-	NumMips = InTexture.Source.GetNumMips();
-	NumSlices = InTexture.Source.GetNumSlices();
-
-	if (NumMips < 1 || NumSlices < 1)
+	Layers.Reserve(NumLayers);
+	for (int LayerIndex = 0; LayerIndex < NumLayers; ++LayerIndex)
 	{
-		UE_LOG(LogTexture,Warning, TEXT("Texture has no source mips: %s"), *InTexture.GetPathName());
-		return;
+		FTextureSourceLayerData* LayerData = new(Layers) FTextureSourceLayerData();
+		switch (InTexture.Source.GetFormat(LayerIndex))
+		{
+		case TSF_G8:		LayerData->ImageFormat = ERawImageFormat::G8;		break;
+		case TSF_G16:		LayerData->ImageFormat = ERawImageFormat::G16;		break;
+		case TSF_BGRA8:		LayerData->ImageFormat = ERawImageFormat::BGRA8;	break;
+		case TSF_BGRE8:		LayerData->ImageFormat = ERawImageFormat::BGRE8;	break;
+		case TSF_RGBA16:	LayerData->ImageFormat = ERawImageFormat::RGBA16;	break;
+		case TSF_RGBA16F:	LayerData->ImageFormat = ERawImageFormat::RGBA16F;  break;
+		default:
+			UE_LOG(LogTexture, Fatal, TEXT("Texture %s has source art in an invalid format."), *InTexture.GetName());
+			return;
+		}
+
+		FTextureFormatSettings FormatSettings;
+		InTexture.GetLayerFormatSettings(LayerIndex, FormatSettings);
+		LayerData->GammaSpace = FormatSettings.SRGB ? (InTexture.bUseLegacyGamma ? EGammaSpace::Pow22 : EGammaSpace::sRGB) : EGammaSpace::Linear;
 	}
 
-	if (InBuildSettings.MipGenSettings != TMGS_LeaveExistingMips)
+	Blocks.Reserve(NumBlocks);
+	for (int32 BlockIndex = 0; BlockIndex < NumBlocks; ++BlockIndex)
 	{
-		NumMips = 1;
+		FTextureSourceBlock SourceBlock;
+		InTexture.Source.GetBlock(BlockIndex, SourceBlock);
+
+		if (SourceBlock.NumMips > 0 && SourceBlock.NumSlices > 0)
+		{
+			FTextureSourceBlockData* BlockData = new(Blocks) FTextureSourceBlockData();
+			BlockData->BlockX = SourceBlock.BlockX;
+			BlockData->BlockY = SourceBlock.BlockY;
+			BlockData->SizeX = SourceBlock.SizeX;
+			BlockData->SizeY = SourceBlock.SizeY;
+			BlockData->NumMips = SourceBlock.NumMips;
+			BlockData->NumSlices = SourceBlock.NumSlices;
+
+			if (InBuildSettingsPerLayer[0].MipGenSettings != TMGS_LeaveExistingMips)
+			{
+				BlockData->NumMips = 1;
+			}
+
+			if (!InBuildSettingsPerLayer[0].bCubemap && !InBuildSettingsPerLayer[0].bTextureArray && !InBuildSettingsPerLayer[0].bVolume)
+			{
+				BlockData->NumSlices = 1;
+			}
+
+			BlockData->MipsPerLayer.SetNum(NumLayers);
+
+			SizeInBlocksX = FMath::Max(SizeInBlocksX, SourceBlock.BlockX + 1);
+			SizeInBlocksY = FMath::Max(SizeInBlocksY, SourceBlock.BlockY + 1);
+			BlockSizeX = FMath::Max(BlockSizeX, SourceBlock.SizeX);
+			BlockSizeY = FMath::Max(BlockSizeY, SourceBlock.SizeY);
+		}
 	}
 
-	if (!InBuildSettings.bCubemap && !InBuildSettings.bVolume)
+	for (FTextureSourceBlockData& Block : Blocks)
 	{
-		NumSlices = 1;
+		const int32 MipBiasX = FMath::CeilLogTwo(BlockSizeX / Block.SizeX);
+		const int32 MipBiasY = FMath::CeilLogTwo(BlockSizeY / Block.SizeY);
+		if (MipBiasX != MipBiasY)
+		{
+			UE_LOG(LogTexture, Warning, TEXT("Texture has blocks with mismatched aspect ratios"), *InTexture.GetPathName());
+			return;
+		}
+
+		Block.MipBias = MipBiasX;
 	}
 
 	TextureName = InTexture.GetFName();
-	GammaSpace = InTexture.SRGB ? (InTexture.bUseLegacyGamma ? EGammaSpace::Pow22 : EGammaSpace::sRGB) : EGammaSpace::Linear;
 
 	if (bAllowAsyncLoading && !InTexture.Source.IsBulkDataLoaded())
 	{
@@ -84,40 +136,58 @@ void FTextureCacheDerivedDataWorker::FTextureSourceData::Init(UTexture& InTextur
 	bValid = true;
 }
 
-void FTextureCacheDerivedDataWorker::FTextureSourceData::GetSourceMips(FTextureSource& Source, IImageWrapperModule* InImageWrapper)
+void FTextureSourceData::GetSourceMips(FTextureSource& Source, IImageWrapperModule* InImageWrapper)
 {
-	if (bValid && !Mips.Num()) // If we already got valid data, nothing to do.
+	if (bValid)
 	{
 		if (Source.HasHadBulkDataCleared())
 		{	// don't do any work we can't reload this
 			UE_LOG(LogTexture, Error, TEXT("Unable to get texture source mips because its bulk data was released. %s"), *TextureName.ToString())
-			return;
+				return;
 		}
 
-		for (int32 MipIndex = 0; MipIndex < NumMips; ++MipIndex)
+		for (int32 BlockIndex = 0; BlockIndex < Blocks.Num(); ++BlockIndex)
 		{
-			FImage* SourceMip = new(Mips) FImage(
-				(MipIndex == 0) ? Source.GetSizeX() : FMath::Max(1, Mips[MipIndex - 1].SizeX >> 1),
-				(MipIndex == 0) ? Source.GetSizeY() : FMath::Max(1, Mips[MipIndex - 1].SizeY >> 1),
-				NumSlices,
-				ImageFormat,
-				GammaSpace
-				);
+			FTextureSourceBlock SourceBlock;
+			Source.GetBlock(BlockIndex, SourceBlock);
 
-			if (!Source.GetMipData(SourceMip->RawData, MipIndex, InImageWrapper))
+			FTextureSourceBlockData& BlockData = Blocks[BlockIndex];
+			for (int32 LayerIndex = 0; LayerIndex < Layers.Num(); ++LayerIndex)
 			{
-				UE_LOG(LogTexture,Warning, TEXT("Cannot retrieve source data for mip %d of texture %s"), MipIndex, *TextureName.ToString());
-				ReleaseMemory();
-				bValid = false;
-				break;
+				const FTextureSourceLayerData& LayerData = Layers[LayerIndex];
+				if (!BlockData.MipsPerLayer[LayerIndex].Num()) // If we already got valid data, nothing to do.
+				{
+					int32 MipSizeX = SourceBlock.SizeX;
+					int32 MipSizeY = SourceBlock.SizeY;
+					for (int32 MipIndex = 0; MipIndex < BlockData.NumMips; ++MipIndex)
+					{
+						FImage* SourceMip = new(BlockData.MipsPerLayer[LayerIndex]) FImage(
+							MipSizeX, MipSizeY,
+							BlockData.NumSlices,
+							LayerData.ImageFormat,
+							LayerData.GammaSpace
+						);
+
+						if (!Source.GetMipData(SourceMip->RawData, BlockIndex, LayerIndex, MipIndex, InImageWrapper))
+						{
+							UE_LOG(LogTexture, Warning, TEXT("Cannot retrieve source data for mip %d of texture %s"), MipIndex, *TextureName.ToString());
+							ReleaseMemory();
+							bValid = false;
+							break;
+						}
+
+						MipSizeX = FMath::Max(MipSizeX / 2, 1);
+						MipSizeY = FMath::Max(MipSizeY / 2, 1);
+					}
+				}
 			}
 		}
 	}
 }
 
-void FTextureCacheDerivedDataWorker::FTextureSourceData::GetAsyncSourceMips(IImageWrapperModule* InImageWrapper)
+void FTextureSourceData::GetAsyncSourceMips(IImageWrapperModule* InImageWrapper)
 {
-	if (bValid && !Mips.Num() && AsyncSource.GetSizeOnDisk())
+	if (bValid && !Blocks[0].MipsPerLayer[0].Num() && AsyncSource.GetSizeOnDisk())
 	{
 		if (AsyncSource.LoadBulkDataWithFileReader())
 		{
@@ -128,24 +198,77 @@ void FTextureCacheDerivedDataWorker::FTextureSourceData::GetAsyncSourceMips(IIma
 
 void FTextureCacheDerivedDataWorker::BuildTexture()
 {
-	ensure(Compressor);
-	if (Compressor && TextureData.Mips.Num())
+	const bool bHasValidMip0 = TextureData.Blocks.Num() && TextureData.Blocks[0].MipsPerLayer.Num() && TextureData.Blocks[0].MipsPerLayer[0].Num();
+
+	FFormatNamedArguments Args;
+	Args.Add(TEXT("TextureName"), FText::FromString(Texture.GetName()));
+	Args.Add(TEXT("TextureFormatName"), FText::FromString(BuildSettingsPerLayer[0].TextureFormatName.GetPlainNameString()));
+	Args.Add(TEXT("TextureResolutionX"), FText::FromString(FString::FromInt(bHasValidMip0 ? TextureData.Blocks[0].MipsPerLayer[0][0].SizeX : 0)));
+	Args.Add(TEXT("TextureResolutionY"), FText::FromString(FString::FromInt(bHasValidMip0 ? TextureData.Blocks[0].MipsPerLayer[0][0].SizeY : 0)));
+
+	FTextureStatusMessageContext StatusMessage(FText::Format(NSLOCTEXT("Engine", "BuildTextureStatus", "Building textures: {TextureName} ({TextureFormatName}, {TextureResolutionX}X{TextureResolutionY})"), Args));
+
+	if (!ensure(Compressor))
 	{
-		FFormatNamedArguments Args; 
-		Args.Add( TEXT("TextureName"), FText::FromString( Texture.GetName() ) );
-		Args.Add( TEXT("TextureFormatName"), FText::FromString( BuildSettings.TextureFormatName.GetPlainNameString() ) );
-		Args.Add( TEXT("TextureResolutionX"), FText::FromString( FString::FromInt(TextureData.Mips[0].SizeX) ) );
-		Args.Add( TEXT("TextureResolutionY"), FText::FromString( FString::FromInt(TextureData.Mips[0].SizeY) ) );
-		FTextureStatusMessageContext StatusMessage( FText::Format( NSLOCTEXT("Engine", "BuildTextureStatus", "Building textures: {TextureName} ({TextureFormatName}, {TextureResolutionX}X{TextureResolutionY})"), Args ) );
+		UE_LOG(LogTexture, Warning, TEXT("Missing Compressor required to build texture %s"), *Texture.GetPathName());
+		return;
+	}
+
+	const bool bForVirtualTextureStreamingBuild = (CacheFlags & ETextureCacheFlags::ForVirtualTextureStreamingBuild) != 0;	
+	if (bForVirtualTextureStreamingBuild)
+	{
+		if (DerivedData->VTData == nullptr)
+		{
+			DerivedData->VTData = new FVirtualTextureBuiltData();
+		}
+
+		FVirtualTextureDataBuilder Builder(*DerivedData->VTData, Compressor, ImageWrapper);
+		Builder.Build(TextureData, CompositeTextureData, &BuildSettingsPerLayer[0], true);
+
+		DerivedData->SizeX = DerivedData->VTData->Width;
+		DerivedData->SizeY = DerivedData->VTData->Height;
+		DerivedData->PixelFormat = DerivedData->VTData->LayerTypes[0];
+		DerivedData->SetNumSlices(1);
+
+		// Store it in the cache.
+		// @todo: This will remove the streaming bulk data, which we immediately reload below!
+		// Should ideally avoid this redundant work, but it only happens when we actually have 
+		// to build the texture, which should only ever be once.
+		this->BytesCached = PutDerivedDataInCache(DerivedData, KeySuffix, Texture.GetPathName());
+
+		if (DerivedData->VTData->Chunks.Num())
+		{
+			const bool bInlineMips = (CacheFlags & ETextureCacheFlags::InlineMips) != 0;
+			bSucceeded = !bInlineMips || DerivedData->TryInlineMipData(BuildSettingsPerLayer[0].LODBiasWithCinematicMips, &Texture);
+		}
+		else
+		{
+			UE_LOG(LogTexture, Warning, TEXT("Failed to build %s derived data for %s"), *BuildSettingsPerLayer[0].TextureFormatName.GetPlainNameString(), *Texture.GetPathName());
+		}
+	}
+	else if (bHasValidMip0)
+	{
+		// Only support single Block/Layer here (Blocks and Layers are intended for VT support)
+		ensure(TextureData.Blocks.Num() == 1);
+		ensure(TextureData.Layers.Num() == 1);
 
 		check(DerivedData->Mips.Num() == 0);
 		DerivedData->SizeX = 0;
 		DerivedData->SizeY = 0;
 		DerivedData->PixelFormat = PF_Unknown;
+		DerivedData->SetIsCubemap(false);
+		DerivedData->VTData = nullptr;
+
+		FOptTexturePlatformData OptData;
 
 		// Compress the texture.
 		TArray<FCompressedImage2D> CompressedMips;
-		if (Compressor->BuildTexture(TextureData.Mips, CompositeTextureData.Mips, BuildSettings, CompressedMips))
+		if (Compressor->BuildTexture(TextureData.Blocks[0].MipsPerLayer[0],
+			((bool)Texture.CompositeTexture && CompositeTextureData.Blocks.Num() && CompositeTextureData.Blocks[0].MipsPerLayer.Num()) ? CompositeTextureData.Blocks[0].MipsPerLayer[0] : TArray<FImage>(),
+			BuildSettingsPerLayer[0],
+			CompressedMips,
+			OptData.NumMipsInTail,
+			OptData.ExtData))
 		{
 			check(CompressedMips.Num());
 
@@ -159,7 +282,7 @@ void FTextureCacheDerivedDataWorker::BuildTexture()
 				NewMip->SizeX = CompressedImage.SizeX;
 				NewMip->SizeY = CompressedImage.SizeY;
 				NewMip->SizeZ = CompressedImage.SizeZ;
-				check(NewMip->SizeZ == 1 || BuildSettings.bVolume); // Only volume can have SizeZ != 1
+				check(NewMip->SizeZ == 1 || BuildSettingsPerLayer[0].bVolume || BuildSettingsPerLayer[0].bTextureArray); // Only volume & arrays can have SizeZ != 1
 				NewMip->BulkData.Lock(LOCK_READ_WRITE);
 				check(CompressedImage.RawData.GetTypeSize() == 1);
 				void* NewMipData = NewMip->BulkData.Realloc(CompressedImage.RawData.Num());
@@ -170,8 +293,9 @@ void FTextureCacheDerivedDataWorker::BuildTexture()
 				{
 					DerivedData->SizeX = CompressedImage.SizeX;
 					DerivedData->SizeY = CompressedImage.SizeY;
-					DerivedData->NumSlices = BuildSettings.bCubemap ? 6 : (BuildSettings.bVolume ? CompressedImage.SizeZ : 1);
 					DerivedData->PixelFormat = (EPixelFormat)CompressedImage.PixelFormat;
+					DerivedData->SetNumSlices(BuildSettingsPerLayer[0].bCubemap ? 6 : (BuildSettingsPerLayer[0].bVolume || BuildSettingsPerLayer[0].bTextureArray) ? CompressedImage.SizeZ : 1);
+					DerivedData->SetIsCubemap(BuildSettingsPerLayer[0].bCubemap);
 				}
 				else
 				{
@@ -179,21 +303,23 @@ void FTextureCacheDerivedDataWorker::BuildTexture()
 				}
 			}
 
+			DerivedData->SetOptData(OptData);
+
 			// Store it in the cache.
 			// @todo: This will remove the streaming bulk data, which we immediately reload below!
 			// Should ideally avoid this redundant work, but it only happens when we actually have 
 			// to build the texture, which should only ever be once.
-			this->BytesCached = PutDerivedDataInCache(DerivedData, KeySuffix);
+			this->BytesCached = PutDerivedDataInCache(DerivedData, KeySuffix, Texture.GetPathName());
 		}
 
 		if (DerivedData->Mips.Num())
 		{
-			bool bInlineMips = (CacheFlags & ETextureCacheFlags::InlineMips) != 0;
-			bSucceeded = !bInlineMips || DerivedData->TryInlineMipData(BuildSettings.LODBiasWithCinematicMips);
+			const bool bInlineMips = (CacheFlags & ETextureCacheFlags::InlineMips) != 0;
+			bSucceeded = !bInlineMips || DerivedData->TryInlineMipData(BuildSettingsPerLayer[0].LODBiasWithCinematicMips, &Texture);
 		}
 		else
 		{
-			UE_LOG(LogTexture, Warning, TEXT("Failed to build %s derived data for %s"), *BuildSettings.TextureFormatName.GetPlainNameString(), *Texture.GetPathName());
+			UE_LOG(LogTexture, Warning, TEXT("Failed to build %s derived data for %s"), *BuildSettingsPerLayer[0].TextureFormatName.GetPlainNameString(), *Texture.GetPathName());
 		}
 	}
 }
@@ -202,18 +328,23 @@ FTextureCacheDerivedDataWorker::FTextureCacheDerivedDataWorker(
 	ITextureCompressorModule* InCompressor,
 	FTexturePlatformData* InDerivedData,
 	UTexture* InTexture,
-	const FTextureBuildSettings& InSettings,
+	const FTextureBuildSettings* InSettingsPerLayer,
 	uint32 InCacheFlags
 	)
 	: Compressor(InCompressor)
 	, ImageWrapper(nullptr)
 	, DerivedData(InDerivedData)
 	, Texture(*InTexture)
-	, BuildSettings(InSettings)
 	, CacheFlags(InCacheFlags)
 	, bSucceeded(false)
 {
 	check(DerivedData);
+
+	BuildSettingsPerLayer.SetNum(InTexture->Source.GetNumLayers());
+	for (int32 LayerIndex = 0; LayerIndex < BuildSettingsPerLayer.Num(); ++LayerIndex)
+	{
+		BuildSettingsPerLayer[LayerIndex] = InSettingsPerLayer[LayerIndex];
+	}
 
 	// At this point, the texture *MUST* have a valid GUID.
 	if (!Texture.Source.GetId().IsValid())
@@ -225,25 +356,32 @@ FTextureCacheDerivedDataWorker::FTextureCacheDerivedDataWorker(
 
 	// Dump any existing mips.
 	DerivedData->Mips.Empty();
+	if (DerivedData->VTData)
+	{
+		delete DerivedData->VTData;
+		DerivedData->VTData = nullptr;
+	}
 	UTexture::GetPixelFormatEnum();
-	GetTextureDerivedDataKeySuffix(Texture, BuildSettings, KeySuffix);
+	GetTextureDerivedDataKeySuffix(Texture, InSettingsPerLayer, KeySuffix);
 		
 	const bool bAllowAsyncBuild = (CacheFlags & ETextureCacheFlags::AllowAsyncBuild) != 0;
 	const bool bAllowAsyncLoading = (CacheFlags & ETextureCacheFlags::AllowAsyncLoading) != 0;
+	const bool bForVirtualTextureStreamingBuild = (CacheFlags & ETextureCacheFlags::ForVirtualTextureStreamingBuild) != 0;
 
-	if (bAllowAsyncLoading)
+	// FVirtualTextureDataBuilder always wants to load ImageWrapper module
+	// This is not strictly necessary, used only for debug output, but seems simpler to just always load this here, doesn't seem like it should be too expensive
+	if (bAllowAsyncLoading || bForVirtualTextureStreamingBuild)
 	{
 		ImageWrapper = &FModuleManager::LoadModuleChecked<IImageWrapperModule>( FName("ImageWrapper") );
 	}
 
-	TextureData.Init(Texture, BuildSettings, bAllowAsyncLoading); 
+	TextureData.Init(Texture, BuildSettingsPerLayer.GetData(), bAllowAsyncLoading);
 	if (Texture.CompositeTexture && Texture.CompositeTextureMode != CTM_Disabled)
 	{
-		const int32 SizeX = Texture.CompositeTexture->Source.GetSizeX();
-		const int32 SizeY = Texture.CompositeTexture->Source.GetSizeY();
-		if (FMath::IsPowerOfTwo(SizeX) && FMath::IsPowerOfTwo(SizeY))
+		const FIntPoint CompositeSourceSize = Texture.CompositeTexture->Source.GetLogicalSize();
+		if (FMath::IsPowerOfTwo(CompositeSourceSize.X) && FMath::IsPowerOfTwo(CompositeSourceSize.Y))
 		{
-			CompositeTextureData.Init(*Texture.CompositeTexture, BuildSettings, bAllowAsyncLoading);
+			CompositeTextureData.Init(*Texture.CompositeTexture, BuildSettingsPerLayer.GetData(), bAllowAsyncLoading);
 		}
 	}
 
@@ -267,10 +405,11 @@ void FTextureCacheDerivedDataWorker::DoWork()
 	const bool bForceRebuild = (CacheFlags & ETextureCacheFlags::ForceRebuild) != 0;
 	const bool bAllowAsyncBuild = (CacheFlags & ETextureCacheFlags::AllowAsyncBuild) != 0;
 	const bool bAllowAsyncLoading = (CacheFlags & ETextureCacheFlags::AllowAsyncLoading) != 0;
+	const bool bForVirtualTextureStreamingBuild = (CacheFlags & ETextureCacheFlags::ForVirtualTextureStreamingBuild) != 0;
 
 	TArray<uint8> RawDerivedData;
 
-	if (!bForceRebuild && GetDerivedDataCacheRef().GetSynchronous(*DerivedData->DerivedDataKey, RawDerivedData))
+	if (!bForceRebuild && GetDerivedDataCacheRef().GetSynchronous(*DerivedData->DerivedDataKey, RawDerivedData, Texture.GetPathName()))
 	{
 		const bool bInlineMips = (CacheFlags & ETextureCacheFlags::InlineMips) != 0;
 		const bool bForDDC = (CacheFlags & ETextureCacheFlags::ForDDCBuild) != 0;
@@ -282,15 +421,46 @@ void FTextureCacheDerivedDataWorker::DoWork()
 		// Load any streaming (not inline) mips that are necessary for our platform.
 		if (bForDDC)
 		{
-			bSucceeded = DerivedData->TryLoadMips(0,NULL);
+			bSucceeded = DerivedData->TryLoadMips(0, nullptr, &Texture);
 		}
 		else if (bInlineMips)
 		{
-			bSucceeded = DerivedData->TryInlineMipData(BuildSettings.LODBiasWithCinematicMips);
+			bSucceeded = DerivedData->TryInlineMipData(BuildSettingsPerLayer[0].LODBiasWithCinematicMips, &Texture);
 		}
 		else
 		{
-			bSucceeded = DerivedData->AreDerivedMipsAvailable();
+			if (bForVirtualTextureStreamingBuild)
+			{
+				bSucceeded =	DerivedData->VTData != nullptr &&
+								DerivedData->VTData->IsInitialized() &&
+								DerivedData->AreDerivedVTChunksAvailable();
+			}
+			else
+			{
+				bSucceeded = DerivedData->AreDerivedMipsAvailable();
+
+				if (bSucceeded && BuildSettingsPerLayer.Num() > 0)
+				{
+					// Code inspired by the texture compressor module as a hot fix for the bad data that might have been push into the ddc in 4.23 or 4.24 
+					const bool bLongLatCubemap = DerivedData->IsCubemap() && DerivedData->GetNumSlices() == 1;
+					int32 MaximunNumberOfMipMap = TNumericLimits<int32>::Max();
+					if (bLongLatCubemap)
+					{
+						MaximunNumberOfMipMap = FMath::CeilLogTwo(FMath::Clamp<uint32>(uint32(1 << FMath::FloorLog2(DerivedData->SizeX / 2)), uint32(32), BuildSettingsPerLayer[0].MaxTextureResolution)) + 1;
+					}
+					else
+					{
+						MaximunNumberOfMipMap = FMath::CeilLogTwo(FMath::Max3(DerivedData->SizeX, DerivedData->SizeY, BuildSettingsPerLayer[0].bVolume ? DerivedData->GetNumSlices() : 1)) + 1;
+					}
+
+					bSucceeded = DerivedData->Mips.Num() <= MaximunNumberOfMipMap;
+				}
+
+				if (!bSucceeded)
+				{
+					UE_LOG(LogTexture, Warning, TEXT("The data retrieved from the derived data cache for the texture %s was invalid. The texture will be rebuild."), *Texture.GetFullName())
+				}
+			}
 		}
 		bLoadedFromDDC = true;
 
@@ -298,6 +468,11 @@ void FTextureCacheDerivedDataWorker::DoWork()
 		if (!bSucceeded)
 		{
 			DerivedData->Mips.Empty();
+			if (DerivedData->VTData)
+			{
+				delete DerivedData->VTData;
+				DerivedData->VTData = nullptr;
+			}
 		}
 	}
 	
@@ -309,7 +484,8 @@ void FTextureCacheDerivedDataWorker::DoWork()
 			CompositeTextureData.GetAsyncSourceMips(ImageWrapper);
 		}
 
-		if (TextureData.Mips.Num() && (!CompositeTextureData.IsValid() || CompositeTextureData.Mips.Num()))
+		if (TextureData.Blocks.Num() && TextureData.Blocks[0].MipsPerLayer.Num() && TextureData.Blocks[0].MipsPerLayer[0].Num() && 
+			(!CompositeTextureData.IsValid() || (CompositeTextureData.Blocks.Num() && CompositeTextureData.Blocks[0].MipsPerLayer.Num() && CompositeTextureData.Blocks[0].MipsPerLayer[0].Num())))
 		{
 			BuildTexture();
 			bSucceeded = true;
@@ -340,6 +516,11 @@ void FTextureCacheDerivedDataWorker::Finalize()
 			CompositeTextureData.GetSourceMips(Texture.CompositeTexture->Source, ImageWrapper);
 		}
 		BuildTexture();
+	}
+		
+	if (BuildSettingsPerLayer[0].bVirtualStreamable) // Texture.VirtualTextureStreaming is more a hint that might be overruled by the buildsettings
+	{
+		check((DerivedData->VTData != nullptr) == Texture.VirtualTextureStreaming); 
 	}
 }
 

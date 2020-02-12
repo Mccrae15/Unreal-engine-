@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "SPaperEditorViewport.h"
 #include "Rendering/DrawElements.h"
@@ -27,26 +27,30 @@ struct FZoomLevelEntry
 	float ZoomAmount;
 };
 
-static const FZoomLevelEntry ZoomLevels[NumZoomLevels] =
+static const FZoomLevelEntry& GetZoomLevel(int Index)
 {
-	FZoomLevelEntry(0.03125f, NSLOCTEXT("PaperEditor", "ZoomLevel_1_32", "1:32")),
-	FZoomLevelEntry(0.0625f, NSLOCTEXT("PaperEditor", "ZoomLevel_1_16", "1:16")),
-	FZoomLevelEntry(0.125f, NSLOCTEXT("PaperEditor", "ZoomLevel_1_8", "1:8")),
-	FZoomLevelEntry(0.250f, NSLOCTEXT("PaperEditor", "ZoomLevel_1_4", "1:4")),
-	FZoomLevelEntry(0.500f, NSLOCTEXT("PaperEditor", "ZoomLevel_1_2", "1:2")),
-	FZoomLevelEntry(0.750f, NSLOCTEXT("PaperEditor", "ZoomLevel_3_4", "3:4")),
-	FZoomLevelEntry(0.875f, NSLOCTEXT("PaperEditor", "ZoomLevel_7_8", "7:8")),
-	FZoomLevelEntry(1.000f, NSLOCTEXT("PaperEditor", "ZoomLevel_1_1", "1:1")),
-	FZoomLevelEntry(2.000f, NSLOCTEXT("PaperEditor", "ZoomLevel_2x", "2x")),
-	FZoomLevelEntry(3.000f, NSLOCTEXT("PaperEditor", "ZoomLevel_3x", "3x")),
-	FZoomLevelEntry(4.500f, NSLOCTEXT("PaperEditor", "ZoomLevel_4x", "4x")),
-	FZoomLevelEntry(5.000f, NSLOCTEXT("PaperEditor", "ZoomLevel_5x", "5x")),
-	FZoomLevelEntry(6.000f, NSLOCTEXT("PaperEditor", "ZoomLevel_6x", "6x")),
-	FZoomLevelEntry(7.000f, NSLOCTEXT("PaperEditor", "ZoomLevel_7x", "7x")),
-	FZoomLevelEntry(8.000f, NSLOCTEXT("PaperEditor", "ZoomLevel_8x", "8x")),
-	FZoomLevelEntry(16.000f, NSLOCTEXT("PaperEditor", "ZoomLevel_16x", "16x")),
-	FZoomLevelEntry(32.000f, NSLOCTEXT("PaperEditor", "ZoomLevel_32x", "32x"))
-};
+	static const FZoomLevelEntry ZoomLevels[NumZoomLevels] =
+	{
+		FZoomLevelEntry(0.03125f, NSLOCTEXT("PaperEditor", "ZoomLevel_1_32", "1:32")),
+		FZoomLevelEntry(0.0625f, NSLOCTEXT("PaperEditor", "ZoomLevel_1_16", "1:16")),
+		FZoomLevelEntry(0.125f, NSLOCTEXT("PaperEditor", "ZoomLevel_1_8", "1:8")),
+		FZoomLevelEntry(0.250f, NSLOCTEXT("PaperEditor", "ZoomLevel_1_4", "1:4")),
+		FZoomLevelEntry(0.500f, NSLOCTEXT("PaperEditor", "ZoomLevel_1_2", "1:2")),
+		FZoomLevelEntry(0.750f, NSLOCTEXT("PaperEditor", "ZoomLevel_3_4", "3:4")),
+		FZoomLevelEntry(0.875f, NSLOCTEXT("PaperEditor", "ZoomLevel_7_8", "7:8")),
+		FZoomLevelEntry(1.000f, NSLOCTEXT("PaperEditor", "ZoomLevel_1_1", "1:1")),
+		FZoomLevelEntry(2.000f, NSLOCTEXT("PaperEditor", "ZoomLevel_2x", "2x")),
+		FZoomLevelEntry(3.000f, NSLOCTEXT("PaperEditor", "ZoomLevel_3x", "3x")),
+		FZoomLevelEntry(4.500f, NSLOCTEXT("PaperEditor", "ZoomLevel_4x", "4x")),
+		FZoomLevelEntry(5.000f, NSLOCTEXT("PaperEditor", "ZoomLevel_5x", "5x")),
+		FZoomLevelEntry(6.000f, NSLOCTEXT("PaperEditor", "ZoomLevel_6x", "6x")),
+		FZoomLevelEntry(7.000f, NSLOCTEXT("PaperEditor", "ZoomLevel_7x", "7x")),
+		FZoomLevelEntry(8.000f, NSLOCTEXT("PaperEditor", "ZoomLevel_8x", "8x")),
+		FZoomLevelEntry(16.000f, NSLOCTEXT("PaperEditor", "ZoomLevel_16x", "16x")),
+		FZoomLevelEntry(32.000f, NSLOCTEXT("PaperEditor", "ZoomLevel_32x", "32x"))
+	};
+	return ZoomLevels[Index];
+}
 
 //////////////////////////////////////////////////////////////////////////
 // SPaperEditorViewport
@@ -179,7 +183,7 @@ FReply SPaperEditorViewport::OnMouseButtonDown(const FGeometry& MyGeometry, cons
 		ReplyState.CaptureMouse( SharedThis(this) );
 		ReplyState.UseHighPrecisionMouseMovement( SharedThis(this) );
 
-		SoftwareCursorPosition = PanelCoordToGraphCoord( MyGeometry.AbsoluteToLocal( MouseEvent.GetScreenSpacePosition() ) );
+		SoftwareCursorPosition = PanelCoordToGraphCoord( MyGeometry.AbsoluteToLocal( MouseEvent.GetScreenSpacePosition() ) * MyGeometry.Scale );
 
 		// clear any interpolation when you manually pan
 		//DeferredMovementTargetObject = nullptr;
@@ -189,7 +193,7 @@ FReply SPaperEditorViewport::OnMouseButtonDown(const FGeometry& MyGeometry, cons
 	else if (MouseEvent.GetEffectingButton() == EKeys::LeftMouseButton)
 	{
 		// START MARQUEE SELECTION.
-		const FVector2D GraphMousePos = PanelCoordToGraphCoord( MyGeometry.AbsoluteToLocal( MouseEvent.GetScreenSpacePosition() ) );
+		const FVector2D GraphMousePos = PanelCoordToGraphCoord( MyGeometry.AbsoluteToLocal( MouseEvent.GetScreenSpacePosition() ) * MyGeometry.Scale );
 		Marquee.Start( GraphMousePos, FMarqueeOperation::OperationTypeFromMouseEvent(MouseEvent) );
 
 		// Trigger a selection update now so that single-clicks without a drag still select something
@@ -218,7 +222,7 @@ FReply SPaperEditorViewport::OnMouseButtonUp(const FGeometry& MyGeometry, const 
 		if (HasMouseCapture())
 		{
 			FSlateRect ThisPanelScreenSpaceRect = MyGeometry.GetLayoutBoundingRect();
-			const FVector2D ScreenSpaceCursorPos = MyGeometry.LocalToAbsolute( GraphCoordToPanelCoord( SoftwareCursorPosition ) );
+			const FVector2D ScreenSpaceCursorPos = MyGeometry.LocalToAbsolute( GraphCoordToPanelCoord( SoftwareCursorPosition ) / MyGeometry.Scale );
 
 			FIntPoint BestPositionInViewport(
 				FMath::RoundToInt( FMath::Clamp( ScreenSpaceCursorPos.X, ThisPanelScreenSpaceRect.Left, ThisPanelScreenSpaceRect.Right ) ),
@@ -335,7 +339,7 @@ FReply SPaperEditorViewport::OnMouseMove(const FGeometry& MyGeometry, const FPoi
 
 			{
 				// We are marquee selecting
-				const FVector2D GraphMousePos = PanelCoordToGraphCoord( MyGeometry.AbsoluteToLocal( MouseEvent.GetScreenSpacePosition() ) );
+				const FVector2D GraphMousePos = PanelCoordToGraphCoord( MyGeometry.AbsoluteToLocal( MouseEvent.GetScreenSpacePosition() ) * MyGeometry.Scale );
 				Marquee.Rect.UpdateEndPoint(GraphMousePos);
 
 				return FReply::Handled();
@@ -349,7 +353,7 @@ FReply SPaperEditorViewport::OnMouseMove(const FGeometry& MyGeometry, const FPoi
 FReply SPaperEditorViewport::OnMouseWheel(const FGeometry& MyGeometry, const FPointerEvent& MouseEvent)
 {
 	// We want to zoom into this point; i.e. keep it the same fraction offset into the panel
-	const FVector2D WidgetSpaceCursorPos = MyGeometry.AbsoluteToLocal( MouseEvent.GetScreenSpacePosition() );
+	const FVector2D WidgetSpaceCursorPos = MyGeometry.AbsoluteToLocal( MouseEvent.GetScreenSpacePosition() ) * MyGeometry.Scale;
 	FVector2D PointToMaintainGraphSpace = PanelCoordToGraphCoord( WidgetSpaceCursorPos );
 
 
@@ -391,7 +395,7 @@ int32 SPaperEditorViewport::FindNearestZoomLevel(float InZoomAmount, bool bRound
 
 	for (int32 ZoomLevelIndex=0; ZoomLevelIndex < NumZoomLevels; ++ZoomLevelIndex)
 	{
-		if (InZoomAmount <= ZoomLevels[ZoomLevelIndex].ZoomAmount)
+		if (InZoomAmount <= GetZoomLevel(ZoomLevelIndex).ZoomAmount)
 		{
 			Result = ZoomLevelIndex;
 			bFoundItem = true;
@@ -418,12 +422,12 @@ int32 SPaperEditorViewport::FindNearestZoomLevel(float InZoomAmount, bool bRound
 
 float SPaperEditorViewport::GetZoomAmount() const
 {
-	return ZoomLevels[ZoomLevel].ZoomAmount;
+	return GetZoomLevel(ZoomLevel).ZoomAmount;
 }
 
 FText SPaperEditorViewport::GetZoomText() const
 {
-	return ZoomLevels[ZoomLevel].DisplayText;
+	return GetZoomLevel(ZoomLevel).DisplayText;
 }
 
 FSlateColor SPaperEditorViewport::GetZoomTextColorAndOpacity() const
@@ -515,7 +519,7 @@ void SPaperEditorViewport::PaintSoftwareCursor(const FGeometry& AllottedGeometry
 		FSlateDrawElement::MakeBox(
 			OutDrawElements,
 			DrawLayerId,
-			AllottedGeometry.ToPaintGeometry( GraphCoordToPanelCoord(SoftwareCursorPosition) - ( Brush->ImageSize / 2 ), Brush->ImageSize ),
+			AllottedGeometry.ToPaintGeometry( GraphCoordToPanelCoord(SoftwareCursorPosition) / AllottedGeometry.Scale - ( Brush->ImageSize / 2 ), Brush->ImageSize ),
 			Brush);
 	}
 }

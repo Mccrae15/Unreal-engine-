@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "Animation/Sequencer2DTransformSection.h"
 #include "ISectionLayoutBuilder.h"
@@ -134,7 +134,7 @@ bool F2DTransformSection::RequestDeleteCategory(const TArray<FName>& CategoryNam
 		EMovieScene2DTransformChannel Channel = TransformSection->GetMask().GetChannels();
 		EMovieScene2DTransformChannel ChannelToRemove = TransformSection->GetMaskByName(CategoryName).GetChannels();
 
-		Channel = Channel ^ ChannelToRemove;
+		Channel &= ~ChannelToRemove;
 
 		TransformSection->SetMask(Channel);
 			
@@ -160,7 +160,7 @@ bool F2DTransformSection::RequestDeleteKeyArea(const TArray<FName>& KeyAreaNameP
 		EMovieScene2DTransformChannel Channel = TransformSection->GetMask().GetChannels();
 		EMovieScene2DTransformChannel ChannelToRemove = TransformSection->GetMaskByName(KeyAreaName).GetChannels();
 
-		Channel = Channel ^ ChannelToRemove;
+		Channel &= ~ChannelToRemove;
 
 		TransformSection->SetMask(Channel);
 					

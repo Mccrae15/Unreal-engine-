@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -252,7 +252,7 @@ public:
 	 * @param SubsystemName - Name of the requested online service
 	 * @return true if the subsystem is enabled by config
 	 */
-	static bool IsEnabled(const FName& SubsystemName);
+	static bool IsEnabled(const FName& SubsystemName, const FName& InstanceName = NAME_None);
 
 	/**
 	 * Return the name of the subsystem @see OnlineSubsystemNames.h
@@ -370,7 +370,8 @@ public:
 	 * Get the interface for accessing an online store
 	 * @return Interface pointer for the appropriate online store service
 	 */
-	virtual IOnlineStorePtr GetStoreInterface() const = 0;
+	UE_DEPRECATED(4.25, "Move to OnlineStoreInterfaceV2 and OnlinePurchaseInterface.")
+	virtual IOnlineStorePtr GetStoreInterface() const { return nullptr; }
 
 	/** 
 	 * Get the interface for accessing an online store

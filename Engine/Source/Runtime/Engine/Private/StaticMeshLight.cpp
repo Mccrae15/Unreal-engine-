@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 /*=============================================================================
 	StaticMeshLight.cpp: Static mesh lighting code.
@@ -38,7 +38,7 @@ static void GetStaticLightingVertex(
 	OutVertex.WorldTangentY = LocalToWorld.TransformVector(VertexBuffer.VertexTangentY(VertexIndex)).GetSafeNormal();
 	OutVertex.WorldTangentZ = LocalToWorldInverseTranspose.TransformVector(VertexBuffer.VertexTangentZ(VertexIndex)).GetSafeNormal();
 
-	checkSlow(VertexBuffer.GetNumTexCoords() <= ARRAY_COUNT(OutVertex.TextureCoordinates));
+	checkSlow(VertexBuffer.GetNumTexCoords() <= UE_ARRAY_COUNT(OutVertex.TextureCoordinates));
 	for(uint32 LightmapTextureCoordinateIndex = 0;LightmapTextureCoordinateIndex < VertexBuffer.GetNumTexCoords();LightmapTextureCoordinateIndex++)
 	{
 		OutVertex.TextureCoordinates[LightmapTextureCoordinateIndex] = VertexBuffer.GetVertexUV(VertexIndex,LightmapTextureCoordinateIndex);
@@ -210,6 +210,9 @@ FStaticMeshStaticLightingTextureMapping::FStaticMeshStaticLightingTextureMapping
 // FStaticLightingTextureMapping interface
 void FStaticMeshStaticLightingTextureMapping::Apply(FQuantizedLightmapData* QuantizedData, const TMap<ULightComponent*,FShadowMapData2D*>& ShadowMapData, ULevel* LightingScenario)
 {
+	static const auto CVar = IConsoleManager::Get().FindTConsoleVariableDataInt(TEXT("r.VirtualTexturedLightmaps"));
+	const bool bUseVirtualTextures = (CVar->GetValueOnAnyThread() != 0) && UseVirtualTexturing(GMaxRHIFeatureLevel);
+
 	UStaticMeshComponent* StaticMeshComponent = Primitive.Get();
 
 	if (StaticMeshComponent && StaticMeshComponent->GetOwner() && StaticMeshComponent->GetOwner()->GetLevel())
@@ -228,7 +231,14 @@ void FStaticMeshStaticLightingTextureMapping::Apply(FQuantizedLightmapData* Quan
 			StaticMeshComponent->MarkPackageDirty();
 		}
 
-		const FStaticMeshComponentLODInfo& ComponentLODInfo = StaticMeshComponent->LODData[LODIndex];
+		FStaticMeshComponentLODInfo& ComponentLODInfo = StaticMeshComponent->LODData[LODIndex];
+
+		// Ensure this LODInfo has a valid MapBuildDataId
+		if (ComponentLODInfo.CreateMapBuildDataId(LODIndex))
+		{
+			StaticMeshComponent->MarkPackageDirty();
+		}
+
 		ELightMapPaddingType PaddingType = GAllowLightmapPadding ? LMPT_NormalPadding : LMPT_NoPadding;
 		const bool bHasNonZeroData = (QuantizedData != NULL && QuantizedData->HasNonZeroData());
 
@@ -243,20 +253,22 @@ void FStaticMeshStaticLightingTextureMapping::Apply(FQuantizedLightmapData* Quan
 		if (bNeedsLightMap)
 		{
 			// Create a light-map for the primitive.
+			TMap<ULightComponent*, FShadowMapData2D*> EmptyShadowMapData;
 			MeshBuildData.LightMap = FLightMap2D::AllocateLightMap(
 				Registry,
 				QuantizedData,
+				bUseVirtualTextures ? ShadowMapData : EmptyShadowMapData,
 				StaticMeshComponent->Bounds,
 				PaddingType,
 				LMF_Streamed
-				);
+			);
 		}
 		else
 		{
 			MeshBuildData.LightMap = NULL;
 		}
 
-		if (ShadowMapData.Num() > 0)
+		if (ShadowMapData.Num() > 0 && !bUseVirtualTextures)
 		{
 			MeshBuildData.ShadowMap = FShadowMap2D::AllocateShadowMap(
 				Registry,
@@ -449,10 +461,7 @@ void UStaticMeshComponent::InvalidateLightingCacheDetailed(bool bInvalidateBuild
 	for(int32 i = 0; i < LODData.Num(); i++)
 	{
 		FStaticMeshComponentLODInfo& LODDataElement = LODData[i];
-		LODDataElement.MapBuildDataId = FGuid::NewGuid();
-		#if WITH_EDITOR
-			LODDataElement.bMapBuildDataIdLoaded = false;
-		#endif
+		LODDataElement.MapBuildDataId.Invalidate();
 	}
 
 	MarkRenderStateDirty();

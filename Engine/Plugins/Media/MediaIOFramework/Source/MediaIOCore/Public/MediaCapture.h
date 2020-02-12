@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -17,13 +17,15 @@
 #include "MediaCapture.generated.h"
 
 class FSceneViewport;
+class FTextureRenderTargetResource;
 class UTextureRenderTarget2D;
+class FRHICommandListImmediate;
 
 /**
  * Possible states of media capture.
  */
-UENUM()
-enum class EMediaCaptureState
+UENUM(BlueprintType)
+enum class EMediaCaptureState : uint8
 {
 	/** Unrecoverable error occurred during capture. */
 	Error,
@@ -50,7 +52,7 @@ class FMediaCaptureUserData
 /**
  * Type of cropping 
  */
-UENUM()
+UENUM(BlueprintType)
 enum class EMediaCaptureCroppingType : uint8
 {
 	/** Do not crop the captured image. */
@@ -82,9 +84,24 @@ public:
 	 * Crop the captured SceneViewport or TextureRenderTarget2D to the desired size.
 	 * @note Only valid when Crop is set to Custom.
 	 */
-	UPROPERTY(BlueprintReadWrite, EditAnywhere, Category = "MediaCapture")
+	UPROPERTY(BlueprintReadWrite, EditAnywhere, Category="MediaCapture")
 	FIntPoint CustomCapturePoint;
+
+	/**
+	 * When the capture start, resize the source buffer to the desired size.
+	 * @note Only valid when a size is specified by the MediaOutput.
+	 * @note For viewport, the window size will not change. Only the viewport will be resized.
+	 * @note For RenderTarget, the asset will be modified and resized to the desired size.
+	 */
+	UPROPERTY(BlueprintReadWrite, EditAnywhere, Category="MediaCapture")
+	bool bResizeSourceBuffer;
 };
+
+
+/** Delegate signatures */
+DECLARE_DYNAMIC_MULTICAST_DELEGATE(FMediaCaptureStateChangedSignature);
+DECLARE_MULTICAST_DELEGATE(FMediaCaptureStateChangedSignatureNative);
+
 
 /**
  * Abstract base class for media capture.
@@ -173,6 +190,16 @@ public:
 	/** Check whether this capture has any processing left to do. */
 	virtual bool HasFinishedProcessing() const;
 
+	/** Called when the state of the capture changed. */
+	UPROPERTY(BlueprintAssignable, Category = "Media|Output")
+	FMediaCaptureStateChangedSignature OnStateChanged;
+
+	/**
+	 * Called when the state of the capture changed.
+	 * The callback is called on the game thread. Note that the change may occur on the rendering thread.
+	 */
+	FMediaCaptureStateChangedSignatureNative OnStateChangedNative;
+
 public:
 	//~ UObject interface
 	virtual void BeginDestroy() override;
@@ -193,28 +220,73 @@ protected:
 		FCaptureBaseData();
 
 		FTimecode SourceFrameTimecode;
+		FFrameRate SourceFrameTimecodeFramerate;
 		uint32 SourceFrameNumberRenderThread;
 	};
-	virtual TSharedPtr<FMediaCaptureUserData> GetCaptureFrameUserData_GameThread() { return TSharedPtr<FMediaCaptureUserData>(); }
-	virtual void OnFrameCaptured_RenderingThread(const FCaptureBaseData& InBaseData, TSharedPtr<FMediaCaptureUserData> InUserData, void* InBuffer, int32 Width, int32 Height) { }
+
+	/**
+	 * Capture the data that will pass along to the callback.
+	 * @note The capture is done on the Render Thread but triggered from the Game Thread.
+	 */
+	virtual TSharedPtr<FMediaCaptureUserData, ESPMode::ThreadSafe> GetCaptureFrameUserData_GameThread() { return TSharedPtr<FMediaCaptureUserData, ESPMode::ThreadSafe>(); }
+
+	/** Should we call OnFrameCaptured_RenderingThread() with a RHI Texture -or- copy the memory to CPU ram and call OnFrameCaptured_RenderingThread(). */
+	virtual bool ShouldCaptureRHITexture() const { return false; }
+
+	/**
+	 * Callback when the buffer was successfully copied to CPU ram.
+	 * The callback in called from a critical point. If you intend to process the buffer, do so in another thread.
+	 * The buffer is only valid for the duration of the callback.
+	 */
+	virtual void OnFrameCaptured_RenderingThread(const FCaptureBaseData& InBaseData, TSharedPtr<FMediaCaptureUserData, ESPMode::ThreadSafe> InUserData, void* InBuffer, int32 Width, int32 Height) { }
+
+	/**
+	 * Callback when the buffer was successfully copied on the GPU ram.
+	 * The callback in called from a critical point. If you intend to process the texture, do so in another thread.
+	 * The texture is valid for the duration of the callback.
+	 */
+	virtual void OnRHITextureCaptured_RenderingThread(const FCaptureBaseData& InBaseData, TSharedPtr<FMediaCaptureUserData, ESPMode::ThreadSafe> InUserData, FTextureRHIRef InTexture) { }
+
+	/**
+	 * Callback when the buffer is ready to be copied on the GPU. You need to copy yourself. You may use the callback to do texel operation or other conversion.
+	 * The callback in called from a critical point be fast.
+	 * The texture is valid for the duration of the callback.
+	 * Only called when the conversion operation is custom.
+	 */
+	virtual void OnCustomCapture_RenderingThread(FRHICommandListImmediate& RHICmdList, const FCaptureBaseData& InBaseData, TSharedPtr<FMediaCaptureUserData, ESPMode::ThreadSafe> InUserData, FTexture2DRHIRef InSourceTexture, FTextureRHIRef TargetableTexture, FResolveParams& ResolveParams, FVector2D CropU, FVector2D CropV) { }
+
+	/** Get the size of the buffer when the conversion operation is custom. The function is called once at initialization and the result is cached. */
+	virtual FIntPoint GetCustomOutputSize(const FIntPoint& InSize) const { return InSize; }
+
+	/** Get the pixel format of the buffer when the conversion operation is custom. The function is called once at initialization and the result is cached. */
+	virtual EPixelFormat GetCustomOutputPixelFormat(const EPixelFormat& InPixelFormat) const { return InPixelFormat; }
 
 protected:
 	UTextureRenderTarget2D* GetTextureRenderTarget() { return CapturingRenderTarget; }
 	TSharedPtr<FSceneViewport> GetCapturingSceneViewport() { return CapturingSceneViewport.Pin(); }
 	EMediaCaptureConversionOperation GetConversionOperation() const { return ConversionOperation; }
+	void SetState(EMediaCaptureState InNewState);
 
 protected:
 	UPROPERTY(Transient)
 	UMediaOutput* MediaOutput;
 
-	EMediaCaptureState MediaState;
-
 private:
+	struct FCaptureFrame;
+
 	void InitializeResolveTarget(int32 InNumberOfBuffers);
 	void OnEndFrame_GameThread();
-	void CacheMediaOutput();
-	FIntPoint GetOutputSize(const FIntPoint & InSize, const EMediaCaptureConversionOperation & InConversionOperation) const;
-	EPixelFormat GetOutputPixelFormat(const EPixelFormat & InPixelFormat, const EMediaCaptureConversionOperation & InConversionOperation) const;
+	void CacheMediaOutput(EMediaCaptureSourceType InSourceType);
+	void CacheOutputOptions();
+	FIntPoint GetOutputSize(const FIntPoint& InSize, const EMediaCaptureConversionOperation & InConversionOperation) const;
+	EPixelFormat GetOutputPixelFormat(const EPixelFormat& InPixelFormat, const EMediaCaptureConversionOperation & InConversionOperation) const;
+	void BroadcastStateChanged();
+	void SetFixedViewportSize(TSharedPtr<FSceneViewport> InSceneViewport);
+	void ResetFixedViewportSize(TSharedPtr<FSceneViewport> InViewport, bool bInFlushRenderingCommands);
+
+	void Capture_RenderThread(FRHICommandListImmediate& RHICmdList, UMediaCapture* InMediaCapture, FCaptureFrame* CapturingFrame, FCaptureFrame* ReadyFrame,
+		FSceneViewport* InCapturingSceneViewport, FTextureRenderTargetResource* InTextureRenderTargetResource,
+		FIntPoint InDesiredSize, FMediaCaptureStateChangedSignature InOnStateChanged);
 
 private:
 	struct FCaptureFrame
@@ -223,13 +295,14 @@ private:
 
 		FTexture2DRHIRef ReadbackTexture;
 		FCaptureBaseData CaptureBaseData;
-		bool bResolvedTargetRequested;
-		TSharedPtr<FMediaCaptureUserData> UserData;
+		TAtomic<bool> bResolvedTargetRequested;
+		TSharedPtr<FMediaCaptureUserData, ESPMode::ThreadSafe> UserData;
 	};
 
 	TArray<FCaptureFrame> CaptureFrames;
 	int32 CurrentResolvedTargetIndex;
 	int32 NumberOfCaptureFrame;
+	EMediaCaptureState MediaState;
 
 	UPROPERTY(Transient)
 	UTextureRenderTarget2D* CapturingRenderTarget;
@@ -243,7 +316,11 @@ private:
 	FMediaCaptureOptions DesiredCaptureOptions;
 	EMediaCaptureConversionOperation ConversionOperation;
 	FString MediaOutputName;
+	bool bUseRequestedTargetSize;
 
-	bool bResolvedTargetInitialized;
+	bool bViewportHasFixedViewportSize;
+	TAtomic<bool> bResolvedTargetInitialized;
+	TAtomic<bool> bShouldCaptureRHITexture;
 	TAtomic<int32> WaitingForResolveCommandExecutionCounter;
+	TAtomic<int32> NumberOfTexturesToResolve;
 };

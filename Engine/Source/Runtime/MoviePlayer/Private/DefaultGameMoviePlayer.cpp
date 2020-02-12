@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "DefaultGameMoviePlayer.h"
 #include "HAL/PlatformSplash.h"
@@ -15,7 +15,7 @@
 #include "ShaderCompiler.h"
 #include "IHeadMountedDisplay.h"
 #include "IXRTrackingSystem.h"
-#include "IStereoLayers.h"
+#include "IXRLoadingScreen.h"
 #include "Misc/ConfigCacheIni.h"
 #include "HAL/FileManager.h"
 #include "Widgets/SVirtualWindow.h"
@@ -127,10 +127,12 @@ FDefaultGameMoviePlayer::~FDefaultGameMoviePlayer()
 	else if (GIsRHIInitialized)
 	{
 		// Even when uninitialized we must safely unregister the movie player on the render thread
-		ENQUEUE_UNIQUE_RENDER_COMMAND_ONEPARAMETER(UnregisterMoviePlayerTickable, FDefaultGameMoviePlayer*, MoviePlayer, this,
-		{
-			MoviePlayer->Unregister();
-		});
+		FDefaultGameMoviePlayer* InMoviePlayer = this;
+		ENQUEUE_RENDER_COMMAND(UnregisterMoviePlayerTickable)(
+			[InMoviePlayer](FRHICommandListImmediate& RHICmdList)
+			{
+				InMoviePlayer->Unregister();
+			});
 	}
 
 	FCoreDelegates::IsLoadingMovieCurrentlyPlaying.Unbind();
@@ -140,14 +142,10 @@ FDefaultGameMoviePlayer::~FDefaultGameMoviePlayer()
 
 void FDefaultGameMoviePlayer::RegisterMovieStreamer(TSharedPtr<IMovieStreamer> InMovieStreamer)
 {
-	MovieStreamer = InMovieStreamer;
-	MovieStreamer->OnCurrentMovieClipFinished().AddRaw(this, &FDefaultGameMoviePlayer::BroadcastMovieClipFinished);
-
-	// Always set the viewport interface when the movie streamer is registered.  This fixes cases movies not appearing due to module load order where the movie player is initialized after a movie streamer is registered.
-	// It also fixes cases of a different movie streamer being registered after initialization for any reason
-	if (MovieStreamer.IsValid() && MovieViewportWeakPtr.IsValid())
+	if (InMovieStreamer.IsValid() && !MovieStreamers.Contains(InMovieStreamer))
 	{
-		MovieViewportWeakPtr.Pin()->SetViewportInterface(MovieStreamer->GetViewportInterface().ToSharedRef());
+		MovieStreamers.Add(InMovieStreamer);
+		InMovieStreamer->OnCurrentMovieClipFinished().AddRaw(this, &FDefaultGameMoviePlayer::BroadcastMovieClipFinished);
 	}
 }
 
@@ -160,10 +158,12 @@ void FDefaultGameMoviePlayer::Initialize(FSlateRenderer& InSlateRenderer, TShare
 
 	UE_LOG(LogMoviePlayer, Log, TEXT("Initializing movie player"));
 
-	ENQUEUE_UNIQUE_RENDER_COMMAND_ONEPARAMETER(RegisterMoviePlayerTickable, FDefaultGameMoviePlayer*, MoviePlayer, this,
-	{
-		MoviePlayer->Register();
-	});
+	FDefaultGameMoviePlayer* InMoviePlayer = this;
+	ENQUEUE_RENDER_COMMAND(RegisterMoviePlayerTickable)(
+		[InMoviePlayer](FRHICommandListImmediate& RHICmdList)
+		{
+			InMoviePlayer->Register();
+		});
 
 	bInitialized = true;
 
@@ -224,12 +224,6 @@ void FDefaultGameMoviePlayer::Initialize(FSlateRenderer& InSlateRenderer, TShare
 		];
 
 	MovieViewportWeakPtr = MovieViewport;
-
-	if (MovieStreamer.IsValid())
-	{
-		MovieViewport->SetViewportInterface( MovieStreamer->GetViewportInterface().ToSharedRef() );
-	}
-	
 	MovieViewport->SetActive(true);
 
 	// Register the movie viewport so that it can receive user input.
@@ -262,10 +256,12 @@ void FDefaultGameMoviePlayer::Shutdown()
 	StopMovie();
 	WaitForMovieToFinish();
 
-	ENQUEUE_UNIQUE_RENDER_COMMAND_ONEPARAMETER(UnregisterMoviePlayerTickable, FDefaultGameMoviePlayer*, MoviePlayer, this,
-	{
-		MoviePlayer->Unregister();
-	});
+	FDefaultGameMoviePlayer* InMoviePlayer = this;
+	ENQUEUE_RENDER_COMMAND(UnregisterMoviePlayerTickable)(
+		[InMoviePlayer](FRHICommandListImmediate& RHICmdList)
+		{
+			InMoviePlayer->Unregister();
+		});
 
 	bInitialized = false;
 
@@ -278,7 +274,8 @@ void FDefaultGameMoviePlayer::Shutdown()
 	MainWindow.Reset();
 	VirtualRenderWindow.Reset();
 
-	MovieStreamer.Reset();
+	MovieStreamers.Empty();
+	ActiveMovieStreamer.Reset();
 
 	LoadingScreenAttributes = FLoadingScreenAttributes();
 
@@ -353,13 +350,24 @@ bool FDefaultGameMoviePlayer::PlayMovie()
 		
 		LastPlayTime = FPlatformTime::Seconds();
 
-		bool bIsInitialized = true;
+		ActiveMovieStreamer.Reset();
 		if (MovieStreamingIsPrepared())
 		{
-			bIsInitialized = MovieStreamer->Init(LoadingScreenAttributes.MoviePaths, LoadingScreenAttributes.PlaybackType);
+			for (TSharedPtr<IMovieStreamer> MovieStreamer : MovieStreamers)
+			{
+				if (MovieStreamer->Init(LoadingScreenAttributes.MoviePaths, LoadingScreenAttributes.PlaybackType))
+				{
+					ActiveMovieStreamer = MovieStreamer;
+					if (MovieViewportWeakPtr.IsValid())
+					{
+						MovieViewportWeakPtr.Pin()->SetViewportInterface(MovieStreamer->GetViewportInterface().ToSharedRef());
+					}
+					break;
+				}
+			}
 		}
 
-		if (bIsInitialized)
+		if (ActiveMovieStreamer.IsValid() || !MovieStreamingIsPrepared())
 		{
 			MovieStreamingIsDone.Set(MovieStreamingIsPrepared() ? 0 : 1);
 			LoadingIsDone.Set(0);
@@ -445,20 +453,18 @@ void FDefaultGameMoviePlayer::WaitForMovieToFinish(bool bAllowEngineTick)
 		// Make sure the movie player widget has user focus to accept keypresses
 		if (LoadingScreenContents.IsValid())
 		{
-			SlateApp.ForEachUser([&](FSlateUser* User) {
-				SlateApp.SetUserFocus(User->GetUserIndex(), LoadingScreenContents);
-			});
+			SlateApp.SetAllUserFocus(LoadingScreenContents);
 		}
 
 		// Continue to wait until the user calls finish (if enabled) or when loading completes or the minimum enforced time (if any) has been reached.
 		// Don't continue playing on game shutdown
-		while ( !GIsRequestingExit &&
+		while ( !IsEngineExitRequested() &&
 				((bWaitForManualStop && !bUserCalledFinish)
 			||	(!bUserCalledFinish && !bEnforceMinimumTime && !IsMovieStreamingFinished() && !bAutoCompleteWhenLoadingCompletes) 
 			||	(bEnforceMinimumTime && (FPlatformTime::Seconds() - LastPlayTime) < LoadingScreenAttributes.MinimumLoadingScreenDisplayTime)))
 		{
 			// If we are in a loading loop, and this is the last movie in the playlist.. assume you can break out.
-			if (MovieStreamer.IsValid() && LoadingScreenAttributes.PlaybackType == MT_LoadingLoop && MovieStreamer->IsLastMovieInPlaylist())
+			if (ActiveMovieStreamer.IsValid() && LoadingScreenAttributes.PlaybackType == MT_LoadingLoop && ActiveMovieStreamer->IsLastMovieInPlaylist())
 			{
 				break;
 			}
@@ -468,9 +474,9 @@ void FDefaultGameMoviePlayer::WaitForMovieToFinish(bool bAllowEngineTick)
 				// Break out of the loop if the main window is closed during the movie.
 				if ( !MainWindow.IsValid() || bMainWindowClosed.Load() )
 				{
-					if (MovieStreamer.IsValid())
+					if (ActiveMovieStreamer.IsValid())
 					{
-						MovieStreamer->ForceCompletion();
+						ActiveMovieStreamer->ForceCompletion();
 					}
 					break;
 				}
@@ -488,15 +494,14 @@ void FDefaultGameMoviePlayer::WaitForMovieToFinish(bool bAllowEngineTick)
 					GEngine->Tick(DeltaTime, false);
 				}
 
-				ENQUEUE_UNIQUE_RENDER_COMMAND_TWOPARAMETER(
-					BeginLoadingMovieFrameAndTickMovieStreamer,
-					FDefaultGameMoviePlayer*, MoviePlayer, this,
-					float, DeltaTime, DeltaTime,
+				FDefaultGameMoviePlayer* InMoviePlayer = this;
+				ENQUEUE_RENDER_COMMAND(BeginLoadingMovieFrameAndTickMovieStreamer)(
+					[InMoviePlayer, DeltaTime](FRHICommandListImmediate& RHICmdList)
 					{
 						GFrameNumberRenderThread++;
 						GRHICommandList.GetImmediateCommandList().BeginFrame();
 				
-						MoviePlayer->TickStreamer(DeltaTime);
+						InMoviePlayer->TickStreamer(DeltaTime);
 					}
 				);
 				
@@ -519,25 +524,25 @@ void FDefaultGameMoviePlayer::WaitForMovieToFinish(bool bAllowEngineTick)
 		LoadingIsDone.Set(1);
 		IsMoviePlaying = false;
 
-		IStereoLayers* StereoLayers;
-		if (GEngine && GEngine->StereoRenderingDevice.IsValid() && (StereoLayers = GEngine->StereoRenderingDevice->GetStereoLayers()) != nullptr && SyncMechanism == nullptr)
+		IXRLoadingScreen* LoadingScreen;
+		if (GEngine && GEngine->XRSystem.IsValid() && (LoadingScreen = GEngine->XRSystem->GetLoadingScreen()) != nullptr && SyncMechanism == nullptr)
 		{
-			StereoLayers->SetSplashScreenMovie(FTextureRHIRef());
+			LoadingScreen->ClearSplashes();
 		}
 
 		MovieStreamingIsDone.Set(1);
 
 		FlushRenderingCommands();
 
-		if( MovieStreamer.IsValid() )
+		if( ActiveMovieStreamer.IsValid() )
 		{
-			MovieStreamer->ForceCompletion();
+			ActiveMovieStreamer->ForceCompletion();
 		}
 
 		// Allow the movie streamer to clean up any resources it uses once there are no movies to play.
-		if( MovieStreamer.IsValid() )
+		if( ActiveMovieStreamer.IsValid() )
 		{
-			MovieStreamer->Cleanup();
+			ActiveMovieStreamer->Cleanup();
 		}
 	
 		// Finally, clear out the loading screen attributes, forcing users to always
@@ -551,7 +556,7 @@ void FDefaultGameMoviePlayer::WaitForMovieToFinish(bool bAllowEngineTick)
 		UGameEngine* GameEngine = Cast<UGameEngine>(GEngine);
 
 		// Don't switch the window on game shutdown
-		if (GameEngine && !GIsRequestingExit)
+		if (GameEngine && !IsEngineExitRequested())
 		{
 			GameEngine->SwitchGameWindowToUseGameViewport();
 		}
@@ -597,24 +602,32 @@ void FDefaultGameMoviePlayer::Tick( float DeltaTime )
 
 void FDefaultGameMoviePlayer::TickStreamer(float DeltaTime)
 {	
-	if (MovieStreamingIsPrepared() && !IsMovieStreamingFinished())
+	if (MovieStreamingIsPrepared() && ActiveMovieStreamer.IsValid() && !IsMovieStreamingFinished())
 	{
-		const bool bMovieIsDone = MovieStreamer->Tick(DeltaTime);		
+		const bool bMovieIsDone = ActiveMovieStreamer->Tick(DeltaTime);
 		if (bMovieIsDone)
 		{
 			MovieStreamingIsDone.Set(1);
 		}
 
-		IStereoLayers* StereoLayers;
-		if (GEngine && GEngine->StereoRenderingDevice.IsValid() && (StereoLayers = GEngine->StereoRenderingDevice->GetStereoLayers()) != nullptr)
+		IXRLoadingScreen* LoadingScreen;
+		if (GEngine && GEngine->XRSystem.IsValid() && (LoadingScreen = GEngine->XRSystem->GetLoadingScreen()) != nullptr)
 		{
-			FTexture2DRHIRef Movie2DTexture = MovieStreamer->GetTexture();
-			FTextureRHIRef MovieTexture;
+			FTexture2DRHIRef Movie2DTexture = ActiveMovieStreamer->GetTexture();
+			LoadingScreen->ClearSplashes();
 			if (Movie2DTexture.IsValid() && !bMovieIsDone)
 			{
-				MovieTexture = (FRHITexture*)Movie2DTexture.GetReference();
+				IXRLoadingScreen::FSplashDesc Splash;
+				Splash.Texture = (FRHITexture*)Movie2DTexture.GetReference();
+				Splash.bIsDynamic = true;
+				const FIntPoint TextureSize = Movie2DTexture->GetSizeXY();
+				const float	InvAspectRatio = (TextureSize.X > 0) ? float(TextureSize.Y) / float(TextureSize.X) : 1.0f;
+
+				Splash.bIgnoreAlpha = true;
+				Splash.Transform = FTransform(FVector(5.0f, 0.0f, 1.0f));
+				Splash.QuadSize = FVector2D(8.0f, 8.0f*InvAspectRatio);
+				LoadingScreen->AddSplash(Splash);
 			}
-			StereoLayers->SetSplashScreenMovie(MovieTexture);
 		}
 	}
 }
@@ -692,15 +705,15 @@ void FDefaultGameMoviePlayer::SetupLoadingScreenFromIni()
 
 bool FDefaultGameMoviePlayer::MovieStreamingIsPrepared() const
 {
-	return MovieStreamer.IsValid() && LoadingScreenAttributes.MoviePaths.Num() > 0;
+	return MovieStreamers.Num() > 0 && LoadingScreenAttributes.MoviePaths.Num() > 0;
 }
 
 FVector2D FDefaultGameMoviePlayer::GetMovieSize() const
 {
 	const FVector2D ScreenSize = MainWindow.Pin()->GetClientSizeInScreen();
-	if (MovieStreamingIsPrepared())
+	if (MovieStreamingIsPrepared() && ActiveMovieStreamer.IsValid())
 	{
-		const float MovieAspectRatio = MovieStreamer->GetAspectRatio();
+		const float MovieAspectRatio = ActiveMovieStreamer->GetAspectRatio();
 		const float ScreenAspectRatio = ScreenSize.X / ScreenSize.Y;
 		if (MovieAspectRatio < ScreenAspectRatio)
 		{
@@ -728,12 +741,12 @@ FOptionalSize FDefaultGameMoviePlayer::GetMovieHeight() const
 
 EVisibility FDefaultGameMoviePlayer::GetSlateBackgroundVisibility() const
 {
-	return MovieStreamingIsPrepared() && !IsMovieStreamingFinished() ? EVisibility::Collapsed : EVisibility::Visible;
+	return MovieStreamingIsPrepared() && ActiveMovieStreamer.IsValid() && !IsMovieStreamingFinished() ? EVisibility::Collapsed : EVisibility::Visible;
 }
 
 EVisibility FDefaultGameMoviePlayer::GetViewportVisibility() const
 {
-	return MovieStreamingIsPrepared() && !IsMovieStreamingFinished() ? EVisibility::Visible : EVisibility::Collapsed;
+	return MovieStreamingIsPrepared() && ActiveMovieStreamer.IsValid() && !IsMovieStreamingFinished() ? EVisibility::Visible : EVisibility::Collapsed;
 }
 
 FReply FDefaultGameMoviePlayer::OnLoadingScreenMouseButtonDown(const FGeometry& Geometry, const FPointerEvent& PointerEvent)
@@ -753,9 +766,9 @@ FReply FDefaultGameMoviePlayer::OnAnyDown()
 		if (LoadingScreenAttributes.bMoviesAreSkippable)
 		{
 			MovieStreamingIsDone.Set(1);
-			if (MovieStreamer.IsValid())
+			if (ActiveMovieStreamer.IsValid())
 			{
-				MovieStreamer->ForceCompletion();
+				ActiveMovieStreamer->ForceCompletion();
 			}
 		}
 
@@ -789,7 +802,7 @@ void FDefaultGameMoviePlayer::OnPostLoadMap(UWorld* LoadedWorld)
 
 void FDefaultGameMoviePlayer::SetSlateOverlayWidget(TSharedPtr<SWidget> NewOverlayWidget)
 {
-	if (MovieStreamer.IsValid() && UserWidgetHolder.IsValid())
+	if (ActiveMovieStreamer.IsValid() && UserWidgetHolder.IsValid())
 	{
 		UserWidgetHolder->SetContent(NewOverlayWidget.ToSharedRef());
 	}
@@ -797,17 +810,17 @@ void FDefaultGameMoviePlayer::SetSlateOverlayWidget(TSharedPtr<SWidget> NewOverl
 
 bool FDefaultGameMoviePlayer::WillAutoCompleteWhenLoadFinishes()
 {
-	return LoadingScreenAttributes.bAutoCompleteWhenLoadingCompletes || (LoadingScreenAttributes.PlaybackType == MT_LoadingLoop && (MovieStreamer.IsValid() && MovieStreamer->IsLastMovieInPlaylist()));
+	return LoadingScreenAttributes.bAutoCompleteWhenLoadingCompletes || (LoadingScreenAttributes.PlaybackType == MT_LoadingLoop && (ActiveMovieStreamer.IsValid() && ActiveMovieStreamer->IsLastMovieInPlaylist()));
 }
 
 FString FDefaultGameMoviePlayer::GetMovieName()
 {
-	return MovieStreamer.IsValid() ? MovieStreamer->GetMovieName() : TEXT("");
+	return ActiveMovieStreamer.IsValid() ? ActiveMovieStreamer->GetMovieName() : TEXT("");
 }
 
 bool FDefaultGameMoviePlayer::IsLastMovieInPlaylist()
 {
-	return MovieStreamer.IsValid() ? MovieStreamer->IsLastMovieInPlaylist() : false;
+	return ActiveMovieStreamer.IsValid() ? ActiveMovieStreamer->IsLastMovieInPlaylist() : false;
 }
 
 FMoviePlayerWidgetRenderer::FMoviePlayerWidgetRenderer(TSharedPtr<SWindow> InMainWindow, TSharedPtr<SVirtualWindow> InVirtualRenderWindow, FSlateRenderer* InRenderer)
@@ -838,7 +851,8 @@ void FMoviePlayerWidgetRenderer::DrawWindow(float DeltaTime)
 
 	FSlateRect ClipRect = WindowGeometry.GetLayoutBoundingRect();
 
-	HittestGrid->ClearGridForNewFrame(ClipRect);
+	HittestGrid->SetHittestArea(VirtualRenderWindow->GetPositionInScreen(), VirtualRenderWindow->GetViewportSize());
+	HittestGrid->Clear();
 
 	// Get the free buffer & add our virtual window
 	FSlateDrawBuffer& DrawBuffer = SlateRenderer->GetDrawBuffer();
@@ -848,7 +862,7 @@ void FMoviePlayerWidgetRenderer::DrawWindow(float DeltaTime)
 
 	int32 MaxLayerId = 0;
 	{
-		FPaintArgs PaintArgs(*VirtualRenderWindow, *HittestGrid, FVector2D::ZeroVector, FSlateApplication::Get().GetCurrentTime(), FSlateApplication::Get().GetDeltaTime());
+		FPaintArgs PaintArgs(nullptr, *HittestGrid, FVector2D::ZeroVector, FSlateApplication::Get().GetCurrentTime(), FSlateApplication::Get().GetDeltaTime());
 
 		// Paint the window
 		MaxLayerId = VirtualRenderWindow->Paint(
@@ -874,25 +888,25 @@ void FDefaultGameMoviePlayer::ForceCompletion()
 	bUserCalledFinish = true;
 	MovieStreamingIsDone.Set(1);
 
-	if (MovieStreamer.IsValid())
+	if (ActiveMovieStreamer.IsValid())
 	{
-		MovieStreamer->ForceCompletion();
+		ActiveMovieStreamer->ForceCompletion();
 	}
 }
 /*Interrupts*/
 void FDefaultGameMoviePlayer::Suspend()
 {
-	if (MovieStreamer.IsValid())
+	if (ActiveMovieStreamer.IsValid())
 	{
-		MovieStreamer->Suspend();
+		ActiveMovieStreamer->Suspend();
 	}
 }
 
 void FDefaultGameMoviePlayer::Resume()
 {
-	if (MovieStreamer.IsValid())
+	if (ActiveMovieStreamer.IsValid())
 	{
-		MovieStreamer->Resume();
+		ActiveMovieStreamer->Resume();
 	}
 }
 

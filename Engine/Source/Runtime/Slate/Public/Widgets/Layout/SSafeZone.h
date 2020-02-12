@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -114,8 +114,8 @@ public:
 	virtual void OnArrangeChildren( const FGeometry& AllottedGeometry, FArrangedChildren& ArrangedChildren ) const override;
 	virtual FVector2D ComputeDesiredSize(float LayoutScale) const override;
 
-	static void SetGlobalSafeZoneScale(float InScale);
-	static float GetGlobalSafeZoneScale();
+	static void SetGlobalSafeZoneScale(TOptional<float> InScale);
+	static TOptional<float> GetGlobalSafeZoneScale();
 
 private:
 

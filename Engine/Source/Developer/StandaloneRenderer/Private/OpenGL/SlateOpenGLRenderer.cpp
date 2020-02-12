@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "OpenGL/SlateOpenGLRenderer.h"
 #include "Fonts/FontTypes.h"
@@ -21,20 +21,24 @@ public:
 	{
 	}
 
-	virtual FIntPoint GetAtlasSize() const override
+	virtual FIntPoint GetAtlasSize(const bool InIsGrayscale) const override
 	{
-		return FIntPoint(TextureSize, TextureSize);
+		return InIsGrayscale 
+			? FIntPoint(GrayscaleTextureSize, GrayscaleTextureSize)
+			: FIntPoint(ColorTextureSize, ColorTextureSize);
 	}
 
-	virtual TSharedRef<FSlateFontAtlas> CreateFontAtlas() const override
+	virtual TSharedRef<FSlateFontAtlas> CreateFontAtlas(const bool InIsGrayscale) const override
 	{
-		TSharedRef<FSlateFontTextureOpenGL> FontTexture = MakeShareable( new FSlateFontTextureOpenGL( TextureSize, TextureSize ) );
+		const FIntPoint AtlasSize = GetAtlasSize(InIsGrayscale);
+
+		TSharedRef<FSlateFontTextureOpenGL> FontTexture = MakeShareable(new FSlateFontTextureOpenGL(AtlasSize.X, AtlasSize.Y, InIsGrayscale));
 		FontTexture->CreateFontTexture();
 
 		return FontTexture;
 	}
 
-	virtual TSharedPtr<ISlateFontTexture> CreateNonAtlasedTexture(const uint32 InWidth, const uint32 InHeight, const TArray<uint8>& InRawData) const override
+	virtual TSharedPtr<ISlateFontTexture> CreateNonAtlasedTexture(const uint32 InWidth, const uint32 InHeight, const bool InIsGrayscale, const TArray<uint8>& InRawData) const override
 	{
 		return nullptr;
 	}
@@ -42,7 +46,8 @@ public:
 private:
 
 	/** Size of each font texture, width and height */
-	static const uint32 TextureSize = 1024;
+	static const uint32 GrayscaleTextureSize = 1024;
+	static const uint32 ColorTextureSize = 512;
 };
 
 TSharedRef<FSlateFontServices> CreateOpenGLFontServices()
@@ -84,11 +89,10 @@ bool FSlateOpenGLRenderer::Initialize()
 	SharedContext.Initialize( NULL, NULL );
 
 	TextureManager = MakeShareable( new FSlateOpenGLTextureManager );
-	FSlateDataPayload::ResourceManager = TextureManager.Get();
 
 	RenderingPolicy = MakeShareable( new FSlateOpenGLRenderingPolicy( SlateFontServices.ToSharedRef(), TextureManager.ToSharedRef() ) );
 
-	ElementBatcher = MakeShareable( new FSlateElementBatcher( RenderingPolicy.ToSharedRef() ) );
+	ElementBatcher = MakeUnique<FSlateElementBatcher>(RenderingPolicy.ToSharedRef());
 
 #if !PLATFORM_USES_ES2
 	// Load OpenGL extensions if needed.  Need a current rendering context to do this
@@ -110,6 +114,8 @@ bool FSlateOpenGLRenderer::Initialize()
  */
 void FSlateOpenGLRenderer::DrawWindows( FSlateDrawBuffer& InWindowDrawBuffer )
 {
+	FMemMark MemMark(FMemStack::Get());
+
 	const TSharedRef<FSlateFontCache> FontCache = SlateFontServices->GetFontCache();
 
 	// Draw each window.  For performance.  All elements are batched before anything is rendered
@@ -124,47 +130,51 @@ void FSlateOpenGLRenderer::DrawWindows( FSlateDrawBuffer& InWindowDrawBuffer )
 			SWindow* WindowToDraw = ElementList.GetRenderWindow();
 
 			const FVector2D WindowSize = WindowToDraw->GetSizeInScreen();
-			FSlateOpenGLViewport* Viewport = WindowToViewportMap.Find( WindowToDraw );
-			check(Viewport);
-		
-			//@todo Slate OpenGL: Move this to ResizeViewport
-			if( WindowSize.X != Viewport->ViewportRect.Right || WindowSize.Y != Viewport->ViewportRect.Bottom )
+			if (WindowSize.X > 0 && WindowSize.Y > 0)
 			{
-				//@todo implement fullscreen
-				const bool bFullscreen = false;
-				Private_ResizeViewport( WindowSize, *Viewport, bFullscreen );
+				FSlateOpenGLViewport* Viewport = WindowToViewportMap.Find( WindowToDraw );
+				check(Viewport);
+
+				//@todo Slate OpenGL: Move this to ResizeViewport
+				if( WindowSize.X != Viewport->ViewportRect.Right || WindowSize.Y != Viewport->ViewportRect.Bottom )
+				{
+					//@todo implement fullscreen
+					const bool bFullscreen = false;
+					Private_ResizeViewport( WindowSize, *Viewport, bFullscreen );
+				}
+
+				Viewport->MakeCurrent();
+
+				// Batch elements.  Note that we must set the current viewport before doing this so we have a valid rendering context when calling OpenGL functions
+				ElementBatcher->AddElements(ElementList);
+
+				// Update the font cache with new text before elements are batched
+				FontCache->UpdateCache();
+
+				//@ todo Slate: implement for opengl
+				bool bRequiresStencilTest = false;
+
+				ElementBatcher->ResetBatches();
+			
+				FSlateBatchData& BatchData = ElementList.GetBatchData();
+
+				RenderingPolicy->BuildRenderingBuffers( BatchData );
+
+				check(Viewport);
+
+				glViewport( Viewport->ViewportRect.Left, Viewport->ViewportRect.Top, Viewport->ViewportRect.Right, Viewport->ViewportRect.Bottom );
+
+				if (BatchData.GetRenderBatches().Num() > 0)
+				{
+					// Draw all elements
+					RenderingPolicy->DrawElements( ViewMatrix*Viewport->ProjectionMatrix, WindowSize, BatchData.GetRenderBatches() );
+				}
+
+				Viewport->SwapBuffers();
+
+				// All elements have been drawn.  Reset all cached data
+				ElementBatcher->ResetBatches();
 			}
-			
-			Viewport->MakeCurrent();
-
-			// Batch elements.  Note that we must set the current viewport before doing this so we have a valid rendering context when calling OpenGL functions
-			ElementBatcher->AddElements( ElementList );
-
-			// Update the font cache with new text before elements are batched
-			FontCache->UpdateCache();
-
-			//@ todo Slate: implement for opengl
-			bool bRequiresStencilTest = false;
-
-			ElementBatcher->ResetBatches();
-			
-			FSlateBatchData& BatchData = ElementList.GetBatchData();
-
-			BatchData.CreateRenderBatches(ElementList.GetRootDrawLayer().GetElementBatchMap());
-
-			RenderingPolicy->UpdateVertexAndIndexBuffers( BatchData );
-
-			check(Viewport);
-
-			glViewport( Viewport->ViewportRect.Left, Viewport->ViewportRect.Top, Viewport->ViewportRect.Right, Viewport->ViewportRect.Bottom );
-
-			// Draw all elements
-			RenderingPolicy->DrawElements( ViewMatrix*Viewport->ProjectionMatrix, WindowSize, BatchData.GetRenderBatches() );
-
-			Viewport->SwapBuffers();
-
-			// Reset all batch data for this window
-			ElementBatcher->ResetBatches();
 		}
 	}
 
@@ -174,6 +184,7 @@ void FSlateOpenGLRenderer::DrawWindows( FSlateDrawBuffer& InWindowDrawBuffer )
 	// Safely release the references now that we are finished rendering with the dynamic brushes
 	DynamicBrushesToRemove.Empty();
 }
+
 
 
 /** Called when a window is destroyed to give the renderer a chance to free resources */
@@ -267,11 +278,7 @@ FSlateUpdatableTexture* FSlateOpenGLRenderer::CreateUpdatableTexture(uint32 Widt
 	TArray<uint8> RawData;
 	RawData.AddZeroed(Width * Height * 4);
 	FSlateOpenGLTexture* NewTexture = new FSlateOpenGLTexture(Width, Height);
-#if !PLATFORM_USES_ES2
-	NewTexture->Init(GL_SRGB8_ALPHA8, RawData);
-#else
-	NewTexture->Init(GL_SRGB8_ALPHA8_EXT, RawData);
-#endif
+	NewTexture->Init(GL_RGBA, RawData);
 	return NewTexture;
 }
 

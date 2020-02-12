@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "Logging/MessageLog.h"
 #include "Internationalization/Internationalization.h"
@@ -74,7 +74,7 @@ private:
 
 private:
 	/** The name of this log */
-	FName LogName;
+	FLogCategoryName LogName;
 };
 
 FMessageLog::FMessageLog( const FName& InLogName )

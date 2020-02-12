@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "Animation/SmartName.h"
 #include "UObject/FrameworkObjectVersion.h"
@@ -23,6 +23,9 @@ FSmartName FSmartNameMapping::AddName(FName Name)
 
 	FSmartName NewSmartName(Name, CurveNameList.Add(Name));
 	CurveMetaDataMap.Add(Name);
+#if !WITH_EDITOR
+	CurveMetaDataList.AddDefaulted();
+#endif
 	return NewSmartName;
 }
 
@@ -114,6 +117,9 @@ void FSmartNameMapping::Serialize(FArchive& Ar)
 	if (Ar.IsLoading())
 	{
 		CurveMetaDataMap.GenerateKeyArray(CurveNameList);
+#if !WITH_EDITOR
+		CurveMetaDataMap.GenerateValueArray(CurveMetaDataList);
+#endif
 	}
 }
 
@@ -269,12 +275,15 @@ void FSmartNameMapping::InitializeCurveMetaData(class USkeleton* Skeleton)
 // FSmartNameContainer
 //
 ///////////////////////////////////////////////////////////////////////
-void FSmartNameContainer::AddContainer(FName NewContainerName)
+FSmartNameMapping* FSmartNameContainer::AddContainer(FName NewContainerName)
 {
-	if(!NameMappings.Find(NewContainerName))
+	FSmartNameMapping* ExistingMapping = NameMappings.Find(NewContainerName);
+	if(ExistingMapping == nullptr)
 	{
-		NameMappings.Add(NewContainerName);
+		return &NameMappings.Add(NewContainerName);
 	}
+
+	return ExistingMapping;
 }
 
 const FSmartNameMapping* FSmartNameContainer::GetContainer(FName ContainerName) const
@@ -284,7 +293,24 @@ const FSmartNameMapping* FSmartNameContainer::GetContainer(FName ContainerName) 
 
 void FSmartNameContainer::Serialize(FArchive& Ar)
 {
-	Ar << NameMappings;
+#if WITH_EDITORONLY_DATA
+	if (Ar.IsCooking())
+	{
+		Ar << LoadedNameMappings;
+	}
+	else
+#endif
+	{
+		Ar << NameMappings;
+	}
+
+#if WITH_EDITORONLY_DATA
+	if (Ar.IsLoading())
+	{
+		//To preserve 
+		LoadedNameMappings = NameMappings;
+	}
+#endif
 }
 
 FSmartNameMapping* FSmartNameContainer::GetContainerInternal(const FName& ContainerName)

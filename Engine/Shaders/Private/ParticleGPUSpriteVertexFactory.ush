@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 /*=============================================================================
 	ParticleGPUSpriteVertexFactory.usf: Vertex factory for GPU simulated particles.
@@ -229,7 +229,7 @@ void GetSpriteTangents(
 FVertexFactoryIntermediates GetVertexFactoryIntermediates( FVertexFactoryInput Input )
 {
 	// Sample the position and velocity textures to get the current state of the particle.
-	uint InstanceId = Input.InstanceId * PARTICLES_PER_INSTANCE + Input.VertexId / 4;
+	uint InstanceId = GetInstanceId(Input.InstanceId) * PARTICLES_PER_INSTANCE + Input.VertexId / 4;
 	float2 ParticleIndex = ParticleIndices[ParticleIndicesOffset + InstanceId];
 	float4 PositionSample = Texture2DSampleLevel(PositionTexture, PositionTextureSampler, ParticleIndex, 0);
 	float4 VelocitySample = Texture2DSampleLevel(VelocityTexture, VelocityTextureSampler, ParticleIndex, 0);
@@ -587,6 +587,11 @@ float3x3 VertexFactoryGetTangentToLocal( FVertexFactoryInput Input, FVertexFacto
 	TangentToLocal[1] = Intermediates.TangentUp;
 	TangentToLocal[2] = normalize(cross(Intermediates.TangentRight.xyz , Intermediates.TangentUp.xyz));
 	return TangentToLocal;
+}
+
+float3 VertexFactoryGetWorldNormal(FVertexFactoryInput Input, FVertexFactoryIntermediates Intermediates)
+{
+	return VertexFactoryGetTangentToLocal(Input, Intermediates)[2].xyz;
 }
 
 /**

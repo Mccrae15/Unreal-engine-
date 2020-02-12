@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -46,10 +46,12 @@ public:
     void DrawIndexedIndirect(FMetalIndexBuffer* IndexBufferRHI, uint32 PrimitiveType, FMetalStructuredBuffer* VertexBufferRHI, int32 DrawArgumentsIndex, uint32 NumInstances);
     
     void DrawIndexedPrimitiveIndirect(uint32 PrimitiveType,FMetalIndexBuffer* IndexBufferRHI,FMetalVertexBuffer* VertexBufferRHI,uint32 ArgumentOffset);
-    
+	
+#if PLATFORM_SUPPORTS_TESSELLATION_SHADERS
     void DrawPatches(uint32 PrimitiveType, FMetalBuffer const& IndexBuffer, uint32 IndexBufferStride, int32 BaseVertexIndex, uint32 FirstInstance, uint32 StartIndex,
                      uint32 NumPrimitives, uint32 NumInstances);
-    
+#endif
+	
     void Dispatch(uint32 ThreadGroupCountX, uint32 ThreadGroupCountY, uint32 ThreadGroupCountZ);
     
     void DispatchIndirect(FMetalVertexBuffer* ArgumentBufferRHI, uint32 ArgumentOffset);
@@ -76,7 +78,11 @@ public:
 	
 	bool AsyncCopyFromTextureToTexture(FMetalTexture const& Texture, uint32 sourceSlice, uint32 sourceLevel, mtlpp::Origin sourceOrigin, mtlpp::Size sourceSize, FMetalTexture const& toTexture, uint32 destinationSlice, uint32 destinationLevel, mtlpp::Origin destinationOrigin);
 	
+	bool CanAsyncCopyToBuffer(FMetalBuffer const& DestinationBuffer);
+	
 	void AsyncCopyFromBufferToBuffer(FMetalBuffer const& SourceBuffer, NSUInteger SourceOffset, FMetalBuffer const& DestinationBuffer, NSUInteger DestinationOffset, NSUInteger Size);
+	
+	FMetalBuffer AllocateTemporyBufferForCopy(FMetalBuffer const& DestinationBuffer, NSUInteger Size, NSUInteger Align);
 	
 	void AsyncGenerateMipmapsForTexture(FMetalTexture const& Texture);
 	
@@ -123,11 +129,22 @@ public:
 	mtlpp::CommandBuffer const& GetCurrentCommandBuffer(void) const;
 	mtlpp::CommandBuffer& GetCurrentCommandBuffer(void);
 	
+    /*
+     * Get the internal current command-encoder.
+     * @returns The current command encoder.
+     */
+	inline FMetalCommandEncoder& GetCurrentCommandEncoder(void) { return CurrentEncoder; }
+	
 	/*
 	 * Get the internal ring-buffer used for temporary allocations.
 	 * @returns The temporary allocation buffer for the command-pass.
 	 */
 	FMetalSubBufferRing& GetRingBuffer(void);
+	
+	/*
+	 * Attempts to shrink the ring-buffers so we don't keep very large allocations when we don't need them.
+	 */
+	void ShrinkRingBuffers(void);
 	
 	/*
 	 * Whether the render-pass is within a parallel rendering pass.
@@ -145,22 +162,37 @@ private:
 #pragma mark -
     void ConditionalSwitchToRender(void);
     void ConditionalSwitchToTessellation(void);
+	void ConditionalSwitchToSeparateTessellation(void);
     void ConditionalSwitchToCompute(void);
 	void ConditionalSwitchToBlit(void);
 	void ConditionalSwitchToAsyncBlit(void);
 	void ConditionalSwitchToAsyncCompute(void);
 	
     void PrepareToRender(uint32 PrimType);
+#if PLATFORM_SUPPORTS_TESSELLATION_SHADERS
     void PrepareToTessellate(uint32 PrimType);
+	void PrepareToStreamOut(uint32 PrimType);
+	void PrepareToSeparateTessellate(uint32 PrimType);
+#endif
     void PrepareToDispatch(void);
 	void PrepareToAsyncDispatch(void);
 
     void CommitRenderResourceTables(void);
+#if PLATFORM_SUPPORTS_TESSELLATION_SHADERS
     void CommitTessellationResourceTables(void);
+	void CommitStreamOutResourceTables(void);
+	void CommitSeparateTessellationResourceTables(void);
+#endif
     void CommitDispatchResourceTables(void);
 	void CommitAsyncDispatchResourceTables(void);
     
     void ConditionalSubmit();
+	
+	uint32 GetEncoderIndex(void) const;
+	uint32 GetCommandBufferIndex(void) const;
+	
+	void InsertDebugDraw(FMetalCommandData& Data);
+	void InsertDebugDispatch(FMetalCommandData& Data);
 private:
 #pragma mark -
 	FMetalCommandList& CmdList;
@@ -168,9 +200,9 @@ private:
     
     // Which of the buffers/textures/sampler slots are bound
     // The state cache is responsible for ensuring we bind the correct 
-    FMetalTextureMask BoundTextures[SF_NumStandardFrequencies];
-    uint32 BoundBuffers[SF_NumStandardFrequencies];
-    uint16 BoundSamplers[SF_NumStandardFrequencies];
+	FMetalTextureMask BoundTextures[EMetalShaderStages::Num];
+    uint32 BoundBuffers[EMetalShaderStages::Num];
+    uint16 BoundSamplers[EMetalShaderStages::Num];
     
     FMetalCommandEncoder CurrentEncoder;
     FMetalCommandEncoder PrologueEncoder;

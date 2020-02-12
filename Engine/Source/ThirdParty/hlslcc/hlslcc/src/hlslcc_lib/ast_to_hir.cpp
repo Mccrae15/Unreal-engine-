@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 // This code is modified from that in the Mesa3D Graphics library available at
 // http://mesa3d.org/
@@ -667,20 +667,31 @@ static bool make_types_compatible(ir_rvalue* &value_a, ir_rvalue* &value_b,
 
 	// Determine how many rows and columns to use.
 	unsigned rows = 0, cols = 0;
-	if (type_a->is_scalar() || type_b->is_scalar())
+	if (bAIsLHS)
 	{
-		rows = MAX2(type_a->vector_elements, type_b->vector_elements);
-		cols = MAX2(type_a->matrix_columns, type_b->matrix_columns);
-	}
-	else if (type_a->components() > type_b->components())
-	{
-		rows = type_b->vector_elements;
-		cols = type_b->matrix_columns;
+		// If LHS is an l-value of an assignment, LHS dictates the type dimension.
+		// Otherwise, swizzle operators might be generated that make it an r-value,
+		// which is not allowed on the left hand side of an assignment!
+		rows = type_a->vector_elements;
+		cols = type_a->matrix_columns;
 	}
 	else
 	{
-		rows = type_a->vector_elements;
-		cols = type_a->matrix_columns;
+		if (type_a->is_scalar() || type_b->is_scalar())
+		{
+			rows = MAX2(type_a->vector_elements, type_b->vector_elements);
+			cols = MAX2(type_a->matrix_columns, type_b->matrix_columns);
+		}
+		else if (type_a->components() > type_b->components())
+		{
+			rows = type_b->vector_elements;
+			cols = type_b->matrix_columns;
+		}
+		else
+		{
+			rows = type_a->vector_elements;
+			cols = type_a->matrix_columns;
+		}
 	}
 
 	// Now we know the desired type, try to convert.
@@ -1572,9 +1583,31 @@ ir_rvalue* ast_expression::hir(exec_list *instructions, struct _mesa_glsl_parse_
 				result = new(ctx)ir_dereference_variable(tmp[0]);
 			}
 		}
+		else if(type->is_float())
+		{
+			int dim = type->vector_elements;
+			ir_variable* tmp;
+			tmp = new(ctx)ir_variable(type, NULL, ir_var_temporary);
+			instructions->push_tail(tmp);
+			for (int i = 0; i < dim; ++i)
+			{
+				ir_constant* const array_index = new (ctx) ir_constant(i);
+				ir_dereference_array* array_bool = new(ctx)ir_dereference_array(op[0]->clone(ctx, nullptr), array_index);
+				ir_dereference_array* array_out = new(ctx)ir_dereference_array(tmp, array_index);
+				ir_dereference_array* array_1 = new(ctx)ir_dereference_array(op[1]->clone(ctx, nullptr), array_index);
+				ir_dereference_array* array_2 = new(ctx)ir_dereference_array(op[2]->clone(ctx, nullptr), array_index);
+
+				ir_if *const stmt = new(ctx)ir_if(array_bool);
+				stmt->then_instructions.push_tail(new(ctx)ir_assignment(new(ctx)ir_dereference_array(tmp, array_index), array_1));
+				stmt->else_instructions.push_tail(new(ctx)ir_assignment(new(ctx)ir_dereference_array(tmp, array_index), array_2));
+				instructions->push_tail(stmt);
+			}
+			result = new(ctx)ir_dereference_variable(tmp);
+		}
 		else if (apply_type_conversion(type, op[0], instructions, state, false, &loc))
 		{
-			ir_variable* tmp[3] = {0};
+
+			ir_variable* tmp[3] = { 0 };
 			for (unsigned i = 0; i < 3; i++)
 			{
 				tmp[i] = new(ctx)ir_variable(type, NULL, ir_var_temporary);
@@ -1584,17 +1617,10 @@ ir_rvalue* ast_expression::hir(exec_list *instructions, struct _mesa_glsl_parse_
 					op[i]));
 			}
 
-			if (type->is_float())
+
+			if (type->is_integer())
 			{
-				result = new(ctx)ir_expression(ir_ternop_lerp, type,
-					new(ctx)ir_dereference_variable(tmp[2]),
-					new(ctx)ir_dereference_variable(tmp[1]),
-					new(ctx)ir_dereference_variable(tmp[0]),
-					NULL);
-			}
-			else if (type->is_integer())
-			{
-				ir_constant_data one_data = {0};
+				ir_constant_data one_data = { 0 };
 				for (unsigned i = 0; i < 16; ++i)
 				{
 					one_data.u[i] = 1;
@@ -1605,8 +1631,8 @@ ir_rvalue* ast_expression::hir(exec_list *instructions, struct _mesa_glsl_parse_
 					new(ctx)ir_dereference_variable(tmp[1]));
 				ir_expression* expr_b = new(ctx)ir_expression(ir_binop_mul,
 					new(ctx)ir_expression(ir_binop_sub,
-					new(ctx)ir_constant(type, &one_data),
-					new(ctx)ir_dereference_variable(tmp[0])),
+						new(ctx)ir_constant(type, &one_data),
+						new(ctx)ir_dereference_variable(tmp[0])),
 					new(ctx)ir_dereference_variable(tmp[2]));
 				result = new(ctx)ir_expression(ir_binop_add, type, expr_a, expr_b);
 			}
@@ -1797,7 +1823,7 @@ ir_rvalue* ast_expression::hir(exec_list *instructions, struct _mesa_glsl_parse_
 			error_emitted = true;
 		}
 
-		if (!op[1]->type->is_integer())
+		if (!(op[1]->type->is_integer() || op[1]->type->is_boolean()))
 		{
 			_mesa_glsl_error(&index_loc, state,
 				"array index must be integer type");
@@ -1960,6 +1986,10 @@ ir_rvalue* ast_expression::hir(exec_list *instructions, struct _mesa_glsl_parse_
 		}
 		else
 		{
+			if (op[1]->type->is_boolean())
+			{
+				apply_type_conversion(glsl_type::get_instance(GLSL_TYPE_INT, 1, 1), op[1], instructions, state, false, &loc);
+			}
 			if (array->type->is_array())
 			{
 				/* whole_variable_referenced can return NULL if the array is a
@@ -2288,8 +2318,11 @@ const glsl_type* ast_type_specifier::glsl_type(const char **name, _mesa_glsl_par
 {
 	const struct glsl_type *type = nullptr;
 
-	if (!strcmp(this->type_name, "StructuredBuffer") || !strcmp(this->type_name + 2, "StructuredBuffer"))
+	YYLTYPE loc = this->get_location();
+
+	if (IsStructuredOrRWStructuredBuffer())
 	{
+		const bool bRWStructuredBuffer = !strcmp(this->type_name + 2, "StructuredBuffer");
 		const struct glsl_type* InnerType = nullptr;
 		if (this->InnerStructure)
 		{
@@ -2299,6 +2332,7 @@ const glsl_type* ast_type_specifier::glsl_type(const char **name, _mesa_glsl_par
 		{
 			InnerType = state->symbols->get_type(this->inner_type);
 		}
+
 		type = glsl_type::GetStructuredBufferInstance(this->type_name, InnerType);
 		*name = type->name;
 	}
@@ -2327,7 +2361,6 @@ const glsl_type* ast_type_specifier::glsl_type(const char **name, _mesa_glsl_par
 
 	if (this->is_array)
 	{
-		YYLTYPE loc = this->get_location();
 		type = process_array_type(&loc, type, this->array_size, state);
 	}
 
@@ -2988,7 +3021,7 @@ ir_rvalue* ast_declarator_list::hir(exec_list *instructions, struct _mesa_glsl_p
 	}
 
 	// Handle row/column major qualifiers for matrices.
-	if (decl_type->is_matrix())
+	if (decl_type && decl_type->is_matrix())
 	{
 		// If the matrix was declared without a layout qualifer, it is row_major.
 		if (this->type->qualifier.flags.q.row_major == 0
@@ -3016,6 +3049,12 @@ ir_rvalue* ast_declarator_list::hir(exec_list *instructions, struct _mesa_glsl_p
 	{
 		const struct glsl_type *var_type;
 		ir_variable *var;
+
+		if (decl_type == nullptr && type->specifier->IsStructuredOrRWStructuredBuffer())
+		{
+			// Ignore for now
+			continue;
+		}
 
 		/* FINISHME: Emit a warning if a variable declaration shadows a
 		* FINISHME: declaration at a higher scope.
@@ -4327,11 +4366,13 @@ ir_rvalue* ast_jump_statement::hir(exec_list *instructions, struct _mesa_glsl_pa
 	}
 
 	case ast_discard:
+/*
 		if (state->target != fragment_shader)
 		{
 			YYLTYPE loc = this->get_location();
 			_mesa_glsl_error(&loc, state, "'discard' may only appear in a fragment shader");
 		}
+*/
 		instructions->push_tail(new(ctx)ir_discard);
 		break;
 
@@ -4488,54 +4529,6 @@ ir_rvalue * ast_switch_statement::hir(exec_list *instructions, struct _mesa_glsl
 {
 	void *ctx = state;
 
-	ir_rvalue* test_expression =
-		this->test_expression->hir(instructions, state);
-
-	/* From page 66 (page 55 of the PDF) of the GLSL 1.50 spec:
-	*
-	*    "The type of init-expression in a switch statement must be a
-	*     scalar integer."
-	*
-	* The checks are separated so that higher quality diagnostics can be
-	* generated for cases where the rule is violated.
-	*/
-	if (!test_expression->type->is_scalar())
-	{
-		YYLTYPE loc = this->test_expression->get_location();
-		
-		_mesa_glsl_error(&loc,
-						 state,
-						 "switch-statement expression must be scalar type");
-	}
-	
-	if (!test_expression->type->is_integer())
-	{
-		YYLTYPE loc = this->test_expression->get_location();
-
-		_mesa_glsl_warning(&loc,
-			state,
-			"switch-statement expression should be scalar "
-			"integer - casts may not function correctly on non-HLSL platforms");
-		
-		switch(test_expression->type->base_type)
-		{
-			case GLSL_TYPE_FLOAT:
-				test_expression = new(ctx)ir_expression(ir_unop_f2i, test_expression);
-				break;
-			case GLSL_TYPE_HALF:
-				test_expression = new(ctx)ir_expression(ir_unop_h2i, test_expression);
-				break;
-			case GLSL_TYPE_BOOL:
-				test_expression = new(ctx)ir_expression(ir_unop_b2i, test_expression);
-				break;
-			default:
-				_mesa_glsl_error(&loc,
-								   state,
-								   "switch-statement expression must be numeric type");
-				break;
-		}
-	}
-
 	/* Track the switch-statement nesting in a stack-like manner.
 	*/
 	struct glsl_switch_state saved = state->switch_state;
@@ -4599,12 +4592,56 @@ void ast_switch_statement::test_to_hir(exec_list *instructions, struct _mesa_gls
 
 	/* Cache value of test expression.
 	*/
-	ir_rvalue *const test_val =
-		test_expression->hir(instructions,
-		state);
+	ir_rvalue* test_expression =
+		this->test_expression->hir(instructions, state);
+
+	/* From page 66 (page 55 of the PDF) of the GLSL 1.50 spec:
+	*
+	*    "The type of init-expression in a switch statement must be a
+	*     scalar integer."
+	*
+	* The checks are separated so that higher quality diagnostics can be
+	* generated for cases where the rule is violated.
+	*/
+	if (!test_expression->type->is_scalar())
+	{
+		YYLTYPE loc = this->test_expression->get_location();
+
+		_mesa_glsl_error(&loc,
+			state,
+			"switch-statement expression must be scalar type");
+	}
+
+	if (!test_expression->type->is_integer())
+	{
+		YYLTYPE loc = this->test_expression->get_location();
+
+		_mesa_glsl_warning(&loc,
+			state,
+			"switch-statement expression should be scalar "
+			"integer - casts may not function correctly on non-HLSL platforms");
+
+		switch (test_expression->type->base_type)
+		{
+		case GLSL_TYPE_FLOAT:
+			test_expression = new(ctx)ir_expression(ir_unop_f2i, test_expression);
+			break;
+		case GLSL_TYPE_HALF:
+			test_expression = new(ctx)ir_expression(ir_unop_h2i, test_expression);
+			break;
+		case GLSL_TYPE_BOOL:
+			test_expression = new(ctx)ir_expression(ir_unop_b2i, test_expression);
+			break;
+		default:
+			_mesa_glsl_error(&loc,
+				state,
+				"switch-statement expression must be numeric type");
+			break;
+		}
+	}
 
 	auto* TestVarType = glsl_type::int_type;
-	if (test_val->type == glsl_type::uint_type)
+	if (test_expression->type == glsl_type::uint_type)
 	{
 		TestVarType = glsl_type::uint_type;
 	}
@@ -4616,7 +4653,7 @@ void ast_switch_statement::test_to_hir(exec_list *instructions, struct _mesa_gls
 
 	instructions->push_tail(state->switch_state.test_var);
 	instructions->push_tail(new(ctx)ir_assignment(deref_test_var,
-		test_val,
+		test_expression,
 		NULL));
 }
 

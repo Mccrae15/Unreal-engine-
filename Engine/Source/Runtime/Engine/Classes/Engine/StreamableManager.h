@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -149,6 +149,12 @@ private:
 	/** Callback when async load finishes, it's here so we can use a shared pointer for callback safety */
 	void AsyncLoadCallbackWrapper(const FName& PackageName, UPackage* LevelPackage, EAsyncLoadingResult::Type Result, FSoftObjectPath TargetName);
 
+	/** Notify all parents that a child completed loading */
+	void NotifyParentsOfCompletion();
+
+	/** Notify all parents that a child was canceled */
+	void NotifyParentsOfCancellation();
+
 	/** Called on meta handle when a child handle has completed/canceled */
 	void UpdateCombinedHandle();
 
@@ -194,6 +200,12 @@ private:
 	/** How many FStreamables is this waiting on to finish loading */
 	int32 StreamablesLoading;
 
+	/** How many of our children that have been completed */
+	int32 CompletedChildCount = 0;
+
+	/** How many of our children that have been canceled */
+	int32 CanceledChildCount = 0;
+
 	/** List of assets that were referenced by this handle */
 	TArray<FSoftObjectPath> RequestedAssets;
 
@@ -238,12 +250,12 @@ struct ENGINE_API FStreamableManager : public FGCObject
 	 * @param bStartStalled			If true, the handle will start in a stalled state and will not attempt to actually async load until StartStalledHandle is called on it
 	 * @param DebugName				Name of this handle, will be reported in debug tools
 	 */
-	TSharedPtr<FStreamableHandle> RequestAsyncLoad(const TArray<FSoftObjectPath>& TargetsToStream, FStreamableDelegate DelegateToCall = FStreamableDelegate(), TAsyncLoadPriority Priority = DefaultAsyncLoadPriority, bool bManageActiveHandle = false, bool bStartStalled = false, const FString& DebugName = TEXT("RequestAsyncLoad ArrayDelegate"));
-	TSharedPtr<FStreamableHandle> RequestAsyncLoad(const FSoftObjectPath& TargetToStream, FStreamableDelegate DelegateToCall = FStreamableDelegate(), TAsyncLoadPriority Priority = DefaultAsyncLoadPriority, bool bManageActiveHandle = false, bool bStartStalled = false, const FString& DebugName = TEXT("RequestAsyncLoad SingleDelegate"));
+	TSharedPtr<FStreamableHandle> RequestAsyncLoad(TArray<FSoftObjectPath> TargetsToStream, FStreamableDelegate DelegateToCall = FStreamableDelegate(), TAsyncLoadPriority Priority = DefaultAsyncLoadPriority, bool bManageActiveHandle = false, bool bStartStalled = false, FString DebugName = TEXT("RequestAsyncLoad ArrayDelegate"));
+	TSharedPtr<FStreamableHandle> RequestAsyncLoad(const FSoftObjectPath& TargetToStream, FStreamableDelegate DelegateToCall = FStreamableDelegate(), TAsyncLoadPriority Priority = DefaultAsyncLoadPriority, bool bManageActiveHandle = false, bool bStartStalled = false, FString DebugName = TEXT("RequestAsyncLoad SingleDelegate"));
 
 	/** Lambda Wrappers. Be aware that Callback may go off multiple seconds in the future. */
-	TSharedPtr<FStreamableHandle> RequestAsyncLoad(const TArray<FSoftObjectPath>& TargetsToStream, TFunction<void()>&& Callback, TAsyncLoadPriority Priority = DefaultAsyncLoadPriority, bool bManageActiveHandle = false, bool bStartStalled = false, const FString& DebugName = TEXT("RequestAsyncLoad ArrayLambda"));
-	TSharedPtr<FStreamableHandle> RequestAsyncLoad(const FSoftObjectPath& TargetToStream, TFunction<void()>&& Callback, TAsyncLoadPriority Priority = DefaultAsyncLoadPriority, bool bManageActiveHandle = false, bool bStartStalled = false, const FString& DebugName = TEXT("RequestAsyncLoad SingleLambda"));
+	TSharedPtr<FStreamableHandle> RequestAsyncLoad(TArray<FSoftObjectPath> TargetsToStream, TFunction<void()>&& Callback, TAsyncLoadPriority Priority = DefaultAsyncLoadPriority, bool bManageActiveHandle = false, bool bStartStalled = false, FString DebugName = TEXT("RequestAsyncLoad ArrayLambda"));
+	TSharedPtr<FStreamableHandle> RequestAsyncLoad(const FSoftObjectPath& TargetToStream, TFunction<void()>&& Callback, TAsyncLoadPriority Priority = DefaultAsyncLoadPriority, bool bManageActiveHandle = false, bool bStartStalled = false, FString DebugName = TEXT("RequestAsyncLoad SingleLambda"));
 
 	/** 
 	 * Synchronously load a set of assets, and return a handle. This can be very slow and may stall the game thread for several seconds.
@@ -252,8 +264,8 @@ struct ENGINE_API FStreamableManager : public FGCObject
 	 * @param bManageActiveHandle	If true, the manager will keep the streamable handle active until explicitly released
 	 * @param DebugName				Name of this handle, will be reported in debug tools
 	 */
-	TSharedPtr<FStreamableHandle> RequestSyncLoad(const TArray<FSoftObjectPath>& TargetsToStream, bool bManageActiveHandle = false, const FString& DebugName = TEXT("RequestSyncLoad Array"));
-	TSharedPtr<FStreamableHandle> RequestSyncLoad(const FSoftObjectPath& TargetToStream, bool bManageActiveHandle = false, const FString& DebugName = TEXT("RequestSyncLoad Single"));
+	TSharedPtr<FStreamableHandle> RequestSyncLoad(TArray<FSoftObjectPath> TargetsToStream, bool bManageActiveHandle = false, FString DebugName = TEXT("RequestSyncLoad Array"));
+	TSharedPtr<FStreamableHandle> RequestSyncLoad(const FSoftObjectPath& TargetToStream, bool bManageActiveHandle = false, FString DebugName = TEXT("RequestSyncLoad Single"));
 
 	/** 
 	 * Synchronously load the referred asset and return the loaded object, or nullptr if it can't be found. This can be very slow and may stall the game thread for several seconds.
@@ -313,26 +325,16 @@ struct ENGINE_API FStreamableManager : public FGCObject
 	/** Checks for any redirectors that were previously loaded, and returns the redirected target if found. This will not handle redirects that it doesn't yet know about */
 	FSoftObjectPath ResolveRedirects(const FSoftObjectPath& Target) const;
 
-	UE_DEPRECATED(4.16, "Call LoadSynchronous with bManageActiveHandle=true instead if you want the manager to keep the handle alive")
-	UObject* SynchronousLoad(FSoftObjectPath const& Target);
+	/** Returns the debug name for this manager */
+	const FString& GetManagerName() const;
 
-	template< typename T >
-	UE_DEPRECATED(4.16, "Call LoadSynchronous with bManageActiveHandle=true instead if you want the manager to keep the handle alive")
-	T* SynchronousLoadType(FSoftObjectPath const& Target)
-	{
-		PRAGMA_DISABLE_DEPRECATION_WARNINGS
-		return Cast< T >(SynchronousLoad(Target));
-		PRAGMA_ENABLE_DEPRECATION_WARNINGS
-	}
-
-	UE_DEPRECATED(4.16, "Call RequestAsyncLoad with bManageActiveHandle=true instead if you want the manager to keep the handle alive")
-	void SimpleAsyncLoad(const FSoftObjectPath& Target, TAsyncLoadPriority Priority = DefaultAsyncLoadPriority);
-
-	UE_DEPRECATED(4.16, "AddStructReferencedObjects is no longer necessary, as it is a GCObject now")
-	void AddStructReferencedObjects(class FReferenceCollector& Collector) const {}
+	/** Modifies the debug name of this manager, used for debugging GC references */
+	void SetManagerName(FString InName);
 
 	/** Add referenced objects to stop them from GCing */
 	virtual void AddReferencedObjects(FReferenceCollector& Collector) override;
+	virtual FString GetReferencerName() const override { return ManagerName; }
+	virtual bool GetReferencerPropertyName(UObject* Object, FString& OutPropertyName) const override;
 
 	FStreamableManager();
 	~FStreamableManager();
@@ -382,6 +384,9 @@ private:
 
 	/** If True, temporarily force synchronous loading */
 	bool bForceSynchronousLoads;
+
+	/** Debug name of this manager */
+	FString ManagerName;
 };
 
 

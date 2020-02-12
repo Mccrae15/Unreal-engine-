@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -83,9 +83,6 @@ struct FBlueprintSupport
 	static bool UseDeferredDependencyLoading();
 	static bool IsDeferredExportCreationDisabled();
 	static bool IsDeferredCDOInitializationDisabled();
-
-	/** Initializes the BP Compilation Manager if it's enabled: */
-	COREUOBJECT_API static void InitializeCompilationManager();
 
 	/** Checks for any old instances and reinstances them: */
 	static void FlushReinstancingQueue();

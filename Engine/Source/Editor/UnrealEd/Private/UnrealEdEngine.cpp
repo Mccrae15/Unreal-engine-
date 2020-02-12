@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "Editor/UnrealEdEngine.h"
 #include "HAL/PlatformFilemanager.h"
@@ -49,6 +49,7 @@
 #include "Settings/GameMapsSettingsCustomization.h"
 #include "Settings/LevelEditorPlaySettingsCustomization.h"
 #include "Settings/ProjectPackagingSettingsCustomization.h"
+#include "Settings/LevelEditorPlayNetworkEmulationSettings.h"
 #include "StatsViewerModule.h"
 #include "SnappingUtils.h"
 #include "PackageAutoSaver.h"
@@ -62,15 +63,32 @@
 #include "AutoReimport/AssetSourceFilenameCache.h"
 #include "UObject/UObjectThreadContext.h"
 #include "EngineUtils.h"
-
-
+#include "EngineAnalytics.h"
 #include "CookerSettings.h"
+#include "Misc/MessageDialog.h"
+
 DEFINE_LOG_CATEGORY_STATIC(LogUnrealEdEngine, Log, All);
 
 
 void UUnrealEdEngine::Init(IEngineLoop* InEngineLoop)
 {
 	Super::Init(InEngineLoop);
+
+	uint64 TotalDiskSpace = 0;
+	uint64 FreeDiskSpace = 0;
+	const TCHAR* BaseDir = FPlatformProcess::BaseDir();
+	if (FPlatformMisc::GetDiskTotalAndFreeSpace(BaseDir, TotalDiskSpace, FreeDiskSpace))
+	{
+		const uint64 HardDriveFreeMB = FreeDiskSpace / (1024 * 1024);
+		if (HardDriveFreeMB < 512)
+		{
+			FEngineAnalytics::LowDriveSpaceDetected();
+			
+			const FText Title = NSLOCTEXT("DriveSpaceDialog", "LowHardDriveSpaceMsgTitle", "Low drive space warning");
+			const FText Message = NSLOCTEXT("DriveSpaceDialog", "LowHardDriveSpaceMsg", "The available space on the drive containing this project is low.\nIt is recommended that you free some space to avoid issues.");
+			FMessageDialog::Open(EAppMsgType::Ok, Message, &Title);
+		}
+	}
 
 	// Build databases used by source code navigation
 	FSourceCodeNavigation::Initialize();
@@ -101,15 +119,12 @@ void UUnrealEdEngine::Init(IEngineLoop* InEngineLoop)
 	FEditorSupportDelegates::PostWindowsMessage.AddUObject(this, &UUnrealEdEngine::OnPostWindowsMessage);
 
 	USelection::SelectionChangedEvent.AddUObject(this, &UUnrealEdEngine::OnEditorSelectionChanged);
-	OnObjectsReplaced().AddUObject(this, &UUnrealEdEngine::ReplaceCachedVisualizerObjects);
 
 	// Initialize the snap manager
 	FSnappingUtils::InitEditorSnappingTools();
 
 	// Register for notification of volume changes
 	AVolume::GetOnVolumeShapeChangedDelegate().AddStatic(&FBSPOps::HandleVolumeShapeChanged);
-	//
-	InitBuilderBrush( GWorld );
 
 	// Iterate over all always fully loaded packages and load them.
 	if (!IsRunningCommandlet())
@@ -154,6 +169,9 @@ void UUnrealEdEngine::Init(IEngineLoop* InEngineLoop)
 		PropertyModule.RegisterCustomClassLayout("GameMapsSettings", FOnGetDetailCustomizationInstance::CreateStatic(&FGameMapsSettingsCustomization::MakeInstance));
 		PropertyModule.RegisterCustomClassLayout("LevelEditorPlaySettings", FOnGetDetailCustomizationInstance::CreateStatic(&FLevelEditorPlaySettingsCustomization::MakeInstance));
 		PropertyModule.RegisterCustomClassLayout("ProjectPackagingSettings", FOnGetDetailCustomizationInstance::CreateStatic(&FProjectPackagingSettingsCustomization::MakeInstance));
+
+		PropertyModule.RegisterCustomPropertyTypeLayout("LevelEditorPlayNetworkEmulationSettings", FOnGetPropertyTypeCustomizationInstance::CreateStatic(&FLevelEditorPlayNetworkEmulationSettingsDetail::MakeInstance));
+		
 	}
 
 	if (!IsRunningCommandlet())
@@ -186,6 +204,12 @@ void UUnrealEdEngine::Init(IEngineLoop* InEngineLoop)
 			CookServer = NewObject<UCookOnTheFlyServer>();
 			CookServer->Initialize(ECookMode::CookByTheBookFromTheEditor, BaseCookingFlags);
 		}
+	}
+
+	if (FParse::Param(FCommandLine::Get(), TEXT("nomcp")))
+	{
+		// If our editor has nomcp, pass it through to any subprocesses.
+		FCommandLine::AddToSubprocessCommandline(TEXT(" -nomcp"));
 	}
 
 	bPivotMovedIndependently = false;
@@ -706,7 +730,7 @@ void UUnrealEdEngine::OnPostWindowsMessage(FViewport* Viewport, uint32 Message)
 void UUnrealEdEngine::OnOpenMatinee()
 {
 	// Register a delegate to pickup when Matinee is closed.
-	OnMatineeEditorClosedDelegateHandle = GLevelEditorModeTools().OnEditorModeChanged().AddUObject( this, &UUnrealEdEngine::OnMatineeEditorClosed );
+	UpdateEdModeOnMatineeCloseDelegateHandle = GLevelEditorModeTools().OnEditorModeIDChanged().AddUObject( this, &UUnrealEdEngine::UpdateEdModeOnMatineeClose );
 }
 
 bool UUnrealEdEngine::IsAutosaving() const
@@ -744,8 +768,8 @@ void UUnrealEdEngine::ConvertMatinees()
 				StartLocation.Y += 50;
 								
 				MatineeActor->MatineeData = InterpData;
-				UProperty* MatineeDataProp = NULL;
-				for( UProperty* Property = MatineeActor->GetClass()->PropertyLink; Property != NULL; Property = Property->PropertyLinkNext )
+				FProperty* MatineeDataProp = NULL;
+				for( FProperty* Property = MatineeActor->GetClass()->PropertyLink; Property != NULL; Property = Property->PropertyLinkNext )
 				{
 					if( Property->GetName() == TEXT("MatineeData") )
 					{
@@ -878,7 +902,7 @@ void UUnrealEdEngine::CloseEditor()
 	EndPlayOnLocalPc();
 
 	// Can't use FPlatformMisc::RequestExit as it uses PostQuitMessage which is not what we want here.
-	GIsRequestingExit = 1;
+	RequestEngineExit(TEXT("UUnrealEdEngine::CloseEditor()"));
 }
 
 
@@ -1330,7 +1354,7 @@ void UUnrealEdEngine::DrawComponentVisualizers(const FSceneView* View, FPrimitiv
 {
 	for(FCachedComponentVisualizer& CachedVisualizer : VisualizersForSelection)
 	{
-		CachedVisualizer.Visualizer->DrawVisualization(CachedVisualizer.Component.Get(), View, PDI);
+		CachedVisualizer.Visualizer->DrawVisualization(CachedVisualizer.ComponentPropertyPath.GetComponent(), View, PDI);
 	}
 }
 
@@ -1339,7 +1363,7 @@ void UUnrealEdEngine::DrawComponentVisualizersHUD(const FViewport* Viewport, con
 {
 	for(FCachedComponentVisualizer& CachedVisualizer : VisualizersForSelection)
 	{
-		CachedVisualizer.Visualizer->DrawVisualizationHUD(CachedVisualizer.Component.Get(), Viewport, View, Canvas);
+		CachedVisualizer.Visualizer->DrawVisualizationHUD(CachedVisualizer.ComponentPropertyPath.GetComponent(), Viewport, View, Canvas);
 	}
 }
 
@@ -1357,9 +1381,9 @@ void UUnrealEdEngine::OnEditorSelectionChanged(UObject* SelectionThatChanged)
 			AActor* Actor = Cast<AActor>(*It);
 			if(Actor != nullptr)
 			{
-				// Then iterate over components of that actor
+				// Then iterate over components of that actor (and recurse through child components)
 				TInlineComponentArray<UActorComponent*> Components;
-				Actor->GetComponents(Components);
+				Actor->GetComponents(Components, true);
 
 				for(int32 CompIdx = 0; CompIdx < Components.Num(); CompIdx++)
 				{
@@ -1379,18 +1403,6 @@ void UUnrealEdEngine::OnEditorSelectionChanged(UObject* SelectionThatChanged)
 	}
 }
 
-void UUnrealEdEngine::ReplaceCachedVisualizerObjects(const TMap<UObject*, UObject*>& ReplacementMap)
-{
-	for(FCachedComponentVisualizer& Visualizer : VisualizersForSelection)
-	{
-		UObject* OldObject = Visualizer.Component.Get(true);
-		UActorComponent* NewComponent = Cast<UActorComponent>(ReplacementMap.FindRef(OldObject));
-		if(NewComponent)
-		{
-			Visualizer.Component = NewComponent;
-		}
-	}
-}
 
 EWriteDisallowedWarningState UUnrealEdEngine::GetWarningStateForWritePermission(const FString& PackageName) const
 {
@@ -1442,7 +1454,7 @@ EWriteDisallowedWarningState UUnrealEdEngine::GetWarningStateForWritePermission(
 	return WarningState;
 }
 
-
+PRAGMA_DISABLE_DEPRECATION_WARNINGS
 void UUnrealEdEngine::OnMatineeEditorClosed( FEdMode* Mode, bool IsEntering )
 {
 	// if we are closing the Matinee editor
@@ -1457,4 +1469,21 @@ void UUnrealEdEngine::OnMatineeEditorClosed( FEdMode* Mode, bool IsEntering )
 		// Remove this delegate. 
 		GLevelEditorModeTools().OnEditorModeChanged().Remove( OnMatineeEditorClosedDelegateHandle );
 	}	
+}
+PRAGMA_ENABLE_DEPRECATION_WARNINGS
+
+void UUnrealEdEngine::UpdateEdModeOnMatineeClose(const FEditorModeID& EditorModeID, bool IsEntering)
+{
+	// if we are closing the Matinee editor
+	if (!IsEntering && EditorModeID == FBuiltinEditorModes::EM_InterpEdit)
+	{
+		// set the autosave timer to save soon
+		if (PackageAutoSaver)
+		{
+			PackageAutoSaver->ForceMinimumTimeTillAutoSave();
+		}
+
+		// Remove this delegate. 
+		GLevelEditorModeTools().OnEditorModeIDChanged().Remove(UpdateEdModeOnMatineeCloseDelegateHandle);
+	}
 }

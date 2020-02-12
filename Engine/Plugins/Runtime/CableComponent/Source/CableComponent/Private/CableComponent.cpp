@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved. 
+// Copyright Epic Games, Inc. All Rights Reserved. 
 
 #include "CableComponent.h"
 #include "EngineGlobals.h"
@@ -285,10 +285,11 @@ public:
 				bool bHasPrecomputedVolumetricLightmap;
 				FMatrix PreviousLocalToWorld;
 				int32 SingleCaptureIndex;
-				GetScene().GetPrimitiveUniformShaderParameters_RenderThread(GetPrimitiveSceneInfo(), bHasPrecomputedVolumetricLightmap, PreviousLocalToWorld, SingleCaptureIndex);
+				bool bOutputVelocity;
+				GetScene().GetPrimitiveUniformShaderParameters_RenderThread(GetPrimitiveSceneInfo(), bHasPrecomputedVolumetricLightmap, PreviousLocalToWorld, SingleCaptureIndex, bOutputVelocity);
 
 				FDynamicPrimitiveUniformBuffer& DynamicPrimitiveUniformBuffer = Collector.AllocateOneFrameResource<FDynamicPrimitiveUniformBuffer>();
-				DynamicPrimitiveUniformBuffer.Set(GetLocalToWorld(), PreviousLocalToWorld, GetBounds(), GetLocalBounds(), true, bHasPrecomputedVolumetricLightmap, UseEditorDepthTest());
+				DynamicPrimitiveUniformBuffer.Set(GetLocalToWorld(), PreviousLocalToWorld, GetBounds(), GetLocalBounds(), true, bHasPrecomputedVolumetricLightmap, DrawsVelocity(), bOutputVelocity);
 				BatchElement.PrimitiveUniformBufferResource = &DynamicPrimitiveUniformBuffer.UniformBuffer;
 
 				BatchElement.FirstIndex = 0;
@@ -586,7 +587,7 @@ AActor* UCableComponent::GetAttachedActor() const
 
 USceneComponent* UCableComponent::GetAttachedComponent() const
 {
-	return AttachEndTo.GetComponent(GetOwner());
+	return Cast<USceneComponent>(AttachEndTo.GetComponent(GetOwner()));
 }
 
 void UCableComponent::GetCableParticleLocations(TArray<FVector>& Locations) const
@@ -605,7 +606,7 @@ void UCableComponent::GetEndPositions(FVector& OutStartPosition, FVector& OutEnd
 	OutStartPosition = GetComponentLocation();
 
 	// See if we want to attach the other end to some other component
-	USceneComponent* EndComponent = AttachEndTo.GetComponent(GetOwner());
+	USceneComponent* EndComponent = Cast<USceneComponent>(AttachEndTo.GetComponent(GetOwner()));
 	if(EndComponent == NULL)
 	{
 		EndComponent = this;
@@ -673,9 +674,9 @@ void UCableComponent::TickComponent(float DeltaTime, enum ELevelTick TickType, F
 	UpdateComponentToWorld();
 };
 
-void UCableComponent::CreateRenderState_Concurrent()
+void UCableComponent::CreateRenderState_Concurrent(FRegisterComponentContext* Context)
 {
-	Super::CreateRenderState_Concurrent();
+	Super::CreateRenderState_Concurrent(Context);
 
 	SendRenderDynamicData_Concurrent();
 }
@@ -708,10 +709,9 @@ void UCableComponent::SendRenderDynamicData_Concurrent()
 		}
 
 		// Enqueue command to send to render thread
-		ENQUEUE_UNIQUE_RENDER_COMMAND_TWOPARAMETER(
-			FSendCableDynamicData,
-			FCableSceneProxy*,CableSceneProxy,(FCableSceneProxy*)SceneProxy,
-			FCableDynamicData*,DynamicData,DynamicData,
+		FCableSceneProxy* CableSceneProxy = (FCableSceneProxy*)SceneProxy;
+		ENQUEUE_RENDER_COMMAND(FSendCableDynamicData)(
+			[CableSceneProxy, DynamicData](FRHICommandListImmediate& RHICmdList)
 		{
 			CableSceneProxy->SetDynamicData_RenderThread(DynamicData);
 		});

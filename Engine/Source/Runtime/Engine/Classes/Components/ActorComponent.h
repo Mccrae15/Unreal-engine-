@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -22,6 +22,11 @@ class AActor;
 class UActorComponent;
 class UAssetUserData;
 class ULevel;
+
+struct FRegisterComponentContext
+{
+	TArray<class UPrimitiveComponent*> AddPrimitiveBatches;
+};
 
 #if WITH_EDITOR
 class SWidget;
@@ -67,9 +72,14 @@ CONSTEXPR inline EUpdateTransformFlags operator ~(EUpdateTransformFlags Value)
 /** Converts legacy bool into the SkipPhysicsUpdate bitflag */
 FORCEINLINE EUpdateTransformFlags SkipPhysicsToEnum(bool bSkipPhysics){ return bSkipPhysics ? EUpdateTransformFlags::SkipPhysicsUpdate : EUpdateTransformFlags::None; }
 
+class FSceneInterface;
+extern ENGINE_API void UpdateAllPrimitiveSceneInfosForSingleComponent(UActorComponent* InComponent, TSet<FSceneInterface*>* InScenesToUpdateAllPrimitiveSceneInfosForBatching = nullptr);
+extern ENGINE_API void UpdateAllPrimitiveSceneInfosForScenes(TSet<FSceneInterface*> ScenesToUpdateAllPrimitiveSceneInfos);
 
-DECLARE_DYNAMIC_MULTICAST_DELEGATE_TwoParams(FActorComponentActivatedSignature, UActorComponent*, Component, bool, bReset);
-DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(FActorComponentDeactivateSignature, UActorComponent*, Component);
+class UActorComponent;
+
+DECLARE_DYNAMIC_MULTICAST_SPARSE_DELEGATE_TwoParams(FActorComponentActivatedSignature, UActorComponent, OnComponentActivated, UActorComponent*, Component, bool, bReset);
+DECLARE_DYNAMIC_MULTICAST_SPARSE_DELEGATE_OneParam(FActorComponentDeactivateSignature, UActorComponent, OnComponentDeactivated, UActorComponent*, Component);
 
 DECLARE_MULTICAST_DELEGATE_OneParam(FActorComponentGlobalCreatePhysicsSignature, UActorComponent*);
 DECLARE_MULTICAST_DELEGATE_OneParam(FActorComponentGlobalDestroyPhysicsSignature, UActorComponent*);
@@ -115,6 +125,10 @@ private:
 	/** Used for fast removal of end of frame update */
 	int32 MarkedForEndOfFrameUpdateArrayIndex;
 
+	/** Populated when the component is created and tracks the often used order of creation on a per archetype/per actor basis */
+	UPROPERTY()
+	int32 UCSSerializationIndex;
+
 protected:
 	/** 
 	 *  Indicates if this ActorComponent is currently registered with a scene. 
@@ -128,6 +142,7 @@ protected:
 	uint8 bPhysicsStateCreated:1;
 
 	/** Is this component currently replicating? Should the network code consider it for replication? Owning Actor must be replicating first! */
+	UE_DEPRECATED(4.24, "This member will be made private. Please use GetIsReplicated, SetIsReplicated, or SetIsReplicatedByDefault for constructors.")
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Replicated, Category=ComponentReplication,meta=(DisplayName = "Component Replicates"))
 	uint8 bReplicates:1;
 
@@ -184,6 +199,7 @@ public:
 	uint8 bAutoActivate:1;
 
 	/** Whether the component is currently active. */
+	UE_DEPRECATED(4.24, "This member will be made private. Please use IsActive or SetActive.")
 	UPROPERTY(transient, ReplicatedUsing=OnRep_IsActive)
 	uint8 bIsActive:1;
 
@@ -203,10 +219,6 @@ public:
 	/** If true, we call the virtual InitializeComponent */
 	uint8 bWantsInitializeComponent:1;
 
-	/** If true, we call the virtual BeginPlay */
-	UE_DEPRECATED(4.14, "bWantsBeginPlay was inconsistently enforced and is now unused. BeginPlay will now always be called for Actor Components.")
-	uint8 bWantsBeginPlay:1;
-
 	/** If true, the component will be excluded from non-editor builds */
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = Cooking)
 	uint8 bIsEditorOnly:1;
@@ -216,6 +228,10 @@ private:
 	/** True if this component is only used for visualization, usually a sprite or text */
 	UPROPERTY()
 	uint8 bIsVisualizationComponent : 1;
+
+	/** Marks this component pending kill once PostLoad occurs. Used to clean up old native default subobjects that were removed from code */
+	UPROPERTY()
+	uint8 bNeedsUCSSerializationIndexEvaluted : 1;
 #endif
 
 private:
@@ -237,6 +253,9 @@ private:
 #if WITH_EDITOR
 	/** During undo/redo it isn't safe to cache owner */
 	uint8 bCanUseCachedOwner:1;
+
+	/** Marks this component pending kill once PostLoad occurs. Used to clean up old native default subobjects that were removed from code */
+	uint8 bMarkPendingKillOnPostLoad : 1;
 #endif
 
 	/** True if this component was owned by a net startup actor during level load. */
@@ -250,11 +269,26 @@ public:
 	UPROPERTY()
 	EComponentCreationMethod CreationMethod;
 
+public:
+	/** Returns the UCS serialization index. This can be an expensive operation in the editor if you are dealing with a component that was saved before this information was present and it needs to be calculated. */
+	int32 GetUCSSerializationIndex() const
+	{
+#if WITH_EDITORONLY_DATA
+		if (bNeedsUCSSerializationIndexEvaluted)
+		{
+			const_cast<UActorComponent*>(this)->DetermineUCSSerializationIndexForLegacyComponent();
+		}
+#endif
+
+		return UCSSerializationIndex;
+	}
+
 private:
-	UPROPERTY()
-	TArray<FSimpleMemberReference> UCSModifiedProperties;
+	/** Calculate the UCS serialization index for a component that was saved before we started saving this data */
+	void DetermineUCSSerializationIndexForLegacyComponent();
 
 public:
+
 	/** Tracks whether the component has been added to one of the world's end of frame update lists */
 	uint32 GetMarkedForEndOfFrameUpdateState() const { return MarkedForEndOfFrameUpdateState; }
 
@@ -262,10 +296,10 @@ public:
 	void DetermineUCSModifiedProperties();
 
 	/** Returns the list of properties that are modified by the UserConstructionScript */
-	void GetUCSModifiedProperties(TSet<const UProperty*>& ModifiedProperties) const;
+	void GetUCSModifiedProperties(TSet<const FProperty*>& ModifiedProperties) const;
 
 	/** Removes specified properties from the list of UCS-modified properties */
-	void RemoveUCSModifiedProperties(const TArray<UProperty*>& Properties);
+	void RemoveUCSModifiedProperties(const TArray<FProperty*>& Properties);
 
 	/** True if this component can be modified when it was inherited from a parent actor class */
 	bool IsEditableWhenInherited() const;
@@ -321,6 +355,11 @@ public:
 	UPROPERTY(BlueprintAssignable, Category = "Components|Activation")
 	FActorComponentDeactivateSignature OnComponentDeactivated;
 
+private:
+	UPROPERTY()
+	TArray<FSimpleMemberReference> UCSModifiedProperties;
+
+public:
 	/**
 	 * Activates the SceneComponent, should be overridden by native child classes.
 	 * @param bReset - Whether the activation should happen even if ShouldActivate returns false.
@@ -348,12 +387,14 @@ public:
 	UFUNCTION(BlueprintCallable, Category="Components|Activation", meta=(UnsafeDuringActorConstruction="true"))
 	virtual void ToggleActive();
 
+PRAGMA_DISABLE_DEPRECATION_WARNINGS
 	/**
 	 * Returns whether the component is active or not
 	 * @return - The active state of the component.
 	 */
 	UFUNCTION(BlueprintCallable, Category="Components|Activation", meta=(UnsafeDuringActorConstruction="true"))
-	virtual bool IsActive() const { return bIsActive; }
+	bool IsActive() const { return bIsActive; }
+PRAGMA_ENABLE_DEPRECATION_WARNINGS
 
 	/**
 	 * Sets whether the component should be auto activate or not. Only safe during construction scripts.
@@ -382,11 +423,13 @@ public:
 	UFUNCTION(BlueprintCallable, Category="Components")
 	void SetIsReplicated(bool ShouldReplicate);
 
+PRAGMA_DISABLE_DEPRECATION_WARNINGS
 	/** Returns whether replication is enabled or not. */
 	FORCEINLINE bool GetIsReplicated() const
 	{
 		return bReplicates;
 	}
+PRAGMA_ENABLE_DEPRECATION_WARNINGS
 
 	/** Allows a component to replicate other subobject on the actor  */
 	virtual bool ReplicateSubobjects(class UActorChannel *Channel, class FOutBunch *Bunch, FReplicationFlags *RepFlags);
@@ -449,6 +492,9 @@ public:
 	/** This should only be called by the engine in ULevel::InitializeNetworkActors to initialize bIsNetStartupComponent. */
 	void SetIsNetStartupComponent(const bool bInIsNetStartupComponent) { bIsNetStartupComponent = bInIsNetStartupComponent; }
 
+	/** Allows components to handle an EOF update happening mid tick. Can be used to block on in-flight async tasks etc. This should ensure the the component's tick is complete so that it's render update is correct. */
+	virtual void OnEndOfFrameUpdateDuringTick() {}
+
 private:
 	/** Cached pointer to owning actor */
 	mutable AActor* OwnerPrivate;
@@ -474,7 +520,7 @@ private:
 	void ExecuteUnregisterEvents();
 
 	/** Calls OnRegister, CreateRenderState_Concurrent and OnCreatePhysicsState. */
-	void ExecuteRegisterEvents();
+	void ExecuteRegisterEvents(FRegisterComponentContext* Context = nullptr);
 
 	/** Utility function for each of the PostEditChange variations to call for the same behavior */
 	void ConsolidatedPostEditChange(const FPropertyChangedEvent& PropertyChangedEvent);
@@ -500,7 +546,7 @@ protected:
 	 * Used to create any rendering thread information for this component
 	 * @warning This is called concurrently on multiple threads (but never the same component concurrently)
 	 */
-	virtual void CreateRenderState_Concurrent();
+	virtual void CreateRenderState_Concurrent(FRegisterComponentContext* Context);
 
 	/** 
 	 * Called to send a transform update for this component to the rendering thread
@@ -545,9 +591,9 @@ public:
 	virtual void InitializeComponent();
 
 	/**
-	 * BeginsPlay for the component.  Occurs at level startup or actor spawn. This is before BeginPlay (Actor or Component).  
-	 * All Components (that want initialization) in the level will be Initialized on load before any 
-	 * Actor/Component gets BeginPlay.
+	 * Begins Play for the component. 
+	 * Called when the owning Actor begins play or when the component is created if the Actor has already begun play.
+	 * Actor BeginPlay normally happens right after PostInitializeComponents but can be delayed for networked or child actors.
 	 * Requires component to be registered and initialized.
 	 */
 	virtual void BeginPlay();
@@ -636,7 +682,7 @@ public:
 	 * Registers a component with a specific world, which creates any visual/physical state
 	 * @param InWorld - The world to register the component with.
 	 */
-	void RegisterComponentWithWorld(UWorld* InWorld);
+	void RegisterComponentWithWorld(UWorld* InWorld, FRegisterComponentContext* Context = nullptr);
 
 	/** Overridable check for a component to indicate to its Owner that it should prevent the Actor from auto destroying when finished */
 	virtual bool IsReadyForOwnerToAutoDestroy() const { return true; }
@@ -779,7 +825,7 @@ public:
 	virtual bool IsNameStableForNetworking() const override;
 	virtual bool IsSupportedForNetworking() const override;
 	virtual void GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLifetimeProps) const override;
-	virtual int32 GetFunctionCallspace( UFunction* Function, void* Parameters, FFrame* Stack ) override;
+	virtual int32 GetFunctionCallspace( UFunction* Function, FFrame* Stack ) override;
 	virtual bool CallRemoteFunction( UFunction* Function, void* Parameters, FOutParmRec* OutParms, FFrame* Stack ) override;
 	virtual void PostInitProperties() override;
 	virtual void PostLoad() override;
@@ -788,7 +834,8 @@ public:
 	virtual void Serialize(FArchive& Ar) override;
 #if WITH_EDITOR
 	virtual bool Modify( bool bAlwaysMarkDirty = true ) override;
-	virtual void PreEditChange(UProperty* PropertyThatWillChange) override;
+	virtual bool CanEditChange(const FProperty* InProperty) const override;
+	virtual void PreEditChange(FProperty* PropertyThatWillChange) override;
 	virtual void PostEditChangeProperty(FPropertyChangedEvent& PropertyChangedEvent) override;
 	virtual void PostEditChangeChainProperty( FPropertyChangedChainEvent& PropertyChangedEvent ) override;
 	virtual void PreEditUndo() override;
@@ -885,6 +932,11 @@ public:
 	/** Prefix used to identify template component instances */
 	static const FString ComponentTemplateNameSuffix;
 
+	DECLARE_MULTICAST_DELEGATE_OneParam(FOnMarkRenderStateDirty, UActorComponent&);
+
+	/** Called When render state is marked dirty */
+	static FOnMarkRenderStateDirty MarkRenderStateDirtyEvent;
+
 protected:
 	/** Makes sure navigation system has up to date information regarding component's navigation relevancy 
 	 *	and if it can affect navigation at all 
@@ -901,11 +953,56 @@ private:
 	void ClearNeedEndOfFrameUpdate_Internal();
 
 	friend struct FMarkComponentEndOfFrameUpdateState;
+	friend struct FSetUCSSerializationIndex;
 	friend struct FActorComponentInstanceData;
 	friend class FActorComponentDetails;
 	friend class FComponentReregisterContextBase;
 	friend class FComponentRecreateRenderStateContext;
 	friend struct FActorComponentTickFunction;
+
+PRAGMA_DISABLE_DEPRECATION_WARNINGS
+	//~ Begin Methods for Replicated Members.
+protected:
+
+	/**
+	 * Sets the value of bReplicates without causing other side effects to this instance.
+	 * This should only be called during component construction.
+	 *
+	 * This method exists only to allow code to directly modify bReplicates to maintain existing
+	 * behavior.
+	 */
+	void SetIsReplicatedByDefault(const bool bNewReplicates);
+
+	/**
+	 * Gets the property name for bReplicates.
+	 *
+	 * This exists so subclasses don't need to have direct access to the bReplicates property so it
+	 * can be made private later.
+	 */
+	static const FName GetReplicatesPropertyName()
+	{
+		return GET_MEMBER_NAME_CHECKED(UActorComponent, bReplicates);
+	}
+
+public:
+
+	/**
+	 * Sets the value of bIsActive without causing other side effects to this instance.
+	 *
+	 * Activate, Deactivate, and SetActive are preferred in most cases because they respect virtual behavior.
+	 */
+	void SetActiveFlag(const bool bNewIsActive);
+
+	//~ End Methods for Replicated Members.
+PRAGMA_ENABLE_DEPRECATION_WARNINGS
+
+protected:
+
+	/** Convenience method for testing whether or not our owner is still being constructed / initialized. */
+	bool OwnerNeedsInitialization() const;
+
+	/** Convenience method for testing whether or not we are still be constructed / initialized. */
+	bool NeedsInitialization() const;
 };
 
 //////////////////////////////////////////////////////////////////////////

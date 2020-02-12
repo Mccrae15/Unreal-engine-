@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -27,7 +27,7 @@ public:
 protected:
 
 	/** Evaluate the easing with an interpolation value between 0 and 1 */
-	UFUNCTION(BlueprintCallable, BlueprintImplementableEvent, Category = "Sequencer", meta=(CallInEditor="true"))
+	UFUNCTION(BlueprintCallable, BlueprintImplementableEvent, Category = "Sequence", meta=(CallInEditor="true"))
 	float OnEvaluate(float Interp) const;
 
 	/** Evaluate the easing with an interpolation value between 0 and 1 */

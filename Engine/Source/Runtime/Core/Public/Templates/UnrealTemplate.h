@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -12,6 +12,7 @@
 #include "Templates/UnrealTypeTraits.h"
 #include "Templates/RemoveReference.h"
 #include "Templates/TypeCompatibleBytes.h"
+#include "Templates/Identity.h"
 #include "Traits/IsContiguousContainer.h"
 
 /*-----------------------------------------------------------------------------
@@ -25,13 +26,7 @@
 template<typename ReferencedType>
 FORCEINLINE ReferencedType* IfAThenAElseB(ReferencedType* A,ReferencedType* B)
 {
-	const PTRINT IntA = reinterpret_cast<PTRINT>(A);
-	const PTRINT IntB = reinterpret_cast<PTRINT>(B);
-
-	// Compute a mask which has all bits set if IntA is zero, and no bits set if it's non-zero.
-	const PTRINT MaskB = -(!IntA);
-
-	return reinterpret_cast<ReferencedType*>(IntA | (MaskB & IntB));
+	return A ? A : B;
 }
 
 /** branchless pointer selection based on predicate
@@ -40,13 +35,7 @@ FORCEINLINE ReferencedType* IfAThenAElseB(ReferencedType* A,ReferencedType* B)
 template<typename PredicateType,typename ReferencedType>
 FORCEINLINE ReferencedType* IfPThenAElseB(PredicateType Predicate,ReferencedType* A,ReferencedType* B)
 {
-	const PTRINT IntA = reinterpret_cast<PTRINT>(A);
-	const PTRINT IntB = reinterpret_cast<PTRINT>(B);
-
-	// Compute a mask which has all bits set if Predicate is zero, and no bits set if it's non-zero.
-	const PTRINT MaskB = -(!PTRINT(Predicate));
-
-	return reinterpret_cast<ReferencedType*>((IntA & ~MaskB) | (IntB & MaskB));
+	return Predicate ? A : B;
 }
 
 /** A logical exclusive or function. */
@@ -86,14 +75,13 @@ auto GetData(T&& Container) -> decltype(Container.GetData())
 	return Container.GetData();
 }
 
-template <typename T, SIZE_T N>
-CONSTEXPR T* GetData(T (&Container)[N])
-{
-	return Container;
-}
+template <typename T, SIZE_T N> CONSTEXPR       T* GetData(      T (& Container)[N]) { return Container; }
+template <typename T, SIZE_T N> CONSTEXPR       T* GetData(      T (&&Container)[N]) { return Container; }
+template <typename T, SIZE_T N> CONSTEXPR const T* GetData(const T (& Container)[N]) { return Container; }
+template <typename T, SIZE_T N> CONSTEXPR const T* GetData(const T (&&Container)[N]) { return Container; }
 
 template <typename T>
-CONSTEXPR T* GetData(std::initializer_list<T> List)
+CONSTEXPR const T* GetData(std::initializer_list<T> List)
 {
 	return List.begin();
 }
@@ -102,16 +90,15 @@ CONSTEXPR T* GetData(std::initializer_list<T> List)
 * Generically gets the number of items in a contiguous container
 */
 template<typename T, typename = typename TEnableIf<TIsContiguousContainer<T>::Value>::Type>
-SIZE_T GetNum(T&& Container)
+auto GetNum(T&& Container) -> decltype(Container.Num())
 {
-	return (SIZE_T)Container.Num();
+	return Container.Num();
 }
 
-template <typename T, SIZE_T N>
-CONSTEXPR SIZE_T GetNum(T (&Container)[N])
-{
-	return N;
-}
+template <typename T, SIZE_T N> CONSTEXPR SIZE_T GetNum(      T (& Container)[N]) { return N; }
+template <typename T, SIZE_T N> CONSTEXPR SIZE_T GetNum(      T (&&Container)[N]) { return N; }
+template <typename T, SIZE_T N> CONSTEXPR SIZE_T GetNum(const T (& Container)[N]) { return N; }
+template <typename T, SIZE_T N> CONSTEXPR SIZE_T GetNum(const T (&&Container)[N]) { return N; }
 
 template <typename T>
 CONSTEXPR SIZE_T GetNum(std::initializer_list<T> List)
@@ -143,14 +130,15 @@ FORCEINLINE const T& AsConst(T& Ref)
 
 #ifdef __clang__
 	template <typename T>
-	auto ArrayCountHelper(T& t) -> typename TEnableIf<__is_array(T), char(&)[sizeof(t) / sizeof(t[0]) + 1]>::Type;
+	auto UE4ArrayCountHelper(T& t) -> typename TEnableIf<__is_array(T), char(&)[sizeof(t) / sizeof(t[0]) + 1]>::Type;
 #else
 	template <typename T, uint32 N>
-	char (&ArrayCountHelper(const T (&)[N]))[N + 1];
+	char (&UE4ArrayCountHelper(const T (&)[N]))[N + 1];
 #endif
 
 // Number of elements in an array.
-#define ARRAY_COUNT( array ) (sizeof(ArrayCountHelper(array)) - 1)
+#define UE_ARRAY_COUNT( array ) (sizeof(UE4ArrayCountHelper(array)) - 1)
+#define ARRAY_COUNT( array ) DEPRECATED_MACRO(4.24, "The ARRAY_COUNT macro has been deprecated in favor of UE_ARRAY_COUNT.") UE_ARRAY_COUNT( array )
 
 // Offset of a struct member.
 #ifndef UNREAL_CODE_ANALYZER
@@ -311,9 +299,9 @@ private:
  * Macro variant on TGuardValue<bool> that can deal with bitfields which cannot be passed by reference in to TGuardValue
  */
 #define FGuardValue_Bitfield(ReferenceValue, NewValue) \
-	const bool TempBitfield##__LINE__ = ReferenceValue; \
+	const bool PREPROCESSOR_JOIN(TempBitfield, __LINE__) = ReferenceValue; \
 	ReferenceValue = NewValue; \
-	const TGuardValue_Bitfield_Cleanup<TFunction<void()>> TempBitfieldCleanup##__LINE__([&](){ ReferenceValue = TempBitfield##__LINE__; });
+	const TGuardValue_Bitfield_Cleanup<TFunction<void()>> PREPROCESSOR_JOIN(TempBitfieldCleanup, __LINE__)([&](){ ReferenceValue = PREPROCESSOR_JOIN(TempBitfield, __LINE__); });
 
 /** 
  * Commonly used to make sure a value is incremented, and then decremented anyway the function can terminate.
@@ -540,6 +528,41 @@ FORCEINLINE typename TEnableIf<TAreTypesEqual<T, uint32>::Value, T>::Type Revers
 	return Bits;
 }
 
+/**
+ * Generates a bitmask with a given number of bits set.
+ */
+template <typename T>
+FORCEINLINE T BitMask( uint32 Count );
+
+template <>
+FORCEINLINE uint64 BitMask<uint64>( uint32 Count )
+{
+	checkSlow(Count <= 64);
+	return (uint64(Count < 64) << Count) - 1;
+}
+
+template <>
+FORCEINLINE uint32 BitMask<uint32>( uint32 Count )
+{
+	checkSlow(Count <= 32);
+	return uint32(uint64(1) << Count) - 1;
+}
+
+template <>
+FORCEINLINE uint16 BitMask<uint16>( uint32 Count )
+{
+	checkSlow(Count <= 16);
+	return uint16((uint32(1) << Count) - 1);
+}
+
+template <>
+FORCEINLINE uint8 BitMask<uint8>( uint32 Count )
+{
+	checkSlow(Count <= 8);
+	return uint8((uint32(1) << Count) - 1);
+}
+
+
 /** Template for initializing a singleton at the boot. */
 template< class T >
 struct TForceInitAtBoot
@@ -558,44 +581,6 @@ struct FNoopStruct
 
 	~FNoopStruct()
 	{}
-};
-
-/**
- * Copies the cv-qualifiers from one type to another, e.g.:
- *
- * TCopyQualifiersFromTo<const    T1,       T2>::Type == const T2
- * TCopyQualifiersFromTo<volatile T1, const T2>::Type == const volatile T2
- */
-template <typename From, typename To> struct TCopyQualifiersFromTo                          { typedef                To Type; };
-template <typename From, typename To> struct TCopyQualifiersFromTo<const          From, To> { typedef const          To Type; };
-template <typename From, typename To> struct TCopyQualifiersFromTo<      volatile From, To> { typedef       volatile To Type; };
-template <typename From, typename To> struct TCopyQualifiersFromTo<const volatile From, To> { typedef const volatile To Type; };
-
-/**
- * Tests if qualifiers are lost between one type and another, e.g.:
- *
- * TCopyQualifiersFromTo<const    T1,                T2>::Value == true
- * TCopyQualifiersFromTo<volatile T1, const volatile T2>::Value == false
- */
-template <typename From, typename To>
-struct TLosesQualifiersFromTo
-{
-	enum { Value = !TAreTypesEqual<typename TCopyQualifiersFromTo<From, To>::Type, To>::Value };
-};
-
-/**
- * Returns the same type passed to it.  This is useful in a few cases, but mainly for inhibiting template argument deduction in function arguments, e.g.:
- *
- * template <typename T>
- * void Func1(T Val); // Can be called like Func(123) or Func<int>(123);
- *
- * template <typename T>
- * void Func2(typename TIdentity<T>::Type Val); // Must be called like Func<int>(123)
- */
-template <typename T>
-struct TIdentity
-{
-	typedef T Type;
 };
 
 /**

@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -53,7 +53,14 @@ public:
 	 * @param InY Y coordinate.
 	 */
 	FORCEINLINE FVector2D(float InX, float InY);
-
+	
+	/**
+	 * Constructor initializing both components to a single float value.
+	 *
+	 * @param InF Value to set both components to.
+	 */
+	explicit FORCEINLINE FVector2D(float InF);
+	
 	/**
 	 * Constructs a vector from an FIntPoint.
 	 *
@@ -82,6 +89,14 @@ public:
 	 * @param V Vector to copy from.
 	 */
 	explicit FORCEINLINE FVector2D(const FVector& V);
+
+	/**
+	 * Constructs a vector from an FVector4.
+	 * Copies the X and Y components from the FVector4.
+	 *
+	 * @param V Vector to copy from.
+	 */
+	explicit FORCEINLINE FVector2D(const FVector4& V);
 
 public:
 
@@ -605,6 +620,9 @@ FORCEINLINE FVector2D::FVector2D(float InX,float InY)
 	:	X(InX), Y(InY)
 { }
 
+FORCEINLINE FVector2D::FVector2D(float InF)
+	:	X(InF), Y(InF)
+{ }
 
 FORCEINLINE FVector2D::FVector2D(FIntPoint InPos)
 {
@@ -943,7 +961,7 @@ FORCEINLINE FIntPoint FVector2D::IntPoint() const
 
 FORCEINLINE FVector2D FVector2D::RoundToVector() const
 {
-	return FVector2D(FMath::RoundToInt(X), FMath::RoundToInt(Y));
+	return FVector2D(FMath::RoundToFloat(X), FMath::RoundToFloat(Y));
 }
 
 FORCEINLINE FVector2D FVector2D::ClampAxes(float MinAxisVal, float MaxAxisVal) const

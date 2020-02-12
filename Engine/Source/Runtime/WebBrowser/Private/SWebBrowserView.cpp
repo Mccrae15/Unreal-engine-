@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "SWebBrowserView.h"
 #include "Misc/CommandLine.h"
@@ -18,7 +18,7 @@
 #elif PLATFORM_IOS
 #	include "IOS/IOSPlatformWebBrowser.h"
 #elif PLATFORM_PS4
-#	include "PS4/PS4PlatformWebBrowser.h"
+#	include "PS4PlatformWebBrowser.h"
 #elif WITH_CEF3
 #	include "CEF/CEFWebBrowserWindow.h"
 #else
@@ -92,6 +92,9 @@ void SWebBrowserView::Construct(const FArguments& InArgs, const TSharedPtr<IWebB
 	OnCloseWindow = InArgs._OnCloseWindow;
 	AddressBarUrl = FText::FromString(InArgs._InitialURL);
 	PopupMenuMethod = InArgs._PopupMenuMethod;
+	OnUnhandledKeyDown = InArgs._OnUnhandledKeyDown;
+	OnUnhandledKeyUp = InArgs._OnUnhandledKeyUp;
+	OnUnhandledKeyChar = InArgs._OnUnhandledKeyChar;
 
 	BrowserWindow = InWebBrowserWindow;
 	if(!BrowserWindow.IsValid())
@@ -109,6 +112,7 @@ void SWebBrowserView::Construct(const FArguments& InArgs, const TSharedPtr<IWebB
 			Settings.ContentsToLoad = InArgs._ContentsToLoad;
 			Settings.bShowErrorMessage = InArgs._ShowErrorMessage;
 			Settings.BackgroundColor = InArgs._BackgroundColor;
+			Settings.BrowserFrameRate = InArgs._BrowserFrameRate;
 			Settings.Context = InArgs._ContextSettings;
 			Settings.AltRetryDomains = InArgs._AltRetryDomains;
 
@@ -174,12 +178,29 @@ void SWebBrowserView::Construct(const FArguments& InArgs, const TSharedPtr<IWebB
 			check(!OnBeforePopup.IsBound());
 		}
 
+		if (!BrowserWindow->OnUnhandledKeyDown().IsBound())
+		{
+			BrowserWindow->OnUnhandledKeyDown().BindSP(this, &SWebBrowserView::UnhandledKeyDown);
+		}
+
+		if (!BrowserWindow->OnUnhandledKeyUp().IsBound())
+		{
+			BrowserWindow->OnUnhandledKeyUp().BindSP(this, &SWebBrowserView::UnhandledKeyUp);
+		}
+
+		if (!BrowserWindow->OnUnhandledKeyChar().IsBound())
+		{
+			BrowserWindow->OnUnhandledKeyChar().BindSP(this, &SWebBrowserView::UnhandledKeyChar);
+		}
+		
 		BrowserWindow->OnShowDialog().BindSP(this, &SWebBrowserView::HandleShowDialog);
 		BrowserWindow->OnDismissAllDialogs().BindSP(this, &SWebBrowserView::HandleDismissAllDialogs);
 		BrowserWindow->OnShowPopup().AddSP(this, &SWebBrowserView::HandleShowPopup);
 		BrowserWindow->OnDismissPopup().AddSP(this, &SWebBrowserView::HandleDismissPopup);
 
 		BrowserWindow->OnSuppressContextMenu().BindSP(this, &SWebBrowserView::HandleSuppressContextMenu);
+
+
 		OnSuppressContextMenu = InArgs._OnSuppressContextMenu;
 
 		BrowserWindow->OnDragWindow().BindSP(this, &SWebBrowserView::HandleDrag);
@@ -645,5 +666,33 @@ bool SWebBrowserView::HandleDrag(const FPointerEvent& MouseEvent)
 	}
 	return false;
 }
+
+bool SWebBrowserView::UnhandledKeyDown(const FKeyEvent& KeyEvent)
+{
+	if (OnUnhandledKeyDown.IsBound())
+	{
+		return OnUnhandledKeyDown.Execute(KeyEvent);
+	}
+	return false;
+}
+
+bool SWebBrowserView::UnhandledKeyUp(const FKeyEvent& KeyEvent)
+{
+	if (OnUnhandledKeyUp.IsBound())
+	{
+		return OnUnhandledKeyUp.Execute(KeyEvent);
+	}
+	return false;
+}
+
+bool SWebBrowserView::UnhandledKeyChar(const FCharacterEvent& CharacterEvent)
+{
+	if (OnUnhandledKeyChar.IsBound())
+	{
+		return OnUnhandledKeyChar.Execute(CharacterEvent);
+	}
+	return false;
+}
+
 
 #undef LOCTEXT_NAMESPACE

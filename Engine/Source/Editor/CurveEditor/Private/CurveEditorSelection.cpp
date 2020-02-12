@@ -1,11 +1,19 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "CurveEditorSelection.h"
 #include "CurveEditorTypes.h"
 #include "Algo/BinarySearch.h"
+#include "CurveEditor.h"
 
 FCurveEditorSelection::FCurveEditorSelection()
 {
+	SelectionType = ECurvePointType::Key;
+	SerialNumber = 0;
+}
+
+FCurveEditorSelection::FCurveEditorSelection(TWeakPtr<FCurveEditor> InWeakCurveEditor)
+{
+	WeakCurveEditor = InWeakCurveEditor;
 	SelectionType = ECurvePointType::Key;
 	SerialNumber = 0;
 }
@@ -56,14 +64,20 @@ void FCurveEditorSelection::Add(FCurveModelID CurveID, ECurvePointType PointType
 
 void FCurveEditorSelection::Add(FCurveModelID CurveID, ECurvePointType PointType, TArrayView<const FKeyHandle> Keys)
 {
-	if (Keys.Num() > 0)
+	TSharedPtr<FCurveEditor> CurveEditor = WeakCurveEditor.Pin();
+	if (Keys.Num() > 0 && CurveEditor)
 	{
-		ChangeSelectionPointType(PointType);
-
-		FKeyHandleSet& SelectedKeys = CurveToSelectedKeys.FindOrAdd(CurveID);
-		for (FKeyHandle Key : Keys)
+		const TUniquePtr<FCurveModel> *CurveModel = CurveEditor->GetCurves().Find(CurveID);
+		if (CurveModel && CurveModel->IsValid() && !(*CurveModel)->IsReadOnly())
 		{
-			SelectedKeys.Add(Key);
+			ChangeSelectionPointType(PointType);
+
+			FKeyHandleSet& SelectedKeys = CurveToSelectedKeys.FindOrAdd(CurveID);
+			for (FKeyHandle Key : Keys)
+			{
+				SelectedKeys.Add(Key);
+			}
+
 		}
 	}
 

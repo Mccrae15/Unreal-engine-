@@ -1,8 +1,29 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
 #if defined(__clang__)
+	// UE4 uses a struct packing of 4 for Win32 and 8 for Win64, 
+	// and the default packing is 8 for Win32 and 16 for Win64
+	#ifdef _WIN64
+		#ifndef PRAGMA_PUSH_PLATFORM_DEFAULT_PACKING
+			#define PRAGMA_PUSH_PLATFORM_DEFAULT_PACKING \
+				_Pragma("pack(push)") \
+				_Pragma("pack(16)")
+		#endif // PRAGMA_PUSH_PLATFORM_DEFAULT_PACKING
+	#else // _WIN64
+		#ifndef PRAGMA_PUSH_PLATFORM_DEFAULT_PACKING
+			#define PRAGMA_PUSH_PLATFORM_DEFAULT_PACKING \
+				_Pragma("pack(push)") \
+				_Pragma("pack(8)")
+		#endif // PRAGMA_PUSH_PLATFORM_DEFAULT_PACKING
+	#endif // _WIN64
+	
+	#ifndef PRAGMA_POP_PLATFORM_DEFAULT_PACKING
+		#define PRAGMA_POP_PLATFORM_DEFAULT_PACKING \
+			_Pragma("pack(pop)")
+	#endif // PRAGMA_POP_PLATFORM_DEFAULT_PACKING
+
 	#include "Clang/ClangPlatformCompilerPreSetup.h"
 
 	// Disable common CA warnings around SDK includes
@@ -11,11 +32,15 @@
 			PRAGMA_DISABLE_REORDER_WARNINGS \
 			PRAGMA_DISABLE_SHADOW_VARIABLE_WARNINGS \
 			PRAGMA_DISABLE_UNDEFINED_IDENTIFIER_WARNINGS \
-			PRAGMA_DISABLE_DEPRECATION_WARNINGS
+			PRAGMA_DISABLE_DEPRECATION_WARNINGS \
+			PRAGMA_DISABLE_OVERLOADED_VIRTUAL_WARNINGS \
+			PRAGMA_DISABLE_MISSING_BRACES_WARNINGS
 	#endif // THIRD_PARTY_INCLUDES_START
 
 	#ifndef THIRD_PARTY_INCLUDES_END
 		#define THIRD_PARTY_INCLUDES_END \
+			PRAGMA_DISABLE_MISSING_BRACES_WARNINGS \
+			PRAGMA_DISABLE_OVERLOADED_VIRTUAL_WARNINGS \
 			PRAGMA_ENABLE_DEPRECATION_WARNINGS \
 			PRAGMA_ENABLE_UNDEFINED_IDENTIFIER_WARNINGS \
 			PRAGMA_ENABLE_SHADOW_VARIABLE_WARNINGS \
@@ -48,6 +73,17 @@
 		#define PRAGMA_ENABLE_SHADOW_VARIABLE_WARNINGS \
 			__pragma(warning(pop))
 	#endif // PRAGMA_ENABLE_SHADOW_VARIABLE_WARNINGS
+
+	#ifndef PRAGMA_DISABLE_UNSAFE_TYPECAST_WARNINGS
+		#define PRAGMA_DISABLE_UNSAFE_TYPECAST_WARNINGS \
+			__pragma (warning(push)) \
+			__pragma (warning(disable: 4244)) /* 'argument': conversion from 'type1' to 'type2', possible loss of data */
+	#endif // PRAGMA_DISABLE_UNSAFE_TYPECAST_WARNINGS
+
+	#ifndef PRAGMA_ENABLE_UNSAFE_TYPECAST_WARNINGS
+		#define PRAGMA_ENABLE_UNSAFE_TYPECAST_WARNINGS \
+			__pragma(warning(pop))
+	#endif // PRAGMA_ENABLE_UNSAFE_TYPECAST_WARNINGS
 
 	#ifndef PRAGMA_DISABLE_UNDEFINED_IDENTIFIER_WARNINGS
 		#define PRAGMA_DISABLE_UNDEFINED_IDENTIFIER_WARNINGS \
@@ -82,10 +118,42 @@
 			__pragma(warning(pop))
 	#endif // PRAGMA_ENABLE_REORDER_WARNINGS
 
+	#ifndef PRAGMA_DISABLE_REGISTER_WARNINGS
+		#define PRAGMA_DISABLE_REGISTER_WARNINGS \
+			__pragma(warning(push)) \
+			__pragma(warning(disable: 5033)) /* 'register' is no longer a supported storage class */
+	#endif // PRAGMA_DISABLE_REGISTER_WARNINGS
+
+	#ifndef PRAGMA_ENABLE_REGISTER_WARNINGS
+		#define PRAGMA_ENABLE_REGISTER_WARNINGS \
+			__pragma(warning(pop))
+	#endif // PRAGMA_ENABLE_REGISTER_WARNINGS
+
 	#ifndef PRAGMA_POP
 		#define PRAGMA_POP \
 			__pragma(warning(pop))
 	#endif // PRAGMA_POP
+
+	// UE4 uses a struct packing of 4 for Win32 and 8 for Win64, 
+	// and the default packing is 8 for Win32 and 16 for Win64
+	#ifdef _WIN64
+		#ifndef PRAGMA_PUSH_PLATFORM_DEFAULT_PACKING
+			#define PRAGMA_PUSH_PLATFORM_DEFAULT_PACKING \
+				__pragma(pack(push)) \
+				__pragma(pack(16))
+		#endif // PRAGMA_PUSH_PLATFORM_DEFAULT_PACKING
+	#else // _WIN64
+		#ifndef PRAGMA_PUSH_PLATFORM_DEFAULT_PACKING
+			#define PRAGMA_PUSH_PLATFORM_DEFAULT_PACKING \
+				__pragma(pack(push)) \
+				__pragma(pack(8))
+		#endif // PRAGMA_PUSH_PLATFORM_DEFAULT_PACKING
+	#endif // _WIN64
+	
+	#ifndef PRAGMA_POP_PLATFORM_DEFAULT_PACKING
+		#define PRAGMA_POP_PLATFORM_DEFAULT_PACKING \
+			__pragma(pack(pop))
+	#endif // PRAGMA_POP_PLATFORM_DEFAULT_PACKING
 
 	// Disable common CA warnings around SDK includes
 	#ifndef THIRD_PARTY_INCLUDES_START
@@ -93,6 +161,7 @@
 			__pragma(warning(push)) \
 			__pragma(warning(disable: 4510))  /* '<class>': default constructor could not be generated. */ \
 			__pragma(warning(disable: 4610))  /* object '<class>' can never be instantiated - user-defined constructor required. */ \
+			__pragma(warning(disable: 4800))  /* Implicit conversion from '<type>' to bool. Possible information loss. */ \
 			__pragma(warning(disable: 4946))  /* reinterpret_cast used between related classes: '<class1>' and '<class1>' */ \
 			__pragma(warning(disable: 4996))  /* '<obj>' was declared deprecated. */ \
 			__pragma(warning(disable: 6011))  /* Dereferencing NULL pointer '<ptr>'. */ \

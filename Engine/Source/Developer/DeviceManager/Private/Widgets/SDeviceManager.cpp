@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "Widgets/SDeviceManager.h"
 #include "HAL/PlatformProcess.h"
@@ -386,7 +386,7 @@ bool SDeviceManager::HandlePowerOnActionCanExecute()
 
 		if (TargetDevice.IsValid())
 		{
-			return (TargetDevice->IsConnected() && TargetDevice->SupportsFeature(ETargetDeviceFeatures::PowerOn));
+			return (TargetDevice->SupportsFeature(ETargetDeviceFeatures::PowerOn));
 		}
 	}
 

@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "SceneOutlinerActorInfoColumn.h"
 #include "Modules/ModuleManager.h"
@@ -169,6 +169,7 @@ SHeaderRow::FColumn::FArguments FActorInfoColumn::ConstructHeaderRowColumn()
 			[
 				SNew(SListView<TSharedPtr<ECustomColumnMode::Type>>)
 				.ListItemsSource(&ModeOptions)
+				.SelectionMode(ESelectionMode::Single)
 				.OnGenerateRow( this, &FActorInfoColumn::MakeComboButtonItemWidget )
 				.OnSelectionChanged( this, &FActorInfoColumn::OnModeChanged )
 			]

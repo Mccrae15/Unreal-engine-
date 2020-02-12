@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "StandaloneRendererPrivate.h"
 #include "OpenGL/SlateOpenGLRenderer.h"
@@ -83,7 +83,7 @@ void FSlateOpenGLViewport::Resize( int Width, int Height, bool bInFullscreen )
 		CGRect Frame = [[UIScreen mainScreen] bounds];
 		CGFloat Scale = [[UIScreen mainScreen] scale];
 
-		IOSAppDelegate* AppDelegate = (IOSAppDelegate*)[[UIApplication sharedApplication] delegate];
+		IOSAppDelegate* AppDelegate = [IOSAppDelegate GetDelegate];
 		if (!AppDelegate.bDeviceInPortraitMode)
 		{
 			Swap<float>(Frame.size.width, Frame.size.height);

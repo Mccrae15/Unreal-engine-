@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "InAppPurchaseQueryCallbackProxy.h"
 #include "Async/TaskGraphInterfaces.h"
@@ -23,7 +23,9 @@ void UInAppPurchaseQueryCallbackProxy::TriggerQuery(APlayerController* PlayerCon
 	{
 		if (IOnlineSubsystem* const OnlineSub = IOnlineSubsystem::IsLoaded() ? IOnlineSubsystem::Get() : nullptr)
 		{
+			PRAGMA_DISABLE_DEPRECATION_WARNINGS
 			IOnlineStorePtr StoreInterface = OnlineSub->GetStoreInterface();
+			PRAGMA_ENABLE_DEPRECATION_WARNINGS
 			if (StoreInterface.IsValid())
 			{
 				bFailedToEvenSubmit = false;
@@ -109,7 +111,9 @@ void UInAppPurchaseQueryCallbackProxy::RemoveDelegate()
 	{
 		if (IOnlineSubsystem* OnlineSub = IOnlineSubsystem::IsLoaded() ? IOnlineSubsystem::Get() : nullptr)
 		{
+			PRAGMA_DISABLE_DEPRECATION_WARNINGS
 			IOnlineStorePtr InAppPurchases = OnlineSub->GetStoreInterface();
+			PRAGMA_ENABLE_DEPRECATION_WARNINGS
 			if (InAppPurchases.IsValid())
 			{
 				InAppPurchases->ClearOnQueryForAvailablePurchasesCompleteDelegate_Handle(InAppPurchaseReadCompleteDelegateHandle);

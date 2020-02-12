@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "NiagaraUserRedirectionParameterStore.h"
 #include "NiagaraStats.h"
@@ -43,9 +43,9 @@ FNiagaraVariable FNiagaraUserRedirectionParameterStore::GetUserRedirection(const
 void FNiagaraUserRedirectionParameterStore::RecreateRedirections()
 {
 	UserParameterRedirects.Reset();
-	for (const TPair<FNiagaraVariable, int32>& ParamOffset : GetParameterOffsets())
+
+	for (const FNiagaraVariable& Var : GetSortedParameterOffsets())
 	{
-		const FNiagaraVariable& Var = ParamOffset.Key;
 		if (IsUserParameter(Var))
 		{
 			UserParameterRedirects.Add(GetUserRedirection(Var), Var);
@@ -53,19 +53,13 @@ void FNiagaraUserRedirectionParameterStore::RecreateRedirections()
 	}
 }
 
-int32 FNiagaraUserRedirectionParameterStore::IndexOf(const FNiagaraVariable& Parameter) const
-{
-	const FNiagaraVariable* Redirection = UserParameterRedirects.Find(Parameter);
-	return Super::IndexOf(Redirection ? *Redirection : Parameter);
-}
-
-bool FNiagaraUserRedirectionParameterStore::AddParameter(const FNiagaraVariable& Param, bool bInitialize /*= true*/, bool bTriggerRebind /*= true*/)
+bool FNiagaraUserRedirectionParameterStore::AddParameter(const FNiagaraVariable& Param, bool bInitialize /*= true*/, bool bTriggerRebind /*= true*/, int32* OutOffset /*= nullptr*/)
 {
 	if (IsUserParameter(Param))
 	{
 		UserParameterRedirects.Add(GetUserRedirection(Param), Param);
 	}
-	return Super::AddParameter(Param, bInitialize, bTriggerRebind);
+	return Super::AddParameter(Param, bInitialize, bTriggerRebind, OutOffset);
 }
 
 bool FNiagaraUserRedirectionParameterStore::RemoveParameter(const FNiagaraVariable& InVar)
@@ -105,6 +99,8 @@ bool FNiagaraUserRedirectionParameterStore::SerializeFromMismatchedTag(const FPr
 	{
 		FNiagaraParameterStore OldStore;
 		FNiagaraParameterStore::StaticStruct()->SerializeItem(Slot, &OldStore, nullptr);
+		// Call PostLoad() to convert the serialized ParameterOffsets to SortedParameterOffsets.
+		OldStore.PostLoad();
 		*this = OldStore;
 		return true;
 	}

@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "PerPlatformPropertyCustomization.h"
 #include "Widgets/DeclarativeSyntaxSupport.h"
@@ -14,8 +14,10 @@
 #include "PropertyHandle.h"
 #include "DetailLayoutBuilder.h"
 #include "SPerPlatformPropertiesWidget.h"
+#include "PlatformInfo.h"
 #include "ScopedTransaction.h"
 #include "IPropertyUtilities.h"
+#include "UObject/MetaData.h"
 
 #define LOCTEXT_NAMESPACE "PerPlatformPropertyCustomization"
 
@@ -75,6 +77,25 @@ TSharedRef<SWidget> FPerPlatformPropertyCustomization<PerPlatformType>::GetWidge
 					}
 				}
 			}
+		}
+	
+	}
+
+	// Push down struct metadata to per-platform properties
+	{
+		// First get the source map
+		const TMap<FName, FString>* SourceMap = StructPropertyHandle->GetMetaDataProperty()->GetMetaDataMap();
+		// Iterate through source map, setting each key/value pair in the destination
+		for (const auto& It : *SourceMap)
+		{
+				EditProperty->SetInstanceMetaData(*It.Key.ToString(), *It.Value);
+		}
+
+		// Copy instance metadata as well
+		const TMap<FName, FString>* InstanceSourceMap = StructPropertyHandle->GetInstanceMetaDataMap();		
+		for (const auto& It : *InstanceSourceMap)
+		{
+			EditProperty->SetInstanceMetaData(*It.Key.ToString(), *It.Value);
 		}
 	}
 

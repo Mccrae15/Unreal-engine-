@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "PerPlatformProperties.h"
 #include "Serialization/Archive.h"
@@ -7,6 +7,9 @@
 #include "Interfaces/ITargetPlatform.h"
 #include "PlatformInfo.h"
 #endif
+
+IMPLEMENT_TYPE_LAYOUT(FFreezablePerPlatformFloat);
+IMPLEMENT_TYPE_LAYOUT(FFreezablePerPlatformInt);
 
 /** Serializer to cook out the most appropriate platform override */
 template<typename StructType, typename ValueType, EName BasePropertyName>
@@ -51,21 +54,21 @@ ENGINE_API void operator<<(FStructuredArchive::FSlot Slot, TPerPlatformProperty<
 	if (UnderlyingArchive.IsCooking())
 	{
 		bCooked = true;
-		Record << NAMED_FIELD(bCooked);
+		Record << SA_VALUE(TEXT("bCooked"), bCooked);
 		// Save out platform override if it exists and Default otherwise
 		ValueType Value = Property.GetValueForPlatformIdentifiers(UnderlyingArchive.CookingTarget()->GetPlatformInfo().PlatformGroupName);
-		Record << NAMED_FIELD(Value);
+		Record << SA_VALUE(TEXT("Value"), Value);
 	}
 	else
 #endif
 	{
 		StructType* This = StaticCast<StructType*>(&Property);
-		Record << NAMED_FIELD(bCooked);
-		Record << NAMED_ITEM("Value", This->Default);
+		Record << SA_VALUE(TEXT("bCooked"), bCooked);
+		Record << SA_VALUE(TEXT("Value"), This->Default);
 #if WITH_EDITORONLY_DATA
 		if (!bCooked)
 		{
-			Record << NAMED_ITEM("PerPlatform", This->PerPlatform);
+			Record << SA_VALUE(TEXT("PerPlatform"), This->PerPlatform);
 		}
 #endif
 	}
@@ -74,6 +77,31 @@ ENGINE_API void operator<<(FStructuredArchive::FSlot Slot, TPerPlatformProperty<
 template ENGINE_API FArchive& operator<<(FArchive&, TPerPlatformProperty<FPerPlatformInt, int32, NAME_IntProperty>&);
 template ENGINE_API FArchive& operator<<(FArchive&, TPerPlatformProperty<FPerPlatformFloat, float, NAME_FloatProperty>&);
 template ENGINE_API FArchive& operator<<(FArchive&, TPerPlatformProperty<FPerPlatformBool, bool, NAME_BoolProperty>&);
+template ENGINE_API FArchive& operator<<(FArchive&, TPerPlatformProperty<FFreezablePerPlatformFloat, float, NAME_FloatProperty>&);
 template ENGINE_API void operator<<(FStructuredArchive::FSlot Slot, TPerPlatformProperty<FPerPlatformInt, int32, NAME_IntProperty>&);
 template ENGINE_API void operator<<(FStructuredArchive::FSlot Slot, TPerPlatformProperty<FPerPlatformFloat, float, NAME_FloatProperty>&);
 template ENGINE_API void operator<<(FStructuredArchive::FSlot Slot, TPerPlatformProperty<FPerPlatformBool, bool, NAME_BoolProperty>&);
+template ENGINE_API void operator<<(FStructuredArchive::FSlot Slot, TPerPlatformProperty<FFreezablePerPlatformFloat, float, NAME_FloatProperty>&);
+
+FString FPerPlatformInt::ToString() const
+{
+	FString Result = FString::FromInt(Default);
+
+#if WITH_EDITORONLY_DATA
+	TArray<FName> SortedPlatforms;
+	PerPlatform.GetKeys(/*out*/ SortedPlatforms);
+	SortedPlatforms.Sort(FNameLexicalLess());
+
+	for (FName Platform : SortedPlatforms)
+	{
+		Result = FString::Printf(TEXT("%s, %s=%d"), *Result, *Platform.ToString(), PerPlatform.FindChecked(Platform));
+	}
+#endif
+
+	return Result;
+}
+
+FString FFreezablePerPlatformInt::ToString() const
+{
+	return FPerPlatformInt(*this).ToString();
+}

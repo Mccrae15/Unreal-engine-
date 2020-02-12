@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -102,6 +102,11 @@ public:
 
 	virtual void SetExpanded_Animated( bool bExpanded );
 
+	/**
+	 * Returns true if area title is hovered, false otherwise.
+	 */
+	virtual bool IsTitleHovered() const;
+
 protected:
 
 	/**
@@ -140,7 +145,7 @@ protected:
 protected:
 
 	/** Border widget for the header area */
-	TSharedPtr<SBorder> HeaderBorder;
+	TSharedPtr<SBorder> TitleBorder;
 
 	/** Curved used to simulate a rollout of the section */
 	FCurveSequence RolloutCurve;

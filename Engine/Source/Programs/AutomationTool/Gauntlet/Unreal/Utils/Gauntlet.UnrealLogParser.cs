@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 using System;
 using System.Collections.Generic;
@@ -26,6 +26,7 @@ namespace Gauntlet
 			public string			Message;
 			public string[]			Callstack;
 			public bool				IsEnsure;
+			public bool				IsPostMortem;
 			
 			/// <summary>
 			/// Generate a string that represents a CallstackMessage formatted to be inserted into a log file.
@@ -124,11 +125,22 @@ namespace Gauntlet
 		/// <param name="InContent"></param>
 		/// <param name="InPattern"></param>
 		/// <returns></returns>
-		protected string[] GetAllMatchingLines(string InContent, string InPattern)
+		protected IEnumerable<Match> GetAllMatches(string InContent, string InPattern)
 		{
 			Regex regex = new Regex(InPattern);
 
-			return regex.Matches(InContent).Cast<Match>().Select(M => M.Value).ToArray();
+			return regex.Matches(InContent).Cast<Match>();
+		}
+
+		/// <summary>
+		/// Returns all lines from the specified content match the specified regex
+		/// </summary>
+		/// <param name="InContent"></param>
+		/// <param name="InPattern"></param>
+		/// <returns></returns>
+		protected string[] GetAllMatchingLines(string InContent, string InPattern)
+		{
+			return GetAllMatches(InContent, InPattern).Select(M => M.Value).ToArray();
 		}
 
 		/// <summary>
@@ -139,6 +151,16 @@ namespace Gauntlet
 		public string[] GetAllMatchingLines(string InPattern)
 		{
 			return GetAllMatchingLines(Content, InPattern);
+		}
+
+		/// <summary>
+		/// Returns all Matches that match the specified regex
+		/// </summary>
+		/// <param name="InPattern"></param>
+		/// <returns></returns>
+		public IEnumerable<Match> GetAllMatches(string InPattern)
+		{
+			return GetAllMatches(Content, InPattern);
 		}
 
 		/// <summary>
@@ -189,6 +211,30 @@ namespace Gauntlet
 			return Info;
 		}
 
+		/// <summary>
+		/// Return all entries for the specified channel. E.g. "OrionGame" will
+		/// return all entries starting with LogOrionGame
+		/// </summary>
+		/// <param name="Channel"></param>
+		/// <returns></returns>
+		public IEnumerable<string> GetLogChannels(IEnumerable<string> Channels, bool ExactMatch = true)
+		{
+			// expand Chan1, Chan2 into Log(?:Chan1|Chan2) for a non-capturing group
+			string Match = string.Format("Log(?:{0})", string.Join("|", Channels));
+
+			string Pattern;
+
+			if (ExactMatch)
+			{
+				Pattern = string.Format(@"({0}:\s{{0,1}}.+)", Match);
+			}
+			else
+			{
+				Pattern = string.Format(@"({0}.*:\s{{0,1}}.+)", Match);
+			}
+
+			return Regex.Matches(Content, Pattern).Cast<Match>().Select(M => M.Groups[1].ToString()).ToArray();
+		}
 
 		/// <summary>
 		/// Return all entries for the specified channel. E.g. "OrionGame" will
@@ -196,11 +242,9 @@ namespace Gauntlet
 		/// </summary>
 		/// <param name="Channel"></param>
 		/// <returns></returns>
-		public IEnumerable<string> GetLogChannel(string Channel)
+		public IEnumerable<string> GetLogChannel(string Channel, bool ExactMatch=true)
 		{
-			string Pattern = string.Format(@"(Log{0}:\s{{0,1}}.+)", Channel);
-
-			return Regex.Matches(Content, Pattern).Cast<Match>().Select(M => M.Groups[1].ToString()).ToArray();
+			return GetLogChannels(new string[] { Channel }, ExactMatch);
 		}
 
 		/// <summary>
@@ -356,8 +400,9 @@ namespace Gauntlet
 					NewTrace.Position = TraceMatch.Index;
 					NewTrace.Message = TraceMatch.Groups[1].Value;
 
-					// Next there will be a message (in some cases), and a callstack..
-					string ErrorContent = Content.Substring(TraceMatch.Index + TraceMatch.Length + 1);
+					// If the regex matches the very end of the string, the substring will get an invalid range.
+					string ErrorContent = Content.Length <= TraceMatch.Index + TraceMatch.Length 
+						? string.Empty : Content.Substring(TraceMatch.Index + TraceMatch.Length + 1);
 
 					Match MsgMatch = Regex.Match(ErrorContent, @".+:\s*Error:\s*(.+)");
 
@@ -430,6 +475,9 @@ namespace Gauntlet
 
 						string Line = SearchContent.Substring(0, EOL);
 
+						// collapse inline function
+						Line = Line.Replace("[Inline Function] ", "[InlineFunction]");
+
 						// Must have [Callstack] 0x00123456
 						// The module name is optional, must start with whitespace, and continues until next whites[ace
 						// filename is optional, must be in [file]
@@ -469,13 +517,17 @@ namespace Gauntlet
 
 						SearchContent = SearchContent.Substring(EOL + 1);
 
-					} while (LinesWithoutBacktrace < 5);
+					} while (LinesWithoutBacktrace < 10);
 
 					if (Backtrace.Count > 0)
 					{
 						NewTrace.Callstack = Backtrace.ToArray();
-						Traces.Add(NewTrace);
 					}
+					else
+					{
+						NewTrace.Callstack = new[] { "Unable to parse callstack from log" };
+					}
+					Traces.Add(NewTrace);
 				}
 			}
 
@@ -510,26 +562,18 @@ namespace Gauntlet
 				// check this trace to see if it's postmortem
 				if (Trace.Message.IndexOf("Postmortem Cause:", StringComparison.OrdinalIgnoreCase) != -1)
 				{
-					// we have post-mortem info, which should be much better than the game-generated stuff so 
-					// update any previous trace
-					var PrevTrace = FilteredTraces.LastOrDefault();
+					// we have post-mortem info, which should be much better than the game-generated stuff and will be sorted to first position
+					Trace.IsPostMortem = true;
+				}
 
-					if (PrevTrace != null)
-					{
-						PrevTrace.Callstack = Trace.Callstack;
-					}
-					else
-					{
-						// no in-log callstack? Strange... but just go with this
-						FilteredTraces.Add(Trace);
-					}
-				}
-				else
-				{
-					FilteredTraces.Add(Trace);
-				}
+				FilteredTraces.Add(Trace);
 			}
-			
+
+			// If we have a post mortem crash, sort it to the front
+			if (FilteredTraces.FirstOrDefault((Trace) => { return Trace.IsPostMortem; }) != null)
+			{				
+				FilteredTraces.Sort((Trace1, Trace2) => { if (!Trace1.IsPostMortem && !Trace2.IsPostMortem) return 0; return Trace1.IsPostMortem ? -1 : 1; });
+			}
 
 			return FilteredTraces;
 		}

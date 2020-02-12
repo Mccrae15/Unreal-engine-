@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 using System;
 using System.Collections.Generic;
@@ -16,7 +16,7 @@ namespace UnrealBuildTool
 		/// <summary>
 		/// The platform to be compiled/linked for.
 		/// </summary>
-		public readonly CppPlatform Platform;
+		public readonly UnrealTargetPlatform Platform;
 
 		/// <summary>
 		/// The configuration to be compiled/linked for.
@@ -119,6 +119,12 @@ namespace UnrealBuildTool
 		/// True if debug info should be created.
 		/// </summary>
 		public bool bCreateDebugInfo = true;
+
+		/// <summary>
+		/// True if runtime symbols files should be generated as a post build step for some platforms.
+		/// These files are used by the engine to resolve symbol names of callstack backtraces in logs.
+		/// </summary>
+		public bool bGenerateRuntimeSymbolFiles = true;
 
 		/// <summary>
 		/// True if debug symbols that are cached for some platforms should not be created.
@@ -245,6 +251,11 @@ namespace UnrealBuildTool
 		public bool bUseFastPDBLinking;
 
 		/// <summary>
+		/// Whether to ignore dangling (i.e. unresolved external) symbols in modules
+		/// </summary>
+		public bool bIgnoreUnresolvedSymbols;
+
+		/// <summary>
 		/// Whether to log detailed timing information
 		/// </summary>
 		public bool bPrintTimingInfo;
@@ -255,14 +266,14 @@ namespace UnrealBuildTool
 		public string BundleVersion;
 
 		/// <summary>
+		/// When building a dynamic library on Apple platforms, specifies the installed name for other binaries that link against it.
+		/// </summary>
+		public string InstallName;
+
+		/// <summary>
 		/// A list of the object files to be linked.
 		/// </summary>
 		public List<FileItem> InputFiles = new List<FileItem>();
-
-		/// <summary>
-		/// A list of dependent static or import libraries that need to be linked.
-		/// </summary>
-		public List<FileItem> InputLibraries = new List<FileItem>();
 
 		/// <summary>
 		/// The default resource file to link in to every binary if a custom one is not provided
@@ -293,7 +304,7 @@ namespace UnrealBuildTool
 		/// <summary>
 		/// Default constructor.
 		/// </summary>
-		public LinkEnvironment(CppPlatform Platform, CppConfiguration Configuration, string Architecture)
+		public LinkEnvironment(UnrealTargetPlatform Platform, CppConfiguration Configuration, string Architecture)
 		{
 			this.Platform = Platform;
 			this.Configuration = Configuration;
@@ -324,6 +335,7 @@ namespace UnrealBuildTool
 			DelayLoadDLLs.AddRange(Other.DelayLoadDLLs);
 			AdditionalArguments = Other.AdditionalArguments;
 			bCreateDebugInfo = Other.bCreateDebugInfo;
+			bGenerateRuntimeSymbolFiles = Other.bGenerateRuntimeSymbolFiles;
 			bIsBuildingLibrary = Other.bIsBuildingLibrary;
             bDisableSymbolCache = Other.bDisableSymbolCache;
 			bIsBuildingDLL = Other.bIsBuildingDLL;
@@ -347,10 +359,11 @@ namespace UnrealBuildTool
             bAllowASLR = Other.bAllowASLR;
 			bUsePDBFiles = Other.bUsePDBFiles;
 			bUseFastPDBLinking = Other.bUseFastPDBLinking;
+			bIgnoreUnresolvedSymbols = Other.bIgnoreUnresolvedSymbols;
 			bPrintTimingInfo = Other.bPrintTimingInfo;
 			BundleVersion = Other.BundleVersion;
+			InstallName = Other.InstallName;
 			InputFiles.AddRange(Other.InputFiles);
-			InputLibraries.AddRange(Other.InputLibraries);
 			DefaultResourceFiles.AddRange(Other.DefaultResourceFiles);
 			CommonResourceFiles.AddRange(Other.CommonResourceFiles);
 			IncludeFunctions.AddRange(Other.IncludeFunctions);

@@ -1,16 +1,21 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
 #include "CoreMinimal.h"
 #include "UObject/ObjectMacros.h"
 #include "UObject/Object.h"
+#include "Particles/ParticleSystem.h"
+#include "Particles/ParticlePerfStats.h"
 #include "NiagaraCommon.h"
 #include "NiagaraDataSet.h"
 #include "NiagaraEmitterInstance.h"
 #include "NiagaraEmitterHandle.h"
 #include "NiagaraParameterCollection.h"
 #include "NiagaraUserRedirectionParameterStore.h"
+#include "NiagaraSystemFastPath.h"
+#include "NiagaraEffectType.h"
+
 #include "NiagaraSystem.generated.h"
 
 #if WITH_EDITORONLY_DATA
@@ -18,15 +23,122 @@ class UNiagaraEditorDataBase;
 #endif
 
 USTRUCT()
-struct FNiagaraEmitterSpawnAttributes
+struct FNiagaraEmitterCompiledData
+{
+	GENERATED_USTRUCT_BODY()
+
+	FNiagaraEmitterCompiledData();
+	
+	/** Attribute names in the data set that are driving each emitter's spawning. */
+	UPROPERTY()
+	TArray<FName> SpawnAttributes;
+
+	/** Explicit list of Niagara Variables to bind to Emitter instances. */
+	UPROPERTY()
+	FNiagaraVariable EmitterSpawnIntervalVar;
+
+	UPROPERTY()
+	FNiagaraVariable EmitterInterpSpawnStartDTVar;
+
+	UPROPERTY()
+	FNiagaraVariable EmitterSpawnGroupVar;
+
+	UPROPERTY()
+	FNiagaraVariable EmitterAgeVar;
+
+	UPROPERTY()
+	FNiagaraVariable EmitterRandomSeedVar;
+
+	UPROPERTY()
+	FNiagaraVariable EmitterTotalSpawnedParticlesVar;
+
+	/** Per-Emitter DataSet Data. */
+	UPROPERTY()
+	FNiagaraDataSetCompiledData DataSetCompiledData;
+
+#if WITH_EDITORONLY_DATA
+	UPROPERTY()
+	FNiagaraDataSetCompiledData GPUCaptureDataSetCompiledData;
+#endif
+};
+
+USTRUCT()
+struct FNiagaraParameterDataSetBinding
 {
 	GENERATED_USTRUCT_BODY()
 
 	UPROPERTY()
-	TArray<FName> SpawnAttributes;
+	int32 ParameterOffset;
+
+	UPROPERTY()
+	int32 DataSetComponentOffset;
 };
 
+USTRUCT()
+struct FNiagaraParameterDataSetBindingCollection
+{
+	GENERATED_USTRUCT_BODY()
 
+	UPROPERTY()
+	TArray<FNiagaraParameterDataSetBinding> FloatOffsets;
+
+	UPROPERTY()
+	TArray<FNiagaraParameterDataSetBinding> Int32Offsets;
+
+#if WITH_EDITORONLY_DATA
+	template<typename BufferType>
+	void Build(const FNiagaraDataSetCompiledData& DataSet)
+	{
+		BuildInternal(BufferType::GetVariables(), DataSet, TEXT(""), TEXT(""));
+	}
+
+	template<typename BufferType>
+	void Build(const FNiagaraDataSetCompiledData& DataSet, const FString& NamespaceBase, const FString& NamespaceReplacement)
+	{
+		BuildInternal(BufferType::GetVariables(), DataSet, NamespaceBase, NamespaceReplacement);
+	}
+
+protected:
+	void BuildInternal(const TArray<FNiagaraVariable>& ParameterVars, const FNiagaraDataSetCompiledData& DataSet, const FString& NamespaceBase, const FString& NamespaceReplacement);
+
+#endif
+};
+
+USTRUCT()
+struct FNiagaraSystemCompiledData
+{
+	GENERATED_USTRUCT_BODY()
+
+	UPROPERTY()
+	FNiagaraParameterStore InstanceParamStore;
+
+	UPROPERTY()
+	FNiagaraDataSetCompiledData DataSetCompiledData;
+
+	UPROPERTY()
+	FNiagaraDataSetCompiledData SpawnInstanceParamsDataSetCompiledData;
+
+	UPROPERTY()
+	FNiagaraDataSetCompiledData UpdateInstanceParamsDataSetCompiledData;
+
+	UPROPERTY()
+	FNiagaraParameterDataSetBindingCollection SpawnInstanceGlobalBinding;
+	UPROPERTY()
+	FNiagaraParameterDataSetBindingCollection SpawnInstanceSystemBinding;
+	UPROPERTY()
+	FNiagaraParameterDataSetBindingCollection SpawnInstanceOwnerBinding;
+	UPROPERTY()
+	TArray<FNiagaraParameterDataSetBindingCollection> SpawnInstanceEmitterBindings;
+
+	UPROPERTY()
+	FNiagaraParameterDataSetBindingCollection UpdateInstanceGlobalBinding;
+	UPROPERTY()
+	FNiagaraParameterDataSetBindingCollection UpdateInstanceSystemBinding;
+	UPROPERTY()
+	FNiagaraParameterDataSetBindingCollection UpdateInstanceOwnerBinding;
+	UPROPERTY()
+	TArray<FNiagaraParameterDataSetBindingCollection> UpdateInstanceEmitterBindings;
+};
 
 USTRUCT()
 struct FEmitterCompiledScriptPair
@@ -36,7 +148,7 @@ struct FEmitterCompiledScriptPair
 	bool bResultsReady;
 	UNiagaraEmitter* Emitter;
 	UNiagaraScript* CompiledScript;
-	uint32 PendingDDCID;
+	uint32 PendingJobID = INDEX_NONE; // this is the ID for any active shader compiler worker job
 	FNiagaraVMExecutableDataId CompileId;
 	TSharedPtr<FNiagaraVMExecutableData> CompileResults;
 };
@@ -58,7 +170,7 @@ struct FNiagaraSystemCompileRequest
 
 /** Container for multiple emitters that combine together to create a particle system effect.*/
 UCLASS(BlueprintType)
-class NIAGARA_API UNiagaraSystem : public UObject
+class NIAGARA_API UNiagaraSystem : public UFXSystemAsset
 {
 	GENERATED_UCLASS_BODY()
 
@@ -66,6 +178,9 @@ public:
 #if WITH_EDITOR
 	DECLARE_MULTICAST_DELEGATE_OneParam(FOnSystemCompiled, UNiagaraSystem*);
 #endif
+	//TestChange
+
+	UNiagaraSystem(FVTableHelper& Helper);
 
 	//~ UObject interface
 	void PostInitProperties();
@@ -74,6 +189,7 @@ public:
 	virtual void BeginDestroy() override;
 	virtual void PreSave(const class ITargetPlatform * TargetPlatform) override;
 #if WITH_EDITOR
+	virtual void PreEditChange(FProperty* PropertyThatWillChange)override;
 	virtual void PostEditChangeProperty(struct FPropertyChangedEvent& PropertyChangedEvent) override; 
 	virtual void BeginCacheForCookedPlatformData(const ITargetPlatform *TargetPlatform) override;
 #endif
@@ -89,11 +205,6 @@ public:
 	/** Adds a new emitter handle to this System.  The new handle exposes an Instance value which is a copy of the
 		original asset. */
 	FNiagaraEmitterHandle AddEmitterHandle(UNiagaraEmitter& SourceEmitter, FName EmitterName);
-
-	/** Adds a new emitter handle to this System.  The new handle will not copy the emitter and any changes made to it's
-		Instance value will modify the original asset.  This should only be used in the emitter toolkit for simulation
-		purposes. */
-	FNiagaraEmitterHandle AddEmitterHandleWithoutCopying(UNiagaraEmitter& Emitter);
 
 	/** Duplicates an existing emitter handle and adds it to the System.  The new handle will reference the same source asset,
 		but will have a copy of the duplicated Instance value. */
@@ -132,10 +243,11 @@ public:
 	UNiagaraScript* GetSystemSpawnScript();
 	UNiagaraScript* GetSystemUpdateScript();
 
+private:
+	bool IsReadyToRunInternal() const;
+	bool bIsReadyToRunCached = false;
+public:
 	bool IsReadyToRun() const;
-
-	/** Are there any pending compile requests?*/
-	bool HasOutstandingCompilationRequests() const;
 
 	FORCEINLINE bool NeedsWarmup()const { return WarmupTickCount > 0 && WarmupTickDelta > SMALL_NUMBER; }
 	FORCEINLINE float GetWarmupTime()const { return WarmupTime; }
@@ -143,14 +255,11 @@ public:
 	FORCEINLINE float GetWarmupTickDelta()const { return WarmupTickDelta; }
 
 #if WITH_EDITORONLY_DATA
-	/** Called to query whether or not this emitter is referenced as the source to any emitter handles for this System.*/
-	bool ReferencesSourceEmitter(UNiagaraEmitter& Emitter);
+	/** Are there any pending compile requests?*/
+	bool HasOutstandingCompilationRequests() const;
 
 	/** Determines if this system has the supplied emitter as an editable and simulating emitter instance. */
 	bool ReferencesInstanceEmitter(UNiagaraEmitter& Emitter);
-
-	/** Updates all handles which use this emitter as their source. */
-	void UpdateFromEmitterChanges(UNiagaraEmitter& ChangedSourceEmitter);
 
 	/** Updates the system's rapid iteration parameters from a specific emitter. */
 	void RefreshSystemParametersFromEmitter(const FNiagaraEmitterHandle& EmitterHandle);
@@ -164,7 +273,7 @@ public:
 	/** If we have a pending compile request, is it done with yet? */
 	bool PollForCompilationComplete();
 
-	/** */
+	/** Blocks until all active compile jobs have finished */
 	void WaitForCompilationComplete();
 
 	/** Delegate called when the system's dependencies have all been compiled.*/
@@ -176,9 +285,6 @@ public:
 	/** Gets editor specific data stored with this system. */
 	const UNiagaraEditorDataBase* GetEditorData() const;
 
-	/** Sets editor specific data stored with this system. */
-	void SetEditorData(UNiagaraEditorDataBase* InEditorData);
-
 	/** Internal: The thumbnail image.*/
 	UPROPERTY()
 	class UTexture2D* ThumbnailImage;
@@ -187,28 +293,44 @@ public:
 	UPROPERTY()
 	uint32 ThumbnailImageOutOfDate : 1;
 
+	/* If this system is exposed to the library. */
+	UPROPERTY(EditAnywhere, AdvancedDisplay, Category = "Asset Options", AssetRegistrySearchable)
+	bool bExposeToLibrary;
+
 	UPROPERTY(EditAnywhere, AdvancedDisplay, Category = "Asset Options", AssetRegistrySearchable)
 	bool bIsTemplateAsset;
 
 	UPROPERTY(EditAnywhere, AdvancedDisplay, Category = "Asset Options", AssetRegistrySearchable)
 	FText TemplateAssetDescription;
 
+	UPROPERTY()
+	TArray<UNiagaraScript*> ScratchPadScripts;
+
 	bool GetIsolateEnabled() const;
 	void SetIsolateEnabled(bool bIsolate);
+	
+	UPROPERTY(transient)
+	FNiagaraSystemUpdateContext UpdateContext;
 #endif
 
 	bool ShouldAutoDeactivate() const { return bAutoDeactivate; }
 	bool IsLooping() const;
 
-	const TArray<FNiagaraEmitterSpawnAttributes>& GetEmitterSpawnAttributes()const {	return EmitterSpawnAttributes;	};
+	const TArray<TSharedRef<const FNiagaraEmitterCompiledData>>& GetEmitterCompiledData() const { return EmitterCompiledData; };
+
+	const FNiagaraSystemCompiledData& GetSystemCompiledData() const { return SystemCompiledData; };
 
 	bool UsesCollection(const UNiagaraParameterCollection* Collection)const;
 #if WITH_EDITORONLY_DATA
 	bool UsesEmitter(const UNiagaraEmitter* Emitter) const;
 	bool UsesScript(const UNiagaraScript* Script)const; 
-	void InvalidateCachedCompileIds();
+	void ForceGraphToRecompileOnNextCheck();
 
 	static void RequestCompileForEmitter(UNiagaraEmitter* InEmitter);
+
+	/** Experimental feature that allows us to bake out rapid iteration parameters during the normal compile process. */
+	UPROPERTY(EditAnywhere, AdvancedDisplay, Category = "Emitter")
+	uint32 bBakeOutRapidIteration : 1;
 #endif
 
 	FORCEINLINE UNiagaraParameterCollectionInstance* GetParameterCollectionOverride(UNiagaraParameterCollection* Collection)
@@ -232,24 +354,83 @@ public:
 
 	const TArray<FName>& GetUserDINamesReadInSystemScripts() const;
 
+	FBox GetFixedBounds() const;
+
+	FORCEINLINE int32* GetCycleCounter(bool bGameThread, bool bConcurrent);
+
+	UNiagaraEffectType* GetEffectType()const;
+	FORCEINLINE const FNiagaraSystemScalabilitySettings& GetScalabilitySettings() { return CurrentScalabilitySettings; }
+	
+	void OnEffectsQualityChanged();
+
+	/** Whether or not fixed bounds are enabled. */
+	UPROPERTY(EditAnywhere, Category = "System", meta = (InlineEditConditionToggle))
+	uint32 bFixedBounds : 1;
+
+	TStatId GetStatID(bool bGameThread, bool bConcurrent)const;
+
+	UPROPERTY(EditAnywhere, Category = "Script Fast Path")
+	ENiagaraFastPathMode FastPathMode;
+
+	UPROPERTY(EditAnywhere, Category = "Script Fast Path")
+	FNiagaraFastPath_Module_SystemScalability SystemScalability;
+
+	UPROPERTY(EditAnywhere, Category = "Script Fast Path")
+	FNiagaraFastPath_Module_SystemLifeCycle SystemLifeCycle;
+
 private:
 #if WITH_EDITORONLY_DATA
-	INiagaraModule::FMergeEmitterResults MergeChangesForEmitterHandle(FNiagaraEmitterHandle& EmitterHandle);
+	/** Checks the ddc for vm execution data for the given script. Return true if the data was loaded from the ddc, false otherwise. */
+	bool GetFromDDC(FEmitterCompiledScriptPair& ScriptPair);
+
+	/** Since the shader compilation is done in another process, this is used to check if the result for any ongoing compilations is done.
+	*   If bWait is true then this *blocks* the game thread (and ui) until all running compilations are finished.
+	*/
 	bool QueryCompileComplete(bool bWait, bool bDoPost, bool bDoNotApply = false);
+
+	bool ProcessCompilationResult(FEmitterCompiledScriptPair& ScriptPair, bool bWait, bool bDoNotApply);
+
+	void InitEmitterCompiledData();
+
+	void InitSystemCompiledData();
+
+	/** Helper for filling in precomputed variable names per emitter. Converts an emitter paramter "Emitter.XXXX" into it's real parameter name. */
+	void InitEmitterVariableAliasNames(FNiagaraEmitterCompiledData& EmitterCompiledDataToInit, const UNiagaraEmitter* InAssociatedEmitter);
+
+	/** Helper for generating aliased FNiagaraVariable names for the Emitter they are associated with. */
+	const FName GetEmitterVariableAliasName(const FNiagaraVariable& InEmitterVar, const UNiagaraEmitter* InEmitter) const;
+
+	/** Helper for filling in attribute datasets per emitter. */
+	void InitEmitterDataSetCompiledData(FNiagaraDataSetCompiledData& DataSetToInit, const UNiagaraEmitter* InAssociatedEmitter, const FNiagaraEmitterHandle& InAssociatedEmitterHandle);
 #endif
 
+	void ResolveScalabilitySettings();
 	void UpdatePostCompileDIInfo();
+
 protected:
+	UPROPERTY(EditAnywhere, Category = "System")
+	UNiagaraEffectType* EffectType;
+
+	UPROPERTY(EditAnywhere, Category = "System", meta=(InlineEditConditionToggle))
+	bool bOverrideScalabilitySettings;
+
+	UPROPERTY()
+	TArray<FNiagaraSystemScalabilityOverride> ScalabilityOverrides_DEPRECATED;
+
+	UPROPERTY(EditAnywhere, Category = "System", meta = (EditCondition="bOverrideScalabilitySettings"))
+	FNiagaraSystemScalabilityOverrides SystemScalabilityOverrides;
 
 	/** Handles to the emitter this System will simulate. */
-	UPROPERTY(VisibleAnywhere, Category = "Emitters")
+	UPROPERTY()
 	TArray<FNiagaraEmitterHandle> EmitterHandles;
 
 	UPROPERTY(EditAnywhere, Category="System")
 	TArray<UNiagaraParameterCollectionInstance*> ParameterCollectionOverrides;
 
+#if WITH_EDITORONLY_DATA
 	UPROPERTY(Transient)
 	TArray<FNiagaraSystemCompileRequest> ActiveCompilations;
+#endif
 
 // 	/** Category of this system. */
 // 	UPROPERTY(EditAnywhere, Category = System)
@@ -265,16 +446,18 @@ protected:
 	UPROPERTY()
 	UNiagaraScript* SystemUpdateScript;
 
-	/** Attribute names in the data set that are driving each emitter's spawning. */
+	//** Post compile generated data used for initializing Emitter Instances during runtime. */
+	TArray<TSharedRef<const FNiagaraEmitterCompiledData>> EmitterCompiledData;
+
+	//** Post compile generated data used for initializing System Instances during runtime. */
 	UPROPERTY()
-	TArray<FNiagaraEmitterSpawnAttributes> EmitterSpawnAttributes;
+	FNiagaraSystemCompiledData SystemCompiledData;
 
 	/** Variables exposed to the outside work for tweaking*/
 	UPROPERTY()
 	FNiagaraUserRedirectionParameterStore ExposedParameters;
 
-#if WITH_EDITORONLY_DATA	
-
+#if WITH_EDITORONLY_DATA
 	/** Data used by the editor to maintain UI state etc.. */
 	UPROPERTY()
 	UNiagaraEditorDataBase* EditorData;
@@ -284,6 +467,10 @@ protected:
 	/** A multicast delegate which is called whenever the script has been compiled (successfully or not). */
 	FOnSystemCompiled OnSystemCompiledDelegate;
 #endif
+
+	/** The fixed bounding box value. bFixedBounds is the condition whether the fixed bounds can be edited. */
+	UPROPERTY(EditAnywhere, Category = "System", meta = (EditCondition = "bFixedBounds"))
+	FBox FixedBounds;
 
 	UPROPERTY(EditAnywhere, Category = Performance, meta = (ToolTip = "Auto-deactivate system if all emitters are determined to not spawn particles again, regardless of lifetime."))
 	bool bAutoDeactivate;
@@ -300,11 +487,29 @@ protected:
 	UPROPERTY(EditAnywhere, Category = Warmup)
 	float WarmupTickDelta;
 
-	void InitEmitterSpawnAttributes();
-
 	UPROPERTY()
 	bool bHasSystemScriptDIsWithPerInstanceData;
 
 	UPROPERTY()
 	TArray<FName> UserDINamesReadInSystemScripts;
+
+	void GenerateStatID()const;
+#if STATS
+	mutable TStatId StatID_GT;
+	mutable TStatId StatID_GT_CNC;
+	mutable TStatId StatID_RT;
+	mutable TStatId StatID_RT_CNC;
+#endif
+
+	FNiagaraSystemScalabilitySettings CurrentScalabilitySettings;
 };
+
+extern int32 GEnableNiagaraRuntimeCycleCounts;
+FORCEINLINE int32* UNiagaraSystem::GetCycleCounter(bool bGameThread, bool bConcurrent)
+{
+	if (GEnableNiagaraRuntimeCycleCounts && EffectType)
+	{
+		return EffectType->GetCycleCounter(bGameThread, bConcurrent);
+	}
+	return nullptr;
+}

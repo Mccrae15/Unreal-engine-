@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -15,7 +15,7 @@ class UPackage;
 struct FManifestModule;
 class IScriptGeneratorPluginInterface;
 class FStringOutputDevice;
-class UProperty;
+class FProperty;
 class FUnrealSourceFile;
 class UFunction;
 class UEnum;
@@ -81,6 +81,18 @@ namespace EVariableCategory
 	};
 }
 
+enum class ELayoutMacroType
+{
+	None = -1,
+	Array,
+	ArrayEditorOnly,
+	Bitfield,
+	BitfieldEditorOnly,
+	Field,
+	FieldEditorOnly,
+	FieldInitialized,
+};
+
 /** Information for a particular nesting level. */
 class FNestInfo
 {
@@ -117,6 +129,239 @@ struct FIndexRange
 	int32 Count;
 };
 
+/**
+ * The FRigVMParameter represents a single parameter of a method
+ * marked up with RIGVM_METHOD.
+ * Each parameter can be marked with Constant, Input or Output
+ * metadata - this struct simplifies access to that information.
+ */
+struct FRigVMParameter
+{
+	FRigVMParameter()
+		: Name()
+		, Type()
+		, bConstant(false)
+		, bInput(false)
+		, bOutput(false)
+		, MaxArraySize()
+		, Getter()
+		, CastName()
+		, CastType()
+		, bEditorOnly(false)
+	{
+	}
+
+	FString Name;
+	FString Type;
+	bool bConstant;
+	bool bInput;
+	bool bOutput;
+	FString MaxArraySize;
+	FString Getter;
+	FString CastName;
+	FString CastType;
+	bool bEditorOnly;
+
+	const FString& NameOriginal(bool bCastName = false) const
+	{
+		return (bCastName && !CastName.IsEmpty()) ? CastName : Name;
+	}
+
+	const FString& TypeOriginal(bool bCastType = false) const
+	{
+		return (bCastType && !CastType.IsEmpty()) ? CastType : Type;
+	}
+
+	FString Declaration(bool bCastType = false, bool bCastName = false) const
+	{
+		return FString::Printf(TEXT("%s %s"), *TypeOriginal(bCastType), *NameOriginal(bCastName));
+	}
+
+	FString BaseType(bool bCastType = false) const
+	{
+		const FString& String = TypeOriginal(bCastType);
+		int32 LesserPos = 0;
+		if (String.FindChar('<', LesserPos))
+		{
+			return String.Mid(0, LesserPos);
+		}
+		return String;
+	}
+
+	FString ExtendedType(bool bCastType = false) const
+	{
+		const FString& String = TypeOriginal(bCastType);
+		int32 LesserPos = 0;
+		if(String.FindChar('<', LesserPos))
+		{
+			return String.Mid(LesserPos);
+		}
+		return String;
+	}
+
+	FString TypeConstRef(bool bCastType = false) const
+	{
+		const FString& String = TypeNoRef(bCastType);
+		if (String.StartsWith(TEXT("T"), ESearchCase::CaseSensitive) || String.StartsWith(TEXT("F"), ESearchCase::CaseSensitive))
+		{
+			return FString::Printf(TEXT("const %s&"), *String);
+		}
+		return FString::Printf(TEXT("const %s"), *String);
+	}
+
+	FString TypeRef(bool bCastType = false) const
+	{
+		const FString& String = TypeNoRef(bCastType);
+		return FString::Printf(TEXT("%s&"), *String);
+	}
+
+	FString TypeNoRef(bool bCastType = false) const
+	{
+		const FString& String = TypeOriginal(bCastType);
+		if (String.EndsWith(TEXT("&")))
+		{
+			return String.LeftChop(1);
+		}
+		return String;
+	}
+
+	FString TypeVariableRef(bool bCastType = false) const
+	{
+		return IsConst() ? TypeConstRef(bCastType) : TypeRef(bCastType);
+	}
+
+	FString Variable(bool bCastType = false, bool bCastName = false) const
+	{
+		return FString::Printf(TEXT("%s %s"), *TypeVariableRef(bCastType), *NameOriginal(bCastName));
+	}
+
+	bool IsConst() const
+	{
+		return bConstant || (bInput && !bOutput);
+	}
+
+	bool IsArray() const
+	{
+		return BaseType().Equals(TEXT("TArray"));
+	}
+
+	bool RequiresCast() const
+	{
+		return !CastType.IsEmpty() && !CastName.IsEmpty();
+	}
+};
+
+/**
+ * The FRigVMParameterArray represents the parameters in a notation
+ * of a function marked with RIGVM_METHOD. The parameter array can 
+ * produce a comma separated list of names or parameter declarations.
+ */
+struct FRigVMParameterArray
+{
+public:
+	int32 Num() const { return Parameters.Num(); }
+	const FRigVMParameter& operator[](int32 InIndex) const { return Parameters[InIndex]; }
+	FRigVMParameter& operator[](int32 InIndex) { return Parameters[InIndex]; }
+	TArray<FRigVMParameter>::RangedForConstIteratorType begin() const { return Parameters.begin(); }
+	TArray<FRigVMParameter>::RangedForConstIteratorType end() const { return Parameters.end(); }
+	TArray<FRigVMParameter>::RangedForIteratorType begin() { return Parameters.begin(); }
+	TArray<FRigVMParameter>::RangedForIteratorType end() { return Parameters.end(); }
+
+	int32 Add(const FRigVMParameter& InParameter)
+	{
+		return Parameters.Add(InParameter);
+	}
+
+	FString Names(bool bLeadingSeparator = false, const TCHAR* Separator = TEXT(", "), bool bCastType = false, bool bIncludeEditorOnly = true) const
+	{
+		if (Parameters.Num() == 0)
+		{
+			return FString();
+		}
+		TArray<FString> NameArray;
+		for (const FRigVMParameter& Parameter : Parameters)
+		{
+			if (!bIncludeEditorOnly && Parameter.bEditorOnly)
+			{
+				continue;
+			}
+			NameArray.Add(Parameter.NameOriginal(bCastType));
+		}
+
+		if (NameArray.Num() == 0)
+		{
+			return FString();
+		}
+
+		FString Joined = FString::Join(NameArray, Separator);
+		if (bLeadingSeparator)
+		{
+			return FString::Printf(TEXT("%s%s"), Separator, *Joined);
+		}
+		return Joined;
+	}
+
+	FString Declarations(bool bLeadingSeparator = false, const TCHAR* Separator = TEXT(", "), bool bCastType = false, bool bCastName = false, bool bIncludeEditorOnly = true) const
+	{
+		if (Parameters.Num() == 0)
+		{
+			return FString();
+		}
+		TArray<FString> DeclarationArray;
+		for (const FRigVMParameter& Parameter : Parameters)
+		{
+			if (!bIncludeEditorOnly && Parameter.bEditorOnly)
+			{
+				continue;
+			}
+			DeclarationArray.Add(Parameter.Variable(bCastType, bCastName));
+		}
+
+		if (DeclarationArray.Num() == 0)
+		{
+			return FString();
+		}
+
+		FString Joined = FString::Join(DeclarationArray, Separator);
+		if (bLeadingSeparator)
+		{
+			return FString::Printf(TEXT("%s%s"), Separator, *Joined);
+		}
+		return Joined;
+	}
+
+private:
+	TArray<FRigVMParameter> Parameters;
+};
+
+/**
+ * A single info dataset for a function marked with RIGVM_METHOD.
+ * This struct provides access to its name, the return type and all parameters.
+ */
+struct FRigVMMethodInfo
+{
+	FString ReturnType;
+	FString Name;
+	FRigVMParameterArray Parameters;
+
+	FString ReturnPrefix() const
+	{
+		return (ReturnType.IsEmpty() || (ReturnType == TEXT("void"))) ? TEXT("") : TEXT("return ");
+	}
+};
+
+/**
+ * An info dataset providing access to all functions marked with RIGVM_METHOD
+ * for each struct.
+ */
+struct FRigVMStructInfo
+{
+	FString Name;
+	FRigVMParameterArray Members;
+	TArray<FRigVMMethodInfo> Methods;
+};
+
+typedef TMap<UStruct*, FRigVMStructInfo> FRigVMStructMap;
 
 struct ClassDefinitionRange
 {
@@ -146,6 +391,19 @@ struct ClassDefinitionRange
 };
 
 extern TMap<UClass*, ClassDefinitionRange> ClassDefinitionRanges;
+
+#ifndef UHT_DOCUMENTATION_POLICY_DEFAULT
+#define UHT_DOCUMENTATION_POLICY_DEFAULT false
+#endif
+
+struct FDocumentationPolicy
+{
+	bool bClassOrStructCommentRequired = UHT_DOCUMENTATION_POLICY_DEFAULT;
+	bool bFunctionToolTipsRequired = UHT_DOCUMENTATION_POLICY_DEFAULT;
+	bool bMemberToolTipsRequired = UHT_DOCUMENTATION_POLICY_DEFAULT;
+	bool bParameterToolTipsRequired = UHT_DOCUMENTATION_POLICY_DEFAULT;
+	bool bFloatRangesRequired = UHT_DOCUMENTATION_POLICY_DEFAULT;
+};
 
 /////////////////////////////////////////////////////
 // FHeaderParser
@@ -187,7 +445,7 @@ public:
 	 * @param InNameToCheck - Name w/ potential prefix to check
 	 * @param OriginalClassName - Name of class w/ no prefix to check against
 	 */
-	static bool ClassNameHasValidPrefix(const FString InNameToCheck, const FString OriginalClassName);
+	static bool ClassNameHasValidPrefix(const FString& InNameToCheck, const FString& OriginalClassName);
 
 	/**
 	 * Tries to convert the header file name to a class name (with 'U' prefix)
@@ -207,7 +465,7 @@ public:
 	 * @param out InnerForm Inner formated string
 	 * @return true on success, false otherwise.
 	 */
-	static bool DefaultValueStringCppFormatToInnerFormat(const UProperty* Property, const FString& CppForm, FString &InnerForm);
+	static bool DefaultValueStringCppFormatToInnerFormat(const FProperty* Property, const FString& CppForm, FString &InnerForm);
 
 	/**
 	 * Parse Class's annotated headers and optionally its child classes.  Marks the class as CLASS_Parsed.
@@ -222,6 +480,7 @@ public:
 
 protected:
 	friend struct FScriptLocation;
+	friend struct FNativeClassHeaderGenerator;
 
 	// For compiling messages and errors.
 	FFeedbackContext* Warn;
@@ -406,6 +665,9 @@ protected:
 	// List of all net service functions with undeclared response functions 
 	TMap<int32, FString> RPCsNeedingHookup;
 
+	// List of all multiplex methods defined on structs
+	static FRigVMStructMap StructRigVMMap;
+
 	// Constructor.
 	explicit FHeaderParser(FFeedbackContext* InWarn, const FManifestModule& InModule);
 
@@ -421,7 +683,7 @@ protected:
 	bool IsValidDelegateDeclaration(const FToken& Token) const;
 
 	// Returns true if the current token is a bitfield type
-	bool IsBitfieldProperty();
+	bool IsBitfieldProperty(ELayoutMacroType LayoutMacroType);
 
 	// Parse the parameter list of a function or delegate declaration
 	void ParseParameterList(FClasses& AllClasses, UFunction* Function, bool bExpectCommaBeforeName = false, TMap<FName, FString>* MetaData = NULL);
@@ -447,6 +709,10 @@ public:
 	* @return	a pointer to a UField with a name matching InIdentifier, or NULL if it wasn't found
 	*/
 	static UField* FindField( UStruct* InScope, const TCHAR* InIdentifier, bool bIncludeParents=true, UClass* FieldClass=UField::StaticClass(), const TCHAR* Thing=nullptr );
+	static FField* FindProperty(UStruct* InScope, const TCHAR* InIdentifier, bool bIncludeParents = true, FFieldClass* FieldClass = FField::StaticClass(), const TCHAR* Thing = nullptr);
+
+	// Checks ToValidate to make sure that its associated sparse class data struct, if one exists, is a valid structure to use for storing sparse class data.
+	static void CheckSparseClassData(const UStruct* ToValidate);
 
 protected:
 
@@ -469,6 +735,13 @@ protected:
 	 * @return					The input string, reformatted in such a way as to be appropriate for use as a tooltip.
 	 */
 	static FString FormatCommentForToolTip(const FString& Input);
+
+	/**
+	 * Retrieves parameter comments / tooltips from the function comment
+	 * @param		Input		An input string, expected to be a script comment.
+	 * @return					The map of parameter name to comment per parameter
+	*/
+	static TMap<FName, FString> GetParameterToolTipsFromFunctionComment(const FString& Input);
 	
 	/**
 	 * Begins the process of exporting C++ class declarations for native classes in the specified package
@@ -507,7 +780,7 @@ protected:
 	/** Skip C++ (noexport) declaration. */
 	bool SkipDeclaration(FToken& Token);
 	/** Similar to MatchSymbol() but will return to the exact location as on entry if the symbol was not found. */
-	bool SafeMatchSymbol(const TCHAR* Match);
+	bool SafeMatchSymbol(const TCHAR Match);
 	void HandleOneInheritedClass(FClasses& AllClasses, UClass* Class, FString InterfaceName);
 	FClass* ParseClassNameDeclaration(FClasses& AllClasses, FString& DeclaredClassName, FString& RequiredAPIMacroIfPresent);
 
@@ -534,6 +807,7 @@ protected:
 	/**
 	 * Create new delegate function object based on given info structure.
 	 */
+	template<typename T>
 	UDelegateFunction* CreateDelegateFunction(const FFuncInfo &FuncInfo) const;	
 
 	UClass* CompileClassDeclaration(FClasses& AllClasses);
@@ -541,6 +815,8 @@ protected:
 	void CompileFunctionDeclaration(FClasses& AllClasses);
 	void CompileVariableDeclaration (FClasses& AllClasses, UStruct* Struct);
 	void CompileInterfaceDeclaration(FClasses& AllClasses);
+	void CompileRigVMMethodDeclaration(FClasses& AllClasses, UStruct* Struct);
+	void ParseRigVMMethodParameters(UStruct* Struct);
 
 	FClass* ParseInterfaceNameDeclaration(FClasses& AllClasses, FString& DeclaredInterfaceName, FString& RequiredAPIMacroIfPresent);
 	bool TryParseIInterfaceClass(FClasses& AllClasses);
@@ -555,7 +831,7 @@ protected:
 	// nesting level.
 	void CheckAllow(const TCHAR* Thing, ENestAllowFlags AllowFlags);
 
-	UStruct* GetSuperScope( UStruct* CurrentScope, const FName& SearchName );
+	UStruct* GetSuperScope( UStruct* CurrentScope, const FName& SearchName );	
 
 	void SkipStatements( int32 SubCount, const TCHAR* ErrorTag );
 
@@ -579,21 +855,23 @@ protected:
 		const FToken*                   OuterPropertyType,
 		EPropertyDeclarationStyle::Type PropertyDeclarationStyle,
 		EVariableCategory::Type         VariableCategory,
-		FIndexRange*                    ParsedVarIndexRange = nullptr);
+		FIndexRange*                    ParsedVarIndexRange = nullptr,
+		ELayoutMacroType*               OutLayoutMacroType = nullptr);
 
 	/**
-	 * Parses a variable name declaration and creates a new UProperty object.
+	 * Parses a variable name declaration and creates a new FProperty object.
 	 *
 	 * @param	Scope				struct to create the property in
 	 * @param	VarProperty			type and propertyflag info for the new property (inout)
 	 * @param   VariableCategory	what kind of variable is being created
 	 *
-	 * @return	a pointer to the new UProperty if successful, or NULL if there was no property to parse
+	 * @return	a pointer to the new FProperty if successful, or NULL if there was no property to parse
 	 */
-	UProperty* GetVarNameAndDim(
+	FProperty* GetVarNameAndDim(
 		UStruct* Struct,
 		FToken& VarProperty,
-		EVariableCategory::Type VariableCategory);
+		EVariableCategory::Type VariableCategory,
+		ELayoutMacroType LayoutMacroType = ELayoutMacroType::None);
 	
 	/**
 	 * Returns whether the specified class can be referenced from the class currently being compiled.
@@ -606,7 +884,7 @@ protected:
 	bool AllowReferenceToClass(UStruct* Scope, UClass* CheckClass) const;
 
 	/**
-	 * @return	true if Scope has UProperty objects in its list of fields
+	 * @return	true if Scope has FProperty objects in its list of fields
 	 */
 	static bool HasMemberProperties( const UStruct* Scope );
 
@@ -733,13 +1011,37 @@ private:
 	void VerifyPropertyMarkups( UClass* TargetClass );
 
 	// Verifies the target function meets the criteria for a blueprint property getter
-	void VerifyBlueprintPropertyGetter(UProperty* Property, UFunction* TargetFunction);
+	void VerifyBlueprintPropertyGetter(FProperty* Property, UFunction* TargetFunction);
 
 	// Verifies the target function meets the criteria for a blueprint property setter
-	void VerifyBlueprintPropertySetter(UProperty* Property, UFunction* TargetFunction);
+	void VerifyBlueprintPropertySetter(FProperty* Property, UFunction* TargetFunction);
 
 	// Verifies the target function meets the criteria for a replication notify callback
-	void VerifyRepNotifyCallback(UProperty* Property, UFunction* TargetFunction);
+	void VerifyRepNotifyCallback(FProperty* Property, UFunction* TargetFunction);
+
+	// Constructs the policy from a string
+	static FDocumentationPolicy GetDocumentationPolicyFromName(const FString& PolicyName);
+
+	// Constructs the policy for documentation checks for a given struct
+	static FDocumentationPolicy GetDocumentationPolicyForStruct(UStruct* Struct);
+
+	// Property types to provide UI Min and Max ranges
+	static TArray<FString> PropertyCPPTypesRequiringUIRanges;
+
+	// Returns true if a given CPP types required ui checking
+	static bool DoesCPPTypeRequireDocumentation(const FString& CPPType);
+
+	// Validates the documentation for a given enum
+	void CheckDocumentationPolicyForEnum(UEnum* Enum, const TMap<FName, FString>& MetaData, const TArray<TMap<FName, FString>>& Entries);
+
+	// Validates the documentation for a given struct
+	void CheckDocumentationPolicyForStruct(UStruct* Struct, const TMap<FName, FString>& MetaData);
+
+	// Validates the documentation for a given method
+	void CheckDocumentationPolicyForFunc(UClass* Class, UFunction* Func, const TMap<FName, FString>& MetaData);
+
+	// Checks if a valid range has been found on the provided metadata
+	bool CheckUIMinMaxRangeFromMetaData(const FString& UIMin, const FString& UIMax);
 };
 
 /////////////////////////////////////////////////////

@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "CoreMinimal.h"
 #include "HAL/RunnableThread.h"
@@ -148,7 +148,7 @@ namespace UAudio
 
 	bool FUnrealAudioModule::InitializeAudioDevice()
 	{
-		LLM_SCOPE(ELLMTag::Audio);
+		LLM_SCOPE(ELLMTag::AudioMisc);
 
 		UnrealAudioDevice = FModuleManager::LoadModulePtr<IUnrealAudioDeviceModule>(ModuleName);
 		if (UnrealAudioDevice)
@@ -293,7 +293,7 @@ namespace UAudio
 
 	uint32 FUnrealAudioModule::Run()
 	{
-		LLM_SCOPE(ELLMTag::Audio);
+		LLM_SCOPE(ELLMTag::AudioMisc);
 
 		AudioThreadChecker.CheckThread();
 

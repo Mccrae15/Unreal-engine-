@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "FoliageEditUtility.h"
 #include "FoliageType.h"
@@ -22,11 +22,11 @@ UFoliageType* FFoliageEditUtility::SaveFoliageTypeObject(UFoliageType* InFoliage
 	if (!InFoliageType->IsAsset())
 	{
 		FString PackageName;
-		UStaticMesh* StaticMesh = InFoliageType->GetStaticMesh();
-		if (StaticMesh)
+		UObject* FoliageSource = InFoliageType->GetSource();
+		if (FoliageSource)
 		{
 			// Build default settings asset name and path
-			PackageName = FPackageName::GetLongPackagePath(StaticMesh->GetOutermost()->GetName()) + TEXT("/") + StaticMesh->GetName() + TEXT("_FoliageType");
+			PackageName = FPackageName::GetLongPackagePath(FoliageSource->GetOutermost()->GetName()) + TEXT("/") + FoliageSource->GetName() + TEXT("_FoliageType");
 		}
 
 		TSharedRef<SDlgPickAssetPath> SaveFoliageTypeDialog =
@@ -91,35 +91,28 @@ void FFoliageEditUtility::ReplaceFoliageTypeObject(UWorld* InWorld, UFoliageType
 			if (IFA)
 			{
 				IFA->Modify();
-				TUniqueObj<FFoliageMeshInfo> OldMeshInfo;
-				IFA->FoliageMeshes.RemoveAndCopyValue(OldType, OldMeshInfo);
+				TUniqueObj<FFoliageInfo> OldInfo;
+				IFA->FoliageInfos.RemoveAndCopyValue(OldType, OldInfo);
 
 				// Old component needs to go
-				if (OldMeshInfo->Component != nullptr)
+				if (OldInfo->IsInitialized())
 				{
-					if (OldMeshInfo->Component->GetStaticMesh() != nullptr)
-					{
-						OldMeshInfo->Component->GetStaticMesh()->GetOnExtendedBoundsChanged().RemoveAll(&(*OldMeshInfo));
-					}
-
-					OldMeshInfo->Component->ClearInstances();
-					OldMeshInfo->Component->SetFlags(RF_Transactional);
-					OldMeshInfo->Component->Modify();
-					OldMeshInfo->Component->DestroyComponent();
-					OldMeshInfo->Component = nullptr;
+					OldInfo->Uninitialize();
 				}
-
+				
 				// Append instances if new foliage type is already exists in this actor
 				// Otherwise just replace key entry for instances
-				TUniqueObj<FFoliageMeshInfo>* NewMeshInfo = IFA->FoliageMeshes.Find(NewType);
-				if (NewMeshInfo)
+				TUniqueObj<FFoliageInfo>* NewInfo = IFA->FoliageInfos.Find(NewType);
+				if (NewInfo)
 				{
-					(*NewMeshInfo)->Instances.Append(OldMeshInfo->Instances);
-					(*NewMeshInfo)->ReallocateClusters(IFA, NewType);
+					(*NewInfo)->Instances.Append(OldInfo->Instances);
+					(*NewInfo)->ReallocateClusters(IFA, NewType);
 				}
 				else
 				{
-					IFA->FoliageMeshes.Add(NewType, MoveTemp(OldMeshInfo))->ReallocateClusters(IFA, NewType);
+					// Make sure if type changes we have proper implementation
+					TUniqueObj<FFoliageInfo>& NewFoliageInfo = IFA->FoliageInfos.Add(NewType, MoveTemp(OldInfo));
+					NewFoliageInfo->ReallocateClusters(IFA, NewType);
 				}
 			}
 		}
@@ -127,7 +120,7 @@ void FFoliageEditUtility::ReplaceFoliageTypeObject(UWorld* InWorld, UFoliageType
 }
 
 
-void FFoliageEditUtility::MoveActorFoliageInstancesToLevel(ULevel* InTargetLevel)
+void FFoliageEditUtility::MoveActorFoliageInstancesToLevel(ULevel* InTargetLevel, AActor* InIFA)
 {
 	// Can't move into a locked level
 	if (FLevelUtils::IsLevelLocked(InTargetLevel))
@@ -158,10 +151,14 @@ void FFoliageEditUtility::MoveActorFoliageInstancesToLevel(ULevel* InTargetLevel
 			{
 				continue;
 			}
+			if (InIFA && IFA != InIFA)
+			{
+				continue;
+			}
 
 			bool CanMoveInstanceType = true;
 
-			TMap<UFoliageType*, FFoliageMeshInfo*> InstancesFoliageType = IFA->GetAllInstancesFoliageType();
+			TMap<UFoliageType*, FFoliageInfo*> InstancesFoliageType = IFA->GetAllInstancesFoliageType();
 
 			for (auto& MeshPair : InstancesFoliageType)
 			{
@@ -189,7 +186,7 @@ void FFoliageEditUtility::MoveActorFoliageInstancesToLevel(ULevel* InTargetLevel
 					if (NewFoliageType != nullptr)
 					{
 						// Restore previous selection for move operation
-						FFoliageMeshInfo* MeshInfo = IFA->FindMesh(NewFoliageType);
+						FFoliageInfo* MeshInfo = IFA->FindInfo(NewFoliageType);
 						MeshInfo->SelectInstances(IFA, true, PreviousSelectionArray);
 					}
 				}
@@ -202,6 +199,11 @@ void FFoliageEditUtility::MoveActorFoliageInstancesToLevel(ULevel* InTargetLevel
 				ensure(IFA != nullptr);
 
 				IFA->MoveAllInstancesToLevel(InTargetLevel);
+			}
+
+			if (InIFA)
+			{
+				return;
 			}
 		}
 	}

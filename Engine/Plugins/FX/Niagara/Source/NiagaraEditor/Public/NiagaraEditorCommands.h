@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 #include "Framework/Commands/Commands.h"
@@ -29,7 +29,9 @@ public:
 	TSharedPtr<FUICommandInfo> ResetSimulation;
 
 	/** Toggles the preview pane's grid */
-	TSharedPtr< FUICommandInfo > TogglePreviewGrid;
+	TSharedPtr<FUICommandInfo> TogglePreviewGrid;
+	TSharedPtr<FUICommandInfo> ToggleInstructionCounts;
+	TSharedPtr<FUICommandInfo> ToggleParticleCounts;
 
 	/** Toggles the preview pane's background */
 	TSharedPtr< FUICommandInfo > TogglePreviewBackground;
@@ -45,6 +47,12 @@ public:
 	TSharedPtr<FUICommandInfo> ToggleAutoPlay;
 	TSharedPtr<FUICommandInfo> ToggleResetSimulationOnChange;
 	TSharedPtr<FUICommandInfo> ToggleResimulateOnChangeWhilePaused;
+	TSharedPtr<FUICommandInfo> ToggleResetDependentSystems;
 
 	TSharedPtr<FUICommandInfo> CollapseStackToHeaders;
+
+	TSharedPtr<FUICommandInfo> FindInCurrentView;
+
+	TSharedPtr<FUICommandInfo> ZoomToFit;
+	TSharedPtr<FUICommandInfo> ZoomToFitAll;
 };

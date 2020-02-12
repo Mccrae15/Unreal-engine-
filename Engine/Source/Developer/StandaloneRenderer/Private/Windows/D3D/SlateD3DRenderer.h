@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -90,7 +90,7 @@ private:
 	FMatrix ViewMatrix;
 	TMap<const SWindow*, FSlateD3DViewport> WindowToViewportMap;
 	FSlateDrawBuffer DrawBuffer;
-	TSharedPtr<FSlateElementBatcher> ElementBatcher;
+	TUniquePtr<FSlateElementBatcher> ElementBatcher;
 	TSharedPtr<FSlateD3DTextureManager> TextureManager;
 	TSharedPtr<FSlateD3D11RenderingPolicy> RenderingPolicy;
 	TArray<TSharedPtr<FSlateDynamicImageBrush>> DynamicBrushesToRemove;

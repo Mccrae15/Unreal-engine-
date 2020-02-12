@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "AnimationModifier.h"
 #include "Animation/AnimSequence.h"
@@ -7,9 +7,16 @@
 #include "Editor/Transactor.h"
 #include "UObject/UObjectIterator.h"
 
-#include "Dialogs/Dialogs.h"
+#include "UObject/ReleaseObjectVersion.h"
+#include "Misc/MessageDialog.h"
 #include "Editor/Transactor.h"
 #include "UObject/UObjectIterator.h"
+#include "UObject/AnimObjectVersion.h"
+
+UAnimationModifier::UAnimationModifier()
+	: PreviouslyAppliedModifier(nullptr)
+{
+}
 
 void UAnimationModifier::ApplyToAnimationSequence(class UAnimSequence* InAnimationSequence)
 {
@@ -34,8 +41,15 @@ void UAnimationModifier::ApplyToAnimationSequence(class UAnimSequence* InAnimati
 	AnimationDataTransaction.SaveObject(CurrentAnimSequence);
 	AnimationDataTransaction.SaveObject(CurrentSkeleton);
 
-	/** This populates the log with possible warnings and or errors to notify the user about */
-	OnRevert(CurrentAnimSequence);
+	/** In case this modifier has been previously applied, revert it using the serialised out version at the time */	
+	if (PreviouslyAppliedModifier)
+	{
+
+		PreviouslyAppliedModifier->Modify();
+		PreviouslyAppliedModifier->OnRevert(CurrentAnimSequence);
+	}
+
+	/** Reverting and applying, populates the log with possible warnings and or errors to notify the user about */
 	OnApply(CurrentAnimSequence);
 
 	// Apply transaction
@@ -55,7 +69,8 @@ void UAnimationModifier::ApplyToAnimationSequence(class UAnimSequence* InAnimati
 
 		EAppMsgType::Type MessageType = OutputLog.ContainsErrors() ? EAppMsgType::Ok : EAppMsgType::YesNo;
 		const FText& MessageFormat = OutputLog.ContainsErrors() ? ErrorMessageFormat : WarningMessageFormat;
-		bShouldRevert = (OpenMsgDlgInt(MessageType, FText::FormatOrdered(MessageFormat, FText::FromString(OutputLog)), FText::FromString("Modifier has Generated Warnings/Errors")) != EAppReturnType::Yes);
+		const FText MessageTitle = FText::FromString("Modifier has Generated Warnings/Errors");
+		bShouldRevert = (FMessageDialog::Open(MessageType, FText::FormatOrdered(MessageFormat, FText::FromString(OutputLog)), &MessageTitle) != EAppReturnType::Yes);
 	}
 
 	// Revert changes if necessary, otherwise post edit and refresh animation data
@@ -70,12 +85,20 @@ void UAnimationModifier::ApplyToAnimationSequence(class UAnimSequence* InAnimati
 	else
 	{		
 		UpdateCompressedAnimationData();
+		
+		/** Mark the previous modifier pending kill, as it will be replaced with the current modifier state */
+		if (PreviouslyAppliedModifier)
+		{
+			PreviouslyAppliedModifier->MarkPendingKill();
+		}
 
+		PreviouslyAppliedModifier = DuplicateObject(this, GetOuter());
 
 		CurrentAnimSequence->PostEditChange();
-		CurrentSkeleton->PostEditChange();		
+		CurrentSkeleton->PostEditChange();
 		CurrentAnimSequence->RefreshCacheData();
 		CurrentAnimSequence->RefreshCurveData();
+		CurrentAnimSequence->MarkRawDataAsModified();
 
 		UpdateStoredRevisions();
 	}
@@ -105,33 +128,42 @@ void UAnimationModifier::RevertFromAnimationSequence(class UAnimSequence* InAnim
 {
 	FEditorScriptExecutionGuard ScriptGuard;
 
-	checkf(InAnimationSequence, TEXT("Invalid Animation Sequence supplied"));
-	CurrentAnimSequence = InAnimationSequence;
-	CurrentSkeleton = InAnimationSequence->GetSkeleton();
+	/** Can only revert if previously applied, which means there should be a previous modifier */
+	if (PreviouslyAppliedModifier)
+	{
+		checkf(InAnimationSequence, TEXT("Invalid Animation Sequence supplied"));
+		CurrentAnimSequence = InAnimationSequence;
+		CurrentSkeleton = InAnimationSequence->GetSkeleton();
 
-	// Transact the modifier to prevent instance variables/data to change during reverting
-	FTransaction Transaction;
-	Transaction.SaveObject(this);
+		// Transact the modifier to prevent instance variables/data to change during reverting
+		FTransaction Transaction;
+		Transaction.SaveObject(this);
 
-	OnRevert(CurrentAnimSequence);
+		PreviouslyAppliedModifier->Modify();
+		PreviouslyAppliedModifier->OnRevert(CurrentAnimSequence);
 
-	// Apply transaction
-	Transaction.BeginOperation();
-	Transaction.Apply();
-	Transaction.EndOperation();
+		// Apply transaction
+		Transaction.BeginOperation();
+		Transaction.Apply();
+		Transaction.EndOperation();
 
-	UpdateCompressedAnimationData();
+		UpdateCompressedAnimationData();
 
-	CurrentAnimSequence->PostEditChange();
-	CurrentSkeleton->PostEditChange();
-	CurrentAnimSequence->RefreshCacheData();
-	CurrentAnimSequence->RefreshCurveData();
+	    CurrentAnimSequence->PostEditChange();
+	    CurrentSkeleton->PostEditChange();
+	    CurrentAnimSequence->RefreshCacheData();
+	    CurrentAnimSequence->RefreshCurveData();
+	    CurrentAnimSequence->MarkRawDataAsModified();
 
-	ResetStoredRevisions();
+		ResetStoredRevisions();
 
-	// Finished
-	CurrentAnimSequence = nullptr;
-	CurrentSkeleton = nullptr;
+		// Finished
+		CurrentAnimSequence = nullptr;
+		CurrentSkeleton = nullptr;
+
+		PreviouslyAppliedModifier->MarkPendingKill();
+		PreviouslyAppliedModifier = nullptr;
+	}
 }
 
 bool UAnimationModifier::IsLatestRevisionApplied() const
@@ -149,6 +181,18 @@ void UAnimationModifier::PostInitProperties()
 	{
 		UpdateRevisionGuid(GetClass());
 		MarkPackageDirty();
+	}
+}
+
+void UAnimationModifier::Serialize(FArchive& Ar)
+{
+	Super::Serialize(Ar);
+	Ar.UsingCustomVersion(FReleaseObjectVersion::GUID);
+
+	/** Back-wards compatibility, assume the current modifier as previously applied */
+	if (Ar.CustomVer(FReleaseObjectVersion::GUID) < FReleaseObjectVersion::SerializeAnimModifierState)
+	{
+		PreviouslyAppliedModifier = DuplicateObject(this, GetOuter());
 	}
 }
 

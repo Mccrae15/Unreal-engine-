@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 using System;
 using System.Collections.Generic;
@@ -288,6 +288,42 @@ namespace Tools.DotNETCommon
 		}
 
 		/// <summary>
+		/// Writes an array of bytes to the output
+		/// </summary>
+		/// <param name="Data">Data to write. May be null.</param>
+		public void WriteFixedSizeByteArray(byte[] Data)
+		{
+			WriteFixedSizePrimitiveArray(Data, sizeof(byte));
+		}
+
+		/// <summary>
+		/// Writes an array of shorts to the output
+		/// </summary>
+		/// <param name="Data">Data to write. May be null.</param>
+		public void WriteFixedSizeShortArray(short[] Data)
+		{
+			WriteFixedSizePrimitiveArray(Data, sizeof(short));
+		}
+
+		/// <summary>
+		/// Writes an array of ints to the output
+		/// </summary>
+		/// <param name="Data">Data to write. May be null.</param>
+		public void WriteFixedSizeIntArray(int[] Data)
+		{
+			WriteFixedSizePrimitiveArray(Data, sizeof(int));
+		}
+
+		/// <summary>
+		/// Writes an array of primitive types to the output.
+		/// </summary>
+		/// <param name="Data">Data to write. May be null.</param>
+		private void WriteFixedSizePrimitiveArray<T>(T[] Data, int ElementSize) where T : struct
+		{
+			WriteBulkData(Data, Data.Length * ElementSize);
+		}
+
+		/// <summary>
 		/// Writes primitive data from the given array to the output buffer.
 		/// </summary>
 		/// <param name="Data">Data to write.</param>
@@ -342,7 +378,7 @@ namespace Tools.DotNETCommon
 		/// <typeparam name="T">Type of the element</typeparam>
 		/// <param name="Items">List of items</param>
 		/// <param name="WriteElement">Writes an individual element to the archive</param>
-		public void WriteList<T>(List<T> Items, Action<T> WriteElement)
+		public void WriteList<T>(IReadOnlyList<T> Items, Action<T> WriteElement)
 		{
 			if(Items == null)
 			{
@@ -441,6 +477,14 @@ namespace Tools.DotNETCommon
 				WriteBool(true);
 				WriteObject();
 			}
+		}
+
+		/// <summary>
+		/// Writes a null object reference to the output.
+		/// </summary>
+		public void WriteNullObjectReference()
+		{
+			WriteInt(-1);
 		}
 
 		/// <summary>

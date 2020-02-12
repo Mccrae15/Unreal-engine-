@@ -2,7 +2,7 @@
  * Copyright 2016-2017 Nikolay Aleksiev. All rights reserved.
  * License: https://github.com/naleksiev/mtlpp/blob/master/LICENSE
  */
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 // Modifications for Unreal Engine
 
 #pragma once
@@ -93,10 +93,10 @@ namespace mtlpp
         OneMinusBlendColor                                  = 12,
         BlendAlpha                                          = 13,
         OneMinusBlendAlpha                                  = 14,
-        Source1Color             MTLPP_AVAILABLE_MAC(10_12) = 15,
-        OneMinusSource1Color     MTLPP_AVAILABLE_MAC(10_12) = 16,
-        Source1Alpha             MTLPP_AVAILABLE_MAC(10_12) = 17,
-        OneMinusSource1Alpha     MTLPP_AVAILABLE_MAC(10_12) = 18,
+        Source1Color             MTLPP_AVAILABLE(10_12, 8_0) = 15,
+        OneMinusSource1Color     MTLPP_AVAILABLE(10_12, 8_0) = 16,
+        Source1Alpha             MTLPP_AVAILABLE(10_12, 8_0) = 17,
+        OneMinusSource1Alpha     MTLPP_AVAILABLE(10_12, 8_0) = 18,
     }
     MTLPP_AVAILABLE(10_11, 8_0);
 

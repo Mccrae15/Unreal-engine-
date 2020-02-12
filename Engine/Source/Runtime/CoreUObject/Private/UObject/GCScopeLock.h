@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 /*=============================================================================
 	Garbage Collection scope lock. 
@@ -12,34 +12,6 @@
 #include "Misc/ScopeLock.h"
 #include "HAL/ThreadSafeBool.h"
 #include "HAL/Event.h"
-
-/** Locks all UObject hash tables when performing GC */
-class FGCScopeLock
-{
-	/** Previous value of the GetGarbageCollectingFlag() */
-	bool bPreviousGabageCollectingFlagValue;
-public:
-
-	static FThreadSafeBool& GetGarbageCollectingFlag();
-
-	/** 
-	 * We're storing the value of GetGarbageCollectingFlag in the constructor, it's safe as only 
-	 * one thread is ever going to be setting it and calling this code - the game thread.
-	 **/
-	FORCEINLINE FGCScopeLock()
-		: bPreviousGabageCollectingFlagValue(GetGarbageCollectingFlag())
-	{		
-		void LockUObjectHashTables();
-		LockUObjectHashTables();		
-		GetGarbageCollectingFlag() = true;
-	}
-	FORCEINLINE ~FGCScopeLock()
-	{		
-		GetGarbageCollectingFlag() = bPreviousGabageCollectingFlagValue;
-		void UnlockUObjectHashTables();
-		UnlockUObjectHashTables();		
-	}
-};
 
 
 /**
@@ -62,9 +34,6 @@ class FGCCSyncObject
 	/** Event used to block non-game threads when GC is running */
 	FEvent* GCUnlockedEvent;
 
-	/** One and only global instance of FGCCSyncObject */
-	static TUniquePtr<FGCCSyncObject> Singleton;
-
 public:
 
 	FGCCSyncObject();
@@ -74,11 +43,7 @@ public:
 	static void Create();
 
 	/** Gets the singleton object */
-	static FGCCSyncObject& Get()
-	{
-		check(Singleton.IsValid());
-		return *Singleton.Get();
-	}
+	static FGCCSyncObject& Get();
 
 	/** Lock on non-game thread. Will block if GC is running. */
 	void LockAsync()
@@ -186,8 +151,8 @@ public:
 	}
 
 	/** True if GC wants to run on the game thread but is maybe blocked by some other thread */
-	bool IsGCWaiting() const
+	FORCEINLINE bool IsGCWaiting() const
 	{
-		return GCWantsToRunCounter.GetValue() > 0;
+		return !!GCWantsToRunCounter.GetValue();
 	}
 };

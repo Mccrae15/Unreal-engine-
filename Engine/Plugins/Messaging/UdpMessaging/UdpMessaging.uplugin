@@ -18,7 +18,9 @@
 	[
 		"UnrealFrontend",
 		"UnrealMultiUserServer",
-		"UnrealLightmass"
+		"UnrealDisasterRecoveryService",
+		"UnrealLightmass",
+		"CrashReportClientEditor"
 	],
 	"Modules" :
 	[
@@ -28,12 +30,13 @@
 			"LoadingPhase" : "PreDefault",
 			"BlacklistPlatforms" :
 			[
-				"HTML5"
 			],
 			"WhitelistPrograms": [
 				"UnrealFrontend",
 				"UnrealMultiUserServer",
-				"UnrealLightmass"
+				"UnrealDisasterRecoveryService",
+				"UnrealLightmass",
+				"CrashReportClientEditor"
 			]
 		}
 	]

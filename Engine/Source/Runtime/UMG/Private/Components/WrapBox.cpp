@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "Components/WrapBox.h"
 #include "Components/WrapBoxSlot.h"
@@ -12,10 +12,7 @@ UWrapBox::UWrapBox(const FObjectInitializer& ObjectInitializer)
 	: Super(ObjectInitializer)
 {
 	bIsVariable = false;
-
-	SWrapBox::FArguments Defaults;
-	Visibility = UWidget::ConvertRuntimeToSerializedVisibility(Defaults._Visibility.Get());
-
+	Visibility = ESlateVisibility::SelfHitTestInvisible;
 	WrapWidth = 500;
 	bExplicitWrapWidth = false;
 }

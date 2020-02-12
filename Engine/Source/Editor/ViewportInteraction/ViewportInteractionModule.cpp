@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "ViewportInteractionModule.h"
 #include "HAL/IConsoleManager.h"
@@ -75,9 +75,9 @@ void FViewportInteractionModule::ToggleMode()
 				const TSharedRef< ILevelEditor >& LevelEditor = FModuleManager::GetModuleChecked<FLevelEditorModule>("LevelEditor").GetFirstLevelEditor().ToSharedRef();
 
 				// Do we have an active perspective viewport that is valid for VR?  If so, go ahead and use that.
-				TSharedPtr<FEditorViewportClient> ViewportClient;
+ 				TSharedPtr<FEditorViewportClient> ViewportClient;
 				{
-					TSharedPtr<ILevelViewport> ActiveLevelViewport = LevelEditor->GetActiveViewportInterface();
+					TSharedPtr<IAssetViewport> ActiveLevelViewport = LevelEditor->GetActiveViewportInterface();
 					if (ActiveLevelViewport.IsValid())
 					{
 						ViewportClient = StaticCastSharedRef<SLevelViewport>(ActiveLevelViewport->AsWidget())->GetViewportClient();

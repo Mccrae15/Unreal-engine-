@@ -1,4 +1,4 @@
-﻿// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+﻿// Copyright Epic Games, Inc. All Rights Reserved.
 
 using System;
 using System.Collections.Generic;
@@ -65,6 +65,24 @@ namespace Gauntlet
 		public virtual string GetTestSummary()
 		{
 			return string.Format("{0}: {1}", Name, GetTestResult());
+		}
+
+		/// <summary>
+		/// Return list of warnings. Empty by default
+		/// </summary>
+		/// <returns></returns>
+		public virtual IEnumerable<string> GetWarnings()
+		{
+			return new string[0];
+		}
+
+		/// <summary>
+		/// Return list of errors. Empty by default
+		/// </summary>
+		/// <returns></returns>
+		public virtual IEnumerable<string> GetErrors()
+		{
+			return new string[0];
 		}
 
 		/// <summary>

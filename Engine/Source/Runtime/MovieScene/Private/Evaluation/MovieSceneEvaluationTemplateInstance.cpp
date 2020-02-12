@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "Evaluation/MovieSceneEvaluationTemplateInstance.h"
 #include "Containers/SortedMap.h"
@@ -8,6 +8,8 @@
 #include "Compilation/MovieSceneCompiler.h"
 #include "Sections/MovieSceneSubSection.h"
 #include "Compilation/MovieSceneEvaluationTemplateGenerator.h"
+#include "Evaluation/MovieSceneMotionVectorSimulation.h"
+#include "Rendering/MotionVectorSimulation.h"
 
 #include "IMovieSceneModule.h"
 #include "Algo/Sort.h"
@@ -154,6 +156,7 @@ FMovieSceneRootEvaluationTemplateInstance::FMovieSceneRootEvaluationTemplateInst
 	: RootSequence(nullptr)
 	, RootID(MovieSceneSequenceID::Root)
 	, TemplateStore(MakeShared<FMovieSceneSequencePrecompiledTemplateStore>())
+	, bEvaluating(false)
 {
 }
 
@@ -193,6 +196,11 @@ void FMovieSceneRootEvaluationTemplateInstance::Initialize(UMovieSceneSequence& 
 	RootTemplate = &TemplateStore->AccessTemplate(InRootSequence);
 
 	RootID = MovieSceneSequenceID::Root;
+
+	if (FMotionVectorSimulation::Get().IsEnabled() && !Player.MotionVectorSimulation.IsValid())
+	{
+		Player.MotionVectorSimulation = FMovieSceneMotionVectorSimulation();
+	}
 }
 
 void FMovieSceneRootEvaluationTemplateInstance::Finish(IMovieScenePlayer& Player)
@@ -203,11 +211,16 @@ void FMovieSceneRootEvaluationTemplateInstance::Finish(IMovieScenePlayer& Player
 	CallSetupTearDown(Player);
 
 	ResetDirectorInstances();
+	Player.MotionVectorSimulation.Reset();
 }
 
 void FMovieSceneRootEvaluationTemplateInstance::Evaluate(FMovieSceneContext Context, IMovieScenePlayer& Player, FMovieSceneSequenceID InOverrideRootID)
 {
+	ensureMsgf(!bEvaluating, TEXT("Movie scene evaluation caused a re-entrant evaluation"));
+
 	SCOPE_CYCLE_COUNTER(MovieSceneEval_EntireEvaluationCost);
+
+	TGuardValue<bool> Guard(bEvaluating, true);
 
 	Swap(ThisFrameMetaData, LastFrameMetaData);
 	ThisFrameMetaData.Reset();
@@ -257,6 +270,11 @@ void FMovieSceneRootEvaluationTemplateInstance::Evaluate(FMovieSceneContext Cont
 
 	// Process execution tokens
 	ExecutionTokens.Apply(Context, Player);
+
+	if (Player.MotionVectorSimulation.IsValid())
+	{
+		Player.MotionVectorSimulation->Apply(Player);
+	}
 }
 
 FMovieSceneEvaluationPtrCache FMovieSceneRootEvaluationTemplateInstance::ConstructEvaluationPtrCacheForFrame(UMovieSceneSequence* OverrideRootSequence)
@@ -287,7 +305,9 @@ const FMovieSceneEvaluationGroup* FMovieSceneRootEvaluationTemplateInstance::Set
 		OverrideRootTemplate = &TemplateStore->AccessTemplate(*OverrideRootSequence);
 		if (const FMovieSceneSubSequenceData* OverrideSubData = GetHierarchy().FindSubData(InOverrideRootID))
 		{
-			*InOutContext = InOutContext->Transform(OverrideSubData->RootToSequenceTransform, OverrideSubData->TickResolution);
+			*InOutContext = InOutContext->Transform(
+					OverrideSubData->RootToSequenceTransform, 
+					OverrideSubData->TickResolution);
 		}
 	}
 
@@ -366,7 +386,9 @@ void FMovieSceneRootEvaluationTemplateInstance::EvaluateGroup(const FMovieSceneE
 				SubContext = Context;
 				if (EvalPtrs.SubData)
 				{
-					SubContext = Context.Transform(EvalPtrs.SubData->RootToSequenceTransform, EvalPtrs.SubData->TickResolution);
+					SubContext = Context.Transform(
+							EvalPtrs.SubData->RootToSequenceTransform, 
+							EvalPtrs.SubData->TickResolution);
 
 					// Hittest against the sequence's pre and postroll ranges
 					SubContext.ReportOuterSectionRanges(EvalPtrs.SubData->PreRollRange.Value, EvalPtrs.SubData->PostRollRange.Value);
@@ -408,7 +430,9 @@ void FMovieSceneRootEvaluationTemplateInstance::EvaluateGroup(const FMovieSceneE
 				SubContext = Context;
 				if (EvalPtrs.SubData)
 				{
-					SubContext = Context.Transform(EvalPtrs.SubData->RootToSequenceTransform, EvalPtrs.SubData->TickResolution);
+					SubContext = Context.Transform(
+							EvalPtrs.SubData->RootToSequenceTransform, 
+							EvalPtrs.SubData->TickResolution);
 
 					// Hittest against the sequence's pre and postroll ranges
 					SubContext.ReportOuterSectionRanges(EvalPtrs.SubData->PreRollRange.Value, EvalPtrs.SubData->PostRollRange.Value);

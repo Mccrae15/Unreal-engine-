@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -9,7 +9,7 @@
 class FLevelEditorViewportClient;
 class SLevelViewport;
 
-class LEVELEDITOR_API FLevelViewportLayoutEntity : public IViewportLayoutEntity
+class LEVELEDITOR_API FLevelViewportLayoutEntity : public ILevelViewportLayoutEntity
 {
 public:
 

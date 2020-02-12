@@ -1,10 +1,11 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "AssetDataGatherer.h"
 #include "HAL/PlatformProcess.h"
+#include "HAL/RunnableThread.h"
+#include "Misc/AsciiSet.h"
 #include "Misc/CommandLine.h"
 #include "Misc/Paths.h"
-#include "HAL/RunnableThread.h"
 #include "Misc/ScopeLock.h"
 #include "AssetRegistryPrivate.h"
 #include "NameTableArchive.h"
@@ -36,27 +37,13 @@ namespace
 		}
 	};
 
-	bool IsValidPackageFileToRead(const FString& Filename)
+	static constexpr FAsciiSet InvalidLongPackageCharacters(INVALID_LONGPACKAGE_CHARACTERS);
+
+	static bool ConvertToValidLongPackageName(const FString& Filename, /* out */ FString& LongPackageName)
 	{
-		FString LongPackageName;
-		if (FPackageName::TryConvertFilenameToLongPackageName(Filename, LongPackageName))
-		{
-			// Make sure the path does not contain invalid characters. These packages will not be successfully loaded or read later.
-			for (const TCHAR PackageChar : LongPackageName)
-			{
-				for (const TCHAR InvalidChar : INVALID_LONGPACKAGE_CHARACTERS)
-				{
-					if (PackageChar == InvalidChar)
-					{
-						return false;
-					}
-				}
-			}
-
-			return true;
-		}
-
-		return false;
+		// Make sure the path does not contain invalid characters. These packages will not be successfully loaded or read later.
+		return FPackageName::TryConvertFilenameToLongPackageName(Filename, LongPackageName) &&
+			FAsciiSet::HasNone(*LongPackageName, InvalidLongPackageCharacters);
 	}
 }
 
@@ -102,6 +89,17 @@ bool FAssetDataDiscovery::Init()
 
 uint32 FAssetDataDiscovery::Run()
 {
+	// Commenting out the code below as it causes cook-on-the-side to wait indefinitely in FAssetRegistryGenerator::Initialize
+	//if (!bIsSynchronous)
+	//{
+	//	// If we're running asynchronous, don't allow these tasks to start until the engine is "running"
+	//	// as we may still be manipulating global lists during start-up configuration
+	//	while (!GIsRunning && StopTaskCounter.GetValue() == 0)
+	//	{
+	//		FPlatformProcess::SleepNoStats(0.1f);
+	//	}
+	//}
+
 	double DiscoverStartTime = FPlatformTime::Seconds();
 	int32 NumDiscoveredFiles = 0;
 
@@ -126,11 +124,19 @@ uint32 FAssetDataDiscovery::Run()
 			{
 				FScopeLock CritSectionLock(&WorkerThreadCriticalSection);
 
-				// Place all the discovered files into the files to search list
-				DiscoveredPaths.Append(MoveTemp(LocalDiscoveredPathsArray));
+				// Work around for TArray::Append(const TArray&) not growing expontentially.
+				// This causes O(N^2) allocations when continuously appending small arrays,
+				// at least on platforms with allocators that use QuantizeSize().
+				const auto ReserveAndAppend = [](auto& To, auto&& From)
+				{
+					To.Reserve(FMath::RoundUpToPowerOfTwo(To.Num() + From.Num()));
+					To.Append(MoveTemp(From));
+				};
 
-				PriorityDiscoveredFiles.Append(MoveTemp(LocalPriorityFilesToSearch));
-				NonPriorityDiscoveredFiles.Append(MoveTemp(LocalNonPriorityFilesToSearch));
+				// Place all the discovered files into the files to search list
+				ReserveAndAppend(DiscoveredPaths, MoveTemp(LocalDiscoveredPathsArray));
+				ReserveAndAppend(PriorityDiscoveredFiles, MoveTemp(LocalPriorityFilesToSearch));
+				ReserveAndAppend(NonPriorityDiscoveredFiles, MoveTemp(LocalNonPriorityFilesToSearch));
 			}
 		}
 
@@ -167,10 +173,9 @@ uint32 FAssetDataDiscovery::Run()
 		}
 		else if (FPackageName::IsPackageFilename(PackageFilenameStr))
 		{
-			if (IsValidPackageFileToRead(PackageFilenameStr))
+			FString LongPackageNameStr;
+			if (ConvertToValidLongPackageName(PackageFilenameStr, LongPackageNameStr))
 			{
-				const FString LongPackageNameStr = FPackageName::FilenameToLongPackageName(PackageFilenameStr);
-
 				if (IsPriorityFile(PackageFilenameStr))
 				{
 					LocalPriorityFilesToSearch.Add(FDiscoveredPackageFile(PackageFilenameStr, InPackageStatData.ModificationTime));
@@ -505,12 +510,24 @@ uint32 FAssetDataGatherer::Run()
 		NumFilesProcessedSinceLastCacheSave = 0;
 	};
 
-	while ( StopTaskCounter.GetValue() == 0 )
+	while ( true )
 	{
 		bool LocalIsDiscoveringFiles = false;
 
 		{
 			FScopeLock CritSectionLock(&WorkerThreadCriticalSection);
+
+			AssetResults.Append(MoveTemp(LocalAssetResults));
+			DependencyResults.Append(MoveTemp(LocalDependencyResults));
+			CookedPackageNamesWithoutAssetDataResults.Append(MoveTemp(LocalCookedPackageNamesWithoutAssetDataResults));
+			LocalAssetResults.Reset();
+			LocalDependencyResults.Reset();
+			LocalCookedPackageNamesWithoutAssetDataResults.Reset();
+
+			if (StopTaskCounter.GetValue() != 0)
+			{
+				break;
+			}
 
 			// Grab any new package files from the background directory scan
 			if (BackgroundPackageFileDiscovery.IsValid())
@@ -519,9 +536,6 @@ uint32 FAssetDataGatherer::Run()
 				LocalIsDiscoveringFiles = bIsDiscoveringFiles;
 			}
 
-			AssetResults.Append(MoveTemp(LocalAssetResults));
-			DependencyResults.Append(MoveTemp(LocalDependencyResults));
-			CookedPackageNamesWithoutAssetDataResults.Append(MoveTemp(LocalCookedPackageNamesWithoutAssetDataResults));
 
 			if (FilesToSearch.Num() > 0)
 			{
@@ -540,10 +554,6 @@ uint32 FAssetDataGatherer::Run()
 				SearchStartTime = 0;
 			}
 		}
-
-		LocalAssetResults.Reset();
-		LocalDependencyResults.Reset();
-		LocalCookedPackageNamesWithoutAssetDataResults.Reset();
 
 		TArray<FDiscoveredPackageFile> LocalFilesToRetry;
 
@@ -623,7 +633,6 @@ uint32 FAssetDataGatherer::Run()
 						bool bCachePackage = bLoadAndSaveCache && LocalCookedPackageNamesWithoutAssetDataResults.Num() == 0;
 						if (bCachePackage)
 						{
-							// Don't store info on cooked packages
 							for (const auto& AssetData : AssetDataFromFile)
 							{
 								if (!!(AssetData->PackageFlags & PKG_FilterEditorOnly))
@@ -698,6 +707,8 @@ uint32 FAssetDataGatherer::Run()
 			}
 		}
 	}
+
+	check(LocalAssetResults.Num() == 0); // All LocalAssetResults needed to be copied to AssetResults to avoid leaking memory
 
 	if ( bLoadAndSaveCache )
 	{
@@ -780,9 +791,12 @@ void FAssetDataGatherer::AddPathToSearch(const FString& Path)
 void FAssetDataGatherer::AddFilesToSearch(const TArray<FString>& Files)
 {
 	TArray<FString> FilesToAdd;
+	FilesToAdd.Reserve(Files.Num());
+	FString LongPackageName;
 	for (const FString& Filename : Files)
 	{
-		if ( IsValidPackageFileToRead(Filename) )
+		LongPackageName.Reset();
+		if (ConvertToValidLongPackageName(Filename, LongPackageName))
 		{
 			// Add the path to this asset into the list of discovered paths
 			FilesToAdd.Add(Filename);
@@ -905,29 +919,38 @@ void FAssetDataGatherer::SerializeCache(FArchive& Ar)
 	else
 	{
 		// allocate one single block for all asset data structs (to reduce tens of thousands of heap allocations)
-		DiskCachedAssetDataMap.Empty(LocalNumAssets);
-
-		for (int32 AssetIndex = 0; AssetIndex < LocalNumAssets; ++AssetIndex)
+		if (Ar.IsError() || LocalNumAssets < 0)
 		{
-			// Load the name first to add the entry to the tmap below
-			FName PackageName;
-			Ar << PackageName;
-			if (Ar.IsError())
+			Ar.SetError();
+		}
+		else
+		{
+			const int32 MinAssetEntrySize = sizeof(int32);
+			int32 MaxReservation = (Ar.TotalSize() - Ar.Tell()) / MinAssetEntrySize;
+			DiskCachedAssetDataMap.Empty(FMath::Min(LocalNumAssets, MaxReservation));
+
+			for (int32 AssetIndex = 0; AssetIndex < LocalNumAssets; ++AssetIndex)
 			{
-				// There was an error reading the cache. Bail out.
-				break;
-			}
+				// Load the name first to add the entry to the tmap below
+				FName PackageName;
+				Ar << PackageName;
+				if (Ar.IsError())
+				{
+					// There was an error reading the cache. Bail out.
+					break;
+				}
 
-			// Add to the cached map
-			FDiskCachedAssetData& CachedAssetData = DiskCachedAssetDataMap.Add(PackageName);
+				// Add to the cached map
+				FDiskCachedAssetData& CachedAssetData = DiskCachedAssetDataMap.Add(PackageName);
 
-			// Now load the data
-			CachedAssetData.SerializeForCache(Ar);
+				// Now load the data
+				CachedAssetData.SerializeForCache(Ar);
 
-			if (Ar.IsError())
-			{
-				// There was an error reading the cache. Bail out.
-				break;
+				if (Ar.IsError())
+				{
+					// There was an error reading the cache. Bail out.
+					break;
+				}
 			}
 		}
 

@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 
 #include "SourceCodeNavigation.h"
@@ -613,7 +613,7 @@ void FSourceCodeNavigationImpl::NavigateToFunctionSource( const FString& Functio
 								int32 ArgumentIndex = -1;
 								if(SymbolName.FindLastChar(TCHAR('('), ArgumentIndex))
 								{
-									SymbolName = SymbolName.Left(ArgumentIndex);
+									SymbolName.LeftInline(ArgumentIndex, false);
 									int32 TemplateNesting = 0;
 									
 									int32 Pos = SymbolName.Len();
@@ -630,7 +630,7 @@ void FSourceCodeNavigationImpl::NavigateToFunctionSource( const FString& Functio
 										TCHAR Character = SymbolName[Pos - 1];
 										if(Character == TCHAR(' ') && TemplateNesting == 0)
 										{
-											SymbolName = SymbolName.Mid(Pos);
+											SymbolName.MidInline(Pos, MAX_int32, false);
 											break;
 										}
 										else if(Character == TCHAR('>'))
@@ -1082,7 +1082,7 @@ void FSourceCodeNavigationImpl::GatherFunctions( const FString& ModuleName, cons
 									int32 ArgumentIndex = -1;
 									if(FunctionSymbolName.FindLastChar(TCHAR('('), ArgumentIndex))
 									{
-										FunctionSymbolName = FunctionSymbolName.Left(ArgumentIndex);
+										FunctionSymbolName.LeftInline(ArgumentIndex, false);
 										int32 TemplateNesting = 0;
 										
 										int32 Pos = FunctionSymbolName.Len();
@@ -1099,7 +1099,7 @@ void FSourceCodeNavigationImpl::GatherFunctions( const FString& ModuleName, cons
 											TCHAR Character = FunctionSymbolName[Pos - 1];
 											if(Character == TCHAR(' ') && TemplateNesting == 0)
 											{
-												FunctionSymbolName = FunctionSymbolName.Mid(Pos);
+												FunctionSymbolName.MidInline(Pos, MAX_int32, false);
 												break;
 											}
 											else if(Character == TCHAR('>'))
@@ -1440,14 +1440,14 @@ bool FSourceCodeNavigation::NavigateToFunctionAsync(UFunction* InFunction)
 
 static TArray<ISourceCodeNavigationHandler*> SourceCodeNavigationHandlers;
 
-void FSourceCodeNavigation::AddNavigationHandler(ISourceCodeNavigationHandler* handler)
+void FSourceCodeNavigation::AddNavigationHandler(ISourceCodeNavigationHandler* Handler)
 {
-	SourceCodeNavigationHandlers.Add(handler);
+	SourceCodeNavigationHandlers.Add(Handler);
 }
 
-void FSourceCodeNavigation::RemoveNavigationHandler(ISourceCodeNavigationHandler* handler)
+void FSourceCodeNavigation::RemoveNavigationHandler(ISourceCodeNavigationHandler* Handler)
 {
-	SourceCodeNavigationHandlers.Remove(handler);
+	SourceCodeNavigationHandlers.Remove(Handler);
 }
 
 bool FSourceCodeNavigation::CanNavigateToClass(const UClass* InClass)
@@ -1459,8 +1459,8 @@ bool FSourceCodeNavigation::CanNavigateToClass(const UClass* InClass)
 
 	for (int32 i = 0; i < SourceCodeNavigationHandlers.Num(); ++i)
 	{
-		ISourceCodeNavigationHandler* handler = SourceCodeNavigationHandlers[i];
-		if (handler->CanNavigateToClass(InClass))
+		ISourceCodeNavigationHandler* Handler = SourceCodeNavigationHandlers[i];
+		if (Handler->CanNavigateToClass(InClass))
 		{
 			return true;
 		}
@@ -1478,8 +1478,8 @@ bool FSourceCodeNavigation::NavigateToClass(const UClass* InClass)
 
 	for (int32 i = 0; i < SourceCodeNavigationHandlers.Num(); ++i)
 	{
-		ISourceCodeNavigationHandler* handler = SourceCodeNavigationHandlers[i];
-		if (handler->NavigateToClass(InClass))
+		ISourceCodeNavigationHandler* Handler = SourceCodeNavigationHandlers[i];
+		if (Handler->NavigateToClass(InClass))
 		{
 			return true;
 		}
@@ -1495,6 +1495,51 @@ bool FSourceCodeNavigation::NavigateToClass(const UClass* InClass)
 	return false;
 }
 
+bool FSourceCodeNavigation::CanNavigateToStruct(const UScriptStruct* InStruct)
+{
+	if (!InStruct)
+	{
+		return false;
+	}
+
+	for (int32 i = 0; i < SourceCodeNavigationHandlers.Num(); ++i)
+	{
+		ISourceCodeNavigationHandler* Handler = SourceCodeNavigationHandlers[i];
+		if (Handler->CanNavigateToStruct(InStruct))
+		{
+			return true;
+		}
+	}
+
+	return (InStruct->StructFlags & STRUCT_Native) && FSourceCodeNavigation::IsCompilerAvailable();
+}
+
+bool FSourceCodeNavigation::NavigateToStruct(const UScriptStruct* InStruct)
+{
+	if (!InStruct)
+	{
+		return false;
+	}
+
+	for (int32 i = 0; i < SourceCodeNavigationHandlers.Num(); ++i)
+	{
+		ISourceCodeNavigationHandler* Handler = SourceCodeNavigationHandlers[i];
+		if (Handler->NavigateToStruct(InStruct))
+		{
+			return true;
+		}
+	}
+
+	FString StructHeaderPath;
+	if (FSourceCodeNavigation::FindClassHeaderPath(InStruct, StructHeaderPath) && IFileManager::Get().FileSize(*StructHeaderPath) != INDEX_NONE)
+	{
+		FString AbsoluteHeaderPath = IFileManager::Get().ConvertToAbsolutePathForExternalAppForRead(*StructHeaderPath);
+		FSourceCodeNavigation::OpenSourceFile(AbsoluteHeaderPath);
+		return true;
+	}
+	return false;
+}
+
 bool FSourceCodeNavigation::CanNavigateToFunction(const UFunction* InFunction)
 {
 	if (!InFunction)
@@ -1504,8 +1549,8 @@ bool FSourceCodeNavigation::CanNavigateToFunction(const UFunction* InFunction)
 
 	for (int32 i = 0; i < SourceCodeNavigationHandlers.Num(); ++i)
 	{
-		ISourceCodeNavigationHandler* handler = SourceCodeNavigationHandlers[i];
-		if (handler->CanNavigateToFunction(InFunction))
+		ISourceCodeNavigationHandler* Handler = SourceCodeNavigationHandlers[i];
+		if (Handler->CanNavigateToFunction(InFunction))
 		{
 			return true;
 		}
@@ -1525,8 +1570,8 @@ bool FSourceCodeNavigation::NavigateToFunction(const UFunction* InFunction)
 
 	for (int32 i = 0; i < SourceCodeNavigationHandlers.Num(); ++i)
 	{
-		ISourceCodeNavigationHandler* handler = SourceCodeNavigationHandlers[i];
-		if (handler->NavigateToFunction(InFunction))
+		ISourceCodeNavigationHandler* Handler = SourceCodeNavigationHandlers[i];
+		if (Handler->NavigateToFunction(InFunction))
 		{
 			return true;
 		}
@@ -1549,7 +1594,7 @@ bool FSourceCodeNavigation::NavigateToFunction(const UFunction* InFunction)
 	return false;
 }
 
-bool FSourceCodeNavigation::CanNavigateToProperty(const UProperty* InProperty)
+bool FSourceCodeNavigation::CanNavigateToProperty(const FProperty* InProperty)
 {
 	if (!InProperty)
 	{
@@ -1558,8 +1603,8 @@ bool FSourceCodeNavigation::CanNavigateToProperty(const UProperty* InProperty)
 
 	for (int32 i = 0; i < SourceCodeNavigationHandlers.Num(); ++i)
 	{
-		ISourceCodeNavigationHandler* handler = SourceCodeNavigationHandlers[i];
-		if (handler->CanNavigateToProperty(InProperty))
+		ISourceCodeNavigationHandler* Handler = SourceCodeNavigationHandlers[i];
+		if (Handler->CanNavigateToProperty(InProperty))
 		{
 			return true;
 		}
@@ -1568,7 +1613,7 @@ bool FSourceCodeNavigation::CanNavigateToProperty(const UProperty* InProperty)
 	return InProperty->IsNative() && IsCompilerAvailable();
 }
 
-bool FSourceCodeNavigation::NavigateToProperty(const UProperty* InProperty)
+bool FSourceCodeNavigation::NavigateToProperty(const FProperty* InProperty)
 {
 	if (!InProperty)
 	{
@@ -1577,8 +1622,8 @@ bool FSourceCodeNavigation::NavigateToProperty(const UProperty* InProperty)
 
 	for (int32 i = 0; i < SourceCodeNavigationHandlers.Num(); ++i)
 	{
-		ISourceCodeNavigationHandler* handler = SourceCodeNavigationHandlers[i];
-		if (handler->NavigateToProperty(InProperty))
+		ISourceCodeNavigationHandler* Handler = SourceCodeNavigationHandlers[i];
+		if (Handler->NavigateToProperty(InProperty))
 		{
 			return true;
 		}
@@ -1587,7 +1632,7 @@ bool FSourceCodeNavigation::NavigateToProperty(const UProperty* InProperty)
 	if (InProperty && InProperty->IsNative())
 	{
 		FString SourceFilePath;
-		const bool bFileLocated = FindClassHeaderPath(InProperty, SourceFilePath) &&
+		const bool bFileLocated = FindClassHeaderPath(InProperty->GetOwnerUField(), SourceFilePath) &&
 			IFileManager::Get().FileSize(*SourceFilePath) != INDEX_NONE;
 
 		if (bFileLocated)
@@ -2075,7 +2120,7 @@ FString FSourceCodeNavigationImpl::GetSuggestedIDEInstallerFileName()
 void FSourceCodeNavigationImpl::LaunchIDEInstaller(const FString& Filepath)
 {
 #if PLATFORM_WINDOWS
-	auto Params = TEXT("--productId \"Microsoft.VisualStudio.Product.Community\" --add \"Microsoft.VisualStudio.Workload.NativeGame\" --add \"Component.Unreal\" --campaign \"EpicGames_UE4\"");
+	auto Params = TEXT("--productId \"Microsoft.VisualStudio.Product.Community\" --add \"Microsoft.VisualStudio.Workload.NativeGame\" --add \"Component.Unreal\" --add \"Microsoft.VisualStudio.Component.Windows10SDK.17763\" --campaign \"EpicGames_UE4\"");
 	FPlatformProcess::ExecElevatedProcess(*Filepath, Params, nullptr);
 #endif
 }

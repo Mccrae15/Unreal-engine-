@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "BPDelegateDragDropAction.h"
 #include "Framework/MultiBox/MultiBoxBuilder.h"
@@ -20,7 +20,7 @@
 void FKismetDelegateDragDropAction::MakeEvent(FNodeConstructionParams Params)
 {
 	check(Params.Graph && Params.Property);
-	const UMulticastDelegateProperty* MulticastDelegateProperty = Cast<const UMulticastDelegateProperty>(Params.Property);
+	const FMulticastDelegateProperty* MulticastDelegateProperty = CastField<const FMulticastDelegateProperty>(Params.Property);
 	const UFunction* SignatureFunction = MulticastDelegateProperty ? MulticastDelegateProperty->SignatureFunction : NULL;
 	if(SignatureFunction)
 	{
@@ -44,12 +44,12 @@ void FKismetDelegateDragDropAction::MakeEvent(FNodeConstructionParams Params)
 void FKismetDelegateDragDropAction::AssignEvent(FNodeConstructionParams Params)
 {
 	check(Params.Graph && Params.Property);
-	const UMulticastDelegateProperty* MulticastDelegateProperty = Cast<const UMulticastDelegateProperty>(Params.Property);
+	const FMulticastDelegateProperty* MulticastDelegateProperty = CastField<const FMulticastDelegateProperty>(Params.Property);
 	const UFunction* SignatureFunction = MulticastDelegateProperty ? MulticastDelegateProperty->SignatureFunction : NULL;
-	if(SignatureFunction)
+	if (SignatureFunction)
 	{
 		UK2Node_AddDelegate* TemplateNode = NewObject<UK2Node_AddDelegate>();
-		TemplateNode->SetFromProperty(Params.Property, Params.bSelfContext);
+		TemplateNode->SetFromProperty(Params.Property, Params.bSelfContext, Params.Property->GetOwnerClass());
 		FEdGraphSchemaAction_K2AssignDelegate::AssignDelegate(TemplateNode, Params.Graph, NULL, Params.GraphPosition, true);
 		Params.AnalyticCallback.ExecuteIfBound();
 	}
@@ -61,7 +61,7 @@ FReply FKismetDelegateDragDropAction::DroppedOnPanel(const TSharedRef< SWidget >
 	{
 		FNodeConstructionParams NewNodeParams;
 		NewNodeParams.Property = GetVariableProperty();
-		const UClass* VariableSourceClass = CastChecked<UClass>(NewNodeParams.Property->GetOuter());
+		const UClass* VariableSourceClass = NewNodeParams.Property->GetOwnerChecked<UClass>();
 		const UBlueprint* DropOnBlueprint = FBlueprintEditorUtils::FindBlueprintForGraph(&Graph);
 		NewNodeParams.Graph = &Graph;
 		NewNodeParams.GraphPosition = GraphPosition;
@@ -146,7 +146,7 @@ bool FKismetDelegateDragDropAction::IsValid() const
 {
 	return VariableSource.IsValid() &&
 		(VariableName != NAME_None) &&
-		(NULL != FindField<UMulticastDelegateProperty>(VariableSource.Get(), VariableName));
+		(NULL != FindField<FMulticastDelegateProperty>(VariableSource.Get(), VariableName));
 }
 
 bool FKismetDelegateDragDropAction::IsSupportedBySchema(const class UEdGraphSchema* Schema) const

@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 namespace UnrealBuildTool.Rules
 {
@@ -9,11 +9,11 @@ namespace UnrealBuildTool.Rules
             PrivateIncludePaths.Add("Runtime/MeshDescription/Private");
             PublicIncludePaths.Add("Runtime/MeshDescription/Public");
 
-			PrivateDependencyModuleNames.AddRange(
+			PublicDependencyModuleNames.AddRange(
 				new string[]
 				{
 					"Core",
-					"CoreUObject",
+					"CoreUObject"
 				}
 			);
 		}

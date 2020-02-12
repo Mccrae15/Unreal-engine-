@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 /*=============================================================================
 	GameState.cpp: GameState C++ code.
@@ -57,7 +57,7 @@ void AGameState::PostInitializeComponents()
 
 void AGameState::HandleMatchIsWaitingToStart()
 {
-	if (Role != ROLE_Authority)
+	if (GetLocalRole() != ROLE_Authority)
 	{
 		// Server handles this in AGameMode::HandleMatchIsWaitingToStart
 		GetWorldSettings()->NotifyBeginPlay();
@@ -68,7 +68,7 @@ void AGameState::HandleMatchIsWaitingToStart()
 
 void AGameState::HandleMatchHasStarted()
 {
-	if (Role != ROLE_Authority)
+	if (GetLocalRole() != ROLE_Authority)
 	{
 		// Server handles this in AGameMode::HandleMatchHasStarted
 		GetWorldSettings()->NotifyMatchStarted();
@@ -127,7 +127,7 @@ bool AGameState::HasMatchEnded() const
 
 void AGameState::SetMatchState(FName NewState)
 {
-	if (Role == ROLE_Authority)
+	if (GetLocalRole() == ROLE_Authority)
 	{
 		UE_LOG(LogGameState, Log, TEXT("Match State Changed from %s to %s"), *MatchState.ToString(), *NewState.ToString());
 

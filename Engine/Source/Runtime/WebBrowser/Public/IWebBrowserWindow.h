@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -26,6 +26,7 @@ struct FWebNavigationRequest
 {
 	bool bIsRedirect;
 	bool bIsMainFrame;
+	bool bIsExplicitTransition;
 };
 
 /**
@@ -341,6 +342,19 @@ public:
 	DECLARE_DELEGATE_RetVal_TwoParams(bool, FOnBeforePopupDelegate, FString, FString);
 	virtual FOnBeforePopupDelegate& OnBeforePopup() = 0;
 
+	/** A delegate that is invoked before the browser loads a resource. Its primary purpose is to inject headers into the request. */
+	typedef TMap<FString, FString> FRequestHeaders;
+	DECLARE_DELEGATE_ThreeParams(FOnBeforeResourceLoadDelegate, FString /*Url*/, FString /*ResourceType*/, FRequestHeaders& /*AdditionalHeaders*/);
+	virtual FOnBeforeResourceLoadDelegate& OnBeforeResourceLoad() = 0;
+
+	/** A delegate that is invoked on completion of browser resource loads. Its primary purpose is to allow response to failures. */
+	DECLARE_DELEGATE_FourParams(FOnResourceLoadCompleteDelegate, FString /*Url*/, FString /*ResourceType*/, FString /*RequestStatus*/, int64 /*ContentLength*/);
+	virtual FOnResourceLoadCompleteDelegate& OnResourceLoadComplete() = 0;
+
+	/** A delegate that is invoked for each console message */
+	DECLARE_DELEGATE_ThreeParams(FOnConsoleMessageDelegate, const FString& /*Message*/, const FString& /*Source*/, int /*Line*/);
+	virtual FOnConsoleMessageDelegate& OnConsoleMessage() = 0;
+
 	/** A delegate that is invoked when an existing browser requests creation of a new browser window. */
 	DECLARE_DELEGATE_RetVal_TwoParams(bool, FOnCreateWindow, const TWeakPtr<IWebBrowserWindow>& /*NewBrowserWindow*/, const TWeakPtr<IWebBrowserPopupFeatures>& /* PopupFeatures*/)
 	virtual FOnCreateWindow& OnCreateWindow() = 0;
@@ -369,6 +383,17 @@ public:
 	DECLARE_DELEGATE_RetVal(bool, FOnSuppressContextMenu);
 	virtual FOnSuppressContextMenu& OnSuppressContextMenu() = 0;
 
+	/** A delegate that is invoked for each key down event not handled by the browser, return true if event is handled to prevent it from bubbling up. */
+	DECLARE_DELEGATE_RetVal_OneParam(bool, FOnUnhandledKeyDown, const FKeyEvent& /*KeyEvent*/);
+	virtual FOnUnhandledKeyDown& OnUnhandledKeyDown() = 0;
+
+	/** A delegate that is invoked for each up down event not handled by the browser, return true if event is handled to prevent it from bubbling up. */
+	DECLARE_DELEGATE_RetVal_OneParam(bool, FOnUnhandledKeyUp, const FKeyEvent& /*KeyEvent*/);
+	virtual FOnUnhandledKeyUp& OnUnhandledKeyUp() = 0;
+
+	/** A delegate that is invoked for each key char event not handled by the browser, return true if event is handled to prevent it from bubbling up. */
+	DECLARE_DELEGATE_RetVal_OneParam(bool, FOnUnhandledKeyChar, const FCharacterEvent& /*CharacterEvent*/);
+	virtual FOnUnhandledKeyChar& OnUnhandledKeyChar() = 0;
 	/** A delegate that is invoked when drag is detected in an area specified as a drag region on the web page. */
 	DECLARE_DELEGATE_RetVal_OneParam(bool, FOnDragWindow, const FPointerEvent& /*MouseEvent*/)
 	virtual FOnDragWindow& OnDragWindow() = 0;

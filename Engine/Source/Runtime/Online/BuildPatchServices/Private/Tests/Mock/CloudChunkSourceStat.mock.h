@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 #pragma once
 
 #include "Installer/CloudChunkSource.h"
@@ -69,7 +69,7 @@ namespace BuildPatchServices
 			RxSuccessRateUpdated.Emplace(FStatsCollector::GetSeconds(), SuccessRate);
 		}
 
-		virtual void OnActiveRequestCountUpdated(int32 RequestCount) override
+		virtual void OnActiveRequestCountUpdated(uint32 RequestCount) override
 		{
 			RxActiveRequestCountUpdated.Emplace(FStatsCollector::GetSeconds(), RequestCount);
 		}

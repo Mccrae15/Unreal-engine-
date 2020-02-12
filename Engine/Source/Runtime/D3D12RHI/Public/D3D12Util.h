@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 /*=============================================================================
 	D3D12Util.h: D3D RHI utility definitions.
@@ -41,11 +41,8 @@ namespace D3D12RHI
 	 * @param	Filename - The filename of the source file containing Code.
 	 * @param	Line - The line number of Code within Filename.
 	 */
-	extern void VerifyD3D12Result(HRESULT Result, const ANSICHAR* Code, const ANSICHAR* Filename, uint32 Line, ID3D12Device* Device);
-}
+	extern void VerifyD3D12Result(HRESULT Result, const ANSICHAR* Code, const ANSICHAR* Filename, uint32 Line, ID3D12Device* Device, FString Message = FString());
 
-namespace D3D12RHI
-{
 	/**
 	* Checks that the given result isn't a failure.  If it is, the application exits with an appropriate error message.
 	* @param	Result - The result code to check
@@ -53,15 +50,15 @@ namespace D3D12RHI
 	* @param	Filename - The filename of the source file containing Code.
 	* @param	Line - The line number of Code within Filename.
 	*/
-	extern void VerifyD3D12CreateTextureResult(HRESULT D3DResult, const ANSICHAR* Code, const ANSICHAR* Filename, uint32 Line,
-		uint32 SizeX, uint32 SizeY, uint32 SizeZ, uint8 D3DFormat, uint32 NumMips, uint32 Flags);
+	extern void VerifyD3D12CreateTextureResult(HRESULT D3DResult, const ANSICHAR* Code, const ANSICHAR* Filename, uint32 Line, const D3D12_RESOURCE_DESC& TextureDesc);
 
 	/**
 	 * A macro for using VERIFYD3D12RESULT that automatically passes in the code and filename/line.
 	 */
-#define VERIFYD3D12RESULT_EX(x, Device)	{HRESULT hr = x; if (FAILED(hr)) { VerifyD3D12Result(hr,#x,__FILE__,__LINE__, Device); }}
-#define VERIFYD3D12RESULT(x)			{HRESULT hr = x; if (FAILED(hr)) { VerifyD3D12Result(hr,#x,__FILE__,__LINE__, 0); }}
-#define VERIFYD3D12CREATETEXTURERESULT(x,SizeX,SizeY,SizeZ,Format,NumMips,Flags) {HRESULT hr = x; if (FAILED(hr)) { VerifyD3D12CreateTextureResult(hr,#x,__FILE__,__LINE__,SizeX,SizeY,SizeZ,Format,NumMips,Flags); }}
+#define VERIFYD3D12RESULT_LAMBDA(x, Device, Lambda)	{HRESULT hres = x; if (FAILED(hres)) { VerifyD3D12Result(hres, #x, __FILE__, __LINE__, Device, Lambda()); }}
+#define VERIFYD3D12RESULT_EX(x, Device)	{HRESULT hres = x; if (FAILED(hres)) { VerifyD3D12Result(hres, #x, __FILE__, __LINE__, Device); }}
+#define VERIFYD3D12RESULT(x)			{HRESULT hres = x; if (FAILED(hres)) { VerifyD3D12Result(hres, #x, __FILE__, __LINE__, nullptr); }}
+#define VERIFYD3D12CREATETEXTURERESULT(x, Desc) {HRESULT hres = x; if (FAILED(hres)) { VerifyD3D12CreateTextureResult(hres, #x, __FILE__, __LINE__, Desc); }}
 
 	/**
 	 * Checks that a COM object has the expected number of references.
@@ -141,6 +138,7 @@ extern void QuantizeBoundShaderState(
 #if D3D12_RHI_RAYTRACING
 class FD3D12RayTracingShader;
 extern void QuantizeBoundShaderState(
+	EShaderFrequency ShaderFrequency,
 	const D3D12_RESOURCE_BINDING_TIER& ResourceBindingTier,
 	const FD3D12RayTracingShader* const Shader,
 	FD3D12QuantizedBoundShaderState &OutQBSS);
@@ -306,25 +304,16 @@ private:
 //==================================================================================================================================
 struct ShaderBytecodeHash
 {
-	// 160 bit strong SHA1 hash
-	uint32 SHA1Hash[5];
+	uint64 Hash[2];
 
 	bool operator ==(const ShaderBytecodeHash &b) const
 	{
-		return (SHA1Hash[0] == b.SHA1Hash[0] &&
-			SHA1Hash[1] == b.SHA1Hash[1] &&
-			SHA1Hash[2] == b.SHA1Hash[2] &&
-			SHA1Hash[3] == b.SHA1Hash[3] &&
-			SHA1Hash[4] == b.SHA1Hash[4]);
+		return (Hash[0] == b.Hash[0] && Hash[1] == b.Hash[1]);
 	}
 
 	bool operator !=(const ShaderBytecodeHash &b) const
 	{
-		return (SHA1Hash[0] != b.SHA1Hash[0] ||
-			SHA1Hash[1] != b.SHA1Hash[1] ||
-			SHA1Hash[2] != b.SHA1Hash[2] ||
-			SHA1Hash[3] != b.SHA1Hash[3] ||
-			SHA1Hash[4] != b.SHA1Hash[4]);
+		return (Hash[0] != b.Hash[0] || Hash[1] != b.Hash[1]);
 	}
 };
 
@@ -333,12 +322,12 @@ class FD3D12ShaderBytecode
 public:
 	FD3D12ShaderBytecode()
 	{
-		FMemory::Memzero(&Shader, sizeof(Shader));
-		FMemory::Memset(&Hash, 0, sizeof(Hash));
+		FMemory::Memzero(Shader);
+		FMemory::Memzero(Hash);
 	}
 
-	FD3D12ShaderBytecode(const D3D12_SHADER_BYTECODE &InShader) :
-		Shader(InShader)
+	FD3D12ShaderBytecode(const D3D12_SHADER_BYTECODE &InShader)
+		: Shader(InShader)
 	{
 		HashShader();
 	}
@@ -355,10 +344,15 @@ public:
 private:
 	void HashShader()
 	{
-		FMemory::Memset(&Hash, 0, sizeof(Hash));
 		if (Shader.pShaderBytecode && Shader.BytecodeLength > 0)
 		{
-			FSHA1::HashBuffer(Shader.pShaderBytecode, Shader.BytecodeLength, (uint8*)Hash.SHA1Hash);
+			// D3D shader bytecode contains a 128bit checksum in DWORD 1-4. We can just use that directly instead of hashing the whole shader bytecode ourselves.
+			check(Shader.BytecodeLength >= sizeof(uint32) + sizeof(Hash));
+			FMemory::Memcpy(&Hash, ((uint32*) Shader.pShaderBytecode) + 1, sizeof(Hash));
+		}
+		else
+		{
+			FMemory::Memzero(Hash);
 		}
 	}
 
@@ -396,7 +390,7 @@ public:
 	}
 
 	template <typename CompareFunc>
-	bool Dequeue(Type& Result, CompareFunc& Func)
+	bool Dequeue(Type& Result, const CompareFunc& Func)
 	{
 		FScopeLock ScopeLock(&SynchronizationObject);
 
@@ -415,7 +409,7 @@ public:
 	}
 
 	template <typename CompareFunc>
-	bool BatchDequeue(TQueue<Type>* Result, CompareFunc& Func, uint32 MaxItems)
+	bool BatchDequeue(TQueue<Type>* Result, const CompareFunc& Func, uint32 MaxItems)
 	{
 		FScopeLock ScopeLock(&SynchronizationObject);
 
@@ -1101,49 +1095,4 @@ struct FD3D12ScopeNoLock
 public:
 	FD3D12ScopeNoLock(FCriticalSection* CritSec) { /* Do Nothing! */ }
 	~FD3D12ScopeNoLock() { /* Do Nothing! */ }
-};
-
-template<typename Type>
-struct FD3D12ThreadLocalObject
-{
-	FD3D12ThreadLocalObject()
-	{
-		FMemory::Memzero(AllObjects);
-	}
-
-	~FD3D12ThreadLocalObject()
-	{
-		Destroy();
-	}
-
-	inline void Destroy()
-	{
-		for (Type*& Object : AllObjects)
-		{
-			delete Object;
-		}
-		AllObjects.Empty();
-	}
-
-	template<typename CreationFunction>
-	Type* GetObjectForThisThread(const CreationFunction& pfnCreate)
-	{
-		if (ThisThreadObject)
-		{
-			return (Type*)ThisThreadObject;
-		}
-		else
-		{
-			FScopeLock Lock(&CS);
-			Type* NewObject = pfnCreate();
-			ThisThreadObject = NewObject;
-			AllObjects.Add(NewObject);
-			return NewObject;
-		}
-	}
-
-private:
-	TArray<Type*> AllObjects;
-	FCriticalSection CS;
-	static __declspec(thread) void* ThisThreadObject;
 };

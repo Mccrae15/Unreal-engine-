@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "Tracks/MovieSceneCinematicShotTrack.h"
 #include "MovieSceneSequence.h"
@@ -73,6 +73,12 @@ void UMovieSceneCinematicShotTrack::RemoveSection(UMovieSceneSection& Section)
 	MovieSceneHelpers::SortConsecutiveSections(Sections);
 
 	// @todo Sequencer: The movie scene owned by the section is now abandoned.  Should we offer to delete it?  
+}
+
+void UMovieSceneCinematicShotTrack::RemoveSectionAt(int32 SectionIndex)
+{
+	Sections.RemoveAt(SectionIndex);
+	MovieSceneHelpers::SortConsecutiveSections(Sections);
 }
 
 bool UMovieSceneCinematicShotTrack::SupportsMultipleRows() const

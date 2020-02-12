@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 /*=============================================================================
 	VulkanPipelineState.h: Vulkan pipeline state definitions.
@@ -325,9 +325,9 @@ public:
 	void ProcessBindingsForStage(VkShaderStageFlagBits StageFlags, ShaderStage::EStage DescSetStage, const FVulkanShaderHeader& CodeHeader, FUniformBufferGatherInfo& OutUBGatherInfo) const;
 
 	template<bool bIsCompute>
-	void FinalizeBindings(const FUniformBufferGatherInfo& UBGatherInfo, const TArrayView<const FSamplerStateRHIParamRef>& ImmutableSamplers);
+	void FinalizeBindings(const FUniformBufferGatherInfo& UBGatherInfo, const TArrayView<FRHISamplerState*>& ImmutableSamplers);
 
-	void GenerateHash(const TArrayView<const FSamplerStateRHIParamRef>& ImmutableSamplers);
+	void GenerateHash(const TArrayView<FRHISamplerState*>& ImmutableSamplers);
 
 	friend uint32 GetTypeHash(const FVulkanDescriptorSetsLayoutInfo& In)
 	{
@@ -885,6 +885,8 @@ public:
 		return GfxPipelineDescriptorInfo;
 	}
 
+	bool UsesInputAttachment(FVulkanShaderHeader::EAttachmentType AttachmentType) const;
+	
 protected:
 	FVulkanGfxPipelineDescriptorInfo		GfxPipelineDescriptorInfo;
 	friend class FVulkanPipelineStateCacheManager;
@@ -969,12 +971,11 @@ public:
 		bool bChanged = false;
 		if (UseVulkanDescriptorCache())
 		{
-			
-			FVulkanHashableDescriptorInfo& HeshableInfo = HashableDescriptorInfos[DescriptorIndex];
+			FVulkanHashableDescriptorInfo& HashableInfo = HashableDescriptorInfos[DescriptorIndex];
 			check(Sampler.SamplerId > 0);
-			if (HeshableInfo.Image.SamplerId != Sampler.SamplerId)
+			if (HashableInfo.Image.SamplerId != Sampler.SamplerId)
 			{
-				HeshableInfo.Image.SamplerId = Sampler.SamplerId;
+				HashableInfo.Image.SamplerId = Sampler.SamplerId;
 				ImageInfo->sampler = Sampler.Sampler;
 				bChanged = true;
 			}
@@ -1050,23 +1051,23 @@ protected:
 		bool bChanged = false;
 		if (UseVulkanDescriptorCache())
 		{
-			FVulkanHashableDescriptorInfo& HeshableInfo = HashableDescriptorInfos[DescriptorIndex];
+			FVulkanHashableDescriptorInfo& HashableInfo = HashableDescriptorInfos[DescriptorIndex];
 			check(BufferAllocation.GetHandleId() > 0);
-			if (HeshableInfo.Buffer.Id != BufferAllocation.GetHandleId())
+			if (HashableInfo.Buffer.Id != BufferAllocation.GetHandleId())
 			{
-				HeshableInfo.Buffer.Id = BufferAllocation.GetHandleId();
+				HashableInfo.Buffer.Id = BufferAllocation.GetHandleId();
 				BufferInfo->buffer = BufferAllocation.GetHandle();
 				bChanged = true;
 			}
-			if (HeshableInfo.Buffer.Offset != static_cast<uint32>(Offset))
+			if (HashableInfo.Buffer.Offset != static_cast<uint32>(Offset))
 			{
-				HeshableInfo.Buffer.Offset = static_cast<uint32>(Offset);
+				HashableInfo.Buffer.Offset = static_cast<uint32>(Offset);
 				BufferInfo->offset = Offset;
 				bChanged = true;
 			}
-			if (HeshableInfo.Buffer.Range != static_cast<uint32>(Range))
+			if (HashableInfo.Buffer.Range != static_cast<uint32>(Range))
 			{
-				HeshableInfo.Buffer.Range = static_cast<uint32>(Range);
+				HashableInfo.Buffer.Range = static_cast<uint32>(Range);
 				BufferInfo->range = Range;
 				bChanged = true;
 			}
@@ -1094,6 +1095,12 @@ protected:
 		if (DescriptorType == VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE)
 		{
 			check(WriteDescriptors[DescriptorIndex].descriptorType == VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE || WriteDescriptors[DescriptorIndex].descriptorType == VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER);
+			ensureMsgf(Layout == VK_IMAGE_LAYOUT_SHARED_PRESENT_KHR ||
+				  Layout == VK_IMAGE_LAYOUT_DEPTH_READ_ONLY_STENCIL_ATTACHMENT_OPTIMAL ||
+				  Layout == VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_STENCIL_READ_ONLY_OPTIMAL ||
+				  Layout == VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL || 
+				  Layout == VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL ||
+				  Layout == VK_IMAGE_LAYOUT_GENERAL, TEXT("Invalid Layout %d, Index %d, Type %d\n"), Layout, DescriptorIndex, WriteDescriptors[DescriptorIndex].descriptorType);
 		}
 		else
 		{
@@ -1105,17 +1112,17 @@ protected:
 		bool bChanged = false;
 		if (UseVulkanDescriptorCache())
 		{
-			FVulkanHashableDescriptorInfo& HeshableInfo = HashableDescriptorInfos[DescriptorIndex];
+			FVulkanHashableDescriptorInfo& HashableInfo = HashableDescriptorInfos[DescriptorIndex];
 			check(TextureView.ViewId > 0);
-			if (HeshableInfo.Image.ImageViewId != TextureView.ViewId)
+			if (HashableInfo.Image.ImageViewId != TextureView.ViewId)
 			{
-				HeshableInfo.Image.ImageViewId = TextureView.ViewId;
+				HashableInfo.Image.ImageViewId = TextureView.ViewId;
 				ImageInfo->imageView = TextureView.View;
 				bChanged = true;
 			}
-			if (HeshableInfo.Image.ImageLayout != static_cast<uint32>(Layout))
+			if (HashableInfo.Image.ImageLayout != static_cast<uint32>(Layout))
 			{
-				HeshableInfo.Image.ImageLayout = static_cast<uint32>(Layout);
+				HashableInfo.Image.ImageLayout = static_cast<uint32>(Layout);
 				ImageInfo->imageLayout = Layout;
 				bChanged = true;
 			}
@@ -1141,11 +1148,11 @@ protected:
 		if (UseVulkanDescriptorCache())
 		{
 			bool bChanged = false;
-			FVulkanHashableDescriptorInfo& HeshableInfo = HashableDescriptorInfos[DescriptorIndex];
+			FVulkanHashableDescriptorInfo& HashableInfo = HashableDescriptorInfos[DescriptorIndex];
 			check(View->ViewId > 0);
-			if (HeshableInfo.BufferView.Id != View->ViewId)
+			if (HashableInfo.BufferView.Id != View->ViewId)
 			{
-				HeshableInfo.BufferView.Id = View->ViewId;
+				HashableInfo.BufferView.Id = View->ViewId;
 				bChanged = true;
 			}
 			bIsKeyDirty |= bChanged;

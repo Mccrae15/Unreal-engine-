@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "SourceCodeAccessModule.h"
 #include "Modules/ModuleManager.h"
@@ -86,7 +86,7 @@ bool FSourceCodeAccessModule::IsSourceCodeAccessorAvailable(FName Name) const
 	{
 		if (Accessor->GetFName() == Name)
 		{
-			return true;
+			return Accessor->CanAccessSourceCode();
 		}
 	}
 	return false;

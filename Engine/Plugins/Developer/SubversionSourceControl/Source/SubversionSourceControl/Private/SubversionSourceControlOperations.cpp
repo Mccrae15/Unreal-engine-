@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "SubversionSourceControlOperations.h"
 #include "HAL/PlatformFilemanager.h"
@@ -202,7 +202,7 @@ static void AddDirectoriesToCommit(const FSubversionSourceControlCommand& InComm
 			int32 ChopPoint = INDEX_NONE;
 			if(Directory.FindLastChar('/', ChopPoint))
 			{
-				Directory = Directory.Left(ChopPoint);
+				Directory.LeftInline(ChopPoint);
 			}
 			else
 			{
@@ -619,7 +619,7 @@ bool FSubversionUpdateStatusWorker::Execute(FSubversionSourceControlCommand& InC
 		Parameters.Add(TEXT("--verbose"));
 
 		TArray<FString> Files;
-		Files.Add(FPaths::RootDir());
+		Files.Add(FPaths::ProjectDir());
 
 		InCommand.bCommandSuccessful &= SubversionSourceControlUtils::RunCommand(TEXT("status"), Files, Parameters, ResultsXml, InCommand.ErrorMessages, InCommand.UserName);
 		SubversionSourceControlUtils::ParseStatusResults(ResultsXml, InCommand.ErrorMessages, InCommand.UserName, InCommand.WorkingCopyRoot, OutStates);

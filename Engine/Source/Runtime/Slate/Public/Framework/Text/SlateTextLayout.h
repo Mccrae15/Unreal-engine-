@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 #pragma once
 
 #include "CoreMinimal.h"
@@ -27,8 +27,6 @@ public:
 
 	virtual void EndLayout() override;
 
-	virtual void UpdateIfNeeded() override;
-
 	void SetDefaultTextStyle(FTextBlockStyle InDefaultTextStyle);
 	const FTextBlockStyle& GetDefaultTextStyle() const;
 
@@ -54,9 +52,6 @@ private:
 
 	/** This this layout displaying a password? */
 	TAttribute<bool> bIsPassword;
-
-	/** The localized fallback font revision the last time the text layout was updated. Used to force a flush if the font changes. */
-	uint16 LocalizedFallbackFontRevision;
 
 	friend class FSlateTextLayoutFactory;
 };

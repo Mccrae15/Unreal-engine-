@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "Blueprint/BlueprintSupport.h"
 #include "Misc/ScopeLock.h"
@@ -27,9 +27,6 @@
 #endif
 
 DEFINE_LOG_CATEGORY_STATIC(LogBlueprintSupport, Log, All);
-
-// Flag to enable the BlueprintCompilationManager:
-COREUOBJECT_API bool GBlueprintUseCompilationManager = true;
 
 const FName FBlueprintTags::GeneratedClassPath(TEXT("GeneratedClass"));
 const FName FBlueprintTags::ParentClassPath(TEXT("ParentClass"));
@@ -118,28 +115,6 @@ bool FBlueprintSupport::IsDeferredCDOInitializationDisabled()
 #endif
 }
 
-void FBlueprintSupport::InitializeCompilationManager()
-{
-	// 'real' initialization is done lazily because we're in a pretty tough
-	// spot in terms of dependencies:
-	bool bCompilationManagerDisabled = false;
-	bool bCompilationManagerEnabled = true;
-	GConfig->GetBool(TEXT("/Script/UnrealEd.BlueprintEditorProjectSettings"), TEXT("bUseCompilationManager"), bCompilationManagerEnabled, GEditorIni);
-	GConfig->GetBool(TEXT("/Script/UnrealEd.BlueprintEditorProjectSettings"), TEXT("bDisableCompilationManager"), bCompilationManagerDisabled, GEditorIni);
-	if (bCompilationManagerDisabled)
-	{
-		GBlueprintUseCompilationManager = false;
-	}
-	else if(!bCompilationManagerEnabled)
-	{
-		UE_LOG(LogScript, Warning,
-			TEXT("Warning: Compilation manager enabled, compilation manager will be mandatory in 4.21. \
-				Use bDisableCompilationManager to disable the compilation manager as a last resort or remove \
-				bUseCompilationManager from project .ini to fix this warning.")
-		);
-	}
-}
-
 static FFlushReinstancingQueueFPtr FlushReinstancingQueueFPtr = nullptr;
 
 void FBlueprintSupport::FlushReinstancingQueue()
@@ -170,9 +145,9 @@ void FBlueprintSupport::RegisterDeferredDependenciesInStruct(const UStruct* Stru
 		return;
 	}
 
-	for (TPropertyValueIterator<const UObjectProperty> It(Struct, StructData); It; ++It)
+	for (TPropertyValueIterator<const FObjectProperty> It(Struct, StructData); It; ++It)
 	{
-		const UObjectProperty* Property = It.Key();
+		const FObjectProperty* Property = It.Key();
 		void* PropertyValue = (void*)It.Value();
 		UObject* ObjectValue = *((UObject**)PropertyValue);
 		
@@ -185,14 +160,14 @@ void FBlueprintSupport::RegisterDeferredDependenciesInStruct(const UStruct* Stru
 		}
 
 		// Create a stack of property trackers to deal with any outer Struct Properties
-		TArray<const UProperty*> PropertyChain;
+		TArray<const FProperty*> PropertyChain;
 		It.GetPropertyChain(PropertyChain);
 		TIndirectArray<FScopedPlaceholderPropertyTracker> PlaceholderStack;
 
 		// Iterate property chain in reverse order as we need to start with parent
 		for (int32 PropertyIndex = PropertyChain.Num() - 1; PropertyIndex >= 0; PropertyIndex--)
 		{
-			if (const UStructProperty* StructProperty = Cast<UStructProperty>(PropertyChain[PropertyIndex]))
+			if (const FStructProperty* StructProperty = CastField<FStructProperty>(PropertyChain[PropertyIndex]))
 			{
 				PlaceholderStack.Add(new FScopedPlaceholderPropertyTracker(StructProperty));
 			}
@@ -461,24 +436,7 @@ FScopedClassDependencyGather::~FScopedClassDependencyGather()
 			}
 		};
 
-		if(!GBlueprintUseCompilationManager)
-		{
-			for( ; DependencyIter; ++DependencyIter )
-			{
-				UClass* Dependency = *DependencyIter;
-				if( Dependency->ClassGeneratedBy != BatchMasterClass->ClassGeneratedBy )
-				{
-					RecompileClassLambda(Dependency, LoadContext);
-				}
-			}
-
-			// Finally, recompile the master class to make sure it gets updated too
-			RecompileClassLambda(BatchMasterClass, LoadContext);
-		}
-		else
-		{
-			BatchMasterClass->ConditionalRecompileClass(LoadContext);
-		}
+		BatchMasterClass->ConditionalRecompileClass(LoadContext);
 
 		BatchMasterClass = NULL;
 	}
@@ -1544,7 +1502,7 @@ int32 FLinkerLoad::ResolveDependencyPlaceholder(FLinkerPlaceholderBase* Placehol
 		}
 		DEFERRED_DEPENDENCY_CHECK(ObjectPathName.IsValid() && !ObjectPathName.IsNone());
 
-		// emulating the StaticLoadObject() call in UObjectPropertyBase::FindImportedObject(),
+		// emulating the StaticLoadObject() call in FObjectPropertyBase::FindImportedObject(),
 		// since this was most likely a placeholder 
 		RealImportObj = StaticLoadObject(UObject::StaticClass(), /*Outer =*/nullptr, *ObjectPathName.ToString(), /*Filename =*/nullptr, (LOAD_NoWarn | LOAD_FindIfFail));
 	}
@@ -2068,6 +2026,7 @@ void FLinkerLoad::ResolveDeferredExports(UClass* LoadClass)
 				if (ensure(PlaceholderExport))
 				{
 					// replace the placeholder with the proper object instance
+					PlaceholderExport->SetLinker(nullptr, INDEX_NONE);
 					Export.ResetObject();
 					UObject* ExportObj = CreateExport(ExportIndex);
 
@@ -2574,7 +2533,7 @@ void UObject::DestroyNonNativeProperties()
 	GetClass()->DestroyPersistentUberGraphFrame(this);
 #endif
 	{
-		for (UProperty* P = GetClass()->DestructorLink; P; P = P->DestructorLinkNext)
+		for (FProperty* P = GetClass()->DestructorLink; P; P = P->DestructorLinkNext)
 		{
 			P->DestroyValue_InContainer(this);
 		}
@@ -2592,7 +2551,7 @@ void UObject::DestroyNonNativeProperties()
  * @param	Data				Default data
  * @return	Returns true if that property was a non-native one, otherwise false
  */
-bool FObjectInitializer::InitNonNativeProperty(UProperty* Property, UObject* Data)
+bool FObjectInitializer::InitNonNativeProperty(FProperty* Property, UObject* Data)
 {
 	if (!Property->GetOwnerClass()->HasAnyClassFlags(CLASS_Native | CLASS_Intrinsic)) // if this property belongs to a native class, it was already initialized by the class constructor
 	{

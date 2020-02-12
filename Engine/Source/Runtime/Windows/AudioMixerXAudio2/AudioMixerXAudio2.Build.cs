@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 using UnrealBuildTool;
 
@@ -10,12 +10,26 @@ public class AudioMixerXAudio2 : ModuleRules
 		PublicIncludePaths.Add("Runtime/AudioMixer/Public");
 		PrivateIncludePaths.Add("Runtime/AudioMixer/Private");
 
-		PrivateDependencyModuleNames.AddRange(
+		if (Target.bCompileAgainstEngine)
+        {
+			// Engine module is required for CompressedAudioInfo implementations.
+            PrivateDependencyModuleNames.Add("Engine");
+
+			AddEngineThirdPartyPrivateStaticDependencies(Target,
+			"UEOgg",
+			"Vorbis",
+			"VorbisFile"
+			);
+	
+            if (Target.Platform == UnrealTargetPlatform.XboxOne)
+            {
+                PrivateDependencyModuleNames.Add("XMA2");
+            }
+        }
+        PrivateDependencyModuleNames.AddRange(
 			new string[] {
 					"Core",
-					"CoreUObject",
-					"Engine",
-                    "AudioMixer",
+					"AudioMixerCore"
                 }
 		);
 
@@ -23,15 +37,8 @@ public class AudioMixerXAudio2 : ModuleRules
 
 		AddEngineThirdPartyPrivateStaticDependencies(Target,
 			"DX11Audio",
-			"UEOgg",
-			"Vorbis",
-			"VorbisFile"
-		);
-
-        if(Target.Platform == UnrealTargetPlatform.XboxOne)
-        {
-            PrivateDependencyModuleNames.Add("XMA2");
-        }
+			"XAudio2_9"
+        );
 
 		if (Target.Platform == UnrealTargetPlatform.Win32 || Target.Platform == UnrealTargetPlatform.Win64 || Target.Platform == UnrealTargetPlatform.XboxOne)
 		{

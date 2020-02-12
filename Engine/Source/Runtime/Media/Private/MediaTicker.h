@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -60,6 +60,9 @@ private:
 
 	/** Collection of tickable objects. */
 	TArray<TWeakPtr<IMediaTickable, ESPMode::ThreadSafe>> Tickables;
+
+	/** Variable to avoid rellocating the Tickables array repeatedly. */
+	TArray<TWeakPtr<IMediaTickable, ESPMode::ThreadSafe>> TickablesCopy;
 
 	/** Holds an event signaling the thread to wake up. */
 	FEvent* WakeupEvent;

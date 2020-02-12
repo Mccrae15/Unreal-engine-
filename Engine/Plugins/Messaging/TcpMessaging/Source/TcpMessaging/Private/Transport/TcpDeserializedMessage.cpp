@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "Transport/TcpDeserializedMessage.h"
 #include "UObject/Package.h"
@@ -189,6 +189,12 @@ EMessageFlags FTcpDeserializedMessage::GetFlags() const
 
 
 const FMessageAddress& FTcpDeserializedMessage::GetSender() const
+{
+	return Sender;
+}
+
+
+const FMessageAddress& FTcpDeserializedMessage::GetForwarder() const
 {
 	return Sender;
 }

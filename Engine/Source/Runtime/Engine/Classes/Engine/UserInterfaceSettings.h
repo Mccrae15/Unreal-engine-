@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -191,7 +191,8 @@ public:
 
 	virtual void PostInitProperties() override;
 
-	void ForceLoadResources();
+	/** Loads assets, if bForceLoadEverything is true it will load despite environment */
+	void ForceLoadResources(bool bForceLoadEverything = false);
 
 	/** Gets the current scale of the UI based on the size of a viewport */
 	float GetDPIScaleBasedOnSize(FIntPoint Size) const;

@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -14,7 +14,7 @@ namespace EditorScriptingUtils
 	bool CheckIfInEditorAndPIE();
 
 	/*
-	 * Have any flag that are not supported for Blutility (PIE, Map, MapData).
+	 * Have any flag that are not supported for Editor Utilities (PIE, Map, MapData).
 	 */
 	bool IsPackageFlagsSupportedForAssetLibrary(uint32 PackageFlags);
 

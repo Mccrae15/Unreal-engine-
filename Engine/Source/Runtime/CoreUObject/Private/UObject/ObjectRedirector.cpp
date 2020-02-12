@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 /*=============================================================================
 	UnRedirector.cpp: Object redirector implementation.
@@ -39,7 +39,7 @@ void UObjectRedirector::Serialize( FStructuredArchive::FRecord Record )
 {
 	Super::Serialize(Record);
 
-	Record << NAMED_FIELD(DestinationObject);
+	Record << SA_VALUE(TEXT("DestinationObject"), DestinationObject);
 }
 
 bool UObjectRedirector::NeedsLoadForEditorGame() const
@@ -68,7 +68,7 @@ void UObjectRedirector::GetAssetRegistryTags(TArray<FAssetRegistryTag>& OutTags)
  *
  * @param	out_PropertyValues	receives the property names and values which should be reported for this object.  The map's key should be the name of
  *								the property and the map's value should be the textual representation of the property's value.  The property value should
- *								be formatted the same way that UProperty::ExportText formats property values (i.e. for arrays, wrap in quotes and use a comma
+ *								be formatted the same way that FProperty::ExportText formats property values (i.e. for arrays, wrap in quotes and use a comma
  *								as the delimiter between elements, etc.)
  * @param	ExportFlags			bitmask of EPropertyPortFlags used for modifying the format of the property values
  *

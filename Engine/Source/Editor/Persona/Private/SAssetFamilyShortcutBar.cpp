@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "SAssetFamilyShortcutBar.h"
 #include "Styling/SlateTypes.h"
@@ -12,7 +12,7 @@
 #include "Framework/MultiBox/MultiBoxDefs.h"
 #include "Widgets/Text/STextBlock.h"
 #include "Framework/MultiBox/MultiBoxBuilder.h"
-#include "Toolkits/AssetEditorManager.h"
+
 #include "EditorStyleSet.h"
 #include "IAssetFamily.h"
 #include "IContentBrowserSingleton.h"
@@ -23,6 +23,7 @@
 #include "Widgets/Images/SImage.h"
 #include "Widgets/Input/SComboButton.h"
 #include "Framework/Application/SlateApplication.h"
+#include "Subsystems/AssetEditorSubsystem.h"
 
 #define LOCTEXT_NAMESPACE "SAssetFamilyShortcutBar"
 
@@ -54,7 +55,7 @@ public:
 		AssetRegistryModule.Get().OnAssetRemoved().AddSP(this, &SAssetShortcut::HandleAssetRemoved);
 		AssetRegistryModule.Get().OnAssetRenamed().AddSP(this, &SAssetShortcut::HandleAssetRenamed);
 
-		FAssetEditorManager::Get().OnAssetEditorRequestedOpen().AddSP(this, &SAssetShortcut::HandleAssetOpened);
+		GEditor->GetEditorSubsystem<UAssetEditorSubsystem>()->OnAssetEditorRequestedOpen().AddSP(this, &SAssetShortcut::HandleAssetOpened);
 		AssetFamily->GetOnAssetOpened().AddSP(this, &SAssetShortcut::HandleAssetOpened);
 
 		AssetThumbnail = MakeShareable(new FAssetThumbnail(InAssetData, AssetShortcutConstants::ThumbnailSize, AssetShortcutConstants::ThumbnailSize, InThumbnailPool));
@@ -183,7 +184,7 @@ public:
 		}
 
 		AssetFamily->GetOnAssetOpened().RemoveAll(this);
-		FAssetEditorManager::Get().OnAssetEditorRequestedOpen().RemoveAll(this);
+		GEditor->GetEditorSubsystem<UAssetEditorSubsystem>()->OnAssetEditorRequestedOpen().RemoveAll(this);
 		UnRegisterActiveTimer(DirtyStateTimerHandle.ToSharedRef());
 	}
 
@@ -191,9 +192,16 @@ public:
 	{
 		if(AssetData.IsValid())
 		{
-			TArray<UObject*> Assets;
-			Assets.Add(AssetData.GetAsset());
-			FAssetEditorManager::Get().OpenEditorForAssets(Assets);
+			if (UObject* AssetObject = AssetData.GetAsset())
+			{
+				TArray<UObject*> Assets;
+				Assets.Add(AssetObject);
+				GEditor->GetEditorSubsystem<UAssetEditorSubsystem>()->OpenEditorForAssets(Assets);
+			}
+			else
+			{
+				UE_LOG(LogAnimation, Error, TEXT("Asset cannot be opened: %s"), *AssetData.ObjectPath.ToString());
+			}
 		}
 	}
 
@@ -285,7 +293,7 @@ public:
 
 			TArray<UObject*> Assets;
 			Assets.Add(InAssetData.GetAsset());
-			FAssetEditorManager::Get().OpenEditorForAssets(Assets);
+			GEditor->GetEditorSubsystem<UAssetEditorSubsystem>()->OpenEditorForAssets(Assets);
 		}
 		else if(AssetData.IsValid())
 		{
@@ -294,7 +302,7 @@ public:
 			// Assume that as we are set to 'toggle' mode with no 'none' selection allowed, we are selecting the currently selected item
 			TArray<UObject*> Assets;
 			Assets.Add(AssetData.GetAsset());
-			FAssetEditorManager::Get().OpenEditorForAssets(Assets);
+			GEditor->GetEditorSubsystem<UAssetEditorSubsystem>()->OpenEditorForAssets(Assets);
 		}
 	}
 

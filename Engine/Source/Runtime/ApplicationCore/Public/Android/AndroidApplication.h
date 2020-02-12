@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -15,7 +15,6 @@ namespace FAndroidAppEntry
 	// if the native window handle has changed then the new handle is required.
 	void ReInitWindow(void* NewNativeWindowHandle = nullptr);
 
-	void DestroyWindow();
 	void ReleaseEGL();
 	void OnPauseEvent();
 }
@@ -64,6 +63,10 @@ public:
 	static FORCEINLINE jclass FindJavaClass(const char* name)
 	{
 		return AndroidJavaEnv::FindJavaClass(name);
+	}
+	static FORCEINLINE jclass FindJavaClassGlobalRef(const char* name)
+	{
+		return AndroidJavaEnv::FindJavaClassGlobalRef(name);
 	}
 	static FORCEINLINE void DetachJavaEnv()
 	{
@@ -117,6 +120,9 @@ private:
 	static bool bWindowSizeChanged;
 
 	static FAndroidApplication* _application;
+
+    EDeviceScreenOrientation DeviceOrientation;
+    void HandleDeviceOrientation();
 };
 
 PRAGMA_ENABLE_DEPRECATION_WARNINGS

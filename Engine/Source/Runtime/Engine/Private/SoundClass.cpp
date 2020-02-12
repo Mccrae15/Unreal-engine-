@@ -1,7 +1,8 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 
 #include "Sound/SoundClass.h"
+#include "Sound/AudioSettings.h"
 #include "EngineGlobals.h"
 #include "Engine/Engine.h"
 #include "Audio.h"
@@ -10,11 +11,57 @@
 #include "UObject/UObjectHash.h"
 #include "UObject/UObjectIterator.h"
 #include "Sound/SoundMix.h"
+
 #if WITH_EDITOR
 #include "SoundClassGraph/SoundClassGraph.h"
 #include "Framework/Notifications/NotificationManager.h"
 #include "Widgets/Notifications/SNotificationList.h"
-#endif
+#endif // WITH_EDITOR
+
+FSoundClassProperties::FSoundClassProperties()
+	: Volume(1.0f)
+	, Pitch(1.0f)
+	, LowPassFilterFrequency(MAX_FILTER_FREQUENCY)
+	, AttenuationDistanceScale(1.0f)
+	, LFEBleed(0.5f)
+	, VoiceCenterChannelVolume(0.0f)
+	, RadioFilterVolume(0.0f)
+	, RadioFilterVolumeThreshold(0.0f)
+	, bApplyEffects(false)
+	, bAlwaysPlay(false)
+	, bIsUISound(false)
+	, bIsMusic(false)
+	, bCenterChannelOnly(false)
+	, bApplyAmbientVolumes(false)
+	, bReverb(true)
+	, Default2DReverbSendAmount(0.0f)
+	, OutputTarget(EAudioOutputTarget::Speaker)
+	, LoadingBehavior(ESoundWaveLoadingBehavior::Inherited)
+	, DefaultSubmix(nullptr)
+	, AttenuationScaleParam(AttenuationDistanceScale)
+	, ParentAttenuationScale(1.0f)
+{
+}
+
+void FSoundClassProperties::SetAttenuationDistanceScale(float InAttenuationScale, float InTime)
+{
+	AttenuationScaleParam.Set(AttenuationDistanceScale, InTime);
+}
+
+void FSoundClassProperties::SetParentAttenuationDistanceScale(float InAttenuationDistanceScale)
+{
+	ParentAttenuationScale = InAttenuationDistanceScale;
+}
+
+float FSoundClassProperties::GetAttenuationDistanceScale() const
+{
+	return AttenuationScaleParam.GetValue() * ParentAttenuationScale;
+}
+
+void FSoundClassProperties::UpdateSoundClassProperties(float DeltaTime)
+{
+	AttenuationScaleParam.Update(DeltaTime);
+}
 
 /*-----------------------------------------------------------------------------
 	USoundClass implementation.
@@ -36,6 +83,7 @@ void USoundClass::PostLoad()
 {
 	Super::PostLoad();
 
+#if WITH_EDITORONLY_DATA
 	for (int32 ChildIndex = ChildClasses.Num()-1; ChildIndex >= 0; ChildIndex--)
 	{
 		if (ChildClasses[ChildIndex] != NULL && ChildClasses[ChildIndex]->GetLinkerUE4Version() < VER_UE4_SOUND_CLASS_GRAPH_EDITOR)
@@ -53,6 +101,8 @@ void USoundClass::PostLoad()
 			}
 		}
 	}
+#endif
+
 	// Use the main/default audio device for storing and retrieving sound class properties
 	FAudioDeviceManager* AudioDeviceManager = (GEngine ? GEngine->GetAudioDeviceManager() : nullptr);
 
@@ -66,15 +116,22 @@ void USoundClass::PostLoad()
 #if WITH_EDITOR
 
 TArray<USoundClass*> BackupChildClasses;
+ESoundWaveLoadingBehavior BackupLoadingBehavior;
 
-void USoundClass::PreEditChange(UProperty* PropertyAboutToChange)
+void USoundClass::PreEditChange(FProperty* PropertyAboutToChange)
 {
-	static FName NAME_ChildClasses(TEXT("ChildClasses"));
+	static const FName NAME_ChildClasses = GET_MEMBER_NAME_CHECKED(USoundClass, ChildClasses);
+	static const FName NAME_Properties = GET_MEMBER_NAME_CHECKED(FSoundClassProperties, LoadingBehavior);
 
 	if (PropertyAboutToChange && PropertyAboutToChange->GetFName() == NAME_ChildClasses)
 	{
 		// Take a copy of the current state of child classes
 		BackupChildClasses = ChildClasses;
+	}
+	else if (PropertyAboutToChange && PropertyAboutToChange->GetFName() == NAME_Properties)
+	{
+		// Copy the current loading behavior in case it does not pass validation.
+		BackupLoadingBehavior = Properties.LoadingBehavior;
 	}
 }
 
@@ -82,10 +139,11 @@ void USoundClass::PostEditChangeProperty(struct FPropertyChangedEvent& PropertyC
 {
 	if (PropertyChangedEvent.Property != NULL)
 	{
-		static const FName NAME_ChildClasses(TEXT("ChildClasses"));
-		static const FName NAME_ParentClass(TEXT("ParentClass"));
+		static const FName NAME_ChildClasses = GET_MEMBER_NAME_CHECKED(USoundClass, ChildClasses);
+		static const FName NAME_ParentClass = GET_MEMBER_NAME_CHECKED(USoundClass, ParentClass);
+		static const FName NAME_Properties = GET_MEMBER_NAME_CHECKED(FSoundClassProperties, LoadingBehavior);
 
-		if (PropertyChangedEvent.Property->GetFName() == NAME_ChildClasses)
+		if (PropertyChangedEvent.GetPropertyName() == NAME_ChildClasses)
 		{
 			// Find child that was changed/added
 			for (int32 ChildIndex = 0; ChildIndex < ChildClasses.Num(); ChildIndex++)
@@ -123,7 +181,7 @@ void USoundClass::PostEditChangeProperty(struct FPropertyChangedEvent& PropertyC
 
 			RefreshAllGraphs(false);
 		}
-		else if (PropertyChangedEvent.Property->GetFName() == NAME_ParentClass)
+		else if (PropertyChangedEvent.GetPropertyName() == NAME_ParentClass)
 		{
 			// Add this sound class to the parent class if it's not already added
 			if (ParentClass)
@@ -149,11 +207,24 @@ void USoundClass::PostEditChangeProperty(struct FPropertyChangedEvent& PropertyC
 			Modify();
 			RefreshAllGraphs(false);
 		}
+		else if (PropertyChangedEvent.GetPropertyName() == NAME_Properties)
+		{
+			// Until we can check FSoundClassProperties during USoundWave::Serialize, we can't support ForceInline here.
+			if (Properties.LoadingBehavior == ESoundWaveLoadingBehavior::ForceInline)
+			{
+				FNotificationInfo Info(NSLOCTEXT("Engine", "ForceInlineUnavailableOnSoundClass", "Using Force Inline on soundclasses is currently not supported. Set each Sound Wave to Force Inline individually instead."));
+				Info.ExpireDuration = 5.0f;
+				Info.Image = FCoreStyle::Get().GetBrush(TEXT("MessageLog.Error"));
+				FSlateNotificationManager::Get().AddNotification(Info);
+
+				Properties.LoadingBehavior = BackupLoadingBehavior;
+			}
+		}
 	}
 
 	if (PropertyChangedEvent.ChangeType != EPropertyChangeType::Interactive && PropertyChangedEvent.MemberProperty)
 	{
-		if (PropertyChangedEvent.MemberProperty->GetFName() == GET_MEMBER_NAME_CHECKED(USoundClass,PassiveSoundMixModifiers))
+		if (PropertyChangedEvent.GetPropertyName() == GET_MEMBER_NAME_CHECKED(USoundClass,PassiveSoundMixModifiers))
 		{
 			TArray<USoundClass*> ProblemClasses;
 			for (int32 Index = 0; Index < PassiveSoundMixModifiers.Num(); Index++)

@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 using System;
 using System.Collections.Generic;
@@ -15,7 +15,7 @@ namespace UnrealBuildTool
 	class HybridExecutor : ActionExecutor
 	{
 		/// <summary>
-		/// Maximum number of actions to execute locally
+		/// Maximum number of actions to execute locally.
 		/// </summary>
 		[XmlConfigFile(Category = "HybridExecutor")]
 		int MaxLocalActions;

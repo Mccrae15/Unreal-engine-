@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 /*=============================================================================
 	SceneHitProxyRendering.cpp: Scene hit proxy rendering.
@@ -20,11 +20,13 @@
 #include "VisualizeTexture.h"
 #include "MeshPassProcessor.inl"
 #include "GPUScene.h"
+#include "Rendering/ColorVertexBuffer.h"
+#include "FXSystem.h"
+#include "GPUSortManager.h"
 
 class FHitProxyShaderElementData : public FMeshMaterialShaderElementData
 {
 public:
-
 	FHitProxyShaderElementData(FHitProxyId InBatchHitProxyId)
 		: BatchHitProxyId(InBatchHitProxyId)
 	{
@@ -41,29 +43,53 @@ class FHitProxyVS : public FMeshMaterialShader
 	DECLARE_SHADER_TYPE(FHitProxyVS,MeshMaterial);
 
 public:
-
-	virtual bool Serialize(FArchive& Ar) override
-	{
-		bool bShaderHasOutdatedParameters = FMeshMaterialShader::Serialize(Ar);
-		return bShaderHasOutdatedParameters;
-	}
-
-	static bool ShouldCompilePermutation(EShaderPlatform Platform,const FMaterial* Material,const FVertexFactoryType* VertexFactoryType)
+	static bool ShouldCompilePermutation(const FMeshMaterialShaderPermutationParameters& Parameters)
 	{
 		// Only compile the hit proxy vertex shader on PC
-		return IsPCPlatform(Platform)
+		return IsPCPlatform(Parameters.Platform)
 			// and only compile for the default material or materials that are masked.
-			&& (Material->IsSpecialEngineMaterial() || !Material->WritesEveryPixel() || Material->MaterialMayModifyMeshPosition() || Material->IsTwoSided());
+			&& (Parameters.MaterialParameters.bIsSpecialEngineMaterial ||
+				!Parameters.MaterialParameters.bWritesEveryPixel ||
+				Parameters.MaterialParameters.bMaterialMayModifyMeshPosition ||
+				Parameters.MaterialParameters.bIsTwoSided);
 	}
 
+	void GetShaderBindings(
+		const FScene* Scene,
+		ERHIFeatureLevel::Type FeatureLevel,
+		const FPrimitiveSceneProxy* PrimitiveSceneProxy,
+		const FMaterialRenderProxy& MaterialRenderProxy,
+		const FMaterial& Material,
+		const FMeshPassProcessorRenderState& DrawRenderState,
+		const FMeshMaterialShaderElementData& ShaderElementData,
+		FMeshDrawSingleShaderBindings& ShaderBindings)
+	{
+		FMeshMaterialShader::GetShaderBindings(Scene, FeatureLevel, PrimitiveSceneProxy, MaterialRenderProxy, Material, DrawRenderState, ShaderElementData, ShaderBindings);
+
+#if WITH_EDITOR
+		const FColorVertexBuffer* HitProxyIdBuffer = PrimitiveSceneProxy ? PrimitiveSceneProxy->GetCustomHitProxyIdBuffer() : nullptr;
+		if(HitProxyIdBuffer)
+		{
+			ShaderBindings.Add(VertexFetch_HitProxyIdBuffer, HitProxyIdBuffer->GetColorComponentsSRV());
+		}
+		else
+		{
+			ShaderBindings.Add(VertexFetch_HitProxyIdBuffer, GNullColorVertexBuffer.VertexBufferSRV);
+		}
+#endif
+	}
 protected:
 
 	FHitProxyVS(const ShaderMetaType::CompiledShaderInitializerType& Initializer) :
 		FMeshMaterialShader(Initializer)
 	{
 		PassUniformBuffer.Bind(Initializer.ParameterMap, FSceneTexturesUniformParameters::StaticStructMetadata.GetShaderVariableName());
+
+		VertexFetch_HitProxyIdBuffer.Bind(Initializer.ParameterMap, TEXT("VertexFetch_HitProxyIdBuffer"), SPF_Optional);
 	}
 	FHitProxyVS() {}
+
+	LAYOUT_FIELD(FShaderResourceParameter, VertexFetch_HitProxyIdBuffer)
 };
 
 IMPLEMENT_MATERIAL_SHADER_TYPE(,FHitProxyVS,TEXT("/Engine/Private/HitProxyVertexShader.usf"),TEXT("Main"),SF_Vertex); 
@@ -82,10 +108,10 @@ protected:
 		FBaseHS(Initializer)
 	{}
 
-	static bool ShouldCompilePermutation(EShaderPlatform Platform,const FMaterial* Material,const FVertexFactoryType* VertexFactoryType)
+	static bool ShouldCompilePermutation(const FMeshMaterialShaderPermutationParameters& Parameters)
 	{
-		return FBaseHS::ShouldCompilePermutation(Platform, Material, VertexFactoryType)
-			&& FHitProxyVS::ShouldCompilePermutation(Platform,Material,VertexFactoryType);
+		return FBaseHS::ShouldCompilePermutation(Parameters)
+			&& FHitProxyVS::ShouldCompilePermutation(Parameters);
 	}
 };
 
@@ -104,10 +130,10 @@ protected:
 		FBaseDS(Initializer)
 	{}
 
-	static bool ShouldCompilePermutation(EShaderPlatform Platform,const FMaterial* Material,const FVertexFactoryType* VertexFactoryType)
+	static bool ShouldCompilePermutation(const FMeshMaterialShaderPermutationParameters& Parameters)
 	{
-		return FBaseDS::ShouldCompilePermutation(Platform, Material, VertexFactoryType)
-			&& FHitProxyVS::ShouldCompilePermutation(Platform,Material,VertexFactoryType);
+		return FBaseDS::ShouldCompilePermutation(Parameters)
+			&& FHitProxyVS::ShouldCompilePermutation(Parameters);
 	}
 };
 
@@ -122,18 +148,21 @@ class FHitProxyPS : public FMeshMaterialShader
 	DECLARE_SHADER_TYPE(FHitProxyPS,MeshMaterial);
 public:
 
-	static bool ShouldCompilePermutation(EShaderPlatform Platform,const FMaterial* Material,const FVertexFactoryType* VertexFactoryType)
+	static bool ShouldCompilePermutation(const FMeshMaterialShaderPermutationParameters& Parameters)
 	{
 		// Only compile the hit proxy vertex shader on PC
-		return IsPCPlatform(Platform) 
+		return IsPCPlatform(Parameters.Platform) 
 			// and only compile for default materials or materials that are masked.
-			&& (Material->IsSpecialEngineMaterial() || !Material->WritesEveryPixel() || Material->MaterialMayModifyMeshPosition() || Material->IsTwoSided());
+			&& (Parameters.MaterialParameters.bIsSpecialEngineMaterial ||
+				!Parameters.MaterialParameters.bWritesEveryPixel ||
+				Parameters.MaterialParameters.bMaterialMayModifyMeshPosition ||
+				Parameters.MaterialParameters.bIsTwoSided);
 	}
 
 	FHitProxyPS(const ShaderMetaType::CompiledShaderInitializerType& Initializer):
 		FMeshMaterialShader(Initializer)
 	{
-		HitProxyId.Bind(Initializer.ParameterMap,TEXT("HitProxyId"), SPF_Mandatory);
+		HitProxyId.Bind(Initializer.ParameterMap,TEXT("HitProxyId"), SPF_Optional); // There is no way to guarantee that this parameter will be preserved in a material that kill()s all fragments as the optimiser can remove the global - this happens in various projects.
 		PassUniformBuffer.Bind(Initializer.ParameterMap, FSceneTexturesUniformParameters::StaticStructMetadata.GetShaderVariableName());
 	}
 
@@ -151,9 +180,15 @@ public:
 	{
 		FMeshMaterialShader::GetShaderBindings(Scene, FeatureLevel, PrimitiveSceneProxy, MaterialRenderProxy, Material, DrawRenderState, ShaderElementData, ShaderBindings);
 
-
 		FHitProxyId hitProxyId = ShaderElementData.BatchHitProxyId;
 
+#if WITH_EDITOR
+		if (PrimitiveSceneProxy && PrimitiveSceneProxy->GetCustomHitProxyIdBuffer())
+		{
+			hitProxyId = FColor(0);
+		}
+		else 
+#endif
 		if (PrimitiveSceneProxy && ShaderElementData.BatchHitProxyId == FHitProxyId())
 		{
 			hitProxyId = PrimitiveSceneProxy->GetPrimitiveSceneInfo()->DefaultDynamicHitProxyId;
@@ -168,16 +203,8 @@ public:
 		ShaderBindings.Add(HitProxyId, hitProxyId.GetColor().ReinterpretAsLinear());
 	}
 
-	virtual bool Serialize(FArchive& Ar) override
-	{
-		bool bShaderHasOutdatedParameters = FMeshMaterialShader::Serialize(Ar);
-		Ar << HitProxyId;
-		return bShaderHasOutdatedParameters;
-	}
-
-
 private:
-	FShaderParameter HitProxyId;
+	LAYOUT_FIELD(FShaderParameter, HitProxyId)
 };
 
 IMPLEMENT_MATERIAL_SHADER_TYPE(,FHitProxyPS,TEXT("/Engine/Private/HitProxyPixelShader.usf"),TEXT("Main"),SF_Pixel);
@@ -200,7 +227,7 @@ void InitHitProxyRender(FRHICommandListImmediate& RHICmdList, const FSceneRender
 
 	// Create a texture to store the resolved light attenuation values, and a render-targetable surface to hold the unresolved light attenuation values.
 	{
-		FPooledRenderTargetDesc Desc(FPooledRenderTargetDesc::Create2DDesc(SceneContext.GetBufferSizeXY(), PF_B8G8R8A8, FClearValueBinding::None, TexCreate_None, TexCreate_RenderTargetable, false));
+		FPooledRenderTargetDesc Desc(FPooledRenderTargetDesc::Create2DDesc(SceneContext.GetBufferSizeXY(), PF_B8G8R8A8, FClearValueBinding::None, TexCreate_None, TexCreate_RenderTargetable | TexCreate_ShaderResource, false));
 		GRenderTargetPool.FindFreeElement(RHICmdList, Desc, OutHitProxyRT, TEXT("HitProxy"));
 
 		// create non-MSAA version for hit proxies on PC if needed
@@ -302,11 +329,7 @@ static void DoRenderHitProxies(FRHICommandListImmediate& RHICmdList, const FScen
 			for (int32 MeshIndex = 0; MeshIndex < View.DynamicEditorMeshElements.Num(); MeshIndex++)
 			{
 				const FMeshBatchAndRelevance& MeshBatchAndRelevance = View.DynamicEditorMeshElements[MeshIndex];
-
-				if (MeshBatchAndRelevance.Mesh->bSelectable)
-				{
-					PassMeshProcessor.AddMeshBatch(*MeshBatchAndRelevance.Mesh, DefaultBatchElementMask, MeshBatchAndRelevance.PrimitiveSceneProxy);
-				}
+				PassMeshProcessor.AddMeshBatch(*MeshBatchAndRelevance.Mesh, DefaultBatchElementMask, MeshBatchAndRelevance.PrimitiveSceneProxy);
 			}
 		});
 
@@ -494,6 +517,8 @@ static void DoRenderHitProxies(FRHICommandListImmediate& RHICmdList, const FScen
 
 void FMobileSceneRenderer::RenderHitProxies(FRHICommandListImmediate& RHICmdList)
 {
+	Scene->UpdateAllPrimitiveSceneInfos(RHICmdList);
+	
 	PrepareViewRectsForRendering();
 
 #if WITH_EDITOR
@@ -523,6 +548,8 @@ void FMobileSceneRenderer::RenderHitProxies(FRHICommandListImmediate& RHICmdList
 
 void FDeferredShadingSceneRenderer::RenderHitProxies(FRHICommandListImmediate& RHICmdList)
 {
+	Scene->UpdateAllPrimitiveSceneInfos(RHICmdList);
+
 	PrepareViewRectsForRendering();
 
 #if WITH_EDITOR
@@ -539,6 +566,19 @@ void FDeferredShadingSceneRenderer::RenderHitProxies(FRHICommandListImmediate& R
 		if (bDoInitViewAftersPrepass)
 		{
 			InitViewsPossiblyAfterPrepass(RHICmdList, ILCTaskData, UpdateViewCustomDataEvents);
+		}
+
+		extern TSet<IPersistentViewUniformBufferExtension*> PersistentViewUniformBufferExtensions;
+
+		for (IPersistentViewUniformBufferExtension* Extension : PersistentViewUniformBufferExtensions)
+		{
+			Extension->BeginFrame();
+
+			for (int32 ViewIndex = 0; ViewIndex < Views.Num(); ViewIndex++)
+			{
+				// Must happen before RHI thread flush so any tasks we dispatch here can land in the idle gap during the flush
+				Extension->PrepareView(&Views[ViewIndex]);
+			}
 		}
 
 		UpdateGPUScene(RHICmdList, *Scene);
@@ -561,8 +601,25 @@ void FDeferredShadingSceneRenderer::RenderHitProxies(FRHICommandListImmediate& R
 		DynamicVertexBufferForInitViews.Commit();
 		DynamicReadBufferForInitViews.Commit();
 
+		// Notify the FX system that the scene is about to be rendered.
+		if (Scene->FXSystem && Views.IsValidIndex(0))
+		{
+			FGPUSortManager* GPUSortManager = Scene->FXSystem->GetGPUSortManager();
+			Scene->FXSystem->PreRender(RHICmdList, &Views[0].GlobalDistanceFieldInfo.ParameterData, false);
+			if (GPUSortManager)
+			{
+				GPUSortManager->OnPreRender(RHICmdList);
+			}
+			// Call PostRenderOpaque now as this is irrelevant for when rendering hit proxies.
+			// because we don't tick the particles in the render loop (see last param being "false").
+			Scene->FXSystem->PostRenderOpaque(RHICmdList, Views[0].ViewUniformBuffer, nullptr, nullptr, false);
+			if (GPUSortManager)
+			{
+				GPUSortManager->OnPostRenderOpaque(RHICmdList);
+			}
+		}
+
 		::DoRenderHitProxies(RHICmdList, this, HitProxyRT, HitProxyDepthRT);
-		ClearPrimitiveSingleFrameIndirectLightingCacheBuffers();
 	}
 	check(RHICmdList.IsOutsideRenderPass());
 #endif
@@ -572,19 +629,15 @@ void FDeferredShadingSceneRenderer::RenderHitProxies(FRHICommandListImmediate& R
 
 void FHitProxyMeshProcessor::AddMeshBatch(const FMeshBatch& RESTRICT MeshBatch, uint64 BatchElementMask, const FPrimitiveSceneProxy* RESTRICT PrimitiveSceneProxy, int32 StaticMeshId)
 {
-	if (ViewIfDynamicMeshCommand && ViewIfDynamicMeshCommand->bAllowTranslucentPrimitivesInHitProxy != bAllowTranslucentPrimitivesInHitProxy)
-	{
-		return;
-	}
-
 	if (MeshBatch.bUseForMaterial && MeshBatch.bSelectable && Scene->RequiresHitProxies() && (!PrimitiveSceneProxy || PrimitiveSceneProxy->IsSelectable()))
 	{
 		// Determine the mesh's material and blend mode.
 		const FMaterialRenderProxy* MaterialRenderProxy = nullptr;
 		const FMaterial* Material = &MeshBatch.MaterialRenderProxy->GetMaterialWithFallback(FeatureLevel, MaterialRenderProxy);
 		const EBlendMode BlendMode = Material->GetBlendMode();
-		const ERasterizerFillMode MeshFillMode = ComputeMeshFillMode(MeshBatch, *Material);
-		const ERasterizerCullMode MeshCullMode = ComputeMeshCullMode(MeshBatch, *Material);
+		const FMeshDrawingPolicyOverrideSettings OverrideSettings = ComputeMeshOverrideSettings(MeshBatch);
+		const ERasterizerFillMode MeshFillMode = ComputeMeshFillMode(MeshBatch, *Material, OverrideSettings);
+		const ERasterizerCullMode MeshCullMode = ComputeMeshCullMode(MeshBatch, *Material, OverrideSettings);
 
 		if (Material->WritesEveryPixel() && !Material->IsTwoSided() && !Material->MaterialModifiesMeshPosition_RenderThread())
 		{
@@ -600,7 +653,29 @@ void FHitProxyMeshProcessor::AddMeshBatch(const FMeshBatch& RESTRICT MeshBatch, 
 
 		check(Material && MaterialRenderProxy);
 
-		if (bAllowTranslucentPrimitivesInHitProxy || !IsTranslucentBlendMode(BlendMode))
+		bool bAddTranslucentPrimitive = bAllowTranslucentPrimitivesInHitProxy;
+
+		// Check whether the primitive overrides the pass to force translucent hit proxies.
+		if (!bAddTranslucentPrimitive)
+		{
+			FHitProxyId HitProxyId = MeshBatch.BatchHitProxyId;
+
+			// Fallback to the primitive default hit proxy id if the mesh batch doesn't have one.
+			if (MeshBatch.BatchHitProxyId == FHitProxyId() && PrimitiveSceneProxy)
+			{
+				if (const FPrimitiveSceneInfo* PrimitiveSceneInfo = PrimitiveSceneProxy->GetPrimitiveSceneInfo())
+				{
+					HitProxyId = PrimitiveSceneInfo->DefaultDynamicHitProxyId;
+				}
+			}
+
+			if (const HHitProxy* HitProxy = GetHitProxyById(HitProxyId))
+			{
+				bAddTranslucentPrimitive = HitProxy->AlwaysAllowsTranslucentPrimitives();
+			}
+		}
+
+		if (bAddTranslucentPrimitive || !IsTranslucentBlendMode(BlendMode))
 		{
 			Process(MeshBatch, BatchElementMask, StaticMeshId, PrimitiveSceneProxy, *MaterialRenderProxy, *Material, MeshFillMode, MeshCullMode);
 		}
@@ -611,10 +686,10 @@ void GetHitProxyPassShaders(
 	const FMaterial& Material,
 	FVertexFactoryType* VertexFactoryType,
 	ERHIFeatureLevel::Type FeatureLevel,
-	FHitProxyHS*& HullShader,
-	FHitProxyDS*& DomainShader,
-	FHitProxyVS*& VertexShader,
-	FHitProxyPS*& PixelShader)
+	TShaderRef<FHitProxyHS>& HullShader,
+	TShaderRef<FHitProxyDS>& DomainShader,
+	TShaderRef<FHitProxyVS>& VertexShader,
+	TShaderRef<FHitProxyPS>& PixelShader)
 {
 	const EMaterialTessellationMode MaterialTessellationMode = Material.GetTessellationMode();
 
@@ -722,7 +797,8 @@ void FEditorSelectionMeshProcessor::AddMeshBatch(const FMeshBatch& RESTRICT Mesh
 		const FMaterialRenderProxy* MaterialRenderProxy = nullptr;
 		const FMaterial* Material = &MeshBatch.MaterialRenderProxy->GetMaterialWithFallback(FeatureLevel, MaterialRenderProxy);
 
-		const ERasterizerFillMode MeshFillMode = ComputeMeshFillMode(MeshBatch, *Material);
+		const FMeshDrawingPolicyOverrideSettings OverrideSettings = ComputeMeshOverrideSettings(MeshBatch);
+		const ERasterizerFillMode MeshFillMode = ComputeMeshFillMode(MeshBatch, *Material, OverrideSettings);
 		const ERasterizerCullMode MeshCullMode = CM_None;
 
 		if (Material->WritesEveryPixel() && !Material->IsTwoSided() && !Material->MaterialModifiesMeshPosition_RenderThread())

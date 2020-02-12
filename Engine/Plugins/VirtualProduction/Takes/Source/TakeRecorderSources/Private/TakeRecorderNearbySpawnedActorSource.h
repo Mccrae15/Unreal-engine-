@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -12,7 +12,7 @@ class UTexture;
 class UTakeRecorderActorSource;
 
 /** A recording source that detects actors spawned close to the current camera, and captures them as spawnables */
-UCLASS(DisplayName="Nearby Spawned Actors", Category="Actors")
+UCLASS(Category="Actors", meta = (TakeRecorderDisplayName = "Nearby Spawned Actors"))
 class UTakeRecorderNearbySpawnedActorSource : public UTakeRecorderSource
 {
 public:

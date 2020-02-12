@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "Channels/MovieSceneEventChannel.h"
 
@@ -25,6 +25,11 @@ void FMovieSceneEventChannel::DuplicateKeys(TArrayView<const FKeyHandle> InHandl
 void FMovieSceneEventChannel::DeleteKeys(TArrayView<const FKeyHandle> InHandles)
 {
 	GetData().DeleteKeys(InHandles);
+}
+
+void FMovieSceneEventChannel::DeleteKeysFrom(FFrameNumber InTime, bool bDeleteKeysBefore)
+{
+	GetData().DeleteKeysFrom(InTime, bDeleteKeysBefore);
 }
 
 void FMovieSceneEventChannel::ChangeFrameResolution(FFrameRate SourceRate, FFrameRate DestinationRate)

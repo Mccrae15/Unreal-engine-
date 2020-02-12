@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "MaterialEditorUtilities.h"
 #include "UObject/UObjectHash.h"
@@ -16,6 +16,7 @@
 #include "Materials/MaterialExpressionComment.h"
 #include "Materials/MaterialExpressionTextureSample.h"
 #include "Materials/MaterialExpressionTextureSampleParameter.h"
+#include "Materials/MaterialExpressionRuntimeVirtualTextureSampleParameter.h"
 #include "Materials/MaterialExpressionFontSampleParameter.h"
 #include "Materials/MaterialExpressionMaterialFunctionCall.h"
 #include "Materials/MaterialExpressionScalarParameter.h"
@@ -32,6 +33,8 @@
 #include "MaterialUtilities.h"
 #include "Misc/ScopedSlowTask.h"
 #include "Templates/UniquePtr.h"
+#include "Materials/MaterialFunctionInstance.h"
+#include "Subsystems/AssetEditorSubsystem.h"
 
 #define LOCTEXT_NAMESPACE "MaterialEditorUtilities"
 
@@ -406,6 +409,7 @@ void FMaterialEditorUtilities::GetVisibleMaterialParametersFromExpression(
 	// If it's a material parameter it must be visible so add it to the list
 	UMaterialExpressionParameter* Param = Cast<UMaterialExpressionParameter>( MaterialExpressionKey.Expression );
 	UMaterialExpressionTextureSampleParameter* TexParam = Cast<UMaterialExpressionTextureSampleParameter>( MaterialExpressionKey.Expression );
+	UMaterialExpressionRuntimeVirtualTextureSampleParameter* RuntimeVirtualTexParam = Cast<UMaterialExpressionRuntimeVirtualTextureSampleParameter>(MaterialExpressionKey.Expression);
 	UMaterialExpressionFontSampleParameter* FontParam = Cast<UMaterialExpressionFontSampleParameter>( MaterialExpressionKey.Expression );
 
 	if (Param)
@@ -416,12 +420,16 @@ void FMaterialEditorUtilities::GetVisibleMaterialParametersFromExpression(
 	{
 		ParameterInfo.Name = TexParam->ParameterName;
 	}
+	else if (RuntimeVirtualTexParam)
+	{
+		ParameterInfo.Name = RuntimeVirtualTexParam->ParameterName;
+	}
 	else if (FontParam)
 	{
 		ParameterInfo.Name = FontParam->ParameterName;
 	}
 		
-	if (Param || TexParam || FontParam)
+	if (Param || TexParam || FontParam || RuntimeVirtualTexParam)
 	{
 		VisibleExpressions.AddUnique(ParameterInfo);
 	}
@@ -687,25 +695,15 @@ void FMaterialEditorUtilities::BuildTextureStreamingData(UMaterialInterface* Upd
 		FScopedSlowTask SlowTask(2.f, (LOCTEXT("MaterialEditorUtilities_UpdatingTextureStreamingData", "Updating Texture Streaming Data")));
 		SlowTask.MakeDialog(true);
 
+		// Clear the build data.
+		const TArray<FMaterialTextureInfo> EmptyTextureStreamingData;
+		UpdatedMaterial->SetTextureStreamingData(EmptyTextureStreamingData);
+
 		TSet<UMaterialInterface*> Materials;
 		Materials.Add(UpdatedMaterial);
 
-		// Clear the build data.
-		const TArray<FMaterialTextureInfo> EmptyTextureStreamingData;
-
-		// Here we also update the parents as we just want to save the delta between the hierarchy.
-		// Since the instance may only override partially the parent params, we try to find what the child has overridden.
-		UMaterialInstance* MaterialInstance = Cast<UMaterialInstance>(UpdatedMaterial);
-		while (MaterialInstance)
-		{
-			// Clear the data in case the build is canceled.
-			MaterialInstance->SetTextureStreamingData(EmptyTextureStreamingData);
-			Materials.Add(MaterialInstance);
-			MaterialInstance = Cast<UMaterialInstance>(MaterialInstance->Parent);
-		};
-
 		// Here we need a full rebuild since the shader changed. Although don't wait for previous shaders to fasten the process.
-		if (CompileDebugViewModeShaders(DVSM_OutputMaterialTextureScales, QualityLevel, FeatureLevel, true, false, Materials, SlowTask))
+		if (CompileDebugViewModeShaders(DVSM_OutputMaterialTextureScales, QualityLevel, FeatureLevel, true, false, Materials, &SlowTask))
 		{
 			FMaterialUtilities::FExportErrorManager ExportErrors(FeatureLevel);
 			for (UMaterialInterface* MaterialInterface : Materials)
@@ -715,6 +713,72 @@ void FMaterialEditorUtilities::BuildTextureStreamingData(UMaterialInterface* Upd
 			ExportErrors.OutputToLog();
 
 			CollectGarbage( GARBAGE_COLLECTION_KEEPFLAGS );
+		}
+	}
+}
+
+
+void FMaterialEditorUtilities::OnOpenMaterial(FAssetData InMaterial)
+{
+	UMaterialInterface* MaterialInterface = Cast<UMaterialInterface>(InMaterial.GetAsset());
+	OpenSelectedParentEditor(MaterialInterface);
+}
+
+void FMaterialEditorUtilities::OnOpenFunction(FAssetData InFunction)
+{
+	UMaterialFunctionInterface* MaterialFunctionInterface = Cast<UMaterialFunctionInterface>(InFunction.GetAsset());
+	OpenSelectedParentEditor(MaterialFunctionInterface);
+}
+
+void FMaterialEditorUtilities::OnShowMaterialInContentBrowser(FAssetData InMaterial)
+{
+	TArray<UObject*> SyncedObject;
+	SyncedObject.Add(InMaterial.GetAsset());
+	GEditor->SyncBrowserToObjects(SyncedObject);
+}
+
+void FMaterialEditorUtilities::OnShowFunctionInContentBrowser(FAssetData InFunction)
+{
+	TArray<UObject*> SyncedObject;
+	SyncedObject.Add(InFunction.GetAsset());
+	GEditor->SyncBrowserToObjects(SyncedObject);
+}
+
+void FMaterialEditorUtilities::OpenSelectedParentEditor(UMaterialInterface* InMaterialInterface)
+{
+	// See if its a material or material instance constant. 
+	if (ensure(InMaterialInterface))
+	{
+		if (InMaterialInterface->IsA(UMaterial::StaticClass()))
+		{
+			// Show material editor
+			UMaterial* Material = Cast<UMaterial>(InMaterialInterface);
+			GEditor->GetEditorSubsystem<UAssetEditorSubsystem>()->OpenEditorForAsset(Material);
+		}
+		else if (InMaterialInterface->IsA(UMaterialInstance::StaticClass()))
+		{
+			// Show material instance editor
+			UMaterialInstance* MaterialInstance = Cast<UMaterialInstance>(InMaterialInterface);
+			GEditor->GetEditorSubsystem<UAssetEditorSubsystem>()->OpenEditorForAsset(MaterialInstance);
+		}
+	}
+}
+
+void FMaterialEditorUtilities::OpenSelectedParentEditor(UMaterialFunctionInterface* InMaterialFunction)
+{
+	// See if its a material or material instance constant.  
+	if (ensure(InMaterialFunction) )
+	{
+		if (InMaterialFunction->IsA(UMaterialFunctionInstance::StaticClass()))
+		{
+			// Show function instance editor
+			UMaterialFunctionInstance* FunctionInstance = Cast<UMaterialFunctionInstance>(InMaterialFunction);
+			GEditor->GetEditorSubsystem<UAssetEditorSubsystem>()->OpenEditorForAsset(FunctionInstance);
+		}
+		else
+		{
+			// Show function editor
+			GEditor->GetEditorSubsystem<UAssetEditorSubsystem>()->OpenEditorForAsset(InMaterialFunction);
 		}
 	}
 }

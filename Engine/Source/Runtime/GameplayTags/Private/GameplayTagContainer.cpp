@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "GameplayTagContainer.h"
 #include "HAL/IConsoleManager.h"
@@ -245,7 +245,7 @@ void FQueryEvaluator::ReadExpr(FGameplayTagQueryExpression& E)
 		{
 			FGameplayTagQueryExpression Exp;
 			ReadExpr(Exp);
-			Exp.AddExpr(Exp);
+			E.AddExpr(Exp);
 		}
 	}
 }
@@ -821,7 +821,7 @@ bool FGameplayTagContainer::AddLeafTag(const FGameplayTag& TagToAdd)
 
 DECLARE_CYCLE_STAT(TEXT("FGameplayTagContainer::RemoveTag"), STAT_FGameplayTagContainer_RemoveTag, STATGROUP_GameplayTags);
 
-bool FGameplayTagContainer::RemoveTag(FGameplayTag TagToRemove)
+bool FGameplayTagContainer::RemoveTag(const FGameplayTag& TagToRemove, bool bDeferParentTags)
 {
 	SCOPE_CYCLE_COUNTER(STAT_FGameplayTagContainer_RemoveTag);
 
@@ -829,8 +829,11 @@ bool FGameplayTagContainer::RemoveTag(FGameplayTag TagToRemove)
 
 	if (NumChanged > 0)
 	{
-		// Have to recompute parent table from scratch because there could be duplicates providing the same parent tag
-		FillParentTags();
+		if (!bDeferParentTags)
+		{
+			// Have to recompute parent table from scratch because there could be duplicates providing the same parent tag
+			FillParentTags();
+		}
 		return true;
 	}
 	return false;
@@ -838,7 +841,7 @@ bool FGameplayTagContainer::RemoveTag(FGameplayTag TagToRemove)
 
 DECLARE_CYCLE_STAT(TEXT("FGameplayTagContainer::RemoveTags"), STAT_FGameplayTagContainer_RemoveTags, STATGROUP_GameplayTags);
 
-void FGameplayTagContainer::RemoveTags(FGameplayTagContainer TagsToRemove)
+void FGameplayTagContainer::RemoveTags(const FGameplayTagContainer& TagsToRemove)
 {
 	SCOPE_CYCLE_COUNTER(STAT_FGameplayTagContainer_RemoveTags);
 
@@ -864,41 +867,43 @@ void FGameplayTagContainer::Reset(int32 Slack)
 	ParentTags.Reset(Slack);
 }
 
-bool FGameplayTagContainer::Serialize(FArchive& Ar)
+bool FGameplayTagContainer::Serialize(FStructuredArchive::FSlot Slot)
 {
-	const bool bOldTagVer = Ar.UE4Ver() < VER_UE4_GAMEPLAY_TAG_CONTAINER_TAG_TYPE_CHANGE;
+	FArchive& UnderlyingArchive = Slot.GetUnderlyingArchive();
+
+	const bool bOldTagVer = UnderlyingArchive.UE4Ver() < VER_UE4_GAMEPLAY_TAG_CONTAINER_TAG_TYPE_CHANGE;
 	
 	if (bOldTagVer)
 	{
 		TArray<FName> Tags_DEPRECATED;
-		Ar << Tags_DEPRECATED;
+		Slot << Tags_DEPRECATED;
 		// Too old to deal with
 		UE_LOG(LogGameplayTags, Error, TEXT("Failed to load old GameplayTag container, too old to migrate correctly"));
 	}
 	else
 	{
-		Ar << GameplayTags;
+		Slot << GameplayTags;
 	}
 	
 	// Only do redirects for real loads, not for duplicates or recompiles
-	if (Ar.IsLoading() )
+	if (UnderlyingArchive.IsLoading() )
 	{
-		if (Ar.IsPersistent() && !(Ar.GetPortFlags() & PPF_Duplicate) && !(Ar.GetPortFlags() & PPF_DuplicateForPIE))
+		if (UnderlyingArchive.IsPersistent() && !(UnderlyingArchive.GetPortFlags() & PPF_Duplicate) && !(UnderlyingArchive.GetPortFlags() & PPF_DuplicateForPIE))
 		{
 			// Rename any tags that may have changed by the ini file.  Redirects can happen regardless of version.
 			// Regardless of version, want loading to have a chance to handle redirects
-			UGameplayTagsManager::Get().GameplayTagContainerLoaded(*this, Ar.GetSerializedProperty());
+			UGameplayTagsManager::Get().GameplayTagContainerLoaded(*this, UnderlyingArchive.GetSerializedProperty());
 		}
 
 		FillParentTags();
 	}
 
-	if (Ar.IsSaving())
+	if (UnderlyingArchive.IsSaving())
 	{
 		// This marks the saved name for later searching
 		for (const FGameplayTag& Tag : GameplayTags)
 		{
-			Ar.MarkSearchableName(FGameplayTag::StaticStruct(), Tag.TagName);
+			UnderlyingArchive.MarkSearchableName(FGameplayTag::StaticStruct(), Tag.TagName);
 		}
 	}
 
@@ -913,7 +918,7 @@ FString FGameplayTagContainer::ToString() const
 	return ExportString;
 }
 
-void FGameplayTagContainer::FromExportString(FString ExportString)
+void FGameplayTagContainer::FromExportString(const FString& ExportString)
 {
 	Reset();
 
@@ -1085,7 +1090,7 @@ const FGameplayTagContainer& FGameplayTag::GetSingleTagContainer() const
 	return FGameplayTagContainer::EmptyContainer;
 }
 
-FGameplayTag FGameplayTag::RequestGameplayTag(FName TagName, bool ErrorIfNotFound)
+FGameplayTag FGameplayTag::RequestGameplayTag(const FName& TagName, bool ErrorIfNotFound)
 {
 	return UGameplayTagsManager::Get().RequestGameplayTag(TagName, ErrorIfNotFound);
 }
@@ -1114,7 +1119,7 @@ bool FGameplayTag::MatchesTag(const FGameplayTag& TagToCheck) const
 	}
 
 	// This should always be invalid if the node is missing
-	ensureMsgf(!IsValid(), TEXT("Valid tag failed to conver to single tag container. %s"), *GetTagName().ToString());
+	ensureMsgf(!IsValid(), TEXT("Valid tag failed to convert to single tag container. %s"), *GetTagName().ToString());
 
 	return false;
 }
@@ -1142,7 +1147,7 @@ int32 FGameplayTag::MatchesTagDepth(const FGameplayTag& TagToCheck) const
 	return UGameplayTagsManager::Get().GameplayTagsMatchDepth(*this, TagToCheck);
 }
 
-FGameplayTag::FGameplayTag(FName Name)
+FGameplayTag::FGameplayTag(const FName& Name)
 	: TagName(Name)
 {
 	// This constructor is used to bypass the table check and is only usable by GameplayTagManager
@@ -1213,7 +1218,7 @@ bool FGameplayTag::NetSerialize_Packed(FArchive& Ar, class UPackageMap* Map, boo
 		FGameplayTagNetIndex NetIndex = INVALID_TAGNETINDEX;
 
 		UPackageMapClient* PackageMapClient = Cast<UPackageMapClient>(Map);
-		const bool bIsReplay = PackageMapClient && PackageMapClient->GetConnection() && PackageMapClient->GetConnection()->InternalAck;
+		const bool bIsReplay = PackageMapClient && PackageMapClient->GetConnection() && PackageMapClient->GetConnection()->IsInternalAck();
 
 		TSharedPtr<FNetFieldExportGroup> NetFieldExportGroup;
 
@@ -1321,7 +1326,7 @@ void FGameplayTag::PostSerialize(const FArchive& Ar)
 bool FGameplayTag::ImportTextItem(const TCHAR*& Buffer, int32 PortFlags, UObject* Parent, FOutputDevice* ErrorText)
 {
 	FString ImportedTag = TEXT("");
-	const TCHAR* NewBuffer = UPropertyHelpers::ReadToken(Buffer, ImportedTag, true);
+	const TCHAR* NewBuffer = FPropertyHelpers::ReadToken(Buffer, ImportedTag, true);
 	if (!NewBuffer)
 	{
 		// Failed to read buffer. Maybe normal ImportText will work.
@@ -1670,7 +1675,7 @@ void FGameplayTagQuery::BuildFromEditableQuery(UEditableGameplayTagQuery& Editab
 FString UEditableGameplayTagQuery::GetTagQueryExportText(FGameplayTagQuery const& TagQuery)
 {
 	TagQueryExportText_Helper = TagQuery;
-	UProperty* const TQProperty = FindField<UProperty>(GetClass(), TEXT("TagQueryExportText_Helper"));
+	FProperty* const TQProperty = FindField<FProperty>(GetClass(), TEXT("TagQueryExportText_Helper"));
 
 	FString OutString;
 	TQProperty->ExportTextItem(OutString, (void*)&TagQueryExportText_Helper, (void*)&TagQueryExportText_Helper, this, 0);

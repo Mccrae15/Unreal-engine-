@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "Misc/NetworkVersion.h"
 #include "Misc/App.h"
@@ -13,12 +13,16 @@ DEFINE_LOG_CATEGORY( LogNetVersion );
 FNetworkVersion::FGetLocalNetworkVersionOverride FNetworkVersion::GetLocalNetworkVersionOverride;
 FNetworkVersion::FIsNetworkCompatibleOverride FNetworkVersion::IsNetworkCompatibleOverride;
 
-FString FNetworkVersion::ProjectVersion = TEXT("1.0.0");
+FString& FNetworkVersion::GetProjectVersion_Internal()
+{
+	static FString ProjectVersion = TEXT("1.0.0");
+	return ProjectVersion;
+}
 
 bool FNetworkVersion::bHasCachedNetworkChecksum			= false;
 uint32 FNetworkVersion::CachedNetworkChecksum			= 0;
 
-uint32 FNetworkVersion::EngineNetworkProtocolVersion	= HISTORY_NETEXPORT_SERIALIZATION;
+uint32 FNetworkVersion::EngineNetworkProtocolVersion	= HISTORY_ENGINENETVERSION_LATEST;
 uint32 FNetworkVersion::GameNetworkProtocolVersion		= 0;
 
 uint32 FNetworkVersion::EngineCompatibleNetworkProtocolVersion		= HISTORY_REPLAY_BACKWARDS_COMPAT;
@@ -28,6 +32,8 @@ void FNetworkVersion::SetProjectVersion(const TCHAR* InVersion)
 {
 	if (ensureMsgf(InVersion != nullptr && FCString::Strlen(InVersion), TEXT("ProjectVersion used for network version must be a valid string!")))
 	{
+		FString& ProjectVersion = GetProjectVersion_Internal();
+
 		ProjectVersion = InVersion;
 		bHasCachedNetworkChecksum = false;
 

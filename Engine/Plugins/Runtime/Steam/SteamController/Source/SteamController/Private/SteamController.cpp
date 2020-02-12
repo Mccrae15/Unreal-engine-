@@ -1,9 +1,10 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "CoreMinimal.h"
 #include "HAL/PlatformTime.h"
 #include "HAL/PlatformProcess.h"
 #include "Misc/Paths.h"
+#include "Misc/ConfigCacheIni.h"
 #include "GenericPlatform/GenericApplicationMessageHandler.h"
 #include "Modules/ModuleManager.h"
 #include "GenericPlatform/IInputInterface.h"
@@ -11,8 +12,8 @@
 #include "IInputDeviceModule.h"
 #include "ISteamControllerPlugin.h"
 #include "SteamControllerPrivate.h"
+#include "SteamSharedModule.h"
 #include "GameFramework/InputSettings.h"
-#include "ISteamControllerPlugin.h"
 
 DEFINE_LOG_CATEGORY_STATIC(LogSteamController, Log, All);
 
@@ -23,38 +24,6 @@ DEFINE_LOG_CATEGORY_STATIC(LogSteamController, Log, All);
 #define MAX_STEAM_CONTROLLERS 8
 #endif
 
-// Support function to load the proper version of the Steamworks library
-bool LoadSteamModule()
-{
-#if PLATFORM_WINDOWS
-#if PLATFORM_64BITS
-	void* SteamDLLHandle = nullptr;
-
-	FString RootSteamPath = FPaths::EngineDir() / FString::Printf(TEXT("Binaries/ThirdParty/Steamworks/%s/Win64/"), STEAM_SDK_VER_PATH);
-	FPlatformProcess::PushDllDirectory(*RootSteamPath);
-	SteamDLLHandle = FPlatformProcess::GetDllHandle(*(RootSteamPath + "steam_api64.dll"));
-	FPlatformProcess::PopDllDirectory(*RootSteamPath);
-#else
-	FString RootSteamPath = FPaths::EngineDir() / FString::Printf(TEXT("Binaries/ThirdParty/Steamworks/%s/Win32/"), STEAM_SDK_VER_PATH);
-	FPlatformProcess::PushDllDirectory(*RootSteamPath);
-	SteamDLLHandle = FPlatformProcess::GetDllHandle(*(RootSteamPath + "steam_api.dll"));
-	FPlatformProcess::PopDllDirectory(*RootSteamPath);
-#endif
-#elif PLATFORM_MAC
-	void* SteamDLLHandle = FPlatformProcess::GetDllHandle(TEXT("libsteam_api.dylib"));
-#elif PLATFORM_LINUX
-	void* SteamDLLHandle = FPlatformProcess::GetDllHandle(TEXT("libsteam_api.so"));
-#endif	//PLATFORM_WINDOWS
-
-	if (!SteamDLLHandle)
-	{
-		UE_LOG(LogSteamController, Warning, TEXT("Failed to load Steam library."));
-		return false;
-	}
-
-	return true;
-}
-
 class FSteamController : public IInputDevice
 {
 
@@ -64,23 +33,19 @@ public:
 		InitialButtonRepeatDelay(0.2),
 		ButtonRepeatDelay(0.1),
 		MessageHandler(InMessageHandler),
-		bSteamAPIInitialized(false),
 		bSteamControllerInitialized(false),
 		InputSettings(nullptr)
 	{
-		// Attempt to load the Steam Library
-		if (!LoadSteamModule())
-		{
-			return;
-		}
+		GConfig->GetDouble(TEXT("/Script/Engine.InputSettings"), TEXT("InitialButtonRepeatDelay"), InitialButtonRepeatDelay, GInputIni);
+		GConfig->GetDouble(TEXT("/Script/Engine.InputSettings"), TEXT("ButtonRepeatDelay"), ButtonRepeatDelay, GInputIni);
 
 		// Initialize the API, so we can start calling SteamController functions
-		bSteamAPIInitialized = SteamAPI_Init();
+		SteamAPIHandle = FSteamSharedModule::Get().ObtainSteamClientInstanceHandle();
 
 		// [RCL] 2015-01-23 FIXME: move to some other code than constructor so we can handle failures more gracefully
-		if (bSteamAPIInitialized && (SteamController() != nullptr))
+		if (SteamAPIHandle.IsValid() && (SteamInput() != nullptr))
 		{
-			bSteamControllerInitialized = SteamController()->Init();
+			bSteamControllerInitialized = SteamInput()->Init();
 
 			InputSettings = GetDefault<UInputSettings>();
 			if (InputSettings != nullptr)
@@ -92,7 +57,7 @@ public:
 					ANSICHAR AnsiActionName[NAME_SIZE];
 					ActionName.GetPlainANSIString(AnsiActionName);
 
-					ControllerDigitalActionHandle_t DigitalActionHandle = SteamController()->GetDigitalActionHandle(AnsiActionName);
+					ControllerDigitalActionHandle_t DigitalActionHandle = SteamInput()->GetDigitalActionHandle(AnsiActionName);
 					if (DigitalActionHandle > 0)
 					{
 						DigitalActionHandlesMap.Add(ActionName, DigitalActionHandle);
@@ -112,7 +77,7 @@ public:
 					ANSICHAR AnsiAxisName[NAME_SIZE];
 					AxisName.GetPlainANSIString(AnsiAxisName);
 
-					ControllerAnalogActionHandle_t AnalogActionHandle = SteamController()->GetAnalogActionHandle(AnsiAxisName);
+					ControllerAnalogActionHandle_t AnalogActionHandle = SteamInput()->GetAnalogActionHandle(AnsiAxisName);
 					if (AnalogActionHandle > 0)
 					{
 						AnalogActionHandlesMap.Add(AxisName, AnalogActionHandle);
@@ -126,7 +91,7 @@ public:
 					}
 				}
 
-				for (FInputActionKeyMapping ActionMapping : InputSettings->ActionMappings)
+				for (FInputActionKeyMapping ActionMapping : InputSettings->GetActionMappings())
 				{
 					if (ActionMapping.Key.IsGamepadKey())
 					{
@@ -134,7 +99,7 @@ public:
 					}
 				}
 
-				for (FInputAxisKeyMapping AxisMapping : InputSettings->AxisMappings)
+				for (FInputAxisKeyMapping AxisMapping : InputSettings->GetAxisMappings())
 				{
 					if (AxisMapping.Key.IsGamepadKey() || AxisMapping.Key == EKeys::MouseX || AxisMapping.Key == EKeys::MouseY)
 					{
@@ -145,15 +110,15 @@ public:
 		}
 		else
 		{
-			UE_LOG(LogSteamController, Log, TEXT("SteamController is not available"));
+			UE_LOG(LogSteamController, Log, TEXT("SteamController is not available"));		
 		}
 	}
 
 	virtual ~FSteamController()
 	{
-		if (SteamController() != nullptr)
+		if (SteamInput() != nullptr)
 		{
-			SteamController()->Shutdown();
+			SteamInput()->Shutdown();
 		}
 	}
 
@@ -169,16 +134,21 @@ public:
 		}
 		double CurrentTime = FPlatformTime::Seconds();
 		ControllerHandle_t ControllerHandles[STEAM_CONTROLLER_MAX_COUNT];
-		int32 NumControllers = (int32)SteamController()->GetConnectedControllers(ControllerHandles);
+		int32 NumControllers = (int32)SteamInput()->GetConnectedControllers(ControllerHandles);
 		for (int32 i = 0; i < NumControllers; i++)
 		{
 			ControllerHandle_t ControllerHandle = ControllerHandles[i];
 			FControllerState& ControllerState = ControllerStates[i];
 
+			// Doesn't seem to be a good way to get a non-localized string, so use generic name for scope
+			static FName SystemName(TEXT("SteamController"));
+			static FString ControllerName(TEXT("SteamController"));
+			FInputDeviceScope InputScope(this, SystemName, i, ControllerName);
+
 			for (auto It = DigitalActionHandlesMap.CreateConstIterator(); It; ++It)
 			{
 				FName DigitalActionName = It.Key();
-				ControllerDigitalActionData_t DigitalActionData = SteamController()->GetDigitalActionData(ControllerHandle, It.Value());
+				ControllerDigitalActionData_t DigitalActionData = SteamInput()->GetDigitalActionData(ControllerHandle, It.Value());
 				if (ControllerState.DigitalStatusMap[DigitalActionName] == false && DigitalActionData.bState)
 				{
  					MessageHandler->OnControllerButtonPressed(DigitalNamesToKeysMap[DigitalActionName].GetFName(), i, false);
@@ -200,7 +170,7 @@ public:
 			for (auto It = AnalogActionHandlesMap.CreateConstIterator(); It; ++It)
 			{
 				FName AnalogActionName = It.Key();
-				ControllerAnalogActionData_t AnalogActionData = SteamController()->GetAnalogActionData(ControllerHandle, It.Value());
+				ControllerAnalogActionData_t AnalogActionData = SteamInput()->GetAnalogActionData(ControllerHandle, It.Value());
 				if (AxisNamesToKeysMap[AnalogActionName] == EKeys::MouseX || AxisNamesToKeysMap[AnalogActionName] == EKeys::MouseY)
 				{
 					ControllerState.MouseX += AnalogActionData.x;
@@ -284,14 +254,14 @@ public:
 	void UpdateVibration(int32 ControllerId, const FForceFeedbackValues& ForceFeedbackValues)
 	{
 		// make sure there is a valid device for this controller
-		ISteamController* const Controller = SteamController();
+		ISteamInput* const Controller = SteamInput();
 		if (Controller == nullptr || IsGamepadAttached() == false)
 		{
 			return;
 		}
 
 		ControllerHandle_t ControllerHandles[STEAM_CONTROLLER_MAX_COUNT];
-		int32 NumControllers = (int32)SteamController()->GetConnectedControllers(ControllerHandles);
+		int32 NumControllers = (int32)SteamInput()->GetConnectedControllers(ControllerHandles);
 		if (ControllerHandles[ControllerId] == 0)
 		{
 			return;
@@ -322,7 +292,7 @@ public:
 
 	virtual bool IsGamepadAttached() const override
 	{
-		return (bSteamAPIInitialized && bSteamControllerInitialized);
+		return (SteamAPIHandle.IsValid() && bSteamControllerInitialized);
 	}
 
 private:
@@ -360,7 +330,7 @@ private:
 	TSharedRef<FGenericApplicationMessageHandler> MessageHandler;
 
 	/** SteamAPI initialized **/
-	bool bSteamAPIInitialized;
+	TSharedPtr<class FSteamClientInstanceHandler> SteamAPIHandle;
 
 	/** SteamController initialized **/
 	bool bSteamControllerInitialized;

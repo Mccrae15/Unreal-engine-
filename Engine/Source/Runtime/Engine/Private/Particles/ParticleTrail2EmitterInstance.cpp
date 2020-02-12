@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 /*=============================================================================
 	ParticleTrail2EmitterInstance.cpp: 
@@ -45,8 +45,35 @@ DEFINE_STAT(STAT_AnimTrailNotifyTime);
 
 DECLARE_CYCLE_STAT(TEXT("TrailEmitterInstance Init GT"), STAT_TrailEmitterInstance_Init, STATGROUP_Particles);
 
+static int32 GSkipRibbonSpawnInterp = 1;
+static FAutoConsoleVariableRef CVarSkipRibbonSpawnInterp(
+	TEXT("r.Emitter.SkipRibbonSpawnInterp"),
+	GSkipRibbonSpawnInterp,
+	TEXT("Ignore velocity based offsets when interpolating. This prevents ribbon quads from overlapping eachother (default=1)"),
+	ECVF_Default
+);
 
 #define MAX_TRAIL_INDICES	65535
+
+namespace FXConsoleVariables
+{
+	int32 MaxDistanceTessellation = MAX_TRAIL_INDICES;
+	int32 MaxTangentTessellation = MAX_TRAIL_INDICES;
+
+	FAutoConsoleVariableRef CVarMaxDistanceTessellation(
+		TEXT("FX.Trail.MaxDistanceTessellation"),
+		MaxDistanceTessellation,
+		TEXT("Maximum tessellation steps allowed for distance based tessellation."),
+		ECVF_Default
+	);
+
+	FAutoConsoleVariableRef CVarMaxTangentTessellation(
+		TEXT("FX.Trail.MaxTangentTessellation"),
+		MaxTangentTessellation,
+		TEXT("Maximum tessellation steps allowed for tangent based tessellation."),
+		ECVF_Default
+	);
+}
 
 /*-----------------------------------------------------------------------------
 	FParticleTrailsEmitterInstance_Base.
@@ -465,6 +492,22 @@ void FParticleTrailsEmitterInstance_Base::KillParticles()
 					check(!TEXT("What the hell are you doing in here?"));
 				}
 
+				//Be certain we've broken links to this particle				
+				int32 Next = TRAIL_EMITTER_GET_NEXT(TrailData->Flags);
+				if (Next != TRAIL_EMITTER_NULL_NEXT)
+				{
+					DECLARE_PARTICLE_PTR(NextParticle, ParticleData + ParticleStride * Next);
+					FTrailsBaseTypeDataPayload* NextTrailData = ((FTrailsBaseTypeDataPayload*)((uint8*)NextParticle + TypeDataOffset));
+					NextTrailData->Flags = TRAIL_EMITTER_SET_PREV(NextTrailData->Flags, TRAIL_EMITTER_NULL_PREV);
+				}
+				int32 Prev = TRAIL_EMITTER_GET_PREV(TrailData->Flags);
+				if (Prev != TRAIL_EMITTER_NULL_PREV)
+				{
+					DECLARE_PARTICLE_PTR(PrevParticle, ParticleData + ParticleStride * Prev);
+					FTrailsBaseTypeDataPayload* PrevTrailData = ((FTrailsBaseTypeDataPayload*)((uint8*)PrevParticle + TypeDataOffset));
+					PrevTrailData->Flags = TRAIL_EMITTER_SET_NEXT(PrevTrailData->Flags, TRAIL_EMITTER_NULL_NEXT);
+				}
+
 				// Clear it out... just to be safe when it gets pulled back to active
 				TrailData->Flags = TRAIL_EMITTER_SET_NEXT(TrailData->Flags, TRAIL_EMITTER_NULL_NEXT);
 				TrailData->Flags = TRAIL_EMITTER_SET_PREV(TrailData->Flags, TRAIL_EMITTER_NULL_PREV);
@@ -852,7 +895,7 @@ void TrailsBase_CalculateTangent(
 	NewTangent *= (1.0f / InOutCurrTrailData->SpawnedTessellationPoints);
 
 		InOutCurrTrailData->Tangent = NewTangent;
-	}
+}
 
 /**
  *	Tick sub-function that handles recalculation of tangents
@@ -881,7 +924,7 @@ void FParticleRibbonEmitterInstance::Tick_RecalculateTangents(float DeltaTime, U
 				//     END, prev, prev, ..., START
 				FBaseParticle* PrevParticle = StartParticle;
 				FRibbonTypeDataPayload* PrevTrailData = StartTrailData;
-				FBaseParticle* CurrParticle = NULL;
+				FBaseParticle* CurrParticle = NULL; 
 				FRibbonTypeDataPayload* CurrTrailData = NULL;
 				FBaseParticle* NextParticle = NULL;
 				FTrailsBaseTypeDataPayload* TempPayload = NULL;
@@ -1347,7 +1390,6 @@ float FParticleRibbonEmitterInstance::Spawn(float DeltaTime)
 			GetParticleLifetimeAndSize(TrailIdx, Particle, bNoLivingParticles, Particle->OneOverMaxLifetime, Particle->Size.X);
 			Particle->RelativeTime = SpawnTime * Particle->OneOverMaxLifetime;
 			Particle->Size.Y = Particle->Size.X;
-			Particle->Size.Z = Particle->Size.Z;
 			Particle->BaseSize = Particle->Size;
 
 			if (EventPayload)
@@ -1842,12 +1884,12 @@ bool FParticleRibbonEmitterInstance::Spawn_Source(float DeltaTime)
 					//@todo. Need to track TypeData offset into payload!
 					LODLevel->TypeDataModule->Spawn(this, TypeDataOffset, SpawnTime, Particle);
 				}
-				PostSpawn(Particle, 1.f - float(SpawnIdx + 1) / float(MovementSpawnCount), SpawnTime);
+				const float InterpolationPercentage = GSkipRibbonSpawnInterp ? 0.f : (1.f - float(SpawnIdx + 1) / float(MovementSpawnCount));
+				PostSpawn(Particle, InterpolationPercentage, SpawnTime);
 
 				GetParticleLifetimeAndSize(TrailIdx, Particle, bNoLivingParticles, Particle->OneOverMaxLifetime, Particle->Size.X);
 				Particle->RelativeTime = SpawnTime * Particle->OneOverMaxLifetime;
 				Particle->Size.Y = Particle->Size.X;
-				Particle->Size.Z = Particle->Size.Z;
 				Particle->BaseSize = Particle->Size;
 
 				Component->SetComponentToWorld(SavedComponentToWorld);
@@ -2223,7 +2265,8 @@ bool FParticleRibbonEmitterInstance::ResolveSourcePoint(int32 InTrailIdx,
 						{
 							case EPSSM_Random:
 							{
-								Index = FMath::TruncToInt(FMath::FRand() * SourceEmitter->ActiveParticles);
+								FRandomStream& RandomStream = SourceModule->GetRandomStream(this);
+								Index = RandomStream.RandHelper(SourceEmitter->ActiveParticles);
 							}
 								break;
 							case EPSSM_Sequential:
@@ -2494,7 +2537,7 @@ void FParticleRibbonEmitterInstance::DetermineVertexAndTriangleCount()
 
 					//@todo. Need to adjust the tangent diff count when the distance is REALLY small...
 					float TangDiff = CheckTangent * TrailTypeData->TangentTessellationScalar;
-					int32 InterpCount = FMath::TruncToInt(DistDiff) + FMath::TruncToInt(TangDiff);
+					int32 InterpCount = FMath::Min(FMath::TruncToInt(DistDiff), FXConsoleVariables::MaxDistanceTessellation) + FMath::Min(FMath::TruncToInt(TangDiff), FXConsoleVariables::MaxTangentTessellation);
 
 					// There always is at least 1 point (the source particle itself)
 					InterpCount = (InterpCount > 0) ? InterpCount : 1;
@@ -2618,7 +2661,6 @@ FDynamicEmitterDataBase* FParticleRibbonEmitterInstance::GetDynamicData(bool bSe
 	// Allocate the dynamic data
 	FDynamicRibbonEmitterData* NewEmitterData = new FDynamicRibbonEmitterData(LODLevel->RequiredModule);
 	{
-		SCOPE_CYCLE_COUNTER(STAT_ParticleMemTime);
 		INC_DWORD_STAT(STAT_DynamicEmitterCount);
 		INC_DWORD_STAT(STAT_DynamicRibbonCount);
 		INC_DWORD_STAT_BY(STAT_DynamicEmitterMem, sizeof(FDynamicRibbonEmitterData));
@@ -2975,6 +3017,11 @@ void FParticleAnimTrailEmitterInstance::Tick_RecalculateTangents(float DeltaTime
 			CurrTrailData = (FAnimTrailTypeDataPayload*)(TempPayload);
 			while (CurrParticle != NULL)
 			{
+				if (CheckForCircularTrail(StartParticle, CurrParticle))
+				{
+					break;
+				}
+
 				// Grab the next particle in the trail...
 				GetParticleInTrail(true, CurrParticle, CurrTrailData, GET_Next, GET_Any, NextParticle, TempPayload);
 				NextTrailData = (FAnimTrailTypeDataPayload*)(TempPayload);
@@ -3167,6 +3214,8 @@ void FParticleAnimTrailEmitterInstance::SpawnParticle( int32& StartParticleIndex
 			// This it the first particle.
 			// Tag it as the 'only'
 			TrailData->Flags = TRAIL_EMITTER_SET_ONLY(TrailData->Flags);
+			TrailData->Flags = TRAIL_EMITTER_SET_PREV(TrailData->Flags, TRAIL_EMITTER_NULL_PREV);
+			TrailData->Flags = TRAIL_EMITTER_SET_NEXT(TrailData->Flags, TRAIL_EMITTER_NULL_NEXT);
 			TiledUDistanceTraveled[TrailIdx] = 0.0f;
 			TrailData->TiledU = 0.0f;
 			bAddedParticle		= true;
@@ -3761,6 +3810,11 @@ void FParticleAnimTrailEmitterInstance::DetermineVertexAndTriangleCount()
 				// The end of the trail, so there MUST be another particle
 				while (!bDone)
 				{
+					if (CheckForCircularTrail(Particle, PrevParticle))
+					{
+						break;
+					}
+
 					ParticleCount++;
 					int32 InterpCount = 1;
 					if( bApplyDistanceTessellation )
@@ -3768,7 +3822,7 @@ void FParticleAnimTrailEmitterInstance::DetermineVertexAndTriangleCount()
 						// Determine the number of rendered interpolated points between these two particles
 						float CheckDistance = (CurrParticle->Location - PrevParticle->Location).Size();
 						float DistDiff = CheckDistance / TrailTypeData->DistanceTessellationStepSize;
-						InterpCount += FMath::TruncToInt(DistDiff);
+						InterpCount += FMath::Min(FMath::TruncToInt(DistDiff), FXConsoleVariables::MaxDistanceTessellation);
 					}
 					
 					if (bApplyTangentTessellation )
@@ -3787,7 +3841,7 @@ void FParticleAnimTrailEmitterInstance::DetermineVertexAndTriangleCount()
 							CheckTangent = FMath::Max( CheckTangent, NextCheckTangent );
 						}		
 						float TangDiff = CheckTangent / TangentTessellationStepSize;
-						InterpCount += FMath::TruncToInt(TangDiff);
+						InterpCount += FMath::Min(FMath::TruncToInt(TangDiff), FXConsoleVariables::MaxTangentTessellation);
 					}
 
 					if( bApplyWidthTessellation )
@@ -3909,7 +3963,6 @@ FDynamicEmitterDataBase* FParticleAnimTrailEmitterInstance::GetDynamicData(bool 
 	// Allocate the dynamic data
 	FDynamicAnimTrailEmitterData* NewEmitterData = new FDynamicAnimTrailEmitterData(LODLevel->RequiredModule);
 	{
-		SCOPE_CYCLE_COUNTER(STAT_ParticleMemTime);
 		INC_DWORD_STAT(STAT_DynamicEmitterCount);
 		INC_DWORD_STAT(STAT_DynamicAnimTrailCount);
 		INC_DWORD_STAT_BY(STAT_DynamicEmitterMem, sizeof(FDynamicAnimTrailEmitterData));
@@ -4259,6 +4312,26 @@ void FParticleAnimTrailEmitterInstance::PrintTrails()
 
 		//check that all particles were visited. If not then there are some orphaned particles munging things up.
 		if (ParticlesVisited.Num() != ActiveParticles)
+		{
+			PrintAllActiveParticles();
+		}
+	}
+}
+
+static int32 GbEnableCircularAnimTrailDump = 2;
+static FAutoConsoleVariableRef CVarEnableCircularAnimTrailDump(
+	TEXT("fx.EnableCircularAnimTrailDump"),
+	GbEnableCircularAnimTrailDump,
+	TEXT("Controls logging for when circular links are discovered in anim trails.\n0 = No logging.\n1 = Minimal logging.\n2 = Verbose logging."),
+	ECVF_Default
+);
+
+void FParticleTrailsEmitterInstance_Base::DumpCircularTrailsSpam()
+{
+	if (GbEnableCircularAnimTrailDump > 0)
+	{
+		UE_LOG(LogParticles, Warning, TEXT("Circular links in Anim Trail discovered. \nPSys: %s\nEmitter: %s"), *Component->Template->GetFullName(), *SpriteTemplate->GetEmitterName().ToString());
+		if (GbEnableCircularAnimTrailDump > 1)
 		{
 			PrintAllActiveParticles();
 		}

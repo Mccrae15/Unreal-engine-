@@ -1,8 +1,37 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "Evaluation/MovieSceneObjectPropertyTemplate.h"
 #include "Tracks/MovieSceneObjectPropertyTrack.h"
 #include "Sections/MovieSceneObjectPropertySection.h"
+#include "UObject/StrongObjectPtr.h"
+
+
+struct FMovieSceneObjectPropertyValue : IMovieScenePreAnimatedToken
+{
+	TStrongObjectPtr<UObject> Value;
+	FTrackInstancePropertyBindings PropertyBindings;
+
+	FMovieSceneObjectPropertyValue(UObject* AnimatedObject, FTrackInstancePropertyBindings* InPropertyBindings)
+		: Value(InPropertyBindings->GetCurrentValue<UObject*>(*AnimatedObject))
+		, PropertyBindings(*InPropertyBindings)
+	{}
+
+	virtual void RestoreState(UObject& Object, IMovieScenePlayer& Player)
+	{
+		PropertyBindings.CallFunction<UObject*>(Object, Value.Get());
+	}
+};
+
+struct FMovieSceneObjectPropertyValueProducer : IMovieScenePreAnimatedTokenProducer
+{
+	FTrackInstancePropertyBindings* PropertyBindings;
+	FMovieSceneObjectPropertyValueProducer(FTrackInstancePropertyBindings* InPropertyBindings) : PropertyBindings(InPropertyBindings) {}
+
+	virtual IMovieScenePreAnimatedTokenPtr CacheExistingState(UObject& Object) const
+	{
+		return FMovieSceneObjectPropertyValue(&Object, PropertyBindings);
+	}
+};
 
 
 struct FObjectPropertyExecToken : IMovieSceneExecutionToken
@@ -27,13 +56,13 @@ struct FObjectPropertyExecToken : IMovieSceneExecutionToken
 				continue;
 			}
 
-			UObjectPropertyBase* ObjectProperty = Cast<UObjectPropertyBase>(PropertyBindings->GetProperty(*ObjectPtr));
+			FObjectPropertyBase* ObjectProperty = CastField<FObjectPropertyBase>(PropertyBindings->GetProperty(*ObjectPtr));
 			if (!ObjectProperty || !CanAssignValue(ObjectProperty, NewObjectValue))
 			{
 				continue;
 			}
 
-			Player.SavePreAnimatedState(*ObjectPtr, PropertyTrackData.PropertyID, FTokenProducer<UObject*>(*PropertyBindings));
+			Player.SavePreAnimatedState(*ObjectPtr, PropertyTrackData.PropertyID, FMovieSceneObjectPropertyValueProducer(PropertyBindings));
 
 			UObject* ExistingValue = PropertyBindings->GetCurrentValue<UObject*>(*ObjectPtr);
 			if (ExistingValue != NewObjectValue)
@@ -43,7 +72,7 @@ struct FObjectPropertyExecToken : IMovieSceneExecutionToken
 		}
 	}
 
-	bool CanAssignValue(UObjectPropertyBase* TargetProperty, UObject* DesiredValue) const
+	bool CanAssignValue(FObjectPropertyBase* TargetProperty, UObject* DesiredValue) const
 	{
 		check(TargetProperty);
 		if (!TargetProperty->PropertyClass)

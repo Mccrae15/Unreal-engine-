@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -145,9 +145,8 @@ public:
 	virtual void PostEditChangeProperty(FPropertyChangedEvent& PropertyChangedEvent) override;
 	virtual void PostEditChangeChainProperty(FPropertyChangedChainEvent& PropertyChangedEvent) override;
 	virtual FName GetCustomIconName() const override;
-#endif // WITH_EDITOR
-
 	virtual bool Modify(bool bAlwaysMarkDirty = false) override;
+#endif // WITH_EDITOR
 
 	virtual bool NeedsLoadForClient() const override
 	{ 

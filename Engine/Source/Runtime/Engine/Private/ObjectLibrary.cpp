@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "Engine/ObjectLibrary.h"
 #include "Modules/ModuleManager.h"
@@ -494,7 +494,7 @@ int32 UObjectLibrary::LoadAssetsFromAssetData()
 	if (bPreloadObjects)
 	{
 		TArray<FSoftObjectPath> AssetsToStream;
-
+		AssetsToStream.Reserve(AssetDataList.Num());
 		for (int32 AssetIdx = 0; AssetIdx < AssetDataList.Num(); AssetIdx++)
 		{
 			FAssetData& Data = AssetDataList[AssetIdx];
@@ -506,7 +506,7 @@ int32 UObjectLibrary::LoadAssetsFromAssetData()
 			FStreamableManager Streamable;
 			
 			// This will either use loadobject or async load + flush as appropriate
-			Streamable.RequestSyncLoad(AssetsToStream);
+			Streamable.RequestSyncLoad(MoveTemp(AssetsToStream));
 		}
 
 	}

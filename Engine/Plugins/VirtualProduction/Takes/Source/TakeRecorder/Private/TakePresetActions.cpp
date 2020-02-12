@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "TakePresetActions.h"
 #include "TakePreset.h"
@@ -12,7 +12,7 @@
 #include "Toolkits/ToolkitManager.h"
 #include "ISequencer.h"
 #include "SequencerSettings.h"
-#include "Toolkits/AssetEditorManager.h"
+
 #include "LevelSequence.h"
 
 #define LOCTEXT_NAMESPACE "TakePresetActions"

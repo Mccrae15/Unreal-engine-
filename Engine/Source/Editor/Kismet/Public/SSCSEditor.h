@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -22,20 +22,23 @@
 #include "BlueprintEditor.h"
 #include "Widgets/SToolTip.h"
 #include "SComponentClassCombo.h"
+#include "ScopedTransaction.h"
 
 class FMenuBuilder;
+class UToolMenu;
 class FSCSEditorTreeNode;
 class SSCSEditor;
 class UPrimitiveComponent;
 struct EventData;
 
 // SCS tree node pointer type
-typedef TSharedPtr<class FSCSEditorTreeNode> FSCSEditorTreeNodePtrType;
+using FSCSEditorTreeNodePtrType = TSharedPtr<class FSCSEditorTreeNode>;
+using FSCSEditorActorNodePtrType = TSharedPtr<class FSCSEditorTreeNodeRootActor>;
 
 /**
  * FSCSEditorTreeNode
  *
- * Wrapper class for component template nodes displayed in the SCS editor tree widget.
+ * Wrapper class for component template nodes displayed in the SCS (Simple Construction Script) editor tree widget.
  */
 class KISMET_API FSCSEditorTreeNode : public TSharedFromThis<FSCSEditorTreeNode>
 {
@@ -81,7 +84,7 @@ public:
 	 *
 	 * @return The component template that can be editable for actual class.
 	 */
-	virtual UActorComponent* GetEditableComponentTemplate(UBlueprint* ActualEditedBlueprint);
+	virtual UActorComponent* GetOrCreateEditableComponentTemplate(UBlueprint* ActualEditedBlueprint) const;
 	/**
 	 * Finds the component instance represented by this node contained within a given Actor instance.
 	 *
@@ -107,6 +110,7 @@ public:
 	 *								have been reinstanced following construction script execution).
 	 *
 	 * @note	Deliberately non-virtual, for performance reasons.
+	 * @warning This will not return the right component for components overridden by the inherited component handler, you need to call GetOrCreateEditableComponentTemplate instead
 	 * @return	The component template or instance represented by this node, if it's a component node.
 	 */
 	UActorComponent* GetComponentTemplate(bool bEvenIfPendingKill = false) const;
@@ -136,7 +140,7 @@ public:
 	 *
 	 * @param InChildNodePtr The node to add as a child node.
 	 */
-	void AddChild(FSCSEditorTreeNodePtrType InChildNodePtr);
+	virtual void AddChild(FSCSEditorTreeNodePtrType InChildNodePtr);
 
 	/**
 	 * Adds a child node for the given SCS node.
@@ -190,7 +194,7 @@ public:
 	 *
 	 * @param InChildNodePtr The child node to remove.
 	 */
-	void RemoveChild(FSCSEditorTreeNodePtrType InChildNodePtr);
+	virtual void RemoveChild(FSCSEditorTreeNodePtrType InChildNodePtr);
 
 	bool IsSceneComponent() const
 	{
@@ -279,8 +283,11 @@ public:
 	 */
 	virtual bool CanRename() const { return false; }
 
-	/** Requests a rename on the component */
-	void OnRequestRename(bool bTransactional);
+	/**
+	 * Requests a rename on the component.
+	 * @param OngoingCreateTransaction The transaction scoping the node creation which will end once the node is named by the user or null if the rename is not part of a the creation process.
+	 */
+	void OnRequestRename(TUniquePtr<FScopedTransaction> OngoingCreateTransaction);
 
 	/** Renames the component */
 	virtual void OnCompleteRename(const FText& InNewName);
@@ -289,7 +296,7 @@ public:
 	void SetRenameRequestedDelegate(FOnRenameRequested InRenameRequested) { RenameRequestedDelegate = InRenameRequested; }
 
 	/** Query that determines if this item should be filtered out or not */
-	bool IsFlaggedForFiltration() const 
+	virtual bool IsFlaggedForFiltration() const 
 	{
 		return ensureMsgf(FilterFlags != EFilteredState::Unknown, TEXT("Querying a bad filtration state.")) ? 
 			(FilterFlags & EFilteredState::FilteredInMask) == 0 : false; 
@@ -304,12 +311,8 @@ protected:
 	/** Used to update the EFilteredState::ChildMatches flag for parent nodes, when this item's filtration state has changed */
 	void ApplyFilteredStateToParent();
 	
-	bool GetAndClearNonTransactionalRenameFlag()
-	{
-		const bool bResult = bNonTransactionalRename;
-		bNonTransactionalRename = false;
-		return bResult;
-	}
+	// Scope the creation of a component which ends when the initial component 'name' is given/accepted by the user, which can be several frames after the component was actually created.
+	TUniquePtr<FScopedTransaction> OngoingCreateTransaction;
 
 	// Component template represented by this node, if it's a component node, otherwise invalid
 	TWeakObjectPtr<UActorComponent> ComponentTemplatePtr;
@@ -323,7 +326,6 @@ private:
 	TArray<FSCSEditorTreeNodePtrType> Children;
 
 	/** Handles rename requests */
-	bool bNonTransactionalRename;
 	FOnRenameRequested RenameRequestedDelegate;
 
 	enum EFilteredState
@@ -371,7 +373,7 @@ public:
 	 *
 	 * @param InComponentTemplate The component template represented by this object.
 	 */
-	FSCSEditorTreeNodeInstancedInheritedComponent(AActor* Owner, FName InComponentName);
+	FSCSEditorTreeNodeInstancedInheritedComponent(AActor* Owner, UActorComponent* InComponentTemplate);
 
 	// FSCSEditorTreeNode public interface
 	virtual bool IsNative() const override;
@@ -385,11 +387,10 @@ public:
 	//virtual FName GetVariableName() const override;
 	//virtual FString GetDisplayString() const override;
 	virtual FText GetDisplayName() const override;
-	virtual UActorComponent* GetEditableComponentTemplate(UBlueprint* ActualEditedBlueprint) override;
+	virtual UActorComponent* GetOrCreateEditableComponentTemplate(UBlueprint* ActualEditedBlueprint) const override;
 	// End of FSCSEditorTreeNode public interface
 
 private:
-	FName InstancedComponentName;
 	TWeakObjectPtr<AActor> InstancedComponentOwnerPtr;
 };
 
@@ -417,7 +418,7 @@ public:
 	virtual FName GetVariableName() const override { return NAME_None; }
 	virtual FString GetDisplayString() const override;
 	virtual FText GetDisplayName() const override;
-	virtual UActorComponent* GetEditableComponentTemplate(UBlueprint* ActualEditedBlueprint) override;
+	virtual UActorComponent* GetOrCreateEditableComponentTemplate(UBlueprint* ActualEditedBlueprint) const override;
 	virtual void OnCompleteRename(const FText& InNewName) override;
 	// End of FSCSEditorTreeNode public interface
 
@@ -465,7 +466,7 @@ public:
 	//virtual FString GetDisplayString() const override;
 	virtual FText GetDisplayName() const override;
 	virtual class USCS_Node* GetSCSNode() const override;
-	virtual UActorComponent* GetEditableComponentTemplate(UBlueprint* ActualEditedBlueprint) override;
+	virtual UActorComponent* GetOrCreateEditableComponentTemplate(UBlueprint* ActualEditedBlueprint) const override;
 	virtual void OnCompleteRename(const FText& InNewName) override;
 	// End of FSCSEditorTreeNode public interface
 
@@ -485,7 +486,6 @@ private:
 	TWeakObjectPtr<class USCS_Node> SCSNodePtr;
 };
 
-
 class KISMET_API FSCSEditorTreeNodeRootActor : public FSCSEditorTreeNode
 {
 public:
@@ -496,15 +496,32 @@ public:
 	{
 	}
 
+	FSCSEditorTreeNodePtrType GetSceneRootNode() const;
+	void SetSceneRootNode(FSCSEditorTreeNodePtrType NewSceneRootNode);
+
+	/** Returns the set of root nodes */
+	const TArray<FSCSEditorTreeNodePtrType>& GetComponentNodes() const;
+
 	// FSCSEditorTreeNode public interface
 	virtual FName GetNodeID() const override;
 	virtual bool CanRename() const override { return bAllowRename; }
 	virtual void OnCompleteRename(const FText& InNewName) override;
+	virtual void AddChild(FSCSEditorTreeNodePtrType InChildNodePtr) override;
+	virtual void RemoveChild(FSCSEditorTreeNodePtrType InChildNodePtr) override;
 	// End of FSCSEditorTreeNode public interface
+protected:
+	using Super = FSCSEditorTreeNode;
 
 private:
+	
 	AActor* Actor;
 	bool bAllowRename;
+
+	FSCSEditorTreeNodePtrType SceneRootNodePtr;
+	/** Root set of components (contains the root scene component and any non-scene component nodes) */
+	TArray<FSCSEditorTreeNodePtrType> ComponentNodes;
+	FSCSEditorTreeNodePtrType SceneComponentSeparatorNodePtr;
+	FSCSEditorTreeNodePtrType NonSceneComponentSeparatorNodePtr;
 };
 
 class KISMET_API FSCSEditorTreeNodeSeparator : public FSCSEditorTreeNode
@@ -514,6 +531,8 @@ public:
 		: FSCSEditorTreeNode(FSCSEditorTreeNode::SeparatorNode)
 	{
 	}
+
+	virtual bool IsFlaggedForFiltration() const override { return false; }
 };
 
 //////////////////////////////////////////////////////////////////////////
@@ -693,7 +712,9 @@ public:
 		, _ClearSelectionOnClick(true)
 		, _ExternalScrollbar()
 		, _OnTableViewBadState()
-		{}
+		{
+			_Clipping = EWidgetClipping::ClipToBounds;
+		}
 
 		SLATE_ARGUMENT( SSCSEditor*, SCSEditor )
 
@@ -804,6 +825,14 @@ public:
 	/** Returns true if editing is allowed */
 	bool IsEditingAllowed() const;
 
+	/** gets the actor root */
+	FSCSEditorActorNodePtrType GetActorNode() const;
+
+	/** get the root scene node */
+	FSCSEditorTreeNodePtrType GetSceneRootNode() const;
+
+	void SetSceneRootNode(FSCSEditorTreeNodePtrType NewSceneRootNode);
+
 	/** Adds a component to the SCS Table
 	   @param NewComponentClass				(In) The class to add
 	   @param Asset       					(In) Optional asset to assign to the component
@@ -812,19 +841,21 @@ public:
 	UActorComponent* AddNewComponent(UClass* NewComponentClass, UObject* Asset, const bool bSkipMarkBlueprintModified = false, bool bSetFocusToNewItem = true);
 
 	/** Adds a new SCS Node to the component Table
+	   @param OngoingCreateTransaction (In) The transaction containing the creation of the node. The transaction will remain ongoing until the node gets its initial name from user.
 	   @param NewNode	(In) The SCS node to add
 	   @param Asset		(In) Optional asset to assign to the component
 	   @param bMarkBlueprintModified (In) Whether or not to mark the Blueprint as structurally modified
 	   @param bSetFocusToNewItem (In) Select the new item and activate the inline rename widget (default is true)
 	   @return The reference of the newly created ActorComponent */
-	UActorComponent* AddNewNode(USCS_Node* NewNode, UObject* Asset, bool bMarkBlueprintModified, bool bSetFocusToNewItem = true);
+	UActorComponent* AddNewNode(TUniquePtr<FScopedTransaction> OngoingCreateTransaction, USCS_Node* NewNode, UObject* Asset, bool bMarkBlueprintModified, bool bSetFocusToNewItem = true);
 
 	/** Adds a new component instance node to the component Table
+		@param OngoingCreateTransaction (In) The transaction containing the creation of the node. The transaction will remain ongoing until the node gets its initial name from user.
 		@param NewInstanceComponent	(In) The component being added to the actor instance
+		@param InParentNodePtr (In) The node this component will be added to
 		@param Asset (In) Optional asset to assign to the component
-		@param bSetFocusToNewItem (In) Select the new item and activate the inline rename widget (default is true)
-		@return The reference of the newly created ActorComponent */
-	UActorComponent* AddNewNodeForInstancedComponent(UActorComponent* NewInstanceComponent, UObject* Asset, bool bSetFocusToNewItem = true);
+		@param bSetFocusToNewItem (In) Select the new item and activate the inline rename widget (default is true) */
+	void AddNewNodeForInstancedComponent(TUniquePtr<FScopedTransaction> OngoingCreateTransaction, UActorComponent* NewInstanceComponent, FSCSEditorTreeNodePtrType InParentNodePtr, UObject* Asset, bool bSetFocusToNewItem = true);
 	
 	/** Returns true if the specified component is currently selected */
 	bool IsComponentSelected(const UPrimitiveComponent* PrimComponent) const;
@@ -960,9 +991,6 @@ public:
 	/** Provides access to the Blueprint context that's being edited */
 	class UBlueprint* GetBlueprint() const;
 
-	/** Returns the set of root nodes */
-	const TArray<FSCSEditorTreeNodePtrType>& GetRootComponentNodes();
-
 	/** @return The current editor mode (editing live actors or editing blueprints) */
 	EComponentEditorMode::Type GetEditorMode() const { return EditorMode; }
 
@@ -975,7 +1003,14 @@ public:
 	/** Callback for the action trees to get the filter text */
 	FText GetFilterText() const;
 
+	/** Called at the end of each frame. */
+	void OnPostTick(float);
+
 protected:
+	FSCSEditorTreeNodePtrType FindOrCreateParentForExistingComponent(UActorComponent* InActorComponent, FSCSEditorActorNodePtrType ActorRootNode);
+	FSCSEditorTreeNodePtrType FindParentForNewComponent(UActorComponent* NewComponent) const;
+	FSCSEditorTreeNodePtrType FindParentForNewNode(USCS_Node* NewNode) const;
+
 	FString GetSelectedClassText() const;
 
 	/** Add a component from the selection in the combo box */
@@ -984,16 +1019,29 @@ protected:
 	/** Called to display context menu when right clicking on the widget */
 	TSharedPtr< SWidget > CreateContextMenu();
 
+	/** Registers context menu by name for later access */
+	void RegisterContextMenu();
+
+	/** Populate context menu on the fly */
+	void PopulateContextMenu(UToolMenu* InMenu);
+
 	/** Called when the level editor requests a component to be renamed. */
 	void OnLevelComponentRequestRename(const UActorComponent* InComponent);
 
 	/** Checks to see if renaming is allowed on the selected component */
 	bool CanRenameComponent() const;
+
 	/**
-	 * Requests a rename on the selected component
-	 * @param bTransactional Whether or not the rename should be transactional (i.e. undoable)
+	 * Requests a rename on the selected component just after creation so that the user can provide the initial
+	 * component name (overwriting the default generated one), which is considered part of the creation process.
+	 * @param OngoingCreateTransaction The ongoing transaction started when the component was created.
 	 */
-	void OnRenameComponent(bool bTransactional);
+	void OnRenameComponent(TUniquePtr<FScopedTransaction> OngoingCreateTransaction);
+
+	/**
+	 * Requests a rename on the selected component.
+	 */
+	void OnRenameComponent();
 
 	/** Called when component objects are replaced following construction script execution */
 	void OnObjectsReplaced(const TMap<UObject*, UObject*>& OldToNewInstanceMap);
@@ -1029,15 +1077,9 @@ protected:
 	/** Helper method to add a tree node for the given SCS node */
 	FSCSEditorTreeNodePtrType AddTreeNode(USCS_Node* InSCSNode, FSCSEditorTreeNodePtrType InParentNodePtr, const bool bIsInheritedSCS);
 
-	/** Helper method to add a tree node for the given scene component */
-	FSCSEditorTreeNodePtrType AddTreeNodeFromComponent(USceneComponent* InSceneComponent, FSCSEditorTreeNodePtrType InParentTreeNode = FSCSEditorTreeNodePtrType());
+	/** Helper method to add a tree node for the given actor component */
+	FSCSEditorTreeNodePtrType AddTreeNodeFromComponent(UActorComponent* InSceneComponent, FSCSEditorTreeNodePtrType InParentTreeNode = FSCSEditorTreeNodePtrType());
 	
-	/** Helper method to recursively add tree nodes for an already-attached instanced scene component hierarchy */
-	void AddInstancedTreeNodesRecursive(USceneComponent* Component, FSCSEditorTreeNodePtrType TreeNode, TSet<UActorComponent*>& ComponentsToAdd);
-
-	/** Helper method to determine whether or not an instanced actor component should be added to the tree */
-	bool ShouldAddInstancedActorComponent(UActorComponent* ActorComp, USceneComponent* ParentSceneComp = nullptr) const;
-
 	/** Helper method to recursively find a tree node for the given SCS node starting at the given tree node */
 	FSCSEditorTreeNodePtrType FindTreeNode(const USCS_Node* InSCSNode, FSCSEditorTreeNodePtrType InStartNodePtr = FSCSEditorTreeNodePtrType()) const;
 
@@ -1052,6 +1094,9 @@ protected:
 
 	/** Callback when a component item is double clicked. */
 	void HandleItemDoubleClicked(FSCSEditorTreeNodePtrType InItem);
+
+	/** Recursively visits the given node + its children and invokes the given function for each. */
+	void DepthFirstTraversal(const FSCSEditorTreeNodePtrType& InNodePtr, TSet<FSCSEditorTreeNodePtrType>& OutVisitedNodes, const TFunctionRef<void(const FSCSEditorTreeNodePtrType&)> InFunction) const;
 
 	/** Returns the set of expandable nodes that are currently collapsed in the UI */
 	void GetCollapsedNodes(const FSCSEditorTreeNodePtrType& InNodePtr, TSet<FSCSEditorTreeNodePtrType>& OutCollapsedNodes) const;
@@ -1086,9 +1131,6 @@ protected:
 	/** gets a root nodes of the tree */
 	const TArray<FSCSEditorTreeNodePtrType>& GetRootNodes() const;
 
-	/** Adds a root component tree node */
-	TSharedPtr<FSCSEditorTreeNode> AddRootComponentTreeNode(UActorComponent* ActorComp);
-
 	/**
 	 * Creates a new C++ component from the specified class type
 	 * The user will be prompted to pick a new subclass name and code will be recompiled
@@ -1115,18 +1157,9 @@ protected:
 	 */
 	bool RefreshFilteredState(FSCSEditorTreeNodePtrType TreeNode, bool bRecursive);
 
-	/** 
-	 * Iterates the RootNodes list, and uses the cached filtered state to 
-	 * determine what items should be listed in the tree view. 
-	 */
-	void RebuildFilteredRootList();
-
 public:
 	/** Tree widget */
 	TSharedPtr<SSCSTreeType> SCSTreeWidget;
-
-	/** The node that represents the root component in the scene hierarchy */
-	FSCSEditorTreeNodePtrType SceneRootNodePtr;
 
 	/** Command list for handling actions in the SSCSEditor */
 	TSharedPtr< FUICommandList > CommandList;
@@ -1134,8 +1167,11 @@ public:
 	/** Name of a node that has been requested to be renamed */
 	FName DeferredRenameRequest;
 
-	/** Whether or not the deferred rename request was flagged as transactional */
-	bool bIsDeferredRenameRequestTransactional;
+	/** Scope the creation of a component which ends when the initial component 'name' is given/accepted by the user, which can be several frames after the component was actually created. */
+	TUniquePtr<FScopedTransaction> DeferredOngoingCreateTransaction;
+
+	/** Used to unregister from the post tick event. */
+	FDelegateHandle PostTickHandle;
 
 	/** Attribute that provides access to the Actor context for which we are viewing/editing the SCS. */
 	TAttribute<class AActor*> ActorContext;
@@ -1164,15 +1200,6 @@ private:
 	/** Root set of tree */
 	TArray<FSCSEditorTreeNodePtrType> RootNodes;
 
-	/** Root set of components (contains the root scene component and any non-scene component nodes) */
-	TArray<FSCSEditorTreeNodePtrType> RootComponentNodes;
-
-	/** The list of nodes used for the UI (a filtered version of RootNodes) */
-	TArray<FSCSEditorTreeNodePtrType> FilteredRootNodes;
-
-	/* Root Tree Node (for scene components) */
-	TSharedPtr<FSCSEditorTreeNode> RootTreeNode;
-
 	/* Root Tree Node*/
 	TSharedPtr<FExtender> ActorMenuExtender;
 
@@ -1181,9 +1208,6 @@ private:
 
 	/** Gate to prevent changing the selection while selection change is being broadcast. */
 	bool bUpdatingSelection;
-
-	/** true if we've added the separator between the scene and behavior components to the root nodes */
-	bool bHasAddedSceneAndBehaviorComponentSeparator;
 
 	/** Controls whether or not to allow calls to UpdateTree() */
 	bool bAllowTreeUpdates;

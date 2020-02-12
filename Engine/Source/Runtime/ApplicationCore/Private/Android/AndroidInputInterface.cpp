@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "Android/AndroidInputInterface.h"
 #if USE_ANDROID_INPUT
@@ -26,6 +26,7 @@ FForceFeedbackValues FAndroidInputInterface::VibeValues;
 
 bool FAndroidInputInterface::bAllowControllers = true;
 bool FAndroidInputInterface::bBlockAndroidKeysOnControllers = false;
+bool FAndroidInputInterface::bControllersBlockDeviceFeedback = false;
 
 FAndroidControllerData FAndroidInputInterface::OldControllerData[MAX_NUM_CONTROLLERS];
 FAndroidControllerData FAndroidInputInterface::NewControllerData[MAX_NUM_CONTROLLERS];
@@ -72,6 +73,7 @@ FAndroidInputInterface::FAndroidInputInterface(const TSharedRef< FGenericApplica
 {
 	GConfig->GetBool(TEXT("/Script/AndroidRuntimeSettings.AndroidRuntimeSettings"), TEXT("bAllowControllers"), bAllowControllers, GEngineIni);
 	GConfig->GetBool(TEXT("/Script/AndroidRuntimeSettings.AndroidRuntimeSettings"), TEXT("bBlockAndroidKeysOnControllers"), bBlockAndroidKeysOnControllers, GEngineIni);
+	GConfig->GetBool(TEXT("/Script/AndroidRuntimeSettings.AndroidRuntimeSettings"), TEXT("bControllersBlockDeviceFeedback"), bControllersBlockDeviceFeedback, GEngineIni);
 
 	ButtonMapping[0] = FGamepadKeyNames::FaceButtonBottom;
 	ButtonMapping[1] = FGamepadKeyNames::FaceButtonRight;
@@ -104,6 +106,9 @@ FAndroidInputInterface::FAndroidInputInterface(const TSharedRef< FGenericApplica
 
 	InitialButtonRepeatDelay = 0.2f;
 	ButtonRepeatDelay = 0.1f;
+
+	GConfig->GetFloat(TEXT("/Script/Engine.InputSettings"), TEXT("InitialButtonRepeatDelay"), InitialButtonRepeatDelay, GInputIni);
+	GConfig->GetFloat(TEXT("/Script/Engine.InputSettings"), TEXT("ButtonRepeatDelay"), ButtonRepeatDelay, GInputIni);
 
 	VibeIsOn = false;
 
@@ -193,11 +198,40 @@ void FAndroidInputInterface::Tick(float DeltaTime)
 	}
 }
 
-void FAndroidInputInterface::SetForceFeedbackChannelValue(int32 ControllerId, FForceFeedbackChannelType ChannelType, float Value)
+void FAndroidInputInterface::SetLightColor(int32 ControllerId, FColor Color)
 {
 	for (auto DeviceIt = ExternalInputDevices.CreateIterator(); DeviceIt; ++DeviceIt)
 	{
-		(*DeviceIt)->SetChannelValue(ControllerId, ChannelType, Value);
+		(*DeviceIt)->SetLightColor(ControllerId, Color);
+	}
+}
+
+void FAndroidInputInterface::ResetLightColor(int32 ControllerId)
+{
+	for (auto DeviceIt = ExternalInputDevices.CreateIterator(); DeviceIt; ++DeviceIt)
+	{
+		(*DeviceIt)->ResetLightColor(ControllerId);
+	}
+}
+
+void FAndroidInputInterface::SetForceFeedbackChannelValue(int32 ControllerId, FForceFeedbackChannelType ChannelType, float Value)
+{
+	bool bDidFeedback = false;
+	for (auto DeviceIt = ExternalInputDevices.CreateIterator(); DeviceIt; ++DeviceIt)
+	{
+		if ((*DeviceIt)->SupportsForceFeedback(ControllerId))
+		{
+			bDidFeedback = true;
+			(*DeviceIt)->SetChannelValue(ControllerId, ChannelType, Value);
+		}
+	}
+
+	bDidFeedback |= IsGamepadAttached() && bControllersBlockDeviceFeedback;
+
+	// If controller handled force feedback don't do it on the phone
+	if (bDidFeedback)
+	{
+		return;
 	}
 
 	// Note: only one motor on Android at the moment, but remember all the settings
@@ -233,15 +267,30 @@ void FAndroidInputInterface::SetForceFeedbackChannelValue(int32 ControllerId, FF
 
 void FAndroidInputInterface::SetForceFeedbackChannelValues(int32 ControllerId, const FForceFeedbackValues &Values)
 {
+	bool bDidFeedback = false;
 	for (auto DeviceIt = ExternalInputDevices.CreateIterator(); DeviceIt; ++DeviceIt)
 	{
-		(*DeviceIt)->SetChannelValues(ControllerId, Values);
+		if ((*DeviceIt)->SupportsForceFeedback(ControllerId))
+		{
+			bDidFeedback = true;
+			(*DeviceIt)->SetChannelValues(ControllerId, Values);
+		}
+	}
+
+	bDidFeedback |= IsGamepadAttached() && bControllersBlockDeviceFeedback;
+
+	// If controller handled force feedback don't do it on the phone
+	if (bDidFeedback)
+	{
+		VibeValues.LeftLarge = VibeValues.RightLarge = VibeValues.LeftSmall = VibeValues.RightSmall = 0.0f;
+	}
+	else
+	{
+		VibeValues = Values;
 	}
 
 	// Note: only one motor on Android at the moment, but remember all the settings
 	// update will look at combination of all values to pick state
-
-	VibeValues = Values;
 
 	// Update with the latest values (wait for SendControllerEvents later?)
 	UpdateVibeMotors();
@@ -809,9 +858,11 @@ void FAndroidInputInterface::SendControllerEvents()
 						CurrentDevice.DeviceState = MappingState::Valid;
 
 						// Generic mappings
+						CurrentDevice.ControllerClass = ControllerClassType::Generic;
 						CurrentDevice.ButtonRemapping = ButtonRemapType::Normal;
 						CurrentDevice.LTAnalogRangeMinimum = 0.0f;
 						CurrentDevice.RTAnalogRangeMinimum = 0.0f;
+						CurrentDevice.bTriggersUseThresholdForClick = false;
 						CurrentDevice.bSupportsHat = true;
 						CurrentDevice.bMapL1R1ToTriggers = false;
 						CurrentDevice.bMapZRZToTriggers = false;
@@ -851,16 +902,20 @@ void FAndroidInputInterface::SendControllerEvents()
 						}
 						else if (CurrentDevice.DeviceInfo.Name.StartsWith(TEXT("Xbox Wired Controller")))
 						{
+							CurrentDevice.ControllerClass = ControllerClassType::XBoxWired;
 							CurrentDevice.bSupportsHat = true;
+							CurrentDevice.bTriggersUseThresholdForClick = true;
 						}
 						else if (CurrentDevice.DeviceInfo.Name.StartsWith(TEXT("Xbox Wireless Controller")))
 						{
+							CurrentDevice.ControllerClass = ControllerClassType::XBoxWireless;
 							CurrentDevice.bSupportsHat = true;
+							CurrentDevice.bTriggersUseThresholdForClick = true;
 
 							if (GAndroidOldXBoxWirelessFirmware == 1)
 							{
 								// Apply mappings for older firmware before 3.1.1221.0
-								CurrentDevice.ButtonRemapping = ButtonRemapType::XBoxWireless;
+								CurrentDevice.ButtonRemapping = ButtonRemapType::XBox;
 								CurrentDevice.bMapL1R1ToTriggers = false;
 								CurrentDevice.bMapZRZToTriggers = true;
 								CurrentDevice.bRightStickZRZ = false;
@@ -870,6 +925,7 @@ void FAndroidInputInterface::SendControllerEvents()
 						else if (CurrentDevice.DeviceInfo.Name.StartsWith(TEXT("SteelSeries Stratus XL")))
 						{
 							CurrentDevice.bSupportsHat = true;
+							CurrentDevice.bTriggersUseThresholdForClick = true;
 
 							// For some reason the left trigger is at 0.5 when at rest so we have to adjust for that.
 							CurrentDevice.LTAnalogRangeMinimum = 0.5f;
@@ -879,8 +935,11 @@ void FAndroidInputInterface::SendControllerEvents()
 						// comparison. Instead we check the product and vendor IDs to ensure it's the correct one.
 						else if (CurrentDevice.DeviceInfo.Name.StartsWith(TEXT("PS4 Wireless Controller")))
 						{
-							if (CurrentDevice.DeviceInfo.Name.EndsWith(TEXT(" (v2)")))
+							CurrentDevice.ControllerClass = ControllerClassType::PS4Wireless;
+							if (CurrentDevice.DeviceInfo.Name.EndsWith(TEXT(" (v2)")) && FAndroidMisc::GetCPUVendor() != TEXT("Sony")
+								&& FAndroidMisc::GetAndroidBuildVersion() < 10)
 							{
+								// Only needed for non-Sony devices with v2 firmware
 								CurrentDevice.ButtonRemapping = ButtonRemapType::PS4;
 							}
 							CurrentDevice.bSupportsHat = true;
@@ -999,23 +1058,31 @@ void FAndroidInputInterface::SendControllerEvents()
 				NewControllerState.ButtonStates[MAX_NUM_PHYSICAL_CONTROLLER_BUTTONS + 6] = NewControllerState.RYAnalog >= RepeatDeadzone;
 				NewControllerState.ButtonStates[MAX_NUM_PHYSICAL_CONTROLLER_BUTTONS + 7] = NewControllerState.RYAnalog <= -RepeatDeadzone;
 			}
+			
+			const bool bUseTriggerThresholdForClick = DeviceMapping[ControllerIndex].bTriggersUseThresholdForClick;
 			if (NewControllerState.LTAnalog != OldControllerState.LTAnalog)
 			{
 				//LOGD("    Sending updated LeftTriggerAnalog value of %f", NewControllerState.LTAnalog);
 				MessageHandler->OnControllerAnalog(FGamepadKeyNames::LeftTriggerAnalog, NewControllerState.DeviceId, NewControllerState.LTAnalog);
 
-				// Handle the trigger theshold "virtual" button state
-				//check(ButtonMapping[10] == FGamepadKeyNames::LeftTriggerThreshold);
-				NewControllerState.ButtonStates[10] = NewControllerState.LTAnalog >= ANDROID_GAMEPAD_TRIGGER_THRESHOLD;
+				if (bUseTriggerThresholdForClick)
+				{
+					// Handle the trigger theshold "virtual" button state
+					//check(ButtonMapping[10] == FGamepadKeyNames::LeftTriggerThreshold);
+					NewControllerState.ButtonStates[10] = NewControllerState.LTAnalog >= ANDROID_GAMEPAD_TRIGGER_THRESHOLD;
+				}
 			}
 			if (NewControllerState.RTAnalog != OldControllerState.RTAnalog)
 			{
 				//LOGD("    Sending updated RightTriggerAnalog value of %f", NewControllerState.RTAnalog);
 				MessageHandler->OnControllerAnalog(FGamepadKeyNames::RightTriggerAnalog, NewControllerState.DeviceId, NewControllerState.RTAnalog);
 
-				// Handle the trigger theshold "virtual" button state
-				//check(ButtonMapping[11] == FGamepadKeyNames::RightTriggerThreshold);
-				NewControllerState.ButtonStates[11] = NewControllerState.RTAnalog >= ANDROID_GAMEPAD_TRIGGER_THRESHOLD;
+				if (bUseTriggerThresholdForClick)
+				{
+					// Handle the trigger theshold "virtual" button state
+					//check(ButtonMapping[11] == FGamepadKeyNames::RightTriggerThreshold);
+					NewControllerState.ButtonStates[11] = NewControllerState.RTAnalog >= ANDROID_GAMEPAD_TRIGGER_THRESHOLD;
+				}
 			}
 
 			const double CurrentTime = FPlatformTime::Seconds();
@@ -1165,6 +1232,15 @@ int32 FAndroidInputInterface::FindExistingDevice(int32 deviceId)
 
 	// Did not find it
 	return -1;
+}
+
+FAndroidGamepadDeviceMapping* FAndroidInputInterface::GetDeviceMapping(int32 ControllerId)
+{
+	if (ControllerId < 0 || ControllerId >= MAX_NUM_CONTROLLERS)
+	{
+		return nullptr;
+	}
+	return &DeviceMapping[ControllerId];
 }
 
 int32 FAndroidInputInterface::GetControllerIndex(int32 deviceId)
@@ -1333,6 +1409,17 @@ void FAndroidInputInterface::JoystickButtonEvent(int32 deviceId, int32 buttonId,
 	if (deviceId == -1)
 		return;
 
+	//FPlatformMisc::LowLevelOutputDebugStringf(TEXT("JoystickButtonEvent[%d]: %d"), (int)DeviceMapping[deviceId].ButtonRemapping, buttonId);
+
+	if (DeviceMapping[deviceId].ControllerClass == ControllerClassType::PS4Wireless)
+	{
+		if (buttonId == 3002)
+		{
+			NewControllerData[deviceId].ButtonStates[7] = buttonDown;  // Touchpad = Special Left
+			return;
+		}
+	}
+
 	// Deal with button remapping
 	switch (DeviceMapping[deviceId].ButtonRemapping)
 	{
@@ -1381,7 +1468,7 @@ void FAndroidInputInterface::JoystickButtonEvent(int32 deviceId, int32 buttonId,
 			}
 			break;
 
-		case ButtonRemapType::XBoxWireless:
+		case ButtonRemapType::XBox:
 			switch (buttonId)
 			{
 				case AKEYCODE_BUTTON_A:      NewControllerData[deviceId].ButtonStates[0] = buttonDown; break; // A

@@ -1,10 +1,9 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 
 #include "CoreMinimal.h"
 #include "Stats/Stats.h"
 #include "TickableEditorObject.h"
-#include "Templates/ScopedPointer.h"
 #include "DistanceFieldAtlas.h"
 #include "Framework/Notifications/NotificationManager.h"
 #include "Widgets/Notifications/SNotificationList.h"

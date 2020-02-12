@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 using UnrealBuildTool;
 using System.IO;
@@ -10,17 +10,9 @@ public class DisplayClusterEditor : ModuleRules
 		PrivateDependencyModuleNames.AddRange( new string[] {
 			"Core",
 			"CoreUObject",
+			"DisplayCluster",
 			"Engine",
 			"UnrealEd"
-		});
-
-		PrivateDependencyModuleNames.AddRange( new string[] {
-			"DisplayCluster"
-		});
-
-        PrivateIncludePathModuleNames.AddRange( new string[] {
-			"Settings",
-			"DisplayCluster"
 		});
 	}
 }

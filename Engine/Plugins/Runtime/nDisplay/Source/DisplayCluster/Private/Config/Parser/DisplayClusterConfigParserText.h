@@ -1,10 +1,10 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
 #include "CoreMinimal.h"
 #include "Config/Parser/DisplayClusterConfigParser.h"
-#include "Misc/DisplayClusterLog.h"
+#include "DisplayClusterLog.h"
 
 
 /**
@@ -34,4 +34,3 @@ protected:
 		return tmp;
 	}
 };
-

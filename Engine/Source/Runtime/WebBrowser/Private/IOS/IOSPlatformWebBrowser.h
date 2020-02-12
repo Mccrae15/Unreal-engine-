@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -69,7 +69,6 @@ supportsMetal : (bool)InSupportsMetal supportsMetalMRT : (bool)InSupportsMetalMR
 -(void)SetVideoTextureValid:(bool)Condition;
 -(bool)IsVideoTextureValid;
 -(bool)UpdateVideoFrame:(void*)ptr;
--(void)updateWebViewGLESTexture:(GLuint)gltexture;
 - (void)updateWebViewMetalTexture : (id<MTLTexture>)texture;
 #if !PLATFORM_TVOS
 - (void)webView:(WKWebView*)InWebView decidePolicyForNavigationAction : (WKNavigationAction*)InNavigationAction decisionHandler : (void(^)(WKNavigationActionPolicy))InDecisionHandler;
@@ -211,6 +210,21 @@ public:
 		return FCursorReply::Unhandled();
 	}
 
+	virtual FOnBeforeResourceLoadDelegate& OnBeforeResourceLoad() override
+	{
+		return BeforeResourceLoadDelegate;
+	}
+
+	virtual FOnResourceLoadCompleteDelegate& OnResourceLoadComplete() override
+	{
+		return ResourceLoadCompleteDelegate;
+	}
+
+	virtual FOnConsoleMessageDelegate& OnConsoleMessage() override
+	{
+		return ConsoleMessageDelegate;
+	}
+
 	virtual FOnBeforePopupDelegate& OnBeforePopup() override
 	{
 		return BeforePopupDelegate;
@@ -253,6 +267,21 @@ public:
 	void NotifyDocumentError(const FString& InCurrentUrl, int InErrorCode);
 
 	bool OnJsMessageReceived(const FString& Command, const TArray<FString>& Params, const FString& Origin);
+
+	virtual FOnUnhandledKeyDown& OnUnhandledKeyDown() override
+	{
+		return UnhandledKeyDownDelegate;
+	}
+
+	virtual FOnUnhandledKeyUp& OnUnhandledKeyUp() override
+	{
+		return UnhandledKeyUpDelegate;
+	}
+
+	virtual FOnUnhandledKeyChar& OnUnhandledKeyChar() override
+	{
+		return UnhandledKeyCharDelegate;
+	}
 
 	void NotifyUrlChanged(const FString& InCurrentUrl);
 public:
@@ -319,6 +348,15 @@ private:
 	/** Delegate for notifying that a popup window is attempting to open. */
 	FOnBeforePopupDelegate BeforePopupDelegate;
 
+	/** Delegate for notifying that the browser is about to load a resource. */
+	FOnBeforeResourceLoadDelegate BeforeResourceLoadDelegate;
+
+	/** Delegate that allows for responses to resource loads */
+	FOnResourceLoadCompleteDelegate ResourceLoadCompleteDelegate;
+
+	/** Delegate that allows for response to console logs.  Typically used to capture and mirror web logs in client application logs. */
+	FOnConsoleMessageDelegate ConsoleMessageDelegate;
+
 	/** Delegate for handling requests to create new windows. */
 	FOnCreateWindow CreateWindowDelegate;
 
@@ -350,6 +388,14 @@ private:
 	FMobileJSScriptingPtr Scripting;
 
 	mutable TOptional<TFunction<void(const FString&)>> GetPageSourceCallback;
+	/** Delegate for handling key down events not handled by the browser. */
+	FOnUnhandledKeyDown UnhandledKeyDownDelegate;
+	
+	/** Delegate for handling key up events not handled by the browser. */
+	FOnUnhandledKeyUp UnhandledKeyUpDelegate;
+	
+	/** Delegate for handling key char events not handled by the browser. */
+	FOnUnhandledKeyChar UnhandledKeyCharDelegate;
 
 	TSharedPtr<SWindow> ParentWindow;
 

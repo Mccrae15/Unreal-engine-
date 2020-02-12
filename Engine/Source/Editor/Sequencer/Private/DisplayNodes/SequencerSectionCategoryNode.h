@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -14,17 +14,17 @@ class FSequencerSectionCategoryNode
 {
 public:
 
+	/** The display name of the category */
+	FText DisplayName;
+
 	/**
 	 * Create and initialize a new instance.
 	 * 
 	 * @param InNodeName The name identifier of then node.
-	 * @param InDisplayName Display name of the category.
-	 * @param InParentNode The parent of this node, or nullptr if this is a root node.
 	 * @param InParentTree The tree this node is in.
 	 */
-	FSequencerSectionCategoryNode(FName NodeName, const FText& InDisplayName, TSharedPtr<FSequencerDisplayNode> InParentNode, FSequencerNodeTree& InParentTree)
-		: FSequencerDisplayNode(NodeName, InParentNode, InParentTree)
-		, DisplayName(InDisplayName)
+	FSequencerSectionCategoryNode(FName NodeName, FSequencerNodeTree& InParentTree)
+		: FSequencerDisplayNode(NodeName, InParentTree)
 	{ }
 
 public:
@@ -38,9 +38,6 @@ public:
 	virtual FNodePadding GetNodePadding() const override;
 	virtual ESequencerNode::Type GetType() const override;
 	virtual void SetDisplayName(const FText& NewDisplayName) override;
+	virtual FSlateFontInfo GetDisplayNameFont() const override;
 
-private:
-
-	/** The display name of the category */
-	FText DisplayName;
 };

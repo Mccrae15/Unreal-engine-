@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "PyGenUtil.h"
 #include "PyUtil.h"
@@ -9,17 +9,22 @@
 #include "PyWrapperStruct.h"
 #include "Internationalization/BreakIterator.h"
 #include "Misc/Paths.h"
+#include "Misc/ScopeExit.h"
 #include "Misc/FileHelper.h"
+#include "Misc/PackageName.h"
 #include "UObject/Class.h"
+#include "UObject/Stack.h"
 #include "UObject/Package.h"
 #include "UObject/EnumProperty.h"
 #include "UObject/TextProperty.h"
 #include "UObject/CoreRedirects.h"
 #include "UObject/PropertyPortFlags.h"
 #include "UObject/UnrealType.h"
+#include "Engine/BlueprintCore.h"
 #include "Engine/BlueprintGeneratedClass.h"
 #include "Engine/UserDefinedStruct.h"
 #include "Engine/UserDefinedEnum.h"
+#include "GameFramework/Actor.h"
 #include "Interfaces/IPluginManager.h"
 
 #if WITH_PYTHON
@@ -195,7 +200,7 @@ const FGeneratedWrappedOperatorSignature& FGeneratedWrappedOperatorSignature::Op
 }
 
 bool FGeneratedWrappedOperatorSignature::StringToSignature(const TCHAR* InStr, FGeneratedWrappedOperatorSignature& OutSignature)
-{
+	{
 	for (int32 OpTypeIndex = 0; OpTypeIndex < (int32)EGeneratedWrappedOperatorType::Num; ++OpTypeIndex)
 	{
 		const FGeneratedWrappedOperatorSignature& PotentialSignature = OpTypeToSignature((EGeneratedWrappedOperatorType)OpTypeIndex);
@@ -237,7 +242,7 @@ bool FGeneratedWrappedOperatorSignature::ValidateParam(const FGeneratedWrappedMe
 		return true;
 
 	case EType::Struct:
-		if (!InParam.ParamProp || !InParam.ParamProp->IsA<UStructProperty>() || (InStructType && CastChecked<UStructProperty>(InParam.ParamProp)->Struct != InStructType))
+		if (!InParam.ParamProp || !InParam.ParamProp->IsA<FStructProperty>() || (InStructType && CastFieldChecked<const FStructProperty>(InParam.ParamProp)->Struct != InStructType))
 		{
 			if (OutError)
 			{
@@ -248,7 +253,7 @@ bool FGeneratedWrappedOperatorSignature::ValidateParam(const FGeneratedWrappedMe
 		return true;
 
 	case EType::Bool:
-		if (!InParam.ParamProp || !InParam.ParamProp->IsA<UBoolProperty>())
+		if (!InParam.ParamProp || !InParam.ParamProp->IsA<FBoolProperty>())
 		{
 			if (OutError)
 			{
@@ -315,7 +320,7 @@ bool FGeneratedWrappedOperatorFunction::SetFunction(const FGeneratedWrappedFunct
 
 	// The 'self' parameter should be the first parameter
 	check(InFuncDef.InputParams.IsValidIndex(0)); // always expect a 'self' argument; ExpectedInputParamCount should have verified this
-	if (InFuncDef.InputParams[0].ParamProp->IsA<UStructProperty>())
+	if (InFuncDef.InputParams[0].ParamProp->IsA<FStructProperty>())
 	{
 		SelfParam = InFuncDef.InputParams[0];
 	}
@@ -332,7 +337,7 @@ bool FGeneratedWrappedOperatorFunction::SetFunction(const FGeneratedWrappedFunct
 	if (ExpectedInputParamCount > 1 && InFuncDef.InputParams.IsValidIndex(1))
 	{
 		FString OtherParamError;
-		if (FGeneratedWrappedOperatorSignature::ValidateParam(InFuncDef.InputParams[1], InSignature.OtherType, CastChecked<UStructProperty>(SelfParam.ParamProp)->Struct, &OtherParamError))
+		if (FGeneratedWrappedOperatorSignature::ValidateParam(InFuncDef.InputParams[1], InSignature.OtherType, CastFieldChecked<const FStructProperty>(SelfParam.ParamProp)->Struct, &OtherParamError))
 		{
 			OtherParam = InFuncDef.InputParams[1];
 		}
@@ -358,7 +363,7 @@ bool FGeneratedWrappedOperatorFunction::SetFunction(const FGeneratedWrappedFunct
 	if (InFuncDef.OutputParams.IsValidIndex(0))
 	{
 		FString ReturnValueError;
-		if (FGeneratedWrappedOperatorSignature::ValidateParam(InFuncDef.OutputParams[0], InSignature.ReturnType, CastChecked<UStructProperty>(SelfParam.ParamProp)->Struct, &ReturnValueError))
+		if (FGeneratedWrappedOperatorSignature::ValidateParam(InFuncDef.OutputParams[0], InSignature.ReturnType, CastFieldChecked<const FStructProperty>(SelfParam.ParamProp)->Struct, &ReturnValueError))
 		{
 			ReturnParam = InFuncDef.OutputParams[0];
 			if (InSignature.ReturnType == FGeneratedWrappedOperatorSignature::EType::Struct)
@@ -382,7 +387,7 @@ bool FGeneratedWrappedOperatorFunction::SetFunction(const FGeneratedWrappedFunct
 }
 
 
-void FGeneratedWrappedProperty::SetProperty(const UProperty* InProp, const uint32 InSetPropFlags)
+void FGeneratedWrappedProperty::SetProperty(const FProperty* InProp, const uint32 InSetPropFlags)
 {
 	Prop = InProp;
 	DeprecationMessage.Reset();
@@ -497,13 +502,13 @@ void FGeneratedWrappedDynamicConstantsMixinBase::AddDynamicConstantImpl(FGenerat
 }
 
 
-FGeneratedWrappedPropertyDoc::FGeneratedWrappedPropertyDoc(const UProperty* InProp)
+FGeneratedWrappedPropertyDoc::FGeneratedWrappedPropertyDoc(const FProperty* InProp)
 {
 	PythonPropName = GetPropertyPythonName(InProp);
 
 	const FString PropTooltip = GetFieldTooltip(InProp);
-	DocString = PythonizePropertyTooltip(PropTooltip, InProp);
-	EditorDocString = PythonizePropertyTooltip(PropTooltip, InProp, CPF_EditConst);
+	DocString = PythonizePropertyTooltip(PropTooltip, InProp, PropertyAccessUtil::RuntimeReadOnlyFlags);
+	EditorDocString = PythonizePropertyTooltip(PropTooltip, InProp, PropertyAccessUtil::EditorReadOnlyFlags);
 }
 
 bool FGeneratedWrappedPropertyDoc::SortPredicate(const FGeneratedWrappedPropertyDoc& InOne, const FGeneratedWrappedPropertyDoc& InTwo)
@@ -559,25 +564,48 @@ void FGeneratedWrappedPropertyDoc::AppendDocString(const TArray<FGeneratedWrappe
 }
 
 
-void FGeneratedWrappedFieldTracker::RegisterPythonFieldName(const FString& InPythonFieldName, const UField* InUnrealField)
+void FGeneratedWrappedFieldTracker::RegisterPythonFieldName(const FString& InPythonFieldName, const FFieldVariant& InUnrealField)
 {
-	const UField* ExistingUnrealField = PythonWrappedFieldNameToUnrealField.FindRef(InPythonFieldName).Get();
-	if (!ExistingUnrealField)
+	FFieldVariant ExistingUnrealField;
+	const UField* ExistingUField = nullptr;
+	const FField* ExistingFField = nullptr;
+
+	if (InUnrealField.IsUObject())
 	{
-		PythonWrappedFieldNameToUnrealField.Add(InPythonFieldName, InUnrealField);
+		ExistingUField = PythonWrappedFieldNameToUnrealField.FindRef(InPythonFieldName).Get();
+		if (!ExistingUField)
+		{
+			PythonWrappedFieldNameToUnrealField.Add(InPythonFieldName, InUnrealField.Get<UField>());
+		}
+		else
+		{
+			ExistingUnrealField = ExistingUField;
+		}
 	}
 	else
 	{
-		auto GetScopedFieldName = [](const UField* InField) -> FString
+		ExistingFField = PythonWrappedFieldNameToFField.FindRef(InPythonFieldName).Get();
+		if (!ExistingFField)
+		{
+			PythonWrappedFieldNameToFField.Add(InPythonFieldName, InUnrealField.ToField());
+		}
+		else
+		{
+			ExistingUnrealField = ExistingFField;
+		}
+	}
+	if (ExistingUnrealField.IsValid())
+	{
+		auto GetScopedFieldName = [](const FFieldVariant& InField) -> FString
 		{
 			// Note: We don't use GetOwnerStruct here, as UFunctions are UStructs so it
 			// doesn't work correctly for them as it includes 'this' in the look-up chain
-			const UObject* OwnerStruct = InField->GetOuter();
-			while (OwnerStruct && !OwnerStruct->IsA<UStruct>())
+			FFieldVariant OwnerStruct = InField.GetOwnerVariant();
+			while (OwnerStruct.IsValid() && !OwnerStruct.IsA<UStruct>())
 			{
-				OwnerStruct = OwnerStruct->GetOuter();
+				OwnerStruct = OwnerStruct.GetOwnerVariant();
 			}
-			return OwnerStruct ? FString::Printf(TEXT("%s.%s"), *OwnerStruct->GetName(), *InField->GetName()) : InField->GetName();
+			return OwnerStruct.IsValid() ? FString::Printf(TEXT("%s.%s"), *OwnerStruct.GetName(), *InField.GetName()) : InField.GetName();
 		};
 
 		REPORT_PYTHON_GENERATION_ISSUE(Warning, TEXT("'%s' and '%s' have the same name (%s) when exposed to Python. Rename one of them using 'ScriptName' meta-data (or 'ScriptMethod' or 'ScriptConstant' for extension functions)."), *GetScopedFieldName(ExistingUnrealField), *GetScopedFieldName(InUnrealField), *InPythonFieldName);
@@ -591,9 +619,24 @@ bool FGeneratedWrappedType::Finalize()
 
 	bool bSuccess = false;
 	// Execute Python code within this block
+	if (FinalizedState != EFinalizedState::Finalized)
 	{
 		FPyScopedGIL GIL;
-		bSuccess = PyType_Ready(&PyType) == 0;
+		if (FinalizedState == EFinalizedState::Initial)
+		{
+			bSuccess = PyType_Ready(&PyType) == 0;
+		}
+		else if (FinalizedState == EFinalizedState::Reset)
+		{
+			PyType_Modified(&PyType);
+
+			// PyType_Modified doesn't update __doc__
+			FPyObjectPtr PyDocString = FPyObjectPtr::StealReference(PyUnicode_FromString(PyType.tp_doc ? PyType.tp_doc : ""));
+			PyDict_SetItemString(PyType.tp_dict, "__doc__", PyDocString);
+
+			bSuccess = true;
+		}
+		FinalizedState = EFinalizedState::Finalized;
 	}
 
 	if (bSuccess)
@@ -606,6 +649,12 @@ bool FGeneratedWrappedType::Finalize()
 	return false;
 }
 
+void FGeneratedWrappedType::Reset()
+{
+	Reset_CleansePyType();
+	Reset_CleanseSelf();
+}
+
 void FGeneratedWrappedType::Finalize_PreReady()
 {
 	PyType.tp_name = TypeName.GetData();
@@ -614,6 +663,22 @@ void FGeneratedWrappedType::Finalize_PreReady()
 
 void FGeneratedWrappedType::Finalize_PostReady()
 {
+}
+
+void FGeneratedWrappedType::Reset_CleansePyType()
+{
+	PyType.tp_name = nullptr;
+	PyType.tp_doc = nullptr;
+
+	FPyWrapperBaseMetaData::SetMetaData(&PyType, nullptr);
+}
+
+void FGeneratedWrappedType::Reset_CleanseSelf()
+{
+	TypeName.Reset();
+	TypeDoc.Reset();
+	MetaData.Reset();
+	FinalizedState = EFinalizedState::Reset;
 }
 
 
@@ -645,7 +710,7 @@ void FGeneratedWrappedClassType::Finalize_PostReady()
 	// Execute Python code within this block
 	{
 		FPyScopedGIL GIL;
-		FPyMethodWithClosureDef::AddMethods(Methods.PyMethods.GetData(), &PyType);
+	FPyMethodWithClosureDef::AddMethods(Methods.PyMethods.GetData(), &PyType);
 		FPyConstantDef::AddConstantsToType(Constants.PyConstants.GetData(), &PyType);
 	}
 }
@@ -655,23 +720,44 @@ void FGeneratedWrappedEnumType::Finalize_PostReady()
 {
 	FGeneratedWrappedType::Finalize_PostReady();
 
-	check(MetaData.IsValid() && MetaData->GetTypeId() == FPyWrapperEnumMetaData::StaticTypeId());
-	TSharedRef<FPyWrapperEnumMetaData> EnumMetaData = StaticCastSharedRef<FPyWrapperEnumMetaData>(MetaData.ToSharedRef());
+	check(!MetaData || MetaData->GetTypeId() == FPyWrapperEnumMetaData::StaticTypeId());
+	TSharedPtr<FPyWrapperEnumMetaData> EnumMetaData = StaticCastSharedPtr<FPyWrapperEnumMetaData>(MetaData);
 
-	// Execute Python code within this block
+	if (EnumMetaData)
 	{
-		FPyScopedGIL GIL;
-		for (const FGeneratedWrappedEnumEntry& EnumEntry : EnumEntries)
+		// Execute Python code within this block
 		{
-			FPyWrapperEnum* PyEnumEntry = FPyWrapperEnum::AddEnumEntry(&PyType, EnumEntry.EntryValue, EnumEntry.EntryName.GetData(), EnumEntry.EntryDoc.GetData());
-			if (PyEnumEntry)
+			FPyScopedGIL GIL;
+			for (const FGeneratedWrappedEnumEntry& EnumEntry : EnumEntries)
 			{
-				EnumMetaData->EnumEntries.Add(PyEnumEntry);
+				FPyWrapperEnum* PyEnumEntry = FPyWrapperEnum::AddEnumEntry(&PyType, EnumEntry.EntryValue, EnumEntry.EntryName.GetData(), EnumEntry.EntryDoc.GetData());
+				if (PyEnumEntry)
+				{
+					EnumMetaData->EnumEntries.Add(PyEnumEntry);
+				}
 			}
 		}
+
+		EnumMetaData->bFinalized = true;
+	}
+}
+
+void FGeneratedWrappedEnumType::Reset_CleansePyType()
+{
+	// Unregister the existing enum entries
+	for (const FGeneratedWrappedEnumEntry& EnumEntry : EnumEntries)
+	{
+		PyDict_DelItemString(PyType.tp_dict, EnumEntry.EntryName.GetData());
 	}
 
-	EnumMetaData->bFinalized = true;
+	FGeneratedWrappedType::Reset_CleansePyType();
+}
+
+void FGeneratedWrappedEnumType::Reset_CleanseSelf()
+{
+	EnumEntries.Reset();
+
+	FGeneratedWrappedType::Reset_CleanseSelf();
 }
 
 void FGeneratedWrappedEnumType::ExtractEnumEntries(const UEnum* InEnum)
@@ -690,7 +776,7 @@ void FGeneratedWrappedEnumType::ExtractEnumEntries(const UEnum* InEnum)
 }
 
 
-FPythonizeTooltipContext::FPythonizeTooltipContext(const UProperty* InProp, const uint64 InReadOnlyFlags)
+FPythonizeTooltipContext::FPythonizeTooltipContext(const FProperty* InProp, const uint64 InReadOnlyFlags)
 	: Prop(InProp)
 	, Func(nullptr)
 	, ReadOnlyFlags(InReadOnlyFlags)
@@ -699,12 +785,12 @@ FPythonizeTooltipContext::FPythonizeTooltipContext(const UProperty* InProp, cons
 	{
 		IsDeprecatedProperty(Prop, &DeprecationMessage);
 	}
-}
+	}
 
 FPythonizeTooltipContext::FPythonizeTooltipContext(const UFunction* InFunc, const TSet<FName>& InParamsToIgnore)
 	: Prop(nullptr)
 	, Func(InFunc)
-	, ReadOnlyFlags(CPF_BlueprintReadOnly | CPF_EditConst)
+	, ReadOnlyFlags(PropertyAccessUtil::RuntimeReadOnlyFlags)
 	, ParamsToIgnore(InParamsToIgnore)
 {
 	if (Func)
@@ -763,7 +849,7 @@ PyObject* GetPostInitFunc(PyTypeObject* InPyType)
 	return PostInitFunc.Release();
 }
 
-void AddStructInitParam(const UProperty* InUnrealProp, const TCHAR* InPythonAttrName, TArray<FGeneratedWrappedMethodParameter>& OutInitParams)
+void AddStructInitParam(const FProperty* InUnrealProp, const TCHAR* InPythonAttrName, TArray<FGeneratedWrappedMethodParameter>& OutInitParams)
 {
 	FGeneratedWrappedMethodParameter& InitParam = OutInitParams.AddDefaulted_GetRef();
 	InitParam.ParamName = TCHARToUTF8Buffer(InPythonAttrName);
@@ -773,7 +859,7 @@ void AddStructInitParam(const UProperty* InUnrealProp, const TCHAR* InPythonAttr
 
 void ExtractFunctionParams(const UFunction* InFunc, TArray<FGeneratedWrappedMethodParameter>& OutInputParams, TArray<FGeneratedWrappedMethodParameter>& OutOutputParams)
 {
-	auto AddGeneratedWrappedMethodParameter = [InFunc](const UProperty* InParam, TArray<FGeneratedWrappedMethodParameter>& OutParams)
+	auto AddGeneratedWrappedMethodParameter = [InFunc](const FProperty* InParam, TArray<FGeneratedWrappedMethodParameter>& OutParams)
 	{
 		const FString ParamName = InParam->GetName();
 		const FString PythonParamName = PythonizePropertyName(ParamName, EPythonizeNameCase::Lower);
@@ -788,14 +874,14 @@ void ExtractFunctionParams(const UFunction* InFunc, TArray<FGeneratedWrappedMeth
 		}
 	};
 
-	if (const UProperty* ReturnProp = InFunc->GetReturnProperty())
+	if (const FProperty* ReturnProp = InFunc->GetReturnProperty())
 	{
 		AddGeneratedWrappedMethodParameter(ReturnProp, OutOutputParams);
 	}
 
-	for (TFieldIterator<const UProperty> ParamIt(InFunc); ParamIt; ++ParamIt)
+	for (TFieldIterator<const FProperty> ParamIt(InFunc); ParamIt; ++ParamIt)
 	{
-		const UProperty* Param = *ParamIt;
+		const FProperty* Param = *ParamIt;
 
 		if (PyUtil::IsInputParameter(Param))
 		{
@@ -911,9 +997,9 @@ PyObject* PackReturnValues(const void* InBaseParamsAddr, const TArray<FGenerated
 	int32 ReturnPropIndex = 0;
 
 	// If we have multiple return values and the main return value is a bool, we return None (for false) or the (potentially packed) return value without the bool (for true)
-	if (InOutputParams.Num() > 1 && InOutputParams[0].ParamProp->HasAnyPropertyFlags(CPF_ReturnParm) && InOutputParams[0].ParamProp->IsA<UBoolProperty>())
+	if (InOutputParams.Num() > 1 && InOutputParams[0].ParamProp->HasAnyPropertyFlags(CPF_ReturnParm) && InOutputParams[0].ParamProp->IsA<FBoolProperty>())
 	{
-		const UBoolProperty* BoolReturn = CastChecked<const UBoolProperty>(InOutputParams[0].ParamProp);
+		const FBoolProperty* BoolReturn = CastFieldChecked<const FBoolProperty>(InOutputParams[0].ParamProp);
 		const bool bReturnValue = BoolReturn->GetPropertyValue(BoolReturn->ContainerPtrToValuePtr<void>(InBaseParamsAddr));
 		if (!bReturnValue)
 		{
@@ -953,32 +1039,32 @@ PyObject* PackReturnValues(const void* InBaseParamsAddr, const TArray<FGenerated
 	}
 }
 
-bool UnpackReturnValues(PyObject* InRetVals, void* InBaseParamsAddr, const TArray<FGeneratedWrappedMethodParameter>& InOutputParams, const TCHAR* InErrorCtxt, const TCHAR* InCallingCtxt)
+bool UnpackReturnValues(PyObject* InRetVals, const FOutParmRec* InOutputParms, const TCHAR* InErrorCtxt, const TCHAR* InCallingCtxt)
 {
-	if (!InOutputParams.Num())
+	if (!InOutputParms)
 	{
 		return true;
 	}
 
-	int32 ReturnPropIndex = 0;
+	const FOutParmRec* OutParamRec = InOutputParms;
 
 	// If we have multiple return values and the main return value is a bool, we expect None (for false) or the (potentially packed) return value without the bool (for true)
-	if (InOutputParams.Num() > 1 && InOutputParams[0].ParamProp->HasAnyPropertyFlags(CPF_ReturnParm) && InOutputParams[0].ParamProp->IsA<UBoolProperty>())
+	if (OutParamRec->NextOutParm && OutParamRec->Property->HasAnyPropertyFlags(CPF_ReturnParm) && OutParamRec->Property->IsA<FBoolProperty>())
 	{
-		const UBoolProperty* BoolReturn = CastChecked<const UBoolProperty>(InOutputParams[0].ParamProp);
+		const FBoolProperty* BoolReturn = CastFieldChecked<const FBoolProperty>(OutParamRec->Property);
 		const bool bReturnValue = InRetVals != Py_None;
-		BoolReturn->SetPropertyValue(BoolReturn->ContainerPtrToValuePtr<void>(InBaseParamsAddr), bReturnValue);
+		BoolReturn->SetPropertyValue(OutParamRec->PropAddr, bReturnValue);
 
-		ReturnPropIndex = 1; // Start unpacking at the 1st out value
+		OutParamRec = OutParamRec->NextOutParm; // Start unpacking at the 1st out value
+		check(OutParamRec);
 	}
 
 	// Do we need to expect a packed tuple, or just a single value?
-	const int32 NumPropertiesToUnpack = InOutputParams.Num() - ReturnPropIndex;
-	if (NumPropertiesToUnpack == 1)
+	if (OutParamRec->NextOutParm == nullptr)
 	{
-		if (!PyConversion::NativizeProperty_InContainer(InRetVals, InOutputParams[ReturnPropIndex].ParamProp, InBaseParamsAddr, 0))
+		if (!PyConversion::NativizeProperty_Direct(InRetVals, OutParamRec->Property, OutParamRec->PropAddr))
 		{
-			PyUtil::SetPythonError(PyExc_TypeError, InErrorCtxt, *FString::Printf(TEXT("Failed to convert return property '%s' (%s) when calling %s"), *InOutputParams[ReturnPropIndex].ParamProp->GetName(), *InOutputParams[ReturnPropIndex].ParamProp->GetClass()->GetName(), InCallingCtxt));
+			PyUtil::SetPythonError(PyExc_TypeError, InErrorCtxt, *FString::Printf(TEXT("Failed to convert return property '%s' (%s) when calling %s"), *OutParamRec->Property->GetName(), *OutParamRec->Property->GetClass()->GetName(), InCallingCtxt));
 			return false;
 		}
 	}
@@ -990,6 +1076,13 @@ bool UnpackReturnValues(PyObject* InRetVals, void* InBaseParamsAddr, const TArra
 			return false;
 		}
 
+		check(OutParamRec->NextOutParm);
+		int32 NumPropertiesToUnpack = 2; // We can start from 2 since we know we already have at least 2 output parameters to get to this code
+		for (const FOutParmRec* Tmp = OutParamRec->NextOutParm->NextOutParm; Tmp; Tmp = Tmp->NextOutParm)
+		{
+			++NumPropertiesToUnpack;
+		}
+
 		const int32 RetTupleSize = PyTuple_Size(InRetVals);
 		if (RetTupleSize != NumPropertiesToUnpack)
 		{
@@ -998,21 +1091,160 @@ bool UnpackReturnValues(PyObject* InRetVals, void* InBaseParamsAddr, const TArra
 		}
 
 		int32 RetTupleIndex = 0;
-		for (; ReturnPropIndex < InOutputParams.Num(); ++ReturnPropIndex)
+		do
 		{
 			PyObject* RetVal = PyTuple_GetItem(InRetVals, RetTupleIndex++);
-			if (!PyConversion::NativizeProperty_InContainer(RetVal, InOutputParams[ReturnPropIndex].ParamProp, InBaseParamsAddr, 0))
+			if (!PyConversion::NativizeProperty_Direct(RetVal, OutParamRec->Property, OutParamRec->PropAddr))
 			{
-				PyUtil::SetPythonError(PyExc_TypeError, InErrorCtxt, *FString::Printf(TEXT("Failed to convert return property '%s' (%s) when calling %s"), *InOutputParams[ReturnPropIndex].ParamProp->GetName(), *InOutputParams[ReturnPropIndex].ParamProp->GetClass()->GetName(), InCallingCtxt));
+				PyUtil::SetPythonError(PyExc_TypeError, InErrorCtxt, *FString::Printf(TEXT("Failed to convert return property '%s' (%s) when calling %s"), *OutParamRec->Property->GetName(), *OutParamRec->Property->GetClass()->GetName(), InCallingCtxt));
 				return false;
 			}
+			OutParamRec = OutParamRec->NextOutParm;
 		}
+		while (OutParamRec);
 	}
 
 	return true;
 }
 
-PyObject* GetPropertyValue(const UStruct* InStruct, void* InStructData, const FGeneratedWrappedProperty& InPropDef, const char *InAttributeName, PyObject* InOwnerPyObject, const TCHAR* InErrorCtxt)
+bool InvokePythonCallableFromUnrealFunctionThunk(FPyObjectPtr InSelf, PyObject* InCallable, const UFunction* InFunc, UObject* Context, FFrame& Stack, RESULT_DECL)
+{
+	// Allocate memory to store our local argument data
+	void* LocalStruct = FMemory_Alloca(FMath::Max<int32>(1, InFunc->GetStructureSize()));
+	InFunc->InitializeStruct(LocalStruct);
+	ON_SCOPE_EXIT
+	{
+		InFunc->DestroyStruct(LocalStruct);
+	};
+
+	// Stores information about inputs and outputs
+	FOutParmRec* OutParms = nullptr;
+	TArray<FPyObjectPtr, TInlineAllocator<4>> PyParams;
+
+	// Add any return property to the output params chain
+	if (FProperty* ReturnProp = InFunc->GetReturnProperty())
+	{
+		FOutParmRec* Out = (FOutParmRec*)FMemory_Alloca(sizeof(FOutParmRec));
+		Out->Property = ReturnProp;
+		Out->PropAddr = (uint8*)RESULT_PARAM;
+
+		// Link it to the head of the list, as UnpackReturnValues expects the return value to be first in the list
+		Out->NextOutParm = OutParms;
+		OutParms = Out;
+	}
+
+	// Get the value of the input params for the Python args, and cache the addresses that return and output data should be unpacked to
+	bool bProcessedInputs = true;
+	{
+		int32 ArgIndex = 0;
+		FOutParmRec** LastOut = &OutParms;
+
+		// We iterate the fields directly here as we need to process input and output properties in the 
+		// correct stack order, as we're potentially popping data off the bytecode stack
+		for (TFieldIterator<FProperty> ParamIt(InFunc); ParamIt; ++ParamIt)
+		{
+			FProperty* Param = *ParamIt;
+
+			// Skip the return value; it never has data on the bytecode stack and was added to the output params chain before this loop
+			if (Param->HasAnyPropertyFlags(CPF_ReturnParm))
+			{
+				continue;
+			}
+
+			// Step the property data to populate the local value
+			Stack.MostRecentPropertyAddress = nullptr;
+			void* LocalValue = Param->ContainerPtrToValuePtr<void>(LocalStruct);
+			Stack.StepCompiledIn<FProperty>(LocalValue);
+
+			// Output parameters (even const ones) need to read their data from the property address (if available) rather than the local struct
+			void* ValueAddress = LocalValue;
+			if (Param->HasAnyPropertyFlags(CPF_OutParm) && Stack.MostRecentPropertyAddress)
+			{
+				ValueAddress = Stack.MostRecentPropertyAddress;
+			}
+
+			// Add any output parameters to the output params chain
+			if (PyUtil::IsOutputParameter(Param))
+			{
+				CA_SUPPRESS(6263) // using _alloca in a loop
+				FOutParmRec* Out = (FOutParmRec*)FMemory_Alloca(sizeof(FOutParmRec));
+				Out->Property = Param;
+				Out->PropAddr = (uint8*)ValueAddress;
+				Out->NextOutParm = nullptr;
+
+				// Link it to the end of the list
+				if (*LastOut)
+				{
+					(*LastOut)->NextOutParm = Out;
+					LastOut = &(*LastOut)->NextOutParm;
+				}
+				else
+				{
+					*LastOut = Out;
+				}
+			}
+
+			// Convert any input parameters for use with Python
+			if (PyUtil::IsInputParameter(Param))
+			{
+				FPyObjectPtr& PyParam = PyParams.AddDefaulted_GetRef();
+				if (!PyConversion::PythonizeProperty_Direct(Param, ValueAddress, PyParam.Get()))
+				{
+					PyUtil::SetPythonError(PyExc_TypeError, InCallable ? *PyUtil::GetErrorContext(InCallable) : TEXT("<null>"), *FString::Printf(TEXT("Failed to convert argument at pos '%d' when calling function '%s' on '%s'"), ArgIndex + 1, *InFunc->GetName(), *P_THIS_OBJECT->GetName()));
+					bProcessedInputs = false;
+				}
+				++ArgIndex;
+			}
+		}
+	}
+
+	// Validate we reached the end of the parameters when stepping the bytecode stack
+	if (Stack.Code)
+	{
+		checkSlow(*Stack.Code == EX_EndFunctionParms);
+		++Stack.Code;
+	}
+
+	// If any errors happened during parameter processing then we can bail now that we've finished stepping the bytecode stack
+	// We can also bail if we have no Python callable to invoke
+	if (!bProcessedInputs || !InCallable)
+	{
+		return false;
+	}
+
+	// Prepare the arguments tuple for the Python callable
+	FPyObjectPtr PyArgs;
+	if (InSelf || PyParams.Num() > 0)
+	{
+		const int32 PyParamOffset = (InSelf ? 1 : 0);
+		PyArgs = FPyObjectPtr::StealReference(PyTuple_New(PyParams.Num() + PyParamOffset));
+		if (InSelf)
+		{
+			PyTuple_SetItem(PyArgs, 0, InSelf.Release()); // SetItem steals the reference
+		}
+		for (int32 PyParamIndex = 0; PyParamIndex < PyParams.Num(); ++PyParamIndex)
+		{
+			PyTuple_SetItem(PyArgs, PyParamIndex + PyParamOffset, PyParams[PyParamIndex].Release()); // SetItem steals the reference
+		}
+	}
+
+	// Invoke the Python callable
+	FPyObjectPtr RetVals = FPyObjectPtr::StealReference(PyObject_CallObject(InCallable, PyArgs));
+	if (!RetVals)
+	{
+		return false;
+	}
+
+	// Unpack any output values
+	if (!UnpackReturnValues(RetVals, OutParms, *PyUtil::GetErrorContext(InCallable), *FString::Printf(TEXT("function '%s' on '%s'"), *InFunc->GetName(), *P_THIS_OBJECT->GetName())))
+	{
+		return false;
+	}
+
+	return true;
+}
+
+PyObject* GetPropertyValue(const UStruct* InStruct, const void* InStructData, const FGeneratedWrappedProperty& InPropDef, const char *InAttributeName, PyObject* InOwnerPyObject, const TCHAR* InErrorCtxt)
 {
 	// Has this property been deprecated?
 	if (InStruct && InPropDef.Prop && InPropDef.DeprecationMessage.IsSet())
@@ -1037,7 +1269,7 @@ PyObject* GetPropertyValue(const UStruct* InStruct, void* InStructData, const FG
 	return PyUtil::GetPropertyValue(InStruct, InStructData, InPropDef.Prop, InAttributeName, InOwnerPyObject, InErrorCtxt);
 }
 
-int SetPropertyValue(const UStruct* InStruct, void* InStructData, PyObject* InValue, const FGeneratedWrappedProperty& InPropDef, const char *InAttributeName, const FPyWrapperOwnerContext& InChangeOwner, const uint64 InReadOnlyFlags, const bool InOwnerIsTemplate, const TCHAR* InErrorCtxt)
+int SetPropertyValue(const UStruct* InStruct, void* InStructData, PyObject* InValue, const FGeneratedWrappedProperty& InPropDef, const char *InAttributeName, const FPropertyAccessChangeNotify* InChangeNotify, const uint64 InReadOnlyFlags, const bool InOwnerIsTemplate, const TCHAR* InErrorCtxt)
 {
 	// Has this property been deprecated?
 	if (InStruct && InPropDef.Prop && InPropDef.DeprecationMessage.IsSet())
@@ -1059,7 +1291,7 @@ int SetPropertyValue(const UStruct* InStruct, void* InStructData, PyObject* InVa
 		}
 	}
 
-	return PyUtil::SetPropertyValue(InStruct, InStructData, InValue, InPropDef.Prop, InAttributeName, InChangeOwner, InReadOnlyFlags, InOwnerIsTemplate, InErrorCtxt);
+	return PyUtil::SetPropertyValue(InStruct, InStructData, InValue, InPropDef.Prop, InAttributeName, InChangeNotify, InReadOnlyFlags, InOwnerIsTemplate, InErrorCtxt);
 }
 
 FString BuildFunctionDocString(const UFunction* InFunc, const FString& InFuncPythonName, const TArray<FGeneratedWrappedMethodParameter>& InInputParams, const TArray<FGeneratedWrappedMethodParameter>& InOutputParams, const bool* InStaticOverride)
@@ -1088,7 +1320,7 @@ FString BuildFunctionDocString(const UFunction* InFunc, const FString& InFuncPyt
 		int32 IndexOffset = 0;
 		if (InOutputParams.Num() > 1)
 		{
-			if (InOutputParams[0].ParamProp->HasAnyPropertyFlags(CPF_ReturnParm) && InOutputParams[0].ParamProp->IsA<UBoolProperty>())
+			if (InOutputParams[0].ParamProp->HasAnyPropertyFlags(CPF_ReturnParm) && InOutputParams[0].ParamProp->IsA<FBoolProperty>())
 			{
 				++IndexOffset;
 			}
@@ -1135,6 +1367,11 @@ bool IsScriptExposedClass(const UClass* InClass)
 {
 	for (const UClass* ParentClass = InClass; ParentClass; ParentClass = ParentClass->GetSuperClass())
 	{
+		if (IsBlueprintGeneratedClass(ParentClass))
+		{
+			return true;
+		}
+
 		if (ParentClass->GetBoolMetaData(BlueprintTypeMetaDataKey) || ParentClass->HasMetaData(BlueprintSpawnableComponentMetaDataKey))
 		{
 			return true;
@@ -1153,6 +1390,11 @@ bool IsScriptExposedStruct(const UScriptStruct* InStruct)
 {
 	for (const UScriptStruct* ParentStruct = InStruct; ParentStruct; ParentStruct = Cast<UScriptStruct>(ParentStruct->GetSuperStruct()))
 	{
+		if (IsBlueprintGeneratedStruct(ParentStruct))
+		{
+			return true;
+		}
+
 		if (ParentStruct->GetBoolMetaData(BlueprintTypeMetaDataKey))
 		{
 			return true;
@@ -1169,6 +1411,11 @@ bool IsScriptExposedStruct(const UScriptStruct* InStruct)
 
 bool IsScriptExposedEnum(const UEnum* InEnum)
 {
+	if (IsBlueprintGeneratedEnum(InEnum))
+	{
+		return true;
+	}
+
 	if (InEnum->GetBoolMetaData(BlueprintTypeMetaDataKey))
 	{
 		return true;
@@ -1187,7 +1434,7 @@ bool IsScriptExposedEnumEntry(const UEnum* InEnum, int32 InEnumEntryIndex)
 	return !InEnum->HasMetaData(HiddenMetaDataKey, InEnumEntryIndex);
 }
 
-bool IsScriptExposedProperty(const UProperty* InProp)
+bool IsScriptExposedProperty(const FProperty* InProp)
 {
 	return !InProp->HasMetaData(ScriptNoExportMetaDataKey) 
 		&& InProp->HasAnyPropertyFlags(CPF_BlueprintVisible | CPF_BlueprintAssignable);
@@ -1205,28 +1452,27 @@ bool IsScriptExposedFunction(const UFunction* InFunc)
 		&& !InFunc->HasMetaData(NativeMakeFuncMetaDataKey);
 }
 
-bool IsScriptExposedField(const UField* InField)
-{
-	if (const UProperty* Prop = Cast<const UProperty>(InField))
-	{
-		return IsScriptExposedProperty(Prop);
-	}
-
-	if (const UFunction* Func = Cast<const UFunction>(InField))
-	{
-		return IsScriptExposedFunction(Func);
-	}
-
-	return false;
-}
-
 bool HasScriptExposedFields(const UStruct* InStruct)
 {
 	for (TFieldIterator<const UField> FieldIt(InStruct); FieldIt; ++FieldIt)
 	{
-		if (IsScriptExposedField(*FieldIt))
+		if (const UFunction* Func = Cast<const UFunction>(*FieldIt))
 		{
-			return true;
+			if (IsScriptExposedFunction(Func))
+			{
+				return true;
+			}
+		}
+	}
+
+	for (TFieldIterator<const FField> FieldIt(InStruct); FieldIt; ++FieldIt)
+	{
+		if (const FProperty* Prop = CastField<const FProperty>(*FieldIt))
+		{
+			if (IsScriptExposedProperty(Prop))
+			{
+				return true;
+			}
 		}
 	}
 
@@ -1269,7 +1515,7 @@ bool IsDeprecatedClass(const UClass* InClass, FString* OutDeprecationMessage)
 	return false;
 }
 
-bool IsDeprecatedProperty(const UProperty* InProp, FString* OutDeprecationMessage)
+bool IsDeprecatedProperty(const FProperty* InProp, FString* OutDeprecationMessage)
 {
 	if (InProp->HasMetaData(DeprecatedPropertyMetaDataKey))
 	{
@@ -1327,13 +1573,13 @@ bool ShouldExportEnumEntry(const UEnum* InEnum, int32 InEnumEntryIndex)
 	return IsScriptExposedEnumEntry(InEnum, InEnumEntryIndex);
 }
 
-bool ShouldExportProperty(const UProperty* InProp)
+bool ShouldExportProperty(const FProperty* InProp)
 {
 	const bool bCanScriptExport = !InProp->HasMetaData(ScriptNoExportMetaDataKey); // Need to test this again here as IsScriptExposedProperty checks it internally, but IsDeprecatedProperty doesn't
 	return bCanScriptExport && (IsScriptExposedProperty(InProp) || IsDeprecatedProperty(InProp));
 }
 
-bool ShouldExportEditorOnlyProperty(const UProperty* InProp)
+bool ShouldExportEditorOnlyProperty(const FProperty* InProp)
 {
 	const bool bCanScriptExport = !InProp->HasMetaData(ScriptNoExportMetaDataKey);
 	return bCanScriptExport && GIsEditor && (InProp->HasAnyPropertyFlags(CPF_Edit) || IsDeprecatedProperty(InProp));
@@ -1342,6 +1588,46 @@ bool ShouldExportEditorOnlyProperty(const UProperty* InProp)
 bool ShouldExportFunction(const UFunction* InFunc)
 {
 	return IsScriptExposedFunction(InFunc);
+}
+
+bool IsValidName(const FString& InName, FText* OutError)
+{
+	if (InName.Len() == 0)
+	{
+		if (OutError)
+		{
+			*OutError = NSLOCTEXT("PyGenUtil", "InvalidName_EmptyName", "Name is empty");
+		}
+		return false;
+	}
+
+	// Names must be a valid symbol (alnum or _ and doesn't start with a digit)
+
+	const TCHAR* InvalidChar = InName.GetCharArray().FindByPredicate(
+		[](const TCHAR InChar)
+		{
+			return !FChar::IsAlnum(InChar) && InChar != TEXT('_') && InChar != 0;
+		});
+
+	if (InvalidChar)
+	{
+		if (OutError)
+		{
+			*OutError = FText::Format(NSLOCTEXT("PyGenUtil", "InvalidName_RestrictedCharacter", "Name contains '{0}' which is invalid for Python"), FText::AsCultureInvariant(FString(1, InvalidChar)));
+		}
+		return false;
+	}
+
+	if (FChar::IsDigit(InName[0]))
+	{
+		if (OutError)
+		{
+			*OutError = NSLOCTEXT("PyGenUtil", "InvalidName_LeadingDigit", "Name starts with a digit which is invalid for Python");
+		}
+		return false;
+	}
+
+	return true;
 }
 
 FString PythonizeName(const FString& InName, const EPythonizeNameCase InNameCase)
@@ -1469,7 +1755,7 @@ FString PythonizePropertyName(const FString& InName, const EPythonizeNameCase In
 	return PythonizeName(NameOffset ? InName.RightChop(NameOffset) : InName, InNameCase);
 }
 
-FString PythonizePropertyTooltip(const FString& InTooltip, const UProperty* InProp, const uint64 InReadOnlyFlags)
+FString PythonizePropertyTooltip(const FString& InTooltip, const FProperty* InProp, const uint64 InReadOnlyFlags)
 {
 	return PythonizeTooltip(InTooltip, FPythonizeTooltipContext(InProp, InReadOnlyFlags));
 }
@@ -1505,7 +1791,7 @@ FString PythonizeTooltip(const FString& InTooltip, const FPythonizeTooltipContex
 		FParamToken(FParamToken&&) = default;
 		FParamToken& operator=(FParamToken&&) = default;
 		
-		explicit FParamToken(const UProperty* InParam)
+		explicit FParamToken(const FProperty* InParam)
 			: ParamName(InParam->GetFName())
 			, ParamType(GetPropertyPythonType(InParam))
 			, ParamComment()
@@ -1543,15 +1829,15 @@ FString PythonizeTooltip(const FString& InTooltip, const FPythonizeTooltipContex
 	// params (in-order) and fill them in with the description from the tooltip later (if available)
 	if (InContext.Func)
 	{
-		if (const UProperty* ReturnProp = InContext.Func->GetReturnProperty())
+		if (const FProperty* ReturnProp = InContext.Func->GetReturnProperty())
 		{
-			bIsBoolReturn = ReturnProp->IsA<UBoolProperty>();
+			bIsBoolReturn = ReturnProp->IsA<FBoolProperty>();
 			ParsedReturnToken = FParamToken(ReturnProp);
 		}
 
-		for (TFieldIterator<const UProperty> ParamIt(InContext.Func); ParamIt; ++ParamIt)
+		for (TFieldIterator<const FProperty> ParamIt(InContext.Func); ParamIt; ++ParamIt)
 		{
-			const UProperty* Param = *ParamIt;
+			const FProperty* Param = *ParamIt;
 
 			if (PyUtil::IsInputParameter(Param))
 			{
@@ -1805,7 +2091,7 @@ FString PythonizeTooltip(const FString& InTooltip, const FPythonizeTooltipContex
 			PythonizedTooltip += PythonizePropertyName(ParamToken.ParamName.ToString(), EPythonizeNameCase::Lower);
 
 			if (!ParamToken.ParamType.IsEmpty())
-			{
+	{
 				PythonizedTooltip += TEXT(" (");
 				PythonizedTooltip += ParamToken.ParamType;
 				PythonizedTooltip += TEXT(')');
@@ -1824,7 +2110,7 @@ FString PythonizeTooltip(const FString& InTooltip, const FPythonizeTooltipContex
 
 void PythonizeStructValueImpl(const UScriptStruct* InStruct, const void* InStructValue, const uint32 InFlags, FString& OutPythonDefaultValue);
 
-void PythonizeValueImpl(const UProperty* InProp, const void* InPropValue, const uint32 InFlags, FString& OutPythonDefaultValue)
+void PythonizeValueImpl(const FProperty* InProp, const void* InPropValue, const uint32 InFlags, FString& OutPythonDefaultValue)
 {
 	static const bool bIsForDocString = false;
 
@@ -1847,7 +2133,7 @@ void PythonizeValueImpl(const UProperty* InProp, const void* InPropValue, const 
 			OutPythonDefaultValue += TEXT(", ");
 		}
 
-		if (const UByteProperty* ByteProp = Cast<const UByteProperty>(InProp))
+		if (const FByteProperty* ByteProp = CastField<const FByteProperty>(InProp))
 		{
 			if (ByteProp->Enum)
 			{
@@ -1860,25 +2146,25 @@ void PythonizeValueImpl(const UProperty* InProp, const void* InPropValue, const 
 				ByteProp->ExportText_Direct(OutPythonDefaultValue, PropArrValue, PropArrValue, nullptr, PPF_None);
 			}
 		}
-		else if (const UEnumProperty* EnumProp = Cast<const UEnumProperty>(InProp))
+		else if (const FEnumProperty* EnumProp = CastField<const FEnumProperty>(InProp))
 		{
-			UNumericProperty* EnumInternalProp = EnumProp->GetUnderlyingProperty();
+			FNumericProperty* EnumInternalProp = EnumProp->GetUnderlyingProperty();
 			const int64 EnumVal = EnumInternalProp->GetSignedIntPropertyValue(PropArrValue);
 			const FString EnumValStr = EnumProp->GetEnum()->GetNameStringByValue(EnumVal);
 			OutPythonDefaultValue += EnumValStr.IsEmpty() ? TEXT("0") : *FString::Printf(TEXT("%s%s.%s"), UnrealNamespace, *GetEnumPythonName(EnumProp->GetEnum()), *PythonizeName(EnumValStr, EPythonizeNameCase::Upper));
 		}
-		else if (const UBoolProperty* BoolProp = Cast<const UBoolProperty>(InProp))
+		else if (const FBoolProperty* BoolProp = CastField<const FBoolProperty>(InProp))
 		{
 			OutPythonDefaultValue += BoolProp->GetPropertyValue(PropArrValue) ? TEXT("True") : TEXT("False");
 		}
-		else if (const UNameProperty* NameProp = Cast<const UNameProperty>(InProp))
+		else if (const FNameProperty* NameProp = CastField<const FNameProperty>(InProp))
 		{
 			const FString NameStrValue = NameProp->GetPropertyValue(PropArrValue).ToString();
 			OutPythonDefaultValue += bUseStrictTyping
 				? FString::Printf(TEXT("%sName(\"%s\")"), UnrealNamespace, *NameStrValue)
 				: FString::Printf(TEXT("\"%s\""), *NameStrValue);
 		}
-		else if (const UTextProperty* TextProp = Cast<const UTextProperty>(InProp))
+		else if (const FTextProperty* TextProp = CastField<const FTextProperty>(InProp))
 		{
 			const FString* TextStrValue = FTextInspector::GetSourceString(TextProp->GetPropertyValue(PropArrValue));
 			check(TextStrValue);
@@ -1886,27 +2172,27 @@ void PythonizeValueImpl(const UProperty* InProp, const void* InPropValue, const 
 				? FString::Printf(TEXT("%sText(\"%s\")"), UnrealNamespace, **TextStrValue)
 				: FString::Printf(TEXT("\"%s\""), **TextStrValue);
 		}
-		else if (const UObjectPropertyBase* ObjProp = Cast<const UObjectPropertyBase>(InProp))
+		else if (const FObjectPropertyBase* ObjProp = CastField<const FObjectPropertyBase>(InProp))
 		{
 			OutPythonDefaultValue += TEXT("None");
 		}
-		else if (const UInterfaceProperty* InterfaceProp = Cast<const UInterfaceProperty>(InProp))
+		else if (const FInterfaceProperty* InterfaceProp = CastField<const FInterfaceProperty>(InProp))
 		{
 			OutPythonDefaultValue += TEXT("None");
 		}
-		else if (const UStructProperty* StructProp = Cast<const UStructProperty>(InProp))
+		else if (const FStructProperty* StructProp = CastField<const FStructProperty>(InProp))
 		{
 			PythonizeStructValueImpl(StructProp->Struct, PropArrValue, InFlags, OutPythonDefaultValue);
 		}
-		else if (const UDelegateProperty* DelegateProp = Cast<const UDelegateProperty>(InProp))
+		else if (const FDelegateProperty* DelegateProp = CastField<const FDelegateProperty>(InProp))
 		{
 			OutPythonDefaultValue += FString::Printf(TEXT("%s%s()"), UnrealNamespace, *GetDelegatePythonName(DelegateProp->SignatureFunction));
 		}
-		else if (const UMulticastDelegateProperty* MulticastDelegateProp = Cast<const UMulticastDelegateProperty>(InProp))
+		else if (const FMulticastDelegateProperty* MulticastDelegateProp = CastField<const FMulticastDelegateProperty>(InProp))
 		{
 			OutPythonDefaultValue += FString::Printf(TEXT("%s%s()"), UnrealNamespace, *GetDelegatePythonName(MulticastDelegateProp->SignatureFunction));
 		}
-		else if (const UArrayProperty* ArrayProperty = Cast<const UArrayProperty>(InProp))
+		else if (const FArrayProperty* ArrayProperty = CastField<const FArrayProperty>(InProp))
 		{
 			OutPythonDefaultValue += bUseStrictTyping
 				? FString::Printf(TEXT("%sArray.cast(%s, ["), UnrealNamespace, *GetPropertyTypePythonName(ArrayProperty->Inner, bIncludeUnrealNamespace, bIsForDocString))
@@ -1927,7 +2213,7 @@ void PythonizeValueImpl(const UProperty* InProp, const void* InPropValue, const 
 				? TEXT("])")
 				: TEXT("]");
 		}
-		else if (const USetProperty* SetProperty = Cast<const USetProperty>(InProp))
+		else if (const FSetProperty* SetProperty = CastField<const FSetProperty>(InProp))
 		{
 			OutPythonDefaultValue += bUseStrictTyping
 				? FString::Printf(TEXT("%sSet.cast(%s, ["), UnrealNamespace, *GetPropertyTypePythonName(SetProperty->ElementProp, bIncludeUnrealNamespace, bIsForDocString))
@@ -1950,12 +2236,12 @@ void PythonizeValueImpl(const UProperty* InProp, const void* InPropValue, const 
 				? TEXT("])")
 				: TEXT("]");
 		}
-		else if (const UMapProperty* MapProperty = Cast<const UMapProperty>(InProp))
+		else if (const FMapProperty* MapProperty = CastField<const FMapProperty>(InProp))
 		{
 			OutPythonDefaultValue += bUseStrictTyping
 				? FString::Printf(TEXT("%sMap.cast(%s, %s, {"), UnrealNamespace, *GetPropertyTypePythonName(MapProperty->KeyProp, bIncludeUnrealNamespace, bIsForDocString), *GetPropertyTypePythonName(MapProperty->ValueProp, bIncludeUnrealNamespace, bIsForDocString))
 				: TEXT("{");
-			{
+		{
 				FScriptMapHelper ScriptMapHelper(MapProperty, PropArrValue);
 				for (int32 SparseElementIndex = 0, ElementIndex = 0; SparseElementIndex < ScriptMapHelper.GetMaxIndex(); ++SparseElementIndex)
 				{
@@ -2032,12 +2318,12 @@ void PythonizeStructValueImpl(const UScriptStruct* InStruct, const void* InStruc
 			{
 				// Call the break function using the instance we were given
 				FStructOnScope FuncParams(BreakFuncDef.Func);
-				if (BreakFuncDef.InputParams.Num() == 1 && Cast<UStructProperty>(BreakFuncDef.InputParams[0].ParamProp) && InStruct->IsChildOf(CastChecked<UStructProperty>(BreakFuncDef.InputParams[0].ParamProp)->Struct))
+				if (BreakFuncDef.InputParams.Num() == 1 && CastField<FStructProperty>(BreakFuncDef.InputParams[0].ParamProp) && InStruct->IsChildOf(CastFieldChecked<const FStructProperty>(BreakFuncDef.InputParams[0].ParamProp)->Struct))
 				{
 					// Copy the given instance as the 'self' argument
 					const FGeneratedWrappedMethodParameter& SelfParam = BreakFuncDef.InputParams[0];
 					void* SelfArgInstance = SelfParam.ParamProp->ContainerPtrToValuePtr<void>(FuncParams.GetStructMemory());
-					CastChecked<UStructProperty>(SelfParam.ParamProp)->Struct->CopyScriptStruct(SelfArgInstance, InStructValue);
+					CastFieldChecked<const FStructProperty>(SelfParam.ParamProp)->Struct->CopyScriptStruct(SelfArgInstance, InStructValue);
 				}
 				PyUtil::InvokeFunctionCall(Obj, BreakFuncDef.Func, FuncParams.GetStructMemory(), TEXT("pythonize default struct value"));
 				PyErr_Clear(); // Clear any errors in case InvokeFunctionCall failed
@@ -2058,9 +2344,9 @@ void PythonizeStructValueImpl(const UScriptStruct* InStruct, const void* InStruc
 		{
 			int32 ExportedPropertyCount = 0;
 			FString StructInitParamsStr;
-			for (TFieldIterator<const UProperty> PropIt(InStruct, EFieldIteratorFlags::IncludeSuper); PropIt; ++PropIt)
+			for (TFieldIterator<const FProperty> PropIt(InStruct, EFieldIteratorFlags::IncludeSuper); PropIt; ++PropIt)
 			{
-				const UProperty* Prop = *PropIt;
+				const FProperty* Prop = *PropIt;
 				if (ShouldExportProperty(Prop) && !IsDeprecatedProperty(Prop))
 				{
 					if (ExportedPropertyCount++ > 0)
@@ -2083,18 +2369,54 @@ void PythonizeStructValueImpl(const UScriptStruct* InStruct, const void* InStruc
 		: TEXT("]");
 }
 
-FString PythonizeValue(const UProperty* InProp, const void* InPropValue, const uint32 InFlags)
+FString PythonizeValue(const FProperty* InProp, const void* InPropValue, const uint32 InFlags)
 {
 	FString PythonValue;
 	PythonizeValueImpl(InProp, InPropValue, InFlags, PythonValue);
 	return PythonValue;
 }
 
-FString PythonizeDefaultValue(const UProperty* InProp, const FString& InDefaultValue, const uint32 InFlags)
+FString PythonizeDefaultValue(const FProperty* InProp, const FString& InDefaultValue, const uint32 InFlags)
 {
-	PyUtil::FPropValueOnScope PropValue(InProp);
+	PyUtil::FPropValueOnScope PropValue(PyUtil::FConstPropOnScope::ExternalReference(InProp));
 	PyUtil::ImportDefaultValue(InProp, PropValue.GetValue(), InDefaultValue);
 	return PythonizeValue(InProp, PropValue.GetValue(), InFlags);
+}
+
+const UObject* GetTypeRegistryType(const UObject* InObj)
+{
+	if (const UBlueprintCore* BlueprintAsset = Cast<const UBlueprintCore>(InObj))
+	{
+		return BlueprintAsset->GeneratedClass;
+	}
+
+	return InObj;
+}
+
+FName GetTypeRegistryName(const UClass* InClass)
+{
+	return IsBlueprintGeneratedClass(InClass)
+		? InClass->GetOutermost()->GetFName()
+		: InClass->GetFName();
+}
+
+FName GetTypeRegistryName(const UScriptStruct* InStruct)
+{
+	return IsBlueprintGeneratedStruct(InStruct)
+		? InStruct->GetOutermost()->GetFName()
+		: InStruct->GetFName();
+}
+
+FName GetTypeRegistryName(const UEnum* InEnum)
+{
+	return IsBlueprintGeneratedEnum(InEnum)
+		? InEnum->GetOutermost()->GetFName()
+		: InEnum->GetFName();
+}
+
+FName GetTypeRegistryName(const UFunction* InDelegateSignature)
+{
+	return InDelegateSignature->GetFName();
 }
 
 FString GetFieldModule(const UField* InField)
@@ -2106,11 +2428,9 @@ FString GetFieldModule(const UField* InField)
 	{
 		return PackageName.RightChop(8); // Chop "/Script/" from the name
 	}
-
-	check(PackageName[0] == TEXT('/'));
-	int32 RootNameEnd = 1;
-	for (; PackageName[RootNameEnd] != TEXT('/'); ++RootNameEnd) {}
-	return PackageName.Mid(1, RootNameEnd - 1);
+	
+	// Not a native module!
+	return FString();
 }
 
 FString GetFieldPlugin(const UField* InField)
@@ -2162,12 +2482,12 @@ FString GetModulePythonName(const FName InModuleName, const bool bIncludePrefix)
 	return bIncludePrefix ? FString::Printf(TEXT("_unreal_%s"), *ModulePythonName) : ModulePythonName;
 }
 
-bool GetFieldPythonNameFromMetaDataImpl(const UField* InField, const FName InMetaDataKey, FString& OutFieldName)
+bool GetFieldPythonNameFromMetaDataImpl(const FFieldVariant& InField, const FName InMetaDataKey, FString& OutFieldName)
 {
 	// See if we have a name override in the meta-data
 	if (!InMetaDataKey.IsNone())
 	{
-		OutFieldName = InField->GetMetaData(InMetaDataKey);
+		OutFieldName = InField.IsUObject() ? InField.Get<UField>()->GetMetaData(InMetaDataKey) : InField.Get<FField>()->GetMetaData(InMetaDataKey);
 
 		// This may be a semi-colon separated list - the first item is the one we want for the current name
 		if (!OutFieldName.IsEmpty())
@@ -2178,6 +2498,18 @@ bool GetFieldPythonNameFromMetaDataImpl(const UField* InField, const FName InMet
 				OutFieldName.RemoveAt(SemiColonIndex, OutFieldName.Len() - SemiColonIndex, /*bAllowShrinking*/false);
 			}
 
+			FText ValidationError;
+			if (!IsValidName(OutFieldName, &ValidationError))
+			{
+				if ( InField.IsUObject() )
+				{
+					const FString FieldPathName = InField.IsUObject() ? InField.Get<UField>()->GetPathName() : InField.Get<FField>()->GetPathName();
+
+					REPORT_PYTHON_GENERATION_ISSUE(Error, TEXT("'%s' has an invalid '%s' meta-data value '%s': %s."), *FieldPathName, *InMetaDataKey.ToString(), *OutFieldName, *ValidationError.ToString());
+				}
+				
+			}
+
 			return true;
 		}
 	}
@@ -2185,12 +2517,12 @@ bool GetFieldPythonNameFromMetaDataImpl(const UField* InField, const FName InMet
 	return false;
 }
 
-bool GetDeprecatedFieldPythonNamesFromMetaDataImpl(const UField* InField, const FName InMetaDataKey, TArray<FString>& OutFieldNames)
+bool GetDeprecatedFieldPythonNamesFromMetaDataImpl(const FFieldVariant& InField, const FName InMetaDataKey, TArray<FString>& OutFieldNames)
 {
 	// See if we have a name override in the meta-data
 	if (!InMetaDataKey.IsNone())
 	{
-		const FString FieldName = InField->GetMetaData(InMetaDataKey);
+		const FString FieldName = InField.IsUObject() ? InField.Get<UField>()->GetMetaData(InMetaDataKey) : InField.Get<FField>()->GetMetaData(InMetaDataKey);
 
 		// This may be a semi-colon separated list - everything but the first item is deprecated
 		if (!FieldName.IsEmpty())
@@ -2210,6 +2542,16 @@ bool GetDeprecatedFieldPythonNamesFromMetaDataImpl(const UField* InField, const 
 				return InStr.IsEmpty();
 			});
 
+			for (const FString& FieldNamePart : OutFieldNames)
+			{
+				FText ValidationError;
+				if (!IsValidName(FieldNamePart, &ValidationError))
+				{
+					const FString FieldPathName = InField.IsUObject() ? InField.Get<UField>()->GetPathName() : InField.Get<FField>()->GetPathName();
+					REPORT_PYTHON_GENERATION_ISSUE(Error, TEXT("'%s' has an invalid '%s' meta-data value '%s' (from '%s'): %s."), *FieldPathName, *InMetaDataKey.ToString(), *FieldNamePart, *FieldName, *ValidationError.ToString());
+				}
+			}
+
 			return true;
 		}
 	}
@@ -2217,7 +2559,7 @@ bool GetDeprecatedFieldPythonNamesFromMetaDataImpl(const UField* InField, const 
 	return false;
 }
 
-FString GetFieldPythonNameImpl(const UField* InField, const FName InMetaDataKey)
+FString GetFieldPythonNameImpl(const FFieldVariant& InField, const FName InMetaDataKey)
 {
 	FString FieldName;
 
@@ -2225,24 +2567,46 @@ FString GetFieldPythonNameImpl(const UField* InField, const FName InMetaDataKey)
 	if (GetFieldPythonNameFromMetaDataImpl(InField, InMetaDataKey, FieldName))
 	{
 		return FieldName;
-	}
+}
 
 	// Just use the field name if we have no meta-data
 	if (FieldName.IsEmpty())
-	{
-		FieldName = InField->GetName();
+{
+		FieldName = InField.GetName();
 
 		// Strip the "E" prefix from enum names
-		if (InField->IsA<UEnum>() && FieldName.Len() >= 2 && FieldName[0] == TEXT('E') && FChar::IsUpper(FieldName[1]))
-		{
+		if (InField.IsA<UEnum>() && FieldName.Len() >= 2 && FieldName[0] == TEXT('E') && FChar::IsUpper(FieldName[1]))
+	{
 			FieldName.RemoveAt(0, 1, /*bAllowShrinking*/false);
+		}
+
+		// Classes, structs, and enums will no longer have their C++ prefix at this point
+		// These prefixes can prevent types that start with numbers from being a compile error in C++
+		// Ideally we don't want those prefixes to be used for Python, but we must ensure a valid symbol name
+		if ( UObject* FieldObject = InField.ToUObject() )
+		{
+			if (FieldName.Len() >= 0 && FChar::IsDigit(FieldName[0]))
+			{
+				if (const UClass* Class = Cast<UClass>(FieldObject))
+				{
+					FieldName.InsertAt(0, Class->IsChildOf<AActor>() ? TEXT('A') : TEXT('U'));
+				}
+				else if (FieldObject->IsA<UScriptStruct>())
+				{
+					FieldName.InsertAt(0, TEXT('F'));
+				}
+				else if (FieldObject->IsA<UEnum>())
+				{
+					FieldName.InsertAt(0, TEXT('E'));
+				}
+			}
 		}
 	}
 
 	return FieldName;
 }
 
-TArray<FString> GetDeprecatedFieldPythonNamesImpl(const UField* InField, const FName InMetaDataKey)
+TArray<FString> GetDeprecatedFieldPythonNamesImpl(const FFieldVariant& InField, const FName InMetaDataKey)
 {
 	TArray<FString> FieldNames;
 
@@ -2250,32 +2614,32 @@ TArray<FString> GetDeprecatedFieldPythonNamesImpl(const UField* InField, const F
 	if (GetDeprecatedFieldPythonNamesFromMetaDataImpl(InField, InMetaDataKey, FieldNames))
 	{
 		return FieldNames;
-	}
+}
 
 	// Just use the redirects if we have no meta-data
 	ECoreRedirectFlags RedirectFlags = ECoreRedirectFlags::None;
-	if (InField->IsA<UFunction>())
+	if (InField.IsA<UFunction>())
 	{
 		RedirectFlags = ECoreRedirectFlags::Type_Function;
 	}
-	else if (InField->IsA<UProperty>())
+	else if (InField.IsA<FProperty>())
 	{
 		RedirectFlags = ECoreRedirectFlags::Type_Property;
 	}
-	else if (InField->IsA<UClass>())
+	else if (InField.IsA<UClass>())
 	{
 		RedirectFlags = ECoreRedirectFlags::Type_Class;
 	}
-	else if (InField->IsA<UScriptStruct>())
+	else if (InField.IsA<UScriptStruct>())
 	{
 		RedirectFlags = ECoreRedirectFlags::Type_Struct;
 	}
-	else if (InField->IsA<UEnum>())
+	else if (InField.IsA<UEnum>())
 	{
 		RedirectFlags = ECoreRedirectFlags::Type_Enum;
 	}
 	
-	const FCoreRedirectObjectName CurrentName = FCoreRedirectObjectName(InField);
+	const FCoreRedirectObjectName CurrentName = FCoreRedirectObjectName(InField.GetPathName());
 	TArray<FCoreRedirectObjectName> PreviousNames;
 	FCoreRedirects::FindPreviousNames(RedirectFlags, CurrentName, PreviousNames);
 
@@ -2285,21 +2649,21 @@ TArray<FString> GetDeprecatedFieldPythonNamesImpl(const UField* InField, const F
 		// Redirects can be used to redirect outers
 		// We want to skip those redirects as we only care about changes within the current scope
 		if (!PreviousName.OuterName.IsNone() && PreviousName.OuterName != CurrentName.OuterName)
-		{
+{
 			continue;
 		}
 
 		// Redirects can often keep the same name when updating the path
 		// We want to skip those redirects as we only care about name changes
 		if (PreviousName.ObjectName == CurrentName.ObjectName)
-		{
+	{
 			continue;
 		}
 		
 		FString FieldName = PreviousName.ObjectName.ToString();
 
 		// Strip the "E" prefix from enum names
-		if (InField->IsA<UEnum>() && FieldName.Len() >= 2 && FieldName[0] == TEXT('E') && FChar::IsUpper(FieldName[1]))
+		if (InField.IsA<UEnum>() && FieldName.Len() >= 2 && FieldName[0] == TEXT('E') && FChar::IsUpper(FieldName[1]))
 		{
 			FieldName.RemoveAt(0, 1, /*bAllowShrinking*/false);
 		}
@@ -2333,7 +2697,7 @@ TArray<FString> GetDeprecatedStructPythonNames(const UScriptStruct* InStruct)
 FString GetEnumPythonName(const UEnum* InEnum)
 {
 	return GetFieldPythonNameImpl(InEnum, ScriptNameMetaDataKey);
-}
+	}
 
 TArray<FString> GetDeprecatedEnumPythonNames(const UEnum* InEnum)
 {
@@ -2356,9 +2720,37 @@ FString GetEnumEntryPythonName(const UEnum* InEnum, const int32 InEntryIndex)
 			{
 				EnumEntryName.RemoveAt(SemiColonIndex, EnumEntryName.Len() - SemiColonIndex, /*bAllowShrinking*/false);
 			}
+
+			FText ValidationError;
+			if (!IsValidName(EnumEntryName, &ValidationError))
+			{
+				REPORT_PYTHON_GENERATION_ISSUE(Error, TEXT("'%s' has an invalid 'ScriptName' meta-data value '%s': %s."), *InEnum->GetPathName(), *EnumEntryName, *ValidationError.ToString());
+			}
 		}
 	}
 	
+	// Blueprint enums have horrible internal names, so try and create a valid identifier from the display name meta-data
+	if (IsBlueprintGeneratedEnum(InEnum))
+	{
+		EnumEntryName = InEnum->GetAuthoredNameStringByIndex(InEntryIndex);
+		if (FCString::IsPureAnsi(*EnumEntryName))
+		{
+			// Sanitize out any invalid characters in the name
+			for (TCHAR& Char : EnumEntryName)
+			{
+				if (!FChar::IsAlnum(Char))
+				{
+					Char = TEXT('_');
+				}
+			}
+		}
+		else
+		{
+			// If the name isn't pure-ANSI then don't attempt to sanitize it as the result will be very mangled
+			EnumEntryName.Reset();
+		}
+	}
+
 	// Just use the entry name if we have no meta-data
 	if (EnumEntryName.IsEmpty())
 	{
@@ -2428,7 +2820,7 @@ TArray<FString> GetDeprecatedScriptMethodPythonNames(const UFunction* InFunc)
 }
 
 FString GetScriptConstantPythonName(const UFunction* InFunc)
-{
+	{
 	FString ScriptConstantName;
 	if (!GetFieldPythonNameFromMetaDataImpl(InFunc, ScriptConstantMetaDataKey, ScriptConstantName))
 	{
@@ -2451,13 +2843,13 @@ TArray<FString> GetDeprecatedScriptConstantPythonNames(const UFunction* InFunc)
 	return ScriptConstantNames;
 }
 
-FString GetPropertyPythonName(const UProperty* InProp)
+FString GetPropertyPythonName(const FProperty* InProp)
 {
 	FString PropName = GetFieldPythonNameImpl(InProp, ScriptNameMetaDataKey);
 	return PythonizePropertyName(PropName, EPythonizeNameCase::Lower);
 }
 
-TArray<FString> GetDeprecatedPropertyPythonNames(const UProperty* InProp)
+TArray<FString> GetDeprecatedPropertyPythonNames(const FProperty* InProp)
 {
 	const UStruct* PropOwner = InProp->GetOwnerStruct();
 	check(PropOwner);
@@ -2468,12 +2860,12 @@ TArray<FString> GetDeprecatedPropertyPythonNames(const UProperty* InProp)
 		FString& PropName = *PropNamesIt;
 
 		// Remove any deprecated names that clash with an existing Python exposed property
-		const UProperty* DeprecatedProp = PropOwner->FindPropertyByName(*PropName);
+		const FProperty* DeprecatedProp = PropOwner->FindPropertyByName(*PropName);
 		if (DeprecatedProp && ShouldExportProperty(DeprecatedProp))
-		{
+	{
 			PropNamesIt.RemoveCurrent();
 			continue;
-		}
+	}
 
 		PropName = PythonizeName(PropName, EPythonizeNameCase::Lower);
 	}
@@ -2481,30 +2873,30 @@ TArray<FString> GetDeprecatedPropertyPythonNames(const UProperty* InProp)
 	return PropNames;
 }
 
-FString GetPropertyTypePythonName(const UProperty* InProp, const bool InIncludeUnrealNamespace, const bool InIsForDocString)
+FString GetPropertyTypePythonName(const FProperty* InProp, const bool InIncludeUnrealNamespace, const bool InIsForDocString)
 {
 #define GET_PROPERTY_TYPE(TYPE, VALUE)				\
-		if (Cast<const TYPE>(InProp) != nullptr)	\
+		if (CastField<const TYPE>(InProp) != nullptr)	\
 		{											\
 			return (VALUE);							\
 		}
 
 	const TCHAR* UnrealNamespace = InIncludeUnrealNamespace ? TEXT("unreal.") : TEXT("");
 
-	GET_PROPERTY_TYPE(UBoolProperty, TEXT("bool"))
-	GET_PROPERTY_TYPE(UInt8Property, InIsForDocString ? TEXT("int8") : TEXT("int"))
-	GET_PROPERTY_TYPE(UInt16Property, InIsForDocString ? TEXT("int16") : TEXT("int"))
-	GET_PROPERTY_TYPE(UUInt16Property, InIsForDocString ? TEXT("uint16") : TEXT("int"))
-	GET_PROPERTY_TYPE(UIntProperty, InIsForDocString ? TEXT("int32") : TEXT("int"))
-	GET_PROPERTY_TYPE(UUInt32Property, InIsForDocString ? TEXT("uint32") : TEXT("int"))
-	GET_PROPERTY_TYPE(UInt64Property, InIsForDocString ? TEXT("int64") : TEXT("int"))
-	GET_PROPERTY_TYPE(UUInt64Property, InIsForDocString ? TEXT("uint64") : TEXT("int"))
-	GET_PROPERTY_TYPE(UFloatProperty, TEXT("float"))
-	GET_PROPERTY_TYPE(UDoubleProperty, InIsForDocString ? TEXT("double") : TEXT("float"))
-	GET_PROPERTY_TYPE(UStrProperty, TEXT("str"))
-	GET_PROPERTY_TYPE(UNameProperty, InIncludeUnrealNamespace ? TEXT("unreal.Name") : TEXT("Name"))
-	GET_PROPERTY_TYPE(UTextProperty, InIncludeUnrealNamespace ? TEXT("unreal.Text") : TEXT("Text"))
-	if (const UByteProperty* ByteProp = Cast<const UByteProperty>(InProp))
+	GET_PROPERTY_TYPE(FBoolProperty, TEXT("bool"))
+	GET_PROPERTY_TYPE(FInt8Property, InIsForDocString ? TEXT("int8") : TEXT("int"))
+	GET_PROPERTY_TYPE(FInt16Property, InIsForDocString ? TEXT("int16") : TEXT("int"))
+	GET_PROPERTY_TYPE(FUInt16Property, InIsForDocString ? TEXT("uint16") : TEXT("int"))
+	GET_PROPERTY_TYPE(FIntProperty, InIsForDocString ? TEXT("int32") : TEXT("int"))
+	GET_PROPERTY_TYPE(FUInt32Property, InIsForDocString ? TEXT("uint32") : TEXT("int"))
+	GET_PROPERTY_TYPE(FInt64Property, InIsForDocString ? TEXT("int64") : TEXT("int"))
+	GET_PROPERTY_TYPE(FUInt64Property, InIsForDocString ? TEXT("uint64") : TEXT("int"))
+	GET_PROPERTY_TYPE(FFloatProperty, TEXT("float"))
+	GET_PROPERTY_TYPE(FDoubleProperty, InIsForDocString ? TEXT("double") : TEXT("float"))
+	GET_PROPERTY_TYPE(FStrProperty, TEXT("str"))
+	GET_PROPERTY_TYPE(FNameProperty, InIncludeUnrealNamespace ? TEXT("unreal.Name") : TEXT("Name"))
+	GET_PROPERTY_TYPE(FTextProperty, InIncludeUnrealNamespace ? TEXT("unreal.Text") : TEXT("Text"))
+	if (const FByteProperty* ByteProp = CastField<const FByteProperty>(InProp))
 	{
 		if (ByteProp->Enum)
 		{
@@ -2515,46 +2907,46 @@ FString GetPropertyTypePythonName(const UProperty* InProp, const bool InIncludeU
 			return InIsForDocString ? TEXT("uint8") : TEXT("int");
 		}
 	}
-	if (const UEnumProperty* EnumProp = Cast<const UEnumProperty>(InProp))
+	if (const FEnumProperty* EnumProp = CastField<const FEnumProperty>(InProp))
 	{
 		return FString::Printf(TEXT("%s%s"), UnrealNamespace, *GetEnumPythonName(EnumProp->GetEnum()));
 	}
 	if (InIsForDocString)
 	{
-		if (const UClassProperty* ClassProp = Cast<const UClassProperty>(InProp))
+		if (const FClassProperty* ClassProp = CastField<const FClassProperty>(InProp))
 		{
 			return FString::Printf(TEXT("type(%s%s)"), UnrealNamespace, *GetClassPythonName(ClassProp->PropertyClass));
 		}
 	}
-	if (const UObjectPropertyBase* ObjProp = Cast<const UObjectPropertyBase>(InProp))
+	if (const FObjectPropertyBase* ObjProp = CastField<const FObjectPropertyBase>(InProp))
 	{
 		return FString::Printf(TEXT("%s%s"), UnrealNamespace, *GetClassPythonName(ObjProp->PropertyClass));
 	}
-	if (const UInterfaceProperty* InterfaceProp = Cast<const UInterfaceProperty>(InProp))
+	if (const FInterfaceProperty* InterfaceProp = CastField<const FInterfaceProperty>(InProp))
 	{
 		return FString::Printf(TEXT("%s%s"), UnrealNamespace, *GetClassPythonName(InterfaceProp->InterfaceClass));
 	}
-	if (const UStructProperty* StructProp = Cast<const UStructProperty>(InProp))
+	if (const FStructProperty* StructProp = CastField<const FStructProperty>(InProp))
 	{
 		return FString::Printf(TEXT("%s%s"), UnrealNamespace, *GetStructPythonName(StructProp->Struct));
 	}
-	if (const UDelegateProperty* DelegateProp = Cast<const UDelegateProperty>(InProp))
+	if (const FDelegateProperty* DelegateProp = CastField<const FDelegateProperty>(InProp))
 	{
 		return FString::Printf(TEXT("%s%s"), UnrealNamespace, *GetDelegatePythonName(DelegateProp->SignatureFunction));
 	}
-	if (const UMulticastDelegateProperty* MulticastDelegateProp = Cast<const UMulticastDelegateProperty>(InProp))
+	if (const FMulticastDelegateProperty* MulticastDelegateProp = CastField<const FMulticastDelegateProperty>(InProp))
 	{
 		return FString::Printf(TEXT("%s%s"), UnrealNamespace, *GetDelegatePythonName(MulticastDelegateProp->SignatureFunction));
 	}
-	if (const UArrayProperty* ArrayProperty = Cast<const UArrayProperty>(InProp))
+	if (const FArrayProperty* ArrayProperty = CastField<const FArrayProperty>(InProp))
 	{
 		return FString::Printf(TEXT("%sArray(%s)"), UnrealNamespace, *GetPropertyTypePythonName(ArrayProperty->Inner, InIncludeUnrealNamespace, InIsForDocString));
 	}
-	if (const USetProperty* SetProperty = Cast<const USetProperty>(InProp))
+	if (const FSetProperty* SetProperty = CastField<const FSetProperty>(InProp))
 	{
 		return FString::Printf(TEXT("%sSet(%s)"), UnrealNamespace, *GetPropertyTypePythonName(SetProperty->ElementProp, InIncludeUnrealNamespace, InIsForDocString));
 	}
-	if (const UMapProperty* MapProperty = Cast<const UMapProperty>(InProp))
+	if (const FMapProperty* MapProperty = CastField<const FMapProperty>(InProp))
 	{
 		return FString::Printf(TEXT("%sMap(%s, %s)"), UnrealNamespace, *GetPropertyTypePythonName(MapProperty->KeyProp, InIncludeUnrealNamespace, InIsForDocString), *GetPropertyTypePythonName(MapProperty->ValueProp, InIncludeUnrealNamespace, InIsForDocString));
 	}
@@ -2564,28 +2956,39 @@ FString GetPropertyTypePythonName(const UProperty* InProp, const bool InIncludeU
 #undef GET_PROPERTY_TYPE
 }
 
-FString GetPropertyPythonType(const UProperty* InProp)
+FString GetPropertyPythonType(const FProperty* InProp)
 {
 	FString RetStr;
 	AppendPropertyPythonType(InProp, RetStr);
 	return RetStr;
 }
 
-void AppendPropertyPythonType(const UProperty* InProp, FString& OutStr)
+void AppendPropertyPythonType(const FProperty* InProp, FString& OutStr)
 {
 	OutStr += GetPropertyTypePythonName(InProp);
 }
 
-void AppendPropertyPythonReadWriteState(const UProperty* InProp, FString& OutStr, const uint64 InReadOnlyFlags)
+void AppendPropertyPythonReadWriteState(const FProperty* InProp, FString& OutStr, const uint64 InReadOnlyFlags)
 {
-	OutStr += (InProp->HasAnyPropertyFlags(InReadOnlyFlags) ? TEXT("[Read-Only]") : TEXT("[Read-Write]"));
+	OutStr += (InProp->HasAnyPropertyFlags(InReadOnlyFlags) ? TEXT(" [Read-Only]") : TEXT(" [Read-Write]"));
 }
 
-FString GetFieldTooltip(const UField* InField)
+template <typename FieldType>
+FString GetFieldTooltipImpl(const FieldType* InField)
 {
 	// We use the source string here as the culture may change while the editor is running, and also because some versions 
 	// of Python (<3.4) can't override the default encoding to UTF-8 so produce errors when trying to print the help docs
 	return *FTextInspector::GetSourceString(InField->GetToolTipText());
+}
+
+FString GetFieldTooltip(const UField* InField)
+{
+	return GetFieldTooltipImpl(InField);
+}
+
+FString GetFieldTooltip(const FField* InField)
+{
+	return GetFieldTooltipImpl(InField);
 }
 
 FString GetEnumEntryTooltip(const UEnum* InEnum, const int64 InEntryIndex)
@@ -2595,14 +2998,14 @@ FString GetEnumEntryTooltip(const UEnum* InEnum, const int64 InEntryIndex)
 	return *FTextInspector::GetSourceString(InEnum->GetToolTipTextByIndex(InEntryIndex));
 }
 
-FString BuildCppSourceInformationDocString(const UField* InOwnerType)
+FString BuildSourceInformationDocString(const UField* InOwnerType)
 {
 	FString Str;
-	AppendCppSourceInformationDocString(InOwnerType, Str);
+	AppendSourceInformationDocString(InOwnerType, Str);
 	return Str;
 }
 
-void AppendCppSourceInformationDocString(const UField* InOwnerType, FString& OutStr)
+void AppendSourceInformationDocString(const UField* InOwnerType, FString& OutStr)
 {
 	if (!InOwnerType)
 	{
@@ -2617,23 +3020,35 @@ void AppendCppSourceInformationDocString(const UField* InOwnerType, FString& Out
 		}
 	}
 
-	static const FName ModuleRelativePathMetaDataKey = "ModuleRelativePath";
+	const UPackage* OwnerPackage = InOwnerType->GetOutermost();
+	const FString OwnerPackageName = OwnerPackage->GetName();
 
-	const FString TypePlugin = GetFieldPlugin(InOwnerType);
-	const FString TypeModule = GetFieldModule(InOwnerType);
-	const FString TypeFile = FPaths::GetCleanFilename(InOwnerType->GetMetaData(ModuleRelativePathMetaDataKey));
-
-	OutStr += LINE_TERMINATOR TEXT("**C++ Source:**") LINE_TERMINATOR;
-	if (!TypePlugin.IsEmpty())
+	if (FPackageName::IsScriptPackage(OwnerPackageName))
 	{
-		OutStr += LINE_TERMINATOR TEXT("- **Plugin**: ");
-		OutStr += TypePlugin;
+		static const FName ModuleRelativePathMetaDataKey = "ModuleRelativePath";
+
+		const FString TypePlugin = GetFieldPlugin(InOwnerType);
+		const FString TypeModule = GetFieldModule(InOwnerType);
+		const FString TypeFile = FPaths::GetCleanFilename(InOwnerType->GetMetaData(ModuleRelativePathMetaDataKey));
+
+		OutStr += LINE_TERMINATOR TEXT("**C++ Source:**") LINE_TERMINATOR;
+		if (!TypePlugin.IsEmpty())
+		{
+			OutStr += LINE_TERMINATOR TEXT("- **Plugin**: ");
+			OutStr += TypePlugin;
+		}
+		OutStr += LINE_TERMINATOR TEXT("- **Module**: ");
+		OutStr += TypeModule;
+		OutStr += LINE_TERMINATOR TEXT("- **File**: ");
+		OutStr += TypeFile;
+		OutStr += LINE_TERMINATOR;
 	}
-	OutStr += LINE_TERMINATOR TEXT("- **Module**: ");
-	OutStr += TypeModule;
-	OutStr += LINE_TERMINATOR TEXT("- **File**: ");
-	OutStr += TypeFile;
-	OutStr += LINE_TERMINATOR;
+	else
+	{
+		OutStr += LINE_TERMINATOR TEXT("**Asset Source:**") LINE_TERMINATOR;
+		OutStr += LINE_TERMINATOR TEXT("- **Package**: ");
+		OutStr += OwnerPackageName;
+	}
 }
 
 bool SaveGeneratedTextFile(const TCHAR* InFilename, const FString& InFileContents, const bool InForceWrite)

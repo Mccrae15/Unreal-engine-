@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -21,6 +21,11 @@ struct FWindowsPlatformProperties
 	static FORCEINLINE const char* IniPlatformName()
 	{
 		return "Windows";
+	}
+
+	static FORCEINLINE const TCHAR* GetRuntimeSettingsClassName()
+	{
+		return TEXT("/Script/WindowsTargetPlatform.WindowsTargetSettings");
 	}
 
 	static FORCEINLINE const char* GetPhysicsFormat()
@@ -78,6 +83,11 @@ struct FWindowsPlatformProperties
 		return !IsServerOnly();
 	}
 
+	static FORCEINLINE bool SupportsMeshLODStreaming()
+	{
+		return !IsServerOnly();
+	}
+
 	static FORCEINLINE bool SupportsGrayscaleSRGB()
 	{
 		return false; // Requires expand from G8 to RGBA
@@ -127,4 +137,14 @@ struct FWindowsPlatformProperties
 
 		return 1.0f;
 	}
+
+	static FORCEINLINE bool SupportsVirtualTextureStreaming()
+	{
+		return true;
+	}
+
 };
+
+#ifdef PROPERTY_HEADER_SHOULD_DEFINE_TYPE
+typedef FWindowsPlatformProperties<WITH_EDITORONLY_DATA, UE_SERVER, !WITH_SERVER_CODE> FPlatformProperties;
+#endif

@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 using System;
 using System.Collections.Generic;
@@ -132,7 +132,7 @@ namespace UnrealBuildTool
 				// Add all the makefiles and caches to be deleted
 				FilesToDelete.Add(TargetMakefile.GetLocation(Target.ProjectFile, Target.Name, Target.Platform, Target.Configuration));
 				FilesToDelete.UnionWith(SourceFileMetadataCache.GetFilesToClean(Target.ProjectFile));
-				FilesToDelete.UnionWith(ActionHistory.GetFilesToClean(Target.ProjectFile, Target.Name, Target.Platform, Target.Type));
+				FilesToDelete.UnionWith(ActionHistory.GetFilesToClean(Target.ProjectFile, Target.Name, Target.Platform, Target.Type, Target.Architecture));
 
 				// Add all the intermediate folders to be deleted
 				foreach (DirectoryReference BaseDir in BaseDirs)

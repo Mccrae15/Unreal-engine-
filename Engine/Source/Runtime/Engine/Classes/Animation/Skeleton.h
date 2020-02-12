@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 /** 
  * This is the definition for a skeleton, used to animate USkeletalMesh
@@ -24,6 +24,8 @@ class UBlendProfile;
 class URig;
 class USkeletalMesh;
 class USkeletalMeshSocket;
+class FPackageReloadedEvent;
+enum class EPackageReloadPhase : uint8;
 
 /** This is a mapping table between bone in a particular skeletal mesh and bone of this skeleton set. */
 USTRUCT()
@@ -124,11 +126,10 @@ struct FReferencePose
 	 * Serializes the bones
 	 *
 	 * @param Ar - The archive to serialize into.
-	 * @param Rect - The bone container to serialize.
-	 *
-	 * @return Reference to the Archive after serialization.
+	 * @param P - The FReferencePose to serialize
+	 * @param Outer - The object containing this instance. Used to determine if we're loading cooked data.
 	 */
-	friend FArchive& operator<<(FArchive& Ar, FReferencePose & P);
+	friend void SerializeReferencePose(FArchive& Ar, FReferencePose& P, UObject* Outer);
 };
 
 USTRUCT()
@@ -232,7 +233,7 @@ public:
 
 namespace VirtualBoneNameHelpers
 {
-	const FString VirtualBonePrefix(TEXT("VB "));
+	extern ENGINE_API const FString VirtualBonePrefix;
 
 	ENGINE_API FString AddVirtualBonePrefix(const FString& InName);
 	ENGINE_API FName RemoveVirtualBonePrefix(const FString& InName);
@@ -315,6 +316,7 @@ public:
 	ENGINE_API virtual void PreEditUndo() override;
 	ENGINE_API virtual void PostEditUndo() override;
 #endif
+	ENGINE_API virtual void BeginDestroy() override;
 
 	/** Accessor to Reference Skeleton to make data read only */
 	const FReferenceSkeleton& GetReferenceSkeleton() const
@@ -373,7 +375,7 @@ public:
 	const TArray<FName>& GetExistingMarkerNames() const { return ExistingMarkerNames; }
 
 	// Register a new sync marker name
-	void RegisterMarkerName(FName MarkerName) { ExistingMarkerNames.AddUnique(MarkerName); ExistingMarkerNames.Sort(); }
+	void RegisterMarkerName(FName MarkerName) { ExistingMarkerNames.AddUnique(MarkerName); ExistingMarkerNames.Sort(FNameLexicalLess()); }
 
 	// Remove a sync marker name
 	void RemoveMarkerName(FName MarkerName) { ExistingMarkerNames.Remove(MarkerName); }
@@ -383,6 +385,9 @@ protected:
 	// Container for smart name mappings
 	UPROPERTY()
 	FSmartNameContainer SmartNames;
+
+	// Cached ptr to the persistent AnimCurveMapping
+	FSmartNameMapping* AnimCurveMapping;
 
 	// this is default curve uid list used like ref pose, as default value
 	// don't use this unless you want all curves from the skeleton
@@ -432,7 +437,10 @@ public:
 	ENGINE_API const FAnimSlotGroup* FindAnimSlotGroup(const FName& InGroupName) const;
 	ENGINE_API const TArray<FAnimSlotGroup>& GetSlotGroups() const;
 	ENGINE_API bool ContainsSlotName(const FName& InSlotName) const;
-	ENGINE_API void RegisterSlotNode(const FName& InSlotName);
+
+	/** Register a slot name. Return true if a slot was registered, false if it was already registered. */
+	ENGINE_API bool RegisterSlotNode(const FName& InSlotName);
+
 	ENGINE_API void SetSlotGroupName(const FName& InSlotName, const FName& InGroupName);
 	/** Returns true if Group is added, false if it already exists */
 	ENGINE_API bool AddSlotGroupName(const FName& InNewGroupName);
@@ -557,10 +565,19 @@ public:
 
 #if WITH_EDITORONLY_DATA
 
-	// @todo document
+	/*
+	 * Collect animation notifies that are referenced in all animations that use this skeleton (uses the asset registry).
+	 * Updates the cached AnimationNotifies array.
+	 */
 	ENGINE_API void CollectAnimationNotifies();
 
-	// @todo document
+	/*
+	 * Collect animation notifies that are referenced in all animations that use this skeleton (uses the asset registry).
+	 * @param	OutNotifies		All the notifies that were found
+	 */
+	ENGINE_API void CollectAnimationNotifies(TArray<FName>& OutNotifies) const;
+
+	// Adds a new anim notify to the cached AnimationNotifies array.
 	ENGINE_API void AddNewAnimationNotify(FName NewAnimNotifyName);
 
 	ENGINE_API USkeletalMesh* GetAssetPreviewMesh(UObject* InAsset);
@@ -711,7 +728,7 @@ public:
 	 *
 	 * @return	Index of Track of Animation Sequence
 	 */
-	ENGINE_API int32 GetAnimationTrackIndex(const int32 InSkeletonBoneIndex, const UAnimSequence* InAnimSeq, const bool bUseRawData);
+	ENGINE_API int32 GetRawAnimationTrackIndex(const int32 InSkeletonBoneIndex, const UAnimSequence* InAnimSeq);
 
 	/** 
 	 * Get Bone Tree Index from Reference Bone Index
@@ -835,8 +852,8 @@ public:
 	ENGINE_API void RemoveBonesFromSkeleton(const TArray<FName>& BonesToRemove, bool bRemoveChildBones);
 
 	// Asset registry information for animation notifies
-	static const FName AnimNotifyTag;
-	static const FString AnimNotifyTagDelimiter;
+	ENGINE_API static const FName AnimNotifyTag;
+	ENGINE_API static const FString AnimNotifyTagDelimiter;
 
 	// Asset registry information for animation curves
 	ENGINE_API static const FName CurveNameTag;
@@ -865,6 +882,9 @@ private:
 	/** Regenerate new Guid */
 	void RegenerateGuid();
 	void RegenerateVirtualBoneGuid();
+
+	// Handle skeletons being reloaded via the content browser
+	static void HandlePackageReloaded(const EPackageReloadPhase InPackageReloadPhase, FPackageReloadedEvent* InPackageReloadedEvent);
 
 
 

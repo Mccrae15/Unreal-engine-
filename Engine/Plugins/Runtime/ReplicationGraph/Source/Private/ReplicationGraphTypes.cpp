@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "ReplicationGraphTypes.h"
 
@@ -455,6 +455,47 @@ void TActorListAllocator<NumListsPerBlock, MaxNumPools>::LogDetails(int32 PoolSi
 		else
 		{
 			LogListDetails(B->Lists[ListIdx], Ar);
+		}
+	}
+}
+
+void FGlobalActorReplicationInfoMap::AddDependentActor(AActor* Parent, AActor* Child, FGlobalActorReplicationInfoMap::EWarnFlag WarnFlag)
+{
+	const bool bIsParentValid = ensureMsgf(Parent && IsActorValidForReplication(Parent), TEXT("FGlobalActorReplicationInfoMap::AddDependentActor Invalid Parent! %s"),
+										   *GetPathNameSafe(Parent));
+
+	const bool bIsChildValid = ensureMsgf(Child && IsActorValidForReplication(Child), TEXT("FGlobalActorReplicationInfoMap::AddDependentActor Invalid Child! %s"),
+										  *GetPathNameSafe(Child));
+
+	if (bIsParentValid && bIsChildValid)
+	{
+		const bool bDoWarnings = EnumHasAnyFlags(WarnFlag, EWarnFlag::WarnAlreadyDependant);
+
+		bool bChildIsAlreadyDependant(false);
+		if (FGlobalActorReplicationInfo* ParentInfo = Find(Parent))
+		{
+			bChildIsAlreadyDependant = ParentInfo->DependentActorList.IsValid() && ParentInfo->DependentActorList.Contains(Child);
+			if (bChildIsAlreadyDependant == false)
+			{
+				ParentInfo->DependentActorList.PrepareForWrite();
+				ParentInfo->DependentActorList.ConditionalAdd(Child);
+			}
+		}
+
+		bool bChildHadParentAlready(false);
+		if (FGlobalActorReplicationInfo* ChildInfo = Find(Child))
+		{
+			bChildHadParentAlready = ChildInfo->ParentActorList.IsValid() && ChildInfo->ParentActorList.Contains(Parent);
+			if (bChildHadParentAlready == false)
+			{
+				ChildInfo->ParentActorList.PrepareForWrite();
+				ChildInfo->ParentActorList.ConditionalAdd(Parent);
+			}
+		}
+
+		if (bDoWarnings && (bChildIsAlreadyDependant || bChildHadParentAlready))
+		{
+			UE_LOG(LogReplicationGraph, Warning, TEXT("FGlobalActorReplicationInfoMap::AddDependentActor child %s already dependant of parent %s"), *GetNameSafe(Child), *GetNameSafe(Parent));
 		}
 	}
 }

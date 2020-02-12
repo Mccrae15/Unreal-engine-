@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "MetalUtils.h"
 #include "MetalShaderFormat.h"
@@ -157,6 +157,7 @@ static void CreateNewAssignmentsHalf2Float(_mesa_glsl_parse_state* State, exec_l
 const glsl_type* GetFragColorTypeFromMetalOutputStruct(const glsl_type* OutputType)
 {
 	const glsl_type* FragColorType = glsl_type::error_type;
+	const glsl_type* FragDepthType = glsl_type::error_type;
 	if (OutputType && OutputType->base_type == GLSL_TYPE_STRUCT)
 	{
 		for (unsigned j = 0; j < OutputType->length; j++)
@@ -169,7 +170,15 @@ const glsl_type* GetFragColorTypeFromMetalOutputStruct(const glsl_type* OutputTy
 					FragColorType = OutputType->fields.structure[j].type;
 					break;
 				}
+				else if (!strncmp(OutputType->fields.structure[j].semantic, "[[ depth(", 9))
+				{
+					FragDepthType = OutputType->fields.structure[j].type;
+				}
 			}
+		}
+		if (FragColorType == glsl_type::error_type)
+		{
+			FragColorType = FragDepthType;
 		}
 	}
 	return FragColorType;
@@ -240,6 +249,30 @@ namespace MetalUtils
 		{"SV_Target5", glsl_type::float_type, "FragColor5", ir_var_out, "[[ color(5) ]]"},
 		{"SV_Target6", glsl_type::float_type, "FragColor6", ir_var_out, "[[ color(6) ]]"},
 		{"SV_Target7", glsl_type::float_type, "FragColor7", ir_var_out, "[[ color(7) ]]"},
+		{"SV_Target0", glsl_type::uint_type, "FragColor0", ir_var_out, "[[ color(0) ]]"},
+		{"SV_Target1", glsl_type::uint_type, "FragColor1", ir_var_out, "[[ color(1) ]]"},
+		{"SV_Target2", glsl_type::uint_type, "FragColor2", ir_var_out, "[[ color(2) ]]"},
+		{"SV_Target3", glsl_type::uint_type, "FragColor3", ir_var_out, "[[ color(3) ]]"},
+		{"SV_Target4", glsl_type::uint_type, "FragColor4", ir_var_out, "[[ color(4) ]]"},
+		{"SV_Target5", glsl_type::uint_type, "FragColor5", ir_var_out, "[[ color(5) ]]"},
+		{"SV_Target6", glsl_type::uint_type, "FragColor6", ir_var_out, "[[ color(6) ]]"},
+		{"SV_Target7", glsl_type::uint_type, "FragColor7", ir_var_out, "[[ color(7) ]]"},
+		{"SV_Target0", glsl_type::uvec2_type, "FragColor0", ir_var_out, "[[ color(0) ]]"},
+		{"SV_Target1", glsl_type::uvec2_type, "FragColor1", ir_var_out, "[[ color(1) ]]"},
+		{"SV_Target2", glsl_type::uvec2_type, "FragColor2", ir_var_out, "[[ color(2) ]]"},
+		{"SV_Target3", glsl_type::uvec2_type, "FragColor3", ir_var_out, "[[ color(3) ]]"},
+		{"SV_Target4", glsl_type::uvec2_type, "FragColor4", ir_var_out, "[[ color(4) ]]"},
+		{"SV_Target5", glsl_type::uvec2_type, "FragColor5", ir_var_out, "[[ color(5) ]]"},
+		{"SV_Target6", glsl_type::uvec2_type, "FragColor6", ir_var_out, "[[ color(6) ]]"},
+		{"SV_Target7", glsl_type::uvec2_type, "FragColor7", ir_var_out, "[[ color(7) ]]"},
+		{"SV_Target0", glsl_type::uvec4_type, "FragColor0", ir_var_out, "[[ color(0) ]]"},
+		{"SV_Target1", glsl_type::uvec4_type, "FragColor1", ir_var_out, "[[ color(1) ]]"},
+		{"SV_Target2", glsl_type::uvec4_type, "FragColor2", ir_var_out, "[[ color(2) ]]"},
+		{"SV_Target3", glsl_type::uvec4_type, "FragColor3", ir_var_out, "[[ color(3) ]]"},
+		{"SV_Target4", glsl_type::uvec4_type, "FragColor4", ir_var_out, "[[ color(4) ]]"},
+		{"SV_Target5", glsl_type::uvec4_type, "FragColor5", ir_var_out, "[[ color(5) ]]"},
+		{"SV_Target6", glsl_type::uvec4_type, "FragColor6", ir_var_out, "[[ color(6) ]]"},
+		{"SV_Target7", glsl_type::uvec4_type, "FragColor7", ir_var_out, "[[ color(7) ]]"},
 		{NULL, NULL, NULL, ir_var_auto, nullptr}
 	};
 
@@ -943,13 +976,15 @@ struct FFixIntrinsicsVisitor : public ir_rvalue_visitor
 	ir_variable* DestColorVar;
 	const glsl_type* DestColorType;
 	ir_variable* DestMRTColorVar[MAX_SIMULTANEOUS_RENDER_TARGETS];
+	EHlslShaderFrequency Frequency;
 
-	FFixIntrinsicsVisitor(_mesa_glsl_parse_state* InState, ir_function_signature* InMainSig) :
+	FFixIntrinsicsVisitor(_mesa_glsl_parse_state* InState, ir_function_signature* InMainSig, EHlslShaderFrequency InFrequency) :
 		State(InState),
 		bUsesFramebufferFetchES2(false),
 		MRTFetchMask(0),
 		DestColorVar(nullptr),
-		DestColorType(glsl_type::error_type)
+		DestColorType(glsl_type::error_type),
+		Frequency(InFrequency)
 	{
 		DestColorType = GetFragColorTypeFromMetalOutputStruct(InMainSig->return_type);
 		memset(DestMRTColorVar, 0, sizeof(DestMRTColorVar));
@@ -1016,7 +1051,7 @@ struct FFixIntrinsicsVisitor : public ir_rvalue_visitor
 
 	virtual ir_visitor_status visit_leave(ir_call* IR) override
 	{
-		if (IR->use_builtin)
+		if ((Frequency == HSF_PixelShader) && IR->use_builtin)
 		{
 			const char* CalleeName = IR->callee_name();
 			static auto ES2Len = strlen(FRAMEBUFFER_FETCH_ES2);
@@ -1029,6 +1064,11 @@ struct FFixIntrinsicsVisitor : public ir_rvalue_visitor
 				if (!DestColorVar)
 				{
 					// Generate new input variable for Metal semantics
+					if (DestColorType == glsl_type::error_type)
+					{
+						// When there are no depth writes and no color target writes then use float
+						DestColorType = glsl_type::float_type;
+					}
 					DestColorVar = new(State)ir_variable(glsl_type::get_instance(DestColorType->base_type, 4, 1), "gl_LastFragData", ir_var_in);
 					DestColorVar->semantic = "[[ color(0) ]]";
 				}
@@ -1066,12 +1106,12 @@ struct FFixIntrinsicsVisitor : public ir_rvalue_visitor
 	}
 };
 
-void FMetalCodeBackend::FixIntrinsics(exec_list* ir, _mesa_glsl_parse_state* state)
+void FMetalCodeBackend::FixIntrinsics(exec_list* ir, _mesa_glsl_parse_state* state, EHlslShaderFrequency InFrequency)
 {
 	ir_function_signature* MainSig = GetMainFunction(ir);
 	check(MainSig);
 
-	FFixIntrinsicsVisitor Visitor(state,MainSig);
+	FFixIntrinsicsVisitor Visitor(state,MainSig,InFrequency);
 	Visitor.run(&MainSig->body);
 
 	if (Visitor.bUsesFramebufferFetchES2)
@@ -1227,14 +1267,20 @@ void FMetalCodeBackend::MovePackedUniformsToMain(exec_list* ir, _mesa_glsl_parse
 		{
 			bool bIsBuffer = false;
             bool bIsVec3 = (Var->type->inner_type && Var->type->inner_type->is_vector() && Var->type->inner_type->components() == 3);
-			bool bIsStructuredBuffer = Var->type->sampler_buffer && Var->type->inner_type && (Var->type->inner_type->is_record() || !strncmp(Var->type->name, "RWStructuredBuffer<", 19) || !strncmp(Var->type->name, "StructuredBuffer<", 17));
-			bool bIsByteAddressBuffer = Var->type->sampler_buffer && (!strncmp(Var->type->name, "RWByteAddressBuffer", 19) || !strncmp(Var->type->name, "ByteAddressBuffer", 17));
+			bool bIsStructuredBuffer = Var->type->sampler_buffer && Var->type->inner_type && (Var->type->inner_type->is_record() || (Var->type->HlslName && (!strncmp(Var->type->HlslName, "RWStructuredBuffer<", 19) || !strncmp(Var->type->HlslName, "StructuredBuffer<", 17))));
+			bool bIsByteAddressBuffer = Var->type->sampler_buffer && (Var->type->HlslName && (!strncmp(Var->type->HlslName, "RWByteAddressBuffer", 19) || !strncmp(Var->type->HlslName, "ByteAddressBuffer", 17)));
 			bool bIsInvariant = Var->invariant;
 			switch(TypedMode)
 			{
 				case EMetalTypeBufferModeRaw:
 				{
 					bIsBuffer = (!Var->type->is_sampler() && !Var->type->is_image()) || Var->type->sampler_buffer;
+					break;
+				}
+				case EMetalTypeBufferMode2DSRV:
+				case EMetalTypeBufferModeTBSRV:
+				{
+					bIsBuffer = (!Var->type->is_sampler() && !Var->type->is_image()) || (Var->type->sampler_buffer && (Var->type->is_image() || OutBuffers.AtomicVariables.find(Var) != OutBuffers.AtomicVariables.end() || bIsStructuredBuffer || bIsInvariant || bIsByteAddressBuffer)) || bIsVec3;
 					break;
 				}
 				case EMetalTypeBufferMode2D:
@@ -1251,7 +1297,7 @@ void FMetalCodeBackend::MovePackedUniformsToMain(exec_list* ir, _mesa_glsl_parse
 			{
 				if (bIsBuffer)
 				{
-                    bool bReallyIsStructuredBuffer = Var->type->sampler_buffer && Var->type->inner_type && Var->type->inner_type->is_record() && (!strncmp(Var->type->name, "RWStructuredBuffer<", 19) || !strncmp(Var->type->name, "StructuredBuffer<", 17));
+                    bool bReallyIsStructuredBuffer = Var->type->sampler_buffer && Var->type->inner_type && Var->type->inner_type->is_record() && (Var->type->HlslName && (!strncmp(Var->type->HlslName, "RWStructuredBuffer<", 19) || !strncmp(Var->type->HlslName, "StructuredBuffer<", 17)));
                     if (bReallyIsStructuredBuffer)
 					{
 						((glsl_type*)Var->type->inner_type)->HlslName = "__PACKED__";
@@ -3365,7 +3411,7 @@ struct FDeReferencePackedVarsVisitor final : public ir_rvalue_visitor
 			{
 				if (SwizzleValDeRefRecord->type->vector_elements > 1 && SwizzleValDeRefRecord->type->vector_elements < 4)
 				{
-					auto* Var = GetVar(SwizzleValDeRefRecord);
+					auto* Var = GetVar(StructVar, SwizzleValDeRefRecord);
 					Swizzle->val = new(State)ir_dereference_variable(Var);
 				}
 			}
@@ -3377,7 +3423,7 @@ struct FDeReferencePackedVarsVisitor final : public ir_rvalue_visitor
 			{
 				if (DeRefRecord->type->vector_elements > 1 && DeRefRecord->type->vector_elements < 4)
 				{
-					auto* Var = GetVar(DeRefRecord);
+					auto* Var = GetVar(StructVar, DeRefRecord);
 					*RValuePtr = new(State)ir_dereference_variable(Var);
 				}
             }
@@ -3385,7 +3431,7 @@ struct FDeReferencePackedVarsVisitor final : public ir_rvalue_visitor
             {
                 if (DeRefRecord->type->vector_elements > 1 && DeRefRecord->type->vector_elements < 4)
                 {
-                    auto* Var = GetVar(DeRefRecord);
+                    auto* Var = GetVar(StructVar, DeRefRecord);
                     *RValuePtr = new(State)ir_dereference_variable(Var);
                 }
             }
@@ -3393,8 +3439,9 @@ struct FDeReferencePackedVarsVisitor final : public ir_rvalue_visitor
 	}
 
 	std::map<ir_dereference_record*, ir_variable*, ir_type_compare<ir_dereference_record>> Replaced;
+	std::map<ir_variable*, ir_variable*, ir_type_compare<ir_variable>> Replacements;
 
-	ir_variable* GetVar(ir_dereference_record* ir)
+	ir_variable* GetVar(ir_variable* Orig, ir_dereference_record* ir)
 	{
 		ir_variable* Var = nullptr;
 		for (auto& Pair : Replaced)
@@ -3410,6 +3457,7 @@ struct FDeReferencePackedVarsVisitor final : public ir_rvalue_visitor
 		{
 			Var = new(State)ir_variable(ir->type, nullptr, ir_var_temporary);
 			Replaced[ir] = Var;
+			Replacements[Var] = Orig;
 		}
 		return Var;
 	}
@@ -3424,15 +3472,51 @@ void FMetalCodeBackend::RemovePackedVarReferences(exec_list* ir, _mesa_glsl_pars
 	{
 		return;
 	}
-
+	
 	ir_function_signature* Main = GetMainFunction(ir);
+	for (auto& Pair : Visitor.Replacements)
+	{
+		auto* NewVar = Pair.first;
+		auto* OldVar = Pair.second;
+		if (OldVar->mode == ir_var_uniform || OldVar->mode == ir_var_in || OldVar->mode == ir_var_out)
+		{
+			Main->body.push_head(NewVar);
+		}
+		else
+		{
+			// New variable declaration including its initialization must be inserted *after* the original variable has been initialized.
+			// So look ahead until we find the <ir_assignment> node that initializes "OldVar".
+			ir_assignment* OldVarInit = nullptr;
+			for (exec_node* Node = OldVar->next; Node && !OldVarInit; Node = Node->next)
+			{
+				ir_instruction* Instr = static_cast<ir_instruction*>(Node);
+				if (Instr->ir_type == ir_type_assignment)
+				{
+					ir_assignment* AssignStmt = static_cast<ir_assignment*>(Instr);
+					if (AssignStmt->lhs->variable_referenced() == OldVar)
+					{
+						OldVarInit = AssignStmt;
+					}
+				}
+			}
+			
+			if (OldVarInit != nullptr)
+			{
+				OldVarInit->insert_after(NewVar);
+			}
+			else
+			{
+				OldVar->insert_after(NewVar);
+			}
+		}
+	}
+
 	for (auto& OuterPair : Visitor.Replaced)
 	{
 		auto* NewVar = OuterPair.second;
 		auto* DeRefRecord = OuterPair.first;
 		auto* NewAssignment = new(State)ir_assignment(new(State)ir_dereference_variable(NewVar), DeRefRecord);
-		Main->body.push_head(NewAssignment);
-		Main->body.push_head(NewVar);
+		NewVar->insert_after(NewAssignment);
 	}
 }
 

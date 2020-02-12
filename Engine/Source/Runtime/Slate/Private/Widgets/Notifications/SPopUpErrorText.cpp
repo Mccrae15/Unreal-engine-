@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "Widgets/Notifications/SPopUpErrorText.h"
 
@@ -9,6 +9,7 @@ void SPopupErrorText::Construct( const FArguments& InArgs )
 		.ComboButtonStyle( FCoreStyle::Get(), "MessageLogListingComboButton" )
 		.HasDownArrow(false)
 		.ContentPadding(0)
+		.IsFocusable(false)
 		.ButtonContent()
 		[
 			SAssignNew( HasErrorSymbol, SErrorText )

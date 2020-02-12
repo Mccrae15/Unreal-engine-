@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 //~=============================================================================
 // ParticleEmitter
@@ -217,6 +217,9 @@ class UParticleEmitter : public UObject
 	/** Map module pointers to their offset into the instance data.		*/
 	TMap<UParticleModule*, uint32> ModuleInstanceOffsetMap;
 
+	/** Map module pointers to their offset into the instance data.		*/
+	TMap<UParticleModule*, uint32> ModuleRandomSeedInstanceOffsetMap;
+	
 	/** Materials collected from any MeshMaterial modules */
 	TArray<class UMaterialInterface*> MeshMaterials;
 
@@ -235,6 +238,9 @@ class UParticleEmitter : public UObject
 
 	// Array of modules that want emitter instance data
 	TArray<UParticleModule*> ModulesNeedingInstanceData;
+
+	// Array of modules that want emitter random seed instance data
+	TArray<UParticleModule*> ModulesNeedingRandomSeedInstanceData;
 
 	/** SubUV animation asset to use for cutout geometry. */
 	class USubUVAnimation* RESTRICT SubUVAnimation;

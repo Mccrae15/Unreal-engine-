@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -8,7 +8,7 @@
 #include "ProceduralFoliageInstance.generated.h"
 
 class UActorComponent;
-class UFoliageType_InstancedStaticMesh;
+class UFoliageType;
 struct FProceduralFoliageInstance;
 
 #if WITH_PHYSX
@@ -37,6 +37,7 @@ namespace ESimulationQuery
 {
 	enum Type
 	{
+		None = 0 UMETA(Hidden),
 		/*Instances overlap with collision*/
 		CollisionOverlap = 1,
 		/*Instances overlap with shade*/
@@ -95,7 +96,7 @@ public:
 	float Scale;
 
 	UPROPERTY()
-	const UFoliageType_InstancedStaticMesh* Type;
+	const UFoliageType* Type;
 
 
 	bool bBlocker;

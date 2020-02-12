@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 #include "BehaviorTreeGraph.h"
 #include "EdGraph/EdGraphPin.h"
 #include "SGraphNode.h"
@@ -24,6 +24,7 @@
 #include "BehaviorTree/Tasks/BTTask_Wait.h"
 #include "BehaviorTreeGraphNode_SimpleParallel.h"
 #include "BehaviorTreeGraphNode_SubtreeTask.h"
+#include "BehaviorTreeDecoratorGraphNode_Decorator.h"
 
 //////////////////////////////////////////////////////////////////////////
 // BehaviorTreeGraph
@@ -942,27 +943,27 @@ void UBehaviorTreeGraph::CreateBTFromGraph(UBehaviorTreeGraphNode* RootEdNode)
 	RemoveOrphanedNodes();
 }
 
-void UBehaviorTreeGraph::CollectAllNodeInstances(TSet<UObject*>& NodeInstance)
+void UBehaviorTreeGraph::CollectAllNodeInstances(TSet<UObject*>& NodeInstances)
 {
-	Super::CollectAllNodeInstances(NodeInstance);
+	Super::CollectAllNodeInstances(NodeInstances);
 
-	for (int32 Idx = 0; Idx < Nodes.Num(); Idx++)
+	for (UEdGraphNode* EdGraphNode : Nodes)
 	{
-		UBehaviorTreeGraphNode* MyNode = Cast<UBehaviorTreeGraphNode>(Nodes[Idx]);
-		if (MyNode)
+		UBehaviorTreeGraphNode* BTGraphNode = Cast<UBehaviorTreeGraphNode>(EdGraphNode);
+		if (BTGraphNode != nullptr)
 		{
-			for (int32 SubIdx = 0; SubIdx < MyNode->Decorators.Num(); SubIdx++)
+			for (UBehaviorTreeGraphNode* BTDecoratorGraphNode : BTGraphNode->Decorators)
 			{
-				UBehaviorTreeGraphNode_CompositeDecorator* SubgraphNode = Cast<UBehaviorTreeGraphNode_CompositeDecorator>(MyNode->Decorators[SubIdx]);
-				if (SubgraphNode)
+				UEdGraph* EdSubGraph = BTDecoratorGraphNode->GetBoundGraph();
+				if (EdSubGraph != nullptr)
 				{
-					TArray<UBTDecorator*> DecoratorInstances;
-					TArray<FBTDecoratorLogic> DummyOps;
-					SubgraphNode->CollectDecoratorData(DecoratorInstances, DummyOps);
-
-					for (int32 DecoratorIdx = 0; DecoratorIdx < DecoratorInstances.Num(); DecoratorIdx++)
+					for (UEdGraphNode* SubGraphNode : EdSubGraph->Nodes)
 					{
-						NodeInstance.Add(DecoratorInstances[DecoratorIdx]);
+						const UBehaviorTreeDecoratorGraphNode_Decorator* DecoratorNode = Cast<const UBehaviorTreeDecoratorGraphNode_Decorator>(SubGraphNode);
+						if (DecoratorNode && DecoratorNode->NodeInstance)
+						{
+							NodeInstances.Add(DecoratorNode->NodeInstance);
+						}
 					}
 				}
 			}
@@ -1211,17 +1212,18 @@ namespace BTAutoArrangeHelpers
 		if (Pin)
 		{
 			SGraphNode::FNodeSet NodeFilter;
-			for (int32 Idx = 0; Idx < Pin->LinkedTo.Num(); Idx++)
+			TArray<UEdGraphPin*> TempLinkedTo = Pin->LinkedTo;
+			for (int32 Idx = 0; Idx < TempLinkedTo.Num(); Idx++)
 			{
-				UBehaviorTreeGraphNode* GraphNode = Cast<UBehaviorTreeGraphNode>(Pin->LinkedTo[Idx]->GetOwningNode());
+				UBehaviorTreeGraphNode* GraphNode = Cast<UBehaviorTreeGraphNode>(TempLinkedTo[Idx]->GetOwningNode());
 				if (GraphNode && BBoxTree.Children.Num() > 0)
 				{
 					AutoArrangeNodes(GraphNode, BBoxTree.Children[BBoxIndex], PosX, PosY + GraphNode->DEPRECATED_NodeWidget.Pin()->GetDesiredSize().Y * 2.5f);
 					GraphNode->DEPRECATED_NodeWidget.Pin()->MoveTo(FVector2D(BBoxTree.Children[BBoxIndex].SubGraphBBox.X / 2 - GraphNode->DEPRECATED_NodeWidget.Pin()->GetDesiredSize().X / 2 + PosX, PosY), NodeFilter);
 					PosX += BBoxTree.Children[BBoxIndex].SubGraphBBox.X + 20;
+					BBoxIndex++;
 				}
 
-				BBoxIndex++;
 			}
 		}
 	}

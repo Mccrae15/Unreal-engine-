@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -590,9 +590,9 @@ float UKismetMathLibrary::Atan(float A)
 }
 
 KISMET_MATH_FORCEINLINE
-float UKismetMathLibrary::Atan2(float A, float B)
+float UKismetMathLibrary::Atan2(float Y, float X)
 {
-	return FMath::Atan2(A, B);
+	return FMath::Atan2(Y, X);
 }	
 
 KISMET_MATH_FORCEINLINE
@@ -632,9 +632,9 @@ float UKismetMathLibrary::DegAtan(float A)
 }
 
 KISMET_MATH_FORCEINLINE
-float UKismetMathLibrary::DegAtan2(float A, float B)
+float UKismetMathLibrary::DegAtan2(float Y, float X)
 {
-	return (180.f)/PI * FMath::Atan2(A, B);
+	return (180.f)/PI * FMath::Atan2(Y, X);
 }
 
 KISMET_MATH_FORCEINLINE
@@ -696,25 +696,25 @@ int32 UKismetMathLibrary::FTrunc(float A)
 KISMET_MATH_FORCEINLINE
 int64 UKismetMathLibrary::Round64(float A)
 {
-	return (int64)FMath::RoundToInt(A);
+	return (int64)FMath::RoundToDouble(A);
 }
 
 KISMET_MATH_FORCEINLINE
 int64 UKismetMathLibrary::FFloor64(float A)
 {
-	return (int64)FMath::FloorToInt(A);
+	return (int64)FMath::FloorToDouble(A);
 }
 
 KISMET_MATH_FORCEINLINE
 int64 UKismetMathLibrary::FTrunc64(float A)
 {
-	return (int64)FMath::TruncToInt(A);
+	return (int64)A;
 }
 
 KISMET_MATH_FORCEINLINE
 int64 UKismetMathLibrary::FCeil64(float A)
 {
-	return (int64)FMath::CeilToInt(A);
+	return (int64)FMath::CeilToDouble(A);
 }
 
 KISMET_MATH_FORCEINLINE
@@ -909,6 +909,124 @@ bool UKismetMathLibrary::EqualEqual_TransformTransform(const FTransform& A, cons
 }
 
 
+/* FIntPoint
+*****************************************************************************/
+
+KISMET_MATH_FORCEINLINE
+FIntPoint UKismetMathLibrary::IntPoint_Zero()
+{
+	return FIntPoint::ZeroValue;
+}
+
+KISMET_MATH_FORCEINLINE
+FIntPoint UKismetMathLibrary::IntPoint_One()
+{
+	return FIntPoint(1);
+}
+
+KISMET_MATH_FORCEINLINE
+FIntPoint UKismetMathLibrary::IntPoint_Up()
+{
+	return FIntPoint(0, -1);
+}
+
+KISMET_MATH_FORCEINLINE
+FIntPoint UKismetMathLibrary::IntPoint_Left()
+{
+	return FIntPoint(-1, 0);
+}
+
+KISMET_MATH_FORCEINLINE
+FIntPoint UKismetMathLibrary::IntPoint_Right()
+{
+	return FIntPoint(1, 0);
+}
+
+KISMET_MATH_FORCEINLINE
+FIntPoint UKismetMathLibrary::IntPoint_Down()
+{
+	return FIntPoint(0, 1);
+}
+
+KISMET_MATH_FORCEINLINE
+FVector2D UKismetMathLibrary::Conv_IntPointToVector2D(FIntPoint InIntPoint)
+{
+	return FVector2D(InIntPoint.X, InIntPoint.Y);
+}
+
+
+KISMET_MATH_FORCEINLINE
+FIntPoint UKismetMathLibrary::Add_IntPointIntPoint(FIntPoint A, FIntPoint B)
+{
+	return A + B;
+}
+
+KISMET_MATH_FORCEINLINE
+FIntPoint UKismetMathLibrary::Add_IntPointInt(FIntPoint A, int32 B)
+{
+	return A + FIntPoint(B);
+}
+
+KISMET_MATH_FORCEINLINE
+FIntPoint UKismetMathLibrary::Subtract_IntPointIntPoint(FIntPoint A, FIntPoint B)
+{
+	return A - B;
+}
+
+KISMET_MATH_FORCEINLINE
+FIntPoint UKismetMathLibrary::Subtract_IntPointInt(FIntPoint A, int32 B)
+{
+	return A - FIntPoint(B);
+}
+
+KISMET_MATH_FORCEINLINE
+FIntPoint UKismetMathLibrary::Multiply_IntPointIntPoint(FIntPoint A, FIntPoint B)
+{
+	return A * B;
+}
+
+KISMET_MATH_FORCEINLINE
+FIntPoint UKismetMathLibrary::Multiply_IntPointInt(FIntPoint A, int32 B)
+{
+	return A * FIntPoint(B);
+}
+
+KISMET_MATH_FORCEINLINE
+FIntPoint UKismetMathLibrary::Divide_IntPointIntPoint(FIntPoint A, FIntPoint B)
+{
+	if (B.X == 0 || B.Y == 0)
+	{
+		ReportError_Divide_IntPointOnIntPoint();
+		return FIntPoint::ZeroValue;
+	}
+	return A / B;
+}
+
+KISMET_MATH_FORCEINLINE
+FIntPoint UKismetMathLibrary::Divide_IntPointInt(FIntPoint A, int32 B)
+{
+	if (B == 0)
+	{
+		ReportError_Divide_IntPointOnInt();
+		return FIntPoint::ZeroValue;
+	}
+
+	return A / FIntPoint(B);
+}
+
+KISMET_MATH_FORCEINLINE
+bool UKismetMathLibrary::Equal_IntPointIntPoint(FIntPoint A, FIntPoint B)
+{
+	return A == B;
+}
+
+KISMET_MATH_FORCEINLINE
+bool UKismetMathLibrary::NotEqual_IntPointIntPoint(FIntPoint A, FIntPoint B)
+{
+	return A != B;
+}
+
+
 /* FVector2D
 *****************************************************************************/
 
@@ -1046,9 +1164,9 @@ FVector2D UKismetMathLibrary::Negated2D(const FVector2D& A)
 }
 
 KISMET_MATH_FORCEINLINE
-void UKismetMathLibrary::Set2D(FVector2D& A, float InX, float InY)
+void UKismetMathLibrary::Set2D(FVector2D& A, float X, float Y)
 {
-	A.Set(InX, InY);
+	A.Set(X, Y);
 }
 
 KISMET_MATH_FORCEINLINE
@@ -1254,9 +1372,9 @@ void UKismetMathLibrary::Vector_Assign(FVector& A, const FVector& InVector)
 }
 
 KISMET_MATH_FORCEINLINE
-void UKismetMathLibrary::Vector_Set(FVector& A, float InX, float InY, float InZ)
+void UKismetMathLibrary::Vector_Set(FVector& A, float X, float Y, float Z)
 {
-	A.Set(InX, InY, InZ);
+	A.Set(X, Y, Z);
 }
 
 KISMET_MATH_FORCEINLINE
@@ -1920,9 +2038,9 @@ void UKismetMathLibrary::Vector4_Assign(FVector4& A, const FVector4& InVector)
 }
 
 KISMET_MATH_FORCEINLINE
-void UKismetMathLibrary::Vector4_Set(FVector4& A, float InX, float InY, float InZ, float InW)
+void UKismetMathLibrary::Vector4_Set(FVector4& A, float X, float Y, float Z, float W)
 {
-	A.Set(InX, InY, InZ, InW);
+	A.Set(X, Y, Z, W);
 }
 
 KISMET_MATH_FORCEINLINE
@@ -2021,6 +2139,12 @@ FVector4 UKismetMathLibrary::Vector4_MirrorByVector3(const FVector4& Direction, 
 	return Direction.Reflect3(SurfaceNormal);
 }
 
+KISMET_MATH_FORCEINLINE
+FVector4 UKismetMathLibrary::TransformVector4(const FMatrix& Matrix, const FVector4& Vec4)
+{
+	return Matrix.TransformFVector4(Vec4);
+}
+
 
 /* FName
 *****************************************************************************/
@@ -2080,6 +2204,12 @@ KISMET_MATH_FORCEINLINE
 FTimespan UKismetMathLibrary::Subtract_DateTimeDateTime(FDateTime A, FDateTime B)
 {
 	return A - B;
+}
+
+KISMET_MATH_FORCEINLINE
+FDateTime UKismetMathLibrary::Add_DateTimeDateTime(FDateTime A, FDateTime B)
+{
+	return A + B;
 }
 
 KISMET_MATH_FORCEINLINE
@@ -2450,6 +2580,18 @@ uint8 UKismetMathLibrary::Conv_IntToByte(int32 InInt)
 }
 
 KISMET_MATH_FORCEINLINE
+int32 UKismetMathLibrary::Conv_Int64ToInt(int64 InInt)
+{
+	return (int32)InInt;
+}
+
+KISMET_MATH_FORCEINLINE
+uint8 UKismetMathLibrary::Conv_Int64ToByte(int64 InInt)
+{
+	return (uint8)InInt;
+}
+
+KISMET_MATH_FORCEINLINE
 FIntVector UKismetMathLibrary::Conv_IntToIntVector(int32 InInt)
 {
 	return FIntVector(InInt, InInt, InInt);
@@ -2629,6 +2771,261 @@ FVector UKismetMathLibrary::Matrix_GetOrigin(const FMatrix& InMatrix)
 	return InMatrix.GetOrigin();
 }
 
+KISMET_MATH_FORCEINLINE
+FMatrix UKismetMathLibrary::Matrix_Identity()
+{
+	return FMatrix::Identity;
+}
+
+KISMET_MATH_FORCEINLINE
+FMatrix UKismetMathLibrary::Multiply_MatrixMatrix(const FMatrix& A, const FMatrix& B)
+{
+	return A * B;
+}
+
+KISMET_MATH_FORCEINLINE
+FMatrix UKismetMathLibrary::Add_MatrixMatrix(const FMatrix& A, const FMatrix& B)
+{
+	return A + B;
+}
+
+KISMET_MATH_FORCEINLINE
+FMatrix UKismetMathLibrary::Multiply_MatrixFloat(const FMatrix& A, float B)
+{
+	return A * B;
+}
+
+KISMET_MATH_FORCEINLINE
+bool UKismetMathLibrary::EqualEqual_MatrixMatrix(const FMatrix& A, const FMatrix& B, float Tolerance /*= KINDA_SMALL_NUMBER*/)
+{
+	return A.Equals(B, Tolerance);
+}
+
+KISMET_MATH_FORCEINLINE
+bool UKismetMathLibrary::NotEqual_MatrixMatrix(const FMatrix& A, const FMatrix& B, float Tolerance /*= KINDA_SMALL_NUMBER*/)
+{
+	return !(A.Equals(B, Tolerance));
+}
+
+KISMET_MATH_FORCEINLINE
+FVector4 UKismetMathLibrary::Matrix_TransformVector4(const FMatrix& M, FVector4 V)
+{
+	return M.TransformFVector4(V);
+}
+
+KISMET_MATH_FORCEINLINE
+FVector4 UKismetMathLibrary::Matrix_TransformPosition(const FMatrix& M, FVector V)
+{
+	return M.TransformPosition(V);
+}
+
+KISMET_MATH_FORCEINLINE
+FVector UKismetMathLibrary::Matrix_InverseTransformPosition(const FMatrix& M, FVector V)
+{
+	return M.InverseTransformPosition(V);
+}
+
+KISMET_MATH_FORCEINLINE
+FVector4 UKismetMathLibrary::Matrix_TransformVector(const FMatrix& M, FVector V)
+{
+	return M.TransformVector(V);
+}
+
+KISMET_MATH_FORCEINLINE
+FVector UKismetMathLibrary::Matrix_InverseTransformVector(const FMatrix& M, FVector V)
+{
+	return M.InverseTransformVector(V);
+}
+
+KISMET_MATH_FORCEINLINE
+FMatrix UKismetMathLibrary::Matrix_GetTransposed(const FMatrix& M)
+{
+	return M.GetTransposed();
+}
+
+KISMET_MATH_FORCEINLINE
+float UKismetMathLibrary::Matrix_GetDeterminant(const FMatrix& M)
+{
+	return M.Determinant();
+}
+
+KISMET_MATH_FORCEINLINE
+float UKismetMathLibrary::Matrix_GetRotDeterminant(const FMatrix& M)
+{
+	return M.RotDeterminant();
+}
+
+KISMET_MATH_FORCEINLINE
+FMatrix UKismetMathLibrary::Matrix_GetInverse(const FMatrix& M)
+{
+	return M.Inverse();
+}
+
+KISMET_MATH_FORCEINLINE
+FMatrix UKismetMathLibrary::Matrix_GetTransposeAdjoint(const FMatrix& M)
+{
+	return M.TransposeAdjoint();
+}
+
+KISMET_MATH_FORCEINLINE
+void UKismetMathLibrary::Matrix_RemoveScaling(FMatrix& M, float Tolerance /*= SMALL_NUMBER*/)
+{
+	M.RemoveScaling(Tolerance);
+}
+
+KISMET_MATH_FORCEINLINE
+FMatrix UKismetMathLibrary::Matrix_GetMatrixWithoutScale(const FMatrix& M, float Tolerance /*= SMALL_NUMBER*/)
+{
+	return M.GetMatrixWithoutScale(Tolerance);
+}
+
+KISMET_MATH_FORCEINLINE
+FVector UKismetMathLibrary::Matrix_GetScaleVector(const FMatrix& M, float Tolerance /*= SMALL_NUMBER*/)
+{
+	return M.GetScaleVector(Tolerance);
+}
+
+KISMET_MATH_FORCEINLINE
+FMatrix UKismetMathLibrary::Matrix_RemoveTranslation(const FMatrix& M)
+{
+	return M.RemoveTranslation();
+}
+
+KISMET_MATH_FORCEINLINE
+FMatrix UKismetMathLibrary::Matrix_ConcatenateTranslation(const FMatrix& M, FVector Translation)
+{
+	return M.ConcatTranslation(Translation);
+}
+
+KISMET_MATH_FORCEINLINE
+bool UKismetMathLibrary::Matrix_ContainsNaN(const FMatrix& M)
+{
+	return M.ContainsNaN();
+}
+
+KISMET_MATH_FORCEINLINE
+FMatrix UKismetMathLibrary::Matrix_ScaleTranslation(const FMatrix& M, FVector Scale3D)
+{
+	FMatrix ScaledMatrix = M;
+	ScaledMatrix.ScaleTranslation(Scale3D);
+	return ScaledMatrix;
+}
+
+KISMET_MATH_FORCEINLINE
+float UKismetMathLibrary::Matrix_GetMaximumAxisScale(const FMatrix& M)
+{
+	return M.GetMaximumAxisScale();
+}
+
+KISMET_MATH_FORCEINLINE
+FMatrix UKismetMathLibrary::Matrix_ApplyScale(const FMatrix& M, float Scale)
+{
+	return M.ApplyScale(Scale);
+}
+
+KISMET_MATH_FORCEINLINE
+FVector UKismetMathLibrary::Matrix_GetScaledAxis(const FMatrix& M, TEnumAsByte<EAxis::Type> Axis)
+{
+	return M.GetScaledAxis(Axis);
+}
+
+KISMET_MATH_FORCEINLINE
+void UKismetMathLibrary::Matrix_GetScaledAxes(const FMatrix& M, FVector &X, FVector &Y, FVector &Z)
+{
+	M.GetScaledAxes(X, Y, Z);
+}
+
+KISMET_MATH_FORCEINLINE
+FVector UKismetMathLibrary::Matrix_GetUnitAxis(const FMatrix& M, TEnumAsByte<EAxis::Type> Axis)
+{
+	return M.GetUnitAxis(Axis);
+}
+
+KISMET_MATH_FORCEINLINE
+void UKismetMathLibrary::Matrix_GetUnitAxes(const FMatrix& M, FVector &X, FVector &Y, FVector &Z)
+{
+	M.GetUnitAxes(X, Y, Z);
+}
+
+KISMET_MATH_FORCEINLINE
+void UKismetMathLibrary::Matrix_SetAxis(FMatrix& M, TEnumAsByte<EAxis::Type> Axis, FVector AxisVector)
+{
+	M.SetAxis(StaticCast<int32>(Axis), AxisVector);
+}
+
+KISMET_MATH_FORCEINLINE
+void UKismetMathLibrary::Matrix_SetOrigin(FMatrix& M, FVector NewOrigin)
+{
+	M.SetOrigin(NewOrigin);
+}
+
+KISMET_MATH_FORCEINLINE
+FVector UKismetMathLibrary::Matrix_GetColumn(const FMatrix& M, TEnumAsByte<EMatrixColumns::Type> Column)
+{
+	return M.GetColumn(StaticCast<int32>(Column));
+}
+
+KISMET_MATH_FORCEINLINE
+void UKismetMathLibrary::Matrix_SetColumn(FMatrix& M, TEnumAsByte<EMatrixColumns::Type> Column, FVector Value)
+{
+	M.SetColumn(StaticCast<int32>(Column), Value);
+}
+
+KISMET_MATH_FORCEINLINE
+FRotator UKismetMathLibrary::Matrix_GetRotator(const FMatrix& M)
+{
+	return M.Rotator();
+}
+
+KISMET_MATH_FORCEINLINE
+FQuat UKismetMathLibrary::Matrix_ToQuat(const FMatrix& M)
+{
+	return M.ToQuat();
+}
+
+KISMET_MATH_FORCEINLINE
+bool UKismetMathLibrary::Matrix_GetFrustumNearPlane(const FMatrix& M, FPlane& OutPlane)
+{
+	return M.GetFrustumNearPlane(OutPlane);
+}
+
+KISMET_MATH_FORCEINLINE
+bool UKismetMathLibrary::Matrix_GetFrustumFarPlane(const FMatrix& M, FPlane& OutPlane)
+{
+	return M.GetFrustumFarPlane(OutPlane);
+}
+
+KISMET_MATH_FORCEINLINE
+bool UKismetMathLibrary::Matrix_GetFrustumLeftPlane(const FMatrix& M, FPlane& OutPlane)
+{
+	return M.GetFrustumLeftPlane(OutPlane);
+}
+
+KISMET_MATH_FORCEINLINE
+bool UKismetMathLibrary::Matrix_GetFrustumRightPlane(const FMatrix& M, FPlane& OutPlane)
+{
+	return M.GetFrustumRightPlane(OutPlane);
+}
+
+KISMET_MATH_FORCEINLINE
+bool UKismetMathLibrary::Matrix_GetFrustumTopPlane(const FMatrix& M, FPlane& OutPlane)
+{
+	return M.GetFrustumTopPlane(OutPlane);
+}
+
+KISMET_MATH_FORCEINLINE
+bool UKismetMathLibrary::Matrix_GetFrustumBottomPlane(const FMatrix& M, FPlane& OutPlane)
+{
+	return M.GetFrustumBottomPlane(OutPlane);
+}
+
+KISMET_MATH_FORCEINLINE
+FMatrix UKismetMathLibrary::Matrix_Mirror(const FMatrix& M, TEnumAsByte<EAxis::Type> MirrorAxis, TEnumAsByte<EAxis::Type> FlipAxis)
+{
+	FMatrix MirrorMatrix = M;
+	MirrorMatrix.Mirror(MirrorAxis, FlipAxis);
+	return MirrorMatrix;
+}
 
 /* FQuat
 *****************************************************************************/
@@ -2791,18 +3188,24 @@ FQuat UKismetMathLibrary::Quat_Log(const FQuat& Q)
 }
 
 KISMET_MATH_FORCEINLINE
-void UKismetMathLibrary::Quat_SetComponents(UPARAM(ref) FQuat& Q, float InX, float InY, float InZ, float InW)
+void UKismetMathLibrary::Quat_SetComponents(FQuat& Q, float X, float Y, float Z, float W)
 {
-	Q.X = InX;
-	Q.Y = InY;
-	Q.Z = InZ;
-	Q.W = InW;
+	Q.X = X;
+	Q.Y = Y;
+	Q.Z = Z;
+	Q.W = W;
 }
 
 KISMET_MATH_FORCEINLINE
-void UKismetMathLibrary::Quat_SetFromEuler(UPARAM(ref) FQuat& Q, const FVector& Euler)
+void UKismetMathLibrary::Quat_SetFromEuler(FQuat& Q, const FVector& Euler)
 {
 	Q = FQuat::MakeFromEuler(Euler);
+}
+
+KISMET_MATH_FORCEINLINE
+FQuat UKismetMathLibrary::Quat_MakeFromEuler(const FVector& Euler)
+{
+	return FQuat::MakeFromEuler(Euler);
 }
 
 KISMET_MATH_FORCEINLINE
@@ -2907,7 +3310,7 @@ void UKismetMathLibrary::BreakColor(FLinearColor InColor, float& R, float& G, fl
 }
 
 KISMET_MATH_FORCEINLINE
-void UKismetMathLibrary::LinearColor_Set(UPARAM(ref) FLinearColor& InOutColor, FLinearColor InColor)
+void UKismetMathLibrary::LinearColor_Set(FLinearColor& InOutColor, FLinearColor InColor)
 {
 	InOutColor.R = InColor.R;
 	InOutColor.G = InColor.G;
@@ -2916,7 +3319,7 @@ void UKismetMathLibrary::LinearColor_Set(UPARAM(ref) FLinearColor& InOutColor, F
 }
 
 KISMET_MATH_FORCEINLINE
-void UKismetMathLibrary::LinearColor_SetRGBA(UPARAM(ref) FLinearColor& InOutColor, float R, float G, float B, float A)
+void UKismetMathLibrary::LinearColor_SetRGBA(FLinearColor& InOutColor, float R, float G, float B, float A)
 {
 	InOutColor.R = R;
 	InOutColor.G = G;
@@ -2925,32 +3328,32 @@ void UKismetMathLibrary::LinearColor_SetRGBA(UPARAM(ref) FLinearColor& InOutColo
 }
 
 KISMET_MATH_FORCEINLINE
-void UKismetMathLibrary::LinearColor_SetFromHSV(UPARAM(ref) FLinearColor& InOutColor, float H, float S, float V, float A)
+void UKismetMathLibrary::LinearColor_SetFromHSV(FLinearColor& InOutColor, float H, float S, float V, float A)
 {
 	const FLinearColor HSV(H, S, V, A);
 	InOutColor = HSV.HSVToLinearRGB();
 }
 
 KISMET_MATH_FORCEINLINE
-void UKismetMathLibrary::LinearColor_SetFromSRGB(UPARAM(ref) FLinearColor& InOutColor, const FColor& InSRGB)
+void UKismetMathLibrary::LinearColor_SetFromSRGB(FLinearColor& InOutColor, const FColor& InSRGB)
 {
 	InOutColor = FLinearColor::FromSRGBColor(InSRGB);
 }
 
 KISMET_MATH_FORCEINLINE
-void UKismetMathLibrary::LinearColor_SetFromPow22(UPARAM(ref) FLinearColor& InOutColor, const FColor& InColor)
+void UKismetMathLibrary::LinearColor_SetFromPow22(FLinearColor& InOutColor, const FColor& InColor)
 {
 	InOutColor = FLinearColor::FromPow22Color(InColor);
 }
 
 KISMET_MATH_FORCEINLINE
-void UKismetMathLibrary::LinearColor_SetTemperature(UPARAM(ref) FLinearColor& InOutColor, float InTemperature)
+void UKismetMathLibrary::LinearColor_SetTemperature(FLinearColor& InOutColor, float InTemperature)
 {
 	InOutColor = FLinearColor::MakeFromColorTemperature(InTemperature);
 }
 
 KISMET_MATH_FORCEINLINE
-void UKismetMathLibrary::LinearColor_SetRandomHue(UPARAM(ref) FLinearColor& InOutColor)
+void UKismetMathLibrary::LinearColor_SetRandomHue(FLinearColor& InOutColor)
 {
 	InOutColor = FLinearColor::MakeRandomColor();
 }

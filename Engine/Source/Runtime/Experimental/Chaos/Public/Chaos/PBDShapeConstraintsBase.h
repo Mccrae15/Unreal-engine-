@@ -1,10 +1,8 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 #pragma once
 
 #include "Chaos/Array.h"
-#include "Chaos/Map.h"
 #include "Chaos/PBDParticles.h"
-#include "Chaos/PerParticleRule.h"
 
 #include <functional>
 

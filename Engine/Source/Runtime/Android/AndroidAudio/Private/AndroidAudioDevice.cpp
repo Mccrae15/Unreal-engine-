@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 
 /*------------------------------------------------------------------------------------
@@ -8,6 +8,7 @@
 #include "AndroidAudioDevice.h"
 #include "VorbisAudioInfo.h"
 #include "ADPCMAudioInfo.h"
+#include "AudioPluginUtilities.h"
 
 DEFINE_LOG_CATEGORY(LogAndroidAudio);
 
@@ -36,8 +37,8 @@ DEFINE_STAT(STAT_AudioAndroidSourcePlayerRealize);
 void FSLESAudioDevice::Teardown( void )
 {
 	// Flush stops all sources and deletes all buffers so sources can be safely deleted below.
-	Flush( NULL );	
-	
+	Flush( NULL );
+
 	// Destroy all sound sources
 	for( int32 i = 0; i < Sources.Num(); i++ )
 	{
@@ -45,7 +46,7 @@ void FSLESAudioDevice::Teardown( void )
 	}
 
 	UE_LOG( LogAndroidAudio, Warning, TEXT("OpenSLES Tearing Down HW"));
-	
+
 	// Teardown OpenSLES..
 	// Destroy the SLES objects in reverse order of creation:
 	if (SL_OutputMixObject)
@@ -67,76 +68,59 @@ void FSLESAudioDevice::Teardown( void )
 /**
  * Initializes the audio device and creates sources.
  *
- * @warning: 
+ * @warning:
  *
  * @return TRUE if initialization was successful, FALSE otherwise
  */
-bool FSLESAudioDevice::InitializeHardware( void )
+bool FSLESAudioDevice::InitializeHardware(void)
 {
-	UE_LOG( LogAndroidAudio, Warning, TEXT("SL Entered Init HW"));
+	UE_LOG(LogAndroidAudio, Warning, TEXT("SL Entered Init HW"));
 
 	SLresult result;
 
-	UE_LOG( LogAndroidAudio, Warning, TEXT("OpenSLES Initializing HW"));
-	
-	SLEngineOption EngineOption[] = { {(SLuint32) SL_ENGINEOPTION_THREADSAFE, (SLuint32) SL_BOOLEAN_TRUE} };
-	
-    // create engine
-    result = slCreateEngine( &SL_EngineObject, 1, EngineOption, 0, NULL, NULL);
-    //check(SL_RESULT_SUCCESS == result);
+	UE_LOG(LogAndroidAudio, Warning, TEXT("OpenSLES Initializing HW"));
+
+	SLEngineOption EngineOption[] = { {(SLuint32)SL_ENGINEOPTION_THREADSAFE, (SLuint32)SL_BOOLEAN_TRUE} };
+
+	// create engine
+	result = slCreateEngine(&SL_EngineObject, 1, EngineOption, 0, NULL, NULL);
+	//check(SL_RESULT_SUCCESS == result);
 	if (SL_RESULT_SUCCESS != result)
 	{
-		UE_LOG( LogAndroidAudio, Error, TEXT("Engine create failed %d"), int32(result));
+		UE_LOG(LogAndroidAudio, Error, TEXT("Engine create failed %d"), int32(result));
 	}
-	
-    // realize the engine
-    result = (*SL_EngineObject)->Realize(SL_EngineObject, SL_BOOLEAN_FALSE);
-    check(SL_RESULT_SUCCESS == result);
-	
-    // get the engine interface, which is needed in order to create other objects
-    result = (*SL_EngineObject)->GetInterface(SL_EngineObject, SL_IID_ENGINE, &SL_EngineEngine);
-    check(SL_RESULT_SUCCESS == result);
-	
-	// create output mix, with environmental reverb specified as a non-required interface    
-    result = (*SL_EngineEngine)->CreateOutputMix( SL_EngineEngine, &SL_OutputMixObject, 0, NULL, NULL );
-    check(SL_RESULT_SUCCESS == result);
-	
-    // realize the output mix
-    result = (*SL_OutputMixObject)->Realize(SL_OutputMixObject, SL_BOOLEAN_FALSE);
-    check(SL_RESULT_SUCCESS == result);
-	
-	UE_LOG( LogAndroidAudio, Warning, TEXT("OpenSLES Initialized"));
-    // ignore unsuccessful result codes for env
 
-	
-	// Default to sensible channel count.
-	if( MaxChannels < 1 )
-	{  
-		MaxChannels = 12;
-	}
-	
-	
-	// Initialize channels.
-	for( int32 i = 0; i < FMath::Min( MaxChannels, 12 ); i++ )
+	// realize the engine
+	result = (*SL_EngineObject)->Realize(SL_EngineObject, SL_BOOLEAN_FALSE);
+	check(SL_RESULT_SUCCESS == result);
+
+	// get the engine interface, which is needed in order to create other objects
+	result = (*SL_EngineObject)->GetInterface(SL_EngineObject, SL_IID_ENGINE, &SL_EngineEngine);
+	check(SL_RESULT_SUCCESS == result);
+
+	// create output mix, with environmental reverb specified as a non-required interface
+	result = (*SL_EngineEngine)->CreateOutputMix(SL_EngineEngine, &SL_OutputMixObject, 0, NULL, NULL);
+	check(SL_RESULT_SUCCESS == result);
+
+	// realize the output mix
+	result = (*SL_OutputMixObject)->Realize(SL_OutputMixObject, SL_BOOLEAN_FALSE);
+	check(SL_RESULT_SUCCESS == result);
+
+	UE_LOG(LogAndroidAudio, Warning, TEXT("OpenSLES Initialized"));
+
+	// Initialize sources
+	const int32 MaxSoundSources = GetMaxSources();
+	for (int32 i = 0; i < MaxSoundSources; i++)
 	{
-		FSLESSoundSource* Source = new FSLESSoundSource( this );		
-		Sources.Add( Source );
-		FreeSources.Add( Source );
+		FSLESSoundSource* Source = new FSLESSoundSource(this);
+		Sources.Add(Source);
+		FreeSources.Add(Source);
 	}
-	
-	if( Sources.Num() < 1 )
-	{
-		UE_LOG( LogAndroidAudio,  Warning, TEXT( "OpenSLAudio: couldn't allocate any sources" ) );
-		return false;
-	}
-	
-	// Update MaxChannels in case we couldn't create enough sources.
-	MaxChannels = Sources.Num();
-	UE_LOG( LogAndroidAudio, Warning, TEXT( "OpenSLAudioDevice: Allocated %i sources" ), MaxChannels );
-	
-	// Set up a default (nop) effects manager 
-	Effects = new FAudioEffectsManager( this );
-	
+	UE_LOG(LogAndroidAudio, Warning, TEXT("OpenSLAudioDevice: Allocated %i sources"), MaxSoundSources);
+
+	// Set up a default (nop) effects manager
+	Effects = new FAudioEffectsManager(this);
+
 	return true;
 }
 
@@ -177,6 +161,11 @@ bool FSLESAudioDevice::HasCompressedAudioInfoClass(USoundWave* SoundWave)
 
 class ICompressedAudioInfo* FSLESAudioDevice::CreateCompressedAudioInfo(USoundWave* SoundWave)
 {
+	if (SoundWave->IsSeekableStreaming())
+	{
+		return new FADPCMAudioInfo();
+	}
+
 #if WITH_OGGVORBIS
 	static FName NAME_OGG(TEXT("OGG"));
 	if (SoundWave->bStreaming || SoundWave->HasCompressedData(NAME_OGG))
@@ -193,6 +182,11 @@ class ICompressedAudioInfo* FSLESAudioDevice::CreateCompressedAudioInfo(USoundWa
 	return nullptr;
 }
 
+FAudioPlatformSettings FSLESAudioDevice::GetPlatformSettings() const
+{
+	return FAudioPlatformSettings::GetPlatformSettings(FPlatformProperties::GetRuntimeSettingsClassName());
+}
+
 /** Check if any background music or sound is playing through the audio device */
 bool FSLESAudioDevice::IsExernalBackgroundSoundActive()
 {
@@ -203,4 +197,28 @@ bool FSLESAudioDevice::IsExernalBackgroundSoundActive()
 	return false;
 #endif
 
+}
+
+FAndroidSoundBufferNotification& FAndroidSoundBufferNotification::Get()
+{
+	static FAndroidSoundBufferNotification Instance;
+	return Instance;
+}
+
+FDelegateHandle FAndroidSoundBufferNotification::AddDelegate(const FOnAndroidSoundBufferEnqueued::FDelegate& InNewDelegate)
+{
+	FScopeLock Lock(&DelegateLock);
+	return InternalDelegate.Add(InNewDelegate);
+}
+
+void FAndroidSoundBufferNotification::RemoveDelegate(const FDelegateHandle& Handle)
+{
+	FScopeLock Lock(&DelegateLock);
+	InternalDelegate.Remove(Handle);
+}
+
+void FAndroidSoundBufferNotification::Broadcast(const void* AudioData, int32 DataSize, int32 SampleRate, int32 NumChannels)
+{
+	FScopeLock Lock(&DelegateLock);
+	InternalDelegate.Broadcast(AudioData, DataSize, SampleRate, NumChannels);
 }

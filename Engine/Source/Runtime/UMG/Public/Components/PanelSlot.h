@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -21,7 +21,11 @@ public:
 	UPROPERTY(Instanced)
 	class UWidget* Content;
 	
+#if WITH_EDITOR
 	bool IsDesignTime() const;
+#else
+	FORCEINLINE bool IsDesignTime() const { return false; }
+#endif
 
 	virtual void ReleaseSlateResources(bool bReleaseChildren) override;
 

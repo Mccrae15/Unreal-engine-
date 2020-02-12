@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -8,6 +8,7 @@
 #include "Math/Color.h"
 #include "Templates/Function.h"
 #include "MovieSceneCommonHelpers.h"
+#include "Evaluation/MovieSceneEvaluationTemplateInstance.h"
 
 #if WITH_EDITOR
 
@@ -27,8 +28,9 @@ struct FMovieSceneChannelMetaData
 	 * @param InName           The unique name of this channel within the section
 	 * @param InDisplayText    Text to display on the sequencer node tree
 	 * @param InGroup          (Optional) When not empty, specifies a name to group channels by
+	 * @param bInEnabled        (Optional) When true the channel is enabled, if false it is not.
 	 */
-	MOVIESCENE_API FMovieSceneChannelMetaData(FName InName, FText InDisplayText, FText InGroup = FText());
+	MOVIESCENE_API FMovieSceneChannelMetaData(FName InName, FText InDisplayText, FText InGroup = FText(), bool bInEnabled = true);
 
 	/*
 	 * Set the identifiers for this editor data
@@ -44,7 +46,7 @@ struct FMovieSceneChannelMetaData
 	/** True if this channel can be collapsed onto the top level track node */
 	uint8 bCanCollapseToTrack : 1;
 	/** A sort order for this channel. Channels are sorted by this order, then by name. Groups are sorted by the channel with the lowest sort order. */
-	uint8 SortOrder;
+	uint32 SortOrder;
 	/** This channel's unique name */
 	FName Name;
 	/** Text to display on this channel's key area node */
@@ -95,6 +97,9 @@ struct TMovieSceneExternalValue
 
 	/** Function to invoke to get the current value of the property of an object */
 	TFunction<TOptional<T>(UObject&, FTrackInstancePropertyBindings*)> OnGetExternalValue;
+
+	/** Optional Function To Get Current Value and Weight, needed for setting keys on blended sections */
+	TFunction<void (UObject*, UMovieSceneSection*,  FFrameNumber, FFrameRate, FMovieSceneRootEvaluationTemplateInstance&, T&, float&) > OnGetCurrentValueAndWeight;
 };
 
 

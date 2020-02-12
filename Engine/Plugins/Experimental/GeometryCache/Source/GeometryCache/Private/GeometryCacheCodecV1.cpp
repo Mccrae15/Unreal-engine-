@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "GeometryCacheCodecV1.h"
 #include "GeometryCacheMeshData.h"
@@ -123,13 +123,10 @@ void UGeometryCacheCodecV1::CodeFrame(const FGeometryCacheCodecEncodeArguments &
 
 FGeometryCacheCodecRenderStateV1::FGeometryCacheCodecRenderStateV1(const TArray<int32> &SetTopologyRanges) : FGeometryCacheCodecRenderStateBase(SetTopologyRanges)
 {
-	Decoder = new FCodecV1Decoder();
 }
 
 FGeometryCacheCodecRenderStateV1::~FGeometryCacheCodecRenderStateV1()
 {	
-	delete Decoder;
-	Decoder = nullptr;
 }
 
 DECLARE_CYCLE_STAT(TEXT("Deserialize Mesh"), STAT_DeserializeMeshV1, STATGROUP_GeometryCache);
@@ -153,7 +150,8 @@ bool FGeometryCacheCodecRenderStateV1::DecodeSingleFrame(FGeometryCacheCodecDeco
 
 	{
 		SCOPE_CYCLE_COUNTER(STAT_DeserializeMeshV1);
-		Decoder->DecodeFrameData(Ar, Args.OutMeshData);
+		FCodecV1Decoder Decoder;
+		Decoder.DecodeFrameData(Ar, Args.OutMeshData);
 	}
 	IGeometryCacheStreamingManager::Get().UnmapChunk(Args.Track.GetTrack(), Args.FrameIdentifier);
 	return true;

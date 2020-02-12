@@ -1,8 +1,9 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
 #include "RenderResource.h"
+#include "StaticMeshVertexData.h"
 
 struct FStaticMeshBuildVertex;
 
@@ -58,6 +59,8 @@ public:
 	void Serialize(FArchive& Ar, bool bNeedsCPUAccess);
 
 	void SerializeMetaData(FArchive& Ar);
+
+	void ClearMetaData();
 
 	/**
 	* Export the data to a string, used for editor Copy&Paste.
@@ -138,30 +141,31 @@ public:
 	FVertexBufferRHIRef CreateRHIBuffer_RenderThread();
 	FVertexBufferRHIRef CreateRHIBuffer_Async();
 
-	/** Set whether this buffer is managed by the streamer. Must be set before InitRHI is called */
-	void SetIsStreamed(bool bValue) { bStreamed = bValue; }
-
 	/** Similar to Init/ReleaseRHI but only update existing SRV so references to the SRV stays valid */
-	template <int32 MaxNumUpdates>
-	void InitRHIForStreaming(FVertexBufferRHIParamRef IntermediateBuffer, TRHIResourceUpdateBatcher<MaxNumUpdates>& Batcher)
+	template <uint32 MaxNumUpdates>
+	void InitRHIForStreaming(FRHIVertexBuffer* IntermediateBuffer, TRHIResourceUpdateBatcher<MaxNumUpdates>& Batcher)
 	{
-		check(!VertexBufferRHI);
-		if (IntermediateBuffer)
+		if (VertexBufferRHI && IntermediateBuffer)
 		{
-			check(ColorComponentsSRV);
-			VertexBufferRHI = IntermediateBuffer;
-			Batcher.QueueUpdateRequest(ColorComponentsSRV, VertexBufferRHI, 4, PF_R8G8B8A8);
+			Batcher.QueueUpdateRequest(VertexBufferRHI, IntermediateBuffer);
+			if (ColorComponentsSRV)
+			{
+				Batcher.QueueUpdateRequest(ColorComponentsSRV, VertexBufferRHI, 4, PF_R8G8B8A8);
+			}
 		}
 	}
 
-	template <int32 MaxNumUpdates>
+	template <uint32 MaxNumUpdates>
 	void ReleaseRHIForStreaming(TRHIResourceUpdateBatcher<MaxNumUpdates>& Batcher)
 	{
+		if (VertexBufferRHI)
+		{
+			Batcher.QueueUpdateRequest(VertexBufferRHI, nullptr);
+		}
 		if (ColorComponentsSRV)
 		{
 			Batcher.QueueUpdateRequest(ColorComponentsSRV, nullptr, 0, 0);
 		}
-		FVertexBuffer::ReleaseRHI();
 	}
 
 	// FRenderResource interface.
@@ -172,7 +176,7 @@ public:
 	ENGINE_API void BindColorVertexBuffer(const class FVertexFactory* VertexFactory, struct FStaticMeshDataType& StaticMeshData) const;
 	ENGINE_API static void BindDefaultColorVertexBuffer(const class FVertexFactory* VertexFactory, struct FStaticMeshDataType& StaticMeshData, NullBindStride BindStride);
 
-	FORCEINLINE const FShaderResourceViewRHIParamRef GetColorComponentsSRV() const
+	FORCEINLINE FRHIShaderResourceView* GetColorComponentsSRV() const
 	{
 		return ColorComponentsSRV;
 	}
@@ -199,8 +203,6 @@ private:
 	uint32 NumVertices;
 
 	bool NeedsCPUAccess = true;
-
-	bool bStreamed;
 
 	/** Allocates the vertex data storage type. */
 	void AllocateData(bool bNeedsCPUAccess = true);

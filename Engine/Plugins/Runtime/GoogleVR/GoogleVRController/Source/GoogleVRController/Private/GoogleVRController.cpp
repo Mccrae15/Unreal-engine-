@@ -30,6 +30,8 @@ DEFINE_LOG_CATEGORY_STATIC(LogGoogleVRController, Log, All);
 #include "GoogleVRInstantPreviewGetServer.h"
 #endif  // GOOGLEVRCONTROLLER_SUPPORTED_INSTANT_PREVIEW_PLATFORMS
 
+DEFINE_LOG_CATEGORY(LogGoogleVRMotionController);
+
 #if GOOGLEVRCONTROLLER_SUPPORTED_EMULATOR_PLATFORMS
 #define CONTROLLER_EVENT_FORWARDED_PORT 7003 //Change this port number if it is already taken.
 #define ADB_FORWARD_RETRY_TIME 5.0 //5 seconds
@@ -73,12 +75,13 @@ class FGoogleVRControllerPlugin : public IGoogleVRControllerPlugin
 		JNIEnv* jenv = FAndroidApplication::GetJavaEnv();
 		static jmethodID Method = FJavaWrapper::FindMethod(jenv, FJavaWrapper::GameActivityClassID, "getApplicationContext", "()Landroid/content/Context;", false);
 		static jobject ApplicationContext = FJavaWrapper::CallObjectMethod(jenv, FJavaWrapper::GameActivityThis, Method);
-		jclass MainClass = FAndroidApplication::FindJavaClass("com/epicgames/ue4/GameActivity");
+		jclass MainClass = FAndroidApplication::FindJavaClassGlobalRef("com/epicgames/ue4/GameActivity");
 		jclass classClass = jenv->FindClass("java/lang/Class");
 		jmethodID getClassLoaderMethod = jenv->GetMethodID(classClass, "getClassLoader", "()Ljava/lang/ClassLoader;");
-		jobject classLoader = jenv->CallObjectMethod(MainClass, getClassLoaderMethod);
+		auto classLoader = NewScopedJavaObject(jenv, jenv->CallObjectMethod(MainClass, getClassLoaderMethod));
 
-		success = pController->Init(jenv, ApplicationContext, classLoader, options, GVRAPI);
+		success = pController->Init(jenv, ApplicationContext, *classLoader, options, GVRAPI);
+		jenv->DeleteGlobalRef(MainClass);
 #else
 #if GOOGLEVRCONTROLLER_SUPPORTED_EMULATOR_PLATFORMS
 		success = static_cast<gvr::ControllerEmulatorApi*>(pController)->InitEmulator(options, CONTROLLER_EVENT_FORWARDED_PORT);
@@ -222,6 +225,15 @@ FGoogleVRController::FGoogleVRController(const TSharedRef< FGenericApplicationMe
 
 	Buttons[(int32)EControllerHand::Left][EGoogleVRControllerButton::TouchPadTouch] = GoogleVRControllerKeyNames::Touch0;
 	Buttons[(int32)EControllerHand::Right][EGoogleVRControllerButton::TouchPadTouch] = GoogleVRControllerKeyNames::Touch0;
+
+	Buttons[(int32)EControllerHand::Left][EGoogleVRControllerButton::SelectClick] = EKeys::Daydream_Left_Select_Click.GetFName();
+	Buttons[(int32)EControllerHand::Right][EGoogleVRControllerButton::SelectClick] = EKeys::Daydream_Right_Select_Click.GetFName();
+
+	Buttons[(int32)EControllerHand::Left][EGoogleVRControllerButton::TrackpadClick] = EKeys::Daydream_Left_Trackpad_Click.GetFName();
+	Buttons[(int32)EControllerHand::Right][EGoogleVRControllerButton::TrackpadClick] = EKeys::Daydream_Right_Trackpad_Click.GetFName();
+
+	Buttons[(int32)EControllerHand::Left][EGoogleVRControllerButton::TrackpadTouch] = EKeys::Daydream_Left_Trackpad_Touch.GetFName();
+	Buttons[(int32)EControllerHand::Right][EGoogleVRControllerButton::TrackpadTouch] = EKeys::Daydream_Right_Trackpad_Touch.GetFName();
 
 	// Register callbacks for pause and resume
 	FCoreDelegates::ApplicationWillEnterBackgroundDelegate.AddRaw(this, &FGoogleVRController::ApplicationPauseDelegate);
@@ -453,10 +465,12 @@ void FGoogleVRController::ProcessControllerButtons(int32 ControllerStateIndex)
 			if (CachedControllerState.GetButtonState(gvr::ControllerButton::GVR_CONTROLLER_BUTTON_CLICK))
 			{
 				CurrentButtonStates[EGoogleVRControllerButton::TouchPadPress] = true;
+				CurrentButtonStates[EGoogleVRControllerButton::TrackpadClick] = true;
 			}
 			else if (CachedControllerState.GetButtonUp(gvr::ControllerButton::GVR_CONTROLLER_BUTTON_CLICK))
 			{
 				CurrentButtonStates[EGoogleVRControllerButton::TouchPadPress] = false;
+				CurrentButtonStates[EGoogleVRControllerButton::TrackpadClick] = false;
 			}
 
 			if (CachedControllerState.GetButtonState(gvr::ControllerButton::GVR_CONTROLLER_BUTTON_HOME))
@@ -473,10 +487,12 @@ void FGoogleVRController::ProcessControllerButtons(int32 ControllerStateIndex)
 			if (CachedControllerState.GetButtonState(gvr::ControllerButton::GVR_CONTROLLER_BUTTON_APP))
 			{
 				CurrentButtonStates[EGoogleVRControllerButton::ApplicationMenu] = true;
+				CurrentButtonStates[EGoogleVRControllerButton::SelectClick] = true;
 			}
 			else if (CachedControllerState.GetButtonUp(gvr::ControllerButton::GVR_CONTROLLER_BUTTON_APP))
 			{
 				CurrentButtonStates[EGoogleVRControllerButton::ApplicationMenu] = false;
+				CurrentButtonStates[EGoogleVRControllerButton::SelectClick] = false;
 			}
 
 			if (CachedControllerState.GetButtonState(gvr::ControllerButton::GVR_CONTROLLER_BUTTON_RESERVED0))
@@ -500,6 +516,7 @@ void FGoogleVRController::ProcessControllerButtons(int32 ControllerStateIndex)
 			// Process touches and analog information
 			// OnDown
 			CurrentButtonStates[EGoogleVRControllerButton::TouchPadTouch] = CachedControllerState.IsTouching();
+			CurrentButtonStates[EGoogleVRControllerButton::TrackpadTouch] = CachedControllerState.IsTouching();
 
 			// The controller's touch positions are in [0,1]^2 coordinate space, we want to be in [-1,1]^2, so translate the touch positions.
 			TranslatedLocation = FVector2D((CachedControllerState.GetTouchPos().x * 2) - 1, (CachedControllerState.GetTouchPos().y * 2) - 1);
@@ -538,13 +555,17 @@ void FGoogleVRController::ProcessControllerButtons(int32 ControllerStateIndex)
 
 	if (Hand == EControllerHand::Left)
 	{
-		MessageHandler->OnControllerAnalog( FGamepadKeyNames::MotionController_Left_Thumbstick_X, 0, TranslatedLocation.X);
+		MessageHandler->OnControllerAnalog(FGamepadKeyNames::MotionController_Left_Thumbstick_X, 0, TranslatedLocation.X);
 		MessageHandler->OnControllerAnalog(FGamepadKeyNames::MotionController_Left_Thumbstick_Y, 0, TranslatedLocation.Y);
+		MessageHandler->OnControllerAnalog(EKeys::Daydream_Left_Trackpad_X.GetFName(), 0, TranslatedLocation.X);
+		MessageHandler->OnControllerAnalog(EKeys::Daydream_Left_Trackpad_Y.GetFName(), 0, TranslatedLocation.Y);
 	}
 	if (Hand == EControllerHand::Right)
 	{
 		MessageHandler->OnControllerAnalog(FGamepadKeyNames::MotionController_Right_Thumbstick_X, 0, TranslatedLocation.X);
 		MessageHandler->OnControllerAnalog(FGamepadKeyNames::MotionController_Right_Thumbstick_Y, 0, TranslatedLocation.Y);
+		MessageHandler->OnControllerAnalog(EKeys::Daydream_Right_Trackpad_X.GetFName(), 0, TranslatedLocation.X);
+		MessageHandler->OnControllerAnalog(EKeys::Daydream_Right_Trackpad_Y.GetFName(), 0, TranslatedLocation.Y);
 	}
 
 	// Process buttons

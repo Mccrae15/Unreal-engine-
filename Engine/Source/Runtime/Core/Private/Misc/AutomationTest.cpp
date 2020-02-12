@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "Misc/AutomationTest.h"
 #include "HAL/PlatformStackWalk.h"
@@ -12,7 +12,8 @@
 #include "Modules/ModuleManager.h"
 #include "Misc/OutputDeviceRedirector.h"
 #include "Internationalization/Regex.h"
-
+#include <inttypes.h>
+#include "Misc/App.h"
 
 DEFINE_LOG_CATEGORY_STATIC(LogAutomationTest, Warning, All);
 
@@ -29,28 +30,29 @@ void FAutomationTestFramework::FAutomationTestFeedbackContext::Serialize( const 
 	// Ensure there's a valid unit test associated with the context
 	if ( CurTest )
 	{
-		// Warnings
-		if ( Verbosity == ELogVerbosity::Warning )
+		bool CaptureLog = !CurTest->SuppressLogs() 
+					&& (Verbosity == ELogVerbosity::Error || Verbosity == ELogVerbosity::Warning || Verbosity == ELogVerbosity::Display);
+
+		if (CaptureLog)
 		{
-			// If warnings should be treated as errors, log the warnings as such in the current unit test
-			if ( TreatWarningsAsErrors )
+			bool IsError = (Verbosity == ELogVerbosity::Error && CurTest->TreatLogErrorsAsErrors()) || (Verbosity == ELogVerbosity::Warning && CurTest->TreatLogWarningsAsErrors());
+			bool IsWarning = (Verbosity == ELogVerbosity::Warning || Verbosity == ELogVerbosity::Error) && !IsError;
+			
+			// Errors
+			if (IsError)
 			{
 				CurTest->AddError(FString(V), STACK_OFFSET);
 			}
-			else
+			// Warnings
+			else if (IsWarning)
 			{
 				CurTest->AddWarning(FString(V), STACK_OFFSET);
 			}
-		}
-		// Errors
-		else if ( Verbosity == ELogVerbosity::Error )
-		{
-			CurTest->AddError(FString(V), STACK_OFFSET);
-		}
-		// Display
-		if ( Verbosity == ELogVerbosity::Display )
-		{
-			CurTest->AddInfo(FString(V), STACK_OFFSET);
+			// Display
+			else
+			{
+				CurTest->AddInfo(FString(V), STACK_OFFSET);
+			}
 		}
 		// Log...etc
 		else
@@ -65,7 +67,7 @@ void FAutomationTestFramework::FAutomationTestFeedbackContext::Serialize( const 
 			if (LogString.StartsWith(*AnalyticsString))
 			{
 				//Remove "analytics" from the string
-				LogString = LogString.Right(LogString.Len() - (AnalyticsString.Len() + 1));
+				LogString.RightInline(LogString.Len() - (AnalyticsString.Len() + 1), false);
 
 				CurTest->AddAnalyticsItem(LogString);
 			}
@@ -162,7 +164,7 @@ bool FAutomationTestFramework::RunSmokeTests()
 			TMap<FString, FAutomationTestExecutionInfo> OutExecutionInfoMap;
 
 			// Run each valid test
-			FScopedSlowTask SlowTask(TestInfo.Num());
+			FScopedSlowTask SlowTask((float)TestInfo.Num());
 
 			// We disable capturing the stack when running smoke tests, it adds too much overhead to do it at startup.
 			FAutomationTestFramework::Get().SetCaptureStack(false);
@@ -395,6 +397,121 @@ void FAutomationTestFramework::LoadTestModules( )
 	}
 }
 
+void FAutomationTestFramework::BuildTestBlacklistFromConfig()
+{
+	TestBlacklist.Empty();
+	if (GConfig)
+	{
+
+		const FString CommandLine = FCommandLine::Get();
+
+		for (const TPair<FString, FConfigFile>& Config : *GConfig)
+		{
+			FConfigSection* BlacklistSection = GConfig->GetSectionPrivate(TEXT("AutomationTestBlacklist"), false, true, Config.Key);
+			if (BlacklistSection)
+			{
+				// Parse all blacklist definitions of the format "BlacklistTest=(Map=/Game/Tests/MapName, Test=TestName, Reason="Foo")"
+				for (FConfigSection::TIterator Section(*BlacklistSection); Section; ++Section)
+				{
+					if (Section.Key() == TEXT("BlacklistTest"))
+					{
+						FString BlacklistValue = Section.Value().GetValue();
+						FString Map, Test, Reason, RHIs, Warn, ListName;
+						bool bSuccess = false;
+
+						if (FParse::Value(*BlacklistValue, TEXT("Test="), Test, true))
+						{
+							ListName = FString(Test);
+							FParse::Value(*BlacklistValue, TEXT("Map="), Map, true);
+							FParse::Value(*BlacklistValue, TEXT("Reason="), Reason);
+							FParse::Value(*BlacklistValue, TEXT("RHIs="), RHIs);
+							FParse::Value(*BlacklistValue, TEXT("Warn="), Warn);
+
+							if (Map.IsEmpty())
+							{
+								// Test with no Map property
+								bSuccess = true;
+							}
+							else if (Map.StartsWith(TEXT("/")))
+							{
+								// Account for Functional Tests based on Map - historically blacklisting was made only for functional tests
+								ListName = TEXT("Project.Functional Tests.") + Map + TEXT(".") + ListName;
+								bSuccess = true;
+							}
+
+						}
+
+						if (bSuccess)
+						{
+							if ((!Map.IsEmpty() && CommandLine.Contains(Map)) || CommandLine.Contains(Test))
+							{
+								UE_LOG(LogAutomationTest, Warning, TEXT("Test '%s' is blacklisted but allowing due to command line."), *BlacklistValue);
+							}
+							else
+							{
+								ListName.RemoveSpacesInline();
+								FBlacklistEntry& Entry = TestBlacklist.Add(ListName);
+								Entry.Map = Map;
+								Entry.Test = Test;
+								Entry.Reason = Reason;
+								if (!RHIs.IsEmpty())
+								{
+									RHIs.ToLower().ParseIntoArray(Entry.RHIs, TEXT(","), true);
+									for (FString& RHI : Entry.RHIs)
+									{
+										RHI.TrimStartAndEndInline();
+									}
+								}
+								Entry.bWarn = Warn.ToBool();
+							}
+						}
+						else
+						{
+							UE_LOG(LogAutomationTest, Error, TEXT("Invalid blacklisted test definition: '%s'"), *BlacklistValue);
+						}
+					}
+				}
+			}
+		}
+	}
+
+	if (TestBlacklist.Num() > 0)
+	{
+		UE_LOG(LogAutomationTest, Log, TEXT("Automated Test Blacklist:"));
+		for (auto& KV : TestBlacklist)
+		{
+			UE_LOG(LogAutomationTest, Log, TEXT("\tTest: %s"), *KV.Key);
+		}
+	}
+}
+
+bool FAutomationTestFramework::IsBlacklisted(const FString& TestName, FString* OutReason, bool *OutWarn) const
+{
+	const FString ListName = TestName.Replace(TEXT(" "), TEXT(""));
+	const FBlacklistEntry* Entry = TestBlacklist.Find(ListName);
+
+	if (Entry)
+	{
+		if (Entry->RHIs.Num() != 0 && !Entry->RHIs.Contains(FApp::GetGraphicsRHI().ToLower()))
+		{
+			return false;
+		}
+
+		if (OutReason != nullptr)
+		{
+			*OutReason = Entry->Reason;
+		}
+
+		if (OutWarn != nullptr)
+		{
+			*OutWarn = Entry->bWarn;
+		}
+	}
+
+	return Entry != nullptr;
+}
+
+
 void FAutomationTestFramework::GetValidTestNames( TArray<FAutomationTestInfo>& TestInfo ) const
 {
 	TestInfo.Empty();
@@ -460,7 +577,30 @@ void FAutomationTestFramework::GetValidTestNames( TArray<FAutomationTestInfo>& T
 		
 		if (bEnabled && bPassesApplicationRequirements && bPassesFeatureRequirements && bPassesFilterRequirement)
 		{
-			CurTest->GenerateTestNames(TestInfo);
+			TArray<FAutomationTestInfo> TestsToAdd;
+			CurTest->GenerateTestNames(TestsToAdd);
+			for (FAutomationTestInfo& Test : TestsToAdd)
+			{
+				FString BlacklistReason;
+				bool bWarn(false);
+				FString TestName = Test.GetDisplayName();
+				if (!IsBlacklisted(TestName.Replace(TEXT(" "), TEXT("")), &BlacklistReason, &bWarn))
+				{
+					TestInfo.Add(MoveTemp(Test));
+				}
+				else
+				{
+					if (bWarn)
+					{
+						UE_LOG(LogAutomationTest, Warning, TEXT("Test '%s' is blacklisted. %s"), *TestName, *BlacklistReason);
+					}
+					else
+					{
+						UE_LOG(LogAutomationTest, Display, TEXT("Test '%s' is blacklisted. %s"), *TestName, *BlacklistReason);
+					}
+				}
+			}
+			
 		}
 
 		// Make sure people are not writing complex tests that take forever to return the names of the tests
@@ -586,6 +726,8 @@ void FAutomationTestFramework::DumpAutomationTestExecutionInfo( const TMap<FStri
 
 void FAutomationTestFramework::InternalStartTest( const FString& InTestToRun )
 {
+	Parameters.Empty();
+
 	FString TestName;
 	if (!InTestToRun.Split(TEXT(" "), &TestName, &Parameters, ESearchCase::CaseSensitive))
 	{
@@ -611,6 +753,8 @@ void FAutomationTestFramework::InternalStartTest( const FString& InTestToRun )
 		{
 			UE_LOG(LogAutomationTest, Log, TEXT("%s %s is starting at %f"), *CurrentTest->GetBeautifiedTestName(), *Parameters, StartTime);
 		}
+
+		CurrentTest->SetTestContext(Parameters);
 
 		// Run the test!
 		bTestSuccessful = CurrentTest->RunTest(Parameters);
@@ -673,16 +817,6 @@ void FAutomationTestFramework::AddAnalyticsItemToCurrentTest( const FString& Ana
 	}
 }
 
-bool FAutomationTestFramework::GetTreatWarningsAsErrors() const
-{
-	return AutomationTestFeedbackContext.TreatWarningsAsErrors;
-}
-
-void FAutomationTestFramework::SetTreatWarningsAsErrors(TOptional<bool> bTreatWarningsAsErrors)
-{
-	AutomationTestFeedbackContext.TreatWarningsAsErrors = bTreatWarningsAsErrors.IsSet() ? bTreatWarningsAsErrors.GetValue() : GWarn->TreatWarningsAsErrors;
-}
-
 void FAutomationTestFramework::NotifyScreenshotComparisonComplete(const FAutomationScreenshotCompareResults& CompareResults)
 {
 	OnScreenshotCompared.Broadcast(CompareResults);
@@ -724,22 +858,23 @@ FString FAutomationExecutionEntry::ToString() const
 {
 	FString ComplexString;
 
+	ComplexString = Event.Message;
+	
 	if ( !Filename.IsEmpty() && LineNumber > 0 )
 	{
+		ComplexString += TEXT(" [");
 		ComplexString += Filename;
 		ComplexString += TEXT("(");
 		ComplexString += FString::FromInt(LineNumber);
-		ComplexString += TEXT("): ");
+		ComplexString += TEXT(")]");
 	}
 
 	if ( !Event.Context.IsEmpty() )
 	{
-		ComplexString += TEXT("[");
+		ComplexString += TEXT(" [");
 		ComplexString += Event.Context;
 		ComplexString += TEXT("] ");
 	}
-
-	ComplexString += Event.Message;
 
 	return ComplexString;
 }
@@ -876,15 +1011,23 @@ void FAutomationTestBase::ClearExecutionInfo()
 
 void FAutomationTestBase::AddError(const FString& InError, int32 StackOffset)
 {
-	if( !bSuppressLogs && !IsExpectedError(InError))
+	if( !IsExpectedError(InError))
 	{
 		ExecutionInfo.AddEvent(FAutomationEvent(EAutomationEventType::Error, InError), StackOffset + 1);
 	}
 }
 
+void FAutomationTestBase::AddErrorIfFalse(bool bCondition, const FString& InError, int32 StackOffset)
+{
+	if (!bCondition)
+	{
+		AddError(InError, StackOffset);
+	}
+}
+
 void FAutomationTestBase::AddErrorS(const FString& InError, const FString& InFilename, int32 InLineNumber)
 {
-	if ( !bSuppressLogs && !IsExpectedError(InError))
+	if ( !IsExpectedError(InError))
 	{
 		//ExecutionInfo.AddEvent(FAutomationEvent(EAutomationEventType::Error, InError, ExecutionInfo.GetContext(), InFilename, InLineNumber));
 	}
@@ -892,7 +1035,7 @@ void FAutomationTestBase::AddErrorS(const FString& InError, const FString& InFil
 
 void FAutomationTestBase::AddWarningS(const FString& InWarning, const FString& InFilename, int32 InLineNumber)
 {
-	if ( !bSuppressLogs && !IsExpectedError(InWarning))
+	if ( !IsExpectedError(InWarning))
 	{
 		//ExecutionInfo.AddEvent(FAutomationEvent(EAutomationEventType::Warning, InWarning, ExecutionInfo.GetContext(), InFilename, InLineNumber));
 	}
@@ -900,7 +1043,7 @@ void FAutomationTestBase::AddWarningS(const FString& InWarning, const FString& I
 
 void FAutomationTestBase::AddWarning( const FString& InWarning, int32 StackOffset )
 {
-	if ( !bSuppressLogs && !IsExpectedError(InWarning))
+	if ( !IsExpectedError(InWarning))
 	{
 		ExecutionInfo.AddEvent(FAutomationEvent(EAutomationEventType::Warning, InWarning), StackOffset + 1);
 	}
@@ -908,10 +1051,7 @@ void FAutomationTestBase::AddWarning( const FString& InWarning, int32 StackOffse
 
 void FAutomationTestBase::AddInfo( const FString& InLogItem, int32 StackOffset )
 {
-	if ( !bSuppressLogs )
-	{
-		ExecutionInfo.AddEvent(FAutomationEvent(EAutomationEventType::Info, InLogItem), StackOffset + 1);
-	}
+	ExecutionInfo.AddEvent(FAutomationEvent(EAutomationEventType::Info, InLogItem), StackOffset + 1);
 }
 
 void FAutomationTestBase::AddAnalyticsItem(const FString& InAnalyticsItem)
@@ -921,10 +1061,7 @@ void FAutomationTestBase::AddAnalyticsItem(const FString& InAnalyticsItem)
 
 void FAutomationTestBase::AddEvent(const FAutomationEvent& InEvent, int32 StackOffset)
 {
-	if (!bSuppressLogs)
-	{
-		ExecutionInfo.AddEvent(InEvent, StackOffset + 1);
-	}
+	ExecutionInfo.AddEvent(InEvent, StackOffset + 1);
 }
 
 bool FAutomationTestBase::HasAnyErrors() const
@@ -1062,76 +1199,115 @@ void FAutomationTestBase::GenerateTestNames(TArray<FAutomationTestInfo>& TestInf
 
 // --------------------------------------------------------------------------------------
 
-void FAutomationTestBase::TestEqual(const TCHAR* What, const int32 Actual, const int32 Expected)
+bool FAutomationTestBase::TestEqual(const TCHAR* What, const int32 Actual, const int32 Expected)
 {
 	if (Actual != Expected)
 	{
 		AddError(FString::Printf(TEXT("Expected '%s' to be %d, but it was %d."), What, Expected, Actual), 1);
+		return false;
 	}
+	return true;
 }
 
-void FAutomationTestBase::TestEqual(const TCHAR* What, const float Actual, const float Expected, float Tolerance)
+
+bool FAutomationTestBase::TestEqual(const TCHAR* What, const int64 Actual, const int64 Expected)
+{
+	if (Actual != Expected)
+	{
+		AddError(FString::Printf(TEXT("Expected '%s' to be %" PRId64 ", but it was %" PRId64 "."), What, Expected, Actual), 1);
+		return false;
+	}
+	return true;
+}
+
+bool FAutomationTestBase::TestEqual(const TCHAR* What, const float Actual, const float Expected, float Tolerance)
 {
 	if (!FMath::IsNearlyEqual(Actual, Expected, Tolerance))
 	{
 		AddError(FString::Printf(TEXT("Expected '%s' to be %f, but it was %f within tolerance %f."), What, Expected, Actual, Tolerance), 1);
+		return false;
 	}
+	return true;
 }
 
-void FAutomationTestBase::TestEqual(const TCHAR* What, const FVector Actual, const FVector Expected, float Tolerance)
+bool FAutomationTestBase::TestEqual(const TCHAR* What, const double Actual, const double Expected, double Tolerance)
+{
+	if (!FMath::IsNearlyEqual(Actual, Expected, Tolerance))
+	{
+		AddError(FString::Printf(TEXT("Expected '%s' to be %f, but it was %f within tolerance %f."), What, Expected, Actual, Tolerance), 1);
+		return false;
+	}
+	return true;
+}
+
+bool FAutomationTestBase::TestEqual(const TCHAR* What, const FVector Actual, const FVector Expected, float Tolerance)
 {
 	if (!Expected.Equals(Actual, Tolerance))
 	{
 		AddError(FString::Printf(TEXT("Expected '%s' to be %s, but it was %s within tolerance %f."), What, *Expected.ToString(), *Actual.ToString(), Tolerance), 1);
+		return false;
 	}
+	return true;
 }
 
-void FAutomationTestBase::TestEqual(const TCHAR* What, const FColor Actual, const FColor Expected)
+bool FAutomationTestBase::TestEqual(const TCHAR* What, const FColor Actual, const FColor Expected)
 {
 	if (Expected != Actual)
 	{
 		AddError(FString::Printf(TEXT("Expected '%s' to be %s, but it was %s."), What, *Expected.ToString(), *Actual.ToString()), 1);
+		return false;
 	}
+	return true;
 }
 
-void FAutomationTestBase::TestEqual(const TCHAR* What, const TCHAR* Actual, const TCHAR* Expected)
+bool FAutomationTestBase::TestEqual(const TCHAR* What, const TCHAR* Actual, const TCHAR* Expected)
 {
 	if (FCString::Strcmp(Actual, Expected) != 0)
 	{
 		AddError(FString::Printf(TEXT("Expected '%s' to be %s, but it was %s."), What, Expected, Actual), 1);
+		return false;
 	}
+	return true;
 }
 
-void FAutomationTestBase::TestEqualInsensitive(const TCHAR* What, const TCHAR* Actual, const TCHAR* Expected)
+bool FAutomationTestBase::TestEqualInsensitive(const TCHAR* What, const TCHAR* Actual, const TCHAR* Expected)
 {
 	if (FCString::Stricmp(Actual, Expected) != 0)
 	{
 		AddError(FString::Printf(TEXT("Expected '%s' to be %s, but it was %s."), What, Expected, Actual), 1);
+		return false;
 	}
+	return true;
 }
 
-void FAutomationTestBase::TestFalse(const TCHAR* What, bool Value)
+bool FAutomationTestBase::TestFalse(const TCHAR* What, bool Value)
 {
 	if (Value)
 	{
 		AddError(FString::Printf(TEXT("Expected '%s' to be false."), What), 1);
+		return false;
 	}
+	return true;
 }
 
-void FAutomationTestBase::TestTrue(const TCHAR* What, bool Value)
+bool FAutomationTestBase::TestTrue(const TCHAR* What, bool Value)
 {
 	if (!Value)
 	{
 		AddError(FString::Printf(TEXT("Expected '%s' to be true."), What), 1);
+		return false;
 	}
+	return true;
 }
 
-void FAutomationTestBase::TestNull(const TCHAR* What, const void* Pointer)
+bool FAutomationTestBase::TestNull(const TCHAR* What, const void* Pointer)
 {
 	if ( Pointer != nullptr )
 	{
-		AddError(FString::Printf(TEXT("Expected '%s' to be null."), *What), 1);
+		AddError(FString::Printf(TEXT("Expected '%s' to be null."), What), 1);
+		return false;
 	}
+	return true;
 }
 
 bool FAutomationTestBase::IsExpectedError(const FString& Error)

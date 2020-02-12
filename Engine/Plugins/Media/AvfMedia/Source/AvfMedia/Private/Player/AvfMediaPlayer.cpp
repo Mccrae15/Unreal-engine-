@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "AvfMediaPlayer.h"
 #include "AvfMediaPrivate.h"
@@ -142,7 +142,7 @@
 	[loadingRequest retain];
 	
 	// Allow this function to return quickly so the resource loader knows the data is probabky coming and doesn't error
-	Async<void>(EAsyncExecution::ThreadPool, [self, loadingRequest]()
+	Async(EAsyncExecution::ThreadPool, [self, loadingRequest]()
 	{
 		FScopeLock ScopeLock(&CriticalSection);
 		
@@ -321,6 +321,9 @@ FAvfMediaPlayer::~FAvfMediaPlayer()
 {
 	Close();
 
+	delete Tracks;
+	Tracks = nullptr;
+	
 	delete Samples;
 	Samples = nullptr;
 }
@@ -740,14 +743,11 @@ bool FAvfMediaPlayer::Open(const FString& Url, const IMediaOptions* /*Options*/)
 
 	[[NSNotificationCenter defaultCenter] addObserver:MediaHelper selector:@selector(playerItemPlaybackEndReached:) name:AVPlayerItemDidPlayToEndTimeNotification object:PlayerItem];
 	[PlayerItem addObserver:MediaHelper forKeyPath:@"status" options:0 context:PlayerItem];
-
-	[MediaPlayer replaceCurrentItemWithPlayerItem : PlayerItem];
-	PRAGMA_DISABLE_DEPRECATION_WARNINGS
-	[[MediaPlayer currentItem] seekToTime:kCMTimeZero];
-	PRAGMA_ENABLE_DEPRECATION_WARNINGS
-
+	
 	MediaPlayer.rate = 0.0;
 	CurrentTime = FTimespan::Zero();
+
+	[MediaPlayer replaceCurrentItemWithPlayerItem : PlayerItem];
 
 	if (!EnteredForegroundHandle.IsValid())
     {
@@ -815,13 +815,10 @@ void FAvfMediaPlayer::TickInput(FTimespan DeltaTime, FTimespan /*Timecode*/)
 					{
 						FTimespan SyncTime = FTimespan::MinValue();
 #if AUDIO_PLAYBACK_VIA_ENGINE
-						if(Tracks->GetSelectedTrack(EMediaTrackType::Audio) != INDEX_NONE)
+						// There is no audio in reverse - can't use as sync point - same issue as if no audio track video
+						if(Tracks->GetSelectedTrack(EMediaTrackType::Audio) != INDEX_NONE && CurrentRate >= 0.f)
 						{
 							SyncTime = GetAudioTimeSync();
-						}
-						else if(Tracks->GetSelectedTrack(EMediaTrackType::Video) != INDEX_NONE)
-						{
-							SyncTime = GetVideoTimeSync();
 						}
 						else /* Default Use AVPlayer time*/
 #endif
@@ -837,7 +834,8 @@ void FAvfMediaPlayer::TickInput(FTimespan DeltaTime, FTimespan /*Timecode*/)
 					}
 					else
 					{
-						CurrentTime += DeltaTime * CurrentRate;
+						// On certain movies (short ones it seems) the AVPlayerItemDidPlayToEndTimeNotification can be delayed - clamp the time to the duration
+						CurrentTime = FMath::Clamp(CurrentTime + (DeltaTime * CurrentRate), FTimespan::Zero(), Duration);
 					}
 				}
 				break;

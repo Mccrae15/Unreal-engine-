@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "Widgets/Text/SRichTextBlock.h"
 
@@ -36,10 +36,10 @@ void SRichTextBlock::Construct( const FArguments& InArgs )
 		TSharedPtr<IRichTextMarkupParser> Parser = InArgs._Parser;
 		if ( !Parser.IsValid() )
 		{
-			Parser = FDefaultRichTextMarkupParser::Create();
+			Parser = FDefaultRichTextMarkupParser::GetStaticInstance();
 		}
 
-		TSharedPtr<FRichTextLayoutMarshaller> Marshaller = InArgs._Marshaller;
+		Marshaller = InArgs._Marshaller;
 		if (!Marshaller.IsValid())
 		{
 			Marshaller = FRichTextLayoutMarshaller::Create(Parser, nullptr, InArgs._Decorators, InArgs._DecoratorStyleSet);
@@ -57,15 +57,23 @@ void SRichTextBlock::Construct( const FArguments& InArgs )
 	SetCanTick(false);
 }
 
-int32 SRichTextBlock::OnPaint( const FPaintArgs& Args, const FGeometry& AllottedGeometry, const FSlateRect& MyCullingRect, FSlateWindowElementList& OutDrawElements, int32 LayerId, const FWidgetStyle& InWidgetStyle, bool bParentEnabled ) const
+int32 SRichTextBlock::OnPaint(const FPaintArgs& Args, const FGeometry& AllottedGeometry, const FSlateRect& MyCullingRect, FSlateWindowElementList& OutDrawElements, int32 LayerId, const FWidgetStyle& InWidgetStyle, bool bParentEnabled) const
 {
+	const FVector2D LastDesiredSize = TextLayoutCache->GetDesiredSize();
+
+	const FGeometry TextBlockScaledGeometry = AllottedGeometry.MakeChild(AllottedGeometry.GetLocalSize() / TextBlockScale, FSlateLayoutTransform(TextBlockScale));
+
 	// OnPaint will also update the text layout cache if required
-	LayerId = TextLayoutCache->OnPaint(Args, AllottedGeometry, MyCullingRect, OutDrawElements, LayerId, InWidgetStyle, ShouldBeEnabled(bParentEnabled));
+	LayerId = TextLayoutCache->OnPaint(Args, TextBlockScaledGeometry, MyCullingRect, OutDrawElements, LayerId, InWidgetStyle, ShouldBeEnabled(bParentEnabled));
+
+	const FVector2D NewDesiredSize = TextLayoutCache->GetDesiredSize();
 
 	// HACK: Due to the nature of wrapping and layout, we may have been arranged in a different box than what we were cached with.  Which
 	// might update wrapping, so make sure we always set the desired size to the current size of the text layout, which may have changed
 	// during paint.
-	if (TextLayoutCache->GetDesiredSize().Y > GetDesiredSize().Y)
+	bool bCanWrap = WrapTextAt.Get() > 0 || AutoWrapText.Get();
+
+	if (bCanWrap && !NewDesiredSize.Equals(LastDesiredSize))
 	{
 		const_cast<SRichTextBlock*>(this)->Invalidate(EInvalidateWidget::Layout);
 	}
@@ -78,8 +86,7 @@ FVector2D SRichTextBlock::ComputeDesiredSize(float LayoutScaleMultiplier) const
 	// ComputeDesiredSize will also update the text layout cache if required
 	const FVector2D TextSize = TextLayoutCache->ComputeDesiredSize(
 		FSlateTextBlockLayout::FWidgetArgs(BoundText, HighlightText, WrapTextAt, AutoWrapText, WrappingPolicy, Margin, LineHeightPercentage, Justification),
-		LayoutScaleMultiplier, TextStyle
-		);
+		LayoutScaleMultiplier * TextBlockScale, TextStyle) * TextBlockScale;
 
 	return FVector2D(FMath::Max(TextSize.X, MinDesiredWidth.Get()), TextSize.Y);
 }
@@ -89,15 +96,18 @@ FChildren* SRichTextBlock::GetChildren()
 	return TextLayoutCache->GetChildren();
 }
 
-void SRichTextBlock::OnArrangeChildren( const FGeometry& AllottedGeometry, FArrangedChildren& ArrangedChildren ) const
+void SRichTextBlock::OnArrangeChildren(const FGeometry& AllottedGeometry, FArrangedChildren& ArrangedChildren) const
 {
-	TextLayoutCache->ArrangeChildren( AllottedGeometry, ArrangedChildren );
+	const FGeometry TextBlockScaledGeometry = AllottedGeometry.MakeChild(AllottedGeometry.GetLocalSize() / TextBlockScale, FSlateLayoutTransform(TextBlockScale));
+
+	TextLayoutCache->ArrangeChildren(TextBlockScaledGeometry, ArrangedChildren);
 }
 
 void SRichTextBlock::SetText( const TAttribute<FText>& InTextAttr )
 {
 	BoundText = InTextAttr;
 	Invalidate(EInvalidateWidget::LayoutAndVolatility);
+	InvalidatePrepass();
 }
 
 void SRichTextBlock::SetHighlightText( const TAttribute<FText>& InHighlightText )
@@ -120,38 +130,33 @@ void SRichTextBlock::SetTextFlowDirection(const TOptional<ETextFlowDirection>& I
 
 void SRichTextBlock::SetWrapTextAt(const TAttribute<float>& InWrapTextAt)
 {
-	WrapTextAt = InWrapTextAt;
-	Invalidate(EInvalidateWidget::LayoutAndVolatility);
+	SetAttribute(WrapTextAt, InWrapTextAt, EInvalidateWidgetReason::Layout);
 }
 
 void SRichTextBlock::SetAutoWrapText(const TAttribute<bool>& InAutoWrapText)
 {
-	AutoWrapText = InAutoWrapText;
-	Invalidate(EInvalidateWidget::LayoutAndVolatility);
+	SetAttribute(AutoWrapText, InAutoWrapText, EInvalidateWidgetReason::Layout);
+	InvalidatePrepass();
 }
 
 void SRichTextBlock::SetWrappingPolicy(const TAttribute<ETextWrappingPolicy>& InWrappingPolicy)
 {
-	WrappingPolicy = InWrappingPolicy;
-	Invalidate(EInvalidateWidget::LayoutAndVolatility);
+	SetAttribute(WrappingPolicy, InWrappingPolicy, EInvalidateWidgetReason::Layout);
 }
 
 void SRichTextBlock::SetLineHeightPercentage(const TAttribute<float>& InLineHeightPercentage)
 {
-	LineHeightPercentage = InLineHeightPercentage;
-	Invalidate(EInvalidateWidget::LayoutAndVolatility);
+	SetAttribute(LineHeightPercentage, InLineHeightPercentage, EInvalidateWidgetReason::Layout);
 }
 
 void SRichTextBlock::SetMargin(const TAttribute<FMargin>& InMargin)
 {
-	Margin = InMargin;
-	Invalidate(EInvalidateWidget::LayoutAndVolatility);
+	SetAttribute(Margin, InMargin, EInvalidateWidgetReason::Layout);
 }
 
 void SRichTextBlock::SetJustification(const TAttribute<ETextJustify::Type>& InJustification)
 {
-	Justification = InJustification;
-	Invalidate(EInvalidateWidget::LayoutAndVolatility);
+	SetAttribute(Justification, InJustification, EInvalidateWidgetReason::Layout);
 }
 
 void SRichTextBlock::SetTextStyle(const FTextBlockStyle& InTextStyle)
@@ -162,8 +167,23 @@ void SRichTextBlock::SetTextStyle(const FTextBlockStyle& InTextStyle)
 
 void SRichTextBlock::SetMinDesiredWidth(const TAttribute<float>& InMinDesiredWidth)
 {
-	MinDesiredWidth = InMinDesiredWidth;
-	Invalidate(EInvalidateWidget::LayoutAndVolatility);
+	SetAttribute(MinDesiredWidth, InMinDesiredWidth, EInvalidateWidgetReason::Layout);
+}
+
+void SRichTextBlock::SetDecoratorStyleSet(const ISlateStyle* NewDecoratorStyleSet)
+{
+	if (Marshaller.IsValid())
+	{
+		Marshaller->SetDecoratorStyleSet(NewDecoratorStyleSet);
+		Refresh();
+	}
+}
+
+void SRichTextBlock::SetTextBlockScale(const float NewTextBlockScale)
+{
+	TextBlockScale = NewTextBlockScale;
+	Invalidate(EInvalidateWidget::Layout);
+	InvalidatePrepass();
 }
 
 void SRichTextBlock::Refresh()

@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -60,12 +60,35 @@ enum class EConcertSessionResponseCode : uint8
 	InvalidRequest,
 };
 
+/** Response code returned when trying to mount a session repository on the server. */
+UENUM()
+enum class EConcertSessionRepositoryMountResponseCode : uint8
+{
+	/** The repository was mounted on the invoked server. */
+	Mounted,
+	/** The repository is already mounted by another server instance. */
+	AlreadyMounted,
+	/** The repository ID could not be found in the server list. */
+	NotFound,
+};
+
+
 USTRUCT()
 struct FConcertAdmin_DiscoverServersEvent : public FConcertEndpointDiscoveryEvent
 {
 	GENERATED_BODY()
 
-	// TODO: some query argument
+	/** The required role of the server (eg, MultiUser, DisasterRecovery, etc) */
+	UPROPERTY(VisibleAnywhere, Category = "Concert Message")
+	FString RequiredRole;
+
+	/** The required version of the server (eg, 4.22, 4.23, etc) */
+	UPROPERTY(VisibleAnywhere, Category = "Concert Message")
+	FString RequiredVersion;
+
+	/** If a server was configured to restrict access to specific client(s), it will search for this key in its list of authorized keys.*/
+	UPROPERTY(VisibleAnywhere, Category = "Concert Message")
+	FString ClientAuthenticationKey;
 };
 
 USTRUCT()
@@ -83,22 +106,134 @@ struct FConcertAdmin_ServerDiscoveredEvent : public FConcertEndpointDiscoveryEve
 
 	/** Contains information on the server settings */
 	UPROPERTY(VisibleAnywhere, Category = "Concert Message")
-	EConcertSeverFlags ServerFlags;
+	EConcertServerFlags ServerFlags;
 };
 
+/** Contains information about a session repository. */
 USTRUCT()
-struct FConcertAdmin_GetSavedSessionNamesRequest : public FConcertRequestData
+struct FConcertSessionRepositoryInfo
 {
 	GENERATED_BODY()
+
+	/** The repository ID.*/
+	UPROPERTY(VisibleAnywhere, Category = "Concert Message")
+	FGuid RepositoryId;
+
+	/** The mounted state of this repository. */
+	UPROPERTY(VisibleAnywhere, Category = "Concert Message")
+	bool bMounted = false;
+};
+
+/**
+ * Mount a session repository used to store session files.
+ */
+USTRUCT()
+struct FConcertAdmin_MountSessionRepositoryRequest : public FConcertRequestData
+{
+	GENERATED_BODY()
+
+	/** The repository unique Id. Must be valid. */
+	UPROPERTY(VisibleAnywhere, Category = "Concert Message")
+	FGuid RepositoryId;
+
+	/** The repository root dir (absolute path) where the repository should be found/created. If empty, the server will use its default one. */
+	UPROPERTY(VisibleAnywhere, Category = "Concert Message")
+	FString RepositoryRootDir;
+
+	/** Whether this repository is set as the default one used by server to store new sessions. */
+	UPROPERTY(VisibleAnywhere, Category = "Concert Message")
+	bool bAsServerDefault = false;
+
+	/** Whether the repository should be created if it was not found. */
+	UPROPERTY(VisibleAnywhere, Category = "Concert Message")
+	bool bCreateIfNotExist = false;
 };
 
 USTRUCT()
-struct FConcertAdmin_GetSavedSessionNamesResponse : public FConcertResponseData
+struct FConcertAdmin_MountSessionRepositoryResponse : public FConcertResponseData
 {
 	GENERATED_BODY()
 
 	UPROPERTY(VisibleAnywhere, Category = "Concert Message")
-	TArray<FString> SavedSessionNames;
+	EConcertSessionRepositoryMountResponseCode MountStatus;
+};
+
+/** Returns the list of repositories known of the server. */
+USTRUCT()
+struct FConcertAdmin_GetSessionRepositoriesRequest : public FConcertRequestData
+{
+	GENERATED_BODY()
+};
+
+USTRUCT()
+struct FConcertAdmin_GetSessionRepositoriesResponse : public FConcertResponseData
+{
+	GENERATED_BODY()
+
+	UPROPERTY(VisibleAnywhere, Category = "Concert Message")
+	TArray<FConcertSessionRepositoryInfo> SessionRepositories;
+};
+
+/**
+ * Drop one or more session repositories from the server, deleting all the contained files.
+ */
+USTRUCT()
+struct FConcertAdmin_DropSessionRepositoriesRequest : public FConcertRequestData
+{
+	GENERATED_BODY()
+
+	/** The list of repository IDs to drop. */
+	UPROPERTY(VisibleAnywhere, Category = "Concert Message")
+	TArray<FGuid> RepositoryIds;
+};
+
+USTRUCT()
+struct FConcertAdmin_DropSessionRepositoriesResponse : public FConcertResponseData
+{
+	GENERATED_BODY()
+
+	/** The list of repository IDs successfully dropped (not found == dropped). */
+	UPROPERTY(VisibleAnywhere, Category = "Concert Message")
+	TArray<FGuid> DroppedRepositoryIds;
+};
+
+USTRUCT()
+struct FConcertAdmin_GetAllSessionsRequest : public FConcertRequestData
+{
+	GENERATED_BODY()
+};
+
+USTRUCT()
+struct FConcertAdmin_GetAllSessionsResponse : public FConcertResponseData
+{
+	GENERATED_BODY()
+
+	UPROPERTY(VisibleAnywhere, Category="Concert Message")
+	TArray<FConcertSessionInfo> LiveSessions;
+
+	UPROPERTY(VisibleAnywhere, Category="Concert Message")
+	TArray<FConcertSessionInfo> ArchivedSessions;
+};
+
+USTRUCT()
+struct FConcertAdmin_GetLiveSessionsRequest : public FConcertRequestData
+{
+	GENERATED_BODY()
+};
+
+USTRUCT()
+struct FConcertAdmin_GetArchivedSessionsRequest : public FConcertRequestData
+{
+	GENERATED_BODY()
+};
+
+USTRUCT()
+struct FConcertAdmin_GetSessionsResponse : public FConcertResponseData
+{
+	GENERATED_BODY()
+
+	UPROPERTY(VisibleAnywhere, Category="Concert Message")
+	TArray<FConcertSessionInfo> Sessions;
 };
 
 USTRUCT()
@@ -114,6 +249,9 @@ struct FConcertAdmin_CreateSessionRequest : public FConcertRequestData
 
 	UPROPERTY(VisibleAnywhere, Category="Concert Message")
 	FConcertSessionSettings SessionSettings;
+
+	UPROPERTY(VisibleAnywhere, Category="Concert Message")
+	FConcertSessionVersionInfo VersionInfo;
 };
 
 USTRUCT()
@@ -122,13 +260,46 @@ struct FConcertAdmin_FindSessionRequest : public FConcertRequestData
 	GENERATED_BODY()
 
 	UPROPERTY(VisibleAnywhere, Category="Concert Message")
-	FString SessionName;
+	FGuid SessionId;
 
 	UPROPERTY(VisibleAnywhere, Category="Concert Message")
 	FConcertClientInfo OwnerClientInfo;
 
 	UPROPERTY(VisibleAnywhere, Category="Concert Message")
 	FConcertSessionSettings SessionSettings;
+
+	UPROPERTY(VisibleAnywhere, Category="Concert Message")
+	FConcertSessionVersionInfo VersionInfo;
+};
+
+USTRUCT()
+struct FConcertAdmin_RestoreSessionRequest : public FConcertRequestData
+{
+	GENERATED_BODY()
+
+	/** The ID of the session to restore (must be an archived session). */
+	UPROPERTY(VisibleAnywhere, Category="Concert Message")
+	FGuid SessionId;
+
+	/** The name of the restored session to create. */
+	UPROPERTY(VisibleAnywhere, Category="Concert Message")
+	FString SessionName;
+
+	/** Information about the owner of the restored session. */
+	UPROPERTY(VisibleAnywhere, Category="Concert Message")
+	FConcertClientInfo OwnerClientInfo;
+
+	/** Settings to apply to the restored session. */
+	UPROPERTY(VisibleAnywhere, Category="Concert Message")
+	FConcertSessionSettings SessionSettings;
+
+	/** Version information of the client requesting the restore. */
+	UPROPERTY(VisibleAnywhere, Category="Concert Message")
+	FConcertSessionVersionInfo VersionInfo;
+
+	/** The filter controlling which activities from the session should be restored. */
+	UPROPERTY(VisibleAnywhere, Category="Concert Message")
+	FConcertSessionFilter SessionFilter;
 };
 
 USTRUCT()
@@ -140,36 +311,122 @@ struct FConcertAdmin_SessionInfoResponse : public FConcertResponseData
 	FConcertSessionInfo SessionInfo; // TODO: Split session Id out of session info
 };
 
+/** Create an archived copy of a live session. */
 USTRUCT()
-struct FConcertAdmin_DeleteSessionRequest : public FConcertRequestData
+struct FConcertAdmin_ArchiveSessionRequest : public FConcertRequestData
 {
 	GENERATED_BODY()
 
+	/** The ID of the session to archive (must be a live session). */
+	UPROPERTY(VisibleAnywhere, Category = "Concert Message")
+	FGuid SessionId;
+
+	/** The override for the archive. */
+	UPROPERTY(VisibleAnywhere, Category = "Concert Message")
+	FString ArchiveNameOverride;
+
+	/** The caller user name. */
+	UPROPERTY(VisibleAnywhere, Category = "Concert Message")
+	FString UserName;
+
+	/** The caller device name. */
+	UPROPERTY(VisibleAnywhere, Category = "Concert Message")
+	FString DeviceName;
+
+	/** The filter controlling which activities from the session should be archived. */
+	UPROPERTY(VisibleAnywhere, Category = "Concert Message")
+	FConcertSessionFilter SessionFilter;
+};
+
+USTRUCT()
+struct FConcertAdmin_ArchiveSessionResponse : public FConcertResponseData
+{
+	GENERATED_BODY()
+
+	/** The ID of the session that was requested to be archived. */
+	UPROPERTY(VisibleAnywhere, Category = "Concert Message")
+	FGuid SessionId;
+
+	/** The name of the session that was requested to be archived. */
 	UPROPERTY(VisibleAnywhere, Category = "Concert Message")
 	FString SessionName;
 
-	//For now only the user name and device name of the client is used to id him as the owner of a session
+	/** The ID of the new archived session (on success). */
+	UPROPERTY(VisibleAnywhere, Category = "Concert Message")
+	FGuid ArchiveId;
+
+	/** The name of the new archived session (on success). */
+	UPROPERTY(VisibleAnywhere, Category = "Concert Message")
+	FString ArchiveName;
+};
+
+/** Rename a session. */
+USTRUCT()
+struct FConcertAdmin_RenameSessionRequest : public FConcertRequestData
+{
+	GENERATED_BODY()
+
+	/** The ID of the session to rename. */
+	UPROPERTY(VisibleAnywhere, Category = "Concert Message")
+	FGuid SessionId;
+
+	/** The new session name. */
+	UPROPERTY(VisibleAnywhere, Category = "Concert Message")
+	FString NewName;
+
+	// For now only the user name and device name of the client is used to id him as the owner of a session
 	UPROPERTY(VisibleAnywhere, Category = "Concert Message")
 	FString UserName;
+
 	UPROPERTY(VisibleAnywhere, Category = "Concert Message")
 	FString DeviceName;
 };
 
 USTRUCT()
-struct FConcertAdmin_GetSessionsRequest : public FConcertRequestData
+struct FConcertAdmin_RenameSessionResponse : public FConcertResponseData
 {
 	GENERATED_BODY()
 
-	// TODO: filter?
+	/** The ID of the session that was requested to be renamed. */
+	UPROPERTY(VisibleAnywhere, Category = "Concert Message")
+	FGuid SessionId;
+
+	/** The old session name (if the session exist). */
+	UPROPERTY(VisibleAnywhere, Category = "Concert Message")
+	FString OldName;
+};
+
+
+/** Delete a live session. */
+USTRUCT()
+struct FConcertAdmin_DeleteSessionRequest : public FConcertRequestData
+{
+	GENERATED_BODY()
+
+	/** The ID of the session to delete. */
+	UPROPERTY(VisibleAnywhere, Category = "Concert Message")
+	FGuid SessionId;
+
+	//For now only the user name and device name of the client is used to id him as the owner of a session
+	UPROPERTY(VisibleAnywhere, Category = "Concert Message")
+	FString UserName;
+
+	UPROPERTY(VisibleAnywhere, Category = "Concert Message")
+	FString DeviceName;
 };
 
 USTRUCT()
-struct FConcertAdmin_GetSessionsResponse : public FConcertResponseData
+struct FConcertAdmin_DeleteSessionResponse : public FConcertResponseData
 {
 	GENERATED_BODY()
 
-	UPROPERTY(VisibleAnywhere, Category="Concert Message")
-	TArray<FConcertSessionInfo> Sessions;
+	/** The ID of the session that was requested to be deleted. */
+	UPROPERTY(VisibleAnywhere, Category = "Concert Message")
+	FGuid SessionId;
+
+	/** The name of the session that was was requested to be deleted. */
+	UPROPERTY(VisibleAnywhere, Category = "Concert Message")
+	FString SessionName;
 };
 
 USTRUCT()
@@ -178,7 +435,7 @@ struct FConcertAdmin_GetSessionClientsRequest : public FConcertRequestData
 	GENERATED_BODY()
 
 	UPROPERTY(VisibleAnywhere, Category="Concert Message")
-	FString SessionName;
+	FGuid SessionId;
 };
 
 USTRUCT()
@@ -188,6 +445,38 @@ struct FConcertAdmin_GetSessionClientsResponse : public FConcertResponseData
 
 	UPROPERTY(VisibleAnywhere, Category="Concert Message")
 	TArray<FConcertSessionClientInfo> SessionClients;
+};
+
+USTRUCT()
+struct FConcertAdmin_GetSessionActivitiesRequest : public FConcertRequestData
+{
+	GENERATED_BODY()
+
+	UPROPERTY(VisibleAnywhere, Category="Concert Message")
+	FGuid SessionId;
+
+	UPROPERTY(VisibleAnywhere, Category="Concert Message")
+	int64 FromActivityId = 1;
+
+	UPROPERTY(VisibleAnywhere, Category="Concert Message")
+	int64 ActivityCount = 1024;
+
+	UPROPERTY(VisibleAnywhere, Category="Concert Message")
+	bool bIncludeDetails = false;
+};
+
+USTRUCT()
+struct FConcertAdmin_GetSessionActivitiesResponse : public FConcertResponseData
+{
+	GENERATED_BODY()
+
+	/** The list of activities. */
+	UPROPERTY(VisibleAnywhere, Category="Concert Message")
+	TArray<FConcertSessionSerializedPayload> Activities;
+
+	/** Maps each activity endpoint to its client info. */
+	UPROPERTY(VisibleAnywhere, Category="Concert Message")
+	TMap<FGuid, FConcertClientInfo> EndpointClientInfoMap;
 };
 
 USTRUCT()
@@ -227,12 +516,30 @@ struct FConcertSession_LeaveSessionEvent : public FConcertEventData
 };
 
 USTRUCT()
+struct FConcertSession_UpdateClientInfoEvent : public FConcertEventData
+{
+	GENERATED_BODY()
+
+	UPROPERTY(VisibleAnywhere, Category="Concert Message")
+	FConcertSessionClientInfo SessionClient;
+};
+
+USTRUCT()
 struct FConcertSession_ClientListUpdatedEvent : public FConcertEventData
 {
 	GENERATED_BODY()
 
 	UPROPERTY(VisibleAnywhere, Category="Concert Message")
 	TArray<FConcertSessionClientInfo> SessionClients;
+};
+
+USTRUCT()
+struct FConcertSession_SessionRenamedEvent : public FConcertEventData
+{
+	GENERATED_BODY()
+
+	UPROPERTY(VisibleAnywhere, Category="Concert Message")
+	FString NewName;
 };
 
 USTRUCT()

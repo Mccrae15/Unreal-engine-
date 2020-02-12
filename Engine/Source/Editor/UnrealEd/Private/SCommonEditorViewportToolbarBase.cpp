@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "SCommonEditorViewportToolbarBase.h"
 #include "Widgets/SBoxPanel.h"
@@ -14,8 +14,10 @@
 #include "EditorViewportCommands.h"
 #include "SEditorViewportToolBarMenu.h"
 #include "SEditorViewportViewMenu.h"
+#include "AssetEditorViewportLayout.h"
+#include "SAssetEditorViewport.h"
 
-#define LOCTEXT_NAMESPACE "LevelViewportToolBar"
+#define LOCTEXT_NAMESPACE "SCommonEditorViewportToolbarBase"
 
 //////////////////////////////////////////////////////////////////////////
 // SCommonEditorViewportToolbarBase
@@ -181,6 +183,20 @@ TSharedRef<SWidget> SCommonEditorViewportToolbarBase::GenerateOptionsMenu() cons
 			OptionsMenuBuilder.AddWidget(GenerateScreenPercentageMenu(), LOCTEXT("ScreenPercentage", "Screen Percentage"));
 		}
 		OptionsMenuBuilder.EndSection();
+
+ 		TSharedPtr<SAssetEditorViewport> AssetEditorViewportPtr = StaticCastSharedRef<SAssetEditorViewport>(ViewportRef);
+ 		if (AssetEditorViewportPtr.IsValid())
+		{
+			OptionsMenuBuilder.BeginSection("EditorViewportLayouts");
+			{
+				OptionsMenuBuilder.AddSubMenu(
+					LOCTEXT("ConfigsSubMenu", "Layouts"),
+					FText::GetEmpty(),
+					FNewMenuDelegate::CreateSP(AssetEditorViewportPtr.Get(), &SAssetEditorViewport::GenerateLayoutMenu));
+			}
+			OptionsMenuBuilder.EndSection();
+		}
+
 		ExtendOptionsMenu(OptionsMenuBuilder);
 	}
 
@@ -356,7 +372,7 @@ TSharedRef<SWidget> SCommonEditorViewportToolbarBase::GenerateScreenPercentageMe
 		.MinValue(PreviewScreenPercentageMin)
 		.MaxValue(PreviewScreenPercentageMax)
 		.Value(this, &SCommonEditorViewportToolbarBase::OnGetScreenPercentageValue)
-		.OnValueChanged(this, &SCommonEditorViewportToolbarBase::OnScreenPercentageValueChanged)
+		.OnValueChanged(const_cast<SCommonEditorViewportToolbarBase*>(this), &SCommonEditorViewportToolbarBase::OnScreenPercentageValueChanged)
 		]
 		];
 }
@@ -395,7 +411,7 @@ TSharedRef<SWidget> SCommonEditorViewportToolbarBase::GenerateFarViewPlaneMenu()
 				.MaxValue(100000.0f)
 				.Font(FEditorStyle::GetFontStyle(TEXT("MenuItem.Font")))
 				.Value(this, &SCommonEditorViewportToolbarBase::OnGetFarViewPlaneValue)
-				.OnValueChanged(this, &SCommonEditorViewportToolbarBase::OnFarViewPlaneValueChanged)
+				.OnValueChanged(const_cast<SCommonEditorViewportToolbarBase*>(this), &SCommonEditorViewportToolbarBase::OnFarViewPlaneValueChanged)
 			]
 		];
 }
@@ -429,7 +445,7 @@ TSharedPtr<FExtender> SCommonEditorViewportToolbarBase::GetViewMenuExtender() co
 		TEXT("ViewMode"),
 		EExtensionHook::After,
 		GetInfoProvider().GetViewportWidget()->GetCommandList(),
-		FMenuExtensionDelegate::CreateSP(this, &SCommonEditorViewportToolbarBase::CreateViewMenuExtensions));
+		FMenuExtensionDelegate::CreateSP(const_cast<SCommonEditorViewportToolbarBase*>(this), &SCommonEditorViewportToolbarBase::CreateViewMenuExtensions));
 
 	return GetCombinedExtenderList(ViewModeExtender);
 }

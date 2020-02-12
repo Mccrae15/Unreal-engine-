@@ -1,10 +1,10 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "MeshEditorSelectionModifiers.h"
 
 #include "EditableMesh.h"
 #include "IMeshEditorModeUIContract.h"
-#include "MeshAttributes.h"
+#include "StaticMeshAttributes.h"
 #include "MeshEditorStyle.h"
 #include "UObject/UObjectIterator.h"
 

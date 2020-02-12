@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "UserInterface/PropertyDetails/PropertyDetailsUtilities.h"
 #include "Presentation/PropertyEditor/PropertyEditor.h"
@@ -73,4 +73,9 @@ const TArray<TWeakObjectPtr<UObject>>& FPropertyDetailsUtilities::GetSelectedObj
 bool FPropertyDetailsUtilities::HasClassDefaultObject() const
 {
 	return DetailsView.HasClassDefaultObject();
+}
+
+TSharedPtr<FEditConditionParser> FPropertyDetailsUtilities::GetEditConditionParser() const
+{
+	return DetailsView.GetEditConditionParser();
 }

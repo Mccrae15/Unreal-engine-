@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "CoreMinimal.h"
 #include "InputCoreTypes.h"
@@ -19,6 +19,9 @@
 #include "LandscapeDataAccess.h"
 #include "LandscapeHeightfieldCollisionComponent.h"
 #include "Raster.h"
+#include "Landscape.h"
+#include "Misc/MessageDialog.h"
+#include "LandscapeEdModeTools.h"
 
 #define LOCTEXT_NAMESPACE "Landscape"
 
@@ -117,6 +120,7 @@ public:
 
 	virtual const TCHAR* GetToolName() override { return TEXT("Ramp"); }
 	virtual FText GetDisplayName() override { return NSLOCTEXT("UnrealEd", "LandscapeMode_Ramp", "Ramp"); };
+	virtual FText GetDisplayMessage() override { return NSLOCTEXT("UnrealEd", "LandscapeMode_Ramp_Message", "Create a ramp between two specified points, adding falloffs according to the settings. Note that this tool cannot use any brushes."); };
 
 	virtual void SetEditRenderType() override { GLandscapeEditRenderMode = ELandscapeEditRenderMode::None | (GLandscapeEditRenderMode & ELandscapeEditRenderMode::BitMaskForMask); }
 	virtual bool SupportsMask() override { return false; }
@@ -361,8 +365,11 @@ public:
 			if (NumPoints == 2)
 			{
 				const FVector Side = FVector::CrossProduct(Points[1] - Points[0], FVector(0, 0, 1)).GetSafeNormal2D();
-				const FVector InnerSide = Side * (EdMode->UISettings->RampWidth * 0.5f * (1 - EdMode->UISettings->RampSideFalloff));
-				const FVector OuterSide = Side * (EdMode->UISettings->RampWidth * 0.5f);
+				FVector InnerSide = Side * (EdMode->UISettings->RampWidth * 0.5f * (1 - EdMode->UISettings->RampSideFalloff));
+				FVector OuterSide = Side * (EdMode->UISettings->RampWidth * 0.5f);
+				InnerSide = LandscapeToWorld.TransformVectorNoScale(InnerSide);
+				OuterSide = LandscapeToWorld.TransformVectorNoScale(OuterSide);
+
 				FVector InnerVerts[2][2];
 				InnerVerts[0][0] = WorldPoints[0] - InnerSide;
 				InnerVerts[0][1] = WorldPoints[0] + InnerSide;
@@ -474,7 +481,16 @@ public:
 
 	virtual void ApplyRamp()
 	{
+		FText Reason;
+		if (!EdMode->CanEditLayer(&Reason))
+		{
+			FMessageDialog::Open(EAppMsgType::Ok, Reason);
+			return;
+		}
+
 		FScopedTransaction Transaction(LOCTEXT("Ramp_Apply", "Landscape Editing: Add ramp"));
+		ALandscape* Landscape = EdMode->GetLandscape();
+		FScopedSetLandscapeEditingLayer Scope(Landscape, EdMode->GetCurrentLayerGuid(), [&] { if (Landscape) { Landscape->RequestLayersContentUpdate(ELandscapeLayerUpdateMode::Update_Heightmap_All); } });
 
 		const ULandscapeInfo* LandscapeInfo = EdMode->CurrentToolTarget.LandscapeInfo.Get();
 		const ALandscapeProxy* LandscapeProxy = LandscapeInfo->GetLandscapeProxy();
@@ -524,6 +540,10 @@ public:
 		}
 
 		FLandscapeEditDataInterface LandscapeEdit(EdMode->CurrentToolTarget.LandscapeInfo.Get());
+		FLandscapeHeightCache HeightCache(EdMode->CurrentToolTarget);
+		FLandscapeLayerDataCache<FHeightmapToolTarget> LayerHeightDataCache(EdMode->CurrentToolTarget, HeightCache);
+		const bool bCombinedLayerOperation = EdMode->UISettings->bCombinedLayersOperation && Landscape && Landscape->HasLayersContent();
+		LayerHeightDataCache.Initialize(EdMode->CurrentToolTarget.LandscapeInfo.Get(), bCombinedLayerOperation);
 
 		// Heights raster
 		bool bRaiseTerrain = true; //EdMode->UISettings->Ramp_bRaiseTerrain;
@@ -537,7 +557,7 @@ public:
 			int32 ValidMinY = MinY;
 			int32 ValidMaxX = MaxX;
 			int32 ValidMaxY = MaxY;
-			LandscapeEdit.GetHeightData(ValidMinX, ValidMinY, ValidMaxX, ValidMaxY, Data.GetData(), 0);
+			LayerHeightDataCache.Read(ValidMinX, ValidMinY, ValidMaxX, ValidMaxY, Data);
 
 			if (ValidMinX > ValidMaxX || ValidMinY > ValidMaxY)
 			{
@@ -567,20 +587,22 @@ public:
 			Rasterizer.DrawTriangle(FVector2D(1, Heights[0]), FVector2D(0, Heights[0]), FVector2D(1, Heights[1]), InnerVerts[0][1], OuterVerts[0][1], InnerVerts[1][1], false);
 			Rasterizer.DrawTriangle(FVector2D(0, Heights[0]), FVector2D(1, Heights[1]), FVector2D(0, Heights[1]), OuterVerts[0][1], InnerVerts[1][1], OuterVerts[1][1], false);
 
-			LandscapeEdit.SetHeightData(MinX, MinY, MaxX, MaxY, Data.GetData(), 0, true);
-			LandscapeEdit.Flush();
+			LayerHeightDataCache.Write(MinX, MinY, MaxX, MaxY, Data);
 
-			TSet<ULandscapeComponent*> Components;
-			if (LandscapeEdit.GetComponentsInRegion(MinX, MinY, MaxX, MaxY, &Components))
+			if (!EdMode->HasLandscapeLayersContent())
 			{
-				for (ULandscapeComponent* Component : Components)
+				TSet<ULandscapeComponent*> Components;
+				if (LandscapeEdit.GetComponentsInRegion(MinX, MinY, MaxX, MaxY, &Components))
 				{
-					// Recreate collision for modified components and update the navmesh
-					ULandscapeHeightfieldCollisionComponent* CollisionComponent = Component->CollisionComponent.Get();
-					if (CollisionComponent)
+					for (ULandscapeComponent* Component : Components)
 					{
-						CollisionComponent->RecreateCollision();
-						FNavigationSystem::UpdateComponentData(*CollisionComponent);
+						// Recreate collision for modified components and update the navmesh
+						ULandscapeHeightfieldCollisionComponent* CollisionComponent = Component->CollisionComponent.Get();
+						if (CollisionComponent)
+						{
+							CollisionComponent->RecreateCollision();
+							FNavigationSystem::UpdateComponentData(*CollisionComponent);
+						}
 					}
 				}
 			}
@@ -589,7 +611,7 @@ public:
 
 	bool CanApplyRamp()
 	{
-		return NumPoints == 2;
+		return EdMode->CanEditLayer() && (NumPoints == 2);
 	}
 
 	void ResetRamp()

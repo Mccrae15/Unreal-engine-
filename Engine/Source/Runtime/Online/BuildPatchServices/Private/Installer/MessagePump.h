@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 #pragma once
 
 #include "CoreMinimal.h"
@@ -28,6 +28,13 @@ namespace BuildPatchServices
 		 * @param Message   The message to be sent.
 		 */
 		virtual void SendMessage(FInstallationFileAction Message) = 0;
+
+		/**
+		 * Sends out a request to resolve the uri to the chunk location
+		 * @param Request   Request for the chunk location
+		 * @param OnResponse   A delegate to call with the response to chunk location
+		 */
+		virtual void SendRequest(FChunkUriRequest Request, TFunction<void(FChunkUriResponse)> OnResponse) = 0;
 
 		/**
 		 * Dequeues received messages, pushing them to the provided handlers.

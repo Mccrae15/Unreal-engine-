@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 /*=============================================================================
 	VulkanUtil.cpp: Vulkan Utility implementation.
@@ -10,37 +10,11 @@
 #include "VulkanContext.h"
 #include "VulkanMemory.h"
 #include "Misc/OutputDeviceRedirector.h"
+#include "RHIValidationContext.h"
 
+FVulkanDynamicRHI*	GVulkanRHI = nullptr;
 
 extern CORE_API bool GIsGPUCrashed;
-
-//#todo-rco: Horrible work-around to avoid breaking binary compatibility; move to header!
-struct FVulkanTimingQueryPool : public FVulkanQueryPool
-{
-	FVulkanTimingQueryPool(FVulkanDevice* InDevice, uint32 InBufferSize)
-		: FVulkanQueryPool(InDevice, InBufferSize * 2, VK_QUERY_TYPE_TIMESTAMP)
-		, BufferSize(InBufferSize)
-	{
-		TimestampListHandles.AddZeroed(InBufferSize * 2);
-	}
-
-	uint32 CurrentTimestamp = 0;
-	uint32 NumIssuedTimestamps = 0;
-	const uint32 BufferSize;
-
-	struct FCmdBufferFence
-	{
-		FVulkanCmdBuffer* CmdBuffer;
-		uint64 FenceCounter;
-	};
-	TArray<FCmdBufferFence> TimestampListHandles;
-
-	VulkanRHI::FStagingBuffer* ResultsBuffer = nullptr;
-};
-
-
-//#todo-rco: Horrible work-around to avoid breaking binary compatibility
-static TMap<FVulkanGPUTiming*, FVulkanTimingQueryPool*> GTimingQueryPools;
 
 
 static FString		EventDeepString(TEXT("EventTooDeep"));
@@ -145,16 +119,21 @@ FStagingBufferRHIRef FVulkanDynamicRHI::RHICreateStagingBuffer()
 	return new FVulkanStagingBuffer();
 }
 
-void* FVulkanDynamicRHI::RHILockStagingBuffer(FStagingBufferRHIParamRef StagingBufferRHI, uint32 Offset, uint32 NumBytes)
+void* FVulkanDynamicRHI::RHILockStagingBuffer(FRHIStagingBuffer* StagingBufferRHI, FRHIGPUFence* Fence, uint32 Offset, uint32 NumBytes)
 {
 	FVulkanStagingBuffer* StagingBuffer = ResourceCast(StagingBufferRHI);
 	return StagingBuffer->Lock(Offset, NumBytes);
 }
 
-void FVulkanDynamicRHI::RHIUnlockStagingBuffer(FStagingBufferRHIParamRef StagingBufferRHI)
+void FVulkanDynamicRHI::RHIUnlockStagingBuffer(FRHIStagingBuffer* StagingBufferRHI)
 {
 	FVulkanStagingBuffer* StagingBuffer = ResourceCast(StagingBufferRHI);
 	StagingBuffer->Unlock();
+}
+
+FVulkanGPUTiming::~FVulkanGPUTiming()
+{
+	check(!Pool);
 }
 
 /**
@@ -168,9 +147,9 @@ void FVulkanGPUTiming::Initialize()
 
 	if (FVulkanPlatform::SupportsTimestampRenderQueries() && GIsSupported)
 	{
-		FVulkanTimingQueryPool* Pool = new FVulkanTimingQueryPool(Device, 8);
-		Pool->ResultsBuffer = Device->GetStagingManager().AcquireBuffer(8 * sizeof(uint64), VK_BUFFER_USAGE_TRANSFER_DST_BIT, true);
-		GTimingQueryPools.Add(this, Pool);
+		check(!Pool);
+		Pool = new FVulkanTimingQueryPool(Device, 8);
+		Pool->ResultsBuffer = Device->GetStagingManager().AcquireBuffer(8 * sizeof(uint64), VK_BUFFER_USAGE_TRANSFER_DST_BIT, VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
 	}
 }
 
@@ -181,12 +160,10 @@ void FVulkanGPUTiming::Release()
 {
 	if (FVulkanPlatform::SupportsTimestampRenderQueries())
 	{
-		FVulkanTimingQueryPool* FoundPool = nullptr;
-		if (GTimingQueryPools.RemoveAndCopyValue(this, FoundPool) && FoundPool)
-		{
-			Device->GetStagingManager().ReleaseBuffer(nullptr, FoundPool->ResultsBuffer);
-			delete FoundPool;
-		}
+		check(Pool);
+		Device->GetStagingManager().ReleaseBuffer(nullptr, Pool->ResultsBuffer);
+		delete Pool;
+		Pool = nullptr;
 	}
 }
 
@@ -202,7 +179,6 @@ void FVulkanGPUTiming::StartTiming(FVulkanCmdBuffer* CmdBuffer)
 		{
 			CmdBuffer = CmdContext->GetCommandBufferManager()->GetActiveCmdBuffer();
 		}
-		FVulkanTimingQueryPool* Pool = GTimingQueryPools.FindChecked(this);
 		Pool->CurrentTimestamp = (Pool->CurrentTimestamp + 1) % Pool->BufferSize;
 		const uint32 QueryStartIndex = Pool->CurrentTimestamp * 2;
 		VulkanRHI::vkCmdWriteTimestamp(CmdBuffer->GetHandle(), VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, Pool->GetHandle(), QueryStartIndex);
@@ -225,15 +201,12 @@ void FVulkanGPUTiming::EndTiming(FVulkanCmdBuffer* CmdBuffer)
 		{
 			CmdBuffer = CmdContext->GetCommandBufferManager()->GetActiveCmdBuffer();
 		}
-		FVulkanTimingQueryPool* Pool = GTimingQueryPools.FindChecked(this);
 		check(Pool->CurrentTimestamp < Pool->BufferSize);
 		const uint32 QueryStartIndex = Pool->CurrentTimestamp * 2;
 		const uint32 QueryEndIndex = Pool->CurrentTimestamp * 2 + 1;
 		check(QueryEndIndex == QueryStartIndex + 1);	// Make sure they're adjacent indices.
 		VulkanRHI::vkCmdWriteTimestamp(CmdBuffer->GetHandle(), VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, Pool->GetHandle(), QueryEndIndex);
-		//check(CmdBuffer->IsOutsideRenderPass());
-		VulkanRHI::vkCmdCopyQueryPoolResults(CmdBuffer->GetHandle(), Pool->GetHandle(), QueryStartIndex, 2, Pool->ResultsBuffer->GetHandle(), sizeof(uint64) * QueryStartIndex, sizeof(uint64), VK_QUERY_RESULT_64_BIT);
-		VulkanRHI::vkCmdResetQueryPool(CmdBuffer->GetHandle(), Pool->GetHandle(), QueryStartIndex, 2);
+		CmdBuffer->AddPendingTimestampQuery(QueryStartIndex, 2, Pool->GetHandle(), Pool->ResultsBuffer->GetHandle());
 		Pool->TimestampListHandles[QueryEndIndex].CmdBuffer = CmdBuffer;
 		Pool->TimestampListHandles[QueryEndIndex].FenceCounter = CmdBuffer->GetFenceSignaledCounter();
 		Pool->NumIssuedTimestamps = FMath::Min<uint32>(Pool->NumIssuedTimestamps + 1, Pool->BufferSize);
@@ -253,7 +226,6 @@ uint64 FVulkanGPUTiming::GetTiming(bool bGetCurrentResultsAndBlock)
 {
 	if (GIsSupported)
 	{
-		FVulkanTimingQueryPool* Pool = GTimingQueryPools.FindChecked(this);
 		check(Pool->CurrentTimestamp < Pool->BufferSize);
 		uint64 StartTime, EndTime;
 		int32 TimestampIndex = Pool->CurrentTimestamp;
@@ -377,16 +349,51 @@ float FVulkanEventNode::GetTiming()
 	return Result;
 }
 
+FVulkanGPUProfiler::FVulkanGPUProfiler(FVulkanCommandListContext* InCmd, FVulkanDevice* InDevice)
+	: bCommandlistSubmitted(false)
+	, Device(InDevice)
+	, CmdContext(InCmd)
+	, LocalTracePointsQueryPool(nullptr)
+	, bBeginFrame(false)
+{
+}
+
+FVulkanGPUProfiler::~FVulkanGPUProfiler()
+{
+	if (LocalTracePointsQueryPool != nullptr)
+	{
+		delete LocalTracePointsQueryPool;
+	}
+}
 
 void FVulkanGPUProfiler::BeginFrame()
 {
 #if VULKAN_SUPPORTS_GPU_CRASH_DUMPS
-	if (GGPUCrashDebuggingEnabled && Device->GetOptionalExtensions().HasGPUCrashDumpExtensions())
+	if (GGPUCrashDebuggingEnabled)
 	{
 		static auto* CrashCollectionEnableCvar = IConsoleManager::Get().FindTConsoleVariableDataInt(TEXT("r.gpucrash.collectionenable"));
 		static auto* CrashCollectionDataDepth = IConsoleManager::Get().FindTConsoleVariableDataInt(TEXT("r.gpucrash.datadepth"));
 		bTrackingGPUCrashData = CrashCollectionEnableCvar ? CrashCollectionEnableCvar->GetValueOnRenderThread() != 0 : false;
 		GPUCrashDataDepth = CrashCollectionDataDepth ? CrashCollectionDataDepth->GetValueOnRenderThread() : -1;
+		if (GPUCrashDataDepth == -1 || GPUCrashDataDepth > GMaxCrashBufferEntries)
+		{
+			if (Device->GetOptionalExtensions().HasAMDBufferMarker)
+			{
+				static bool bChecked = false;
+				if (!bChecked)
+				{
+					bChecked = true;
+					UE_LOG(LogVulkanRHI, Warning, TEXT("Clamping r.gpucrash.datadepth to %d"), GMaxCrashBufferEntries);
+				}
+				GPUCrashDataDepth = GMaxCrashBufferEntries;
+			}
+		}
+
+		// Use local tracepoints if no extension is available
+		if (!Device->GetOptionalExtensions().HasGPUCrashDumpExtensions() && LocalTracePointsQueryPool == nullptr)
+		{
+			LocalTracePointsQueryPool = new FVulkanTimingQueryPool(Device, GMaxCrashBufferEntries);
+		}
 	}
 #endif
 
@@ -394,6 +401,17 @@ void FVulkanGPUProfiler::BeginFrame()
 	CurrentEventNode = NULL;
 	check(!bTrackingEvents);
 	check(!CurrentEventNodeFrame); // this should have already been cleaned up and the end of the previous frame
+
+	if (GGPUCrashDebuggingEnabled && !Device->GetOptionalExtensions().HasGPUCrashDumpExtensions())
+	{
+		VulkanRHI::vkCmdResetQueryPool(Device->GetImmediateContext().GetCommandBufferManager()->GetActiveCmdBuffer()->GetHandle(), LocalTracePointsQueryPool->GetHandle(), 0, GMaxCrashBufferEntries);
+
+		PushPopStack.Reset();
+		CrashMarkers.Reset();
+		CrashMarkers.AddZeroed(GMaxCrashBufferEntries);
+	}
+
+	bBeginFrame = true;
 
 	// latch the bools from the game thread into our private copy
 	bLatchedGProfilingGPU = GTriggerGPUProfile;
@@ -491,11 +509,19 @@ void FVulkanGPUProfiler::EndFrame()
 		delete CurrentEventNodeFrame;
 		CurrentEventNodeFrame = nullptr;
 	}
+
+	bBeginFrame = false;
 }
 
 #if VULKAN_SUPPORTS_GPU_CRASH_DUMPS
 void FVulkanGPUProfiler::PushMarkerForCrash(VkCommandBuffer CmdBuffer, VkBuffer DestBuffer, const TCHAR* Name)
 {
+	if (!Device->GetOptionalExtensions().HasGPUCrashDumpExtensions() && !bBeginFrame)
+	{
+		// If using local trace points, ignore any markers pushed before begin frame or after end frame.
+		return;
+	}
+
 	uint32 CRC = 0;
 	if (GPUCrashDataDepth < 0 || PushPopStack.Num() < GPUCrashDataDepth)
 	{
@@ -519,14 +545,32 @@ void FVulkanGPUProfiler::PushMarkerForCrash(VkCommandBuffer CmdBuffer, VkBuffer 
 
 	PushPopStack.Push(CRC);
 	FVulkanPlatform::WriteCrashMarker(Device->GetOptionalExtensions(), CmdBuffer, DestBuffer, TArrayView<uint32>(PushPopStack), true);
+
+	if (GGPUCrashDebuggingEnabled && !Device->GetOptionalExtensions().HasGPUCrashDumpExtensions())
+	{
+		VulkanRHI::vkCmdWriteTimestamp(CmdBuffer, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, LocalTracePointsQueryPool->GetHandle(), PushPopStack.Num() - 1);
+	}
 }
 
 void FVulkanGPUProfiler::PopMarkerForCrash(VkCommandBuffer CmdBuffer, VkBuffer DestBuffer)
 {
+	if (!Device->GetOptionalExtensions().HasGPUCrashDumpExtensions() && !bBeginFrame)
+	{
+		// If using local trace points, ignore any markers popped before begin frame or after end frame.
+		return;
+	}
+
 	if (PushPopStack.Num() > 0)
 	{
-		PushPopStack.Pop(false);
-		FVulkanPlatform::WriteCrashMarker(Device->GetOptionalExtensions(), CmdBuffer, DestBuffer, TArrayView<uint32>(PushPopStack), false);
+		if (Device->GetOptionalExtensions().HasGPUCrashDumpExtensions())
+		{
+			PushPopStack.Pop(false);
+			FVulkanPlatform::WriteCrashMarker(Device->GetOptionalExtensions(), CmdBuffer, DestBuffer, TArrayView<uint32>(PushPopStack), false);
+		}
+		else if (GGPUCrashDebuggingEnabled)
+		{
+			VulkanRHI::vkGetQueryPoolResults(Device->GetInstanceHandle(), LocalTracePointsQueryPool->GetHandle(), 0, PushPopStack.Num(), sizeof(uint64) * GMaxCrashBufferEntries, CrashMarkers.GetData(), sizeof(uint64), VK_QUERY_RESULT_64_BIT | VK_QUERY_RESULT_WITH_AVAILABILITY_BIT);
+		}
 	}
 }
 
@@ -579,6 +623,22 @@ void FVulkanGPUProfiler::DumpCrashMarkers(void* BufferData)
 		}
 #endif
 	}
+
+	if (!Device->GetOptionalExtensions().HasGPUCrashDumpExtensions())
+	{
+		UE_LOG(LogVulkanRHI, Warning, TEXT("Printing trace points."));
+
+		for (int32 i = 0; i < PushPopStack.Num(); ++i)
+		{
+			const FString* InsertedFrame = CachedStrings.Find(PushPopStack[i]);
+			const FString FrameName = InsertedFrame ? *InsertedFrame : TEXT("<undefined>");
+
+			UE_LOG(LogVulkanRHI, Warning, TEXT("[gpu_crash_markers] %s"), (CrashMarkers[i] != 0) ? *FrameName : TEXT("unavailable"));
+		}
+
+		GLog->PanicFlushThreadedLogs();
+		GLog->Flush();
+	}
 }
 #endif
 
@@ -609,14 +669,19 @@ namespace VulkanRHIBridge
 }
 
 
-#include "ShaderParameterUtils.h"
-#include "RHIStaticStates.h"
-#include "OneColorShader.h"
-#include "VulkanRHI.h"
-#include "StaticBoundShaderState.h"
-
 namespace VulkanRHI
 {
+#if ENABLE_RHI_VALIDATION
+	FVulkanCommandListContext& GetVulkanContext(class FValidationContext& CmdContext)
+	{
+		if (GValidationRHI && GValidationRHI->Context == &CmdContext)
+		{
+			return (FVulkanCommandListContext&)*CmdContext.RHIContext;
+		}
+
+		return (FVulkanCommandListContext&)CmdContext;
+	}
+#endif
 	VkBuffer CreateBuffer(FVulkanDevice* InDevice, VkDeviceSize Size, VkBufferUsageFlags BufferUsageFlags, VkMemoryRequirements& OutMemoryRequirements)
 	{
 		VkDevice Device = InDevice->GetInstanceHandle();
@@ -643,6 +708,7 @@ namespace VulkanRHI
 	 */
 	void VerifyVulkanResult(VkResult Result, const ANSICHAR* VkFunction, const ANSICHAR* Filename, uint32 Line)
 	{
+		bool bDumpMemory = false;
 		FString ErrorString;
 		switch (Result)
 		{
@@ -652,8 +718,8 @@ namespace VulkanRHI
 		VKERRORCASE(VK_EVENT_SET); break;
 		VKERRORCASE(VK_EVENT_RESET); break;
 		VKERRORCASE(VK_INCOMPLETE); break;
-		VKERRORCASE(VK_ERROR_OUT_OF_HOST_MEMORY); break;
-		VKERRORCASE(VK_ERROR_OUT_OF_DEVICE_MEMORY); break;
+		VKERRORCASE(VK_ERROR_OUT_OF_HOST_MEMORY); bDumpMemory = true; break;
+		VKERRORCASE(VK_ERROR_OUT_OF_DEVICE_MEMORY); bDumpMemory = true; break;
 		VKERRORCASE(VK_ERROR_INITIALIZATION_FAILED); break;
 		VKERRORCASE(VK_ERROR_DEVICE_LOST); GIsGPUCrashed = true; break;
 		VKERRORCASE(VK_ERROR_MEMORY_MAP_FAILED); break;
@@ -687,18 +753,31 @@ namespace VulkanRHI
 			break;
 		}
 
+#if VULKAN_HAS_DEBUGGING_ENABLED
+		if (Result == VK_ERROR_VALIDATION_FAILED_EXT)
+		{
+			if (GValidationCvar.GetValueOnRenderThread() == 0)
+			{
+				UE_LOG(LogVulkanRHI, Fatal, TEXT("Failed with Validation error. Try running with r.Vulkan.EnableValidation=1 to get information from the driver"));
+			}
+		}
+#endif
+
 		UE_LOG(LogVulkanRHI, Error, TEXT("%s failed, VkResult=%d\n at %s:%u \n with error %s"),
 			ANSI_TO_TCHAR(VkFunction), (int32)Result, ANSI_TO_TCHAR(Filename), Line, *ErrorString);
 
 #if VULKAN_SUPPORTS_GPU_CRASH_DUMPS
 		if (GIsGPUCrashed && GGPUCrashDebuggingEnabled)
 		{
-			FVulkanDynamicRHI* RHI = (FVulkanDynamicRHI*)GDynamicRHI;
-			FVulkanDevice* Device = RHI->GetDevice();
-			if (Device->GetOptionalExtensions().HasGPUCrashDumpExtensions())
-			{
-				Device->GetImmediateContext().GetGPUProfiler().DumpCrashMarkers(Device->GetCrashMarkerMappedPointer());
-			}
+			FVulkanDevice* Device = GVulkanRHI->GetDevice();
+			Device->GetImmediateContext().GetGPUProfiler().DumpCrashMarkers(Device->GetCrashMarkerMappedPointer());
+		}
+#endif
+
+#if UE_BUILD_DEBUG || UE_BUILD_DEVELOPMENT
+		if (bDumpMemory)
+		{
+			GVulkanRHI->DumpMemory();
 		}
 #endif
 
@@ -706,6 +785,19 @@ namespace VulkanRHI
 			ANSI_TO_TCHAR(VkFunction), (int32)Result, ANSI_TO_TCHAR(Filename), Line, *ErrorString);
 	}
 }
+
+
+DEFINE_STAT(STAT_VulkanNumPSOs);
+DEFINE_STAT(STAT_VulkanNumGraphicsPSOs);
+DEFINE_STAT(STAT_VulkanNumPSOLRU);
+DEFINE_STAT(STAT_VulkanNumPSOLRUSize);
+DEFINE_STAT(STAT_VulkanPSOLookupTime);
+DEFINE_STAT(STAT_VulkanPSOCreationTime);
+DEFINE_STAT(STAT_VulkanPSOHeaderInitTime);
+DEFINE_STAT(STAT_VulkanPSOVulkanCreationTime);
+DEFINE_STAT(STAT_VulkanNumComputePSOs);
+DEFINE_STAT(STAT_VulkanPSOKeyMemory);
+
 
 DEFINE_STAT(STAT_VulkanDrawCallTime);
 DEFINE_STAT(STAT_VulkanDispatchCallTime);
@@ -716,12 +808,12 @@ DEFINE_STAT(STAT_VulkanGetOrCreatePipeline);
 DEFINE_STAT(STAT_VulkanGetDescriptorSet);
 DEFINE_STAT(STAT_VulkanPipelineBind);
 DEFINE_STAT(STAT_VulkanNumCmdBuffers);
-DEFINE_STAT(STAT_VulkanNumPSOs);
 DEFINE_STAT(STAT_VulkanNumRenderPasses);
 DEFINE_STAT(STAT_VulkanNumFrameBuffers);
 DEFINE_STAT(STAT_VulkanNumBufferViews);
 DEFINE_STAT(STAT_VulkanNumImageViews);
 DEFINE_STAT(STAT_VulkanNumPhysicalMemAllocations);
+DEFINE_STAT(STAT_VulkanTempFrameAllocationBuffer);
 DEFINE_STAT(STAT_VulkanDynamicVBSize);
 DEFINE_STAT(STAT_VulkanDynamicIBSize);
 DEFINE_STAT(STAT_VulkanDynamicVBLockTime);
@@ -745,6 +837,8 @@ DEFINE_STAT(STAT_VulkanAcquireBackBuffer);
 DEFINE_STAT(STAT_VulkanStagingBuffer);
 DEFINE_STAT(STAT_VulkanVkCreateDescriptorPool);
 DEFINE_STAT(STAT_VulkanNumDescPools);
+DEFINE_STAT(STAT_VulkanUpdateUniformBuffers);
+DEFINE_STAT(STAT_VulkanUpdateUniformBuffersRename);
 #if VULKAN_ENABLE_AGGRESSIVE_STATS
 DEFINE_STAT(STAT_VulkanUpdateDescriptorSets);
 DEFINE_STAT(STAT_VulkanNumUpdateDescriptors);

@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -185,7 +185,7 @@ private:
 	/** The buffer available to slate for creating draw elements */
 	FSlateDrawBuffer DrawBuffer;
 	/** The element batcher used to create and batch geometry for each element. */
-	TSharedPtr<FSlateElementBatcher> ElementBatcher;
+	TUniquePtr<FSlateElementBatcher> ElementBatcher;
 	/** Texture manager for accessing slate textures */
  	TSharedPtr<FSlateOpenGLTextureManager> TextureManager;
 	/** The rendering policy to use when drawing elements */

@@ -1,39 +1,43 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
-
-/*=============================================================================
-	PostProcessTemporalAA.h: Post process MotionBlur implementation.
-=============================================================================*/
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
-#include "CoreMinimal.h"
-#include "RendererInterface.h"
-#include "RenderingCompositionGraph.h"
+#include "ScreenPass.h"
 
+class FSceneTextureParameters;
+struct FTemporalAAHistory;
 
-/** Lists of TAA configurations. */
+/** List of TAA configurations. */
 enum class ETAAPassConfig
 {
-	LegacyDepthOfField,
+	// Permutations for main scene color TAA.
 	Main,
-	ScreenSpaceReflections,
-	LightShaft,
 	MainUpsampling,
+	MainSuperSampling,
+
+	// Permutation for SSR noise accumulation.
+	ScreenSpaceReflections,
+	
+	// Permutation for light shaft noise accumulation.
+	LightShaft,
+
+	// Permutation for DOF that handle Coc.
 	DiaphragmDOF,
 	DiaphragmDOFUpsampling,
 
 	MAX
 };
 
+bool IsTemporalAASceneDownsampleAllowed(const FViewInfo& View);
 
 static FORCEINLINE bool IsTAAUpsamplingConfig(ETAAPassConfig Pass)
 {
-	return Pass == ETAAPassConfig::MainUpsampling || Pass == ETAAPassConfig::DiaphragmDOFUpsampling;
+	return Pass == ETAAPassConfig::MainUpsampling || Pass == ETAAPassConfig::DiaphragmDOFUpsampling || Pass == ETAAPassConfig::MainSuperSampling;
 }
 
 static FORCEINLINE bool IsMainTAAConfig(ETAAPassConfig Pass)
 {
-	return Pass == ETAAPassConfig::Main || Pass == ETAAPassConfig::MainUpsampling;
+	return Pass == ETAAPassConfig::Main || Pass == ETAAPassConfig::MainUpsampling || Pass == ETAAPassConfig::MainSuperSampling;
 }
 
 static FORCEINLINE bool IsDOFTAAConfig(ETAAPassConfig Pass)
@@ -41,45 +45,59 @@ static FORCEINLINE bool IsDOFTAAConfig(ETAAPassConfig Pass)
 	return Pass == ETAAPassConfig::DiaphragmDOF || Pass == ETAAPassConfig::DiaphragmDOFUpsampling;
 }
 
+/** GPU Output of the TAA pass. */
+struct FTAAOutputs
+{
+	// Anti aliased scene color.
+	// Can have alpha channel, or CoC for DOF.
+	FRDGTexture* SceneColor = nullptr;
+
+	// Optional information that get anti aliased, such as separate CoC for DOF.
+	FRDGTexture* SceneMetadata = nullptr;
+
+	// Optional scene color output at half the resolution.
+	FRDGTexture* DownsampledSceneColor = nullptr;
+};
+
 
 /** Configuration of TAA. */
 struct FTAAPassParameters
 {
 	// TAA pass to run.
-	ETAAPassConfig Pass;
+	ETAAPassConfig Pass = ETAAPassConfig::Main;
 
 	// Whether to use the faster shader permutation.
-	bool bUseFast;
+	bool bUseFast = false;
 
-	// Whether to do compute or not.
-	bool bIsComputePass;
+	// Whether output texture should be render targetable.
+	bool bOutputRenderTargetable = false;
 
 	// Whether downsampled (box filtered, half resolution) frame should be written out.
-	// Only used when bIsComputePass is true.
-	bool bDownsample;
-	EPixelFormat DownsampleOverrideFormat;
+	bool bDownsample = false;
+	EPixelFormat DownsampleOverrideFormat = PF_Unknown;
 
 	// Viewport rectangle of the input and output of TAA at ResolutionDivisor == 1.
 	FIntRect InputViewRect;
 	FIntRect OutputViewRect;
 
 	// Resolution divisor.
-	int32 ResolutionDivisor;
+	int32 ResolutionDivisor = 1;
+
+	// Anti aliased scene color.
+	// Can have alpha channel, or CoC for DOF.
+	FRDGTexture* SceneColorInput = nullptr;
+
+	// Optional information that get anti aliased, such as separate CoC for DOF.
+	FRDGTexture* SceneMetadataInput = nullptr;
 
 
 	FTAAPassParameters(const FViewInfo& View)
-		: Pass(ETAAPassConfig::Main)
-		, bUseFast(false)
-		, bIsComputePass(false)
-		, bDownsample(false)
-		, DownsampleOverrideFormat(PF_Unknown)
-		, InputViewRect(View.ViewRect)
+		: InputViewRect(View.ViewRect)
 		, OutputViewRect(View.ViewRect)
-		, ResolutionDivisor(1)
 	{ }
 
 
-	// Customises the view rectangles for input and output.
+	// Customizes the view rectangles for input and output.
 	FORCEINLINE void SetupViewRect(const FViewInfo& View, int32 InResolutionDivisor = 1)
 	{
 		ResolutionDivisor = InResolutionDivisor;
@@ -106,41 +124,35 @@ struct FTAAPassParameters
 		OutputViewRect.Max -= OutputViewRect.Min;
 		OutputViewRect.Min = FIntPoint::ZeroValue;
 	}
+	
+	/** Returns the texture resolution that will be output. */
+	FIntPoint GetOutputExtent() const;
+
+	/** Validate the settings of TAA, to make sure there is no issue. */
+	bool Validate() const;
 };
 
+/** Temporal AA pass which emits a filtered scene color and new history. */
+FTAAOutputs AddTemporalAAPass(
+	FRDGBuilder& GraphBuilder,
+	const FSceneTextureParameters& SceneTextures,
+	const FViewInfo& View,
+	const FTAAPassParameters& Inputs,
+	const FTemporalAAHistory& InputHistory,
+	FTemporalAAHistory* OutputHistory);
 
-// ePId_Input0: Full Res Scene color (point)
-// ePId_Input2: Velocity (point)
-// ePId_Output0: Antialiased color
-// ePId_Output1: Downsampled antialiased color (only when FTAAConfig::bDownsample is true)
-// derives from TRenderingCompositePassBase<InputCount, OutputCount> 
-class FRCPassPostProcessTemporalAA : public TRenderingCompositePassBase<3, 3>
-{
-public:
-	FRCPassPostProcessTemporalAA(
-		const class FPostprocessContext& Context,
-		const FTAAPassParameters& Parameters,
-		const FTemporalAAHistory& InInputHistory,
-		FTemporalAAHistory* OutOutputHistory);
-
-	// interface FRenderingCompositePass ---------
-	virtual void Process(FRenderingCompositePassContext& Context) override;
-	virtual void Release() override { delete this; }
-	virtual FPooledRenderTargetDesc ComputeOutputDesc(EPassOutputId InPassOutputId) const override;
-
-	virtual FComputeFenceRHIParamRef GetComputePassEndFence() const override { return AsyncEndFence; }
-
-	bool IsDownsamplePossible() const { return bDownsamplePossible; }
-
-private:
-	const FTAAPassParameters Parameters;
-
-	FIntPoint OutputExtent;
-
-	FComputeFenceRHIRef AsyncEndFence;
-
-	const FTemporalAAHistory& InputHistory;
-	FTemporalAAHistory* OutputHistory;
-
-	bool bDownsamplePossible = false;
-};
+/** Temporal AA helper method which performs filtering on the main pass scene color. Supports upsampled history and,
+ *  if requested, will attempt to perform the scene color downsample. Returns the filtered scene color, the downsampled
+ *  scene color (or null if it was not performed), and the secondary view rect.
+ */
+void AddTemporalAAPass(
+	FRDGBuilder& GraphBuilder,
+	const FSceneTextureParameters& SceneTextures,
+	const FViewInfo& View,
+	const bool bAllowDownsampleSceneColor,
+	const EPixelFormat DownsampleOverrideFormat,
+	FRDGTextureRef InSceneColorTexture,
+	FRDGTextureRef* OutSceneColorTexture,
+	FIntRect* OutSceneColorViewRect,
+	FRDGTextureRef* OutSceneColorHalfResTexture,
+	FIntRect* OutSceneColorHalfResViewRect);

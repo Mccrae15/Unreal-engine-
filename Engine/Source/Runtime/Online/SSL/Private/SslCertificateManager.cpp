@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "SslCertificateManager.h"
 #include "Ssl.h"
@@ -10,6 +10,8 @@
 #include "Misc/Base64.h"
 #include "Misc/CommandLine.h"
 #include <Algo/Count.h>
+
+FSslCertificateDelegates::FVerifySslCertificates FSslCertificateDelegates::VerifySslCertificates;
 
 #if WITH_SSL
 
@@ -24,6 +26,27 @@
 #if PLATFORM_WINDOWS
 #include "Windows/HideWindowsPlatformTypes.h"
 #endif
+
+namespace
+{
+	FString GetCertificateName(X509* const Certificate)
+	{
+		char StaticBuffer[2048];
+		// We do not have to free the return value of get_subject_name
+		X509_NAME_oneline(X509_get_subject_name(Certificate), StaticBuffer, sizeof(StaticBuffer));
+
+		return FString(ANSI_TO_TCHAR(StaticBuffer));
+	}
+
+	FString GetCertificateIssuer(X509* const Certificate)
+	{
+		char StaticBuffer[2048];
+		// We do not have to free the return value of get_subject_name
+		X509_NAME_oneline(X509_get_issuer_name(Certificate), StaticBuffer, sizeof(StaticBuffer));
+
+		return FString(ANSI_TO_TCHAR(StaticBuffer));
+	}
+}
 
 void FSslCertificateManager::AddCertificatesToSslContext(SSL_CTX* SslContextPtr) const
 {
@@ -187,25 +210,10 @@ bool FSslCertificateManager::VerifySslCertificates(X509_STORE_CTX* Context, cons
 		return false;
 	}
 
-	const TArray<TArray<uint8, TFixedAllocator<PUBLIC_KEY_DIGEST_SIZE>>>* PinnedKeys = nullptr;
-	for (const TPair<FString, TArray<TArray<uint8, TFixedAllocator<PUBLIC_KEY_DIGEST_SIZE>>>>& PinnedKeyPair: PinnedPublicKeys)
-	{
-		const FString& PinnedDomain = PinnedKeyPair.Key;
-		if ((PinnedDomain[0] == TEXT('.') && Domain.EndsWith(PinnedDomain))
-			|| Domain == PinnedDomain)
-		{
-			PinnedKeys = &PinnedKeyPair.Value;
-			break;
-		}
-	}
+	TArray<TArray<uint8, TFixedAllocator<PUBLIC_KEY_DIGEST_SIZE>>> CertDigests;
+	TArray<FSslCertificateDelegates::FCertInfo> CertInfoList;
+	const bool bCollectCertInfo = FSslCertificateDelegates::VerifySslCertificates.IsBound();
 
-	if (!PinnedKeys)
-	{
-		// No keys pinned for this domain
-		return true;
-	}
-
-	bool bFoundMatch = false;
 	for (int CertIndex = 0; CertIndex < NumCertsInChain; ++CertIndex)
 	{
 		X509* Certificate = sk_X509_value(Chain, CertIndex);
@@ -228,18 +236,78 @@ bool FSslCertificateManager::VerifySslCertificates(X509_STORE_CTX* Context, cons
 		SHA256_Update(&ShaContext, PubKey.GetData(), PubKey.Num());
 		SHA256_Final(Digest.GetData(), &ShaContext);
 
-		if (PinnedKeys->Contains(Digest))
+		CertDigests.Add(Digest);
+
+		if (bCollectCertInfo)
 		{
-			bFoundMatch = true;
-			break;
+			FSslCertificateDelegates::FCertInfo CertInfo;
+			CertInfo.KeyDigest = Digest;
+			CertInfo.Issuer = GetCertificateIssuer(Certificate);
+			CertInfo.Subject = GetCertificateName(Certificate);
+
+			const EVP_MD* CertDigest = EVP_get_digestbyname("sha1");
+			if (CertDigest)
+			{
+				unsigned int DummySize = 0;
+				CertInfo.Thumbprint.AddZeroed(FSslCertificateDelegates::FCertInfo::CERT_DIGEST_SIZE);
+				X509_digest(Certificate, CertDigest, CertInfo.Thumbprint.GetData(), &DummySize);
+			}
+
+			CertInfoList.Add(CertInfo);
 		}
+	}
+
+	bool bFoundMatch = false;
+
+	bool bFoundMatchDelegate = FSslCertificateDelegates::VerifySslCertificates.IsBound() ? FSslCertificateDelegates::VerifySslCertificates.Execute(Domain, CertInfoList) : true;
+	if (bFoundMatchDelegate)
+	{
+		bFoundMatch = VerifySslCertificates(CertDigests, Domain);
 	}
 
 	if (!bFoundMatch)
 	{
 		X509_STORE_CTX_set_error(Context, X509_V_ERR_CERT_UNTRUSTED);
 	}
+	return bFoundMatch;
+}
 
+bool FSslCertificateManager::VerifySslCertificates(TArray<TArray<uint8, TFixedAllocator<PUBLIC_KEY_DIGEST_SIZE>>>& Digests, const FString& Domain) const
+{
+#if !UE_BUILD_SHIPPING
+	static const bool bPinningDisabled = FParse::Param(FCommandLine::Get(), TEXT("DisableSSLCertificatePinning"));
+	if (bPinningDisabled)
+	{
+		return true;
+	}
+#endif
+	const TArray<TArray<uint8, TFixedAllocator<PUBLIC_KEY_DIGEST_SIZE>>>* PinnedKeys = nullptr;
+	for (const TPair<FString, TArray<TArray<uint8, TFixedAllocator<PUBLIC_KEY_DIGEST_SIZE>>>>& PinnedKeyPair : PinnedPublicKeys)
+	{
+		const FString& PinnedDomain = PinnedKeyPair.Key;
+		if ((PinnedDomain[0] == TEXT('.') && Domain.EndsWith(PinnedDomain))
+			|| Domain == PinnedDomain)
+		{
+			PinnedKeys = &PinnedKeyPair.Value;
+			break;
+		}
+	}
+	if (!PinnedKeys)
+	{
+		// No keys pinned for this domain
+		UE_LOG(LogSsl, Verbose, TEXT("no pinned key digests found for domain '%s'"), *Domain);
+		return true;
+	}
+	bool bFoundMatch = false;
+	for (int32 CertIndex = 0; CertIndex < Digests.Num(); ++CertIndex)
+	{
+		if (PinnedKeys->Contains(Digests[CertIndex]))
+		{
+			UE_LOG(LogSsl, Verbose, TEXT("found public key digest in request that matches a pinned key for '%s'"), *Domain);
+			bFoundMatch = true;
+			break;
+		}
+	}
 	return bFoundMatch;
 }
 
@@ -274,14 +342,17 @@ void FSslCertificateManager::BuildRootCertificateArray()
 		}
 	}
 
-	AddPEMFileToRootCertificateArray(CertificateBundlePath);
+	if (!CertificateBundlePath.IsEmpty())
+	{
+		AddPEMFileToRootCertificateArray(CertificateBundlePath);
+	}
 
 	FString DebuggingCertificatePath;
 	if (GConfig->GetString(TEXT("SSL"), TEXT("DebuggingCertificatePath"), DebuggingCertificatePath, GEngineIni) && DebuggingCertificatePath.Len() > 0)
 	{
 		if (FPaths::FileExists(DebuggingCertificatePath))
 		{
-			FArchive* DebuggingCertificateArchive = IFileManager::Get().CreateFileReader(*DebuggingCertificatePath, 0);
+			TUniquePtr<FArchive> DebuggingCertificateArchive(IFileManager::Get().CreateFileReader(*DebuggingCertificatePath, 0));
 			int64 CertificateBufferSize = DebuggingCertificateArchive->TotalSize();
 			char* CertificateBuffer = new char[CertificateBufferSize + 1];
 			DebuggingCertificateArchive->Serialize(CertificateBuffer, CertificateBufferSize);
@@ -351,18 +422,6 @@ void FSslCertificateManager::AddPEMFileToRootCertificateArray(const FString& Pat
 			}
 			FoundString = EndString;
 		}
-	}
-}
-
-namespace
-{
-	FString GetCertificateName(X509* const Certificate)
-	{
-		char StaticBuffer[2048];
-		// We do not have to free the return value of get_subject_name
-		X509_NAME_oneline(X509_get_subject_name(Certificate), StaticBuffer, sizeof(StaticBuffer));
-
-		return FString(ANSI_TO_TCHAR(StaticBuffer));
 	}
 }
 

@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 using System;
 using System.Collections.Generic;
@@ -27,6 +27,7 @@ namespace AutomationTool
 			{
 				throw new AutomationException("-Description must be defined!");
 			}
+			
 
 			string FileType = ParseParamValue("FileType", null);
 

@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "Slate/DeferredCleanupSlateBrush.h"
 #include "Engine/Texture.h"
@@ -48,5 +48,5 @@ void FDeferredCleanupSlateBrush::AddReferencedObjects(FReferenceCollector& Colle
 
 FString FDeferredCleanupSlateBrush::GetReferencerName() const
 {
-	return "FDeferredCleanupSlateBrush";
+	return TEXT("FDeferredCleanupSlateBrush");
 }

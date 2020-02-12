@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 #pragma once
 
 #include "CoreTypes.h"
@@ -11,7 +11,14 @@ struct CORE_API FPhysicsObjectVersion
 	{
 		// Before any version changes were made
 		BeforeCustomVersionWasAdded = 0,
-
+		// Adding PerShapeData to serialization
+		PerShapeData,
+		// Add serialization from handle back to particle
+		SerializeGTGeometryParticles,
+		// Groom serialization with hair description as bulk data
+		GroomWithDescription,
+		// Groom serialization with import option
+		GroomWithImportSettings,
 
 		// -----<new versions can be added above this line>-------------------------------------------------
 		VersionPlusOne,

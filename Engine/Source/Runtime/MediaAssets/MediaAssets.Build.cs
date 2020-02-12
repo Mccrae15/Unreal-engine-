@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 namespace UnrealBuildTool.Rules
 {
@@ -8,8 +8,9 @@ namespace UnrealBuildTool.Rules
 		{
 			PublicDependencyModuleNames.AddRange(
 				new string[] {
+					"SignalProcessing",
 					"AudioMixer",
-					"Core",
+                    "Core",
 					"CoreUObject",
 					"Engine",
 					"Media",
@@ -19,8 +20,7 @@ namespace UnrealBuildTool.Rules
 			PrivateDependencyModuleNames.AddRange(
 				new string[] {
 					"RenderCore",
-					"RHI",
-					"UtilityShaders",
+					"RHI"
 				});
 
 			PrivateIncludePaths.AddRange(

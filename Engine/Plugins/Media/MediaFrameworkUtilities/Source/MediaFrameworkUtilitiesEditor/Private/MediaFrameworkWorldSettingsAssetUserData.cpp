@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "MediaFrameworkWorldSettingsAssetUserData.h"
 #include "UObject/EnterpriseObjectVersion.h"
@@ -22,6 +22,12 @@ FMediaFrameworkCaptureRenderTargetCameraOutputInfo::FMediaFrameworkCaptureRender
 	: RenderTarget(nullptr)
 	, MediaOutput(nullptr)
 {
+}
+
+
+UMediaFrameworkWorldSettingsAssetUserData::UMediaFrameworkWorldSettingsAssetUserData()
+{
+	CurrentViewportMediaOutput.CaptureOptions.bResizeSourceBuffer = true;
 }
 
 

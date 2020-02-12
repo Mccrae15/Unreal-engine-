@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -11,7 +11,7 @@ class ALevelSequenceActor;
 class ULevelSequence;
 
 /** Plays level sequence actors when recording starts */
-UCLASS(DisplayName="Level Sequence", Category="Other")
+UCLASS(Category="Other", meta = (TakeRecorderDisplayName = "Level Sequence"))
 class UTakeRecorderLevelSequenceSource : public UTakeRecorderSource
 {
 public:

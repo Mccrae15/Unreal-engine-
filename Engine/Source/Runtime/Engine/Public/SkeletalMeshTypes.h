@@ -1,10 +1,11 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
 #include "CoreMinimal.h"
 #include "PrimitiveSceneProxy.h"
 #include "Materials/MaterialInterface.h"
+#include "ComponentReregisterContext.h"
 
 class FMaterialRenderProxy;
 class FMeshElementCollector;
@@ -57,6 +58,8 @@ struct FSkeletalMeshCustomVersion
 		DeprecateSectionDisabledFlag = 15,
 		// Add Section ignore by reduce
 		SectionIgnoreByReduceAdded = 16,
+		// Adding skin weight profile support
+		SkinWeightProfiles = 17,
 
 		// -----<new versions can be added above this line>-------------------------------------------------
 		VersionPlusOne,
@@ -120,7 +123,8 @@ struct ESkeletalMeshVertexFlags
 		None = 0x0,
 		UseFullPrecisionUVs = 0x1,
 		HasVertexColors = 0x2,
-		UseHighPrecisionTangentBasis = 0x4
+		UseHighPrecisionTangentBasis = 0x4,
+		BuildAdjacencyIndexBuffer = 0x8
 	};
 };
 
@@ -230,7 +234,8 @@ public:
 	{
 		return bRenderStatic;
 	}
-	FRayTracingGeometryRHIRef GetDynamicRayTracingGeometryInstance() const final override;
+
+	virtual void GetDynamicRayTracingInstances(struct FRayTracingMaterialGatheringContext& Context, TArray<struct FRayTracingInstance>& OutRayTracingInstances) final override;
 #endif // RHI_RAYTRACING
 
 	virtual FPrimitiveViewRelevance GetViewRelevance(const FSceneView* View) const override;
@@ -239,6 +244,9 @@ public:
 	
 	virtual bool HasDynamicIndirectShadowCasterRepresentation() const override;
 	virtual void GetShadowShapes(TArray<FCapsuleShape>& CapsuleShapes) const override;
+
+	/** Return the bounds for the pre-skinned primitive in local space */
+	virtual void GetPreSkinnedLocalBounds(FBoxSphereBounds& OutBounds) const override { OutBounds = PreSkinnedLocalBounds; }
 
 	/** Returns a pre-sorted list of shadow capsules's bone indicies */
 	const TArray<uint16>& GetSortedShadowBoneIndices() const
@@ -263,7 +271,7 @@ public:
 	 */
 	virtual void DebugDrawPhysicsAsset(int32 ViewIndex, FMeshElementCollector& Collector, const FEngineShowFlags& EngineShowFlags) const;
 
-	/** Render the bones of the skeleton for debug display */
+	/** Render the bones of the skeleton for debug display */ 
 	void DebugDrawSkeleton(int32 ViewIndex, FMeshElementCollector& Collector, const FEngineShowFlags& EngineShowFlags) const;
 
 	virtual uint32 GetMemoryFootprint( void ) const override { return( sizeof( *this ) + GetAllocatedSize() ); }
@@ -287,6 +295,14 @@ public:
 
 	virtual void OnTransformChanged() override;
 
+	virtual uint8 GetCurrentFirstLODIdx_RenderThread() const final override
+	{
+		return GetCurrentFirstLODIdx_Internal();
+	}
+
+	const TArray<FMatrix>& GetMeshObjectReferenceToLocalMatrices() const;
+	const TIndirectArray<FSkeletalMeshLODRenderData>& GetSkeletalMeshRenderDataLOD() const;
+
 protected:
 	AActor* Owner;
 	class FSkeletalMeshObject* MeshObject;
@@ -296,11 +312,20 @@ protected:
 	const USkeletalMesh* SkeletalMeshForDebug;
 	class UPhysicsAsset* PhysicsAssetForDebug;
 
+public:
+#if RHI_RAYTRACING
+	bool bAnySegmentUsesWorldPositionOffset : 1;
+#endif
+
+protected:
 	/** data copied for rendering */
 	uint8 bForceWireframe : 1;
 	uint8 bIsCPUSkinned : 1;
 	uint8 bCanHighlightSelectedSections : 1;
 	uint8 bRenderStatic:1;
+#if !(UE_BUILD_SHIPPING || UE_BUILD_TEST)
+	uint8 bDrawDebugSkeleton:1;
+#endif
 
 	TEnumAsByte<ERHIFeatureLevel::Type> FeatureLevel;
 
@@ -354,6 +379,14 @@ protected:
 	/** Set of materials used by this scene proxy, safe to access from the game thread. */
 	TSet<UMaterialInterface*> MaterialsInUse_GameThread;
 	
+	/** The primitive's pre-skinned local space bounds. */
+	FBoxSphereBounds PreSkinnedLocalBounds;
+
+#if !(UE_BUILD_SHIPPING || UE_BUILD_TEST)
+	/** The color we draw this component in if drawing debug bones */
+	TOptional<FLinearColor> DebugDrawColor;
+#endif
+
 #if WITH_EDITORONLY_DATA
 	/** The component streaming distance multiplier */
 	float StreamingDistanceMultiplier;
@@ -364,6 +397,11 @@ protected:
 								   const FSectionElementInfo& SectionElementInfo, bool bInSelectable, FMeshElementCollector& Collector) const;
 
 	void GetMeshElementsConditionallySelectable(const TArray<const FSceneView*>& Views, const FSceneViewFamily& ViewFamily, bool bInSelectable, uint32 VisibilityMap, FMeshElementCollector& Collector) const;
+
+	/** Only call on render thread timeline */
+	uint8 GetCurrentFirstLODIdx_Internal() const;
+private:
+	void CreateBaseMeshBatch(const FSceneView* View, const FSkeletalMeshLODRenderData& LODData, const int32 LODIndex, const int32 SectionIndex, const FSectionElementInfo& SectionElementInfo, FMeshBatch& Mesh) const;
 };
 
 /** Used to recreate all skinned mesh components for a given skeletal mesh */
@@ -386,3 +424,35 @@ private:
 	bool bRefreshBounds;
 };
 
+#if WITH_EDITOR
+
+//Helper to scope skeletal mesh post edit change.
+class ENGINE_API FScopedSkeletalMeshPostEditChange
+{
+public:
+	/*
+	 * This constructor increment the skeletal mesh PostEditChangeStackCounter. If the stack counter is zero before the increment
+	 * the skeletal mesh component will be unregister from the world. The component will also release there rendering resources.
+	 * Parameters:
+	 * @param InbCallPostEditChange - if we are the first scope PostEditChange will be called.
+	 * @param InbReregisterComponents - if we are the first scope we will re register component from world and also component render data.
+	 */
+	FScopedSkeletalMeshPostEditChange(USkeletalMesh* InSkeletalMesh, bool InbCallPostEditChange = true, bool InbReregisterComponents = true);
+
+	/*
+	 * This destructor decrement the skeletal mesh PostEditChangeStackCounter. If the stack counter is zero after the decrement,
+	 * the skeletal mesh PostEditChange will be call. The component will also be register to the world and there render data resources will be rebuild.
+	 */
+	~FScopedSkeletalMeshPostEditChange();
+
+	void SetSkeletalMesh(USkeletalMesh* InSkeletalMesh);
+
+private:
+	USkeletalMesh* SkeletalMesh;
+	bool bReregisterComponents;
+	bool bCallPostEditChange;
+	FSkinnedMeshComponentRecreateRenderStateContext* RecreateExistingRenderStateContext;
+	TIndirectArray<FComponentReregisterContext> ComponentReregisterContexts;
+};
+
+#endif

@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -78,10 +78,9 @@ protected:
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category=TViewTarget)
 	class APlayerState* PlayerState;
 
-	//@TODO: All for GetNextViewablePlayer
-	friend class APlayerController;
-
 public:
+	class APlayerState* GetPlayerState() const { return PlayerState; }
+	
 	void SetNewTarget(AActor* NewTarget);
 
 	class APawn* GetTargetPawn() const;
@@ -258,6 +257,12 @@ public:
 	/** Current view target transition blend parameters. */
 	struct FViewTargetTransitionParams BlendParams;
 
+public:
+	/** Fires when ViewTarget is set to PendingViewTarget */
+	DECLARE_EVENT(APlayerCameraManager, FOnBlendComplete)
+	FOnBlendComplete& OnBlendComplete() const { return OnBlendCompleteEvent; }
+private:
+	mutable FOnBlendComplete OnBlendCompleteEvent;
 private:
 	/** Cached camera properties. */
 	UPROPERTY(transient)
@@ -655,15 +660,15 @@ public:
 	 * @param	OutCamLoc	Returned camera location
 	 * @param	OutCamRot	Returned camera rotation
 	 */
-	void GetCameraViewPoint(FVector& OutCamLoc, FRotator& OutCamRot) const;
+	virtual void GetCameraViewPoint(FVector& OutCamLoc, FRotator& OutCamRot) const;
 	
 	/** Returns camera's current rotation. */
 	UFUNCTION(BlueprintCallable, Category = "Camera", meta=(Keywords="View Direction"))
-	FRotator GetCameraRotation() const;
+	virtual FRotator GetCameraRotation() const;
 
 	/** Returns camera's current location. */
 	UFUNCTION(BlueprintCallable, Category = "Camera", meta=(Keywords="View Position"))
-	FVector GetCameraLocation() const;
+	virtual FVector GetCameraLocation() const;
 	
 	/** 
 	 * Sets the new desired color scale, enables color scaling, and enables color scale interpolation. 
@@ -770,14 +775,26 @@ public:
 	 */
 	UFUNCTION(BlueprintCallable, Category = "Camera Shakes")
 	virtual class UCameraShake* PlayCameraShake(TSubclassOf<class UCameraShake> ShakeClass, float Scale=1.f, enum ECameraAnimPlaySpace::Type PlaySpace = ECameraAnimPlaySpace::CameraLocal, FRotator UserPlaySpaceRot = FRotator::ZeroRotator);
+
+	/** 
+	 * Plays a camera shake on this camera.
+	 * @param Shake - The class of camera shake to play.
+	 * @param SourceComponent - The source from which the camera shake originates.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "Camera Shakes")
+	virtual class UCameraShake* PlayCameraShakeFromSource(TSubclassOf<class UCameraShake> ShakeClass, class UCameraShakeSourceComponent* SourceComponent);
 	
 	/** Immediately stops the given shake instance and invalidates it. */
 	UFUNCTION(BlueprintCallable, Category = "Camera Shakes")
 	virtual void StopCameraShake(class UCameraShake* ShakeInstance, bool bImmediately = true);
 
-	/** Stops playing CameraShake of the given class. */
+	/** Stops playing all shakes of the given class. */
 	UFUNCTION(BlueprintCallable, Category = "Camera Shakes")
 	virtual void StopAllInstancesOfCameraShake(TSubclassOf<class UCameraShake> Shake, bool bImmediately = true);
+
+	/** Stops playing all shakes originating from the given source. */
+	UFUNCTION(BlueprintCallable, Category = "Camera Shakes")
+	virtual void StopAllInstancesOfCameraShakeFromSource(class UCameraShakeSourceComponent* SourceComponent, bool bImmediately = true);
 
 	/** Stops all active camera shakes on this camera. */
 	UFUNCTION(BlueprintCallable, Category = "Camera Shakes")
@@ -858,6 +875,10 @@ public:
 
 	/** Returns first existing instance of the specified camera anim, or NULL if none exists. */
 	class UCameraAnimInst* FindInstanceOfCameraAnim(class UCameraAnim const* Anim) const;
+
+	/** Sets the bGameCameraCutThisFrame flag to true (indicating we did a camera cut this frame; useful for game code to call, e.g., when performing a teleport that should be seamless) */
+	UFUNCTION(BlueprintCallable, Category = "Camera")
+	void SetGameCameraCutThisFrame() { bGameCameraCutThisFrame = true; }
 
 protected:
 	/** Gets specified temporary CameraActor ready to update the specified Anim. */

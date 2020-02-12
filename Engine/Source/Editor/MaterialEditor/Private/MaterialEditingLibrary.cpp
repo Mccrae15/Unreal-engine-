@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "MaterialEditingLibrary.h"
 #include "Editor.h"
@@ -26,7 +26,9 @@
 #include "EditorSupportDelegates.h"
 #include "Misc/RuntimeErrors.h"
 #include "SceneTypes.h"
-
+#include "AssetRegistryModule.h"
+#include "DebugViewModeHelpers.h"
+#include "Subsystems/AssetEditorSubsystem.h"
 
 DEFINE_LOG_CATEGORY_STATIC(LogMaterialEditingLibrary, Warning, All);
 
@@ -211,9 +213,19 @@ namespace MaterialEditingLibraryImpl
 
 			int32 InputIndex = 0;
 
-			for ( FFunctionExpressionInput& FunctionExpressionInput : Inputs )
+			if ( Inputs.Num() > 0 )
 			{
-				LayoutMaterialExpression( FunctionExpressionInput.ExpressionInput, nullptr, MaterialExpressionsToLayout, ++InputIndex, 0 );
+				for ( FFunctionExpressionInput& FunctionExpressionInput : Inputs )
+				{
+					LayoutMaterialExpression( FunctionExpressionInput.ExpressionInput, nullptr, MaterialExpressionsToLayout, ++InputIndex, 0 );
+				}
+			}
+			else
+			{
+				for ( FFunctionExpressionOutput& FunctionExpressionOutput : Outputs )
+				{
+					LayoutMaterialExpression( FunctionExpressionOutput.ExpressionOutput, nullptr, MaterialExpressionsToLayout, ++InputIndex, 0 );
+				}
 			}
 		}
 
@@ -257,8 +269,8 @@ namespace MaterialEditingLibraryImpl
 
 void UMaterialEditingLibrary::RebuildMaterialInstanceEditors(UMaterial* BaseMaterial)
 {
-	FAssetEditorManager& AssetEditorManager = FAssetEditorManager::Get();
-	TArray<UObject*> EditedAssets = AssetEditorManager.GetAllEditedAssets();
+	UAssetEditorSubsystem* AssetEditorSubsystem = GEditor->GetEditorSubsystem<UAssetEditorSubsystem>();
+	TArray<UObject*> EditedAssets = AssetEditorSubsystem->GetAllEditedAssets();
 
 	for (int32 AssetIdx = 0; AssetIdx < EditedAssets.Num(); AssetIdx++)
 	{
@@ -282,7 +294,7 @@ void UMaterialEditingLibrary::RebuildMaterialInstanceEditors(UMaterial* BaseMate
 			UMaterial* MICOriginalMaterial = SourceInstance->GetMaterial();
 			if (MICOriginalMaterial == BaseMaterial)
 			{
-				IAssetEditorInstance* EditorInstance = AssetEditorManager.FindEditorForAsset(EditedAsset, false);
+				IAssetEditorInstance* EditorInstance = AssetEditorSubsystem->FindEditorForAsset(EditedAsset, false);
 				if (EditorInstance != nullptr)
 				{
 					FMaterialInstanceEditor* OtherEditor = static_cast<FMaterialInstanceEditor*>(EditorInstance);
@@ -295,8 +307,8 @@ void UMaterialEditingLibrary::RebuildMaterialInstanceEditors(UMaterial* BaseMate
 
 void UMaterialEditingLibrary::RebuildMaterialInstanceEditors(UMaterialFunction* BaseFunction)
 {
-	FAssetEditorManager& AssetEditorManager = FAssetEditorManager::Get();
-	TArray<UObject*> EditedAssets = AssetEditorManager.GetAllEditedAssets();
+	UAssetEditorSubsystem* AssetEditorSubsystem = GEditor->GetEditorSubsystem<UAssetEditorSubsystem>();
+	TArray<UObject*> EditedAssets = AssetEditorSubsystem->GetAllEditedAssets();
 
 	for (int32 AssetIdx = 0; AssetIdx < EditedAssets.Num(); AssetIdx++)
 	{
@@ -310,7 +322,7 @@ void UMaterialEditingLibrary::RebuildMaterialInstanceEditors(UMaterialFunction* 
 			// Update function instances that are children of this material function	
 			if (BaseFunction && BaseFunction == FunctionInstance->GetBaseFunction())
 			{
-				IAssetEditorInstance* EditorInstance = AssetEditorManager.FindEditorForAsset(EditedAsset, false);
+				IAssetEditorInstance* EditorInstance = AssetEditorSubsystem->FindEditorForAsset(EditedAsset, false);
 				if (EditorInstance)
 				{
 					FMaterialInstanceEditor* OtherEditor = static_cast<FMaterialInstanceEditor*>(EditorInstance);
@@ -338,7 +350,7 @@ void UMaterialEditingLibrary::RebuildMaterialInstanceEditors(UMaterialFunction* 
 
 				if (BaseFunction && (DependentFunctions.Contains(BaseFunction) || DependentFunctions.Contains(BaseFunction->ParentFunction)))
 				{
-					IAssetEditorInstance* EditorInstance = AssetEditorManager.FindEditorForAsset(EditedAsset, false);
+					IAssetEditorInstance* EditorInstance = AssetEditorSubsystem->FindEditorForAsset(EditedAsset, false);
 					if (EditorInstance != nullptr)
 					{
 						FMaterialInstanceEditor* OtherEditor = static_cast<FMaterialInstanceEditor*>(EditorInstance);
@@ -563,6 +575,16 @@ bool UMaterialEditingLibrary::SetMaterialUsage(UMaterial* Material, EMaterialUsa
 	return bResult;
 }
 
+bool UMaterialEditingLibrary::HasMaterialUsage(UMaterial* Material, EMaterialUsage Usage)
+{
+	bool bResult = false;
+	if (Material)
+	{
+		bResult = Material->GetUsageByFlag(Usage);
+	}
+	return bResult;
+}
+
 bool UMaterialEditingLibrary::ConnectMaterialProperty(UMaterialExpression* FromExpression, FString FromOutputName, EMaterialProperty Property)
 {
 	bool bResult = false;
@@ -639,6 +661,7 @@ void UMaterialEditingLibrary::RecompileMaterial(UMaterial* Material)
 
 		UMaterialEditingLibrary::RebuildMaterialInstanceEditors(Material);
 
+		ClearDebugViewMaterials(Material);
 		FMaterialEditorUtilities::BuildTextureStreamingData(Material);
 	}
 }
@@ -646,6 +669,64 @@ void UMaterialEditingLibrary::RecompileMaterial(UMaterial* Material)
 void UMaterialEditingLibrary::LayoutMaterialExpressions(UMaterial* Material)
 {
 	MaterialEditingLibraryImpl::LayoutMaterialExpressions( Material );
+}
+
+float UMaterialEditingLibrary::GetMaterialDefaultScalarParameterValue(UMaterial* Material, FName ParameterName)
+{
+	float Result = 0.f;
+	if (Material)
+	{
+		Material->GetScalarParameterDefaultValue(ParameterName, Result);
+	}
+	return Result;
+}
+
+UTexture* UMaterialEditingLibrary::GetMaterialDefaultTextureParameterValue(UMaterial* Material, FName ParameterName)
+{
+	UTexture* Result = nullptr;
+	if (Material)
+	{
+		Material->GetTextureParameterDefaultValue(ParameterName, Result);
+	}
+	return Result;
+}
+
+FLinearColor UMaterialEditingLibrary::GetMaterialDefaultVectorParameterValue(UMaterial* Material, FName ParameterName)
+{
+	FLinearColor Result = FLinearColor::Black;
+	if (Material)
+	{
+		Material->GetVectorParameterDefaultValue(ParameterName, Result);
+	}
+	return Result;
+}
+
+bool UMaterialEditingLibrary::GetMaterialDefaultStaticSwitchParameterValue(UMaterial* Material, FName ParameterName)
+{
+	bool bResult = false;
+	if (Material)
+	{
+		FGuid OutGuid;
+		Material->GetStaticSwitchParameterDefaultValue(ParameterName, bResult, OutGuid);
+	}
+	return bResult;
+}
+
+TSet<UObject*> UMaterialEditingLibrary::GetMaterialSelectedNodes(UMaterial* Material)
+{
+	auto* MaterialEditor = (IMaterialEditor*)GEditor->GetEditorSubsystem<UAssetEditorSubsystem>()->FindEditorForAsset(Material, false);
+	if (MaterialEditor)
+	{
+		TSet<UObject*> SelectedMaterialObjects;
+		for (const FFieldVariant& SelectedNode : MaterialEditor->GetSelectedNodes())
+		{
+			check(SelectedNode.IsUObject());
+			SelectedMaterialObjects.Add(SelectedNode.ToUObject());
+		}
+		return SelectedMaterialObjects;
+	}
+
+	return TSet<UObject*>();
 }
 
 //////////////////////////////////////////////////////////////////////////
@@ -756,7 +837,7 @@ void UMaterialEditingLibrary::UpdateMaterialFunction(UMaterialFunctionInterface*
 						}
 
 						// if this instance was opened in an editor notify the change
-						auto* MaterialEditor = (IMaterialEditor*)FAssetEditorManager::Get().FindEditorForAsset(CurrentMaterial, false);
+						auto* MaterialEditor = (IMaterialEditor*)GEditor->GetEditorSubsystem<UAssetEditorSubsystem>()->FindEditorForAsset(CurrentMaterial, false);
 						if (MaterialEditor)
 						{
 							MaterialEditor->NotifyExternalMaterialChange();
@@ -780,7 +861,7 @@ void UMaterialEditingLibrary::UpdateMaterialFunction(UMaterialFunctionInterface*
 						CurrentInstance->PostEditChange();
 
 						// if this instance was opened in an editor notify the change
-						auto* MaterialEditor = (IMaterialEditor*)FAssetEditorManager::Get().FindEditorForAsset(CurrentInstance, false);
+						auto* MaterialEditor = (IMaterialEditor*)GEditor->GetEditorSubsystem<UAssetEditorSubsystem>()->FindEditorForAsset(CurrentInstance, false);
 						if (MaterialEditor)
 						{
 							MaterialEditor->NotifyExternalMaterialChange();
@@ -888,6 +969,17 @@ bool UMaterialEditingLibrary::SetMaterialInstanceVectorParameterValue(UMaterialI
 }
 
 
+bool UMaterialEditingLibrary::GetMaterialInstanceStaticSwitchParameterValue(UMaterialInstanceConstant* Instance, FName ParameterName)
+{
+	bool bResult = false;
+	if (Instance)
+	{
+		FGuid OutGuid;
+		Instance->GetStaticSwitchParameterValue(ParameterName, bResult, OutGuid);
+	}
+	return bResult;
+}
+
 void UMaterialEditingLibrary::UpdateMaterialInstance(UMaterialInstanceConstant* Instance)
 {
 	if (Instance)
@@ -903,4 +995,167 @@ void UMaterialEditingLibrary::UpdateMaterialInstance(UMaterialInstanceConstant* 
 		FEditorDelegates::RefreshEditor.Broadcast();
 		FEditorSupportDelegates::RedrawAllViewports.Broadcast();
 	}
+}
+
+void UMaterialEditingLibrary::GetChildInstances(UMaterialInterface* Parent, TArray< FAssetData>& ChildInstances)
+{
+	FAssetRegistryModule& AssetRegistryModule = FModuleManager::LoadModuleChecked<FAssetRegistryModule>(TEXT("AssetRegistry"));
+	TArray<FAssetData> AssetList;
+	TMultiMap<FName, FString> TagsAndValues;
+	const FString ParentNameString = FAssetData(Parent).GetExportTextName();
+	TagsAndValues.Add(GET_MEMBER_NAME_CHECKED(UMaterialInstance, Parent), ParentNameString);
+	AssetRegistryModule.Get().GetAssetsByTagValues(TagsAndValues, AssetList);
+	
+	for (const FAssetData MatInstRef : AssetList)
+	{
+		ChildInstances.Add(MatInstRef);
+	}
+}
+
+void UMaterialEditingLibrary::GetScalarParameterNames(UMaterialInterface* Material, TArray<FName>& ParameterNames)
+{
+	ParameterNames.Empty();
+	if (Material)
+	{
+		TArray<FMaterialParameterInfo> MaterialInfo;
+		TArray<FGuid> MaterialGuids;
+		Material->GetAllScalarParameterInfo(MaterialInfo, MaterialGuids);
+
+		for (const FMaterialParameterInfo& Info : MaterialInfo)
+		{
+			ParameterNames.Add(Info.Name);
+		}
+	}
+}
+
+void UMaterialEditingLibrary::GetVectorParameterNames(UMaterialInterface* Material, TArray<FName>& ParameterNames)
+{
+	ParameterNames.Empty();
+	if (Material)
+	{
+		TArray<FMaterialParameterInfo> MaterialInfo;
+		TArray<FGuid> MaterialGuids;
+		Material->GetAllVectorParameterInfo(MaterialInfo, MaterialGuids);
+
+		for (const FMaterialParameterInfo& Info : MaterialInfo)
+		{
+			ParameterNames.Add(Info.Name);
+		}
+	}
+}
+
+void UMaterialEditingLibrary::GetTextureParameterNames(UMaterialInterface* Material, TArray<FName>& ParameterNames)
+{
+	ParameterNames.Empty();
+	if (Material)
+	{
+		TArray<FMaterialParameterInfo> MaterialInfo;
+		TArray<FGuid> MaterialGuids;
+		Material->GetAllTextureParameterInfo(MaterialInfo, MaterialGuids);
+
+		for (const FMaterialParameterInfo& Info : MaterialInfo)
+		{
+			ParameterNames.Add(Info.Name);
+		}
+	}
+}
+
+void UMaterialEditingLibrary::GetStaticSwitchParameterNames(UMaterialInterface* Material, TArray<FName>& ParameterNames)
+{
+	ParameterNames.Empty();
+	if (Material)
+	{
+		TArray<FMaterialParameterInfo> MaterialInfo;
+		TArray<FGuid> MaterialGuids;
+		Material->GetAllStaticSwitchParameterInfo(MaterialInfo, MaterialGuids);
+
+		for (const FMaterialParameterInfo& Info : MaterialInfo)
+		{
+			ParameterNames.Add(Info.Name);
+		}
+	}
+}
+
+bool UMaterialEditingLibrary::GetScalarParameterSource(UMaterialInterface* Material, const FName ParameterName, FSoftObjectPath& ParameterSource)
+{
+	if (Material)
+	{
+		TArray<FMaterialParameterInfo> MaterialInfo;
+		TArray<FGuid> MaterialGuids;
+		Material->GetAllScalarParameterInfo(MaterialInfo, MaterialGuids);
+		FMaterialParameterInfo* ParameterInfo = MaterialInfo.FindByPredicate([ParameterName](const FMaterialParameterInfo& Parameter)
+		{
+			return ParameterName == Parameter.Name;
+		});
+		
+		if (ParameterInfo)
+		{
+			ParameterSource = ParameterInfo->ParameterLocation;
+			return true;
+		}
+	}
+	return false;
+}
+
+bool UMaterialEditingLibrary::GetVectorParameterSource(UMaterialInterface* Material, const FName ParameterName, FSoftObjectPath& ParameterSource)
+{
+	if (Material)
+	{
+		TArray<FMaterialParameterInfo> MaterialInfo;
+		TArray<FGuid> MaterialGuids;
+		Material->GetAllVectorParameterInfo(MaterialInfo, MaterialGuids);
+		FMaterialParameterInfo* ParameterInfo = MaterialInfo.FindByPredicate([ParameterName](const FMaterialParameterInfo& Parameter)
+		{
+			return ParameterName == Parameter.Name;
+		});
+
+		if (ParameterInfo)
+		{
+			ParameterSource = ParameterInfo->ParameterLocation;
+			return true;
+		}
+	}
+	return false;
+}
+
+bool UMaterialEditingLibrary::GetTextureParameterSource(UMaterialInterface* Material, const FName ParameterName, FSoftObjectPath& ParameterSource)
+{
+	if (Material)
+	{
+		TArray<FMaterialParameterInfo> MaterialInfo;
+		TArray<FGuid> MaterialGuids;
+		Material->GetAllTextureParameterInfo(MaterialInfo, MaterialGuids);
+		FMaterialParameterInfo* ParameterInfo = MaterialInfo.FindByPredicate([ParameterName](const FMaterialParameterInfo& Parameter)
+		{
+			return ParameterName == Parameter.Name;
+		});
+
+		if (ParameterInfo)
+		{
+			ParameterSource = ParameterInfo->ParameterLocation;
+			return true;
+		}
+	}
+	return false;
+}
+
+bool UMaterialEditingLibrary::GetStaticSwitchParameterSource(UMaterialInterface* Material, const FName ParameterName, FSoftObjectPath& ParameterSource)
+{
+	if (Material)
+	{
+		TArray<FMaterialParameterInfo> MaterialInfo;
+		TArray<FGuid> MaterialGuids;
+		Material->GetAllStaticSwitchParameterInfo(MaterialInfo, MaterialGuids);
+		FMaterialParameterInfo* ParameterInfo = MaterialInfo.FindByPredicate([ParameterName](const FMaterialParameterInfo& Parameter)
+		{
+			return ParameterName == Parameter.Name;
+		});
+
+		if (ParameterInfo)
+		{
+			ParameterSource = ParameterInfo->ParameterLocation;
+			return true;
+		}
+	}
+	return false;
 }

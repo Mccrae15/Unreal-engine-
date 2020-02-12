@@ -1,10 +1,11 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
 #include "Input/Devices/IDisplayClusterInputDevice.h"
 #include "Input/Devices/DisplayClusterInputDeviceTraits.h"
-#include "Misc/DisplayClusterLog.h"
+
+#include "DisplayClusterLog.h"
 
 #include "CoreMinimal.h"
 

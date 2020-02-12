@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -52,7 +52,7 @@ public:
 	 */
 	UE_DEPRECATED(4.22, "Use the socket constructor that specifies protocol stack for better compatibility and debugging")
 	FSocketBSD(SOCKET InSocket, ESocketType InSocketType, const FString& InSocketDescription, ISocketSubsystem * InSubsystem)
-		: FSocket(InSocketType, InSocketDescription, ESocketProtocolFamily::None)
+		: FSocket(InSocketType, InSocketDescription, NAME_None)
 		, Socket(InSocket)
 		, LastActivityTime(0)
 		, SocketSubsystem(InSubsystem)
@@ -66,7 +66,7 @@ public:
 	 * @param InSocketDescription the debug description of the socket.
 	 * @param InSocketProtocol the protocol this socket is initialized with
 	 */
-	FSocketBSD(SOCKET InSocket, ESocketType InSocketType, const FString& InSocketDescription, ESocketProtocolFamily InSocketProtocol, ISocketSubsystem * InSubsystem)
+	FSocketBSD(SOCKET InSocket, ESocketType InSocketType, const FString& InSocketDescription, const FName& InSocketProtocol, ISocketSubsystem * InSubsystem)
 		: FSocket(InSocketType, InSocketDescription, InSocketProtocol)
 		, Socket(InSocket)
 		, LastActivityTime(0.0)
@@ -117,6 +117,7 @@ public:
 	virtual void GetAddress(FInternetAddr& OutAddr) override;
 	virtual bool GetPeerAddress(FInternetAddr& OutAddr) override;
 	virtual bool SetNonBlocking(bool bIsNonBlocking = true) override;
+	virtual bool SetNoDelay(bool bIsNoDelay = true) override;
 	virtual bool SetBroadcast(bool bAllowBroadcast = true) override;
 	virtual bool JoinMulticastGroup(const FInternetAddr& GroupAddress) override;
 	virtual bool JoinMulticastGroup(const FInternetAddr& GroupAddress, const FInternetAddr& InterfaceAddress) override;

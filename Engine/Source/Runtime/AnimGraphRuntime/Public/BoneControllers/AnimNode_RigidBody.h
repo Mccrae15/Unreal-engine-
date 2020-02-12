@@ -1,16 +1,11 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
 #include "BoneControllers/AnimNode_SkeletalControlBase.h"
 #include "Components/SkeletalMeshComponent.h"
+#include "Physics/ImmediatePhysics/ImmediatePhysicsDeclares.h"
 #include "AnimNode_RigidBody.generated.h"
-
-namespace ImmediatePhysics
-{
-	struct FSimulation;
-	struct FActorHandle;
-}
 
 struct FBodyInstance;
 struct FConstraintInstance;
@@ -50,14 +45,20 @@ struct ANIMGRAPHRUNTIME_API FAnimNode_RigidBody : public FAnimNode_SkeletalContr
 	virtual void EvaluateComponentPose_AnyThread(FComponentSpacePoseContext& Output) override;
 	virtual void EvaluateSkeletalControl_AnyThread(FComponentSpacePoseContext& Output, TArray<FBoneTransform>& OutBoneTransforms) override;
 	virtual void OnInitializeAnimInstance(const FAnimInstanceProxy* InProxy, const UAnimInstance* InAnimInstance) override;
+	virtual bool NeedsOnInitializeAnimInstance() const override { return true; }
 	virtual void PreUpdate(const UAnimInstance* InAnimInstance) override;
 	virtual void UpdateInternal(const FAnimationUpdateContext& Context) override;
 	virtual bool HasPreUpdate() const override { return true; }
-	virtual bool IsValidToEvaluate(const USkeleton* Skeleton, const FBoneContainer& RequiredBones) override { return true; }
+	virtual bool IsValidToEvaluate(const USkeleton* Skeleton, const FBoneContainer& RequiredBones) override;
 	virtual bool NeedsDynamicReset() const override;
 	virtual void ResetDynamics(ETeleportType InTeleportType) override;
 	virtual int32 GetLODThreshold() const override;
 	// End of FAnimNode_SkeletalControlBase interface
+
+	virtual void AddImpulseAtLocation(FVector Impulse, FVector Location, FName BoneName = NAME_None);
+
+	// TEMP: Exposed for use in PhAt as a quick way to get drag handles working with Chaos
+	virtual ImmediatePhysics::FSimulation* GetSimulation() { return PhysicsSimulation; }
 
 public:
 	/** Physics asset to use. If empty use the skeletal mesh's default physics asset */
@@ -69,6 +70,7 @@ private:
 	FTransform CurrentTransform;
 	FTransform PreviousTransform;
 
+	UPhysicsAsset* UsePhysicsAsset;
 public:
 	/** Override gravity*/
 	UPROPERTY(EditAnywhere, Category = Settings, meta = (PinHiddenByDefault, editcondition = "bOverrideWorldGravity"))
@@ -119,7 +121,7 @@ private:
 	ETeleportType ResetSimulatedTeleportType;
 
 public:
-	UPROPERTY(EditAnywhere, Category = Settings, meta=(InlineEditConditionToggle))
+	UPROPERTY(EditAnywhere, Category = Settings, meta = (InlineEditConditionToggle))
 	uint8 bEnableWorldGeometry : 1;
 
 	UPROPERTY(EditAnywhere, Category = Settings, meta = (InlineEditConditionToggle))
@@ -147,7 +149,17 @@ public:
 	UPROPERTY(EditAnywhere, Category = Settings)
 	uint8 bClampLinearTranslationLimitToRefPose : 1;
 
+	/**
+	 * Solver iteration settings overrides (defaults are set in the Physics Asset).
+	 * These can be varied in the runtime and set through blueprint (e.g., to increase
+	 * iterations during difficult movements).
+	 * Set to -1 to leave an individual iteration value at its Physics Asset value.
+	 */
+	UPROPERTY(EditAnywhere, Category = Settings, meta = (PinHiddenByDefault))
+	FSolverIterations OverrideSolverIterations;
+
 private:
+	uint8 bEnabled : 1;
 	uint8 bSimulationStarted : 1;
 	uint8 bCheckForBodyTransformInit : 1;
 
@@ -174,11 +186,13 @@ private:
 private:
 
 	float AccumulatedDeltaTime;
-
+	float AnimPhysicsMinDeltaTime;
+	bool bSimulateAnimPhysicsAfterReset;
 	/** This should only be used for removing the delegate during termination. Do NOT use this for any per frame work */
 	TWeakObjectPtr<USkeletalMeshComponent> SkelMeshCompWeakPtr;
 
 	ImmediatePhysics::FSimulation* PhysicsSimulation;
+	FSolverIterations SolverIterations;
 
 	struct FOutputBoneData
 	{

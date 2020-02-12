@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "GroupedSprites/PaperGroupedSpriteUtilities.h"
 #include "Paper2DEditorLog.h"
@@ -13,7 +13,7 @@
 #include "PaperSprite.h"
 #include "PaperSpriteComponent.h"
 #include "ScopedTransaction.h"
-#include "Layers/ILayers.h"
+#include "Layers/LayersSubsystem.h"
 #include "ComponentReregisterContext.h"
 #include "PaperGroupedSpriteComponent.h"
 
@@ -136,11 +136,12 @@ void FPaperGroupedSpriteUtilities::SplitSprites(const TArray<UObject*>& InObject
 			}
 
 			// Delete the existing actor instances
+			ULayersSubsystem* Layers = GEditor->GetEditorSubsystem<ULayersSubsystem>();
 			for (AActor* ActorToDelete : ActorsToDelete)
 			{
 				// Remove from active selection in editor
 				GEditor->SelectActor(ActorToDelete, /*bSelected=*/ false, /*bNotify=*/ false);
-				GEditor->Layers->DisassociateActorFromLayers(ActorToDelete);
+				Layers->DisassociateActorFromLayers(ActorToDelete);
 				World->EditorDestroyActor(ActorToDelete, /*bShouldModifyLevel=*/ true);
 			}
 
@@ -214,11 +215,12 @@ void FPaperGroupedSpriteUtilities::MergeSprites(const TArray<UObject*>& InObject
 				UGameplayStatics::FinishSpawningActor(SpawnedActor, MergedWorldTM);
 
 				// Delete the existing actor instances
+				ULayersSubsystem* Layers = GEditor->GetEditorSubsystem<ULayersSubsystem>();
 				for (AActor* ActorToDelete : ActorsToDelete)
 				{
 					// Remove from active selection in editor
 					GEditor->SelectActor(ActorToDelete, /*bSelected=*/ false, /*bNotify=*/ false);
-					GEditor->Layers->DisassociateActorFromLayers(ActorToDelete);
+					Layers->DisassociateActorFromLayers(ActorToDelete);
 					World->EditorDestroyActor(ActorToDelete, /*bShouldModifyLevel=*/ true);
 				}
 

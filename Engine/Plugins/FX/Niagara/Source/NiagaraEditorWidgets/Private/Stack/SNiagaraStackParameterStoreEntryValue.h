@@ -1,9 +1,10 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
 #include "Widgets/SCompoundWidget.h"
 #include "Widgets/DeclarativeSyntaxSupport.h"
+#include "AssetData.h"
 
 class UNiagaraStackParameterStoreEntry;
 class SNiagaraParameterEditor;
@@ -24,8 +25,6 @@ public:
 private:
 	FReply DeleteClicked();
 
-	TSharedRef<SWidget> OnGetAvailableHandleMenu();
-
 	TSharedRef<SWidget> ConstructValueStructWidget();
 
 	void OnInputValueChanged();
@@ -38,8 +37,6 @@ private:
 
 	void ParameterPropertyValueChanged(const FPropertyChangedEvent& PropertyChangedEvent);
 
-	EVisibility GetDeleteButtonVisibility() const;
-
 	EVisibility GetReferenceVisibility() const;
 
 	EVisibility GetResetButtonVisibility() const;
@@ -51,6 +48,9 @@ private:
 	FText GetInputIconToolTip() const;
 
 	FSlateColor GetInputIconColor() const;
+
+	void OnAssetSelectedFromPicker(const FAssetData& InAssetData);
+	FString GetCurrentAssetPath() const;
 
 private:
 	UNiagaraStackParameterStoreEntry* StackEntry;

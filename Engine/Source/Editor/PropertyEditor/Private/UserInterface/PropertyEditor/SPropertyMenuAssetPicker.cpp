@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "UserInterface/PropertyEditor/SPropertyMenuAssetPicker.h"
 #include "Factories/Factory.h"
@@ -20,6 +20,8 @@
 void SPropertyMenuAssetPicker::Construct( const FArguments& InArgs )
 {
 	CurrentObject = InArgs._InitialObject;
+	PropertyHandle = InArgs._PropertyHandle;
+	const TArray<FAssetData>& OwnerAssetArray = InArgs._OwnerAssetArray;
 	bAllowClear = InArgs._AllowClear;
 	bAllowCopyPaste = InArgs._AllowCopyPaste;
 	AllowedClasses = InArgs._AllowedClasses;
@@ -28,6 +30,8 @@ void SPropertyMenuAssetPicker::Construct( const FArguments& InArgs )
 	OnShouldFilterAsset = InArgs._OnShouldFilterAsset;
 	OnSet = InArgs._OnSet;
 	OnClose = InArgs._OnClose;
+
+	const bool bForceShowEngineContent = PropertyHandle ? PropertyHandle->HasMetaData(TEXT("ForceShowEngineContent")) : false;
 
 	const bool bInShouldCloseWindowAfterMenuSelection = true;
 	const bool bCloseSelfOnly = true;
@@ -143,6 +147,12 @@ void SPropertyMenuAssetPicker::Construct( const FArguments& InArgs )
 		AssetPickerConfig.bAllowDragging = false;
 		// Save the settings into a special section for asset pickers for properties
 		AssetPickerConfig.SaveSettingsName = TEXT("AssetPropertyPicker");
+		// Populate the referencing assets via property handle
+		AssetPickerConfig.PropertyHandle = PropertyHandle;
+		// Populate the additional referencing assets with the Owner asset data
+		AssetPickerConfig.AdditionalReferencingAssets = OwnerAssetArray;
+		// Force show engine content if meta data says so
+		AssetPickerConfig.bForceShowEngineContent = bForceShowEngineContent;
 
 		MenuContent =
 			SNew(SBox)
@@ -233,10 +243,10 @@ bool SPropertyMenuAssetPicker::CanPaste()
 
 	FString Class;
 	FString PossibleObjectPath = ClipboardText;
-	if( ClipboardText.Split( TEXT("'"), &Class, &PossibleObjectPath ) )
+	if( ClipboardText.Split( TEXT("'"), &Class, &PossibleObjectPath, ESearchCase::CaseSensitive) )
 	{
 		// Remove the last item
-		PossibleObjectPath = PossibleObjectPath.LeftChop( 1 );
+		PossibleObjectPath.LeftChopInline( 1, false );
 	}
 
 	bool bCanPaste = false;
@@ -285,12 +295,15 @@ void SPropertyMenuAssetPicker::OnCreateNewAssetSelected(TWeakObjectPtr<UFactory>
 	if (FactoryPtr.IsValid())
 	{
 		UFactory* FactoryInstance = DuplicateObject<UFactory>(FactoryPtr.Get(), GetTransientPackage());
+		// Ensure this object is not GC for the duration of CreateAssetWithDialog
+		FactoryInstance->AddToRoot();
 		FAssetToolsModule& AssetToolsModule = FAssetToolsModule::GetModule();
 		UObject* NewAsset = AssetToolsModule.Get().CreateAssetWithDialog(FactoryInstance->GetSupportedClass(), FactoryInstance);
 		if (NewAsset != nullptr)
 		{
 			SetValue(NewAsset);
 		}
+		FactoryInstance->RemoveFromRoot();
 	}
 }
 

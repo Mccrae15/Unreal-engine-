@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -13,8 +13,8 @@ class USkeletalMeshComponent;
 // Timed Particle Effect Notify
 // Allows a looping particle effect to be played in an animation that will activate
 // at the beginning of the notify and deactivate at the end.
-UCLASS(MinimalAPI, Blueprintable, meta = (DisplayName = "Timed Particle Effect"))
-class UAnimNotifyState_TimedParticleEffect : public UAnimNotifyState
+UCLASS(Blueprintable, meta = (DisplayName = "Timed Particle Effect"))
+class ENGINE_API UAnimNotifyState_TimedParticleEffect : public UAnimNotifyState
 {
 	GENERATED_UCLASS_BODY()
 
@@ -54,7 +54,7 @@ class UAnimNotifyState_TimedParticleEffect : public UAnimNotifyState
 #endif
 
 #if WITH_EDITOR
-	virtual void PreEditChange(UProperty* PropertyAboutToChange) override;
+	virtual void PreEditChange(FProperty* PropertyAboutToChange) override;
 #endif
 
 	virtual void NotifyBegin(class USkeletalMeshComponent * MeshComp, class UAnimSequenceBase * Animation, float TotalDuration) override;
@@ -64,6 +64,6 @@ class UAnimNotifyState_TimedParticleEffect : public UAnimNotifyState
 	// Overridden from UAnimNotifyState to provide custom notify name.
 	FString GetNotifyName_Implementation() const override;
 
-private:
+protected:
 	bool ValidateParameters(USkeletalMeshComponent* MeshComp);
 };

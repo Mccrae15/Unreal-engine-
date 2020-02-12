@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -50,8 +50,13 @@ public:
 	FVisualTreeCapture();
 	~FVisualTreeCapture();
 
+	/** Enables visual tree capture */
 	void Enable();
+
+	/** Disables visual tree capture */
 	void Disable();
+
+	/** Resets the visual tree capture to a pre-capture state and destroys the cached visual tree captured last. */
 	void Reset();
 
 	TSharedPtr<FVisualTreeSnapshot> GetVisualTreeForWindow(SWindow* InWindow);

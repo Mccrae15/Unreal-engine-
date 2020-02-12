@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 /**
  * Base class of all placed Blutility editor utilities.
@@ -11,8 +11,8 @@
 #include "GameFramework/Actor.h"
 #include "PlacedEditorUtilityBase.generated.h"
 
-UCLASS(Abstract, hideCategories=(Object, Actor)/*, Blueprintable*/)
-class BLUTILITY_API APlacedEditorUtilityBase : public AActor
+UCLASS(Abstract, hideCategories=(Object, Actor), Deprecated)
+class BLUTILITY_API ADEPRECATED_PlacedEditorUtilityBase : public AActor
 {
 	GENERATED_UCLASS_BODY()
 

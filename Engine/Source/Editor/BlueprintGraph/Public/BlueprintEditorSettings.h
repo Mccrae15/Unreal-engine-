@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -46,6 +46,10 @@ public:
 	UPROPERTY(EditAnywhere, config, Category=Workflow, meta=(DisplayName="Context Menu: Show Favorites Section"))
 	bool bShowContextualFavorites;
 
+	/** If enabled, deprecated functions will be visible in the context menu and will be available for override implementation. By default, functions marked as deprecated are not exposed in either case. */
+	UPROPERTY(EditAnywhere, config, Category = Workflow)
+	bool bExposeDeprecatedFunctions;
+
 	/** If enabled, then call-on-member actions will be spawned as a single node (instead of a GetMember + FunctionCall node). */
 	UPROPERTY(EditAnywhere, config, Category=Workflow)
 	bool bCompactCallOnMemberNodes;
@@ -70,9 +74,21 @@ public:
 	UPROPERTY(config)
 	bool bShowInheritedVariables;
 
+	/** If set interface functions will always show in the overrides menu, even if they are already shown in the interfaces menu */
+	UPROPERTY(config)
+	bool bAlwaysShowInterfacesInOverrides;
+
+	/** If set then the parent class will be listed next to the override function name in the overrides function menu */
+	UPROPERTY(config)
+	bool bShowParentClassInOverrides;
+
 	/** If set we'll show empty sections in the My Blueprint view. */
 	UPROPERTY(config)
 	bool bShowEmptySections;
+
+	/** If set we'll show the access specifier of functions in the My Blueprint view */
+	UPROPERTY(config)
+	bool bShowAccessSpecifier;
 
 	/** If set will spawn default nodes in new Blueprints */
 	UPROPERTY(EditAnywhere, config, Category=Workflow)

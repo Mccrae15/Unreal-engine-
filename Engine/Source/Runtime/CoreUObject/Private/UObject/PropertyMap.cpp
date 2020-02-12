@@ -1,15 +1,19 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "CoreMinimal.h"
 #include "UObject/ObjectMacros.h"
 #include "Templates/Casts.h"
 #include "UObject/PropertyTag.h"
 #include "UObject/UnrealType.h"
+#include "UObject/UnrealTypePrivate.h"
 #include "UObject/LinkerLoad.h"
 #include "UObject/PropertyHelper.h"
 #include "Misc/ScopeExit.h"
 #include "Serialization/ArchiveUObjectFromStructuredArchive.h"
 #include "UObject/UObjectThreadContext.h"
+
+// WARNING: This should always be the last include in any file that needs it (except .generated.h)
+#include "UObject/UndefineUPropertyMacros.h"
 
 namespace UE4MapProperty_Private
 {
@@ -22,8 +26,8 @@ namespace UE4MapProperty_Private
 	 */
 	bool AnyEqual(const FScriptMapHelper& MapHelper, int32 Index, int32 Num, const uint8* PairToCompare, uint32 PortFlags)
 	{
-		UProperty* KeyProp   = MapHelper.GetKeyProperty();
-		UProperty* ValueProp = MapHelper.GetValueProperty();
+		FProperty* KeyProp   = MapHelper.GetKeyProperty();
+		FProperty* ValueProp = MapHelper.GetValueProperty();
 
 		int32 ValueOffset = MapHelper.MapLayout.ValueOffset;
 
@@ -47,8 +51,8 @@ namespace UE4MapProperty_Private
 
 	bool RangesContainSameAmountsOfVal(const FScriptMapHelper& MapHelperA, int32 IndexA, const FScriptMapHelper& MapHelperB, int32 IndexB, int32 Num, const uint8* PairToCompare, uint32 PortFlags)
 	{
-		UProperty* KeyProp   = MapHelperA.GetKeyProperty();
-		UProperty* ValueProp = MapHelperA.GetValueProperty();
+		FProperty* KeyProp   = MapHelperA.GetKeyProperty();
+		FProperty* ValueProp = MapHelperA.GetValueProperty();
 
 		// Ensure that both maps are the same type
 		check(KeyProp   == MapHelperB.GetKeyProperty());
@@ -95,8 +99,8 @@ namespace UE4MapProperty_Private
 
 	bool IsPermutation(const FScriptMapHelper& MapHelperA, const FScriptMapHelper& MapHelperB, uint32 PortFlags)
 	{
-		UProperty* KeyProp   = MapHelperA.GetKeyProperty();
-		UProperty* ValueProp = MapHelperA.GetValueProperty();
+		FProperty* KeyProp   = MapHelperA.GetKeyProperty();
+		FProperty* ValueProp = MapHelperA.GetValueProperty();
 
 		// Ensure that both maps are the same type
 		check(KeyProp   == MapHelperB.GetKeyProperty());
@@ -177,24 +181,73 @@ namespace UE4MapProperty_Private
 	}
 }
 
-UMapProperty::UMapProperty(const FObjectInitializer& ObjectInitializer, ECppProperty, int32 InOffset, EPropertyFlags InFlags)
-: UMapProperty_Super(ObjectInitializer, EC_CppProperty, InOffset, InFlags)
+IMPLEMENT_FIELD(FMapProperty)
+
+FMapProperty::FMapProperty(FFieldVariant InOwner, const FName& InName, EObjectFlags InObjectFlags, EMapPropertyFlags InMapFlags)
+	: FMapProperty_Super(InOwner, InName, InObjectFlags)
+{
+	// These are expected to be set post-construction by AddCppProperty
+	KeyProp = nullptr;
+	ValueProp = nullptr;
+
+	MapFlags = InMapFlags;
+}
+
+FMapProperty::FMapProperty(FFieldVariant InOwner, const FName& InName, EObjectFlags InObjectFlags, int32 InOffset, EPropertyFlags InFlags, EMapPropertyFlags InMapFlags)
+	: FMapProperty_Super(InOwner, InName, InObjectFlags, InOffset, InFlags)
 {
 	// These are expected to be set post-construction by AddCppProperty
 	KeyProp   = nullptr;
 	ValueProp = nullptr;
+
+	MapFlags = InMapFlags;
 }
 
-void UMapProperty::LinkInternal(FArchive& Ar)
+#if WITH_EDITORONLY_DATA
+FMapProperty::FMapProperty(UField* InField)
+	: FMapProperty_Super(InField)
+	, MapFlags(EMapPropertyFlags::None)
+{
+	UMapProperty* SourceProperty = CastChecked<UMapProperty>(InField);
+	MapLayout = SourceProperty->MapLayout;
+
+	KeyProp = CastField<FProperty>(SourceProperty->KeyProp->GetAssociatedFField());
+	if (!KeyProp)
+	{
+		KeyProp = CastField<FProperty>(CreateFromUField(SourceProperty->KeyProp));
+		SourceProperty->KeyProp->SetAssociatedFField(KeyProp);
+	}
+
+	ValueProp = CastField<FProperty>(SourceProperty->ValueProp->GetAssociatedFField());
+	if (!ValueProp)
+	{
+		ValueProp = CastField<FProperty>(CreateFromUField(SourceProperty->ValueProp));
+		SourceProperty->ValueProp->SetAssociatedFField(ValueProp);
+	}
+}
+#endif // WITH_EDITORONLY_DATA
+
+FMapProperty::~FMapProperty()
+{
+	delete KeyProp;
+	KeyProp = nullptr;
+	delete ValueProp;
+	ValueProp = nullptr;
+}
+
+void FMapProperty::PostDuplicate(const FField& InField)
+{
+	const FMapProperty& Source = static_cast<const FMapProperty&>(InField);
+	KeyProp = CastFieldChecked<FProperty>(FField::Duplicate(Source.KeyProp, this));
+	ValueProp = CastFieldChecked<FProperty>(FField::Duplicate(Source.ValueProp, this));
+	MapLayout = Source.MapLayout;
+	Super::PostDuplicate(InField);
+}
+
+void FMapProperty::LinkInternal(FArchive& Ar)
 {
 	check(KeyProp && ValueProp);
 
-	if (FLinkerLoad* MyLinker = GetLinker())
-	{
-		MyLinker->Preload(this);
-	}
-	Ar.Preload(KeyProp);
-	Ar.Preload(ValueProp);
 	KeyProp  ->Link(Ar);
 	ValueProp->Link(Ar);
 
@@ -210,7 +263,7 @@ void UMapProperty::LinkInternal(FArchive& Ar)
 	Super::LinkInternal(Ar);
 }
 
-bool UMapProperty::Identical(const void* A, const void* B, uint32 PortFlags) const
+bool FMapProperty::Identical(const void* A, const void* B, uint32 PortFlags) const
 {
 	checkSlow(KeyProp);
 	checkSlow(ValueProp);
@@ -233,14 +286,20 @@ bool UMapProperty::Identical(const void* A, const void* B, uint32 PortFlags) con
 	return UE4MapProperty_Private::IsPermutation(MapHelperA, MapHelperB, PortFlags);
 }
 
-void UMapProperty::GetPreloadDependencies(TArray<UObject*>& OutDeps)
+void FMapProperty::GetPreloadDependencies(TArray<UObject*>& OutDeps)
 {
 	Super::GetPreloadDependencies(OutDeps);
-	OutDeps.Add(KeyProp);
-	OutDeps.Add(ValueProp);
+	if (KeyProp)
+	{
+		KeyProp->GetPreloadDependencies(OutDeps);
+	}
+	if (ValueProp)
+	{
+		ValueProp->GetPreloadDependencies(OutDeps);
+	}
 }
 
-void UMapProperty::SerializeItem(FStructuredArchive::FSlot Slot, void* Value, const void* Defaults) const
+void FMapProperty::SerializeItem(FStructuredArchive::FSlot Slot, void* Value, const void* Defaults) const
 {
 	FArchive& UnderlyingArchive = Slot.GetUnderlyingArchive();
 	FStructuredArchive::FRecord Record = Slot.EnterRecord();
@@ -251,13 +310,9 @@ void UMapProperty::SerializeItem(FStructuredArchive::FSlot Slot, void* Value, co
 		Defaults = nullptr;
 	}
 
-	// Ar related calls in this function must be mirrored in UMapProperty::ConvertFromType
+	// Ar related calls in this function must be mirrored in FMapProperty::ConvertFromType
 	checkSlow(KeyProp);
 	checkSlow(ValueProp);
-
-	// Ensure that the key/value properties have been loaded before calling SerializeItem() on them
-	UnderlyingArchive.Preload(KeyProp);
-	UnderlyingArchive.Preload(ValueProp);
 
 	FScriptMapHelper MapHelper(this, Value);
 
@@ -284,10 +339,10 @@ void UMapProperty::SerializeItem(FStructuredArchive::FSlot Slot, void* Value, co
 
 		// Delete any explicitly-removed keys
 		int32 NumKeysToRemove = 0;
-		FStructuredArchive::FArray KeysToRemoveArray = Record.EnterArray(FIELD_NAME_TEXT("KeysToRemove"), NumKeysToRemove);
+		FStructuredArchive::FArray KeysToRemoveArray = Record.EnterArray(SA_FIELD_NAME(TEXT("KeysToRemove")), NumKeysToRemove);
 		if (NumKeysToRemove)
 		{
-			TempKeyStorage = (uint8*)FMemory::Malloc(MapLayout.SetLayout.Size);
+			TempKeyStorage = (uint8*)FMemory::Malloc(KeyProp->GetSize());
 			KeyProp->InitializeValue(TempKeyStorage);
 
 			FSerializedPropertyScope SerializedProperty(UnderlyingArchive, KeyProp, this);
@@ -297,21 +352,20 @@ void UMapProperty::SerializeItem(FStructuredArchive::FSlot Slot, void* Value, co
 				KeyProp->SerializeItem(KeysToRemoveArray.EnterElement(), TempKeyStorage);
 
 				// If the key is in the map, remove it
-				int32 Found = MapHelper.FindMapIndexWithKey(TempKeyStorage);
-				if (Found != INDEX_NONE)
+				if (uint8* PairPtr = MapHelper.FindMapPairPtrFromHash(TempKeyStorage))
 				{
-					MapHelper.RemoveAt(Found);
+					MapHelper.RemovePair(PairPtr);
 				}
 			}
 		}
 
 		int32 NumEntries = 0;
-		FStructuredArchive::FArray EntriesArray = Record.EnterArray(FIELD_NAME_TEXT("Entries"), NumEntries);
+		FStructuredArchive::FArray EntriesArray = Record.EnterArray(SA_FIELD_NAME(TEXT("Entries")), NumEntries);
 
 		// Allocate temporary key space if we haven't allocated it already above
 		if (NumEntries != 0 && !TempKeyStorage)
 		{
-			TempKeyStorage = (uint8*)FMemory::Malloc(MapLayout.SetLayout.Size);
+			TempKeyStorage = (uint8*)FMemory::Malloc(KeyProp->GetSize());
 			KeyProp->InitializeValue(TempKeyStorage);
 		}
 
@@ -323,29 +377,17 @@ void UMapProperty::SerializeItem(FStructuredArchive::FSlot Slot, void* Value, co
 			// Read key into temporary storage
 			{
 				FSerializedPropertyScope SerializedProperty(UnderlyingArchive, KeyProp, this);
-				KeyProp->SerializeItem(EntryRecord.EnterField(FIELD_NAME_TEXT("Key")), TempKeyStorage);
-			}
-			
-			// Add a new default value if the key doesn't currently exist in the map
-			int32 NextPairIndex = MapHelper.FindMapIndexWithKey(TempKeyStorage);
-			if (NextPairIndex == INDEX_NONE)
-			{
-				NextPairIndex = MapHelper.AddDefaultValue_Invalid_NeedsRehash();
+				KeyProp->SerializeItem(EntryRecord.EnterField(SA_FIELD_NAME(TEXT("Key"))), TempKeyStorage);
 			}
 
-			uint8* NextPairPtr = MapHelper.GetPairPtrWithoutCheck(NextPairIndex);
+			void* ValuePtr = MapHelper.FindOrAdd(TempKeyStorage);
 
-			// Copy over deserialised key from temporary storage
-			KeyProp->CopyCompleteValue_InContainer(NextPairPtr, TempKeyStorage);
-
-			// Deserialize value
+			// Deserialize value into hash map-owned memory
 			{
 				FSerializedPropertyScope SerializedProperty(UnderlyingArchive, ValueProp, this);
-				ValueProp->SerializeItem(EntryRecord.EnterField(FIELD_NAME_TEXT("Value")), NextPairPtr + MapLayout.ValueOffset);
+				ValueProp->SerializeItem(EntryRecord.EnterField(SA_FIELD_NAME(TEXT("Value"))), ValuePtr);
 			}
 		}
-
-		MapHelper.Rehash();
 	}
 	else
 	{
@@ -375,7 +417,7 @@ void UMapProperty::SerializeItem(FStructuredArchive::FSlot Slot, void* Value, co
 
 		// Write out the missing keys
 		int32 MissingKeysNum = Indices.Num();
-		FStructuredArchive::FArray KeysToRemoveArray = Record.EnterArray(FIELD_NAME_TEXT("KeysToRemove"), MissingKeysNum);
+		FStructuredArchive::FArray KeysToRemoveArray = Record.EnterArray(SA_FIELD_NAME(TEXT("KeysToRemove")), MissingKeysNum);
 		{
 			FSerializedPropertyScope SerializedProperty(UnderlyingArchive, KeyProp, this);
 			for (int32 Index : Indices)
@@ -406,7 +448,7 @@ void UMapProperty::SerializeItem(FStructuredArchive::FSlot Slot, void* Value, co
 
 			// Write out differences from defaults
 			int32 Num = Indices.Num();
-			FStructuredArchive::FArray EntriesArray = Record.EnterArray(FIELD_NAME_TEXT("Entries"), Num);
+			FStructuredArchive::FArray EntriesArray = Record.EnterArray(SA_FIELD_NAME(TEXT("Entries")), Num);
 			for (int32 Index : Indices)
 			{
 				uint8* ValuePairPtr = MapHelper.GetPairPtrWithoutCheck(Index);
@@ -414,18 +456,18 @@ void UMapProperty::SerializeItem(FStructuredArchive::FSlot Slot, void* Value, co
 
 				{
 					FSerializedPropertyScope SerializedProperty(UnderlyingArchive, KeyProp, this);
-					KeyProp->SerializeItem(EntryRecord.EnterField(FIELD_NAME_TEXT("Key")), ValuePairPtr);
+					KeyProp->SerializeItem(EntryRecord.EnterField(SA_FIELD_NAME(TEXT("Key"))), ValuePairPtr);
 				}
 				{
 					FSerializedPropertyScope SerializedProperty(UnderlyingArchive, ValueProp, this);
-					ValueProp->SerializeItem(EntryRecord.EnterField(FIELD_NAME_TEXT("Value")), ValuePairPtr + MapLayout.ValueOffset);
+					ValueProp->SerializeItem(EntryRecord.EnterField(SA_FIELD_NAME(TEXT("Value"))), ValuePairPtr + MapLayout.ValueOffset);
 				}
 			}
 		}
 		else
 		{
 			int32 Num = MapHelper.Num();
-			FStructuredArchive::FArray EntriesArray = Record.EnterArray(FIELD_NAME_TEXT("Entries"), Num);
+			FStructuredArchive::FArray EntriesArray = Record.EnterArray(SA_FIELD_NAME(TEXT("Entries")), Num);
 
 			for (int32 Index = 0; Num; ++Index)
 			{
@@ -437,11 +479,11 @@ void UMapProperty::SerializeItem(FStructuredArchive::FSlot Slot, void* Value, co
 
 					{
 						FSerializedPropertyScope SerializedProperty(UnderlyingArchive, KeyProp, this);
-						KeyProp->SerializeItem(EntryRecord.EnterField(FIELD_NAME_TEXT("Key")), ValuePairPtr);
+						KeyProp->SerializeItem(EntryRecord.EnterField(SA_FIELD_NAME(TEXT("Key"))), ValuePairPtr);
 					}
 					{
 						FSerializedPropertyScope SerializedProperty(UnderlyingArchive, ValueProp, this);
-						ValueProp->SerializeItem(EntryRecord.EnterField(FIELD_NAME_TEXT("Value")), ValuePairPtr + MapLayout.ValueOffset);
+						ValueProp->SerializeItem(EntryRecord.EnterField(SA_FIELD_NAME(TEXT("Value"))), ValuePairPtr + MapLayout.ValueOffset);
 					}
 
 					--Num;
@@ -451,30 +493,34 @@ void UMapProperty::SerializeItem(FStructuredArchive::FSlot Slot, void* Value, co
 	}
 }
 
-bool UMapProperty::NetSerializeItem( FArchive& Ar, UPackageMap* Map, void* Data, TArray<uint8> * MetaData ) const
+bool FMapProperty::NetSerializeItem( FArchive& Ar, UPackageMap* Map, void* Data, TArray<uint8> * MetaData ) const
 {
 	UE_LOG( LogProperty, Error, TEXT( "Replicated TMaps are not supported." ) );
 	return 1;
 }
 
-void UMapProperty::Serialize( FArchive& Ar )
+void FMapProperty::Serialize( FArchive& Ar )
 {
 	Super::Serialize( Ar );
-	Ar << KeyProp;
-	Ar << ValueProp;
+
+	SerializeSingleField(Ar, KeyProp, this);
+	SerializeSingleField(Ar, ValueProp, this);
 }
 
-void UMapProperty::AddReferencedObjects(UObject* InThis, FReferenceCollector& Collector)
+void FMapProperty::AddReferencedObjects(FReferenceCollector& Collector)
 {
-	UMapProperty* This = CastChecked<UMapProperty>(InThis);
-
-	Collector.AddReferencedObject(This->KeyProp,   This);
-	Collector.AddReferencedObject(This->ValueProp, This);
-
-	Super::AddReferencedObjects(This, Collector);
+	Super::AddReferencedObjects(Collector);
+	if (KeyProp)
+	{
+		KeyProp->AddReferencedObjects(Collector);
+	}
+	if (ValueProp)
+	{
+		ValueProp->AddReferencedObjects(Collector);
+	}
 }
 
-FString UMapProperty::GetCPPTypeCustom(FString* ExtendedTypeText, uint32 CPPExportFlags, const FString& KeyTypeText, const FString& InKeyExtendedTypeText, const FString& ValueTypeText, const FString& InValueExtendedTypeText) const
+FString FMapProperty::GetCPPTypeCustom(FString* ExtendedTypeText, uint32 CPPExportFlags, const FString& KeyTypeText, const FString& InKeyExtendedTypeText, const FString& ValueTypeText, const FString& InValueExtendedTypeText) const
 {
 	if (ExtendedTypeText)
 	{
@@ -500,7 +546,7 @@ FString UMapProperty::GetCPPTypeCustom(FString* ExtendedTypeText, uint32 CPPExpo
 	return TEXT("TMap");
 }
 
-FString UMapProperty::GetCPPType(FString* ExtendedTypeText, uint32 CPPExportFlags) const
+FString FMapProperty::GetCPPType(FString* ExtendedTypeText, uint32 CPPExportFlags) const
 {
 	checkSlow(KeyProp);
 	checkSlow(ValueProp);
@@ -517,7 +563,7 @@ FString UMapProperty::GetCPPType(FString* ExtendedTypeText, uint32 CPPExportFlag
 	return GetCPPTypeCustom(ExtendedTypeText, CPPExportFlags, KeyTypeText, KeyExtendedTypeText, ValueTypeText, ValueExtendedTypeText);
 }
 
-FString UMapProperty::GetCPPTypeForwardDeclaration() const
+FString FMapProperty::GetCPPTypeForwardDeclaration() const
 {
 	checkSlow(KeyProp);
 	checkSlow(ValueProp);
@@ -525,7 +571,7 @@ FString UMapProperty::GetCPPTypeForwardDeclaration() const
 	return FString::Printf( TEXT("%s %s"), *KeyProp->GetCPPTypeForwardDeclaration(), *ValueProp->GetCPPTypeForwardDeclaration());
 }
 
-FString UMapProperty::GetCPPMacroType( FString& ExtendedTypeText ) const
+FString FMapProperty::GetCPPMacroType( FString& ExtendedTypeText ) const
 {
 	checkSlow(KeyProp);
 	checkSlow(ValueProp);
@@ -533,7 +579,7 @@ FString UMapProperty::GetCPPMacroType( FString& ExtendedTypeText ) const
 	return TEXT("TMAP");
 }
 
-void UMapProperty::ExportTextItem(FString& ValueStr, const void* PropertyValue, const void* DefaultValue, UObject* Parent, int32 PortFlags, UObject* ExportRootScope) const
+void FMapProperty::ExportTextItem(FString& ValueStr, const void* PropertyValue, const void* DefaultValue, UObject* Parent, int32 PortFlags, UObject* ExportRootScope) const
 {
 	if (0 != (PortFlags & PPF_ExportCpp))
 	{
@@ -552,13 +598,19 @@ void UMapProperty::ExportTextItem(FString& ValueStr, const void* PropertyValue, 
 		return;
 	}
 
+	const bool bExternalEditor = (0 != (PPF_ExternalEditor & PortFlags));
+
 	uint8* StructDefaults = nullptr;
-	if (UStructProperty* StructValueProp = dynamic_cast<UStructProperty*>(ValueProp))
+	if (FStructProperty* StructValueProp = CastField<FStructProperty>(ValueProp))
 	{
 		checkSlow(StructValueProp->Struct);
 
-		StructDefaults = (uint8*)FMemory::Malloc(MapLayout.SetLayout.Size);
-		ValueProp->InitializeValue(StructDefaults + MapLayout.ValueOffset);
+		if (!bExternalEditor)
+		{
+			// For external editor, we always export all fields
+			StructDefaults = (uint8*)FMemory::Malloc(MapLayout.SetLayout.Size);
+			ValueProp->InitializeValue(StructDefaults + MapLayout.ValueOffset);
+		}
 	}
 	ON_SCOPE_EXIT
 	{
@@ -596,6 +648,12 @@ void UMapProperty::ExportTextItem(FString& ValueStr, const void* PropertyValue, 
 				// Always use struct defaults if the inner is a struct, for symmetry with the import of array inner struct defaults
 				uint8* PropDefault = StructDefaults ? StructDefaults : DefaultValue ? DefaultMapHelper.FindMapPairPtrWithKey(PropData) : nullptr;
 
+				if (bExternalEditor)
+				{
+					// For external editor, always write
+					PropDefault = PropData;
+				}
+
 				ValueProp->ExportTextItem(ValueStr, PropData + MapLayout.ValueOffset, PropDefault + MapLayout.ValueOffset, Parent, PortFlags | PPF_Delimited, ExportRootScope);
 
 				--Count;
@@ -629,6 +687,12 @@ void UMapProperty::ExportTextItem(FString& ValueStr, const void* PropertyValue, 
 				// Always use struct defaults if the inner is a struct, for symmetry with the import of array inner struct defaults
 				uint8* PropDefault = StructDefaults ? StructDefaults : DefaultValue ? DefaultMapHelper.FindMapPairPtrWithKey(PropData) : nullptr;
 
+				if (bExternalEditor)
+				{
+					// For external editor, always write
+					PropDefault = PropData;
+				}
+
 				ValueProp->ExportTextItem(ValueStr, PropData + MapLayout.ValueOffset, PropDefault + MapLayout.ValueOffset, Parent, PortFlags | PPF_Delimited, ExportRootScope);
 
 				ValueStr += TEXT(")");
@@ -641,7 +705,7 @@ void UMapProperty::ExportTextItem(FString& ValueStr, const void* PropertyValue, 
 	}
 }
 
-const TCHAR* UMapProperty::ImportText_Internal(const TCHAR* Buffer, void* Data, int32 PortFlags, UObject* Parent, FOutputDevice* ErrorText) const
+const TCHAR* FMapProperty::ImportText_Internal(const TCHAR* Buffer, void* Data, int32 PortFlags, UObject* Parent, FOutputDevice* ErrorText) const
 {
 	checkSlow(KeyProp);
 	checkSlow(ValueProp);
@@ -751,7 +815,7 @@ const TCHAR* UMapProperty::ImportText_Internal(const TCHAR* Buffer, void* Data, 
 	}
 }
 
-void UMapProperty::AddCppProperty( UProperty* Property )
+void FMapProperty::AddCppProperty(FProperty* Property)
 {
 	check(Property);
 
@@ -770,7 +834,7 @@ void UMapProperty::AddCppProperty( UProperty* Property )
 	}
 }
 
-void UMapProperty::CopyValuesInternal(void* Dest, void const* Src, int32 Count) const
+void FMapProperty::CopyValuesInternal(void* Dest, void const* Src, int32 Count) const
 {
 	check(Count == 1);
 
@@ -804,13 +868,13 @@ void UMapProperty::CopyValuesInternal(void* Dest, void const* Src, int32 Count) 
 	DestMapHelper.Rehash();
 }
 
-void UMapProperty::ClearValueInternal(void* Data) const
+void FMapProperty::ClearValueInternal(void* Data) const
 {
 	FScriptMapHelper MapHelper(this, Data);
 	MapHelper.EmptyValues();
 }
 
-void UMapProperty::DestroyValueInternal(void* Data) const
+void FMapProperty::DestroyValueInternal(void* Data) const
 {
 	FScriptMapHelper MapHelper(this, Data);
 	MapHelper.EmptyValues();
@@ -819,7 +883,7 @@ void UMapProperty::DestroyValueInternal(void* Data) const
 	((FScriptMap*)Data)->~FScriptMap();
 }
 
-bool UMapProperty::PassCPPArgsByRef() const
+bool FMapProperty::PassCPPArgsByRef() const
 {
 	return true;
 }
@@ -832,7 +896,7 @@ bool UMapProperty::PassCPPArgsByRef() const
  * @param	Owner				the object that contains this property's data
  * @param	InstanceGraph		contains the mappings of instanced objects and components to their templates
  */
-void UMapProperty::InstanceSubobjects(void* Data, void const* DefaultData, UObject* Owner, FObjectInstancingGraph* InstanceGraph)
+void FMapProperty::InstanceSubobjects(void* Data, void const* DefaultData, UObject* InOwner, FObjectInstancingGraph* InstanceGraph)
 {
 	if (!Data)
 	{
@@ -863,12 +927,12 @@ void UMapProperty::InstanceSubobjects(void* Data, void const* DefaultData, UObje
 
 				if (bInstancedKey)
 				{
-					KeyProp->InstanceSubobjects(PairPtr, DefaultPairPtr, Owner, InstanceGraph);
+					KeyProp->InstanceSubobjects(PairPtr, DefaultPairPtr, InOwner, InstanceGraph);
 				}
 
 				if (bInstancedValue)
 				{
-					ValueProp->InstanceSubobjects(PairPtr + MapLayout.ValueOffset, DefaultPairPtr ? DefaultPairPtr + MapLayout.ValueOffset : nullptr, Owner, InstanceGraph);
+					ValueProp->InstanceSubobjects(PairPtr + MapLayout.ValueOffset, DefaultPairPtr ? DefaultPairPtr + MapLayout.ValueOffset : nullptr, InOwner, InstanceGraph);
 				}
 
 				--Num;
@@ -885,12 +949,12 @@ void UMapProperty::InstanceSubobjects(void* Data, void const* DefaultData, UObje
 
 				if (bInstancedKey)
 				{
-					KeyProp->InstanceSubobjects(PairPtr, nullptr, Owner, InstanceGraph);
+					KeyProp->InstanceSubobjects(PairPtr, nullptr, InOwner, InstanceGraph);
 				}
 
 				if (bInstancedValue)
 				{
-					ValueProp->InstanceSubobjects(PairPtr + MapLayout.ValueOffset, nullptr, Owner, InstanceGraph);
+					ValueProp->InstanceSubobjects(PairPtr + MapLayout.ValueOffset, nullptr, InOwner, InstanceGraph);
 				}
 
 				--Num;
@@ -899,25 +963,21 @@ void UMapProperty::InstanceSubobjects(void* Data, void const* DefaultData, UObje
 	}
 }
 
-bool UMapProperty::SameType(const UProperty* Other) const
+bool FMapProperty::SameType(const FProperty* Other) const
 {
-	UMapProperty* MapProp = (UMapProperty*)Other;
+	FMapProperty* MapProp = (FMapProperty*)Other;
 	return Super::SameType(Other) && KeyProp && ValueProp && KeyProp->SameType(MapProp->KeyProp) && ValueProp->SameType(MapProp->ValueProp);
 }
 
-EConvertFromTypeResult UMapProperty::ConvertFromType(const FPropertyTag& Tag, FStructuredArchive::FSlot Slot, uint8* Data, UStruct* DefaultsStruct)
+EConvertFromTypeResult FMapProperty::ConvertFromType(const FPropertyTag& Tag, FStructuredArchive::FSlot Slot, uint8* Data, UStruct* DefaultsStruct)
 {
 	FArchive& UnderlyingArchive = Slot.GetUnderlyingArchive();
 
-	// Ar related calls in this function must be mirrored in UMapProperty::SerializeItem
+	// Ar related calls in this function must be mirrored in FMapProperty::SerializeItem
 	checkSlow(KeyProp);
 	checkSlow(ValueProp);
 
-	// Ensure that the key/value properties have been loaded before calling SerializeItem() on them
-	UnderlyingArchive.Preload(KeyProp);
-	UnderlyingArchive.Preload(ValueProp);
-
-	const auto SerializeOrConvert = [](UProperty* CurrentType, const FPropertyTag& InTag, FStructuredArchive::FSlot InnerSlot, uint8* InData, UStruct* InDefaultsStruct) -> bool
+	const auto SerializeOrConvert = [](FProperty* CurrentType, const FPropertyTag& InTag, FStructuredArchive::FSlot InnerSlot, uint8* InData, UStruct* InDefaultsStruct) -> bool
 	{
 		// Serialize wants the property address, while convert wants the container address. InData is the container address
 		if(CurrentType->GetID() == InTag.Type)
@@ -965,7 +1025,7 @@ EConvertFromTypeResult UMapProperty::ConvertFromType(const FPropertyTag& Tag, FS
 			// instance that was being written. Presumably we were constructed from our defaults and must now remove 
 			// any of the elements that were not present when we saved this Map:
 			int32 NumKeysToRemove = 0;
-			FStructuredArchive::FArray KeysToRemoveArray = ValueRecord.EnterArray(FIELD_NAME_TEXT("KeysToRemove"), NumKeysToRemove);
+			FStructuredArchive::FArray KeysToRemoveArray = ValueRecord.EnterArray(SA_FIELD_NAME(TEXT("KeysToRemove")), NumKeysToRemove);
 
 			if( NumKeysToRemove != 0 )
 			{
@@ -999,7 +1059,7 @@ EConvertFromTypeResult UMapProperty::ConvertFromType(const FPropertyTag& Tag, FS
 			}
 
 			int32 NumEntries = 0;
-			FStructuredArchive::FArray EntriesArray = ValueRecord.EnterArray(FIELD_NAME_TEXT("Entries"), NumEntries);
+			FStructuredArchive::FArray EntriesArray = ValueRecord.EnterArray(SA_FIELD_NAME(TEXT("Entries")), NumEntries);
 
 			if( bConversionSucceeded )
 			{
@@ -1013,7 +1073,7 @@ EConvertFromTypeResult UMapProperty::ConvertFromType(const FPropertyTag& Tag, FS
 
 					FStructuredArchive::FRecord FirstPropertyRecord = EntriesArray.EnterElement().EnterRecord();
 
-					if( SerializeOrConvert( KeyProp, KeyPropertyTag, FirstPropertyRecord.EnterField(FIELD_NAME_TEXT("Key")), TempKeyStorage, DefaultsStruct ) )
+					if( SerializeOrConvert( KeyProp, KeyPropertyTag, FirstPropertyRecord.EnterField(SA_FIELD_NAME(TEXT("Key"))), TempKeyStorage, DefaultsStruct ) )
 					{
 						// Add a new default value if the key doesn't currently exist in the map
 						bool bKeyAlreadyPresent = true;
@@ -1029,14 +1089,14 @@ EConvertFromTypeResult UMapProperty::ConvertFromType(const FPropertyTag& Tag, FS
 						KeyProp->CopyCompleteValue_InContainer(NextPairPtr, TempKeyStorage);
 
 						// Deserialize value
-						if( SerializeOrConvert( ValueProp, ValuePropertyTag, FirstPropertyRecord.EnterField(FIELD_NAME_TEXT("Value")), NextPairPtr, DefaultsStruct ) )
+						if( SerializeOrConvert( ValueProp, ValuePropertyTag, FirstPropertyRecord.EnterField(SA_FIELD_NAME(TEXT("Value"))), NextPairPtr, DefaultsStruct ) )
 						{
 							// first entry went fine, convert the rest:
 							for(int32 I = 1; I < NumEntries; ++I)
 							{
 								FStructuredArchive::FRecord PropertyRecord = EntriesArray.EnterElement().EnterRecord();
 
-								verify( SerializeOrConvert( KeyProp, KeyPropertyTag, PropertyRecord.EnterField(FIELD_NAME_TEXT("Key")), TempKeyStorage, DefaultsStruct ) );
+								verify( SerializeOrConvert( KeyProp, KeyPropertyTag, PropertyRecord.EnterField(SA_FIELD_NAME(TEXT("Key"))), TempKeyStorage, DefaultsStruct ) );
 								NextPairIndex = MapHelper.FindMapIndexWithKey(TempKeyStorage);
 								if (NextPairIndex == INDEX_NONE)
 								{
@@ -1046,7 +1106,7 @@ EConvertFromTypeResult UMapProperty::ConvertFromType(const FPropertyTag& Tag, FS
 								NextPairPtr = MapHelper.GetPairPtrWithoutCheck(NextPairIndex);
 								// This copy is unnecessary when the key was already in the map:
 								KeyProp->CopyCompleteValue_InContainer(NextPairPtr, TempKeyStorage);
-								verify( SerializeOrConvert( ValueProp, ValuePropertyTag, PropertyRecord.EnterField(FIELD_NAME_TEXT("Value")), NextPairPtr, DefaultsStruct ) );
+								verify( SerializeOrConvert( ValueProp, ValuePropertyTag, PropertyRecord.EnterField(SA_FIELD_NAME(TEXT("Value"))), NextPairPtr, DefaultsStruct ) );
 							}
 						}
 						else
@@ -1088,13 +1148,13 @@ EConvertFromTypeResult UMapProperty::ConvertFromType(const FPropertyTag& Tag, FS
 			return bConversionSucceeded ? EConvertFromTypeResult::Converted : EConvertFromTypeResult::CannotConvert;
 		}
 
-		if (UStructProperty* KeyPropAsStruct = Cast<UStructProperty>(KeyProp))
+		if (FStructProperty* KeyPropAsStruct = CastField<FStructProperty>(KeyProp))
 		{
 			if(!KeyPropAsStruct->Struct || (KeyPropAsStruct->Struct->GetCppStructOps() && !KeyPropAsStruct->Struct->GetCppStructOps()->HasGetTypeHash() ) )
 			{
 				// If the type we contain is no longer hashable, we're going to drop the saved data here. This can
 				// happen if the native GetTypeHash function is removed.
-				ensureMsgf(false, TEXT("UMapProperty %s with tag %s has an unhashable key type %s and will lose its saved data"), *GetName(), *Tag.Name.ToString(), *KeyProp->GetID().ToString());
+				ensureMsgf(false, TEXT("FMapProperty %s with tag %s has an unhashable key type %s and will lose its saved data"), *GetName(), *Tag.Name.ToString(), *KeyProp->GetID().ToString());
 
 				FScriptMapHelper ScriptMapHelper(this, ContainerPtrToValuePtr<void>(Data));
 				ScriptMapHelper.EmptyValues();
@@ -1107,21 +1167,28 @@ EConvertFromTypeResult UMapProperty::ConvertFromType(const FPropertyTag& Tag, FS
 	return EConvertFromTypeResult::UseSerializeItem;
 }
 
-IMPLEMENT_CORE_INTRINSIC_CLASS(UMapProperty, UProperty,
-	{
-		Class->EmitObjectReference(STRUCT_OFFSET(UMapProperty, KeyProp),   TEXT("KeyProp"));
-		Class->EmitObjectReference(STRUCT_OFFSET(UMapProperty, ValueProp), TEXT("ValueProp"));
-
-		// Ensure that TArray and FScriptMap are interchangeable, as FScriptMap will be used to access a native array property
-		// from script that is declared as a TArray in C++.
-		static_assert(sizeof(FScriptMap) == sizeof(TMap<uint32, uint8>), "FScriptMap and TMap<uint32, uint8> must be interchangable.");
-	}
-);
-
 void FScriptMapHelper::Rehash()
 {
-	// Moved out-of-line to maybe fix a weird link error
-	Map->Rehash(MapLayout, [=](const void* Src) {
-		return KeyProp->GetValueTypeHash(Src);
+	WithScriptMap([this](auto* Map)
+	{
+		// Moved out-of-line to maybe fix a weird link error
+		Map->Rehash(MapLayout, [=](const void* Src) {
+			return KeyProp->GetValueTypeHash(Src);
+		});
 	});
 }
+
+FField* FMapProperty::GetInnerFieldByName(const FName& InName)
+{
+	if (KeyProp && KeyProp->GetFName() == InName)
+	{
+		return KeyProp;
+	}
+	else if (ValueProp && ValueProp->GetFName() == InName)
+	{
+		return ValueProp;
+	}
+	return nullptr;
+}
+
+#include "UObject/DefineUPropertyMacros.h"

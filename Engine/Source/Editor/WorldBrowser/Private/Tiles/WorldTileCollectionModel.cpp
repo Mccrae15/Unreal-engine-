@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 #include "Tiles/WorldTileCollectionModel.h"
 #include "Misc/PackageName.h"
 #include "Components/PrimitiveComponent.h"
@@ -23,10 +23,7 @@
 #include "AssetRegistryModule.h"
 #include "MeshUtilities.h"
 
-#include "MeshDescription.h"
-#include "MeshAttributes.h"
-#include "MeshAttributeArray.h"
-
+#include "StaticMeshAttributes.h"
 #include "Materials/Material.h"
 #include "MaterialUtilities.h"
 #include "LandscapeLayerInfoObject.h"
@@ -344,13 +341,13 @@ void FWorldTileCollectionModel::BuildWorldCompositionMenu(FMenuBuilder& InMenuBu
 			InMenuBuilder.AddSubMenu( 
 				LOCTEXT("VisibilityHeader", "Visibility"),
 				LOCTEXT("VisibilitySubMenu_ToolTip", "Selected Level(s) visibility commands"),
-				FNewMenuDelegate::CreateSP(this, &FWorldTileCollectionModel::FillVisibilitySubMenu ) );
+				FNewMenuDelegate::CreateSP(const_cast<FWorldTileCollectionModel*>(this), &FWorldTileCollectionModel::FillVisibilitySubMenu ) );
 
 			// Lock commands
 			InMenuBuilder.AddSubMenu( 
 				LOCTEXT("LockHeader", "Lock"),
 				LOCTEXT("LockSubMenu_ToolTip", "Selected Level(s) lock commands"),
-				FNewMenuDelegate::CreateSP(this, &FWorldTileCollectionModel::FillLockSubMenu ) );
+				FNewMenuDelegate::CreateSP(const_cast<FWorldTileCollectionModel*>(this), &FWorldTileCollectionModel::FillLockSubMenu ) );
 
 			InMenuBuilder.AddMenuEntry(Commands.World_FindInContentBrowser);
 		}
@@ -364,7 +361,7 @@ void FWorldTileCollectionModel::BuildWorldCompositionMenu(FMenuBuilder& InMenuBu
 				InMenuBuilder.AddSubMenu( 
 					LOCTEXT("Layer_Assign", "Assign to Layer"),
 					FText::GetEmpty(),
-					FNewMenuDelegate::CreateSP(this, &FWorldTileCollectionModel::FillLayersSubMenu));
+					FNewMenuDelegate::CreateSP(const_cast<FWorldTileCollectionModel*>(this), &FWorldTileCollectionModel::FillLayersSubMenu));
 			}
 			InMenuBuilder.EndSection();
 		}
@@ -410,7 +407,7 @@ void FWorldTileCollectionModel::BuildWorldCompositionMenu(FMenuBuilder& InMenuBu
 				InMenuBuilder.AddSubMenu( 
 					LOCTEXT("AddLandscapeLevel", "Add Adjacent Landscape Level"),
 					FText::GetEmpty(),
-					FNewMenuDelegate::CreateSP(this, &FWorldTileCollectionModel::FillAdjacentLandscapeSubMenu));
+					FNewMenuDelegate::CreateSP(const_cast<FWorldTileCollectionModel*>(this), &FWorldTileCollectionModel::FillAdjacentLandscapeSubMenu));
 			}
 
 			// Tiled landscape
@@ -419,7 +416,7 @@ void FWorldTileCollectionModel::BuildWorldCompositionMenu(FMenuBuilder& InMenuBu
 				InMenuBuilder.AddSubMenu( 
 					LOCTEXT("ReimportTiledLandscape", "Reimport Tiled Landscape"),
 					FText::GetEmpty(),
-					FNewMenuDelegate::CreateSP(this, &FWorldTileCollectionModel::FillReimportTiledLandscapeSubMenu));
+					FNewMenuDelegate::CreateSP(const_cast<FWorldTileCollectionModel*>(this), &FWorldTileCollectionModel::FillReimportTiledLandscapeSubMenu));
 			}
 		
 			InMenuBuilder.EndSection();
@@ -454,13 +451,13 @@ void FWorldTileCollectionModel::BuildHierarchyMenu(FMenuBuilder& InMenuBuilder) 
 		InMenuBuilder.AddSubMenu( 
 			LOCTEXT("VisibilityHeader", "Visibility"),
 			LOCTEXT("VisibilitySubMenu_ToolTip", "Selected Level(s) visibility commands"),
-			FNewMenuDelegate::CreateSP(this, &FWorldTileCollectionModel::FillVisibilitySubMenu ) );
+			FNewMenuDelegate::CreateSP(const_cast<FWorldTileCollectionModel*>(this), &FWorldTileCollectionModel::FillVisibilitySubMenu ) );
 
 		// Lock commands
 		InMenuBuilder.AddSubMenu( 
 			LOCTEXT("LockHeader", "Lock"),
 			LOCTEXT("LockSubMenu_ToolTip", "Selected Level(s) lock commands"),
-			FNewMenuDelegate::CreateSP(this, &FWorldTileCollectionModel::FillLockSubMenu ) );
+			FNewMenuDelegate::CreateSP(const_cast<FWorldTileCollectionModel*>(this), &FWorldTileCollectionModel::FillLockSubMenu ) );
 	
 		InMenuBuilder.AddMenuEntry(Commands.World_FindInContentBrowser);
 	}
@@ -474,7 +471,7 @@ void FWorldTileCollectionModel::BuildHierarchyMenu(FMenuBuilder& InMenuBuilder) 
 			InMenuBuilder.AddSubMenu( 
 				LOCTEXT("WorldLayers", "Assign to Layer"),
 				FText::GetEmpty(),
-				FNewMenuDelegate::CreateSP(this, &FWorldTileCollectionModel::FillLayersSubMenu)
+				FNewMenuDelegate::CreateSP(const_cast<FWorldTileCollectionModel*>(this), &FWorldTileCollectionModel::FillLayersSubMenu)
 			);
 		}
 		InMenuBuilder.EndSection();
@@ -524,7 +521,7 @@ void FWorldTileCollectionModel::FillLayersSubMenu(FMenuBuilder& InMenuBuilder) c
 			FText::FromString((*It).Name), 
 			FText(), FSlateIcon(),
 			FUIAction(FExecuteAction::CreateSP(
-				this, &FWorldTileCollectionModel::AssignSelectedLevelsToLayer_Executed, (*It)
+				const_cast<FWorldTileCollectionModel*>(this), &FWorldTileCollectionModel::AssignSelectedLevelsToLayer_Executed, (*It)
 				)
 			)
 		);
@@ -550,7 +547,7 @@ void FWorldTileCollectionModel::FillReimportTiledLandscapeSubMenu(FMenuBuilder& 
 			LOCTEXT("Menu_HeightmapTitle", "Heightmap"), 
 			FText(), FSlateIcon(),
 			FUIAction(FExecuteAction::CreateSP(
-				this, &FWorldTileCollectionModel::ReimportTiledLandscape_Executed, HeightmapLayerName
+				const_cast<FWorldTileCollectionModel*>(this), &FWorldTileCollectionModel::ReimportTiledLandscape_Executed, HeightmapLayerName
 				)
 			)
 		);
@@ -570,7 +567,7 @@ void FWorldTileCollectionModel::FillWeightmapsSubMenu(FMenuBuilder& InMenuBuilde
 			LOCTEXT("Menu_AllWeightmapsTitle", "All Weightmaps"), 
 			FText(), FSlateIcon(),
 			FUIAction(FExecuteAction::CreateSP(
-				this, &FWorldTileCollectionModel::ReimportTiledLandscape_Executed, FName(NAME_None)
+				const_cast<FWorldTileCollectionModel*>(this), &FWorldTileCollectionModel::ReimportTiledLandscape_Executed, FName(NAME_None)
 				)
 			)
 		);
@@ -596,7 +593,7 @@ void FWorldTileCollectionModel::FillWeightmapsSubMenu(FMenuBuilder& InMenuBuilde
 			FText::FromName(LayerName), 
 			FText(), FSlateIcon(),
 			FUIAction(FExecuteAction::CreateSP(
-				this, &FWorldTileCollectionModel::ReimportTiledLandscape_Executed, LayerName
+				const_cast<FWorldTileCollectionModel*>(this), &FWorldTileCollectionModel::ReimportTiledLandscape_Executed, LayerName
 				)
 			)
 		);
@@ -611,7 +608,7 @@ void FWorldTileCollectionModel::CustomizeFileMainMenu(FMenuBuilder& InMenuBuilde
 		
 	InMenuBuilder.BeginSection("LevelsAddLevel");
 	{
-		InMenuBuilder.AddMenuEntry(Commands.World_CreateEmptyLevel);
+		InMenuBuilder.AddMenuEntry(Commands.World_CreateNewLevel);
 		InMenuBuilder.AddMenuEntry(Commands.ImportTiledLandscape);
 	}
 	InMenuBuilder.EndSection();
@@ -749,8 +746,8 @@ void FWorldTileCollectionModel::BindCommands()
 	FUICommandList& ActionList = *CommandList;
 
 	//
-	ActionList.MapAction(Commands.World_CreateEmptyLevel,
-		FExecuteAction::CreateSP(this, &FWorldTileCollectionModel::CreateEmptyLevel_Executed));
+	ActionList.MapAction(Commands.World_CreateNewLevel,
+		FExecuteAction::CreateSP(this, &FWorldTileCollectionModel::CreateNewLevel_Executed));
 
 	ActionList.MapAction(Commands.ClearParentLink,
 		FExecuteAction::CreateSP(this, &FWorldTileCollectionModel::ClearParentLink_Executed),
@@ -1314,7 +1311,7 @@ FVector2D FWorldTileCollectionModel::SnapTranslationDeltaLandscape(const TShared
 																	float SnappingDistance)
 {
 	ALandscapeProxy* Landscape = LandscapeTile->GetLandscape();
-	FVector ComponentScale = Landscape->GetRootComponent()->RelativeScale3D*Landscape->ComponentSizeQuads;
+	FVector ComponentScale = Landscape->GetRootComponent()->GetRelativeScale3D()*Landscape->ComponentSizeQuads;
 	
 	return FVector2D(	FMath::GridSnap(InAbsoluteDelta.X, ComponentScale.X),
 						FMath::GridSnap(InAbsoluteDelta.Y, ComponentScale.Y));
@@ -1391,7 +1388,7 @@ bool FWorldTileCollectionModel::IsLayerSelected(const FWorldTileLayer& InLayer)
 	return SelectedLayers.Contains(InLayer);
 }
 
-void FWorldTileCollectionModel::CreateEmptyLevel_Executed()
+void FWorldTileCollectionModel::CreateNewLevel_Executed()
 {
 	CreateNewEmptyLevel();
 }
@@ -1471,10 +1468,9 @@ void FWorldTileCollectionModel::AddLandscapeProxy_Executed(FWorldTileModel::EWor
 		Levels.Add(NewLevelModel);
 
 		ALandscapeProxy* SourceLandscape = LandscapeTileModel->GetLandscape();
-		FIntVector SourceTileOffset = LandscapeTileModel->GetAbsoluteLevelPosition();
-
+	
 		NewLevelModel->SetVisible(false);
-		NewLevelModel->CreateAdjacentLandscapeProxy(SourceLandscape, SourceTileOffset, InWhere);
+		NewLevelModel->CreateAdjacentLandscapeProxy(SourceLandscape, InWhere);
 		ShowLevels(Levels);
 	}
 }
@@ -1612,7 +1608,7 @@ void FWorldTileCollectionModel::ImportTiledLandscape_Executed()
 		// Extract tile prefix
 		FString FolderName = FPaths::GetBaseFilename(ImportSettings.HeightmapFileList[0]);
 		int32 PrefixEnd = FolderName.Find(TEXT("_x"), ESearchCase::IgnoreCase, ESearchDir::FromEnd);
-		FolderName = FolderName.Left(PrefixEnd);
+		FolderName.LeftInline(PrefixEnd, false);
 		WorldRootPath+= FolderName;
 		WorldRootPath+= TEXT("/");
 
@@ -1630,6 +1626,7 @@ void FWorldTileCollectionModel::ImportTiledLandscape_Executed()
 			SetupLandscapeImportLayers(ImportSettings, GetWorld()->GetOutermost()->GetName(), INDEX_NONE, ImportLayers);
 
 			// Set landscape configuration
+			Landscape->bCanHaveLayersContent = false; 
 			Landscape->LandscapeMaterial	= ImportSettings.LandscapeMaterial.Get();
 			Landscape->ComponentSizeQuads	= ImportSettings.QuadsPerSection*ImportSettings.SectionsPerComponent;
 			Landscape->NumSubsections		= ImportSettings.SectionsPerComponent;
@@ -1959,7 +1956,7 @@ bool FWorldTileCollectionModel::GenerateLODLevels(FLevelModelList InLevelList, i
 				{
 					LandscapeActors.Add(LandscapeProxy);
 				}
-				else 
+				else if(!Actor->IsA<AInstancedFoliageActor>()) // Exclude Foliage from merged mesh
 				{
 					Actors.Add(Actor);
 				}
@@ -2100,7 +2097,8 @@ bool FWorldTileCollectionModel::GenerateLODLevels(FLevelModelList InLevelList, i
 				/* Flush existing grass components, but not grass maps */
 				Landscape->FlushGrassComponents(nullptr, false);
 				TArray<FVector> Cameras;
-				Landscape->UpdateGrass(Cameras, true);
+				int32 NumCompsCreated = 0;
+				Landscape->UpdateGrass(Cameras, NumCompsCreated, true);
 			}
 								
 			// This is texture resolution for a landscape mesh, probably needs to be calculated using landscape size
@@ -2158,12 +2156,13 @@ bool FWorldTileCollectionModel::GenerateLODLevels(FLevelModelList InLevelList, i
 				//Set the Imported version before calling the build
 				StaticMesh->ImportVersion = EImportStaticMeshVersion::LastVersion;
 			}
-			FMeshDescription& LandscapeRawMesh = *(StaticMesh->CreateMeshDescription(0));
+			FMeshDescription* LandscapeRawMesh = StaticMesh->CreateMeshDescription(0);
+			FStaticMeshAttributes Attributes(*LandscapeRawMesh);
 		
-			Landscape->ExportToRawMesh(LandscapeLOD, LandscapeRawMesh);
+			Landscape->ExportToRawMesh(LandscapeLOD, *LandscapeRawMesh);
 		
-			TVertexAttributesRef<FVector> VertexPositions = LandscapeRawMesh.VertexAttributes().GetAttributesRef<FVector>(MeshAttribute::Vertex::Position);
-			for (const FVertexID& VertexID : LandscapeRawMesh.Vertices().GetElementIDs())
+			TVertexAttributesRef<FVector> VertexPositions = Attributes.GetVertexPositions();
+			for (const FVertexID& VertexID : LandscapeRawMesh->Vertices().GetElementIDs())
 			{
 				VertexPositions[VertexID] -= LandscapeWorldLocation;
 			}

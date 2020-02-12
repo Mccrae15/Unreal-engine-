@@ -1,11 +1,15 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "SQLiteDatabase.h"
 #include "SQLiteCore.h"
 #include "IncludeSQLite.h"
 
+#include "Misc/Paths.h"
+#include "HAL/FileManager.h"
 #include "Misc/AssertionMacros.h"
 #include "Containers/StringConv.h"
+
+DEFINE_LOG_CATEGORY_STATIC(LogSQLiteDatabase, Log, All);
 
 FSQLiteDatabase::FSQLiteDatabase()
 	: Database(nullptr)
@@ -64,7 +68,26 @@ bool FSQLiteDatabase::Open(const TCHAR* InFilename, const ESQLiteDatabaseOpenMod
 	}
 	checkf(OpenFlags != 0, TEXT("SQLite open flags were zero! Unhandled ESQLiteDatabaseOpenMode?"));
 
-	return sqlite3_open_v2(TCHAR_TO_UTF8(InFilename), &Database, OpenFlags, nullptr) == SQLITE_OK;
+	if (OpenFlags & SQLITE_OPEN_CREATE)
+	{
+		// Try to ensure that the outer directory exists if we're allowed to create the database file (SQLite won't do this for you)
+		IFileManager::Get().MakeDirectory(*FPaths::GetPath(InFilename), true);
+	}
+
+	if (sqlite3_open_v2(TCHAR_TO_UTF8(InFilename), &Database, OpenFlags, nullptr) != SQLITE_OK)
+	{
+		if (Database)
+		{
+			UE_LOG(LogSQLiteDatabase, Warning, TEXT("Failed to open database '%s': %s"), InFilename, *GetLastError());
+
+			// Partially opened a database - try and close it
+			sqlite3_close(Database);
+			Database = nullptr;
+		}
+		return false;
+	}
+
+	return true;
 }
 
 bool FSQLiteDatabase::Close()
@@ -84,6 +107,44 @@ bool FSQLiteDatabase::Close()
 	return true;
 }
 
+FString FSQLiteDatabase::GetFilename() const
+{
+	const char* FilenameStr = Database ? sqlite3_db_filename(Database, "main") : nullptr;
+	if (FilenameStr)
+	{
+		return UTF8_TO_TCHAR(FilenameStr);
+	}
+	return FString();
+}
+
+bool FSQLiteDatabase::GetApplicationId(int32& OutApplicationId) const
+{
+	return const_cast<FSQLiteDatabase*>(this)->Execute(TEXT("PRAGMA application_id;"), [&OutApplicationId](const FSQLitePreparedStatement& InStatement)
+	{
+		InStatement.GetColumnValueByIndex(0, OutApplicationId);
+		return ESQLitePreparedStatementExecuteRowResult::Stop;
+	}) == 1;
+}
+
+bool FSQLiteDatabase::SetApplicationId(const int32 InApplicationId)
+{
+	return Execute(*FString::Printf(TEXT("PRAGMA application_id = %d;"), InApplicationId));
+}
+
+bool FSQLiteDatabase::GetUserVersion(int32& OutUserVersion) const
+{
+	return const_cast<FSQLiteDatabase*>(this)->Execute(TEXT("PRAGMA user_version;"), [&OutUserVersion](const FSQLitePreparedStatement& InStatement)
+	{
+		InStatement.GetColumnValueByIndex(0, OutUserVersion);
+		return ESQLitePreparedStatementExecuteRowResult::Stop;
+	}) == 1;
+}
+
+bool FSQLiteDatabase::SetUserVersion(const int32 InUserVersion)
+{
+	return Execute(*FString::Printf(TEXT("PRAGMA user_version = %d;"), InUserVersion));
+}
+
 bool FSQLiteDatabase::Execute(const TCHAR* InStatement)
 {
 	if (!Database)
@@ -98,14 +159,26 @@ bool FSQLiteDatabase::Execute(const TCHAR* InStatement)
 		return false;
 	}
 
-	// Step it to completion (or error)
-	ESQLitePreparedStatementStepResult StepResult = ESQLitePreparedStatementStepResult::Row;
-	while (StepResult == ESQLitePreparedStatementStepResult::Row)
+	// Execute it
+	return Statement.Execute();
+}
+
+int64 FSQLiteDatabase::Execute(const TCHAR* InStatement, TFunctionRef<ESQLitePreparedStatementExecuteRowResult(const FSQLitePreparedStatement&)> InCallback)
+{
+	if (!Database)
 	{
-		StepResult = Statement.Step();
+		return false;
 	}
 
-	return StepResult != ESQLitePreparedStatementStepResult::Error;
+	// Create a prepared statement
+	FSQLitePreparedStatement Statement(*this, InStatement);
+	if (!Statement.IsValid())
+	{
+		return false;
+	}
+
+	// Execute it
+	return Statement.Execute(InCallback);
 }
 
 FSQLitePreparedStatement FSQLiteDatabase::PrepareStatement(const TCHAR* InStatement, const ESQLitePreparedStatementFlags InFlags)
@@ -123,4 +196,11 @@ FString FSQLiteDatabase::GetLastError() const
 		return UTF8_TO_TCHAR(ErrorStr);
 	}
 	return FString();
+}
+
+int64 FSQLiteDatabase::GetLastInsertRowId() const
+{
+	return Database
+		? sqlite3_last_insert_rowid(Database)
+		: 0;
 }

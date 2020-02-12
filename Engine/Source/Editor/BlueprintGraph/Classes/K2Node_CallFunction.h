@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -80,9 +80,8 @@ public:
 	virtual FText GetTooltipText() const override;
 	virtual FText GetNodeTitle(ENodeTitleType::Type TitleType) const override;
 	virtual FString GetDescriptiveCompiledName() const override;
-	virtual bool IsDeprecated() const override;
-	virtual bool ShouldWarnOnDeprecation() const override;
-	virtual FString GetDeprecationMessage() const override;
+	virtual bool HasDeprecatedReference() const override;
+	virtual FEdGraphNodeDeprecationResponse GetDeprecationResponse(EEdGraphNodeDeprecationType DeprecationType) const override;
 	virtual void PostPlacedNewNode() override;
 	virtual FString GetDocumentationLink() const override;
 	virtual FString GetDocumentationExcerptName() const override;
@@ -193,7 +192,7 @@ public:
 	static bool IsStructureWildcardProperty(const UFunction* InFunction, const FName PropertyName);
 
 	/** returns true if InProperty should be treated as a wildcard (e.g. due to SetParam markup) */
-	static bool IsWildcardProperty(const UFunction* InFunction, const UProperty* InProperty);
+	static bool IsWildcardProperty(const UFunction* InFunction, const FProperty* InProperty);
 
 	/** Used to determine the result of AllowMultipleSelfs() (without having a node instance) */
 	static bool CanFunctionSupportMultipleTargets(UFunction const* InFunction);

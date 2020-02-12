@@ -1,8 +1,9 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "MovieSceneTimeController.h"
 #include "Engine/World.h"
 #include "Engine/Engine.h"
+#include "Engine/TimecodeProvider.h"
 #include "AudioDevice.h"
 #include "Misc/App.h"
 
@@ -103,16 +104,21 @@ double FMovieSceneTimeController_PlatformClock::GetCurrentTime() const
 
 double FMovieSceneTimeController_AudioClock::GetCurrentTime() const
 {
-	FAudioDevice* AudioDevice = GEngine ? GEngine->GetMainAudioDevice() : nullptr;
-	return AudioDevice ? AudioDevice->GetAudioClock() : 0.0;
+	FAudioDevice* AudioDevice = GEngine ? GEngine->GetMainAudioDevice().GetAudioDevice() : nullptr;
+	return AudioDevice ? AudioDevice->GetAudioClock() : FPlatformTime::Seconds();
 }
 
 double FMovieSceneTimeController_TimecodeClock::GetCurrentTime() const
 {
-	FTimecode Timecode = FApp::GetTimecode();
-	FFrameRate FrameRate = FApp::GetTimecodeFrameRate();
-	FFrameNumber FrameNumber = Timecode.ToFrameNumber(FrameRate);
-	return FrameRate.AsSeconds(FrameNumber);
+	const TOptional<FQualifiedFrameTime> CurrentFrameTime = FApp::GetCurrentFrameTime();
+	if (CurrentFrameTime.IsSet())
+	{
+		return CurrentFrameTime.GetValue().AsSeconds();
+	}
+	else
+	{
+		return FPlatformTime::Seconds();
+	}
 }
 
 void FMovieSceneTimeController_Tick::OnStartPlaying(const FQualifiedFrameTime& InStartTime)

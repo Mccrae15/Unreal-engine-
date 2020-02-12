@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "MeshVertexPainter/MeshVertexPainter.h"
 #include "Components.h"
@@ -36,7 +36,9 @@ void FMeshVertexPainter::PaintVerticesSingleColor(UStaticMeshComponent* StaticMe
 		LODIndex++;
 	}
 
+#if WITH_EDITORONLY_DATA
 	StaticMeshComponent->CachePaintedDataIfNecessary();
+#endif
 	StaticMeshComponent->MarkRenderStateDirty();
 	StaticMeshComponent->bDisallowMeshPaintPerInstance = true;
 }
@@ -85,7 +87,9 @@ void FMeshVertexPainter::PaintVerticesLerpAlongAxis(UStaticMeshComponent* Static
 		LODIndex++;
 	}
 
+#if WITH_EDITORONLY_DATA
 	StaticMeshComponent->CachePaintedDataIfNecessary();
+#endif
 	StaticMeshComponent->MarkRenderStateDirty();
 	StaticMeshComponent->bDisallowMeshPaintPerInstance = true;
 }

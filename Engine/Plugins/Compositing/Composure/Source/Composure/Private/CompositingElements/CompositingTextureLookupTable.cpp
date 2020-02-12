@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "CompositingElements/CompositingTextureLookupTable.h"
 #include "HAL/IConsoleManager.h"
@@ -29,7 +29,7 @@ namespace CompositingTextureLookupTable_Impl
 
 static bool CompositingTextureLookupTable_Impl::IsLookupNameAPrePassAlias(FName LookupName)
 {
-	for (int32 AliasIndex = 0; AliasIndex < ARRAY_COUNT(PrePassAliases); ++AliasIndex)
+	for (int32 AliasIndex = 0; AliasIndex < UE_ARRAY_COUNT(PrePassAliases); ++AliasIndex)
 	{
 		if (LookupName == PrePassAliases[AliasIndex])
 		{

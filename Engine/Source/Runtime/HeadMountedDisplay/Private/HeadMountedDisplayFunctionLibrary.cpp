@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "HeadMountedDisplayFunctionLibrary.h"
 #include "EngineGlobals.h"
@@ -220,6 +220,9 @@ void UHeadMountedDisplayFunctionLibrary::SetTrackingOrigin(TEnumAsByte<EHMDTrack
 			break;
 		case EHMDTrackingOrigin::Floor:
 			Origin = EHMDTrackingOrigin::Floor;
+			break;
+		case EHMDTrackingOrigin::Stage:
+			Origin = EHMDTrackingOrigin::Stage;
 			break;
 		default:
 			break;

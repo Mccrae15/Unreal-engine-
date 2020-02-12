@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 using System;
 using System.Collections.Generic;
@@ -24,11 +24,6 @@ namespace UnrealBuildTool
 		public readonly UnrealTargetPlatform Platform;
 
 		/// <summary>
-		/// The default C++ target platform to use
-		/// </summary>
-		public readonly CppPlatform DefaultCppPlatform;
-
-		/// <summary>
 		/// All the platform folder names
 		/// </summary>
 		private static string[] CachedPlatformFolderNames;
@@ -47,23 +42,30 @@ namespace UnrealBuildTool
 		/// Constructor.
 		/// </summary>
 		/// <param name="InPlatform">The enum value for this platform</param>
-		/// <param name="InDefaultCPPPlatform">The default C++ platform for this platform</param>
-		public UEBuildPlatform(UnrealTargetPlatform InPlatform, CppPlatform InDefaultCPPPlatform)
+		public UEBuildPlatform(UnrealTargetPlatform InPlatform)
 		{
 			Platform = InPlatform;
-			DefaultCppPlatform = InDefaultCPPPlatform;
 		}
 
 		/// <summary>
 		/// Finds all the UEBuildPlatformFactory types in this assembly and uses them to register all the available platforms
 		/// </summary>
 		/// <param name="bIncludeNonInstalledPlatforms">Whether to register platforms that are not installed</param>
-		public static void RegisterPlatforms(bool bIncludeNonInstalledPlatforms)
+		/// <param name="bHostPlatformOnly">Only register the host platform</param>
+		public static void RegisterPlatforms(bool bIncludeNonInstalledPlatforms, bool bHostPlatformOnly)
 		{
-			// Find and register all tool chains and build platforms that are present
-			Assembly UBTAssembly = Assembly.GetExecutingAssembly();
+			// Initialize the installed platform info
+			using(Timeline.ScopeEvent("Initializing InstalledPlatformInfo"))
+			{
+				InstalledPlatformInfo.Initialize();
+			}
 
-			Type[] AllTypes = UBTAssembly.GetTypes();
+			// Find and register all tool chains and build platforms that are present
+			Type[] AllTypes;
+			using(Timeline.ScopeEvent("Querying types"))
+			{
+				AllTypes = Assembly.GetExecutingAssembly().GetTypes();
+			}
 
 			// register all build platforms first, since they implement SDK-switching logic that can set environment variables
 			foreach (Type CheckType in AllTypes)
@@ -73,12 +75,21 @@ namespace UnrealBuildTool
 					if (CheckType.IsSubclassOf(typeof(UEBuildPlatformFactory)))
 					{
 						Log.TraceVerbose("    Registering build platform: {0}", CheckType.ToString());
-						UEBuildPlatformFactory TempInst = (UEBuildPlatformFactory)(UBTAssembly.CreateInstance(CheckType.FullName, true));
-
-						// We need all platforms to be registered when we run -validateplatform command to check SDK status of each
-						if (bIncludeNonInstalledPlatforms || InstalledPlatformInfo.IsValidPlatform(TempInst.TargetPlatform))
+						using(Timeline.ScopeEvent(CheckType.Name))
 						{
-							TempInst.RegisterBuildPlatforms();
+							UEBuildPlatformFactory TempInst = (UEBuildPlatformFactory)Activator.CreateInstance(CheckType);
+							
+							if(bHostPlatformOnly && TempInst.TargetPlatform != BuildHostPlatform.Current.Platform)
+							{
+								continue;
+							}
+
+
+							// We need all platforms to be registered when we run -validateplatform command to check SDK status of each
+							if (bIncludeNonInstalledPlatforms || InstalledPlatformInfo.IsValidPlatform(TempInst.TargetPlatform))
+							{
+								TempInst.RegisterBuildPlatforms();
+							}
 						}
 					}
 				}
@@ -96,19 +107,10 @@ namespace UnrealBuildTool
 				List<string> PlatformFolderNames = new List<string>();
 
 				// Find all the platform folders to exclude from the list of precompiled modules
-				foreach (UnrealTargetPlatform TargetPlatform in Enum.GetValues(typeof(UnrealTargetPlatform)))
-				{
-					if (TargetPlatform != UnrealTargetPlatform.Unknown)
-					{
-						PlatformFolderNames.Add(TargetPlatform.ToString());
-					}
-				}
+				PlatformFolderNames.AddRange(UnrealTargetPlatform.GetValidPlatformNames());
 
 				// Also exclude all the platform groups that this platform is not a part of
-				foreach (UnrealPlatformGroup PlatformGroup in Enum.GetValues(typeof(UnrealPlatformGroup)))
-				{
-					PlatformFolderNames.Add(PlatformGroup.ToString());
-				}
+				PlatformFolderNames.AddRange(UnrealPlatformGroup.GetValidGroupNames());
 
 				// Save off the list as an array
 				CachedPlatformFolderNames = PlatformFolderNames.ToArray();
@@ -343,39 +345,13 @@ namespace UnrealBuildTool
 		}
 
 		/// <summary>
-		/// Attempt to convert a string to an UnrealTargetPlatform enum entry
-		/// </summary>
-		/// <returns>UnrealTargetPlatform.Unknown on failure (the platform didn't match the enum)</returns>
-		public static UnrealTargetPlatform ConvertStringToPlatform(string InPlatformName)
-		{
-			// special case x64, to not break anything
-			// @todo: Is it possible to remove this hack?
-			if (InPlatformName.Equals("X64", StringComparison.InvariantCultureIgnoreCase))
-			{
-				return UnrealTargetPlatform.Win64;
-			}
-
-			// we can't parse the string into an enum because Enum.Parse is case sensitive, so we loop over the enum
-			// looking for matches
-			foreach (string PlatformName in Enum.GetNames(typeof(UnrealTargetPlatform)))
-			{
-				if (InPlatformName.Equals(PlatformName, StringComparison.InvariantCultureIgnoreCase))
-				{
-					// convert the known good enum string back to the enum value
-					return (UnrealTargetPlatform)Enum.Parse(typeof(UnrealTargetPlatform), PlatformName);
-				}
-			}
-			return UnrealTargetPlatform.Unknown;
-		}
-
-		/// <summary>
 		/// Determines whether a given platform is available
 		/// </summary>
 		/// <param name="Platform">The platform to check for</param>
 		/// <returns>True if it's available, false otherwise</returns>
 		public static bool IsPlatformAvailable(UnrealTargetPlatform Platform)
 		{
-			return BuildPlatformDictionary.ContainsKey(Platform);
+			return BuildPlatformDictionary.ContainsKey(Platform) && BuildPlatformDictionary[Platform].HasRequiredSDKsInstalled() == SDKStatus.Valid;
 		}
 
 		/// <summary>
@@ -384,6 +360,8 @@ namespace UnrealBuildTool
 		/// <param name="InBuildPlatform"> The UEBuildPlatform instance to use for the InPlatform</param>
 		public static void RegisterBuildPlatform(UEBuildPlatform InBuildPlatform)
 		{
+			Log.TraceVerbose("        Registering build platform: {0} - buildable: {1}", InBuildPlatform.Platform, InBuildPlatform.HasRequiredSDKsInstalled() == SDKStatus.Valid);
+
 			if (BuildPlatformDictionary.ContainsKey(InBuildPlatform.Platform) == true)
 			{
 				Log.TraceWarning("RegisterBuildPlatform Warning: Registering build platform {0} for {1} when it is already set to {2}",
@@ -451,52 +429,6 @@ namespace UnrealBuildTool
 		}
 
 		/// <summary>
-		/// Gets the UnrealTargetPlatform matching a given CPPTargetPlatform
-		/// </summary>
-		/// <param name="InCPPPlatform">The compile platform</param>
-		/// <returns>The target platform</returns>
-		public static UnrealTargetPlatform CPPTargetPlatformToUnrealTargetPlatform(CppPlatform InCPPPlatform)
-		{
-			switch (InCPPPlatform)
-			{
-				case CppPlatform.Win32:			return UnrealTargetPlatform.Win32;
-				case CppPlatform.Win64:			return UnrealTargetPlatform.Win64;
-				case CppPlatform.Mac:			return UnrealTargetPlatform.Mac;
-				case CppPlatform.XboxOne:		return UnrealTargetPlatform.XboxOne;
-				case CppPlatform.PS4:			return UnrealTargetPlatform.PS4;
-				case CppPlatform.Android:		return UnrealTargetPlatform.Android;
-				case CppPlatform.IOS:			return UnrealTargetPlatform.IOS;
-				case CppPlatform.HTML5:			return UnrealTargetPlatform.HTML5;
-				case CppPlatform.Linux:			return UnrealTargetPlatform.Linux;
-				case CppPlatform.TVOS:			return UnrealTargetPlatform.TVOS;
-				case CppPlatform.Switch: 		return UnrealTargetPlatform.Switch;
-				case CppPlatform.Quail:			return UnrealTargetPlatform.Quail;
-				case CppPlatform.Lumin:			return UnrealTargetPlatform.Lumin;
-			}
-			throw new BuildException("CPPTargetPlatformToUnrealTargetPlatform: Unknown CPPTargetPlatform {0}", InCPPPlatform.ToString());
-		}
-
-		/// <summary>
-		/// Retrieve the IUEBuildPlatform instance for the given CPPTargetPlatform
-		/// </summary>
-		/// <param name="InPlatform">  The CPPTargetPlatform being built</param>
-		/// <param name="bInAllowFailure"> If true, do not throw an exception and return null</param>
-		/// <returns>UEBuildPlatform  The instance of the build platform</returns>
-		public static UEBuildPlatform GetBuildPlatformForCPPTargetPlatform(CppPlatform InPlatform, bool bInAllowFailure = false)
-		{
-			UnrealTargetPlatform UTPlatform = CPPTargetPlatformToUnrealTargetPlatform(InPlatform);
-			if (BuildPlatformDictionary.ContainsKey(UTPlatform) == true)
-			{
-				return BuildPlatformDictionary[UTPlatform];
-			}
-			if (bInAllowFailure == true)
-			{
-				return null;
-			}
-			throw new BuildException("UEBuildPlatform::GetBuildPlatformForCPPTargetPlatform: No BuildPlatform found for {0}", InPlatform.ToString());
-		}
-
-		/// <summary>
 		/// Allow all registered build platforms to modify the newly created module
 		/// passed in for the given platform.
 		/// This is not required - but allows for hiding details of a particular platform.
@@ -517,18 +449,27 @@ namespace UnrealBuildTool
 		/// </summary>
 		public static String GetPathVarDelimiter()
 		{
-			switch (BuildHostPlatform.Current.Platform)
+			if (BuildHostPlatform.Current.Platform == UnrealTargetPlatform.Linux || BuildHostPlatform.Current.Platform == UnrealTargetPlatform.LinuxAArch64 ||
+				BuildHostPlatform.Current.Platform == UnrealTargetPlatform.Mac)
 			{
-				case UnrealTargetPlatform.Linux:
-				case UnrealTargetPlatform.Mac:
-					return ":";
-				case UnrealTargetPlatform.Win32:
-				case UnrealTargetPlatform.Win64:
-					return ";";
-				default:
-					Log.TraceWarning("PATH variable delimiter unknown for platform " + BuildHostPlatform.Current.Platform.ToString() + " using ';'");
-					return ";";
+				return ":";
 			}
+			if (BuildHostPlatform.Current.Platform == UnrealTargetPlatform.Win32 || BuildHostPlatform.Current.Platform == UnrealTargetPlatform.Win64 || 
+				BuildHostPlatform.Current.Platform == UnrealTargetPlatform.HoloLens)
+			{
+				return ";";
+			}
+
+			Log.TraceWarning("PATH variable delimiter unknown for platform " + BuildHostPlatform.Current.Platform.ToString() + " using ';'");
+			return ";";
+		}
+
+		/// <summary>
+		/// Gets the platform name that should be used.
+		/// </summary>
+		public virtual string GetPlatformName()
+		{
+			return Platform.ToString();
 		}
 
 		/// <summary>
@@ -687,7 +628,7 @@ namespace UnrealBuildTool
 					ProjIni.GetBool(Section, Key, out Project);
 					if (Default != Project)
 					{
-						Log.TraceInformationOnce(Key + " is not set to default. (" + Default + " vs. " + Project + ")");
+						Log.TraceInformationOnce("{0} is not set to default. (Base: {1} vs. {2}: {3})", Key, Default, Path.GetFileName(ProjectDirectoryName.FullName), Project);
 						return false;
 					}
 				}
@@ -700,7 +641,7 @@ namespace UnrealBuildTool
 					ProjIni.GetInt32(Section, Key, out Project);
 					if (Default != Project)
 					{
-						Log.TraceInformationOnce(Key + " is not set to default. (" + Default + " vs. " + Project + ")");
+						Log.TraceInformationOnce("{0} is not set to default. (Base: {1} vs. {2}: {3})", Key, Default, Path.GetFileName(ProjectDirectoryName.FullName), Project);
 						return false;
 					}
 				}
@@ -713,7 +654,7 @@ namespace UnrealBuildTool
 					ProjIni.GetString(Section, Key, out Project);
 					if (Default != Project)
 					{
-						Log.TraceInformationOnce(Key + " is not set to default. (" + Default + " vs. " + Project + ")");
+						Log.TraceInformationOnce("{0} is not set to default. (Base: {1} vs. {2}: {3})", Key, Default, Path.GetFileName(ProjectDirectoryName.FullName), Project);
 						return false;
 					}
 				}
@@ -867,13 +808,12 @@ namespace UnrealBuildTool
 		public abstract bool ShouldCreateDebugInfo(ReadOnlyTargetRules Target);
 
 		/// <summary>
-		/// Creates a toolchain instance for the given platform. There should be a single toolchain instance per-target, as their may be
+		/// Creates a toolchain instance for this platform. There should be a single toolchain instance per-target, as their may be
 		/// state data and configuration cached between calls.
 		/// </summary>
-		/// <param name="CppPlatform">The platform to create a toolchain for</param>
 		/// <param name="Target">The target being built</param>
 		/// <returns>New toolchain instance.</returns>
-		public abstract UEToolChain CreateToolChain(CppPlatform CppPlatform, ReadOnlyTargetRules Target);
+		public abstract UEToolChain CreateToolChain(ReadOnlyTargetRules Target);
 
 		/// <summary>
 		/// Deploys the given target

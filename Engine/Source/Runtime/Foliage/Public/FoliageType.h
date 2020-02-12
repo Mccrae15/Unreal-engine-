@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -9,6 +9,7 @@
 #include "Engine/EngineTypes.h"
 #include "Components/PrimitiveComponent.h"
 #include "Curves/CurveFloat.h"
+#include "VT/RuntimeVirtualTextureEnum.h"
 #include "FoliageType.generated.h"
 
 class UStaticMesh;
@@ -84,25 +85,25 @@ class UFoliageType : public UObject
 {
 	GENERATED_UCLASS_BODY()
 
-	/* Gets/Sets the mesh associated with this FoliageType */
-	virtual UStaticMesh* GetStaticMesh() const PURE_VIRTUAL(UFoliageType::GetStaticMesh, return nullptr; );
-	virtual void SetStaticMesh(UStaticMesh* InStaticMesh) PURE_VIRTUAL(UFoliageType::SetStaticMesh,);
-
-	/* Gets the component class to use for instances of this FoliageType */
-	virtual UClass* GetComponentClass() const PURE_VIRTUAL(UFoliageType::GetComponentClass(), return nullptr;);
-	
+	/* Gets/Sets the source data associated with this FoliageType */
+	virtual UObject* GetSource() const PURE_VIRTUAL(UFoliageType::GetSource, return nullptr; );
+		
 	virtual void Serialize(FArchive& Ar) override;
+	virtual void PostLoad() override;
 
 	virtual bool IsNotAssetOrBlueprint() const;
 
 	FOLIAGE_API FVector GetRandomScale() const;
-
+	
 #if WITH_EDITOR
+	virtual void SetSource(UObject* InSource) PURE_VIRTUAL(UFoliageType::SetSource, );
+	virtual void UpdateBounds() {}
 	/* Lets subclasses decide if the InstancedFoliageActor should reallocate its instances if the specified property change event occurs */
-	virtual bool IsFoliageReallocationRequiredForPropertyChange(struct FPropertyChangedEvent& PropertyChangedEvent) const { return true; }
+	virtual bool IsFoliageReallocationRequiredForPropertyChange(const FProperty* Property) const { return true; }
 
-	virtual void PreEditChange(UProperty* PropertyAboutToChange) override;
+	virtual void PreEditChange(FProperty* PropertyAboutToChange) override;
 	virtual void PostEditChangeProperty(struct FPropertyChangedEvent& PropertyChangedEvent) override;
+	virtual bool IsSourcePropertyChange(const FProperty* Property) const { return false; }
 
 	/* Notifies all relevant foliage actors that HiddenEditorView mask has been changed */
 	FOLIAGE_API void OnHiddenEditorViewMaskChanged(UWorld* InWorld);
@@ -129,8 +130,16 @@ public:
 	float DensityAdjustmentFactor;
 
 	/** The minimum distance between foliage instances */
-	UPROPERTY(EditAnywhere, Category=Painting, meta=(UIMin=0, ClampMin=0, UIMax = 1000, ClampMax = 1000, ReapplyCondition="ReapplyRadius"))
+	UPROPERTY(EditAnywhere, Category=Painting, meta=(UIMin=0, ClampMin=0, UIMax = 100000, ClampMax = 100000, ReapplyCondition="ReapplyRadius"))
 	float Radius;
+
+	/** Option to override radius used to detect collision with other instances when painting in single instance mode */
+	UPROPERTY(EditAnywhere, Category = Painting)
+	bool bSingleInstanceModeOverrideRadius = false;
+
+	/** The radius used in single instance mode to detect collision with other instances */
+	UPROPERTY(EditAnywhere, Category = Painting, meta = (EditCondition = "bSingleInstanceModeOverrideRadius", UIMin = 0, ClampMin = 0, UIMax = 100000, ClampMax = 100000))
+	float SingleInstanceModeRadius = 0.f;
 
 	/** Specifies foliage instance scaling behavior when painting. */
 	UPROPERTY(EditAnywhere, Category=Painting, meta=(ReapplyCondition="ReapplyScaling"))
@@ -201,9 +210,21 @@ public:
 	UPROPERTY(EditAnywhere, Category=Placement, meta=(ReapplyCondition="ReapplyHeight"))
 	FFloatInterval Height;
 
-	/** If a layer name is specified, painting on landscape will limit the foliage to areas of landscape with the specified layer painted */
-	UPROPERTY(EditAnywhere, AdvancedDisplay, Category=Placement, meta=(ReapplyCondition="ReapplyLandscapeLayers"))
+	/** If layer names are specified, painting on landscape will limit the foliage to areas of landscape with the specified layers painted */
+	UPROPERTY(EditAnywhere, AdvancedDisplay, Category=Placement, meta=(ReapplyCondition="ReapplyLandscapeLayers", DisplayName="Inclusion Landscape Layers"))
 	TArray<FName> LandscapeLayers;
+
+	/** Specifies the minimum value above which the landscape layer weight value must be, in order for foliage instances to be placed in a specific area */
+	UPROPERTY(EditAnywhere, AdvancedDisplay, Category=Placement, meta=(UIMin=0, ClampMin = 0, UIMax = 1, ClampMax = 1, HideBehind="LandscapeLayers", DisplayName="Minimum Inclusion Landscape Weight"))
+	float MinimumLayerWeight;
+
+	/** If layer names are specified, painting on landscape will exclude the foliage to areas of landscape without the specified layers painted */
+	UPROPERTY(EditAnywhere, AdvancedDisplay, Category = Placement, meta = (ReapplyCondition = "ReapplyLandscapeLayers"))
+	TArray<FName> ExclusionLandscapeLayers;
+
+	/** Specifies the minimum value above which the landscape exclusion layer weight value must be, in order for foliage instances to be excluded in a specific area */
+	UPROPERTY(EditAnywhere, AdvancedDisplay, Category = Placement, meta = (UIMin=0, ClampMin = 0, UIMax = 1, ClampMax = 1, HideBehind = "ExclusionLandscapeLayers"))
+	float MinimumExclusionLayerWeight;
 
 	UPROPERTY()
 	FName LandscapeLayer_DEPRECATED;
@@ -216,17 +237,12 @@ public:
 	UPROPERTY(EditAnywhere, AdvancedDisplay, Category=Placement, meta=(HideBehind="CollisionWithWorld"))
 	FVector CollisionScale;
 
-	/** Specifies the minimum value above which the landscape layer weight value must be, in order for foliage instances to be placed in a specific area */
-	UPROPERTY(EditAnywhere, AdvancedDisplay, Category=Placement, meta=(HideBehind="LandscapeLayers"))
-	float MinimumLayerWeight;
-
 	UPROPERTY()
 	FBoxSphereBounds MeshBounds;
 
 	// X, Y is origin position and Z is radius...
 	UPROPERTY()
 	FVector LowBoundOriginRadius;
-
 
 public:
 	// INSTANCE SETTINGS
@@ -273,7 +289,7 @@ public:
 	/** Whether the foliage receives decals. */
 	UPROPERTY(EditAnywhere, AdvancedDisplay, BlueprintReadOnly, Category=InstanceSettings)
 	uint32 bReceivesDecals : 1;
-	
+
 	/** Whether to override the lightmap resolution defined in the static mesh. */
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category=InstanceSettings, meta=(InlineEditConditionToggle))
 	uint32 bOverrideLightMapRes:1;
@@ -316,16 +332,29 @@ public:
 	UPROPERTY(EditAnywhere, AdvancedDisplay, BlueprintReadOnly, Category=InstanceSettings,  meta=(UIMin = "0", UIMax = "255", editcondition = "bRenderCustomDepth", DisplayName = "CustomDepth Stencil Value"))
 	int32 CustomDepthStencilValue;
 
+	/**
+	 * Translucent objects with a lower sort priority draw behind objects with a higher priority.
+	 * Translucent objects with the same priority are rendered from back-to-front based on their bounds origin.
+	 * This setting is also used to sort objects being drawn into a runtime virtual texture.
+	 *
+	 * Ignored if the object is not translucent.  The default priority is zero.
+	 * Warning: This should never be set to a non-default value unless you know what you are doing, as it will prevent the renderer from sorting correctly.
+	 * It is especially problematic on dynamic gameplay effects.
+	 */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category=InstanceSettings)
+	int32 TranslucencySortPriority;
 
 #if WITH_EDITORONLY_DATA
 	/** Bitflag to represent in which editor views this foliage mesh is hidden. */
 	UPROPERTY(transient)
 	uint64 HiddenEditorViews;
 
-	UPROPERTY()
+	UPROPERTY(transient)
 	uint32 IsSelected:1;
 #endif
 public:
+	FOLIAGE_API float GetRadius(bool bInSingleInstanceMode) const { return bInSingleInstanceMode && bSingleInstanceModeOverrideRadius ? SingleInstanceModeRadius : Radius; }
+
 	// PROCEDURAL
 
 	FOLIAGE_API float GetSeedDensitySquared() const { return InitialSeedDensity * InitialSeedDensity; }
@@ -416,7 +445,7 @@ public:
 	UPROPERTY(Category = Procedural, EditAnywhere, meta = (Subcategory = "Growth", XAxisName = "Normalized Age", YAxisName = "Scale Factor"))
 	FRuntimeFloatCurve ScaleCurve;
 
-	UPROPERTY()
+	UPROPERTY(Transient)
 	int32 ChangeCount;
 
 public:
@@ -492,6 +521,28 @@ public:
 	 */
 	UPROPERTY(EditAnywhere, Category=Scalability)
 	uint32 bEnableDensityScaling:1;
+
+public:
+	// VIRTUAL TEXTURE
+
+	/** 
+	 * Array of runtime virtual textures into which we render the instances. 
+	 * The mesh material also needs to be set up to output to a virtual texture. 
+	 */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category=VirtualTexture, meta = (DisplayName = "Render to Virtual Textures"))
+	TArray<URuntimeVirtualTexture*> RuntimeVirtualTextures;
+
+	/**
+	 * Number of lower mips in the runtime virtual texture to skip for rendering this primitive.
+	 * Larger values reduce the effective draw distance in the runtime virtual texture.
+	 * This culling method doesn't take into account primitive size or virtual texture size.
+	 */
+	UPROPERTY(EditAnywhere, AdvancedDisplay, BlueprintReadOnly, Category = VirtualTexture, meta = (DisplayName = "Virtual Texture Skip Mips", UIMin = "0", UIMax = "7"))
+	int32 VirtualTextureCullMips = 0;
+
+	/** Render to the main pass based on the virtual texture settings. */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = VirtualTexture, meta = (DisplayName = "Virtual Texture Pass Type"))
+	ERuntimeVirtualTextureMainPassType VirtualTextureRenderPassType = ERuntimeVirtualTextureMainPassType::Exclusive;
 
 private:
 

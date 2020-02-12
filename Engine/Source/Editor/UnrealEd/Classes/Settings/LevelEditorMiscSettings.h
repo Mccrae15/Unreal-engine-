@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -43,10 +43,19 @@ public:
 	UPROPERTY(EditAnywhere, config, Category=Editing, meta=( DisplayName = "Preserve Actor Scale on Replace" ))
 	uint32 bReplaceRespectsScale:1;
 
+
+	/** If enabled, the modes tab will revert to the original mesh paint */
+	UPROPERTY(EditAnywhere, config, AdvancedDisplay, Category = Editing, meta = (ConfigRestartRequired = true))
+	uint32 bEnableLegacyMeshPaintMode : 1;
+
 public:
 	/** If checked audio playing in the editor will continue to play even if the editor is in the background */
 	UPROPERTY(EditAnywhere, config, Category=Sound)
 	uint32 bAllowBackgroundAudio:1;
+
+	/** If checked, will create a new audio engine instance for the play-in-editor window. Otherwise, will re-use the audio device used in content browser. */
+	UPROPERTY(EditAnywhere, config, Category = Sound)
+	uint32 bCreateNewAudioDeviceForPlayInEditor: 1;
 
 	/** If true audio will be enabled in the editor. Does not affect PIE **/
 	UPROPERTY(config)
@@ -65,6 +74,18 @@ public:
 	/** The default level streaming class to use when adding new streaming levels */
 	UPROPERTY(EditAnywhere, config, Category=Levels)
 	TSubclassOf<ULevelStreaming> DefaultLevelStreamingClass;
+
+	UPROPERTY(EditAnywhere, config, Category = Levels)
+	bool bPromptWhenAddingToLevelBeforeCheckout;
+
+	UPROPERTY(EditAnywhere, config, Category = Levels)
+	bool bPromptWhenAddingToLevelOutsideBounds;
+
+	UPROPERTY(EditAnywhere, config, Category = Levels, Meta = (ClampMin = "0.0", ClampMax = "100.0"))
+	float PercentageThresholdForPrompt;
+
+	UPROPERTY(EditAnywhere, config, Category = Levels)
+	FVector MinimumBoundsForCheckingSize;
 
 public:
 

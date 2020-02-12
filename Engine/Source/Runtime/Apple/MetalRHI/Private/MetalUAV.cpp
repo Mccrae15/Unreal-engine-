@@ -1,12 +1,16 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 
 #include "MetalRHIPrivate.h"
 #include "MetalCommandBuffer.h"
 #include "RenderUtils.h"
+#include "ClearReplacementShaders.h"
+
+static void ClearUAV(TRHICommandList_RecursiveHazardous<FMetalRHICommandContext>& RHICmdList, FMetalUnorderedAccessView* UnorderedAccessView, const void* ClearValue, bool bFloat);
 
 FMetalShaderResourceView::FMetalShaderResourceView()
 : TextureView(nullptr)
+, Offset(0)
 , MipLevel(0)
 , NumMips(0)
 , Format(0)
@@ -29,8 +33,6 @@ FMetalShaderResourceView::~FMetalShaderResourceView()
 		{
 			TextureView->Texture = nil;
 			
-			TextureView->StencilTexture = nil;
-			
 			TextureView->MSAATexture = nil;
 		}
 		delete TextureView;
@@ -44,32 +46,31 @@ FMetalShaderResourceView::~FMetalShaderResourceView()
 ns::AutoReleased<FMetalTexture> FMetalShaderResourceView::GetLinearTexture(bool const bUAV)
 {
 	ns::AutoReleased<FMetalTexture> NewLinearTexture;
-	if (FMetalCommandQueue::SupportsFeature(EMetalFeaturesLinearTextures) && (!bUAV || FMetalCommandQueue::SupportsFeature(EMetalFeaturesLinearTextureUAVs)))
 	{
 		if (IsValidRef(SourceVertexBuffer))
 		{
-			NewLinearTexture = SourceVertexBuffer->GetLinearTexture((EPixelFormat)Format);
+			NewLinearTexture = SourceVertexBuffer->GetLinearTexture((EPixelFormat)Format, Offset);
 			check(NewLinearTexture);
 		}
 		else if (IsValidRef(SourceIndexBuffer))
 		{
-			NewLinearTexture = SourceIndexBuffer->GetLinearTexture((EPixelFormat)Format);;
+			NewLinearTexture = SourceIndexBuffer->GetLinearTexture((EPixelFormat)Format, Offset);
 			check(NewLinearTexture);
 		}
 	}
 	return NewLinearTexture;
 }
 
-FUnorderedAccessViewRHIRef FMetalDynamicRHI::RHICreateUnorderedAccessView_RenderThread(class FRHICommandListImmediate& RHICmdList, FStructuredBufferRHIParamRef StructuredBuffer, bool bUseUAVCounter, bool bAppendBuffer)
+FUnorderedAccessViewRHIRef FMetalDynamicRHI::RHICreateUnorderedAccessView_RenderThread(class FRHICommandListImmediate& RHICmdList, FRHIStructuredBuffer* StructuredBuffer, bool bUseUAVCounter, bool bAppendBuffer)
 {
 	return GDynamicRHI->RHICreateUnorderedAccessView(StructuredBuffer, bUseUAVCounter, bAppendBuffer);
 }
 
-FUnorderedAccessViewRHIRef FMetalDynamicRHI::RHICreateUnorderedAccessView_RenderThread(class FRHICommandListImmediate& RHICmdList, FTextureRHIParamRef Texture, uint32 MipLevel)
+FUnorderedAccessViewRHIRef FMetalDynamicRHI::RHICreateUnorderedAccessView_RenderThread(class FRHICommandListImmediate& RHICmdList, FRHITexture* Texture, uint32 MipLevel)
 {
 	FMetalSurface* Surface = (FMetalSurface*)Texture->GetTextureBaseRHI();
 	FMetalTexture Tex = Surface->Texture;
-	if (ImmediateContext.Context->GetCommandQueue().SupportsFeature(EMetalFeaturesResourceOptions) && !(Tex.GetUsage() & mtlpp::TextureUsage::PixelFormatView))
+	if (!(Tex.GetUsage() & mtlpp::TextureUsage::PixelFormatView))
 	{
 		FScopedRHIThreadStaller StallRHIThread(RHICmdList);
 		return GDynamicRHI->RHICreateUnorderedAccessView(Texture, MipLevel);
@@ -80,21 +81,21 @@ FUnorderedAccessViewRHIRef FMetalDynamicRHI::RHICreateUnorderedAccessView_Render
 	}
 }
 
-FUnorderedAccessViewRHIRef FMetalDynamicRHI::RHICreateUnorderedAccessView_RenderThread(class FRHICommandListImmediate& RHICmdList, FVertexBufferRHIParamRef VertexBuffer, uint8 Format)
+FUnorderedAccessViewRHIRef FMetalDynamicRHI::RHICreateUnorderedAccessView_RenderThread(class FRHICommandListImmediate& RHICmdList, FRHIVertexBuffer* VertexBuffer, uint8 Format)
 {
 	FUnorderedAccessViewRHIRef Result = GDynamicRHI->RHICreateUnorderedAccessView(VertexBuffer, Format);
 	if (IsRunningRHIInSeparateThread() && !RHICmdList.Bypass()) 	{ 		RHICmdList.RHIThreadFence(true); 	}
 	return Result;
 }
 
-FUnorderedAccessViewRHIRef FMetalDynamicRHI::RHICreateUnorderedAccessView_RenderThread(class FRHICommandListImmediate& RHICmdList, FIndexBufferRHIParamRef IndexBuffer, uint8 Format)
+FUnorderedAccessViewRHIRef FMetalDynamicRHI::RHICreateUnorderedAccessView_RenderThread(class FRHICommandListImmediate& RHICmdList, FRHIIndexBuffer* IndexBuffer, uint8 Format)
 {
 	FUnorderedAccessViewRHIRef Result = GDynamicRHI->RHICreateUnorderedAccessView(IndexBuffer, Format);
 	if (IsRunningRHIInSeparateThread() && !RHICmdList.Bypass()) 	{ 		RHICmdList.RHIThreadFence(true); 	}
 	return Result;
 }
 
-FUnorderedAccessViewRHIRef FMetalDynamicRHI::RHICreateUnorderedAccessView(FStructuredBufferRHIParamRef StructuredBufferRHI, bool bUseUAVCounter, bool bAppendBuffer)
+FUnorderedAccessViewRHIRef FMetalDynamicRHI::RHICreateUnorderedAccessView(FRHIStructuredBuffer* StructuredBufferRHI, bool bUseUAVCounter, bool bAppendBuffer)
 {
 	@autoreleasepool {
 	FMetalStructuredBuffer* StructuredBuffer = ResourceCast(StructuredBufferRHI);
@@ -112,7 +113,7 @@ FUnorderedAccessViewRHIRef FMetalDynamicRHI::RHICreateUnorderedAccessView(FStruc
 	}
 }
 
-FUnorderedAccessViewRHIRef FMetalDynamicRHI::RHICreateUnorderedAccessView(FTextureRHIParamRef TextureRHI, uint32 MipLevel)
+FUnorderedAccessViewRHIRef FMetalDynamicRHI::RHICreateUnorderedAccessView(FRHITexture* TextureRHI, uint32 MipLevel)
 {
 	@autoreleasepool {
 	FMetalShaderResourceView* SRV = new FMetalShaderResourceView;
@@ -142,7 +143,7 @@ FUnorderedAccessViewRHIRef FMetalDynamicRHI::RHICreateUnorderedAccessView(FTextu
 	}
 }
 
-FUnorderedAccessViewRHIRef FMetalDynamicRHI::RHICreateUnorderedAccessView(FVertexBufferRHIParamRef VertexBufferRHI, uint8 Format)
+FUnorderedAccessViewRHIRef FMetalDynamicRHI::RHICreateUnorderedAccessView(FRHIVertexBuffer* VertexBufferRHI, uint8 Format)
 {
 	@autoreleasepool {
 	FMetalVertexBuffer* VertexBuffer = ResourceCast(VertexBufferRHI);
@@ -153,11 +154,9 @@ FUnorderedAccessViewRHIRef FMetalDynamicRHI::RHICreateUnorderedAccessView(FVerte
 	SRV->SourceIndexBuffer = nullptr;
 	SRV->SourceStructuredBuffer = nullptr;
 	SRV->Format = Format;
-		
-	if (FMetalCommandQueue::SupportsFeature(EMetalFeaturesLinearTextureUAVs))
 	{
 		check(VertexBuffer->GetUsage() & BUF_UnorderedAccess);
-		VertexBuffer->CreateLinearTexture((EPixelFormat)Format, VertexBuffer);
+		VertexBuffer->CreateLinearTexture((EPixelFormat)Format, VertexBuffer, 0);
 	}
 		
 	// create the UAV buffer to point to the structured buffer's memory
@@ -168,7 +167,7 @@ FUnorderedAccessViewRHIRef FMetalDynamicRHI::RHICreateUnorderedAccessView(FVerte
 	}
 }
 
-FUnorderedAccessViewRHIRef FMetalDynamicRHI::RHICreateUnorderedAccessView(FIndexBufferRHIParamRef IndexBufferRHI, uint8 Format)
+FUnorderedAccessViewRHIRef FMetalDynamicRHI::RHICreateUnorderedAccessView(FRHIIndexBuffer* IndexBufferRHI, uint8 Format)
 {
 	@autoreleasepool {
 		FMetalIndexBuffer* IndexBuffer = ResourceCast(IndexBufferRHI);
@@ -179,11 +178,9 @@ FUnorderedAccessViewRHIRef FMetalDynamicRHI::RHICreateUnorderedAccessView(FIndex
 		SRV->SourceIndexBuffer = IndexBuffer;
 		SRV->SourceStructuredBuffer = nullptr;
 		SRV->Format = Format;
-		
-		if (FMetalCommandQueue::SupportsFeature(EMetalFeaturesLinearTextureUAVs))
 		{
 			check(IndexBuffer->GetUsage() & BUF_UnorderedAccess);
-			IndexBuffer->CreateLinearTexture((EPixelFormat)Format, IndexBuffer);
+			IndexBuffer->CreateLinearTexture((EPixelFormat)Format, IndexBuffer, 0);
 		}
 		
 		// create the UAV buffer to point to the structured buffer's memory
@@ -194,576 +191,347 @@ FUnorderedAccessViewRHIRef FMetalDynamicRHI::RHICreateUnorderedAccessView(FIndex
 	}
 }
 
-FShaderResourceViewRHIRef FMetalDynamicRHI::RHICreateShaderResourceView_RenderThread(class FRHICommandListImmediate& RHICmdList, FTexture2DRHIParamRef Texture2DRHI, uint8 MipLevel)
-{
-	FMetalTexture2D* Texture = ResourceCast(Texture2DRHI);
-	FMetalTexture Tex = Texture->Surface.Texture;
-	if (ImmediateContext.Context->GetCommandQueue().SupportsFeature(EMetalFeaturesResourceOptions) && !(Tex.GetUsage() & mtlpp::TextureUsage::PixelFormatView))
-	{
-		FScopedRHIThreadStaller StallRHIThread(RHICmdList);
-		return GDynamicRHI->RHICreateShaderResourceView(Texture2DRHI, MipLevel);
-	}
-	else
-	{
-		return GDynamicRHI->RHICreateShaderResourceView(Texture2DRHI, MipLevel);
-	}
-}
-
-FShaderResourceViewRHIRef FMetalDynamicRHI::RHICreateShaderResourceView_RenderThread(class FRHICommandListImmediate& RHICmdList, FTexture2DRHIParamRef Texture2DRHI, uint8 MipLevel, uint8 NumMipLevels, uint8 Format)
-{
-	FMetalTexture2D* Texture = ResourceCast(Texture2DRHI);
-	FMetalTexture Tex = Texture->Surface.Texture;
-	if (ImmediateContext.Context->GetCommandQueue().SupportsFeature(EMetalFeaturesResourceOptions) && !(Tex.GetUsage() & mtlpp::TextureUsage::PixelFormatView))
-	{
-		FScopedRHIThreadStaller StallRHIThread(RHICmdList);
-		return GDynamicRHI->RHICreateShaderResourceView(Texture2DRHI, MipLevel, NumMipLevels, Format);
-	}
-	else
-	{
-		return GDynamicRHI->RHICreateShaderResourceView(Texture2DRHI, MipLevel, NumMipLevels, Format);
-	}
-}
-
-FShaderResourceViewRHIRef FMetalDynamicRHI::RHICreateShaderResourceView_RenderThread(class FRHICommandListImmediate& RHICmdList, FTexture3DRHIParamRef Texture3DRHI, uint8 MipLevel)
-{
-	FMetalTexture3D* Texture = ResourceCast(Texture3DRHI);
-	FMetalTexture Tex = Texture->Surface.Texture;
-	if (ImmediateContext.Context->GetCommandQueue().SupportsFeature(EMetalFeaturesResourceOptions) && !(Tex.GetUsage() & mtlpp::TextureUsage::PixelFormatView))
-	{
-		FScopedRHIThreadStaller StallRHIThread(RHICmdList);
-		return GDynamicRHI->RHICreateShaderResourceView(Texture3DRHI, MipLevel);
-	}
-	else
-	{
-		return GDynamicRHI->RHICreateShaderResourceView(Texture3DRHI, MipLevel);
-	}
-}
-
-FShaderResourceViewRHIRef FMetalDynamicRHI::RHICreateShaderResourceView_RenderThread(class FRHICommandListImmediate& RHICmdList, FTexture2DArrayRHIParamRef Texture2DArrayRHI, uint8 MipLevel)
-{
-	FMetalTexture2DArray* Texture = ResourceCast(Texture2DArrayRHI);
-	FMetalTexture Tex = Texture->Surface.Texture;
-	if (ImmediateContext.Context->GetCommandQueue().SupportsFeature(EMetalFeaturesResourceOptions) && !(Tex.GetUsage() & mtlpp::TextureUsage::PixelFormatView))
-	{
-		FScopedRHIThreadStaller StallRHIThread(RHICmdList);
-		return GDynamicRHI->RHICreateShaderResourceView(Texture2DArrayRHI, MipLevel);
-	}
-	else
-	{
-		return GDynamicRHI->RHICreateShaderResourceView(Texture2DArrayRHI, MipLevel);
-	}
-}
-
-FShaderResourceViewRHIRef FMetalDynamicRHI::RHICreateShaderResourceView_RenderThread(class FRHICommandListImmediate& RHICmdList, FTextureCubeRHIParamRef TextureCubeRHI, uint8 MipLevel)
-{
-	FMetalTextureCube* Texture = ResourceCast(TextureCubeRHI);
-	FMetalTexture Tex = Texture->Surface.Texture;
-	if (ImmediateContext.Context->GetCommandQueue().SupportsFeature(EMetalFeaturesResourceOptions) && !(Tex.GetUsage() & mtlpp::TextureUsage::PixelFormatView))
-	{
-		FScopedRHIThreadStaller StallRHIThread(RHICmdList);
-		return GDynamicRHI->RHICreateShaderResourceView(TextureCubeRHI, MipLevel);
-	}
-	else
-	{
-		return GDynamicRHI->RHICreateShaderResourceView(TextureCubeRHI, MipLevel);
-	}
-}
-
-FShaderResourceViewRHIRef FMetalDynamicRHI::CreateShaderResourceView_RenderThread(class FRHICommandListImmediate& RHICmdList, FVertexBufferRHIParamRef VertexBuffer, uint32 Stride, uint8 Format)
+FShaderResourceViewRHIRef FMetalDynamicRHI::CreateShaderResourceView_RenderThread(class FRHICommandListImmediate& RHICmdList, FRHIVertexBuffer* VertexBuffer, uint32 Stride, uint8 Format)
 {
 	FShaderResourceViewRHIRef Result = GDynamicRHI->RHICreateShaderResourceView(VertexBuffer, Stride, Format);
 	if (IsRunningRHIInSeparateThread() && !RHICmdList.Bypass()) 	{ 		RHICmdList.RHIThreadFence(true); 	}
 	return Result;
 }
 
-FShaderResourceViewRHIRef FMetalDynamicRHI::CreateShaderResourceView_RenderThread(class FRHICommandListImmediate& RHICmdList, FIndexBufferRHIParamRef Buffer)
+FShaderResourceViewRHIRef FMetalDynamicRHI::CreateShaderResourceView_RenderThread(class FRHICommandListImmediate& RHICmdList, const FShaderResourceViewInitializer& Initializer)
+{
+	FShaderResourceViewRHIRef Result = GDynamicRHI->RHICreateShaderResourceView(Initializer);
+	if (IsRunningRHIInSeparateThread() && !RHICmdList.Bypass()) { RHICmdList.RHIThreadFence(true); }
+	return Result;
+}
+
+FShaderResourceViewRHIRef FMetalDynamicRHI::CreateShaderResourceView_RenderThread(class FRHICommandListImmediate& RHICmdList, FRHIIndexBuffer* Buffer)
 {
 	FShaderResourceViewRHIRef Result = GDynamicRHI->RHICreateShaderResourceView(Buffer);
 	if (IsRunningRHIInSeparateThread() && !RHICmdList.Bypass()) 	{ 		RHICmdList.RHIThreadFence(true); 	}
 	return Result;
 }
 
-FShaderResourceViewRHIRef FMetalDynamicRHI::RHICreateShaderResourceView_RenderThread(class FRHICommandListImmediate& RHICmdList, FVertexBufferRHIParamRef VertexBuffer, uint32 Stride, uint8 Format)
+FShaderResourceViewRHIRef FMetalDynamicRHI::RHICreateShaderResourceView_RenderThread(class FRHICommandListImmediate& RHICmdList, FRHIVertexBuffer* VertexBuffer, uint32 Stride, uint8 Format)
 {
 	FShaderResourceViewRHIRef Result = GDynamicRHI->RHICreateShaderResourceView(VertexBuffer, Stride, Format);
 	if (IsRunningRHIInSeparateThread() && !RHICmdList.Bypass()) 	{ 		RHICmdList.RHIThreadFence(true); 	}
 	return Result;
 }
 
-FShaderResourceViewRHIRef FMetalDynamicRHI::RHICreateShaderResourceView_RenderThread(class FRHICommandListImmediate& RHICmdList, FIndexBufferRHIParamRef Buffer)
+FShaderResourceViewRHIRef FMetalDynamicRHI::RHICreateShaderResourceView_RenderThread(class FRHICommandListImmediate& RHICmdList, const FShaderResourceViewInitializer& Initializer)
+{
+	FShaderResourceViewRHIRef Result = GDynamicRHI->RHICreateShaderResourceView(Initializer);
+	if (IsRunningRHIInSeparateThread() && !RHICmdList.Bypass()) { RHICmdList.RHIThreadFence(true); }
+	return Result;
+}
+
+FShaderResourceViewRHIRef FMetalDynamicRHI::RHICreateShaderResourceView_RenderThread(class FRHICommandListImmediate& RHICmdList, FRHIIndexBuffer* Buffer)
 {
 	FShaderResourceViewRHIRef Result = GDynamicRHI->RHICreateShaderResourceView(Buffer);
 	if (IsRunningRHIInSeparateThread() && !RHICmdList.Bypass()) 	{ 		RHICmdList.RHIThreadFence(true); 	}
 	return Result;
 }
 
-FShaderResourceViewRHIRef FMetalDynamicRHI::RHICreateShaderResourceView_RenderThread(class FRHICommandListImmediate& RHICmdList, FStructuredBufferRHIParamRef StructuredBuffer)
+FShaderResourceViewRHIRef FMetalDynamicRHI::RHICreateShaderResourceView_RenderThread(class FRHICommandListImmediate& RHICmdList, FRHIStructuredBuffer* StructuredBuffer)
 {
 	return GDynamicRHI->RHICreateShaderResourceView(StructuredBuffer);
 }
 
-
-FShaderResourceViewRHIRef FMetalDynamicRHI::RHICreateShaderResourceView(FStructuredBufferRHIParamRef StructuredBufferRHI)
+FShaderResourceViewRHIRef FMetalDynamicRHI::RHICreateShaderResourceView_RenderThread(class FRHICommandListImmediate& RHICmdList, FRHITexture* Texture2DRHI, const FRHITextureSRVCreateInfo& CreateInfo)
 {
-	FMetalStructuredBuffer* StructuredBuffer = ResourceCast(StructuredBufferRHI);
-
-	FMetalShaderResourceView* SRV = new FMetalShaderResourceView;
-	SRV->SourceVertexBuffer = nullptr;
-	SRV->SourceIndexBuffer = nullptr;
-	SRV->TextureView = nullptr;
-	SRV->SourceStructuredBuffer = StructuredBuffer;
-	
-	return SRV;
-}
-
-FShaderResourceViewRHIRef FMetalDynamicRHI::RHICreateShaderResourceView(FVertexBufferRHIParamRef VertexBufferRHI, uint32 Stride, uint8 Format)
-{
-	@autoreleasepool {
-	FMetalVertexBuffer* VertexBuffer = ResourceCast(VertexBufferRHI);
-		
-	FMetalShaderResourceView* SRV = new FMetalShaderResourceView;
-	SRV->SourceVertexBuffer = VertexBuffer;
-	SRV->TextureView = nullptr;
-	SRV->SourceIndexBuffer = nullptr;
-	SRV->SourceStructuredBuffer = nullptr;
-	SRV->Format = Format;
-	SRV->Stride = Stride;
-	
-	if (FMetalCommandQueue::SupportsFeature(EMetalFeaturesLinearTextures))
+	FMetalSurface* Surface = (FMetalSurface*)Texture2DRHI->GetTextureBaseRHI();
+	FMetalTexture Tex = Surface->Texture;
+	if (!(Tex.GetUsage() & mtlpp::TextureUsage::PixelFormatView))
 	{
-		check(Stride == GPixelFormats[Format].BlockBytes);
-		check(VertexBuffer->GetUsage() & BUF_ShaderResource);
-		
-		VertexBuffer->CreateLinearTexture((EPixelFormat)Format, VertexBuffer);
+		FScopedRHIThreadStaller StallRHIThread(RHICmdList);
+		return GDynamicRHI->RHICreateShaderResourceView(Texture2DRHI, CreateInfo);
 	}
-	
-	return SRV;
+	else
+	{
+		return GDynamicRHI->RHICreateShaderResourceView(Texture2DRHI, CreateInfo);
 	}
 }
 
-FShaderResourceViewRHIRef FMetalDynamicRHI::RHICreateShaderResourceView(FIndexBufferRHIParamRef BufferRHI)
+FShaderResourceViewRHIRef FMetalDynamicRHI::RHICreateShaderResourceView(FRHITexture* Texture2DRHI, const FRHITextureSRVCreateInfo& CreateInfo)
 {
 	@autoreleasepool {
-	FMetalIndexBuffer* Buffer = ResourceCast(BufferRHI);
+		FMetalShaderResourceView* SRV = new FMetalShaderResourceView;
+		SRV->SourceTexture = (FRHITexture*)Texture2DRHI;
 		
-	FMetalShaderResourceView* SRV = new FMetalShaderResourceView;
-	SRV->SourceVertexBuffer = nullptr;
-	SRV->SourceIndexBuffer = Buffer;
-	SRV->TextureView = nullptr;
-	SRV->SourceStructuredBuffer = nullptr;
-	SRV->Format = (Buffer->IndexType == mtlpp::IndexType::UInt16) ? PF_R16_UINT : PF_R32_UINT;
-	
-	if (FMetalCommandQueue::SupportsFeature(EMetalFeaturesLinearTextures))
-	{
-		Buffer->CreateLinearTexture((EPixelFormat)SRV->Format, Buffer);
-	}
-	
-	return SRV;
+		FMetalSurface* Surface = GetMetalSurfaceFromRHITexture(Texture2DRHI);
+		
+		// Asking to make a SRV with PF_Unknown means to use the same format.
+		// This matches the behavior of the DX11 RHI.
+		EPixelFormat Format = (EPixelFormat) CreateInfo.Format;
+		if(Surface && Format == PF_Unknown)
+		{
+			Format = Surface->PixelFormat;
+		}
+		
+		SRV->TextureView = Surface ? new FMetalSurface(*Surface, NSMakeRange(CreateInfo.MipLevel, CreateInfo.NumMipLevels), (EPixelFormat)(CreateInfo.Format == PF_Unknown ? Surface->PixelFormat : CreateInfo.Format)) : nullptr;
+		
+		SRV->SourceVertexBuffer = nullptr;
+		SRV->SourceIndexBuffer = nullptr;
+		SRV->SourceStructuredBuffer = nullptr;
+		
+		SRV->MipLevel = CreateInfo.MipLevel;
+		SRV->NumMips = CreateInfo.NumMipLevels;
+		SRV->Format = CreateInfo.Format;
+		
+		if (Surface)
+		{
+			Surface->SRVs.Add(SRV);
+		}
+		
+		return SRV;
 	}
 }
 
-FShaderResourceViewRHIRef FMetalDynamicRHI::RHICreateShaderResourceView(FTexture2DRHIParamRef Texture2DRHI, uint8 MipLevel)
+FShaderResourceViewRHIRef FMetalDynamicRHI::RHICreateShaderResourceView(FRHIStructuredBuffer* StructuredBufferRHI)
 {
-	@autoreleasepool {
-    FMetalShaderResourceView* SRV = new FMetalShaderResourceView;
-	SRV->SourceTexture = (FRHITexture*)Texture2DRHI;
-	
-	FMetalSurface* Surface = GetMetalSurfaceFromRHITexture(Texture2DRHI);
-	SRV->TextureView = Surface ? new FMetalSurface(*Surface, NSMakeRange(MipLevel, 1)) : nullptr;
-	
-	SRV->SourceVertexBuffer = nullptr;
-	SRV->SourceIndexBuffer = nullptr;
-	SRV->SourceStructuredBuffer = nullptr;
-	
-	SRV->MipLevel = MipLevel;
-	SRV->NumMips = 1;
-	SRV->Format = PF_Unknown;
-		
-	if (Surface)
+	return RHICreateShaderResourceView(FShaderResourceViewInitializer(StructuredBufferRHI));
+}
+
+FShaderResourceViewRHIRef FMetalDynamicRHI::RHICreateShaderResourceView(FRHIVertexBuffer* VertexBufferRHI, uint32 Stride, uint8 Format)
+{
+	check(GPixelFormats[Format].BlockBytes == Stride);
+
+	@autoreleasepool
 	{
-		Surface->SRVs.Add(SRV);
-	}
-	
-	return SRV;
+		return RHICreateShaderResourceView(FShaderResourceViewInitializer(VertexBufferRHI, Format));
 	}
 }
 
-FShaderResourceViewRHIRef FMetalDynamicRHI::RHICreateShaderResourceView(FTexture2DRHIParamRef Texture2DRHI, uint8 MipLevel, uint8 NumMipLevels, uint8 Format)
+FShaderResourceViewRHIRef FMetalDynamicRHI::RHICreateShaderResourceView(FRHIIndexBuffer* BufferRHI)
 {
-	@autoreleasepool {
-	FMetalShaderResourceView* SRV = new FMetalShaderResourceView;
-	SRV->SourceTexture = (FRHITexture*)Texture2DRHI;
-	
-	FMetalSurface* Surface = GetMetalSurfaceFromRHITexture(Texture2DRHI);
-	SRV->TextureView = Surface ? new FMetalSurface(*Surface, NSMakeRange(MipLevel, NumMipLevels), (EPixelFormat)Format) : nullptr;
-		
-	SRV->SourceVertexBuffer = nullptr;
-	SRV->SourceIndexBuffer = nullptr;
-	SRV->SourceStructuredBuffer = nullptr;
-	
-	SRV->MipLevel = MipLevel;
-	SRV->NumMips = NumMipLevels;
-	SRV->Format = Format;
-		
-	if (Surface)
+	@autoreleasepool
 	{
-		Surface->SRVs.Add(SRV);
-	}
-	
-	return SRV;
+		return RHICreateShaderResourceView(FShaderResourceViewInitializer(BufferRHI));
 	}
 }
 
-FShaderResourceViewRHIRef FMetalDynamicRHI::RHICreateShaderResourceView(FTexture3DRHIParamRef Texture3DRHI, uint8 MipLevel)
+FShaderResourceViewRHIRef FMetalDynamicRHI::RHICreateShaderResourceView(const FShaderResourceViewInitializer& Initializer)
 {
-	@autoreleasepool {
-	FMetalShaderResourceView* SRV = new FMetalShaderResourceView;
-	SRV->SourceTexture = (FRHITexture*)Texture3DRHI;
-	
-	FMetalSurface* Surface = GetMetalSurfaceFromRHITexture(Texture3DRHI);
-	SRV->TextureView = Surface ? new FMetalSurface(*Surface, NSMakeRange(MipLevel, 1)) : nullptr;
-	
-	SRV->SourceVertexBuffer = nullptr;
-	SRV->SourceIndexBuffer = nullptr;
-	SRV->SourceStructuredBuffer = nullptr;
-	
-	SRV->MipLevel = MipLevel;
-	SRV->NumMips = 1;
-	SRV->Format = PF_Unknown;
-		
-	if (Surface)
+	@autoreleasepool
 	{
-		Surface->SRVs.Add(SRV);
-	}
-	
-	return SRV;
+		switch(Initializer.GetType())
+		{
+			case FShaderResourceViewInitializer::EType::VertexBufferSRV:
+			{
+				FShaderResourceViewInitializer::FVertexBufferShaderResourceViewInitializer Desc = Initializer.AsVertexBufferSRV();
+				
+				FMetalVertexBuffer* VertexBuffer = ResourceCast(Desc.VertexBuffer);
+				
+				FMetalShaderResourceView* SRV = new FMetalShaderResourceView;
+				SRV->SourceVertexBuffer = VertexBuffer;
+				SRV->TextureView = nullptr;
+				SRV->SourceIndexBuffer = nullptr;
+				SRV->SourceStructuredBuffer = nullptr;
+				
+				SRV->Format = Desc.Format;
+				
+				if(!VertexBuffer)
+				{
+					SRV->Offset = 0;
+					SRV->Stride = 0;
+				}
+				else
+				{
+					check(VertexBuffer->GetUsage() & BUF_ShaderResource);
+					uint32 Stride = GPixelFormats[Desc.Format].BlockBytes;
+					
+					SRV->Stride = Stride;
+					SRV->Offset = Desc.StartElement * Stride;
+					
+					VertexBuffer->CreateLinearTexture((EPixelFormat)Desc.Format, VertexBuffer, SRV->Offset);
+				}
+				
+				return SRV;
+			} // VertexBufferSRV
+				
+			case FShaderResourceViewInitializer::EType::StructuredBufferSRV:
+			{
+				FShaderResourceViewInitializer::FStructuredBufferShaderResourceViewInitializer Desc = Initializer.AsStructuredBufferSRV();
+				
+				FMetalStructuredBuffer* StructuredBuffer = ResourceCast(Desc.StructuredBuffer);
+
+				FMetalShaderResourceView* SRV = new FMetalShaderResourceView;
+				SRV->SourceVertexBuffer = nullptr;
+				SRV->SourceIndexBuffer = nullptr;
+				SRV->TextureView = nullptr;
+				SRV->SourceStructuredBuffer = StructuredBuffer;
+				
+				SRV->Offset = Desc.StartElement * StructuredBuffer->GetStride();
+				SRV->Format = 0;
+				SRV->Stride = StructuredBuffer->GetStride();
+				
+				return SRV;
+			} // StructuredBufferSRV
+				
+			case FShaderResourceViewInitializer::EType::IndexBufferSRV:
+			{
+				FShaderResourceViewInitializer::FIndexBufferShaderResourceViewInitializer Desc = Initializer.AsIndexBufferSRV();
+				
+				FMetalIndexBuffer* IndexBuffer = ResourceCast(Desc.IndexBuffer);
+				
+				FMetalShaderResourceView* SRV = new FMetalShaderResourceView;
+				SRV->SourceVertexBuffer = nullptr;
+				SRV->SourceIndexBuffer = IndexBuffer;
+				SRV->TextureView = nullptr;
+				
+				if(!IndexBuffer)
+				{
+					SRV->Format = PF_R16_UINT;
+					SRV->Stride = 0;
+					SRV->Offset = 0;
+				}
+				else
+				{
+					SRV->Format = (IndexBuffer->IndexType == mtlpp::IndexType::UInt16) ? PF_R16_UINT : PF_R32_UINT;
+					
+					const uint32 Stride = Desc.IndexBuffer->GetStride();
+					check(Stride == ((SRV->Format == PF_R16_UINT) ? 2 : 4));
+					
+					SRV->Offset = Desc.StartElement * Stride;
+					SRV->Stride = Stride;
+						  
+					IndexBuffer->CreateLinearTexture((EPixelFormat)SRV->Format, IndexBuffer, SRV->Offset);
+				}
+					  
+				return SRV;
+			} // IndexBufferSRV
+					  
+			default:
+			{
+				checkNoEntry();
+				return nullptr;
+			}
+		}
 	}
 }
 
-FShaderResourceViewRHIRef FMetalDynamicRHI::RHICreateShaderResourceView(FTexture2DArrayRHIParamRef Texture2DArrayRHI, uint8 MipLevel)
+void FMetalDynamicRHI::RHIUpdateShaderResourceView(FRHIShaderResourceView* SRVRHI, FRHIVertexBuffer* VertexBufferRHI, uint32 Stride, uint8 Format)
 {
-	@autoreleasepool {
-	FMetalShaderResourceView* SRV = new FMetalShaderResourceView;
-	SRV->SourceTexture = (FRHITexture*)Texture2DArrayRHI;
-	
-	FMetalSurface* Surface = GetMetalSurfaceFromRHITexture(Texture2DArrayRHI);
-	SRV->TextureView = Surface ? new FMetalSurface(*Surface, NSMakeRange(MipLevel, 1)) : nullptr;
-	
-	SRV->SourceVertexBuffer = nullptr;
-	SRV->SourceIndexBuffer = nullptr;
-	SRV->SourceStructuredBuffer = nullptr;
-	
-	SRV->MipLevel = MipLevel;
-	SRV->NumMips = 1;
-	SRV->Format = PF_Unknown;
-		
-	if (Surface)
+	check(SRVRHI);
+	FMetalShaderResourceView* SRV = ResourceCast(SRVRHI);
+	if (!VertexBufferRHI)
 	{
-		Surface->SRVs.Add(SRV);
+		SRV->SourceVertexBuffer = nullptr;
+		SRV->TextureView = nullptr;
+		SRV->SourceIndexBuffer = nullptr;
+		SRV->SourceStructuredBuffer = nullptr;
+		SRV->Offset = 0;
+		SRV->Format = Format;
+		SRV->Stride = Stride;
 	}
-	
-	return SRV;
+	else if (SRV->SourceVertexBuffer != VertexBufferRHI)
+	{
+		FMetalVertexBuffer* VertexBuffer = ResourceCast(VertexBufferRHI);
+		SRV->SourceVertexBuffer = VertexBuffer;
+		SRV->TextureView = nullptr;
+		SRV->SourceIndexBuffer = nullptr;
+		SRV->SourceStructuredBuffer = nullptr;
+		SRV->Offset = 0;
+		SRV->Format = Format;
+		SRV->Stride = Stride;
 	}
 }
 
-FShaderResourceViewRHIRef FMetalDynamicRHI::RHICreateShaderResourceView(FTextureCubeRHIParamRef TextureCubeRHI, uint8 MipLevel)
+void FMetalDynamicRHI::RHIUpdateShaderResourceView(FRHIShaderResourceView* SRVRHI, FRHIIndexBuffer* IndexBufferRHI)
 {
-	@autoreleasepool {
-	FMetalShaderResourceView* SRV = new FMetalShaderResourceView;
-	SRV->SourceTexture = (FRHITexture*)TextureCubeRHI;
-	
-	FMetalSurface* Surface = GetMetalSurfaceFromRHITexture(TextureCubeRHI);
-	SRV->TextureView = Surface ? new FMetalSurface(*Surface, NSMakeRange(MipLevel, 1)) : nullptr;
-	
-	SRV->SourceVertexBuffer = nullptr;
-	SRV->SourceIndexBuffer = nullptr;
-	SRV->SourceStructuredBuffer = nullptr;
-	
-	SRV->MipLevel = MipLevel;
-	SRV->NumMips = 1;
-	SRV->Format = PF_Unknown;
-		
-	if (Surface)
+	check(SRVRHI);
+	FMetalShaderResourceView* SRV = ResourceCast(SRVRHI);
+	if (!IndexBufferRHI)
 	{
-		Surface->SRVs.Add(SRV);
+		SRV->SourceVertexBuffer = nullptr;
+		SRV->TextureView = nullptr;
+		SRV->SourceIndexBuffer = nullptr;
+		SRV->SourceStructuredBuffer = nullptr;
+		SRV->Offset = 0;
+		SRV->Format = PF_R16_UINT;
+		SRV->Stride = 0;
 	}
-	
-	return SRV;
+	else if (SRV->SourceIndexBuffer != IndexBufferRHI)
+	{
+		FMetalIndexBuffer* IndexBuffer = ResourceCast(IndexBufferRHI);
+		SRV->SourceVertexBuffer = nullptr;
+		SRV->TextureView = nullptr;
+		SRV->SourceIndexBuffer = IndexBuffer;
+		SRV->SourceStructuredBuffer = nullptr;
+		SRV->Offset = 0;
+		SRV->Format = (IndexBuffer->IndexType == mtlpp::IndexType::UInt16) ? PF_R16_UINT : PF_R32_UINT;
+		SRV->Stride = 0;
 	}
 }
 
-void FMetalRHICommandContext::RHIClearTinyUAV(FUnorderedAccessViewRHIParamRef UnorderedAccessViewRHI, const uint32* Values)
+void FMetalRHICommandContext::RHIClearUAVFloat(FRHIUnorderedAccessView* UnorderedAccessViewRHI, const FVector4& Values)
+{
+	TRHICommandList_RecursiveHazardous<FMetalRHICommandContext> RHICmdList(this);
+	ClearUAV(RHICmdList, ResourceCast(UnorderedAccessViewRHI), &Values, true);
+}
+void FMetalRHICommandContext::RHIClearUAVUint(FRHIUnorderedAccessView* UnorderedAccessViewRHI, const FUintVector4& Values)
+{
+	TRHICommandList_RecursiveHazardous<FMetalRHICommandContext> RHICmdList(this);
+	ClearUAV(RHICmdList, ResourceCast(UnorderedAccessViewRHI), &Values, false);
+}
+
+void ClearUAV(TRHICommandList_RecursiveHazardous<FMetalRHICommandContext>& RHICmdList, FMetalUnorderedAccessView* UnorderedAccessView, const void* ClearValue, bool bFloat)
 {
 	@autoreleasepool {
-	FMetalUnorderedAccessView* UnorderedAccessView = ResourceCast(UnorderedAccessViewRHI);
-	FMetalSurface* Surface = UnorderedAccessView->SourceView->SourceTexture ? GetMetalSurfaceFromRHITexture(UnorderedAccessView->SourceView->SourceTexture) : nullptr;
-	if (UnorderedAccessView->SourceView->SourceStructuredBuffer || UnorderedAccessView->SourceView->SourceVertexBuffer || UnorderedAccessView->SourceView->SourceIndexBuffer || (Surface && Surface->Texture.GetBuffer()))
-	{
-		check(UnorderedAccessView->SourceView->SourceStructuredBuffer || UnorderedAccessView->SourceView->SourceVertexBuffer || UnorderedAccessView->SourceView->SourceIndexBuffer || (Surface && Surface->Texture.GetBuffer()));
-		
-		FMetalBuffer Buffer;
-		uint32 Size = 0;
+		EClearReplacementValueType ValueType = bFloat ? EClearReplacementValueType::Float : EClearReplacementValueType::Uint32;
+
+		// The Metal validation layer will complain about resources with a
+		// signed format bound against an unsigned data format type as the
+		// shader parameter.
+		switch (GPixelFormats[UnorderedAccessView->SourceView->Format].UnrealFormat)
+		{
+			case PF_R32_SINT:
+			case PF_R16_SINT:
+			case PF_R16G16B16A16_SINT:
+				ValueType = EClearReplacementValueType::Int32;
+				break;
+				
+			default:
+				break;
+		}
+
 		if (UnorderedAccessView->SourceView->SourceVertexBuffer)
 		{
-			Buffer = UnorderedAccessView->SourceView->SourceVertexBuffer->Buffer;
-			Size = UnorderedAccessView->SourceView->SourceVertexBuffer->GetSize();
+			uint32 NumElements = UnorderedAccessView->SourceView->SourceVertexBuffer->GetSize() / GPixelFormats[UnorderedAccessView->SourceView->Format].BlockBytes;
+			ClearUAVShader_T<EClearReplacementResourceType::Buffer, 4, false>(RHICmdList, UnorderedAccessView, NumElements, 1, 1, ClearValue, ValueType);
 		}
-		else if (UnorderedAccessView->SourceView->SourceStructuredBuffer)
+		else if (UnorderedAccessView->SourceView->SourceTexture)
 		{
-			Buffer = UnorderedAccessView->SourceView->SourceStructuredBuffer->Buffer;
-			Size = UnorderedAccessView->SourceView->SourceStructuredBuffer->GetSize();
-		}
-		else if (UnorderedAccessView->SourceView->SourceIndexBuffer)
-		{
-			Buffer = UnorderedAccessView->SourceView->SourceIndexBuffer->Buffer;
-			Size = UnorderedAccessView->SourceView->SourceIndexBuffer->GetSize();
-		}
-		else if (Surface && Surface->Texture.GetBuffer())
-		{
-			Buffer = FMetalBuffer(Surface->Texture.GetBuffer(), false);
-		}
-		
-		uint32 NumComponents = 1;
-		uint32 NumBytes = 1;
-		EPixelFormat Format = (EPixelFormat)UnorderedAccessView->SourceView->Format;
-		if (Format != 0)
-		{
-			NumComponents = GPixelFormats[Format].NumComponents;
-			NumBytes = GPixelFormats[Format].BlockBytes;
-		}
-		
-		// If all the values are the same then we can treat it as one component.
-		NumComponents = (Values[0] == Values[1] == Values[2] == Values[3]) ? 1 : NumComponents;
-		
-		
-		if (NumComponents > 1 || NumBytes > 1)
-		{
-			// get the pointer to send back for writing
-			uint32 AlignedSize = Align(Size, BufferOffsetAlignment);
-			uint32 Offset = 0;
-			FMetalBuffer Temp = nil;
-			bool bBufferPooled = false;
-			
-			FMetalPooledBufferArgs Args(GetMetalDeviceContext().GetDevice(), AlignedSize, mtlpp::StorageMode::Shared);
-			Temp = GetMetalDeviceContext().CreatePooledBuffer(Args);
-			bBufferPooled = true;
-			
-			// Construct a pattern that can be encoded into the temporary buffer (handles packing & 2-byte formats).
-			uint32 Pattern[4];
-			switch(Format)
+			FIntVector SizeXYZ = UnorderedAccessView->SourceView->SourceTexture->GetSizeXYZ();
+
+			if (FRHITexture2D* Texture2D = UnorderedAccessView->SourceView->SourceTexture->GetTexture2D())
 			{
-				case PF_Unknown:
-				case PF_R8_UINT:
-				case PF_G8:
-				case PF_A8:
-				{
-					Pattern[0] = Values[0];
-					break;
-				}
-				case PF_G16:
-				case PF_R16F:
-				case PF_R16F_FILTER:
-				case PF_R16_UINT:
-				case PF_R16_SINT:
-				{
-					Pattern[0] = Values[0];
-					break;
-				}
-				case PF_R32_FLOAT:
-				case PF_R32_UINT:
-				case PF_R32_SINT:
-				{
-					Pattern[0] = Values[0];
-					break;
-				}
-				case PF_R8G8:
-				case PF_V8U8:
-				{
-					UE_LOG(LogMetal, Warning, TEXT("UAV pattern fill for format: %d is untested"), Format);
-					Pattern[0] = Values[0];
-					Pattern[1] = Values[1];
-					break;
-				}
-				case PF_G16R16:
-				case PF_G16R16F:
-				case PF_R16G16_UINT:
-				case PF_G16R16F_FILTER:
-				{
-					UE_LOG(LogMetal, Warning, TEXT("UAV pattern fill for format: %d is untested"), Format);
-					Pattern[0] = Values[0];
-					Pattern[0] |= ((Values[1] & 0xffff) << 16);
-					break;
-				}
-				case PF_G32R32F:
-				{
-					UE_LOG(LogMetal, Warning, TEXT("UAV pattern fill for format: %d is untested"), Format);
-					Pattern[0] = Values[0];
-					Pattern[1] = Values[1];
-					break;
-				}
-				case PF_R5G6B5_UNORM:
-				{
-					UE_LOG(LogMetal, Warning, TEXT("UAV pattern fill for format: %d is untested"), Format);
-					Pattern[0] = Values[0] & 0x1f;
-					Pattern[0] |= (Values[1] & 0x3f) << 5;
-					Pattern[0] |= (Values[2] & 0x1f) << 11;
-					break;
-				}
-				case PF_FloatR11G11B10:
-				{
-					UE_LOG(LogMetal, Warning, TEXT("UAV pattern fill for format: %d is untested"), Format);
-					Pattern[0] = Values[0] & 0x7FF;
-					Pattern[0] |= ((Values[1] & 0x7FF) << 11);
-					Pattern[0] |= ((Values[2] & 0x3FF) << 22);
-					break;
-				}
-				case PF_B8G8R8A8:
-				case PF_R8G8B8A8:
-				case PF_A8R8G8B8:
-				{
-					UE_LOG(LogMetal, Warning, TEXT("UAV pattern fill for format: %d is untested"), Format);
-					Pattern[0] = Values[0];
-					Pattern[0] |= ((Values[1] & 0xff) << 8);
-					Pattern[0] |= ((Values[2] & 0xff) << 16);
-					Pattern[0] |= ((Values[3] & 0xff) << 24);
-					break;
-				}
-				case PF_A2B10G10R10:
-				{
-					UE_LOG(LogMetal, Warning, TEXT("UAV pattern fill for format: %d is untested"), Format);
-					Pattern[0] = Values[0] & 0x3;
-					Pattern[0] |= ((Values[1] & 0x3FF) << 2);
-					Pattern[0] |= ((Values[2] & 0x3FF) << 12);
-					Pattern[0] |= ((Values[3] & 0x3FF) << 22);
-					break;
-				}
-				case PF_A16B16G16R16:
-				case PF_R16G16B16A16_UINT:
-				case PF_R16G16B16A16_SINT:
-				case PF_R16G16B16A16_UNORM:
-				case PF_R16G16B16A16_SNORM:
-				{
-					UE_LOG(LogMetal, Warning, TEXT("UAV pattern fill for format: %d is untested"), Format);
-					Pattern[0] = Values[0];
-					Pattern[0] |= ((Values[1] & 0xffff) << 16);
-					Pattern[1] = Values[2];
-					Pattern[1] |= ((Values[3] & 0xffff) << 16);
-					break;
-				}
-				case PF_R32G32B32A32_UINT:
-				case PF_A32B32G32R32F:
-				{
-					UE_LOG(LogMetal, Warning, TEXT("UAV pattern fill for format: %d is untested"), Format);
-					Pattern[0] = Values[0];
-					Pattern[1] = Values[1];
-					Pattern[2] = Values[2];
-					Pattern[3] = Values[3];
-					break;
-				}
-				case PF_FloatRGB:
-				case PF_FloatRGBA:
-				{
-					UE_LOG(LogMetal, Fatal, TEXT("No UAV pattern fill for format: %d"), Format);
-					break;
-				}
-				case PF_DepthStencil:
-				case PF_ShadowDepth:
-				case PF_D24:
-				case PF_X24_G8:
-				case PF_A1:
-				case PF_ASTC_4x4:
-				case PF_ASTC_6x6:
-				case PF_ASTC_8x8:
-				case PF_ASTC_10x10:
-				case PF_ASTC_12x12:
-				case PF_BC6H:
-				case PF_BC7:
-				case PF_ETC1:
-				case PF_ETC2_RGB:
-				case PF_ETC2_RGBA:
-				case PF_ATC_RGB:
-				case PF_ATC_RGBA_E:
-				case PF_ATC_RGBA_I:
-				case PF_BC4:
-				case PF_PVRTC2:
-				case PF_PVRTC4:
-				case PF_BC5:
-				case PF_DXT1:
-				case PF_DXT3:
-				case PF_DXT5:
-				case PF_UYVY:
-				case PF_MAX:
-				default:
-				{
-					UE_LOG(LogMetal, Fatal, TEXT("No UAV support for format: %d"), Format);
-					break;
-				}
+				ClearUAVShader_T<EClearReplacementResourceType::Texture2D, 4, false>(RHICmdList, UnorderedAccessView, SizeXYZ.X, SizeXYZ.Y, SizeXYZ.Z, ClearValue, ValueType);
 			}
-			
-			// Pattern memset for varying blocksize (1/2/4/8/16 bytes)
-			switch(NumBytes)
+			else if (FRHITexture2DArray* Texture2DArray = UnorderedAccessView->SourceView->SourceTexture->GetTexture2DArray())
 			{
-				case 1:
-				{
-					memset(((uint8*)Temp.GetContents()) + Offset, Pattern[0], AlignedSize);
-					break;
-				}
-				case 2:
-				{
-					uint16* Dst = (uint16*)(((uint8*)Temp.GetContents()) + Offset);
-					for (uint32 i = 0; i < AlignedSize / 2; i++, Dst++)
-					{
-						*Dst = (uint16)Pattern[0];
-					}
-					break;
-				}
-				case 4:
-				{
-					memset_pattern4(((uint8*)Temp.GetContents()) + Offset, Values, AlignedSize);
-					break;
-				}
-				case 8:
-				{
-					memset_pattern8(((uint8*)Temp.GetContents()) + Offset, Values, AlignedSize);
-					break;
-				}
-				case 16:
-				{
-					memset_pattern16(((uint8*)Temp.GetContents()) + Offset, Values, AlignedSize);
-					break;
-				}
-				default:
-				{
-					UE_LOG(LogMetal, Fatal, TEXT("Invalid UAV pattern fill size (%d) for: %d"), NumBytes, Format);
-					break;
-				}
+				ClearUAVShader_T<EClearReplacementResourceType::Texture2DArray, 4, false>(RHICmdList, UnorderedAccessView, SizeXYZ.X, SizeXYZ.Y, SizeXYZ.Z, ClearValue, ValueType);
 			}
-			
-			Context->CopyFromBufferToBuffer(Temp, Offset, Buffer, 0, Size);
-			
-			if(bBufferPooled)
+			else if (FRHITexture3D* Texture3D = UnorderedAccessView->SourceView->SourceTexture->GetTexture3D())
 			{
-				GetMetalDeviceContext().ReleaseBuffer(Temp);
+				ClearUAVShader_T<EClearReplacementResourceType::Texture3D, 4, false>(RHICmdList, UnorderedAccessView, SizeXYZ.X, SizeXYZ.Y, SizeXYZ.Z, ClearValue, ValueType);
+			}
+			else if (FRHITextureCube* TextureCube = UnorderedAccessView->SourceView->SourceTexture->GetTextureCube())
+			{
+				ClearUAVShader_T<EClearReplacementResourceType::Texture2DArray, 4, false>(RHICmdList, UnorderedAccessView, SizeXYZ.X, SizeXYZ.Y, SizeXYZ.Z, ClearValue, ValueType);
+			}
+			else
+			{
+				ensure(0);
 			}
 		}
 		else
 		{
-			// Fill the buffer via a blit encoder - I hope that is sufficient.
-			Context->FillBuffer(Buffer, ns::Range(0, Size), Values[0]);
+			// TODO: ensure(0);
+			UE_LOG(LogRHI, Warning, TEXT("Metal RHI ClearUAV does not yet support clearing of a UAV without a SourceView."));
 		}
-		
-		// If there are problems you may need to add calls to restore the render command encoder at this point
-		// but we don't generally want to do that.
-	}
-	else if (UnorderedAccessView->SourceView->SourceTexture)
-	{
-		UE_LOG(LogRHI, Fatal,TEXT("Metal RHI doesn't support RHIClearTinyUAV with FRHITexture yet!"));
-	}
-	else
-	{
-		UE_LOG(LogRHI, Fatal,TEXT("Metal RHI doesn't support RHIClearUAV with this type yet!"));
-	}
-	}
+	} // @autoreleasepool
 }
 
 FComputeFenceRHIRef FMetalDynamicRHI::RHICreateComputeFence(const FName& Name)
@@ -817,7 +585,7 @@ void FMetalComputeFence::Reset()
 	Fence = nullptr;
 }
 
-void FMetalRHICommandContext::RHITransitionResources(EResourceTransitionAccess TransitionType, EResourceTransitionPipeline TransitionPipeline, FUnorderedAccessViewRHIParamRef* InUAVs, int32 NumUAVs, FComputeFenceRHIParamRef WriteComputeFence)
+void FMetalRHICommandContext::RHITransitionResources(EResourceTransitionAccess TransitionType, EResourceTransitionPipeline TransitionPipeline, FRHIUnorderedAccessView** InUAVs, int32 NumUAVs, FRHIComputeFence* WriteComputeFence)
 {
 	@autoreleasepool
 	{
@@ -844,7 +612,7 @@ void FMetalRHICommandContext::RHITransitionResources(EResourceTransitionAccess T
 	}
 }
 
-void FMetalRHICommandContext::RHITransitionResources(EResourceTransitionAccess TransitionType, FTextureRHIParamRef* InTextures, int32 NumTextures)
+void FMetalRHICommandContext::RHITransitionResources(EResourceTransitionAccess TransitionType, FRHITexture** InTextures, int32 NumTextures)
 {
 	@autoreleasepool
 	{
@@ -863,7 +631,7 @@ void FMetalRHICommandContext::RHITransitionResources(EResourceTransitionAccess T
 	}
 }
 
-void FMetalRHICommandContext::RHIWaitComputeFence(FComputeFenceRHIParamRef InFence)
+void FMetalRHICommandContext::RHIWaitComputeFence(FRHIComputeFence* InFence)
 {
 	@autoreleasepool {
 	if (InFence)
@@ -881,7 +649,7 @@ void FMetalGPUFence::WriteInternal(mtlpp::CommandBuffer& CmdBuffer)
 	check(Fence);
 }
 
-void FMetalRHICommandContext::RHICopyToStagingBuffer(FVertexBufferRHIParamRef SourceBufferRHI, FStagingBufferRHIParamRef DestinationStagingBufferRHI, uint32 Offset, uint32 NumBytes, FGPUFenceRHIParamRef FenceRHI)
+void FMetalRHICommandContext::RHICopyToStagingBuffer(FRHIVertexBuffer* SourceBufferRHI, FRHIStagingBuffer* DestinationStagingBufferRHI, uint32 Offset, uint32 NumBytes)
 {
 	@autoreleasepool {
 		check(DestinationStagingBufferRHI);
@@ -899,18 +667,21 @@ void FMetalRHICommandContext::RHICopyToStagingBuffer(FVertexBufferRHIParamRef So
 			{
 				SafeReleaseMetalBuffer(ReadbackBuffer);
 			}
-			FMetalPooledBufferArgs ArgsCPU(GetMetalDeviceContext().GetDevice(), NumBytes, mtlpp::StorageMode::Shared);
+			FMetalPooledBufferArgs ArgsCPU(GetMetalDeviceContext().GetDevice(), NumBytes, BUF_Dynamic, mtlpp::StorageMode::Shared);
 			ReadbackBuffer = GetMetalDeviceContext().CreatePooledBuffer(ArgsCPU);
 		}
 
 		// Inline copy from the actual buffer to the shadow
 		GetMetalDeviceContext().CopyFromBufferToBuffer(SourceBuffer->Buffer, Offset, ReadbackBuffer, 0, NumBytes);
+	}
+}
 
-		if (FenceRHI)
-		{
-			FMetalGPUFence* Fence = ResourceCast(FenceRHI);
-			Fence->WriteInternal(Context->GetCurrentCommandBuffer());
-		}
+void FMetalRHICommandContext::RHIWriteGPUFence(FRHIGPUFence* FenceRHI)
+{
+	@autoreleasepool {
+		check(FenceRHI);
+		FMetalGPUFence* Fence = ResourceCast(FenceRHI);
+		Fence->WriteInternal(Context->GetCurrentCommandBuffer());
 	}
 }
 

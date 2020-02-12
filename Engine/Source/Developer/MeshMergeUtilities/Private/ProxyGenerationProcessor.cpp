@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "ProxyGenerationProcessor.h"
 #include "MaterialUtilities.h"
@@ -8,10 +8,7 @@
 #include "IMeshReductionInterfaces.h"
 #include "IMeshReductionManagerModule.h"
 #include "Modules/ModuleManager.h"
-
-#include "MeshDescription.h"
-#include "MeshAttributes.h"
-#include "MeshAttributeArray.h"
+#include "StaticMeshAttributes.h"
 
 #if WITH_EDITOR
 #include "Editor.h"
@@ -111,6 +108,9 @@ void FProxyGenerationProcessor::ProxyGenerationFailed(const FGuid OutJobGUID, co
 	{
 		UE_LOG(LogMeshMerging, Log, TEXT("Failed to generate proxy mesh for cluster %s, %s"), *(*FindData)->ProxyBasePackageName, *ErrorMessage);
 		ProxyMeshJobs.Remove(OutJobGUID);
+		
+		TArray<UObject*> OutAssetsToSync;
+		(*FindData)->CallbackDelegate.ExecuteIfBound(OutJobGUID, OutAssetsToSync);
 	}
 }
 
@@ -191,6 +191,7 @@ void FProxyGenerationProcessor::ProcessJob(const FGuid& JobGuid, FProxyGeneratio
 	/*Don't allow the engine to recalculate normals*/
 	SrcModel.BuildSettings.bRecomputeNormals = false;
 	SrcModel.BuildSettings.bRecomputeTangents = false;
+	SrcModel.BuildSettings.bComputeWeightedNormals = true;
 	SrcModel.BuildSettings.bRemoveDegenerates = true;
 	SrcModel.BuildSettings.bUseHighPrecisionTangentBasis = false;
 	SrcModel.BuildSettings.bUseFullPrecisionUVs = false;
@@ -205,7 +206,9 @@ void FProxyGenerationProcessor::ProcessJob(const FGuid& JobGuid, FProxyGeneratio
 	const bool bContainsImposters = Data->MergeData->ImposterComponents.Num() > 0;
 	FBox ImposterBounds(EForceInit::ForceInit);
 
-	auto RemoveVertexColorAndCommitMeshDescription = [&StaticMesh, &Data]()
+	TPolygonGroupAttributesConstRef<FName> PolygonGroupMaterialSlotName = Data->RawMesh.PolygonGroupAttributes().GetAttributesRef<FName>(MeshAttribute::PolygonGroup::ImportedMaterialSlotName);
+
+	auto RemoveVertexColorAndCommitMeshDescription = [&StaticMesh, &Data, &ProxyMaterial, &PolygonGroupMaterialSlotName]()
 	{
 		if (!Data->MergeData->InProxySettings.bAllowVertexColors)
 		{
@@ -219,11 +222,19 @@ void FProxyGenerationProcessor::ProcessJob(const FGuid& JobGuid, FProxyGeneratio
 		}
 
 		//Commit the FMeshDescription to the source model we just created
-		int32 SourceModelIndex = StaticMesh->SourceModels.Num() - 1;
-		FMeshDescription* MeshDescription = StaticMesh->CreateMeshDescription(SourceModelIndex);
+		int32 SourceModelIndex = StaticMesh->GetNumSourceModels() - 1;
+		FMeshDescription* MeshDescription = StaticMesh->CreateMeshDescription(SourceModelIndex, Data->RawMesh);
 		if (ensure(MeshDescription))
 		{
-			*MeshDescription = Data->RawMesh;
+			// Make sure the Proxy material have a valid ImportedMaterialSlotName
+			//The proxy material must be add only once and is always the first slot of the HLOD mesh
+			FStaticMaterial NewMaterial(ProxyMaterial);
+			if (MeshDescription->PolygonGroups().Num() > 0)
+			{
+				NewMaterial.ImportedMaterialSlotName = PolygonGroupMaterialSlotName[MeshDescription->PolygonGroups().GetFirstValidID()];
+			}
+			StaticMesh->StaticMaterials.Add(NewMaterial);
+
 			StaticMesh->CommitMeshDescription(SourceModelIndex);
 		}
 	};
@@ -236,7 +247,6 @@ void FProxyGenerationProcessor::ProcessJob(const FGuid& JobGuid, FProxyGeneratio
 		// The base material index is always one here as we assume we only have one HLOD material
 		FMeshMergeHelpers::MergeImpostersToRawMesh(Data->MergeData->ImposterComponents, Data->RawMesh, FVector::ZeroVector, 1, ImposterMaterials);
 
-		
 		for (const UStaticMeshComponent* Component : Data->MergeData->ImposterComponents)
 		{
 			if (Component->GetStaticMesh())
@@ -246,19 +256,21 @@ void FProxyGenerationProcessor::ProcessJob(const FGuid& JobGuid, FProxyGeneratio
 		}
 		RemoveVertexColorAndCommitMeshDescription();
 
-		StaticMesh->StaticMaterials.Add(FStaticMaterial(ProxyMaterial));
-
 		for (UMaterialInterface* Material : ImposterMaterials)
 		{
-			StaticMesh->StaticMaterials.Add(FStaticMaterial(Material));
+			//Set the ImportedMaterialSlotName in each imposter material
+			FStaticMaterial NewMaterial(Material);
+			if (Data->RawMesh.PolygonGroups().Num() > 0)
+			{
+				NewMaterial.ImportedMaterialSlotName = PolygonGroupMaterialSlotName[Data->RawMesh.PolygonGroups().GetFirstValidID()];
+			}
+			StaticMesh->StaticMaterials.Add(NewMaterial);
 		}
 	}
 	else
 	{
 		RemoveVertexColorAndCommitMeshDescription();
-
-		StaticMesh->StaticMaterials.Add(FStaticMaterial(ProxyMaterial));
-	}	
+	}
 
 	//Set the Imported version before calling the build
 	StaticMesh->ImportVersion = EImportStaticMeshVersion::LastVersion;
@@ -296,7 +308,7 @@ void FProxyGenerationProcessor::ProcessJob(const FGuid& JobGuid, FProxyGeneratio
 		// enable/disable section collision according to settings
 		MeshSectionInfo.bEnableCollision = Data->MergeData->InProxySettings.bCreateCollision;
 
-		StaticMesh->SectionInfoMap.Set(0, SectionIndex, MeshSectionInfo);
+		StaticMesh->GetSectionInfoMap().Set(0, SectionIndex, MeshSectionInfo);
 		SectionIndex++;
 	}
 

@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 #include "PhysicsEngine/PhysDerivedData.h"
 #include "Serialization/MemoryWriter.h"
 #include "Modules/ModuleManager.h"
@@ -11,7 +11,7 @@
 
 #if WITH_PHYSX && WITH_EDITOR
 
-#include "Physics/IPhysXCookingModule.h"
+#include "IPhysXCookingModule.h"
 
 FDerivedDataPhysXCooker::FDerivedDataPhysXCooker(FName InFormat, EPhysXMeshCookFlags InRuntimeCookFlags, UBodySetup* InBodySetup, bool InIsRuntime)
 	: BodySetup( InBodySetup )
@@ -63,6 +63,8 @@ FString FDerivedDataPhysXCooker::GetDebugContextString() const
 
 bool FDerivedDataPhysXCooker::Build( TArray<uint8>& OutData )
 {
+	TRACE_CPUPROFILER_EVENT_SCOPE(FDerivedDataPhysXCooker::Build);
+
 	SCOPE_CYCLE_COUNTER(STAT_PhysXCooking);
 
 	check(Cooker != NULL);

@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 
 using System;
@@ -16,28 +16,28 @@ namespace UnrealBuildTool
 	public class MacTargetRules
 	{
 		/// <summary>
-		/// Whether to generate dSYM files
-		/// Lists Architectures that you want to build
+		/// Whether to generate dSYM files.
+		/// Lists Architectures that you want to build.
 		/// </summary>
 		[XmlConfigFile(Category = "BuildConfiguration", Name = "bGeneratedSYMFile")]
 		public bool bGenerateDsymFile = true;
 
 		/// <summary>
-		/// Enables address sanitizer (ASan)
+		/// Enables address sanitizer (ASan).
 		/// </summary>
 		[CommandLine("-EnableASan")]
 		[XmlConfigFile(Category = "BuildConfiguration", Name = "bEnableAddressSanitizer")]
 		public bool bEnableAddressSanitizer = false;
 
 		/// <summary>
-		/// Enables thread sanitizer (TSan)
+		/// Enables thread sanitizer (TSan).
 		/// </summary>
 		[CommandLine("-EnableTSan")]
 		[XmlConfigFile(Category = "BuildConfiguration", Name = "bEnableThreadSanitizer")]
 		public bool bEnableThreadSanitizer = false;
 
 		/// <summary>
-		/// Enables undefined behavior sanitizer (UBSan)
+		/// Enables undefined behavior sanitizer (UBSan).
 		/// </summary>
 		[CommandLine("-EnableUBSan")]
 		[XmlConfigFile(Category = "BuildConfiguration", Name = "bEnableUndefinedBehaviorSanitizer")]
@@ -101,7 +101,7 @@ namespace UnrealBuildTool
 	{
 		MacPlatformSDK SDK;
 
-		public MacPlatform(MacPlatformSDK InSDK) : base(UnrealTargetPlatform.Mac, CppPlatform.Mac)
+		public MacPlatform(MacPlatformSDK InSDK) : base(UnrealTargetPlatform.Mac)
 		{
 			SDK = InSDK;
 		}
@@ -157,6 +157,8 @@ namespace UnrealBuildTool
 			Target.bDeployAfterCompile = true;
 
 			Target.bCheckSystemHeadersForModification = BuildHostPlatform.Current.Platform != UnrealTargetPlatform.Mac;
+
+			Target.bCompileISPC = true;
 		}
 
 		/// <summary>
@@ -290,6 +292,7 @@ namespace UnrealBuildTool
 					// Rules.DynamicallyLoadedModuleNames.Add("ShaderFormatD3D");
 					Rules.DynamicallyLoadedModuleNames.Add("ShaderFormatOpenGL");
 					Rules.DynamicallyLoadedModuleNames.Add("MetalShaderFormat");
+					Rules.DynamicallyLoadedModuleNames.Add("ShaderFormatVectorVM");
 
 					Rules.DynamicallyLoadedModuleNames.Remove("VulkanRHI");
 					Rules.DynamicallyLoadedModuleNames.Add("VulkanShaderFormat");
@@ -325,10 +328,9 @@ namespace UnrealBuildTool
 		/// <summary>
 		/// Creates a toolchain instance for the given platform.
 		/// </summary>
-		/// <param name="CppPlatform">The platform to create a toolchain for</param>
 		/// <param name="Target">The target being built</param>
 		/// <returns>New toolchain instance.</returns>
-		public override UEToolChain CreateToolChain(CppPlatform CppPlatform, ReadOnlyTargetRules Target)
+		public override UEToolChain CreateToolChain(ReadOnlyTargetRules Target)
 		{
 			MacToolChainOptions Options = MacToolChainOptions.None;
 
@@ -347,6 +349,10 @@ namespace UnrealBuildTool
 			if(Target.MacPlatform.bEnableUndefinedBehaviorSanitizer || (UndefSanitizerMode != null && UndefSanitizerMode == "YES"))
 			{
 				Options |= MacToolChainOptions.EnableUndefinedBehaviorSanitizer;
+			}
+			if(Target.bShouldCompileAsDLL)
+			{
+				Options |= MacToolChainOptions.OutputDylib;
 			}
 			return new MacToolChain(Target.ProjectFile, Options);
 		}
@@ -385,7 +391,6 @@ namespace UnrealBuildTool
 			SDK.ManageAndValidateSDK();
 
 			// Register this build platform for Mac
-			Log.TraceVerbose("        Registering for {0}", UnrealTargetPlatform.Mac.ToString());
 			UEBuildPlatform.RegisterBuildPlatform(new MacPlatform(SDK));
 			UEBuildPlatform.RegisterPlatformWithGroup(UnrealTargetPlatform.Mac, UnrealPlatformGroup.Apple);
 		}

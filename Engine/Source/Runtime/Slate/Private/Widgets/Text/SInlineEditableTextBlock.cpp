@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "Widgets/Text/SInlineEditableTextBlock.h"
 #include "Widgets/SBoxPanel.h"
@@ -283,7 +283,7 @@ void SInlineEditableTextBlock::OnTextBoxCommitted(const FText& InText, ETextComm
 					return;
 				}
 			}
-			else if(InCommitType == ETextCommit::OnUserMovedFocus)
+			else if(InCommitType == ETextCommit::OnUserMovedFocus || InCommitType == ETextCommit::Default)
 			{
 				FText OutErrorMessage;
 				if(!OnVerifyTextChanged.Execute(InText, OutErrorMessage))

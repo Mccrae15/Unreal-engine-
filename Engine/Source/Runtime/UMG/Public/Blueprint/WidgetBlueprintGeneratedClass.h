@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -119,6 +119,9 @@ public:
 
 	void SetTemplate(UUserWidget* InTemplate);
 	UUserWidget* GetTemplate();
+
+	// Walks up the hierarchy looking for a valid widget tree.
+	UWidgetBlueprintGeneratedClass* FindWidgetTreeOwningClass();
 
 	// UObject interface
 	virtual void PreSave(const class ITargetPlatform* TargetPlatform) override;

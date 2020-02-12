@@ -1,16 +1,16 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
-struct FMath;
-
-#ifdef __cplusplus_cli
+#if defined(__cplusplus_cli) && !PLATFORM_HOLOLENS
 // there are compile issues with this file in managed mode, so use the FPU version
 #include "Math/UnrealMathFPU.h"
 #else
 
 // We require SSE2
 #include <emmintrin.h>
+
+#include "Math/sse_mathfun.h"
 
 // We suppress static analysis warnings for the cast from (double*) to (float*) in VectorLoadFloat2 below:
 // -V:VectorLoadFloat2:615
@@ -164,7 +164,7 @@ FORCEINLINE VectorRegister VectorLoad( const void* Ptr )
  * @param Ptr	Aligned memory pointer to the 4 FLOATs
  * @return		VectorRegister(Ptr[0], Ptr[1], Ptr[2], Ptr[3])
  */
-#define VectorLoadAligned( Ptr )		_mm_load_ps( (float*)(Ptr) )
+#define VectorLoadAligned( Ptr )		_mm_load_ps( (const float*)(Ptr) )
 
 /**
  * Loads 1 float from unaligned memory and replicates it to all 4 elements.
@@ -172,7 +172,7 @@ FORCEINLINE VectorRegister VectorLoad( const void* Ptr )
  * @param Ptr	Unaligned memory pointer to the float
  * @return		VectorRegister(Ptr[0], Ptr[0], Ptr[0], Ptr[0])
  */
-#define VectorLoadFloat1( Ptr )			_mm_load1_ps( (float*)(Ptr) )
+#define VectorLoadFloat1( Ptr )			_mm_load1_ps( (const float*)(Ptr) )
 
 /**
  * Loads 2 floats from unaligned memory into X and Y and duplicates them in Z and W.
@@ -180,7 +180,7 @@ FORCEINLINE VectorRegister VectorLoad( const void* Ptr )
  * @param Ptr	Unaligned memory pointer to the floats
  * @return		VectorRegister(Ptr[0], Ptr[1], Ptr[0], Ptr[1])
  */
-#define VectorLoadFloat2( Ptr )			_mm_castpd_ps(_mm_load1_pd((double*)(Ptr)))
+#define VectorLoadFloat2( Ptr )			_mm_castpd_ps(_mm_load1_pd((const double*)(Ptr)))
 
 /**
  * Creates a vector out of three FLOATs and leaves W undefined.
@@ -496,11 +496,15 @@ FORCEINLINE VectorRegister VectorCross( const VectorRegister& Vec1, const Vector
  */
 FORCEINLINE VectorRegister VectorPow( const VectorRegister& Base, const VectorRegister& Exponent )
 {
-	//@TODO: Optimize
+	// using SseMath library
+	return SseMath_exp_ps(_mm_mul_ps(SseMath_log_ps(Base), Exponent));
+/*
+	// old version, keeping for reference in case something breaks and we need to debug it.
 	union { VectorRegister v; float f[4]; } B, E;
 	B.v = Base;
 	E.v = Exponent;
 	return _mm_setr_ps( powf(B.f[0], E.f[0]), powf(B.f[1], E.f[1]), powf(B.f[2], E.f[2]), powf(B.f[3], E.f[3]) );
+*/
 }
 
 /**
@@ -1206,7 +1210,10 @@ FORCEINLINE VectorRegister VectorMod(const VectorRegister& X, const VectorRegist
 	// Floats where abs(f) >= 2^23 have no fractional portion, and larger values would overflow VectorTruncate.
 	VectorRegister NoFractionMask = VectorCompareGE(VectorAbs(Div), GlobalVectorConstants::FloatNonFractional);
 	VectorRegister Temp = VectorSelect(NoFractionMask, Div, VectorTruncate(Div));
-	return VectorSubtract(X, VectorMultiply(Y, Temp));
+	VectorRegister Result = VectorSubtract(X, VectorMultiply(Y, Temp));
+	// Clamp to [-AbsY, AbsY] because of possible failures for very large numbers (>1e10) due to precision loss.
+	VectorRegister AbsY = VectorAbs(Y);
+	return VectorMax(VectorNegate(AbsY), VectorMin(Result, AbsY));
 }
 
 FORCEINLINE VectorRegister VectorSign(const VectorRegister& X)
@@ -1224,7 +1231,7 @@ FORCEINLINE VectorRegister VectorStep(const VectorRegister& X)
 //TODO: Vectorize
 FORCEINLINE VectorRegister VectorExp(const VectorRegister& X)
 {
-	return MakeVectorRegister(FMath::Exp(VectorGetComponent(X, 0)), FMath::Exp(VectorGetComponent(X, 1)), FMath::Exp(VectorGetComponent(X, 2)), FMath::Exp(VectorGetComponent(X, 3)));
+	return SseMath_exp_ps(X);
 }
 
 //TODO: Vectorize
@@ -1236,7 +1243,7 @@ FORCEINLINE VectorRegister VectorExp2(const VectorRegister& X)
 //TODO: Vectorize
 FORCEINLINE VectorRegister VectorLog(const VectorRegister& X)
 {
-	return MakeVectorRegister(FMath::Loge(VectorGetComponent(X, 0)), FMath::Loge(VectorGetComponent(X, 1)), FMath::Loge(VectorGetComponent(X, 2)), FMath::Loge(VectorGetComponent(X, 3)));
+	return SseMath_log_ps(X);
 }
 
 //TODO: Vectorize
@@ -1255,8 +1262,8 @@ FORCEINLINE VectorRegister VectorLog2(const VectorRegister& X)
 namespace VectorSinConstantsSSE
 {
 	static const float p = 0.225f;
-	static const float a = (16 * sqrt(p));
-	static const float b = ((1 - p) / sqrt(p));
+	static const float a = (16 * sqrtf(p));
+	static const float b = ((1 - p) / sqrtf(p));
 	static const VectorRegister A = MakeVectorRegister(a, a, a, a);
 	static const VectorRegister B = MakeVectorRegister(b, b, b, b);
 }
@@ -1482,6 +1489,6 @@ FORCEINLINE VectorRegisterInt VectorIntAbs(const VectorRegisterInt& A)
 * @param Ptr	Unaligned memory pointer to the 4 int32s
 * @return		VectorRegisterInt(*Ptr, *Ptr, *Ptr, *Ptr)
 */
-#define VectorIntLoad1( Ptr )	_mm_shuffle_epi32(_mm_loadu_si128((VectorRegisterInt*)Ptr),_MM_SHUFFLE(0,0,0,0))
+#define VectorIntLoad1( Ptr )	_mm_shuffle_epi32(_mm_loadu_si128((VectorRegisterInt*)(Ptr)),_MM_SHUFFLE(0,0,0,0))
 #endif
 

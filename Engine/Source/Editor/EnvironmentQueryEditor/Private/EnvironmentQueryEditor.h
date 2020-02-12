@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -28,10 +28,6 @@ public:
 	virtual FString GetWorldCentricTabPrefix() const override;
 	virtual FLinearColor GetWorldCentricTabColorScale() const override;
 	//~ End IToolkit Interface
-
-	//~ Begin IEnvironmentQueryEditor Interface
-	virtual uint32 GetSelectedNodesCount() const override { return SelectedNodesCount; }
-	//~ End IEnvironmentQueryEditor Interface
 
 	void OnFinishedChangingProperties(const FPropertyChangedEvent& PropertyChangedEvent);
 	void OnStatsDataChange();

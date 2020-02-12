@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "OculusMR_BoundaryMeshComponent.h"
 
@@ -113,16 +113,15 @@ public:
 
 		const bool bWireframe = AllowDebugViewmodes() && ViewFamily.EngineShowFlags.Wireframe;
 
-		auto WireframeMaterialInstance = new FColoredMaterialRenderProxy(
-			GEngine->WireframeMaterial->GetRenderProxy(),
-			FLinearColor(0, 0.5f, 1.f)
-		);
-
-		Collector.RegisterOneFrameMaterialProxy(WireframeMaterialInstance);
-
 		FMaterialRenderProxy* MaterialProxy = NULL;
 		if (bWireframe)
 		{
+			auto WireframeMaterialInstance = new FColoredMaterialRenderProxy(
+				GEngine->WireframeMaterial->GetRenderProxy(),
+				FLinearColor(0, 0.5f, 1.f)
+			);
+
+			Collector.RegisterOneFrameMaterialProxy(WireframeMaterialInstance);
 			MaterialProxy = WireframeMaterialInstance;
 		}
 		else
@@ -150,7 +149,7 @@ public:
 				//Mesh.bWireframe = bWireframe;
 				//Mesh.VertexFactory = &VertexFactory;
 				//Mesh.MaterialRenderProxy = MaterialProxy;
-				//BatchElement.PrimitiveUniformBuffer = CreatePrimitiveUniformBufferImmediate(Transform.ToMatrixWithScale(), GetBounds(), GetLocalBounds(), true, UseEditorDepthTest());
+				//BatchElement.PrimitiveUniformBuffer = CreatePrimitiveUniformBufferImmediate(Transform.ToMatrixWithScale(), GetBounds(), GetLocalBounds(), true, DrawsVelocity());
 				//BatchElement.FirstIndex = 0;
 				//BatchElement.NumPrimitives = IndexBuffer.Indices.Num() / 3;
 				//BatchElement.MinVertexIndex = 0;
@@ -187,8 +186,10 @@ public:
 		Result.bUsesLightingChannels = false;
 		Result.bRenderCustomDepth = false;
 		MaterialRelevance.SetPrimitiveViewRelevance(Result);
-		Result.bOpaqueRelevance = true;
+		Result.bOpaque = true;
 		Result.bUsesSceneDepth = false;
+		Result.bUsesSkyMaterial = false;
+		Result.bUsesSingleLayerWaterMaterial = false;
 		Result.bRenderCustomDepth = false;
 		return Result;
 	}

@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "HttpManager.h"
 #include "HttpModule.h"
@@ -13,16 +13,16 @@
 #include "Misc/CommandLine.h"
 
 #include "Stats/Stats.h"
+#include "Containers/BackgroundableTicker.h"
 
 // FHttpManager
 
 FCriticalSection FHttpManager::RequestLock;
 
 FHttpManager::FHttpManager()
-	: FTickerObjectBase(0.0f)
+	: FTickerObjectBase(0.0f, FBackgroundableTicker::GetCoreTicker())
 	, Thread(nullptr)
 	, CorrelationIdMethod(FHttpManager::GetDefaultCorrelationIdMethod())
-	, DeferredDestroyDelay(10.0f)
 {
 }
 
@@ -98,6 +98,21 @@ TFunction<FString()> FHttpManager::GetDefaultCorrelationIdMethod()
 	return []{ return FGuid::NewGuid().ToString(); };
 }
 
+void FHttpManager::OnBeforeFork()
+{
+	Flush(false);
+}
+
+void FHttpManager::OnAfterFork()
+{
+
+}
+
+void FHttpManager::UpdateConfigs()
+{
+	// empty
+}
+
 FHttpThread* FHttpManager::CreateHttpThread()
 {
 	return new FHttpThread();
@@ -105,6 +120,8 @@ FHttpThread* FHttpManager::CreateHttpThread()
 
 void FHttpManager::Flush(bool bShutdown)
 {
+	QUICK_SCOPE_CYCLE_COUNTER(STAT_FHttpManager_Flush);
+
 	FScopeLock ScopeLock(&RequestLock);
 	double MaxFlushTimeSeconds = -1.0; // default to no limit
 	GConfig->GetDouble(TEXT("HTTP"), TEXT("MaxFlushTimeSeconds"), MaxFlushTimeSeconds, GEngineIni);
@@ -118,10 +135,11 @@ void FHttpManager::Flush(bool bShutdown)
 		// Clear delegates since they may point to deleted instances
 		for (TArray<TSharedRef<IHttpRequest>>::TIterator It(Requests); It; ++It)
 		{
-			TSharedRef<IHttpRequest> Request = *It;
+			TSharedRef<IHttpRequest>& Request = *It;
 			Request->OnProcessRequestComplete().Unbind();
 			Request->OnRequestProgress().Unbind();
-			UE_LOG(LogHttp, Display, TEXT("	verb=[%s] url=[%s] status=%s"), *Request->GetVerb(), *Request->GetURL(), EHttpRequestStatus::ToString(Request->GetStatus()));
+			Request->OnHeaderReceived().Unbind();
+			UE_LOG(LogHttp, Display, TEXT("	verb=[%s] url=[%s] refs=[%d] status=%s"), *Request->GetVerb(), *Request->GetURL(), Request.GetSharedReferenceCount(), EHttpRequestStatus::ToString(Request->GetStatus()));
 		}
 	}
 
@@ -132,12 +150,16 @@ void FHttpManager::Flush(bool bShutdown)
 	{
 		const double AppTime = FPlatformTime::Seconds();
 		//UE_LOG(LogHttp, Display, TEXT("Waiting for %0.2f seconds. Limit:%0.2f seconds"), (AppTime - BeginWaitTime), MaxFlushTimeSeconds);
-		if (bShutdown && MaxFlushTimeSeconds > 0 && (GIsRequestingExit || (AppTime - BeginWaitTime > MaxFlushTimeSeconds)))
+		if (bShutdown && MaxFlushTimeSeconds > 0 && (AppTime - BeginWaitTime > MaxFlushTimeSeconds))
 		{
 			UE_LOG(LogHttp, Display, TEXT("Canceling remaining HTTP requests after waiting %0.2f seconds"), (AppTime - BeginWaitTime));
 			for (TArray<TSharedRef<IHttpRequest>>::TIterator It(Requests); It; ++It)
 			{
-				TSharedRef<IHttpRequest> Request = *It;
+				TSharedRef<IHttpRequest>& Request = *It;
+				if (IsEngineExitRequested())
+				{
+					ensureMsgf(Request.IsUnique(), TEXT("Dangling HTTP request! This may cause undefined behaviour or crash during module shutdown!"));
+				}
 				Request->CancelRequest();
 			}
 		}
@@ -174,16 +196,6 @@ bool FHttpManager::Tick(float DeltaSeconds)
 		TSharedRef<IHttpRequest> Request = *It;
 		Request->Tick(DeltaSeconds);
 	}
-	// Tick any pending destroy objects
-	for (int Idx=0; Idx < PendingDestroyRequests.Num(); Idx++)
-	{
-		FRequestPendingDestroy& Request = PendingDestroyRequests[Idx];
-		Request.TimeLeft -= DeltaSeconds;
-		if (Request.TimeLeft <= 0)
-		{	
-			PendingDestroyRequests.RemoveAt(Idx--);
-		}		
-	}
 
 	if (Thread)
 	{
@@ -193,9 +205,6 @@ bool FHttpManager::Tick(float DeltaSeconds)
 		// Finish and remove any completed requests
 		for (IHttpThreadedRequest* CompletedRequest : CompletedThreadedRequests)
 		{
-			// Keep track of requests that have been removed to be destroyed later
-			PendingDestroyRequests.AddUnique(FRequestPendingDestroy(DeferredDestroyDelay, CompletedRequest->AsShared()));
-
 			CompletedRequest->FinishRequest();
 			Requests.Remove(CompletedRequest->AsShared());
 		}
@@ -214,9 +223,6 @@ void FHttpManager::AddRequest(const TSharedRef<IHttpRequest>& Request)
 void FHttpManager::RemoveRequest(const TSharedRef<IHttpRequest>& Request)
 {
 	FScopeLock ScopeLock(&RequestLock);
-
-	// Keep track of requests that have been removed to be destroyed later
-	PendingDestroyRequests.AddUnique(FRequestPendingDestroy(DeferredDestroyDelay,Request));
 
 	Requests.Remove(Request);
 }
@@ -257,7 +263,7 @@ bool FHttpManager::IsValidRequest(const IHttpRequest* RequestPtr) const
 void FHttpManager::DumpRequests(FOutputDevice& Ar) const
 {
 	FScopeLock ScopeLock(&RequestLock);
-	
+
 	Ar.Logf(TEXT("------- (%d) Http Requests"), Requests.Num());
 	for (const TSharedRef<IHttpRequest>& Request : Requests)
 	{

@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 /*=============================================================================
 	Character.cpp: ACharacter implementation
@@ -11,7 +11,6 @@
 #include "Components/SkeletalMeshComponent.h"
 #include "Components/ArrowComponent.h"
 #include "Engine/CollisionProfile.h"
-#include "Engine/DemoNetDriver.h"
 #include "Components/CapsuleComponent.h"
 #include "GameFramework/CharacterMovementComponent.h"
 #include "Net/UnrealNetwork.h"
@@ -111,13 +110,15 @@ ACharacter::ACharacter(const FObjectInitializer& ObjectInitializer)
 
 void ACharacter::PostInitializeComponents()
 {
+	QUICK_SCOPE_CYCLE_COUNTER(STAT_Character_PostInitComponents);
+
 	Super::PostInitializeComponents();
 
 	if (!IsPendingKill())
 	{
 		if (Mesh)
 		{
-			CacheInitialMeshOffset(Mesh->RelativeLocation, Mesh->RelativeRotation);
+			CacheInitialMeshOffset(Mesh->GetRelativeLocation(), Mesh->GetRelativeRotation());
 
 			// force animation tick after movement component updates
 			if (Mesh->PrimaryComponentTick.bCanEverTick && CharacterMovement)
@@ -157,9 +158,11 @@ void ACharacter::CacheInitialMeshOffset(FVector MeshRelativeLocation, FRotator M
 	{
 		logOrEnsureNanError(TEXT("ACharacter::PostInitializeComponents detected NaN in BaseRotationOffset! (%s)"), *BaseRotationOffset.ToString());
 	}
-	if (Mesh->RelativeRotation.ContainsNaN())
+
+	const FRotator LocalRotation = Mesh->GetRelativeRotation();
+	if (LocalRotation.ContainsNaN())
 	{
-		logOrEnsureNanError(TEXT("ACharacter::PostInitializeComponents detected NaN in Mesh->RelativeRotation! (%s)"), *Mesh->RelativeRotation.ToString());
+		logOrEnsureNanError(TEXT("ACharacter::PostInitializeComponents detected NaN in Mesh->RelativeRotation! (%s)"), *LocalRotation.ToString());
 	}
 #endif
 }
@@ -262,11 +265,7 @@ bool ACharacter::CanJumpInternal_Implementation() const
 	bool bCanJump = !bIsCrouched;
 
 	// Ensure that the CharacterMovement state is valid
-	bCanJump &= CharacterMovement &&
-				CharacterMovement->IsJumpAllowed() &&
-				!CharacterMovement->bWantsToCrouch &&
-				// Can only jump from the ground, or multi-jump if already falling.
-				(CharacterMovement->IsMovingOnGround() || CharacterMovement->IsFalling());
+	bCanJump &= CharacterMovement->CanAttemptJump();
 
 	if (bCanJump)
 	{
@@ -319,7 +318,7 @@ bool ACharacter::IsJumpProvidingForce() const
 	{
 		return true;
 	}
-	else if (bProxyIsJumpForceApplied && (Role==ROLE_SimulatedProxy))
+	else if (bProxyIsJumpForceApplied && (GetLocalRole() == ROLE_SimulatedProxy))
 	{
 		return GetWorld()->TimeSince(ProxyJumpForceStartedTime) <= GetJumpMaxHoldTime();
 	}
@@ -362,7 +361,7 @@ void ACharacter::SetReplicateMovement(bool bInReplicateMovement)
 {
 	Super::SetReplicateMovement(bInReplicateMovement);
 
-	if (CharacterMovement != nullptr && Role == ROLE_Authority)
+	if (CharacterMovement != nullptr && GetLocalRole() == ROLE_Authority)
 	{
 		// Set prediction data time stamp to current time to stop extrapolating
 		// from time bReplicateMovement was turned off to when it was turned on again
@@ -375,7 +374,7 @@ void ACharacter::SetReplicateMovement(bool bInReplicateMovement)
 	}
 }
 
-bool ACharacter::CanCrouch()
+bool ACharacter::CanCrouch() const
 {
 	return !bIsCrouched && CharacterMovement && CharacterMovement->CanEverCrouch() && GetRootComponent() && !GetRootComponent()->IsSimulatingPhysics();
 }
@@ -413,8 +412,9 @@ void ACharacter::OnEndCrouch( float HeightAdjust, float ScaledHeightAdjust )
 	const ACharacter* DefaultChar = GetDefault<ACharacter>(GetClass());
 	if (Mesh && DefaultChar->Mesh)
 	{
-		Mesh->RelativeLocation.Z = DefaultChar->Mesh->RelativeLocation.Z;
-		BaseTranslationOffset.Z = Mesh->RelativeLocation.Z;
+		FVector& MeshRelativeLocation = Mesh->GetRelativeLocation_DirectMutable();
+		MeshRelativeLocation.Z = DefaultChar->Mesh->GetRelativeLocation().Z;
+		BaseTranslationOffset.Z = MeshRelativeLocation.Z;
 	}
 	else
 	{
@@ -431,8 +431,9 @@ void ACharacter::OnStartCrouch( float HeightAdjust, float ScaledHeightAdjust )
 	const ACharacter* DefaultChar = GetDefault<ACharacter>(GetClass());
 	if (Mesh && DefaultChar->Mesh)
 	{
-		Mesh->RelativeLocation.Z = DefaultChar->Mesh->RelativeLocation.Z + HeightAdjust;
-		BaseTranslationOffset.Z = Mesh->RelativeLocation.Z;
+		FVector& MeshRelativeLocation = Mesh->GetRelativeLocation_DirectMutable();
+		MeshRelativeLocation.Z = DefaultChar->Mesh->GetRelativeLocation().Z + HeightAdjust;
+		BaseTranslationOffset.Z = MeshRelativeLocation.Z;
 	}
 	else
 	{
@@ -489,6 +490,18 @@ namespace MovementBaseUtility
 	bool IsDynamicBase(const UPrimitiveComponent* MovementBase)
 	{
 		return (MovementBase && MovementBase->Mobility == EComponentMobility::Movable);
+	}
+
+	bool IsSimulatedBase(const UPrimitiveComponent* MovementBase)
+	{
+		bool bBaseIsSimulatingPhysics = false;
+		const USceneComponent* AttachParent = MovementBase;
+		while (!bBaseIsSimulatingPhysics && AttachParent)
+		{
+			bBaseIsSimulatingPhysics = AttachParent->IsSimulatingPhysics();
+			AttachParent = AttachParent->GetAttachParent();
+		}
+		return bBaseIsSimulatingPhysics;
 	}
 
 	void AddTickDependency(FTickFunction& BasedObjectTick, UPrimitiveComponent* NewBase)
@@ -688,7 +701,7 @@ void ACharacter::SetBase( UPrimitiveComponent* NewBaseComponent, const FName InB
 
 		if (CharacterMovement)
 		{
-			const bool bBaseIsSimulating = NewBaseComponent && NewBaseComponent->IsSimulatingPhysics();
+			const bool bBaseIsSimulating = MovementBaseUtility::IsSimulatedBase(NewBaseComponent);
 			if (bBaseChanged)
 			{
 				MovementBaseUtility::RemoveTickDependency(CharacterMovement->PrimaryComponentTick, OldBase);
@@ -720,10 +733,11 @@ void ACharacter::SetBase( UPrimitiveComponent* NewBaseComponent, const FName InB
 				CharacterMovement->PostPhysicsTickFunction.SetTickFunctionEnable(false);
 			}
 
-			if (Role == ROLE_Authority || Role == ROLE_AutonomousProxy)
+			const ENetRole LocalRole = GetLocalRole();
+			if (LocalRole == ROLE_Authority || LocalRole == ROLE_AutonomousProxy)
 			{
 				BasedMovement.bServerHasBaseComponent = (BasedMovement.MovementBase != nullptr); // Also set on proxies for nicer debugging.
-				UE_LOG(LogCharacter, Verbose, TEXT("Setting base on %s for '%s' to '%s'"), Role == ROLE_Authority ? TEXT("Server") : TEXT("AutoProxy"), *GetName(), *GetFullNameSafe(NewBaseComponent));
+				UE_LOG(LogCharacter, Verbose, TEXT("Setting base on %s for '%s' to '%s'"), LocalRole == ROLE_Authority ? TEXT("Server") : TEXT("AutoProxy"), *GetName(), *GetFullNameSafe(NewBaseComponent));
 			}
 			else
 			{
@@ -819,7 +833,7 @@ void ACharacter::PossessedBy(AController* NewController)
 	Super::PossessedBy(NewController);
 
 	// If we are controlled remotely, set animation timing to be driven by client's network updates. So timing and events remain in sync.
-	if (Mesh && bReplicateMovement && (GetRemoteRole() == ROLE_AutonomousProxy && GetNetConnection() != nullptr))
+	if (Mesh && IsReplicatingMovement() && (GetRemoteRole() == ROLE_AutonomousProxy && GetNetConnection() != nullptr))
 	{
 		Mesh->bOnlyAllowAutonomousTickPose = true;
 	}
@@ -1061,7 +1075,7 @@ void ACharacter::PreNetReceive()
 
 void ACharacter::PostNetReceive()
 {
-	if (Role == ROLE_SimulatedProxy)
+	if (GetLocalRole() == ROLE_SimulatedProxy)
 	{
 		CharacterMovement->bNetworkMovementModeChanged |= (SavedMovementMode != ReplicatedMovementMode);
 		CharacterMovement->bNetworkUpdateReceived |= CharacterMovement->bNetworkMovementModeChanged || CharacterMovement->bJustTeleported;
@@ -1072,7 +1086,7 @@ void ACharacter::PostNetReceive()
 
 void ACharacter::OnRep_ReplicatedBasedMovement()
 {	
-	if (Role != ROLE_SimulatedProxy)
+	if (GetLocalRole() != ROLE_SimulatedProxy)
 	{
 		return;
 	}
@@ -1165,7 +1179,7 @@ void ACharacter::OnRep_RootMotion()
 		return;
 	}
 
-	if (Role == ROLE_SimulatedProxy)
+	if (GetLocalRole() == ROLE_SimulatedProxy)
 	{
 
 		UE_LOG(LogRootMotion, Log,  TEXT("ACharacter::OnRep_RootMotion"));
@@ -1178,15 +1192,6 @@ void ACharacter::OnRep_RootMotion()
 			FSimulatedRootMotionReplicatedMove& NewMove = RootMotionRepMoves.Last();
 			NewMove.RootMotion = RepRootMotion;
 			NewMove.Time = GetWorld()->GetTimeSeconds();
-
-			// Convert RootMotionSource Server IDs -> Local IDs in AuthoritativeRootMotion and cull invalid
-			// so that when we use this root motion it has the correct IDs
-			if (CharacterMovement)
-			{
-				CharacterMovement->ConvertRootMotionServerIDsToLocalIDs(CharacterMovement->CurrentRootMotion, NewMove.RootMotion.AuthoritativeRootMotion, NewMove.Time);
-			}
-			
-			NewMove.RootMotion.AuthoritativeRootMotion.CullInvalidSources();
 		}
 		else
 		{
@@ -1382,18 +1387,19 @@ void ACharacter::OnUpdateSimulatedPosition(const FVector& OldLocation, const FQu
 
 void ACharacter::PostNetReceiveLocationAndRotation()
 {
-	if( Role == ROLE_SimulatedProxy )
+	if(GetLocalRole() == ROLE_SimulatedProxy)
 	{
 		// Don't change transform if using relative position (it should be nearly the same anyway, or base may be slightly out of sync)
 		if (!ReplicatedBasedMovement.HasRelativeLocation())
 		{
+			const FRepMovement& ConstRepMovement = GetReplicatedMovement();
 			const FVector OldLocation = GetActorLocation();
-			const FVector NewLocation = FRepMovement::RebaseOntoLocalOrigin(ReplicatedMovement.Location, this);
+			const FVector NewLocation = FRepMovement::RebaseOntoLocalOrigin(ConstRepMovement.Location, this);
 			const FQuat OldRotation = GetActorQuat();
 
 			CharacterMovement->bNetworkSmoothingComplete = false;
 			CharacterMovement->bJustTeleported |= (OldLocation != NewLocation);
-			CharacterMovement->SmoothCorrection(OldLocation, OldRotation, NewLocation, ReplicatedMovement.Rotation.Quaternion());
+			CharacterMovement->SmoothCorrection(OldLocation, OldRotation, NewLocation, ConstRepMovement.Rotation.Quaternion());
 			OnUpdateSimulatedPosition(OldLocation, OldRotation);
 		}
 		CharacterMovement->bNetworkUpdateReceived = true;
@@ -1471,73 +1477,18 @@ void ACharacter::PreReplicationForReplay(IRepChangedPropertyTracker & ChangedPro
 {
 	Super::PreReplicationForReplay(ChangedPropertyTracker);
 
-	// If this is a replay, we save out certain values we need to runtime to do smooth interpolation
-	// We'll be able to look ahead in the replay to have these ahead of time for smoother playback
-	FCharacterReplaySample ReplaySample;
-
 	const UWorld* World = GetWorld();
-
-	// If this is a client-recorded replay, use the mesh location and rotation, since these will always
-	// be smoothed - unlike the actor position and rotation.
-	const USkeletalMeshComponent* const MeshComponent = GetMesh();
-	if (MeshComponent && World && World->IsRecordingClientReplay())
-	{
-		FNetworkPredictionData_Client_Character const* const ClientNetworkPredicationData = CharacterMovement->GetPredictionData_Client_Character();
-		if ((Role == ROLE_SimulatedProxy) && ClientNetworkPredicationData)
-		{
-			ReplaySample.Location = GetActorLocation() + ClientNetworkPredicationData->MeshTranslationOffset;
-			if (CharacterMovement->NetworkSmoothingMode == ENetworkSmoothingMode::Exponential)
-			{
-				ReplaySample.Rotation = GetActorRotation() + ClientNetworkPredicationData->MeshRotationOffset.Rotator();
-			}
-			else
-			{
-				ReplaySample.Rotation = ClientNetworkPredicationData->MeshRotationOffset.Rotator();
-			}
-		}
-		else
-		{
-			// Remove the base transform from the mesh's transform, since on playback the base transform
-			// will be stored in the mesh's RelativeLocation and RelativeRotation.
-			const FTransform BaseTransform(GetBaseRotationOffset(), GetBaseTranslationOffset());
-			const FTransform MeshRootTransform = BaseTransform.Inverse() * MeshComponent->GetComponentTransform();
-
-			ReplaySample.Location = MeshRootTransform.GetLocation();
-			ReplaySample.Rotation = MeshRootTransform.GetRotation().Rotator();
-		}
-
-		// On client replays, our view pitch will be set to 0 as by default we do not replicate
-		// pitch for owners, just for simulated. So instead push our rotation into the sampler
-		if (Controller != nullptr && Role == ROLE_AutonomousProxy && GetNetMode() == NM_Client)
-		{
-			SetRemoteViewPitch(Controller->GetControlRotation().Pitch);
-		}
-	}
-	else
-	{
-		ReplaySample.Location = GetActorLocation();
-		ReplaySample.Rotation = GetActorRotation();
-	}
-
-	ReplaySample.Velocity = GetVelocity();
-	ReplaySample.Acceleration = CharacterMovement->GetCurrentAcceleration();
-	ReplaySample.RemoteViewPitch = RemoteViewPitch;
-
 	if (World)
 	{
-		if (World->DemoNetDriver)
+		// On client replays, our view pitch will be set to 0 as by default we do not replicate
+		// pitch for owners, just for simulated. So instead push our rotation into the sampler
+		if (World->IsRecordingClientReplay() && Controller != nullptr && GetLocalRole() == ROLE_AutonomousProxy && GetNetMode() == NM_Client)
 		{
-			ReplaySample.Time = World->DemoNetDriver->DemoCurrentTime;
+			SetRemoteViewPitch(Controller->GetControlRotation().Pitch);
 		}
 
 		ReplayLastTransformUpdateTimeStamp = World->GetTimeSeconds();
 	}
-
-	const uint32 ReserveBits = 1024;
-	FBitWriter Writer(ReserveBits, true);
-	Writer << ReplaySample;
-
-	ChangedPropertyTracker.SetExternalData(Writer.GetData(), Writer.GetNumBits());
 }
 
 void ACharacter::GetLifetimeReplicatedProps( TArray< FLifetimeProperty > & OutLifetimeProps ) const

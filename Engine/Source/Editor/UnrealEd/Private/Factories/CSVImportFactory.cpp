@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "Factories/CSVImportFactory.h"
 #include "Misc/MessageDialog.h"
@@ -111,22 +111,30 @@ UObject* UCSVImportFactory::FactoryCreateText(UClass* InClass, UObject* InParent
 
 	// Save off information if so
 	bool bHaveInfo = false;
-	UScriptStruct* ImportRowStruct = nullptr;
 	ERichCurveInterpMode ImportCurveInterpMode = RCIM_Linear;
 	ECSVImportType ImportType = ECSVImportType::ECSV_DataTable;
+	UClass* DataTableClass = UDataTable::StaticClass();
+
+	// Clear our temp table
+	TempImportDataTable = nullptr;
 
 	if (IsAutomatedImport())
 	{
-		ImportRowStruct = AutomatedImportSettings.ImportRowStruct;
 		ImportCurveInterpMode = AutomatedImportSettings.ImportCurveInterpMode;
 		ImportType = AutomatedImportSettings.ImportType;
 
+		TempImportDataTable = NewObject<UDataTable>(this, UDataTable::StaticClass(), InName, Flags);
+		TempImportDataTable->RowStruct = AutomatedImportSettings.ImportRowStruct;
+
 		// For automated import to work a row struct must be specified for a datatable type or a curve type must be specified
-		bHaveInfo = ImportRowStruct != nullptr || ImportType != ECSVImportType::ECSV_DataTable;
+		bHaveInfo = TempImportDataTable->RowStruct != nullptr || ImportType != ECSVImportType::ECSV_DataTable;
 	}
 	else if (ExistingTable != nullptr)
 	{
-		ImportRowStruct = ExistingTable->RowStruct;
+		ImportType = ECSVImportType::ECSV_DataTable;
+		TempImportDataTable = NewObject<UDataTable>(this, ExistingTable->GetClass(), InName, Flags);
+		TempImportDataTable->CopyImportOptions(ExistingTable);
+		
 		bHaveInfo = true;
 	}
 	else if (ExistingCurveTable != nullptr)
@@ -141,6 +149,12 @@ UObject* UCSVImportFactory::FactoryCreateText(UClass* InClass, UObject* InParent
 	}
 
 	bool bDoImport = true;
+
+	if (!TempImportDataTable)
+	{
+		// Create an empty one
+		TempImportDataTable = NewObject<UDataTable>(this, UDataTable::StaticClass(), InName, Flags);
+	}
 
 	// If we do not have the info we need, pop up window to ask for things
 	if (!bHaveInfo && !IsAutomatedImport())
@@ -171,19 +185,20 @@ UObject* UCSVImportFactory::FactoryCreateText(UClass* InClass, UObject* InParent
 			SAssignNew(ImportOptionsWindow, SCSVImportOptions)
 				.WidgetWindow(Window)
 				.FullPath(FText::FromString(ParentFullPath))
+				.TempImportDataTable(TempImportDataTable)
 		);
 
 		FSlateApplication::Get().AddModalWindow(Window, ParentWindow, false);
 
 		ImportType = ImportOptionsWindow->GetSelectedImportType();
-		ImportRowStruct = ImportOptionsWindow->GetSelectedRowStruct();
+		TempImportDataTable->RowStruct = ImportOptionsWindow->GetSelectedRowStruct();
 		ImportCurveInterpMode = ImportOptionsWindow->GetSelectedCurveIterpMode();
 		bDoImport = ImportOptionsWindow->ShouldImport();
 		bOutOperationCanceled = !bDoImport;
 	}
 	else if (!bHaveInfo && IsAutomatedImport())
 	{
-		if (ImportType == ECSVImportType::ECSV_DataTable && !ImportRowStruct)
+		if (ImportType == ECSVImportType::ECSV_DataTable && !TempImportDataTable->RowStruct)
 		{
 			UE_LOG(LogCSVImportFactory, Error, TEXT("A Data table row type must be specified in the import settings json file for automated import"));
 		}
@@ -207,10 +222,7 @@ UObject* UCSVImportFactory::FactoryCreateText(UClass* InClass, UObject* InParent
 
 		if (ImportType == ECSVImportType::ECSV_DataTable)
 		{
-			UClass* DataTableClass = UDataTable::StaticClass();
-
 			// If there is an existing table, need to call this to free data memory before recreating object
-			bool bStripFromClientBuilds = false;
 			UDataTable::FOnDataTableChanged OldOnDataTableChanged;
 			if (ExistingTable != nullptr)
 			{
@@ -218,14 +230,14 @@ UObject* UCSVImportFactory::FactoryCreateText(UClass* InClass, UObject* InParent
 				ExistingTable->OnDataTableChanged().Clear();
 				DataTableClass = ExistingTable->GetClass();
 				ExistingTable->EmptyTable();
-				bStripFromClientBuilds = ExistingTable->bStripFromClientBuilds;
 			}
 
 			// Create/reset table
 			UDataTable* NewTable = NewObject<UDataTable>(InParent, DataTableClass, InName, Flags);
-			NewTable->RowStruct = ImportRowStruct;
+			
+			NewTable->CopyImportOptions(TempImportDataTable);
 			NewTable->AssetImportData->Update(CurrentFilename);
-			NewTable->bStripFromClientBuilds = bStripFromClientBuilds;
+
 			// Go ahead and create table from string
 			Problems = DoImportDataTable(NewTable, String);
 
@@ -336,7 +348,7 @@ EReimportResult::Type UCSVImportFactory::Reimport(UObject* Obj, const FString& P
 		FString FilePath = IFileManager::Get().ConvertToRelativePath(*Path);
 
 		FString Data;
-		if ( FFileHelper::LoadFileToString( Data, *FilePath) )
+		if ( FFileHelper::LoadFileToString( Data, *FilePath, FFileHelper::EHashOptions::None, FILEREAD_AllowWrite) )
 		{
 			const TCHAR* Ptr = *Data;
 			CurrentFilename = FilePath; //not thread safe but seems to be how it is done..
@@ -409,14 +421,9 @@ bool UReimportDataTableFactory::CanReimport( UObject* Obj, TArray<FString>& OutF
 	if (DataTable)
 	{
 		DataTable->AssetImportData->ExtractFilenames(OutFilenames);
-		if (OutFilenames.Num() > 0)
-		{
-			return true;
-		}
-		else
-		{
-			return false;
-		}
+		
+		// Always allow reimporting a data table as it is common to convert from manual to CSV-driven tables
+		return true;
 	}
 	return false;
 }

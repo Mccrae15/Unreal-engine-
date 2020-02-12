@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "FunctionalUIScreenshotTest.h"
 
@@ -173,7 +173,7 @@ void AFunctionalUIScreenshotTest::RequestScreenshot()
 			// when rendering to a separate render target
 			FWidgetRenderer* WidgetRenderer = new FWidgetRenderer(true, false);
 			check(WidgetRenderer);
-			WidgetRenderer->DrawWidget(ScreenshotRT, ViewportWidget.ToSharedRef(), ScreenshotSize, 0.f);
+			WidgetRenderer->DrawWidget(ScreenshotRT, ViewportWidget.ToSharedRef(), ViewportWidget->GetCachedGeometry().Scale, ScreenshotSize, 0.f);
 			FlushRenderingCommands();
 			BeginCleanup(WidgetRenderer);
 

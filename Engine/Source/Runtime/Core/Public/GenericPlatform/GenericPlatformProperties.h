@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -142,10 +142,10 @@ struct FGenericPlatformProperties
 	/**
 	 * Checks whether the specified build target is supported.
 	 *
-	 * @param BuildTarget The build target to check.
+	 * @param TargetType The build target to check.
 	 * @return true if the build target is supported, false otherwise.
 	 */
-	static FORCEINLINE bool SupportsBuildTarget( EBuildTargets::Type BuildTarget )
+	static FORCEINLINE bool SupportsBuildTarget( EBuildTargetType TargetType )
 	{
 		return true;
 	}
@@ -241,7 +241,7 @@ struct FGenericPlatformProperties
 
 	static FORCEINLINE bool SupportsMeshLODStreaming()
 	{
-		return true;
+		return false;
 	}
 
 	static FORCEINLINE bool SupportsMemoryMappedFiles()
@@ -252,9 +252,18 @@ struct FGenericPlatformProperties
 	{
 		return false;
 	}
+	static FORCEINLINE bool SupportsMemoryMappedAnimation()
+	{
+		return false;
+	}
 	static FORCEINLINE int64 GetMemoryMappingAlignment()
 	{
 		return 0;
+	}
+	
+	static FORCEINLINE bool SupportsVirtualTextureStreaming()
+	{
+		return false; // Currently VT is opt-in
 	}
 
 	/**
@@ -279,7 +288,7 @@ struct FGenericPlatformProperties
 	// Whether the platform allows the call stack to be dumped during an assert
 	static FORCEINLINE bool AllowsCallStackDumpDuringAssert()
 	{
-		return false;
+		return IsProgram();
 	}
 
 	// If this platform wants to replace Zlib with a platform-specific version, set the name of the compression format 

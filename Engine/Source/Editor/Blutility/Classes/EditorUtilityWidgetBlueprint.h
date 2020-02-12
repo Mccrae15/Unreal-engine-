@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 /**
  * Widget for editor utilities
@@ -15,6 +15,8 @@
 
 class UBlueprint;
 class UEditorUtilityWidget;
+enum class EAssetEditorCloseReason : uint8;
+enum class EMapChangeType : uint8;
 
 UCLASS()
 class UEditorUtilityWidgetBlueprint : public UWidgetBlueprint
@@ -22,6 +24,8 @@ class UEditorUtilityWidgetBlueprint : public UWidgetBlueprint
 	GENERATED_UCLASS_BODY()
 
 public:
+	virtual void BeginDestroy() override;
+
 	TSharedRef<SDockTab> SpawnEditorUITab(const FSpawnTabArgs& SpawnTabArgs);
 
 	/** Creates the slate widget from the UMG widget */
@@ -35,13 +39,31 @@ public:
 	// UBlueprint interface
 	virtual void GetReparentingRules(TSet< const UClass* >& AllowedChildrenOfClasses, TSet< const UClass* >& DisallowedChildrenOfClasses) const override;
 
+	virtual bool AllowEditorWidget() const override { return true; }
+
 	UEditorUtilityWidget* GetCreatedWidget() const
 	{
 		return CreatedUMGWidget;
 	}
 
+	void SetRegistrationName(FName InRegistrationName)
+	{
+		RegistrationName = InRegistrationName;
+	}
+
+	FName GetRegistrationName() const
+	{
+		return RegistrationName;
+	}
+
+	void ChangeTabWorld(UWorld* World, EMapChangeType MapChangeType);
+
 private:
+	FName RegistrationName;
+
 	TWeakPtr<SDockTab> CreatedTab;
 
+	UPROPERTY(Transient)
 	UEditorUtilityWidget* CreatedUMGWidget;
+
 };

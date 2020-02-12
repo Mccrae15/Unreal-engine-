@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "Widgets/Layout/SScrollBarTrack.h"
 #include "Layout/ArrangedChildren.h"
@@ -128,6 +128,8 @@ void SScrollBarTrack::SetSizes(float InThumbOffsetFraction, float InThumbSizeFra
 	{
 		ThumbSizeFraction = 0.0f;
 	}
+
+	Invalidate(EInvalidateWidget::Layout);
 }
 
 bool SScrollBarTrack::IsNeeded() const
@@ -159,5 +161,9 @@ float SScrollBarTrack::GetThumbSizeFraction() const
 
 void SScrollBarTrack::SetIsAlwaysVisible(bool InIsAlwaysVisible)
 {
-	bIsAlwaysVisible = InIsAlwaysVisible;
+	if (bIsAlwaysVisible != InIsAlwaysVisible)
+	{
+		bIsAlwaysVisible = InIsAlwaysVisible;
+		Invalidate(EInvalidateWidget::Layout);
+	}
 }

@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 
 #pragma once
@@ -49,6 +49,10 @@ class UDrawFrustumComponent : public UPrimitiveComponent
 	virtual FPrimitiveSceneProxy* CreateSceneProxy() override;
 	virtual FBoxSphereBounds CalcBounds(const FTransform& LocalToWorld) const override;
 	//~ End UPrimitiveComponent Interface.
+
+#if WITH_EDITOR
+	virtual bool IgnoreBoundsForEditorFocus() const override { return true; }
+#endif
 };
 
 

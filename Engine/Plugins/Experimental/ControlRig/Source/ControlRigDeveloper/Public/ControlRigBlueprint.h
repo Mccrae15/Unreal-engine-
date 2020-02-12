@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -8,71 +8,33 @@
 #include "Engine/Blueprint.h"
 #include "Misc/Crc.h"
 #include "ControlRigDefines.h"
-#include "Hierarchy.h"
+#include "Rigs/RigHierarchyContainer.h"
+#include "Rigs/RigCurveContainer.h"
 #include "Interfaces/Interface_PreviewMeshProvider.h"
+#include "ControlRigGizmoLibrary.h"
+#include "RigVMCore/RigVM.h"
+#include "RigVMCore/RigVMStatistics.h"
+#include "RigVMModel/RigVMController.h"
+#include "RigVMCompiler/RigVMCompiler.h"
+#include "ControlRigHierarchyModifier.h"
+#include "Drawing/ControlRigDrawContainer.h"
 #include "ControlRigBlueprint.generated.h"
 
 class UControlRigBlueprintGeneratedClass;
 class USkeletalMesh;
+class UControlRigGraph;
 
-/** 
-  * Source data used by the FControlRigBlueprintCompiler, can't be an editor plugin
-  * because it is needed when running with -game.
-  */
+DECLARE_EVENT_TwoParams(UControlRigBlueprint, FOnVMCompiledEvent, UBlueprint*, URigVM*);
 
-/** A link between two properties. Links become copies between property data at runtime. */
-USTRUCT()
-struct CONTROLRIGDEVELOPER_API FControlRigBlueprintPropertyLink
-{
-	GENERATED_BODY()
-
-	FControlRigBlueprintPropertyLink() 
-		: SourcePropertyHash(0)
-		, DestPropertyHash(0)
-	{}
-
-	FControlRigBlueprintPropertyLink(const FString& InSourcePropertyPath, const FString& InDestPropertyPath)
-		: SourcePropertyPath(InSourcePropertyPath)
-		, DestPropertyPath(InDestPropertyPath)
-		, SourcePropertyHash(FCrc::StrCrc32<TCHAR>(*SourcePropertyPath))
-		, DestPropertyHash(FCrc::StrCrc32<TCHAR>(*DestPropertyPath))
-	{}
-
-	friend bool operator==(const FControlRigBlueprintPropertyLink& A, const FControlRigBlueprintPropertyLink& B)
-	{
-		return A.SourcePropertyHash == B.SourcePropertyHash && A.DestPropertyHash == B.DestPropertyHash;
-	}
-
-	const FString& GetSourcePropertyPath() const { return SourcePropertyPath; }
-	const FString& GetDestPropertyPath() const { return DestPropertyPath; }
-
-	uint32 GetSourcePropertyHash() const { return SourcePropertyHash; }
-	uint32 GetDestPropertyHash() const { return DestPropertyHash; }
-
-private:
-	/** Path to the property we are linking from */
-	UPROPERTY(VisibleAnywhere, Category="Links")
-	FString SourcePropertyPath;
-
-	/** Path to the property we are linking to */
-	UPROPERTY(VisibleAnywhere, Category="Links")
-	FString DestPropertyPath;
-
-	// Hashed strings for faster comparisons
-	UPROPERTY(VisibleAnywhere, Category="Links")
-	uint32 SourcePropertyHash;
-
-	UPROPERTY(VisibleAnywhere, Category="Links")
-	uint32 DestPropertyHash;
-};
-
-UCLASS(BlueprintType)
+UCLASS(BlueprintType, meta=(IgnoreClassThumbnail))
 class CONTROLRIGDEVELOPER_API UControlRigBlueprint : public UBlueprint, public IInterface_PreviewMeshProvider
 {
-	GENERATED_BODY()
+	GENERATED_UCLASS_BODY()
 
 public:
 	UControlRigBlueprint();
+
+	void InitializeModelIfRequired();
 
 	/** Get the (full) generated class for this control rig blueprint */
 	UControlRigBlueprintGeneratedClass* GetControlRigBlueprintGeneratedClass() const;
@@ -81,44 +43,188 @@ public:
 	UControlRigBlueprintGeneratedClass* GetControlRigBlueprintSkeletonClass() const;
 
 #if WITH_EDITOR
+
 	// UBlueprint interface
 	virtual UClass* GetBlueprintClass() const override;
 	virtual bool SupportedByDefaultBlueprintFactory() const override { return false; }
 	virtual bool IsValidForBytecodeOnlyRecompile() const override { return false; }
 	virtual void LoadModulesRequiredForCompilation() override;
 	virtual void GetTypeActions(FBlueprintActionDatabaseRegistrar& ActionRegistrar) const override;
-	virtual void GetInstanceActions(FBlueprintActionDatabaseRegistrar& ActionRegistrar) const override;	
-#endif	// #if WITH_EDITOR
+	virtual void SetObjectBeingDebugged(UObject* NewObject) override;
+	virtual void PostLoad() override;
+	virtual void PostTransacted(const FTransactionObjectEvent& TransactionEvent) override;
 
-	/** Make a property link between the specified properties - used by the compiler */
-	void MakePropertyLink(const FString& InSourcePropertyPath, const FString& InDestPropertyPath);
+	virtual bool SupportsGlobalVariables() const override { return false; }
+	virtual bool SupportsLocalVariables() const override { return false; }
+	virtual bool SupportsFunctions() const override { return false; }
+	virtual bool SupportsMacros() const override { return false; }
+	virtual bool SupportsDelegates() const override { return false; }
+	virtual bool SupportsEventGraphs() const override { return false; }
+	virtual bool SupportsAnimLayers() const override { return false; }
+
+
+#endif	// #if WITH_EDITOR
+	virtual bool ShouldBeMarkedDirtyUponTransaction() const override { return false; }
 
 	/** IInterface_PreviewMeshProvider interface */
+	UFUNCTION(BlueprintCallable, Category = "Control Rig Blueprint")
 	virtual void SetPreviewMesh(USkeletalMesh* PreviewMesh, bool bMarkAsDirty = true) override;
+	
+	UFUNCTION(BlueprintCallable, Category = "Control Rig Blueprint")
 	virtual USkeletalMesh* GetPreviewMesh() const override;
 
-private:
-	/** Links between the various properties we have */
-	UPROPERTY(EditAnywhere, Category="Links")
-	TArray<FControlRigBlueprintPropertyLink> PropertyLinks;
+	UFUNCTION(BlueprintCallable, Category = "Control Rig Blueprint")
+	void RecompileVM();
 
-	/** list of operators. Visible for debug purpose for now */
-	UPROPERTY(VisibleAnywhere, Category = "Links")
-	TArray<FControlRigOperator> Operators;
+	UFUNCTION(BlueprintCallable, Category = "Control Rig Blueprint")
+	void RecompileVMIfRequired();
+	
+	UFUNCTION(BlueprintCallable, Category = "Control Rig Blueprint")
+	void RequestAutoVMRecompilation();
+
+	void IncrementVMRecompileBracket();
+	void DecrementVMRecompileBracket();
+
+	UFUNCTION(BlueprintCallable, Category = "Control Rig Blueprint")
+	void RequestControlRigInit();
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "VM")
+	FRigVMCompileSettings VMCompileSettings;
+
+	UPROPERTY(BlueprintReadOnly, Category = "VM")
+	URigVMGraph* Model;
+
+	UPROPERTY(BlueprintReadOnly, transient, Category = "VM")
+	URigVMController* Controller;
+
+	UPROPERTY(transient)
+	TMap<FString, FRigVMOperand> PinToOperandMap;
+
+	bool bSuspendModelNotificationsForSelf;
+	bool bSuspendModelNotificationsForOthers;
+
+	void PopulateModelFromGraphForBackwardsCompatibility(UControlRigGraph* InGraph);
+	void RebuildGraphFromModel();
+
+	FRigVMGraphModifiedEvent& OnModified();
+	FOnVMCompiledEvent& OnVMCompiled();
+
+	UFUNCTION(BlueprintCallable, Category = "VM")
+	static TArray<UControlRigBlueprint*> GetCurrentlyOpenRigBlueprints();
+
+	UFUNCTION(BlueprintCallable, Category = "VM")
+	static TArray<UStruct*> GetAvailableRigUnits();
+
+	UFUNCTION(BlueprintCallable, Category = "Hierarchy")
+	UControlRigHierarchyModifier* GetHierarchyModifier();
+
+#if WITH_EDITORONLY_DATA
+	UPROPERTY(EditAnywhere, config, Category = DefaultGizmo)
+	TAssetPtr<UControlRigGizmoLibrary> GizmoLibrary;
+#endif
+
+	UPROPERTY(transient, VisibleAnywhere, Category = "VM", meta = (DisplayName = "VM Statistics", DisplayAfter = "VMCompileSettings"))
+	FRigVMStatistics Statistics;
+
+	UPROPERTY(EditAnywhere, Category = "Drawing")
+	FControlRigDrawContainer DrawContainer;
+
+#if WITH_EDITOR
+	/** Remove a transient / temporary control used to interact with a pin */
+	FName AddTransientControl(URigVMPin* InPin);
+
+	/** Remove a transient / temporary control used to interact with a pin */
+	FName RemoveTransientControl(URigVMPin* InPin);
+
+	/** Remove a transient / temporary control used to interact with a bone */
+	FName AddTransientControl(const FRigElementKey& InElement);
+
+	/** Remove a transient / temporary control used to interact with a bone */
+	FName RemoveTransientControl(const FRigElementKey& InElement);
+
+	/** Removes all  transient / temporary control used to interact with pins */
+	void ClearTransientControls();
+
+#endif
+
+private:
 
 	// need list of "allow query property" to "source" - whether rig unit or property itself
 	// this will allow it to copy data to target
-	UPROPERTY(VisibleAnywhere, Category = "Links")
+	UPROPERTY()
 	TMap<FName, FString> AllowSourceAccessProperties;
 
-	UPROPERTY(VisibleAnywhere, Category = "Hierarchy")
-	FRigHierarchy Hierarchy;
+public:
+	UPROPERTY()
+	FRigHierarchyContainer HierarchyContainer;
+
+private:
+
+	UPROPERTY()
+	FRigBoneHierarchy Hierarchy_DEPRECATED;
+
+	UPROPERTY()
+	FRigCurveContainer CurveContainer_DEPRECATED;
+
+	/** The default skeletal mesh to use when previewing this asset */
+	UPROPERTY(AssetRegistrySearchable)
+	TSoftObjectPtr<USkeletalMesh> PreviewSkeletalMesh;
 
 	/** The default skeletal mesh to use when previewing this asset */
 	UPROPERTY(DuplicateTransient, AssetRegistrySearchable)
-	TSoftObjectPtr<USkeletalMesh> PreviewSkeletalMesh;
+	TSoftObjectPtr<UObject> SourceHierarchyImport;
+
+	UPROPERTY(DuplicateTransient, AssetRegistrySearchable)
+	TSoftObjectPtr<UObject> SourceCurveImport;
+
+	UPROPERTY(transient)
+	bool bAutoRecompileVM;
+
+	UPROPERTY(transient)
+	bool bVMRecompilationRequired;
+
+	UPROPERTY(transient)
+	int32 VMRecompilationBracket;
+
+	UPROPERTY(transient)
+	UControlRigHierarchyModifier* HierarchyModifier;
+
+	FRigVMGraphModifiedEvent ModifiedEvent;
+	void Notify(ERigVMGraphNotifType InNotifType, UObject* InSubject);
+	void HandleModifiedEvent(ERigVMGraphNotifType InNotifType, URigVMGraph* InGraph, UObject* InSubject);
+
+	FOnVMCompiledEvent VMCompiledEvent;
+
+	static TArray<UControlRigBlueprint*> sCurrentlyOpenedRigBlueprints;
+
+	void CleanupBoneHierarchyDeprecated();
+
+public:
+	void PropagatePoseFromInstanceToBP(UControlRig* InControlRig);
+	void PropagatePoseFromBPToInstances();
+	void PropagateHierarchyFromBPToInstances(bool bInitializeContainer = true, bool bInitializeRigs = true);
+	void PropagateDrawInstructionsFromBPToInstances();
+	void PropagatePropertyFromBPToInstances(FRigElementKey InRigElement, const FProperty* InProperty);
+	void PropagatePropertyFromInstanceToBP(FRigElementKey InRigElement, const FProperty* InProperty, UControlRig* InInstance);
+
+private:
+
+#if WITH_EDITOR
+
+	void HandleOnElementAdded(FRigHierarchyContainer* InContainer, const FRigElementKey& InKey);
+	void HandleOnElementRemoved(FRigHierarchyContainer* InContainer, const FRigElementKey& InKey);
+	void HandleOnElementRenamed(FRigHierarchyContainer* InContainer, ERigElementType InElementType, const FName& InOldName, const FName& InNewName);
+	void HandleOnElementReparented(FRigHierarchyContainer* InContainer, const FRigElementKey& InKey, const FName& InOldParentName, const FName& InNewParentName);
+	void HandleOnElementSelected(FRigHierarchyContainer* InContainer, const FRigElementKey& InKey, bool bSelected);
+#endif
 
 	friend class FControlRigBlueprintCompilerContext;
 	friend class SRigHierarchy;
+	friend class SRigCurveContainer;
 	friend class FControlRigEditor;
+	friend class UEngineTestControlRig;
+	friend class FControlRigEditMode;
+	friend class FControlRigBlueprintActions;
+	friend class FControlRigDrawContainerDetails;
+	friend class UDefaultControlRigManipulationLayer;
 };

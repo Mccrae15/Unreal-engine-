@@ -1,8 +1,14 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
 #include <sal.h>
+
+#if defined(__clang__)
+	#include "Clang/ClangPlatform.h"
+#else
+	#include "MSVC/MSVCPlatform.h"
+#endif
 
 
 /**
@@ -40,27 +46,44 @@ typedef FWindowsPlatformTypes FPlatformTypes;
 #if defined(__clang__)
 	// @todo clang: Clang compiler on Windows doesn't support SEH exception handling yet (__try/__except)
 	#define PLATFORM_SEH_EXCEPTIONS_DISABLED				1
-
-	// @todo clang: Clang compiler on Windows doesn't support C++ exception handling yet (try/throw/catch)
-	#define PLATFORM_EXCEPTIONS_DISABLED					1
 #endif
 
 #define PLATFORM_SUPPORTS_PRAGMA_PACK						1
 #define PLATFORM_ENABLE_VECTORINTRINSICS					1
+#ifndef PLATFORM_MAYBE_HAS_SSE4_1 // May be set from UnrealBuildTool
+	#define PLATFORM_MAYBE_HAS_SSE4_1						1
+#endif
+// Current unreal minspec is sse2, not sse4, so on windows any calling code must check _cpuid before calling SSE4 instructions;
+// If called on a platform for which _cpuid for SSE4 returns false, attempting to call SSE4 intrinsics will crash
+// If your title has raised the minspec to sse4, you can define PLATFORM_ALWAYS_HAS_SSE4_1 to 1
+#ifndef PLATFORM_ALWAYS_HAS_SSE4_1 // May be set from UnrealBuildTool
+	#define PLATFORM_ALWAYS_HAS_SSE4_1						0
+#endif
+
 #define PLATFORM_USE_LS_SPEC_FOR_WIDECHAR					0
 //#define PLATFORM_USE_SYSTEM_VSWPRINTF						1
 //#define PLATFORM_TCHAR_IS_4_BYTES							0
 #define PLATFORM_HAS_BSD_TIME								0
 #define PLATFORM_USE_PTHREADS								0
 #define PLATFORM_MAX_FILEPATH_LENGTH_DEPRECATED				WINDOWS_MAX_PATH
+#define PLATFORM_HAS_BSD_IPV6_SOCKETS						1
 #define PLATFORM_HAS_BSD_SOCKET_FEATURE_WINSOCKETS			1
 #define PLATFORM_USES_MICROSOFT_LIBC_FUNCTIONS				1
+#define PLATFORM_IS_ANSI_MALLOC_THREADSAFE					1
 #define PLATFORM_SUPPORTS_TBB								1
+#define PLATFORM_SUPPORTS_MIMALLOC							PLATFORM_64BITS
 #define PLATFORM_SUPPORTS_NAMED_PIPES						1
 #define PLATFORM_COMPILER_HAS_TCHAR_WMAIN					1
 #define PLATFORM_SUPPORTS_EARLY_MOVIE_PLAYBACK				(!WITH_EDITOR) // movies will start before engine is initalized
 #define PLATFORM_RHITHREAD_DEFAULT_BYPASS					0
+#define PLATFORM_USE_GENERIC_STRING_IMPLEMENTATION			0
+#define PLATFORM_SUPPORTS_VIRTUAL_TEXTURE_STREAMING			1
+
 #define PLATFORM_SUPPORTS_STACK_SYMBOLS						1
+#define PLATFORM_COMPILER_HAS_DECLTYPE_AUTO					1
+
+#define PLATFORM_GLOBAL_LOG_CATEGORY						LogWindows
+
 
 // Q: Why is there a __nop() before __debugbreak()?
 // A: VS' debug engine has a bug where it will silently swallow explicit
@@ -69,15 +92,6 @@ typedef FWindowsPlatformTypes FPlatformTypes;
 // for example, which can appear as if the did not fire, leaving a programmer
 // unknowingly debugging an undefined process.
 #define PLATFORM_BREAK() (__nop(), __debugbreak())
-
-#if defined(__INTEL_COMPILER) || _MSC_VER > 1900
-	#define PLATFORM_COMPILER_HAS_DECLTYPE_AUTO 1
-#else
-	// Static analysis causes internal compiler errors with auto-deduced return types,
-	// but some older VC versions still have return type deduction failures inside the delegate code
-	// when they are enabled.  So we currently only enable them for static analysis builds.
-	#define PLATFORM_COMPILER_HAS_DECLTYPE_AUTO USING_CODE_ANALYSIS
-#endif
 
 // Intrinsics for 128-bit atomics on Windows platform requires Windows 8 or higher (WINVER>=0x0602)
 // http://msdn.microsoft.com/en-us/library/windows/desktop/hh972640.aspx
@@ -93,11 +107,6 @@ typedef FWindowsPlatformTypes FPlatformTypes;
 #define FUNCTION_NO_RETURN_START __declspec(noreturn)				/* Indicate that the function never returns. */
 #define FUNCTION_NON_NULL_RETURN_START _Ret_notnull_				/* Indicate that the function never returns nullptr. */
 
-// Hints compiler that expression is true; generally restricted to comparisons against constants
-#if !defined(__clang__) || defined(_MSC_VER)	// Clang only supports __assume when using -fms-extensions
-	#define ASSUME(expr) __assume(expr)
-#endif
-
 #define DECLARE_UINT64(x)	x
 
 // Optimization macros (uses __pragma to enable inside a #define).
@@ -107,6 +116,10 @@ typedef FWindowsPlatformTypes FPlatformTypes;
 #elif defined(_MSC_VER)		// Clang only supports __pragma with -fms-extensions
 	#define PRAGMA_DISABLE_OPTIMIZATION_ACTUAL __pragma(clang optimize off)
 	#define PRAGMA_ENABLE_OPTIMIZATION_ACTUAL  __pragma(clang optimize on)
+#endif
+
+#if !defined(__clang__)
+	#define PLATFORM_EMPTY_BASES __declspec(empty_bases)
 #endif
 
 // Tells the compiler to put the decorated function in a certain section (aka. segment) of the executable.

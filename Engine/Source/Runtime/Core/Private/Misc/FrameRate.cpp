@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "Misc/FrameRate.h"
 #include "Algo/BinarySearch.h"
@@ -7,6 +7,8 @@
 #include "Math/BasicMathExpressionEvaluator.h"
 
 #define LOCTEXT_NAMESPACE "FFrameRate"
+
+PRAGMA_DISABLE_UNSAFE_TYPECAST_WARNINGS
 
 namespace
 {
@@ -102,6 +104,12 @@ public:
 		return MakeError(LOCTEXT("UnrecognizedResult", "Unrecognized result returned from expression"));
 	}
 
+	static FFrameRateParser& Get()
+	{
+		static FFrameRateParser StaticFrameRateParser;
+		return StaticFrameRateParser;
+	}
+
 private:
 
 	static FExpressionResult MakeFrameRate(double A, double B)
@@ -151,7 +159,7 @@ private:
 	FExpressionGrammar Grammar;
 	FOperatorJumpTable JumpTable;
 
-} StaticFrameRateParser;
+};
 
 double FFrameRate::MaxSeconds() const
 {
@@ -175,7 +183,7 @@ FText FFrameRate::ToPrettyText() const
 	}
 }
 
-bool FFrameRate::ComputeGridSpacing(float PixelsPerSecond, double& OutMajorInterval, int32& OutMinorDivisions, float MinTickPx, float DesiredMajorTickPx)
+bool FFrameRate::ComputeGridSpacing(float PixelsPerSecond, double& OutMajorInterval, int32& OutMinorDivisions, float MinTickPx, float DesiredMajorTickPx) const
 {
 	if (PixelsPerSecond <= 0.f)
 	{
@@ -194,7 +202,7 @@ bool FFrameRate::ComputeGridSpacing(float PixelsPerSecond, double& OutMajorInter
 
 		// Showing hours, minutes or seconds
 		static const int32 DesirableBases[]  = { 1, 2, 5, 10, 30, 60 };
-		static const int32 NumDesirableBases = ARRAY_COUNT(DesirableBases);
+		static const SIZE_T NumDesirableBases = UE_ARRAY_COUNT(DesirableBases);
 
 		const int32 Scale     = FMath::CeilToInt(DesiredMajorTickPx / PixelsPerSecond / TimeOrder);
 		const int32 BaseIndex = FMath::Min(Algo::LowerBound(DesirableBases, Scale), NumDesirableBases-1);
@@ -249,7 +257,7 @@ bool FFrameRate::ComputeGridSpacing(float PixelsPerSecond, double& OutMajorInter
 		OutMajorInterval  = MajorIntervalFrames * AsInterval();
 
 		// Find the lowest number of divisions we can show that's larger than the minimum tick size
-		OutMinorDivisions = 0;
+		OutMinorDivisions = MajorIntervalFrames;
 		for (int32 DivIndex = 0; DivIndex < BaseIndex; ++DivIndex)
 		{
 			if (Base % CommonBases[DivIndex] == 0)
@@ -279,11 +287,13 @@ bool FFrameRate::ComputeGridSpacing(float PixelsPerSecond, double& OutMajorInter
 
 TValueOrError<FFrameRate, FExpressionError> ParseFrameRate(const TCHAR* FrameRateString)
 {
+	FFrameRateParser& StaticFrameRateParser = FFrameRateParser::Get();
 	return StaticFrameRateParser.Evaluate(FrameRateString);
 }
 
 bool TryParseString(FFrameRate& OutFrameRate, const TCHAR* InString)
 {
+	FFrameRateParser& StaticFrameRateParser = FFrameRateParser::Get();
 	TValueOrError<FFrameRate, FExpressionError> ParseResult = StaticFrameRateParser.Evaluate(InString);
 	if (ParseResult.IsValid())
 	{
@@ -293,5 +303,7 @@ bool TryParseString(FFrameRate& OutFrameRate, const TCHAR* InString)
 
 	return false;
 }
+
+PRAGMA_ENABLE_UNSAFE_TYPECAST_WARNINGS
 
 #undef LOCTEXT_NAMESPACE

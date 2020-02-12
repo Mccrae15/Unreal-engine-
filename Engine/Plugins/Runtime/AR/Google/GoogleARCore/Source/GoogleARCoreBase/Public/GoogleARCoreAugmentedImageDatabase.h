@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -44,7 +44,7 @@ struct FGoogleARCoreAugmentedImageDatabaseEntry
 
 	FGoogleARCoreAugmentedImageDatabaseEntry()
 		: ImageAsset(nullptr)
-	    , Width(0.0f) 
+	    , Width(0.0f)
 	{ }
 };
 

@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -38,13 +38,14 @@ class FXmppPingStrophe
 public:
 	// FXmppPingStrophe
 	FXmppPingStrophe(FXmppConnectionStrophe& InConnectionManager);
-	virtual ~FXmppPingStrophe() = default;
+	virtual ~FXmppPingStrophe();
 
 	// FTickerObjectBase
 	virtual bool Tick(float DeltaTime) override;
 
 	/** Clear any caches on disconnect */
 	void OnDisconnect();
+	void OnReconnect();
 
 	/** Determine if an incoming stanza is a ping stanza */
 	bool ReceiveStanza(const FStropheStanza& IncomingStanza);
@@ -67,6 +68,9 @@ protected:
 
 	/** Check the current status of our Xmpp ping responses; may lead to disconnection requests */
 	void CheckXmppPongTimeout(float DeltaTime);
+
+	/** Remove pending messages and engine KeepAwake calls */
+	void CleanupMessages();
 
 private:
 	/** Connection manager controls sending data to XMPP thread */

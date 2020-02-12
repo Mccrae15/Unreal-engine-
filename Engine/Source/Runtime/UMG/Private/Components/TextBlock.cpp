@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "Components/TextBlock.h"
 #include "UObject/ConstructorHelpers.h"
@@ -30,6 +30,11 @@ UTextBlock::UTextBlock(const FObjectInitializer& ObjectInitializer)
 		static ConstructorHelpers::FObjectFinder<UFont> RobotoFontObj(*UWidget::GetDefaultFontName());
 		Font = FSlateFontInfo(RobotoFontObj.Object, 24, FName("Bold"));
 	}
+
+#if WITH_EDITORONLY_DATA
+	AccessibleBehavior = ESlateAccessibleBehavior::Auto;
+	bCanChildrenBeAccessible = false;
+#endif
 }
 
 void UTextBlock::PostLoad()
@@ -94,7 +99,7 @@ void UTextBlock::SetFont(FSlateFontInfo InFontInfo)
 	}
 }
 
-void UTextBlock::SetStrikeBrush(FSlateBrush& InStrikeBrush)
+void UTextBlock::SetStrikeBrush(FSlateBrush InStrikeBrush)
 {
 	StrikeBrush = InStrikeBrush;
 	if (MyTextBlock.IsValid())
@@ -103,12 +108,12 @@ void UTextBlock::SetStrikeBrush(FSlateBrush& InStrikeBrush)
 	}
 }
 
-void UTextBlock::SetJustification( ETextJustify::Type InJustification )
+void UTextBlock::SetJustification(ETextJustify::Type InJustification)
 {
-	Justification = InJustification;
-	if ( MyTextBlock.IsValid() )
+	Super::SetJustification(InJustification);
+	if (MyTextBlock.IsValid())
 	{
-		MyTextBlock->SetJustification( Justification );
+		MyTextBlock->SetJustification(InJustification);
 	}
 }
 
@@ -132,7 +137,7 @@ void UTextBlock::SetAutoWrapText(bool InAutoWrapText)
 
 UMaterialInstanceDynamic* UTextBlock::GetDynamicFontMaterial()
 {
-	if (ensure(Font.FontMaterial))
+	if (Font.FontMaterial)
 	{
 		UMaterialInterface* Material = CastChecked<UMaterialInterface>(Font.FontMaterial);
 
@@ -154,7 +159,7 @@ UMaterialInstanceDynamic* UTextBlock::GetDynamicFontMaterial()
 
 UMaterialInstanceDynamic* UTextBlock::GetDynamicOutlineMaterial()
 {
-	if (ensure(Font.OutlineSettings.OutlineMaterial))
+	if (Font.OutlineSettings.OutlineMaterial)
 	{
 		UMaterialInterface* Material = CastChecked<UMaterialInterface>(Font.OutlineSettings.OutlineMaterial);
 
@@ -219,6 +224,13 @@ EVisibility UTextBlock::GetTextWarningImageVisibility() const
 {
 	return Text.IsCultureInvariant() ? EVisibility::Visible : EVisibility::Collapsed;
 }
+
+#if WITH_ACCESSIBILITY
+TSharedPtr<SWidget> UTextBlock::GetAccessibleWidget() const
+{
+	return MyTextBlock;
+}
+#endif
 
 void UTextBlock::OnBindingChanged(const FName& Property)
 {
@@ -327,7 +339,7 @@ void UTextBlock::OnCreationFromPalette()
 	Text = LOCTEXT("TextBlockDefaultValue", "Text Block");
 }
 
-bool UTextBlock::CanEditChange(const UProperty* InProperty) const
+bool UTextBlock::CanEditChange(const FProperty* InProperty) const
 {
 	if (bSimpleTextMode && InProperty)
 	{
@@ -349,7 +361,7 @@ bool UTextBlock::CanEditChange(const UProperty* InProperty) const
 	return Super::CanEditChange(InProperty);
 }
 
-#endif
+#endif //if WITH_EDITOR
 
 /////////////////////////////////////////////////////
 

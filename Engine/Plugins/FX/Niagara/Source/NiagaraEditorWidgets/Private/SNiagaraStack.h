@@ -1,8 +1,7 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
-#include "EditorUndoClient.h"
 #include "Widgets/SCompoundWidget.h"
 #include "Widgets/DeclarativeSyntaxSupport.h"
 #include "Widgets/Views/STableRow.h"
@@ -11,14 +10,15 @@
 #include "ViewModels/Stack/NiagaraStackEntry.h"
 #include "Widgets/Input/SSearchBox.h"
 #include "Widgets/Text/SInlineEditableTextBlock.h"
-
+#include "ViewModels/Stack/NiagaraStackViewModel.h"
 
 class UNiagaraStackViewModel;
 class SNiagaraStackTableRow;
 class SSearchBox;
 class FReply;
-
-class SNiagaraStack : public SCompoundWidget, public FEditorUndoClient
+class FNiagaraStackCommandContext;
+class SWidget;
+class SNiagaraStack : public SCompoundWidget
 {
 public:
 	SLATE_BEGIN_ARGS(SNiagaraStack)
@@ -27,6 +27,8 @@ public:
 	SLATE_END_ARGS();
 
 	void Construct(const FArguments& InArgs, UNiagaraStackViewModel* InStackViewModel);
+
+	TSharedPtr<SWidget> GenerateStackMenu(TWeakPtr<UNiagaraStackViewModel::FTopLevelViewModel> TopLevelViewModelWeak);
 
 private:
 	struct FRowWidgets
@@ -50,6 +52,10 @@ private:
 
 	TSharedRef<ITableRow> OnGenerateRowForStackItem(UNiagaraStackEntry* Item, const TSharedRef<STableViewBase>& OwnerTable);
 
+	TSharedRef<ITableRow> OnGenerateRowForTopLevelObject(TSharedRef<UNiagaraStackViewModel::FTopLevelViewModel> Item, const TSharedRef<STableViewBase>& OwnerTable);
+
+	
+
 	TSharedRef<SNiagaraStackTableRow> ConstructContainerForItem(UNiagaraStackEntry* Item);
 
 	FRowWidgets ConstructNameAndValueWidgetsForItem(UNiagaraStackEntry* Item, TSharedRef<SNiagaraStackTableRow> Container);
@@ -57,6 +63,8 @@ private:
 	void OnGetChildren(UNiagaraStackEntry* Item, TArray<UNiagaraStackEntry*>& Children);
 
 	void StackTreeScrolled(double ScrollValue);
+
+	void StackTreeSelectionChanged(UNiagaraStackEntry* InNewSelection, ESelectInfo::Type SelectInfo);
 
 	float GetNameColumnWidth() const;
 	float GetContentColumnWidth() const;
@@ -67,23 +75,11 @@ private:
 
 	EVisibility GetVisibilityForItem(UNiagaraStackEntry* Item) const;
 
+
+	virtual FReply OnKeyDown(const FGeometry& MyGeometry, const FKeyEvent& InKeyEvent) override;
 	virtual void Tick(const FGeometry& AllottedGeometry, const double InCurrentTime, const float InDeltaTime) override;
 
-	void ConstructHeaderWidget();
-	FSlateColor GetPinColor() const;
-	FReply PinButtonPressed();
-	FReply OpenSourceEmitter();
-	EVisibility GetEnableCheckboxVisibility() const;
-	EVisibility GetPinEmitterVisibility() const;
-	EVisibility GetOpenSourceEmitterVisibility() const;
-
-	// source name handling
-	bool GetEmitterNameIsReadOnly() const;
-	FText GetSourceEmitterNameText() const;
-	FText GetEmitterNameToolTip() const;
-	void OnStackViewNameTextCommitted(const FText& InText, ETextCommit::Type CommitInfo) const;
-	EVisibility GetSourceEmitterNameVisibility() const; 
-	bool GetIsEmitterRenamed() const;
+	TSharedRef<SWidget> ConstructHeaderWidget();
 
 	// ~stack search stuff
 	void OnSearchTextChanged(const FText& SearchText);
@@ -100,45 +96,41 @@ private:
 	bool IsEntryFocusedInSearch(UNiagaraStackEntry* Entry) const;
 	
 	// Inline menu commands
-	bool CanOpenSourceEmitter() const;
-	void SetEmitterEnabled(bool bIsEnabled);
-	bool CheckEmitterEnabledStatus(bool bIsEnabled);
-	void ShowEmitterInContentBrowser();
+	void ShowEmitterInContentBrowser(TWeakPtr<FNiagaraEmitterHandleViewModel> EmitterHandleViewModelWeak);
 	void NavigateTo(UNiagaraStackEntry* Item);
 	void CollapseAll();
 
 	TSharedRef<SWidget> GetViewOptionsMenu() const;
+	const FSlateBrush* GetViewOptionsIconBrush() const;
 
 	// Drag/Drop
 	FReply OnRowDragDetected(const FGeometry& InGeometry, const FPointerEvent& InPointerEvent, UNiagaraStackEntry* InStackEntry);
 
+	void OnRowDragLeave(FDragDropEvent const& InDragDropEvent);
+
 	TOptional<EItemDropZone> OnRowCanAcceptDrop(const FDragDropEvent& InDragDropEvent, EItemDropZone InDropZone, UNiagaraStackEntry* InTargetEntry);
 
 	FReply OnRowAcceptDrop(const FDragDropEvent& InDragDropEvent, EItemDropZone InDropZone, UNiagaraStackEntry* InTargetEntry);
+
+	EVisibility GetIssueIconVisibility() const;
+
+	FReply OnCycleThroughSystemIssues(TSharedPtr<FNiagaraSystemViewModel> SystemViewModel);
+	void OnCycleThroughIssues();
 
 private:
 	UNiagaraStackViewModel* StackViewModel;
 
 	TSharedPtr<STreeView<UNiagaraStackEntry*>> StackTree;
 
+	TSharedPtr<SListView<TSharedRef<UNiagaraStackViewModel::FTopLevelViewModel>>> HeaderList;
+
 	float NameColumnWidth;
 
 	float ContentColumnWidth;
-	
-	TSharedPtr<SWidget> HeaderWidget;
-
-	FLinearColor PinIsPinnedColor;
-	
-	FLinearColor PinIsUnpinnedColor;
-
-	FLinearColor CurrentPinColor;
-	
-	// emitter name textblock
-	TSharedPtr<SInlineEditableTextBlock> InlineEditableTextBlock;
 
 	// ~ search stuff
 	TSharedPtr<SSearchBox> SearchBox;
-	static const FText OccurencesFormat;
 	bool bNeedsJumpToNextOccurence;
-	
+
+	TSharedPtr<FNiagaraStackCommandContext> StackCommandContext;
 };

@@ -1,9 +1,9 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "ClothMeshAdapter.h"
 
-#include "ClothingAssetInterface.h"
-#include "Assets/ClothingAsset.h"
+#include "ClothingAssetBase.h"
+#include "ClothingAsset.h"
 
 #include "MeshPaintTypes.h"
 #include "Animation/DebugSkelMeshComponent.h"
@@ -54,9 +54,9 @@ bool FClothMeshPaintAdapter::Initialize()
 	bool bHaveAsset = false;
 	bool bBaseInit = false;
 
-	UClothingAsset* ClothingAsset = Cast<UClothingAsset>(SelectedAsset);
+	UClothingAssetCommon* ClothingAsset = Cast<UClothingAssetCommon>(SelectedAsset);
 
-	bHaveAsset = ClothingAsset && ClothingAsset->LodData.IsValidIndex(PaintingClothLODIndex);
+	bHaveAsset = ClothingAsset && ClothingAsset->ClothLodData.IsValidIndex(PaintingClothLODIndex);
 	bBaseInit = FBaseMeshPaintGeometryAdapter::Initialize();
 
 	return bHaveAsset && bBaseInit;
@@ -142,81 +142,6 @@ FMatrix FClothMeshPaintAdapter::GetComponentToWorldMatrix() const
 	return SkeletalMeshComponent->GetComponentToWorld().ToMatrixWithScale();
 }
 
-float FClothMeshPaintAdapter::GetMaxDistanceValue(int32 VertexIndex) const
-{
-	for (const FClothAssetInfo& Info : AssetInfoMap)
-	{
-		if (VertexIndex >= Info.VertexStart && VertexIndex < Info.VertexEnd)
-		{
-			return Info.Asset->LodData[PaintingClothLODIndex].PhysicalMeshData.MaxDistances[VertexIndex - Info.VertexStart];			
-		}
-	}
-
-	return 0.0f;
-}
-
-void FClothMeshPaintAdapter::SetMaxDistanceValue(int32 VertexIndex, float Value)
-{
-	for (const FClothAssetInfo& Info : AssetInfoMap)
-	{
-		if (VertexIndex >= Info.VertexStart && VertexIndex < Info.VertexEnd)
-		{
-			Info.Asset->LodData[PaintingClothLODIndex].PhysicalMeshData.MaxDistances[VertexIndex - Info.VertexStart] = Value;
-			break;
-		}
-	}
-}
-
-float FClothMeshPaintAdapter::GetBackstopDistanceValue(int32 VertexIndex) const
-{
-	for (const FClothAssetInfo& Info : AssetInfoMap)
-	{
-		if (VertexIndex >= Info.VertexStart && VertexIndex < Info.VertexEnd)
-		{
-			return Info.Asset->LodData[PaintingClothLODIndex].PhysicalMeshData.BackstopDistances[VertexIndex - Info.VertexStart];
-		}
-	}
-
-	return 0.0f;
-}
-
-void FClothMeshPaintAdapter::SetBackstopDistanceValue(int32 VertexIndex, float Value)
-{
-	for (const FClothAssetInfo& Info : AssetInfoMap)
-	{
-		if (VertexIndex >= Info.VertexStart && VertexIndex < Info.VertexEnd)
-		{
-			Info.Asset->LodData[PaintingClothLODIndex].PhysicalMeshData.BackstopDistances[VertexIndex - Info.VertexStart] = Value;
-			break;
-		}
-	}
-}
-
-float FClothMeshPaintAdapter::GetBackstopRadiusValue(int32 VertexIndex) const
-{
-	for (const FClothAssetInfo& Info : AssetInfoMap)
-	{
-		if (VertexIndex >= Info.VertexStart && VertexIndex < Info.VertexEnd)
-		{
-			return Info.Asset->LodData[PaintingClothLODIndex].PhysicalMeshData.BackstopRadiuses[VertexIndex - Info.VertexStart];
-		}
-	}
-
-	return 0.0f;
-}
-
-void FClothMeshPaintAdapter::SetBackstopRadiusValue(int32 VertexIndex, float Value)
-{
-	for (const FClothAssetInfo& Info : AssetInfoMap)
-	{
-		if (VertexIndex >= Info.VertexStart && VertexIndex < Info.VertexEnd)
-		{
-			Info.Asset->LodData[PaintingClothLODIndex].PhysicalMeshData.BackstopRadiuses[VertexIndex - Info.VertexStart] = Value;
-			break;
-		}
-	}
-}
-
 TArray<FVector> FClothMeshPaintAdapter::SphereIntersectVertices(const float ComponentSpaceSquaredBrushRadius, const FVector& ComponentSpaceBrushPosition, const FVector& ComponentSpaceCameraPosition, const bool bOnlyFrontFacing) const
 {
 	// Get list of intersecting triangles with given sphere data
@@ -252,14 +177,14 @@ void FClothMeshPaintAdapter::SetSelectedClothingAsset(const FGuid& InAssetGuid, 
 	{
 		for(UClothingAssetBase* Asset : ReferencedSkeletalMesh->MeshClothingAssets)
 		{
-			UClothingAsset* ConcreteAsset = CastChecked<UClothingAsset>(Asset);
+			UClothingAssetCommon* ConcreteAsset = CastChecked<UClothingAssetCommon>(Asset);
 			if(ConcreteAsset->GetAssetGuid() == InAssetGuid)
 			{
 				if(ConcreteAsset->IsValidLod(InAssetLod))
 				{
-					FClothLODData& LodData = ConcreteAsset->LodData[InAssetLod];
+					UClothLODDataCommon* LodData = ConcreteAsset->ClothLodData[InAssetLod];
 
-					if(LodData.ParameterMasks.IsValidIndex(InMaskIndex))
+					if(LodData->ParameterMasks.IsValidIndex(InMaskIndex))
 					{
 						PaintingClothLODIndex = InAssetLod;
 						PaintingClothMaskIndex = InMaskIndex;
@@ -307,9 +232,9 @@ bool FClothMeshPaintAdapter::InitializeVertexData()
 		{
 			if(DebugComponent->SkinnedSelectedClothingPositions.Num() > 0)
 			{
-				UClothingAsset* ConcreteAsset = CastChecked<UClothingAsset>(SelectedAsset);
-				const FClothLODData& LODData = ConcreteAsset->LodData[PaintingClothLODIndex];
-				const FClothPhysicalMeshData& MeshData = LODData.PhysicalMeshData;
+				UClothingAssetCommon* ConcreteAsset = CastChecked<UClothingAssetCommon>(SelectedAsset);
+				const UClothLODDataCommon* LODData = ConcreteAsset->ClothLodData[PaintingClothLODIndex];
+				const FClothPhysicalMeshData& MeshData = LODData->ClothPhysicalMeshData;
 
 				MeshVertices.Append(DebugComponent->SkinnedSelectedClothingPositions);
 				MeshIndices.Append(MeshData.Indices);
@@ -365,13 +290,13 @@ bool FClothMeshPaintAdapter::InitializeVertexData()
 	return true;
 }
 
-FClothParameterMask_PhysMesh* FClothMeshPaintAdapter::GetCurrentMask() const
+FPointWeightMap* FClothMeshPaintAdapter::GetCurrentMask() const
 {
 	if(HasValidSelection())
 	{
-		UClothingAsset* ConcreteAsset = CastChecked<UClothingAsset>(SelectedAsset);
+		UClothingAssetCommon* ConcreteAsset = CastChecked<UClothingAssetCommon>(SelectedAsset);
 
-		return &ConcreteAsset->LodData[PaintingClothLODIndex].ParameterMasks[PaintingClothMaskIndex];
+		return &ConcreteAsset->ClothLodData[PaintingClothLODIndex]->ParameterMasks[PaintingClothMaskIndex];
 	}
 
 	return nullptr;
@@ -381,11 +306,11 @@ bool FClothMeshPaintAdapter::HasValidSelection() const
 {
 	if(SelectedAsset)
 	{
-		UClothingAsset* ConcreteAsset = Cast<UClothingAsset>(SelectedAsset);
+		UClothingAssetCommon* ConcreteAsset = Cast<UClothingAssetCommon>(SelectedAsset);
 
 		// Only valid selection if we have a valid asset, asset LOD and a mask
-		if(ConcreteAsset->LodData.IsValidIndex(PaintingClothLODIndex) &&
-			ConcreteAsset->LodData[PaintingClothLODIndex].ParameterMasks.IsValidIndex(PaintingClothMaskIndex))
+		if(ConcreteAsset->ClothLodData.IsValidIndex(PaintingClothLODIndex) &&
+			ConcreteAsset->ClothLodData[PaintingClothLODIndex]->ParameterMasks.IsValidIndex(PaintingClothMaskIndex))
 		{
 			return true;
 		}

@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 using UnrealBuildTool;
 
@@ -13,17 +13,23 @@ public class AudioMixerAndroid : ModuleRules
 		PrivateDependencyModuleNames.AddRange(
 			new string[] {
 				"Core",
-				"CoreUObject",
-				"Engine",
+				"AudioMixerCore"
 			}
 			);
+			
+		if(Target.bCompileAgainstEngine)
+        {
+            AddEngineThirdPartyPrivateStaticDependencies(Target,
+            "UEOgg",
+            "Vorbis",
+            "VorbisFile"
+            );
 
-		PrivateDependencyModuleNames.Add("AudioMixer");
-
-		AddEngineThirdPartyPrivateStaticDependencies(Target, 
-			"UEOgg",
-			"Vorbis",
-			"VorbisFile"
-			);
+            PrivateDependencyModuleNames.AddRange(
+            new string[] {
+                    "Engine"
+                }
+            );
+        }
 	}
 }

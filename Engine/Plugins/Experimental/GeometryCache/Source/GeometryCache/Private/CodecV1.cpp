@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 #include "CodecV1.h"
 #include "GeometryCacheMeshData.h"
 #include "Serialization/MemoryWriter.h"
@@ -9,7 +9,14 @@
 #include "HuffmanBitStream.h"
 #include "CodecV1Test.h"
 #include "Stats/StatsMisc.h"
+#include "Async/ParallelFor.h"
 
+#define OLD_MAGIC 123
+#define CURRENT_MAGIC 124
+
+#define MAX_CHUNK_VERTICES	1024u
+#define CHUNK_MAX_TRIANGLES	2048u
+#define MAX_CHUNK_INDICES	(CHUNK_MAX_TRIANGLES * 3)
 /*
 //#define DEBUG_DUMP_FRAMES // Dump raw frames to file during encoding for debugging
 //#define DEBUG_CODECTEST_DUMPED_FRAMES // Test codec using dumped raw files
@@ -188,98 +195,6 @@ private:
 	FQuantizer Quantizer;	
 };
 
-int32 FCodecV1SharedTools::EstimateCodingCost(const FIntVector& Value)
-{
-	// Just use the absolute sizes of the components as a representative for a relative coding cost of this vector
-	return FMath::Abs(Value.X) + FMath::Abs(Value.Y) + FMath::Abs(Value.Z);
-}
-
-FIntVector FCodecV1SharedTools::PredictVertex(uint32 CornerIndex, uint32 PreviousTriangleRotationOffsets[3], FRingBuffer<FIntVector, VertexStreamCodingVertexHistorySize>& ReconstructedVertexHistory, uint32 Mode)
-{
-	FIntVector Prediction;
-	
-	switch (Mode)
-	{
-	case 0:
-		{
-			// Mode 0: delta coding, last visited vertex
-			Prediction = ReconstructedVertexHistory[0];
-		}
-		break;
-	case 1:
-		{
-			// Mode 1: delta coding, second to last visited vertex
-			Prediction = ReconstructedVertexHistory[1]; 		
-		}
-		break;
-	case 2:
-		{
-			// Mode 2: delta coding, third to last visited vertex
-			Prediction = ReconstructedVertexHistory[2];			
-		}
-		break;
-	case 3:
-		{
-			// Mode 3: Parallelogram prediction: P = V + U - W				
-			// Calculate offsets of the previous triangle in our vertex history buffer and compensate for possible rotation of the triangle		
-			const uint32 OffsetV = CornerIndex + 2 - PreviousTriangleRotationOffsets[0]; // Shared edge vertex 1
-			const uint32 OffsetU = CornerIndex + 2 - PreviousTriangleRotationOffsets[1]; // Shared edge vertex 2
-			const uint32 OffsetW = CornerIndex + 2 - PreviousTriangleRotationOffsets[2]; // non-shared vertex
-			
-			const FIntVector PredV = ReconstructedVertexHistory[OffsetV];
-			const FIntVector PredU = ReconstructedVertexHistory[OffsetU];
-			const FIntVector PredW = ReconstructedVertexHistory[OffsetW];
-			Prediction = PredV + PredU - PredW; 			
-		}		
-		break;
-	default:
-		{
-			checkf(false, TEXT("Unknown prediction mode, corrupt bitstream or encoder and decoder are out of sync."));
-		}
-	}
-	
-	return Prediction;
-}
-
-bool FCodecV1SharedTools::FindTrianglesSharedEdge(const uint32 Triangle1[3], const uint32 Triangle2[3], uint32 Triangle1RotationOffsets[3])
-{
-	// e.g. Triangle1 = {3, 4, 5}, Triangle2 = {5, 6, 3}
-	//      Returns: true, orderedTriangle1 = {2, 0, 1}
-	//      The shared edge is (orderedTriangle[0], orderedTriangle1[1]), the non-edge vertex is orderedTriangle1[2]
-
-	const bool bIsShared[3] =
-	{
-		Triangle1[0] == Triangle2[0] || Triangle1[0] == Triangle2[1] || Triangle1[0] == Triangle2[2],
-		Triangle1[1] == Triangle2[0] || Triangle1[1] == Triangle2[1] || Triangle1[1] == Triangle2[2],
-		Triangle1[2] == Triangle2[0] || Triangle1[2] == Triangle2[1] || Triangle1[2] == Triangle2[2]
-	};
-	
-	if (bIsShared[0] && bIsShared[1])
-	{
-		Triangle1RotationOffsets[0] = 0;
-		Triangle1RotationOffsets[1] = 1;
-		Triangle1RotationOffsets[2] = 2;
-		return true;
-	}
-
-	if (bIsShared[1] && bIsShared[2])
-	{
-		Triangle1RotationOffsets[0] = 1;
-		Triangle1RotationOffsets[1] = 2;
-		Triangle1RotationOffsets[2] = 0;
-		return true;
-	}
-
-	if (bIsShared[2] && bIsShared[0])
-	{
-		Triangle1RotationOffsets[0] = 2;
-		Triangle1RotationOffsets[1] = 0;
-		Triangle1RotationOffsets[2] = 1;
-		return true;
-	}
-
-	return false;
-}
 // Custom serialization for our const TArray because of the const
 FArchive& operator<<(FArchive &Ar, const TArray<FGeometryCacheMeshBatchInfo>& BatchesInfo)
 {
@@ -349,39 +264,7 @@ void FCodecV1Encoder::EncodeIndexStream(const uint32* Stream, uint64 ElementOffs
 	Stats = FStreamEncodingStatistics(ByteCounter.Read(), ElementCount * sizeof(uint32), Quality);
 }
 
-FIntVector FCodecV1Encoder::FindModeAndPredictVertex(const FIntVector& ValueToCode, uint32 CornerIndex, uint32 PreviousTriangleRotationOffsets[3], FRingBuffer<FIntVector, VertexStreamCodingVertexHistorySize>& ReconstructedVertexHistory, uint32& ChosenMode)
-{
-	// We perform multiple prediction methods and return prediction and method. 
-	// Methods comprise of: delta coding (previous or n-th last value), parallelogram prediction on last seen triangle.
-	// Whether the parallelogram prediction perform a good prediction depends on the mesh optimization the importer/preprocessor did and how much 
-	// coherency there is between successive triangles. No matter the input, the algorithm will never fail. Worst case scenario, prediction is bad 
-	// and we code more bits.	
-	uint32 BestMode = 0;
-	uint32 MinimumCost = UINT32_MAX;
-	FIntVector BestPrediction;
-		
-	for (uint32 Mode = 0; Mode < VertexPredictionModeCount; ++Mode)
-	{
-		// Predict according to this mode
-		FIntVector Prediction = FCodecV1SharedTools::PredictVertex(CornerIndex, PreviousTriangleRotationOffsets, ReconstructedVertexHistory, Mode);
-
-		// Estimate the cost of resulting delta vector
-		FIntVector Delta = ValueToCode - Prediction;		
-		uint32 Cost = FCodecV1SharedTools::EstimateCodingCost(Delta);
-		
-		if (Cost < MinimumCost)
-		{			
-			MinimumCost = Cost;
-			BestMode = Mode;
-			BestPrediction = Prediction;
-		}
-	}
-	
-	ChosenMode = BestMode;
-	return BestPrediction;
-}
-
-void FCodecV1Encoder::EncodePositionStream(const FVector* VertexStream, uint64 VertexElementOffset, uint32 VertexElementCount, const uint32* IndexStream, uint64 IndexElementOffset, uint32 IndexElementCount, FStreamEncodingStatistics& Stats)
+void FCodecV1Encoder::EncodePositionStream(const FVector* VertexStream, uint64 VertexElementOffset, uint32 VertexElementCount, FStreamEncodingStatistics& Stats)
 {
 	FBitstreamWriterByteCounter ByteCounter(EncodingContext.Writer);
 
@@ -401,104 +284,41 @@ void FCodecV1Encoder::EncodePositionStream(const FVector* VertexStream, uint64 V
 	Header.QuantizationPrecision = QuantizationPrecision;
 	Header.Translation = QuantizedTranslationToCenter;
 	WriteBytes((void*)&Header, sizeof(Header));
-
-	uint32 EncodedVertexCount = 0;
-	FRingBuffer<uint32, VertexStreamCodingIndexHistorySize> IndexHistory(VertexStreamCodingIndexHistorySize); // Previously seen indices
-	FRingBuffer<FIntVector, VertexStreamCodingVertexHistorySize> ReconstructedVertexHistory(VertexStreamCodingVertexHistorySize, FIntVector(0, 0, 0)); // Previously seen positions
-	int64 MaxEncounteredIndex = -1;
+	
+	FIntVector Prediction(0, 0, 0);	// Previously seen position
 		
 	FQualityMetric QualityMetric;
 
-	const uint8* RawElementDataIndices = (const uint8*)IndexStream;
 	const uint8* RawElementDataVertices = (const uint8*)VertexStream;
 
-	uint32 PreviousTriangleCornerIndices[3] = { 0 };
-	uint32 FaceCount = IndexElementCount / 3;
-
 	// Walk over indices/triangles
-	for (uint32 FaceIdx = 0; FaceIdx < FaceCount; ++FaceIdx, RawElementDataIndices += 3 * IndexElementOffset)
+	for (uint32 ElementIdx = 0; ElementIdx < VertexElementCount; ++ElementIdx)
 	{
-		uint32 CornerIndices[3];
-		CornerIndices[0] = *(uint32*)(RawElementDataIndices);
-		CornerIndices[1] = *(uint32*)(RawElementDataIndices + IndexElementOffset);
-		CornerIndices[2] = *(uint32*)(RawElementDataIndices + 2 * IndexElementOffset);
+		// Code a newly encountered vertex
+		FVector VertexValue = *(FVector*)RawElementDataVertices;
+		RawElementDataVertices += VertexElementOffset;
 
-		// Find if this triangle shares an edge with the previous one, if so, get the rotation offsets to rotate the triangle's indices 
-		// We want a well-defined order of indices so we can look up the right vertices to apply the parallelogram predictor
-		uint32 PreviousTriangleRotationOffsets[3] = { 0, 0, 0 };
-		bool bTrianglesShareEdge = FCodecV1SharedTools::FindTrianglesSharedEdge(PreviousTriangleCornerIndices, CornerIndices, PreviousTriangleRotationOffsets);
+		// Quantize
+		FIntVector Encoded = Quantizer.Quantize(VertexValue);
 
-		// Walk over triangle corners
-		for (uint32 CornerIndex = 0; CornerIndex < 3; ++CornerIndex)
-		{
-			uint32 IndexValue = CornerIndices[CornerIndex];
-			bool NewlyEncounteredVertex = (int64)IndexValue > MaxEncounteredIndex; // We rely on indices being references in order
-			MaxEncounteredIndex = FMath::Max((int64)IndexValue, MaxEncounteredIndex);
+		// Translate to center
+		FIntVector EncodedCentered = Encoded - QuantizedTranslationToCenter;
 
-			if (NewlyEncounteredVertex)
-			{
-				// Code a newly encountered vertex
-				FVector VertexValue = *(FVector*)RawElementDataVertices;
-				RawElementDataVertices += VertexElementOffset;
-
-				// Quantize
-				FIntVector Encoded = Quantizer.Quantize(VertexValue);
-
-				// Translate to center
-				FIntVector EncodedCentered = Encoded - QuantizedTranslationToCenter;
-
-				// Find best prediction mode and prediction using our triangle history
-				uint32 PredictionMode;
-				FIntVector Prediction = FindModeAndPredictVertex(EncodedCentered, CornerIndex, PreviousTriangleRotationOffsets, ReconstructedVertexHistory, PredictionMode);
-
-				// Residual to code
-				FIntVector Residual = EncodedCentered - Prediction;
+		// Residual to code
+		FIntVector Residual = EncodedCentered - Prediction;
 				
-				// Write mode
-				WriteSymbol(EncodingContext.VertexPredictionModeTable, PredictionMode);
-								
-				// Write residual
-				WriteInt32(EncodingContext.ResidualVertexPosTable, Residual.X);
-				WriteInt32(EncodingContext.ResidualVertexPosTable, Residual.Y);
-				WriteInt32(EncodingContext.ResidualVertexPosTable, Residual.Z);				
+		// Write residual
+		WriteInt32(EncodingContext.ResidualVertexPosTable, Residual.X);
+		WriteInt32(EncodingContext.ResidualVertexPosTable, Residual.Y);
+		WriteInt32(EncodingContext.ResidualVertexPosTable, Residual.Z);
 
-				EncodedVertexCount++;
-				
-				// Store previous encountered values
-				FIntVector Reconstructed = Prediction + Residual;
-				ReconstructedVertexHistory.Push(Reconstructed);
+		// Store previous encountered values
+		FIntVector Reconstructed = Prediction + Residual;
 
-				// Calculate error
-				FVector DequantReconstructed = Quantizer.Dequantize(Reconstructed);
-				QualityMetric.Register(VertexValue, DequantReconstructed);
-			}
-			else // NewlyEncounteredVertex == false
-			{
-				// Keep our vertex history consistent with the indices we have seen.
-				// We fetch from our previously reconstructed vertex history. Our history is limited in size, so
-				// we do a explicit search and if the value is not found, we use the last seen vector as a safe prediction
-				FIntVector EncounteredVertex = ReconstructedVertexHistory[0];
-
-				for (uint32 Index = 0; Index < IndexHistory.Num(); ++Index)
-				{
-					if (IndexHistory[Index] == IndexValue)
-					{
-						// We have it in our history buffer
-						EncounteredVertex = ReconstructedVertexHistory[Index];
-						break;
-					}
-				}
-
-				ReconstructedVertexHistory.Push(EncounteredVertex);				
-			}
-
-			IndexHistory.Push(IndexValue);
-		}
-
-		// Save our triangle
-		PreviousTriangleCornerIndices[0] = CornerIndices[0];
-		PreviousTriangleCornerIndices[1] = CornerIndices[1];
-		PreviousTriangleCornerIndices[2] = CornerIndices[2];
+		// Calculate error
+		FVector DequantReconstructed = Quantizer.Dequantize(Reconstructed);
+		QualityMetric.Register(VertexValue, DequantReconstructed);
+		Prediction = Reconstructed;
 	}
 
 	// Gather rate and quality statistics
@@ -547,12 +367,12 @@ void FCodecV1Encoder::EncodeColorStream(const FColor* Stream, uint64 ElementOffs
 	Stats = FStreamEncodingStatistics(ByteCounter.Read(), ElementCount * sizeof(FColor), Quality);
 }
 
-void FCodecV1Encoder::EncodeNormalStream(const FPackedNormal* Stream, uint64 ElementOffsetBytes, uint32 ElementCount, FHuffmanTable& Table, FStreamEncodingStatistics& Stats)
+void FCodecV1Encoder::EncodeNormalStream(const FPackedNormal* Stream, uint64 ElementOffsetBytes, uint32 ElementCount, FHuffmanEncodeTable& Table, FStreamEncodingStatistics& Stats)
 {
 	FBitstreamWriterByteCounter ByteCounter(EncodingContext.Writer);
 
-	FRingBuffer<FIntVector4, NormalStreamCodingHistorySize> ReconstructedHistory(NormalStreamCodingHistorySize, FIntVector4(128, 128, 128, 128));
-
+	uint8 x = 128, y = 128, z = 128, w = 128;
+	
 	const uint8* RawElementData = (const uint8*)Stream;
 
 	// Walk over colors
@@ -560,20 +380,22 @@ void FCodecV1Encoder::EncodeNormalStream(const FPackedNormal* Stream, uint64 Ele
 	{
 		// Load data
 		FPackedNormal& NormalValue = *(FPackedNormal*)RawElementData;		
-		FIntVector4 Value(NormalValue.Vector.X, NormalValue.Vector.Y, NormalValue.Vector.Z, NormalValue.Vector.W);
-
-		FIntVector4 Prediction = ReconstructedHistory[0]; // Delta coding
-		FIntVector4 Residual = FCodecV1SharedTools::SubtractVector4(Value, Prediction); // Residual = Value - Prediction
+		
+		int8 dx = NormalValue.Vector.X - x;
+		int8 dy = NormalValue.Vector.Y - y;
+		int8 dz = NormalValue.Vector.Z - z;
+		int8 dw = NormalValue.Vector.W - w;
 
 		// Write residual	
-		WriteInt32(Table, Residual.X);
-		WriteInt32(Table, Residual.Y);
-		WriteInt32(Table, Residual.Z);
-		WriteInt32(Table, Residual.W);
+		WriteSymbol(Table, (uint8)dx);
+		WriteSymbol(Table, (uint8)dy);
+		WriteSymbol(Table, (uint8)dz);
+		WriteSymbol(Table, (uint8)dw);
 
-		// Decode as the decoder would and keep the result for future prediction
-		FIntVector4 Reconstructed = FCodecV1SharedTools::SumVector4(Prediction, Residual); // Reconstructed = Prediction + Residual
-		ReconstructedHistory.Push(Reconstructed);
+		x = NormalValue.Vector.X;
+		y = NormalValue.Vector.Y;
+		z = NormalValue.Vector.Z;
+		w = NormalValue.Vector.W;
 	}
 
 	// Gather rate and quality statistics
@@ -766,6 +588,8 @@ bool FCodecV1Encoder::EncodeFrameData(FMemoryWriter& Writer, const FGeometryCach
 	const TArray<uint32>& Indices = MeshData.Indices;
 	const TArray<FVector>& MotionVectors = MeshData.MotionVectors;	
 
+	const FGeometryCacheVertexInfo& VertexInfo = MeshData.VertexInfo;
+
 	{
 		// Check if indices are referenced in order, i.e. if a previously unreferenced vertex is referenced by the index 
 		// list it's id will always be the next unreferenced id instead of some random unused id. E.g., ok: 1, 2, 3, 2, 4, not ok: 1, 2, 4
@@ -778,35 +602,58 @@ bool FCodecV1Encoder::EncodeFrameData(FMemoryWriter& Writer, const FGeometryCach
 			MaxIndex = FMath::Max(Indices[i], MaxIndex);
 		}
 	}
-	FBitstreamWriterByteCounter TotalByteCounter(EncodingContext.Writer);
-	const FGeometryCacheVertexInfo& VertexInfo = MeshData.VertexInfo;
 
-	// Encode streams	
-	if (!VertexInfo.bConstantIndices)
+	checkf(!VertexInfo.bHasMotionVectors || MotionVectors.Num() > 0, TEXT("No motion vectors while VertexInfo states otherwise"));
+
+	FBitstreamWriterByteCounter TotalByteCounter(EncodingContext.Writer);
+	
+	const uint32 NumIndices = MeshData.Indices.Num();
+	const uint32 NumVertices = MeshData.Positions.Num();
+
+	const uint32 NumChunks = FMath::Max((NumIndices + MAX_CHUNK_INDICES - 1) / MAX_CHUNK_INDICES, (NumVertices + MAX_CHUNK_VERTICES - 1) / MAX_CHUNK_VERTICES);
+	TArray<uint32> ChunkOffsets;
+	ChunkOffsets.AddUninitialized(NumChunks);
+
+	// Encode streams
+	for (uint32 ChunkIndex = 0; ChunkIndex < NumChunks; ChunkIndex++)
 	{
-		EncodeIndexStream(&Indices[0], Indices.GetTypeSize(), Indices.Num(), Statistics.Indices);
-	}
-	EncodePositionStream(&Positions[0], Positions.GetTypeSize(), Positions.Num(), &Indices[0], Indices.GetTypeSize(), Indices.Num(), Statistics.Vertices);
-	if (VertexInfo.bHasColor0)
-	{
-		EncodeColorStream(&Colors[0], Colors.GetTypeSize(), Colors.Num(), Statistics.Colors);
-	}
-	if (VertexInfo.bHasTangentX)
-	{
-		EncodeNormalStream(&TangentsX[0], TangentsX.GetTypeSize(), TangentsX.Num(), EncodingContext.ResidualNormalTangentXTable, Statistics.TangentX);
-	}
-	if (VertexInfo.bHasTangentZ)
-	{
-		EncodeNormalStream(&TangentsZ[0], TangentsZ.GetTypeSize(), TangentsZ.Num(), EncodingContext.ResidualNormalTangentZTable, Statistics.TangentY);
-	}
-	if (VertexInfo.bHasUV0)
-	{
-		EncodeUVStream(&TextureCoordinates[0], TextureCoordinates.GetTypeSize(), TextureCoordinates.Num(), Statistics.TexCoords);
-	}
-	if (VertexInfo.bHasMotionVectors)
-	{
-		checkf(MotionVectors.Num() > 0, TEXT("No motion vectors while VertexInfo states otherwise"));
-		EncodeMotionVectorStream(&MotionVectors[0], MotionVectors.GetTypeSize(), MotionVectors.Num(), Statistics.MotionVectors);		
+		uint32 IndexOffset = ChunkIndex * (NumIndices / NumChunks);
+		uint32 VertexOffset = ChunkIndex * (NumVertices / NumChunks);
+		uint32 NumChunkIndices = (ChunkIndex == NumChunks - 1) ? (NumIndices - IndexOffset) : (NumIndices / NumChunks);
+		uint32 NumChunkVertices = (ChunkIndex == NumChunks - 1) ? (NumVertices - VertexOffset) : (NumVertices / NumChunks);
+
+		EncodingContext.Writer->Align();
+		ChunkOffsets[ChunkIndex] = EncodingContext.Writer->GetNumBytes();
+
+		if (NumChunkIndices > 0 && !VertexInfo.bConstantIndices)
+		{
+			EncodeIndexStream(&Indices[IndexOffset], Indices.GetTypeSize(), NumChunkIndices, Statistics.Indices);
+		}
+
+		if (NumChunkVertices > 0)
+		{
+			EncodePositionStream(&Positions[VertexOffset], Positions.GetTypeSize(), NumChunkVertices, Statistics.Vertices);
+			if (VertexInfo.bHasColor0)
+			{
+				EncodeColorStream(&Colors[VertexOffset], Colors.GetTypeSize(), NumChunkVertices, Statistics.Colors);
+			}
+			if (VertexInfo.bHasTangentX)
+			{
+				EncodeNormalStream(&TangentsX[VertexOffset], TangentsX.GetTypeSize(), NumChunkVertices, EncodingContext.ResidualNormalTangentXTable, Statistics.TangentX);
+			}
+			if (VertexInfo.bHasTangentZ)
+			{
+				EncodeNormalStream(&TangentsZ[VertexOffset], TangentsZ.GetTypeSize(), NumChunkVertices, EncodingContext.ResidualNormalTangentZTable, Statistics.TangentY);
+			}
+			if (VertexInfo.bHasUV0)
+			{
+				EncodeUVStream(&TextureCoordinates[VertexOffset], TextureCoordinates.GetTypeSize(), NumChunkVertices, Statistics.TexCoords);
+			}
+			if (VertexInfo.bHasMotionVectors)
+			{
+				EncodeMotionVectorStream(&MotionVectors[VertexOffset], MotionVectors.GetTypeSize(), NumChunkVertices, Statistics.MotionVectors);
+			}
+		}
 	}
 	
 	BitWriter.Close();
@@ -815,7 +662,7 @@ bool FCodecV1Encoder::EncodeFrameData(FMemoryWriter& Writer, const FGeometryCach
 	{
 		// Write out bitstream
 		FCodedFrameHeader Header = { 0 };
-		Header.Magic = 123;
+		Header.Magic = CURRENT_MAGIC;
 		Header.VertexCount = (uint32)Positions.Num();
 		Header.IndexCount = (uint32)Indices.Num();
 		uint32 PayloadSize = BitWriter.GetNumBytes();
@@ -823,6 +670,7 @@ bool FCodecV1Encoder::EncodeFrameData(FMemoryWriter& Writer, const FGeometryCach
 		Writer.Serialize(&Header, sizeof(Header));	// Write header				
 		Writer << MeshData.BatchesInfo;	// Uncompressed data: bounding box & material list
 		Writer << MeshData.BoundingBox;
+		Writer << ChunkOffsets;
 		Writer.Serialize((void*)BitWriter.GetBytes().GetData(), PayloadSize);	// Write payload
 	}	
 
@@ -857,29 +705,46 @@ void FCodecV1Encoder::WriteBytes(const void* Data, int64 NumBytes)
 }
 
 
-void FCodecV1Encoder::WriteInt32(FHuffmanTable& ValueTable, int32 Value)
+void FCodecV1Encoder::WriteInt32(FHuffmanEncodeTable& ValueTable, int32 Value)
 {
-	// We code the length of the value (huffman table), followed by the raw bits. Small values take up very small amount of bits.
-	const int32 ZeroValue32BitInt = 32;	// Zero value used to shift interval [32,31] to [0,63]
-
-	int32 AbsValue = FMath::Abs(Value);
-
-	if (Value == 0)
+	// It is impractical to entropy code an entire integer, so we split it into an entropy coded magnitude followed by a number of raw bits.
+	// The reasoning is that usually most of the redundancy is in the magnitude of the number, not the exact value.
+	
+	// Positive values are encoded as the index k of the first 1-bit (at most 30) followed by the remaining k bits encoded as raw bits.
+	// Negative values are handled symmetrically, but using the index of the first 0-bit.
+	// With one symbol for every bit length and sign, the set of reachable number is 2 * (2^0 + 2^1 + ... + 2^30) = 2 * (2^31 - 1) = 2^32 - 2
+	// To cover all 2^32 possible integer values, we have use separate codes for the remaining two symbols (with no raw bits).
+	// The total number of symbols is 2 * 31 + 2 = 64
+	
+	if (Value >= -2 && Value <= 1)
 	{
-		WriteSymbol(ValueTable, ZeroValue32BitInt);
+		// 4 center values have no raw bits. One more negative values than positive,
+		// so we have an equal number of positive and negative values remaining.
+		WriteSymbol(ValueTable, Value + 2);	// [-2, 1] -> [0, 3]
 	}
-	else if (Value > 0)
+	else
 	{
-		int32 HiBit = HighestSetBit(AbsValue);	// Find most significant bit k, i.e., number of bits
-		WriteSymbol(ValueTable, ZeroValue32BitInt + (HiBit + 1));	// Code number of bits, recenter around new zero, e.g., 32 + 10 bits
-		WriteBits(AbsValue - (1 << HiBit), HiBit);	// Code remaining k bits verbatim
+		// At least one raw bit.
+		if (Value >= 0)
+		{
+			// Value >= 2
+			int32 NumRawBits = HighestSetBit(Value);	// Find first 1-bit. 1 <= NumRawBits <= 30.
+			int32 Packed = 2 + NumRawBits * 2;			// First positive code is 4
+			WriteSymbol(ValueTable, Packed);
+			int32 RawBits = Value - (1 << NumRawBits);
+			WriteBits(RawBits, NumRawBits);
+		}
+		else
+		{
+			// Value <= -3
+			int32 NumRawBits = HighestSetBit(~Value);	// Find first 0-bit. 1 <= NumRawBits <= 30.
+			int32 Packed = 3 + NumRawBits * 2;			// First negative code is 5
+			WriteSymbol(ValueTable, Packed);
+			int32 RawBits = Value & ~(0xFFFFFFFFu << NumRawBits);
+			WriteBits(RawBits, NumRawBits);
+		}
 	}
-	else /*if (Value < 0)*/
-	{
-		int32 HiBit = HighestSetBit(AbsValue);	// Find most significant bit k, i.e., number of bits
-		WriteSymbol(ValueTable, ZeroValue32BitInt - (HiBit + 1));	// Code number of bits, recenter around new zero, e.g., 32 - 10 bits
-		WriteBits(AbsValue - (1 << HiBit), HiBit);	// code remaining k bits verbatim
-	}	
+	
 }
 
 void FCodecV1Encoder::SetupTables()
@@ -888,10 +753,9 @@ void FCodecV1Encoder::SetupTables()
 	// Most tables store 32-bit integers stored with a bit-length;raw value scheme. Some store specific symbols.
 	EncodingContext.ResidualIndicesTable.Initialize(HuffmanTableInt32SymbolCount);
 	EncodingContext.ResidualVertexPosTable.Initialize(HuffmanTableInt32SymbolCount);
-	EncodingContext.VertexPredictionModeTable.Initialize(VertexPredictionModeCount);
 	EncodingContext.ResidualColorTable.Initialize(HuffmanTableInt32SymbolCount);
-	EncodingContext.ResidualNormalTangentXTable.Initialize(HuffmanTableInt32SymbolCount);
-	EncodingContext.ResidualNormalTangentZTable.Initialize(HuffmanTableInt32SymbolCount);
+	EncodingContext.ResidualNormalTangentXTable.Initialize(HuffmanTableInt8SymbolCount);
+	EncodingContext.ResidualNormalTangentZTable.Initialize(HuffmanTableInt8SymbolCount);
 	EncodingContext.ResidualUVTable.Initialize(HuffmanTableInt32SymbolCount);
 	EncodingContext.ResidualMotionVectorTable.Initialize(HuffmanTableInt32SymbolCount);
 	// Add additional tables here
@@ -906,7 +770,6 @@ void FCodecV1Encoder::SetPrepass(bool bPrepass)
 	if ( !VertexInfo.bConstantIndices)
 		EncodingContext.ResidualIndicesTable.SetPrepass(bPrepass);	
 	EncodingContext.ResidualVertexPosTable.SetPrepass(bPrepass);
-	EncodingContext.VertexPredictionModeTable.SetPrepass(bPrepass);
 	if (VertexInfo.bHasColor0)
 	{
 		EncodingContext.ResidualColorTable.SetPrepass(bPrepass);
@@ -942,7 +805,6 @@ void FCodecV1Encoder::WriteTables()
 	if ( !VertexInfo.bConstantIndices)
 		EncodingContext.ResidualIndicesTable.Serialize(Writer);	
 	EncodingContext.ResidualVertexPosTable.Serialize(Writer);
-	EncodingContext.VertexPredictionModeTable.Serialize(Writer);
 	if (VertexInfo.bHasColor0)
 	{
 		EncodingContext.ResidualColorTable.Serialize(Writer);
@@ -970,42 +832,31 @@ void FCodecV1Encoder::WriteTables()
 
 #endif // WITH_EDITOR
 
-FCodecV1Decoder::FCodecV1Decoder()
+void FCodecV1Decoder::DecodeIndexStream(FHuffmanBitStreamReader& Reader, uint32* Stream, uint64 ElementOffset, uint32 ElementCount)
 {
-}
-
-void FCodecV1Decoder::DecodeIndexStream(uint32* Stream, uint64 ElementOffset, uint32 ElementCount)
-{
-	FRingBuffer<uint32, IndexStreamCodingHistorySize> LastReconstructed(IndexStreamCodingHistorySize); // History holding previously seen indices
-
 	const uint8* RawElementData = (const uint8*)Stream;
 
+	uint32 Value = 0;
 	for (uint32 ElementIdx = 0; ElementIdx < ElementCount; ++ElementIdx, RawElementData += ElementOffset)
 	{
 		// Read coded residual
-		int32 DecodedResidual = ReadInt32(DecodingContext.ResidualIndicesTable);
-
-		uint32 Prediction = LastReconstructed[0]; // Delta coding, best effort
-		uint32 Reconstructed = DecodedResidual + Prediction; // Reconstruct
+		int32 DecodedResidual = ReadInt32(Reader, DecodingContext.ResidualIndicesTable);
+		Value += DecodedResidual;
 
 		// Save result to our list
-		uint32* Value = (uint32*)RawElementData;
-		*Value = Reconstructed;
-
-		// Store previous encountered values
-		LastReconstructed.Push(Reconstructed);
+		*(uint32*)RawElementData = Value;
 	}
 }
 
-void FCodecV1Decoder::DecodeMotionVectorStream(FVector* Stream, uint64 ElementOffset, uint32 ElementCount)
+void FCodecV1Decoder::DecodeMotionVectorStream(FHuffmanBitStreamReader& Reader, FVector* Stream, uint64 ElementOffset, uint32 ElementCount)
 {
 	// Read header
 	FMotionVectorStreamHeader Header;
-	ReadBytes((void*)&Header, sizeof(Header));
+	ReadBytes(Reader, (void*)&Header, sizeof(Header));
 
 	FQuantizerVector3 Quantizer(Header.QuantizationPrecision); // We quantize MVs to a certain precision just like the positions
 
-	FRingBuffer<FIntVector, MotionVectorStreamCodingHistorySize> ReconstructedHistory(MotionVectorStreamCodingHistorySize, FIntVector(0, 0, 0)); // Previously seen texture coordinates
+	FIntVector QuantizedValue(0, 0, 0);
 
 	const uint8* RawElementData = (const uint8*)Stream;
 
@@ -1013,31 +864,24 @@ void FCodecV1Decoder::DecodeMotionVectorStream(FVector* Stream, uint64 ElementOf
 	{
 		// Read coded residual
 		FIntVector DecodedResidual;
-		DecodedResidual.X = ReadInt32(DecodingContext.ResidualMotionVectorTable);
-		DecodedResidual.Y = ReadInt32(DecodingContext.ResidualMotionVectorTable);
-		DecodedResidual.Z = ReadInt32(DecodingContext.ResidualMotionVectorTable);
+		DecodedResidual.X = ReadInt32(Reader, DecodingContext.ResidualMotionVectorTable);
+		DecodedResidual.Y = ReadInt32(Reader, DecodingContext.ResidualMotionVectorTable);
+		DecodedResidual.Z = ReadInt32(Reader, DecodingContext.ResidualMotionVectorTable);
 
-		FIntVector Prediction = ReconstructedHistory[0]; // Delta coding													  
-		FIntVector Reconstructed = DecodedResidual + Prediction; // Reconstruct
-		FVector Decoded = Quantizer.Dequantize(Reconstructed); // Dequantize
-
-		FVector* Value = (FVector*)RawElementData;	// Save result to our list
-		*Value = Decoded;
-
-		// Store previous encountered values
-		ReconstructedHistory.Push(Reconstructed);
+		QuantizedValue += DecodedResidual;
+		*(FVector*)RawElementData = Quantizer.Dequantize(QuantizedValue);
 	}
 }
 
-void FCodecV1Decoder::DecodeUVStream(FVector2D* Stream, uint64 ElementOffset, uint32 ElementCount)
+void FCodecV1Decoder::DecodeUVStream(FHuffmanBitStreamReader& Reader, FVector2D* Stream, uint64 ElementOffset, uint32 ElementCount)
 {
 	// Read header
 	FUVStreamHeader Header;
-	ReadBytes((void*)&Header, sizeof(Header));
+	ReadBytes(Reader, (void*)&Header, sizeof(Header));
 
 	FQuantizerVector2 Quantizer(Header.Range, Header.QuantizationBits); // We quantize UVs to a number of bits, set in the bitstream header
 	
-	FRingBuffer<FIntVector, UVStreamCodingHistorySize> ReconstructedHistory(UVStreamCodingHistorySize, FIntVector(0, 0, 0)); // Previously seen texture coordinates
+	FIntVector QuantizedValue(0, 0, 0);
 
 	const uint8* RawElementData = (const uint8*)Stream;
 
@@ -1045,230 +889,109 @@ void FCodecV1Decoder::DecodeUVStream(FVector2D* Stream, uint64 ElementOffset, ui
 	{
 		// Read coded residual
 		FIntVector DecodedResidual;
-		DecodedResidual.X = ReadInt32(DecodingContext.ResidualUVTable);
-		DecodedResidual.Y = ReadInt32(DecodingContext.ResidualUVTable);
+		DecodedResidual.X = ReadInt32(Reader, DecodingContext.ResidualUVTable);
+		DecodedResidual.Y = ReadInt32(Reader, DecodingContext.ResidualUVTable);
 
-		FIntVector Prediction = ReconstructedHistory[0]; // Delta coding													  
-		FIntVector Reconstructed = DecodedResidual + Prediction; // Reconstruct
-		FVector2D Decoded = Quantizer.Dequantize(Reconstructed); // Dequantize
-
-		FVector2D* Value = (FVector2D*)RawElementData;	// Save result to our list
-		*Value = Decoded;
-
-		// Store previous encountered values
-		ReconstructedHistory.Push(Reconstructed);
+		QuantizedValue += DecodedResidual;
+		*(FVector2D*)RawElementData = Quantizer.Dequantize(QuantizedValue);
 	}
 }
 
-void FCodecV1Decoder::DecodeNormalStream(FPackedNormal* Stream, uint64 ElementOffset, uint32 ElementCount, FHuffmanTable& Table)
+void FCodecV1Decoder::DecodeNormalStream(FHuffmanBitStreamReader& Reader, FPackedNormal* Stream, uint64 ElementOffset, uint32 ElementCount, FHuffmanDecodeTable& Table)
 {
-	FRingBuffer<FIntVector4, NormalStreamCodingHistorySize> ReconstructedHistory(NormalStreamCodingHistorySize, FIntVector4(128, 128, 128, 128)); // Previously seen normals
+	uint8 x = 128, y = 128, z = 128, w = 128;
 
 	const uint8* RawElementData = (const uint8*)Stream;
+
+	check(HUFFMAN_MAX_CODE_LENGTH * 4 <= MINIMUM_BITS_AFTER_REFILL);	// Make sure we can safely decode all 4 symbols with a single refill
 
 	for (uint32 ElementIdx = 0; ElementIdx < ElementCount; ++ElementIdx, RawElementData += ElementOffset) // Walk normals
 	{
 		// Read coded residual
-		FIntVector4 DecodedResidual;
-		DecodedResidual.X = ReadInt32(Table);
-		DecodedResidual.Y = ReadInt32(Table);
-		DecodedResidual.Z = ReadInt32(Table);
-		DecodedResidual.W = ReadInt32(Table);
-
-		FIntVector4 Prediction = ReconstructedHistory[0]; // Delta coding
-		FIntVector4 Reconstructed = FCodecV1SharedTools::SumVector4(DecodedResidual, Prediction);
-
-		FPackedNormal* Value = (FPackedNormal*)RawElementData;	// Save result to our list
-		Value->Vector.X = Reconstructed.X;
-		Value->Vector.Y = Reconstructed.Y;
-		Value->Vector.Z = Reconstructed.Z;
-		Value->Vector.W = Reconstructed.W;
-
-		// Store previous encountered values
-		ReconstructedHistory.Push(Reconstructed);
+		Reader.Refill();
+		x += Table.DecodeNoRefill(Reader);	
+		y += Table.DecodeNoRefill(Reader);
+		z += Table.DecodeNoRefill(Reader);
+		w += Table.DecodeNoRefill(Reader);
+		
+		FPackedNormal* Value = (FPackedNormal*)RawElementData;
+		Value->Vector.X = x;
+		Value->Vector.Y = y;
+		Value->Vector.Z = z;
+		Value->Vector.W = w;
 	}
 }
 
-void FCodecV1Decoder::DecodeColorStream(FColor* Stream, uint64 ElementOffset, uint32 ElementCount)
+void FCodecV1Decoder::DecodeColorStream(FHuffmanBitStreamReader& Reader, FColor* Stream, uint64 ElementOffset, uint32 ElementCount)
 {
-	FRingBuffer<FIntVector4, ColorStreamCodingHistorySize> ReconstructedHistory(ColorStreamCodingHistorySize, FIntVector4(128, 128, 128, 255)); // Previously seen colors
+	FIntVector4 QuantizedValue(128, 128, 128, 255);
 
 	const uint8* RawElementData = (const uint8*)Stream;
 
 	for (uint32 ElementIdx = 0; ElementIdx < ElementCount; ++ElementIdx, RawElementData += ElementOffset)
 	{
-		FIntVector4 Prediction = ReconstructedHistory[0]; // Delta coding
 		FIntVector4 DecodedResidual(0, 0, 0, 0);
 
-		int32 SkipBit = ReadBits(1); // 1: Perfect prediction, nothing coded, 0: we have coded residuals
+		int32 SkipBit = ReadBits(Reader, 1); // 1: Perfect prediction, nothing coded, 0: we have coded residuals
 
 		if (SkipBit != 1) 
 		{
 			// Prediction not perfect, residual were coded
-			int32 DecodedResidualR = ReadInt32(DecodingContext.ResidualColorTable);
-			int32 DecodedResidualG = ReadInt32(DecodingContext.ResidualColorTable);
-			int32 DecodedResidualB = ReadInt32(DecodingContext.ResidualColorTable);
-			int32 DecodedResidualA = ReadInt32(DecodingContext.ResidualColorTable);
+			int32 DecodedResidualR = ReadInt32(Reader, DecodingContext.ResidualColorTable);
+			int32 DecodedResidualG = ReadInt32(Reader, DecodingContext.ResidualColorTable);
+			int32 DecodedResidualB = ReadInt32(Reader, DecodingContext.ResidualColorTable);
+			int32 DecodedResidualA = ReadInt32(Reader, DecodingContext.ResidualColorTable);
 
 			DecodedResidual = FIntVector4(DecodedResidualR, DecodedResidualG, DecodedResidualB, DecodedResidualA);
-		}	
-
-		FIntVector4 Reconstructed = FCodecV1SharedTools::SumVector4(DecodedResidual, Prediction);
+			QuantizedValue = FCodecV1SharedTools::SumVector4(QuantizedValue, DecodedResidual);
+		}
 																			
 		FColor* Value = (FColor*)RawElementData; // Save result to our list
-		Value->R = Reconstructed.X;
-		Value->G = Reconstructed.Y;
-		Value->B = Reconstructed.Z;
-		Value->A = Reconstructed.W;
-
-		// Store previous encountered values
-		ReconstructedHistory.Push(Reconstructed);
+		Value->R = QuantizedValue.X;
+		Value->G = QuantizedValue.Y;
+		Value->B = QuantizedValue.Z;
+		Value->A = QuantizedValue.W;
 	}
 }
 
-void FCodecV1Decoder::DecodePositionStream(const uint32* IndexStream, uint64 IndexElementOffset, uint32 IndexElementCount, FVector* VertexStream, uint64 VertexElementOffset, uint32 MaxVertexElementCount)
+void FCodecV1Decoder::DecodePositionStream(FHuffmanBitStreamReader& Reader, FVector* VertexStream, uint64 VertexElementOffset, uint32 VertexElementCount)
 {
-	checkf(IndexElementCount > 0, TEXT("You cannot decode vertex stream before the index stream was decoded"));
-
 	// Read header
 	FVertexStreamHeader Header;
-	ReadBytes((void*)&Header, sizeof(Header));
+	ReadBytes(Reader, (void*)&Header, sizeof(Header));
 
 	FQuantizerVector3 Quantizer(Header.QuantizationPrecision);
 	
-	FRingBuffer<uint32, VertexStreamCodingIndexHistorySize> IndexHistory(VertexStreamCodingIndexHistorySize); // Previously seen indices
-	FRingBuffer<FIntVector, VertexStreamCodingVertexHistorySize> ReconstructedVertexHistory(VertexStreamCodingVertexHistorySize, FIntVector(0, 0, 0)); // Previously seen positions
-	int64 MaxEncounteredIndex = -1; // We rely on indices being references in order, a requirement of the encoder and enforced by the preprocessor
 	uint32 DecodedVertexCount = 0;
 
-	const uint8* RawElementDataIndices = (const uint8*)IndexStream;
 	const uint8* RawElementDataVertices = (const uint8*)VertexStream;
 
-	uint32 PreviousTriangleCornerIndices[3] = { 0, 0, 0 };
-	const uint32 FaceCount = IndexElementCount / 3;
+	FIntVector QuantizedValue(0, 0, 0);
 
 	// Walk over indices/triangles
-	for (uint32 FaceIdx = 0; FaceIdx < FaceCount; ++FaceIdx, RawElementDataIndices += 3 * IndexElementOffset)
+	for (uint32 ElementIdx = 0; ElementIdx < VertexElementCount; ++ElementIdx)
 	{
-		const uint32 CornerIndices[3]
-		{
-			*(uint32*)(RawElementDataIndices),
-			*(uint32*)(RawElementDataIndices + IndexElementOffset),
-			*(uint32*)(RawElementDataIndices + 2 * IndexElementOffset)
-		};
+		// Read coded residual
+		const FIntVector DecodedResidual = { ReadInt32(Reader, DecodingContext.ResidualVertexPosTable), ReadInt32(Reader, DecodingContext.ResidualVertexPosTable), ReadInt32(Reader, DecodingContext.ResidualVertexPosTable) };
+		DecodedVertexCount++;
 
-		// Find if this triangle shares an edge with the previous one, if so, get the rotation offsets to rotate the triangle's indices 
-		// We want a well-defined order of indices so we can look up the right vertices to apply the parallelogram predictor
-		uint32 PreviousTriangleRotationOffsets[3] = { 0, 0, 0 }; 
-		bool bTrianglesShareEdge = FCodecV1SharedTools::FindTrianglesSharedEdge(PreviousTriangleCornerIndices, CornerIndices, PreviousTriangleRotationOffsets);
+		QuantizedValue += DecodedResidual;
 
-		// Walk over triangle corners
-		for (uint32 CornerIndex = 0; CornerIndex < 3; ++CornerIndex)
-		{
-			const uint32 IndexValue = CornerIndices[CornerIndex];
-			const bool NewlyEncounteredVertex = (int64)IndexValue > MaxEncounteredIndex; // We rely on indices being references in order
-			MaxEncounteredIndex = FMath::Max((int64)IndexValue, MaxEncounteredIndex);
-
-			if (NewlyEncounteredVertex)
-			{
-				checkf(DecodedVertexCount < MaxVertexElementCount, TEXT("Encountering more vertices than we have encoded. Encoding and decoding algorithms don't seem to match. Please make sure the preprocessor has processed the mesh such that vertexes are referenced in-order, i.e. if a previously unreferenced vertex is referenced by the index list it's id will always be the next unreferenced id instead of some random unused id."));
-
-				// Read prediction mode
-				const uint32 PredictionMode = ReadSymbol(DecodingContext.VertexPredictionModeTable);
-
-				// Read coded residual
-				const FIntVector DecodedResidual = { ReadInt32(DecodingContext.ResidualVertexPosTable), ReadInt32(DecodingContext.ResidualVertexPosTable), ReadInt32(DecodingContext.ResidualVertexPosTable) };
-				DecodedVertexCount++;
-
-				// Predict using the history according to the prediction mode 
-				const FIntVector Prediction = FCodecV1SharedTools::PredictVertex(CornerIndex, PreviousTriangleRotationOffsets, ReconstructedVertexHistory, PredictionMode);
-
-				// Reconstruct, dequantize
-				const FIntVector Reconstructed = DecodedResidual + Prediction;
-				// Store previous encountered values
-				ReconstructedVertexHistory.Push(Reconstructed);
-
-				// Save result to our list
-				FVector* Value = (FVector*)RawElementDataVertices;
-				*Value = Quantizer.Dequantize(Reconstructed + Header.Translation);
-				RawElementDataVertices += VertexElementOffset;		
-			}
-			else
-			{
-				// Keep our vertex history consistent with the indices we have seen.
-				// We fetch from our previously reconstructed vertex history. Our history is limited in size, so
-				// we do a explicit search and if the value is not found, we use the last seen vector as a safe prediction
-				FIntVector EncounteredVertex = ReconstructedVertexHistory[0];
-				for (uint32 Index = 0; Index < IndexHistory.Num(); ++Index)
-				{
-					if (IndexHistory[Index] == IndexValue)
-					{
-						// We have it in our history buffer
-						EncounteredVertex = ReconstructedVertexHistory[Index];
-						break;
-					}
-				}
-
-				ReconstructedVertexHistory.Push(EncounteredVertex);
-			}
-
-			IndexHistory.Push(IndexValue);
-		}
-
-		// Save our triangle
-		PreviousTriangleCornerIndices[0] = CornerIndices[0];
-		PreviousTriangleCornerIndices[1] = CornerIndices[1];
-		PreviousTriangleCornerIndices[2] = CornerIndices[2];
+		// Save result to our list
+		FVector* Value = (FVector*)RawElementDataVertices;
+		*Value = Quantizer.Dequantize(QuantizedValue + Header.Translation);
+		RawElementDataVertices += VertexElementOffset;
 	}
 }
 
-void FCodecV1Decoder::ZeroStream(uint8* Stream, uint64 ElementOffset, uint64 ElementSize, uint32 NumElements)
-{
-	uint8* RawElementData = (uint8*)Stream;
-
-	FMemory::Memzero(RawElementData, ElementSize * NumElements);
-
-	for (uint32 ElementIdx = 0; ElementIdx < NumElements; ++ElementIdx, RawElementData += ElementOffset)
-	{
-		FMemory::Memzero(RawElementData, ElementSize);
-	}
-}
-
-void FCodecV1Decoder::ClearStream(FVector* Stream, uint64 ElementOffset, uint32 NumElements)
-{
-	ZeroStream((uint8*)Stream, ElementOffset, sizeof(FVector), NumElements);
-}
-
-void FCodecV1Decoder::ClearStream(FColor* Stream, uint64 ElementOffset, uint32 NumElements)
-{
-	ZeroStream((uint8*)Stream, ElementOffset, sizeof(FColor), NumElements);
-}
-
-void FCodecV1Decoder::ClearStream(FPackedNormal* Stream, uint64 ElementOffset, uint32 NumElements)
-{
-	uint8* RawElementData = (uint8*)Stream;
-
-	for (uint32 ElementIdx = 0; ElementIdx < NumElements; ++ElementIdx, RawElementData += ElementOffset)
-	{
-		new (RawElementData) FPackedNormal(); //Zero initialize
-	}
-}
-
-void FCodecV1Decoder::ClearStream(FVector2D* Stream, uint64 ElementOffset, uint32 NumElements)
-{
-	ZeroStream((uint8*)Stream, ElementOffset, sizeof(FVector2D), NumElements);
-}
-
-void FCodecV1Decoder::SetupAndReadTables()
+void FCodecV1Decoder::SetupAndReadTables(FHuffmanBitStreamReader& Reader)
 {
 	// Initialize and read Huffman tables from the bitstream
-	FHuffmanBitStreamReader& Reader = *DecodingContext.Reader;	
 	const FGeometryCacheVertexInfo& VertexInfo = DecodingContext.MeshData->VertexInfo;
 		
 	if (!VertexInfo.bConstantIndices)
 		DecodingContext.ResidualIndicesTable.Initialize(Reader);	
 	DecodingContext.ResidualVertexPosTable.Initialize(Reader);
-	DecodingContext.VertexPredictionModeTable.Initialize(Reader);
 	
 	if (VertexInfo.bHasColor0)
 	{
@@ -1294,21 +1017,45 @@ void FCodecV1Decoder::SetupAndReadTables()
 	// Add additional tables here
 }
 
-void FCodecV1Decoder::ReadCodedStreamDescription()
+void FCodecV1Decoder::ReadCodedStreamDescription(FHuffmanBitStreamReader& Reader)
 {	
 	FGeometryCacheVertexInfo& VertexInfo = DecodingContext.MeshData->VertexInfo;
 	
 	VertexInfo = FGeometryCacheVertexInfo();
-	VertexInfo.bHasTangentX = (ReadBits(1) == 1);
-	VertexInfo.bHasTangentZ = (ReadBits(1) == 1);
-	VertexInfo.bHasUV0 = (ReadBits(1) == 1);
-	VertexInfo.bHasColor0 = (ReadBits(1) == 1);
-	VertexInfo.bHasMotionVectors = (ReadBits(1) == 1);
+	VertexInfo.bHasTangentX = (ReadBits(Reader, 1) == 1);
+	VertexInfo.bHasTangentZ = (ReadBits(Reader, 1) == 1);
+	VertexInfo.bHasUV0 = (ReadBits(Reader, 1) == 1);
+	VertexInfo.bHasColor0 = (ReadBits(Reader, 1) == 1);
+	VertexInfo.bHasMotionVectors = (ReadBits(Reader, 1) == 1);
 
-	VertexInfo.bConstantUV0 = (ReadBits(1) == 1);
-	VertexInfo.bConstantColor0 = (ReadBits(1) == 1);
-	VertexInfo.bConstantIndices = (ReadBits(1) == 1);
+	VertexInfo.bConstantUV0 = (ReadBits(Reader, 1) == 1);
+	VertexInfo.bConstantColor0 = (ReadBits(Reader, 1) == 1);
+	VertexInfo.bConstantIndices = (ReadBits(Reader, 1) == 1);
 }
+
+int32 FCodecV1Decoder::CachedHighBitsLUT[64];
+void FCodecV1Decoder::InitLUT()
+{
+	// Precalculate table mapping symbol index to non-raw bits. ((Sign ? -2 : 1) << NumRawBits)
+	for (int32 NumRawBits = 1; NumRawBits <= 30; NumRawBits++)
+	{
+		for (int32 Sign = 0; Sign <= 1; Sign++)
+		{
+			CachedHighBitsLUT[2 + Sign + NumRawBits * 2] = (Sign ? -2 : 1) << NumRawBits;
+		}
+	}
+}
+
+DECLARE_CYCLE_STAT(TEXT("FCodecV1Decoder"), STAT_CodecV1Decoder, STATGROUP_GeometryCache);
+DECLARE_CYCLE_STAT(TEXT("SetupAndReadTables"), STAT_SetupAndReadTables, STATGROUP_GeometryCache);
+DECLARE_CYCLE_STAT(TEXT("DecodeIndexStream"), STAT_DecodeIndexStream, STATGROUP_GeometryCache);
+DECLARE_CYCLE_STAT(TEXT("DecodePositionStream"), STAT_DecodePositionStream, STATGROUP_GeometryCache);
+DECLARE_CYCLE_STAT(TEXT("DecodeColorStream"), STAT_DecodeColorStream, STATGROUP_GeometryCache);
+DECLARE_CYCLE_STAT(TEXT("DecodeTangentXStream"), STAT_DecodeTangentXStream, STATGROUP_GeometryCache);
+DECLARE_CYCLE_STAT(TEXT("DecodeTangentZStream"), STAT_DecodeTangentZStream, STATGROUP_GeometryCache);
+DECLARE_CYCLE_STAT(TEXT("DecodeUVStream"), STAT_DecodeUVStream, STATGROUP_GeometryCache);
+DECLARE_CYCLE_STAT(TEXT("DecodeMotionVectorStream"), STAT_DecodeMotionVectorStream, STATGROUP_GeometryCache);
+
 
 bool FCodecV1Decoder::DecodeFrameData(FBufferReader& Reader, FGeometryCacheMeshData &OutMeshData)
 {
@@ -1318,7 +1065,7 @@ bool FCodecV1Decoder::DecodeFrameData(FBufferReader& Reader, FGeometryCacheMeshD
 	FCodedFrameHeader Header;
 	Reader.Serialize(&Header, sizeof(Header));
 
-	if (Header.Magic != 123)
+	if (Header.Magic != OLD_MAGIC && Header.Magic != CURRENT_MAGIC)
 	{
 		UE_LOG(LogGeoCaStreamingCodecV1, Error, TEXT("Incompatible bitstream found"));
 		return false;
@@ -1328,118 +1075,210 @@ bool FCodecV1Decoder::DecodeFrameData(FBufferReader& Reader, FGeometryCacheMeshD
 	Reader << OutMeshData.BatchesInfo; 
 	Reader << OutMeshData.BoundingBox;
 
+	const uint32 NumIndices = Header.IndexCount;
+	const uint32 NumVertices = Header.VertexCount;
+
+	uint32 NumChunks;
+	TArray<uint32> ChunkOffsets;
+
+	bool IsChunked = false;
+	if (Header.Magic == OLD_MAGIC)
+	{
+		// Compatibility with old files. Just treat everything as one big chunk
+		IsChunked = false;
+		NumChunks = 1;
+	}
+	else
+	{
+		IsChunked = true;
+		Reader << ChunkOffsets;
+		NumChunks = ChunkOffsets.Num();
+	}
+	
 	DecodingContext = { 0 };
 	DecodingContext.MeshData = &OutMeshData;	
 	
 	// Read the payload in memory to pass to the bit reader
 	TArray<uint8> Bytes;
-	Bytes.AddUninitialized(Header.PayloadSize);
-	Reader.Serialize(Bytes.GetData(), Bytes.Num()); 	
-	FHuffmanBitStreamReader BitReader(Bytes); // This copies the data again. We should optimize this out.
-	Bytes.Empty(); // No need anymore
-	DecodingContext.Reader = &BitReader;
-
+	Bytes.AddUninitialized(Header.PayloadSize + 16);	// Overallocate by 16 bytes to ensure BitReader can safely perform uint64 reads.
+	Reader.Serialize(Bytes.GetData(), Header.PayloadSize);
+	FHuffmanBitStreamReader BitReader(Bytes.GetData(), Bytes.Num());
+	
 	// Read which vertex attributes are in the bit stream
-	ReadCodedStreamDescription();
+	ReadCodedStreamDescription(BitReader);
 
 	// Restore entropy coding contexts
-	SetupAndReadTables();
-	
 	{
-		// Decode streams
-		
-		TArray<uint32>& Indices = OutMeshData.Indices;
+		SCOPE_CYCLE_COUNTER(STAT_SetupAndReadTables);
+		SetupAndReadTables(BitReader);
+	}
+	
+	// Allocate buffers
+	{
 		if (!OutMeshData.VertexInfo.bConstantIndices)
 		{
 			OutMeshData.Indices.Empty(Header.IndexCount);
 			OutMeshData.Indices.AddUninitialized(Header.IndexCount);
-			DecodeIndexStream(&Indices[0], Indices.GetTypeSize(), Header.IndexCount);
 		}
-		
-		TArray<FVector>& Positions = OutMeshData.Positions;
+
 		OutMeshData.Positions.Empty(Header.VertexCount);
-		OutMeshData.Positions.AddZeroed(Header.VertexCount);
-		DecodePositionStream(&Indices[0], Indices.GetTypeSize(), Indices.Num(), &Positions[0], Positions.GetTypeSize(), Header.VertexCount);
+		OutMeshData.Positions.AddUninitialized(Header.VertexCount);
 
 		OutMeshData.Colors.Empty(Header.VertexCount);
-		OutMeshData.Colors.AddZeroed(Header.VertexCount);
 		if (OutMeshData.VertexInfo.bHasColor0)
 		{
-			TArray<FColor>& Colors = OutMeshData.Colors;
-			DecodeColorStream(&Colors[0], Colors.GetTypeSize(), Header.VertexCount);
+			OutMeshData.Colors.AddUninitialized(Header.VertexCount);
 		}
-
+		else
+		{
+			OutMeshData.Colors.AddZeroed(Header.VertexCount);
+		}
+		
+		
 		OutMeshData.TangentsX.Empty(Header.VertexCount);
-		OutMeshData.TangentsX.AddZeroed(Header.VertexCount);
 		if (OutMeshData.VertexInfo.bHasTangentX)
 		{
-			TArray<FPackedNormal>& TangentsX = OutMeshData.TangentsX;
-			DecodeNormalStream(&TangentsX[0], TangentsX.GetTypeSize(), Header.VertexCount, DecodingContext.ResidualNormalTangentXTable);
+			OutMeshData.TangentsX.AddUninitialized(Header.VertexCount);
 		}
-
+		else
+		{
+			OutMeshData.TangentsX.AddZeroed(Header.VertexCount);
+		}
+		
 		OutMeshData.TangentsZ.Empty(Header.VertexCount);
-		OutMeshData.TangentsZ.AddZeroed(Header.VertexCount);
 		if (OutMeshData.VertexInfo.bHasTangentZ)
 		{
-			TArray<FPackedNormal>& TangentsZ = OutMeshData.TangentsZ;
-			DecodeNormalStream(&TangentsZ[0], TangentsZ.GetTypeSize(), Header.VertexCount, DecodingContext.ResidualNormalTangentZTable);
+			OutMeshData.TangentsZ.AddUninitialized(Header.VertexCount);
 		}
-
+		else
+		{
+			OutMeshData.TangentsZ.AddZeroed(Header.VertexCount);
+		}
+		
 		OutMeshData.TextureCoordinates.Empty(Header.VertexCount);
-		OutMeshData.TextureCoordinates.AddZeroed(Header.VertexCount);
 		if (OutMeshData.VertexInfo.bHasUV0)
 		{
-			TArray<FVector2D>& TextureCoordinates = OutMeshData.TextureCoordinates;
-			DecodeUVStream(&TextureCoordinates[0], TextureCoordinates.GetTypeSize(), Header.VertexCount);
+			OutMeshData.TextureCoordinates.AddUninitialized(Header.VertexCount);
 		}
-
-		TArray<FVector>& MotionVectors = OutMeshData.MotionVectors;
+		else
+		{
+			OutMeshData.TextureCoordinates.AddZeroed(Header.VertexCount);
+		}
+		
+		
 		OutMeshData.MotionVectors.Empty(Header.VertexCount);
 		if (OutMeshData.VertexInfo.bHasMotionVectors)
 		{
 			OutMeshData.MotionVectors.AddUninitialized(Header.VertexCount);
-			DecodeMotionVectorStream(&MotionVectors[0], MotionVectors.GetTypeSize(), Header.VertexCount);
 		}
-
-		if (CVarCodecDebug.GetValueOnAnyThread() == 1)
+		else
 		{
-			const float TimeFloat = DecodingTime.Get();
-			UE_LOG(LogGeoCaStreamingCodecV1, Log, TEXT("Decoded frame with %i vertices in %.2f milliseconds."), Positions.Num(), TimeFloat);
+			OutMeshData.MotionVectors.AddZeroed(Header.VertexCount);
 		}
 	}
+	
+	// Decompress chunks using the task graph. Note: ParallelFor is slow to wake threads. It can take up to 1ms!
+	// TODO: can we sync later to get more overlap?
+	ParallelFor(NumChunks, [this, NumChunks, NumIndices, NumVertices, IsChunked, &Bytes, &BitReader, &ChunkOffsets, &OutMeshData](int32 ChunkIndex)
+	{
+		SCOPE_CYCLE_COUNTER(STAT_CodecV1Decoder);
 
+		uint32 IndexOffset = 0;
+		uint32 VertexOffset = 0;
+		uint32 NumChunkIndices = NumIndices;
+		uint32 NumChunkVertices = NumVertices;
+
+		uint32 ChunkOffset = 0;
+		if (IsChunked)
+		{
+			IndexOffset = (uint32)ChunkIndex * (NumIndices / NumChunks);
+			VertexOffset = (uint32)ChunkIndex * (NumVertices / NumChunks);
+			NumChunkIndices = (ChunkIndex + 1 == NumChunks) ? (NumIndices - IndexOffset) : (NumIndices / NumChunks);
+			NumChunkVertices = (ChunkIndex + 1 == NumChunks) ? (NumVertices - VertexOffset) : (NumVertices / NumChunks);
+			ChunkOffset = ChunkOffsets[ChunkIndex];
+		}
+
+		FHuffmanBitStreamReader ReaderObj(Bytes.GetData() + ChunkOffset, Bytes.Num() - ChunkOffset);
+		FHuffmanBitStreamReader& ChunkReader = IsChunked ? ReaderObj : BitReader;
+
+		if (NumChunkIndices > 0 && !OutMeshData.VertexInfo.bConstantIndices)
+		{
+			SCOPE_CYCLE_COUNTER(STAT_DecodeIndexStream);
+			DecodeIndexStream(ChunkReader, &OutMeshData.Indices[IndexOffset], OutMeshData.Indices.GetTypeSize(), NumChunkIndices);
+		}
+
+		if (NumChunkVertices > 0)
+		{
+			{
+				SCOPE_CYCLE_COUNTER(STAT_DecodePositionStream);
+				DecodePositionStream(ChunkReader, &OutMeshData.Positions[VertexOffset], OutMeshData.Positions.GetTypeSize(), NumChunkVertices);
+			}
+
+			if (OutMeshData.VertexInfo.bHasColor0)
+			{
+				SCOPE_CYCLE_COUNTER(STAT_DecodeColorStream);
+				DecodeColorStream(ChunkReader, &OutMeshData.Colors[VertexOffset], OutMeshData.Colors.GetTypeSize(), NumChunkVertices);
+			}
+
+			if (OutMeshData.VertexInfo.bHasTangentX)
+			{
+				SCOPE_CYCLE_COUNTER(STAT_DecodeTangentXStream);
+				DecodeNormalStream(ChunkReader, &OutMeshData.TangentsX[VertexOffset], OutMeshData.TangentsX.GetTypeSize(), NumChunkVertices, DecodingContext.ResidualNormalTangentXTable);
+			}
+
+			if (OutMeshData.VertexInfo.bHasTangentZ)
+			{
+				SCOPE_CYCLE_COUNTER(STAT_DecodeTangentZStream);
+				DecodeNormalStream(ChunkReader, &OutMeshData.TangentsZ[VertexOffset], OutMeshData.TangentsZ.GetTypeSize(), NumChunkVertices, DecodingContext.ResidualNormalTangentZTable);
+			}
+
+			if (OutMeshData.VertexInfo.bHasUV0)
+			{
+				SCOPE_CYCLE_COUNTER(STAT_DecodeUVStream);
+				DecodeUVStream(ChunkReader, &OutMeshData.TextureCoordinates[VertexOffset], OutMeshData.TextureCoordinates.GetTypeSize(), NumChunkVertices);
+			}
+
+			if (OutMeshData.VertexInfo.bHasMotionVectors)
+			{
+				SCOPE_CYCLE_COUNTER(STAT_DecodeMotionVectorStream);
+				DecodeMotionVectorStream(ChunkReader, &OutMeshData.MotionVectors[VertexOffset], OutMeshData.MotionVectors.GetTypeSize(), NumChunkVertices);
+			}
+		}
+	});
+
+	if (CVarCodecDebug.GetValueOnAnyThread() == 1)
+	{
+		const float TimeFloat = DecodingTime.Get();
+		UE_LOG(LogGeoCaStreamingCodecV1, Log, TEXT("Decoded frame with %i vertices in %.2f milliseconds."), NumVertices, TimeFloat);
+	}
+	
 	return true;
 }
 
-void FCodecV1Decoder::ReadBytes(void* Data, uint32 NumBytes)
+void FCodecV1Decoder::ReadBytes(FHuffmanBitStreamReader& Reader, void* Data, uint32 NumBytes)
 {
 	uint8* ByteData = (uint8*)Data;
 
 	for (int64 ByteIndex = 0; ByteIndex < NumBytes; ++ByteIndex)
 	{
-		const uint32 ByteValue = DecodingContext.Reader->Read(8);
+		const uint32 ByteValue = Reader.Read(8);
 		*ByteData++ = ByteValue & 255;
 	}
 }
 
-int32 FCodecV1Decoder::ReadInt32(FHuffmanTable& ValueTable)
-{	
-	// We code the length of the value (huffman table), followed by the raw bits. Small values take up very small amount of bits.
-	const int32 ZeroValue32BitInt = 32;	// Zero value used to shift interval [32,31] to [0,63]
-
-	const int32 PackedLength = ReadSymbol(ValueTable); // Read number of bits, i.e., most significant bit + 1
-	if (PackedLength == ZeroValue32BitInt)
+int32 FCodecV1Decoder::ReadInt32(FHuffmanBitStreamReader& Reader, FHuffmanDecodeTable& ValueTable)
+{
+	// See write WriteInt32 for encoding details.
+	const int32 Packed = ReadSymbol(Reader, ValueTable);
+	if (Packed < 4)
 	{
-		return 0;
+		// [-2, 1] coded directly with no additional raw bits
+		return Packed - 2;
 	}
-	else if (PackedLength > ZeroValue32BitInt)
-	{	
-		int32 NumBits = PackedLength - 1 - ZeroValue32BitInt;  // Positive number, undo re centering around new zero, extract length
-		return ReadBits(NumBits) + (1 << NumBits);	// Read remaining bits
+	else
+	{
+		// At least one raw bit.
+		int32 NumRawBits = (Packed - 2) >> 1;
+		return ReadBitsNoRefill(Reader, NumRawBits) + CachedHighBitsLUT[Packed];
 	}
-	else /*if (PackedLength < ZeroValue32BitInt)*/
-	{		
-		int32 NumBits = ZeroValue32BitInt - PackedLength - 1;	 // Negative number, undo re centering around new zero, extract length
-		return -(ReadBits(NumBits) + (1 << NumBits)); // Read remaining bits
-	}	
 }

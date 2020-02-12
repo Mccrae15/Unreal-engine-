@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 /*=============================================================================
 	HeightFogComponent.cpp: Height fog implementation.
@@ -56,9 +56,9 @@ void UExponentialHeightFogComponent::AddFogIfNeeded()
 	}
 }
 
-void UExponentialHeightFogComponent::CreateRenderState_Concurrent()
+void UExponentialHeightFogComponent::CreateRenderState_Concurrent(FRegisterComponentContext* Context)
 {
-	Super::CreateRenderState_Concurrent();
+	Super::CreateRenderState_Concurrent(Context);
 	AddFogIfNeeded();
 }
 
@@ -77,7 +77,7 @@ void UExponentialHeightFogComponent::DestroyRenderState_Concurrent()
 
 #if WITH_EDITOR
 
-bool UExponentialHeightFogComponent::CanEditChange(const UProperty* InProperty) const
+bool UExponentialHeightFogComponent::CanEditChange(const FProperty* InProperty) const
 {
 	if (InProperty)
 	{
@@ -119,7 +119,7 @@ void UExponentialHeightFogComponent::PostEditChangeProperty(FPropertyChangedEven
 }
 #endif // WITH_EDITOR
 
-void UExponentialHeightFogComponent::PostInterpChange(UProperty* PropertyThatChanged)
+void UExponentialHeightFogComponent::PostInterpChange(FProperty* PropertyThatChanged)
 {
 	Super::PostInterpChange(PropertyThatChanged);
 
@@ -315,7 +315,7 @@ AExponentialHeightFog::AExponentialHeightFog(const FObjectInitializer& ObjectIni
 	Component = CreateDefaultSubobject<UExponentialHeightFogComponent>(TEXT("HeightFogComponent0"));
 	RootComponent = Component;
 
-	bHidden = false;
+	SetHidden(false);
 
 #if WITH_EDITORONLY_DATA
 	if (!IsRunningCommandlet() && (GetSpriteComponent() != NULL))
@@ -336,7 +336,7 @@ AExponentialHeightFog::AExponentialHeightFog(const FObjectInitializer& ObjectIni
 		static FConstructorStatics ConstructorStatics;
 
 		GetSpriteComponent()->Sprite = ConstructorStatics.FogTextureObject.Get();
-		GetSpriteComponent()->RelativeScale3D = FVector(0.5f, 0.5f, 0.5f);
+		GetSpriteComponent()->SetRelativeScale3D_Direct(FVector(0.5f, 0.5f, 0.5f));
 		GetSpriteComponent()->SpriteInfo.Category = ConstructorStatics.ID_Fog;
 		GetSpriteComponent()->SpriteInfo.DisplayName = ConstructorStatics.NAME_Fog;
 		GetSpriteComponent()->SetupAttachment(Component);
@@ -348,7 +348,7 @@ void AExponentialHeightFog::PostInitializeComponents()
 {
 	Super::PostInitializeComponents();
 
-	bEnabled = Component->bVisible;
+	bEnabled = Component->GetVisibleFlag();
 }
 
 void AExponentialHeightFog::GetLifetimeReplicatedProps( TArray< FLifetimeProperty > & OutLifetimeProps ) const

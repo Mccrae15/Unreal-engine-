@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 /*================================================================================
 	DelegateInstancesImpl.inl: Inline implementation of delegate bindings.
@@ -9,7 +9,6 @@
 #pragma once
 #include "CoreTypes.h"
 #include "Misc/AssertionMacros.h"
-#include "Templates/PointerIsConvertibleFromTo.h"
 #include "Templates/TypeWrapper.h"
 #include "Templates/AreTypesEqual.h"
 #include "Templates/UnrealTypeTraits.h"
@@ -21,6 +20,12 @@
 class FDelegateBase;
 class FDelegateHandle;
 enum class ESPMode;
+
+namespace UE4Delegates_Private
+{
+	constexpr bool IsUObjectPtr(const volatile UObjectBase*) { return true; }
+	constexpr bool IsUObjectPtr(...)                         { return false; }
+}
 
 /* Macros for function parameter and delegate payload lists
  *****************************************************************************/
@@ -43,7 +48,7 @@ private:
 	typedef IBaseDelegateInstance<RetValType (ParamTypes...)>                                  Super;
 	typedef TBaseUFunctionDelegateInstance<UserClass, RetValType (ParamTypes...), VarTypes...> UnwrappedThisType;
 
-	static_assert(TPointerIsConvertibleFromTo<UserClass, const UObjectBase>::Value, "You cannot use UFunction delegates with non UObject classes.");
+	static_assert(UE4Delegates_Private::IsUObjectPtr((UserClass*)nullptr), "You cannot use UFunction delegates with non UObject classes.");
 
 public:
 	TBaseUFunctionDelegateInstance(UserClass* InUserObject, const FName& InFunctionName, VarTypes... Vars)
@@ -81,6 +86,11 @@ public:
 		return UserObjectPtr.Get();
 	}
 
+	virtual uint64 GetBoundProgramCounterForTimerManager() const override final
+	{
+		return 0;
+	}
+
 	// Deprecated
 	virtual bool HasSameObject( const void* InUserObject ) const override final
 	{
@@ -108,7 +118,7 @@ public:
 
 	virtual RetValType Execute(ParamTypes... Params) const override final
 	{
-		typedef TPayload<RetValType (ParamTypes..., VarTypes...)> FParmsWithPayload;
+		typedef TPayload<RetValType (typename TDecay<ParamTypes>::Type..., typename TDecay<VarTypes> ::Type...)> FParmsWithPayload;
 
 		checkSlow(IsSafeToExecute());
 
@@ -237,6 +247,15 @@ public:
 	virtual const void* GetObjectForTimerManager() const override final
 	{
 		return UserObject.Pin().Get();
+	}
+
+	virtual uint64 GetBoundProgramCounterForTimerManager() const override final
+	{
+#if PLATFORM_64BITS
+		return *((uint64*)&MethodPtr);
+#else
+		return *((uint32*)&MethodPtr);
+#endif
 	}
 
 	// Deprecated
@@ -375,7 +394,7 @@ public:
 	typedef typename TUnwrapType<WrappedRetValType>::Type RetValType;
 
 private:
-	static_assert(!TPointerIsConvertibleFromTo<UserClass, const UObjectBase>::Value, "You cannot use raw method delegates with UObjects.");
+	static_assert(!UE4Delegates_Private::IsUObjectPtr((UserClass*)nullptr), "You cannot use raw method delegates with UObjects.");
 
 	typedef IBaseDelegateInstance<RetValType (ParamTypes...)>                                          Super;
 	typedef TBaseRawMethodDelegateInstance<bConst, UserClass, RetValType (ParamTypes...), VarTypes...> UnwrappedThisType;
@@ -418,6 +437,15 @@ public:
 	virtual const void* GetObjectForTimerManager() const override final
 	{
 		return UserObject;
+	}
+
+	virtual uint64 GetBoundProgramCounterForTimerManager() const override final
+	{
+#if PLATFORM_64BITS
+		return *((uint64*)&MethodPtr);
+#else
+		return *((uint32*)&MethodPtr);
+#endif
 	}
 
 	// Deprecated
@@ -536,7 +564,7 @@ private:
 	typedef IBaseDelegateInstance<RetValType (ParamTypes...)>                                              Super;
 	typedef TBaseUObjectMethodDelegateInstance<bConst, UserClass, RetValType (ParamTypes...), VarTypes...> UnwrappedThisType;
 
-	static_assert(TPointerIsConvertibleFromTo<UserClass, const UObjectBase>::Value, "You cannot use UObject method delegates with raw pointers.");
+	static_assert(UE4Delegates_Private::IsUObjectPtr((UserClass*)nullptr), "You cannot use UObject method delegates with raw pointers.");
 
 public:
 	typedef typename TMemFunPtrType<bConst, UserClass, RetValType (ParamTypes..., VarTypes...)>::Type FMethodPtr;
@@ -571,6 +599,15 @@ public:
 	virtual const void* GetObjectForTimerManager() const override final
 	{
 		return UserObject.Get();
+	}
+
+	virtual uint64 GetBoundProgramCounterForTimerManager() const override final
+	{
+#if PLATFORM_64BITS
+		return *((uint64*)&MethodPtr);
+#else
+		return *((uint32*)&MethodPtr);
+#endif
 	}
 
 	// Deprecated
@@ -730,6 +767,15 @@ public:
 		return nullptr;
 	}
 
+	virtual uint64 GetBoundProgramCounterForTimerManager() const override final
+	{
+#if PLATFORM_64BITS
+		return *((uint64*)&StaticFuncPtr);
+#else
+		return *((uint32*)&StaticFuncPtr);
+#endif
+	}
+
 	// Deprecated
 	virtual bool HasSameObject( const void* UserObject ) const override final
 	{
@@ -866,6 +912,11 @@ public:
 	virtual const void* GetObjectForTimerManager() const override final
 	{
 		return nullptr;
+	}
+
+	virtual uint64 GetBoundProgramCounterForTimerManager() const override final
+	{
+		return 0;
 	}
 
 	// Deprecated
@@ -1011,6 +1062,11 @@ public:
 	virtual const void* GetObjectForTimerManager() const override final
 	{
 		return ContextObject.Get();
+	}
+
+	virtual uint64 GetBoundProgramCounterForTimerManager() const override final
+	{
+		return 0;
 	}
 
 	// Deprecated

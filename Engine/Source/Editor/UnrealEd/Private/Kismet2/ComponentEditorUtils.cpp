@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "Kismet2/ComponentEditorUtils.h"
 #include "HAL/FileManager.h"
@@ -25,8 +25,11 @@
 #include "Styling/SlateIconFinder.h"
 #include "Framework/MultiBox/MultiBoxBuilder.h"
 #include "Editor.h"
-#include "Toolkits/AssetEditorManager.h"
+
 #include "HAL/PlatformApplicationMisc.h"
+#include "ToolMenus.h"
+#include "Kismet2/ComponentEditorContextMenuContex.h"
+#include "Subsystems/AssetEditorSubsystem.h"
 
 #define LOCTEXT_NAMESPACE "ComponentEditorUtils"
 
@@ -154,38 +157,136 @@ protected:
 	// FCustomizableTextObjectFactory (end)
 };
 
-bool FComponentEditorUtils::CanEditNativeComponent(const UActorComponent* NativeComponent)
+bool FComponentEditorUtils::CanEditComponentInstance(const UActorComponent* ActorComp, const UActorComponent* ParentSceneComp, bool bAllowUserContructionScript)
+{
+	// Exclude nested DSOs attached to BP-constructed instances, which are not mutable.
+	return (ActorComp != nullptr
+		&& (!ActorComp->IsVisualizationComponent())
+		&& (ActorComp->CreationMethod != EComponentCreationMethod::UserConstructionScript || bAllowUserContructionScript)
+		&& (ParentSceneComp == nullptr || !ParentSceneComp->IsCreatedByConstructionScript() || !ActorComp->HasAnyFlags(RF_DefaultSubObject)))
+		&& (ActorComp->CreationMethod != EComponentCreationMethod::Native || FComponentEditorUtils::GetPropertyForEditableNativeComponent(ActorComp));
+}
+
+FProperty* FComponentEditorUtils::GetPropertyForEditableNativeComponent(const UActorComponent* NativeComponent)
 {
 	// A native component can be edited if it is bound to a member variable and that variable is marked as visible in the editor
-	// Note: We aren't concerned with whether the component is marked editable - the component itself is responsible for determining which of its properties are editable
-
-	bool bCanEdit = false;
-	
+	// Note: We aren't concerned with whether the component is marked editable - the component itself is responsible for determining which of its properties are editable	
 	UObject* ComponentOuter = (NativeComponent ? NativeComponent->GetOuter() : nullptr);
 	UClass* OwnerClass = (ComponentOuter ? ComponentOuter->GetClass() : nullptr);
+	AActor* OwnerCDO = (OwnerClass ? CastChecked<AActor>(OwnerClass->GetDefaultObject()) : nullptr);
+
 	if (OwnerClass != nullptr)
 	{
-		for (TFieldIterator<UObjectProperty> It(OwnerClass); It; ++It)
+		for (TFieldIterator<FObjectProperty> It(OwnerClass); It; ++It)
 		{
-			UObjectProperty* ObjectProp = *It;
+			FObjectProperty* ObjectProp = *It;
 
 			// Must be visible - note CPF_Edit is set for all properties that should be visible, not just those that are editable
-			if (( ObjectProp->PropertyFlags & ( CPF_Edit ) ) == 0)
+			if ((ObjectProp->PropertyFlags & (CPF_Edit)) == 0)
 			{
 				continue;
 			}
 
 			UObject* Object = ObjectProp->GetObjectPropertyValue(ObjectProp->ContainerPtrToValuePtr<void>(ComponentOuter));
-			bCanEdit = Object != nullptr && Object->GetFName() == NativeComponent->GetFName();
-
-			if (bCanEdit)
+			if (Object != nullptr && Object->GetFName() == NativeComponent->GetFName())
 			{
-				break;
+				return ObjectProp;
+			}
+		}	
+	
+		// We have to check for array properties as well because they are not FObjectProperties and we want to be able to
+		// edit the inside of it
+		if (OwnerCDO != nullptr)
+		{
+			for (TFieldIterator<FArrayProperty> PropIt(OwnerClass, EFieldIteratorFlags::IncludeSuper); PropIt; ++PropIt)
+			{
+				FArrayProperty* TestProperty = *PropIt;
+				void* ArrayPropInstAddress = TestProperty->ContainerPtrToValuePtr<void>(OwnerCDO);
+
+				// Ensure that this property is valid
+				FObjectProperty* ArrayEntryProp = CastField<FObjectProperty>(TestProperty->Inner);
+				if ((ArrayEntryProp == nullptr) || !ArrayEntryProp->PropertyClass->IsChildOf<UActorComponent>() || ((TestProperty->PropertyFlags & CPF_Edit) == 0))
+				{
+					continue;
+				}
+
+				// For each object in this array
+				FScriptArrayHelper ArrayHelper(TestProperty, ArrayPropInstAddress);
+				for (int32 ComponentIndex = 0; ComponentIndex < ArrayHelper.Num(); ++ComponentIndex)
+				{
+					// If this object is the native component we are looking for, then we should be allowed to edit it
+					const uint8* ArrayValRawPtr = ArrayHelper.GetRawPtr(ComponentIndex);
+					UObject* ArrayElement = ArrayEntryProp->GetObjectPropertyValue(ArrayValRawPtr);			
+					
+					if (ArrayElement != nullptr && ArrayElement->GetFName() == NativeComponent->GetFName())
+					{
+						return ArrayEntryProp;
+					}
+				}				
+			}			
+
+			// Check for map properties as well
+			for (TFieldIterator<FMapProperty> PropIt(OwnerClass, EFieldIteratorFlags::IncludeSuper); PropIt; ++PropIt)
+			{
+				FMapProperty* TestProperty = *PropIt;
+				void* MapPropInstAddress = TestProperty->ContainerPtrToValuePtr<void>(OwnerCDO);
+				
+				// Ensure that this property is valid and that it is marked as visible in the editor
+				FObjectProperty* MapValProp = CastField<FObjectProperty>(TestProperty->ValueProp);
+				if ((MapValProp == nullptr) || !MapValProp->PropertyClass->IsChildOf<UActorComponent>() || ((TestProperty->PropertyFlags & CPF_Edit) == 0))
+				{
+					continue;
+				}
+
+				FScriptMapHelper MapHelper(TestProperty, MapPropInstAddress);
+				for (int32 MapSparseIndex = 0; MapSparseIndex < MapHelper.GetMaxIndex(); ++MapSparseIndex)
+				{
+					// For each value in the map (don't bother checking the keys, they won't be what the user can edit in this case)
+					if (MapHelper.IsValidIndex(MapSparseIndex))
+					{
+						const uint8* MapValueData = MapHelper.GetValuePtr(MapSparseIndex);						
+						UObject* ValueElement = MapValProp->GetObjectPropertyValue(MapValueData);
+						if (ValueElement != nullptr && ValueElement->GetFName() == NativeComponent->GetFName())
+						{
+							return MapValProp;
+						}
+					}
+				}
+			}
+
+			// Finally we should check for set properties
+			for (TFieldIterator<FSetProperty> PropIt(OwnerClass, EFieldIteratorFlags::IncludeSuper); PropIt; ++PropIt)
+			{
+				FSetProperty* TestProperty = *PropIt;
+				void* SetPropInstAddress = TestProperty->ContainerPtrToValuePtr<void>(OwnerCDO);
+
+				// Ensure that this property is valid and that it is marked visible
+				FObjectProperty* SetValProp = CastField<FObjectProperty>(TestProperty->ElementProp);
+				if ((SetValProp == nullptr) || !SetValProp->PropertyClass->IsChildOf<UActorComponent>() || ((TestProperty->PropertyFlags & CPF_Edit) == 0))
+				{
+					continue;
+				}
+				
+				// For each item in the set
+				FScriptSetHelper SetHelper(TestProperty, SetPropInstAddress);
+				for (int32 i = 0; i < SetHelper.Num(); ++i)
+				{
+					if (SetHelper.IsValidIndex(i))
+					{
+						const uint8* SetValData = SetHelper.GetElementPtr(i);
+						UObject* SetValueElem = SetValProp->GetObjectPropertyValue(SetValData);
+						
+						if (SetValueElem != nullptr && SetValueElem->GetFName() == NativeComponent->GetFName())
+						{
+							return SetValProp;
+						}
+					}
+				}
 			}
 		}
-	}
+	}	
 
-	return bCanEdit;
+	return nullptr;
 }
 
 bool FComponentEditorUtils::IsValidVariableNameString(const UActorComponent* InComponent, const FString& InString)
@@ -225,14 +326,14 @@ FString FComponentEditorUtils::GenerateValidVariableName(TSubclassOf<UActorCompo
 	FString SuffixToStrip( TEXT( "Component" ) );
 	if( ComponentTypeName.EndsWith( SuffixToStrip ) )
 	{
-		ComponentTypeName = ComponentTypeName.Left( ComponentTypeName.Len() - SuffixToStrip.Len() );
+		ComponentTypeName.LeftInline( ComponentTypeName.Len() - SuffixToStrip.Len(), false );
 	}
 
 	// Strip off 'Actor' if the class ends with that so as not to confuse actors with components
 	SuffixToStrip = TEXT( "Actor" );
 	if( ComponentTypeName.EndsWith( SuffixToStrip ) )
 	{
-		ComponentTypeName = ComponentTypeName.Left( ComponentTypeName.Len() - SuffixToStrip.Len() );
+		ComponentTypeName.LeftInline( ComponentTypeName.Len() - SuffixToStrip.Len(), false );
 	}
 
 	// Try to create a name without any numerical suffix first
@@ -252,8 +353,7 @@ FString FComponentEditorUtils::GenerateValidVariableNameFromAsset(UObject* Asset
 	int32 Counter = 1;
 	FString AssetName = Asset->GetName();
 
-	UClass* Class = Cast<UClass>(Asset);
-	if (Class)
+	if (UClass* Class = Cast<UClass>(Asset))
 	{
 		if (!Class->HasAnyClassFlags(CLASS_CompiledFromBlueprint))
 		{
@@ -264,20 +364,45 @@ FString FComponentEditorUtils::GenerateValidVariableNameFromAsset(UObject* Asset
 			AssetName.RemoveFromEnd("_C");
 		}
 	}
+	else if (UActorComponent* Comp = Cast <UActorComponent>(Asset))
+	{
+		AssetName.RemoveFromEnd(UActorComponent::ComponentTemplateNameSuffix);
+	}
 
 	// Try to create a name without any numerical suffix first
-	FString ComponentInstanceName = AssetName;
+	FString NewName = AssetName;
+
+	auto BuildNewName = [&Counter, &AssetName]()
+	{
+		return FString::Printf(TEXT("%s%d"), *AssetName, Counter++);
+	};
 
 	if (ComponentOwner)
 	{
-		while (!IsComponentNameAvailable(ComponentInstanceName, ComponentOwner))
+		// If a desired name is supplied then walk back and find any numeric suffix so we can increment it nicely
+		int32 Index = AssetName.Len();
+		while (Index > 0 && AssetName[Index - 1] >= '0' && AssetName[Index - 1] <= '9')
 		{
-			// Assign the lowest possible numerical suffix
-			ComponentInstanceName = FString::Printf(TEXT("%s%d"), *AssetName, Counter++);
+			--Index;
+		}
+
+		if (Index < AssetName.Len())
+		{
+			FString NumericSuffix = AssetName.RightChop(Index);
+			Counter = FCString::Atoi(*NumericSuffix);
+			NumericSuffix = FString::Printf(TEXT("%d"), Counter); // Restringify the counter to account for leading 0s that we don't want to remove
+			AssetName.RemoveAt(AssetName.Len() - NumericSuffix.Len(), NumericSuffix.Len(), false);
+			++Counter;
+			NewName = BuildNewName();
+		}
+
+		while (!IsComponentNameAvailable(NewName, ComponentOwner))
+		{
+			NewName = BuildNewName();
 		}
 	}
 
-	return ComponentInstanceName;
+	return NewName;
 }
 
 USceneComponent* FComponentEditorUtils::FindClosestParentInList(UActorComponent* ChildComponent, const TArray<UActorComponent*>& ComponentList)
@@ -686,7 +811,7 @@ void FComponentEditorUtils::AdjustComponentDelta(USceneComponent* Component, FVe
 	{
 		const FTransform ParentToWorldSpace = ParentSceneComp->GetSocketTransform(Component->GetAttachSocketName());
 
-		if (!Component->bAbsoluteLocation)
+		if (!Component->IsUsingAbsoluteLocation())
 		{
 			//transform the drag vector in relative to the parent transform
 			Drag = ParentToWorldSpace.InverseTransformVectorNoScale(Drag);
@@ -694,7 +819,7 @@ void FComponentEditorUtils::AdjustComponentDelta(USceneComponent* Component, FVe
 			Drag = Drag * ParentToWorldSpace.Inverse().GetScale3D();
 		}
 
-		if (!Component->bAbsoluteRotation)
+		if (!Component->IsUsingAbsoluteRotation())
 		{
 			Rotation = ( ParentToWorldSpace.Inverse().GetRotation() * Rotation.Quaternion() * ParentToWorldSpace.GetRotation() ).Rotator();
 		}
@@ -808,59 +933,47 @@ bool FComponentEditorUtils::AttemptApplyMaterialToComponent(USceneComponent* Sce
 		}
 
 		SceneComponent->MarkRenderStateDirty();
+		SceneComponent->PostEditChange();
 		GEditor->OnSceneMaterialsModified();
 	}
 
 	return bResult;
 }
 
-FName FComponentEditorUtils::FindVariableNameGivenComponentInstance(UActorComponent* ComponentInstance)
+FName FComponentEditorUtils::FindVariableNameGivenComponentInstance(const UActorComponent* ComponentInstance)
 {
 	check(ComponentInstance != nullptr);
 
-	// First see if the name just works
-	if (AActor* OwnerActor = ComponentInstance->GetOwner())
+	// When names mismatch, try finding a differently named variable pointing to the the component (the mismatch should only be possible for native components)
+	auto FindPropertyReferencingComponent = [](const UActorComponent* Component) -> FProperty*
 	{
-		UClass* OwnerActorClass = OwnerActor->GetClass();
-		if (UObjectProperty* TestProperty = FindField<UObjectProperty>(OwnerActorClass, ComponentInstance->GetFName()))
-		{
-			if (ComponentInstance->GetClass()->IsChildOf(TestProperty->PropertyClass))
-			{
-				return TestProperty->GetFName();
-			}
-		}
-	}
-
-	// Name mismatch, try finding a differently named variable pointing to the the component (the mismatch should only be possible for native components)
-	if (UActorComponent* Archetype = Cast<UActorComponent>(ComponentInstance->GetArchetype()))
-	{
-		if (AActor* OwnerActor = Archetype->GetOwner())
+		if (AActor* OwnerActor = Component->GetOwner())
 		{
 			UClass* OwnerClass = OwnerActor->GetClass();
 			AActor* OwnerCDO = CastChecked<AActor>(OwnerClass->GetDefaultObject());
 			check(OwnerCDO->HasAnyFlags(RF_ClassDefaultObject));
 
-			for (TFieldIterator<UObjectProperty> PropIt(OwnerClass, EFieldIteratorFlags::IncludeSuper); PropIt; ++PropIt)
+			for (TFieldIterator<FObjectProperty> PropIt(OwnerClass, EFieldIteratorFlags::IncludeSuper); PropIt; ++PropIt)
 			{
-				UObjectProperty* TestProperty = *PropIt;
-				if (Archetype->GetClass()->IsChildOf(TestProperty->PropertyClass))
+				FObjectProperty* TestProperty = *PropIt;
+				if (Component->GetClass()->IsChildOf(TestProperty->PropertyClass))
 				{
 					void* TestPropertyInstanceAddress = TestProperty->ContainerPtrToValuePtr<void>(OwnerCDO);
 					UObject* ObjectPointedToByProperty = TestProperty->GetObjectPropertyValue(TestPropertyInstanceAddress);
-					if (ObjectPointedToByProperty == Archetype)
+					if (ObjectPointedToByProperty == Component)
 					{
 						// This property points to the component archetype, so it's an anchor even if it was named wrong
-						return TestProperty->GetFName();
+						return TestProperty;
 					}
 				}
 			}
 
-			for (TFieldIterator<UArrayProperty> PropIt(OwnerClass, EFieldIteratorFlags::IncludeSuper); PropIt; ++PropIt)
+			for (TFieldIterator<FArrayProperty> PropIt(OwnerClass, EFieldIteratorFlags::IncludeSuper); PropIt; ++PropIt)
 			{
-				UArrayProperty* TestProperty = *PropIt;
+				FArrayProperty* TestProperty = *PropIt;
 				void* ArrayPropInstAddress = TestProperty->ContainerPtrToValuePtr<void>(OwnerCDO);
 
-				UObjectProperty* ArrayEntryProp = Cast<UObjectProperty>(TestProperty->Inner);
+				FObjectProperty* ArrayEntryProp = CastField<FObjectProperty>(TestProperty->Inner);
 				if ((ArrayEntryProp == nullptr) || !ArrayEntryProp->PropertyClass->IsChildOf<UActorComponent>())
 				{
 					continue;
@@ -870,31 +983,58 @@ FName FComponentEditorUtils::FindVariableNameGivenComponentInstance(UActorCompon
 				for (int32 ComponentIndex = 0; ComponentIndex < ArrayHelper.Num(); ++ComponentIndex)
 				{
 					UObject* ArrayElement = ArrayEntryProp->GetObjectPropertyValue(ArrayHelper.GetRawPtr(ComponentIndex));
-					if (ArrayElement == Archetype)
+					if (ArrayElement == Component)
+					{
+						return TestProperty;
+					}
+				}
+			}
+		}
+
+		return nullptr;
+	};
+
+	// First see if the name just works
+	if (AActor* OwnerActor = ComponentInstance->GetOwner())
+	{
+		UClass* OwnerActorClass = OwnerActor->GetClass();
+		if (FObjectProperty* TestProperty = FindField<FObjectProperty>(OwnerActorClass, ComponentInstance->GetFName()))
+		{
+			if (ComponentInstance->GetClass()->IsChildOf(TestProperty->PropertyClass))
 					{
 						return TestProperty->GetFName();
 					}
 				}
+
+		if (FProperty* ReferencingProp = FindPropertyReferencingComponent(ComponentInstance))
+		{
+			return ReferencingProp->GetFName();
+		}
 			}
+
+	if (UActorComponent* Archetype = Cast<UActorComponent>(ComponentInstance->GetArchetype()))
+	{
+		if (FProperty* ReferencingProp = FindPropertyReferencingComponent(Archetype))
+		{
+			return ReferencingProp->GetFName();
 		}
 	}
 
 	return NAME_None;
 }
 
-void FComponentEditorUtils::FillComponentContextMenuOptions(FMenuBuilder& MenuBuilder, const TArray<UActorComponent*>& SelectedComponents)
+void FComponentEditorUtils::FillComponentContextMenuOptions(UToolMenu* Menu, const TArray<UActorComponent*>& SelectedComponents)
 {
 	// Basic commands
-	MenuBuilder.BeginSection("EditComponent", LOCTEXT("EditComponentHeading", "Edit"));
 	{
-		MenuBuilder.AddMenuEntry(FGenericCommands::Get().Cut);
-		MenuBuilder.AddMenuEntry(FGenericCommands::Get().Copy);
-		MenuBuilder.AddMenuEntry(FGenericCommands::Get().Paste);
-		MenuBuilder.AddMenuEntry(FGenericCommands::Get().Duplicate);
-		MenuBuilder.AddMenuEntry(FGenericCommands::Get().Delete);
-		MenuBuilder.AddMenuEntry(FGenericCommands::Get().Rename);
+		FToolMenuSection& Section = Menu->AddSection("EditComponent", LOCTEXT("EditComponentHeading", "Edit"));
+		Section.AddMenuEntry(FGenericCommands::Get().Cut);
+		Section.AddMenuEntry(FGenericCommands::Get().Copy);
+		Section.AddMenuEntry(FGenericCommands::Get().Paste);
+		Section.AddMenuEntry(FGenericCommands::Get().Duplicate);
+		Section.AddMenuEntry(FGenericCommands::Get().Delete);
+		Section.AddMenuEntry(FGenericCommands::Get().Rename);
 	}
-	MenuBuilder.EndSection();
 
 	if (SelectedComponents.Num() == 1)
 	{
@@ -902,9 +1042,10 @@ void FComponentEditorUtils::FillComponentContextMenuOptions(FMenuBuilder& MenuBu
 
 		if (Component->GetClass()->ClassGeneratedBy)
 		{
-			MenuBuilder.BeginSection("ComponentAsset", LOCTEXT("ComponentAssetHeading", "Asset"));
 			{
-				MenuBuilder.AddMenuEntry(
+				FToolMenuSection& Section = Menu->AddSection("ComponentAsset", LOCTEXT("ComponentAssetHeading", "Asset"));
+				Section.AddMenuEntry(
+					"GoToBlueprintForComponent",
 					FText::Format(LOCTEXT("GoToBlueprintForComponent", "Edit {0}"), FText::FromString(Component->GetClass()->ClassGeneratedBy->GetName())),
 					LOCTEXT("EditBlueprintForComponent_ToolTip", "Edits the Blueprint Class that defines this component."),
 					FSlateIconFinder::FindIconForClass(Component->GetClass()),
@@ -912,7 +1053,8 @@ void FComponentEditorUtils::FillComponentContextMenuOptions(FMenuBuilder& MenuBu
 					FExecuteAction::CreateStatic(&FComponentEditorUtils::OnEditBlueprintComponent, Component->GetClass()->ClassGeneratedBy),
 					FCanExecuteAction()));
 
-				MenuBuilder.AddMenuEntry(
+				Section.AddMenuEntry(
+					"GoToAssetForComponent",
 					LOCTEXT("GoToAssetForComponent", "Find Class in Content Browser"),
 					LOCTEXT("GoToAssetForComponent_ToolTip", "Summons the content browser and goes to the class for this component."),
 					FSlateIcon(FEditorStyle::GetStyleSetName(), "SystemWideCommands.FindInContentBrowser"),
@@ -920,12 +1062,11 @@ void FComponentEditorUtils::FillComponentContextMenuOptions(FMenuBuilder& MenuBu
 					FExecuteAction::CreateStatic(&FComponentEditorUtils::OnGoToComponentAssetInBrowser, Component->GetClass()->ClassGeneratedBy),
 					FCanExecuteAction()));
 			}
-			MenuBuilder.EndSection();
 		}
 		else
 		{
-			MenuBuilder.BeginSection("ComponentCode", LOCTEXT("ComponentCodeHeading", "C++"));
 			{
+				FToolMenuSection& Section = Menu->AddSection("ComponentCode", LOCTEXT("ComponentCodeHeading", "C++"));
 				if (FSourceCodeNavigation::IsCompilerAvailable())
 				{
 					FString ClassHeaderPath;
@@ -933,7 +1074,8 @@ void FComponentEditorUtils::FillComponentContextMenuOptions(FMenuBuilder& MenuBu
 					{
 						const FString CodeFileName = FPaths::GetCleanFilename(*ClassHeaderPath);
 
-						MenuBuilder.AddMenuEntry(
+						Section.AddMenuEntry(
+							"GoToCodeForComponent",
 							FText::Format(LOCTEXT("GoToCodeForComponent", "Open {0}"), FText::FromString(CodeFileName)),
 							FText::Format(LOCTEXT("GoToCodeForComponent_ToolTip", "Opens the header file for this component ({0}) in a code editing program"), FText::FromString(CodeFileName)),
 							FSlateIcon(),
@@ -942,7 +1084,8 @@ void FComponentEditorUtils::FillComponentContextMenuOptions(FMenuBuilder& MenuBu
 							FCanExecuteAction()));
 					}
 
-					MenuBuilder.AddMenuEntry(
+					Section.AddMenuEntry(
+						"GoToAssetForComponent",
 						LOCTEXT("GoToAssetForComponent", "Find Class in Content Browser"),
 						LOCTEXT("GoToAssetForComponent_ToolTip", "Summons the content browser and goes to the class for this component."),
 						FSlateIcon(FEditorStyle::GetStyleSetName(), "SystemWideCommands.FindInContentBrowser"),
@@ -951,9 +1094,110 @@ void FComponentEditorUtils::FillComponentContextMenuOptions(FMenuBuilder& MenuBu
 						FCanExecuteAction()));
 				}
 			}
-			MenuBuilder.EndSection();
 		}
 	}
+}
+
+UActorComponent* FComponentEditorUtils::FindMatchingComponent(UActorComponent* ComponentInstance, const TInlineComponentArray<UActorComponent*>& ComponentList)
+{
+	if (ComponentInstance == nullptr)
+	{
+		return nullptr;
+	}
+
+	TInlineComponentArray<UActorComponent*> FoundComponents;
+	UActorComponent* LastFoundComponent = nullptr;
+	for (UActorComponent* Component : ComponentList)
+	{
+		// Early out on pointer match
+		if (ComponentInstance == Component)
+		{
+			return Component;
+		}
+
+		if (ComponentInstance->GetFName() == Component->GetFName())
+		{
+			FoundComponents.Add(Component);
+			LastFoundComponent = Component;
+		}
+	}
+
+	// No match or 1 match avoid sorting
+	if (FoundComponents.Num() <= 1)
+	{
+		return LastFoundComponent;
+	}
+
+	if (USceneComponent* CurrentSceneComponent = Cast<USceneComponent>(ComponentInstance))
+	{
+		// Sort by matching hierarchy
+		FoundComponents.Sort([&](const UActorComponent& ComponentA, const UActorComponent& ComponentB)
+		{
+			const USceneComponent* SceneComponentA = Cast<USceneComponent>(&ComponentA);
+			const USceneComponent* SceneComponentB = Cast<USceneComponent>(&ComponentB);
+			if (SceneComponentB == nullptr)
+			{
+				return true;
+			}
+			else if (SceneComponentA == nullptr)
+			{
+				return false;
+			}
+
+			const USceneComponent* AttachParentA = SceneComponentA->GetAttachParent();
+			const USceneComponent* AttachParentB = SceneComponentB->GetAttachParent();
+			const USceneComponent* CurrentParent = CurrentSceneComponent->GetAttachParent();
+			// No parents...
+			if (CurrentParent == nullptr)
+			{
+				return AttachParentA == nullptr;
+			}
+
+			bool MatchA = AttachParentA != nullptr && AttachParentA->GetFName() == CurrentParent->GetFName();
+			bool MatchB = AttachParentB != nullptr && AttachParentB->GetFName() == CurrentParent->GetFName();
+			while (MatchA && MatchB)
+			{
+				AttachParentA = AttachParentA->GetAttachParent();
+				AttachParentB = AttachParentB->GetAttachParent();
+				CurrentParent = CurrentParent->GetAttachParent();
+				if (CurrentParent == nullptr)
+				{
+					return AttachParentA == nullptr;
+				}
+
+				MatchA = AttachParentA != nullptr && AttachParentA->GetFName() == CurrentParent->GetFName();
+				MatchB = AttachParentB != nullptr && AttachParentB->GetFName() == CurrentParent->GetFName();
+			}
+
+			return MatchA;
+		});
+	}
+
+	return FoundComponents[0];
+}
+
+FComponentReference FComponentEditorUtils::MakeComponentReference(const AActor* InExpectedComponentOwner, const UActorComponent* InComponent)
+{
+	FComponentReference Result;
+	if (InComponent)
+	{
+		const AActor* Owner = InExpectedComponentOwner;
+		if (InComponent->GetOwner() && InComponent->GetOwner() != Owner)
+		{
+			Result.OtherActor = InComponent->GetOwner();
+			Owner = InComponent->GetOwner();
+		}
+
+		if (InComponent->CreationMethod == EComponentCreationMethod::Native || InComponent->CreationMethod == EComponentCreationMethod::SimpleConstructionScript)
+		{
+			Result.ComponentProperty = FComponentEditorUtils::FindVariableNameGivenComponentInstance(InComponent);
+		}
+		if (Result.ComponentProperty.IsNone() && InComponent->CreationMethod != EComponentCreationMethod::UserConstructionScript)
+		{
+			Result.PathToComponent = InComponent->GetPathName(InComponent->GetOwner());
+		}
+	}
+	return Result;
 }
 
 void FComponentEditorUtils::OnGoToComponentAssetInBrowser(UObject* Asset)
@@ -971,7 +1215,7 @@ void FComponentEditorUtils::OnOpenComponentCodeFile(const FString CodeFileName)
 
 void FComponentEditorUtils::OnEditBlueprintComponent(UObject* Blueprint)
 {
-	FAssetEditorManager::Get().OpenEditorForAsset(Blueprint);
+	GEditor->GetEditorSubsystem<UAssetEditorSubsystem>()->OpenEditorForAsset(Blueprint);
 }
 
 #undef LOCTEXT_NAMESPACE

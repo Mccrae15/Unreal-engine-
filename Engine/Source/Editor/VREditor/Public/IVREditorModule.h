@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -95,7 +95,7 @@ public:
 	*
 	* @param The new actor preview widget
 	*/
-	virtual void UpdateActorPreview(TSharedRef<class SWidget> InWidget, int32 Index, AActor *Actor = nullptr) = 0;
+	virtual void UpdateActorPreview(TSharedRef<class SWidget> InWidget, int32 Index, AActor *Actor = nullptr, bool bIsDetached = false) = 0;
 
 
 	/**
@@ -104,7 +104,7 @@ public:
 	* @param The new widget
 	* @param The label to use for the UI
 	*/
-	virtual void UpdateExternalUMGUI(TSubclassOf<class UUserWidget> InUMGClass, FName Name, FVector2D InSize = FVector2D::ZeroVector) = 0;
+	virtual void UpdateExternalUMGUI(const struct FVREditorFloatingUICreationContext& CreationContext) = 0;
 
 	/**
 	* Update any external Slate UI spawned from the radial menu

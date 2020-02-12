@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "MergeProxyUtils/Utils.h"
 
@@ -134,6 +134,13 @@ TSharedRef<ITableRow> FComponentSelectionControl::MakeComponentListItemWidget(TS
 	{
 		State = *StoredState;
 	}
+
+	if (UStaticMeshComponent* StaticMeshComponent = Cast<UStaticMeshComponent>(ComponentData->PrimComponent.Get()))
+	{
+		bEnabled = (StaticMeshComponent->GetStaticMesh() != nullptr);
+		bIsMesh = true;
+	}
+
 
 	return SNew(STableRow<TSharedPtr<FMergeComponentData>>, OwnerTable)
 		[

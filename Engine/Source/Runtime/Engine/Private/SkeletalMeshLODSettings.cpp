@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "Engine/SkeletalMeshLODSettings.h"
 #include "Engine/SkeletalMesh.h"
@@ -6,6 +6,7 @@
 #include "Animation/Skeleton.h"
 #include "Animation/AnimSequence.h"
 #include "UObject/FortniteMainBranchObjectVersion.h"
+#include "UObject/EditorObjectVersion.h"
 
 DEFINE_LOG_CATEGORY_STATIC(LogSkeletalMeshLODSettings, Warning, All)
 
@@ -13,6 +14,10 @@ DEFINE_LOG_CATEGORY_STATIC(LogSkeletalMeshLODSettings, Warning, All)
 USkeletalMeshLODSettings::USkeletalMeshLODSettings(const FObjectInitializer& ObjectInitializer)
 	: Super(ObjectInitializer)
 {
+	bSupportLODStreaming.Default = false;
+	MaxNumStreamedLODs.Default = 0;
+	// TODO: support saving some but not all optional LODs
+	MaxNumOptionalLODs.Default = 0;
 }
 
 const FSkeletalMeshLODGroupSettings& USkeletalMeshLODSettings::GetSettingsForLODLevel(const int32 LODIndex) const
@@ -161,6 +166,12 @@ int32 USkeletalMeshLODSettings::SetLODSettingsToMesh(USkeletalMesh* InMesh) cons
 	if (InMesh)
 	{
 		InMesh->MinLod = MinLod;
+		InMesh->DisableBelowMinLodStripping = DisableBelowMinLodStripping;
+#if WITH_EDITORONLY_DATA
+		InMesh->bSupportLODStreaming = bSupportLODStreaming;
+		InMesh->MaxNumStreamedLODs = MaxNumStreamedLODs;
+		InMesh->MaxNumOptionalLODs = MaxNumOptionalLODs;
+#endif
 		// we only fill up until we have enough LODs
 		const int32 NumSettings = FMath::Min(LODGroups.Num(), InMesh->GetLODNum());
 		for (int32 Index = 0; Index < NumSettings; ++Index)
@@ -180,6 +191,12 @@ int32 USkeletalMeshLODSettings::SetLODSettingsFromMesh(USkeletalMesh* InMesh)
 	if (InMesh)
 	{
 		MinLod = InMesh->MinLod;
+		DisableBelowMinLodStripping = InMesh->DisableBelowMinLodStripping;
+#if WITH_EDITORONLY_DATA
+		bSupportLODStreaming = InMesh->bSupportLODStreaming;
+		MaxNumStreamedLODs = InMesh->MaxNumStreamedLODs;
+		MaxNumOptionalLODs = InMesh->MaxNumOptionalLODs;
+#endif
 		// we only fill up until we have enough LODs
 		const int32 NumSettings = InMesh->GetLODNum();
 		LODGroups.Reset(NumSettings);
@@ -243,6 +260,7 @@ void USkeletalMeshLODSettings::Serialize(FArchive& Ar)
 	Super::Serialize(Ar);
 
 	Ar.UsingCustomVersion(FFortniteMainBranchObjectVersion::GUID);
+	Ar.UsingCustomVersion(FEditorObjectVersion::GUID);
 
 	if (Ar.CustomVer(FFortniteMainBranchObjectVersion::GUID) < FFortniteMainBranchObjectVersion::ConvertReductionSettingOptions)
 	{

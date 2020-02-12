@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "SProjectLauncherPreviewPage.h"
 
@@ -845,7 +845,7 @@ FText SProjectLauncherPreviewPage::HandleBuildConfigurationTextBlockText( ) cons
 
 	if (SelectedProfile.IsValid())
 	{
-		return FText::FromString(EBuildConfigurations::ToString(SelectedProfile->GetBuildConfiguration()));
+		return FText::FromString(LexToString(SelectedProfile->GetBuildConfiguration()));
 	}
 
 	return LOCTEXT("NotAvailableText", "n/a");

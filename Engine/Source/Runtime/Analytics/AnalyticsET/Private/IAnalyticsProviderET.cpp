@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "IAnalyticsProviderET.h"
 #include "Misc/CommandLine.h"
@@ -188,6 +188,8 @@ public:
 
 	virtual void SetAppID(FString&& AppID) override;
 	virtual const FString& GetAppID() const override;
+	virtual void SetAppVersion(FString&& AppVersion) override;
+	virtual const FString& GetAppVersion() const override;
 	virtual void SetUserID(const FString& InUserID) override;
 	virtual FString GetUserID() const override;
 
@@ -515,6 +517,7 @@ TSharedRef<IHttpRequest> FAnalyticsProviderET::CreateRequest()
 
 void FAnalyticsProviderET::FlushEvents()
 {
+	QUICK_SCOPE_CYCLE_COUNTER(STAT_FAnalyticsProviderET_FlushEvents);
 	// Warn if this takes more than 2 ms
 	SCOPE_TIME_GUARD_MS(TEXT("FAnalyticsProviderET::FlushEvents"), 2);
 
@@ -550,56 +553,37 @@ void FAnalyticsProviderET::FlushEvents()
 				FlushedEvents->Reserve(CachedEvents.Num());
 			}
 
-			TSharedRef< TJsonWriter<TCHAR, TCondensedJsonPrintPolicy<TCHAR> > > JsonWriter = TJsonWriterFactory<TCHAR, TCondensedJsonPrintPolicy<TCHAR> >::Create(&Payload);
-			JsonWriter->WriteObjectStart();
-			JsonWriter->WriteArrayStart(TEXT("Events"));
-			for (FAnalyticsEventEntry& Entry : CachedEvents)
 			{
-				if (Entry.bIsDefaultAttributes)
+				QUICK_SCOPE_CYCLE_COUNTER(STAT_FlushEventsJson);
+				TSharedRef< TJsonWriter<TCHAR, TCondensedJsonPrintPolicy<TCHAR> > > JsonWriter = TJsonWriterFactory<TCHAR, TCondensedJsonPrintPolicy<TCHAR> >::Create(&Payload);
+				JsonWriter->WriteObjectStart();
+				JsonWriter->WriteArrayStart(TEXT("Events"));
+				for (FAnalyticsEventEntry& Entry : CachedEvents)
 				{
-					// This is the default attributes, so update the array.
-					if (FlushedEvents.IsValid())
+					if (Entry.bIsDefaultAttributes)
 					{
-						CurrentDefaultAttributes = Entry.Attributes; // need to copy
-						FlushedEvents->Emplace(MoveTemp(Entry));
+						// This is the default attributes, so update the array.
+						if (FlushedEvents.IsValid())
+						{
+							CurrentDefaultAttributes = Entry.Attributes; // need to copy
+							FlushedEvents->Emplace(MoveTemp(Entry));
+						}
+						else
+						{
+							CurrentDefaultAttributes = MoveTemp(Entry.Attributes);
+						}
 					}
 					else
 					{
-						CurrentDefaultAttributes = MoveTemp(Entry.Attributes);
-					}
-				}
-				else
-				{
-					++EventCount;
+						++EventCount;
 
-					// event entry
-					JsonWriter->WriteObjectStart();
-					JsonWriter->WriteValue(TEXT("EventName"), Entry.EventName);
-					FString DateOffset = (CurrentTime - Entry.TimeStamp).ToString();
-					JsonWriter->WriteValue(TEXT("DateOffset"), DateOffset);
-					// default attributes for this event
-					for (const FAnalyticsEventAttribute& Attr : CurrentDefaultAttributes)
-					{
-						switch (Attr.AttrType)
-						{
-						case FAnalyticsEventAttribute::AttrTypeEnum::String:
-							JsonWriter->WriteValue(Attr.AttrName, Attr.AttrValueString);
-							break;
-						case FAnalyticsEventAttribute::AttrTypeEnum::Number:
-							JsonWriter->WriteValue(Attr.AttrName, Attr.ToString());
-							break;
-						case FAnalyticsEventAttribute::AttrTypeEnum::Boolean:
-							JsonWriter->WriteValue(Attr.AttrName, Attr.ToString());
-							break;
-						case FAnalyticsEventAttribute::AttrTypeEnum::JsonFragment:
-							JsonWriter->WriteRawJSONValue(Attr.AttrName, Attr.AttrValueString);
-							break;
-						}
-					}
-					// optional attributes for this event
-					if (!Entry.bIsJsonEvent)
-					{
-						for (const FAnalyticsEventAttribute& Attr : Entry.Attributes)
+						// event entry
+						JsonWriter->WriteObjectStart();
+						JsonWriter->WriteValue(TEXT("EventName"), Entry.EventName);
+						FString DateOffset = (CurrentTime - Entry.TimeStamp).ToString();
+						JsonWriter->WriteValue(TEXT("DateOffset"), DateOffset);
+						// default attributes for this event
+						for (const FAnalyticsEventAttribute& Attr : CurrentDefaultAttributes)
 						{
 							switch (Attr.AttrType)
 							{
@@ -615,29 +599,51 @@ void FAnalyticsProviderET::FlushEvents()
 							case FAnalyticsEventAttribute::AttrTypeEnum::JsonFragment:
 								JsonWriter->WriteRawJSONValue(Attr.AttrName, Attr.AttrValueString);
 								break;
+							}
 						}
-					}
-					}
-					else
-					{
-						for (const FAnalyticsEventAttribute& Attr : Entry.Attributes)
+						// optional attributes for this event
+						if (!Entry.bIsJsonEvent)
 						{
-							JsonWriter->WriteRawJSONValue(Attr.AttrName, Attr.AttrValueString);
+							for (const FAnalyticsEventAttribute& Attr : Entry.Attributes)
+							{
+								switch (Attr.AttrType)
+								{
+								case FAnalyticsEventAttribute::AttrTypeEnum::String:
+									JsonWriter->WriteValue(Attr.AttrName, Attr.AttrValueString);
+									break;
+								case FAnalyticsEventAttribute::AttrTypeEnum::Number:
+									JsonWriter->WriteValue(Attr.AttrName, Attr.ToString());
+									break;
+								case FAnalyticsEventAttribute::AttrTypeEnum::Boolean:
+									JsonWriter->WriteValue(Attr.AttrName, Attr.ToString());
+									break;
+								case FAnalyticsEventAttribute::AttrTypeEnum::JsonFragment:
+									JsonWriter->WriteRawJSONValue(Attr.AttrName, Attr.AttrValueString);
+									break;
+								}
+							}
 						}
-					}
-					JsonWriter->WriteObjectEnd();
+						else
+						{
+							for (const FAnalyticsEventAttribute& Attr : Entry.Attributes)
+							{
+								JsonWriter->WriteRawJSONValue(Attr.AttrName, Attr.AttrValueString);
+							}
+						}
+						JsonWriter->WriteObjectEnd();
 
-					// move the entry into the flushed
-					if (FlushedEvents.IsValid())
-					{
-						FlushedEvents->Emplace(MoveTemp(Entry));
+						// move the entry into the flushed
+						if (FlushedEvents.IsValid())
+						{
+							FlushedEvents->Emplace(MoveTemp(Entry));
+						}
 					}
 				}
-			}
 
-			JsonWriter->WriteArrayEnd();
-			JsonWriter->WriteObjectEnd();
-			JsonWriter->Close();
+				JsonWriter->WriteArrayEnd();
+				JsonWriter->WriteObjectEnd();
+				JsonWriter->Close();
+			}
 
 			// UrlEncode NOTE: need to concatenate everything
 			FString URLPath  = TEXT("datarouter/api/v1/public/data?SessionID=") + FPlatformHttp::UrlEncode(SessionID);
@@ -664,22 +670,26 @@ void FAnalyticsProviderET::FlushEvents()
 				UE_LOG(LogAnalytics, VeryVerbose, TEXT("%s"), *LogString);
 			}
 
-			// Create/send Http request for an event
-			TSharedRef<IHttpRequest> HttpRequest = CreateRequest();
-			HttpRequest->SetHeader(TEXT("Content-Type"), TEXT("application/json; charset=utf-8"));
-			HttpRequest->SetURL(APIServer / URLPath);
-			HttpRequest->SetVerb(TEXT("POST"));
-			HttpRequest->SetContentAsString(Payload);
-
-			// Don't set a response callback if we are in our destructor, as the instance will no longer be there to call.
-			if (!bInDestructor)
 			{
-				HttpRequest->OnProcessRequestComplete().BindSP(this, &FAnalyticsProviderET::EventRequestComplete, FlushedEvents);
+				QUICK_SCOPE_CYCLE_COUNTER(STAT_FlushEventsHttpRequest);
+				// Create/send Http request for an event
+				TSharedRef<IHttpRequest> HttpRequest = CreateRequest();
+				HttpRequest->SetHeader(TEXT("Content-Type"), TEXT("application/json; charset=utf-8"));
+				HttpRequest->SetURL(APIServer / URLPath);
+				HttpRequest->SetVerb(TEXT("POST"));
+				HttpRequest->SetContentAsString(Payload);
+
+				// Don't set a response callback if we are in our destructor, as the instance will no longer be there to call.
+				if (!bInDestructor)
+				{
+					HttpRequest->OnProcessRequestComplete().BindSP(this, &FAnalyticsProviderET::EventRequestComplete, FlushedEvents);
+				}
+				HttpRequest->ProcessRequest();
 			}
-			HttpRequest->ProcessRequest();
 		}
 		else
 		{
+			QUICK_SCOPE_CYCLE_COUNTER(STAT_FlushEventsLegacy);
 			// this is a legacy pathway that doesn't accept batch payloads of cached data. We'll just send one request for each event, which will be slow for a large batch of requests at once.
 			for (auto& Event : CachedEvents)
 			{
@@ -766,9 +776,30 @@ void FAnalyticsProviderET::SetAppID(FString&& InAppID)
 	}
 }
 
+void FAnalyticsProviderET::SetAppVersion(FString&& InAppVersion)
+{
+	// make sure to do the version replacement if the given string is parameterized.
+	InAppVersion = InAppVersion.IsEmpty()
+		? FString(FApp::GetBuildVersion())
+		: InAppVersion.Replace(TEXT("%VERSION%"), FApp::GetBuildVersion(), ESearchCase::CaseSensitive);
+
+	if (AppVersion != InAppVersion)
+	{
+		UE_LOG(LogAnalytics, Log, TEXT("[%s] Updating AppVersion to %s from old value of %s"), *APIKey, *InAppVersion, *AppVersion);
+		// Flush any cached events that would be using the old AppVersion.
+		FlushEvents();
+		AppVersion = MoveTemp(InAppVersion);
+	}
+}
+
 const FString& FAnalyticsProviderET::GetAppID() const
 {
 	return APIKey;
+}
+
+const FString& FAnalyticsProviderET::GetAppVersion() const
+{
+	return AppVersion;
 }
 
 void FAnalyticsProviderET::SetUserID(const FString& InUserID)

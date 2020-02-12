@@ -1,14 +1,21 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "Engine/RendererSettings.h"
 #include "PixelFormat.h"
+#include "RHI.h"
 
 #if WITH_EDITOR
 #include "Editor/EditorEngine.h"
+#include "Misc/MessageDialog.h"
+#include "UnrealEdMisc.h"
+#include "Misc/ConfigCacheIni.h"
+#include "HAL/PlatformFilemanager.h"
 
 /** The editor object. */
 extern UNREALED_API class UEditorEngine* GEditor;
 #endif // #if WITH_EDITOR
+
+#define LOCTEXT_NAMESPACE "RendererSettings"
 
 namespace EAlphaChannelMode
 {
@@ -60,11 +67,14 @@ URendererSettings::URendererSettings(const FObjectInitializer& ObjectInitializer
 	bSupportStationarySkylight = true;
 	bSupportPointLightWholeSceneShadows = true;
 	bSupportAtmosphericFog = true;
+	bSupportSkyAtmosphere = true;
 	bSupportSkinCacheShaders = false;
 	bSupportMaterialLayers = false;
 	GPUSimulationTextureSizeX = 1024;
 	GPUSimulationTextureSizeY = 1024;
 	bEnableRayTracing = 0;
+	bEnableRayTracingTextureLOD = 0;
+	bLPV = 1;
 }
 
 void URendererSettings::PostInitProperties()
@@ -79,11 +89,16 @@ void URendererSettings::PostInitProperties()
 		ImportConsoleVariableValues();
 	}
 #endif // #if WITH_EDITOR
-
-	ensureMsgf(!bEnableRayTracing || (bEnableRayTracing && bSupportSkinCacheShaders), TEXT("Raytracing enabled, but skin cache is not.  Disable raytracing, or enable r.SkinCache.CompileShaders"));
 }
 
 #if WITH_EDITOR
+void URendererSettings::PreEditChange(FProperty* PropertyAboutToChange)
+{
+	Super::PreEditChange(PropertyAboutToChange);
+
+	PreEditReflectionCaptureResolution = ReflectionCaptureResolution;
+}
+
 void URendererSettings::PostEditChangeProperty(FPropertyChangedEvent& PropertyChangedEvent)
 {
 	Super::PostEditChangeProperty(PropertyChangedEvent);
@@ -102,6 +117,59 @@ void URendererSettings::PostEditChangeProperty(FPropertyChangedEvent& PropertyCh
 			GPUSimulationTextureSizeY = FMath::RoundUpToPowerOfTwo( FMath::Clamp(GPUSimulationTextureSizeY, MinGPUSimTextureSize, MaxGPUSimTextureSize) );
 		}
 
+		if (PropertyChangedEvent.Property->GetFName() == GET_MEMBER_NAME_CHECKED(URendererSettings, bEnableRayTracing) 
+			&& bEnableRayTracing 
+			&& !bSupportSkinCacheShaders)
+		{
+			FString FullPath = FPaths::ConvertRelativePathToFull(GetDefaultConfigFilename());
+			FPlatformFileManager::Get().GetPlatformFile().SetReadOnly(*FullPath, false);
+
+			if (FMessageDialog::Open(EAppMsgType::YesNo, LOCTEXT("Skin Cache Disabled", "Ray Tracing requires enabling skin cache. Do you want to automatically enable skin cache now?")) == EAppReturnType::Yes)
+			{
+				bSupportSkinCacheShaders = 1;
+
+				for (TFieldIterator<FProperty> PropIt(GetClass()); PropIt; ++PropIt)
+				{
+					FProperty* Property = *PropIt;
+					if (Property->GetFName() == GET_MEMBER_NAME_CHECKED(URendererSettings, bSupportSkinCacheShaders))
+					{
+						UpdateSinglePropertyInConfigFile(Property, GetDefaultConfigFilename());
+					}
+				}
+			}
+			else
+			{
+				bEnableRayTracing = 0;
+
+				for (TFieldIterator<FProperty> PropIt(GetClass()); PropIt; ++PropIt)
+				{
+					FProperty* Property = *PropIt;
+					if (Property->GetFName() == GET_MEMBER_NAME_CHECKED(URendererSettings, bEnableRayTracing))
+					{
+						UpdateSinglePropertyInConfigFile(Property, GetDefaultConfigFilename());
+					}
+				}
+			}
+		}
+
+		if (PropertyChangedEvent.Property->GetFName() == GET_MEMBER_NAME_CHECKED(URendererSettings, VirtualTextureTileSize))
+		{
+			VirtualTextureTileSize = FMath::RoundUpToPowerOfTwo(VirtualTextureTileSize);
+		}
+
+		if (PropertyChangedEvent.Property->GetFName() == GET_MEMBER_NAME_CHECKED(URendererSettings, VirtualTextureTileBorderSize))
+		{
+			VirtualTextureTileBorderSize = FMath::RoundUpToPowerOfTwo(VirtualTextureTileBorderSize);
+		}
+
+		if ((PropertyChangedEvent.Property->GetFName() == GET_MEMBER_NAME_CHECKED(URendererSettings, bSupportSkyAtmosphere)))
+		{
+			if (!bSupportSkyAtmosphere)
+			{
+				bSupportSkyAtmosphereAffectsHeightFog = 0; // Always disable sky affecting height fog if sky is disabled.
+			}
+		}
+
 		ExportValuesToConsoleVariables(PropertyChangedEvent.Property);
 
 		if (PropertyChangedEvent.Property->GetFName() == GET_MEMBER_NAME_CHECKED(URendererSettings, ReflectionCaptureResolution) && 
@@ -112,20 +180,19 @@ void URendererSettings::PostEditChangeProperty(FPropertyChangedEvent& PropertyCh
 	}
 }
 
-bool URendererSettings::CanEditChange(const UProperty* InProperty) const
+bool URendererSettings::CanEditChange(const FProperty* InProperty) const
 {
 	const bool ParentVal = Super::CanEditChange(InProperty);
-
-	if ((InProperty->GetFName() == GET_MEMBER_NAME_CHECKED(URendererSettings, bEnableRayTracing)))
-	{
-		//only allow enabling raytracing if skin cache is on, but allow disable of raytracing no matter what.
-		return ParentVal && (bSupportSkinCacheShaders || bEnableRayTracing);
-	}
 
 	if ((InProperty->GetFName() == GET_MEMBER_NAME_CHECKED(URendererSettings, bSupportSkinCacheShaders)))
 	{
 		//only allow DISABLE of skincache shaders if raytracing is also disabled as skincache is a dependency of raytracing.
 		return ParentVal && (!bSupportSkinCacheShaders || !bEnableRayTracing);
+	}
+
+	if ((InProperty->GetFName() == GET_MEMBER_NAME_CHECKED(URendererSettings, bSupportSkyAtmosphereAffectsHeightFog)))
+	{
+		return ParentVal && bSupportSkyAtmosphere;
 	}
 
 	return ParentVal;
@@ -134,9 +201,45 @@ bool URendererSettings::CanEditChange(const UProperty* InProperty) const
 
 void URendererSettings::SanatizeReflectionCaptureResolution()
 {
-	static const int32 MaxReflectionCaptureResolution = 1024;
-	static const int32 MinReflectionCaptureResolution = 64;
-	ReflectionCaptureResolution = FMath::Clamp(int32(FMath::RoundUpToPowerOfTwo(ReflectionCaptureResolution)), MinReflectionCaptureResolution, MaxReflectionCaptureResolution);
+	const int32 MaxCubemapResolution = GetMaxCubeTextureDimension();
+	const int32 MinCubemapResolution = 8;
+
+	ReflectionCaptureResolution = FMath::Clamp(int32(FMath::RoundUpToPowerOfTwo(ReflectionCaptureResolution)), MinCubemapResolution, MaxCubemapResolution);
+
+#if WITH_EDITOR
+	if (FApp::CanEverRender() && !FApp::IsUnattended())
+	{
+		SIZE_T TexMemRequired = CalcTextureSize(ReflectionCaptureResolution, ReflectionCaptureResolution, PF_FloatRGBA, FMath::CeilLogTwo(ReflectionCaptureResolution) + 1) * CubeFace_MAX;
+
+		FTextureMemoryStats TextureMemStats;
+		RHIGetTextureMemoryStats(TextureMemStats);
+
+		if (TextureMemStats.DedicatedVideoMemory > 0 && TexMemRequired > SIZE_T(TextureMemStats.DedicatedVideoMemory / 8))
+		{
+			FNumberFormattingOptions FmtOpts = FNumberFormattingOptions()
+				.SetUseGrouping(false)
+				.SetMaximumFractionalDigits(2)
+				.SetMinimumFractionalDigits(0)
+				.SetRoundingMode(HalfFromZero);
+
+			EAppReturnType::Type Response = FPlatformMisc::MessageBoxExt(
+				EAppMsgType::YesNo,
+				*FText::Format(
+					LOCTEXT("MemAllocWarning_Message_ReflectionCubemap", "A resolution of {0} will require {1} of video memory PER reflection capture component. Are you sure?"),
+					FText::AsNumber(ReflectionCaptureResolution, &FmtOpts),
+					FText::AsMemory(TexMemRequired, &FmtOpts)
+				).ToString(),
+				*LOCTEXT("MemAllocWarning_Title_ReflectionCubemap", "Memory Allocation Warning").ToString()
+			);
+
+			if (Response == EAppReturnType::No)
+			{
+				ReflectionCaptureResolution = PreEditReflectionCaptureResolution;
+			}
+		}
+		PreEditReflectionCaptureResolution = ReflectionCaptureResolution;
+	}
+#endif // WITH_EDITOR
 }
 
 URendererOverrideSettings::URendererOverrideSettings(const FObjectInitializer& ObjectInitializer)
@@ -168,3 +271,5 @@ void URendererOverrideSettings::PostEditChangeProperty(FPropertyChangedEvent& Pr
 	}
 }
 #endif // #if WITH_EDITOR
+
+#undef LOCTEXT_NAMESPACE

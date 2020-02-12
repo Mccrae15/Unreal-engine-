@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -18,15 +18,11 @@
 #include "Components/SlateWrapperTypes.h"
 #include "Slate/WidgetTransform.h"
 #include "UObject/UObjectThreadContext.h"
-
-#if WITH_EDITOR
-// This violates IWYU, but the alternative is .cpp includes that are invariably not within #if WITH_EDITOR and cause non-editor build failures
-#include "Kismet2/CompilerResultsLog.h"
-#endif
+#include "GameFramework/PlayerController.h"
+#include "Blueprint/WidgetNavigation.h"
 
 #include "Widget.generated.h"
 
-class APlayerController;
 class ULocalPlayer;
 class SObjectWidget;
 class UPanelSlot;
@@ -173,16 +169,15 @@ namespace UMWidget
  * Flags used by the widget designer.
  */
 UENUM()
-namespace EWidgetDesignFlags
+enum class EWidgetDesignFlags : uint8
 {
-	enum Type
-	{
-		None				= 0,
-		Designing			= 1,
-		ShowOutline			= 2,
-		ExecutePreConstruct	= 4
-	};
-}
+	None				= 0,
+	Designing			= 1 << 0,
+	ShowOutline			= 1 << 1,
+	ExecutePreConstruct	= 1 << 2
+};
+
+ENUM_CLASS_FLAGS(EWidgetDesignFlags);
 
 
 #if WITH_EDITOR
@@ -210,6 +205,11 @@ public:
 #endif
 
 
+#ifndef WIDGET_INCLUDE_RELFECTION_METADATA
+	#define WIDGET_INCLUDE_RELFECTION_METADATA !UE_BUILD_SHIPPING
+#endif
+
+
 
 /**
  * This is the base class for all wrapped Slate controls that are exposed to UObjects.
@@ -221,7 +221,7 @@ class UMG_API UWidget : public UVisual
 
 public:
 
-	// Common Bindings - If you add any new common binding, you must provide a UPropertyBinder for it.
+	// Common Bindings - If you add any new common binding, you must provide a FPropertyBinder for it.
 	//                   all primitive binding in UMG goes through native binding evaluators to prevent
 	//                   thunking through the VM.
 	DECLARE_DYNAMIC_DELEGATE_RetVal(bool, FGetBool);
@@ -249,7 +249,7 @@ public:
 	/**
 	 * The parent slot of the UWidget.  Allows us to easily inline edit the layout controlling this widget.
 	 */
-	UPROPERTY(Instanced, EditAnywhere, BlueprintReadOnly, Category=Layout, meta=(ShowOnlyInnerProperties))
+	UPROPERTY(Instanced, TextExportTransient, EditAnywhere, BlueprintReadOnly, Category=Layout, meta=(ShowOnlyInnerProperties))
 	UPanelSlot* Slot;
 
 	/** A bindable delegate for bIsEnabled */
@@ -312,6 +312,57 @@ public:
 	/**  */
 	UPROPERTY(EditAnywhere, Category="Behavior", meta=(InlineEditConditionToggle))
 	uint8 bOverride_Cursor : 1;
+
+#if WITH_EDITORONLY_DATA
+	// These editor-only properties exist for two reasons:
+	//   1. To make details customization easier to write, specifically in regards to the binding extension widget
+	//   2. To allow subclasses to set their default values without having to subclass USlateAccessibleWidgetData
+	// Every time one of these properties changes, it's data is propagated to AccessibleWidgetData if it exists.
+	// The creations of AccessibleWidgetData is controlled by the details customization through a CheckBox.
+	// The reason this is set up like this is to reduce the memory footprint of UWidget since overriding the default
+	// accessibility rules for a particular widget will be relatively rare. In a shipped game, if no custom rules
+	// are defined, there will only be the memory cost of the UObject pointer.
+	//
+	// IMPORTANT: Any user-editable variables added to USlateAccessibleWidgetData should be duplicated here as well.
+	//            Additionally, its edit condition must be manually assigned in UMGDetailCustomizations.
+
+	/** Override all of the default accessibility behavior and text for this widget. */
+	UPROPERTY(EditAnywhere, Category="Accessibility")
+	uint8 bOverrideAccessibleDefaults : 1;
+
+	/** Whether or not children of this widget can appear as distinct accessible widgets. */
+	UPROPERTY(EditAnywhere, Category="Accessibility", meta=(EditCondition="bOverrideAccessibleDefaults"))
+	uint8 bCanChildrenBeAccessible : 1;
+
+	/** Whether or not the widget is accessible, and how to describe it. If set to custom, additional customization options will appear. */
+	UPROPERTY(EditAnywhere, Category="Accessibility", meta=(EditCondition="bOverrideAccessibleDefaults"))
+	ESlateAccessibleBehavior AccessibleBehavior;
+
+	/** How to describe this widget when it's being presented through a summary of a parent widget. If set to custom, additional customization options will appear. */
+	UPROPERTY(EditAnywhere, Category="Accessibility", AdvancedDisplay, meta=(EditCondition="bOverrideAccessibleDefaults"))
+	ESlateAccessibleBehavior AccessibleSummaryBehavior;
+
+	/** When AccessibleBehavior is set to Custom, this is the text that will be used to describe the widget. */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category="Accessibility", meta=(MultiLine=true))
+	FText AccessibleText;
+
+	/** An optional delegate that may be assigned in place of AccessibleText for creating a TAttribute */
+	UPROPERTY()
+	USlateAccessibleWidgetData::FGetText AccessibleTextDelegate;
+
+	/** When AccessibleSummaryBehavior is set to Custom, this is the text that will be used to describe the widget. */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category="Accessibility", meta=(MultiLine=true), AdvancedDisplay)
+	FText AccessibleSummaryText;
+
+	/** An optional delegate that may be assigned in place of AccessibleSummaryText for creating a TAttribute */
+	UPROPERTY()
+	USlateAccessibleWidgetData::FGetText AccessibleSummaryTextDelegate;
+#endif
+
+private:
+	/** A custom set of accessibility rules for this widget. If null, default rules for the widget are used. */
+	UPROPERTY(Instanced)
+	USlateAccessibleWidgetData* AccessibleWidgetData;
 
 protected:
 
@@ -400,8 +451,10 @@ public:
 
 #endif
 
+#if !UE_BUILD_SHIPPING
 	/** Stores a reference to the class responsible for this widgets construction. */
 	TWeakObjectPtr<UClass> WidgetGeneratedByClass;
+#endif
 
 public:
 
@@ -419,7 +472,11 @@ public:
 
 	/** */
 	UFUNCTION(BlueprintCallable, Category="Widget|Transform")
-	void SetRenderAngle(float Angle);
+	void SetRenderTransformAngle(float Angle);
+	
+	/** */
+	UFUNCTION(BlueprintCallable, Category = "Widget|Transform")
+	float GetRenderTransformAngle() const;
 	
 	/** */
 	UFUNCTION(BlueprintCallable, Category="Widget|Transform")
@@ -533,13 +590,17 @@ public:
 	UFUNCTION(BlueprintCallable, Category="Widget")
 	bool HasUserFocusedDescendants(APlayerController* PlayerController) const;
 	
-	/** Sets the focus to this widget for a specific user */
+	/** Sets the focus to this widget for the owning user */
+	UFUNCTION(BlueprintCallable, Category="Widget")
+	void SetFocus();
+
+	/** Sets the focus to this widget for a specific user (if setting focus for the owning user, prefer SetFocus()) */
 	UFUNCTION(BlueprintCallable, Category="Widget")
 	void SetUserFocus(APlayerController* PlayerController);
 
 	/**
 	 * Forces a pre-pass.  A pre-pass caches the desired size of the widget hierarchy owned by this widget.  
-	 * One pre-pass is already happens for every widget before Tick occurs.  You only need to perform another 
+	 * One pre-pass already happens for every widget before Tick occurs.  You only need to perform another 
 	 * pre-pass if you are adding child widgets this frame and want them to immediately be visible this frame.
 	 */
 	UFUNCTION(BlueprintCallable, Category="Widget")
@@ -576,8 +637,41 @@ public:
 	 *	@param Rule The rule to use when navigation is taking place
 	 *	@param WidgetToFocus When using the Explicit rule, focus on this widget
 	 */
+	UE_DEPRECATED(4.23, "SetNavigationRule is deprecated. Please use either SetNavigationRuleBase or SetNavigationRuleExplicit or SetNavigationRuleCustom or SetNavigationRuleCustomBoundary.")
 	UFUNCTION(BlueprintCallable, Category = "Widget")
 	void SetNavigationRule(EUINavigation Direction, EUINavigationRule Rule, FName WidgetToFocus);
+
+	/**
+	 *	Sets the widget navigation rules for a specific direction. This can only be called on widgets that are in a widget tree. This works only for non Explicit, non Custom and non CustomBoundary Rules.
+	 *	@param Direction
+	 *	@param Rule The rule to use when navigation is taking place
+	 */
+	UFUNCTION(BlueprintCallable, Category = "Widget")
+	void SetNavigationRuleBase(EUINavigation Direction, EUINavigationRule Rule);
+
+	/**
+	 *	Sets the widget navigation rules for a specific direction. This can only be called on widgets that are in a widget tree. This works only for Explicit Rule.
+	 *	@param Direction
+	 *	@param InWidget Focus on this widget instance
+	 */
+	UFUNCTION(BlueprintCallable, Category = "Widget")
+	void SetNavigationRuleExplicit(EUINavigation Direction, UWidget* InWidget);
+
+	/**
+	 *	Sets the widget navigation rules for a specific direction. This can only be called on widgets that are in a widget tree. This works only for Custom Rule.
+	 *	@param Direction
+	 *	@param InCustomDelegate Custom Delegate that will be called
+	 */
+	UFUNCTION(BlueprintCallable, Category = "Widget")
+	void SetNavigationRuleCustom(EUINavigation Direction, FCustomWidgetNavigationDelegate InCustomDelegate);
+
+	/**
+	 *	Sets the widget navigation rules for a specific direction. This can only be called on widgets that are in a widget tree. This works only for CustomBoundary Rule.
+	 *	@param Direction
+	 *	@param InCustomDelegate Custom Delegate that will be called
+	 */
+	UFUNCTION(BlueprintCallable, Category = "Widget")
+	void SetNavigationRuleCustomBoundary(EUINavigation Direction, FCustomWidgetNavigationDelegate InCustomDelegate);
 
 	/** Gets the parent widget */
 	UFUNCTION(BlueprintCallable, Category="Widget")
@@ -602,6 +696,11 @@ public:
 	UFUNCTION(BlueprintCallable, Category="Widget")
 	const FGeometry& GetCachedGeometry() const;
 
+	UFUNCTION(BlueprintCallable, Category="Widget")
+	const FGeometry& GetTickSpaceGeometry() const;
+
+	UFUNCTION(BlueprintCallable, Category="Widget")
+	const FGeometry& GetPaintSpaceGeometry() const;
 	/**
 	 * Gets the underlying slate widget or constructs it if it doesn't exist.  If you're looking to replace
 	 * what slate widget gets constructed look for RebuildWidget.  For extremely special cases where you actually
@@ -673,11 +772,31 @@ public:
 	virtual APlayerController* GetOwningPlayer() const;
 
 	/**
+	 * Gets the player controller associated with this UI cast to the template type.
+	 * @return The player controller that owns the UI. May be NULL if the cast fails.
+	 */
+	template <class TPlayerController = APlayerController >
+	TPlayerController* GetOwningPlayer() const
+	{
+		return Cast<TPlayerController>(GetOwningPlayer());
+	}
+
+	/**
 	 * Gets the local player associated with this UI.
 	 * @return The owning local player.
 	 */
 	UFUNCTION(BlueprintCallable, BlueprintCosmetic, Category = "Widget")
 	virtual ULocalPlayer* GetOwningLocalPlayer() const;
+	
+	/**
+	 * Gets the local player associated with this UI cast to the template type.
+	 * @return The owning local player. May be NULL if the cast fails.
+	 */
+	template < class T >
+	T* GetOwningLocalPlayer() const
+	{
+		return Cast<T>(GetOwningLocalPlayer());
+	}
 
 	/**
 	 * Applies all properties to the native widget if possible.  This is called after a widget is constructed.
@@ -701,18 +820,18 @@ public:
 	}
 
 	/** Sets the designer flags on the widget. */
-	virtual void SetDesignerFlags(EWidgetDesignFlags::Type NewFlags);
+	virtual void SetDesignerFlags(EWidgetDesignFlags NewFlags);
 
 	/** Gets the designer flags currently set on the widget. */
-	FORCEINLINE EWidgetDesignFlags::Type GetDesignerFlags() const
+	FORCEINLINE EWidgetDesignFlags GetDesignerFlags() const
 	{
-		return DesignerFlags;
+		return static_cast<EWidgetDesignFlags>(DesignerFlags);
 	}
 
 	/** Tests if any of the flags exist on this widget. */
-	FORCEINLINE bool HasAnyDesignerFlags(EWidgetDesignFlags::Type FlagToCheck) const
+	FORCEINLINE bool HasAnyDesignerFlags(EWidgetDesignFlags FlagsToCheck) const
 	{
-		return ( DesignerFlags&FlagToCheck ) != 0;
+		return EnumHasAnyFlags(GetDesignerFlags(), FlagsToCheck);
 	}
 
 	/** Returns the friendly name of the widget to display in the editor */
@@ -736,13 +855,13 @@ public:
 	 * To trigger compilation failure, add an error to the log. Warnings and notes will be visible, but will not cause compiles to fail.
 	 */
 	virtual void ValidateCompiledDefaults(class IWidgetCompilerLog& CompileLog) const {}
+
+	/** Mark this object as modified, also mark the slot as modified. */
+	virtual bool Modify(bool bAlwaysMarkDirty = true) override;
 #else
 	FORCEINLINE bool IsDesignTime() const { return false; }
 #endif
 	
-	/** Mark this object as modified, also mark the slot as modified. */
-	virtual bool Modify(bool bAlwaysMarkDirty = true) override;
-
 	/**
 	 * Recurses up the list of parents and returns true if this widget is a descendant of the PossibleParent
 	 * @return true if this widget is a child of the PossibleParent
@@ -750,13 +869,15 @@ public:
 	bool IsChildOf(UWidget* PossibleParent);
 
 	/**  */
-	bool AddBinding(UDelegateProperty* DelegateProperty, UObject* SourceObject, const FDynamicPropertyPath& BindingPath);
+	bool AddBinding(FDelegateProperty* DelegateProperty, UObject* SourceObject, const FDynamicPropertyPath& BindingPath);
 
-	static TSubclassOf<UPropertyBinding> FindBinderClassForDestination(UProperty* Property);
+	static TSubclassOf<UPropertyBinding> FindBinderClassForDestination(FProperty* Property);
 
 	// Begin UObject
 	virtual UWorld* GetWorld() const override;
 	virtual void FinishDestroy() override;
+	virtual bool IsDestructionThreadSafe() const override { return false; }
+	virtual void PreSave(const class ITargetPlatform* TargetPlatform) override;
 	// End UObject
 
 	FORCEINLINE bool CanSafelyRouteEvent()
@@ -878,6 +999,9 @@ protected:
 	/** Gets the base name used to generate the display label/name of this widget. */
 	FText GetDisplayNameBase() const;
 
+	/** Copy all accessible properties to the AccessibleWidgetData object */
+	void SynchronizeAccessibleData();
+
 protected:
 	//TODO UMG Consider moving conversion functions into another class.
 	// Conversion functions
@@ -897,7 +1021,12 @@ protected:
 		return FSlateColor(InLinearColor.Get());
 	}
 
-	void SetNavigationRuleInternal(EUINavigation Direction, EUINavigationRule Rule, FName WidgetToFocus);
+	void SetNavigationRuleInternal(EUINavigation Direction, EUINavigationRule Rule, FName WidgetToFocus = NAME_None, UWidget* InWidget = nullptr, FCustomWidgetNavigationDelegate InCustomDelegate = FCustomWidgetNavigationDelegate());
+
+#if WITH_ACCESSIBILITY
+	/** Gets the widget that accessibility properties should synchronize to. */
+	virtual TSharedPtr<SWidget> GetAccessibleWidget() const;
+#endif
 
 protected:
 	/** The underlying SWidget. */
@@ -917,7 +1046,7 @@ private:
 #if WITH_EDITORONLY_DATA
 	/** Any flags used by the designer at edit time. */
 	UPROPERTY(Transient)
-	TEnumAsByte<EWidgetDesignFlags::Type> DesignerFlags;
+	uint8 DesignerFlags;
 
 	/** The friendly name for this widget displayed in the designer and BP graph. */
 	UPROPERTY()
@@ -945,4 +1074,8 @@ private:
 private:
 	PROPERTY_BINDING_IMPLEMENTATION(FText, ToolTipText);
 	PROPERTY_BINDING_IMPLEMENTATION(bool, bIsEnabled);
+#if WITH_EDITORONLY_DATA
+	PROPERTY_BINDING_IMPLEMENTATION(FText, AccessibleText);
+	PROPERTY_BINDING_IMPLEMENTATION(FText, AccessibleSummaryText);
+#endif
 };

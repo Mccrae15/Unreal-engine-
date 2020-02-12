@@ -1,6 +1,8 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
+
+#include "../HAL/PreprocessorHelpers.h"
 
 
 // This file is included in some resource files, which issue a warning:
@@ -54,9 +56,9 @@
 #define RETURN_VAL_IF_EXIT_REQUESTED(x)
 
 #if CHECK_PUREVIRTUALS
-#define PURE_VIRTUAL(func,extra) =0;
+#define PURE_VIRTUAL(func,...) =0;
 #else
-#define PURE_VIRTUAL(func,extra) { LowLevelFatalError(TEXT("Pure virtual not implemented (%s)"), TEXT(#func)); extra }
+#define PURE_VIRTUAL(func,...) { LowLevelFatalError(TEXT("Pure virtual not implemented (%s)"), TEXT(#func)); __VA_ARGS__ }
 #endif
 
 
@@ -108,30 +110,14 @@ enum EForceInit
 	ForceInitToZero
 };
 enum ENoInit {NoInit};
+enum EInPlace {InPlace};
 
 // Handle type to stably track users on a specific platform
 typedef int32 FPlatformUserId;
 const FPlatformUserId PLATFORMUSERID_NONE = INDEX_NONE;
 #endif // RC_INVOKED
 
-// Turns an preprocessor token into a real string (see UBT_COMPILED_PLATFORM)
-#define PREPROCESSOR_TO_STRING(x) PREPROCESSOR_TO_STRING_INNER(x)
-#define PREPROCESSOR_TO_STRING_INNER(x) #x
 
-// Concatenates two preprocessor tokens, performing macro expansion on them first
-#define PREPROCESSOR_JOIN(x, y) PREPROCESSOR_JOIN_INNER(x, y)
-#define PREPROCESSOR_JOIN_INNER(x, y) x##y
-
-// Expands to the second argument or the third argument if the first argument is 1 or 0 respectively
-#define PREPROCESSOR_IF(cond, x, y) PREPROCESSOR_JOIN(PREPROCESSOR_IF_INNER_, cond)(x, y)
-#define PREPROCESSOR_IF_INNER_1(x, y) x
-#define PREPROCESSOR_IF_INNER_0(x, y) y
-
-// Expands to the parameter list of the macro - used for when you need to pass a comma-separated identifier to another macro as a single parameter
-#define PREPROCESSOR_COMMA_SEPARATED(first, second, ...) first, second, ##__VA_ARGS__
-
-// Expands to nothing - used as a placeholder
-#define PREPROCESSOR_NOTHING
 
 // When passed to pragma message will result in clickable warning in VS
 #define WARNING_LOCATION(Line) __FILE__ "(" PREPROCESSOR_TO_STRING(Line) ")"
@@ -259,6 +245,12 @@ struct TStaticDeprecateExpression
 		static constexpr int condition(TStaticDeprecateExpression<false>) { return 1; } \
 	}; \
 	enum class PREPROCESSOR_JOIN(EDeprecationMsg_, __LINE__) { Value = PREPROCESSOR_JOIN(FDeprecationMsg_, __LINE__)::condition(TStaticDeprecateExpression<!!(bExpression)>()) }
+
+// These defines are used to mark a difference between two pointers as expected to fit into the specified range
+// while still leaving something searchable if the surrounding code is updated to work with a 64 bit count/range
+// in the future
+#define UE_PTRDIFF_TO_INT32(argument) static_cast<int32>(argument)
+#define UE_PTRDIFF_TO_UINT32(argument) static_cast<uint32>(argument)
 
 /**
 * Makes a type non-copyable and non-movable by deleting copy/move constructors and assignment/move operators.

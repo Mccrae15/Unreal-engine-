@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -21,6 +21,3 @@ MONOLITHIC_HEADER_BOILERPLATE()
 #include "GraphEditorDragDropAction.h"
 #include "DragConnection.h"
 #include "DragNode.h"
-
-#include "AnimGraphDefinitions.h"
-

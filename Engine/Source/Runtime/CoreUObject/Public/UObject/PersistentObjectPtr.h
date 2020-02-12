@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 /*=============================================================================
 	PersistentObjectPtr.h: Template that is a base class for Lazy and Asset pointers
@@ -36,12 +36,6 @@ public:
 	{
 		WeakPtr.Reset();
 		TagAtLastTest = 0;
-	}
-
-	/** Construct from another pointer of the same type */
-	FORCEINLINE TPersistentObjectPtr(const TPersistentObjectPtr& Other)
-	{
-		(*this)=Other;
 	}
 
 	/** Construct from a unique object identifier */
@@ -83,15 +77,6 @@ public:
 		*this = Object;
 	}
 
-	/** Construct from another pointer */
-	FORCEINLINE void operator=(const TPersistentObjectPtr<TObjectID>& Other)
-	{
-		WeakPtr = Other.WeakPtr;
-		TagAtLastTest = Other.TagAtLastTest;
-		ObjectID = Other.ObjectID;
-
-	}
-	
 	/**
 	 * Gets the unique object identifier associated with this lazy pointer. Valid even if pointer is not currently valid
 	 *
@@ -116,7 +101,9 @@ public:
 	FORCEINLINE UObject* Get() const
 	{
 		UObject* Object = WeakPtr.Get();
-		if (!Object && TObjectID::GetCurrentTag() != TagAtLastTest && ObjectID.IsValid())
+		
+		// Do a full resolve if the returned object is null and either we think we've loaded new objects, or the weak ptr may be stale
+		if (!Object && ObjectID.IsValid() && (TObjectID::GetCurrentTag() != TagAtLastTest || !WeakPtr.IsExplicitlyNull()))
 		{
 			Object = ObjectID.ResolveObject();
 			WeakPtr = Object;

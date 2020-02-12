@@ -1,4 +1,5 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
+#pragma once
 
 #if !PLATFORM_LUMINGL4
 
@@ -34,6 +35,24 @@ typedef khronos_uint64_t GLuint64;
 #ifndef GL_HALF_FLOAT
 #define GL_HALF_FLOAT	GL_HALF_FLOAT_OES
 #endif
+
+
+#ifndef GL_TEXTURE_1D
+#define GL_TEXTURE_1D			0x0DE0
+#endif
+
+#ifndef GL_TEXTURE_1D_ARRAY
+#define GL_TEXTURE_1D_ARRAY		0x8C18
+#endif
+
+#ifndef GL_TEXTURE_2D_ARRAY
+#define GL_TEXTURE_2D_ARRAY		0x8C1A
+#endif
+
+#ifndef GL_TEXTURE_RECTANGLE
+#define GL_TEXTURE_RECTANGLE	0x84F5
+#endif
+
 
 #define GL_COMPRESSED_RGB8_ETC2           0x9274
 #define GL_COMPRESSED_SRGB8_ETC2          0x9275
@@ -121,6 +140,7 @@ namespace GL_EXT
 	extern PFNGLVERTEXATTRIBDIVISORPROC		glVertexAttribDivisor;
 
 	extern PFNGLTEXBUFFEREXTPROC			glTexBufferEXT;
+	extern PFNGLTEXBUFFERRANGEEXTPROC		glTexBufferRangeEXT;
 	extern PFNGLUNIFORM4UIVPROC				glUniform4uiv;
 	extern PFNGLCLEARBUFFERFIPROC			glClearBufferfi;
 	extern PFNGLCLEARBUFFERFVPROC			glClearBufferfv;
@@ -149,6 +169,11 @@ namespace GL_EXT
 	extern PFNEGLCREATESYNCKHRPROC eglCreateSyncKHR;
 	extern PFNEGLDESTROYSYNCKHRPROC eglDestroySyncKHR;
 	extern PFNEGLCLIENTWAITSYNCKHRPROC eglClientWaitSyncKHR;
+
+	extern PFNEGLCREATEIMAGEKHRPROC eglCreateImageKHR;
+	extern PFNEGLDESTROYIMAGEKHRPROC eglDestroyImageKHR;
+
+	extern PFNGLEGLIMAGETARGETTEXTURE2DOESPROC glEGLImageTargetTexture2DOES;
 
 	extern PFNGLREADBUFFERPROC glReadBuffer;
 }
@@ -268,22 +293,17 @@ struct FLuminOpenGL : public FOpenGLES2
 
 	static FORCEINLINE void DrawArraysInstanced(GLenum Mode, GLint First, GLsizei Count, GLsizei InstanceCount)
 	{
-		check(SupportsInstancing());
 		glDrawArraysInstanced(Mode, First, Count, InstanceCount);
 	}
 
 	static FORCEINLINE void DrawElementsInstanced(GLenum Mode, GLsizei Count, GLenum Type, const GLvoid* Indices, GLsizei InstanceCount)
 	{
-		check(SupportsInstancing());
 		glDrawElementsInstanced(Mode, Count, Type, Indices, InstanceCount);
 	}
 
 	static FORCEINLINE void VertexAttribDivisor(GLuint Index, GLuint Divisor)
 	{
-		if (SupportsInstancing())
-		{
-			glVertexAttribDivisor(Index, Divisor);
-		}
+		glVertexAttribDivisor(Index, Divisor);
 	}
 	
 	static FORCEINLINE void TexStorage3D(GLenum Target, GLint Levels, GLint InternalFormat, GLsizei Width, GLsizei Height, GLsizei Depth, GLenum Format, GLenum Type)
@@ -323,6 +343,11 @@ struct FLuminOpenGL : public FOpenGLES2
 		glTexSubImage3D(Target, Level, XOffset, YOffset, ZOffset, Width, Height, Depth, Format, Type, PixelData);
 	}
 
+	static FORCEINLINE void	CopyTexSubImage2D(GLenum Target, GLint Level, GLint XOffset, GLint YOffset, GLint X, GLint Y, GLsizei Width, GLsizei Height)
+	{
+		glCopyTexSubImage2D(Target, Level, XOffset, YOffset, X, Y, Width, Height);
+	}
+
 	static FORCEINLINE void	CopyTexSubImage3D(GLenum Target, GLint Level, GLint XOffset, GLint YOffset, GLint ZOffset, GLint X, GLint Y, GLsizei Width, GLsizei Height)
 	{
 		glCopyTexSubImage3D(Target, Level, XOffset, YOffset, ZOffset, X, Y, Width, Height);
@@ -359,6 +384,11 @@ struct FLuminOpenGL : public FOpenGLES2
 		glTexBufferEXT(Target, InternalFormat, Buffer);
 	}
 
+	static FORCEINLINE void TexBufferRange(GLenum Target, GLenum InternalFormat, GLuint Buffer, GLintptr Offset, GLsizeiptr Size)
+	{
+		glTexBufferRangeEXT(Target, InternalFormat, Buffer, Offset, Size);
+	}
+
 	static FORCEINLINE void ProgramUniform4uiv(GLuint Program, GLint Location, GLsizei Count, const GLuint *Value)
 	{
 		glUniform4uiv(Location, Count, Value);
@@ -392,11 +422,14 @@ struct FLuminOpenGL : public FOpenGLES2
 		glFramebufferTextureLayer(Target, Attachment, Texture, Level, Layer);
 	}
 
+	static FORCEINLINE void	CopyTexSubImage1D(GLenum Target, GLint Level, GLint XOffset, GLint X, GLint Y, GLsizei Width)
+	{
+	}
+
 	// Android ES2 shaders have code that allows compile selection of
 	// 32 bpp HDR encoding mode via 'intrinsic_GetHDR32bppEncodeModeES2()'.
 	static FORCEINLINE bool SupportsHDR32bppEncodeModeIntrinsic()		{ return true; }
 
-	static FORCEINLINE bool SupportsInstancing()						{ return bSupportsInstancing; }
 	static FORCEINLINE bool SupportsDrawBuffers()						{ return bES30Support; }
 	// MRT triggers black rendering for the SensoryWare plugin. Turn it off for now.
 	static FORCEINLINE bool SupportsMultipleRenderTargets()				{ return false; }
@@ -437,9 +470,6 @@ struct FLuminOpenGL : public FOpenGLES2
 
 	// whether device supports ES 3.1
 	static bool bES31Support;
-
-	// whether device supports hardware instancing
-	static bool bSupportsInstancing;
 
 	/** Whether device supports Hidden Surface Removal */
 	static bool bHasHardwareHiddenSurfaceRemoval;

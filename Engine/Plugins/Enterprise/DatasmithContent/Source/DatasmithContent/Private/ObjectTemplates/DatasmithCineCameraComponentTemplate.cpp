@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "ObjectTemplates/DatasmithCineCameraComponentTemplate.h"
 
@@ -147,29 +147,29 @@ bool FDatasmithCameraFocusSettingsTemplate::Equals( const FDatasmithCameraFocusS
 	return bEquals;
 }
 
-void UDatasmithCineCameraComponentTemplate::Apply( UObject* Destination, bool bForce )
+UObject* UDatasmithCineCameraComponentTemplate::UpdateObject( UObject* Destination, bool bForce )
 {
-#if WITH_EDITORONLY_DATA
 	UCineCameraComponent* CineCameraComponent = Cast< UCineCameraComponent >( Destination );
 
 	if ( !CineCameraComponent )
 	{
-		return;
+		return nullptr;
 	}
 
+#if WITH_EDITORONLY_DATA
 	UDatasmithCineCameraComponentTemplate* PreviousTemplate = !bForce ? FDatasmithObjectTemplateUtils::GetObjectTemplate< UDatasmithCineCameraComponentTemplate >( Destination ) : nullptr;
 
 	DATASMITHOBJECTTEMPLATE_CONDITIONALSET( CurrentFocalLength, CineCameraComponent, PreviousTemplate );
 	DATASMITHOBJECTTEMPLATE_CONDITIONALSET( CurrentAperture, CineCameraComponent, PreviousTemplate );
 
-	FilmbackSettings.Apply( &CineCameraComponent->FilmbackSettings, PreviousTemplate ? &PreviousTemplate->FilmbackSettings : nullptr );
+	FilmbackSettings.Apply( &CineCameraComponent->Filmback, PreviousTemplate ? &PreviousTemplate->FilmbackSettings : nullptr );
 	LensSettings.Apply( &CineCameraComponent->LensSettings, PreviousTemplate ? &PreviousTemplate->LensSettings : nullptr );
 	FocusSettings.Apply( &CineCameraComponent->FocusSettings, PreviousTemplate ? &PreviousTemplate->FocusSettings : nullptr );
 
 	PostProcessSettings.Apply( &CineCameraComponent->PostProcessSettings, PreviousTemplate ? &PreviousTemplate->PostProcessSettings : nullptr );
-
-	FDatasmithObjectTemplateUtils::SetObjectTemplate( Destination, this );
 #endif // #if WITH_EDITORONLY_DATA
+
+	return Destination;
 }
 
 void UDatasmithCineCameraComponentTemplate::Load( const UObject* Source )
@@ -185,7 +185,7 @@ void UDatasmithCineCameraComponentTemplate::Load( const UObject* Source )
 	CurrentFocalLength = CineCameraComponent->CurrentFocalLength;
 	CurrentAperture = CineCameraComponent->CurrentAperture;
 
-	FilmbackSettings.Load( CineCameraComponent->FilmbackSettings );
+	FilmbackSettings.Load( CineCameraComponent->Filmback );
 	LensSettings.Load( CineCameraComponent->LensSettings );
 	FocusSettings.Load( CineCameraComponent->FocusSettings );
 

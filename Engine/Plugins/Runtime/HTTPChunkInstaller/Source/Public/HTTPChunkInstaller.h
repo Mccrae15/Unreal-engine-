@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -17,8 +17,6 @@ class HTTPCHUNKINSTALLER_API FHTTPChunkInstall : public FGenericPlatformChunkIns
 public:
 	FHTTPChunkInstall();
 	~FHTTPChunkInstall();
-
-	virtual EChunkLocation::Type GetChunkLocation( uint32 ChunkID ) override;
 
 	virtual bool GetProgressReportingTypeSupported(EChunkProgressReportingType::Type ReportType) override
 	{
@@ -80,7 +78,9 @@ private:
 	bool BuildChunkFolderName(IBuildManifestRef Manifest, FString& ChunkFdrName, FString& ManifestName, uint32& ChunkID, bool& bIsPatch);
 	void OSSEnumerateFilesComplete(bool bSuccess);
 	void OSSReadFileComplete(bool bSuccess, const FString& Filename);
-	void OSSInstallComplete(bool, IBuildManifestRef);
+	void OSSInstallComplete(const IBuildInstallerRef& Installer);
+
+	virtual EChunkLocation::Type GetChunkLocation(uint32 ChunkID) override;
 
 	DECLARE_MULTICAST_DELEGATE_OneParam(FPlatformChunkInstallCompleteMultiDelegate, uint32);
 

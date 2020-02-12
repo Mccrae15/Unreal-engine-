@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -6,6 +6,7 @@
 #include "AnimNodes/AnimNode_SequenceEvaluator.h"
 #include "AnimNodes/AnimNode_ApplyAdditive.h"
 #include "AnimNodes/AnimNode_MultiWayBlend.h"
+#include "AnimNodes/AnimNode_PoseSnapshot.h"
 #include "AnimSequencerInstanceProxy.generated.h"
 
 /** Base class for all 'players' that can attach to and be blended into a sequencer instance's output */
@@ -78,13 +79,17 @@ public:
 	// FAnimInstanceProxy interface
 	virtual void Initialize(UAnimInstance* InAnimInstance) override;
 	virtual bool Evaluate(FPoseContext& Output) override;
-	virtual void UpdateAnimationNode(float DeltaSeconds) override;
+	virtual void UpdateAnimationNode(const FAnimationUpdateContext& InContext) override;
 
 	/** Update an animation sequence player in this instance */
 	void UpdateAnimTrack(UAnimSequenceBase* InAnimSequence, uint32 SequenceId, float InPosition, float Weight, bool bFireNotifies);
+	void UpdateAnimTrack(UAnimSequenceBase* InAnimSequence, uint32 SequenceId, TOptional<float> InFromPosition, float InToPosition, float Weight, bool bFireNotifies);
 
 	/** Reset all nodes in this instance */
 	virtual void ResetNodes();
+
+	/** Reset the pose in this instance*/
+	virtual void ResetPose();
 
 protected:
 	/** Find a player of a specified type */
@@ -107,6 +112,7 @@ protected:
 	struct FAnimNode_ApplyAdditive SequencerRootNode;
 	struct FAnimNode_MultiWayBlend FullBodyBlendNode;
 	struct FAnimNode_MultiWayBlend AdditiveBlendNode;
+	struct FAnimNode_PoseSnapshot  SnapshotNode;
 
 	/** mapping from sequencer index to internal player index */
 	TMap<uint32, FSequencerPlayerBase*> SequencerToPlayerMap;

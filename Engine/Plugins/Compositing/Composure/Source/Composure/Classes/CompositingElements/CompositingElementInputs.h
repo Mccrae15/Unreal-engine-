@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -77,6 +77,8 @@ class COMPOSURE_API UMediaTextureCompositingInput : public UCompositingMediaInpu
 	GENERATED_BODY()
 
 public:
+	UMediaTextureCompositingInput();
+
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Compositing Pass", meta = (DisplayAfter = "PassName", EditCondition = "bEnabled"))
 	UMediaTexture* MediaSource;
 

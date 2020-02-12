@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "Kismet/KismetStringLibrary.h"
 
@@ -46,6 +46,11 @@ int32 UKismetStringLibrary::Len(const FString& S)
 	return S.Len();
 }
 
+bool UKismetStringLibrary::IsEmpty(const FString& InString)
+{
+	return InString.IsEmpty();
+}
+
 FString UKismetStringLibrary::Conv_FloatToString(float InFloat)
 {
 	return FString::SanitizeFloat(InFloat);
@@ -76,6 +81,11 @@ FString UKismetStringLibrary::Conv_IntVectorToString(FIntVector InIntVec)
 	return InIntVec.ToString();
 }
 
+FString UKismetStringLibrary::Conv_IntPointToString(FIntPoint InIntPoint)
+{
+	return InIntPoint.ToString();
+}
+
 FString UKismetStringLibrary::Conv_Vector2dToString(FVector2D InVec)
 {
 	return InVec.ToString();	
@@ -104,6 +114,11 @@ FString UKismetStringLibrary::Conv_ColorToString(FLinearColor C)
 FString UKismetStringLibrary::Conv_NameToString(FName InName)
 {
 	return InName.ToString();
+}
+
+FString UKismetStringLibrary::Conv_MatrixToString(const FMatrix& InMatrix)
+{
+	return InMatrix.ToString();
 }
 
 FName UKismetStringLibrary::Conv_StringToName(const FString& InString)

@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -64,7 +64,10 @@ struct FStructVariableDescription
 	uint8 bInvalidMember:1;
 
 	UPROPERTY()
-	uint8 bDontEditoOnInstance:1;
+	uint8 bDontEditOnInstance:1;
+
+	UPROPERTY()
+	uint8 bEnableSaveGame : 1;
 
 	UPROPERTY()
 	uint8 bEnableMultiLineText:1;
@@ -92,7 +95,8 @@ struct FStructVariableDescription
 		, bIsSet_DEPRECATED(false)
 		, bIsMap_DEPRECATED(false)
 		, bInvalidMember(false)
-		, bDontEditoOnInstance(false)
+		, bDontEditOnInstance(false)
+		, bEnableSaveGame(false)
 		, bEnableMultiLineText(false)
 		, bEnable3dWidget(false)
 	{ }
@@ -143,6 +147,7 @@ public:
 
 	const uint8* GetDefaultInstance() const;
 	void RecreateDefaultInstance(FString* OutLog = nullptr);
+	void ReinitializeDefaultInstance(FString* OutLog = nullptr);
 	void CleanDefaultInstance();
 
 private:

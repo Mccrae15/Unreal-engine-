@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -28,7 +28,13 @@ protected:
 	FCompactPose CachedPose;
 	FBlendedCurve CachedCurve;
 
-	TArray<FAnimationUpdateContext> CachedUpdateContexts;
+	struct FCachedUpdateContext
+	{
+		FAnimationUpdateContext Context;
+		TSharedPtr<FAnimationUpdateSharedContext> SharedContext;
+	};
+
+	TArray<FCachedUpdateContext> CachedUpdateContexts;
 
 	FGraphTraversalCounter InitializationCounter;
 	FGraphTraversalCounter CachedBonesCounter;

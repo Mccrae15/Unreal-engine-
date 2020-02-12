@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 /**
  * Shader Pipeline Precompilation Cache
@@ -72,7 +72,6 @@ class RENDERCORE_API FShaderPipelineCache : public FTickableObjectRenderThread
 	{
 		FPipelineCacheFileFormatPSO PSO;
 		FShaderPipelineCacheArchive* ReadRequests;
-		TSet<FSHAHash> ShaderCodeReads;
 	};
 
 public:
@@ -90,7 +89,8 @@ public:
 	enum class BatchMode
 	{
 		Background, // The maximum batch size is defined by r.ShaderPipelineCache.BackgroundBatchSize
-		Fast // The maximum batch size is defined by r.ShaderPipelineCache.BatchSize
+		Fast, // The maximum batch size is defined by r.ShaderPipelineCache.BatchSize
+		Precompile // The maximum batch size is defined by r.ShaderPipelineCache.PrecompileBatchSize
 	};
 	
 	/** Sets the precompilation batching mode. */
@@ -157,6 +157,16 @@ public:
 		bool IsPrecompilationSlowTask() const { return bSlowPrecompileTask; }
 	};
 
+	/**
+	 * Delegate signature for being notified when we are about to open the pipeline cache
+	 */
+	DECLARE_MULTICAST_DELEGATE_ThreeParams(FShaderCachePreOpenDelegate, FString const& /* Name */, EShaderPlatform /* Platform*/, bool& /* Ready */);
+	
+	/**
+	 * Gets the event delegate to register to to be notified when we are about to open the pipeline cache.
+	 */
+	static FShaderCachePreOpenDelegate& GetCachePreOpenDelegate() { return OnCachePreOpen; }
+	
     /**
      * Delegate signature for being notified when a pipeline cache is opened
      */
@@ -200,7 +210,7 @@ public:
 private:
 	bool Open(FString const& Name, EShaderPlatform Platform);
 	bool Save(FPipelineFileCache::SaveMode Mode);
-	void Close();
+	void Close(bool bShuttingDown = false);
 
 	bool Precompile(FRHICommandListImmediate& RHICmdList, EShaderPlatform Platform, FPipelineCacheFileFormatPSO const& PSO);
 	void PreparePipelineBatch(TDoubleLinkedList<FPipelineCacheFileFormatPSORead*>& PipelineBatch);
@@ -228,6 +238,7 @@ private:
 	bool bPaused;
 	bool bOpened;
 	bool bReady;
+	bool bPreOptimizing;
     int32 PausedCount;
 	FShaderCachePrecompileContext ShaderCachePrecompileContext;
 	
@@ -244,7 +255,8 @@ private:
 
 	TArray<CompileJob> ShutdownReadCompileTasks;
 	TDoubleLinkedList<FPipelineCacheFileFormatPSORead*> ShutdownFetchTasks;
-    
+	
+	static FShaderCachePreOpenDelegate OnCachePreOpen;
     static FShaderCacheOpenedDelegate OnCachedOpened;
     static FShaderCacheClosedDelegate OnCachedClosed;
 	static FShaderPrecompilationBeginDelegate OnPrecompilationBegin;
@@ -255,4 +267,6 @@ private:
 	int32 LastAutoSaveNum;
 	
 	TSet<uint64> CompletedMasks;
+	float TotalPrecompileWallTime;
+	int64 TotalPrecompileTasks;
 };

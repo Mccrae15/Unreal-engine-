@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 
 #include "Engine/Selection.h"
@@ -79,7 +79,7 @@ void USelection::Deselect(UObject* InObject)
 	SelectionAnnotation->Clear(InObject);
 
 	// Remove from selected list.
-	SelectedObjects.Remove( InObject );
+	SelectedObjects.RemoveSingle( InObject );
 
 	if( !IsBatchSelecting() )
 	{
@@ -229,6 +229,7 @@ void USelection::Serialize(FArchive& Ar)
 	}
 }
 
+#if WITH_EDITOR
 bool USelection::Modify(bool bAlwaysMarkDirty/* =true */)
 {
 	// If the selection currently contains any PIE objects we should not be including it in the transaction buffer
@@ -243,6 +244,7 @@ bool USelection::Modify(bool bAlwaysMarkDirty/* =true */)
 
 	return Super::Modify(bAlwaysMarkDirty);
 }
+#endif
 
 void USelection::BeginDestroy()
 {

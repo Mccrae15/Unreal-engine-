@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "Graph/ControlRigGraphSchema.h"
 #include "Graph/ControlRigGraph.h"
@@ -10,6 +10,13 @@
 #include "ScopedTransaction.h"
 #include "Framework/MultiBox/MultiBoxBuilder.h"
 #include "GraphEditorActions.h"
+#include "ControlRig.h"
+#include "ControlRigBlueprint.h"
+#include "ControlRigBlueprintGeneratedClass.h"
+#include "Widgets/Notifications/SNotificationList.h"
+#include "Framework/Notifications/NotificationManager.h"
+#include "EulerTransform.h"
+#include "Curves/CurveFloat.h"
 
 #define LOCTEXT_NAMESPACE "ControlRigGraphSchema"
 
@@ -24,105 +31,53 @@ void UControlRigGraphSchema::GetGraphContextActions(FGraphContextMenuBuilder& Co
 
 }
 
-void UControlRigGraphSchema::GetContextMenuActions(const UEdGraph* CurrentGraph, const UEdGraphNode* InGraphNode, const UEdGraphPin* InGraphPin, FMenuBuilder* MenuBuilder, bool bIsDebugging) const
+void UControlRigGraphSchema::GetContextMenuActions(class UToolMenu* Menu, class UGraphNodeContextMenuContext* Context) const
 {
+	/*
+	// this seems to be taken care of by ControlRigGraphNode
 #if WITH_EDITOR
-	return IControlRigEditorModule::Get().GetContextMenuActions(this, CurrentGraph, InGraphNode, InGraphPin, MenuBuilder, bIsDebugging);
+	return IControlRigEditorModule::Get().GetContextMenuActions(this, Menu, Context);
 #else
 	check(0);
 #endif
-}
-
-bool UControlRigGraphSchema::TryCreateConnection_Extended(UEdGraphPin* PinA, UEdGraphPin* PinB) const
-{
-	const FControlRigPinConnectionResponse Response = CanCreateConnection_Extended(PinA, PinB);
-	bool bModified = false;
-
-	struct Local
-	{
-		static void BreakParentConnections_Recursive(UEdGraphPin* InPin)
-		{
-			if(InPin->ParentPin)
-			{
-				InPin->ParentPin->Modify();
-				InPin->ParentPin->BreakAllPinLinks();
-				InPin->GetOwningNode()->PinConnectionListChanged(InPin->ParentPin);
-				BreakParentConnections_Recursive(InPin->ParentPin);
-			}
-		}
-
-		static void BreakChildConnections_Recursive(UEdGraphPin* InPin)
-		{
-			for(UEdGraphPin* SubPin : InPin->SubPins)
-			{
-				if(SubPin->LinkedTo.Num() > 0)
-				{
-					SubPin->Modify();
-					SubPin->BreakAllPinLinks();
-					SubPin->GetOwningNode()->PinConnectionListChanged(SubPin);
-				}
-
-				BreakChildConnections_Recursive(SubPin);
-			}
-		}
-	};
-
-	switch (Response.Response.Response)
-	{
-	case CONNECT_RESPONSE_MAKE:
-		PinA->Modify();
-		PinB->Modify();
-		PinA->MakeLinkTo(PinB);
-		bModified = true;
-		switch(Response.ExtendedResponse)
-		{
-		case ECanCreateConnectionResponse_Extended::None:
-			break;
-		case ECanCreateConnectionResponse_Extended::BreakChildren:
-			if(PinA->Direction == EGPD_Input)
-			{
-				Local::BreakChildConnections_Recursive(PinA);
-			}
-			else if(PinB->Direction == EGPD_Input)
-			{
-				Local::BreakChildConnections_Recursive(PinB);
-			}
-			break;
-		case ECanCreateConnectionResponse_Extended::BreakParent:
-			if(PinA->Direction == EGPD_Input)
-			{
-				Local::BreakParentConnections_Recursive(PinA);
-			}
-			else if(PinB->Direction == EGPD_Input)
-			{
-				Local::BreakParentConnections_Recursive(PinB);
-			}
-			break;
-		}
-		PinA->GetOwningNode()->PinConnectionListChanged(PinA);
-		PinB->GetOwningNode()->PinConnectionListChanged(PinB);
-		break;
-
-	default:
-		bModified = UEdGraphSchema::TryCreateConnection(PinA, PinB);
-		break;
-	}
-
-	return bModified;
+	*/
 }
 
 bool UControlRigGraphSchema::TryCreateConnection(UEdGraphPin* PinA, UEdGraphPin* PinB) const
 {
-	UBlueprint* Blueprint = FBlueprintEditorUtils::FindBlueprintForNodeChecked(PinA->GetOwningNode());
-
-	bool bModified = TryCreateConnection_Extended(PinA, PinB);
-
-	if (bModified && !PinA->IsPendingKill())
+#if WITH_EDITOR
+	if (GEditor)
 	{
-		FBlueprintEditorUtils::MarkBlueprintAsModified(Blueprint);
+		GEditor->CancelTransaction(0);
+	}
+#endif
+
+	if (PinA == PinB)
+	{
+		return false;
 	}
 
-	return bModified;	
+	if (PinA->GetOwningNode() == PinB->GetOwningNode())
+	{
+		return false;
+	}
+
+	UControlRigGraphSchema* MutableThis = (UControlRigGraphSchema*)this;
+	MutableThis->LastPinForCompatibleCheck = nullptr;
+
+	UBlueprint* Blueprint = FBlueprintEditorUtils::FindBlueprintForNodeChecked(PinA->GetOwningNode());
+	UControlRigBlueprint* RigBlueprint = Cast<UControlRigBlueprint>(Blueprint);
+	if (RigBlueprint != nullptr)
+	{
+		if (PinA->Direction == EGPD_Input)
+		{
+			UEdGraphPin* Temp = PinA;
+			PinA = PinB;
+			PinB = Temp;
+		}
+		return RigBlueprint->Controller->AddLink(PinA->GetName(), PinB->GetName());
+	}
+	return false;
 }
 
 static bool HasParentConnection_Recursive(const UEdGraphPin* InPin)
@@ -148,97 +103,96 @@ static bool HasChildConnection_Recursive(const UEdGraphPin* InPin)
 	return false;
 }
 
-const FControlRigPinConnectionResponse UControlRigGraphSchema::CanCreateConnection_Extended(const UEdGraphPin* A, const UEdGraphPin* B) const
-{
-	check(A != nullptr);
-	check(B != nullptr);
-
-	// Deal with basic connections (same pins, same node, differing types etc.)
-	if(A == B)
-	{
-		return FControlRigPinConnectionResponse(CONNECT_RESPONSE_DISALLOW, LOCTEXT("ConnectResponse_Disallowed_Self", "Cannot link a pin to itself"));
-	}
-
-	if(A->Direction == B->Direction)
-	{
-		return FControlRigPinConnectionResponse(CONNECT_RESPONSE_DISALLOW, A->Direction == EGPD_Input ? LOCTEXT("ConnectResponse_Disallowed_Direction_Input", "Cannot link input pin to input pin") : LOCTEXT("ConnectResponse_Disallowed_Direction_Output", "Cannot link output pin to output pin"));
-	}
-
-	if(A->GetOwningNode() == B->GetOwningNode())
-	{
-		return FControlRigPinConnectionResponse(CONNECT_RESPONSE_DISALLOW, LOCTEXT("ConnectResponse_Disallowed_SameNode", "Cannot link two pins on the same node"));
-	}
-
-	if(A->PinType != B->PinType)
-	{
-		return FControlRigPinConnectionResponse(CONNECT_RESPONSE_DISALLOW, LOCTEXT("ConnectResponse_Disallowed_Different_Types", "Cannot link pins of differing types"));
-	}
-
-	// Deal with many-to-one and one to many connections
-	if(A->Direction == EGPD_Input && A->LinkedTo.Num() > 0)
-	{
-		return FControlRigPinConnectionResponse(CONNECT_RESPONSE_BREAK_OTHERS_A, LOCTEXT("ConnectResponse_Replace_Input", "Replace connection"));
-	}
-	else if(B->Direction == EGPD_Input && B->LinkedTo.Num() > 0)
-	{
-		return FControlRigPinConnectionResponse(CONNECT_RESPONSE_BREAK_OTHERS_B, LOCTEXT("ConnectResponse_Replace_Input", "Replace connection"));
-	}
-
-	// Deal with sub-struct pins
-
-	if(A->Direction == EGPD_Input && HasParentConnection_Recursive(A))
-	{
-		return FControlRigPinConnectionResponse(CONNECT_RESPONSE_MAKE, LOCTEXT("ConnectResponse_Replace_Parent", "Replace parent connection"), ECanCreateConnectionResponse_Extended::BreakParent);
-	}
-	else if(B->Direction == EGPD_Input && HasParentConnection_Recursive(B))
-	{
-		return FControlRigPinConnectionResponse(CONNECT_RESPONSE_MAKE, LOCTEXT("ConnectResponse_Replace_Parent", "Replace parent connection"), ECanCreateConnectionResponse_Extended::BreakParent);
-	}
-
-	if(A->Direction == EGPD_Input && HasChildConnection_Recursive(A))
-	{
-		return FControlRigPinConnectionResponse(CONNECT_RESPONSE_MAKE, LOCTEXT("ConnectResponse_Replace_Child", "Replace child connection(s)"), ECanCreateConnectionResponse_Extended::BreakChildren);
-	}
-	else if(B->Direction == EGPD_Input && HasChildConnection_Recursive(B))
-	{
-		return FControlRigPinConnectionResponse(CONNECT_RESPONSE_MAKE, LOCTEXT("ConnectResponse_Replace_Child", "Replace child connection(s)"), ECanCreateConnectionResponse_Extended::BreakChildren);
-	}
-
-	return FControlRigPinConnectionResponse(CONNECT_RESPONSE_MAKE, LOCTEXT("ConnectResponse_Allowed", "Connect"));	
-}
-
 const FPinConnectionResponse UControlRigGraphSchema::CanCreateConnection(const UEdGraphPin* A, const UEdGraphPin* B) const
 {
-	const FControlRigPinConnectionResponse Response = CanCreateConnection_Extended(A, B);
-	return Response.Response;
+	UBlueprint* Blueprint = FBlueprintEditorUtils::FindBlueprintForNodeChecked(A->GetOwningNode());
+	UControlRigBlueprint* RigBlueprint = Cast<UControlRigBlueprint>(Blueprint);
+	if (RigBlueprint != nullptr)
+	{
+		UControlRigGraphNode* RigNodeA = Cast<UControlRigGraphNode>(A->GetOwningNode());
+		UControlRigGraphNode* RigNodeB = Cast<UControlRigGraphNode>(B->GetOwningNode());
+
+		if (RigNodeA && RigNodeB)
+		{
+			URigVMPin* PinA = RigNodeA->GetModelPinFromPinPath(A->GetName());
+			if (PinA)
+			{
+				PinA = PinA->GetPinForLink();
+				RigBlueprint->Model->PrepareCycleChecking(PinA, A->Direction == EGPD_Input);
+			}
+
+			URigVMPin* PinB = RigNodeB->GetModelPinFromPinPath(B->GetName());
+			if (PinB)
+			{
+				PinB = PinB->GetPinForLink();
+			}
+
+			if (A->Direction == EGPD_Input)
+			{
+				URigVMPin* Temp = PinA;
+				PinA = PinB;
+				PinB = Temp;
+			}
+
+			FString FailureReason;
+			bool bResult = RigBlueprint->Model->CanLink(PinA, PinB, &FailureReason);
+			if (!bResult)
+			{
+				return FPinConnectionResponse(CONNECT_RESPONSE_DISALLOW, FText::FromString(FailureReason));
+			}
+			return FPinConnectionResponse(CONNECT_RESPONSE_MAKE, LOCTEXT("ConnectResponse_Allowed", "Connect"));
+		}
+	}
+
+	return FPinConnectionResponse(CONNECT_RESPONSE_DISALLOW, LOCTEXT("ConnectResponse_Disallowed_Unexpected", "Unexpected error"));
 }
 
 FLinearColor UControlRigGraphSchema::GetPinTypeColor(const FEdGraphPinType& PinType) const
 {
+	const FName& TypeName = PinType.PinCategory;
+	if (TypeName == UEdGraphSchema_K2::PC_Struct)
+	{
+		if (UStruct* Struct = Cast<UStruct>(PinType.PinSubCategoryObject))
+		{
+			if (Struct->IsChildOf(FRigVMExecuteContext::StaticStruct()))
+			{
+				return FLinearColor::White;
+			}
+		}
+	}
 	return GetDefault<UEdGraphSchema_K2>()->GetPinTypeColor(PinType);
 }
 
 void UControlRigGraphSchema::BreakPinLinks(UEdGraphPin& TargetPin, bool bSendsNodeNotifcation) const
 {
-	const FScopedTransaction Transaction( LOCTEXT("GraphEd_BreakPinLinks", "Break Pin Links") );
+	//const FScopedTransaction Transaction( LOCTEXT("GraphEd_BreakPinLinks", "Break Pin Links") );
 
 	// cache this here, as BreakPinLinks can trigger a node reconstruction invalidating the TargetPin referenceS
-	UBlueprint* const Blueprint = FBlueprintEditorUtils::FindBlueprintForNodeChecked(TargetPin.GetOwningNode());
-
-	Super::BreakPinLinks(TargetPin, bSendsNodeNotifcation);
-
-	FBlueprintEditorUtils::MarkBlueprintAsModified(Blueprint);	
+	UBlueprint* Blueprint = FBlueprintEditorUtils::FindBlueprintForNodeChecked(TargetPin.GetOwningNode());
+	const UControlRigBlueprint* RigBlueprint = Cast<UControlRigBlueprint>(Blueprint);
+	if (RigBlueprint != nullptr)
+	{
+		RigBlueprint->Controller->BreakAllLinks(TargetPin.GetName(), TargetPin.Direction == EGPD_Input);
+	}
 }
 
 void UControlRigGraphSchema::BreakSinglePinLink(UEdGraphPin* SourcePin, UEdGraphPin* TargetPin) const
 {
-	const FScopedTransaction Transaction(LOCTEXT("GraphEd_BreakSinglePinLink", "Break Pin Link") );
+	//const FScopedTransaction Transaction(LOCTEXT("GraphEd_BreakSinglePinLink", "Break Pin Link") );
 
 	UBlueprint* Blueprint = FBlueprintEditorUtils::FindBlueprintForNodeChecked(TargetPin->GetOwningNode());
-
-	Super::BreakSinglePinLink(SourcePin, TargetPin);
-
-	FBlueprintEditorUtils::MarkBlueprintAsModified(Blueprint);
+	const UControlRigBlueprint* RigBlueprint = Cast<UControlRigBlueprint>(Blueprint);
+	if (RigBlueprint != nullptr)
+	{
+		if (SourcePin->Direction == EGPD_Input)
+		{
+			UEdGraphPin* Temp = TargetPin;
+			TargetPin = SourcePin;
+			SourcePin = Temp;
+		}
+		
+		RigBlueprint->Controller->BreakLink(SourcePin->GetName(), TargetPin->GetName());
+	}
 }
 
 FConnectionDrawingPolicy* UControlRigGraphSchema::CreateConnectionDrawingPolicy(int32 InBackLayerID, int32 InFrontLayerID, float InZoomFactor, const FSlateRect& InClippingRect, class FSlateWindowElementList& InDrawElements, class UEdGraph* InGraphObj) const
@@ -257,35 +211,179 @@ bool UControlRigGraphSchema::ShouldHidePinDefaultValue(UEdGraphPin* Pin) const
 	return HasParentConnection_Recursive(Pin);
 }
 
+bool UControlRigGraphSchema::IsPinBeingWatched(UEdGraphPin const* Pin) const
+{
+	UBlueprint* Blueprint = FBlueprintEditorUtils::FindBlueprintForNodeChecked(Pin->GetOwningNode());
+	const UControlRigBlueprint* RigBlueprint = Cast<UControlRigBlueprint>(Blueprint);
+	if (RigBlueprint != nullptr)
+	{
+		if (URigVMPin* ModelPin = RigBlueprint->Model->FindPin(Pin->GetName()))
+		{
+			return ModelPin->RequiresWatch();
+		}
+	}
+	return false;
+}
+
+void UControlRigGraphSchema::ClearPinWatch(UEdGraphPin const* Pin) const
+{
+	UBlueprint* Blueprint = FBlueprintEditorUtils::FindBlueprintForNodeChecked(Pin->GetOwningNode());
+	const UControlRigBlueprint* RigBlueprint = Cast<UControlRigBlueprint>(Blueprint);
+	if (RigBlueprint != nullptr)
+	{
+		RigBlueprint->Controller->SetPinIsWatched(Pin->GetName(), false);
+	}
+}
+
+void UControlRigGraphSchema::OnPinConnectionDoubleCicked(UEdGraphPin* PinA, UEdGraphPin* PinB, const FVector2D& GraphPosition) const
+{
+	UBlueprint* Blueprint = FBlueprintEditorUtils::FindBlueprintForNodeChecked(PinA->GetOwningNode());
+	const UControlRigBlueprint* RigBlueprint = Cast<UControlRigBlueprint>(Blueprint);
+	if (RigBlueprint != nullptr)
+	{
+		if (URigVMLink* Link = RigBlueprint->Model->FindLink(FString::Printf(TEXT("%s -> %s"), *PinA->GetName(), *PinB->GetName())))
+		{
+			RigBlueprint->Controller->AddRerouteNodeOnLink(Link, false, GraphPosition);
+		}
+	}
+}
+
+bool UControlRigGraphSchema::MarkBlueprintDirtyFromNewNode(UBlueprint* InBlueprint, UEdGraphNode* InEdGraphNode) const
+{
+	if (InBlueprint == nullptr || InEdGraphNode == nullptr)
+	{
+		return false;
+	}
+	return true;
+}
+
+bool UControlRigGraphSchema::IsStructEditable(UStruct* InStruct) const
+{
+	if (InStruct == FRuntimeFloatCurve::StaticStruct())
+	{
+		return true;
+	}
+	return false;
+}
+
 UControlRigGraphNode* UControlRigGraphSchema::CreateGraphNode(UControlRigGraph* InGraph, const FName& InPropertyName) const
 {
 	const bool bSelectNewNode = true;
 	FGraphNodeCreator<UControlRigGraphNode> GraphNodeCreator(*InGraph);
 	UControlRigGraphNode* ControlRigGraphNode = GraphNodeCreator.CreateNode(bSelectNewNode);
-	ControlRigGraphNode->SetPropertyName(InPropertyName);
+	ControlRigGraphNode->ModelNodePath = InPropertyName.ToString();
 	GraphNodeCreator.Finalize();
 
 	return ControlRigGraphNode;
 }
 
-void UControlRigGraphSchema::TrySetDefaultValue(UEdGraphPin& InPin, const FString& InNewDefaultValue) const
+void UControlRigGraphSchema::TrySetDefaultValue(UEdGraphPin& InPin, const FString& InNewDefaultValue, bool bMarkAsModified) const
 {
-	GetDefault<UEdGraphSchema_K2>()->TrySetDefaultValue(InPin, InNewDefaultValue);
+#if WITH_EDITOR
+	if (GEditor)
+	{
+		GEditor->CancelTransaction(0);
+	}
+#endif
+	GetDefault<UEdGraphSchema_K2>()->TrySetDefaultValue(InPin, InNewDefaultValue, false);
 }
 
-void UControlRigGraphSchema::TrySetDefaultObject(UEdGraphPin& InPin, UObject* InNewDefaultObject) const
+void UControlRigGraphSchema::TrySetDefaultObject(UEdGraphPin& InPin, UObject* InNewDefaultObject, bool bMarkAsModified) const
 {
-	GetDefault<UEdGraphSchema_K2>()->TrySetDefaultObject(InPin, InNewDefaultObject);
+#if WITH_EDITOR
+	if (GEditor)
+	{
+		GEditor->CancelTransaction(0);
+	}
+#endif
+	GetDefault<UEdGraphSchema_K2>()->TrySetDefaultObject(InPin, InNewDefaultObject, false);
 }
 
-void UControlRigGraphSchema::TrySetDefaultText(UEdGraphPin& InPin, const FText& InNewDefaultText) const
+void UControlRigGraphSchema::TrySetDefaultText(UEdGraphPin& InPin, const FText& InNewDefaultText, bool bMarkAsModified) const
 {
-	GetDefault<UEdGraphSchema_K2>()->TrySetDefaultText(InPin, InNewDefaultText);
+#if WITH_EDITOR
+	if (GEditor)
+	{
+		GEditor->CancelTransaction(0);
+	}
+#endif
+	GetDefault<UEdGraphSchema_K2>()->TrySetDefaultText(InPin, InNewDefaultText, false);
 }
 
 bool UControlRigGraphSchema::ArePinsCompatible(const UEdGraphPin* PinA, const UEdGraphPin* PinB, const UClass* CallingContext, bool bIgnoreArray /*= false*/) const
 {
+	// filter out pins which have a parent
+	if (PinB->ParentPin != nullptr)
+	{
+		return false;
+	}
+
+	// for reroute nodes - always allow it
+	if (PinA->PinType.PinCategory == TEXT("REROUTE"))
+	{
+		UControlRigGraphSchema* MutableThis = (UControlRigGraphSchema*)this;
+		MutableThis->LastPinForCompatibleCheck = PinB;
+		MutableThis->bLastPinWasInput = PinB->Direction == EGPD_Input;
+		return true;
+	}
+	if (PinB->PinType.PinCategory == TEXT("REROUTE"))
+	{
+		UControlRigGraphSchema* MutableThis = (UControlRigGraphSchema*)this;
+		MutableThis->LastPinForCompatibleCheck = PinA;
+		MutableThis->bLastPinWasInput = PinA->Direction == EGPD_Input;
+		return true;
+	}
+
 	return GetDefault<UEdGraphSchema_K2>()->ArePinsCompatible(PinA, PinB, CallingContext, bIgnoreArray);
 }
+
+void UControlRigGraphSchema::RenameNode(UControlRigGraphNode* Node, const FName& InNewNodeName) const
+{
+	Node->NodeTitle = FText::FromName(InNewNodeName);
+	Node->Modify();
+}
+
+void UControlRigGraphSchema::ResetPinDefaultsRecursive(UEdGraphPin* InPin) const
+{
+	UControlRigGraphNode* RigNode = Cast<UControlRigGraphNode>(InPin->GetOwningNode());
+	if (RigNode == nullptr)
+	{
+		return;
+	}
+
+	RigNode->CopyPinDefaultsToModel(InPin);
+	for (UEdGraphPin* SubPin : InPin->SubPins)
+	{
+		ResetPinDefaultsRecursive(SubPin);
+	}
+}
+
+void UControlRigGraphSchema::GetVariablePinTypes(TArray<FEdGraphPinType>& PinTypes) const
+{
+	PinTypes.Add(FEdGraphPinType(UEdGraphSchema_K2::PC_Boolean, FName(NAME_None), nullptr, EPinContainerType::None, false, FEdGraphTerminalType()));
+	PinTypes.Add(FEdGraphPinType(UEdGraphSchema_K2::PC_Float, FName(NAME_None), nullptr, EPinContainerType::None, false, FEdGraphTerminalType()));
+	PinTypes.Add(FEdGraphPinType(UEdGraphSchema_K2::PC_Int, FName(NAME_None), nullptr, EPinContainerType::None, false, FEdGraphTerminalType()));
+	PinTypes.Add(FEdGraphPinType(UEdGraphSchema_K2::PC_Struct, FName(NAME_None), TBaseStructure<FVector>::Get(), EPinContainerType::None, false, FEdGraphTerminalType()));
+	PinTypes.Add(FEdGraphPinType(UEdGraphSchema_K2::PC_Struct, FName(NAME_None), TBaseStructure<FVector2D>::Get(), EPinContainerType::None, false, FEdGraphTerminalType()));
+	PinTypes.Add(FEdGraphPinType(UEdGraphSchema_K2::PC_Struct, FName(NAME_None), TBaseStructure<FRotator>::Get(), EPinContainerType::None, false, FEdGraphTerminalType()));
+	PinTypes.Add(FEdGraphPinType(UEdGraphSchema_K2::PC_Struct, FName(NAME_None), TBaseStructure<FTransform>::Get(), EPinContainerType::None, false, FEdGraphTerminalType()));
+	PinTypes.Add(FEdGraphPinType(UEdGraphSchema_K2::PC_Struct, FName(NAME_None), TBaseStructure<FEulerTransform>::Get(), EPinContainerType::None, false, FEdGraphTerminalType()));
+	PinTypes.Add(FEdGraphPinType(UEdGraphSchema_K2::PC_Struct, FName(NAME_None), TBaseStructure<FLinearColor>::Get(), EPinContainerType::None, false, FEdGraphTerminalType()));
+}
+
+bool UControlRigGraphSchema::SafeDeleteNodeFromGraph(UEdGraph* Graph, UEdGraphNode* Node) const
+{
+	if (UControlRigGraphNode* RigNode = Cast<UControlRigGraphNode>(Node))
+	{
+		UBlueprint* Blueprint = FBlueprintEditorUtils::FindBlueprintForNodeChecked(RigNode);
+		UControlRigBlueprint* RigBlueprint = Cast<UControlRigBlueprint>(Blueprint);
+		if (RigBlueprint != nullptr)
+		{
+			return RigBlueprint->Controller->RemoveNode(RigNode->GetModelNode());
+		}
+	}
+	return false;
+}
+
 
 #undef LOCTEXT_NAMESPACE

@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 using System;
 using System.Collections.Generic;
@@ -395,6 +395,12 @@ namespace AutomationTool
 
 				foreach (KeyValuePair<string, Node[]> Aggregate in AggregateNameToNodes)
 				{
+					// If the aggregate has no required elements, skip it.
+					if (!Aggregate.Value.Any())
+					{
+						continue;
+					}
+
 					Writer.WriteStartElement("Aggregate");
 					Writer.WriteAttributeString("Name", Aggregate.Key);
 					Writer.WriteAttributeString("Requires", String.Join(";", Aggregate.Value.Select(x => x.Name)));
@@ -579,6 +585,53 @@ namespace AutomationTool
 		}
 
 		/// <summary>
+		/// Export the build graph to a Json file for parsing by Horde
+		/// </summary>
+		/// <param name="File">Output file to write</param>
+		public void ExportForHorde(FileReference File)
+		{
+			DirectoryReference.CreateDirectory(File.Directory);
+			using (JsonWriter JsonWriter = new JsonWriter(File.FullName))
+			{
+				JsonWriter.WriteObjectStart();
+				JsonWriter.WriteArrayStart("Groups");
+				foreach (Agent Agent in Agents)
+				{
+					JsonWriter.WriteObjectStart();
+					JsonWriter.WriteArrayStart("Nodes");
+					foreach (Node Node in Agent.Nodes)
+					{
+						JsonWriter.WriteObjectStart();
+						JsonWriter.WriteValue("Name", Node.Name);
+						JsonWriter.WriteValue("Group", Agent.Name);
+						JsonWriter.WriteValue("RunEarly", Node.bRunEarly);
+						JsonWriter.WriteValue("Exclusive", true);
+
+						JsonWriter.WriteArrayStart("InputDependencies");
+						foreach (string InputDependency in Node.GetDirectInputDependencies().Select(x => x.Name))
+						{
+							JsonWriter.WriteValue(InputDependency);
+						}
+						JsonWriter.WriteArrayEnd();
+
+						JsonWriter.WriteArrayStart("OrderDependencies");
+						foreach (string OrderDependency in Node.GetDirectOrderDependencies().Select(x => x.Name))
+						{
+							JsonWriter.WriteValue(OrderDependency);
+						}
+						JsonWriter.WriteArrayEnd();
+
+						JsonWriter.WriteObjectEnd();
+					}
+					JsonWriter.WriteArrayEnd();
+					JsonWriter.WriteObjectEnd();
+				}
+				JsonWriter.WriteArrayEnd();
+				JsonWriter.WriteObjectEnd();
+			}
+		}
+
+		/// <summary>
 		/// Print the contents of the graph
 		/// </summary>
 		/// <param name="CompletedNodes">Set of nodes which are already complete</param>
@@ -589,28 +642,27 @@ namespace AutomationTool
 			if((PrintOptions & GraphPrintOptions.ShowCommandLineOptions) != 0)
 			{
 				// Get the list of messages
-				List<string> Messages = new List<string>();
+				List<KeyValuePair<string, string>> Parameters = new List<KeyValuePair<string, string>>();
 				foreach(GraphOption Option in Options)
 				{
-					StringBuilder Message = new StringBuilder();
-					Message.AppendFormat("-set:{0}=... {1}", Option.Name, Option.Description);
+					string Name = String.Format("-set:{0}=...", Option.Name);
+
+					StringBuilder Description = new StringBuilder(Option.Description);
 					if(!String.IsNullOrEmpty(Option.DefaultValue))
 					{
-						Message.AppendFormat(" (Default: {0})", Option.DefaultValue);
+						Description.AppendFormat(" (Default: {0})", Option.DefaultValue);
 					}
-					Messages.Add(Message.ToString());
+
+					Parameters.Add(new KeyValuePair<string, string>(Name, Description.ToString()));
 				}
 
 				// Format them to the log
-				if(Messages.Count > 0)
+				if(Parameters.Count > 0)
 				{
 					CommandUtils.LogInformation("");
 					CommandUtils.LogInformation("Options:");
 					CommandUtils.LogInformation("");
-					foreach(string Line in CommandUtils.FormatParams(Messages, 4, 24))
-					{
-						CommandUtils.LogInformation(Line);
-					}
+					HelpUtils.PrintTable(Parameters, 4, 24);
 				}
 			}
 

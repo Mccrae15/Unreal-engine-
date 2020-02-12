@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 /*-----------------------------------------------------------------------------
 	Config cache.
@@ -18,7 +18,9 @@
 #include "Math/Vector.h"
 #include "Math/Rotator.h"
 #include "Misc/Paths.h"
-#include "Serialization/StructuredArchiveFromArchive.h"
+#include "Serialization/StructuredArchive.h"
+
+class FStringBuilderBase;
 
 CORE_API DECLARE_LOG_CATEGORY_EXTERN(LogConfig, Log, All);
 
@@ -39,7 +41,16 @@ public:
 		ExpandValueInternal();
 	}
 
-	FConfigValue(FString InValue)
+	FConfigValue(const FString& InValue)
+		: SavedValue(InValue)
+#if CONFIG_REMEMBER_ACCESS_PATTERN 
+		, bRead(false)
+#endif
+	{
+		ExpandValueInternal();
+	}
+
+	FConfigValue(FString&& InValue)
 		: SavedValue(MoveTemp(InValue))
 #if CONFIG_REMEMBER_ACCESS_PATTERN 
 		, bRead(false)
@@ -48,14 +59,46 @@ public:
 		ExpandValueInternal();
 	}
 
-	FConfigValue( const FConfigValue& InConfigValue ) 
-		: SavedValue( InConfigValue.SavedValue )
-		, ExpandedValue( InConfigValue.ExpandedValue )
+	FConfigValue(const FConfigValue& InConfigValue)
+		: SavedValue(InConfigValue.SavedValue)
+		, ExpandedValue(InConfigValue.ExpandedValue)
 #if CONFIG_REMEMBER_ACCESS_PATTERN 
-		, bRead( InConfigValue.bRead )
+		, bRead(InConfigValue.bRead)
 #endif
 	{
 		// shouldn't need to expand value it's assumed that the other FConfigValue has done this already
+	}
+
+	FConfigValue(FConfigValue&& InConfigValue)
+		: SavedValue(MoveTemp(InConfigValue.SavedValue))
+		, ExpandedValue(MoveTemp(InConfigValue.ExpandedValue))
+#if CONFIG_REMEMBER_ACCESS_PATTERN 
+		, bRead(InConfigValue.bRead)
+#endif
+	{
+		// shouldn't need to expand value it's assumed that the other FConfigValue has done this already
+	}
+
+	FConfigValue& operator=(FConfigValue&& RHS)
+	{
+		SavedValue = MoveTemp(RHS.SavedValue);
+		ExpandedValue = MoveTemp(RHS.ExpandedValue);
+#if CONFIG_REMEMBER_ACCESS_PATTERN 
+		bRead = RHS.bRead;
+#endif
+
+		return *this;
+	}
+
+	FConfigValue& operator=(const FConfigValue& RHS)
+	{
+		SavedValue = RHS.SavedValue;
+		ExpandedValue = RHS.ExpandedValue;
+#if CONFIG_REMEMBER_ACCESS_PATTERN 
+		bRead = RHS.bRead;
+#endif
+
+		return *this;
 	}
 
 	// Returns the ini setting with any macros expanded out
@@ -153,13 +196,7 @@ public:
 
 private:
 	/** Internal version of ExpandValue that expands SavedValue into ExpandedValue, or produces an empty ExpandedValue if no expansion occurred. */
-	void ExpandValueInternal()
-	{
-		if (!ExpandValue(SavedValue, ExpandedValue))
-		{
-			ExpandedValue.Empty();
-		}
-	}
+	CORE_API void ExpandValueInternal();
 
 	FString SavedValue;
 	FString ExpandedValue;
@@ -186,7 +223,9 @@ public:
 	bool operator!=( const FConfigSection& Other ) const;
 
 	// process the '+' and '.' commands, takingf into account ArrayOfStruct unique keys
-	void CORE_API HandleAddCommand(FName Key, const FString& Value, bool bAppendValueIfNotArrayOfStructsKeyUsed);
+	void CORE_API HandleAddCommand(FName Key, FString&& Value, bool bAppendValueIfNotArrayOfStructsKeyUsed);
+
+	bool HandleArrayOfKeyedStructsCommand(FName Key, FString&& Value);
 
 	template<typename Allocator> 
 	void MultiFind(const FName Key, TArray<FConfigValue, Allocator>& OutValues, const bool bMaintainOrder = false) const
@@ -197,12 +236,9 @@ public:
 	template<typename Allocator> 
 	void MultiFind(const FName Key, TArray<FString, Allocator>& OutValues, const bool bMaintainOrder = false) const
 	{
-		for (const TPair<FName, FConfigValue>& Pair : Pairs)
+		for (typename ElementSetType::TConstKeyIterator It(Pairs, Key); It; ++It)
 		{
-			if (Pair.Key == Key)
-			{
-				OutValues.Add(Pair.Value.GetValue());
-			}
+			OutValues.Add(It->Value.GetValue());
 		}
 
 		if (bMaintainOrder)
@@ -213,7 +249,11 @@ public:
 
 	// look for "array of struct" keys for overwriting single entries of an array
 	TMap<FName, FString> ArrayOfStructKeys;
+
+	friend FArchive& operator<<(FArchive& Ar, FConfigSection& ConfigSection);
 };
+
+FArchive& operator<<(FArchive& Ar, FConfigSection& ConfigSection);
 
 /**
  * FIniFilename struct.
@@ -225,15 +265,25 @@ struct FIniFilename
 	/** Ini filename */
 	FString Filename;
 	/** If true this ini file is required to generate the output ini. */
-	bool bRequired;
+	bool bRequired = false;
 	/** Used as ID for looking up an INI Hierarchy */
 	FString CacheKey;
 
-	FIniFilename(const FString& InFilename, bool InIsRequired, FString InCacheKey=FString(TEXT("")))
+	explicit FIniFilename(const FString& InFilename, bool InIsRequired=false, FString InCacheKey=FString(TEXT("")))
 		: Filename(InFilename)
 		, bRequired(InIsRequired) 
 		, CacheKey(InCacheKey)
 	{}
+
+	FIniFilename() = default;
+
+	friend FArchive& operator<<(FArchive& Ar, FIniFilename& IniFilename)
+	{
+		Ar << IniFilename.Filename;
+		Ar << IniFilename.bRequired;
+		Ar << IniFilename.CacheKey;
+		return Ar;
+	}
 };
 
 
@@ -245,76 +295,48 @@ struct FConfigCommandlineOverride
 };
 #endif // ALLOW_INI_OVERRIDE_FROM_COMMANDLINE
 
-// Possible entries in a config hierarchy
-enum class EConfigFileHierarchy : uint8
+
+class FConfigFileHierarchy : public TMap<int32, FIniFilename>
 {
-	// Engine/Config/Base.ini
-	AbsoluteBase = 0,
+private:
+	int32 KeyGen = 0;
 
-	// Engine/Config/*.ini
-	EngineDirBase,
-	// Engine/Config/Platform/BasePlatform* ini
-	EngineDir_BasePlatformParent,
-	EngineDir_BasePlatform,
-	// Engine/Config/NotForLicensees/*.ini
-	EngineDirBase_NotForLicensees,
-	// Engine/Config/NoRedist/*.ini -Not supported at this time.
-	EngineDirBase_NoRedist,
+public:
+	FConfigFileHierarchy();
 
-	// Game/Config/*.ini
-	GameDirDefault,
-	// Game/Config/DedicatedServer*.ini
-	GameDirDedicatedServer,
-	// Game/Config/NotForLicensees/*.ini
-	GameDirDefault_NotForLicensees,
-	// Game/Config/NoRedist*.ini
-	GameDirDefault_NoRedist,
+	friend FArchive& operator<<(FArchive& Ar, FConfigFileHierarchy& ConfigFileHierarchy)
+	{
+		Ar << static_cast<FConfigFileHierarchy::Super&>(ConfigFileHierarchy);
+		Ar << ConfigFileHierarchy.KeyGen;
+		return Ar;
+	}
 
+private:
+	int32 GenerateDynamicKey();
 
-	// Engine/Config/PlatformName/PlatformName*.ini
-	EngineDir_PlatformParent,
-	EngineDir_Platform,
-	// Engine/Config/NotForLicensees/PlatformName/PlatformName*.ini
-	EngineDir_PlatformParent_NotForLicensees,
-	EngineDir_Platform_NotForLicensees,
-	// Engine/Config/NoRedist/PlatformName/PlatformName*.ini
-	EngineDir_PlatformParent_NoRedist,
-	EngineDir_Platform_NoRedist,
+	int32 AddStaticLayer(FIniFilename Filename, int32 LayerIndex, int32 LayerExpansionIndex = 0, int32 PlatformIndex = 0);
+	int32 AddDynamicLayer(FIniFilename Filename);
 
-	// Game/Config/PlatformName/PlatformName*.ini
-	GameDir_PlatformParent,
-	GameDir_Platform,
-	// Game/Config/NotForLicensees/PlatformName/PlatformName*.ini
-	GameDir_PlatformParent_NotForLicensees,
-	GameDir_Platform_NotForLicensees,
-	// Game/Config/NoRedist/PlatformName/PlatformName*.ini
-	GameDir_PlatformParent_NoRedist,
-	GameDir_Platform_NoRedist,
-
-	// <UserSettingsDir|AppData>/Unreal Engine/Engine/Config/User*.ini
-	UserSettingsDir_EngineDir_User,
-	// <UserDir|Documents>/Unreal Engine/Engine/Config/User*.ini
-	UserDir_User,
-	// Game/Config/User*.ini
-	GameDir_User,
-
-	// Number of config files in hierarchy.
-	NumHierarchyFiles,
+	friend class FConfigFile;
 };
-typedef TMap<EConfigFileHierarchy, FIniFilename> FConfigFileHierarchy;
 
 // One config file.
 
 class FConfigFile : public TMap<FString,FConfigSection>
 {
 public:
-	bool Dirty, NoSave;
+	bool Dirty;
+	bool NoSave;
 
 	/** The name of this config file */	
 	FName Name;
 
 	// The collection of source files which were used to generate this file.
 	FConfigFileHierarchy SourceIniHierarchy;
+
+	// Locations where this file may have come from - used to merge with non-standard ini locations
+	FString SourceEngineConfigDir;
+	FString SourceProjectConfigDir;
 
 	/** The untainted config file which contains the coalesced base/default options. I.e. No Saved/ options*/
 	FConfigFile* SourceConfigFile;
@@ -340,7 +362,23 @@ public:
 	CORE_API bool Combine( const FString& Filename);
 	CORE_API void CombineFromBuffer(const FString& Buffer);
 	CORE_API void Read( const FString& Filename );
-	CORE_API bool Write( const FString& Filename, bool bDoRemoteWrite=true, const FString& InitialText=FString() );
+
+	/** Write this ConfigFile to the given Filename, constructed the text from the config sections in *this, prepended by the optional PrefixText */
+	CORE_API bool Write( const FString& Filename, bool bDoRemoteWrite=true, const FString& PrefixText=FString());
+
+	/** Write a ConfigFile to the ginve Filename, constructed from the given SectionTexts, in the given order, with sections in *this overriding sections in SectionTexts
+	 * @param Filename - The file to write to
+	 * @param bDoRemoteWrite - If true, also write the file to FRemoteConfig::Get()
+	 * @param InOutSectionTexts - A map from section name to existing text for that section; text does not include the name of the section.
+	 *  Entries in the TMap that also exist in *this will be updated.
+	 *  If the empty string is present, it will be written out first (it is interpreted as a prefix before the first section)
+	 * @param InSectionOrder - List of section names in the order in which each section should be written to disk, from e.g. the existing file.
+	 *  Any section in this array that is not found in InOutSectionTexts will be ignored.
+	 *  Any section in InOutSectionTexts that is not in this array will be appended to the end.
+	 *  Duplicate entries are ignored; the first found index is used.
+	 * @return TRUE if the write was successful
+	 */
+	CORE_API bool Write(const FString& Filename, bool bDoRemoteWrite, TMap<FString, FString>& InOutSectionTexts, const TArray<FString>& InSectionOrder);
 	CORE_API void Dump(FOutputDevice& Ar);
 
 	CORE_API bool GetString( const TCHAR* Section, const TCHAR* Key, FString& Value ) const;
@@ -368,8 +406,8 @@ public:
 	CORE_API void AddMissingProperties(const FConfigFile& InSourceFile);
 
 	/**
-	 * Saves only the sections in this FConfigFile its source files. All other sections in the file are left alone. The sections in this
-	 * file are completely replaced. If IniRootName is specified, the saved settings are the diffed against the file in the hierarchy up
+	 * Saves only the sections in this FConfigFile into the given file. All other sections in the file are left alone. The sections in this
+	 * file are completely replaced. If IniRootName is specified, the current section settings are diffed against the file in the hierarchy up
 	 * to right before this file (so, if you are saving DefaultEngine.ini, and IniRootName is "Engine", then Base.ini and BaseEngine.ini
 	 * will be loaded, and only differences against that will be saved into DefaultEngine.ini)
 	 *
@@ -403,6 +441,13 @@ public:
 	/** Checks the command line for any overridden config settings */
 	CORE_API static void OverrideFromCommandline(FConfigFile* File, const FString& Filename);
 
+	/** Checks the command line for any overridden config file settings */
+	CORE_API static void OverrideFileFromCommandline(FString& Filename);
+
+	/** Appends a new INI file to the SourceIniHierarchy and combines it */
+	CORE_API void AddDynamicLayerToHeirarchy(const FString& Filename);
+
+	friend FArchive& operator<<(FArchive& Ar, FConfigFile& ConfigFile);
 private:
 
 	// This holds per-object config class names, with their ArrayOfStructKeys. Since the POC sections are all unique,
@@ -424,9 +469,25 @@ private:
 	 * @param SectionName - The section name the array property is being written to
 	 * @param PropertyName - The property name of the array
 	 */
-	void ProcessPropertyAndWriteForDefaults(EConfigFileHierarchy IniCombineThreshold, const TArray<FConfigValue>& InCompletePropertyToProcess, FString& OutText, const FString& SectionName, const FString& PropertyName);
+	void ProcessPropertyAndWriteForDefaults(int32 IniCombineThreshold, const TArray<FConfigValue>& InCompletePropertyToProcess, FStringBuilderBase& OutText, const FString& SectionName, const FString& PropertyName);
 
+	/** Version of ProcessPropertyAndWriteForDefaults that takes an FString to append to rather than a StringBuilder */
+	void ProcessPropertyAndWriteForDefaults(int32 IniCombineThreshold, const TArray<FConfigValue>& InCompletePropertyToProcess, FString& OutText, const FString& SectionName, const FString& PropertyName);
+
+	/**
+	 * Creates a chain of ini filenames to load and combine.
+	 *
+	 * @param InBaseIniName Ini name.
+	 * @param InPlatformName Platform name, nullptr means to use the current platform
+	 * @param OutHierarchy An array which is to receive the generated hierachy of ini filenames.
+	 */
+	void AddStaticLayersToHierarchy(const TCHAR* InBaseIniName, const TCHAR* InPlatformName, const TCHAR* EngineConfigDir, const TCHAR* SourceConfigDir);
+
+	// for AddStaticLayersToHierarchy
+	friend class FConfigCacheIni;
 };
+
+FArchive& operator<<(FArchive& Ar, FConfigFile& ConfigFile);
 
 /**
  * Declares a delegate type that's used by the config system to allow iteration of key value pairs.
@@ -783,6 +844,17 @@ public:
 	static void InitializeConfigSystem();
 
 	/**
+	 * Calculates the name of a dest (generated) .ini file for a given base (ie Engine, Game, etc)
+	 *
+	 * @param IniBaseName Base name of the .ini (Engine, Game)
+	 * @param PlatformName Name of the platform to get the .ini path for (nullptr means to use the current platform)
+	 * @param GeneratedConfigDir The base folder that will contain the generated config files.
+	 *
+	 * @return Standardized .ini filename
+	 */
+	static FString GetDestIniFilename(const TCHAR* BaseIniName, const TCHAR* PlatformName, const TCHAR* GeneratedConfigDir);
+
+	/**
 	 * Loads and generates a destination ini file and adds it to GConfig:
 	 *   - Looking on commandline for override source/dest .ini filenames
 	 *   - Generating the name for the engine to refer to the ini
@@ -805,7 +877,7 @@ public:
 	/**
 	 * Load an ini file directly into an FConfigFile, and nothing is written to GConfig or disk. 
 	 * The passed in .ini name can be a "base" (Engine, Game) which will be modified by platform and/or commandline override,
-	 * or it can be a full ini filenname (ie WrangleContent) loaded from the Source config directory
+	 * or it can be a full ini filename (ie WrangleContent) loaded from the Source config directory
 	 *
 	 * @param ConfigFile The output object to fill
 	 * @param IniName Either a Base ini name (Engine) or a full ini name (WrangleContent). NO PATH OR EXTENSION SHOULD BE USED!
@@ -819,7 +891,7 @@ public:
 	/**
 	 * Load an ini file directly into an FConfigFile from the specified config folders, optionally writing to disk. 
 	 * The passed in .ini name can be a "base" (Engine, Game) which will be modified by platform and/or commandline override,
-	 * or it can be a full ini filenname (ie WrangleContent) loaded from the Source config directory
+	 * or it can be a full ini filename (ie WrangleContent) loaded from the Source config directory
 	 *
 	 * @param ConfigFile The output object to fill
 	 * @param IniName Either a Base ini name (Engine) or a full ini name (WrangleContent). NO PATH OR EXTENSION SHOULD BE USED!
@@ -847,7 +919,16 @@ public:
 	 */
 	static FString GetGameUserSettingsDir();
 
+	/**
+	 * Save the current config cache state into a file for bootstrapping other processes.
+	 */
+	void SaveCurrentStateForBootstrap(const TCHAR* Filename);
+
+	friend FArchive& operator<<(FArchive& Ar, FConfigCacheIni& ConfigCacheIni);
 private:
+	/** Serialize a bootstrapping state into or from an archive */
+	void SerializeStateForBootstrap_Impl(FArchive& Ar);
+
 	/** true if file operations should not be performed */
 	bool bAreFileOperationsDisabled;
 
@@ -858,22 +939,12 @@ private:
 	EConfigCacheType Type;
 };
 
-/**
- * Helper function to read the contents of an ini file and a specified group of cvar parameters, where sections in the ini file are marked [InName@InGroupNumber]
- * @param InSectionBaseName - The base name of the section to apply cvars from (i.e. the bit before the @)
- * @param InGroupNumber - The group number required
- * @param InIniFilename - The ini filename
- * @param SetBy anything in ECVF_LastSetMask e.g. ECVF_SetByScalability
- */
+FArchive& operator<<(FArchive& Ar, FConfigCacheIni& ConfigCacheIni);
+
+UE_DEPRECATED(4.24, "This functionality to generate Scalability@Level section string has been moved to Scalability.cpp. Explictly construct section you need manually.")
 CORE_API void ApplyCVarSettingsGroupFromIni(const TCHAR* InSectionBaseName, int32 InGroupNumber, const TCHAR* InIniFilename, uint32 SetBy);
 
-/**
-* Helper function to read the contents of an ini file and a specified group of cvar parameters, where sections in the ini file are marked [InName@TagName]
-* @param InSectionBaseName - The base name of the section to apply cvars from (i.e. the bit before the @)
-* @param InSectionTag - The group name required. e.g. 'Cine'
-* @param InIniFilename - The ini filename
-* @param SetBy anything in ECVF_LastSetMask e.g. ECVF_SetByScalability
-*/
+UE_DEPRECATED(4.24, "This functionality to generate Scalability@Level section string has been moved to Scalability.cpp. Explictly construct section you need manually.")
 CORE_API void ApplyCVarSettingsGroupFromIni(const TCHAR* InSectionBaseName, const TCHAR* InSectionTag, const TCHAR* InIniFilename, uint32 SetBy);
 
 /**
@@ -884,7 +955,13 @@ CORE_API void ApplyCVarSettingsGroupFromIni(const TCHAR* InSectionBaseName, cons
  */
 CORE_API void ApplyCVarSettingsFromIni(const TCHAR* InSectionBaseName, const TCHAR* InIniFilename, uint32 SetBy, bool bAllowCheating = false);
 
-
+/**
+ * Helper function to operate a user defined function for each CVar key/value pair in the specified section in an ini file
+ * @param InSectionName - The name of the section to apply cvars from
+ * @param InIniFilename - The ini filename
+ * @param InEvaluationFunction - The evaluation function to be called for each key/value pair
+ */
+CORE_API void ForEachCVarInSectionFromIni(const TCHAR* InSectionName, const TCHAR* InIniFilename, TFunction<void(IConsoleVariable* CVar, const FString& KeyString, const FString& ValueString)> InEvaluationFunction);
 
 /**
  * CVAR Ini history records all calls to ApplyCVarSettingsFromIni and can re run them 
@@ -905,3 +982,18 @@ CORE_API void ReapplyRecordedCVarSettingsFromIni();
  * Helper function to clean up ini history
  */
 CORE_API void DeleteRecordedCVarSettingsFromIni();
+
+/**
+ * Helper function to start recording config reads
+ */
+CORE_API void RecordConfigReadsFromIni();
+
+/**
+ * Helper function to dump config reads to csv after RecordConfigReadsFromIni was called
+ */
+CORE_API void DumpRecordedConfigReadsFromIni();
+
+/**
+ * Helper function to clean up config read history
+ */
+CORE_API void DeleteRecordedConfigReadsFromIni();

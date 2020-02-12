@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -11,8 +11,6 @@ enum class EVulkanShaderVersion
 	ES3_1_NOUB,
 	ES3_1_ANDROID,
 	ES3_1_ANDROID_NOUB,
-	SM4,
-	SM4_NOUB,
 	SM5,
 	SM5_NOUB,
 };
@@ -23,12 +21,10 @@ inline bool HasRealUBs(EVulkanShaderVersion Version)
 	{
 	case EVulkanShaderVersion::ES3_1:
 	case EVulkanShaderVersion::ES3_1_ANDROID:
-	case EVulkanShaderVersion::SM4:
 	case EVulkanShaderVersion::SM5:
 		return true;
 	case EVulkanShaderVersion::ES3_1_NOUB:
 	case EVulkanShaderVersion::ES3_1_ANDROID_NOUB:
-	case EVulkanShaderVersion::SM4_NOUB:
 	case EVulkanShaderVersion::SM5_NOUB:
 		return false;
 
@@ -81,10 +77,13 @@ struct FSpirv
 		uint32 WordBindingIndex = UINT32_MAX;
 	};
 	TArray<FEntry> ReflectionInfo;
+	uint32 OffsetToMainName = 0;
+	uint32 OffsetToEntryPoint = 0;
+	uint32 CRC = 0;
 
 	int32 FindBinding(const FString& Name, bool bOuter = false) const
 	{
-		for (const auto& Entry : ReflectionInfo)
+		for (const FEntry& Entry : ReflectionInfo)
 		{
 			if (Entry.Name == Name)
 			{
@@ -98,6 +97,21 @@ struct FSpirv
 				}
 
 				return Entry.Binding;
+			}
+		}
+
+		if (!bOuter)
+		{
+			for (const FEntry& Entry : ReflectionInfo)
+			{
+				if (Entry.Name.StartsWith(Name) && Entry.Name.Len() > Name.Len() && Entry.Name[Name.Len()] == (TCHAR)'.')
+				{
+					// Try the outer group variable; eg 
+					// layout(set=0, binding=0) buffer  MainAndPostPassPersistentStates_BUFFER { FPersistentState MainAndPostPassPersistentStates[]; };
+					FString OuterName = Name;
+					OuterName += TEXT("_BUFFER");
+					return FindBinding(OuterName, true);
+				}
 			}
 		}
 

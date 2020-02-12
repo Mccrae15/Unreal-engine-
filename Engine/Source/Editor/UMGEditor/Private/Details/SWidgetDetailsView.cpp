@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "Details/SWidgetDetailsView.h"
 #include "Widgets/Text/STextBlock.h"
@@ -280,7 +280,7 @@ void SWidgetDetailsView::OnEditorSelectionChanged()
 	PropertyView->SetObjects(SelectedObjects, bForceRefresh);
 }
 
-void SWidgetDetailsView::OnPropertyViewObjectArrayChanged(const FString& InTitle, const TArray<TWeakObjectPtr<UObject>>& InObjects)
+void SWidgetDetailsView::OnPropertyViewObjectArrayChanged(const FString& InTitle, const TArray<UObject*>& InObjects)
 {
 	// Update the package remapping for all selected objects so that we can find the correct localization ID when editing text properties (since we edit a copy of the real data, not connected to the asset package)
 	UBlueprint* UMGBlueprint = BlueprintEditor.Pin()->GetBlueprintObj();
@@ -549,7 +549,11 @@ void SWidgetDetailsView::NotifyPostChange(const FPropertyChangedEvent& PropertyC
 		// Any time we migrate a property value we need to mark the blueprint as structurally modified so users don't need 
 		// to recompile it manually before they see it play in game using the latest version.
 		FBlueprintEditorUtils::MarkBlueprintAsModified(BlueprintEditor.Pin()->GetBlueprintObj());
-		ClearFocusIfOwned();
+		
+		if (PropertyChangedEvent.ChangeType != EPropertyChangeType::ValueSet)
+		{
+			ClearFocusIfOwned();
+		}
 	}
 
 	// If the property that changed is marked as "DesignerRebuild" we invalidate

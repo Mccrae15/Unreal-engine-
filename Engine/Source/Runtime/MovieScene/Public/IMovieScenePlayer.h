@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -11,7 +11,10 @@
 #include "MovieSceneSpawnRegister.h"
 #include "Containers/ArrayView.h"
 #include "Evaluation/MovieSceneEvaluationState.h"
+#include "Misc/InlineValue.h"
+#include "Evaluation/IMovieSceneMotionVectorSimulation.h"
 #include "Evaluation/MovieSceneEvaluationOperand.h"
+#include "Generators/MovieSceneEasingCurves.h"
 
 
 class UMovieSceneSequence;
@@ -45,11 +48,31 @@ struct EMovieSceneViewportParams
 	bool bEnableColorScaling;
 };
 
+/** Camera cut parameters */
+struct EMovieSceneCameraCutParams
+{
+	/** If this is not null, release actor lock only if currently locked to this object */
+	UObject* UnlockIfCameraObject = nullptr;
+	/** Whether this is a jump cut, i.e. the cut jumps from one shot to another shot */
+	bool bJumpCut = false;
+
+	/** Blending time to get to the new shot instead of cutting */
+	float BlendTime = -1.f;
+	/** Blending type to use to get to the new shot (only used when BlendTime is greater than 0) */
+	TOptional<EMovieSceneBuiltInEasing> BlendType;
+
+#if WITH_EDITOR
+	// Info for previewing shot blends in editor.
+	UObject* PreviousCameraObject = nullptr;
+	float PreviewBlendFactor = -1.f;
+#endif
+};
+
 /**
  * Interface for movie scene players
  * Provides information for playback of a movie scene
  */
-class IMovieScenePlayer
+class MOVIESCENE_VTABLE IMovieScenePlayer
 {
 public:
 	virtual ~IMovieScenePlayer() { }
@@ -76,7 +99,21 @@ public:
 	 * @param UnlockIfCameraObject If this is not nullptr, release actor lock only if currently locked to this object.
 	 * @param bJumpCut Whether this is a jump cut, ie. the cut jumps from one shot to another shot
 	 */
-	virtual void UpdateCameraCut(UObject* CameraObject, UObject* UnlockIfCameraObject = nullptr, bool bJumpCut = false) = 0;
+	void UpdateCameraCut(UObject* CameraObject, UObject* UnlockIfCameraObject = nullptr, bool bJumpCut = false)
+	{
+		EMovieSceneCameraCutParams CameraCutParams;
+		CameraCutParams.UnlockIfCameraObject = UnlockIfCameraObject;
+		CameraCutParams.bJumpCut = bJumpCut;
+		UpdateCameraCut(CameraObject, CameraCutParams);
+	}
+
+	/**
+	 * Updates the perspective viewports with the actor to view through
+	 *
+	 * @param CameraObject The object, probably a camera, that the viewports should lock to
+	 * @param CameraCutParams The parameters for this camera cut.
+	 */
+	virtual void UpdateCameraCut(UObject* CameraObject, const EMovieSceneCameraCutParams& CameraCutParams) = 0;
 
 	/*
 	 * Set the perspective viewport settings
@@ -276,6 +313,19 @@ public:
 	}
 
 	/**
+	 * Attempt to save specific global state for the specified token state before it animates an object.
+	 * @note: Will only call IMovieSceneExecutionToken::CacheExistingState if no state has been previously cached for the specified token type
+	 *
+	 * @param InObject			The object to cache state for
+	 * @param InTokenType		Unique marker that identifies the originating token type
+	 * @param InProducer		Producer implementation that defines how to create the preanimated token, if it doesn't already exist
+	 */
+	FORCEINLINE void SaveGlobalPreAnimatedState(UObject& InObject, FMovieSceneAnimTypeID InTokenType, const IMovieScenePreAnimatedTokenProducer& InProducer)
+	{
+		PreAnimatedState.SavePreAnimatedState(InTokenType, InProducer, InObject, ECapturePreAnimatedState::Global, FMovieSceneEvaluationKey());
+	}
+
+	/**
 	 * Restore all pre-animated state
 	 */
 	void RestorePreAnimatedState()
@@ -292,6 +342,16 @@ public:
 	void RestorePreAnimatedState(UObject& Object)
 	{
 		PreAnimatedState.RestorePreAnimatedState(*this, Object);
+	}
+
+	/**
+	 * Restore any pre-animated state that has been cached for the specified class
+	 *
+	 * @param GeneratedClass			The class of the object to restore
+	 */
+	void RestorePreAnimatedState(UClass* GeneratedClass)
+	{
+		PreAnimatedState.RestorePreAnimatedState(*this, GeneratedClass);
 	}
 
 	/**
@@ -331,7 +391,13 @@ public:
 
 	/** Container that stores any per-animated state tokens  */
 	FMovieScenePreAnimatedState PreAnimatedState;
-	
+
+	/** Motion Vector Simulation */
+	TInlineValue<IMovieSceneMotionVectorSimulation> MotionVectorSimulation;
+
+	/** List of binding overrides to use for the sequence */
+	TMap<FMovieSceneEvaluationOperand, FMovieSceneEvaluationOperand> BindingOverrides;
+
 private:
 
 	/** Null register that asserts on use */

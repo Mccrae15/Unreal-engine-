@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "CrashDebugHelperModule.h"
 #include "Logging/LogMacros.h"
@@ -19,6 +19,9 @@ DEFINE_LOG_CATEGORY(LogCrashDebugHelper);
 
 #elif PLATFORM_IOS
 	#include "CrashDebugHelperIOS.h"
+
+#elif PLATFORM_ANDROID
+	#include "Android/CrashDebugHelperAndroid.h"
 
 #else
 	#error "Unknown platform"
@@ -44,5 +47,20 @@ void FCrashDebugHelperModule::ShutdownModule()
 
 ICrashDebugHelper* FCrashDebugHelperModule::Get()
 {
+	return CrashDebugHelper;
+}
+
+ICrashDebugHelper* FCrashDebugHelperModule::GetNew()
+{
+	if (CrashDebugHelper != nullptr)
+	{
+		delete CrashDebugHelper;
+		CrashDebugHelper = nullptr;
+	}
+	CrashDebugHelper = new FCrashDebugHelper();
+	if (CrashDebugHelper != nullptr)
+	{
+		CrashDebugHelper->Init();
+	}
 	return CrashDebugHelper;
 }

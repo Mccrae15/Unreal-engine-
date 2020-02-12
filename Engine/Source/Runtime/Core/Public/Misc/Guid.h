@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -6,7 +6,9 @@
 #include "Misc/AssertionMacros.h"
 #include "Misc/Crc.h"
 #include "Containers/UnrealString.h"
-#include "Serialization/StructuredArchiveFromArchive.h"
+#include "Serialization/StructuredArchive.h"
+#include "Serialization/MemoryLayout.h"
+#include "Hash/CityHash.h"
 
 class FArchive;
 class FOutputDevice;
@@ -59,8 +61,14 @@ enum class EGuidFormats
 	 * For example: 00000000-00000000-00000000-00000000
 	*/
 	UniqueObjectGuid,
-};
 
+	/**
+	 * Base64 characters with dashes and underscores instead of pluses and slashes (respectively)
+	 *
+	 * For example: AQsMCQ0PAAUKCgQEBAgADQ
+	 */
+	Short
+};
 
 /**
  * Implements a globally unique identifier.
@@ -293,7 +301,7 @@ public:
 	 */
 	friend uint32 GetTypeHash(const FGuid& Guid)
 	{
-		return FCrc::MemCrc_DEPRECATED(&Guid, sizeof(FGuid));
+		return uint32(CityHash64((char*)&Guid, sizeof(FGuid)));
 	}
 
 public:
@@ -341,6 +349,7 @@ public:
 	/** Holds the fourth component. */
 	uint32 D;
 };
-
+template<> struct TCanBulkSerialize<FGuid> { enum { Value = true }; };
+DECLARE_INTRINSIC_TYPE_LAYOUT(FGuid);
 
 template <> struct TIsPODType<FGuid> { enum { Value = true }; };

@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "Curl/CurlHttpManager.h"
 
@@ -26,25 +26,27 @@
 #include "SocketSubsystem.h"
 #include "IPAddress.h"
 
+#include "Http.h"
+
 #ifndef DISABLE_UNVERIFIED_CERTIFICATE_LOADING
 #define DISABLE_UNVERIFIED_CERTIFICATE_LOADING 0
 #endif
 
-CURLM* FCurlHttpManager::GMultiHandle = NULL;
-CURLSH* FCurlHttpManager::GShareHandle = NULL;
+CURLM* FCurlHttpManager::GMultiHandle = nullptr;
+CURLSH* FCurlHttpManager::GShareHandle = nullptr;
 
 FCurlHttpManager::FCurlRequestOptions FCurlHttpManager::CurlRequestOptions;
 
 // set functions that will init the memory
 namespace LibCryptoMemHooks
 {
-	void* (*ChainedMalloc)(size_t Size) = nullptr;
-	void* (*ChainedRealloc)(void* Ptr, const size_t Size) = nullptr;
-	void (*ChainedFree)(void* Ptr) = nullptr;
+	void* (*ChainedMalloc)(size_t Size, const char* File, int Line) = nullptr;
+	void* (*ChainedRealloc)(void* Ptr, const size_t Size, const char* File, int Line) = nullptr;
+	void (*ChainedFree)(void* Ptr, const char* File, int Line) = nullptr;
 	bool bMemoryHooksSet = false;
 
 	/** This malloc will init the memory, keeping valgrind happy */
-	void* MallocWithInit(size_t Size)
+	void* MallocWithInit(size_t Size, const char* File, int Line)
 	{
 		void* Result = FMemory::Malloc(Size);
 		if (LIKELY(Result))
@@ -56,7 +58,7 @@ namespace LibCryptoMemHooks
 	}
 
 	/** This realloc will init the memory, keeping valgrind happy */
-	void* ReallocWithInit(void* Ptr, const size_t Size)
+	void* ReallocWithInit(void* Ptr, const size_t Size, const char* File, int Line)
 	{
 		size_t CurrentUsableSize = FMemory::GetAllocSize(Ptr);
 		void* Result = FMemory::Realloc(Ptr, Size);
@@ -69,7 +71,7 @@ namespace LibCryptoMemHooks
 	}
 
 	/** This realloc will init the memory, keeping valgrind happy */
-	void Free(void* Ptr)
+	void Free(void* Ptr, const char* File, int Line)
 	{
 		return FMemory::Free(Ptr);
 	}
@@ -238,6 +240,8 @@ void FCurlHttpManager::InitCurl()
 		CurlRequestOptions.BufferSize = ConfigBufferSize;
 	}
 
+	GConfig->GetBool(TEXT("HTTP.Curl"), TEXT("bAllowSeekFunction"), CurlRequestOptions.bAllowSeekFunction, GEngineIni);
+
 	CurlRequestOptions.MaxHostConnections = FHttpModule::Get().GetHttpMaxConnectionsPerServer();
 	if (CurlRequestOptions.MaxHostConnections > 0)
 	{
@@ -256,20 +260,12 @@ void FCurlHttpManager::InitCurl()
 	}
 
 	TCHAR Home[256] = TEXT("");
-	if (FParse::Value(FCommandLine::Get(), TEXT("MULTIHOMEHTTP="), Home, ARRAY_COUNT(Home)))
+	if (FParse::Value(FCommandLine::Get(), TEXT("MULTIHOMEHTTP="), Home, UE_ARRAY_COUNT(Home)))
 	{
 		ISocketSubsystem* SocketSubsystem = ISocketSubsystem::Get(PLATFORM_SOCKETSUBSYSTEM);
-		if (SocketSubsystem)
+		if (SocketSubsystem && SocketSubsystem->GetAddressFromString(Home).IsValid())
 		{
-			TSharedRef<FInternetAddr> HostAddr = SocketSubsystem->CreateInternetAddr();
-			HostAddr->SetAnyAddress();
-
-			bool bIsValid = false;
-			HostAddr->SetIp(Home, bIsValid);
-			if (bIsValid)
-			{
-				CurlRequestOptions.LocalHostAddr = FString(Home);
-			}
+			CurlRequestOptions.LocalHostAddr = FString(Home);
 		}
 	}
 
@@ -314,10 +310,18 @@ void FCurlHttpManager::FCurlRequestOptions::Log()
 
 void FCurlHttpManager::ShutdownCurl()
 {
-	if (NULL != GMultiHandle)
+	if (GShareHandle != nullptr)
 	{
-		curl_multi_cleanup(GMultiHandle);
-		GMultiHandle = NULL;
+		CURLSHcode ShareCleanupCode = curl_share_cleanup(GShareHandle);
+		ensureMsgf(ShareCleanupCode == CURLSHE_OK, TEXT("CurlShareCleanup failed. ReturnValue=[%d]"), static_cast<int32>(ShareCleanupCode));
+		GShareHandle = nullptr;
+	}
+
+	if (GMultiHandle != nullptr)
+	{
+		CURLMcode MutliCleanupCode = curl_multi_cleanup(GMultiHandle);
+		ensureMsgf(MutliCleanupCode == CURLM_OK, TEXT("CurlMultiCleanup failed. ReturnValue=[%d]"), static_cast<int32>(MutliCleanupCode));
+		GMultiHandle = nullptr;
 	}
 
 	curl_global_cleanup();
@@ -329,6 +333,64 @@ void FCurlHttpManager::ShutdownCurl()
 	FSslModule& SslModule = FModuleManager::LoadModuleChecked<FSslModule>("SSL");
 	SslModule.GetSslManager().ShutdownSsl();
 #endif // #if WITH_SSL
+}
+
+void FCurlHttpManager::OnBeforeFork()
+{
+	FHttpManager::OnBeforeFork();
+
+	Thread->StopThread();
+	ShutdownCurl();
+}
+
+void FCurlHttpManager::OnAfterFork()
+{
+	InitCurl();
+	Thread->StartThread();
+
+	FHttpManager::OnAfterFork();
+}
+
+void FCurlHttpManager::UpdateConfigs()
+{
+	// Update configs - update settings that are safe to update after initialize 
+	FHttpManager::UpdateConfigs();
+
+	{
+		bool bAcceptCompressedContent = true;
+		if (GConfig->GetBool(TEXT("HTTP"), TEXT("AcceptCompressedContent"), bAcceptCompressedContent, GEngineIni))
+		{
+			if (CurlRequestOptions.bAcceptCompressedContent != bAcceptCompressedContent)
+			{
+				UE_LOG(LogHttp, Log, TEXT("AcceptCompressedContent changed from %s to %s"), *LexToString(CurlRequestOptions.bAcceptCompressedContent), *LexToString(bAcceptCompressedContent));
+				CurlRequestOptions.bAcceptCompressedContent = bAcceptCompressedContent;
+			}
+		}
+	}
+
+	{
+		int32 ConfigBufferSize = 0;
+		if (GConfig->GetInt(TEXT("HTTP.Curl"), TEXT("BufferSize"), ConfigBufferSize, GEngineIni) && ConfigBufferSize > 0)
+		{
+			if (CurlRequestOptions.BufferSize != ConfigBufferSize)
+			{
+				UE_LOG(LogHttp, Log, TEXT("BufferSize changed from %d to %d"), CurlRequestOptions.BufferSize, ConfigBufferSize);
+				CurlRequestOptions.BufferSize = ConfigBufferSize;
+			}
+		}
+	}
+
+	{
+		bool bConfigAllowSeekFunction = false;
+		if (GConfig->GetBool(TEXT("HTTP.Curl"), TEXT("bAllowSeekFunction"), bConfigAllowSeekFunction, GEngineIni))
+		{
+			if (CurlRequestOptions.bAllowSeekFunction != bConfigAllowSeekFunction)
+			{
+				UE_LOG(LogHttp, Log, TEXT("bAllowSeekFunction changed from %s to %s"), *LexToString(CurlRequestOptions.bAllowSeekFunction), *LexToString(bConfigAllowSeekFunction));
+				CurlRequestOptions.bAllowSeekFunction = bConfigAllowSeekFunction;
+			}
+		}
+	}
 }
 
 FHttpThread* FCurlHttpManager::CreateHttpThread()

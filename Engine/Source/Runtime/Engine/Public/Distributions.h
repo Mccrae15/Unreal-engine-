@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 /*=============================================================================
 	Distributions.h: Declaration of distributions.
@@ -28,6 +28,12 @@ enum ERawDistributionOperation
  */
 struct FDistributionLookupTable
 {
+	/** Time between values in the lookup table */
+	float TimeScale;
+	/** Absolute time of the first value */
+	float TimeBias;
+	/** Values in the table. */
+	TArray<float> Values;
 	/** Operation for which the table was built. */
 	uint8 Op;
 	/** Number of entries in the table. */
@@ -36,22 +42,17 @@ struct FDistributionLookupTable
 	uint8 EntryStride;
 	/** Number of values between sub-entries [0,4]. */
 	uint8 SubEntryStride;
-	/** Time between values in the lookup table */
-	float TimeScale;
-	/** Absolute time of the first value */
-	float TimeBias;
-	/** Values in the table. */
-	TArray<float> Values;
 	/** Lock axes flag for vector distributions. */
 	uint8 LockFlag;
+	
 	/** Default constructor. */
 	FDistributionLookupTable()
-		: Op(RDO_Uninitialized)
+		: TimeScale(0.0f)
+		, TimeBias(0.0f)
+		, Op(RDO_Uninitialized)
 		, EntryCount(0)
 		, EntryStride(0)
 		, SubEntryStride(0)
-		, TimeScale(0.0f)
-		, TimeBias(0.0f)
 		, LockFlag(0)
 	{}
 
@@ -231,7 +232,7 @@ struct ENGINE_API FRawDistribution
 	 * @return The UDisitribution* object if this is a FRawDistribution* struct, 
 	 *         or NULL otherwise
 	 */
-	static UObject* TryGetDistributionObjectFromRawDistributionProperty(UStructProperty* Property, uint8* Data);
+	static UObject* TryGetDistributionObjectFromRawDistributionProperty(FStructProperty* Property, uint8* Data);
 
 protected:
 

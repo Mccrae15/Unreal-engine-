@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 using System;
 using System.Collections.Generic;
@@ -81,7 +81,7 @@ namespace AutomationTool
 				{
 					if (!Document.bHasErrors)
 					{
-						Log.TraceError(File.FullName, Ex.LineNumber, "{0}", Ex.Message);
+						Log.TraceError(File, Ex.LineNumber, "{0}", Ex.Message);
 						Document.bHasErrors = true;
 					}
 				}
@@ -232,6 +232,11 @@ namespace AutomationTool
 		Dictionary<string, ScriptMacro> MacroNameToDefinition = new Dictionary<string, ScriptMacro>();
 
 		/// <summary>
+		/// Preprocess the file, but do not expand any values that are not portable (eg. paths on the local machine)
+		/// </summary>
+		bool bPreprocessOnly;
+
+		/// <summary>
 		/// Schema for the script
 		/// </summary>
 		ScriptSchema Schema;
@@ -242,12 +247,19 @@ namespace AutomationTool
 		int NumErrors;
 
 		/// <summary>
+		/// The name of the node if only a single node is going to be built, otherwise null.
+		/// </summary>
+		string SingleNodeName;
+
+		/// <summary>
 		/// Private constructor. Use ScriptReader.TryRead() to read a script file.
 		/// </summary>
 		/// <param name="DefaultProperties">Default properties available to the script</param>
+		/// <param name="bPreprocessOnly">Preprocess the file, but do not expand any values that are not portable (eg. paths on the local machine)</param>
 		/// <param name="Schema">Schema for the script</param>
-		private ScriptReader(IDictionary<string, string> DefaultProperties, ScriptSchema Schema)
+		private ScriptReader(IDictionary<string, string> DefaultProperties, bool bPreprocessOnly, ScriptSchema Schema)
 		{
+			this.bPreprocessOnly = bPreprocessOnly;
 			this.Schema = Schema;
 
 			EnterScope();
@@ -264,10 +276,12 @@ namespace AutomationTool
 		/// <param name="File">File to read from</param>
 		/// <param name="Arguments">Arguments passed in to the graph on the command line</param>
 		/// <param name="DefaultProperties">Default properties available to the script</param>
+		/// <param name="bPreprocessOnly">Preprocess the file, but do not expand any values that are not portable (eg. paths on the local machine)</param>
 		/// <param name="Schema">Schema for the script</param>
 		/// <param name="Graph">If successful, the graph constructed from the given script</param>
+		/// <param name="SingleNodeName">If a single node will be processed, the name of that node.</param>
 		/// <returns>True if the graph was read, false if there were errors</returns>
-		public static bool TryRead(FileReference File, Dictionary<string, string> Arguments, Dictionary<string, string> DefaultProperties, ScriptSchema Schema, out Graph Graph)
+		public static bool TryRead(FileReference File, Dictionary<string, string> Arguments, Dictionary<string, string> DefaultProperties, bool bPreprocessOnly, ScriptSchema Schema, out Graph Graph, string SingleNodeName = null)
 		{
 			// Check the file exists before doing anything.
 			if (!FileReference.Exists(File))
@@ -278,8 +292,8 @@ namespace AutomationTool
 			}
 
 			// Read the file and build the graph
-			ScriptReader Reader = new ScriptReader(DefaultProperties, Schema);
-			if (!Reader.TryRead(File, Arguments) || Reader.NumErrors > 0)
+			ScriptReader Reader = new ScriptReader(DefaultProperties, bPreprocessOnly, Schema);
+			if (!Reader.TryRead(File, Arguments, SingleNodeName) || Reader.NumErrors > 0)
 			{
 				Graph = null;
 				return false;
@@ -289,7 +303,7 @@ namespace AutomationTool
 			bool bInvalidArgument = false;
 			foreach(string InvalidArgumentName in Arguments.Keys.Except(Reader.Graph.Options.Select(x => x.Name), StringComparer.InvariantCultureIgnoreCase))
 			{
-				CommandUtils.LogWarning("Unknown argument '{0}' for '{1}'", InvalidArgumentName, File.FullName);
+				CommandUtils.LogError("Unknown argument '{0}' for '{1}'", InvalidArgumentName, File.FullName);
 				bInvalidArgument = true;
 			}
 			if(bInvalidArgument)
@@ -308,7 +322,8 @@ namespace AutomationTool
 		/// </summary>
 		/// <param name="File">File to read from</param>
 		/// <param name="Arguments">Arguments passed in to the graph on the command line</param>
-		bool TryRead(FileReference File, Dictionary<string, string> Arguments)
+		/// <param name="SingleNodeName">The name of the node if only a single node is going to be built, otherwise null.</param>
+		bool TryRead(FileReference File, Dictionary<string, string> Arguments, string SingleNodeName = null)
 		{
 			// Read the document and validate it against the schema
 			ScriptDocument Document;
@@ -319,6 +334,7 @@ namespace AutomationTool
 			}
 
 			// Read the root BuildGraph element
+			this.SingleNodeName = SingleNodeName;
 			ReadGraphBody(Document.DocumentElement, File.Directory, Arguments);
 			return true;
 		}
@@ -388,6 +404,9 @@ namespace AutomationTool
 						break;
 					case "ForEach":
 						ReadForEach(ChildElement, x => ReadGraphBody(x, BaseDirectory, Arguments));
+						break;
+					case "Expand":
+						ReadExpand(ChildElement, x => ReadGraphBody(x, BaseDirectory, Arguments));
 						break;
 					default:
 						LogError(ChildElement, "Invalid element '{0}'", ChildElement.Name);
@@ -595,7 +614,7 @@ namespace AutomationTool
 		{
 			if (EvaluateCondition(Element))
 			{
-				FileReference Script = FileReference.Combine(BaseDir, Element.GetAttribute("Script"));
+				FileReference Script = FileReference.Combine(BaseDir, ReadAttribute(Element, "Script"));
 				if (!FileReference.Exists(Script))
 				{
 					LogError(Element, "Cannot find included script '{0}'", Script.FullName);
@@ -656,7 +675,7 @@ namespace AutomationTool
 						string Restrict = ReadAttribute(Element, "Restrict");
 						if(!String.IsNullOrEmpty(Restrict))
 						{
-							string Pattern = "^" + Restrict + "$";
+							string Pattern = "^(" + Restrict + ")$";
 							if(!Regex.IsMatch(Value, Pattern, RegexOptions.IgnoreCase))
 							{
 								LogError(Element, "'{0}' is not a valid value for '{1}' (required: '{2}')", Value, Name, Restrict);
@@ -910,6 +929,9 @@ namespace AutomationTool
 						break;
 					case "ForEach":
 						ReadForEach(ChildElement, x => ReadAgentBody(x, ParentAgent, ControllingTrigger));
+						break;
+					case "Expand":
+						ReadExpand(ChildElement, x => ReadAgentBody(x, ParentAgent, ControllingTrigger));
 						break;
 					default:
 						LogError(ChildElement, "Unexpected element type '{0}'", ChildElement.Name);
@@ -1250,7 +1272,7 @@ namespace AutomationTool
 							int Index;
 							if(Macro.ArgumentNameToIndex.TryGetValue(Attribute.Name, out Index))
 							{
-								Arguments[Index] = Attribute.Value;
+								Arguments[Index] = ExpandProperties(Element, Attribute.Value);
 							}
 							else
 							{
@@ -1265,7 +1287,7 @@ namespace AutomationTool
 					{
 						if(Arguments[Idx] == null)
 						{
-							LogWarning(Element, "Macro '{0}' is missing argument '{1}'", Macro.ArgumentNameToIndex.First(x => x.Value == Idx).Key);
+							LogWarning(Element, "Macro '{0}' is missing argument '{1}'", Macro.Name, Macro.ArgumentNameToIndex.First(x => x.Value == Idx).Key);
 							bHasMissingArguments = true;
 						}
 					}
@@ -1292,6 +1314,12 @@ namespace AutomationTool
 		/// <param name="ParentNode">The node which owns this task</param>
 		void ReadTask(ScriptElement Element, Node ParentNode)
 		{
+			// If we're running a single node and this element's parent isn't the single node to run, ignore the error and return.
+			if (!string.IsNullOrWhiteSpace(SingleNodeName) && ParentNode.Name != SingleNodeName)
+			{
+				return;
+			}
+
 			if (EvaluateCondition(Element))
 			{
 				// Get the reflection info for this element
@@ -1418,11 +1446,29 @@ namespace AutomationTool
 			}
 			else if (ValueType == typeof(FileReference))
 			{
-				return CustomTask.ResolveFile(ValueText);
+				if (bPreprocessOnly)
+				{
+					return new FileReference(ValueText, FileReference.Sanitize.None);
+				}
+				else
+				{
+					return CustomTask.ResolveFile(ValueText);
+				}
 			}
 			else if (ValueType == typeof(DirectoryReference))
 			{
-				return CustomTask.ResolveDirectory(ValueText);
+				if (bPreprocessOnly)
+				{
+					return new DirectoryReference(ValueText, DirectoryReference.Sanitize.None);
+				}
+				else
+				{
+					return CustomTask.ResolveDirectory(ValueText);
+				}
+			}
+			else if (ValueType == typeof(UnrealTargetPlatform))
+			{
+				return UnrealTargetPlatform.Parse(ValueText);
 			}
 			else
 			{
@@ -1942,11 +1988,20 @@ namespace AutomationTool
 					Value = "";
 				}
 
-				// Replace the variable, or skip past it
-				Result = Result.Substring(0, Idx) + Value + Result.Substring(EndIdx + 1);
+				// Check if we've got a value for this variable
+				if (Value == null)
+				{
+					// Do not expand it; must be preprocessing the script.
+					Idx = EndIdx;
+				}
+				else
+				{
+					// Replace the variable, or skip past it
+					Result = Result.Substring(0, Idx) + Value + Result.Substring(EndIdx + 1);
 
-				// Make sure we skip over the expanded variable; we don't want to recurse on it.
-				Idx += Value.Length;
+					// Make sure we skip over the expanded variable; we don't want to recurse on it.
+					Idx += Value.Length;
+				}
 			}
 			return Result;
 		}

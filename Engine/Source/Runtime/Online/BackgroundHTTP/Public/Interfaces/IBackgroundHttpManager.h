@@ -1,8 +1,8 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
-#include "BackgroundHttp.h"
+#include "IBackgroundHttpRequest.h"
 
 typedef TSharedPtr<class IBackgroundHttpManager, ESPMode::ThreadSafe> FBackgroundHttpManagerPtr;
 
@@ -43,6 +43,23 @@ public:
 	*
 	*/
 	virtual void CleanUpTemporaryFiles() = 0;
+
+	/** Returns whether or not this is a platform specific implementation */
+	virtual bool IsGenericImplementation() const = 0;
+
+	/**
+	* Function that returns how many active BackgroundHttpRequests we should have actively downloading at once.
+	*
+	* @return int Number of downloads we should have active at once.
+	*/
+	virtual int GetMaxActiveDownloads() const = 0;
+
+	/**
+	* Function that sets how many active BackgroundHttpRequests we should have actively downloading at once.
+	*
+	* @param MaxActiveDownloads the maximum number of downloads that should be active at once
+	*/
+	virtual void SetMaxActiveDownloads(int MaxActiveDownloads) = 0;
 
 protected:
 	/**

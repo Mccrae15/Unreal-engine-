@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "LandscapeModule.h"
 #include "Serialization/CustomVersion.h"
@@ -11,10 +11,6 @@
 #include "LandscapeVersion.h"
 #include "LandscapeInfoMap.h"
 #include "Materials/MaterialInstance.h"
-
-#if WITH_EDITOR
-#include "Settings/EditorExperimentalSettings.h"
-#endif
 
 #include "LandscapeProxy.h"
 #include "Landscape.h"
@@ -51,6 +47,7 @@ void AddPerWorldLandscapeData(UWorld* World)
 	}
 }
 
+#if WITH_EDITOR
 /**
  * Gets landscape-specific material's static parameters values.
  *
@@ -66,6 +63,7 @@ void LandscapeMaterialsParameterValuesGetter(FStaticParameterSet &OutStaticParam
  * @param Material A material to update.
  */
 bool LandscapeMaterialsParameterSetUpdater(FStaticParameterSet &OutStaticParameterSet, UMaterial* Material);
+#endif // WITH_EDITOR
 
 /**
  * Function that will fire every time a world is created.
@@ -112,25 +110,7 @@ void GetLandscapeTexturesAndMaterials(ULevel* Level, TArray<UObject*>& OutTextur
 		if (LandscapeComponent)
 		{
 			LandscapeComponent->GetGeneratedTexturesAndMaterialInstances(OutTexturesAndMaterials);
-		}
-
-		if (GetMutableDefault<UEditorExperimentalSettings>()->bProceduralLandscape)
-		{
-			ALandscapeProxy* Landscape = Cast<ALandscapeProxy>(ObjInLevel);
-
-			if (Landscape != nullptr)
-			{
-				for (auto& ItLayerDataPair : Landscape->ProceduralLayersData)
-				{
-					for (auto& ItHeightmapPair : ItLayerDataPair.Value.Heightmaps)
-					{
-						OutTexturesAndMaterials.AddUnique(ItHeightmapPair.Value);
-					}
-
-					// TODO: add support for weightmap
-				}
-			}
-		}
+		}		
 	}
 }
 
@@ -151,6 +131,7 @@ void WorldRenameEventFunction(UWorld* World, const TCHAR* InName, UObject* NewOu
 	UPackage* PersistentLevelPackage = World->PersistentLevel->GetOutermost();
 	for (auto* OldTexOrMat : LandscapeTexturesAndMaterials)
 	{
+		// Now that landscape textures and materials are properly parented, this should not be necessary anymore
 		if (OldTexOrMat && OldTexOrMat->GetOuter() == PersistentLevelPackage)
 		{
 			// The names for these objects are not important, just generate a new name to avoid collisions
@@ -191,36 +172,11 @@ void WorldDuplicateEventFunction(UWorld* World, bool bDuplicateForPIE, TMap<UObj
 	{
 		AddPerWorldLandscapeData(World);
 	}
-
-#if WITH_EDITOR
-	if (!bDuplicateForPIE)
-	{
-		UPackage* WorldPackage = World->GetOutermost();
-
-		// Also duplicate all textures and materials used by landscape components
-		TArray<UObject*> LandscapeTexturesAndMaterials;
-		GetLandscapeTexturesAndMaterials(World->PersistentLevel, LandscapeTexturesAndMaterials);
-		for (auto* OldTexOrMat : LandscapeTexturesAndMaterials)
-		{
-			if (OldTexOrMat && OldTexOrMat->GetOuter() != WorldPackage)
-			{
-				// The names for these objects are not important, just generate a new name to avoid collisions
-				UObject* NewTextureOrMaterial = StaticDuplicateObject(OldTexOrMat, WorldPackage);
-				ReplacementMap.Add(OldTexOrMat, NewTextureOrMaterial);
-
-				// Materials hold references to the textures being moved, so they will need references fixed up as well
-				if (OldTexOrMat->IsA(UMaterialInterface::StaticClass()))
-				{
-					ObjectsToFixReferences.Add(NewTextureOrMaterial);
-				}
-			}
-		}
-	}
-#endif // WITH_EDITOR
 }
 
 void FLandscapeModule::StartupModule()
 {
+#if WITH_EDITOR
 	// This code will execute after your module is loaded into memory (but after global variables are initialized, of course.)
 	UMaterialInstance::CustomStaticParametersGetters.AddStatic(
 		&LandscapeMaterialsParameterValuesGetter
@@ -231,15 +187,14 @@ void FLandscapeModule::StartupModule()
 			&LandscapeMaterialsParameterSetUpdater
 		)
 	);
+#endif // WITH_EDITOR
 
-#if WITH_EDITORONLY_DATA
 	FWorldDelegates::OnPostWorldCreation.AddStatic(
 		&WorldCreationEventFunction
 	);
 	FWorldDelegates::OnPreWorldFinishDestroy.AddStatic(
 		&WorldDestroyEventFunction
 	);
-#endif // WITH_EDITORONLY_DATA
 
 #if WITH_EDITOR
 	FWorldDelegates::OnPreWorldRename.AddStatic(

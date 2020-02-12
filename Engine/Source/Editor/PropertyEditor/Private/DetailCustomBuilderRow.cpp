@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "DetailCustomBuilderRow.h"
 #include "IDetailCustomNodeBuilder.h"
@@ -81,4 +81,20 @@ bool FDetailCustomBuilderRow::IsInitiallyCollapsed() const
 FDetailWidgetRow FDetailCustomBuilderRow::GetWidgetRow()
 {
 	return *HeaderRow;
+}
+
+bool FDetailCustomBuilderRow::AreChildCustomizationsHidden() const
+{
+	if (ChildrenBuilder && ChildrenBuilder->GetChildCustomizations().Num() > 0)
+	{
+		for (const FDetailLayoutCustomization& ChildCustomizations : ChildrenBuilder->GetChildCustomizations())
+		{
+			if (!ChildCustomizations.IsHidden())
+			{
+				return false;
+			}
+		}
+		return true;
+	}
+	return false;
 }

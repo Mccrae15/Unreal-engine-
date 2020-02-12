@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -265,6 +265,8 @@ struct FGPUDriverInfo
 	FString UserDriverVersion;
 	// e.g. 3-13-2015
 	FString DriverDate;
+	// e.g. D3D11, D3D12
+	FString RHIName;
 
 	bool IsValid() const
 	{
@@ -324,17 +326,25 @@ struct FGPUDriverInfo
 // one entry in the Hardware.ini file
 struct FBlackListEntry
 {
-	// required, e.g. "<=223.112.21.1", might includes comparison operators, later even things multiple ">12.22 <=12.44"
+	// optional, e.g. "<=223.112.21.1", might includes comparison operators, later even things multiple ">12.22 <=12.44"
 	FString DriverVersionString;
+	// optional, e.g. "<=MM-DD-YYYY"
+	FString DriverDateString;
+	// optional, e.g. "D3D11", "D3D12"
+	FString RHIName;
 	// required
 	FString Reason;
 
 	// @param e.g. "DriverVersion=\"361.43\", Reason=\"UE-25096 Viewport flashes black and white when moving in the scene on latest Nvidia drivers\""
+	// At least one specifier of driver date or version is required to check for a match
 	void LoadFromINIString(const TCHAR* In)
 	{
 		FParse::Value(In, TEXT("DriverVersion="), DriverVersionString);
-		ensure(!DriverVersionString.IsEmpty());
+		FParse::Value(In, TEXT("DriverDate="), DriverDateString);
+		ensure(!DriverVersionString.IsEmpty() || !DriverDateString.IsEmpty());
 
+		FParse::Value(In, TEXT("RHI="), RHIName);
+		
 		// later:
 //		FParse::Value(In, TEXT("DeviceId="), DeviceId);
 //		FParse::Value(In, TEXT("OS="), OS);
@@ -349,12 +359,54 @@ struct FBlackListEntry
 	// @return true:yes, inform used, false otherwise
 	bool Test(const FGPUDriverInfo& Info) const
 	{
-		return CompareStringOp(*DriverVersionString, *Info.GetUnifiedDriverVersion());
+		if (IsValid())
+		{
+			// If RHI specified, ignore if mismatched
+			if (!RHIName.IsEmpty() && RHIName != Info.RHIName)
+			{
+				return false;
+			}
+
+			if (!DriverVersionString.IsEmpty())
+			{
+				return CompareStringOp(*DriverVersionString, *Info.GetUnifiedDriverVersion());
+			}
+			else
+			{
+				FString TempDay, TempMonth, TempMonthDay, TempYear;
+
+				// Trim 1-2 character operator then reformat for comparison
+				int32 OpLength = FChar::IsDigit((*DriverDateString)[1]) ? 1 : 2;
+
+				const TCHAR* DriverDateStringChars = *DriverDateString;
+				EComparisonOp Op = ParseComparisonOp(DriverDateStringChars);
+				if (Op == ECO_Unknown)
+				{
+					Op = ECO_Equal;
+				}
+
+				FString DriverDateComparisonOp = DriverDateString.Left(OpLength);
+				FString TrimmedDriverDateString = DriverDateString.RightChop(OpLength);
+				TrimmedDriverDateString.Split(TEXT("-"), &TempMonthDay, &TempYear, ESearchCase::CaseSensitive, ESearchDir::FromEnd);
+				TempMonthDay.Split(TEXT("-"), &TempMonth, &TempDay, ESearchCase::CaseSensitive, ESearchDir::FromEnd);
+				
+				FDateTime TestDate(FCString::Atoi(*TempYear), FCString::Atoi(*TempMonth), FCString::Atoi(*TempDay));
+
+				Info.DriverDate.Split(TEXT("-"), &TempMonthDay, &TempYear, ESearchCase::CaseSensitive, ESearchDir::FromEnd);
+				TempMonthDay.Split(TEXT("-"), &TempMonth, &TempDay, ESearchCase::CaseSensitive, ESearchDir::FromEnd);
+
+				FDateTime InfoDate(FCString::Atoi(*TempYear), FCString::Atoi(*TempMonth), FCString::Atoi(*TempDay));
+
+				return Compare(InfoDate, Op, TestDate);
+			}
+		}
+
+		return true;
 	}
 
 	bool IsValid() const
 	{
-		return !DriverVersionString.IsEmpty();
+		return DriverVersionString.Len() > 1 || DriverDateString.Len() > 1;
 	}
 
 	/**
@@ -366,7 +418,7 @@ struct FBlackListEntry
 		bool bLatestBlacklisted = false;
 		if (IsValid())
 		{
-			const TCHAR* DriverVersionTchar = *DriverVersionString;
+			const TCHAR* DriverVersionTchar = !DriverVersionString.IsEmpty() ? *DriverVersionString : *DriverDateString;
 			EComparisonOp ComparisonOp = ParseComparisonOp(DriverVersionTchar);
 			bLatestBlacklisted = (ComparisonOp == ECO_Larger) || (ComparisonOp == ECO_LargerThan);
 		}
@@ -465,7 +517,7 @@ struct FGPUHardware
 	}	
 	
 	// @return a driver version intended to be shown to the user e.g. "15.30.1025.1001 12/17/2015 (Crimson Edition 15.12)"
-	FString GetSuggestedDriverVersion() const
+	FString GetSuggestedDriverVersion(const FString& InRHIName) const
 	{
 		const TCHAR* Section = GetVendorSectionName();
 
@@ -473,7 +525,32 @@ struct FGPUHardware
 
 		if(Section)
 		{
-			GConfig->GetString(Section, TEXT("SuggestedDriverVersion"), Ret, GHardwareIni);
+			TArray<FString> SuggestedDriverVersions;
+			GConfig->GetArray(Section, TEXT("SuggestedDriverVersion"), SuggestedDriverVersions, GHardwareIni);
+
+			// Find specific RHI version first
+			if (InRHIName.Len() > 0)
+			{
+				for (const FString& SuggestedVersion : SuggestedDriverVersions)
+				{
+					int32 Found = SuggestedVersion.Find(InRHIName);
+					if (Found != INDEX_NONE && Found > 0 && SuggestedVersion[Found - 1] == ';')
+					{
+						Ret = SuggestedVersion.Left(Found - 1);
+						return Ret;
+					}
+				}
+			}
+
+			// Return the first generic one
+			for (const FString& SuggestedVersion : SuggestedDriverVersions)
+			{
+				int32 Found = 0;
+				if (!SuggestedVersion.FindChar(';', Found))
+				{
+					return SuggestedVersion;
+				}
+			}
 		}
 
 		return Ret;

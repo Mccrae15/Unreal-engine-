@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -105,7 +105,7 @@ class FChunkCacheWorker : public FRunnable
 	};
 
 	/** Reference hashes */
-	TArray<TPakChunkHash> ChunkHashes;
+	TSharedPtr<const FPakSignatureFile, ESPMode::ThreadSafe> Signatures;
 	/** Hash of the sig file data. Used to check that nothing was corrupted when a signature check fails */
 	TPakChunkHash OriginalSignatureFileHash;
 	/** Thread to run the worker FRunnable on */
@@ -130,8 +130,6 @@ class FChunkCacheWorker : public FRunnable
 	FThreadSafeCounter StopTaskCounter;
 	/** Available chunk requests */
 	TLockFreePointerListUnordered<FChunkRequest, PLATFORM_CACHE_LINE_SIZE> FreeChunkRequests;
-	/** Public decryption key */
-	FEncryptionKey DecryptionKey;
 
 	/** 
 	 * Process requested chunks 
@@ -202,6 +200,13 @@ public:
 	 * Releases the requested chunk buffer
 	 */
 	void ReleaseChunk(FChunkRequest& Chunk);
+
+
+	/**
+	* Indicates that this chunk worker is valid. If the signature file couldn't be loaded or if it failed
+	* the master table check, this will be false
+	*/
+	bool IsValid() const;
 
 	friend class FSignedArchiveReader;
 };

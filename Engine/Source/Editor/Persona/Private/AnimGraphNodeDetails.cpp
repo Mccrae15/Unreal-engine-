@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "AnimGraphNodeDetails.h"
 #include "Modules/ModuleManager.h"
@@ -40,9 +40,12 @@
 #include "Widgets/Input/SNumericEntryBox.h"
 #include "BoneControllers/AnimNode_SkeletalControlBase.h"
 #include "AnimGraphNode_StateMachine.h"
+#include "AnimGraphNode_SequencePlayer.h"
 #include "Engine/SkeletalMeshSocket.h"
 #include "Styling/CoreStyle.h"
 #include "Widgets/Input/SCheckBox.h"
+#include "LODInfoUILayout.h"
+#include "IPersonaToolkit.h"
 
 #define LOCTEXT_NAMESPACE "KismetNodeWithOptionalPinsDetails"
 
@@ -56,7 +59,8 @@ TSharedRef<IDetailCustomization> FAnimGraphNodeDetails::MakeInstance()
 
 void FAnimGraphNodeDetails::CustomizeDetails(class IDetailLayoutBuilder& DetailBuilder)
 {
-	TArray< TWeakObjectPtr<UObject> > SelectedObjectsList = DetailBuilder.GetSelectedObjects();
+	TArray< TWeakObjectPtr<UObject> > SelectedObjectsList;
+	DetailBuilder.GetObjectsBeingCustomized(SelectedObjectsList);
 
 	// Hide the pin options property; it's represented inline per-property instead
 	IDetailCategoryBuilder& PinOptionsCategory = DetailBuilder.EditCategory("PinOptions");
@@ -83,10 +87,10 @@ void FAnimGraphNodeDetails::CustomizeDetails(class IDetailLayoutBuilder& DetailB
 	}
 
 	TargetSkeleton = AnimGraphNode->GetAnimBlueprint()->TargetSkeleton;
-	TargetSkeletonName = FString::Printf(TEXT("%s'%s'"), *TargetSkeleton->GetClass()->GetName(), *TargetSkeleton->GetPathName());
+	TargetSkeletonName = TargetSkeleton ? FString::Printf(TEXT("%s'%s'"), *TargetSkeleton->GetClass()->GetName(), *TargetSkeleton->GetPathName()) : FString(TEXT(""));
 
 	// Get the node property
-	const UStructProperty* NodeProperty = AnimGraphNode->GetFNodeProperty();
+	const FStructProperty* NodeProperty = AnimGraphNode->GetFNodeProperty();
 	if (NodeProperty == nullptr)
 	{
 		return;
@@ -101,22 +105,22 @@ void FAnimGraphNodeDetails::CustomizeDetails(class IDetailLayoutBuilder& DetailB
 
 	uint32 NumChildHandles = 0;
 	FPropertyAccess::Result Result = NodePropertyHandle->GetNumChildren(NumChildHandles);
-	if(Result != FPropertyAccess::Fail)
+	if (Result != FPropertyAccess::Fail)
 	{
-		for(uint32 ChildHandleIndex = 0; ChildHandleIndex < NumChildHandles; ++ChildHandleIndex)
+		for (uint32 ChildHandleIndex = 0; ChildHandleIndex < NumChildHandles; ++ChildHandleIndex)
 		{
 			TSharedPtr<IPropertyHandle> TargetPropertyHandle = NodePropertyHandle->GetChildHandle(ChildHandleIndex);
-			if(TargetPropertyHandle.IsValid())
+			if (TargetPropertyHandle.IsValid())
 			{
-				UProperty* TargetProperty = TargetPropertyHandle->GetProperty();
+				FProperty* TargetProperty = TargetPropertyHandle->GetProperty();
 				IDetailCategoryBuilder& CurrentCategory = DetailBuilder.EditCategory(FObjectEditorUtils::GetCategoryFName(TargetProperty));
-			
+
 				int32 CustomPinIndex = AnimGraphNode->ShowPinForProperties.IndexOfByPredicate([TargetProperty](const FOptionalPinFromProperty& InOptionalPin)
 				{
 					return TargetProperty->GetFName() == InOptionalPin.PropertyName;
 				});
 
-				if(CustomPinIndex != INDEX_NONE)
+				if (CustomPinIndex != INDEX_NONE)
 				{
 					const FOptionalPinFromProperty& OptionalPin = AnimGraphNode->ShowPinForProperties[CustomPinIndex];
 
@@ -128,17 +132,17 @@ void FAnimGraphNodeDetails::CustomizeDetails(class IDetailLayoutBuilder& DetailB
 						continue;
 					}
 
-					if(!TargetPropertyHandle->GetProperty())
+					if (!TargetPropertyHandle->GetProperty())
 					{
 						continue;
 					}
 
 					// if customized, do not do anything
-					if(TargetPropertyHandle->IsCustomized())
+					if (TargetPropertyHandle->IsCustomized())
 					{
 						continue;
 					}
-		
+
 					// sometimes because of order of customization
 					// this gets called first for the node you'd like to customize
 					// then the above statement won't work
@@ -155,11 +159,11 @@ void FAnimGraphNodeDetails::CustomizeDetails(class IDetailLayoutBuilder& DetailB
 					{
 						IDetailPropertyRow& PropertyRow = CurrentCategory.AddProperty(TargetPropertyHandle);
 
-						TSharedPtr<SWidget> NameWidget; 
+						TSharedPtr<SWidget> NameWidget;
 						TSharedPtr<SWidget> ValueWidget;
 						FDetailWidgetRow Row;
-						PropertyRow.GetDefaultWidgets( NameWidget, ValueWidget, Row );
-						
+						PropertyRow.GetDefaultWidgets(NameWidget, ValueWidget, Row);
+
 						ValueWidget = (InternalCustomWidget == SNullWidget::NullWidget) ? ValueWidget : InternalCustomWidget;
 
 						const FName OptionalPinArrayEntryName(*FString::Printf(TEXT("ShowPinForProperties[%d].bShowPin"), CustomPinIndex));
@@ -167,13 +171,11 @@ void FAnimGraphNodeDetails::CustomizeDetails(class IDetailLayoutBuilder& DetailB
 
 						ShowHidePropertyHandle->MarkHiddenByCustomization();
 
-						TSharedRef<SWidget> ShowHidePropertyWidget = CreateAsPinWidget(ShowHidePropertyHandle);
-
 						ValueWidget->SetVisibility(TAttribute<EVisibility>::Create(TAttribute<EVisibility>::FGetter::CreateSP(this, &FAnimGraphNodeDetails::GetVisibilityOfProperty, ShowHidePropertyHandle)));
 
 						// If we have an edit condition, that comes as part of the default name widget, so just use a text block to avoid duplicate checkboxes
 						TSharedPtr<SWidget> PropertyNameWidget;
-						if(TargetProperty->HasMetaData(TEXT("EditCondition")))
+						if (TargetProperty->HasMetaData(TEXT("EditCondition")))
 						{
 							PropertyNameWidget = SNew(STextBlock)
 							.Text(TargetProperty->GetDisplayNameText())
@@ -185,26 +187,7 @@ void FAnimGraphNodeDetails::CustomizeDetails(class IDetailLayoutBuilder& DetailB
 							PropertyNameWidget = NameWidget;
 						}
 
-						NameWidget = 
-							SNew(SHorizontalBox)
-							+SHorizontalBox::Slot()
-							.HAlign(HAlign_Left)
-							.VAlign(VAlign_Center)
-							.FillWidth(1)
-							[
-								SNew(SBox)
-								.Clipping(EWidgetClipping::ClipToBounds)
-								[
-									PropertyNameWidget.ToSharedRef()
-								]
-							]
-							+SHorizontalBox::Slot()
-							.AutoWidth()
-							.HAlign(HAlign_Right)
-							.VAlign(VAlign_Center)
-							[
-								ShowHidePropertyWidget
-							];
+						NameWidget = PropertyNameWidget;
 
 						// we only show children if visibility is one
 						// whenever toggles, this gets called, so it will be refreshed
@@ -223,7 +206,7 @@ void FAnimGraphNodeDetails::CustomizeDetails(class IDetailLayoutBuilder& DetailB
 							ValueWidget.ToSharedRef()
 						];
 					}
-					else if(InternalCustomWidget != SNullWidget::NullWidget)
+					else if (InternalCustomWidget != SNullWidget::NullWidget)
 					{
 						// A few properties are internally customized within this customization. Here we
 						// catch instances of these that don't have an optional pin flag.
@@ -248,72 +231,10 @@ void FAnimGraphNodeDetails::CustomizeDetails(class IDetailLayoutBuilder& DetailB
 	}
 }
 
-TSharedRef<SWidget> FAnimGraphNodeDetails::CreateAsPinWidget(TSharedRef<IPropertyHandle> InPropertyHandle)
+
+TSharedRef<SWidget> FAnimGraphNodeDetails::CreatePropertyWidget(FProperty* TargetProperty, TSharedRef<IPropertyHandle> TargetPropertyHandle, UClass* NodeClass)
 {
-	TWeakPtr<IPropertyHandle> WeakPropertyHandle = InPropertyHandle;
-
-	auto IsCheckedLambda = [WeakPropertyHandle]()
-	{
-		if(WeakPropertyHandle.IsValid())
-		{
-			bool bValue;
-			FPropertyAccess::Result Result = WeakPropertyHandle.Pin()->GetValue(bValue);
-			if(Result == FPropertyAccess::MultipleValues)
-			{
-				return ECheckBoxState::Undetermined;
-			}
-			else
-			{
-				return bValue ? ECheckBoxState::Checked : ECheckBoxState::Unchecked;
-			}
-		}
-
-		return ECheckBoxState::Unchecked;
-	};
-
-	auto OnCheckStateChangedLambda = [WeakPropertyHandle](ECheckBoxState InCheckBoxState)
-	{
-		if(WeakPropertyHandle.IsValid())
-		{
-			bool bValue = InCheckBoxState == ECheckBoxState::Checked;
-			WeakPropertyHandle.Pin()->SetValue(bValue);
-		}
-	};
-
-	auto ImageLambda = [WeakPropertyHandle]()
-	{
-		if(WeakPropertyHandle.IsValid())
-		{
-			bool bValue;
-			FPropertyAccess::Result Result = WeakPropertyHandle.Pin()->GetValue(bValue);
-			if(Result == FPropertyAccess::MultipleValues)
-			{
-				return FEditorStyle::GetBrush("Kismet.VariableList.HideForInstance");
-			}
-			else
-			{
-				return bValue ? FEditorStyle::GetBrush("Kismet.VariableList.ExposeForInstance") : FEditorStyle::GetBrush("Kismet.VariableList.HideForInstance");
-			}
-		}
-
-		return FEditorStyle::GetBrush("Kismet.VariableList.HideForInstance");
-	};
-
-	return SNew(SCheckBox)
-		.ToolTipText(LOCTEXT("AsPinTooltip", "Show/hide this property as a pin on the node"))
-		.IsChecked_Lambda(IsCheckedLambda)
-		.OnCheckStateChanged_Lambda(OnCheckStateChangedLambda)
-		.Style(FEditorStyle::Get(), "CheckboxLookToggleButtonCheckbox")
-		[
-			SNew(SImage)
-			.Image_Lambda(ImageLambda)
-			.ColorAndOpacity(FLinearColor::Black)
-		];
-}
-
-TSharedRef<SWidget> FAnimGraphNodeDetails::CreatePropertyWidget(UProperty* TargetProperty, TSharedRef<IPropertyHandle> TargetPropertyHandle, UClass* NodeClass)
-{
-	if(const UObjectPropertyBase* ObjectProperty = Cast<const UObjectPropertyBase>( TargetProperty ))
+	if(const FObjectPropertyBase* ObjectProperty = CastField<const FObjectPropertyBase>( TargetProperty ))
 	{
 		if(ObjectProperty->PropertyClass->IsChildOf(UAnimationAsset::StaticClass()))
 		{
@@ -597,6 +518,7 @@ void FBoneReferenceCustomization::SetEditableSkeleton(TSharedRef<IPropertyHandle
 	UAnimGraphNode_Base* AnimGraphNode = nullptr;
 	USkeletalMesh* SkeletalMesh = nullptr;
 	UAnimationAsset * AnimationAsset = nullptr;
+	ULODInfoUILayout* LODInfoUILayout = nullptr;
 
 	USkeleton* TargetSkeleton = nullptr;
 	TSharedPtr<IEditableSkeleton> EditableSkeleton;
@@ -615,6 +537,16 @@ void FBoneReferenceCustomization::SetEditableSkeleton(TSharedRef<IPropertyHandle
 			TargetSkeleton = SkeletalMesh->Skeleton;
 			break;
 		}
+
+		LODInfoUILayout = Cast<ULODInfoUILayout>(*OuterIter);
+		if (LODInfoUILayout)
+		{
+			SkeletalMesh = LODInfoUILayout->GetPersonaToolkit()->GetPreviewMesh();
+			check(SkeletalMesh);
+			TargetSkeleton = SkeletalMesh->Skeleton;
+			break;
+		}
+
 		AnimationAsset = Cast<UAnimationAsset>(*OuterIter);
 		if (AnimationAsset)
 		{
@@ -883,6 +815,11 @@ void FAnimGraphParentPlayerDetails::CustomizeDetails(class IDetailLayoutBuilder&
 				else if (UAnimGraphNode_StateMachine* StateMachineNode = Cast<UAnimGraphNode_StateMachine>(Object))
 				{
 					// Don't create a node for these, the graph speaks for it
+				}
+				else if (UAnimGraphNode_AssetPlayerBase * AssetPlayerBase = Cast<UAnimGraphNode_AssetPlayerBase>(Object))
+				{
+					FString Title = AssetPlayerBase->GetNodeTitle(ENodeTitleType::FullTitle).ToString();
+					ThisNode = MakeShareable(new FPlayerTreeViewEntry(Title, EPlayerTreeViewEntryType::Node));
 				}
 				else if (UAnimGraphNode_Base* Node = Cast<UAnimGraphNode_Base>(Object))
 				{
@@ -1218,4 +1155,135 @@ void FPlayerTreeViewEntry::GenerateNameWidget(TSharedPtr<SHorizontalBox> Box)
 		];
 }
 
+void FAnimGraphNodeShowAsPinExtension::GetOptionalPinData(const IPropertyHandle& PropertyHandle, int32& OutOptionalPinIndex, UAnimGraphNode_Base*& OutAnimGraphNode) const
+{
+	OutOptionalPinIndex = INDEX_NONE;
+
+	TArray<UObject*> Objects;
+	PropertyHandle.GetOuterObjects(Objects);
+
+	FProperty* Property = PropertyHandle.GetProperty();
+	if(Property)
+	{
+		OutAnimGraphNode = Cast<UAnimGraphNode_Base>(Objects[0]);
+		if (OutAnimGraphNode != nullptr)
+		{
+			OutOptionalPinIndex = OutAnimGraphNode->ShowPinForProperties.IndexOfByPredicate([Property](const FOptionalPinFromProperty& InOptionalPin)
+			{
+				return Property->GetFName() == InOptionalPin.PropertyName;
+			});
+		}
+	}
+}
+
+bool FAnimGraphNodeShowAsPinExtension::IsPropertyExtendable(const UClass* InObjectClass, const IPropertyHandle& PropertyHandle) const
+{
+	int32 OptionalPinIndex;
+	UAnimGraphNode_Base* AnimGraphNode;
+	GetOptionalPinData(PropertyHandle, OptionalPinIndex, AnimGraphNode);
+
+	if(OptionalPinIndex != INDEX_NONE)
+	{
+		const FOptionalPinFromProperty& OptionalPin = AnimGraphNode->ShowPinForProperties[OptionalPinIndex];
+
+		// Not optional
+		if (!OptionalPin.bCanToggleVisibility && OptionalPin.bShowPin)
+		{
+			return false;
+		}
+
+		if(!PropertyHandle.GetProperty())
+		{
+			return false;
+		}
+
+		return OptionalPin.bCanToggleVisibility;
+	}
+
+	return false;
+}
+
+class SShowAsWidget : public SCompoundWidget
+{
+	SLATE_BEGIN_ARGS(SShowAsWidget) {}
+
+	SLATE_END_ARGS()
+
+	void Construct(const FArguments& InArgs, const TSharedRef<IPropertyHandle>& InPropertyHandle)
+	{
+		PropertyHandle = InPropertyHandle;
+
+		TSharedRef<SHorizontalBox> HorizontalBox = 
+			SNew(SHorizontalBox)
+			.ToolTipText(LOCTEXT("AsPinTooltip", "Show/hide this property as a pin on the node"));
+
+		TWeakPtr<SWidget> WeakHorizontalBox = HorizontalBox;
+
+		HorizontalBox->AddSlot()
+			.AutoWidth()
+			.VAlign(VAlign_Center)
+			[
+				SNew(STextBlock)
+				.Text(LOCTEXT("ExposeAsPinLabel", "Expose"))
+				.Font(IDetailLayoutBuilder::GetDetailFont())
+				.Visibility_Lambda([WeakHorizontalBox](){ return WeakHorizontalBox.IsValid() && WeakHorizontalBox.Pin()->IsHovered() ? EVisibility::Visible : EVisibility::Collapsed; })
+			];
+
+		HorizontalBox->AddSlot()
+			.AutoWidth()
+			.VAlign(VAlign_Center)
+			.Padding(3.0f, 0.0f, 0.0f, 0.0f)
+			[
+				SNew(SCheckBox)
+				.IsChecked(this, &SShowAsWidget::IsChecked)
+				.OnCheckStateChanged(this, &SShowAsWidget::OnCheckStateChanged)
+			];
+
+		ChildSlot
+		[
+			HorizontalBox
+		];
+	}
+
+	ECheckBoxState IsChecked() const
+	{
+		bool bValue;
+		FPropertyAccess::Result Result = PropertyHandle->GetValue(bValue);
+		if(Result == FPropertyAccess::MultipleValues)
+		{
+			return ECheckBoxState::Undetermined;
+		}
+		else
+		{
+			return bValue ? ECheckBoxState::Checked : ECheckBoxState::Unchecked;
+		}
+
+		return ECheckBoxState::Unchecked;
+	}
+
+	void OnCheckStateChanged(ECheckBoxState InCheckBoxState)
+	{
+		bool bValue = InCheckBoxState == ECheckBoxState::Checked;
+		PropertyHandle->SetValue(bValue);
+	}
+
+	TSharedPtr<IPropertyHandle> PropertyHandle;
+};
+
+TSharedRef<SWidget> FAnimGraphNodeShowAsPinExtension::GenerateExtensionWidget(const IDetailLayoutBuilder& InDetailBuilder, const UClass* InObjectClass, TSharedPtr<IPropertyHandle> PropertyHandle)
+{
+	int32 OptionalPinIndex;
+	UAnimGraphNode_Base* AnimGraphNode;
+	GetOptionalPinData(*PropertyHandle.Get(), OptionalPinIndex, AnimGraphNode);
+	check(OptionalPinIndex != INDEX_NONE);
+
+	const FName OptionalPinArrayEntryName(*FString::Printf(TEXT("ShowPinForProperties[%d].bShowPin"), OptionalPinIndex));
+	TSharedRef<IPropertyHandle> ShowHidePropertyHandle = InDetailBuilder.GetProperty(OptionalPinArrayEntryName, UAnimGraphNode_Base::StaticClass());
+
+	ShowHidePropertyHandle->MarkHiddenByCustomization();
+
+	return SNew(SShowAsWidget, ShowHidePropertyHandle);
+}
+
 #undef LOCTEXT_NAMESPACE
+

@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "EditorClassUtils.h"
 #include "HAL/FileManager.h"
@@ -132,7 +132,7 @@ TSharedRef<SWidget> FEditorClassUtils::GetSourceLinkFormatted(const UClass* Clas
 			.Style(FEditorStyle::Get(), "Common.GotoNativeCodeHyperlink")
 			.OnNavigate_Static(&Local::OnEditCodeClicked, Class)
 			.Text(FText::Format(CodeFormat, FText::FromString((Class->GetName()))))
-			.ToolTipText(FText::Format(NSLOCTEXT("SourceHyperlink", "GoToCode_ToolTip", "Click to open this source file in {0}"), FSourceCodeNavigation::GetSuggestedSourceCodeIDE()));
+			.ToolTipText(FText::Format(NSLOCTEXT("SourceHyperlink", "GoToCode_ToolTip", "Click to open this source file in {0}"), FSourceCodeNavigation::GetSelectedSourceCodeIDE()));
 	}
 
 	return SourceHyperlink;

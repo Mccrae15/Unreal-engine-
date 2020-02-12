@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -11,6 +11,7 @@
 #include "Animation/AnimNotifyQueue.h"
 #include "Serializers/MovieSceneAnimationSerialization.h"
 
+class UAnimBoneCompressionSettings;
 class UAnimNotify;
 class UAnimNotifyState;
 class UAnimSequence;
@@ -38,6 +39,7 @@ private:
 	FBlendedHeapCurve PreviousAnimCurves;
 	FTransform PreviousComponentToWorld;
 	FTransform InvInitialRootTransform;
+	FTransform InitialRootTransform;
 	int32 SkeletonRootIndex;
 
 	/** Array of currently active notifies that have duration */
@@ -73,7 +75,9 @@ public:
 	/** Sets a new sample rate & max length for this recorder. Don't call while recording. */
 	void SetSampleRateAndLength(float SampleRateHz, float LengthInMinutes);
 
-	bool SetAnimCompressionScheme(TSubclassOf<class UAnimCompress> SchemeClass);
+	bool SetAnimCompressionScheme(UAnimBoneCompressionSettings* Settings);
+
+	const FTransform& GetInitialRootTransform() const { return InitialRootTransform; }
 
 	/** If true, it will record root to include LocalToWorld */
 	uint8 bRecordLocalToWorld :1;
@@ -81,6 +85,8 @@ public:
 	uint8 bAutoSaveAsset : 1;
 	/** If true, the root bone transform will be removed from all bone transforms */
 	uint8 bRemoveRootTransform : 1;
+	/** If true we check delta time at beginning of recording */
+	uint8 bCheckDeltaTimeAtBeginning : 1;
 	/** The interpolation mode for the recorded keys */
 	ERichCurveInterpMode InterpMode;
 	/** The tangent mode for the recorded keys*/
@@ -167,6 +173,7 @@ public:
 	float GetCurrentRecordingTime(USkeletalMeshComponent* Component);
 	void StopRecordingAnimation(USkeletalMeshComponent* Component, bool bShowMessage = true);
 	void StopRecordingAllAnimations();
+	const FTransform& GetInitialRootTransform(USkeletalMeshComponent* Component) const;
 
 	void Tick(float DeltaTime);
 

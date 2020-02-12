@@ -1,4 +1,4 @@
-﻿// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+﻿// Copyright Epic Games, Inc. All Rights Reserved.
 
 using System;
 using System.Collections.Generic;
@@ -247,6 +247,16 @@ namespace Tools.DotNETCommon
 		}
 
 		/// <summary>
+		/// Finds the correct case to match the location of this file on disk. Uses the given case for parts of the path that do not exist.
+		/// </summary>
+		/// <param name="Location">The path to find the correct case for</param>
+		/// <returns>Location of the file with the correct case</returns>
+		public static FileReference FindCorrectCase(FileReference Location)
+		{
+			return new FileReference(FileUtils.FindCorrectCase(Location.ToFileInfo()));
+		}
+
+		/// <summary>
 		/// Constructs a FileInfo object from this reference
 		/// </summary>
 		/// <returns>New FileInfo object</returns>
@@ -454,6 +464,26 @@ namespace Tools.DotNETCommon
 		}
 
 		/// <summary>
+		/// Sets the time that the file was last accessed.
+		/// </summary>
+		/// <param name="Location">Location of the file.</param>
+		/// <param name="LastWriteTime">Last access time, in local time.</param>
+		public static void SetLastAccessTime(FileReference Location, DateTime LastWriteTime)
+		{
+			File.SetLastWriteTime(Location.FullName, LastWriteTime);
+		}
+
+		/// <summary>
+		/// Sets the time that the file was last accessed.
+		/// </summary>
+		/// <param name="Location">Location of the file.</param>
+		/// <param name="LastWriteTime">Last access time, in UTC time.</param>
+		public static void SetLastAccessTimeUtc(FileReference Location, DateTime LastWriteTimeUtc)
+		{
+			File.SetLastWriteTimeUtc(Location.FullName, LastWriteTimeUtc);
+		}
+
+		/// <summary>
 		/// Writes the contents of a file
 		/// </summary>
 		/// <param name="Location">Location of the file</param>
@@ -542,6 +572,69 @@ namespace Tools.DotNETCommon
 		public static void WriteAllText(FileReference Location, string Contents, Encoding Encoding)
 		{
 			File.WriteAllText(Location.FullName, Contents, Encoding);
+		}
+
+		/// <summary>
+		/// Appends the contents to a file
+		/// </summary>
+		/// <param name="Location">Location of the file</param>
+		/// <param name="Contents">Contents to append to the file</param>
+		public static void AppendAllLines(FileReference Location, IEnumerable<string> Contents)
+		{
+			File.AppendAllLines(Location.FullName, Contents);
+		}
+
+		/// <summary>
+		/// Appends the contents to a file
+		/// </summary>
+		/// <param name="Location">Location of the file</param>
+		/// <param name="Contents">Contents to append to the file</param>
+		/// <param name="Encoding">The encoding to use when parsing the file</param>
+		public static void AppendAllLines(FileReference Location, IEnumerable<string> Contents, Encoding Encoding)
+		{
+			File.AppendAllLines(Location.FullName, Contents, Encoding);
+		}
+
+		/// <summary>
+		/// Appends the contents to a file
+		/// </summary>
+		/// <param name="Location">Location of the file</param>
+		/// <param name="Contents">Contents to append to the file</param>
+		public static void AppendAllLines(FileReference Location, string[] Contents)
+		{
+			File.AppendAllLines(Location.FullName, Contents);
+		}
+
+		/// <summary>
+		/// Appends the contents to a file
+		/// </summary>
+		/// <param name="Location">Location of the file</param>
+		/// <param name="Contents">Contents to append to the file</param>
+		/// <param name="Encoding">The encoding to use when parsing the file</param>
+		public static void AppendAllLines(FileReference Location, string[] Contents, Encoding Encoding)
+		{
+			File.AppendAllLines(Location.FullName, Contents, Encoding);
+		}
+
+		/// <summary>
+		/// Appends the contents to a file
+		/// </summary>
+		/// <param name="Location">Location of the file</param>
+		/// <param name="Contents">Contents to append to the file</param>
+		public static void AppendAllText(FileReference Location, string Contents)
+		{
+			File.AppendAllText(Location.FullName, Contents);
+		}
+
+		/// <summary>
+		/// Appends the contents to a file
+		/// </summary>
+		/// <param name="Location">Location of the file</param>
+		/// <param name="Contents">Contents to append to the file</param>
+		/// <param name="Encoding">The encoding to use when parsing the file</param>
+		public static void AppendAllText(FileReference Location, string Contents, Encoding Encoding)
+		{
+			File.AppendAllText(Location.FullName, Contents, Encoding);
 		}
 
 		#endregion

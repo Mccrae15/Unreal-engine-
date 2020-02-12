@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "ClientUnitTest.h"
 
@@ -1165,7 +1165,7 @@ void UClientUnitTest::StartUnitTestServer()
 			ServerParameters += FString::Printf(TEXT(" -BeaconPort=%i -NUTMonitorBeacon"), ServerBeaconPort);
 		}
 
-		ServerHandle = StartUE4UnitTestProcess(ServerParameters, true, EBuildTargets::Server);
+		ServerHandle = StartUE4UnitTestProcess(ServerParameters, true, EBuildTargetType::Server);
 
 		if (ServerHandle.IsValid())
 		{

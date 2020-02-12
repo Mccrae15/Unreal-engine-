@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 #pragma once
 
 #include "CoreTypes.h"
@@ -28,7 +28,19 @@ struct CORE_API FEnterpriseObjectVersion
 		AjaMediaConfiguration,
 
 		// Addition of pointer to UDatasmithDataPrepRecipe 
-		HasUDatasmithDataPrepRecipe,
+		HasUDataprepRecipe,
+
+		// Addition of UDatatprepAssetInterface and UDatatprepAssetInstance
+		HasUDatatprepAssetInterface,
+		
+		// MeshDescriptionBulkData contains a bGuidIsHash so we can benefit from DDC caching.
+		MeshDescriptionBulkDataGuidIsHash,
+		
+		// Splitting controller associated with a livelink component for each LiveLinkRole class hierarchy
+		LiveLinkControllerSplitPerRole,
+
+		// Change CoreTechParametricSurface serialization to be more efficient
+		CoreTechParametricSurfaceOptim,
 
 		// -----<new versions can be added above this line>-------------------------------------------------
 		VersionPlusOne,

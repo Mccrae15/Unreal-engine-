@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -34,8 +34,7 @@ public:
 		const FNiagaraVariable* Redirection = UserParameterRedirects.Find(Parameter);
 		return FNiagaraParameterStore::FindParameterOffset(Redirection ? *Redirection : Parameter);
 	}
-	virtual int32 IndexOf(const FNiagaraVariable& Parameter) const override;
-	virtual bool AddParameter(const FNiagaraVariable& Param, bool bInitialize = true, bool bTriggerRebind = true) override;
+	virtual bool AddParameter(const FNiagaraVariable& Param, bool bInitialize = true, bool bTriggerRebind = true, int32* OutOffset = nullptr) override;
 	virtual bool RemoveParameter(const FNiagaraVariable& InVar) override;
 	virtual void InitFromSource(const FNiagaraParameterStore* SrcStore, bool bNotifyAsDirty) override;
 	virtual void Empty(bool bClearBindings = true) override;

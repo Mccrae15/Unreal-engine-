@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "StatsPages/PrimitiveStatsPage.h"
 #include "Engine/Level.h"
@@ -59,10 +59,10 @@ struct PrimitiveStatsGenerator
 	}
 
 	/** Add a new statistic to the internal map (or update an existing one) from the supplied component */
-	UPrimitiveStats* Add(UPrimitiveComponent* InPrimitiveComponent, EPrimitiveObjectSets InObjectSet)
+	UPrimitiveStats* Add(UPrimitiveComponent* InPrimitiveComponent, EPrimitiveObjectSets InObjectSet, bool bAllowTransientWorld)
 	{
-		// Objects in transient package or transient objects are not part of level.
-		if( InPrimitiveComponent->GetOutermost() == GetTransientPackage() || InPrimitiveComponent->HasAnyFlags( RF_Transient ) )
+		// Transient objects are not part of level, but if part of transient package, we can allow depending on flag bAllowTransientWorld.
+		if( (!bAllowTransientWorld && InPrimitiveComponent->GetOutermost() == GetTransientPackage()) || InPrimitiveComponent->HasAnyFlags( RF_Transient ) )
 		{
 			return NULL;
 		}
@@ -352,7 +352,6 @@ struct PrimitiveStatsGenerator
 						NewStatsEntry->Sections += FMath::Square(CurrentComponent->NumSubsections);
 
 						// count resource usage of landscape
-						//TODO: take into consideration all the editing RT/heightmap, etc.
 						bool bNotUnique = false;
 						UniqueTextures.Add(CurrentComponent->GetHeightmap(), &bNotUnique);
 						if (!bNotUnique)
@@ -370,12 +369,14 @@ struct PrimitiveStatsGenerator
 							}
 						}
 
-						for (auto ItWeightmaps = CurrentComponent->WeightmapTextures.CreateConstIterator(); ItWeightmaps; ++ItWeightmaps)
+						const TArray<UTexture2D*>& ComponentWeightmapTextures = CurrentComponent->GetWeightmapTextures();
+
+						for (UTexture2D* Weightmap : ComponentWeightmapTextures)
 						{
-							UniqueTextures.Add((*ItWeightmaps), &bNotUnique);
+							UniqueTextures.Add(Weightmap, &bNotUnique);
 							if (!bNotUnique)
 							{
-								const SIZE_T WeightmapResourceSize = (*ItWeightmaps)->GetResourceSizeBytes(EResourceSizeMode::EstimatedTotal);
+								const SIZE_T WeightmapResourceSize = Weightmap->GetResourceSizeBytes(EResourceSizeMode::EstimatedTotal);
 								NewStatsEntry->ResourceSize += (float)WeightmapResourceSize / 1024.f;
 							}
 						}
@@ -411,10 +412,18 @@ struct PrimitiveStatsGenerator
 	}
 };
 
-void FPrimitiveStatsPage::Generate( TArray< TWeakObjectPtr<UObject> >& OutObjects ) const
+void FPrimitiveStatsPage::Generate(TArray< TWeakObjectPtr<UObject> >& OutObjects) const
 {
 	PrimitiveStatsGenerator Generator;
 	Generator.Generate();
+
+	UWorld* World = GetWorld();
+	bool bAllowTransientWorld = false;
+
+	if (StatsWorld.IsValid())
+	{
+		bAllowTransientWorld = (StatsWorld->GetOutermost() == GetTransientPackage());
+	}
 
 	switch ((EPrimitiveObjectSets)ObjectSetIndex)
 	{
@@ -424,9 +433,9 @@ void FPrimitiveStatsPage::Generate( TArray< TWeakObjectPtr<UObject> >& OutObject
 			{
 				AActor* Owner = (*It)->GetOwner();
 
-				if (Owner != nullptr && !Owner->HasAnyFlags(RF_ClassDefaultObject) && Owner->IsInLevel(GWorld->GetCurrentLevel()))
+				if (Owner != nullptr && !Owner->HasAnyFlags(RF_ClassDefaultObject) && Owner->IsInLevel(World->GetCurrentLevel()))
 				{
-					UPrimitiveStats* StatsEntry = Generator.Add(*It, (EPrimitiveObjectSets)ObjectSetIndex);
+					UPrimitiveStats* StatsEntry = Generator.Add(*It, (EPrimitiveObjectSets)ObjectSetIndex, bAllowTransientWorld);
 
 					if (StatsEntry != nullptr)
 					{
@@ -439,7 +448,7 @@ void FPrimitiveStatsPage::Generate( TArray< TWeakObjectPtr<UObject> >& OutObject
 
 		case PrimitiveObjectSets_AllObjects:
 		{
-			if (UWorld* World = GWorld)
+			if (World)
 			{
 				TArray<ULevel*> Levels;
 
@@ -468,7 +477,7 @@ void FPrimitiveStatsPage::Generate( TArray< TWeakObjectPtr<UObject> >& OutObject
 
 						if (CheckLevel != nullptr && (Levels.Contains(CheckLevel)))
 						{
-							UPrimitiveStats* StatsEntry = Generator.Add(*It, (EPrimitiveObjectSets)ObjectSetIndex);
+							UPrimitiveStats* StatsEntry = Generator.Add(*It, (EPrimitiveObjectSets)ObjectSetIndex, bAllowTransientWorld);
 
 							if (StatsEntry != nullptr)
 							{
@@ -491,7 +500,7 @@ void FPrimitiveStatsPage::Generate( TArray< TWeakObjectPtr<UObject> >& OutObject
 				AActor* Owner = (*It)->GetOwner();
 				if (Owner != nullptr && !Owner->HasAnyFlags(RF_ClassDefaultObject) && SelectedActors.Contains(Owner))
 				{
-					UPrimitiveStats* StatsEntry = Generator.Add(*It, (EPrimitiveObjectSets)ObjectSetIndex);
+					UPrimitiveStats* StatsEntry = Generator.Add(*It, (EPrimitiveObjectSets)ObjectSetIndex, bAllowTransientWorld);
 					if (StatsEntry != nullptr)
 					{
 						OutObjects.Add(StatsEntry);

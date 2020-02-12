@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -41,6 +41,15 @@ enum EEngineNetworkVersionHistory
 	HISTORY_CHANNEL_CLOSE_REASON = 7,				// Bump version to serialize a channel close reason in bunches instead of bDormant
 	HISTORY_ACKS_INCLUDED_IN_HEADER = 8,			// Bump version since acks are now sent as part of the header
 	HISTORY_NETEXPORT_SERIALIZATION = 9,			// Bump version due to serialization change to FNetFieldExport
+	HISTORY_NETEXPORT_SERIALIZE_FIX = 10,			// Bump version to fix net field export name serialization 
+	HISTORY_FAST_ARRAY_DELTA_STRUCT = 11,			// Bump version to allow fast array serialization, delta struct serialization.
+	HISTORY_FIX_ENUM_SERIALIZATION = 12,			// Bump version to fix enum net serialization issues.
+	HISTORY_OPTIONALLY_QUANTIZE_SPAWN_INFO = 13,	// Bump version to conditionally disable quantization for Scale, Location, and Velocity when spawning network actors.
+	HISTORY_JITTER_IN_HEADER = 14,					// Bump version since we added jitter clock time to packet headers and removed remote saturation
+	// New history items go above here.
+
+	HISTORY_ENGINENETVERSION_PLUS_ONE,
+	HISTORY_ENGINENETVERSION_LATEST = HISTORY_ENGINENETVERSION_PLUS_ONE - 1,
 };
 
 struct CORE_API FNetworkVersion
@@ -107,7 +116,7 @@ struct CORE_API FNetworkVersion
 	* 
 	* @return FString
 	*/
-	static const FString& GetProjectVersion() { return ProjectVersion; }
+	static const FString& GetProjectVersion() { return GetProjectVersion_Internal(); }
 
 	/**
 	* Invalidates any cached network checksum and forces it to be recalculated on next request
@@ -119,7 +128,7 @@ protected:
 	/**
 	* Used to allow BP only projects to override network versions
 	*/
-	static FString ProjectVersion;
+	static FString& GetProjectVersion_Internal();
 
 	static bool		bHasCachedNetworkChecksum;
 	static uint32	CachedNetworkChecksum;

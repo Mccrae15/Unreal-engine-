@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 
 /*=============================================================================================
@@ -14,6 +14,8 @@
 **/
 struct CORE_API FIOSPlatformMemory : public FApplePlatformMemory
 {
+    // added this for now because Crashlytics doesn't properly break up different callstacks all ending in UE_LOG(LogXXX, Fatal, ...)
+    static CA_NO_RETURN void OnOutOfMemory(uint64 Size, uint32 Alignment);
 };
 
 typedef FIOSPlatformMemory FPlatformMemory;

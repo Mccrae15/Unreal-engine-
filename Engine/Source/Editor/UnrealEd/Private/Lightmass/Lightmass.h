@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 /*=============================================================================
 	Lightmass.h: lightmass import/export definitions.
@@ -14,6 +14,8 @@
 #include "StaticLightingSystem/StaticLightingPrivate.h"
 #include "Lightmass/LightmassImportanceVolume.h"
 #include "Components/LightmassPortalComponent.h"
+#include "Atmosphere/AtmosphericFogComponent.h"
+#include "Components/SkyAtmosphereComponent.h"
 #if PLATFORM_WINDOWS
 #include "Windows/AllowWindowsPlatformTypes.h"
 #endif
@@ -114,6 +116,16 @@ public:
 		Portals.Add(InPortalComponent->GetComponentTransform().ToMatrixWithScale());
 	}
 
+	void SetAtmosphericComponent(const UAtmosphericFogComponent* AtmosphericFog)
+	{
+		AtmosphericFogComponent = AtmosphericFog;
+	}
+
+	void SetSkyAtmosphereComponent(const USkyAtmosphereComponent* SkyAtmosphere)
+	{
+		SkyAtmosphereComponent = SkyAtmosphere;
+	}
+
 	// if provided, InStaticLightingMesh is used to UV unwrap the material into the static lighting textures
 	void AddMaterial(UMaterialInterface* InMaterialInterface, const FStaticLightingMesh* InStaticLightingMesh = nullptr);
 
@@ -198,6 +210,9 @@ private:
 	TArray<FBox>				ImportanceVolumes;
 	TArray<FBox>				CharacterIndirectDetailVolumes;
 	TArray<FMatrix>				Portals;
+
+	const UAtmosphericFogComponent*	AtmosphericFogComponent;
+	const USkyAtmosphereComponent*	SkyAtmosphereComponent;
 
 	FLightmassWorldInfoSettings LevelSettings;
 	/** The number of local cores to leave unused */
@@ -558,7 +573,7 @@ protected:
 	 */
 	UStaticMesh* FindStaticMesh(FGuid& Guid);
 
-	ULevel* FindLevel(FGuid& Guid);
+	ULevel* FindLevel(const FGuid& Guid);
 
 	/**
 	 *	Import light map data from the given channel.

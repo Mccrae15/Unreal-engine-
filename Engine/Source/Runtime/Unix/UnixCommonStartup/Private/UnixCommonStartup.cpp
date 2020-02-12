@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "UnixCommonStartup.h"
 #include "Misc/OutputDeviceRedirector.h"
@@ -18,11 +18,6 @@ static FString GSavedCommandLine;
 extern int32 GuardedMain( const TCHAR* CmdLine );
 extern void LaunchStaticShutdownAfterError();
 
-#if WITH_ENGINE
-// see comment in LaunchUnix.cpp for details why it is done this way
-extern void LaunchUnix_FEngineLoop_AppExit();
-#endif // WITH_ENGINE
-
 /**
  * Game-specific crash reporter
  */
@@ -33,10 +28,14 @@ void CommonUnixCrashHandler(const FGenericCrashContext& GenericContext)
 	const FUnixCrashContext& Context = static_cast< const FUnixCrashContext& >( GenericContext );
 	printf("CommonUnixCrashHandler: Signal=%d\n", Context.Signal);
 
+	/** This is the last place to gather memory stats */
+	FGenericCrashContext::SetMemoryStats(FPlatformMemory::GetStats());
+
 	// better than having mutable fields?
 	const_cast< FUnixCrashContext& >(Context).CaptureStackTrace();
 	if (GLog)
 	{
+		GLog->SetCurrentThreadAsMasterThread();
 		GLog->Flush();
 	}
 	if (GWarn)
@@ -101,6 +100,23 @@ bool SetResourceLimit(int Resource, rlim_t DesiredLimit, bool bIncreaseOnly)
 }
 
 /**
+ * Sets (hard) limit on a specific resource
+ *
+ * @param Resource - one of RLIMIT_* values
+ */
+static bool SetResourceMaxHardLimit(int Resource)
+{
+	rlimit Limit;
+	if (getrlimit(Resource, &Limit) != 0)
+	{
+		fprintf(stderr, "getrlimit() failed with error %d (%s)\n", errno, strerror(errno));
+		return false;
+	}
+
+	return SetResourceLimit(Resource, Limit.rlim_max, true);
+}
+
+/**
  * Expects GSavedCommandLine to be set up. Increases limit on
  *  - number of open files to be no less than desired (if specified on command line, otherwise left alone)
  *  - size of core file, so core gets dumped and we can debug crashed builds (unless overridden with -nocore)
@@ -108,7 +124,7 @@ bool SetResourceLimit(int Resource, rlim_t DesiredLimit, bool bIncreaseOnly)
  */
 static bool IncreasePerProcessLimits()
 {
-	// honor the parameter if given, but don't change limits if not
+	// honor the parameter if given, else change the limit of open files to the max hard limit allowed
 	int32 FileHandlesToReserve = -1;
 	if (FParse::Value(*GSavedCommandLine, TEXT("numopenfiles="), FileHandlesToReserve) && FileHandlesToReserve > 0)
 	{
@@ -122,6 +138,11 @@ static bool IncreasePerProcessLimits()
 			fprintf(stderr, "Could not adjust number of file handles, consider changing \"nofile\" in /etc/security/limits.conf and relogin.\nerror(%d): %s\n", errno, strerror(errno));
 			return false;
 		}
+	}
+	else
+	{
+		// Set the highest value we can for number of files open
+		SetResourceMaxHardLimit(RLIMIT_NOFILE);
 	}
 
 	// core dump policy:
@@ -166,7 +187,7 @@ static bool IncreasePerProcessLimits()
 	return true;
 }
 
-int CommonUnixMain(int argc, char *argv[], int (*RealMain)(const TCHAR * CommandLine))
+int CommonUnixMain(int argc, char *argv[], int (*RealMain)(const TCHAR * CommandLine), void (*AppExitCallback)())
 {
 	FString EarlyInitCommandLine;
 	FPlatformApplicationMisc::EarlyUnixInitialization(EarlyInitCommandLine);
@@ -246,9 +267,17 @@ int CommonUnixMain(int argc, char *argv[], int (*RealMain)(const TCHAR * Command
 	}
 
 	// Final shut down.
-#if WITH_ENGINE
-	LaunchUnix_FEngineLoop_AppExit();
-#endif // WITH_ENGINE
+	if (AppExitCallback)
+	{
+		// Workaround function to avoid circular dependencies between Launch and CommonUnixStartup modules.
+
+		// Other platforms call FEngineLoop::AppExit() in their main() (removed by preprocessor if compiled without engine), 
+		// but on Unix we want to share a common main() in CommonUnixStartup module, so not just the engine but all the programs 
+		// could share this logic. Unfortunately, AppExit() practice breaks this nice approach since FEngineLoop cannot be moved outside of 
+		// Launch module without making too many changes. Hence CommonUnixMain will call it through this function if provided.
+
+		AppExitCallback();
+	}
 
 	// check if a specific return code has been set
 	uint8 OverriddenErrorLevel = 0;

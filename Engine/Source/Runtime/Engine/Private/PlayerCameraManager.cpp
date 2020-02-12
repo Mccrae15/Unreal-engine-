@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "Camera/PlayerCameraManager.h"
 #include "GameFramework/Pawn.h"
@@ -20,6 +20,7 @@
 #include "Camera/CameraPhotography.h"
 #include "GameFramework/PlayerState.h"
 #include "IXRTrackingSystem.h" // for IsHeadTrackingAllowed()
+#include "GameFramework/GameNetworkManager.h"
 
 DEFINE_LOG_CATEGORY_STATIC(LogPlayerCameraManager, Log, All);
 
@@ -39,7 +40,7 @@ APlayerCameraManager::APlayerCameraManager(const FObjectInitializer& ObjectIniti
 	DefaultAspectRatio = 1.33333f;
 	bDefaultConstrainAspectRatio = false;
 	DefaultOrthoWidth = 512.0f;
-	bHidden = true;
+	SetHidden(true);
 	bReplicates = false;
 	FreeCamDistance = 256.0f;
 	bDebugClientSideCamera = false;
@@ -51,7 +52,7 @@ APlayerCameraManager::APlayerCameraManager(const FObjectInitializer& ObjectIniti
 	ViewRollMax = 89.9f;
 	bUseClientSideCameraUpdates = true;
 	CameraStyle = NAME_Default;
-	bCanBeDamaged = false;
+	SetCanBeDamaged(false);
 	TimeSinceLastServerUpdateCamera = 0.0f;
 
 	// create dummy transform component
@@ -595,7 +596,7 @@ void APlayerCameraManager::ApplyAudioFade()
 		UWorld* World = GetWorld();
 		if (World)
 		{
-			if (FAudioDevice* AudioDevice = World->GetAudioDevice())
+			if (FAudioDevice* AudioDevice = World->GetAudioDeviceRaw())
 			{
 				AudioDevice->SetTransientMasterVolume(1.0f - FadeAmount);
 			}
@@ -610,7 +611,7 @@ void APlayerCameraManager::StopAudioFade()
 		UWorld* World = GetWorld();
 		if (World)
 		{
-			if (FAudioDevice* AudioDevice = World->GetAudioDevice())
+			if (FAudioDevice* AudioDevice = World->GetAudioDeviceRaw())
 			{
 				AudioDevice->SetTransientMasterVolume(1.0f);
 			}
@@ -748,7 +749,7 @@ void APlayerCameraManager::PostInitializeComponents()
 	// spawn the temp CameraActor used for updating CameraAnims
 	FActorSpawnParameters SpawnInfo;
 	SpawnInfo.Owner = this;
-	SpawnInfo.Instigator = Instigator;
+	SpawnInfo.Instigator = GetInstigator();
 	SpawnInfo.SpawnCollisionHandlingOverride = ESpawnActorCollisionHandlingMethod::AlwaysSpawn;
 	SpawnInfo.ObjectFlags |= RF_Transient;	// We never want to save these temp actors into a map
 	AnimCameraActor = GetWorld()->SpawnActor<ACameraActor>(SpawnInfo);
@@ -875,26 +876,45 @@ void APlayerCameraManager::UpdateCamera(float DeltaTime)
 	{
 		DoUpdateCamera(DeltaTime);
 
-		TimeSinceLastServerUpdateCamera += DeltaTime;
+		const float TimeDilation = FMath::Max(GetActorTimeDilation(), KINDA_SMALL_NUMBER);
+
+		TimeSinceLastServerUpdateCamera += (DeltaTime / TimeDilation);
 
 		if (bShouldSendClientSideCameraUpdate && IsNetMode(NM_Client))
 		{
 			SCOPE_CYCLE_COUNTER(STAT_ServerUpdateCamera);
 
+			const AGameNetworkManager* const GameNetworkManager = GetDefault<AGameNetworkManager>();
+			const float ClientNetCamUpdateDeltaTime = GameNetworkManager->ClientNetCamUpdateDeltaTime;
+			const float ClientNetCamUpdatePositionLimit = GameNetworkManager->ClientNetCamUpdatePositionLimit;
+
 			FMinimalViewInfo CurrentPOV = GetCameraCachePOV();
-			
-			if (!CurrentPOV.Equals(GetLastFrameCameraCachePOV()) || TimeSinceLastServerUpdateCamera > ServerUpdateCameraTimeout)
+			FMinimalViewInfo LastPOV = GetLastFrameCameraCachePOV();
+
+			FVector ClientCameraPosition = FRepMovement::RebaseOntoZeroOrigin(CurrentPOV.Location, this);
+			FVector PrevClientCameraPosition = FRepMovement::RebaseOntoZeroOrigin(LastPOV.Location, this);
+
+			const bool bPositionThreshold = (ClientCameraPosition - PrevClientCameraPosition).SizeSquared() > (ClientNetCamUpdatePositionLimit * ClientNetCamUpdatePositionLimit);
+
+			if (bPositionThreshold || (TimeSinceLastServerUpdateCamera > ClientNetCamUpdateDeltaTime))
 			{
 				// compress the rotation down to 4 bytes
 				int32 const ShortYaw = FRotator::CompressAxisToShort(CurrentPOV.Rotation.Yaw);
 				int32 const ShortPitch = FRotator::CompressAxisToShort(CurrentPOV.Rotation.Pitch);
 				int32 const CompressedRotation = (ShortYaw << 16) | ShortPitch;
 
-				FVector ClientCameraPosition = FRepMovement::RebaseOntoZeroOrigin(CurrentPOV.Location, this);
-				PCOwner->ServerUpdateCamera(ClientCameraPosition, CompressedRotation);
+				int32 const PrevShortYaw = FRotator::CompressAxisToShort(LastPOV.Rotation.Yaw);
+				int32 const PrevShortPitch = FRotator::CompressAxisToShort(LastPOV.Rotation.Pitch);
+				int32 const PrevCompressedRotation = (PrevShortYaw << 16) | PrevShortPitch;
 
-				TimeSinceLastServerUpdateCamera = 0.0f;
+				if ((CompressedRotation != PrevCompressedRotation) || !ClientCameraPosition.Equals(PrevClientCameraPosition) || (TimeSinceLastServerUpdateCamera > ServerUpdateCameraTimeout))
+				{
+					PCOwner->ServerUpdateCamera(ClientCameraPosition, CompressedRotation);
+
+					TimeSinceLastServerUpdateCamera = 0.0f;
+				}
 			}
+
 			bShouldSendClientSideCameraUpdate = false;
 		}
 	}
@@ -985,6 +1005,8 @@ void APlayerCameraManager::DoUpdateCamera(float DeltaTime)
 
 			// our camera is now viewing there
 			NewPOV = PendingViewTarget.POV;
+
+			OnBlendComplete().Broadcast();
 		}
 	}
 
@@ -1167,7 +1189,8 @@ AEmitterCameraLensEffectBase* APlayerCameraManager::FindCameraLensEffect(TSubcla
 	for (int32 i = 0; i < CameraLensEffects.Num(); ++i)
 	{
 		AEmitterCameraLensEffectBase* LensEffect = CameraLensEffects[i];
-		if ( !LensEffect->IsPendingKill() &&
+		if (LensEffect &&
+			!LensEffect->IsPendingKill() &&
 			( (LensEffect->GetClass() == LensEffectEmitterClass) ||
 			(LensEffect->EmittersToTreatAsSame.Find(LensEffectEmitterClass) != INDEX_NONE) ||
 			(GetDefault<AEmitterCameraLensEffectBase>(LensEffectEmitterClass)->EmittersToTreatAsSame.Find(LensEffect->GetClass()) != INDEX_NONE ) ) )
@@ -1185,7 +1208,8 @@ AEmitterCameraLensEffectBase* APlayerCameraManager::AddCameraLensEffect(TSubclas
 	if (LensEffectEmitterClass != NULL)
 	{
 		AEmitterCameraLensEffectBase* LensEffect = NULL;
-		if (!GetDefault<AEmitterCameraLensEffectBase>(LensEffectEmitterClass)->bAllowMultipleInstances)
+		const AEmitterCameraLensEffectBase* LensEffectClassDefaultObject = GetDefault<AEmitterCameraLensEffectBase>(LensEffectEmitterClass);
+		if (LensEffectClassDefaultObject && !LensEffectClassDefaultObject->bAllowMultipleInstances)
 		{
 			LensEffect = FindCameraLensEffect(LensEffectEmitterClass);
 
@@ -1200,7 +1224,7 @@ AEmitterCameraLensEffectBase* APlayerCameraManager::AddCameraLensEffect(TSubclas
 			// spawn with viewtarget as the owner so bOnlyOwnerSee works as intended
 			FActorSpawnParameters SpawnInfo;
 			SpawnInfo.Owner = PCOwner->GetViewTarget();
-			SpawnInfo.Instigator = Instigator;
+			SpawnInfo.Instigator = GetInstigator();
 			SpawnInfo.SpawnCollisionHandlingOverride = ESpawnActorCollisionHandlingMethod::AlwaysSpawn;
 			SpawnInfo.ObjectFlags |= RF_Transient;	// We never want to save these into a map
 			
@@ -1249,12 +1273,21 @@ UCameraShake* APlayerCameraManager::PlayCameraShake(TSubclassOf<UCameraShake> Sh
 {
 	if (ShakeClass && CachedCameraShakeMod && (Scale > 0.0f) )
 	{
-		return CachedCameraShakeMod->AddCameraShake(ShakeClass, Scale, PlaySpace, UserPlaySpaceRot);
+		return CachedCameraShakeMod->AddCameraShake(ShakeClass, FAddCameraShakeParams(Scale, PlaySpace, UserPlaySpaceRot));
 	}
 
 	return nullptr;
 }
 
+UCameraShake* APlayerCameraManager::PlayCameraShakeFromSource(TSubclassOf<class UCameraShake> ShakeClass, class UCameraShakeSourceComponent* SourceComponent)
+{
+	if (ShakeClass && CachedCameraShakeMod)
+	{
+		return CachedCameraShakeMod->AddCameraShake(ShakeClass, FAddCameraShakeParams(1.0f, ECameraAnimPlaySpace::CameraLocal, FRotator::ZeroRotator, SourceComponent));
+	}
+
+	return nullptr;
+}
 
 void APlayerCameraManager::StopCameraShake(UCameraShake* ShakeInst, bool bImmediately)
 {
@@ -1269,6 +1302,14 @@ void APlayerCameraManager::StopAllInstancesOfCameraShake(TSubclassOf<class UCame
 	if (ShakeClass && CachedCameraShakeMod)
 	{
 		CachedCameraShakeMod->RemoveAllCameraShakesOfClass(ShakeClass, bImmediately);
+	}
+}
+
+void APlayerCameraManager::StopAllInstancesOfCameraShakeFromSource(class UCameraShakeSourceComponent* SourceComponent, bool bImmediately)
+{
+	if (SourceComponent && CachedCameraShakeMod)
+	{
+		CachedCameraShakeMod->RemoveAllCameraShakesFromSource(SourceComponent, bImmediately);
 	}
 }
 
@@ -1311,9 +1352,7 @@ void APlayerCameraManager::PlayWorldCameraShake(UWorld* InWorld, TSubclassOf<cla
 
 			if (bOrientShakeTowardsEpicenter && PlayerController->GetPawn() != NULL)
 			{
-				FVector CamLoc;
-				FRotator CamRot;
-				PlayerController->PlayerCameraManager->GetCameraViewPoint(CamLoc, CamRot);
+				const FVector CamLoc = PlayerController->PlayerCameraManager->GetCameraLocation();
 				PlayerController->ClientPlayCameraShake(Shake, ShakeScale, ECameraAnimPlaySpace::UserDefined, (Epicenter - CamLoc).Rotation());
 			}
 			else

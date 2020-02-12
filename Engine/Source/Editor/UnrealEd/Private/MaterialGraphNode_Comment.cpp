@@ -1,11 +1,11 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 /*=============================================================================
 	MaterialGraphNode_Comment.cpp
 =============================================================================*/
 
 #include "MaterialGraph/MaterialGraphNode_Comment.h"
-#include "Framework/MultiBox/MultiBoxBuilder.h"
+#include "ToolMenus.h"
 #include "MaterialGraph/MaterialGraphSchema.h"
 #include "Materials/MaterialExpressionComment.h"
 #include "Framework/Commands/GenericCommands.h"
@@ -67,19 +67,18 @@ void UMaterialGraphNode_Comment::PrepareForCopying()
 	}
 }
 
-void UMaterialGraphNode_Comment::GetContextMenuActions(const FGraphNodeContextMenuBuilder& Context) const
+void UMaterialGraphNode_Comment::GetNodeContextMenuActions(UToolMenu* Menu, UGraphNodeContextMenuContext* Context) const
 {
-	if (Context.Node && !Context.Pin)
+	if (Context->Node && !Context->Pin)
 	{
 		// frequently used common options
-		Context.MenuBuilder->BeginSection("MaterialEditorCommentMenu");
 		{
-			Context.MenuBuilder->AddMenuEntry( FGenericCommands::Get().Delete );
-			Context.MenuBuilder->AddMenuEntry( FGenericCommands::Get().Cut );
-			Context.MenuBuilder->AddMenuEntry( FGenericCommands::Get().Copy );
-			Context.MenuBuilder->AddMenuEntry( FGenericCommands::Get().Duplicate );
+			FToolMenuSection& Section = Menu->AddSection("MaterialEditorCommentMenu");
+			Section.AddMenuEntry(FGenericCommands::Get().Delete);
+			Section.AddMenuEntry(FGenericCommands::Get().Cut);
+			Section.AddMenuEntry(FGenericCommands::Get().Copy);
+			Section.AddMenuEntry(FGenericCommands::Get().Duplicate);
 		}
-		Context.MenuBuilder->EndSection();
 	}
 }
 
@@ -107,7 +106,7 @@ void UMaterialGraphNode_Comment::PostPlacedNewNode()
 void UMaterialGraphNode_Comment::OnRenameNode(const FString& NewName)
 {
 	// send property changed events
-	UProperty* NodeCommentProperty = FindField<UProperty>(GetClass(), "NodeComment");
+	FProperty* NodeCommentProperty = FindField<FProperty>(GetClass(), "NodeComment");
 	if(NodeCommentProperty != NULL)
 	{
 		PreEditChange(NodeCommentProperty);

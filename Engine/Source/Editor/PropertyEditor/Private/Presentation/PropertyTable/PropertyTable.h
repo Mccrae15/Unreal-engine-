@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 #pragma once
 
 #include "CoreMinimal.h"
@@ -15,6 +15,7 @@ class FPropertyTable : public TSharedFromThis< FPropertyTable >, public IPropert
 public: 
 
 	FPropertyTable();
+	virtual ~FPropertyTable();
 
 	virtual void Tick() override;
 
@@ -28,18 +29,19 @@ public:
 	virtual void EnqueueDeferredAction( FSimpleDelegate DeferredAction ) override;
 	virtual TSharedPtr<class FAssetThumbnailPool> GetThumbnailPool() const override;
 	virtual void NotifyFinishedChangingProperties(const FPropertyChangedEvent& PropertyChangedEvent) override {}
+	virtual TSharedPtr<FEditConditionParser> GetEditConditionParser() const override;
 
 	virtual bool GetIsUserAllowedToChangeRoot() override;
 	virtual void SetIsUserAllowedToChangeRoot( bool InAllowUserToChangeRoot ) override;
 
 	virtual void AddColumn( const TWeakObjectPtr< UObject >& Object ) override;
-	virtual void AddColumn( const TWeakObjectPtr< UProperty >& Property ) override;
+	virtual void AddColumn( const TWeakFieldPtr< FProperty >& Property ) override;
 	virtual void AddColumn( const TSharedRef< FPropertyPath >& PropertyPath ) override;
 	virtual void AddColumn( const TSharedRef< class IPropertyTableColumn >& Column ) override;
 	virtual void RemoveColumn( const TSharedRef< class IPropertyTableColumn >& Column ) override;
 
 	virtual void AddRow( const TWeakObjectPtr< UObject >& Object ) override;
-	virtual void AddRow( const TWeakObjectPtr< UProperty >& Property ) override;
+	virtual void AddRow( const TWeakFieldPtr< FProperty >& Property ) override;
 	virtual void AddRow( const TSharedRef< FPropertyPath >& PropertyPath ) override;
 	virtual void AddRow( const TSharedRef< class IPropertyTableRow >& Row ) override;
 	virtual void RemoveRow( const TSharedRef< class IPropertyTableRow >& Row ) override;
@@ -158,15 +160,18 @@ private:
 	TSharedPtr< IPropertyTableRow > ScanForRowWithCells( const int32 StartIndex, const int32 Step ) const;
 
 	TSharedRef< IPropertyTableRow > CreateRow( const TWeakObjectPtr< UObject >& Object );
-	TSharedRef< IPropertyTableRow > CreateRow( const TWeakObjectPtr< UProperty >& Property );
+	TSharedRef< IPropertyTableRow > CreateRow( const TWeakFieldPtr< FProperty >& Property );
 	TSharedRef< IPropertyTableRow > CreateRow( const TSharedRef< FPropertyPath >& PropertyPath );
 
 	TSharedRef< IPropertyTableColumn > CreateColumn( const TWeakObjectPtr< UObject >& Object );
-	TSharedRef< IPropertyTableColumn > CreateColumn( const TWeakObjectPtr< UProperty >& Property );
+	TSharedRef< IPropertyTableColumn > CreateColumn( const TWeakFieldPtr< FProperty >& Property );
 	TSharedRef< IPropertyTableColumn > CreateColumn( const TSharedRef< FPropertyPath >& PropertyPath );
 
 	void PurgeInvalidObjectNodes();
 
+	void ResetTable();
+
+	void OnObjectsReplaced(const TMap<UObject*, UObject*>& ReplacementMap);
 
 private:
 
@@ -218,5 +223,9 @@ private:
 
 	/** The Orientation of this table, I.e. do we swap columns and rows */
 	EPropertyTableOrientation::Type Orientation;
+
+	FDelegateHandle ObjectsReplacedHandle;
+
+	TSharedRef<FEditConditionParser> EditConditionParser;
 };
 

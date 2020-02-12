@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -14,6 +14,16 @@ class IPlatformCrypto : public IModuleInterface
 {
 
 public:
+
+	/**
+	 * Called when crytpo module is loaded
+	 */
+	virtual void StartupModule() override;
+
+	/**
+	 * Called when crytpo module is unloaded
+	 */
+	virtual void ShutdownModule() override;
 
 	/**
 	 * Singleton-like access to this module's interface.  This is just for convenience!

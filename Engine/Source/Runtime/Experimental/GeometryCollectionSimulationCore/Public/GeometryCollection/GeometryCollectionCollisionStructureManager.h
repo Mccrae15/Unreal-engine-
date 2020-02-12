@@ -1,8 +1,6 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
-
-#if INCLUDE_CHAOS
 
 #include "CoreMinimal.h"
 #include "GeometryCollection/GeometryCollection.h"
@@ -10,7 +8,7 @@
 #include "GeometryCollection/GeometryCollectionSimulationTypes.h"
 #include "UObject/ObjectMacros.h"
 
-#include "PBDRigidsSolver.h"
+namespace Chaos { class FErrorReporter; }
 
 namespace Chaos
 {
@@ -26,37 +24,37 @@ class GEOMETRYCOLLECTIONSIMULATIONCORE_API FCollisionStructureManager
 {
 public:
 	FCollisionStructureManager();
-	virtual ~FCollisionStructureManager();
+	virtual ~FCollisionStructureManager() {}
 
-	typedef TArray<Chaos::TVector<float, 3>> FSimplicial;
+	typedef TArray<Chaos::TVector<float, 3>> FPoints;
+	typedef Chaos::TBVHParticles<float,3> FSimplicial;
+	typedef Chaos::FImplicitObject FImplicit;
 
-	typedef Chaos::TImplicitObject<float, 3> FImplicit;
-
-	struct FElement {
-		FSimplicial* Simplicial;
-		FImplicit* Implicit;
-		FVector InertiaTensor;
-		Chaos::TTriangleMesh<float>* TriangleMesh;
-		float Volume;
-		float Mass;
-	};
-
+	static FSimplicial* NewSimplicial(
+		const Chaos::TParticles<float, 3>& Vertices,
+		Chaos::TTriangleMesh<float>& TriMesh,
+		const Chaos::FImplicitObject* Implicit,
+		int32 CollisionParticlesMaxInput
+	);
+	
+	
 	static FSimplicial * NewSimplicial(
 		const Chaos::TParticles<float,3>& AllParticles,
 		const TManagedArray<int32>& BoneMap,
-		const TManagedArray<int32>& CollisionMask,
 		const ECollisionTypeEnum CollisionType,
 		Chaos::TTriangleMesh<float>& TriMesh,
 		const float CollisionParticlesFraction
 	);
 
 	static FImplicit * NewImplicit(
+		Chaos::FErrorReporter& ErrorReporter,
 		const Chaos::TParticles<float, 3>& MeshParticles,
 		const Chaos::TTriangleMesh<float>& TriMesh,
 		const FBox& CollisionBoundsArray,
 		const float Radius,
 		const int32 MinRes,
 		const int32 MaxRes,
+		const float CollisionObjectReduction,
 		const ECollisionTypeEnum CollisionType,
 		const EImplicitTypeEnum ImplicitType
 	);
@@ -75,6 +73,7 @@ public:
 
 
 	static Chaos::TLevelSet<float, 3>* NewLevelset(
+		Chaos::FErrorReporter& ErrorReporter,
 		const Chaos::TParticles<float, 3>& MeshParticles,
 		const Chaos::TTriangleMesh<float>& TriMesh,
 		const FBox& CollisionBounds,
@@ -84,9 +83,4 @@ public:
 	);
 
 	static void UpdateImplicitFlags(FImplicit* Implicit, ECollisionTypeEnum CollisionType);
-
-
-	TMap<int32, FElement> Map;
 };
-
-#endif

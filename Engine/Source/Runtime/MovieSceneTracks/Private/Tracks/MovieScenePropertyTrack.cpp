@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "Tracks/MovieScenePropertyTrack.h"
 #include "MovieSceneCommonHelpers.h"
@@ -92,6 +92,18 @@ void UMovieScenePropertyTrack::RemoveSection(UMovieSceneSection& Section)
 	}
 }
 
+void UMovieScenePropertyTrack::RemoveSectionAt(int32 SectionIndex)
+{
+	bool bResetSectionToKey = (SectionToKey == Sections[SectionIndex]);
+
+	Sections.RemoveAt(SectionIndex);
+
+	if (bResetSectionToKey)
+	{
+		SectionToKey = Sections.Num() > 0 ? Sections[0] : nullptr;
+	}
+}
+
 
 bool UMovieScenePropertyTrack::IsEmpty() const
 {
@@ -146,9 +158,12 @@ UMovieSceneSection* UMovieScenePropertyTrack::FindOrExtendSection(FFrameNumber T
 		bool bCalculateWeight = false;
 		if (SectionToKey && !OverlappingSections.Contains(SectionToKey))
 		{
-			if (SectionToKey->HasEndFrame() && SectionToKey->GetExclusiveEndFrame() < Time)
+			if (SectionToKey->HasEndFrame() && SectionToKey->GetExclusiveEndFrame() <= Time)
 			{
-				SectionToKey->SetEndFrame(Time);
+				if (SectionToKey->GetExclusiveEndFrame() != Time)
+				{
+					SectionToKey->SetEndFrame(Time);
+				}
 			}
 			else
 			{
@@ -168,30 +183,9 @@ UMovieSceneSection* UMovieScenePropertyTrack::FindOrExtendSection(FFrameNumber T
 		}
 		//we need to calculate weight also possibly
 		FOptionalMovieSceneBlendType BlendType = SectionToKey->GetBlendType();
-		if (bCalculateWeight && BlendType.IsValid() && (BlendType.Get() == EMovieSceneBlendType::Additive || BlendType.Get() == EMovieSceneBlendType::Absolute))
+		if (bCalculateWeight)
 		{
-			//if additive weight is just the inverse of any weight on it
-			if (BlendType.Get() == EMovieSceneBlendType::Additive)
-			{
-				float TotalWeightValue = SectionToKey->GetTotalWeightValue(Time);
-				Weight = !FMath::IsNearlyZero(TotalWeightValue) ? 1.0f / TotalWeightValue : 0.0f;
-			}
-			else
-			{
-				//if absolute need to calculate weight based upon other sections weights (+ implicit absolute weights)
-				int TotalNumOfAbsoluteSections = 1;
-				for (UMovieSceneSection* Section : OverlappingSections)
-				{
-					FOptionalMovieSceneBlendType NewBlendType = Section->GetBlendType();
-
-					if (Section != SectionToKey  && NewBlendType.IsValid() && NewBlendType.Get() == EMovieSceneBlendType::Absolute)
-					{
-						++TotalNumOfAbsoluteSections;
-					}
-				}
-				float TotalWeightValue = SectionToKey->GetTotalWeightValue(Time);
-				Weight = !FMath::IsNearlyZero(TotalWeightValue) ? float(TotalNumOfAbsoluteSections) / TotalWeightValue : 0.0f;
-			}
+			Weight = MovieSceneHelpers::CalculateWeightForBlending(SectionToKey, Time);
 		}
 		return SectionToKey;
 	}
@@ -232,10 +226,13 @@ UMovieSceneSection* UMovieScenePropertyTrack::FindOrExtendSection(FFrameNumber T
 			{
 				// SectionIndex == 0 
 				UMovieSceneSection* PreviousSection = Sections[0];
-				if(PreviousSection->HasEndFrame() && PreviousSection->GetExclusiveEndFrame() < Time)
+				if(PreviousSection->HasEndFrame() && PreviousSection->GetExclusiveEndFrame() <= Time)
 				{
 					// Append and grow the section
-					PreviousSection->SetEndFrame(Time);
+					if (PreviousSection->GetExclusiveEndFrame() != Time)
+					{
+						PreviousSection->SetEndFrame(Time);
+					}
 				}
 				else
 				{
@@ -278,7 +275,7 @@ void UMovieScenePropertyTrack::SetSectionToKey(UMovieSceneSection* InSection)
 	SectionToKey = InSection;
 }
 
-UMovieSceneSection* UMovieScenePropertyTrack::GetSectionToKey()
+UMovieSceneSection* UMovieScenePropertyTrack::GetSectionToKey() const
 {
 	return SectionToKey;
 }

@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 /*=============================================================================
 D3D12Commands.cpp: D3D RHI commands implementation.
@@ -26,7 +26,7 @@ static FAutoConsoleVariableRef CVarSyncTemporalResources(
 
 using namespace D3D12RHI;
 
-#define DECLARE_ISBOUNDSHADER(ShaderType) inline void ValidateBoundShader(FD3D12StateCache& InStateCache, F##ShaderType##RHIParamRef ShaderType##RHI) \
+#define DECLARE_ISBOUNDSHADER(ShaderType) inline void ValidateBoundShader(FD3D12StateCache& InStateCache, FRHI##ShaderType* ShaderType##RHI) \
 { \
 	FD3D12##ShaderType* CachedShader; \
 	InStateCache.Get##ShaderType(&CachedShader); \
@@ -57,14 +57,12 @@ void FD3D12DynamicRHI::SetupRecursiveResources()
 
 	{
 		TShaderMapRef<FLongGPUTaskPS> PixelShader(ShaderMap);
-		PixelShader->GetPixelShader();
+		PixelShader.GetPixelShader();
 	}
-
-	extern ENGINE_API TGlobalResource<FScreenVertexDeclaration> GScreenVertexDeclaration;
 
 	{
 		TShaderMapRef<FLongGPUTaskPS> PixelShader(ShaderMap);
-		PixelShader->GetPixelShader();
+		PixelShader.GetPixelShader();
 	}
 
 	// TODO: Waiting to integrate MSAA fix for ResolveShader.h
@@ -75,67 +73,34 @@ void FD3D12DynamicRHI::SetupRecursiveResources()
 	if (GMaxRHIShaderPlatform == SP_PCD3D_SM5 || GMaxRHIShaderPlatform == SP_XBOXONE_D3D12)
 	{
 		TShaderMapRef<FResolveDepthPS> ResolvePixelShader_Depth(ShaderMap);
-		ResolvePixelShader_Depth->GetPixelShader();
+		ResolvePixelShader_Depth.GetPixelShader();
 
 		TShaderMapRef<FResolveDepthPS> ResolvePixelShader_SingleSample(ShaderMap);
-		ResolvePixelShader_SingleSample->GetPixelShader();
+		ResolvePixelShader_SingleSample.GetPixelShader();
 	}
 	else
 	{
 		TShaderMapRef<FResolveDepthNonMSPS> ResolvePixelShader_DepthNonMS(ShaderMap);
-		ResolvePixelShader_DepthNonMS->GetPixelShader();
+		ResolvePixelShader_DepthNonMS.GetPixelShader();
 	}
 }
 
 // Vertex state.
-void FD3D12CommandContext::RHISetStreamSource(uint32 StreamIndex, FVertexBufferRHIParamRef VertexBufferRHI, uint32 Offset)
+void FD3D12CommandContext::RHISetStreamSource(uint32 StreamIndex, FRHIVertexBuffer* VertexBufferRHI, uint32 Offset)
 {
 	FD3D12VertexBuffer* VertexBuffer = RetrieveObject<FD3D12VertexBuffer>(VertexBufferRHI);
 
 	StateCache.SetStreamSource(VertexBuffer ? &VertexBuffer->ResourceLocation : nullptr, StreamIndex, Offset);
 }
 
-// Stream-Out state.
-void FD3D12DynamicRHI::RHISetStreamOutTargets(uint32 NumTargets, const FVertexBufferRHIParamRef* VertexBuffers, const uint32* Offsets)
+void FD3D12CommandContext::RHISetComputeShader(FRHIComputeShader* ComputeShaderRHI)
 {
-	// Multi-GPU support: this might need a node mask parameter or broadcast to all GPUs.
-	FD3D12CommandContext& CmdContext = GetRHIDevice()->GetDefaultCommandContext();
-	FD3D12Resource* D3DVertexBuffers[D3D12_SO_BUFFER_SLOT_COUNT] = { 0 };
-	uint32 D3DOffsets[D3D12_SO_BUFFER_SLOT_COUNT] = { 0 };
-
-	if (VertexBuffers)
-	{
-		for (uint32 BufferIndex = 0; BufferIndex < NumTargets; BufferIndex++)
-		{
-			const FD3D12VertexBuffer* VB = ((FD3D12VertexBuffer*)VertexBuffers[BufferIndex]);
-			if (VB != nullptr)
-			{
-				D3DVertexBuffers[BufferIndex] = VB->ResourceLocation.GetResource();
-				D3DOffsets[BufferIndex] = VB->ResourceLocation.GetOffsetFromBaseOfResource();
-			}
-			else
-			{
-				D3DVertexBuffers[BufferIndex] = nullptr;
-				D3DOffsets[BufferIndex] = 0;
-			}
-		}
-	}
-
-	CmdContext.StateCache.SetStreamOutTargets(NumTargets, D3DVertexBuffers, D3DOffsets);
-}
-
-void FD3D12CommandContext::RHISetComputeShader(FComputeShaderRHIParamRef ComputeShaderRHI)
-{
-#if D3D12_RHI_RAYTRACING
-	StateCache.TransitionComputeState(D3D12PT_Compute);
-#endif
-
 	// TODO: Eventually the high-level should just use RHISetComputePipelineState() directly similar to how graphics PSOs are handled.
 	FD3D12ComputePipelineState* const ComputePipelineState = FD3D12DynamicRHI::ResourceCast(RHICreateComputePipelineState(ComputeShaderRHI).GetReference());
 	RHISetComputePipelineState(ComputePipelineState);
 }
 
-void FD3D12CommandContextBase::RHIWaitComputeFence(FComputeFenceRHIParamRef InFenceRHI)
+void FD3D12CommandContextBase::RHIWaitComputeFence(FRHIComputeFence* InFenceRHI)
 {
 	FD3D12Fence* Fence = FD3D12DynamicRHI::ResourceCast(InFenceRHI);
 
@@ -157,7 +122,7 @@ void FD3D12CommandContext::RHIDispatchComputeShader(uint32 ThreadGroupCountX, ui
 
 	if (IsDefaultContext())
 	{
-		GetParentDevice()->RegisterGPUWork(1);
+		GetParentDevice()->RegisterGPUDispatch(FIntVector(ThreadGroupCountX, ThreadGroupCountY, ThreadGroupCountZ));	
 	}
 
 	if (ComputeShader->ResourceCounts.bGlobalUniformBufferUsed)
@@ -173,13 +138,13 @@ void FD3D12CommandContext::RHIDispatchComputeShader(uint32 ThreadGroupCountX, ui
 	DEBUG_EXECUTE_COMMAND_LIST(this);
 }
 
-void FD3D12CommandContext::RHIDispatchIndirectComputeShader(FVertexBufferRHIParamRef ArgumentBufferRHI, uint32 ArgumentOffset)
+void FD3D12CommandContext::RHIDispatchIndirectComputeShader(FRHIVertexBuffer* ArgumentBufferRHI, uint32 ArgumentOffset)
 {
 	FD3D12VertexBuffer* ArgumentBuffer = FD3D12DynamicRHI::ResourceCast(ArgumentBufferRHI);
 
 	if (IsDefaultContext())
 	{
-		GetParentDevice()->RegisterGPUWork(1);
+		GetParentDevice()->RegisterGPUDispatch(FIntVector(1, 1, 1));	
 	}
 
 	FD3D12ComputeShader* ComputeShader = nullptr;
@@ -211,7 +176,7 @@ void FD3D12CommandContext::RHIDispatchIndirectComputeShader(FVertexBufferRHIPara
 }
 
 
-void FD3D12CommandContext::RHITransitionResources(EResourceTransitionAccess TransitionType, FTextureRHIParamRef* InTextures, int32 NumTextures)
+void FD3D12CommandContext::RHITransitionResources(EResourceTransitionAccess TransitionType, FRHITexture** InTextures, int32 NumTextures)
 {
 #if !USE_D3D12RHI_RESOURCE_STATE_TRACKING
 	// TODO: Make sure that EMetaData is supported with an aliasing barrier, otherwise the CMask decal optimisation will break.
@@ -280,7 +245,7 @@ void FD3D12CommandContext::RHITransitionResources(EResourceTransitionAccess Tran
 }
 
 
-void FD3D12CommandContext::RHITransitionResources(EResourceTransitionAccess TransitionType, EResourceTransitionPipeline TransitionPipeline, FUnorderedAccessViewRHIParamRef* InUAVs, int32 InNumUAVs, FComputeFenceRHIParamRef WriteComputeFenceRHI)
+void FD3D12CommandContext::RHITransitionResources(EResourceTransitionAccess TransitionType, EResourceTransitionPipeline TransitionPipeline, FRHIUnorderedAccessView** InUAVs, int32 InNumUAVs, FRHIComputeFence* WriteComputeFenceRHI)
 {
 	static IConsoleVariable* CVarShowTransitions = IConsoleManager::Get().FindConsoleVariable(TEXT("r.ProfileGPU.ShowTransitions"));
 	const bool bShowTransitionEvents = CVarShowTransitions->GetInt() != 0;
@@ -319,7 +284,27 @@ void FD3D12CommandContext::RHITransitionResources(EResourceTransitionAccess Tran
 		}
 		else
 		{
-#if !USE_D3D12RHI_RESOURCE_STATE_TRACKING
+#if USE_D3D12RHI_RESOURCE_STATE_TRACKING
+			if (TransitionType == EResourceTransitionAccess::EReadable)
+			{
+				const D3D12_COMMAND_LIST_TYPE CmdListType = CommandListHandle.GetCommandListType();
+
+				// Compute pipeline can't transition to graphics states such as PIXEL_SHADER_RESOURCE. Best bet is to transition to COMMON given that we're going to consume it on a different queue anyway.
+				// Technically we should be able to transition NON_PIXEL_SHADER_RESOURCE on ComputeToCompute cases, but it appears an AMD driver issue is causing that to hang the GPU, so we're using COMMON
+				// in that case also, which is not ideal, but avoids the hang.
+				D3D12_RESOURCE_STATES AfterState = (CmdListType == D3D12_COMMAND_LIST_TYPE_DIRECT && TransitionPipeline == EResourceTransitionPipeline::EComputeToGfx)?
+					D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE | D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE : D3D12_RESOURCE_STATE_COMMON;
+
+				for (int32 i = 0; i < InNumUAVs; ++i)
+				{
+					if (InUAVs[i])
+					{
+						FD3D12UnorderedAccessView* const UnorderedAccessView = RetrieveObject<FD3D12UnorderedAccessView>(InUAVs[i]);
+						FD3D12DynamicRHI::TransitionResource(CommandListHandle, UnorderedAccessView, AfterState);
+					}
+				}
+			}
+#else
 			// Determine the direction of the transitions.
 			// Note in this method, the writeable state is always UAV, regardless of the FD3D12Resource's Writeable state.
 			const D3D12_RESOURCE_STATES* pBefore = nullptr;
@@ -377,7 +362,7 @@ void FD3D12CommandContext::RHITransitionResources(EResourceTransitionAccess Tran
 					}
 				}
 			}
-#endif // !USE_D3D12RHI_RESOURCE_STATE_TRACKING
+#endif // USE_D3D12RHI_RESOURCE_STATE_TRACKING
 		}
 	}
 
@@ -392,8 +377,17 @@ void FD3D12CommandContext::RHITransitionResources(EResourceTransitionAccess Tran
 	}
 }
 
+void FD3D12CommandContext::RHISetGlobalUniformBuffers(const FUniformBufferStaticBindings& InUniformBuffers)
+{
+	FMemory::Memzero(GlobalUniformBuffers.GetData(), GlobalUniformBuffers.Num() * sizeof(FRHIUniformBuffer*));
 
-void FD3D12CommandContext::RHICopyToStagingBuffer(FVertexBufferRHIParamRef SourceBufferRHI, FStagingBufferRHIParamRef StagingBufferRHI, uint32 Offset, uint32 NumBytes, FGPUFenceRHIParamRef FenceRHI)
+	for (int32 Index = 0; Index < InUniformBuffers.GetUniformBufferCount(); ++Index)
+	{
+		GlobalUniformBuffers[InUniformBuffers.GetSlot(Index)] = InUniformBuffers.GetUniformBuffer(Index);
+	}
+}
+
+void FD3D12CommandContext::RHICopyToStagingBuffer(FRHIVertexBuffer* SourceBufferRHI, FRHIStagingBuffer* StagingBufferRHI, uint32 Offset, uint32 NumBytes)
 {
 	FD3D12StagingBuffer* StagingBuffer = FD3D12DynamicRHI::ResourceCast(StagingBufferRHI);
 	check(StagingBuffer);
@@ -410,11 +404,9 @@ void FD3D12CommandContext::RHICopyToStagingBuffer(FVertexBufferRHIParamRef Sourc
 	{
 		// @todo-mattc I feel like we should allocate more than NumBytes to handle small reads without blowing tons of space. Need to pool this.
 		// Hopefully d3d12 will do smart pooling out of an internal heap.
-		if (StagingBuffer->StagedRead)
-		{
-			StagingBuffer->StagedRead.SafeRelease();
-		}
-		VERIFYD3D12RESULT(GetParentDevice()->GetParentAdapter()->CreateBuffer(D3D12_HEAP_TYPE_READBACK, GetGPUMask(), GetGPUMask(), NumBytes, StagingBuffer->StagedRead.GetInitReference()));
+		StagingBuffer->SafeRelease();
+
+		VERIFYD3D12RESULT(GetParentDevice()->GetParentAdapter()->CreateBuffer(D3D12_HEAP_TYPE_READBACK, GetGPUMask(), GetGPUMask(), NumBytes, &StagingBuffer->StagedRead, TEXT("StagedRead")));
 		StagingBuffer->ShadowBufferSize = NumBytes;
 	}
 
@@ -430,21 +422,23 @@ void FD3D12CommandContext::RHICopyToStagingBuffer(FVertexBufferRHIParamRef Sourc
 
 		numCopies++;
 
-		CommandListHandle->CopyBufferRegion(pDestResource->GetResource(), Offset, pSourceResource->GetResource(), Offset, NumBytes);
+		CommandListHandle->CopyBufferRegion(pDestResource->GetResource(), 0, pSourceResource->GetResource(), Offset, NumBytes);
 		CommandListHandle.UpdateResidency(pDestResource);
 		CommandListHandle.UpdateResidency(pSourceResource);
 	}
-
-	if (FenceRHI)
-	{
-		// @todo-mattc we don't want to flush here. That should be the caller's responsibility.
-		RHISubmitCommandsHint();
-		FD3D12GPUFence* Fence = FD3D12DynamicRHI::ResourceCast(FenceRHI);
-		Fence->WriteInternal(ED3D12CommandQueueType::Default);
-	}
 }
 
-void FD3D12CommandContext::RHISetViewport(uint32 MinX, uint32 MinY, float MinZ, uint32 MaxX, uint32 MaxY, float MaxZ)
+void FD3D12CommandContext::RHIWriteGPUFence(FRHIGPUFence* FenceRHI)
+{
+	check(FenceRHI)
+
+	// @todo-mattc we don't want to flush here. That should be the caller's responsibility.
+	RHISubmitCommandsHint();
+	FD3D12GPUFence* Fence = FD3D12DynamicRHI::ResourceCast(FenceRHI);
+	Fence->WriteInternal(ED3D12CommandQueueType::Default);
+}
+
+void FD3D12CommandContext::RHISetViewport(float MinX, float MinY, float MinZ, float MaxX, float MaxY, float MaxZ)
 {
 	// These are the maximum viewport extents for D3D12. Exceeding them leads to badness.
 	check(MinX <= (uint32)D3D12_VIEWPORT_BOUNDS_MAX);
@@ -452,12 +446,13 @@ void FD3D12CommandContext::RHISetViewport(uint32 MinX, uint32 MinY, float MinZ, 
 	check(MaxX <= (uint32)D3D12_VIEWPORT_BOUNDS_MAX);
 	check(MaxY <= (uint32)D3D12_VIEWPORT_BOUNDS_MAX);
 
-	D3D12_VIEWPORT Viewport = { (float)MinX, (float)MinY, (float)(MaxX - MinX), (float)(MaxY - MinY), MinZ, MaxZ };
+	D3D12_VIEWPORT Viewport = { MinX, MinY, (MaxX - MinX), (MaxY - MinY), MinZ, MaxZ };
 	//avoid setting a 0 extent viewport, which the debug runtime doesn't like
 	if (Viewport.Width > 0 && Viewport.Height > 0)
 	{
 		// Setting a viewport will also set the scissor rect appropriately.
 		StateCache.SetViewport(Viewport);
+		RHISetScissorRect(true, MinX, MinY, MaxX, MaxY);
 	}
 }
 
@@ -470,92 +465,18 @@ void FD3D12CommandContext::RHISetScissorRect(bool bEnable, uint32 MinX, uint32 M
 	}
 	else
 	{
-		const CD3DX12_RECT ScissorRect(0, 0, GetMax2DTextureDimension(), GetMax2DTextureDimension());
+		const D3D12_VIEWPORT& Viewport = StateCache.GetViewport();
+		const CD3DX12_RECT ScissorRect((LONG) Viewport.TopLeftX, (LONG) Viewport.TopLeftY, (LONG) Viewport.TopLeftX + (LONG) Viewport.Width, (LONG) Viewport.TopLeftY + (LONG) Viewport.Height);
 		StateCache.SetScissorRect(ScissorRect);
 	}
 }
 
-static inline D3D_PRIMITIVE_TOPOLOGY GetD3D12PrimitiveType(EPrimitiveType PrimitiveType, bool bUsingTessellation)
-{
-	if (bUsingTessellation)
-	{
-		switch (PrimitiveType)
-		{
-		case PT_1_ControlPointPatchList: return D3D_PRIMITIVE_TOPOLOGY_1_CONTROL_POINT_PATCHLIST;
-		case PT_2_ControlPointPatchList: return D3D_PRIMITIVE_TOPOLOGY_2_CONTROL_POINT_PATCHLIST;
-
-			// This is the case for tessellation without AEN or other buffers, so just flip to 3 CPs
-		case PT_TriangleList: return D3D_PRIMITIVE_TOPOLOGY_3_CONTROL_POINT_PATCHLIST;
-
-		case PT_LineList:
-		case PT_TriangleStrip:
-		case PT_QuadList:
-		case PT_RectList:
-		case PT_PointList:
-			UE_LOG(LogD3D12RHI, Fatal, TEXT("Invalid type specified for tessellated render, probably missing a case in FSkeletalMeshSceneProxy::DrawDynamicElementsByMaterial or FStaticMeshSceneProxy::GetMeshElement"));
-			break;
-		default:
-			// Other cases are valid.
-			break;
-		};
-	}
-
-	switch (PrimitiveType)
-	{
-	case PT_TriangleList: return D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST;
-	case PT_TriangleStrip: return D3D_PRIMITIVE_TOPOLOGY_TRIANGLESTRIP;
-	case PT_LineList: return D3D_PRIMITIVE_TOPOLOGY_LINELIST;
-	case PT_PointList: return D3D_PRIMITIVE_TOPOLOGY_POINTLIST;
-	#if defined(D3D12RHI_PRIMITIVE_TOPOLOGY_RECTLIST)
-		case PT_RectList: return D3D12RHI_PRIMITIVE_TOPOLOGY_RECTLIST;
-	#endif
-
-		// ControlPointPatchList types will pretend to be TRIANGLELISTS with a stride of N 
-		// (where N is the number of control points specified), so we can return them for
-		// tessellation and non-tessellation. This functionality is only used when rendering a 
-		// default material with something that claims to be tessellated, generally because the 
-		// tessellation material failed to compile for some reason.
-	case PT_3_ControlPointPatchList: return D3D_PRIMITIVE_TOPOLOGY_3_CONTROL_POINT_PATCHLIST;
-	case PT_4_ControlPointPatchList: return D3D_PRIMITIVE_TOPOLOGY_4_CONTROL_POINT_PATCHLIST;
-	case PT_5_ControlPointPatchList: return D3D_PRIMITIVE_TOPOLOGY_5_CONTROL_POINT_PATCHLIST;
-	case PT_6_ControlPointPatchList: return D3D_PRIMITIVE_TOPOLOGY_6_CONTROL_POINT_PATCHLIST;
-	case PT_7_ControlPointPatchList: return D3D_PRIMITIVE_TOPOLOGY_7_CONTROL_POINT_PATCHLIST;
-	case PT_8_ControlPointPatchList: return D3D_PRIMITIVE_TOPOLOGY_8_CONTROL_POINT_PATCHLIST;
-	case PT_9_ControlPointPatchList: return D3D_PRIMITIVE_TOPOLOGY_9_CONTROL_POINT_PATCHLIST;
-	case PT_10_ControlPointPatchList: return D3D_PRIMITIVE_TOPOLOGY_10_CONTROL_POINT_PATCHLIST;
-	case PT_11_ControlPointPatchList: return D3D_PRIMITIVE_TOPOLOGY_11_CONTROL_POINT_PATCHLIST;
-	case PT_12_ControlPointPatchList: return D3D_PRIMITIVE_TOPOLOGY_12_CONTROL_POINT_PATCHLIST;
-	case PT_13_ControlPointPatchList: return D3D_PRIMITIVE_TOPOLOGY_13_CONTROL_POINT_PATCHLIST;
-	case PT_14_ControlPointPatchList: return D3D_PRIMITIVE_TOPOLOGY_14_CONTROL_POINT_PATCHLIST;
-	case PT_15_ControlPointPatchList: return D3D_PRIMITIVE_TOPOLOGY_15_CONTROL_POINT_PATCHLIST;
-	case PT_16_ControlPointPatchList: return D3D_PRIMITIVE_TOPOLOGY_16_CONTROL_POINT_PATCHLIST;
-	case PT_17_ControlPointPatchList: return D3D_PRIMITIVE_TOPOLOGY_17_CONTROL_POINT_PATCHLIST;
-	case PT_18_ControlPointPatchList: return D3D_PRIMITIVE_TOPOLOGY_18_CONTROL_POINT_PATCHLIST;
-	case PT_19_ControlPointPatchList: return D3D_PRIMITIVE_TOPOLOGY_19_CONTROL_POINT_PATCHLIST;
-	case PT_20_ControlPointPatchList: return D3D_PRIMITIVE_TOPOLOGY_20_CONTROL_POINT_PATCHLIST;
-	case PT_21_ControlPointPatchList: return D3D_PRIMITIVE_TOPOLOGY_21_CONTROL_POINT_PATCHLIST;
-	case PT_22_ControlPointPatchList: return D3D_PRIMITIVE_TOPOLOGY_22_CONTROL_POINT_PATCHLIST;
-	case PT_23_ControlPointPatchList: return D3D_PRIMITIVE_TOPOLOGY_23_CONTROL_POINT_PATCHLIST;
-	case PT_24_ControlPointPatchList: return D3D_PRIMITIVE_TOPOLOGY_24_CONTROL_POINT_PATCHLIST;
-	case PT_25_ControlPointPatchList: return D3D_PRIMITIVE_TOPOLOGY_25_CONTROL_POINT_PATCHLIST;
-	case PT_26_ControlPointPatchList: return D3D_PRIMITIVE_TOPOLOGY_26_CONTROL_POINT_PATCHLIST;
-	case PT_27_ControlPointPatchList: return D3D_PRIMITIVE_TOPOLOGY_27_CONTROL_POINT_PATCHLIST;
-	case PT_28_ControlPointPatchList: return D3D_PRIMITIVE_TOPOLOGY_28_CONTROL_POINT_PATCHLIST;
-	case PT_29_ControlPointPatchList: return D3D_PRIMITIVE_TOPOLOGY_29_CONTROL_POINT_PATCHLIST;
-	case PT_30_ControlPointPatchList: return D3D_PRIMITIVE_TOPOLOGY_30_CONTROL_POINT_PATCHLIST;
-	case PT_31_ControlPointPatchList: return D3D_PRIMITIVE_TOPOLOGY_31_CONTROL_POINT_PATCHLIST;
-	case PT_32_ControlPointPatchList: return D3D_PRIMITIVE_TOPOLOGY_32_CONTROL_POINT_PATCHLIST;
-	default: UE_LOG(LogD3D12RHI, Fatal, TEXT("Unknown primitive type: %u"), PrimitiveType);
-	};
-
-	return D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST;
-}
-
-void FD3D12CommandContext::RHISetGraphicsPipelineState(FGraphicsPipelineStateRHIParamRef GraphicsState)
+void FD3D12CommandContext::RHISetGraphicsPipelineState(FRHIGraphicsPipelineState* GraphicsState)
 {
 	FD3D12GraphicsPipelineState* GraphicsPipelineState = FD3D12DynamicRHI::ResourceCast(GraphicsState);
 
 	// TODO: [PSO API] Every thing inside this scope is only necessary to keep the PSO shadow in sync while we convert the high level to only use PSOs
+	const bool bWasUsingTessellation = bUsingTessellation;
 	bUsingTessellation = GraphicsPipelineState->GetHullShader() && GraphicsPipelineState->GetDomainShader();
 	// Ensure the command buffers are reset to reduce the amount of data that needs to be versioned.
 	VSConstantBuffer.Reset();
@@ -573,12 +494,22 @@ void FD3D12CommandContext::RHISetGraphicsPipelineState(FGraphicsPipelineStateRHI
 		StateCache.SetDepthBounds(0.0f, 1.0f);
 	}
 
-	StateCache.SetGraphicsPipelineState(GraphicsPipelineState);
+	StateCache.SetGraphicsPipelineState(GraphicsPipelineState, bUsingTessellation != bWasUsingTessellation);
 	StateCache.SetStencilRef(0);
+
+	ApplyGlobalUniformBuffers(GraphicsPipelineState->GetVertexShader());
+	ApplyGlobalUniformBuffers(GraphicsPipelineState->GetHullShader());
+	ApplyGlobalUniformBuffers(GraphicsPipelineState->GetDomainShader());
+	ApplyGlobalUniformBuffers(GraphicsPipelineState->GetGeometryShader());
+	ApplyGlobalUniformBuffers(GraphicsPipelineState->GetPixelShader());
 }
 
 void FD3D12CommandContext::RHISetComputePipelineState(FRHIComputePipelineState* ComputeState)
 {
+#if D3D12_RHI_RAYTRACING
+	StateCache.TransitionComputeState(D3D12PT_Compute);
+#endif
+
 	FD3D12ComputePipelineState* ComputePipelineState = FD3D12DynamicRHI::ResourceCast(ComputeState);
 
 	// TODO: [PSO API] Every thing inside this scope is only necessary to keep the PSO shadow in sync while we convert the high level to only use PSOs
@@ -587,51 +518,79 @@ void FD3D12CommandContext::RHISetComputePipelineState(FRHIComputePipelineState* 
 	}
 
 	StateCache.SetComputePipelineState(ComputePipelineState);
+
+	ApplyGlobalUniformBuffers(ComputePipelineState->ComputeShader.GetReference());
 }
 
-void FD3D12CommandContext::RHISetShaderTexture(FVertexShaderRHIParamRef VertexShaderRHI, uint32 TextureIndex, FTextureRHIParamRef NewTextureRHI)
+void FD3D12CommandContext::RHISetShaderTexture(FRHIGraphicsShader* ShaderRHI, uint32 TextureIndex, FRHITexture* NewTextureRHI)
 {
-	VALIDATE_BOUND_SHADER(VertexShaderRHI);
 	FD3D12TextureBase* const NewTexture = RetrieveTextureBase(NewTextureRHI);
-	StateCache.SetShaderResourceView<SF_Vertex>(NewTexture ? NewTexture->GetShaderResourceView() : nullptr, TextureIndex);
+	switch (ShaderRHI->GetFrequency())
+	{
+	case SF_Vertex:
+	{
+		FRHIVertexShader* VertexShaderRHI = static_cast<FRHIVertexShader*>(ShaderRHI);
+		VALIDATE_BOUND_SHADER(VertexShaderRHI);
+		StateCache.SetShaderResourceView<SF_Vertex>(NewTexture ? NewTexture->GetShaderResourceView() : nullptr, TextureIndex);
+	}
+	break;
+	case SF_Hull:
+	{
+		FRHIHullShader* HullShaderRHI = static_cast<FRHIHullShader*>(ShaderRHI);
+		VALIDATE_BOUND_SHADER(HullShaderRHI);
+		StateCache.SetShaderResourceView<SF_Hull>(NewTexture ? NewTexture->GetShaderResourceView() : nullptr, TextureIndex);
+	}
+	break;
+	case SF_Domain:
+	{
+		FRHIDomainShader* DomainShaderRHI = static_cast<FRHIDomainShader*>(ShaderRHI);
+		VALIDATE_BOUND_SHADER(DomainShaderRHI);
+		StateCache.SetShaderResourceView<SF_Domain>(NewTexture ? NewTexture->GetShaderResourceView() : nullptr, TextureIndex);
+	}
+	break;
+	case SF_Geometry:
+	{
+		FRHIGeometryShader* GeometryShaderRHI = static_cast<FRHIGeometryShader*>(ShaderRHI);
+		VALIDATE_BOUND_SHADER(GeometryShaderRHI);
+		StateCache.SetShaderResourceView<SF_Geometry>(NewTexture ? NewTexture->GetShaderResourceView() : nullptr, TextureIndex);
+	}
+	break;
+	case SF_Pixel:
+	{
+		FRHIPixelShader* PixelShaderRHI = static_cast<FRHIPixelShader*>(ShaderRHI);
+		VALIDATE_BOUND_SHADER(PixelShaderRHI);
+		StateCache.SetShaderResourceView<SF_Pixel>(NewTexture ? NewTexture->GetShaderResourceView() : nullptr, TextureIndex);
+	}
+	break;
+	default:
+		checkf(0, TEXT("Undefined FRHIShader Type %d!"), (int32)ShaderRHI->GetFrequency());
+	}
 }
 
-void FD3D12CommandContext::RHISetShaderTexture(FHullShaderRHIParamRef HullShaderRHI, uint32 TextureIndex, FTextureRHIParamRef NewTextureRHI)
-{
-	VALIDATE_BOUND_SHADER(HullShaderRHI);
-	FD3D12TextureBase* const NewTexture = RetrieveTextureBase(NewTextureRHI);
-	StateCache.SetShaderResourceView<SF_Hull>(NewTexture ? NewTexture->GetShaderResourceView() : nullptr, TextureIndex);
-}
-
-void FD3D12CommandContext::RHISetShaderTexture(FDomainShaderRHIParamRef DomainShaderRHI, uint32 TextureIndex, FTextureRHIParamRef NewTextureRHI)
-{
-	VALIDATE_BOUND_SHADER(DomainShaderRHI);
-	FD3D12TextureBase* const NewTexture = RetrieveTextureBase(NewTextureRHI);
-	StateCache.SetShaderResourceView<SF_Domain>(NewTexture ? NewTexture->GetShaderResourceView() : nullptr, TextureIndex);
-}
-
-void FD3D12CommandContext::RHISetShaderTexture(FGeometryShaderRHIParamRef GeometryShaderRHI, uint32 TextureIndex, FTextureRHIParamRef NewTextureRHI)
-{
-	VALIDATE_BOUND_SHADER(GeometryShaderRHI);
-	FD3D12TextureBase* const NewTexture = RetrieveTextureBase(NewTextureRHI);
-	StateCache.SetShaderResourceView<SF_Geometry>(NewTexture ? NewTexture->GetShaderResourceView() : nullptr, TextureIndex);
-}
-
-void FD3D12CommandContext::RHISetShaderTexture(FPixelShaderRHIParamRef PixelShaderRHI, uint32 TextureIndex, FTextureRHIParamRef NewTextureRHI)
-{
-	VALIDATE_BOUND_SHADER(PixelShaderRHI);
-	FD3D12TextureBase* const NewTexture = RetrieveTextureBase(NewTextureRHI);
-	StateCache.SetShaderResourceView<SF_Pixel>(NewTexture ? NewTexture->GetShaderResourceView() : nullptr, TextureIndex);
-}
-
-void FD3D12CommandContext::RHISetShaderTexture(FComputeShaderRHIParamRef ComputeShaderRHI, uint32 TextureIndex, FTextureRHIParamRef NewTextureRHI)
+void FD3D12CommandContext::RHISetShaderTexture(FRHIComputeShader* ComputeShaderRHI, uint32 TextureIndex, FRHITexture* NewTextureRHI)
 {
 	//VALIDATE_BOUND_SHADER(ComputeShaderRHI);
 	FD3D12TextureBase* const NewTexture = RetrieveTextureBase(NewTextureRHI);
 	StateCache.SetShaderResourceView<SF_Compute>(NewTexture ? NewTexture->GetShaderResourceView() : nullptr, TextureIndex);
 }
 
-void FD3D12CommandContext::RHISetUAVParameter(FComputeShaderRHIParamRef ComputeShaderRHI, uint32 UAVIndex, FUnorderedAccessViewRHIParamRef UAVRHI)
+void FD3D12CommandContext::RHISetUAVParameter(FRHIPixelShader* PixelShaderRHI, uint32 UAVIndex, FRHIUnorderedAccessView* UAVRHI)
+{
+	FD3D12UnorderedAccessView* UAV = RetrieveObject<FD3D12UnorderedAccessView>(UAVRHI);
+
+	if (UAV)
+	{
+		ConditionalClearShaderResource(UAV->GetResourceLocation());
+	}
+
+	uint32 InitialCount = -1;
+
+	// Actually set the UAV
+	StateCache.SetUAVs<SF_Pixel>(UAVIndex, 1, &UAV, &InitialCount);
+}
+
+
+void FD3D12CommandContext::RHISetUAVParameter(FRHIComputeShader* ComputeShaderRHI, uint32 UAVIndex, FRHIUnorderedAccessView* UAVRHI)
 {
 	//VALIDATE_BOUND_SHADER(ComputeShaderRHI);
 
@@ -648,7 +607,7 @@ void FD3D12CommandContext::RHISetUAVParameter(FComputeShaderRHIParamRef ComputeS
 	StateCache.SetUAVs<SF_Compute>(UAVIndex, 1, &UAV, &InitialCount);
 }
 
-void FD3D12CommandContext::RHISetUAVParameter(FComputeShaderRHIParamRef ComputeShaderRHI, uint32 UAVIndex, FUnorderedAccessViewRHIParamRef UAVRHI, uint32 InitialCount)
+void FD3D12CommandContext::RHISetUAVParameter(FRHIComputeShader* ComputeShaderRHI, uint32 UAVIndex, FRHIUnorderedAccessView* UAVRHI, uint32 InitialCount)
 {
 	//VALIDATE_BOUND_SHADER(ComputeShaderRHI);
 
@@ -662,176 +621,173 @@ void FD3D12CommandContext::RHISetUAVParameter(FComputeShaderRHIParamRef ComputeS
 	StateCache.SetUAVs<SF_Compute>(UAVIndex, 1, &UAV, &InitialCount);
 }
 
-void FD3D12CommandContext::RHISetShaderResourceViewParameter(FPixelShaderRHIParamRef PixelShaderRHI, uint32 TextureIndex, FShaderResourceViewRHIParamRef SRVRHI)
+void FD3D12CommandContext::RHISetShaderResourceViewParameter(FRHIGraphicsShader* ShaderRHI, uint32 TextureIndex, FRHIShaderResourceView* SRVRHI)
 {
-	VALIDATE_BOUND_SHADER(PixelShaderRHI);
 	FD3D12ShaderResourceView* const SRV = RetrieveObject<FD3D12ShaderResourceView>(SRVRHI);
-	StateCache.SetShaderResourceView<SF_Pixel>(SRV, TextureIndex);
+	switch (ShaderRHI->GetFrequency())
+	{
+	case SF_Vertex:
+	{
+		FRHIVertexShader* VertexShaderRHI = static_cast<FRHIVertexShader*>(ShaderRHI);
+		VALIDATE_BOUND_SHADER(VertexShaderRHI);
+		StateCache.SetShaderResourceView<SF_Vertex>(SRV, TextureIndex);
+	}
+	break;
+	case SF_Hull:
+	{
+		FRHIHullShader* HullShaderRHI = static_cast<FRHIHullShader*>(ShaderRHI);
+		VALIDATE_BOUND_SHADER(HullShaderRHI);
+		StateCache.SetShaderResourceView<SF_Hull>(SRV, TextureIndex);
+	}
+	break;
+	case SF_Domain:
+	{
+		FRHIDomainShader* DomainShaderRHI = static_cast<FRHIDomainShader*>(ShaderRHI);
+		VALIDATE_BOUND_SHADER(DomainShaderRHI);
+		StateCache.SetShaderResourceView<SF_Domain>(SRV, TextureIndex);
+	}
+	break;
+	case SF_Geometry:
+	{
+		FRHIGeometryShader* GeometryShaderRHI = static_cast<FRHIGeometryShader*>(ShaderRHI);
+		VALIDATE_BOUND_SHADER(GeometryShaderRHI);
+		StateCache.SetShaderResourceView<SF_Geometry>(SRV, TextureIndex);
+	}
+	break;
+	case SF_Pixel:
+	{
+		FRHIPixelShader* PixelShaderRHI = static_cast<FRHIPixelShader*>(ShaderRHI);
+		VALIDATE_BOUND_SHADER(PixelShaderRHI);
+		StateCache.SetShaderResourceView<SF_Pixel>(SRV, TextureIndex);
+	}
+	break;
+	default:
+		checkf(0, TEXT("Undefined FRHIShader Type %d!"), (int32)ShaderRHI->GetFrequency());
+	}
+
 }
 
-void FD3D12CommandContext::RHISetShaderResourceViewParameter(FVertexShaderRHIParamRef VertexShaderRHI, uint32 TextureIndex, FShaderResourceViewRHIParamRef SRVRHI)
-{
-	VALIDATE_BOUND_SHADER(VertexShaderRHI);
-	FD3D12ShaderResourceView* const SRV = RetrieveObject<FD3D12ShaderResourceView>(SRVRHI);
-	StateCache.SetShaderResourceView<SF_Vertex>(SRV, TextureIndex);
-}
-
-void FD3D12CommandContext::RHISetShaderResourceViewParameter(FComputeShaderRHIParamRef ComputeShaderRHI, uint32 TextureIndex, FShaderResourceViewRHIParamRef SRVRHI)
+void FD3D12CommandContext::RHISetShaderResourceViewParameter(FRHIComputeShader* ComputeShaderRHI, uint32 TextureIndex, FRHIShaderResourceView* SRVRHI)
 {
 	//VALIDATE_BOUND_SHADER(ComputeShaderRHI);
 	FD3D12ShaderResourceView* const SRV = RetrieveObject<FD3D12ShaderResourceView>(SRVRHI);
 	StateCache.SetShaderResourceView<SF_Compute>(SRV, TextureIndex);
 }
 
-void FD3D12CommandContext::RHISetShaderResourceViewParameter(FHullShaderRHIParamRef HullShaderRHI, uint32 TextureIndex, FShaderResourceViewRHIParamRef SRVRHI)
+void FD3D12CommandContext::RHISetShaderSampler(FRHIGraphicsShader* ShaderRHI, uint32 SamplerIndex, FRHISamplerState* NewStateRHI)
 {
-	VALIDATE_BOUND_SHADER(HullShaderRHI);
-	FD3D12ShaderResourceView* const SRV = RetrieveObject<FD3D12ShaderResourceView>(SRVRHI);
-	StateCache.SetShaderResourceView<SF_Hull>(SRV, TextureIndex);
-}
-
-void FD3D12CommandContext::RHISetShaderResourceViewParameter(FDomainShaderRHIParamRef DomainShaderRHI, uint32 TextureIndex, FShaderResourceViewRHIParamRef SRVRHI)
-{
-	VALIDATE_BOUND_SHADER(DomainShaderRHI);
-	FD3D12ShaderResourceView* const SRV = RetrieveObject<FD3D12ShaderResourceView>(SRVRHI);
-	StateCache.SetShaderResourceView<SF_Domain>(SRV, TextureIndex);
-}
-
-void FD3D12CommandContext::RHISetShaderResourceViewParameter(FGeometryShaderRHIParamRef GeometryShaderRHI, uint32 TextureIndex, FShaderResourceViewRHIParamRef SRVRHI)
-{
-	VALIDATE_BOUND_SHADER(GeometryShaderRHI);
-	FD3D12ShaderResourceView* const SRV = RetrieveObject<FD3D12ShaderResourceView>(SRVRHI);
-	StateCache.SetShaderResourceView<SF_Geometry>(SRV, TextureIndex);
-}
-
-void FD3D12CommandContext::RHISetShaderSampler(FVertexShaderRHIParamRef VertexShaderRHI, uint32 SamplerIndex, FSamplerStateRHIParamRef NewStateRHI)
-{
-	VALIDATE_BOUND_SHADER(VertexShaderRHI);
 	FD3D12SamplerState* NewState = RetrieveObject<FD3D12SamplerState>(NewStateRHI);
-	StateCache.SetSamplerState<SF_Vertex>(NewState, SamplerIndex);
+	switch (ShaderRHI->GetFrequency())
+	{
+	case SF_Vertex:
+	{
+		FRHIVertexShader* VertexShaderRHI = static_cast<FRHIVertexShader*>(ShaderRHI);
+		VALIDATE_BOUND_SHADER(VertexShaderRHI);
+		StateCache.SetSamplerState<SF_Vertex>(NewState, SamplerIndex);
+	}
+	break;
+	case SF_Hull:
+	{
+		FRHIHullShader* HullShaderRHI = static_cast<FRHIHullShader*>(ShaderRHI);
+		VALIDATE_BOUND_SHADER(HullShaderRHI);
+		StateCache.SetSamplerState<SF_Hull>(NewState, SamplerIndex);
+	}
+	break;
+	case SF_Domain:
+	{
+		FRHIDomainShader* DomainShaderRHI = static_cast<FRHIDomainShader*>(ShaderRHI);
+		VALIDATE_BOUND_SHADER(DomainShaderRHI);
+		StateCache.SetSamplerState<SF_Domain>(NewState, SamplerIndex);
+	}
+	break;
+	case SF_Geometry:
+	{
+		FRHIGeometryShader* GeometryShaderRHI = static_cast<FRHIGeometryShader*>(ShaderRHI);
+		VALIDATE_BOUND_SHADER(GeometryShaderRHI);
+		StateCache.SetSamplerState<SF_Geometry>(NewState, SamplerIndex);
+	}
+	break;
+	case SF_Pixel:
+	{
+		FRHIPixelShader* PixelShaderRHI = static_cast<FRHIPixelShader*>(ShaderRHI);
+		VALIDATE_BOUND_SHADER(PixelShaderRHI);
+		StateCache.SetSamplerState<SF_Pixel>(NewState, SamplerIndex);
+	}
+	break;
+	default:
+		checkf(0, TEXT("Undefined FRHIShader Type %d!"), (int32)ShaderRHI->GetFrequency());
+	}
 }
 
-void FD3D12CommandContext::RHISetShaderSampler(FHullShaderRHIParamRef HullShaderRHI, uint32 SamplerIndex, FSamplerStateRHIParamRef NewStateRHI)
-{
-	VALIDATE_BOUND_SHADER(HullShaderRHI);
-	FD3D12SamplerState* NewState = RetrieveObject<FD3D12SamplerState>(NewStateRHI);
-	StateCache.SetSamplerState<SF_Hull>(NewState, SamplerIndex);
-}
-
-void FD3D12CommandContext::RHISetShaderSampler(FDomainShaderRHIParamRef DomainShaderRHI, uint32 SamplerIndex, FSamplerStateRHIParamRef NewStateRHI)
-{
-	VALIDATE_BOUND_SHADER(DomainShaderRHI);
-	FD3D12SamplerState* NewState = RetrieveObject<FD3D12SamplerState>(NewStateRHI);
-	StateCache.SetSamplerState<SF_Domain>(NewState, SamplerIndex);
-}
-
-void FD3D12CommandContext::RHISetShaderSampler(FGeometryShaderRHIParamRef GeometryShaderRHI, uint32 SamplerIndex, FSamplerStateRHIParamRef NewStateRHI)
-{
-	VALIDATE_BOUND_SHADER(GeometryShaderRHI);
-	FD3D12SamplerState* NewState = RetrieveObject<FD3D12SamplerState>(NewStateRHI);
-	StateCache.SetSamplerState<SF_Geometry>(NewState, SamplerIndex);
-}
-
-void FD3D12CommandContext::RHISetShaderSampler(FPixelShaderRHIParamRef PixelShaderRHI, uint32 SamplerIndex, FSamplerStateRHIParamRef NewStateRHI)
-{
-	VALIDATE_BOUND_SHADER(PixelShaderRHI);
-	FD3D12SamplerState* NewState = RetrieveObject<FD3D12SamplerState>(NewStateRHI);
-	StateCache.SetSamplerState<SF_Pixel>(NewState, SamplerIndex);
-}
-
-void FD3D12CommandContext::RHISetShaderSampler(FComputeShaderRHIParamRef ComputeShaderRHI, uint32 SamplerIndex, FSamplerStateRHIParamRef NewStateRHI)
+void FD3D12CommandContext::RHISetShaderSampler(FRHIComputeShader* ComputeShaderRHI, uint32 SamplerIndex, FRHISamplerState* NewStateRHI)
 {
 	//VALIDATE_BOUND_SHADER(ComputeShaderRHI);
 	FD3D12SamplerState* NewState = RetrieveObject<FD3D12SamplerState>(NewStateRHI);
 	StateCache.SetSamplerState<SF_Compute>(NewState, SamplerIndex);
 }
 
-void FD3D12CommandContext::RHISetShaderUniformBuffer(FVertexShaderRHIParamRef VertexShader, uint32 BufferIndex, FUniformBufferRHIParamRef BufferRHI)
+void FD3D12CommandContext::RHISetShaderUniformBuffer(FRHIGraphicsShader* ShaderRHI, uint32 BufferIndex, FRHIUniformBuffer* BufferRHI)
 {
 	//SCOPE_CYCLE_COUNTER(STAT_D3D12SetShaderUniformBuffer);
-	VALIDATE_BOUND_SHADER(VertexShader);
 	FD3D12UniformBuffer* Buffer = RetrieveObject<FD3D12UniformBuffer>(BufferRHI);
-
-	StateCache.SetConstantsFromUniformBuffer<SF_Vertex>(BufferIndex, Buffer);
+	EShaderFrequency Stage = SF_NumFrequencies;
+	switch (ShaderRHI->GetFrequency())
+	{
+	case SF_Vertex:
+	{
+		FRHIVertexShader* VertexShaderRHI = static_cast<FRHIVertexShader*>(ShaderRHI);
+		VALIDATE_BOUND_SHADER(VertexShaderRHI);
+		StateCache.SetConstantsFromUniformBuffer<SF_Vertex>(BufferIndex, Buffer);
+		Stage = SF_Vertex;
+	}
+	break;
+	case SF_Hull:
+	{
+		FRHIHullShader* HullShaderRHI = static_cast<FRHIHullShader*>(ShaderRHI);
+		VALIDATE_BOUND_SHADER(HullShaderRHI);
+		StateCache.SetConstantsFromUniformBuffer<SF_Hull>(BufferIndex, Buffer);
+		Stage = SF_Hull;
+	}
+	break;
+	case SF_Domain:
+	{
+		FRHIDomainShader* DomainShaderRHI = static_cast<FRHIDomainShader*>(ShaderRHI);
+		VALIDATE_BOUND_SHADER(DomainShaderRHI);
+		StateCache.SetConstantsFromUniformBuffer<SF_Domain>(BufferIndex, Buffer);
+		Stage = SF_Domain;
+	}
+	break;
+	case SF_Geometry:
+	{
+		FRHIGeometryShader* GeometryShaderRHI = static_cast<FRHIGeometryShader*>(ShaderRHI);
+		VALIDATE_BOUND_SHADER(GeometryShaderRHI);
+		StateCache.SetConstantsFromUniformBuffer<SF_Geometry>(BufferIndex, Buffer);
+		Stage = SF_Geometry;
+	}
+	break;
+	case SF_Pixel:
+	{
+		FRHIPixelShader* PixelShaderRHI = static_cast<FRHIPixelShader*>(ShaderRHI);
+		VALIDATE_BOUND_SHADER(PixelShaderRHI);
+		StateCache.SetConstantsFromUniformBuffer<SF_Pixel>(BufferIndex, Buffer);
+		Stage = SF_Pixel;
+	}
+	break;
+	default:
+		checkf(0, TEXT("Undefined FRHIShader Type %d!"), (int32)ShaderRHI->GetFrequency());
+		return;
+	}
 
 	if (!GRHINeedsExtraDeletionLatency)
 	{
-		BoundUniformBufferRefs[SF_Vertex][BufferIndex] = BufferRHI;
+		BoundUniformBufferRefs[Stage][BufferIndex] = BufferRHI;
 	}
 
-	BoundUniformBuffers[SF_Vertex][BufferIndex] = Buffer;
-	DirtyUniformBuffers[SF_Vertex] |= (1 << BufferIndex);
+	BoundUniformBuffers[Stage][BufferIndex] = Buffer;
+	DirtyUniformBuffers[Stage] |= (1 << BufferIndex);
 }
 
-void FD3D12CommandContext::RHISetShaderUniformBuffer(FHullShaderRHIParamRef HullShader, uint32 BufferIndex, FUniformBufferRHIParamRef BufferRHI)
-{
-	//SCOPE_CYCLE_COUNTER(STAT_D3D12SetShaderUniformBuffer);
-	VALIDATE_BOUND_SHADER(HullShader);
-	FD3D12UniformBuffer* Buffer = RetrieveObject<FD3D12UniformBuffer>(BufferRHI);
-
-	StateCache.SetConstantsFromUniformBuffer<SF_Hull>(BufferIndex, Buffer);
-
-	if (!GRHINeedsExtraDeletionLatency)
-	{
-		BoundUniformBufferRefs[SF_Hull][BufferIndex] = BufferRHI;
-	}
-	
-	BoundUniformBuffers[SF_Hull][BufferIndex] = Buffer;
-	DirtyUniformBuffers[SF_Hull] |= (1 << BufferIndex);
-}
-
-void FD3D12CommandContext::RHISetShaderUniformBuffer(FDomainShaderRHIParamRef DomainShader, uint32 BufferIndex, FUniformBufferRHIParamRef BufferRHI)
-{
-	//SCOPE_CYCLE_COUNTER(STAT_D3D12SetShaderUniformBuffer);
-	VALIDATE_BOUND_SHADER(DomainShader);
-	FD3D12UniformBuffer* Buffer = RetrieveObject<FD3D12UniformBuffer>(BufferRHI);
-	
-	StateCache.SetConstantsFromUniformBuffer<SF_Domain>(BufferIndex, Buffer);
-
-	if (!GRHINeedsExtraDeletionLatency)
-	{
-		BoundUniformBufferRefs[SF_Domain][BufferIndex] = BufferRHI;
-	}
-
-	BoundUniformBuffers[SF_Domain][BufferIndex] = Buffer;
-	DirtyUniformBuffers[SF_Domain] |= (1 << BufferIndex);
-}
-
-void FD3D12CommandContext::RHISetShaderUniformBuffer(FGeometryShaderRHIParamRef GeometryShader, uint32 BufferIndex, FUniformBufferRHIParamRef BufferRHI)
-{
-	//SCOPE_CYCLE_COUNTER(STAT_D3D12SetShaderUniformBuffer);
-	VALIDATE_BOUND_SHADER(GeometryShader);
-	FD3D12UniformBuffer* Buffer = RetrieveObject<FD3D12UniformBuffer>(BufferRHI);
-
-	StateCache.SetConstantsFromUniformBuffer<SF_Geometry>(BufferIndex, Buffer);
-
-	if (!GRHINeedsExtraDeletionLatency)
-	{
-		BoundUniformBufferRefs[SF_Geometry][BufferIndex] = BufferRHI;
-	}
-
-	BoundUniformBuffers[SF_Geometry][BufferIndex] = Buffer;
-	DirtyUniformBuffers[SF_Geometry] |= (1 << BufferIndex);
-}
-
-void FD3D12CommandContext::RHISetShaderUniformBuffer(FPixelShaderRHIParamRef PixelShader, uint32 BufferIndex, FUniformBufferRHIParamRef BufferRHI)
-{
-	//SCOPE_CYCLE_COUNTER(STAT_D3D12SetShaderUniformBuffer);
-	VALIDATE_BOUND_SHADER(PixelShader);
-	FD3D12UniformBuffer* Buffer = RetrieveObject<FD3D12UniformBuffer>(BufferRHI);
-
-	StateCache.SetConstantsFromUniformBuffer<SF_Pixel>(BufferIndex, Buffer);
-
-	if (!GRHINeedsExtraDeletionLatency)
-	{
-		BoundUniformBufferRefs[SF_Pixel][BufferIndex] = BufferRHI;
-	}
-
-	BoundUniformBuffers[SF_Pixel][BufferIndex] = Buffer;
-	DirtyUniformBuffers[SF_Pixel] |= (1 << BufferIndex);
-}
-
-void FD3D12CommandContext::RHISetShaderUniformBuffer(FComputeShaderRHIParamRef ComputeShader, uint32 BufferIndex, FUniformBufferRHIParamRef BufferRHI)
+void FD3D12CommandContext::RHISetShaderUniformBuffer(FRHIComputeShader* ComputeShader, uint32 BufferIndex, FRHIUniformBuffer* BufferRHI)
 {
 	//SCOPE_CYCLE_COUNTER(STAT_D3D12SetShaderUniformBuffer);
 	//VALIDATE_BOUND_SHADER(ComputeShader);
@@ -848,42 +804,53 @@ void FD3D12CommandContext::RHISetShaderUniformBuffer(FComputeShaderRHIParamRef C
 	DirtyUniformBuffers[SF_Compute] |= (1 << BufferIndex);
 }
 
-void FD3D12CommandContext::RHISetShaderParameter(FHullShaderRHIParamRef HullShaderRHI, uint32 BufferIndex, uint32 BaseIndex, uint32 NumBytes, const void* NewValue)
+void FD3D12CommandContext::RHISetShaderParameter(FRHIGraphicsShader* ShaderRHI, uint32 BufferIndex, uint32 BaseIndex, uint32 NumBytes, const void* NewValue)
 {
-	VALIDATE_BOUND_SHADER(HullShaderRHI);
 	checkSlow(BufferIndex == 0);
-	HSConstantBuffer.UpdateConstant((const uint8*)NewValue, BaseIndex, NumBytes);
+
+	switch (ShaderRHI->GetFrequency())
+	{
+	case SF_Vertex:
+	{
+		FRHIVertexShader* VertexShaderRHI = static_cast<FRHIVertexShader*>(ShaderRHI);
+		VALIDATE_BOUND_SHADER(VertexShaderRHI);
+		VSConstantBuffer.UpdateConstant((const uint8*)NewValue, BaseIndex, NumBytes);
+	}
+	break;
+	case SF_Hull:
+	{
+		FRHIHullShader* HullShaderRHI = static_cast<FRHIHullShader*>(ShaderRHI);
+		VALIDATE_BOUND_SHADER(HullShaderRHI);
+		HSConstantBuffer.UpdateConstant((const uint8*)NewValue, BaseIndex, NumBytes);
+	}
+	break;
+	case SF_Domain:
+	{
+		FRHIDomainShader* DomainShaderRHI = static_cast<FRHIDomainShader*>(ShaderRHI);
+		VALIDATE_BOUND_SHADER(DomainShaderRHI);
+		DSConstantBuffer.UpdateConstant((const uint8*)NewValue, BaseIndex, NumBytes);
+	}
+	break;
+	case SF_Geometry:
+	{
+		FRHIGeometryShader* GeometryShaderRHI = static_cast<FRHIGeometryShader*>(ShaderRHI);
+		VALIDATE_BOUND_SHADER(GeometryShaderRHI);
+		GSConstantBuffer.UpdateConstant((const uint8*)NewValue, BaseIndex, NumBytes);
+	}
+	break;
+	case SF_Pixel:
+	{
+		FRHIPixelShader* PixelShaderRHI = static_cast<FRHIPixelShader*>(ShaderRHI);
+		VALIDATE_BOUND_SHADER(PixelShaderRHI);
+		PSConstantBuffer.UpdateConstant((const uint8*)NewValue, BaseIndex, NumBytes);
+	}
+	break;
+	default:
+		checkf(0, TEXT("Undefined FRHIShader Type %d!"), (int32)ShaderRHI->GetFrequency());
+	}
 }
 
-void FD3D12CommandContext::RHISetShaderParameter(FDomainShaderRHIParamRef DomainShaderRHI, uint32 BufferIndex, uint32 BaseIndex, uint32 NumBytes, const void* NewValue)
-{
-	VALIDATE_BOUND_SHADER(DomainShaderRHI);
-	checkSlow(BufferIndex == 0);
-	DSConstantBuffer.UpdateConstant((const uint8*)NewValue, BaseIndex, NumBytes);
-}
-
-void FD3D12CommandContext::RHISetShaderParameter(FVertexShaderRHIParamRef VertexShaderRHI, uint32 BufferIndex, uint32 BaseIndex, uint32 NumBytes, const void* NewValue)
-{
-	VALIDATE_BOUND_SHADER(VertexShaderRHI);
-	checkSlow(BufferIndex == 0);
-	VSConstantBuffer.UpdateConstant((const uint8*)NewValue, BaseIndex, NumBytes);
-}
-
-void FD3D12CommandContext::RHISetShaderParameter(FPixelShaderRHIParamRef PixelShaderRHI, uint32 BufferIndex, uint32 BaseIndex, uint32 NumBytes, const void* NewValue)
-{
-	VALIDATE_BOUND_SHADER(PixelShaderRHI);
-	checkSlow(BufferIndex == 0);
-	PSConstantBuffer.UpdateConstant((const uint8*)NewValue, BaseIndex, NumBytes);
-}
-
-void FD3D12CommandContext::RHISetShaderParameter(FGeometryShaderRHIParamRef GeometryShaderRHI, uint32 BufferIndex, uint32 BaseIndex, uint32 NumBytes, const void* NewValue)
-{
-	VALIDATE_BOUND_SHADER(GeometryShaderRHI);
-	checkSlow(BufferIndex == 0);
-	GSConstantBuffer.UpdateConstant((const uint8*)NewValue, BaseIndex, NumBytes);
-}
-
-void FD3D12CommandContext::RHISetShaderParameter(FComputeShaderRHIParamRef ComputeShaderRHI, uint32 BufferIndex, uint32 BaseIndex, uint32 NumBytes, const void* NewValue)
+void FD3D12CommandContext::RHISetShaderParameter(FRHIComputeShader* ComputeShaderRHI, uint32 BufferIndex, uint32 BaseIndex, uint32 NumBytes, const void* NewValue)
 {
 	//VALIDATE_BOUND_SHADER(ComputeShaderRHI);
 	checkSlow(BufferIndex == 0);
@@ -922,18 +889,7 @@ void FD3D12CommandContext::RHISetBlendFactor(const FLinearColor& BlendFactor)
 void FD3D12CommandContext::CommitRenderTargetsAndUAVs()
 {
 	StateCache.SetRenderTargets(NumSimultaneousRenderTargets, CurrentRenderTargets, CurrentDepthStencilTarget);
-
-	if (NumUAVs > 0)
-	{
-		uint32 UAVInitialCountArray[MAX_UAVS];
-		for (uint32 UAVIndex = 0; UAVIndex < NumUAVs; ++UAVIndex)
-		{
-			// Using the value that indicates to keep the current UAV counter
-			UAVInitialCountArray[UAVIndex] = -1;
-		}
-
-		StateCache.SetUAVs<SF_Pixel>(NumSimultaneousRenderTargets, NumUAVs, CurrentUAVs, UAVInitialCountArray);
-	}
+	StateCache.ClearUAVs<SF_Pixel>();
 }
 
 struct FRTVDesc
@@ -996,14 +952,12 @@ FRTVDesc GetRenderTargetViewDesc(FD3D12RenderTargetView* RenderTargetView)
 void FD3D12CommandContext::RHISetRenderTargets(
 	uint32 NewNumSimultaneousRenderTargets,
 	const FRHIRenderTargetView* NewRenderTargetsRHI,
-	const FRHIDepthRenderTargetView* NewDepthStencilTargetRHI,
-	uint32 NewNumUAVs,
-	const FUnorderedAccessViewRHIParamRef* UAVs
+	const FRHIDepthRenderTargetView* NewDepthStencilTargetRHI
 	)
 {
-	FD3D12TextureBase* NewDepthStencilTarget = RetrieveTextureBase(NewDepthStencilTargetRHI ? NewDepthStencilTargetRHI->Texture : nullptr);
+	FD3D12TextureBase* NewDepthStencilTarget = NewDepthStencilTargetRHI ? RetrieveTextureBase(NewDepthStencilTargetRHI->Texture) : nullptr;
 
-	check(NewNumSimultaneousRenderTargets + NewNumUAVs <= MaxSimultaneousRenderTargets);
+	check(NewNumSimultaneousRenderTargets <= MaxSimultaneousRenderTargets);
 
 	bool bTargetChanged = false;
 
@@ -1011,6 +965,7 @@ void FD3D12CommandContext::RHISetRenderTargets(
 	FD3D12DepthStencilView* DepthStencilView = NULL;
 	if (NewDepthStencilTarget)
 	{
+		check(NewDepthStencilTargetRHI);	// Calm down static analysis
 		CurrentDSVAccessType = NewDepthStencilTargetRHI->GetDepthStencilAccess();
 		DepthStencilView = NewDepthStencilTarget->GetDepthStencilView(CurrentDSVAccessType);
 
@@ -1059,31 +1014,6 @@ void FD3D12CommandContext::RHISetRenderTargets(
 		bTargetChanged = true;
 	}
 
-	// Gather the new UAVs.
-	for (uint32 UAVIndex = 0;UAVIndex < MaxSimultaneousUAVs;++UAVIndex)
-	{
-		FD3D12UnorderedAccessView* RHIUAV = NULL;
-		if (UAVIndex < NewNumUAVs && UAVs[UAVIndex] != NULL)
-		{
-			RHIUAV = RetrieveObject<FD3D12UnorderedAccessView>(UAVs[UAVIndex]);
-			FD3D12DynamicRHI::TransitionResource(CommandListHandle, RHIUAV, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
-
-			// Unbind any shader views of the UAV's resource.
-			ConditionalClearShaderResource(RHIUAV->GetResourceLocation());
-		}
-
-		if (CurrentUAVs[UAVIndex] != RHIUAV)
-		{
-			CurrentUAVs[UAVIndex] = RHIUAV;
-			bTargetChanged = true;
-		}
-	}
-	if (NumUAVs != NewNumUAVs)
-	{
-		NumUAVs = NewNumUAVs;
-		bTargetChanged = true;
-	}
-
 	// Only make the D3D call to change render targets if something actually changed.
 	if (bTargetChanged)
 	{
@@ -1096,30 +1026,23 @@ void FD3D12CommandContext::RHISetRenderTargets(
 		// check target 0 is valid
 		check(0 < NewNumSimultaneousRenderTargets && NewRenderTargetsRHI[0].Texture != nullptr);
 		FRTVDesc RTTDesc = GetRenderTargetViewDesc(NewRenderTargetViews[0]);
-		RHISetViewport(0, 0, 0.0f, RTTDesc.Width, RTTDesc.Height, 1.0f);
+		RHISetViewport(0.0f, 0.0f, 0.0f, (float)RTTDesc.Width, (float)RTTDesc.Height, 1.0f);
 	}
 	else if (DepthStencilView)
 	{
 		FD3D12Resource* DepthTargetTexture = DepthStencilView->GetResource();
 		D3D12_RESOURCE_DESC const& DTTDesc = DepthTargetTexture->GetDesc();
-		RHISetViewport(0, 0, 0.0f, (uint32)DTTDesc.Width, DTTDesc.Height, 1.0f);
+		RHISetViewport(0.0f, 0.0f, 0.0f, (float)DTTDesc.Width, (float)DTTDesc.Height, 1.0f);
 	}
 }
 
 void FD3D12CommandContext::RHISetRenderTargetsAndClear(const FRHISetRenderTargetsInfo& RenderTargetsInfo)
 {
-	FUnorderedAccessViewRHIParamRef UAVs[MaxSimultaneousUAVs] = {};
-	check(RenderTargetsInfo.NumUAVs <= MaxSimultaneousUAVs);
-	for (int32 UAVIndex = 0; UAVIndex < RenderTargetsInfo.NumUAVs; ++UAVIndex)
-	{
-		UAVs[UAVIndex] = RenderTargetsInfo.UnorderedAccessView[UAVIndex].GetReference();
-	}
+	FRHIUnorderedAccessView* UAVs[MaxSimultaneousUAVs] = {};
 
 	this->RHISetRenderTargets(RenderTargetsInfo.NumColorRenderTargets,
 		RenderTargetsInfo.ColorRenderTarget,
-		&RenderTargetsInfo.DepthStencilRenderTarget,
-		RenderTargetsInfo.NumUAVs,
-		UAVs);
+		&RenderTargetsInfo.DepthStencilRenderTarget);
 
 	if (RenderTargetsInfo.bClearColor || RenderTargetsInfo.bClearStencil || RenderTargetsInfo.bClearDepth)
 	{
@@ -1155,49 +1078,43 @@ void FD3D12CommandContext::RHISetRenderTargetsAndClear(const FRHISetRenderTarget
 }
 
 // Occlusion/Timer queries.
-void FD3D12CommandContext::RHIBeginRenderQuery(FRenderQueryRHIParamRef QueryRHI)
+void FD3D12CommandContext::RHIBeginRenderQuery(FRHIRenderQuery* QueryRHI)
 {
 	FD3D12RenderQuery* Query = RetrieveObject<FD3D12RenderQuery>(QueryRHI);
 	check(IsDefaultContext());
 	check(Query->Type == RQT_Occlusion);
 
-	Query->Reset();
-	Query->HeapIndex = GetParentDevice()->GetOcclusionQueryHeap()->BeginQuery(*this);
+	GetParentDevice()->GetOcclusionQueryHeap()->BeginQuery(*this, Query);
 
 #if EXECUTE_DEBUG_COMMAND_LISTS
 	GIsDoingQuery = true;
 #endif
 }
 
-void FD3D12CommandContext::RHIEndRenderQuery(FRenderQueryRHIParamRef QueryRHI)
+void FD3D12CommandContext::RHIEndRenderQuery(FRHIRenderQuery* QueryRHI)
 {
 	FD3D12RenderQuery* Query = RetrieveObject<FD3D12RenderQuery>(QueryRHI);
 	check(IsDefaultContext());
 
+	FD3D12QueryHeap* QueryHeap = nullptr;
+
 	switch (Query->Type)
 	{
 	case RQT_Occlusion:
-	{
-		GetParentDevice()->GetOcclusionQueryHeap()->EndQuery(*this, Query->HeapIndex, Query);
-		// Multi-GPU support : by setting a timestamp, we can filter only the relevant GPUs when getting the query results.
-		Query->Timestamp = GFrameNumberRenderThread;
+		QueryHeap = GetParentDevice()->GetOcclusionQueryHeap();
 		break;
-	}
 
 	case RQT_AbsoluteTime:
-	{
-		FD3D12QueryHeap* pQueryHeap = GetParentDevice()->GetTimestampQueryHeap();
-		Query->Reset();
-		Query->HeapIndex = pQueryHeap->AllocQuery(*this);
-		pQueryHeap->EndQuery(*this, Query->HeapIndex, Query);
-		// Multi-GPU support : by setting a timestamp, we can filter only the relevant GPUs when getting the query results.
-		Query->Timestamp = GFrameNumberRenderThread;
+		QueryHeap = GetParentDevice()->GetTimestampQueryHeap();
 		break;
-	}
 
 	default:
 		ensure(false);
 	}
+
+	QueryHeap->EndQuery(*this, Query);
+	// Multi-GPU support : by setting a timestamp, we can filter only the relevant GPUs when getting the query results.
+	Query->Timestamp = GFrameNumberRenderThread;
 
 	// Query data isn't ready until it has been resolved.
 	ensure(Query->bResultIsCached == false && Query->bResolved == false);
@@ -1272,6 +1189,15 @@ FORCEINLINE void SetResource(FD3D12CommandContext& CmdContext, uint32 BindIndex,
 	CmdContext.StateCache.SetSamplerState<Frequency>(SamplerState, BindIndex);
 }
 
+template <EShaderFrequency Frequency>
+FORCEINLINE void SetResource(FD3D12CommandContext& CmdContext, uint32 BindIndex, FD3D12UnorderedAccessView* UAV)
+{
+	uint32 InitialCount = -1;
+
+	// Actually set the UAV
+	CmdContext.StateCache.SetUAVs<SF_Pixel>(BindIndex, 1, &UAV, &InitialCount);
+}
+
 template <EShaderFrequency ShaderFrequency>
 inline int32 SetShaderResourcesFromBuffer_Surface(FD3D12CommandContext& CmdContext, FD3D12UniformBuffer* RESTRICT Buffer, const uint32 * RESTRICT ResourceMap, int32 BufferIndex)
 {
@@ -1294,6 +1220,7 @@ inline int32 SetShaderResourcesFromBuffer_Surface(FD3D12CommandContext& CmdConte
 
 			FD3D12TextureBase* TextureD3D12 = CmdContext.RetrieveTextureBase(TextureRHI);
 			FD3D12ShaderResourceView* D3D12Resource = TextureD3D12->GetShaderResourceView();
+			check(D3D12Resource != nullptr);
 
 			SetResource<ShaderFrequency>(CmdContext, BindIndex, D3D12Resource);
 			NumSetCalls++;
@@ -1389,6 +1316,66 @@ void FD3D12CommandContext::SetResourcesFromTables(const ShaderType* RESTRICT Sha
 	DirtyUniformBuffers[ShaderType::StaticFrequency] = 0;
 }
 
+
+template <EShaderFrequency ShaderFrequency>
+inline int32 SetShaderResourcesFromBuffer_UAVPS(FD3D12CommandContext& CmdContext, FD3D12UniformBuffer* RESTRICT Buffer, const uint32 * RESTRICT ResourceMap, int32 BufferIndex)
+{
+	const TRefCountPtr<FRHIResource>* RESTRICT Resources = Buffer->ResourceTable.GetData();
+	int32 NumSetCalls = 0;
+	const uint32 BufferOffset = ResourceMap[BufferIndex];
+	if (BufferOffset > 0)
+	{
+		const uint32* RESTRICT ResourceInfos = &ResourceMap[BufferOffset];
+		uint32 ResourceInfo = *ResourceInfos++;
+		do
+		{
+			checkSlow(FRHIResourceTableEntry::GetUniformBufferIndex(ResourceInfo) == BufferIndex);
+			const uint16 ResourceIndex = FRHIResourceTableEntry::GetResourceIndex(ResourceInfo);
+			const uint8 BindIndex = FRHIResourceTableEntry::GetBindIndex(ResourceInfo);
+
+			FRHIUnorderedAccessView* RHIUAV = (FRHIUnorderedAccessView*)(Resources[ResourceIndex].GetReference());
+
+			FD3D12UnorderedAccessView* D3D12Resource = CmdContext.RetrieveObject<FD3D12UnorderedAccessView>(RHIUAV);
+			SetResource<ShaderFrequency>(CmdContext, BindIndex, D3D12Resource);
+
+			NumSetCalls++;
+			ResourceInfo = *ResourceInfos++;
+		} while (FRHIResourceTableEntry::GetUniformBufferIndex(ResourceInfo) == BufferIndex);
+	}
+
+	INC_DWORD_STAT_BY(STAT_D3D12SetTextureInTableCalls, NumSetCalls);
+	return NumSetCalls;
+}
+
+
+template <class ShaderType>
+uint32 FD3D12CommandContext::SetUAVPSResourcesFromTables(const ShaderType* RESTRICT Shader)
+{
+	checkSlow(Shader);
+
+	int32 NumChanged = 0;
+	// Mask the dirty bits by those buffers from which the shader has bound resources.
+	uint32 DirtyBits = Shader->ShaderResourceTable.ResourceTableBits & DirtyUniformBuffers[ShaderType::StaticFrequency];
+	while (DirtyBits)
+	{
+		// Scan for the lowest set bit, compute its index, clear it in the set of dirty bits.
+		const uint32 LowestBitMask = (DirtyBits)& (-(int32)DirtyBits);
+		const int32 BufferIndex = FMath::FloorLog2(LowestBitMask); // todo: This has a branch on zero, we know it could never be zero...
+		DirtyBits ^= LowestBitMask;
+		FD3D12UniformBuffer* Buffer = BoundUniformBuffers[ShaderType::StaticFrequency][BufferIndex];
+		check(Buffer);
+		check(BufferIndex < Shader->ShaderResourceTable.ResourceTableLayoutHashes.Num());
+		check(Buffer->GetLayout().GetHash() == Shader->ShaderResourceTable.ResourceTableLayoutHashes[BufferIndex]);
+
+		if ((EShaderFrequency)ShaderType::StaticFrequency == SF_Pixel)
+		{
+			NumChanged += SetShaderResourcesFromBuffer_UAVPS<(EShaderFrequency)ShaderType::StaticFrequency>(*this, Buffer, Shader->ShaderResourceTable.UnorderedAccessViewMap.GetData(), BufferIndex);
+		}
+	}
+	return NumChanged;
+
+}
+
 void FD3D12CommandContext::CommitGraphicsResourceTables()
 {
 	//SCOPE_CYCLE_COUNTER(STAT_D3D12CommitResourceTables);
@@ -1396,13 +1383,18 @@ void FD3D12CommandContext::CommitGraphicsResourceTables()
 	const FD3D12GraphicsPipelineState* const RESTRICT GraphicPSO = StateCache.GetGraphicsPipelineState();
 	check(GraphicPSO);
 
+	auto* PixelShader = GraphicPSO->GetPixelShader();
+	if (PixelShader)
+	{
+		SetUAVPSResourcesFromTables(PixelShader);
+	}
 	if (auto* Shader = GraphicPSO->GetVertexShader())
 	{
 		SetResourcesFromTables(Shader);
 	}
-	if (auto* Shader = GraphicPSO->GetPixelShader())
+	if (PixelShader)
 	{
-		SetResourcesFromTables(Shader);
+		SetResourcesFromTables(PixelShader);
 	}
 	if (auto* Shader = GraphicPSO->GetHullShader())
 	{
@@ -1429,37 +1421,32 @@ void FD3D12CommandContext::CommitComputeResourceTables(FD3D12ComputeShader* InCo
 
 void FD3D12CommandContext::RHIDrawPrimitive(uint32 BaseVertexIndex, uint32 NumPrimitives, uint32 NumInstances)
 {
-	RHI_DRAW_CALL_STATS(StateCache.GetGraphicsPipelinePrimitiveType(), NumInstances*NumPrimitives);
-
 	CommitGraphicsResourceTables();
 	CommitNonComputeShaderConstants();
 
-	uint32 VertexCount = GetVertexCountForPrimitiveCount(NumPrimitives, StateCache.GetGraphicsPipelinePrimitiveType());
-
-	if (IsDefaultContext())
+	uint32 VertexCount = StateCache.GetVertexCountAndIncrementStat(NumPrimitives);
+	NumInstances = FMath::Max<uint32>(1, NumInstances);
+	numDraws++;
+	if (bTrackingEvents)
 	{
 		GetParentDevice()->RegisterGPUWork(NumPrimitives * NumInstances, VertexCount * NumInstances);
 	}
 
-	StateCache.SetPrimitiveTopology(GetD3D12PrimitiveType(StateCache.GetGraphicsPipelinePrimitiveType(), bUsingTessellation));
-
 	StateCache.ApplyState<D3D12PT_Graphics>();
-	numDraws++;
-	CommandListHandle->DrawInstanced(VertexCount, FMath::Max<uint32>(1, NumInstances), BaseVertexIndex, 0);
+	CommandListHandle->DrawInstanced(VertexCount, NumInstances, BaseVertexIndex, 0);
+
 #if UE_BUILD_DEBUG	
 	OwningRHI.DrawCount++;
 #endif
 	DEBUG_EXECUTE_COMMAND_LIST(this);
-
 }
 
-void FD3D12CommandContext::RHIDrawPrimitiveIndirect(FVertexBufferRHIParamRef ArgumentBufferRHI, uint32 ArgumentOffset)
+void FD3D12CommandContext::RHIDrawPrimitiveIndirect(FRHIVertexBuffer* ArgumentBufferRHI, uint32 ArgumentOffset)
 {
 	FD3D12VertexBuffer* ArgumentBuffer = RetrieveObject<FD3D12VertexBuffer>(ArgumentBufferRHI);
 
-	RHI_DRAW_CALL_INC();
-
-	if (IsDefaultContext())
+	numDraws++;
+	if (bTrackingEvents)
 	{
 		GetParentDevice()->RegisterGPUWork(0);
 	}
@@ -1467,14 +1454,11 @@ void FD3D12CommandContext::RHIDrawPrimitiveIndirect(FVertexBufferRHIParamRef Arg
 	CommitGraphicsResourceTables();
 	CommitNonComputeShaderConstants();
 
-	StateCache.SetPrimitiveTopology(GetD3D12PrimitiveType(StateCache.GetGraphicsPipelinePrimitiveType(), bUsingTessellation));
-
 	FD3D12ResourceLocation& Location = ArgumentBuffer->ResourceLocation;
 	FD3D12DynamicRHI::TransitionResource(CommandListHandle, Location.GetResource(), D3D12_RESOURCE_STATE_INDIRECT_ARGUMENT, D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES);
 
 	StateCache.ApplyState<D3D12PT_Graphics>();
 
-	numDraws++;
 	CommandListHandle->ExecuteIndirect(
 		GetParentDevice()->GetParentAdapter()->GetDrawIndirectCommandSignature(),
 		1,
@@ -1490,17 +1474,15 @@ void FD3D12CommandContext::RHIDrawPrimitiveIndirect(FVertexBufferRHIParamRef Arg
 	OwningRHI.DrawCount++;
 #endif
 	DEBUG_EXECUTE_COMMAND_LIST(this);
-
 }
 
-void FD3D12CommandContext::RHIDrawIndexedIndirect(FIndexBufferRHIParamRef IndexBufferRHI, FStructuredBufferRHIParamRef ArgumentsBufferRHI, int32 DrawArgumentsIndex, uint32 NumInstances)
+void FD3D12CommandContext::RHIDrawIndexedIndirect(FRHIIndexBuffer* IndexBufferRHI, FRHIStructuredBuffer* ArgumentsBufferRHI, int32 DrawArgumentsIndex, uint32 NumInstances)
 {
 	FD3D12IndexBuffer* IndexBuffer = RetrieveObject<FD3D12IndexBuffer>(IndexBufferRHI);
 	FD3D12StructuredBuffer* ArgumentsBuffer = RetrieveObject<FD3D12StructuredBuffer>(ArgumentsBufferRHI);
 
-	RHI_DRAW_CALL_INC();
-
-	if (IsDefaultContext())
+	numDraws++;
+	if (bTrackingEvents)
 	{
 		GetParentDevice()->RegisterGPUWork(1);
 	}
@@ -1509,18 +1491,15 @@ void FD3D12CommandContext::RHIDrawIndexedIndirect(FIndexBufferRHIParamRef IndexB
 	CommitNonComputeShaderConstants();
 
 	// determine 16bit vs 32bit indices
-	uint32 SizeFormat = sizeof(DXGI_FORMAT);
 	const DXGI_FORMAT Format = (IndexBuffer->GetStride() == sizeof(uint16) ? DXGI_FORMAT_R16_UINT : DXGI_FORMAT_R32_UINT);
 
-	StateCache.SetIndexBuffer(&IndexBuffer->ResourceLocation, Format, 0);
-	StateCache.SetPrimitiveTopology(GetD3D12PrimitiveType(StateCache.GetGraphicsPipelinePrimitiveType(), bUsingTessellation));
+	StateCache.SetIndexBuffer(IndexBuffer->ResourceLocation, Format, 0);
 
 	FD3D12ResourceLocation& Location = ArgumentsBuffer->ResourceLocation;
 	FD3D12DynamicRHI::TransitionResource(CommandListHandle, Location.GetResource(), D3D12_RESOURCE_STATE_INDIRECT_ARGUMENT, D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES);
 
 	StateCache.ApplyState<D3D12PT_Graphics>();
 
-	numDraws++;
 	CommandListHandle->ExecuteIndirect(
 		GetParentDevice()->GetParentAdapter()->GetDrawIndexedIndirectCommandSignature(),
 		1,
@@ -1538,16 +1517,14 @@ void FD3D12CommandContext::RHIDrawIndexedIndirect(FIndexBufferRHIParamRef IndexB
 	DEBUG_EXECUTE_COMMAND_LIST(this);
 }
 
-void FD3D12CommandContext::RHIDrawIndexedPrimitive(FIndexBufferRHIParamRef IndexBufferRHI, int32 BaseVertexIndex, uint32 FirstInstance, uint32 NumVertices, uint32 StartIndex, uint32 NumPrimitives, uint32 NumInstances)
+void FD3D12CommandContext::RHIDrawIndexedPrimitive(FRHIIndexBuffer* IndexBufferRHI, int32 BaseVertexIndex, uint32 FirstInstance, uint32 NumVertices, uint32 StartIndex, uint32 NumPrimitives, uint32 NumInstances)
 {
-	FD3D12IndexBuffer* IndexBuffer = RetrieveObject<FD3D12IndexBuffer>(IndexBufferRHI);
-
 	// called should make sure the input is valid, this avoid hidden bugs
 	ensure(NumPrimitives > 0);
 
-	RHI_DRAW_CALL_STATS(StateCache.GetGraphicsPipelinePrimitiveType(), NumInstances*NumPrimitives);
-
-	if (IsDefaultContext())
+	NumInstances = FMath::Max<uint32>(1, NumInstances);
+	numDraws++;
+	if (bTrackingEvents)
 	{
 		GetParentDevice()->RegisterGPUWork(NumPrimitives * NumInstances, NumVertices * NumInstances);
 	}
@@ -1555,38 +1532,34 @@ void FD3D12CommandContext::RHIDrawIndexedPrimitive(FIndexBufferRHIParamRef Index
 	CommitGraphicsResourceTables();
 	CommitNonComputeShaderConstants();
 
-	// determine 16bit vs 32bit indices
-	uint32 SizeFormat = sizeof(DXGI_FORMAT);
-	const DXGI_FORMAT Format = (IndexBuffer->GetStride() == sizeof(uint16) ? DXGI_FORMAT_R16_UINT : DXGI_FORMAT_R32_UINT);
-
-	uint32 IndexCount = GetVertexCountForPrimitiveCount(NumPrimitives, StateCache.GetGraphicsPipelinePrimitiveType());
+	uint32 IndexCount = StateCache.GetVertexCountAndIncrementStat(NumPrimitives);
+	FD3D12IndexBuffer* IndexBuffer = RetrieveObject<FD3D12IndexBuffer>(IndexBufferRHI);
 
 	// Verify that we are not trying to read outside the index buffer range
 	// test is an optimized version of: StartIndex + IndexCount <= IndexBuffer->GetSize() / IndexBuffer->GetStride() 
 	checkf((StartIndex + IndexCount) * IndexBuffer->GetStride() <= IndexBuffer->GetSize(),
 		TEXT("Start %u, Count %u, Type %u, Buffer Size %u, Buffer stride %u"), StartIndex, IndexCount, StateCache.GetGraphicsPipelinePrimitiveType(), IndexBuffer->GetSize(), IndexBuffer->GetStride());
 
-	StateCache.SetIndexBuffer(&IndexBuffer->ResourceLocation, Format, 0);
-	StateCache.SetPrimitiveTopology(GetD3D12PrimitiveType(StateCache.GetGraphicsPipelinePrimitiveType(), bUsingTessellation));
+	// determine 16bit vs 32bit indices
+	const DXGI_FORMAT Format = (IndexBuffer->GetStride() == sizeof(uint16) ? DXGI_FORMAT_R16_UINT : DXGI_FORMAT_R32_UINT);
+	StateCache.SetIndexBuffer(IndexBuffer->ResourceLocation, Format, 0);
 	StateCache.ApplyState<D3D12PT_Graphics>();
 
-	numDraws++;
-	CommandListHandle->DrawIndexedInstanced(IndexCount, FMath::Max<uint32>(1, NumInstances), StartIndex, BaseVertexIndex, FirstInstance);
+	CommandListHandle->DrawIndexedInstanced(IndexCount, NumInstances, StartIndex, BaseVertexIndex, FirstInstance);
+
 #if UE_BUILD_DEBUG	
 	OwningRHI.DrawCount++;
 #endif
 	DEBUG_EXECUTE_COMMAND_LIST(this);
-
 }
 
-void FD3D12CommandContext::RHIDrawIndexedPrimitiveIndirect(FIndexBufferRHIParamRef IndexBufferRHI, FVertexBufferRHIParamRef ArgumentBufferRHI, uint32 ArgumentOffset)
+void FD3D12CommandContext::RHIDrawIndexedPrimitiveIndirect(FRHIIndexBuffer* IndexBufferRHI, FRHIVertexBuffer* ArgumentBufferRHI, uint32 ArgumentOffset)
 {
 	FD3D12IndexBuffer* IndexBuffer = RetrieveObject<FD3D12IndexBuffer>(IndexBufferRHI);
 	FD3D12VertexBuffer* ArgumentBuffer = RetrieveObject<FD3D12VertexBuffer>(ArgumentBufferRHI);
 
-	RHI_DRAW_CALL_INC();
-
-	if (IsDefaultContext())
+	numDraws++;
+	if (bTrackingEvents)
 	{
 		GetParentDevice()->RegisterGPUWork(0);
 	}
@@ -1595,17 +1568,14 @@ void FD3D12CommandContext::RHIDrawIndexedPrimitiveIndirect(FIndexBufferRHIParamR
 	CommitNonComputeShaderConstants();
 
 	// Set the index buffer.
-	const uint32 SizeFormat = sizeof(DXGI_FORMAT);
 	const DXGI_FORMAT Format = (IndexBuffer->GetStride() == sizeof(uint16) ? DXGI_FORMAT_R16_UINT : DXGI_FORMAT_R32_UINT);
-	StateCache.SetIndexBuffer(&IndexBuffer->ResourceLocation, Format, 0);
-	StateCache.SetPrimitiveTopology(GetD3D12PrimitiveType(StateCache.GetGraphicsPipelinePrimitiveType(), bUsingTessellation));
+	StateCache.SetIndexBuffer(IndexBuffer->ResourceLocation, Format, 0);
 
 	FD3D12ResourceLocation& Location = ArgumentBuffer->ResourceLocation;
 	FD3D12DynamicRHI::TransitionResource(CommandListHandle, Location.GetResource(), D3D12_RESOURCE_STATE_INDIRECT_ARGUMENT, D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES);
 
 	StateCache.ApplyState<D3D12PT_Graphics>();
 
-	numDraws++;
 	CommandListHandle->ExecuteIndirect(
 		GetParentDevice()->GetParentAdapter()->GetDrawIndexedIndirectCommandSignature(),
 		1,
@@ -1623,132 +1593,6 @@ void FD3D12CommandContext::RHIDrawIndexedPrimitiveIndirect(FIndexBufferRHIParamR
 	DEBUG_EXECUTE_COMMAND_LIST(this);
 }
 
-/**
-* Preallocate memory or get a direct command stream pointer to fill up for immediate rendering . This avoids memcpys below in DrawPrimitiveUP
-* @param NumPrimitives The number of primitives in the VertexData buffer
-* @param NumVertices The number of vertices to be written
-* @param VertexDataStride Size of each vertex
-* @param OutVertexData Reference to the allocated vertex memory
-*/
-void FD3D12CommandContext::RHIBeginDrawPrimitiveUP(uint32 NumPrimitives, uint32 NumVertices, uint32 VertexDataStride, void*& OutVertexData)
-{
-	checkSlow(PendingUP.NumVertices == 0);
-
-	// Remember the parameters for the draw call.
-	PendingUP.NumPrimitives = NumPrimitives;
-	PendingUP.NumVertices = NumVertices;
-	PendingUP.VertexDataStride = VertexDataStride;
-
-	// Map the dynamic buffer.
-	OutVertexData = DynamicVB.Lock(NumVertices * VertexDataStride);
-}
-
-/**
-* Draw a primitive using the vertex data populated since RHIBeginDrawPrimitiveUP and clean up any memory as needed
-*/
-void FD3D12CommandContext::RHIEndDrawPrimitiveUP()
-{
-	RHI_DRAW_CALL_STATS(StateCache.GetGraphicsPipelinePrimitiveType(), PendingUP.NumPrimitives);
-
-	checkSlow(!bUsingTessellation || StateCache.GetGraphicsPipelinePrimitiveType() == PT_TriangleList);
-
-	if (IsDefaultContext())
-	{
-		GetParentDevice()->RegisterGPUWork(PendingUP.NumPrimitives, PendingUP.NumVertices);
-	}
-
-	// Unmap the dynamic vertex buffer.
-	FD3D12ResourceLocation* BufferLocation = DynamicVB.Unlock();
-	uint32 VBOffset = 0;
-
-	// Issue the draw call.
-	CommitGraphicsResourceTables();
-	CommitNonComputeShaderConstants();
-	StateCache.SetStreamSource(BufferLocation, 0, PendingUP.VertexDataStride, VBOffset);
-	StateCache.SetPrimitiveTopology(GetD3D12PrimitiveType(StateCache.GetGraphicsPipelinePrimitiveType(), bUsingTessellation));
-	StateCache.ApplyState<D3D12PT_Graphics>();
-	numDraws++;
-	CommandListHandle->DrawInstanced(PendingUP.NumVertices, 1, 0, 0);
-#if UE_BUILD_DEBUG	
-	OwningRHI.DrawCount++;
-#endif
-	DEBUG_EXECUTE_COMMAND_LIST(this);
-
-	// Clear these parameters.
-	PendingUP.Reset();
-}
-
-/**
-* Preallocate memory or get a direct command stream pointer to fill up for immediate rendering . This avoids memcpys below in DrawIndexedPrimitiveUP
-* @param NumPrimitives The number of primitives in the VertexData buffer
-* @param NumVertices The number of vertices to be written
-* @param VertexDataStride Size of each vertex
-* @param OutVertexData Reference to the allocated vertex memory
-* @param MinVertexIndex The lowest vertex index used by the index buffer
-* @param NumIndices Number of indices to be written
-* @param IndexDataStride Size of each index (either 2 or 4 bytes)
-* @param OutIndexData Reference to the allocated index memory
-*/
-void FD3D12CommandContext::RHIBeginDrawIndexedPrimitiveUP(uint32 NumPrimitives, uint32 NumVertices, uint32 VertexDataStride, void*& OutVertexData, uint32 MinVertexIndex, uint32 NumIndices, uint32 IndexDataStride, void*& OutIndexData)
-{
-	checkSlow((sizeof(uint16) == IndexDataStride) || (sizeof(uint32) == IndexDataStride));
-
-	// Store off information needed for the draw call.
-	PendingUP.NumPrimitives = NumPrimitives;
-	PendingUP.MinVertexIndex = MinVertexIndex;
-	PendingUP.IndexDataStride = IndexDataStride;
-	PendingUP.NumVertices = NumVertices;
-	PendingUP.NumIndices = NumIndices;
-	PendingUP.VertexDataStride = VertexDataStride;
-
-	// Map dynamic vertex and index buffers.
-	OutVertexData = DynamicVB.Lock(NumVertices * VertexDataStride);
-	OutIndexData = DynamicIB.Lock(NumIndices * IndexDataStride);
-}
-
-/**
-* Draw a primitive using the vertex and index data populated since RHIBeginDrawIndexedPrimitiveUP and clean up any memory as needed
-*/
-void FD3D12CommandContext::RHIEndDrawIndexedPrimitiveUP()
-{
-	// tessellation only supports trilists
-	checkSlow(!bUsingTessellation || StateCache.GetGraphicsPipelinePrimitiveType() == PT_TriangleList);
-
-	RHI_DRAW_CALL_STATS(StateCache.GetGraphicsPipelinePrimitiveType(), PendingUP.NumPrimitives);
-
-	if (IsDefaultContext())
-	{
-		GetParentDevice()->RegisterGPUWork(PendingUP.NumPrimitives, PendingUP.NumVertices);
-	}
-
-	// Unmap the dynamic buffers.
-	FD3D12ResourceLocation* VertexBufferLocation = DynamicVB.Unlock();
-	FD3D12ResourceLocation* IndexBufferLocation = DynamicIB.Unlock();
-	uint32 VBOffset = 0;
-
-	// Issue the draw call.
-	CommitGraphicsResourceTables();
-	CommitNonComputeShaderConstants();
-	StateCache.SetStreamSource(VertexBufferLocation, 0, PendingUP.VertexDataStride, VBOffset);
-	StateCache.SetIndexBuffer(IndexBufferLocation, PendingUP.IndexDataStride == sizeof(uint16) ? DXGI_FORMAT_R16_UINT : DXGI_FORMAT_R32_UINT, 0);
-	StateCache.SetPrimitiveTopology(GetD3D12PrimitiveType(StateCache.GetGraphicsPipelinePrimitiveType(), bUsingTessellation));
-	StateCache.ApplyState<D3D12PT_Graphics>();
-
-	numDraws++;
-	CommandListHandle->DrawIndexedInstanced(PendingUP.NumIndices, 1, 0, PendingUP.MinVertexIndex, 0);
-#if UE_BUILD_DEBUG	
-	OwningRHI.DrawCount++;
-#endif
-	DEBUG_EXECUTE_COMMAND_LIST(this);
-
-	//It's important to release the locations so the fast alloc page can be freed
-	DynamicVB.ReleaseResourceLocation();
-	DynamicIB.ReleaseResourceLocation();
-
-	// Clear these parameters.
-	PendingUP.Reset();
-}
-
 // Raster operations.
 void FD3D12CommandContext::RHIClearMRT(bool bClearColor, int32 NumClearColors, const FLinearColor* ClearColorArray, bool bClearDepth, float Depth, bool bClearStencil, uint32 Stencil)
 {
@@ -1759,12 +1603,8 @@ void FD3D12CommandContext::RHIClearMRTImpl(bool bClearColor, int32 NumClearColor
 {
 	SCOPE_CYCLE_COUNTER(STAT_D3D12ClearMRT);
 
-	uint32 NumViews = 1;
-	D3D12_VIEWPORT Viewport;
-	StateCache.GetViewports(&NumViews, &Viewport);
-
-	D3D12_RECT ScissorRect;
-	StateCache.GetScissorRect(&ScissorRect);
+	const D3D12_VIEWPORT& Viewport = StateCache.GetViewport();
+	const D3D12_RECT& ScissorRect = StateCache.GetScissorRect();
 
 	if (ScissorRect.left >= ScissorRect.right || ScissorRect.top >= ScissorRect.bottom)
 	{
@@ -1940,7 +1780,7 @@ void FD3D12DynamicRHI::RHISubmitCommandsAndFlushGPU()
 /*
 * Returns the total GPU time taken to render the last frame. Same metric as FPlatformTime::Cycles().
 */
-uint32 FD3D12DynamicRHI::RHIGetGPUFrameCycles()
+uint32 FD3D12DynamicRHI::RHIGetGPUFrameCycles(uint32 GPUIndex)
 {
 	return GGPUFrameTime;
 }
@@ -1984,118 +1824,105 @@ void FD3D12CommandContext::RHISubmitCommandsHint()
 
 void FD3D12CommandContext::RHIWaitForTemporalEffect(const FName& InEffectName)
 {
-#if USE_COPY_QUEUE_FOR_RESOURCE_SYNC
+#if WITH_MGPU
 	check(IsDefaultContext());
-	FD3D12Device* Device = GetParentDevice();
-	FD3D12Adapter* Adapter = Device->GetParentAdapter();
 
-#if 0 // Multi-GPU support : this must depend on whether the current GPUs was also used or for rendering the last frame.
-	if (Adapter->AlternateFrameRenderingEnabled() && AFRSyncTemporalResources)
+	if (GNumAlternateFrameRenderingGroups == 1 || !AFRSyncTemporalResources)
 	{
-		FD3D12TemporalEffect* Effect = Adapter->GetTemporalEffect(InEffectName);
+		return;
+	}
 
+#if USE_COPY_QUEUE_FOR_RESOURCE_SYNC
+	FD3D12Adapter* Adapter = GetParentAdapter();
+	FD3D12TemporalEffect* Effect = Adapter->GetTemporalEffect(InEffectName);
+
+	const uint32 GPUIndex = GetGPUIndex();
+	if (Effect->ShouldWaitForPrevious(GPUIndex))
+	{
 		// Execute the current command list so we can have a point to insert a wait
 		FlushCommands();
 
-		FD3D12CommandListManager& Manager = bIsAsyncComputeContext ? Device->GetAsyncCommandListManager() :
-			Device->GetCommandListManager();
-
-		// Wait for previous copy by splicing in a wait to the queue
-		Effect->WaitForPrevious(Manager.GetD3DCommandQueue());
+		Effect->WaitForPrevious(GPUIndex, bIsAsyncComputeContext ? ED3D12CommandQueueType::Async : ED3D12CommandQueueType::Default);
 	}
 #endif
-#endif
+#endif // WITH_MGPU
 }
 
-void FD3D12CommandContext::RHIBroadcastTemporalEffect(const FName& InEffectName, FTextureRHIParamRef* InTextures, int32 NumTextures)
+void FD3D12CommandContext::RHIBroadcastTemporalEffect(const FName& InEffectName, const TArrayView<FRHITexture*> InTextures)
 {
+#if WITH_MGPU
 	check(IsDefaultContext());
-	FD3D12Device* Device = GetParentDevice();
-	FD3D12Adapter* Adapter = Device->GetParentAdapter();
+
+	if (GNumAlternateFrameRenderingGroups == 1 || !AFRSyncTemporalResources)
+	{
+		return;
+	}
+
+	const uint32 GPUIndex = GetGPUIndex();
+	TArray<FD3D12TextureBase*, TInlineAllocator<8>> SrcTextures, DstTextures;
+	const int32 NumTextures = InTextures.Num();
+	for (int32 i = 0; i < NumTextures; i++)
+	{
+		SrcTextures.Emplace(RetrieveTextureBase(InTextures[i]));
+		const uint32 NextSiblingGPUIndex = AFRUtils::GetNextSiblingGPUIndex(GPUIndex);
+		DstTextures.Emplace(RetrieveTextureBase(InTextures[i], [NextSiblingGPUIndex](FD3D12Device* Device) { return Device->GetGPUIndex() == NextSiblingGPUIndex; }));
+	}
 
 #if USE_COPY_QUEUE_FOR_RESOURCE_SYNC
-#if 0 // Multi-GPU support : we only need to broadcast to GPUs that will be used to render the next frame.
-	if (Adapter->AlternateFrameRenderingEnabled() && AFRSyncTemporalResources)
+
+	FD3D12Device* Device = GetParentDevice();
+	FD3D12Adapter* Adapter = Device->GetParentAdapter();
+	FD3D12TemporalEffect* Effect = Adapter->GetTemporalEffect(InEffectName);
+
+	for (int32 i = 0; i < NumTextures; i++)
 	{
-		FD3D12TemporalEffect* Effect = Adapter->GetTemporalEffect(InEffectName);
-
-		FD3D12CommandAllocatorManager& TextureStreamingCommandAllocatorManager = Device->GetTextureStreamingCommandAllocatorManager();
-		FD3D12CommandAllocator* CurrentCommandAllocator = TextureStreamingCommandAllocatorManager.ObtainCommandAllocator();
-		FD3D12CommandListManager& CopyManager = Device->GetCopyCommandListManager();
-		FD3D12CommandListHandle hCopyCommandList = CopyManager.ObtainCommandList(*CurrentCommandAllocator);
-		hCopyCommandList.SetCurrentOwningContext(this);
-
-		for (int32 i = 0; i < NumTextures; i++)
-		{
-			// Get the texture for this frame i.e. the one that was just generated
-			FD3D12TextureBase* ThisTexture = RetrieveTextureBase(InTextures[i]);
-			FD3D12TextureBase* OtherTexture = ((FD3D12TextureBase*)InTextures[i]->GetTextureBaseRHI());
-
-			FD3D12DynamicRHI::TransitionResource(CommandListHandle, ThisTexture->GetResource(), D3D12_RESOURCE_STATE_COMMON, D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES);
-
-			// Broadcast this texture to all other GPUs in the LDA chain
-			while (OtherTexture)
-			{
-				if (OtherTexture != ThisTexture)
-				{
-					// Note: We transition on the incomming queue as the copy queue will auto promote from common to whatever the resource is used as.
-					FD3D12DynamicRHI::TransitionResource(CommandListHandle, OtherTexture->GetResource(), D3D12_RESOURCE_STATE_COMMON, D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES);
-
-					hCopyCommandList.GetCurrentOwningContext()->numCopies++;
-					hCopyCommandList->CopyResource(OtherTexture->GetResource()->GetResource(), ThisTexture->GetResource()->GetResource());
-				}
-
-				OtherTexture = OtherTexture->GetNextObject();
-			}
-		}
-
-		// Flush 3D/Compute Queue
-		{
-			CommandListHandle.FlushResourceBarriers();
-			FlushCommands();
-		}
-
-		// Kick off the async copy, signalling when done
-		{
-			// The consuming engine must wait for the producer before executing
-			{
-				FD3D12CommandListManager& ProducerManager = bIsAsyncComputeContext ? Device->GetAsyncCommandListManager() :
-					Device->GetCommandListManager();
-
-				FD3D12Fence& ProducerFence = ProducerManager.GetFence();
-				ProducerFence.GpuWait(CopyManager.GetD3DCommandQueue(), ProducerFence.GetLastSignaledFence());
-			}
-
-			hCopyCommandList.Close();
-			Device->GetCopyCommandListManager().ExecuteCommandList(hCopyCommandList);
-
-			Effect->SignalSyncComplete(Device->GetCopyCommandListManager().GetD3DCommandQueue());
-			TextureStreamingCommandAllocatorManager.ReleaseCommandAllocator(CurrentCommandAllocator);
-		}
+		// Resources must be in the COMMON state before using on the copy queue.
+		FD3D12DynamicRHI::TransitionResource(CommandListHandle, SrcTextures[i]->GetResource(), D3D12_RESOURCE_STATE_COMMON, D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES);
+		FD3D12DynamicRHI::TransitionResource(CommandListHandle, DstTextures[i]->GetResource(), D3D12_RESOURCE_STATE_COMMON, D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES);
 	}
-#endif
+	CommandListHandle.FlushResourceBarriers();
+
+	// Finish rendering on the current queue.
+	FlushCommands();
+
+	// Tell the copy queue to wait for the current queue to finish rendering before starting the copy.
+	Effect->SignalSyncComplete(GPUIndex, bIsAsyncComputeContext ? ED3D12CommandQueueType::Async : ED3D12CommandQueueType::Default);
+	Effect->WaitForPrevious(GPUIndex, ED3D12CommandQueueType::Copy);
+
+	FD3D12CommandAllocatorManager& CopyCommandAllocatorManager = Device->GetTextureStreamingCommandAllocatorManager();
+	FD3D12CommandAllocator* CopyCommandAllocator = CopyCommandAllocatorManager.ObtainCommandAllocator();
+	FD3D12CommandListManager& CopyCommandListManager = Device->GetCopyCommandListManager();
+	FD3D12CommandListHandle hCopyCommandList = CopyCommandListManager.ObtainCommandList(*CopyCommandAllocator);
+	hCopyCommandList.SetCurrentOwningContext(this);
+
+	for (int32 i = 0; i < NumTextures; i++)
+	{
+		// NB: We do not increment numCopies here because the main context isn't doing any work.
+		hCopyCommandList->CopyResource(DstTextures[i]->GetResource()->GetResource(), SrcTextures[i]->GetResource()->GetResource());
+	}
+	hCopyCommandList.Close();
+
+	CopyCommandListManager.ExecuteCommandList(hCopyCommandList);
+	CopyCommandAllocatorManager.ReleaseCommandAllocator(CopyCommandAllocator);
+
+	// Signal again once the copy queue copy is complete.
+	Effect->SignalSyncComplete(GPUIndex, ED3D12CommandQueueType::Copy);
+
 #else
-	for (size_t i = 0; i < NumTextures; i++)
+
+	for (int32 i = 0; i < NumTextures; i++)
 	{
-		// Get the texture for this frame i.e. the one that was just generated
-		FD3D12TextureBase* ThisTexture = RetrieveTextureBase(InTextures[i]);
-		FD3D12TextureBase* OtherTexture = ((FD3D12TextureBase*)InTextures[i]->GetTextureBaseRHI());
-
-		FD3D12DynamicRHI::TransitionResource(CommandListHandle, ThisTexture->GetResource(), D3D12_RESOURCE_STATE_COPY_SOURCE, D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES);
-
-		// Broadcast this texture to all other GPUs in the LDA chain
-		while (OtherTexture)
-		{
-			if (OtherTexture != ThisTexture)
-			{
-				FD3D12DynamicRHI::TransitionResource(CommandListHandle, OtherTexture->GetResource(), D3D12_RESOURCE_STATE_COPY_DEST, D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES);
-
-				CommandListHandle.GetCurrentOwningContext()->numCopies++;
-				CommandListHandle->CopyResource(OtherTexture->GetResource()->GetResource(), ThisTexture->GetResource()->GetResource());
-			}
-
-			OtherTexture = OtherTexture->GetNextObject();
-		}
+		FD3D12DynamicRHI::TransitionResource(CommandListHandle, SrcTextures[i]->GetResource(), D3D12_RESOURCE_STATE_COPY_SOURCE, D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES);
+		FD3D12DynamicRHI::TransitionResource(CommandListHandle, DstTextures[i]->GetResource(), D3D12_RESOURCE_STATE_COPY_DEST, D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES);
 	}
-#endif
+	CommandListHandle.FlushResourceBarriers();
+
+	for (int32 i = 0; i < NumTextures; i++)
+	{
+		numCopies++;
+		CommandListHandle->CopyResource(DstTextures[i]->GetResource()->GetResource(), SrcTextures[i]->GetResource()->GetResource());
+	}
+
+#endif // USE_COPY_QUEUE_FOR_RESOURCE_SYNC
+#endif // WITH_MGPU
 }

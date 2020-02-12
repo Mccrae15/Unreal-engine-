@@ -1,10 +1,18 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "DisplayClusterCameraComponent.h"
+#include "Config/DisplayClusterConfigTypes.h"
+
+#include "Camera/CameraComponent.h"
+
+#include "CoreGlobals.h"
 
 
-UDisplayClusterCameraComponent::UDisplayClusterCameraComponent(const FObjectInitializer& ObjectInitializer) :
-	UDisplayClusterSceneComponent(ObjectInitializer)
+UDisplayClusterCameraComponent::UDisplayClusterCameraComponent(const FObjectInitializer& ObjectInitializer)
+	: UDisplayClusterSceneComponent(ObjectInitializer)
+	, EyeDist(0.064f)
+	, bEyeSwap(false)
+	, ForceEyeOffset(0)
 {
 	PrimaryComponentTick.bCanEverTick = true;
 }
@@ -13,21 +21,22 @@ UDisplayClusterCameraComponent::UDisplayClusterCameraComponent(const FObjectInit
 void UDisplayClusterCameraComponent::BeginPlay()
 {
 	Super::BeginPlay();
-	
-	// ...
-	
 }
 
-void UDisplayClusterCameraComponent::TickComponent( float DeltaTime, ELevelTick TickType, FActorComponentTickFunction* ThisTickFunction )
+void UDisplayClusterCameraComponent::SetSettings(const FDisplayClusterConfigSceneNode* ConfigData)
 {
-	Super::TickComponent( DeltaTime, TickType, ThisTickFunction );
+	check(ConfigData);
+	if (ConfigData)
+	{
+		const FDisplayClusterConfigCamera* const CameraCfg = static_cast<const FDisplayClusterConfigCamera*>(ConfigData);
 
-	// ...
-}
+		EyeDist        = CameraCfg->EyeDist;
+		bEyeSwap       = CameraCfg->EyeSwap;
+		ForceEyeOffset = CameraCfg->ForceOffset;
+	}
+	
 
-void UDisplayClusterCameraComponent::SetSettings(const FDisplayClusterConfigSceneNode* pConfig)
-{
-	Super::SetSettings(pConfig);
+	Super::SetSettings(ConfigData);
 }
 
 bool UDisplayClusterCameraComponent::ApplySettings()

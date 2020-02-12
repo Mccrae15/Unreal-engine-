@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 /*=============================================================================
 	D3D11UniformBuffer.cpp: D3D uniform buffer RHI implementation.
@@ -6,6 +6,14 @@
 
 #include "D3D11RHIPrivate.h"
 #include "UniformBuffer.h"
+
+
+
+#if UE_BUILD_DEBUG || UE_BUILD_DEVELOPMENT
+constexpr EUniformBufferValidation UniformBufferValidation = EUniformBufferValidation::ValidateResources;
+#else
+constexpr EUniformBufferValidation UniformBufferValidation = EUniformBufferValidation::None;
+#endif
 
 /** Describes a uniform buffer in the free pool. */
 struct FPooledUniformBuffer
@@ -46,6 +54,14 @@ TArray<FPooledUniformBuffer> UniformBufferPool[NumPoolBuckets];
 /** Uniform buffers that have been freed more recently than NumSafeFrames ago. */
 TArray<FPooledUniformBuffer> SafeUniformBufferPools[NumSafeFrames][NumPoolBuckets];
 
+static int32 GD3DUniformPoolRecycleDepth = 30;
+static FAutoConsoleVariableRef CVarD3DUniformPoolRecycleDepth(
+	TEXT("r.d3d.uniformbufferrecycledepth"),
+	GD3DUniformPoolRecycleDepth,
+	TEXT("Number of frames before recycling freed uniform buffers .\n"),	
+	ECVF_Default
+);
+
 /** Does per-frame global updating for the uniform buffer pool. */
 void UniformBufferBeginFrame()
 {
@@ -63,12 +79,13 @@ void UniformBufferBeginFrame()
 			check(IsValidRef(PoolEntry.Buffer));
 
 			// Clean entries that are unlikely to be reused
-			if (GFrameNumberRenderThread - PoolEntry.FrameFreed > 30)
+			if (GFrameNumberRenderThread - PoolEntry.FrameFreed > (uint32)GD3DUniformPoolRecycleDepth)
 			{
 				DEC_DWORD_STAT(STAT_D3D11NumFreeUniformBuffers);
 				DEC_MEMORY_STAT_BY(STAT_D3D11FreeUniformBufferMemory, PoolEntry.CreatedSize);
 				NumCleaned++;
 				UpdateBufferStats(PoolEntry.Buffer, false);
+				PoolEntry.Buffer.SafeRelease();
 				UniformBufferPool[BucketIndex].RemoveAtSwap(EntryIndex);
 			}
 		}
@@ -95,18 +112,68 @@ void UniformBufferBeginFrame()
 
 static bool IsPoolingEnabled()
 {
-	if (IsRunningRHIInSeparateThread() && IsInRenderingThread() && GRHICommandList.IsRHIThreadActive())
-	{
-		return false; // we can't currently use pooling if the RHI thread is active. 
-	}
 	static const auto CVar = IConsoleManager::Get().FindTConsoleVariableDataInt(TEXT("r.UniformBufferPooling"));
 	int32 CVarValue = CVar->GetValueOnRenderThread();
 	return CVarValue != 0;
 };
 
-FUniformBufferRHIRef FD3D11DynamicRHI::RHICreateUniformBuffer(const void* Contents,const FRHIUniformBufferLayout& Layout,EUniformBufferUsage Usage, EUniformBufferValidation Validation)
+static TRefCountPtr<ID3D11Buffer> CreateAndUpdatePooledUniformBuffer(
+	FD3D11Device* Device,
+	FD3D11DeviceContext* Context,
+	const void* Contents,
+	uint32 NumBytes)
 {
-	check(IsInRenderingThread());
+	TRefCountPtr<ID3D11Buffer> UniformBufferResource;
+
+	// Find the appropriate bucket based on size
+	const uint32 BucketIndex = GetPoolBucketIndex(NumBytes);
+	TArray<FPooledUniformBuffer>& PoolBucket = UniformBufferPool[BucketIndex];
+
+	if (PoolBucket.Num() > 0)
+	{
+		// Reuse the last entry in this size bucket
+		FPooledUniformBuffer FreeBufferEntry = PoolBucket.Pop();
+		check(IsValidRef(FreeBufferEntry.Buffer));
+		checkf(FreeBufferEntry.CreatedSize >= NumBytes, TEXT("%u %u %u %u"), NumBytes, BucketIndex, FreeBufferEntry.CreatedSize, GetPoolBucketSize(NumBytes));
+		DEC_DWORD_STAT(STAT_D3D11NumFreeUniformBuffers);
+		DEC_MEMORY_STAT_BY(STAT_D3D11FreeUniformBufferMemory, FreeBufferEntry.CreatedSize);
+		UniformBufferResource = FreeBufferEntry.Buffer;
+	}
+
+	if (!IsValidRef(UniformBufferResource))
+	{
+		D3D11_BUFFER_DESC Desc;
+		// Allocate based on the bucket size, since this uniform buffer will be reused later
+		Desc.ByteWidth = GetPoolBucketSize(NumBytes);
+		// Use D3D11_USAGE_DYNAMIC, which allows multiple CPU writes for pool reuses
+		// This is method of updating is vastly superior to creating a new constant buffer each time with D3D11_USAGE_IMMUTABLE,
+		// Since that inserts the data into the command buffer which causes GPU flushes
+		Desc.Usage = D3D11_USAGE_DYNAMIC;
+		Desc.BindFlags = D3D11_BIND_CONSTANT_BUFFER;
+		Desc.CPUAccessFlags = D3D11_CPU_ACCESS_WRITE;
+		Desc.MiscFlags = 0;
+		Desc.StructureByteStride = 0;
+
+		VERIFYD3D11RESULT_EX(Device->CreateBuffer(&Desc, NULL, UniformBufferResource.GetInitReference()), Device);
+
+		UpdateBufferStats(UniformBufferResource, true);
+	}
+
+	check(IsValidRef(UniformBufferResource));
+
+	D3D11_MAPPED_SUBRESOURCE MappedSubresource;
+	// Discard previous results since we always do a full update
+	VERIFYD3D11RESULT_EX(Context->Map(UniformBufferResource, 0, D3D11_MAP_WRITE_DISCARD, 0, &MappedSubresource), Device);
+	check(MappedSubresource.RowPitch >= NumBytes);
+	FMemory::Memcpy(MappedSubresource.pData, Contents, NumBytes);
+	Context->Unmap(UniformBufferResource, 0);
+
+	return UniformBufferResource;
+}
+
+FUniformBufferRHIRef FD3D11DynamicRHI::RHICreateUniformBuffer(const void* Contents, const FRHIUniformBufferLayout& Layout, EUniformBufferUsage Usage, EUniformBufferValidation Validation)
+{
+	check(IsInRenderingThread() || IsInRHIThread());
 
 	FD3D11UniformBuffer* NewUniformBuffer = nullptr;
 	const uint32 NumBytes = Layout.ConstantBufferSize;
@@ -119,68 +186,46 @@ FUniformBufferRHIRef FD3D11DynamicRHI::RHICreateUniformBuffer(const void* Conten
 		check(NumBytes < (1 << NumPoolBuckets));
 
 		SCOPE_CYCLE_COUNTER(STAT_D3D11UpdateUniformBufferTime);
+
 		if (IsPoolingEnabled())
 		{
-			TRefCountPtr<ID3D11Buffer> UniformBufferResource;
-			FRingAllocation RingAllocation;
-
-			if (!RingAllocation.IsValid())
+			if (ShouldNotEnqueueRHICommand())
 			{
-				// Find the appropriate bucket based on size
-				const uint32 BucketIndex = GetPoolBucketIndex(NumBytes);
-				TArray<FPooledUniformBuffer>& PoolBucket = UniformBufferPool[BucketIndex];
-
-				if (PoolBucket.Num() > 0)
-				{
-					// Reuse the last entry in this size bucket
-					FPooledUniformBuffer FreeBufferEntry = PoolBucket.Pop();
-					check(IsValidRef(FreeBufferEntry.Buffer));
-					UniformBufferResource = FreeBufferEntry.Buffer;
-					checkf(FreeBufferEntry.CreatedSize >= NumBytes, TEXT("%u %u %u %u"), NumBytes, BucketIndex, FreeBufferEntry.CreatedSize, GetPoolBucketSize(NumBytes));
-					DEC_DWORD_STAT(STAT_D3D11NumFreeUniformBuffers);
-					DEC_MEMORY_STAT_BY(STAT_D3D11FreeUniformBufferMemory, FreeBufferEntry.CreatedSize);
-				}
-
-				// Nothing usable was found in the free pool, create a new uniform buffer
-				if (!IsValidRef(UniformBufferResource))
-				{
-					D3D11_BUFFER_DESC Desc;
-					// Allocate based on the bucket size, since this uniform buffer will be reused later
-					Desc.ByteWidth = GetPoolBucketSize(NumBytes);
-					// Use D3D11_USAGE_DYNAMIC, which allows multiple CPU writes for pool reuses
-					// This is method of updating is vastly superior to creating a new constant buffer each time with D3D11_USAGE_IMMUTABLE, 
-					// Since that inserts the data into the command buffer which causes GPU flushes
-					Desc.Usage = D3D11_USAGE_DYNAMIC;
-					Desc.BindFlags = D3D11_BIND_CONSTANT_BUFFER;
-					Desc.CPUAccessFlags = D3D11_CPU_ACCESS_WRITE;
-					Desc.MiscFlags = 0;
-					Desc.StructureByteStride = 0;
-
-					VERIFYD3D11RESULT_EX(Direct3DDevice->CreateBuffer(&Desc, NULL, UniformBufferResource.GetInitReference()), Direct3DDevice);
-
-					UpdateBufferStats(UniformBufferResource, true);
-				}
-
-				check(IsValidRef(UniformBufferResource));
-
-				D3D11_MAPPED_SUBRESOURCE MappedSubresource;
-				// Discard previous results since we always do a full update
-				VERIFYD3D11RESULT_EX(Direct3DDeviceIMContext->Map(UniformBufferResource, 0, D3D11_MAP_WRITE_DISCARD, 0, &MappedSubresource), Direct3DDevice);
-				check(MappedSubresource.RowPitch >= NumBytes);
-				FMemory::Memcpy(MappedSubresource.pData, Contents, NumBytes);
-				Direct3DDeviceIMContext->Unmap(UniformBufferResource, 0);
+				TRefCountPtr<ID3D11Buffer> UniformBufferResource = CreateAndUpdatePooledUniformBuffer(
+					Direct3DDevice.GetReference(),
+					Direct3DDeviceIMContext.GetReference(),
+					Contents,
+					NumBytes);
+				NewUniformBuffer = new FD3D11UniformBuffer(this, Layout, UniformBufferResource, FRingAllocation());
 			}
+			else
+			{
+				NewUniformBuffer = new FD3D11UniformBuffer(this, Layout, nullptr, FRingAllocation());
+				NewUniformBuffer->AddRef();
+				void* CPUContent = FMemory::Malloc(NumBytes);
+				FMemory::Memcpy(CPUContent, Contents, NumBytes);
 
-			NewUniformBuffer = new FD3D11UniformBuffer(this, Layout, UniformBufferResource, RingAllocation);
+				RunOnRHIThread(
+					[NewUniformBuffer, CPUContent, NumBytes]()
+				{
+					NewUniformBuffer->Resource = CreateAndUpdatePooledUniformBuffer(
+						D3D11RHI_DEVICE,
+						D3D11RHI_IMMEDIATE_CONTEXT,
+						CPUContent,
+						NumBytes);
+					NewUniformBuffer->Release();
+					FMemory::Free(CPUContent);
+				});
+			}
 		}
 		else
 		{
 			// No pooling
 			D3D11_BUFFER_DESC Desc;
 			Desc.ByteWidth = NumBytes;
-			Desc.Usage = D3D11_USAGE_IMMUTABLE;
+			Desc.Usage = D3D11_USAGE_DYNAMIC;
 			Desc.BindFlags = D3D11_BIND_CONSTANT_BUFFER;
-			Desc.CPUAccessFlags = 0;
+			Desc.CPUAccessFlags = D3D11_CPU_ACCESS_WRITE;
 			Desc.MiscFlags = 0;
 			Desc.StructureByteStride = 0;
 
@@ -192,6 +237,8 @@ FUniformBufferRHIRef FD3D11DynamicRHI::RHICreateUniformBuffer(const void* Conten
 			VERIFYD3D11RESULT_EX(Direct3DDevice->CreateBuffer(&Desc,&ImmutableData,UniformBufferResource.GetInitReference()), Direct3DDevice);
 
 			NewUniformBuffer = new FD3D11UniformBuffer(this, Layout, UniformBufferResource, FRingAllocation());
+
+			INC_DWORD_STAT(STAT_D3D11NumImmutableUniformBuffers);
 		}
 	}
 	else
@@ -200,6 +247,7 @@ FUniformBufferRHIRef FD3D11DynamicRHI::RHICreateUniformBuffer(const void* Conten
 		NewUniformBuffer = new FD3D11UniformBuffer(this, Layout, nullptr, FRingAllocation());
 	}
 
+	const TCHAR* LayoutName = *Layout.GetDebugName();
 	if (Layout.Resources.Num())
 	{
 		int32 NumResources = Layout.Resources.Num();
@@ -208,16 +256,18 @@ FUniformBufferRHIRef FD3D11DynamicRHI::RHICreateUniformBuffer(const void* Conten
 
 		for (int32 i = 0; i < NumResources; ++i)
 		{
-			FRHIResource* Resource = *(FRHIResource**)((uint8*)Contents + Layout.Resources[i].MemberOffset);
+			const FRHIUniformBufferLayout::FResourceParameter& ResourceParam = Layout.Resources[i];
+			FRHIResource* Resource = *(FRHIResource**)((uint8*)Contents + ResourceParam.MemberOffset);
 
 			// Allow null SRV's in uniform buffers for feature levels that don't support SRV's in shaders
 			if (!(GMaxRHIFeatureLevel <= ERHIFeatureLevel::ES3_1 
-				&& (Layout.Resources[i].MemberType == UBMT_SRV || Layout.Resources[i].MemberType == UBMT_RDG_TEXTURE_SRV || Layout.Resources[i].MemberType == UBMT_RDG_BUFFER_SRV))
+				&& (Layout.Resources[i].MemberType == UBMT_SRV || Layout.Resources[i].MemberType == UBMT_UAV || Layout.Resources[i].MemberType == UBMT_RDG_TEXTURE_SRV || Layout.Resources[i].MemberType == UBMT_RDG_BUFFER_SRV))
 				&& Validation == EUniformBufferValidation::ValidateResources)
 			{
-				checkf(Resource, TEXT("Invalid resource entry creating uniform buffer, %s.Resources[%u], ResourceType 0x%x."), *Layout.GetDebugName().ToString(), i, Layout.Resources[i].MemberType);
+				checkf(Resource, TEXT("Invalid resource entry creating uniform buffer, %s.Resources[%u], ResourceType 0x%x."), *Layout.GetDebugName(), i, Layout.Resources[i].MemberType);
 			}
 			NewUniformBuffer->ResourceTable[i] = Resource;
+			int a = 0;
 		}
 	}
 
@@ -241,7 +291,7 @@ void UpdateUniformBufferContents(FD3D11Device* Direct3DDevice, FD3D11DeviceConte
 	}
 }
 
-void FD3D11DynamicRHI::RHIUpdateUniformBuffer(FUniformBufferRHIParamRef UniformBufferRHI, const void* Contents)
+void FD3D11DynamicRHI::RHIUpdateUniformBuffer(FRHIUniformBuffer* UniformBufferRHI, const void* Contents)
 {
 	check(IsInRenderingThread());
 	check(UniformBufferRHI);
@@ -264,11 +314,16 @@ void FD3D11DynamicRHI::RHIUpdateUniformBuffer(FUniformBufferRHIParamRef UniformB
 		{
 			FRHIResource* Resource = *(FRHIResource**)((uint8*)Contents + Layout.Resources[ResourceIndex].MemberOffset);
 
-			checkf(Resource, TEXT("Invalid resource entry creating uniform buffer, %s.Resources[%u], ResourceType 0x%x."),
-				*Layout.GetDebugName().ToString(),
-				ResourceIndex,
-				Layout.Resources[ResourceIndex].MemberType);
-
+			if (!(GMaxRHIFeatureLevel <= ERHIFeatureLevel::ES3_1
+				&& (Layout.Resources[ResourceIndex].MemberType == UBMT_SRV || Layout.Resources[ResourceIndex].MemberType == UBMT_RDG_TEXTURE_SRV || Layout.Resources[ResourceIndex].MemberType == UBMT_RDG_BUFFER_SRV))
+				&& UniformBufferValidation == EUniformBufferValidation::ValidateResources)
+			{
+				checkf(Resource, TEXT("Invalid resource entry creating uniform buffer, %s.Resources[%u], ResourceType 0x%x."),
+					*Layout.GetDebugName(),
+					ResourceIndex,
+					Layout.Resources[ResourceIndex].MemberType);
+			}
+	
 			UniformBuffer->ResourceTable[ResourceIndex] = Resource;
 		}
 	}
@@ -285,10 +340,15 @@ void FD3D11DynamicRHI::RHIUpdateUniformBuffer(FUniformBufferRHIParamRef UniformB
 			{
 				FRHIResource* Resource = *(FRHIResource**)((uint8*)Contents + Layout.Resources[ResourceIndex].MemberOffset);
 
-				checkf(Resource, TEXT("Invalid resource entry creating uniform buffer, %s.Resources[%u], ResourceType 0x%x."),
-					*Layout.GetDebugName().ToString(),
-					ResourceIndex,
-					Layout.Resources[ResourceIndex].MemberType);
+				if (!(GMaxRHIFeatureLevel <= ERHIFeatureLevel::ES3_1
+					&& (Layout.Resources[ResourceIndex].MemberType == UBMT_SRV || Layout.Resources[ResourceIndex].MemberType == UBMT_RDG_TEXTURE_SRV || Layout.Resources[ResourceIndex].MemberType == UBMT_RDG_BUFFER_SRV))
+					&& UniformBufferValidation == EUniformBufferValidation::ValidateResources)
+				{
+					checkf(Resource, TEXT("Invalid resource entry creating uniform buffer, %s.Resources[%u], ResourceType 0x%x."),
+						*Layout.GetDebugName(),
+						ResourceIndex,
+						Layout.Resources[ResourceIndex].MemberType);
+				}
 
 				CmdListResources[ResourceIndex] = Resource;
 			}

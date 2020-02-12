@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 /*=============================================================================
 	DiaphragmDOF/DOFHybridScatterVertexShader.usf: Scattering's vertex shader.
@@ -20,6 +20,8 @@ static const float2 kSpriteVertices[6] = {
 
 
 //------------------------------------------------------- PARAMETERS
+
+float4 ViewportSize;
 
 float ScatteringScaling;
 float CocRadiusToCircumscribedRadius;

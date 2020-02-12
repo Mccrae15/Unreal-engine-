@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "PhysicsEngine/ConstraintInstance.h"
 #include "Physics/PhysicsInterfaceCore.h"
@@ -66,13 +66,13 @@ void FConstraintProfileProperties::SyncChangedConstraintProperties(FPropertyChan
 	static const FName MaxForceName = GET_MEMBER_NAME_CHECKED(FConstraintDrive, MaxForce);
 	static const FName DampingName = GET_MEMBER_NAME_CHECKED(FConstraintDrive, Damping);
 
-	if (TDoubleLinkedList<UProperty*>::TDoubleLinkedListNode* PropertyNode = PropertyChangedEvent.PropertyChain.GetTail())
+	if (TDoubleLinkedList<FProperty*>::TDoubleLinkedListNode* PropertyNode = PropertyChangedEvent.PropertyChain.GetTail())
 	{
-		if (TDoubleLinkedList<UProperty*>::TDoubleLinkedListNode* ParentProeprtyNode = PropertyNode->GetPrevNode())
+		if (TDoubleLinkedList<FProperty*>::TDoubleLinkedListNode* ParentProeprtyNode = PropertyNode->GetPrevNode())
 		{
-			if (UProperty* Property = PropertyNode->GetValue())
+			if (FProperty* Property = PropertyNode->GetValue())
 			{
-				if (UProperty* ParentProperty = ParentProeprtyNode->GetValue())
+				if (FProperty* ParentProperty = ParentProeprtyNode->GetValue())
 				{
 					const FName PropertyName = Property->GetFName();
 					const FName ParentPropertyName = ParentProperty->GetFName();
@@ -270,13 +270,13 @@ float ComputeAverageMass_AssumesLocked(const FPhysicsActorHandle& InActor1, cons
 	float TotalMass = 0;
 	int NumDynamic = 0;
 
-	if (InActor1.IsValid() && FPhysicsInterface::IsRigidBody(InActor1))
+	if (FPhysicsInterface::IsValid(InActor1) && FPhysicsInterface::IsRigidBody(InActor1))
 	{
 		TotalMass += FPhysicsInterface::GetMass_AssumesLocked(InActor1);
 		++NumDynamic;
 	}
 
-	if(InActor2.IsValid() && FPhysicsInterface::IsRigidBody(InActor2))
+	if(FPhysicsInterface::IsValid(InActor2) && FPhysicsInterface::IsRigidBody(InActor2))
 	{
 		TotalMass += FPhysicsInterface::GetMass_AssumesLocked(InActor2);
 		++NumDynamic;
@@ -299,7 +299,7 @@ bool GetActorRefs(FBodyInstance* Body1, FBodyInstance* Body2, FPhysicsActorHandl
 
 	// Do not create joint unless you have two actors
 	// Do not create joint unless one of the actors is dynamic
-	if((!ActorRef1.IsValid() || !FPhysicsInterface::IsRigidBody(ActorRef1)) && (!ActorRef2.IsValid() || !FPhysicsInterface::IsRigidBody(ActorRef2)))
+	if((!FPhysicsInterface::IsValid(ActorRef1) || !FPhysicsInterface::IsRigidBody(ActorRef1)) && (!FPhysicsInterface::IsValid(ActorRef2) || !FPhysicsInterface::IsRigidBody(ActorRef2)))
 	{
 #if !(UE_BUILD_SHIPPING || UE_BUILD_TEST)
 		FMessageLog("PIE").Warning()
@@ -310,7 +310,7 @@ bool GetActorRefs(FBodyInstance* Body1, FBodyInstance* Body2, FPhysicsActorHandl
 		return false;
 	}
 
-	if(ActorRef1.IsValid() && ActorRef2.IsValid() && ActorRef1.Equals(ActorRef2))
+	if(FPhysicsInterface::IsValid(ActorRef1) && FPhysicsInterface::IsValid(ActorRef2) && ActorRef1 == ActorRef2)
 	{
 #if !(UE_BUILD_SHIPPING || UE_BUILD_TEST)
 		const UPrimitiveComponent* PrimComp = Body1 ? Body1->OwnerComponent.Get() : nullptr;
@@ -328,8 +328,8 @@ bool GetActorRefs(FBodyInstance* Body1, FBodyInstance* Body2, FPhysicsActorHandl
 	bool bActor2ValidToSim = false;
 	FPhysicsCommand::ExecuteRead(ActorRef1, ActorRef2, [&](const FPhysicsActorHandle& ActorA, const FPhysicsActorHandle& ActorB)
 	{
-		bActor1ValidToSim = !ActorRef1.IsValid() || FPhysicsInterface::CanSimulate_AssumesLocked(ActorRef1);
-		bActor2ValidToSim = !ActorRef2.IsValid() || FPhysicsInterface::CanSimulate_AssumesLocked(ActorRef2);
+		bActor1ValidToSim = !FPhysicsInterface::IsValid(ActorRef1) || FPhysicsInterface::CanSimulate_AssumesLocked(ActorRef1);
+		bActor2ValidToSim = !FPhysicsInterface::IsValid(ActorRef2) || FPhysicsInterface::CanSimulate_AssumesLocked(ActorRef2);
 	});
 
 	if(!bActor1ValidToSim || !bActor2ValidToSim)
@@ -348,10 +348,14 @@ bool GetActorRefs(FBodyInstance* Body1, FBodyInstance* Body2, FPhysicsActorHandl
 
 bool FConstraintInstance::CreateJoint_AssumesLocked(const FPhysicsActorHandle& InActorRef1, const FPhysicsActorHandle& InActorRef2)
 {
+#if WITH_CHAOS
+	LLM_SCOPE(ELLMTag::Chaos);
+#else
 	LLM_SCOPE(ELLMTag::PhysX);
+#endif
 
 	FTransform Local1 = GetRefFrame(EConstraintFrame::Frame1);
-	if(InActorRef1.IsValid())
+	if(FPhysicsInterface::IsValid(InActorRef1))
 	{
 		Local1.ScaleTranslation(FVector(LastKnownScale));
 	}
@@ -359,7 +363,7 @@ bool FConstraintInstance::CreateJoint_AssumesLocked(const FPhysicsActorHandle& I
 	checkf(Local1.IsValid() && !Local1.ContainsNaN(), TEXT("%s"), *Local1.ToString());
 
 	FTransform Local2 = GetRefFrame(EConstraintFrame::Frame2);
-	if(InActorRef2.IsValid())
+	if(FPhysicsInterface::IsValid(InActorRef2))
 	{
 		Local2.ScaleTranslation(FVector(LastKnownScale));
 	}
@@ -404,12 +408,12 @@ void EnsureSleepingActorsStaySleeping_AssumesLocked(const FPhysicsActorHandle& I
 	// creation of joints wakes up rigid bodies, so we put them to sleep again if both were initially asleep
 	if (bActor1Asleep && bActor2Asleep)
 	{
-		if(InActorRef1.IsValid() && !FPhysicsInterface::IsKinematic_AssumesLocked(InActorRef1))
+		if(FPhysicsInterface::IsValid(InActorRef1) && !FPhysicsInterface::IsKinematic_AssumesLocked(InActorRef1))
 		{
 			FPhysicsInterface::PutToSleep_AssumesLocked(InActorRef1);
 		}
 
-		if(InActorRef2.IsValid() && !FPhysicsInterface::IsKinematic_AssumesLocked(InActorRef2))
+		if(FPhysicsInterface::IsValid(InActorRef2) && !FPhysicsInterface::IsKinematic_AssumesLocked(InActorRef2))
 		{
 			FPhysicsInterface::PutToSleep_AssumesLocked(InActorRef2);
 		}
@@ -462,6 +466,11 @@ void FConstraintInstance::InitConstraint_AssumesLocked(const FPhysicsActorHandle
 
 	ProfileInstance.Update_AssumesLocked(ConstraintHandle, AverageMass, bScaleLinearLimits ? LastKnownScale : 1.f);
 	EnsureSleepingActorsStaySleeping_AssumesLocked(ActorRef1, ActorRef2);
+}
+
+void FConstraintInstance::SetConstraintBrokenDelegate(FOnConstraintBroken InConstraintBrokenDelegate)
+{
+	OnConstraintBrokenDelegate = InConstraintBrokenDelegate;
 }
 
 void FConstraintProfileProperties::Update_AssumesLocked(const FPhysicsConstraintHandle& InConstraintRef, float AverageMass, float UseScale) const
@@ -887,9 +896,9 @@ bool FConstraintInstance::Serialize(FArchive& Ar)
 	return false;	//We only have this function to mark custom GUID. Still want serialize tagged properties
 }
 
+#if WITH_EDITORONLY_DATA
 void FConstraintInstance::PostSerialize(const FArchive& Ar)
 {
-#if WITH_EDITORONLY_DATA
 	if (Ar.IsLoading() && Ar.UE4Ver() < VER_UE4_FIXUP_STIFFNESS_AND_DAMPING_SCALE)
 	{
 		LinearLimitStiffness_DEPRECATED		/= CVarConstraintAngularStiffnessScale.GetValueOnGameThread();
@@ -1021,8 +1030,8 @@ void FConstraintInstance::PostSerialize(const FArchive& Ar)
 			ProfileInstance.LinearLimit.Damping *= CVarConstraintAngularDampingScale.GetValueOnGameThread() / CVarConstraintLinearDampingScale.GetValueOnGameThread();
 		}
 	}
-#endif
 }
+#endif
 
 //Hacks to easily get zeroed memory for special case when we don't use GC
 void FConstraintInstance::Free(FConstraintInstance * Ptr)

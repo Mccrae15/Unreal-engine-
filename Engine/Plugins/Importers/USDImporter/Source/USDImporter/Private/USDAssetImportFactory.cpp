@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "USDAssetImportFactory.h"
 #include "USDImporter.h"
@@ -12,11 +12,18 @@
 #include "USDAssetImportData.h"
 #include "AssetImportTask.h"
 
-void FUSDAssetImportContext::Init(UObject* InParent, const FString& InName, class IUsdStage* InStage)
+#if USE_USD_SDK
+#include "USDIncludesStart.h"
+
+#include "pxr/usd/usd/stage.h"
+
+#include "USDIncludesEnd.h"
+
+void FUSDAssetImportContext::Init(UObject* InParent, const FString& InName, const TUsdStore< pxr::UsdStageRefPtr >& InStage)
 {
 	FUsdImportContext::Init(InParent, InName, InStage);
 }
-
+#endif // #if USE_USD_SDK
 
 UUSDAssetImportFactory::UUSDAssetImportFactory(const FObjectInitializer& ObjectInitializer)
 	: Super(ObjectInitializer)
@@ -38,13 +45,15 @@ UUSDAssetImportFactory::UUSDAssetImportFactory(const FObjectInitializer& ObjectI
 UObject* UUSDAssetImportFactory::FactoryCreateFile(UClass* InClass, UObject* InParent, FName InName, EObjectFlags Flags, const FString& Filename, const TCHAR* Parms, FFeedbackContext* Warn, bool& bOutOperationCanceled)
 {
 	UObject* ImportedObject = nullptr;
+	AdditionalImportedObjects.Empty();
 
+#if USE_USD_SDK
 	UUSDImporter* USDImporter = IUSDImporterModule::Get().GetImporter();
 
 	if (IsAutomatedImport() || USDImporter->ShowImportOptions(*ImportOptions))
 	{
-		IUsdStage* Stage = USDImporter->ReadUSDFile(ImportContext, Filename);
-		if (Stage)
+		TUsdStore< pxr::UsdStageRefPtr > Stage = USDImporter->ReadUsdFile(ImportContext, Filename);
+		if (*Stage)
 		{
 			ImportContext.Init(InParent, InName.ToString(), Stage);
 			
@@ -68,9 +77,11 @@ UObject* UUSDAssetImportFactory::FactoryCreateFile(UClass* InClass, UObject* InP
 				{
 					FUsdAssetPrimToImport NewTopLevelPrim;
 
-					NewTopLevelPrim.Prim = Stage->GetPrimAtPath(TCHAR_TO_ANSI(*SubTask->SourcePath));
-					if (NewTopLevelPrim.Prim == nullptr)
+					NewTopLevelPrim.Prim = (*Stage)->GetPrimAtPath( pxr::SdfPath(TCHAR_TO_ANSI(*SubTask->SourcePath)) );
+					if (!NewTopLevelPrim.Prim.Get().IsValid())
+					{
 						continue;
+					}
 
 					NewTopLevelPrim.AssetPath = SubTask->DestPath;
 					NewTopLevelPrim.MeshPrims.Add(NewTopLevelPrim.Prim);
@@ -80,13 +91,21 @@ UObject* UUSDAssetImportFactory::FactoryCreateFile(UClass* InClass, UObject* InP
 			}
 			else
 			{
-				ImportContext.PrimResolver->FindMeshAssetsToImport(ImportContext, ImportContext.RootPrim, PrimsToImport);
+				ImportContext.PrimResolver->FindMeshAssetsToImport(ImportContext, ImportContext.RootPrim, ImportContext.RootPrim, PrimsToImport);
 			}
 						
 			TArray<UObject*> ImportedObjects = USDImporter->ImportMeshes(ImportContext, PrimsToImport);
 
 			// Just return the first one imported
-			ImportedObject = ImportedObjects.Num() > 0 ? ImportedObjects[0] : nullptr;
+			if (ImportedObjects.Num() > 0)
+			{
+				ImportedObject = ImportedObjects[0];
+				AdditionalImportedObjects.Reserve(ImportedObjects.Num() - 1);
+				for (int32 ImportedObjectIndex = 1; ImportedObjectIndex < ImportedObjects.Num(); ++ImportedObjectIndex)
+				{
+					AdditionalImportedObjects.Add(ImportedObjects[ImportedObjectIndex]);
+				}
+			}
 		}
 
 		ImportContext.DisplayErrorMessages(IsAutomatedImport());
@@ -95,6 +114,8 @@ UObject* UUSDAssetImportFactory::FactoryCreateFile(UClass* InClass, UObject* InP
 	{
 		bOutOperationCanceled = true;
 	}
+
+#endif // #if USE_USD_SDK
 
 	return ImportedObject;
 }
@@ -114,7 +135,7 @@ bool UUSDAssetImportFactory::FactoryCanImport(const FString& Filename)
 void UUSDAssetImportFactory::CleanUp()
 {
 	ImportContext = FUSDAssetImportContext();
-	UnrealUSDWrapper::CleanUp();
+	Super::CleanUp();
 }
 
 bool UUSDAssetImportFactory::CanReimport(UObject* Obj, TArray<FString>& OutFilenames)

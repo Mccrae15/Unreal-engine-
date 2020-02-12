@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "Widgets/Text/STextBlock.h"
 #include "SlateGlobals.h"
@@ -8,6 +8,9 @@
 #include "Rendering/DrawElements.h"
 #include "Framework/Application/SlateApplication.h"
 #include "Fonts/FontMeasure.h"
+#if WITH_ACCESSIBILITY
+#include "Widgets/Accessibility/SlateAccessibleWidgets.h"
+#endif
 
 DECLARE_CYCLE_STAT(TEXT("STextBlock::SetText Time"), Stat_SlateTextBlockSetText, STATGROUP_SlateVerbose)
 DECLARE_CYCLE_STAT(TEXT("STextBlock::OnPaint Time"), Stat_SlateTextBlockOnPaint, STATGROUP_SlateVerbose)
@@ -19,6 +22,11 @@ STextBlock::STextBlock()
 	SetCanTick(false);
 	bCanSupportFocus = false;
 	bSimpleTextMode = false;
+
+#if WITH_ACCESSIBILITY
+	AccessibleBehavior = EAccessibleBehavior::Auto;
+	bCanChildrenBeAccessible = false;
+#endif
 }
 
 STextBlock::~STextBlock()
@@ -110,28 +118,21 @@ void STextBlock::SetText( const TAttribute< FString >& InText )
 {
 	if (InText.IsSet() && !InText.IsBound())
 	{
-		SetText(InText.Get());
+		SetText(FText::AsCultureInvariant(InText.Get()));
 		return;
 	}
 
 	SCOPE_CYCLE_COUNTER(Stat_SlateTextBlockSetText);
-	struct Local
+	BoundText = MakeAttributeLambda([InText]()
 	{
-		static FText PassThroughAttribute( TAttribute< FString > InString )
-		{
-			return FText::FromString( InString.Get( TEXT("") ) );
-		}
-	};
-
-	BoundText = TAttribute< FText >::Create(TAttribute<FText>::FGetter::CreateStatic( &Local::PassThroughAttribute, InText) );
-
+		return FText::AsCultureInvariant(InText.Get(FString()));
+	});
 	InvalidateText(EInvalidateWidget::LayoutAndVolatility);
-
 }
 
 void STextBlock::SetText( const FString& InText )
 {
-	SetText(FText::FromString(InText));
+	SetText(FText::AsCultureInvariant(InText));
 }
 
 void STextBlock::SetText( const TAttribute< FText >& InText )
@@ -180,7 +181,6 @@ void STextBlock::SetHighlightText(TAttribute<FText> InText)
 int32 STextBlock::OnPaint( const FPaintArgs& Args, const FGeometry& AllottedGeometry, const FSlateRect& MyCullingRect, FSlateWindowElementList& OutDrawElements, int32 LayerId, const FWidgetStyle& InWidgetStyle, bool bParentEnabled ) const
 {
 	SCOPE_CYCLE_COUNTER(Stat_SlateTextBlockOnPaint);
-	//SCOPED_NAMED_EVENT_TEXT("STextBlock", FColor::Orange);
 
 	if (bSimpleTextMode)
 	{
@@ -192,10 +192,16 @@ int32 STextBlock::OnPaint( const FPaintArgs& Args, const FGeometry& AllottedGeom
 		const bool bShouldBeEnabled = ShouldBeEnabled(bParentEnabled);
 
 		const FText& LocalText = GetText();
-		const FSlateFontInfo LocalFont = GetFont();
+		FSlateFontInfo LocalFont = GetFont();
 
 		if (ShouldDropShadow)
 		{
+			const int32 OutlineSize = LocalFont.OutlineSettings.OutlineSize;
+			if (!LocalFont.OutlineSettings.bApplyOutlineToDropShadows)
+			{
+				LocalFont.OutlineSettings.OutlineSize = 0;
+			}
+
 			FSlateDrawElement::MakeText(
 				OutDrawElements,
 				LayerId,
@@ -205,6 +211,9 @@ int32 STextBlock::OnPaint( const FPaintArgs& Args, const FGeometry& AllottedGeom
 				bShouldBeEnabled ? ESlateDrawEffect::None : ESlateDrawEffect::DisabledEffect,
 				InWidgetStyle.GetColorAndOpacityTint() * LocalShadowColorAndOpacity
 			);
+
+			// Restore outline size for main text
+			LocalFont.OutlineSettings.OutlineSize = OutlineSize;
 
 			// actual text should appear above the shadow
 			++LayerId;
@@ -223,13 +232,19 @@ int32 STextBlock::OnPaint( const FPaintArgs& Args, const FGeometry& AllottedGeom
 	}
 	else
 	{
+		const FVector2D LastDesiredSize = TextLayoutCache->GetDesiredSize();
+
 		// OnPaint will also update the text layout cache if required
 		LayerId = TextLayoutCache->OnPaint(Args, AllottedGeometry, MyCullingRect, OutDrawElements, LayerId, InWidgetStyle, ShouldBeEnabled(bParentEnabled));
+
+		const FVector2D NewDesiredSize = TextLayoutCache->GetDesiredSize();
 
 		// HACK: Due to the nature of wrapping and layout, we may have been arranged in a different box than what we were cached with.  Which
 		// might update wrapping, so make sure we always set the desired size to the current size of the text layout, which may have changed
 		// during paint.
-		if (TextLayoutCache->GetDesiredSize().Y > GetDesiredSize().Y)
+		bool bCanWrap = WrapTextAt.Get() > 0 || AutoWrapText.Get();
+
+		if (bCanWrap && !NewDesiredSize.Equals(LastDesiredSize))
 		{
 			const_cast<STextBlock*>(this)->Invalidate(EInvalidateWidget::Layout);
 		}
@@ -451,3 +466,15 @@ FTextBlockStyle STextBlock::GetComputedTextStyle() const
 	ComputedStyle.SetHighlightShape( *GetHighlightShape() );
 	return ComputedStyle;
 }
+
+#if WITH_ACCESSIBILITY
+TSharedRef<FSlateAccessibleWidget> STextBlock::CreateAccessibleWidget()
+{
+	return MakeShareable<FSlateAccessibleWidget>(new FSlateAccessibleTextBlock(SharedThis(this)));
+}
+
+TOptional<FText> STextBlock::GetDefaultAccessibleText(EAccessibleType AccessibleType) const
+{
+	return GetText();
+}
+#endif

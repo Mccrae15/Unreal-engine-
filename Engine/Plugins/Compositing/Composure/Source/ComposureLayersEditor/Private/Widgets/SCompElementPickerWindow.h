@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -8,6 +8,10 @@
 #include "Templates/SharedPointer.h"
 #include "EditorSupport/CompImageColorPickerInterface.h"
 #include "EditorSupport/WeakUInterfacePtr.h"
+#include "Widgets/SWindow.h"
+#include "Widgets/DeclarativeSyntaxSupport.h"
+#include "Framework/Commands/UICommandList.h"
+#include "EditorSupport/CompFreezeFrameController.h" // for FFreezeFrameControlHandle
 
 class ICompImageColorPickerInterface;
 class SWidget;
@@ -29,11 +33,6 @@ struct FCompElementColorPickerArgs
 
 /* SCompElementPickerWindow
  *****************************************************************************/
-
-#include "Widgets/SWindow.h"
-#include "Widgets/DeclarativeSyntaxSupport.h"
-#include "Framework/Commands/UICommandList.h"
-#include "EditorSupport/CompFreezeFrameController.h" // for FFreezeFrameControlHandle
 
 class SCompElementColorPickerDialog;
 

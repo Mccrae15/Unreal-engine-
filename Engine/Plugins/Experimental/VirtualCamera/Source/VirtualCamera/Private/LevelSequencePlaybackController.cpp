@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "LevelSequencePlaybackController.h"
 
@@ -16,8 +16,9 @@
 #include "Input/Reply.h"
 #include "Recorder/TakeRecorderBlueprintLibrary.h"
 #include "Templates/SharedPointer.h"
-#include "Toolkits/AssetEditorManager.h"
+#include "Subsystems/AssetEditorSubsystem.h"
 #endif //WITH_EDITOR
+
 
 
 ULevelSequencePlaybackController::ULevelSequencePlaybackController(const FObjectInitializer& ObjectInitializer)
@@ -25,14 +26,6 @@ ULevelSequencePlaybackController::ULevelSequencePlaybackController(const FObject
 	, ActiveLevelSequence(nullptr)
 {
 
-}
-
-void ULevelSequencePlaybackController::ResumeLevelSequencePlay()
-{
-	if (ActiveLevelSequence)
-	{
-		PlayLevelSequence();
-	}
 }
 
 void ULevelSequencePlaybackController::GetLevelSequences(TArray<FLevelSequenceData>& OutLevelSequenceNames)
@@ -204,7 +197,7 @@ FTimecode ULevelSequencePlaybackController::GetCurrentSequencePlaybackTimecode()
 		if (Sequencer)
 		{
 			const FFrameTime DisplayTime = Sequencer->GetLocalTime().ConvertTo(Sequencer->GetFocusedDisplayRate());
-			return FTimecode::FromFrameNumber(DisplayTime.FrameNumber, Sequencer->GetFocusedDisplayRate(), FTimecode::IsDropFormatTimecodeSupported(Sequencer->GetFocusedDisplayRate()));
+			return FTimecode::FromFrameNumber(DisplayTime.FrameNumber, Sequencer->GetFocusedDisplayRate());
 		}
 	}
 #endif //WITH_EDITOR
@@ -307,8 +300,8 @@ bool ULevelSequencePlaybackController::SetActiveLevelSequence(ULevelSequence* In
 	if(InNewLevelSequence && !IsRunningGame())
 	{
 		const bool bDoFocusOnEditor = false;
-		FAssetEditorManager::Get().OpenEditorForAsset(InNewLevelSequence);
-		IAssetEditorInstance* AssetEditor = FAssetEditorManager::Get().FindEditorForAsset(InNewLevelSequence, bDoFocusOnEditor);
+		GEditor->GetEditorSubsystem<UAssetEditorSubsystem>()->OpenEditorForAsset(InNewLevelSequence);
+		IAssetEditorInstance* AssetEditor = GEditor->GetEditorSubsystem<UAssetEditorSubsystem>()->FindEditorForAsset(InNewLevelSequence, bDoFocusOnEditor);
 		ILevelSequenceEditorToolkit* LevelSequenceEditor = static_cast<ILevelSequenceEditorToolkit*>(AssetEditor);
 
 		WeakSequencer = LevelSequenceEditor ? LevelSequenceEditor->GetSequencer() : nullptr;
@@ -342,15 +335,6 @@ void ULevelSequencePlaybackController::ClearActiveLevelSequence()
 #if WITH_EDITOR
 		WeakSequencer = nullptr;
 #endif
-	}
-}
-
-void ULevelSequencePlaybackController::PlayFromBeginning()
-{
-	if (ActiveLevelSequence)
-	{
-		JumpToPlaybackPosition(GetCurrentSequencePlaybackStart());
-		PlayLevelSequence();
 	}
 }
 

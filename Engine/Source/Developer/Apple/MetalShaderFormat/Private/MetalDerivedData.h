@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -175,6 +175,7 @@ private:
 	FSHAHash GUIDHash;
 	uint8 VersionEnum;
 	uint32 CCFlags;
+	int32 IABTier;
 	EHlslCompileTarget HlslCompilerTarget;
 	EHlslCompileTarget MetalCompilerTarget;
 	EMetalGPUSemantics Semantics;

@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #ifndef WINDOWS_PLATFORM_ATOMICS_GUARD
 	#define WINDOWS_PLATFORM_ATOMICS_GUARD
@@ -12,6 +12,9 @@
 #define InterlockedExchange _InterlockedExchange
 #define InterlockedExchangeAdd _InterlockedExchangeAdd
 #define InterlockedCompareExchange _InterlockedCompareExchange
+#define InterlockedAnd _InterlockedAnd
+#define InterlockedOr _InterlockedOr
+#define InterlockedXor _InterlockedXor
 
 #if PLATFORM_64BITS
 	#define InterlockedCompareExchangePointer _InterlockedCompareExchangePointer

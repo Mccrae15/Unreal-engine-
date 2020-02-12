@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 // This code is modified from that in the Mesa3D Graphics library available at
 // http://mesa3d.org/
@@ -1067,7 +1067,10 @@ bool do_optimization_pass(exec_list *ir, _mesa_glsl_parse_state * state, bool bP
 {
 	bool progress = false;
 
-	progress = lower_instructions(ir, SUB_TO_ADD_NEG) || progress;
+	if (state && state->LanguageSpec && state->LanguageSpec->LowerSubToAddNeg())
+	{
+		progress = lower_instructions(ir, SUB_TO_ADD_NEG) || progress;
+	}
 	progress = do_structure_splitting(ir, state) || progress;
 	progress = do_function_inlining(ir) || progress;
 	progress = do_dead_functions(ir) || progress;

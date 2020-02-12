@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "ProfilerClientManager.h"
 #include "HAL/FileManager.h"
@@ -532,7 +532,7 @@ void FProfilerClientManager::HandleServiceFileChunk(const FProfilerServiceFileCh
 		if(!ReceivedFileInfo)
 		{
 			const FString PathName = FPaths::ProfilingDir() + TEXT("UnrealStats/Received/");
-			const FString StatFilepath = PathName + FileChunk.Filename + StrTmp;
+			const FString StatFilepath = PathName + FPaths::GetCleanFilename((const FString&)FileChunk.Filename) + StrTmp;
 
 			UE_LOG(LogProfilerClient, Log, TEXT("Opening stats file for service-client sending: %s"), *StatFilepath);
 
@@ -908,7 +908,7 @@ int32 FServiceConnection::FindOrAddStat(const FStatNameAndInfo& StatNameAndInfo,
 		StatDescription.Name = !Description.IsEmpty() ? Description : StatName.ToString();
 		if(StatDescription.Name.Contains(TEXT("STAT_")))
 		{
-			StatDescription.Name = StatDescription.Name.RightChop(FString(TEXT("STAT_")).Len());
+			StatDescription.Name.RightChopInline(FString(TEXT("STAT_")).Len(), false);
 		}
 		StatDescription.StatType = StatType;
 

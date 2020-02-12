@@ -1,10 +1,12 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
 #include "Interfaces/OnlinePurchaseInterface.h"
+#include "OnlineSubsystemIOSTypes.h"
 
 struct FStoreKitTransactionData;
+@class SKProductsResponse;
 @class FStoreKitHelperV2;
 
 /**
@@ -102,6 +104,8 @@ public:
 	/** Initialize the FStoreKitHelper for interaction with the app store */
 	void InitStoreKit(FStoreKitHelperV2* InStoreKit);
 	
+	/** Manually iterate the payment transaction queue and fire off appropriate callbacks in StoreKitHelper. */
+	void ManuallyIteratePaymentQueue();
 	
 private:
 	

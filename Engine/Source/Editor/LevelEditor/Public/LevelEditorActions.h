@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 
 
@@ -87,6 +87,7 @@ public:
 	TSharedPtr< FUICommandInfo > BuildPathsOnly;
 	TSharedPtr< FUICommandInfo > BuildLODsOnly;
 	TSharedPtr< FUICommandInfo > BuildTextureStreamingOnly;
+	TSharedPtr< FUICommandInfo > BuildVirtualTextureOnly;
 	TSharedPtr< FUICommandInfo > LightingQuality_Production;
 	TSharedPtr< FUICommandInfo > LightingQuality_High;
 	TSharedPtr< FUICommandInfo > LightingQuality_Medium;
@@ -105,6 +106,13 @@ public:
 	TSharedPtr< FUICommandInfo > RecompileLevelEditor;
 	TSharedPtr< FUICommandInfo > ReloadLevelEditor;
 	TSharedPtr< FUICommandInfo > RecompileGameCode;
+
+#if WITH_LIVE_CODING
+	TSharedPtr< FUICommandInfo > LiveCoding_Enable;
+	TSharedPtr< FUICommandInfo > LiveCoding_StartSession;
+	TSharedPtr< FUICommandInfo > LiveCoding_ShowConsole;
+	TSharedPtr< FUICommandInfo > LiveCoding_Settings;
+#endif
 
 	/**
 	 * Level context menu commands.  These are shared between all viewports
@@ -258,6 +266,7 @@ public:
 	TSharedPtr< FUICommandInfo > CreateNewOutlinerFolder;
 
 	TSharedPtr< FUICommandInfo > HoldToEnableVertexSnapping;
+	TSharedPtr< FUICommandInfo > HoldToEnablePivotVertexSnapping;
 
 	/**
 	 * Brush Commands                   
@@ -538,7 +547,6 @@ public:
 	TSharedPtr< FUICommandInfo > WorldProperties;
 	TSharedPtr< FUICommandInfo > OpenContentBrowser;
 	TSharedPtr< FUICommandInfo > OpenMarketplace;
-	TSharedPtr< FUICommandInfo > EditMatinee;
 	TSharedPtr< FUICommandInfo > ToggleVR;
 
 	/**
@@ -547,8 +555,7 @@ public:
 	TSharedPtr< FUICommandInfo > OpenLevelBlueprint;
 	TSharedPtr< FUICommandInfo > CheckOutProjectSettingsConfig;
 	TSharedPtr< FUICommandInfo > CreateBlankBlueprintClass;
-	TSharedPtr< FUICommandInfo > ConvertSelectionToBlueprintViaHarvest;
-	TSharedPtr< FUICommandInfo > ConvertSelectionToBlueprintViaSubclass;
+	TSharedPtr< FUICommandInfo > ConvertSelectionToBlueprint;
 
 	/** Editor mode commands */
 	TArray< TSharedPtr< FUICommandInfo > > EditorModeCommands;
@@ -577,20 +584,14 @@ public:
 
 	TSharedPtr< FUICommandInfo > ToggleHideViewportUI;
 
-	TSharedPtr< FUICommandInfo > AddMatinee;
-
 	TSharedPtr< FUICommandInfo > MaterialQualityLevel_Low;
 	TSharedPtr< FUICommandInfo > MaterialQualityLevel_Medium;
 	TSharedPtr< FUICommandInfo > MaterialQualityLevel_High;
 
-	TSharedPtr< FUICommandInfo > FeatureLevelPreview[ERHIFeatureLevel::Num];
-	
 	TSharedPtr< FUICommandInfo > ToggleFeatureLevelPreview;
 
-	TSharedPtr< FUICommandInfo > PreviewPlatformOverride_DefaultES2;
+	TSharedPtr< FUICommandInfo > PreviewPlatformOverride_SM5;
 	TSharedPtr< FUICommandInfo > PreviewPlatformOverride_AndroidGLES2;
-
-	TSharedPtr< FUICommandInfo > PreviewPlatformOverride_DefaultES31;
 	TSharedPtr< FUICommandInfo > PreviewPlatformOverride_AndroidGLES31;
 	TSharedPtr< FUICommandInfo > PreviewPlatformOverride_AndroidVulkanES31;
 	TSharedPtr< FUICommandInfo > PreviewPlatformOverride_IOSMetalES31;
@@ -623,6 +624,7 @@ public:
 	TSharedPtr< FUICommandInfo > SelectActorsInLayers;
 
 	TSharedPtr< FUICommandInfo > FocusAllViewportsToSelection;
+	TSharedPtr< FUICommandInfo > FocusViewportToSelection;
 
         // Open merge actor command
 	TSharedPtr< FUICommandInfo > OpenMergeActor;
@@ -769,6 +771,7 @@ public:
 	static void BuildPathsOnly_Execute();
 	static void BuildLODsOnly_Execute();
 	static void BuildTextureStreamingOnly_Execute();
+	static void BuildVirtualTextureOnly_Execute();
 	static void SetLightingQuality( ELightingBuildQuality NewQuality );
 	static bool IsLightingQualityChecked( ELightingBuildQuality TestQuality );
 	static float GetLightingDensityIdeal();
@@ -809,11 +812,8 @@ public:
 	static bool IsFeatureLevelPreviewEnabled();
 	static bool IsFeatureLevelPreviewActive();
 	static bool IsPreviewModeButtonVisible();
-	static void SetPreviewPlatform(FName MaterialQualityPlatform,ERHIFeatureLevel::Type PreviewFeatureLevel);
-	static bool IsPreviewPlatformChecked(FName MaterialQualityPlatform, ERHIFeatureLevel::Type PreviewFeatureLevel);
-	static void SetFeatureLevelPreview(ERHIFeatureLevel::Type InFeatureLevel);
-	static bool IsFeatureLevelPreviewChecked(ERHIFeatureLevel::Type InFeatureLevel);
-	static bool IsFeatureLevelPreviewAvailable(ERHIFeatureLevel::Type InFeatureLevel);
+	static void SetPreviewPlatform(FPreviewPlatformInfo NewPreviewPlatform);
+	static bool IsPreviewPlatformChecked(FPreviewPlatformInfo NewPreviewPlatform);
 	static void GeometryCollection_SelectAllGeometry();
 	static void GeometryCollection_SelectNone();
 	static void GeometryCollection_SelectInverseGeometry();
@@ -842,6 +842,43 @@ public:
 	 */
 	static void RecompileGameCode_Clicked();
 	static bool Recompile_CanExecute();
+
+#if WITH_LIVE_CODING
+	/**
+	 * Enables live coding mode
+	 */
+	static void LiveCoding_ToggleEnabled();
+
+	/**
+	 * Determines if live coding is enabled
+	 */
+	static bool LiveCoding_IsEnabled();
+
+	/**
+	 * Starts live coding (in manual mode)
+	 */
+	static void LiveCoding_StartSession_Clicked();
+
+	/**
+	 * Determines whether we can manually start live coding for the current session
+	 */
+	static bool LiveCoding_CanStartSession();
+
+	/**
+	 * Shows the console
+	 */
+	static void LiveCoding_ShowConsole_Clicked();
+
+	/**
+	 * Determines whether the console can be shown
+	 */
+	static bool LiveCoding_CanShowConsole();
+
+	/**
+	 * Shows the settings panel
+	 */
+	static void LiveCoding_Settings_Clicked();
+#endif
 
 	/**
 	 * Called when requesting connection to source control
@@ -913,7 +950,7 @@ public:
 	 * @param bUsePlacement		Whether to use the placement editor. If not, the actor will be placed at the last click.
 	 * @param ActorLocation		[opt] If NULL, positions the actor at the mouse location, otherwise the location specified. Default is true.
 	 */
-	static void AddActor_Clicked( UActorFactory* ActorFactory, FAssetData AssetData, bool bUsePlacement );
+	static void AddActor_Clicked( UActorFactory* ActorFactory, FAssetData AssetData);
 	static AActor* AddActor( UActorFactory* ActorFactory, const FAssetData& AssetData, const FTransform* ActorLocation );
 
 	/**
@@ -1140,17 +1177,11 @@ public:
 	/** Helps the user create a Blueprint class */
 	static void CreateBlankBlueprintClass();
 
-	/** Can call HarvestSelectedActorsIntoBlueprintClass right now?  (is anything selected) */
-	static bool CanHarvestSelectedActorsIntoBlueprintClass();
+	/** Can the selected actors be converted to a blueprint class in any of the supported ways? */
+	static bool CanConvertSelectedActorsIntoBlueprintClass();
 
-	/** Harvest all of the components in the selected actors into a Blueprint, and replace the instances with one new actor */
-	static void HarvestSelectedActorsIntoBlueprintClass();
-
-	/** Can call SubclassSelectedActorIntoBlueprintClass right now?  (is exactly one thing selected) */
-	static bool CanSubclassSelectedActorIntoBlueprintClass();
-
-	/** Convert the selected actor into a Blueprint (via subclassing) */
-	static void SubclassSelectedActorIntoBlueprintClass();
+	/** Bring up the convert actors to blueprint UI */
+	static void ConvertSelectedActorsIntoBlueprintClass();
 
 	/** Shows only selected actors, hiding any unselected actors and unhiding any selected hidden actors. */
 	static void OnShowOnlySelectedActors();
@@ -1207,8 +1238,6 @@ public:
 	static void MakeBuilderBrush( UClass* BrushBuilderClass );
 
 	static void OnAddVolume( UClass* VolumeClass );
-
-	static void OnAddMatinee();
 
 	static void SelectActorsInLayers();
 

@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -10,6 +10,7 @@
 #include "Framework/DelayedDrag.h"
 
 class SSequencer;
+class SSequencerTrackArea;
 struct ISequencerHotspot;
 
 class FSequencerEditTool_Selection
@@ -21,7 +22,7 @@ public:
 	static const FName Identifier;
 
 	/** Create and initialize a new instance. */
-	FSequencerEditTool_Selection(FSequencer& InSequencer);
+	FSequencerEditTool_Selection(FSequencer& InSequencer, SSequencerTrackArea& InTrackArea);
 
 public:
 
@@ -49,7 +50,9 @@ private:
 		FDelayedDrag_Hotspot(FVector2D InInitialPosition, FKey InApplicableKey, TSharedPtr<ISequencerHotspot> InHotspot)
 			: FDelayedDrag(InInitialPosition, InApplicableKey)
 			, Hotspot(MoveTemp(InHotspot))
-		{}
+		{
+			SetTriggerScaleFactor(0.1f);
+		}
 
 		TSharedPtr<ISequencerHotspot> Hotspot;
 	};
@@ -62,6 +65,9 @@ private:
 
 	/** Cached mouse position for software cursor rendering */
 	FVector2D MousePosition;
+
+	/** TrackArea this object belongs to */
+	SSequencerTrackArea& TrackArea;
 
 	/** Software cursor decorator brush */
 	const FSlateBrush* CursorDecorator;

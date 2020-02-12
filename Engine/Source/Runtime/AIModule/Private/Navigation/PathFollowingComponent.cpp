@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "Navigation/PathFollowingComponent.h"
 #include "UObject/Package.h"
@@ -457,6 +457,9 @@ void UPathFollowingComponent::AbortMove(const UObject& Instigator, FPathFollowin
 
 FAIRequestID UPathFollowingComponent::RequestMoveWithImmediateFinish(EPathFollowingResult::Type Result, EPathFollowingVelocityMode VelocityMode)
 {
+	// make sure we stop (or not) depending on VelocityMode's value
+	bStopMovementOnFinish = (VelocityMode == EPathFollowingVelocityMode::Reset);
+
 	if (Status != EPathFollowingStatus::Idle)
 	{
 		OnPathFinished(EPathFollowingResult::Aborted, FPathFollowingResultFlags::NewRequest);
@@ -669,7 +672,7 @@ void UPathFollowingComponent::SetMovementComponent(UNavMovementComponent* MoveCo
 		
 		if (NavSys)
 		{
-			MyNavData = NavSys->GetNavDataForProps(NavAgentProps);
+			MyNavData = NavSys->GetNavDataForProps(NavAgentProps, MoveComp->GetActorLocation());
 			if (MyNavData == nullptr)
 			{
 				if (NavSys->IsInitialized() == false)
@@ -693,7 +696,7 @@ void UPathFollowingComponent::OnNavigationInitDone()
 		UNavigationSystemV1* NavSys = FNavigationSystem::GetCurrent<UNavigationSystemV1>(MyWorld);
 		check(NavSys);
 		const FNavAgentProperties& NavAgentProps = MovementComp->GetNavAgentPropertiesRef();
-		MyNavData = NavSys->GetNavDataForProps(NavAgentProps);
+		MyNavData = NavSys->GetNavDataForProps(NavAgentProps, MovementComp->GetActorLocation());
 		NavSys->OnNavigationInitDone.RemoveAll(this);
 	}
 }

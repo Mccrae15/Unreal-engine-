@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -8,7 +8,7 @@
 #include "MovieSceneSlomoTrack.generated.h"
 
 /**
- * Implements a movie scene track that controls a movie scene's playback speed.
+ * Implements a movie scene track that controls a movie scene's world time dilation.
  */
 UCLASS(MinimalAPI)
 class UMovieSceneSlomoTrack

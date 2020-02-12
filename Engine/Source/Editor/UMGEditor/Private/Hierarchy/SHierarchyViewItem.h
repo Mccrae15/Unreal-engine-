@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -32,6 +32,9 @@ public:
 
 	/** @return The tooltip for the tree item label */
 	virtual FText GetLabelToolTipText() const { return FText::GetEmpty(); }
+	
+	/** @param OutStrings - Returns an array of strings used for filtering/searching this item. */
+	virtual void GetFilterStrings(TArray<FString>& OutStrings) const { OutStrings.Add(GetText().ToString()); }
 
 	virtual const FSlateBrush* GetImage() const = 0;
 
@@ -82,6 +85,9 @@ public:
 		}
 	}
 
+	virtual bool DoesWidgetOverrideNavigation() const { return false; }
+	virtual bool DoesWidgetOverrideFlowDirection() const { return false; }
+
 	virtual bool IsExpanded() const { return true; }
 	virtual void SetExpanded(bool bIsExpanded) { }
 
@@ -100,6 +106,8 @@ protected:
 	virtual void GetChildren(TArray< TSharedPtr<FHierarchyModel> >& Children) = 0;
 	virtual void UpdateSelection() = 0;
 	virtual FWidgetReference AsDraggedWidgetReference() const { return FWidgetReference(); }
+	void DetermineDragDropPreviewWidgets(TArray<class UWidget*>& OutWidgets, const FDragDropEvent& DragDropEvent);
+	void RemovePreviewWidget(class UWidgetBlueprint* Blueprint, class UWidget* Widget);
 
 private:
 	void InitializeChildren();
@@ -116,7 +124,7 @@ class FHierarchyRoot : public FHierarchyModel
 {
 public:
 	FHierarchyRoot(TSharedPtr<FWidgetBlueprintEditor> InBlueprintEditor);
-	
+
 	virtual ~FHierarchyRoot() {}
 
 	virtual FName GetUniqueName() const override;
@@ -129,6 +137,9 @@ public:
 	virtual FSlateFontInfo GetFont() const override;
 
 	virtual void OnSelection() override;
+
+	virtual bool DoesWidgetOverrideFlowDirection() const override;
+	virtual bool DoesWidgetOverrideNavigation() const { return false; }
 
 	virtual TOptional<EItemDropZone> HandleCanAcceptDrop(const FDragDropEvent& DragDropEvent, EItemDropZone DropZone) override;
 	virtual FReply HandleAcceptDrop(FDragDropEvent const& DragDropEvent, EItemDropZone DropZone) override;
@@ -190,6 +201,8 @@ public:
 	virtual FText GetText() const override;
 	virtual FText GetImageToolTipText() const override;
 	virtual FText GetLabelToolTipText() const override;
+	
+	virtual void GetFilterStrings(TArray<FString>& OutStrings) const override;
 
 	virtual const FSlateBrush* GetImage() const override;
 
@@ -261,6 +274,28 @@ public:
 			Item.GetTemplate()->SetLockedInDesigner(NewIsLocked);
 			Item.GetPreview()->SetLockedInDesigner(NewIsLocked);
 		}
+	}
+
+	virtual bool DoesWidgetOverrideFlowDirection() const override
+	{
+		UWidget* TemplateWidget = Item.GetTemplate();
+		if (TemplateWidget)
+		{
+			return TemplateWidget->FlowDirectionPreference != EFlowDirectionPreference::Inherit;
+		}
+
+		return false;
+	}
+
+	virtual bool DoesWidgetOverrideNavigation() const override
+	{
+		UWidget* TemplateWidget = Item.GetTemplate();
+		if (TemplateWidget)
+		{
+			return TemplateWidget->Navigation != nullptr;
+		}
+
+		return false;
 	}
 
 	virtual bool IsExpanded() const override

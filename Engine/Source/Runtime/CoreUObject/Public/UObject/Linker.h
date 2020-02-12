@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -166,35 +166,35 @@ public:
 };
 
 
-struct FLinkerNamePairKeyFuncs : DefaultKeyFuncs<FName, false>
+struct UE_DEPRECATED(4.23, "Outdated since display index replaced FName as key") FLinkerNamePairKeyFuncs : DefaultKeyFuncs<FName, false>
 {
 	static FORCEINLINE bool Matches(FName A, FName B)
 	{
 		// The linker requires that FNames preserve case, but the numeric suffix can be ignored since
 		// that is stored separately for each FName instance saved
-		return A.IsEqual(B, ENameCase::CaseSensitive, false/*bCompareNumber*/);
+		return A.GetDisplayIndex() == B.GetDisplayIndex();
 	}
 
 	static FORCEINLINE uint32 GetKeyHash(FName Key)
 	{
-		return Key.GetComparisonIndex();
+		return GetTypeHash(Key.GetDisplayIndex());
 	}
 };
 
 
 template<typename ValueType>
-struct TLinkerNameMapKeyFuncs : TDefaultMapKeyFuncs<FName, ValueType, false>
+struct UE_DEPRECATED(4.23, "Outdated since display indexes replaced FNames as keys") TLinkerNameMapKeyFuncs : TDefaultMapKeyFuncs<FName, ValueType, false>
 {
 	static FORCEINLINE bool Matches(FName A, FName B)
 	{
 		// The linker requires that FNames preserve case, but the numeric suffix can be ignored since
 		// that is stored separately for each FName instance saved
-		return A.IsEqual(B, ENameCase::CaseSensitive, false/*bCompareNumber*/);
+		return A.GetDisplayIndex() == B.GetDisplayIndex();
 	}
 
 	static FORCEINLINE uint32 GetKeyHash(FName Key)
 	{
-		return Key.GetComparisonIndex();
+		return GetTypeHash(Key.GetDisplayIndex());
 	}
 };
 
@@ -231,7 +231,7 @@ public:
 	FPackageFileSummary		Summary;
 
 	/** Names used by objects contained within this package */
-	TArray<FName>			NameMap;
+	TArray<FNameEntryId>	NameMap;
 
 	/** Gatherable text data contained within this package */
 	TArray<FGatherableTextData> GatherableTextDataMap;
@@ -596,12 +596,21 @@ COREUOBJECT_API FLinkerLoad* GetPackageLinker(UPackage* InOuter, const TCHAR* In
 
 COREUOBJECT_API FString GetPrestreamPackageLinkerName(const TCHAR* InLongPackageName, bool bExistSkip = true);
 
+UE_DEPRECATED(4.25, "No longer used; use version that takes a UPackage* and call EnsureLoadingComplete separately.")
+COREUOBJECT_API void ResetLoadersForSave(UObject* InOuter, const TCHAR *Filename);
 
 /**
- * 
- * Ensure thumbnails are loaded and then reset the loader in preparation for a package save
  *
- * @param	InOuter			The outer for the package we are saving
+ * Reset the loader for the given package if it is using the given filename, so we can write to the file
+ *
+ * @param	Package			The package we are saving
  * @param	Filename		The filename we are saving too
  */
-COREUOBJECT_API void ResetLoadersForSave(UObject* InOuter, const TCHAR *Filename);
+COREUOBJECT_API void ResetLoadersForSave(UPackage* Package, const TCHAR* Filename);
+
+/*
+ * Ensure all data that can be loaded from the linker (thumbnails, bulk data) is loaded, in preparation for saving out the given package
+ *
+ * @param Package	The the package for which the linker should be fully loaded
+ */
+COREUOBJECT_API void EnsureLoadingComplete(UPackage* Package);

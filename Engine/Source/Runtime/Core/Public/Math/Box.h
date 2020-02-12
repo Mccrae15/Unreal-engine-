@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -31,13 +31,6 @@ public:
 
 	/** Default constructor (no initialization). */
 	FBox() { }
-
-	/** Creates and initializes a new box with zero extent and marks it as invalid. */
-	UE_DEPRECATED(4.16, "Use ForceInit constructor instead.")
-	FBox( int32 )
-	{
-		Init();
-	}
 
 	/**
 	 * Creates and initializes a new box with zero extent and marks it as invalid.
@@ -257,23 +250,13 @@ public:
 		return 0.5f * (Max - Min);
 	}
 
-	/**
-	 * Gets a reference to the specified point of the bounding box.
-	 *
-	 * @param PointIndex The index of the extrema point to return.
-	 * @return A reference to the point.
-	 */
+	UE_DEPRECATED(4.24, "This method performed unsafe operations and should be replaced with using .Min and .Max directly or using the [] operator on this class instead.")
 	FORCEINLINE FVector& GetExtrema( int PointIndex )
 	{
 		return (&Min)[PointIndex];
 	}
 
-	/**
-	 * Gets a read-only reference to the specified point of the bounding box.
-	 *
-	 * @param PointIndex The index of extrema point to return.
-	 * @return A read-only reference to the point.
-	 */
+	UE_DEPRECATED(4.24, "This method performed unsafe operations and should be replaced with using .Min and .Max directly or using the [] operator on this class instead.")
 	FORCEINLINE const FVector& GetExtrema( int PointIndex ) const
 	{
 		return (&Min)[PointIndex];
@@ -473,7 +456,7 @@ public:
 	friend void operator<<(FStructuredArchive::FSlot Slot, FBox& Box)
 	{
 		FStructuredArchive::FRecord Record = Slot.EnterRecord();
-		Record << NAMED_ITEM("Min", Box.Min) << NAMED_ITEM("Max", Box.Max) << NAMED_ITEM("IsValid", Box.IsValid);
+		Record << SA_VALUE(TEXT("Min"), Box.Min) << SA_VALUE(TEXT("Max"), Box.Max) << SA_VALUE(TEXT("IsValid"), Box.IsValid);
 	}
 
 	bool Serialize( FArchive& Ar )

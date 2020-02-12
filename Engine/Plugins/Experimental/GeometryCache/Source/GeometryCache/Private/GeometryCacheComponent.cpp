@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "GeometryCacheComponent.h"
 #include "GeometryCache.h"
@@ -148,6 +148,11 @@ bool UGeometryCacheComponent::GetManualTick() const
 	return bManualTick;
 }
 
+void UGeometryCacheComponent::ResetAnimationTime()
+{
+	ElapsedTime = 0.0f;
+}
+
 void UGeometryCacheComponent::TickAtThisTime(const float Time, bool bInIsRunning, bool bInBackwards, bool bInIsLooping)
 {
 	if (bManualTick && GeometryCache && bRunning)
@@ -217,6 +222,7 @@ void UGeometryCacheComponent::UpdateLocalBounds()
 
 FPrimitiveSceneProxy* UGeometryCacheComponent::CreateSceneProxy()
 {
+	IGeometryCacheStreamingManager::Get().PrefetchData(this);
 	return new FGeometryCacheSceneProxy(this);
 }
 

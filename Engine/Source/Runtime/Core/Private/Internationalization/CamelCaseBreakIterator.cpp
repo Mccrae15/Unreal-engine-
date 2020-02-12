@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "Internationalization/CamelCaseBreakIterator.h"
 #include "Internationalization/Text.h"
@@ -26,9 +26,15 @@ void FCamelCaseBreakIterator::SetString(const FString& InString)
 
 void FCamelCaseBreakIterator::SetString(const TCHAR* const InString, const int32 InStringLength) 
 {
-	String = FString(InString, InStringLength);
+	String = FString(InStringLength, InString);
 	UpdateBreakPointsArray();
 	ResetToBeginning();
+}
+
+void FCamelCaseBreakIterator::SetStringRef(const FString* InString)
+{
+	// TODO: Support external string references as an optimization
+	SetString(*InString);
 }
 
 void FCamelCaseBreakIterator::ClearString()

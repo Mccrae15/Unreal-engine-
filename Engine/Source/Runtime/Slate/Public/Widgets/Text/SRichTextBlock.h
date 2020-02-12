@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 #pragma once
 
 #include "CoreMinimal.h"
@@ -51,7 +51,9 @@ public:
 		, _Decorators()
 		, _Parser()
 		, _MinDesiredWidth()
-	{}
+	{
+		_Clipping = EWidgetClipping::OnDemand;
+	}
 		/** The text displayed in this text block */
 		SLATE_ATTRIBUTE( FText, Text )
 
@@ -206,10 +208,16 @@ public:
 	/** See MinDesiredWidth attribute */
 	void SetMinDesiredWidth(const TAttribute<float>& InMinDesiredWidth);
 
+	/**  */
+	void SetDecoratorStyleSet(const ISlateStyle* NewDecoratorStyleSet);
+
 	/**
 	 * Causes the text to reflow it's layout
 	 */
 	void Refresh();
+
+	/** set the scale value at the TextLayout*/
+	void SetTextBlockScale(const float NewTextBlockScale);
 
 protected:
 	//~ SWidget interface
@@ -251,6 +259,12 @@ private:
 
 	/** Prevents the text block from being smaller than desired in certain cases (e.g. when it is empty) */
 	TAttribute<float> MinDesiredWidth;
+
+	/** Use to Scale the entire Text Block*/
+	float TextBlockScale = 1.0f;
+
+	/**  */
+	TSharedPtr<FRichTextLayoutMarshaller> Marshaller;
 };
 
 #endif //WITH_FANCY_TEXT

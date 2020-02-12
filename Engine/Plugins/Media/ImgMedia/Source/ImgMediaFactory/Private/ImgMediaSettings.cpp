@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "ImgMediaSettings.h"
 
@@ -12,7 +12,23 @@ UImgMediaSettings::UImgMediaSettings()
 	, CacheSizeGB(1.0f)
 	, CacheThreads(8)
 	, CacheThreadStackSizeKB(128)
+	, GlobalCacheSizeGB(1.0f)
+	, UseGlobalCache(true)
 	, ExrDecoderThreads(0)
 	, DefaultProxy(TEXT("proxy"))
 	, UseDefaultProxy(false)
 { }
+
+#if WITH_EDITOR
+void UImgMediaSettings::PostEditChangeProperty(FPropertyChangedEvent& PropertyChangedEvent)
+{
+	SettingsChangedDelegate.Broadcast(this);
+}
+
+UImgMediaSettings::FOnImgMediaSettingsChanged& UImgMediaSettings::OnSettingsChanged()
+{
+	return SettingsChangedDelegate;
+}
+
+UImgMediaSettings::FOnImgMediaSettingsChanged UImgMediaSettings::SettingsChangedDelegate;
+#endif

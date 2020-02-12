@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 
 #include "SGraphPin.h"
@@ -19,6 +19,7 @@
 #include "ScopedTransaction.h"
 #include "SLevelOfDetailBranchNode.h"
 #include "SPinTypeSelector.h"
+#include "Animation/AnimNodeBase.h"
 
 /////////////////////////////////////////////////////
 // FGraphPinHandle
@@ -69,11 +70,14 @@ SGraphPin::SGraphPin()
 	: GraphPinObj(nullptr)
 	, PinColorModifier(FLinearColor::White)
 	, CachedNodeOffset(FVector2D::ZeroVector)
+	, Custom_Brush_Connected(nullptr)
+	, Custom_Brush_Disconnected(nullptr)
 	, bGraphDataInvalid(false)
 	, bShowLabel(true)
 	, bOnlyShowDefaultValue(false)
 	, bIsMovingLinks(false)
 	, bUsePinColorForText(false)
+
 {
 	IsEditable = true;
 
@@ -103,6 +107,9 @@ SGraphPin::SGraphPin()
 	static const FName NAME_Pin_Background("Graph.Pin.Background");
 	static const FName NAME_Pin_BackgroundHovered("Graph.Pin.BackgroundHovered");
 
+	static const FName NAME_PosePin_Connected("Graph.PosePin.Connected");
+	static const FName NAME_PosePin_Disconnected("Graph.PosePin.Disconnected");
+
 	const EBlueprintPinStyleType StyleType = GetDefault<UGraphEditorSettings>()->DataPinStyle;
 
 	switch(StyleType)
@@ -126,6 +133,9 @@ SGraphPin::SGraphPin()
 
 	CachedImg_DelegatePin_Connected = FEditorStyle::GetBrush( NAME_DelegatePin_Connected );
 	CachedImg_DelegatePin_Disconnected = FEditorStyle::GetBrush( NAME_DelegatePin_Disconnected );
+
+	CachedImg_PosePin_Connected = FEditorStyle::GetBrush(NAME_PosePin_Connected);
+	CachedImg_PosePin_Disconnected = FEditorStyle::GetBrush(NAME_PosePin_Disconnected);
 
 	CachedImg_SetPin = FEditorStyle::GetBrush(NAME_SetPin);
 	CachedImg_MapPinKey = FEditorStyle::GetBrush(NAME_MapPinKey);
@@ -372,6 +382,9 @@ FReply SGraphPin::OnPinMouseDown( const FGeometry& SenderGeometry, const FPointe
 
 					// A weak reference to the node object that owns the pin
 					TWeakObjectPtr<UEdGraphNode> OwnerNodePtr;
+
+					// The direction of the pin
+					EEdGraphPinDirection Direction;
 				};
 
 				// Build a lookup table containing information about the set of pins that we're currently linked to
@@ -385,6 +398,7 @@ FReply SGraphPin::OnPinMouseDown( const FGeometry& SenderGeometry, const FPointe
 						FLinkedToPinInfo PinInfo;
 						PinInfo.PinName = (*PinWidget)->GetPinObj()->PinName;
 						PinInfo.OwnerNodePtr = (*PinWidget)->OwnerNodePtr.Pin()->GetNodeObj();
+						PinInfo.Direction = (*PinWidget)->GetPinObj()->Direction;
 						LinkedToPinInfoArray.Add(MoveTemp(PinInfo));
 					}
 				}
@@ -398,7 +412,7 @@ FReply SGraphPin::OnPinMouseDown( const FGeometry& SenderGeometry, const FPointe
 					{
 						for (UEdGraphPin* Pin : PinInfo.OwnerNodePtr.Get()->Pins)
 						{
-							if (Pin->PinName == PinInfo.PinName)
+							if (Pin->PinName == PinInfo.PinName && Pin->Direction == PinInfo.Direction)
 							{
 								if (TSharedRef<SGraphPin>* pWidget = PinToPinWidgetMap.Find(FGraphPinHandle(Pin)))
 								{
@@ -434,7 +448,7 @@ FReply SGraphPin::OnPinMouseDown( const FGeometry& SenderGeometry, const FPointe
 				}
 			}
 
-			if (!GraphPinObj->bNotConnectable)
+			if (!MouseEvent.IsShiftDown() && !GraphPinObj->bNotConnectable)
 			{
 				// Start a drag-drop on the pin
 				if (ensure(OwnerNodePinned.IsValid()))
@@ -882,6 +896,18 @@ bool SGraphPin::IsConnected() const
 /** @return The brush with which to pain this graph pin's incoming/outgoing bullet point */
 const FSlateBrush* SGraphPin::GetPinIcon() const
 {
+	if (Custom_Brush_Connected && Custom_Brush_Disconnected)
+	{
+		if (IsConnected())
+		{
+			return Custom_Brush_Connected;
+		}
+		else
+		{
+			return Custom_Brush_Disconnected;
+		}
+	}
+
 	if (IsArray())
 	{
 		if (IsConnected())
@@ -923,6 +949,17 @@ const FSlateBrush* SGraphPin::GetPinIcon() const
 	else if (IsMap())
 	{
 		return CachedImg_MapPinKey;
+	}
+	else if (GraphPinObj->PinType.PinCategory == UEdGraphSchema_K2::PC_Struct && ((GraphPinObj->PinType.PinSubCategoryObject == FPoseLink::StaticStruct()) || (GraphPinObj->PinType.PinSubCategoryObject == FComponentSpacePoseLink::StaticStruct())))
+	{
+		if (IsConnected())
+		{
+			return CachedImg_PosePin_Connected;
+		}
+		else
+		{
+			return CachedImg_PosePin_Disconnected;
+		}
 	}
 	else
 	{
@@ -974,7 +1011,7 @@ FSlateColor SGraphPin::GetPinColor() const
 		}
 		if (const UEdGraphSchema* Schema = GraphPinObj->GetSchema())
 		{
-			if (!GetPinObj()->GetOwningNode()->IsNodeEnabled() || GetPinObj()->GetOwningNode()->IsDisplayAsDisabledForced() || !IsEditingEnabled())
+			if (!GetPinObj()->GetOwningNode()->IsNodeEnabled() || GetPinObj()->GetOwningNode()->IsDisplayAsDisabledForced() || !IsEditingEnabled() || GetPinObj()->GetOwningNode()->IsNodeUnrelated())
 			{
 				return Schema->GetPinTypeColor(GraphPinObj->PinType) * FLinearColor(1.0f, 1.0f, 1.0f, 0.5f);
 			}
@@ -997,13 +1034,13 @@ FSlateColor SGraphPin::GetPinTextColor() const
 	// If there is no schema there is no owning node (or basically this is a deleted node)
 	if (UEdGraphNode* GraphNode = GraphPinObj->GetOwningNodeUnchecked())
 	{
-		const bool bDisabled = (!GraphNode->IsNodeEnabled() || GraphNode->IsDisplayAsDisabledForced() || !IsEditingEnabled());
+		const bool bDisabled = (!GraphNode->IsNodeEnabled() || GraphNode->IsDisplayAsDisabledForced() || !IsEditingEnabled() || GraphNode->IsNodeUnrelated());
 		if (GraphPinObj->bOrphanedPin)
 		{
 			FLinearColor PinColor = FLinearColor::Red;
 			if (bDisabled)
 			{
-				PinColor.A = 0.5f;
+				PinColor.A = .25f;
 			}
 			return PinColor;
 		}
@@ -1163,6 +1200,12 @@ EVisibility SGraphPin::GetPinVisiblity() const
 		return EVisibility::HitTestInvisible;
 	}
 	return EVisibility::Visible;
+}
+
+void SGraphPin::SetCustomPinIcon(const FSlateBrush* InConnectedBrush, const FSlateBrush* InDisconnectedBrush)
+{
+	Custom_Brush_Connected = InConnectedBrush;
+	Custom_Brush_Disconnected = InDisconnectedBrush;
 }
 
 bool SGraphPin::GetIsConnectable() const

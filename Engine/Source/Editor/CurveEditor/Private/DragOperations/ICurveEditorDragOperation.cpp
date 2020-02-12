@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "ICurveEditorDragOperation.h"
 #include "CurveEditor.h"
@@ -6,7 +6,6 @@
 
 void ICurveEditorDragOperation::BeginDrag(FVector2D InitialPosition, FVector2D CurrentPosition, const FPointerEvent& MouseEvent)
 {
-	GetLockedMousePosition(InitialPosition, CurrentPosition, MouseEvent);
 	OnBeginDrag(InitialPosition, CurrentPosition, MouseEvent);
 }
 
@@ -15,14 +14,19 @@ void ICurveEditorDragOperation::Drag(FVector2D InitialPosition, FVector2D Curren
 	OnDrag(InitialPosition, CurrentPosition, MouseEvent);
 }
 
+FReply ICurveEditorDragOperation::MouseWheel(FVector2D InitialPosition, FVector2D CurrentPosition, const FPointerEvent& MouseEvent)
+{
+	return OnMouseWheel(InitialPosition, CurrentPosition, MouseEvent);
+}
+
 void ICurveEditorDragOperation::EndDrag(FVector2D InitialPosition, FVector2D CurrentPosition, const FPointerEvent& MouseEvent)
 {
 	OnEndDrag(InitialPosition, CurrentPosition, MouseEvent);
 }
 
-int32 ICurveEditorDragOperation::Paint(const FGeometry& AllottedGeometry, FSlateWindowElementList& OutDrawElements, int32 LayerId)
+void ICurveEditorDragOperation::Paint(const FGeometry& AllottedGeometry, FSlateWindowElementList& OutDrawElements, int32 PaintOnLayerId)
 {
-	return OnPaint(AllottedGeometry, OutDrawElements, LayerId);
+	OnPaint(AllottedGeometry, OutDrawElements, PaintOnLayerId);
 }
 
 void ICurveEditorDragOperation::CancelDrag()
@@ -30,31 +34,8 @@ void ICurveEditorDragOperation::CancelDrag()
 	OnCancelDrag();
 }
 
-FVector2D ICurveEditorDragOperation::GetLockedMousePosition(FVector2D InitialPosition, FVector2D CurrentPosition, const FPointerEvent& MouseEvent)
-{
-	if (MouseEvent.IsShiftDown())
-	{
-		if (MouseLockVector == FVector2D::UnitVector)
-		{
-			if (FMath::Abs(CurrentPosition.Y - InitialPosition.Y) <= FMath::Abs(CurrentPosition.X - InitialPosition.X))
-			{
-				MouseLockVector.Y = 0.f;
-			}
-			else
-			{
-				MouseLockVector.X = 0.f;
-			}
-		}
-	}
-	else
-	{
-		MouseLockVector = FVector2D::UnitVector;
-	}
-	return InitialPosition + (CurrentPosition - InitialPosition) * MouseLockVector;
-}
-
 void ICurveEditorKeyDragOperation::Initialize(FCurveEditor* InCurveEditor, const TOptional<FCurvePointHandle>& CardinalPoint)
 {
-	SnapMetrics = InCurveEditor->GetSnapMetrics();
+	// TODO: maybe cache snap data for all selected curves?
 	OnInitialize(InCurveEditor, CardinalPoint);
 }

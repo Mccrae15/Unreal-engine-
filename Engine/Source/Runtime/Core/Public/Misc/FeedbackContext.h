@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -24,13 +24,17 @@ public:
 	/** Ask the user a binary question, returning their answer */
 	virtual bool YesNof( const FText& Question ) { return false; }
 	
-	/** Return whether the user has requested to cancel the current slow task */
+	/**
+	 * Whether or not the user has canceled out of the progress dialog
+	 * (i.e. the ongoing slow task or the last one that ran).
+	 * The user cancel flag is reset when starting a new root slow task.
+	 */
 	virtual bool ReceivedUserCancel() { return false; };
 	
 	/** Public const access to the current state of the scope stack */
 	FORCEINLINE const FSlowTaskStack& GetScopeStack() const
 	{
-		return *ScopeStack;
+		return ScopeStack;
 	}
 
 	/**** Legacy API - not deprecated as it's still in heavy use, but superceded by FScopedSlowTask ****/
@@ -136,7 +140,23 @@ protected:
 	friend FSlowTask;
 
 	/** Stack of pointers to feedback scopes that are currently open */
-	TSharedRef<FSlowTaskStack> ScopeStack;
+	FSlowTaskStack ScopeStack;
+
+	/**
+	 * Points to the ScopeStack above when initialized - this is because Slate wants a TSharedPtr,
+	 * but we don't want to allocate
+	 */
+	mutable TSharedPtr<FSlowTaskStack> ScopeStackSharedPtr;
+
+	const TSharedPtr<FSlowTaskStack>& GetScopeStackSharedPtr() const
+	{
+		if (!ScopeStackSharedPtr)
+		{
+			ScopeStackSharedPtr = MakeShareable(const_cast<FSlowTaskStack*>(&ScopeStack), [](FSlowTaskStack*){});
+		}
+		return ScopeStackSharedPtr;
+	}
+
 	TArray<TUniquePtr<FSlowTask>> LegacyAPIScopes;
 
 	/** Ask that the UI be updated as a result of the scope stack changing */

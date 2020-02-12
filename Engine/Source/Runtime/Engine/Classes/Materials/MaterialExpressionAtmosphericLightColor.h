@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 
 #pragma once
@@ -13,8 +13,6 @@ class UMaterialExpressionAtmosphericLightColor : public UMaterialExpression
 {
 	GENERATED_UCLASS_BODY()
 
-
-
 	//~ Begin UMaterialExpression Interface
 #if WITH_EDITOR
 	virtual int32 Compile(class FMaterialCompiler* Compiler, int32 OutputIndex) override;
@@ -22,6 +20,5 @@ class UMaterialExpressionAtmosphericLightColor : public UMaterialExpression
 #endif
 	//~ End UMaterialExpression Interface
 };
-
 
 

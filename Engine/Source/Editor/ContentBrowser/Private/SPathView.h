@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -16,13 +16,13 @@
 #include "ContentBrowserDelegates.h"
 #include "Delegates/DelegateCombinations.h"
 
+class FSourcesSearch;
 struct FHistoryData;
 struct FTreeItem;
+class FContentBrowserSingleton;
+class FBlacklistPaths;
 
 typedef TTextFilter< const FString& > FolderTextFilter;
-
-DECLARE_DELEGATE_OneParam(FOnAssetTreeSearchBoxChanged, const FText& /*SearchText*/);
-DECLARE_DELEGATE_TwoParams(FOnAssetTreeSearchBoxCommitted, const FText& /*InSearchText*/, ETextCommit::Type /*InCommitType*/);
 
 /**
  * The tree view of folders which contain content.
@@ -72,6 +72,9 @@ public:
 
 		/** The selection mode for the tree view */
 		SLATE_ARGUMENT( ESelectionMode::Type, SelectionMode )
+
+		/** Optional external search. Will hide and replace our internal search UI */
+		SLATE_ARGUMENT( TSharedPtr<FSourcesSearch>, ExternalSearch )
 
 	SLATE_END_ARGS()
 
@@ -158,12 +161,6 @@ public:
 		return TreeTitle;
 	}
 
-	/** Handler for when search terms change in the asset tree search box */
-	virtual void OnAssetTreeSearchBoxChanged(const FText& InSearchText);
-
-	/** Handler for when search term is committed in the asset tree search box */
-	virtual void OnAssetTreeSearchBoxCommitted(const FText& InSearchText, ETextCommit::Type InCommitType);
-
 public:
 	/** Delegate that handles if any folder paths changed as a result of a move, rename, etc. in the path view*/
 	FOnFolderPathChanged OnFolderPathChanged;
@@ -201,6 +198,9 @@ protected:
 
 	/** Handler used to verify the name of a new folder */
 	bool VerifyFolderNameChanged(const FString& InName, FText& OutErrorMessage, const FString& InFolderPath) const;
+
+	/** Set the active filter text */
+	void SetSearchFilterText(const FText& InSearchText, TArray<FText>& OutErrors);
 
 	/** Gets the string to highlight in tree items (used in folder searching) */
 	FText GetHighlightText() const;
@@ -311,8 +311,8 @@ protected:
 	/** The tree view widget */
 	TSharedPtr< STreeView< TSharedPtr<FTreeItem>> > TreeViewPtr;
 
-	/** The asset tree search box */
-	TSharedPtr< SSearchBox > SearchBoxPtr;
+	/** The path view search interface */
+	TSharedPtr<FSourcesSearch> SearchPtr;
 
 	/** The list of folders in the tree */
 	TArray< TSharedPtr<FTreeItem> > TreeRootItems;
@@ -327,6 +327,9 @@ protected:
 	TArray<FString> PendingInitialPaths;
 
 	TSharedPtr<SWidget> PathViewWidget;
+
+	/** Blacklist filter to hide folders */
+	TSharedPtr<FBlacklistPaths> FolderBlacklist;
 
 private:
 
@@ -374,18 +377,8 @@ public:
 	/** Loads any settings to config that should be persistent between editor sessions */
 	virtual void LoadSettings(const FString& IniFilename, const FString& IniSection, const FString& SettingsString) override;
 
-	/** Handler for when search terms change in the asset tree search box */
-	virtual void OnAssetTreeSearchBoxChanged(const FText& InSearchText) override;
-
-	/** Handler for when search term is committed in the asset tree search box */
-	virtual void OnAssetTreeSearchBoxCommitted(const FText& InSearchText, ETextCommit::Type InCommitType) override;
-
 	/** Selects the closest matches to the supplied paths in the tree. "/" delimited */
 	virtual void SetSelectedPaths(const TArray<FString>& Paths) override;
-
-	FOnAssetTreeSearchBoxChanged OnFavoriteSearchChanged;
-
-	FOnAssetTreeSearchBoxCommitted OnFavoriteSearchCommitted;
 
 	/** Adds nodes to the tree in order to construct the specified path. If bUserNamed is true, the user will name the folder and Path includes the default name. */
 	virtual TSharedPtr<FTreeItem> AddPath(const FString& Path, bool bUserNamed = false) override;

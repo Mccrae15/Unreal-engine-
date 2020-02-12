@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -67,6 +67,19 @@ public:
 	/**
 	 * Finds type by its name.
 	 *
+	 * @param Name Name to look for.
+	 *
+	 * @returns Found type or nullptr on failure.
+	 */
+	template <typename CharType>
+	UField* FindTypeByName(const CharType* Name)
+	{
+		return FindTypeByName(FName(Name, FNAME_Find));
+	}
+
+	/**
+	 * Finds type by its name.
+	 *
 	 * Const version.
 	 *
 	 * @param Name Name to look for.
@@ -75,6 +88,20 @@ public:
 	 */
 	const UField* FindTypeByName(FName Name) const;
 
+	/**
+	 * Finds type by its name.
+	 *
+	 * Const version.
+	 *
+	 * @param Name Name to look for.
+	 *
+	 * @returns Found type or nullptr on failure.
+	 */
+	template <typename CharType>
+	const UField* FindTypeByName(const CharType* Name) const
+	{
+		return FindTypeByName(FName(Name, FNAME_Find));
+	}
 	/**
 	 * Checks if scope contains this type.
 	 *
@@ -263,6 +290,8 @@ private:
 	friend struct FStructScopeArchiveProxy;
 };
 
+using FScopeSet = TSet<FScope*, DefaultKeyFuncs<FScope*>, TInlineSetAllocator<1024>>;
+
 /**
  * Represents a scope associated with source file.
  */
@@ -300,18 +329,15 @@ public:
 	 *
 	 * @param Out (Output parameter) Array to append scopes.
 	 */
-	void AppendIncludedFileScopes(TArray<FScope*>& Out)
+	void AppendIncludedFileScopes(FScopeSet& Out)
 	{
-		if (!Out.Contains(this))
-		{
-			Out.Add(this);
-		}
+		bool bAlreadyAdded = false;
+		Out.Add(this, &bAlreadyAdded);
 
-		for (FFileScope* IncludedScope : IncludedScopes)
+		if (!bAlreadyAdded)
 		{
-			if (!Out.Contains(IncludedScope))
+			for (FFileScope* IncludedScope : IncludedScopes)
 			{
-				Out.Add(IncludedScope);
 				IncludedScope->AppendIncludedFileScopes(Out);
 			}
 		}
@@ -381,7 +407,7 @@ public:
 	typedef typename TConditionalType<TIsConst, TMap<FName, UField*>::TConstIterator, TMap<FName, UField*>::TIterator>::Type MapIteratorType;
 	typedef typename TConditionalType<TIsConst, const FScope, FScope>::Type ScopeType;
 	typedef typename TConditionalType<TIsConst, const FFileScope, FFileScope>::Type FileScopeType;
-	typedef typename TConditionalType<TIsConst, typename TArray<ScopeType*>::TConstIterator, typename TArray<ScopeType*>::TIterator>::Type ScopeArrayIteratorType;
+	typedef typename TConditionalType<TIsConst, FScopeSet::TConstIterator, FScopeSet::TIterator>::Type ScopeArrayIteratorType;
 
 	// Constructor.
 	TDeepScopeTypeIterator(ScopeType* Scope)
@@ -418,7 +444,7 @@ public:
 	 */
 	bool MoveNext()
 	{
-		if (!ScopeIterator.IsValid() && !MoveToNextScope())
+		if (!ScopeIterator.IsSet() && !MoveToNextScope())
 		{
 			return false;
 		}
@@ -431,7 +457,7 @@ public:
 		{
 			do
 			{
-				ScopeIterator = nullptr;
+				ScopeIterator.Reset();
 				if (!MoveToNextScope())
 				{
 					return false;
@@ -461,9 +487,9 @@ private:
 	 */
 	bool MoveToNextScope()
 	{
-		if (!ScopesIterator.IsValid())
+		if (!ScopesIterator.IsSet())
 		{
-			ScopesIterator = MakeShareable(new ScopeArrayIteratorType(ScopesToTraverse));
+			ScopesIterator.Emplace(ScopesToTraverse);
 		}
 		else
 		{
@@ -475,17 +501,17 @@ private:
 			return false;
 		}
 
-		ScopeIterator = MakeShareable(new FScope::TScopeTypeIterator<TType, TIsConst>(ScopesIterator->operator*()));
+		ScopeIterator.Emplace(ScopesIterator->operator*());
 		return true;
 	}
 
-	// List of scopes to traverse.
-	TArray<ScopeType*> ScopesToTraverse;
-
 	// Current scope iterator.
-	TSharedPtr<FScope::TScopeTypeIterator<TType, TIsConst> > ScopeIterator;
+	TOptional<FScope::TScopeTypeIterator<TType, TIsConst> > ScopeIterator;
 
 	// Scopes list iterator.
-	TSharedPtr<ScopeArrayIteratorType> ScopesIterator;
+	TOptional<ScopeArrayIteratorType> ScopesIterator;
+
+	// List of scopes to traverse.
+	FScopeSet  ScopesToTraverse;
 };
 

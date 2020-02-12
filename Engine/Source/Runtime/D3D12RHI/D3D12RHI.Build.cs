@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 using UnrealBuildTool;
 
@@ -6,17 +6,20 @@ public class D3D12RHI : ModuleRules
 {
 	public D3D12RHI(ReadOnlyTargetRules Target) : base(Target)
 	{
+		if (Target.Platform == UnrealTargetPlatform.HoloLens)
+		{
+			PrivateIncludePaths.Add("Runtime/D3D12RHI/Private/HoloLens");
+		}
 		PrivateIncludePaths.Add("Runtime/D3D12RHI/Private");
-        PrivateIncludePaths.Add("../Shaders/Private/RayTracing");
+		PrivateIncludePaths.Add("../Shaders/Shared");
 
-        PrivateDependencyModuleNames.AddRange(
+		PrivateDependencyModuleNames.AddRange(
 			new string[] {
 				"Core",
 				"Engine",
 				"RHI",
 				"RenderCore",
-				"UtilityShaders",
-			    }
+				}
 			);
 
 		if (Target.Configuration != UnrealTargetConfiguration.Shipping)
@@ -33,13 +36,18 @@ public class D3D12RHI : ModuleRules
             PrecompileForTargets = PrecompileTargetsType.None;
         }
 
-        if (Target.Platform == UnrealTargetPlatform.Win64 || Target.Platform == UnrealTargetPlatform.Win32)
+        if (Target.Platform == UnrealTargetPlatform.Win64 || Target.Platform == UnrealTargetPlatform.Win32 ||
+            Target.Platform == UnrealTargetPlatform.HoloLens)
 		{
 			AddEngineThirdPartyPrivateStaticDependencies(Target, "DX12");
 			AddEngineThirdPartyPrivateStaticDependencies(Target, "DX11");
-			AddEngineThirdPartyPrivateStaticDependencies(Target, "NVAPI");
-			AddEngineThirdPartyPrivateStaticDependencies(Target, "AMD_AGS");
-			AddEngineThirdPartyPrivateStaticDependencies(Target, "IntelMetricsDiscovery");
-		}
-	}
+            if (Target.Platform != UnrealTargetPlatform.HoloLens)
+            {
+                AddEngineThirdPartyPrivateStaticDependencies(Target, "NVAPI");
+				AddEngineThirdPartyPrivateStaticDependencies(Target, "AMD_AGS");
+            	AddEngineThirdPartyPrivateStaticDependencies(Target, "NVAftermath");
+            	AddEngineThirdPartyPrivateStaticDependencies(Target, "IntelMetricsDiscovery");
+            }
+        }
+    }
 }

@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -123,12 +123,16 @@ public:
 	UPROPERTY(EditAnywhere, Category=Behavior, AdvancedDisplay)
 	FVirtualKeyboardOptions VirtualKeyboardOptions;
 
+	/** The type of event that will trigger the display of the virtual keyboard */
+	UPROPERTY(EditAnywhere, Category = Behavior, AdvancedDisplay)
+	EVirtualKeyboardTrigger VirtualKeyboardTrigger;
+
 	/** What action should be taken when the virtual keyboard is dismissed? */
 	UPROPERTY(EditAnywhere, Category=Behavior, AdvancedDisplay)
 	EVirtualKeyboardDismissAction VirtualKeyboardDismissAction;
 	
 	/** How the text should be aligned with the margin. */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category=Appearance)
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, BlueprintSetter = SetJustification, Category=Appearance)
 	TEnumAsByte<ETextJustify::Type> Justification;
 
 	/** Controls how the text within this widget should be shaped. */
@@ -137,7 +141,7 @@ public:
 
 public:
 
-	/** Called whenever the text is changed interactively by the user */
+	/** Called whenever the text is changed programmatically or interactively by the user */
 	UPROPERTY(BlueprintAssignable, Category="TextBox|Event")
 	FOnEditableTextBoxChangedEvent OnTextChanged;
 
@@ -176,6 +180,9 @@ public:
 	UFUNCTION(BlueprintCallable, Category = "Widget")
 	bool HasError() const;
 
+	UFUNCTION(BlueprintSetter)
+	void SetJustification(ETextJustify::Type InJustification);
+
 	//~ Begin UWidget Interface
 	virtual void SynchronizeProperties() override;
 	//~ End UWidget Interface
@@ -199,6 +206,10 @@ protected:
 
 	virtual void HandleOnTextChanged(const FText& Text);
 	virtual void HandleOnTextCommitted(const FText& Text, ETextCommit::Type CommitMethod);
+
+#if WITH_ACCESSIBILITY
+	virtual TSharedPtr<SWidget> GetAccessibleWidget() const override;
+#endif
 
 protected:
 	TSharedPtr<SEditableTextBox> MyEditableTextBlock;

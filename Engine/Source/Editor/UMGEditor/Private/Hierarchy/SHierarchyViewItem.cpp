@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "Hierarchy/SHierarchyViewItem.h"
 #include "Components/NamedSlotInterface.h"
@@ -33,6 +33,9 @@
 #include "WidgetBlueprintEditorUtils.h"
 #include "ScopedTransaction.h"
 #include "Styling/SlateIconFinder.h"
+#include "DragAndDrop/AssetDragDropOp.h"
+#include "WidgetTemplateBlueprintClass.h"
+#include "WidgetTemplateImageClass.h"
 
 #define LOCTEXT_NAMESPACE "UMG"
 
@@ -328,8 +331,7 @@ TOptional<EItemDropZone> ProcessHierarchyDragDrop(const FDragDropEvent& DragDrop
 					UWidget* NamedSlotHostWidget = FWidgetBlueprintEditorUtils::FindNamedSlotHostWidgetForContent(TemplateWidget, Blueprint->WidgetTree);
 					if (NamedSlotHostWidget != nullptr)
 					{
-						INamedSlotInterface* NamedSlotHost = Cast<INamedSlotInterface>(NamedSlotHostWidget);
-						if (NamedSlotHost != nullptr)
+						if (TScriptInterface<INamedSlotInterface> NamedSlotHost = TScriptInterface<INamedSlotInterface>(NamedSlotHostWidget))
 						{
 							NamedSlotHostWidget->SetFlags(RF_Transactional);
 							NamedSlotHostWidget->Modify();
@@ -459,7 +461,17 @@ FReply FHierarchyModel::HandleDragDetected(const FGeometry& MyGeometry, const FP
 
 void FHierarchyModel::HandleDragEnter(const FDragDropEvent& DragDropEvent)
 {
-
+	TArray<UWidget*> DragDropPreviewWidgets;
+	DetermineDragDropPreviewWidgets(DragDropPreviewWidgets, DragDropEvent);
+	// Move the remaining widgets into the transient package. Otherwise, they will remain outered to the WidgetTree and end up as properties in the BP class layout as a result.
+	UWidgetBlueprint* BP = Cast<UWidgetBlueprint>(BlueprintEditor.Pin()->GetBlueprintObj());
+	if (BP)
+	{
+		for (UWidget* Widget : DragDropPreviewWidgets)
+		{
+			FHierarchyModel::RemovePreviewWidget(BP, Widget);
+		}
+	}
 }
 
 void FHierarchyModel::HandleDragLeave(const FDragDropEvent& DragDropEvent)
@@ -468,6 +480,17 @@ void FHierarchyModel::HandleDragLeave(const FDragDropEvent& DragDropEvent)
 	if ( DecoratedDragDropOp.IsValid() )
 	{
 		DecoratedDragDropOp->ResetToDefaultToolTip();
+	}
+	TArray<UWidget*> DragDropPreviewWidgets;
+	DetermineDragDropPreviewWidgets(DragDropPreviewWidgets, DragDropEvent);
+	// Move the remaining widgets into the transient package. Otherwise, they will remain outered to the WidgetTree and end up as properties in the BP class layout as a result.
+	UWidgetBlueprint* BP = Cast<UWidgetBlueprint>(BlueprintEditor.Pin()->GetBlueprintObj());
+	if (BP)
+	{
+		for (UWidget* Widget : DragDropPreviewWidgets)
+		{
+			FHierarchyModel::RemovePreviewWidget(BP, Widget);
+		}
 	}
 }
 
@@ -484,6 +507,86 @@ bool FHierarchyModel::OnVerifyNameTextChanged(const FText& InText, FText& OutErr
 void FHierarchyModel::OnNameTextCommited(const FText& InText, ETextCommit::Type CommitInfo)
 {
 
+}
+
+
+void FHierarchyModel::DetermineDragDropPreviewWidgets(TArray<UWidget*>& OutWidgets, const FDragDropEvent& DragDropEvent)
+{
+	OutWidgets.Empty();
+	UWidgetBlueprint* Blueprint = Cast<UWidgetBlueprint>(BlueprintEditor.Pin()->GetBlueprintObj());
+
+	if (!Blueprint)
+	{
+		return;
+	}
+
+	TSharedPtr<FWidgetTemplateDragDropOp> TemplateDragDropOp = DragDropEvent.GetOperationAs<FWidgetTemplateDragDropOp>();
+	TSharedPtr<FAssetDragDropOp> AssetDragDropOp = DragDropEvent.GetOperationAs<FAssetDragDropOp>();
+
+	if (TemplateDragDropOp.IsValid())
+	{
+		UWidget* Widget = TemplateDragDropOp->Template->Create(Blueprint->WidgetTree);
+
+		if (Widget)
+		{
+			if (Cast<UUserWidget>(Widget) == nullptr || Blueprint->IsWidgetFreeFromCircularReferences(Cast<UUserWidget>(Widget)))
+			{
+				OutWidgets.Add(Widget);
+			}
+		}
+	}
+	else if (AssetDragDropOp.IsValid())
+	{
+		for (const FAssetData& AssetData : AssetDragDropOp->GetAssets())
+		{
+			UWidget* Widget = nullptr;
+			UClass* AssetClass = FindObjectChecked<UClass>(ANY_PACKAGE, *AssetData.AssetClass.ToString());
+
+			if (FWidgetTemplateBlueprintClass::Supports(AssetClass))
+			{
+				// Allows a UMG Widget Blueprint to be dragged from the Content Browser to another Widget Blueprint...as long as we're not trying to place a
+				// blueprint inside itself.
+				FString BlueprintPath = Blueprint->GetPathName();
+				if (BlueprintPath != AssetData.ObjectPath.ToString())
+				{
+					Widget = FWidgetTemplateBlueprintClass(AssetData).Create(Blueprint->WidgetTree);
+
+					// Check to make sure that this widget can be added to the current blueprint
+					if (Cast<UUserWidget>(Widget) != nullptr && !Blueprint->IsWidgetFreeFromCircularReferences(Cast<UUserWidget>(Widget)))
+					{
+						Widget = nullptr;
+					}
+				}
+			}
+			else if (FWidgetTemplateImageClass::Supports(AssetClass))
+			{
+				Widget = FWidgetTemplateImageClass(AssetData).Create(Blueprint->WidgetTree);
+			}
+
+			if (Widget)
+			{
+				OutWidgets.Add(Widget);
+			}
+		}
+	}
+
+	// Mark the widgets for design-time rendering
+	for (UWidget* Widget : OutWidgets)
+	{
+		Widget->SetDesignerFlags(BlueprintEditor.Pin()->GetCurrentDesignerFlags());
+	}
+}
+
+void FHierarchyModel::RemovePreviewWidget(UWidgetBlueprint* Blueprint, UWidget* Widget)
+{
+	Blueprint->WidgetTree->SetFlags(RF_Transactional);
+	Blueprint->WidgetTree->Modify();
+	Blueprint->WidgetTree->RemoveWidget(Widget);
+	if (Widget->GetOutermost() != GetTransientPackage())
+	{
+		Widget->SetFlags(RF_NoFlags);
+		Widget->Rename(nullptr, GetTransientPackage());
+	}
 }
 
 void FHierarchyModel::InitializeChildren()
@@ -607,8 +710,20 @@ void FHierarchyRoot::UpdateSelection()
 	}
 }
 
+bool FHierarchyRoot::DoesWidgetOverrideFlowDirection() const
+{
+	TSharedPtr<FWidgetBlueprintEditor> BPEd = BlueprintEditor.Pin();
+	if (UWidget* Default = BPEd->GetWidgetBlueprintObj()->GeneratedClass->GetDefaultObject<UWidget>())
+	{
+		return Default->FlowDirectionPreference != EFlowDirectionPreference::Inherit;
+	}
+
+	return false;
+}
+
 TOptional<EItemDropZone> FHierarchyRoot::HandleCanAcceptDrop(const FDragDropEvent& DragDropEvent, EItemDropZone DropZone)
 {
+	bool bIsFreeFromCircularReferences = true;
 	TSharedPtr<FWidgetTemplateDragDropOp> TemplateDragDropOp = DragDropEvent.GetOperationAs<FWidgetTemplateDragDropOp>();
 	if (TemplateDragDropOp.IsValid())
 	{
@@ -623,20 +738,36 @@ TOptional<EItemDropZone> FHierarchyRoot::HandleCanAcceptDrop(const FDragDropEven
 				{
 					TemplateDragDropOp->CurrentIconBrush = FEditorStyle::GetBrush(TEXT("Graph.ConnectorFeedback.Error"));
 					TemplateDragDropOp->CurrentHoverText = LOCTEXT("CircularReference", "This would cause a circular reference.");
-					return TOptional<EItemDropZone>();
+					bIsFreeFromCircularReferences = false;
 				}
+
+				FHierarchyModel::RemovePreviewWidget(Blueprint, Widget);
 			}
 		}
 	}
 
 	bool bIsDrop = false;
-	return ProcessHierarchyDragDrop(DragDropEvent, DropZone, bIsDrop, BlueprintEditor.Pin(), FWidgetReference());
+	return bIsFreeFromCircularReferences ? ProcessHierarchyDragDrop(DragDropEvent, DropZone, bIsDrop, BlueprintEditor.Pin(), FWidgetReference()) : TOptional<EItemDropZone>();
 }
 
 FReply FHierarchyRoot::HandleAcceptDrop(FDragDropEvent const& DragDropEvent, EItemDropZone DropZone)
 {
 	bool bIsDrop = true;
 	TOptional<EItemDropZone> Zone = ProcessHierarchyDragDrop(DragDropEvent, DropZone, bIsDrop, BlueprintEditor.Pin(), FWidgetReference());
+	if (Zone.IsSet())
+	{
+		TArray<UWidget*> DragDropPreviewWidgets;
+		DetermineDragDropPreviewWidgets(DragDropPreviewWidgets, DragDropEvent);
+		// Move the remaining widgets into the transient package. Otherwise, they will remain outered to the WidgetTree and end up as properties in the BP class layout as a result.
+		UWidgetBlueprint* BP = Cast<UWidgetBlueprint>(BlueprintEditor.Pin()->GetBlueprintObj());
+		if (BP)
+		{
+			for (UWidget* Widget : DragDropPreviewWidgets)
+			{
+				FHierarchyModel::RemovePreviewWidget(BP, Widget);
+			}
+		}
+	}
 	return Zone.IsSet() ? FReply::Handled() : FReply::Unhandled();
 }
 
@@ -759,19 +890,21 @@ TOptional<EItemDropZone> FNamedSlotModel::HandleCanAcceptDrop(const FDragDropEve
 			}
 
 			UWidget* Widget = TemplateDragDropOp->Template->Create(Blueprint->WidgetTree);
-
+			bool bIsFreeFromCircularReferences = true;
 			if (Widget)
 			{
 				if (!Blueprint->IsWidgetFreeFromCircularReferences(Cast<UUserWidget>(Widget)))
 				{
 					TemplateDragDropOp->CurrentIconBrush = FEditorStyle::GetBrush(TEXT("Graph.ConnectorFeedback.Error"));
 					TemplateDragDropOp->CurrentHoverText = LOCTEXT("CircularReference", "This would cause a circular reference.");
-					return TOptional<EItemDropZone>();
+					bIsFreeFromCircularReferences = false;
 				}
+
+				FHierarchyModel::RemovePreviewWidget(Blueprint, Widget);
 			}
 
 			TemplateDragDropOp->CurrentIconBrush = FEditorStyle::GetBrush(TEXT("Graph.ConnectorFeedback.OK"));
-			return EItemDropZone::OntoItem;
+			return bIsFreeFromCircularReferences ? EItemDropZone::OntoItem : TOptional<EItemDropZone>();
 		}
 	}
 
@@ -858,8 +991,7 @@ FReply FNamedSlotModel::HandleAcceptDrop(FDragDropEvent const& DragDropEvent, EI
 		UWidget* SourceNamedSlotHostWidget = FWidgetBlueprintEditorUtils::FindNamedSlotHostWidgetForContent(DroppingWidget, Blueprint->WidgetTree);
 		if (SourceNamedSlotHostWidget != nullptr)
 		{
-			INamedSlotInterface* SourceNamedSlotHost = Cast<INamedSlotInterface>(SourceNamedSlotHostWidget);
-			if (SourceNamedSlotHost != nullptr)
+			if (TScriptInterface<INamedSlotInterface> SourceNamedSlotHost = TScriptInterface<INamedSlotInterface>(SourceNamedSlotHostWidget))
 			{
 				SourceNamedSlotHostWidget->SetFlags(RF_Transactional);
 				SourceNamedSlotHostWidget->Modify();
@@ -884,7 +1016,7 @@ void FNamedSlotModel::DoDrop(UWidget* NamedSlotHostWidget, UWidget* DroppingWidg
 	NamedSlotHostWidget->SetFlags(RF_Transactional);
 	NamedSlotHostWidget->Modify();
 
-	INamedSlotInterface* NamedSlotInterface = Cast<INamedSlotInterface>(NamedSlotHostWidget);
+	TScriptInterface<INamedSlotInterface> NamedSlotInterface = TScriptInterface<INamedSlotInterface>(NamedSlotHostWidget);
 	NamedSlotInterface->SetContentForSlot(SlotName, DroppingWidget);
 
 	FBlueprintEditorUtils::MarkBlueprintAsStructurallyModified(Blueprint);
@@ -959,6 +1091,18 @@ FText FHierarchyWidget::GetLabelToolTipText() const
 	return FText::GetEmpty();
 }
 
+void FHierarchyWidget::GetFilterStrings(TArray<FString>& OutStrings) const
+{
+	FHierarchyModel::GetFilterStrings(OutStrings);
+
+	UWidget* WidgetTemplate = Item.GetTemplate();
+	if (WidgetTemplate && !WidgetTemplate->IsGeneratedName())
+	{
+		OutStrings.Add(WidgetTemplate->GetClass()->GetName());
+		OutStrings.Add(WidgetTemplate->GetClass()->GetDisplayNameText().ToString());
+	}
+}
+
 const FSlateBrush* FHierarchyWidget::GetImage() const
 {
 	if (Item.GetTemplate())
@@ -987,6 +1131,7 @@ FSlateFontInfo FHierarchyWidget::GetFont() const
 TOptional<EItemDropZone> FHierarchyWidget::HandleCanAcceptDrop(const FDragDropEvent& DragDropEvent, EItemDropZone DropZone)
 {
 	TSharedPtr<FWidgetTemplateDragDropOp> TemplateDragDropOp = DragDropEvent.GetOperationAs<FWidgetTemplateDragDropOp>();
+	bool bIsFreeFromCircularReferences = true;
 	if (TemplateDragDropOp.IsValid())
 	{
 		UWidgetBlueprint* Blueprint = BlueprintEditor.Pin()->GetWidgetBlueprintObj();
@@ -1000,13 +1145,16 @@ TOptional<EItemDropZone> FHierarchyWidget::HandleCanAcceptDrop(const FDragDropEv
 				{
 					TemplateDragDropOp->CurrentIconBrush = FEditorStyle::GetBrush(TEXT("Graph.ConnectorFeedback.Error"));
 					TemplateDragDropOp->CurrentHoverText = LOCTEXT("CircularReference", "This would cause a circular reference.");
-					return TOptional<EItemDropZone>();
+					bIsFreeFromCircularReferences = false;
 				}
+
+				RemovePreviewWidget(Blueprint, Widget);
+
 			}
 		}
 	}
 	bool bIsDrop = false;
-	return ProcessHierarchyDragDrop(DragDropEvent, DropZone, bIsDrop, BlueprintEditor.Pin(), Item);
+	return bIsFreeFromCircularReferences ? ProcessHierarchyDragDrop(DragDropEvent, DropZone, bIsDrop, BlueprintEditor.Pin(), Item) :  TOptional<EItemDropZone>();
 }
 
 void FHierarchyWidget::HandleDragLeave(const FDragDropEvent& DragDropEvent)
@@ -1016,12 +1164,27 @@ void FHierarchyWidget::HandleDragLeave(const FDragDropEvent& DragDropEvent)
 	{
 		DecoratedDragDropOp->ResetToDefaultToolTip();
 	}
+	FHierarchyModel::HandleDragLeave(DragDropEvent);
 }
 
 FReply FHierarchyWidget::HandleAcceptDrop(const FDragDropEvent& DragDropEvent, EItemDropZone DropZone)
 {
 	bool bIsDrop = true;
 	TOptional<EItemDropZone> Zone = ProcessHierarchyDragDrop(DragDropEvent, DropZone, bIsDrop, BlueprintEditor.Pin(), Item);
+	if (Zone.IsSet())
+	{
+		TArray<UWidget*> DragDropPreviewWidgets;
+		DetermineDragDropPreviewWidgets(DragDropPreviewWidgets, DragDropEvent);
+		// Move the remaining widgets into the transient package. Otherwise, they will remain outered to the WidgetTree and end up as properties in the BP class layout as a result.
+		UWidgetBlueprint* BP = Cast<UWidgetBlueprint>(BlueprintEditor.Pin()->GetBlueprintObj());
+		if (BP)
+		{
+			for (UWidget* Widget : DragDropPreviewWidgets)
+			{
+				FHierarchyModel::RemovePreviewWidget(BP, Widget);
+			}
+		}
+	}
 	return Zone.IsSet() ? FReply::Handled() : FReply::Unhandled();
 }
 
@@ -1163,6 +1326,34 @@ void SHierarchyViewItem::Construct(const FArguments& InArgs, const TSharedRef< S
 				.OnVerifyTextChanged(this, &SHierarchyViewItem::OnVerifyNameTextChanged)
 				.OnTextCommitted(this, &SHierarchyViewItem::OnNameTextCommited)
 				.IsSelected(this, &SHierarchyViewItem::IsSelectedExclusively)
+			]
+
+			// Flow Direction Icon
+			+ SHorizontalBox::Slot()
+			.AutoWidth()
+			.VAlign(VAlign_Center)
+			[
+				SNew(STextBlock)
+				// TODO Tooltip should tell you what the widget is setup to do
+				.ToolTipText(LOCTEXT("NavigationHierarchyToolTip", "This widget overrides the navigation preference."))
+				.Visibility_Lambda([InModel] { return InModel->DoesWidgetOverrideNavigation() ? EVisibility::Visible : EVisibility::Collapsed; })
+				.ColorAndOpacity(FCoreStyle::Get().GetSlateColor("Foreground"))
+				.Font(FEditorStyle::Get().GetFontStyle("FontAwesome.10"))
+				.Text(FEditorFontGlyphs::Arrows)
+			]
+
+			// Localization Flow Direction Icon
+			+ SHorizontalBox::Slot()
+			.AutoWidth()
+			.VAlign(VAlign_Center)
+			[
+				SNew(STextBlock)
+				// TODO Tooltip should tell you what the widget is setup to do
+				.ToolTipText(LOCTEXT("FlowDirectionHierarchyToolTip", "This widget overrides the culture/localization flow direction preference."))
+				.Visibility_Lambda([InModel] { return InModel->DoesWidgetOverrideFlowDirection() ? EVisibility::Visible : EVisibility::Collapsed; })
+				.ColorAndOpacity(FCoreStyle::Get().GetSlateColor("Foreground"))
+				.Font(FEditorStyle::Get().GetFontStyle("FontAwesome.10"))
+				.Text(FEditorFontGlyphs::Exchange)
 			]
 
 			// Locked Icon

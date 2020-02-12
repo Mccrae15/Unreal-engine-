@@ -1,24 +1,102 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "Misc/OutputDeviceRedirector.h"
+
+#include "Containers/BitArray.h"
+#include "HAL/PlatformProcess.h"
+#include "Misc/CoreStats.h"
 #include "Misc/ScopeLock.h"
 #include "Stats/Stats.h"
-#include "Misc/CoreStats.h"
 
 /*-----------------------------------------------------------------------------
 	FOutputDeviceRedirector.
 -----------------------------------------------------------------------------*/
 
-/** Initialization constructor. */
-FOutputDeviceRedirector::FOutputDeviceRedirector()
-:	MasterThreadID(FPlatformTLS::GetCurrentThreadId())
-,	bEnableBacklog(false)
+class FLogAllocator
+{
+public:
+	bool HasSpace(int32 NumChars) const
+	{
+		return Data[BufferIndex].Num() + NumChars <= BufferSize;
+	}
+
+	TCHAR* Alloc(int32 NumChars)
+	{
+		check(HasSpace(NumChars));
+		int32 DataIndex = Data[BufferIndex].AddUninitialized(NumChars);
+		return Data[BufferIndex].GetData() + DataIndex;
+	}
+
+	/**
+	 * Swap which buffer is being used for new allocations.
+	 *
+	 * Buffer remains valid until BufferCount calls are made to this function.
+	 */
+	void SwapBuffers()
+	{
+		BufferIndex = (BufferIndex + 1) % BufferCount;
+		check(!DataLocked[BufferIndex]);
+		Data[BufferIndex].Empty();
+	}
+
+	struct FBufferLock { int32 Index = -1; };
+
+	FBufferLock LockBuffer()
+	{
+		DataLocked[BufferIndex] = true;
+		return {BufferIndex};
+	}
+
+	void UnlockBuffer(FBufferLock Lock)
+	{
+		DataLocked[Lock.Index] = false;
+	}
+
+private:
+	static constexpr int32 BufferSize = 4096;
+	static constexpr int32 BufferCount = 2;
+	TArray<TCHAR, TInlineAllocator<BufferSize>> Data[BufferCount];
+	TBitArray<TInlineAllocator<1>> DataLocked{false, BufferCount};
+	int32 BufferIndex = 0;
+};
+
+FBufferedLine::FBufferedLine(const TCHAR* InData, const FName& InCategory, ELogVerbosity::Type InVerbosity, double InTime, FLogAllocator* ExternalAllocator)
+	: FBufferedLine(InData, FLazyName(InCategory), InVerbosity, InTime, ExternalAllocator)
 {
 }
 
+FBufferedLine::FBufferedLine(const TCHAR* InData, const FLazyName& InCategory, ELogVerbosity::Type InVerbosity, double InTime, FLogAllocator* ExternalAllocator)
+	: Category(InCategory)
+	, Time(InTime)
+	, Verbosity(InVerbosity)
+{
+	int32 NumChars = FCString::Strlen(InData) + 1;
+	bExternalAllocation = ExternalAllocator && ExternalAllocator->HasSpace(NumChars);
+	void* Dest = bExternalAllocation ? ExternalAllocator->Alloc(NumChars) : FMemory::Malloc(sizeof(TCHAR) * NumChars);
+	Data = (TCHAR*)FMemory::Memcpy(Dest, InData, sizeof(TCHAR) * NumChars);
+}
+
+FBufferedLine::~FBufferedLine()
+{
+	if (!bExternalAllocation)
+	{
+		FMemory::Free(const_cast<TCHAR*>(Data));
+	}
+}
+
+/** Initialization constructor. */
+FOutputDeviceRedirector::FOutputDeviceRedirector(FLogAllocator* Allocator)
+:	MasterThreadID(FPlatformTLS::GetCurrentThreadId())
+,	bEnableBacklog(false)
+,	BufferedLinesAllocator(Allocator)
+{
+}
+
+static FLogAllocator GLogAllocator;
+
 FOutputDeviceRedirector* FOutputDeviceRedirector::Get()
 {
-	static FOutputDeviceRedirector Singleton;
+	static FOutputDeviceRedirector Singleton(&GLogAllocator);
 	return &Singleton;
 }
 
@@ -29,18 +107,31 @@ FOutputDeviceRedirector* FOutputDeviceRedirector::Get()
  */
 void FOutputDeviceRedirector::AddOutputDevice( FOutputDevice* OutputDevice )
 {
-	FScopeLock ScopeLock( &SynchronizationObject );
-
-	if( OutputDevice )
+	if (OutputDevice)
 	{
-		if (OutputDevice->CanBeUsedOnMultipleThreads())
+		bool bAdded = false;
+		do
 		{
-			UnbufferedOutputDevices.AddUnique(OutputDevice);
-		}
-		else
-		{
-			BufferedOutputDevices.AddUnique(OutputDevice);
-		}
+			{
+				FScopeLock ScopeLock(&OutputDevicesMutex);
+				if (OutputDevicesLockCounter.GetValue() == 0)
+				{
+					if (OutputDevice->CanBeUsedOnMultipleThreads())
+					{
+						UnbufferedOutputDevices.AddUnique(OutputDevice);
+					}
+					else
+					{
+						BufferedOutputDevices.AddUnique(OutputDevice);
+					}
+					bAdded = true;
+				}
+			}
+			if (!bAdded)
+			{
+				FPlatformProcess::Sleep(0);
+			}
+		} while (!bAdded);
 	}
 }
 
@@ -51,9 +142,23 @@ void FOutputDeviceRedirector::AddOutputDevice( FOutputDevice* OutputDevice )
  */
 void FOutputDeviceRedirector::RemoveOutputDevice( FOutputDevice* OutputDevice )
 {
-	FScopeLock ScopeLock( &SynchronizationObject );
-	BufferedOutputDevices.Remove( OutputDevice );
-	UnbufferedOutputDevices.Remove(OutputDevice);
+	bool bRemoved = false;
+	do
+	{
+		{
+			FScopeLock ScopeLock(&OutputDevicesMutex);
+			if (OutputDevicesLockCounter.GetValue() == 0)
+			{
+				BufferedOutputDevices.Remove( OutputDevice );
+				UnbufferedOutputDevices.Remove(OutputDevice);
+				bRemoved = true;
+			}
+		}
+		if (!bRemoved)
+		{
+			FPlatformProcess::Sleep(0);
+		}
+	} while (!bRemoved);
 }
 
 /**
@@ -64,32 +169,75 @@ void FOutputDeviceRedirector::RemoveOutputDevice( FOutputDevice* OutputDevice )
  */
 bool FOutputDeviceRedirector::IsRedirectingTo( FOutputDevice* OutputDevice )
 {
-	FScopeLock ScopeLock( &SynchronizationObject );
-
+	// For performance reasons whe're not using the FOutputDevicesLock here
+	FScopeLock OutputDevicesLock(&OutputDevicesMutex);
 	return BufferedOutputDevices.Contains(OutputDevice) || UnbufferedOutputDevices.Contains(OutputDevice);
+}
+
+void FOutputDeviceRedirector::InternalFlushThreadedLogs(bool bUseAllDevices)
+{
+	TLocalOutputDevicesArray LocalBufferedDevices;
+	TLocalOutputDevicesArray LocalUnbufferedDevices;
+	FOutputDevicesLock OutputDevicesLock(this, LocalBufferedDevices, LocalUnbufferedDevices);
+
+	InternalFlushThreadedLogs(LocalBufferedDevices, bUseAllDevices);
 }
 
 /**
  * The unsynchronized version of FlushThreadedLogs.
- * Assumes that the caller holds a lock on SynchronizationObject.
  */
-void FOutputDeviceRedirector::UnsynchronizedFlushThreadedLogs( bool bUseAllDevices )
-{
-	for(int32 LineIndex = 0;LineIndex < BufferedLines.Num();LineIndex++)
+void FOutputDeviceRedirector::InternalFlushThreadedLogs(TLocalOutputDevicesArray& InBufferedDevices, bool bUseAllDevices)
+{	
+	if (BufferedLines.Num())
 	{
-		FBufferedLine BufferedLine = BufferedLines[LineIndex];
-
-		for( int32 OutputDeviceIndex=0; OutputDeviceIndex<BufferedOutputDevices.Num(); OutputDeviceIndex++ )
+		TArray<FBufferedLine, TInlineAllocator<64>> LocalBufferedLines;
+		FLogAllocator::FBufferLock BufferLock;
 		{
-			FOutputDevice* OutputDevice = BufferedOutputDevices[OutputDeviceIndex];
-			if( OutputDevice->CanBeUsedOnAnyThread() || bUseAllDevices )
+			FScopeLock ScopeLock(&BufferSynchronizationObject);
+			LocalBufferedLines.AddUninitialized(BufferedLines.Num());
+			for (int32 LineIndex = 0; LineIndex < BufferedLines.Num(); LineIndex++)
 			{
-				OutputDevice->Serialize( *BufferedLine.Data, BufferedLine.Verbosity, BufferedLine.Category, BufferedLine.Time );
+				new(&LocalBufferedLines[LineIndex]) FBufferedLine(BufferedLines[LineIndex], FBufferedLine::EMoveCtor);
+			}
+			if (BufferedLinesAllocator)
+			{
+				BufferLock = BufferedLinesAllocator->LockBuffer();
+			}
+			EmptyBufferedLines();
+		}
+
+		for (FBufferedLine& Line : LocalBufferedLines)
+		{
+			const TCHAR* Data = Line.Data;
+			const FLazyName Category = Line.Category;
+			const double Time = Line.Time;
+			const ELogVerbosity::Type Verbosity = Line.Verbosity;
+
+			for (FOutputDevice* OutputDevice : InBufferedDevices)
+			{
+				if (OutputDevice->CanBeUsedOnAnyThread() || bUseAllDevices)
+				{
+					OutputDevice->Serialize(Data, Verbosity, Category, Time);
+				}
 			}
 		}
-	}
 
+		if (BufferedLinesAllocator)
+		{
+			FScopeLock ScopeLock(&BufferSynchronizationObject);
+			BufferedLinesAllocator->UnlockBuffer(BufferLock);
+		}
+	}
+}
+
+void FOutputDeviceRedirector::EmptyBufferedLines()
+{
 	BufferedLines.Empty();
+
+	if (BufferedLinesAllocator)
+	{
+		BufferedLinesAllocator->SwapBuffers();
+	}
 }
 
 /**
@@ -98,37 +246,34 @@ void FOutputDeviceRedirector::UnsynchronizedFlushThreadedLogs( bool bUseAllDevic
 void FOutputDeviceRedirector::FlushThreadedLogs()
 {
 	SCOPE_CYCLE_COUNTER(STAT_FlushThreadedLogs);
-	// Acquire a lock on SynchronizationObject and call the unsynchronized worker function.
-	FScopeLock ScopeLock( &SynchronizationObject );
 	check(IsInGameThread());
-	UnsynchronizedFlushThreadedLogs( true );
+	InternalFlushThreadedLogs(true);
 }
 
 void FOutputDeviceRedirector::PanicFlushThreadedLogs()
 {
 //	SCOPE_CYCLE_COUNTER(STAT_FlushThreadedLogs);
-	// Acquire a lock on SynchronizationObject and call the unsynchronized worker function.
-	FScopeLock ScopeLock( &SynchronizationObject );
-	
+
+	TLocalOutputDevicesArray LocalBufferedDevices;
+	TLocalOutputDevicesArray LocalUnbufferedDevices;
+	FOutputDevicesLock OutputDevicesLock(this, LocalBufferedDevices, LocalUnbufferedDevices);
+
 	// Flush threaded logs, but use the safe version.
-	UnsynchronizedFlushThreadedLogs( false );
+	InternalFlushThreadedLogs(LocalBufferedDevices, false);
 
 	// Flush devices.
-	for (int32 OutputDeviceIndex = 0; OutputDeviceIndex<BufferedOutputDevices.Num(); OutputDeviceIndex++)
+	for (FOutputDevice* OutputDevice : LocalBufferedDevices)
 	{
-		FOutputDevice* OutputDevice = BufferedOutputDevices[OutputDeviceIndex];
 		if (OutputDevice->CanBeUsedOnAnyThread())
 		{
 			OutputDevice->Flush();
 		}
 	}
 
-	for (int32 OutputDeviceIndex = 0; OutputDeviceIndex < UnbufferedOutputDevices.Num(); OutputDeviceIndex++)
+	for (FOutputDevice* OutputDevice : LocalUnbufferedDevices)
 	{
-		UnbufferedOutputDevices[OutputDeviceIndex]->Flush();
+		OutputDevice->Flush();
 	}
-
-	BufferedLines.Empty();
 }
 
 /**
@@ -142,7 +287,7 @@ void FOutputDeviceRedirector::SerializeBacklog( FOutputDevice* OutputDevice )
 	for (int32 LineIndex = 0; LineIndex < BacklogLines.Num(); LineIndex++)
 	{
 		const FBufferedLine& BacklogLine = BacklogLines[ LineIndex ];
-		OutputDevice->Serialize( *BacklogLine.Data, BacklogLine.Verbosity, BacklogLine.Category, BacklogLine.Time );
+		OutputDevice->Serialize( BacklogLine.Data, BacklogLine.Verbosity, BacklogLine.Category, BacklogLine.Time );
 	}
 }
 
@@ -167,24 +312,43 @@ void FOutputDeviceRedirector::EnableBacklog( bool bEnable )
  */
 void FOutputDeviceRedirector::SetCurrentThreadAsMasterThread()
 {
-	FScopeLock ScopeLock( &SynchronizationObject );
+	InternalFlushThreadedLogs( false );
 
 	// make sure anything queued up is flushed out, this may be called from a background thread, so use the safe version.
-	UnsynchronizedFlushThreadedLogs( false );
-
-	// set the current thread as the master thread
-	MasterThreadID = FPlatformTLS::GetCurrentThreadId();
+	{
+		FScopeLock ScopeLock(&SynchronizationObject);
+		// set the current thread as the master thread
+		MasterThreadID = FPlatformTLS::GetCurrentThreadId();
+	}
 }
 
-void FOutputDeviceRedirector::Serialize( const TCHAR* Data, ELogVerbosity::Type Verbosity, const class FName& Category, const double Time )
+void FOutputDeviceRedirector::LockOutputDevices(TLocalOutputDevicesArray& OutBufferedDevices, TLocalOutputDevicesArray& OutUnbufferedDevices)
+{
+	FScopeLock OutputDevicesLock(&OutputDevicesMutex);
+	OutputDevicesLockCounter.Increment();
+	OutBufferedDevices.Append(BufferedOutputDevices);
+	OutUnbufferedDevices.Append(UnbufferedOutputDevices);
+}
+
+void FOutputDeviceRedirector::UnlockOutputDevices()
+{
+	FScopeLock OutputDevicesLock(&OutputDevicesMutex);
+	int32 LockValue = OutputDevicesLockCounter.Decrement();
+	check(LockValue >= 0);
+}
+
+template<class T>
+void FOutputDeviceRedirector::SerializeImpl(const TCHAR* Data, ELogVerbosity::Type Verbosity, T& Category, const double Time)
 {
 	const double RealTime = Time == -1.0f ? FPlatformTime::Seconds() - GStartTime : Time;
 
-	FScopeLock ScopeLock( &SynchronizationObject );
+	TLocalOutputDevicesArray LocalBufferedDevices;
+	TLocalOutputDevicesArray LocalUnbufferedDevices;
+	FOutputDevicesLock OutputDevicesLock(this, LocalBufferedDevices, LocalUnbufferedDevices);
 
 #if PLATFORM_DESKTOP
 	// this is for errors which occur after shutdown we might be able to salvage information from stdout 
-	if ((BufferedOutputDevices.Num() == 0) && GIsRequestingExit)
+	if ((LocalBufferedDevices.Num() == 0) && IsEngineExitRequested())
 	{
 #if PLATFORM_WINDOWS
 		_tprintf(_T("%s\n"), Data);
@@ -197,37 +361,53 @@ void FOutputDeviceRedirector::Serialize( const TCHAR* Data, ELogVerbosity::Type 
 #endif
 
 	// Serialize directly to any output devices which don't require buffering
-	for (int32 OutputDeviceIndex = 0; OutputDeviceIndex < UnbufferedOutputDevices.Num(); OutputDeviceIndex++)
+	for (FOutputDevice* OutputDevice : LocalUnbufferedDevices)
 	{
-		UnbufferedOutputDevices[OutputDeviceIndex]->Serialize(Data, Verbosity, Category, RealTime);
+		OutputDevice->Serialize(Data, Verbosity, Category, RealTime);
 	}
 
 
-	if ( bEnableBacklog )
+	if (bEnableBacklog)
 	{
-		new(BacklogLines)FBufferedLine( Data, Category, Verbosity, RealTime );
+		FScopeLock ScopeLock(&SynchronizationObject);
+		new(BacklogLines)FBufferedLine(Data, Category, Verbosity, RealTime, nullptr);
 	}
 
-	if(FPlatformTLS::GetCurrentThreadId() != MasterThreadID || BufferedOutputDevices.Num() == 0)
+	if (FPlatformTLS::GetCurrentThreadId() != MasterThreadID || LocalBufferedDevices.Num() == 0)
 	{
-		new(BufferedLines)FBufferedLine( Data, Category, Verbosity, RealTime );
+		FScopeLock ScopeLock(&BufferSynchronizationObject);
+		new(BufferedLines)FBufferedLine(Data, Category, Verbosity, RealTime, BufferedLinesAllocator);
 	}
 	else
 	{
 		// Flush previously buffered lines from secondary threads.
-		// Since we already hold a lock on SynchronizationObject, call the unsynchronized version.
-		UnsynchronizedFlushThreadedLogs( true );
+		InternalFlushThreadedLogs(LocalBufferedDevices, true);
 
-		for( int32 OutputDeviceIndex=0; OutputDeviceIndex<BufferedOutputDevices.Num(); OutputDeviceIndex++ )
+		for (FOutputDevice* OutputDevice : LocalBufferedDevices)
 		{
-			BufferedOutputDevices[OutputDeviceIndex]->Serialize( Data, Verbosity, Category, RealTime );
+			OutputDevice->Serialize(Data, Verbosity, Category, RealTime);
 		}
 	}
 }
 
+void FOutputDeviceRedirector::Serialize( const TCHAR* Data, ELogVerbosity::Type Verbosity, const class FName& Category, const double Time )
+{
+	SerializeImpl(Data, Verbosity, Category, Time);
+}
+
 void FOutputDeviceRedirector::Serialize( const TCHAR* Data, ELogVerbosity::Type Verbosity, const class FName& Category )
 {
-	Serialize( Data, Verbosity, Category, -1.0 );
+	SerializeImpl( Data, Verbosity, Category, -1.0 );
+}
+
+void FOutputDeviceRedirector::RedirectLog(const FName& Category, ELogVerbosity::Type Verbosity, const TCHAR* Data)
+{
+	SerializeImpl(Data, Verbosity, Category, -1.0);
+}
+
+void FOutputDeviceRedirector::RedirectLog(const FLazyName& Category, ELogVerbosity::Type Verbosity, const TCHAR* Data)
+{
+	SerializeImpl(Data, Verbosity, Category, -1.0);
 }
 
 /**
@@ -235,23 +415,24 @@ void FOutputDeviceRedirector::Serialize( const TCHAR* Data, ELogVerbosity::Type 
  */
 void FOutputDeviceRedirector::Flush()
 {
-	FScopeLock ScopeLock( &SynchronizationObject );
+	TLocalOutputDevicesArray LocalBufferedDevices;
+	TLocalOutputDevicesArray LocalUnbufferedDevices;
+	FOutputDevicesLock OutputDevicesLock(this, LocalBufferedDevices, LocalUnbufferedDevices);
 
 	if(FPlatformTLS::GetCurrentThreadId() == MasterThreadID)
 	{
 		// Flush previously buffered lines from secondary threads.
-		// Since we already hold a lock on SynchronizationObject, call the unsynchronized version.
-		UnsynchronizedFlushThreadedLogs( true );
+		InternalFlushThreadedLogs(true);
 
-		for( int32 OutputDeviceIndex=0; OutputDeviceIndex<BufferedOutputDevices.Num(); OutputDeviceIndex++ )
+		for (FOutputDevice* OutputDevice : LocalBufferedDevices)
 		{
-			BufferedOutputDevices[OutputDeviceIndex]->Flush();
+			OutputDevice->Flush();
 		}
 	}
 
-	for (int32 OutputDeviceIndex = 0; OutputDeviceIndex < UnbufferedOutputDevices.Num(); OutputDeviceIndex++)
+	for (FOutputDevice* OutputDevice : LocalUnbufferedDevices)
 	{
-		UnbufferedOutputDevices[OutputDeviceIndex]->Flush();
+		OutputDevice->Flush();
 	}
 }
 
@@ -262,36 +443,42 @@ void FOutputDeviceRedirector::Flush()
  */
 void FOutputDeviceRedirector::TearDown()
 {
+	FScopeLock SyncLock(&SynchronizationObject);
 	check(FPlatformTLS::GetCurrentThreadId() == MasterThreadID);
 
-	FScopeLock ScopeLock( &SynchronizationObject );
+	TLocalOutputDevicesArray LocalBufferedDevices;
+	TLocalOutputDevicesArray LocalUnbufferedDevices;
+
+	{
+		// We need to lock the mutex here so that it gets unlocked after we empty the devices arrays
+		FScopeLock GlobalOutputDevicesLock(&OutputDevicesMutex);
+		LockOutputDevices(LocalBufferedDevices, LocalUnbufferedDevices);
+		BufferedOutputDevices.Empty();
+		UnbufferedOutputDevices.Empty();	
+	}
 
 	// Flush previously buffered lines from secondary threads.
-	// Since we already hold a lock on SynchronizationObject, call the unsynchronized version.
-	UnsynchronizedFlushThreadedLogs( false );
+	InternalFlushThreadedLogs(LocalBufferedDevices, false);
 
-	for( int32 OutputDeviceIndex=0; OutputDeviceIndex<BufferedOutputDevices.Num(); OutputDeviceIndex++ )
+	for (FOutputDevice* OutputDevice : LocalBufferedDevices)
 	{
-		FOutputDevice* OutputDevice = BufferedOutputDevices[OutputDeviceIndex];
 		if (OutputDevice->CanBeUsedOnAnyThread())
 		{
 			OutputDevice->Flush();
 		}
 		OutputDevice->TearDown();
 	}
-	BufferedOutputDevices.Empty();
 
-	for (int32 OutputDeviceIndex = 0; OutputDeviceIndex < UnbufferedOutputDevices.Num(); OutputDeviceIndex++)
+	for (FOutputDevice* OutputDevice : LocalUnbufferedDevices)
 	{
-		FOutputDevice* OutputDevice = UnbufferedOutputDevices[OutputDeviceIndex];
 		OutputDevice->Flush();
 		OutputDevice->TearDown();
 	}
-	UnbufferedOutputDevices.Empty();
+
+	UnlockOutputDevices();
 }
 
 CORE_API FOutputDeviceRedirector* GetGlobalLogSingleton()
 {
 	return FOutputDeviceRedirector::Get();
 }
-

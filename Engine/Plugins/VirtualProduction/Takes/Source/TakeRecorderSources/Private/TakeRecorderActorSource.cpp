@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "TakeRecorderActorSource.h"
 #include "Styling/SlateIconFinder.h"
@@ -14,6 +14,7 @@
 #include "Recorder/TakeRecorderParameters.h"
 #include "TakeRecorderSettings.h"
 #include "TakesUtils.h"
+#include "TakeMetaData.h"
 #include "MovieSceneFolder.h"
 #include "Serializers/MovieSceneManifestSerialization.h"
 
@@ -21,7 +22,7 @@
 #include "GameFramework/Actor.h"
 #include "GameFramework/MovementComponent.h"
 #include "GameFramework/Character.h"
-#include "Camera/CameraActor.h"
+#include "Camera/CameraComponent.h"
 #include "CameraRig_Crane.h"
 #include "CameraRig_Rail.h"
 #include "Components/SkeletalMeshComponent.h"
@@ -35,15 +36,12 @@
 #include "TrackRecorders/MovieSceneTrackRecorderSettings.h"
 
 #include "Compilation/MovieSceneCompiler.h"
-
-
 DEFINE_LOG_CATEGORY(ActorSerialization);
 
 #define LOCTEXT_NAMESPACE "UTakeRecorderActorSource"
 static const FName MovieSceneSectionRecorderFactoryName("MovieSceneTrackRecorderFactory");
 static const FName SequencerTrackClassMetadataName("SequencerTrackClass");
 static const FName DoNotRecordTag("DoNotRecord");
-
 
 UTakeRecorderSource* UTakeRecorderActorSource::AddSourceForActor(AActor* InActor, UTakeRecorderSources* InSources)
 {
@@ -52,10 +50,120 @@ UTakeRecorderSource* UTakeRecorderActorSource::AddSourceForActor(AActor* InActor
 		FFrame::KismetExecutionMessage(TEXT("The Source is invalid."), ELogVerbosity::Error);
 		return nullptr;
 	}
+	
+	if (InActor == nullptr)
+	{
+		FFrame::KismetExecutionMessage(TEXT("The Actor is invalid."), ELogVerbosity::Error);
+		return nullptr;
+	}
+
+	//Look through our sources and see if one actor matches the incoming one either from editor or PIE world.
+	{
+		//Cache  InputActor comparison data
+		const bool bIsAlreadyPIEActor = InActor->GetOutermost()->HasAnyPackageFlags(PKG_PlayInEditor);
+		const AActor* InputActorEditor = EditorUtilities::GetEditorWorldCounterpartActor(InActor);
+		const AActor* InputActorPIE = EditorUtilities::GetSimWorldCounterpartActor(InActor);
+
+		TArray<UTakeRecorderSource*> SourceArray = InSources->GetSourcesCopy();
+		for (UTakeRecorderSource* CurrentSource : SourceArray)
+		{
+			UTakeRecorderActorSource* CurrentActorSource = Cast<UTakeRecorderActorSource>(CurrentSource);
+			if (CurrentActorSource != nullptr)
+			{
+				AActor* CurrentActor = CurrentActorSource->Target.Get();
+				if (CurrentActor == nullptr)
+				{
+					continue;
+				}
+
+				if (InActor == CurrentActor)
+				{
+					return CurrentActorSource;
+				}
+				else 
+				{
+					if (bIsAlreadyPIEActor)
+					{
+						//The input actor is from PIE -> Bring it into Editor world and compare. 
+						if (InputActorEditor == CurrentActor)
+						{
+							return CurrentActorSource;
+						}
+					}
+					else
+					{
+						//The input actor is from Editor -> Bring it into PIE world and compare. 
+						if (InputActorPIE == CurrentActor)
+						{
+							return CurrentActorSource;
+						}
+					}
+				}
+			}
+		}
+	}
 
 	UTakeRecorderActorSource* NewSource = InSources->AddSource<UTakeRecorderActorSource>();
 	NewSource->SetSourceActor(InActor);
 	return NewSource;
+}
+
+void UTakeRecorderActorSource::RemoveActorFromSources(AActor* InActor, UTakeRecorderSources* InSources)
+{
+	if (InSources == nullptr)
+	{
+		FFrame::KismetExecutionMessage(TEXT("The Source to remove from is invalid."), ELogVerbosity::Error);
+		return;
+	}
+
+	if (InActor == nullptr)
+	{
+		FFrame::KismetExecutionMessage(TEXT("The Actor to remove is invalid."), ELogVerbosity::Error);
+		return;
+	}
+
+	//Cache  InputActor comparison data
+	const bool bIsAlreadyPIEActor = InActor->GetOutermost()->HasAnyPackageFlags(PKG_PlayInEditor);
+	const AActor* InputActorEditor = EditorUtilities::GetEditorWorldCounterpartActor(InActor);
+	const AActor* InputActorPIE = EditorUtilities::GetSimWorldCounterpartActor(InActor);
+
+	TArray<UTakeRecorderSource*> SourceArray = InSources->GetSourcesCopy();
+	for (UTakeRecorderSource* CurrentSource : SourceArray)
+	{
+		UTakeRecorderActorSource* CurrentActorSource = Cast<UTakeRecorderActorSource>(CurrentSource);
+		if (CurrentActorSource != nullptr)
+		{
+			const AActor* CurrentActor = CurrentActorSource->Target.Get();
+			if (CurrentActor == nullptr)
+			{
+				continue;
+			}
+
+			if (InActor == CurrentActor)
+			{
+				InSources->RemoveSource(CurrentSource);
+			}
+			else
+			{
+				if (bIsAlreadyPIEActor)
+				{
+					//The input actor is from PIE -> Bring it into Editor world and compare. 
+					if (InputActorEditor == CurrentActor)
+					{
+						InSources->RemoveSource(CurrentSource);
+					}
+				}
+				else
+				{
+					//The input actor is from Editor -> Bring it into PIE world and compare. 
+					if (InputActorPIE == CurrentActor)
+					{
+						InSources->RemoveSource(CurrentSource);
+					}
+				}
+			}
+		}
+	}
 }
 
 UTakeRecorderActorSource::UTakeRecorderActorSource(const FObjectInitializer& ObjInit)
@@ -76,6 +184,8 @@ TArray<UTakeRecorderSource*> UTakeRecorderActorSource::PreRecording(class ULevel
 	{
 		return TArray<UTakeRecorderSource*>();
 	}
+	// We used to do this at the PostRecording but other Actor sources may need to check you recorded an animation so we keep it around
+	TrackRecorders.Empty();
 
 	// Resolve which actor we wish to record 
 	AActor* ActorToRecord = Target.Get();
@@ -326,7 +436,7 @@ void UTakeRecorderActorSource::CreateSectionRecordersRecursive(UObject* ObjectTo
 			TArray<FString> PropertyNames;
 			Property.PropertyName.ToString().ParseIntoArray(PropertyNames, TEXT("."));
 
-			UProperty* PropertyInstance = nullptr;
+			FProperty* PropertyInstance = nullptr;
 			UStruct* SearchStruct = ObjectToRecord->GetClass();
 			for (auto PropertyStringName : PropertyNames)
 			{
@@ -334,7 +444,7 @@ void UTakeRecorderActorSource::CreateSectionRecordersRecursive(UObject* ObjectTo
 				SearchStruct = nullptr;
 				if (PropertyInstance)
 				{
-					if (UStructProperty* AsStructProperty = Cast<UStructProperty>(PropertyInstance))
+					if (FStructProperty* AsStructProperty = CastField<FStructProperty>(PropertyInstance))
 					{
 						SearchStruct = AsStructProperty->Struct;
 					}
@@ -518,16 +628,15 @@ TArray<UTakeRecorderSource*> UTakeRecorderActorSource::PostRecording(ULevelSeque
 		SectionRecorder->FinalizeTrack();
 	}
 
-	// Now that the section recorders have placed their data inside the resulting Level Sequence we can release them.
-	TrackRecorders.Empty();
-
 	// Expand the Movie Scene Playback Range to encompass all of the sections now that they've all been created.
 	SequenceRecorderUtils::ExtendSequencePlaybackRange(InSequence);
 
 	if (Target.IsValid())
 	{
-		// Automatically add or update the camera cut track if this is a camera
-		if (Target.Get()->IsA<ACameraActor>())
+		// Automatically add or update the camera cut track if there is a camera component
+		AActor* TargetActor = Target.Get();
+
+		if (TargetActor->GetComponentByClass(UCameraComponent::StaticClass()))
 		{
 			FGuid RecordedCameraGuid = GetRecordedActorGuid(Target.Get());
 			FMovieSceneSequenceID RecordedCameraSequenceID = GetLevelSequenceID(Target.Get());
@@ -539,6 +648,12 @@ TArray<UTakeRecorderSource*> UTakeRecorderActorSource::PostRecording(ULevelSeque
 		{
 			Target = EditorActor;
 		}
+	}
+
+	// Force to authority role in case of capturing replicated actors
+	if (CachedObjectTemplate.IsValid() && !CachedObjectTemplate->HasAuthority())
+	{
+		CachedObjectTemplate->SetRole(ROLE_Authority);
 	}
 
 	// No longer need to track the Object Template that was created inside the level sequence.
@@ -724,7 +839,7 @@ void UTakeRecorderActorSource::PostEditChangeProperty(FPropertyChangedEvent& Pro
 		
 		TrackTint = FColor(67, 148, 135); 
 		AActor* TargetActor = Target.Get();
-		if (TargetActor && TargetActor->GetClass()->IsChildOf(ACameraActor::StaticClass()))
+		if (TargetActor && TargetActor->GetComponentByClass(UCameraComponent::StaticClass()))
 		{
 			TrackTint = FColor(148, 67, 108);
 		}
@@ -739,7 +854,7 @@ void UTakeRecorderActorSource::PostEditChangeChainProperty(struct FPropertyChang
 {
 	if (PropertyChangedEvent.PropertyChain.Num() > 0)
 	{
-		UProperty* MemberProperty = PropertyChangedEvent.PropertyChain.GetTail()->GetValue();
+		FProperty* MemberProperty = PropertyChangedEvent.PropertyChain.GetTail()->GetValue();
 		if (MemberProperty != NULL)
 		{
 			if (MemberProperty->GetFName() == GET_MEMBER_NAME_CHECKED(FActorRecordedProperty, bEnabled))
@@ -784,17 +899,17 @@ void UTakeRecorderActorSource::RebuildRecordedPropertyMap()
 	UpdateCachedNumberOfRecordedProperties();
 }
 
-void UTakeRecorderActorSource::RebuildRecordedPropertyMapRecursive(UObject* InObject, UActorRecorderPropertyMap* PropertyMap, const FString& OuterStructPath)
+void UTakeRecorderActorSource::RebuildRecordedPropertyMapRecursive(const FFieldVariant& InObject, UActorRecorderPropertyMap* PropertyMap, const FString& OuterStructPath)
 {
 	ensure(InObject);
 	ensure(PropertyMap);
 
 	// // Iterate through our recorders and find any that can record this object that aren't tied to a specific property. Some things
-	// we wish to record (such as Transforms) don't have a specific UProperty or UActorComponent associated with them.
+	// we wish to record (such as Transforms) don't have a specific FProperty or UActorComponent associated with them.
 	TArray<IMovieSceneTrackRecorderFactory*> ModularFactories = IModularFeatures::Get().GetModularFeatureImplementations<IMovieSceneTrackRecorderFactory>(MovieSceneSectionRecorderFactoryName);
 	for (IMovieSceneTrackRecorderFactory* Factory : ModularFactories)
 	{
-	 	if (Factory->CanRecordObject(InObject))
+	 	if (InObject.IsUObject() && Factory->CanRecordObject(InObject.ToUObject()))
 	 	{
 	 		// @sequencer-todo: Instead of defaulting to true this should copy from the global settings
 	 		FName PropertyName = FName(*Factory->GetDisplayName().ToString());
@@ -813,12 +928,13 @@ void UTakeRecorderActorSource::RebuildRecordedPropertyMapRecursive(UObject* InOb
 	// Iterate through the properties on this object and look for ones marked with CPF_Interp ("Expose for Cinematics") or that have metadata
 	// that explicitly specifies a sequence track metadata.
 
-	UStruct* ObjectClass = InObject->GetClass();
-	if (UStructProperty* AsStructProperty = Cast<UStructProperty>(InObject)) 
+	UStruct* ObjectClass = InObject.IsUObject() ? InObject.ToUObject()->GetClass() : nullptr;
+	if (FStructProperty* AsStructProperty = InObject.Get<FStructProperty>())
 	{
 		ObjectClass = AsStructProperty->Struct;
 	}
-	for (TFieldIterator<UProperty> It(ObjectClass); It; ++It)
+	check(ObjectClass); // With FProperties ObjectClass can only be obtained from AsStructProperty. If we hit this we need to change this check to an 'if (ObjectClass)'
+	for (TFieldIterator<FProperty> It(ObjectClass); It; ++It)
 	{
 		const bool bIsInterpField = It->HasAllPropertyFlags(CPF_Interp);
 		const bool bHasTrackMetadata = It->HasMetaData(SequencerTrackClassMetadataName);
@@ -838,7 +954,7 @@ void UTakeRecorderActorSource::RebuildRecordedPropertyMapRecursive(UObject* InOb
 			// shown there do actually have something trying to record them).
 			for (IMovieSceneTrackRecorderFactory* Factory : ModularFactories)
 			{
-				if (Factory->CanRecordProperty(InObject, *It))
+				if (InObject.IsUObject() && Factory->CanRecordProperty(InObject.ToUObject(), *It))
 				{
 			 		DebugDisplayName = Factory->GetDisplayName();
 
@@ -875,7 +991,7 @@ void UTakeRecorderActorSource::RebuildRecordedPropertyMapRecursive(UObject* InOb
 
 			if (!bFoundRecorder)
 			{
-				if (UStructProperty* StructProperty = Cast<UStructProperty>(*It)) 
+				if (FStructProperty* StructProperty = CastField<FStructProperty>(*It)) 
 				{
 					FString NewOuterStructPath = OuterStructPath + PropertyName + TEXT(".");
 					RebuildRecordedPropertyMapRecursive(StructProperty, PropertyMap, NewOuterStructPath);
@@ -890,7 +1006,7 @@ void UTakeRecorderActorSource::RebuildRecordedPropertyMapRecursive(UObject* InOb
 			}
 		}
 
-		else if (UStructProperty* StructProperty = Cast<UStructProperty>(*It))
+		else if (FStructProperty* StructProperty = CastField<FStructProperty>(*It))
 		{
 			FString NewOuterStructPath = OuterStructPath + PropertyName + TEXT(".");
 			RebuildRecordedPropertyMapRecursive(StructProperty, PropertyMap, NewOuterStructPath);
@@ -902,9 +1018,9 @@ void UTakeRecorderActorSource::RebuildRecordedPropertyMapRecursive(UObject* InOb
 	TSet<UActorComponent*> PossibleComponents;
 	TSet<AActor*> ExternalActorsReferenced;
 
-	if (InObject->IsA<AActor>())
+	if (InObject.IsA<AActor>())
 	{
-		AActor* Actor = Cast<AActor>(InObject);
+		AActor* Actor = InObject.Get<AActor>();
 		
 		// Actors only have their Root Component plus any Actor Components (which have no hierarchy)
 		// After that the structure is recursive down from the Root Component.
@@ -914,9 +1030,9 @@ void UTakeRecorderActorSource::RebuildRecordedPropertyMapRecursive(UObject* InOb
 		}
 		GetActorComponents(Actor, PossibleComponents);
 	}
-	else if (InObject->IsA<USceneComponent>())
+	else if (InObject.IsA<USceneComponent>())
 	{
-		USceneComponent* SceneComponent = Cast<USceneComponent>(InObject);
+		USceneComponent* SceneComponent = InObject.Get<USceneComponent>();
 		GetChildSceneComponents(SceneComponent, PossibleComponents, true);
 	}
 
@@ -998,7 +1114,7 @@ FText UTakeRecorderActorSource::GetDisplayTextImpl() const
 FText UTakeRecorderActorSource::GetCategoryTextImpl() const
 {
 	AActor* TargetActor = Target.Get();
-	if (TargetActor && TargetActor->GetClass()->IsChildOf(ACameraActor::StaticClass()))
+	if (TargetActor && TargetActor->GetComponentByClass(UCameraComponent::StaticClass()))
 	{
 		return LOCTEXT("CamerasCategoryLabel", "Cameras");
 	}
@@ -1058,7 +1174,7 @@ void UTakeRecorderActorSource::PostProcessCreatedObjectTemplateImpl(AActor* Obje
 	 	SkeletalMeshComponent->SetAnimationMode(EAnimationMode::AnimationSingleNode);
 	 	SkeletalMeshComponent->bEnableUpdateRateOptimizations = false;
 	 	SkeletalMeshComponent->VisibilityBasedAnimTickOption = EVisibilityBasedAnimTickOption::AlwaysTickPoseAndRefreshBones;
-	 	SkeletalMeshComponent->ForcedLodModel = 1;
+	 	SkeletalMeshComponent->SetForcedLOD(1);
 	 }
 
 	// Disable auto-possession on recorded Pawns so that when the Spawnable is spawned it doesn't auto-possess the player
@@ -1324,7 +1440,7 @@ bool UTakeRecorderActorSource::IsOtherActorBeingRecorded(AActor* OtherActor) con
 	{
 		if (UTakeRecorderActorSource* ActorSource = Cast<UTakeRecorderActorSource>(Source))
 		{
-			if (ActorSource->Target.Get() == OtherActor)
+			if (ActorSource->bEnabled && ActorSource->Target.Get() == OtherActor)
 			{
 				return true;
 			}
@@ -1352,6 +1468,30 @@ FGuid UTakeRecorderActorSource::GetRecordedActorGuid(class AActor* OtherActor) c
 	}
 
 	return FGuid();
+}
+
+FTransform UTakeRecorderActorSource::GetRecordedActorAnimationInitialRootTransform(class AActor* OtherActor) const
+{
+	UTakeRecorderSources* OwningSources = CastChecked<UTakeRecorderSources>(GetOuter());
+	for (UTakeRecorderSource* Source : OwningSources->GetSources())
+	{
+		if (UTakeRecorderActorSource* ActorSource = Cast<UTakeRecorderActorSource>(Source))
+		{
+			AActor* OtherTarget = ActorSource->Target.Get();
+			if (OtherTarget && OtherActor && (OtherTarget == OtherActor || OtherTarget->GetName() == OtherActor->GetName()))
+			{
+				for (UMovieSceneTrackRecorder* TrackRecorder : ActorSource->TrackRecorders)
+				{
+					if (TrackRecorder->IsA<UMovieSceneAnimationTrackRecorder>())
+					{
+						return Cast<UMovieSceneAnimationTrackRecorder>(TrackRecorder)->GetInitialRootTransform();
+					}
+				}
+
+			}
+		}
+	}
+	return FTransform::Identity;
 }
 
 FMovieSceneSequenceID UTakeRecorderActorSource::GetLevelSequenceID(class AActor* OtherActor)
@@ -1465,14 +1605,28 @@ UMovieSceneTrackRecorderSettings* UTakeRecorderActorSource::GetSettingsObjectFor
 	return nullptr;
 }
 
-FString UTakeRecorderActorSource::GetSubsceneName(ULevelSequence* InSequence) const
+FString UTakeRecorderActorSource::GetSubsceneTrackName(ULevelSequence* InSequence) const
 {
 	if (Target.IsValid())
 	{
 		return Target->GetActorLabel();
 	}
 
-	return Super::GetSubsceneName(InSequence);
+	return Super::GetSubsceneTrackName(InSequence);
+}
+
+FString UTakeRecorderActorSource::GetSubsceneAssetName(ULevelSequence* InSequence) const
+{
+	if (Target.IsValid())
+	{
+		if (UTakeMetaData* TakeMetaData = InSequence->FindMetaData<UTakeMetaData>())
+		{
+			return FString::Printf(TEXT("%s_%s"), *Target->GetActorLabel(), *TakeMetaData->GenerateAssetPath("{slate}_{take}"));
+		}
+		return Target->GetActorLabel();
+	}
+
+	return Super::GetSubsceneAssetName(InSequence);
 }
 
 void UTakeRecorderActorSource::AddContentsToFolder(UMovieSceneFolder* InFolder)

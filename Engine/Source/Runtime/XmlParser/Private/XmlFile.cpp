@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "XmlFile.h"
 #include "Misc/FileHelper.h"
@@ -162,7 +162,7 @@ void FXmlFile::PreProcessInput(TArray<FString>& Input)
 
 		if(NumWhiteSpace > 0)
 		{
-			Input[i] = Input[i].Mid(NumWhiteSpace);
+			Input[i].MidInline(NumWhiteSpace, MAX_int32, false);
 		}
 	}
 
@@ -322,10 +322,8 @@ static bool IsQuote(TCHAR Char)
 	return Char == TCHAR('\"');
 }
 
-TArray<FString> FXmlFile::Tokenize(FString Input)
+void FXmlFile::Tokenize(FString Input, TArray<FString>& Tokens)
 {
-	TArray<FString> Tokens;
-
 	FString WorkingToken;
 	enum TOKENTYPE { OPERATOR, STRING, NONE } Type = NONE;
 	bool bInToken = false;
@@ -396,8 +394,8 @@ TArray<FString> FXmlFile::Tokenize(FString Input)
 					bInQuote = false;
 				}
 
-				// Still a string
-				if(!CheckTagOperator(Input, i))
+				// Still a string. Allow '>' within a string
+				if(!CheckTagOperator(Input, i) || (bInQuote && Input[i] == TCHAR('>')))
 				{
 					WorkingToken += Input[i];
 				}
@@ -417,7 +415,7 @@ TArray<FString> FXmlFile::Tokenize(FString Input)
 		}
 
 		// If we have a working token, add it if it's final (ie: ends with '>')
-		if(WorkingToken.Len() > 0)
+		if((WorkingToken.Len() > 0) && (Type == OPERATOR))
 		{
 			if(WorkingToken[WorkingToken.Len() - 1] == TCHAR('>'))
 			{
@@ -434,17 +432,15 @@ TArray<FString> FXmlFile::Tokenize(FString Input)
 	{
 		Tokens.Add(WorkingToken);
 	}
-
-	// Return result
-	return Tokens;
 }
 
 TArray<FString> FXmlFile::Tokenize(TArray<FString>& Input)
 {
 	TArray<FString> Tokens;
+	Tokens.Reserve(Input.Num());
 	for(int32 i = 0; i < Input.Num(); ++i)
 	{
-		Tokens.Append(Tokenize(Input[i]));
+		Tokenize(Input[i], Tokens);
 	}
 	return Tokens;
 }
@@ -496,6 +492,7 @@ FXmlNode* FXmlFile::CreateNodeRecursive(const TArray<FString>& Tokens, int32 Sta
 	//  - Continue parsing until </tag> for self is found
 	//  - Return own constructed node (and index of next starting point
 
+	const int32 RecursiveStartIndex = StartIndex;
 	int32 SavedIndex = StartIndex;
 
 	// Get the tag & any attributes
@@ -608,7 +605,11 @@ FXmlNode* FXmlFile::CreateNodeRecursive(const TArray<FString>& Tokens, int32 Sta
 			if(Tokens[i] == TEXT("<"))
 			{
 				// Recursively enter function creating a child at the new tag
-				FXmlNode* Child = CreateNodeRecursive(Tokens, i, &SavedIndex);
+				FXmlNode* Child = nullptr;
+				if (i > RecursiveStartIndex)
+				{
+					Child = CreateNodeRecursive(Tokens, i, &SavedIndex);
+				}
 
 				// Save child to parent
 				if(Child != nullptr)

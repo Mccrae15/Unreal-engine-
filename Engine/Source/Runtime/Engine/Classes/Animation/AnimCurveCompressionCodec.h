@@ -1,9 +1,10 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
 #include "CoreMinimal.h"
 #include "Animation/AnimTypes.h"
+#include "Animation/AnimCompressionTypes.h"
 #include "AnimCurveCompressionCodec.generated.h"
 
 class UAnimCurveCompressionCodec;
@@ -38,6 +39,9 @@ class ENGINE_API UAnimCurveCompressionCodec : public UObject
 	FGuid InstanceGuid;
 #endif
 
+	/** Allow us to convert DDC serialized path back into codec object */
+	virtual UAnimCurveCompressionCodec* GetCodec(const FString& Path) { return this; }
+
 	//////////////////////////////////////////////////////////////////////////
 
 #if WITH_EDITORONLY_DATA
@@ -50,10 +54,8 @@ class ENGINE_API UAnimCurveCompressionCodec : public UObject
 	virtual bool IsCodecValid() const { return true; }
 
 	/** Compresses the curve data from an animation sequence. */
-	virtual bool Compress(const UAnimSequence& AnimSeq, FAnimCurveCompressionResult& OutResult) PURE_VIRTUAL(UAnimCurveCompressionCodec::Compress, return false;);
+	virtual bool Compress(const FCompressibleAnimData& AnimSeq, FAnimCurveCompressionResult& OutResult) PURE_VIRTUAL(UAnimCurveCompressionCodec::Compress, return false;);
 
-	/** Allow us to convert DDC serialized path back into codec object */
-	virtual UAnimCurveCompressionCodec* GetCodec(const FString& Path) { return this; }
 	/*
 	 * Called to generate a unique DDC key for this codec instance.
 	 * A suitable key should be generated from: the InstanceGuid, a codec version, and all relevant properties that drive the behavior.
@@ -66,12 +68,12 @@ class ENGINE_API UAnimCurveCompressionCodec : public UObject
 	 * Note: Codecs should _NOT_ rely on any member properties during decompression. Decompression
 	 * behavior should entirely be driven by code and the compressed data.
 	 */
-	virtual void DecompressCurves(const UAnimSequence& AnimSeq, FBlendedCurve& Curves, float CurrentTime) const PURE_VIRTUAL(UAnimCurveCompressionCodec::DecompressCurves, );
+	virtual void DecompressCurves(const FCompressedAnimSequence& AnimSeq, FBlendedCurve& Curves, float CurrentTime) const PURE_VIRTUAL(UAnimCurveCompressionCodec::DecompressCurves, );
 
 	/*
 	 * Decompress a single curve.
 	 * Note: Codecs should _NOT_ rely on any member properties during decompression. Decompression
 	 * behavior should entirely be driven by code and the compressed data.
 	 */
-	virtual float DecompressCurve(const UAnimSequence& AnimSeq, SmartName::UID_Type CurveUID, float CurrentTime) const PURE_VIRTUAL(UAnimCurveCompressionCodec::DecompressCurve, return 0.0f;);
+	virtual float DecompressCurve(const FCompressedAnimSequence& AnimSeq, SmartName::UID_Type CurveUID, float CurrentTime) const PURE_VIRTUAL(UAnimCurveCompressionCodec::DecompressCurve, return 0.0f;);
 };

@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -26,8 +26,8 @@ class UEnvironmentQueryGraphNode_Option : public UEnvironmentQueryGraphNode
 	virtual void PrepareForCopying() override;
 	virtual void UpdateNodeClassData() override;
 
-	virtual void GetContextMenuActions(const FGraphNodeContextMenuBuilder& Context) const override;
-	void CreateAddTestSubMenu(class FMenuBuilder& MenuBuilder, UEdGraph* Graph) const;
+	virtual void GetNodeContextMenuActions(class UToolMenu* Menu, class UGraphNodeContextMenuContext* Context) const override;
+	void CreateAddTestSubMenu(class UToolMenu* Menu, UEdGraph* Graph) const;
 
 	void CalculateWeights();
 	void UpdateNodeData();

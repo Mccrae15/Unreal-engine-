@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "SDistributionCurveEditor.h"
 #include "Engine/InterpCurveEdSetup.h"
@@ -63,21 +63,7 @@ void SDistributionCurveEditor::Construct(const FArguments& InArgs)
 void SDistributionCurveEditor::RefreshViewport()
 {
 	Viewport->GetViewport()->Invalidate();
-}
-
-bool SDistributionCurveEditor::GetNeedsRedraw()
-{
-	if (Viewport->GetViewportClient().IsValid())
-	{
-		return Viewport->GetViewportClient()->GetNeedsRedraw();
-	}
-
-	return false;
-}
-
-void SDistributionCurveEditor::DrawViewport()
-{
-	Viewport->DrawViewport();
+	Viewport->GetViewport()->InvalidateDisplay();
 }
 
 void SDistributionCurveEditor::CurveChanged()

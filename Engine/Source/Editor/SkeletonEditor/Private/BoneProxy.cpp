@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "BoneProxy.h"
 #include "IPersonaPreviewScene.h"
@@ -26,10 +26,12 @@ void UBoneProxy::Tick(float DeltaTime)
 	{
 		if (UDebugSkelMeshComponent* Component = SkelMeshComponent.Get())
 		{
+			TArray<FTransform> LocalBoneTransforms = Component->GetBoneSpaceTransforms();
+
 			int32 BoneIndex = Component->GetBoneIndex(BoneName);
-			if (Component->BoneSpaceTransforms.IsValidIndex(BoneIndex))
+			if (LocalBoneTransforms.IsValidIndex(BoneIndex))
 			{
-				FTransform LocalTransform = Component->BoneSpaceTransforms[BoneIndex];
+				FTransform LocalTransform = LocalBoneTransforms[BoneIndex];
 				FTransform BoneTransform = Component->GetBoneTransform(BoneIndex);
 
 				if (bLocalLocation)

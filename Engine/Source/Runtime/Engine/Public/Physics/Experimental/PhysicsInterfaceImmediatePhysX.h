@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -44,6 +44,7 @@ struct ENGINE_API FPhysicsActorReference_ImmediatePhysX
 
 	bool IsValid() const;
 	bool Equals(const FPhysicsActorReference_ImmediatePhysX& Other) const;
+	bool operator==(const FPhysicsActorReference_ImmediatePhysX& Other) const { return Equals(Other); }
 
 	FPhysScene_ImmediatePhysX* Scene;
 	uint32 Index;
@@ -130,6 +131,7 @@ struct ENGINE_API FPhysicsGeometryCollection_ImmediatePhysX
         }
         return ECollisionShapeType::None;
     }
+#if 0	//Not sure if this is needed, refactoring this code for Chaos usage so leaving as is for now
     physx::PxGeometry& GetGeometry() const { return *Geometry; }
     bool GetBoxGeometry(physx::PxBoxGeometry& OutGeom) const
     {
@@ -151,6 +153,7 @@ struct ENGINE_API FPhysicsGeometryCollection_ImmediatePhysX
     {
         return GPhysXSDK->createShape(GetGeometry(), nullptr, 0)->getTriangleMeshGeometry(OutGeom);
     }
+#endif
 };
 
 // @todo(mlentine): Once we finalize the format of this we need to redo this
@@ -205,7 +208,6 @@ struct ENGINE_API FPhysicsInterface_ImmediatePhysX
 
 	static bool IsSimulationShape(const FPhysicsShapeReference_ImmediatePhysX& InShape);
 	static bool IsQueryShape(const FPhysicsShapeReference_ImmediatePhysX& InShape);
-	static bool IsShapeType(const FPhysicsShapeReference_ImmediatePhysX& InShape, ECollisionShapeType InType);
     // @todo(mlentine): We don't keep track of what is shared but anything can be
     static bool IsShared(const FPhysicsShapeHandle& InShape) { return true; }
 	static ECollisionShapeType GetShapeType(const FPhysicsShapeReference_ImmediatePhysX& InShape);
@@ -233,7 +235,7 @@ struct ENGINE_API FPhysicsInterface_ImmediatePhysX
 	// Actor interface functions
 
 	// #PHYS2 - These should be on the scene, but immediate mode stops us for now, eventually that should spawn its own minimal IM scene and these should move
-	static FPhysicsActorHandle CreateActor(const FActorCreationParams& Params);
+	static void CreateActor(const FActorCreationParams& Params, FPhysicsActorHandle& Handle);
 	static void ReleaseActor(FPhysicsActorReference_ImmediatePhysX& InActorReference, FPhysScene* InScene = nullptr);
 	//////////////////////////////////////////////////////////////////////////
 

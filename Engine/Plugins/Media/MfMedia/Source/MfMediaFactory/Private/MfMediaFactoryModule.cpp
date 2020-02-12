@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "MfMediaFactoryPrivate.h"
 
@@ -161,6 +161,7 @@ public:
 
 		// supported platforms
 		SupportedPlatforms.Add(TEXT("XboxOne"));
+		SupportedPlatforms.Add(TEXT("HoloLens"));
 #if MFMEDIAFACTORY_WINDOWS && MFMEDIAFACTORY_USE_WINDOWS
 		SupportedPlatforms.Add(TEXT("Windows"));
 #endif

@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 
 #pragma once
@@ -48,6 +48,7 @@ class LANDSCAPE_API UMaterialExpressionLandscapeGrassOutput : public UMaterialEx
 	virtual const TArray<FExpressionInput*> GetInputs() override;
 	virtual FExpressionInput* GetInput(int32 InputIndex) override;
 	virtual FName GetInputName(int32 InputIndex) const override;
+	void ValidateInputName(FGrassInput& Input) const;
 #endif
 
 	//~ Begin UObject Interface
@@ -64,6 +65,9 @@ class LANDSCAPE_API UMaterialExpressionLandscapeGrassOutput : public UMaterialEx
 
 	UPROPERTY(EditAnywhere, Category = UMaterialExpressionLandscapeGrassOutput)
 	TArray<FGrassInput> GrassTypes;
+
+private:
+	static FName PinDefaultName;
 };
 
 

@@ -1,8 +1,8 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
-#if !WITH_CHAOS && !WITH_IMMEDIATE_PHYSX && !PHYSICS_INTERFACE_LLIMMEDIATE
+#if !WITH_CHAOS && !WITH_IMMEDIATE_PHYSX
 
 #include "EngineGlobals.h"
 #include "Engine/EngineTypes.h"
@@ -55,6 +55,7 @@ struct ENGINE_API FPhysicsActorHandle_PhysX
 
 	bool IsValid() const;
 	bool Equals(const FPhysicsActorHandle_PhysX& Other) const;
+	bool operator==(const FPhysicsActorHandle_PhysX& Other) const { return Equals(Other); }
 
 	physx::PxRigidActor* SyncActor;
 
@@ -121,12 +122,18 @@ struct ENGINE_API FPhysicsGeometryCollection_PhysX
 	~FPhysicsGeometryCollection_PhysX();
 
 	ECollisionShapeType GetType() const;
-	physx::PxGeometry& GetGeometry() const;
-	bool GetBoxGeometry(physx::PxBoxGeometry& OutGeom) const;
-	bool GetSphereGeometry(physx::PxSphereGeometry& OutGeom) const;
-	bool GetCapsuleGeometry(physx::PxCapsuleGeometry& OutGeom) const;
-	bool GetConvexGeometry(physx::PxConvexMeshGeometry& OutGeom) const;
-	bool GetTriMeshGeometry(physx::PxTriangleMeshGeometry& OutGeom) const;
+	const physx::PxGeometry& GetGeometry() const;
+	physx::PxGeometry& GetGeometry();
+	const physx::PxBoxGeometry& GetBoxGeometry() const;
+	physx::PxBoxGeometry& GetBoxGeometry();
+	const physx::PxSphereGeometry& GetSphereGeometry() const;
+	physx::PxSphereGeometry& GetSphereGeometry();
+	const physx::PxCapsuleGeometry& GetCapsuleGeometry() const;
+	physx::PxCapsuleGeometry& GetCapsuleGeometry();
+	const physx::PxConvexMeshGeometry& GetConvexGeometry() const;
+	physx::PxConvexMeshGeometry& GetConvexGeometry();
+	const physx::PxTriangleMeshGeometry& GetTriMeshGeometry() const;
+	physx::PxTriangleMeshGeometry& GetTriMeshGeometry();
 
 private:
 	friend struct FPhysicsInterface_PhysX;
@@ -165,6 +172,7 @@ struct ENGINE_API FPhysicsCommand_PhysX
 
 	// Executes with appropriate write locking, return true if execution took place (actor was valid)
 	static bool ExecuteWrite(const FPhysicsActorHandle_PhysX& InHandle, TFunctionRef<void(const FPhysicsActorHandle_PhysX& Actor)> InCallable);
+	static bool ExecuteWrite(FPhysicsActorHandle_PhysX& InHandle, TFunctionRef<void(FPhysicsActorHandle_PhysX& Actor)> InCallable);
 	static bool ExecuteWrite(USkeletalMeshComponent* InMeshComponent, TFunctionRef<void()> InCallable);
 	static bool ExecuteWrite(const FPhysicsActorHandle_PhysX& InHandleA, const FPhysicsActorHandle_PhysX& InHandleB, TFunctionRef<void(const FPhysicsActorHandle_PhysX& ActorA, const FPhysicsActorHandle_PhysX& ActorB)> InCallable);
 	static bool ExecuteWrite(const FPhysicsConstraintHandle_PhysX& InHandle, TFunctionRef<void(const FPhysicsConstraintHandle_PhysX& Constraint)> InCallable);
@@ -176,6 +184,9 @@ struct ENGINE_API FPhysicsCommand_PhysX
 
 struct ENGINE_API FPhysicsInterface_PhysX : public FGenericPhysicsInterface
 {
+	// Describe the interface to identify it to the caller
+	static FString GetInterfaceDescription() { return TEXT("PhysX"); }
+
 	// PhysX Only functions, not related to wider physics interface
 	// To be used only in code that handles PhysX
 	static physx::PxRigidActor* GetPxRigidActorFromScene_AssumesLocked(const FPhysicsActorHandle_PhysX& InActorHandle);
@@ -203,7 +214,6 @@ struct ENGINE_API FPhysicsInterface_PhysX : public FGenericPhysicsInterface
 	static FCollisionFilterData GetQueryFilter(const FPhysicsShapeHandle_PhysX& InShape);
 	static bool IsSimulationShape(const FPhysicsShapeHandle_PhysX& InShape);
 	static bool IsQueryShape(const FPhysicsShapeHandle_PhysX& InShape);
-	static bool IsShapeType(const FPhysicsShapeHandle_PhysX& InShape, ECollisionShapeType InType);
 	static ECollisionShapeType GetShapeType(const FPhysicsShapeHandle_PhysX& InShape);
 	static FPhysicsGeometryCollection_PhysX GetGeometryCollection(const FPhysicsShapeHandle_PhysX& InShape);
 	static FTransform GetLocalTransform(const FPhysicsShapeHandle_PhysX& InShape);
@@ -234,9 +244,12 @@ struct ENGINE_API FPhysicsInterface_PhysX : public FGenericPhysicsInterface
 	//////////////////////////////////////////////////////////////////////////
 
 	// #PHYS2 - These should be on the scene, but immediate mode stops us for now, eventually that should spawn its own minimal IM scene and these should move
-	static FPhysicsActorHandle CreateActor(const FActorCreationParams& Params);
+	static void CreateActor(const FActorCreationParams& Params, FPhysicsActorHandle& Handle);
 	static void ReleaseActor(FPhysicsActorHandle_PhysX& InHandle, FPhysScene* InScene = nullptr, bool bNeverDeferRelease = false);
 	//////////////////////////////////////////////////////////////////////////
+
+	// NOTE: Adding this temporarily, until we phase out Handle.IsValid().
+	static bool IsValid(const FPhysicsActorHandle& Handle) { return Handle.IsValid(); }
 
 	template<typename AllocatorType>
 	static int32 GetAllShapes_AssumedLocked(const FPhysicsActorHandle_PhysX& InHandle, TArray<FPhysicsShapeHandle_PhysX, AllocatorType>& OutShapes);
@@ -298,10 +311,10 @@ struct ENGINE_API FPhysicsInterface_PhysX : public FGenericPhysicsInterface
 	static void SetLinearDamping_AssumesLocked(const FPhysicsActorHandle_PhysX& InHandle, float InDamping);
 	static void SetAngularDamping_AssumesLocked(const FPhysicsActorHandle_PhysX& InHandle, float InDamping);
 
-	static void AddForce_AssumesLocked(const FPhysicsActorHandle_PhysX& InHandle, const FVector& InForce);
-	static void AddTorque_AssumesLocked(const FPhysicsActorHandle_PhysX& InHandle, const FVector& InTorque);
-	static void AddForceMassIndependent_AssumesLocked(const FPhysicsActorHandle_PhysX& InHandle, const FVector& InForce);
-	static void AddTorqueMassIndependent_AssumesLocked(const FPhysicsActorHandle_PhysX& InHandle, const FVector& InTorque);
+	static void AddImpulse_AssumesLocked(const FPhysicsActorHandle_PhysX& InHandle, const FVector& InForce);
+	static void AddAngularImpulseInRadians_AssumesLocked(const FPhysicsActorHandle_PhysX& InHandle, const FVector& InTorque);
+	static void AddVelocity_AssumesLocked(const FPhysicsActorHandle_PhysX& InHandle, const FVector& InForce);
+	static void AddAngularVelocityInRadians_AssumesLocked(const FPhysicsActorHandle_PhysX& InHandle, const FVector& InTorque);
 	static void AddImpulseAtLocation_AssumesLocked(const FPhysicsActorHandle_PhysX& InHandle, const FVector& InImpulse, const FVector& InLocation);
 	static void AddRadialImpulse_AssumesLocked(const FPhysicsActorHandle_PhysX& InHandle, const FVector& InOrigin, float InRadius, float InStrength, ERadialImpulseFalloff InFalloff, bool bInVelChange);
 
@@ -411,10 +424,10 @@ template <>
 ENGINE_API int32 FPhysicsInterface_PhysX::GetAllShapes_AssumedLocked(const FPhysicsActorHandle_PhysX& InActorHandle, PhysicsInterfaceTypes::FInlineShapeArray& OutShapes);
 
 template<>
-bool FGenericPhysicsInterface::GeomSweepMulti(const UWorld* World, const FPhysicsGeometryCollection& InGeom, const FQuat& InGeomRot, TArray<FHitResult>& OutHits, FVector Start, FVector End, ECollisionChannel TraceChannel, const FCollisionQueryParams& Params, const FCollisionResponseParams& ResponseParams, const FCollisionObjectQueryParams& ObjectParams /*= FCollisionObjectQueryParams::DefaultObjectQueryParam*/);
+ENGINE_API bool FGenericPhysicsInterface::GeomSweepMulti(const UWorld* World, const FPhysicsGeometryCollection& InGeom, const FQuat& InGeomRot, TArray<FHitResult>& OutHits, FVector Start, FVector End, ECollisionChannel TraceChannel, const FCollisionQueryParams& Params, const FCollisionResponseParams& ResponseParams, const FCollisionObjectQueryParams& ObjectParams /*= FCollisionObjectQueryParams::DefaultObjectQueryParam*/);
 
 template<>
-bool FGenericPhysicsInterface::GeomOverlapMulti(const UWorld* World, const FPhysicsGeometryCollection& InGeom, const FVector& InPosition, const FQuat& InRotation, TArray<FOverlapResult>& OutOverlaps, ECollisionChannel TraceChannel, const FCollisionQueryParams& Params, const FCollisionResponseParams& ResponseParams, const FCollisionObjectQueryParams& ObjectParams);
+ENGINE_API bool FGenericPhysicsInterface::GeomOverlapMulti(const UWorld* World, const FPhysicsGeometryCollection& InGeom, const FVector& InPosition, const FQuat& InRotation, TArray<FOverlapResult>& OutOverlaps, ECollisionChannel TraceChannel, const FCollisionQueryParams& Params, const FCollisionResponseParams& ResponseParams, const FCollisionObjectQueryParams& ObjectParams);
 
 
 #endif

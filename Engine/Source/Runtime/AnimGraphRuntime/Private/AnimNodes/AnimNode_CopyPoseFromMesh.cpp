@@ -1,7 +1,8 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "AnimNodes/AnimNode_CopyPoseFromMesh.h"
 #include "Animation/AnimInstanceProxy.h"
+#include "Animation/AnimTrace.h"
 
 /////////////////////////////////////////////////////
 // FAnimNode_CopyPoseFromMesh
@@ -15,17 +16,18 @@ FAnimNode_CopyPoseFromMesh::FAnimNode_CopyPoseFromMesh()
 
 void FAnimNode_CopyPoseFromMesh::Initialize_AnyThread(const FAnimationInitializeContext& Context)
 {
+	DECLARE_SCOPE_HIERARCHICAL_COUNTER_ANIMNODE(Initialize_AnyThread)
 	FAnimNode_Base::Initialize_AnyThread(Context);
 
 	// Initial update of the node, so we dont have a frame-delay on setup
-	FAnimationUpdateContext UpdateContext(Context.AnimInstanceProxy, 0.0f);
-	GetEvaluateGraphExposedInputs().Execute(UpdateContext);
+	GetEvaluateGraphExposedInputs().Execute(Context);
 
 	RefreshMeshComponent(Context.AnimInstanceProxy->GetSkelMeshComponent());
 }
 
 void FAnimNode_CopyPoseFromMesh::CacheBones_AnyThread(const FAnimationCacheBonesContext& Context)
 {
+	DECLARE_SCOPE_HIERARCHICAL_COUNTER_ANIMNODE(CacheBones_AnyThread)
 
 }
 
@@ -46,6 +48,14 @@ void FAnimNode_CopyPoseFromMesh::RefreshMeshComponent(USkeletalMeshComponent* Ta
 			else if (CurrentMeshComponent->SkeletalMesh != CurrentlyUsedSourceMesh.Get())
 			{
 				ReinitializeMeshComponent(InMeshComponent, InTargetMeshComponent);
+			}
+			else if (InTargetMeshComponent)
+			{
+				// see if target mesh has changed
+				if (InTargetMeshComponent->SkeletalMesh != CurrentlyUsedTargetMesh.Get())
+				{
+					ReinitializeMeshComponent(InMeshComponent, InTargetMeshComponent);
+				}
 			}
 		}
 		// if not valid, but input mesh is
@@ -113,7 +123,7 @@ void FAnimNode_CopyPoseFromMesh::PreUpdate(const UAnimInstance* InAnimInstance)
 			SourceMeshTransformArray.Append((bUROInSync || bUsingExternalInterpolation) && bArraySizesMatch ? CachedComponentSpaceTransforms : CurrentMeshComponent->GetComponentSpaceTransforms());
 
 			// Ref skeleton is need for parent index lookups later, so store it now
-			RefSkeleton = &CurrentMeshComponent->SkeletalMesh->RefSkeleton;
+			CurrentlyUsedMesh = CurrentMeshComponent->SkeletalMesh;
 
 			if(bCopyCurves)
 			{
@@ -130,22 +140,31 @@ void FAnimNode_CopyPoseFromMesh::PreUpdate(const UAnimInstance* InAnimInstance)
 				}
 			}
 		}
+		else
+		{
+			CurrentlyUsedMesh.Reset();
+		}
 	}
 }
 
 void FAnimNode_CopyPoseFromMesh::Update_AnyThread(const FAnimationUpdateContext& Context)
 {
+	DECLARE_SCOPE_HIERARCHICAL_COUNTER_ANIMNODE(Update_AnyThread)
 	// This introduces a frame of latency in setting the pin-driven source component,
 	// but we cannot do the work to extract transforms on a worker thread as it is not thread safe.
 	GetEvaluateGraphExposedInputs().Execute(Context);
+
+	TRACE_ANIM_NODE_VALUE(Context, TEXT("Component"), *GetNameSafe(CurrentlyUsedSourceMeshComponent.IsValid() ? CurrentlyUsedSourceMeshComponent.Get() : nullptr));
+	TRACE_ANIM_NODE_VALUE(Context, TEXT("Mesh"), *GetNameSafe(CurrentlyUsedSourceMeshComponent.IsValid() ? CurrentlyUsedSourceMeshComponent.Get()->SkeletalMesh : nullptr));
 }
 
 void FAnimNode_CopyPoseFromMesh::Evaluate_AnyThread(FPoseContext& Output)
 {
+	DECLARE_SCOPE_HIERARCHICAL_COUNTER_ANIMNODE(Evaluate_AnyThread)
 	FCompactPose& OutPose = Output.Pose;
 	OutPose.ResetToRefPose();
-
-	if(SourceMeshTransformArray.Num() > 0 && RefSkeleton != nullptr)
+	USkeletalMesh* CurrentMesh = CurrentlyUsedMesh.IsValid() ? CurrentlyUsedMesh.Get() : nullptr;
+	if(SourceMeshTransformArray.Num() > 0 && CurrentMesh)
 	{
 		const FBoneContainer& RequiredBones = OutPose.GetBoneContainer();
 
@@ -157,7 +176,7 @@ void FAnimNode_CopyPoseFromMesh::Evaluate_AnyThread(FPoseContext& Output)
 			if(Value && SourceMeshTransformArray.IsValidIndex(*Value))
 			{
 				const int32 SourceBoneIndex = *Value;
-				const int32 ParentIndex = RefSkeleton->GetParentIndex(SourceBoneIndex);
+				const int32 ParentIndex = CurrentMesh->RefSkeleton.GetParentIndex(SourceBoneIndex);
 				const FCompactPoseBoneIndex MyParentIndex = RequiredBones.GetParentBoneIndex(PoseBoneIndex);
 				// only apply if I also have parent, otherwise, it should apply the space bases
 				if (SourceMeshTransformArray.IsValidIndex(ParentIndex) && MyParentIndex != INDEX_NONE)
@@ -190,6 +209,7 @@ void FAnimNode_CopyPoseFromMesh::Evaluate_AnyThread(FPoseContext& Output)
 
 void FAnimNode_CopyPoseFromMesh::GatherDebugData(FNodeDebugData& DebugData)
 {
+	DECLARE_SCOPE_HIERARCHICAL_COUNTER_ANIMNODE(GatherDebugData)
 	FString DebugLine = DebugData.GetNodeName(this);
 
 	DebugLine += FString::Printf(TEXT("('%s')"), *GetNameSafe(CurrentlyUsedSourceMeshComponent.IsValid() ? CurrentlyUsedSourceMeshComponent.Get()->SkeletalMesh : nullptr));
@@ -198,9 +218,10 @@ void FAnimNode_CopyPoseFromMesh::GatherDebugData(FNodeDebugData& DebugData)
 
 void FAnimNode_CopyPoseFromMesh::ReinitializeMeshComponent(USkeletalMeshComponent* NewSourceMeshComponent, USkeletalMeshComponent* TargetMeshComponent)
 {
-	CurrentlyUsedSourceMeshComponent = NewSourceMeshComponent;
+	CurrentlyUsedSourceMeshComponent.Reset();
 	// reset source mesh
 	CurrentlyUsedSourceMesh.Reset();
+	CurrentlyUsedTargetMesh.Reset();
 	BoneMapToSource.Reset();
 	CurveNameToUIDMap.Reset();
 
@@ -208,45 +229,54 @@ void FAnimNode_CopyPoseFromMesh::ReinitializeMeshComponent(USkeletalMeshComponen
 	{
 		USkeletalMesh* SourceSkelMesh = NewSourceMeshComponent->SkeletalMesh;
 		USkeletalMesh* TargetSkelMesh = TargetMeshComponent->SkeletalMesh;
-		CurrentlyUsedSourceMesh = SourceSkelMesh;
-
-		if (SourceSkelMesh == TargetSkelMesh)
+		
+		if (SourceSkelMesh && !SourceSkelMesh->IsPendingKill() && !SourceSkelMesh->HasAnyFlags(RF_NeedPostLoad) &&
+			TargetSkelMesh && !TargetSkelMesh->IsPendingKill() && !TargetSkelMesh->HasAnyFlags(RF_NeedPostLoad))
 		{
-			for(int32 ComponentSpaceBoneId = 0; ComponentSpaceBoneId < SourceSkelMesh->RefSkeleton.GetNum(); ++ComponentSpaceBoneId)
+			CurrentlyUsedSourceMeshComponent = NewSourceMeshComponent;
+			CurrentlyUsedSourceMesh = SourceSkelMesh;
+			CurrentlyUsedTargetMesh = TargetSkelMesh;
+
+			if (SourceSkelMesh == TargetSkelMesh)
 			{
-				BoneMapToSource.Add(ComponentSpaceBoneId, ComponentSpaceBoneId);
-			}
-		}
-		else
-		{
-			for (int32 ComponentSpaceBoneId=0; ComponentSpaceBoneId<TargetSkelMesh->RefSkeleton.GetNum(); ++ComponentSpaceBoneId)
-			{
-				FName BoneName = TargetSkelMesh->RefSkeleton.GetBoneName(ComponentSpaceBoneId);
-				BoneMapToSource.Add(ComponentSpaceBoneId, SourceSkelMesh->RefSkeleton.FindBoneIndex(BoneName));
-			}
-		}
-
-		if (bCopyCurves)
-		{
-			USkeleton* SourceSkeleton = SourceSkelMesh->Skeleton;
-			USkeleton* TargetSkeleton = TargetSkelMesh->Skeleton;
-
-			// you shouldn't be here if this happened
-			check(SourceSkeleton && TargetSkeleton);
-
-			const FSmartNameMapping* SourceContainer = SourceSkeleton->GetSmartNameContainer(USkeleton::AnimCurveMappingName);
-			const FSmartNameMapping* TargetContainer = TargetSkeleton->GetSmartNameContainer(USkeleton::AnimCurveMappingName);
-
-			TArray<FName> SourceCurveNames;
-			SourceContainer->FillNameArray(SourceCurveNames);
-			for (int32 Index = 0; Index < SourceCurveNames.Num(); ++Index)
-			{
-				SmartName::UID_Type UID = TargetContainer->FindUID(SourceCurveNames[Index]);
-				if (UID != SmartName::MaxUID)
+				for(int32 ComponentSpaceBoneId = 0; ComponentSpaceBoneId < SourceSkelMesh->RefSkeleton.GetNum(); ++ComponentSpaceBoneId)
 				{
-					// has a valid UID, add to the list
-					SmartName::UID_Type& Value = CurveNameToUIDMap.Add(SourceCurveNames[Index]);
-					Value = UID;
+					BoneMapToSource.Add(ComponentSpaceBoneId, ComponentSpaceBoneId);
+				}
+			}
+			else
+			{
+				for (int32 ComponentSpaceBoneId=0; ComponentSpaceBoneId<TargetSkelMesh->RefSkeleton.GetNum(); ++ComponentSpaceBoneId)
+				{
+					FName BoneName = TargetSkelMesh->RefSkeleton.GetBoneName(ComponentSpaceBoneId);
+					BoneMapToSource.Add(ComponentSpaceBoneId, SourceSkelMesh->RefSkeleton.FindBoneIndex(BoneName));
+				}
+			}
+
+			if (bCopyCurves)
+			{
+				USkeleton* SourceSkeleton = SourceSkelMesh->Skeleton;
+				USkeleton* TargetSkeleton = TargetSkelMesh->Skeleton;
+
+				// you shouldn't be here if this happened
+				if (ensureMsgf(SourceSkeleton, TEXT("Invalid null source skeleton : %s"), *GetNameSafe(SourceSkelMesh))
+					&& ensureMsgf(TargetSkeleton, TEXT("Invalid null target skeleton : %s"), *GetNameSafe(TargetSkelMesh)))
+				{
+					const FSmartNameMapping* SourceContainer = SourceSkeleton->GetSmartNameContainer(USkeleton::AnimCurveMappingName);
+					const FSmartNameMapping* TargetContainer = TargetSkeleton->GetSmartNameContainer(USkeleton::AnimCurveMappingName);
+
+					TArray<FName> SourceCurveNames;
+					SourceContainer->FillNameArray(SourceCurveNames);
+					for (int32 Index = 0; Index < SourceCurveNames.Num(); ++Index)
+					{
+						SmartName::UID_Type UID = TargetContainer->FindUID(SourceCurveNames[Index]);
+						if (UID != SmartName::MaxUID)
+						{
+							// has a valid UID, add to the list
+							SmartName::UID_Type& Value = CurveNameToUIDMap.Add(SourceCurveNames[Index]);
+							Value = UID;
+						}
+					}
 				}
 			}
 		}

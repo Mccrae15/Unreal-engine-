@@ -1,6 +1,7 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 #pragma once
 
+#include "Chaos/Particle/ParticleUtilities.h"
 #include "Chaos/PBDParticles.h"
 #include "Chaos/PBDRigidParticles.h"
 #include "Chaos/PerParticleRule.h"
@@ -23,18 +24,40 @@ class TPerParticlePBDUpdateFromDeltaPosition : public TPerParticleRule<T, d>
 
 	inline void Apply(TPBDParticles<T, d>& InParticles, const T Dt, const int32 Index) const override //-V762
 	{
-		ApplyHelper(InParticles, Dt, Index);
+		InParticles.V(Index) = (InParticles.P(Index) - InParticles.X(Index)) / Dt;
+		InParticles.X(Index) = InParticles.P(Index);
 	}
 
 	inline void Apply(TPBDRigidParticles<T, d>& InParticles, const T Dt, const int32 Index) const override //-V762
 	{
 		ApplyHelper(InParticles, Dt, Index);
-		TRotation<T, d> Delta = InParticles.Q(Index) * InParticles.R(Index).Inverse();
-		TVector<T, d> Axis;
-		T Angle;
-		Delta.ToAxisAndAngle(Axis, Angle);
-		InParticles.W(Index) = Axis * Angle / Dt;
-		//InParticles.R(Index) = InParticles.Q(Index);
+		InParticles.W(Index) = TRotation<T, d>::CalculateAngularVelocity(InParticles.R(Index), InParticles.Q(Index), Dt);
+	}
+
+	inline void Apply(TPBDRigidParticleHandle<T, d>* Particle, const T Dt) const override //-V762
+	{
+#if CHAOS_PARTICLE_ACTORTRANSFORM
+		const FVec3& CenterOfMass = Particle->CenterOfMass();
+		const FVec3 CenteredX = Particle->X() + Particle->R().RotateVector(CenterOfMass);
+		const FVec3 CenteredP = Particle->P() + Particle->Q().RotateVector(CenterOfMass);
+		Particle->V() = FVec3::CalculateVelocity(CenteredX, CenteredP, Dt);
+#else
+		Particle->V() = FVec3::CalculateVelocity(Particle->X(), Particle->P(), Dt);
+#endif
+		Particle->W() = FRotation3::CalculateAngularVelocity(Particle->R(), Particle->Q(), Dt);
+	}
+
+	inline void Apply(TTransientPBDRigidParticleHandle<T, d>& Particle, const T Dt) const override //-V762
+	{
+#if CHAOS_PARTICLE_ACTORTRANSFORM
+		const FVec3& CenterOfMass = Particle.CenterOfMass();
+		const FVec3 CenteredX = Particle.X() + Particle.R().RotateVector(CenterOfMass);
+		const FVec3 CenteredP = Particle.P() + Particle.Q().RotateVector(CenterOfMass);
+		Particle.V() = FVec3::CalculateVelocity(CenteredX, CenteredP, Dt);
+#else
+		Particle.V() = FVec3::CalculateVelocity(Particle.X(), Particle.P(), Dt);
+#endif
+		Particle.W() = FRotation3::CalculateAngularVelocity(Particle.R(), Particle.Q(), Dt);
 	}
 };
 }

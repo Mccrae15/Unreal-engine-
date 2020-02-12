@@ -1,8 +1,9 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "DestructibleFractureSettings.h"
 #include "Materials/Material.h"
 #include "PhysXPublic.h"
+#include "PhysicsPublic.h"
 #include "Serialization/ArchiveUObjectFromStructuredArchive.h"
 
 //////////////////////////////////////////////////////////////////////////

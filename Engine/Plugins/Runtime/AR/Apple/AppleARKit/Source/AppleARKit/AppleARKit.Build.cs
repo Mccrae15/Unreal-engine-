@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 using UnrealBuildTool;
 using System.IO;
@@ -36,7 +36,8 @@ public class AppleARKit : ModuleRules
                 "RenderCore",
                 "HeadMountedDisplay",
                 "AugmentedReality",
-                "AppleImageUtils"
+                "AppleImageUtils",
+                "MRMesh"
 				// ... add private dependencies that you statically link with here ...
 			}
 			);

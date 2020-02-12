@@ -18,19 +18,14 @@
 	"Modules": [
 		{
 			"Name": "ConcertSyncClient",
-			"Type": "Developer",
+			"Type": "UncookedOnly",
 			"LoadingPhase": "Default"
 		},
 		{
-			"Name": "ConcertUICore",
-			"Type": "Developer",
+			"Name": "ConcertSyncUI",
+			"Type": "UncookedOnly",
 			"LoadingPhase": "Default"
-		},
-		{
-			"Name": "ConcertSyncClientLibrary",
-			"Type": "Runtime",
-			"LoadingPhase": "Default"
-		}		
+		}
 	],
 	"Plugins": [
 		{

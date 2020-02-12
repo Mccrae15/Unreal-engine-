@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -39,6 +39,12 @@ public:
 		return TakeMetaData;
 	}
 
+	FFrameRate GetFrameRate() const;
+
+	void SetFrameRate(FFrameRate InFrameRate, bool bFromTimecode);
+
+	bool IsSameFrameRate(FFrameRate InFrameRate) const;
+
 	bool Reviewing() const;
 
 	bool Recording() const;
@@ -62,7 +68,7 @@ private:
 	FText GetTakeWarningText() const;
 
 	EVisibility GetRecordErrorVisibility() const;
-	FText GetRecordErrorText() const;
+	FText GetRecordErrorText() const; 
 
 	void UpdateRecordError();
 	void UpdateTakeError();
@@ -70,20 +76,21 @@ private:
 	EVisibility GetCountdownVisibility() const;
 	FText GetCountdownText() const;
 
-	FText GetDurationText() const;
-	void SetDurationText(const FText& InNewText, ETextCommit::Type);
+	FText GetTimecodeText() const;
 
 	FText GetUserDescriptionText() const;
 	void SetUserDescriptionText(const FText& InNewText, ETextCommit::Type);
 
-	FFrameRate GetFrameRate() const;
+	FText GetFrameRateText() const;
+	FText GetFrameRateTooltipText() const;
 	bool IsFrameRateCompatible(FFrameRate InFrameRate) const;
-	void SetFrameRate(FFrameRate InNewFrameRate);
+	bool IsSetFromTimecode() const;
 
 	FText GetSlateText() const;
 	void SetSlateText(const FText& InNewText, ETextCommit::Type InCommitType);
 
 	FText GetTimestampText() const;
+	FText GetTimestampTooltipText() const;
 
 	int32 GetTakeNumber() const;
 
@@ -122,6 +129,8 @@ private:
 	void BindCommands();
 
 	void OnToggleEditPreviousRecording(ECheckBoxState CheckState);
+	
+	TSharedRef<SWidget> OnCreateMenu();
 
 private:
 

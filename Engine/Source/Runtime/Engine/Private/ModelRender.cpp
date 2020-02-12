@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 /*=============================================================================
 	ModelRender.cpp: Unreal model rendering
@@ -134,6 +134,12 @@ void UModelComponent::BuildRenderData()
 			if( ensureMsgf( TheModel->Nodes.IsValidIndex( NodeIdx ), TEXT( "Invalid Node Index, Idx:%d, Num:%d" ), NodeIdx, TheModel->Nodes.Num() ) )
 			{
 				const FBspNode& Node = TheModel->Nodes[NodeIdx];
+				if (Node.NumVertices == 0)
+				{
+					Element.MinVertexIndex = 0;
+					continue;
+				}
+
 				if( ensureMsgf( TheModel->Surfs.IsValidIndex(Node.iSurf), TEXT("Invalid Surf Index, Idx:%d, Num:%d"), Node.iSurf, TheModel->Surfs.Num() ) )
 				{
 					const FBspSurf& Surf = TheModel->Surfs[Node.iSurf];
@@ -167,10 +173,11 @@ void UModelComponent::BuildRenderData()
 						Element.MinVertexIndex = FMath::Min(Node.iVertexIndex + Node.NumVertices * BackFace, Element.MinVertexIndex);
 						Element.MaxVertexIndex = FMath::Max(Node.iVertexIndex + Node.NumVertices * BackFace + Node.NumVertices - 1, Element.MaxVertexIndex);
 
-						if (Element.MaxVertexIndex > (uint32)TheModel->VertexBuffer.Vertices.Num())
+						uint32 NumModelVertices = TheModel->VertexBuffer.Buffers.StaticMeshVertexBuffer.GetNumVertices();
+						if (Element.MaxVertexIndex >= NumModelVertices)
 						{
-							UE_LOG(LogModelComponent, Log, TEXT("Model %s has elements that reference missing vertices. MaxVertex=%d, NumVertices=%d"),
-								*GetPathName(), Element.MaxVertexIndex, TheModel->VertexBuffer.Vertices.Num());
+							UE_LOG(LogModelComponent, Log, TEXT("Model %s has elements that reference missing vertices. MaxVertex=%d, NumModelVertices=%d"),
+								*GetPathName(), Element.MaxVertexIndex, NumModelVertices);
 						}
 					}
 				}
@@ -500,17 +507,17 @@ public:
 
 	virtual void DrawStaticElements(FStaticPrimitiveDrawInterface* PDI) override
 	{
-		if(!HasViewDependentDPG())
+		if (!HasViewDependentDPG())
 		{
 			// Determine the DPG the primitive should be drawn in.
 			uint8 PrimitiveDPG = GetStaticDepthPriorityGroup();
 
 			PDI->ReserveMemoryForMeshes(Elements.Num());
 
-			for(int32 ElementIndex = 0;ElementIndex < Elements.Num();ElementIndex++)
+			for (int32 ElementIndex = 0;ElementIndex < Elements.Num();ElementIndex++)
 			{
 				const FModelElement& ModelElement = Component->GetElements()[ElementIndex];
-				if(ModelElement.NumTriangles > 0)
+				if (ModelElement.NumTriangles > 0)
 				{
 					FMeshBatch MeshElement;
 					FMeshBatchElement& BatchElement = MeshElement.Elements[0];
@@ -526,7 +533,12 @@ public:
 					MeshElement.Type = PT_TriangleList;
 					MeshElement.DepthPriorityGroup = PrimitiveDPG;
 					MeshElement.LODIndex = 0;
-					PDI->DrawMesh(MeshElement, FLT_MAX);
+					const bool bValidIndexBuffer = !BatchElement.IndexBuffer || (BatchElement.IndexBuffer && BatchElement.IndexBuffer->IsInitialized() && BatchElement.IndexBuffer->IndexBufferRHI);
+					ensure(bValidIndexBuffer);
+					if (bValidIndexBuffer)
+					{
+						PDI->DrawMesh(MeshElement, FLT_MAX);
+					}
 				}
 			}
 		}
@@ -724,7 +736,7 @@ private:
 		// Accessors.
 		UMaterialInterface* GetMaterial() const { return Material; }
 
-		FUniformBufferRHIParamRef GetVertexFactoryUniformBuffer() const { return VertexFactoryUniformBuffer; }
+		FRHIUniformBuffer* GetVertexFactoryUniformBuffer() const { return VertexFactoryUniformBuffer; }
 
 	private:
 
@@ -803,7 +815,7 @@ public:
 	friend class UModelComponent;
 };
 
-void UModelComponent::CreateRenderState_Concurrent()
+void UModelComponent::CreateRenderState_Concurrent(FRegisterComponentContext* Context)
 {
 	for (int32 ElementIndex = 0; ElementIndex < Elements.Num(); ElementIndex++)
 	{
@@ -817,7 +829,7 @@ void UModelComponent::CreateRenderState_Concurrent()
 		++GetModel()->VertexBuffer.RefCount;
 	}
 
-	Super::CreateRenderState_Concurrent();
+	Super::CreateRenderState_Concurrent(Context);
 }
 
 void UModelComponent::DestroyRenderState_Concurrent()

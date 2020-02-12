@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "CoreMinimal.h"
 #include "Math/RandomStream.h"
@@ -29,6 +29,8 @@
 #include "Engine/SimpleConstructionScript.h"
 #include "Components/ChildActorComponent.h"
 #include "ProfilingDebugging/CsvProfiler.h"
+#include "Algo/Transform.h"
+#include "Misc/ScopeExit.h"
 
 #if WITH_EDITOR
 #include "Editor.h"
@@ -41,33 +43,42 @@ DECLARE_CYCLE_STAT(TEXT("InstanceActorComponent"), STAT_InstanceActorComponent, 
 //////////////////////////////////////////////////////////////////////////
 // AActor Blueprint Stuff
 
-static TArray<FRandomStream*> FindRandomStreams(AActor* InActor)
-{
-	check(InActor);
-	TArray<FRandomStream*> OutStreams;
-	UScriptStruct* RandomStreamStruct = TBaseStructure<FRandomStream>::Get();
-	for( TFieldIterator<UStructProperty> It(InActor->GetClass()) ; It ; ++It )
-	{
-		UStructProperty* StructProp = *It;
-		if( StructProp->Struct == RandomStreamStruct )
-		{
-			FRandomStream* StreamPtr = StructProp->ContainerPtrToValuePtr<FRandomStream>(InActor);
-			OutStreams.Add(StreamPtr);
-		}
-	}
-	return OutStreams;
-}
-
 #if WITH_EDITOR
 void AActor::SeedAllRandomStreams()
 {
-	TArray<FRandomStream*> Streams = FindRandomStreams(this);
-	for(int32 i=0; i<Streams.Num(); i++)
+	UScriptStruct* RandomStreamStruct = TBaseStructure<FRandomStream>::Get();
+	UObject* Archetype = GetArchetype();
+
+	for (TFieldIterator<FStructProperty> It(GetClass()); It; ++It)
 	{
-		Streams[i]->GenerateNewSeed();
+		FStructProperty* StructProp = *It;
+		if (StructProp->Struct == RandomStreamStruct)
+		{
+			FRandomStream* ArchetypeStreamPtr = StructProp->ContainerPtrToValuePtr<FRandomStream>(Archetype);
+			FRandomStream* StreamPtr = StructProp->ContainerPtrToValuePtr<FRandomStream>(this);
+
+			if (ArchetypeStreamPtr->GetInitialSeed() == 0)
+			{
+				StreamPtr->GenerateNewSeed();
+			}
+			else
+			{
+				StreamPtr->Reset();
+			}
+		}
 	}
 }
 #endif //WITH_EDITOR
+
+bool IsBlueprintAddedContainer(FProperty* Prop)
+{
+	if (Prop->IsA<FArrayProperty>() || Prop->IsA<FSetProperty>() || Prop->IsA<FMapProperty>())
+	{
+		return Prop->GetOwnerUObject()->IsInBlueprint();
+	}
+
+	return false;
+}
 
 void AActor::ResetPropertiesForConstruction()
 {
@@ -82,11 +93,11 @@ void AActor::ResetPropertiesForConstruction()
 	const bool bIsPlayInEditor = World && World->IsPlayInEditor();
 
 	// Iterate over properties
-	for( TFieldIterator<UProperty> It(GetClass()) ; It ; ++It )
+	for( TFieldIterator<FProperty> It(GetClass()) ; It ; ++It )
 	{
-		UProperty* Prop = *It;
-		UStructProperty* StructProp = Cast<UStructProperty>(Prop);
-		UClass* PropClass = CastChecked<UClass>(Prop->GetOuter()); // get the class that added this property
+		FProperty* Prop = *It;
+		FStructProperty* StructProp = CastField<FStructProperty>(Prop);
+		UClass* PropClass = Prop->GetOwnerChecked<UClass>(); // get the class that added this property
 
 		// First see if it is a random stream, if so reset before running construction script
 		if( (StructProp != nullptr) && (StructProp->Struct != nullptr) && (StructProp->Struct->GetFName() == RandomStreamName) )
@@ -95,7 +106,7 @@ void AActor::ResetPropertiesForConstruction()
 			StreamPtr->Reset();
 		}
 		// If it is a blueprint exposed variable that is not editable per-instance, reset to default before running construction script
-		else if (!bIsLevelScriptActor && !Prop->ContainsInstancedObjectProperty())
+		else if (!bIsLevelScriptActor && (!Prop->ContainsInstancedObjectProperty() || IsBlueprintAddedContainer(Prop)))
 		{
 			const bool bExposedOnSpawn = bIsPlayInEditor && Prop->HasAnyPropertyFlags(CPF_ExposeOnSpawn);
 			const bool bCanEditInstanceValue = !Prop->HasAnyPropertyFlags(CPF_DisableEditOnInstance) && Prop->HasAnyPropertyFlags(CPF_Edit);
@@ -104,8 +115,8 @@ void AActor::ResetPropertiesForConstruction()
 			if (!bExposedOnSpawn
 				&& !bCanEditInstanceValue
 				&& bCanBeSetInBlueprints
-				&& !Prop->IsA<UDelegateProperty>()
-				&& !Prop->IsA<UMulticastDelegateProperty>())
+				&& !Prop->IsA<FDelegateProperty>()
+				&& !Prop->IsA<FMulticastDelegateProperty>())
 			{
 				Prop->CopyCompleteValue_InContainer(this, Default);
 			}
@@ -207,22 +218,27 @@ void AActor::RerunConstructionScripts()
 	FEditorScriptExecutionGuard ScriptGuard;
 	// don't allow (re)running construction scripts on dying actors and Actors that seamless traveled 
 	// were constructed in the previous level and should not have construction scripts rerun
-	bool bAllowReconstruction =  !bActorSeamlessTraveled && !IsPendingKill() && !HasAnyFlags(RF_BeginDestroyed|RF_FinishDestroyed);
+	bool bAllowReconstruction = !bActorSeamlessTraveled && !IsPendingKill() && !HasAnyFlags(RF_BeginDestroyed|RF_FinishDestroyed);
 #if WITH_EDITOR
 	if(bAllowReconstruction && GIsEditor)
 	{
-		// Generate the blueprint hierarchy for this actor
-		TArray<UBlueprint*> ParentBPStack;
-		bAllowReconstruction = UBlueprint::GetBlueprintHierarchyFromClass(GetClass(), ParentBPStack);
-		if(bAllowReconstruction)
+		// Don't allow reconstruction if we're still in the middle of construction.
+		bAllowReconstruction = !bActorIsBeingConstructed;
+		if (ensureMsgf(bAllowReconstruction, TEXT("Attempted to rerun construction scripts on an Actor that isn't fully constructed yet (%s)."), *GetFullName()))
 		{
-			for(int i = ParentBPStack.Num() - 1; i > 0 && bAllowReconstruction; --i)
+			// Generate the blueprint hierarchy for this actor
+			TArray<UBlueprint*> ParentBPStack;
+			bAllowReconstruction = UBlueprint::GetBlueprintHierarchyFromClass(GetClass(), ParentBPStack);
+			if (bAllowReconstruction)
 			{
-				const UBlueprint* ParentBP = ParentBPStack[i];
-				if(ParentBP && ParentBP->bBeingCompiled)
+				for (int i = ParentBPStack.Num() - 1; i > 0 && bAllowReconstruction; --i)
 				{
-					// don't allow (re)running construction scripts if a parent BP is being compiled
-					bAllowReconstruction = false;
+					const UBlueprint* ParentBP = ParentBPStack[i];
+					if (ParentBP && ParentBP->bBeingCompiled)
+					{
+						// don't allow (re)running construction scripts if a parent BP is being compiled
+						bAllowReconstruction = false;
+					}
 				}
 			}
 		}
@@ -270,6 +286,26 @@ void AActor::RerunConstructionScripts()
 
 		// Save info about attached actors
 		TArray<FAttachedActorInfo> AttachedActorInfos;
+
+		// Before we build the component instance data cache we need to make sure that instance components 
+		// are correctly in their AttachParent's AttachChildren array which may not be the case if they
+		// have not yet been registered
+		for (UActorComponent* Component : InstanceComponents)
+		{
+			if (Component && !Component->IsRegistered())
+			{
+				if (USceneComponent* SceneComp = Cast<USceneComponent>(Component))
+				{
+					if (USceneComponent* AttachParent = SceneComp->GetAttachParent())
+					{
+						if (AttachParent->IsCreatedByConstructionScript())
+						{
+							SceneComp->AttachToComponent(AttachParent, FAttachmentTransformRules::KeepRelativeTransform, SceneComp->GetAttachSocketName());
+						}
+					}
+				}
+			}
+		}
 
 #if WITH_EDITOR
 		if (!CurrentTransactionAnnotation.IsValid())
@@ -420,6 +456,19 @@ void AActor::RerunConstructionScripts()
 			// In this case we need to "tunnel out" to find the parent component which has been created by the construction script.
 			if (UActorComponent* CSAddedComponent = GetComponentAddedByConstructionScript(Component))
 			{
+				// If we have any instanced components attached to us and we're going to be destroyed we need to explicitly detach them so they don't choose a new
+				// parent component and the attachment data we stored in the component instance data cache won't get applied
+				if (USceneComponent* SceneComp = Cast<USceneComponent>(Component))
+				{
+					TInlineComponentArray<USceneComponent*> InstancedChildren;
+					Algo::TransformIf(SceneComp->GetAttachChildren(), InstancedChildren, [](USceneComponent* SC) { return SC && SC->CreationMethod == EComponentCreationMethod::Instance; }, [](USceneComponent* SC) { return SC; });
+					for (USceneComponent* InstancedChild : InstancedChildren)
+					{
+						InstancedChild->DetachFromComponent(FDetachmentTransformRules::KeepRelativeTransform);
+					}
+				}
+
+
 				// Determine if this component is an inner of a component added by the construction script
 				const bool bIsInnerComponent = (CSAddedComponent != Component);
 
@@ -438,42 +487,12 @@ void AActor::RerunConstructionScripts()
 				}
 
 				// Add a new item
-				ComponentMapping.Insert(FComponentData(), Index);
-				ComponentMapping[Index].OldComponent = Component;
-				ComponentMapping[Index].OldOuter = bIsInnerComponent ? CSAddedComponent : nullptr;
-				ComponentMapping[Index].OldArchetype = Component->GetArchetype();
-				ComponentMapping[Index].OldName = Component->GetFName();
-
-				// If it's a UCS-created component, store a serialized index which will be used to match it to the reinstanced counterpart later
-				int32 SerializedIndex = -1;
-				if (Component->CreationMethod == EComponentCreationMethod::UserConstructionScript)
-				{
-					bool bFound = false;
-					for (const UActorComponent* BlueprintCreatedComponent : BlueprintCreatedComponents)
-					{
-						if (BlueprintCreatedComponent)
-						{
-							if (BlueprintCreatedComponent == Component)
-							{
-								SerializedIndex++;
-								bFound = true;
-								break;
-							}
-							else if (BlueprintCreatedComponent->CreationMethod == EComponentCreationMethod::UserConstructionScript &&
-									 BlueprintCreatedComponent->GetArchetype() == ComponentMapping[Index].OldArchetype)
-							{
-								SerializedIndex++;
-							}
-						}
-					}
-
-					if (!bFound)
-					{
-						SerializedIndex = -1;
-					}
-				}
-
-				ComponentMapping[Index].UCSComponentIndex = SerializedIndex;
+				FComponentData& ComponentData = ComponentMapping.InsertDefaulted_GetRef(Index);
+				ComponentData.OldComponent = Component;
+				ComponentData.OldOuter = bIsInnerComponent ? CSAddedComponent : nullptr;
+				ComponentData.OldArchetype = Component->GetArchetype();
+				ComponentData.OldName = Component->GetFName();
+				ComponentData.UCSComponentIndex = Component->GetUCSSerializationIndex();
 			}
 		}
 #endif
@@ -545,12 +564,20 @@ void AActor::RerunConstructionScripts()
 		NameToNewComponent.Reserve(NewComponents.Num());
 		ComponentToArchetypeMap.Reserve(NewComponents.Num());
 
+		typedef TArray<UActorComponent*, TInlineAllocator<4>> FComponentsForSerializationIndex;
+		TMap<int32, FComponentsForSerializationIndex> SerializationIndexToNewUCSComponents;
+
 		for (UActorComponent* NewComponent : NewComponents)
 		{
 			if (GetComponentAddedByConstructionScript(NewComponent))
 			{
 				NameToNewComponent.Add(NewComponent->GetFName(), NewComponent);
 				ComponentToArchetypeMap.Add(NewComponent, NewComponent->GetArchetype());
+
+				if (NewComponent->CreationMethod == EComponentCreationMethod::UserConstructionScript)
+				{
+					SerializationIndexToNewUCSComponents.FindOrAdd(NewComponent->GetUCSSerializationIndex()).Add(NewComponent);
+				}
 			}
 		}
 
@@ -559,35 +586,21 @@ void AActor::RerunConstructionScripts()
 		{
 			if (ComponentData.OldComponent->CreationMethod == EComponentCreationMethod::UserConstructionScript)
 			{
-				// If created by the UCS, look for a component whose class, archetype and serialized index matches
-				for (UActorComponent* NewComponent : NewComponents)
+				if (ComponentData.UCSComponentIndex >= 0)
 				{
-					if (NewComponent->CreationMethod == EComponentCreationMethod::UserConstructionScript &&
-						ComponentData.OldComponent->GetClass() == NewComponent->GetClass() &&
-						ComponentData.OldArchetype == NewComponent->GetArchetype() &&
-						ComponentData.UCSComponentIndex >= 0)
+					// If created by the UCS, look for a component whose class, archetype, and serialized index matches
+					if (FComponentsForSerializationIndex* NewUCSComponentsToConsider = SerializationIndexToNewUCSComponents.Find(ComponentData.UCSComponentIndex))
 					{
-						int32 FoundSerializedIndex = -1;
-						bool bMatches = false;
-						for (UActorComponent* BlueprintCreatedComponent : BlueprintCreatedComponents)
+						for (int32 Index = 0; Index < NewUCSComponentsToConsider->Num(); ++Index)
 						{
-							if (BlueprintCreatedComponent && BlueprintCreatedComponent->CreationMethod == EComponentCreationMethod::UserConstructionScript)
+							UActorComponent* NewComponent = (*NewUCSComponentsToConsider)[Index];
+							if (   ComponentData.OldComponent->GetClass() == NewComponent->GetClass() 
+							    && ComponentData.OldArchetype == ComponentToArchetypeMap[NewComponent])
 							{
-								UObject* BlueprintComponentTemplate = ComponentToArchetypeMap.FindRef(BlueprintCreatedComponent);
-								if (BlueprintComponentTemplate &&
-									ComponentData.OldArchetype == BlueprintComponentTemplate &&
-									++FoundSerializedIndex == ComponentData.UCSComponentIndex)
-								{
-									bMatches = (BlueprintCreatedComponent == NewComponent);
-									break;
-								}
+								OldToNewComponentMapping.Add(ComponentData.OldComponent, NewComponent);
+								NewUCSComponentsToConsider->RemoveAtSwap(Index, 1, false);
+								break;
 							}
-						}
-
-						if (bMatches)
-						{
-							OldToNewComponentMapping.Add(ComponentData.OldComponent, NewComponent);
-							break;
 						}
 					}
 				}
@@ -645,10 +658,27 @@ void AActor::RerunConstructionScripts()
 	}
 }
 
+namespace
+{
+	TMap<const AActor*, TMap<const UObject*, int32>, TInlineSetAllocator<4>> UCSBlueprintComponentArchetypeCounts;
+}
+
 bool AActor::ExecuteConstruction(const FTransform& Transform, const FRotationConversionCache* TransformRotationCache, const FComponentInstanceDataCache* InstanceDataCache, bool bIsDefaultTransform)
 {
 	check(!IsPendingKill());
 	check(!HasAnyFlags(RF_BeginDestroyed|RF_FinishDestroyed));
+
+#if WITH_EDITOR
+	// Guard against reentrancy due to attribute editing at construction time.
+	// @see RerunConstructionScripts()
+	checkf(!bActorIsBeingConstructed, TEXT("Actor construction is not reentrant"));
+#endif
+	bActorIsBeingConstructed = true;
+	ON_SCOPE_EXIT
+	{
+		bActorIsBeingConstructed = false;
+		UCSBlueprintComponentArchetypeCounts.Remove(this);
+	};
 
 	// ensure that any existing native root component gets this new transform
 	// we can skip this in the default case as the given transform will be the root component's transform
@@ -893,7 +923,7 @@ static FName FindFirstFreeName(UObject* Outer, FName BaseName)
 	// Binary search if we appear to have used this name a lot, else
 	// just linear search for the first free index:
 	if (FindObjectFast<UObject>(Outer, FName(BaseName, 100)))
-	{
+		{
 		// could be replaced by Algo::LowerBound if TRange or some other
 		// integer range type could be made compatible with the algo's
 		// implementation:
@@ -1065,7 +1095,7 @@ UActorComponent* AActor::AddComponent(FName TemplateName, bool bManualAttachment
 				TemplateData = BPGC->CookedComponentInstancingData.Find(TemplateName);
 			}
 			
-			if (!TemplateData || !TemplateData->bIsValid
+			if (!TemplateData || !TemplateData->bHasValidCookedData
 				|| !ensureMsgf(TemplateData->ComponentTemplateClass != nullptr, TEXT("AddComponent fast path (%s.%s): Cooked data is valid, but runtime support data is not initialized. Using the slow path instead."), *BPGC->GetName(), *TemplateName.ToString()))
 			{
 				Template = BPGC->FindComponentTemplateByName(TemplateName);
@@ -1154,7 +1184,7 @@ void AActor::CheckComponentInstanceName(const FName InName)
 			if (CharIndex < ConflictingObjectName.Len() - 1)
 			{
 				Counter = FCString::Atoi(*ConflictingObjectName.RightChop(CharIndex + 1));
-				ConflictingObjectName = ConflictingObjectName.Left(CharIndex + 1);
+				ConflictingObjectName.LeftInline(CharIndex + 1, false);
 			}
 			FString NewObjectName;
 			do
@@ -1168,6 +1198,17 @@ void AActor::CheckComponentInstanceName(const FName InName)
 	}
 }
 
+struct FSetUCSSerializationIndex
+{
+	friend class AActor;
+
+private:
+	FORCEINLINE static void Set(UActorComponent* Component, int32 SerializationIndex)
+	{
+		Component->UCSSerializationIndex = SerializationIndex;
+	}
+};
+
 void AActor::PostCreateBlueprintComponent(UActorComponent* NewActorComp)
 {
 	if (NewActorComp)
@@ -1176,6 +1217,22 @@ void AActor::PostCreateBlueprintComponent(UActorComponent* NewActorComp)
 
 		// Need to do this so component gets saved - Components array is not serialized
 		BlueprintCreatedComponents.Add(NewActorComp);
+
+		if (bActorIsBeingConstructed)
+		{
+			TMap<const UObject*, int32>& ComponentArchetypeCounts = UCSBlueprintComponentArchetypeCounts.FindOrAdd(this);
+			int32& Count = ComponentArchetypeCounts.FindOrAdd(NewActorComp->GetArchetype());
+			FSetUCSSerializationIndex::Set(NewActorComp, Count);
+			++Count;
+		}
+
+		// The component may not have been added to ReplicatedComponents if it was duplicated from
+		// a template, since ReplicatedComponents is normally only updated before the duplicated properties
+		// are copied over - in this case bReplicates would not have been set yet, but it will be now.
+		if (NewActorComp->GetIsReplicated())
+		{
+			ReplicatedComponents.AddUnique(NewActorComp);
+		}
 	}
 }
 

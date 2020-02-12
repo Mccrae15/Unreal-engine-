@@ -1,4 +1,4 @@
-﻿// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+﻿// Copyright Epic Games, Inc. All Rights Reserved.
 
 using System;
 using System.Collections.Generic;
@@ -12,7 +12,7 @@ namespace Gauntlet
 	
 	public class MacDeviceFactory : IDeviceFactory
 	{
-		public bool CanSupportPlatform(UnrealTargetPlatform Platform)
+		public bool CanSupportPlatform(UnrealTargetPlatform? Platform)
 		{
 			return Platform == UnrealTargetPlatform.Mac;
 		}
@@ -86,7 +86,7 @@ namespace Gauntlet
 	{
 		public string Name { get; protected set; }
 
-		public UnrealTargetPlatform Platform { get { return UnrealTargetPlatform.Mac; } }
+		public UnrealTargetPlatform? Platform { get { return UnrealTargetPlatform.Mac; } }
 
 		public bool IsAvailable { get { return true; } }
 		public bool IsConnected { get { return true; } }
@@ -160,6 +160,17 @@ namespace Gauntlet
 			return "";
 		}
 
+		public void PopulateDirectoryMappings(string ProjectDir)
+		{
+			LocalDirectoryMappings.Add(EIntendedBaseCopyDirectory.Build, Path.Combine(ProjectDir, "Build"));
+			LocalDirectoryMappings.Add(EIntendedBaseCopyDirectory.Binaries, Path.Combine(ProjectDir, "Binaries"));
+			LocalDirectoryMappings.Add(EIntendedBaseCopyDirectory.Config, Path.Combine(ProjectDir, "Saved", "Config"));
+			LocalDirectoryMappings.Add(EIntendedBaseCopyDirectory.Content, Path.Combine(ProjectDir, "Content"));
+			LocalDirectoryMappings.Add(EIntendedBaseCopyDirectory.Demos, Path.Combine(ProjectDir, "Saved", "Demos"));
+			LocalDirectoryMappings.Add(EIntendedBaseCopyDirectory.Profiling, Path.Combine(ProjectDir, "Saved", "Profiling"));
+			LocalDirectoryMappings.Add(EIntendedBaseCopyDirectory.Saved, Path.Combine(ProjectDir, "Saved"));
+		}
+
 		protected IAppInstall InstallStagedBuild(UnrealAppConfig AppConfig, StagedBuild InBuild)
 		{
 			bool SkipDeploy = Globals.Params.ParseParam("SkipDeploy");
@@ -177,9 +188,7 @@ namespace Gauntlet
 
 				if (!SkipDeploy)
 				{
-					Log.Info("Installing {0} to {1}", AppConfig.Name, ToString());
-					Log.Verbose("\tCopying {0} to {1}", BuildPath, DestPath);
-					Gauntlet.Utils.SystemHelpers.CopyDirectory(BuildPath, DestPath, Utils.SystemHelpers.CopyOptions.Mirror);
+					StagedBuild.InstallBuildParallel(AppConfig, InBuild, BuildPath, DestPath, ToString());
 				}
 				else
 				{
@@ -201,8 +210,12 @@ namespace Gauntlet
 
 			// Mac always forces this to stop logs and other artifacts going to different places
 			// Mac always forces this to stop logs and other artifacts going to different places
-			MacApp.CommandArguments += string.Format(" -userdir={0}", UserDir);
+			MacApp.CommandArguments += string.Format(" -userdir=\"{0}\"", UserDir);
 			MacApp.ArtifactPath = Path.Combine(UserDir, @"Saved");
+			if (LocalDirectoryMappings.Count == 0)
+			{
+				PopulateDirectoryMappings(BuildPath);
+			}
 
 			// temp - Mac doesn't support -userdir?
 			//MacApp.ArtifactPath = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.Personal), "Library/Logs", AppConfig.ProjectName);
@@ -220,19 +233,20 @@ namespace Gauntlet
 				}
 			}
 
-			if (Path.IsPathRooted(InBuild.ExecutablePath))
-			{
-				MacApp.ExecutablePath = InBuild.ExecutablePath;
-			}
-			else
+			// For Mac turn Foo.app into Foo/Content/MacOS/Foo
+			string AppPath = Path.GetDirectoryName(InBuild.ExecutablePath);
+			string FileName = Path.GetFileNameWithoutExtension(InBuild.ExecutablePath);
+			MacApp.ExecutablePath = Path.Combine(InBuild.ExecutablePath, "Contents", "MacOS", FileName);
+
+			if (!Path.IsPathRooted(MacApp.ExecutablePath))
 			{
 				// TODO - this check should be at a higher level....
-				string BinaryPath = Path.Combine(BuildPath, InBuild.ExecutablePath);
+				string BinaryPath = Path.Combine(BuildPath, MacApp.ExecutablePath);
 
 				// check for a local newer executable
 				if (Globals.Params.ParseParam("dev") && AppConfig.ProcessType.UsesEditor() == false)
 				{
-					string LocalBinary = Path.Combine(Environment.CurrentDirectory, InBuild.ExecutablePath);
+					string LocalBinary = Path.Combine(Environment.CurrentDirectory, MacApp.ExecutablePath);
 
 					bool LocalFileExists = File.Exists(LocalBinary);
 					bool LocalFileNewer = LocalFileExists && File.GetLastWriteTime(LocalBinary) > File.GetLastWriteTime(BinaryPath);
@@ -242,8 +256,10 @@ namespace Gauntlet
 
 					if (LocalFileExists && LocalFileNewer)
 					{
+						string LocalAppPath = Path.Combine(Environment.CurrentDirectory, InBuild.ExecutablePath);
+						
 						// need to -basedir to have our exe load content from the path
-						MacApp.CommandArguments += string.Format(" -basedir={0}", Path.GetDirectoryName(BinaryPath));
+						MacApp.CommandArguments += string.Format(" -basedir={0}", Path.GetDirectoryName(LocalAppPath));
 
 						BinaryPath = LocalBinary;
 					}
@@ -251,11 +267,6 @@ namespace Gauntlet
 
 				MacApp.ExecutablePath = BinaryPath;
 			}
-
-			// now turn the Foo.app into Foo/Content/MacOS/Foo
-			string AppPath = Path.GetDirectoryName(MacApp.ExecutablePath);
-			string FileName = Path.GetFileNameWithoutExtension(MacApp.ExecutablePath);
-			MacApp.ExecutablePath = Path.Combine(MacApp.ExecutablePath, "Contents", "MacOS", FileName);
 
 			return MacApp;
 		}
@@ -282,14 +293,19 @@ namespace Gauntlet
 			MacApp.RunOptions = RunOptions;
 
 			// Mac always forces this to stop logs and other artifacts going to different places
-			MacApp.CommandArguments += string.Format(" -userdir={0}", UserDir);
+			MacApp.CommandArguments += string.Format(" -userdir=\"{0}\"", UserDir);
 			MacApp.ArtifactPath = Path.Combine(UserDir, @"Saved");
+
 
 			// now turn the Foo.app into Foo/Content/MacOS/Foo
 			string AppPath = Path.GetDirectoryName(EditorBuild.ExecutablePath);
 			string FileName = Path.GetFileNameWithoutExtension(EditorBuild.ExecutablePath);
 			MacApp.ExecutablePath = Path.Combine(EditorBuild.ExecutablePath, "Contents", "MacOS", FileName);
 
+			if (LocalDirectoryMappings.Count == 0)
+			{
+				PopulateDirectoryMappings(AppPath);
+			}
 			return MacApp;
 		}
 

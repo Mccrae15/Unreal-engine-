@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 /*=============================================================================
 	Timeline.cpp
@@ -11,12 +11,14 @@
 #include "UObject/UnrealType.h"
 #include "Curves/CurveLinearColor.h"
 #include "Curves/CurveVector.h"
+#include "Curves/CurveFloat.h"
 #include "UObject/Package.h"
 #include "GameFramework/WorldSettings.h"
 #include "Net/UnrealNetwork.h"
 #include "Components/TimelineComponent.h"
 #include "Engine/World.h"
 #include "ProfilingDebugging/CsvProfiler.h"
+#include "Misc/App.h"
 
 DEFINE_LOG_CATEGORY_STATIC(LogTimeline, Log, All);
 
@@ -231,7 +233,7 @@ void FTimeline::SetPlaybackPosition(float NewPosition, bool bFireEvents, bool bF
 			{
 				if (VecEntry.VectorProperty == NULL)
 				{
-					VecEntry.VectorProperty = FindField<UStructProperty>(PropSetObject->GetClass(), VecEntry.VectorPropertyName);
+					VecEntry.VectorProperty = FindField<FStructProperty>(PropSetObject->GetClass(), VecEntry.VectorPropertyName);
 					if(VecEntry.VectorProperty == NULL)
 					{
 						UE_LOG(LogTimeline, Log, TEXT("SetPlaybackPosition: No vector property '%s' in '%s'"), *VecEntry.VectorPropertyName.ToString(), *PropSetObject->GetName());
@@ -265,7 +267,7 @@ void FTimeline::SetPlaybackPosition(float NewPosition, bool bFireEvents, bool bF
 			{
 				if (FloatEntry.FloatProperty == NULL)
 				{
-					FloatEntry.FloatProperty = FindField<UFloatProperty>(PropSetObject->GetClass(), FloatEntry.FloatPropertyName);
+					FloatEntry.FloatProperty = FindField<FFloatProperty>(PropSetObject->GetClass(), FloatEntry.FloatPropertyName);
 					if(FloatEntry.FloatProperty == NULL)
 					{
 						UE_LOG(LogTimeline, Log, TEXT("SetPlaybackPosition: No float property '%s' in '%s'"), *FloatEntry.FloatPropertyName.ToString(), *PropSetObject->GetName());
@@ -299,7 +301,7 @@ void FTimeline::SetPlaybackPosition(float NewPosition, bool bFireEvents, bool bF
 			{
 				if (ColorEntry.LinearColorProperty == NULL)
 				{
-					ColorEntry.LinearColorProperty = FindField<UStructProperty>(PropSetObject->GetClass(), ColorEntry.LinearColorPropertyName);
+					ColorEntry.LinearColorProperty = FindField<FStructProperty>(PropSetObject->GetClass(), ColorEntry.LinearColorPropertyName);
 					if(ColorEntry.LinearColorProperty == NULL)
 					{
 						UE_LOG(LogTimeline, Log, TEXT("SetPlaybackPosition: No linear color property '%s' in '%s'"), *ColorEntry.LinearColorPropertyName.ToString(), *PropSetObject->GetName());
@@ -322,10 +324,10 @@ void FTimeline::SetPlaybackPosition(float NewPosition, bool bFireEvents, bool bF
 		{
 			if (DirectionProperty == nullptr)
 			{
-				DirectionProperty = FindField<UByteProperty>(PropSetObject->GetClass(), DirectionPropertyName);
+				DirectionProperty = FindField<FByteProperty>(PropSetObject->GetClass(), DirectionPropertyName);
 				if (DirectionProperty == nullptr)
 				{
-					DirectionProperty = FindField<UEnumProperty>(PropSetObject->GetClass(), DirectionPropertyName);
+					DirectionProperty = FindField<FEnumProperty>(PropSetObject->GetClass(), DirectionPropertyName);
 				}
 
 				if (DirectionProperty == nullptr)
@@ -337,15 +339,15 @@ void FTimeline::SetPlaybackPosition(float NewPosition, bool bFireEvents, bool bF
 			{
 				const ETimelineDirection::Type CurrentDirection = bReversePlayback ? ETimelineDirection::Backward : ETimelineDirection::Forward;
 				TEnumAsByte<ETimelineDirection::Type> ValueAsByte(CurrentDirection);
-				if (UByteProperty* ByteDirection = Cast<UByteProperty>(DirectionProperty))
+				if (FByteProperty* ByteDirection = CastField<FByteProperty>(DirectionProperty))
 				{
 					ByteDirection->SetPropertyValue_InContainer(PropSetObject, ValueAsByte);
 				}
 				else
 				{
-					UEnumProperty* EnumProp = CastChecked<UEnumProperty>(DirectionProperty);
+					FEnumProperty* EnumProp = CastFieldChecked<FEnumProperty>(DirectionProperty);
 					void* PropAddr = EnumProp->ContainerPtrToValuePtr<void>(PropSetObject);
-					UNumericProperty* UnderlyingProp = EnumProp->GetUnderlyingProperty();
+					FNumericProperty* UnderlyingProp = EnumProp->GetUnderlyingProperty();
 					UnderlyingProp->SetIntPropertyValue(PropAddr, (int64)ValueAsByte);
 				}
 			}
@@ -669,19 +671,14 @@ void UTimelineComponent::TickComponent(float DeltaTime, enum ELevelTick TickType
 
 	if (bIgnoreTimeDilation)
 	{
-		AActor* const OwnerActor = GetOwner();
-		if (OwnerActor)
+		// Get the raw, undilated delta time.
+		DeltaTime = FApp::GetDeltaTime();
+		const UWorld* World = GetWorld();
+		if (const AWorldSettings* WorldSettings = World ? World->GetWorldSettings() : nullptr)
 		{
-			DeltaTime /= OwnerActor->GetActorTimeDilation();
-		}
-		else
-		{
-			// no Actor for some reason, use the world time dilation as fallback
-			UWorld* const W = GetWorld();
-			if (W)
-			{
-				DeltaTime /= W->GetWorldSettings()->GetEffectiveTimeDilation();
-			}
+			// Clamp DeltaTime in the same way as before.
+			// UWorld::Tick called AWorldSettings::FixupDeltaSeconds, which clamped between Min and MaxUndilatedFrameTime.
+			DeltaTime = FMath::Clamp(DeltaTime, WorldSettings->MinUndilatedFrameTime, WorldSettings->MaxUndilatedFrameTime);
 		}
 	}
 

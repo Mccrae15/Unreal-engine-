@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 using System;
 using System.Collections.Generic;
@@ -23,7 +23,7 @@ namespace Gauntlet
 		/// <summary>
 		/// Platform of this device
 		/// </summary>
-		UnrealTargetPlatform Platform { get; }
+		UnrealTargetPlatform? Platform { get; }
 
 		/// <summary>
 		/// Options used when running processes
@@ -96,7 +96,7 @@ namespace Gauntlet
 	/// </summary>
 	public interface IDeviceSource
 	{
-		bool CanSupportPlatform(UnrealTargetPlatform Platform);
+		bool CanSupportPlatform(UnrealTargetPlatform? Platform);
 	}
 
 	/// <summary>

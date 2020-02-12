@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc.All Rights Reserved.
+// Copyright Epic Games, Inc.All Rights Reserved.
 
 #pragma once
 
@@ -9,6 +9,7 @@ class FRHICommandListImmediate;
 class FSceneRenderer;
 class FTexture;
 struct FResolveParams;
+struct FGenerateMipsParams;
 
 void UpdateSceneCaptureContentMobile_RenderThread(
 	FRHICommandListImmediate& RHICmdList,
@@ -16,4 +17,6 @@ void UpdateSceneCaptureContentMobile_RenderThread(
 	FRenderTarget* RenderTarget,
 	FTexture* RenderTargetTexture,
 	const FString& OwnerName,
-	const FResolveParams& ResolveParams);
+	const FResolveParams& ResolveParams,
+	bool bGenerateMips,
+	const FGenerateMipsParams& GenerateMipsParams);

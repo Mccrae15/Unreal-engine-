@@ -1,9 +1,11 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
+#include "Containers/ContainerAllocationPolicies.h"
 #include "CoreTypes.h"
 #include "CoreFwd.h"
+#include "Delegates/Delegate.h"
 
 struct ssl_ctx_st;
 typedef struct ssl_ctx_st SSL_CTX;
@@ -15,7 +17,9 @@ class ISslCertificateManager
 {
 public:
 	virtual ~ISslCertificateManager() {}
-
+    
+	static constexpr int PUBLIC_KEY_DIGEST_SIZE = 32;
+    
 	/**
 	 * Add trusted root certificates to the SSL context
 	 *
@@ -60,4 +64,31 @@ public:
 	 * @return false if validation fails
 	 */
 	virtual bool VerifySslCertificates(X509_STORE_CTX* Context, const FString& Domain) const = 0;
+    
+	/**
+	 * Performs additional ssl validation (certificate pinning)
+	 *
+	 * @param Digests Array of public key digests to check against pinned key digests
+	 * @param Domain Domain we are connected to
+	 *
+	 * @return false if validation fails
+	 */
+	virtual bool VerifySslCertificates(TArray<TArray<uint8, TFixedAllocator<PUBLIC_KEY_DIGEST_SIZE>>>& Digests, const FString& Domain) const = 0;
+};
+
+class SSL_API FSslCertificateDelegates
+{
+public:
+	struct FCertInfo
+	{
+		static constexpr int CERT_DIGEST_SIZE = 20;
+
+		TArray<uint8, TInlineAllocator<ISslCertificateManager::PUBLIC_KEY_DIGEST_SIZE>> KeyDigest;
+		TArray<uint8, TInlineAllocator<CERT_DIGEST_SIZE>> Thumbprint;
+		FString Issuer;
+		FString Subject;
+	};
+
+	DECLARE_DELEGATE_RetVal_TwoParams(bool, FVerifySslCertificates, const FString&, const TArray<FCertInfo>&);
+	static FVerifySslCertificates VerifySslCertificates;
 };

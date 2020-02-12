@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 /*=============================================================================
 	XeAudioDevice.cpp: Unreal XAudio2 Audio interface object.
@@ -525,6 +525,10 @@ FXAudio2SoundBuffer* FXAudio2SoundBuffer::Init( FAudioDevice* AudioDevice, USoun
 	{
 		return( NULL );
 	}
+
+#if WITH_EDITOR
+	Wave->InvalidateSoundWaveIfNeccessary();
+#endif // WITH_EDITOR
 
 	FAudioDeviceManager* AudioDeviceManager = GEngine->GetAudioDeviceManager();
 

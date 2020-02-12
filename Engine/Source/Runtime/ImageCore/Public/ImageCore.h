@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -16,14 +16,15 @@ namespace ERawImageFormat
 	/**
 	 * Enumerates supported raw image formats.
 	 */
-	enum Type
+	enum Type : uint8
 	{
 		G8,
 		BGRA8,
 		BGRE8,
 		RGBA16,
 		RGBA16F,
-		RGBA32F
+		RGBA32F,
+		G16
 	};
 };
 
@@ -34,7 +35,7 @@ namespace ERawImageFormat
 struct FImage
 {
 	/** Raw image data. */
-	TArray<uint8> RawData;
+	TArray64<uint8> RawData;
 
 	/** Width of the image. */
 	int32 SizeX;
@@ -92,6 +93,18 @@ public:
 	IMAGECORE_API void CopyTo(FImage& DestImage, ERawImageFormat::Type DestFormat, EGammaSpace DestGammaSpace) const;
 
 	/**
+	 * Copies and resizes the image to a destination image with the specified size and format.
+	 * Resize is done using bilinear filtering
+	 *
+	 * @param DestImage - The destination image.
+	 * @param DestSizeX - Width of the resized image
+	 * @param DestSizeY - Height of the resized image
+	 * @param DestFormat - The destination image format.
+	 * @param DestSRGB - Whether the destination image is in SRGB format.
+	 */
+	IMAGECORE_API void ResizeTo(FImage& DestImage, int32 DestSizeX, int32 DestSizeY, ERawImageFormat::Type DestFormat, EGammaSpace DestGammaSpace) const;
+
+	/**
 	 * Gets the number of bytes per pixel.
 	 *
 	 * @return Bytes per pixel.
@@ -130,6 +143,12 @@ public:
 		return RawData.GetData();
 	}
 
+	uint16* AsG16()
+	{
+		check(Format == ERawImageFormat::G16);
+		return (uint16*)RawData.GetData();
+	}
+
 	struct FColor* AsBGRA8()
 	{
 		check(Format == ERawImageFormat::BGRA8);
@@ -166,6 +185,12 @@ public:
 	{
 		check(Format == ERawImageFormat::G8);
 		return RawData.GetData();
+	}
+
+	const uint16* AsG16() const
+	{
+		check(Format == ERawImageFormat::G16);
+		return (const uint16*)RawData.GetData();
 	}
 
 	const struct FColor* AsBGRA8() const

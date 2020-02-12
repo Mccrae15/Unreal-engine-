@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "OnlineSubsystemModule.h"
 #include "Misc/CommandLine.h"
@@ -15,15 +15,22 @@ IMPLEMENT_MODULE( FOnlineSubsystemModule, OnlineSubsystem );
  */
 FOnlineSubsystemDelegates::FOnOnlineSubsystemCreated FOnlineSubsystemDelegates::OnOnlineSubsystemCreated;
 
-/** Helper function to turn the friendly subsystem name into the module name */
-static inline FName GetOnlineModuleName(const FString& SubsystemName)
+static inline FName GetOnlineModuleName(const FString& SubsystemName, const TMap<FString, FName>& ModuleRedirects)
 {
 	FString ModuleBase(TEXT("OnlineSubsystem"));
 
 	FName ModuleName;
 	if (!SubsystemName.StartsWith(ModuleBase, ESearchCase::CaseSensitive))
 	{
-		ModuleName = FName(*(ModuleBase + SubsystemName));
+		const FName* const ModuleOverride = ModuleRedirects.Find(SubsystemName);
+		if (ModuleOverride != nullptr)
+		{
+			ModuleName = *ModuleOverride;
+		}
+		else
+		{
+			ModuleName = FName(*(ModuleBase + SubsystemName));
+		}
 	}
 	else
 	{
@@ -39,12 +46,12 @@ static inline FName GetOnlineModuleName(const FString& SubsystemName)
  * @param SubsystemName Name of the requested platform service to load
  * @return The module interface of the requested platform service, NULL if the service doesn't exist
  */
-static IModuleInterface* LoadSubsystemModule(const FString& SubsystemName)
+static IModuleInterface* LoadSubsystemModule(const FString& SubsystemName, const TMap<FString, FName>& ModuleRedirects)
 {
 	const bool bAttemptLoadModule = IOnlineSubsystem::IsEnabled(FName(*SubsystemName));
 	if (bAttemptLoadModule)
 	{
-		const FName ModuleName = GetOnlineModuleName(SubsystemName);
+		const FName ModuleName = GetOnlineModuleName(SubsystemName, ModuleRedirects);
 		FModuleManager& ModuleManager = FModuleManager::Get();
 
 		if (!ModuleManager.IsModuleLoaded(ModuleName))
@@ -73,6 +80,8 @@ void FOnlineSubsystemModule::StartupModule()
 		FModuleManager::Get().LoadModule(TEXT("XMPP"));
 	}
 
+	ProcessConfigDefinedModuleRedirects();
+
 	LoadDefaultSubsystem();
 	
 	// Also load the console/platform specific OSS which might not necessarily be the default OSS instance
@@ -95,15 +104,14 @@ void FOnlineSubsystemModule::ShutdownModule()
 	ShutdownOnlineSubsystem();
 }
 
-void FOnlineSubsystemModule::ProcessConfigDefinedSubsystems()
+static inline void ReadOnlineSubsystemConfigPairs(const TCHAR* Section, const TCHAR* Key, const FString& ConfigFile, TArray<TPair<FString, FString>>& OutPairs)
 {
-	// Save off the names of the user defined platform services.
-	TArray<FString> TmpConfigDefinedSubsystems;
-	GConfig->GetArray(TEXT("OnlineSubsystem"), TEXT("ConfigDefinedPlatformServices"), TmpConfigDefinedSubsystems, GEngineIni);
+	TArray<FString> ConfigPairs;
+	GConfig->GetArray(Section, Key, ConfigPairs, ConfigFile);
+	OutPairs.Reserve(ConfigPairs.Num());
 
-	// Takes on the pattern "(ServiceNameString=SubsystemName)"
-	// For example "(GameFeature=NULL)" to have OnlineSubsystemNull be the provider for "GameFeature"
-	for (const FString& ConfigEntry : TmpConfigDefinedSubsystems)
+	// Takes on the pattern "(Key=Value)"
+	for (const FString& ConfigEntry : ConfigPairs)
 	{
 		FString TrimmedConfigEntry = ConfigEntry.TrimStartAndEnd();
 		FString KeyString;
@@ -111,34 +119,81 @@ void FOnlineSubsystemModule::ProcessConfigDefinedSubsystems()
 
 		if (TrimmedConfigEntry.Left(1) == TEXT("("))
 		{
-			TrimmedConfigEntry = TrimmedConfigEntry.RightChop(1);
+			TrimmedConfigEntry.RightChopInline(1, false);
 		}
 		if (TrimmedConfigEntry.Right(1) == TEXT(")"))
 		{
-			TrimmedConfigEntry = TrimmedConfigEntry.LeftChop(1);
+			TrimmedConfigEntry.LeftChopInline(1, false);
 		}
-		if (TrimmedConfigEntry.Split(TEXT("="), &KeyString, &ValueString))
+		if (TrimmedConfigEntry.Split(TEXT("="), &KeyString, &ValueString, ESearchCase::CaseSensitive))
 		{
 			KeyString.TrimStartAndEndInline();
 			ValueString.TrimStartAndEndInline();
 		}
-		UE_LOG(LogOnline, Verbose, TEXT("ConfigDefinedPlatformServices: Associating OnlineSubsystem %s with identifier %s"), *ValueString, *KeyString);
-		ConfigDefinedSubsystems.Add(KeyString, FName(*ValueString));
+		OutPairs.Emplace(MoveTemp(KeyString), MoveTemp(ValueString));
+	}
+}
+
+void FOnlineSubsystemModule::ProcessConfigDefinedSubsystems()
+{
+	// Takes on the pattern "(ServiceNameString=SubsystemName)"
+	// For example "(GameFeature=NULL)" to have OnlineSubsystemNull be the provider for "GameFeature"
+	TArray<TPair<FString, FString>> ServicePairs;
+	ReadOnlineSubsystemConfigPairs(TEXT("OnlineSubsystem"), TEXT("ConfigDefinedPlatformServices"), GEngineIni, ServicePairs);
+
+	for (TPair<FString, FString>& ServicePair : ServicePairs)
+	{
+		UE_LOG(LogOnline, Verbose, TEXT("ConfigDefinedPlatformServices: Associating OnlineSubsystem %s with identifier %s"), *ServicePair.Value, *ServicePair.Key);
+		ConfigDefinedSubsystems.Add(MoveTemp(ServicePair.Key), FName(*ServicePair.Value));
+	}
+}
+
+void FOnlineSubsystemModule::ProcessConfigDefinedModuleRedirects()
+{
+	// Takes on the pattern "(SubsystemName=ModuleName)"
+	// For example "(Test=OnlineSubsystemNull)" to have OnlineSubsystemNull be the provider for "Test"
+	TArray<TPair<FString, FString>> RedirectPairs;
+	ReadOnlineSubsystemConfigPairs(TEXT("OnlineSubsystem"), TEXT("ModuleRedirects"), GEngineIni, RedirectPairs);
+
+	for (TPair<FString, FString>& RedirectPair : RedirectPairs)
+	{
+		UE_LOG(LogOnline, Verbose, TEXT("ProcessConfigDefinedModuleRedirects: Associating module %s with OnlineSubsystem %s"), *RedirectPair.Value, *RedirectPair.Key);
+		ModuleRedirects.Emplace(MoveTemp(RedirectPair.Key), FName(*RedirectPair.Value));
 	}
 }
 
 bool FOnlineSubsystemModule::TryLoadSubsystemAndSetDefault(FName ModuleName)
 {
 	// A module loaded with its factory method set for creation and a default instance of the online subsystem is required
-	if ((LoadSubsystemModule(ModuleName.ToString()) &&
-		OnlineFactories.Contains(ModuleName) &&
-		GetOnlineSubsystem(ModuleName) != nullptr))
+	bool bLoaded = false;
+	FString ModuleNameString = ModuleName.ToString();
+	if (LoadSubsystemModule(ModuleNameString, ModuleRedirects))
 	{
-		DefaultPlatformService = ModuleName;
-		return true;
+		if (OnlineFactories.Contains(ModuleName))
+		{
+			IOnlineSubsystem* OnlineSubsystem = GetOnlineSubsystem(ModuleName);
+			if (OnlineSubsystem != nullptr)
+			{
+				UE_LOG_ONLINE(Log, TEXT("TryLoadSubsystemAndSetDefault: Loaded subsystem for module [%s]"), *ModuleNameString);
+				DefaultPlatformService = ModuleName;
+				bLoaded = true;
+			}
+			else
+			{
+				//UE_LOG_ONLINE(Warning, TEXT("TryLoadSubsystemAndSetDefault: GetOnlineSubsystem([%s]) failed"), *ModuleNameString);
+			}
+		}
+		else
+		{
+			UE_LOG_ONLINE(Warning, TEXT("TryLoadSubsystemAndSetDefault: OnlineFactories does not contain [%s]"), *ModuleNameString);
+		}
+	}
+	else
+	{
+		UE_LOG_ONLINE(Warning, TEXT("TryLoadSubsystemAndSetDefault: LoadSubsystemModule([%s]) failed"), *ModuleNameString);
 	}
 
-	return false;
+	return bLoaded;
 }
 
 void FOnlineSubsystemModule::LoadDefaultSubsystem()
@@ -155,6 +210,7 @@ void FOnlineSubsystemModule::LoadDefaultSubsystem()
 	// if default fails, attempt to load Null
 	if (!bHasLoadedModule)
 	{
+		//UE_LOG_ONLINE(Warning, TEXT("LoadDefaultSubsystem: Failed to load Subsystem=[%s], falling back to NULL_SUBSYSTEM"), *InterfaceString);
 		bHasLoadedModule = TryLoadSubsystemAndSetDefault(NULL_SUBSYSTEM);
 	}
 
@@ -167,6 +223,8 @@ void FOnlineSubsystemModule::LoadDefaultSubsystem()
 void FOnlineSubsystemModule::ReloadDefaultSubsystem()
 {
 	DestroyOnlineSubsystem(DefaultPlatformService);
+	// Clear our InstanceNames cache so we can re-establish it in case the DefaultPlatformService
+	InstanceNames.Empty();
 	LoadDefaultSubsystem();
 }
 
@@ -196,7 +254,7 @@ void FOnlineSubsystemModule::ShutdownOnlineSubsystem()
 		UE_LOG_ONLINE(Verbose, TEXT("Unloading online subsystem: %s"), *It.Key().ToString());
 
 		// Unloading the module will do proper cleanup
-		FName ModuleName = GetOnlineModuleName(It.Key().ToString());
+		FName ModuleName = GetOnlineModuleName(It.Key().ToString(), ModuleRedirects);
 
 		const bool bIsShutdown = true;
 		ModuleManager.UnloadModule(ModuleName, bIsShutdown);
@@ -233,34 +291,47 @@ void FOnlineSubsystemModule::EnumerateOnlineSubsystems(FEnumerateOnlineSubsystem
 
 FName FOnlineSubsystemModule::ParseOnlineSubsystemName(const FName& FullName, FName& SubsystemName, FName& InstanceName) const
 {
-	SubsystemName = DefaultPlatformService;
-	InstanceName = FOnlineSubsystemImpl::DefaultInstanceName;
-
-	if (!FullName.IsNone())
+	FInstanceNameEntry* Entry = InstanceNames.Find(FullName);
+	if (Entry)
 	{
-		FString FullNameStr = FullName.ToString();
-
-		int32 DelimIdx = INDEX_NONE;
-		static const TCHAR InstanceDelim = ':';
-		if (FullNameStr.FindChar(InstanceDelim, DelimIdx))
-		{
-			if (DelimIdx > 0)
-			{
-				SubsystemName = FName(*FullNameStr.Left(DelimIdx));
-			}
-
-			if ((DelimIdx + 1) < FullNameStr.Len())
-			{
-				InstanceName = FName(*FullNameStr.RightChop(DelimIdx + 1));
-			}
-		}
-		else
-		{
-			SubsystemName = FName(*FullNameStr);
-		}
+		SubsystemName = Entry->SubsystemName;
+		InstanceName = Entry->InstanceName;	
 	}
+	else
+	{
+		SubsystemName = DefaultPlatformService;
+		InstanceName = FOnlineSubsystemImpl::DefaultInstanceName;
 
-	return FName(*FString::Printf(TEXT("%s:%s"), *SubsystemName.ToString(), *InstanceName.ToString()));
+		if (!FullName.IsNone())
+		{
+			FString FullNameStr = FullName.ToString();
+
+			int32 DelimIdx = INDEX_NONE;
+			static const TCHAR InstanceDelim = ':';
+			if (FullNameStr.FindChar(InstanceDelim, DelimIdx))
+			{
+				if (DelimIdx > 0)
+				{
+					SubsystemName = FName(*FullNameStr.Left(DelimIdx));
+				}
+
+				if ((DelimIdx + 1) < FullNameStr.Len())
+				{
+					InstanceName = FName(*FullNameStr.RightChop(DelimIdx + 1));
+				}
+			}
+			else
+			{
+				SubsystemName = FName(*FullNameStr);
+			}			
+		}
+
+		Entry = &InstanceNames.Add(FullName);
+		Entry->SubsystemName = SubsystemName;
+		Entry->InstanceName = InstanceName;
+		Entry->FullPath = FName(*FString::Printf(TEXT("%s:%s"), *SubsystemName.ToString(), *InstanceName.ToString()));
+	}
+	return Entry->FullPath;
 }
 
 IOnlineSubsystem* FOnlineSubsystemModule::GetOnlineSubsystem(const FName InSubsystemName)
@@ -268,11 +339,15 @@ IOnlineSubsystem* FOnlineSubsystemModule::GetOnlineSubsystem(const FName InSubsy
 	FName SubsystemName, InstanceName;
 	FName KeyName = ParseOnlineSubsystemName(InSubsystemName, SubsystemName, InstanceName);
 
-	IOnlineSubsystemPtr* OnlineSubsystem = nullptr;
+	IOnlineSubsystemPtr OnlineSubsystem;
 	if (!SubsystemName.IsNone())
 	{
-		OnlineSubsystem = OnlineSubsystems.Find(KeyName);
-		if (OnlineSubsystem == nullptr)
+		IOnlineSubsystemPtr* ExistingOnlineSubsystem = OnlineSubsystems.Find(KeyName);
+		if (ExistingOnlineSubsystem != nullptr)
+		{
+			OnlineSubsystem = *ExistingOnlineSubsystem;
+		}
+		else
 		{
 			if (IOnlineSubsystem::IsEnabled(SubsystemName))
 			{
@@ -280,7 +355,7 @@ IOnlineSubsystem* FOnlineSubsystemModule::GetOnlineSubsystem(const FName InSubsy
 				if (OSSFactory == nullptr)
 				{
 					// Attempt to load the requested factory
-					IModuleInterface* NewModule = LoadSubsystemModule(SubsystemName.ToString());
+					IModuleInterface* NewModule = LoadSubsystemModule(SubsystemName.ToString(), ModuleRedirects);
 					if (NewModule)
 					{
 						// If the module loaded successfully this should be non-NULL
@@ -290,14 +365,14 @@ IOnlineSubsystem* FOnlineSubsystemModule::GetOnlineSubsystem(const FName InSubsy
 
 				if (OSSFactory != nullptr)
 				{
-					UE_LOG_ONLINE(Verbose, TEXT("Creating online subsystem instance for: %s"), *InSubsystemName.ToString());
+					UE_LOG_ONLINE(Log, TEXT("Creating online subsystem instance for: %s"), *InSubsystemName.ToString());
 						
 					IOnlineSubsystemPtr NewSubsystemInstance = (*OSSFactory)->CreateSubsystem(InstanceName);
 					if (NewSubsystemInstance.IsValid())
 					{
 						OnlineSubsystems.Add(KeyName, NewSubsystemInstance);
-						OnlineSubsystem = OnlineSubsystems.Find(KeyName);
-						FOnlineSubsystemDelegates::OnOnlineSubsystemCreated.Broadcast(NewSubsystemInstance.Get());
+						OnlineSubsystem = NewSubsystemInstance;
+						FOnlineSubsystemDelegates::OnOnlineSubsystemCreated.Broadcast(NewSubsystemInstance.Get());						
 					}
 					else
 					{
@@ -313,7 +388,7 @@ IOnlineSubsystem* FOnlineSubsystemModule::GetOnlineSubsystem(const FName InSubsy
 		}
 	}
 
-	return (OnlineSubsystem == nullptr) ? nullptr : (*OnlineSubsystem).Get();
+	return OnlineSubsystem.Get();
 }
 
 IOnlineSubsystem* FOnlineSubsystemModule::GetNativeSubsystem(bool bAutoLoad)
@@ -388,7 +463,7 @@ bool FOnlineSubsystemModule::IsOnlineSubsystemLoaded(const FName InSubsystemName
 
 	if (!SubsystemName.IsNone())
 	{
-		if (FModuleManager::Get().IsModuleLoaded(GetOnlineModuleName(SubsystemName.ToString())))
+		if (FModuleManager::Get().IsModuleLoaded(GetOnlineModuleName(SubsystemName.ToString(), ModuleRedirects)))
 		{
 			bIsLoaded = true;
 		}

@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "OculusFunctionLibrary.h"
 #include "OculusHMDPrivate.h"
@@ -134,8 +134,7 @@ void UOculusFunctionLibrary::SetCPUAndGPULevels(int CPULevel, int GPULevel)
 	OculusHMD::FOculusHMD* OculusHMD = GetOculusHMD();
 	if (OculusHMD != nullptr && OculusHMD->IsHMDActive())
 	{
-		ovrp_SetSystemCpuLevel2(CPULevel);
-		ovrp_SetSystemGpuLevel2(GPULevel);
+		OculusHMD->SetCPUAndGPULevel(CPULevel, GPULevel);
 	}
 #endif // OCULUS_HMD_SUPPORTED_PLATFORMS
 }
@@ -383,18 +382,18 @@ float UOculusFunctionLibrary::GetGPUFrameTime()
 	return 0.0f;
 }
 
-void UOculusFunctionLibrary::SetTiledMultiresLevel(ETiledMultiResLevel level)
+void UOculusFunctionLibrary::SetFixedFoveatedRenderingLevel(EFixedFoveatedRenderingLevel level)
 {
 #if OCULUS_HMD_SUPPORTED_PLATFORMS
 	OculusHMD::FOculusHMD* OculusHMD = GetOculusHMD();
 	if (OculusHMD != nullptr)
 	{
-		OculusHMD->SetTiledMultiResLevel(level);
+		OculusHMD->SetFixedFoveatedRenderingLevel(level);
 	}
 #endif // OCULUS_HMD_SUPPORTED_PLATFORMS
 }
 
-ETiledMultiResLevel UOculusFunctionLibrary::GetTiledMultiresLevel()
+EFixedFoveatedRenderingLevel UOculusFunctionLibrary::GetFixedFoveatedRenderingLevel()
 {
 #if OCULUS_HMD_SUPPORTED_PLATFORMS
 	OculusHMD::FOculusHMD* OculusHMD = GetOculusHMD();
@@ -403,11 +402,11 @@ ETiledMultiResLevel UOculusFunctionLibrary::GetTiledMultiresLevel()
 		ovrpTiledMultiResLevel Lvl;
 		if (OVRP_SUCCESS(ovrp_GetTiledMultiResLevel(&Lvl)))
 		{
-			return (ETiledMultiResLevel)Lvl;
+			return (EFixedFoveatedRenderingLevel)Lvl;
 		}
 	}
 #endif // OCULUS_HMD_SUPPORTED_PLATFORMS
-	return ETiledMultiResLevel::ETiledMultiResLevel_Off;
+	return EFixedFoveatedRenderingLevel::FFR_Off;
 }
 
 FString UOculusFunctionLibrary::GetDeviceName()
@@ -533,6 +532,19 @@ static ovrpBoundaryType ToOvrpBoundaryType(EBoundaryType Source)
 	}
 }
 #endif // OCULUS_HMD_SUPPORTED_PLATFORMS
+
+bool UOculusFunctionLibrary::IsGuardianConfigured()
+{
+#if OCULUS_HMD_SUPPORTED_PLATFORMS
+	OculusHMD::FOculusHMD* OculusHMD = GetOculusHMD();
+	if (OculusHMD != nullptr)
+	{
+		ovrpBool boundaryConfigured;
+		return OVRP_SUCCESS(ovrp_GetBoundaryConfigured2(&boundaryConfigured)) && boundaryConfigured;
+	}
+#endif
+	return false;
+}
 
 bool UOculusFunctionLibrary::IsGuardianDisplayed()
 {

@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -14,6 +14,9 @@
 #include "Logging/TokenizedMessage.h"
 #include "MovieSceneTranslator.h"
 #include "MovieSceneCaptureSettings.h"
+#include "SEnumCombobox.h"
+#include "Animation/AnimSequence.h"
+
 
 class ISequencer;
 class UMovieScene;
@@ -22,11 +25,29 @@ class UInterpTrackMoveAxis;
 struct FMovieSceneObjectBindingID;
 class UMovieSceneTrack;
 struct FMovieSceneEvaluationTrack;
-
+class UMovieSceneUserImportFBXSettings;
 struct FMovieSceneFloatValue;
+class INodeNameAdapter;
+struct FMovieSceneSequenceTransform;
 template<typename ChannelType> struct TMovieSceneChannelData;
 
-DECLARE_DELEGATE_TwoParams(FOnEnumSelectionChanged, int32 /*Selection*/, ESelectInfo::Type /*SelectionType*/);
+namespace fbxsdk
+{
+	class FbxCamera;
+	class FbxNode;
+}
+namespace UnFbx
+{
+	class FFbxImporter;
+	class FFbxCurvesAPI;
+};
+
+struct FFBXInOutParameters
+{
+	bool bConvertSceneBackup;
+	bool bConvertSceneUnitBackup;
+	bool bForceFrontXAxisBackup;
+};
 
 class MOVIESCENETOOLS_API MovieSceneToolHelpers
 {
@@ -38,16 +59,18 @@ public:
 	 * @param Sections The sections to trim
 	 * @param Time	The time at which to trim
 	 * @param bTrimLeft Trim left or trim right
+	 * @param bDeleteKeys Delete keys outside the split ranges
 	 */
-	static void TrimSection(const TSet<TWeakObjectPtr<UMovieSceneSection>>& Sections, FQualifiedFrameTime Time, bool bTrimLeft);
+	static void TrimSection(const TSet<TWeakObjectPtr<UMovieSceneSection>>& Sections, FQualifiedFrameTime Time, bool bTrimLeft, bool bDeleteKeys);
 
 	/**
 	 * Splits sections at the given time
 	 *
 	 * @param Sections The sections to split
 	 * @param Time	The time at which to split
+	 * @param bDeleteKeys Delete keys outside the split ranges
 	 */
-	static void SplitSection(const TSet<TWeakObjectPtr<UMovieSceneSection>>& Sections, FQualifiedFrameTime Time);
+	static void SplitSection(const TSet<TWeakObjectPtr<UMovieSceneSection>>& Sections, FQualifiedFrameTime Time, bool bDeleteKeys);
 
 	/**
 	 * Parse a shot name into its components.
@@ -92,20 +115,30 @@ public:
 	 * Gather takes - level sequence assets that have the same shot prefix and shot number in the same asset path (directory)
 	 * 
 	 * @param Section The section to gather takes from
-	 * @param TakeNumbers The gathered take numbers
-	 * @param CurrentTakeNumber The current take number of the section
+	 * @param AssetData The gathered asset take data
+	 * @param OutCurrentTakeNumber The current take number of the section
 	 */
-	static void GatherTakes(const UMovieSceneSection* Section, TArray<uint32>& TakeNumbers, uint32& CurrentTakeNumber);
+	static void GatherTakes(const UMovieSceneSection* Section, TArray<FAssetData>& AssetData, uint32& OutCurrentTakeNumber);
 
 
 	/**
-	 * Get the asset associated with the take number
+	 * Get the take number for the given asset
 	 *
-	 * @param Section The section to gather the take from
-	 * @param TakeNumber The take number to get
-	 * @return The asset
+	 * @param Section The section to gather the take number from
+	 * @param AssetData The take asset to search for
+	 * @param OutTakeNumber The take number for the given asset
+	 * @return Whether the take number was found
 	 */
-	static UObject* GetTake(const UMovieSceneSection* Section, uint32 TakeNumber);
+	static bool GetTakeNumber(const UMovieSceneSection* Section, FAssetData AssetData, uint32& OutTakeNumber);
+
+	/**
+	 * Set the take number for the given asset
+	 *
+	 * @param Section The section to set the take number on
+	 * @param InTakeNumber The take number for the given asset
+	 * @return Whether the take number could be set
+	 */
+	static bool SetTakeNumber(const UMovieSceneSection* Section, uint32 InTakeNumber);
 
 	/**
 	 * Get the next available row index for the section so that it doesn't overlap any other sections in time.
@@ -124,7 +157,7 @@ public:
 	 * @param OnSelectionChanged Delegate fired when selection is changed
 	 * @return The new widget
 	 */
-	static TSharedRef<SWidget> MakeEnumComboBox(const UEnum* Enum, TAttribute<int32> CurrentValue, FOnEnumSelectionChanged OnSelectionChanged);
+	static TSharedRef<SWidget> MakeEnumComboBox(const UEnum* Enum, TAttribute<int32> CurrentValue, SEnumCombobox::FOnEnumSelectionChanged OnSelectionChanged);
 
 
 	/**
@@ -190,14 +223,101 @@ public:
 	static void MovieSceneTranslatorLogOutput(FMovieSceneTranslator* InTranslator, TSharedRef<FMovieSceneTranslatorContext> InContext);
 
 	/**
-	* Import FBX
+	* Export FBX
+	*
+	* @param World The world to export from
+	* @param InMovieScene The movie scene to export frome
+	* @param MoviePlayer to use
+	* @param Bindings The sequencer binding map
+	* @param NodeNameAdaptor Adaptor to look up actor names.
+	* @param InFBXFileName the fbx file name.
+	* @param Template Movie scene sequence id.
+	* @param RootToLocalTransform The root to local transform time.
+	* @return Whether the export was successful
+	*/
+	static bool ExportFBX(UWorld* World, UMovieScene* MovieScene, IMovieScenePlayer* Player, TArray<FGuid>& Bindings, INodeNameAdapter& NodeNameAdapter, FMovieSceneSequenceIDRef& Template,  const FString& InFBXFileName, FMovieSceneSequenceTransform& RootToLocalTransform);
+
+	/**
+	* Import FBX with dialog
 	*
 	* @param InMovieScene The movie scene to import the fbx into
 	* @param InObjectBindingNameMap The object binding to name map to map import fbx animation onto
 	* @param bCreateCameras Whether to allow creation of cameras if found in the fbx file.
 	* @return Whether the import was successful
 	*/
-	static bool ImportFBX(UMovieScene* InMovieScene, ISequencer& InSequencer, const TMap<FGuid, FString>& InObjectBindingNameMap, TOptional<bool> bCreateCameras);
+	static bool ImportFBXWithDialog(UMovieScene* InMovieScene, ISequencer& InSequencer, const TMap<FGuid, FString>& InObjectBindingNameMap, TOptional<bool> bCreateCameras);
+
+	/**
+	* Get FBX Ready for Import. This make sure the passed in file make be imported. After calling this call ImportReadiedFbx. It returns out some parameters that we forcably change so we reset them later.
+	*
+	* @param ImportFileName The filename to import into
+	* @param ImportFBXSettings FBX Import Settings to enforce.
+	* @param OutFBXParams Paremter to pass back to ImportReadiedFbx
+	* @return Whether the fbx file was ready and is ready to be import.
+	*/
+	static bool ReadyFBXForImport(const FString&  ImportFilename, UMovieSceneUserImportFBXSettings* ImportFBXSettings, FFBXInOutParameters& OutFBXParams);
+
+	/**
+	* Import into an FBX scene that has been readied already, via the ReadyFBXForImport call. We do this as two pass in case the client want's to do something, like create camera's, before actually
+	* loading the data.
+	*
+	* @param World The world to import the fbx into
+	* @param World The movie scene to import the fbx into
+	* @param ObjectBindingMap Map relating binding id's to track names. 
+	* @param ImportFBXSettings FBX Import Settings to enforce.
+	* @param InFBXParams Paremter from ImportReadiedFbx used to reset some internal fbx settings that we override.
+	* @return Whether the fbx file was ready and is ready to be import.
+	*/
+
+	static bool ImportFBXIfReady(UWorld* World, UMovieScene* MovieScene, IMovieScenePlayer* Player, TMap<FGuid, FString>& ObjectBindingMap, UMovieSceneUserImportFBXSettings* ImportFBXSettings,
+		const FFBXInOutParameters& InFBXParams);
+
+	/**
+	* Import FBX Camera to existing camera's
+	*
+	* @param FbxImporter The Fbx importer
+	* @param InMovieScene The movie scene to import the fbx into
+	* @param Player The player we are getting objects from.
+	* @param TemplateID Id of the sequence template ID.
+	* @param InObjectBindingNameMap The object binding to name map to map import fbx animation onto
+	* @param bCreateCameras Whether to allow creation of cameras if found in the fbx file.
+	* @param bNotifySlate  If an issue show's up, whether or not to notify the UI.
+	* @return Whether the import was successful
+	*/
+
+	static void ImportFBXCameraToExisting(UnFbx::FFbxImporter* FbxImporter, UMovieScene* InMovieScene, IMovieScenePlayer* Player, FMovieSceneSequenceIDRef TemplateID, TMap<FGuid, FString>& InObjectBindingMap, bool bMatchByNameOnly, bool bNotifySlate);
+
+	/**
+	* Import FBX Node to existing actor/node
+	*
+	* @param NodeName Name of fbx node/actor
+	* @param CurvesApi Existing FBX curves coming in
+	* @param InMovieScene The movie scene to import the fbx into
+	* @param Player The player we are getting objects from.
+	* @param TemplateID Id of the sequence template ID.
+	* @param ObjectBinding Guid of the object we are importing onto.
+	* @return Whether the import was successful
+	*/
+	static bool ImportFBXNode(FString NodeName, UnFbx::FFbxCurvesAPI& CurveAPI, UMovieScene* InMovieScene, IMovieScenePlayer* Player, FMovieSceneSequenceIDRef TemplateID, FGuid ObjectBinding);
+
+
+	/**
+	*  Camera track was added, we usually do extra things, like add a Camera Cut tracks
+	*
+	* @param MovieScene MovieScene to add Camera.
+	* @param CameraGuid CameraGuid  Guid of the camera that was added.
+	* @param FrameNumber FrameNumber it's added at.
+	*/
+	static void CameraAdded(UMovieScene* MovieScene, FGuid CameraGuid, FFrameNumber FrameNumber);
+
+	/**
+	* Import FBX Camera to existing camera's
+	*
+	* @param CameraNode The Fbx camera
+	* @param InCameraActor Ue4 actor
+	*/
+	static void CopyCameraProperties(fbxsdk::FbxCamera* CameraNode, AActor* InCameraActor);
+
 
 	/*
 	 * Rich curve interpolation to matinee interpolation
@@ -226,6 +346,14 @@ public:
 	static UObject* ExportToCameraAnim(UMovieScene* InMovieScene, FGuid& InObjectBinding);
 
 	/*
+	
+	
+	*/
+	static bool ExportToAnimSequence(UAnimSequence* AnimSequence, UMovieScene* MovieScene, IMovieScenePlayer* Player,
+		USkeletalMeshComponent* SkelMesh, FMovieSceneSequenceIDRef& Template, FMovieSceneSequenceTransform& RootToLocalTransform);
+
+
+	/*
 	 * @return Whether this object class has hidden mobility and can't be animated
 	 */
 	static bool HasHiddenMobility(const UClass* ObjectClass);
@@ -238,6 +366,15 @@ public:
 	*/
 	static FMovieSceneEvaluationTrack* GetEvaluationTrack(ISequencer *Sequencer, const FGuid& TrackSignature);
 
+	/*
+	 * Get the fbx cameras from the requested parent node
+	 */
+	static void GetCameras(fbxsdk::FbxNode* Parent, TArray<fbxsdk::FbxCamera*>& Cameras);
+
+	/*
+	 * Get the fbx camera name
+	 */
+	static FString GetCameraName(fbxsdk::FbxCamera* InCamera);
 };
 
 class FTrackEditorBindingIDPicker : public FMovieSceneObjectBindingIDPicker

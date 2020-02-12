@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 /**
  * This file is just used to indirectly include EngineParticleClasses.h with all of the C++ headers it depends on included first.
@@ -25,8 +25,8 @@ MONOLITHIC_HEADER_BOILERPLATE()
 #include "EngineDefines.h"
 #include "ComponentInstanceDataCache.h"
 #include "TimerManager.h"
-#include "GenericOctreePublic.h"
-#include "GenericOctree.h"
+#include "Math/GenericOctreePublic.h"
+#include "Math/GenericOctree.h"
 #include "BlendableManager.h"
 #include "FinalPostProcessSettings.h"
 #include "SceneInterface.h"

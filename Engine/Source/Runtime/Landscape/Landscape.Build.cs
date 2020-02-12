@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 using UnrealBuildTool;
 using System.IO;
@@ -10,8 +10,9 @@ public class Landscape : ModuleRules
 		PrivateIncludePaths.AddRange(
 			new string[] {
 				"Runtime/Engine/Private", // for Engine/Private/Collision/PhysXCollision.h
-				"Runtime/Landscape/Private"
-			}
+				"Runtime/Landscape/Private",
+                "../Shaders/Shared"
+            }
 		);
 
 		PrivateIncludePathModuleNames.AddRange(
@@ -42,11 +43,12 @@ public class Landscape : ModuleRules
 			DynamicallyLoadedModuleNames.Add("PhysXCooking");
 		}
 
-		if (Target.bBuildDeveloperTools && Target.Type != TargetType.Server)
+		if (Target.Type == TargetType.Editor || Target.Type == TargetType.Program)
 		{
 			PrivateDependencyModuleNames.AddRange(
 				new string[] {
 					"MeshDescription",
+					"StaticMeshDescription",
                     "MeshUtilitiesCommon"
 				}
 			);

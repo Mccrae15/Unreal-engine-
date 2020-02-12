@@ -1,11 +1,13 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "ViewModels/Stack/NiagaraStackScriptItemGroup.h"
 #include "ViewModels/Stack/NiagaraStackModuleItem.h"
-#include "ViewModels/Stack/NiagaraStackSpacer.h"
 #include "ViewModels/NiagaraSystemViewModel.h"
+#include "ViewModels/NiagaraSystemSelectionViewModel.h"
 #include "ViewModels/NiagaraEmitterViewModel.h"
-#include "NiagaraScriptViewModel.h"
+#include "ViewModels/NiagaraScriptViewModel.h"
+#include "ViewModels/NiagaraScratchPadViewModel.h"
+#include "ViewModels/NiagaraScratchPadScriptViewModel.h"
 #include "NiagaraScriptGraphViewModel.h"
 #include "NiagaraGraph.h"
 #include "NiagaraNodeOutput.h"
@@ -18,13 +20,18 @@
 #include "NiagaraStackEditorData.h"
 #include "NiagaraSystem.h"
 #include "NiagaraEmitterHandle.h"
+#include "NiagaraEditorSettings.h"
+#include "NiagaraClipboard.h"
+#include "Toolkits/NiagaraSystemToolkit.h"
 
 #include "Internationalization/Internationalization.h"
 #include "ScopedTransaction.h"
 #include "Widgets/Notifications/SNotificationList.h"
 #include "Framework/Notifications/NotificationManager.h"
 #include "Internationalization/Internationalization.h"
-#include "ViewModels/Stack/NiagaraStackModuleSpacer.h"
+#include "DragAndDrop/AssetDragDropOp.h"
+#include "AssetRegistryModule.h"
+#include "Modules/ModuleManager.h"
 
 #define LOCTEXT_NAMESPACE "UNiagaraStackScriptItemGroup"
 
@@ -40,17 +47,33 @@ public:
 			Category = LOCTEXT("ModuleNotCategorized", "Uncategorized Modules");
 		}
 
-		FString DisplayNameString = FName::NameToDisplayString(AssetData.AssetName.ToString(), false);
-		FText DisplayName = FText::FromString(DisplayNameString);
+		bool bIsInLibrary = FNiagaraEditorUtilities::IsScriptAssetInLibrary(AssetData);
+
+		FText DisplayName = FNiagaraEditorUtilities::FormatScriptName(AssetData.AssetName, bIsInLibrary);
 
 		FText AssetDescription;
 		AssetData.GetTagValue(GET_MEMBER_NAME_CHECKED(UNiagaraScript, Description), AssetDescription);
-		FText Description = FNiagaraEditorUtilities::FormatScriptAssetDescription(AssetDescription, AssetData.ObjectPath);
+		FText Description = FNiagaraEditorUtilities::FormatScriptDescription(AssetDescription, AssetData.ObjectPath, bIsInLibrary);
 
 		FText Keywords;
 		AssetData.GetTagValue(GET_MEMBER_NAME_CHECKED(UNiagaraScript, Keywords), Keywords);
 
-		return MakeShareable(new FScriptGroupAddAction(Category, DisplayName, Description, Keywords, FNiagaraVariable(), false, AssetData, false));
+		return MakeShareable(new FScriptGroupAddAction(Category, DisplayName, Description, Keywords, FNiagaraVariable(), false, AssetData, nullptr, false));
+	}
+
+	static TSharedRef<FScriptGroupAddAction> CreateScriptModuleAction(UNiagaraScript* ModuleScript)
+	{
+		FText Category = ModuleScript->Category;
+		if (Category.IsEmptyOrWhitespace())
+		{
+			Category = LOCTEXT("ModuleNotCategorized", "Uncategorized Modules");
+		}
+
+		FText DisplayName = FNiagaraEditorUtilities::FormatScriptName(ModuleScript->GetFName(), ModuleScript->bExposeToLibrary);
+		FText Description = FNiagaraEditorUtilities::FormatScriptDescription(ModuleScript->Description, *ModuleScript->GetPathName(), ModuleScript->bExposeToLibrary);
+		FText Keywords = ModuleScript->Keywords;
+
+		return MakeShareable(new FScriptGroupAddAction(Category, DisplayName, Description, Keywords, FNiagaraVariable(), false, FAssetData(), ModuleScript, false));
 	}
 
 	static TSharedRef<FScriptGroupAddAction> CreateExistingParameterModuleAction(FNiagaraVariable ParameterVariable)
@@ -63,7 +86,7 @@ public:
 		FText AttributeDescription = FNiagaraConstants::GetAttributeDescription(ParameterVariable);
 		FText Description = FText::Format(LOCTEXT("ExistingParameterModuleDescriptoinFormat", "Description: Set the parameter {0}. {1}"), FText::FromName(ParameterVariable.GetName()), AttributeDescription);
 
-		return MakeShareable(new FScriptGroupAddAction(Category, DisplayName, Description, FText(), ParameterVariable, false, FAssetData(), false));
+		return MakeShareable(new FScriptGroupAddAction(Category, DisplayName, Description, FText(), ParameterVariable, false, FAssetData(), nullptr, false));
 	}
 
 	static TSharedRef<FScriptGroupAddAction> CreateNewParameterModuleAction(FName NewParameterNamespace, FNiagaraTypeDefinition NewParameterType)
@@ -75,7 +98,16 @@ public:
 		FNiagaraParameterHandle NewParameterHandle(NewParameterNamespace, *(TEXT("New") + NewParameterType.GetName()));
 		FNiagaraVariable NewParameter(NewParameterType, NewParameterHandle.GetParameterHandleString());
 
-		return MakeShareable(new FScriptGroupAddAction(Category, DisplayName, Description, FText(), NewParameter, true, FAssetData(), false));
+		return MakeShareable(new FScriptGroupAddAction(Category, DisplayName, Description, FText(), NewParameter, true, FAssetData(), nullptr, false));
+	}
+
+	static TSharedRef<FScriptGroupAddAction> CreateNewScratchModuleAction()
+	{
+		FText Category = LOCTEXT("NewScratchModuleCategory", "Scratch");
+		FText DisplayName = LOCTEXT("NewScratchModuleName", "New Scratch Pad Module");
+		FText Description = LOCTEXT("NewScratchModuleDescription", "Description: Create a new scratch pad module.");
+
+		return MakeShareable(new FScriptGroupAddAction(Category, DisplayName, Description, FText(), FNiagaraVariable(), false, FAssetData(), nullptr, true));
 	}
 
 	virtual FText GetCategory() const override
@@ -113,13 +145,21 @@ public:
 		return ModuleAssetData;
 	}
 
-	bool GetIsMaterialParameterModuleAction() const
+	UNiagaraScript* GetModuleScript() const
 	{
-		return bIsMaterialParameterModuleAction;
+		return ModuleScript;
+	}
+
+	bool GetIsNewScratchModuleAction() const
+	{
+		return bIsNewScratchModuleAction;
 	}
 
 private:
-	FScriptGroupAddAction(FText InCategory, FText InDisplayName, FText InDescription, FText InKeywords, FNiagaraVariable InModuleParameterVariable, bool bInRenameParameterOnAdd, FAssetData InModuleAssetData, bool bInIsMaterialParameterModuleAction)
+	FScriptGroupAddAction(FText InCategory, FText InDisplayName, FText InDescription, FText InKeywords,
+		FNiagaraVariable InModuleParameterVariable, bool bInRenameParameterOnAdd,
+		FAssetData InModuleAssetData, UNiagaraScript* InModuleScript, bool bInIsNewScratchModuleAction)
+
 		: Category(InCategory)
 		, DisplayName(InDisplayName)
 		, Description(InDescription)
@@ -127,7 +167,8 @@ private:
 		, ModuleParameterVariable(InModuleParameterVariable)
 		, bRenameParameterOnAdd(bInRenameParameterOnAdd)
 		, ModuleAssetData(InModuleAssetData)
-		, bIsMaterialParameterModuleAction(bInIsMaterialParameterModuleAction)
+		, ModuleScript(InModuleScript)
+		, bIsNewScratchModuleAction(bInIsNewScratchModuleAction)
 	{
 	}
 
@@ -139,14 +180,17 @@ private:
 	FNiagaraVariable ModuleParameterVariable;
 	bool bRenameParameterOnAdd;
 	FAssetData ModuleAssetData;
+	UNiagaraScript* ModuleScript;
 	bool bIsMaterialParameterModuleAction;
+	bool bIsNewScratchModuleAction;
 };
 
 class FScriptItemGroupAddUtilities : public TNiagaraStackItemGroupAddUtilities<UNiagaraNodeFunctionCall*>
 {
 public:
-	FScriptItemGroupAddUtilities(TSharedRef<FNiagaraSystemViewModel> InSystemViewModel, TSharedRef<FNiagaraEmitterViewModel> InEmitterViewModel, UNiagaraStackEditorData& InStackEditorData, FOnItemAdded InOnItemAdded)
+	FScriptItemGroupAddUtilities(TSharedRef<FNiagaraSystemViewModel> InSystemViewModel, TSharedPtr<FNiagaraEmitterViewModel> InEmitterViewModel, UNiagaraStackEditorData& InStackEditorData, FOnItemAdded InOnItemAdded)
 		: TNiagaraStackItemGroupAddUtilities(LOCTEXT("ScriptGroupAddItemName", "Module"), EAddMode::AddFromAction, false, InOnItemAdded)
+		, OutputNode(nullptr)
 		, SystemViewModel(InSystemViewModel)
 		, EmitterViewModel(InEmitterViewModel)
 		, StackEditorData(InStackEditorData)
@@ -160,17 +204,22 @@ public:
 
 	virtual void AddItemDirectly() override { unimplemented(); }
 
-	virtual void GenerateAddActions(TArray<TSharedRef<INiagaraStackItemGroupAddAction>>& OutAddActions) const override
+	virtual void GenerateAddActions(TArray<TSharedRef<INiagaraStackItemGroupAddAction>>& OutAddActions, const FNiagaraStackItemGroupAddOptions& AddProperties) const override
 	{
-		if (SystemViewModel.IsValid() == false || EmitterViewModel.IsValid() == false || OutputNode == nullptr)
+		if (SystemViewModel.IsValid() == false || OutputNode == nullptr)
 		{
 			return;
 		}
 
 		// Generate actions for adding script asset modules.
 		TArray<FAssetData> ModuleAssets;
-		FNiagaraStackGraphUtilities::GetScriptAssetsByUsage(ENiagaraScriptUsage::Module, OutputNode->GetUsage(), ModuleAssets);
-		for(const FAssetData& ModuleAsset : ModuleAssets)
+		FNiagaraEditorUtilities::FGetFilteredScriptAssetsOptions ModuleScriptFilterOptions;
+		ModuleScriptFilterOptions.ScriptUsageToInclude = ENiagaraScriptUsage::Module;
+		ModuleScriptFilterOptions.TargetUsageToMatch = OutputNode->GetUsage();
+		ModuleScriptFilterOptions.bIncludeDeprecatedScripts = AddProperties.bIncludeDeprecated;
+		ModuleScriptFilterOptions.bIncludeNonLibraryScripts = AddProperties.bIncludeNonLibrary;
+		FNiagaraEditorUtilities::GetFilteredScriptAssets(ModuleScriptFilterOptions, ModuleAssets);
+		for (const FAssetData& ModuleAsset : ModuleAssets)
 		{
 			OutAddActions.Add(FScriptGroupAddAction::CreateAssetModuleAction(ModuleAsset));
 		}
@@ -188,12 +237,27 @@ public:
 		if (NewParameterNamespace.IsSet())
 		{
 			TArray<FNiagaraTypeDefinition> AvailableTypes;
-			FNiagaraStackGraphUtilities::GetNewParameterAvailableTypes(AvailableTypes);
+			FNiagaraStackGraphUtilities::GetNewParameterAvailableTypes(AvailableTypes, NewParameterNamespace.Get(TEXT("Unknown")));
 			for (const FNiagaraTypeDefinition& AvailableType : AvailableTypes)
 			{
 				OutAddActions.Add(FScriptGroupAddAction::CreateNewParameterModuleAction(NewParameterNamespace.GetValue(), AvailableType));
 			}
 		}
+
+		// Generate actions for scratch pad modules
+		for (TSharedRef<FNiagaraScratchPadScriptViewModel> ScratchPadScriptViewModel : SystemViewModel.Pin()->GetScriptScratchPadViewModel()->GetScriptViewModels())
+		{
+			UNiagaraScript* ScratchPadScript = ScratchPadScriptViewModel->GetScript();
+			if (ScratchPadScript->Usage == ENiagaraScriptUsage::Module)
+			{
+				TArray<ENiagaraScriptUsage> SupportedUsages = ScratchPadScript->GetSupportedUsageContexts();
+				if (SupportedUsages.Contains(OutputNode->GetUsage()))
+				{
+					OutAddActions.Add(FScriptGroupAddAction::CreateScriptModuleAction(ScratchPadScript));
+				}
+			}
+		}
+		OutAddActions.Add(FScriptGroupAddAction::CreateNewScratchModuleAction());
 	}
 
 	virtual void ExecuteAddAction(TSharedRef<INiagaraStackItemGroupAddAction> AddAction, int32 TargetIndex) override
@@ -209,11 +273,27 @@ public:
 		{
 			NewModuleNode = AddParameterModule(ScriptGroupAddAction->GetModuleParameterVariable(), ScriptGroupAddAction->GetRenameParameterOnAdd(), TargetIndex);
 		}
+		else if (ScriptGroupAddAction->GetModuleScript() != nullptr)
+		{
+			NewModuleNode = FNiagaraStackGraphUtilities::AddScriptModuleToStack(ScriptGroupAddAction->GetModuleScript(), *OutputNode, TargetIndex);
+		}
+		else if (ScriptGroupAddAction->GetIsNewScratchModuleAction())
+		{
+			TSharedPtr<FNiagaraScratchPadScriptViewModel> ScratchPadScriptViewModel = SystemViewModel.Pin()->GetScriptScratchPadViewModel()->CreateNewScript(ENiagaraScriptUsage::Module, OutputNode->GetUsage(), FNiagaraTypeDefinition());
+			if (ScratchPadScriptViewModel.IsValid())
+			{
+				ScratchPadScriptViewModel->SetIsPendingRename(true);
+				NewModuleNode = FNiagaraStackGraphUtilities::AddScriptModuleToStack(ScratchPadScriptViewModel->GetScript(), *OutputNode, TargetIndex);
+				SystemViewModel.Pin()->FocusTab(FNiagaraSystemToolkit::ScratchPadTabID);
+			}
+		}
 
-		checkf(NewModuleNode != nullptr, TEXT("Add module action failed"));
-		FNiagaraStackGraphUtilities::InitializeStackFunctionInputs(SystemViewModel.Pin().ToSharedRef(), EmitterViewModel.Pin().ToSharedRef(), StackEditorData, *NewModuleNode, *NewModuleNode);
-		FNiagaraStackGraphUtilities::RelayoutGraph(*OutputNode->GetGraph());
-		OnItemAdded.ExecuteIfBound(NewModuleNode);
+		if (NewModuleNode != nullptr)
+		{
+			FNiagaraStackGraphUtilities::InitializeStackFunctionInputs(SystemViewModel.Pin().ToSharedRef(), EmitterViewModel.Pin(), StackEditorData, *NewModuleNode, *NewModuleNode);
+			FNiagaraStackGraphUtilities::RelayoutGraph(*OutputNode->GetGraph());
+			OnItemAdded.ExecuteIfBound(NewModuleNode);
+		}
 	}
 private:
 	UNiagaraNodeFunctionCall* AddScriptAssetModule(const FAssetData& AssetData, int32 TargetIndex)
@@ -236,7 +316,7 @@ private:
 			FString FunctionInputEditorDataKey = FNiagaraStackGraphUtilities::GenerateStackFunctionInputEditorDataKey(*NewAssignmentModule, InputPins[0]->PinName);
 			if (bRenameParameterOnAdd)
 			{
-				StackEditorData.SetModuleInputIsRenamePending(FunctionInputEditorDataKey, true);
+				StackEditorData.SetStackEntryIsRenamePending(FunctionInputEditorDataKey, true);
 			}
 		}
 
@@ -285,15 +365,79 @@ void UNiagaraStackScriptItemGroup::FinalizeInternal()
 	{
 		ScriptGraph->RemoveOnGraphChangedHandler(OnGraphChangedHandle);
 	}
+	if (AddUtilities.IsValid())
+	{
+		AddUtilities.Reset();
+	}
+	if (ScriptViewModel.IsValid())
+	{
+		ScriptViewModel.Reset();
+	}
 	Super::FinalizeInternal();
+}
+
+bool UNiagaraStackScriptItemGroup::TestCanPasteWithMessage(const UNiagaraClipboardContent* ClipboardContent, FText& OutMessage) const
+{
+	if (ClipboardContent->Functions.Num() > 0)
+	{
+		bool bValidUsage = false;
+		UNiagaraNodeOutput* OutputNode = GetScriptOutputNode();
+		for (const UNiagaraClipboardFunction* Function : ClipboardContent->Functions)
+		{
+			if (Function->ScriptMode == ENiagaraClipboardFunctionScriptMode::ScriptAsset)
+			{
+				if (Function != nullptr && Function->Script != nullptr && Function->Script->GetSupportedUsageContexts().Contains(OutputNode->GetUsage()))
+				{
+					bValidUsage = true;
+				}
+			}
+			else if (Function->ScriptMode == ENiagaraClipboardFunctionScriptMode::Assignment)
+			{
+				for (const FNiagaraVariable& AssignmentTarget : Function->AssignmentTargets)
+				{
+					if (FNiagaraStackGraphUtilities::CanWriteParameterFromUsage(AssignmentTarget, OutputNode->GetUsage()))
+					{
+						bValidUsage = true;
+						continue;
+					}
+				}
+			}
+		}
+		if (bValidUsage)
+		{
+			OutMessage = LOCTEXT("PasteModules", "Paste modules from the clipboard which have a valid usage.");
+			return true;
+		}
+		else
+		{
+			OutMessage = LOCTEXT("CantPasteModulesForUsage", "Can't paste the copied modules because they don't support the correct usage.");
+			return false;
+		}
+	}
+	OutMessage = FText();
+	return false;
+}
+
+FText UNiagaraStackScriptItemGroup::GetPasteTransactionText(const UNiagaraClipboardContent* ClipboardContent) const
+{
+	return LOCTEXT("PasteModuleTransactionText", "Paste niagara modules");
+}
+
+void UNiagaraStackScriptItemGroup::Paste(const UNiagaraClipboardContent* ClipboardContent, FText& OutPasteWarning)
+{
+	if (ClipboardContent->Functions.Num() > 0)
+	{
+		TArray<UNiagaraStackModuleItem*> ModuleItems;
+		GetUnfilteredChildrenOfType(ModuleItems);
+		int32 PasteIndex = ModuleItems.Num() > 0 ? ModuleItems.Last()->GetModuleIndex() + 1 : 0;
+		PasteModules(ClipboardContent, PasteIndex, OutPasteWarning);
+	}
 }
 
 void UNiagaraStackScriptItemGroup::RefreshChildrenInternal(const TArray<UNiagaraStackEntry*>& CurrentChildren, TArray<UNiagaraStackEntry*>& NewChildren, TArray<FStackIssue>& NewIssues)
 {
 	TSharedPtr<FNiagaraScriptViewModel> ScriptViewModelPinned = ScriptViewModel.Pin();
 	checkf(ScriptViewModelPinned.IsValid(), TEXT("Can not refresh children when the script view model has been deleted."));
-
-	StackSpacerToModuleItemMap.Empty();
 
 	UNiagaraGraph* Graph = ScriptViewModelPinned->GetGraphViewModel()->GetGraph();
 	FText ErrorMessage;
@@ -307,22 +451,8 @@ void UNiagaraStackScriptItemGroup::RefreshChildrenInternal(const TArray<UNiagara
 
 		TArray<UNiagaraNodeFunctionCall*> ModuleNodes;
 		FNiagaraStackGraphUtilities::GetOrderedModuleNodes(*MatchingOutputNode, ModuleNodes);
-		int32 ModuleIndex = 0;
 		for (UNiagaraNodeFunctionCall* ModuleNode : ModuleNodes)
 		{
-			FName ModuleSpacerKey = *FString::Printf(TEXT("Module%i"), ModuleIndex);
-			UNiagaraStackModuleSpacer* ModuleSpacer = FindCurrentChildOfTypeByPredicate<UNiagaraStackModuleSpacer>(CurrentChildren,
-				[=](UNiagaraStackModuleSpacer* CurrentModuleSpacer) { return CurrentModuleSpacer->GetSpacerKey() == ModuleSpacerKey; });
-
-			if (ModuleSpacer == nullptr)
-			{
-				ModuleSpacer = NewObject<UNiagaraStackModuleSpacer>(this);
-				ModuleSpacer->Initialize(CreateDefaultChildRequiredData(), GetScriptUsage(), ModuleSpacerKey, 1.4f, UNiagaraStackEntry::EStackRowStyle::None);
-				ModuleSpacer->OnStackSpacerAcceptDrop.BindUObject(this, &UNiagaraStackScriptItemGroup::AddParameterModuleToStack);
-			}
-
-			NewChildren.Add(ModuleSpacer);
-
 			UNiagaraStackModuleItem* ModuleItem = FindCurrentChildOfTypeByPredicate<UNiagaraStackModuleItem>(CurrentChildren, 
 				[=](UNiagaraStackModuleItem* CurrentModuleItem) { return &CurrentModuleItem->GetModuleNode() == ModuleNode; });
 
@@ -330,29 +460,13 @@ void UNiagaraStackScriptItemGroup::RefreshChildrenInternal(const TArray<UNiagara
 			{
 				ModuleItem = NewObject<UNiagaraStackModuleItem>(this);
 				ModuleItem->Initialize(CreateDefaultChildRequiredData(), GetAddUtilities(), *ModuleNode);
-				ModuleItem->SetOnModifiedGroupItems(UNiagaraStackModuleItem::FOnModifiedGroupItems::CreateUObject(this, &UNiagaraStackScriptItemGroup::ChildModifiedGroupItems));
+				ModuleItem->OnModifiedGroupItems().AddUObject(this, &UNiagaraStackScriptItemGroup::ChildModifiedGroupItems);
+				ModuleItem->SetOnRequestCanPaste(UNiagaraStackModuleItem::FOnRequestCanPaste::CreateUObject(this, &UNiagaraStackScriptItemGroup::ChildRequestCanPaste));
+				ModuleItem->SetOnRequestPaste(UNiagaraStackModuleItem::FOnRequestPaste::CreateUObject(this, &UNiagaraStackScriptItemGroup::ChildRequestPaste));
 			}
 
 			NewChildren.Add(ModuleItem);
-			StackSpacerToModuleItemMap.Add(FObjectKey(ModuleSpacer), ModuleItem);
-
-			ModuleIndex++;
 		}
-
-		// Add the post items spacer.
-		FName ModuleSpacerKey = *FString::Printf(TEXT("Module%i"), ModuleIndex);
-		UNiagaraStackModuleSpacer* ModuleSpacer = FindCurrentChildOfTypeByPredicate<UNiagaraStackModuleSpacer>(CurrentChildren,
-			[=](UNiagaraStackModuleSpacer* CurrentModuleSpacer) { return CurrentModuleSpacer->GetSpacerKey() == ModuleSpacerKey; });
-
-		if (ModuleSpacer == nullptr)
-		{
-			ModuleSpacer = NewObject<UNiagaraStackModuleSpacer>(this);
-			ModuleSpacer->Initialize(CreateDefaultChildRequiredData(), GetScriptUsage(), ModuleSpacerKey, 1.4f, UNiagaraStackEntry::EStackRowStyle::None);
-			ModuleSpacer->OnStackSpacerAcceptDrop.BindUObject(this, &UNiagaraStackScriptItemGroup::AddParameterModuleToStack);
-		}
-
-		NewChildren.Add(ModuleSpacer);
-		StackSpacerToModuleItemMap.Add(FObjectKey(ModuleSpacer), nullptr);
 	}
 	Super::RefreshChildrenInternal(CurrentChildren, NewChildren, NewIssues);
 	RefreshIssues(NewIssues);
@@ -396,19 +510,17 @@ void UNiagaraStackScriptItemGroup::RefreshIssues(TArray<FStackIssue>& NewIssues)
 			// We need to make sure that System Update Scripts have the SystemLifecycle script for now.
 			// The factor ensures this, but older assets may not have it or it may have been removed accidentally.
 			// For now, treat this as an error and allow them to resolve.
-			FString ModulePath = TEXT("/Niagara/Modules/System/SystemLifeCycle.SystemLifeCycle");
-			FSoftObjectPath SystemUpdateScriptRef(ModulePath);
-			FAssetData ModuleScriptAsset;
-			ModuleScriptAsset.ObjectPath = SystemUpdateScriptRef.GetAssetPathName();
+			const FAssetRegistryModule& AssetRegistryModule = FModuleManager::LoadModuleChecked<FAssetRegistryModule>(TEXT("AssetRegistry"));
+			const FAssetData ModuleScriptAsset = AssetRegistryModule.Get().GetAssetByObjectPath(GetDefault<UNiagaraEditorSettings>()->RequiredSystemUpdateScript.GetAssetPathName());
 
 			TArray<UNiagaraNodeFunctionCall*> FoundCalls;
 			UNiagaraNodeOutput* MatchingOutputNode = Graph->FindOutputNode(ScriptUsage, ScriptUsageId);
-			if (!FNiagaraStackGraphUtilities::FindScriptModulesInStack(ModuleScriptAsset, *MatchingOutputNode, FoundCalls))
+			if (ModuleScriptAsset.IsValid() && !FNiagaraStackGraphUtilities::FindScriptModulesInStack(ModuleScriptAsset, *MatchingOutputNode, FoundCalls))
 			{
 				bForcedError = true;
 
-				FText FixDescription = LOCTEXT("AddingSystemLifecycleModule", "Adding System Lifecycle Module.");
-				FStackIssueFix AddLifeCycleFix(
+				FText FixDescription = FText::Format(LOCTEXT("AddingRequiredSystemUpdateModuleFormat", "Add {0} module."), FText::FromName(ModuleScriptAsset.AssetName));
+				FStackIssueFix AddRequiredSystemUpdateModule(
 					FixDescription,
 					FStackIssueFixDelegate::CreateLambda([=]()
 				{
@@ -416,7 +528,7 @@ void UNiagaraStackScriptItemGroup::RefreshIssues(TArray<FStackIssue>& NewIssues)
 					UNiagaraNodeFunctionCall* AddedModuleNode = FNiagaraStackGraphUtilities::AddScriptModuleToStack(ModuleScriptAsset, *MatchingOutputNode);
 					if (AddedModuleNode == nullptr)
 					{
-						FNotificationInfo Info(LOCTEXT("FailedToAddSystemLifecycle", "Failed to add system life cycle module.\nCheck the log for errors."));
+						FNotificationInfo Info(LOCTEXT("FailedToAddSystemLifecycle", "Failed to add required module.\nCheck the log for errors."));
 						Info.ExpireDuration = 5.0f;
 						Info.bFireAndForget = true;
 						Info.Image = FCoreStyle::Get().GetBrush(TEXT("MessageLog.Error"));
@@ -424,15 +536,15 @@ void UNiagaraStackScriptItemGroup::RefreshIssues(TArray<FStackIssue>& NewIssues)
 					}
 				}));
 
-				FStackIssue MissingLifeCycleError(
+				FStackIssue MissingRequiredSystemUpdateModuleError(
 					EStackIssueSeverity::Error,
-					LOCTEXT("SystemLifeCycleWarning", "The stack needs a SystemLifeCycle module."),
+					FText::Format(LOCTEXT("RequiredSystemUpdateModuleWarningFormat", "The stack needs a {0} module."), FText::FromName(ModuleScriptAsset.AssetName)),
 					LOCTEXT("MissingRequiredMode", "Missing required module."),
 					GetStackEditorDataKey(),
 					false,
-					AddLifeCycleFix);
+					AddRequiredSystemUpdateModule);
 
-				NewIssues.Add(MissingLifeCycleError);
+				NewIssues.Add(MissingRequiredSystemUpdateModuleError);
 			}
 		}
 
@@ -455,16 +567,15 @@ void UNiagaraStackScriptItemGroup::RefreshIssues(TArray<FStackIssue>& NewIssues)
 }
 
 void GenerateDragDropData(
-	UNiagaraNodeFunctionCall* SourceModule,
-	UNiagaraNodeFunctionCall* TargetModule, const UNiagaraGraph* TargetGraph, ENiagaraScriptUsage TargetScriptUsage, FGuid TargetScriptUsageId,
+	UNiagaraNodeFunctionCall& SourceModule,
+	UNiagaraNodeFunctionCall* TargetModule,
+	UNiagaraNodeOutput* TargetOutputNode,
+	EItemDropZone TargetZone,
 	TArray<FNiagaraStackGraphUtilities::FStackNodeGroup>& OutSourceStackGroups, int32& OutSourceGroupIndex,
 	TArray<FNiagaraStackGraphUtilities::FStackNodeGroup>& OutTargetStackGroups, int32& OutTargetGroupIndex)
 {
-	// Find the output nodes for the source and target
-	UNiagaraNodeOutput* SourceOutputNode = FNiagaraStackGraphUtilities::GetEmitterOutputNodeForStackNode(*SourceModule);
-	UNiagaraNodeOutput* TargetOutputNode = TargetModule != nullptr
-		? FNiagaraStackGraphUtilities::GetEmitterOutputNodeForStackNode(*TargetModule)
-		: TargetGraph->FindOutputNode(TargetScriptUsage, TargetScriptUsageId);
+	// Find the output node for the source
+	UNiagaraNodeOutput* SourceOutputNode = FNiagaraStackGraphUtilities::GetEmitterOutputNodeForStackNode(SourceModule);
 
 	// Collect the stack node groups for the source and target.
 	FNiagaraStackGraphUtilities::GetStackNodeGroups(*SourceOutputNode, OutSourceStackGroups);
@@ -481,156 +592,427 @@ void GenerateDragDropData(
 	OutSourceGroupIndex = INDEX_NONE;
 	for (int32 GroupIndex = 0; GroupIndex < OutSourceStackGroups.Num(); GroupIndex++)
 	{
-		if (OutSourceStackGroups[GroupIndex].EndNode == SourceModule)
+		if (OutSourceStackGroups[GroupIndex].EndNode == &SourceModule)
 		{
 			OutSourceGroupIndex = GroupIndex;
 			break;
 		}
 	}
 
-	OutTargetGroupIndex = INDEX_NONE;
-	if (TargetModule == SourceModule)
+	if (TargetModule == nullptr)
 	{
-		OutTargetGroupIndex = OutSourceGroupIndex;
-	}
-	else if (TargetModule != nullptr)
-	{
-		for (int32 GroupIndex = 0; GroupIndex < OutTargetStackGroups.Num(); GroupIndex++)
-		{
-			if (OutTargetStackGroups[GroupIndex].EndNode == TargetModule)
-			{
-				OutTargetGroupIndex = GroupIndex;
-				break;
-			}
-		}
+		// If no target module was supplied then the module should be inserted at the beginning.
+		OutTargetGroupIndex = 1;
 	}
 	else
 	{
-		// If there is no target module then we need to insert at the end.  The last group is the output node and we want to
-		// insert before that.
-		OutTargetGroupIndex = OutTargetStackGroups.Num() - 1;
-	}
-}
-
-TOptional<UNiagaraStackEntry::FDropResult> UNiagaraStackScriptItemGroup::ChildRequestCanDropInternal(const UNiagaraStackEntry& TargetChild, const TArray<UNiagaraStackEntry*>& DraggedEntries)
-{
-	if (bIsValidForOutput && DraggedEntries.Num() == 1)
-	{
-		UNiagaraStackModuleItem* SourceModuleItem = Cast<UNiagaraStackModuleItem>(DraggedEntries[0]);
-		if (SourceModuleItem != nullptr)
+		if (TargetModule == &SourceModule)
 		{
-			if (SourceModuleItem->CanMoveAndDelete() == false)
+			OutTargetGroupIndex = OutSourceGroupIndex;
+		}
+		else
+		{
+			for (int32 GroupIndex = 0; GroupIndex < OutTargetStackGroups.Num(); GroupIndex++)
 			{
-				return FDropResult(false, LOCTEXT("CantMoveModuleError", "This inherited module can't be moved."));
-			}
-
-			TArray<ENiagaraScriptUsage> SourceUsages = SourceModuleItem->GetModuleNode().FunctionScript->GetSupportedUsageContexts();
-			if (SourceUsages.ContainsByPredicate([this](ENiagaraScriptUsage SourceUsage) { return UNiagaraScript::IsEquivalentUsage(ScriptUsage, SourceUsage); }) == false)
-			{
-				return FDropResult(false, LOCTEXT("CantMoveByUsage", "This module can't be moved to this section of the stack because its it's not supported in this context."));
-			}
-
-			const FNiagaraEmitterHandle* SourceEmitterHandle = FNiagaraEditorUtilities::GetEmitterHandleForEmitter(
-				SourceModuleItem->GetSystemViewModel()->GetSystem(), *SourceModuleItem->GetEmitterViewModel()->GetEmitter());
-			if (SourceEmitterHandle == nullptr)
-			{
-				return FDropResult(false, LOCTEXT("CantMoveFromAnotherSystem", "This module can't be moved into this system from a different system."));
-			}
-
-			const UNiagaraStackSpacer* TargetSpacer = Cast<UNiagaraStackSpacer>(&TargetChild);
-			if (TargetSpacer != nullptr)
-			{
-				UNiagaraStackModuleItem** TargetModuleItemPtr = StackSpacerToModuleItemMap.Find(FObjectKey(TargetSpacer));
-				if (TargetModuleItemPtr != nullptr)
+				if (OutTargetStackGroups[GroupIndex].EndNode == TargetModule)
 				{
-					UNiagaraStackModuleItem* TargetModuleItem = *TargetModuleItemPtr;
-					TArray<FNiagaraStackGraphUtilities::FStackNodeGroup> SourceStackGroups;
-					TArray<FNiagaraStackGraphUtilities::FStackNodeGroup> TargetStackGroups;
-					int32 SourceGroupIndex;
-					int32 TargetGroupIndex;
-					GenerateDragDropData(
-						&SourceModuleItem->GetModuleNode(), TargetModuleItem != nullptr ? &TargetModuleItem->GetModuleNode() : nullptr,
-						ScriptViewModel.Pin()->GetGraphViewModel()->GetGraph(), ScriptUsage, ScriptUsageId,
-						SourceStackGroups, SourceGroupIndex,
-						TargetStackGroups, TargetGroupIndex);
-
-					// Make sure the source and target indices are within safe ranges, and make sure that the insert target isn't the source target or the spot directly
-					// after the source target since that won't actually move the module.
-					if (SourceGroupIndex > 0 && SourceGroupIndex < SourceStackGroups.Num() - 1 && TargetGroupIndex > 0 && TargetGroupIndex < TargetStackGroups.Num() &&
-						SourceStackGroups[SourceGroupIndex].EndNode != TargetStackGroups[TargetGroupIndex].EndNode &&
-						SourceStackGroups[SourceGroupIndex].EndNode != TargetStackGroups[TargetGroupIndex - 1].EndNode)
-					{
-						return FDropResult(true, LOCTEXT("MoveModuleResult", "Move this module here."));
-					}
+					OutTargetGroupIndex = GroupIndex;
+					break;
 				}
 			}
 		}
+
+		if (TargetZone == EItemDropZone::BelowItem)
+		{
+			OutTargetGroupIndex++;
+		}
 	}
-	return TOptional<FDropResult>();
 }
 
-TOptional<UNiagaraStackEntry::FDropResult> UNiagaraStackScriptItemGroup::ChildRequestDropInternal(const UNiagaraStackEntry& TargetChild, const TArray<UNiagaraStackEntry*>& DraggedEntries)
+TOptional<UNiagaraStackEntry::FDropRequestResponse> UNiagaraStackScriptItemGroup::CanDropInternal(const FDropRequest& DropRequest)
 {
-	if (bIsValidForOutput && DraggedEntries.Num() == 1 && DraggedEntries[0]->IsA<UNiagaraStackModuleItem>())
+	return CanDropOnTarget(*this, DropRequest);
+}
+
+TOptional<UNiagaraStackEntry::FDropRequestResponse> UNiagaraStackScriptItemGroup::DropInternal(const FDropRequest& DropRequest)
+{
+	return DropOnTarget(*this, DropRequest);
+}
+
+TOptional<UNiagaraStackEntry::FDropRequestResponse> UNiagaraStackScriptItemGroup::ChildRequestCanDropInternal(const UNiagaraStackEntry& TargetChild, const FDropRequest& DropRequest)
+{
+	return CanDropOnTarget(TargetChild, DropRequest);
+}
+
+TOptional<UNiagaraStackEntry::FDropRequestResponse> UNiagaraStackScriptItemGroup::ChildRequestDropInternal(const UNiagaraStackEntry& TargetChild, const FDropRequest& DropRequest)
+{
+	return DropOnTarget(TargetChild, DropRequest);
+}
+
+TOptional<UNiagaraStackEntry::FDropRequestResponse> UNiagaraStackScriptItemGroup::CanDropOnTarget(const UNiagaraStackEntry& TargetEntry, const FDropRequest& DropRequest)
+{
+	if (DropRequest.DragDropOperation->IsOfType<FNiagaraStackEntryDragDropOp>())
 	{
-		UNiagaraStackModuleItem* SourceModuleItem = CastChecked<UNiagaraStackModuleItem>(DraggedEntries[0]);
-		TArray<ENiagaraScriptUsage> SourceUsages;
-		if (SourceModuleItem != nullptr)
+		return CanDropEntriesOnTarget(TargetEntry, DropRequest);
+	}
+	else if (DropRequest.DragDropOperation->IsOfType<FAssetDragDropOp>())
+	{
+		return CanDropAssetsOnTarget(TargetEntry, DropRequest);
+	}
+	else if (DropRequest.DragDropOperation->IsOfType<FNiagaraParameterDragOperation>())
+	{
+		return CanDropParameterOnTarget(TargetEntry, DropRequest);
+	}
+	return TOptional<FDropRequestResponse>();
+}
+
+TOptional<EItemDropZone> GetTargetDropZoneForTargetEntry(UNiagaraStackScriptItemGroup* ThisEntry, const UNiagaraStackEntry& TargetEntry, EItemDropZone RequestedDropZone)
+{
+	TOptional<EItemDropZone> TargetDropZone;
+	if (&TargetEntry == ThisEntry)
+	{
+		// Items dragged onto the group entry are always inserted below it.
+		TargetDropZone = EItemDropZone::BelowItem;
+	}
+	else
+	{
+		// Otherwise only allow drops above or below items.
+		if (RequestedDropZone == EItemDropZone::AboveItem || RequestedDropZone == EItemDropZone::BelowItem)
 		{
-			SourceUsages = SourceModuleItem->GetModuleNode().FunctionScript->GetSupportedUsageContexts();
-		}
-
-		if (SourceModuleItem != nullptr &&
-			SourceModuleItem->CanMoveAndDelete() &&
-			SourceUsages.ContainsByPredicate([this](ENiagaraScriptUsage SourceUsage) { return UNiagaraScript::IsEquivalentUsage(ScriptUsage, SourceUsage); }))
-		{
-			const UNiagaraStackSpacer* TargetSpacer = Cast<UNiagaraStackSpacer>(&TargetChild);
-			if (TargetSpacer != nullptr)
-			{
-				UNiagaraStackModuleItem** TargetModuleItemPtr = StackSpacerToModuleItemMap.Find(FObjectKey(TargetSpacer));
-				if (TargetModuleItemPtr != nullptr)
-				{
-					const FNiagaraEmitterHandle* SourceEmitterHandle = FNiagaraEditorUtilities::GetEmitterHandleForEmitter(
-						SourceModuleItem->GetSystemViewModel()->GetSystem(), *SourceModuleItem->GetEmitterViewModel()->GetEmitter());
-					if (SourceEmitterHandle != nullptr)
-					{
-						UNiagaraNodeOutput* SourceModuleOutputNode = FNiagaraStackGraphUtilities::GetEmitterOutputNodeForStackNode(SourceModuleItem->GetModuleNode());
-						UNiagaraScript* SourceModuleScript = FNiagaraEditorUtilities::GetScriptFromSystem(SourceModuleItem->GetSystemViewModel()->GetSystem(), SourceEmitterHandle->GetId(),
-							SourceModuleOutputNode->GetUsage(), SourceModuleOutputNode->GetUsageId());
-
-						const FNiagaraEmitterHandle* TargetEmitterHandle = FNiagaraEditorUtilities::GetEmitterHandleForEmitter(GetSystemViewModel()->GetSystem(), *GetEmitterViewModel()->GetEmitter());
-
-						int32 TargetIndex = *TargetModuleItemPtr != nullptr ? (*TargetModuleItemPtr)->GetModuleIndex() : INDEX_NONE;
-
-						FScopedTransaction ScopedTransaction(LOCTEXT("DragAndDropModule", "Drag and drop module"));
-						{
-							FNiagaraStackGraphUtilities::MoveModule(*SourceModuleScript, SourceModuleItem->GetModuleNode(), GetSystemViewModel()->GetSystem(), TargetEmitterHandle->GetId(),
-								ScriptUsage, ScriptUsageId, TargetIndex);
-
-							UNiagaraGraph* TargetGraph = ScriptViewModel.Pin()->GetGraphViewModel()->GetGraph();
-							FNiagaraStackGraphUtilities::RelayoutGraph(*TargetGraph);
-							TargetGraph->NotifyGraphNeedsRecompile();
-
-							SourceModuleItem->NotifyModuleMoved();
-							RefreshChildren();
-						}
-						return FDropResult(true);
-					}
-				}
-			}
+			TargetDropZone = RequestedDropZone;
 		}
 	}
-	return FDropResult(false);
+	return TargetDropZone;
+}
+
+TOptional<UNiagaraStackEntry::FDropRequestResponse> UNiagaraStackScriptItemGroup::CanDropEntriesOnTarget(const UNiagaraStackEntry& TargetEntry, const FDropRequest& DropRequest)
+{
+	TSharedRef<const FNiagaraStackEntryDragDropOp> StackEntryDragDropOp = StaticCastSharedRef<const FNiagaraStackEntryDragDropOp>(DropRequest.DragDropOperation);
+	bool ModuleEntriesDragged = false;
+	for (UNiagaraStackEntry* DraggedEntry : StackEntryDragDropOp->GetDraggedEntries())
+	{
+		if (DraggedEntry->IsA<UNiagaraStackModuleItem>())
+		{
+			ModuleEntriesDragged = true;
+			break;
+		}
+	}
+
+	if (ModuleEntriesDragged == false)
+	{
+		// Only handle dragged module items.
+		return TOptional<FDropRequestResponse>();
+	}
+	if (&TargetEntry != this && TargetEntry.IsA<UNiagaraStackModuleItem>() == false)
+	{
+		// Only handle drops onto this script group, or child drop requests from module items.
+		return TOptional<FDropRequestResponse>();
+	}
+	if (DropRequest.DropOptions != UNiagaraStackEntry::EDropOptions::Overview)
+	{
+		// Only allow dropping in the overview stacks.
+		return FDropRequestResponse(TOptional<EItemDropZone>(), LOCTEXT("CantDropModuleOnStack", "Modules can only be dropped into the overview."));
+	}
+	if (StackEntryDragDropOp->GetDraggedEntries().Num() != 1)
+	{
+		// Only handle a single module.
+		return FDropRequestResponse(TOptional<EItemDropZone>(), LOCTEXT("CantDropMultipleModules", "Only single modules can be dragged and dropped."));
+	}
+
+	UNiagaraStackModuleItem* SourceModuleItem = CastChecked<UNiagaraStackModuleItem>(StackEntryDragDropOp->GetDraggedEntries()[0]);
+	if (DropRequest.DragOptions != EDragOptions::Copy && SourceModuleItem->CanMoveAndDelete() == false)
+	{
+		return FDropRequestResponse(TOptional<EItemDropZone>(), LOCTEXT("CantMoveModuleError", "This inherited module can't be moved."));
+	}
+
+	TArray<ENiagaraScriptUsage> SourceUsages = SourceModuleItem->GetModuleNode().FunctionScript->GetSupportedUsageContexts();
+	if (SourceUsages.ContainsByPredicate([this](ENiagaraScriptUsage SourceUsage) { return UNiagaraScript::IsEquivalentUsage(ScriptUsage, SourceUsage); }) == false)
+	{
+		return FDropRequestResponse(TOptional<EItemDropZone>(), LOCTEXT("CantMoveModuleByUsage", "This module can't be moved to this section of the\nstack because it's not valid for this usage context."));
+	}
+
+	TOptional<EItemDropZone> TargetDropZone = GetTargetDropZoneForTargetEntry(this, TargetEntry, DropRequest.DropZone);
+	if(TargetDropZone.IsSet() == false)
+	{
+		return TOptional<FDropRequestResponse>();
+	}
+
+	const UNiagaraStackModuleItem* TargetModuleItem = Cast<UNiagaraStackModuleItem>(&TargetEntry);
+
+	TArray<FNiagaraStackGraphUtilities::FStackNodeGroup> SourceStackGroups;
+	TArray<FNiagaraStackGraphUtilities::FStackNodeGroup> TargetStackGroups;
+	int32 SourceGroupIndex;
+	int32 TargetGroupIndex;
+	UNiagaraNodeFunctionCall* TargetModuleNode = TargetModuleItem != nullptr ? &TargetModuleItem->GetModuleNode() : nullptr;
+	UNiagaraNodeOutput* TargetOutputNode = GetScriptOutputNode();
+	GenerateDragDropData(
+		SourceModuleItem->GetModuleNode(), TargetModuleNode, 
+		TargetOutputNode, DropRequest.DropZone,
+		SourceStackGroups, SourceGroupIndex,
+		TargetStackGroups, TargetGroupIndex);
+
+	// Make sure the source and target indices are within safe ranges, and make sure that the insert target isn't the source target or the spot directly
+	// after the source target since that won't actually move the module.
+	bool bSourceWithinRange = SourceGroupIndex > 0 && SourceGroupIndex < SourceStackGroups.Num() - 1;
+	bool bTargetWithinRange = TargetGroupIndex > 0 && TargetGroupIndex < TargetStackGroups.Num();
+	bool bWillMove = DropRequest.DragOptions == EDragOptions::Copy ||
+		(SourceStackGroups[SourceGroupIndex].EndNode != TargetStackGroups[TargetGroupIndex].EndNode &&
+			SourceStackGroups[SourceGroupIndex].EndNode != TargetStackGroups[TargetGroupIndex - 1].EndNode);
+	if (bSourceWithinRange && bTargetWithinRange && bWillMove)
+	{
+		FText DropMessage;
+		if (DropRequest.DragOptions == UNiagaraStackEntry::EDragOptions::Copy)
+		{
+			DropMessage = LOCTEXT("CopyModuleResult", "Copy this module here.");
+		}
+		else
+		{
+			DropMessage = LOCTEXT("MoveModuleResult", "Move this module here.");
+		}
+		return FDropRequestResponse(TargetDropZone, DropMessage);
+	}
+
+	return TOptional<FDropRequestResponse>();
+}
+
+TOptional<UNiagaraStackEntry::FDropRequestResponse> UNiagaraStackScriptItemGroup::CanDropAssetsOnTarget(const UNiagaraStackEntry& TargetEntry, const FDropRequest& DropRequest)
+{
+	TSharedRef<const FAssetDragDropOp> AssetDragDropOp = StaticCastSharedRef<const FAssetDragDropOp>(DropRequest.DragDropOperation);
+	const UEnum* NiagaraScriptUsageEnum = FindObjectChecked<UEnum>(ANY_PACKAGE, TEXT("ENiagaraScriptUsage"), true);
+
+	if (&TargetEntry != this && TargetEntry.IsA<UNiagaraStackModuleItem>() == false)
+	{
+		// Only handle drops onto this script group, or child drop requests from module items.
+		return TOptional<FDropRequestResponse>();
+	}
+	if (DropRequest.DropOptions != UNiagaraStackEntry::EDropOptions::Overview)
+	{
+		// Only allow dropping in the overview stacks.
+		return FDropRequestResponse(TOptional<EItemDropZone>(), LOCTEXT("AssetCantDropOnStack", "Assets can only be dropped into the overview."));
+	}
+
+	for (const FAssetData& AssetData : AssetDragDropOp->GetAssets())
+	{
+		if (AssetData.GetClass() != UNiagaraScript::StaticClass())
+		{
+			FString AssetName;
+			AssetData.GetFullName(AssetName);
+			return FDropRequestResponse(TOptional<EItemDropZone>(), FText::Format(LOCTEXT("CantDropNonScriptAssetFormat", "Can not drop asset {0} here because it is not a niagara script."), FText::FromString(AssetName)));
+		}
+
+		FString AssetScriptUsageString = AssetData.GetTagValueRef<FString>(GET_MEMBER_NAME_CHECKED(UNiagaraScript, Usage));
+		int64 AssetScriptUsageValue = NiagaraScriptUsageEnum->GetValueByNameString(AssetScriptUsageString);
+		if (AssetScriptUsageValue == INDEX_NONE)
+		{
+			FString AssetName;
+			AssetData.GetFullName(AssetName);
+			return FDropRequestResponse(TOptional<EItemDropZone>(), FText::Format(LOCTEXT("CantDropAssetWithInvalidUsageFormat", "Can not drop asset {0} here because it doesn't have a valid usage."), FText::FromString(AssetName)));
+		}
+
+		ENiagaraScriptUsage AssetScriptUsage = static_cast<ENiagaraScriptUsage>(AssetScriptUsageValue);
+		if (AssetScriptUsage != ENiagaraScriptUsage::Module)
+		{
+			FString AssetName;
+			AssetData.GetFullName(AssetName);
+			return FDropRequestResponse(TOptional<EItemDropZone>(), FText::Format(LOCTEXT("CantDropNonModuleAssetFormat", "Can not drop asset {0} here because it is not a module script."), FText::FromString(AssetName)));
+		}
+
+		FString BitfieldTagValue = AssetData.GetTagValueRef<FString>(GET_MEMBER_NAME_CHECKED(UNiagaraScript, ModuleUsageBitmask));
+		int32 BitfieldValue = FCString::Atoi(*BitfieldTagValue);
+		TArray<ENiagaraScriptUsage> SupportedUsages = UNiagaraScript::GetSupportedUsageContextsForBitmask(BitfieldValue);
+		if (SupportedUsages.Contains(GetScriptUsage()) == false)
+		{
+			FString AssetName;
+			AssetData.GetFullName(AssetName);
+			return FDropRequestResponse(TOptional<EItemDropZone>(), FText::Format(LOCTEXT("CantDropAssetByUsageFormat", "Can not drop asset {0} in this part of the stack\nbecause it's not valid for this usage context."), FText::FromString(AssetName)));
+		}
+	}
+
+	TOptional<EItemDropZone> TargetDropZone = GetTargetDropZoneForTargetEntry(this, TargetEntry, DropRequest.DropZone);
+	if (TargetDropZone.IsSet() == false)
+	{
+		return TOptional<FDropRequestResponse>();
+	}
+
+	FText DropMessage;
+	if (AssetDragDropOp->GetAssets().Num() > 1)
+	{
+		DropMessage = LOCTEXT("DropAssets", "Insert modules for these assets here.");
+	}
+	else
+	{
+		DropMessage = LOCTEXT("DropAsset", "Insert a module for this asset here.");
+	}
+	return FDropRequestResponse(TargetDropZone, DropMessage);
+}
+
+TOptional<UNiagaraStackEntry::FDropRequestResponse> UNiagaraStackScriptItemGroup::CanDropParameterOnTarget(const UNiagaraStackEntry& TargetEntry, const FDropRequest& DropRequest)
+{
+	TSharedRef<const FNiagaraParameterDragOperation> ParameterDragDropOp = StaticCastSharedRef<const FNiagaraParameterDragOperation>(DropRequest.DragDropOperation);
+	TSharedPtr<const FNiagaraParameterAction> ParameterAction = StaticCastSharedPtr<const FNiagaraParameterAction>(ParameterDragDropOp->GetSourceAction());
+
+	if (&TargetEntry != this && TargetEntry.IsA<UNiagaraStackModuleItem>() == false)
+	{
+		// Only handle drops onto this script group, or child drop requests from module items.
+		return TOptional<FDropRequestResponse>();
+	}
+	if (DropRequest.DropOptions != UNiagaraStackEntry::EDropOptions::Overview)
+	{
+		// Only allow dropping in the overview stacks.
+		return FDropRequestResponse(TOptional<EItemDropZone>(), LOCTEXT("CantDropParameterOnStack", 
+			"Parameters can only be dropped onto 'Set Variables' modules, or correctly\ntyped inputs in the selection view.  If you want to add a new 'Set Variables' module for\n this parameter, you can drop it into one of the nodes in the System Overview graph."));
+	}
+	if (ParameterAction.IsValid())
+	{
+		if (FNiagaraStackGraphUtilities::CanWriteParameterFromUsage(ParameterAction->GetParameter(), ScriptUsage) == false)
+		{
+			return FDropRequestResponse(TOptional<EItemDropZone>(), LOCTEXT("CantDropParameterByUsage", "Can not drop this parameter here because\nit can't be written in this usage context."));
+		}
+
+		{
+			TOptional<EItemDropZone> TargetDropZone = GetTargetDropZoneForTargetEntry(this, TargetEntry, DropRequest.DropZone);
+			if (TargetDropZone.IsSet() == false)
+			{
+				return TOptional<FDropRequestResponse>();
+			}
+			else
+			{
+				return FDropRequestResponse(TargetDropZone, LOCTEXT("DropParameterFormat", "Insert a module for this parameter here."));
+			}
+		}
+
+	}
+	return TOptional<FDropRequestResponse>();
+}
+
+TOptional<UNiagaraStackEntry::FDropRequestResponse> UNiagaraStackScriptItemGroup::DropOnTarget(const UNiagaraStackEntry& TargetEntry, const FDropRequest& DropRequest)
+{
+	if (DropRequest.DragDropOperation->IsOfType<FNiagaraStackEntryDragDropOp>())
+	{
+		return DropEntriesOnTarget(TargetEntry, DropRequest);
+	}
+	else if (DropRequest.DragDropOperation->IsOfType<FAssetDragDropOp>())
+	{
+		return DropAssetsOnTarget(TargetEntry, DropRequest);
+	}
+	else if (DropRequest.DragDropOperation->IsOfType<FNiagaraParameterDragOperation>())
+	{
+		return DropParameterOnTarget(TargetEntry, DropRequest);
+	}
+	return TOptional<FDropRequestResponse>();
+}
+
+int32 GetTargetIndexForTargetEntry(UNiagaraStackScriptItemGroup* ThisEntry, const UNiagaraStackEntry& TargetEntry, EItemDropZone DropZone)
+{
+	int32 TargetIndex;
+	if (&TargetEntry == ThisEntry)
+	{
+		// Items dragged onto this group entry are always inserted at index 0.
+		TargetIndex = 0;
+	}
+	else
+	{
+		// Otherwise get the index from the module and the drop zone.
+		const UNiagaraStackModuleItem* TargetModuleItem = CastChecked<UNiagaraStackModuleItem>(&TargetEntry);
+		TargetIndex = TargetModuleItem->GetModuleIndex();
+		if (DropZone == EItemDropZone::BelowItem)
+		{
+			TargetIndex++;
+		}
+	}
+	return TargetIndex;
+}
+
+TOptional<UNiagaraStackEntry::FDropRequestResponse> UNiagaraStackScriptItemGroup::DropEntriesOnTarget(const UNiagaraStackEntry& TargetEntry, const FDropRequest& DropRequest)
+{
+	TSharedRef<const FNiagaraStackEntryDragDropOp> StackEntryDragDropOp = StaticCastSharedRef<const FNiagaraStackEntryDragDropOp>(DropRequest.DragDropOperation);
+
+	UNiagaraStackModuleItem* SourceModuleItem = CastChecked<UNiagaraStackModuleItem>(StackEntryDragDropOp->GetDraggedEntries()[0]);
+	const FNiagaraEmitterHandle* SourceEmitterHandle = SourceModuleItem->GetEmitterViewModel().IsValid()
+		? FNiagaraEditorUtilities::GetEmitterHandleForEmitter(SourceModuleItem->GetSystemViewModel()->GetSystem(), *SourceModuleItem->GetEmitterViewModel()->GetEmitter())
+		: nullptr;
+	FGuid SourceEmitterHandleId = SourceEmitterHandle != nullptr
+		? SourceEmitterHandle->GetId()
+		: FGuid();
+	UNiagaraNodeOutput* SourceModuleOutputNode = FNiagaraStackGraphUtilities::GetEmitterOutputNodeForStackNode(SourceModuleItem->GetModuleNode());
+	UNiagaraScript* SourceModuleScript = FNiagaraEditorUtilities::GetScriptFromSystem(SourceModuleItem->GetSystemViewModel()->GetSystem(), SourceEmitterHandleId,
+		SourceModuleOutputNode->GetUsage(), SourceModuleOutputNode->GetUsageId());
+
+	const UNiagaraStackModuleItem* TargetModuleItem = Cast<UNiagaraStackModuleItem>(&TargetEntry);
+	const FNiagaraEmitterHandle* TargetEmitterHandle = GetEmitterViewModel().IsValid()
+		? FNiagaraEditorUtilities::GetEmitterHandleForEmitter(GetSystemViewModel()->GetSystem(), *GetEmitterViewModel()->GetEmitter())
+		: nullptr;
+	FGuid TargetEmitterHandleId = TargetEmitterHandle != nullptr
+		? TargetEmitterHandle->GetId()
+		: FGuid();
+	int32 TargetIndex = GetTargetIndexForTargetEntry(this, TargetEntry, DropRequest.DropZone);
+
+	FScopedTransaction ScopedTransaction(LOCTEXT("DragAndDropModule", "Drag and drop module"));
+	{
+		GetSystemViewModel()->GetSelectionViewModel()->RemoveEntryFromSelectionByDisplayedObject(SourceModuleItem->GetDisplayedObject());
+		UNiagaraNodeFunctionCall* MovedModule = nullptr;
+		FNiagaraStackGraphUtilities::MoveModule(*SourceModuleScript, SourceModuleItem->GetModuleNode(), GetSystemViewModel()->GetSystem(), TargetEmitterHandleId,
+			ScriptUsage, ScriptUsageId, TargetIndex, DropRequest.DragOptions == EDragOptions::Copy, MovedModule);
+
+		UNiagaraGraph* TargetGraph = ScriptViewModel.Pin()->GetGraphViewModel()->GetGraph();
+		FNiagaraStackGraphUtilities::RelayoutGraph(*TargetGraph);
+		TargetGraph->NotifyGraphNeedsRecompile();
+		GetSystemViewModel()->GetSelectionViewModel()->AddEntryToSelectionByDisplayedObjectDeferred(MovedModule);
+	}
+
+	SourceModuleItem->OnRequestFullRefreshDeferred().Broadcast();
+	TargetEntry.OnRequestFullRefreshDeferred().Broadcast();
+	return FDropRequestResponse(DropRequest.DropZone);
+}
+
+TOptional<UNiagaraStackEntry::FDropRequestResponse> UNiagaraStackScriptItemGroup::DropAssetsOnTarget(const UNiagaraStackEntry& TargetEntry, const FDropRequest& DropRequest)
+{
+	TSharedRef<const FAssetDragDropOp> AssetDragDropOp = StaticCastSharedRef<const FAssetDragDropOp>(DropRequest.DragDropOperation);
+
+	int32 TargetIndex = GetTargetIndexForTargetEntry(this, TargetEntry, DropRequest.DropZone);
+
+	FScopedTransaction ScopedTransaction(LOCTEXT("DragAndDropAsset", "Insert modules for assets"));
+	for (const FAssetData& AssetData : AssetDragDropOp->GetAssets())
+	{
+		TSharedRef<FScriptGroupAddAction> AddAction = FScriptGroupAddAction::CreateAssetModuleAction(AssetData);
+		AddUtilities->ExecuteAddAction(AddAction, TargetIndex);
+		TargetIndex++;
+	}
+	return FDropRequestResponse(DropRequest.DropZone);
+}
+
+TOptional<UNiagaraStackEntry::FDropRequestResponse> UNiagaraStackScriptItemGroup::DropParameterOnTarget(const UNiagaraStackEntry& TargetEntry, const FDropRequest& DropRequest)
+{
+	TSharedRef<const FNiagaraParameterDragOperation> ParameterDragDropOp = StaticCastSharedRef<const FNiagaraParameterDragOperation>(DropRequest.DragDropOperation);
+	TSharedPtr<FNiagaraParameterAction> ParameterAction = StaticCastSharedPtr<FNiagaraParameterAction>(ParameterDragDropOp->GetSourceAction());
+
+	int32 TargetIndex = GetTargetIndexForTargetEntry(this, TargetEntry, DropRequest.DropZone);
+	TSharedRef<FScriptGroupAddAction> AddAction = FScriptGroupAddAction::CreateExistingParameterModuleAction(ParameterAction->GetParameter());
+	AddUtilities->ExecuteAddAction(AddAction, TargetIndex);
+
+	return FDropRequestResponse(DropRequest.DropZone);
 }
 
 void UNiagaraStackScriptItemGroup::ItemAdded(UNiagaraNodeFunctionCall* AddedModule)
 {
+	GetSystemViewModel()->GetSelectionViewModel()->EmptySelection();
+	GetSystemViewModel()->GetSelectionViewModel()->AddEntryToSelectionByDisplayedObjectDeferred(AddedModule);
 	RefreshChildren();
 }
 
 void UNiagaraStackScriptItemGroup::ChildModifiedGroupItems()
 {
 	RefreshChildren();
+}
+
+bool UNiagaraStackScriptItemGroup::ChildRequestCanPaste(const UNiagaraClipboardContent* ClipboardContent, FText& OutCanPasteMessage)
+{
+	return TestCanPasteWithMessage(ClipboardContent, OutCanPasteMessage);
+}
+
+void UNiagaraStackScriptItemGroup::ChildRequestPaste(const UNiagaraClipboardContent* ClipboardContent, int32 PasteIndex, FText& OutPasteWarning)
+{
+	PasteModules(ClipboardContent, PasteIndex, OutPasteWarning);
 }
 
 void UNiagaraStackScriptItemGroup::OnScriptGraphChanged(const struct FEdGraphEditAction& InAction)
@@ -641,18 +1023,150 @@ void UNiagaraStackScriptItemGroup::OnScriptGraphChanged(const struct FEdGraphEdi
 	}
 }
 
-void UNiagaraStackScriptItemGroup::AddParameterModuleToStack(const UNiagaraStackModuleSpacer* InModuleSpacer, const FNiagaraVariable &InVariable)
+void GatherRenamedModuleOutputs(
+	UNiagaraStackScriptItemGroup* InOwnerEntry,
+	TArray<TPair<const UNiagaraClipboardFunction*, UNiagaraNodeFunctionCall*>> InClipboardFunctionAndNodeFunctionPairs,
+	TMap<FName, FName>& OutOldModuleOutputNameToNewModuleOutputNameMap)
 {
-	int32 TargetIndex = INDEX_NONE;
-	UNiagaraStackModuleItem** TargetModuleItemPtr = StackSpacerToModuleItemMap.Find(FObjectKey(InModuleSpacer));
-	if (*TargetModuleItemPtr != nullptr)
+	UNiagaraEmitter* Emitter = InOwnerEntry->GetEmitterViewModel().IsValid() ? InOwnerEntry->GetEmitterViewModel()->GetEmitter() : nullptr;
+
+	for (TPair<const UNiagaraClipboardFunction*, UNiagaraNodeFunctionCall*>& ClipboardFunctionAndNodeFunctionPair : InClipboardFunctionAndNodeFunctionPairs)
 	{
-		UNiagaraStackModuleItem* TargetModuleItem = *TargetModuleItemPtr;
-		TargetIndex = TargetModuleItem->GetModuleIndex();
+		const UNiagaraClipboardFunction* ClipboardFunction = ClipboardFunctionAndNodeFunctionPair.Key;
+		UNiagaraNodeFunctionCall* NewFunctionCallNode = ClipboardFunctionAndNodeFunctionPair.Value;
+		if (NewFunctionCallNode->GetFunctionName() != ClipboardFunction->FunctionName)
+		{
+			FNiagaraStackGraphUtilities::GatherRenamedStackFunctionOutputVariableNames(Emitter, *NewFunctionCallNode, ClipboardFunction->FunctionName, NewFunctionCallNode->GetFunctionName(), OutOldModuleOutputNameToNewModuleOutputNameMap);
+		}
+	}
+}
+
+void RenameInputsFromClipboard(TMap<FName, FName> OldModuleOutputNameToNewModuleOutputNameMap, UObject* InOuter, const TArray<const UNiagaraClipboardFunctionInput*>& InSourceInputs, TArray<const UNiagaraClipboardFunctionInput*>& OutRenamedInputs)
+{
+	for (const UNiagaraClipboardFunctionInput* SourceInput : InSourceInputs)
+	{
+		TOptional<bool> bEditConditionValue = SourceInput->bHasEditCondition 
+			? TOptional<bool>(SourceInput->bEditConditionValue)
+			: TOptional<bool>();
+		if (SourceInput->ValueMode == ENiagaraClipboardFunctionInputValueMode::Linked && OldModuleOutputNameToNewModuleOutputNameMap.Contains(SourceInput->Linked))
+		{
+			FName RenamedLinkedValue = OldModuleOutputNameToNewModuleOutputNameMap[SourceInput->Linked];
+			OutRenamedInputs.Add(UNiagaraClipboardFunctionInput::CreateLinkedValue(InOuter, SourceInput->InputName, SourceInput->InputType, bEditConditionValue, RenamedLinkedValue));
+		}
+		else if (SourceInput->ValueMode == ENiagaraClipboardFunctionInputValueMode::Dynamic)
+		{
+			const UNiagaraClipboardFunctionInput* RenamedDynamicInput = UNiagaraClipboardFunctionInput::CreateDynamicValue(InOuter, SourceInput->InputName, SourceInput->InputType, bEditConditionValue, SourceInput->Dynamic->FunctionName, SourceInput->Dynamic->Script);
+			RenameInputsFromClipboard(OldModuleOutputNameToNewModuleOutputNameMap, RenamedDynamicInput->Dynamic, SourceInput->Dynamic->Inputs, RenamedDynamicInput->Dynamic->Inputs);
+			OutRenamedInputs.Add(RenamedDynamicInput);
+		}
+		else
+		{
+			OutRenamedInputs.Add(CastChecked<UNiagaraClipboardFunctionInput>(StaticDuplicateObject(SourceInput, InOuter)));
+		}
+	}
+}
+
+void UNiagaraStackScriptItemGroup::PasteModules(const UNiagaraClipboardContent* ClipboardContent, int32 PasteIndex, FText& OutPasteWarning)
+{
+	UNiagaraNodeOutput* OutputNode = GetScriptOutputNode();
+	
+	// Add the new function call nodes from the clipboard functions and collected the pairs.
+	TArray<TPair<const UNiagaraClipboardFunction*, UNiagaraNodeFunctionCall*>> ClipboardFunctionAndNodeFunctionPairs;
+	int32 CurrentPasteIndex = PasteIndex;
+	int32 ModulesSkippedForIncorrectUsage = 0;
+	int32 AssignmentTargetsSkippedForIncorrectUsage = 0;
+	for (const UNiagaraClipboardFunction* ClipboardFunction : ClipboardContent->Functions)
+	{
+		if (ClipboardFunction != nullptr)
+		{
+			UNiagaraNodeFunctionCall* NewFunctionCallNode = nullptr;
+			switch (ClipboardFunction->ScriptMode)
+			{
+			case ENiagaraClipboardFunctionScriptMode::Assignment:
+			{
+				TArray<FNiagaraVariable> CompatibleAssignmentTargets;
+				TArray<FString> CompatibleAssignmentDefaults;
+				for (int32 AssignmentTargetIndex = 0; AssignmentTargetIndex < ClipboardFunction->AssignmentTargets.Num(); ++AssignmentTargetIndex)
+				{
+					if (FNiagaraStackGraphUtilities::CanWriteParameterFromUsage(ClipboardFunction->AssignmentTargets[AssignmentTargetIndex], OutputNode->GetUsage()))
+					{
+						CompatibleAssignmentTargets.Add(ClipboardFunction->AssignmentTargets[AssignmentTargetIndex]);
+						CompatibleAssignmentDefaults.Add(ClipboardFunction->AssignmentDefaults[AssignmentTargetIndex]);
+					}
+					else
+					{
+						AssignmentTargetsSkippedForIncorrectUsage++;
+					}
+				}
+				if (CompatibleAssignmentTargets.Num() > 0)
+				{
+					NewFunctionCallNode = FNiagaraStackGraphUtilities::AddParameterModuleToStack(CompatibleAssignmentTargets, *OutputNode, CurrentPasteIndex, CompatibleAssignmentDefaults);
+				}
+				break;
+			}
+			case ENiagaraClipboardFunctionScriptMode::ScriptAsset:
+			{
+				if (ClipboardFunction->Script->GetSupportedUsageContexts().Contains(OutputNode->GetUsage()))
+				{
+					UNiagaraScript* ClipboardScript = ClipboardFunction->Script->IsAsset()
+						? ClipboardFunction->Script
+						: GetSystemViewModel()->GetScriptScratchPadViewModel()->CreateNewScriptAsDuplicate(ClipboardFunction->Script)->GetScript();
+					NewFunctionCallNode = FNiagaraStackGraphUtilities::AddScriptModuleToStack(ClipboardFunction->Script, *OutputNode, CurrentPasteIndex);
+				}
+				else
+				{
+					ModulesSkippedForIncorrectUsage++;
+				}
+				break;
+			}
+			default:
+				checkf(false, TEXT("Unsupported clipboard function mode."));
+			}
+
+			if (NewFunctionCallNode != nullptr)
+			{
+				NewFunctionCallNode->SuggestName(ClipboardFunction->FunctionName);
+				ClipboardFunctionAndNodeFunctionPairs.Add(TPair<const UNiagaraClipboardFunction*, UNiagaraNodeFunctionCall*>(ClipboardFunction, NewFunctionCallNode));
+				CurrentPasteIndex++;
+			}
+		}
+	}
+	RefreshChildren();
+
+	// Check to see if any of the functions were renamed, and if they were, check if they had aliased outputs that need to be fixed up.
+	TMap<FName, FName> OldModuleOutputNameToNewModuleOutputNameMap;
+	GatherRenamedModuleOutputs(this, ClipboardFunctionAndNodeFunctionPairs, OldModuleOutputNameToNewModuleOutputNameMap);
+
+	// Apply the function inputs now that we have the map of old module output names to new module output names.
+	for(TPair<const UNiagaraClipboardFunction*, UNiagaraNodeFunctionCall*>& ClipboardFunctionAndNodeFunctionPair : ClipboardFunctionAndNodeFunctionPairs)
+	{
+		const UNiagaraClipboardFunction* ClipboardFunction = ClipboardFunctionAndNodeFunctionPair.Key;
+		UNiagaraNodeFunctionCall* NewFunctionCallNode = ClipboardFunctionAndNodeFunctionPair.Value;
+
+		TArray<UNiagaraStackModuleItem*> ModuleItems;
+		GetUnfilteredChildrenOfType(ModuleItems);
+
+		UNiagaraStackModuleItem** NewModuleItemPtr = ModuleItems.FindByPredicate([NewFunctionCallNode](UNiagaraStackModuleItem* ModuleItem) { return &ModuleItem->GetModuleNode() == NewFunctionCallNode; });
+		if (NewModuleItemPtr != nullptr)
+		{
+			TArray<const UNiagaraClipboardFunctionInput*> FunctionInputs;
+			if (OldModuleOutputNameToNewModuleOutputNameMap.Num() > 0)
+			{
+				RenameInputsFromClipboard(OldModuleOutputNameToNewModuleOutputNameMap, GetTransientPackage(), ClipboardFunction->Inputs, FunctionInputs);
+			}
+			else
+			{
+				FunctionInputs = ClipboardFunction->Inputs;
+			}
+			(*NewModuleItemPtr)->SetInputValuesFromClipboardFunctionInputs(FunctionInputs);
+		}
 	}
 
-	TSharedRef<FScriptGroupAddAction> AddAction = FScriptGroupAddAction::CreateExistingParameterModuleAction(InVariable);
-	AddUtilities->ExecuteAddAction(AddAction, TargetIndex);
+	if (ModulesSkippedForIncorrectUsage > 0 || AssignmentTargetsSkippedForIncorrectUsage > 0)
+	{
+		OutPasteWarning = FText::Format(LOCTEXT("NonPastedModulesWarningFormat", "{0} modules not pasted due to incorrect usage.\n{1} inputs not pasted in Set Variables nodes due to incorrect usage."),
+			FText::AsNumber(ModulesSkippedForIncorrectUsage), FText::AsNumber(AssignmentTargetsSkippedForIncorrectUsage));
+	}
 }
 
 #undef LOCTEXT_NAMESPACE

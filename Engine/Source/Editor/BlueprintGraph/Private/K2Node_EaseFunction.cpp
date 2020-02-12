@@ -1,8 +1,8 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "K2Node_EaseFunction.h"
 #include "Framework/Commands/UIAction.h"
-#include "Framework/MultiBox/MultiBoxBuilder.h"
+#include "ToolMenus.h"
 #include "EdGraphSchema_K2.h"
 #include "EdGraph/EdGraphNodeUtils.h"
 #include "K2Node_CallFunction.h"
@@ -533,26 +533,26 @@ void UK2Node_EaseFunction::ResetToWildcards()
 	PinTypeChanged(APin);
 }
 
-void UK2Node_EaseFunction::GetContextMenuActions(const FGraphNodeContextMenuBuilder& Context) const
+void UK2Node_EaseFunction::GetNodeContextMenuActions(UToolMenu* Menu, UGraphNodeContextMenuContext* Context) const
 {
-	Super::GetContextMenuActions(Context);
+	Super::GetNodeContextMenuActions(Menu, Context);
 
-	if (!Context.bIsDebugging)
+	if (!Context->bIsDebugging)
 	{
-		if (Context.Pin == NULL)
+		if (Context->Pin == NULL)
 		{
-			Context.MenuBuilder->BeginSection("UK2Node_EaseFunction", LOCTEXT("ContextMenuHeader", "Ease"));
 			{
-				Context.MenuBuilder->AddMenuEntry(
+				FToolMenuSection& Section = Menu->AddSection("UK2Node_EaseFunction", LOCTEXT("ContextMenuHeader", "Ease"));
+				Section.AddMenuEntry(
+					"AddPin",
 					LOCTEXT("AddPin", "Reset to Wildcards"),
 					LOCTEXT("AddPinTooltip", "Resets A, B and Results pins to its default wildcard state"),
 					FSlateIcon(),
 					FUIAction(
-					FExecuteAction::CreateUObject(this, &UK2Node_EaseFunction::ResetToWildcards)
+					FExecuteAction::CreateUObject(const_cast<UK2Node_EaseFunction*>(this), &UK2Node_EaseFunction::ResetToWildcards)
 					)
 				);
 			}
-			Context.MenuBuilder->EndSection();
 		}
 	}
 }

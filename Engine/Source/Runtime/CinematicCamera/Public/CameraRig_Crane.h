@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -77,16 +77,16 @@ private:
 
 #if WITH_EDITORONLY_DATA
 	/** Preview meshes for visualization */
-	UPROPERTY()
+	UPROPERTY(Transient)
 	UStaticMeshComponent* PreviewMesh_CraneArm;
 
-	UPROPERTY()
+	UPROPERTY(Transient)
 	UStaticMeshComponent* PreviewMesh_CraneBase;
 
-	UPROPERTY()
+	UPROPERTY(Transient)
 	UStaticMeshComponent* PreviewMesh_CraneMount;
 
-	UPROPERTY()
+	UPROPERTY(Transient)
 	UStaticMeshComponent* PreviewMesh_CraneCounterWeight;
 #endif
 };

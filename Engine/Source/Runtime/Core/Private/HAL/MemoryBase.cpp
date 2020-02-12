@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "HAL/MemoryBase.h"
 #include "Stats/Stats.h"
@@ -9,10 +9,6 @@ DECLARE_DWORD_COUNTER_STAT(TEXT("Malloc calls"),			STAT_MallocCalls,STATGROUP_Me
 DECLARE_DWORD_COUNTER_STAT(TEXT("Free calls"),				STAT_FreeCalls,STATGROUP_MemoryAllocator);
 DECLARE_DWORD_COUNTER_STAT(TEXT("Realloc calls"),			STAT_ReallocCalls,STATGROUP_MemoryAllocator);
 DECLARE_DWORD_COUNTER_STAT(TEXT("Total Allocator calls"),	STAT_TotalAllocatorCalls,STATGROUP_MemoryAllocator);
-
-TAtomic<uint32> FMalloc::TotalMallocCalls(0);
-TAtomic<uint32> FMalloc::TotalFreeCalls(0);
-TAtomic<uint32> FMalloc::TotalReallocCalls(0);
 
 #if !UE_BUILD_SHIPPING
 TAtomic<uint64> FMalloc::MaxSingleAlloc;
@@ -41,9 +37,9 @@ struct FCurrentFrameCalls
 
 	void Update()
 	{
-		uint32 LocalTotalMallocCalls  = FMalloc::TotalMallocCalls.Load(EMemoryOrder::Relaxed);
-		uint32 LocalTotalReallocCalls = FMalloc::TotalReallocCalls.Load(EMemoryOrder::Relaxed);
-		uint32 LocalTotalFreeCalls    = FMalloc::TotalFreeCalls.Load(EMemoryOrder::Relaxed);
+		uint32 LocalTotalMallocCalls  = 0;
+		uint32 LocalTotalReallocCalls = 0;
+		uint32 LocalTotalFreeCalls    = 0;
 
 		MallocCalls      = LocalTotalMallocCalls - LastMallocCalls;
 		ReallocCalls     = LocalTotalReallocCalls - LastReallocCalls;
@@ -94,4 +90,14 @@ void FMalloc::GetAllocatorStats( FGenericMemoryStats& out_Stats )
 	out_Stats.Add( TEXT("Free calls"), GetCurrentFrameCalls().FreeCalls );
 	out_Stats.Add( TEXT("Total Allocator calls"), GetCurrentFrameCalls().AllocatorCalls );
 #endif // STATS
+}
+
+void* FMalloc::TryMalloc(SIZE_T Count, uint32 Alignment)
+{
+	return Malloc(Count, Alignment);
+}
+
+void* FMalloc::TryRealloc(void* Original, SIZE_T Count, uint32 Alignment)
+{
+	return Realloc(Original, Count, Alignment);
 }

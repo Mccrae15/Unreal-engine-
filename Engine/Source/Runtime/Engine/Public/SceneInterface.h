@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -10,6 +10,8 @@
 
 class AWorldSettings;
 class FAtmosphericFogSceneInfo;
+class FSkyAtmosphereRenderSceneInfo;
+class FSkyAtmosphereSceneProxy;
 class FMaterial;
 class FMaterialShaderMap;
 class FPrimitiveSceneInfo;
@@ -38,7 +40,7 @@ enum EBasePassDrawListType
  * An interface to the private scene manager implementation of a scene.  Use GetRendererModule().AllocateScene to create.
  * The scene
  */
-class FSceneInterface
+class ENGINE_VTABLE FSceneInterface
 {
 public:
 	FSceneInterface(ERHIFeatureLevel::Type InFeatureLevel)
@@ -61,6 +63,10 @@ public:
 	virtual void RemovePrimitive(UPrimitiveComponent* Primitive) = 0;
 	/** Called when a primitive is being unregistered and will not be immediately re-registered. */
 	virtual void ReleasePrimitive(UPrimitiveComponent* Primitive) = 0;
+	/**
+	* Updates all primitive scene info additions, remobals and translation changes
+	*/
+	virtual void UpdateAllPrimitiveSceneInfos(FRHICommandListImmediate& RHICmdList, bool bAsyncCreateLPIs = false) = 0;
 	/** 
 	 * Updates the transform of a primitive which has already been added to the scene. 
 	 * 
@@ -69,6 +75,12 @@ public:
 	virtual void UpdatePrimitiveTransform(UPrimitiveComponent* Primitive) = 0;
 	/** Updates primitive attachment state. */
 	virtual void UpdatePrimitiveAttachment(UPrimitiveComponent* Primitive) = 0;
+	/** 
+	 * Updates the custom primitive data of a primitive component which has already been added to the scene. 
+	 * 
+	 * @param Primitive - Primitive component to update
+	 */
+	virtual void UpdateCustomPrimitiveData(UPrimitiveComponent* Primitive) = 0;
 	/**
 	 * Updates distance field scene data (transforms, uv scale, self-shadow bias, etc.) but doesn't change allocation in the atlas
 	 */
@@ -97,6 +109,10 @@ public:
 	virtual void AddInvisibleLight(ULightComponent* Light) = 0;
 	virtual void SetSkyLight(FSkyLightSceneProxy* Light) = 0;
 	virtual void DisableSkyLight(FSkyLightSceneProxy* Light) = 0;
+
+	virtual bool HasSkyLightRequiringLightingBuild() const = 0;
+	virtual bool HasAtmosphereLightRequiringLightingBuild() const = 0;
+
 	/** 
 	 * Adds a new decal component to the scene
 	 * 
@@ -154,18 +170,24 @@ public:
 	virtual void UpdateSceneCaptureContents(class USceneCaptureComponent2D* CaptureComponent) {}
 	virtual void UpdateSceneCaptureContents(class USceneCaptureComponentCube* CaptureComponent) {}
 	virtual void UpdatePlanarReflectionContents(class UPlanarReflectionComponent* CaptureComponent, class FSceneRenderer& MainSceneRenderer) {}
-
+	
 	virtual void AddPrecomputedLightVolume(const class FPrecomputedLightVolume* Volume) {}
 	virtual void RemovePrecomputedLightVolume(const class FPrecomputedLightVolume* Volume) {}
 
 	virtual bool HasPrecomputedVolumetricLightmap_RenderThread() const { return false; }
-	virtual void AddPrecomputedVolumetricLightmap(const class FPrecomputedVolumetricLightmap* Volume) {}
+	virtual void AddPrecomputedVolumetricLightmap(const class FPrecomputedVolumetricLightmap* Volume, bool bIsPersistentLevel) {}
 	virtual void RemovePrecomputedVolumetricLightmap(const class FPrecomputedVolumetricLightmap* Volume) {}
+
+	/** Add a runtime virtual texture object to the scene. */
+	virtual void AddRuntimeVirtualTexture(class URuntimeVirtualTextureComponent* Component) {}
+
+	/** Removes a runtime virtual texture object from the scene. */
+	virtual void RemoveRuntimeVirtualTexture(class URuntimeVirtualTextureComponent* Component) {}
 
 	/** 
 	 * Retrieves primitive uniform shader parameters that are internal to the renderer.
 	 */
-	virtual void GetPrimitiveUniformShaderParameters_RenderThread(const FPrimitiveSceneInfo* PrimitiveSceneInfo, bool& bHasPrecomputedVolumetricLightmap, FMatrix& PreviousLocalToWorld, int32& SingleCaptureIndex) const {}
+	virtual void GetPrimitiveUniformShaderParameters_RenderThread(const FPrimitiveSceneInfo* PrimitiveSceneInfo, bool& bHasPrecomputedVolumetricLightmap, FMatrix& PreviousLocalToWorld, int32& SingleCaptureIndex, bool& OutputVelocity) const {}
 	 
 	/** 
 	 * Updates the transform of a light which has already been added to the scene. 
@@ -229,6 +251,24 @@ public:
 	virtual FAtmosphericFogSceneInfo* GetAtmosphericFogSceneInfo() = 0;
 
 	/**
+	 * Adds the unique sky atmosphere component to the scene
+	 *
+	 * @param SkyAtmosphereSceneProxy - the sky atmosphere proxy
+	 */
+	virtual void AddSkyAtmosphere(FSkyAtmosphereSceneProxy* SkyAtmosphereSceneProxy, bool bStaticLightingBuilt) = 0;
+	/**
+	 * Removes the unique sky atmosphere component to the scene
+	 *
+	 * @param SkyAtmosphereSceneProxy - the sky atmosphere proxy
+	 */
+	virtual void RemoveSkyAtmosphere(FSkyAtmosphereSceneProxy* SkyAtmosphereSceneProxy) = 0;
+	/**
+	 * Returns the scene's unique info if it exists
+	 */
+	virtual FSkyAtmosphereRenderSceneInfo* GetSkyAtmosphereSceneInfo() = 0;
+	virtual const FSkyAtmosphereRenderSceneInfo* GetSkyAtmosphereSceneInfo() const = 0;
+
+	/**
 	 * Adds a wind source component to the scene.
 	 * @param WindComponent - The component to add.
 	 */
@@ -272,7 +312,7 @@ public:
 	 * Looks up the SpeedTree uniform buffer for the passed in vertex factory.
 	 * @param VertexFactory - The vertex factory registered for SpeedTree.
 	 */
-	virtual FUniformBufferRHIParamRef GetSpeedTreeUniformBuffer(const FVertexFactory* VertexFactory) const = 0;
+	virtual FRHIUniformBuffer* GetSpeedTreeUniformBuffer(const FVertexFactory* VertexFactory) const = 0;
 
 	/**
 	 * Release this scene and remove it from the rendering thread
@@ -369,7 +409,7 @@ public:
 
 	static EShadingPath GetShadingPath(ERHIFeatureLevel::Type InFeatureLevel)
 	{
-		if (InFeatureLevel >= ERHIFeatureLevel::SM4)
+		if (InFeatureLevel >= ERHIFeatureLevel::SM5)
 		{
 			return EShadingPath::Deferred;
 		}

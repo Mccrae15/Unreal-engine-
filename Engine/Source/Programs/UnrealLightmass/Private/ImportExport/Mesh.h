@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -43,6 +43,8 @@ public:
 	{
 		return LODs[Index];
 	}
+
+	class FDefaultAggregateMesh* VoxelizationMesh = nullptr;
 
 protected:
 	/** array of LODs (same number as FStaticMeshData.NumLODs) */

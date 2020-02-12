@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 using System;
 using System.Collections.Generic;
@@ -120,6 +120,9 @@ namespace Gauntlet
 			if (bHasExited)
 			{
 				ActivityExited = true;
+				// The activity has exited, make sure entire activity log has been captured, sleep to allow time for the log to flush
+				Thread.Sleep(5000);
+				UpdateCachedLog(true);
 				Log.VeryVerbose("{0}: process exited, Activity running={1}, Activity in foreground={2} ", ToString(), bActivityPresent.ToString(), bActivityInForeground.ToString());
 			}
 
@@ -134,37 +137,58 @@ namespace Gauntlet
 		public bool WasKilled { get; protected set; }
 
 		/// <summary>
-		/// The output of the test activity, runs a shell command returning the full log from device per call (possibly over wifi)
-		/// result is cached, and updated at ActivityLogDelta frequency
+		/// The output of the test activity
 		/// </summary>
 		public string StdOut
 		{
 			get
-			{				
-				if (!String.IsNullOrEmpty(ActivityLogCached) && (ActivityLogTime == DateTime.MinValue || ((DateTime.UtcNow - ActivityLogTime) < ActivityLogDelta)))
-				{
-					return ActivityLogCached;
-				}
-
-				ActivityLogTime = DateTime.UtcNow;
-
-				string GetLogCommand = string.Format("shell cat {0}/Logs/{1}.log", Install.AndroidDevice.DeviceArtifactPath, Install.Name);
-				IProcessResult LogQuery = Install.AndroidDevice.RunAdbDeviceCommand(GetLogCommand, true);
-				ActivityLogCached = LogQuery.Output;
-
-				// the activity has exited, mark final log sentinel 
-				if (ActivityExited)
-				{
-					ActivityLogTime = DateTime.MinValue;
-				}
-
-				return ActivityLogCached;
+			{
+				UpdateCachedLog();
+				return String.IsNullOrEmpty(ActivityLogCached) ? String.Empty : ActivityLogCached;
 			}
+		}
+		/// <summary>
+		/// Updates cached activity log by running a shell command returning the full log from device (possibly over wifi)
+		/// The result is cached and updated at ActivityLogDelta frequency
+		/// </summary>
+		private void UpdateCachedLog(bool ForceUpdate = false)
+		{
+			if (!ForceUpdate && (ActivityLogTime == DateTime.MinValue || ((DateTime.UtcNow - ActivityLogTime) < ActivityLogDelta)))
+			{
+				return;
+			}
+
+			if (Install.AndroidDevice != null && Install.AndroidDevice.Disposed)
+			{
+				Log.Warning("Attempting to cache log using disposed Android device");
+				return;
+			}
+
+			string GetLogCommand = string.Format("shell cat {0}/Logs/{1}.log", Install.AndroidDevice.DeviceArtifactPath, Install.Name);
+			IProcessResult LogQuery = Install.AndroidDevice.RunAdbDeviceCommand(GetLogCommand, true);
+
+			if (LogQuery.ExitCode != 0)
+			{
+				Log.VeryVerbose("Unable to query activity stdout on device {0}", Install.AndroidDevice.Name);
+			}
+			else
+			{
+				ActivityLogCached = LogQuery.Output;
+			}
+
+			ActivityLogTime = DateTime.UtcNow;
+
+			// the activity has exited, mark final log sentinel 
+			if (ActivityExited)
+			{
+				ActivityLogTime = DateTime.MinValue;
+			}
+
 		}
 
 		private static readonly TimeSpan ActivityLogDelta = TimeSpan.FromSeconds(15);
-		private DateTime ActivityLogTime = DateTime.UtcNow;
-		private string ActivityLogCached = "";
+		private DateTime ActivityLogTime = DateTime.UtcNow - ActivityLogDelta;
+		private string ActivityLogCached = string.Empty;
 		
 
 		public int WaitForExit()
@@ -189,9 +213,13 @@ namespace Gauntlet
 
 		protected void SaveArtifacts()
 		{
+
 			// copy remote artifacts to local
 			if (Directory.Exists(Install.AndroidDevice.LocalCachePath))
 			{
+
+				Log.Verbose("Deleting {0}", Install.AndroidDevice.LocalCachePath);
+
 				try
 				{
 					// don't consider this fatal, people often have the directory or a file open
@@ -204,26 +232,49 @@ namespace Gauntlet
 			}
 
 			// mark it as a temp dir (will also create it)
-			Utils.SystemHelpers.MarkDirectoryForCleanup(Install.AndroidDevice.LocalCachePath);
+			try
+			{
+				Utils.SystemHelpers.MarkDirectoryForCleanup(Install.AndroidDevice.LocalCachePath);
+			}
+			catch (Exception Ex)
+			{
+				Log.Warning("Exception marking directory for cleanup {0}", Ex.Message);
+			}			
 
 			string LocalSaved = Path.Combine(Install.AndroidDevice.LocalCachePath, "Saved");
+			Log.Verbose("Creating {0}", LocalSaved);
 			Directory.CreateDirectory(LocalSaved);
 
+
+			
+
+
 			// pull all the artifacts
-			string ArtifactPullCommand = string.Format("pull {0} {1}", Install.AndroidDevice.DeviceArtifactPath, LocalSaved);
-			IProcessResult PullCmd = Install.AndroidDevice.RunAdbDeviceCommand(ArtifactPullCommand);
+			string ArtifactPullCommand = string.Format("pull {0} {1}", Install.AndroidDevice.DeviceArtifactPath, Install.AndroidDevice.LocalCachePath);
+			IProcessResult PullCmd = Install.AndroidDevice.RunAdbDeviceCommand(ArtifactPullCommand, bShouldLogCommand: Log.IsVerbose);
 
 			if (PullCmd.ExitCode != 0)
 			{
 				Log.Warning("Failed to retrieve artifacts. {0}", PullCmd.Output);
 			}
+			else
+			{
+				// update final cached stdout property
+				string LogFilename = string.Format("{0}/Logs/{1}.log", LocalSaved, Install.Name);
+				if (File.Exists(LogFilename))
+				{
+					ActivityLogCached = File.ReadAllText(LogFilename);
+					ActivityLogTime = DateTime.MinValue;
+				}
+
+			}
 
 			// pull the logcat over from device.
-			IProcessResult LogcatResult = Install.AndroidDevice.RunAdbDeviceCommand("logcat -d");
+			IProcessResult LogcatResult = Install.AndroidDevice.RunAdbDeviceCommand("logcat -d", bShouldLogCommand: Log.IsVerbose);
 
 			string LogcatFilename = "Logcat.log";
 			// Save logcat dump to local artifact path.
-			System.IO.File.WriteAllText(Path.Combine(LocalSaved, LogcatFilename), LogcatResult.Output);
+			File.WriteAllText(Path.Combine(LocalSaved, LogcatFilename), LogcatResult.Output);
 
 			Install.AndroidDevice.PostRunCleanup();
 		}
@@ -257,7 +308,7 @@ namespace Gauntlet
 
 	public class DefaultAndroidDevices : IDefaultDeviceSource
 	{
-		public bool CanSupportPlatform(UnrealTargetPlatform Platform)
+		public bool CanSupportPlatform(UnrealTargetPlatform? Platform)
 		{
 			return Platform == UnrealTargetPlatform.Android;
 		}
@@ -270,7 +321,7 @@ namespace Gauntlet
 
 	public class AndroidDeviceFactory : IDeviceFactory
 	{
-		public bool CanSupportPlatform(UnrealTargetPlatform Platform)
+		public bool CanSupportPlatform(UnrealTargetPlatform? Platform)
 		{
 			return Platform == UnrealTargetPlatform.Android;
 		}
@@ -306,7 +357,7 @@ namespace Gauntlet
 		/// <summary>
 		/// Platform type.
 		/// </summary>
-		public UnrealTargetPlatform Platform { get { return UnrealTargetPlatform.Android; } }
+		public UnrealTargetPlatform? Platform { get { return UnrealTargetPlatform.Android; } }
 
 		/// <summary>
 		/// Options for executing commands
@@ -359,9 +410,10 @@ namespace Gauntlet
         }
 
         public void PopulateDirectoryMappings(string ProjectDir)
-        {
-            LocalDirectoryMappings.Add(EIntendedBaseCopyDirectory.Binaries, Path.Combine(ProjectDir, "Binaries"));
-            LocalDirectoryMappings.Add(EIntendedBaseCopyDirectory.Config, Path.Combine(ProjectDir, "Config"));
+		{
+			LocalDirectoryMappings.Add(EIntendedBaseCopyDirectory.Build, Path.Combine(ProjectDir, "Build"));
+			LocalDirectoryMappings.Add(EIntendedBaseCopyDirectory.Binaries, Path.Combine(ProjectDir, "Binaries"));
+			LocalDirectoryMappings.Add(EIntendedBaseCopyDirectory.Config, Path.Combine(ProjectDir, "Config"));
             LocalDirectoryMappings.Add(EIntendedBaseCopyDirectory.Content, Path.Combine(ProjectDir, "Content"));
             LocalDirectoryMappings.Add(EIntendedBaseCopyDirectory.Demos, Path.Combine(ProjectDir, "Demos"));
             LocalDirectoryMappings.Add(EIntendedBaseCopyDirectory.Profiling, Path.Combine(ProjectDir, "Profiling"));
@@ -485,7 +537,7 @@ namespace Gauntlet
 					if (!IsExistingDevice)
 					{
 						// disconnect
-						RunAdbGlobalCommand(string.Format("disconnect {0}", DeviceName));
+						RunAdbGlobalCommand(string.Format("disconnect {0}", DeviceName), true, false, true);
 
 						Log.Info("Disconnected {0}", DeviceName);
 					}					
@@ -511,6 +563,16 @@ namespace Gauntlet
 			// TODO: uncomment the following line if the finalizer is overridden above.
 			// GC.SuppressFinalize(this);
 		}
+
+		public bool Disposed
+		{
+			get
+			{
+				return disposedValue;
+			}
+			
+		}
+
 		#endregion
 
 		/// <summary>
@@ -627,7 +689,7 @@ namespace Gauntlet
 			return AdbResult.ExitCode == 0;
 		}
 
-		protected bool CopyFileToDevice(string PackageName, string SourcePath, string DestPath, bool IgnoreDependencies = false)
+		public bool CopyFileToDevice(string PackageName, string SourcePath, string DestPath, bool IgnoreDependencies = false)
 		{
 			bool IsAPK = string.Equals(Path.GetExtension(SourcePath), ".apk", StringComparison.OrdinalIgnoreCase);
 
@@ -787,12 +849,13 @@ namespace Gauntlet
 				// remote dir used to save things
 				string RemoteDir = StorageLocation + "/UE4Game/" + AppConfig.ProjectName;
 
-				// if not a bulk/dev build, remote dir will be under /{StorageLocation}/Android/data/{PackageName}
-				if ((Build.Flags & ( BuildFlags.Bulk | BuildFlags.CanReplaceExecutable)) == 0)
+				// if using a non-bulk test configuration, implies com.epicgames.ue4.GameActivity.bUseExternalFilesDir = true
+				// @todo: query this from the apk? 
+				if (AppConfig.Configuration == UnrealTargetConfiguration.Test && ((Build.Flags & BuildFlags.NotBulk) == BuildFlags.NotBulk))
 				{
 					RemoteDir = StorageLocation + "/Android/data/" + Build.AndroidPackageName + "/files/UE4Game/" + AppConfig.ProjectName;
 				}
-				
+
 				string DependencyDir = RemoteDir + "/deps";
 
 				// device artifact path, always clear between runs
@@ -899,7 +962,7 @@ namespace Gauntlet
 					string DestFile = Path.GetFileName(DestPath);
 
 					// If we installed a new APK we need to change the package version
-					Match OBBMatch = Regex.Match(DestFile, @"main\.(\d+)\.com.*\.obb");
+					Match OBBMatch = Regex.Match(DestFile, @"\.(\d+)\.com.*\.obb");
 					if (OBBMatch.Success)
 					{
 						string NewFileName = DestFile.Replace(OBBMatch.Groups[1].ToString(), PackageVersion);
@@ -919,7 +982,13 @@ namespace Gauntlet
 				// if != 0 then no folder exists
 				if (AdbResult.ExitCode == 0)
 				{
-					IEnumerable<string> CurrentRemoteFileList = AdbResult.Output.Replace("\r\n", "\n").Split('\n');
+					string[] Delimiters = { "\r\n", "\n" };
+					string[] CurrentRemoteFileList = AdbResult.Output.Split(Delimiters, StringSplitOptions.RemoveEmptyEntries);
+					for (int i = 0; i < CurrentRemoteFileList.Length; ++i)
+					{
+						CurrentRemoteFileList[i] = CurrentRemoteFileList[i].Trim();
+					}
+
 					IEnumerable<string> NewRemoteFileList = FilesToInstall.Values.Select(F => Path.GetFileName(F));
 
 					// delete any files that should not be there
@@ -955,6 +1024,7 @@ namespace Gauntlet
 				AdbCommand = string.Format("push {0} {1}", TmpFile, CommandLineFilePath);
 				RunAdbDeviceCommand(AdbCommand);
 
+				EnablePermissions(Build.AndroidPackageName);
 
 				File.Delete(TmpFile);
 			}
@@ -1006,14 +1076,14 @@ namespace Gauntlet
 		/// <param name="Wait"></param>
 		/// <param name="Input"></param>
 		/// <returns></returns>
-		public IProcessResult RunAdbDeviceCommand(string Args, bool Wait=true, bool bShouldLogCommand = false)
+		public IProcessResult RunAdbDeviceCommand(string Args, bool Wait=true, bool bShouldLogCommand = false, bool bPauseErrorParsing = false)
 		{
 			if (string.IsNullOrEmpty(DeviceName) == false)
 			{
 				Args = string.Format("-s {0} {1}", DeviceName, Args);
 			}
 
-			return RunAdbGlobalCommand(Args, Wait, bShouldLogCommand);
+			return RunAdbGlobalCommand(Args, Wait, bShouldLogCommand, bPauseErrorParsing);
 		}
 
 		/// <summary>
@@ -1047,7 +1117,7 @@ namespace Gauntlet
 		/// <param name="Args"></param>
 		/// <param name="Wait"></param>
 		/// <returns></returns>
-		public static IProcessResult RunAdbGlobalCommand(string Args, bool Wait = true, bool bShouldLogCommand = false)
+		public static IProcessResult RunAdbGlobalCommand(string Args, bool Wait = true, bool bShouldLogCommand = false, bool bPauseErrorParsing = false)
 		{
 			CommandUtils.ERunOptions RunOptions = CommandUtils.ERunOptions.AppMustExist | CommandUtils.ERunOptions.NoWaitForExit;
 
@@ -1064,21 +1134,38 @@ namespace Gauntlet
 			{
 				Log.Verbose("Running ADB Command: adb {0}", Args);
 			}
-			
-			IProcessResult Process = AndroidPlatform.RunAdbCommand(null, null, Args, null, RunOptions);
 
-			if (Wait)
+			IProcessResult Process;
+
+			using (bPauseErrorParsing ? new ScopedSuspendECErrorParsing() : null)
 			{
-				Process.WaitForExit();
+				Process = AndroidPlatform.RunAdbCommand(null, null, Args, null, RunOptions);
+
+				if (Wait)
+				{
+					Process.WaitForExit();
+				}
 			}
 			
-return Process;
+			return Process;
 		}
 
 		public void AllowDeviceSleepState(bool bAllowSleep)
 		{
 			string CommandLine = "shell svc power stayon " + (bAllowSleep ? "false" : "usb");
-			RunAdbDeviceCommand(CommandLine);
+			RunAdbDeviceCommand(CommandLine, true, false, true);
+		}
+		/// <summary>
+		/// Enable Android permissions which would otherwise block automation with permimssion requests
+		/// </summary>
+		public void EnablePermissions(string AndroidPackageName)
+		{
+			List<string> Permissions = new List<string>{ "WRITE_EXTERNAL_STORAGE", "GET_ACCOUNTS", "RECORD_AUDIO" };
+			Permissions.ForEach(Permission => {
+				string CommandLine = string.Format("shell pm grant {0} android.permission.{1}", AndroidPackageName, Permission);
+				Log.Verbose(string.Format("Enabling permission: {0} {1}", AndroidPackageName, Permission));
+				RunAdbDeviceCommand(CommandLine, true, false, true);
+			});
 		}
 
 		public void KillRunningProcess(string AndroidPackageName)
@@ -1219,13 +1306,23 @@ return Process;
 
 					bUsingCustomKeys = true;
 
-					Log.Info("Running adb kill-server to refresh credentials");
-					TargetDeviceAndroid.RunAdbGlobalCommand("kill-server");
-
-					Thread.Sleep(5000);
+					KillAdbServer();
 				}
 
 				InstanceCount++;
+			}
+
+		}
+
+		private static void KillAdbServer()
+		{			
+			using (new ScopedSuspendECErrorParsing())
+			{
+				Log.Info("Running adb kill-server to refresh credentials");
+				TargetDeviceAndroid.RunAdbGlobalCommand("kill-server");
+				// killing the adb server restarts it and can surface superfluous device errors
+				int SleepTime = CommandUtils.IsBuildMachine ? 15000 : 5000;
+				Thread.Sleep(SleepTime);
 			}
 
 		}
@@ -1240,12 +1337,8 @@ return Process;
 				if (InstanceCount == 0 && bUsingCustomKeys)
 				{
 					Reset();
-
-					Log.Info("Running adb kill-server to refresh credentials");
-					TargetDeviceAndroid.RunAdbGlobalCommand("kill-server");
-					Thread.Sleep(2500);
+					KillAdbServer();
 				}
-
 			}
 		}
 

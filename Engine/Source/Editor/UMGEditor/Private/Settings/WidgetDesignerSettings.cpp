@@ -1,9 +1,12 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "Settings/WidgetDesignerSettings.h"
 
 UWidgetDesignerSettings::UWidgetDesignerSettings()
 {
+
+	Favorites = CreateDefaultSubobject<UWidgetPaletteFavorites>(TEXT("WidgetPaletteFavorites"));
+
 	CategoryName = TEXT("ContentEditors");
 
 	GridSnapEnabled = true;

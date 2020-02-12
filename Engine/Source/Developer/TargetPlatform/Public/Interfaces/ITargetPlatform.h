@@ -1,10 +1,9 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
 #include "CoreMinimal.h"
 #include "Interfaces/ITargetDevice.h"
-
 
 namespace PlatformInfo
 {
@@ -81,6 +80,15 @@ enum class ETargetPlatformFeatures
 
 	/* The platform supports memory mapped audio */
 	MemoryMappedAudio,
+
+	/* The platform supports memory mapped animation */
+	MemoryMappedAnimation,
+
+	/* The platform supports sparse textures */
+	SparseTextures,
+	
+	/* Can we use the virtual texture streaming system on this platform. */
+	VirtualTextureStreaming,
 };
 
 
@@ -157,14 +165,26 @@ public:
 	/**
 	 * Checks whether the platform's build requirements are met so that we can do things like package for the platform.
 	 *
-	 * @param ProjectPath Path to the project.
 	 * @param bProjectHasCode true if the project has code, and therefore any compilation based SDK requirements should be checked.
+	 * @param Configuration The configuration being built
+	 * @param bRequiresAssetNativization Whether asset nativization is required
 	 * @param OutTutorialPath Let's the platform tell the editor a path to show some information about how to fix any problem.
 	 * @param OutDocumentationPath Let's the platform tell the editor a documentation path.
 	 * @param CustomizedLogMessage Let's the platform return a customized log message instead of the default for the returned status.
 	 * @return A mask of ETargetPlatformReadyStatus flags to indicate missing requirements, or 0 if all requirements are met.
 	 */
-	virtual int32 CheckRequirements(const FString& ProjectPath, bool bProjectHasCode, FString& OutTutorialPath, FString& OutDocumentationPath, FText& CustomizedLogMessage) const = 0;
+	virtual int32 CheckRequirements(bool bProjectHasCode, EBuildConfiguration Configuration, bool bRequiresAssetNativization, FString& OutTutorialPath, FString& OutDocumentationPath, FText& CustomizedLogMessage) const = 0;
+
+	/**
+	 * Checks whether the current project needs a temporary .target.cs file to be packaged as a code project.
+	 *
+	 * @param bProjectHasCode Whether the project has code
+	 * @param Configuration The configuration being built
+	 * @param bRequiresAssetNativization Whether asset nativization is enabled
+	 * @param OutReason On success, includes a description of the reason why a target is required
+	 * @return True if a temporary target is required
+	 */
+	virtual bool RequiresTempTarget(bool bProjectHasCode, EBuildConfiguration Configuration, bool bRequiresAssetNativization, FText& OutReason) const = 0;
 
 	/**
 	 * Returns the information about this platform
@@ -207,11 +227,11 @@ public:
 	/**
 	 * Generates a platform specific asset manifest given an array of FAssetData.
 	 *
-	 * @param ChunkMap A map of asset path to ChunkIDs for all of the assets.
-	 * @param ChunkIDsInUse A set of all ChunkIDs used by this set of assets.
+	 * @param PakchunkMap A map of asset path to Pakchunk file indices for all of the assets.
+	 * @param PakchunkIndicesInUse A set of all Pakchunk file indices used by this set of assets.
 	 * @return true if the manifest was successfully generated, or if the platform doesn't need a manifest .
 	 */
-	virtual bool GenerateStreamingInstallManifest( const TMultiMap<FString, int32>& ChunkMap, const TSet<int32>& ChunkIDsInUse ) const = 0;
+	virtual bool GenerateStreamingInstallManifest( const TMultiMap<FString, int32>& PakchunkMap, const TSet<int32>& PakchunkIndicesInUse) const = 0;
 
 	/**
 	 * Gets the default device.
@@ -314,10 +334,10 @@ public:
 	/**
 	 * Checks whether this platform supports the specified build target, i.e. Game or Editor.
 	 *
-	 * @param BuildTarget The build target to check.
+	 * @param TargetType The target type to check.
 	 * @return true if the build target is supported, false otherwise.
 	 */
-	virtual bool SupportsBuildTarget( EBuildTargets::Type BuildTarget ) const = 0;
+	virtual bool SupportsBuildTarget( EBuildTargetType TargetType ) const = 0;
 
 	/**
 	 * Checks whether the target platform supports the specified feature.
@@ -326,6 +346,15 @@ public:
 	 * @return true if the feature is supported, false otherwise.
 	 */
 	virtual bool SupportsFeature( ETargetPlatformFeatures Feature ) const = 0;
+
+	/**
+	 * Checks whether the target platform supports the specified value for the specified type of support
+	 *
+	 * @param SupportedType The type of support being queried
+	 * @param RequiredSupportedValue The value of support needed
+	 * @return true if the feature is supported, false otherwise.
+	 */
+	virtual bool SupportsValueForType(FName SupportedType, FName RequiredSupportedValue) const = 0;
 
 	/**
 	 * Gets whether the platform should use forward shading or not.
@@ -337,6 +366,28 @@ public:
 	*/
 	virtual bool UsesDBuffer() const = 0;
 	
+	/**
+	* Gets whether the platform should output velocity in the base pass.
+	*/
+	virtual bool UsesBasePassVelocity() const = 0;
+
+	/**
+	* Gets whether the platform will use selective outputs in the base pass shaders.
+	*/
+	virtual bool UsesSelectiveBasePassOutputs() const = 0; 
+
+	/**
+	* Gets whether the platform will use distance fields.
+	*/
+	virtual bool UsesDistanceFields() const = 0;
+
+	/**
+	* Gets down sample mesh distance field divider.
+	*
+	* @return 1 if platform does not need to downsample mesh distance fields
+	*/
+	virtual float GetDownSampleMeshDistanceFieldDivider() const = 0;
+
 #if WITH_ENGINE
 	/**
 	 * Gets the format to use for a particular body setup.
@@ -370,9 +421,10 @@ public:
 	 * Gets the format to use for a particular texture.
 	 *
 	 * @param Texture The texture to get the format for.
+	 * @param LayerIndex Index of layer within Texture to get the format for
 	 * @param OutFormats Will contain the list of supported formats.
 	 */
-	virtual void GetTextureFormats( const class UTexture* Texture, TArray<FName>& OutFormats ) const = 0;
+	virtual void GetTextureFormats( const class UTexture* Texture, TArray< TArray<FName> >& OutFormats ) const = 0;
 
 	/**
 	 * Gets the texture formats this platform can use
@@ -407,13 +459,6 @@ public:
 	 * @return Name of the wave format.
 	 */
 	virtual FName GetWaveFormat( const class USoundWave* Wave ) const = 0;
-
-	/**
-	* Get the audio compression settings for this platform.
-	* 
-	* @return the compression overrides for this platform, or the default platform overrides.
-	*/
-	virtual const struct FPlatformAudioCookOverrides* GetAudioCompressionSettings() const = 0;
 
 	/**
 	* Gets all the formats which can be returned from GetWaveFormat

@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 /*=============================================================================
 	SplineMeshActor.cpp: Spline mesh actor class implementation.
@@ -18,7 +18,7 @@
 ASplineMeshActor::ASplineMeshActor(const FObjectInitializer& ObjectInitializer)
 	: Super(ObjectInitializer)
 {
-	bCanBeDamaged = false;
+	SetCanBeDamaged(false);
 
 	SplineMeshComponent = ObjectInitializer.CreateDefaultSubobject<USplineMeshComponent>(this, TEXT("SplineMeshComponent0"));
 	SplineMeshComponent->SetCollisionProfileName(UCollisionProfile::BlockAll_ProfileName);

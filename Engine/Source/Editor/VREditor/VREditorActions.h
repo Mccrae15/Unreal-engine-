@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 #pragma once
 
 #include "VREditorUISystem.h"
@@ -71,6 +71,8 @@ public:
 	static void OnGizmoModeButtonClicked(UVREditorMode* InVRMode);
 
 	static void SetGizmoMode(UVREditorMode* InVRMode, EGizmoHandleTypes InGizmoMode);
+
+	static EGizmoHandleTypes GetGizmoMode(const UVREditorMode* InVRMode);
 
 	static ECheckBoxState IsActiveGizmoMode(UVREditorMode* InVRMode, EGizmoHandleTypes InGizmoMode);
 

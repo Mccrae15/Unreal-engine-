@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -70,16 +70,24 @@ public:
 
 	void UpdateEmitterHandleFromTrackChange(const FFrameRate& InFrameResolution);
 
+	bool GetSectionsWereModified() const;
+
 	//~ UMovieSceneTrack interface
 	virtual void RemoveAllAnimationData() override { }
 	virtual bool HasSection(const UMovieSceneSection& Section) const override;
+	virtual void AddSection(UMovieSceneSection& Section) override;
+	virtual bool SupportsType(TSubclassOf<UMovieSceneSection> SectionClass) const override;
 	virtual void RemoveSection(UMovieSceneSection& Section) override;
+	virtual void RemoveSectionAt(int32 SectionIndex) override;
 	virtual bool IsEmpty() const override;
 	virtual const TArray<UMovieSceneSection*>& GetAllSections() const override;
 	virtual bool SupportsMultipleRows() const override;
 
 	/** Gets the unique id for the emitter handle that was associated with this track; used for copy/paste detection */
 	FGuid GetEmitterHandleId() const;
+
+	/** Gets the string path of the system which owns the emitter associated with this track; used for copy/paste detection */
+	const FString& GetSystemPath() const;
 
 	const TArray<FText>& GetSectionInitializationErrors() const;
 
@@ -94,9 +102,16 @@ private:
 	UPROPERTY()
 	TArray<UMovieSceneSection*> Sections;
 
+	UPROPERTY()
+	bool bSectionsWereModified;
+
 	// Used for detecting copy/paste 
 	UPROPERTY()
 	FGuid EmitterHandleId;
+
+	// Used for detecting copy/paste
+	UPROPERTY()
+	FString SystemPath;
 
 	TArray<FText> SectionInitializationErrors;
 };

@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -27,11 +27,6 @@ public:
 
 	/** Routes a command to the self-registered execs. */
 	static bool StaticExec( UWorld* Inworld, const TCHAR* Cmd, FOutputDevice& Ar );
-
-private:
-	
-	/** Array of registered exec's routed via StaticExec. */
-	static TArray<FSelfRegisteringExec*>& GetRegisteredExecs();
 };
 
 /** Registers a static Exec function using FSelfRegisteringExec. */
@@ -76,8 +71,13 @@ CORE_API class FDerivedDataCacheInterface* GetDerivedDataCache();
 /** Return the DDC interface, fatal error if it is not available. **/
 CORE_API class FDerivedDataCacheInterface& GetDerivedDataCacheRef();
 
-/** Return the Target Platform Manager interface, if it is available, otherwise return NULL **/
-CORE_API class ITargetPlatformManagerModule* GetTargetPlatformManager();
+/**
+ * Return the Target Platform Manager interface, if it is available, otherwise return nullptr.
+ *
+ * @param bFailOnInitErrors If true (default) and errors occur during init of the TPM, an error will be logged and the process may terminate, otherwise will return whether there was an error or not.
+ * @return The Target Platform Manager interface, if it is available, otherwise return nullptr.
+*/
+CORE_API class ITargetPlatformManagerModule* GetTargetPlatformManager(bool bFailOnInitErrors = true);
 
 /** Return the Target Platform Manager interface, fatal error if it is not available. **/
 CORE_API class ITargetPlatformManagerModule& GetTargetPlatformManagerRef();
@@ -262,6 +262,14 @@ struct CORE_API FScopedScriptExceptionHandler
 		#define DO_BLUEPRINT_GUARD 1
 	#else
 		#define DO_BLUEPRINT_GUARD 0
+	#endif
+#endif
+
+#ifndef SCRIPT_AUDIT_ROUTINES
+	#if !(UE_BUILD_SHIPPING || UE_BUILD_TEST)
+		#define SCRIPT_AUDIT_ROUTINES 1
+	#else
+		#define SCRIPT_AUDIT_ROUTINES 0
 	#endif
 #endif
 

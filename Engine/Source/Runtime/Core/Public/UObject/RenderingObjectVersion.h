@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 #pragma once
 
 #include "CoreTypes.h"
@@ -76,6 +76,41 @@ struct CORE_API FRenderingObjectVersion
 		IncreaseNormalPrecision,
 
 		VirtualTexturedLightmaps,
+
+		GeometryCacheFastDecoder,
+
+		LightmapHasShadowmapData,
+
+		// Removed old gaussian and bokeh DOF methods from deferred shading renderer.
+		DiaphragmDOFOnlyForDeferredShadingRenderer,
+
+		// Lightmaps replace ULightMapVirtualTexture (non-UTexture derived class) with ULightMapVirtualTexture2D (derived from UTexture)
+		VirtualTexturedLightmapsV2,
+
+		SkyAtmosphereStaticLightingVersioning,
+
+		// UTextureRenderTarget2D now explicitly allows users to create sRGB or non-sRGB type targets
+		ExplicitSRGBSetting,
+
+		VolumetricLightmapStreaming,
+
+		//ShaderModel4 support removed from engine
+		RemovedSM4,
+
+		// Deterministic ShaderMapID serialization
+		MaterialShaderMapIdSerialization,
+
+		// Add force opaque flag for static mesh
+		StaticMeshSectionForceOpaqueField,
+
+		// Add force opaque flag for static mesh
+		AutoExposureChanges,
+
+		// Removed emulated instancing from instanced static meshes
+		RemovedEmulatedInstancing,
+
+		// Added per instance custom data (for Instanced Static Meshes)
+		PerInstanceCustomData,
 
 		// -----<new versions can be added above this line>-------------------------------------------------
 		VersionPlusOne,

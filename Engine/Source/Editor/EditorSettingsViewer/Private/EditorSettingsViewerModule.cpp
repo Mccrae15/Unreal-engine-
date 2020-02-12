@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "CoreMinimal.h"
 #include "HAL/FileManager.h"
@@ -263,8 +263,8 @@ protected:
 			GetMutableDefault<UAnalyticsPrivacySettings>()
 			);
 
-		// Crash reports
-		SettingsModule.RegisterSettings("Editor", "Privacy", "Analitics",
+		// Bug reports
+		SettingsModule.RegisterSettings("Editor", "Privacy", "BugReports",
 			LOCTEXT("PrivacyBugReportsSettingsName", "Bug Reports"),
 			LOCTEXT("PrivacyBugReportsSettingsDescription", "Configure the way your bug reports information is handled."),
 			GetMutableDefault<UCrashReportsPrivacySettings>()

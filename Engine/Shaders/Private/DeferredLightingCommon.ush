@@ -1,11 +1,10 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 /*=============================================================================
 	DeferredLightingCommon.usf: Common definitions for deferred lighting.
 =============================================================================*/
 
-#ifndef __DEFERRED_LIGHTING_COMMON__
-#define __DEFERRED_LIGHTING_COMMON__
+#pragma once
 
 #include "DeferredShadingCommon.ush"
 #include "DynamicLightingCommon.ush"
@@ -46,6 +45,10 @@ struct FDeferredLightData
 	bool bRectLight;
 	/** Whether the light should apply shadowing. */
 	uint ShadowedBits;
+	float RectLightBarnCosAngle;
+	float RectLightBarnLength;
+
+	FHairTransmittanceData HairTransmittance;
 };
 
 /** Data about a single light to be shaded with the simple shading model, designed for speed and limited feature set. */
@@ -91,7 +94,7 @@ float ShadowRayCast(
 
 	const float Step = 1.0 / NumSteps;
 
-	// *2 to get less morie pattern in extreme cases, larger values make object appear not grounded in reflections
+	// *2 to get less moire pattern in extreme cases, larger values make object appear not grounded in reflections
 	const float CompareTolerance = abs( RayDepthScreen.z - RayStartScreen.z ) * Step * 2;
 
 	float SampleTime = StepOffset * Step + Step;
@@ -198,12 +201,23 @@ void GetShadowTerms(FGBufferData GBuffer, FDeferredLightData LightData, float3 W
 		Shadow.SurfaceShadow *= ContactShadow;
 
 		FLATTEN
-		if( GBuffer.ShadingModelID == SHADINGMODELID_HAIR )
-			Shadow.TransmissionShadow *= ContactShadow;
-		else if( GBuffer.ShadingModelID != SHADINGMODELID_EYE )
+		if( GBuffer.ShadingModelID == SHADINGMODELID_HAIR ||  GBuffer.ShadingModelID == SHADINGMODELID_EYE  )
+		{
+			// If hair transmittance is enabled, sharp shadowing should already be handled by 
+			// the dedicated deep shadow maps. Thus no need for contact shadow
+			const bool bUseComplexTransmittance = (LightData.HairTransmittance.ScatteringComponent & HAIR_COMPONENT_MULTISCATTER) > 0;
+			if (!bUseComplexTransmittance)
+			{
+				Shadow.TransmissionShadow *= ContactShadow;
+			}
+		}
+		else
 			Shadow.TransmissionShadow *= ContactShadow * 0.5 + 0.5;
 	}
 #endif
+
+	Shadow.HairTransmittance = LightData.HairTransmittance;
+	Shadow.HairTransmittance.OpaqueVisibility = Shadow.SurfaceShadow;
 }
 
 float GetLocalLightAttenuation(
@@ -241,18 +255,19 @@ float GetLocalLightAttenuation(
 	return LightMask;
 }
 
-FRect GetRect( float3 ToLight, FDeferredLightData LightData )
+#define RECLIGHT_BARNDOOR 1
+// Wrapper for FDeferredLightData for computing visible rect light (i.e., unoccluded by barn doors)
+FRect GetRect(float3 ToLight, FDeferredLightData LightData)
 {
-	FRect Rect;
-	Rect.Origin = ToLight;
-	Rect.Axis[1] = LightData.Tangent;
-	Rect.Axis[2] = LightData.Direction;
-	Rect.Axis[0] = cross( Rect.Axis[1], Rect.Axis[2] );
-	Rect.Extent = float2(
-		LightData.SourceRadius,
-		LightData.SourceLength
-	);
-	return Rect;
+	return GetRect(
+		ToLight, 
+		LightData.Direction, 
+		LightData.Tangent, 
+		LightData.SourceRadius, 
+		LightData.SourceLength, 
+		LightData.RectLightBarnCosAngle, 
+		LightData.RectLightBarnLength,
+		RECLIGHT_BARNDOOR);
 }
 
 FCapsuleLight GetCapsule( float3 ToLight, FDeferredLightData LightData )
@@ -268,7 +283,10 @@ FCapsuleLight GetCapsule( float3 ToLight, FDeferredLightData LightData )
 }
 
 /** Calculates lighting for a given position, normal, etc with a fully featured lighting model designed for quality. */
-float4 GetDynamicLighting(float3 WorldPosition, float3 CameraVector, FGBufferData GBuffer, float AmbientOcclusion, uint ShadingModelID, FDeferredLightData LightData, float4 LightAttenuation, float Dither, uint2 SVPos, Texture2D SourceTexture)
+float4 GetDynamicLighting(
+	float3 WorldPosition, float3 CameraVector, FGBufferData GBuffer, float AmbientOcclusion, uint ShadingModelID, 
+	FDeferredLightData LightData, float4 LightAttenuation, float Dither, uint2 SVPos, FRectTexture SourceTexture,
+	inout float SurfaceShadow)
 {
 	FLightAccumulator LightAccumulator = (FLightAccumulator)0;
 
@@ -298,7 +316,10 @@ float4 GetDynamicLighting(float3 WorldPosition, float3 CameraVector, FGBufferDat
 		Shadow.SurfaceShadow = AmbientOcclusion;
 		Shadow.TransmissionShadow = 1;
 		Shadow.TransmissionThickness = 1;
+		Shadow.HairTransmittance.Transmittance = 1;
+		Shadow.HairTransmittance.OpaqueVisibility = 1;
 		GetShadowTerms(GBuffer, LightData, WorldPosition, L, LightAttenuation, Dither, Shadow);
+		SurfaceShadow = Shadow.SurfaceShadow;
 
 		LightAccumulator.EstimatedCost += 0.3f;		// add the cost of getting the shadow terms
 
@@ -413,4 +434,3 @@ float3 GetSimpleDynamicLighting(float3 WorldPosition, float3 CameraVector, float
 	return OutLighting;
 }
 
-#endif

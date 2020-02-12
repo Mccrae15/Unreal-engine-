@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "UserInterface/SMessageLogListing.h"
 #include "Widgets/Images/SImage.h"
@@ -419,7 +419,7 @@ TSharedRef<SWidget> SMessageLogListing::OnGetPageMenuContent() const
 				MessageLogListingViewModel->GetPageTitle(PageIndex), 
 				FText::Format(LOCTEXT("PageMenuEntry_Tooltip", "View page: {PageName}"), Arguments), 
 				FSlateIcon(),
-				FExecuteAction::CreateSP(this, &SMessageLogListing::OnPageSelected, PageIndex));
+				FExecuteAction::CreateSP(const_cast<SMessageLogListing*>(this), &SMessageLogListing::OnPageSelected, PageIndex));
 		}
 
 		return MenuBuilder.MakeWidget();

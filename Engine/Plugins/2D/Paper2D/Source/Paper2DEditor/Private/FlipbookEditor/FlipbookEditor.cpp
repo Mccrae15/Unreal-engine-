@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "FlipbookEditor/FlipbookEditor.h"
 #include "EditorViewportClient.h"
@@ -20,6 +20,7 @@
 #include "FlipbookEditor/SFlipbookTimeline.h"
 #include "Widgets/Docking/SDockTab.h"
 #include "Framework/Commands/GenericCommands.h"
+#include "Subsystems/AssetEditorSubsystem.h"
 
 #define LOCTEXT_NAMESPACE "FlipbookEditor"
 
@@ -313,7 +314,7 @@ void FFlipbookEditor::UnregisterTabSpawners(const TSharedRef<class FTabManager>&
 
 void FFlipbookEditor::InitFlipbookEditor(const EToolkitMode::Type Mode, const TSharedPtr< class IToolkitHost >& InitToolkitHost, class UPaperFlipbook* InitFlipbook)
 {
-	FAssetEditorManager::Get().CloseOtherEditors(InitFlipbook, this);
+	GEditor->GetEditorSubsystem<UAssetEditorSubsystem>()->CloseOtherEditors(InitFlipbook, this);
 	FlipbookBeingEdited = InitFlipbook;
 	CurrentSelectedKeyframe = INDEX_NONE;
 

@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -24,6 +24,9 @@ struct FBlueprintDebugger;
 
 /** Delegate used to customize variable display */
 DECLARE_DELEGATE_RetVal_OneParam(TSharedPtr<IDetailCustomization>, FOnGetVariableCustomizationInstance, TSharedPtr<IBlueprintEditor> /*BlueprintEditor*/);
+
+/** Delegate used to customize graph display */
+DECLARE_DELEGATE_RetVal_OneParam(TSharedPtr<IDetailCustomization>, FOnGetGraphCustomizationInstance, TSharedPtr<IBlueprintEditor> /*BlueprintEditor*/);
 
 /** Describes the reason for Refreshing the editor */
 namespace ERefreshBlueprintEditorReason
@@ -65,9 +68,13 @@ public:
 	virtual void SummonFindAndReplaceUI() = 0;
 
 	/** Tries to open the specified graph and bring it's document to the front (note: this can return NULL) */
-	virtual TSharedPtr<class SGraphEditor> OpenGraphAndBringToFront(class UEdGraph* Graph) = 0;
+	virtual TSharedPtr<class SGraphEditor> OpenGraphAndBringToFront(class UEdGraph* Graph, bool bSetFocus = true) = 0;
 
 	virtual void RefreshEditors(ERefreshBlueprintEditorReason::Type Reason = ERefreshBlueprintEditorReason::UnknownReason) = 0;
+
+	virtual void RefreshMyBlueprint() = 0;
+
+	virtual void RefreshInspector() = 0;
 
 	virtual void AddToSelection(UEdGraphNode* InNode) = 0;
 
@@ -110,7 +117,7 @@ public:
 	 *
 	 * Note: This function should not be called directly, use one of the following instead:
 	 *	- FKismetEditorUtilities::BringKismetToFocusAttentionOnObject
-	 *  - FAssetEditorManager::Get().OpenEditorForAsset
+	 *  - GEditor->GetEditorSubsystem<UAssetEditorSubsystem>()->OpenEditorForAsset
 	 *
 	 * @param	Mode					Mode that this editor should operate in
 	 * @param	InitToolkitHost			When Mode is WorldCentric, this is the level editor instance to spawn this editor within
@@ -175,20 +182,41 @@ public:
 	 * @param	InStruct				The type of the variable to create the customization for
 	 * @param	InOnGetDetailCustomization	The delegate used to create customization instances
 	 */
-	virtual void RegisterVariableCustomization(UStruct* InStruct, FOnGetVariableCustomizationInstance InOnGetVariableCustomization);
+	virtual void RegisterVariableCustomization(FFieldClass* InFieldClass, FOnGetVariableCustomizationInstance InOnGetVariableCustomization);
 
 	/** 
 	 * Unregister a previously registered customization for BP variables
 	 * @param	InStruct				The type to create the customization for
 	 */
-	virtual void UnregisterVariableCustomization(UStruct* InStruct);
+	virtual void UnregisterVariableCustomization(FFieldClass* InFieldClass);
+
+	/** 
+	 * Register a customization for for Blueprint graphs
+	 * @param	InGraphSchema				The schema of the graph to create the customization for
+	 * @param	InOnGetDetailCustomization	The delegate used to create customization instances
+	 */
+	virtual void RegisterGraphCustomization(const UEdGraphSchema* InGraphSchema, FOnGetGraphCustomizationInstance InOnGetGraphCustomization);
+
+	/** 
+	 * Unregister a previously registered customization for BP graphs
+	 * @param	InGraphSchema				The schema of the graph to create the customization for
+	 */
+	virtual void UnregisterGraphCustomization(const UEdGraphSchema* InGraphSchema);
+
 
 	/** 
 	 * Build a set of details customizations for the passed-in type, if possible.
 	 * @param	InStruct				The type to create the customization for
 	 * @param	InBlueprintEditor		The Blueprint Editor the customization will be created for
 	 */
-	virtual TArray<TSharedPtr<IDetailCustomization>> CustomizeVariable(UStruct* InStruct, TSharedPtr<IBlueprintEditor> InBlueprintEditor);
+	virtual TArray<TSharedPtr<IDetailCustomization>> CustomizeVariable(FFieldClass* InFieldClass, TSharedPtr<IBlueprintEditor> InBlueprintEditor);
+
+	/** 
+	 * Build a set of details customizations for graphs with the passed-in schema, if possible.
+	 * @param	InGraphSchema			The schema to create the customization for
+	 * @param	InBlueprintEditor		The Blueprint Editor the customization will be created for
+	 */
+	virtual TArray<TSharedPtr<IDetailCustomization>> CustomizeGraph(const UEdGraphSchema* InGraphSchema, TSharedPtr<IBlueprintEditor> InBlueprintEditor);
 
 	/** Delegate for binding functions to be called when the blueprint editor finishes getting created */
 	DECLARE_EVENT_OneParam( FBlueprintEditorModule, FBlueprintEditorOpenedEvent, EBlueprintType );
@@ -222,7 +250,10 @@ private:
 	TMap<FName, FSCSEditorCustomizationBuilder> SCSEditorCustomizations;
 
 	/** Customizations for Blueprint variables */
-	TMap<UStruct*, FOnGetVariableCustomizationInstance> VariableCustomizations;
+	TMap<FFieldClass*, FOnGetVariableCustomizationInstance> VariableCustomizations;
+
+	/** Customizations for Blueprint graphs */
+	TMap<const UEdGraphSchema*, FOnGetGraphCustomizationInstance> GraphCustomizations;
 
 	/** 
 	 * A command list that can be passed around and isn't bound to an instance 

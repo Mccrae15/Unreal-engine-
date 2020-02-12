@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -58,11 +58,7 @@ class ENGINE_API ALevelScriptActor : public AActor
 	UFUNCTION(BlueprintImplementableEvent)
 	void WorldOriginLocationChanged(FIntVector OldOriginLocation, FIntVector NewOriginLocation);
 	
-#if WITH_EDITOR
 	//~ Begin UObject Interface
-	virtual void PostDuplicate(bool bDuplicateForPIE) override;
-	virtual void BeginDestroy() override;
-#endif
 	virtual void PreInitializeComponents() override;
 	//~ End UObject Interface
 

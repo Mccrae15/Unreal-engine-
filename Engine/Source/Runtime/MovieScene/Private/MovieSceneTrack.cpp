@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "MovieSceneTrack.h"
 #include "MovieScene.h"
@@ -27,6 +27,8 @@ UMovieSceneTrack::UMovieSceneTrack(const FObjectInitializer& InInitializer)
 
 void UMovieSceneTrack::PostInitProperties()
 {
+	SetFlags(RF_Transactional);
+
 	// Propagate sub object flags from our outer (movie scene) to ourselves. This is required for tracks that are stored on blueprints (archetypes) so that they can be referenced in worlds.
 	if (GetOuter()->HasAnyFlags(RF_ClassDefaultObject|RF_ArchetypeObject))
 	{
@@ -43,6 +45,22 @@ void UMovieSceneTrack::PostLoad()
 	if (GetLinkerCustomVersion(FMovieSceneEvaluationCustomVersion::GUID) < FMovieSceneEvaluationCustomVersion::ChangeEvaluateNearestSectionDefault)
 	{
 		EvalOptions.bEvalNearestSection = EvalOptions.bEvaluateNearestSection_DEPRECATED;
+	}
+
+	// Remove any null sections
+	for (int32 SectionIndex = 0; SectionIndex < GetAllSections().Num(); )
+	{
+		if (GetAllSections()[SectionIndex] == nullptr)
+		{
+#if WITH_EDITOR
+			UE_LOG(LogMovieScene, Warning, TEXT("Removing null section from %s:%s"), *GetPathName(), *GetDisplayName().ToString());
+#endif
+			RemoveSectionAt(SectionIndex);
+		}
+		else
+		{
+			++SectionIndex;
+		}
 	}
 }
 
@@ -71,6 +89,24 @@ void UMovieSceneTrack::UpdateEasing()
 		for (int32 Index = 0; Index < RowSections.Num(); ++Index)
 		{
 			UMovieSceneSection* CurrentSection = RowSections[Index];
+
+			FMovieSceneSupportsEasingParams SupportsEasingParams(CurrentSection);
+			EMovieSceneTrackEasingSupportFlags EasingFlags = SupportsEasing(SupportsEasingParams);
+
+			// Auto-deactivate manual easing if we lost the ability to use it.
+			if (!EnumHasAllFlags(EasingFlags, EMovieSceneTrackEasingSupportFlags::ManualEaseIn))
+			{
+				CurrentSection->Easing.bManualEaseIn = false;
+			}
+			if (!EnumHasAllFlags(EasingFlags, EMovieSceneTrackEasingSupportFlags::ManualEaseOut))
+			{
+				CurrentSection->Easing.bManualEaseOut = false;
+			}
+
+			if (!EnumHasAllFlags(EasingFlags, EMovieSceneTrackEasingSupportFlags::AutomaticEasing))
+			{
+				continue;
+			}
 
 			// Check overlaps with exclusive ranges so that sections can butt up against each other
 			UMovieSceneTrack* OuterTrack = CurrentSection->GetTypedOuter<UMovieSceneTrack>();
@@ -248,7 +284,10 @@ int32 UMovieSceneTrack::GetMaxRowIndex() const
 	int32 MaxRowIndex = 0;
 	for (UMovieSceneSection* Section : GetAllSections())
 	{
-		MaxRowIndex = FMath::Max(MaxRowIndex, Section->GetRowIndex());
+		if (Section != nullptr)
+		{
+			MaxRowIndex = FMath::Max(MaxRowIndex, Section->GetRowIndex());
+		}
 	}
 
 	return MaxRowIndex;

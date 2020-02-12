@@ -1,9 +1,21 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "Widgets/Input/SEditableTextBox.h"
 #include "Widgets/SBoxPanel.h"
 #include "Widgets/Layout/SBox.h"
 #include "Widgets/Notifications/SPopUpErrorText.h"
+
+#if WITH_ACCESSIBILITY
+#include "Widgets/Accessibility/SlateAccessibleWidgets.h"
+#endif
+
+SEditableTextBox::SEditableTextBox()
+{
+#if WITH_ACCESSIBILITY
+	AccessibleBehavior = EAccessibleBehavior::Auto;
+	bCanChildrenBeAccessible = false;
+#endif
+}
 
 /**
  * Construct this widget
@@ -20,6 +32,9 @@ void SEditableTextBox::Construct( const FArguments& InArgs )
 	ForegroundColorOverride = InArgs._ForegroundColor;
 	BackgroundColorOverride = InArgs._BackgroundColor;
 	ReadOnlyForegroundColorOverride = InArgs._ReadOnlyForegroundColor;
+	OnTextChanged = InArgs._OnTextChanged;
+	OnVerifyTextChanged = InArgs._OnVerifyTextChanged;
+	OnTextCommitted = InArgs._OnTextCommitted;
 
 	SBorder::Construct( SBorder::FArguments()
 		.BorderImage( this, &SEditableTextBox::GetBorderImage )
@@ -52,8 +67,9 @@ void SEditableTextBox::Construct( const FArguments& InArgs )
 					.Justification( InArgs._Justification )
 					.AllowContextMenu( InArgs._AllowContextMenu )
 					.OnContextMenuOpening( InArgs._OnContextMenuOpening )
-					.OnTextChanged( InArgs._OnTextChanged )
-					.OnTextCommitted( InArgs._OnTextCommitted )
+					.ContextMenuExtender( InArgs._ContextMenuExtender )
+					.OnTextChanged(this, &SEditableTextBox::OnEditableTextChanged)
+					.OnTextCommitted(this, &SEditableTextBox::OnEditableTextCommitted)
 					.MinDesiredWidth( InArgs._MinDesiredWidth )
 					.SelectAllTextOnCommit( InArgs._SelectAllTextOnCommit )
 					.OnKeyCharHandler( InArgs._OnKeyCharHandler )			
@@ -79,7 +95,6 @@ void SEditableTextBox::Construct( const FArguments& InArgs )
 			ErrorReporting->AsWidget()
 		];
 	}
-
 }
 
 void SEditableTextBox::SetStyle(const FEditableTextBoxStyle* InStyle)
@@ -395,4 +410,68 @@ void SEditableTextBox::SetAllowContextMenu(TAttribute<bool> InAllowContextMenu)
 void SEditableTextBox::SetVirtualKeyboardDismissAction(TAttribute<EVirtualKeyboardDismissAction> InVirtualKeyboardDismissAction)
 {
 	EditableText->SetVirtualKeyboardDismissAction(InVirtualKeyboardDismissAction);
+}
+
+#if WITH_ACCESSIBILITY
+TSharedRef<FSlateAccessibleWidget> SEditableTextBox::CreateAccessibleWidget()
+{
+	return MakeShareable<FSlateAccessibleWidget>(new FSlateAccessibleEditableTextBox(SharedThis(this)));
+}
+
+TOptional<FText> SEditableTextBox::GetDefaultAccessibleText(EAccessibleType AccessibleType) const
+{
+	// The parent Construct() function will call this before EditableText exists,
+	// so we need a guard here to ignore that function call.
+	if (EditableText.IsValid())
+	{
+		return EditableText->GetHintText();
+	}
+	return TOptional<FText>();
+}
+#endif
+
+void SEditableTextBox::OnEditableTextChanged(const FText& InText)
+{
+	OnTextChanged.ExecuteIfBound(InText);
+
+	if (OnVerifyTextChanged.IsBound())
+	{
+		FText OutErrorMessage;
+		if (!OnVerifyTextChanged.Execute(InText, OutErrorMessage))
+		{
+			// Display as an error.
+			SetError(OutErrorMessage);
+		}
+		else
+		{
+			SetError(FText::GetEmpty());
+		}
+	}
+}
+
+void SEditableTextBox::OnEditableTextCommitted(const FText& InText, ETextCommit::Type InCommitType)
+{
+	if (OnVerifyTextChanged.IsBound())
+	{
+		FText OutErrorMessage;
+		if (!OnVerifyTextChanged.Execute(InText, OutErrorMessage))
+		{
+           		// Display as an error.
+			if (InCommitType == ETextCommit::OnEnter)
+			{
+				SetError(OutErrorMessage);
+			}
+			return;
+		}
+		else
+		{
+			if (InCommitType == ETextCommit::OnEnter)
+			{
+				SetError(FText::GetEmpty());
+			}
+			
+		}		
+	}
+
+	OnTextCommitted.ExecuteIfBound(InText, InCommitType);
 }

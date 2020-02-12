@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "Tasks/GameplayTask_SpawnActor.h"
 #include "EngineGlobals.h"
@@ -17,7 +17,7 @@ UGameplayTask_SpawnActor* UGameplayTask_SpawnActor::SpawnActor(TScriptInterface<
 		AActor* TaskOwnerActor = TaskOwner->GetGameplayTaskOwner(nullptr);
 		if (TaskOwnerActor)
 		{
-			bCanSpawn = (TaskOwnerActor->Role == ROLE_Authority);
+			bCanSpawn = (TaskOwnerActor->GetLocalRole() == ROLE_Authority);
 		}
 		else
 		{

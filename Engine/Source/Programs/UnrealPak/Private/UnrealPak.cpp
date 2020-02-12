@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "UnrealPak.h"
 #include "RequiredProgramMainCPPInclude.h"
@@ -25,3 +25,4 @@ INT32_MAIN_INT32_ARGC_TCHAR_ARGV()
 
 	return Result;
 }
+

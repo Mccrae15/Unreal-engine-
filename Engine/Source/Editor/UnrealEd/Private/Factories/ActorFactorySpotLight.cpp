@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 /*=============================================================================
 	ActorFactorySpotLight.cpp: Factory for SpotLight
@@ -7,6 +7,7 @@
 #include "ActorFactories/ActorFactorySpotLight.h"
 #include "GameFramework/Actor.h"
 #include "Components/SpotLightComponent.h"
+#include "Components/RectLightComponent.h"
 
 void UActorFactorySpotLight::PostSpawnActor(UObject* Asset, AActor* NewActor)
 {

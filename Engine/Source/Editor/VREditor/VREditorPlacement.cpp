@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "VREditorPlacement.h"
 #include "HAL/IConsoleManager.h"
@@ -372,25 +372,34 @@ void UVREditorPlacement::StartPlacingObjects( const TArray<UObject*>& ObjectsToP
 				FEditorDelegates::OnNewActorsDropped.Broadcast( DroppedObjects, AllNewActors );
 			}
 
-			FBox BoundsOfAllActors;
+			static const auto CVarAllowCarryingCertainObjects = IConsoleManager::Get().FindTConsoleVariableDataInt(TEXT("VI.AllowCarryingCertainObjects"));
+			const bool bCanBeCarried = ViewportWorldInteraction->GetTransformables().Num() == 1 && ViewportWorldInteraction->GetTransformables()[0].Get()->ShouldBeCarried();
+			const bool bShouldInterpolateScaleFromDragLocation = bShouldInterpolateFromDragLocation && (CVarAllowCarryingCertainObjects->GetValueOnAnyThread() == 0 || !bCanBeCarried);
+
+			float DesiredScale = 1.f;
+			if( bShouldInterpolateScaleFromDragLocation )
 			{
-				BoundsOfAllActors.Init();
+				FBox BoundsOfAllActors;
+				{
+					BoundsOfAllActors.Init();
+					for( AActor* NewActor : AllNewActors )
+					{
+						BoundsOfAllActors += NewActor->CalculateComponentsBoundingBoxInLocalSpace();
+					}
+				}
+				const float BoundsOfAllActorsSize = BoundsOfAllActors.GetSize().GetAbsMax();
+				const float UsedBoundsOfAllActorsSize = BoundsOfAllActorsSize == 0 ? 1 : BoundsOfAllActorsSize;
+				DesiredScale = (VREd::SizeOfActorsOverContentBrowserThumbnail->GetFloat() / UsedBoundsOfAllActorsSize) * ViewportWorldInteraction->GetWorldScaleFactor();
+
+				// Start the placed objects off scaled down to match the content browser thumbnail
 				for( AActor* NewActor : AllNewActors )
 				{
-					BoundsOfAllActors += NewActor->CalculateComponentsBoundingBoxInLocalSpace();
+					NewActor->SetActorScale3D(FVector(DesiredScale));
 				}
 			}
-			const float BoundsOfAllActorsSize = BoundsOfAllActors.GetSize().GetAbsMax();
-			const float UsedBoundsOfAllActorsSize = BoundsOfAllActorsSize == 0 ? 1 : BoundsOfAllActorsSize;
-			const float DesiredScale = ( VREd::SizeOfActorsOverContentBrowserThumbnail->GetFloat() / UsedBoundsOfAllActorsSize ) * ViewportWorldInteraction->GetWorldScaleFactor();
-
-			// Start the placed objects off scaled down to match the content browser thumbnail
-			if( bShouldInterpolateFromDragLocation )
+			else if( bShouldInterpolateFromDragLocation )
 			{
- 				for( AActor* NewActor : AllNewActors )
- 				{
- 					NewActor->SetActorScale3D( FVector( DesiredScale ) );
- 				}
+				PlaceAt = PlacingWithInteractor->GetInteractorData().Transform.GetLocation();
 			}
 
 			// We changed the initial scale of selected actors, so make sure our transformables and gizmo start transform are up to date.
@@ -437,9 +446,9 @@ void UVREditorPlacement::PlaceDraggedMaterialOrTexture( UViewportInteractor* Int
 		UPrimitiveComponent* HitComponent = nullptr;
 		FVector HitLocation = FVector::ZeroVector;
 		{
-			const bool bIgnoreGizmos = true;	// Never place on top of gizmos, just ignore them
+			const EHitResultGizmoFilterMode GizmoFilterMode = EHitResultGizmoFilterMode::NoGizmos;// Never place on top of gizmos, just ignore them
 			const bool bEvenIfUIIsInFront = true;	// Don't let the UI block placement
-			FHitResult HitResult = Interactor->GetHitResultFromLaserPointer( nullptr, bIgnoreGizmos, nullptr, bEvenIfUIIsInFront );
+			FHitResult HitResult = Interactor->GetHitResultFromLaserPointer( nullptr, GizmoFilterMode, nullptr, bEvenIfUIIsInFront );
 			if( HitResult.Actor.IsValid() )
 			{
 				if( ViewportWorldInteraction->IsInteractableComponent( HitResult.GetComponent() ) )	// @todo vreditor placement: We don't necessarily need to restrict to only VR-interactive components here

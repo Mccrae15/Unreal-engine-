@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 #pragma once
 
 #include "CoreTypes.h"
@@ -9,8 +9,16 @@
 class CORE_API FDevVersionRegistration :  public FCustomVersionRegistration
 {
 public:
-	FDevVersionRegistration(FGuid InKey, int32 Version, FName InFriendlyName);
+	/** @param InFriendlyName must be a string literal */
+	template<int N>
+	FDevVersionRegistration(FGuid InKey, int32 Version, const TCHAR(&InFriendlyName)[N])
+		: FCustomVersionRegistration(InKey, Version, InFriendlyName)
+	{
+		RecordDevVersion(InKey);
+	}
 
 	/** Dumps all registered versions to log */
 	static void DumpVersionsToLog();
+private:
+	static void RecordDevVersion(FGuid Key);
 };

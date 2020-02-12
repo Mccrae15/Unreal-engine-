@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -27,9 +27,9 @@ class USkeletalMeshComponent;
 struct FPoseLinkMappingRecord
 {
 public:
-	static FPoseLinkMappingRecord MakeFromArrayEntry(UAnimGraphNode_Base* LinkingNode, UAnimGraphNode_Base* LinkedNode, UArrayProperty* ArrayProperty, int32 ArrayIndex)
+	static FPoseLinkMappingRecord MakeFromArrayEntry(UAnimGraphNode_Base* LinkingNode, UAnimGraphNode_Base* LinkedNode, FArrayProperty* ArrayProperty, int32 ArrayIndex)
 	{
-		checkSlow(CastChecked<UStructProperty>(ArrayProperty->Inner)->Struct->IsChildOf(FPoseLinkBase::StaticStruct()));
+		checkSlow(CastFieldChecked<FStructProperty>(ArrayProperty->Inner)->Struct->IsChildOf(FPoseLinkBase::StaticStruct()));
 
 		FPoseLinkMappingRecord Result;
 		Result.LinkingNode = LinkingNode;
@@ -40,7 +40,7 @@ public:
 		return Result;
 	}
 
-	static FPoseLinkMappingRecord MakeFromMember(UAnimGraphNode_Base* LinkingNode, UAnimGraphNode_Base* LinkedNode, UStructProperty* MemberProperty)
+	static FPoseLinkMappingRecord MakeFromMember(UAnimGraphNode_Base* LinkingNode, UAnimGraphNode_Base* LinkedNode, FStructProperty* MemberProperty)
 	{
 		checkSlow(MemberProperty->Struct->IsChildOf(FPoseLinkBase::StaticStruct()));
 
@@ -92,7 +92,7 @@ protected:
 	UAnimGraphNode_Base* LinkingNode;
 
 	// Will either be an array property containing FPoseLinkBase derived structs, indexed by ChildPropertyIndex, or a FPoseLinkBase derived struct property 
-	UProperty* ChildProperty;
+	FProperty* ChildProperty;
 
 	// Index when ChildProperty is an array
 	int32 ChildPropertyIndex;
@@ -133,7 +133,7 @@ class ANIMGRAPH_API UAnimGraphNode_Base : public UK2Node
 
 	// UObject interface
 	virtual void PostEditChangeProperty(FPropertyChangedEvent& PropertyChangedEvent) override;
-	virtual void PreEditChange(UProperty* PropertyAboutToChange) override;
+	virtual void PreEditChange(FProperty* PropertyAboutToChange) override;
 	// End of UObject interface
 
 	// UEdGraphNode interface
@@ -143,6 +143,7 @@ class ANIMGRAPH_API UAnimGraphNode_Base : public UK2Node
 	virtual void GetPinHoverText(const UEdGraphPin& Pin, FString& HoverTextOut) const override;
 	virtual bool ShowPaletteIconOnNode() const override{ return false; }
 	virtual void PinDefaultValueChanged(UEdGraphPin* Pin) override;
+	virtual FString GetPinMetaData(FName InPinName, FName InKey) override;
 	// End of UEdGraphNode interface
 
 	// UK2Node interface
@@ -287,6 +288,11 @@ class ANIMGRAPH_API UAnimGraphNode_Base : public UK2Node
 	 */
 	bool IsPinExposedAndLinked(const FString& InPinName, const EEdGraphPinDirection Direction = EGPD_MAX) const;
 
+	// Event that is broadcast to inform observers that the node title has changed
+	// The default SAnimationGraphNode uses this to invalidate cached node title text
+	DECLARE_EVENT(UAnimGraphNode_Base, FOnNodeTitleChangedEvent);
+	FOnNodeTitleChangedEvent& OnNodeTitleChangedEvent() { return NodeTitleChangedEvent; }
+
 protected:
 	friend FAnimBlueprintCompilerContext;
 	friend FAnimGraphNodeDetails;
@@ -295,23 +301,25 @@ protected:
 	UScriptStruct* GetFNodeType() const;
 
 	// Gets the animation FNode property represented by this ed graph node
-	UStructProperty* GetFNodeProperty() const;
+	FStructProperty* GetFNodeProperty() const;
 
 	// This will be called when a pose link is found, and can be called with PoseProperty being either of:
 	//  - an array property (ArrayIndex >= 0)
 	//  - a single pose property (ArrayIndex == INDEX_NONE)
-	virtual void CreatePinsForPoseLink(UProperty* PoseProperty, int32 ArrayIndex);
+	virtual void CreatePinsForPoseLink(FProperty* PoseProperty, int32 ArrayIndex);
 
 	//
 	virtual FPoseLinkMappingRecord GetLinkIDLocation(const UScriptStruct* NodeType, UEdGraphPin* InputLinkPin);
 
 	/** Get the property (and possibly array index) associated with the supplied pin */
-	virtual void GetPinAssociatedProperty(const UScriptStruct* NodeType, const UEdGraphPin* InputPin, UProperty*& OutProperty, int32& OutIndex) const;
+	virtual void GetPinAssociatedProperty(const UScriptStruct* NodeType, const UEdGraphPin* InputPin, FProperty*& OutProperty, int32& OutIndex) const;
 
 	// Allocates or reallocates pins
 	void InternalPinCreation(TArray<UEdGraphPin*>* OldPins);
 
 	FOnNodePropertyChangedEvent PropertyChangeEvent;
+
+	FOnNodeTitleChangedEvent NodeTitleChangedEvent;
 
 private:
 	TArray<FName> OldShownPins;

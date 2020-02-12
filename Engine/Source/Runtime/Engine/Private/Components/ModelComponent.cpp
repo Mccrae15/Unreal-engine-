@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 /*=============================================================================
 	ModelComponent.cpp: Model component implementation
@@ -270,7 +270,7 @@ void UModelComponent::Serialize(FArchive& Ar)
 
 		if (LegacyComponentData.Data.Num() > 0)
 		{
-			GComponentsWithLegacyLightmaps.AddAnnotation(this, LegacyComponentData);
+			GComponentsWithLegacyLightmaps.AddAnnotation(this, MoveTemp(LegacyComponentData));
 		}
 	}
 
@@ -309,15 +309,26 @@ void UModelComponent::PostLoad()
 }
 
 #if WITH_EDITOR
-void UModelComponent::PostEditUndo()
+void UModelComponent::PostEditChangeProperty(FPropertyChangedEvent& PropertyChangedEvent)
 {
 	// Rebuild the component's render data after applying a transaction to it.
 	ULevel* Level = GetTypedOuter<ULevel>();
-	if(ensure(Level))
+	if (ensure(Level))
 	{
 		Level->InvalidateModelSurface();
+		if (PropertyChangedEvent.ChangeType == EPropertyChangeType::Redirected)
+		{
+			// Normally, we can wait until the next tick to update the model surfaces. However, when force-deleting a material (signaled by the
+			// Redirected change type), UActorComponent::PostEditChangeProperty() will try to re-register the component, which ends up using render
+			// resources such as the index buffer. We need to call CommitModelSurfaces() now to make sure these resources are rebuilt taking into
+			// account the replacement material. This is not optimal, since it will be called multiple times, but it only happens when deleting a
+			// material assigned to a BSP component.
+			// This is a stopgap measure until we bite the bullet and refactor the update code so that resources aren't used before they are 
+			// recreated by the normal level rebuilding process.
+			Level->CommitModelSurfaces();
+		}
 	}
-	Super::PostEditUndo();
+	Super::PostEditChangeProperty(PropertyChangedEvent);
 }
 #endif // WITH_EDITOR
 
@@ -662,26 +673,35 @@ bool UModelComponent::GetPhysicsTriMeshData(struct FTriMeshCollisionData* Collis
 	for(int32 ElementIndex = 0;ElementIndex < Elements.Num();ElementIndex++)
 	{
 		FModelElement& Element = Elements[ElementIndex];
-		FRawIndexBuffer16or32* IndexBuffer = Element.IndexBuffer;
-		int32 IndexBufferSize = 0;
-
-		if (IndexBuffer == nullptr || IndexBuffer->Indices.Num() == 0)
+		if (Element.NumTriangles == 0)
 		{
-			UE_LOG(LogPhysics, Warning, TEXT("Found bad index buffer when cooking UModelComponent physics data! Component: %s, Buffer: %x, Buffer Size: %d, Element: %d"), *GetPathName(), IndexBuffer, IndexBufferSize, ElementIndex);
-			verify(IndexBufferSize >= 0);
+			// CSG can produce empty elements, just ignore them.
 			continue;
 		}
 
+		FRawIndexBuffer16or32* IndexBuffer = Element.IndexBuffer;
+		if (IndexBuffer == nullptr)
+		{
+			UE_LOG(LogPhysics, Warning, TEXT("Found NULL index buffer when cooking UModelComponent physics data! Component: %s, Element: %d, NumTriangles: %d."), *GetPathName(), ElementIndex, Element.NumTriangles);
+			continue;
+		}
+
+		int32 NumIndices = IndexBuffer->Indices.Num();
 		int32 NumVertices = Model->VertexBuffer.Vertices.Num();
 
 		if (NumVertices < (int32)Element.MaxVertexIndex)
 		{
-			UE_LOG(LogPhysics, Warning, TEXT("Found bad vertex buffer when cooking UModelComponent physics data! Component: %s, Element: %d. Verts Exected: %d, Actual: %d"), 
+			UE_LOG(LogPhysics, Warning, TEXT("Found bad vertex buffer when cooking UModelComponent physics data! Component: %s, Element: %d. Expected Vertex Count: %d, Actual Vertex Count: %d"),
 				*GetPathName(), ElementIndex, Element.MaxVertexIndex, NumVertices);
 			continue;
 		}
 
-		IndexBufferSize = IndexBuffer->Indices.Num();
+		if (NumIndices < (int32)(Element.FirstIndex + Element.NumTriangles * 3 - 1))
+		{
+			UE_LOG(LogPhysics, Warning, TEXT("Found bad index buffer when cooking UModelComponent physics data! Not enough indices in buffer for Element triangles. Component: %s, Element: %d, Index Start: %d, Tri Count: %d, Index Count: %d"),
+				*GetPathName(), ElementIndex, Element.FirstIndex, Element.NumTriangles, NumIndices);
+			continue;
+		}
 
 		for (uint32 TriIdx = 0; TriIdx < Element.NumTriangles; TriIdx++)
 		{

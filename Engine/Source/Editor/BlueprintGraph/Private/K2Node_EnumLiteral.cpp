@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 
 #include "K2Node_EnumLiteral.h"
@@ -12,6 +12,7 @@
 #include "KismetCompilerMisc.h"
 #include "BlueprintFieldNodeSpawner.h"
 #include "EditorCategoryUtils.h"
+#include "FindInBlueprintManager.h"
 #include "BlueprintActionDatabaseRegistrar.h"
 
 const FName UK2Node_EnumLiteral::GetEnumInputPinName()
@@ -31,6 +32,34 @@ void UK2Node_EnumLiteral::ValidateNodeDuringCompilation(class FCompilerResultsLo
 	if (!Enum)
 	{
 		MessageLog.Error(*NSLOCTEXT("K2Node", "EnumLiteral_NullEnumError", "Undefined Enum in @@").ToString(), this);
+	}
+}
+
+void UK2Node_EnumLiteral::AddSearchMetaDataInfo(TArray<struct FSearchTagDataPair>& OutTaggedMetaData) const
+{
+	Super::AddSearchMetaDataInfo(OutTaggedMetaData);
+
+	const UEdGraphPin* Pin = FindPinChecked(GetEnumInputPinName());
+	if (!Pin->DefaultValue.IsEmpty())
+	{
+		OutTaggedMetaData.Add(FSearchTagDataPair(FFindInBlueprintSearchTags::FiB_NativeName, FText::FromString(Pin->DefaultValue)));
+
+		const int32 ValueIndex = Enum ? Enum->GetIndexByName(*Enum->GenerateFullEnumName(*Pin->DefaultValue)) : INDEX_NONE;
+		if (ValueIndex != INDEX_NONE)
+		{
+			FText SearchName = FText::FormatOrdered(NSLOCTEXT("K2Node", "EnumLiteral_SearchName", "{0} - {1}"), GetTooltipText(), Enum->GetDisplayNameTextByIndex(ValueIndex));
+
+			// Find the Name, populated by Super::AddSearchMetaDataInfo
+			for (FSearchTagDataPair& SearchData : OutTaggedMetaData)
+			{
+				// Should always be the first item, but there is no guarantee
+				if (SearchData.Key.CompareTo(FFindInBlueprintSearchTags::FiB_Name) == 0)
+				{
+					SearchData.Value = SearchName;
+					break;
+				}
+			}
+		}
 	}
 }
 
@@ -121,7 +150,7 @@ void UK2Node_EnumLiteral::GetMenuActions(FBlueprintActionDatabaseRegistrar& Acti
 {
 	struct GetMenuActions_Utils
 	{
-		static void SetNodeEnum(UEdGraphNode* NewNode, UField const* /*EnumField*/, TWeakObjectPtr<UEnum> NonConstEnumPtr)
+		static void SetNodeEnum(UEdGraphNode* NewNode, FFieldVariant /*EnumField*/, TWeakObjectPtr<UEnum> NonConstEnumPtr)
 		{
 			UK2Node_EnumLiteral* EnumNode = CastChecked<UK2Node_EnumLiteral>(NewNode);
 			EnumNode->Enum = NonConstEnumPtr.Get();
@@ -131,7 +160,7 @@ void UK2Node_EnumLiteral::GetMenuActions(FBlueprintActionDatabaseRegistrar& Acti
 	UClass* NodeClass = GetClass();
 	ActionRegistrar.RegisterEnumActions( FBlueprintActionDatabaseRegistrar::FMakeEnumSpawnerDelegate::CreateLambda([NodeClass](const UEnum* InEnum)->UBlueprintNodeSpawner*
 	{
-		UBlueprintFieldNodeSpawner* NodeSpawner = UBlueprintFieldNodeSpawner::Create(NodeClass, InEnum);
+		UBlueprintFieldNodeSpawner* NodeSpawner = UBlueprintFieldNodeSpawner::Create(NodeClass, const_cast<UEnum*>(InEnum));
 		check(NodeSpawner != nullptr);
 		TWeakObjectPtr<UEnum> NonConstEnumPtr = MakeWeakObjectPtr(const_cast<UEnum*>(InEnum));
 		NodeSpawner->SetNodeFieldDelegate = UBlueprintFieldNodeSpawner::FSetNodeFieldDelegate::CreateStatic(GetMenuActions_Utils::SetNodeEnum, NonConstEnumPtr);

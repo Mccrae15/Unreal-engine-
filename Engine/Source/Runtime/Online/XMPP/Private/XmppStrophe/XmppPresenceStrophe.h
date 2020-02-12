@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -21,14 +21,14 @@ class FXmppPresenceStrophe
 public:
 	// FXmppPresenceStrophe
 	FXmppPresenceStrophe(FXmppConnectionStrophe& InConnectionManager);
-	virtual ~FXmppPresenceStrophe() = default;
+	virtual ~FXmppPresenceStrophe();
 
 	// XMPP Thread
-
-	void OnDisconnect();
 	bool ReceiveStanza(const FStropheStanza& IncomingStanza);
 
 	// Game Thread
+	void OnDisconnect();
+	void OnReconnect();
 
 	// IXmppPresence
 	virtual bool UpdatePresence(const FXmppUserPresence& NewPresence) override;
@@ -43,6 +43,9 @@ public:
 
 protected:
 	void OnPresenceUpdate(TUniquePtr<FXmppUserPresence>&& UpdatedPresence);
+
+	/** Remove pending messages and engine KeepAwake calls */
+	void CleanupMessages();
 
 protected:
 	/** Connection manager controls sending data to XMPP thread */

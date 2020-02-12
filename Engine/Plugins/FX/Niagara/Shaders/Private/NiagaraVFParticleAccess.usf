@@ -1,0 +1,51 @@
+
+/*********************************************************************************
+ *							Niagara Vertex Factory data access
+ *********************************************************************************/
+
+//Currently we have no integer data being fed into the renderers.
+//Buffer<int> NiagaraParticleDataInt;
+//uint NiagaraIntDataOffset;
+//uint NiagaraIntDataStride;
+
+#ifndef NIAGARA_KEYGEN
+#define NIAGARA_KEYGEN 0
+#endif
+
+#define NIAGARA_LOOSEPARAM_BINDING (!RAYHITGROUPSHADER && !COMPUTESHADER) || NIAGARA_KEYGEN
+
+#if NIAGARA_LOOSEPARAM_BINDING
+
+#define NIAGARA_LOOSEPARAM_STRUCT(x) x
+uint NiagaraFloatDataStride;
+
+float GetFloat(Buffer<float> NiagaraBuffer, int RegisterIdx, uint InstanceID)
+{
+	return NiagaraBuffer[(RegisterIdx * NiagaraFloatDataStride + InstanceID)];
+}
+
+#else
+#define NIAGARA_LOOSEPARAM_STRUCT(x) NiagaraVFLooseParameters.x
+
+float GetFloat(Buffer<float> NiagaraBuffer, int RegisterIdx, uint InstanceID)
+{
+	return NiagaraBuffer[(RegisterIdx * NiagaraVFLooseParameters.NiagaraFloatDataStride + InstanceID)];
+}
+
+#endif
+
+float2 GetVec2(Buffer<float> NiagaraBuffer, int RegisterIndex, uint InstanceID)
+{
+	return float2(GetFloat(NiagaraBuffer, RegisterIndex, InstanceID), GetFloat(NiagaraBuffer, RegisterIndex+1, InstanceID));
+}
+
+float3 GetVec3(Buffer<float> NiagaraBuffer, int RegisterIndex, uint InstanceID)
+{
+	return float3(GetFloat(NiagaraBuffer, RegisterIndex, InstanceID), GetFloat(NiagaraBuffer, RegisterIndex+1, InstanceID), GetFloat(NiagaraBuffer, RegisterIndex+2, InstanceID));
+}
+
+float4 GetVec4(Buffer<float> NiagaraBuffer, int RegisterIndex, uint InstanceID)
+{
+	return float4(GetFloat(NiagaraBuffer, RegisterIndex, InstanceID), GetFloat(NiagaraBuffer, RegisterIndex+1, InstanceID), GetFloat(NiagaraBuffer, RegisterIndex+2, InstanceID), GetFloat(NiagaraBuffer, RegisterIndex+3, InstanceID));
+}
+

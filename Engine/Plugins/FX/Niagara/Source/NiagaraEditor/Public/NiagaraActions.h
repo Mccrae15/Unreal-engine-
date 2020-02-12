@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -7,6 +7,7 @@
 #include "NiagaraGraph.h"
 #include "EdGraph/EdGraphSchema.h"
 #include "GraphEditorDragDropAction.h"
+#include "DragAndDrop/DecoratedDragDropOp.h"
 #include "NiagaraActions.generated.h"
 
 USTRUCT()
@@ -17,10 +18,7 @@ struct NIAGARAEDITOR_API FNiagaraMenuAction : public FEdGraphSchemaAction
 	DECLARE_DELEGATE(FOnExecuteStackAction);
 	DECLARE_DELEGATE_RetVal(bool, FCanExecuteStackAction);
 
-	FNiagaraMenuAction()
-	{
-	}
-
+	FNiagaraMenuAction() {}
 	FNiagaraMenuAction(FText InNodeCategory, FText InMenuDesc, FText InToolTip, const int32 InGrouping, FText InKeywords, FOnExecuteStackAction InAction, int32 InSectionID = 0);
 	FNiagaraMenuAction(FText InNodeCategory, FText InMenuDesc, FText InToolTip, const int32 InGrouping, FText InKeywords, FOnExecuteStackAction InAction, FCanExecuteStackAction InCanPerformAction, int32 InSectionID = 0);
 
@@ -38,27 +36,24 @@ struct NIAGARAEDITOR_API FNiagaraMenuAction : public FEdGraphSchemaAction
 		return CanPerformAction.IsBound() ? CanPerformAction.Execute() : true;
 	}
 
+	bool IsExperimental = false;
+
 private:
 	FOnExecuteStackAction Action;
 	FCanExecuteStackAction CanPerformAction;
 };
 
-USTRUCT()
 struct NIAGARAEDITOR_API FNiagaraParameterAction : public FEdGraphSchemaAction
 {
-	GENERATED_USTRUCT_BODY()
-
 	FNiagaraParameterAction() {}
 	FNiagaraParameterAction(const FNiagaraVariable& InParameter,
 		const TArray<FNiagaraGraphParameterReferenceCollection>& InReferenceCollection,
 		FText InNodeCategory, FText InMenuDesc, FText InToolTip, const int32 InGrouping, FText InKeywords, int32 InSectionID = 0);
 
-	FNiagaraVariable& GetParameter() { return Parameter; }
+	const FNiagaraVariable& GetParameter() const { return Parameter; }
 
-	UPROPERTY()
 	FNiagaraVariable Parameter;
 
-	UPROPERTY()
 	TArray<FNiagaraGraphParameterReferenceCollection> ReferenceCollection;
 };
 
@@ -105,36 +100,18 @@ protected:
 	bool bAltDrag;
 };
 
-class NIAGARAEDITOR_API FNiagaraStackDragOperation : public FDragDropOperation
+class NIAGARAEDITOR_API FNiagaraParameterDragOperation : public FDecoratedDragDropOp
 {
 public:
-	DRAG_DROP_OPERATOR_TYPE(FNiagaraStackDragOperation, FDragDropOperation)
+	DRAG_DROP_OPERATOR_TYPE(FNiagaraParameterDragOperation, FDecoratedDragDropOp)
 
-	static TSharedRef<FNiagaraStackDragOperation> New(TSharedPtr<FEdGraphSchemaAction> InActionNode);
+	FNiagaraParameterDragOperation(TSharedPtr<FEdGraphSchemaAction> InSourceAction)
+		: SourceAction(InSourceAction)
+	{
+	}
 
-	void Construct();
+	TSharedPtr<FEdGraphSchemaAction> GetSourceAction() const { return SourceAction; }
 
-	/** Set if operation is modified by alt */
-	void SetAltDrag(bool InIsAltDrag) { bAltDrag = InIsAltDrag; }
-
-	/** Set if operation is modified by the ctrl key */
-	void SetCtrlDrag(bool InIsCtrlDrag) { bControlDrag = InIsCtrlDrag; }
-
-	TSharedPtr<FEdGraphSchemaAction> GetAction() { return SourceAction; }
-
-	virtual void OnDrop(bool bDropWasHandled, const FPointerEvent& MouseEvent) override;
-	virtual void OnDragged(const class FDragDropEvent& DragDropEvent) override;
-protected:
-	FNiagaraStackDragOperation();
-
-	bool HasFeedbackMessage();
-	void SetFeedbackMessage(const TSharedPtr<SWidget>& Message);
-	void SetSimpleFeedbackMessage(const FText& Message);
-	
+private:
 	TSharedPtr<FEdGraphSchemaAction> SourceAction;
-
-	/** Was ctrl held down at start of drag */
-	bool bControlDrag;
-	/** Was alt held down at the start of drag */
-	bool bAltDrag;
 };

@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "MovieScene/MovieSceneNiagaraTrack.h"
 
@@ -30,4 +30,9 @@ void UMovieSceneNiagaraTrack::RemoveAllAnimationData()
 void UMovieSceneNiagaraTrack::RemoveSection(UMovieSceneSection& Section)
 {
 	Sections.Remove(&Section);
+}
+
+void UMovieSceneNiagaraTrack::RemoveSectionAt(int32 SectionIndex)
+{
+	Sections.RemoveAt(SectionIndex);
 }

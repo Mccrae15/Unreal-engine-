@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "TrackEditors/FadeTrackEditor.h"
 #include "Rendering/DrawElements.h"
@@ -162,9 +162,8 @@ void FFadeTrackEditor::HandleAddFadeTrackMenuEntryExecute()
 	FadeTrack->AddSection(*NewSection);
 	if (GetSequencer().IsValid())
 	{
-		GetSequencer()->OnAddTrack(FadeTrack);
+		GetSequencer()->OnAddTrack(FadeTrack, FGuid());
 	}
-	GetSequencer()->NotifyMovieSceneDataChanged( EMovieSceneDataChangeType::MovieSceneStructureItemAdded );
 }
 
 bool FFadeTrackEditor::HandleAddFadeTrackMenuEntryCanExecute() const

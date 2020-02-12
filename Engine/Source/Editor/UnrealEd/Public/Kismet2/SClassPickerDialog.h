@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -79,4 +79,7 @@ private:
 
 	/**  An array of default classes used in the dialog **/
 	TArray< TSharedPtr<FClassPickerDefaults>  > AssetDefaultClasses;
+
+	/** Determines if selecting no class is permitted **/
+	bool bAllowNone;
 };

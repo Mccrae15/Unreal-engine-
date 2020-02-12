@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -14,8 +14,8 @@ MONOLITHIC_HEADER_BOILERPLATE()
 #include "LocalVertexFactory.h"
 #include "SceneTypes.h"
 #include "RawIndexBuffer.h"
-#include "GenericOctreePublic.h"
-#include "GenericOctree.h"
+#include "Math/GenericOctreePublic.h"
+#include "Math/GenericOctree.h"
 #include "Model.h"
 #include "ComponentInstanceDataCache.h"
 #include "EngineLogs.h"

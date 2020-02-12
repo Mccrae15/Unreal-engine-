@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "Slate/SRetainerWidget.h"
 #include "Misc/App.h"
@@ -7,8 +7,6 @@
 #include "Engine/TextureRenderTarget2D.h"
 #include "Framework/Application/SlateApplication.h"
 #include "Engine/World.h"
-#include "Layout/WidgetCaching.h"
-
 
 DECLARE_CYCLE_STAT(TEXT("Retainer Widget Tick"), STAT_SlateRetainerWidgetTick, STATGROUP_Slate);
 DECLARE_CYCLE_STAT(TEXT("Retainer Widget Paint"), STAT_SlateRetainerWidgetPaint, STATGROUP_Slate);
@@ -68,6 +66,12 @@ public:
 		Collector.AddReferencedObject(RenderTarget);
 		Collector.AddReferencedObject(DynamicEffect);
 	}
+
+	virtual FString GetReferencerName() const override
+	{
+		return TEXT("FRetainerWidgetRenderingResources");
+	}
+	
 public:
 	FWidgetRenderer* WidgetRenderer;
 	UTextureRenderTarget2D* RenderTarget;
@@ -81,8 +85,20 @@ TFrameValue<int32> SRetainerWidget::Shared_RetainerWorkThisFrame(0);
 
 SRetainerWidget::SRetainerWidget()
 	: EmptyChildSlot(this)
+	, VirtualWindow(SNew(SVirtualWindow))
 	, RenderingResources(new FRetainerWidgetRenderingResources)
+
 {
+	FSlateApplicationBase::Get().OnGlobalInvalidationToggled().AddRaw(this, &SRetainerWidget::OnGlobalInvalidationToggled);
+	if (FSlateApplication::IsInitialized())
+	{
+#if !UE_BUILD_SHIPPING
+		OnRetainerModeChangedDelegate.RemoveAll(this);
+#endif
+	}
+	bHasCustomPrepass = true;
+	SetInvalidationRootWidget(*this);
+	SetInvalidationRootHittestGrid(HittestGrid);
 	SetCanTick(false);
 }
 
@@ -90,6 +106,7 @@ SRetainerWidget::~SRetainerWidget()
 {
 	if( FSlateApplication::IsInitialized() )
 	{
+		FSlateApplicationBase::Get().OnGlobalInvalidationToggled().RemoveAll(this);
 #if !UE_BUILD_SHIPPING
 		OnRetainerModeChangedDelegate.RemoveAll( this );
 #endif
@@ -117,6 +134,10 @@ void SRetainerWidget::UpdateWidgetRenderer()
 	FWidgetRenderer* WidgetRenderer = RenderingResources->WidgetRenderer;
 
 	WidgetRenderer->SetUseGammaCorrection(bWriteContentInGammaSpace);
+
+	// This will be handled by the main slate rendering pass
+	WidgetRenderer->SetApplyColorDeficiencyCorrection(false);
+
 	WidgetRenderer->SetIsPrepassNeeded(false);
 	WidgetRenderer->SetClearHitTestGrid(false);
 
@@ -134,23 +155,20 @@ void SRetainerWidget::UpdateWidgetRenderer()
 
 void SRetainerWidget::Construct(const FArguments& InArgs)
 {
-	FSlateApplicationBase::Get().OnGlobalInvalidate().AddSP(this, &SRetainerWidget::OnGlobalInvalidate);
+	FSlateApplicationBase::Get().OnInvalidateAllWidgets().AddSP(this, &SRetainerWidget::OnGlobalInvalidate);
 
 	STAT(MyStatId = FDynamicStats::CreateStatId<FStatGroup_STATGROUP_Slate>(InArgs._StatId);)
 
 	UTextureRenderTarget2D* RenderTarget = NewObject<UTextureRenderTarget2D>();
 	RenderTarget->ClearColor = FLinearColor::Transparent;
-	RenderTarget->OverrideFormat = PF_B8G8R8A8;
-	RenderTarget->bForceLinearGamma = false;
+	RenderTarget->RenderTargetFormat = RTF_RGBA8_SRGB;
 
 	RenderingResources->RenderTarget = RenderTarget;
 	SurfaceBrush.SetResourceObject(RenderTarget);
 
-	Window = SNew(SVirtualWindow)
-    .Visibility(EVisibility::SelfHitTestInvisible);  // deubanks: We don't want Retainer Widgets blocking hit testing for tooltips
+	VirtualWindow->SetVisibility(EVisibility::SelfHitTestInvisible);  // deubanks: We don't want Retainer Widgets blocking hit testing for tooltips
+	VirtualWindow->SetShouldResolveDeferred(false);
 
-	Window->SetShouldResolveDeferred(false);
-	
 	UpdateWidgetRenderer();
 
 	MyWidget = InArgs._Content.Widget;
@@ -167,16 +185,12 @@ void SRetainerWidget::Construct(const FArguments& InArgs)
 	bEnableRetainedRenderingDesire = true;
 	bEnableRetainedRendering = false;
 
+	RefreshRenderingMode();
 	bRenderRequested = true;
-
-	RootCacheNode = nullptr;
-	LastUsedCachedNodeIndex = 0;
-
-	Window->SetContent(MyWidget.ToSharedRef());
 
 	ChildSlot
 	[
-		Window.ToSharedRef()
+		MyWidget.ToSharedRef()
 	];
 
 	if ( FSlateApplication::IsInitialized() )
@@ -208,11 +222,20 @@ bool SRetainerWidget::IsAnythingVisibleToRender() const
 void SRetainerWidget::OnRetainerModeChanged()
 {
 	RefreshRenderingMode();
-	Invalidate(EInvalidateWidget::Layout);
+	// Invalidate myself 
+	InvalidateRoot();
+
+	// Nested invalidation: Invalidate whatever invalidation root I am in.
+	Invalidate(EInvalidateWidget::ChildOrder);
 }
 
-void SRetainerWidget::OnGlobalInvalidate()
+void SRetainerWidget::OnGlobalInvalidate(bool bClearResourcesImmediately)
 {
+	if (bClearResourcesImmediately)
+	{
+		ClearAllFastPathData(false);
+	}
+
 	RequestRender();
 }
 
@@ -228,6 +251,8 @@ void SRetainerWidget::OnRetainerModeCVarChanged( IConsoleVariable* CVar )
 void SRetainerWidget::SetRetainedRendering(bool bRetainRendering)
 {
 	bEnableRetainedRenderingDesire = bRetainRendering;
+
+	RefreshRenderingMode();
 }
 
 void SRetainerWidget::RefreshRenderingMode()
@@ -237,15 +262,17 @@ void SRetainerWidget::RefreshRenderingMode()
 	if ( bEnableRetainedRendering != bShouldBeRenderingOffscreen )
 	{
 		bEnableRetainedRendering = bShouldBeRenderingOffscreen;
-
-		Window->SetContent(MyWidget.ToSharedRef());
+		InvalidateChildOrder();
 	}
 }
 
 void SRetainerWidget::SetContent(const TSharedRef< SWidget >& InContent)
 {
 	MyWidget = InContent;
-	Window->SetContent(InContent);
+	ChildSlot
+	[
+		InContent
+	];
 }
 
 UMaterialInstanceDynamic* SRetainerWidget::GetEffectMaterial() const
@@ -287,7 +314,7 @@ void SRetainerWidget::SetWorld(UWorld* World)
 
 FChildren* SRetainerWidget::GetChildren()
 {
-	if ( bEnableRetainedRendering )
+	if (bEnableRetainedRendering && !GSlateEnableGlobalInvalidation && !NeedsPrepass())
 	{
 		return &EmptyChildSlot;
 	}
@@ -297,35 +324,9 @@ FChildren* SRetainerWidget::GetChildren()
 	}
 }
 
-bool SRetainerWidget::ComputeVolatility() const
+FChildren* SRetainerWidget::GetAllChildren()
 {
-	return true;
-}
-
-FCachedWidgetNode* SRetainerWidget::CreateCacheNode() const
-{
-	// If the node pool is empty, allocate a few
-	if (LastUsedCachedNodeIndex >= NodePool.Num())
-	{
-		for (int32 i = 0; i < 10; i++)
-		{
-			NodePool.Add(new FCachedWidgetNode());
-		}
-	}
-
-	// Return one of the preallocated nodes and increment the next node index.
-	FCachedWidgetNode* NewNode = NodePool[LastUsedCachedNodeIndex];
-	++LastUsedCachedNodeIndex;
-
-	return NewNode;
-}
-
-void SRetainerWidget::InvalidateWidget(SWidget* InvalidateWidget)
-{
-	if (RenderOnInvalidation)
-	{
-		bRenderRequested = true;
-	}
+	return SCompoundWidget::GetChildren();
 }
 
 void SRetainerWidget::SetRenderingPhase(int32 InPhase, int32 InPhaseCount)
@@ -337,16 +338,25 @@ void SRetainerWidget::SetRenderingPhase(int32 InPhase, int32 InPhaseCount)
 void SRetainerWidget::RequestRender()
 {
 	bRenderRequested = true;
+	InvalidateRoot();
 }
 
-bool SRetainerWidget::PaintRetainedContent(const FPaintArgs& Args, const FGeometry& AllottedGeometry)
+bool SRetainerWidget::PaintRetainedContent(const FSlateInvalidationContext& Context, const FGeometry& AllottedGeometry)
 {
 	if (RenderOnPhase)
 	{
 		if (LastTickedFrame != GFrameCounter && (GFrameCounter % PhaseCount) == Phase)
 		{
+			// If doing some phase based invalidation, just redraw everything again
+			InvalidateRoot();
 			bRenderRequested = true;
 		}
+	}
+
+	if (RenderOnInvalidation)
+	{
+		// the invalidation root will take care of whether or not we actually rendered
+		bRenderRequested = true;
 	}
 
 	if (Shared_MaxRetainerWorkPerFrame > 0)
@@ -367,7 +377,7 @@ bool SRetainerWidget::PaintRetainedContent(const FPaintArgs& Args, const FGeomet
 		bRenderRequested = true;
 	}
 
-	if ( bRenderRequested )
+	if (bRenderRequested)
 	{
 		// In order to get material parameter collections to function properly, we need the current world's Scene
 		// properly propagated through to any widgets that depend on that functionality. The SceneViewport and RetainerWidget the 
@@ -389,20 +399,11 @@ bool SRetainerWidget::PaintRetainedContent(const FPaintArgs& Args, const FGeomet
 		LastTickedFrame = GFrameCounter;
 		const double TimeSinceLastDraw = FApp::GetCurrentTime() - LastDrawTime;
 
-		const uint32 RenderTargetWidth  = FMath::RoundToInt(RenderSize.X);
-		const uint32 RenderTargetHeight = FMath::RoundToInt(RenderSize.Y);
+		// Size must be a positive integer to allocate the RenderTarget
+		const uint32 RenderTargetWidth  = FMath::RoundToInt(FMath::Abs(RenderSize.X));
+		const uint32 RenderTargetHeight = FMath::RoundToInt(FMath::Abs(RenderSize.Y));
 
 		const FVector2D ViewOffset = PaintGeometry.DrawPosition.RoundToVector();
-
-		// Keep the visibilities the same, the proxy window should maintain the same visible/non-visible hit-testing of the retainer.
-		Window->SetVisibility(GetVisibility());
-
-		// Need to prepass.
-		Window->SlatePrepass(AllottedGeometry.Scale);
-
-		// Reset the cached node pool index so that we effectively reset the pool.
-		LastUsedCachedNodeIndex = 0;
-		RootCacheNode = nullptr;
 
 		UTextureRenderTarget2D* RenderTarget = RenderingResources->RenderTarget;
 		FWidgetRenderer* WidgetRenderer = RenderingResources->WidgetRenderer;
@@ -431,36 +432,28 @@ bool SRetainerWidget::PaintRetainedContent(const FPaintArgs& Args, const FGeomet
 				const float Scale = AllottedGeometry.Scale;
 
 				const FVector2D DrawSize = FVector2D(RenderTargetWidth, RenderTargetHeight);
-				const FGeometry WindowGeometry = FGeometry::MakeRoot(DrawSize * ( 1 / Scale ), FSlateLayoutTransform(Scale, PaintGeometry.DrawPosition));
+				//const FGeometry WindowGeometry = FGeometry::MakeRoot(DrawSize * ( 1 / Scale ), FSlateLayoutTransform(Scale, PaintGeometry.DrawPosition));
 
 				// Update the surface brush to match the latest size.
 				SurfaceBrush.ImageSize = DrawSize;
 
 				WidgetRenderer->ViewOffset = -ViewOffset;
 
-				SRetainerWidget* MutableThis = const_cast<SRetainerWidget*>(this);
-				TSharedRef<SRetainerWidget> SharedMutableThis = SharedThis(MutableThis);
-				
-				FPaintArgs PaintArgs(*this, Args.GetGrid(), Args.GetWindowToDesktopTransform(), FApp::GetCurrentTime(), Args.GetDeltaTime());
+				bool bRepaintedWidgets = WidgetRenderer->DrawInvalidationRoot(VirtualWindow, RenderTarget, *this, Context, GDeferRetainedRenderingRenderThread != 0);
 
-				RootCacheNode = CreateCacheNode();
-				RootCacheNode->Initialize(Args, SharedMutableThis, WindowGeometry);
-
-				WidgetRenderer->DrawWindow(
-					PaintArgs.EnableCaching(SharedMutableThis, RootCacheNode, true, true),
-					RenderTarget,
-					Window.ToSharedRef(),
-					WindowGeometry,
-					WindowGeometry.GetLayoutBoundingRect(),
-					TimeSinceLastDraw,
-					GDeferRetainedRenderingRenderThread!=0);
+#if WITH_SLATE_DEBUGGING
+				if (bRepaintedWidgets)
+				{
+					FSlateDebugging::DrawInvalidationRoot(*this, Context.IncomingLayerId+1, *Context.WindowElementList);
+				}
+#endif
 
 				bRenderRequested = false;
 				Shared_WaitingToRender.Remove(this);
 
 				LastDrawTime = FApp::GetCurrentTime();
 
-				return true;
+				return bRepaintedWidgets;
 			}
 		}
 	}
@@ -470,31 +463,46 @@ bool SRetainerWidget::PaintRetainedContent(const FPaintArgs& Args, const FGeomet
 
 int32 SRetainerWidget::OnPaint(const FPaintArgs& Args, const FGeometry& AllottedGeometry, const FSlateRect& MyCullingRect, FSlateWindowElementList& OutDrawElements, int32 LayerId, const FWidgetStyle& InWidgetStyle, bool bParentEnabled) const
 {
-	STAT(FScopeCycleCounter PaintCycleCounter(MyStatId);)
+	STAT(FScopeCycleCounter PaintCycleCounter(MyStatId););
 
-	SRetainerWidget* MutableThis = const_cast<SRetainerWidget*>( this );
+	SRetainerWidget* MutableThis = const_cast<SRetainerWidget*>(this);
 
-	MutableThis->RefreshRenderingMode();
-
-	if ( bEnableRetainedRendering && IsAnythingVisibleToRender() )
+	if (bEnableRetainedRendering && IsAnythingVisibleToRender())
 	{
-		SCOPE_CYCLE_COUNTER( STAT_SlateRetainerWidgetPaint );
+		SCOPE_CYCLE_COUNTER(STAT_SlateRetainerWidgetPaint);
 
-		TSharedRef<SRetainerWidget> SharedMutableThis = SharedThis(MutableThis);
+		// Copy hit test grid settings from the root
+		const bool bHittestCleared = HittestGrid.SetHittestArea(Args.RootGrid.GetGridOrigin(), Args.RootGrid.GetGridSize(), Args.RootGrid.GetGridWindowOrigin());
+		if (bHittestCleared)
+		{
+			MutableThis->RequestRender();
+		}
+		FPaintArgs NewArgs = Args.WithNewHitTestGrid(HittestGrid);
 
-		const bool bNewFramePainted = MutableThis->PaintRetainedContent(Args, AllottedGeometry);
+		// Copy the current user index into the new grid since nested hittest grids should inherit their parents user id
+		NewArgs.GetHittestGrid().SetUserIndex(Args.RootGrid.GetUserIndex());
+
+		FSlateInvalidationContext Context(OutDrawElements, InWidgetStyle);
+		Context.bParentEnabled = bParentEnabled;
+		Context.bAllowFastPathUpdate = true;
+		Context.LayoutScaleMultiplier = GetPrepassLayoutScaleMultiplier();
+		Context.PaintArgs = &NewArgs;
+		Context.IncomingLayerId = LayerId;
+		Context.CullingRect = MyCullingRect;
+
+		MutableThis->PaintRetainedContent(Context, AllottedGeometry);
 
 		UTextureRenderTarget2D* RenderTarget = RenderingResources->RenderTarget;
 
-		if ( RenderTarget->GetSurfaceWidth() >= 1 && RenderTarget->GetSurfaceHeight() >= 1 )
+		if (RenderTarget->GetSurfaceWidth() >= 1 && RenderTarget->GetSurfaceHeight() >= 1)
 		{
-			const FLinearColor ComputedColorAndOpacity(InWidgetStyle.GetColorAndOpacityTint() * ColorAndOpacity.Get() * SurfaceBrush.GetTint(InWidgetStyle));
+			const FLinearColor ComputedColorAndOpacity(Context.WidgetStyle.GetColorAndOpacityTint() * ColorAndOpacity.Get() * SurfaceBrush.GetTint(Context.WidgetStyle));
 			// Retainer widget uses pre-multiplied alpha, so pre-multiply the color by the alpha to respect opacity.
 			const FLinearColor PremultipliedColorAndOpacity(ComputedColorAndOpacity * ComputedColorAndOpacity.A);
 
 			FWidgetRenderer* WidgetRenderer = RenderingResources->WidgetRenderer;
 			UMaterialInstanceDynamic* DynamicEffect = RenderingResources->DynamicEffect;
-	
+
 			const bool bDynamicMaterialInUse = (DynamicEffect != nullptr);
 			if (bDynamicMaterialInUse)
 			{
@@ -502,8 +510,8 @@ int32 SRetainerWidget::OnPaint(const FPaintArgs& Args, const FGeometry& Allotted
 			}
 
 			FSlateDrawElement::MakeBox(
-				OutDrawElements,
-				LayerId,
+				*Context.WindowElementList,
+				Context.IncomingLayerId,
 				AllottedGeometry.ToPaintGeometry(),
 				&SurfaceBrush,
 				// We always write out the content in gamma space, so when we render the final version we need to
@@ -511,24 +519,17 @@ int32 SRetainerWidget::OnPaint(const FPaintArgs& Args, const FGeometry& Allotted
 				ESlateDrawEffect::PreMultipliedAlpha | ESlateDrawEffect::NoGamma,
 				FLinearColor(PremultipliedColorAndOpacity.R, PremultipliedColorAndOpacity.G, PremultipliedColorAndOpacity.B, PremultipliedColorAndOpacity.A)
 			);
-			
-			if (RootCacheNode)
-			{
-				RootCacheNode->RecordHittestGeometry(Args.GetGrid(), Args.GetLastHitTestIndex(), LayerId, FVector2D(0, 0));
-			}
-
-			// Any deferred painted elements of the retainer should be drawn directly by the main renderer, not rendered into the render target,
-			// as most of those sorts of things will break the rendering rect, things like tooltips, and popup menus.
-			for ( auto& DeferredPaint : WidgetRenderer->DeferredPaints )
-			{
-				OutDrawElements.QueueDeferredPainting(DeferredPaint->Copy(Args));
-			}
 		}
 
-		return LayerId;
-	}
+		// add our widgets to the root hit test grid
+		Context.PaintArgs->RootGrid.AppendGrid(HittestGrid);
 
-	return SCompoundWidget::OnPaint(Args, AllottedGeometry, MyCullingRect, OutDrawElements, LayerId, InWidgetStyle, bParentEnabled);
+		return Context.IncomingLayerId;
+	}
+	else
+	{
+		return SCompoundWidget::OnPaint(Args, AllottedGeometry, MyCullingRect, OutDrawElements, LayerId, InWidgetStyle, bParentEnabled);
+	}
 }
 
 FVector2D SRetainerWidget::ComputeDesiredSize(float LayoutScaleMuliplier) const
@@ -541,4 +542,30 @@ FVector2D SRetainerWidget::ComputeDesiredSize(float LayoutScaleMuliplier) const
 	{
 		return SCompoundWidget::ComputeDesiredSize(LayoutScaleMuliplier);
 	}
+}
+
+void SRetainerWidget::OnGlobalInvalidationToggled(bool bGlobalInvalidationEnabled)
+{
+	InvalidateRoot();
+
+	ClearAllFastPathData(false);
+}
+
+bool SRetainerWidget::CustomPrepass(float LayoutScaleMultiplier)
+{
+	if (bEnableRetainedRendering)
+	{
+		ProcessInvalidation();
+
+		return NeedsPrepass();
+	}
+	else
+	{
+		return true;
+	}
+}
+
+int32 SRetainerWidget::PaintSlowPath(const FSlateInvalidationContext& Context)
+{
+	return SCompoundWidget::OnPaint(*Context.PaintArgs, GetPaintSpaceGeometry(), Context.CullingRect, *Context.WindowElementList, Context.IncomingLayerId, Context.WidgetStyle, Context.bParentEnabled);
 }

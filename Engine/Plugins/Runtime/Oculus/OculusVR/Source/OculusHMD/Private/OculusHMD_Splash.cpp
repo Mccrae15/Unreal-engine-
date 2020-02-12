@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "OculusHMD_Splash.h"
 
@@ -28,8 +28,9 @@ FSplash::FSplash(FOculusHMD* InOculusHMD) :
 	FramesOutstanding(0),
 	NextLayerId(1),
 	bInitialized(false),
-	bTickable(false),
 	bIsShown(false),
+	bNeedSplashUpdate(false),
+	bShouldShowSplash(false),
 	SystemDisplayInterval(1 / 90.0f)
 {
 	// Create empty quad layer for black frame
@@ -38,7 +39,6 @@ FSplash::FSplash(FOculusHMD* InOculusHMD) :
 		LayerDesc.QuadSize = FVector2D(0.01f, 0.01f);
 		LayerDesc.Priority = 0;
 		LayerDesc.PositionType = IStereoLayers::TrackerLocked;
-		LayerDesc.ShapeType = IStereoLayers::QuadLayer;
 		LayerDesc.Texture = GBlackTexture->TextureRHI;
 		BlackLayer = MakeShareable(new FLayer(NextLayerId++, LayerDesc));
 	}
@@ -49,7 +49,6 @@ FSplash::FSplash(FOculusHMD* InOculusHMD) :
 		LayerDesc.QuadSize = FVector2D(0.01f, 0.01f);
 		LayerDesc.Priority = 0;
 		LayerDesc.PositionType = IStereoLayers::TrackerLocked;
-		LayerDesc.ShapeType = IStereoLayers::QuadLayer;
 		LayerDesc.Texture = nullptr;
 		UELayer = MakeShareable(new FLayer(NextLayerId++, LayerDesc));
 	}
@@ -75,29 +74,25 @@ void FSplash::Tick_RenderThread(float DeltaTime)
 	const double TimeInSeconds = FPlatformTime::Seconds();
 	const double DeltaTimeInSeconds = TimeInSeconds - LastTimeInSeconds;
 
-	if (DeltaTimeInSeconds > 2.f * SystemDisplayInterval)
+	if (DeltaTimeInSeconds > 2.f * SystemDisplayInterval && Layers_RenderThread_DeltaRotation.Num() > 0)
 	{
-		for (int32 SplashLayerIndex = 0; SplashLayerIndex < SplashLayers.Num(); SplashLayerIndex++)
+		FScopeLock ScopeLock(&RenderThreadLock);
+		for (TTuple<FLayerPtr, FQuat>& Info : Layers_RenderThread_DeltaRotation)
 		{
-			FSplashLayer& SplashLayer = SplashLayers[SplashLayerIndex];
+			FLayerPtr Layer = Info.Key;
+			const FQuat& DeltaRotation = Info.Value;
+			check(Layer.IsValid());
+			check(!DeltaRotation.Equals(FQuat::Identity)); // Only layers with non-zero delta rotation should be in the DeltaRotation array.
 
-			if (SplashLayer.Layer.IsValid() && !SplashLayer.Desc.DeltaRotation.Equals(FQuat::Identity))
-			{
-				FScopeLock ScopeLock(&RenderThreadLock);
-
-				IStereoLayers::FLayerDesc LayerDesc = SplashLayer.Layer->GetDesc();
-				LayerDesc.Transform.SetRotation(SplashLayer.Desc.DeltaRotation * LayerDesc.Transform.GetRotation());
-
-				FLayer* Layer = new FLayer(*SplashLayer.Layer);
-				Layer->SetDesc(LayerDesc);
-				SplashLayer.Layer = MakeShareable(Layer);
-
-			}
+			IStereoLayers::FLayerDesc LayerDesc = Layer->GetDesc();
+			LayerDesc.Transform.SetRotation(LayerDesc.Transform.GetRotation() * DeltaRotation);
+			LayerDesc.Transform.NormalizeRotation();
+			Layer->SetDesc(LayerDesc);
 		}
+		LastTimeInSeconds = TimeInSeconds;
 	}
 
 	RenderFrame_RenderThread(FRHICommandListExecutor::GetImmediateCommandList());
-	LastTimeInSeconds = TimeInSeconds;
 }
 
 void FSplash::LoadSettings()
@@ -109,7 +104,28 @@ void FSplash::LoadSettings()
 	{
 		AddSplash(SplashDesc);
 	}
+
 	UStereoLayerFunctionLibrary::EnableAutoLoadingSplashScreen(HMDSettings->bAutoEnabled);
+	if (HMDSettings->bAutoEnabled)
+	{
+		if (!LoadLevelDelegate.IsValid())
+		{
+			LoadLevelDelegate = FCoreUObjectDelegates::PreLoadMap.AddSP(this, &FSplash::OnPreLoadMap);
+		}
+	}
+	else
+	{
+		if (LoadLevelDelegate.IsValid())
+		{
+			FCoreUObjectDelegates::PreLoadMap.Remove(LoadLevelDelegate);
+			LoadLevelDelegate.Reset();
+		}
+	}
+}
+
+void FSplash::OnPreLoadMap(const FString&)
+{
+	DoShow();
 }
 
 void FSplash::Startup()
@@ -131,12 +147,7 @@ void FSplash::Startup()
 
 		LoadSettings();
 
-		Ticker = MakeShareable(new FTicker(this));
 
-		ExecuteOnRenderThread_DoNotWait([this]()
-		{
-			Ticker->Register();
-		});
 
 		bInitialized = true;
 	}
@@ -144,13 +155,37 @@ void FSplash::Startup()
 
 void FSplash::StopTicker()
 {
-	FScopeLock ScopeLock(&RenderThreadLock);
+	CheckInGameThread();
 
-	if (!IsShown())
+	if (!bIsShown)
 	{
-		bTickable = false;
+		ExecuteOnRenderThread([this]()
+		{
+			if (Ticker.IsValid())
+			{
+				Ticker->Unregister();
+				Ticker = nullptr;
+			}
+		});
 		UnloadTextures();
 	}
+}
+
+void FSplash::StartTicker()
+{
+	CheckInGameThread();
+
+	if (!Ticker.IsValid())
+	{
+		Ticker = MakeShareable(new FTicker(this));
+
+		ExecuteOnRenderThread([this]()
+		{
+			LastTimeInSeconds = FPlatformTime::Seconds();
+			Ticker->Register();
+		});
+	}
+
 }
 
 void FSplash::RenderFrame_RenderThread(FRHICommandListImmediate& RHICmdList)
@@ -172,16 +207,24 @@ void FSplash::RenderFrame_RenderThread(FRHICommandListImmediate& RHICmdList)
 	}
 
 	ovrpResult Result;
-	UE_LOG(LogHMD, Verbose, TEXT("Splash ovrp_WaitToBeginFrame %u"), XFrame->FrameNumber);
-	if (OVRP_FAILURE(Result = ovrp_WaitToBeginFrame(XFrame->FrameNumber)))
-	{
-		UE_LOG(LogHMD, Error, TEXT("Splash ovrp_WaitToBeginFrame %u failed (%d)"), XFrame->FrameNumber, Result);
-		XFrame->ShowFlags.Rendering = false;
+	if ( ovrp_GetInitialized() && OculusHMD->WaitFrameNumber != Frame->FrameNumber)
+	{ 
+		UE_LOG(LogHMD, Verbose, TEXT("Splash ovrp_WaitToBeginFrame %u"), XFrame->FrameNumber);
+		if (OVRP_FAILURE(Result = ovrp_WaitToBeginFrame(XFrame->FrameNumber)))
+		{
+			UE_LOG(LogHMD, Error, TEXT("Splash ovrp_WaitToBeginFrame %u failed (%d)"), XFrame->FrameNumber, Result);
+			XFrame->ShowFlags.Rendering = false;
+		}
+		else
+		{
+			OculusHMD->WaitFrameNumber = XFrame->FrameNumber;
+			OculusHMD->NextFrameNumber = XFrame->FrameNumber + 1;
+			FPlatformAtomics::InterlockedIncrement(&FramesOutstanding);
+		}
 	}
 	else
 	{
-		OculusHMD->NextFrameNumber++;
-		FPlatformAtomics::InterlockedIncrement(&FramesOutstanding);
+		XFrame->ShowFlags.Rendering = false;
 	}
 
 	if (XFrame->ShowFlags.Rendering)
@@ -299,9 +342,6 @@ void FSplash::ReleaseResources_RHIThread()
 void FSplash::PreShutdown()
 {
 	CheckInGameThread();
-
-	// force Ticks to stop
-	bTickable = false;
 }
 
 
@@ -311,17 +351,19 @@ void FSplash::Shutdown()
 
 	if (bInitialized)
 	{
-		bTickable = false;
-
 		ExecuteOnRenderThread([this]()
 		{
-			Ticker->Unregister();
-			Ticker = nullptr;
+			if(Ticker)
+			{
+				Ticker->Unregister();
+				Ticker = nullptr;
+			}
 
 			ExecuteOnRHIThread([this]()
 			{
 				SplashLayers.Reset();
 				Layers_RenderThread.Reset();
+				Layers_RenderThread_Input.Reset();
 				Layers_RHIThread.Reset();
 			});
 		});
@@ -338,6 +380,21 @@ int FSplash::AddSplash(const FOculusSplashDesc& Desc)
 	return SplashLayers.Add(FSplashLayer(Desc));
 }
 
+
+void FSplash::AddSplash(const FSplashDesc& Splash)
+{
+	FOculusSplashDesc OculusDesc;
+	OculusDesc.TransformInMeters = Splash.Transform;
+	OculusDesc.QuadSizeInMeters = Splash.QuadSize;
+	OculusDesc.DeltaRotation = Splash.DeltaRotation;
+	OculusDesc.bNoAlphaChannel = Splash.bIgnoreAlpha;
+	OculusDesc.bIsDynamic = Splash.bIsDynamic || Splash.bIsExternal;
+	OculusDesc.TextureOffset = Splash.UVRect.Min;
+	OculusDesc.TextureScale = Splash.UVRect.Max;
+	OculusDesc.LoadedTexture = Splash.Texture;
+
+	AddSplash(OculusDesc);
+}
 
 void FSplash::ClearSplashes()
 {
@@ -363,26 +420,31 @@ bool FSplash::GetSplash(unsigned InSplashLayerIndex, FOculusSplashDesc& OutDesc)
 
 IStereoLayers::FLayerDesc FSplash::StereoLayerDescFromOculusSplashDesc(FOculusSplashDesc OculusDesc)
 {
-	bool bIsCubemap = OculusDesc.LoadedTexture->GetTextureCube() != nullptr;
-
 	IStereoLayers::FLayerDesc LayerDesc;
+	if (OculusDesc.LoadedTexture->GetTextureCube() != nullptr)
+	{
+		LayerDesc.SetShape<FCubemapLayer>();
+	}
+	// else LayerDesc.Shape defaults to FQuadLayer
+
 	LayerDesc.Transform = OculusDesc.TransformInMeters * FTransform(OculusHMD->GetSplashRotation().Quaternion());
 	LayerDesc.QuadSize = OculusDesc.QuadSizeInMeters;
 	LayerDesc.UVRect = FBox2D(OculusDesc.TextureOffset, OculusDesc.TextureOffset + OculusDesc.TextureScale);
 	LayerDesc.Priority = INT32_MAX - (int32)(OculusDesc.TransformInMeters.GetTranslation().X * 1000.f);
 	LayerDesc.PositionType = IStereoLayers::TrackerLocked;
-	LayerDesc.ShapeType = bIsCubemap ? IStereoLayers::CubemapLayer : IStereoLayers::QuadLayer;
 	LayerDesc.Texture = OculusDesc.LoadedTexture;
 	LayerDesc.Flags = IStereoLayers::LAYER_FLAG_QUAD_PRESERVE_TEX_RATIO | (OculusDesc.bNoAlphaChannel ? IStereoLayers::LAYER_FLAG_TEX_NO_ALPHA_CHANNEL : 0) | (OculusDesc.bIsDynamic ? IStereoLayers::LAYER_FLAG_TEX_CONTINUOUS_UPDATE : 0);
 
 	return LayerDesc;
 }
 
-void FSplash::Show()
+void FSplash::DoShow()
 {
 	CheckInGameThread();
 
 	OculusHMD->InitDevice();
+
+	OculusHMD->SetSplashRotationToForward();
 
 	// Create new textures
 	UnloadTextures();
@@ -406,10 +468,7 @@ void FSplash::Show()
 		}
 	}
 
-	if (bWaitForRT)
-	{
-		FlushRenderingCommands();
-	}
+	FlushRenderingCommands();
 
 	for (int32 SplashLayerIndex = 0; SplashLayerIndex < SplashLayers.Num(); ++SplashLayerIndex)
 	{
@@ -438,6 +497,7 @@ void FSplash::Show()
 	{
 		//add oculus-generated layers through the OculusVR settings area
 		FScopeLock ScopeLock(&RenderThreadLock);
+		Layers_RenderThread_DeltaRotation.Reset();
 		Layers_RenderThread_Input.Reset();
 		for (int32 SplashLayerIndex = 0; SplashLayerIndex < SplashLayers.Num(); SplashLayerIndex++)
 		{
@@ -445,7 +505,14 @@ void FSplash::Show()
 
 			if (SplashLayer.Layer.IsValid())
 			{
-				Layers_RenderThread_Input.Add(SplashLayer.Layer->Clone());
+				FLayerPtr ClonedLayer = SplashLayer.Layer->Clone();
+				Layers_RenderThread_Input.Add(ClonedLayer);
+
+				// Register layers that need to be rotated every n ticks
+				if (!SplashLayer.Desc.DeltaRotation.Equals(FQuat::Identity))
+				{
+					Layers_RenderThread_DeltaRotation.Emplace(ClonedLayer, SplashLayer.Desc.DeltaRotation);
+				}
 			}
 		}
 
@@ -453,7 +520,8 @@ void FSplash::Show()
 		FOculusSplashDesc UESplashDesc = OculusHMD->GetUESplashScreenDesc();
 		if (UESplashDesc.LoadedTexture != nullptr)
 		{
-			UELayer->SetDesc(StereoLayerDescFromOculusSplashDesc(UESplashDesc));
+			UELayer.Reset();
+			UELayer = MakeShareable(new FLayer(NextLayerId++, StereoLayerDescFromOculusSplashDesc(UESplashDesc)));
 			Layers_RenderThread_Input.Add(UELayer->Clone());
 		}
 
@@ -461,20 +529,53 @@ void FSplash::Show()
 	}
 
 	// If no textures are loaded, this will push black frame
-	bTickable = true;
+	StartTicker();
 	bIsShown = true;
 
 	UE_LOG(LogHMD, Log, TEXT("FSplash::OnShow"));
 }
 
 
-void FSplash::Hide()
+void FSplash::DoHide()
 {
 	CheckInGameThread();
 
 	UE_LOG(LogHMD, Log, TEXT("FSplash::OnHide"));
-//	bTickable = false;
 	bIsShown = false;
+
+	StopTicker();
+}
+
+void FSplash::UpdateLoadingScreen_GameThread()
+{
+	if (bNeedSplashUpdate)
+	{
+		if (bShouldShowSplash)
+		{
+			DoShow();
+		}
+		else
+		{
+			DoHide();
+		}
+
+		bNeedSplashUpdate = false;
+	}
+}
+
+void FSplash::ShowLoadingScreen()
+{
+	bShouldShowSplash = true;
+
+	// DoShow will be called from UpdateSplashScreen_Gamethread().
+	// This can can happen if the splashes are already being shown, as it will reset the relative positions and delta rotations of the layers.
+	bNeedSplashUpdate = true;  
+}
+
+void FSplash::HideLoadingScreen()
+{
+	bShouldShowSplash = false;
+	bNeedSplashUpdate = bIsShown; // no need to call DoHide when the splash is already hidden
 }
 
 void FSplash::UnloadTextures()

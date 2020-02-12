@@ -1,4 +1,4 @@
-﻿// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+﻿// Copyright Epic Games, Inc. All Rights Reserved.
 
 using System;
 using System.IO;
@@ -18,30 +18,27 @@ public class BuildCommonTools : BuildCommand
 	{
 		LogInformation("************************* BuildCommonTools");
 
-		// Get the list of platform names
-		string[] PlatformNames = ParseParamValue("platforms", BuildHostPlatform.Current.Platform.ToString()).Split('+');
-
-		// Parse the platforms
-		List<UnrealBuildTool.UnrealTargetPlatform> Platforms = new List<UnrealTargetPlatform>();
-		foreach(string PlatformName in PlatformNames)
-		{
-			UnrealBuildTool.UnrealTargetPlatform Platform;
-			if(!UnrealBuildTool.UnrealTargetPlatform.TryParse(PlatformName, true, out Platform))
-			{
-				throw new AutomationException("Unknown platform specified on command line - '{0}' - valid platforms are {1}", PlatformName, String.Join("/", Enum.GetNames(typeof(UnrealBuildTool.UnrealTargetPlatform))));
-			}
-			Platforms.Add(Platform);
-		}
+		List<UnrealTargetPlatform> Platforms = new List<UnrealTargetPlatform>();
 
 		// Add all the platforms if specified
-		if(ParseParam("allplatforms"))
+		if (ParseParam("allplatforms"))
 		{
-			foreach(UnrealTargetPlatform Platform in Enum.GetValues(typeof(UnrealTargetPlatform)))
+			Platforms = UnrealTargetPlatform.GetValidPlatforms().ToList();
+		}
+		else
+		{
+			// Get the list of platform names
+			string[] PlatformNames = ParseParamValue("platforms", BuildHostPlatform.Current.Platform.ToString()).Split('+');
+
+			// Parse the platforms
+			foreach (string PlatformName in PlatformNames)
 			{
-				if(!Platforms.Contains(Platform))
+				UnrealBuildTool.UnrealTargetPlatform Platform;
+				if (!UnrealTargetPlatform.TryParse(PlatformName, out Platform))
 				{
-					Platforms.Add(Platform);
+					throw new AutomationException("Unknown platform specified on command line - '{0}' - valid platforms are {1}", PlatformName, String.Join("/", UnrealTargetPlatform.GetValidPlatformNames()));
 				}
+				Platforms.Add(Platform);
 			}
 		}
 
@@ -89,7 +86,6 @@ public class BuildCommonTools : BuildCommand
 		Agenda.SwarmCoordinatorProject = @"Engine\Source\Programs\UnrealSwarm\SwarmCoordinator.sln";
 		Agenda.DotNetProjects.Add(@"Engine/Source/Editor/SwarmInterface/DotNET/SwarmInterface.csproj");
 		Agenda.DotNetProjects.Add(@"Engine/Source/Programs/DotNETCommon/DotNETUtilities/DotNETUtilities.csproj");
-		Agenda.DotNetProjects.Add(@"Engine/Source/Programs/RPCUtility/RPCUtility.csproj");
 		Agenda.DotNetProjects.Add(@"Engine/Source/Programs/UnrealControls/UnrealControls.csproj");
 
 		// Windows binaries
@@ -160,13 +156,6 @@ public class BuildCommonTools : BuildCommand
 			Agenda.AddTarget("XboxOnePDBFileUtil", UnrealBuildTool.UnrealTargetPlatform.Win64, UnrealBuildTool.UnrealTargetConfiguration.Development);
 		}
 
-		// HTML5 binaries
-		if (Platforms.Contains(UnrealBuildTool.UnrealTargetPlatform.HTML5))
-		{
-			Agenda.DotNetProjects.Add(@"Engine/Source/Programs/HTML5/HTML5LaunchHelper/HTML5LaunchHelper.csproj");
-			ExtraBuildProducts.Add(CommandUtils.CombinePaths(CommandUtils.CmdEnv.LocalRoot, @"Engine/Binaries/DotNET/HTML5LaunchHelper.exe"));
-		}
-
 		return Agenda;
 	}
 }
@@ -189,6 +178,9 @@ public class ZipProjectUp : BuildCommand
 		FileFilter Filter = new FileFilter();
 		Filter.Include("/Config/...");
 		Filter.Include("/Content/...");
+		Filter.Include("/Plugins/...");
+		Filter.Exclude("/Plugins/.../Intermediate/...");
+		Filter.Exclude("/Plugins/.../Binaries/...");
 		Filter.Include("/Source/...");
 		Filter.Include("*.uproject");
 

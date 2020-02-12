@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 /*=============================================================================
 	OpenGLVertexDeclaration.cpp: OpenGL vertex declaration RHI implementation.
@@ -349,6 +349,11 @@ bool FOpenGLVertexDeclaration::GetInitializer(FVertexDeclarationElementList& Ini
 			case GL_UNSIGNED_INT_2_10_10_10_REV:
 			{
 				Element.Type = VET_URGB10A2N;
+				break;
+			}
+			case GL_UNSIGNED_INT:
+			{
+				Element.Type = VET_UInt;
 				break;
 			}
 			default:

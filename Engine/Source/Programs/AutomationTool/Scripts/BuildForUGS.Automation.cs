@@ -1,4 +1,4 @@
-﻿// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 using System;
 using System.Collections.Generic;
@@ -43,9 +43,9 @@ namespace AutomationTool
 			{
 				string[] Tokens = Target.Split(new char[]{ ' ' }, StringSplitOptions.RemoveEmptyEntries);
 
+				UnrealTargetConfiguration Configuration = UnrealTargetConfiguration.Unknown;
 				UnrealTargetPlatform Platform;
-				UnrealTargetConfiguration Configuration;
-				if(Tokens.Length < 3 || !Enum.TryParse(Tokens[1], true, out Platform) || !Enum.TryParse(Tokens[2], true, out Configuration))
+				if(Tokens.Length < 3 || !UnrealTargetPlatform.TryParse(Tokens[1], out Platform)|| !Enum.TryParse(Tokens[2], true, out Configuration))
 				{
 					throw new AutomationException("Invalid target '{0}' - expected <TargetName> <Platform> <Configuration>");
 				}
@@ -85,7 +85,7 @@ namespace AutomationTool
 				string ZipFileName = Path.Combine(OutputFolder, "Archive.zip");
 				using (Ionic.Zip.ZipFile Zip = new Ionic.Zip.ZipFile())
 				{
-					Zip.UseZip64WhenSaving = Ionic.Zip.Zip64Option.Always;
+					Zip.UseZip64WhenSaving = Ionic.Zip.Zip64Option.AsNecessary;
 					foreach(string BuildProduct in Builder.BuildProductFiles)
 					{
 						if(!File.Exists(BuildProduct))

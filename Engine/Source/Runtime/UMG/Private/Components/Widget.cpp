@@ -1,7 +1,8 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "Components/Widget.h"
 #include "Misc/ConfigCacheIni.h"
+#include "Misc/UObjectToken.h"
 #include "CoreGlobals.h"
 #include "Widgets/SNullWidget.h"
 #include "Types/NavigationMetaData.h"
@@ -16,7 +17,6 @@
 #include "Widgets/Layout/SSpacer.h"
 #include "Widgets/SToolTip.h"
 #include "Binding/PropertyBinding.h"
-#include "Blueprint/WidgetNavigation.h"
 #include "Logging/MessageLog.h"
 #include "Blueprint/UserWidget.h"
 #include "Slate/SObjectWidget.h"
@@ -155,12 +155,20 @@ UWidget::UWidget(const FObjectInitializer& ObjectInitializer)
 	bIsEnabled = true;
 	bIsVariable = true;
 #if WITH_EDITOR
-	DesignerFlags = EWidgetDesignFlags::None;
+	DesignerFlags = static_cast<uint8>(EWidgetDesignFlags::None);
 #endif
 	Visibility = ESlateVisibility::Visible;
 	RenderOpacity = 1.0f;
 	RenderTransformPivot = FVector2D(0.5f, 0.5f);
 	Cursor = EMouseCursor::Default;
+
+#if WITH_EDITORONLY_DATA
+	bOverrideAccessibleDefaults = false;
+	AccessibleBehavior = ESlateAccessibleBehavior::NotAccessible;
+	AccessibleSummaryBehavior = ESlateAccessibleBehavior::Auto;
+	bCanChildrenBeAccessible = true;
+#endif
+	AccessibleWidgetData = nullptr;
 
 #if WITH_EDITORONLY_DATA
 	{ static const FAutoRegisterLocalizationDataGatheringCallback AutomaticRegistrationOfLocalizationGatherer(UWidget::StaticClass(), &GatherWidgetForLocalization); }
@@ -187,10 +195,15 @@ void UWidget::SetRenderShear(FVector2D Shear)
 	UpdateRenderTransform();
 }
 
-void UWidget::SetRenderAngle(float Angle)
+void UWidget::SetRenderTransformAngle(float Angle)
 {
 	RenderTransform.Angle = Angle;
 	UpdateRenderTransform();
+}
+
+float UWidget::GetRenderTransformAngle() const
+{
+	return RenderTransform.Angle;
 }
 
 void UWidget::SetRenderTranslation(FVector2D Translation)
@@ -442,7 +455,7 @@ void UWidget::SetKeyboardFocus()
 #if !(UE_BUILD_SHIPPING || UE_BUILD_TEST)
 		if ( !SafeWidget->SupportsKeyboardFocus() )
 		{
-			FMessageLog("PIE").Warning(LOCTEXT("ThisWidgetDoesntSupportFocus", "This widget does not support focus.  If this is a UserWidget, you should set bIsFocusable to true."));
+			FMessageLog("PIE").Warning(FText::Format(LOCTEXT("ThisWidgetDoesntSupportFocus", "The widget {0} does not support focus. If this is a UserWidget, you should set bIsFocusable to true."), FText::FromString(GetNameSafe(this))));
 		}
 #endif
 
@@ -473,11 +486,12 @@ bool UWidget::HasUserFocus(APlayerController* PlayerController) const
 
 		if ( ULocalPlayer* LocalPlayer = Context.GetLocalPlayer() )
 		{
-			// HACK: We use the controller Id as the local player index for focusing widgets in Slate.
-			int32 UserIndex = LocalPlayer->GetControllerId();
-
-			TOptional<EFocusCause> FocusCause = SafeWidget->HasUserFocus(UserIndex);
-			return FocusCause.IsSet();
+			TOptional<int32> UserIndex = FSlateApplication::Get().GetUserIndexForController(LocalPlayer->GetControllerId());
+			if (UserIndex.IsSet())
+			{
+				TOptional<EFocusCause> FocusCause = SafeWidget->HasUserFocus(UserIndex.GetValue());
+				return FocusCause.IsSet();
+			}
 		}
 	}
 
@@ -521,14 +535,20 @@ bool UWidget::HasUserFocusedDescendants(APlayerController* PlayerController) con
 
 		if ( ULocalPlayer* LocalPlayer = Context.GetLocalPlayer() )
 		{
-			// HACK: We use the controller Id as the local player index for focusing widgets in Slate.
-			int32 UserIndex = LocalPlayer->GetControllerId();
-
-			return SafeWidget->HasUserFocusedDescendants(UserIndex);
+			TOptional<int32> UserIndex = FSlateApplication::Get().GetUserIndexForController(LocalPlayer->GetControllerId());
+			if (UserIndex.IsSet())
+			{
+				return SafeWidget->HasUserFocusedDescendants(UserIndex.GetValue());
+			}
 		}
 	}
 
 	return false;
+}
+
+void UWidget::SetFocus()
+{
+	SetUserFocus(GetOwningPlayer());
 }
 
 void UWidget::SetUserFocus(APlayerController* PlayerController)
@@ -547,20 +567,40 @@ void UWidget::SetUserFocus(APlayerController* PlayerController)
 #if !(UE_BUILD_SHIPPING || UE_BUILD_TEST)
 		if ( !SafeWidget->SupportsKeyboardFocus() )
 		{
-			FMessageLog("PIE").Warning(LOCTEXT("ThisWidgetDoesntSupportFocus", "This widget does not support focus.  If this is a UserWidget, you should set bIsFocusable to true."));
+			TSharedRef<FTokenizedMessage> Message = FMessageLog("PIE").Warning()->AddToken(FUObjectToken::Create(this));
+#if WITH_EDITORONLY_DATA
+			if(UObject* GeneratedBy = WidgetGeneratedBy.Get())
+			{
+				Message->AddToken(FTextToken::Create(FText::FromString(TEXT(" in "))))->AddToken(FUObjectToken::Create(GeneratedBy));
+			}
+#endif
+			if (IsA(UUserWidget::StaticClass()))
+			{
+				Message->AddToken(FTextToken::Create(LOCTEXT("UserWidgetDoesntSupportFocus", " does not support focus, you should set bIsFocusable to true.")));
+			}
+			else
+			{
+				Message->AddToken(FTextToken::Create(LOCTEXT("NonUserWidgetDoesntSupportFocus", " does not support focus.")));
+			}
+			
 		}
 #endif
 
-		FLocalPlayerContext Context(PlayerController);
-
-		if ( ULocalPlayer* LocalPlayer = Context.GetLocalPlayer() )
+		if ( ULocalPlayer* LocalPlayer = PlayerController->GetLocalPlayer() )
 		{
-			// HACK: We use the controller Id as the local player index for focusing widgets in Slate.
-			int32 UserIndex = LocalPlayer->GetControllerId();
-
-			if ( !FSlateApplication::Get().SetUserFocus(UserIndex, SafeWidget) )
+			TOptional<int32> UserIndex = FSlateApplication::Get().GetUserIndexForController(LocalPlayer->GetControllerId());
+			if (UserIndex.IsSet())
 			{
-				LocalPlayer->GetSlateOperations().SetUserFocus(SafeWidget.ToSharedRef());
+				FReply& DelayedSlateOperations = LocalPlayer->GetSlateOperations();
+				if (FSlateApplication::Get().SetUserFocus(UserIndex.GetValue(), SafeWidget))
+				{
+					DelayedSlateOperations.CancelFocusRequest();
+				}
+				else
+				{
+					DelayedSlateOperations.SetUserFocus(SafeWidget.ToSharedRef());
+				}
+				
 			}
 		}
 	}
@@ -571,7 +611,7 @@ void UWidget::ForceLayoutPrepass()
 	TSharedPtr<SWidget> SafeWidget = GetCachedWidget();
 	if (SafeWidget.IsValid())
 	{
-		SafeWidget->SlatePrepass(SafeWidget->GetCachedGeometry().Scale);
+		SafeWidget->SlatePrepass(SafeWidget->GetTickSpaceGeometry().Scale);
 	}
 }
 
@@ -595,7 +635,7 @@ FVector2D UWidget::GetDesiredSize() const
 	return FVector2D(0, 0);
 }
 
-void UWidget::SetNavigationRuleInternal(EUINavigation Direction, EUINavigationRule Rule, FName WidgetToFocus)
+void UWidget::SetNavigationRuleInternal(EUINavigation Direction, EUINavigationRule Rule, FName WidgetToFocus/* = NAME_None*/, UWidget* InWidget/* = nullptr*/, FCustomWidgetNavigationDelegate InCustomDelegate/* = FCustomWidgetNavigationDelegate()*/)
 {
 	if (Navigation == nullptr)
 	{
@@ -605,6 +645,8 @@ void UWidget::SetNavigationRuleInternal(EUINavigation Direction, EUINavigationRu
 	FWidgetNavigationData NavigationData;
 	NavigationData.Rule = Rule;
 	NavigationData.WidgetToFocus = WidgetToFocus;
+	NavigationData.Widget = InWidget;
+	NavigationData.CustomDelegate = InCustomDelegate;
 	switch(Direction)
 	{
 		case EUINavigation::Up:
@@ -633,6 +675,37 @@ void UWidget::SetNavigationRuleInternal(EUINavigation Direction, EUINavigationRu
 void UWidget::SetNavigationRule(EUINavigation Direction, EUINavigationRule Rule, FName WidgetToFocus)
 {
 	SetNavigationRuleInternal(Direction, Rule, WidgetToFocus);
+	BuildNavigation();
+}
+
+void UWidget::SetNavigationRuleBase(EUINavigation Direction, EUINavigationRule Rule)
+{
+	if (Rule == EUINavigationRule::Explicit || Rule == EUINavigationRule::Custom || Rule == EUINavigationRule::CustomBoundary)
+	{
+#if !(UE_BUILD_SHIPPING || UE_BUILD_TEST)
+		FMessageLog("PIE").Error(LOCTEXT("SetNavigationRuleBaseWrongRule", "Cannot use SetNavigationRuleBase with an Explicit or a Custom or a CustomBoundary Rule."));
+#endif
+		return;
+	}
+	SetNavigationRuleInternal(Direction, Rule);
+	BuildNavigation();
+}
+
+void UWidget::SetNavigationRuleExplicit(EUINavigation Direction, UWidget* InWidget)
+{
+	SetNavigationRuleInternal(Direction, EUINavigationRule::Explicit, NAME_None, InWidget);
+	BuildNavigation();
+}
+
+void UWidget::SetNavigationRuleCustom(EUINavigation Direction, FCustomWidgetNavigationDelegate InCustomDelegate)
+{
+	SetNavigationRuleInternal(Direction, EUINavigationRule::Custom, NAME_None, nullptr, InCustomDelegate);
+	BuildNavigation();
+}
+
+void UWidget::SetNavigationRuleCustomBoundary(EUINavigation Direction, FCustomWidgetNavigationDelegate InCustomDelegate)
+{
+	SetNavigationRuleInternal(Direction, EUINavigationRule::CustomBoundary, NAME_None, nullptr, InCustomDelegate);
 	BuildNavigation();
 }
 
@@ -669,7 +742,7 @@ void UWidget::RemoveFromParent()
 		else
 		{
 #if !(UE_BUILD_SHIPPING || UE_BUILD_TEST)
-			if (GetCachedWidget().IsValid() && !IsDesignTime())
+			if (GetCachedWidget().IsValid() && GetCachedWidget()->GetParentWidget().IsValid() && !IsDesignTime())
 			{
 				FText WarningMessage = FText::Format(LOCTEXT("RemoveFromParentWithNoParent", "UWidget::RemoveFromParent() called on '{0}' which has no UMG parent (if it was added directly to a native Slate widget via TakeWidget() then it must be removed explicitly rather than via RemoveFromParent())"), FText::AsCultureInvariant(GetPathName()));
 				// @todo: nickd - we need to switch this back to a warning in engine, but info for games
@@ -682,13 +755,29 @@ void UWidget::RemoveFromParent()
 
 const FGeometry& UWidget::GetCachedGeometry() const
 {
+	return GetTickSpaceGeometry();
+}
+
+const FGeometry& UWidget::GetTickSpaceGeometry() const
+{
 	TSharedPtr<SWidget> SafeWidget = GetCachedWidget();
 	if ( SafeWidget.IsValid() )
 	{
-		return SafeWidget->GetCachedGeometry();
+		return SafeWidget->GetTickSpaceGeometry();
 	}
 
-	return SNullWidget::NullWidget->GetCachedGeometry();
+	return SNullWidget::NullWidget->GetTickSpaceGeometry();
+}
+
+const FGeometry& UWidget::GetPaintSpaceGeometry() const
+{
+	TSharedPtr<SWidget> SafeWidget = GetCachedWidget();
+	if (SafeWidget.IsValid())
+	{
+		return SafeWidget->GetPaintSpaceGeometry();
+	}
+
+	return SNullWidget::NullWidget->GetPaintSpaceGeometry();
 }
 
 #if !(UE_BUILD_SHIPPING || UE_BUILD_TEST)
@@ -777,6 +866,11 @@ TSharedRef<SWidget> UWidget::TakeWidget_Private(ConstructMethodType ConstructMet
 	{
 #if !(UE_BUILD_SHIPPING || UE_BUILD_TEST)
 		bRoutedSynchronizeProperties = false;
+#endif
+
+#if WIDGET_INCLUDE_RELFECTION_METADATA
+		// We only need to do this once, when the slate widget is created.
+		PublicWidget->AddMetadata<FReflectionMetaData>(MakeShared<FReflectionMetaData>(GetFName(), GetClass(), this, GetSourceAssetOrClass()));
 #endif
 
 		SynchronizeProperties();
@@ -874,9 +968,9 @@ ULocalPlayer* UWidget::GetOwningLocalPlayer() const
 #undef LOCTEXT_NAMESPACE
 #define LOCTEXT_NAMESPACE "UMGEditor"
 
-void UWidget::SetDesignerFlags(EWidgetDesignFlags::Type NewFlags)
+void UWidget::SetDesignerFlags(EWidgetDesignFlags NewFlags)
 {
-	DesignerFlags = ( EWidgetDesignFlags::Type )( DesignerFlags | NewFlags );
+	DesignerFlags = static_cast<uint8>(GetDesignerFlags() | NewFlags);
 
 	INamedSlotInterface* NamedSlotWidget = Cast<INamedSlotInterface>(this);
 	if (NamedSlotWidget)
@@ -1010,6 +1104,10 @@ void UWidget::PostEditChangeProperty(FPropertyChangedEvent& PropertyChangedEvent
 	{
 		SynchronizeProperties();
 	}
+	else
+	{
+		SynchronizeAccessibleData();
+	}
 }
 
 void UWidget::SelectByDesigner()
@@ -1040,6 +1138,16 @@ void UWidget::DeselectByDesigner()
 #define LOCTEXT_NAMESPACE "UMG"
 #endif
 
+void UWidget::PreSave(const class ITargetPlatform* TargetPlatform)
+{
+	Super::PreSave(TargetPlatform);
+
+	// This is a failsafe to make sure all the accessibility data is copied over in case
+	// some rare instance isn't handled by SynchronizeProperties. It might not be necessary.
+	SynchronizeAccessibleData();
+}
+
+#if WITH_EDITOR
 bool UWidget::Modify(bool bAlwaysMarkDirty)
 {
 	bool Modified = Super::Modify(bAlwaysMarkDirty);
@@ -1052,6 +1160,7 @@ bool UWidget::Modify(bool bAlwaysMarkDirty)
 
 	return Modified;
 }
+#endif
 
 bool UWidget::IsChildOf(UWidget* PossibleParent)
 {
@@ -1079,6 +1188,9 @@ void UWidget::SynchronizeProperties()
 #if !(UE_BUILD_SHIPPING || UE_BUILD_TEST)
 	bRoutedSynchronizeProperties = true;
 #endif
+
+	// Always sync accessible data even if the SWidget doesn't exist
+	SynchronizeAccessibleData();
 
 	// We want to apply the bindings to the cached widget, which could be the SWidget, or the SObjectWidget, 
 	// in the case where it's a user widget.  We always want to prefer the SObjectWidget so that bindings to 
@@ -1128,10 +1240,6 @@ void UWidget::SynchronizeProperties()
 
 	SafeWidget->SetRenderOpacity(RenderOpacity);
 
-#if !UE_BUILD_SHIPPING
-	SafeWidget->SetTag(GetFName());
-#endif
-
 	UpdateRenderTransform();
 	SafeWidget->SetRenderTransformPivot(RenderTransformPivot);
 
@@ -1157,10 +1265,51 @@ void UWidget::SynchronizeProperties()
 		SafeWidget->SetToolTipText(PROPERTY_BINDING(FText, ToolTipText));
 	}
 
-#if !UE_BUILD_SHIPPING
-	SafeWidget->AddMetadata<FReflectionMetaData>(MakeShared<FReflectionMetaData>(GetFName(), GetClass(), this, GetSourceAssetOrClass()));
+#if WITH_ACCESSIBILITY
+	if (AccessibleWidgetData)
+	{
+		TSharedPtr<SWidget> AccessibleWidget = GetAccessibleWidget();
+		if (AccessibleWidget.IsValid())
+		{
+			AccessibleWidget->SetAccessibleBehavior((EAccessibleBehavior)AccessibleWidgetData->AccessibleBehavior, AccessibleWidgetData->CreateAccessibleTextAttribute(), EAccessibleType::Main);
+			AccessibleWidget->SetAccessibleBehavior((EAccessibleBehavior)AccessibleWidgetData->AccessibleSummaryBehavior, AccessibleWidgetData->CreateAccessibleSummaryTextAttribute(), EAccessibleType::Summary);
+			AccessibleWidget->SetCanChildrenBeAccessible(AccessibleWidgetData->bCanChildrenBeAccessible);
+		}
+	}
 #endif
 }
+
+
+void UWidget::SynchronizeAccessibleData()
+{
+#if WITH_EDITORONLY_DATA
+	if (bOverrideAccessibleDefaults)
+	{
+		if (!AccessibleWidgetData)
+		{
+			AccessibleWidgetData = NewObject<USlateAccessibleWidgetData>(this);
+		}
+		AccessibleWidgetData->bCanChildrenBeAccessible = bCanChildrenBeAccessible;
+		AccessibleWidgetData->AccessibleBehavior = AccessibleBehavior;
+		AccessibleWidgetData->AccessibleText = AccessibleText;
+		AccessibleWidgetData->AccessibleTextDelegate = AccessibleTextDelegate;
+		AccessibleWidgetData->AccessibleSummaryBehavior = AccessibleSummaryBehavior;
+		AccessibleWidgetData->AccessibleSummaryText = AccessibleSummaryText;
+		AccessibleWidgetData->AccessibleSummaryTextDelegate = AccessibleSummaryTextDelegate;
+	}
+	else if (AccessibleWidgetData)
+	{
+		AccessibleWidgetData = nullptr;
+	}
+#endif
+}
+
+#if WITH_ACCESSIBILITY
+TSharedPtr<SWidget> UWidget::GetAccessibleWidget() const
+{
+	return GetCachedWidget();
+}
+#endif
 
 UObject* UWidget::GetSourceAssetOrClass() const
 {
@@ -1171,9 +1320,9 @@ UObject* UWidget::GetSourceAssetOrClass() const
 	// where it comes from, what blueprint, what the name of the widget was...etc.
 	SourceAsset = WidgetGeneratedBy.Get();
 #else
-#if !UE_BUILD_SHIPPING
-	SourceAsset = WidgetGeneratedByClass.Get();
-#endif
+	#if !UE_BUILD_SHIPPING
+		SourceAsset = WidgetGeneratedByClass.Get();
+	#endif
 #endif
 
 	if (!SourceAsset)
@@ -1323,7 +1472,7 @@ FString UWidget::GetDefaultFontName()
 
 //bool UWidget::BindProperty(const FName& DestinationProperty, UObject* SourceObject, const FName& SourceProperty)
 //{
-//	UDelegateProperty* DelegateProperty = FindField<UDelegateProperty>(GetClass(), FName(*( DestinationProperty.ToString() + TEXT("Delegate") )));
+//	FDelegateProperty* DelegateProperty = FindField<FDelegateProperty>(GetClass(), FName(*( DestinationProperty.ToString() + TEXT("Delegate") )));
 //
 //	if ( DelegateProperty )
 //	{
@@ -1334,7 +1483,7 @@ FString UWidget::GetDefaultFontName()
 //	return false;
 //}
 
-TSubclassOf<UPropertyBinding> UWidget::FindBinderClassForDestination(UProperty* Property)
+TSubclassOf<UPropertyBinding> UWidget::FindBinderClassForDestination(FProperty* Property)
 {
 	if ( BinderClasses.Num() == 0 )
 	{
@@ -1358,7 +1507,7 @@ TSubclassOf<UPropertyBinding> UWidget::FindBinderClassForDestination(UProperty* 
 	return nullptr;
 }
 
-static UPropertyBinding* GenerateBinder(UDelegateProperty* DelegateProperty, UObject* Container, UObject* SourceObject, const FDynamicPropertyPath& BindingPath)
+static UPropertyBinding* GenerateBinder(FDelegateProperty* DelegateProperty, UObject* Container, UObject* SourceObject, const FDynamicPropertyPath& BindingPath)
 {
 	FScriptDelegate* ScriptDelegate = DelegateProperty->GetPropertyValuePtr_InContainer(Container);
 	if ( ScriptDelegate )
@@ -1367,7 +1516,7 @@ static UPropertyBinding* GenerateBinder(UDelegateProperty* DelegateProperty, UOb
 		UFunction* SignatureFunction = DelegateProperty->SignatureFunction;
 		if ( SignatureFunction->NumParms == 1 )
 		{
-			if ( UProperty* ReturnProperty = SignatureFunction->GetReturnProperty() )
+			if ( FProperty* ReturnProperty = SignatureFunction->GetReturnProperty() )
 			{
 				TSubclassOf<UPropertyBinding> BinderClass = UWidget::FindBinderClassForDestination(ReturnProperty);
 				if ( BinderClass != nullptr )
@@ -1386,7 +1535,7 @@ static UPropertyBinding* GenerateBinder(UDelegateProperty* DelegateProperty, UOb
 	return nullptr;
 }
 
-bool UWidget::AddBinding(UDelegateProperty* DelegateProperty, UObject* SourceObject, const FDynamicPropertyPath& BindingPath)
+bool UWidget::AddBinding(FDelegateProperty* DelegateProperty, UObject* SourceObject, const FDynamicPropertyPath& BindingPath)
 {
 	if ( UPropertyBinding* Binder = GenerateBinder(DelegateProperty, this, SourceObject, BindingPath) )
 	{

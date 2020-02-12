@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -35,14 +35,18 @@ public:
 	virtual const FXmppUserJid& GetUserJid() const override;
 
 	virtual FOnXmppLoginComplete& OnLoginComplete() override { return OnXmppLoginCompleteDelegate; }
-	virtual FOnXmppLogingChanged& OnLoginChanged() override { return OnXmppLogingChangedDelegate; }
+	virtual FOnXmppLoginChanged& OnLoginChanged() override { return OnXmppLoginChangedDelegate; }
 	virtual FOnXmppLogoutComplete& OnLogoutComplete() override { return OnXmppLogoutCompleteDelegate; }
+	virtual FOnXmppStanzaSent& OnStanzaSent() override { return OnXmppStanzaSentDelegate; }
+	virtual FOnXmppStanzaReceived& OnStanzaReceived() override { return OnXmppStanzaReceivedDelegate; }
 
 	virtual IXmppPresencePtr Presence() override;
 	virtual IXmppPubSubPtr PubSub() override;
 	virtual IXmppMessagesPtr Messages() override;
 	virtual IXmppMultiUserChatPtr MultiUserChat() override;
 	virtual IXmppChatPtr PrivateChat() override;
+
+	virtual void DumpState() const override;
 
 	// FTickerObjectBase
 
@@ -96,8 +100,10 @@ private:
 
 	// completion delegates
 	FOnXmppLoginComplete OnXmppLoginCompleteDelegate;
-	FOnXmppLogingChanged OnXmppLogingChangedDelegate;
+	FOnXmppLoginChanged OnXmppLoginChangedDelegate;
 	FOnXmppLogoutComplete OnXmppLogoutCompleteDelegate;
+	FOnXmppStanzaReceived OnXmppStanzaReceivedDelegate;
+	FOnXmppStanzaSent OnXmppStanzaSentDelegate;
 
 	/** access to presence implementation */
 	TSharedPtr<class FXmppPresenceJingle, ESPMode::ThreadSafe> PresenceJingle;

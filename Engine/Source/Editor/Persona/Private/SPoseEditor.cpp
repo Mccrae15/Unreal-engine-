@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 
 #include "SPoseEditor.h"
@@ -37,7 +37,7 @@ void SPoseEditor::Construct(const FArguments& InArgs, const TSharedRef<class IPe
 	check(PoseAssetObj);
 
 	SAnimEditorBase::Construct(SAnimEditorBase::FArguments()
-		.DisplayAnimInfoBar(false),
+		.DisplayAnimTimeline(false),
 		InPreviewScene);
 
 	NonScrollEditorPanels->AddSlot()
@@ -640,7 +640,7 @@ TSharedPtr<SWidget> SPoseViewer::OnGetContextMenuContentForCurveList() const
 
 	MenuBuilder.BeginSection("CurveAction", LOCTEXT("CurveActions", "Selected Item Actions"));
 	{
-		FUIAction Action = FUIAction(FExecuteAction::CreateSP(this, &SPoseViewer::OnDeleteCurves),
+		FUIAction Action = FUIAction(FExecuteAction::CreateSP(const_cast<SPoseViewer*>(this), &SPoseViewer::OnDeleteCurves),
 			FCanExecuteAction::CreateSP(this, &SPoseViewer::IsCurveSelected));
 		const FText MenuLabel = LOCTEXT("DeleteCurveButtonLabel", "Delete");
 		const FText MenuToolTip = LOCTEXT("DeleteCurveButtonTooltip", "Deletes the selected animation curve.");

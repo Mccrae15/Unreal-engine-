@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -64,17 +64,22 @@ public:
 	TSharedPtr< FUICommandInfo > AddNewLocalVariable;
 	TSharedPtr< FUICommandInfo > AddNewFunction;
 	TSharedPtr< FUICommandInfo > AddNewMacroDeclaration;
-	TSharedPtr< FUICommandInfo > AddNewAnimationGraph;
+	TSharedPtr< FUICommandInfo > AddNewAnimationLayer;
 	TSharedPtr< FUICommandInfo > AddNewEventGraph;
 	TSharedPtr< FUICommandInfo > AddNewDelegate;
 
 	// Development commands
 	TSharedPtr< FUICommandInfo > SaveIntermediateBuildProducts;
 	TSharedPtr< FUICommandInfo > GenerateNativeCode;
+	TSharedPtr< FUICommandInfo > GenerateSearchIndex;
+	TSharedPtr< FUICommandInfo > DumpCachedIndexData;
 	TSharedPtr< FUICommandInfo > ShowActionMenuItemSignatures;
 
 	// SSC commands
 	TSharedPtr< FUICommandInfo > BeginBlueprintMerge;
+	
+	// Toggle focusing nodes which are related to the selected nodes
+	TSharedPtr< FUICommandInfo > ToggleHideUnrelatedNodes;
 };
 
 //////////////////////////////////////////////////////////////////////////

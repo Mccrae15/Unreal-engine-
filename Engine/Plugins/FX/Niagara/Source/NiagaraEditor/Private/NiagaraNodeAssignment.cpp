@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "NiagaraNodeAssignment.h"
 #include "UObject/UnrealType.h"
@@ -142,6 +142,11 @@ void UNiagaraNodeAssignment::PostLoad()
 
 			for (UNiagaraScript* Script : Scripts)
 			{
+				check(Script);
+				if (Script->HasAnyFlags(RF_NeedPostLoad))
+				{
+					Script->RapidIterationParameters.PostLoad();
+				}
 				if (Script->HandleVariableRenames(Converted, Emitter ? Emitter->GetUniqueEmitterName() : FString()))
 				{
 					bConvertedAnything = true;
@@ -172,9 +177,15 @@ void UNiagaraNodeAssignment::PostLoad()
 	}
 }
 
-void UNiagaraNodeAssignment::BuildParameterMapHistory(FNiagaraParameterMapHistoryBuilder& OutHistory, bool bRecursive)
+void UNiagaraNodeAssignment::BuildParameterMapHistory(FNiagaraParameterMapHistoryBuilder& OutHistory, bool bRecursive /*= true*/, bool bFilterForCompilation /*= true*/) const
 {
-	Super::BuildParameterMapHistory(OutHistory, bRecursive);
+	Super::BuildParameterMapHistory(OutHistory, bRecursive, bFilterForCompilation);
+}
+
+void UNiagaraNodeAssignment::GatherExternalDependencyData(ENiagaraScriptUsage InMasterUsage, const FGuid& InMasterUsageId, TArray<FNiagaraCompileHash>& InReferencedCompileHashes, TArray<FString>& InReferencedObjs) const
+{
+	// Assignment nodes own their function graphs and therefore have no external dependencies so we override the default function behavior here to avoid 
+	// adding additional non-deterministic guids to the compile id generation which can invalid the DDC for compiled scripts, especially during emitter merging.
 }
 
 void UNiagaraNodeAssignment::GenerateScript()
@@ -233,14 +244,14 @@ void UNiagaraNodeAssignment::BuildCreateParameterMenu(FMenuBuilder& MenuBuilder,
 		TSet<FName> Names;
 		for (const UNiagaraGraph* Graph : Graphs)
 		{
-			for (const TPair<FNiagaraVariable, FNiagaraGraphParameterReferenceCollection>& ParameterElement : Graph->GetParameterMap())
+			for (const TPair<FNiagaraVariable, FNiagaraGraphParameterReferenceCollection>& ParameterElement : Graph->GetParameterReferenceMap())
 			{
 				Names.Add(ParameterElement.Key.GetName());
 			}
 		}
 
 		TArray<FNiagaraTypeDefinition> AvailableTypes;
-		FNiagaraStackGraphUtilities::GetNewParameterAvailableTypes(AvailableTypes);
+		FNiagaraStackGraphUtilities::GetNewParameterAvailableTypes(AvailableTypes, NewParameterNamespace.GetValue());
 		for (const FNiagaraTypeDefinition& AvailableType : AvailableTypes)
 		{
 			// Make generic new parameter name
@@ -344,6 +355,7 @@ void UNiagaraNodeAssignment::InitializeScript(UNiagaraScript* NewScript)
 			CreatedGraph = NewObject<UNiagaraGraph>(Source, NAME_None, RF_Transactional);
 			Source->NodeGraph = CreatedGraph;
 		}
+		CreatedGraph->Modify();
 		
 		TArray<UNiagaraNodeInput*> InputNodes;
 		CreatedGraph->FindInputNodes(InputNodes);
@@ -495,16 +507,18 @@ void UNiagaraNodeAssignment::InitializeScript(UNiagaraScript* NewScript)
 					const FNiagaraVariableMetaData* FoundMetaData = FNiagaraConstants::GetConstantMetaData(AssignmentTargets[i]);
 					if (FoundMetaData)
 					{
-						FNiagaraVariableMetaData& MetaData = CreatedGraph->FindOrAddMetaData(TargetVar);
-						MetaData.Description = FoundMetaData->Description;
-						MetaData.ReferencerNodes.Empty();
-						MetaData.ReferencerNodes.Add(GetNodes[0]);
+						FNiagaraVariableMetaData NewMetaData;
+						TOptional<FNiagaraVariableMetaData> ExistingMetaData = CreatedGraph->GetMetaData(TargetVar);
+						if (ExistingMetaData.IsSet())
+						{
+							NewMetaData = ExistingMetaData.GetValue();
+						}
+						NewMetaData.Description = FoundMetaData->Description;
+						CreatedGraph->SetMetaData(TargetVar, NewMetaData);
 					}
 				}
 			}
 		}
-
-		CreatedGraph->PurgeUnreferencedMetaData();
 	}
 }
 

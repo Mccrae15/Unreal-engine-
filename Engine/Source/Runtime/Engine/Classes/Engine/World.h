@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -22,6 +22,9 @@
 #include "Physics/PhysicsInterfaceDeclares.h"
 #include "Particles/WorldPSCPool.h"
 #include "Containers/SortedMap.h"
+#include "AudioDeviceManager.h"
+#include "Subsystems/WorldSubsystem.h"
+#include "Subsystems/SubsystemCollection.h"
 
 #include "World.generated.h"
 
@@ -43,16 +46,19 @@ class UAISystemBase;
 class UCanvas;
 class UDemoNetDriver;
 class UGameViewportClient;
+class ULevel;
 class ULevelStreaming;
 class ULocalPlayer;
 class UMaterialParameterCollection;
 class UMaterialParameterCollectionInstance;
 class UModel;
-class UNavigationSystem;
+class UNavigationSystemBase;
 class UNetConnection;
 class UNetDriver;
 class UPrimitiveComponent;
 class UTexture2D;
+class FPhysScene_Chaos;
+class FSceneView;
 struct FUniqueNetIdRepl;
 struct FEncryptionKeyResponse;
 
@@ -62,12 +68,74 @@ template<typename,typename> class TOctree;
  * Misc. Iterator types
  *
  */
+template <typename ActorType> class TActorIterator;
 typedef TArray<TWeakObjectPtr<AController> >::TConstIterator FConstControllerIterator;
 typedef TArray<TWeakObjectPtr<APlayerController> >::TConstIterator FConstPlayerControllerIterator;
-typedef TArray<TWeakObjectPtr<APawn> >::TConstIterator FConstPawnIterator;	
 typedef TArray<TWeakObjectPtr<ACameraActor> >::TConstIterator FConstCameraActorIterator;
-typedef TArray<class ULevel*>::TConstIterator FConstLevelIterator;
+typedef TArray<ULevel*>::TConstIterator FConstLevelIterator;
 typedef TArray<TWeakObjectPtr<APhysicsVolume> >::TConstIterator FConstPhysicsVolumeIterator;
+
+/** Wrapper object that tries to imitate the TWeakObjectPtr interface for the objects previously in the PawnList and iterated by FConstPawnIterator. */
+struct ENGINE_API FPawnIteratorObject
+{
+	APawn* operator->() const { return Pawn; }
+	APawn& operator*() const { return *Pawn; }
+	APawn* Get() const { return Pawn; }
+
+	bool operator==(const UObject* Other) const { return Pawn == Other; }
+	bool operator!=(const UObject* Other) const { return Pawn != Other; }
+
+private:
+	FPawnIteratorObject()
+		: Pawn(nullptr)
+	{
+	}
+
+	FPawnIteratorObject(APawn* InPawn)
+		: Pawn(InPawn)
+	{
+	}
+
+	APawn* Pawn;
+
+	friend class FConstPawnIterator;
+};
+
+template< class T > FORCEINLINE T* Cast(const FPawnIteratorObject& Src) { return Cast<T>(Src.Get()); }
+
+/** 
+ * Imitation iterator class that attempts to provide the basic interface that FConstPawnIterator previously did when a typedef of TArray<TWeakObjectPtr<APawn>>::Iterator.
+ * In general you should prefer not to use this iterator and instead use TActorIterator<APawn> or TActorRange<APawn> (or the desired more derived type).
+ * This iterator will likely be deprecated in a future release.
+ */
+class ENGINE_API FConstPawnIterator
+{
+private:
+	FConstPawnIterator(UWorld* World);
+
+public:
+	~FConstPawnIterator();
+
+	FConstPawnIterator(FConstPawnIterator&&);
+	FConstPawnIterator& operator=(FConstPawnIterator&&);
+
+	explicit operator bool() const;
+	FPawnIteratorObject operator*() const;
+	TUniquePtr<FPawnIteratorObject> operator->() const;
+
+	FConstPawnIterator& operator++();
+	FConstPawnIterator& operator++(int);
+	UE_DEPRECATED(4.23, "Decrement operator no longer means anything on a pawn iterator")
+	FConstPawnIterator& operator--() { return *this; }
+	UE_DEPRECATED(4.23, "Decrement operator no longer means anything on a pawn iterator")
+	FConstPawnIterator& operator--(int) { return *this; }
+
+private:
+	TUniquePtr<TActorIterator<APawn>> Iterator;
+
+	friend UWorld;
+};
+
 
 DECLARE_LOG_CATEGORY_EXTERN(LogSpawn, Warning, All);
 
@@ -420,7 +488,6 @@ struct TStructOpsTypeTraits<FEndPhysicsTickFunction> : public TStructOpsTypeTrai
 };
 
 /* Struct of optional parameters passed to SpawnActor function(s). */
-PRAGMA_DISABLE_DEPRECATION_WARNINGS // Required for auto-generated functions referencing bNoCollisionFail
 struct ENGINE_API FActorSpawnParameters
 {
 	FActorSpawnParameters();
@@ -448,30 +515,32 @@ private:
 	friend class UPackageMapClient;
 
 	/* Is the actor remotely owned. This should only be set true by the package map when it is creating an actor on a client that was replicated from the server. */
-	uint16	bRemoteOwned:1;
+	uint8	bRemoteOwned:1;
 	
 public:
 
 	bool IsRemoteOwned() const { return bRemoteOwned; }
 
 	/* Determines whether spawning will not fail if certain conditions are not met. If true, spawning will not fail because the class being spawned is `bStatic=true` or because the class of the template Actor is not the same as the class of the Actor being spawned. */
-	uint16	bNoFail:1;
+	uint8	bNoFail:1;
 
 	/* Determines whether the construction script will be run. If true, the construction script will not be run on the spawned Actor. Only applicable if the Actor is being spawned from a Blueprint. */
-	uint16	bDeferConstruction:1;
+	uint8	bDeferConstruction:1;
 	
 	/* Determines whether or not the actor may be spawned when running a construction script. If true spawning will fail if a construction script is being run. */
-	uint16	bAllowDuringConstructionScript:1;
+	uint8	bAllowDuringConstructionScript:1;
 
 #if WITH_EDITOR
 	/** Determines whether the begin play cycle will run on the spawned actor when in the editor. */
-	uint16 bTemporaryEditorActor:1;
+	uint8	bTemporaryEditorActor:1;
+
+	/* Determines wether or not the actor should be hidden from the Scene Outliner */
+	uint8	bHideFromSceneOutliner:1;
 #endif
 	
 	/* Flags used to describe the spawned actor/object instance. */
 	EObjectFlags ObjectFlags;		
 };
-PRAGMA_ENABLE_DEPRECATION_WARNINGS
 
 
 /**
@@ -721,13 +790,13 @@ struct FStreamingLevelsToConsider
 		: bStreamingLevelsBeingConsidered(false)
 	{}
 
+private:
+
 	/** Priority sorted array of streaming levels actively being considered. */
 	UPROPERTY()
 	TArray<FLevelStreamingWrapper> StreamingLevels;
 
-private:
-
-	enum class EProcessReason
+	enum class EProcessReason : uint8
 	{
 		Add,
 		Reevaluate
@@ -747,6 +816,8 @@ private:
 
 public:
 
+	const TArray<FLevelStreamingWrapper>& GetStreamingLevels() const { return StreamingLevels; }
+
 	void AddReferencedObjects(UObject* InThis, FReferenceCollector& Collector);
 
 	void BeginConsideration();
@@ -757,6 +828,9 @@ public:
 
 	/* Remove an element from the container. */
 	bool Remove(ULevelStreaming* StreamingLevel);
+
+	/* Remove the element at a given index from the container. */
+	void RemoveAt(int32 Index);
 
 	/* Returns if an element is in the container. */
 	bool Contains(ULevelStreaming* StreamingLevel) const;
@@ -839,6 +913,10 @@ class ENGINE_API UWorld final : public UObject, public FNetworkNotify
 	 */
 	UPROPERTY(Transient)
 	TArray<UObject*>							PerModuleDataObjects;
+
+	// Level sequence actors to tick first
+	UPROPERTY(transient)
+	TArray<AActor*>								LevelSequenceActors;
 
 private:
 	/** Level collection. ULevels are referenced by FName (Package name) to avoid serialized references. Also contains offsets in world units */
@@ -931,7 +1009,7 @@ public:
 
 private:
 	/** DefaultPhysicsVolume used for whole game **/
-	UPROPERTY()
+	UPROPERTY(Transient)
 	APhysicsVolume*								DefaultPhysicsVolume;
 
 public:
@@ -991,7 +1069,7 @@ public:
 
 #if !UE_BUILD_SHIPPING
 	/** If TRUE, 'hidden' components will still create render proxy, so can draw info (see USceneComponent::ShouldRender) */
-	uint8 bCreateRenderStateForHiddenComponents:1;
+	uint8 bCreateRenderStateForHiddenComponentsWithCollsion:1;
 #endif // !UE_BUILD_SHIPPING
 
 #if WITH_EDITOR
@@ -1115,7 +1193,7 @@ private:
 public:
 
 	/** Handle to the active audio device for this world. */
-	uint32 AudioDeviceHandle;
+	FAudioDeviceHandle AudioDeviceHandle;
 
 #if WITH_EDITOR
 	/** Hierarchical LOD System. Used when WorldSetting.bEnableHierarchicalLODSystem is true */
@@ -1189,6 +1267,9 @@ public:
 	/** Creates a new FX system for this world */
 	void CreateFXSystem();
 
+	/** Initialize all world subsystems */
+	void InitializeSubsystems();
+
 #if WITH_EDITOR
 
 	/** Change the feature level that this world is current rendering with */
@@ -1217,9 +1298,6 @@ private:
 	/** List of all the player controllers in the world. */
 	TArray<TWeakObjectPtr<class APlayerController> > PlayerControllerList;
 
-	/** List of all the pawns in the world. */
-	TArray<TWeakObjectPtr<class APawn> > PawnList;
-
 	/** List of all the cameras in the world that auto-activate for players. */
 	TArray<TWeakObjectPtr<ACameraActor> > AutoCameraActorList;
 
@@ -1228,13 +1306,23 @@ private:
 
 	/** Physics scene for this world. */
 	FPhysScene*									PhysicsScene;
+	// Note that this should be merged with PhysScene going forward but is needed for now.
+public:
+#if INCLUDE_CHAOS
+	/** Current global physics scene. */
+	TSharedPtr<FPhysScene_Chaos> PhysicsScene_Chaos;
+
+	/** Default global physics scene. */
+	TSharedPtr<FPhysScene_Chaos> DefaultPhysicsScene_Chaos;
+#endif
+private:
 
 	/** Array of components that need updates at the end of the frame */
-	UPROPERTY(Transient)
+	UPROPERTY(Transient, NonTransactional)
 	TArray<UActorComponent*> ComponentsThatNeedEndOfFrameUpdate;
 
 	/** Array of components that need game thread updates at the end of the frame */
-	UPROPERTY(Transient)
+	UPROPERTY(Transient, NonTransactional)
 	TArray<UActorComponent*> ComponentsThatNeedEndOfFrameUpdate_OnGameThread;
 
 	/** The state of async tracing - abstracted into its own object for easier reference */
@@ -1259,6 +1347,11 @@ private:
 
 	/** Utility function that is used to ensure that a World has the correct WorldSettings */
 	void RepairWorldSettings();
+	
+#if INCLUDE_CHAOS
+	/** Utility function that is used to ensure that a World has the correct ChaosActor */
+	void RepairChaosActors();
+#endif
 
 	/** Gameplay timers. */
 	class FTimerManager* TimerManager;
@@ -1309,6 +1402,11 @@ private:
 	
 	/** Broadcasts whenever the number of levels changes */
 	FOnLevelsChangedEvent LevelsChangedEvent;
+
+	DECLARE_EVENT(UWorld, FOnBeginTearingDownEvent);
+
+	/** Broadcasted on UWorld::BeginTearingDown */
+	FOnBeginTearingDownEvent BeginTearingDownEvent;
 
 #if WITH_EDITOR
 
@@ -1375,6 +1473,19 @@ public:
 	}
 #endif
 
+	/** Called when the world computes how post process volumes contribute to the scene. */
+	DECLARE_EVENT_TwoParams(UWorld, FOnBeginPostProcessSettings, FVector, FSceneView*);
+	FOnBeginPostProcessSettings OnBeginPostProcessSettings;
+
+	/** Inserts a post process volume into the world in priority order */
+	void InsertPostProcessVolume(IInterface_PostProcessVolume* InVolume);
+
+	/** Removes a post process volume from the world */
+	void RemovePostProcessVolume(IInterface_PostProcessVolume* InVolume);
+
+	/** Called when a scene view for this world needs the worlds post process settings computed */
+	void AddPostProcessingSettings(FVector ViewLocation, FSceneView* SceneView);
+
 	/** An array of post processing volumes, sorted in ascending order of priority.					*/
 	TArray< IInterface_PostProcessVolume * > PostProcessVolumes;
 
@@ -1424,7 +1535,14 @@ public:
 
 	/** The type of travel to perform next when doing a server travel */
 	TEnumAsByte<ETravelType> NextTravelType;
-	
+
+private:
+	/** An internal count of how many streaming levels are currently loading */
+	uint16 NumStreamingLevelsBeingLoaded; // Move this somewhere better
+
+	friend struct FWorldNotifyStreamingLevelLoading;
+
+public:
 	/** The URL to be used for the upcoming server travel */
 	FString NextURL;
 
@@ -1454,9 +1572,10 @@ public:
 	/** Indicates that the world has marked contained objects as pending kill */
 	bool HasMarkedObjectsPendingKill() const { return bMarkedObjectsPendingKill; }
 private:
-	uint32 bCleanedUpWorld:1;
-
 	uint32 bMarkedObjectsPendingKill:1;
+
+	uint32 CleanupWorldTag;
+	static uint32 CleanupWorldGlobalTag;
 
 public:
 #if WITH_EDITORONLY_DATA
@@ -2016,9 +2135,11 @@ public:
 	FConstControllerIterator GetControllerIterator() const;
 
 	/** @return Returns an iterator for the pawn list. */
+	UE_DEPRECATED(4.24, "The PawnIterator is an inefficient mechanism for iterating pawns. Please use TActorIterator<PawnType> instead.")
 	FConstPawnIterator GetPawnIterator() const;
 	
 	/** @return Returns the number of Pawns. */
+	UE_DEPRECATED(4.23, "GetNumPawns is no longer a supported function on UWorld. The version that remains for backwards compatibility is significantly more expensive to call.")
 	int32 GetNumPawns() const;
 
 	/** @return Returns an iterator for the player controller list. */
@@ -2090,6 +2211,9 @@ public:
 
 	DECLARE_MULTICAST_DELEGATE_OneParam(FOnWorldInitializedActors, const FActorsInitializedParams&);
 	FOnWorldInitializedActors OnActorsInitialized;
+
+	DECLARE_MULTICAST_DELEGATE(FOnWorldBeginPlay);
+	FOnWorldBeginPlay OnWorldBeginPlay;
 
 	/** Returns true if gameplay has already started, false otherwise. */
 	bool HasBegunPlay() const;
@@ -2231,19 +2355,16 @@ public:
 	 */
 	void RemoveController( AController* Controller );
 
-	/**
-	 * Inserts the passed in pawn at the front of the linked list of pawns.
-	 *
-	 * @param	Pawn	Pawn to insert, use NULL to clear list
-	 */
-	void AddPawn( APawn* Pawn );
+	UE_DEPRECATED(4.23, "There is no longer a reason to AddPawn to UWorld")
+	void AddPawn( APawn* Pawn ) { }
 	
 	/**
 	 * Removes the passed in pawn from the linked list of pawns.
 	 *
 	 * @param	Pawn	Pawn to remove
 	 */
-	void RemovePawn( APawn* Pawn );
+	UE_DEPRECATED(4.23, "RemovePawn has been deprecated and should no longer need to be called as PawnList is no longer maintained and Unpossess should be handled by EndPlay.")
+	void RemovePawn( APawn* Pawn ) const;
 
 	/**
 	 * Adds the passed in actor to the special network actor list
@@ -2256,7 +2377,7 @@ public:
 	 * Removes the passed in actor to from special network actor list
 	 * @param	Actor	Actor to remove
 	 */
-	void RemoveNetworkActor( AActor* Actor );
+	void RemoveNetworkActor( AActor* Actor ) const;
 
 	/** Add a listener for OnActorSpawned events */
 	FDelegateHandle AddOnActorSpawnedHandler( const FOnActorSpawned::FDelegate& InHandler );
@@ -2272,14 +2393,14 @@ public:
 	 *	
 	 * @return	true if actor is contained by any of the loaded levels, false otherwise
 	 */
-	bool ContainsActor( AActor* Actor );
+	bool ContainsActor( AActor* Actor ) const;
 
 	/**
 	 * Returns whether audio playback is allowed for this scene.
 	 *
 	 * @return true if current world is GWorld, false otherwise
 	 */
-	virtual bool AllowAudioPlayback();
+	bool AllowAudioPlayback() const;
 
 	//~ Begin UObject Interface
 	virtual void Serialize( FArchive& Ar ) override;
@@ -2309,18 +2430,19 @@ public:
 	 * @param	bRerunConstructionScripts	If we should rerun construction scripts on actors
 	 * @param	bCurrentLevelOnly			If true, affect only the current level.
 	 */
-	void UpdateWorldComponents(bool bRerunConstructionScripts, bool bCurrentLevelOnly);
+	void UpdateWorldComponents(bool bRerunConstructionScripts, bool bCurrentLevelOnly, FRegisterComponentContext* Context = nullptr);
 
 	/**
 	 * Updates cull distance volumes for a specified component or a specified actor or all actors
          * @param ComponentToUpdate If specified just that Component will be updated
 	 * @param ActorToUpdate If specified (and ComponentToUpdate is not specified), all Components owned by this Actor will be updated
+	 * @return True if the passed in actors or components were within a volume
 	 */
-	void UpdateCullDistanceVolumes(AActor* ActorToUpdate = nullptr, UPrimitiveComponent* ComponentToUpdate = nullptr);
+	bool UpdateCullDistanceVolumes(AActor* ActorToUpdate = nullptr, UPrimitiveComponent* ComponentToUpdate = nullptr);
 
 	/**
 	 * Cleans up components, streaming data and assorted other intermediate data.
-	 * @param bSessionEnded whether to notify the viewport that the game session has ended
+	 * @param bSessionEnded whether to notify the viewport that the game session has ended.
 	 * @param NewWorld Optional new world that will be loaded after this world is cleaned up. Specify a new world to prevent it and it's sublevels from being GCed during map transitions.
 	 */
 	void CleanupWorld(bool bSessionEnded = true, bool bCleanupResources = true, UWorld* NewWorld = nullptr);
@@ -2376,6 +2498,8 @@ public:
 	 */
 	void UpdateLevelStreaming();
 
+	/** Releases PhysicsScene manually */
+	void ReleasePhysicsScene();
 public:
 	/**
 	 * Flushes level streaming in blocking fashion and returns when all levels are loaded/ visible/ hidden
@@ -2422,7 +2546,7 @@ public:
 	UMaterialParameterCollectionInstance* GetParameterCollectionInstance(const UMaterialParameterCollection* Collection);
 
 	/** Updates this world's scene with the list of instances, and optionally updates each instance's uniform buffer. */
-	void UpdateParameterCollectionInstances(bool bUpdateInstanceUniformBuffers);
+	void UpdateParameterCollectionInstances(bool bUpdateInstanceUniformBuffers, bool bRecreateUniformBuffer);
 
 	/** Gets the canvas object for rendering to a render target.  Will allocate one if needed. */
 	UCanvas* GetCanvasForRenderingToTarget();
@@ -2475,6 +2599,8 @@ public:
 		/** Should the FX system be created for this world. */
 		uint32 bCreateFXSystem:1;
 
+		TSubclassOf<class AGameModeBase> DefaultGameMode;
+
 		InitializationValues& InitializeScenes(const bool bInitialize) { bInitializeScenes = bInitialize; return *this; }
 		InitializationValues& AllowAudioPlayback(const bool bAllow) { bAllowAudioPlayback = bAllow; return *this; }
 		InitializationValues& RequiresHitProxies(const bool bRequires) { bRequiresHitProxies = bRequires; return *this; }
@@ -2485,6 +2611,7 @@ public:
 		InitializationValues& EnableTraceCollision(const bool bInEnableTraceCollision) { bEnableTraceCollision = bInEnableTraceCollision; return *this; }
 		InitializationValues& SetTransactional(const bool bInTransactional) { bTransactional = bInTransactional; return *this; }
 		InitializationValues& CreateFXSystem(const bool bCreate) { bCreateFXSystem = bCreate; return *this; }
+		InitializationValues& SetDefaultGameMode(TSubclassOf<class AGameModeBase> GameMode) { DefaultGameMode = GameMode; return *this; }
 	};
 
 	/**
@@ -2508,7 +2635,7 @@ public:
 	void DestroyWorld( bool bInformEngineOfWorld, UWorld* NewWorld = nullptr );
 
 	/** 
-	 * Marks all objects that have this World as an Outer as pending kill
+	 * Marks this world and all objects within as pending kill
 	 */
 	void MarkObjectsPendingKill();
 
@@ -2608,6 +2735,11 @@ public:
 	 */
 	void SendAllEndOfFrameUpdates();
 
+	/**
+	 * Flush any pending parameter collection updates to the render thrad.
+	 */
+	void FlushDeferredParameterCollectionInstanceUpdates();
+
 	/** Do per frame tick behaviors related to the network driver */
 	void TickNetClient( float DeltaSeconds );
 
@@ -2623,7 +2755,7 @@ public:
 	 * Transacts the specified level -- the correct way to modify a level
 	 * as opposed to calling Level->Modify.
 	 */
-	void ModifyLevel(ULevel* Level);
+	void ModifyLevel(ULevel* Level) const;
 
 	/**
 	 * Ensures that the collision detection tree is fully built. This should be called after the full level reload to make sure
@@ -2759,7 +2891,13 @@ public:
 	/** Handle Exec/Console Commands related to the World */
 	bool Exec( UWorld* InWorld, const TCHAR* Cmd, FOutputDevice& Ar=*GLog );
 
+	/** Mark the world as being torn down */
+	void BeginTearingDown();
+
 private:
+	/** Internal version of CleanupWorld. */
+	void CleanupWorldInternal(bool bSessionEnded, bool bCleanupResources, UWorld* NewWorld);
+
 	/** Utility function to handle Exec/Console Commands related to the Trace Tags */
 	bool HandleTraceTagCommand( const TCHAR* Cmd, FOutputDevice& Ar );
 
@@ -2791,6 +2929,9 @@ public:
 
 	// Destroys the current demo net driver
 	void DestroyDemoNetDriver();
+
+	// Remove internal references to pending demo net driver when starting a replay, but do not destroy it
+	void ClearDemoNetDriver();
 
 	/** Returns true if we are currently playing a replay */
 	bool IsPlayingReplay() const;
@@ -2837,7 +2978,7 @@ public:
 	 * @param	Actor					Actor to remove.
 	 * @param	bShouldModifyLevel		If true, Modify() the level before removing the actor if in the editor.
 	 */
-	void RemoveActor( AActor* Actor, bool bShouldModifyLevel );
+	void RemoveActor( AActor* Actor, bool bShouldModifyLevel ) const;
 
 	/**
 	 * Spawn Actors with given transform and SpawnParameters
@@ -3033,7 +3174,7 @@ public:
 	 * @param InURL commandline URL
 	 * @param bResetTime (optional) whether the WorldSettings's TimeSeconds should be reset to zero
 	 */
-	void InitializeActorsForPlay(const FURL& InURL, bool bResetTime = true);
+	void InitializeActorsForPlay(const FURL& InURL, bool bResetTime = true, FRegisterComponentContext* Context = nullptr);
 
 	/**
 	 * Start gameplay. This will cause the game mode to transition to the correct state and call BeginPlay on all actors
@@ -3085,19 +3226,22 @@ private:
 	/** Private version without inlining that does *not* check Dedicated server build flags (which should already have been done). */
 	ENetMode InternalGetNetMode() const;
 
-#if WITH_EDITOR
-	/** Attempts to derive the net mode from PlayInSettings for PIE*/
-	ENetMode AttemptDeriveFromPlayInSettings() const;
-#endif
-
 	/** Attempts to derive the net mode from URL */
 	ENetMode AttemptDeriveFromURL() const;
 
 	APhysicsVolume* InternalGetDefaultPhysicsVolume() const;
 
-	// Sends the NMT_Challenge message to Connection.
-	void SendChallengeControlMessage(UNetConnection* Connection);
-	void SendChallengeControlMessage(const FEncryptionKeyResponse& Response, TWeakObjectPtr<UNetConnection> WeakConnection);
+#if WITH_EDITOR
+public:
+	void SetPlayInEditorInitialNetMode(ENetMode InNetMode)
+	{
+		PlayInEditorNetMode = InNetMode;
+	}
+
+private:
+	/** In PIE, what Net Mode was this world started in? Fallback for not having a NetDriver */
+	ENetMode PlayInEditorNetMode;
+#endif
 
 public:
 
@@ -3148,6 +3292,9 @@ public:
 	/** Returns the LevelsChangedEvent member. */
 	FOnLevelsChangedEvent& OnLevelsChanged() { return LevelsChangedEvent; }
 
+	/** Returns the BeginTearingDownEvent member. */
+	FOnBeginTearingDownEvent& OnBeginTearingDown() { return BeginTearingDownEvent; }
+
 	/** Returns the actor count. */
 	int32 GetProgressDenominator();
 	
@@ -3167,18 +3314,20 @@ public:
 	 */
 	class AAudioVolume* GetAudioSettings( const FVector& ViewLocation, struct FReverbSettings* OutReverbSettings, struct FInteriorSettings* OutInteriorSettings );
 
-	/** Returns the audio device handle for this world.*/
-	uint32 GetAudioDeviceHandle() const { return AudioDeviceHandle; }
-
-	/** Sets the audio device handle to the active audio device for this world.*/
-	void SetAudioDeviceHandle(const uint32 InAudioDeviceHandle);
+	void SetAudioDevice(FAudioDeviceHandle& InHandle);
 
 	/**
-	* Returns the audio device associated with this world, or returns the main audio device if there is none.
+	 * Get the audio device used by this world.
+	 */
+	FAudioDeviceHandle GetAudioDevice();
+
+	/**
+	* Returns the audio device associated with this world.
+	* Lifecycle of the audio device is not guaranteed unless you used GetAudioDevice().
 	*
 	* @return Audio device to use with this world.
 	*/
-	class FAudioDevice* GetAudioDevice();
+	class FAudioDevice* GetAudioDeviceRaw();
 
 	/** Return the URL of this level on the local machine. */
 	virtual FString GetLocalURL() const;
@@ -3336,6 +3485,50 @@ public:
 		return (OwningGameInstance ? OwningGameInstance->GetLatentActionManager() : LatentActionManager);
 	}
 
+	/**
+	 * Get a Subsystem of specified type
+	 */
+	UWorldSubsystem* GetSubsystemBase(TSubclassOf<UWorldSubsystem> SubsystemClass) const
+	{
+		return SubsystemCollection.GetSubsystem<UWorldSubsystem>(SubsystemClass);
+	}
+
+	/**
+	 * Get a Subsystem of specified type
+	 */
+	template <typename TSubsystemClass>
+	TSubsystemClass* GetSubsystem() const
+	{
+		return SubsystemCollection.GetSubsystem<TSubsystemClass>(TSubsystemClass::StaticClass());
+	}
+
+	/**
+	 * Get a Subsystem of specified type from the provided GameInstance
+	 * returns nullptr if the Subsystem cannot be found or the GameInstance is null
+	 */
+	template <typename TSubsystemClass>
+	static FORCEINLINE TSubsystemClass* GetSubsystem(const UWorld* World)
+	{
+		if (World)
+		{
+			return World->GetSubsystem<TSubsystemClass>();
+		}
+		return nullptr;
+	}
+
+	/**
+	 * Get all Subsystem of specified type, this is only necessary for interfaces that can have multiple implementations instanced at a time.
+	 *
+	 * Do not hold onto this Array reference unless you are sure the lifetime is less than that of UGameInstance
+	 */
+	template <typename TSubsystemClass>
+	const TArray<TSubsystemClass*>& GetSubsystemArray() const
+	{
+		return SubsystemCollection.GetSubsystemArray<TSubsystemClass>(TSubsystemClass::StaticClass());
+	}
+
+
+
 	/** Sets the owning game instance for this world */
 	inline void SetGameInstance(UGameInstance* NewGI)
 	{
@@ -3418,6 +3611,7 @@ public:
 	FWorldPSCPool PSCPool;
 
 	//PSC Pooling END
+	FSubsystemCollection<UWorldSubsystem> SubsystemCollection;
 };
 
 /** Global UWorld pointer. Use of this pointer should be avoided whenever possible. */
@@ -3452,7 +3646,7 @@ public:
 	// delegate for generating world asset registry tags so project/game scope can add additional tags for filtering levels in their UI, etc
 	DECLARE_MULTICAST_DELEGATE_TwoParams(FWorldGetAssetTags, const UWorld*, TArray<UObject::FAssetRegistryTag>&);
 
-	DECLARE_MULTICAST_DELEGATE_TwoParams(FOnWorldTickStart, ELevelTick, float);
+	DECLARE_MULTICAST_DELEGATE_ThreeParams(FOnWorldTickStart, UWorld*, ELevelTick, float);
 	static FOnWorldTickStart OnWorldTickStart;
 
 	// Delegate called before actors are ticked for each world. Delta seconds is already dilated and clamped.
@@ -3514,10 +3708,30 @@ public:
 	// Global Callback after actors have been initialized (on any world)
 	static UWorld::FOnWorldInitializedActors OnWorldInitializedActors;
 
+	static FWorldEvent OnWorldBeginTearDown;
 private:
 	FWorldDelegates() {}
 };
 
+/** Helper struct to allow ULevelStreaming to update its World on how many streaming levels are being loaded */
+struct FWorldNotifyStreamingLevelLoading
+{
+private:
+	static void Started(UWorld* World)
+	{
+		++World->NumStreamingLevelsBeingLoaded;
+	}
+
+	static void Finished(UWorld* World)
+	{
+		if (ensure(World->NumStreamingLevelsBeingLoaded > 0))
+		{
+			--World->NumStreamingLevelsBeingLoaded;
+		}
+	}
+
+	friend ULevelStreaming;
+};
 
 //////////////////////////////////////////////////////////////////////////
 // UWorld inlines:

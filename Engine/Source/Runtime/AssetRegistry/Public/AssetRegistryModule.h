@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 
 #pragma once
@@ -29,6 +29,14 @@ public:
 
 	/** Gets the asset registry singleton */
 	virtual IAssetRegistry& Get() const;
+
+	/** Gets the asset registry singleton */
+	static IAssetRegistry& GetRegistry()
+	{
+		static FName ModuleName("AssetRegistry");
+		FAssetRegistryModule& AssetRegistryModule = FModuleManager::LoadModuleChecked<FAssetRegistryModule>(ModuleName);
+		return AssetRegistryModule.Get();
+	}
 
 	/** Tick the asset registry with the supplied timestep */
 	static void TickAssetRegistry(float DeltaTime)

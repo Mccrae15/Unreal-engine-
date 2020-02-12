@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 using System;
 using System.Collections.Generic;
@@ -24,6 +24,11 @@ namespace AutomationTool
 
 		public override string GetUE4ExePath(string UE4Exe)
 		{
+			if(Path.IsPathRooted(UE4Exe))
+			{
+				return CommandUtils.CombinePaths(UE4Exe);
+			}
+
 			int CmdExeIndex = UE4Exe.IndexOf("-Cmd.exe");
 			if (CmdExeIndex != -1)
 			{
@@ -77,6 +82,7 @@ namespace AutomationTool
 				CommandLine = (String.IsNullOrEmpty(CommandLine) ? "" : CommandLine) + " /verbosity:quiet /nologo";
 				// Pass #define MONO to all the automation scripts (see XboxOne)
 				CommandLine += " /p:DefineConstants=MONO";
+				CommandLine += " /p:DefineConstants=__MonoCS__";
 				// Some projects have TargetFrameworkProfile=Client which causes warnings on Linux
 				// so force it to empty.
 				CommandLine += " /p:TargetFrameworkProfile=";

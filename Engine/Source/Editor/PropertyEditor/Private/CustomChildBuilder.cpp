@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "CustomChildBuilder.h"
 #include "Modules/ModuleManager.h"
@@ -32,6 +32,12 @@ FDetailWidgetRow& FCustomChildrenBuilder::AddCustomRow( const FText& SearchStrin
 	FDetailLayoutCustomization NewCustomization;
 
 	NewRow->FilterString( SearchString );
+	
+	IDetailsViewPrivate* DetailsView = ParentCategory.Pin()->GetDetailsView();
+	if (DetailsView && DetailsView->IsCustomRowVisibilityFiltered() && !DetailsView->IsCustomRowVisible(FName(*SearchString.ToString()), FName(*GetParentCategory().GetDisplayName().ToString())))
+	{
+		NewRow->Visibility(TAttribute<EVisibility>(EVisibility::Collapsed));
+	}
 
 	NewCustomization.WidgetDecl = NewRow;
 
@@ -59,23 +65,23 @@ IDetailPropertyRow& FCustomChildrenBuilder::AddProperty( TSharedRef<IPropertyHan
 
 IDetailPropertyRow* FCustomChildrenBuilder::AddExternalStructure(TSharedRef<FStructOnScope> ChildStructure, FName UniqueIdName)
 {
-	return AddExternalStructureProperty(ChildStructure, NAME_None, UniqueIdName);
+	return AddExternalStructureProperty(ChildStructure, NAME_None, FAddPropertyParams().UniqueId(UniqueIdName));
 }
 
-IDetailPropertyRow* FCustomChildrenBuilder::AddExternalStructureProperty(TSharedRef<FStructOnScope> ChildStructure, FName PropertyName, FName UniqueIdName)
+IDetailPropertyRow* FCustomChildrenBuilder::AddExternalStructureProperty(TSharedRef<FStructOnScope> ChildStructure, FName PropertyName, const FAddPropertyParams& Params)
 {
 	FDetailLayoutCustomization NewCustomization;
 
 	TSharedRef<FDetailCategoryImpl> ParentCategoryRef = ParentCategory.Pin().ToSharedRef();
 
-	FDetailPropertyRow::MakeExternalPropertyRowCustomization(ChildStructure, PropertyName, ParentCategoryRef, NewCustomization);
+	FDetailPropertyRow::MakeExternalPropertyRowCustomization(ChildStructure, PropertyName, ParentCategoryRef, NewCustomization, Params);
 
 	TSharedPtr<FDetailPropertyRow> NewRow = NewCustomization.PropertyRow;
 
-	NewRow->SetCustomExpansionId(UniqueIdName);
-
 	if (NewRow.IsValid())
 	{
+		NewRow->SetCustomExpansionId(Params.GetUniqueId());
+
 		TSharedPtr<FPropertyNode> PropertyNode = NewRow->GetPropertyNode();
 		TSharedPtr<FComplexPropertyNode> RootNode = StaticCastSharedRef<FComplexPropertyNode>(PropertyNode->FindComplexParent()->AsShared());
 
@@ -87,7 +93,7 @@ IDetailPropertyRow* FCustomChildrenBuilder::AddExternalStructureProperty(TShared
 
 IDetailPropertyRow* FCustomChildrenBuilder::AddExternalObjects(const TArray<UObject *>& Objects, FName UniqueIdName)
 {
-	return AddExternalObjectProperty(Objects, NAME_None, UniqueIdName);
+	return AddExternalObjectProperty(Objects, NAME_None, FAddPropertyParams().UniqueId(UniqueIdName));
 }
 
 TArray<TSharedPtr<IPropertyHandle>> FCustomChildrenBuilder::AddAllExternalStructureProperties(TSharedRef<FStructOnScope> ChildStructure)
@@ -95,20 +101,20 @@ TArray<TSharedPtr<IPropertyHandle>> FCustomChildrenBuilder::AddAllExternalStruct
 	return ParentCategory.Pin()->AddAllExternalStructureProperties(ChildStructure);
 }
 
-IDetailPropertyRow* FCustomChildrenBuilder::AddExternalObjectProperty(const TArray<UObject*>& Objects, FName PropertyName, FName UniqueIdName, TOptional<bool> bAllowChildrenOverride, TOptional<bool> bCreateCategoryNodesOverride)
+IDetailPropertyRow* FCustomChildrenBuilder::AddExternalObjectProperty(const TArray<UObject*>& Objects, FName PropertyName, const FAddPropertyParams& Params)
 {
 	FDetailLayoutCustomization NewCustomization;
 
 	TSharedRef<FDetailCategoryImpl> ParentCategoryRef = ParentCategory.Pin().ToSharedRef();
 
-	FDetailPropertyRow::MakeExternalPropertyRowCustomization(Objects, PropertyName, ParentCategoryRef, NewCustomization, bAllowChildrenOverride, bCreateCategoryNodesOverride);
+	FDetailPropertyRow::MakeExternalPropertyRowCustomization(Objects, PropertyName, ParentCategoryRef, NewCustomization, Params);
 
 	TSharedPtr<FDetailPropertyRow> NewRow = NewCustomization.PropertyRow;
 
-	NewRow->SetCustomExpansionId(UniqueIdName);
-
 	if (NewRow.IsValid())
 	{
+		NewRow->SetCustomExpansionId(Params.GetUniqueId());
+
 		TSharedPtr<FPropertyNode> PropertyNode = NewRow->GetPropertyNode();
 		TSharedPtr<FObjectPropertyNode> RootNode = StaticCastSharedRef<FObjectPropertyNode>(PropertyNode->FindObjectItemParent()->AsShared());
 
@@ -156,7 +162,7 @@ private:
 
 TSharedRef<SWidget> FCustomChildrenBuilder::GenerateStructValueWidget( TSharedRef<IPropertyHandle> StructPropertyHandle )
 {
-	UStructProperty* StructProperty = CastChecked<UStructProperty>( StructPropertyHandle->GetProperty() );
+	FStructProperty* StructProperty = CastFieldChecked<FStructProperty>( StructPropertyHandle->GetProperty() );
 
 	FPropertyEditorModule& PropertyEditorModule = FModuleManager::GetModuleChecked<FPropertyEditorModule>("PropertyEditor");
 	

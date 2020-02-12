@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -11,7 +11,7 @@
  * A struct that contains a string reference to an object, either a top level asset or a subobject.
  * This can be used to make soft references to assets that are loaded on demand.
  * This is stored internally as an FName pointing to the top level asset (/package/path.assetname) and an option a string subobject path.
- * If the MetaClass metadata is applied to a UProperty with this the UI will restrict to that type of asset.
+ * If the MetaClass metadata is applied to a FProperty with this the UI will restrict to that type of asset.
  */
 struct COREUOBJECT_API FSoftObjectPath
 {
@@ -51,6 +51,9 @@ struct COREUOBJECT_API FSoftObjectPath
 	/** Returns string representation of reference, in form /package/path.assetname[:subpath] */
 	FString ToString() const;
 
+	/** Append string representation of reference, in form /package/path.assetname[:subpath] */
+	void ToString(FStringBuilderBase& Builder) const;
+
 	/** Returns the entire asset path as an FName, including both package and asset but not sub object */
 	FORCEINLINE FName GetAssetPathName() const
 	{
@@ -60,7 +63,7 @@ struct COREUOBJECT_API FSoftObjectPath
 	/** Returns string version of asset path, including both package and asset but not sub object */
 	FORCEINLINE FString GetAssetPathString() const
 	{
-		if (AssetPathName == NAME_None)
+		if (AssetPathName.IsNone())
 		{
 			return FString();
 		}
@@ -110,32 +113,32 @@ struct COREUOBJECT_API FSoftObjectPath
 	/** Resets reference to point to null */
 	void Reset()
 	{		
-		AssetPathName = NAME_None;
+		AssetPathName = FName();
 		SubPathString.Reset();
 	}
 	
 	/** Check if this could possibly refer to a real object, or was initialized to null */
 	FORCEINLINE bool IsValid() const
 	{
-		return AssetPathName != NAME_None;
+		return !AssetPathName.IsNone();
 	}
 
 	/** Checks to see if this is initialized to null */
 	FORCEINLINE bool IsNull() const
 	{
-		return AssetPathName == NAME_None;
+		return AssetPathName.IsNone();
 	}
 
 	/** Check if this represents an asset, meaning it is not null but does not have a sub path */
 	FORCEINLINE bool IsAsset() const
 	{
-		return AssetPathName != NAME_None && SubPathString.IsEmpty();
+		return !AssetPathName.IsNone() && SubPathString.IsEmpty();
 	}
 
 	/** Check if this represents a sub object, meaning it has a sub path */
 	FORCEINLINE bool IsSubobject() const
 	{
-		return AssetPathName != NAME_None && !SubPathString.IsEmpty();
+		return !AssetPathName.IsNone() && !SubPathString.IsEmpty();
 	}
 
 	/** Struct overrides */
@@ -211,8 +214,45 @@ private:
 	/** Package names currently being duplicated, needed by FixupForPIE */
 	static TSet<FName> PIEPackageNames;
 
+	UObject* ResolveObjectInternal() const;
+	UObject* ResolveObjectInternal(const TCHAR* PathString) const;
+
 	friend struct Z_Construct_UScriptStruct_FSoftObjectPath_Statics;
 };
+
+/** Fast non-alphabetical order that is only stable during this process' lifetime. */
+struct FSoftObjectPathFastLess
+{
+	bool operator()(const FSoftObjectPath& Lhs, const FSoftObjectPath& Rhs) const
+	{
+		int32 Comp = Lhs.GetAssetPathName().CompareIndexes(Rhs.GetAssetPathName());
+		if (Comp < 0)
+		{
+			return true;
+		}
+		return Comp == 0 && Lhs.GetSubPathString() < Rhs.GetSubPathString();
+	}
+};
+
+/** Slow alphabetical order that is stable / deterministic over process runs. */
+struct FSoftObjectPathLexicalLess
+{
+	bool operator()(const FSoftObjectPath& Lhs, const FSoftObjectPath& Rhs) const
+	{
+		int32 Comp = Lhs.GetAssetPathName().Compare(Rhs.GetAssetPathName());
+		if (Comp < 0)
+		{
+			return true;
+		}
+		return Comp == 0 && Lhs.GetSubPathString() < Rhs.GetSubPathString();
+	}
+};
+
+inline FStringBuilderBase& operator<<(FStringBuilderBase& Builder, const FSoftObjectPath& Path)
+{
+	Path.ToString(Builder);
+	return Builder;
+}
 
 /**
  * A struct that contains a string reference to a class, can be used to make soft references to classes

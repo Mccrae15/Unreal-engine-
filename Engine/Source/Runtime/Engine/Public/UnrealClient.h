@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 /*=============================================================================
 	UnrealClient.h: Interface definition for platform specific client code.
@@ -24,7 +24,7 @@ class UModel;
 /**
  * A render target.
  */
-class FRenderTarget
+class ENGINE_VTABLE FRenderTarget
 {
 public:
 
@@ -132,6 +132,8 @@ public:
 #define MAX_HITPROXYSIZE 200
 
 DECLARE_MULTICAST_DELEGATE(FOnScreenshotRequestProcessed);
+DECLARE_MULTICAST_DELEGATE_ThreeParams(FOnScreenshotCaptured, int32 /*Width*/, int32 /*Height*/, const TArray<FColor>& /*Colors*/);
+
 
 struct ENGINE_API FScreenshotRequest
 {
@@ -187,14 +189,23 @@ struct ENGINE_API FScreenshotRequest
 		return ScreenshotProcessedDelegate;
 	}
 
+	static FOnScreenshotCaptured& OnScreenshotCaptured()
+	{
+		return ScreenshotCapturedDelegate;
+	}
+
 private:
 	static FOnScreenshotRequestProcessed ScreenshotProcessedDelegate;
+	static FOnScreenshotCaptured ScreenshotCapturedDelegate;
 	static bool bIsScreenshotRequested;
 	static FString NextScreenshotName;
 	static FString Filename;
 	static bool bShowUI;
 	static TArray<FColor> HighresScreenshotMaskColorArray;
 };
+
+// @param bAutoType true: automatically choose GB/MB/KB/... false: always use MB for easier comparisons
+ENGINE_API FString GetMemoryString( const double Value, const bool bAutoType = true );
 
 /** Data needed to display perframe stat tracking when STAT UNIT is enabled */
 struct FStatUnitData
@@ -205,6 +216,7 @@ struct FStatUnitData
 	float GPUFrameTime;
 	float FrameTime;
 	float RHITTime;
+	float InputLatencyTime;
 
 	/** Raw equivalents of the above variables */
 	float RawRenderThreadTime;
@@ -212,6 +224,7 @@ struct FStatUnitData
 	float RawGPUFrameTime;
 	float RawFrameTime;
 	float RawRHITTime;
+	float RawInputLatencyTime;
 
 	/** Time that has transpired since the last draw call */
 	double LastTime;
@@ -225,6 +238,7 @@ struct FStatUnitData
 	TArray<float> GPUFrameTimes;
 	TArray<float> FrameTimes;
 	TArray<float> RHITTimes;
+	TArray<float> InputLatencyTimes;
 	TArray<float> ResolutionFractions;
 #endif //!UE_BUILD_SHIPPING
 
@@ -234,10 +248,13 @@ struct FStatUnitData
 		, GPUFrameTime(0.0f)
 		, FrameTime(0.0f)
 		, RHITTime(0.0f)
+		, InputLatencyTime(0.0f)
 		, RawRenderThreadTime(0.0f)
 		, RawGameThreadTime(0.0f)
 		, RawGPUFrameTime(0.0f)
 		, RawFrameTime(0.0f)
+		, RawRHITTime(0.0f)
+		, RawInputLatencyTime(0.0f)
 		, LastTime(0.0)
 	{
 #if !UE_BUILD_SHIPPING
@@ -247,6 +264,7 @@ struct FStatUnitData
 		GPUFrameTimes.AddZeroed(NumberOfSamples);
 		FrameTimes.AddZeroed(NumberOfSamples);
 		RHITTimes.AddZeroed(NumberOfSamples);
+		InputLatencyTimes.AddZeroed(NumberOfSamples);
 		ResolutionFractions.Reserve(NumberOfSamples);
 		for (int32 i = 0; i < NumberOfSamples; i++)
 		{
@@ -287,7 +305,7 @@ struct FStatHitchesData
  * Encapsulates the I/O of a viewport.
  * The viewport display is implemented using the platform independent RHI.
  */
-class FViewport : public FRenderTarget, protected FRenderResource
+class ENGINE_VTABLE FViewport : public FRenderTarget, protected FRenderResource
 {
 public:
 	/** delegate type for viewport resize events ( Params: FViewport* Viewport, uint32 ) */
@@ -307,7 +325,7 @@ public:
 	virtual void Destroy() = 0;
 
 	// New MouseCapture/MouseLock API
-	virtual bool HasMouseCapture() const				{ return true; }
+	virtual bool HasMouseCapture() const				{ return false; }
 	virtual bool HasFocus() const					{ return true; }
 	virtual bool IsForegroundWindow() const			{ return true; }
 	virtual void CaptureMouse( bool bCapture )		{ }
@@ -565,6 +583,12 @@ public:
 	/** Returns true if this is an FSlateSceneViewport */
 	bool IsSlateViewport() const { return bIsSlateViewport; }
 
+	/** Returns true if this viewport should be rendered in HDR */
+	bool IsHDRViewport() const { return bIsHDR; }
+
+	/** Sets HDR Status of Viewport */
+	void SetHDRMode( bool bHDR) { bIsHDR = bHDR; }
+
 	/** The current version of the running instance */
 	FString AppVersionString;
 
@@ -578,6 +602,8 @@ public:
 
 	/** Returns dimensions of RenderTarget texture. Can be called on a game thread. */
 	virtual FIntPoint GetRenderTargetTextureSizeXY() const { return GetSizeXY(); }
+
+	inline FName GetViewportType() const { return ViewportType; }
 
 protected:
 
@@ -625,6 +651,7 @@ protected:
 
 		/** FGCObject interface */
 		virtual void AddReferencedObjects( FReferenceCollector& Collector ) override;
+		virtual FString GetReferencerName() const override;
 
 		const FTexture2DRHIRef& GetHitProxyTexture(void) const		{ return HitProxyTexture; }
 		const FTexture2DRHIRef& GetHitProxyCPUTexture(void) const		{ return HitProxyCPUTexture; }
@@ -686,6 +713,12 @@ protected:
 	/** If true this viewport is an FSlateSceneViewport */
 	uint32 bIsSlateViewport : 1;
 
+	/** If true this viewport is being displayed on a HDR monitor */
+	uint32 bIsHDR : 1;
+
+	/** Used internally for testing runtime instance type before casting */
+	FName ViewportType;
+
 	/** true if we should draw game viewports (has no effect on Editor viewports) */
 	ENGINE_API static bool bIsGameRenderingEnabled;
 
@@ -707,7 +740,7 @@ extern ENGINE_API bool IsShiftDown(FViewport* Viewport);
 extern ENGINE_API bool IsAltDown(FViewport* Viewport);
 
 extern ENGINE_API bool GetViewportScreenShot(FViewport* Viewport, TArray<FColor>& Bitmap, const FIntRect& ViewRect = FIntRect());
-extern ENGINE_API bool GetHighResScreenShotInput(const TCHAR* Cmd, FOutputDevice& Ar, uint32& OutXRes, uint32& OutYRes, float& OutResMult, FIntRect& OutCaptureRegion, bool& OutShouldEnableMask, bool& OutDumpBufferVisualizationTargets, bool& OutCaptureHDR, FString& OutFilenameOverride);
+extern ENGINE_API bool GetHighResScreenShotInput(const TCHAR* Cmd, FOutputDevice& Ar, uint32& OutXRes, uint32& OutYRes, float& OutResMult, FIntRect& OutCaptureRegion, bool& OutShouldEnableMask, bool& OutDumpBufferVisualizationTargets, bool& OutCaptureHDR, FString& OutFilenameOverride, bool& OutUseDateTimeAsFileName);
 
 struct FInputKeyEventArgs
 {
@@ -757,28 +790,12 @@ public:
 class FViewportClient
 {
 public:
-	/** The different types of sound stat flags */
-	struct ESoundShowFlags
-	{
-		enum Type
-		{
-			Disabled = 0x00,
-			Debug = 0x01,
-			Sort_Distance = 0x02,
-			Sort_Class = 0x04,
-			Sort_Name = 0x08,
-			Sort_WavesNum = 0x10,
-			Sort_Disabled = 0x20,
-			Long_Names = 0x40,
-		};
-	};
-
 	virtual ~FViewportClient(){}
 	virtual void Precache() {}
 	virtual void RedrawRequested(FViewport* Viewport) { Viewport->Draw(); }
 	virtual void RequestInvalidateHitProxy(FViewport* Viewport) { Viewport->InvalidateHitProxy(); }
 	virtual void Draw(FViewport* Viewport,FCanvas* Canvas) {}
-	virtual void ProcessScreenShots(FViewport* Viewport) {}
+	virtual bool ProcessScreenShots(FViewport* Viewport) { return false; }
 	virtual UWorld* GetWorld() const { return NULL; }
 	virtual struct FEngineShowFlags* GetEngineShowFlags() { return NULL; }
 
@@ -917,6 +934,12 @@ public:
 	virtual void Activated(FViewport* Viewport, const FWindowActivateEvent& InActivateEvent) {}
 	virtual void Deactivated(FViewport* Viewport, const FWindowActivateEvent& InActivateEvent) {}
 
+	virtual bool IsInPermanentCapture()
+	{ 
+		return  !GIsEditor && ((CaptureMouseOnClick() == EMouseCaptureMode::CapturePermanently) ||
+			(CaptureMouseOnClick() == EMouseCaptureMode::CapturePermanently_IncludingInitialMouseDown));
+	}
+
 	/**
 	 * Called when the top level window associated with the viewport has been requested to close.
 	 * At this point, the viewport has not been closed and the operation may be canceled.
@@ -1009,16 +1032,6 @@ public:
 	virtual void SetShowStats(bool bWantStats) { }
 
 	/**
-	 * Get the sound stat flags enabled for this viewport
-	 */
-	virtual ESoundShowFlags::Type GetSoundShowFlags() const { return ESoundShowFlags::Disabled; }
-
-	/**
-	 * Set the sound stat flags enabled for this viewport
-	 */
-	virtual void SetSoundShowFlags(const ESoundShowFlags::Type InSoundShowFlags) {}
-
-	/**
 	 * Check whether we should ignore input.
 	 */
 	virtual bool IgnoreInput() { return false; }
@@ -1079,7 +1092,7 @@ extern ENGINE_API class FCommonViewportClient* GStatProcessingViewportClient;
  * Common functionality for game and editor viewport clients
  */
 
-class FCommonViewportClient : public FViewportClient
+class ENGINE_VTABLE FCommonViewportClient : public FViewportClient
 {
 public:
 	FCommonViewportClient()

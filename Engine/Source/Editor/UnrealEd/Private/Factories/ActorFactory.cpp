@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 /*=============================================================================
 ActorFactory.cpp: 
@@ -16,6 +16,7 @@ ActorFactory.cpp:
 #include "Model.h"
 #include "ActorFactories/ActorFactoryAmbientSound.h"
 #include "ActorFactories/ActorFactoryAtmosphericFog.h"
+#include "ActorFactories/ActorFactorySkyAtmosphere.h"
 #include "ActorFactories/ActorFactoryBlueprint.h"
 #include "ActorFactories/ActorFactoryBoxReflectionCapture.h"
 #include "ActorFactories/ActorFactoryBoxVolume.h"
@@ -37,6 +38,7 @@ ActorFactory.cpp:
 #include "ActorFactories/ActorFactoryPointLight.h"
 #include "ActorFactories/ActorFactorySpotLight.h"
 #include "ActorFactories/ActorFactoryRectLight.h"
+#include "ActorFactories/ActorFactoryRuntimeVirtualTextureVolume.h"
 #include "ActorFactories/ActorFactorySkyLight.h"
 #include "ActorFactories/ActorFactorySkeletalMesh.h"
 #include "ActorFactories/ActorFactoryAnimationAsset.h"
@@ -91,6 +93,7 @@ ActorFactory.cpp:
 #include "VectorField/VectorFieldVolume.h"
 #include "Components/DecalComponent.h"
 #include "Components/BillboardComponent.h"
+#include "Components/SkyAtmosphereComponent.h"
 #include "Engine/BlueprintGeneratedClass.h"
 #include "Animation/AnimBlueprintGeneratedClass.h"
 #include "Engine/Polys.h"
@@ -101,6 +104,7 @@ ActorFactory.cpp:
 #include "Matinee/MatineeActor.h"
 #include "Matinee/InterpData.h"
 #include "InteractiveFoliageActor.h"
+#include "VT/RuntimeVirtualTextureVolume.h"
 
 #include "AssetRegistryModule.h"
 
@@ -214,26 +218,30 @@ bool UActorFactory::CanCreateActorFrom( const FAssetData& AssetData, FText& OutE
 
 AActor* UActorFactory::GetDefaultActor( const FAssetData& AssetData )
 {
-	if ( NewActorClassName != TEXT("") )
-	{
-		UE_LOG(LogActorFactory, Log, TEXT("Loading ActorFactory Class %s"), *NewActorClassName);
-		NewActorClass = Cast<UClass>(StaticLoadObject(UClass::StaticClass(), NULL, *NewActorClassName, NULL, LOAD_NoWarn, NULL));
-		NewActorClassName = TEXT("");
-		if ( NewActorClass == NULL )
-		{
-			UE_LOG(LogActorFactory, Log, TEXT("ActorFactory Class LOAD FAILED"));
-		}
-	}
-	return NewActorClass ? NewActorClass->GetDefaultObject<AActor>() : NULL;
+	UClass* DefaultActorClass = GetDefaultActorClass( AssetData );
+	return (DefaultActorClass ? DefaultActorClass->GetDefaultObject<AActor>() : nullptr);
 }
 
 UClass* UActorFactory::GetDefaultActorClass( const FAssetData& AssetData )
 {
-	if ( !NewActorClass )
+	if (!NewActorClassName.IsEmpty())
 	{
-		GetDefaultActor( AssetData );
+		UE_LOG(LogActorFactory, Log, TEXT("Loading ActorFactory Class %s"), *NewActorClassName);
+		UClass* NewActorClassCandidate = Cast<UClass>(StaticLoadObject(UClass::StaticClass(), nullptr, *NewActorClassName, nullptr, LOAD_NoWarn, nullptr));
+		NewActorClassName.Empty();
+		if (NewActorClassCandidate == nullptr)
+		{
+			UE_LOG(LogActorFactory, Warning, TEXT("ActorFactory Class LOAD FAILED - falling back to %s"), *GetNameSafe(*NewActorClass));
+		}
+		else if (!NewActorClassCandidate->IsChildOf(AActor::StaticClass()))
+		{
+			UE_LOG(LogActorFactory, Warning, TEXT("ActorFactory Class loaded class %s doesn't derive from Actor - falling back to %s"), *NewActorClassCandidate->GetName(), *GetNameSafe(*NewActorClass));
+		}
+		else
+		{
+			NewActorClass = NewActorClassCandidate;
+		}
 	}
-
 	return NewActorClass;
 }
 
@@ -267,8 +275,11 @@ AActor* UActorFactory::CreateActor( UObject* Asset, ULevel* InLevel, FTransform 
 		{
 			PostSpawnActor(Asset, NewActor);
 
-			// Only do this if the actor wasn't already given a name
-			if (Name == NAME_None && Asset)
+			// Only do this if the actor wasn't already given a name.
+			// We also want to skip this if a toolchain during PostSpawn
+			// already adjusted the name.
+			if (Name == NAME_None && Asset && 
+				!NewActor->GetName().StartsWith(Asset->GetName()))
 			{
 				FActorLabelUtilities::SetActorLabelUnique(NewActor, Asset->GetName());
 			}
@@ -305,7 +316,7 @@ AActor* UActorFactory::SpawnActor( UObject* Asset, ULevel* InLevel, const FTrans
 		SpawnInfo.ObjectFlags = InObjectFlags;
 		SpawnInfo.Name = Name;
 #if WITH_EDITOR
-		SpawnInfo.bTemporaryEditorActor = GEditor->bIsSimulatingInEditor ? FLevelEditorViewportClient::IsDroppingPreviewActor(): true;
+		SpawnInfo.bTemporaryEditorActor = FLevelEditorViewportClient::IsDroppingPreviewActor();
 #endif
 		return InLevel->OwningWorld->SpawnActor( DefaultActor->GetClass(), &Transform, SpawnInfo );
 	}
@@ -428,23 +439,28 @@ bool UActorFactoryBasicShape::CanCreateActorFrom( const FAssetData& AssetData, F
 
 void UActorFactoryBasicShape::PostSpawnActor(UObject* Asset, AActor* NewActor)
 {
-	Super::PostSpawnActor(Asset, NewActor);
-
-	// Change properties
-	UStaticMesh* StaticMesh = CastChecked<UStaticMesh>(Asset);
-
-	AStaticMeshActor* StaticMeshActor = CastChecked<AStaticMeshActor>(NewActor);
-	UStaticMeshComponent* StaticMeshComponent = StaticMeshActor->GetStaticMeshComponent();
-
-	if( StaticMeshComponent )
+	// HACK 4.24 crash fix
+	// You CAN end up in this code with a redirector! so you can't CastChecked()
+	// Ideally this wouldn't be possible, but unfortunately that is a much bigger refactor.
+	// You can chase the redirector here and it causes this to be functional at first, BUT when you restart the editor this no longer works because the initial load chases the redirector then the CanCreateActorFrom() fails all together.
+	if (UStaticMesh* StaticMesh = Cast<UStaticMesh>(Asset))
 	{
-		StaticMeshComponent->UnregisterComponent();
+		Super::PostSpawnActor(Asset, NewActor);
 
-		StaticMeshComponent->SetStaticMesh(StaticMesh);
-		StaticMeshComponent->StaticMeshDerivedDataKey = StaticMesh->RenderData->DerivedDataKey;
-		StaticMeshComponent->SetMaterial(0, LoadObject<UMaterial>(nullptr, TEXT("/Engine/BasicShapes/BasicShapeMaterial.BasicShapeMaterial")));
-		// Init Component
-		StaticMeshComponent->RegisterComponent();
+		// Change properties
+		AStaticMeshActor* StaticMeshActor = CastChecked<AStaticMeshActor>(NewActor);
+		UStaticMeshComponent* StaticMeshComponent = StaticMeshActor->GetStaticMeshComponent();
+
+		if (StaticMeshComponent)
+		{
+			StaticMeshComponent->UnregisterComponent();
+
+			StaticMeshComponent->SetStaticMesh(StaticMesh);
+			StaticMeshComponent->StaticMeshDerivedDataKey = StaticMesh->RenderData->DerivedDataKey;
+			StaticMeshComponent->SetMaterial(0, LoadObject<UMaterial>(nullptr, TEXT("/Engine/BasicShapes/BasicShapeMaterial.BasicShapeMaterial")));
+			// Init Component
+			StaticMeshComponent->RegisterComponent();
+		}
 	}
 }
 
@@ -455,7 +471,7 @@ UActorFactoryDeferredDecal
 UActorFactoryDeferredDecal::UActorFactoryDeferredDecal(const FObjectInitializer& ObjectInitializer)
 	: Super(ObjectInitializer)
 { 
-	DisplayName = LOCTEXT("DeferredDecalDisplayName", "Deferred Decal");
+	DisplayName = LOCTEXT("DecalDisplayName", "Decal");
 	NewActorClass = ADecalActor::StaticClass();
 	bUseSurfaceOrientation = true;
 }
@@ -761,7 +777,7 @@ void UActorFactoryPhysicsAsset::PostSpawnActor(UObject* Asset, AActor* NewActor)
 	NewSkelActor->GetSkeletalMeshComponent()->bBlendPhysics = true;
 
 	NewSkelActor->bAlwaysRelevant = true;
-	NewSkelActor->bReplicateMovement = true;
+	NewSkelActor->SetReplicatingMovement(true);
 	NewSkelActor->SetReplicates(true);
 
 	// Init Component
@@ -790,7 +806,7 @@ void UActorFactoryPhysicsAsset::PostCreateBlueprint( UObject* Asset, AActor* CDO
 		SkeletalPhysicsActor->GetSkeletalMeshComponent()->bBlendPhysics = true;
 
 		SkeletalPhysicsActor->bAlwaysRelevant = true;
-		SkeletalPhysicsActor->bReplicateMovement = true;
+		SkeletalPhysicsActor->SetReplicatingMovement(true);
 		SkeletalPhysicsActor->SetReplicates(true);
 	}
 }
@@ -861,7 +877,7 @@ bool UActorFactoryAnimationAsset::CanCreateActorFrom( const FAssetData& AssetDat
 	return true;
 }
 
-USkeletalMesh* UActorFactoryAnimationAsset::GetSkeletalMeshFromAsset( UObject* Asset ) const
+USkeletalMesh* UActorFactoryAnimationAsset::GetSkeletalMeshFromAsset( UObject* Asset )
 {
 	USkeletalMesh* SkeletalMesh = NULL;
 	
@@ -939,25 +955,22 @@ void UActorFactoryAnimationAsset::PostCreateBlueprint( UObject* Asset,  AActor* 
 /*-----------------------------------------------------------------------------
 UActorFactorySkeletalMesh
 -----------------------------------------------------------------------------*/
+
+// static storage
+TMap<UClass*, FGetSkeletalMeshFromAssetDelegate> UActorFactorySkeletalMesh::GetSkeletalMeshDelegates;
+TMap<UClass*, FPostSkeletalMeshActorSpawnedDelegate> UActorFactorySkeletalMesh::PostSkeletalMeshActorSpawnedDelegates;
+
 UActorFactorySkeletalMesh::UActorFactorySkeletalMesh(const FObjectInitializer& ObjectInitializer)
 	: Super(ObjectInitializer)
 { 
 	DisplayName = LOCTEXT("SkeletalMeshDisplayName", "Skeletal Mesh");
 	NewActorClass = ASkeletalMeshActor::StaticClass();
 	bUseSurfaceOrientation = true;
+	ClassUsedForDelegate = nullptr;
 }
 
 bool UActorFactorySkeletalMesh::CanCreateActorFrom( const FAssetData& AssetData, FText& OutErrorMsg )
 {	
-	if ( !AssetData.IsValid() || 
-		( !AssetData.GetClass()->IsChildOf( USkeletalMesh::StaticClass() ) && 
-		  !AssetData.GetClass()->IsChildOf( UAnimBlueprint::StaticClass() ) && 
-		  !AssetData.GetClass()->IsChildOf( USkeleton::StaticClass() ) ) )
-	{
-		OutErrorMsg = NSLOCTEXT("CanCreateActor", "NoAnimSeq", "A valid anim sequence must be specified.");
-		return false;
-	}
-
 	FAssetRegistryModule& AssetRegistryModule = FModuleManager::LoadModuleChecked<FAssetRegistryModule>(TEXT("AssetRegistry"));
 	IAssetRegistry& AssetRegistry = AssetRegistryModule.Get();
 	FAssetData SkeletalMeshData;
@@ -1022,9 +1035,16 @@ bool UActorFactorySkeletalMesh::CanCreateActorFrom( const FAssetData& AssetData,
 				return false;
 			}
 		}
-		else
+	}
+
+	if (!SkeletalMeshData.IsValid())
+	{
+		for (const auto& Pair : UActorFactorySkeletalMesh::GetSkeletalMeshDelegates)
 		{
-			OutErrorMsg = NSLOCTEXT("CanCreateActor", "NoSkelMeshTargetSkeleton", "SkeletalMesh must have a valid Target Skeleton.");
+			if (Pair.Value.Execute(AssetData.GetAsset()) != nullptr)
+			{
+				return true;
+			}
 		}
 	}
 
@@ -1045,7 +1065,7 @@ bool UActorFactorySkeletalMesh::CanCreateActorFrom( const FAssetData& AssetData,
 	return true;
 }
 
-USkeletalMesh* UActorFactorySkeletalMesh::GetSkeletalMeshFromAsset( UObject* Asset ) const
+USkeletalMesh* UActorFactorySkeletalMesh::GetSkeletalMeshFromAsset( UObject* Asset )
 {
 	USkeletalMesh*SkeletalMesh = Cast<USkeletalMesh>( Asset );
 	UAnimBlueprint* AnimBlueprint = Cast<UAnimBlueprint>( Asset );
@@ -1060,6 +1080,19 @@ USkeletalMesh* UActorFactorySkeletalMesh::GetSkeletalMeshFromAsset( UObject* Ass
 	if( SkeletalMesh == NULL && Skeleton != NULL )
 	{
 		SkeletalMesh = Skeleton->GetPreviewMesh(true);
+	}
+
+	if (SkeletalMesh == NULL)
+	{
+		for (const auto& Pair : UActorFactorySkeletalMesh::GetSkeletalMeshDelegates)
+		{
+			if (USkeletalMesh* SkeletalMeshFromDelegate = Pair.Value.Execute(Asset))
+			{
+				ClassUsedForDelegate = Pair.Key;
+				SkeletalMesh = SkeletalMeshFromDelegate;
+				break;
+			}
+		}
 	}
 
 	check( SkeletalMesh != NULL );
@@ -1090,6 +1123,12 @@ void UActorFactorySkeletalMesh::PostSpawnActor( UObject* Asset, AActor* NewActor
 	{
 		NewSMActor->GetSkeletalMeshComponent()->SetAnimInstanceClass(AnimBlueprint->GeneratedClass);
 	}
+
+	if (ClassUsedForDelegate != NULL)
+	{
+		UActorFactorySkeletalMesh::PostSkeletalMeshActorSpawnedDelegates.FindChecked(ClassUsedForDelegate).Execute(NewSMActor, Asset);
+	}
+
 }
 
 void UActorFactorySkeletalMesh::PostCreateBlueprint( UObject* Asset, AActor* CDO )
@@ -1110,6 +1149,23 @@ FQuat UActorFactorySkeletalMesh::AlignObjectToSurfaceNormal(const FVector& InSur
 	// Meshes align the Z (up) axis with the surface normal
 	return FindActorAlignmentRotation(ActorRotation, FVector(0.f, 0.f, 1.f), InSurfaceNormal);
 }
+
+void UActorFactorySkeletalMesh::RegisterDelegatesForAssetClass(
+	UClass* InAssetClass,
+	FGetSkeletalMeshFromAssetDelegate GetSkeletalMeshFromAssetDelegate,
+	FPostSkeletalMeshActorSpawnedDelegate PostSkeletalMeshActorSpawnedDelegate
+)
+{
+	UActorFactorySkeletalMesh::GetSkeletalMeshDelegates.Add(InAssetClass, GetSkeletalMeshFromAssetDelegate);
+	UActorFactorySkeletalMesh::PostSkeletalMeshActorSpawnedDelegates.Add(InAssetClass, PostSkeletalMeshActorSpawnedDelegate);
+}
+
+void UActorFactorySkeletalMesh::UnregisterDelegatesForAssetClass(UClass* InAssetClass)
+{
+	UActorFactorySkeletalMesh::GetSkeletalMeshDelegates.Remove(InAssetClass);
+	UActorFactorySkeletalMesh::PostSkeletalMeshActorSpawnedDelegates.Remove(InAssetClass);
+}
+
 
 /*-----------------------------------------------------------------------------
 UActorFactoryCameraActor
@@ -1594,6 +1650,16 @@ UActorFactoryAtmosphericFog::UActorFactoryAtmosphericFog(const FObjectInitialize
 }
 
 /*-----------------------------------------------------------------------------
+UActorFactorySkyAtmosphere
+-----------------------------------------------------------------------------*/
+UActorFactorySkyAtmosphere::UActorFactorySkyAtmosphere(const FObjectInitializer& ObjectInitializer)
+	: Super(ObjectInitializer)
+{
+	DisplayName = LOCTEXT("SkyAtmosphereDisplayName", "Sky Atmosphere");
+	NewActorClass = ASkyAtmosphere::StaticClass();
+}
+
+/*-----------------------------------------------------------------------------
 UActorFactoryExponentialHeightFog
 -----------------------------------------------------------------------------*/
 UActorFactoryExponentialHeightFog::UActorFactoryExponentialHeightFog(const FObjectInitializer& ObjectInitializer)
@@ -1881,6 +1947,28 @@ UObject* UActorFactoryMovieScene::GetAssetFromActorInstance(AActor* Instance)
 	}
 
 	return nullptr;
+}
+
+/*-----------------------------------------------------------------------------
+UActorFactoryRuntimeVirtualTextureVolume
+-----------------------------------------------------------------------------*/
+UActorFactoryRuntimeVirtualTextureVolume::UActorFactoryRuntimeVirtualTextureVolume(const FObjectInitializer& ObjectInitializer)
+	: Super(ObjectInitializer)
+{
+	DisplayName = LOCTEXT("VirtualTextureVolume_DisplayName", "Runtime Virtual Texture Volume");
+	NewActorClass = ARuntimeVirtualTextureVolume::StaticClass();
+	bShowInEditorQuickMenu = 1;
+}
+
+void UActorFactoryRuntimeVirtualTextureVolume::PostSpawnActor(UObject* Asset, AActor* NewActor)
+{
+	FText ActorName = LOCTEXT("VirtualTextureVolume_DefaultActorName", "Runtime Virtual Texture Volume");
+	NewActor->SetActorLabel(ActorName.ToString());
+
+	// Good default size to see object in editor
+	NewActor->SetActorScale3D(FVector(100.f, 100.f, 1.f));
+
+	Super::PostSpawnActor(Asset, NewActor);
 }
 
 #undef LOCTEXT_NAMESPACE

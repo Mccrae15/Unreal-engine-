@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -56,6 +56,16 @@ enum class EWidgetGeometryMode : uint8
 	Cylinder
 };
 
+UENUM(BlueprintType)
+enum class EWindowVisibility : uint8
+{
+	/** The window visibility is Visible */
+	Visible,
+
+	/** The window visibility is SelfHitTestInvisible */
+	SelfHitTestInvisible
+};
+
 
 /**
  * The widget component provides a surface in the 3D environment on which to render widgets normally rendered to the screen.
@@ -73,6 +83,11 @@ class UMG_API UWidgetComponent : public UMeshComponent
 	GENERATED_UCLASS_BODY()
 
 public:
+	//UObject interface
+	virtual void Serialize(FArchive& Ar) override;
+	virtual bool IsDestructionThreadSafe() const override { return false; }
+	//~ End UObject Interface
+
 	/** UActorComponent Interface */
 	virtual void BeginPlay() override;
 	virtual void EndPlay(const EEndPlayReason::Type EndPlayReason) override;
@@ -95,7 +110,7 @@ public:
 	virtual void GetUsedMaterials(TArray<UMaterialInterface*>& OutMaterials, bool bGetDebugMaterials = false) const override;
 
 #if WITH_EDITOR
-	virtual bool CanEditChange(const UProperty* InProperty) const override;
+	virtual bool CanEditChange(const FProperty* InProperty) const override;
 	virtual void PostEditChangeProperty(FPropertyChangedEvent& PropertyChangedEvent) override;
 #endif
 
@@ -273,7 +288,7 @@ public:
 
 	/**  */
 	UFUNCTION(BlueprintCallable, Category = UserInterface)
-	void SetDrawAtDesiredSize(bool InbDrawAtDesiredSize) { bDrawAtDesiredSize = InbDrawAtDesiredSize; }
+	void SetDrawAtDesiredSize(bool bInDrawAtDesiredSize) { bDrawAtDesiredSize = bInDrawAtDesiredSize; }
 
 	/**  */
 	UFUNCTION(BlueprintCallable, Category = UserInterface)
@@ -281,7 +296,7 @@ public:
 
 	/**  */
 	UFUNCTION(BlueprintCallable, Category = UserInterface)
-	void SetRedrawTime(float bInRedrawTime) { RedrawTime = bInRedrawTime; }
+	void SetRedrawTime(float InRedrawTime) { RedrawTime = InRedrawTime; }
 
 	/** Get the fake window we create for widgets displayed in the world. */
 	TSharedPtr< SWindow > GetVirtualWindow() const;
@@ -344,12 +359,25 @@ public:
 
 	/** @see bWindowFocusable */
 	UFUNCTION(BlueprintCallable, Category = UserInterface)
-	void SetWindowFocusable(bool bInWindowFocusable)
+	void SetWindowFocusable(bool bInWindowFocusable);
+
+	/** Gets the visibility of the virtual window created to host the widget focusable. */
+	UFUNCTION(BlueprintCallable, Category = UserInterface)
+	EWindowVisibility GetWindowVisiblility() const
 	{
-		bWindowFocusable = bInWindowFocusable;
-	};
+		return WindowVisibility;
+	}
+
+	/** Sets the visibility of the virtual window created to host the widget focusable. */
+	UFUNCTION(BlueprintCallable, Category = UserInterface)
+	void SetWindowVisibility(EWindowVisibility InVisibility);
+
+	/** Hook to allow this component modify the local position of the widget after it has been projected from world space to screen space. */
+	virtual FVector2D ModifyProjectedLocalPosition(const FGeometry& ViewportGeometry, const FVector2D& LocalPosition) { return LocalPosition; }
 
 protected:
+	void OnLevelRemovedFromWorld(ULevel* InLevel, UWorld* InWorld);
+
 	/** Just because the user attempts to receive hardware input does not mean it's possible. */
 	bool CanReceiveHardwareInput() const;
 
@@ -447,6 +475,10 @@ protected:
 	/** Is the virtual window created to host the widget focusable? */
 	UPROPERTY(EditAnywhere, Category=Interaction)
 	bool bWindowFocusable;
+
+	/** The visibility of the virtual window created to host the widget */
+	UPROPERTY(EditAnywhere, Category = Interaction)
+	EWindowVisibility WindowVisibility;
 
 	/**
 	 * Widget components that appear in the world will be gamma corrected by the 3D renderer.
@@ -570,6 +602,11 @@ protected:
 
 	/** Helper class for drawing widgets to a render target. */
 	class FWidgetRenderer* WidgetRenderer;
+
+private: 
+	static EVisibility ConvertWindowVisibilityToVisibility(EWindowVisibility visibility);
+	/** Set to true after a draw of an empty component.*/
+	bool bRenderCleared;
 };
 
 USTRUCT()

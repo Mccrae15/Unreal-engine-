@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -10,6 +10,10 @@
 THIRD_PARTY_INCLUDES_START
 	#include <unicode/unistr.h>
 THIRD_PARTY_INCLUDES_END
+
+#ifndef WITH_ICU_V64
+	#define WITH_ICU_V64 0
+#endif
 
 namespace ICUUtilities
 {

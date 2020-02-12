@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 using UnrealBuildTool;
 
@@ -14,7 +14,8 @@ public class SoundModImporter : ModuleRules
 				"SlateCore",
                 "Slate",
 				"SoundMod",
-				"UnrealEd"
+				"UnrealEd",
+				"ToolMenus",
 			});
 
 		PrivateIncludePathModuleNames.AddRange(

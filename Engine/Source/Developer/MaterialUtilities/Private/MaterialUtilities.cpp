@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 #include "MaterialUtilities.h"
 #include "EngineDefines.h"
 #include "ShowFlags.h"
@@ -17,6 +17,7 @@
 #include "Materials/MaterialExpressionConstant4Vector.h"
 #include "Materials/MaterialExpressionMultiply.h"
 #include "Engine/TextureCube.h"
+#include "Engine/Texture2DArray.h"
 #include "SceneView.h"
 #include "RendererInterface.h"
 #include "EngineModule.h"
@@ -40,10 +41,7 @@
 #include "MaterialBakingStructures.h"
 #include "MaterialOptions.h"
 
-#include "MeshDescription.h"
-#include "MeshAttributes.h"
-#include "MeshAttributeArray.h"
-#include "MeshDescriptionOperations.h"
+#include "StaticMeshAttributes.h"
 
 #if WITH_EDITOR
 #include "DeviceProfiles/DeviceProfile.h"
@@ -206,7 +204,7 @@ struct FExportMaterialCompiler : public FProxyMaterialCompiler
 		return SF_Pixel;
 	}
 
-	virtual EMaterialShadingModel GetMaterialShadingModel() const override
+	virtual FMaterialShadingModelField GetMaterialShadingModels() const override
 	{
 		// not used by Lightmass
 		return MSM_MAX;
@@ -280,6 +278,11 @@ struct FExportMaterialCompiler : public FProxyMaterialCompiler
 	virtual int32 ObjectBounds() override
 	{
 		return Compiler->ObjectBounds();
+	}
+
+	virtual int32 PreSkinnedLocalBounds(int32 OutputIndex) override
+	{
+		return Compiler->PreSkinnedLocalBounds(OutputIndex);
 	}
 
 	virtual int32 CameraVector() override
@@ -387,8 +390,7 @@ struct FExportMaterialCompiler : public FProxyMaterialCompiler
 		}
 	}
 	
-	virtual int32 LightmassReplace(int32 Realtime, int32 Lightmass) override { return Realtime; }
-	virtual int32 MaterialProxyReplace(int32 Realtime, int32 MaterialProxy) override { return MaterialProxy; }
+	virtual EMaterialCompilerType GetCompilerType() const override { return EMaterialCompilerType::MaterialProxy; }
 };
 
 
@@ -408,7 +410,7 @@ public:
 	{
 		SetQualityLevelProperties(EMaterialQualityLevel::High, false, GMaxRHIFeatureLevel);
 		Material = InMaterialInterface->GetMaterial();
-		InMaterialInterface->AppendReferencedTextures(ReferencedTextures);
+		ReferencedTextures = InMaterialInterface->GetReferencedTextures();
 		FPlatformMisc::CreateGuid(Id);
 
 		FMaterialResource* Resource = InMaterialInterface->GetMaterialResource(GMaxRHIFeatureLevel);
@@ -423,7 +425,7 @@ public:
 			GetDependentShaderAndVFTypes(GMaxRHIShaderPlatform, ShaderTypes, ShaderPipelineTypes, VFTypes);
 
 			// Overwrite the shader map Id's dependencies with ones that came from the FMaterial actually being compiled (this)
-			// This is necessary as we change FMaterial attributes like GetShadingModel(), which factor into the ShouldCache functions that determine dependent shader types
+			// This is necessary as we change FMaterial attributes like GetShadingModels(), which factor into the ShouldCache functions that determine dependent shader types
 			ResourceId.SetShaderDependencies(ShaderTypes, ShaderPipelineTypes, VFTypes, GMaxRHIShaderPlatform);
 		}
 
@@ -445,7 +447,7 @@ public:
 			break;
 		};
 		
-		CacheShaders(ResourceId, GMaxRHIShaderPlatform, true);
+		CacheShaders(ResourceId, GMaxRHIShaderPlatform);
 	}
 
 	virtual bool IsUsedWithStaticLighting() const { return true; }
@@ -469,7 +471,7 @@ public:
 		return true;
 	}
 
-	virtual const TArray<UTexture*>& GetReferencedTextures() const override
+	virtual TArrayView<UObject* const> GetReferencedTextures() const override
 	{
 		return ReferencedTextures;
 	}
@@ -489,19 +491,24 @@ public:
 		}
 	}
 
-	virtual bool GetVectorValue(const FMaterialParameterInfo& ParameterInfo, FLinearColor* OutValue, const FMaterialRenderContext& Context) const override
+	virtual bool GetVectorValue(const FHashedMaterialParameterInfo& ParameterInfo, FLinearColor* OutValue, const FMaterialRenderContext& Context) const override
 	{
 		return MaterialInterface->GetRenderProxy()->GetVectorValue(ParameterInfo, OutValue, Context);
 	}
 
-	virtual bool GetScalarValue(const FMaterialParameterInfo& ParameterInfo, float* OutValue, const FMaterialRenderContext& Context) const override
+	virtual bool GetScalarValue(const FHashedMaterialParameterInfo& ParameterInfo, float* OutValue, const FMaterialRenderContext& Context) const override
 	{
 		return MaterialInterface->GetRenderProxy()->GetScalarValue(ParameterInfo, OutValue, Context);
 	}
 
-	virtual bool GetTextureValue(const FMaterialParameterInfo& ParameterInfo,const UTexture** OutValue, const FMaterialRenderContext& Context) const override
+	virtual bool GetTextureValue(const FHashedMaterialParameterInfo& ParameterInfo,const UTexture** OutValue, const FMaterialRenderContext& Context) const override
 	{
 		return MaterialInterface->GetRenderProxy()->GetTextureValue(ParameterInfo,OutValue,Context);
+	}
+
+	virtual bool GetTextureValue(const FHashedMaterialParameterInfo& ParameterInfo, const URuntimeVirtualTexture** OutValue, const FMaterialRenderContext& Context) const override
+	{
+		return MaterialInterface->GetRenderProxy()->GetTextureValue(ParameterInfo, OutValue, Context);
 	}
 
 	// Material properties.
@@ -513,7 +520,7 @@ public:
 
 		int32 Ret = CompilePropertyAndSetMaterialPropertyWithoutCast(Property, Compiler);
 
-		return Compiler->ForceCast(Ret, FMaterialAttributeDefinitionMap::GetValueType(Property));
+		return Compiler->ForceCast(Ret, FMaterialAttributeDefinitionMap::GetValueType(Property), MFCF_ExactMatch | MFCF_ReplicateValue);
 	}
 
 	/** helper for CompilePropertyAndSetMaterialProperty() */
@@ -524,7 +531,6 @@ public:
 			UMaterial* ProxyMaterial = MaterialInterface->GetMaterial();
 			check(ProxyMaterial);
 			EBlendMode BlendMode = MaterialInterface->GetBlendMode();
-			EMaterialShadingModel ShadingModel = MaterialInterface->GetShadingModel();
 			FExportMaterialCompiler ProxyCompiler(Compiler);
 			const uint32 ForceCast_Exact_Replicate = MFCF_ForceCast | MFCF_ExactMatch | MFCF_ReplicateValue;
 									
@@ -560,6 +566,8 @@ public:
 							Compiler->Constant(0.5f)); // [-0.5,0.5] + 0.5
 				}
 				break;
+			case MP_ShadingModel:
+				return MaterialInterface->CompileProperty(&ProxyCompiler, MP_ShadingModel);
 			default:
 				return Compiler->Constant(1.0f);
 			}
@@ -575,6 +583,10 @@ public:
 		{
 			// Pass through customized UVs
 			return MaterialInterface->CompileProperty(Compiler, Property);
+		}
+		else if (Property == MP_ShadingModel)
+		{
+			return MaterialInterface->CompileProperty(Compiler, MP_ShadingModel);
 		}
 		else
 		{
@@ -638,11 +650,12 @@ public:
 		}
 		return false;
 	}
-	virtual bool IsMasked() const override								{ return false; }
-	virtual enum EBlendMode GetBlendMode() const override				{ return BLEND_Opaque; }
-	virtual enum EMaterialShadingModel GetShadingModel() const override	{ return MSM_Unlit; }
-	virtual float GetOpacityMaskClipValue() const override				{ return 0.5f; }
-	virtual bool GetCastDynamicShadowAsMasked() const override					{ return false; }
+	virtual bool IsMasked() const override									{ return false; }
+	virtual enum EBlendMode GetBlendMode() const override					{ return BLEND_Opaque; }
+	virtual FMaterialShadingModelField GetShadingModels() const override	{ return MSM_Unlit; }
+	virtual bool IsShadingModelFromMaterialExpression() const override		{ return false; }
+	virtual float GetOpacityMaskClipValue() const override					{ return 0.5f; }
+	virtual bool GetCastDynamicShadowAsMasked() const override				{ return false; }
 	virtual FString GetFriendlyName() const override { return FString::Printf(TEXT("FExportMaterialRenderer %s"), MaterialInterface ? *MaterialInterface->GetName() : TEXT("NULL")); }
 	/**
 	* Should shaders compiled for this material be saved to disk?
@@ -700,6 +713,11 @@ public:
 				UTextureCube* TexCube = (UTextureCube*)Texture;
 				LocalSize = FIntPoint(TexCube->GetSizeX(), TexCube->GetSizeY());
 			}
+			else if (Texture->IsA(UTexture2DArray::StaticClass())) 
+			{
+				UTexture2DArray* TexArray = (UTexture2DArray*)Texture;
+				LocalSize = FIntPoint(TexArray->GetSizeX(), TexArray->GetSizeY());
+			}
 
 			int32 LocalBias = GameTextureLODSettings->CalculateLODBias(Texture);
 
@@ -743,11 +761,20 @@ public:
 	{
 		return Material && Material->MaterialDomain == MD_Volume;
 	}
+
+	virtual void GatherExpressionsForCustomInterpolators(TArray<UMaterialExpression*>& OutExpressions) const override
+	{
+		if(Material)
+		{
+			Material->GetAllExpressionsForCustomInterpolators(OutExpressions);
+		}
+	}
+
 private:
 	/** The material interface for this proxy */
 	UMaterialInterface* MaterialInterface;
 	UMaterial* Material;	
-	TArray<UTexture*> ReferencedTextures;
+	TArray<UObject*> ReferencedTextures;
 	/** The property to compile for rendering the sample */
 	EMaterialProperty PropertyToCompile;
 	FGuid Id;
@@ -1592,7 +1619,7 @@ void FMaterialUtilities::AnalyzeMaterial(UMaterialInterface* InMaterial, const s
 	PropertyBeingBaked[MP_Metallic] = InMaterialSettings.bOpacityMap;
 	PropertyBeingBaked[MP_EmissiveColor] = InMaterialSettings.bEmissiveMap;
 
-	for (int32 PropertyIndex = 0; PropertyIndex < ARRAY_COUNT(PropertyBeingBaked); ++PropertyIndex)
+	for (int32 PropertyIndex = 0; PropertyIndex < UE_ARRAY_COUNT(PropertyBeingBaked); ++PropertyIndex)
 	{
 		if (PropertyBeingBaked[PropertyIndex])
 		{
@@ -2594,7 +2621,7 @@ bool FMaterialUtilities::RenderMaterialPropertyToTexture(struct FMaterialMergeDa
 
 	FMaterialRenderProxy* MaterialProxy = nullptr;
 
-	check(InMaterialProperty >= 0 && InMaterialProperty < ARRAY_COUNT(InMaterialData.ProxyCache->Proxies));
+	check(InMaterialProperty >= 0 && InMaterialProperty < UE_ARRAY_COUNT(InMaterialData.ProxyCache->Proxies));
 	if (InMaterialData.ProxyCache->Proxies[InMaterialProperty])
 	{
 		MaterialProxy = InMaterialData.ProxyCache->Proxies[InMaterialProperty];
@@ -2788,7 +2815,7 @@ FExportMaterialProxyCache::~FExportMaterialProxyCache()
 
 void FExportMaterialProxyCache::Release()
 {
-	for (int32 PropertyIndex = 0; PropertyIndex < ARRAY_COUNT(Proxies); PropertyIndex++)
+	for (int32 PropertyIndex = 0; PropertyIndex < UE_ARRAY_COUNT(Proxies); PropertyIndex++)
 	{
 		FMaterialRenderProxy* Proxy = Proxies[PropertyIndex];
 		if (Proxy)
@@ -2806,8 +2833,7 @@ void FMaterialUtilities::DetermineMaterialImportance(const TArray<UMaterialInter
 	int32 SummedSize = 0;
 	for (UMaterialInterface* Material : InMaterials)
 	{
-		TArray<UTexture*> UsedTextures;
-		Material->AppendReferencedTextures(UsedTextures);
+		TArray<UObject*> UsedTextures(Material->GetReferencedTextures());
 		if (UMaterialInstance* MaterialInstance = Cast<UMaterialInstance>(Material))
 		{
 			for (const FTextureParameterValue& TextureParameter : MaterialInstance->TextureParameterValues)
@@ -2819,7 +2845,7 @@ void FMaterialUtilities::DetermineMaterialImportance(const TArray<UMaterialInter
 			}
 		}
 		int32 MaxSize = 64 * 64;
-		for (UTexture* Texture : UsedTextures)
+		for (UObject* Texture : UsedTextures)
 		{
 			if (UTexture2D* Texture2D = Cast<UTexture2D>(Texture))
 			{

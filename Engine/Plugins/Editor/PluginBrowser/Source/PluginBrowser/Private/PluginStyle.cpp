@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "PluginStyle.h"
 #include "Styling/SlateStyleRegistry.h"
@@ -151,9 +151,10 @@ void FPluginStyle::Initialize()
 			}
 
 			FTextBlockStyle BetaText = FTextBlockStyle( NormalText )
+				.SetFont(DEFAULT_FONT("Bold", 14))
 				.SetColorAndOpacity( FLinearColor( 0.9f, 0.9f, 0.9f ) );
 			{
-				BetaText.Font.Size = 14;
+				BetaText.Font.Size = 10;
 				StyleSet->Set( "PluginTile.BetaText", BetaText );
 			}
 

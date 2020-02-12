@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 #pragma once
 
 #include "CoreMinimal.h"
@@ -9,17 +9,19 @@
 class FArchive;
 class UClass;
 
-/** Build module type, mirrored in UEBuildModule.cs, enum UEBuildModuletype */
+/** Build module type, mirrored in ExternalExecution.cs, enum UHTModuleType */
 struct EBuildModuleType
 {
 	enum Type
 	{
 		Program,
 		EngineRuntime,
+		EngineUncooked,
 		EngineDeveloper,
 		EngineEditor,
 		EngineThirdParty,
 		GameRuntime,
+		GameUncooked,
 		GameDeveloper,
 		GameEditor,
 		GameThirdParty,

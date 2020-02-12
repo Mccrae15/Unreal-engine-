@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "PostProcessSettingsCustomization.h"
 #include "UObject/UnrealType.h"
@@ -14,7 +14,7 @@
 #include "Widgets/Input/SComboButton.h"
 #include "Materials/Material.h"
 #include "Materials/MaterialInstanceConstant.h"
-#include "Toolkits/AssetEditorManager.h"
+
 #include "IDetailGroup.h"
 #include "IDetailChildrenBuilder.h"
 #include "PropertyCustomizationHelpers.h"
@@ -22,8 +22,13 @@
 #include "Widgets/Layout/SWidgetSwitcher.h"
 #include "DetailCategoryBuilder.h"
 #include "DetailLayoutBuilder.h"
+#include "Subsystems/AssetEditorSubsystem.h"
+#include "Editor.h"
 
 #define LOCTEXT_NAMESPACE "PostProcessSettingsCustomization"
+
+const FName ShowPostProcessCategoriesName("ShowPostProcessCategories");
+const FName ShowOnlyInnerPropertiesName("ShowOnlyInnerProperties");
 
 struct FCategoryOrGroup
 {
@@ -100,8 +105,8 @@ void FPostProcessSettingsCustomization::CustomizeChildren( TSharedRef<IPropertyH
 	uint32 NumChildren = 0;
 	FPropertyAccess::Result Result = StructPropertyHandle->GetNumChildren(NumChildren);
 
-	UProperty* Prop = StructPropertyHandle->GetProperty();
-	UStructProperty* StructProp = Cast<UStructProperty>(Prop);
+	FProperty* Prop = StructPropertyHandle->GetProperty();
+	FStructProperty* StructProp = CastField<FStructProperty>(Prop);
 
 	// a category with this name should be one level higher, should be "PostProcessSettings"
 	FName ClassName = StructProp->Struct->GetFName();
@@ -126,7 +131,7 @@ void FPostProcessSettingsCustomization::CustomizeChildren( TSharedRef<IPropertyH
 	const bool bExtendedLuminanceRange = VarDefaultAutoExposureExtendDefaultLuminanceRange->GetValueOnGameThread() == 1;
 	static const FName ExposureCategory("Lens|Exposure");
 
-	static const FName ShowPostProcessCategoriesName("ShowPostProcessCategories");
+
 
 	bool bShowPostProcessCategories = StructPropertyHandle->HasMetaData(ShowPostProcessCategoriesName);
 
@@ -138,7 +143,7 @@ void FPostProcessSettingsCustomization::CustomizeChildren( TSharedRef<IPropertyH
 
 			if( ChildHandle.IsValid() && ChildHandle->GetProperty() )
 			{
-				UProperty* Property = ChildHandle->GetProperty();
+				FProperty* Property = ChildHandle->GetProperty();
 
 				FName CategoryFName = FObjectEditorUtils::GetCategoryFName(Property);
 					
@@ -278,7 +283,19 @@ PRAGMA_ENABLE_OPTIMIZATION
 
 void FPostProcessSettingsCustomization::CustomizeHeader( TSharedRef<IPropertyHandle> StructPropertyHandle, class FDetailWidgetRow& HeaderRow, IPropertyTypeCustomizationUtils& StructCustomizationUtils )
 {
-	// No header
+	bool bShowHeader = !StructPropertyHandle->HasMetaData(ShowPostProcessCategoriesName) && !StructPropertyHandle->HasMetaData(ShowOnlyInnerPropertiesName);
+	if(bShowHeader)
+	{
+		HeaderRow.NameContent()
+		[
+			StructPropertyHandle->CreatePropertyNameWidget()
+		];
+
+		HeaderRow.ValueContent()
+		[
+			StructPropertyHandle->CreatePropertyValueWidget()
+		];
+	}
 }
 
 void FWeightedBlendableCustomization::AddDirectAsset(TSharedRef<IPropertyHandle> StructPropertyHandle, TSharedPtr<IPropertyHandle> Weight, TSharedPtr<IPropertyHandle> Value, UClass* Class)
@@ -337,7 +354,7 @@ FReply FWeightedBlendableCustomization::JumpToDirectAsset(TSharedPtr<IPropertyHa
 	
 	Value->GetValue(RefObject);
 
-	FAssetEditorManager::Get().OpenEditorForAsset(RefObject);
+	GEditor->GetEditorSubsystem<UAssetEditorSubsystem>()->OpenEditorForAsset(RefObject);
 
 	return FReply::Handled();
 }

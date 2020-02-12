@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 #pragma once
 
 #include "CoreMinimal.h"
@@ -46,22 +46,21 @@ public:
 	SLATE_BEGIN_ARGS( SPropertyEditorAsset )
 		: _AssetFont( FEditorStyle::GetFontStyle("PropertyEditor.AssetName.Font") ) 
 		, _ClassFont( FEditorStyle::GetFontStyle("PropertyEditor.AssetClass.Font") ) 
-		, _AllowClear(true)
 		, _DisplayThumbnail(true)
 		, _DisplayUseSelected(true)
 		, _DisplayBrowse(true)
 		, _EnableContentPicker(true)
 		, _DisplayCompactSize(false)
-		, _ThumbnailPool(NULL)
-		, _ThumbnailSize( FIntPoint(64, 64) )
+		, _ThumbnailPool(nullptr)
+		, _ThumbnailSize(FIntPoint(64, 64))
 		, _ObjectPath()
-		, _Class(NULL)
+		, _Class(nullptr)
 		, _CustomContentSlot()
 		, _ResetToDefaultSlot()
 		{}
 		SLATE_ATTRIBUTE( FSlateFontInfo, AssetFont )
 		SLATE_ATTRIBUTE( FSlateFontInfo, ClassFont )
-		SLATE_ARGUMENT( bool, AllowClear )
+		SLATE_ARGUMENT( TOptional<bool>, AllowClear )
 		SLATE_ARGUMENT( bool, DisplayThumbnail )
 		SLATE_ARGUMENT( bool, DisplayUseSelected )
 		SLATE_ARGUMENT( bool, DisplayBrowse )
@@ -77,11 +76,12 @@ public:
 		SLATE_NAMED_SLOT( FArguments, CustomContentSlot )
 		SLATE_NAMED_SLOT( FArguments, ResetToDefaultSlot )
 		SLATE_ARGUMENT( TSharedPtr<IPropertyHandle>, PropertyHandle )
+		SLATE_ARGUMENT( TArray<FAssetData>, OwnerAssetDataArray)
 
 	SLATE_END_ARGS()
 
 	static bool Supports( const TSharedRef< class FPropertyEditor >& InPropertyEditor );
-	static bool Supports( const UProperty* NodeProperty );
+	static bool Supports( const FProperty* NodeProperty );
 
 	/**
 	 * Construct the widget.
@@ -304,6 +304,12 @@ private:
 	/** @return true if the passed in AssetData can be used to set the property based on the list of custom classes */
 	bool CanSetBasedOnCustomClasses( const FAssetData& InAssetData ) const;
 
+	/** @return true if the passed in AssetData can be used to set the property based on the game specific asset reference filter */
+	bool CanSetBasedOnAssetReferenceFilter( const FAssetData& InAssetData, FText* OutOptionalFailureReason = nullptr ) const;
+
+	/** @return Returns the property handle most relevant */
+	TSharedPtr<class IPropertyHandle> GetMostSpecificPropertyHandle() const;
+
 	/**
 	 * Gets the class of the supplied property for use within the PropertyEditorAsset widget. Asserts if the property
 	 * is not supported by the widget.
@@ -311,7 +317,24 @@ private:
 	 * @param	Property	The supplied property for the widget
 	 * @return	The class of the property. Asserts if this tries to return null.
 	 */
-	static UClass* GetObjectPropertyClass(const UProperty* Property);
+	static UClass* GetObjectPropertyClass(const FProperty* Property);
+
+	/**
+	 * Initialize the AllowedClasses and DisallowedClasses arrays based on the property metadata.
+	 */
+	void InitializeClassFilters(const FProperty* Property);
+
+	/** Check if the given class is allowed by the AllowedClasses and DisallowedClasses as defined in the property metadata. */
+	bool IsClassAllowed(const UClass* InClass) const;
+
+	/**
+	 * Initialize DisallowedAssetDataTags based on the property metadata.
+	 */
+	void InitializeAssetDataTags(const FProperty* Property);
+
+	/** @return Returns true if the asset is relevant for this property*/
+	bool IsAssetAllowed(const FAssetData& InAssetData);
+
 private:
 
 	/** Main combobutton */
@@ -341,11 +364,17 @@ private:
 	/** A list of the factories we can use to create new assets */
 	TArray<UFactory*> NewAssetFactories;
 
+	/** Tags (and eventually values) that can NOT be used with this property */
+	TSharedPtr<FAssetDataTagMap> DisallowedAssetDataTags;
+
 	/** Whether the asset can be 'None' in this case */
 	bool bAllowClear;
 
 	/** Whether the object we are editing is an Actor (i.e. requires a Scene Outliner to be displayed) */
 	bool bIsActor;
+
+	/** Whether the classes in the AllowedClassFilters list are exact or whether valid classes can be derived. */
+	bool bExactClass;
 
 	/** Delegate to call when our object value is set */
 	FOnSetObject OnSetObject;
@@ -358,4 +387,10 @@ private:
 
 	/** The property handle, if any */
 	TSharedPtr<class IPropertyHandle> PropertyHandle;
+
+	/*
+	 * The reference object on which the picker will assign the picked asset, if any.
+	 * The system will test first the PropertyHandle follow by the PropertyEditor and if nothing this array of assets
+	 */
+	TArray<FAssetData> OwnerAssetDataArray;
 };

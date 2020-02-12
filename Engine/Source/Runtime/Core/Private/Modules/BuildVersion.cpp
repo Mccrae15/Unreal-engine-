@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "Modules/BuildVersion.h"
 #include "Misc/FileHelper.h"
@@ -29,12 +29,12 @@ FString FBuildVersion::GetFileNameForCurrentExecutable()
 #if PLATFORM_WINDOWS || PLATFORM_MAC
 	if(AppExecutableName.EndsWith(TEXT("-Cmd")))
 	{
-		AppExecutableName = AppExecutableName.Left(AppExecutableName.Len() - 4);
+		AppExecutableName.LeftInline(AppExecutableName.Len() - 4, false);
 	}
 #endif
 #if UE_BUILD_DEVELOPMENT
 	// For DebugGame builds we want to read the development version file because it's in an engine folder
-	if (FApp::GetBuildConfiguration() == EBuildConfigurations::DebugGame)
+	if (FApp::GetBuildConfiguration() == EBuildConfiguration::DebugGame)
 	{
 		for (int32 Idx = 0; Idx < 2; Idx++)
 		{
@@ -43,7 +43,7 @@ FString FBuildVersion::GetFileNameForCurrentExecutable()
 			{
 				break;
 			}
-			AppExecutableName = AppExecutableName.Left(EndIdx);
+			AppExecutableName.LeftInline(EndIdx, false);
 		}
 	}
 #endif
@@ -147,6 +147,13 @@ bool FBuildVersion::TryRead(const FString& FileName, FBuildVersion& OutVersion)
 		else if (Field == TEXT("BuildId"))
 		{
 			if (!FSimpleParse::ParseString(Ptr, OutVersion.BuildId))
+			{
+				return false;
+			}
+		}
+		else if (Field == TEXT("BuildVersion"))
+		{
+			if (!FSimpleParse::ParseString(Ptr, OutVersion.BuildVersion))
 			{
 				return false;
 			}

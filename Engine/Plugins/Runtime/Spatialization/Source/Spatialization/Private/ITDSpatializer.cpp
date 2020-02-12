@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "ITDSpatializer.h"
 #include "CoreMinimal.h"
@@ -105,8 +105,8 @@ void FSourceSpatializer::ProcessSource(const FAudioPluginSourceInputData& InputD
 	{
 		for (int32 InChannelIndex = 0; InChannelIndex < NumInputChannels; InChannelIndex++)
 		{
-			OutAudio[OutFrameIndex] += LeftDelays[InChannelIndex].ProcessAudioSample(InAudio[InFrameIndex + InChannelIndex]) * LeftGain.GetValue();
-			OutAudio[OutFrameIndex + 1] += RightDelays[InChannelIndex].ProcessAudioSample(InAudio[InFrameIndex + InChannelIndex]) * RightGain.GetValue();
+			OutAudio[OutFrameIndex] += LeftDelays[InChannelIndex].ProcessAudioSample(InAudio[InFrameIndex + InChannelIndex]) * LeftGain.GetNextValue();
+			OutAudio[OutFrameIndex + 1] += RightDelays[InChannelIndex].ProcessAudioSample(InAudio[InFrameIndex + InChannelIndex]) * RightGain.GetNextValue();
 		}
 
 		OutFrameIndex += NumOutputChannels;

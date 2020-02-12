@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 /*=============================================================================
 	VorbisAudioInfo.h: Unreal audio vorbis decompression interface object.
@@ -91,13 +91,16 @@ public:
 
 	// Additional overrides for streaming
 	virtual bool SupportsStreaming() const override {return true;}
-	virtual bool StreamCompressedInfo(USoundWave* Wave, struct FSoundQualityInfo* QualityInfo) override;
 	virtual bool StreamCompressedData(uint8* InDestination, bool bLooping, uint32 BufferSize) override;
 	virtual int32 GetCurrentChunkIndex() const override {return CurrentStreamingChunkIndex;}
 	virtual int32 GetCurrentChunkOffset() const override {return BufferOffset % CurrentStreamingChunksSize;}
 	// End of ICompressedAudioInfo Interface
 
+protected:
+	virtual bool StreamCompressedInfoInternal(USoundWave* Wave, struct FSoundQualityInfo* QualityInfo) override;
+
 private:
+	const uint8* GetLoadedChunk(USoundWave* InSoundWave, uint32 ChunkIndex, uint32& OutChunkSize);
 
 	struct FVorbisFileWrapper* VFWrapper;
 	const uint8* SrcBufferData;
@@ -108,11 +111,13 @@ private:
 	/** Critical section used to prevent multiple threads accessing same ogg-vorbis file handles at the same time */
 	FCriticalSection VorbisCriticalSection;
 
-	USoundWave* StreamingSoundWave;				// The current sound wave being streamed, this is used to fetch new chunks
 	uint8 const* CurrentStreamingChunkData;
 	int32 CurrentStreamingChunkIndex;
 	int32 NextStreamingChunkIndex;
 	uint32 CurrentStreamingChunksSize;
 	bool bHeaderParsed;
+
+	// This handle is used to ensure that a chunk currently being decoded isn't evicted until we are done with it.
+	FAudioChunkHandle CurCompressedChunkHandle;
 };
 #endif

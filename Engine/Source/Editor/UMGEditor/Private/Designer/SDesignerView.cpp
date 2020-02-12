@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "Designer/SDesignerView.h"
 #include "Rendering/DrawElements.h"
@@ -70,6 +70,7 @@
 #include "DeviceProfiles/DeviceProfile.h"
 #include "DeviceProfiles/DeviceProfileManager.h"
 #include "Engine/DPICustomScalingRule.h"
+#include "UMGEditorModule.h"
 
 #define LOCTEXT_NAMESPACE "UMG"
 
@@ -215,6 +216,7 @@ public:
 		/** The original parent of the widget. */
 		FWidgetReference ParentWidget;
 
+		/** The offset of the original click location, as a percentage of the widget's size. */
 		FVector2D DraggedOffset;
 	};
 
@@ -241,7 +243,7 @@ TSharedRef<FSelectedWidgetDragDropOp> FSelectedWidgetDragDropOp::New(TSharedPtr<
 	Operation->bShowingMessage = false;
 	Operation->Designer = InDesigner;
 
-	for (const auto& InDraggedWidget : InWidgets)
+	for (const FDraggingWidgetReference& InDraggedWidget : InWidgets)
 	{
 		FItem DraggedWidget;
 		DraggedWidget.bStayingInParent = false;
@@ -333,11 +335,11 @@ void SDesignerView::Construct(const FArguments& InArgs, TSharedPtr<FWidgetBluepr
 
 	bShowResolutionOutlines = false;
 
+	HeightReadFromSettings = 0;
+	WidthReadFromSettings = 0;
 	SetStartupResolution();
 
 	CachedPreviewDesiredSize = FVector2D(0, 0);
-	HeightReadFromSettings = 0;
-	WidthReadFromSettings = 0;
 
 	ResolutionTextFade = FCurveSequence(0.0f, 1.0f);
 	ResolutionTextFade.Play(this->AsShared());
@@ -354,6 +356,15 @@ void SDesignerView::Construct(const FArguments& InArgs, TSharedPtr<FWidgetBluepr
 	Register(MakeShareable(new FCanvasSlotExtension()));
 	Register(MakeShareable(new FUniformGridSlotExtension()));
 	Register(MakeShareable(new FGridSlotExtension()));
+
+	//Register External Extensions
+	IUMGEditorModule& UMGEditorInterface = FModuleManager::GetModuleChecked<IUMGEditorModule>("UMGEditor");
+
+	TSharedPtr<FDesignerExtensibilityManager>DesignerExtensibilityManager = UMGEditorInterface.GetDesignerExtensibilityManager();
+	for (const auto& Extension : DesignerExtensibilityManager->GetExternalDesignerExtensions())
+	{
+		Register(Extension);
+	}
 
 	GEditor->OnBlueprintReinstanced().AddRaw(this, &SDesignerView::OnPreviewNeedsRecreation);
 
@@ -431,6 +442,11 @@ void SDesignerView::Construct(const FArguments& InArgs, TSharedPtr<FWidgetBluepr
 								[
 									SAssignNew(PreviewSurface, SDPIScaler)
 									.DPIScale(this, &SDesignerView::GetPreviewDPIScale)
+									[
+										SAssignNew(PreviewSizeConstraint, SBox)
+										.WidthOverride(this, &SDesignerView::GetPreviewSizeWidth)
+										.HeightOverride(this, &SDesignerView::GetPreviewSizeHeight)
+									]
 								]
 							]
 						]
@@ -573,6 +589,19 @@ TSharedRef<SWidget> SDesignerView::CreateOverlayUI()
 			.Text(this, &SDesignerView::GetZoomText)
 			.ColorAndOpacity(this, &SDesignerView::GetZoomTextColorAndOpacity)
 			.Visibility(EVisibility::SelfHitTestInvisible)
+		]
+
+		+ SHorizontalBox::Slot()
+		.AutoWidth()
+		.VAlign(VAlign_Center)
+		.Padding(40, 2, 0, 0)
+		[
+			SNew(STextBlock)
+			.TextStyle(FEditorStyle::Get(), "Graph.ZoomText")
+			.Font(FCoreStyle::GetDefaultFontStyle(TEXT("BoldCondensed"), 14))
+			.Text(this, &SDesignerView::GetCursorPositionText)
+			.ColorAndOpacity(FLinearColor(1.f, 1.f, 1.f, 0.25f))
+			.Visibility(this, &SDesignerView::GetCursorPositionTextVisibility)
 		]
 
 		+ SHorizontalBox::Slot()
@@ -945,12 +974,16 @@ void SDesignerView::SetStartupResolution()
 		GConfig->SetInt(*ConfigSectionName, TEXT("PreviewWidth"), DefaultResolutionWidth, GEditorPerProjectIni);
 		PreviewWidth = DefaultResolutionWidth;
 	}
+	// Initially assign WidthReadFromSettings to PreviewWidth
+	WidthReadFromSettings = PreviewWidth;
 	// Height
 	if (!GConfig->GetInt(*ConfigSectionName, TEXT("PreviewHeight"), PreviewHeight, GEditorPerProjectIni))
 	{
 		GConfig->SetInt(*ConfigSectionName, TEXT("PreviewHeight"), DefaultResolutionHeight, GEditorPerProjectIni);
 		PreviewHeight = DefaultResolutionHeight;
 	}
+	// Initially assign HeightReadFromSettings to PreviewHeight
+	HeightReadFromSettings = PreviewHeight;
 	// Aspect Ratio
 	if (!GConfig->GetString(*ConfigSectionName, TEXT("PreviewAspectRatio"), PreviewAspectRatio, GEditorPerProjectIni))
 	{
@@ -1121,8 +1154,8 @@ void SDesignerView::SetPreviewAreaSize(int32 Width, int32 Height)
 
 FVector2D SDesignerView::GetAreaResizeHandlePosition() const
 {
-	FGeometry PreviewAreaGeometry = PreviewAreaConstraint->GetCachedGeometry();
-	FGeometry DesignerOverlayGeometry = DesignerWidgetCanvas->GetCachedGeometry();
+	FGeometry PreviewAreaGeometry = PreviewAreaConstraint->GetTickSpaceGeometry();
+	FGeometry DesignerOverlayGeometry = DesignerWidgetCanvas->GetTickSpaceGeometry();
 
 	FVector2D AbsoluteResizeHandlePosition = PreviewAreaGeometry.LocalToAbsolute(PreviewAreaGeometry.GetLocalSize() + FVector2D(2, 2));
 
@@ -1339,7 +1372,7 @@ void SDesignerView::OnHoveredWidgetCleared()
 
 FGeometry SDesignerView::GetDesignerGeometry() const
 {
-	return PreviewHitTestRoot->GetCachedGeometry();
+	return PreviewHitTestRoot->GetTickSpaceGeometry();
 }
 
 FVector2D SDesignerView::GetWidgetOriginAbsolute() const
@@ -1580,6 +1613,7 @@ void SDesignerView::ClearDropPreviews()
 		// it will remain outered to the widget tree and end up as a property in the BP class layout as a result.
 		if (DropPreview.Widget->GetOutermost() != GetTransientPackage())
 		{
+			DropPreview.Widget->SetFlags(RF_NoFlags);
 			DropPreview.Widget->Rename(nullptr, GetTransientPackage());
 		}
 	}
@@ -1611,7 +1645,7 @@ void SDesignerView::OnPreviewNeedsRecreation()
 	CachedWidgetGeometry.Reset();
 
 	PreviewWidget = nullptr;
-	PreviewSurface->SetContent(SNullWidget::NullWidget);
+	PreviewSizeConstraint->SetContent(SNullWidget::NullWidget);
 }
 
 SDesignerView::FWidgetHitResult::FWidgetHitResult()
@@ -1626,7 +1660,7 @@ bool SDesignerView::FindWidgetUnderCursor(const FGeometry& MyGeometry, const FPo
 	//@TODO UMG Make it so you can request dropable widgets only, to find the first parentable.
 
 	// Query the hit test grid we create for the design surface, and determine what widgets we hit.
-	TArray<FWidgetAndPointer> BubblePath = DesignerHittestGrid->GetBubblePath(MouseEvent.GetScreenSpacePosition(), 0.0f, true);
+	TArray<FWidgetAndPointer> BubblePath = DesignerHittestGrid->GetBubblePath(MouseEvent.GetScreenSpacePosition(), 0.0f, true, INDEX_NONE);
 
 	HitResult.Widget = FWidgetReference();
 	HitResult.NamedSlot = NAME_None;
@@ -1708,13 +1742,21 @@ FReply SDesignerView::OnMouseButtonDown(const FGeometry& MyGeometry, const FPoin
 	SDesignSurface::OnMouseButtonDown(MyGeometry, MouseEvent);
 
 	//TODO UMG Undoable Selection
-	FWidgetHitResult HitResult;
-	if ( FindWidgetUnderCursor(MyGeometry, MouseEvent, UWidget::StaticClass(), HitResult) )
+
+	bool bFoundWidgetUnderCursor = false;
 	{
-		SelectedWidgetContextMenuLocation = HitResult.WidgetArranged.Geometry.AbsoluteToLocal(MouseEvent.GetScreenSpacePosition());
+		// Narrow life scope of FWidgetHitResult so it doesn't keep a hard reference on any widget.
+		FWidgetHitResult HitResult;
+		bFoundWidgetUnderCursor = FindWidgetUnderCursor(MyGeometry, MouseEvent, UWidget::StaticClass(), HitResult);
+		if (bFoundWidgetUnderCursor)
+		{
+			SelectedWidgetContextMenuLocation = HitResult.WidgetArranged.Geometry.AbsoluteToLocal(MouseEvent.GetScreenSpacePosition());
+			PendingSelectedWidget = HitResult.Widget;
+		}
+	}
 
-		PendingSelectedWidget = HitResult.Widget;
-
+	if (bFoundWidgetUnderCursor)
+	{
 		if ( MouseEvent.GetEffectingButton() == EKeys::LeftMouseButton )
 		{
 			const TSet<FWidgetReference>& SelectedWidgets = GetSelectedWidgets();
@@ -1905,7 +1947,7 @@ FReply SDesignerView::OnKeyDown(const FGeometry& MyGeometry, const FKeyEvent& In
 	{
 		if (SelectedWidget->IsA(UPanelWidget::StaticClass()))
 		{
-			BlueprintEditor.Pin()->PasteDropLocation = SelectedWidget->GetCachedGeometry().AbsoluteToLocal(CachedMousePosition);
+			BlueprintEditor.Pin()->PasteDropLocation = SelectedWidget->GetTickSpaceGeometry().AbsoluteToLocal(CachedMousePosition);
 		}
 		else
 		{
@@ -2009,12 +2051,15 @@ void SDesignerView::ShowContextMenu(const FGeometry& MyGeometry, const FPointerE
 
 void SDesignerView::PopulateWidgetGeometryCache(FArrangedWidget& Root)
 {
-	DesignerHittestGrid->ClearGridForNewFrame(GetDesignerGeometry().GetLayoutBoundingRect());
+	const FSlateRect Rect = PreviewHitTestRoot->GetTickSpaceGeometry().GetLayoutBoundingRect();
+	const FSlateRect PaintRect = PreviewHitTestRoot->GetPaintSpaceGeometry().GetLayoutBoundingRect();
+	DesignerHittestGrid->SetHittestArea(Rect.GetTopLeft(), Rect.GetSize(),  PaintRect.GetTopLeft());
+	DesignerHittestGrid->Clear();
 
-	PopulateWidgetGeometryCache_Loop(Root, INDEX_NONE);
+	PopulateWidgetGeometryCache_Loop(Root);
 }
 
-void SDesignerView::PopulateWidgetGeometryCache_Loop(FArrangedWidget& CurrentWidget, int32 ParentHitTestIndex)
+void SDesignerView::PopulateWidgetGeometryCache_Loop(FArrangedWidget& CurrentWidget)
 {
 	// If this widget clips to its bounds, then generate a new clipping rect representing the intersection of the bounding
 	// rectangle of the widget's geometry, and the current clipping rectangle.
@@ -2030,7 +2075,6 @@ void SDesignerView::PopulateWidgetGeometryCache_Loop(FArrangedWidget& CurrentWid
 		FSlateClippingZone DesktopClippingZone(CurrentWidget.Geometry);
 		DesktopClippingZone.SetShouldIntersectParent(bIntersectClipBounds);
 		DesktopClippingZone.SetAlwaysClip(bAlwaysClip);
-		DesignerHittestGrid->PushClip(DesktopClippingZone);
 	}
 
 	bool bIncludeInHitTestGrid = false;
@@ -2055,11 +2099,9 @@ void SDesignerView::PopulateWidgetGeometryCache_Loop(FArrangedWidget& CurrentWid
 		}
 	}
 
-	int32 NewParentHitTestIndex = ParentHitTestIndex;
-
 	if (bIncludeInHitTestGrid)
 	{
-		NewParentHitTestIndex = DesignerHittestGrid->InsertWidget(ParentHitTestIndex, EVisibility::Visible, CurrentWidget, FVector2D(0, 0), 0);
+		DesignerHittestGrid->AddWidget(CurrentWidget.Widget, 0, 0, 0);
 	}
 
 	FArrangedChildren ArrangedChildren(EVisibility::All);
@@ -2070,12 +2112,7 @@ void SDesignerView::PopulateWidgetGeometryCache_Loop(FArrangedWidget& CurrentWid
 	for (int32 ChildIndex = 0; ChildIndex < ArrangedChildren.Num(); ++ChildIndex)
 	{
 		FArrangedWidget& SomeChild = ArrangedChildren[ChildIndex];
-		PopulateWidgetGeometryCache_Loop(SomeChild, NewParentHitTestIndex);
-	}
-
-	if (bClipToBounds)
-	{
-		DesignerHittestGrid->PopClip();
+		PopulateWidgetGeometryCache_Loop(SomeChild);
 	}
 }
 
@@ -2196,7 +2233,7 @@ void SDesignerView::DrawSafeZone(const FOnPaintHandlerParams& PaintArgs)
 		const FLinearColor UnsafeZoneColor(1.0f, 0.5f, 0.5f, UnsafeZoneAlpha);
 		const FSlateBrush* WhiteBrush = FEditorStyle::GetBrush("WhiteBrush");
 			
-		FGeometry PreviewGeometry = PreviewAreaConstraint->GetCachedGeometry();
+		FGeometry PreviewGeometry = PreviewAreaConstraint->GetTickSpaceGeometry();
 		PreviewGeometry.AppendTransform(FSlateLayoutTransform(Inverse(PaintArgs.Args.GetWindowToDesktopTransform())));
 		
 		const float Width = PreviewWidth;
@@ -2287,20 +2324,11 @@ void SDesignerView::UpdatePreviewWidget(bool bForceUpdate)
 		if ( PreviewWidget )
 		{
 			TSharedRef<SWidget> NewPreviewSlateWidget = PreviewWidget->TakeWidget();
-			NewPreviewSlateWidget->SlatePrepass();
+			NewPreviewSlateWidget->SlatePrepass(PreviewSizeConstraint->GetCachedGeometry().Scale);
 
 			PreviewSlateWidget = NewPreviewSlateWidget;
 
-			// The constraint box for the widget size needs to inside the DPI scaler in order to make sure it too
-			// is sized accurately for the size screen it's on.
-			TSharedRef<SBox> NewPreviewSizeConstraintBox = SNew(SBox)
-				.WidthOverride(this, &SDesignerView::GetPreviewSizeWidth)
-				.HeightOverride(this, &SDesignerView::GetPreviewSizeHeight)
-				[
-					NewPreviewSlateWidget
-				];
-
-			PreviewSurface->SetContent(NewPreviewSizeConstraintBox);
+			PreviewSizeConstraint->SetContent(NewPreviewSlateWidget);
 
 			// Notify all selected widgets that they are selected, because there are new preview objects
 			// state may have been lost so this will recreate it if the widget does something special when
@@ -2517,7 +2545,7 @@ FReply SDesignerView::OnDragDetected(const FGeometry& MyGeometry, const FPointer
 		// Clear any pending selected widgets, the user has already decided what widget they want.
 		PendingSelectedWidget = FWidgetReference();
 
-		for (const auto& SelectedWidget : SelectedWidgets)
+		for (const FWidgetReference& SelectedWidget : SelectedWidgets)
 		{
 			// Determine The offset to keep the widget from the mouse while dragging
 			FArrangedWidget ArrangedWidget(SNullWidget::NullWidget, FGeometry());
@@ -2526,14 +2554,13 @@ FReply SDesignerView::OnDragDetected(const FGeometry& MyGeometry, const FPointer
 
 			FDragWidget DraggingWidget;
 			DraggingWidget.Widget = SelectedWidget;
-			DraggingWidget.DraggedOffset = SelectedWidgetContextMenuLocation;
-
+			DraggingWidget.DraggedOffset = SelectedWidgetContextMenuLocation / ArrangedWidget.Geometry.GetLocalSize();
 			DraggingWidgetCandidates.Add(DraggingWidget);
 		}
 
 		TArray<FDragWidget> DraggingWidgets;
 
-		for (const auto& Candidate : DraggingWidgetCandidates)
+		for (const FDragWidget& Candidate : DraggingWidgetCandidates)
 		{
 			// check the parent chain of each dragged widget and ignore those that are children of other dragged widgets
 			bool bIsChild = false;
@@ -2812,6 +2839,7 @@ void SDesignerView::ProcessDropAndAddWidget(const FGeometry& MyGeometry, const F
 		{
 			if (Widget->GetOutermost() != GetTransientPackage())
 			{
+				Widget->SetFlags(RF_NoFlags);
 				Widget->Rename(nullptr, GetTransientPackage());
 			}
 		}
@@ -2963,13 +2991,11 @@ void SDesignerView::ProcessDropAndAddWidget(const FGeometry& MyGeometry, const F
 					}
 					else
 					{
-						Slot = ParentWidget->AddChild(Widget);
+						Slot = ParentWidget->InsertChildAt(ParentWidget->GetChildIndex(Widget), Widget);
 					}
 
 					if (Slot != nullptr)
 					{
-						FVector2D NewPosition = LocalPosition - DraggedWidget.DraggedOffset;
-
 						FWidgetBlueprintEditorUtils::ImportPropertiesFromText(Slot, DraggedWidget.ExportedSlotProperties);
 
 						bool HasChangedLayout = false;
@@ -2983,6 +3009,12 @@ void SDesignerView::ProcessDropAndAddWidget(const FGeometry& MyGeometry, const F
 							if (bIsPreview)
 							{
 								CanvasSlot->SaveBaseLayout();
+
+								FArrangedWidget ArrangedWidget(SNullWidget::NullWidget, FGeometry());
+								FDesignTimeUtils::GetArrangedWidget(Widget->GetCachedWidget().ToSharedRef(), ArrangedWidget);
+
+								FVector2D Offset = DraggedWidget.DraggedOffset * ArrangedWidget.Geometry.GetLocalSize();
+								FVector2D NewPosition = LocalPosition - Offset;
 
 								// Perform grid snapping on X and Y if we need to.
 								if (bGridSnapX)
@@ -3088,10 +3120,9 @@ FReply SDesignerView::OnDrop(const FGeometry& MyGeometry, const FDragDropEvent& 
 
 FText SDesignerView::GetResolutionText(int32 Width, int32 Height, const FString& AspectRatio) const
 {
-	FInternationalization& I18N = FInternationalization::Get();
 	FFormatNamedArguments Args;
-	Args.Add(TEXT("Width"), FText::AsNumber(Width, nullptr, I18N.GetInvariantCulture()));
-	Args.Add(TEXT("Height"), FText::AsNumber(Height, nullptr, I18N.GetInvariantCulture()));
+	Args.Add(TEXT("Width"), FText::AsNumber(Width, &FNumberFormattingOptions::DefaultNoGrouping()));
+	Args.Add(TEXT("Height"), FText::AsNumber(Height, &FNumberFormattingOptions::DefaultNoGrouping()));
 	Args.Add(TEXT("AspectRatio"), FText::FromString(AspectRatio));
 
 	return FText::Format(LOCTEXT("CommonResolutionFormat", "{Width} x {Height} ({AspectRatio})"), Args);
@@ -3104,9 +3135,7 @@ FText SDesignerView::GetCurrentResolutionText() const
 
 FText SDesignerView::GetCurrentDPIScaleText() const
 {
-	FInternationalization& I18N = FInternationalization::Get();
-
-	FNumberFormattingOptions Options;
+	FNumberFormattingOptions Options = FNumberFormattingOptions::DefaultNoGrouping();
 	Options.MinimumIntegralDigits = 1;
 	Options.MaximumFractionalDigits = 2;
 	Options.MinimumFractionalDigits = 1;
@@ -3122,7 +3151,7 @@ FText SDesignerView::GetCurrentDPIScaleText() const
 		}
 	}
 
-	FText DPIString = FText::AsNumber(GetPreviewDPIScale(), &Options, I18N.GetInvariantCulture());
+	FText DPIString = FText::AsNumber(GetPreviewDPIScale(), &Options);
 	return FText::Format(LOCTEXT("CurrentDPIScaleFormat", "DPI Scale {0}"), DPIString);
 }
 
@@ -3144,14 +3173,12 @@ FSlateColor SDesignerView::GetCurrentDPIScaleColor() const
 
 FText SDesignerView::GetCurrentScaleFactorText() const
 {
-	FInternationalization& I18N = FInternationalization::Get();
-
-	FNumberFormattingOptions Options;
+	FNumberFormattingOptions Options = FNumberFormattingOptions::DefaultNoGrouping();
 	Options.MinimumIntegralDigits = 1;
 	Options.MaximumFractionalDigits = 2;
 	Options.MinimumFractionalDigits = 1;
 
-	FText DPIString = FText::AsNumber(ScaleFactor, &Options, I18N.GetInvariantCulture());
+	FText DPIString = FText::AsNumber(ScaleFactor, &Options);
 	return FText::Format(LOCTEXT("CurrentContentScale", "Device Content Scale {0}"), DPIString);
 }
 
@@ -3240,6 +3267,23 @@ FText SDesignerView::GetDesignerOutlineText() const
 	return FText::GetEmpty();
 }
 
+FText SDesignerView::GetCursorPositionText() const
+{
+	if (const FArrangedWidget* CachedPreviewSurface = CachedWidgetGeometry.Find(PreviewSurface.ToSharedRef()))
+	{
+		const FGeometry& RootGeometry = CachedPreviewSurface->Geometry;
+		const FVector2D CursorPos = RootGeometry.AbsoluteToLocal(FSlateApplication::Get().GetCursorPos()) / GetPreviewDPIScale();
+
+		return FText::Format(LOCTEXT("CursorPositionFormat", "{0} x {1}"), FText::AsNumber(FMath::RoundToInt(CursorPos.X)), FText::AsNumber(FMath::RoundToInt(CursorPos.Y)));
+	}
+	return FText();
+}
+
+EVisibility SDesignerView::GetCursorPositionTextVisibility() const
+{
+	return IsHovered() ? EVisibility::SelfHitTestInvisible : EVisibility::Collapsed;
+}
+
 FReply SDesignerView::HandleDPISettingsClicked()
 {
 	FModuleManager::LoadModuleChecked<ISettingsModule>("Settings").ShowViewer("Project", "Engine", "UI");
@@ -3247,15 +3291,14 @@ FReply SDesignerView::HandleDPISettingsClicked()
 	return FReply::Handled();
 }
 
-void SDesignerView::HandleOnCommonResolutionSelected(FPlayScreenResolution InResolution)
+void SDesignerView::HandleOnCommonResolutionSelected(const FPlayScreenResolution InResolution)
 {
 	bSafeZoneFlipped = false;
 	bCanPreviewSwapAspectRatio = InResolution.bCanSwapAspectRatio;
 	WidthReadFromSettings = InResolution.Width;
 	HeightReadFromSettings = InResolution.Height;
-	// Phone/tablet resolutions can be stored in either portrait or landscape mode, and may need to be flipped
-	if (bCanPreviewSwapAspectRatio && ((!bPreviewIsPortrait && InResolution.Width < InResolution.Height) ||
-		(bPreviewIsPortrait && InResolution.Width > InResolution.Height)))
+	// Most resolutions (tablets, phones, TVs, etc.) can be stored in either portrait or landscape mode, and may need to be flipped
+	if (bCanPreviewSwapAspectRatio && (bPreviewIsPortrait != (InResolution.Width < InResolution.Height)))
 	{
 		PreviewWidth = InResolution.Height;
 		PreviewHeight = InResolution.Width;
@@ -3264,16 +3307,11 @@ void SDesignerView::HandleOnCommonResolutionSelected(FPlayScreenResolution InRes
 	{
 		PreviewWidth = InResolution.Width;
 		PreviewHeight = InResolution.Height;
-		bPreviewIsPortrait = PreviewWidth < PreviewHeight;
 	}
+	bPreviewIsPortrait = PreviewWidth < PreviewHeight;
 	PreviewAspectRatio = InResolution.AspectRatio;
 
 	PreviewOverrideName = InResolution.ProfileName;
-
-	if (!bCanPreviewSwapAspectRatio)
-	{
-		bPreviewIsPortrait = (PreviewHeight > PreviewWidth);
-	}
 
 	ScaleFactor = 1.0f;
 	ULevelEditorPlaySettings* PlayInSettings = GetMutableDefault<ULevelEditorPlaySettings>();
@@ -3329,7 +3367,7 @@ void SDesignerView::HandleOnCommonResolutionSelected(FPlayScreenResolution InRes
 	ResolutionTextFade.Play(this->AsShared());
 }
 
-bool SDesignerView::HandleIsCommonResolutionSelected(FPlayScreenResolution InResolution) const
+bool SDesignerView::HandleIsCommonResolutionSelected(const FPlayScreenResolution InResolution) const
 {
 	// If we're using a custom design time size, none of the other resolutions should appear selected, even if they match.
 	if ( UUserWidget* DefaultWidget = GetDefaultWidget() )
@@ -3609,8 +3647,8 @@ FReply SDesignerView::HandleZoomToFitClicked()
 FReply SDesignerView::HandleSwapAspectRatioClicked()
 {
 	bSafeZoneFlipped = false;
-	// If in portrait
-	if (PreviewHeight > PreviewWidth)
+	// If in default orientation (portrait for table/phone, landscape for monitor/laptop/TV)
+	if ((WidthReadFromSettings < HeightReadFromSettings) == (PreviewWidth < PreviewHeight))
 	{
 		PreviewHeight = WidthReadFromSettings;
 		PreviewWidth = HeightReadFromSettings;

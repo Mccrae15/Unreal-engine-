@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 package com.epicgames.ue4;
 
@@ -1378,7 +1378,7 @@ public class CameraPlayer14
 
 			mSurfaceTexture.getTransformMatrix(mTransformMatrix);
 
-			int degrees = (GameActivity._activity.DeviceRotation + CameraRotationOffset) % 360;
+			int degrees = (GameActivity._activity.getCurrentDeviceRotationDegree() + CameraRotationOffset) % 360;
 			if (degrees == 0) {
 				mScaleRotation00 = mTransformMatrix[1];
 				mScaleRotation01 = mTransformMatrix[5];
@@ -1778,6 +1778,7 @@ public class CameraPlayer14
 		private int mTextureID = -1;
 		private float[] mTransformMatrix = new float[16];
 		private boolean mTextureSizeChanged = true;
+		private int GL_TEXTURE_EXTERNAL_OES = 0x8D65;
 
 		private float mScaleRotation00 = 1.0f;
 		private float mScaleRotation01 = 0.0f;
@@ -1917,7 +1918,7 @@ public class CameraPlayer14
 			GameActivity.Log.debug(mTransformMatrix[12] + ", " + mTransformMatrix[13] + ", " + mTransformMatrix[14] + ", " + mTransformMatrix[15]);
 			*/
 
-			int degrees = (GameActivity._activity.DeviceRotation + CameraRotationOffset) % 360;
+			int degrees = (GameActivity._activity.getCurrentDeviceRotationDegree() + CameraRotationOffset) % 360;
 			if (degrees == 0) {
 				mScaleRotation00 = mTransformMatrix[1];
 				mScaleRotation01 = mTransformMatrix[5];
@@ -1996,6 +1997,11 @@ public class CameraPlayer14
 				frameUpdateInfo.VOffset = mVOffset;
 			}
 
+			
+			// updateTexImage binds an external texture to active texture unit
+			// make sure to unbind it to prevent state leak
+			GLES20.glBindTexture(GL_TEXTURE_EXTERNAL_OES, 0);
+			
 			return frameUpdateInfo;
 		}
 	};

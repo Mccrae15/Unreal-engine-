@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -14,6 +14,7 @@
 #include "BoneIndices.h"
 #include "StaticMeshResources.h"
 #include "GPUSkinVertexFactory.h"
+#include "Animation/SkinWeightProfile.h"
 
 #if WITH_EDITOR
 class FSkeletalMeshLODModel;
@@ -120,17 +121,32 @@ public:
 	/** GPU friendly access data for MorphTargets for an LOD */
 	FMorphTargetVertexInfoBuffers	MorphTargetVertexInfoBuffers;
 
+	/** Skin weight profile data structures, can contain multiple profiles and their runtime FSkinWeightVertexBuffer */
+	FSkinWeightProfilesData SkinWeightProfilesData;
 
 	TArray<FBoneIndexType> ActiveBoneIndices;
 
 	TArray<FBoneIndexType> RequiredBones;
+
+	uint32 BuffersSize;
+
+	typename TChooseClass<USE_BULKDATA_STREAMING_TOKEN, FBulkDataStreamingToken, FByteBulkData>::Result StreamingBulkData;
+
+	/** Whether buffers of this LOD is inlined (i.e. stored in .uexp instead of .ubulk) */
+	uint32 bStreamedDataInlined : 1;
+	/** Whether this LOD is below MinLod */
+	uint32 bIsLODOptional : 1;
+
+#if WITH_EDITOR
+	FByteBulkData BulkData;
+#endif
 
 	/**
 	* Initialize the LOD's render resources.
 	*
 	* @param Parent Parent mesh
 	*/
-	void InitResources(bool bNeedsVertexColors, int32 LODIndex, TArray<class UMorphTarget*>& InMorphTargets);
+	void InitResources(bool bNeedsVertexColors, int32 LODIndex, TArray<class UMorphTarget*>& InMorphTargets, USkeletalMesh* Owner);
 
 	/**
 	* Releases the LOD's render resources.
@@ -140,10 +156,13 @@ public:
 	/**
 	* Releases the LOD's CPU render resources.
 	*/
-	void ReleaseCPUResources();
+	void ReleaseCPUResources(bool bForStreaming = false);
 
 	/** Constructor (default) */
 	FSkeletalMeshLODRenderData()
+		: BuffersSize(0)
+		, bStreamedDataInlined(false)
+		, bIsLODOptional(false)
 	{
 	}
 
@@ -157,6 +176,15 @@ public:
 	*/
 	void Serialize(FArchive& Ar, UObject* Owner, int32 Idx);
 
+	/**
+	* Serialize the portion of data that might be streamed
+	* @param bNeedsCPUAcces - Whether something requires keeping CPU copy of resources (see ShouldKeepCPUResources)
+	* @param bForceKeepCPUResources - Whether we want to force keeping CPU resources
+	* @return Size of streamed LOD data in bytes
+	*/
+	void SerializeStreamedData(FArchive& Ar, USkeletalMesh* Owner, int32 LODIdx, uint8 ClassStripFlags, bool bNeedsCPUAccess, bool bForceKeepCPUResources);
+
+	void SerializeAvailabilityInfo(FArchive& Ar, USkeletalMesh* Owner, int32 LODIdx, bool bHasAdjacencyData, bool bNeedsCPUAccess);
 
 #if WITH_EDITOR
 	/**
@@ -171,14 +199,33 @@ public:
 		return StaticVertexBuffers.PositionVertexBuffer.GetNumVertices();
 	}
 
-	bool DoesVertexBufferHaveExtraBoneInfluences() const
+	uint32 GetVertexBufferMaxBoneInfluences() const
 	{
-		return SkinWeightVertexBuffer.HasExtraBoneInfluences();
+		return SkinWeightVertexBuffer.GetMaxBoneInfluences();
+	}
+
+	bool DoesVertexBufferUse16BitBoneIndex() const
+	{
+		return SkinWeightVertexBuffer.Use16BitBoneIndex();
 	}
 
 	uint32 GetNumTexCoords() const
 	{
 		return StaticVertexBuffers.StaticMeshVertexBuffer.GetNumTexCoords();
+	}
+
+	/** Checks whether or not the skin weight buffer has been overridden 'by default' and if not return the original Skin Weight buffer */
+	FSkinWeightVertexBuffer* GetSkinWeightVertexBuffer() 
+	{
+		FSkinWeightVertexBuffer* OverrideBuffer = SkinWeightProfilesData.GetDefaultOverrideBuffer();
+		return OverrideBuffer != nullptr ? OverrideBuffer : &SkinWeightVertexBuffer;
+	}
+	
+	/** Checks whether or not the skin weight buffer has been overridden 'by default' and if not return the original Skin Weight buffer */
+	const FSkinWeightVertexBuffer* GetSkinWeightVertexBuffer() const
+	{
+		FSkinWeightVertexBuffer* OverrideBuffer = SkinWeightProfilesData.GetDefaultOverrideBuffer();
+		return OverrideBuffer != nullptr ? OverrideBuffer : &SkinWeightVertexBuffer;
 	}
 
 	/** Utility function for returning total number of faces in this LOD. */
@@ -202,4 +249,29 @@ public:
 	uint32 FindSectionIndex(const FSkelMeshRenderSection& Section) const;
 
 	ENGINE_API int32 NumNonClothingSections() const;
+
+	void IncrementMemoryStats(bool bNeedsVertexColors);
+	void DecrementMemoryStats();
+
+	static bool ShouldForceKeepCPUResources();
+	static bool ShouldKeepCPUResources(const USkeletalMesh* SkeletalMesh, int32 LODIdx, bool bForceKeep);
+
+private:
+	enum EClassDataStripFlag : uint8
+	{
+		CDSF_AdjacencyData = 1,
+		CDSF_MinLodData = 2
+	};
+
+	static int32 GetPlatformMinLODIdx(const ITargetPlatform* TargetPlatform, const USkeletalMesh* SkeletalMesh);
+
+	static uint8 GenerateClassStripFlags(FArchive& Ar, const USkeletalMesh* OwnerMesh, int32 LODIdx);
+
+	static bool IsLODCookedOut(const ITargetPlatform* TargetPlatform, const USkeletalMesh* SkeletalMesh, bool bIsBelowMinLOD);
+
+	static bool IsLODInlined(const ITargetPlatform* TargetPlatform, const USkeletalMesh* SkeletalMesh, int32 LODIdx, bool bIsBelowMinLOD);
+
+	static int32 GetNumOptionalLODsAllowed(const ITargetPlatform* TargetPlatform, const USkeletalMesh* SkeletalMesh);
+
+	friend class FSkeletalMeshRenderData;
 };

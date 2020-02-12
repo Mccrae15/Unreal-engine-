@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -14,7 +14,6 @@
 #include "Engine/StaticMesh.h"
 
 #include "Subsystems/ImportSubsystem.h"
-
 
 
 #define CAMERA_ZOOM_DAMPEN			200.f
@@ -39,6 +38,21 @@ extern UNREALED_API class UEditorEngine* GEditor;
  */
 UNREALED_API const FString GetEditorResourcesDir();
 
+/**
+ * Helper struct for the FOnAssetsCanDelete delegate
+ */
+struct FCanDeleteAssetResult
+{
+public:
+	FCanDeleteAssetResult() : bResult(true) {}
+	FCanDeleteAssetResult(const FCanDeleteAssetResult&) = delete;
+	FCanDeleteAssetResult(FCanDeleteAssetResult&&) = delete;
+
+	void Set(const bool InValue) { bResult &= InValue; }
+	bool Get() const { return bResult; }
+private:
+	bool bResult;
+};
 
 /** 
  * FEditorDelegates
@@ -84,6 +98,10 @@ struct UNREALED_API FEditorDelegates
 	DECLARE_MULTICAST_DELEGATE_TwoParams(FOnMapOpened, const FString& /* Filename */, bool /*bAsTemplate*/);
 	/** Delegate used for entering or exiting an editor mode */
 	DECLARE_MULTICAST_DELEGATE_OneParam(FOnEditorModeTransitioned, FEdMode* /*Mode*/);
+	/** Delegate used for entering or exiting an editor mode */
+	DECLARE_MULTICAST_DELEGATE_OneParam(FOnEditorModeIDTransitioned, const FEditorModeID& /*Mode*/);
+	/** delegate type to determine if a user requests can delete certain assets. */
+	DECLARE_MULTICAST_DELEGATE_TwoParams(FOnAssetsCanDelete, const TArray<UObject*>& /*InObjectToDelete*/, FCanDeleteAssetResult& /*OutCanDelete*/);
 	/** delegate type for when a user requests to delete certain assets... DOES NOT mean the asset(s) will be deleted (the user could cancel) */
 	DECLARE_MULTICAST_DELEGATE_OneParam(FOnAssetsPreDelete, const TArray<UObject*>&);
 	/** delegate type for when one or more assets have been deleted */
@@ -116,6 +134,8 @@ struct UNREALED_API FEditorDelegates
 	DECLARE_MULTICAST_DELEGATE(FOnDeleteActorsEnd);
 	/** delegate type to handle viewing/editing a set of asset identifiers which are packages or ids */
 	DECLARE_MULTICAST_DELEGATE_OneParam(FOnViewAssetIdentifiers, TArray<FAssetIdentifier>);
+	/** delegate type to handle viewing/editing a set of asset identifiers (which are packages or ids) in the reference viewer */
+	DECLARE_MULTICAST_DELEGATE_TwoParams(FOnOpenReferenceViewer, const TArray<FAssetIdentifier>, const FReferenceViewerParams);
 
 	/** Called when the CurrentLevel is switched to a new level.  Note that this event won't be fired for temporary
 		changes to the current level, such as when copying/pasting actors. */
@@ -150,9 +170,15 @@ struct UNREALED_API FEditorDelegates
 	/** Called when load errors are about to be displayed */
 	static FSimpleMulticastDelegate DisplayLoadErrors;
 	/** Called when an editor mode is being entered */
+	UE_DEPRECATED(4.24, "Use EditorModeIDEnter instead")
 	static FOnEditorModeTransitioned EditorModeEnter;
 	/** Called when an editor mode is being exited */
+	UE_DEPRECATED(4.24, "Use EditorModeIDExit instead")
 	static FOnEditorModeTransitioned EditorModeExit;
+	/** Called when an editor mode ID is being entered */
+	static FOnEditorModeIDTransitioned EditorModeIDEnter;
+	/** Called when an editor mode ID is being exited */
+	static FOnEditorModeIDTransitioned EditorModeIDExit;
 	/** Sent when a PIE session is beginning (before we decide if PIE can run - allows clients to avoid blocking PIE) */
 	static FOnPIEEvent PreBeginPIE;
 	/** Sent when a PIE session is beginning (but hasn't actually started yet) */
@@ -222,6 +248,8 @@ struct UNREALED_API FEditorDelegates
 	static FOnDollyPerspectiveCamera OnDollyPerspectiveCamera;
 	/** Called on editor shutdown after packages have been successfully saved */
 	static FSimpleMulticastDelegate OnShutdownPostPackagesSaved;
+	/** Called when the user requests assets to be deleted to determine if the operation is available.  */
+	static FOnAssetsCanDelete OnAssetsCanDelete;
 	/** Called when the user requests certain assets be deleted (DOES NOT imply that the asset will be deleted... the user could cancel) */
 	static FOnAssetsPreDelete OnAssetsPreDelete;
 	/** Called when one or more assets have been deleted */
@@ -253,7 +281,7 @@ struct UNREALED_API FEditorDelegates
 	/** Sent when delete end called */
 	static FOnDeleteActorsEnd OnDeleteActorsEnd;
 	/** Called when you want to view things in the reference viewer, these are bound to by asset manager editor plugins */
-	static FOnViewAssetIdentifiers OnOpenReferenceViewer;
+	static FOnOpenReferenceViewer OnOpenReferenceViewer;
 	/** Called when you want to view things in the size map */
 	static FOnViewAssetIdentifiers OnOpenSizeMap;
 	/** Called when you want to view things in the asset audit window */
@@ -653,6 +681,9 @@ namespace EditorUtilities
 
 			/** Filters out Blueprint Read-only properties */
 			FilterBlueprintReadOnly = 1 << 5,
+
+			/** Filters out properties that are marked instance only. */
+			SkipInstanceOnlyProperties = 1 << 6,
 		};
 	}
 
@@ -664,7 +695,7 @@ namespace EditorUtilities
 		FCopyOptions(const ECopyOptions::Type InFlags) : Flags(InFlags) {}
 
 		/** Check whether we can copy the specified property */
-		bool CanCopyProperty(UProperty& Property, UObject& Object) const
+		bool CanCopyProperty(FProperty& Property, UObject& Object) const
 		{
 			return !PropertyFilter || PropertyFilter(Property, Object);
 		}
@@ -673,11 +704,11 @@ namespace EditorUtilities
 		ECopyOptions::Type Flags;
 
 		/** User-specified custom property filter predicate */
-		TFunction<bool(UProperty&, UObject&)> PropertyFilter;
+		TFunction<bool(FProperty&, UObject&)> PropertyFilter;
 	};
 
 	/** Helper function for CopyActorProperties(). Copies a single property form a source object to a target object. */
-	UNREALED_API void CopySingleProperty(const UObject* const InSourceObject, UObject* const InTargetObject, UProperty* const InProperty);
+	UNREALED_API void CopySingleProperty(const UObject* const InSourceObject, UObject* const InTargetObject, FProperty* const InProperty);
 
 	/**
 	 * Copies properties from one actor to another.  Designed for propagating changes made to PIE actors back to their EditorWorld

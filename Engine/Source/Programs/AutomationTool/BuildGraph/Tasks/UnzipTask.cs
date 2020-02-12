@@ -1,4 +1,4 @@
-﻿// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+﻿// Copyright Epic Games, Inc. All Rights Reserved.
 
 using AutomationTool;
 using System;
@@ -18,19 +18,19 @@ namespace BuildGraph.Tasks
 	public class UnzipTaskParameters
 	{
 		/// <summary>
-		/// Path to the zip file to extract
+		/// Path to the zip file to extract.
 		/// </summary>
 		[TaskParameter(ValidationType = TaskParameterValidationType.FileSpec)]
 		public string ZipFile;
 
 		/// <summary>
-		/// Output directory for the extracted files
+		/// Output directory for the extracted files.
 		/// </summary>
 		[TaskParameter]
 		public DirectoryReference ToDir;
 
 		/// <summary>
-		/// Tag to be applied to the extracted files
+		/// Tag to be applied to the extracted files.
 		/// </summary>
 		[TaskParameter(Optional = true, ValidationType = TaskParameterValidationType.TagList)]
 		public string Tag;

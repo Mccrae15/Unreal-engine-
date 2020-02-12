@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "OpenGL/SlateOpenGLTextureManager.h"
 #include "Misc/FileHelper.h"
@@ -142,10 +142,8 @@ bool FSlateOpenGLTextureManager::LoadTexture( const FSlateBrush& InBrush, uint32
 			OutHeight = ImageWrapper->GetHeight();
 
 			// Decode the png and get the data in raw rgb
-			const TArray<uint8>* RawData = NULL;
-			if (ImageWrapper->GetRaw(ERGBFormat::RGBA, 8, RawData))
+			if (ImageWrapper->GetRaw(ERGBFormat::RGBA, 8, OutDecodedImage))
 			{
-				OutDecodedImage = *RawData;
 				bSucceeded = true;
 			}
 			else

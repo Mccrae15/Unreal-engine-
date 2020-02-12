@@ -1,8 +1,9 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 #pragma once
 
 #include "CoreMinimal.h"
 #include "BuildPatchManifest.h"
+
 
 namespace BuildPatchServices
 {
@@ -11,8 +12,9 @@ namespace BuildPatchServices
 	class IInstallerError;
 	class IFileSystem;
 	class IPlatform;
-	struct FInstallerConfiguration;
+	struct FBuildInstallerConfiguration;
 	struct FBuildPatchProgress;
+	class IBuildManifestSet;
 
 	class IPrerequisites
 	{
@@ -30,7 +32,7 @@ namespace BuildPatchServices
 		 * @param BuildProgress       Used to keep track of install progress.
 		 * @return                    Returns true if the prerequisites installer succeeded, false otherwise.
 		 */
-		virtual bool RunPrereqs(const FBuildPatchAppManifestRef& BuildManifest, const FInstallerConfiguration& Configuration, const FString& InstallStagingDir, FBuildPatchProgress& BuildProgress) = 0;
+		virtual bool RunPrereqs(const IBuildManifestSet* ManifestSet, const FBuildInstallerConfiguration& Configuration, const FString& InstallStagingDir, FBuildPatchProgress& BuildProgress) = 0;
 	};
 
 	/**

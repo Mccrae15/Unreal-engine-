@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "CoreMinimal.h"
 #include "Misc/AutomationTest.h"
@@ -26,9 +26,8 @@ void TimerTest_TickWorld(UWorld* World, float Time = 1.f)
 	}
 }
 
-class FDummy
+struct FDummy
 {
-public:
 	FDummy() { Count = 0; }
 
 	void Callback() { ++Count; }

@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "TimecodeSynchronizerEditorModule.h"
 
@@ -45,7 +45,7 @@ public:
 
 	virtual void ShutdownModule() override
 	{
-		if (!IsRunningCommandlet() && UObjectInitialized() && !GIsRequestingExit)
+		if (!IsRunningCommandlet() && UObjectInitialized() && !IsEngineExitRequested())
 		{
 			// Unregister settings
 			FModuleManager::GetModulePtr<ISettingsModule>("Settings")->UnregisterSettings("Project", "Plugins", "TimecodeSynchronizer");

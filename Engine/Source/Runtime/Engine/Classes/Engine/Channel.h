@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -71,6 +71,7 @@ class ENGINE_API UChannel
 	uint32				SentClosingBunch:1;	// Set when sending closing bunch to avoid recursion in send-failure-close case.
 	uint32				bPooled:1;			// Set when placed in the actor channel pool
 	uint32				OpenedLocally:1;	// Whether channel was opened locally or by remote.
+	uint32				bOpenedForCheckpoint:1;	// Whether channel was opened by replay checkpoint recording
 	int32				ChIndex;			// Index of this channel.
 	FPacketIdRange		OpenPacketId;		// If OpenedLocally is true, this is the packet we sent the bOpen bunch on. Otherwise, it's the packet we received the bOpen bunch on.
 	UE_DEPRECATED(4.22, "ChType has been deprecated in favor of ChName.")
@@ -114,6 +115,9 @@ public:
 	/** Handle an incoming bunch. */
 	virtual void ReceivedBunch( FInBunch& Bunch ) PURE_VIRTUAL(UChannel::ReceivedBunch,);
 	
+	/** Positive acknowledgment processing. */
+	virtual void ReceivedAck( int32 AckPacketId );
+
 	/** Negative acknowledgment processing. */
 	virtual void ReceivedNak( int32 NakPacketId );
 	
@@ -190,7 +194,7 @@ protected:
 private:
 
 	/** Just sends the bunch out on the connection */
-	int32 SendRawBunch(FOutBunch* Bunch, bool Merge);
+	int32 SendRawBunch(FOutBunch* Bunch, bool Merge, const FNetTraceCollector* Collector = nullptr);
 
 	/** Final step to prepare bunch to be sent. If reliable, adds to acknowldege list. */
 	FOutBunch* PrepBunch(FOutBunch* Bunch, FOutBunch* OutBunch, bool Merge);

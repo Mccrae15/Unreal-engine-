@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -14,6 +14,27 @@
 #endif
 
 #define USE_MUTE_SWITCH_DETECTION 0
+
+enum class EAudioFeature : uint8
+{
+	Playback, // Audio Not affected by the ringer switch
+	Record, // Recording only, unless Playback or VoiceChat is also set
+
+	DoNotMixWithOthers, // Do not mix audio with other applications
+
+	VoiceChat, // set AVAudioSessionModeVoiceChat when both Playback and Record are enabled
+	UseReceiver, // use receiver instead of speaker when both Playback and Record are enabled. Headsets will still be preferred if they are present
+	DisableBluetoothSpeaker, // disable the use of Bluetooth A2DP speakers when both Playback and Record are enabled
+
+	BluetoothMicrophone, // enable the use of Bluetooth HFP headsets when Record is enabled
+
+	BackgroundAudio, // continue to play audio in the background. Requires an appropriate background mode to be set in Info.plist
+
+	NumFeatures,
+};
+
+void LexFromString(EAudioFeature& OutFeature, const TCHAR* String);
+FString LexToString(EAudioFeature Feature);
 
 // Predicate to decide whether a push notification message should be processed
 DECLARE_DELEGATE_RetVal_OneParam(bool, FPushNotificationFilter, NSDictionary*);
@@ -34,6 +55,14 @@ public:
 	/** INTERNAL - check if a push notification payload passes all registered filters */
 	static bool PassesPushNotificationFilters(NSDictionary* Payload);
 
+	/** INTERNAL - called when entering the background - this is not thread-safe with the game thread or render thread as it is called from the app's Main thread */
+	DECLARE_MULTICAST_DELEGATE(FOnWillResignActive);
+	static FOnWillResignActive OnWillResignActive;
+
+	/** INTERNAL - called when becoming active - this is not thread-safe with the game thread or render thread as it is called from the app's Main thread */
+	DECLARE_MULTICAST_DELEGATE(FOnDidBecomeActive);
+	static FOnWillResignActive OnDidBecomeActive;
+	
 private:
 	struct FFilterDelegateAndHandle
 	{
@@ -58,9 +87,15 @@ namespace FAppEntry
 	void Init();
 	void Tick();
     void SuspendTick();
+	void ResumeAudioContext();
+	void ResetAudioContextResumeTime();
 	void Shutdown();
     void Suspend(bool bIsInterrupt = false);
     void Resume(bool bIsInterrupt = false);
+	void RestartAudio();
+    void IncrementAudioSuspendCounters();
+    void DecrementAudioSuspendCounters();
+
 	bool IsStartupMoviePlaying();
 
 	extern bool	gAppLaunchedWithLocalNotification;
@@ -68,6 +103,7 @@ namespace FAppEntry
 	extern int32	gLaunchLocalNotificationFireDate;
 }
 
+APPLICATIONCORE_API
 @interface IOSAppDelegate : UIResponder <UIApplicationDelegate,
 #if !UE_BUILD_SHIPPING
 	UIGestureRecognizerDelegate,
@@ -76,7 +112,10 @@ namespace FAppEntry
 #if __IPHONE_OS_VERSION_MIN_REQUIRED >= __IPHONE_10_0
 	UNUserNotificationCenterDelegate,
 #endif
-UITextFieldDelegate>
+	UITextFieldDelegate>
+{
+    bool bForceExit;
+}
 
 /** Window object */
 @property (strong, retain, nonatomic) UIWindow *Window;
@@ -87,7 +126,7 @@ UITextFieldDelegate>
 @property class FIOSApplication* IOSApplication;
 
 /** The controller to handle rotation of the view */
-@property (retain) IOSViewController* IOSController;
+@property (readonly) UIViewController* IOSController;
 
 /** The view controlled by the auto-rotating controller */
 @property (retain) UIView* RootView;
@@ -113,6 +152,13 @@ UITextFieldDelegate>
 /** The time delay (in seconds) between idle timer enable requests and actually enabling the idle timer */
 @property (readonly) float IdleTimerEnablePeriod;
 
+#if WITH_ACCESSIBILITY
+/** Timer used for updating cached data from game thread for all accessible widgets. */
+@property (nonatomic, retain) NSTimer* AccessibilityCacheTimer;
+/** Callback for IOS notification of VoiceOver being enabled or disabled. */
+-(void)OnVoiceOverStatusChanged;
+#endif
+
 // parameters passed from openURL
 @property (nonatomic, retain) NSMutableArray* savedOpenUrlParameters;
 
@@ -122,7 +168,7 @@ UITextFieldDelegate>
 	@property (nonatomic, retain) UIAlertView*		ConsoleAlert;
 #endif
 #ifdef __IPHONE_8_0
-	@property (nonatomic, assign) UIAlertController* ConsoleAlertController;
+	@property (nonatomic, retain) UIAlertController* ConsoleAlertController;
 #endif
 	@property (nonatomic, retain) NSMutableArray*	ConsoleHistoryValues;
 	@property (nonatomic, assign) int				ConsoleHistoryValuesIndex;
@@ -142,6 +188,8 @@ UITextFieldDelegate>
 @property (assign) bool bBatteryState;
 @property (assign) int BatteryLevel;
 
+@property (assign) bool bUpdateAvailable;
+
 /**
  * @return the single app delegate object
  */
@@ -149,8 +197,10 @@ UITextFieldDelegate>
 
 -(bool)IsIdleTimerEnabled;
 -(void)EnableIdleTimer:(bool)bEnable;
-
--(void) ParseCommandLineOverrides;
+-(void)StartGameThread;
+/** Uses the TaskGraph to execute a function on the game thread, and then blocks until the function is executed. */
++(bool)WaitAndRunOnGameThread:(TUniqueFunction<void()>)Function;
+-(void)NoUrlCommandLine;
 
 -(int)GetAudioVolume;
 -(bool)AreHeadphonesPluggedIn;
@@ -158,6 +208,12 @@ UITextFieldDelegate>
 -(bool)IsRunningOnBattery;
 -(NSProcessInfoThermalState)GetThermalState;
 -(void)CheckForZoomAccessibility;
+-(float)GetBackgroundingMainThreadBlockTime;
+-(void)OverrideBackgroundingMainThreadBlockTime:(float)BlockTime;
+
+-(bool)IsUpdateAvailable;
+
+@property (assign) bool bAudioSessionInitialized;
 
 /** TRUE if the device is playing background music and we want to allow that */
 @property (assign) bool bUsingBackgroundMusic;
@@ -173,10 +229,16 @@ UITextFieldDelegate>
 @property (assign) bool bForceEmitVolume;
 
 - (void)InitializeAudioSession;
-- (void)ToggleAudioSession:(bool)bActive force:(bool)bForce;
+- (void)ToggleAudioSession:(bool)bActive;
 - (bool)IsBackgroundAudioPlaying;
+- (bool)HasRecordPermission;
 - (void)EnableVoiceChat:(bool)bEnable;
+- (void)EnableHighQualityVoiceChat:(bool)bEnable;
 - (bool)IsVoiceChatEnabled;
+
+/** Enable/Disable an EAudioFeature. This is reference counted, so a feature must be disabled as many times as it has been enabled to actually be disabled. */
+- (void)SetFeature:(EAudioFeature)Feature Active:(bool)bIsActive;
+- (bool)IsFeatureActive:(EAudioFeature)Mode;
 
 @property (atomic) bool bAudioActive;
 @property (atomic) bool bVoiceChatEnabled;
@@ -186,6 +248,7 @@ UITextFieldDelegate>
 @property (atomic) bool bHasStarted;
 - (void)ToggleSuspend:(bool)bSuspend;
 
+- (void)ForceExit;
 
 @property (nonatomic, copy) void(^BackgroundSessionEventCompleteDelegate)();
 

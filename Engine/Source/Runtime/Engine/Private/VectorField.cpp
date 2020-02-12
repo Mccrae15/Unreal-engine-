@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 /*==============================================================================
 	VectorField.cpp: Implementation of vector fields.
@@ -57,15 +57,16 @@ FVectorFieldInstance::~FVectorFieldInstance()
 {
 	if (Resource && bInstancedResource)
 	{
-		FVectorFieldResource* InResource = Resource;
+		FVectorFieldResource* InResource = Resource.GetReference();
+		InResource->AddRef();
 		ENQUEUE_RENDER_COMMAND(FDestroyVectorFieldResourceCommand)(
 			[InResource](FRHICommandList& RHICmdList)
 			{
 				InResource->ReleaseResource();
-				delete InResource;
+				InResource->Release();
 			});
-		Resource = nullptr;
 	}
+	Resource = nullptr;
 }
 
 /**
@@ -75,7 +76,7 @@ FVectorFieldInstance::~FVectorFieldInstance()
  */
 void FVectorFieldInstance::Init(FVectorFieldResource* InResource, bool bInstanced)
 {
-	check(Resource == NULL);
+	check(!Resource);
 	Resource = InResource;
 	bInstancedResource = bInstanced;
 }
@@ -188,12 +189,15 @@ public:
 		InVectorField->SourceData.GetCopy(&VolumeData, /*bDiscardInternalCopy=*/ true);
 	}
 
+protected:
 	/** Destructor. */
 	virtual ~FVectorFieldStaticResource()
 	{
 		FMemory::Free(VolumeData);
 		VolumeData = NULL;
 	}
+
+public:
 
 	/**
 	 * Initialize RHI resources.
@@ -239,11 +243,10 @@ public:
 		UpdateParams.VolumeData = NULL;
 		InVectorField->SourceData.GetCopy(&UpdateParams.VolumeData, /*bDiscardInternalCopy=*/ true);
 
-		ENQUEUE_UNIQUE_RENDER_COMMAND_TWOPARAMETER(
-			FUpdateStaticVectorFieldCommand,
-			FVectorFieldStaticResource*, Resource, this,
-			FUpdateParams, UpdateParams, UpdateParams,
-		{
+		FVectorFieldStaticResource* Resource = this;
+		ENQUEUE_RENDER_COMMAND(FUpdateStaticVectorFieldCommand)(
+			[Resource, UpdateParams](FRHICommandListImmediate& RHICmdList)
+			{
 				// Free any existing volume data on the resource.
 				FMemory::Free(Resource->VolumeData);
 
@@ -257,7 +260,7 @@ public:
 
 				// Update RHI resources.
 				Resource->UpdateRHI();
-		});
+			});
 	}
 
 private:
@@ -280,36 +283,38 @@ void UVectorFieldStatic::InitInstance(FVectorFieldInstance* Instance, bool bPrev
 
 void UVectorFieldStatic::InitResource()
 {
-	check(Resource == NULL);
+	check(!Resource);
 
 	// Loads and copies the bulk data into CPUData if bAllowCPUAccess is set, otherwise clear CPUData. 
-	UpdateCPUData();
+	UpdateCPUData(false);
 
-	Resource = new FVectorFieldStaticResource(this);
+	Resource = new FVectorFieldStaticResource(this); // Will discard the contents of SourceData
+	Resource->AddRef(); // Increment refcount because of UVectorFieldStatic::Resource is not a TRefCountPtr.
+
 	BeginInitResource(Resource);
 }
 
 
 void UVectorFieldStatic::UpdateResource()
 {
-	check(Resource != NULL);
+	check(Resource);
 
 	// Loads and copies the bulk data into CPUData if bAllowCPUAccess is set, otherwise clears CPUData. 
-	UpdateCPUData();
+	UpdateCPUData(false);
 
 	FVectorFieldStaticResource* StaticResource = (FVectorFieldStaticResource*)Resource;
-	StaticResource->UpdateResource(this);
+	StaticResource->UpdateResource(this); // Will discard the contents of SourceData
 }
 
 #if WITH_EDITOR
 ENGINE_API void UVectorFieldStatic::SetCPUAccessEnabled()
 {
 	bAllowCPUAccess = true;
-	UpdateCPUData();
+	UpdateCPUData(true);
 }
 #endif // WITH_EDITOR
 
-void UVectorFieldStatic::UpdateCPUData()
+void UVectorFieldStatic::UpdateCPUData(bool bDiscardData)
 {
 	if (bAllowCPUAccess)
 	{
@@ -317,7 +322,7 @@ void UVectorFieldStatic::UpdateCPUData()
 		// If the data is already loaded it makes a copy and discards the old content,
 		// otherwise it simply loads the data directly from file into the pointer after allocating.
 		FFloat16Color *Ptr = nullptr;
-		SourceData.GetCopy((void**)&Ptr, /* bDiscardInternalCopy */ true);
+		SourceData.GetCopy((void**)&Ptr, bDiscardData);
 
 		// Make sure the data is actually valid. 
 		if (!ensure(Ptr))
@@ -335,7 +340,7 @@ void UVectorFieldStatic::UpdateCPUData()
 		}
 
 		// GetCopy should free/unload the data.
-		if (SourceData.IsBulkDataLoaded())
+		if (bDiscardData && SourceData.IsBulkDataLoaded())
 		{
 			// NOTE(mv): This assertion will fail in the case where the bulk data is still available even though the bDiscardInternalCopy
 			//           flag is toggled when FUntypedBulkData::CanLoadFromDisk() also fail. This happens when the user tries to allow 
@@ -378,17 +383,18 @@ FRHITexture* UVectorFieldStatic::GetVolumeTextureRef()
 
 void UVectorFieldStatic::ReleaseResource()
 {
-	if ( Resource != NULL )
+	if (Resource)
 	{
-		FRenderResource* InResource = Resource;
+		FVectorFieldResource* InResource = Resource;
 		ENQUEUE_RENDER_COMMAND(ReleaseVectorFieldCommand)(
 			[InResource](FRHICommandList& RHICmdList)
 			{
 				InResource->ReleaseResource();
-				delete InResource;
+				// Decrement the refcount and possibly delete (see refs from FVectorFieldInstance).
+				InResource->Release(); 
 			});
+		Resource = nullptr;
 	}
-	Resource = nullptr;
 }
 
 void UVectorFieldStatic::Serialize(FArchive& Ar)
@@ -401,7 +407,7 @@ void UVectorFieldStatic::Serialize(FArchive& Ar)
 		SourceData.SetBulkDataFlags(BULKDATA_ForceInlinePayload | BULKDATA_SingleUse);
 	}
 
-	SourceData.Serialize(Ar,this);
+	SourceData.Serialize(Ar, this, INDEX_NONE, false);
 }
 
 void UVectorFieldStatic::PostLoad()
@@ -545,7 +551,7 @@ public:
 		FPrimitiveViewRelevance Result;
 		Result.bDrawRelevance = IsShown(View); 
 		Result.bDynamicRelevance = true;
-		Result.bOpaqueRelevance = true;
+		Result.bOpaque = true;
 		return Result;
 	}
 
@@ -688,7 +694,7 @@ void UVectorFieldComponent::SetIntensity(float NewIntensity)
 }
 
 
-void UVectorFieldComponent::PostInterpChange(UProperty* PropertyThatChanged)
+void UVectorFieldComponent::PostInterpChange(FProperty* PropertyThatChanged)
 {
 	static const FName IntensityPropertyName(TEXT("Intensity"));
 
@@ -780,19 +786,6 @@ public:
 		OutVolumeTextureSampler.Bind( Initializer.ParameterMap, TEXT("OutVolumeTextureSampler") );
 	}
 
-	/** Serialization. */
-	virtual bool Serialize( FArchive& Ar ) override
-	{
-		bool bShaderHasOutdatedParameters = FGlobalShader::Serialize( Ar );
-		Ar << AtlasTexture;
-		Ar << AtlasTextureSampler;
-		Ar << NoiseVolumeTexture;
-		Ar << NoiseVolumeTextureSampler;
-		Ar << OutVolumeTexture;
-		Ar << OutVolumeTextureSampler;
-		return bShaderHasOutdatedParameters;
-	}
-
 	/**
 	 * Set parameters for this shader.
 	 * @param UniformBuffer - Uniform buffer containing parameters for compositing vector fields.
@@ -802,11 +795,11 @@ public:
 	void SetParameters(
 		FRHICommandList& RHICmdList, 
 		const FCompositeAnimatedVectorFieldUniformBufferRef& UniformBuffer,
-		FTextureRHIParamRef AtlasTextureRHI,
-		FTextureRHIParamRef NoiseVolumeTextureRHI )
+		FRHITexture* AtlasTextureRHI,
+		FRHITexture* NoiseVolumeTextureRHI )
 	{
-		FComputeShaderRHIParamRef ComputeShaderRHI = GetComputeShader();
-		FSamplerStateRHIParamRef SamplerStateLinear = TStaticSamplerState<SF_Bilinear,AM_Clamp,AM_Clamp,AM_Clamp>::GetRHI();
+		FRHIComputeShader* ComputeShaderRHI = RHICmdList.GetBoundComputeShader();
+		FRHISamplerState* SamplerStateLinear = TStaticSamplerState<SF_Bilinear,AM_Clamp,AM_Clamp,AM_Clamp>::GetRHI();
 		SetUniformBufferParameter(RHICmdList, ComputeShaderRHI, GetUniformBufferParameter<FCompositeAnimatedVectorFieldUniformParameters>(), UniformBuffer );
 		SetTextureParameter(RHICmdList, ComputeShaderRHI, AtlasTexture, AtlasTextureSampler, SamplerStateLinear, AtlasTextureRHI );
 		SetTextureParameter(RHICmdList, ComputeShaderRHI, NoiseVolumeTexture, NoiseVolumeTextureSampler, SamplerStateLinear, NoiseVolumeTextureRHI );
@@ -815,9 +808,9 @@ public:
 	/**
 	 * Set output buffer for this shader.
 	 */
-	void SetOutput(FRHICommandList& RHICmdList, FUnorderedAccessViewRHIParamRef VolumeTextureUAV)
+	void SetOutput(FRHICommandList& RHICmdList, FRHIUnorderedAccessView* VolumeTextureUAV)
 	{
-		FComputeShaderRHIParamRef ComputeShaderRHI = GetComputeShader();
+		FRHIComputeShader* ComputeShaderRHI = RHICmdList.GetBoundComputeShader();
 		if ( OutVolumeTexture.IsBound() )
 		{
 			RHICmdList.SetUAVParameter(ComputeShaderRHI, OutVolumeTexture.GetBaseIndex(), VolumeTextureUAV);
@@ -829,24 +822,23 @@ public:
 	 */
 	void UnbindBuffers(FRHICommandList& RHICmdList)
 	{
-		FComputeShaderRHIParamRef ComputeShaderRHI = GetComputeShader();
+		FRHIComputeShader* ComputeShaderRHI = RHICmdList.GetBoundComputeShader();
 		if ( OutVolumeTexture.IsBound() )
 		{
-			RHICmdList.SetUAVParameter(ComputeShaderRHI, OutVolumeTexture.GetBaseIndex(), FUnorderedAccessViewRHIParamRef());
+			RHICmdList.SetUAVParameter(ComputeShaderRHI, OutVolumeTexture.GetBaseIndex(), nullptr);
 		}
 	}
 
 private:
-
 	/** Vector field volume textures to composite. */
-	FShaderResourceParameter AtlasTexture;
-	FShaderResourceParameter AtlasTextureSampler;
+	LAYOUT_FIELD(FShaderResourceParameter, AtlasTexture);
+	LAYOUT_FIELD(FShaderResourceParameter, AtlasTextureSampler);
 	/** Volume texture to sample as noise. */
-	FShaderResourceParameter NoiseVolumeTexture;
-	FShaderResourceParameter NoiseVolumeTextureSampler;
+	LAYOUT_FIELD(FShaderResourceParameter, NoiseVolumeTexture);
+	LAYOUT_FIELD(FShaderResourceParameter, NoiseVolumeTextureSampler);
 	/** The global vector field volume texture to write to. */
-	FShaderResourceParameter OutVolumeTexture;
-	FShaderResourceParameter OutVolumeTextureSampler;
+	LAYOUT_FIELD(FShaderResourceParameter, OutVolumeTexture);
+	LAYOUT_FIELD(FShaderResourceParameter, OutVolumeTextureSampler);
 };
 IMPLEMENT_SHADER_TYPE(,FCompositeAnimatedVectorFieldCS,TEXT("/Engine/Private/VectorFieldCompositeShaders.usf"),TEXT("CompositeAnimatedVectorField"),SF_Compute);
 
@@ -982,14 +974,14 @@ public:
 				FCompositeAnimatedVectorFieldUniformBufferRef::CreateUniformBufferImmediate(Parameters, UniformBuffer_SingleDraw);
 
 			TShaderMapRef<FCompositeAnimatedVectorFieldCS> CompositeCS(GetGlobalShaderMap(GetFeatureLevel()));
-			FTextureRHIParamRef NoiseVolumeTextureRHI = GBlackVolumeTexture->TextureRHI;
+			FRHITexture* NoiseVolumeTextureRHI = GBlackVolumeTexture->TextureRHI;
 			if (AnimatedVectorField->NoiseField && AnimatedVectorField->NoiseField->Resource)
 			{
 				NoiseVolumeTextureRHI = AnimatedVectorField->NoiseField->Resource->VolumeTextureRHI;
 			}
 
 			RHICmdList.TransitionResource(EResourceTransitionAccess::ERWBarrier, EResourceTransitionPipeline::EGfxToCompute, VolumeTextureUAV);
-			RHICmdList.SetComputeShader(CompositeCS->GetComputeShader());
+			RHICmdList.SetComputeShader(CompositeCS.GetComputeShader());
 			CompositeCS->SetOutput(RHICmdList, VolumeTextureUAV);
 			/// ?
 			CompositeCS->SetParameters(
@@ -999,7 +991,7 @@ public:
 				NoiseVolumeTextureRHI );
 			DispatchComputeShader(
 				RHICmdList,
-				*CompositeCS,
+				CompositeCS.GetShader(),
 				SizeX / THREADS_PER_AXIS,
 				SizeY / THREADS_PER_AXIS,
 				SizeZ / THREADS_PER_AXIS );

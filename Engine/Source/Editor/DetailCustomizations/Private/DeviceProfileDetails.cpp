@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "DeviceProfileDetails.h"
 #include "HAL/IConsoleManager.h"
@@ -747,7 +747,7 @@ void FDeviceProfileConsoleVariablesPropertyDetails::CreateRowWidgetForCVarProper
 			SNew(SEditableTextBox)
 			.Text(FText::FromString(CVarValueAsString))
 			.SelectAllTextWhenFocused(true)
-			.OnTextCommitted(this, &FDeviceProfileConsoleVariablesPropertyDetails::OnCVarValueCommited, InProperty)
+			.OnTextCommitted(const_cast<FDeviceProfileConsoleVariablesPropertyDetails*>(this), &FDeviceProfileConsoleVariablesPropertyDetails::OnCVarValueCommited, InProperty)
 		]
 		+ SHorizontalBox::Slot()
 		.Padding(DeviceProfilePropertyConstants::PropertyPadding)
@@ -755,7 +755,7 @@ void FDeviceProfileConsoleVariablesPropertyDetails::CreateRowWidgetForCVarProper
 		[
 			SNew(SButton)
 			.ButtonStyle(FEditorStyle::Get(), "HoverHintOnly")
-			.OnClicked(this, &FDeviceProfileConsoleVariablesPropertyDetails::OnRemoveCVarProperty, InProperty)
+			.OnClicked(const_cast<FDeviceProfileConsoleVariablesPropertyDetails*>(this), &FDeviceProfileConsoleVariablesPropertyDetails::OnRemoveCVarProperty, InProperty)
 			.ContentPadding(4.0f)
 			.ForegroundColor(FSlateColor::UseForeground())
 			.IsFocusable(false)

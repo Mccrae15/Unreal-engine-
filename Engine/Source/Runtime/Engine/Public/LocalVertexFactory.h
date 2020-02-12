@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -19,6 +19,7 @@ BEGIN_GLOBAL_SHADER_PARAMETER_STRUCT(FLocalVertexFactoryUniformShaderParameters,
 	SHADER_PARAMETER(FIntVector4,VertexFetch_Parameters)
 	SHADER_PARAMETER(uint32,LODLightmapDataIndex)
 	SHADER_PARAMETER_SRV(Buffer<float2>, VertexFetch_TexCoordBuffer)
+	SHADER_PARAMETER_SRV(Buffer<float>, VertexFetch_PositionBuffer)
 	SHADER_PARAMETER_SRV(Buffer<float4>, VertexFetch_PackedTangentsBuffer)
 	SHADER_PARAMETER_SRV(Buffer<float4>, VertexFetch_ColorComponentsBuffer)
 END_GLOBAL_SHADER_PARAMETER_STRUCT()
@@ -52,9 +53,9 @@ public:
 	/**
 	 * Should we cache the material's shadertype on this platform with this vertex factory? 
 	 */
-	static bool ShouldCompilePermutation(EShaderPlatform Platform, const class FMaterial* Material, const class FShaderType* ShaderType);
+	static bool ShouldCompilePermutation(const FVertexFactoryShaderPermutationParameters& Parameters);
 
-	static void ModifyCompilationEnvironment(const FVertexFactoryType* Type, EShaderPlatform Platform, const FMaterial* Material, FShaderCompilerEnvironment& OutEnvironment);
+	static void ModifyCompilationEnvironment(const FVertexFactoryShaderPermutationParameters& Parameters, FShaderCompilerEnvironment& OutEnvironment);
 
 	static void ValidateCompiledResult(const FVertexFactoryType* Type, EShaderPlatform Platform, const FShaderParameterMap& ParameterMap, TArray<FString>& OutErrors);
 
@@ -79,8 +80,6 @@ public:
 
 	static bool SupportsTessellationShaders() { return true; }
 
-	static FVertexFactoryShaderParameters* ConstructShaderParameters(EShaderFrequency ShaderFrequency);
-
 	FORCEINLINE_DEBUGGABLE void SetColorOverrideStream(FRHICommandList& RHICmdList, const FVertexBuffer* ColorVertexBuffer) const
 	{
 		checkf(ColorVertexBuffer->IsInitialized(), TEXT("Color Vertex buffer was not initialized! Name %s"), *ColorVertexBuffer->GetFriendlyName());
@@ -96,22 +95,22 @@ public:
 		VertexStreams.Add(FVertexInputStream(ColorStreamIndex, 0, ColorVertexBuffer->VertexBufferRHI));
 	}
 
-	inline const FShaderResourceViewRHIParamRef GetPositionsSRV() const
+	inline FRHIShaderResourceView* GetPositionsSRV() const
 	{
 		return Data.PositionComponentSRV;
 	}
 
-	inline const FShaderResourceViewRHIParamRef GetTangentsSRV() const
+	inline FRHIShaderResourceView* GetTangentsSRV() const
 	{
 		return Data.TangentsSRV;
 	}
 
-	inline const FShaderResourceViewRHIParamRef GetTextureCoordinatesSRV() const
+	inline FRHIShaderResourceView* GetTextureCoordinatesSRV() const
 	{
 		return Data.TextureCoordinatesSRV;
 	}
 
-	inline const FShaderResourceViewRHIParamRef GetColorComponentsSRV() const
+	inline FRHIShaderResourceView* GetColorComponentsSRV() const
 	{
 		return Data.ColorComponentsSRV;
 	}
@@ -131,7 +130,7 @@ public:
 		return Data.NumTexCoords;
 	}
 
-	FUniformBufferRHIParamRef GetUniformBuffer() const
+	FRHIUniformBuffer* GetUniformBuffer() const
 	{
 		return UniformBuffer.GetReference();
 	}
@@ -163,19 +162,19 @@ protected:
  */
 class FLocalVertexFactoryShaderParametersBase : public FVertexFactoryShaderParameters
 {
+	DECLARE_TYPE_LAYOUT(FLocalVertexFactoryShaderParametersBase, NonVirtual);
 public:
-	virtual void Bind(const FShaderParameterMap& ParameterMap) override;
-	virtual void Serialize(FArchive& Ar) override;
+	void Bind(const FShaderParameterMap& ParameterMap);
 
 	void GetElementShaderBindingsBase(
 		const class FSceneInterface* Scene,
 		const FSceneView* View,
 		const FMeshMaterialShader* Shader,
-		bool bShaderRequiresPositionOnlyStream,
+		const EVertexInputStreamType InputStreamType,
 		ERHIFeatureLevel::Type FeatureLevel,
 		const FVertexFactory* VertexFactory,
 		const FMeshBatchElement& BatchElement,
-		FUniformBufferRHIParamRef VertexFactoryUniformBuffer,
+		FRHIUniformBuffer* VertexFactoryUniformBuffer,
 		FMeshDrawSingleShaderBindings& ShaderBindings,
 		FVertexInputStreamArray& VertexStreams
 		) const;
@@ -186,26 +185,26 @@ public:
 	}
 
 	// SpeedTree LOD parameter
-	FShaderParameter LODParameter;
+	LAYOUT_FIELD(FShaderParameter, LODParameter);
 
 	// True if LODParameter is bound, which puts us on the slow path in GetElementShaderBindings
-	bool bAnySpeedTreeParamIsBound;
+	LAYOUT_FIELD(bool, bAnySpeedTreeParamIsBound);
 };
 
 /** Shader parameter class used by FLocalVertexFactory only - no derived classes. */
 class FLocalVertexFactoryShaderParameters : public FLocalVertexFactoryShaderParametersBase
 {
+	DECLARE_TYPE_LAYOUT(FLocalVertexFactoryShaderParameters, NonVirtual);
 public:
-
-	virtual void GetElementShaderBindings(
+	void GetElementShaderBindings(
 		const FSceneInterface* Scene,
 		const FSceneView* View,
 		const FMeshMaterialShader* Shader,
-		bool bShaderRequiresPositionOnlyStream,
+		const EVertexInputStreamType InputStreamType,
 		ERHIFeatureLevel::Type FeatureLevel,
 		const FVertexFactory* VertexFactory,
 		const FMeshBatchElement& BatchElement,
 		FMeshDrawSingleShaderBindings& ShaderBindings,
 		FVertexInputStreamArray& VertexStreams
-	) const override; 
+	) const; 
 };

@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 /*=============================================================================
 	GPUSkinVertexFactory.h: GPU skinning vertex factory definitions.
@@ -25,8 +25,6 @@ END_GLOBAL_SHADER_PARAMETER_STRUCT()
 typedef TUniformBufferRef<FGeometryCacheVertexFactoryUniformBufferParameters> FGeometryCacheVertexFactoryUniformBufferParametersRef;
 
 BEGIN_GLOBAL_SHADER_PARAMETER_STRUCT(FGeometryCacheManualVertexFetchUniformBufferParameters, ENGINE_API)
-	// FIXME: UE-69107 error X3000: syntax error: unexpected token ','
-	SHADER_PARAMETER(float, Dummy)
 	SHADER_PARAMETER_SRV(Buffer<float>, Position)
 	SHADER_PARAMETER_SRV(Buffer<float>, MotionBlurData)
 	SHADER_PARAMETER_SRV(Buffer<half4>, TangentX)
@@ -102,9 +100,8 @@ public:
 	};
 
 
-	static void ModifyCompilationEnvironment(const FVertexFactoryType* Type, EShaderPlatform Platform, const class FMaterial* Material, FShaderCompilerEnvironment& OutEnvironment);
-	static bool ShouldCache(EShaderPlatform Platform, const class FMaterial* Material, const FShaderType* ShaderType);
-	static bool ShouldCompilePermutation(EShaderPlatform Platform, const class FMaterial* Material, const class FShaderType* ShaderType);
+	static void ModifyCompilationEnvironment(const FVertexFactoryShaderPermutationParameters& Parameters, FShaderCompilerEnvironment& OutEnvironment);
+	static bool ShouldCompilePermutation(const FVertexFactoryShaderPermutationParameters& Parameters);
 
 	/**
 	* An implementation of the interface used by TSynchronizedResource to update the resource with new data from the game thread.
@@ -117,9 +114,6 @@ public:
 		FGeometryCacheVertexFactoryUserData& OutUserData) const;
 
 	virtual void InitRHI() override;
-
-	// FRenderResource interface.
-	static FVertexFactoryShaderParameters* ConstructShaderParameters(EShaderFrequency ShaderFrequency);
 
 	friend FGeometryCacheVertexFactoryShaderParameters;
 	

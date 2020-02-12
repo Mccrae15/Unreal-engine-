@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "DynamicCastHandler.h"
 #include "K2Node_DynamicCast.h"
@@ -25,7 +25,7 @@ void FKCHandler_DynamicCast::RegisterNets(FKismetFunctionContext& Context, UEdGr
 			FBPTerminal* BoolTerm = Context.CreateLocalTerminal();
 			BoolTerm->Type.PinCategory = UEdGraphSchema_K2::PC_Boolean;
 			BoolTerm->Source = Node;
-			BoolTerm->Name = Context.NetNameMap->MakeValidName(Node) + TEXT("_CastSuccess");
+			BoolTerm->Name = Context.NetNameMap->MakeValidName(Node, TEXT("CastSuccess"));
 			BoolTermMap.Add(Node, BoolTerm);
 		}
 	}

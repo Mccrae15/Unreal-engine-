@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 using System;
 using System.Collections.Generic;
 using System.Text;
@@ -67,19 +67,21 @@ class BuildThirdPartyLibs : BuildCommand
 
 		// figure out what batch/script to run
 		string CompileScriptName;
-		switch (UnrealBuildTool.BuildHostPlatform.Current.Platform)
+		if (UnrealBuildTool.BuildHostPlatform.Current.Platform == UnrealTargetPlatform.Win64)
 		{
-			case UnrealTargetPlatform.Win64:
-				CompileScriptName = WindowsCompileScript;
-				break;
-			case UnrealTargetPlatform.Mac:
-				CompileScriptName = MacCompileScript;
-				break;
-			case UnrealTargetPlatform.Linux:
-				CompileScriptName = LinuxCompileScript;
-				break;
-			default:
-				throw new AutomationException("Unknown runtime platform!");
+			CompileScriptName = WindowsCompileScript;
+		}
+		else if (UnrealBuildTool.BuildHostPlatform.Current.Platform == UnrealTargetPlatform.Mac)
+		{
+			CompileScriptName = MacCompileScript;
+		}
+		else if (UnrealBuildTool.BuildHostPlatform.Current.Platform == UnrealTargetPlatform.Linux)
+		{
+			CompileScriptName = LinuxCompileScript;
+		}
+		else
+		{
+			throw new AutomationException("Unknown runtime platform!");
 		}
 
 		// look for changelist on the command line

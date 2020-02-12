@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -33,6 +33,9 @@ public:
 	typedef TMap<FName, TArray<UBlueprintNodeSpawner*>>	FUnloadedActionRegistry;
 
 public:
+	/** Destructor */
+	virtual ~FBlueprintActionDatabase();
+
 	/**
 	 * Getter to access the database singleton. Will populate the database first 
 	 * if this is the first time accessing it.
@@ -52,6 +55,7 @@ public:
 
 	// FGCObject interface
 	virtual void AddReferencedObjects(FReferenceCollector& Collector) override;
+	virtual FString GetReferencerName() const override;
 	// End FGCObject interface
 
 	/**
@@ -106,13 +110,22 @@ public:
 	void RefreshComponentActions();
 
 	/**
-	 * Finds the database entry for the specified class and wipes it. The entry 
+	 * Finds the database entry for the specified object and wipes it. The entry 
 	 * won't be rebuilt, unless RefreshAssetActions() is explicitly called after.
 	 * 
 	 * @param  AssetObject	
 	 * @return True if an entry was found and removed.
 	 */
 	bool ClearAssetActions(UObject* const AssetObject);
+
+	/**
+	 * Finds the database entry for the specified object and wipes it. The entry
+	 * won't be rebuilt, unless RefreshAssetActions() is explicitly called after.
+	 *
+	 * @param  AssetObjectKey
+	 * @return True if an entry was found and removed.
+	 */
+	bool ClearAssetActions(const FObjectKey& AssetObjectKey);
 	
 	/**
 	 * Finds the database entry for the specified unloaded asset and wipes it.
@@ -181,8 +194,18 @@ private:
 	FOnDatabaseEntryUpdated EntryRefreshDelegate;
 	FOnDatabaseEntryUpdated EntryRemovedDelegate;
 
-	/** Handle to the registered OnBlueprintChanged delegate. */
-	FDelegateHandle OnBlueprintChangedDelegateHandle;
+	/** Handles to registered delegates. */
+	FDelegateHandle OnAssetLoadedDelegateHandle;
+	FDelegateHandle OnAssetAddedDelegateHandle;
+	FDelegateHandle OnAssetRemovedDelegateHandle;
+	FDelegateHandle OnAssetRenamedDelegateHandle;
+	FDelegateHandle OnAssetsPreDeleteDelegateHandle;
+	FDelegateHandle OnBlueprintUnloadedDelegateHandle;
+	FDelegateHandle OnWorldAddedDelegateHandle;
+	FDelegateHandle OnWorldDestroyedDelegateHandle;
+	FDelegateHandle RefreshLevelScriptActionsDelegateHandle;
+	FDelegateHandle OnModulesChangedDelegateHandle;
+	FDelegateHandle OnHotReloadDelegateHandle;
 
 	/** Pointer to the shared list of currently existing component types */
 	const TArray<struct FComponentTypeEntry>* ComponentTypes;

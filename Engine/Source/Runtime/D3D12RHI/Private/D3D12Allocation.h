@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 /*=============================================================================
 D3D12Allocation.h: A Collection of allocators
@@ -28,6 +28,36 @@ D3D12Allocation.h: A Collection of allocators
 // - Defragmentation support
 #define D3D12RHI_SEGREGATED_TEXTURE_ALLOC (PLATFORM_WINDOWS)
 #define D3D12RHI_SEGLIST_ALLOC_TRACK_WASTAGE (!(UE_BUILD_TEST || UE_BUILD_SHIPPING))
+
+#define D3D12RHI_SEGLIST_ALLOC_TRACK_LEAK_STACK_DEPTH 12
+
+struct FD3D12SegListAllocatorLeakTrack
+{
+	uint32 Offset;
+	void*  Heap;
+	uint32 Size;
+	uint32 StackDepth;
+	uint64 Stack[D3D12RHI_SEGLIST_ALLOC_TRACK_LEAK_STACK_DEPTH];
+	bool operator==(const FD3D12SegListAllocatorLeakTrack& Other) const
+	{
+		return Offset == Other.Offset && Heap == Other.Heap;
+	}
+};
+
+FORCEINLINE uint32 GetTypeHash(const FD3D12SegListAllocatorLeakTrack& S)
+{
+	uint32 Prime0 = 0xa6c70167;
+	uint32 Prime1 = 0x5d18b207;
+	uint32 Prime2 = 0xd0a489f9;
+	uint32 Value0 = (uint32)(((uint64)S.Heap) >> 32);
+	uint32 Value1 = (uint32)(uint64)S.Heap;
+	uint32 Value2 = S.Offset;
+	return Value0 * Prime0 + Value1 * Prime1 + Value2 * Prime2;
+}
+
+
+
+
 
 class FD3D12SegList;
 
@@ -373,7 +403,7 @@ public:
 	~FD3D12DefaultBufferPool() { delete Allocator; }
 
 	// Grab a buffer from the available buffers or create a new buffer if none are available
-	void AllocDefaultResource(const D3D12_RESOURCE_DESC& Desc, uint32 InUsage, FD3D12ResourceLocation& ResourceLocation, uint32 Alignment);
+	void AllocDefaultResource(const D3D12_RESOURCE_DESC& Desc, uint32 InUsage, FD3D12ResourceLocation& ResourceLocation, uint32 Alignment, const TCHAR* Name);
 
 	void CleanUpAllocations();
 
@@ -389,7 +419,7 @@ public:
 	FD3D12DefaultBufferAllocator(FD3D12Device* InParent, FRHIGPUMask VisibleNodes);
 
 	// Grab a buffer from the available buffers or create a new buffer if none are available
-	HRESULT AllocDefaultResource(const D3D12_RESOURCE_DESC& pDesc, uint32 InUsage, FD3D12ResourceLocation& ResourceLocation, uint32 Alignment);
+	void AllocDefaultResource(const D3D12_RESOURCE_DESC& pDesc, uint32 InUsage, FD3D12ResourceLocation& ResourceLocation, uint32 Alignment, const TCHAR* Name);
 	void FreeDefaultBufferPools();
 	void CleanupFreeBlocks();
 
@@ -403,6 +433,8 @@ private:
 
 		Count,
 	};
+
+	void InitializeAllocator(EBufferPool PoolIndex, D3D12_RESOURCE_FLAGS Flags);
 	FD3D12DefaultBufferPool* DefaultBufferPools[(uint32)EBufferPool::Count];
 
 	inline EBufferPool GetBufferPool(D3D12_RESOURCE_FLAGS Flags) const
@@ -490,13 +522,9 @@ public:
 	FD3D12FastAllocator(FD3D12Device* Parent, FRHIGPUMask VisibiltyMask, D3D12_HEAP_TYPE InHeapType, uint32 PageSize);
 	FD3D12FastAllocator(FD3D12Device* Parent, FRHIGPUMask VisibiltyMask, const D3D12_HEAP_PROPERTIES& InHeapProperties, uint32 PageSize);
 
-	template<typename LockType>
 	void* Allocate(uint32 Size, uint32 Alignment, class FD3D12ResourceLocation* ResourceLocation);
-
-	template<typename LockType>
 	void Destroy();
 
-	template<typename LockType>
 	void CleanupPages(uint64 FrameLag);
 
 protected:
@@ -507,138 +535,10 @@ protected:
 	FCriticalSection CS;
 };
 
-class FD3D12AbstractRingBuffer
-{
-public:
-	FD3D12AbstractRingBuffer(uint64 BufferSize)
-		: Fence(nullptr)
-		, Size(BufferSize)
-		, Head(BufferSize)
-		, Tail(0)
-		, LastFence(0)
-	{}
-
-	static const uint64 FailedReturnValue = uint64(-1);
-
-	inline void Reset(uint64 NewSize)
-	{
-		Size = NewSize;
-		Head = Size;
-		Tail = 0;
-		LastFence = 0;
-		OutstandingAllocs.Empty();
-	}
-
-	inline void SetFence(FD3D12Fence* InFence)
-	{
-		Fence = InFence;
-		LastFence = 0;
-	}
-
-	inline const uint64 GetSpaceLeft() const { return Head - Tail; }
-
-#if 0  // used to detect problems with fencing 
-	void GetOverwritableBlocks(uint64& Block1Start, uint64& Block1Size, uint64& Block2Start, uint64& Block2Size) const
-	{
-		check(Head >= Tail);
-		check(Size >= Head - Tail);
-		uint64 Used = Size - (Head - Tail);
-
-		if (Used == Size)
-		{
-			Block1Start = 0;
-			Block1Size = 0;
-
-			Block2Start = 0;
-			Block2Size = 0;
-		}
-		else
-		{
-			uint64 PhysicalTail = Tail % Size;
-
-			if (PhysicalTail <= Used)
-			{
-				// there is only one block, it starts at PhysicalTail
-				Block1Start = 0;
-				Block1Size = 0;
-
-				Block2Start = PhysicalTail;
-				Block2Size = Size - Used;
-			}
-			else
-			{
-				Block1Start = 0;
-				Block1Size = PhysicalTail - Used;
-
-				Block2Start = PhysicalTail;
-				Block2Size = Size - PhysicalTail;
-			}
-		}
-	}
-#endif // used to detect problems with fencing 
-
-	inline uint64 Allocate(uint64 Count)
-	{
-		{
-			const uint64 LastCompletedFence = Fence->GetLastCompletedFenceFast();
-			// If progress has been made since we were here last
-			if (LastCompletedFence > LastFence)
-			{
-				LastFence = LastCompletedFence;
-
-				for (auto It = OutstandingAllocs.CreateIterator(); It; ++It)
-				{
-					if (It.Key() < LastCompletedFence)
-					{
-						Head += It.Value();
-						It.RemoveCurrent();
-					}
-				}
-			}
-		}
-
-		uint64 ReturnValue = FailedReturnValue;
-
-		uint64 PhysicalTail = Tail % Size;
-
-		if (PhysicalTail + Count > Size)
-		{
-			// Force the wrap around by simply allocating the difference
-			uint64 Padding = Allocate(Size - PhysicalTail);
-			if (Padding == FailedReturnValue)
-			{
-				return FailedReturnValue;
-			}
-
-			PhysicalTail = Tail % Size;
-		}
-
-		if (Tail + Count < Head)
-		{
-			ReturnValue = PhysicalTail;
-			Tail += Count;
-			OutstandingAllocs.FindOrAdd(Fence->GetCurrentFence()) += Count;
-		}
-
-		return ReturnValue;
-	}
-
-private:
-	FD3D12Fence* Fence;
-	uint64 Size;
-	uint64 Head;
-	uint64 Tail;
-	uint64 LastFence;
-
-	TMap<uint64, uint64, TInlineSetAllocator<16> > OutstandingAllocs;
-};
-
 class FD3D12FastConstantAllocator : public FD3D12DeviceChild, public FD3D12MultiNodeGPUObject
 {
 public:
-	FD3D12FastConstantAllocator(FD3D12Device* Parent, FRHIGPUMask VisibiltyMask, uint32 InPageSize);
-
-	void Init();
+	FD3D12FastConstantAllocator(FD3D12Device* Parent, FRHIGPUMask VisibiltyMask);
 
 #if USE_STATIC_ROOT_SIGNATURE
 	void* Allocate(uint32 Bytes, class FD3D12ResourceLocation& OutLocation, FD3D12ConstantBufferView* OutCBView);
@@ -648,12 +548,10 @@ public:
 
 
 private:
-	void ReallocBuffer();
-
 	FD3D12ResourceLocation UnderlyingResource;
 
+	uint32 Offset;
 	uint32 PageSize;
-	FD3D12AbstractRingBuffer RingBuffer;
 };
 
 //-----------------------------------------------------------------------------
@@ -868,9 +766,7 @@ public:
 		check(!SegLists.Num());
 		check(!FenceValues.Num());
 		check(!DeferredDeletionQueue.Num());
-#if D3D12RHI_SEGLIST_ALLOC_TRACK_WASTAGE
-		check(!TotalBytesRequested);
-#endif
+		VerifyEmpty();
 	}
 
 	FD3D12SegListAllocator(const FD3D12SegListAllocator&) = delete;
@@ -911,9 +807,7 @@ public:
 				HeapFlags,
 				OutHeap);
 			check(Ret != InvalidOffset);
-#if D3D12RHI_SEGLIST_ALLOC_TRACK_WASTAGE
-			TotalBytesRequested += SizeInBytes;
-#endif
+			OnAlloc(Ret, OutHeap.GetReference(), SizeInBytes);
 			return Ret;
 		}
 		OutHeap = nullptr;
@@ -1008,6 +902,18 @@ private:
 
 #if D3D12RHI_SEGLIST_ALLOC_TRACK_WASTAGE
 	TAtomic<uint64> TotalBytesRequested;
+	FCriticalSection SegListTrackedAllocationCS;
+	TSet<FD3D12SegListAllocatorLeakTrack> SegListTrackedAllocations;
+
+
+	void DumpStack(const FD3D12SegListAllocatorLeakTrack& LeakTrack);
+	void OnAlloc(uint32 Offset, void* Heap, uint32 Size);
+	void OnFree(uint32 Offset, void* Heap, uint32 Size);
+	void VerifyEmpty();
+#else
+	void OnAlloc(uint32 Offset, void* Heap, uint32 Size) {}
+	void OnFree(uint32 Offset, void* Heap, uint32 Size) {}
+	void VerifyEmpty(){}
 #endif
 };
 
@@ -1021,7 +927,7 @@ class FD3D12TextureAllocatorPool : public FD3D12DeviceChild, public FD3D12MultiN
 public:
 	FD3D12TextureAllocatorPool(FD3D12Device* Device, FRHIGPUMask VisibilityNode);
 
-	HRESULT AllocateTexture(D3D12_RESOURCE_DESC Desc, const D3D12_CLEAR_VALUE* ClearValue, uint8 UEFormat, FD3D12ResourceLocation& TextureLocation, const D3D12_RESOURCE_STATES InitialState);
+	HRESULT AllocateTexture(D3D12_RESOURCE_DESC Desc, const D3D12_CLEAR_VALUE* ClearValue, uint8 UEFormat, FD3D12ResourceLocation& TextureLocation, const D3D12_RESOURCE_STATES InitialState, const TCHAR* Name);
 
 	void CleanUpAllocations()
 	{
@@ -1049,7 +955,7 @@ public:
 
 	~FD3D12TextureAllocator();
 
-	HRESULT AllocateTexture(D3D12_RESOURCE_DESC Desc, const D3D12_CLEAR_VALUE* ClearValue, FD3D12ResourceLocation& TextureLocation, const D3D12_RESOURCE_STATES InitialState);
+	HRESULT AllocateTexture(D3D12_RESOURCE_DESC Desc, const D3D12_CLEAR_VALUE* ClearValue, FD3D12ResourceLocation& TextureLocation, const D3D12_RESOURCE_STATES InitialState, const TCHAR* Name);
 };
 
 class FD3D12TextureAllocatorPool : public FD3D12DeviceChild, public FD3D12MultiNodeGPUObject
@@ -1057,7 +963,7 @@ class FD3D12TextureAllocatorPool : public FD3D12DeviceChild, public FD3D12MultiN
 public:
 	FD3D12TextureAllocatorPool(FD3D12Device* Device, FRHIGPUMask VisibilityNode);
 
-	HRESULT AllocateTexture(D3D12_RESOURCE_DESC Desc, const D3D12_CLEAR_VALUE* ClearValue, uint8 UEFormat, FD3D12ResourceLocation& TextureLocation, const D3D12_RESOURCE_STATES InitialState);
+	HRESULT AllocateTexture(D3D12_RESOURCE_DESC Desc, const D3D12_CLEAR_VALUE* ClearValue, uint8 UEFormat, FD3D12ResourceLocation& TextureLocation, const D3D12_RESOURCE_STATES InitialState, const TCHAR* Name);
 
 	void CleanUpAllocations() { ReadOnlyTexturePool.CleanUpAllocations(); }
 

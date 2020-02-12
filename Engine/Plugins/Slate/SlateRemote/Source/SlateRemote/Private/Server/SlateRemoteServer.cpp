@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "Server/SlateRemoteServer.h"
 
@@ -191,7 +191,7 @@ void FSlateRemoteServer::ProcessTouchMessage( const FSlateRemoteServerMessage& M
 	}
 	else
 	{
-		//checkf(Message.Handle < ARRAY_COUNT(LastTouchPositions), TEXT("Received handle %d, but it's too big for our array"), Message.Handle);
+		//checkf(Message.Handle < UE_ARRAY_COUNT(LastTouchPositions), TEXT("Received handle %d, but it's too big for our array"), Message.Handle);
 	}
 }
 

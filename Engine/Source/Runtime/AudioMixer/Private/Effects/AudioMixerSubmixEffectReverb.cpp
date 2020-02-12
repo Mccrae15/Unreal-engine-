@@ -1,10 +1,39 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "SubmixEffects/AudioMixerSubmixEffectReverb.h"
 #include "AudioMixerEffectsManager.h"
 #include "Sound/ReverbEffect.h"
 #include "Audio.h"
 #include "AudioMixer.h"
+#include "ProfilingDebugging/CsvProfiler.h"
+
+// Link to "Audio" profiling category
+CSV_DECLARE_CATEGORY_MODULE_EXTERN(AUDIOMIXERCORE_API, Audio);
+
+static int32 DisableSubmixReverbLegacyCVar = 0;
+static FAutoConsoleVariableRef CVarDisableSubmixReverbLegacy(
+	TEXT("au.DisableReverbSubmixLegacy"),
+	DisableSubmixReverbLegacyCVar,
+	TEXT("Disables the reverb submix.\n")
+	TEXT("0: Not Disabled, 1: Disabled"),
+	ECVF_Default);
+
+static int32 EnableReverbStereoFlipForQuadLegacyCVar = 0;
+static FAutoConsoleVariableRef CVarReverbStereoFlipForQuadLegacy(
+	TEXT("au.EnableReverbStereoFlipForQuadLegacy"),
+	EnableReverbStereoFlipForQuadLegacyCVar,
+	TEXT("Enables doing a stereo flip for quad reverb when in surround.\n")
+	TEXT("0: Not Enabled, 1: Enabled"),
+	ECVF_Default);
+
+
+static int32 DisableQuadReverbLegacyCVar = 0;
+static FAutoConsoleVariableRef CVarDisableQuadReverbLegacy(
+	TEXT("au.DisableQuadReverbLegacy"),
+	DisableQuadReverbLegacyCVar,
+	TEXT("Disables quad reverb in surround.\n")
+	TEXT("0: Not Disabled, 1: Disabled"),
+	ECVF_Default);
 
 class UReverbEffect;
 
@@ -69,7 +98,7 @@ void FSubmixEffectReverb::OnPresetChanged()
 
 	DryLevel = Settings.DryLevel;
 
-	SetEffectParameters(ReverbEffect);
+	SetParameters(ReverbEffect);
 }
 
 void FSubmixEffectReverb::OnProcessAudio(const FSoundEffectSubmixInputData& InData, FSoundEffectSubmixOutputData& OutData)
@@ -77,13 +106,13 @@ void FSubmixEffectReverb::OnProcessAudio(const FSoundEffectSubmixInputData& InDa
 	LLM_SCOPE(ELLMTag::AudioMixer);
 
 	check(InData.NumChannels == 2);
- 	if (OutData.NumChannels < 2 || !bIsEnabled) 
+ 	if (OutData.NumChannels < 2 || !bIsEnabled || DisableSubmixReverbLegacyCVar == 1) 
 	{
 		// Not supported
 		return;
 	}
 
-	SCOPE_CYCLE_COUNTER(STAT_AudioMixerMasterReverb);
+	CSV_SCOPED_TIMING_STAT(Audio, SubmixReverb);
 
 	UpdateParameters();
 
@@ -96,51 +125,74 @@ void FSubmixEffectReverb::OnProcessAudio(const FSoundEffectSubmixInputData& InDa
 		for (int32 SampleIndex = 0; SampleIndex < InData.AudioBuffer->Num(); SampleIndex += OutData.NumChannels)
 		{
 			PlateReverb.ProcessAudioFrame(&AudioData[SampleIndex], InData.NumChannels, &OutAudioData[SampleIndex], OutData.NumChannels);
-
-			OutAudioData[SampleIndex] += DryLevel * AudioData[SampleIndex];
-			OutAudioData[SampleIndex + 1] += DryLevel * AudioData[SampleIndex + 1];
 		}
 	}
 	// 5.1 or higher surround sound. Map stereo output to quad output
 	else if(OutData.NumChannels > 5)
 	{
-		for (int32 InSampleIndex = 0, OutSampleIndex = 0; InSampleIndex < InData.AudioBuffer->Num(); InSampleIndex += InData.NumChannels, OutSampleIndex += OutData.NumChannels)
+		if (DisableQuadReverbLegacyCVar == 1)
 		{
-			// Processed downmixed audio frame
-			PlateReverb.ProcessAudioFrame(&AudioData[InSampleIndex], InData.NumChannels, &OutAudioData[OutSampleIndex], InData.NumChannels);
-			// Now do a cross-over to the back-left/back-right speakers from the front-left and front-right
-			
-			// Using standard speaker map order map the right output to the BackLeft channel
-			OutAudioData[OutSampleIndex + EAudioMixerChannel::BackRight] = OutAudioData[OutSampleIndex + EAudioMixerChannel::FrontLeft];
-			OutAudioData[OutSampleIndex + EAudioMixerChannel::BackLeft] = OutAudioData[OutSampleIndex + EAudioMixerChannel::FrontRight];
+			for (int32 InSampleIndex = 0, OutSampleIndex = 0; InSampleIndex < InData.AudioBuffer->Num(); InSampleIndex += InData.NumChannels, OutSampleIndex += OutData.NumChannels)
+			{
+				PlateReverb.ProcessAudioFrame(&AudioData[InSampleIndex], InData.NumChannels, &OutAudioData[OutSampleIndex], InData.NumChannels);
+			}
+		}
+		else if (EnableReverbStereoFlipForQuadLegacyCVar == 1)
+		{
+			for (int32 InSampleIndex = 0, OutSampleIndex = 0; InSampleIndex < InData.AudioBuffer->Num(); InSampleIndex += InData.NumChannels, OutSampleIndex += OutData.NumChannels)
+			{
+				PlateReverb.ProcessAudioFrame(&AudioData[InSampleIndex], InData.NumChannels, &OutAudioData[OutSampleIndex], InData.NumChannels);
 
-			// Copy dry output to output data to stereo fronts
-			OutAudioData[OutSampleIndex] += DryLevel * AudioData[InSampleIndex];
-			OutAudioData[OutSampleIndex + 1] += DryLevel * AudioData[InSampleIndex + 1];
+				// Reduce volume of stereo fronts when doing quad reverb to maintain power
+				OutAudioData[OutSampleIndex + EAudioMixerChannel::FrontLeft] *= 0.5f;
+				OutAudioData[OutSampleIndex + EAudioMixerChannel::FrontRight] *= 0.5f;
+
+				// Using standard speaker map order map the right output to the BackLeft channel
+				OutAudioData[OutSampleIndex + EAudioMixerChannel::BackRight] = OutAudioData[OutSampleIndex + EAudioMixerChannel::FrontLeft];
+				OutAudioData[OutSampleIndex + EAudioMixerChannel::BackLeft] = OutAudioData[OutSampleIndex + EAudioMixerChannel::FrontRight];
+			}
+		}
+		else
+		{
+			for (int32 InSampleIndex = 0, OutSampleIndex = 0; InSampleIndex < InData.AudioBuffer->Num(); InSampleIndex += InData.NumChannels, OutSampleIndex += OutData.NumChannels)
+			{
+				// Processed downmixed audio frame
+				PlateReverb.ProcessAudioFrame(&AudioData[InSampleIndex], InData.NumChannels, &OutAudioData[OutSampleIndex], InData.NumChannels);
+
+				// Reduce volume of stereo fronts when doing quad reverb to maintain power
+				OutAudioData[OutSampleIndex + EAudioMixerChannel::FrontLeft] *= 0.5f;
+				OutAudioData[OutSampleIndex + EAudioMixerChannel::FrontRight] *= 0.5f;
+
+				// Using standard speaker map order map the right output to the BackLeft channel
+				OutAudioData[OutSampleIndex + EAudioMixerChannel::BackLeft] = OutAudioData[OutSampleIndex + EAudioMixerChannel::FrontLeft];
+				OutAudioData[OutSampleIndex + EAudioMixerChannel::BackRight] = OutAudioData[OutSampleIndex + EAudioMixerChannel::FrontRight];
+			}
 		}
 	}
 }
 
-void FSubmixEffectReverb::SetEffectParameters(const FAudioReverbEffect& InParams)
+bool FSubmixEffectReverb::SetParameters(const FAudioEffectParameters& InEffectParameters)
 {
 	LLM_SCOPE(ELLMTag::AudioMixer);
 
+	const FAudioReverbEffect& ReverbParams = static_cast<const FAudioReverbEffect&>(InEffectParameters);
+
 	Audio::FPlateReverbSettings NewSettings;
 
-	NewSettings.EarlyReflections.Gain = FMath::GetMappedRangeValueClamped({ 0.0f, 3.16f }, { 0.0f, 1.0f }, InParams.ReflectionsGain);
-	NewSettings.EarlyReflections.PreDelayMsec = FMath::GetMappedRangeValueClamped({ 0.0f, 0.3f }, { 0.0f, 300.0f }, InParams.ReflectionsDelay);
-	NewSettings.EarlyReflections.Bandwidth = FMath::GetMappedRangeValueClamped({ 0.0f, 1.0f }, { 0.0f, 1.0f }, InParams.GainHF);
+	NewSettings.EarlyReflections.Gain = FMath::GetMappedRangeValueClamped({ 0.0f, 3.16f }, { 0.0f, 1.0f }, ReverbParams.ReflectionsGain);
+	NewSettings.EarlyReflections.PreDelayMsec = FMath::GetMappedRangeValueClamped({ 0.0f, 0.3f }, { 0.0f, 300.0f }, ReverbParams.ReflectionsDelay);
+	NewSettings.EarlyReflections.Bandwidth = FMath::GetMappedRangeValueClamped({ 0.0f, 1.0f }, { 0.0f, 1.0f }, ReverbParams.GainHF);
 
-	NewSettings.LateDelayMsec = FMath::GetMappedRangeValueClamped({ 0.0f, 0.1f }, { 0.0f, 100.0f }, InParams.LateDelay);
-	NewSettings.LateGain = FMath::GetMappedRangeValueClamped({ 0.0f, 1.0f }, { 0.0f, 1.0f }, InParams.Gain);
-	NewSettings.Bandwidth = FMath::GetMappedRangeValueClamped({ 0.0f, 1.0f }, { 0.2f, 0.999f }, InParams.AirAbsorptionGainHF);
-	NewSettings.Diffusion = FMath::GetMappedRangeValueClamped({ 0.0f, 1.0f }, { 0.0f, 1.0f }, InParams.Diffusion);
-	NewSettings.Dampening = FMath::GetMappedRangeValueClamped({ 0.1f, 2.0f }, { 0.0f, 0.999f }, InParams.DecayHFRatio);
-	NewSettings.Density = FMath::GetMappedRangeValueClamped({ 0.0f, 1.0f }, { 0.01f, 1.0f }, InParams.Density);
-	NewSettings.Wetness = FMath::GetMappedRangeValueClamped({ 0.0f, 10.0f }, { 0.0f, 10.0f }, InParams.Volume);
+	NewSettings.LateDelayMsec = FMath::GetMappedRangeValueClamped({ 0.0f, 0.1f }, { 0.0f, 100.0f }, ReverbParams.LateDelay);
+	NewSettings.LateGain = FMath::GetMappedRangeValueClamped({ 0.0f, 1.0f }, { 0.0f, 1.0f }, ReverbParams.Gain);
+	NewSettings.Bandwidth = FMath::GetMappedRangeValueClamped({ 0.0f, 1.0f }, { 0.2f, 0.999f }, ReverbParams.AirAbsorptionGainHF);
+	NewSettings.Diffusion = FMath::GetMappedRangeValueClamped({ 0.0f, 1.0f }, { 0.0f, 1.0f }, ReverbParams.Diffusion);
+	NewSettings.Dampening = FMath::GetMappedRangeValueClamped({ 0.1f, 2.0f }, { 0.0f, 0.999f }, ReverbParams.DecayHFRatio);
+	NewSettings.Density = FMath::GetMappedRangeValueClamped({ 0.0f, 1.0f }, { 0.01f, 1.0f }, ReverbParams.Density);
+	NewSettings.Wetness = FMath::GetMappedRangeValueClamped({ 0.0f, 10.0f }, { 0.0f, 10.0f }, ReverbParams.Volume);
 
 	// Use mapping function to get decay time in seconds to internal linear decay scale value
-	const float DecayValue = DecayCurve.Eval(InParams.DecayTime);
+	const float DecayValue = DecayCurve.Eval(ReverbParams.DecayTime);
 	NewSettings.Decay = DecayValue;
 
 	// Convert to db
@@ -150,6 +202,8 @@ void FSubmixEffectReverb::SetEffectParameters(const FAudioReverbEffect& InParams
 	Params.SetParams(NewSettings);
 
 	bIsEnabled = true;
+
+	return true;
 }
 
 void FSubmixEffectReverb::UpdateParameters()

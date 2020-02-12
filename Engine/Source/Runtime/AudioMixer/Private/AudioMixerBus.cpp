@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "AudioMixerBus.h"
 #include "AudioMixerSourceManager.h"
@@ -20,14 +20,30 @@ namespace Audio
 		}
 	}
 
+	void FMixerBus::SetNumOutputChannels(int32 InNumOutputChannels)
+	{
+		NumChannels = InNumOutputChannels;
+		const int32 NumSamples = NumChannels * NumFrames;
+		for (int32 i = 0; i < 2; ++i)
+		{
+			MixedSourceData[i].Reset();
+			MixedSourceData[i].AddZeroed(NumSamples);
+		}
+	}
+
 	void FMixerBus::Update()
 	{
 		CurrentBufferIndex = !CurrentBufferIndex;
 	}
 
-	void FMixerBus::AddInstanceId(const int32 InSourceId)
+	void FMixerBus::AddInstanceId(const int32 InSourceId, int32 InNumOutputChannels)
 	{
 		InstanceIds.Add(InSourceId);
+
+		if (NumChannels != InNumOutputChannels)
+		{
+			SetNumOutputChannels(InNumOutputChannels);
+		}
 	}
 
 	bool FMixerBus::RemoveInstanceId(const int32 InSourceId)
@@ -40,6 +56,18 @@ namespace Audio
 
 	void FMixerBus::AddBusSend(EBusSendType BusSendType, const FBusSend& InBusSend)
 	{
+		// Make sure we don't have duplicates in the bus sends
+		for (FBusSend& BusSend : BusSends[(int32)BusSendType])
+		{
+			// If it's already added, just update the send level
+			if (BusSend.SourceId == InBusSend.SourceId)
+			{
+				BusSend.SendLevel = InBusSend.SendLevel;
+				return;
+			}
+		}
+
+		// It's a new source id so just add it
 		BusSends[(int32)BusSendType].Add(InBusSend);
 	}
 

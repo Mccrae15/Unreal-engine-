@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 using System;
 using System.Collections.Generic;
@@ -197,7 +197,7 @@ namespace UnrealBuildTool
 	{
 		/// <summary>
 		/// Processor count multiplier for local execution. Can be below 1 to reserve CPU for other tasks.
-		/// When using the local executor (not XGE), run a single action on each CPU core.  Note that you can set this to a larger value
+		/// When using the local executor (not XGE), run a single action on each CPU core. Note that you can set this to a larger value
 		/// to get slightly faster build times in many cases, but your computer's responsiveness during compiling may be much worse.
 		/// </summary>
 		[XmlConfigFile]
@@ -434,12 +434,11 @@ namespace UnrealBuildTool
 
 				Log.WriteLineIf(bLogDetailedActionStats,
 					LogEventType.Console,
-					"^{0}^{1:0.00}^{2}^{3}^{4}",
+					"^{0}^{1:0.00}^{2}^{3}",
 					Action.ActionType.ToString(),
 					ThreadSeconds,
 					Action.CommandPath.GetFileName(),
-					  Action.StatusDescription,
-					Action.bIsUsingPCH);
+					Action.StatusDescription);
 
 				// Update statistics
 				switch (Action.ActionType)

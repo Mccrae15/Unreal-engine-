@@ -1,16 +1,20 @@
 @echo off
 
 rem ## Unreal Engine 4 utility script
-rem ## Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+rem ## Copyright Epic Games, Inc. All Rights Reserved.
 rem ##
 rem ## This script determines the path to MSBuild necessary to compile C# tools for the current version of the engine.
 rem ## The discovered path is set to the MSBUILD_EXE environment variable on success.
 
 set MSBUILD_EXE=
 
-rem ## Try to get the MSBuild 15 path using vswhere (see https://github.com/Microsoft/vswhere)
+rem ## Try to get the MSBuild 15 path using vswhere (see https://github.com/Microsoft/vswhere). VS2019 preview puts the executable in a "Current" subfolder.
 if not exist "%ProgramFiles(x86)%\Microsoft Visual Studio\Installer\vswhere.exe" goto no_vswhere
-for /f "delims=" %%i in ('"%ProgramFiles(x86)%\Microsoft Visual Studio\Installer\vswhere" -latest -products * -requires Microsoft.Component.MSBuild -property installationPath') do (
+for /f "delims=" %%i in ('"%ProgramFiles(x86)%\Microsoft Visual Studio\Installer\vswhere" -prerelease -latest -products * -requires Microsoft.Component.MSBuild -property installationPath') do (
+	if exist "%%i\MSBuild\Current\Bin\MSBuild.exe" (
+		set MSBUILD_EXE="%%i\MSBuild\Current\Bin\MSBuild.exe"
+		goto Succeeded
+	)
 	if exist "%%i\MSBuild\15.0\Bin\MSBuild.exe" (
 		set MSBUILD_EXE="%%i\MSBuild\15.0\Bin\MSBuild.exe"
 		goto Succeeded
@@ -38,9 +42,6 @@ if not errorlevel 1 goto Succeeded
 rem ## Check for older versions of MSBuild. These are registered as separate versions in the registry.
 
 call :ReadInstallPath Microsoft\MSBuild\ToolsVersions\12.0 MSBuildToolsPath MSBuild.exe
-if not errorlevel 1 goto Succeeded
-
-call :ReadInstallPath Microsoft\MSBuild\ToolsVersions\4.0 MSBuildToolsPath MSBuild.exe
 if not errorlevel 1 goto Succeeded
 
 rem ## Couldn't find anything

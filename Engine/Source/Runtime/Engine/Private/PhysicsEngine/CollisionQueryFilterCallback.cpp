@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "PhysicsEngine/CollisionQueryFilterCallback.h"
 #include "PhysicsEngine/ScopedSQHitchRepeater.h"
@@ -8,11 +8,12 @@
 #include "Components/PrimitiveComponent.h"
 #include "Collision.h"
 
-#if PHYSICS_INTERFACE_PHYSX
+#if WITH_PHYSX
 #include "PhysXInterfaceWrapper.h"
-#elif PHYSICS_INTERFACE_LLIMMEDIATE
-#include "Physics/Experimental/LLImmediateInterfaceWrapper.h"
 #endif
+
+#include "ChaosInterfaceWrapperCore.h"
+#include "Physics/Experimental/ChaosInterfaceWrapper.h"
 
 ECollisionQueryHitType FCollisionQueryFilterCallback::CalcQueryHitType(const FCollisionFilterData& QueryFilter, const FCollisionFilterData& ShapeFilter, bool bPreFilter)
 {
@@ -85,27 +86,49 @@ ECollisionQueryHitType FCollisionQueryFilterCallback::CalcQueryHitType(const FCo
 	return ECollisionQueryHitType::None;
 }
 
-ECollisionQueryHitType FCollisionQueryFilterCallback::PreFilter(const FCollisionFilterData& FilterData, const FPhysicsShape& Shape, const FPhysicsActor& Actor)
+#if WITH_PHYSX
+ECollisionQueryHitType FCollisionQueryFilterCallback::PreFilterImp(const FCollisionFilterData& FilterData, const physx::PxShape& Shape, const physx::PxActor& Actor)
 {
-	SCOPE_CYCLE_COUNTER(STAT_Collision_PreFilter);
-	FCollisionFilterData ShapeFilter = GetQueryFilterData(Shape);
+	//SCOPE_CYCLE_COUNTER(STAT_Collision_PreFilter);
+	FCollisionFilterData ShapeFilter = PhysXInterface::GetQueryFilterData(Shape);
 
 	// We usually don't have ignore components so we try to avoid the virtual getSimulationFilterData() call below. 'word2' of shape sim filter data is componentID.
 	uint32 ComponentID = 0;
 	if (IgnoreComponents.Num() > 0)
 	{
-		ComponentID = GetSimulationFilterData(Shape).Word2;
+		ComponentID = PhysXInterface::GetSimulationFilterData(Shape).Word2;
 	}
 
 	FBodyInstance* BodyInstance = nullptr;
 #if ENABLE_PREFILTER_LOGGING || DETECT_SQ_HITCHES
-	BodyInstance = GetUserData(Actor);
+	BodyInstance = PhysXInterface::GetUserData(Actor);
 #endif // ENABLE_PREFILTER_LOGGING || DETECT_SQ_HITCHES
 
-	return PreFilter(FilterData, ShapeFilter, ComponentID, BodyInstance);
+	return PreFilterImp(FilterData, ShapeFilter, ComponentID, BodyInstance);
+}
+#endif
+
+ECollisionQueryHitType FCollisionQueryFilterCallback::PreFilterImp(const FCollisionFilterData& FilterData, const Chaos::TPerShapeData<float,3>& Shape, const Chaos::TGeometryParticle<float,3>& Actor)
+{
+	//SCOPE_CYCLE_COUNTER(STAT_Collision_PreFilter);
+	FCollisionFilterData ShapeFilter = ChaosInterface::GetQueryFilterData(Shape);
+
+	// We usually don't have ignore components so we try to avoid the virtual getSimulationFilterData() call below. 'word2' of shape sim filter data is componentID.
+	uint32 ComponentID = 0;
+	if (IgnoreComponents.Num() > 0)
+	{
+		ComponentID = ChaosInterface::GetSimulationFilterData(Shape).Word2;
+	}
+
+	FBodyInstance* BodyInstance = nullptr;
+#if ENABLE_PREFILTER_LOGGING || DETECT_SQ_HITCHES
+	BodyInstance = ChaosInterface::GetUserData(Actor);
+#endif // ENABLE_PREFILTER_LOGGING || DETECT_SQ_HITCHES
+
+	return PreFilterImp(FilterData, ShapeFilter, ComponentID, BodyInstance);
 }
 
-ECollisionQueryHitType FCollisionQueryFilterCallback::PreFilter(const FCollisionFilterData& FilterData, const FCollisionFilterData& ShapeFilter, uint32 ComponentID, const FBodyInstance* BodyInstance)
+ECollisionQueryHitType FCollisionQueryFilterCallback::PreFilterImp(const FCollisionFilterData& FilterData, const FCollisionFilterData& ShapeFilter, uint32 ComponentID, const FBodyInstance* BodyInstance)
 {
 #if DETECT_SQ_HITCHES
 	FPreFilterRecord* PreFilterRecord = nullptr;
@@ -205,7 +228,7 @@ ECollisionQueryHitType FCollisionQueryFilterCallback::PreFilter(const FCollision
 }
 
 
-ECollisionQueryHitType FCollisionQueryFilterCallback::PostFilter(const FCollisionFilterData& FilterData, bool bIsOverlap)
+ECollisionQueryHitType FCollisionQueryFilterCallback::PostFilterImp(const FCollisionFilterData& FilterData, bool bIsOverlap)
 {
 	if (!bIsSweep)
 	{
@@ -228,7 +251,8 @@ ECollisionQueryHitType FCollisionQueryFilterCallback::PostFilter(const FCollisio
 	}
 }
 
-ECollisionQueryHitType FCollisionQueryFilterCallback::PostFilter(const FCollisionFilterData& FilterData, const FPhysicsQueryHit& Hit)
+#if WITH_PHYSX
+ECollisionQueryHitType FCollisionQueryFilterCallback::PostFilterImp(const FCollisionFilterData& FilterData, const physx::PxQueryHit& Hit)
 {
 	// Unused in non-sweeps
 	if (!bIsSweep)
@@ -239,5 +263,69 @@ ECollisionQueryHitType FCollisionQueryFilterCallback::PostFilter(const FCollisio
 	const FHitLocation& SweepHit = (const FHitLocation&)Hit;
 	const bool bIsOverlap = HadInitialOverlap(SweepHit);
 
-	return PostFilter(FilterData, bIsOverlap);
+	return PostFilterImp(FilterData, bIsOverlap);
 }
+#endif
+
+ECollisionQueryHitType FCollisionQueryFilterCallback::PostFilterImp(const FCollisionFilterData& FilterData, const ChaosInterface::FQueryHit& Hit)
+{
+	// Unused in non-sweeps
+	if (!bIsSweep)
+	{
+		return ECollisionQueryHitType::None;
+	}
+
+	const ChaosInterface::FLocationHit& SweepHit = (const ChaosInterface::FLocationHit&)Hit;
+	const bool bIsOverlap = ChaosInterface::HadInitialOverlap(SweepHit);
+
+	return PostFilterImp(FilterData, bIsOverlap);
+}
+
+#if WITH_PHYSX
+
+PxQueryHitType::Enum FCollisionQueryFilterCallback::preFilter(const PxFilterData& filterData, const PxShape* shape, const PxRigidActor* actor, PxHitFlags& queryFlags)
+{
+	ensureMsgf(shape, TEXT("Invalid shape encountered in FCollisionQueryFilterCallback::preFilter, actor: %p, filterData: %x %x %x %x"), actor, filterData.word0, filterData.word1, filterData.word2, filterData.word3);
+
+	if (!shape)
+	{
+		// Early out to avoid crashing.
+		return U2PCollisionQueryHitType(PreFilterReturnValue = ECollisionQueryHitType::None);
+	}
+
+	FCollisionFilterData FilterData = P2UFilterData(filterData);
+	FCollisionFilterData ShapeFilter = P2UFilterData(shape->getQueryFilterData());
+
+	// We usually don't have ignore components so we try to avoid the virtual getSimulationFilterData() call below. 'word2' of shape sim filter data is componentID.
+	uint32 ComponentID = 0;
+	if (IgnoreComponents.Num() > 0)
+	{
+		ComponentID = shape->getSimulationFilterData().word2;
+	}
+
+	FBodyInstance* BodyInstance = nullptr;
+#if ENABLE_PREFILTER_LOGGING || DETECT_SQ_HITCHES
+	BodyInstance = FPhysxUserData::Get<FBodyInstance>(actor->userData);
+#endif // ENABLE_PREFILTER_LOGGING || DETECT_SQ_HITCHES
+
+	return U2PCollisionQueryHitType(PreFilterImp(FilterData, ShapeFilter, ComponentID, BodyInstance));
+}
+
+PxQueryHitType::Enum FCollisionQueryFilterCallback::postFilter(const PxFilterData& filterData, const PxQueryHit& hit)
+{
+	// Unused in non-sweeps
+	if (!bIsSweep)
+	{
+		return PxQueryHitType::eNONE;
+	}
+
+	FCollisionFilterData FilterData = P2UFilterData(filterData);
+
+	PxSweepHit& SweepHit = (PxSweepHit&)hit;
+	const bool bIsOverlap = SweepHit.hadInitialOverlap();
+
+	const ECollisionQueryHitType HitType = PostFilterImp(FilterData, bIsOverlap);
+	return U2PCollisionQueryHitType(HitType);
+}
+
+#endif

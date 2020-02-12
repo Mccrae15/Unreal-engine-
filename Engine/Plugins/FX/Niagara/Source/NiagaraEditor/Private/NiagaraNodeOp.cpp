@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "NiagaraNodeOp.h"
 #include "NiagaraHlslTranslator.h"
@@ -18,13 +18,16 @@ void UNiagaraNodeOp::AllocateDefaultPins()
 	const UEdGraphSchema_Niagara* Schema = GetDefault<UEdGraphSchema_Niagara>();
 
 	const FNiagaraOpInfo* OpInfo = FNiagaraOpInfo::GetOpInfo(OpName);
-	check(OpInfo);
+	if (!OpInfo)
+	{
+		return;
+	}
 
 	// Create input pins from the op
 	for (int32 SrcIndex = 0; SrcIndex < OpInfo->Inputs.Num(); ++SrcIndex)
 	{
 		const FNiagaraOpInOutInfo& InOutInfo = OpInfo->Inputs[SrcIndex];
-		UEdGraphPin* Pin = CreatePin(EGPD_Input, Schema->TypeDefinitionToPinType(InOutInfo.DataType), *InOutInfo.FriendlyName.ToString());
+		UEdGraphPin* Pin = CreatePin(EGPD_Input, Schema->TypeDefinitionToPinType(InOutInfo.DataType), *InOutInfo.Name.ToString());
 		check(Pin);
 		Pin->bDefaultValueIsIgnored = false;
 		Pin->bDefaultValueIsReadOnly = false;
@@ -49,7 +52,7 @@ void UNiagaraNodeOp::AllocateDefaultPins()
 	for (int32 OutIdx = 0; OutIdx < OpInfo->Outputs.Num(); ++OutIdx)
 	{
 		const FNiagaraOpInOutInfo& InOutInfo = OpInfo->Outputs[OutIdx];
-		UEdGraphPin* Pin = CreatePin(EGPD_Output, Schema->TypeDefinitionToPinType(InOutInfo.DataType), *InOutInfo.FriendlyName.ToString());
+		UEdGraphPin* Pin = CreatePin(EGPD_Output, Schema->TypeDefinitionToPinType(InOutInfo.DataType), *InOutInfo.Name.ToString());
 		check(Pin);
 		Pin->PinToolTip = InOutInfo.Description.ToString();
 	}
@@ -92,6 +95,10 @@ void UNiagaraNodeOp::Compile(class FHlslNiagaraTranslator* Translator, TArray<in
 	const FNiagaraOpInfo* OpInfo = FNiagaraOpInfo::GetOpInfo(OpName);
 	if (!OpInfo)
 	{
+		FFormatNamedArguments Args;
+		Args.Add(TEXT("OpName"), FText::FromName(OpName));
+		FText Format = LOCTEXT("Unknown opcode", "Unknown opcode on {OpName} node.");
+		Translator->Error(FText::Format(Format, Args), this, nullptr);
 		return;
 	}
 
@@ -115,6 +122,31 @@ void UNiagaraNodeOp::Compile(class FHlslNiagaraTranslator* Translator, TArray<in
 			Args.Add(TEXT("OpName"), GetNodeTitle(ENodeTitleType::FullTitle));
 			FText Format = LOCTEXT("InputErrorFormat", "Error compiling input on {OpName} node.");
 			Translator->Error(FText::Format(Format, Args), this, Pin);
+		}
+		else if (i < OpInfo->Inputs.Num() && OpInfo->Inputs[i].DataType == FNiagaraTypeDefinition::GetGenericNumericDef()) 
+		{
+			// Some nodes disallow integer or floating numeric input pins, so we guard against them here. 
+			// This will catch both implicitly and explicitly set pin types.
+			// Currently this is for the Random Float/Integer and Seeded Random Float/Integer ops, but might be useful for others in the future. 
+
+			const UEdGraphSchema_Niagara* Schema = CastChecked<UEdGraphSchema_Niagara>(GetSchema());
+			FNiagaraTypeDefinition TypeDef = Schema->PinToTypeDefinition(Pin);
+			if (TypeDef.IsFloatPrimitive() && !OpInfo->bNumericsCanBeFloats)
+			{
+				bError = true;
+				FFormatNamedArguments Args;
+				Args.Add(TEXT("OpName"), GetNodeTitle(ENodeTitleType::FullTitle));
+				FText Format = LOCTEXT("InputTypeErrorFormatFloat", "The {OpName} node cannot have float based numeric input pins.");
+				Translator->Error(FText::Format(Format, Args), this, Pin);
+			}
+			else if (!TypeDef.IsFloatPrimitive() && !OpInfo->bNumericsCanBeIntegers)
+			{
+				bError = true;
+				FFormatNamedArguments Args;
+				Args.Add(TEXT("OpName"), GetNodeTitle(ENodeTitleType::FullTitle));
+				FText Format = LOCTEXT("InputTypeErrorFormatInt", "The {OpName} node cannot have integer based numeric input pins.");
+				Translator->Error(FText::Format(Format, Args), this, Pin);
+			}
 		}
 		Inputs.Add(CompiledInput);
 	}
@@ -183,8 +215,14 @@ bool UNiagaraNodeOp::RefreshFromExternalChanges()
 ENiagaraNumericOutputTypeSelectionMode UNiagaraNodeOp::GetNumericOutputTypeSelectionMode() const
 {
 	const FNiagaraOpInfo* OpInfo = FNiagaraOpInfo::GetOpInfo(OpName);
-	check(OpInfo);
-	return OpInfo->NumericOuputTypeSelectionMode;
+	if (OpInfo)
+	{
+		return OpInfo->NumericOuputTypeSelectionMode;
+	}
+	else
+	{
+		return ENiagaraNumericOutputTypeSelectionMode::Largest;
+	}
 }
 
 bool UNiagaraNodeOp::AllowNiagaraTypeForAddPin(const FNiagaraTypeDefinition& InType)

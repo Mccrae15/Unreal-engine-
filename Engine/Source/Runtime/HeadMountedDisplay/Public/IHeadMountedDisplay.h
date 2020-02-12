@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -125,6 +125,10 @@ public:
 	virtual class ISpectatorScreenController* GetSpectatorScreenController() { return nullptr; }
 	virtual class ISpectatorScreenController const* GetSpectatorScreenController() const { return nullptr; }
 
+	/**
+	* When implemented, creates a new post process node to provide platform-specific HMD distortion.
+	*/
+	virtual void CreateHMDPostProcessPass_RenderThread(class FRDGBuilder& GraphBuilder, const class FViewInfo& View, const struct FHMDDistortionInputs& Inputs, struct FScreenPassTexture& OutPass) const {}
 
 public:
 
@@ -203,12 +207,7 @@ public:
 	 * It is called at the beginning of UGameViewportClient::Draw() method.
 	 * We might remove this one as UpdatePostProcessSettings should be able to capture all needed cases
 	 */
-	virtual void UpdateScreenSettings(const class FViewport* InViewport) {}
-
-	/**
-	 * Allows to override the PostProcessSettings in the last moment e.g. allows up sampled 3D rendering
-	 */
-	virtual void UpdatePostProcessSettings(FPostProcessSettings*) {}
+	virtual void UpdateScreenSettings(const class FViewport* InViewport) {}	
 
 	/** 
 	 * Additional optional distortion rendering parameters

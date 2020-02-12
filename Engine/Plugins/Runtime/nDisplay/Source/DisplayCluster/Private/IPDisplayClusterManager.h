@@ -1,13 +1,10 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
 #include "CoreMinimal.h"
-#include "DisplayClusterOperationMode.h"
 
-
-class ADisplayClusterGameMode;
-class ADisplayClusterSettings;
+#include "DisplayClusterEnums.h"
 
 
 /**
@@ -19,6 +16,7 @@ public:
 	virtual ~IPDisplayClusterManager() = 0
 	{ }
 
+public:
 	// Called at start to initialize internals
 	virtual bool Init(EDisplayClusterOperationMode OperationMode)
 	{ return true; }
@@ -43,7 +41,23 @@ public:
 	virtual void EndScene()
 	{ }
 
+	// Called before start every frame
+	virtual void StartFrame(uint64 FrameNum)
+	{ }
+
+	// Called before start every frame
+	virtual void EndFrame(uint64 FrameNum)
+	{ }
+
 	// Called every frame before world Tick
 	virtual void PreTick(float DeltaSeconds)
+	{ }
+
+	// Called every frame during world Tick
+	virtual void Tick(float DeltaSeconds)
+	{ }
+
+	// Called every frame during world Tick
+	virtual void PostTick(float DeltaSeconds)
 	{ }
 };

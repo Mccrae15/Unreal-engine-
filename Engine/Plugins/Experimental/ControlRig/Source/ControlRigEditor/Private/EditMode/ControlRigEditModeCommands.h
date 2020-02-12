@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -25,8 +25,6 @@ public:
 	/** Toggles hiding all manipulators in the viewport */
 	TSharedPtr< FUICommandInfo > ToggleManipulators;
 
-	/** Toggles hiding all trajectories in the viewport */
-	TSharedPtr< FUICommandInfo > ToggleTrajectories;
 
 	/** Export this sequence to an optimized skeleton-specific animation sequence */
 	TSharedPtr< FUICommandInfo > ExportAnimSequence;

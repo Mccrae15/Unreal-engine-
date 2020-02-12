@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -46,7 +46,9 @@ public:
 	}
 		SLATE_DEFAULT_SLOT(FArguments, Content)
 	SLATE_END_ARGS()
-
+	
+	SScissorRectBox();
+	
 	void Construct( const FArguments& InArgs );
 
 	/**

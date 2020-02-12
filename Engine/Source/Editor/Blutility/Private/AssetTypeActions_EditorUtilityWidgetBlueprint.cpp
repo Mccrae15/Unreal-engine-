@@ -1,13 +1,12 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "AssetTypeActions_EditorUtilityWidgetBlueprint.h"
-#include "Framework/MultiBox/MultiBoxBuilder.h"
+#include "ToolMenus.h"
 #include "Misc/PackageName.h"
 #include "Misc/MessageDialog.h"
 #include "EditorUtilityBlueprintFactory.h"
 #include "Kismet2/KismetEditorUtilities.h"
 #include "BlueprintEditorModule.h"
-#include "EditorUtilityDialog.h"
 #include "IContentBrowserSingleton.h"
 #include "ContentBrowserModule.h"
 #include "EditorUtilityWidgetBlueprint.h"
@@ -18,6 +17,8 @@
 #include "Widgets/Docking/SDockTab.h"
 #include "Framework/Docking/TabManager.h"
 #include "IBlutilityModule.h"
+#include "EditorUtilitySubsystem.h"
+#include "SBlueprintDiff.h"
 
 #define LOCTEXT_NAMESPACE "AssetTypeActions"
 
@@ -26,7 +27,7 @@
 
 FText FAssetTypeActions_EditorUtilityWidgetBlueprint::GetName() const
 {
-	return LOCTEXT("AssetTypeActions_EditorUtilityWidget", "Editor Widget");
+	return LOCTEXT("AssetTypeActions_EditorUtilityWidget", "Editor Utility Widget");
 }
 
 FColor FAssetTypeActions_EditorUtilityWidgetBlueprint::GetTypeColor() const
@@ -44,16 +45,17 @@ bool FAssetTypeActions_EditorUtilityWidgetBlueprint::HasActions(const TArray<UOb
 	return true;
 }
 
-void FAssetTypeActions_EditorUtilityWidgetBlueprint::GetActions(const TArray<UObject*>& InObjects, FMenuBuilder& MenuBuilder)
+void FAssetTypeActions_EditorUtilityWidgetBlueprint::GetActions(const TArray<UObject*>& InObjects, FToolMenuSection& Section)
 {
 	auto Blueprints = GetTypedWeakObjectPtrs<UWidgetBlueprint>(InObjects);
 
-	MenuBuilder.AddMenuEntry(
-		LOCTEXT("EditorUtilityWidget_Edit", "Edit Blueprint"),
-		LOCTEXT("EditorUtilityWidget_EditTooltip", "Opens the selected blueprints in the full blueprint editor."),
+	Section.AddMenuEntry(
+		"EditorUtilityWidget_Edit",
+		LOCTEXT("EditorUtilityWidget_Edit", "Run Editor Utility Widget"),
+		LOCTEXT("EditorUtilityWidget_EditTooltip", "Opens the tab built by this Editor Utility Widget Blueprint."),
 		FSlateIcon(),
 		FUIAction(
-			FExecuteAction::CreateSP(this, &FAssetTypeActions_EditorUtilityWidgetBlueprint::ExecuteEdit, Blueprints),
+			FExecuteAction::CreateSP(this, &FAssetTypeActions_EditorUtilityWidgetBlueprint::ExecuteRun, Blueprints),
 			FCanExecuteAction()
 		)
 	);
@@ -64,39 +66,20 @@ void FAssetTypeActions_EditorUtilityWidgetBlueprint::OpenAssetEditor(const TArra
 {
 	EToolkitMode::Type Mode = EditWithinLevelEditor.IsValid() ? EToolkitMode::WorldCentric : EToolkitMode::Standalone;
 
-	for (auto ObjIt = InObjects.CreateConstIterator(); ObjIt; ++ObjIt)
+	for (UObject* Object : InObjects)
 	{
-		if (UWidgetBlueprint* Blueprint = Cast<UWidgetBlueprint>(*ObjIt))
+		UBlueprint* Blueprint = Cast<UBlueprint>(Object);
+		if (Blueprint && Blueprint->SkeletonGeneratedClass && Blueprint->GeneratedClass)
 		{
-			if (Blueprint->GeneratedClass->IsChildOf(UEditorUtilityWidget::StaticClass()))
-			{
-				const UEditorUtilityWidget* CDO = Blueprint->GeneratedClass->GetDefaultObject<UEditorUtilityWidget>();
-				if (CDO->ShouldAutoRunDefaultAction())
-				{
-					// This is an instant-run blueprint, just execute it
-					UEditorUtilityWidget* Instance = NewObject<UEditorUtilityWidget>(GetTransientPackage(), Blueprint->GeneratedClass);
-					Instance->ExecuteDefaultAction();
-				}
-				else
-				{
-					FName RegistrationName = FName(*CDO->GetPathName());
-					FText DisplayName = FText::FromString(Blueprint->GetName());
-					FLevelEditorModule& LevelEditorModule = FModuleManager::GetModuleChecked<FLevelEditorModule>(TEXT("LevelEditor"));
-					TSharedPtr<FTabManager> LevelEditorTabManager = LevelEditorModule.GetLevelEditorTabManager();
-					if (!LevelEditorTabManager->CanSpawnTab(RegistrationName))
-					{
-						IBlutilityModule* BlutilityModule = FModuleManager::GetModulePtr<IBlutilityModule>("Blutility");
-						UEditorUtilityWidgetBlueprint* WidgetBlueprint = Cast<UEditorUtilityWidgetBlueprint>(Blueprint);
+			TSharedRef< FWidgetBlueprintEditor > NewBlueprintEditor(new FWidgetBlueprintEditor());
 
-						LevelEditorTabManager->RegisterTabSpawner(RegistrationName, FOnSpawnTab::CreateUObject(WidgetBlueprint, &UEditorUtilityWidgetBlueprint::SpawnEditorUITab))
-							.SetDisplayName(DisplayName)
-							.SetGroup(BlutilityModule->GetMenuGroup().ToSharedRef());
-						BlutilityModule->AddLoadedScriptUI(WidgetBlueprint);
-					}
-					TSharedRef<SDockTab> NewDockTab = LevelEditorTabManager->InvokeTab(RegistrationName);
-				
-				}
-			}
+			TArray<UBlueprint*> Blueprints;
+			Blueprints.Add(Blueprint);
+			NewBlueprintEditor->InitWidgetBlueprintEditor(EToolkitMode::Standalone, nullptr, Blueprints, true);
+		}
+		else
+		{
+			FMessageDialog::Open(EAppMsgType::Ok, LOCTEXT("FailedToLoadEditorUtilityWidgetBlueprint", "Editor Utility Widget could not be loaded because it derives from an invalid class.\nCheck to make sure the parent class for this blueprint hasn't been removed!"));
 		}
 	}
 }
@@ -107,24 +90,40 @@ uint32 FAssetTypeActions_EditorUtilityWidgetBlueprint::GetCategories()
 	return BlutilityModule->GetAssetCategory();
 }
 
-void FAssetTypeActions_EditorUtilityWidgetBlueprint::ExecuteEdit(FWeakBlueprintPointerArray Objects)
+void FAssetTypeActions_EditorUtilityWidgetBlueprint::PerformAssetDiff(UObject* Asset1, UObject* Asset2, const struct FRevisionInfo& OldRevision, const struct FRevisionInfo& NewRevision) const
 {
-	for (auto ObjIt = Objects.CreateConstIterator(); ObjIt; ++ObjIt)
-	{
-		if (auto Object = (*ObjIt).Get())
-		{
-			auto Blueprint = Cast<UBlueprint>(*ObjIt);
-			if (Blueprint && Blueprint->SkeletonGeneratedClass && Blueprint->GeneratedClass)
-			{
-				TSharedRef< FWidgetBlueprintEditor > NewBlueprintEditor(new FWidgetBlueprintEditor());
+	UBlueprint* OldBlueprint = CastChecked<UBlueprint>(Asset1);
+	UBlueprint* NewBlueprint = CastChecked<UBlueprint>(Asset2);
 
-				TArray<UBlueprint*> Blueprints;
-				Blueprints.Add(Blueprint);
-				NewBlueprintEditor->InitWidgetBlueprintEditor(EToolkitMode::Standalone, nullptr, Blueprints, true);
-			}
-			else
+	// sometimes we're comparing different revisions of one single asset (other 
+	// times we're comparing two completely separate assets altogether)
+	bool bIsSingleAsset = (NewBlueprint->GetName() == OldBlueprint->GetName());
+
+	FText WindowTitle = LOCTEXT("NamelessEditorUtilityWidgetBlueprintDiff", "Editor Utility Widget Blueprint Diff");
+	// if we're diffing one asset against itself 
+	if (bIsSingleAsset)
+	{
+		// identify the assumed single asset in the window's title
+		WindowTitle = FText::Format(LOCTEXT("EditorUtilityWidgetBlueprintDiff", "{0} - Editor Utility Widget Blueprint Diff"), FText::FromString(NewBlueprint->GetName()));
+	}
+
+	SBlueprintDiff::CreateDiffWindow(WindowTitle, OldBlueprint, NewBlueprint, OldRevision, NewRevision);
+}
+
+void FAssetTypeActions_EditorUtilityWidgetBlueprint::ExecuteRun(FWeakBlueprintPointerArray InObjects)
+{
+	for (auto ObjIt = InObjects.CreateConstIterator(); ObjIt; ++ObjIt)
+	{
+		if (UWidgetBlueprint* Blueprint = Cast<UWidgetBlueprint>(*ObjIt))
+		{
+			if (Blueprint->GeneratedClass->IsChildOf(UEditorUtilityWidget::StaticClass()))
 			{
-				FMessageDialog::Open(EAppMsgType::Ok, LOCTEXT("FailedToLoadEditorUtilityWidgetBlueprint", "Editor Utility Widget could not be loaded because it derives from an invalid class.\nCheck to make sure the parent class for this blueprint hasn't been removed!"));
+				UEditorUtilityWidgetBlueprint* EditorWidget = Cast<UEditorUtilityWidgetBlueprint>(Blueprint);
+				if (EditorWidget)
+				{
+					UEditorUtilitySubsystem* EditorUtilitySubsystem = GEditor->GetEditorSubsystem<UEditorUtilitySubsystem>();
+					EditorUtilitySubsystem->SpawnAndRegisterTab(EditorWidget);
+				}
 			}
 		}
 	}

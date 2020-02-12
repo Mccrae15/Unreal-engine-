@@ -1,14 +1,21 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
 #include "CoreTypes.h"
+#include "Delegates/Delegate.h"
+#include "IOS/IOSInputInterface.h"
+
 #import <UIKit/UIKit.h>
 #import <OpenGLES/EAGL.h>
 
 #if HAS_METAL
 #import <Metal/Metal.h>
 #import <QuartzCore/CAMetalLayer.h>
+#endif
+
+#if WITH_ACCESSIBILITY
+#include "GenericPlatform/Accessibility/GenericAccessibleInterfaces.h"
 #endif
 
 struct FKeyboardConfig
@@ -25,6 +32,8 @@ struct FKeyboardConfig
 		bSecureTextEntry(NO) {}
 };
 
+
+APPLICATIONCORE_API
 @interface FIOSView : UIView  <UIKeyInput, UITextInput>
 {
 @public
@@ -40,14 +49,6 @@ struct FKeyboardConfig
 	UITouch* AllTouches[10];
 	float PreviousForces[10];
 	bool HasMoved[10];
-
-
-	//// GL MEMBERS
-	// the GL context
-	EAGLContext* Context;
-
-	// the internal MSAA FBO used to resolve the color buffer at present-time
-	GLuint ResolveFrameBuffer;
 
 
 	//// METAL MEMBERS
@@ -75,8 +76,18 @@ struct FKeyboardConfig
 	BOOL bSecureTextEntry;
 	
 	volatile int32 KeyboardShowCount;
+
+#if WITH_ACCESSIBILITY
+@private
+	// Single-element array used for the accessibilityElements property. It holds the IAccessibleWindow for the app.
+	NSMutableArray* _accessibilityElements;
+#endif
 }
 
+#if WITH_ACCESSIBILITY
+/** Repopulate _accessibilityElements when the accessible window's ID has changed. */
+-(void)SetAccessibilityWindow:(AccessibleWidgetId)WindowId;
+#endif
 
 //// SHARED FUNCTIONALITY
 @property (nonatomic) GLuint SwapCount;
@@ -99,12 +110,20 @@ struct FKeyboardConfig
 - (id<CAMetalDrawable>)MakeDrawable;
 #endif
 
-
 //// KEYBOARD FUNCTIONALITY
 -(void)InitKeyboard;
 -(void)ActivateKeyboard:(bool)bInSendEscapeOnClose;
 -(void)ActivateKeyboard:(bool)bInSendEscapeOnClose keyboardConfig:(FKeyboardConfig)KeyboardConfig;
 -(void)DeactivateKeyboard;
+
+// callable from outside to fake locations
+-(void)HandleTouchAtLoc:(CGPoint)Loc PrevLoc:(CGPoint)PrevLoc TouchIndex:(int)TouchIndex Force:(float)Force Type:(TouchType)Type TouchesArray:(TArray<TouchInput>&)TouchesArray;
+
+#if BUILD_EMBEDDED_APP
+// startup UE before we have a view - so that we don't need block on Metal device creation, which can take .5-1.5 seconds!
++(void)StartupEmbeddedUnreal;
+#endif
+
 @end
 
 

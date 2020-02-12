@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 /*=============================================================================
 	AnimStateTransitionNode.cpp
@@ -331,9 +331,14 @@ void UAnimStateTransitionNode::PostEditChangeProperty(struct FPropertyChangedEve
 		}
 		else if (CustomTransitionGraph != NULL)
 		{
+			// UAnimationCustomTransitionSchema::HandleGraphBeingDeleted resets logic type, so we'll need to restore it after RemoveGraph
+			const TEnumAsByte<ETransitionLogicType::Type> DesiredLogicType = LogicType;
+
 			UBlueprint* Blueprint = FBlueprintEditorUtils::FindBlueprintForNodeChecked(this);
 			FBlueprintEditorUtils::RemoveGraph(Blueprint, CustomTransitionGraph);
 			CustomTransitionGraph = NULL;
+
+			LogicType = DesiredLogicType;
 		}	
 	}
 

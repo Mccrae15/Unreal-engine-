@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -753,7 +753,7 @@ public:
 		VolumetricLightmapDirectLightingTime(0),
 		VolumetricLightmapFinalGatherTime(0)
 	{
-		for (int32 i = 0; i < ARRAY_COUNT(NumRefiningFinalGatherSamples); i++)
+		for (int32 i = 0; i < UE_ARRAY_COUNT(NumRefiningFinalGatherSamples); i++)
 		{
 			NumRefiningFinalGatherSamples[i] = 0;
 		}
@@ -825,7 +825,7 @@ public:
 		BaseFinalGatherSampleTime += B.BaseFinalGatherSampleTime;
 		RefiningFinalGatherSampleTime += B.RefiningFinalGatherSampleTime;
 
-		for (int32 i = 0; i < ARRAY_COUNT(NumRefiningFinalGatherSamples); i++)
+		for (int32 i = 0; i < UE_ARRAY_COUNT(NumRefiningFinalGatherSamples); i++)
 		{
 			NumRefiningFinalGatherSamples[i] += B.NumRefiningFinalGatherSamples[i];
 		}
@@ -1215,7 +1215,7 @@ private:
 
 	void ReturnToFreeListRecursive(FSimpleQuadTreeNode<ElementType>* Node, TArray<FSimpleQuadTreeNode<ElementType>*>& OutNodes) const
 	{
-		for (int32 ChildIndex = 0; ChildIndex < ARRAY_COUNT(Node->Children); ChildIndex++)
+		for (int32 ChildIndex = 0; ChildIndex < UE_ARRAY_COUNT(Node->Children); ChildIndex++)
 		{
 			if (Node->Children[ChildIndex])
 			{
@@ -1348,6 +1348,8 @@ struct FPrecomputedVisibilityData
 
 struct FIrradianceBrickData
 {
+	FGuid IntersectingLevelGuid;
+
 	/** Position in the global indirection texture.  Used for mapping brick positions back to world space. */
 	FIntVector IndirectionTexturePosition;
 
@@ -2058,6 +2060,8 @@ private:
 
 	void RasterizeToSurfaceCacheTextureMapping(FStaticLightingTextureMapping* TextureMapping, bool bDebugThisMapping, FTexelToVertexMap& TexelToVertexMap);
 
+	void AdjustRepresentativeSurfelForTexelsTextureMapping(FStaticLightingTextureMapping* TextureMapping, FTexelToVertexMap& TexelToVertexMap, FTexelToCornersMap& TexelToCornersMap, FGatheredLightMapData2D* LightMapData, FStaticLightingMappingContext& MappingContext,	bool bDebugThisMapping) const;
+
 	void RadiosityIterationTextureMapping(FStaticLightingTextureMapping* TextureMapping, int32 PassIndex);
 
 	void RadiosityIterationCachedHitpointsTextureMapping(const FTexelToVertexMap& TexelToVertexMap, FStaticLightingTextureMapping* TextureMapping, int32 PassIndex);
@@ -2220,19 +2224,20 @@ private:
 		bool bCoveringDebugPosition,
 		const FBox& TopLevelCellBounds, 
 		const TArray<FVector>& VoxelTestPositions,
+		const FGuid& IntersectingLevelGuid,
 		TArray<struct FIrradianceBrickBuildData>& OutBrickBuildData);
 
 	void ProcessVolumetricLightmapBrickTask(class FVolumetricLightmapBrickTaskDescription* Task);
 
-	void ProcessVolumetricLightmapTaskIfAvailable();
+	bool ProcessVolumetricLightmapTaskIfAvailable();
 
 	void GenerateVoxelTestPositions(TArray<FVector>& VoxelTestPositions) const;
 
 	void CalculateAdaptiveVolumetricLightmap(int32 TaskIndex);
 
-	bool DoesVoxelIntersectSceneGeometry(const FBox& CellBounds) const;
+	bool DoesVoxelIntersectSceneGeometry(const FBox& CellBounds, FGuid& OutIntersectingLevelGuid) const;
 
-	bool ShouldRefineVoxel(int32 TreeDepth, const FBox& AABB, const TArray<FVector>& VoxelTestPositions, bool bDebugThisVoxel) const;
+	bool ShouldRefineVoxel(int32 TreeDepth, const FBox& AABB, const TArray<FVector>& VoxelTestPositions, bool bDebugThisVoxel, FGuid& OutIntersectingLevelGuid) const;
 
 	/** Computes a shadow depth map for a stationary light. */
 	void CalculateStaticShadowDepthMap(FGuid LightGuid);
@@ -2379,6 +2384,7 @@ private:
 		const FStaticLightingMapping* Mapping,
 		const FFullStaticLightingVertex& Vertex,
 		int32 ElementIndex,
+		float TexelRadius,
 		float SampleRadius,
 		bool bIntersectingSurface,
 		FStaticLightingMappingContext& MappingContext,
@@ -2688,7 +2694,11 @@ private:
 
 	/** The aggregate mesh used for raytracing. */
 	FStaticLightingAggregateMeshType* AggregateMesh;
-	
+
+	FDefaultAggregateMesh* VoxelizationSurfaceAggregateMesh;
+	FDefaultAggregateMesh* VoxelizationVolumeAggregateMesh;
+	FDefaultAggregateMesh* LandscapeCullingVoxelizationAggregateMesh;
+
 	/** The input scene describing geometry, materials and lights. */
 	const FScene& Scene; 
 

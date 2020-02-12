@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 using UnrealBuildTool;
 
@@ -17,16 +17,18 @@ public class VulkanShaderFormat : ModuleRules
 				"RenderCore",
 				"ShaderCompilerCommon",
 				"ShaderPreprocessor",
+				"RHI", // @todo platplug: This would not be needed if we could move FDataDriveShaderPlatformInfo (and ERHIFeatureLevel) into RenderCore or maybe its own module?
 			}
 			);
-
-		// GlsLang has a shadowed variable:
-		bEnableShadowVariableWarnings = false;
 
 		AddEngineThirdPartyPrivateStaticDependencies(Target, "HLSLCC");
 		AddEngineThirdPartyPrivateStaticDependencies(Target, "GlsLang");
 
-		if (Target.Platform != UnrealTargetPlatform.Win64 && Target.Platform != UnrealTargetPlatform.Win32 && Target.Platform != UnrealTargetPlatform.Android && Target.Platform != UnrealTargetPlatform.Linux && Target.Platform != UnrealTargetPlatform.Mac)
+		if (Target.Platform != UnrealTargetPlatform.Win64 &&
+			Target.Platform != UnrealTargetPlatform.Win32 &&
+			Target.Platform != UnrealTargetPlatform.Android &&
+			!Target.IsInPlatformGroup(UnrealPlatformGroup.Linux) &&
+			Target.Platform != UnrealTargetPlatform.Mac)
 		{
 			PrecompileForTargets = PrecompileTargetsType.None;
 		}

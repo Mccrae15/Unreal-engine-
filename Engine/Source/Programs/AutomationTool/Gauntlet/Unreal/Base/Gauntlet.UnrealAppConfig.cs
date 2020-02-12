@@ -1,4 +1,4 @@
-﻿// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+﻿// Copyright Epic Games, Inc. All Rights Reserved.
 
 using System;
 using System.Collections.Generic;
@@ -30,7 +30,7 @@ namespace Gauntlet
 		/// <summary>
 		/// Platform this role runs on
 		/// </summary>
-		public UnrealTargetPlatform Platform { get; set; }
+		public UnrealTargetPlatform? Platform { get; set; }
 
 		/// <summary>
 		/// Configuration for this role
@@ -54,5 +54,17 @@ namespace Gauntlet
 
 		// new system
 		public IBuild Build { get; set; }
+
+		/// <summary>
+		/// Constructor that sets some required values to defaults
+		/// </summary>
+		public UnrealAppConfig()
+		{
+			Name = "UnrealApp";
+			ProjectName = "UnknownProject";
+			CommandLine = "";
+			Configuration = UnrealTargetConfiguration.Development;
+			Sandbox = "Gauntlet";
+		}
 	}
 }

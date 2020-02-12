@@ -1,48 +1,80 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 #pragma once
 
-#include "Chaos/BoundingVolumeHierarchy.h"
 #include "Chaos/Particles.h"
+#include "ChaosArchive.h"
+#include "Chaos/ParticleHandleFwd.h"
 
-extern int32 CollisionParticlesBVHDepth;
 
 namespace Chaos
 {
-template<class T, int d>
-class TBVHParticles : public TParticles<T, d>
-{
-  public:
-	using TArrayCollection::Size;
+	extern int32 CHAOS_API CollisionParticlesBVHDepth;
 
-	TBVHParticles()
-	    : TParticles<T, d>(), MBVH(*this, CollisionParticlesBVHDepth){}
-	TBVHParticles(const TBVHParticles<T, d>& Other) = delete;
-	TBVHParticles(TBVHParticles<T, d>&& Other)
-	    : TParticles<T, d>(MoveTemp(Other)), MBVH(MoveTemp(Other.MBVH))
+    template<class OBJECT_ARRAY, class LEAF_TYPE, class T, int d>
+    class TBoundingVolumeHierarchy;
+
+
+    template<class OBJECT_ARRAY, class LEAF_TYPE, class T, int d>
+    class TBoundingVolumeHierarchy;
+
+    template<class T, int d>
+    class TAABB;
+
+	template<class T, int d>
+	class TBVHParticles final /*Note: removing this final has implications for serialization. See TImplicitObject*/ : public TParticles<T, d>
 	{
-	}
-	~TBVHParticles()
+	public:
+		using TArrayCollection::Size;
+		using TParticles<T, d>::X;
+		using TParticles<T, d>::AddParticles;
+
+		CHAOS_API TBVHParticles();
+		TBVHParticles(TBVHParticles<T, d>&& Other);
+		TBVHParticles(TParticles<T, d>&& Other);
+        CHAOS_API ~TBVHParticles();
+
+	    CHAOS_API TBVHParticles& operator=(const TBVHParticles<T, d>& Other);
+	    CHAOS_API TBVHParticles& operator=(TBVHParticles<T, d>&& Other);
+
+		CHAOS_API TBVHParticles* NewCopy()
+		{
+			return new TBVHParticles(*this);
+		}
+
+		CHAOS_API void UpdateAccelerationStructures();
+		const TArray<int32> FindAllIntersections(const TAABB<T, d>& Object) const;
+
+		static TBVHParticles<T,d>* SerializationFactory(FChaosArchive& Ar, TBVHParticles<T,d>* BVHParticles)
+		{
+			return Ar.IsLoading() ? new TBVHParticles<T, d>() : nullptr;
+		}
+
+		CHAOS_API void Serialize(FChaosArchive& Ar);
+
+		CHAOS_API virtual void Serialize(FArchive& Ar)
+		{
+			check(false); //Aggregate simplicial require FChaosArchive - check false by default
+		}
+
+	private:
+		CHAOS_API TBVHParticles(const TBVHParticles<T, d>& Other);
+
+		TBoundingVolumeHierarchy<TParticles<T, d>, TArray<int32>, T, d>* MBVH;
+	};
+
+	template<typename T, int d>
+	FORCEINLINE FChaosArchive& operator<<(FChaosArchive& Ar, TBVHParticles<T, d>& Value)
 	{
+		Value.Serialize(Ar);
+		return Ar;
 	}
 
-	TBVHParticles& operator=(TBVHParticles<T, d>&& Other)
+	template<typename T, int d>
+	FORCEINLINE FArchive& operator<<(FArchive& Ar, TBVHParticles<T, d>& Value)
 	{
-		MBVH = MoveTemp(Other.MBVH);
-		TParticles<T, d>::operator=(static_cast<TParticles<T, d>&&>(Other));
-		return *this;
+		Value.Serialize(Ar);
+		return Ar;
 	}
 
-	void UpdateAccelerationStructures()
-	{
-		MBVH.UpdateHierarchy();
-	}
-
-	const TArray<int32> FindAllIntersections(const TBox<T, d>& Object) const
-	{
-		return MBVH.FindAllIntersections(Object);
-	}
-
-  private:
-	TBoundingVolumeHierarchy<TParticles<T, d>, T, d> MBVH;
-};
+	typedef TBVHParticles<float, 3> FBVHParticlesFloat3;
 }

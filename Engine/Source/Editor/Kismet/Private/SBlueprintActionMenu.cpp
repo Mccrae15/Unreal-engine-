@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 
 #include "SBlueprintActionMenu.h"
@@ -344,6 +344,7 @@ void SBlueprintActionMenu::Construct( const FArguments& InArgs, TSharedPtr<FBlue
 						.OnCreateWidgetForAction(SGraphActionMenu::FOnCreateWidgetForAction::CreateSP(this, &SBlueprintActionMenu::OnCreateWidgetForAction))
 						.OnCollectAllActions(this, &SBlueprintActionMenu::CollectAllActions)
 						.OnCreateCustomRowExpander_Static(&CreateCustomBlueprintActionExpander)
+						.DraggedFromPins(DraggedFromPins)
 				]
 			]
 		]
@@ -495,7 +496,7 @@ void SBlueprintActionMenu::ConstructActionContext(FBlueprintActionContext& Conte
 			if (Nodes.Num() == 1 && Nodes[0]->GetNodeType() == FSCSEditorTreeNode::ComponentNode)
 			{
 				FName PropertyName = Nodes[0]->GetVariableName();
-				UObjectProperty* VariableProperty = FindField<UObjectProperty>(Blueprint->SkeletonGeneratedClass, PropertyName);
+				FObjectProperty* VariableProperty = FindField<FObjectProperty>(Blueprint->SkeletonGeneratedClass, PropertyName);
 				ContextDescOut.SelectedObjects.Add(VariableProperty);
 			}
 		}

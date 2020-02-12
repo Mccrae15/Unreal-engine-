@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -25,11 +25,7 @@ public:
 	void NIAGARASHADER_API ResetOnRequestDefaultDataInterfaceHandler();
 	UNiagaraDataInterfaceBase* RequestDefaultDataInterface(const FString& DIClassName);
 
-	virtual void StartupModule() override
-	{
-		Singleton = this;
-	}
-
+	virtual void StartupModule() override;
 
 	virtual void ShutdownModule() override
 	{

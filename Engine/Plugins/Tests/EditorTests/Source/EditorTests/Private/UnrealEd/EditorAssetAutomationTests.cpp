@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "CoreMinimal.h"
 #include "HAL/FileManager.h"
@@ -94,7 +94,7 @@
 #include "ObjectTools.h"
 #include "PackageTools.h"
 #include "AssetRegistryModule.h"
-#include "Toolkits/AssetEditorManager.h"
+
 #include "ContentBrowserModule.h"
 
 #include "Slate/SlateBrushAsset.h"
@@ -111,6 +111,7 @@
 #include "Factories/DataAssetFactory.h"
 #include "Factories/CurveFactory.h"
 #include "AssetExportTask.h"
+#include "Subsystems/AssetEditorSubsystem.h"
 
 #define LOCTEXT_NAMESPACE "EditorAssetAutomationTests"
 
@@ -521,6 +522,8 @@ IMPLEMENT_SIMPLE_AUTOMATION_TEST(FAssetEditorTest, "Editor.Content.Asset Creatio
 
 bool FAssetEditorTest::RunTest(const FString& Parameters)
 {
+	// todo - doesn't appear to work with userdir arg
+#if 0
 	FAssetRegistryModule& AssetRegistryModule = FModuleManager::LoadModuleChecked<FAssetRegistryModule>(TEXT("AssetRegistry"));
 	FContentBrowserModule& ContentBrowserModule = FModuleManager::LoadModuleChecked<FContentBrowserModule>("ContentBrowser");
 
@@ -687,7 +690,7 @@ bool FAssetEditorTest::RunTest(const FString& Parameters)
 	{
 		ADD_LATENT_AUTOMATION_COMMAND(FDisableBehaviorTreeEditorCommand());
 	}
-
+#endif
 	return true;
 }
 
@@ -907,7 +910,7 @@ namespace ImportExportAssetHelper
 				// Do not show progress window because we need to take screenshot
 				// ActiveTopLevelWindow does not get set to editor window for asset if progress modal window was open
 				const bool bShowProgressWindow = false;
-				if (FAssetEditorManager::Get().OpenEditorForAsset(ImportedAsset, EToolkitMode::Standalone, TSharedPtr<IToolkitHost>(), bShowProgressWindow))
+				if (GEditor->GetEditorSubsystem<UAssetEditorSubsystem>()->OpenEditorForAsset(ImportedAsset, EToolkitMode::Standalone, TSharedPtr<IToolkitHost>(), bShowProgressWindow))
 				{
 					State = EState::WaitForEditor;
 				}
@@ -932,7 +935,7 @@ namespace ImportExportAssetHelper
 				if (!ActiveWindowTitle.StartsWith(ImportedAsset->GetName()))
 				{
 					//Bring the asset editor to the front
-					FAssetEditorManager::Get().FindEditorForAsset(ImportedAsset, true);
+					GEditor->GetEditorSubsystem<UAssetEditorSubsystem>()->FindEditorForAsset(ImportedAsset, true);
 				}
 
 				State = EState::Screenshot;
@@ -975,7 +978,7 @@ namespace ImportExportAssetHelper
 				}
 
 				//Close the editor
-				FAssetEditorManager::Get().CloseAllAssetEditors();
+				GEditor->GetEditorSubsystem<UAssetEditorSubsystem>()->CloseAllAssetEditors();
 
 				State = EState::Export;
 			}
@@ -1000,9 +1003,9 @@ namespace ImportExportAssetHelper
 					Extension = FPaths::GetExtension(ImportPath);
 				}
 
-				if (Extension.StartsWith(TEXT(".")))
+				if (Extension.StartsWith(TEXT("."), ESearchCase::CaseSensitive))
 				{
-					Extension = Extension.RightChop(1);
+					Extension.RightChopInline(1, false);
 				}
 
 				//Export the asset

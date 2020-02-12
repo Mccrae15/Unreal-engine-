@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -150,7 +150,10 @@ struct FMovieSceneOrderedEvaluationKey
 	FMovieSceneEvaluationKey Key;
 
 	UPROPERTY()
-	uint32 EvaluationIndex;
+	uint16 SetupIndex;
+
+	UPROPERTY()
+	uint16 TearDownIndex;
 };
 
 /** Informational meta-data that applies to a given time range */

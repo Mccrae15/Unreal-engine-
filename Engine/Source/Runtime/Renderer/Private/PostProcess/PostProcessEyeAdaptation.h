@@ -1,151 +1,90 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
-
-/*=============================================================================
-	PostProcessEyeAdaptation.h: Post processing eye adaptation implementation.
-=============================================================================*/
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
-#include "CoreMinimal.h"
-#include "HAL/IConsoleManager.h"
-#include "RendererInterface.h"
-#include "SceneRendering.h"
-#include "PostProcess/RenderingCompositionGraph.h"
+#include "ScreenPass.h"
 
-#define EYE_ADAPTATION_PARAMS_SIZE 4
-
-// Computes the eye-adaptation from HDRHistogram.
-// ePId_Input0: HDRHistogram or nothing
-// derives from TRenderingCompositePassBase<InputCount, OutputCount> 
-class FRCPassPostProcessEyeAdaptation : public TRenderingCompositePassBase<1, 1>
+// LuminanceMax is the amount of light that will cause the sensor to saturate at EV100.
+FORCEINLINE float EV100ToLuminance(float LuminanceMax, float EV100)
 {
-public:
-	FRCPassPostProcessEyeAdaptation(bool bInIsComputePass)
-	{
-		bIsComputePass = bInIsComputePass;
-		bPreferAsyncCompute = false;
-		bPreferAsyncCompute &= (GNumAlternateFrameRenderingGroups == 1); // Can't handle multi-frame updates on async pipe
-	}
-
-	// compute the parameters used for eye-adaptation.  These will default to values
-	// that disable eye-adaptation if the hardware doesn't support SM5 feature-level
-	static void ComputeEyeAdaptationParamsValue(const FViewInfo& View, FVector4 Out[EYE_ADAPTATION_PARAMS_SIZE]);
-	
-	// Computes the a fix exposure to be used to replace the dynamic exposure when it's not available (< SM5).
-	static float GetFixedExposure(const FViewInfo& View);
-
-	// interface FRenderingCompositePass ---------
-	virtual void Process(FRenderingCompositePassContext& Context) override;
-	virtual void Release() override { delete this; }
-	virtual FPooledRenderTargetDesc ComputeOutputDesc(EPassOutputId InPassOutputId) const override;
-
-	virtual FComputeFenceRHIParamRef GetComputePassEndFence() const override { return AsyncEndFence; }
-
-private:
-	template <typename TRHICmdList>
-	void DispatchCS(TRHICmdList& RHICmdList, FRenderingCompositePassContext& Context, FUnorderedAccessViewRHIParamRef DestUAV, IPooledRenderTarget* LastEyeAdaptation);
-
-	FComputeFenceRHIRef AsyncEndFence;
-};
-
-// Write Log2(Luminance) in the alpha channel.
-// ePId_Input0: Half-Res HDR scene color
-// derives from TRenderingCompositePassBase<InputCount, OutputCount> 
-class FRCPassPostProcessBasicEyeAdaptationSetUp : public TRenderingCompositePassBase<1, 1>
-{
-public:
-	
-	// interface FRenderingCompositePass ---------
-	virtual void Process(FRenderingCompositePassContext& Context) override;
-	virtual FPooledRenderTargetDesc ComputeOutputDesc(EPassOutputId InPassOutputId) const override;
-	virtual void Release() override { delete this; }
-};
-
-// ePId_Input0: Downsampled SceneColor Log
-// derives from TRenderingCompositePassBase<InputCount, OutputCount> 
-class FRCPassPostProcessBasicEyeAdaptation : public TRenderingCompositePassBase<1, 1>
-{
-public:
-	FRCPassPostProcessBasicEyeAdaptation(FIntPoint InDownsampledViewRect)
-	: DownsampledViewRect(InDownsampledViewRect) 
-	{
-	}
-
-	// interface FRenderingCompositePass ---------
-	virtual void Process(FRenderingCompositePassContext& Context) override;
-	virtual void Release() override { delete this; }
-	virtual FPooledRenderTargetDesc ComputeOutputDesc(EPassOutputId InPassOutputId) const override;
-
-private:
-	FIntPoint DownsampledViewRect;
-};
-
-// Console Variable that is used to over-ride the post process settings.
-extern TAutoConsoleVariable<int32> CVarEyeAdaptationMethodOverride;
-
-// Query the view for the auto exposure method, and allow for CVar override.
-static inline EAutoExposureMethod GetAutoExposureMethod(const FViewInfo& View)
-{
-	EAutoExposureMethod AutoExposureMethodId = View.FinalPostProcessSettings.AutoExposureMethod;
-	const int32 EyeOverride = CVarEyeAdaptationMethodOverride.GetValueOnRenderThread();
-
-	// Early out for common case
-	if (EyeOverride < 0) return AutoExposureMethodId;
-
-	// Additional branching for override.
-	switch (EyeOverride)
-	{
-	case 1:
-	{
-			  AutoExposureMethodId = EAutoExposureMethod::AEM_Histogram;
-			  break;
-	}
-	case 2:
-	{
-			  AutoExposureMethodId = EAutoExposureMethod::AEM_Basic;
-			  break;
-	}
-	case 3:
-	{
-			  AutoExposureMethodId = EAutoExposureMethod::AEM_Manual;
-			  break;
-	}
-	default:
-	{
-			   // Should only happen if the user supplies an override > 3
-			   AutoExposureMethodId = EAutoExposureMethod::AEM_MAX;
-			   break;
-	}
-	}
-	return AutoExposureMethodId;
+	return LuminanceMax * FMath::Pow(2.0f, EV100);
 }
 
-// @return true if the current feature level supports this auto exposure method.
-static inline bool IsAutoExposureMethodSupported(const ERHIFeatureLevel::Type& FeatureLevel, const EAutoExposureMethod& AutoExposureMethodId)
+FORCEINLINE float EV100ToLog2(float LuminanceMax, float EV100)
 {
-	bool Result = false;
-
-	switch (AutoExposureMethodId)
-	{
-	case EAutoExposureMethod::AEM_Histogram:
-		Result = FeatureLevel >= ERHIFeatureLevel::SM5;
-		break;
-	case EAutoExposureMethod::AEM_Basic:
-	case EAutoExposureMethod::AEM_Manual:
-		Result = FeatureLevel >= ERHIFeatureLevel::ES3_1;
-		break;
-	default:
-		break;
-	}
-	return Result;
+	return EV100 + FMath::Log2(LuminanceMax);
 }
 
-extern TAutoConsoleVariable<float> CVarEyeAdaptationFocus;
-static inline float GetBasicAutoExposureFocus()
+FORCEINLINE float LuminanceToEV100(float LuminanceMax, float Luminance)
 {
-	// Hard coded value camp.
-	static float clampValue = 10.f;
-	float FocusValue = CVarEyeAdaptationFocus.GetValueOnRenderThread();
-	
-	return FMath::Max(FMath::Min(FocusValue, clampValue), 0.0f);
+	return FMath::Log2(Luminance / LuminanceMax);
 }
+
+FORCEINLINE float Log2ToEV100(float LuminanceMax, float Log2)
+{
+	return Log2 - FMath::Log2(LuminanceMax);
+}
+
+// For converting the auto exposure to new values from 4.24 to 4.25
+float CalculateEyeAdaptationParameterExposureConversion(const FPostProcessSettings& Settings, const bool bExtendedLuminanceRange);
+
+// figure out the LuminanceMax (i.e. how much light in cd/m2 will saturate the camera sensor) from the CVar lens attenuation
+float LuminanceMaxFromLensAttenuation();
+
+// Returns whether the auto exposure method is supported by the feature level.
+bool IsAutoExposureMethodSupported(ERHIFeatureLevel::Type FeatureLevel, EAutoExposureMethod AutoExposureMethodId);
+
+// Returns the auto exposure method enabled by the view (including CVar override).
+EAutoExposureMethod GetAutoExposureMethod(const FViewInfo& View);
+
+BEGIN_SHADER_PARAMETER_STRUCT(FEyeAdaptationParameters, )
+	SHADER_PARAMETER(float, ExposureLowPercent)
+	SHADER_PARAMETER(float, ExposureHighPercent)
+	SHADER_PARAMETER(float, MinAverageLuminance)
+	SHADER_PARAMETER(float, MaxAverageLuminance)
+	SHADER_PARAMETER(float, ExposureCompensation)
+	SHADER_PARAMETER(float, DeltaWorldTime)
+	SHADER_PARAMETER(float, ExposureSpeedUp)
+	SHADER_PARAMETER(float, ExposureSpeedDown)
+	SHADER_PARAMETER(float, HistogramScale)
+	SHADER_PARAMETER(float, HistogramBias)
+	SHADER_PARAMETER(float, LuminanceMin)
+	SHADER_PARAMETER(float, CalibrationConstantInverse)
+	SHADER_PARAMETER(float, WeightSlope)
+	SHADER_PARAMETER(float, GreyMult)
+	SHADER_PARAMETER(float, ExponentialUpM)
+	SHADER_PARAMETER(float, ExponentialDownM)
+	SHADER_PARAMETER(float, StartDistance)
+	SHADER_PARAMETER(float, LuminanceMax)
+	SHADER_PARAMETER(float, ForceTarget)
+	SHADER_PARAMETER(int, VisualizeDebugType)
+	SHADER_PARAMETER_TEXTURE(Texture2D, MeterMaskTexture)
+	SHADER_PARAMETER_SAMPLER(SamplerState, MeterMaskSampler)
+END_SHADER_PARAMETER_STRUCT()
+
+FEyeAdaptationParameters GetEyeAdaptationParameters(const FViewInfo& ViewInfo, ERHIFeatureLevel::Type MinFeatureLevel);
+
+// Computes the a fixed exposure to be used to replace the dynamic exposure when it's not supported (< SM5).
+float GetEyeAdaptationFixedExposure(const FViewInfo& View);
+
+// Returns the updated 1x1 eye adaptation texture.
+FRDGTextureRef AddHistogramEyeAdaptationPass(
+	FRDGBuilder& GraphBuilder,
+	const FViewInfo& View,
+	const FEyeAdaptationParameters& EyeAdaptationParameters,
+	FRDGTextureRef HistogramTexture);
+
+// Computes luma of scene color stores in Alpha.
+FScreenPassTexture AddBasicEyeAdaptationSetupPass(
+	FRDGBuilder& GraphBuilder,
+	const FViewInfo& View,
+	const FEyeAdaptationParameters& EyeAdaptationParameters,
+	FScreenPassTexture SceneColor);
+
+// Returns the updated 1x1 eye adaptation texture.
+FRDGTextureRef AddBasicEyeAdaptationPass(
+	FRDGBuilder& GraphBuilder,
+	const FViewInfo& View,
+	const FEyeAdaptationParameters& EyeAdaptationParameters,
+	FScreenPassTexture SceneColor,
+	FRDGTextureRef EyeAdaptationTexture);

@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "Subsystems/SubsystemBlueprintLibrary.h"
 
@@ -16,7 +16,7 @@
 {
 	if (const UWorld* World = ThisClass::GetWorldFrom(ContextObject))
 	{
-		if (const UGameInstance* GameInstance = GameInstance = World->GetGameInstance())
+		if (const UGameInstance* GameInstance = World->GetGameInstance())
 		{
 			return GameInstance->GetSubsystemBase(Class);
 		}
@@ -46,6 +46,15 @@
 		return LocalPlayer->GetSubsystemBase(Class);
 	}
 
+	return nullptr;
+}
+
+UWorldSubsystem* USubsystemBlueprintLibrary::GetWorldSubsystem(UObject* ContextObject, TSubclassOf<UWorldSubsystem> Class)
+{
+	if (const UWorld* World = ThisClass::GetWorldFrom(ContextObject))
+	{
+		return World->GetSubsystemBase(Class);
+	}
 	return nullptr;
 }
 

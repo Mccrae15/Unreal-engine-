@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "NavLinkCustomComponent.h"
 #include "TimerManager.h"
@@ -42,12 +42,46 @@ void UNavLinkCustomComponent::PostLoad()
 	INavLinkCustomInterface::UpdateUniqueId(NavLinkUserId);
 }
 
+TStructOnScope<FActorComponentInstanceData> UNavLinkCustomComponent::GetComponentInstanceData() const
+{
+	TStructOnScope<FActorComponentInstanceData> InstanceData = MakeStructOnScope<FActorComponentInstanceData, FNavLinkCustomInstanceData>(this);
+	FNavLinkCustomInstanceData* NavLinkCustomInstanceData = InstanceData.Cast<FNavLinkCustomInstanceData>();
+	NavLinkCustomInstanceData->NavLinkUserId = NavLinkUserId;
+
+	return InstanceData;
+}
+
+void UNavLinkCustomComponent::ApplyComponentInstanceData(FNavLinkCustomInstanceData* NavLinkData)
+{
+	check(NavLinkData);
+
+	if (NavLinkUserId != NavLinkData->NavLinkUserId)
+	{
+		// Registered component has its link registered in the navigation system. 
+		// In such case, we need to unregister current Id and register with the Id from the instance data.
+		const bool bIsLinkRegistrationUpdateRequired = IsRegistered();
+
+		if (bIsLinkRegistrationUpdateRequired)
+		{
+			UNavigationSystemV1::RequestCustomLinkUnregistering(*this, this);
+		}
+
+		NavLinkUserId = NavLinkData->NavLinkUserId;
+
+		if (bIsLinkRegistrationUpdateRequired)
+		{
+			UNavigationSystemV1::RequestCustomLinkRegistering(*this, this);
+		}
+	}
+}
+
 #if WITH_EDITOR
 void UNavLinkCustomComponent::PostEditImport()
 {
 	Super::PostEditImport();
 
 	NavLinkUserId = INavLinkCustomInterface::GetUniqueId();
+	UE_LOG(LogNavLink, VeryVerbose, TEXT("%s new navlink id %u."), ANSI_TO_TCHAR(__FUNCTION__), NavLinkUserId);
 }
 #endif
 
@@ -56,6 +90,11 @@ void UNavLinkCustomComponent::GetLinkData(FVector& LeftPt, FVector& RightPt, ENa
 	LeftPt = LinkRelativeStart;
 	RightPt = LinkRelativeEnd;
 	Direction = LinkDirection;
+}
+
+void UNavLinkCustomComponent::GetSupportedAgents(FNavAgentSelector& OutSupportedAgents) const
+{
+	OutSupportedAgents = SupportedAgents;
 }
 
 TSubclassOf<UNavArea> UNavLinkCustomComponent::GetLinkAreaClass() const
@@ -131,6 +170,7 @@ void UNavLinkCustomComponent::OnRegister()
 	if (NavLinkUserId == 0)
 	{
 		NavLinkUserId = INavLinkCustomInterface::GetUniqueId();
+		UE_LOG(LogNavLink, VeryVerbose, TEXT("%s new navlink id %u [%s]."), ANSI_TO_TCHAR(__FUNCTION__), NavLinkUserId, *GetFullName());
 	}
 
 	UNavigationSystemV1::RequestCustomLinkRegistering(*this, this);

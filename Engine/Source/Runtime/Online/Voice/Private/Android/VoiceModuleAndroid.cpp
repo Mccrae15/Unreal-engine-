@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 /*
 opensl_io.c:
@@ -576,7 +576,10 @@ IVoiceCapture* CreateVoiceCaptureObject(const FString& DeviceName, int32 SampleR
 		delete Capture;
 		Capture = nullptr;
 	}
-	ActiveVoiceCaptures.Add(Capture);
+	else
+	{
+		ActiveVoiceCaptures.Add(Capture);
+	}
 	return Capture;
 #else
 	return nullptr;

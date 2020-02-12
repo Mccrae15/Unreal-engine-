@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 
 #pragma once
@@ -108,6 +108,7 @@ extern PFNGLISVERTEXARRAYPROC 				glIsVertexArray;
 	EnumMacro(PFNGLLINKPROGRAMPROC,glLinkProgram) \
 	EnumMacro(PFNGLSHADERSOURCEPROC,glShaderSource) \
 	EnumMacro(PFNGLUSEPROGRAMPROC,glUseProgram) \
+	EnumMacro(PFNGLUNIFORM2FPROC,glUniform2f) \
 	EnumMacro(PFNGLUNIFORM4FPROC,glUniform4f) \
 	EnumMacro(PFNGLUNIFORM1IPROC,glUniform1i) \
 	EnumMacro(PFNGLUNIFORM4FVPROC,glUniform4fv) \

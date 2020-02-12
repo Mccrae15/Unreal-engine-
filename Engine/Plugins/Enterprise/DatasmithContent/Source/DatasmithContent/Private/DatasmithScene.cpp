@@ -1,8 +1,9 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "DatasmithScene.h"
 #include "DatasmithAssetImportData.h"
 
+#include "Engine/AssetUserData.h"
 #include "Engine/Blueprint.h"
 #include "Engine/World.h"
 #include "EngineUtils.h"
@@ -21,9 +22,6 @@ enum
 
 UDatasmithScene::UDatasmithScene()
 {
-#if WITH_EDITORONLY_DATA
-	DataPrepRecipeBP = nullptr;
-#endif
 #if WITH_EDITOR
 	bPreWorldRenameCallbackRegistered = false;
 #endif
@@ -98,12 +96,67 @@ void UDatasmithScene::Serialize( FArchive& Archive )
 		DatasmithSceneBulkData.Serialize( Archive, this );
 	}
 
-	if (Archive.IsLoading() && Archive.CustomVer(FEnterpriseObjectVersion::GUID) < FEnterpriseObjectVersion::HasUDatasmithDataPrepRecipe)
+	if (Archive.IsLoading() && Archive.CustomVer(FEnterpriseObjectVersion::GUID) < FEnterpriseObjectVersion::HasUDataprepRecipe)
 	{
 		check(AssetImportData);
 		check(AssetImportData->StaticClass()->IsChildOf(UDatasmithSceneImportData::StaticClass()));
 
 		UDatasmithSceneImportData* SceneImportData = Cast<UDatasmithSceneImportData>(AssetImportData);
 	}
+#endif // #if WITH_EDITORONLY_DATA
+}
+
+void UDatasmithScene::AddAssetUserData( UAssetUserData* InUserData )
+{
+#if WITH_EDITORONLY_DATA
+	if ( InUserData != NULL )
+	{
+		UAssetUserData* ExistingData = GetAssetUserDataOfClass( InUserData->GetClass() );
+		if ( ExistingData != NULL )
+		{
+			AssetUserData.Remove( ExistingData );
+		}
+		AssetUserData.Add( InUserData );
+	}
+#endif // #if WITH_EDITORONLY_DATA
+}
+
+UAssetUserData* UDatasmithScene::GetAssetUserDataOfClass( TSubclassOf<UAssetUserData> InUserDataClass )
+{
+#if WITH_EDITORONLY_DATA
+	for ( int32 DataIdx = 0; DataIdx < AssetUserData.Num(); DataIdx++ )
+	{
+		UAssetUserData* Datum = AssetUserData[DataIdx];
+		if ( Datum != NULL && Datum->IsA( InUserDataClass ) )
+		{
+			return Datum;
+		}
+	}
+#endif // #if WITH_EDITORONLY_DATA
+	return NULL;
+
+}
+
+void UDatasmithScene::RemoveUserDataOfClass( TSubclassOf<UAssetUserData> InUserDataClass )
+{
+#if WITH_EDITORONLY_DATA
+	for ( int32 DataIdx = 0; DataIdx < AssetUserData.Num(); DataIdx++ )
+	{
+		UAssetUserData* Datum = AssetUserData[DataIdx];
+		if ( Datum != NULL && Datum->IsA(InUserDataClass ) )
+		{
+			AssetUserData.RemoveAt( DataIdx );
+			return;
+		}
+	}
+#endif // #if WITH_EDITORONLY_DATA
+}
+
+const TArray<UAssetUserData*>* UDatasmithScene::GetAssetUserDataArray() const
+{
+#if WITH_EDITORONLY_DATA
+	return &AssetUserData;
+#else
+	return NULL;
 #endif // #if WITH_EDITORONLY_DATA
 }

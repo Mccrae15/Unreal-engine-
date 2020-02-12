@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -42,6 +42,8 @@ struct FCrashOverrideParameters
 	/** Default this to true for backward compatibility before these bools were added. */
 	bool bSetCrashReportClientMessageText = true;
 	bool bSetGameNameSuffix = false;
+	TOptional<bool> SendUnattendedBugReports;
+	TOptional<bool> SendUsageData;
 
 	CORE_API ~FCrashOverrideParameters();
 };
@@ -64,8 +66,14 @@ public:
 	// delegate type for prompting the pak system to mount a new pak
 	DECLARE_DELEGATE_RetVal_OneParam(bool, FOnUnmountPak, const FString&);
 
+	// delegate type for prompting the pak system to optimize memory for mounted paks
+	DECLARE_DELEGATE(FOnOptimizeMemoryUsageForMountedPaks);
+
 	// delegate for handling when a new pak file is successfully mounted passes in the name of the mounted pak file
 	DECLARE_MULTICAST_DELEGATE_OneParam(FPakFileMountedDelegate, const TCHAR*);
+
+	// delegate for handling when a new pak file is successfully mounted passes in the name of the pak file and its chunk ID (or INDEX_NONE)
+	DECLARE_MULTICAST_DELEGATE_TwoParams(FOnPakFileMounted, const TCHAR*, const int32);
 
 	// delegate to let other systems no that no paks were mounted, in case something wants to handle that case
 	DECLARE_MULTICAST_DELEGATE(FNoPakFilesMountedDelegate);
@@ -101,7 +109,7 @@ public:
 	DECLARE_DELEGATE_OneParam(FPakEncryptionKeyDelegate, uint8[32]);
 
 	// Callback for gathering pak signing keys, if they exist
-	DECLARE_DELEGATE_TwoParams(FPakSigningKeysDelegate, uint8[64], uint8[64]);
+	DECLARE_DELEGATE_TwoParams(FPakSigningKeysDelegate, TArray<uint8>&, TArray<uint8>&);
 
 	// Callback for handling the Controller connection / disconnection
 	// first param is true for a connection, false for a disconnection.
@@ -152,11 +160,24 @@ public:
 	// Callback for unmounting a pak file.
 	static FOnUnmountPak OnUnmountPak;
 
-	// After a pakfile is mounted this callback is called for each new file
+	// Callback to optimize memeory for currently mounted paks
+	static FOnOptimizeMemoryUsageForMountedPaks OnOptimizeMemoryUsageForMountedPaks;
+
+	// After a pakfile is mounted this is called
+	static FOnPakFileMounted OnPakFileMounted;
+	UE_DEPRECATED(4.25, "FCoreDelegates::PakFileMountedCallback is deprecated. Use FCoreDelegates::OnPakFileMounted instead.")
 	static FPakFileMountedDelegate PakFileMountedCallback;
+
+	// After a file is added this is called
+	DECLARE_MULTICAST_DELEGATE_OneParam(FNewFileAddedDelegate, const FString&);
+	static FNewFileAddedDelegate NewFileAddedDelegate;
 
 	// After an attempt to mount all pak files, but none wre found, this is called
 	static FNoPakFilesMountedDelegate NoPakFilesMountedDelegate;
+
+	// When a file is opened for read from a pak file
+	DECLARE_MULTICAST_DELEGATE_TwoParams(FOnFileOpenedForReadFromPakFile, const TCHAR* /*PakFile*/, const TCHAR* /*FileName*/);
+	static FOnFileOpenedForReadFromPakFile OnFileOpenedForReadFromPakFile;
 
     // Delegate used to register a movie streamer with any movie player modules that bind to this delegate
     // Designed to be called when a platform specific movie streamer plugin starts up so that it doesn't need to implement a register for all movie player plugins
@@ -167,6 +188,7 @@ public:
 
 	// Callback when an ensure has occurred
 	static FOnHandleSystemEnsure OnHandleSystemEnsure;
+
 	// Callback when an error (crash) has occurred
 	static FOnHandleSystemError OnHandleSystemError;
 
@@ -281,6 +303,13 @@ public:
 	static FOnFConfigFileCreated OnFConfigCreated;
 	static FOnFConfigFileDeleted OnFConfigDeleted;
 
+	DECLARE_MULTICAST_DELEGATE_ThreeParams(FOnConfigValueRead, const TCHAR* /*IniFilename*/, const TCHAR* /*SectionName*/, const TCHAR* /*Key*/);
+	static FOnConfigValueRead OnConfigValueRead;
+
+	DECLARE_MULTICAST_DELEGATE_TwoParams(FOnConfigSectionRead, const TCHAR* /*IniFilename*/, const TCHAR* /*SectionName*/);
+	static FOnConfigSectionRead OnConfigSectionRead;
+	static FOnConfigSectionRead OnConfigSectionNameRead;
+
 	DECLARE_MULTICAST_DELEGATE_FourParams(FOnApplyCVarFromIni, const TCHAR* /*SectionName*/, const TCHAR* /*IniFilename*/, uint32 /*SetBy*/, bool /*bAllowCheating*/);
 	static FOnApplyCVarFromIni OnApplyCVarFromIni;
 
@@ -291,6 +320,10 @@ public:
 	// called when a target platform changes it's return value of supported formats.  This is so anything caching those results can reset (like cached shaders for cooking)
 	DECLARE_MULTICAST_DELEGATE_OneParam(FOnTargetPlatformChangedSupportedFormats, const ITargetPlatform*); 
 	static FOnTargetPlatformChangedSupportedFormats OnTargetPlatformChangedSupportedFormats;
+
+	// Called when a feature level is disabled by the user.
+	DECLARE_MULTICAST_DELEGATE_TwoParams(FOnFeatureLevelDisabled, int, const FName&);
+	static FOnFeatureLevelDisabled OnFeatureLevelDisabled;
 #endif
 
 	/** IOS-style application lifecycle delegates */
@@ -309,13 +342,19 @@ public:
 	// terminated from the background state without any further warning.
 	static FApplicationLifetimeDelegate ApplicationWillEnterBackgroundDelegate; // for instance, hitting the home button
 
-																				// Called when the application is returning to the foreground (reverse any processing done in the EnterBackground delegate)
+	// Called when the application is returning to the foreground (reverse any processing done in the EnterBackground delegate)
 	static FApplicationLifetimeDelegate ApplicationHasEnteredForegroundDelegate;
 
 	// This *may* be called when the application is getting terminated by the OS.
 	// There is no guarantee that this will ever be called on a mobile device,
 	// save state when ApplicationWillEnterBackgroundDelegate is called instead.
 	static FApplicationLifetimeDelegate ApplicationWillTerminateDelegate;
+
+	// Called when in the background, if the OS is giving CPU time to the device. It is very likely
+	// this will never be called due to mobile OS backgrounded CPU restrictions. But if, for instance,
+	// VOIP is active on iOS, the will be getting called
+	DECLARE_MULTICAST_DELEGATE_OneParam(FBackgroundTickDelegate, float /*DeltaTime*/);
+	static FBackgroundTickDelegate MobileBackgroundTickDelegate;
 
 	// Called when the OS needs control of the music (parameter is true) or when the OS returns
 	// control of the music to the application (parameter is false). This can happen due to a
@@ -518,6 +557,10 @@ public:
 	// Return true for to launch the url
 	DECLARE_DELEGATE_RetVal_OneParam(bool, FShouldLaunchUrl, const TCHAR* /* URL */);
 	static FShouldLaunchUrl ShouldLaunchUrl;
+
+	/** Sent when GC finish destroy takes more time than expected */
+	DECLARE_MULTICAST_DELEGATE_OneParam(FOnGCFinishDestroyTimeExtended, const FString&);
+	static FOnGCFinishDestroyTimeExtended OnGCFinishDestroyTimeExtended;
 
 private:
 

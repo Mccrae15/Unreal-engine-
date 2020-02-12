@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 
 #include "Animation/DebugSkelMeshComponent.h"
@@ -17,8 +17,9 @@
 #include "Rendering/SkeletalMeshRenderData.h"
 #include "Rendering/SkeletalMeshModel.h"
 
-#include "Assets/ClothingAsset.h"
+#include "ClothingAsset.h"
 #include "ClothingSimulation.h"
+#include "Utils/ClothingMeshUtils.h"
 #include "DynamicMeshBuilder.h"
 #include "Materials/MaterialInstanceDynamic.h"
 
@@ -47,6 +48,14 @@ UDebugSkelMeshComponent::UDebugSkelMeshComponent(const FObjectInitializer& Objec
 
 FBoxSphereBounds UDebugSkelMeshComponent::CalcBounds(const FTransform& LocalToWorld) const
 {
+	// Override bounds with pre-skinned bounds if asking for them
+	if (IsUsingPreSkinnedBounds())
+	{
+		FBoxSphereBounds PreSkinnedLocalBounds;
+		GetPreSkinnedLocalBounds(PreSkinnedLocalBounds);
+		return PreSkinnedLocalBounds;
+	}
+
 	FBoxSphereBounds Result = Super::CalcBounds(LocalToWorld);
 
 	if (!IsUsingInGameBounds())
@@ -90,6 +99,16 @@ bool UDebugSkelMeshComponent::IsUsingInGameBounds() const
 void UDebugSkelMeshComponent::UseInGameBounds(bool bUseInGameBounds)
 {
 	bIsUsingInGameBounds = bUseInGameBounds;
+}
+
+bool UDebugSkelMeshComponent::IsUsingPreSkinnedBounds() const
+{
+	return bIsUsingPreSkinnedBounds;
+}
+
+void UDebugSkelMeshComponent::UsePreSkinnedBounds(bool bUsePreSkinnedBounds)
+{
+	bIsUsingPreSkinnedBounds = bUsePreSkinnedBounds;
 }
 
 bool UDebugSkelMeshComponent::CheckIfBoundsAreCorrrect()
@@ -295,7 +314,7 @@ void UDebugSkelMeshComponent::InitAnim(bool bForceReinit)
 	}
 }
 
-void UDebugSkelMeshComponent::K2_SetAnimInstanceClass(class UClass* NewClass)
+void UDebugSkelMeshComponent::SetAnimClass(class UClass* NewClass)
 {
 	// Override this to do nothing and warn the user
 	UE_LOG(LogAnimation, Warning, TEXT("Attempting to destroy an animation preview actor, skipping."));
@@ -335,7 +354,7 @@ void UDebugSkelMeshComponent::EnablePreview(bool bEnable, UAnimationAsset* Previ
 
 bool UDebugSkelMeshComponent::ShouldCPUSkin()
 {
-	return 	bCPUSkinning || bDrawBoneInfluences || bDrawNormals || bDrawTangents || bDrawBinormals || bDrawMorphTargetVerts;
+	return 	GetCPUSkinningEnabled() || bDrawBoneInfluences || bDrawNormals || bDrawTangents || bDrawBinormals || bDrawMorphTargetVerts;
 }
 
 
@@ -642,11 +661,11 @@ void UDebugSkelMeshComponent::ToggleClothSectionsVisibility(bool bShowOnlyClothS
 
 				if(Section.HasClothingData())
 				{
-					ShowMaterialSection(Section.MaterialIndex, bShowOnlyClothSections, LODIndex);
+					ShowMaterialSection(Section.MaterialIndex, SecIdx, bShowOnlyClothSections, LODIndex);
 				}
 				else
 				{
-					ShowMaterialSection(Section.MaterialIndex, !bShowOnlyClothSections, LODIndex);
+					ShowMaterialSection(Section.MaterialIndex, SecIdx, !bShowOnlyClothSections, LODIndex);
 				}
 			}
 		}
@@ -689,7 +708,7 @@ void UDebugSkelMeshComponent::SetMeshSectionVisibilityForCloth(FGuid InClothGuid
 				// disables cloth section and also corresponding original section for matching cloth asset
 				if(Section.HasClothingData() && Section.ClothingData.AssetGuid == InClothGuid)
 				{
-					ShowMaterialSection(Section.MaterialIndex, bVisibility, LODIndex);
+					ShowMaterialSection(Section.MaterialIndex, SecIdx, bVisibility, LODIndex);
 				}
 			}
 		}
@@ -721,17 +740,16 @@ void UDebugSkelMeshComponent::RebuildClothingSectionsFixedVerts()
 
 				if(BaseAsset)
 				{
-					UClothingAsset* ConcreteAsset = Cast<UClothingAsset>(BaseAsset);
-					FClothLODData& LodData = ConcreteAsset->LodData[Section.ClothingData.AssetLodIndex];
+					UClothingAssetCommon* ConcreteAsset = Cast<UClothingAssetCommon>(BaseAsset);
+					UClothLODDataCommon* LodData = ConcreteAsset->ClothLodData[Section.ClothingData.AssetLodIndex];
+					const FPointWeightMap& MaxDistances = LodData->ClothPhysicalMeshData.GetWeightMap(EWeightMapTargetCommon::MaxDistance);
 
 					for(FMeshToMeshVertData& VertData : Section.ClothMappingData)
 					{
-						float TriangleDistanceMax = 0.0f;
-						TriangleDistanceMax += LodData.PhysicalMeshData.MaxDistances[VertData.SourceMeshVertIndices[0]];
-						TriangleDistanceMax += LodData.PhysicalMeshData.MaxDistances[VertData.SourceMeshVertIndices[1]];
-						TriangleDistanceMax += LodData.PhysicalMeshData.MaxDistances[VertData.SourceMeshVertIndices[2]];
-
-						if(TriangleDistanceMax == 0.0f)
+						if(MaxDistances.AreAnyBelowThreshold(
+							VertData.SourceMeshVertIndices[0],
+							VertData.SourceMeshVertIndices[1],
+							VertData.SourceMeshVertIndices[2]))
 						{
 							VertData.SourceMeshVertIndices[3] = 0xFFFF;
 						}
@@ -795,14 +813,14 @@ void UDebugSkelMeshComponent::RefreshSelectedClothingSkinnedPositions()
 	{
 		UClothingAssetBase** Asset = SkeletalMesh->MeshClothingAssets.FindByPredicate([&](UClothingAssetBase* Item)
 		{
-			return SelectedClothingGuidForPainting == Item->GetAssetGuid();
+			return Item && SelectedClothingGuidForPainting == Item->GetAssetGuid();
 		});
 
 		if(Asset)
 		{
-			UClothingAsset* ConcreteAsset = Cast<UClothingAsset>(*Asset);
+			UClothingAssetCommon* ConcreteAsset = Cast<UClothingAssetCommon>(*Asset);
 
-			if(ConcreteAsset->LodData.IsValidIndex(SelectedClothingLodForPainting))
+			if(ConcreteAsset->ClothLodData.IsValidIndex(SelectedClothingLodForPainting))
 			{
 				SkinnedSelectedClothingPositions.Reset();
 				SkinnedSelectedClothingNormals.Reset();
@@ -811,9 +829,9 @@ void UDebugSkelMeshComponent::RefreshSelectedClothingSkinnedPositions()
 				// Pass LOD0 to collect all bones
 				GetCurrentRefToLocalMatrices(RefToLocals, 0);
 
-				FClothLODData& LodData = ConcreteAsset->LodData[SelectedClothingLodForPainting];
+				UClothLODDataCommon* LodData = ConcreteAsset->ClothLodData[SelectedClothingLodForPainting];
 
-				FClothingSimulationBase::SkinPhysicsMesh(ConcreteAsset, LodData.PhysicalMeshData, FTransform::Identity, RefToLocals.GetData(), RefToLocals.Num(), SkinnedSelectedClothingPositions, SkinnedSelectedClothingNormals);
+				ClothingMeshUtils::SkinPhysicsMesh(ConcreteAsset->UsedBoneIndices, LodData->ClothPhysicalMeshData, FTransform::Identity, RefToLocals.GetData(), RefToLocals.Num(), SkinnedSelectedClothingPositions, SkinnedSelectedClothingNormals);
 				RebuildCachedClothBounds();
 			}
 		}
@@ -1010,23 +1028,23 @@ FDebugSkelMeshDynamicData::FDebugSkelMeshDynamicData(UDebugSkelMeshComponent* In
 			for(int32 ClothingAssetIndex = 0; ClothingAssetIndex < NumClothingAssets; ++ClothingAssetIndex)
 			{
 				UClothingAssetBase* BaseAsset = Mesh->MeshClothingAssets[ClothingAssetIndex];
-				if(BaseAsset->GetAssetGuid() == InComponent->SelectedClothingGuidForPainting)
+				if(BaseAsset && BaseAsset->GetAssetGuid() == InComponent->SelectedClothingGuidForPainting)
 				{
 					ClothingSimDataIndexWhenPainting = ClothingAssetIndex;
 
-					if(UClothingAsset* ConcreteAsset = Cast<UClothingAsset>(BaseAsset))
+					if(UClothingAssetCommon* ConcreteAsset = Cast<UClothingAssetCommon>(BaseAsset))
 					{
-						if(ConcreteAsset->LodData.IsValidIndex(InComponent->SelectedClothingLodForPainting))
+						if(ConcreteAsset->ClothLodData.IsValidIndex(InComponent->SelectedClothingLodForPainting))
 						{
-							FClothLODData& LodData = ConcreteAsset->LodData[InComponent->SelectedClothingLodForPainting];
+							UClothLODDataCommon* LodData = ConcreteAsset->ClothLodData[InComponent->SelectedClothingLodForPainting];
 
-							ClothingSimIndices = LodData.PhysicalMeshData.Indices;
+							ClothingSimIndices = LodData->ClothPhysicalMeshData.Indices;
 
-							if(LodData.ParameterMasks.IsValidIndex(InComponent->SelectedClothingLodMaskForPainting))
+							if(LodData->ParameterMasks.IsValidIndex(InComponent->SelectedClothingLodMaskForPainting))
 							{
-								FClothParameterMask_PhysMesh& Mask = LodData.ParameterMasks[InComponent->SelectedClothingLodMaskForPainting];
+								FPointWeightMap& Mask = LodData->ParameterMasks[InComponent->SelectedClothingLodMaskForPainting];
 
-								ClothingVisiblePropertyValues = Mask.GetValueArray();
+								ClothingVisiblePropertyValues = Mask.Values;
 							}
 						}
 					}
@@ -1038,3 +1056,37 @@ FDebugSkelMeshDynamicData::FDebugSkelMeshDynamicData(UDebugSkelMeshComponent* In
 	}
 }
 
+FScopedSuspendAlternateSkinWeightPreview::FScopedSuspendAlternateSkinWeightPreview(USkeletalMesh* SkeletalMesh)
+{
+	SuspendedComponentArray.Empty(2);
+	if (SkeletalMesh != nullptr)
+	{
+		// Now iterate over all skeletal mesh components and unregister them from the world, we will reregister them in the destructor
+		for (TObjectIterator<UDebugSkelMeshComponent> It; It; ++It)
+		{
+			UDebugSkelMeshComponent* DebugSKComp = *It;
+			if (DebugSKComp->SkeletalMesh == SkeletalMesh)
+			{
+				const FName ProfileName = DebugSKComp->GetCurrentSkinWeightProfileName();
+				if (ProfileName != NAME_None)
+				{
+					DebugSKComp->ClearSkinWeightProfile();
+					TTuple<UDebugSkelMeshComponent*, FName> ComponentTupple;
+					ComponentTupple.Key = DebugSKComp;
+					ComponentTupple.Value = ProfileName;
+					SuspendedComponentArray.Add(ComponentTupple);
+				}
+			}
+		}
+	}
+}
+
+FScopedSuspendAlternateSkinWeightPreview::~FScopedSuspendAlternateSkinWeightPreview()
+{
+	//Put back the skin weight profile for all editor debug component
+	for (const TTuple<UDebugSkelMeshComponent*, FName>& ComponentTupple : SuspendedComponentArray)
+	{
+		ComponentTupple.Key->SetSkinWeightProfile(ComponentTupple.Value);
+	}
+	SuspendedComponentArray.Empty();
+}

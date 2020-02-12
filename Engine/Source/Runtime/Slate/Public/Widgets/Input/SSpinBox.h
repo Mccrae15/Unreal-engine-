@@ -1,29 +1,30 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
 #include "CoreMinimal.h"
-#include "Misc/Attribute.h"
-#include "InputCoreTypes.h"
-#include "Layout/Margin.h"
 #include "Fonts/SlateFontInfo.h"
-#include "Layout/Visibility.h"
-#include "Widgets/DeclarativeSyntaxSupport.h"
-#include "Styling/SlateColor.h"
+#include "Framework/Application/SlateApplication.h"
+#include "Framework/MultiBox/MultiBoxExtender.h"
 #include "Input/CursorReply.h"
 #include "Input/Events.h"
 #include "Input/Reply.h"
-#include "Widgets/SCompoundWidget.h"
-#include "Styling/CoreStyle.h"
-#include "Widgets/Input/NumericTypeInterface.h"
-#include "Widgets/SBoxPanel.h"
-#include "Styling/SlateTypes.h"
-#include "Widgets/Text/STextBlock.h"
-#include "Widgets/Input/SEditableText.h"
+#include "InputCoreTypes.h"
+#include "Layout/Margin.h"
+#include "Layout/Visibility.h"
+#include "Misc/Attribute.h"
 #include "Rendering/DrawElements.h"
-#include "Framework/Application/SlateApplication.h"
-#include "Widgets/Images/SImage.h"
+#include "Styling/CoreStyle.h"
+#include "Styling/SlateColor.h"
+#include "Styling/SlateTypes.h"
 #include "Templates/IsIntegral.h"
+#include "Widgets/DeclarativeSyntaxSupport.h"
+#include "Widgets/Images/SImage.h"
+#include "Widgets/Input/NumericTypeInterface.h"
+#include "Widgets/Input/SEditableText.h"
+#include "Widgets/SBoxPanel.h"
+#include "Widgets/SCompoundWidget.h"
+#include "Widgets/Text/STextBlock.h"
 
 /*
  * This function compute a slider position by simulating two log on both side of the neutral value
@@ -69,7 +70,10 @@ public:
 		: _Style(&FCoreStyle::Get().GetWidgetStyle<FSpinBoxStyle>("SpinBox"))
 		, _Value(0)
 		, _MinValue(0)
-		, _MaxValue(10)
+		, _MaxValue(0)
+		, _MinFractionalDigits(DefaultMinFractionalDigits)
+		, _MaxFractionalDigits(DefaultMaxFractionalDigits)
+		, _AlwaysUsesDeltaSnap(false)
 		, _Delta(0)
 		, _ShiftMouseMovePixelPerDelta(1)
 		, _SupportDynamicSliderMaxValue(false)
@@ -97,6 +101,12 @@ public:
 		SLATE_ATTRIBUTE( TOptional< NumericType >, MinSliderValue )
 		/** The maximum value that can be specified by using the slider, defaults to MaxValue */
 		SLATE_ATTRIBUTE( TOptional< NumericType >, MaxSliderValue )
+		/** The minimum fractional digits the spin box displays, defaults to 1 */
+		SLATE_ATTRIBUTE(TOptional< int32 >, MinFractionalDigits)
+		/** The maximum fractional digits the spin box displays, defaults to 7 */
+		SLATE_ATTRIBUTE(TOptional< int32 >, MaxFractionalDigits)
+		/** Whether typed values should use delta snapping, defaults to false */
+		SLATE_ATTRIBUTE(bool, AlwaysUsesDeltaSnap)
 		/** Delta to increment the value as the slider moves.  If not specified will determine automatically */
 		SLATE_ATTRIBUTE( NumericType, Delta )
 		/** How many pixel the mouse must move to change the value of the delta step */
@@ -137,6 +147,10 @@ public:
 		SLATE_ATTRIBUTE( ETextJustify::Type, Justification )
 		/** Provide custom type conversion functionality to this spin box */
 		SLATE_ARGUMENT( TSharedPtr< INumericTypeInterface<NumericType> >, TypeInterface )
+		/** If refresh requests for the viewport should happen for all value changes **/
+		SLATE_ARGUMENT(bool, PreventThrottling)
+		/** Menu extender for the right-click context menu */
+		SLATE_EVENT( FMenuExtensionDelegate, ContextMenuExtender )
 
 	SLATE_END_ARGS()
 
@@ -170,10 +184,17 @@ public:
 		MinSliderValue = (InArgs._MinSliderValue.Get().IsSet()) ? InArgs._MinSliderValue : MinValue;
 		MaxSliderValue = (InArgs._MaxSliderValue.Get().IsSet()) ? InArgs._MaxSliderValue : MaxValue;
 
+		MinFractionalDigits = (InArgs._MinFractionalDigits.Get().IsSet()) ? InArgs._MinFractionalDigits : DefaultMinFractionalDigits;
+		MaxFractionalDigits = (InArgs._MaxFractionalDigits.Get().IsSet()) ? InArgs._MaxFractionalDigits : DefaultMaxFractionalDigits;
+
+		AlwaysUsesDeltaSnap = InArgs._AlwaysUsesDeltaSnap;
+
 		SupportDynamicSliderMaxValue = InArgs._SupportDynamicSliderMaxValue;
 		SupportDynamicSliderMinValue = InArgs._SupportDynamicSliderMinValue;
 		OnDynamicSliderMaxValueChanged = InArgs._OnDynamicSliderMaxValueChanged;
 		OnDynamicSliderMinValueChanged = InArgs._OnDynamicSliderMinValueChanged;
+
+		bPreventThrottling = InArgs._PreventThrottling;
 
 		// Update the max slider value based on the current value if we're in dynamic mode
 		NumericType CurrentMaxValue = GetMaxValue();
@@ -253,6 +274,7 @@ public:
 				.VirtualKeyboardType(EKeyboardType::Keyboard_Number)
 				.Justification(InArgs._Justification)
 				.VirtualKeyboardTrigger(EVirtualKeyboardTrigger::OnAllFocusEvents)
+				.ContextMenuExtender( InArgs._ContextMenuExtender )
 			]
 
 			+SHorizontalBox::Slot()
@@ -354,7 +376,13 @@ public:
 			PreDragValue = InternalValue;
 			PointerDraggingSliderIndex = MouseEvent.GetPointerIndex();
 			CachedMousePosition = MouseEvent.GetScreenSpacePosition().IntPoint();
-			return FReply::Handled().CaptureMouse(SharedThis(this)).UseHighPrecisionMouseMovement(SharedThis(this)).SetUserFocus(SharedThis(this), EFocusCause::Mouse);
+
+			FReply ReturnReply = FReply::Handled().CaptureMouse(SharedThis(this)).UseHighPrecisionMouseMovement(SharedThis(this)).SetUserFocus(SharedThis(this), EFocusCause::Mouse);
+			if (bPreventThrottling) 
+			{
+				ReturnReply.PreventThrottling();
+			}
+			return ReturnReply;
 		}
 		else
 		{
@@ -689,7 +717,7 @@ public:
 	void SetValue(const TAttribute<NumericType>& InValueAttribute) 
 	{
 		ValueAttribute = InValueAttribute; 
-		CommitValue(InValueAttribute.Get(), ECommitMethod::CommittedViaSpin, ETextCommit::Default);
+		CommitValue(InValueAttribute.Get(), ECommitMethod::CommittedViaCode, ETextCommit::Default);
 	}
 
 	/** See the MinValue attribute */
@@ -727,6 +755,24 @@ public:
 		MaxSliderValue = (InMaxSliderValue.Get().IsSet()) ? InMaxSliderValue : MaxValue;;
 		UpdateIsSpinRangeUnlimited();
 	}
+
+	/** See the MinFractionalDigits attribute */
+	int32 GetMinFractionalDigits() const { return Interface->GetMinFractionalDigits(); }
+	void SetMinFractionalDigits(const TAttribute<TOptional<int32>>& InMinFractionalDigits)
+	{
+		Interface->SetMinFractionalDigits((InMinFractionalDigits.Get().IsSet()) ? InMinFractionalDigits.Get() : MinFractionalDigits);
+	}
+
+	/** See the MaxFractionalDigits attribute */
+	int32 GetMaxFractionalDigits() const { return Interface->GetMaxFractionalDigits(); }
+	void SetMaxFractionalDigits(const TAttribute<TOptional<int32>>& InMaxFractionalDigits)
+	{
+		Interface->SetMaxFractionalDigits((InMaxFractionalDigits.Get().IsSet()) ? InMaxFractionalDigits.Get() : MaxFractionalDigits);
+	}
+
+	/** See the AlwaysUsesDeltaSnap attribute */
+	bool GetAlwaysUsesDeltaSnap() const { return AlwaysUsesDeltaSnap.Get(); }
+	void SetAlwaysUsesDeltaSnap(bool bNewValue) { AlwaysUsesDeltaSnap.Set(bNewValue); }
 
 	/** See the Delta attribute */
 	NumericType GetDelta() const { return Delta.Get(); }
@@ -825,7 +871,8 @@ protected:
 	{
 		CommittedViaSpin,
 		CommittedViaTypeIn,
-		CommittedViaArrowKey
+		CommittedViaArrowKey,
+		CommittedViaCode
 	};
 
 	/**
@@ -864,8 +911,9 @@ protected:
 		// Update the internal value, this needs to be done before rounding.
 		InternalValue = NewValue;
 
+		const bool bAlwaysUsesDeltaSnap = GetAlwaysUsesDeltaSnap();
 		// If needed, round this value to the delta. Internally the value is not held to the Delta but externally it appears to be.
-		if ( CommitMethod == CommittedViaSpin || CommitMethod == CommittedViaArrowKey )
+		if ( CommitMethod == CommittedViaSpin || CommitMethod == CommittedViaArrowKey || bAlwaysUsesDeltaSnap)
 		{
 			NumericType CurrentDelta = Delta.Get();
 			if( CurrentDelta != 0 )
@@ -890,6 +938,11 @@ protected:
 		}
 
 		OnValueChanged.ExecuteIfBound( RoundIfIntegerValue( NewValue ) );
+
+		if (!ValueAttribute.IsBound())
+		{
+			ValueAttribute.Set(NewValue);
+		}
 
 		// Update the cache of the external value to what the user believes the value is now.
 		CachedExternalValue = ValueAttribute.Get();
@@ -935,6 +988,13 @@ protected:
 	}
 
 private:
+
+	/** The default minimum fractional digits */
+	static const int32 DefaultMinFractionalDigits;
+
+	/** The default maximum fractional digits */
+	static const int32 DefaultMaxFractionalDigits;
+
 	TAttribute<NumericType> ValueAttribute;
 	FOnValueChanged OnValueChanged;
 	FOnValueCommitted OnValueCommitted;
@@ -970,6 +1030,9 @@ private:
 	TAttribute< TOptional<NumericType> > MaxValue;
 	TAttribute< TOptional<NumericType> > MinSliderValue;
 	TAttribute< TOptional<NumericType> > MaxSliderValue;
+	TAttribute< TOptional<int32> > MinFractionalDigits;
+	TAttribute< TOptional<int32> > MaxFractionalDigits;
+	TAttribute<bool> AlwaysUsesDeltaSnap;
 	TAttribute<bool> SupportDynamicSliderMaxValue;
 	TAttribute<bool> SupportDynamicSliderMinValue;
 	FOnDynamicSliderMinMaxValueChanged OnDynamicSliderMaxValueChanged;
@@ -1019,4 +1082,14 @@ private:
 
 	/** Re-entrant guard for the text changed handler */
 	bool bIsTextChanging;
+
+	/* Holds whether or not to prevent throttling during mouse capture */
+	// When true, the viewport will be updated with every single change to the value during dragging
+	bool bPreventThrottling;
 };
+
+template<typename NumericType>
+const int32 SSpinBox<NumericType>::DefaultMinFractionalDigits = 1;
+
+template<typename NumericType>
+const int32 SSpinBox<NumericType>::DefaultMaxFractionalDigits = 6;

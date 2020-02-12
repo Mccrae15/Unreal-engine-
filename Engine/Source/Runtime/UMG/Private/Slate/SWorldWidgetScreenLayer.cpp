@@ -1,12 +1,34 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "Slate/SWorldWidgetScreenLayer.h"
 #include "Widgets/Layout/SBox.h"
 #include "Components/WidgetComponent.h"
 #include "Blueprint/WidgetLayoutLibrary.h"
+#include "Blueprint/SlateBlueprintLibrary.h"
 #include "Engine/GameViewportClient.h"
 #include "Widgets/SViewport.h"
 #include "Slate/SGameLayerManager.h"
+
+static int32 GSlateWorldWidgetZOrder = 1;
+static FAutoConsoleVariableRef CVarSlateWorldWidgetZOrder(
+	TEXT("Slate.WorldWidgetZOrder"),
+	GSlateWorldWidgetZOrder,
+	TEXT("Whether to re-order world widgets projected to screen by their view point distance\n")
+	TEXT(" 0: Disable re-ordering\n")
+	TEXT(" 1: Re-order by distance (default, less batching, less artifacts when widgets overlap)"),
+	ECVF_Default
+	);
+
+SWorldWidgetScreenLayer::FComponentEntry::FComponentEntry()
+	: Slot(nullptr)
+{
+}
+
+SWorldWidgetScreenLayer::FComponentEntry::~FComponentEntry()
+{
+	Widget.Reset();
+	ContainerWidget.Reset();
+}
 
 void SWorldWidgetScreenLayer::Construct(const FArguments& InArgs, const FLocalPlayerContext& InPlayerContext)
 {
@@ -32,11 +54,11 @@ void SWorldWidgetScreenLayer::SetWidgetPivot(FVector2D InPivot)
 	Pivot = InPivot;
 }
 
-void SWorldWidgetScreenLayer::AddComponent(USceneComponent* Component, TSharedPtr<SWidget> Widget)
+void SWorldWidgetScreenLayer::AddComponent(USceneComponent* Component, TSharedRef<SWidget> Widget)
 {
-	if ( Component && Widget.IsValid() )
+	if ( Component )
 	{
-		FComponentEntry& Entry = ComponentMap.FindOrAdd(Component);
+		FComponentEntry& Entry = ComponentMap.FindOrAdd(FObjectKey(Component));
 		Entry.Component = Component;
 		Entry.WidgetComponent = Cast<UWidgetComponent>(Component);
 		Entry.Widget = Widget;
@@ -46,7 +68,7 @@ void SWorldWidgetScreenLayer::AddComponent(USceneComponent* Component, TSharedPt
 		[
 			SAssignNew(Entry.ContainerWidget, SBox)
 			[
-				Widget.ToSharedRef()
+				Widget
 			]
 		];
 	}
@@ -54,16 +76,15 @@ void SWorldWidgetScreenLayer::AddComponent(USceneComponent* Component, TSharedPt
 
 void SWorldWidgetScreenLayer::RemoveComponent(USceneComponent* Component)
 {
-	if ( Component )
+	if (ensure(Component))
 	{
-		if ( FComponentEntry* Entry = ComponentMap.Find(Component) )
+		if (FComponentEntry* EntryPtr = ComponentMap.Find(Component))
 		{
-			if ( Entry->Widget.IsValid() )
+			if (!EntryPtr->bRemoving)
 			{
-				Canvas->RemoveSlot(Entry->ContainerWidget.ToSharedRef());
+				RemoveEntryFromCanvas(*EntryPtr);
+				ComponentMap.Remove(Component);
 			}
-
-			ComponentMap.Remove(Component);
 		}
 	}
 }
@@ -72,13 +93,26 @@ void SWorldWidgetScreenLayer::Tick(const FGeometry& AllottedGeometry, const doub
 {
 	QUICK_SCOPE_CYCLE_COUNTER(SWorldWidgetScreenLayer_Tick);
 
-	TArray<USceneComponent*, TInlineAllocator<1>> DeadComponents;
-
 	if ( APlayerController* PlayerController = PlayerContext.GetPlayerController() )
 	{
 		if ( UGameViewportClient* ViewportClient = PlayerController->GetWorld()->GetGameViewport() )
 		{
 			const FGeometry& ViewportGeometry = ViewportClient->GetGameLayerManager()->GetViewportWidgetHostGeometry();
+
+			// cache projection data here and avoid calls to UWidgetLayoutLibrary.ProjectWorldLocationToWidgetPositionWithDistance
+			FSceneViewProjectionData ProjectionData;
+			FMatrix ViewProjectionMatrix;
+			bool bHasProjectionData = false;
+
+			ULocalPlayer const* const LP = PlayerController->GetLocalPlayer();
+			if (LP && LP->ViewportClient)
+			{
+				bHasProjectionData = LP->GetProjectionData(ViewportClient->Viewport, eSSP_FULL, /*out*/ ProjectionData);
+				if (bHasProjectionData)
+				{
+					ViewProjectionMatrix = ProjectionData.ComputeViewProjectionMatrix();
+				}
+			}
 
 			for ( auto It = ComponentMap.CreateIterator(); It; ++It )
 			{
@@ -88,11 +122,17 @@ void SWorldWidgetScreenLayer::Tick(const FGeometry& AllottedGeometry, const doub
 				{
 					FVector WorldLocation = SceneComponent->GetComponentLocation();
 
-					FVector ViewportPosition;
-					const bool bProjected = UWidgetLayoutLibrary::ProjectWorldLocationToWidgetPositionWithDistance(PlayerController, WorldLocation, ViewportPosition);
-
-					if ( bProjected )
+					FVector2D ScreenPosition2D;
+					const bool bProjected = bHasProjectionData ? FSceneView::ProjectWorldToScreen(WorldLocation, ProjectionData.GetConstrainedViewRect(), ViewProjectionMatrix, ScreenPosition2D) : false;
+					if (bProjected)
 					{
+						const float ViewportDist = FVector::Dist(ProjectionData.ViewOrigin, WorldLocation);
+						const FVector2D RoundedPosition2D(FMath::RoundToInt(ScreenPosition2D.X), FMath::RoundToInt(ScreenPosition2D.Y));
+						FVector2D ViewportPosition2D;
+						USlateBlueprintLibrary::ScreenToViewport(PlayerController, RoundedPosition2D, ViewportPosition2D);
+
+						const FVector ViewportPosition(ViewportPosition2D.X, ViewportPosition2D.Y, ViewportDist);
+
 						Entry.ContainerWidget->SetVisibility(EVisibility::SelfHitTestInvisible);
 
 						if ( SConstraintCanvas::FSlot* CanvasSlot = Entry.Slot )
@@ -102,6 +142,8 @@ void SWorldWidgetScreenLayer::Tick(const FGeometry& AllottedGeometry, const doub
 
 							if ( Entry.WidgetComponent )
 							{
+								LocalPosition = Entry.WidgetComponent->ModifyProjectedLocalPosition(ViewportGeometry, LocalPosition);
+
 								FVector2D ComponentDrawSize = Entry.WidgetComponent->GetDrawSize();
 								FVector2D ComponentPivot = Entry.WidgetComponent->GetPivot();
 								
@@ -109,7 +151,11 @@ void SWorldWidgetScreenLayer::Tick(const FGeometry& AllottedGeometry, const doub
 								CanvasSlot->Offset(FMargin(LocalPosition.X, LocalPosition.Y, ComponentDrawSize.X, ComponentDrawSize.Y));
 								CanvasSlot->Anchors(FAnchors(0, 0, 0, 0));
 								CanvasSlot->Alignment(ComponentPivot);
-								CanvasSlot->ZOrder(-ViewportPosition.Z);
+								
+								if (GSlateWorldWidgetZOrder != 0)
+								{
+									CanvasSlot->ZOrder(-ViewportPosition.Z);
+								}
 							}
 							else
 							{
@@ -117,7 +163,11 @@ void SWorldWidgetScreenLayer::Tick(const FGeometry& AllottedGeometry, const doub
 								CanvasSlot->Offset(FMargin(LocalPosition.X, LocalPosition.Y, DrawSize.X, DrawSize.Y));
 								CanvasSlot->Anchors(FAnchors(0, 0, 0, 0));
 								CanvasSlot->Alignment(Pivot);
-								CanvasSlot->ZOrder(-ViewportPosition.Z);
+
+								if (GSlateWorldWidgetZOrder != 0)
+								{
+									CanvasSlot->ZOrder(-ViewportPosition.Z);
+								}
 							}
 						}
 					}
@@ -128,16 +178,40 @@ void SWorldWidgetScreenLayer::Tick(const FGeometry& AllottedGeometry, const doub
 				}
 				else
 				{
-					DeadComponents.Add(SceneComponent);
+					RemoveEntryFromCanvas(Entry);
+					It.RemoveCurrent();
+					continue;
 				}
 			}
+
+			// Done
+			return;
 		}
 	}
 
-	// Normally components should be removed by someone calling remove component, but just in case it was 
-	// deleted in a way where they didn't happen, this is our backup solution to ensure we remove stale widgets.
-	for ( int32 Index = 0; Index < DeadComponents.Num(); Index++ )
+	if (GSlateIsOnFastUpdatePath)
 	{
-		RemoveComponent(DeadComponents[Index]);
+		// Hide everything if we are unable to do any of the work.
+		for (auto It = ComponentMap.CreateIterator(); It; ++It)
+		{
+			FComponentEntry& Entry = It.Value();
+			Entry.ContainerWidget->SetVisibility(EVisibility::Collapsed);
+		}
 	}
+}
+
+void SWorldWidgetScreenLayer::RemoveEntryFromCanvas(SWorldWidgetScreenLayer::FComponentEntry& Entry)
+{
+	// Mark the component was being removed, so we ignore any other remove requests for this component.
+	Entry.bRemoving = true;
+
+	if (TSharedPtr<SWidget> ContainerWidget = Entry.ContainerWidget)
+	{
+		Canvas->RemoveSlot(ContainerWidget.ToSharedRef());
+	}
+}
+
+FVector2D SWorldWidgetScreenLayer::ComputeDesiredSize(float) const
+{
+	return FVector2D(0, 0);
 }

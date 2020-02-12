@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "PaintModePainter.h"
 
@@ -57,7 +57,7 @@ FPaintModePainter::FPaintModePainter()
 FPaintModePainter::~FPaintModePainter()
 {
 	FCoreUObjectDelegates::OnObjectPropertyChanged.RemoveAll(this);
-	ComponentToAdapterMap.Empty();
+	Cleanup();
 	ComponentToTexturePaintSettingsMap.Empty();
 }
 
@@ -387,6 +387,8 @@ void FPaintModePainter::PasteVertexColors()
 			}
 		}
 	}
+
+	UpdateCachedVertexDataSize();
 }
 
 void FPaintModePainter::FixVertexColors()
@@ -407,6 +409,8 @@ void FPaintModePainter::RemoveVertexColors()
 	{
 		MeshPaintHelpers::RemoveComponentInstanceVertexColors(Component);
 	}
+
+	UpdateCachedVertexDataSize();
 }
 
 void FPaintModePainter::PropagateVertexColorsToLODs()
@@ -476,9 +480,12 @@ void FPaintModePainter::PropagateVertexColorsToLODs()
 
 	for (UMeshComponent* SelectedComponent : PaintableComponents)
 	{
-		TSharedPtr<IMeshPaintGeometryAdapter> MeshAdapter = ComponentToAdapterMap.FindChecked(SelectedComponent);
-		MeshPaintHelpers::ApplyVertexColorsToAllLODs(*MeshAdapter, SelectedComponent);
-		FComponentReregisterContext ReregisterContext(SelectedComponent);
+		if (SelectedComponent)
+		{
+			TSharedPtr<IMeshPaintGeometryAdapter> MeshAdapter = ComponentToAdapterMap.FindChecked(SelectedComponent);
+			MeshPaintHelpers::ApplyVertexColorsToAllLODs(*MeshAdapter, SelectedComponent);
+			FComponentReregisterContext ReregisterContext(SelectedComponent);
+		}
 	}
 
 	Refresh();
@@ -493,6 +500,27 @@ void FPaintModePainter::CycleMeshLODs(int32 Direction)
 		const int32 AdjustedLODIndex = NewLODIndex < 0 ? MaxLODIndex + NewLODIndex : NewLODIndex % MaxLODIndex;
 		PaintSettings->VertexPaintSettings.LODIndex = AdjustedLODIndex;
 		PaintLODChanged();
+	}
+}
+
+void FPaintModePainter::UpdateCachedVertexDataSize()
+{
+	if (PaintSettings->PaintMode == EPaintMode::Vertices)
+	{
+		CachedVertexDataSize = 0;
+
+		const bool bInstance = true;
+		for (UMeshComponent* SelectedComponent : PaintableComponents)
+		{
+			if (SelectedComponent)
+			{
+				int32 NumLODs = MeshPaintHelpers::GetNumberOfLODs(SelectedComponent);
+				for (int32 LODIndex = 0; LODIndex < NumLODs; ++LODIndex)
+				{
+					CachedVertexDataSize += MeshPaintHelpers::GetVertexColorBufferSize(SelectedComponent, LODIndex, bInstance);
+				}
+			}
+		}
 	}
 }
 
@@ -672,17 +700,20 @@ const FHitResult FPaintModePainter::GetHitResult(const FVector& Origin, const FV
 
 		for (UMeshComponent* MeshComponent : PaintableComponents)
 		{
-			TSharedPtr<IMeshPaintGeometryAdapter> MeshAdapter = ComponentToAdapterMap.FindChecked(MeshComponent);
-
-			// Ray trace
-			FHitResult TraceHitResult(1.0f);
-
-			if (MeshAdapter->LineTraceComponent(TraceHitResult, TraceStart, TraceEnd, FCollisionQueryParams(SCENE_QUERY_STAT(Paint), true)))
+			if (MeshComponent)
 			{
-				// Find the closest impact
-				if ((BestTraceResult.GetComponent() == nullptr) || (TraceHitResult.Time < BestTraceResult.Time))
+				TSharedPtr<IMeshPaintGeometryAdapter> MeshAdapter = ComponentToAdapterMap.FindChecked(MeshComponent);
+
+				// Ray trace
+				FHitResult TraceHitResult(1.0f);
+
+				if (MeshAdapter->LineTraceComponent(TraceHitResult, TraceStart, TraceEnd, FCollisionQueryParams(SCENE_QUERY_STAT(Paint), true)))
 				{
-					BestTraceResult = TraceHitResult;
+					// Find the closest impact
+					if ((BestTraceResult.GetComponent() == nullptr) || (TraceHitResult.Time < BestTraceResult.Time))
+					{
+						BestTraceResult = TraceHitResult;
+					}
 				}
 			}
 		}
@@ -760,11 +791,14 @@ void FPaintModePainter::AddReferencedObjects(FReferenceCollector& Collector)
 	Collector.AddReferencedObject(BrushRenderTargetTexture);
 	Collector.AddReferencedObject(BrushMaskRenderTargetTexture);
 	Collector.AddReferencedObject(SeamMaskRenderTargetTexture);
+	Collector.AddReferencedObjects(PaintableComponents);
 	for (TMap< UTexture2D*, FPaintTexture2DData >::TIterator It(PaintTargetData); It; ++It)
 	{
 		Collector.AddReferencedObject(It.Key());
 		It.Value().AddReferencedObjects(Collector);
 	}
+
+	FMeshPaintAdapterFactory::AddReferencedObjectsGlobals(Collector);
 
 	for (TMap< UMeshComponent*, TSharedPtr<IMeshPaintGeometryAdapter>>::TIterator It(ComponentToAdapterMap); It; ++It)
 	{
@@ -779,10 +813,20 @@ void FPaintModePainter::FinishPainting()
 	IMeshPainter::FinishPainting();	
 	FinishPaintingTexture();	
 
-	if (PaintSettings->PaintMode == EPaintMode::Vertices && !PaintSettings->VertexPaintSettings.bPaintOnSpecificLOD)
+	if (PaintSettings->PaintMode == EPaintMode::Vertices)
 	{
-		PropagateVertexColorsToLODs();
+		if (!PaintSettings->VertexPaintSettings.bPaintOnSpecificLOD)
+		{
+			PropagateVertexColorsToLODs();
+		}
+		else
+		{
+			Refresh();
+		}
 	}
+
+	UpdateCachedVertexDataSize();
+
 }
 
 bool FPaintModePainter::PaintInternal(const FVector& InCameraOrigin, const TArrayView<TPair<FVector, FVector>>& Rays, EMeshPaintAction PaintAction, float PaintStrength)
@@ -817,6 +861,11 @@ bool FPaintModePainter::PaintInternal(const FVector& InCameraOrigin, const TArra
 
 		for (UMeshComponent* MeshComponent : PaintableComponents)
 		{
+			if (!MeshComponent)
+			{
+				continue;
+			}
+
 			TSharedPtr<IMeshPaintGeometryAdapter>* MeshAdapterPtr = ComponentToAdapterMap.Find(MeshComponent);
 			if (!MeshAdapterPtr)
 			{
@@ -856,13 +905,16 @@ bool FPaintModePainter::PaintInternal(const FVector& InCameraOrigin, const TArra
 				// Vertex paint mode, so we want all valid components overlapping the brush hit location
 				for (auto TestComponent : PaintableComponents)
 				{
-					const FBox ComponentBounds = TestComponent->Bounds.GetBox();
-
-					if (ComponentToAdapterMap.Contains(TestComponent) && ComponentBounds.Intersect(BrushBounds))
+					if (TestComponent)
 					{
-						// OK, this mesh potentially overlaps the brush!
-						HoveredComponents.FindOrAdd(TestComponent).Add(i);
-						bUsed = true;
+						const FBox ComponentBounds = TestComponent->Bounds.GetBox();
+
+						if (ComponentToAdapterMap.Contains(TestComponent) && ComponentBounds.Intersect(BrushBounds))
+						{
+							// OK, this mesh potentially overlaps the brush!
+							HoveredComponents.FindOrAdd(TestComponent).Add(i);
+							bUsed = true;
+						}
 					}
 				}
 			}
@@ -1095,7 +1147,7 @@ void FPaintModePainter::Reset()
 	ApplyForcedLODIndex(-1);
 
 	// If the user has pending changes and the editor is not exiting, we want to do the commit for all the modified textures.
-	if ((GetNumberOfPendingPaintChanges() > 0) && !GIsRequestingExit)
+	if ((GetNumberOfPendingPaintChanges() > 0) && !IsEngineExitRequested())
 	{
 		CommitAllPaintedTextures();
 	}
@@ -1109,12 +1161,10 @@ void FPaintModePainter::Reset()
 	// Remove any existing texture targets
 	TexturePaintTargetList.Empty();
 	
+	PaintableComponents.Empty();
+
 	// Cleanup all cached 
-	for (auto MeshAdapterPair : ComponentToAdapterMap)
-	{
-		MeshAdapterPair.Value->OnRemoved();
-	}
-	ComponentToAdapterMap.Empty();
+	Cleanup();
 }
 
 TSharedPtr<IMeshPaintGeometryAdapter> FPaintModePainter::GetMeshAdapterForComponent(const UMeshComponent* Component)
@@ -1166,7 +1216,12 @@ int32 FPaintModePainter::GetMaxLODIndexToPaint() const
 
 	for (const UMeshComponent* MeshComponent : SelectedComponents )
 	{
-		LODMin = FMath::Min(LODMin, MeshPaintHelpers::GetNumberOfLODs(MeshComponent) - 1);
+		int32 NumMeshLODs = 0;
+		if (MeshPaintHelpers::TryGetNumberOfLODs(MeshComponent, NumMeshLODs))
+		{
+			ensure(NumMeshLODs > 0);
+			LODMin = FMath::Min(LODMin, NumMeshLODs - 1);
+		}
 	}
 
 	if (LODMin == TNumericLimits<int32>::Max())
@@ -1197,7 +1252,10 @@ void FPaintModePainter::LODPaintStateChanged(const bool bLODPaintingEnabled)
 	//Make sure all static mesh render is dirty since we change the force LOD
 	for (UMeshComponent* SelectedComponent : PaintableComponents)
 	{
-		ComponentReregisterContext.Reset(new FComponentReregisterContext(SelectedComponent));
+		if (SelectedComponent)
+		{
+			ComponentReregisterContext.Reset(new FComponentReregisterContext(SelectedComponent));
+		}
 	}
 
 	Refresh();
@@ -1215,7 +1273,10 @@ void FPaintModePainter::PaintLODChanged()
 		//Make sure all static mesh render is dirty since we change the force LOD
 		for (UMeshComponent* SelectedComponent : PaintableComponents)
 		{
-			ComponentReregisterContext.Reset(new FComponentReregisterContext(SelectedComponent));
+			if (SelectedComponent)
+			{
+				ComponentReregisterContext.Reset(new FComponentReregisterContext(SelectedComponent));
+			}
 		}
 
 		Refresh();
@@ -1224,7 +1285,7 @@ void FPaintModePainter::PaintLODChanged()
 
 int32 FPaintModePainter::GetMaxUVIndexToPaint() const
 {
-	if (PaintableComponents.Num() == 1)
+	if (PaintableComponents.Num() == 1 && PaintableComponents[0])
 	{
 		return MeshPaintHelpers::GetNumberOfUVs(PaintableComponents[0], CachedLODIndex) - 1;
 	}
@@ -1592,9 +1653,8 @@ void FPaintModePainter::PaintTexture(const FMeshPaintParameters& InParams, TArra
 	}
 
 	{
-		ENQUEUE_UNIQUE_RENDER_COMMAND_ONEPARAMETER(
-			UpdateMeshPaintRTCommand1,
-			FTextureRenderTargetResource*, BrushRenderTargetResource, BrushRenderTargetResource,
+		ENQUEUE_RENDER_COMMAND(UpdateMeshPaintRTCommand1)(
+			[BrushRenderTargetResource](FRHICommandListImmediate& RHICmdList)
 			{
 				// Copy (resolve) the rendered image from the frame buffer to its render target texture
 				RHICmdList.CopyToResolveTarget(
@@ -1610,9 +1670,8 @@ void FPaintModePainter::PaintTexture(const FMeshPaintParameters& InParams, TArra
 		BrushMaskCanvas->Flush_GameThread(true);
 
 		{
-			ENQUEUE_UNIQUE_RENDER_COMMAND_ONEPARAMETER(
-				UpdateMeshPaintRTCommand2,
-				FTextureRenderTargetResource*, BrushMaskRenderTargetResource, BrushMaskRenderTargetResource,
+			ENQUEUE_RENDER_COMMAND(UpdateMeshPaintRTCommand2)(
+				[BrushMaskRenderTargetResource](FRHICommandListImmediate& RHICmdList)
 				{
 					// Copy (resolve) the rendered image from the frame buffer to its render target texture
 					RHICmdList.CopyToResolveTarget(
@@ -1712,9 +1771,8 @@ void FPaintModePainter::PaintTexture(const FMeshPaintParameters& InParams, TArra
 		}
 
 		{
-			ENQUEUE_UNIQUE_RENDER_COMMAND_ONEPARAMETER(
-				UpdateMeshPaintRTCommand3,
-				FTextureRenderTargetResource*, RenderTargetResource, RenderTargetResource,
+			ENQUEUE_RENDER_COMMAND(UpdateMeshPaintRTCommand3)(
+				[RenderTargetResource](FRHICommandListImmediate& RHICmdList)
 				{
 					// Copy (resolve) the rendered image from the frame buffer to its render target texture
 					RHICmdList.CopyToResolveTarget(
@@ -1973,7 +2031,10 @@ void FPaintModePainter::ApplyForcedLODIndex(int32 ForcedLODIndex)
 {	
 	for (UMeshComponent* SelectedComponent : PaintableComponents)
 	{
-		MeshPaintHelpers::ForceRenderMeshLOD(SelectedComponent, ForcedLODIndex);
+		if (SelectedComponent)
+		{
+			MeshPaintHelpers::ForceRenderMeshLOD(SelectedComponent, ForcedLODIndex);
+		}
 	}
 }
 
@@ -1981,7 +2042,7 @@ void FPaintModePainter::UpdatePaintTargets(UObject* InObject, struct FPropertyCh
 {
 	AActor* Actor = Cast<AActor>(InObject);
 	if (InPropertyChangedEvent.Property && 
-		InPropertyChangedEvent.Property->GetName() == GET_MEMBER_NAME_CHECKED(USceneComponent, bVisible).ToString())
+		InPropertyChangedEvent.Property->GetName() == USceneComponent::GetVisiblePropertyName().ToString())
 	{
 		Refresh();
 	}
@@ -2022,7 +2083,14 @@ void FPaintModePainter::FillWithVertexColor()
 			(*MeshAdapter)->PreEdit();
 		}
 		
-		MeshPaintHelpers::FillVertexColors(Component, FillColor, MaskColor, true);
+		if (Component->IsA<UStaticMeshComponent>())
+		{
+			MeshPaintHelpers::FillStaticMeshVertexColors(Cast<UStaticMeshComponent>(Component), PaintSettings->VertexPaintSettings.bPaintOnSpecificLOD ? PaintSettings->VertexPaintSettings.LODIndex : -1, FillColor, MaskColor);
+		}
+		else if (Component->IsA<USkeletalMeshComponent>())
+		{
+			MeshPaintHelpers::FillSkeletalMeshVertexColors(Cast<USkeletalMeshComponent>(Component), PaintSettings->VertexPaintSettings.bPaintOnSpecificLOD ? PaintSettings->VertexPaintSettings.LODIndex : -1, FillColor, MaskColor);
+		}
 
 		if (MeshAdapter)
 		{
@@ -2150,13 +2218,19 @@ void FPaintModePainter::Refresh()
 {
 	// Ensure that we call OnRemoved while adapter/components are still valid
 	PaintableComponents.Empty();
+	Cleanup();
+
+	bRefreshCachedData = true;
+}
+
+void FPaintModePainter::Cleanup()
+{
 	for (auto MeshAdapterPair : ComponentToAdapterMap)
 	{
 		MeshAdapterPair.Value->OnRemoved();
 	}
 	ComponentToAdapterMap.Empty();
-
-	bRefreshCachedData = true;
+	FMeshPaintAdapterFactory::CleanupGlobals();
 }
 
 void FPaintModePainter::Tick(FEditorViewportClient* ViewportClient, float DeltaTime)
@@ -2168,12 +2242,14 @@ void FPaintModePainter::Tick(FEditorViewportClient* ViewportClient, float DeltaT
 		bRefreshCachedData = false;
 		CacheSelectionData();
 		CacheTexturePaintData();
-		
+
+		UpdateCachedVertexDataSize();
+
 		bDoRestoreRenTargets = true;
 	}
 
 	// Will set the texture override up for the selected texture, important for the drop down combo-list and selecting between material instances.
-	if (PaintSettings->PaintMode == EPaintMode::Textures && PaintableComponents.Num() == 1 && PaintSettings->TexturePaintSettings.PaintTexture)
+	if (PaintSettings->PaintMode == EPaintMode::Textures && PaintableComponents.Num() == 1 && PaintableComponents[0] && PaintSettings->TexturePaintSettings.PaintTexture)
 	{
 		for (UMeshComponent* MeshComponent : PaintableComponents)
 		{
@@ -2273,7 +2349,7 @@ void FPaintModePainter::CacheTexturePaintData()
 	TArray<UMeshComponent*> SelectedMeshComponents = GetSelectedComponents<UMeshComponent>();
 
 	PaintableTextures.Empty();
-	if (PaintableComponents.Num() == 1)
+	if (PaintableComponents.Num() == 1 && PaintableComponents[0])
 	{
 		const UMeshComponent* Component = PaintableComponents[0];
 		TSharedPtr<IMeshPaintGeometryAdapter> Adapter = ComponentToAdapterMap.FindChecked(Component);
@@ -2325,10 +2401,11 @@ TArray<ComponentClass*> FPaintModePainter::GetSelectedComponents() const
 			AActor* SelectedActor = Cast<AActor>(ActorSelection->GetSelectedObject(SelectionIndex));
 			if (SelectedActor)
 			{
-				TArray<UActorComponent*> ActorComponents = SelectedActor->GetComponentsByClass(ComponentClass::StaticClass());
-				for (UActorComponent* Component : ActorComponents)
+				TInlineComponentArray<ComponentClass*> ActorComponents;
+				SelectedActor->GetComponents(ActorComponents);
+				for (ComponentClass* Component : ActorComponents)
 				{
-					Components.AddUnique(CastChecked<ComponentClass>(Component));
+					Components.AddUnique(Component);
 				}
 			}
 		}

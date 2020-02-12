@@ -1,8 +1,15 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 
 #include "Sound/SoundNodeDelay.h"
 #include "ActiveSound.h"
+
+static int32 PrimeDelayedSoundNodesCVar = 0;
+FAutoConsoleVariableRef CVarPrimeDelayedSoundNodes(
+	TEXT("au.streamcache.priming.PrimeDelayNodes"),
+	PrimeDelayedSoundNodesCVar,
+	TEXT("When set to 1, sounds will be loaded into the cache automatically when a delay node is hit.\n"),
+	ECVF_Default);
 
 struct FSoundNodeDelayPayload
 {
@@ -31,7 +38,12 @@ void USoundNodeDelay::ParseNodes( FAudioDevice* AudioDevice, const UPTRINT NodeW
 	{
 		*RequiresInitialization = false;
 
-		const float ActualDelay = FMath::Max(0.f, DelayMax + ( ( DelayMin - DelayMax ) * FMath::SRand() ));
+		const float ActualDelay = FMath::Max(0.f, DelayMax + ( ( DelayMin - DelayMax ) * RandomStream.FRand() ));
+
+		if (PrimeDelayedSoundNodesCVar != 0)
+		{
+			PrimeChildWavePlayers(true);
+		}
 
 		if (ActualDelay > 0.0f && ParseParams.StartTime >= ActualDelay)
 		{

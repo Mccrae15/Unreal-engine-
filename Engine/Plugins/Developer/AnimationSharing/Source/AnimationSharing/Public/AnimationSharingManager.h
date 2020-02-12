@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -112,6 +112,9 @@ struct FAdditiveInstance
 
 	/** Actor used for playing the additive animation */
 	FAdditiveAnimationInstance* AdditiveAnimationInstance;
+
+	/** Index into Components array for the current state data which is used for playing the animation*/
+	uint32 UsedPerStateComponentIndex;
 };
 
 /** Structure which holds data about a unique state which is linked to an enumeration value defined by the user. The data is populated from the user exposed FAnimationStateEntry */
@@ -275,7 +278,7 @@ public:
 	uint8 DetermineStateForActor(uint32 ActorIndex, bool& bShouldProcess);
 
 	/** Initial set up of all animation sharing data and states */
-	void Setup(UAnimationSharingManager* AnimationSharingManager, const FPerSkeletonAnimationSharingSetup& SkeletonSetup, const FAnimationSharingScalability* ScalabilitySettings, uint32 Index);
+	bool Setup(UAnimationSharingManager* AnimationSharingManager, const FPerSkeletonAnimationSharingSetup& SkeletonSetup, const FAnimationSharingScalability* ScalabilitySettings, uint32 Index);
 	/** Populates data for a state setup */
 	void SetupState(FPerStateData& StateData, const FAnimationStateEntry& StateEntry, USkeletalMesh* SkeletalMesh, const FPerSkeletonAnimationSharingSetup& SkeletonSetup, uint32 Index);
 
@@ -531,6 +534,7 @@ protected:
 	FPerActorData* GetActorDataByHandle(uint32 InHandle);
 protected:
 	/** Array of unique skeletons, matches PerSkeletonData array entries*/
+	UPROPERTY(Transient)
 	TArray<const USkeleton*> Skeletons;
 
 	/** Sharing data required for the unique Skeleton setups */

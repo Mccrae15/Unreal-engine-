@@ -1,10 +1,12 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 /*================================================================================
 	IOSPlatform.h: Setup for the iOS platform
 ==================================================================================*/
 
 #pragma once
+
+#include "Clang/ClangPlatform.h"
 
 /**
 * iOS specific types
@@ -35,6 +37,7 @@ typedef FIOSPlatformTypes FPlatformTypes;
 #define PLATFORM_LITTLE_ENDIAN							1
 #define PLATFORM_SUPPORTS_PRAGMA_PACK					1
 #define PLATFORM_COMPILER_DISTINGUISHES_INT_AND_LONG	1
+#define PLATFORM_WCHAR_IS_4_BYTES						1
 #define PLATFORM_TCHAR_IS_CHAR16						1
 #define PLATFORM_USE_SYSTEM_VSWPRINTF					0
 #define PLATFORM_HAS_BSD_TIME							1
@@ -48,6 +51,8 @@ typedef FIOSPlatformTypes FPlatformTypes;
 #define PLATFORM_ENABLE_VECTORINTRINSICS_NEON			PLATFORM_64BITS // disable vector intrinsics to make it compatible with 32-bit in Xcode 8.3
 #define PLATFORM_SUPPORTS_STACK_SYMBOLS					1
 #define PLATFORM_SUPPORTS_EARLY_MOVIE_PLAYBACK			1 // movies will start before engine is initalized
+#define PLATFORM_USE_FULL_TASK_GRAPH					0 // @todo platplug: not platplug, but should investigate soon anyway
+#define PLATFORM_IS_ANSI_MALLOC_THREADSAFE				1
 
 // on iOS we now perform offline symbolication as it's significantly faster. Requires bGenerateCrashReportSymbols=true in the ini file.
 #define	PLATFORM_RUNTIME_MALLOCPROFILER_SYMBOLICATION	0	
@@ -55,6 +60,8 @@ typedef FIOSPlatformTypes FPlatformTypes;
 #if PLATFORM_TVOS
 #define PLATFORM_USES_ES2								0
 #define PLATFORM_HAS_TOUCH_MAIN_SCREEN					0
+#define	PLATFORM_SUPPORTS_OPUS_CODEC					0
+#define PLATFORM_SUPPORTS_VORBIS_CODEC					0
 #else
 #define PLATFORM_USES_ES2								1
 #define PLATFORM_HAS_TOUCH_MAIN_SCREEN					1
@@ -63,13 +70,14 @@ typedef FIOSPlatformTypes FPlatformTypes;
 #define PLATFORM_UI_NEEDS_TOOLTIPS						0
 #define PLATFORM_UI_NEEDS_FOCUS_OUTLINES				0
 
-#if WITH_SIMULATOR
-	#define PLATFORM_BREAK()							__asm__("int $3")
-#elif PLATFORM_64BITS
-	#define PLATFORM_BREAK()							__asm__("svc 0")
-#else
-	#define PLATFORM_BREAK()							__asm__("trap")
-#endif
+#define PLATFORM_NEEDS_RHIRESOURCELIST					0
+#define PLATFORM_SUPPORTS_GEOMETRY_SHADERS				0
+#define PLATFORM_SUPPORTS_TESSELLATION_SHADERS			0
+#define PLATFORM_SUPPORTS_VIRTUAL_TEXTURE_STREAMING		1
+
+#define PLATFORM_GLOBAL_LOG_CATEGORY					LogIOS
+
+#define PLATFORM_BREAK()                                __builtin_trap()
 
 #define PLATFORM_CODE_SECTION(Name)						__attribute__((section("__TEXT,__" Name ",regular,pure_instructions"))) \
 														__attribute__((aligned(4)))
@@ -120,7 +128,7 @@ typedef FIOSPlatformTypes FPlatformTypes;
 #define OPERATOR_DELETE_NOTHROW_SPEC  noexcept
 
 // DLL export and import definitions
-#define DLLEXPORT
+#define DLLEXPORT __attribute__((visibility("default")))
 #define DLLIMPORT
 
 #define IOS_MAX_PATH 1024

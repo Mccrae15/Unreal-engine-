@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "FramePro/FrameProProfiler.h"
 
@@ -203,28 +203,28 @@ static void SendCPUStats()
 		switch (CoreIdx)
 		{
 		case 0:
-			FRAMEPRO_CUSTOM_STAT("Core0Frequency", Freq, "CPUFreq", "GHz");
+			FRAMEPRO_CUSTOM_STAT("Core0Frequency", Freq, "CPUFreq", "GHz", FRAMEPRO_COLOUR(255,255,255) );
 			break;
 		case 1:
-			FRAMEPRO_CUSTOM_STAT("Core1Frequency", Freq, "CPUFreq", "GHz");
+			FRAMEPRO_CUSTOM_STAT("Core1Frequency", Freq, "CPUFreq", "GHz", FRAMEPRO_COLOUR(255,255,255));
 			break;
 		case 2:
-			FRAMEPRO_CUSTOM_STAT("Core2Frequency", Freq, "CPUFreq", "GHz");
+			FRAMEPRO_CUSTOM_STAT("Core2Frequency", Freq, "CPUFreq", "GHz", FRAMEPRO_COLOUR(255,255,255));
 			break;
 		case 3:
-			FRAMEPRO_CUSTOM_STAT("Core3Frequency", Freq, "CPUFreq", "GHz");
+			FRAMEPRO_CUSTOM_STAT("Core3Frequency", Freq, "CPUFreq", "GHz", FRAMEPRO_COLOUR(255,255,255));
 			break;
 		case 4:
-			FRAMEPRO_CUSTOM_STAT("Core4Frequency", Freq, "CPUFreq", "GHz");
+			FRAMEPRO_CUSTOM_STAT("Core4Frequency", Freq, "CPUFreq", "GHz", FRAMEPRO_COLOUR(255,255,255));
 			break;
 		case 5:
-			FRAMEPRO_CUSTOM_STAT("Core5Frequency", Freq, "CPUFreq", "GHz");
+			FRAMEPRO_CUSTOM_STAT("Core5Frequency", Freq, "CPUFreq", "GHz", FRAMEPRO_COLOUR(255,255,255));
 			break;
 		case 6:
-			FRAMEPRO_CUSTOM_STAT("Core6Frequency", Freq, "CPUFreq", "GHz");
+			FRAMEPRO_CUSTOM_STAT("Core6Frequency", Freq, "CPUFreq", "GHz", FRAMEPRO_COLOUR(255,255,255));
 			break;
 		case 7:
-			FRAMEPRO_CUSTOM_STAT("Core7Frequency", Freq, "CPUFreq", "GHz");
+			FRAMEPRO_CUSTOM_STAT("Core7Frequency", Freq, "CPUFreq", "GHz", FRAMEPRO_COLOUR(255,255,255));
 			break;
 		}
 	}
@@ -275,7 +275,7 @@ void FFrameProProfiler::FrameStart()
 		uint64 CurrentTime = FPlatformTime::Cycles64();
 		if (GFrameProCPUStatsUpdateRate > 0.0f)
 		{
-			bool bUpdateStats = ((FPlatformTime::ToSeconds(CurrentTime - LastCollectionTime) >= GFrameProCPUStatsUpdateRate));
+			bool bUpdateStats = ((FPlatformTime::ToSeconds64(CurrentTime - LastCollectionTime) >= GFrameProCPUStatsUpdateRate));
 			if (bUpdateStats)
 			{
 				LastCollectionTime = CurrentTime;
@@ -333,6 +333,14 @@ void FFrameProProfiler::PopEvent(const ANSICHAR* Override)
 	}
 }
 
+static int32 ScopeMinTimeMicroseconds = 25;
+static FAutoConsoleVariableRef CVarScopeMinTimeMicroseconds(
+	TEXT("framepro.ScopeMinTimeMicroseconds"),
+	ScopeMinTimeMicroseconds,
+	TEXT("Scopes with time taken below this threshold are not recorded in the FramePro capture.\n")
+	TEXT(" This value is only used when starting framepro captures with framepro.startrec.")
+);
+
 void FFrameProProfiler::StartFrameProRecordingFromCommand(const TArray< FString >& Args)
 {
 	FString FilenameRoot = FString::Printf(TEXT("ProfilePid%d"), FPlatformProcess::GetCurrentProcessId());
@@ -341,22 +349,16 @@ void FFrameProProfiler::StartFrameProRecordingFromCommand(const TArray< FString 
 		FilenameRoot = Args[0];
 	}
 
-	StartFrameProRecording(FilenameRoot, 25);
-}
-
-void FFrameProProfiler::StartFrameProRecordingScopeOverrideFromCommand(const TArray< FString >& Args)
-{
-	int32 MinScopeTime = 25;
-	if (Args.Num() > 0 && Args[0].Len() > 0)
-	{
-		MinScopeTime = FCString::Atoi(*Args[0]);
-	}
-
-	StartFrameProRecording(FString::Printf(TEXT("ProfilePid%d"), FPlatformProcess::GetCurrentProcessId()), MinScopeTime);
+	StartFrameProRecording(FilenameRoot, ScopeMinTimeMicroseconds);
 }
 
 FString FFrameProProfiler::StartFrameProRecording(const FString& FilenameRoot, int32 MinScopeTime)
 {
+	if (GFrameProIsRecording)
+	{
+		StopFrameProRecording();
+	}
+
 	FString RelPathName = FPaths::ProfilingDir() + TEXT("FramePro/");
 	bool bSuccess = IFileManager::Get().MakeDirectory(*RelPathName, true); // ensure folder exists
 
@@ -384,12 +386,6 @@ static FAutoConsoleCommand StartFrameProRecordCommand(
 	TEXT("framepro.startrec"),
 	TEXT("Start FramePro recording"),
 	FConsoleCommandWithArgsDelegate::CreateStatic(&FFrameProProfiler::StartFrameProRecordingFromCommand)
-);
-
-static FAutoConsoleCommand StartFrameProRecordScopeOverrideCommand(
-	TEXT("framepro.startrecscopeoverride"),
-	TEXT("Start FramePro recording with a minimum event scope override"),
-	FConsoleCommandWithArgsDelegate::CreateStatic(&FFrameProProfiler::StartFrameProRecordingScopeOverrideFromCommand)
 );
 
 void FFrameProProfiler::StopFrameProRecording()

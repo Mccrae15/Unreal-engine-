@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 /* ITargetDevice interface
  *****************************************************************************/
@@ -48,7 +48,7 @@ inline int32 FAndroidTargetDevice::GetProcessSnapshot( TArray<FTargetDeviceProce
 }
 
 
-inline bool FAndroidTargetDevice::Launch( const FString& AppId, EBuildConfigurations::Type BuildConfiguration, EBuildTargets::Type BuildTarget, const FString& Params, uint32* OutProcessId )
+inline bool FAndroidTargetDevice::Launch( const FString& AppId, EBuildConfiguration BuildConfiguration, EBuildTargetType TargetType, const FString& Params, uint32* OutProcessId )
 {
 	// this isn't used, UAT handles it all
 	return false;

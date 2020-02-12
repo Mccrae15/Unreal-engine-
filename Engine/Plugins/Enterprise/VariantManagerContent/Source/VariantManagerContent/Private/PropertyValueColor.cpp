@@ -1,12 +1,14 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "PropertyValueColor.h"
 
-#include "CoreMinimal.h"
-#include "Components/LightComponent.h"
-#include "Atmosphere/AtmosphericFogComponent.h"
-#include "HAL/UnrealMemory.h"
+#include "VariantManagerContentLog.h"
 #include "VariantObjectBinding.h"
+
+#include "Atmosphere/AtmosphericFogComponent.h"
+#include "Components/LightComponent.h"
+#include "CoreMinimal.h"
+#include "HAL/UnrealMemory.h"
 #include "UObject/Package.h"
 
 #define LOCTEXT_NAMESPACE "PropertyValueColor"
@@ -16,11 +18,15 @@ UPropertyValueColor::UPropertyValueColor(const FObjectInitializer& ObjectInitial
 {
 }
 
-void UPropertyValueColor::RecordDataFromResolvedObject()
+TArray<uint8> UPropertyValueColor::GetDataFromResolvedObject() const
 {
-	if (!Resolve())
+	int32 PropertySizeBytes = GetValueSizeInBytes();
+	TArray<uint8> CurrentData;
+	CurrentData.SetNumZeroed(PropertySizeBytes);
+
+	if (!HasValidResolve())
 	{
-		return;
+		return CurrentData;
 	}
 
 	// Used by ULightComponent
@@ -30,13 +36,11 @@ void UPropertyValueColor::RecordDataFromResolvedObject()
 		if (!ContainerObject || !ContainerObject->IsValidLowLevel())
 		{
 			UE_LOG(LogVariantContent, Error, TEXT("UPropertyValueColor '%s' does not have a ULightComponent as parent address!"), *GetFullDisplayString());
-			return;
+			return CurrentData;
 		}
 
 		FLinearColor Col = ContainerObject->GetLightColor();
-
-		int32 PropertySizeBytes = GetValueSizeInBytes();
-		SetRecordedData((uint8*)&Col, PropertySizeBytes);
+		FMemory::Memcpy(CurrentData.GetData(), &Col, PropertySizeBytes);
 	}
 	// Used by UAtmosphericFogComponent
 	else if (PropertySetterName == TEXT("SetDefaultLightColor"))
@@ -45,16 +49,14 @@ void UPropertyValueColor::RecordDataFromResolvedObject()
 		if (!ContainerObject || !ContainerObject->IsValidLowLevel())
 		{
 			UE_LOG(LogVariantContent, Error, TEXT("UPropertyValueColor '%s' does not have a UAtmosphericFogComponent as parent address!"), *GetFullDisplayString());
-			return;
+			return CurrentData;
 		}
 
 		FLinearColor Col = FLinearColor(ContainerObject->DefaultLightColor);
-
-		int32 PropertySizeBytes = GetValueSizeInBytes();
-		SetRecordedData((uint8*)&Col, PropertySizeBytes);
+		FMemory::Memcpy(CurrentData.GetData(), &Col, PropertySizeBytes);
 	}
 
-	OnPropertyRecorded.Broadcast();
+	return CurrentData;
 }
 
 UScriptStruct* UPropertyValueColor::GetStructPropertyStruct() const

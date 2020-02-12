@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 /*=============================================================================
 Texture2DUpdate.cpp: Helpers to stream in and out mips.
@@ -7,6 +7,15 @@ Texture2DUpdate.cpp: Helpers to stream in and out mips.
 #include "Streaming/Texture2DUpdate.h"
 #include "RenderUtils.h"
 #include "Containers/ResourceArray.h"
+#include "Streaming/RenderAssetUpdate.inl"
+
+// Instantiate TRenderAssetUpdate for FTexture2DUpdateContext
+template class TRenderAssetUpdate<FTexture2DUpdateContext>;
+
+#if STATS
+extern volatile int64 GPending2DUpdateCount;
+volatile int64 GPending2DUpdateCount = 0;
+#endif
 
 FTexture2DUpdateContext::FTexture2DUpdateContext(UTexture2D* InTexture, EThreadType InCurrentThread)
 	: Texture(InTexture)
@@ -34,11 +43,15 @@ FTexture2DUpdate::FTexture2DUpdate(UTexture2D* InTexture, int32 InRequestedMips)
 		PendingFirstMip = INDEX_NONE;
 		bIsCancelled = true;
 	}
+
+	STAT(FPlatformAtomics::InterlockedIncrement(&GPending2DUpdateCount));
 }
 
 FTexture2DUpdate::~FTexture2DUpdate()
 {
 	ensure(!IntermediateTextureRHI);
+
+	STAT(FPlatformAtomics::InterlockedDecrement(&GPending2DUpdateCount));
 }
 
 

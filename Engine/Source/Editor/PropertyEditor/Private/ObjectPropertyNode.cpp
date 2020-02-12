@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 
 #include "ObjectPropertyNode.h"
@@ -7,6 +7,7 @@
 #include "ItemPropertyNode.h"
 #include "ObjectEditorUtils.h"
 #include "EditorCategoryUtils.h"
+#include "PropertyEditorHelpers.h"
 
 #if WITH_EDITORONLY_DATA
 #include "Engine/Blueprint.h"
@@ -116,7 +117,45 @@ void FObjectPropertyNode::Finalize()
 	}
 }
 
-bool FObjectPropertyNode::GetReadAddressUncached(FPropertyNode& InNode,
+TArray<UStruct*> FObjectPropertyNode::GetAllStructures()
+{
+	TArray<UStruct*> RetVal;
+	RetVal.Reserve(SparseClassDataInstances.Num() + 1);
+	if (UStruct* BaseStruct = GetBaseStructure())
+	{
+		RetVal.Add(BaseStruct);
+	}
+
+	for (const auto& ClassSparseDataPair : SparseClassDataInstances)
+	{
+		const TTuple<UScriptStruct*, void*>& SparseInstance = ClassSparseDataPair.Value;
+		RetVal.AddUnique(SparseInstance.Key);
+	}
+
+	return RetVal;
+}
+
+TArray<const UStruct*> FObjectPropertyNode::GetAllStructures() const
+{
+	TArray<const UStruct*> RetVal;
+	RetVal.Reserve(SparseClassDataInstances.Num() + 1);
+	if (const UStruct* BaseStruct = GetBaseStructure())
+	{
+		RetVal.Add(BaseStruct);
+	}
+
+	for (const auto& ClassSparseDataPair : SparseClassDataInstances)
+	{
+		const TTuple<UScriptStruct*, void*>& SparseInstance = ClassSparseDataPair.Value;
+		RetVal.AddUnique(SparseInstance.Key);
+	}
+	return RetVal;
+}
+
+// Intended for a function that gets the number of elements in a container
+DECLARE_DELEGATE_RetVal_OneParam(int32, FGetNumDelegate, const void*);
+
+bool FObjectPropertyNode::GetReadAddressUncached(const FPropertyNode& InNode,
 											   bool InRequiresSingleSelection,
 											   FReadAddressListData* OutAddresses,
 											   bool bComparePropertyContents,
@@ -129,10 +168,17 @@ bool FObjectPropertyNode::GetReadAddressUncached(FPropertyNode& InNode,
 		return false;
 	}
 
-	UProperty* InItemProperty = InNode.GetProperty();
+	const FProperty* InItemProperty = InNode.GetProperty();
 	// Is there a InItemProperty bound to the InItemProperty window?
 	if( !InItemProperty )
 	{
+		return false;
+	}
+
+	UStruct* OwnerStruct = InItemProperty->GetOwnerStruct();
+	if (!OwnerStruct || OwnerStruct->IsStructTrashed())
+	{
+		// Verify that the property is not part of an invalid trash class
 		return false;
 	}
 
@@ -151,29 +197,31 @@ bool FObjectPropertyNode::GetReadAddressUncached(FPropertyNode& InNode,
 	// If this item is the child of a container, return NULL if there is a different number
 	// of items in the container in different objects, when multi-selecting.
 
-	UArrayProperty* ArrayOuter = Cast<UArrayProperty>(InItemProperty->GetOuter());
-	USetProperty* SetOuter = Cast<USetProperty>(InItemProperty->GetOuter());
-	UMapProperty* MapOuter = Cast<UMapProperty>(InItemProperty->GetOuter());
+	FArrayProperty* ArrayOuter = InItemProperty->GetOwner<FArrayProperty>();
+	FSetProperty* SetOuter = InItemProperty->GetOwner<FSetProperty>();
+	FMapProperty* MapOuter = InItemProperty->GetOwner<FMapProperty>();
 
 	if( ArrayOuter || SetOuter || MapOuter)
 	{
-		FPropertyNode* ParentPropertyNode = InNode.GetParentNode();
+		const FPropertyNode* ParentPropertyNode = InNode.GetParentNode();
 		check(ParentPropertyNode);
 		const UObject* TempObject = GetUObject(0);
 		if( TempObject )
 		{
-			uint8* BaseAddr = ParentPropertyNode->GetValueBaseAddress( (uint8*)TempObject );
+			uint8* BaseAddr = ParentPropertyNode->GetValueBaseAddressFromObject(TempObject);
 			if( BaseAddr )
 			{
 				if ( ArrayOuter )
 				{
-					const int32 Num = FScriptArrayHelper::Num(BaseAddr);
+					FScriptArrayHelper ArrayHelper(ArrayOuter, BaseAddr);
+					const int32 Num = ArrayHelper.Num();
 					for (int32 ObjIndex = 1; ObjIndex < GetNumObjects(); ++ObjIndex)
 					{
 						TempObject = GetUObject(ObjIndex);
-						BaseAddr = ParentPropertyNode->GetValueBaseAddress((uint8*)TempObject);
+						BaseAddr = ParentPropertyNode->GetValueBaseAddressFromObject(TempObject);
 
-						if (BaseAddr && Num != FScriptArrayHelper::Num(BaseAddr))
+						ArrayHelper = FScriptArrayHelper(ArrayOuter, BaseAddr);
+						if (BaseAddr && Num != ArrayHelper.Num())
 						{
 							bAllTheSame = false;
 						}
@@ -185,7 +233,7 @@ bool FObjectPropertyNode::GetReadAddressUncached(FPropertyNode& InNode,
 					for (int32 ObjIndex = 1; ObjIndex < GetNumObjects(); ++ObjIndex)
 					{
 						TempObject = GetUObject(ObjIndex);
-						BaseAddr = ParentPropertyNode->GetValueBaseAddress((uint8*)TempObject);
+						BaseAddr = ParentPropertyNode->GetValueBaseAddressFromObject(TempObject);
 
 						if (BaseAddr && Num != FScriptSetHelper::Num(BaseAddr))
 						{
@@ -195,15 +243,20 @@ bool FObjectPropertyNode::GetReadAddressUncached(FPropertyNode& InNode,
 				}
 				else if ( MapOuter )
 				{
-					const int32 Num = FScriptMapHelper::Num(BaseAddr);
+					FScriptMapHelper MapHelper(MapOuter, BaseAddr);
+					const int32 Num = MapHelper.Num();
 					for (int32 ObjIndex = 1; ObjIndex < GetNumObjects(); ++ObjIndex)
 					{
 						TempObject = GetUObject(ObjIndex);
-						BaseAddr = ParentPropertyNode->GetValueBaseAddress((uint8*)TempObject);
+						BaseAddr = ParentPropertyNode->GetValueBaseAddressFromObject(TempObject);
 
-						if (BaseAddr && Num != FScriptMapHelper::Num(BaseAddr))
+						if (BaseAddr)
 						{
-							bAllTheSame = false;
+							MapHelper = FScriptMapHelper(MapOuter, BaseAddr);
+							if (Num != MapHelper.Num())
+							{
+								bAllTheSame = false;
+							}
 						}
 					}
 				}
@@ -211,43 +264,48 @@ bool FObjectPropertyNode::GetReadAddressUncached(FPropertyNode& InNode,
 		}
 	}
 
-	uint8* Base = GetUObject(0) ? InNode.GetValueBaseAddress( (uint8*)(GetUObject(0)) ) : NULL;
-	if (Base)
+	uint8* BaseAddr = InNode.GetValueBaseAddressFromObject(GetUObject(0));
+	if (BaseAddr)
 	{
 		// If the item is an array or set itself, return NULL if there are a different number of
 		// items in the container in different objects, when multi-selecting.
 
-		UArrayProperty* ArrayProp = Cast<UArrayProperty>(InItemProperty);
-		USetProperty* SetProp = Cast<USetProperty>(InItemProperty);
-		UMapProperty* MapProp = Cast<UMapProperty>(InItemProperty);
+		const FArrayProperty* ArrayProp = CastField<FArrayProperty>(InItemProperty);
+		const FSetProperty* SetProp = CastField<FSetProperty>(InItemProperty);
+		const FMapProperty* MapProp = CastField<FMapProperty>(InItemProperty);
 
-		if( ArrayProp || SetProp || MapProp)
+		if (ArrayProp || SetProp || MapProp)
 		{
 			// This flag is an override for array properties which want to display e.g. the "Clear" and "Empty"
 			// buttons, even though the array properties may differ in the number of elements.
-			if ( !bArrayPropertiesCanDifferInSize )
+			if (!bArrayPropertiesCanDifferInSize)
 			{
 				const UObject* TempObject = GetUObject(0);
 
 				if (ArrayProp)
 				{
-					int32 const Num = FScriptArrayHelper::Num(InNode.GetValueBaseAddress((uint8*)TempObject));
+					FScriptArrayHelper ArrayHelper(ArrayProp, BaseAddr);
+					int32 const Num = ArrayHelper.Num();
 					for (int32 ObjIndex = 1; ObjIndex < GetNumObjects(); ObjIndex++)
 					{
 						TempObject = GetUObject(ObjIndex);
-						if (TempObject && Num != FScriptArrayHelper::Num(InNode.GetValueBaseAddress((uint8*)TempObject)))
+						if (TempObject)
 						{
-							bAllTheSame = false;
+							ArrayHelper = FScriptArrayHelper(ArrayProp, InNode.GetValueBaseAddressFromObject(TempObject));
+							if (Num != ArrayHelper.Num())
+							{
+								bAllTheSame = false;
+							}
 						}
 					}
 				}
 				else if (SetProp)
 				{
-					int32 const Num = FScriptSetHelper::Num(InNode.GetValueBaseAddress((uint8*)TempObject));
+					int32 const Num = FScriptSetHelper::Num(BaseAddr);
 					for (int32 ObjIndex = 1; ObjIndex < GetNumObjects(); ++ObjIndex)
 					{
 						TempObject = GetUObject(ObjIndex);
-						if (TempObject && Num != FScriptSetHelper::Num(InNode.GetValueBaseAddress((uint8*)TempObject)))
+						if (TempObject && Num != FScriptSetHelper::Num(InNode.GetValueBaseAddressFromObject(TempObject)))
 						{
 							bAllTheSame = false;
 						}
@@ -255,13 +313,18 @@ bool FObjectPropertyNode::GetReadAddressUncached(FPropertyNode& InNode,
 				}
 				else if (MapProp)
 				{
-					int32 const Num = FScriptMapHelper::Num(InNode.GetValueBaseAddress((uint8*)TempObject));
+					FScriptMapHelper MapHelper(MapProp, BaseAddr);
+					int32 const Num = MapHelper.Num();
 					for (int32 ObjIndex = 1; ObjIndex < GetNumObjects(); ++ObjIndex)
 					{
 						TempObject = GetUObject(ObjIndex);
-						if (TempObject && Num != FScriptMapHelper::Num(InNode.GetValueBaseAddress((uint8*)TempObject)))
+						if (TempObject)
 						{
-							bAllTheSame = false;
+							MapHelper = FScriptMapHelper(MapProp, InNode.GetValueBaseAddressFromObject(TempObject));
+							if (Num != MapHelper.Num())
+							{
+								bAllTheSame = false;
+							}
 						}
 					}
 				}
@@ -269,38 +332,37 @@ bool FObjectPropertyNode::GetReadAddressUncached(FPropertyNode& InNode,
 		}
 		else
 		{
-			if ( bComparePropertyContents || !Cast<UObjectPropertyBase>(InItemProperty) || bObjectForceCompare )
+			if ( bComparePropertyContents || !CastField<FObjectPropertyBase>(InItemProperty) || bObjectForceCompare )
 			{
 				// Make sure the value of this InItemProperty is the same in all selected objects.
 				for( int32 ObjIndex = 1 ; ObjIndex < GetNumObjects() ; ObjIndex++ )
 				{
-					const UObject* TempObject = GetUObject(ObjIndex);
-					if( !InItemProperty->Identical( Base, InNode.GetValueBaseAddress( (uint8*)TempObject ) ) )
+					if (!InItemProperty->Identical(BaseAddr, InNode.GetValueBaseAddressFromObject(GetUObject(ObjIndex))))
 					{
 						bAllTheSame = false;
+						break;
 					}
 				}
 			}
 			else
 			{
-				if ( Cast<UObjectPropertyBase>(InItemProperty) )
+				if (CastField<FObjectPropertyBase>(InItemProperty))
 				{
 					// We don't want to exactly compare component properties.  However, we
 					// need to be sure that all references are either valid or invalid.
 
 					// If BaseObj is NON-NULL, all other objects' properties should also be non-NULL.
 					// If BaseObj is NULL, all other objects' properties should also be NULL.
-					UObject* BaseObj = Cast<UObjectPropertyBase>(InItemProperty)->GetObjectPropertyValue(Base);
+					UObject* BaseObj = CastField<FObjectPropertyBase>(InItemProperty)->GetObjectPropertyValue(BaseAddr);
 
-					for( int32 ObjIndex = 1 ; ObjIndex < GetNumObjects() ; ObjIndex++ )
+					for (int32 ObjIndex = 1; ObjIndex < GetNumObjects(); ObjIndex++)
 					{
-						const UObject* TempObject = GetUObject(ObjIndex);
-						UObject* CurObj = Cast<UObjectPropertyBase>(InItemProperty)->GetObjectPropertyValue(InNode.GetValueBaseAddress( (uint8*)TempObject ));
+						UObject* CurObj = CastField<FObjectPropertyBase>(InItemProperty)->GetObjectPropertyValue(InNode.GetValueBaseAddressFromObject(GetUObject(ObjIndex)));
 						if (   ( !BaseObj && CurObj )			// BaseObj is NULL, but this InItemProperty is non-NULL!
 							|| ( BaseObj && !CurObj ) )			// BaseObj is non-NULL, but this InItemProperty is NULL!
 						{
-
 							bAllTheSame = false;
+							break;
 						}
 					}
 				}
@@ -308,15 +370,15 @@ bool FObjectPropertyNode::GetReadAddressUncached(FPropertyNode& InNode,
 		}
 	}
 
-	if(OutAddresses != nullptr)
-	{
 		// Write addresses to the output.
-		for(int32 ObjIndex = 0; ObjIndex < GetNumObjects(); ++ObjIndex)
+	if (OutAddresses != nullptr)
 		{
+		for (int32 ObjIndex = 0; ObjIndex < GetNumObjects(); ++ObjIndex)
+		{	
 			const UObject* TempObject = GetUObject(ObjIndex);
-			if(TempObject)
+			if (TempObject)
 			{
-				OutAddresses->Add(TempObject, InNode.GetValueBaseAddress((uint8*)(TempObject)));
+				OutAddresses->Add(TempObject, InNode.GetValueBaseAddressFromObject(TempObject));
 			}
 		}
 	}
@@ -330,7 +392,7 @@ bool FObjectPropertyNode::GetReadAddressUncached(FPropertyNode& InNode,
  * @param InItem		The property to get objects from.
  * @param OutAddresses	Storage array for all of the objects' addresses.
  */
-bool FObjectPropertyNode::GetReadAddressUncached( FPropertyNode& InNode, FReadAddressListData& OutAddresses ) const
+bool FObjectPropertyNode::GetReadAddressUncached(const FPropertyNode& InNode, FReadAddressListData& OutAddresses ) const
 {
 	// Are any objects selected for property editing?
 	if( !GetNumObjects())
@@ -338,7 +400,7 @@ bool FObjectPropertyNode::GetReadAddressUncached( FPropertyNode& InNode, FReadAd
 		return false;
 	}
 
-	UProperty* InItemProperty = InNode.GetProperty();
+	const FProperty* InItemProperty = InNode.GetProperty();
 	// Is there a InItemProperty bound to the InItemProperty window?
 	if( !InItemProperty )
 	{
@@ -347,13 +409,12 @@ bool FObjectPropertyNode::GetReadAddressUncached( FPropertyNode& InNode, FReadAd
 
 
 	// Write addresses to the output.
-	for ( int32 ObjectIdx = 0 ; ObjectIdx < GetNumObjects() ; ++ObjectIdx )
+	for (int32 ObjIndex = 0 ; ObjIndex < GetNumObjects() ; ++ObjIndex)
 	{
-		const UObject* TempObject = GetUObject(ObjectIdx);
-
-		if( TempObject != NULL )
+		const UObject* TempObject = GetUObject(ObjIndex);
+		if (TempObject != nullptr)
 		{
-			OutAddresses.Add( TempObject, InNode.GetValueBaseAddress( (uint8*)(TempObject) ) );
+			OutAddresses.Add(TempObject, InNode.GetValueBaseAddressFromObject(TempObject));
 		}
 	}
 
@@ -361,22 +422,17 @@ bool FObjectPropertyNode::GetReadAddressUncached( FPropertyNode& InNode, FReadAd
 	return true;
 }
 
-
-/**
- * Calculates the memory address for the data associated with this item's property.  This is typically the value of a UProperty or a UObject address.
- *
- * @param	StartAddress	the location to use as the starting point for the calculation; typically the address of the object that contains this property.
- *
- * @return	a pointer to a UProperty value or UObject.  (For dynamic arrays, you'd cast this value to an FArray*)
- */
-uint8* FObjectPropertyNode::GetValueBaseAddress( uint8* StartAddress )
+uint8* FObjectPropertyNode::GetValueBaseAddress(uint8* StartAddress, bool bIsSparseData) const
 {
 	uint8* Result = StartAddress;
 
 	UClass* ClassObject;
-	if ( (ClassObject=Cast<UClass>((UObject*)Result)) != NULL )
+	if (!bIsSparseData)
 	{
-		Result = (uint8*)ClassObject->GetDefaultObject();
+		if ( (ClassObject=Cast<UClass>((UObject*)Result)) != NULL )
+		{
+			Result = (uint8*)ClassObject->GetDefaultObject();
+		}
 	}
 
 	return Result;
@@ -396,9 +452,64 @@ void FObjectPropertyNode::InitChildNodes()
 	InternalInitChildNodes();
 }
 
+static TSharedPtr<FPropertyNode> FindChildCategory( TSharedPtr<FPropertyNode> ParentNode, FName CategoryName )
+{
+	for( int32 CurNodeIndex = 0; CurNodeIndex < ParentNode->GetNumChildNodes(); ++CurNodeIndex )
+	{
+		TSharedPtr<FPropertyNode>& ChildNode = ParentNode->GetChildNode(CurNodeIndex);
+		check( ChildNode.IsValid() );
+
+		// Is this a category node?
+		FCategoryPropertyNode* ChildCategoryNode = ChildNode->AsCategoryNode();
+		if( ChildCategoryNode != nullptr && ChildCategoryNode->GetCategoryName() == CategoryName )
+		{
+			return ChildNode;
+		}
+	}
+	return nullptr;
+}
+
+void FObjectPropertyNode::GetCategoryProperties(const TSet<UClass*>& ClassesToConsider, const FProperty* CurrentProperty, bool bShouldShowDisableEditOnInstance, bool bShouldShowHiddenProperties,
+	const TSet<FName>& CategoriesFromBlueprints, TSet<FName>& CategoriesFromProperties, TArray<FName>& SortedCategories)
+{
+	static const FName Name_bShowOnlyWhenTrue("bShowOnlyWhenTrue");
+
+	FName CategoryName = FObjectEditorUtils::GetCategoryFName(CurrentProperty);
+
+	for (UClass* Class : ClassesToConsider)
+	{
+		if (FEditorCategoryUtils::IsCategoryHiddenFromClass(Class, CategoryName.ToString()))
+		{
+			HiddenCategories.Add(CategoryName);
+			break;
+		}
+	}
+
+	bool bMetaDataAllowVisible = true;
+	const FString& ShowOnlyWhenTrueString = CurrentProperty->GetMetaData(Name_bShowOnlyWhenTrue);
+	if (ShowOnlyWhenTrueString.Len())
+	{
+		//ensure that the metadata visibility string is actually set to true in order to show this property
+		GConfig->GetBool(TEXT("UnrealEd.PropertyFilters"), *ShowOnlyWhenTrueString, bMetaDataAllowVisible, GEditorPerProjectIni);
+	}
+
+	if (bMetaDataAllowVisible)
+	{
+		if (PropertyEditorHelpers::ShouldBeVisible(*this, CurrentProperty) && !HiddenCategories.Contains(CategoryName))
+		{
+			if (!CategoriesFromBlueprints.Contains(CategoryName) && !CategoriesFromProperties.Contains(CategoryName))
+			{
+				SortedCategories.Add(CategoryName);
+			}
+			CategoriesFromProperties.Add(CategoryName);
+		}
+	}
+}
+
 void FObjectPropertyNode::InternalInitChildNodes( FName SinglePropertyName )
 {
-	HiddenCategories.Empty();
+	HiddenCategories.Reset();
+	SparseClassDataInstances.Reset();
 	// Assemble a list of category names by iterating over all fields of BaseClass.
 
 	// build a list of classes that we need to look at
@@ -436,50 +547,24 @@ void FObjectPropertyNode::InternalInitChildNodes( FName SinglePropertyName )
 	const bool bShouldShowHiddenProperties = !!HasNodeFlags(EPropertyNodeFlags::ShouldShowHiddenProperties);
 	const bool bShouldShowDisableEditOnInstance = !!HasNodeFlags(EPropertyNodeFlags::ShouldShowDisableEditOnInstance);
 
-	for( TFieldIterator<UProperty> It(BaseClass.Get()); It; ++It )
+	for (TFieldIterator<FProperty> It(BaseClass.Get()); It; ++It)
 	{
-		bool bHidden = false;
+		GetCategoryProperties(ClassesToConsider, *It, bShouldShowDisableEditOnInstance, bShouldShowHiddenProperties, CategoriesFromBlueprints, CategoriesFromProperties, SortedCategories);
+	}
 
-		FName CategoryName = FObjectEditorUtils::GetCategoryFName(*It);
-
-		for( UClass* Class : ClassesToConsider )
+	for (UClass* Class : ClassesToConsider)
 		{
-			if( FEditorCategoryUtils::IsCategoryHiddenFromClass(Class, CategoryName.ToString()) )
+		if (Class)
 			{
-				HiddenCategories.Add( CategoryName );
-
-				bHidden = true;
-				break;
-			}
-		}
-
-		// 
-		static const FName Name_InlineEditConditionToggle("InlineEditConditionToggle");
-		if (It->HasMetaData(Name_InlineEditConditionToggle))
+			UScriptStruct* SparseClassDataStruct = Class->GetSparseClassDataStruct();
+			if (SparseClassDataStruct)
 		{
-			bHidden = true;
-		}
+				SparseClassDataInstances.Add(Class, TTuple<UScriptStruct*, void*>(SparseClassDataStruct, Class->GetOrCreateSparseClassData()));
 
-		bool bMetaDataAllowVisible = true;
-		static const FName Name_bShowOnlyWhenTrue("bShowOnlyWhenTrue");
-		const FString& MetaDataVisibilityCheckString = It->GetMetaData(Name_bShowOnlyWhenTrue);
-		if (MetaDataVisibilityCheckString.Len())
+				for (TFieldIterator<FProperty> It(SparseClassDataStruct); It; ++It)
 		{
-			//ensure that the metadata visibility string is actually set to true in order to show this property
-			GConfig->GetBool(TEXT("UnrealEd.PropertyFilters"), *MetaDataVisibilityCheckString, bMetaDataAllowVisible, GEditorPerProjectIni);
-		}
-
-		if (bMetaDataAllowVisible)
-		{
-			const bool bShowIfNonHiddenEditableProperty = (*It)->HasAnyPropertyFlags(CPF_Edit) && !bHidden;
-			const bool bShowIfDisableEditOnInstance = !(*It)->HasAnyPropertyFlags(CPF_DisableEditOnInstance) || bShouldShowDisableEditOnInstance;
-			if( bShouldShowHiddenProperties || (bShowIfNonHiddenEditableProperty && bShowIfDisableEditOnInstance) )
-			{
-				if (!CategoriesFromBlueprints.Contains(CategoryName) && !CategoriesFromProperties.Contains(CategoryName) )
-				{
-					SortedCategories.Add(CategoryName);
+		 			GetCategoryProperties(ClassesToConsider, *It, bShouldShowDisableEditOnInstance, bShouldShowHiddenProperties, CategoriesFromBlueprints, CategoriesFromProperties, SortedCategories);
 				}
-				CategoriesFromProperties.Add(CategoryName);
 			}
 		}
 	}
@@ -523,31 +608,10 @@ void FObjectPropertyNode::InternalInitChildNodes( FName SinglePropertyName )
 				const FName CategoryName( *CurCategoryPathString );
 
 				// Check to see if we've already created a category at the specified path level
-				bool bFoundMatchingCategory = false;
-				{
-					for( int32 CurNodeIndex = 0; CurNodeIndex < ParentLevelNode->GetNumChildNodes(); ++CurNodeIndex )
-					{
-						TSharedPtr<FPropertyNode>& ChildNode = ParentLevelNode->GetChildNode( CurNodeIndex );
-						check( ChildNode.IsValid() );
-
-						// Is this a category node?
-						FCategoryPropertyNode* ChildCategoryNode = ChildNode->AsCategoryNode();
-						if( ChildCategoryNode != NULL )
-						{
-							// Does the name match?
-							if( ChildCategoryNode->GetCategoryName() == CategoryName )
-							{
-								// Descend by using the child node as the new parent
-								bFoundMatchingCategory = true;
-								ParentLevelNode = ChildNode;
-								break;
-							}
-						}
-					}
-				}
+				TSharedPtr<FPropertyNode> FoundCategory = FindChildCategory( ParentLevelNode, CategoryName );
 
 				// If we didn't find the category, then we'll need to create it now!
-				if( !bFoundMatchingCategory )
+				if( !FoundCategory.IsValid() )
 				{
 					// Create the category node and assign it to its parent node
 					TSharedPtr<FCategoryPropertyNode> NewCategoryNode( new FCategoryPropertyNode );
@@ -582,21 +646,21 @@ void FObjectPropertyNode::InternalInitChildNodes( FName SinglePropertyName )
 					// Descend into the newly created category by using this node as the new parent
 					ParentLevelNode = NewCategoryNode;
 				}
+				else
+				{
+					ParentLevelNode = FoundCategory;
+				}
 			}
 		}
 	}
 	else
 	{
 		// Iterate over all fields, creating items.
-		for( TFieldIterator<UProperty> It(BaseClass.Get()); It; ++It )
+		for( TFieldIterator<FProperty> It(BaseClass.Get()); It; ++It )
 		{
-			static const FName Name_InlineEditConditionToggle("InlineEditConditionToggle");
-			const bool bOnlyShowAsInlineEditCondition = (*It)->HasMetaData(Name_InlineEditConditionToggle);
-			const bool bShowIfNonHiddenEditableProperty = (*It)->HasAnyPropertyFlags(CPF_Edit) && !FEditorCategoryUtils::IsCategoryHiddenFromClass(BaseClass.Get(), FObjectEditorUtils::GetCategory(*It));
-			const bool bShowIfDisableEditOnInstance = !(*It)->HasAnyPropertyFlags(CPF_DisableEditOnInstance) || bShouldShowDisableEditOnInstance;
-			if (bShouldShowHiddenProperties || (bShowIfNonHiddenEditableProperty && !bOnlyShowAsInlineEditCondition && bShowIfDisableEditOnInstance))
+			if (PropertyEditorHelpers::ShouldBeVisible(*this, *It))
 			{
-				UProperty* CurProp = *It;
+				FProperty* CurProp = *It;
 				if( SinglePropertyName == NAME_None || CurProp->GetFName() == SinglePropertyName )
 				{
 					TSharedPtr<FItemPropertyNode> NewItemNode( new FItemPropertyNode );
@@ -646,6 +710,20 @@ TSharedPtr<FPropertyNode> FObjectPropertyNode::GenerateSingleChild( FName ChildP
 	}
 
 	return NULL;
+}
+
+bool FObjectPropertyNode::IsSparseDataStruct(const UScriptStruct* Struct) const
+{
+	for (const auto& Instance : SparseClassDataInstances)
+	{
+		const TTuple<UScriptStruct*, void*>& SparseData = Instance.Value;
+		if (SparseData.Key == Struct)
+		{
+			return true;
+		}
+	}
+
+	return false;
 }
 
 /**

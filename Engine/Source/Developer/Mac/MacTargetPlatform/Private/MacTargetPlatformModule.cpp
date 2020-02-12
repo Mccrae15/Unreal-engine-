@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "CoreMinimal.h"
 #include "GenericMacTargetPlatform.h"
@@ -42,7 +42,7 @@ public:
 
 	virtual ITargetPlatform* GetTargetPlatform() override
 	{
-		if (Singleton == NULL)
+		if (Singleton == NULL && TGenericMacTargetPlatform<true, false, false>::IsUsable())
 		{
 			Singleton = new TGenericMacTargetPlatform<true, false, false>();
 		}
@@ -81,6 +81,11 @@ public:
 		if (!GConfig->GetBool(TEXT("/Script/MacTargetPlatform.MacTargetSettings"), TEXT("ForceFloats"), TargetSettings->ForceFloats, GEngineIni))
 		{
 			TargetSettings->ForceFloats = false;
+		}
+		
+		if (!GConfig->GetInt(TEXT("/Script/MacTargetPlatform.MacTargetSettings"), TEXT("IndirectArgumentTier"), TargetSettings->IndirectArgumentTier, GEngineIni))
+		{
+			TargetSettings->IndirectArgumentTier = 0;
 		}
 		
 		TargetSettings->AddToRoot();

@@ -1,309 +1,453 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
-
-/*=============================================================================
-	SSDCommon.ush: All the code commonly shared between uniform buffers.
-=============================================================================*/
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
 #include "SSDCommon.ush"
 
 
+#ifndef COMPILE_SIGNAL_COLOR
+	#define COMPILE_SIGNAL_COLOR 0
+#endif
+
+#ifndef COMPILE_SIGNAL_COLOR_SH
+	#define COMPILE_SIGNAL_COLOR_SH 0
+#endif
+
+#ifndef COMPILE_SIGNAL_COLOR_ARRAY
+	#define COMPILE_SIGNAL_COLOR_ARRAY 0
+#endif
+
+// Maximum number of indepedendent signal domain that can be denoised at same time.
+#ifndef MAX_SIGNAL_BATCH_SIZE
+	#error Need to specify the number of signal domain being denoised.
+#endif
+
+// Number of sample that can be multiplexed into FSSDSignalSample.
+#ifndef SIGNAL_ARRAY_SIZE
+	#error Need to specify the size of the signal array.
+#endif
+
+
 //------------------------------------------------------- STRUCTURE
 
 /** Generic data structure to manipulate any kind of signal. */
-struct FSSFSignalSample
+struct FSSDSignalSample
 {
 	// Number of sample accumulated.
-	float AccumulatedSampleCount;
-
+	float SampleCount;
+	
 	// Scene color and alpha.
-	float4 SceneColor;
+	#if COMPILE_SIGNAL_COLOR
+		float4 SceneColor;
+	#endif
 
-	// Shadow denoising specific.
-	float LeavingRayCount;
-	float PenumbraClosestHit;
-	float UncertainRayCount;
+	// Array of colors.
+	#if COMPILE_SIGNAL_COLOR_ARRAY
+		float3 ColorArray[COMPILE_SIGNAL_COLOR_ARRAY];
+	#endif
+
+	// Spherical harmonic of the color.
+	#if COMPILE_SIGNAL_COLOR_SH
+		FSSDSphericalHarmonicRGB ColorSH;
+	#endif
+
+	// Number of ray that did not find any intersections.
+	float MissCount;
+
+	// Hit distance of a this sample, valid only if SampleCount == 1.
+	float ClosestHitDistance;
+	
+	// Blur radius allowed for this sample, valid only if SampleCount == 1.
+	float WorldBluringRadius;
 };
 
-FSSFSignalSample CreateSignalSampleFromScalarValue(float Scalar)
+/** Array of signal samples. Technically should be a typedef, but there is a bug in HLSL with the out operator of an array. */
+struct FSSDSignalArray
 {
-	FSSFSignalSample OutSample;
-	OutSample.SceneColor = Scalar;
-	OutSample.AccumulatedSampleCount = Scalar;
-	OutSample.LeavingRayCount = Scalar;
-	OutSample.PenumbraClosestHit = Scalar;
-	OutSample.UncertainRayCount = Scalar;
+	FSSDSignalSample Array[SIGNAL_ARRAY_SIZE];
+};
+
+
+FSSDSignalSample CreateSignalSampleFromScalarValue(float Scalar)
+{
+	FSSDSignalSample OutSample;
+	#if COMPILE_SIGNAL_COLOR
+		OutSample.SceneColor = Scalar;
+	#endif
+	#if COMPILE_SIGNAL_COLOR_ARRAY
+	{
+		UNROLL_N(COMPILE_SIGNAL_COLOR_ARRAY)
+		for (uint ColorId = 0; ColorId < COMPILE_SIGNAL_COLOR_ARRAY; ColorId++)
+			OutSample.ColorArray[ColorId] = Scalar;
+	}
+	#endif
+	#if COMPILE_SIGNAL_COLOR_SH && SPHERICAL_HARMONIC_ORDER == 2
+		OutSample.ColorSH.R.V = Scalar;
+		OutSample.ColorSH.G.V = Scalar;
+		OutSample.ColorSH.B.V = Scalar;
+	#elif COMPILE_SIGNAL_COLOR_SH && SPHERICAL_HARMONIC_ORDER == 3
+		OutSample.ColorSH.R.V0 = Scalar;
+		OutSample.ColorSH.R.V1 = Scalar;
+		OutSample.ColorSH.R.V2 = Scalar;
+		OutSample.ColorSH.G.V0 = Scalar;
+		OutSample.ColorSH.G.V1 = Scalar;
+		OutSample.ColorSH.G.V2 = Scalar;
+		OutSample.ColorSH.B.V0 = Scalar;
+		OutSample.ColorSH.B.V1 = Scalar;
+		OutSample.ColorSH.B.V2 = Scalar;
+	#endif
+	OutSample.SampleCount = Scalar;
+	OutSample.MissCount = Scalar;
+	OutSample.ClosestHitDistance = Scalar;
+	OutSample.WorldBluringRadius = Scalar;
 	return OutSample;
 }
 
-FSSFSignalSample CreateSignalSample()
+FSSDSignalSample CreateSignalSample()
 {
 	return CreateSignalSampleFromScalarValue(0.0);
 }
 
-
-//------------------------------------------------------- INPUT/OUTPUT
-
-/** Decode input signal sample. */
-FSSFSignalSample DecodeInputSignal(const uint SignalBufferLayout, float4 RawSample[2])
+FSSDSignalArray CreateSignalArrayFromScalarValue(float Scalar)
 {
-	FSSFSignalSample OutSample = CreateSignalSample();
-
-	if (SignalBufferLayout == SIGNAL_BUFFER_LAYOUT_PENUMBRA_INPUT)
+	FSSDSignalArray OutSamples;
+	UNROLL_N(SIGNAL_ARRAY_SIZE)
+	for (uint BatchedSignalId = 0; BatchedSignalId < SIGNAL_ARRAY_SIZE; BatchedSignalId++)
 	{
-		OutSample.AccumulatedSampleCount = 1;
-		OutSample.LeavingRayCount = OutSample.AccumulatedSampleCount * RawSample[0].r;
-		OutSample.PenumbraClosestHit = RawSample[1].r;
+		OutSamples.Array[BatchedSignalId] = CreateSignalSampleFromScalarValue(Scalar);
 	}
-	else if (SignalBufferLayout == SIGNAL_BUFFER_LAYOUT_PENUMBRA_INTERNAL)
-	{
-		if (DEBUG_STORE_NORMALIZED_COMPONENTS)
-		{
-			OutSample.LeavingRayCount = RawSample[0].r * RawSample[0].b;
-			OutSample.UncertainRayCount = RawSample[0].g * RawSample[0].b;
-			OutSample.AccumulatedSampleCount = RawSample[0].b - OutSample.UncertainRayCount;
-		}
-		else
-		{
-			OutSample.LeavingRayCount = RawSample[0].r;
-			OutSample.AccumulatedSampleCount = RawSample[0].g;
-			OutSample.UncertainRayCount = RawSample[0].b;
-		}
-	}
-	else if (SignalBufferLayout == SIGNAL_BUFFER_LAYOUT_PENUMBRA_HISTORY_REJECTION)
-	{
-		//if (Samples[0].r < 1)
-		if (RawSample[0].r >= 0)
-		{
-			OutSample.AccumulatedSampleCount = 1;
-			OutSample.LeavingRayCount = OutSample.AccumulatedSampleCount * RawSample[0].r; // *(255.0 / 254.0);
-		}
-	}
-	else if (SignalBufferLayout == SIGNAL_BUFFER_LAYOUT_REFLECTIONS_INPUT)
-	{
-		OutSample.AccumulatedSampleCount = RawSample[1].r == -2 ? 0 : 1;
-		OutSample.LeavingRayCount = OutSample.AccumulatedSampleCount * (1 - RawSample[0].a);
-		OutSample.SceneColor = RawSample[0];
-
-		// max() because ray hit distance is < 0 when miss / not ray has been shot.
-		OutSample.PenumbraClosestHit = RawSample[1].r * OutSample.AccumulatedSampleCount;
-		OutSample.PenumbraClosestHit = ((RawSample[1].r == -1.0) ? 1.0e20 : RawSample[1].r) * OutSample.AccumulatedSampleCount;
-	}
-	else if (SignalBufferLayout == SIGNAL_BUFFER_LAYOUT_REFLECTIONS_HISTORY)
-	{
-		OutSample.AccumulatedSampleCount = RawSample[1].r;
-		OutSample.LeavingRayCount = OutSample.AccumulatedSampleCount * (1 - RawSample[0].a);
-		OutSample.SceneColor = OutSample.AccumulatedSampleCount * RawSample[0];
-	}
-	else if (SignalBufferLayout == SIGNAL_BUFFER_LAYOUT_AO_INPUT)
-	{
-		OutSample.AccumulatedSampleCount = RawSample[0].g < 0 ? 0 : 1;
-		OutSample.LeavingRayCount = OutSample.AccumulatedSampleCount * RawSample[0].r;
-		OutSample.PenumbraClosestHit = OutSample.AccumulatedSampleCount * RawSample[0].g;
-	}
-	else if (SignalBufferLayout == SIGNAL_BUFFER_LAYOUT_AO_HISTORY)
-	{
-		OutSample.AccumulatedSampleCount = RawSample[0].g;
-		OutSample.LeavingRayCount = OutSample.AccumulatedSampleCount * RawSample[0].r;
-	}
-
-	return OutSample;
-}
-
-/** Encode output signal sample. */
-void EncodeOutputSignal(const uint SignalBufferLayout, FSSFSignalSample Sample, out float4 OutRawSample[2], out uint OutBufferCount)
-{
-	OutRawSample[0] = OutRawSample[1] = 0;
-	OutBufferCount = 1;
-
-	if (SignalBufferLayout == SIGNAL_BUFFER_LAYOUT_PENUMBRA_INTERNAL)
-	{
-		if (DEBUG_STORE_NORMALIZED_COMPONENTS)
-		{
-			OutRawSample[0] = float4(
-				Sample.UncertainRayCount + Sample.AccumulatedSampleCount > 0
-					? Sample.LeavingRayCount / (Sample.UncertainRayCount + Sample.AccumulatedSampleCount)
-					: -1.0,
-				Sample.UncertainRayCount + Sample.AccumulatedSampleCount > 0
-					? Sample.UncertainRayCount / (Sample.UncertainRayCount + Sample.AccumulatedSampleCount)
-					: -1.0,
-				Sample.UncertainRayCount + Sample.AccumulatedSampleCount,
-				0);
-		}
-		else
-		{
-			OutRawSample[0] = float4(
-				Sample.LeavingRayCount,
-				Sample.AccumulatedSampleCount,
-				Sample.UncertainRayCount,
-				0);
-		}
-	}
-	else if (SignalBufferLayout == SIGNAL_BUFFER_LAYOUT_PENUMBRA_HISTORY_REJECTION)
-	{
-		//if (Sample.AccumulatedSampleCount == 0)
-		//{
-		//	OutRawSample[0].r = 1.0;
-		//}
-		//else
-		//{
-		//	OutRawSample[0].r = (254.0 / 255.0) * (Sample.LeavingRayCount / Sample.AccumulatedSampleCount);
-		//}
-
-		OutRawSample[0].r = Sample.AccumulatedSampleCount == 0 ? -1 : Sample.LeavingRayCount / Sample.AccumulatedSampleCount;
-	}
-	else if (SignalBufferLayout == SIGNAL_BUFFER_LAYOUT_REFLECTIONS_HISTORY)
-	{
-		// Outputs scene color to be compatible with a SSR output.
-		OutRawSample[0] = Sample.SceneColor * (Sample.AccumulatedSampleCount > 0 ? rcp(Sample.AccumulatedSampleCount) : 0);
-		OutRawSample[1].r = Sample.AccumulatedSampleCount;
-		OutBufferCount = 2;
-	}
-	else if (SignalBufferLayout == SIGNAL_BUFFER_LAYOUT_AO_HISTORY)
-	{
-		// Outputs number of ray miss in red to be compatible as a SSAO output.
-		OutRawSample[0].r = Sample.AccumulatedSampleCount > 0 ? Sample.LeavingRayCount / Sample.AccumulatedSampleCount : 1.0;
-		OutRawSample[0].g = Sample.AccumulatedSampleCount;
-	}
-}
-
-/** Sample input signal. */
-FSSFSignalSample SampleInputSignal(Texture2D SignalBuffer0, Texture2D SignalBuffer1, SamplerState Sampler, const uint SignalBufferLayout, float2 UV, float Level = 0)
-{
-	float4 RawSample[2];
-	RawSample[0] = SignalBuffer0.SampleLevel(Sampler, UV, Level);
-	RawSample[1] = SignalBuffer1.SampleLevel(Sampler, UV, Level);
-	return DecodeInputSignal(SignalBufferLayout, RawSample);
-}
-
-/** Sample output signal. */
-void OutputSignal(RWTexture2D<float4> OutputSignalBuffer0, RWTexture2D<float4> OutputSignalBuffer1, const uint SignalBufferLayout, const uint2 PixelPosition, FSSFSignalSample Sample)
-{
-	float4 RawSample[2];
-	uint BufferCount;
-	EncodeOutputSignal(SignalBufferLayout, Sample, RawSample, BufferCount);
-
-	if (BufferCount >= 1)
-		OutputSignalBuffer0[PixelPosition] = RawSample[0];
-	if (BufferCount >= 2)
-		OutputSignalBuffer1[PixelPosition] = RawSample[1];
+	return OutSamples;
 }
 
 
 //------------------------------------------------------- SIGNAL OPERATORS
 
-FSSFSignalSample Mul(FSSFSignalSample Sample, float Scalar)
+FSSDSignalSample MulSignal(FSSDSignalSample Sample, float Scalar)
 {
-	FSSFSignalSample OutSample;
-	OutSample.SceneColor             = Sample.SceneColor * Scalar;
-	OutSample.AccumulatedSampleCount = Sample.AccumulatedSampleCount * Scalar;
-	OutSample.LeavingRayCount        = Sample.LeavingRayCount * Scalar;
-	OutSample.PenumbraClosestHit     = Sample.PenumbraClosestHit * Scalar;
-	OutSample.UncertainRayCount      = Sample.UncertainRayCount * Scalar;
+	FSSDSignalSample OutSample;
+	#if COMPILE_SIGNAL_COLOR
+		OutSample.SceneColor         = Sample.SceneColor * Scalar;
+	#endif
+	#if COMPILE_SIGNAL_COLOR_ARRAY
+	{
+		UNROLL_N(COMPILE_SIGNAL_COLOR_ARRAY)
+		for (uint ColorId = 0; ColorId < COMPILE_SIGNAL_COLOR_ARRAY; ColorId++)
+			OutSample.ColorArray[ColorId] = Sample.ColorArray[ColorId] * Scalar;
+	}
+	#endif
+	#if COMPILE_SIGNAL_COLOR_SH
+		OutSample.ColorSH            = MulSH(Sample.ColorSH, Scalar);
+	#endif
+	OutSample.SampleCount            = Sample.SampleCount * Scalar;
+	OutSample.MissCount              = Sample.MissCount * Scalar;
+	OutSample.ClosestHitDistance     = Sample.ClosestHitDistance * Scalar;
+	OutSample.WorldBluringRadius     = Sample.WorldBluringRadius * Scalar;
 	return OutSample;
 }
 
-FSSFSignalSample Add(FSSFSignalSample SampleA, FSSFSignalSample SampleB)
+FSSDSignalSample AddSignal(FSSDSignalSample SampleA, FSSDSignalSample SampleB)
 {
-	SampleA.SceneColor             += SampleB.SceneColor;
-	SampleA.AccumulatedSampleCount += SampleB.AccumulatedSampleCount;
-	SampleA.LeavingRayCount        += SampleB.LeavingRayCount;
-	SampleA.PenumbraClosestHit     += SampleB.PenumbraClosestHit;
-	SampleA.UncertainRayCount      += SampleB.UncertainRayCount;
+	#if COMPILE_SIGNAL_COLOR
+		SampleA.SceneColor         += SampleB.SceneColor;
+	#endif
+	#if COMPILE_SIGNAL_COLOR_ARRAY
+	{
+		UNROLL_N(COMPILE_SIGNAL_COLOR_ARRAY)
+		for (uint ColorId = 0; ColorId < COMPILE_SIGNAL_COLOR_ARRAY; ColorId++)
+			SampleA.ColorArray[ColorId] += SampleB.ColorArray[ColorId];
+	}
+	#endif
+	#if COMPILE_SIGNAL_COLOR_SH
+		SampleA.ColorSH            = AddSH(SampleA.ColorSH, SampleB.ColorSH);
+	#endif
+	SampleA.SampleCount            += SampleB.SampleCount;
+	SampleA.MissCount              += SampleB.MissCount;
+	SampleA.ClosestHitDistance     += SampleB.ClosestHitDistance;
+	SampleA.WorldBluringRadius     += SampleB.WorldBluringRadius;
 	return SampleA;
 }
 
-FSSFSignalSample Minus(FSSFSignalSample Sample)
+FSSDSignalSample MinusSignal(FSSDSignalSample Sample)
 {
-	Sample.SceneColor             = -Sample.SceneColor;
-	Sample.AccumulatedSampleCount = -Sample.AccumulatedSampleCount;
-	Sample.LeavingRayCount        = -Sample.LeavingRayCount;
-	Sample.PenumbraClosestHit     = -Sample.PenumbraClosestHit;
-	Sample.UncertainRayCount      = -Sample.UncertainRayCount;
+	#if COMPILE_SIGNAL_COLOR
+		Sample.SceneColor         = -Sample.SceneColor;
+	#endif
+	#if COMPILE_SIGNAL_COLOR_ARRAY
+	{
+		UNROLL_N(COMPILE_SIGNAL_COLOR_ARRAY)
+		for (uint ColorId = 0; ColorId < COMPILE_SIGNAL_COLOR_ARRAY; ColorId++)
+			Sample.ColorArray[ColorId] = -Sample.ColorArray[ColorId];
+	}
+	#endif
+	#if COMPILE_SIGNAL_COLOR_SH
+		Sample.ColorSH         = MulSH(Sample.ColorSH, -1.0);
+	#endif
+	Sample.SampleCount            = -Sample.SampleCount;
+	Sample.MissCount              = -Sample.MissCount;
+	Sample.ClosestHitDistance     = -Sample.ClosestHitDistance;
+	Sample.WorldBluringRadius     = -Sample.WorldBluringRadius;
 	return Sample;
 }
 
-FSSFSignalSample Subtract(FSSFSignalSample SampleA, FSSFSignalSample SampleB)
+FSSDSignalSample SubtractSignal(FSSDSignalSample SampleA, FSSDSignalSample SampleB)
 {
-	return Add(SampleA, Minus(SampleB));
+	return AddSignal(SampleA, MinusSignal(SampleB));
 }
 
-FSSFSignalSample Abs(FSSFSignalSample Sample)
+FSSDSignalSample AbsSignal(FSSDSignalSample Sample)
 {
-	Sample.SceneColor             = abs(Sample.SceneColor);
-	Sample.AccumulatedSampleCount = abs(Sample.AccumulatedSampleCount);
-	Sample.LeavingRayCount        = abs(Sample.LeavingRayCount);
-	Sample.PenumbraClosestHit     = abs(Sample.PenumbraClosestHit);
-	Sample.UncertainRayCount      = abs(Sample.UncertainRayCount);
+	#if COMPILE_SIGNAL_COLOR
+		Sample.SceneColor         = abs(Sample.SceneColor);
+	#endif
+	#if COMPILE_SIGNAL_COLOR_ARRAY
+	{
+		UNROLL_N(COMPILE_SIGNAL_COLOR_ARRAY)
+		for (uint ColorId = 0; ColorId < COMPILE_SIGNAL_COLOR_ARRAY; ColorId++)
+			Sample.ColorArray[ColorId] = abs(Sample.ColorArray[ColorId]);
+	}
+	#endif
+	#if COMPILE_SIGNAL_COLOR_SH && SPHERICAL_HARMONIC_ORDER == 2
+		Sample.ColorSH.R.V = abs(Sample.ColorSH.R.V);
+		Sample.ColorSH.G.V = abs(Sample.ColorSH.G.V);
+		Sample.ColorSH.B.V = abs(Sample.ColorSH.B.V);
+	#elif COMPILE_SIGNAL_COLOR_SH && SPHERICAL_HARMONIC_ORDER == 3
+		Sample.ColorSH.R.V0 = abs(Sample.ColorSH.R.V0);
+		Sample.ColorSH.R.V1 = abs(Sample.ColorSH.R.V1);
+		Sample.ColorSH.R.V2 = abs(Sample.ColorSH.R.V2);
+		Sample.ColorSH.G.V0 = abs(Sample.ColorSH.G.V0);
+		Sample.ColorSH.G.V1 = abs(Sample.ColorSH.G.V1);
+		Sample.ColorSH.G.V2 = abs(Sample.ColorSH.G.V2);
+		Sample.ColorSH.B.V0 = abs(Sample.ColorSH.B.V0);
+		Sample.ColorSH.B.V1 = abs(Sample.ColorSH.B.V1);
+		Sample.ColorSH.B.V2 = abs(Sample.ColorSH.B.V2);
+	#endif
+	Sample.SampleCount            = abs(Sample.SampleCount);
+	Sample.MissCount              = abs(Sample.MissCount);
+	Sample.ClosestHitDistance     = abs(Sample.ClosestHitDistance);
+	Sample.WorldBluringRadius     = abs(Sample.WorldBluringRadius);
 	return Sample;
 }
 
-FSSFSignalSample Sqrt(FSSFSignalSample Sample)
+FSSDSignalSample SqrtSignal(FSSDSignalSample Sample)
 {
-	Sample.SceneColor             = sqrt(Sample.SceneColor);
-	Sample.AccumulatedSampleCount = sqrt(Sample.AccumulatedSampleCount);
-	Sample.LeavingRayCount        = sqrt(Sample.LeavingRayCount);
-	Sample.PenumbraClosestHit     = sqrt(Sample.PenumbraClosestHit);
-	Sample.UncertainRayCount      = sqrt(Sample.UncertainRayCount);
+	#if COMPILE_SIGNAL_COLOR
+		Sample.SceneColor         = sqrt(Sample.SceneColor);
+	#endif
+	#if COMPILE_SIGNAL_COLOR_ARRAY
+	{
+		UNROLL_N(COMPILE_SIGNAL_COLOR_ARRAY)
+		for (uint ColorId = 0; ColorId < COMPILE_SIGNAL_COLOR_ARRAY; ColorId++)
+			Sample.ColorArray[ColorId] = sqrt(Sample.ColorArray[ColorId]);
+	}
+	#endif
+	#if COMPILE_SIGNAL_COLOR_SH && SPHERICAL_HARMONIC_ORDER == 2
+		Sample.ColorSH.R.V = sqrt(Sample.ColorSH.R.V);
+		Sample.ColorSH.G.V = sqrt(Sample.ColorSH.G.V);
+		Sample.ColorSH.B.V = sqrt(Sample.ColorSH.B.V);
+	#elif COMPILE_SIGNAL_COLOR_SH && SPHERICAL_HARMONIC_ORDER == 3
+		Sample.ColorSH.R.V0 = sqrt(Sample.ColorSH.R.V0);
+		Sample.ColorSH.R.V1 = sqrt(Sample.ColorSH.R.V1);
+		Sample.ColorSH.R.V2 = sqrt(Sample.ColorSH.R.V2);
+		Sample.ColorSH.G.V0 = sqrt(Sample.ColorSH.G.V0);
+		Sample.ColorSH.G.V1 = sqrt(Sample.ColorSH.G.V1);
+		Sample.ColorSH.G.V2 = sqrt(Sample.ColorSH.G.V2);
+		Sample.ColorSH.B.V0 = sqrt(Sample.ColorSH.B.V0);
+		Sample.ColorSH.B.V1 = sqrt(Sample.ColorSH.B.V1);
+		Sample.ColorSH.B.V2 = sqrt(Sample.ColorSH.B.V2);
+	#endif
+	Sample.SampleCount            = sqrt(Sample.SampleCount);
+	Sample.MissCount              = sqrt(Sample.MissCount);
+	Sample.ClosestHitDistance     = sqrt(Sample.ClosestHitDistance);
+	Sample.WorldBluringRadius     = sqrt(Sample.WorldBluringRadius);
 	return Sample;
 }
 
-FSSFSignalSample Power(FSSFSignalSample Sample, float Exponent)
+FSSDSignalSample PowerSignal(FSSDSignalSample Sample, float Exponent)
 {
-	Sample.SceneColor.r           = pow(Sample.SceneColor.r, Exponent);
-	Sample.SceneColor.g           = pow(Sample.SceneColor.g, Exponent);
-	Sample.SceneColor.b           = pow(Sample.SceneColor.b, Exponent);
-	Sample.SceneColor.a           = pow(Sample.SceneColor.a, Exponent);
-	Sample.AccumulatedSampleCount = pow(Sample.AccumulatedSampleCount, Exponent);
-	Sample.LeavingRayCount        = pow(Sample.LeavingRayCount, Exponent);
-	Sample.PenumbraClosestHit     = pow(Sample.PenumbraClosestHit, Exponent);
-	Sample.UncertainRayCount      = pow(Sample.UncertainRayCount, Exponent);
+	#if COMPILE_SIGNAL_COLOR
+		Sample.SceneColor.r       = pow(Sample.SceneColor.r, Exponent);
+		Sample.SceneColor.g       = pow(Sample.SceneColor.g, Exponent);
+		Sample.SceneColor.b       = pow(Sample.SceneColor.b, Exponent);
+		Sample.SceneColor.a       = pow(Sample.SceneColor.a, Exponent);
+	#endif
+	#if COMPILE_SIGNAL_COLOR_ARRAY
+	{
+		UNROLL_N(COMPILE_SIGNAL_COLOR_ARRAY)
+		for (uint ColorId = 0; ColorId < COMPILE_SIGNAL_COLOR_ARRAY; ColorId++)
+			Sample.ColorArray[ColorId] = pow(Sample.ColorArray[ColorId], Exponent);
+	}
+	#endif
+	#if COMPILE_SIGNAL_COLOR_SH && SPHERICAL_HARMONIC_ORDER == 2
+		Sample.ColorSH.R.V = pow(Sample.ColorSH.R.V, Exponent);
+		Sample.ColorSH.G.V = pow(Sample.ColorSH.G.V, Exponent);
+		Sample.ColorSH.B.V = pow(Sample.ColorSH.B.V, Exponent);
+	#elif COMPILE_SIGNAL_COLOR_SH && SPHERICAL_HARMONIC_ORDER == 3
+		Sample.ColorSH.R.V0 = pow(Sample.ColorSH.R.V0, Exponent);
+		Sample.ColorSH.R.V1 = pow(Sample.ColorSH.R.V1, Exponent);
+		Sample.ColorSH.R.V2 = pow(Sample.ColorSH.R.V2, Exponent);
+		Sample.ColorSH.G.V0 = pow(Sample.ColorSH.G.V0, Exponent);
+		Sample.ColorSH.G.V1 = pow(Sample.ColorSH.G.V1, Exponent);
+		Sample.ColorSH.G.V2 = pow(Sample.ColorSH.G.V2, Exponent);
+		Sample.ColorSH.B.V0 = pow(Sample.ColorSH.B.V0, Exponent);
+		Sample.ColorSH.B.V1 = pow(Sample.ColorSH.B.V1, Exponent);
+		Sample.ColorSH.B.V2 = pow(Sample.ColorSH.B.V2, Exponent);
+	#endif
+	Sample.SampleCount            = pow(Sample.SampleCount, Exponent);
+	Sample.MissCount              = pow(Sample.MissCount, Exponent);
+	Sample.ClosestHitDistance     = pow(Sample.ClosestHitDistance, Exponent);
+	Sample.WorldBluringRadius     = pow(Sample.WorldBluringRadius, Exponent);
 	return Sample;
 }
 
-FSSFSignalSample Min(FSSFSignalSample SampleA, FSSFSignalSample SampleB)
+FSSDSignalSample MinSignal(FSSDSignalSample SampleA, FSSDSignalSample SampleB)
 {
-	FSSFSignalSample OutSample;
-	OutSample.SceneColor = min(SampleA.SceneColor, SampleB.SceneColor);
-	OutSample.AccumulatedSampleCount = min(SampleA.AccumulatedSampleCount, SampleB.AccumulatedSampleCount);
-	OutSample.LeavingRayCount = min(SampleA.LeavingRayCount, SampleB.LeavingRayCount);
-	OutSample.PenumbraClosestHit = min(SampleA.PenumbraClosestHit, SampleB.PenumbraClosestHit);
-	OutSample.UncertainRayCount = min(SampleA.UncertainRayCount, SampleB.UncertainRayCount);
+	FSSDSignalSample OutSample;
+	#if COMPILE_SIGNAL_COLOR
+		OutSample.SceneColor = min(SampleA.SceneColor, SampleB.SceneColor);
+	#endif
+	#if COMPILE_SIGNAL_COLOR_ARRAY
+	{
+		UNROLL_N(COMPILE_SIGNAL_COLOR_ARRAY)
+		for (uint ColorId = 0; ColorId < COMPILE_SIGNAL_COLOR_ARRAY; ColorId++)
+			OutSample.ColorArray[ColorId] = min(SampleA.ColorArray[ColorId], SampleB.ColorArray[ColorId]);
+	}
+	#endif
+	#if COMPILE_SIGNAL_COLOR_SH && SPHERICAL_HARMONIC_ORDER == 2
+		OutSample.ColorSH.R.V = min(SampleA.ColorSH.R.V, SampleB.ColorSH.R.V);
+		OutSample.ColorSH.G.V = min(SampleA.ColorSH.G.V, SampleB.ColorSH.G.V);
+		OutSample.ColorSH.B.V = min(SampleA.ColorSH.B.V, SampleB.ColorSH.B.V);
+	#elif COMPILE_SIGNAL_COLOR_SH && SPHERICAL_HARMONIC_ORDER == 3
+		OutSample.ColorSH.R.V0 = min(SampleA.ColorSH.R.V0, SampleB.ColorSH.R.V0);
+		OutSample.ColorSH.R.V1 = min(SampleA.ColorSH.R.V1, SampleB.ColorSH.R.V1);
+		OutSample.ColorSH.R.V2 = min(SampleA.ColorSH.R.V2, SampleB.ColorSH.R.V2);
+		OutSample.ColorSH.G.V0 = min(SampleA.ColorSH.G.V0, SampleB.ColorSH.G.V0);
+		OutSample.ColorSH.G.V1 = min(SampleA.ColorSH.G.V1, SampleB.ColorSH.G.V1);
+		OutSample.ColorSH.G.V2 = min(SampleA.ColorSH.G.V2, SampleB.ColorSH.G.V2);
+		OutSample.ColorSH.B.V0 = min(SampleA.ColorSH.B.V0, SampleB.ColorSH.B.V0);
+		OutSample.ColorSH.B.V1 = min(SampleA.ColorSH.B.V1, SampleB.ColorSH.B.V1);
+		OutSample.ColorSH.B.V2 = min(SampleA.ColorSH.B.V2, SampleB.ColorSH.B.V2);
+	#endif
+	OutSample.SampleCount = min(SampleA.SampleCount, SampleB.SampleCount);
+	OutSample.MissCount = min(SampleA.MissCount, SampleB.MissCount);
+	OutSample.ClosestHitDistance = min(SampleA.ClosestHitDistance, SampleB.ClosestHitDistance);
+	OutSample.WorldBluringRadius = min(SampleA.WorldBluringRadius, SampleB.WorldBluringRadius);
 	return OutSample;
 }
 
-FSSFSignalSample Max(FSSFSignalSample SampleA, FSSFSignalSample SampleB)
+FSSDSignalSample MaxSignal(FSSDSignalSample SampleA, FSSDSignalSample SampleB)
 {
-	FSSFSignalSample OutSample;
-	OutSample.SceneColor = max(SampleA.SceneColor, SampleB.SceneColor);
-	OutSample.AccumulatedSampleCount = max(SampleA.AccumulatedSampleCount, SampleB.AccumulatedSampleCount);
-	OutSample.LeavingRayCount = max(SampleA.LeavingRayCount, SampleB.LeavingRayCount);
-	OutSample.PenumbraClosestHit = max(SampleA.PenumbraClosestHit, SampleB.PenumbraClosestHit);
-	OutSample.UncertainRayCount = max(SampleA.UncertainRayCount, SampleB.UncertainRayCount);
+	FSSDSignalSample OutSample;
+	#if COMPILE_SIGNAL_COLOR
+		OutSample.SceneColor = max(SampleA.SceneColor, SampleB.SceneColor);
+	#endif
+	#if COMPILE_SIGNAL_COLOR_ARRAY
+	{
+		UNROLL_N(COMPILE_SIGNAL_COLOR_ARRAY)
+		for (uint ColorId = 0; ColorId < COMPILE_SIGNAL_COLOR_ARRAY; ColorId++)
+			OutSample.ColorArray[ColorId] = max(SampleA.ColorArray[ColorId], SampleB.ColorArray[ColorId]);
+	}
+	#endif
+	#if COMPILE_SIGNAL_COLOR_SH && SPHERICAL_HARMONIC_ORDER == 2
+		OutSample.ColorSH.R.V = max(SampleA.ColorSH.R.V, SampleB.ColorSH.R.V);
+		OutSample.ColorSH.G.V = max(SampleA.ColorSH.G.V, SampleB.ColorSH.G.V);
+		OutSample.ColorSH.B.V = max(SampleA.ColorSH.B.V, SampleB.ColorSH.B.V);
+	#elif COMPILE_SIGNAL_COLOR_SH && SPHERICAL_HARMONIC_ORDER == 3
+		OutSample.ColorSH.R.V0 = max(SampleA.ColorSH.R.V0, SampleB.ColorSH.R.V0);
+		OutSample.ColorSH.R.V1 = max(SampleA.ColorSH.R.V1, SampleB.ColorSH.R.V1);
+		OutSample.ColorSH.R.V2 = max(SampleA.ColorSH.R.V2, SampleB.ColorSH.R.V2);
+		OutSample.ColorSH.G.V0 = max(SampleA.ColorSH.G.V0, SampleB.ColorSH.G.V0);
+		OutSample.ColorSH.G.V1 = max(SampleA.ColorSH.G.V1, SampleB.ColorSH.G.V1);
+		OutSample.ColorSH.G.V2 = max(SampleA.ColorSH.G.V2, SampleB.ColorSH.G.V2);
+		OutSample.ColorSH.B.V0 = max(SampleA.ColorSH.B.V0, SampleB.ColorSH.B.V0);
+		OutSample.ColorSH.B.V1 = max(SampleA.ColorSH.B.V1, SampleB.ColorSH.B.V1);
+		OutSample.ColorSH.B.V2 = max(SampleA.ColorSH.B.V2, SampleB.ColorSH.B.V2);
+	#endif
+	OutSample.SampleCount = max(SampleA.SampleCount, SampleB.SampleCount);
+	OutSample.MissCount = max(SampleA.MissCount, SampleB.MissCount);
+	OutSample.ClosestHitDistance = max(SampleA.ClosestHitDistance, SampleB.ClosestHitDistance);
+	OutSample.WorldBluringRadius = max(SampleA.WorldBluringRadius, SampleB.WorldBluringRadius);
 	return OutSample;
 }
 
-FSSFSignalSample Clamp(FSSFSignalSample Sample, FSSFSignalSample SampleMin, FSSFSignalSample SampleMax)
+FSSDSignalSample ClampSignal(FSSDSignalSample Sample, FSSDSignalSample SampleMin, FSSDSignalSample SampleMax)
 {
-	FSSFSignalSample OutSample;
-	OutSample.SceneColor = clamp(Sample.SceneColor, SampleMin.SceneColor, SampleMax.SceneColor);
-	OutSample.AccumulatedSampleCount = clamp(Sample.AccumulatedSampleCount, SampleMin.AccumulatedSampleCount, SampleMax.AccumulatedSampleCount);
-	OutSample.LeavingRayCount = clamp(Sample.LeavingRayCount, SampleMin.LeavingRayCount, SampleMax.LeavingRayCount);
-	OutSample.PenumbraClosestHit = clamp(Sample.PenumbraClosestHit, SampleMin.PenumbraClosestHit, SampleMax.PenumbraClosestHit);
-	OutSample.UncertainRayCount = clamp(Sample.UncertainRayCount, SampleMin.UncertainRayCount, SampleMax.UncertainRayCount);
+	FSSDSignalSample OutSample;
+	#if COMPILE_SIGNAL_COLOR
+		OutSample.SceneColor = clamp(Sample.SceneColor, SampleMin.SceneColor, SampleMax.SceneColor);
+	#endif
+	#if COMPILE_SIGNAL_COLOR_ARRAY
+	{
+		UNROLL_N(COMPILE_SIGNAL_COLOR_ARRAY)
+		for (uint ColorId = 0; ColorId < COMPILE_SIGNAL_COLOR_ARRAY; ColorId++)
+			OutSample.ColorArray[ColorId] = clamp(Sample.ColorArray[ColorId], SampleMin.ColorArray[ColorId], SampleMax.ColorArray[ColorId]);
+	}
+	#endif
+	#if COMPILE_SIGNAL_COLOR_SH && SPHERICAL_HARMONIC_ORDER == 2
+		OutSample.ColorSH.R.V = clamp(Sample.ColorSH.R.V, SampleMin.ColorSH.R.V, SampleMax.ColorSH.R.V);
+		OutSample.ColorSH.G.V = clamp(Sample.ColorSH.G.V, SampleMin.ColorSH.G.V, SampleMax.ColorSH.G.V);
+		OutSample.ColorSH.B.V = clamp(Sample.ColorSH.B.V, SampleMin.ColorSH.B.V, SampleMax.ColorSH.B.V);
+	#elif COMPILE_SIGNAL_COLOR_SH && SPHERICAL_HARMONIC_ORDER == 3
+		OutSample.ColorSH.R.V0 = clamp(Sample.ColorSH.R.V0, SampleMin.ColorSH.R.V0, SampleMax.ColorSH.R.V0);
+		OutSample.ColorSH.R.V1 = clamp(Sample.ColorSH.R.V1, SampleMin.ColorSH.R.V1, SampleMax.ColorSH.R.V1);
+		OutSample.ColorSH.R.V2 = clamp(Sample.ColorSH.R.V2, SampleMin.ColorSH.R.V2, SampleMax.ColorSH.R.V2);
+		OutSample.ColorSH.G.V0 = clamp(Sample.ColorSH.G.V0, SampleMin.ColorSH.G.V0, SampleMax.ColorSH.G.V0);
+		OutSample.ColorSH.G.V1 = clamp(Sample.ColorSH.G.V1, SampleMin.ColorSH.G.V1, SampleMax.ColorSH.G.V1);
+		OutSample.ColorSH.G.V2 = clamp(Sample.ColorSH.G.V2, SampleMin.ColorSH.G.V2, SampleMax.ColorSH.G.V2);
+		OutSample.ColorSH.B.V0 = clamp(Sample.ColorSH.B.V0, SampleMin.ColorSH.B.V0, SampleMax.ColorSH.B.V0);
+		OutSample.ColorSH.B.V1 = clamp(Sample.ColorSH.B.V1, SampleMin.ColorSH.B.V1, SampleMax.ColorSH.B.V1);
+		OutSample.ColorSH.B.V2 = clamp(Sample.ColorSH.B.V2, SampleMin.ColorSH.B.V2, SampleMax.ColorSH.B.V2);
+	#endif
+	OutSample.SampleCount = clamp(Sample.SampleCount, SampleMin.SampleCount, SampleMax.SampleCount);
+	OutSample.MissCount = clamp(Sample.MissCount, SampleMin.MissCount, SampleMax.MissCount);
+	OutSample.ClosestHitDistance = clamp(Sample.ClosestHitDistance, SampleMin.ClosestHitDistance, SampleMax.ClosestHitDistance);
+	OutSample.WorldBluringRadius = clamp(Sample.WorldBluringRadius, SampleMin.WorldBluringRadius, SampleMax.WorldBluringRadius);
 	return OutSample;
 }
 
-FSSFSignalSample Lerp(FSSFSignalSample Sample0, FSSFSignalSample Sample1, float Interp)
+FSSDSignalSample LerpSignal(FSSDSignalSample Sample0, FSSDSignalSample Sample1, float Interp)
 {
-	return Add(Sample0, Mul(Subtract(Sample1, Sample0), Interp));
+	return AddSignal(Sample0, MulSignal(SubtractSignal(Sample1, Sample0), Interp));
 }
 
 /** Normalize the signal sample to one. */
-FSSFSignalSample NormalizeToOneSample(FSSFSignalSample Sample)
+FSSDSignalSample NormalizeToOneSample(FSSDSignalSample Sample)
 {
-	FSSFSignalSample OutSample = Mul(Sample, Sample.AccumulatedSampleCount > 0 ? rcp(Sample.AccumulatedSampleCount) : 0);
-	OutSample.AccumulatedSampleCount = 1;
+	FSSDSignalSample OutSample = MulSignal(Sample, Sample.SampleCount > 0 ? rcp(Sample.SampleCount) : 0);
+	OutSample.SampleCount = Sample.SampleCount > 0 ? 1 : 0;
+	return OutSample;
+}
+
+FSSDSignalSample WaveBroadcastSignal(const FWaveBroadcastSettings BroadcastSettings, FSSDSignalSample Sample)
+{
+	FSSDSignalSample OutSample;
+	#if COMPILE_SIGNAL_COLOR
+		OutSample.SceneColor = WaveBroadcast(BroadcastSettings, Sample.SceneColor);
+	#endif
+	#if COMPILE_SIGNAL_COLOR_ARRAY
+	{
+		UNROLL_N(COMPILE_SIGNAL_COLOR_ARRAY)
+		for (uint ColorId = 0; ColorId < COMPILE_SIGNAL_COLOR_ARRAY; ColorId++)
+			OutSample.ColorArray[ColorId] = WaveBroadcast(BroadcastSettings, Sample.ColorArray[ColorId]);
+	}
+	#endif
+	#if COMPILE_SIGNAL_COLOR_SH && SPHERICAL_HARMONIC_ORDER == 2
+		OutSample.ColorSH.R.V = WaveBroadcast(BroadcastSettings, Sample.ColorSH.R.V);
+		OutSample.ColorSH.G.V = WaveBroadcast(BroadcastSettings, Sample.ColorSH.G.V);
+		OutSample.ColorSH.B.V = WaveBroadcast(BroadcastSettings, Sample.ColorSH.B.V);
+	#elif COMPILE_SIGNAL_COLOR_SH && SPHERICAL_HARMONIC_ORDER == 3
+		OutSample.ColorSH.R.V0 = WaveBroadcast(BroadcastSettings, Sample.ColorSH.R.V0);
+		OutSample.ColorSH.R.V1 = WaveBroadcast(BroadcastSettings, Sample.ColorSH.R.V1);
+		OutSample.ColorSH.R.V2 = WaveBroadcast(BroadcastSettings, Sample.ColorSH.R.V2);
+		OutSample.ColorSH.G.V0 = WaveBroadcast(BroadcastSettings, Sample.ColorSH.G.V0);
+		OutSample.ColorSH.G.V1 = WaveBroadcast(BroadcastSettings, Sample.ColorSH.G.V1);
+		OutSample.ColorSH.G.V2 = WaveBroadcast(BroadcastSettings, Sample.ColorSH.G.V2);
+		OutSample.ColorSH.B.V0 = WaveBroadcast(BroadcastSettings, Sample.ColorSH.B.V0);
+		OutSample.ColorSH.B.V1 = WaveBroadcast(BroadcastSettings, Sample.ColorSH.B.V1);
+		OutSample.ColorSH.B.V2 = WaveBroadcast(BroadcastSettings, Sample.ColorSH.B.V2);
+	#endif
+	OutSample.SampleCount        = WaveBroadcast(BroadcastSettings, Sample.SampleCount);
+	OutSample.MissCount          = WaveBroadcast(BroadcastSettings, Sample.MissCount);
+	OutSample.ClosestHitDistance = WaveBroadcast(BroadcastSettings, Sample.ClosestHitDistance);
+	OutSample.WorldBluringRadius = WaveBroadcast(BroadcastSettings, Sample.WorldBluringRadius);
 	return OutSample;
 }

@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 //
 #include "MotionControllerComponent.h"
 #include "GameFramework/Pawn.h"
@@ -92,17 +92,32 @@ void UMotionControllerComponent::BeginDestroy()
 	}
 }
 
-void UMotionControllerComponent::CreateRenderState_Concurrent()
+void UMotionControllerComponent::CreateRenderState_Concurrent(FRegisterComponentContext* Context)
 {
-	Super::CreateRenderState_Concurrent();
+	Super::CreateRenderState_Concurrent(Context);
 	RenderThreadRelativeTransform = GetRelativeTransform();
 	RenderThreadComponentScale = GetComponentScale();
 }
 
 void UMotionControllerComponent::SendRenderTransform_Concurrent()
 {
-	RenderThreadRelativeTransform = GetRelativeTransform();
-	RenderThreadComponentScale = GetComponentScale();
+	struct FPrimitiveUpdateRenderThreadRelativeTransformParams
+	{
+		FTransform RenderThreadRelativeTransform;
+		FVector RenderThreadComponentScale;
+	};
+
+	FPrimitiveUpdateRenderThreadRelativeTransformParams UpdateParams;
+	UpdateParams.RenderThreadRelativeTransform = GetRelativeTransform();
+	UpdateParams.RenderThreadComponentScale = GetComponentScale();
+
+	ENQUEUE_RENDER_COMMAND(UpdateRTRelativeTransformCommand)(
+		[UpdateParams, this](FRHICommandListImmediate& RHICmdList)
+	{
+		RenderThreadRelativeTransform = UpdateParams.RenderThreadRelativeTransform;
+		RenderThreadComponentScale = UpdateParams.RenderThreadComponentScale;
+	});
+
 	Super::SendRenderTransform_Concurrent();
 }
 
@@ -111,10 +126,10 @@ void UMotionControllerComponent::TickComponent(float DeltaTime, enum ELevelTick 
 {
 	Super::TickComponent(DeltaTime, TickType, ThisTickFunction);
 
-	if (bIsActive)
+	if (IsActive())
 	{
-		FVector Position;
-		FRotator Orientation;
+		FVector Position = GetRelativeTransform().GetTranslation();
+		FRotator Orientation = GetRelativeTransform().GetRotation().Rotator();
 		float WorldToMeters = GetWorld() ? GetWorld()->GetWorldSettings()->WorldToMeters : 100.0f;
 		const bool bNewTrackedState = PollControllerState(Position, Orientation, WorldToMeters);
 		if (bNewTrackedState)
@@ -253,7 +268,7 @@ void UMotionControllerComponent::Serialize(FArchive& Ar)
 
 #if WITH_EDITOR
 //=============================================================================
-void UMotionControllerComponent::PreEditChange(UProperty* PropertyAboutToChange)
+void UMotionControllerComponent::PreEditChange(FProperty* PropertyAboutToChange)
 {
 	PreEditMaterialCount = DisplayMeshMaterialOverrides.Num();
 	Super::PreEditChange(PropertyAboutToChange);
@@ -264,7 +279,7 @@ void UMotionControllerComponent::PostEditChangeProperty(FPropertyChangedEvent& P
 {
 	Super::PostEditChangeProperty(PropertyChangedEvent);
 
-	UProperty* PropertyThatChanged = PropertyChangedEvent.Property;
+	FProperty* PropertyThatChanged = PropertyChangedEvent.Property;
 	const FName PropertyName = (PropertyThatChanged != nullptr) ? PropertyThatChanged->GetFName() : NAME_None;
 
 	if (PropertyName == GET_MEMBER_NAME_CHECKED(UMotionControllerComponent, bDisplayDeviceModel))
@@ -454,7 +469,7 @@ void UMotionControllerComponent::RefreshDisplayComponent(const bool bForceDestro
 				}
 
 				DisplayComponent->SetHiddenInGame(bHiddenInGame);
-				DisplayComponent->SetVisibility(bVisible);
+				DisplayComponent->SetVisibility(GetVisibleFlag());
 			}
 		}
 		else if (DisplayComponent)
@@ -567,8 +582,8 @@ void UMotionControllerComponent::FViewExtension::PreRenderViewFamily_RenderThrea
 		}
 
 		// Poll state for the most recent controller transform
-		FVector Position;
-		FRotator Orientation;
+		FVector Position = MotionControllerComponent->RenderThreadRelativeTransform.GetTranslation();
+		FRotator Orientation = MotionControllerComponent->RenderThreadRelativeTransform.GetRotation().Rotator();
 		if (!MotionControllerComponent->PollControllerState(Position, Orientation, WorldToMetersScale))
 		{
 			return;
@@ -580,15 +595,6 @@ void UMotionControllerComponent::FViewExtension::PreRenderViewFamily_RenderThrea
 
 	// Tell the late update manager to apply the offset to the scene components
 	LateUpdate.Apply_RenderThread(InViewFamily.Scene, OldTransform, NewTransform);
-}
-
-void UMotionControllerComponent::FViewExtension::PostRenderViewFamily_RenderThread(FRHICommandListImmediate& RHICmdList, FSceneViewFamily& InViewFamily)
-{
-	if (!MotionControllerComponent)
-	{
-		return;
-	}
-	LateUpdate.PostRender_RenderThread();
 }
 
 bool UMotionControllerComponent::FViewExtension::IsActiveThisFrame(class FViewport* InViewport) const
@@ -605,6 +611,21 @@ float UMotionControllerComponent::GetParameterValue(FName InName, bool& bValueFo
 	}
 	bValueFound = false;
 	return 0.f;
+}
+
+FVector UMotionControllerComponent::GetHandJointPosition(int jointIndex, bool& bValueFound)
+{
+	FVector outPosition;
+	if (InUseMotionController && InUseMotionController->GetHandJointPosition(MotionSource, jointIndex, outPosition))
+	{
+		bValueFound = true;
+		return outPosition;
+	}
+	else
+	{
+		bValueFound = false;
+		return FVector::ZeroVector;
+	}
 }
 
 

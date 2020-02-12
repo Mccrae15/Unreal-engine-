@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 /*=============================================================================
 	BrushComponent.cpp: Unreal brush component implementation
@@ -141,8 +141,6 @@ public:
 			}
 		}
 
-		bUseEditorDepthTest = !bInManipulation;
-
 		// Get a color for property coloration.
 		FColor NewPropertyColor;
 		GEngine->GetPropertyColorationColor( (UObject*)Component, NewPropertyColor );
@@ -253,7 +251,7 @@ public:
 							Collector.RegisterOneFrameMaterialProxy(SolidMaterialInstance);
 
 							FTransform GeomTransform(GetLocalToWorld());
-							BodySetup->AggGeom.GetAggGeom(GeomTransform, DrawColor.ToFColor(true), /*Material=*/SolidMaterialInstance, false, /*bSolid=*/ true, UseEditorDepthTest(), ViewIndex, Collector);
+							BodySetup->AggGeom.GetAggGeom(GeomTransform, DrawColor.ToFColor(true), /*Material=*/SolidMaterialInstance, false, /*bSolid=*/ true, DrawsVelocity(), ViewIndex, Collector);
 						}
 					}
 					// WIREFRAME
@@ -290,7 +288,7 @@ public:
 							// If not, use the body setup for wireframe
 						{
 							FTransform GeomTransform(GetLocalToWorld());
-							BodySetup->AggGeom.GetAggGeom(GeomTransform, GetSelectionColor(DrawColor, IsSelected(), IsHovered()).ToFColor(true), /* Material=*/ NULL, false, /* bSolid=*/ false, UseEditorDepthTest(), ViewIndex, Collector);
+							BodySetup->AggGeom.GetAggGeom(GeomTransform, GetSelectionColor(DrawColor, IsSelected(), IsHovered()).ToFColor(true), /* Material=*/ NULL, false, /* bSolid=*/ false, DrawsVelocity(), ViewIndex, Collector);
 						}
 
 					}
@@ -689,7 +687,9 @@ void UBrushComponent::RequestUpdateBrushCollision()
 {
 	if (BrushBodySetup)
 	{
-		const bool bIsMirrored = (RelativeScale3D.X * RelativeScale3D.Y * RelativeScale3D.Z) < 0.0f;
+
+		const FVector LocalRelativeScale3D = GetRelativeScale3D();
+		const bool bIsMirrored = (LocalRelativeScale3D.X * LocalRelativeScale3D.Y * LocalRelativeScale3D.Z) < 0.0f;
 		if ((BrushBodySetup->bGenerateNonMirroredCollision && bIsMirrored) || (BrushBodySetup->bGenerateMirroredCollision && !bIsMirrored))
 		{
 			// Brushes only maintain one convex mesh as they can't be transformed at runtime.
@@ -755,7 +755,8 @@ bool UBrushComponent::HasInvertedPolys() const
 	// Determine if a brush looks as if it has had its sense inverted
 	// (due to the old behavior of inverting the poly winding and normal when performing a Mirror operation).
 
-	const bool bIsMirrored = (RelativeScale3D.X * RelativeScale3D.Y * RelativeScale3D.Z < 0.0f);
+	const FVector LocalRelativeScale3D = GetRelativeScale3D();
+	const bool bIsMirrored = (LocalRelativeScale3D.X * LocalRelativeScale3D.Y * LocalRelativeScale3D.Z < 0.0f);
 	// Only attempt to fix up brushes with negative scale
 	if (bIsMirrored)
 	{

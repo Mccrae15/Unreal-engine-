@@ -14,6 +14,7 @@
 #include "VolumeLightingCommon.ush"
 #include "VolumetricLightmapShared.ush"
 #include "ForwardShadowingCommon.ush"
+#include "ParticipatingMediaCommon.ush"
 
 RWTexture3D<float4> RWVBufferA;
 RWTexture3D<float4> RWVBufferB;
@@ -70,6 +71,18 @@ float GlobalExtinctionScale;
 #define THREADGROUP_SIZE 1
 #endif
 
+#ifndef THREADGROUP_SIZE_X
+#define THREADGROUP_SIZE_X THREADGROUP_SIZE
+#endif
+
+#ifndef THREADGROUP_SIZE_Y
+#define THREADGROUP_SIZE_Y THREADGROUP_SIZE
+#endif
+
+#ifndef THREADGROUP_SIZE_Z
+#define THREADGROUP_SIZE_Z THREADGROUP_SIZE
+#endif
+
 [numthreads(THREADGROUP_SIZE, THREADGROUP_SIZE, THREADGROUP_SIZE)]
 void MaterialSetupCS( 
 	uint3 GroupId : SV_GroupID,
@@ -101,28 +114,6 @@ void MaterialSetupCS(
 		RWVBufferA[GridCoordinate] = float4(Scattering, Absorption);
 		RWVBufferB[GridCoordinate] = float4(GlobalEmissive, 0);
 	}
-}
-
-float IsotropicPhase()
-{
-	return 1 / (4 * PI);
-}
-
-float HenyeyGreensteinPhase(float g, float CosTheta)
-{
-	g = -g;
-	return (1 - g * g) / (4 * PI * pow(1 + g * g - 2 * g * CosTheta, 1.5f));
-}
-
-float SchlickPhase(float k, float CosTheta)
-{
-	float Inner = (1 + k * CosTheta);
-	return (1 - k * k) / (4 * PI * Inner * Inner);
-}
-
-float RaleighPhase(float CosTheta)
-{
-	return 3.0f * (1.0f + CosTheta * CosTheta) / (16.0f * PI);
 }
 
 // Positive g = forward scattering
@@ -186,16 +177,21 @@ uint HistoryMissSuperSampleCount;
 float PhaseG;
 float InverseSquaredLightDistanceBiasScale;
 
+#ifndef HISTORY_MISS_SUPER_SAMPLE_COUNT
+#define HISTORY_MISS_SUPER_SAMPLE_COUNT 1
+#endif
+
 #ifndef INVERSE_SQUARED_FALLOFF
 #define INVERSE_SQUARED_FALLOFF 1
 #endif
 
 void InjectShadowedLocalLightPS(
 	FWriteToSliceGeometryOutput Input,
-	in float4 SvPosition : SV_Position,
 	out float4 OutScattering : SV_Target0
 	)
 {
+	float4 SvPosition = Input.Vertex.Position;
+
 	OutScattering = 0;
 
 	uint3 GridCoordinate = uint3(SvPosition.xy, Input.LayerIndex);
@@ -221,11 +217,15 @@ void InjectShadowedLocalLightPS(
 		LightData.DistanceFadeMAD = DeferredLightUniforms.DistanceFadeMAD;
 		LightData.ShadowMapChannelMask = DeferredLightUniforms.ShadowMapChannelMask;
 		LightData.ShadowedBits = DeferredLightUniforms.ShadowedBits;
+		LightData.RectLightBarnCosAngle = DeferredLightUniforms.RectLightBarnCosAngle;
+		LightData.RectLightBarnLength = DeferredLightUniforms.RectLightBarnLength;
 
-		LightData.bInverseSquared = INVERSE_SQUARED_FALLOFF;
+		LightData.bInverseSquared = INVERSE_SQUARED_FALLOFF;		
 		LightData.bRadialLight = true;
 		LightData.bSpotLight = LightData.SpotAngles.x > -2.0f;
-		LightData.bRectLight = false;
+		LightData.bRectLight = LightData.RectLightBarnLength > -2.0f;
+
+		FRectTexture RectTexture = InitRectTexture(DeferredLightUniforms.SourceTexture);
 
 		float VolumetricScatteringIntensity = DeferredLightUniforms.VolumetricScatteringIntensity;
 
@@ -270,7 +270,7 @@ void InjectShadowedLocalLightPS(
 			{
 				FRect Rect = GetRect(ToLight, LightData);
 
-				Lighting = IntegrateLight(Rect, DeferredLightUniforms.SourceTexture);
+				Lighting = IntegrateLight(Rect, RectTexture);
 			}
 			else
 			{
@@ -440,11 +440,11 @@ float GetLightFunction(float3 WorldPosition)
 
 float SkyLightVolumetricScatteringIntensity;
 float4 SkySH[3];
-float UseHeightFogColors;
+float2 UseHeightFogColors;	// x=override directional light using height fog inscattering color, y=override sky light using heigh fog inscattering cubemap
 float UseDirectionalLightShadowing;
 float StaticLightingScatteringIntensity;
 
-[numthreads(THREADGROUP_SIZE, THREADGROUP_SIZE, THREADGROUP_SIZE)]
+[numthreads(THREADGROUP_SIZE_X, THREADGROUP_SIZE_Y, THREADGROUP_SIZE_Z)]
 void LightScatteringCS(
 	uint3 GroupId : SV_GroupID,
 	uint3 DispatchThreadId : SV_DispatchThreadID,
@@ -466,10 +466,10 @@ void LightScatteringCS(
 
 	// Supersample if the history was outside the camera frustum
 	// The compute shader is dispatched with extra threads, make sure those don't supersample
-	NumSuperSamples = HistoryAlpha < .001f && all(GridCoordinate < VolumetricFog.GridSizeInt) ? HistoryMissSuperSampleCount : 1;
+	NumSuperSamples = HistoryAlpha < .001f && all(GridCoordinate < VolumetricFog.GridSizeInt) ? HISTORY_MISS_SUPER_SAMPLE_COUNT : 1;
 
 #endif
-
+	UNROLL
 	for (uint SampleIndex = 0; SampleIndex < NumSuperSamples; SampleIndex++)
 	{
 		float3 CellOffset = FrameJitterOffsets[SampleIndex].xyz;
@@ -495,7 +495,7 @@ void LightScatteringCS(
 
 			float3 DirectionalLightColor = ForwardLightData.DirectionalLightColor;
 
-			if (UseHeightFogColors > 0)
+			if (UseHeightFogColors.x > 0)
 			{
 				// Attempt to maintain intensity ratio between sky and sun
 				DirectionalLightColor = VolumetricFog.HeightFogDirectionalLightInscatteringColor * Luminance(ForwardLightData.DirectionalLightColor);
@@ -524,7 +524,7 @@ void LightScatteringCS(
 		{
 			float3 SkyLighting;
 
-			if (UseHeightFogColors > 0)
+			if (UseHeightFogColors.y > 0)
 			{
 				float3 HeightFogInscatteringColor = ComputeInscatteringColor(CameraVector, CameraVectorLength);
 				float ScalarFactor = SHAmbientFunction();
@@ -558,7 +558,18 @@ void LightScatteringCS(
 			LightScattering += (StaticLightingScatteringIntensity / PI) * max(DotSH(IrradianceSH, RotatedHGZonalHarmonic), 0);
 		}
 #endif
-		
+	}
+
+	for (uint SampleIndex = 0; SampleIndex < NumSuperSamples; SampleIndex++)
+	{
+		float3 CellOffset = FrameJitterOffsets[SampleIndex].xyz;
+		//float CellOffset = .5f;
+
+		float SceneDepth;
+		float3 WorldPosition = ComputeCellWorldPosition(GridCoordinate, CellOffset, SceneDepth);
+		float CameraVectorLength = length(WorldPosition - View.WorldCameraOrigin);
+		float3 CameraVector = (WorldPosition - View.WorldCameraOrigin) / CameraVectorLength;
+
 		uint GridIndex = ComputeLightGridCellIndex(GridCoordinate.xy * VolumetricFog.FogGridToPixelXY, SceneDepth, 0);
 		const FCulledLightsGridData CulledLightsGrid = GetCulledLightsGrid(GridIndex, 0);
 
@@ -566,6 +577,7 @@ void LightScatteringCS(
 		// Bias the inverse squared light falloff based on voxel size to prevent aliasing near the light source
 		float DistanceBiasSqr = max(CellRadius * InverseSquaredLightDistanceBiasScale, 1);
 		DistanceBiasSqr *= DistanceBiasSqr;
+		FRectTexture RectTexture = InitRectTexture(DeferredLightUniforms.SourceTexture);
 
 		// Forward lighting of unshadowed point and spot lights
 		LOOP
@@ -589,8 +601,11 @@ void LightScatteringCS(
                 LightData.Tangent = LocalLight.LightTangentAndSoftSourceRadius.xyz;
                 LightData.SoftSourceRadius = LocalLight.LightTangentAndSoftSourceRadius.w;
 				LightData.bInverseSquared = LightData.FalloffExponent == 0;
+				LightData.RectLightBarnCosAngle = LocalLight.RectBarnDoor.x;
+				LightData.RectLightBarnLength = LocalLight.RectBarnDoor.y;
 				LightData.bRadialLight = true;
 				LightData.bSpotLight = LightData.SpotAngles.x > -2.0f;
+				LightData.bRectLight = LightData.RectLightBarnLength > -2.0f;
 
 				float3 LightColor = LightData.Color;
 
@@ -603,7 +618,7 @@ void LightScatteringCS(
 				{
 					FRect Rect = GetRect( ToLight, LightData );
 
-					Lighting = IntegrateLight(Rect, DeferredLightUniforms.SourceTexture);
+					Lighting = IntegrateLight(Rect, RectTexture);
 				}
 				else
 				{

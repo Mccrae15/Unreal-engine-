@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -11,7 +11,33 @@
 class FEngineService;
 class FPendingCleanupObjects;
 class ISessionService;
+class FSlateRenderer;
 
+struct FScopedSlowTask;
+
+struct FPreInitContext
+{
+	bool bDumpEarlyConfigReads = false;
+	bool bDumpEarlyPakFileReads = false;
+	bool bForceQuitAfterEarlyReads = false;
+	bool bWithConfigPatching = false;
+	bool bDisableDisregardForGC = false;
+	bool bHasEditorToken = false;
+	bool bIsRegularClient = false;
+	bool bTokenDoesNotHaveDash = false;
+
+	FString Token;
+	const TCHAR* CommandletCommandLine = nullptr;
+	TCHAR* CommandLineCopy = nullptr;
+
+	FScopedSlowTask* SlowTaskPtr = nullptr;
+
+	void Cleanup();
+
+#if WITH_ENGINE && !UE_SERVER
+	TSharedPtr<FSlateRenderer> SlateRenderer;
+#endif // WITH_ENGINE && !UE_SERVER
+};
 
 /**
  * Implements the main engine loop.	
@@ -47,12 +73,21 @@ public:
 	 * @return The error level; 0 if successful, > 0 if there were errors.
 	 */ 
 	int32 PreInit(const TCHAR* CmdLine);
+	
+	/** First part of PreInit. */
+	int32 PreInitPreStartupScreen(const TCHAR* CmdLine);
+
+	/** Second part of PreInit. */
+	int32 PreInitPostStartupScreen(const TCHAR* CmdLine);
 
 	/** Load all modules needed before Init. */ 
 	void LoadPreInitModules();
 
 	/** Load core modules. */
 	bool LoadCoreModules();
+
+	/** Clean up PreInit context. */
+	void CleanupPreInitContext();
 
 #if WITH_ENGINE
 	
@@ -151,6 +186,7 @@ private:
 	TSharedPtr<ISessionService> SessionService;
 
 #endif // WITH_ENGINE
+	FPreInitContext PreInitContext;
 };
 
 

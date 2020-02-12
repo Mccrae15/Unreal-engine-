@@ -1,10 +1,9 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 #pragma once
 
 #include "CoreMinimal.h"
 #include "Widgets/SWidget.h"
 #include "Styling/SlateTypes.h"
-#include "Framework/Text/TextRange.h"
 #include "Framework/Text/IRun.h"
 #include "Framework/Text/TextLayout.h"
 #include "Framework/Text/ILayoutBlock.h"
@@ -59,6 +58,8 @@ public:
 	virtual const FRunInfo& GetRunInfo() const override;
 
 	virtual ERunAttributes GetRunAttributes() const override;
+
+	void ApplyFontSizeMultiplierOnTextStyle(float FontSizeMultiplier);
 
 protected:
 

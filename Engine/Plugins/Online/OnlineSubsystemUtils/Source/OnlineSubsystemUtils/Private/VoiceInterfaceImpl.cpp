@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "VoiceInterfaceImpl.h"
 #include "Misc/ConfigCacheIni.h"
@@ -108,12 +108,8 @@ void FOnlineVoiceImpl::ClearVoicePackets()
 {
 	for (uint32 Index = 0; Index < MAX_SPLITSCREEN_TALKERS; Index++)
 	{
-		FVoicePacketImpl& LocalPacket = VoiceData.LocalPackets[Index];
-		if (LocalPacket.Length > 0)
-		{
-			// Mark the local packet as processed
-			LocalPacket.Length = 0;
-		}
+		// Mark the local packet as processed
+		VoiceData.LocalPackets[Index].ResetData();
 	}
 }
 
@@ -560,12 +556,8 @@ void FOnlineVoiceImpl::ProcessMuteChangeNotification()
 				ULocalPlayer* LP = GEngine->FindFirstLocalPlayerFromControllerId(Index);
 				if (LP && LP->PlayerController)
 				{
-					// If there is a player controller, we can mute/unmute people
-					if (LocalTalkers[Index].bIsRegistered)
-					{
-						// Use the common method of checking muting
-						UpdateMuteListForLocalTalker(Index, LP->PlayerController);
-					}
+					// Use the common method of checking muting
+					UpdateMuteListForLocalTalker(Index, LP->PlayerController);
 				}
 			}
 		}
@@ -739,6 +731,14 @@ void FOnlineVoiceImpl::ProcessLocalVoicePackets()
 
 						// Process this user
 						uint32 Result = VoiceEngine->ReadLocalVoiceData(Index, BufferStart, &SpaceAvail, &SampleCount);
+
+						// Convert to Q15:
+						const float Amplitude = VoiceEngine->GetMicrophoneAmplitude(Index);
+						ensureAlways(Amplitude >= 0.0f && Amplitude <= 1.0f);
+
+						VoiceData.LocalPackets[Index].MicrophoneAmplitude = (int16)(Amplitude * 32767.0f);
+
+
 						if (Result == ONLINE_SUCCESS)
 						{
 							if (LocalTalkers[Index].bHasNetworkedVoice)
@@ -749,7 +749,6 @@ void FOnlineVoiceImpl::ProcessLocalVoicePackets()
 
 								// Update the length based on what it copied
 								VoiceData.LocalPackets[Index].Length += SpaceAvail;
-
 								VoiceData.LocalPackets[Index].SampleCount = SampleCount;
 
 #if VOICE_LOOPBACK
@@ -804,6 +803,19 @@ void FOnlineVoiceImpl::ProcessRemoteVoicePackets()
 				uint64 VoiceSampleCounter = VoicePacket->GetSampleCounter();
 				// Submit this packet to the voice engine
 				uint32 Result = VoiceEngine->SubmitRemoteVoiceData(VoicePacket->Sender, VoicePacket->Buffer.GetData(), &VoiceBufferSize, VoiceSampleCounter);
+				if (Result != ONLINE_SUCCESS)
+				{
+					UE_LOG_ONLINE_VOICEENGINE(Warning,
+						TEXT("SubmitRemoteVoiceData(%s) failed with 0x%08X"),
+						*VoicePacket->Sender->ToDebugString(),
+						Result);
+				}
+
+				// Convert amplitude from Q15:
+				const float Amplitude = ((float)VoicePacket->MicrophoneAmplitude) / 32767.0f;
+				ensureAlways(Amplitude >= 0.0f && Amplitude < 1.0f);
+				Result = VoiceEngine->SetRemoteVoiceAmplitude(FUniqueNetIdWrapper(VoicePacket->Sender), Amplitude);
+
 				if (Result != ONLINE_SUCCESS)
 				{
 					UE_LOG_ONLINE_VOICEENGINE(Warning,
@@ -885,4 +897,72 @@ FString FOnlineVoiceImpl::GetVoiceDebugState() const
 	}
 
 	return Output;
+}
+
+Audio::FPatchOutputStrongPtr FOnlineVoiceImpl::GetMicrophoneOutput()
+{
+	if (VoiceEngine.IsValid())
+	{
+		return VoiceEngine->GetMicrophoneOutput();
+	}
+	else
+	{
+		return nullptr;
+	}
+}
+
+Audio::FPatchOutputStrongPtr FOnlineVoiceImpl::GetRemoteTalkerOutput()
+{
+	if (VoiceEngine.IsValid())
+	{
+		return VoiceEngine->GetRemoteTalkerOutput();
+	}
+	else
+	{
+		return nullptr;
+	}
+}
+
+float FOnlineVoiceImpl::GetAmplitudeOfRemoteTalker(const FUniqueNetId& PlayerId)
+{
+	if (VoiceEngine.IsValid())
+	{
+		return VoiceEngine->GetIncomingAudioAmplitude(FUniqueNetIdWrapper(PlayerId.AsShared()));
+	}
+	else
+	{
+		return 0.0f;
+	}
+}
+
+bool FOnlineVoiceImpl::PatchRemoteTalkerOutputToEndpoint(const FString& InDeviceName, bool bMuteInGameOutput /*= true*/)
+{
+	if (VoiceEngine.IsValid())
+	{
+		return VoiceEngine->PatchRemoteTalkerOutputToEndpoint(InDeviceName, bMuteInGameOutput);
+	}
+	else
+	{
+		return false;
+	}
+}
+
+bool FOnlineVoiceImpl::PatchLocalTalkerOutputToEndpoint(const FString& InDeviceName)
+{
+	if (VoiceEngine.IsValid())
+	{
+		return VoiceEngine->PatchLocalTalkerOutputToEndpoint(InDeviceName);
+	}
+	else
+	{
+		return false;
+	}
+}
+
+void FOnlineVoiceImpl::DisconnectAllEndpoints()
+{
+	if (VoiceEngine.IsValid())
+	{
+		return VoiceEngine->DisconnectAllEndpoints();
+	}
 }

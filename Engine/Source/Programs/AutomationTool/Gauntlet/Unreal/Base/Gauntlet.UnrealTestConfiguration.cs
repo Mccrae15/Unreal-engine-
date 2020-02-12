@@ -1,4 +1,4 @@
-﻿// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+﻿// Copyright Epic Games, Inc. All Rights Reserved.
 
 using System;
 using System.Collections.Generic;
@@ -35,7 +35,8 @@ namespace Gauntlet
     /// </summary>
     public enum EIntendedBaseCopyDirectory
     {
-        Binaries,
+        Build,
+		Binaries,
         Config,
         Content,
         Demos,
@@ -62,14 +63,16 @@ namespace Gauntlet
 		/// the configuration class and take care to append properties.
 		/// </summary>
 		/// <param name="InType"></param>
-		public UnrealTestRole(UnrealTargetRole InType, UnrealTargetPlatform InPlatformOverride)
+		public UnrealTestRole(UnrealTargetRole InType, UnrealTargetPlatform? InPlatformOverride)
 		{
 			Type = InType;
             PlatformOverride = InPlatformOverride;
-			CommandLine = "";
-			ExplicitClientCommandLine = "";
+			CommandLine = string.Empty;
+			MapOverride = string.Empty;
+			ExplicitClientCommandLine = string.Empty;
 			Controllers = new List<string>();
             FilesToCopy = new List<UnrealFileToCopy>();
+			AdditionalArtifactDirectories = new List<EIntendedBaseCopyDirectory>();
             RoleType = ERoleModifier.None;
 		}
 
@@ -83,7 +86,7 @@ namespace Gauntlet
 		/// <summary>
 		/// Override for what platform this role is on
 		/// </summary>
-		public UnrealTargetPlatform PlatformOverride { get; protected set; }
+		public UnrealTargetPlatform? PlatformOverride { get; protected set; }
 
 		/// <summary>
 		/// Command line or this role
@@ -104,12 +107,64 @@ namespace Gauntlet
         public List<UnrealFileToCopy> FilesToCopy { get; set; }
 
 		/// <summary>
+		/// Additional directories to 
+		/// </summary>
+		public List<EIntendedBaseCopyDirectory> AdditionalArtifactDirectories { get; set; }
+
+		/// <summary>
+		/// A map value passed in per server in case a test needs multiple servers on different maps.
+		/// </summary>
+		public string MapOverride { get; set; }
+
+		/// <summary>
 		/// Role device configuration 
 		/// </summary>
 		public ConfigureDeviceHandler ConfigureDevice;
 
 	}
 
+	/// <summary>
+	/// Collection of parameters that control how heartbeats coming from the native gauntlet controller for this role should be handled.
+	/// To make best use of this, your GauntletTestController should regularly call MarkHeartbeatActive().
+	/// Set bExpectHeartbeats to true to enable killing the App Instance when expected heartbeats are not detected.
+	/// </summary>
+	public class UnrealHeartbeatOptions
+	{
+		/// <summary>
+		/// The amount of time between regular heartbeats. This value is passed along through the command line.
+		/// </summary>
+		public float HeartbeatPeriod;
+
+		/// <summary>
+		/// Set to true to allow the App Instance to be killed when expected heartbeats are not detected. If left false, heartbeat timeouts will not result in any action or timeouts.
+		/// </summary>
+		public bool bExpectHeartbeats;
+		
+		/// <summary>
+		/// The max amount of time allowed before the first "active" heartbeat is detected
+		/// </summary>
+		public float TimeoutBeforeFirstActiveHeartbeat;
+
+		/// <summary>
+		/// The max amount of time allowed between "active" heartbeats
+		/// </summary>
+		public float TimeoutBetweenActiveHeartbeats;
+
+		/// <summary>
+		/// The max amount of time allowed between any heartbeats, active or not
+		/// </summary>
+		public float TimeoutBetweenAnyHeartbeats;
+
+		public UnrealHeartbeatOptions(float InHeartbeatPeriod = 30f, bool bShouldExpectHeartbeats = false, float InTimeoutBeforeFirstActiveHeartbeat = 0f, float InTimeoutBetweenActiveHeartbeats = 0f, float InTimeoutBetweenAnyHeartbeats = 90f)
+		{
+			HeartbeatPeriod = InHeartbeatPeriod;
+			bExpectHeartbeats = bShouldExpectHeartbeats;
+			TimeoutBeforeFirstActiveHeartbeat = InTimeoutBeforeFirstActiveHeartbeat;
+			TimeoutBetweenActiveHeartbeats = InTimeoutBetweenActiveHeartbeats;
+			TimeoutBetweenAnyHeartbeats = InTimeoutBetweenAnyHeartbeats;
+		}
+
+	}
 
 	/// <summary>
 	///	TestConfiguration describes the setup that is required for a specific test. 
@@ -126,7 +181,7 @@ namespace Gauntlet
 	/// implementation.
 	///
 	/// </summary>
-	abstract public class UnrealTestConfiguration : IConfigOption<UnrealAppConfig>
+	public class UnrealTestConfiguration : IConfigOption<UnrealAppConfig>
 	{
 
 		// Protected options that are driven from the command line
@@ -218,6 +273,17 @@ namespace Gauntlet
 		/// </summary>
 		public bool AllRolesExit { get; set; }
 
+		/// <summary>
+		/// The collection of options which define heartbeat behavior
+		/// </summary>
+		public UnrealHeartbeatOptions HeartbeatOptions { get; set; }
+
+		/// <summary>
+		/// Prevents heartbeats timeouts from being checked so that tests will not fail from missed heartbeats
+		/// </summary>
+		[AutoParam(false)]
+		public bool DisableHeartbeatTimeout { get; set; }
+
 		// Member variables 
 
 		/// <summary>
@@ -234,6 +300,8 @@ namespace Gauntlet
 
 			// create the role structure
 			RequiredRoles = new Dictionary<UnrealTargetRole, List<UnrealTestRole>>();
+
+			HeartbeatOptions = new UnrealHeartbeatOptions();
 		}
 
 		/// <summary>
@@ -274,10 +342,10 @@ namespace Gauntlet
 		/// <returns></returns>
 		public IEnumerable<UnrealTestRole> RequireRoles(UnrealTargetRole InRole, int Count)
 		{
-			return RequireRoles(InRole, UnrealTargetPlatform.Unknown, Count);
+			return RequireRoles(InRole, null, Count);
 		}
 
-		public IEnumerable<UnrealTestRole> RequireRoles(UnrealTargetRole InRole, UnrealTargetPlatform PlatformOverride, int Count, ERoleModifier roleType = ERoleModifier.None)
+		public IEnumerable<UnrealTestRole> RequireRoles(UnrealTargetRole InRole, UnrealTargetPlatform? PlatformOverride, int Count, ERoleModifier roleType = ERoleModifier.None)
 		{
 			if (RequiredRoles.ContainsKey(InRole) == false)
 			{
@@ -317,11 +385,20 @@ namespace Gauntlet
 		}
 
 		/// <summary>
+		/// 
+		/// </summary>
+		/// <param name="AppConfig"></param>
+		public void ApplyToConfig(UnrealAppConfig AppConfig)
+		{
+			throw new AutomationException("Unreal tests should use ApplyToConfig(Config, Role, OtherRoles)");
+		}
+
+		/// <summary>
 		/// Apply our options to the provided app config
 		/// </summary>
 		/// <param name="AppConfig"></param>
 		/// <returns></returns>
-		public virtual void ApplyToConfig(UnrealAppConfig AppConfig)
+		public virtual void ApplyToConfig(UnrealAppConfig AppConfig, UnrealSessionRole ConfigRole, IEnumerable<UnrealSessionRole> OtherRoles)
 		{
 			if (AppConfig.ProcessType.IsClient())
 			{
@@ -377,6 +454,12 @@ namespace Gauntlet
 			}
 
 			AppConfig.CommandLine += " -stdout -AllowStdOutLogVerbosity";
+
+			float HeartbeatPeriod = Globals.Params.ParseValue("HeartbeatPeriod", HeartbeatOptions.HeartbeatPeriod);
+			if (HeartbeatPeriod > 0)
+			{
+				AppConfig.CommandLine += string.Format(" -gauntlet.heartbeatperiod={0}", HeartbeatPeriod);
+			}
 		}
 	}
 

@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "MeshEditorModule.h"
 #include "EditorModeRegistry.h"
@@ -24,7 +24,7 @@ class FMeshEditorModule : public IModuleInterface
 {
 public:
 	FMeshEditorModule() :
-		bIsEnabled( true ),
+		bIsEnabled( false ),
 		MeshEditorEnable( TEXT( "MeshEditor.Enable" ), TEXT( "Makes MeshEditor mode available" ), FConsoleCommandDelegate::CreateRaw( this, &FMeshEditorModule::Register ) ),
 		MeshEditorDisable( TEXT( "MeshEditor.Disable" ), TEXT( "Makes MeshEditor mode unavailable" ), FConsoleCommandDelegate::CreateRaw( this, &FMeshEditorModule::Unregister ) )
 	{
@@ -228,17 +228,9 @@ void FMeshEditorModule::OnMeshEditModeButtonClicked(EEditableMeshElementType InM
 	GLevelEditorModeTools().ActivateMode(GetEditorModeID());
 
 	// Find and disable any other 'visible' modes since we only ever allow one of those active at a time.
-	TArray<FEdMode*> ActiveModes;
-	GLevelEditorModeTools().GetActiveModes(ActiveModes);
-	for (FEdMode* Mode : ActiveModes)
-	{
-		if (Mode->GetID() != GetEditorModeID() && Mode->GetModeInfo().bVisible)
-		{
-			GLevelEditorModeTools().DeactivateMode(Mode->GetID());
-		}
-	}
+	GLevelEditorModeTools().DeactivateOtherVisibleModes(GetEditorModeID());
 
-	FMeshEditorMode* MeshEditorMode = static_cast<FMeshEditorMode*>( GLevelEditorModeTools().FindMode( GetEditorModeID() ) );
+	FMeshEditorMode* MeshEditorMode = static_cast<FMeshEditorMode*>( GLevelEditorModeTools().GetActiveMode( GetEditorModeID() ) );
 	if ( MeshEditorMode != nullptr)
 	{
 		IMeshEditorModeUIContract* MeshEditorModeUIContract = (IMeshEditorModeUIContract*)MeshEditorMode;
@@ -256,7 +248,7 @@ ECheckBoxState FMeshEditorModule::IsMeshEditModeButtonChecked(EEditableMeshEleme
 {
 	bool bMeshModeActive = false;
 
-	const FMeshEditorMode* MeshEditorMode = static_cast<FMeshEditorMode*>( GLevelEditorModeTools().FindMode( GetEditorModeID() ) );
+	const FMeshEditorMode* MeshEditorMode = static_cast<FMeshEditorMode*>( GLevelEditorModeTools().GetActiveMode( GetEditorModeID() ) );
 	if( MeshEditorMode != nullptr )
 	{
 		const IMeshEditorModeUIContract* MeshEditorModeUIContract = (const IMeshEditorModeUIContract*)MeshEditorMode;

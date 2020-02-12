@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 /*=============================================================================
 	PostProcessDOF.usf: PostProcessing Depth of Field
@@ -48,7 +48,7 @@ float2 ComputeDOFFocalMask(float SceneDepth, float SkyWithoutHorizonMask)
 {
 	float2 Ret = float2(ComputeDOFFarFocalMask(SceneDepth), ComputeDOFNearFocalMask(SceneDepth));
 
-	float SkyFocusDistance = DepthOfFieldParams[0].x;
+	float SkyFocusDistance = DepthOfFieldParams.x;
 
 	// The skybox should not be faded out, expect in the horizon, this can be optimized
 	if(SceneDepth > SkyFocusDistance)
@@ -99,7 +99,12 @@ void SetupPS(
 
 	float MaskDistance = View.DepthOfFieldFocalDistance + View.DepthOfFieldFocalRegion * 0.5f;
 
+#if MOBILE_SHADING
+	// Mobile path gathers Depth later in ReadFullResAndDepth
+	float4 DepthQuad = float4(0,0,0,0);
+#else
 	float4 DepthQuad = GatherSceneDepth(UV, PostprocessInput1Size.zw);
+#endif
 
 	float4 FarColor = 0;
 	float4 NearColor = 0;
@@ -120,8 +125,8 @@ void SetupPS(
 
 #if DOF_VIGNETTE
 	{
-		float DepthOfFieldVignetteMul = DepthOfFieldParams[0].y;
-		float DepthOfFieldVignetteAdd = DepthOfFieldParams[0].z;
+		float DepthOfFieldVignetteMul = DepthOfFieldParams.y;
+		float DepthOfFieldVignetteAdd = DepthOfFieldParams.z;
 
 		// todo: we could optimize that multiplication away
 		float InvAspectRatio = View.ViewSizeAndInvSize.y * View.ViewSizeAndInvSize.z;

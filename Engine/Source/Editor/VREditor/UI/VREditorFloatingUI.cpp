@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "VREditorFloatingUI.h"
 #include "VREditorUISystem.h"
@@ -14,8 +14,7 @@ namespace VREd
 	static FAutoConsoleVariable UIFadeSpeed(TEXT("VREd.UIFadeSpeed"), 6.0f, TEXT("How fast UI should fade in and out"));
 }
 
-
-AVREditorFloatingUI::AVREditorFloatingUI()
+AVREditorFloatingUI::AVREditorFloatingUI(const FObjectInitializer& ObjectInitializer)
 	: Super(),
 	SlateWidget(nullptr),
 	UserWidget(nullptr),
@@ -72,11 +71,20 @@ void AVREditorFloatingUI::SetupWidgetComponent()
 		WidgetComponent->SetBackgroundColor(FLinearColor::Black);
 		WidgetComponent->SetBlendMode(EWidgetBlendMode::Opaque);
 	}
-	else
+	else // UMG UIs
 	{
-		WidgetComponent->SetOpacityFromTexture(1.0f);
-		WidgetComponent->SetBackgroundColor(FLinearColor::Transparent);
-		WidgetComponent->SetBlendMode(EWidgetBlendMode::Masked);
+		if (!CreationContext.bMaskOutWidgetBackground) // Default behavior
+		{
+			WidgetComponent->SetOpacityFromTexture(1.0f);
+			WidgetComponent->SetBackgroundColor(FLinearColor::Transparent);
+			WidgetComponent->SetBlendMode(EWidgetBlendMode::Masked);
+		}
+		else // User override via CreationContext
+		{
+			WidgetComponent->SetOpacityFromTexture(1.0f);
+			WidgetComponent->SetBackgroundColor(FLinearColor::Transparent);
+			WidgetComponent->SetBlendMode(EWidgetBlendMode::Transparent);			
+		}
 	}
 
 	// @todo vreditor: Ideally we use automatic mip map generation, otherwise the UI looks too crunchy at a distance.
@@ -139,7 +147,6 @@ void AVREditorFloatingUI::SetSlateWidget( UVREditorUISystem& InitOwner, const VR
 	InitialScale = Scale;
 
 	SetDockedTo(InitDockedTo);
-
 	SetupWidgetComponent();
 }
 
@@ -211,8 +218,6 @@ void AVREditorFloatingUI::CleanupWidgetReferences()
 		WidgetComponent = nullptr;
 	}
 
-	this->SlateWidget = nullptr;
-
 	// @todo vreditor unreal: UMG has a bug that prevents you from re-using the user widget for a new widget component
 	// after a previous widget component that was using it was destroyed
 	if (UserWidget != nullptr)
@@ -224,7 +229,7 @@ void AVREditorFloatingUI::CleanupWidgetReferences()
 
 void AVREditorFloatingUI::SetTransform(const FTransform& Transform)
 {
-	if (!bHidden)
+	if (!IsHidden())
 	{
 		const FVector AnimatedScale = CalculateAnimatedScale();
 		FTransform AnimatedTransform = Transform;
@@ -266,9 +271,9 @@ void AVREditorFloatingUI::UpdateFadingState(const float DeltaTime)
 		if (FadeAlpha > 0.0f + KINDA_SMALL_NUMBER)
 		{
 			// At least a little bit visible
-			if (bHidden)
+			if (IsHidden())
 			{
-				bHidden = false;
+				SetHidden(false);
 
 				// Iterate as floating UI children may have other mesh components
 				TInlineComponentArray<USceneComponent*> ComponentArray;
@@ -288,9 +293,9 @@ void AVREditorFloatingUI::UpdateFadingState(const float DeltaTime)
 		else if (FadeAlpha <= 0.0f + KINDA_SMALL_NUMBER)
 		{
 			// Fully invisible
-			if (!bHidden)
+			if (!IsHidden())
 			{
-				bHidden = true;
+				SetHidden(true);
 				// Iterate as floating UI children may have other mesh components
 				TInlineComponentArray<USceneComponent*> ComponentArray;
 				GetComponents(ComponentArray);
@@ -364,7 +369,7 @@ void AVREditorFloatingUI::ShowUI( const bool bShow, const bool bAllowFading, con
 
 		if (!bAllowFading)
 		{
-			bHidden = !bShow;
+			SetHidden(!bShow);
 			// Iterate as floating UI children may have other components
 			TInlineComponentArray<USceneComponent*> ComponentArray;
 			GetComponents(ComponentArray);

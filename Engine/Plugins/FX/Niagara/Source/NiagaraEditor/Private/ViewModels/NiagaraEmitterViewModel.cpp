@@ -1,21 +1,28 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "ViewModels/NiagaraEmitterViewModel.h"
 #include "NiagaraEmitter.h"
 #include "NiagaraEmitterInstance.h"
 #include "NiagaraScriptSourceBase.h"
-#include "NiagaraScriptViewModel.h"
+#include "ViewModels/NiagaraSystemViewModel.h"
+#include "ViewModels/NiagaraScriptViewModel.h"
 #include "NiagaraScriptGraphViewModel.h"
 #include "NiagaraObjectSelection.h"
 #include "NiagaraNodeOutput.h"
 #include "NiagaraScriptSource.h"
 #include "NiagaraEmitterEditorData.h"
-#include "NiagaraParameterEditMode.h"
+#include "ViewModels/NiagaraParameterEditMode.h"
 #include "NiagaraGraph.h"
 #include "NiagaraSystem.h"
 #include "NiagaraSystemInstance.h"
 
 #include "ScopedTransaction.h"
+#include "IContentBrowserSingleton.h"
+#include "Framework/Application/SlateApplication.h"
+#include "ContentBrowserModule.h"
+#include "Framework/Docking/TabManager.h"
+#include "Widgets/SWindow.h"
+#include "ViewModels/NiagaraEmitterHandleViewModel.h"
 
 #define LOCTEXT_NAMESPACE "EmitterEditorViewModel"
 
@@ -23,6 +30,7 @@ template<> TMap<UNiagaraEmitter*, TArray<FNiagaraEmitterViewModel*>> TNiagaraVie
 
 const FText FNiagaraEmitterViewModel::StatsFormat = NSLOCTEXT("NiagaraEmitterViewModel", "StatsFormat", "{0} Particles | {1} ms | {2} MB | {3}");
 const FText FNiagaraEmitterViewModel::StatsParticleCountFormat = NSLOCTEXT("NiagaraEmitterViewModel", "StatsParticleCountFormat", "{0} Particles");
+const FText FNiagaraEmitterViewModel::ParticleDisabledDueToScalability = NSLOCTEXT("NiagaraEmitterViewModel", "ParticleDisabledDueToScalability", "Disabled due to scalability settings (Current Effects Quality: {0}). See Scalability options for valid range. ");
 
 namespace NiagaraCommands
 {
@@ -31,18 +39,20 @@ namespace NiagaraCommands
 
 const float Megabyte = 1024.0f * 1024.0f;
 
-FNiagaraEmitterViewModel::FNiagaraEmitterViewModel(UNiagaraEmitter* InEmitter, TWeakPtr<FNiagaraEmitterInstance> InSimulation)
-	: Emitter(InEmitter)
-	, Simulation(InSimulation)
-	, SharedScriptViewModel(MakeShareable(new FNiagaraScriptViewModel(InEmitter, LOCTEXT("SharedDisplayName", "Graph"), ENiagaraParameterEditMode::EditAll)))
+FNiagaraEmitterViewModel::FNiagaraEmitterViewModel()
+	: SharedScriptViewModel(MakeShareable(new FNiagaraScriptViewModel(LOCTEXT("SharedDisplayName", "Graph"), ENiagaraParameterEditMode::EditAll)))
 	, bUpdatingSelectionInternally(false)
 	, ExecutionStateEnum(StaticEnum<ENiagaraExecutionState>())
 {	
-	SetEmitter(InEmitter);
 }
 
 void FNiagaraEmitterViewModel::Cleanup()
 {
+	if (NewParentWindow.IsValid())
+	{
+		NewParentWindow.Reset();
+	}
+
 	if (Emitter.IsValid())
 	{
 		Emitter->OnEmitterVMCompiled().RemoveAll(this);
@@ -51,18 +61,24 @@ void FNiagaraEmitterViewModel::Cleanup()
 
 	if (SharedScriptViewModel.IsValid())
 	{
-		SharedScriptViewModel->GetGraphViewModel()->GetSelection()->OnSelectedObjectsChanged().RemoveAll(this);
+		SharedScriptViewModel->GetGraphViewModel()->GetNodeSelection()->OnSelectedObjectsChanged().RemoveAll(this);
 		SharedScriptViewModel.Reset();
 	}
 
 	RemoveScriptEventHandlers();
 }
 
-bool FNiagaraEmitterViewModel::Set(UNiagaraEmitter* InEmitter, TWeakPtr<FNiagaraEmitterInstance> InSimulation)
+bool FNiagaraEmitterViewModel::Initialize(UNiagaraEmitter* InEmitter, TWeakPtr<FNiagaraEmitterInstance, ESPMode::ThreadSafe> InSimulation)
 {
 	SetEmitter(InEmitter);
 	SetSimulation(InSimulation);
 	return true;
+}
+
+void FNiagaraEmitterViewModel::Reset()
+{
+	SetEmitter(nullptr);
+	SetSimulation(nullptr);
 }
 
 FNiagaraEmitterViewModel::~FNiagaraEmitterViewModel()
@@ -79,7 +95,9 @@ void FNiagaraEmitterViewModel::SetEmitter(UNiagaraEmitter* InEmitter)
 	if (Emitter.IsValid())
 	{
 		Emitter->OnEmitterVMCompiled().RemoveAll(this);
+		Emitter->OnEmitterGPUCompiled().RemoveAll(this);
 		Emitter->OnPropertiesChanged().RemoveAll(this);
+		UnregisterViewModelWithMap(RegisteredHandle);
 	}
 
 	UnregisterViewModelWithMap(RegisteredHandle);
@@ -90,8 +108,9 @@ void FNiagaraEmitterViewModel::SetEmitter(UNiagaraEmitter* InEmitter)
 
 	if (Emitter.IsValid())
 	{
-		Emitter->OnEmitterVMCompiled().AddRaw(this, &FNiagaraEmitterViewModel::OnVMCompiled);
-		Emitter->OnPropertiesChanged().AddRaw(this, &FNiagaraEmitterViewModel::OnEmitterPropertiesChanged);
+		Emitter->OnEmitterVMCompiled().AddSP(this, &FNiagaraEmitterViewModel::OnVMCompiled);
+		Emitter->OnPropertiesChanged().AddSP(this, &FNiagaraEmitterViewModel::OnEmitterPropertiesChanged);
+		Emitter->OnEmitterGPUCompiled().AddSP(this, &FNiagaraEmitterViewModel::OnGPUCompiled);
 	}
 
 	AddScriptEventHandlers();
@@ -104,24 +123,117 @@ void FNiagaraEmitterViewModel::SetEmitter(UNiagaraEmitter* InEmitter)
 	OnEmitterChanged().Broadcast();
 }
 
+TWeakPtr<FNiagaraEmitterInstance, ESPMode::ThreadSafe> FNiagaraEmitterViewModel::GetSimulation() const
+{
+	return Simulation;
+}
 
-void FNiagaraEmitterViewModel::SetSimulation(TWeakPtr<FNiagaraEmitterInstance> InSimulation)
+void FNiagaraEmitterViewModel::SetSimulation(TWeakPtr<FNiagaraEmitterInstance, ESPMode::ThreadSafe> InSimulation)
 {
 	Simulation = InSimulation;
 }
-
 
 UNiagaraEmitter* FNiagaraEmitterViewModel::GetEmitter()
 {
 	return Emitter.Get();
 }
 
+bool FNiagaraEmitterViewModel::HasParentEmitter() const
+{
+	return Emitter.IsValid() && Emitter->GetParent() != nullptr;
+}
+
+const UNiagaraEmitter* FNiagaraEmitterViewModel::GetParentEmitter() const
+{
+	return Emitter.IsValid() ? Emitter->GetParent() : nullptr;
+}
+
+FText FNiagaraEmitterViewModel::GetParentNameText() const
+{
+	if (Emitter.IsValid() && Emitter->GetParent() != nullptr)
+	{
+		return FText::FromString(Emitter->GetParent()->GetName());
+	}
+	return FText();
+}
+
+FText FNiagaraEmitterViewModel::GetParentPathNameText() const
+{
+	if (Emitter.IsValid() && Emitter->GetParent() != nullptr)
+	{
+		return FText::FromString(Emitter->GetParent()->GetPathName());
+	}
+	return FText();
+}
+
+void FNiagaraEmitterViewModel::CreateNewParentWindow(TSharedRef<FNiagaraEmitterHandleViewModel> EmitterHandleViewModel)
+{
+	FAssetPickerConfig AssetPickerConfig;
+	AssetPickerConfig.SelectionMode = ESelectionMode::SingleToggle;
+	AssetPickerConfig.InitialAssetViewType = EAssetViewType::List;
+	AssetPickerConfig.Filter.ClassNames.Add(UNiagaraEmitter::StaticClass()->GetFName());
+	AssetPickerConfig.OnAssetsActivated.BindSP(this, &FNiagaraEmitterViewModel::UpdateParentEmitter, EmitterHandleViewModel);
+
+	FContentBrowserModule& ContentBrowserModule = FModuleManager::Get().LoadModuleChecked<FContentBrowserModule>(TEXT("ContentBrowser"));
+	TSharedRef<SWidget> AssetPicker = ContentBrowserModule.Get().CreateAssetPicker(AssetPickerConfig);
+
+	const FText TitleText = LOCTEXT("NewParentEmitter", "New Parent Emitter");
+	// Create the window to pick the class
+	SAssignNew(NewParentWindow, SWindow)
+		.Title(TitleText)
+		.SizingRule(ESizingRule::UserSized)
+		.ClientSize(FVector2D(700.f, 300.f))
+		.AutoCenter(EAutoCenter::PreferredWorkArea)
+		.SupportsMinimize(false);
+	NewParentWindow->SetContent(AssetPicker);
+	TSharedPtr<SWindow> RootWindow = FGlobalTabmanager::Get()->GetRootWindow();
+	if (RootWindow.IsValid())
+	{
+		FSlateApplication::Get().AddWindowAsNativeChild(NewParentWindow.ToSharedRef(), RootWindow.ToSharedRef());
+	}
+	else
+	{
+		FSlateApplication::Get().AddWindow(NewParentWindow.ToSharedRef());
+	}
+}
+
+void FNiagaraEmitterViewModel::UpdateParentEmitter(const TArray<FAssetData> & ActivatedAssets, EAssetTypeActivationMethod::Type ActivationMethod, TSharedRef<FNiagaraEmitterHandleViewModel> EmitterHandleViewModel)
+{
+	FScopedTransaction ScopedTransaction(LOCTEXT("RemoveParentEmitterTransaction", "Remove Parent Emitter"));
+	if ((ActivationMethod == EAssetTypeActivationMethod::DoubleClicked || ActivationMethod == EAssetTypeActivationMethod::Opened) && ActivatedAssets.Num() == 1)
+	{
+		if (Emitter.IsValid())
+		{
+			FAssetData NewParentData = ActivatedAssets[0];
+			UNiagaraEmitter* NewParentPtr = Cast<UNiagaraEmitter>(NewParentData.GetAsset());
+			if (NewParentPtr && NewParentPtr != Emitter)
+			{
+				Emitter->PreEditChange(nullptr);
+				Emitter->Reparent(*NewParentPtr);
+				Emitter->MergeChangesFromParent();
+				Emitter->PostEditChange();
+				EmitterHandleViewModel->GetOwningSystemViewModel()->RefreshAll();
+				NewParentWindow->RequestDestroyWindow();
+			}
+			
+		}
+		
+	}
+}
+
+void FNiagaraEmitterViewModel::RemoveParentEmitter()
+{
+	FScopedTransaction ScopedTransaction(LOCTEXT("RemoveParentEmitterTransaction", "Remove Parent Emitter"));
+	Emitter->Modify();
+	Emitter->RemoveParent();
+	OnParentRemovedDelegate.Broadcast();
+}
 
 FText FNiagaraEmitterViewModel::GetStatsText() const
 {
 	if (Simulation.IsValid())
 	{
-		TSharedPtr<FNiagaraEmitterInstance> SimInstance = Simulation.Pin();
+		TSharedPtr<FNiagaraEmitterInstance, ESPMode::ThreadSafe> SimInstance = Simulation.Pin();
 		if (SimInstance.IsValid())
 		{
 			static const FNumberFormattingOptions FractionalFormatOptions = FNumberFormattingOptions()
@@ -146,16 +258,22 @@ FText FNiagaraEmitterViewModel::GetStatsText() const
 				{
 					return LOCTEXT("NullInstance", "Invalid instance");
 				}
+				
+				if (Handle.GetIsEnabled() == false)
+				{
+					return LOCTEXT("DisabledSimulation", "Emitter is not enabled. Excluded from code.");
+				}
 
 				if (!HandleEmitter->IsValid())
 				{
 					return LOCTEXT("InvalidInstance", "Invalid Emitter! May have compile errors.");
 				}
 
-				if (Handle.GetIsEnabled() == false)
-				{
-					return LOCTEXT("DisabledSimulation", "Simulation is not enabled.");
-				}
+ 				int32 EffectsQuality = INiagaraModule::GetEffectsQuality();
+  				if (!HandleEmitter->IsAllowedByScalability())
+  				{
+					return FText::Format(ParticleDisabledDueToScalability, FNiagaraPlatformSet::GetEffectsQualityText(EffectsQuality));
+  				}
 
 				if (NiagaraCommands::EmitterStatsFormat->GetInt() == 1)
 				{
@@ -165,7 +283,7 @@ FText FNiagaraEmitterViewModel::GetStatsText() const
 				{
 					return FText::Format(StatsFormat,
 						FText::AsNumber(SimInstance->GetNumParticles()),
-						FText::AsNumber(SimInstance->GetTotalCPUTime(), &FractionalFormatOptions),
+						FText::AsNumber(SimInstance->GetTotalCPUTimeMS(), &FractionalFormatOptions),
 						FText::AsNumber(SimInstance->GetTotalBytesUsed() / Megabyte, &FractionalFormatOptions),
 						ExecutionStateEnum->GetDisplayNameTextByValue((int32)SimInstance->GetExecutionState()));
 				}
@@ -189,7 +307,7 @@ const UNiagaraEmitterEditorData& FNiagaraEmitterViewModel::GetEditorData() const
 {
 	check(Emitter.IsValid());
 
-	const UNiagaraEmitterEditorData* EditorData = Cast<UNiagaraEmitterEditorData>(Emitter->EditorData);
+	const UNiagaraEmitterEditorData* EditorData = Cast<UNiagaraEmitterEditorData>(Emitter->GetEditorData());
 	if (EditorData == nullptr)
 	{
 		EditorData = GetDefault<UNiagaraEmitterEditorData>();
@@ -200,14 +318,21 @@ const UNiagaraEmitterEditorData& FNiagaraEmitterViewModel::GetEditorData() const
 UNiagaraEmitterEditorData& FNiagaraEmitterViewModel::GetOrCreateEditorData()
 {
 	check(Emitter.IsValid());
-	UNiagaraEmitterEditorData* EditorData = Cast<UNiagaraEmitterEditorData>(Emitter->EditorData);
+	UNiagaraEmitterEditorData* EditorData = Cast<UNiagaraEmitterEditorData>(Emitter->GetEditorData());
 	if (EditorData == nullptr)
 	{
 		EditorData = NewObject<UNiagaraEmitterEditorData>(Emitter.Get(), NAME_None, RF_Transactional);
-		Emitter->Modify();
-		Emitter->EditorData = EditorData;
+		Emitter->Modify(); 
+		Emitter->SetEditorData(EditorData);
 	}
 	return *EditorData;
+}
+
+
+void FNiagaraEmitterViewModel::OnGPUCompiled(UNiagaraEmitter* InEmitter)
+{
+	// Flush compilation logs just like the CPU script compiled.
+	OnVMCompiled(InEmitter);
 }
 
 void FNiagaraEmitterViewModel::OnVMCompiled(UNiagaraEmitter* InEmitter)
@@ -255,14 +380,60 @@ void FNiagaraEmitterViewModel::OnVMCompiled(UNiagaraEmitter* InEmitter)
 
 		}
 
+		// Now handle any GPU sims..
+		TArray<UNiagaraScript*> GPUScripts;
+		
+		// Going ahead and making an array for future proofing..
+		{
+			UNiagaraScript* GPUScript = Emitter->GetGPUComputeScript();
+			GPUScripts.Add(GPUScript);
+		}
+
+		// Push in GPU script errors into the other scripts
+		for (UNiagaraScript* GPUScript : GPUScripts)
+		{
+			if (GPUScript)
+			{
+				const FNiagaraShaderScript* ShaderScript = GPUScript->GetRenderThreadScript();
+				if (!ShaderScript)
+					return;
+
+				for (int32 i = 0; i < Scripts.Num(); i++)
+				{
+					if (Scripts[i] != nullptr && CompileStatuses.Num() > i && CompileErrors.Num() > i && GPUScript->ContainsUsage(Scripts[i]->Usage))
+					{
+						const TArray<FString>& NewErrors = ShaderScript->GetCompileErrors();
+						bool bErrors = false;
+						for (const FString& ErrorStr : NewErrors)
+						{
+							if (ErrorStr.Contains(TEXT("err0r")))
+							{
+								CompileErrors[i] += ErrorStr + TEXT("\n");
+								bErrors = true;
+							}
+						}
+
+						if (bErrors)
+						{
+							CompileStatuses[i] = ENiagaraScriptCompileStatus::NCS_Error;
+						}
+					}
+				}
+
+			}
+		}
+
 		for (int32 i = 0; i < CompileStatuses.Num(); i++)
 		{
 			AggregateStatus = FNiagaraEditorUtilities::UnionCompileStatus(AggregateStatus, CompileStatuses[i]);
 			AggregateErrors += CompilePaths[i] + TEXT(" ") + FNiagaraEditorUtilities::StatusToText(CompileStatuses[i]).ToString() + TEXT("\n");
 			AggregateErrors += CompileErrors[i] + TEXT("\n");
 		}
-		check(SharedScriptViewModel.IsValid());
-		SharedScriptViewModel->UpdateCompileStatus(AggregateStatus, AggregateErrors, CompileStatuses, CompileErrors, CompilePaths, Scripts);
+		
+		if (SharedScriptViewModel.IsValid())
+		{
+			SharedScriptViewModel->UpdateCompileStatus(AggregateStatus, AggregateErrors, CompileStatuses, CompileErrors, CompilePaths, Scripts);
+		}
 	}
 	OnScriptCompiled().Broadcast();
 }
@@ -272,7 +443,7 @@ ENiagaraScriptCompileStatus FNiagaraEmitterViewModel::GetLatestCompileStatus()
 	check(SharedScriptViewModel.IsValid());
 	ENiagaraScriptCompileStatus UnionStatus = SharedScriptViewModel->GetLatestCompileStatus();
 
-	if (Emitter->SimTarget == ENiagaraSimTarget::GPUComputeSim || Emitter->SimTarget == ENiagaraSimTarget::DynamicLoadBalancedSim)
+	if (Emitter->SimTarget == ENiagaraSimTarget::GPUComputeSim)
 	{
 		if (UnionStatus != ENiagaraScriptCompileStatus::NCS_Dirty)
 		{
@@ -301,6 +472,11 @@ FNiagaraEmitterViewModel::FOnScriptCompiled& FNiagaraEmitterViewModel::OnScriptC
 	return OnScriptCompiledDelegate;
 }
 
+FNiagaraEmitterViewModel::FOnParentRemoved& FNiagaraEmitterViewModel::OnParentRemoved()
+{
+	return OnParentRemovedDelegate;
+}
+
 FNiagaraEmitterViewModel::FOnScriptGraphChanged& FNiagaraEmitterViewModel::OnScriptGraphChanged()
 {
 	return OnScriptGraphChangedDelegate;
@@ -321,16 +497,16 @@ void FNiagaraEmitterViewModel::AddScriptEventHandlers()
 		{
 			UNiagaraScriptSource* ScriptSource = CastChecked<UNiagaraScriptSource>(Script->GetSource());
 			FDelegateHandle OnGraphChangedHandle = ScriptSource->NodeGraph->AddOnGraphChangedHandler(
-				FOnGraphChanged::FDelegate::CreateRaw<FNiagaraEmitterViewModel, const UNiagaraScript&>(this, &FNiagaraEmitterViewModel::ScriptGraphChanged, *Script));
+				FOnGraphChanged::FDelegate::CreateSP<FNiagaraEmitterViewModel, const UNiagaraScript&>(this->AsShared(), &FNiagaraEmitterViewModel::ScriptGraphChanged, *Script));
 			FDelegateHandle OnGraphNeedRecompileHandle = ScriptSource->NodeGraph->AddOnGraphNeedsRecompileHandler(
-				FOnGraphChanged::FDelegate::CreateRaw<FNiagaraEmitterViewModel, const UNiagaraScript&>(this, &FNiagaraEmitterViewModel::ScriptGraphChanged, *Script));
+				FOnGraphChanged::FDelegate::CreateSP<FNiagaraEmitterViewModel, const UNiagaraScript&>(this->AsShared(), &FNiagaraEmitterViewModel::ScriptGraphChanged, *Script));
 
 			ScriptToOnGraphChangedHandleMap.Add(FObjectKey(Script), OnGraphChangedHandle);
 			ScriptToRecompileHandleMap.Add(FObjectKey(Script), OnGraphNeedRecompileHandle);
 
 			FDelegateHandle OnParameterStoreChangedHandle = Script->RapidIterationParameters.AddOnChangedHandler(
-				FNiagaraParameterStore::FOnChanged::FDelegate::CreateRaw<FNiagaraEmitterViewModel, const FNiagaraParameterStore&, const UNiagaraScript&>(
-					this, &FNiagaraEmitterViewModel::ScriptParameterStoreChanged, Script->RapidIterationParameters, *Script));
+				FNiagaraParameterStore::FOnChanged::FDelegate::CreateSP<FNiagaraEmitterViewModel, const FNiagaraParameterStore&, const UNiagaraScript&>(
+					this->AsShared(), &FNiagaraEmitterViewModel::ScriptParameterStoreChanged, Script->RapidIterationParameters, *Script));
 			ScriptToOnParameterStoreChangedHandleMap.Add(FObjectKey(Script), OnParameterStoreChangedHandle);
 		}
 	}
@@ -383,9 +559,13 @@ void FNiagaraEmitterViewModel::ScriptParameterStoreChanged(const FNiagaraParamet
 
 void FNiagaraEmitterViewModel::OnEmitterPropertiesChanged()
 {
-	// When the properties change we reset the scripts on the script view model because gpu/cpu or interpolation may have changed.
-	SharedScriptViewModel->SetScripts(Emitter.Get());
-	OnPropertyChangedDelegate.Broadcast();
+	// Check that these are valid since post edit changed is called on objects even when they've been deleted as a result of undo/redo.
+	if (SharedScriptViewModel.IsValid() && Emitter.IsValid())
+	{
+		// When the properties change we reset the scripts on the script view model because gpu/cpu or interpolation may have changed.
+		SharedScriptViewModel->SetScripts(Emitter.Get());
+		OnPropertyChangedDelegate.Broadcast();
+	}
 }
 
 #undef LOCTEXT_NAMESPACE

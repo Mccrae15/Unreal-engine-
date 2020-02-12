@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 /*=============================================================================
 	UnClass.cpp: Object class implementation.
@@ -6,6 +6,7 @@
 
 #include "UObject/Class.h"
 #include "HAL/ThreadSafeBool.h"
+#include "HAL/LowLevelMemTracker.h"
 #include "Misc/ScopeLock.h"
 #include "Serialization/MemoryWriter.h"
 #include "Misc/ConfigCacheIni.h"
@@ -14,6 +15,7 @@
 #include "Misc/OutputDeviceConsole.h"
 #include "Misc/AutomationTest.h"
 #include "Misc/EnumClassFlags.h"
+#include "Misc/StringBuilder.h"
 #include "UObject/ErrorException.h"
 #include "Modules/ModuleManager.h"
 #include "UObject/UObjectAllocator.h"
@@ -25,6 +27,7 @@
 #include "UObject/DebugSerializationFlags.h"
 #include "UObject/PropertyTag.h"
 #include "UObject/UnrealType.h"
+#include "UObject/UnrealTypePrivate.h"
 #include "UObject/Stack.h"
 #include "Misc/PackageName.h"
 #include "UObject/ObjectResource.h"
@@ -42,6 +45,17 @@
 #include "UObject/FrameworkObjectVersion.h"
 #include "UObject/GarbageCollection.h"
 #include "UObject/UObjectThreadContext.h"
+#include "Serialization/LoadTimeTracePrivate.h"
+#include "Serialization/UnversionedPropertySerialization.h"
+#include "Serialization/UnversionedPropertySerializationTest.h"
+#include "UObject/CoreObjectVersion.h"
+#include "UObject/FastReferenceCollector.h"
+#include "UObject/PropertyProxyArchive.h"
+#include "UObject/FieldPath.h"
+
+
+// WARNING: This should always be the last include in any file that needs it (except .generated.h)
+#include "UObject/UndefineUPropertyMacros.h"
 
 // This flag enables some expensive class tree validation that is meant to catch mutations of 
 // the class tree outside of SetSuperStruct. It has been disabled because loading blueprints 
@@ -80,6 +94,7 @@ COREUOBJECT_API void InitializePrivateStaticClass(
 	const TCHAR* Name
 	)
 {
+	TRACE_LOADTIME_CLASS_INFO(TClass_PrivateStaticClass, Name);
 	NotifyRegistrationEvent(PackageName, Name, ENotifyRegistrationType::NRT_Class, ENotifyRegistrationPhase::NRP_Started);
 
 	/* No recursive ::StaticClass calls allowed. Setup extras. */
@@ -166,6 +181,16 @@ UStruct* UField::GetOwnerStruct() const
 	return nullptr;
 }
 
+FString UField::GetAuthoredName() const
+{
+	UStruct* Struct = GetOwnerStruct();
+	if (Struct)
+	{
+		return Struct->GetAuthoredNameForField(this);
+	}
+	return FString();
+}
+
 void UField::Bind()
 {
 }
@@ -197,18 +222,18 @@ void UField::Serialize( FArchive& Ar )
 	}
 }
 
-void UField::AddCppProperty( UProperty* Property )
+void UField::AddCppProperty(FProperty* Property)
 {
 	UE_LOG(LogClass, Fatal,TEXT("UField::AddCppProperty"));
 }
 
-#if WITH_EDITOR || HACK_HEADER_GENERATOR
+#if WITH_EDITORONLY_DATA
 
 struct FDisplayNameHelper
 {
 	static FString Get(const UObject& Object)
 	{
-		const UClass* Class = dynamic_cast<const UClass*>(&Object);
+		const UClass* Class = Cast<const UClass>(&Object);
 		if (Class && !Class->HasAnyClassFlags(CLASS_Native))
 		{
 			FString Name = Object.GetName();
@@ -217,13 +242,10 @@ struct FDisplayNameHelper
 			return Name;
 		}
 
-		if (auto Property = dynamic_cast<const UProperty*>(&Object))
-		{
-			if (auto OwnerStruct = Property->GetOwnerStruct())
-			{
-				return OwnerStruct->PropertyNameToDisplayName(Property->GetFName());
-			}
-		}
+		//if (auto Property = dynamic_cast<const FProperty*>(&Object))
+		//{
+		//	return Property->GetAuthoredName();
+		//}
 
 		return Object.GetName();
 	}
@@ -243,14 +265,10 @@ FText UField::GetDisplayNameText() const
 
 	const FString Key = GetFullGroupName(false);
 
-	FString NativeDisplayName;
-	if( HasMetaData(NAME_DisplayName) )
+	FString NativeDisplayName = GetMetaData(NAME_DisplayName);
+	if (NativeDisplayName.IsEmpty())
 	{
-		NativeDisplayName = GetMetaData(NAME_DisplayName);
-	}
-	else
-	{
-		NativeDisplayName = FName::NameToDisplayString(FDisplayNameHelper::Get(*this), IsA<UBoolProperty>());
+		NativeDisplayName = FName::NameToDisplayString(FDisplayNameHelper::Get(*this), false);
 	}
 
 	if ( !( FText::FindText( Namespace, Key, /*OUT*/LocalizedDisplayName, &NativeDisplayName ) ) )
@@ -297,21 +315,77 @@ FText UField::GetToolTipText(bool bShortTooltip) const
 	{
 		if (NativeToolTip.IsEmpty())
 		{
-			NativeToolTip = FName::NameToDisplayString(FDisplayNameHelper::Get(*this), IsA<UBoolProperty>());
+			NativeToolTip = FName::NameToDisplayString(FDisplayNameHelper::Get(*this), false);
 		}
-		else
+		else if (!bShortTooltip && IsNative())
 		{
-			static const FString DoxygenSee(TEXT("@see"));
-			static const FString TooltipSee(TEXT("See:"));
-			if (NativeToolTip.ReplaceInline(*DoxygenSee, *TooltipSee) > 0)
-			{
-				NativeToolTip.TrimEndInline();
-			}
+			FormatNativeToolTip(NativeToolTip, true);
 		}
 		LocalizedToolTip = FText::FromString(NativeToolTip);
 	}
 
 	return LocalizedToolTip;
+}
+
+void UField::FormatNativeToolTip(FString& ToolTipString, bool bRemoveExtraSections)
+{
+	// First do doxygen replace
+	static const FString DoxygenSee(TEXT("@see"));
+	static const FString TooltipSee(TEXT("See:"));
+	ToolTipString.ReplaceInline(*DoxygenSee, *TooltipSee);
+
+	bool bCurrentLineIsEmpty = true;
+	int32 EmptyLineCount = 0;
+	int32 LastContentIndex = INDEX_NONE;
+	const int32 ToolTipLength = ToolTipString.Len();
+		
+	// Start looking for empty lines and whitespace to strip
+	for (int32 StrIndex = 0; StrIndex < ToolTipLength; StrIndex++)
+	{
+		TCHAR CurrentChar = ToolTipString[StrIndex];
+
+		if (!FChar::IsWhitespace(CurrentChar))
+		{
+			if (FChar::IsPunct(CurrentChar))
+			{
+				// Punctuation is considered content if it's on a line with alphanumeric text
+				if (!bCurrentLineIsEmpty)
+				{
+					LastContentIndex = StrIndex;
+				}
+			}
+			else
+			{
+				// This is something alphanumeric, this is always content and mark line as not empty
+				bCurrentLineIsEmpty = false;
+				LastContentIndex = StrIndex;
+			}
+		}
+		else if (CurrentChar == TEXT('\n'))
+		{
+			if (bCurrentLineIsEmpty)
+			{
+				EmptyLineCount++;
+				if (bRemoveExtraSections && EmptyLineCount >= 2)
+				{
+					// If we get two empty or punctuation/separator lines in a row, cut off the string if requested
+					break;
+				}
+			}
+			else
+			{
+				EmptyLineCount = 0;
+			}
+
+			bCurrentLineIsEmpty = true;
+		}
+	}
+
+	// Trim string to last content character, this strips trailing whitespace as well as extra sections if needed
+	if (LastContentIndex >= 0 && LastContentIndex != ToolTipLength - 1)
+	{
+		ToolTipString.RemoveAt(LastContentIndex + 1, ToolTipLength - (LastContentIndex + 1));
+	}
 }
 
 /**
@@ -378,7 +452,7 @@ const FString& UField::GetMetaData(const FName& Key) const
 	return MetaDataString;
 }
 
-const FText UField::GetMetaDataText(const TCHAR* MetaDataKey, const FString LocalizationNamespace, const FString LocalizationKey) const
+FText UField::GetMetaDataText(const TCHAR* MetaDataKey, const FString LocalizationNamespace, const FString LocalizationKey) const
 {
 	FString DefaultMetaData;
 
@@ -388,11 +462,10 @@ const FText UField::GetMetaDataText(const TCHAR* MetaDataKey, const FString Loca
 	}
 
 	// If attempting to grab the DisplayName metadata, we must correct the source string and output it as a DisplayString for lookup
-	if( DefaultMetaData.IsEmpty() && FString(MetaDataKey) == TEXT("DisplayName") )
+	if( DefaultMetaData.IsEmpty() && FCString::Stricmp(MetaDataKey, TEXT("DisplayName")) == 0 )
 	{
-		DefaultMetaData = FName::NameToDisplayString( GetName(), IsA( UBoolProperty::StaticClass() ) );
+		DefaultMetaData = FName::NameToDisplayString(GetName(), false);
 	}
-
 
 	FText LocalizedMetaData;
 	if ( !( FText::FindText( LocalizationNamespace, LocalizationKey, /*OUT*/LocalizedMetaData, &DefaultMetaData ) ) )
@@ -406,7 +479,7 @@ const FText UField::GetMetaDataText(const TCHAR* MetaDataKey, const FString Loca
 	return LocalizedMetaData;
 }
 
-const FText UField::GetMetaDataText(const FName& MetaDataKey, const FString LocalizationNamespace, const FString LocalizationKey) const
+FText UField::GetMetaDataText(const FName& MetaDataKey, const FString LocalizationNamespace, const FString LocalizationKey) const
 {
 	FString DefaultMetaData;
 
@@ -418,7 +491,7 @@ const FText UField::GetMetaDataText(const FName& MetaDataKey, const FString Loca
 	// If attempting to grab the DisplayName metadata, we must correct the source string and output it as a DisplayString for lookup
 	if( DefaultMetaData.IsEmpty() && MetaDataKey == TEXT("DisplayName") )
 	{
-		DefaultMetaData = FName::NameToDisplayString( GetName(), IsA( UBoolProperty::StaticClass() ) );
+		DefaultMetaData = FName::NameToDisplayString(GetName(), false);
 	}
 	
 
@@ -484,59 +557,116 @@ void UField::RemoveMetaData(const FName& Key)
 	return Package->GetMetaData()->RemoveValue(this, Key);
 }
 
-#endif
+#endif // WITH_EDITORONLY_DATA
+
+bool UField::HasAnyCastFlags(const uint64 InCastFlags) const
+{
+	return !!(GetClass()->ClassCastFlags & InCastFlags);
+}
+
+bool UField::HasAllCastFlags(const uint64 InCastFlags) const
+{
+	return (GetClass()->ClassCastFlags & InCastFlags) == InCastFlags;
+}
+
+#if WITH_EDITORONLY_DATA
+FField* UField::GetAssociatedFField()
+{
+	return nullptr;
+}
+
+void UField::SetAssociatedFField(FField* InField)
+{
+	check(false); // unsupported for this type
+}
+#endif // WITH_EDITORONLY_DATA
+
 IMPLEMENT_CORE_INTRINSIC_CLASS(UField, UObject,
 	{
 		Class->EmitObjectReference(STRUCT_OFFSET(UField, Next), TEXT("Next"));
 	}
 );
 
+
+
 /*-----------------------------------------------------------------------------
 	UStruct implementation.
 -----------------------------------------------------------------------------*/
 
+/** Simple reference processor and collector for collecting all UObjects referenced by FProperties */
+class FPropertyReferenceCollector : public FReferenceCollector
+{
+	/** The owner object for properties we collect references for */
+	UObject* Owner;
+public:
+	FPropertyReferenceCollector(UObject* InOwner)
+		: Owner(InOwner)
+	{
+	}
+
+	TSet<UObject*> UniqueReferences;
+
+	virtual bool IsIgnoringArchetypeRef() const override { return false; }
+	virtual bool IsIgnoringTransient() const override { return false;  }
+	virtual void HandleObjectReference(UObject*& InObject, const UObject* InReferencingObject, const FProperty* InReferencingProperty) override
+	{
+		// Skip nulls and the owner object
+		if (InObject && InObject != Owner)
+		{
+			// Don't collect objects that will never be GC'd anyway
+			if (!InObject->HasAnyInternalFlags(EInternalObjectFlags::Native) && !GUObjectArray.IsDisregardForGC(InObject))
+			{
+				UniqueReferences.Add(InObject);
+			}
+		}
+	}
+};
+
 //
 // Constructors.
 //
-UStruct::UStruct( EStaticConstructor, int32 InSize, EObjectFlags InFlags )
-:	UField			( EC_StaticConstructor, InFlags )
-,	SuperStruct		( nullptr )
-,	Children		( NULL )
-,	PropertiesSize	( InSize )
-,	MinAlignment	( 1 )
-,	PropertyLink	( NULL )
-,	RefLink			( NULL )
-,	DestructorLink	( NULL )
-, PostConstructLink( NULL )
+UStruct::UStruct(EStaticConstructor, int32 InSize, int32 InMinAlignment, EObjectFlags InFlags)
+	: UField(EC_StaticConstructor, InFlags)
+	, SuperStruct(nullptr)
+	, Children(nullptr)
+	, ChildProperties(nullptr)
+	, PropertiesSize(InSize)
+	, MinAlignment(InMinAlignment)
+	, PropertyLink(NULL)
+	, RefLink(NULL)
+	, DestructorLink(NULL)
+	, PostConstructLink(NULL)
 {
 }
 
 UStruct::UStruct(UStruct* InSuperStruct, SIZE_T ParamsSize, SIZE_T Alignment)
 	: UField(FObjectInitializer::Get())
 	, SuperStruct(InSuperStruct)
-	, Children(NULL)
+	, Children(nullptr)
+	, ChildProperties(nullptr)
 	, PropertiesSize(ParamsSize ? ParamsSize : (InSuperStruct ? InSuperStruct->GetPropertiesSize() : 0))
 	, MinAlignment(Alignment ? Alignment : (FMath::Max(InSuperStruct ? InSuperStruct->GetMinAlignment() : 1, 1)))
-	, PropertyLink(NULL)
-	, RefLink(NULL)
-	, DestructorLink(NULL)
-	, PostConstructLink(NULL)
+	, PropertyLink(nullptr)
+	, RefLink(nullptr)
+	, DestructorLink(nullptr)
+	, PostConstructLink(nullptr)
 {
 #if USTRUCT_FAST_ISCHILDOF_IMPL == USTRUCT_ISCHILDOF_STRUCTARRAY
 	this->ReinitializeBaseChainArray();
 #endif
 }
 
-UStruct::UStruct(const FObjectInitializer& ObjectInitializer, UStruct* InSuperStruct, SIZE_T ParamsSize, SIZE_T Alignment )
-:	UField			(ObjectInitializer)
-,   SuperStruct		( InSuperStruct )
-,	Children		( NULL )
-,	PropertiesSize	( ParamsSize ? ParamsSize : (InSuperStruct ? InSuperStruct->GetPropertiesSize() : 0) )
-,	MinAlignment	( Alignment ? Alignment : (FMath::Max(InSuperStruct ? InSuperStruct->GetMinAlignment() : 1,1)) )
-,	PropertyLink	( NULL )
-,	RefLink			( NULL )
-,	DestructorLink	( NULL )
-, PostConstructLink( NULL )
+UStruct::UStruct(const FObjectInitializer& ObjectInitializer, UStruct* InSuperStruct, SIZE_T ParamsSize, SIZE_T Alignment)
+	: UField(ObjectInitializer)
+	, SuperStruct(InSuperStruct)
+	, Children(nullptr)
+	, ChildProperties(nullptr)
+	, PropertiesSize(ParamsSize ? ParamsSize : (InSuperStruct ? InSuperStruct->GetPropertiesSize() : 0))
+	, MinAlignment(Alignment ? Alignment : (FMath::Max(InSuperStruct ? InSuperStruct->GetMinAlignment() : 1, 1)))
+	, PropertyLink(nullptr)
+	, RefLink(nullptr)
+	, DestructorLink(nullptr)
+	, PostConstructLink(nullptr)
 {
 #if USTRUCT_FAST_ISCHILDOF_IMPL == USTRUCT_ISCHILDOF_STRUCTARRAY
 	this->ReinitializeBaseChainArray();
@@ -555,10 +685,10 @@ void UStruct::RegisterDependencies()
 	}
 }
 
-void UStruct::AddCppProperty( UProperty* Property )
+void UStruct::AddCppProperty(FProperty* Property)
 {
-	Property->Next = Children;
-	Children       = Property;
+	Property->Next = ChildProperties;
+	ChildProperties = Property;
 }
 
 void UStruct::StaticLink(bool bRelinkExistingProperties)
@@ -574,10 +704,15 @@ void UStruct::GetPreloadDependencies(TArray<UObject*>& OutDeps)
 
 	for (UField* Field = Children; Field; Field = Field->Next)
 	{
-		if (!Cast<UFunction>(Field))
+		//if (!Cast<UFunction>(Field))
 		{
 			OutDeps.Add(Field);
 		}
+	}
+
+	for (FField* Field = ChildProperties; Field; Field = Field->Next)
+	{
+		Field->GetPreloadDependencies(OutDeps);
 	}
 }
 
@@ -601,6 +736,10 @@ void UStruct::Link(FArchive& Ar, bool bRelinkExistingProperties)
 					Ar.Preload(Field);
 				}
 			}
+
+#if WITH_EDITORONLY_DATA
+			ConvertUFieldsToFFields();
+#endif // WITH_EDITORONLY_DATA
 		}
 
 		int32 LoopNum = 1;
@@ -615,21 +754,21 @@ void UStruct::Link(FArchive& Ar, bool bRelinkExistingProperties)
 				MinAlignment = InheritanceSuper->GetMinAlignment();
 			}
 
-			for (UField* Field = Children; Field; Field = Field->Next)
+			for (FField* Field = ChildProperties; Field; Field = Field->Next)
 			{
-				if (Field->GetOuter() != this)
+				if (Field->GetOwner<UObject>() != this)
 				{
 					break;
 				}
 
-				if (UProperty* Property = dynamic_cast<UProperty*>(Field))
+				if (FProperty* Property = CastField<FProperty>(Field))
 				{
 #if !WITH_EDITORONLY_DATA
 					// If we don't have the editor, make sure we aren't trying to link properties that are editor only.
 					check(!Property->IsEditorOnlyProperty());
 #endif // WITH_EDITORONLY_DATA
-					ensureMsgf(Property->GetOuter() == this, TEXT("Linking '%s'. Property '%s' has outer '%s'"),
-						*GetFullName(), *Property->GetName(), *Property->GetOuter()->GetFullName());
+					ensureMsgf(Property->GetOwner<UObject>() == this, TEXT("Linking '%s'. Property '%s' has outer '%s'"),
+						*GetFullName(), *Property->GetName(), *Property->GetOwnerVariant().GetFullName());
 
 					// Linking a property can cause a recompilation of the struct. 
 					// When the property was changed, the struct should be relinked again, to be sure, the PropertiesSize is actual.
@@ -655,12 +794,12 @@ void UStruct::Link(FArchive& Ar, bool bRelinkExistingProperties)
 		if (GetClass()->IsChildOf(UScriptStruct::StaticClass()))
 		{
 			// check for internal struct recursion via arrays
-			for (UField* Field = Children; Field; Field = Field->Next)
+			for (FField* Field = ChildProperties; Field; Field = Field->Next)
 			{
-				UArrayProperty* ArrayProp = dynamic_cast<UArrayProperty*>(Field);
+				FArrayProperty* ArrayProp = CastField<FArrayProperty>(Field);
 				if (ArrayProp != NULL)
 				{
-					UStructProperty* StructProp = dynamic_cast<UStructProperty*>(ArrayProp->Inner);
+					FStructProperty* StructProp = CastField<FStructProperty>(ArrayProp->Inner);
 					if (StructProp != NULL && StructProp->Struct == this)
 					{
 						//we won't support this, too complicated
@@ -686,9 +825,9 @@ void UStruct::Link(FArchive& Ar, bool bRelinkExistingProperties)
 	}
 	else
 	{
-		for (UField* Field = Children; (Field != NULL) && (Field->GetOuter() == this); Field = Field->Next)
+		for (FField* Field = ChildProperties; (Field != NULL) && (Field->GetOwner<UObject>() == this); Field = Field->Next)
 		{
-			if (UProperty* Property = dynamic_cast<UProperty*>(Field))
+			if (FProperty* Property = CastField<FProperty>(Field))
 			{
 				Property->LinkWithoutChangingOffset(Ar);
 			}
@@ -734,12 +873,12 @@ void UStruct::Link(FArchive& Ar, bool bRelinkExistingProperties)
 			// In any case, on big-endian systems we want to byte-swap this.
 			//@todo cooking: this should be moved into the data cooking step.
 			{
-				UProperty*	ColorComponentEntries[4];
+				FProperty*	ColorComponentEntries[4];
 				uint32		ColorComponentIndex = 0;
 
 				for( UField* Field=Children; Field && Field->GetOuter()==this; Field=Field->Next )
 				{
-					UProperty* Property = CastChecked<UProperty>( Field );
+					FProperty* Property = CastFieldChecked<FProperty>( Field );
 					ColorComponentEntries[ColorComponentIndex++] = Property;
 				}
 				check( ColorComponentIndex == 4 );
@@ -754,16 +893,16 @@ void UStruct::Link(FArchive& Ar, bool bRelinkExistingProperties)
 
 
 	// Link the references, structs, and arrays for optimized cleanup.
-	// Note: Could optimize further by adding UProperty::NeedsDynamicRefCleanup, excluding things like arrays of ints.
-	UProperty** PropertyLinkPtr = &PropertyLink;
-	UProperty** DestructorLinkPtr = &DestructorLink;
-	UProperty** RefLinkPtr = (UProperty**)&RefLink;
-	UProperty** PostConstructLinkPtr = &PostConstructLink;
+	// Note: Could optimize further by adding FProperty::NeedsDynamicRefCleanup, excluding things like arrays of ints.
+	FProperty** PropertyLinkPtr = &PropertyLink;
+	FProperty** DestructorLinkPtr = &DestructorLink;
+	FProperty** RefLinkPtr = (FProperty**)&RefLink;
+	FProperty** PostConstructLinkPtr = &PostConstructLink;
 
-	TArray<const UStructProperty*> EncounteredStructProps;
-	for (TFieldIterator<UProperty> It(this); It; ++It)
+	TArray<const FStructProperty*> EncounteredStructProps;
+	for (TFieldIterator<FProperty> It(this); It; ++It)
 	{
-		UProperty* Property = *It;
+		FProperty* Property = *It;
 
 		if (Property->ContainsObjectReference(EncounteredStructProps) || Property->ContainsWeakObjectReference())
 		{
@@ -797,6 +936,26 @@ void UStruct::Link(FArchive& Ar, bool bRelinkExistingProperties)
 	*DestructorLinkPtr = nullptr;
 	*RefLinkPtr = nullptr;
 	*PostConstructLinkPtr = nullptr;
+
+	{
+		// Now collect all references from FProperties to UObjects and store them in GC-exposed array for fast access
+		FPropertyReferenceCollector PropertyReferenceCollector(this);
+		for (FField* CurrentField = ChildProperties; CurrentField; CurrentField = CurrentField->Next)
+		{
+			CurrentField->AddReferencedObjects(PropertyReferenceCollector);
+		}
+		PropertyObjectReferences = PropertyReferenceCollector.UniqueReferences.Array();
+	}
+
+#if WITH_EDITORONLY_DATA
+	// Discard old wrapper objects used by property grids
+	for (UPropertyWrapper* Wrapper : PropertyWrappers)
+	{
+		Wrapper->Rename(nullptr, GetTransientPackage(), REN_ForceNoResetLoaders | REN_DoNotDirty | REN_DontCreateRedirectors | REN_NonTransactional);
+		Wrapper->RemoveFromRoot();
+	}
+	PropertyWrappers.Empty();
+#endif
 }
 
 void UStruct::InitializeStruct(void* InDest, int32 ArrayDim/* = 1*/) const
@@ -809,7 +968,7 @@ void UStruct::InitializeStruct(void* InDest, int32 ArrayDim/* = 1*/) const
 	//@todo UE4 optimize
 	FMemory::Memzero(Dest, 1 * Stride);
 
-	for (UProperty* Property = PropertyLink; Property; Property = Property->PropertyLinkNext)
+	for (FProperty* Property = PropertyLink; Property; Property = Property->PropertyLinkNext)
 	{
 		if (ensure(Property->IsInContainer(Stride)))
 		{
@@ -831,7 +990,7 @@ void UStruct::DestroyStruct(void* Dest, int32 ArrayDim) const
 	int32 Stride = GetStructureSize();
 
 	bool bHitBase = false;
-	for (UProperty* P = DestructorLink; P  && !bHitBase; P = P->DestructorLinkNext)
+	for (FProperty* P = DestructorLink; P  && !bHitBase; P = P->DestructorLinkNext)
 	{
 		if (!P->HasAnyPropertyFlags(CPF_NoDestructor))
 		{
@@ -850,10 +1009,6 @@ void UStruct::DestroyStruct(void* Dest, int32 ArrayDim) const
 	}
 }
 
-void UStruct::SerializeBin(FArchive& Ar, void* Data) const
-{
-	SerializeBin(FStructuredArchiveFromArchive(Ar).GetSlot(), Data);
-}
 //
 // Serialize all of the class's data that belongs in a particular
 // bin and resides in Data.
@@ -866,7 +1021,7 @@ void UStruct::SerializeBin( FStructuredArchive::FSlot Slot, void* Data ) const
 
 	if( UnderlyingArchive.IsObjectReferenceCollector() )
 	{
-		for( UProperty* RefLinkProperty=RefLink; RefLinkProperty!=NULL; RefLinkProperty=RefLinkProperty->NextRef )
+		for( FProperty* RefLinkProperty=RefLink; RefLinkProperty!=NULL; RefLinkProperty=RefLinkProperty->NextRef )
 		{
 			RefLinkProperty->SerializeBinProperty(PropertyStream.EnterElement(), Data );
 		}
@@ -876,7 +1031,7 @@ void UStruct::SerializeBin( FStructuredArchive::FSlot Slot, void* Data ) const
 		const FCustomPropertyListNode* CustomPropertyList = UnderlyingArchive.ArCustomPropertyList;
 		for (auto PropertyNode = CustomPropertyList; PropertyNode; PropertyNode = PropertyNode->PropertyListNext)
 		{
-			UProperty* Property = PropertyNode->Property;
+			FProperty* Property = PropertyNode->Property;
 			if( Property )
 			{
 				// Temporarily set to the sub property list, in case we're serializing a UStruct property.
@@ -891,7 +1046,7 @@ void UStruct::SerializeBin( FStructuredArchive::FSlot Slot, void* Data ) const
 	}
 	else
 	{
-		for (UProperty* Property = PropertyLink; Property != NULL; Property = Property->PropertyLinkNext)
+		for (FProperty* Property = PropertyLink; Property != NULL; Property = Property->PropertyLinkNext)
 		{
 			Property->SerializeBinProperty(PropertyStream.EnterElement(), Data);
 		}
@@ -906,252 +1061,388 @@ void UStruct::SerializeBinEx( FStructuredArchive::FSlot Slot, void* Data, void c
 		return;
 	}
 
-	for( TFieldIterator<UProperty> It(this); It; ++It )
+	for( TFieldIterator<FProperty> It(this); It; ++It )
 	{
 		It->SerializeNonMatchingBinProperty(Slot, Data, DefaultData, DefaultStruct);
 	}
 }
 
-void UStruct::SerializeTaggedProperties(FArchive& Ar, uint8* Data, UStruct* DefaultsStruct, uint8* Defaults, const UObject* BreakRecursionIfFullyLoad) const
+void UStruct::LoadTaggedPropertiesFromText(FStructuredArchive::FSlot Slot, uint8* Data, UStruct* DefaultsStruct, uint8* Defaults, const UObject* BreakRecursionIfFullyLoad) const
 {
-	SerializeTaggedProperties(FStructuredArchiveFromArchive(Ar).GetSlot(), Data, DefaultsStruct, Defaults, BreakRecursionIfFullyLoad);
+	FArchive& UnderlyingArchive = Slot.GetUnderlyingArchive();
+	const bool bUseRedirects = !FPlatformProperties::RequiresCookedData() || UnderlyingArchive.IsSaveGame();
+	int32 NumProperties = 0;
+	FStructuredArchiveMap PropertiesMap = Slot.EnterMap(NumProperties);
+
+	for (int32 PropertyIndex = 0; PropertyIndex < NumProperties; ++PropertyIndex)
+	{
+		FString PropertyNameString;
+		FStructuredArchiveSlot PropertySlot = PropertiesMap.EnterElement(PropertyNameString);
+		FName PropertyName = *PropertyNameString;
+
+		// If this property has a guid attached then we need to resolve it to the right name before we start loading
+		TOptional<FStructuredArchiveSlot> PropertyGuidSlot = PropertySlot.TryEnterAttribute(SA_FIELD_NAME(TEXT("PropertyGuid")), false);
+		if (PropertyGuidSlot.IsSet())
+		{
+			FGuid PropertyGuid;
+			PropertyGuidSlot.GetValue() << PropertyGuid;
+			if (PropertyGuid.IsValid())
+			{
+				FName NewName = FindPropertyNameFromGuid(PropertyGuid);
+				if (NewName != NAME_None)
+				{
+					PropertyName = NewName;
+				}
+			}
+		}
+
+		// Resolve any redirects if necessary
+		if (bUseRedirects && !UnderlyingArchive.HasAnyPortFlags(PPF_DuplicateForPIE | PPF_Duplicate))
+		{
+			for (UStruct* CheckStruct = GetOwnerStruct(); CheckStruct; CheckStruct = CheckStruct->GetSuperStruct())
+			{
+				FName NewTagName = FProperty::FindRedirectedPropertyName(CheckStruct, PropertyName);
+				if (!NewTagName.IsNone())
+				{
+					PropertyName = NewTagName;
+					break;
+				}
+			}
+		}
+
+		// Now we know what the property name is, we can try and load it
+		FProperty* Property = FindPropertyByName(PropertyName);
+
+		if (Property == nullptr)
+		{
+			Property = CustomFindProperty(PropertyName);
+		}
+
+		if (Property && Property->ShouldSerializeValue(UnderlyingArchive))
+		{
+			FName PropID = Property->GetID();
+
+			// Static arrays of tagged properties are special cases where the slot is always an array with no tag data attached. We currently have no TryEnterArray we can't 
+			// react based on what is in the file (yet) so we'll just have to assume that nobody converts a property from an array to a single value and go with whatever 
+			// the code property tells us.
+			TOptional<FStructuredArchiveArray> SlotArray;
+			int32 NumItems = Property->ArrayDim;
+			if (Property->ArrayDim > 1)
+			{
+				int32 NumAvailableItems = 0;
+				SlotArray.Emplace(PropertySlot.EnterArray(NumAvailableItems));
+				NumItems = FMath::Min(Property->ArrayDim, NumAvailableItems);
+			}
+
+			for (int32 ItemIndex = 0; ItemIndex < NumItems; ++ItemIndex)
+			{
+				TOptional<FStructuredArchiveSlot> ItemSlot;
+				if (SlotArray.IsSet())
+				{
+					ItemSlot.Emplace(SlotArray->EnterElement());
+				}
+				else
+				{
+					ItemSlot.Emplace(PropertySlot);
+				}
+
+				FPropertyTag Tag;
+				ItemSlot.GetValue() << Tag;
+				Tag.ArrayIndex = ItemIndex;
+				Tag.Name = PropertyName;
+
+				if (bUseRedirects)
+				{
+					if (Tag.Type == NAME_StructProperty && PropID == NAME_StructProperty)
+					{
+						const FName NewName = FLinkerLoad::FindNewNameForStruct(Tag.StructName);
+						const FName StructName = CastFieldChecked<FStructProperty>(Property)->Struct->GetFName();
+						if (NewName == StructName)
+						{
+							Tag.StructName = NewName;
+						}
+					}
+					else if ((PropID == NAME_EnumProperty) && ((Tag.Type == NAME_EnumProperty) || (Tag.Type == NAME_ByteProperty)))
+					{
+						const FName NewName = FLinkerLoad::FindNewNameForEnum(Tag.EnumName);
+						if (!NewName.IsNone())
+						{
+							Tag.EnumName = NewName;
+						}
+					}
+
+					if (!(BreakRecursionIfFullyLoad && BreakRecursionIfFullyLoad->HasAllFlags(RF_LoadCompleted)))
+					{
+						switch (Property->ConvertFromType(Tag, ItemSlot.GetValue(), Data, DefaultsStruct))
+						{
+						case EConvertFromTypeResult::Converted:
+							break;
+
+						case EConvertFromTypeResult::UseSerializeItem:
+							if (Tag.Type != PropID)
+							{
+								UE_LOG(LogClass, Warning, TEXT("Type mismatch in %s of %s - Previous (%s) Current(%s) for package:  %s"), *Tag.Name.ToString(), *GetName(), *Tag.Type.ToString(), *PropID.ToString(), *UnderlyingArchive.GetArchiveName());
+							}
+							else
+							{
+								uint8* DestAddress = Property->ContainerPtrToValuePtr<uint8>(Data, Tag.ArrayIndex);
+								uint8* DefaultsFromParent = Property->ContainerPtrToValuePtrForDefaults<uint8>(DefaultsStruct, Defaults, Tag.ArrayIndex);
+
+								// This property is ok.
+								Tag.SerializeTaggedProperty(ItemSlot.GetValue(), Property, DestAddress, DefaultsFromParent);
+							}
+							break;
+
+						case EConvertFromTypeResult::CannotConvert:
+							break;
+
+						default:
+							check(false);
+						}
+					}
+				}
+			}
+		}
+	}
 }
 
 void UStruct::SerializeTaggedProperties(FStructuredArchive::FSlot Slot, uint8* Data, UStruct* DefaultsStruct, uint8* Defaults, const UObject* BreakRecursionIfFullyLoad) const
+{
+	if (Slot.GetArchiveState().UseUnversionedPropertySerialization())
+	{
+		SerializeUnversionedProperties(this, Slot, Data, DefaultsStruct, Defaults);
+	}
+	else
+	{
+		SerializeVersionedTaggedProperties(Slot, Data, DefaultsStruct, Defaults, BreakRecursionIfFullyLoad);
+	}
+}
+
+void UStruct::SerializeVersionedTaggedProperties(FStructuredArchive::FSlot Slot, uint8* Data, UStruct* DefaultsStruct, uint8* Defaults, const UObject* BreakRecursionIfFullyLoad) const
 {
 	FArchive& UnderlyingArchive = Slot.GetUnderlyingArchive();
 	//SCOPED_LOADTIMER(SerializeTaggedPropertiesTime);
 
 	// Determine if this struct supports optional property guid's (UBlueprintGeneratedClasses Only)
 	const bool bArePropertyGuidsAvailable = (UnderlyingArchive.UE4Ver() >= VER_UE4_PROPERTY_GUID_IN_PROPERTY_TAG) && !FPlatformProperties::RequiresCookedData() && ArePropertyGuidsAvailable();
+	const bool bUseRedirects = !FPlatformProperties::RequiresCookedData() || UnderlyingArchive.IsSaveGame();
 
-	if( UnderlyingArchive.IsLoading() )
+	if (UnderlyingArchive.IsLoading())
 	{
-		// Load tagged properties.
-		TArray<FString> FieldNames;
-
-		TOptional<FStructuredArchive::FRecord> PropertiesRecord;
-		TOptional<FStructuredArchive::FStream> PropertiesStream;
-
+#if WITH_TEXT_ARCHIVE_SUPPORT
 		if (UnderlyingArchive.IsTextFormat())
 		{
-			PropertiesRecord.Emplace(Slot.EnterRecord_TextOnly(FieldNames));
+			LoadTaggedPropertiesFromText(Slot, Data, DefaultsStruct, Defaults, BreakRecursionIfFullyLoad);
 		}
 		else
+#endif // WITH_TEXT_ARCHIVE_SUPPORT
 		{
-			PropertiesStream.Emplace(Slot.EnterStream());
-		}
+			// Load tagged properties.
+			FStructuredArchive::FStream PropertiesStream = Slot.EnterStream();
 
-		int32 CurrentFieldNameIdx = UnderlyingArchive.IsTextFormat() ? 0 : -1;
+			// This code assumes that properties are loaded in the same order they are saved in. This removes a n^2 search 
+			// and makes it an O(n) when properties are saved in the same order as they are loaded (default case). In the 
+			// case that a property was reordered the code falls back to a slower search.
+			FProperty*	Property = PropertyLink;
+			bool		bAdvanceProperty	= false;
+			int32		RemainingArrayDim	= Property ? Property->ArrayDim : 0;
 
-		// This code assumes that properties are loaded in the same order they are saved in. This removes a n^2 search 
-		// and makes it an O(n) when properties are saved in the same order as they are loaded (default case). In the 
-		// case that a property was reordered the code falls back to a slower search.
-		UProperty*	Property			= PropertyLink;
-		bool		bAdvanceProperty	= false;
-		int32		RemainingArrayDim	= Property ? Property->ArrayDim : 0;
-
-		// Load all stored properties, potentially skipping unknown ones.
-		while (CurrentFieldNameIdx < FieldNames.Num())
-		{
-			FStructuredArchive::FRecord PropertyRecord = UnderlyingArchive.IsTextFormat() ? PropertiesRecord->EnterRecord(FIELD_NAME(*FieldNames[CurrentFieldNameIdx++])) : PropertiesStream->EnterElement().EnterRecord();
-
-			FPropertyTag Tag;
-			PropertyRecord << NAMED_FIELD(Tag);
-
-			if( Tag.Name == NAME_None )
+			// Load all stored properties, potentially skipping unknown ones.
+			while (true)
 			{
-				break;
-			}
-			if (!Tag.Name.IsValid())
-			{
-				UE_LOG(LogClass, Warning, TEXT("Invalid tag name: struct '%s', archive '%s'"), *GetName(), *UnderlyingArchive.GetArchiveName());
-				break;
-			}
+				FStructuredArchive::FRecord PropertyRecord = PropertiesStream.EnterElement().EnterRecord();
 
-			// Move to the next property to be serialized
-			if( bAdvanceProperty && --RemainingArrayDim <= 0 )
-			{
-				Property = Property->PropertyLinkNext;
-				// Skip over properties that don't need to be serialized.
-				while( Property && !Property->ShouldSerializeValue( UnderlyingArchive ) )
+				FPropertyTag Tag;
+				PropertyRecord << SA_VALUE(TEXT("Tag"), Tag);
+
+				if (Tag.Name.IsNone())
+				{
+					break;
+				}
+
+				// Move to the next property to be serialized
+				if( bAdvanceProperty && --RemainingArrayDim <= 0 )
 				{
 					Property = Property->PropertyLinkNext;
-				}
-				RemainingArrayDim = Property ? Property->ArrayDim : 0;
-			}
-			bAdvanceProperty = false;
-			
-			// Optionally resolve properties using Guid Property tags in non cooked builds that support it.
-			if (bArePropertyGuidsAvailable && Tag.HasPropertyGuid)
-			{
-				// Use property guids from blueprint generated classes to redirect serialised data.
-				FName Result = FindPropertyNameFromGuid(Tag.PropertyGuid);
-				if (Result != NAME_None && Tag.Name != Result)
-				{
-					Tag.Name = Result;
-				}
-			}
-			// If this property is not the one we expect (e.g. skipped as it matches the default value), do the brute force search.
-			if( Property == nullptr || Property->GetFName() != Tag.Name )
-			{
-				// No need to check redirects on platforms where everything is cooked. Always check for save games
-				if ((!FPlatformProperties::RequiresCookedData() || UnderlyingArchive.IsSaveGame()) && !UnderlyingArchive.HasAnyPortFlags(PPF_DuplicateForPIE|PPF_Duplicate))
-				{
-					FName EachName = GetFName();
-					FName PackageName = GetOutermost()->GetFName();
-					// Search the current class first, then work up the class hierarchy to see if theres a match for our fixup.
-					UStruct* Owner = GetOwnerStruct();
-					if( Owner )
+					// Skip over properties that don't need to be serialized.
+					while (Property && !Property->ShouldSerializeValue(UnderlyingArchive))
 					{
-						UStruct* CheckStruct = Owner;
-						while(CheckStruct)
-						{
-							FName NewTagName = UProperty::FindRedirectedPropertyName(CheckStruct, Tag.Name);
+						Property = Property->PropertyLinkNext;
+					}
+					RemainingArrayDim = Property ? Property->ArrayDim : 0;
+				}
+				bAdvanceProperty = false;
 
-							if (NewTagName != NAME_None)
+				// Optionally resolve properties using Guid Property tags in non cooked builds that support it.
+				if (bArePropertyGuidsAvailable && Tag.HasPropertyGuid)
+				{
+					// Use property guids from blueprint generated classes to redirect serialised data.
+					FName Result = FindPropertyNameFromGuid(Tag.PropertyGuid);
+					if (Result != NAME_None && Tag.Name != Result)
+					{
+						Tag.Name = Result;
+					}
+				}
+				// If this property is not the one we expect (e.g. skipped as it matches the default value), do the brute force search.
+				if (Property == nullptr || Property->GetFName() != Tag.Name)
+				{
+					// No need to check redirects on platforms where everything is cooked. Always check for save games
+					if (bUseRedirects && !UnderlyingArchive.HasAnyPortFlags(PPF_DuplicateForPIE | PPF_Duplicate))
+					{
+						for (UStruct* CheckStruct = GetOwnerStruct(); CheckStruct; CheckStruct = CheckStruct->GetSuperStruct())
+						{
+							FName NewTagName = FProperty::FindRedirectedPropertyName(CheckStruct, Tag.Name);
+							if (!NewTagName.IsNone())
 							{
 								Tag.Name = NewTagName;
 								break;
 							}
-
-							CheckStruct = CheckStruct->GetSuperStruct();
 						}
 					}
-				}
 
-				UProperty* CurrentProperty = Property;
-				// Search forward...
-				for ( ; Property; Property=Property->PropertyLinkNext )
-				{
-					if( Property->GetFName() == Tag.Name )
+					FProperty* CurrentProperty = Property;
+					// Search forward...
+					for (; Property; Property = Property->PropertyLinkNext)
 					{
-						break;
-					}
-				}
-				// ... and then search from the beginning till we reach the current property if it's not found.
-				if( Property == nullptr )
-				{
-					for( Property = PropertyLink; Property && Property != CurrentProperty; Property = Property->PropertyLinkNext )
-					{
-						if( Property->GetFName() == Tag.Name )
+						if (Property->GetFName() == Tag.Name)
 						{
 							break;
 						}
 					}
-
-					if( Property == CurrentProperty )
+					// ... and then search from the beginning till we reach the current property if it's not found.
+					if (Property == nullptr)
 					{
-						// Property wasn't found.
-						Property = nullptr;
-					}
-				}
-
-				RemainingArrayDim = Property ? Property->ArrayDim : 0;
-			}
-#if WITH_EDITOR
-			if (!Property)
-			{
-				Property = CustomFindProperty(Tag.Name);
-			}
-#endif // WITH_EDITOR
-
-			FName PropID = Property ? Property->GetID() : NAME_None;
-			FName ArrayInnerID = NAME_None;
-
-			// Check if this is a struct property and we have a redirector
-			// No need to check redirects on platforms where everything is cooked. Always check for save games
-			if (!FPlatformProperties::RequiresCookedData() || UnderlyingArchive.IsSaveGame())
-			{
-				if (Tag.Type == NAME_StructProperty && PropID == NAME_StructProperty)
-				{
-					const FName NewName = FLinkerLoad::FindNewNameForStruct(Tag.StructName);
-					const FName StructName = CastChecked<UStructProperty>(Property)->Struct->GetFName();
-					if (NewName == StructName)
-					{
-						Tag.StructName = NewName;
-					}
-				}
-				else if ((PropID == NAME_EnumProperty) && ((Tag.Type == NAME_EnumProperty) || (Tag.Type == NAME_ByteProperty)))
-				{
-					const FName NewName = FLinkerLoad::FindNewNameForEnum(Tag.EnumName);
-					if (!NewName.IsNone())
-					{
-						Tag.EnumName = NewName;
-					}
-				}
-			}
-
-			const int64 StartOfProperty = UnderlyingArchive.Tell();
-			if( !Property )
-			{
-				//UE_LOG(LogClass, Warning, TEXT("Property %s of %s not found for package:  %s"), *Tag.Name.ToString(), *GetFullName(), *UnderlyingArchive.GetArchiveName() );
-			}
-#if WITH_EDITOR
-			else if (BreakRecursionIfFullyLoad && BreakRecursionIfFullyLoad->HasAllFlags(RF_LoadCompleted))
-			{
-			}
-#endif // WITH_EDITOR
-			// editoronly properties should be skipped if we are NOT the editor, or we are 
-			// the editor but are cooking for console (editoronly implies notforconsole)
-			else if ((Property->PropertyFlags & CPF_EditorOnly) && !FPlatformProperties::HasEditorOnlyData() && !GForceLoadEditorOnly)
-			{
-			}
-			// check for valid array index
-			else if( Tag.ArrayIndex >= Property->ArrayDim || Tag.ArrayIndex < 0 )
-			{
-				UE_LOG(LogClass, Warning, TEXT("Array bound exceeded (var %s=%d, exceeds %s [0-%d] in package:  %s"),
-					*Tag.Name.ToString(), Tag.ArrayIndex, *GetName(), Property->ArrayDim-1, *UnderlyingArchive.GetArchiveName());
-			}
-			else if( !Property->ShouldSerializeValue(UnderlyingArchive) )
-			{
-				UE_CLOG((UnderlyingArchive.IsPersistent() && FPlatformProperties::RequiresCookedData()), LogClass, Warning, TEXT("Skipping saved property %s of %s since it is no longer serializable for asset:  %s. (Maybe resave asset?)"), *Tag.Name.ToString(), *GetName(), *UnderlyingArchive.GetArchiveName() );
-			}
-			else
-			{
-				FStructuredArchive::FSlot ValueSlot = PropertyRecord.EnterField(FIELD_NAME_TEXT("Value"));
-
-				switch (Property->ConvertFromType(Tag, ValueSlot, Data, DefaultsStruct))
-				{
-					case EConvertFromTypeResult::Converted:
-						bAdvanceProperty = true;
-						break;
-
-					case EConvertFromTypeResult::UseSerializeItem:
-						if (Tag.Type != PropID)
+						for (Property = PropertyLink; Property && Property != CurrentProperty; Property = Property->PropertyLinkNext)
 						{
-							UE_LOG(LogClass, Warning, TEXT("Type mismatch in %s of %s - Previous (%s) Current(%s) for package:  %s"), *Tag.Name.ToString(), *GetName(), *Tag.Type.ToString(), *PropID.ToString(), *UnderlyingArchive.GetArchiveName() );
+							if (Property->GetFName() == Tag.Name)
+							{
+								break;
+							}
 						}
-						else
+
+						if (Property == CurrentProperty)
 						{
-							uint8* DestAddress = Property->ContainerPtrToValuePtr<uint8>(Data, Tag.ArrayIndex);
-							uint8* DefaultsFromParent = Property->ContainerPtrToValuePtrForDefaults<uint8>(DefaultsStruct, Defaults, Tag.ArrayIndex);
-
-							// This property is ok.
-							Tag.SerializeTaggedProperty(ValueSlot, Property, DestAddress, DefaultsFromParent);
-							bAdvanceProperty = !UnderlyingArchive.IsCriticalError();
+							// Property wasn't found.
+							Property = nullptr;
 						}
-						break;
+					}
 
-					case EConvertFromTypeResult::CannotConvert:
-						break;
-
-					default:
-						check(false);
+					RemainingArrayDim = Property ? Property->ArrayDim : 0;
 				}
-			}
 
-			if (!bAdvanceProperty)
-			{
-				UnderlyingArchive.Seek(StartOfProperty + Tag.Size);
+				const int64 StartOfProperty = UnderlyingArchive.Tell();
+
+				if (!Property)
+				{
+					Property = CustomFindProperty(Tag.Name);
+				}
+
+				if (Property)
+				{
+					FName PropID = Property->GetID();
+
+					// Check if this is a struct property and we have a redirector
+					// No need to check redirects on platforms where everything is cooked. Always check for save games
+					if (bUseRedirects)
+					{
+						if (Tag.Type == NAME_StructProperty && PropID == NAME_StructProperty)
+						{
+							const FName NewName = FLinkerLoad::FindNewNameForStruct(Tag.StructName);
+							const FName StructName = CastFieldChecked<FStructProperty>(Property)->Struct->GetFName();
+							if (NewName == StructName)
+							{
+								Tag.StructName = NewName;
+							}
+						}
+						else if ((PropID == NAME_EnumProperty) && ((Tag.Type == NAME_EnumProperty) || (Tag.Type == NAME_ByteProperty)))
+						{
+							const FName NewName = FLinkerLoad::FindNewNameForEnum(Tag.EnumName);
+							if (!NewName.IsNone())
+							{
+								Tag.EnumName = NewName;
+							}
+						}
+					}
+
+#if WITH_EDITOR
+					if (BreakRecursionIfFullyLoad && BreakRecursionIfFullyLoad->HasAllFlags(RF_LoadCompleted))
+					{
+					}
+					else
+#endif // WITH_EDITOR
+					// editoronly properties should be skipped if we are NOT the editor, or we are 
+					// the editor but are cooking for console (editoronly implies notforconsole)
+					if ((Property->PropertyFlags & CPF_EditorOnly) && !FPlatformProperties::HasEditorOnlyData() && !GForceLoadEditorOnly)
+					{
+					}
+					// check for valid array index
+					else if (Tag.ArrayIndex >= Property->ArrayDim || Tag.ArrayIndex < 0)
+					{
+						UE_LOG(LogClass, Warning, TEXT("Array bound exceeded (var %s=%d, exceeds %s [0-%d] in package:  %s"),
+							*Tag.Name.ToString(), Tag.ArrayIndex, *GetName(), Property->ArrayDim - 1, *UnderlyingArchive.GetArchiveName());
+					}
+					else if (!Property->ShouldSerializeValue(UnderlyingArchive))
+					{
+						UE_CLOG((UnderlyingArchive.IsPersistent() && FPlatformProperties::RequiresCookedData()), LogClass, Warning, TEXT("Skipping saved property %s of %s since it is no longer serializable for asset:  %s. (Maybe resave asset?)"), *Tag.Name.ToString(), *GetName(), *UnderlyingArchive.GetArchiveName());
+					}
+					else
+					{
+						FStructuredArchive::FSlot ValueSlot = PropertyRecord.EnterField(SA_FIELD_NAME(TEXT("Value")));
+
+						switch (Property->ConvertFromType(Tag, ValueSlot, Data, DefaultsStruct))
+						{
+							case EConvertFromTypeResult::Converted:
+								bAdvanceProperty = true;
+								break;
+
+							case EConvertFromTypeResult::UseSerializeItem:
+								if (Tag.Type != PropID)
+								{
+									UE_LOG(LogClass, Warning, TEXT("Type mismatch in %s of %s - Previous (%s) Current(%s) for package:  %s"), *Tag.Name.ToString(), *GetName(), *Tag.Type.ToString(), *PropID.ToString(), *UnderlyingArchive.GetArchiveName());
+								}
+								else
+								{
+									uint8* DestAddress = Property->ContainerPtrToValuePtr<uint8>(Data, Tag.ArrayIndex);
+									uint8* DefaultsFromParent = Property->ContainerPtrToValuePtrForDefaults<uint8>(DefaultsStruct, Defaults, Tag.ArrayIndex);
+
+									// This property is ok.
+									Tag.SerializeTaggedProperty(ValueSlot, Property, DestAddress, DefaultsFromParent);
+									bAdvanceProperty = !UnderlyingArchive.IsCriticalError();
+								}
+								break;
+
+							case EConvertFromTypeResult::CannotConvert:
+								break;
+
+							default:
+								check(false);
+						}
+					}
+				}
+
+				int64 Loaded = UnderlyingArchive.Tell() - StartOfProperty;
+
+				if (!bAdvanceProperty)
+				{
+					UnderlyingArchive.Seek(StartOfProperty + Tag.Size);
+				}
+				else
+				{
+					check(Tag.Size == Loaded);
+				}
 			}
 		}
 	}
 	else
 	{
+		FUnversionedPropertyTestCollector TestCollector;
+
 		FStructuredArchive::FRecord PropertiesRecord = Slot.EnterRecord();
 
 		check(UnderlyingArchive.IsSaving() || UnderlyingArchive.IsCountingMemory());
+		checkf(!UnderlyingArchive.ArUseCustomPropertyList, 
+				TEXT("Custom property lists only work with binary serialization, not tagged property serialization. "
+					 "Attempted for struct '%s' and archive '%s'. "), *GetFName().ToString(), *UnderlyingArchive.GetArchiveName());
 
 		UScriptStruct* DefaultsScriptStruct = dynamic_cast<UScriptStruct*>(DefaultsStruct);
 
@@ -1166,19 +1457,27 @@ void UStruct::SerializeTaggedProperties(FStructuredArchive::FSlot Slot, uint8* D
 
 		// Iterate over properties in the order they were linked and serialize them.
 		const FCustomPropertyListNode* CustomPropertyNode = UnderlyingArchive.ArUseCustomPropertyList ? UnderlyingArchive.ArCustomPropertyList : nullptr;
-		for (UProperty* Property = UnderlyingArchive.ArUseCustomPropertyList ? (CustomPropertyNode ? CustomPropertyNode->Property : nullptr) : PropertyLink;
+		for (FProperty* Property = UnderlyingArchive.ArUseCustomPropertyList ? (CustomPropertyNode ? CustomPropertyNode->Property : nullptr) : PropertyLink;
 			Property;
 			Property = UnderlyingArchive.ArUseCustomPropertyList ? FCustomPropertyListNode::GetNextPropertyAndAdvance(CustomPropertyNode) : Property->PropertyLinkNext)
 		{
-			if( Property->ShouldSerializeValue(UnderlyingArchive) )
+			if (Property->ShouldSerializeValue(UnderlyingArchive))
 			{
 				const int32 LoopMin = CustomPropertyNode ? CustomPropertyNode->ArrayIndex : 0;
 				const int32 LoopMax = CustomPropertyNode ? LoopMin + 1 : Property->ArrayDim;
-				for( int32 Idx = LoopMin; Idx < LoopMax; Idx++ )
+
+				TOptional<FStructuredArchive::FArray> StaticArrayContainer;
+				if (((LoopMax - 1) > LoopMin) && UnderlyingArchive.IsTextFormat())
+				{
+					int32 NumItems = LoopMax - LoopMin;
+					StaticArrayContainer.Emplace(PropertiesRecord.EnterArray(SA_FIELD_NAME((*Property->GetName())), NumItems));
+				}
+
+				for (int32 Idx = LoopMin; Idx < LoopMax; Idx++)
 				{
 					uint8* DataPtr      = Property->ContainerPtrToValuePtr           <uint8>(Data, Idx);
 					uint8* DefaultValue = Property->ContainerPtrToValuePtrForDefaults<uint8>(DefaultsStruct, Defaults, Idx);
-					if( CustomPropertyNode || !UnderlyingArchive.DoDelta() || UnderlyingArchive.IsTransacting() || (!Defaults && !dynamic_cast<const UClass*>(this)) || !Property->Identical( DataPtr, DefaultValue, UnderlyingArchive.GetPortFlags()) )
+					if (StaticArrayContainer.IsSet() || CustomPropertyNode || !UnderlyingArchive.DoDelta() || UnderlyingArchive.IsTransacting() || (!Defaults && !dynamic_cast<const UClass*>(this)) || !Property->Identical(DataPtr, DefaultValue, UnderlyingArchive.GetPortFlags()))
 					{
 						if (bUseAtomicSerialization)
 						{
@@ -1189,6 +1488,8 @@ void UStruct::SerializeTaggedProperties(FStructuredArchive::FSlot Slot, uint8* D
 						FArchive::FScopeAddDebugData P(UnderlyingArchive, NAME_PropertySerialize);
 						FArchive::FScopeAddDebugData S(UnderlyingArchive, Property->GetFName());
 #endif
+						TestCollector.RecordSavedProperty(Property);
+
 						FPropertyTag Tag( UnderlyingArchive, Property, Idx, DataPtr, DefaultValue );
 						// If available use the property guid from BlueprintGeneratedClasses, provided we aren't cooking data.
 						if (bArePropertyGuidsAvailable && !UnderlyingArchive.IsCooking())
@@ -1197,27 +1498,24 @@ void UStruct::SerializeTaggedProperties(FStructuredArchive::FSlot Slot, uint8* D
 							Tag.SetPropertyGuid(PropertyGuid);
 						}
 
-						FStructuredArchive::FRecord PropertyRecord = PropertiesRecord.EnterRecord(FIELD_NAME(*Tag.Name.ToString()));
+						TStringBuilder<256> TagName;
+						Tag.Name.ToString(TagName);
+						FStructuredArchive::FSlot PropertySlot = StaticArrayContainer.IsSet() ? StaticArrayContainer->EnterElement() : PropertiesRecord.EnterField(SA_FIELD_NAME(TagName.ToString()));
 
-						PropertyRecord << NAMED_FIELD(Tag);
+						PropertySlot << Tag;
 
 						// need to know how much data this call to SerializeTaggedProperty consumes, so mark where we are
 						int64 DataOffset = UnderlyingArchive.Tell();
 
 						// if using it, save the current custom property list and switch to its sub property list (in case of UStruct serialization)
 						const FCustomPropertyListNode* SavedCustomPropertyList = nullptr;
-						if(UnderlyingArchive.ArUseCustomPropertyList && CustomPropertyNode)
+						if (UnderlyingArchive.ArUseCustomPropertyList && CustomPropertyNode)
 						{
 							SavedCustomPropertyList = UnderlyingArchive.ArCustomPropertyList;
 							UnderlyingArchive.ArCustomPropertyList = CustomPropertyNode->SubPropertyList;
 						}
 
-						FStructuredArchive::FSlot PropertyField = PropertyRecord.EnterField(FIELD_NAME_TEXT("Value"));
-						Tag.SerializeTaggedProperty(PropertyField, Property, DataPtr, DefaultValue);
-						if (!PropertyField.IsFilled())
-						{
-							Tag.SerializeTaggedProperty(PropertyField, Property, DataPtr, DefaultValue);
-						}
+						Tag.SerializeTaggedProperty(PropertySlot, Property, DataPtr, DefaultValue);
 
 						// restore the original custom property list after serializing
 						if (SavedCustomPropertyList)
@@ -1228,7 +1526,7 @@ void UStruct::SerializeTaggedProperties(FStructuredArchive::FSlot Slot, uint8* D
 						// set the tag's size
 						Tag.Size = UnderlyingArchive.Tell() - DataOffset;
 
-						if ( Tag.Size >  0 && !UnderlyingArchive.IsTextFormat())
+						if (Tag.Size > 0 && !UnderlyingArchive.IsTextFormat())
 						{
 							// mark our current location
 							DataOffset = UnderlyingArchive.Tell();
@@ -1247,22 +1545,191 @@ void UStruct::SerializeTaggedProperties(FStructuredArchive::FSlot Slot, uint8* D
 
 		if (!UnderlyingArchive.IsTextFormat())
 		{
-			static FName Temp(NAME_None);
-			UnderlyingArchive << Temp;
+			// Add an empty FName that serves as a null-terminator
+			FName NoneTerminator;
+			UnderlyingArchive << NoneTerminator;
 		}
 	}
 }
 void UStruct::FinishDestroy()
 {
+	DestroyUnversionedSchema(this);
 	Script.Empty();
+
+	if (ChildProperties)
+	{
+		FFieldPath::OnFieldDeleted();
+	}
+
 	Super::FinishDestroy();
+}
+
+/** Helper function that destroys properties from the privided linked list and nulls the list head pointer */
+inline void DestroyPropertyLinkedList(FField*& PropertiesToDestroy)
+{
+	for (FField* FieldToDestroy = PropertiesToDestroy; FieldToDestroy; )
+	{
+		FField* NextField = FieldToDestroy->Next;
+		delete FieldToDestroy;
+		FieldToDestroy = NextField;
+	}
+	PropertiesToDestroy = nullptr;
+}
+
+void UStruct::DestroyChildPropertiesAndResetPropertyLinks()
+{
+	DestroyPropertyLinkedList(ChildProperties);
+	PropertyLink = nullptr;
+	RefLink = nullptr;
+	DestructorLink = nullptr;
+	PostConstructLink = nullptr;
+}
+
+UStruct::~UStruct()
+{
+	// Destroy all properties owned by this struct
+	// This needs to happen after FinishDestroy which calls DestroyNonNativeProperties
+	// Also, Blueprint generated classes can have DestroyNonNativeProperties called on them after their FinishDestroy has been called
+	// so properties can only be deleted in the destructor
+	DestroyPropertyLinkedList(ChildProperties);
 }
 
 IMPLEMENT_FSTRUCTUREDARCHIVE_SERIALIZER(UStruct);
 
-void UStruct::Serialize( FArchive& Ar )
+#if WITH_EDITORONLY_DATA
+void UStruct::ConvertUFieldsToFFields()
+{	
+	TArray<FField*> NewChildProperties;
+	UField* OldField = Children;
+	UField* PreviousUnconvertedField = nullptr;
+
+	// First convert all properties and store them in a temp array
+	while (OldField)
+	{
+		if (OldField->IsA<UProperty>())
+		{
+			FField* NewField = OldField->GetAssociatedFField();
+			if (!NewField)
+			{
+				NewField = FField::CreateFromUField(OldField);
+				OldField->SetAssociatedFField(NewField);
+				check(NewField);
+			}
+			NewChildProperties.Add(NewField);
+			// Remove this field from the linked list
+			if (PreviousUnconvertedField)
+			{
+				PreviousUnconvertedField->Next = OldField->Next;
+			}
+			else
+			{
+				Children = OldField->Next;
+			}
+			// Move the old FProperty to the transient package
+			OldField->Rename(nullptr, GetTransientPackage(), REN_ForceNoResetLoaders | REN_DoNotDirty | REN_DontCreateRedirectors | REN_NonTransactional);
+			OldField->RemoveFromRoot();
+		}
+		else 
+		{
+			// Update the previous unconverted field
+			if (PreviousUnconvertedField)
+			{
+				PreviousUnconvertedField->Next = OldField;				
+			}
+			else
+			{
+				Children = OldField;
+			}
+			PreviousUnconvertedField = OldField;
+		}
+		OldField = OldField->Next;
+	}
+	// Now add them to the linked list in the reverse order to preserve their actual order (adding to the list reverses the order)
+	for (int32 ChildPropertyIndex = NewChildProperties.Num() - 1; ChildPropertyIndex >= 0; --ChildPropertyIndex)
+	{
+		FField* NewField = NewChildProperties[ChildPropertyIndex];
+		check(NewField->Next == nullptr);
+		NewField->Next = ChildProperties;
+		ChildProperties = NewField;
+	}
+}
+#endif // WITH_EDITORONLY_DATA
+
+void UStruct::SerializeProperties(FArchive& Ar)
 {
-	Super::Serialize( Ar );
+	int32 PropertyCount = 0;
+
+	if (Ar.IsSaving())
+	{
+		// Count properties
+		for (FField* Field = ChildProperties; Field; Field = Field->Next)
+		{
+			bool bSaveProperty = true;
+#if WITH_EDITORONLY_DATA
+			FProperty* Property = CastField<FProperty>(Field);
+			if (Property)
+			{
+				bSaveProperty = !(Ar.IsFilterEditorOnly() && Property->IsEditorOnlyProperty());
+			}
+#endif // WITH_EDITORONLY_DATA
+			if (bSaveProperty)
+			{
+				PropertyCount++;
+			}
+		}
+	}
+
+	Ar << PropertyCount;
+
+	if (Ar.IsLoading())
+	{
+		// Not using SerializeSingleField here to avoid unnecessary checks for each property
+		TArray<FField*> LoadedProperties;
+		LoadedProperties.Reserve(PropertyCount);
+		for (int32 PropertyIndex = 0; PropertyIndex < PropertyCount; ++PropertyIndex)
+		{
+			FName PropertyTypeName;
+			Ar << PropertyTypeName;
+			FField* Prop = FField::Construct(PropertyTypeName, this, NAME_None, RF_NoFlags);
+			check(Prop);
+			Prop->Serialize(Ar);
+			LoadedProperties.Add(Prop);
+		}
+		for (int32 PropertyIndex = LoadedProperties.Num() - 1; PropertyIndex >= 0; --PropertyIndex)
+		{
+			FField* Prop = LoadedProperties[PropertyIndex];
+			Prop->Next = ChildProperties;
+			ChildProperties = Prop;
+		}
+	}
+	else
+	{
+		int32 VerifySerializedFieldsCount = 0;
+		for (FField* Field = ChildProperties; Field; Field = Field->Next)
+		{
+			bool bSaveProperty = true;
+#if WITH_EDITORONLY_DATA
+			FProperty* Property = CastField<FProperty>(Field);
+			if (Property)
+			{
+				bSaveProperty = !(Ar.IsFilterEditorOnly() && Property->IsEditorOnlyProperty());
+			}
+#endif // WITH_EDITORONLY_DATA
+			if (bSaveProperty)
+			{
+				FName PropertyTypeName = Field->GetClass()->GetFName();
+				Ar << PropertyTypeName;
+				Field->Serialize(Ar);
+				VerifySerializedFieldsCount++;
+			}
+		}
+		check(!Ar.IsSaving() || VerifySerializedFieldsCount == PropertyCount);
+	}
+}
+
+void UStruct::Serialize(FArchive& Ar)
+{
+	Super::Serialize(Ar);
 
 #if USTRUCT_FAST_ISCHILDOF_IMPL == USTRUCT_ISCHILDOF_STRUCTARRAY
 	UStruct* SuperStructBefore = GetSuperStruct();
@@ -1288,6 +1755,8 @@ void UStruct::Serialize( FArchive& Ar )
 #endif
 
 	Ar.UsingCustomVersion(FFrameworkObjectVersion::GUID);
+	Ar.UsingCustomVersion(FCoreObjectVersion::GUID);
+
 	if (Ar.CustomVer(FFrameworkObjectVersion::GUID) < FFrameworkObjectVersion::RemoveUField_Next)
 	{
 		Ar << Children;
@@ -1324,6 +1793,10 @@ void UStruct::Serialize( FArchive& Ar )
 		}
 	}
 
+	if (Ar.CustomVer(FCoreObjectVersion::GUID) >= FCoreObjectVersion::FProperties)
+	{
+		SerializeProperties(Ar);
+	}
 
 	if (Ar.IsLoading())
 	{
@@ -1383,10 +1856,13 @@ void UStruct::Serialize( FArchive& Ar )
 				FMemoryWriter MemWriter(TempScript, Ar.IsPersistent());
 				LinkerSave->Saver = &MemWriter;
 
+				{
+					FPropertyProxyArchive PropertyAr(Ar, iCode, this);
 				// now, use the linker to save the byte code, but writing to memory
 				while (iCode < ScriptBytecodeSize)
 				{
-					SerializeExpr(iCode, Ar);
+						SerializeExpr(iCode, PropertyAr);
+					}
 				}
 
 				// restore the saver
@@ -1400,9 +1876,10 @@ void UStruct::Serialize( FArchive& Ar )
 			}
 			else
 			{
+				FPropertyProxyArchive PropertyAr(Ar, iCode, this);
 				while (iCode < ScriptBytecodeSize)
 				{
-					SerializeExpr(iCode, Ar);
+					SerializeExpr(iCode, PropertyAr);
 				}
 			}
 
@@ -1429,6 +1906,28 @@ void UStruct::Serialize( FArchive& Ar )
 	}
 }
 
+void UStruct::PostLoad()
+{
+	Super::PostLoad();
+
+	// Finally try to resolve all script properties that couldn't be resolved at load time
+	for (TPair<TFieldPath<FField>, int32>& MissingProperty : UnresolvedScriptProperties)
+	{
+		FField* ResolvedProperty = MissingProperty.Key.Get(this);
+		if (ResolvedProperty)
+		{			
+			check((int32)Script.Num() >= (int32)(MissingProperty.Value + sizeof(FField*)));
+			FField** TargetScriptPropertyPtr = (FField**)(Script.GetData() + MissingProperty.Value);
+			*TargetScriptPropertyPtr = ResolvedProperty;
+		}
+		else if (!MissingProperty.Key.IsEmpty())
+		{
+			UE_LOG(LogClass, Warning, TEXT("Failed to resolve bytecode referenced field from path: %s when loading %s"), *MissingProperty.Key.ToString(), *GetFullName());
+		}
+	}
+	UnresolvedScriptProperties.Empty();
+}
+
 void UStruct::AddReferencedObjects(UObject* InThis, FReferenceCollector& Collector)
 {
 	UStruct* This = CastChecked<UStruct>(InThis);
@@ -1444,36 +1943,9 @@ void UStruct::AddReferencedObjects(UObject* InThis, FReferenceCollector& Collect
 			Collector.AddReferencedObject( This->ScriptObjectReferences[ Index ], This );
 		}
 	}
-
-	bool bPropertiesRequireRelink = false;
-	auto AROPropertyChain = [&This, &Collector, &bPropertiesRequireRelink](UProperty* InProp, UProperty* UProperty::*NextPropPtr)
-	{
-		//@todo NickW, temp hack to make stale property chains less crashy
-		for (UProperty* CurProperty = InProp; CurProperty;)
-		{
-			// Cache NextProperty now as ARO may re-point (or null) the Property pointer
-			UProperty* NextProperty = CurProperty->*NextPropPtr;
-
-			UProperty* PropertyToARO = CurProperty;
-			Collector.AddReferencedObject(PropertyToARO, This);
-			if (CurProperty != PropertyToARO)
-			{
-				// This property was re-pointed by ARO - we need to re-link the property chain
-				bPropertiesRequireRelink = true;
-			}
-
-			CurProperty = NextProperty;
-		}
-	};
-
-	AROPropertyChain(This->PropertyLink, &UProperty::PropertyLinkNext);
-	AROPropertyChain(This->RefLink, &UProperty::NextRef);
-	AROPropertyChain(This->DestructorLink, &UProperty::DestructorLinkNext);
-
-	if (bPropertiesRequireRelink)
-	{
-		This->StaticLink(bPropertiesRequireRelink);
-	}
+#endif
+#if WITH_EDITORONLY_DATA
+	Collector.AddReferencedObjects(This->PropertyWrappers, This);
 #endif
 	Super::AddReferencedObjects( This, Collector );
 }
@@ -1486,7 +1958,31 @@ void UStruct::SetSuperStruct(UStruct* NewSuperStruct)
 #endif
 }
 
-#if WITH_EDITOR || HACK_HEADER_GENERATOR
+FString UStruct::PropertyNameToDisplayName(FName InName) const
+{
+	const UField* FoundField = FindField<const UField>(this, InName);
+	return GetAuthoredNameForField(FoundField);
+}
+
+FString UStruct::GetAuthoredNameForField(const UField* Field) const
+{
+	if (Field)
+	{
+		return Field->GetName();
+	}
+	return FString();
+}
+
+FString UStruct::GetAuthoredNameForField(const FField* Field) const
+{
+	if (Field)
+	{
+		return Field->GetName();
+	}
+	return FString();
+}
+
+#if WITH_EDITORONLY_DATA
 bool UStruct::GetBoolMetaDataHierarchical(const FName& Key) const
 {
 	bool bResult = false;
@@ -1535,7 +2031,7 @@ const UStruct* UStruct::HasMetaDataHierarchical(const FName& Key) const
 	return nullptr;
 }
 
-#endif
+#endif // WITH_EDITORONLY_DATA
 
 #if USE_CIRCULAR_DEPENDENCY_LOAD_DEFERRING
 	/**
@@ -1586,7 +2082,7 @@ void UStruct::InstanceSubobjectTemplates( void* Data, void const* DefaultData, U
 	checkSlow(Data);
 	checkSlow(Owner);
 
-	for ( UProperty* Property = RefLink; Property != NULL; Property = Property->NextRef )
+	for ( FProperty* Property = RefLink; Property != NULL; Property = Property->NextRef )
 	{
 		if (Property->ContainsInstancedObjectProperty())
 		{
@@ -1605,6 +2101,7 @@ IMPLEMENT_CORE_INTRINSIC_CLASS(UStruct, UField,
 		// that are in the Children chain or SuperStruct->Children chains.
 
 		Class->EmitObjectArrayReference(STRUCT_OFFSET(UStruct, ScriptObjectReferences), TEXT("ScriptObjectReferences"));
+		Class->EmitObjectArrayReference(STRUCT_OFFSET(UStruct, PropertyObjectReferences), TEXT("PropertyObjectReferences"));		
 	}
 );
 
@@ -1613,13 +2110,12 @@ void UStruct::TagSubobjects(EObjectFlags NewFlags)
 	Super::TagSubobjects(NewFlags);
 
 	// Tag our properties
-	for (TFieldIterator<UProperty> It(this, EFieldIteratorFlags::ExcludeSuper); It; ++It)
+	for (TFieldIterator<FProperty> It(this, EFieldIteratorFlags::ExcludeSuper); It; ++It)
 	{
-		UProperty* Property = *It;
+		FProperty* Property = *It;
 		if (Property && !Property->HasAnyFlags(GARBAGE_COLLECTION_KEEPFLAGS) && !Property->IsRooted())
 		{
 			Property->SetFlags(NewFlags);
-			Property->TagSubobjects(NewFlags);
 		}
 	}
 }
@@ -1817,15 +2313,15 @@ bool FindConstructorUninitialized(UStruct* BaseClass,uint8* Data,uint8* Defaults
 {
 	bool bAnyProblem = false;
 	static TSet<FString> PrintedWarnings;
-	for(UProperty* P=BaseClass->PropertyLink; P; P=P->PropertyLinkNext )
+	for(FProperty* P=BaseClass->PropertyLink; P; P=P->PropertyLinkNext )
 	{		
 		int32 Size = P->GetSize();
 		bool bProblem = false;
 		check(Size);
-		UBoolProperty*   PB     = dynamic_cast<UBoolProperty  *>(P);
-		UStructProperty* PS     = dynamic_cast<UStructProperty*>(P);
-		UStrProperty*    PStr   = dynamic_cast<UStrProperty   *>(P);
-		UArrayProperty*  PArray = dynamic_cast<UArrayProperty *>(P);
+		FBoolProperty*   PB     = CastField<FBoolProperty>(P);
+		FStructProperty* PS     = CastField<FStructProperty>(P);
+		FStrProperty*    PStr   = CastField<FStrProperty>(P);
+		FArrayProperty*  PArray = CastField<FArrayProperty>(P);
 		if(PStr)
 		{
 			// string that actually have data would be false positives, since they would point to the same string, but actually be different pointers
@@ -1900,8 +2396,8 @@ bool FindConstructorUninitialized(UStruct* BaseClass,uint8* Data,uint8* Defaults
 #endif
 
 
-UScriptStruct::UScriptStruct( EStaticConstructor, int32 InSize, EObjectFlags InFlags )
-	: UStruct( EC_StaticConstructor, InSize, InFlags )
+UScriptStruct::UScriptStruct( EStaticConstructor, int32 InSize, int32 InAlignment, EObjectFlags InFlags )
+	: UStruct( EC_StaticConstructor, InSize, InAlignment, InFlags )
 	, StructFlags(STRUCT_NoFlags)
 #if HACK_HEADER_GENERATOR
 	, StructMacroDeclaredLineNumber(INDEX_NONE)
@@ -1975,7 +2471,10 @@ void UScriptStruct::PrepareCppStructOps()
 			bPrepareCppStructOpsCompleted = true;
 			return;
 		}
-
+#if !HACK_HEADER_GENERATOR
+		StructFlags = EStructFlags(StructFlags | STRUCT_Native);
+#endif
+		
 #if !(UE_BUILD_SHIPPING || UE_BUILD_TEST)
 		// test that the constructor is initializing everything
 		if (!CppStructOps->HasZeroConstructor()
@@ -2008,7 +2507,7 @@ void UScriptStruct::PrepareCppStructOps()
 	}
 
 	check(!(StructFlags & STRUCT_ComputedFlags));
-	if (CppStructOps->HasSerializer())
+	if (CppStructOps->HasSerializer() || CppStructOps->HasStructuredSerializer())
 	{
 		UE_LOG(LogClass, Verbose, TEXT("Native struct %s has a custom serializer."),*GetName());
 		StructFlags = EStructFlags(StructFlags | STRUCT_SerializeNative );
@@ -2169,13 +2668,19 @@ void UScriptStruct::SerializeItem(FStructuredArchive::FSlot Slot, void* Value, v
 		}
 		else
 		{
-			FArchiveUObjectFromStructuredArchive Ar(Slot);
+#if WITH_TEXT_ARCHIVE_SUPPORT
+			FArchiveUObjectFromStructuredArchive Adapter(Slot);
+			FArchive& Ar = Adapter.GetArchive();
 			bItemSerialized = TheCppStructOps->Serialize(Ar, Value);
 			if (bItemSerialized && !Slot.IsFilled())
 			{
 				// The struct said that serialization succeeded but it didn't actually write anything.
 				Slot.EnterRecord();
 			}
+			Adapter.Close();
+#else
+			bItemSerialized = TheCppStructOps->Serialize(Slot.GetUnderlyingArchive(), Value);
+#endif
 		}		
 	}
 
@@ -2209,6 +2714,11 @@ void UScriptStruct::SerializeItem(FStructuredArchive::FSlot Slot, void* Value, v
 
 const TCHAR* UScriptStruct::ImportText(const TCHAR* InBuffer, void* Value, UObject* OwnerObject, int32 PortFlags, FOutputDevice* ErrorText, const FString& StructName, bool bAllowNativeOverride)
 {
+	return ImportText(InBuffer, Value, OwnerObject, PortFlags, ErrorText, [&StructName](){return StructName;}, bAllowNativeOverride);
+}
+
+const TCHAR* UScriptStruct::ImportText(const TCHAR* InBuffer, void* Value, UObject* OwnerObject, int32 PortFlags, FOutputDevice* ErrorText, const TFunctionRef<FString()>& StructNameGetter, bool bAllowNativeOverride)
+{
 	if (bAllowNativeOverride && StructFlags & STRUCT_ImportTextItemNative)
 	{
 		UScriptStruct::ICppStructOps* TheCppStructOps = GetCppStructOps();
@@ -2229,7 +2739,7 @@ const TCHAR* UScriptStruct::ImportText(const TCHAR* InBuffer, void* Value, UObje
 		while (*Buffer != TCHAR(')'))
 		{
 			// parse and import the value
-			Buffer = UProperty::ImportSingleProperty(Buffer, Value, this, OwnerObject, PortFlags | PPF_Delimited, ErrorText, DefinedProperties);
+			Buffer = FProperty::ImportSingleProperty(Buffer, Value, this, OwnerObject, PortFlags | PPF_Delimited, ErrorText, DefinedProperties);
 
 			// skip any remaining text before the next property value
 			SkipWhitespace(Buffer);
@@ -2247,7 +2757,7 @@ const TCHAR* UScriptStruct::ImportText(const TCHAR* InBuffer, void* Value, UObje
 
 					if (*Buffer != TCHAR('\"'))
 					{
-						ErrorText->Logf(TEXT("%sImportText (%s): Bad quoted string at: %s"), ErrorCount++ > 0 ? LINE_TERMINATOR : TEXT(""), *StructName, Buffer);
+						ErrorText->Logf(TEXT("%sImportText (%s): Bad quoted string at: %s"), ErrorCount++ > 0 ? LINE_TERMINATOR : TEXT(""), *StructNameGetter(), Buffer);
 						return nullptr;
 					}
 				}
@@ -2260,7 +2770,7 @@ const TCHAR* UScriptStruct::ImportText(const TCHAR* InBuffer, void* Value, UObje
 					SubCount--;
 					if (SubCount < 0)
 					{
-						ErrorText->Logf(TEXT("%sImportText (%s): Too many closing parenthesis in: %s"), ErrorCount++ > 0 ? LINE_TERMINATOR : TEXT(""), *StructName, InBuffer);
+						ErrorText->Logf(TEXT("%sImportText (%s): Too many closing parenthesis in: %s"), ErrorCount++ > 0 ? LINE_TERMINATOR : TEXT(""), *StructNameGetter(), InBuffer);
 						return nullptr;
 					}
 				}
@@ -2268,7 +2778,7 @@ const TCHAR* UScriptStruct::ImportText(const TCHAR* InBuffer, void* Value, UObje
 			}
 			if (SubCount > 0)
 			{
-				ErrorText->Logf(TEXT("%sImportText(%s): Not enough closing parenthesis in: %s"), ErrorCount++ > 0 ? LINE_TERMINATOR : TEXT(""), *StructName, InBuffer);
+				ErrorText->Logf(TEXT("%sImportText(%s): Not enough closing parenthesis in: %s"), ErrorCount++ > 0 ? LINE_TERMINATOR : TEXT(""), *StructNameGetter(), InBuffer);
 				return nullptr;
 			}
 
@@ -2280,7 +2790,7 @@ const TCHAR* UScriptStruct::ImportText(const TCHAR* InBuffer, void* Value, UObje
 			}
 			else if (*Buffer != TCHAR(')'))
 			{
-				ErrorText->Logf(TEXT("%sImportText (%s): Missing closing parenthesis: %s"), ErrorCount++ > 0 ? LINE_TERMINATOR : TEXT(""), *StructName, InBuffer);
+				ErrorText->Logf(TEXT("%sImportText (%s): Missing closing parenthesis: %s"), ErrorCount++ > 0 ? LINE_TERMINATOR : TEXT(""), *StructNameGetter(), InBuffer);
 				return nullptr;
 			}
 
@@ -2292,7 +2802,7 @@ const TCHAR* UScriptStruct::ImportText(const TCHAR* InBuffer, void* Value, UObje
 	}
 	else
 	{
-		ErrorText->Logf(TEXT("%sImportText (%s): Missing opening parenthesis: %s"), ErrorCount++ > 0 ? LINE_TERMINATOR : TEXT(""), *StructName, InBuffer); //-V547
+		ErrorText->Logf(TEXT("%sImportText (%s): Missing opening parenthesis: %s"), ErrorCount++ > 0 ? LINE_TERMINATOR : TEXT(""), *StructNameGetter(), InBuffer); //-V547
 		return nullptr;
 	}
 	return Buffer;
@@ -2324,7 +2834,7 @@ void UScriptStruct::ExportText(FString& ValueStr, const void* Value, const void*
 		Defaults = Value;
 	}
 
-	for (TFieldIterator<UProperty> It(this); It; ++It)
+	for (TFieldIterator<FProperty> It(this); It; ++It)
 	{
 		if (It->ShouldPort(PortFlags))
 		{
@@ -2343,13 +2853,15 @@ void UScriptStruct::ExportText(FString& ValueStr, const void* Value, const void*
 						ValueStr += TEXT(",");
 					}
 
+					const FString PropertyName = (PortFlags & PPF_ExternalEditor) != 0 ? *It->GetAuthoredName() : It->GetName();
+
 					if (It->ArrayDim == 1)
 					{
-						ValueStr += FString::Printf(TEXT("%s="), *It->GetName());
+						ValueStr += FString::Printf(TEXT("%s="), *PropertyName);
 					}
 					else
 					{
-						ValueStr += FString::Printf(TEXT("%s[%i]="), *It->GetName(), Index);
+						ValueStr += FString::Printf(TEXT("%s[%i]="), *PropertyName, Index);
 					}
 					ValueStr += InnerValue;
 				}
@@ -2370,10 +2882,11 @@ void UScriptStruct::ExportText(FString& ValueStr, const void* Value, const void*
 void UScriptStruct::Link(FArchive& Ar, bool bRelinkExistingProperties)
 {
 	Super::Link(Ar, bRelinkExistingProperties);
+	SetStructTrashed(false);
 	if (!HasDefaults()) // if you have CppStructOps, then that is authoritative, otherwise we look at the properties
 	{
 		StructFlags = EStructFlags(StructFlags | STRUCT_ZeroConstructor | STRUCT_NoDestructor | STRUCT_IsPlainOldData);
-		for( UProperty* Property = PropertyLink; Property; Property = Property->PropertyLinkNext )
+		for( FProperty* Property = PropertyLink; Property; Property = Property->PropertyLinkNext )
 		{
 			if (!Property->HasAnyPropertyFlags(CPF_ZeroConstructor))
 			{
@@ -2423,7 +2936,7 @@ bool UScriptStruct::CompareScriptStruct(const void* A, const void* B, uint32 Por
 		}
 	}
 
-	for( TFieldIterator<UProperty> It(this); It; ++It )
+	for( TFieldIterator<FProperty> It(this); It; ++It )
 	{
 		for( int32 i=0; i<It->ArrayDim; i++ )
 		{
@@ -2463,7 +2976,7 @@ void UScriptStruct::CopyScriptStruct(void* InDest, void const* InSrc, int32 Arra
 	}
 	else
 	{
-		for( TFieldIterator<UProperty> It(this); It; ++It )
+		for( TFieldIterator<FProperty> It(this); It; ++It )
 		{
 			for (int32 Index = 0; Index < ArrayDim; Index++)
 			{
@@ -2482,11 +2995,11 @@ uint32 UScriptStruct::GetStructTypeHash(const void* Src) const
 
 	// If any the ensure or check in this function fires the fix is to implement GetTypeHash 
 	// or erase the data. USetProperties and UMapProperties that are loaded from disk
-	// will clear themselves when they detect this error (see USetProperty and 
-	// UMapProperty::ConvertFromType).
+	// will clear themselves when they detect this error (see FSetProperty and 
+	// FMapProperty::ConvertFromType).
 
 	UScriptStruct::ICppStructOps* TheCppStructOps = GetCppStructOps();
-	return TheCppStructOps->GetTypeHash(Src);
+	return TheCppStructOps->GetStructTypeHash(Src);
 }
 
 void UScriptStruct::InitializeStruct(void* InDest, int32 ArrayDim) const
@@ -2509,8 +3022,9 @@ void UScriptStruct::InitializeStruct(void* InDest, int32 ArrayDim) const
 			{
 				void* PropertyDest = Dest + ArrayIndex * Stride;
 				checkf(IsAligned(PropertyDest, TheCppStructOps->GetAlignment()),
-					TEXT("Destination address for property does not match requirement of %d byte alignment"), 
-					TheCppStructOps->GetAlignment());
+					TEXT("Destination address for property does not match requirement of %d byte alignment for %s"), 
+					TheCppStructOps->GetAlignment(),
+					*GetPathNameSafe(this));
 				TheCppStructOps->Construct(PropertyDest);
 			}
 		}
@@ -2523,7 +3037,7 @@ void UScriptStruct::InitializeStruct(void* InDest, int32 ArrayDim) const
 	if (PropertiesSize > InitializedSize)
 	{
 		bool bHitBase = false;
-		for (UProperty* Property = PropertyLink; Property && !bHitBase; Property = Property->PropertyLinkNext)
+		for (FProperty* Property = PropertyLink; Property && !bHitBase; Property = Property->PropertyLinkNext)
 		{
 			if (!Property->IsInContainer(InitializedSize))
 			{
@@ -2577,7 +3091,7 @@ void UScriptStruct::ClearScriptStruct(void* Dest, int32 ArrayDim) const
 	if ( PropertiesSize > ClearedSize )
 	{
 		bool bHitBase = false;
-		for ( UProperty* Property = PropertyLink; Property && !bHitBase; Property = Property->PropertyLinkNext )
+		for ( FProperty* Property = PropertyLink; Property && !bHitBase; Property = Property->PropertyLinkNext )
 		{
 			if (!Property->IsInContainer(ClearedSize))
 			{
@@ -2627,7 +3141,7 @@ void UScriptStruct::DestroyStruct(void* Dest, int32 ArrayDim) const
 	if (PropertiesSize > ClearedSize)
 	{
 		bool bHitBase = false;
-		for (UProperty* P = DestructorLink; P  && !bHitBase; P = P->DestructorLinkNext)
+		for (FProperty* P = DestructorLink; P  && !bHitBase; P = P->DestructorLinkNext)
 		{
 			if (!P->IsInContainer(ClearedSize))
 			{
@@ -2644,6 +3158,23 @@ void UScriptStruct::DestroyStruct(void* Dest, int32 ArrayDim) const
 				bHitBase = true;
 			}
 		}
+	}
+}
+
+bool UScriptStruct::IsStructTrashed() const
+{
+	return !!(StructFlags & STRUCT_Trashed);
+}
+
+void UScriptStruct::SetStructTrashed(bool bIsTrash)
+{
+	if (bIsTrash)
+	{
+		StructFlags = EStructFlags(StructFlags | STRUCT_Trashed);
+	}
+	else
+	{
+		StructFlags = EStructFlags(StructFlags & ~STRUCT_Trashed);
 	}
 }
 
@@ -2696,7 +3227,7 @@ public:
 				if (ScriptStruct->PropertiesSize > InitializedSize)
 				{
 					bool bHitBase = false;
-					for (UProperty* Property = ScriptStruct->PropertyLink; Property && !bHitBase; Property = Property->PropertyLinkNext)
+					for (FProperty* Property = ScriptStruct->PropertyLink; Property && !bHitBase; Property = Property->PropertyLinkNext)
 					{
 						if (!Property->IsInContainer(InitializedSize))
 						{
@@ -2755,17 +3286,17 @@ int32 FStructUtils::AttemptToFindUninitializedScriptStructMembers()
 
 			const void* BadPointer = (void*)0xFFFFFFFFFFFFFFFFull;
 			
-			for (const UProperty* Property : TFieldRange<UProperty>(ScriptStruct, EFieldIteratorFlags::ExcludeSuper))
+			for (const FProperty* Property : TFieldRange<FProperty>(ScriptStruct, EFieldIteratorFlags::ExcludeSuper))
 			{
-#if	WITH_EDITOR || HACK_HEADER_GENERATOR
+#if	WITH_EDITORONLY_DATA
 				static const FName NAME_IgnoreForMemberInitializationTest(TEXT("IgnoreForMemberInitializationTest"));
 				if (Property->HasMetaData(NAME_IgnoreForMemberInitializationTest))
 				{
 					continue;
 				}
-#endif
+#endif // WITH_EDITORONLY_DATA
 
-				if (const UObjectPropertyBase* ObjectProperty = Cast<const UObjectPropertyBase>(Property))
+				if (const FObjectPropertyBase* ObjectProperty = CastField<const FObjectPropertyBase>(Property))
 				{
 					// Check any reflected pointer properties to make sure they got initialized
 					const UObject* PropValue = ObjectProperty->GetObjectPropertyValue_InContainer(WrapperFF.GetData());
@@ -2775,7 +3306,7 @@ int32 FStructUtils::AttemptToFindUninitializedScriptStructMembers()
 						UE_LOG(LogClass, Warning, TEXT("ObjectProperty %s%s::%s is not initialized properly"), ScriptStruct->GetPrefixCPP(), *ScriptStruct->GetName(), *Property->GetNameCPP());
 					}
 				}
-				else if (const UBoolProperty* BoolProperty = Cast<const UBoolProperty>(Property))
+				else if (const FBoolProperty* BoolProperty = CastField<const FBoolProperty>(Property))
 				{
 					// Check for uninitialized boolean properties (done separately to deal with byte-wide booleans that would evaluate to true with either 0x55 or 0xAA)
 					const bool Value0 = BoolProperty->GetPropertyValue_InContainer(Wrapper00.GetData());
@@ -2787,7 +3318,7 @@ int32 FStructUtils::AttemptToFindUninitializedScriptStructMembers()
 						UE_LOG(LogClass, Warning, TEXT("BoolProperty %s%s::%s is not initialized properly"), ScriptStruct->GetPrefixCPP(), *ScriptStruct->GetName(), *Property->GetNameCPP());
 					}
 				}
-				else if (Property->IsA(UNameProperty::StaticClass()))
+				else if (Property->IsA(FNameProperty::StaticClass()))
 				{
 					// Skip some other types that will crash in equality with garbage data
 					//@TODO: Shouldn't need to skip FName, it's got a default ctor that initializes correctly...
@@ -2795,11 +3326,11 @@ int32 FStructUtils::AttemptToFindUninitializedScriptStructMembers()
 				else
 				{
 					bool ShouldInspect = true;
-					if (Property->IsA(UStructProperty::StaticClass()))
+					if (Property->IsA(FStructProperty::StaticClass()))
 					{
 						// Skip user defined structs since we will consider those structs directly.
 						// Calling again here will just result in false positives
-						const UStructProperty* StructProperty = Cast<UStructProperty>(Property);
+						const FStructProperty* StructProperty = CastField<FStructProperty>(Property);
 						ShouldInspect = (StructProperty->Struct->StructFlags & STRUCT_NoExport) != 0;
 					}
 
@@ -2939,7 +3470,7 @@ class FRestoreClassInfo: public FRestoreForUObjectOverwrite
 	UClass*			Target;
 	/** Saved ClassWithin **/
 	UClass*			Within;
-	/** Save ClassGeneratedBy */
+	/** Saved ClassGeneratedBy */
 	UObject*		GeneratedBy;
 	/** Saved ClassDefaultObject **/
 	UObject*		DefaultObject;
@@ -3074,6 +3605,20 @@ UObject* UClass::CreateDefaultObject()
 				check(ClassDefaultObject);
 				// Blueprint CDOs have their properties always initialized.
 				const bool bShouldInitializeProperties = !HasAnyClassFlags(CLASS_Native | CLASS_Intrinsic);
+				// Register the offsets of any sparse delegates this class introduces with the sparse delegate storage
+				for (TFieldIterator<FMulticastSparseDelegateProperty> SparseDelegateIt(this, EFieldIteratorFlags::ExcludeSuper, EFieldIteratorFlags::ExcludeDeprecated); SparseDelegateIt; ++SparseDelegateIt)
+				{
+					const FSparseDelegate& SparseDelegate = SparseDelegateIt->GetPropertyValue_InContainer(ClassDefaultObject);
+					USparseDelegateFunction* SparseDelegateFunction = CastChecked<USparseDelegateFunction>(SparseDelegateIt->SignatureFunction);
+					FSparseDelegateStorage::RegisterDelegateOffset(ClassDefaultObject, SparseDelegateFunction->DelegateName, (size_t)&SparseDelegate - (size_t)ClassDefaultObject);
+				}
+				if (HasAnyClassFlags(CLASS_CompiledFromBlueprint))
+				{
+					if (UDynamicClass* DynamicClass = Cast<UDynamicClass>(this))
+					{
+						(*(DynamicClass->DynamicClassInitializer))(DynamicClass);
+					}
+				}
 				(*ClassConstructor)(FObjectInitializer(ClassDefaultObject, ParentDefaultObject, false, bShouldInitializeProperties));
 				if (bDoNotify)
 				{
@@ -3158,7 +3703,7 @@ FFeedbackContext& UClass::GetDefaultPropertiesFeedbackContext()
 * Get the name of the CDO for the this class
 * @return The name of the CDO
 */
-FName UClass::GetDefaultObjectName()
+FName UClass::GetDefaultObjectName() const
 {
 	FString DefaultName;
 	DefaultName.Reserve(NAME_SIZE);
@@ -3335,8 +3880,14 @@ void UClass::FinishDestroy()
 	//warning: Must be emptied explicitly in order for intrinsic classes
 	// to not show memory leakage on exit.
 	NetFields.Empty();
+	ClassReps.Empty();
 
-	ClassDefaultObject = NULL;
+	ClassDefaultObject = nullptr;
+
+#if WITH_EDITORONLY_DATA
+	// If for whatever reason there's still properties that have not been destroyed in PurgeClass, destroy them now
+	DestroyPropertiesPendingDestruction();
+#endif // WITH_EDITORONLY_DATA
 
 	Super::FinishDestroy();
 }
@@ -3396,75 +3947,119 @@ static int32 GValidateReplicatedProperties = 1;
 
 static FAutoConsoleVariable CVarValidateReplicatedPropertyRegistration(TEXT("net.ValidateReplicatedPropertyRegistration"), GValidateReplicatedProperties, TEXT("Warns if replicated properties were not registered in GetLifetimeReplicatedProps."));
 
+#if HACK_HEADER_GENERATOR
+void UClass::SetUpUhtReplicationData()
+{
+	if (!HasAnyClassFlags(CLASS_ReplicationDataIsSetUp) && PropertyLink != NULL)
+	{
+        ClassReps.Empty();
+		if (UClass* SuperClass = GetSuperClass())
+		{
+			SuperClass->SetUpUhtReplicationData();
+			ClassReps = SuperClass->ClassReps;
+			FirstOwnedClassRep = ClassReps.Num();
+		}
+		else
+		{
+			FirstOwnedClassRep = 0;
+		}
+
+		for (TFieldIterator<FProperty> It(this, EFieldIteratorFlags::ExcludeSuper); It; ++It)
+		{
+			if (It->PropertyFlags & CPF_Net)
+			{
+				It->RepIndex = ClassReps.Num();
+				new (ClassReps) FRepRecord(*It, 0);
+			}
+		}
+
+		ClassFlags |= CLASS_ReplicationDataIsSetUp;
+		ClassReps.Shrink();
+	}
+}
+#endif
+
 void UClass::SetUpRuntimeReplicationData()
 {
 	if (!HasAnyClassFlags(CLASS_ReplicationDataIsSetUp) && PropertyLink != NULL)
 	{
 		NetFields.Empty();
+
 		if (UClass* SuperClass = GetSuperClass())
 		{
 			SuperClass->SetUpRuntimeReplicationData();
 			ClassReps = SuperClass->ClassReps;
+			FirstOwnedClassRep = ClassReps.Num();
 		}
 		else
 		{
 			ClassReps.Empty();
+			FirstOwnedClassRep = 0;
 		}
 
-		TArray< UProperty * > NetProperties;		// Track properties so me can ensure they are sorted by offsets at the end
-
-		for( TFieldIterator<UField> It(this,EFieldIteratorFlags::ExcludeSuper); It; ++It )
+		// Track properties so me can ensure they are sorted by offsets at the end
+		TArray<FProperty*> NetProperties;
+		for (TFieldIterator<FField> It(this, EFieldIteratorFlags::ExcludeSuper); It; ++It)
 		{
-			UProperty* P;
-			UFunction* F;
-			if( (P=dynamic_cast<UProperty*>(*It))!=NULL )
+			if (FProperty* Prop = CastField<FProperty>(*It))
 			{
-				if ( P->PropertyFlags & CPF_Net )
+				if ((Prop->PropertyFlags & CPF_Net) && Prop->GetOwner<UObject>() == this)
 				{
-					NetFields.Add( *It );
-
-					if ( P->GetOuter() == this )
-					{
-						NetProperties.Add( P );
-					}
+					NetProperties.Add(Prop);
 				}
 			}
-			else if( (F=dynamic_cast<UFunction*>(*It))!=NULL )
+		}
+
+		for(TFieldIterator<UField> It(this,EFieldIteratorFlags::ExcludeSuper); It; ++It)
+		{
+			if (UFunction * Func = Cast<UFunction>(*It))
 			{
 				// When loading reflection data (e.g. from blueprints), we may have references to placeholder functions, or reflection data 
 				// in children may be out of date. In that case we cannot enforce this check, but that is ok because reflection data will
 				// be regenerated by compile on load anyway:
-				const bool bCanCheck = (!GIsEditor && !IsRunningCommandlet()) || !F->HasAnyFlags(RF_WasLoaded);
-				check(!bCanCheck || (!F->GetSuperFunction() || (F->GetSuperFunction()->FunctionFlags&FUNC_NetFuncFlags) == (F->FunctionFlags&FUNC_NetFuncFlags)));
-				if( (F->FunctionFlags&FUNC_Net) && !F->GetSuperFunction() )
-					NetFields.Add( *It );
+				const bool bCanCheck = (!GIsEditor && !IsRunningCommandlet()) || !Func->HasAnyFlags(RF_WasLoaded);
+				check(!bCanCheck || (!Func->GetSuperFunction() || (Func->GetSuperFunction()->FunctionFlags&FUNC_NetFuncFlags) == (Func->FunctionFlags&FUNC_NetFuncFlags)));
+				if ((Func->FunctionFlags&FUNC_Net) && !Func->GetSuperFunction())
+				{
+					NetFields.Add(Func);
+				}
 			}
 		}
 
-		// Sort NetProperties so that their ClassReps are sorted by memory offset
-		struct FCompareUFieldOffsets
+		const bool bIsNativeClass = HasAnyClassFlags(CLASS_Native);
+		if (!bIsNativeClass)
 		{
-			FORCEINLINE bool operator()( UProperty & A, UProperty & B ) const
+			// Sort NetProperties so that their ClassReps are sorted by memory offset
+			struct FComparePropertyOffsets
 			{
-				// Ensure stable sort
-				if ( A.GetOffset_ForGC() == B.GetOffset_ForGC() )
+				FORCEINLINE bool operator()(FProperty& A, FProperty& B) const
 				{
-					return A.GetName() < B.GetName();
+					// Ensure stable sort
+					if (A.GetOffset_ForGC() == B.GetOffset_ForGC())
+					{
+						return A.GetName() < B.GetName();
+					}
+
+					return A.GetOffset_ForGC() < B.GetOffset_ForGC();
 				}
+			};
 
-				return A.GetOffset_ForGC() < B.GetOffset_ForGC();
-			}
-		};
+			Sort(NetProperties.GetData(), NetProperties.Num(), FComparePropertyOffsets());
+		}
 
-		Sort(NetProperties.GetData(), NetProperties.Num(), FCompareUFieldOffsets());
-
-		for ( int32 i = 0; i < NetProperties.Num(); i++ )
+		ClassReps.Reserve(ClassReps.Num() + NetProperties.Num());
+		for (int32 i = 0; i < NetProperties.Num(); i++)
 		{
 			NetProperties[i]->RepIndex = ClassReps.Num();
-			for ( int32 j = 0; j < NetProperties[i]->ArrayDim; j++ )
+			for (int32 j = 0; j < NetProperties[i]->ArrayDim; j++)
 			{
-				new( ClassReps )FRepRecord( NetProperties[i], j );
+				new(ClassReps)FRepRecord(NetProperties[i], j);
 			}
+		}
+
+		if (bIsNativeClass && GValidateReplicatedProperties)
+		{
+			GetDefaultObject()->ValidateGeneratedRepEnums(ClassReps);
 		}
 
 		NetFields.Shrink();
@@ -3491,7 +4086,7 @@ void UClass::ValidateRuntimeReplicationData()
 {
 	DECLARE_SCOPE_CYCLE_COUNTER(TEXT("Class ValidateRuntimeReplicationData"), STAT_Class_ValidateRuntimeReplicationData, STATGROUP_Game);
 
-	if (HasAnyClassFlags(CLASS_CompiledFromBlueprint))
+	if (HasAnyClassFlags(CLASS_CompiledFromBlueprint|CLASS_LayoutChanging))
 	{
 		// Blueprint classes don't always generate a GetLifetimeReplicatedProps function. 
 		// Assume the Blueprint compiler was ok to do this.
@@ -3501,6 +4096,12 @@ void UClass::ValidateRuntimeReplicationData()
 	if (HasAnyClassFlags(CLASS_ReplicationDataIsSetUp) == false)
 	{
 		UE_LOG(LogClass, Warning, TEXT("ValidateRuntimeReplicationData for class %s called before ReplicationData was setup."), *GetName());
+		return;
+	}
+
+	// Our replication data was set up, but there are no class reps, so there's nothing to do.
+	if (ClassReps.Num() == 0)
+	{
 		return;
 	}
 
@@ -3520,14 +4121,14 @@ void UClass::ValidateRuntimeReplicationData()
 	// Find which properties where not registered by the user code
 	for (int32 RepIndex = 0; RepIndex < ClassReps.Num(); ++RepIndex)
 	{
-		const UProperty* RepProp = ClassReps[RepIndex].Property;
+		const FProperty* RepProp = ClassReps[RepIndex].Property;
 
 		const FLifetimeProperty* LifetimeProp = LifetimeProps.FindByPredicate([&RepIndex](const FLifetimeProperty& Var) { return Var.RepIndex == RepIndex; });
 
 		if (LifetimeProp == nullptr)
 		{
 			// Check if this unregistered property type uses a custom delta serializer
-			if (const UStructProperty* StructProperty = Cast<UStructProperty>(RepProp))
+			if (const FStructProperty* StructProperty = CastField<FStructProperty>(RepProp))
 			{
 				const UScriptStruct* Struct = StructProperty->Struct;
 
@@ -3539,7 +4140,7 @@ void UClass::ValidateRuntimeReplicationData()
 				}
 			}
 
-			UE_LOG(LogClass, Error, TEXT("Property %s::%s (SourceClass: %s) was not registered in GetLifetimeReplicatedProps. This property will not be replicated."),
+			UE_LOG(LogClass, Warning, TEXT("Property %s::%s (SourceClass: %s) was not registered in GetLifetimeReplicatedProps. This property will not be replicated. Use DISABLE_REPLICATED_PROPERTY if not replicating was intentional."),
 				*GetName(), *RepProp->GetName(), *RepProp->GetOwnerClass()->GetName());
 		}
 	}
@@ -3604,7 +4205,21 @@ void UClass::SetSuperStruct(UStruct* NewSuperStruct)
 	UnhashObject(this);
 	ClearFunctionMapsCaches();
 	Super::SetSuperStruct(NewSuperStruct);
+
+	if (!GetSparseClassDataStruct())
+	{
+		if (UScriptStruct* SparseClassDataStructArchetype = GetSparseClassDataArchetypeStruct())
+		{
+			SetSparseClassDataStruct(SparseClassDataStructArchetype);
+		}
+	}
+
 	HashObject(this);
+}
+
+bool UClass::IsStructTrashed() const
+{
+	return Children == nullptr && ChildProperties == nullptr && ClassDefaultObject == nullptr;
 }
 
 void UClass::Serialize( FArchive& Ar )
@@ -3829,6 +4444,14 @@ void UClass::Serialize( FArchive& Ar )
 		}
 	}
 
+	if (!Ar.IsLoading() && !Ar.IsSaving())
+	{
+		if (GetSparseClassDataStruct() != nullptr)
+		{
+			SerializeSparseClassData(FStructuredArchiveFromArchive(Ar).GetSlot());
+		}
+	}
+
 	// mark the archive we that we are no longer serializing defaults
 	Ar.StopSerializingDefaults();
 
@@ -3864,7 +4487,7 @@ bool UClass::ImplementsInterface( const class UClass* SomeInterface ) const
 			for (TArray<FImplementedInterface>::TConstIterator It(CurrentClass->Interfaces); It; ++It)
 			{
 				const UClass* InterfaceClass = It->Class;
-				if (InterfaceClass->IsChildOf(SomeInterface))
+				if (InterfaceClass && InterfaceClass->IsChildOf(SomeInterface))
 				{
 					return true;
 				}
@@ -3873,11 +4496,6 @@ bool UClass::ImplementsInterface( const class UClass* SomeInterface ) const
 	}
 
 	return false;
-}
-
-void UClass::SerializeDefaultObject(UObject* Object, FArchive& Ar)
-{
-	SerializeDefaultObject(Object, FStructuredArchiveFromArchive(Ar).GetSlot());
 }
 
 /** serializes the passed in object as this class's default object using the given archive
@@ -3909,6 +4527,36 @@ void UClass::SerializeDefaultObject(UObject* Object, FStructuredArchive::FSlot S
 	UnderlyingArchive.StopSerializingDefaults();
 }
 
+void UClass::SerializeSparseClassData(FStructuredArchive::FSlot Slot)
+{
+	if (!SparseClassDataStruct)
+	{
+		return;
+	}
+
+	// tell the archive that it's allowed to load data for transient properties
+	FArchive& UnderlyingArchive = Slot.GetUnderlyingArchive();
+
+	// make sure we always have sparse class a sparse class data struct to read from/write to
+	GetOrCreateSparseClassData();
+
+	if (((UnderlyingArchive.IsLoading() || UnderlyingArchive.IsSaving()) && !UnderlyingArchive.WantBinaryPropertySerialization()))
+	{
+		// class default objects do not always have a vtable when saved
+		// so use script serialization as opposed to native serialization to
+		// guarantee that all property data is loaded into the correct location
+		SparseClassDataStruct->SerializeItem(Slot, SparseClassData, GetArchetypeForSparseClassData());
+	}
+	else if (UnderlyingArchive.GetPortFlags() != 0)
+	{
+		SparseClassDataStruct->SerializeBinEx(Slot, (uint8*)SparseClassData, SparseClassDataStruct, GetSparseClassDataArchetypeStruct());
+	}
+	else
+	{
+		SparseClassDataStruct->SerializeBin(Slot, (uint8*)SparseClassData);
+	}
+}
+
 
 FArchive& operator<<(FArchive& Ar, FImplementedInterface& A)
 {
@@ -3919,9 +4567,21 @@ FArchive& operator<<(FArchive& Ar, FImplementedInterface& A)
 	return Ar;
 }
 
+void* UClass::GetArchetypeForSparseClassData() const
+{
+	UClass* SuperClass = GetSuperClass();
+	return SuperClass ? SuperClass->GetOrCreateSparseClassData() : nullptr;
+}
+
+UScriptStruct* UClass::GetSparseClassDataArchetypeStruct() const
+{
+	UClass* SuperClass = GetSuperClass();
+	return SuperClass ? SuperClass->GetSparseClassDataStruct() : nullptr;
+}
+
 UObject* UClass::GetArchetypeForCDO() const
 {
-	auto SuperClass = GetSuperClass();
+	UClass* SuperClass = GetSuperClass();
 	return SuperClass ? SuperClass->GetDefaultObject() : nullptr;
 }
 
@@ -3948,10 +4608,6 @@ void UClass::PurgeClass(bool bRecompilingOnLoad)
 	}
 #endif
 
-#if USE_UBER_GRAPH_PERSISTENT_FRAME
-	UberGraphFramePointerProperty = NULL;
-#endif//USE_UBER_GRAPH_PERSISTENT_FRAME
-
 	ClassDefaultObject = NULL;
 
 	Interfaces.Empty();
@@ -3966,11 +4622,55 @@ void UClass::PurgeClass(bool bRecompilingOnLoad)
 	ClassAddReferencedObjects = NULL;
 
 	ScriptObjectReferences.Empty();
+	PropertyObjectReferences.Empty();
+	UnresolvedScriptProperties.Empty();
 
 	FuncMap.Empty();
 	ClearFunctionMapsCaches();
 	PropertyLink = NULL;
+
+#if WITH_EDITORONLY_DATA
+	{
+		for (UPropertyWrapper* Wrapper : PropertyWrappers)
+		{
+			Wrapper->SetProperty(nullptr);
+		}
+		PropertyWrappers.Empty();
+	}
+	if (bRecompilingOnLoad)
+	{
+		// When compiling on load properties can't be immediately destroyed because new properties can be allocated
+		// in their place and this breaks script byte code reference replacement. See FBlueprintCompileReinstancer::AddReferencedObjects.
+		FField* LastField = ChildProperties;
+		if (LastField)
+		{
+			while (LastField->Next)
+			{
+				LastField = LastField->Next;
+			}
+			check(LastField->Next == nullptr);
+			LastField->Next = PropertiesPendingDestruction;
+			PropertiesPendingDestruction = ChildProperties;
+			ChildProperties = nullptr;
+		}
+	}
+	else
+#endif // WITH_EDITORONLY_DATA
+	{
+		// Destroy all properties owned by this struct
+		DestroyPropertyLinkedList(ChildProperties);
+	}
+	FFieldPath::OnFieldDeleted();
+
+	DestroyUnversionedSchema(this);
 }
+
+#if WITH_EDITORONLY_DATA
+void UClass::DestroyPropertiesPendingDestruction()
+{
+	DestroyPropertyLinkedList(PropertiesPendingDestruction);
+}
+#endif // WITH_EDITORONLY_DATA
 
 UClass* UClass::FindCommonBase(UClass* InClassA, UClass* InClassB)
 {
@@ -4000,17 +4700,21 @@ UClass* UClass::FindCommonBase(const TArray<UClass*>& InClasses)
 	return CommonClass;
 }
 
-bool UClass::IsFunctionImplementedInBlueprint(FName InFunctionName) const
+bool UClass::IsFunctionImplementedInScript(FName InFunctionName) const
 {
-	// Implemented in UBlueprintGeneratedClass
+	// Implemented in classes such as UBlueprintGeneratedClass
 	return false;
 }
 
-bool UClass::HasProperty(UProperty* InProperty) const
+bool UClass::HasProperty(FProperty* InProperty) const
 {
-	if ( UClass* PropertiesClass = dynamic_cast<UClass*>(InProperty->GetOuter()) )
+	if (InProperty->GetOwner<UObject>())
 	{
-		return IsChildOf(PropertiesClass);
+		UClass* PropertiesClass = InProperty->GetOwner<UClass>();
+		if (PropertiesClass)
+		{
+			return IsChildOf(PropertiesClass);
+		}
 	}
 
 	return false;
@@ -4032,14 +4736,17 @@ UClass::UClass(const FObjectInitializer& ObjectInitializer)
 ,	ClassCastFlags(CASTCLASS_None)
 ,	ClassWithin( UObject::StaticClass() )
 ,	ClassGeneratedBy(nullptr)
-#if USE_UBER_GRAPH_PERSISTENT_FRAME
-,	UberGraphFramePointerProperty(nullptr)
-#endif // USE_UBER_GRAPH_PERSISTENT_FRAME
+#if WITH_EDITORONLY_DATA
+,	PropertiesPendingDestruction(nullptr)
+#endif
 ,	ClassDefaultObject(nullptr)
+,	SparseClassData(nullptr)
+,	SparseClassDataStruct(nullptr)
 {
 	// If you add properties here, please update the other constructors and PurgeClass()
 
 	SetCppTypeInfoStatic(&DefaultCppClassTypeInfoStatic);
+	TRACE_LOADTIME_CLASS_INFO(this, GetFName());
 }
 
 /**
@@ -4053,10 +4760,12 @@ UClass::UClass(const FObjectInitializer& ObjectInitializer, UClass* InBaseClass)
 ,	ClassCastFlags(CASTCLASS_None)
 ,	ClassWithin(UObject::StaticClass())
 ,	ClassGeneratedBy(nullptr)
-#if USE_UBER_GRAPH_PERSISTENT_FRAME
-,	UberGraphFramePointerProperty(nullptr)
-#endif // USE_UBER_GRAPH_PERSISTENT_FRAME
+#if WITH_EDITORONLY_DATA
+,	PropertiesPendingDestruction(nullptr)
+#endif
 ,	ClassDefaultObject(nullptr)
+,	SparseClassData(nullptr)
+,	SparseClassDataStruct(nullptr)
 {
 	// If you add properties here, please update the other constructors and PurgeClass()
 
@@ -4090,6 +4799,7 @@ UClass::UClass
 	EStaticConstructor,
 	FName			InName,
 	uint32			InSize,
+	uint32			InAlignment,
 	EClassFlags		InClassFlags,
 	EClassCastFlags	InClassCastFlags,
 	const TCHAR*    InConfigName,
@@ -4098,7 +4808,7 @@ UClass::UClass
 	ClassVTableHelperCtorCallerType InClassVTableHelperCtorCaller,
 	ClassAddReferencedObjectsType InClassAddReferencedObjects
 )
-:	UStruct					( EC_StaticConstructor, InSize, InFlags )
+:	UStruct					( EC_StaticConstructor, InSize, InAlignment, InFlags )
 ,	ClassConstructor		( InClassConstructor )
 ,	ClassVTableHelperCtorCaller(InClassVTableHelperCtorCaller)
 ,	ClassAddReferencedObjects( InClassAddReferencedObjects )
@@ -4108,9 +4818,14 @@ UClass::UClass
 ,	ClassCastFlags			( InClassCastFlags )
 ,	ClassWithin				( nullptr )
 ,	ClassGeneratedBy		( nullptr )
+#if WITH_EDITORONLY_DATA
+,	PropertiesPendingDestruction( nullptr )
+#endif
 ,	ClassConfigName			()
 ,	NetFields				()
 ,	ClassDefaultObject		( nullptr )
+,	SparseClassData			( nullptr )
+,	SparseClassDataStruct	( nullptr )
 {
 	// If you add properties here, please update the other constructors and PurgeClass()
 
@@ -4121,6 +4836,60 @@ UClass::UClass
 	// complains about this operation, but AFAIK it is safe (and we've been doing it a long time)
 	// so the warning has been disabled for now:
 	*(const TCHAR**)&ClassConfigName = InConfigName; //-V580
+}
+
+void* UClass::CreateSparseClassData()
+{
+	check(SparseClassData == nullptr);
+
+	if (SparseClassDataStruct)
+	{
+		SparseClassData = FMemory::Malloc(SparseClassDataStruct->GetStructureSize(), SparseClassDataStruct->GetMinAlignment());
+		SparseClassDataStruct->GetCppStructOps()->Construct(SparseClassData);
+	}
+	if (SparseClassData)
+	{
+		// initialize per class data from the archetype if we have one
+		void* SparseArchetypeData = GetArchetypeForSparseClassData();
+		UStruct* SparseClassDataArchetypeStruct = GetSparseClassDataArchetypeStruct();
+
+		if (SparseArchetypeData)
+		{
+			for (FProperty* P = SparseClassDataArchetypeStruct->PropertyLink; P; P = P->PropertyLinkNext)
+			{
+				P->CopyCompleteValue_InContainer(SparseClassData, SparseArchetypeData);
+			}
+		}
+	}
+
+	return SparseClassData;
+}
+
+void UClass::CleanupSparseClassData()
+{
+	if (SparseClassData)
+	{
+		SparseClassDataStruct->GetCppStructOps()->Destruct(SparseClassData);
+		FMemory::Free(SparseClassData);
+		SparseClassData = nullptr;
+	}
+}
+
+UScriptStruct* UClass::GetSparseClassDataStruct() const
+{
+	// this info is specified on the object via code generation so we use it instead of looking at the UClass
+	return SparseClassDataStruct;
+}
+
+void UClass::SetSparseClassDataStruct(UScriptStruct* InSparseClassDataStruct)
+{ 
+	if (SparseClassDataStruct != InSparseClassDataStruct)
+	{
+		SparseClassDataStruct = InSparseClassDataStruct;
+
+		// the old type and new type may not match when we do a hot reload so get rid of the old data
+		CleanupSparseClassData();
+	}
 }
 
 #if WITH_HOT_RELOAD
@@ -4326,6 +5095,7 @@ void UClass::ClearFunctionMapsCaches()
 
 UFunction* UClass::FindFunctionByName(FName InName, EIncludeSuperFlag::Type IncludeSuper) const
 {
+	LLM_SCOPE(ELLMTag::UObject);
 	UFunction* Result = FuncMap.FindRef(InName);
 	if (Result == nullptr && IncludeSuper == EIncludeSuperFlag::IncludeSuper)
 	{
@@ -4369,6 +5139,7 @@ UFunction* UClass::FindFunctionByName(FName InName, EIncludeSuperFlag::Type Incl
 
 void UClass::AssembleReferenceTokenStreams()
 {
+	SCOPED_BOOT_TIMING("AssembleReferenceTokenStreams (can be optimized)");
 	// Iterate over all class objects and force the default objects to be created. Additionally also
 	// assembles the token reference stream at this point. This is required for class objects that are
 	// not taken into account for garbage collection but have instances that are.
@@ -4383,7 +5154,7 @@ void UClass::AssembleReferenceTokenStreams()
 				Class->GetDefaultObject(); // Force the default object to be constructed if it isn't already
 			}
 			// Assemble reference token stream for garbage collection/ RTGC.
-			if (!Class->HasAnyClassFlags(CLASS_TokenStreamAssembled))
+			if (!Class->HasAnyFlags(RF_ClassDefaultObject) && !Class->HasAnyClassFlags(CLASS_TokenStreamAssembled))
 			{
 				Class->AssembleReferenceTokenStream();
 			}
@@ -4526,14 +5297,6 @@ bool UClass::IsClassGroupName(const TCHAR* InGroupName) const
 
 #endif // WITH_EDITOR || HACK_HEADER_GENERATOR
 
-void UClass::PrependStreamWithSuperClass(UClass& SuperClass)
-{
-	ReferenceTokenStream.PrependStream(SuperClass.ReferenceTokenStream);
-
-#if ENABLE_GC_OBJECT_CHECKS
-	DebugTokenMap.PrependWithSuperClass(SuperClass);
-#endif
-}
 
 IMPLEMENT_CORE_INTRINSIC_CLASS(UClass, UStruct,
 	{
@@ -4552,6 +5315,7 @@ void GetPrivateStaticClassBody(
 	UClass*& ReturnClass,
 	void(*RegisterNativeFunc)(),
 	uint32 InSize,
+	uint32 InAlignment,
 	EClassFlags InClassFlags,
 	EClassCastFlags InClassCastFlags,
 	const TCHAR* InConfigName,
@@ -4560,7 +5324,8 @@ void GetPrivateStaticClassBody(
 	UClass::ClassAddReferencedObjectsType InClassAddReferencedObjects,
 	UClass::StaticClassFunctionType InSuperClassFn,
 	UClass::StaticClassFunctionType InWithinClassFn,
-	bool bIsDynamic /*= false*/
+	bool bIsDynamic /*= false*/,
+	UDynamicClass::DynamicClassInitializerType InDynamicClassInitializerFn /*= nullptr*/
 	)
 {
 #if WITH_HOT_RELOAD
@@ -4611,6 +5376,7 @@ void GetPrivateStaticClassBody(
 			EC_StaticConstructor,
 			Name,
 			InSize,
+			InAlignment,
 			InClassFlags,
 			InClassCastFlags,
 			InConfigName,
@@ -4630,13 +5396,15 @@ void GetPrivateStaticClassBody(
 			EC_StaticConstructor,
 			Name,
 			InSize,
+			InAlignment,
 			InClassFlags|CLASS_CompiledFromBlueprint,
 			InClassCastFlags,
 			InConfigName,
 			EObjectFlags(RF_Public | RF_Standalone | RF_Transient | RF_Dynamic | (GIsInitialLoad ? RF_MarkAsRootSet : RF_NoFlags)),
 			InClassConstructor,
 			InClassVTableHelperCtorCaller,
-			InClassAddReferencedObjects
+			InClassAddReferencedObjects,
+			InDynamicClassInitializerFn
 			);
 		check(ReturnClass);
 	}
@@ -4685,7 +5453,7 @@ void UFunction::InitializeDerivedMembers()
 	ParmsSize = 0;
 	ReturnValueOffset = MAX_uint16;
 
-	for (UProperty* Property = dynamic_cast<UProperty*>(Children); Property; Property = dynamic_cast<UProperty*>(Property->Next))
+	for (FProperty* Property = CastField<FProperty>(ChildProperties); Property; Property = CastField<FProperty>(Property->Next))
 	{
 		if (Property->PropertyFlags & CPF_Parm)
 		{
@@ -4787,9 +5555,9 @@ void UFunction::PostLoad()
 	}
 }
 
-UProperty* UFunction::GetReturnProperty() const
+FProperty* UFunction::GetReturnProperty() const
 {
-	for( TFieldIterator<UProperty> It(this); It && (It->PropertyFlags & CPF_Parm); ++It )
+	for( TFieldIterator<FProperty> It(this); It && (It->PropertyFlags & CPF_Parm); ++It )
 	{
 		if( It->PropertyFlags & CPF_ReturnParm )
 		{
@@ -4842,7 +5610,7 @@ bool UFunction::IsSignatureCompatibleWith(const UFunction* OtherFunction) const
 	return IsSignatureCompatibleWith(OtherFunction, IgnoreFlags);
 }
 
-bool FStructUtils::ArePropertiesTheSame(const UProperty* A, const UProperty* B, bool bCheckPropertiesNames)
+bool FStructUtils::ArePropertiesTheSame(const FProperty* A, const FProperty* B, bool bCheckPropertiesNames)
 {
 	if (A == B)
 	{
@@ -4885,8 +5653,8 @@ bool FStructUtils::TheSameLayout(const UStruct* StructA, const UStruct* StructB,
 		&& (StructA->GetPropertiesSize() == StructB->GetPropertiesSize())
 		&& (StructA->GetMinAlignment() == StructB->GetMinAlignment()))
 	{
-		const UProperty* PropertyA = StructA->PropertyLink;
-		const UProperty* PropertyB = StructB->PropertyLink;
+		const FProperty* PropertyA = StructA->PropertyLink;
+		const FProperty* PropertyB = StructB->PropertyLink;
 
 		bResult = true;
 		while (bResult && (PropertyA != PropertyB))
@@ -4934,8 +5702,8 @@ bool UFunction::IsSignatureCompatibleWith(const UFunction* OtherFunction, uint64
 	}
 
 	// Run thru the parameter property chains to compare each property
-	TFieldIterator<UProperty> IteratorA(this);
-	TFieldIterator<UProperty> IteratorB(OtherFunction);
+	TFieldIterator<FProperty> IteratorA(this);
+	TFieldIterator<FProperty> IteratorB(OtherFunction);
 
 	while (IteratorA && (IteratorA->PropertyFlags & CPF_Parm))
 	{
@@ -4944,8 +5712,8 @@ bool UFunction::IsSignatureCompatibleWith(const UFunction* OtherFunction, uint64
 			// Compare the two properties to make sure their types are identical
 			// Note: currently this requires both to be strictly identical and wouldn't allow functions that differ only by how derived a class is,
 			// which might be desirable when binding delegates, assuming there is directionality in the SignatureIsCompatibleWith call
-			UProperty* PropA = *IteratorA;
-			UProperty* PropB = *IteratorB;
+			FProperty* PropA = *IteratorA;
+			FProperty* PropB = *IteratorB;
 
 			// Check the flags as well
 			const uint64 PropertyMash = PropA->PropertyFlags ^ PropB->PropertyFlags;
@@ -5161,6 +5929,31 @@ IMPLEMENT_CORE_INTRINSIC_CLASS(UDelegateFunction, UFunction,
 	}
 );
 
+USparseDelegateFunction::USparseDelegateFunction(const FObjectInitializer& ObjectInitializer, UFunction* InSuperFunction, EFunctionFlags InFunctionFlags, SIZE_T ParamsSize)
+	: UDelegateFunction(ObjectInitializer, InSuperFunction, InFunctionFlags, ParamsSize)
+{
+
+}
+
+USparseDelegateFunction::USparseDelegateFunction(UFunction* InSuperFunction, EFunctionFlags InFunctionFlags, SIZE_T ParamsSize)
+	: UDelegateFunction(InSuperFunction, InFunctionFlags, ParamsSize)
+{
+
+}
+
+void USparseDelegateFunction::Serialize(FArchive& Ar)
+{
+	Super::Serialize(Ar);
+
+	Ar << OwningClassName;
+	Ar << DelegateName;
+}
+
+IMPLEMENT_CORE_INTRINSIC_CLASS(USparseDelegateFunction, UDelegateFunction,
+	{
+	}
+);
+
 /*-----------------------------------------------------------------------------
 UDynamicClass constructors.
 -----------------------------------------------------------------------------*/
@@ -5191,17 +5984,20 @@ UDynamicClass::UDynamicClass(
 	EStaticConstructor,
 	FName			InName,
 	uint32			InSize,
+	uint32			InAlignment,
 	EClassFlags		InClassFlags,
 	EClassCastFlags	InClassCastFlags,
 	const TCHAR*    InConfigName,
 	EObjectFlags	InFlags,
 	ClassConstructorType InClassConstructor,
 	ClassVTableHelperCtorCallerType InClassVTableHelperCtorCaller,
-	ClassAddReferencedObjectsType InClassAddReferencedObjects)
+	ClassAddReferencedObjectsType InClassAddReferencedObjects,
+	DynamicClassInitializerType InDynamicClassInitializer)
 : UClass(
   EC_StaticConstructor
 , InName
 , InSize
+, InAlignment
 , InClassFlags
 , InClassCastFlags
 , InConfigName
@@ -5210,6 +6006,7 @@ UDynamicClass::UDynamicClass(
 , InClassVTableHelperCtorCaller
 , InClassAddReferencedObjects)
 , AnimClassImplementation(nullptr)
+, DynamicClassInitializer(InDynamicClassInitializer)
 {
 }
 
@@ -5223,6 +6020,11 @@ void UDynamicClass::AddReferencedObjects(UObject* InThis, FReferenceCollector& C
 	Collector.AddReferencedObjects(This->DynamicBindingObjects, This);
 	Collector.AddReferencedObjects(This->ComponentTemplates, This);
 	Collector.AddReferencedObjects(This->Timelines, This);
+
+	for (TPair<FName, UClass*>& Override : This->ComponentClassOverrides)
+	{
+		Collector.AddReferencedObject(Override.Value);
+	}
 
 	Collector.AddReferencedObject(This->AnimClassImplementation, This);
 
@@ -5251,14 +6053,14 @@ void UDynamicClass::PurgeClass(bool bRecompilingOnLoad)
 	DynamicBindingObjects.Empty();
 	ComponentTemplates.Empty();
 	Timelines.Empty();
+	ComponentClassOverrides.Empty();
 
 	AnimClassImplementation = nullptr;
 }
 
-UObject* UDynamicClass::FindArchetype(UClass* ArchetypeClass, const FName ArchetypeName) const
+UObject* UDynamicClass::FindArchetype(const UClass* ArchetypeClass, const FName ArchetypeName) const
 {
-	UDynamicClass* ThisClass = const_cast<UDynamicClass*>(this);
-	UObject* Archetype = static_cast<UObject*>(FindObjectWithOuter(ThisClass, ArchetypeClass, ArchetypeName));
+	UObject* Archetype = static_cast<UObject*>(FindObjectWithOuter(this, ArchetypeClass, ArchetypeName));
 	if (!Archetype)
 	{
 		// See UBlueprintGeneratedClass::FindArchetype, UE-35259, UE-37480
@@ -5277,9 +6079,26 @@ UObject* UDynamicClass::FindArchetype(UClass* ArchetypeClass, const FName Archet
 		(SuperClass ? SuperClass->FindArchetype(ArchetypeClass, ArchetypeName) : nullptr);
 }
 
-UStructProperty* UDynamicClass::FindStructPropertyChecked(const TCHAR* PropertyName) const
+void UDynamicClass::SetupObjectInitializer(FObjectInitializer& ObjectInitializer) const
 {
-	return FindFieldChecked<UStructProperty>(this, PropertyName);
+	for (const TPair<FName, UClass*>& Override : ComponentClassOverrides)
+	{
+		ObjectInitializer.SetDefaultSubobjectClass(Override.Key, Override.Value);
+	}
+
+	GetSuperClass()->SetupObjectInitializer(ObjectInitializer);
+}
+
+
+FStructProperty* UDynamicClass::FindStructPropertyChecked(const TCHAR* PropertyName) const
+{
+	return FindFieldChecked<FStructProperty>(this, PropertyName);
+}
+
+const FString& UDynamicClass::GetTempPackagePrefix()
+{
+	static const FString PackagePrefix(TEXT("/Temp/__TEMP_BP__"));
+	return PackagePrefix;
 }
 
 IMPLEMENT_CORE_INTRINSIC_CLASS(UDynamicClass, UClass,
@@ -5293,3 +6112,6 @@ IMPLEMENT_CORE_INTRINSIC_CLASS(UDynamicClass, UClass,
 		PRAGMA_ENABLE_SHADOW_VARIABLE_WARNINGS
 	#endif
 #endif
+
+
+#include "UObject/DefineUPropertyMacros.h"

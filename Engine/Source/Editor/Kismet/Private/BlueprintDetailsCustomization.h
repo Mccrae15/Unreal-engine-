@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -16,6 +16,7 @@
 #include "Widgets/Views/STableRow.h"
 #include "SMyBlueprint.h"
 #include "SGraphPin.h"
+#include "UObject/WeakFieldPtr.h"
 
 class Error;
 class FBlueprintGlobalOptionsDetails;
@@ -75,7 +76,7 @@ protected:
 
 	UBlueprint* GetBlueprintObj() const { return Blueprint.Get(); }
 
-	void AddEventsCategory(IDetailLayoutBuilder& DetailBuilder, UProperty* VariableProperty);
+	void AddEventsCategory(IDetailLayoutBuilder& DetailBuilder, FProperty* VariableProperty);
 	FReply HandleAddOrViewEventForVariable(const FName EventName, FName PropertyName, TWeakObjectPtr<UClass> PropertyClass);
 	int32 HandleAddOrViewIndexForButton(const FName EventName, FName PropertyName) const;
 
@@ -113,16 +114,16 @@ private:
 	FEdGraphSchemaAction_K2Var* MyBlueprintSelectionAsVar() const {return MyBlueprint.Pin()->SelectionAsVar();}
 	FEdGraphSchemaAction_K2LocalVar* MyBlueprintSelectionAsLocalVar() const {return MyBlueprint.Pin()->SelectionAsLocalVar();}
 	UK2Node_Variable* EdGraphSelectionAsVar() const;
-	UProperty* CustomizedObjectAsProperty() const;
-	UProperty* SelectionAsProperty() const;
+	FProperty* CustomizedObjectAsProperty() const;
+	FProperty* SelectionAsProperty() const;
 	FName GetVariableName() const;
 
 	/** Commonly queried attributes about the schema action */
-	bool IsAUserVariable(UProperty* VariableProperty) const;
-	bool IsASCSVariable(UProperty* VariableProperty) const;
-	bool IsABlueprintVariable(UProperty* VariableProperty) const;
-	bool IsALocalVariable(UProperty* VariableProperty) const;
-	UStruct* GetLocalVariableScope(UProperty* VariableProperty) const;
+	bool IsAUserVariable(FProperty* VariableProperty) const;
+	bool IsASCSVariable(FProperty* VariableProperty) const;
+	bool IsABlueprintVariable(FProperty* VariableProperty) const;
+	bool IsALocalVariable(FProperty* VariableProperty) const;
+	UStruct* GetLocalVariableScope(FProperty* VariableProperty) const;
 
 	// Callbacks for uproperty details customization
 	bool GetVariableNameChangeEnabled() const;
@@ -224,6 +225,13 @@ private:
 	ECheckBoxState OnGetMultilineCheckboxState() const;
 	void OnMultilineChanged(ECheckBoxState InNewState);
 
+	EVisibility GetDeprecatedVisibility() const;
+	ECheckBoxState OnGetDeprecatedCheckboxState() const;
+	void OnDeprecatedChanged(ECheckBoxState InNewState);
+
+	FText GetDeprecationMessageText() const;
+	void OnDeprecationMessageTextCommitted(const FText& NewText, ETextCommit::Type InTextCommit, FName VarName);
+
 	/** Refresh the property flags list */
 	void RefreshPropertyFlags();
 
@@ -244,6 +252,9 @@ private:
 
 	/** Returns TRUE if the Variable is inherited by the current Blueprint */
 	bool IsVariableInheritedByBlueprint() const;
+
+	/** Returns TRUE if the Variable is marked as deprecated */
+	bool IsVariableDeprecated() const;
 private:
 	/** Pointer back to my parent tab */
 	TWeakPtr<SMyBlueprint> MyBlueprint;
@@ -273,7 +284,7 @@ private:
 	TWeakPtr< SListView< TSharedPtr< FString > > > PropertyFlagWidget;
 
 	/** Cached property for the variable we are affecting */
-	TWeakObjectPtr<UProperty> CachedVariableProperty;
+	TWeakFieldPtr<FProperty> CachedVariableProperty;
 
 	/** Cached name for the variable we are affecting */
 	FName CachedVariableName;
@@ -384,13 +395,7 @@ private:
 
 	void SetEntryNode();
 
-	UMulticastDelegateProperty* GetDelegateProperty() const;
-	FText OnGetTooltipText() const;
-	void OnTooltipTextCommitted(const FText& NewText, ETextCommit::Type InTextCommit);
-	FText OnGetCategoryText() const;
-	void OnCategoryTextCommitted(const FText& NewText, ETextCommit::Type InTextCommit);
-	TSharedRef< ITableRow > MakeCategoryViewWidget( TSharedPtr<FText> Item, const TSharedRef< STableViewBase >& OwnerTable );
-	void OnCategorySelectionChanged( TSharedPtr<FText> ProposedSelection, ESelectInfo::Type /*SelectInfo*/ );
+	FMulticastDelegateProperty* GetDelegateProperty() const;
 
 	void CollectAvailibleSignatures();
 	void OnFunctionSelected(TSharedPtr<FString> FunctionItemData, ESelectInfo::Type SelectInfo);
@@ -398,14 +403,6 @@ private:
 	EVisibility OnGetSectionTextVisibility(TWeakPtr<SWidget> RowWidget) const;
 
 private:
-
-	/** A list of all category names to choose from */
-	TArray<TSharedPtr<FText>> CategorySource;
-
-	/** Widgets for the categories */
-	TWeakPtr<SComboButton> CategoryComboButton;
-	TWeakPtr<SListView<TSharedPtr<FText>>> CategoryListView;
-
 	TArray<TSharedPtr<FString>> FunctionsToCopySignatureFrom;
 	TSharedPtr<STextComboBox> CopySignatureComboButton;
 };
@@ -609,6 +606,12 @@ private:
 	/** Enables/Disables selected event as editor callable  */
 	void OnEditorCallableEventModified( const ECheckBoxState NewCheckedState ) const;
 
+	bool IsFunctionDeprecated() const;
+	ECheckBoxState OnGetDeprecatedCheckboxState() const;
+	void OnDeprecatedChanged(ECheckBoxState InNewState);
+
+	FText GetDeprecationMessageText() const;
+	void OnDeprecationMessageTextCommitted(const FText& NewText, ETextCommit::Type InTextCommit);
 	
 	FReply OnAddNewOutputClicked();
 
@@ -643,6 +646,9 @@ private:
 	/** Widgets for the categories */
 	TWeakPtr<SComboButton> CategoryComboButton;
 	TWeakPtr<SListView<TSharedPtr<FText>>> CategoryListView;
+
+	/** External detail customizations */
+	TArray<TSharedPtr<IDetailCustomization>> ExternalDetailCustomizations;
 };
 
 /** Blueprint Interface List Details */
@@ -815,6 +821,8 @@ protected:
 	void OnVariableCategoryTextCommitted(const FText& NewText, ETextCommit::Type InTextCommit, FName VarName);
 	void OnVariableCategorySelectionChanged(TSharedPtr<FText> ProposedSelection, ESelectInfo::Type /*SelectInfo*/);
 	TSharedRef<ITableRow> MakeVariableCategoryViewWidget(TSharedPtr<FText> Item, const TSharedRef< STableViewBase >& OwnerTable);
+	const UClass* GetSelectedEntryClass() const;
+	void HandleNewEntryClassSelected(const UClass* NewEntryClass) const;
 
 	FText GetSocketName() const;
 	bool CanChangeSocket() const;

@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -57,6 +57,11 @@ struct FGameplayCueParameters;
 #if WITH_EDITOR
 struct GAMEPLAYABILITIES_API FGameplayCueTranslationEditorOnlyData
 {
+	FGameplayCueTranslationEditorOnlyData()
+		:UniqueID(0), Enabled(true)
+	{
+	}
+
 	FName	EditorDescription;	// For pretty/custom printing
 	FString ToolTip;			// additional info for tooltip text (exactly where did this rule come from?)
 	int32	UniqueID;			// For filtering overrides by translation rule. Set by the GameplaycueTranslator.

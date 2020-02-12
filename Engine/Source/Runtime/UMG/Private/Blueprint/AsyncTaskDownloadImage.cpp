@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "Blueprint/AsyncTaskDownloadImage.h"
 #include "Modules/ModuleManager.h"
@@ -16,11 +16,11 @@
 
 #if !UE_SERVER
 
-static void WriteRawToTexture_RenderThread(FTexture2DDynamicResource* TextureResource, const TArray<uint8>& RawData, bool bUseSRGB = true)
+static void WriteRawToTexture_RenderThread(FTexture2DDynamicResource* TextureResource, TArray64<uint8>* RawData, bool bUseSRGB = true)
 {
 	check(IsInRenderingThread());
 
-	FTexture2DRHIParamRef TextureRHI = TextureResource->GetTexture2DRHI();
+	FRHITexture2D* TextureRHI = TextureResource->GetTexture2DRHI();
 
 	int32 Width = TextureRHI->GetSizeX();
 	int32 Height = TextureRHI->GetSizeY();
@@ -30,9 +30,9 @@ static void WriteRawToTexture_RenderThread(FTexture2DDynamicResource* TextureRes
 
 	for (int32 y = 0; y < Height; y++)
 	{
-		uint8* DestPtr = &DestData[(Height - 1 - y) * DestStride];
+		uint8* DestPtr = &DestData[((int64)Height - 1 - y) * DestStride];
 
-		const FColor* SrcPtr = &((FColor*)(RawData.GetData()))[(Height - 1 - y) * Width];
+		const FColor* SrcPtr = &((FColor*)(RawData->GetData()))[((int64)Height - 1 - y) * Width];
 		for (int32 x = 0; x < Width; x++)
 		{
 			*DestPtr++ = SrcPtr->B;
@@ -44,6 +44,7 @@ static void WriteRawToTexture_RenderThread(FTexture2DDynamicResource* TextureRes
 	}
 
 	RHIUnlockTexture2D(TextureRHI, 0, false, false);
+	delete RawData;
 }
 
 #endif
@@ -101,22 +102,21 @@ void UAsyncTaskDownloadImage::HandleImageRequest(FHttpRequestPtr HttpRequest, FH
 		{
 			if ( ImageWrapper.IsValid() && ImageWrapper->SetCompressed(HttpResponse->GetContent().GetData(), HttpResponse->GetContentLength()) )
 			{
-				const TArray<uint8>* RawData = NULL;
-				const ERGBFormat InFormat = IsHTML5Platform() ? ERGBFormat::RGBA : ERGBFormat::BGRA;
-				if ( ImageWrapper->GetRaw(InFormat, 8, RawData) )
+				TArray64<uint8>* RawData = new TArray64<uint8>();
+				const ERGBFormat InFormat = (GShaderPlatformForFeatureLevel[GMaxRHIFeatureLevel] == SP_OPENGL_ES2_WEBGL) ? ERGBFormat::RGBA : ERGBFormat::BGRA;
+				if ( ImageWrapper->GetRaw(InFormat, 8, *RawData) )
 				{
 					if ( UTexture2DDynamic* Texture = UTexture2DDynamic::Create(ImageWrapper->GetWidth(), ImageWrapper->GetHeight()) )
 					{
 						Texture->SRGB = true;
 						Texture->UpdateResource();
 
-						ENQUEUE_UNIQUE_RENDER_COMMAND_TWOPARAMETER(
-							FWriteRawDataToTexture,
-							FTexture2DDynamicResource*, TextureResource, static_cast<FTexture2DDynamicResource*>(Texture->Resource),
-							TArray<uint8>, RawData, *RawData,
-						{
-							WriteRawToTexture_RenderThread(TextureResource, RawData);
-						});
+						FTexture2DDynamicResource* TextureResource = static_cast<FTexture2DDynamicResource*>(Texture->Resource);
+						ENQUEUE_RENDER_COMMAND(FWriteRawDataToTexture)(
+							[TextureResource, RawData](FRHICommandListImmediate& RHICmdList)
+							{
+								WriteRawToTexture_RenderThread(TextureResource, RawData);
+							});
 						
 						OnSuccess.Broadcast(Texture);
 						return;

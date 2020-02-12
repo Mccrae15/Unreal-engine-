@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 namespace UnrealBuildTool.Rules
 {
@@ -13,21 +13,43 @@ namespace UnrealBuildTool.Rules
 					"Media",
 				});
 
+            PublicDependencyModuleNames.AddRange(
+                new string[] {
+                    "WmfMediaFactory"
+                    });
+
 			PrivateDependencyModuleNames.AddRange(
 				new string[] {
 					"Core",
 					"CoreUObject",
-					"D3D11RHI",
                     "Engine",
                     "MediaUtils",
 					"Projects",
 					"RenderCore",
                     "RHI",
-					"UtilityShaders",
-                    "WmfMediaFactory",
+                    "WmfMediaFactory"
                 });
 
-			PrivateIncludePathModuleNames.AddRange(
+            if (Target.Platform == UnrealTargetPlatform.XboxOne)
+            {
+                PrivateDependencyModuleNames.AddRange(
+				  new string[] {
+					"D3D12RHI",
+                });
+                PrivateIncludePaths.AddRange(
+                    new string[] {
+                    "../../../../Source/Runtime/D3D12RHI/Private",
+                });
+            }
+            else
+            {
+                PrivateDependencyModuleNames.AddRange(
+                  new string[] {
+                    "D3D11RHI",
+                });
+            }
+
+            PrivateIncludePathModuleNames.AddRange(
 				new string[] {
 					"Media",
 				});
@@ -42,6 +64,7 @@ namespace UnrealBuildTool.Rules
                 });
 
             AddEngineThirdPartyPrivateStaticDependencies(Target, "IntelMetricsDiscovery");
+            AddEngineThirdPartyPrivateStaticDependencies(Target, "IntelExtensionsFramework");
             AddEngineThirdPartyPrivateStaticDependencies(Target, "NVAftermath");
 
 			if (Target.bCompileAgainstEngine)
@@ -50,17 +73,13 @@ namespace UnrealBuildTool.Rules
 				PrivateDependencyModuleNames.Add("HeadMountedDisplay");
 			}
 
-			if (Target.Type != TargetType.Server)
+			if ((Target.Platform == UnrealTargetPlatform.Win64) ||
+				(Target.Platform == UnrealTargetPlatform.Win32))
 			{
-				if ((Target.Platform == UnrealTargetPlatform.Win64) ||
-					(Target.Platform == UnrealTargetPlatform.Win32))
-				{
-					PublicDelayLoadDLLs.Add("mf.dll");
-					PublicDelayLoadDLLs.Add("mfplat.dll");
-					PublicDelayLoadDLLs.Add("mfplay.dll");
-					PublicDelayLoadDLLs.Add("mfuuid.dll");
-					PublicDelayLoadDLLs.Add("shlwapi.dll");
-				}
+				PublicDelayLoadDLLs.Add("mf.dll");
+				PublicDelayLoadDLLs.Add("mfplat.dll");
+				PublicDelayLoadDLLs.Add("mfplay.dll");
+				PublicDelayLoadDLLs.Add("shlwapi.dll");
 			}
 		}
 	}

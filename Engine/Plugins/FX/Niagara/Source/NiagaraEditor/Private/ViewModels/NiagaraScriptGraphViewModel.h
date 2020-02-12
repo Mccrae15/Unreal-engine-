@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -22,8 +22,8 @@ public:
 	DECLARE_MULTICAST_DELEGATE(FOnGraphChanged);
 
 public:
-	/** Create a new view model with the supplied script. */
-	FNiagaraScriptGraphViewModel(UNiagaraScriptSource* InScriptSource, FText InDisplayName);
+	/** Create a new view model with the supplied  display name. */
+	FNiagaraScriptGraphViewModel(TAttribute<FText> InDisplayName);
 
 	~FNiagaraScriptGraphViewModel();
 
@@ -43,7 +43,7 @@ public:
 	TSharedRef<FUICommandList> GetCommands();
 
 	/** Gets the currently selected graph nodes. */
-	TSharedRef<FNiagaraObjectSelection> GetSelection();
+	TSharedRef<FNiagaraObjectSelection> GetNodeSelection();
 
 	/** Sets the currently selected graph nodes. */
 	void SetSelectedNodes(const TSet<UObject*>& InSelectedNodes);
@@ -89,13 +89,13 @@ private:
 	TWeakObjectPtr<UNiagaraScriptSource> ScriptSource;
 
 	/** The display name for the script graph. */
-	FText DisplayName;
+	TAttribute<FText> DisplayName;
 
 	/** Commands for editing the graph. */
 	TSharedRef<FUICommandList> Commands;
 
-	/** The set of objects currently selected in the graph. */
-	TSharedRef<FNiagaraObjectSelection> Selection;
+	/** The set of nodes objects currently selected in the graph. */
+	TSharedRef<FNiagaraObjectSelection> NodeSelection;
 
 	/** A multicast delegate which is called whenever nodes are pasted into the graph. */
 	FOnNodesPasted OnNodesPastedDelegate;

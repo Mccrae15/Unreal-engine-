@@ -1,10 +1,11 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "UObject/SoftObjectPath.h"
 #include "UObject/PropertyPortFlags.h"
 #include "UObject/UnrealType.h"
 #include "UObject/ObjectRedirector.h"
 #include "Misc/PackageName.h"
+#include "Misc/StringBuilder.h"
 #include "UObject/LinkerLoad.h"
 #include "UObject/UObjectThreadContext.h"
 #include "UObject/CoreRedirects.h"
@@ -34,6 +35,19 @@ FString FSoftObjectPath::ToString() const
 	FullPathString.AppendChar(':');
 	FullPathString.Append(SubPathString);
 	return FullPathString;
+}
+
+void FSoftObjectPath::ToString(FStringBuilderBase& Builder) const
+{
+	if (!AssetPathName.IsNone())
+	{
+		Builder << AssetPathName;
+	}
+
+	if (SubPathString.Len() > 0)
+	{
+		Builder << ':' << SubPathString;
+	}
 }
 
 void FSoftObjectPath::SetPath(FString Path)
@@ -235,7 +249,7 @@ bool FSoftObjectPath::ExportTextItem(FString& ValueStr, FSoftObjectPath const& D
 bool FSoftObjectPath::ImportTextItem(const TCHAR*& Buffer, int32 PortFlags, UObject* Parent, FOutputDevice* ErrorText, FArchive* InSerializingArchive)
 {
 	FString ImportedPath;
-	const TCHAR* NewBuffer = UPropertyHelpers::ReadToken(Buffer, ImportedPath, 1);
+	const TCHAR* NewBuffer = FPropertyHelpers::ReadToken(Buffer, ImportedPath, 1);
 	if (!NewBuffer)
 	{
 		return false;
@@ -250,10 +264,10 @@ bool FSoftObjectPath::ImportTextItem(const TCHAR*& Buffer, int32 PortFlags, UObj
 		if (*Buffer == TCHAR('\''))
 		{
 			// A ' token likely means we're looking at a path string in the form "Texture2d'/Game/UI/HUD/Actions/Barrel'" and we need to read and append the path part
-			// We have to skip over the first ' as UPropertyHelpers::ReadToken doesn't read single-quoted strings correctly, but does read a path correctly
+			// We have to skip over the first ' as FPropertyHelpers::ReadToken doesn't read single-quoted strings correctly, but does read a path correctly
 			Buffer++; // Skip the leading '
 			ImportedPath.Reset();
-			NewBuffer = UPropertyHelpers::ReadToken(Buffer, ImportedPath, 1);
+			NewBuffer = FPropertyHelpers::ReadToken(Buffer, ImportedPath, 1);
 			if (!NewBuffer)
 			{
 				return false;
@@ -350,7 +364,30 @@ UObject* FSoftObjectPath::TryLoad(FUObjectSerializeContext* InLoadContext) const
 
 	if (!IsNull())
 	{
-		LoadedObject = StaticLoadObject(UObject::StaticClass(), nullptr, *ToString(), nullptr, LOAD_None, nullptr, true, InLoadContext);
+		if (IsSubobject())
+		{
+			// For subobjects, it's not safe to call LoadObject directly, so we want to load the parent object and then resolve again
+			FSoftObjectPath TopLevelPath = FSoftObjectPath(AssetPathName, FString());
+			UObject* TopLevelObject = TopLevelPath.TryLoad(InLoadContext);
+
+			// This probably loaded the top-level object, so re-resolve ourselves
+			return ResolveObject();
+		}
+
+		FString PathString = ToString();
+#if WITH_EDITOR
+		if (GPlayInEditorID != INDEX_NONE)
+		{
+			// If we are in PIE and this hasn't already been fixed up, we need to fixup at resolution time. We cannot modify the path as it may be somewhere like a blueprint CDO
+			FSoftObjectPath FixupObjectPath = *this;
+			if (FixupObjectPath.FixupForPIE())
+			{
+				PathString = FixupObjectPath.ToString();
+			}
+		}
+#endif
+
+		LoadedObject = StaticLoadObject(UObject::StaticClass(), nullptr, *PathString, nullptr, LOAD_None, nullptr, true, InLoadContext);
 
 #if WITH_EDITOR
 		// Look at core redirects if we didn't find the object
@@ -382,7 +419,6 @@ UObject* FSoftObjectPath::ResolveObject() const
 		return nullptr;
 	}
 
-	FString PathString = ToString();
 #if WITH_EDITOR
 	if (GPlayInEditorID != INDEX_NONE)
 	{
@@ -390,12 +426,31 @@ UObject* FSoftObjectPath::ResolveObject() const
 		FSoftObjectPath FixupObjectPath = *this;
 		if (FixupObjectPath.FixupForPIE())
 		{
-			PathString = FixupObjectPath.ToString();
+			return FixupObjectPath.ResolveObjectInternal();
 		}
 	}
 #endif
 
-	UObject* FoundObject = FindObject<UObject>(nullptr, *PathString);
+	return ResolveObjectInternal();
+}
+
+UObject* FSoftObjectPath::ResolveObjectInternal() const
+{
+	if (SubPathString.IsEmpty())
+	{
+		TCHAR PathString[FName::StringBufferSize];
+		AssetPathName.ToString(PathString);
+		return ResolveObjectInternal(PathString);
+	}
+	else
+	{
+		return ResolveObjectInternal(*ToString());
+	}
+}
+
+UObject* FSoftObjectPath::ResolveObjectInternal(const TCHAR* PathString) const
+{
+	UObject* FoundObject = FindObject<UObject>(nullptr, PathString);
 
 #if WITH_EDITOR
 	// Look at core redirects if we didn't find the object
@@ -404,8 +459,7 @@ UObject* FSoftObjectPath::ResolveObject() const
 		FSoftObjectPath FixupObjectPath = *this;
 		if (FixupObjectPath.FixupCoreRedirects())
 		{
-			PathString = FixupObjectPath.ToString();
-			FoundObject = FindObject<UObject>(nullptr, *PathString);
+			FoundObject = FindObject<UObject>(nullptr, *FixupObjectPath.ToString());
 		}
 	}
 #endif
@@ -587,7 +641,7 @@ bool FSoftObjectPathThreadContext::GetSerializationOptions(FName& OutPackageName
 	// Check archive for property/editor only info, this works for any serialize if passed in
 	if (Archive)
 	{
-		UProperty* CurrentProperty = Archive->GetSerializedProperty();
+		FProperty* CurrentProperty = Archive->GetSerializedProperty();
 			
 		if (CurrentProperty && CurrentPropertyName == NAME_None)
 		{

@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "Engine/WindDirectionalSource.h"
 #include "UObject/ConstructorHelpers.h"
@@ -48,7 +48,7 @@ AWindDirectionalSource::AWindDirectionalSource(const FObjectInitializer& ObjectI
 		if (UBillboardComponent* SpriteComp = GetSpriteComponent())
 		{
 			SpriteComp->Sprite = ConstructorStatics.SpriteTexture.Get();
-			SpriteComp->RelativeScale3D = FVector(0.5f, 0.5f, 0.5f);
+			SpriteComp->SetRelativeScale3D(FVector(0.5f, 0.5f, 0.5f));
 			SpriteComp->SpriteInfo.Category = ConstructorStatics.ID_Wind;
 			SpriteComp->SpriteInfo.DisplayName = ConstructorStatics.NAME_Wind;
 			SpriteComp->SetupAttachment(Component);
@@ -217,9 +217,9 @@ void UWindDirectionalSourceComponent::SetWindType(EWindSourceType InNewType)
 	MarkRenderDynamicDataDirty();
 }
 
-void UWindDirectionalSourceComponent::CreateRenderState_Concurrent()
+void UWindDirectionalSourceComponent::CreateRenderState_Concurrent(FRegisterComponentContext* Context)
 {
-	Super::CreateRenderState_Concurrent();
+	Super::CreateRenderState_Concurrent(Context);
 	GetWorld()->Scene->AddWindSource(this);
 }
 

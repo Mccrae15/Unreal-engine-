@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -63,7 +63,7 @@ public:
 	 */
 	void SendControllerEvents();
 
-	static void QueueTouchInput(const TArray<TouchInput>& InTouchEvents);
+	static APPLICATIONCORE_API void QueueTouchInput(const TArray<TouchInput>& InTouchEvents);
 	static void QueueKeyInput(int32 Key, int32 Char);
 
 	//~ Begin Exec Interface
@@ -79,9 +79,13 @@ public:
 	virtual void ResetLightColor(int32 ControllerId) override {}
 
 	void SetGamepadsAllowed(bool bAllowed) { bAllowControllers = bAllowed; }
+	void SetGamepadsBlockDeviceFeedback(bool bBlock) { bControllersBlockDeviceFeedback = bBlock; }
 	bool IsControllerAssignedToGamepad(int32 ControllerId) const;
 	bool IsGamepadAttached() const;
 
+	void EnableMotionData(bool bEnable);
+	bool IsMotionDataEnabled() const;
+	
 private:
 
 	FIOSInputInterface( const TSharedRef< FGenericApplicationMessageHandler >& InMessageHandler );
@@ -106,25 +110,18 @@ private:
 	void CalibrateMotion(uint32 PlayerIndex);
 
 private:
-	void ProcessTouchesAndKeys(uint32 ControllerId);
-
-
-	static TArray<TouchInput> TouchInputStack;
-	static TArray<int32> KeyInputStack;
-
-	// protects the input stack used on 2 threads
-	static FCriticalSection CriticalSection;
-
+	void ProcessTouchesAndKeys(uint32 ControllerId, const TArray<TouchInput>& InTouchInputStack, const TArray<int32>& InKeyInputStack);
+	   
 	TSharedRef< FGenericApplicationMessageHandler > MessageHandler;
 
 
 	/** Game controller objects (per user)*/
 	struct FUserController
 	{
-		GCGamepadSnapshot* PreviousGamepad;
-		GCExtendedGamepadSnapshot* PreviousExtendedGamepad;
+        GCController* Controller;
+		GCExtendedGamepad* PreviousExtendedGamepad;
 #if PLATFORM_TVOS
-		GCMicroGamepadSnapshot* PreviousMicroGamepad;
+		GCMicroGamepad* PreviousMicroGamepad;
 #endif
 		FQuat ReferenceAttitude;
 		bool bNeedsReferenceAttitude;
@@ -132,6 +129,9 @@ private:
 		bool bIsGamepadConnected;
 		bool bIsRemoteConnected;
 		bool bPauseWasPressed;
+        // Tracked outside the gamepads to allow us to support thumbsticks on more devices.
+        bool bRightThumbstickWasPressed;
+        bool bLeftThumbstickWasPressed;
 	};
 	// there is a hardcoded limit of 4 controllers in the API
 	FUserController Controllers[4];
@@ -150,7 +150,13 @@ private:
 	
 	// should we allow controllers to send input
 	bool bAllowControllers;
+
+	// bluetooth connected controllers will block force feedback.
+	bool bControllersBlockDeviceFeedback;
 	
+	/** Is motion paused or not? */
+	bool bPauseMotion;
+
 #if !PLATFORM_TVOS
 	/** Access to the ios devices motion */
 	CMMotionManager* MotionManager;
@@ -158,7 +164,6 @@ private:
 	/** Access to the ios devices tilt information */
 	CMAttitude* ReferenceAttitude;
 #endif
-	
 
 	/** Last frames roll, for calculating rate */
 	float LastRoll;

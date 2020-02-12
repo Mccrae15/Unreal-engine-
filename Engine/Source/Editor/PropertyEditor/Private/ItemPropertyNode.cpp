@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 
 #include "ItemPropertyNode.h"
@@ -20,65 +20,60 @@ FItemPropertyNode::~FItemPropertyNode(void)
 
 }
 
-/**
- * Calculates the memory address for the data associated with this item's property.  This is typically the value of a UProperty or a UObject address.
- *
- * @param	StartAddress	the location to use as the starting point for the calculation; typically the address of the object that contains this property.
- *
- * @return	a pointer to a UProperty value or UObject.  (For dynamic arrays, you'd cast this value to an FArray*)
- */
-uint8* FItemPropertyNode::GetValueBaseAddress( uint8* StartAddress )
+uint8* FItemPropertyNode::GetValueBaseAddress(uint8* StartAddress, bool bIsSparseData) const
 {
-	UProperty* MyProperty = GetProperty();
+	const FProperty* MyProperty = GetProperty();
 	if( MyProperty && ParentNodeWeakPtr.IsValid())
 	{
-		UArrayProperty* OuterArrayProp = Cast<UArrayProperty>(MyProperty->GetOuter());
-		USetProperty* OuterSetProp = Cast<USetProperty>(MyProperty->GetOuter());
-		UMapProperty* OuterMapProp = Cast<UMapProperty>(MyProperty->GetOuter());
+		const FArrayProperty* OuterArrayProp = MyProperty->GetOwner<FArrayProperty>();
+		const FSetProperty* OuterSetProp = MyProperty->GetOwner<FSetProperty>();
+		const FMapProperty* OuterMapProp = MyProperty->GetOwner<FMapProperty>();
 
-		uint8* ValueBaseAddress = ParentNode->GetValueBaseAddress(StartAddress);
+		uint8* ValueBaseAddress = ParentNode->GetValueBaseAddress(StartAddress, bIsSparseData);
 
-		if ( OuterArrayProp != NULL )
+		if (OuterArrayProp != nullptr)
 		{
 			FScriptArrayHelper ArrayHelper(OuterArrayProp, ValueBaseAddress);
-			if ( ValueBaseAddress != NULL && ArrayIndex < ArrayHelper.Num() )
+			if (ValueBaseAddress != nullptr && ArrayHelper.IsValidIndex(ArrayIndex))
 			{
-				return ArrayHelper.GetRawPtr() + ArrayOffset;
+				return ArrayHelper.GetRawPtr(ArrayIndex);
 			}
-
-			return NULL;
 		}
-		else if (OuterSetProp != NULL)
+		else if (OuterSetProp != nullptr)
 		{
 			FScriptSetHelper SetHelper(OuterSetProp, ValueBaseAddress);
-			if (ValueBaseAddress != NULL && SetHelper.IsValidIndex(ArrayIndex))
+			if (ValueBaseAddress != nullptr)
 			{
-				return SetHelper.GetElementPtr(ArrayIndex);
+				int32 ActualIndex = SetHelper.FindInternalIndex(ArrayIndex);
+				if (ActualIndex != INDEX_NONE)
+				{
+					return SetHelper.GetElementPtr(ActualIndex);
+				}
 			}
-
-			return NULL;
 		}
-		else if (OuterMapProp != NULL)
+		else if (OuterMapProp != nullptr)
 		{
 			FScriptMapHelper MapHelper(OuterMapProp, ValueBaseAddress);
-			if (ValueBaseAddress != NULL && MapHelper.IsValidIndex(ArrayIndex))
+			if (ValueBaseAddress != nullptr)
 			{
-				uint8* PairPtr = MapHelper.GetPairPtr(ArrayIndex);
-
-				return MyProperty->ContainerPtrToValuePtr<uint8>(PairPtr);
+				int32 ActualIndex = MapHelper.FindInternalIndex(ArrayIndex);
+				if (ActualIndex != INDEX_NONE)
+				{
+					uint8* PairPtr = MapHelper.GetPairPtr(ActualIndex);
+					return MyProperty->ContainerPtrToValuePtr<uint8>(PairPtr);
+				}
 			}
-
-			return NULL;
 		}
 		else
 		{
-			uint8* ValueAddress = ParentNode->GetValueAddress(StartAddress);
-			if (ValueAddress != NULL && ParentNode->GetProperty() != MyProperty)
+			uint8* ValueAddress = ParentNode->GetValueAddress(StartAddress, bIsSparseData);
+			if (ValueAddress != nullptr && ParentNode->GetProperty() != MyProperty)
 			{
 				// if this is not a fixed size array (in which the parent property and this property are the same), we need to offset from the property (otherwise, the parent already did that for us)
 				ValueAddress = Property->ContainerPtrToValuePtr<uint8>(ValueAddress);
 			}
-			if ( ValueAddress != NULL )
+
+			if (ValueAddress != nullptr)
 			{
 				ValueAddress += ArrayOffset;
 			}
@@ -86,31 +81,33 @@ uint8* FItemPropertyNode::GetValueBaseAddress( uint8* StartAddress )
 		}
 	}
 
-	return NULL;
+	return nullptr;
 }
 
-/**
- * Calculates the memory address for the data associated with this item's value.  For most properties, identical to GetValueBaseAddress.  For items corresponding
- * to dynamic array elements, the pointer returned will be the location for that element's data. 
- *
- * @param	StartAddress	the location to use as the starting point for the calculation; typically the address of the object that contains this property.
- *
- * @return	a pointer to a UProperty value or UObject.  (For dynamic arrays, you'd cast this value to whatever type is the Inner for the dynamic array)
- */
-uint8* FItemPropertyNode::GetValueAddress( uint8* StartAddress )
+uint8* FItemPropertyNode::GetValueAddress(uint8* StartAddress, bool bIsSparseData) const
 {
-	uint8* Result = GetValueBaseAddress(StartAddress);
+	uint8* Result = GetValueBaseAddress(StartAddress, bIsSparseData);
 
-	UProperty* MyProperty = GetProperty();
+	const FProperty* MyProperty = GetProperty();
 
-	UArrayProperty* ArrayProperty = Cast<UArrayProperty>(MyProperty);
-	USetProperty* SetProperty = Cast<USetProperty>(MyProperty);
-	UMapProperty* MapProperty = Cast<UMapProperty>(MyProperty);
+	const FArrayProperty* ArrayProperty = CastField<FArrayProperty>(MyProperty);
+	const FSetProperty* SetProperty = CastField<FSetProperty>(MyProperty);
+	const FMapProperty* MapProperty = CastField<FMapProperty>(MyProperty);
 
 	if( Result && ArrayProperty)
 	{
-		FScriptArrayHelper ArrayHelper(ArrayProperty,Result);
+		FScriptArrayHelper ArrayHelper(ArrayProperty, Result);
 		Result = ArrayHelper.GetRawPtr();
+	}
+	else if (Result && SetProperty)
+	{
+		FScriptSetHelper SetHelper(SetProperty, Result);
+		Result = SetHelper.GetElementPtr(0);
+	}
+	else if (Result && MapProperty)
+	{
+		FScriptMapHelper MapHelper(MapProperty, Result);
+		Result = MapHelper.GetPairPtr(0);
 	}
 
 	return Result;
@@ -122,12 +119,12 @@ uint8* FItemPropertyNode::GetValueAddress( uint8* StartAddress )
 void FItemPropertyNode::InitExpansionFlags (void)
 {
 	
-	UProperty* MyProperty = GetProperty();
+	FProperty* MyProperty = GetProperty();
 
 	FReadAddressList Addresses;
 
-	bool bExpandableType = Cast<UStructProperty>(MyProperty) 
-		|| ( ( Cast<UArrayProperty>(MyProperty) || Cast<USetProperty>(MyProperty) || Cast<UMapProperty>(MyProperty) ) && GetReadAddress(false,Addresses) );
+	bool bExpandableType = CastField<FStructProperty>(MyProperty) 
+		|| ( ( CastField<FArrayProperty>(MyProperty) || CastField<FSetProperty>(MyProperty) || CastField<FMapProperty>(MyProperty) ) && GetReadAddress(false,Addresses) );
 
 	if(	bExpandableType
 		|| HasNodeFlags(EPropertyNodeFlags::EditInlineNew)
@@ -143,12 +140,12 @@ void FItemPropertyNode::InitExpansionFlags (void)
 void FItemPropertyNode::InitChildNodes()
 {
 	//NOTE - this is only turned off as to not invalidate child object nodes.
-	UProperty* MyProperty = GetProperty();
-	UStructProperty* StructProperty = Cast<UStructProperty>(MyProperty);
-	UArrayProperty* ArrayProperty = Cast<UArrayProperty>(MyProperty);
-	USetProperty* SetProperty = Cast<USetProperty>(MyProperty);
-	UMapProperty* MapProperty = Cast<UMapProperty>(MyProperty);
-	UObjectPropertyBase* ObjectProperty = Cast<UObjectPropertyBase>(MyProperty);
+	FProperty* MyProperty = GetProperty();
+	FStructProperty* StructProperty = CastField<FStructProperty>(MyProperty);
+	FArrayProperty* ArrayProperty = CastField<FArrayProperty>(MyProperty);
+	FSetProperty* SetProperty = CastField<FSetProperty>(MyProperty);
+	FMapProperty* MapProperty = CastField<FMapProperty>(MyProperty);
+	FObjectPropertyBase* ObjectProperty = CastField<FObjectPropertyBase>(MyProperty);
 
 	const bool bShouldShowHiddenProperties = !!HasNodeFlags(EPropertyNodeFlags::ShouldShowHiddenProperties);
 	const bool bShouldShowDisableEditOnInstance = !!HasNodeFlags(EPropertyNodeFlags::ShouldShowDisableEditOnInstance);
@@ -202,14 +199,15 @@ void FItemPropertyNode::InitChildNodes()
 
 		if( Array )
 		{
-			for( int32 Index = 0 ; Index < FScriptArrayHelper::Num(Array) ; Index++ )
+			FScriptArrayHelper ArrayHelper(ArrayProperty, Array);
+			for( int32 Index = 0 ; Index < ArrayHelper.Num(); Index++ )
 			{
 				TSharedPtr<FItemPropertyNode> NewItemNode( new FItemPropertyNode );
 
 				FPropertyNodeInitParams InitParams;
 				InitParams.ParentNode = SharedThis(this);
 				InitParams.Property = ArrayProperty->Inner;
-				InitParams.ArrayOffset = Index*ArrayProperty->Inner->ElementSize;
+				InitParams.ArrayOffset = Index * ArrayProperty->Inner->ElementSize;
 				InitParams.ArrayIndex = Index;
 				InitParams.bAllowChildren = true;
 				InitParams.bForceHiddenPropertyVisibility = bShouldShowHiddenProperties;
@@ -233,25 +231,20 @@ void FItemPropertyNode::InitChildNodes()
 		{
 			FScriptSetHelper SetHelper(SetProperty, Set);
 
-			for (int32 TrueIndex = 0, ItemsLeft = SetHelper.Num(); ItemsLeft > 0; ++TrueIndex)
+			for (int32 Index = 0; Index < SetHelper.Num(); ++Index)
 			{
-				if (SetHelper.IsValidIndex(TrueIndex))
-				{
-					--ItemsLeft;
+				TSharedPtr<FItemPropertyNode> NewItemNode(new FItemPropertyNode);
 
-					TSharedPtr<FItemPropertyNode> NewItemNode(new FItemPropertyNode);
+				FPropertyNodeInitParams InitParams;
+				InitParams.ParentNode = SharedThis(this);
+				InitParams.Property = SetProperty->ElementProp;
+				InitParams.ArrayIndex = Index;
+				InitParams.bAllowChildren = true;
+				InitParams.bForceHiddenPropertyVisibility = bShouldShowHiddenProperties;
+				InitParams.bCreateDisableEditOnInstanceNodes = bShouldShowDisableEditOnInstance;
 
-					FPropertyNodeInitParams InitParams;
-					InitParams.ParentNode = SharedThis(this);
-					InitParams.Property = SetProperty->ElementProp;
-					InitParams.ArrayIndex = TrueIndex;
-					InitParams.bAllowChildren = true;
-					InitParams.bForceHiddenPropertyVisibility = bShouldShowHiddenProperties;
-					InitParams.bCreateDisableEditOnInstanceNodes = bShouldShowDisableEditOnInstance;
-
-					NewItemNode->InitNode(InitParams);
-					AddChildNode(NewItemNode);
-				}
+				NewItemNode->InitNode(InitParams);
+				AddChildNode(NewItemNode);
 			}
 		}
 	}
@@ -268,54 +261,46 @@ void FItemPropertyNode::InitChildNodes()
 		{
 			FScriptMapHelper MapHelper(MapProperty, Map);
 
-			for (int32 TrueIndex = 0, ItemsLeft = MapHelper.Num(); ItemsLeft > 0; ++TrueIndex)
+			for (int32 Index = 0; Index < MapHelper.Num(); ++Index)
 			{
-				if ( MapHelper.IsValidIndex(TrueIndex) )
-				{
-					--ItemsLeft;
-
-					// Construct the key node first
-					TSharedPtr<FPropertyNode> KeyNode(new FItemPropertyNode());
+				// Construct the key node first
+				TSharedPtr<FPropertyNode> KeyNode(new FItemPropertyNode());
 					
-					FPropertyNodeInitParams InitParams;
-					InitParams.ParentNode = SharedThis(this);	// Key Node needs to point to this node to ensure its data is set correctly
-					InitParams.Property = MapHelper.KeyProp;
-					InitParams.ArrayIndex = TrueIndex;
-					InitParams.ArrayOffset = 0;
-					InitParams.bAllowChildren = true;
-					InitParams.bForceHiddenPropertyVisibility = bShouldShowHiddenProperties;
-					InitParams.bCreateDisableEditOnInstanceNodes = bShouldShowDisableEditOnInstance;
+				FPropertyNodeInitParams InitParams;
+				InitParams.ParentNode = SharedThis(this);	// Key Node needs to point to this node to ensure its data is set correctly
+				InitParams.Property = MapHelper.KeyProp;
+				InitParams.ArrayIndex = Index;
+				InitParams.ArrayOffset = 0;
+				InitParams.bAllowChildren = true;
+				InitParams.bForceHiddenPropertyVisibility = bShouldShowHiddenProperties;
+				InitParams.bCreateDisableEditOnInstanceNodes = bShouldShowDisableEditOnInstance;
 
-					KeyNode->InitNode(InitParams);
-					// Not adding the key node as a child, otherwise it'll show up in the wrong spot.
+				KeyNode->InitNode(InitParams);
+				// Not adding the key node as a child, otherwise it'll show up in the wrong spot.
 
-					// Then the value node
-					TSharedPtr<FPropertyNode> ValueNode(new FItemPropertyNode());
+				// Then the value node
+				TSharedPtr<FPropertyNode> ValueNode(new FItemPropertyNode());
 					
-					// Reuse the init params
-					InitParams.ParentNode = SharedThis(this);
-					InitParams.Property = MapHelper.ValueProp;
+				// Reuse the init params
+				InitParams.ParentNode = SharedThis(this);
+				InitParams.Property = MapHelper.ValueProp;
 
-					ValueNode->InitNode(InitParams);
-					AddChildNode(ValueNode);
+				ValueNode->InitNode(InitParams);
+				AddChildNode(ValueNode);
 
-					FPropertyNode::SetupKeyValueNodePair(KeyNode, ValueNode);
-				}
+				FPropertyNode::SetupKeyValueNodePair(KeyNode, ValueNode);
 			}
 		}
 	}
 	else if( StructProperty )
 	{
 		// Expand struct.
-		TArray<UProperty*> StructMembers;
-		for (TFieldIterator<UProperty> It(StructProperty->Struct); It; ++It)
+		TArray<FProperty*> StructMembers;
+		for (TFieldIterator<FProperty> It(StructProperty->Struct); It; ++It)
 		{
-			UProperty* StructMember = *It;
-			static const FName Name_InlineEditConditionToggle("InlineEditConditionToggle");
-			const bool bOnlyShowAsInlineEditCondition = StructMember->HasMetaData(Name_InlineEditConditionToggle);
-			const bool bShowIfEditableProperty = StructMember->HasAnyPropertyFlags(CPF_Edit);
-			const bool bShowIfDisableEditOnInstance = !StructMember->HasAnyPropertyFlags(CPF_DisableEditOnInstance) || bShouldShowDisableEditOnInstance;
-			if (bShouldShowHiddenProperties || (bShowIfEditableProperty && !bOnlyShowAsInlineEditCondition && bShowIfDisableEditOnInstance))
+			FProperty* StructMember = *It;
+			
+			if (PropertyEditorHelpers::ShouldBeVisible(*this, StructMember))
 			{
 				StructMembers.Add(StructMember);
 			}
@@ -323,9 +308,9 @@ void FItemPropertyNode::InitChildNodes()
 
 		PropertyEditorHelpers::OrderPropertiesFromMetadata(StructMembers);
 
-		for (UProperty* StructMember : StructMembers)
+		for (FProperty* StructMember : StructMembers)
 		{
-			TSharedPtr<FItemPropertyNode> NewItemNode( new FItemPropertyNode );//;//CreatePropertyItem(StructMember,INDEX_NONE,this);
+			TSharedPtr<FItemPropertyNode> NewItemNode( new FItemPropertyNode );
 		
 			FPropertyNodeInitParams InitParams;
 			InitParams.ParentNode = SharedThis(this);
@@ -342,7 +327,7 @@ void FItemPropertyNode::InitChildNodes()
 			if ( FPropertySettings::Get().ExpandDistributions() == false)
 			{
 				// auto-expand distribution structs
-				if ( Cast<UObjectProperty>(StructMember) || Cast<UWeakObjectProperty>(StructMember) || Cast<ULazyObjectProperty>(StructMember) || Cast<USoftObjectProperty>(StructMember) )
+				if ( CastField<FObjectProperty>(StructMember) || CastField<FWeakObjectProperty>(StructMember) || CastField<FLazyObjectProperty>(StructMember) || CastField<FSoftObjectProperty>(StructMember) )
 				{
 					const FName StructName = StructProperty->Struct->GetFName();
 					if (StructName == NAME_RawDistributionFloat || StructName == NAME_RawDistributionVector)
@@ -469,7 +454,7 @@ FText FItemPropertyNode::GetDisplayName() const
 	}
 	else 
 	{
-		const UProperty* PropertyPtr = GetProperty();
+		const FProperty* PropertyPtr = GetProperty();
 		if( GetArrayIndex()==-1 && PropertyPtr != NULL  )
 		{
 			// This item is not a member of an array, get a traditional display name
@@ -480,8 +465,8 @@ FText FItemPropertyNode::GetDisplayName() const
 				if ( FinalDisplayName.IsEmpty() )
 				{
 					FString PropertyDisplayName;
-					bool bIsBoolProperty = Cast<const UBoolProperty>(PropertyPtr) != NULL;
-					const UStructProperty* ParentStructProperty = Cast<const UStructProperty>(ParentNode->GetProperty());
+					bool bIsBoolProperty = CastField<const FBoolProperty>(PropertyPtr) != NULL;
+					const FStructProperty* ParentStructProperty = CastField<const FStructProperty>(ParentNode->GetProperty());
 					if( ParentStructProperty && ParentStructProperty->Struct->GetFName() == NAME_Rotator )
 					{
 						if( Property->GetFName() == "Roll" )
@@ -529,8 +514,15 @@ FText FItemPropertyNode::GetDisplayName() const
 			}
 			
 			// Sets and maps do not have a display index.
-			UProperty* ParentProperty = ParentNode->GetProperty();
-			if (Cast<USetProperty>(ParentProperty) == nullptr &&  Cast<UMapProperty>(ParentProperty) == nullptr)
+			FProperty* ParentProperty = ParentNode->GetProperty();
+
+			// Also handle UArray's having the ArraySizeEnum entry...
+			if (ArraySizeEnum == nullptr && CastField<FArrayProperty>(ParentProperty) != nullptr && ParentProperty->HasMetaData(NAME_ArraySizeEnum))
+			{
+				ArraySizeEnum = FindObject<UEnum>(NULL, *ParentProperty->GetMetaData(NAME_ArraySizeEnum));
+			}
+
+			if (CastField<FSetProperty>(ParentProperty) == nullptr &&  CastField<FMapProperty>(ParentProperty) == nullptr)
 			{
 				// This item is a member of an array, its display name is its index 
 				if (PropertyPtr == NULL || ArraySizeEnum == NULL)
@@ -543,7 +535,7 @@ FText FItemPropertyNode::GetDisplayName() const
 				}
 			}
 			// Maps should have display names that reflect the key and value types
-			else if (PropertyPtr != nullptr && Cast<UMapProperty>(ParentNode->GetProperty()) != nullptr)
+			else if (PropertyPtr != nullptr && CastField<FMapProperty>(ParentNode->GetProperty()) != nullptr)
 			{
 				FText FormatText = GetPropertyKeyNode().IsValid()
 					? LOCTEXT("MapValueDisplayFormat", "Value ({0})")
@@ -551,12 +543,12 @@ FText FItemPropertyNode::GetDisplayName() const
 
 				FString TypeName;
 
-				if (const UStructProperty* StructProp = Cast<UStructProperty>(PropertyPtr))
+				if (const FStructProperty* StructProp = CastField<FStructProperty>(PropertyPtr))
 				{
 					// For struct props, use the name of the struct itself
 					TypeName = StructProp->Struct->GetName();
 				}
-				else if (const UEnumProperty* EnumProp = Cast<UEnumProperty>(PropertyPtr))
+				else if (const FEnumProperty* EnumProp = CastField<FEnumProperty>(PropertyPtr))
 				{
 					// For enum props, use the name of the enum
 					if (EnumProp->GetEnum() != nullptr)
@@ -568,7 +560,7 @@ FText FItemPropertyNode::GetDisplayName() const
 						TypeName = TEXT("Enum");
 					}
 				}
-				else if(PropertyPtr->IsA<UStrProperty>())
+				else if(PropertyPtr->IsA<FStrProperty>())
 				{
 					// For strings, actually return "String" and not "Str"
 					TypeName = TEXT("String");
@@ -582,7 +574,7 @@ FText FItemPropertyNode::GetDisplayName() const
 
 					if (EndIndex != -1)
 					{
-						TypeName = TypeName.Mid(0, EndIndex);
+						TypeName.MidInline(0, EndIndex, false);
 					}
 				}
 

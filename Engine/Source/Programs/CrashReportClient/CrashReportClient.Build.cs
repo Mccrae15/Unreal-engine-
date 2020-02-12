@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 using UnrealBuildTool;
 
@@ -21,7 +21,7 @@ public class CrashReportClient : ModuleRules
 				"Core",
 				"CoreUObject",
 				"ApplicationCore",
-				"CrashDebugHelper",
+				"CrashReportCore",
 				"HTTP",
 				"Json",
 				"Projects",
@@ -30,13 +30,8 @@ public class CrashReportClient : ModuleRules
 				"Analytics",
 				"AnalyticsET",
 				"DesktopPlatform",
-                "LauncherPlatform"
-			}
-			);
-
-		PrivateDependencyModuleNames.AddRange(
-			new string[] 
-			{
+				"LauncherPlatform",
+				"InputCore",
 				"Slate",
 				"SlateCore",
 				"StandaloneRenderer",
@@ -44,17 +39,20 @@ public class CrashReportClient : ModuleRules
 			}
 		);
 
-		PrivateIncludePathModuleNames.AddRange(
-			new string[] {
+		if (Target.Configuration != UnrealTargetConfiguration.Shipping)
+		{
+			PrivateIncludePathModuleNames.AddRange(
+				new string[] {
 				"SlateReflector",
-			}
-		);
+				}
+			);
 
-		DynamicallyLoadedModuleNames.AddRange(
-			new string[] {
+			DynamicallyLoadedModuleNames.AddRange(
+				new string[] {
 				"SlateReflector",
-			}
-		);
+				}
+			);
+		}
 
 		PrivateIncludePaths.Add("Runtime/Launch/Private");		// For LaunchEngineLoop.cpp include
 

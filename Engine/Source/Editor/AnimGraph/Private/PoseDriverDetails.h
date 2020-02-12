@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -68,8 +68,12 @@ public:
 	void NotifyTargetChanged();
 	/** Get current weight of this target in preview */
 	float GetTargetWeight() const;
+
 	/** Get index of target this represents on pose driver */
 	int32 GetTargetIndex() const;
+
+	/** If we should enable the display of override controls */
+	bool IsOverrideEnabled() const;
 
 	int32 GetTransRotWidgetIndex() const;
 	TOptional<float> GetTranslation(int32 BoneIndex, EAxis::Type Axis) const;
@@ -92,6 +96,14 @@ public:
 
 	bool IsCustomCurveEnabled() const;
 	void OnApplyCustomCurveChanged(const ECheckBoxState NewCheckState);
+
+	bool IsHidden() const;
+	void OnIsHiddenChanged(const ECheckBoxState NewCheckState);
+
+	FText GetDistanceMethodAsText() const;
+	void OnDistanceMethodChanged(TSharedPtr<FName> InItem, ESelectInfo::Type SelectionType);
+	FText GetFunctionTypeAsText() const;
+	void OnFunctionTypeChanged(TSharedPtr<FName> InItem, ESelectInfo::Type SelectionType);
 
 	/** Remove this target from  */
 	void RemoveTarget();
@@ -116,6 +128,9 @@ public:
 
 	/** Info that this widget represents */
 	TWeakPtr<FPDD_TargetInfo> TargetInfoPtr;
+
+	static TArray< TSharedPtr<FName> > DistanceMethodOptions;
+	static TArray< TSharedPtr<FName> > FunctionTypeOptions;
 };
 
 

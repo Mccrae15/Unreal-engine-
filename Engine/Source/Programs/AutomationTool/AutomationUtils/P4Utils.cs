@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 using System;
 using System.Collections.Generic;
 using System.Text;
@@ -432,6 +432,13 @@ namespace AutomationTool
 		/// </summary>
 		[Description("undid")]
 		Undid,
+
+		/// <summary>
+		/// file was reverted to a previous revision
+		/// </summary>
+		[Description("undone by")]
+		UndoneBy
+
 	}
 
 	/// <summary>
@@ -930,8 +937,6 @@ namespace AutomationTool
 
 	public partial class CommandUtils
 	{
-		#region Environment Setup
-
 		static private P4Connection PerforceConnection;
 		static private P4Environment PerforceEnvironment;
 
@@ -984,8 +989,6 @@ namespace AutomationTool
 		{
 			PerforceConnection = new P4Connection(User: P4Env.User, Client: P4Env.Client, ServerAndPort: P4Env.ServerAndPort);
 		}
-
-		#endregion
 
 		/// <summary>
 		/// Check if P4 is supported.
@@ -1914,9 +1917,21 @@ namespace AutomationTool
 		/// Invokes p4 sync command.
 		/// </summary>
 		/// <param name="CommandLine">CommandLine to pass on to the command.</param>
-        public void Sync(string CommandLine, bool AllowSpew = true, bool SpewIsVerbose = false)
+        public void Sync(string CommandLine, bool AllowSpew = true, bool SpewIsVerbose = false, int Retries=0, int MaxWait=0)
 		{
-			LogP4("sync " + CommandLine, null, AllowSpew, SpewIsVerbose:SpewIsVerbose);
+			string SyncCommandLine = "sync " + CommandLine;
+
+			if (MaxWait > 0)
+			{
+				SyncCommandLine = string.Format("-vnet.maxwait={0} {1}", MaxWait, SyncCommandLine);
+			}
+
+			if (Retries > 0)
+			{
+				SyncCommandLine = string.Format("-r{0} {1}", Retries, SyncCommandLine);
+			}
+
+			LogP4(SyncCommandLine, null, AllowSpew, SpewIsVerbose:SpewIsVerbose);
 		}
 
 		/// <summary>
@@ -2189,7 +2204,7 @@ namespace AutomationTool
                     return;
                 }
 				string CmdOutput;
-				if (!LogP4Output(out CmdOutput, String.Format("submit -c {0}", CL)))
+				if (!LogP4Output(out CmdOutput, String.Format("submit -c {0} -f submitunchanged", CL)))
 				{
 					if (!Force)
 					{
@@ -3046,7 +3061,8 @@ namespace AutomationTool
 			string CommandLine = String.Format("-z tag fstat {0}", CommandUtils.MakePathSafeToUseWithCommandLine(DepotFile));
 
 			string Output;
-			if(!LogP4Output(out Output, CommandLine, AllowSpew: false) || Output.Contains("no such file(s)"))
+			if(!LogP4Output(out Output, CommandLine, AllowSpew: false) || !Output.Contains("headRev"))
+
 			{
 				return false;
 			}
@@ -3194,6 +3210,25 @@ namespace AutomationTool
 				}
 			}
 			return Tags;
+		}
+
+		/// <summary>
+		/// Formats a tagged record as a string
+		/// </summary>
+		/// <param name="Record">The record to format</param>
+		/// <returns>Single string containing the record</returns>
+		public static string FormatTaggedOutput(Dictionary<string, string> Record)
+		{
+			StringBuilder Result = new StringBuilder();
+			foreach (KeyValuePair<string, string> Pair in Record)
+			{
+				if (Result.Length > 0)
+				{
+					Result.Append('\n');
+				}
+				Result.AppendFormat("{0}: {1}", Pair.Key, Pair.Value);
+			}
+			return Result.ToString();
 		}
 
 		/// <summary>
@@ -3934,8 +3969,6 @@ namespace AutomationTool
 			return null;
 		}
 
-		#region Utilities
-
 		private static object[] OldStyleBinaryFlags = new object[]
 		{
 			P4FileAttributes.Uncompressed,
@@ -4061,7 +4094,5 @@ namespace AutomationTool
 			}
 			return Text;
 		}
-
-		#endregion
 	}
 }

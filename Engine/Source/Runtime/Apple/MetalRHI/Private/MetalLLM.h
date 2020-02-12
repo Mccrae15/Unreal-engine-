@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -23,6 +23,7 @@ enum class ELLMTagMetal : LLM_TAG_TYPE
 	Buffers = (LLM_TAG_TYPE)ELLMTag::PlatformTagStart,
 	Textures,
 	Heaps,
+	RenderTargets,
 	
 	Count
 };

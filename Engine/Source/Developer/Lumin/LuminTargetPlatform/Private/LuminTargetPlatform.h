@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 /*=============================================================================
 	LuminTargetPlatform.h: Declares the FLuminTargetPlatform class.
@@ -15,7 +15,7 @@
 #include "Containers/Ticker.h"
 #include "Misc/ScopeLock.h"
 #include "Common/TargetPlatformBase.h"
-#include "Android/AndroidProperties.h"
+#include "Android/AndroidPlatformProperties.h"
 #include "AndroidTargetPlatform.h"
 
 #if WITH_ENGINE
@@ -61,13 +61,13 @@ public:
 
 	virtual bool IsSdkInstalled(bool bProjectHasCode, FString& OutDocumentationPath) const override;
 
-	virtual int32 CheckRequirements(const FString& ProjectPath, bool bProjectHasCode, FString& OutTutorialPath, FString& OutDocumentationPath, FText& CustomizedLogMessage) const override;
+	virtual int32 CheckRequirements(bool bProjectHasCode, EBuildConfiguration Configuration, bool bRequiresAssetNativization, FString& OutTutorialPath, FString& OutDocumentationPath, FText& CustomizedLogMessage) const override;
 
 #if WITH_ENGINE
 
 	virtual void GetAllPossibleShaderFormats( TArray<FName>& OutFormats ) const override;
 
-	virtual void GetTextureFormats( const UTexture* InTexture, TArray<FName>& OutFormats ) const override;
+	virtual void GetTextureFormats( const UTexture* InTexture, TArray< TArray<FName> >& OutFormats) const override;
 	virtual void GetAllTextureFormats(TArray<FName>& OutFormats) const override;
 
 	virtual void GetReflectionCaptureFormats(TArray<FName>& OutFormats) const override
@@ -76,11 +76,6 @@ public:
 		OutFormats.Add(FName(TEXT("FullHDR")));
 	}
 
-	virtual FPlatformAudioCookOverrides* GetAudioCompressionSettings() const override
-	{
-		return nullptr;
-	}
-	
 	// True if the project requires encoded HDR reflection captures
 	bool bRequiresEncodedHDRReflectionCaptures;
 #endif //WITH_ENGINE

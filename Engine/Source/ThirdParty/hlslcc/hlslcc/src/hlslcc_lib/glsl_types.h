@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 // This code is modified from that in the Mesa3D Graphics library available at
 // http://mesa3d.org/
@@ -123,6 +123,7 @@ struct glsl_type
 	unsigned sampler_array : 1;
 	unsigned sampler_ms : 1;
 	unsigned sampler_buffer : 1;
+	unsigned shader_storage_buffer : 1; /**< Shader storage buffer, i.e. "buffer" keyword for GLSL */
 	unsigned outputstream_type : 2; /**< \see glsl_outputstream_type */
 	int sample_count;
 	int patch_length;
@@ -628,7 +629,7 @@ private:
 
 	/** Constructor for image types */
 	glsl_type(
-	enum glsl_sampler_dim dim, bool array, bool is_sampler_buffer,
+	enum glsl_sampler_dim dim, bool array, bool is_sampler_buffer, bool is_shader_storage_buffer,
 		const struct glsl_type* type, const char *name);
 
 	/** Constructor for record types */

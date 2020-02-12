@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "Customizations/WidgetTypeCustomization.h"
 #include "Widgets/Text/STextBlock.h"
@@ -111,7 +111,12 @@ void FWidgetTypeCustomization::OnSelectionChanged(TWeakObjectPtr<UWidget> InItem
 		TSharedPtr<IPropertyHandle> PropertyHandle = PropertyHandlePtr.Pin();
 		if (PropertyHandle.IsValid())
 		{
-			PropertyHandle->SetValue(InItem.Get());
+			TArray<FString> Refrences;
+			for (int32 Index = 0; Index < PropertyHandle->GetNumPerObjectValues(); Index++)
+			{
+				Refrences.Add(InItem.Get()->GetPathName());
+			}
+			PropertyHandle->SetPerObjectValues(Refrences);
 
 			WidgetListComboButton->SetIsOpen(false);
 		}
@@ -185,7 +190,7 @@ void FWidgetTypeCustomization::OnFilterTextChanged(const FText& InFilterText)
 	TSharedPtr<IPropertyHandle> PropertyHandle = PropertyHandlePtr.Pin();
 	if (PropertyHandle.IsValid())
 	{
-		UObjectPropertyBase* ObjectProperty = CastChecked<UObjectPropertyBase>(PropertyHandle->GetProperty());
+		FObjectPropertyBase* ObjectProperty = CastFieldChecked<FObjectPropertyBase>(PropertyHandle->GetProperty());
 		UClass* FilterWidgetClass = ObjectProperty->PropertyClass;
 
 		UUserWidget* PreviewWidget = Editor.Pin()->GetPreview();

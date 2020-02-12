@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 #pragma once
 
 #include "CoreMinimal.h"
@@ -63,11 +63,13 @@ private:
 	/** Fill out the level menu with entries for level operations */
 	void BuildLevelMenu(FMenuBuilder& MenuBuilder);
 
-	bool IsCurrentSublevel(ULevel* InLevel);
-	void SetCurrentSublevel(ULevel* InLevel);
-				
+	bool IsCurrentSublevel(TSharedPtr<class FLevelModel> InLevelModel);
+	void SetCurrentSublevel(TSharedPtr<class FLevelModel> InLevelModel);
+			
+	void ReleaseWorldModel();
+
 private:
-	TWeakPtr<class FLevelCollectionModel>	WorldModel;
+	TSharedPtr<class FLevelCollectionModel> WorldModel;
 
 	/** Extender for the level menu */
 	FLevelEditorModule::FLevelEditorMenuExtender LevelMenuExtender;

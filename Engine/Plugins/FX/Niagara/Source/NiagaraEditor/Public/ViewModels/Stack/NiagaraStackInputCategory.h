@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -8,6 +8,13 @@
 
 class UNiagaraStackFunctionInput;
 class UNiagaraNodeFunctionCall;
+class UNiagaraClipboardFunctionInput;
+
+UENUM()
+enum class EStackParameterBehavior
+{
+	Dynamic, Static
+};
 
 UCLASS()
 class NIAGARAEDITOR_API UNiagaraStackInputCategory : public UNiagaraStackItemContent
@@ -26,7 +33,7 @@ public:
 
 	void ResetInputs();
 
-	void AddInput(FName InInputParameterHandle, FNiagaraTypeDefinition InInputType);
+	void AddInput(FName InInputParameterHandle, FNiagaraTypeDefinition InInputType, EStackParameterBehavior InParameterBehavior, bool bIsVisible);
 
 	//~ UNiagaraStackEntry interface
 	virtual FText GetDisplayName() const override;
@@ -35,6 +42,10 @@ public:
 	virtual bool GetIsEnabled() const override;
 
 	void SetShouldShowInStack(bool bInShouldShowInStack);
+
+	void ToClipboardFunctionInputs(UObject* InOuter, TArray<const UNiagaraClipboardFunctionInput*>& OutClipboardFunctionInputs) const;
+
+	void SetValuesFromClipboardFunctionInputs(const TArray<const UNiagaraClipboardFunctionInput*>& ClipboardFunctionInputs);
 
 protected:
 	//~ UNiagaraStackEntry interface
@@ -49,6 +60,8 @@ private:
 	{
 		FName ParameterHandle;
 		FNiagaraTypeDefinition Type;
+		EStackParameterBehavior ParameterBehavior;
+		bool bIsVisible;
 	};
 
 	UNiagaraNodeFunctionCall* ModuleNode;

@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -39,6 +39,8 @@ public:
 	*/
 	void CleanUp();
 
+	void ClearMetaData();
+
 	/**
 	* Initializes the buffer with the given vertices.
 	* @param InVertices - The vertices to initialize the buffer with.
@@ -54,12 +56,19 @@ public:
 	*/
 	friend FArchive& operator<<(FArchive& Ar, FSkeletalMeshVertexClothBuffer& VertexBuffer);
 
+	void SerializeMetaData(FArchive& Ar);
+
 	//~ Begin FRenderResource interface.
 
 	/**
 	* Initialize the RHI resource for this vertex buffer
 	*/
 	virtual void InitRHI() override;
+
+	/**
+	* Release the RHI resource for this vertex buffer
+	*/
+	virtual void ReleaseRHI() override;
 
 	/**
 	* @return text description for the resource type
@@ -114,6 +123,35 @@ public:
 		return ClothIndexMapping;
 	}
 
+	/** Create an RHI vertex buffer with CPU data. CPU data may be discarded after creation (see TResourceArray::Discard) */
+	FVertexBufferRHIRef CreateRHIBuffer_RenderThread();
+	FVertexBufferRHIRef CreateRHIBuffer_Async();
+
+	/** Similar to Init/ReleaseRHI but only update existing SRV so references to the SRV stays valid */
+	template <uint32 MaxNumUpdates>
+	void InitRHIForStreaming(FRHIVertexBuffer* IntermediateBuffer, TRHIResourceUpdateBatcher<MaxNumUpdates>& Batcher)
+	{
+		if (VertexBufferRHI && IntermediateBuffer)
+		{
+			check(VertexBufferSRV);
+			Batcher.QueueUpdateRequest(VertexBufferRHI, IntermediateBuffer);
+			Batcher.QueueUpdateRequest(VertexBufferSRV, VertexBufferRHI, sizeof(FVector4), PF_A32B32G32R32F);
+		}
+	}
+
+	template <uint32 MaxNumUpdates>
+	void ReleaseRHIForStreaming(TRHIResourceUpdateBatcher<MaxNumUpdates>& Batcher)
+	{
+		if (VertexBufferRHI)
+		{
+			Batcher.QueueUpdateRequest(VertexBufferRHI, nullptr);
+		}
+		if (VertexBufferSRV)
+		{
+			Batcher.QueueUpdateRequest(VertexBufferSRV, nullptr, 0, 0);
+		}
+	}
+
 private:
 	FShaderResourceViewRHIRef VertexBufferSRV;
 
@@ -133,4 +171,7 @@ private:
 	* Allocates the vertex data storage type
 	*/
 	void AllocateData();
+
+	template <bool bRenderThread>
+	FVertexBufferRHIRef CreateRHIBuffer_Internal();
 };

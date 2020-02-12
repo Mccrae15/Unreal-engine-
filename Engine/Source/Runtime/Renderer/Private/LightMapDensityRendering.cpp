@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 /*=============================================================================
 	LightMapDensityRendering.cpp: Implementation for rendering lightmap density.
@@ -61,7 +61,7 @@ bool FDeferredShadingSceneRenderer::RenderLightMapDensities(FRHICommandListImmed
 {
 	bool bDirty = false;
 
-	if (Scene->GetFeatureLevel() >= ERHIFeatureLevel::SM4)
+	if (Scene->GetFeatureLevel() >= ERHIFeatureLevel::SM5)
 	{
 		SCOPED_DRAW_EVENT(RHICmdList, LightMapDensity);
 
@@ -152,12 +152,11 @@ void FLightmapDensityMeshProcessor::Process(
 			static const auto CVar = IConsoleManager::Get().FindTConsoleVariableDataInt(TEXT("r.VirtualTexturedLightmaps"));
 			if (CVar->GetValueOnRenderThread() == 1)
 			{
-				const ULightMapVirtualTexture* VT = MeshBatch.LCI->GetLightMapInteraction(FeatureLevel).GetVirtualTexture();
-				if (VT && VT->Space)
+				IAllocatedVirtualTexture* AllocatedVT = MeshBatch.LCI->GetResourceCluster()->AllocatedVT;
+				if (AllocatedVT)
 				{
-					// We use the total Space size here as the Lightmap Scale/Bias is transformed to VT space
-					ShaderElementData.LightMapResolutionScale.X = VT->Space->Size * VT->Space->TileSize;
-					ShaderElementData.LightMapResolutionScale.Y = (VT->Space->Size * VT->Space->TileSize) * 2.0f; // Compensates the VT specific math in GetLightMapCoordinates (used to pack more coefficients per texture)
+					ShaderElementData.LightMapResolutionScale.X = AllocatedVT->GetWidthInPixels();
+					ShaderElementData.LightMapResolutionScale.Y = AllocatedVT->GetHeightInPixels() * 2.0f; // Compensates the VT specific math in GetLightMapCoordinates (used to pack more coefficients per texture)
 				}
 			}
 			else
@@ -174,6 +173,12 @@ void FLightmapDensityMeshProcessor::Process(
 		else if (PrimitiveSceneProxy)
 		{
 			int32 LightMapResolution = PrimitiveSceneProxy->GetLightMapResolution();
+		#if WITH_EDITOR
+			if (GLightmassDebugOptions.bPadMappings)
+			{
+				LightMapResolution -= 2;
+			}
+		#endif
 			if (PrimitiveSceneProxy->IsStatic() && LightMapResolution > 0)
 			{
 				ShaderElementData.bTextureMapped = true;
@@ -227,25 +232,27 @@ void FLightmapDensityMeshProcessor::Process(
 
 void FLightmapDensityMeshProcessor::AddMeshBatch(const FMeshBatch& RESTRICT MeshBatch, uint64 BatchElementMask, const FPrimitiveSceneProxy* RESTRICT PrimitiveSceneProxy, int32 StaticMeshId)
 {
-	if (FeatureLevel >= ERHIFeatureLevel::SM4 && ViewIfDynamicMeshCommand->Family->EngineShowFlags.LightMapDensity && AllowDebugViewmodes() && MeshBatch.bUseForMaterial)
+	if (FeatureLevel >= ERHIFeatureLevel::SM5 && ViewIfDynamicMeshCommand->Family->EngineShowFlags.LightMapDensity && AllowDebugViewmodes() && MeshBatch.bUseForMaterial)
 	{
 		// Determine the mesh's material and blend mode.
 		const FMaterialRenderProxy* MaterialRenderProxy = nullptr;
 		const FMaterial* Material = &MeshBatch.MaterialRenderProxy->GetMaterialWithFallback(FeatureLevel, MaterialRenderProxy);
 		const bool bMaterialMasked = Material->IsMasked();
 		const bool bTranslucentBlendMode = IsTranslucentBlendMode(Material->GetBlendMode());
-		const bool bIsLitMaterial = Material->GetShadingModel() != MSM_Unlit;
-		const ERasterizerFillMode MeshFillMode = ComputeMeshFillMode(MeshBatch, *Material);
-		const ERasterizerCullMode MeshCullMode = ComputeMeshCullMode(MeshBatch, *Material);
+		const bool bIsLitMaterial = Material->GetShadingModels().IsLit();
+		const FMeshDrawingPolicyOverrideSettings OverrideSettings = ComputeMeshOverrideSettings(MeshBatch);
+		const ERasterizerFillMode MeshFillMode = ComputeMeshFillMode(MeshBatch, *Material, OverrideSettings);
+		const ERasterizerCullMode MeshCullMode = ComputeMeshCullMode(MeshBatch, *Material, OverrideSettings);
 		const FLightMapInteraction LightMapInteraction = (MeshBatch.LCI && bIsLitMaterial) ? MeshBatch.LCI->GetLightMapInteraction(FeatureLevel) : FLightMapInteraction();
 
 		// Force simple lightmaps based on system settings.
 		bool bAllowHighQualityLightMaps = AllowHighQualityLightmaps(FeatureLevel) && LightMapInteraction.AllowsHighQualityLightmaps();
 
-		static const auto CVarSupportLowQualityLightmaps = IConsoleManager::Get().FindTConsoleVariableDataInt(TEXT("r.SupportLowQualityLightmaps"));
-		const bool bAllowLowQualityLightMaps = (!CVarSupportLowQualityLightmaps) || (CVarSupportLowQualityLightmaps->GetValueOnAnyThread() != 0);
+		static const auto SupportLowQualityLightmapsVar = IConsoleManager::Get().FindTConsoleVariableDataInt(TEXT("r.SupportLowQualityLightmaps"));
+		const bool bAllowLowQualityLightMaps = (!SupportLowQualityLightmapsVar) || (SupportLowQualityLightmapsVar->GetValueOnAnyThread() != 0);
 
-		if (!bTranslucentBlendMode || ViewIfDynamicMeshCommand->Family->EngineShowFlags.Wireframe)
+		if ((!bTranslucentBlendMode || ViewIfDynamicMeshCommand->Family->EngineShowFlags.Wireframe)
+			&& ShouldIncludeMaterialInDefaultOpaquePass(*Material))
 		{
 			if (!bMaterialMasked && !Material->MaterialModifiesMeshPosition_RenderThread())
 			{

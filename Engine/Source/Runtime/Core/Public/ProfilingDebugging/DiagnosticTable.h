@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 /*=============================================================================
 	DiagnosticTable.h: Diagnostic table implementation
@@ -47,7 +47,7 @@ public:
 
 		// Format the input string.
 		TCHAR ColumnText[4096];
-		GET_VARARGS(ColumnText,ARRAY_COUNT(ColumnText),ARRAY_COUNT(ColumnText)-1,Format,Format);
+		GET_VARARGS(ColumnText,UE_ARRAY_COUNT(ColumnText),UE_ARRAY_COUNT(ColumnText)-1,Format,Format);
 
 		// If this isn't the first column in the row, add a comma to separate the columns.
 		if(CurrentRow.Len())

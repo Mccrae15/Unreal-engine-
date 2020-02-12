@@ -1,7 +1,9 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "ControlRigUnitNodeSpawner.h"
+#include "Graph/ControlRigGraph.h"
 #include "Graph/ControlRigGraphNode.h"
+#include "Graph/ControlRigGraphSchema.h"
 #include "EdGraphSchema_K2.h"
 #include "Kismet2/BlueprintEditorUtils.h"
 #include "Classes/EditorStyleSettings.h"
@@ -11,10 +13,17 @@
 #include "K2Node_Variable.h"
 #include "BlueprintNodeTemplateCache.h"
 #include "ControlRigBlueprintUtils.h"
+#include "ScopedTransaction.h"
+#include "ControlRig/Private/Units/Execution/RigUnit_BeginExecution.h"
+#include "ControlRig.h"
+
+#if WITH_EDITOR
+#include "Editor.h"
+#endif
 
 #define LOCTEXT_NAMESPACE "ControlRigUnitNodeSpawner"
 
-UControlRigUnitNodeSpawner* UControlRigUnitNodeSpawner::CreateFromStruct(UStruct* InStruct, const FText& InMenuDesc, const FText& InCategory, const FText& InTooltip)
+UControlRigUnitNodeSpawner* UControlRigUnitNodeSpawner::CreateFromStruct(UScriptStruct* InStruct, const FText& InMenuDesc, const FText& InCategory, const FText& InTooltip)
 {
 	UControlRigUnitNodeSpawner* NodeSpawner = NewObject<UControlRigUnitNodeSpawner>(GetTransientPackage());
 	NodeSpawner->StructTemplate = InStruct;
@@ -25,6 +34,21 @@ UControlRigUnitNodeSpawner* UControlRigUnitNodeSpawner::CreateFromStruct(UStruct
 	MenuSignature.MenuName = InMenuDesc;
 	MenuSignature.Tooltip  = InTooltip;
 	MenuSignature.Category = InCategory;
+
+	FString KeywordsMetadata, PrototypeNameMetadata;
+	InStruct->GetStringMetaDataHierarchical(UControlRig::KeywordsMetaName, &KeywordsMetadata);
+	if(!PrototypeNameMetadata.IsEmpty())
+	{
+		if(KeywordsMetadata.IsEmpty())
+		{
+			KeywordsMetadata = PrototypeNameMetadata;
+		}
+		else
+		{
+			KeywordsMetadata = KeywordsMetadata + TEXT(",") + PrototypeNameMetadata;
+		}
+	}
+	MenuSignature.Keywords = FText::FromString(KeywordsMetadata);
 
 	// add at least one character, so that PrimeDefaultUiSpec() doesn't 
 	// attempt to query the template node
@@ -68,29 +92,144 @@ UEdGraphNode* UControlRigUnitNodeSpawner::Invoke(UEdGraph* ParentGraph, FBinding
 
 	if(StructTemplate)
 	{
-	//	const FScopedTransaction Transaction(LOCTEXT("AddRigUnitNode", "Add Rig Unit Node"));
+#if WITH_EDITOR
+		if (GEditor)
+		{
+			GEditor->CancelTransaction(0);
+		}
+#endif
 
-		bool const bIsTemplateNode = FBlueprintNodeTemplateCache::IsTemplateOuter(ParentGraph);
-
-		// First create a backing member for our node
 		UBlueprint* Blueprint = CastChecked<UBlueprint>(ParentGraph->GetOuter());
-		FName MemberName = NAME_None;
-		if(!bIsTemplateNode)
-		{
-			MemberName = FControlRigBlueprintUtils::AddUnitMember(Blueprint, StructTemplate);
-		}
-		else
-		{
-			MemberName = StructTemplate->GetFName();
-		}
-
-		if(MemberName != NAME_None)
-		{
-			NewNode = FControlRigBlueprintUtils::InstantiateGraphNodeForProperty(ParentGraph, MemberName, Location);
-		}
+		NewNode = SpawnNode(ParentGraph, Blueprint, StructTemplate, Location);
 	}
 
 	return NewNode;
+}
+
+bool UControlRigUnitNodeSpawner::IsTemplateNodeFilteredOut(FBlueprintActionFilter const& Filter) const
+{
+	if (StructTemplate)
+	{
+		FString DeprecatedMetadata;
+		StructTemplate->GetStringMetaDataHierarchical(UControlRig::DeprecatedMetaName, &DeprecatedMetadata);
+		if (!DeprecatedMetadata.IsEmpty())
+		{
+			return true;
+		}
+	}
+	return Super::IsTemplateNodeFilteredOut(Filter);
+}
+
+UControlRigGraphNode* UControlRigUnitNodeSpawner::SpawnNode(UEdGraph* ParentGraph, UBlueprint* Blueprint, UScriptStruct* StructTemplate, FVector2D const Location)
+{
+	UControlRigGraphNode* NewNode = nullptr;
+	UControlRigBlueprint* RigBlueprint = Cast<UControlRigBlueprint>(Blueprint);
+	UControlRigGraph* RigGraph = Cast<UControlRigGraph>(ParentGraph);
+
+	if (RigBlueprint != nullptr && RigGraph != nullptr)
+	{
+		bool const bIsTemplateNode = FBlueprintNodeTemplateCache::IsTemplateOuter(ParentGraph);
+		bool const bUndo = !bIsTemplateNode;
+
+		FName Name = bIsTemplateNode ? *StructTemplate->GetDisplayNameText().ToString() : FControlRigBlueprintUtils::ValidateName(RigBlueprint, StructTemplate->GetFName().ToString());
+		URigVMController* Controller = bIsTemplateNode ? RigGraph->GetTemplateController() : RigBlueprint->Controller;
+
+		if (!bIsTemplateNode)
+		{
+			Controller->OpenUndoBracket(FString::Printf(TEXT("Add '%s' Node"), *Name.ToString()));
+		}
+
+		if (URigVMStructNode* ModelNode = Controller->AddStructNode(StructTemplate, TEXT("Execute"), Location, Name.ToString(), bUndo))
+		{
+			NewNode = Cast<UControlRigGraphNode>(RigGraph->FindNodeForModelNodeName(ModelNode->GetFName()));
+
+			if (NewNode && bUndo)
+			{
+				Controller->ClearNodeSelection(true);
+				Controller->SelectNode(ModelNode, true, true);
+
+				HookupMutableNode(ModelNode, RigBlueprint);
+			}
+
+			if (bUndo)
+			{
+				Controller->CloseUndoBracket();
+			}
+		}
+		else
+		{
+			if (bUndo)
+			{
+				Controller->CancelUndoBracket();
+			}
+		}
+	}
+	return NewNode;
+}
+
+void UControlRigUnitNodeSpawner::HookupMutableNode(URigVMStructNode* InModelNode, UControlRigBlueprint* InRigBlueprint)
+{
+	URigVMController* Controller = InRigBlueprint->Controller;
+
+	Controller->ClearNodeSelection(true);
+	Controller->SelectNode(InModelNode, true, true);
+
+	// see if the node has an execute pin
+	URigVMPin* ModelNodeExecutePin = nullptr;
+	for (URigVMPin* Pin : InModelNode->GetPins())
+	{
+		if (Pin->GetScriptStruct())
+		{
+			if (Pin->GetScriptStruct()->IsChildOf(FRigVMExecuteContext::StaticStruct()))
+			{
+				if (Pin->GetDirection() == ERigVMPinDirection::IO)
+				{
+					ModelNodeExecutePin = Pin;
+					break;
+				}
+			}
+		}
+	}
+
+	// we have an execute pin - so we have to hook it up
+	if (ModelNodeExecutePin)
+	{
+		URigVMPin* ClosestOtherModelNodeExecutePin = nullptr;
+		float ClosestDistance = FLT_MAX;
+
+		for (URigVMNode* OtherModelNode : Controller->GetGraph()->GetNodes())
+		{
+			if (OtherModelNode == InModelNode)
+			{
+				continue;
+			}
+
+			for (URigVMPin* Pin : OtherModelNode->GetPins())
+			{
+				if (Pin->GetScriptStruct())
+				{
+					if (Pin->GetScriptStruct()->IsChildOf(FRigVMExecuteContext::StaticStruct()))
+					{
+						if (Pin->GetDirection() == ERigVMPinDirection::IO || Pin->GetDirection() == ERigVMPinDirection::Output)
+						{
+							float Distance = (OtherModelNode->GetPosition() - InModelNode->GetPosition()).Size();
+							if (Distance < ClosestDistance)
+							{
+								ClosestOtherModelNodeExecutePin = Pin;
+								ClosestDistance = Distance;
+							}
+							break;
+						}
+					}
+				}
+			}
+		}
+
+		if (ClosestOtherModelNodeExecutePin)
+		{
+			Controller->AddLink(ClosestOtherModelNodeExecutePin->GetPinPath(), ModelNodeExecutePin->GetPinPath(), true);
+		}
+	}
 }
 
 #undef LOCTEXT_NAMESPACE

@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "OculusMR_PlaneMeshComponent.h"
 #include "RenderingThread.h"
@@ -91,16 +91,15 @@ public:
 		{
 			const bool bWireframe = AllowDebugViewmodes() && ViewFamily.EngineShowFlags.Wireframe;
 
-			auto WireframeMaterialInstance = new FColoredMaterialRenderProxy(
-				GEngine->WireframeMaterial->GetRenderProxy(),
-				FLinearColor(0, 0.5f, 1.f)
-			);
-
-			Collector.RegisterOneFrameMaterialProxy(WireframeMaterialInstance);
-
 			FMaterialRenderProxy* MaterialProxy = NULL;
 			if (bWireframe)
 			{
+				auto WireframeMaterialInstance = new FColoredMaterialRenderProxy(
+					GEngine->WireframeMaterial->GetRenderProxy(),
+					FLinearColor(0, 0.5f, 1.f)
+				);
+
+				Collector.RegisterOneFrameMaterialProxy(WireframeMaterialInstance);
 				MaterialProxy = WireframeMaterialInstance;
 			}
 			else
@@ -127,7 +126,7 @@ public:
 					//Mesh.bWireframe = bWireframe;
 					//Mesh.VertexFactory = &VertexFactory;
 					//Mesh.MaterialRenderProxy = MaterialProxy;
-					//BatchElement.PrimitiveUniformBuffer = CreatePrimitiveUniformBufferImmediate(GetLocalToWorld(), GetBounds(), GetLocalBounds(), true, UseEditorDepthTest());
+					//BatchElement.PrimitiveUniformBuffer = CreatePrimitiveUniformBufferImmediate(GetLocalToWorld(), GetBounds(), GetLocalBounds(), true, DrawsVelocity());
 					//BatchElement.FirstIndex = 0;
 					//BatchElement.NumPrimitives = IndexBuffer.Indices.Num() / 3;
 					//BatchElement.MinVertexIndex = 0;

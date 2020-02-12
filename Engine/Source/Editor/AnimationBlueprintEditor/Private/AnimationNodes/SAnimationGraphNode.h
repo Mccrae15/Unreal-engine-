@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -27,6 +27,8 @@ protected:
 
 	// SGraphNode interface
 	virtual TArray<FOverlayWidgetInfo> GetOverlayWidgets(bool bSelected, const FVector2D& WidgetSize) const override;
+	virtual TSharedRef<SWidget> CreateTitleWidget(TSharedPtr<SNodeTitle> InNodeTitle) override;
+	virtual void GetNodeInfoPopups(FNodeInfoContext* Context, TArray<FGraphInformationPopupInfo>& Popups) const override;
 	// End of SGraphNode interface
 
 private:
@@ -35,11 +37,17 @@ private:
 
 	FReply SpawnColourPicker();
 
+	// Handle the node informing us that the title has changed
+	void HandleNodeTitleChanged();
+
 	/** Keep a reference to the indicator widget handing around */
 	TSharedPtr<SWidget> IndicatorWidget;
 
 	/** Keep a reference to the pose view indicator widget handing around */
 	TSharedPtr<SWidget> PoseViewWidget;
+
+	/** Cache the node title so we can invalidate it */
+	TSharedPtr<SNodeTitle> NodeTitle;
 
 	TWeakObjectPtr<class UPoseWatch> PoseWatch;
 };

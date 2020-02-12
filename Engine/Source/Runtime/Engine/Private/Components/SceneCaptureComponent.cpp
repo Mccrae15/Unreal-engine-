@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 /*=============================================================================
 	
@@ -7,6 +7,7 @@
 #include "Components/SceneCaptureComponent.h"
 #include "Misc/ScopeLock.h"
 #include "UObject/RenderingObjectVersion.h"
+#include "UObject/EditorObjectVersion.h"
 #include "UObject/ConstructorHelpers.h"
 #include "GameFramework/Actor.h"
 #include "RenderingThread.h"
@@ -31,6 +32,7 @@
 #include "Engine/BlueprintGeneratedClass.h"
 #include "Engine/SimpleConstructionScript.h"
 #include "Engine/SCS_Node.h"
+#include "Engine/TextureRenderTarget2D.h"
 
 #define LOCTEXT_NAMESPACE "SceneCaptureComponent"
 
@@ -96,6 +98,18 @@ void ASceneCapture2D::OnInterpToggle(bool bEnable)
 {
 	CaptureComponent2D->SetVisibility(bEnable);
 }
+
+void ASceneCapture2D::CalcCamera(float DeltaTime, FMinimalViewInfo& OutMinimalViewInfo)
+{
+	if (USceneCaptureComponent2D* SceneCaptureComponent = GetCaptureComponent2D())
+	{
+		SceneCaptureComponent->GetCameraView(DeltaTime, OutMinimalViewInfo);
+	}
+	else
+	{
+		Super::CalcCamera(DeltaTime, OutMinimalViewInfo);
+	}
+}
 // -----------------------------------------------
 
 ASceneCaptureCube::ASceneCaptureCube(const FObjectInitializer& ObjectInitializer)
@@ -114,6 +128,7 @@ void ASceneCaptureCube::OnInterpToggle(bool bEnable)
 USceneCaptureComponent::USceneCaptureComponent(const FObjectInitializer& ObjectInitializer)
 	: Super(ObjectInitializer), ShowFlags(FEngineShowFlags(ESFIM_Game))
 {
+	CaptureSource = SCS_SceneColorHDR;
 	bCaptureEveryFrame = true;
 	bCaptureOnMovement = true;
 	bAlwaysPersistRenderingState = false;
@@ -195,17 +210,15 @@ void USceneCaptureComponent::HideComponent(UPrimitiveComponent* InComponent)
 	}
 }
 
-void USceneCaptureComponent::HideActorComponents(AActor* InActor)
+void USceneCaptureComponent::HideActorComponents(AActor* InActor, const bool bIncludeFromChildActors)
 {
 	if (InActor)
 	{
-		for (UActorComponent* Component : InActor->GetComponents())
+		TInlineComponentArray<UPrimitiveComponent*> PrimitiveComponents(InActor, bIncludeFromChildActors);
+		for (UPrimitiveComponent* PrimComp : PrimitiveComponents)
 		{
-			if (UPrimitiveComponent* PrimComp = Cast<UPrimitiveComponent>(Component))
-			{
-				TWeakObjectPtr<UPrimitiveComponent> WeakComponent(PrimComp);
-				HiddenComponents.AddUnique(WeakComponent);
-			}
+			TWeakObjectPtr<UPrimitiveComponent> WeakComponent(PrimComp);
+			HiddenComponents.AddUnique(WeakComponent);
 		}
 	}
 }
@@ -220,19 +233,17 @@ void USceneCaptureComponent::ShowOnlyComponent(UPrimitiveComponent* InComponent)
 	}
 }
 
-void USceneCaptureComponent::ShowOnlyActorComponents(AActor* InActor)
+void USceneCaptureComponent::ShowOnlyActorComponents(AActor* InActor, const bool bIncludeFromChildActors)
 {
 	if (InActor)
 	{
 		// Backward compatibility - set PrimitiveRenderMode to PRM_UseShowOnlyList if BP / game code tries to add a ShowOnlyComponent
 		PrimitiveRenderMode = ESceneCapturePrimitiveRenderMode::PRM_UseShowOnlyList;
 
-		for (UActorComponent* Component : InActor->GetComponents())
-			{
-			if (UPrimitiveComponent* PrimComp = Cast<UPrimitiveComponent>(Component))
-			{
-				ShowOnlyComponents.Add(PrimComp);
-			}
+		TInlineComponentArray<UPrimitiveComponent*> PrimitiveComponents(InActor, bIncludeFromChildActors);
+		for (UPrimitiveComponent* PrimComp : PrimitiveComponents)
+		{
+			ShowOnlyComponents.Add(PrimComp);
 		}
 	}
 }
@@ -243,17 +254,15 @@ void USceneCaptureComponent::RemoveShowOnlyComponent(UPrimitiveComponent* InComp
 	ShowOnlyComponents.Remove(WeakComponent);
 }
 
-void USceneCaptureComponent::RemoveShowOnlyActorComponents(AActor* InActor)
+void USceneCaptureComponent::RemoveShowOnlyActorComponents(AActor* InActor, const bool bIncludeFromChildActors)
 {
 	if (InActor)
 	{
-		for (UActorComponent* Component : InActor->GetComponents())
+		TInlineComponentArray<UPrimitiveComponent*> PrimitiveComponents(InActor, bIncludeFromChildActors);
+		for (UPrimitiveComponent* PrimComp : PrimitiveComponents)
 		{
-			if (UPrimitiveComponent* PrimComp = Cast<UPrimitiveComponent>(Component))
-			{
-				TWeakObjectPtr<UPrimitiveComponent> WeakComponent(PrimComp);
-				ShowOnlyComponents.Remove(WeakComponent);
-			}
+			TWeakObjectPtr<UPrimitiveComponent> WeakComponent(PrimComp);
+			ShowOnlyComponents.Remove(WeakComponent);
 		}
 	}
 }
@@ -314,7 +323,7 @@ void USceneCaptureComponent::UpdateShowFlags()
 
 #if WITH_EDITOR
 
-bool USceneCaptureComponent::CanEditChange(const UProperty* InProperty) const
+bool USceneCaptureComponent::CanEditChange(const FProperty* InProperty) const
 {
 	if (InProperty)
 	{
@@ -424,10 +433,10 @@ USceneCaptureComponent2D::USceneCaptureComponent2D(const FObjectInitializer& Obj
 	PrimaryComponentTick.bCanEverTick = true;
 	PrimaryComponentTick.TickGroup = TG_DuringPhysics;
 	PrimaryComponentTick.bAllowTickOnDedicatedServer = false;
+
 	// Tick in the editor so that bCaptureEveryFrame preview works
 	bTickInEditor = true;
-	// previous behavior was to capture from raw scene color 
-	CaptureSource = SCS_SceneColorHDR;
+
 	// default to full blend weight..
 	PostProcessBlendWeight = 1.0f;
 	CaptureStereoPass = EStereoscopicPass::eSSP_FULL;
@@ -477,7 +486,10 @@ void USceneCaptureComponent2D::OnRegister()
 #if WITH_EDITOR
 	// Update content on register to have at least one frames worth of good data.
 	// Without updating here this component would not work in a blueprint construction script which recreates the component after each move in the editor
-	CaptureSceneDeferred();
+	if (bCaptureOnMovement)
+	{
+		CaptureSceneDeferred();
+	}
 #endif
 }
 
@@ -499,6 +511,28 @@ void USceneCaptureComponent2D::TickComponent(float DeltaTime, enum ELevelTick Ti
 	{
 		CaptureSceneDeferred();
 	}
+}
+
+void USceneCaptureComponent2D::SetCameraView(const FMinimalViewInfo& DesiredView)
+{
+	SetWorldLocation(DesiredView.Location);
+	SetWorldRotation(DesiredView.Rotation);
+
+	FOVAngle = DesiredView.FOV;
+	ProjectionType = DesiredView.ProjectionMode;
+	OrthoWidth = DesiredView.OrthoWidth;
+}
+
+void USceneCaptureComponent2D::GetCameraView(float DeltaTime, FMinimalViewInfo& OutMinimalViewInfo)
+{
+	OutMinimalViewInfo.Location = GetComponentLocation();
+	OutMinimalViewInfo.Rotation = GetComponentRotation();
+	
+	OutMinimalViewInfo.FOV = FOVAngle;
+	OutMinimalViewInfo.AspectRatio = TextureTarget ? (float(TextureTarget->SizeX) / TextureTarget->SizeY) : 1.f;
+	OutMinimalViewInfo.bConstrainAspectRatio = false;
+	OutMinimalViewInfo.ProjectionMode = ProjectionType;
+	OutMinimalViewInfo.OrthoWidth = OrthoWidth;
 }
 
 void USceneCaptureComponent2D::CaptureSceneDeferred()
@@ -567,10 +601,9 @@ void USceneCaptureComponent2D::UpdateDrawFrustum()
 			DrawFrustum->FrustumAngle = -OrthoWidth;
 		}
 
-		DrawFrustum->FrustumStartDist = GNearClippingPlane;
+		DrawFrustum->FrustumStartDist = (bOverride_CustomNearClippingPlane) ? CustomNearClippingPlane : GNearClippingPlane;
 		// 1000 is the default frustum distance, ideally this would be infinite but that might cause rendering issues
-		DrawFrustum->FrustumEndDist = (MaxViewDistanceOverride > DrawFrustum->FrustumStartDist)
-			? MaxViewDistanceOverride : 1000.0f;
+		DrawFrustum->FrustumEndDist = (MaxViewDistanceOverride > DrawFrustum->FrustumStartDist) ? MaxViewDistanceOverride : 1000.0f;
 		DrawFrustum->MarkRenderStateDirty();
 	}
 }
@@ -578,7 +611,7 @@ void USceneCaptureComponent2D::UpdateDrawFrustum()
 
 #if WITH_EDITOR
 
-bool USceneCaptureComponent2D::CanEditChange(const UProperty* InProperty) const
+bool USceneCaptureComponent2D::CanEditChange(const FProperty* InProperty) const
 {
 	if (InProperty)
 	{
@@ -697,9 +730,9 @@ APlanarReflection::APlanarReflection(const FObjectInitializer& ObjectInitializer
 		static FConstructorStatics ConstructorStatics;
 
 		SpriteComponent->Sprite = ConstructorStatics.DecalTexture.Get();
-		SpriteComponent->RelativeScale3D = FVector(0.5f, 0.5f, 0.5f);
+		SpriteComponent->SetRelativeScale3D_Direct(FVector(0.5f, 0.5f, 0.5f));
 		SpriteComponent->bHiddenInGame = true;
-		SpriteComponent->bAbsoluteScale = true;
+		SpriteComponent->SetUsingAbsoluteScale(true);
 		SpriteComponent->SetCollisionProfileName(UCollisionProfile::NoCollision_ProfileName);
 		SpriteComponent->bIsScreenSizeScaled = true;
 	}
@@ -711,15 +744,15 @@ void APlanarReflection::PostLoad()
 	Super::PostLoad();
 
 	if (GetLinkerCustomVersion(FEditorObjectVersion::GUID) < FEditorObjectVersion::ChangeSceneCaptureRootComponent)
-{
-		if (PlanarReflectionComponent)
 	{
+		if (PlanarReflectionComponent)
+		{
 			PRAGMA_DISABLE_DEPRECATION_WARNINGS
 			PlanarReflectionComponent->bShowPreviewPlane = bShowPreviewPlane_DEPRECATED;
 			PRAGMA_ENABLE_DEPRECATION_WARNINGS
 		}
-			}
-		}
+	}
+}
 
 void APlanarReflection::OnInterpToggle(bool bEnable)
 {
@@ -798,7 +831,7 @@ void UPlanarReflectionComponent::OnRegister()
 	if (ProxyMeshComponent)
 	{
 		ProxyMeshComponent->SetMaterial(0, CaptureMaterial);
-		ProxyMeshComponent->bVisible = bShowPreviewPlane;
+		ProxyMeshComponent->SetVisibleFlag(bShowPreviewPlane);
 		ProxyMeshComponent->SetRelativeScale3D(FVector(4, 4, 1));
 	}
 #endif
@@ -817,11 +850,11 @@ void UPlanarReflectionComponent::Serialize(FArchive& Ar)
 	}
 }
 
-void UPlanarReflectionComponent::CreateRenderState_Concurrent()
+void UPlanarReflectionComponent::CreateRenderState_Concurrent(FRegisterComponentContext* Context)
 {
 	UpdatePreviewShape();
 
-	Super::CreateRenderState_Concurrent();
+	Super::CreateRenderState_Concurrent(Context);
 
 	if (ShouldComponentAddToScene() && ShouldRender())
 	{
@@ -874,8 +907,11 @@ void UPlanarReflectionComponent::PostEditChangeProperty(FPropertyChangedEvent& P
 		ViewStates[ViewIndex].Allocate();
 	}
 
-	ProxyMeshComponent->bVisible = bShowPreviewPlane;
-	ProxyMeshComponent->MarkRenderStateDirty();
+	if (ProxyMeshComponent)
+	{
+		ProxyMeshComponent->SetVisibleFlag(bShowPreviewPlane);
+		ProxyMeshComponent->MarkRenderStateDirty();
+	}
 }
 
 #endif
@@ -927,6 +963,7 @@ USceneCaptureComponentCube::USceneCaptureComponentCube(const FObjectInitializer&
 	PrimaryComponentTick.bAllowTickOnDedicatedServer = false;
 	bTickInEditor = true;
 	IPD = 6.2f;
+	bCaptureRotation = false;
 
 #if WITH_EDITORONLY_DATA
 	if (!IsRunningCommandlet())
@@ -934,6 +971,8 @@ USceneCaptureComponentCube::USceneCaptureComponentCube(const FObjectInitializer&
 		static ConstructorHelpers::FObjectFinder<UStaticMesh> EditorMesh(TEXT("/Engine/EditorMeshes/MatineeCam_SM"));
 		CaptureMesh = EditorMesh.Object;
 	}
+
+	DrawFrustum = nullptr;
 #endif
 }
 
@@ -959,7 +998,10 @@ void USceneCaptureComponentCube::OnRegister()
 #if WITH_EDITOR
 	// Update content on register to have at least one frames worth of good data.
 	// Without updating here this component would not work in a blueprint construction script which recreates the component after each move in the editor
-	CaptureSceneDeferred();
+	if (bCaptureOnMovement)
+	{
+		CaptureSceneDeferred();
+	}
 #endif
 }
 

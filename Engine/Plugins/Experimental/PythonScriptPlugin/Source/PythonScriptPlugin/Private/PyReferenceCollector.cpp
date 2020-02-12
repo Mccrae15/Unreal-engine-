@@ -1,62 +1,17 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "PyReferenceCollector.h"
+#include "PyWrapperTypeRegistry.h"
 #include "PyWrapperBase.h"
+#include "PyWrapperObject.h"
+#include "PyWrapperStruct.h"
+#include "PyWrapperEnum.h"
 #include "PyWrapperDelegate.h"
 #include "UObject/UnrealType.h"
 #include "UObject/UObjectHash.h"
+#include "UObject/PurgingReferenceCollector.h"
 
 #if WITH_PYTHON
-
-/** Reference collector that will purge (null) any references to the given set of objects (as if they'd bee marked PendingKill) */
-class FPyPurgingReferenceCollector : public FReferenceCollector
-{
-public:
-	bool HasObjectToPurge() const
-	{
-		return ObjectsToPurge.Num() > 0;
-	}
-
-	void AddObjectToPurge(const UObject* Object)
-	{
-		ObjectsToPurge.Add(Object);
-	}
-
-	virtual bool IsIgnoringArchetypeRef() const override
-	{
-		return false;
-	}
-
-	virtual bool IsIgnoringTransient() const override
-	{
-		return false;
-	}
-
-protected:
-	virtual void HandleObjectReference(UObject*& Object, const UObject* ReferencingObject, const UProperty* ReferencingProperty) override
-	{
-		ConditionalPurgeObject(Object);
-	}
-
-	virtual void HandleObjectReferences(UObject** InObjects, const int32 ObjectNum, const UObject* InReferencingObject, const UProperty* InReferencingProperty) override
-	{
-		for (int32 ObjectIndex = 0; ObjectIndex < ObjectNum; ++ObjectIndex)
-		{
-			UObject*& Object = InObjects[ObjectIndex];
-			ConditionalPurgeObject(Object);
-		}
-	}
-
-	void ConditionalPurgeObject(UObject*& Object)
-	{
-		if (ObjectsToPurge.Contains(Object))
-		{
-			Object = nullptr;
-		}
-	}
-
-	TSet<const UObject*> ObjectsToPurge;
-};
 
 FPyReferenceCollector& FPyReferenceCollector::Get()
 {
@@ -84,6 +39,13 @@ void FPyReferenceCollector::AddReferencedObjects(FReferenceCollector& InCollecto
 			PythonWrappedInstanceMetaData->AddReferencedObjects(PythonWrappedInstance, InCollector);
 		}
 	}
+
+	FPyWrapperTypeReinstancer::Get().AddReferencedObjects(InCollector);
+}
+
+FString FPyReferenceCollector::GetReferencerName() const
+{
+	return TEXT("FPyReferenceCollector");
 }
 
 void FPyReferenceCollector::PurgeUnrealObjectReferences(const UObject* InObject, const bool bIncludeInnerObjects)
@@ -93,7 +55,7 @@ void FPyReferenceCollector::PurgeUnrealObjectReferences(const UObject* InObject,
 
 void FPyReferenceCollector::PurgeUnrealObjectReferences(const TArrayView<const UObject*>& InObjects, const bool bIncludeInnerObjects)
 {
-	FPyPurgingReferenceCollector PurgingReferenceCollector;
+	FPurgingReferenceCollector PurgingReferenceCollector;
 
 	for (const UObject* Object : InObjects)
 	{
@@ -101,19 +63,118 @@ void FPyReferenceCollector::PurgeUnrealObjectReferences(const TArrayView<const U
 
 		if (bIncludeInnerObjects)
 		{
-			TArray<UObject*> InnerObjects;
-			GetObjectsWithOuter(Object, InnerObjects, true);
-
-			for (const UObject* InnerObject : InnerObjects)
+			ForEachObjectWithOuter(Object, [&PurgingReferenceCollector](UObject* InnerObject)
 			{
 				PurgingReferenceCollector.AddObjectToPurge(InnerObject);
-			}
+			}, true);
 		}
 	}
 
 	if (PurgingReferenceCollector.HasObjectToPurge())
 	{
 		AddReferencedObjects(PurgingReferenceCollector);
+	}
+}
+
+void FPyReferenceCollector::PurgeUnrealGeneratedTypes()
+{
+	FPurgingReferenceCollector PurgingReferenceCollector;
+	TArray<FWeakObjectPtr> WeakReferencesToPurgedObjects;
+
+	auto FlagObjectForPurge = [&PurgingReferenceCollector, &WeakReferencesToPurgedObjects](UObject* InObject, const bool bMarkPendingKill)
+	{
+		check(!InObject->HasAnyInternalFlags(EInternalObjectFlags::Native));
+
+		if (InObject->IsRooted())
+		{
+			InObject->RemoveFromRoot();
+		}
+		InObject->ClearFlags(RF_Public | RF_Standalone);
+
+		if (!InObject->HasAnyFlags(RF_ClassDefaultObject))
+		{
+			if (bMarkPendingKill)
+			{
+				InObject->MarkPendingKill();
+			}
+			WeakReferencesToPurgedObjects.Add(InObject);
+		}
+
+		PurgingReferenceCollector.AddObjectToPurge(InObject);
+	};
+
+	// Clean-up Python generated class types and instances
+	// The class types are instances of UPythonGeneratedClass
+	{
+		ForEachObjectOfClass(UPythonGeneratedClass::StaticClass(), [&FlagObjectForPurge](UObject* InObject)
+		{
+			FlagObjectForPurge(InObject, /*bMarkPendingKill*/false);
+
+			UPythonGeneratedClass* PythonGeneratedClass = CastChecked<UPythonGeneratedClass>(InObject);
+			ForEachObjectOfClass(PythonGeneratedClass, [&FlagObjectForPurge](UObject* InInnerObject)
+			{
+				FlagObjectForPurge(InInnerObject, /*bMarkPendingKill*/true);
+			}, false, RF_NoFlags, EInternalObjectFlags::Native);
+		}, false, RF_ClassDefaultObject, EInternalObjectFlags::Native);
+	}
+
+	// Clean-up Python generated struct types
+	// The struct types are instances of UPythonGeneratedStruct
+	{
+		ForEachObjectOfClass(UPythonGeneratedStruct::StaticClass(), [&FlagObjectForPurge](UObject* InObject)
+		{
+			FlagObjectForPurge(InObject, /*bMarkPendingKill*/false);
+		}, false, RF_ClassDefaultObject, EInternalObjectFlags::Native);
+	}
+
+	// Clean-up Python generated enum types
+	// The enum types are instances of UPythonGeneratedEnum
+	{
+		ForEachObjectOfClass(UPythonGeneratedEnum::StaticClass(), [&FlagObjectForPurge](UObject* InObject)
+		{
+			FlagObjectForPurge(InObject, /*bMarkPendingKill*/false);
+		}, false, RF_ClassDefaultObject, EInternalObjectFlags::Native);
+	}
+
+	// Clean-up Python callable types and instances
+	// The callable types all derive directly from UPythonCallableForDelegate
+	{
+		TArray<UClass*> PythonCallableClasses;
+		GetDerivedClasses(UPythonCallableForDelegate::StaticClass(), PythonCallableClasses, true);
+
+		for (UClass* PythonCallableClass : PythonCallableClasses)
+		{
+			// The classes themselves don't hold Python resources, so it's not imperative that 
+			// they are destroyed, but we don't need them anymore so attempt to let them die
+			PythonCallableClass->ClearFlags(RF_Public | RF_Standalone);
+
+			ForEachObjectOfClass(PythonCallableClass, [&FlagObjectForPurge](UObject* InObject)
+			{
+				FlagObjectForPurge(InObject, /*bMarkPendingKill*/true);
+			}, false, RF_NoFlags, EInternalObjectFlags::Native);
+		}
+	}
+
+	if (PurgingReferenceCollector.HasObjectToPurge())
+	{
+		AddReferencedObjects(PurgingReferenceCollector);
+		CollectGarbage(GARBAGE_COLLECTION_KEEPFLAGS);
+
+		for (const FWeakObjectPtr& WeakReferencesToPurgedObject : WeakReferencesToPurgedObjects)
+		{
+			if (UObject* FailedToPurgeObject = WeakReferencesToPurgedObject.Get())
+			{
+				if (IPythonResourceOwner* PythonResourceOwner = Cast<IPythonResourceOwner>(FailedToPurgeObject))
+				{
+					UE_LOG(LogPython, Display, TEXT("Object '%s' was externally referenced when shutting down Python. Forcibly releasing its Python resources!"), *FailedToPurgeObject->GetPathName());
+					PythonResourceOwner->ReleasePythonResources();
+				}
+				else
+				{
+					UE_LOG(LogPython, Warning, TEXT("Object '%s' was externally referenced when shutting down Python and could not gracefully cleaned-up. This may lead to crashes!"), *FailedToPurgeObject->GetPathName());
+				}
+			}
+		}
 	}
 }
 
@@ -127,7 +188,7 @@ void FPyReferenceCollector::AddReferencedObjectsFromDelegate(FReferenceCollector
 	}
 }
 
-void FPyReferenceCollector::AddReferencedObjectsFromMulticastDelegate(FReferenceCollector& InCollector, FMulticastScriptDelegate& InDelegate)
+void FPyReferenceCollector::AddReferencedObjectsFromMulticastDelegate(FReferenceCollector& InCollector, const FMulticastScriptDelegate& InDelegate)
 {
 	// Keep the delegate objects alive if they're using a Python proxy instance
 	// We have to use the EvenIfUnreachable variant here as the objects are speculatively marked as unreachable during GC
@@ -146,7 +207,7 @@ void FPyReferenceCollector::AddReferencedObjectsFromStruct(FReferenceCollector& 
 	AddReferencedObjectsFromStructInternal(InCollector, InStruct, InStructAddr, InFlags, bUnused);
 }
 
-void FPyReferenceCollector::AddReferencedObjectsFromProperty(FReferenceCollector& InCollector, const UProperty* InProp, void* InBaseAddr, const EPyReferenceCollectorFlags InFlags)
+void FPyReferenceCollector::AddReferencedObjectsFromProperty(FReferenceCollector& InCollector, const FProperty* InProp, void* InBaseAddr, const EPyReferenceCollectorFlags InFlags)
 {
 	bool bUnused = false;
 	AddReferencedObjectsFromPropertyInternal(InCollector, InProp, InBaseAddr, InFlags, bUnused);
@@ -154,15 +215,15 @@ void FPyReferenceCollector::AddReferencedObjectsFromProperty(FReferenceCollector
 
 void FPyReferenceCollector::AddReferencedObjectsFromStructInternal(FReferenceCollector& InCollector, const UStruct* InStruct, void* InStructAddr, const EPyReferenceCollectorFlags InFlags, bool& OutValueChanged)
 {
-	for (TFieldIterator<const UProperty> PropIt(InStruct); PropIt; ++PropIt)
+	for (TFieldIterator<const FProperty> PropIt(InStruct); PropIt; ++PropIt)
 	{
 		AddReferencedObjectsFromPropertyInternal(InCollector, *PropIt, InStructAddr, InFlags, OutValueChanged);
 	}
 }
 
-void FPyReferenceCollector::AddReferencedObjectsFromPropertyInternal(FReferenceCollector& InCollector, const UProperty* InProp, void* InBaseAddr, const EPyReferenceCollectorFlags InFlags, bool& OutValueChanged)
+void FPyReferenceCollector::AddReferencedObjectsFromPropertyInternal(FReferenceCollector& InCollector, const FProperty* InProp, void* InBaseAddr, const EPyReferenceCollectorFlags InFlags, bool& OutValueChanged)
 {
-	if (const UObjectProperty* CastProp = Cast<UObjectProperty>(InProp))
+	if (const FObjectProperty* CastProp = CastField<FObjectProperty>(InProp))
 	{
 		if (EnumHasAnyFlags(InFlags, EPyReferenceCollectorFlags::IncludeObjects))
 		{
@@ -186,31 +247,31 @@ void FPyReferenceCollector::AddReferencedObjectsFromPropertyInternal(FReferenceC
 		return;
 	}
 
-	if (const UInterfaceProperty* CastProp = Cast<UInterfaceProperty>(InProp))
+	if (const FInterfaceProperty* CastProp = CastField<FInterfaceProperty>(InProp))
 	{
 		if (EnumHasAnyFlags(InFlags, EPyReferenceCollectorFlags::IncludeInterfaces))
 		{
-			for (int32 ArrIndex = 0; ArrIndex < InProp->ArrayDim; ++ArrIndex)
-			{
-				void* ValuePtr = CastProp->ContainerPtrToValuePtr<void>(InBaseAddr, ArrIndex);
-				UObject* CurObjVal = CastProp->GetPropertyValue(ValuePtr).GetObject();
-				if (CurObjVal)
-				{
-					UObject* NewObjVal = CurObjVal;
-					InCollector.AddReferencedObject(NewObjVal);
-
-					if (NewObjVal != CurObjVal)
-					{
-						OutValueChanged = true;
-						CastProp->SetPropertyValue(ValuePtr, FScriptInterface(NewObjVal, NewObjVal ? NewObjVal->GetInterfaceAddress(CastProp->InterfaceClass) : nullptr));
-					}
-				}
-			}
+		  for (int32 ArrIndex = 0; ArrIndex < InProp->ArrayDim; ++ArrIndex)
+		  {
+			  void* ValuePtr = CastProp->ContainerPtrToValuePtr<void>(InBaseAddr, ArrIndex);
+			  UObject* CurObjVal = CastProp->GetPropertyValue(ValuePtr).GetObject();
+			  if (CurObjVal)
+			  {
+				  UObject* NewObjVal = CurObjVal;
+				  InCollector.AddReferencedObject(NewObjVal);
+  
+				  if (NewObjVal != CurObjVal)
+				  {
+					  OutValueChanged = true;
+					  CastProp->SetPropertyValue(ValuePtr, FScriptInterface(NewObjVal, NewObjVal ? NewObjVal->GetInterfaceAddress(CastProp->InterfaceClass) : nullptr));
+				  }
+			  }
+		  }
 		}
 		return;
 	}
 
-	if (const UStructProperty* CastProp = Cast<UStructProperty>(InProp))
+	if (const FStructProperty* CastProp = CastField<FStructProperty>(InProp))
 	{
 		if (EnumHasAnyFlags(InFlags, EPyReferenceCollectorFlags::IncludeStructs))
 		{
@@ -222,12 +283,12 @@ void FPyReferenceCollector::AddReferencedObjectsFromPropertyInternal(FReferenceC
 		return;
 	}
 
-	if (const UDelegateProperty* CastProp = Cast<UDelegateProperty>(InProp))
+	if (const FDelegateProperty* CastProp = CastField<FDelegateProperty>(InProp))
 	{
 		if (EnumHasAnyFlags(InFlags, EPyReferenceCollectorFlags::IncludeDelegates))
 		{
-			for (int32 ArrIndex = 0; ArrIndex < InProp->ArrayDim; ++ArrIndex)
-			{
+		for (int32 ArrIndex = 0; ArrIndex < InProp->ArrayDim; ++ArrIndex)
+		{
 				FScriptDelegate* Value = CastProp->GetPropertyValuePtr(CastProp->ContainerPtrToValuePtr<void>(InBaseAddr, ArrIndex));
 				AddReferencedObjectsFromDelegate(InCollector, *Value);
 			}
@@ -235,30 +296,32 @@ void FPyReferenceCollector::AddReferencedObjectsFromPropertyInternal(FReferenceC
 		return;
 	}
 
-	if (const UMulticastDelegateProperty* CastProp = Cast<UMulticastDelegateProperty>(InProp))
+	if (const FMulticastDelegateProperty* CastProp = CastField<FMulticastDelegateProperty>(InProp))
 	{
 		if (EnumHasAnyFlags(InFlags, EPyReferenceCollectorFlags::IncludeDelegates))
 		{
 			for (int32 ArrIndex = 0; ArrIndex < InProp->ArrayDim; ++ArrIndex)
 			{
-				FMulticastScriptDelegate* Value = CastProp->GetPropertyValuePtr(CastProp->ContainerPtrToValuePtr<void>(InBaseAddr, ArrIndex));
-				AddReferencedObjectsFromMulticastDelegate(InCollector, *Value);
+				if (const FMulticastScriptDelegate* Value = CastProp->GetMulticastDelegate(CastProp->ContainerPtrToValuePtr<void>(InBaseAddr, ArrIndex)))
+				{
+					AddReferencedObjectsFromMulticastDelegate(InCollector, *Value);
+				}
 			}
 		}
 		return;
 	}
 
-	if (const UArrayProperty* CastProp = Cast<UArrayProperty>(InProp))
+	if (const FArrayProperty* CastProp = CastField<FArrayProperty>(InProp))
 	{
 		if (EnumHasAnyFlags(InFlags, EPyReferenceCollectorFlags::IncludeArrays))
 		{
-			for (int32 ArrIndex = 0; ArrIndex < InProp->ArrayDim; ++ArrIndex)
-			{
-				FScriptArrayHelper_InContainer ScriptArrayHelper(CastProp, InBaseAddr, ArrIndex);
+		for (int32 ArrIndex = 0; ArrIndex < InProp->ArrayDim; ++ArrIndex)
+		{
+			FScriptArrayHelper_InContainer ScriptArrayHelper(CastProp, InBaseAddr, ArrIndex);
 
-				const int32 ElementCount = ScriptArrayHelper.Num();
-				for (int32 ElementIndex = 0; ElementIndex < ElementCount; ++ElementIndex)
-				{
+			const int32 ElementCount = ScriptArrayHelper.Num();
+			for (int32 ElementIndex = 0; ElementIndex < ElementCount; ++ElementIndex)
+			{
 					AddReferencedObjectsFromPropertyInternal(InCollector, CastProp->Inner, ScriptArrayHelper.GetRawPtr(ElementIndex), InFlags, OutValueChanged);
 				}
 			}
@@ -266,62 +329,62 @@ void FPyReferenceCollector::AddReferencedObjectsFromPropertyInternal(FReferenceC
 		return;
 	}
 
-	if (const USetProperty* CastProp = Cast<USetProperty>(InProp))
+	if (const FSetProperty* CastProp = CastField<FSetProperty>(InProp))
 	{
 		if (EnumHasAnyFlags(InFlags, EPyReferenceCollectorFlags::IncludeSets))
 		{
-			for (int32 ArrIndex = 0; ArrIndex < InProp->ArrayDim; ++ArrIndex)
+		for (int32 ArrIndex = 0; ArrIndex < InProp->ArrayDim; ++ArrIndex)
+		{
+			bool bSetValuesChanged = false;
+			FScriptSetHelper_InContainer ScriptSetHelper(CastProp, InBaseAddr, ArrIndex);
+
+			for (int32 SparseElementIndex = 0; SparseElementIndex < ScriptSetHelper.GetMaxIndex(); ++SparseElementIndex)
 			{
-				bool bSetValuesChanged = false;
-				FScriptSetHelper_InContainer ScriptSetHelper(CastProp, InBaseAddr, ArrIndex);
-
-				for (int32 SparseElementIndex = 0; SparseElementIndex < ScriptSetHelper.GetMaxIndex(); ++SparseElementIndex)
+				if (ScriptSetHelper.IsValidIndex(SparseElementIndex))
 				{
-					if (ScriptSetHelper.IsValidIndex(SparseElementIndex))
-					{
 						AddReferencedObjectsFromPropertyInternal(InCollector, ScriptSetHelper.GetElementProperty(), ScriptSetHelper.GetElementPtr(SparseElementIndex), InFlags, bSetValuesChanged);
-					}
-				}
-
-				if (bSetValuesChanged)
-				{
-					OutValueChanged = true;
-					ScriptSetHelper.Rehash();
 				}
 			}
+
+			if (bSetValuesChanged)
+			{
+				OutValueChanged = true;
+				ScriptSetHelper.Rehash();
+			}
+		}
 		}
 		return;
 	}
 
-	if (const UMapProperty* CastProp = Cast<UMapProperty>(InProp))
+	if (const FMapProperty* CastProp = CastField<FMapProperty>(InProp))
 	{
 		if (EnumHasAnyFlags(InFlags, EPyReferenceCollectorFlags::IncludeMaps))
 		{
-			for (int32 ArrIndex = 0; ArrIndex < InProp->ArrayDim; ++ArrIndex)
+		for (int32 ArrIndex = 0; ArrIndex < InProp->ArrayDim; ++ArrIndex)
+		{
+			bool bMapKeysChanged = false;
+			bool bMapValuesChanged = false;
+			FScriptMapHelper_InContainer ScriptMapHelper(CastProp, InBaseAddr, ArrIndex);
+
+			for (int32 SparseElementIndex = 0; SparseElementIndex < ScriptMapHelper.GetMaxIndex(); ++SparseElementIndex)
 			{
-				bool bMapKeysChanged = false;
-				bool bMapValuesChanged = false;
-				FScriptMapHelper_InContainer ScriptMapHelper(CastProp, InBaseAddr, ArrIndex);
-
-				for (int32 SparseElementIndex = 0; SparseElementIndex < ScriptMapHelper.GetMaxIndex(); ++SparseElementIndex)
+				if (ScriptMapHelper.IsValidIndex(SparseElementIndex))
 				{
-					if (ScriptMapHelper.IsValidIndex(SparseElementIndex))
-					{
-						// Note: We use the pair pointer below as AddReferencedObjectsFromPropertyInternal expects a base address and the key/value property will apply the correct offset from the base
-						AddReferencedObjectsFromPropertyInternal(InCollector, ScriptMapHelper.GetKeyProperty(), ScriptMapHelper.GetPairPtr(SparseElementIndex), InFlags, bMapKeysChanged);
-						AddReferencedObjectsFromPropertyInternal(InCollector, ScriptMapHelper.GetValueProperty(), ScriptMapHelper.GetPairPtr(SparseElementIndex), InFlags, bMapValuesChanged);
-					}
-				}
-
-				if (bMapKeysChanged || bMapValuesChanged)
-				{
-					OutValueChanged = true;
-					if (bMapKeysChanged)
-					{
-						ScriptMapHelper.Rehash();
-					}
+					// Note: We use the pair pointer below as AddReferencedObjectsFromPropertyInternal expects a base address and the key/value property will apply the correct offset from the base
+					AddReferencedObjectsFromPropertyInternal(InCollector, ScriptMapHelper.GetKeyProperty(), ScriptMapHelper.GetPairPtr(SparseElementIndex), InFlags, bMapKeysChanged);
+					AddReferencedObjectsFromPropertyInternal(InCollector, ScriptMapHelper.GetValueProperty(), ScriptMapHelper.GetPairPtr(SparseElementIndex), InFlags, bMapValuesChanged);
 				}
 			}
+
+			if (bMapKeysChanged || bMapValuesChanged)
+			{
+				OutValueChanged = true;
+				if (bMapKeysChanged)
+				{
+					ScriptMapHelper.Rehash();
+				}
+			}
+		}
 		}
 		return;
 	}

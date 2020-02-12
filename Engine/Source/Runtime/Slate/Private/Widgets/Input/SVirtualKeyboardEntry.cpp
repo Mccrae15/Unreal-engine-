@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "Widgets/Input/SVirtualKeyboardEntry.h"
 #include "Rendering/DrawElements.h"
@@ -52,6 +52,8 @@ void SVirtualKeyboardEntry::SetText(const TAttribute< FText >& InNewText)
 
 void SVirtualKeyboardEntry::SetTextFromVirtualKeyboard(const FText& InNewText, ETextEntryType TextEntryType)
 {
+	check(IsInGameThread());
+
 	// Only set the text if the text attribute doesn't have a getter binding (otherwise it would be blown away).
 	// If it is bound, we'll assume that OnTextChanged will handle the update.
 	if (!Text.IsBound())
@@ -72,6 +74,7 @@ void SVirtualKeyboardEntry::SetTextFromVirtualKeyboard(const FText& InNewText, E
 
 void SVirtualKeyboardEntry::SetSelectionFromVirtualKeyboard(int InSelStart, int InSelEnd)
 {
+	check(IsInGameThread());
 	//Nothing to do for widgets without a cursor
 }
 

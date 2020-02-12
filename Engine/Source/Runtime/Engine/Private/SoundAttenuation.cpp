@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 
 #include "Sound/SoundAttenuation.h"
@@ -10,9 +10,9 @@
 	USoundAttenuation implementation.
 -----------------------------------------------------------------------------*/
 
+#if WITH_EDITORONLY_DATA
 void FSoundAttenuationSettings::PostSerialize(const FArchive& Ar)
 {
-#if WITH_EDITORONLY_DATA
 	if (Ar.UE4Ver() < VER_UE4_ATTENUATION_SHAPES)
 	{
 		FalloffDistance = RadiusMax_DEPRECATED - RadiusMin_DEPRECATED;
@@ -58,8 +58,8 @@ void FSoundAttenuationSettings::PostSerialize(const FArchive& Ar)
 			PluginSettings.ReverbPluginSettingsArray.Add(ReverbPluginSettings_DEPRECATED);
 		}
 	}
-#endif
 }
+#endif
 
 float FSoundAttenuationSettings::GetFocusPriorityScale(const struct FGlobalFocusSettings& FocusSettings, float FocusFactor) const
 {
@@ -90,6 +90,7 @@ bool FSoundAttenuationSettings::operator==(const FSoundAttenuationSettings& Othe
 	return (   bAttenuate			    == Other.bAttenuate
 			&& bSpatialize			    == Other.bSpatialize
 			&& dBAttenuationAtMax	    == Other.dBAttenuationAtMax
+			&& FalloffMode				== Other.FalloffMode
 			&& OmniRadius				== Other.OmniRadius
 			&& bApplyNormalizationToStereoSounds == Other.bApplyNormalizationToStereoSounds
 			&& StereoSpread				== Other.StereoSpread

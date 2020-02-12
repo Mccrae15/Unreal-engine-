@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 using System;
 using System.Collections.Concurrent;
@@ -123,6 +123,30 @@ namespace Tools.DotNETCommon.Perforce
 		public PerforceConnection(string GlobalOptions)
 		{
 			this.GlobalOptions = GlobalOptions;
+		}
+
+		/// <summary>
+		/// Constructor
+		/// </summary>
+		/// <param name="ServerAndPort">The server address and port</param>
+		/// <param name="UserName">The user name</param>
+		/// <param name="ClientName">The client name</param>
+		public PerforceConnection(string ServerAndPort, string UserName, string ClientName)
+		{
+			List<string> Options = new List<string>();
+			if(ServerAndPort != null)
+			{
+				Options.Add(String.Format("-p {0}", ServerAndPort));
+			}
+			if (UserName != null)
+			{
+				Options.Add(String.Format("-u {0}", UserName));
+			}
+			if (ClientName != null)
+			{
+				Options.Add(String.Format("-c {0}", ClientName));
+			}
+			this.GlobalOptions = String.Join(" ", Options);
 		}
 
 		/// <summary>
@@ -2038,7 +2062,7 @@ namespace Tools.DotNETCommon.Perforce
 			{
 				Arguments.AppendFormat(" -m {0}", MaxFiles);
 			}
-			if(NumThreads != -1)
+/*			if(NumThreads != -1)
 			{
 				Arguments.AppendFormat(" --parallel-threads={0}", NumThreads);
 				if(Batch != -1)
@@ -2057,7 +2081,7 @@ namespace Tools.DotNETCommon.Perforce
 				{
 					Arguments.AppendFormat(",minsize={0}", MinSize);
 				}
-			}
+			}*/
 			foreach (string FileSpec in FileSpecs)
 			{
 				Arguments.AppendFormat(" \"{0}\"", FileSpec);

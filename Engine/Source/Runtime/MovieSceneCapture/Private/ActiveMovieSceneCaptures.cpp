@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "ActiveMovieSceneCaptures.h"
 
@@ -56,4 +56,9 @@ void FActiveMovieSceneCaptures::Shutdown()
 void FActiveMovieSceneCaptures::AddReferencedObjects(FReferenceCollector& Collector)
 {
 	Collector.AddReferencedObjects(ActiveCaptures);
+}
+
+FString FActiveMovieSceneCaptures::GetReferencerName() const
+{
+	return TEXT("FActiveMovieSceneCaptures");
 }

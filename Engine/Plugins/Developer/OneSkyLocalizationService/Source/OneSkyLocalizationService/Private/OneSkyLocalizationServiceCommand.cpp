@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "OneSkyLocalizationServiceCommand.h"
 #include "HAL/PlatformProcess.h"
@@ -34,7 +34,7 @@ bool FOneSkyLocalizationServiceCommand::DoWork()
 		FPlatformProcess::Sleep(0.01f);
 
 		// If the editor was closed, our callbacks won't get called anyway, so just kill the thread
-		if (GIsRequestingExit)
+		if (IsEngineExitRequested())
 		{
 			Abandon();
 		}

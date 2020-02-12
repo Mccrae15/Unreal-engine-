@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "AnimationSharingManager.h"
 #include "AnimationSharingModule.h"
@@ -220,15 +220,23 @@ const FAnimationSharingScalability& UAnimationSharingManager::GetScalabilitySett
 
 void UAnimationSharingManager::SetupPerSkeletonData(const FPerSkeletonAnimationSharingSetup& SkeletonSetup)
 {
-	const USkeleton* Skeleton = SkeletonSetup.Skeleton.LoadSynchronous();
+	const USkeleton* Skeleton = SkeletonSetup.Skeleton;
 	UAnimationSharingStateProcessor* Processor = SkeletonSetup.StateProcessorClass ?SkeletonSetup.StateProcessorClass->GetDefaultObject<UAnimationSharingStateProcessor>() : nullptr;
 	UEnum* StateEnum = Processor ? Processor->GetAnimationStateEnum() : nullptr;
 	if (Skeleton && StateEnum && Processor)
 	{
 		UAnimSharingInstance* Data = NewObject<UAnimSharingInstance>(this);
-		PerSkeletonData.Add(Data);
-		Skeletons.Add(Skeleton);
-		Data->Setup(this, SkeletonSetup, &ScalabilitySettings, Skeletons.Num() - 1);
+		// Try and setup up instance using provided setup data
+		if (Data->Setup(this, SkeletonSetup, &ScalabilitySettings, Skeletons.Num()))
+		{
+			PerSkeletonData.Add(Data);
+			Skeletons.Add(Skeleton);
+		}
+		else
+		{
+			UE_LOG(LogAnimationSharing, Error, TEXT("Failed to initialise Animation Sharing Data for Skeleton (%s)!"),
+				Skeleton ? *Skeleton->GetName() : TEXT("None"));
+		}
 	}
 	else
 	{
@@ -739,15 +747,17 @@ uint8 UAnimSharingInstance::DetermineStateForActor(uint32 ActorIndex, bool& bSho
 	return FMath::Max(0, State);
 }
 
-void UAnimSharingInstance::Setup(UAnimationSharingManager* AnimationSharingManager, const FPerSkeletonAnimationSharingSetup& SkeletonSetup, const FAnimationSharingScalability* InScalabilitySettings, uint32 Index)
+bool UAnimSharingInstance::Setup(UAnimationSharingManager* AnimationSharingManager, const FPerSkeletonAnimationSharingSetup& SkeletonSetup, const FAnimationSharingScalability* InScalabilitySettings, uint32 Index)
 {
-	USkeletalMesh* SkeletalMesh = SkeletonSetup.SkeletalMesh.LoadSynchronous();
+	USkeletalMesh* SkeletalMesh = SkeletonSetup.SkeletalMesh;
 	/** Retrieve the state processor to use */
 	if (UAnimationSharingStateProcessor* Processor = SkeletonSetup.StateProcessorClass.GetDefaultObject())
 	{
 		StateProcessor = Processor;
 		bNativeStateProcessor = SkeletonSetup.StateProcessorClass->HasAnyClassFlags(CLASS_Native);
 	}
+
+	bool bErrors = false;
 
 	if (SkeletalMesh && StateProcessor)
 	{
@@ -771,15 +781,33 @@ void UAnimSharingInstance::Setup(UAnimationSharingManager* AnimationSharingManag
 			const uint8 StateValue = StateEntry.State;
 			const uint32 StateIndex = StateEnum->GetIndexByValue(StateValue);
 
-			checkf(!PerStateData.FindByPredicate([StateValue](const FPerStateData& State) { return State.StateEnumValue == StateValue; }), TEXT("State already defined"));
+			if (!PerStateData.FindByPredicate([StateValue](const FPerStateData& State) { return State.StateEnumValue == StateValue; }))
+			{
+				FPerStateData& StateData = PerStateData[StateIndex];
+				StateData.StateEnumValue = StateValue;
+				SetupState(StateData, StateEntry, SkeletalMesh, SkeletonSetup, Index);
 
-			FPerStateData& StateData = PerStateData[StateIndex];
-			StateData.StateEnumValue = StateValue;
-			SetupState(StateData, StateEntry, SkeletalMesh, SkeletonSetup, Index);
+				// Make sure we have at least one component set up
+				if ((!StateData.bIsAdditive && StateData.Components.Num() == 0) ||(StateData.bIsAdditive && AdditiveInstanceStack.AvailableInstances.Num() == 0))
+				{
+					UE_LOG(LogAnimationSharing, Error, TEXT("No Components available for State %s"), *StateEnum->GetDisplayNameTextByValue(StateValue).ToString());
+					bErrors = true;
+				}
+			}
+			else
+			{
+				UE_LOG(LogAnimationSharing, Error, TEXT("Duplicate entries in Animation Setup for State %s"), *StateEnum->GetDisplayNameTextByValue(StateValue).ToString());
+				bErrors = true;
+			}
+		}
+
+		if (bErrors)
+		{
+			PerStateData.Empty();
 		}
 
 		/** Setup blend actors, if enabled*/
-		if (ScalabilitySettings->UseBlendTransitions.Default)
+		if (!bErrors && ScalabilitySettings->UseBlendTransitions.Default)
 		{
 			const uint32 TotalNumberOfBlendActorsRequired = ScalabilitySettings->MaximumNumberConcurrentBlends.Default;
 			const float ZOffset = Index * SkeletalMeshBounds.Z * 2.f;
@@ -804,7 +832,10 @@ void UAnimSharingInstance::Setup(UAnimationSharingManager* AnimationSharingManag
 	else
 	{
 		UE_LOG(LogAnimationSharing, Error, TEXT("Invalid Skeletal Mesh or State Processing Class"));
+		bErrors = true;
 	}
+
+	return !bErrors;
 }
 
 void UAnimSharingInstance::SetupState(FPerStateData& StateData, const FAnimationStateEntry& StateEntry, USkeletalMesh* SkeletalMesh, const FPerSkeletonAnimationSharingSetup& SkeletonSetup, uint32 Index)
@@ -815,7 +846,7 @@ void UAnimSharingInstance::SetupState(FPerStateData& StateData, const FAnimation
 	/** Setup overall data and flags */
 	StateData.bIsOnDemand = StateEntry.bOnDemand;
 	StateData.bIsAdditive = StateEntry.bAdditive;
-	StateData.AdditiveAnimationSequence = (StateEntry.bAdditive && StateEntry.AnimationSetups.IsValidIndex(0)) ? StateEntry.AnimationSetups[0].AnimSequence.LoadSynchronous() : nullptr;
+	StateData.AdditiveAnimationSequence = (StateEntry.bAdditive && StateEntry.AnimationSetups.IsValidIndex(0)) ? StateEntry.AnimationSetups[0].AnimSequence : nullptr;
 
 	/** Keep hard reference to animation sequence */
 	if (StateData.AdditiveAnimationSequence)
@@ -859,8 +890,13 @@ void UAnimSharingInstance::SetupState(FPerStateData& StateData, const FAnimation
 		const FAnimationSetup& AnimationSetup = StateEntry.AnimationSetups[SetupIndex];
 		/** User can setup either an AnimBP or AnimationSequence */
 		UClass* AnimBPClass = AnimationSetup.AnimBlueprint.Get();
-		UAnimSequence* AnimSequence = AnimationSetup.AnimSequence.LoadSynchronous();
-		ensureMsgf(AnimBPClass != nullptr || AnimSequence != nullptr, TEXT("Animation setup without either an Animation Blueprint Class of Animation Sequence"));
+		UAnimSequence* AnimSequence = AnimationSetup.AnimSequence;
+		
+		if (AnimBPClass == nullptr && AnimSequence == nullptr)
+		{
+			UE_LOG(LogAnimationSharing, Error, TEXT("Animation setup entry for state %s without either a valid Animation Blueprint Class or Animation Sequence"), StateEnum ? *StateEnum->GetName() : TEXT("None"));
+			continue;
+		}
 
 		bool bEnabled = AnimationSetup.Enabled.Default;
 #if WITH_EDITOR			
@@ -874,7 +910,7 @@ void UAnimSharingInstance::SetupState(FPerStateData& StateData, const FAnimation
 #if WITH_EDITOR			
 			NumRandomizedInstances = AnimationSetup.NumRandomizedInstances.GetValueForPlatformIdentifiers(PlatformName, PlatformName);
 #endif
-			const uint32 NumInstances = StateEntry.bOnDemand ? NumInstancesPerSetup	: NumRandomizedInstances;
+			const uint32 NumInstances = StateEntry.bOnDemand ? NumInstancesPerSetup	: FGenericPlatformMath::Max(NumRandomizedInstances, 1);
 			for (uint32 InstanceIndex = 0; InstanceIndex < NumInstances; ++InstanceIndex)
 			{
 				if (!StateData.bIsAdditive)
@@ -944,7 +980,7 @@ void UAnimSharingInstance::SetupState(FPerStateData& StateData, const FAnimation
 					Components.Add(Component);
 				}
 				else
-				{					
+				{	
 					const FVector SpawnLocation(FVector(NumSetups * SkeletalMeshBounds.X, 0.f, ZOffset));
 					const FName AdditiveComponentName(*(SkeletalMesh->GetName() + TEXT("_") + StateEnum->GetNameStringByIndex(StateEntry.State) + FString::FromInt(InstanceIndex)));
 					USkeletalMeshComponent* AdditiveComponent = NewObject<USkeletalMeshComponent>(SharingActor, AdditiveComponentName);
@@ -958,6 +994,10 @@ void UAnimSharingInstance::SetupState(FPerStateData& StateData, const FAnimation
 					FAdditiveAnimationInstance* AdditiveInstance = new FAdditiveAnimationInstance();
 					AdditiveInstance->Initialise(AdditiveComponent, SkeletonSetup.AdditiveAnimBlueprint.Get());
 					AdditiveInstanceStack.AddInstance(AdditiveInstance);
+					
+					/** Set the current animation length length */
+					StateData.AnimationLengths.Add(AnimSequence->SequenceLength);
+					Components.Add(AdditiveComponent);
 				}
 				
 				++NumSetups;
@@ -1005,7 +1045,7 @@ void UAnimSharingInstance::TickDebugInformation()
 		{
 			for (int32 Index = 0; Index < StateData.InUseComponentFrameBits.Num(); ++Index)
 			{
-				const FString ComponentString = FString::Printf(TEXT("In Use %s - Required %s"), StateData.InUseComponentFrameBits[Index] ? TEXT("True") : TEXT("False"), StateData.SlaveTickRequiredFrameBits[Index] ? TEXT("True") : TEXT("False"));
+				const FString ComponentString = FString::Printf(TEXT("[%s]\n In Use %s - Required %s"), *StateEnum->GetDisplayNameTextByValue(StateData.StateEnumValue).ToString(), StateData.InUseComponentFrameBits[Index] ? TEXT("True") : TEXT("False"), StateData.SlaveTickRequiredFrameBits[Index] ? TEXT("True") : TEXT("False"));
 				DrawDebugString(GetWorld(), StateData.Components[Index]->GetComponentLocation() + FVector(0,0,StateData.Components[Index]->Bounds.BoxExtent.Z), ComponentString, nullptr, FColor::White, 0.016f, false);
 			}
 		}
@@ -1122,6 +1162,21 @@ void UAnimSharingInstance::TickOnDemandInstances()
 				else
 				{
 					SetupSlaveComponent(NewState, ActorIndex);
+
+					// If we are setting up a slave to an on-demand state that is not in use yet it needs to create a new On Demand Instance which will not be kicked-off yet, so do that directly.
+					if (PerStateData[NewState].bIsOnDemand)
+					{
+						const int32 OnDemandInstanceIndex = PerActorData[ActorIndex].OnDemandInstanceIndex;
+						if (OnDemandInstanceIndex != INDEX_NONE)
+						{
+							FOnDemandInstance& NewOnDemandInstance = OnDemandInstances[OnDemandInstanceIndex];
+							if (!NewOnDemandInstance.bActive)
+							{
+								NewOnDemandInstance.bActive = true;
+								NewOnDemandInstance.StartTime = WorldTime;
+							}
+						}
+					}
 				}
 
 				// Set actor states
@@ -1258,6 +1313,9 @@ void UAnimSharingInstance::TickAdditiveInstances()
 	for (int32 InstanceIndex = 0; InstanceIndex < AdditiveInstances.Num(); ++InstanceIndex)
 	{
 		FAdditiveInstance& Instance = AdditiveInstances[InstanceIndex];
+		SetComponentUsage(true, Instance.State, Instance.UsedPerStateComponentIndex);		
+		SetComponentTick(Instance.State, Instance.UsedPerStateComponentIndex);
+
 		if (Instance.bActive)
 		{
 			const float WorldTimeSeconds = GetWorld()->GetTimeSeconds();
@@ -1275,6 +1333,8 @@ void UAnimSharingInstance::TickAdditiveInstances()
 				FreeAdditiveInstance(Instance.AdditiveAnimationInstance);
 				RemoveAdditiveInstance(InstanceIndex);
 				--InstanceIndex;
+
+				SetComponentUsage(false, Instance.State, Instance.UsedPerStateComponentIndex);
 			}
 		}
 		else
@@ -1306,7 +1366,7 @@ void UAnimSharingInstance::TickActorStates()
 			ActorData.bRequiresTick = ActorData.SignificanceValue >= ScalabilitySettings->TickSignificanceValue.Default;
 			for (int32 ComponentIndex : ActorData.ComponentIndices)
 			{
-				if (PerComponentData[ComponentIndex].Component->LastRenderTime > (WorldTime - 1.f))
+				if (PerComponentData[ComponentIndex].Component->GetLastRenderTime() > (WorldTime - 1.f))
 				{
 					PerComponentData[ComponentIndex].Component->bRecentlyRendered = true;
 					ActorData.bRequiresTick = true;
@@ -1345,18 +1405,21 @@ void UAnimSharingInstance::TickActorStates()
 #endif
 				}
 				/** Play additive animation only if actor isn't already playing one */
-				else if (PerStateData[CurrentState].bIsAdditive && !ActorData.bRunningAdditive)
-				{					
-					const uint32 AdditiveInstanceIndex = SetupAdditiveInstance(CurrentState, PreviousState, ActorData.PermutationIndex);
-					if (AdditiveInstanceIndex != INDEX_NONE)
+				else if (PerStateData[CurrentState].bIsAdditive)
+				{
+					if (!ActorData.bRunningAdditive)
 					{
-						ActorData.bRunningAdditive = true;
-						ActorData.AdditiveInstanceIndex = AdditiveInstanceIndex;
-						AdditiveInstances[AdditiveInstanceIndex].ActorIndex = ActorIndex;
+						const uint32 AdditiveInstanceIndex = SetupAdditiveInstance(CurrentState, PreviousState, ActorData.PermutationIndex);
+						if (AdditiveInstanceIndex != INDEX_NONE)
+						{
+							ActorData.bRunningAdditive = true;
+							ActorData.AdditiveInstanceIndex = AdditiveInstanceIndex;
+							AdditiveInstances[AdditiveInstanceIndex].ActorIndex = ActorIndex;
+						}
 					}
 				}
 				/** If we are _already_ running an on-demand instance and the new state is also an on-demand we'll have to blend the new state in*/
-				else if (PerStateData[CurrentState].bIsOnDemand)					
+				else if (PerStateData[CurrentState].bIsOnDemand)
 				{
 					/** If the new state is different than the currently running on-demand state, this could happen if we previously only updated the state and not processed it */
 					const bool bSetupInstance = (!ActorData.bRunningOnDemand || (ActorData.bRunningOnDemand && OnDemandInstances[ActorData.OnDemandInstanceIndex].State != CurrentState));
@@ -1699,6 +1762,13 @@ void UAnimSharingInstance::SetMasterComponentForActor(uint32 ActorIndex, USkelet
 void UAnimSharingInstance::SetupSlaveComponent(uint8 CurrentState, uint32 ActorIndex)
 {
 	const FPerStateData& StateData = PerStateData[CurrentState];
+
+	if (StateData.Components.Num() == 0)
+	{	
+		UE_LOG(LogAnimationSharing, Warning, TEXT("No Master Components available for state %s, make sure to set up an Animation Sequence/Blueprint "), *StateEnum->GetDisplayNameTextByValue(CurrentState).ToString());
+		return;
+	}
+
 	if (!StateData.bIsOnDemand)
 	{
 		const uint32 PermutationIndex = DeterminePermutationIndex(ActorIndex, CurrentState);
@@ -1967,9 +2037,13 @@ uint32 UAnimSharingInstance::SetupAdditiveInstance(uint8 StateIndex, uint8 FromS
 		const float WorldTimeSeconds = GetWorld()->GetTimeSeconds();
 		Instance.EndTime = WorldTimeSeconds + StateData.AdditiveAnimationSequence->SequenceLength;
 		Instance.State = StateIndex;
+		Instance.UsedPerStateComponentIndex = PerStateData[StateIndex].Components.IndexOfByKey(AnimationInstance->GetComponent());
 
 		InstanceIndex = AdditiveInstances.Num() - 1;
 		AnimationInstance->Setup(Instance.BaseComponent, StateData.AdditiveAnimationSequence);
+
+		SetComponentUsage(true, Instance.State, Instance.UsedPerStateComponentIndex);
+		SetComponentTick(Instance.State, Instance.UsedPerStateComponentIndex);
 	}
 
 	return InstanceIndex;

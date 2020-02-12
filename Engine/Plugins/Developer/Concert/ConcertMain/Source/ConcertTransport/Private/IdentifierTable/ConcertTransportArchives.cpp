@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "IdentifierTable/ConcertTransportArchives.h"
 #include "IdentifierTable/ConcertIdentifierTable.h"
@@ -33,12 +33,12 @@ FArchive& FConcertIdentifierWriter::operator<<(FName& Name)
 		SerializeIntPacked(UnsignedIndex);
 	};
 
-	int32 HardcodedIndex = Name.GetComparisonIndex();
+	const EName* Ename = Name.ToEName();
 	int32 IdentifierTableIndex = INDEX_NONE;
-	if (HardcodedIndex <= MAX_NETWORKED_HARDCODED_NAME)
+	if (Ename && ShouldReplicateAsInteger(*Ename))
 	{
 		SerializeConcertIdentifierSource(EConcertIdentifierSource::HardcodedIndex);
-		SerializeIndexValue(HardcodedIndex);
+		SerializeIndexValue(*Ename);
 	}
 	else if (LocalIdentifierTable)
 	{

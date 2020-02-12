@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -29,7 +29,7 @@ class FUdpReassembledMessage;
 class FUdpSerializedMessage;
 class FUdpSocketSender;
 class IMessageAttachment;
-
+enum class EUdpMessageFormat : uint8;
 
 /**
  * Implements a message processor for UDP messages.
@@ -139,6 +139,18 @@ public:
 public:
 
 	/**
+	 * Add a static endpoint to the processor
+	 * @param InEndpoint the endpoint to add
+	 */
+	void AddStaticEndpoint(const FIPv4Endpoint& InEndpoint);
+
+	/**
+	 * Remove a static endpoint from the processor
+	 * @param InEndpoint the endpoint to remove
+	 */
+	void RemoveStaticEndpoint(const FIPv4Endpoint& InEndpoint);
+
+	/**
 	 * Get a list of Nodes Ids split by supported Protocol version
 	 *
 	 * @param Recipients The list of recipients Ids
@@ -173,6 +185,12 @@ public:
 	{
 		return WorkEvent;
 	}
+
+	/**
+	 * Waits for all serialization tasks fired by this processor to complete. Expected to be called when the application exit
+	 * to prevent serialized (UStruct) object to being use after the UObject system is shutdown.
+	 */
+	void WaitAsyncTaskCompletion();
 
 public:
 
@@ -213,7 +231,19 @@ public:
 	{
 		return NodeLostDelegate;
 	}
-	
+
+	/**
+	 * Returns a delegate that is executed when a socket error happened.
+	 *
+	 * @return The delegate.
+	 * @note this delegate is broadcasted from the processor thread.
+	 */
+	DECLARE_DELEGATE(FOnError)
+	FOnError& OnError()
+	{
+		return ErrorDelegate;
+	}
+
 public:
 
 	//~ FRunnable interface
@@ -370,19 +400,17 @@ protected:
 	 * Updates all segmenters of the specified node.
 	 *
 	 * @param NodeInfo Details for the node to update.
+	 * @return true if the update was successful
 	 */
-	void UpdateSegmenters(FNodeInfo& NodeInfo);
+	bool UpdateSegmenters(FNodeInfo& NodeInfo);
 
 	/**
 	 * Updates all reassemblers of the specified node.
 	 *
 	 * @param NodeInfo Details for the node to update.
+	 * @return true if the update was successful
 	 */
-	void UpdateReassemblers(FNodeInfo& NodeInfo);
-
-
-	/** Updates all static remote nodes. */
-	void UpdateStaticNodes();
+	bool UpdateReassemblers(FNodeInfo& NodeInfo);
 
 	/** Updates nodes per protocol version map */
 	void UpdateNodesPerVersion();
@@ -421,9 +449,6 @@ private:
 	/** Holds the collection of known remote nodes. */
 	TMap<FGuid, FNodeInfo> KnownNodes;
 
-	/** Holds the collection of static remote nodes. */
-	TMap<FIPv4Endpoint, FNodeInfo> StaticNodes;
-
 	/** Holds the local node identifier. */
 	FGuid LocalNodeId;
 
@@ -436,8 +461,8 @@ private:
 	/** Holds the network socket used to transport messages. */
 	FSocket* Socket;
 
-	/** Holds the socket sender. */
-	FUdpSocketSender* SocketSender;
+	/** Holds the socket sender. volatile pointer because used to validate thread shutdown. */
+	FUdpSocketSender* volatile SocketSender;
 
 	/** Holds a flag indicating that the thread is stopping. */
 	bool Stopping;
@@ -459,6 +484,11 @@ private:
 	/** Holds a delegate to be invoked when a network node was lost. */
 	FOnNodeLost NodeLostDelegate;
 
+	/** Holds a delegate to be invoked when a socket error happen. */
+	FOnError ErrorDelegate;
+
+	/** The configured message format (from UUdpMessagingSettings). */
+	EUdpMessageFormat MessageFormat;
 private:
 
 	/** Defines the maximum number of Hello segments that can be dropped before a remote endpoint is considered dead. */

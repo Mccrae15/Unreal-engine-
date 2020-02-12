@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 /*=============================================================================
 DebugViewModeMaterialProxy.h : Contains definitions the debug view mode material shaders.
@@ -80,7 +80,7 @@ public:
 		return  false;
 	}
 
-	virtual const TArray<UTexture*>& GetReferencedTextures() const override
+	virtual TArrayView<UObject* const> GetReferencedTextures() const override
 	{
 		return ReferencedTextures;
 	}
@@ -127,9 +127,10 @@ public:
 	////////////////
 	// FMaterialRenderProxy interface.
 	virtual const FMaterial& GetMaterialWithFallback(ERHIFeatureLevel::Type InFeatureLevel, const FMaterialRenderProxy*& OutFallbackMaterialRenderProxy) const override;
-	virtual bool GetVectorValue(const FMaterialParameterInfo& ParameterInfo, FLinearColor* OutValue, const FMaterialRenderContext& Context) const override;
-	virtual bool GetScalarValue(const FMaterialParameterInfo& ParameterInfo, float* OutValue, const FMaterialRenderContext& Context) const override;
-	virtual bool GetTextureValue(const FMaterialParameterInfo& ParameterInfo,const UTexture** OutValue, const FMaterialRenderContext& Context) const override;
+	virtual bool GetVectorValue(const FHashedMaterialParameterInfo& ParameterInfo, FLinearColor* OutValue, const FMaterialRenderContext& Context) const override;
+	virtual bool GetScalarValue(const FHashedMaterialParameterInfo& ParameterInfo, float* OutValue, const FMaterialRenderContext& Context) const override;
+	virtual bool GetTextureValue(const FHashedMaterialParameterInfo& ParameterInfo,const UTexture** OutValue, const FMaterialRenderContext& Context) const override;
+	virtual bool GetTextureValue(const FHashedMaterialParameterInfo& ParameterInfo, const URuntimeVirtualTexture** OutValue, const FMaterialRenderContext& Context) const override;
 
 	virtual EMaterialDomain GetMaterialDomain() const override;
 	virtual bool IsTwoSided() const  override;
@@ -141,11 +142,16 @@ public:
 	virtual bool IsWireframe() const override;
 	virtual bool IsMasked() const override;
 	virtual enum EBlendMode GetBlendMode() const override;
-	virtual enum EMaterialShadingModel GetShadingModel() const override;
+	virtual FMaterialShadingModelField GetShadingModels() const override;
+	virtual bool IsShadingModelFromMaterialExpression() const override;
 	virtual float GetOpacityMaskClipValue() const override;
 	virtual bool GetCastDynamicShadowAsMasked() const override;
 	virtual void GatherCustomOutputExpressions(TArray<class UMaterialExpressionCustomOutput*>& OutCustomOutputs) const override;
 	virtual void GatherExpressionsForCustomInterpolators(TArray<class UMaterialExpression*>& OutExpressions) const override;
+	virtual enum EMaterialTessellationMode GetTessellationMode() const override;
+	virtual bool IsCrackFreeDisplacementEnabled() const override;
+	virtual bool IsAdaptiveTessellationEnabled() const override;
+	virtual float GetMaxDisplacement() const override;
 
 	// Cached material usage.
 	virtual bool IsUsedWithSkeletalMesh() const override { return bIsUsedWithSkeletalMesh; }
@@ -161,29 +167,17 @@ public:
 	virtual bool IsUsedWithSplineMeshes() const override { return bIsUsedWithSplineMeshes; }
 	virtual bool IsUsedWithInstancedStaticMeshes() const override { return bIsUsedWithInstancedStaticMeshes; }
 	virtual bool IsUsedWithAPEXCloth() const override { return bIsUsedWithAPEXCloth; }
+	virtual bool IsUsedWithWater() const override { return bIsUsedWithWater; }
 
 	virtual EMaterialShaderMapUsage::Type GetMaterialShaderMapUsage() const { return Usage; }
-
-	////////////////
-
-	static void AddShader(
-		UMaterialInterface* InMaterialInterface, 
-		EMaterialQualityLevel::Type QualityLevel, 
-		ERHIFeatureLevel::Type FeatureLevel, 
-		bool bSynchronousCompilation, 
-		EDebugViewShaderMode InDebugViewMode
-	);
-	static bool GetShader(const UMaterialInterface* InMaterialInterface, EDebugViewShaderMode InDebugViewMode, const FMaterialRenderProxy*& OutMaterialRenderProxy, const FMaterial*& OutMaterial);
-	static void ClearAllShaders(UMaterialInterface* InMaterialInterface);
-	static bool HasAnyShaders() { return DebugMaterialShaderMap.Num() > 0; }
-	static void ValidateAllShaders(TSet<UMaterialInterface*>& Materials);
 
 private:
 
 	/** The material interface for this proxy */
 	UMaterialInterface* MaterialInterface;
-	UMaterial* Material;	
-	TArray<UTexture*> ReferencedTextures;
+	UMaterial* Material;
+	ERHIFeatureLevel::Type FeatureLevel;
+	TArray<UObject*> ReferencedTextures;
 	EMaterialShaderMapUsage::Type Usage;
 	EDebugViewShaderMode DebugViewMode;
 	const TCHAR* PixelShaderName;
@@ -207,6 +201,7 @@ private:
 			uint32 bIsUsedWithSplineMeshes : 1;
 			uint32 bIsUsedWithInstancedStaticMeshes : 1;
 			uint32 bIsUsedWithAPEXCloth : 1;
+			uint32 bIsUsedWithWater : 1;
 		};
 	};
 
@@ -214,28 +209,6 @@ private:
 	bool bValid;
 	bool bIsDefaultMaterial;
 	bool bSynchronousCompilation;
-
-	struct FMaterialUsagePair
-	{
-		FMaterialUsagePair(const UMaterialInterface* InMaterialInterface, EDebugViewShaderMode InDebugViewMode) : MaterialInterface(InMaterialInterface), DebugViewMode(InDebugViewMode) {}
-
-		const UMaterialInterface* MaterialInterface;
-		EDebugViewShaderMode DebugViewMode;
-
-		friend bool operator==(const FMaterialUsagePair& Lhs, const FMaterialUsagePair& Rhs)
-		{
-			return Lhs.MaterialInterface == Rhs.MaterialInterface && Lhs.DebugViewMode == Rhs.DebugViewMode;
-		}
-
-		friend uint32 GetTypeHash( const FMaterialUsagePair& Pair )
-		{
-			return GetTypeHash(Pair.MaterialInterface) ^ GetTypeHash((uint32)Pair.DebugViewMode);
-		}
-
-	};
-
-	static volatile bool bReentrantCall;
-	static TMap<FMaterialUsagePair, FDebugViewModeMaterialProxy*> DebugMaterialShaderMap;
 };
 
-#endif
+#endif // WITH_EDITORONLY_DATA

@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "EnvironmentQuery/EnvQueryManager.h"
 #include "UObject/UObjectIterator.h"
@@ -116,7 +116,7 @@ UEnvQueryManager::UEnvQueryManager(const FObjectInitializer& ObjectInitializer) 
 
 	QueryCountWarningThreshold = 0;
 	QueryCountWarningInterval = 30.0;
-#if !(UE_BUILD_SHIPPING || UE_BUILD_TEST)
+#if !(UE_BUILD_SHIPPING)
 	LastQueryCountWarningThresholdTime = -FLT_MAX;
 #endif
 
@@ -223,6 +223,8 @@ int32 UEnvQueryManager::RunQuery(const TSharedPtr<FEnvQueryInstance>& QueryInsta
 	QueryInstance->FinishDelegate = FinishDelegate;
 	RunningQueries.Add(QueryInstance);
 
+	UE_LOG(LogEQS, Verbose, TEXT("%s: Query: %s - Owner: %s"), ANSI_TO_TCHAR(__FUNCTION__), *QueryInstance->QueryName, *GetNameSafe(QueryInstance->Owner.Get()));
+
 	return QueryInstance->QueryID;
 }
 
@@ -245,6 +247,8 @@ void UEnvQueryManager::RunInstantQuery(const TSharedPtr<FEnvQueryInstance>& Quer
 	{
 		return;
 	}
+
+	UE_LOG(LogEQS, Verbose, TEXT("%s: Query: %s - Owner: %s"), ANSI_TO_TCHAR(__FUNCTION__), *QueryInstance->QueryName, *GetNameSafe(QueryInstance->Owner.Get()));
 
 	{
 		CSV_SCOPED_TIMING_STAT_EXCLUSIVE(EnvQueryManager);
@@ -276,6 +280,8 @@ void UEnvQueryManager::RemoveAllQueriesByQuerier(const UObject& Querier, bool bE
 			{
 				QueryInstance->MarkAsAborted();
 
+				UE_LOG(LogEQS, Verbose, TEXT("%s: Query: %s - Owner: %s"), ANSI_TO_TCHAR(__FUNCTION__), *QueryInstance->QueryName, *GetNameSafe(QueryInstance->Owner.Get()));
+
 				if (bExecuteFinishDelegate)
 				{
 					QueryInstance->FinishDelegate.ExecuteIfBound(QueryInstance);
@@ -293,6 +299,9 @@ TSharedPtr<FEnvQueryInstance> UEnvQueryManager::PrepareQueryInstance(const FEnvQ
 	TSharedPtr<FEnvQueryInstance> QueryInstance = CreateQueryInstance(Request.QueryTemplate, RunMode);
 	if (!QueryInstance.IsValid())
 	{
+		UE_LOG(LogEQS, Warning, TEXT("Error creating query instance for QueryTemplate: %s - Owner: %s"),
+			Request.QueryTemplate != nullptr ? *Request.QueryTemplate->QueryName.ToString() : TEXT("NONE"),
+			*GetNameSafe(Request.Owner));
 		return NULL;
 	}
 
@@ -320,6 +329,8 @@ bool UEnvQueryManager::AbortQuery(int32 RequestID)
 		if (QueryInstance->QueryID == RequestID &&
 			QueryInstance->IsFinished() == false)
 		{
+			UE_LOG(LogEQS, Verbose, TEXT("%s: Query: %s - Owner: %s"), ANSI_TO_TCHAR(__FUNCTION__), *QueryInstance->QueryName, *GetNameSafe(QueryInstance->Owner.Get()));
+
 			QueryInstance->MarkAsAborted();
 			QueryInstance->FinishDelegate.ExecuteIfBound(QueryInstance);
 			
@@ -341,7 +352,7 @@ void UEnvQueryManager::Tick(float DeltaTime)
 
 	CSV_SCOPED_TIMING_STAT_EXCLUSIVE(EnvQueryManager);
 
-#if !(UE_BUILD_SHIPPING || UE_BUILD_TEST)
+#if !(UE_BUILD_SHIPPING)
 	CheckQueryCount();
 #endif
 
@@ -402,6 +413,8 @@ void UEnvQueryManager::Tick(float DeltaTime)
 						EQSDebugger.StoreStats(*QueryInstancePtr);
 						EQSDebugger.StoreQuery(QueryInstance);
 #endif // USE_EQS_DEBUGGER
+
+						UE_LOG(LogEQS, Verbose, TEXT("%s: Finished Query: %s - Owner: %s"), ANSI_TO_TCHAR(__FUNCTION__), *QueryInstance->QueryName, *GetNameSafe(QueryInstance->Owner.Get()));
 
 						QueryInstancePtr->FinishDelegate.ExecuteIfBound(QueryInstance);
 
@@ -503,7 +516,7 @@ void UEnvQueryManager::Tick(float DeltaTime)
 	}
 }
 
-#if !(UE_BUILD_SHIPPING || UE_BUILD_TEST)
+#if !(UE_BUILD_SHIPPING)
 void UEnvQueryManager::CheckQueryCount() const
 {
 	if ((QueryCountWarningThreshold > 0) && (RunningQueries.Num() >= QueryCountWarningThreshold))
@@ -512,22 +525,29 @@ void UEnvQueryManager::CheckQueryCount() const
 
 		if ((LastQueryCountWarningThresholdTime < 0.0) || ((LastQueryCountWarningThresholdTime + QueryCountWarningInterval) < CurrentTime))
 		{
-			LogQueryCountWarning();
+			LogQueryInfo(true /* bDisplayThresholdWarning */);
 
 			LastQueryCountWarningThresholdTime = CurrentTime;
 		}
 	}
 }
 
-void UEnvQueryManager::LogQueryCountWarning() const
+void UEnvQueryManager::LogQueryInfo(bool bDisplayThresholdWarning) const
 {
-	UE_LOG(LogEQS, Warning, TEXT("The number of EQS queries has reached (%d) the warning threshold (%d).  Logging queries."), RunningQueries.Num(), QueryCountWarningThreshold);
+	if (bDisplayThresholdWarning)
+	{
+		UE_LOG(LogEQS, Warning, TEXT("The number of EQS queries (%d) has reached the warning threshold (%d).  Logging queries."), RunningQueries.Num(), QueryCountWarningThreshold);
+	}
+	else
+	{
+		UE_LOG(LogEQS, Warning, TEXT("The number of EQS queries is (%d).  Logging queries."), RunningQueries.Num());
+	}
 
 	for (const TSharedPtr<FEnvQueryInstance>& RunningQuery : RunningQueries)
 	{
 		if (RunningQuery.IsValid())
 		{
-			UE_LOG(LogEQS, Warning, TEXT("Query: %s - Owner: %s"), *RunningQuery->QueryName, RunningQuery->Owner.IsValid() ? *RunningQuery->Owner->GetName() : TEXT("Invalid"));
+			UE_LOG(LogEQS, Warning, TEXT("Query: %s - Owner: %s - %s"), *RunningQuery->QueryName, RunningQuery->Owner.IsValid() ? *RunningQuery->Owner->GetName() : TEXT("Invalid"), *RunningQuery->GetExecutionTimeDescription());
 		}
 		else
 		{
@@ -536,6 +556,13 @@ void UEnvQueryManager::LogQueryCountWarning() const
 	}
 }
 #endif
+
+void UEnvQueryManager::PrintActiveQueryInfo() const
+{
+#if !(UE_BUILD_SHIPPING)
+	LogQueryInfo(false /* bDisplayThresholdWarning */);
+#endif
+}
 
 void UEnvQueryManager::OnWorldCleanup()
 {
@@ -550,6 +577,7 @@ void UEnvQueryManager::OnWorldCleanup()
 			TSharedPtr<FEnvQueryInstance>& QueryInstance = RunningQueriesCopy[Index];
 			if (QueryInstance->IsFinished() == false)
 			{
+				UE_LOG(LogEQS, Verbose, TEXT("Query failed due to world cleanup: Query: %s - Owner: %s"), *QueryInstance->QueryName, *GetNameSafe(QueryInstance->Owner.Get()));
 				QueryInstance->MarkAsFailed();
 				QueryInstance->FinishDelegate.ExecuteIfBound(QueryInstance);
 			}
@@ -579,64 +607,19 @@ namespace EnvQueryTestSort
 {
 	struct FAllMatching
 	{
-		FORCEINLINE bool operator()(const UEnvQueryTest& TestA, const UEnvQueryTest& TestB) const
+		FORCEINLINE_DEBUGGABLE bool operator()(const UEnvQueryTest& TestA, const UEnvQueryTest& TestB) const
 		{
-			// cheaper tests go first
-			if (TestB.Cost > TestA.Cost)
-			{
-				return true;
-			}
-
 			// conditions go first
 			const bool bConditionA = (TestA.TestPurpose != EEnvTestPurpose::Score); // Is Test A Filtering?
 			const bool bConditionB = (TestB.TestPurpose != EEnvTestPurpose::Score); // Is Test B Filtering?
-			if (bConditionA && !bConditionB)
+			if (bConditionA != bConditionB)
 			{
-				return true;
+				return bConditionA;
 			}
 
-			// keep connection order (sort stability)
-			return (TestB.TestOrder > TestA.TestOrder);
-		}
-	};
-
-	struct FSingleResult
-	{
-		FSingleResult(EEnvTestCost::Type InHighestCost) : HighestCost(InHighestCost) {}
-
-		FORCEINLINE bool operator()(const UEnvQueryTest& TestA, const UEnvQueryTest& TestB) const
-		{
 			// cheaper tests go first
-			if (TestB.Cost > TestA.Cost)
-			{
-				return true;
-			}
-
-			const bool bConditionA = (TestA.TestPurpose != EEnvTestPurpose::Score); // Is Test A Filtering?
-			const bool bConditionB = (TestB.TestPurpose != EEnvTestPurpose::Score); // Is Test B Filtering?
-			if (TestA.Cost == HighestCost)
-			{
-				// highest cost: weights go first, conditions later (first match will return result)
-				if (!bConditionA && bConditionB)
-				{
-					return true;
-				}
-			}
-			else
-			{
-				// lower costs: conditions go first to reduce amount of items
-				if (bConditionA && !bConditionB)
-				{
-					return true;
-				}
-			}
-
-			// keep connection order (sort stability)
-			return (TestB.TestOrder > TestA.TestOrder);
+			return (TestA.Cost < TestB.Cost);
 		}
-
-	protected:
-		TEnumAsByte<EEnvTestCost::Type> HighestCost;
 	};
 }
 
@@ -734,6 +717,13 @@ TSharedPtr<FEnvQueryInstance> UEnvQueryManager::CreateQueryInstance(const UEnvQu
 			LocalTemplate->Options[OptionIndex] = LocalOption;
 			LocalOption->Generator = LocalGenerator;
 
+			if (MyOption->Tests.Num() == 0)
+			{
+				// no further work required here
+				CreateOptionInstance(LocalOption, SourceOptionIndex, TArray<UEnvQueryTest*>(), *InstanceTemplate);
+				continue;
+			}
+
 			// check if TestOrder property is set correctly in asset, try to recreate it if not
 			// don't use editor graph, so any disabled tests in the middle will make it look weird
 			if (MyOption->Tests.Num() > 1 && MyOption->Tests.Last() && MyOption->Tests.Last()->TestOrder == 0)
@@ -747,7 +737,10 @@ TSharedPtr<FEnvQueryInstance> UEnvQueryManager::CreateQueryInstance(const UEnvQu
 				}
 			}
 
-			EEnvTestCost::Type HighestCost(EEnvTestCost::Low);
+			const bool bOptionSingleResultSearch = (RunMode == EEnvQueryRunMode::SingleResult) && LocalGenerator->bAutoSortTests;
+			EEnvTestCost::Type HighestFilterCost(EEnvTestCost::Low);
+			UEnvQueryTest* MostExpensiveFilter = nullptr;
+			int32 MostExpensiveFilterIndex = INDEX_NONE;
 			TArray<UEnvQueryTest*> SortedTests = MyOption->Tests;
 			TSubclassOf<UEnvQueryItemType> GeneratedType = MyOption->Generator->ItemType;
 			for (int32 TestIndex = SortedTests.Num() - 1; TestIndex >= 0; TestIndex--)
@@ -760,45 +753,56 @@ TSharedPtr<FEnvQueryInstance> UEnvQueryManager::CreateQueryInstance(const UEnvQu
 
 					SortedTests.RemoveAt(TestIndex, 1, false);
 				}
-				else if (HighestCost < TestOb->Cost)
+				else if (bOptionSingleResultSearch
+					&& TestOb->TestPurpose == EEnvTestPurpose::Filter
+					&& (HighestFilterCost < TestOb->Cost || MostExpensiveFilterIndex == INDEX_NONE))
 				{
-					HighestCost = TestOb->Cost;
+					HighestFilterCost = TestOb->Cost;					
+					MostExpensiveFilterIndex = TestIndex;
 				}
 			}
 
 			LocalOption->Tests.Reset(SortedTests.Num());
-			for (int32 TestIdx = 0; TestIdx < SortedTests.Num(); TestIdx++)
+			// MostExpensiveFilterIndex can be INDEX_NONE if there are no filtering 
+			// tests done (i.e. just scoring tests).
+			if (bOptionSingleResultSearch && MostExpensiveFilterIndex != INDEX_NONE)
 			{
-				UEnvQueryTest* LocalTest = (UEnvQueryTest*)StaticDuplicateObject(SortedTests[TestIdx], this);
-				LocalOption->Tests.Add(LocalTest);
-			}
-
-			// use locally referenced duplicates
-			SortedTests = LocalOption->Tests;
-
-			if (SortedTests.Num() && LocalGenerator->bAutoSortTests)
-			{
-				switch (RunMode)
+				// we're going to remove the most expensive test so that 
+				// it can be added last after everything else gets sorted
+				MostExpensiveFilter = (UEnvQueryTest*)StaticDuplicateObject(SortedTests[MostExpensiveFilterIndex], this);
+				for (int32 TestIdx = 0; TestIdx < SortedTests.Num(); TestIdx++)
 				{
-				case EEnvQueryRunMode::SingleResult:
-					SortedTests.Sort(EnvQueryTestSort::FSingleResult(HighestCost));
-					break;
-
-				case EEnvQueryRunMode::RandomBest5Pct:
-				case EEnvQueryRunMode::RandomBest25Pct:
-				case EEnvQueryRunMode::AllMatching:
-					SortedTests.Sort(EnvQueryTestSort::FAllMatching());
-					break;
-
-				default:
+					if (TestIdx == MostExpensiveFilterIndex)
 					{
-						UE_LOG(LogEQS, Warning, TEXT("Query [%s] can't be sorted for RunMode: %d [%s]"),
-							*GetNameSafe(LocalTemplate), (int32)RunMode, RunModeEnum ? *RunModeEnum->GetNameStringByValue(RunMode) : TEXT("??"));
+						continue;
 					}
+					UEnvQueryTest* LocalTest = (UEnvQueryTest*)StaticDuplicateObject(SortedTests[TestIdx], this);
+					LocalOption->Tests.Add(LocalTest);
+				}
+			}
+			else
+			{				
+				for (int32 TestIdx = 0; TestIdx < SortedTests.Num(); TestIdx++)
+				{
+					UEnvQueryTest* LocalTest = (UEnvQueryTest*)StaticDuplicateObject(SortedTests[TestIdx], this);
+					LocalOption->Tests.Add(LocalTest);
 				}
 			}
 
-			CreateOptionInstance(LocalOption, SourceOptionIndex, SortedTests, *InstanceTemplate);
+			if (SortedTests.Num() && LocalGenerator->bAutoSortTests)
+			{
+				LocalOption->Tests.StableSort(EnvQueryTestSort::FAllMatching());
+				if (bOptionSingleResultSearch && MostExpensiveFilter)
+				{
+					// the only difference between running for a single result is that 
+					// we want to perform a single most expensive test as the last test
+					// to accept the first one that passes the test.
+					// so here we're adding that final, most expensive test
+					LocalOption->Tests.Add(MostExpensiveFilter);
+				}
+			}
+
+			CreateOptionInstance(LocalOption, SourceOptionIndex, LocalOption->Tests, *InstanceTemplate);
 		}
 	}
 
@@ -818,13 +822,7 @@ void UEnvQueryManager::CreateOptionInstance(UEnvQueryOption* OptionTemplate, int
 	OptionInstance.Generator = OptionTemplate->Generator;
 	OptionInstance.ItemType = OptionTemplate->Generator->ItemType;
 	OptionInstance.SourceOptionIndex = SourceOptionIndex;
-
-	OptionInstance.Tests.AddZeroed(SortedTests.Num());
-	for (int32 TestIndex = 0; TestIndex < SortedTests.Num(); TestIndex++)
-	{
-		UEnvQueryTest* TestOb = SortedTests[TestIndex];
-		OptionInstance.Tests[TestIndex] = TestOb;
-	}
+	OptionInstance.Tests = SortedTests;
 
 	DEC_MEMORY_STAT_BY(STAT_AI_EQS_InstanceMemory, Instance.Options.GetAllocatedSize());
 

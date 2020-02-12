@@ -1,7 +1,8 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
+#include "AudioMixerDevice.h"
 #include "AudioMixerBuffer.h"
 #include "AudioMixerSourceManager.h"
 
@@ -48,7 +49,7 @@ namespace Audio
 		void SetHPFFrequency(const float InFrequency);
 
 		// Sets the source voice's channel map (2d or 3d).
-		void SetChannelMap(ESubmixChannelFormat InChannelType, const uint32 NumInputChannels, const Audio::AlignedFloatBuffer& InChannelMap, const bool bInIs3D, const bool bInIsCenterChannelOnly);
+		void SetChannelMap(const uint32 NumInputChannels, const Audio::AlignedFloatBuffer& InChannelMap, const bool bInIs3D, const bool bInIsCenterChannelOnly);
 
 		// Sets params used by HRTF spatializer
 		void SetSpatializationParams(const FSpatializationParams& InParams);
@@ -65,6 +66,9 @@ namespace Audio
 		// Does a faded stop (to avoid discontinuity)
 		void StopFade(int32 NumFrames);
 
+		// Get the source's Id
+		int32 GetSourceId() const { return SourceId; }
+
 		// Queries if the voice is playing
 		bool IsPlaying() const;
 
@@ -80,6 +84,11 @@ namespace Audio
 		// Whether or not the device changed and needs another speaker map sent
 		bool NeedsSpeakerMap() const;
 
+		// Whether or not the voice is currently using HRTF spatialization.
+		//
+		// @param bDefaultValue - This value will be returned if voice does not have a valid source id.
+		bool IsUsingHRTFSpatializer(bool bDefaultValue) const;
+
 		// Retrieves the total number of samples played.
 		int64 GetNumFramesPlayed() const;
 
@@ -87,10 +96,16 @@ namespace Audio
 		float GetEnvelopeValue() const;
 
 		// Mixes the dry and wet buffer audio into the given buffers.
-		void MixOutputBuffers(const ESubmixChannelFormat InSubmixChannelType, const float SendLevel, AlignedFloatBuffer& OutWetBuffer) const;
+		void MixOutputBuffers(int32 InNumChannels, const float SendLevel, AlignedFloatBuffer& OutWetBuffer) const;
+
+		// For soundfield conversions, get the encoded audio.
+		const ISoundfieldAudioPacket* GetEncodedOutput(const FSoundfieldEncodingKey& InKey) const;
 
 		// Sets the submix send levels
 		void SetSubmixSendInfo(FMixerSubmixWeakPtr Submix, const float SendLevel);
+
+		// Set the source bus send levels
+		void SetBusSendInfo(EBusSendType InBusSendType, FMixerBusSend& BusSend);
 
 		// Called when the source is a bus and needs to mix other sources together to generate output
 		void OnMixBus(FMixerSourceVoiceBuffer* OutMixerSourceBuffer);
@@ -102,7 +117,7 @@ namespace Audio
 		FMixerSourceManager* SourceManager;
 		TMap<uint32, FMixerSourceSubmixSend> SubmixSends;
 		FMixerDevice* MixerDevice;
-		TMap<ESubmixChannelFormat, TArray<float>> ChannelMaps;
+		TArray<float> DeviceChannelMap;
 		FThreadSafeBool bStopFadedOut;
 		float Pitch;
 		float Volume;

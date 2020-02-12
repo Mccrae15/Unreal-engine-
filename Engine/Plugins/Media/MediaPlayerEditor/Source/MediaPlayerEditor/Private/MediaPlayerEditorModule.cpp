@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "CoreMinimal.h"
 #include "ComponentVisualizer.h"
@@ -39,6 +39,8 @@
 #include "Models/MediaPlayerEditorCommands.h"
 #include "Shared/MediaPlayerEditorStyle.h"
 #include "Visualizers/MediaSoundComponentVisualizer.h"
+#include "ToolMenus.h"
+#include "Widgets/SMediaPlayerEditorMedia.h"
 
 #include "MediaPlayerEditorLog.h"
 
@@ -89,6 +91,8 @@ public:
 		Style = MakeShareable(new FMediaPlayerEditorStyle());
 
 		FMediaPlayerEditorCommands::Register();
+
+		SMediaPlayerEditorMedia::RegisterMenus();
 
 		RegisterAssetTools();
 		RegisterCustomizations();

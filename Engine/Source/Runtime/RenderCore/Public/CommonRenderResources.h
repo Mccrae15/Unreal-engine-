@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 /*=============================================================================
 	DummyRenderResource.h: Frequently used rendering resources
@@ -9,11 +9,13 @@
 #include "RenderResource.h"
 #include "GlobalShader.h"
 #include "ShaderParameterStruct.h"
+#include "PipelineStateCache.h"
 
 
 /** The vertex data used to filter a texture. */
 struct FFilterVertex
 {
+public:
 	FVector4 Position;
 	FVector2D UV;
 };
@@ -33,7 +35,7 @@ public:
 		uint32 Stride = sizeof(FFilterVertex);
 		Elements.Add(FVertexElement(0, STRUCT_OFFSET(FFilterVertex, Position), VET_Float4, 0, Stride));
 		Elements.Add(FVertexElement(0, STRUCT_OFFSET(FFilterVertex, UV), VET_Float2, 1, Stride));
-		VertexDeclarationRHI = RHICreateVertexDeclaration(Elements);
+		VertexDeclarationRHI = PipelineStateCache::GetOrCreateVertexDeclaration(Elements);
 	}
 
 	virtual void ReleaseRHI()
@@ -56,7 +58,7 @@ public:
 	virtual void InitRHI()
 	{
 		FVertexDeclarationElementList Elements;
-		VertexDeclarationRHI = RHICreateVertexDeclaration(Elements);
+		VertexDeclarationRHI = PipelineStateCache::GetOrCreateVertexDeclaration(Elements);
 	}
 
 	virtual void ReleaseRHI()
@@ -90,16 +92,35 @@ public:
 extern RENDERCORE_API TGlobalResource<FScreenRectangleIndexBuffer> GScreenRectangleIndexBuffer;
 
 
-/** Vertex shader to draw a full screen quad that works on all platforms. */
-class RENDERCORE_API FVisualizeTextureVS : public FGlobalShader
+/** Vertex shader to draw a screen quad that works on all platforms. Does not have any shader parameters.
+ * The pixel shader should just use SV_Position. */
+class RENDERCORE_API FScreenVertexShaderVS : public FGlobalShader
 {
-	DECLARE_GLOBAL_SHADER(FVisualizeTextureVS);
-	SHADER_USE_PARAMETER_STRUCT(FVisualizeTextureVS, FGlobalShader);
+	DECLARE_GLOBAL_SHADER(FScreenVertexShaderVS);
+	SHADER_USE_PARAMETER_STRUCT(FScreenVertexShaderVS, FGlobalShader);
 
 	static bool ShouldCompilePermutation(const FGlobalShaderPermutationParameters& Parameters) {
 		return true;
 	}
 
 	BEGIN_SHADER_PARAMETER_STRUCT(FParameters, )
+	END_SHADER_PARAMETER_STRUCT()
+};
+
+/** Pixel shader to copy pixels from src to dst performing a format change that works on all platforms. */
+class RENDERCORE_API FCopyRectPS : public FGlobalShader
+{
+	DECLARE_GLOBAL_SHADER(FCopyRectPS);
+	SHADER_USE_PARAMETER_STRUCT(FCopyRectPS, FGlobalShader);
+
+	static bool ShouldCompilePermutation(const FGlobalShaderPermutationParameters& Parameters) 
+	{
+		return true;
+	}
+
+	BEGIN_SHADER_PARAMETER_STRUCT(FParameters, )
+		SHADER_PARAMETER_RDG_TEXTURE(Texture2D, InputTexture)
+		SHADER_PARAMETER_SAMPLER(SamplerState, InputSampler)
+		RENDER_TARGET_BINDING_SLOTS()
 	END_SHADER_PARAMETER_STRUCT()
 };

@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -13,6 +13,7 @@ class UNiagaraStackModuleItemOutputCollection;
 class UNiagaraScript;
 class INiagaraStackItemGroupAddUtilities;
 struct FAssetData;
+class UNiagaraClipboardFunctionInput;
 
 UCLASS()
 class NIAGARAEDITOR_API UNiagaraStackModuleItem : public UNiagaraStackItem
@@ -22,13 +23,13 @@ class NIAGARAEDITOR_API UNiagaraStackModuleItem : public UNiagaraStackItem
 public:
 	UNiagaraStackModuleItem();
 
-	const UNiagaraNodeFunctionCall& GetModuleNode() const;
-
-	UNiagaraNodeFunctionCall& GetModuleNode();
+	UNiagaraNodeFunctionCall& GetModuleNode() const;
 
 	void Initialize(FRequiredEntryData InRequiredEntryData, INiagaraStackItemGroupAddUtilities* GroupAddUtilities, UNiagaraNodeFunctionCall& InFunctionCallNode);
 
 	virtual FText GetDisplayName() const override;
+	virtual UObject* GetDisplayedObject() const override;
+	virtual FText GetOriginalName() const override;
 	virtual FText GetTooltipText() const override;
 
 	INiagaraStackItemGroupAddUtilities* GetGroupAddUtilities();
@@ -37,12 +38,15 @@ public:
 	bool CanRefresh() const;
 	void Refresh();
 
+	virtual bool SupportsRename() const override { return true; }
+
+	virtual bool SupportsChangeEnabled() const override { return true; }
 	virtual bool GetIsEnabled() const override;
-	void SetIsEnabled(bool bInIsEnabled);
 
-	void Delete();
+	virtual bool SupportsHighlights() const override;
+	virtual const TArray<FNiagaraScriptHighlight>& GetHighlights() const override;
 
-	int32 GetModuleIndex();
+	int32 GetModuleIndex() const;
 	
 	UObject* GetExternalAsset() const override;
 
@@ -50,8 +54,6 @@ public:
 
 	/** Gets the output node of this module. */
 	class UNiagaraNodeOutput* GetOutputNode() const;
-
-	void NotifyModuleMoved();
 
 	bool CanAddInput(FNiagaraVariable InputParameter) const;
 
@@ -66,8 +68,34 @@ public:
 	/** Reassigns the function script for the module without resetting the inputs. */
 	void ReassignModuleScript(UNiagaraScript* ModuleScript);
 
+	void SetInputValuesFromClipboardFunctionInputs(const TArray<const UNiagaraClipboardFunctionInput*>& ClipboardFunctionInputs);
+
+	virtual bool SupportsCut() const override { return true; }
+	virtual bool TestCanCutWithMessage(FText& OutMessage) const override;
+	virtual FText GetCutTransactionText() const override;
+	virtual void CopyForCut(UNiagaraClipboardContent* ClipboardContent) const override;
+	virtual void RemoveForCut() override;
+
+	virtual bool SupportsCopy() const override { return true; }
+	virtual bool TestCanCopyWithMessage(FText& OutMessage) const override;
+	virtual void Copy(UNiagaraClipboardContent* ClipboardContent) const override;
+
+	virtual bool SupportsPaste() const override { return true; }
+	virtual bool TestCanPasteWithMessage(const UNiagaraClipboardContent* ClipboardContent, FText& OutMessage) const override;
+	virtual FText GetPasteTransactionText(const UNiagaraClipboardContent* ClipboardContent) const override;
+	virtual void Paste(const UNiagaraClipboardContent* ClipboardContent, FText& OutPasteWarning) override;
+
+	virtual bool SupportsDelete() const override { return true; }
+	virtual bool TestCanDeleteWithMessage(FText& OutCanDeleteMessage) const override;
+	virtual FText GetDeleteTransactionText() const override;
+	virtual void Delete() override;
+
 protected:
 	virtual void RefreshChildrenInternal(const TArray<UNiagaraStackEntry*>& CurrentChildren, TArray<UNiagaraStackEntry*>& NewChildren, TArray<FStackIssue>& NewIssues) override;
+	virtual void SetIsEnabledInternal(bool bInIsEnabled) override;
+
+	virtual TOptional<FDropRequestResponse> CanDropInternal(const FDropRequest& DropRequest) override;
+	virtual TOptional<FDropRequestResponse> DropInternal(const FDropRequest& DropRequest) override;
 
 private:
 	bool FilterOutputCollection(const UNiagaraStackEntry& Child) const;
@@ -75,16 +103,17 @@ private:
 	bool FilterLinkedInputCollection(const UNiagaraStackEntry& Child) const;
 	bool FilterLinkedInputCollectionChild(const UNiagaraStackEntry& Child) const;
 	void RefreshIssues(TArray<FStackIssue>& NewIssues);
-
-private:
+	void OnEditorDataChanged();
 	void RefreshIsEnabled();
 
 private:
 	UNiagaraNodeOutput* OutputNode;
 	UNiagaraNodeFunctionCall* FunctionCallNode;
-	bool bCanMoveAndDelete;
+	mutable TOptional<bool> bCanMoveAndDeleteCache;
 	bool bIsEnabled;
 	bool bCanRefresh;
+
+	TOptional<FText> CustomDisplayName;
 
 	UPROPERTY()
 	UNiagaraStackModuleItemLinkedInputCollection* LinkedInputCollection;

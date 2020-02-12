@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 /*=============================================================================
 	StatsFile.cpp: Implements stats file related functionality.
@@ -6,7 +6,6 @@
 
 #include "Stats/StatsFile.h"
 #include "HAL/FileManager.h"
-#include "Templates/ScopedPointer.h"
 #include "Misc/Paths.h"
 #include "Internationalization/Internationalization.h"
 #include "Serialization/MemoryWriter.h"
@@ -279,7 +278,7 @@ void IStatsWriteFile::Stop()
 
 FText IStatsWriteFile::GetFileMetaDesc() const
 {
-	const FTimespan Duration = FTimespan( 0, 0, FPlatformTime::Seconds() - StartTime );
+	const FTimespan Duration = FTimespan( 0, 0, (int32)(FPlatformTime::Seconds() - StartTime) );
 
 	const FText FileMetaDesc = FText::Format( LOCTEXT( "FileMetaDesc_Fmt", "STATS FILE: Duration: {0}, Filesize: {1}" ), FText::AsTimespan( Duration ), FText::AsMemory( (SIZE_T)FileSize ) );
 	return FileMetaDesc;
@@ -330,15 +329,15 @@ void IStatsWriteFile::Finalize()
 	}
 
 	// Create a copy of names.
-	TSet<int32> FNamesToSent = FNamesSent;
+	TSet<FNameEntryId> FNamesToSent = FNamesSent;
 	FNamesSent.Empty( FNamesSent.Num() );
 
 	// Serialize FNames.
 	Header.FNameTableOffset = Ar.Tell();
 	Header.NumFNames = FNamesToSent.Num();
-	for (const int32 It : FNamesToSent)
+	for (FNameEntryId Id : FNamesToSent)
 	{
-		WriteFName( Ar, FStatNameAndInfo( FName( It, It, 0 ), false ) );
+		WriteFName( Ar, FStatNameAndInfo( FName( Id, Id, 0 ), false ) );
 	}
 
 	// Serialize metadata messages.
@@ -346,28 +345,12 @@ void IStatsWriteFile::Finalize()
 	Header.NumMetadataMessages = Stats.ShortNameToLongName.Num();
 	WriteMetadata( Ar );
 
-	// Verify data.
-	TSet<int32> BMinA = FNamesSent.Difference( FNamesToSent );
-	struct FLocal
-	{
-		static TArray<FName> GetFNameArray( const TSet<int32>& NameIndices )
-		{
-			TArray<FName> Result;
-			for (const int32 NameIndex : NameIndices)
-			{
-				new(Result)FName( NameIndex, NameIndex, 0 );
-			}
-			return Result;
-		}
-	};
-	TArray<FName> BMinANames = FLocal::GetFNameArray( BMinA );
-
 	// Seek to the position just after a magic value of the file and write out proper header.
 	Ar.Seek( sizeof( uint32 ) );
 	Ar << Header;
 }
 
-void IStatsWriteFile::SendTask()
+void IStatsWriteFile::WaitTask()
 {
 	if (AsyncTask)
 	{
@@ -376,6 +359,12 @@ void IStatsWriteFile::SendTask()
 		delete AsyncTask;
 		AsyncTask = nullptr;
 	}
+}
+
+void IStatsWriteFile::SendTask()
+{
+	WaitTask();
+
 	if (OutData.Num())
 	{
 		AsyncTask = new FAsyncTask<FAsyncStatsWrite>( this );
@@ -414,6 +403,8 @@ void FStatsWriteFile::WriteFrame( int64 TargetFrame )
 	WriteCondensedMessages( Ar, TargetFrame );
 
 	// Get cycles for all threads, so we can use that data to generate the mini-view.
+	WaitTask();
+
 	const FStatsThreadState& Stats = FStatsThreadState::GetLocalState();
 	for (const auto& It : Stats.Threads)
 	{
@@ -641,8 +632,15 @@ bool FStatsReadFile::PrepareLoading()
 	Stream.ReadFramesOffsets( *Reader );
 
 	// Move file pointer to the first frame or first stat packet.
-	const int64 FrameOffset0 = Stream.FramesInfo[0].FrameFileOffset;
-	Reader->Seek( FrameOffset0 );
+	if (Stream.FramesInfo.Num() > 0)
+	{
+		const int64 FrameOffset0 = Stream.FramesInfo[0].FrameFileOffset;
+		Reader->Seek( FrameOffset0 );
+	}
+	else
+	{
+		Reader->Seek(Reader->TotalSize());
+	}
 
 	const double TotalTime = FPlatformTime::Seconds() - StartTime;
 	UE_LOG( LogStats, Log, TEXT( "Prepare loading took %.2f sec(s)" ), TotalTime );
@@ -760,7 +758,7 @@ void FStatsReadFile::ReadRawStats()
 		else
 		{
 			Frame.Packets.Add( StatPacket );
-			FileInfo.MaximumPacketSize = FMath::Max<int32>( FileInfo.MaximumPacketSize, StatPacket->StatMessages.GetAllocatedSize() );
+			FileInfo.MaximumPacketSize = FMath::Max<int32>( FileInfo.MaximumPacketSize, (int32)StatPacket->StatMessages.GetAllocatedSize() );
 		}
 
 		UpdateReadStageProgress();
@@ -927,7 +925,7 @@ void FStatsReadFile::ProcessStats()
 									// Read OperationSequenceTag.
 									Index++; CurrentStatMessageIndex++;
 									const FStatMessage& SequenceTagMessage = Data[Index];
-									const uint32 SequenceTag = SequenceTagMessage.GetValue_int64();
+									const uint32 SequenceTag = (uint32)SequenceTagMessage.GetValue_int64();
 
 									//ThreadStats->AddMemoryMessage( GET_STATFNAME( STAT_Memory_AllocPtr ), (uint64)(UPTRINT)Ptr | (uint64)EMemoryOperation::Alloc );
 									//ThreadStats->AddMemoryMessage( GET_STATFNAME( STAT_Memory_AllocSize ), Size );
@@ -951,7 +949,7 @@ void FStatsReadFile::ProcessStats()
 									// Read OperationSequenceTag.
 									Index++; CurrentStatMessageIndex++;
 									const FStatMessage& SequenceTagMessage = Data[Index];
-									const uint32 SequenceTag = SequenceTagMessage.GetValue_int64();
+									const uint32 SequenceTag = (uint32)SequenceTagMessage.GetValue_int64();
 
 									//ThreadStats->AddMemoryMessage( GET_STATFNAME( STAT_Memory_FreePtr ), (uint64)(UPTRINT)OldPtr | (uint64)EMemoryOperation::Realloc );
 									//ThreadStats->AddMemoryMessage( GET_STATFNAME( STAT_Memory_AllocPtr ), (uint64)(UPTRINT)NewPtr | (uint64)EMemoryOperation::Realloc );
@@ -964,7 +962,7 @@ void FStatsReadFile::ProcessStats()
 									// Read OperationSequenceTag.
 									Index++; CurrentStatMessageIndex++;
 									const FStatMessage& SequenceTagMessage = Data[Index];
-									const uint32 SequenceTag = SequenceTagMessage.GetValue_int64();
+									const uint32 SequenceTag = (uint32)SequenceTagMessage.GetValue_int64();
 
 									//ThreadStats->AddMemoryMessage( GET_STATFNAME( STAT_Memory_FreePtr ), (uint64)(UPTRINT)Ptr | (uint64)EMemoryOperation::Free );	// 16 bytes total				
 									//ThreadStats->AddMemoryMessage( GET_STATFNAME( STAT_Memory_OperationSequenceTag ), (int64)SequenceTag );
@@ -1088,7 +1086,7 @@ void FStatsReadFile::UpdateCombinedHistoryStats()
 		int32 FramePackets = It.Value.Packets.Num(); // Threads
 		for (const auto& It2 : It.Value.Packets)
 		{
-			FramePacketsSize += It2->StatMessages.GetAllocatedSize();
+			FramePacketsSize += (int32)It2->StatMessages.GetAllocatedSize();
 			FrameStatMessages += It2->StatMessages.Num();
 		}
 

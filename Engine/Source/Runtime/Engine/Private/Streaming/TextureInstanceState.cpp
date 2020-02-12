@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 /*=============================================================================
 	TextureInstanceState.cpp: Implementation of content streaming classes.
@@ -16,10 +16,10 @@
 
 int32 FRenderAssetInstanceState::AddBounds(const UPrimitiveComponent* Component)
 {
-	return AddBounds(Component->Bounds, PackedRelativeBox_Identity, Component, Component->LastRenderTimeOnScreen, Component->Bounds.Origin, 0, 0, FLT_MAX);
+	return AddBounds(Component->Bounds, PackedRelativeBox_Identity, Component, Component->GetLastRenderTimeOnScreen(), Component->Bounds.Origin, 0, 0, FLT_MAX);
 }
 
-int32 FRenderAssetInstanceState::AddBounds(const FBoxSphereBounds& Bounds, uint32 PackedRelativeBox, const UPrimitiveComponent* InComponent, float LastRenderTime, const FVector4& RangeOrigin, float MinDistance, float MinRange, float MaxRange)
+int32 FRenderAssetInstanceState::AddBounds(const FBoxSphereBounds& Bounds, uint32 PackedRelativeBox, const UPrimitiveComponent* InComponent, float LastRenderTime, const FVector4& RangeOrigin, float MinDistanceSq, float MinRangeSq, float MaxRangeSq)
 {
 	check(InComponent);
 
@@ -46,7 +46,7 @@ int32 FRenderAssetInstanceState::AddBounds(const FBoxSphereBounds& Bounds, uint3
 		FreeBoundIndices.Push(BoundsIndex + 1);
 	}
 
-	Bounds4[BoundsIndex / 4].Set(BoundsIndex % 4, Bounds, PackedRelativeBox, LastRenderTime, RangeOrigin, MinDistance, MinRange, MaxRange);
+	Bounds4[BoundsIndex / 4].Set(BoundsIndex % 4, Bounds, PackedRelativeBox, LastRenderTime, RangeOrigin, MinDistanceSq, MinRangeSq, MaxRangeSq);
 	Bounds4Components[BoundsIndex] = InComponent;
 
 	return BoundsIndex;
@@ -91,7 +91,7 @@ void FRenderAssetInstanceState::RemoveBounds(int32 BoundsIndex)
 	}
 }
 
-void FRenderAssetInstanceState::AddElement(const UPrimitiveComponent* InComponent, const UStreamableRenderAsset* InAsset, int InBoundsIndex, float InTexelFactor, bool InForceLoad, int32*& ComponentLink)
+void FRenderAssetInstanceState::AddElement(const UPrimitiveComponent* InComponent, const UStreamableRenderAsset* InAsset, int InBoundsIndex, float InTexelFactor, bool InForceLoad, int32*& ComponentLink, int32 IterationCount_DebuggingOnly)
 {
 	check(InComponent && InAsset);
 
@@ -108,6 +108,8 @@ void FRenderAssetInstanceState::AddElement(const UPrimitiveComponent* InComponen
 		ElementIndex = Elements.Num();
 		Elements.Push(FElement());
 	}
+
+	VerifyElementIdx_DebuggingOnly(ElementIndex, IterationCount_DebuggingOnly, &ComponentMap, &FreeElementIndices);
 
 	FElement& Element = Elements[ElementIndex];
 
@@ -150,11 +152,26 @@ void FRenderAssetInstanceState::AddElement(const UPrimitiveComponent* InComponen
 	if (HasCompiledElements()) 
 	{
 		CompiledRenderAssetMap.FindOrAdd(Element.RenderAsset).Add(FCompiledElement(Element));
+
+		if (Element.TexelFactor < 0.f && !InAsset->IsA<UTexture>())
+		{
+			int32* CountPtr = CompiledNumForcedLODCompMap.Find(Element.RenderAsset);
+			if (!CountPtr)
+			{
+				CompiledNumForcedLODCompMap.Add(Element.RenderAsset, 1);
+			}
+			else
+			{
+				++*CountPtr;
+			}
+		}
 	}
 }
 
-void FRenderAssetInstanceState::RemoveElement(int32 ElementIndex, int32& NextComponentLink, int32& BoundsIndex, const UStreamableRenderAsset*& Asset)
+void FRenderAssetInstanceState::RemoveElement(int32 ElementIndex, int32& NextComponentLink, int32& BoundsIndex, const UStreamableRenderAsset*& Asset, int32 IterationCount_DebuggingOnly)
 {
+	VerifyElementIdx_DebuggingOnly(ElementIndex, IterationCount_DebuggingOnly, &ComponentMap, &FreeElementIndices);
+
 	FElement& Element = Elements[ElementIndex];
 	NextComponentLink = Element.NextComponentLink; 
 	BoundsIndex = Element.BoundsIndex; 
@@ -163,6 +180,14 @@ void FRenderAssetInstanceState::RemoveElement(int32 ElementIndex, int32& NextCom
 	if (HasCompiledElements())
 	{
 		CompiledRenderAssetMap.FindChecked(Element.RenderAsset).RemoveSingleSwap(FCompiledElement(Element), false);
+
+		if (Element.TexelFactor < 0.f
+			&& Element.RenderAsset
+			&& !Element.RenderAsset->IsA<UTexture>()
+			&& !--CompiledNumForcedLODCompMap.FindChecked(Element.RenderAsset))
+		{
+			CompiledNumForcedLODCompMap.Remove(Element.RenderAsset);
+		}
 	}
 
 	// Unlink texutres or meshes
@@ -180,6 +205,7 @@ void FRenderAssetInstanceState::RemoveElement(int32 ElementIndex, int32& NextCom
 			{
 				RenderAssetMap.Remove(Element.RenderAsset);
 				CompiledRenderAssetMap.Remove(Element.RenderAsset);
+				check(!CompiledNumForcedLODCompMap.Find(Element.RenderAsset));
 				Asset = Element.RenderAsset;
 			}
 		}
@@ -217,6 +243,7 @@ FORCEINLINE bool operator<(const FBoxSphereBounds& Lhs, const FBoxSphereBounds& 
 
 void FRenderAssetInstanceState::AddRenderAssetElements(const UPrimitiveComponent* Component, const TArrayView<FStreamingRenderAssetPrimitiveInfo>& RenderAssetInstanceInfos, int32 BoundsIndex, int32*& ComponentLink)
 {
+	int32 IterationCount_DebuggingOnly = 0;
 	// Loop for each render asset - texel factor group (a group being of same texel factor sign)
 	for (int32 InfoIndex = 0; InfoIndex < RenderAssetInstanceInfos.Num();)
 	{
@@ -257,7 +284,7 @@ void FRenderAssetInstanceState::AddRenderAssetElements(const UPrimitiveComponent
 				}
 			}
 		}
-		AddElement(Component, Info.RenderAsset, BoundsIndex, MergedTexelFactor, Component->bForceMipStreaming, ComponentLink);
+		AddElement(Component, Info.RenderAsset, BoundsIndex, MergedTexelFactor, Component->bForceMipStreaming, ComponentLink, IterationCount_DebuggingOnly++);
 
 		InfoIndex += NumOfMergedElements;
 	}
@@ -329,7 +356,7 @@ EAddComponentResult FRenderAssetInstanceState::AddComponent(const UPrimitiveComp
 				++NumOfBoundReferences;
 			}
 
-			const int32 BoundsIndex = AddBounds(FBoxSphereBounds(ForceInit), Info.PackedRelativeBox, Component, Component->LastRenderTimeOnScreen, FVector(ForceInit), 0, 0, FLT_MAX);
+			const int32 BoundsIndex = AddBounds(FBoxSphereBounds(ForceInit), Info.PackedRelativeBox, Component, Component->GetLastRenderTimeOnScreen(), FVector(ForceInit), 0, 0, FLT_MAX);
 			AddRenderAssetElements(Component, TArrayView<FStreamingRenderAssetPrimitiveInfo>(RenderAssetInstanceInfos.GetData() + InfoIndex, NumOfBoundReferences), BoundsIndex, ComponentLink);
 			BoundsToUnpack.Push(BoundsIndex);
 
@@ -355,7 +382,7 @@ EAddComponentResult FRenderAssetInstanceState::AddComponent(const UPrimitiveComp
 		});
 
 		int32* ComponentLink = ComponentMap.Find(Component);
-		float MinDistance = 0, MinRange = 0, MaxRange = FLT_MAX;
+		float MinDistanceSq = 0, MinRangeSq = 0, MaxRangeSq = FLT_MAX;
 
 		// Loop for each bound.
 		for (int32 InfoIndex = 0; InfoIndex < RenderAssetInstanceInfos.Num();)
@@ -368,8 +395,8 @@ EAddComponentResult FRenderAssetInstanceState::AddComponent(const UPrimitiveComp
 				++NumOfBoundReferences;
 			}
 
-			GetDistanceAndRange(Component, Info.Bounds, MinDistance, MinRange, MaxRange);
-			const int32 BoundsIndex = AddBounds(Info.Bounds, PackedRelativeBox_Identity, Component, Component->LastRenderTimeOnScreen, Component->Bounds.Origin, MinDistance, MinRange, MaxRange);
+			GetDistanceAndRange(Component, Info.Bounds, MinDistanceSq, MinRangeSq, MaxRangeSq);
+			const int32 BoundsIndex = AddBounds(Info.Bounds, PackedRelativeBox_Identity, Component, Component->GetLastRenderTimeOnScreen(), Component->Bounds.Origin, MinDistanceSq, MinRangeSq, MaxRangeSq);
 			AddRenderAssetElements(Component, TArrayView<FStreamingRenderAssetPrimitiveInfo>(RenderAssetInstanceInfos.GetData() + InfoIndex, NumOfBoundReferences), BoundsIndex, ComponentLink);
 
 			InfoIndex += NumOfBoundReferences;
@@ -413,12 +440,13 @@ void FRenderAssetInstanceState::RemoveComponent(const UPrimitiveComponent* Compo
 	int32 ElementIndex = INDEX_NONE;
 
 	ComponentMap.RemoveAndCopyValue(Component, ElementIndex);
+	int32 IterationCount_DebuggingOnly = 0;
 	while (ElementIndex != INDEX_NONE)
 	{
 		int32 BoundsIndex = INDEX_NONE;
 		const UStreamableRenderAsset* Texture = nullptr;
 
-		RemoveElement(ElementIndex, ElementIndex, BoundsIndex, Texture);
+		RemoveElement(ElementIndex, ElementIndex, BoundsIndex, Texture, IterationCount_DebuggingOnly++);
 
 		if (BoundsIndex != INDEX_NONE)
 		{
@@ -486,7 +514,7 @@ void FRenderAssetInstanceState::UpdateBounds(const UPrimitiveComponent* Componen
 			const FElement& Element = Elements[ElementIndex];
 			if (Element.BoundsIndex != INDEX_NONE)
 			{
-				Bounds4[Element.BoundsIndex / 4].FullUpdate(Element.BoundsIndex % 4, Component->Bounds, Component->LastRenderTimeOnScreen);
+				Bounds4[Element.BoundsIndex / 4].FullUpdate(Element.BoundsIndex % 4, Component->Bounds, Component->GetLastRenderTimeOnScreen());
 			}
 			ElementIndex = Element.NextComponentLink;
 		}
@@ -498,7 +526,7 @@ bool FRenderAssetInstanceState::UpdateBounds(int32 BoundIndex)
 	const UPrimitiveComponent* Component = ensure(Bounds4Components.IsValidIndex(BoundIndex)) ? Bounds4Components[BoundIndex] : nullptr;
 	if (Component)
 	{
-		Bounds4[BoundIndex / 4].FullUpdate(BoundIndex % 4, Component->Bounds, Component->LastRenderTimeOnScreen);
+		Bounds4[BoundIndex / 4].FullUpdate(BoundIndex % 4, Component->Bounds, Component->GetLastRenderTimeOnScreen());
 		return true;
 	}
 	else
@@ -525,13 +553,13 @@ bool FRenderAssetInstanceState::ConditionalUpdateBounds(int32 BoundIndex)
 
 			if (0.5f * FMath::Min3<float>(XSquared, YSquared, ZSquared) <= RadiusSquared && RadiusSquared <= 2.f * (XSquared + YSquared + ZSquared))
 			{
-				Bounds4[BoundIndex / 4].FullUpdate(BoundIndex % 4, Bounds, Component->LastRenderTimeOnScreen);
+				Bounds4[BoundIndex / 4].FullUpdate(BoundIndex % 4, Bounds, Component->GetLastRenderTimeOnScreen());
 				return true;
 			}
 		}
 		else // Otherwise we assume it is guarantied to be good.
 		{
-			Bounds4[BoundIndex / 4].FullUpdate(BoundIndex % 4, Component->Bounds, Component->LastRenderTimeOnScreen);
+			Bounds4[BoundIndex / 4].FullUpdate(BoundIndex % 4, Component->Bounds, Component->GetLastRenderTimeOnScreen());
 			return true;
 		}
 	}
@@ -539,12 +567,26 @@ bool FRenderAssetInstanceState::ConditionalUpdateBounds(int32 BoundIndex)
 }
 
 
-void FRenderAssetInstanceState::UpdateLastRenderTime(int32 BoundIndex)
+void FRenderAssetInstanceState::UpdateLastRenderTimeAndMaxDrawDistance(int32 BoundIndex)
 {
 	const UPrimitiveComponent* Component = ensure(Bounds4Components.IsValidIndex(BoundIndex)) ? Bounds4Components[BoundIndex] : nullptr;
 	if (Component)
 	{
-		Bounds4[BoundIndex / 4].UpdateLastRenderTime(BoundIndex % 4, Component->LastRenderTimeOnScreen);
+		const int32 Bounds4Idx = BoundIndex / 4;
+		const int32 SubIdx = BoundIndex & 3;
+		Bounds4[Bounds4Idx].UpdateLastRenderTime(SubIdx, Component->GetLastRenderTimeOnScreen());
+		// The min draw distances of HLODs can change dynamically (see Tick, PauseDitherTransition,
+		// and StartDitherTransition methods of ALODActor)
+		const UPrimitiveComponent* LODParent = Component->GetLODParentPrimitive();
+		if (LODParent)
+		{
+			const float MaxRangeSq = FRenderAssetInstanceView::GetMaxDrawDistSqWithLODParent(
+				Component->Bounds.Origin,
+				LODParent->Bounds.Origin,
+				LODParent->MinDrawDistance,
+				LODParent->Bounds.SphereRadius);
+			Bounds4[Bounds4Idx].UpdateMaxDrawDistanceSquared(SubIdx, MaxRangeSq);
+		}
 	}
 }
 
@@ -563,12 +605,14 @@ uint32 FRenderAssetInstanceState::GetAllocatedSize() const
 		FreeElementIndices.GetAllocatedSize() +
 		RenderAssetMap.GetAllocatedSize() +
 		CompiledRenderAssetMap.GetAllocatedSize() + CompiledElementsSize +
+		CompiledNumForcedLODCompMap.GetAllocatedSize() +
 		ComponentMap.GetAllocatedSize();
 }
 
 int32 FRenderAssetInstanceState::CompileElements()
 {
 	CompiledRenderAssetMap.Empty();
+	CompiledNumForcedLODCompMap.Empty();
 	MaxTexelFactor = 0;
 
 	// First create an entry for all elements, so that there are no reallocs when inserting each compiled elements.
@@ -582,6 +626,7 @@ int32 FRenderAssetInstanceState::CompileElements()
 	for (TMap<const UStreamableRenderAsset*, TArray<FCompiledElement> >::TIterator It(CompiledRenderAssetMap); It; ++It)
 	{
 		const UStreamableRenderAsset* Asset = It.Key();
+		const bool bIsNonTexture = Asset && !Asset->IsA<UTexture>();
 		TArray<FCompiledElement>& CompiledElemements = It.Value();
 
 		int32 CompiledElementCount = 0;
@@ -595,6 +640,20 @@ int32 FRenderAssetInstanceState::CompileElements()
 		for (auto ElementIt = GetElementIterator(Asset); ElementIt; ++ElementIt)
 		{
 			const float TexelFactor = ElementIt.GetTexelFactor();
+
+			if (bIsNonTexture && TexelFactor < 0.f)
+			{
+				int32* CountPtr = CompiledNumForcedLODCompMap.Find(Asset);
+				if (!CountPtr)
+				{
+					CompiledNumForcedLODCompMap.Add(Asset, 1);
+				}
+				else
+				{
+					++*CountPtr;
+				}
+			}
+
 			// No need to care about force load as MaxTexelFactor is used to ignore far away levels.
 			MaxTexelFactor = FMath::Max(TexelFactor, MaxTexelFactor);
 

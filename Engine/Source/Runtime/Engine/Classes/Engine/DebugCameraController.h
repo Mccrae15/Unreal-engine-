@@ -1,10 +1,11 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
 #include "CoreMinimal.h"
 #include "UObject/ObjectMacros.h"
 #include "Engine/EngineTypes.h"
+#include "FinalPostProcessSettings.h"
 #include "SceneTypes.h"
 #include "GameFramework/PlayerController.h"
 #include "DebugCameraController.generated.h"
@@ -28,15 +29,39 @@ class ENGINE_API ADebugCameraController
 	UPROPERTY(globalconfig)
 	uint32 bShowSelectedInfo:1;
 
-	/** @todo document */
+	/** Saves whether the FreezeRendering console command is active */
 	UPROPERTY()
 	uint32 bIsFrozenRendering:1;
 
-	/** @todo document */
+	/** Whether to orbit selected actor. */
+	UPROPERTY()
+	uint32 bIsOrbitingSelectedActor : 1;
+
+	/** When orbiting, true if using actor center as pivot, false if using last selected hitpoint */
+	UPROPERTY()
+	uint32 bOrbitPivotUseCenter:1;
+
+	/** Whether set view mode to display GBuffer visualization overview */
+	UPROPERTY()
+	uint32 bEnableBufferVisualization : 1;
+
+	/** Whether set view mode to display GBuffer visualization full */
+	UPROPERTY()
+	uint32 bEnableBufferVisualizationFullMode : 1;
+
+	/** Whether GBuffer visualization overview inputs are set up  */
+	UPROPERTY()
+	uint32 bIsBufferVisualizationInputSetup : 1;
+
+	/** Last display enabled setting before toggling buffer visualization overview */
+	UPROPERTY()
+	uint32 bLastDisplayEnabled : 1;
+
+	/** Visualizes the frustum of the camera */
 	UPROPERTY()
 	class UDrawFrustumComponent* DrawFrustum;
 	
-	/** @todo document */
+	/** Sets whether to show information about the selected actor on the debug camera HUD.t */
 	UFUNCTION(exec)
 	virtual void ShowDebugSelectedInfo();
 
@@ -46,21 +71,27 @@ class ENGINE_API ADebugCameraController
 	/** Called when the user pressed the deselect key, just before the selected actor is cleared. */
 	void Unselect();
 
-	/** @todo document */
+	/** Speeds up camera movement */
 	void IncreaseCameraSpeed();
 
-	/** @todo document */
+	/** Slows down camera movement */
 	void DecreaseCameraSpeed();
 
-	/** @todo document */
+	/** Increases camera field of vision */
 	void IncreaseFOV();
 
-	/** @todo document */
+	/** Decreases camera field of vision */
 	void DecreaseFOV();
 
 	/** Toggles the display of debug info and input commands for the Debug Camera. */
 	UFUNCTION(BlueprintCallable, Category="Debug Camera")
 	void ToggleDisplay();
+
+	/** Sets display of debug info and input commands. */
+	void SetDisplay(bool bEnabled);
+
+	/** Returns whether debug info display is enabled */
+	bool IsDisplayEnabled();
 
 	/**
 	 * function called from key bindings command to save information about
@@ -68,21 +99,104 @@ class ENGINE_API ADebugCameraController
 	 */
 	virtual void ToggleFreezeRendering();
 
+	/** Method called prior to processing input */
+	virtual void PreProcessInput(const float DeltaTime, const bool bGamePaused);
+
+	/**
+	 * Updates the rotation of player, based on ControlRotation after RotationInput has been applied.
+	 * This may then be modified by the PlayerCamera, and is passed to Pawn->FaceRotation().
+	 */
+	virtual void UpdateRotation(float DeltaTime) override;
+
+	/** Pre process input when orbiting */
+	void PreProcessInputForOrbit(const float DeltaTime, const bool bGamePaused);
+
+	/** Updates the rotation and location of player when orbiting */
+	void UpdateRotationForOrbit(float DeltaTime);
+
+	/** Gets pivot to use when orbiting */
+	bool GetPivotForOrbit(FVector& PivotLocation) const;
+
+	/** Toggles camera orbit */
+	void ToggleOrbit(bool bOrbitCenter);
+
+	/** Toggles camera orbit center */
+	void ToggleOrbitCenter();
+
+	/** Toggles camera orbit hitpoint */
+	void ToggleOrbitHitPoint();
+
+#if !(UE_BUILD_SHIPPING || UE_BUILD_TEST)
+
+	/** Whether buffer visualization option should be enabled */
+	static bool EnableDebugBuffers();
+
+	/** Whether cycle viewmode option should be enabled */
+	static bool EnableDebugViewmodes();
+
+	/** Cycle view mode */
+	void CycleViewMode();
+
+	/** Toggle buffer visualization overview */
+	void ToggleBufferVisualizationOverviewMode();
+
+	/** Buffer overview move up */
+	void BufferVisualizationMoveUp();
+
+	/** Buffer overview move down */
+	void BufferVisualizationMoveDown();
+
+	/** Buffer overview move right */
+	void BufferVisualizationMoveRight();
+
+	/** Buffer overview move left */
+	void BufferVisualizationMoveLeft();
+
+	/** Ignores axis motion */
+	void ConsumeAxisMotion(float Val);
+
+	/** Toggle buffer visualization full display */
+	void ToggleBufferVisualizationFullMode();
+
+	/** Set buffer visualization full mode */
+	void SetBufferVisualizationFullMode(bool bFullMode);
+
+	/** Update visualize buffer post processing settings */
+	void UpdateVisualizeBufferPostProcessing(FFinalPostProcessSettings& InOutPostProcessingSettings);
+
+	/** Get visualization buffer's material name used by post processing settings */
+	FString GetBufferMaterialName(const FString& InBuffer);
+
+	/** Get current visualization buffer's material name */
+	FString GetSelectedBufferMaterialName();
+
+
+#endif
+
 public:
 
-	/** @todo document */
+	/** Currently selected actor, may be invalid */
+	UPROPERTY()
 	class AActor* SelectedActor;
 
+	/** Returns the currently selected actor, or null if it is invalid or not set */
 	UFUNCTION(BlueprintCallable, Category="Debug Camera")
 	AActor* GetSelectedActor() const;
 	
-	/** @todo document */
+	/** Currently selected component, may be invalid */
+	UPROPERTY()
 	class UPrimitiveComponent* SelectedComponent;
 
-	/** @todo document */
+	/** Selected hit point */
+	UPROPERTY()
+	FHitResult SelectedHitPoint;
+
+	/** Controller that was active before this was spawned */
+	UPROPERTY()	
 	class APlayerController* OriginalControllerRef;
 
-	/** @todo document */
+	/** Player object that was active before this was spawned */
+	UPROPERTY()	
 	class UPlayer* OriginalPlayer;
 
 	/** Allows control over the speed of the spectator pawn. This scales the speed based on the InitialMaxSpeed. Use Set Pawn Movement Speed Scale during runtime */
@@ -110,6 +224,9 @@ protected:
 	// Adjusts movement speed limits based on SpeedScale.
 	virtual void ApplySpeedScale();
 	virtual void SetupInputComponent() override;
+
+	/** Sets up or clears input for buffer visualization overview */
+	void SetupBufferVisualizationOverviewInput();
 
 public:
 
@@ -173,10 +290,38 @@ protected:
 
 	virtual void SetSpectatorPawn(class ASpectatorPawn* NewSpectatorPawn) override;
 
+#if !(UE_BUILD_SHIPPING || UE_BUILD_TEST)
+
+	/** Get buffer visualization overview targets based on console var */
+	TArray<FString> GetBufferVisualizationOverviewTargets();
+
+	/** Get next buffer */
+	void GetNextBuffer(const TArray<FString>& OverviewBuffers, int32 Step = 1);
+
+	/** Get next buffer */
+	void GetNextBuffer(int32 Step = 1);
+
+#endif
+
 private:
 
 	/** The normalized screen location when a drag starts */
 	FVector2D LastTouchDragLocation;
+
+	/** Last position for orbit */
+	FVector LastOrbitPawnLocation;
+
+	/** Current orbit pivot, if orbit is enabled */
+	FVector OrbitPivot;
+
+	/** Current orbit radius, if orbit is enabled */
+	float OrbitRadius;
+
+	/** Last index in settings array for cycle view modes */
+	int32 LastViewModeSettingsIndex;
+
+	/** Buffer selected in buffer visualization overview or full screen view */
+	FString CurrSelectedBuffer;
 
 	void OnTouchBegin(ETouchIndex::Type FingerIndex, FVector Location);
 	void OnTouchEnd(ETouchIndex::Type FingerIndex, FVector Location);

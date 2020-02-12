@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -19,6 +19,7 @@ class FSlateDrawBuffer;
 class ISlate3DRenderer;
 class STooltipPresenter;
 class UTextureRenderTarget2D;
+class FRenderTarget;
 
 /**
  * 
@@ -40,11 +41,20 @@ public:
 	bool GetUseGammaCorrection() const { return bUseGammaSpace; }
 	void SetUseGammaCorrection(bool bInUseGammaSpace);
 
+	void SetApplyColorDeficiencyCorrection(bool bInApplyColorCorrection);
+
 	ISlate3DRenderer* GetSlateRenderer();
 
 	static UTextureRenderTarget2D* CreateTargetFor(FVector2D DrawSize, TextureFilter InFilter, bool bUseGammaCorrection);
 
 	UTextureRenderTarget2D* DrawWidget(const TSharedRef<SWidget>& Widget, FVector2D DrawSize);
+
+	void DrawWidget(
+		FRenderTarget* RenderTarget,
+		const TSharedRef<SWidget>& Widget,
+		FVector2D DrawSize,
+		float DeltaTime,
+		bool bDeferRenderTargetUpdate = false);
 
 	void DrawWidget(
 		UTextureRenderTarget2D* RenderTarget,
@@ -53,9 +63,25 @@ public:
 		float DeltaTime,
 		bool bDeferRenderTargetUpdate = false);
 
-	void DrawWindow(
+	void DrawWidget(
+		FRenderTarget* RenderTarget,
+		const TSharedRef<SWidget>& Widget,
+		float Scale,
+		FVector2D DrawSize,
+		float DeltaTime,
+		bool bDeferRenderTargetUpdate = false);
+
+	void DrawWidget(
 		UTextureRenderTarget2D* RenderTarget,
-		TSharedRef<FHittestGrid> HitTestGrid,
+		const TSharedRef<SWidget>& Widget,
+		float Scale,
+		FVector2D DrawSize,
+		float DeltaTime,
+		bool bDeferRenderTargetUpdate = false);
+
+	void DrawWindow(
+		FRenderTarget* RenderTarget,
+		FHittestGrid& HitTestGrid,
 		TSharedRef<SWindow> Window,
 		float Scale,
 		FVector2D DrawSize,
@@ -64,7 +90,34 @@ public:
 
 	void DrawWindow(
 		UTextureRenderTarget2D* RenderTarget,
-		TSharedRef<FHittestGrid> HitTestGrid,
+		FHittestGrid& HitTestGrid,
+		TSharedRef<SWindow> Window,
+		float Scale,
+		FVector2D DrawSize,
+		float DeltaTime,
+		bool bDeferRenderTargetUpdate = false);
+
+	void DrawWindow(
+		FRenderTarget* RenderTarget,
+		FHittestGrid& HitTestGrid,
+		TSharedRef<SWindow> Window,
+		FGeometry WindowGeometry,
+		FSlateRect WindowClipRect,
+		float DeltaTime,
+		bool bDeferRenderTargetUpdate = false);
+
+	void DrawWindow(
+		UTextureRenderTarget2D* RenderTarget,
+		FHittestGrid& HitTestGrid,
+		TSharedRef<SWindow> Window,
+		FGeometry WindowGeometry,
+		FSlateRect WindowClipRect,
+		float DeltaTime,
+		bool bDeferRenderTargetUpdate = false);
+
+	void DrawWindow(
+		const FPaintArgs& PaintArgs,
+		FRenderTarget* RenderTarget,
 		TSharedRef<SWindow> Window,
 		FGeometry WindowGeometry,
 		FSlateRect WindowClipRect,
@@ -78,6 +131,13 @@ public:
 		FGeometry WindowGeometry,
 		FSlateRect WindowClipRect,
 		float DeltaTime,
+		bool bDeferRenderTargetUpdate = false);
+
+	bool DrawInvalidationRoot(
+		TSharedRef<SVirtualWindow>& VirtualWindow,
+		UTextureRenderTarget2D* RenderTarget,
+		FSlateInvalidationRoot& Root,
+		const FSlateInvalidationContext& Context,
 		bool bDeferRenderTargetUpdate = false);
 
 	TArray< TSharedPtr<FSlateWindowElementList::FDeferredPaint> > DeferredPaints;

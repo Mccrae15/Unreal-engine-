@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 
 #include "Factories/IESLoader.h"
@@ -10,6 +10,13 @@ enum EIESVersion
 	EIESV_1991, // IES LM-63-1991
 	EIESV_1995, // IES LM-63-1995
 	EIESV_2002, // IES LM-63-2002
+};
+
+enum class EIESPhotometricType
+{
+	TypeC = 1,
+	TypeB = 2,
+	TypeA = 3
 };
 
 DEFINE_LOG_CATEGORY_STATIC(LogIESLoader, Log, All);
@@ -25,14 +32,9 @@ static void JumpOverWhiteSpace(const uint8*& BufferPos)
 			BufferPos += 2;
 			continue;
 		}
-		else if(*BufferPos == 10)
-		{
-			// no valid MSDOS return file
-			check(0);
-		}
 		else if(*BufferPos <= ' ')
 		{
-			// tab, space, invisible characters
+			// Skip tab, space and invisible characters
 			++BufferPos;
 			continue;
 		}
@@ -55,15 +57,15 @@ static void GetLineContent(const uint8*& BufferPos, char Line[256], bool bStopOn
 		{
 			break;
 		}
-		else if(*BufferPos == 13 && *(BufferPos + 1) == 10)
+		else if(*BufferPos == '\r' && *(BufferPos + 1) == '\n')
 		{
 			BufferPos += 2;
 			break;
 		}
-		else if(*BufferPos == 10)
+		else if(*BufferPos == '\n')
 		{
-			// no valid MSDOS return file
-			check(0);
+			++BufferPos;
+			break;
 		}
 		else if(bStopOnWhitespace && (*BufferPos <= ' '))
 		{
@@ -106,6 +108,7 @@ static bool GetInt(const uint8*& BufferPos, int32& ret)
 FIESLoadHelper::FIESLoadHelper(const uint8* Buffer, uint32 BufferLength)
 	: Brightness(0)
 	, CachedIntegral(MAX_FLT)
+	, PhotometricType(EIESPhotometricType::TypeC)
 	, Error("No data loaded")
 {
 	check(!IsValid());
@@ -220,7 +223,12 @@ void FIESLoadHelper::Load(const uint8* Buffer)
 		return;
 	}
 
-	PARSE_INT(PhotometricType);
+	PARSE_INT(PhotometricTypeTemp);
+
+	if ( PhotometricTypeTemp >= (int32)EIESPhotometricType::TypeC && PhotometricTypeTemp <= (int32)EIESPhotometricType::TypeA )
+	{
+		PhotometricType = EIESPhotometricType(PhotometricTypeTemp);
+	}
 
 	// 1:feet, 2:meter
 	PARSE_INT(UnitType);
@@ -549,29 +557,65 @@ float FIESLoadHelper::InterpolateBilinear(float fX, float fY) const
 
 float FIESLoadHelper::Interpolate2D(float HAngle, float VAngle) const
 {
-	// Support symmetry, per the IES format doc:
-	// 0     There is only one horizontal angle, implying that the luminaire is laterally symmetric in all photometric planes.
-	// 90    The luminaire is assumed to be symmetric in each quadrant.
-	// 180   The luminaire is assumed to be bilaterally symmetric about the 0-180 degree photometric plane.
-	// 360   The luminaire is assumed to exhibit no lateral symmetry.
-	//
-	// A luminaire that is bilaterally symmetric about the 90-270 degree
-	// photometric plane will have a first value of 90 degrees and a last value of 270 degrees.
+	float u = 0.0f;
+	float v = 0.0f;
 
-	if ( HAngles.Num() > 0 )
+	if (PhotometricType == EIESPhotometricType::TypeA)
 	{
-		if ( HAngles.Last() > 0.f && HAngle > HAngles.Last() )
-		{
-			HAngle = HAngles.Last() - FMath::Fmod( HAngle, HAngles.Last() );
-		}
-		else if ( HAngles[0] > 0.f && HAngle < HAngles[0] )
-		{
-			HAngle = HAngles.Last() - HAngles[0] - HAngle;
-		}
-	}
+		float X = FMath::Cos(FMath::DegreesToRadians(VAngle));
+		float Y = FMath::Sin(FMath::DegreesToRadians(VAngle)) * FMath::Sin(FMath::DegreesToRadians(HAngle));
+		float Z = FMath::Sin(FMath::DegreesToRadians(VAngle)) * FMath::Cos(FMath::DegreesToRadians(HAngle));
 
-	float u = ComputeFilterPos(HAngle, HAngles);
-	float v = ComputeFilterPos(VAngle, VAngles);
+
+		float NewVAngle = FMath::RadiansToDegrees(FMath::Asin(Z));
+		float NewHAngle = -FMath::RadiansToDegrees(FMath::Atan2(Y, X));
+
+		u = ComputeFilterPos(NewHAngle, HAngles);
+		v = ComputeFilterPos(NewVAngle, VAngles);
+	}
+	else
+	{
+		// Support symmetry, per the IES format doc:
+		// 0     There is only one horizontal angle, implying that the luminaire is laterally symmetric in all photometric planes.
+		// 90    The luminaire is assumed to be symmetric in each quadrant.
+		// 180   The luminaire is assumed to be bilaterally symmetric about the 0-180 degree photometric plane.
+		// 360   The luminaire is assumed to exhibit no lateral symmetry.
+		//
+		// A luminaire that is bilaterally symmetric about the 90-270 degree
+		// photometric plane will have a first value of 90 degrees and a last value of 270 degrees.
+
+		if (HAngles.Num() > 0)
+		{
+			if (HAngles.Last() > 0.f && HAngle > HAngles.Last())
+			{
+				bool bFlipHAngle = false;
+
+				int32 HQuadrant = (int32)HAngle / HAngles.Last();
+
+				if ( HQuadrant == 1 || HQuadrant == 3 )
+				{
+					bFlipHAngle = true;
+				}
+
+				if ( bFlipHAngle )
+				{
+					HAngle = HAngles.Last() - FMath::Fmod(HAngle, HAngles.Last());
+				}
+				else
+				{
+					HAngle = FMath::Fmod(HAngle, HAngles.Last());
+				}
+			}
+			else if (HAngles[0] > 0.f && HAngle < HAngles[0])
+			{
+				HAngle = HAngles.Last() - HAngles[0] - HAngle;
+			}
+		}
+
+		u = ComputeFilterPos(HAngle, HAngles);
+		v = ComputeFilterPos(VAngle, VAngles);
+	}
+	
 
 	return InterpolateBilinear(u, v);
 }

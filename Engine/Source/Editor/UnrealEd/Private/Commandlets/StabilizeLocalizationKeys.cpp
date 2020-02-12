@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "Commandlets/StabilizeLocalizationKeys.h"
 #include "HAL/FileManager.h"
@@ -12,7 +12,6 @@
 #include "UObject/Linker.h"
 #include "Internationalization/InternationalizationManifest.h"
 #include "Internationalization/InternationalizationArchive.h"
-#include "Templates/ScopedPointer.h"
 #include "UserDefinedStructure/UserDefinedStructEditorData.h"
 #include "Engine/UserDefinedStruct.h"
 #include "Serialization/JsonInternationalizationManifestSerializer.h"

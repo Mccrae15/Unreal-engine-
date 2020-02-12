@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -125,7 +125,7 @@ protected:
 	 *
 	 * @param ClientActor client that is making the request
 	 */
-	void ProcessJoinServer(ALobbyBeaconClient* ClientActor);
+	virtual bool ProcessJoinServer(ALobbyBeaconClient* ClientActor);
 
 	/**
 	 * Handle a request to disconnect a given client from the lobby beacon

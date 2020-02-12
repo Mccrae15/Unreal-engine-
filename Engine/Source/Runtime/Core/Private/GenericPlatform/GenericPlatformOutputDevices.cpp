@@ -1,10 +1,9 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "GenericPlatform/GenericPlatformOutputDevices.h"
 #include "HAL/PlatformOutputDevices.h"
 #include "CoreGlobals.h"
 #include "Misc/Parse.h"
-#include "Templates/ScopedPointer.h"
 #include "Misc/CommandLine.h"
 #include "Misc/Paths.h"
 #include "Misc/OutputDeviceMemory.h"
@@ -16,7 +15,7 @@
 #include "Misc/OutputDeviceConsole.h"
 #include "Templates/UniquePtr.h"
 
-TCHAR FGenericPlatformOutputDevices::CachedAbsoluteFilename[1024] = { 0 };
+TCHAR FGenericPlatformOutputDevices::CachedAbsoluteFilename[FGenericPlatformOutputDevices::AbsoluteFileNameMaxLength] = { 0 };
 
 void FGenericPlatformOutputDevices::SetupOutputDevices()
 {
@@ -57,11 +56,12 @@ FString FGenericPlatformOutputDevices::GetAbsoluteLogFilename()
 {
 	if (!CachedAbsoluteFilename[0])
 	{
-		FCString::Strcpy(CachedAbsoluteFilename, ARRAY_COUNT(CachedAbsoluteFilename), *FPaths::ProjectLogDir());
+		FCString::Strcpy(CachedAbsoluteFilename, UE_ARRAY_COUNT(CachedAbsoluteFilename), *FPaths::ProjectLogDir());
 		FString LogFilename;
-		if (!FParse::Value(FCommandLine::Get(), TEXT("LOG="), LogFilename))
+		const bool bShouldStopOnSeparator = false;
+		if (!FParse::Value(FCommandLine::Get(), TEXT("LOG="), LogFilename, bShouldStopOnSeparator))
 		{
-			if (FParse::Value(FCommandLine::Get(), TEXT("ABSLOG="), LogFilename))
+			if (FParse::Value(FCommandLine::Get(), TEXT("ABSLOG="), LogFilename, bShouldStopOnSeparator))
 			{
 				CachedAbsoluteFilename[0] = 0;
 			}
@@ -88,7 +88,7 @@ FString FGenericPlatformOutputDevices::GetAbsoluteLogFilename()
 			LogFilename += TEXT(".log");
 		}
 
-		FCString::Strcat(CachedAbsoluteFilename, ARRAY_COUNT(CachedAbsoluteFilename) - FCString::Strlen(CachedAbsoluteFilename), *LogFilename);
+		FCString::Strcat(CachedAbsoluteFilename, UE_ARRAY_COUNT(CachedAbsoluteFilename) - FCString::Strlen(CachedAbsoluteFilename), *LogFilename);
 	}
 
 	return CachedAbsoluteFilename;

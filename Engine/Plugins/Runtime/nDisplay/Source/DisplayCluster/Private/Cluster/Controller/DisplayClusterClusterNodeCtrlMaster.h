@@ -1,10 +1,11 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
 #include "Cluster/Controller/DisplayClusterClusterNodeCtrlSlave.h"
 
 #include "Network/DisplayClusterMessage.h"
+
 
 class FDisplayClusterClusterSyncService;
 class FDisplayClusterSwapSyncService;
@@ -25,28 +26,21 @@ public:
 	//////////////////////////////////////////////////////////////////////////////////////////////
 	// IPDisplayClusterClusterSyncProtocol
 	//////////////////////////////////////////////////////////////////////////////////////////////
-	virtual void GetTimecode(FTimecode& timecode, FFrameRate& frameRate) override;
-
-public:
-	//////////////////////////////////////////////////////////////////////////////////////////////
-	// IPDisplayClusterClusterEventsProtocol
-	//////////////////////////////////////////////////////////////////////////////////////////////
-	virtual void EmitClusterEvent(const FDisplayClusterClusterEvent& Event) override;
+	virtual void GetDeltaTime(float& DeltaSeconds) override;
+	virtual void GetFrameTime(TOptional<FQualifiedFrameTime>& FrameTime) override;
+	virtual void GetSyncData(FDisplayClusterMessage::DataType& SyncData, EDisplayClusterSyncGroup SyncGroup) override;
+	virtual void GetInputData(FDisplayClusterMessage::DataType& InputData) override;
+	virtual void GetEventsData(FDisplayClusterMessage::DataType& EventsData) override;
+	virtual void GetNativeInputData(FDisplayClusterMessage::DataType& EventsData) override;
 
 public:
 	//////////////////////////////////////////////////////////////////////////////////////////////
 	// IPDisplayClusterNodeController
 	//////////////////////////////////////////////////////////////////////////////////////////////
+	virtual void ClearCache() override;
+
 	virtual bool IsSlave() const override final
 	{ return false; }
-
-public:
-	//////////////////////////////////////////////////////////////////////////////////////////////
-	// IPDisplayClusterNodeController
-	//////////////////////////////////////////////////////////////////////////////////////////////
-	virtual void GetSyncData(FDisplayClusterMessage::DataType& data)   override;
-	virtual void GetInputData(FDisplayClusterMessage::DataType& data)  override;
-	virtual void GetEventsData(FDisplayClusterMessage::DataType& data) override;
 
 protected:
 	//////////////////////////////////////////////////////////////////////////////////////////////
@@ -65,5 +59,29 @@ private:
 	TUniquePtr<FDisplayClusterClusterSyncService>   ClusterSyncServer;
 	TUniquePtr<FDisplayClusterSwapSyncService>      SwapSyncServer;
 	TUniquePtr<FDisplayClusterClusterEventsService> ClusterEventsServer;
+
+private:
+	// GetDeltaTime internals
+	FEvent* CachedDeltaTimeEvent = nullptr;
+	float   CachedDeltaTime = 0.f;
+
+	// GetTimecode internals
+	FEvent* CachedFrameTimeEvent = nullptr;
+	TOptional<FQualifiedFrameTime>  CachedFrameTime;
+
+	// GetSyncData internals
+	TMap<EDisplayClusterSyncGroup, FEvent*> CachedSyncDataEvents;
+	TMap<EDisplayClusterSyncGroup, FDisplayClusterMessage::DataType> CachedSyncData;
+
+	// GetInputData internals
+	FEvent* CachedInputDataEvent = nullptr;
+	FDisplayClusterMessage::DataType CachedInputData;
+
+	// GetEventsData internals
+	FEvent* CachedEventsDataEvent = nullptr;
+	FDisplayClusterMessage::DataType CachedEventsData;
+
+private:
+	mutable FCriticalSection InternalsSyncScope;
 };
 

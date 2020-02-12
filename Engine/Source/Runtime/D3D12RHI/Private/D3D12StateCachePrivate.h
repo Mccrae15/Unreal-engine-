@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 // Implementation of Device Context State Caching to improve draw
 //	thread performance by removing redundant device context calls.
@@ -96,13 +96,9 @@ struct FD3D12IndexBufferCache
 	inline void Clear()
 	{
 		FMemory::Memzero(&CurrentIndexBufferView, sizeof(CurrentIndexBufferView));
-		CurrentIndexBufferLocation = nullptr;
-		ResidencyHandle = nullptr;
 	}
 
 	D3D12_INDEX_BUFFER_VIEW CurrentIndexBufferView;
-	FD3D12ResourceLocation* CurrentIndexBufferLocation;
-	FD3D12ResidencyHandle* ResidencyHandle;
 };
 
 template<typename ResourceSlotMask>
@@ -111,6 +107,11 @@ struct FD3D12ResourceCache
 	static inline void CleanSlot(ResourceSlotMask& SlotMask, uint32 SlotIndex)
 	{
 		SlotMask &= ~((ResourceSlotMask)1 << SlotIndex);
+	}
+
+	static inline void CleanSlots(ResourceSlotMask& SlotMask, uint32 NumSlots)
+	{
+		SlotMask &= ~(((ResourceSlotMask)1 << NumSlots) - 1);
 	}
 
 	static inline void DirtySlot(ResourceSlotMask& SlotMask, uint32 SlotIndex)
@@ -126,7 +127,7 @@ struct FD3D12ResourceCache
 	// Mark a specific shader stage as dirty.
 	inline void Dirty(EShaderFrequency ShaderFrequency, const ResourceSlotMask& SlotMask = -1)
 	{
-		checkSlow(ShaderFrequency < ARRAY_COUNT(DirtySlotMask));
+		checkSlow(ShaderFrequency < UE_ARRAY_COUNT(DirtySlotMask));
 		DirtySlotMask[ShaderFrequency] |= SlotMask;
 	}
 
@@ -258,6 +259,74 @@ struct FD3D12SamplerStateCache : public FD3D12ResourceCache<SamplerSlotMask>
 	FD3D12SamplerState* States[SF_NumStandardFrequencies][MAX_SAMPLERS];
 };
 
+
+static inline D3D_PRIMITIVE_TOPOLOGY GetD3D12PrimitiveType(uint32 PrimitiveType, bool bUsingTessellation)
+{
+	static const uint8 D3D12PrimitiveType[] =
+	{
+		D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST,               // PT_TriangleList
+		D3D_PRIMITIVE_TOPOLOGY_TRIANGLESTRIP,              // PT_TriangleStrip
+		D3D_PRIMITIVE_TOPOLOGY_LINELIST,                   // PT_LineList
+		0,                                                 // PT_QuadList
+		D3D_PRIMITIVE_TOPOLOGY_POINTLIST,                  // PT_PointList
+#if defined(D3D12RHI_PRIMITIVE_TOPOLOGY_RECTLIST)          // PT_RectList
+		D3D_PRIMITIVE_TOPOLOGY_RECTLIST,
+#else
+		0,
+#endif
+		D3D_PRIMITIVE_TOPOLOGY_1_CONTROL_POINT_PATCHLIST,  // PT_1_ControlPointPatchList
+		D3D_PRIMITIVE_TOPOLOGY_2_CONTROL_POINT_PATCHLIST,  // PT_2_ControlPointPatchList
+		D3D_PRIMITIVE_TOPOLOGY_3_CONTROL_POINT_PATCHLIST,  // PT_3_ControlPointPatchList
+		D3D_PRIMITIVE_TOPOLOGY_4_CONTROL_POINT_PATCHLIST,  // PT_4_ControlPointPatchList
+		D3D_PRIMITIVE_TOPOLOGY_5_CONTROL_POINT_PATCHLIST,  // PT_5_ControlPointPatchList
+		D3D_PRIMITIVE_TOPOLOGY_6_CONTROL_POINT_PATCHLIST,  // PT_6_ControlPointPatchList
+		D3D_PRIMITIVE_TOPOLOGY_7_CONTROL_POINT_PATCHLIST,  // PT_7_ControlPointPatchList
+		D3D_PRIMITIVE_TOPOLOGY_8_CONTROL_POINT_PATCHLIST,  // PT_8_ControlPointPatchList
+		D3D_PRIMITIVE_TOPOLOGY_9_CONTROL_POINT_PATCHLIST,  // PT_9_ControlPointPatchList
+		D3D_PRIMITIVE_TOPOLOGY_10_CONTROL_POINT_PATCHLIST, // PT_10_ControlPointPatchList
+		D3D_PRIMITIVE_TOPOLOGY_11_CONTROL_POINT_PATCHLIST, // PT_11_ControlPointPatchList
+		D3D_PRIMITIVE_TOPOLOGY_12_CONTROL_POINT_PATCHLIST, // PT_12_ControlPointPatchList
+		D3D_PRIMITIVE_TOPOLOGY_13_CONTROL_POINT_PATCHLIST, // PT_13_ControlPointPatchList
+		D3D_PRIMITIVE_TOPOLOGY_14_CONTROL_POINT_PATCHLIST, // PT_14_ControlPointPatchList
+		D3D_PRIMITIVE_TOPOLOGY_15_CONTROL_POINT_PATCHLIST, // PT_15_ControlPointPatchList
+		D3D_PRIMITIVE_TOPOLOGY_16_CONTROL_POINT_PATCHLIST, // PT_16_ControlPointPatchList
+		D3D_PRIMITIVE_TOPOLOGY_17_CONTROL_POINT_PATCHLIST, // PT_17_ControlPointPatchList
+		D3D_PRIMITIVE_TOPOLOGY_18_CONTROL_POINT_PATCHLIST, // PT_18_ControlPointPatchList
+		D3D_PRIMITIVE_TOPOLOGY_19_CONTROL_POINT_PATCHLIST, // PT_19_ControlPointPatchList
+		D3D_PRIMITIVE_TOPOLOGY_20_CONTROL_POINT_PATCHLIST, // PT_20_ControlPointPatchList
+		D3D_PRIMITIVE_TOPOLOGY_21_CONTROL_POINT_PATCHLIST, // PT_21_ControlPointPatchList
+		D3D_PRIMITIVE_TOPOLOGY_22_CONTROL_POINT_PATCHLIST, // PT_22_ControlPointPatchList
+		D3D_PRIMITIVE_TOPOLOGY_23_CONTROL_POINT_PATCHLIST, // PT_23_ControlPointPatchList
+		D3D_PRIMITIVE_TOPOLOGY_24_CONTROL_POINT_PATCHLIST, // PT_24_ControlPointPatchList
+		D3D_PRIMITIVE_TOPOLOGY_25_CONTROL_POINT_PATCHLIST, // PT_25_ControlPointPatchList
+		D3D_PRIMITIVE_TOPOLOGY_26_CONTROL_POINT_PATCHLIST, // PT_26_ControlPointPatchList
+		D3D_PRIMITIVE_TOPOLOGY_27_CONTROL_POINT_PATCHLIST, // PT_27_ControlPointPatchList
+		D3D_PRIMITIVE_TOPOLOGY_28_CONTROL_POINT_PATCHLIST, // PT_28_ControlPointPatchList
+		D3D_PRIMITIVE_TOPOLOGY_29_CONTROL_POINT_PATCHLIST, // PT_29_ControlPointPatchList
+		D3D_PRIMITIVE_TOPOLOGY_30_CONTROL_POINT_PATCHLIST, // PT_30_ControlPointPatchList
+		D3D_PRIMITIVE_TOPOLOGY_31_CONTROL_POINT_PATCHLIST, // PT_31_ControlPointPatchList
+		D3D_PRIMITIVE_TOPOLOGY_32_CONTROL_POINT_PATCHLIST, // PT_32_ControlPointPatchList
+	};
+	static_assert(UE_ARRAY_COUNT(D3D12PrimitiveType) == PT_Num, "Primitive lookup table is wrong size");
+
+	if (bUsingTessellation)
+	{
+		if (PrimitiveType == PT_TriangleList)
+		{
+			// This is the case for tessellation without AEN or other buffers, so just flip to 3 CPs
+			return D3D_PRIMITIVE_TOPOLOGY_3_CONTROL_POINT_PATCHLIST;
+		}
+		else/* if (PrimitiveType < PT_1_ControlPointPatchList)*/
+		{
+			checkf(PrimitiveType >= PT_1_ControlPointPatchList, TEXT("Invalid type specified for tessellated render, probably missing a case in FSkeletalMeshSceneProxy::DrawDynamicElementsByMaterial or FStaticMeshSceneProxy::GetMeshElement"));
+		}
+	}
+
+	D3D_PRIMITIVE_TOPOLOGY D3DType = (D3D_PRIMITIVE_TOPOLOGY) D3D12PrimitiveType[PrimitiveType];
+	checkf(D3DType, TEXT("Unknown primitive type: %u"), PrimitiveType);
+	return D3DType;
+}
+
 //-----------------------------------------------------------------------------
 //	FD3D12StateCache Class Definition
 //-----------------------------------------------------------------------------
@@ -269,7 +338,6 @@ protected:
 	FD3D12CommandContext* CmdContext;
 
 	bool bNeedSetVB;
-	bool bNeedSetIB;
 	bool bNeedSetRTs;
 	bool bNeedSetSOs;
 	bool bSRVSCleared;
@@ -314,11 +382,16 @@ protected:
 			FD3D12IndexBufferCache IBCache;
 
 			// Primitive Topology State
+			EPrimitiveType CurrentPrimitiveType;
 			D3D_PRIMITIVE_TOPOLOGY CurrentPrimitiveTopology;
+			uint32 PrimitiveTypeFactor;
+			uint32 PrimitiveTypeOffset;
+			uint32* CurrentPrimitiveStat;
+			uint32 NumTriangles;
+			uint32 NumLines;
 
 			// Input Layout State
 			D3D12_RECT CurrentScissorRects[D3D12_VIEWPORT_AND_SCISSORRECT_OBJECT_COUNT_PER_PIPELINE];
-			D3D12_RECT CurrentViewportScissorRects[D3D12_VIEWPORT_AND_SCISSORRECT_OBJECT_COUNT_PER_PIPELINE];
 			uint32 CurrentNumberOfScissorRects;
 
 			uint16 StreamStrides[MaxVertexElementCount];
@@ -330,8 +403,6 @@ protected:
 
 			float MinDepth;
 			float MaxDepth;
-
-			EPrimitiveType PrimitiveType = PT_Num;
 		} Graphics;
 
 		struct
@@ -366,7 +437,7 @@ protected:
 
 	FD3D12DescriptorCache DescriptorCache;
 
-	void InternalSetIndexBuffer(FD3D12ResourceLocation *IndexBufferLocation, DXGI_FORMAT Format, uint32 Offset);
+	void InternalSetIndexBuffer(FD3D12Resource* Resource);
 
 	void InternalSetStreamSource(FD3D12ResourceLocation* VertexBufferLocation, uint32 StreamIndex, uint32 Stride, uint32 Offset);
 
@@ -380,9 +451,13 @@ protected:
 	}
 	DECLARE_SHADER_TRAITS(Vertex);
 	DECLARE_SHADER_TRAITS(Pixel);
+#if PLATFORM_SUPPORTS_TESSELLATION_SHADERS
 	DECLARE_SHADER_TRAITS(Domain);
 	DECLARE_SHADER_TRAITS(Hull);
+#endif
+#if PLATFORM_SUPPORTS_GEOMETRY_SHADERS
 	DECLARE_SHADER_TRAITS(Geometry);
+#endif
 #undef DECLARE_SHADER_TRAITS
 
 	template <typename TShader> D3D12_STATE_CACHE_INLINE void SetShader(TShader* Shader)
@@ -456,17 +531,26 @@ public:
 		return PipelineState.Graphics.CurrentPipelineStateObject;
 	}
 
-	const FD3D12RootSignature* GetGraphicsRootSignature()
+	const FD3D12RootSignature* GetGraphicsRootSignature() const
 	{
 		return PipelineState.Graphics.CurrentPipelineStateObject ? PipelineState.Graphics.CurrentPipelineStateObject->RootSignature : nullptr;
 	}
 
 	inline EPrimitiveType GetGraphicsPipelinePrimitiveType() const
 	{
-		return PipelineState.Graphics.PrimitiveType;
+		return PipelineState.Graphics.CurrentPrimitiveType;
 	}
 
-	const FD3D12RootSignature* GetComputeRootSignature()
+	inline uint32 GetVertexCountAndIncrementStat(uint32 NumPrimitives)
+	{
+		*PipelineState.Graphics.CurrentPrimitiveStat += NumPrimitives;
+		return PipelineState.Graphics.PrimitiveTypeFactor * NumPrimitives + PipelineState.Graphics.PrimitiveTypeOffset;
+	}
+
+	inline uint32 GetNumTrianglesStat() const { return PipelineState.Graphics.NumTriangles; }
+	inline uint32 GetNumLinesStat() const { return PipelineState.Graphics.NumLines; }
+
+	const FD3D12RootSignature* GetComputeRootSignature() const
 	{
 		return PipelineState.Compute.CurrentPipelineStateObject ? PipelineState.Compute.CurrentPipelineStateObject->ComputeShader->pRootSignature : nullptr;
 	}
@@ -495,33 +579,13 @@ public:
 
 	template <EShaderFrequency ShaderFrequency>
 	void SetShaderResourceView(FD3D12ShaderResourceView* SRV, uint32 ResourceIndex);
-
-	template <EShaderFrequency ShaderFrequency>
-	D3D12_STATE_CACHE_INLINE void GetShaderResourceViews(uint32 StartResourceIndex, uint32& NumResources, FD3D12ShaderResourceView** SRV)
-	{
-		{
-			uint32 NumLoops = D3D12_COMMONSHADER_INPUT_RESOURCE_SLOT_COUNT - StartResourceIndex;
-			NumResources = 0;
-			for (uint32 ResourceLoop = 0; ResourceLoop < NumLoops; ResourceLoop++)
-			{
-				SRV[ResourceLoop] = PipelineState.Common.CurrentShaderResourceViews[ShaderFrequency][ResourceLoop + StartResourceIndex];
-				if (SRV[ResourceLoop])
-				{
-					SRV[ResourceLoop]->AddRef();
-					NumResources = ResourceLoop;
-				}
-			}
-		}
-	}
-
-	void UpdateViewportScissorRects();
+	
 	void SetScissorRects(uint32 Count, const D3D12_RECT* const ScissorRects);
 	void SetScissorRect(const D3D12_RECT& ScissorRect);
 
-	D3D12_STATE_CACHE_INLINE void GetScissorRect(D3D12_RECT* ScissorRect) const
+	D3D12_STATE_CACHE_INLINE const D3D12_RECT& GetScissorRect(int32 Index = 0) const
 	{
-		check(ScissorRect);
-		FMemory::Memcpy(ScissorRect, &PipelineState.Graphics.CurrentScissorRects, sizeof(D3D12_RECT));
+		return PipelineState.Graphics.CurrentScissorRects[Index];
 	}
 
 	void SetViewport(const D3D12_VIEWPORT& Viewport);
@@ -532,10 +596,9 @@ public:
 		return PipelineState.Graphics.CurrentNumberOfViewports;
 	}
 
-	D3D12_STATE_CACHE_INLINE void GetViewport(D3D12_VIEWPORT* Viewport) const
+	D3D12_STATE_CACHE_INLINE const D3D12_VIEWPORT& GetViewport(int32 Index = 0) const
 	{
-		check(Viewport);
-		FMemory::Memcpy(Viewport, &PipelineState.Graphics.CurrentViewport, sizeof(D3D12_VIEWPORT));
+		return PipelineState.Graphics.CurrentViewport[Index];
 	}
 
 	D3D12_STATE_CACHE_INLINE void GetViewports(uint32* Count, D3D12_VIEWPORT* Viewports) const
@@ -661,17 +724,29 @@ public:
 
 	D3D12_STATE_CACHE_INLINE void GetHullShader(FD3D12HullShader** Shader)
 	{
+#if PLATFORM_SUPPORTS_TESSELLATION_SHADERS
 		GetShader(Shader);
+#else
+		*Shader = nullptr;
+#endif
 	}
 
 	D3D12_STATE_CACHE_INLINE void GetDomainShader(FD3D12DomainShader** Shader)
 	{
+#if PLATFORM_SUPPORTS_TESSELLATION_SHADERS
 		GetShader(Shader);
+#else
+		*Shader = nullptr;
+#endif
 	}
 
 	D3D12_STATE_CACHE_INLINE void GetGeometryShader(FD3D12GeometryShader** Shader)
 	{
+#if PLATFORM_SUPPORTS_GEOMETRY_SHADERS
 		GetShader(Shader);
+#else
+		*Shader = nullptr;
+#endif
 	}
 
 	D3D12_STATE_CACHE_INLINE void GetPixelShader(FD3D12PixelShader** Shader)
@@ -679,7 +754,7 @@ public:
 		GetShader(Shader);
 	}
 
-	D3D12_STATE_CACHE_INLINE void SetGraphicsPipelineState(FD3D12GraphicsPipelineState* GraphicsPipelineState)
+	D3D12_STATE_CACHE_INLINE void SetGraphicsPipelineState(FD3D12GraphicsPipelineState* GraphicsPipelineState, bool bTessellationChanged)
 	{
 		check(GraphicsPipelineState);
 		if (PipelineState.Graphics.CurrentPipelineStateObject != GraphicsPipelineState)
@@ -687,10 +762,13 @@ public:
 			SetStreamStrides(GraphicsPipelineState->StreamStrides);
 			SetShader(GraphicsPipelineState->GetVertexShader());
 			SetShader(GraphicsPipelineState->GetPixelShader());
+#if PLATFORM_SUPPORTS_TESSELLATION_SHADERS
 			SetShader(GraphicsPipelineState->GetDomainShader());
 			SetShader(GraphicsPipelineState->GetHullShader());
+#endif
+#if PLATFORM_SUPPORTS_GEOMETRY_SHADERS
 			SetShader(GraphicsPipelineState->GetGeometryShader());
-
+#endif
 			// See if we need to change the root signature
 			if (GetGraphicsRootSignature() != GraphicsPipelineState->RootSignature)
 			{
@@ -700,7 +778,20 @@ public:
 			// Save the PSO
 			PipelineState.Common.bNeedSetPSO = true;
 			PipelineState.Graphics.CurrentPipelineStateObject = GraphicsPipelineState;
-			PipelineState.Graphics.PrimitiveType = GraphicsPipelineState->PipelineStateInitializer.PrimitiveType;
+
+			EPrimitiveType PrimitiveType = GraphicsPipelineState->PipelineStateInitializer.PrimitiveType;
+			if (PipelineState.Graphics.CurrentPrimitiveType != PrimitiveType || bTessellationChanged)
+			{
+				const bool bUsingTessellation = GraphicsPipelineState->GetHullShader() && GraphicsPipelineState->GetDomainShader();
+				PipelineState.Graphics.CurrentPrimitiveType = PrimitiveType;
+				PipelineState.Graphics.CurrentPrimitiveTopology = GetD3D12PrimitiveType(PrimitiveType, bUsingTessellation);
+				bNeedSetPrimitiveTopology = true;
+
+				static_assert(PT_Num == 38, "This computation needs to be updated, matching that of GetVertexCountForPrimitiveCount()");
+				PipelineState.Graphics.PrimitiveTypeFactor = (PrimitiveType == PT_TriangleList)? 3 : (PrimitiveType == PT_LineList)? 2 : (PrimitiveType == PT_RectList)? 3 : (PrimitiveType >= PT_1_ControlPointPatchList)? (PrimitiveType - PT_1_ControlPointPatchList + 1) : 1;
+				PipelineState.Graphics.PrimitiveTypeOffset = (PrimitiveType == PT_TriangleStrip)? 2 : 0;
+				PipelineState.Graphics.CurrentPrimitiveStat = (PrimitiveType == PT_LineList)? &PipelineState.Graphics.NumLines : &PipelineState.Graphics.NumTriangles;
+			}
 
 			// Set the PSO
 			InternalSetPipelineState<D3D12PT_Graphics>();
@@ -783,18 +874,26 @@ public:
 
 public:
 
-	D3D12_STATE_CACHE_INLINE void SetIndexBuffer(FD3D12ResourceLocation* IndexBufferLocation, DXGI_FORMAT Format, uint32 Offset)
+	D3D12_STATE_CACHE_INLINE void SetIndexBuffer(const FD3D12ResourceLocation& IndexBufferLocation, DXGI_FORMAT Format, uint32 Offset)
 	{
-		InternalSetIndexBuffer(IndexBufferLocation, Format, Offset);
+		D3D12_GPU_VIRTUAL_ADDRESS BufferLocation = IndexBufferLocation.GetGPUVirtualAddress() + Offset;
+		UINT SizeInBytes = IndexBufferLocation.GetSize() - Offset;
+
+		D3D12_INDEX_BUFFER_VIEW& CurrentView = PipelineState.Graphics.IBCache.CurrentIndexBufferView;
+
+		if (BufferLocation != CurrentView.BufferLocation ||
+			SizeInBytes != CurrentView.SizeInBytes ||
+			Format != CurrentView.Format ||
+			GD3D12SkipStateCaching)
+		{
+			CurrentView.BufferLocation = BufferLocation;
+			CurrentView.SizeInBytes = SizeInBytes;
+			CurrentView.Format = Format;
+
+			InternalSetIndexBuffer(IndexBufferLocation.GetResource());
+		}
 	}
 
-	D3D12_STATE_CACHE_INLINE bool IsIndexBuffer(const FD3D12ResourceLocation *ResourceLocation) const
-	{
-		return PipelineState.Graphics.IBCache.CurrentIndexBufferLocation == ResourceLocation;
-	}
-
-	void SetPrimitiveTopology(D3D12_PRIMITIVE_TOPOLOGY PrimitiveTopology);
-	
 	D3D12_STATE_CACHE_INLINE void GetPrimitiveTopology(D3D12_PRIMITIVE_TOPOLOGY* PrimitiveTopology) const
 	{
 		*PrimitiveTopology = PipelineState.Graphics.CurrentPrimitiveTopology;
@@ -814,7 +913,9 @@ public:
 	{
 		if (LastComputePipelineType != PipelineType)
 		{
-			ClearState();
+			PipelineState.Common.bNeedSetPSO = true;
+			PipelineState.Compute.bNeedSetRootSignature = true;
+
 			LastComputePipelineType = PipelineType;
 		}
 	}
@@ -846,10 +947,11 @@ public:
 		}
 	}
 
-	void SetStreamOutTargets(uint32 NumSimultaneousStreamOutTargets, FD3D12Resource** SOArray, const uint32* SOOffsets);
-
 	template <EShaderFrequency ShaderStage>
 	void SetUAVs(uint32 UAVStartSlot, uint32 NumSimultaneousUAVs, FD3D12UnorderedAccessView** UAVArray, uint32* UAVInitialCountArray);
+	template <EShaderFrequency ShaderStage>
+	void ClearUAVs();
+
 
 	void SetDepthBounds(float MinDepth, float MaxDepth)
 	{
@@ -889,7 +991,6 @@ public:
 	void ForceSetGraphicsRootSignature() { PipelineState.Graphics.bNeedSetRootSignature = true; }
 	void ForceSetComputeRootSignature() { PipelineState.Compute.bNeedSetRootSignature = true; }
 	void ForceSetVB() { bNeedSetVB = true; }
-	void ForceSetIB() { bNeedSetIB = true; }
 	void ForceSetRTs() { bNeedSetRTs = true; }
 	void ForceSetSOs() { bNeedSetSOs = true; }
 	void ForceSetSamplersPerShaderStage(uint32 Frequency) { PipelineState.Common.SamplerCache.Dirty((EShaderFrequency)Frequency); }
@@ -901,7 +1002,6 @@ public:
 	void ForceSetStencilRef() { bNeedSetStencilRef = true; }
 
 	bool GetForceSetVB() const { return bNeedSetVB; }
-	bool GetForceSetIB() const { return bNeedSetIB; }
 	bool GetForceSetRTs() const { return bNeedSetRTs; }
 	bool GetForceSetSOs() const { return bNeedSetSOs; }
 	bool GetForceSetSamplersPerShaderStage(uint32 Frequency) const { return PipelineState.Common.SamplerCache.DirtySlotMask[Frequency] != 0; }

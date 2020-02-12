@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "Engine/NetworkObjectList.h"
 #include "Engine/Engine.h"
@@ -21,7 +21,7 @@ void FNetworkObjectList::AddInitialObjects(UWorld* const World, UNetDriver* NetD
 	for (FActorIterator Iter(World); Iter; ++Iter)
 	{
 		AActor* Actor = *Iter;
-		if (Actor != nullptr && !Actor->IsPendingKill() && ULevel::IsNetActor(Actor))
+		if (Actor != nullptr && !Actor->IsPendingKill() && ULevel::IsNetActor(Actor) && !UNetDriver::IsDormInitialStartupActor(Actor))
 		{
 			FindOrAdd(Actor, NetDriver);
 		}
@@ -327,8 +327,8 @@ void FNetworkObjectList::ForceActorRelevantNextUpdate(AActor* const Actor, UNetD
 	}
 
 	FNetworkObjectInfo* NetworkObjectInfo = NetworkObjectInfoPtr->Get();
-	
-	NetworkObjectInfo->bForceRelevantNextUpdate = true;
+
+	NetworkObjectInfo->ForceRelevantFrame = NetDriver->ReplicationFrame + 1;
 }
 
 void FNetworkObjectList::Reset()

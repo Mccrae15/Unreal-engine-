@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "LevelEditor.h"
 #include "Widgets/Text/STextBlock.h"
@@ -39,6 +39,8 @@
 #include "Interfaces/IMainFrameModule.h"
 #include "Framework/Commands/GenericCommands.h"
 #include "Misc/EngineBuildSettings.h"
+#include "Subsystems/PanelExtensionSubsystem.h"
+#include "Classes/EditorStyleSettings.h"
 
 #define LOCTEXT_NAMESPACE "LevelEditor"
 
@@ -47,6 +49,31 @@ IMPLEMENT_MODULE( FLevelEditorModule, LevelEditor );
 const FName LevelEditorApp = FName(TEXT("LevelEditorApp"));
 const FName MainFrame("MainFrame");
 const FName CommonMenuExtensionsName(TEXT("CommonMenuExtensions"));
+
+const FName LevelEditorTabIds::LevelEditorViewport(TEXT("LevelEditorViewport"));
+const FName LevelEditorTabIds::LevelEditorViewport_Clone1(TEXT("LevelEditorViewport_Clone1"));
+const FName LevelEditorTabIds::LevelEditorViewport_Clone2(TEXT("LevelEditorViewport_Clone2"));
+const FName LevelEditorTabIds::LevelEditorViewport_Clone3(TEXT("LevelEditorViewport_Clone3"));
+const FName LevelEditorTabIds::LevelEditorViewport_Clone4(TEXT("LevelEditorViewport_Clone4"));
+const FName LevelEditorTabIds::LevelEditorToolBar(TEXT("LevelEditorToolBar"));
+const FName LevelEditorTabIds::LevelEditorToolBox(TEXT("LevelEditorToolBox"));
+const FName LevelEditorTabIds::LevelEditorSelectionDetails(TEXT("LevelEditorSelectionDetails"));
+const FName LevelEditorTabIds::LevelEditorSelectionDetails2(TEXT("LevelEditorSelectionDetails2"));
+const FName LevelEditorTabIds::LevelEditorSelectionDetails3(TEXT("LevelEditorSelectionDetails3"));
+const FName LevelEditorTabIds::LevelEditorSelectionDetails4(TEXT("LevelEditorSelectionDetails4"));
+const FName LevelEditorTabIds::PlacementBrowser(TEXT("PlacementBrowser"));
+const FName LevelEditorTabIds::LevelEditorBuildAndSubmit(TEXT("LevelEditorBuildAndSubmit"));
+const FName LevelEditorTabIds::LevelEditorSceneOutliner(TEXT("LevelEditorSceneOutliner"));
+const FName LevelEditorTabIds::LevelEditorStatsViewer(TEXT("LevelEditorStatsViewer"));
+const FName LevelEditorTabIds::LevelEditorLayerBrowser(TEXT("LevelEditorLayerBrowser"));
+const FName LevelEditorTabIds::Sequencer(TEXT("Sequencer"));
+const FName LevelEditorTabIds::SequencerGraphEditor(TEXT("SequencerGraphEditor"));
+const FName LevelEditorTabIds::WorldSettings(TEXT("WorldSettingsTab"));
+const FName LevelEditorTabIds::WorldBrowserComposition(TEXT("WorldBrowserComposition"));
+const FName LevelEditorTabIds::WorldBrowserHierarchy(TEXT("WorldBrowserHierarchy"));
+const FName LevelEditorTabIds::WorldBrowserDetails(TEXT("WorldBrowserDetails"));
+const FName LevelEditorTabIds::LevelEditorHierarchicalLODOutliner(TEXT("LevelEditorHierarchicalLODOutliner"));
+const FName LevelEditorTabIds::OutputLog(TEXT("OutputLog"));
 
 FLevelEditorModule::FLevelEditorModule()
 	: ToggleImmersiveConsoleCommand(
@@ -86,8 +113,8 @@ public:
 		FText RightContentText;
 		FText RightContentTooltip;
 
-		const EBuildConfigurations::Type BuildConfig = FApp::GetBuildConfiguration();
-		if (BuildConfig != EBuildConfigurations::Shipping && BuildConfig != EBuildConfigurations::Development && BuildConfig != EBuildConfigurations::Unknown)
+		const EBuildConfiguration BuildConfig = FApp::GetBuildConfiguration();
+		if (BuildConfig != EBuildConfiguration::Shipping && BuildConfig != EBuildConfiguration::Development && BuildConfig != EBuildConfiguration::Unknown)
 		{
 			Args.Add(TEXT("Config"), EBuildConfigurations::ToText(BuildConfig));
 			RightContentText = FText::Format(NSLOCTEXT("UnrealEditor", "TitleBarRightContentAndConfig", "{ProjectNameWatermarkPrefix} {GameName} [{Config}] {Branch} {EngineVersion}"), Args);
@@ -100,17 +127,21 @@ public:
 		// Create the tooltip showing more detailed information
 		FFormatNamedArguments TooltipArgs;
 		FString TooltipVersionStr = EngineVersionString;
-		if (IProjectManager::Get().GetCurrentProject() && IProjectManager::Get().GetCurrentProject()->bIsEnterpriseProject)
-		{
-			TooltipVersionStr += TEXT(" Unreal Studio");
-		}
 		TooltipArgs.Add(TEXT("Version"), FText::FromString(TooltipVersionStr));
 		TooltipArgs.Add(TEXT("Branch"), FText::FromString(FEngineVersion::Current().GetBranch()));
 		TooltipArgs.Add(TEXT("BuildConfiguration"), EBuildConfigurations::ToText(BuildConfig));
 		TooltipArgs.Add(TEXT("BuildDate"), FText::FromString(FApp::GetBuildDate()));
-		RightContentTooltip = FText::Format(NSLOCTEXT("UnrealEditor", "TitleBarRightContentTooltip", "Version: {Version}\nBranch: {Branch}\nBuild Configuration: {BuildConfiguration}\nBuild Date: {BuildDate}"), TooltipArgs);
+		TooltipArgs.Add(TEXT("GraphicsRHI"), FText::FromString(FApp::GetGraphicsRHI()));
+
+		RightContentTooltip = FText::Format(NSLOCTEXT("UnrealEditor", "TitleBarRightContentTooltip", "Version: {Version}\nBranch: {Branch}\nBuild Configuration: {BuildConfiguration}\nBuild Date: {BuildDate}\nGraphics RHI: {GraphicsRHI}"), TooltipArgs);
 
 		SetToolTipText(RightContentTooltip);
+
+		TSharedRef<SWidget> DefaultNamePlate = SNew(STextBlock)
+			.Text(RightContentText)
+			.Visibility(EVisibility::HitTestInvisible)
+			.TextStyle(FEditorStyle::Get(), "SProjectBadge.Text")
+			.ColorAndOpacity(BadgeTextColor);
 
 		SBox::Construct(SBox::FArguments()
 			.HAlign(HAlign_Right)
@@ -123,11 +154,9 @@ public:
 				.BorderBackgroundColor(BadgeBackgroundColor)
 				.VAlign(VAlign_Top)
 				[
-					SNew(STextBlock)
-					.Text(RightContentText)
-					.Visibility(EVisibility::HitTestInvisible)
-					.TextStyle(FEditorStyle::Get(),"SProjectBadge.Text")
-					.ColorAndOpacity(BadgeTextColor)
+					SNew(SExtensionPanel)
+					.ExtensionPanelID("LevelEditorProjectNamePlate")
+					.DefaultWidget(DefaultNamePlate)
 				]
 			]);
 	}
@@ -175,11 +204,31 @@ TSharedRef<SDockTab> FLevelEditorModule::SpawnLevelEditor( const FSpawnTabArgs& 
 		SetLevelEditorInstance(LevelEditorTmp);
 		LevelEditorTmp->Initialize( LevelEditorTab, OwnerWindow.ToSharedRef() );
 
-		GLevelEditorModeTools().RemoveDefaultMode( FBuiltinEditorModes::EM_Default );
-		GLevelEditorModeTools().AddDefaultMode( FBuiltinEditorModes::EM_Placement );
+		if (GetDefault<UEditorStyleSettings>()->bEnableLegacyEditorModeUI)
+		{
+			GLevelEditorModeTools().RemoveDefaultMode(FBuiltinEditorModes::EM_Default);
+			GLevelEditorModeTools().AddDefaultMode(FBuiltinEditorModes::EM_Placement);
+		}
+
 		GLevelEditorModeTools().DeactivateAllModes();
 		GLevelEditorModeTools().ActivateDefaultMode();
 
+		if (GetDefault<UEditorStyleSettings>()->bEnableLegacyEditorModeUI)
+		{
+			// In legacy mode this toolbox should always be open
+			static const FTabId ToolboxTabId("LevelEditorToolBox");
+			LevelEditorTabManager->InvokeTab(ToolboxTabId);
+
+			// In legacy mode the standalone placement browser tab should not be opened
+			static const FTabId PlacementBrowserTabId("PlacementBrowser");
+			TSharedPtr<SDockTab> PlacementBrowserTab = LevelEditorTabManager->FindExistingLiveTab(PlacementBrowserTabId);
+			if (PlacementBrowserTab.IsValid())
+			{
+				PlacementBrowserTab->RequestCloseTab();
+			}
+		}
+
+		LevelEditorCreatedEvent.Broadcast(LevelEditorTmp);
 	}
 
 	IIntroTutorials& IntroTutorials = FModuleManager::LoadModuleChecked<IIntroTutorials>(TEXT("IntroTutorials"));
@@ -326,31 +375,26 @@ void FLevelEditorModule::SummonSelectionDetails()
 void FLevelEditorModule::SummonBuildAndSubmit()
 {
 	TSharedPtr<SLevelEditor> LevelEditorInstance = LevelEditorInstancePtr.Pin();
-	LevelEditorInstance->InvokeTab("LevelEditorBuildAndSubmit");
+	LevelEditorInstance->InvokeTab(LevelEditorTabIds::LevelEditorBuildAndSubmit);
 }
 
-void FLevelEditorModule::SummonLevelBrowser()
-{
-	TSharedPtr<SLevelEditor> LevelEditorInstance = LevelEditorInstancePtr.Pin();
-	LevelEditorInstance->InvokeTab("LevelEditorLevelBrowser");
-}
 
 void FLevelEditorModule::SummonWorldBrowserHierarchy()
 {
 	TSharedPtr<SLevelEditor> LevelEditorInstance = LevelEditorInstancePtr.Pin();
-	LevelEditorInstance->InvokeTab("WorldBrowserHierarchy");
+	LevelEditorInstance->InvokeTab(LevelEditorTabIds::WorldBrowserHierarchy);
 }
 
 void FLevelEditorModule::SummonWorldBrowserDetails()
 {
 	TSharedPtr<SLevelEditor> LevelEditorInstance = LevelEditorInstancePtr.Pin();
-	LevelEditorInstance->InvokeTab("WorldBrowserDetails");
+	LevelEditorInstance->InvokeTab(LevelEditorTabIds::WorldBrowserDetails);
 }
 
 void FLevelEditorModule::SummonWorldBrowserComposition()
 {
 	TSharedPtr<SLevelEditor> LevelEditorInstance = LevelEditorInstancePtr.Pin();
-	LevelEditorInstance->InvokeTab("WorldBrowserComposition");
+	LevelEditorInstance->InvokeTab(LevelEditorTabIds::WorldBrowserComposition);
 }
 
 // @todo remove when world-centric mode is added
@@ -361,7 +405,13 @@ void FLevelEditorModule::AttachSequencer( TSharedPtr<SWidget> SequencerWidget, T
 	LevelEditorInstance->AttachSequencer( SequencerWidget, SequencerAssetEditor );
 }
 
-TSharedPtr<ILevelViewport> FLevelEditorModule::GetFirstActiveViewport()
+TSharedPtr<IAssetViewport> FLevelEditorModule::GetFirstActiveViewport()
+{
+	TSharedPtr<SLevelEditor> LevelEditorInstance = LevelEditorInstancePtr.Pin();
+	return (LevelEditorInstance.IsValid()) ? LevelEditorInstance->GetActiveViewport() : nullptr;
+}
+
+TSharedPtr<SLevelViewport> FLevelEditorModule::GetFirstActiveLevelViewport()
 {
 	TSharedPtr<SLevelEditor> LevelEditorInstance = LevelEditorInstancePtr.Pin();
 	return (LevelEditorInstance.IsValid()) ? LevelEditorInstance->GetActiveViewport() : nullptr;
@@ -378,7 +428,7 @@ void FLevelEditorModule::FocusPIEViewport()
 
 void FLevelEditorModule::FocusViewport()
 {
-	TSharedPtr<ILevelViewport> ActiveLevelViewport = GetFirstActiveViewport();
+	TSharedPtr<IAssetViewport> ActiveLevelViewport = GetFirstActiveViewport();
 	if( ActiveLevelViewport.IsValid() )
 	{
 		TSharedRef< const SWidget > ViewportAsWidget = ActiveLevelViewport->AsWidget();
@@ -431,7 +481,7 @@ const FLevelViewportCommands& FLevelEditorModule::GetLevelViewportCommands() con
 	return FLevelViewportCommands::Get();
 }
 
-TWeakPtr<class SLevelEditor> FLevelEditorModule::GetLevelEditorInstance() const
+TWeakPtr<class ILevelEditor> FLevelEditorModule::GetLevelEditorInstance() const
 {
 	return LevelEditorInstancePtr;
 }
@@ -476,44 +526,38 @@ void FLevelEditorModule::SetLevelEditorTabManager( const TSharedPtr<SDockTab>& O
 
 void FLevelEditorModule::StartPlayInEditorSession()
 {
-	TSharedPtr<ILevelViewport> ActiveLevelViewport = GetFirstActiveViewport();
+	TSharedPtr<IAssetViewport> ActiveLevelViewport = GetFirstActiveViewport();
+	FRequestPlaySessionParams SessionParams;
 
 	if( ActiveLevelViewport.IsValid() )
 	{
-		const FVector* StartLocation = NULL;
-		const FRotator* StartRotation = NULL;
-
 		// We never want to play from the camera's location at startup, because the camera could have
 		// been abandoned in a strange location in the map
 		if( 0 )	// @todo immersive
 		{
 			// If this is a perspective viewport, then we'll Play From Here
-			const FLevelEditorViewportClient& LevelViewportClient = ActiveLevelViewport->GetLevelViewportClient();
+			const FEditorViewportClient& LevelViewportClient = ActiveLevelViewport->GetAssetViewportClient();
 			if( LevelViewportClient.IsPerspective() )
 			{
 				// Start PIE from the camera's location and orientation!
-				StartLocation = &LevelViewportClient.GetViewLocation();
-				StartRotation = &LevelViewportClient.GetViewRotation();
+				SessionParams.StartLocation = LevelViewportClient.GetViewLocation();
+				SessionParams.StartRotation = LevelViewportClient.GetViewRotation();
 			}
 		}
 
-		// Queue up the PIE session
-		const bool bSimulateInEditor = false;
-		const bool bUseMobilePreview = false;
-		GUnrealEd->RequestPlaySession( true, ActiveLevelViewport, bSimulateInEditor, StartLocation, StartRotation, -1, bUseMobilePreview );
+		SessionParams.DestinationSlateViewport = ActiveLevelViewport;
+
+		GUnrealEd->RequestPlaySession(SessionParams);
+
 		// Kick off the queued PIE session immediately.  This is so that at startup, we don't need to
 		// wait for the next engine tick.  We want to see PIE gameplay when the editor first appears!
-		GUnrealEd->StartQueuedPlayMapRequest();
-
-		// Special case for immersive pie startup, When in immersive pie at startup we use the player start but we want to move the camera where the player
-		// was at when pie ended.
-		GEditor->bHasPlayWorldPlacement = true;
+		GUnrealEd->StartQueuedPlaySessionRequest();
 	}
 }
 
 void FLevelEditorModule::GoImmersiveWithActiveLevelViewport( const bool bForceGameView )
 {
-	TSharedPtr<ILevelViewport> ActiveLevelViewport = GetFirstActiveViewport();
+	TSharedPtr<IAssetViewport> ActiveLevelViewport = GetFirstActiveViewport();
 
 	if( ActiveLevelViewport.IsValid() )
 	{
@@ -542,7 +586,7 @@ void FLevelEditorModule::GoImmersiveWithActiveLevelViewport( const bool bForceGa
 
 void FLevelEditorModule::ToggleImmersiveOnActiveLevelViewport()
 {
-	TSharedPtr< ILevelViewport > ActiveLevelViewport = GetFirstActiveViewport();
+	TSharedPtr< IAssetViewport > ActiveLevelViewport = GetFirstActiveViewport();
 	if( ActiveLevelViewport.IsValid() )
 	{
 		// Toggle immersive mode (with animation!)
@@ -562,7 +606,19 @@ TSharedPtr<SDockTab> FLevelEditorModule::GetLevelEditorTab() const
 	return LevelEditorInstanceTabPtr.Pin();
 }
 
-TSharedRef<IViewportLayoutEntity> FLevelEditorModule::FactoryViewport(FName InTypeName, const FViewportConstructionArgs& ConstructionArgs) const
+void FLevelEditorModule::AddStatusBarItem(FName InStatusBarIdentifier, const FStatusBarItem& InStatusBarItem)
+{
+	StatusBarItems.FindOrAdd(InStatusBarIdentifier) = InStatusBarItem;
+	BroadcastNotificationBarChanged();
+}
+
+void FLevelEditorModule::RemoveStatusBarItem(FName InStatusBarIdentifier)
+{
+	StatusBarItems.Remove(InStatusBarIdentifier);
+	BroadcastNotificationBarChanged();
+}
+
+TSharedRef<ILevelViewportLayoutEntity> FLevelEditorModule::FactoryViewport(FName InTypeName, const FViewportConstructionArgs& ConstructionArgs) const
 {
 	const FViewportTypeDefinition* Definition = CustomViewports.Find(InTypeName);
 	if (Definition)
@@ -571,6 +627,19 @@ TSharedRef<IViewportLayoutEntity> FLevelEditorModule::FactoryViewport(FName InTy
 	}
 
 	return MakeShareable(new FLevelViewportLayoutEntity(ConstructionArgs));
+}
+
+TSharedPtr<FExtender> FLevelEditorModule::AssembleExtenders(TSharedRef<FUICommandList>& InCommandList, TArray<FLevelEditorMenuExtender>& MenuExtenderDelegates) const
+{
+	TArray<TSharedPtr<FExtender>> Extenders;
+	for (int32 i = 0; i < MenuExtenderDelegates.Num(); ++i)
+	{
+		if (MenuExtenderDelegates[i].IsBound())
+		{
+			Extenders.Add(MenuExtenderDelegates[i].Execute(InCommandList));
+		}
+	}
+	return FExtender::Combine(Extenders);
 }
 
 void FLevelEditorModule::BindGlobalLevelEditorCommands()
@@ -652,6 +721,30 @@ void FLevelEditorModule::BindGlobalLevelEditorCommands()
 		FExecuteAction::CreateStatic( &FLevelEditorActionCallbacks::RecompileGameCode_Clicked ),
 		FCanExecuteAction::CreateStatic( &FLevelEditorActionCallbacks::Recompile_CanExecute )
 		);
+
+#if WITH_LIVE_CODING
+	ActionList.MapAction( 
+		Commands.LiveCoding_Enable, 
+		FExecuteAction::CreateStatic( &FLevelEditorActionCallbacks::LiveCoding_ToggleEnabled ),
+		FCanExecuteAction(),
+		FIsActionChecked::CreateStatic( &FLevelEditorActionCallbacks::LiveCoding_IsEnabled ) );
+
+	ActionList.MapAction( 
+		Commands.LiveCoding_StartSession, 
+		FExecuteAction::CreateStatic( &FLevelEditorActionCallbacks::LiveCoding_StartSession_Clicked ),
+		FCanExecuteAction::CreateStatic( &FLevelEditorActionCallbacks::LiveCoding_CanStartSession ) );
+
+	ActionList.MapAction( 
+		Commands.LiveCoding_ShowConsole, 
+		FExecuteAction::CreateStatic( &FLevelEditorActionCallbacks::LiveCoding_ShowConsole_Clicked ),
+		FCanExecuteAction::CreateStatic( &FLevelEditorActionCallbacks::LiveCoding_CanShowConsole ) );
+
+	ActionList.MapAction( 
+		Commands.LiveCoding_Settings, 
+		FExecuteAction::CreateStatic( &FLevelEditorActionCallbacks::LiveCoding_Settings_Clicked ),
+		FCanExecuteAction());
+
+#endif
 
 	ActionList.MapAction( 
 		FGlobalEditorCommonCommands::Get().FindInContentBrowser, 
@@ -1440,6 +1533,9 @@ void FLevelEditorModule::BindGlobalLevelEditorCommands()
 	ActionList.MapAction(Commands.BuildTextureStreamingOnly,
 		FExecuteAction::CreateStatic(&FLevelEditorActionCallbacks::BuildTextureStreamingOnly_Execute));
 
+	ActionList.MapAction(Commands.BuildVirtualTextureOnly,
+		FExecuteAction::CreateStatic(&FLevelEditorActionCallbacks::BuildVirtualTextureOnly_Execute));
+
 	ActionList.MapAction( 
 		Commands.LightingQuality_Production, 
 		FExecuteAction::CreateStatic( &FLevelEditorActionCallbacks::SetLightingQuality, (ELightingBuildQuality)Quality_Production ),
@@ -1690,10 +1786,6 @@ void FLevelEditorModule::BindGlobalLevelEditorCommands()
 		FCanExecuteAction(),
 		FIsActionChecked::CreateStatic( &FLevelEditorActionCallbacks::IsViewportUIHidden ) 
 		);
-	ActionList.MapAction(
-		Commands.AddMatinee,
-		FExecuteAction::CreateStatic( &FLevelEditorActionCallbacks::OnAddMatinee )
-		);
 
 	ActionList.MapAction( 
 		Commands.MaterialQualityLevel_Low, 
@@ -1719,36 +1811,34 @@ void FLevelEditorModule::BindGlobalLevelEditorCommands()
 		FIsActionButtonVisible::CreateStatic(FLevelEditorActionCallbacks::IsPreviewModeButtonVisible));
 
 	ActionList.MapAction(
-		Commands.PreviewPlatformOverride_DefaultES2,
-		FExecuteAction::CreateStatic(&FLevelEditorActionCallbacks::SetPreviewPlatform, FName(), ERHIFeatureLevel::ES2),
+		Commands.PreviewPlatformOverride_SM5,
+		FExecuteAction::CreateStatic(&FLevelEditorActionCallbacks::SetPreviewPlatform, FPreviewPlatformInfo(ERHIFeatureLevel::SM5, NAME_None, false)),
 		FCanExecuteAction(),
-		FIsActionChecked::CreateStatic(&FLevelEditorActionCallbacks::IsPreviewPlatformChecked, FName(), ERHIFeatureLevel::ES2));
-	ActionList.MapAction(
-		Commands.PreviewPlatformOverride_AndroidGLES2,
-		FExecuteAction::CreateStatic(&FLevelEditorActionCallbacks::SetPreviewPlatform, LegacyShaderPlatformToShaderFormat(SP_OPENGL_ES2_ANDROID), ERHIFeatureLevel::ES2),
-		FCanExecuteAction(),
-		FIsActionChecked::CreateStatic(&FLevelEditorActionCallbacks::IsPreviewPlatformChecked, LegacyShaderPlatformToShaderFormat(SP_OPENGL_ES2_ANDROID), ERHIFeatureLevel::ES2));
+		FIsActionChecked::CreateStatic(&FLevelEditorActionCallbacks::IsPreviewPlatformChecked, FPreviewPlatformInfo(ERHIFeatureLevel::SM5, NAME_None)));
 
 	ActionList.MapAction(
-		Commands.PreviewPlatformOverride_DefaultES31,
-		FExecuteAction::CreateStatic(&FLevelEditorActionCallbacks::SetPreviewPlatform, FName(), ERHIFeatureLevel::ES3_1),
+		Commands.PreviewPlatformOverride_AndroidGLES2,
+		FExecuteAction::CreateStatic(&FLevelEditorActionCallbacks::SetPreviewPlatform, FPreviewPlatformInfo(ERHIFeatureLevel::ES2, LegacyShaderPlatformToShaderFormat(SP_OPENGL_ES2_ANDROID), true)),
 		FCanExecuteAction(),
-		FIsActionChecked::CreateStatic(&FLevelEditorActionCallbacks::IsPreviewPlatformChecked, FName(), ERHIFeatureLevel::ES3_1));
+		FIsActionChecked::CreateStatic(&FLevelEditorActionCallbacks::IsPreviewPlatformChecked, FPreviewPlatformInfo(ERHIFeatureLevel::ES2, LegacyShaderPlatformToShaderFormat(SP_OPENGL_ES2_ANDROID))));
+
 	ActionList.MapAction(
 		Commands.PreviewPlatformOverride_AndroidGLES31,
-		FExecuteAction::CreateStatic(&FLevelEditorActionCallbacks::SetPreviewPlatform, LegacyShaderPlatformToShaderFormat(SP_OPENGL_ES3_1_ANDROID), ERHIFeatureLevel::ES3_1),
+		FExecuteAction::CreateStatic(&FLevelEditorActionCallbacks::SetPreviewPlatform, FPreviewPlatformInfo(ERHIFeatureLevel::ES3_1, LegacyShaderPlatformToShaderFormat(SP_OPENGL_ES3_1_ANDROID), true)),
 		FCanExecuteAction(),
-		FIsActionChecked::CreateStatic(&FLevelEditorActionCallbacks::IsPreviewPlatformChecked, LegacyShaderPlatformToShaderFormat(SP_OPENGL_ES3_1_ANDROID), ERHIFeatureLevel::ES3_1));
+		FIsActionChecked::CreateStatic(&FLevelEditorActionCallbacks::IsPreviewPlatformChecked, FPreviewPlatformInfo(ERHIFeatureLevel::ES3_1, LegacyShaderPlatformToShaderFormat(SP_OPENGL_ES3_1_ANDROID))));
+
 	ActionList.MapAction(
 		Commands.PreviewPlatformOverride_AndroidVulkanES31,
-		FExecuteAction::CreateStatic(&FLevelEditorActionCallbacks::SetPreviewPlatform, LegacyShaderPlatformToShaderFormat(SP_VULKAN_ES3_1_ANDROID), ERHIFeatureLevel::ES3_1),
+		FExecuteAction::CreateStatic(&FLevelEditorActionCallbacks::SetPreviewPlatform, FPreviewPlatformInfo(ERHIFeatureLevel::ES3_1, LegacyShaderPlatformToShaderFormat(SP_VULKAN_ES3_1_ANDROID), true)),
 		FCanExecuteAction(),
-		FIsActionChecked::CreateStatic(&FLevelEditorActionCallbacks::IsPreviewPlatformChecked, LegacyShaderPlatformToShaderFormat(SP_VULKAN_ES3_1_ANDROID), ERHIFeatureLevel::ES3_1));
+		FIsActionChecked::CreateStatic(&FLevelEditorActionCallbacks::IsPreviewPlatformChecked, FPreviewPlatformInfo(ERHIFeatureLevel::ES3_1, LegacyShaderPlatformToShaderFormat(SP_VULKAN_ES3_1_ANDROID))));
+
 	ActionList.MapAction(
 		Commands.PreviewPlatformOverride_IOSMetalES31,
-		FExecuteAction::CreateStatic(&FLevelEditorActionCallbacks::SetPreviewPlatform, LegacyShaderPlatformToShaderFormat(SP_METAL), ERHIFeatureLevel::ES3_1),
+		FExecuteAction::CreateStatic(&FLevelEditorActionCallbacks::SetPreviewPlatform, FPreviewPlatformInfo(ERHIFeatureLevel::ES3_1, LegacyShaderPlatformToShaderFormat(SP_METAL), true)),
 		FCanExecuteAction(),
-		FIsActionChecked::CreateStatic(&FLevelEditorActionCallbacks::IsPreviewPlatformChecked, LegacyShaderPlatformToShaderFormat(SP_METAL), ERHIFeatureLevel::ES3_1));
+		FIsActionChecked::CreateStatic(&FLevelEditorActionCallbacks::IsPreviewPlatformChecked, FPreviewPlatformInfo(ERHIFeatureLevel::ES3_1, LegacyShaderPlatformToShaderFormat(SP_METAL))));
 
 	ActionList.MapAction(
 		Commands.OpenMergeActor,
@@ -1775,16 +1865,7 @@ void FLevelEditorModule::BindGlobalLevelEditorCommands()
 		FCanExecuteAction(),
 		FIsActionChecked::CreateStatic(FLevelEditorActionCallbacks::GeometryCollection_IsChecked)
 		);
-
-
-	for (int32 i = 0; i < ERHIFeatureLevel::Num; ++i)
-	{
-		ActionList.MapAction(
-			Commands.FeatureLevelPreview[i],
-			FExecuteAction::CreateStatic(&FLevelEditorActionCallbacks::SetFeatureLevelPreview, (ERHIFeatureLevel::Type)i),
-			FCanExecuteAction::CreateStatic(&FLevelEditorActionCallbacks::IsFeatureLevelPreviewAvailable, (ERHIFeatureLevel::Type)i),
-			FIsActionChecked::CreateStatic(&FLevelEditorActionCallbacks::IsFeatureLevelPreviewChecked, (ERHIFeatureLevel::Type)i));
-	}
 }
 	
+
 #undef LOCTEXT_NAMESPACE

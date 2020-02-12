@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 
 /** 
@@ -15,7 +15,11 @@
 #include "Sound/SoundWave.h"
 #include "SoundWaveProcedural.generated.h"
 
+#if PLATFORM_IOS
+#define DEFAULT_PROCEDURAL_SOUNDWAVE_BUFFER_SIZE (8 * 1024)
+#else
 #define DEFAULT_PROCEDURAL_SOUNDWAVE_BUFFER_SIZE 1024
+#endif
 
 DECLARE_DELEGATE_TwoParams( FOnSoundWaveProceduralUnderflow, class USoundWaveProcedural*, int32 );
 

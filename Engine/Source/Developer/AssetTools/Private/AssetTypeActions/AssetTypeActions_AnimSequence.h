@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -7,7 +7,6 @@
 #include "Animation/AnimationAsset.h"
 #include "AssetTypeActions/AssetTypeActions_AnimationAsset.h"
 
-class FMenuBuilder;
 class UAnimSequence;
 class UFactory;
 
@@ -20,7 +19,7 @@ public:
 	// IAssetTypeActions Implementation
 	virtual FText GetName() const override { return NSLOCTEXT("AssetTypeActions", "AssetTypeActions_AnimSequence", "Animation Sequence"); }
 	virtual UClass* GetSupportedClass() const override;
-	virtual void GetActions( const TArray<UObject*>& InObjects, FMenuBuilder& MenuBuilder ) override;
+	virtual void GetActions(const TArray<UObject*>& InObjects, struct FToolMenuSection& Section) override;
 	virtual bool CanFilter() override { return true; }
 	virtual bool IsImportedAsset() const override { return true; }
 	virtual void GetResolvedSourceFilePaths(const TArray<UObject*>& TypeAssets, TArray<FString>& OutSourceFilePaths) const override;
@@ -34,6 +33,9 @@ private:
 
 	/** Handler for when Create AnimMontage is selected */
 	void ExecuteNewAnimMontage(TArray<TWeakObjectPtr<UAnimSequence>> Objects) const;
+
+	/** Handler for when Create AnimStreamable is selected */
+	void ExecuteNewAnimStreamable(TArray<TWeakObjectPtr<UAnimSequence>> Objects) const;
 
 	/** Handler for when Create Pose Asset is selected */
 	void ExecuteNewPoseAsset(TArray<TWeakObjectPtr<UAnimSequence>> Objects) const;

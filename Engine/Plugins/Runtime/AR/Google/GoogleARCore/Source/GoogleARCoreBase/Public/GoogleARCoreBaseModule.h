@@ -1,8 +1,9 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
 #include "Modules/ModuleManager.h"
+#include "Stats/Stats.h"
 #include "IHeadMountedDisplayModule.h"
 
 /**
@@ -35,3 +36,5 @@ public:
 		return FModuleManager::Get().IsModuleLoaded("GoogleARCoreBase");
 	}
 };
+
+DECLARE_STATS_GROUP(TEXT("ARCore"), STATGROUP_ARCore, STATCAT_Advanced);

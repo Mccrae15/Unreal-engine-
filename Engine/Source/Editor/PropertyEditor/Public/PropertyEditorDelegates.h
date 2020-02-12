@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -7,20 +7,17 @@
 
 class FPropertyPath;
 struct FPropertyChangedEvent;
+class IPropertyHandle;
 
 struct FPropertyAndParent
 {
-	FPropertyAndParent( const UProperty& InProperty, const UProperty* const InParentProperty, const TArray< TWeakObjectPtr<UObject> >& InObjects )
-		: Property( InProperty )
-		, ParentProperty( InParentProperty )
-		, Objects( InObjects )
-	{}
+	FPropertyAndParent(const TSharedRef<IPropertyHandle>& InPropertyHandle, const TArray< TWeakObjectPtr< UObject > >& InObjects);
 
 	/** The property always exists */
-	const UProperty& Property;
+	const FProperty& Property;
 
-	/** The parent property may not exist */
-	const UProperty* const ParentProperty;
+	/** The entire chain of parent properties, all the way to the property root. ParentProperties[0] is the immediate parent.*/
+	TArray< const FProperty* > ParentProperties;
 
 	/** The objects for these properties */
 	TArray< TWeakObjectPtr< UObject > > Objects;
@@ -29,8 +26,17 @@ struct FPropertyAndParent
 /** Delegate called to see if a property should be visible */
 DECLARE_DELEGATE_RetVal_OneParam( bool, FIsPropertyVisible, const FPropertyAndParent& );
 
-/** Delegate called to see if a property should be visible */
+/** Delegate called to see if a property should be read-only */
 DECLARE_DELEGATE_RetVal_OneParam( bool, FIsPropertyReadOnly, const FPropertyAndParent& );
+
+/** 
+ * Delegate called to check if custom row visibility is filtered, 
+ * i.e. whether FIsCustomRowVisible delegate will always return true no matter the parameters. 
+ */
+DECLARE_DELEGATE_RetVal(bool, FIsCustomRowVisibilityFiltered);
+
+/** Delegate called to determine if a custom row should be visible. */
+DECLARE_DELEGATE_RetVal_TwoParams(bool, FIsCustomRowVisible, FName /*InRowName*/, FName /*InParentName*/);
 
 /** Delegate called to get a detail layout for a specific object class */
 DECLARE_DELEGATE_RetVal( TSharedRef<class IDetailCustomization>, FOnGetDetailCustomizationInstance );
@@ -39,16 +45,16 @@ DECLARE_DELEGATE_RetVal( TSharedRef<class IDetailCustomization>, FOnGetDetailCus
 DECLARE_DELEGATE_RetVal( TSharedRef<class IPropertyTypeCustomization>, FOnGetPropertyTypeCustomizationInstance );
 
 /** Notification for when a property view changes */
-DECLARE_DELEGATE_TwoParams( FOnObjectArrayChanged, const FString&, const TArray< TWeakObjectPtr< UObject > >& );
+DECLARE_DELEGATE_TwoParams( FOnObjectArrayChanged, const FString&, const TArray<UObject*>& );
 
 /** Notification for when displayed properties changes (for instance, because the user has filtered some properties */
 DECLARE_DELEGATE( FOnDisplayedPropertiesChanged );
 
 /** Notification for when a property selection changes. */
-DECLARE_DELEGATE_OneParam( FOnPropertySelectionChanged, UProperty* )
+DECLARE_DELEGATE_OneParam( FOnPropertySelectionChanged, FProperty* )
 
 /** Notification for when a property is double clicked by the user*/
-DECLARE_DELEGATE_OneParam( FOnPropertyDoubleClicked, UProperty* )
+DECLARE_DELEGATE_OneParam( FOnPropertyDoubleClicked, FProperty* )
 
 /** Notification for when a property is clicked by the user*/
 DECLARE_DELEGATE_OneParam( FOnPropertyClicked, const TSharedPtr< class FPropertyPath >& )

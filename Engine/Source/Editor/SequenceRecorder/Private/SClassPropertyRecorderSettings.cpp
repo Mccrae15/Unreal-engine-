@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "SClassPropertyRecorderSettings.h"
 #include "Templates/SubclassOf.h"
@@ -104,12 +104,12 @@ FReply SClassPropertyRecorderSettings::HandleChoosePropertiesButtonClicked()
 	return FReply::Handled();
 }
 
-bool ShouldShowProperty_Recursive(const UProperty* InProperty)
+bool ShouldShowProperty_Recursive(const FProperty* InProperty)
 {
-	if (InProperty->IsA<UStructProperty>())
+	if (InProperty->IsA<FStructProperty>())
 	{
-		const UStructProperty* StructProperty = CastChecked<const UStructProperty>(InProperty);
-		for (const UProperty* Property = StructProperty->Struct->PropertyLink; Property; Property = Property->PropertyLinkNext)
+		const FStructProperty* StructProperty = CastFieldChecked<const FStructProperty>(InProperty);
+		for (const FProperty* Property = StructProperty->Struct->PropertyLink; Property; Property = Property->PropertyLinkNext)
 		{
 			if (Property->HasAnyPropertyFlags(CPF_Interp) && FMovieSceneMultiPropertyRecorder::CanPropertyBeRecorded(*Property))
 			{
@@ -143,7 +143,7 @@ bool SClassPropertyRecorderSettings::IsPropertyExtendable(const UClass* InObject
 	return PropertyHandle.GetProperty()->HasAnyPropertyFlags(CPF_Interp) && FMovieSceneMultiPropertyRecorder::CanPropertyBeRecorded(*PropertyHandle.GetProperty());
 }
 
-TSharedRef<SWidget> SClassPropertyRecorderSettings::GenerateExtensionWidget(const UClass* InObjectClass, TSharedPtr<IPropertyHandle> PropertyHandle)
+TSharedRef<SWidget> SClassPropertyRecorderSettings::GenerateExtensionWidget(const IDetailLayoutBuilder& InDetailLayoutBuilder, const UClass* InObjectClass, TSharedPtr<IPropertyHandle> PropertyHandle)
 {
 	ECheckBoxState InitialState = ECheckBoxState::Unchecked;
 	FName PropertyName = *PropertyHandle->GeneratePathToProperty();

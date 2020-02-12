@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "KismetNodes/SGraphNodeSpawnActorFromClass.h"
 #include "Modules/ModuleManager.h"
@@ -66,6 +66,21 @@ protected:
 		Options.bShowObjectRootClass = true;
 		TSharedPtr< FActorBasedClassFilter > Filter = MakeShareable(new FActorBasedClassFilter);
 		Options.ClassFilter = Filter;
+		// Populate the referencing asset, if possible
+		if (UEdGraphPin* LocalGraphPin = GetPinObj())
+		{
+			if (UEdGraphNode* LocalNode = LocalGraphPin->GetOwningNode())
+			{
+				if (UEdGraph* LocalGraph = LocalNode->GetGraph())
+				{
+					UObject* GraphOuter = LocalGraph->GetOuter();
+					if (GraphOuter)
+					{
+						Options.AdditionalReferencingAssets.Add(FAssetData(GraphOuter));
+					}
+				}
+			}
+		}
 
 		return 
 			SNew(SBox)

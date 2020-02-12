@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -12,6 +12,32 @@
 #include "Templates/IsArrayOrRefOfType.h"
 
 #define MAX_SPRINTF 1024
+
+/** Determines case sensitivity options for string comparisons. */
+namespace ESearchCase
+{
+	enum Type
+	{
+		/** Case sensitive. Upper/lower casing must match for strings to be considered equal. */
+		CaseSensitive,
+
+		/** Ignore case. Upper/lower casing does not matter when making a comparison. */
+		IgnoreCase,
+	};
+};
+
+/** Determines search direction for string operations. */
+namespace ESearchDir
+{
+	enum Type
+	{
+		/** Search from the start, moving forward through the string. */
+		FromStart,
+
+		/** Search from the end, moving backward through the string. */
+		FromEnd,
+	};
+}
 
 /** Helper class used to convert CString into a boolean value. */
 struct CORE_API FToBoolHelper
@@ -302,8 +328,8 @@ struct TCString
 
 	/**
 	 * Converts a string into a boolean value
-	 *   1, "True", "Yes", GTrue, GYes, and non-zero integers become true
-	 *   0, "False", "No", GFalse, GNo, and unparsable values become false
+	 *   1, "True", "Yes", FCoreTexts::True, FCoreTexts::Yes, and non-zero integers become true
+	 *   0, "False", "No", FCoreTexts::False, FCoreTexts::No, and unparsable values become false
 	 *
 	 * @return The boolean value
 	 */
@@ -740,10 +766,10 @@ typename TCString<T>::CharType* TCString<T>::Strrstr( CharType* String, const Ch
 template <typename T> FORCEINLINE
 int32 TCString<T>::Strspn( const CharType* String, const CharType* Mask )
 {
-	const TCHAR* StringIt = String;
+	const CharType* StringIt = String;
 	while (*StringIt)
 	{
-		for (const TCHAR* MaskIt = Mask; *MaskIt; ++MaskIt)
+		for (const CharType* MaskIt = Mask; *MaskIt; ++MaskIt)
 		{
 			if (*StringIt == *MaskIt)
 			{
@@ -751,22 +777,22 @@ int32 TCString<T>::Strspn( const CharType* String, const CharType* Mask )
 			}
 		}
 
-		return StringIt - String;
+		return UE_PTRDIFF_TO_INT32(StringIt - String);
 
 	NextChar:
 		++StringIt;
 	}
 
-	return StringIt - String;
+	return UE_PTRDIFF_TO_INT32(StringIt - String);
 }
 
 template <typename T> FORCEINLINE
 int32 TCString<T>::Strcspn( const CharType* String, const CharType* Mask )
 {
-	const TCHAR* StringIt = String;
+	const CharType* StringIt = String;
 	while (*StringIt)
 	{
-		for (const TCHAR* MaskIt = Mask; *MaskIt; ++MaskIt)
+		for (const CharType* MaskIt = Mask; *MaskIt; ++MaskIt)
 		{
 			if (*StringIt == *MaskIt)
 			{

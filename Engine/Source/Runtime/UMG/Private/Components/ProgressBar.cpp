@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "Components/ProgressBar.h"
 #include "Slate/SlateBrushAsset.h"
@@ -8,11 +8,21 @@
 /////////////////////////////////////////////////////
 // UProgressBar
 
+static FProgressBarStyle* DefaultProgressBarStyle = nullptr;
+
 UProgressBar::UProgressBar(const FObjectInitializer& ObjectInitializer)
 	: Super(ObjectInitializer)
 {
-	SProgressBar::FArguments SlateDefaults;
-	WidgetStyle = *SlateDefaults._Style;
+	if (DefaultProgressBarStyle == nullptr)
+	{
+		// HACK: THIS SHOULD NOT COME FROM CORESTYLE AND SHOULD INSTEAD BE DEFINED BY ENGINE TEXTURES/PROJECT SETTINGS
+		DefaultProgressBarStyle = new FProgressBarStyle(FCoreStyle::Get().GetWidgetStyle<FProgressBarStyle>("ProgressBar"));
+
+		// Unlink UMG default colors from the editor settings colors.
+		DefaultProgressBarStyle->UnlinkColors();
+	}
+
+	WidgetStyle = *DefaultProgressBarStyle;
 	WidgetStyle.FillImage.TintColor = FLinearColor::White;
 
 	BarFillType = EProgressBarFillType::LeftToRight;

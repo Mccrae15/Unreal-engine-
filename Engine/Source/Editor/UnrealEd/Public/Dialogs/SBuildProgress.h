@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 /*=============================================================================
 	DlgBuildProgress.h: UnrealEd dialog for displaying map build progress and cancelling builds.
@@ -44,6 +44,8 @@ public:
 		BUILDTYPE_LODs, 
 		/** Texture streaming data is being built */
 		BUILDTYPE_TextureStreaming, 
+		/** Virtual texture data is being built */
+		BUILDTYPE_VirtualTexture,
 	};
 
 	/** The various issues that can occur. */

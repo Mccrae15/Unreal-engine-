@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "Animation/AnimInstanceProxy.h"
 #include "Animation/AnimNodeBase.h"
@@ -11,7 +11,7 @@
 #include "Animation/AnimNode_StateMachine.h"
 #include "Animation/AnimNode_TransitionResult.h"
 #include "Animation/AnimNode_SaveCachedPose.h"
-#include "Animation/AnimNode_SubInput.h"
+#include "Animation/AnimNode_LinkedInputPose.h"
 #include "Engine/Engine.h"
 #include "DrawDebugHelpers.h"
 #include "GameFramework/WorldSettings.h"
@@ -22,26 +22,41 @@
 
 #define DO_ANIMSTAT_PROCESSING(StatName) DEFINE_STAT(STAT_ ## StatName ## _WorkerThread)
 #include "Animation/AnimMTStats.h"
+#include "Animation/AnimNode_Root.h"
+#include "Animation/AnimNode_LinkedAnimLayer.h"
+#include "Animation/AnimMontage.h"
+
 #undef DO_ANIMSTAT_PROCESSING
 
 #define LOCTEXT_NAMESPACE "AnimInstance"
 
-static const FName NAME_AnimBlueprintLog(TEXT("AnimBlueprintLog"));
-static const FName NAME_Evaluate(TEXT("Evaluate"));
-static const FName NAME_Update(TEXT("Update"));
+const FName NAME_AnimBlueprintLog(TEXT("AnimBlueprintLog"));
+const FName NAME_Evaluate(TEXT("Evaluate"));
+const FName NAME_Update(TEXT("Update"));
+const FName NAME_AnimGraph(TEXT("AnimGraph"));
 
-void FAnimInstanceProxy::UpdateAnimationNode(float DeltaSeconds)
+void FAnimInstanceProxy::UpdateAnimationNode(const FAnimationUpdateContext& InContext)
 {
-#if WITH_EDITORONLY_DATA
-	UpdatedNodesThisFrame.Reset();
-#endif
+	TRACE_SCOPED_ANIM_GRAPH(InContext);
+	TRACE_SCOPED_ANIM_NODE(InContext);
 
-	if(RootNode != nullptr)
+	UpdateAnimationNode_WithRoot(InContext, RootNode, NAME_AnimGraph);
+}
+
+void FAnimInstanceProxy::UpdateAnimationNode_WithRoot(const FAnimationUpdateContext& InContext, FAnimNode_Base* InRootNode, FName InLayerName)
+{
+	DECLARE_SCOPE_HIERARCHICAL_COUNTER_FUNC()
+	if(InRootNode != nullptr)
 	{
-		UpdateCounter.Increment();
-		RootNode->Update_AnyThread(FAnimationUpdateContext(this, DeltaSeconds));
+		if (InRootNode == RootNode)
+		{
+			UpdateCounter.Increment();
+		}
+		
+		InRootNode->Update_AnyThread(InContext);
 
 		// We've updated the graph, now update the fractured saved pose sections
+		TArray<FAnimNode_SaveCachedPose*>& SavedPoseQueue = SavedPoseQueueMap.FindChecked(InLayerName);
 		for(FAnimNode_SaveCachedPose* PoseNode : SavedPoseQueue)
 		{
 			PoseNode->PostGraphUpdate();
@@ -51,7 +66,8 @@ void FAnimInstanceProxy::UpdateAnimationNode(float DeltaSeconds)
 
 void FAnimInstanceProxy::AddReferencedObjects(UAnimInstance* InAnimInstance, FReferenceCollector& Collector)
 {
-	for (int32 Index = 0; Index < ARRAY_COUNT(UngroupedActivePlayerArrays); ++Index)
+	DECLARE_SCOPE_HIERARCHICAL_COUNTER_FUNC()
+	for (int32 Index = 0; Index < UE_ARRAY_COUNT(UngroupedActivePlayerArrays); ++Index)
 	{
 		TArray<FAnimTickRecord>& UngroupedPlayers = UngroupedActivePlayerArrays[Index];
 		for (FAnimTickRecord& TickRecord : UngroupedPlayers)
@@ -63,6 +79,8 @@ void FAnimInstanceProxy::AddReferencedObjects(UAnimInstance* InAnimInstance, FRe
 
 void FAnimInstanceProxy::Initialize(UAnimInstance* InAnimInstance)
 {
+	DECLARE_SCOPE_HIERARCHICAL_COUNTER_FUNC()
+
 	// copy anim instance object if it has not already been set up
 	AnimInstanceObject = InAnimInstance;
 
@@ -72,25 +90,30 @@ void FAnimInstanceProxy::Initialize(UAnimInstance* InAnimInstance)
 
 	if (AnimClassInterface)
 	{
-		// Grab a pointer to the root node
-		if (UStructProperty* RootAnimNodeProperty = AnimClassInterface->GetRootAnimNodeProperty())
+		const TArray<FStructPropertyPath>& AnimNodeProperties = AnimClassInterface->GetAnimNodeProperties();
+
+		// Grab a pointer to the default root node, if any
+		RootNode = nullptr;
+		if(AnimClassInterface->GetAnimBlueprintFunctions().Num() > 0)
 		{
-			RootNode = RootAnimNodeProperty->ContainerPtrToValuePtr<FAnimNode_Base>(InAnimInstance);
-		}
-		else
-		{
-			RootNode = nullptr;
+			if(FProperty* RootNodeProperty = AnimClassInterface->GetAnimBlueprintFunctions()[0].OutputPoseNodeProperty.Get())
+			{
+				RootNode = RootNodeProperty->ContainerPtrToValuePtr<FAnimNode_Root>(InAnimInstance);
+			}
 		}
 
 		// Initialise the pose node list
-		const TArray<int32>& PoseNodeIndices = AnimClassInterface->GetOrderedSavedPoseNodeIndices();
-		const TArray<UStructProperty*>& AnimNodeProperties = AnimClassInterface->GetAnimNodeProperties();
-		SavedPoseQueue.Empty(PoseNodeIndices.Num());
-		for(int32 Idx : PoseNodeIndices)
+		const TMap<FName, FCachedPoseIndices>& PoseNodeIndicesMap = AnimClassInterface->GetOrderedSavedPoseNodeIndicesMap();
+		SavedPoseQueueMap.Reset();
+		for(const TPair<FName, FCachedPoseIndices>& Pair : PoseNodeIndicesMap)
 		{
-			int32 ActualPropertyIdx = AnimNodeProperties.Num() - 1 - Idx;
-			FAnimNode_SaveCachedPose* ActualPoseNode = AnimNodeProperties[ActualPropertyIdx]->ContainerPtrToValuePtr<FAnimNode_SaveCachedPose>(InAnimInstance);
-			SavedPoseQueue.Add(ActualPoseNode);
+			TArray<FAnimNode_SaveCachedPose*>& SavedPoseQueue = SavedPoseQueueMap.Add(Pair.Key);
+			for(int32 Idx : Pair.Value.OrderedSavedPoseNodeIndices)
+			{
+				int32 ActualPropertyIdx = AnimNodeProperties.Num() - 1 - Idx;
+				FAnimNode_SaveCachedPose* ActualPoseNode = AnimNodeProperties[ActualPropertyIdx]->ContainerPtrToValuePtr<FAnimNode_SaveCachedPose>(InAnimInstance);
+				SavedPoseQueue.Add(ActualPoseNode);
+			}
 		}
 
 		// if no mesh, use Blueprint Skeleton
@@ -162,17 +185,70 @@ void FAnimInstanceProxy::Initialize(UAnimInstance* InAnimInstance)
 	}
 }
 
-void FAnimInstanceProxy::InitializeRootNode()
+void FAnimInstanceProxy::InitializeRootNode(bool bInDeferRootNodeInitialization)
 {
-	if (RootNode != nullptr)
-	{
-		LODDisabledGameThreadPreUpdateNodes.Reset();
-		GameThreadPreUpdateNodes.Reset();
-		DynamicResetNodes.Reset();
+	DECLARE_SCOPE_HIERARCHICAL_COUNTER_FUNC()
 
+	LODDisabledGameThreadPreUpdateNodes.Reset();
+	GameThreadPreUpdateNodes.Reset();
+	DynamicResetNodes.Reset();
+
+	if(AnimClassInterface)
+	{
+		// cache any state machine descriptions we have
+		for (const FStructPropertyPath& Property : AnimClassInterface->GetStateMachineNodeProperties())
+		{
+			FAnimNode_StateMachine* StateMachine = Property->ContainerPtrToValuePtr<FAnimNode_StateMachine>(AnimInstanceObject);
+			StateMachine->CacheMachineDescription(AnimClassInterface);
+		}
+
+		// Init any nodes that need non-relevancy based initialization
+		UAnimInstance* AnimInstance = CastChecked<UAnimInstance>(GetAnimInstanceObject());
+		for (const FStructPropertyPath& Property : AnimClassInterface->GetInitializationNodeProperties())
+		{
+			FAnimNode_Base* AnimNode = Property->ContainerPtrToValuePtr<FAnimNode_Base>(AnimInstanceObject);
+			AnimNode->OnInitializeAnimInstance(this, AnimInstance);
+		}
+
+		// Cache any preupdate nodes
+		for (const FStructPropertyPath& Property : AnimClassInterface->GetPreUpdateNodeProperties())
+		{
+			FAnimNode_Base* AnimNode = Property->ContainerPtrToValuePtr<FAnimNode_Base>(AnimInstanceObject);
+			GameThreadPreUpdateNodes.Add(AnimNode);
+		}
+
+		// Cache any dynamic reset nodes
+		for (const FStructPropertyPath& Property : AnimClassInterface->GetDynamicResetNodeProperties())
+		{
+			FAnimNode_Base* AnimNode = Property->ContainerPtrToValuePtr<FAnimNode_Base>(AnimInstanceObject);
+			DynamicResetNodes.Add(AnimNode);
+		}
+
+		// Cache default linked input pose 
+		for(const FAnimBlueprintFunction& AnimBlueprintFunction : AnimClassInterface->GetAnimBlueprintFunctions())
+		{
+			if(AnimBlueprintFunction.Name == NAME_AnimGraph)
+			{
+				check(AnimBlueprintFunction.InputPoseNames.Num() == AnimBlueprintFunction.InputPoseNodeProperties.Num());
+				for(int32 InputIndex = 0; InputIndex < AnimBlueprintFunction.InputPoseNames.Num(); ++InputIndex)
+				{
+					if(AnimBlueprintFunction.InputPoseNames[InputIndex] == FAnimNode_LinkedInputPose::DefaultInputPoseName && AnimBlueprintFunction.InputPoseNodeProperties[InputIndex] != nullptr)
+					{
+						DefaultLinkedInstanceInputNode = AnimBlueprintFunction.InputPoseNodeProperties[InputIndex]->ContainerPtrToValuePtr<FAnimNode_LinkedInputPose>(CastChecked<UAnimInstance>(GetAnimInstanceObject()));
+						break;
+					}
+				}
+			}
+		}
+	}
+	else
+	{
 		auto InitializeNode = [this](FAnimNode_Base* AnimNode)
 		{
-			AnimNode->OnInitializeAnimInstance(this, CastChecked<UAnimInstance>(GetAnimInstanceObject()));
+			if(AnimNode->NeedsOnInitializeAnimInstance())
+			{
+				AnimNode->OnInitializeAnimInstance(this, CastChecked<UAnimInstance>(GetAnimInstanceObject()));
+			}
 
 			if (AnimNode->HasPreUpdate())
 			{
@@ -185,51 +261,48 @@ void FAnimInstanceProxy::InitializeRootNode()
 			}
 		};
 
-		if(AnimClassInterface)
+		//We have a custom root node, so get the associated nodes and initialize them
+		TArray<FAnimNode_Base*> CustomNodes;
+		GetCustomNodes(CustomNodes);
+		for(FAnimNode_Base* Node : CustomNodes)
 		{
-			// cache any state machine descriptions we have
-			for (UStructProperty* Property : AnimClassInterface->GetAnimNodeProperties())
+			if(Node)
 			{
-				if (Property->Struct->IsChildOf(FAnimNode_Base::StaticStruct()))
-				{
-					FAnimNode_Base* AnimNode = Property->ContainerPtrToValuePtr<FAnimNode_Base>(AnimInstanceObject);
-					if (AnimNode)
-					{
-						InitializeNode(AnimNode);
-
-						if (Property->Struct->IsChildOf(FAnimNode_StateMachine::StaticStruct()))
-						{
-							FAnimNode_StateMachine* StateMachine = static_cast<FAnimNode_StateMachine*>(AnimNode);
-							StateMachine->CacheMachineDescription(AnimClassInterface);
-						}
-
-						if (Property->Struct->IsChildOf(FAnimNode_SubInput::StaticStruct()))
-						{
-							check(!SubInstanceInputNode); // Should only ever have one
-							SubInstanceInputNode = static_cast<FAnimNode_SubInput*>(AnimNode);
-						}
-					}
-				}
+				InitializeNode(Node);
 			}
+		}
+	}
+
+	if(!bInDeferRootNodeInitialization)
+	{
+		InitializeRootNode_WithRoot(RootNode);
+	}
+	else
+	{
+		bDeferRootNodeInitialization = true;
+	}
+}
+
+void FAnimInstanceProxy::InitializeRootNode_WithRoot(FAnimNode_Base* InRootNode)
+{
+	DECLARE_SCOPE_HIERARCHICAL_COUNTER_FUNC()
+
+	if (InRootNode != nullptr)
+	{
+		FAnimationInitializeContext InitContext(this);
+
+		if(InRootNode == RootNode)
+		{
+			InitializationCounter.Increment();
+
+			TRACE_SCOPED_ANIM_GRAPH(InitContext);
+
+			InRootNode->Initialize_AnyThread(InitContext);
 		}
 		else
 		{
-			//We have a custom root node, so get the associated nodes and initialize them
-			TArray<FAnimNode_Base*> CustomNodes;
-			GetCustomNodes(CustomNodes);
-			for(FAnimNode_Base* Node : CustomNodes)
-			{
-				if(Node)
-				{
-					InitializeNode(Node);
-				}
-			}
-		}
-		
-
-		InitializationCounter.Increment();
-		FAnimationInitializeContext InitContext(this);
-		RootNode->Initialize_AnyThread(InitContext);
+		InRootNode->Initialize_AnyThread(InitContext);
+	}
 	}
 }
 
@@ -249,7 +322,7 @@ FGuid MakeGuidForMessage(const FText& Message)
 	return FGuid(Hash[0] ^ Hash[4], Hash[1], Hash[2], Hash[3]);
 }
 
-void FAnimInstanceProxy::LogMessage(FName InLogType, EMessageSeverity::Type InSeverity, const FText& InMessage)
+void FAnimInstanceProxy::LogMessage(FName InLogType, EMessageSeverity::Type InSeverity, const FText& InMessage) const
 {
 #if ENABLE_ANIM_LOGGING
 	FGuid CurrentMessageGuid = MakeGuidForMessage(InMessage);
@@ -266,19 +339,24 @@ void FAnimInstanceProxy::LogMessage(FName InLogType, EMessageSeverity::Type InSe
 
 void FAnimInstanceProxy::Uninitialize(UAnimInstance* InAnimInstance)
 {
+	DECLARE_SCOPE_HIERARCHICAL_COUNTER_FUNC()
+
 	MontageEvaluationData.Reset();
-	SubInstanceInputNode = nullptr;
+	DefaultLinkedInstanceInputNode = nullptr;
 	ResetAnimationCurves();
 	MaterialParametersToClear.Reset();
 }
 
 void FAnimInstanceProxy::PreUpdate(UAnimInstance* InAnimInstance, float DeltaSeconds)
 {
+	DECLARE_SCOPE_HIERARCHICAL_COUNTER_FUNC()
+
 	USkeletalMeshComponent* SkelMeshComp = InAnimInstance->GetSkelMeshComponent();
 	UWorld* World = SkelMeshComp ? SkelMeshComp->GetWorld() : nullptr;
+	AWorldSettings* WorldSettings = World ? World->GetWorldSettings() : nullptr;
 
 	CurrentDeltaSeconds = DeltaSeconds;
-	CurrentTimeDilation = World ? World->GetWorldSettings()->GetEffectiveTimeDilation() : 1.0f;
+	CurrentTimeDilation = WorldSettings ? WorldSettings->GetEffectiveTimeDilation() : 1.0f;
 	RootMotionMode = InAnimInstance->RootMotionMode;
 	bShouldExtractRootMotion = InAnimInstance->ShouldExtractRootMotion();
 
@@ -332,15 +410,14 @@ void FAnimInstanceProxy::PreUpdate(UAnimInstance* InAnimInstance, float DeltaSec
 	FMemory::Memset(MachineWeights.GetData(), 0, MachineWeights.Num() * sizeof(float));
 
 #if WITH_EDITORONLY_DATA
-	bIsBeingDebugged = false;
-	if (UAnimBlueprint* AnimBlueprint = GetAnimBlueprint())
+	UAnimBlueprint* AnimBP = GetAnimBlueprint();
+	bIsBeingDebugged = AnimBP ? AnimBP->IsObjectBeingDebugged(InAnimInstance) : false;
+	if (bIsBeingDebugged)
 	{
-		bIsBeingDebugged = (AnimBlueprint->GetObjectBeingDebugged() == InAnimInstance);
-		if(bIsBeingDebugged)
+		FAnimBlueprintDebugData* DebugData = AnimBP->GetDebugData();
+		if (DebugData)
 		{
-			UAnimBlueprintGeneratedClass* AnimBlueprintGeneratedClass = Cast<UAnimBlueprintGeneratedClass>(InAnimInstance->GetClass());
-			FAnimBlueprintDebugData& DebugData = AnimBlueprintGeneratedClass->GetAnimBlueprintDebugData();
-			PoseWatchEntriesForThisFrame = DebugData.AnimNodePoseWatch;
+			PoseWatchEntriesForThisFrame = DebugData->AnimNodePoseWatch;
 		}
 	}
 #endif
@@ -358,6 +435,8 @@ void FAnimInstanceProxy::PreUpdate(UAnimInstance* InAnimInstance, float DeltaSec
 
 void FAnimInstanceProxy::OnPreUpdateLODChanged(const int32 PreviousLODIndex, const int32 NewLODIndex)
 {
+	DECLARE_SCOPE_HIERARCHICAL_COUNTER_FUNC()
+
 	// Decrease detail, see which nodes need to be disabled.
 	if (NewLODIndex > PreviousLODIndex)
 	{
@@ -398,6 +477,8 @@ void FAnimInstanceProxy::OnPreUpdateLODChanged(const int32 PreviousLODIndex, con
 
 void FAnimInstanceProxy::SavePoseSnapshot(USkeletalMeshComponent* InSkeletalMeshComponent, FName SnapshotName)
 {
+	DECLARE_SCOPE_HIERARCHICAL_COUNTER_FUNC()
+
 	FPoseSnapshot* PoseSnapshot = PoseSnapshots.FindByPredicate([SnapshotName](const FPoseSnapshot& PoseData) { return PoseData.SnapshotName == SnapshotName; });
 	if (PoseSnapshot == nullptr)
 	{
@@ -410,13 +491,13 @@ void FAnimInstanceProxy::SavePoseSnapshot(USkeletalMeshComponent* InSkeletalMesh
 
 void FAnimInstanceProxy::PostUpdate(UAnimInstance* InAnimInstance) const
 {
+	DECLARE_SCOPE_HIERARCHICAL_COUNTER_FUNC()
+
 #if WITH_EDITORONLY_DATA
-	if(bIsBeingDebugged)
+	if (FAnimBlueprintDebugData* DebugData = GetAnimBlueprintDebugData())
 	{
-		UAnimBlueprintGeneratedClass* AnimBlueprintGeneratedClass = Cast<UAnimBlueprintGeneratedClass>(InAnimInstance->GetClass());
-		FAnimBlueprintDebugData& DebugData = AnimBlueprintGeneratedClass->GetAnimBlueprintDebugData();
-		DebugData.RecordNodeVisitArray(UpdatedNodesThisFrame);
-		DebugData.AnimNodePoseWatch = PoseWatchEntriesForThisFrame;
+		DebugData->RecordNodeVisitArray(UpdatedNodesThisFrame);
+		DebugData->AnimNodePoseWatch = PoseWatchEntriesForThisFrame;
 	}
 #endif
 
@@ -453,6 +534,8 @@ void FAnimInstanceProxy::PostUpdate(UAnimInstance* InAnimInstance) const
 
 void FAnimInstanceProxy::PostEvaluate(UAnimInstance* InAnimInstance)
 {
+	DECLARE_SCOPE_HIERARCHICAL_COUNTER_FUNC()
+
 	ClearObjects();
 
 #if ENABLE_ANIM_LOGGING
@@ -469,6 +552,8 @@ void FAnimInstanceProxy::PostEvaluate(UAnimInstance* InAnimInstance)
 
 void FAnimInstanceProxy::InitializeObjects(UAnimInstance* InAnimInstance)
 {
+	DECLARE_SCOPE_HIERARCHICAL_COUNTER_FUNC()
+
 	SkeletalMeshComponent = InAnimInstance->GetSkelMeshComponent();
 	if (SkeletalMeshComponent->SkeletalMesh != nullptr)
 	{
@@ -486,17 +571,20 @@ void FAnimInstanceProxy::InitializeObjects(UAnimInstance* InAnimInstance)
 	NumUroSkippedFrames_Eval = 0;
 	if(RateParams)
 	{
-		bool bDoUro = SkeletalMeshComponent->ShouldUseUpdateRateOptimizations();
-		bool bDoEvalOptimization = bDoUro && RateParams->DoEvaluationRateOptimizations();
-
+		const bool bDoUro = SkeletalMeshComponent->ShouldUseUpdateRateOptimizations();
 		if(bDoUro)
 		{
 			NumUroSkippedFrames_Update = RateParams->UpdateRate - 1;
-		}
 
-		if(bDoEvalOptimization)
+			const bool bDoEvalOptimization = RateParams->DoEvaluationRateOptimizations();
+			if(bDoEvalOptimization)
+			{
+				NumUroSkippedFrames_Eval = RateParams->EvaluationRate - 1;
+			}
+		}
+		else if(SkeletalMeshComponent->IsUsingExternalTickRateControl())
 		{
-			NumUroSkippedFrames_Eval = RateParams->EvaluationRate - 1;
+			NumUroSkippedFrames_Update = NumUroSkippedFrames_Eval = SkeletalMeshComponent->GetExternalTickRate();
 		}
 	}
 
@@ -578,8 +666,15 @@ void FAnimInstanceProxy::BlendSpaceAdvanceImmediate(class UBlendSpaceBase* Blend
 	TickRecord.SourceAsset->TickAssetPlayer(TickRecord, NotifyQueue, TickContext);
 }
 
+void FAnimInstanceProxy::TickAssetPlayerInstances()
+{
+	TickAssetPlayerInstances(CurrentDeltaSeconds);
+}
+
 void FAnimInstanceProxy::TickAssetPlayerInstances(float DeltaSeconds)
 {
+	DECLARE_SCOPE_HIERARCHICAL_COUNTER_FUNC()
+
 	SCOPE_CYCLE_COUNTER(STAT_TickAssetPlayerInstances);
 
 	// Handle all players inside sync groups
@@ -731,6 +826,13 @@ void FAnimInstanceProxy::TickAssetPlayerInstances(float DeltaSeconds)
 					}
 				}
 			}
+
+#if ANIM_TRACE_ENABLED
+			for(const FPassedMarker& PassedMarker : TickContext.MarkerTickContext.MarkersPassedThisTick)
+			{
+				TRACE_ANIM_SYNC_MARKER(CastChecked<UAnimInstance>(GetAnimInstanceObject()), PassedMarker);
+			}
+#endif
 		}
 	}
 
@@ -752,6 +854,13 @@ void FAnimInstanceProxy::TickAssetPlayerInstances(float DeltaSeconds)
 		{
 			ExtractedRootMotion.AccumulateWithBlend(TickContext.RootMotionMovementParams, AssetPlayerToTick.GetRootMotionWeight());
 		}
+
+#if ANIM_TRACE_ENABLED
+		for(const FPassedMarker& PassedMarker : TickContext.MarkerTickContext.MarkersPassedThisTick)
+		{
+			TRACE_ANIM_SYNC_MARKER(CastChecked<UAnimInstance>(GetAnimInstanceObject()), PassedMarker);
+		}
+#endif
 	}
 }
 
@@ -987,12 +1096,12 @@ FAnimNode_Base* FAnimInstanceProxy::GetCheckedNodeFromIndexUntyped(int32 NodeIdx
 	FAnimNode_Base* NodePtr = nullptr;
 	if (AnimClassInterface)
 	{
-		const TArray<UStructProperty*>& AnimNodeProperties = AnimClassInterface->GetAnimNodeProperties();
+		const TArray<FStructPropertyPath>& AnimNodeProperties = AnimClassInterface->GetAnimNodeProperties();
 		const int32 InstanceIdx = AnimNodeProperties.Num() - 1 - NodeIdx;
 
 		if (AnimNodeProperties.IsValidIndex(InstanceIdx))
 		{
-			UStructProperty* NodeProperty = AnimNodeProperties[InstanceIdx];
+			FStructProperty* NodeProperty = AnimNodeProperties[InstanceIdx].Get();
 
 			if (NodeProperty->Struct->IsChildOf(RequiredStructType))
 			{
@@ -1019,12 +1128,12 @@ FAnimNode_Base* FAnimInstanceProxy::GetNodeFromIndexUntyped(int32 NodeIdx, UScri
 	FAnimNode_Base* NodePtr = nullptr;
 	if (AnimClassInterface)
 	{
-		const TArray<UStructProperty*>& AnimNodeProperties = AnimClassInterface->GetAnimNodeProperties();
+		const TArray<FStructPropertyPath>& AnimNodeProperties = AnimClassInterface->GetAnimNodeProperties();
 		const int32 InstanceIdx = AnimNodeProperties.Num() - 1 - NodeIdx;
 
 		if (AnimNodeProperties.IsValidIndex(InstanceIdx))
 		{
-			UStructProperty* NodeProperty = AnimNodeProperties[InstanceIdx];
+			FStructProperty* NodeProperty = AnimNodeProperties[InstanceIdx].Get();
 
 			if (NodeProperty->Struct->IsChildOf(RequiredStructType))
 			{
@@ -1038,6 +1147,8 @@ FAnimNode_Base* FAnimInstanceProxy::GetNodeFromIndexUntyped(int32 NodeIdx, UScri
 
 void FAnimInstanceProxy::RecalcRequiredBones(USkeletalMeshComponent* Component, UObject* Asset)
 {
+	DECLARE_SCOPE_HIERARCHICAL_COUNTER_FUNC()
+
 	RequiredBones.InitializeTo(Component->RequiredBones, FCurveEvaluationOption(Component->GetAllowedAnimCurveEvaluate(), &Component->GetDisallowedAnimCurvesEvaluation(), Component->PredictedLODLevel), *Asset);
 
 	// If there is a ref pose override, we want to replace ref pose in RequiredBones
@@ -1073,9 +1184,9 @@ void FAnimInstanceProxy::RecalcRequiredBones(USkeletalMeshComponent* Component, 
 	}
 
 	// If this instance can accept input poses, initialise the input pose container
-	if(SubInstanceInputNode)
+	if(DefaultLinkedInstanceInputNode)
 	{
-		SubInstanceInputNode->InputPose.SetBoneContainer(&RequiredBones);
+		DefaultLinkedInstanceInputNode->CachedInputPose.SetBoneContainer(&RequiredBones);
 	}
 
 	// When RequiredBones mapping has changed, AnimNodes need to update their bones caches. 
@@ -1084,32 +1195,110 @@ void FAnimInstanceProxy::RecalcRequiredBones(USkeletalMeshComponent* Component, 
 
 void FAnimInstanceProxy::RecalcRequiredCurves(const FCurveEvaluationOption& CurveEvalOption)
 {
+	DECLARE_SCOPE_HIERARCHICAL_COUNTER_FUNC()
+
 	RequiredBones.CacheRequiredAnimCurveUids(CurveEvalOption);
 	bBoneCachesInvalidated = true;
 }
 
 void FAnimInstanceProxy::UpdateAnimation()
 {
+	DECLARE_SCOPE_HIERARCHICAL_COUNTER_FUNC()
+
+#if WITH_EDITORONLY_DATA
+	UpdatedNodesThisFrame.Reset();
+#endif
+
+	FAnimationUpdateSharedContext SharedContext;
+	FAnimationUpdateContext Context(this, CurrentDeltaSeconds, &SharedContext);
+#if ANIM_NODE_IDS_AVAILABLE
+	if(AnimClassInterface && AnimClassInterface->GetAnimBlueprintFunctions().Num() > 0)
+	{
+		Context = Context.WithNodeId(AnimClassInterface->GetAnimBlueprintFunctions()[0].OutputPoseNodeIndex);
+	}
+#endif
+	UpdateAnimation_WithRoot(Context, RootNode, NAME_AnimGraph);
+}
+
+void FAnimInstanceProxy::UpdateAnimation_WithRoot(const FAnimationUpdateContext& InContext, FAnimNode_Base* InRootNode, FName InLayerName)
+{
+	DECLARE_SCOPE_HIERARCHICAL_COUNTER_FUNC()
+
 	ANIM_MT_SCOPE_CYCLE_COUNTER(ProxyUpdateAnimation, !IsInGameThread());
 	FScopeCycleCounterUObject AnimScope(GetAnimInstanceObject());
 
-	CacheBones();
-
-	// update native update
+	if(InRootNode == RootNode)
 	{
-		SCOPE_CYCLE_COUNTER(STAT_NativeUpdateAnimation);
-		Update(CurrentDeltaSeconds);
+		if(bDeferRootNodeInitialization)
+		{
+			InitializeRootNode_WithRoot(RootNode);
+
+			if(AnimClassInterface)
+			{
+				// Initialize linked sub graphs
+				for(const FStructPropertyPath& LayerNodeProperty : AnimClassInterface->GetLinkedAnimLayerNodeProperties())
+				{
+					if(FAnimNode_LinkedAnimLayer* LayerNode = LayerNodeProperty->ContainerPtrToValuePtr<FAnimNode_LinkedAnimLayer>(AnimInstanceObject))
+					{
+						if(UAnimInstance* LinkedInstance = LayerNode->GetTargetInstance<UAnimInstance>())
+						{
+							FAnimationInitializeContext InitContext(this);
+							LayerNode->InitializeSubGraph_AnyThread(InitContext);
+							FAnimationCacheBonesContext CacheBonesContext(this);
+							LayerNode->CacheBonesSubGraph_AnyThread(CacheBonesContext);
+						}
+					}
+				}
+			}
+
+			bDeferRootNodeInitialization = false;
+		}
+
+		// Call the correct override point if this is the root node
+		CacheBones();
+	}
+	else
+	{
+		CacheBones_WithRoot(InRootNode);
 	}
 
-	// update all nodes
-	UpdateAnimationNode(CurrentDeltaSeconds);
+	// update native update
+	if(!bUpdatingRoot)
+	{
+		// Make sure we only update this once the first time we update, as we can re-call this function
+		// from other linked instances with grouped layers
+		if(FrameCounterForUpdate != GFrameCounter)
+		{
+			SCOPE_CYCLE_COUNTER(STAT_NativeUpdateAnimation);
+			Update(CurrentDeltaSeconds);
 
-	// tick all our active asset players
-	TickAssetPlayerInstances(CurrentDeltaSeconds);
+			FrameCounterForUpdate = GFrameCounter;
+		}
+	}
+
+	// Update root
+	{
+		// We re-enter this function when we call layer graphs linked to the main graph. In these cases we
+		// dont want to perform duplicate work
+		TGuardValue<bool> ScopeGuard(bUpdatingRoot, true);
+	
+		// update all nodes
+		if(InRootNode == RootNode)
+		{
+			// Call the correct override point if this is the root node
+			UpdateAnimationNode(InContext);
+		}
+		else
+		{
+			UpdateAnimationNode_WithRoot(InContext, InRootNode, InLayerName);
+		}
+	}
 }
 
 void FAnimInstanceProxy::PreEvaluateAnimation(UAnimInstance* InAnimInstance)
 {
+	DECLARE_SCOPE_HIERARCHICAL_COUNTER_FUNC()
+
 	InitializeObjects(InAnimInstance);
 #if ENABLE_ANIM_LOGGING
 	LoggedMessagesMap.FindOrAdd(NAME_Evaluate).Reset();
@@ -1118,37 +1307,111 @@ void FAnimInstanceProxy::PreEvaluateAnimation(UAnimInstance* InAnimInstance)
 
 void FAnimInstanceProxy::EvaluateAnimation(FPoseContext& Output)
 {
+	TRACE_SCOPED_ANIM_GRAPH(Output);
+
+	EvaluateAnimation_WithRoot(Output, RootNode);
+}
+
+void FAnimInstanceProxy::EvaluateAnimation_WithRoot(FPoseContext& Output, FAnimNode_Base* InRootNode)
+{
+	DECLARE_SCOPE_HIERARCHICAL_COUNTER_FUNC()
+
 	ANIM_MT_SCOPE_CYCLE_COUNTER(EvaluateAnimInstance, !IsInGameThread());
 
-	CacheBones();
+	if(InRootNode == RootNode)
+	{
+		// Call the correct override point if this is the root node
+		CacheBones();
+	}
+	else
+	{
+		CacheBones_WithRoot(InRootNode);
+	}
 
 	// Evaluate native code if implemented, otherwise evaluate the node graph
-	if (!Evaluate(Output))
+	if (!Evaluate_WithRoot(Output, InRootNode))
 	{
-		EvaluateAnimationNode(Output);
+		EvaluateAnimationNode_WithRoot(Output, InRootNode);
 	}
 }
 
 void FAnimInstanceProxy::CacheBones()
 {
+	DECLARE_SCOPE_HIERARCHICAL_COUNTER_FUNC()
+
 	// If bone caches have been invalidated, have AnimNodes refresh those.
 	if (bBoneCachesInvalidated && RootNode)
 	{
-		bBoneCachesInvalidated = false;
+		CacheBonesRecursionCounter++;
 
 		CachedBonesCounter.Increment();
-		FAnimationCacheBonesContext Proxy(this);
-		RootNode->CacheBones_AnyThread(Proxy);
+		FAnimationCacheBonesContext Context(this);
+
+		TRACE_SCOPED_ANIM_GRAPH(Context);
+
+		RootNode->CacheBones_AnyThread(Context);
+
+		CacheBonesRecursionCounter--;
+
+		check(CacheBonesRecursionCounter >= 0);
+
+		if(CacheBonesRecursionCounter == 0)
+		{
+			bBoneCachesInvalidated = false;
+		}
+	}
+}
+
+void FAnimInstanceProxy::CacheBones_WithRoot(FAnimNode_Base* InRootNode)
+{
+	// If bone caches have been invalidated, have AnimNodes refresh those.
+	if (bBoneCachesInvalidated && InRootNode)
+	{
+		CacheBonesRecursionCounter++;
+
+		if(InRootNode == RootNode)
+		{
+			CachedBonesCounter.Increment();
+		}
+		FAnimationCacheBonesContext Context(this);
+		InRootNode->CacheBones_AnyThread(Context);
+
+		CacheBonesRecursionCounter--;
+
+		check(CacheBonesRecursionCounter >= 0);
+
+		if(CacheBonesRecursionCounter == 0)
+		{
+			bBoneCachesInvalidated = false;
+		}
 	}
 }
 
 void FAnimInstanceProxy::EvaluateAnimationNode(FPoseContext& Output)
 {
-	if (RootNode != NULL)
+	EvaluateAnimationNode_WithRoot(Output, RootNode);
+}
+
+void FAnimInstanceProxy::EvaluateAnimationNode_WithRoot(FPoseContext& Output, FAnimNode_Base* InRootNode)
+{
+	if (InRootNode != NULL)
 	{
 		ANIM_MT_SCOPE_CYCLE_COUNTER(EvaluateAnimGraph, !IsInGameThread());
-		EvaluationCounter.Increment();
-		RootNode->Evaluate_AnyThread(Output);
+		if(InRootNode == RootNode)
+		{
+			EvaluationCounter.Increment();
+		}
+
+#if ANIM_NODE_IDS_AVAILABLE
+		if(AnimClassInterface && AnimClassInterface->GetAnimBlueprintFunctions().Num() > 0)
+		{
+			Output.SetNodeId(AnimClassInterface->GetAnimBlueprintFunctions()[0].OutputPoseNodeIndex);
+		}
+#endif
+
+		TRACE_SCOPED_ANIM_NODE(Output);
+
+		InRootNode->Evaluate_AnyThread(Output);
 	}
 	else
 	{
@@ -1407,13 +1670,19 @@ const FMontageEvaluationState* FAnimInstanceProxy::GetActiveMontageEvaluationSta
 
 void FAnimInstanceProxy::GatherDebugData(FNodeDebugData& DebugData)
 {
+	GatherDebugData_WithRoot(DebugData, RootNode, NAME_AnimGraph);
+}
+
+void FAnimInstanceProxy::GatherDebugData_WithRoot(FNodeDebugData& DebugData, FAnimNode_Base* InRootNode, FName InLayerName)
+{
 	// Gather debug data for Root Node
-	if(RootNode != nullptr)
+	if(InRootNode != nullptr)
 	{
-		 RootNode->GatherDebugData(DebugData); 
+		 InRootNode->GatherDebugData(DebugData); 
 	}
 
 	// Gather debug data for Cached Poses.
+	TArray<FAnimNode_SaveCachedPose*>& SavedPoseQueue = SavedPoseQueueMap.FindChecked(InLayerName);
 	for (FAnimNode_SaveCachedPose* PoseNode : SavedPoseQueue)
 	{
 		PoseNode->GatherDebugData(DebugData);
@@ -1764,12 +2033,12 @@ FAnimNode_StateMachine* FAnimInstanceProxy::GetStateMachineInstance(int32 Machin
 {
 	if (AnimClassInterface)
 	{
-		const TArray<UStructProperty*>& AnimNodeProperties = AnimClassInterface->GetAnimNodeProperties();
+		const TArray<FStructPropertyPath>& AnimNodeProperties = AnimClassInterface->GetAnimNodeProperties();
 		if ((MachineIndex >= 0) && (MachineIndex < AnimNodeProperties.Num()))
 		{
 			const int32 InstancePropertyIndex = AnimNodeProperties.Num() - 1 - MachineIndex;
 
-			UStructProperty* MachineInstanceProperty = AnimNodeProperties[InstancePropertyIndex];
+			FStructProperty* MachineInstanceProperty = AnimNodeProperties[InstancePropertyIndex].Get();
 			checkSlow(MachineInstanceProperty->Struct->IsChildOf(FAnimNode_StateMachine::StaticStruct()));
 
 			return MachineInstanceProperty->ContainerPtrToValuePtr<FAnimNode_StateMachine>(AnimInstanceObject);
@@ -1850,6 +2119,8 @@ bool FAnimInstanceProxy::HasNativeStateExitBinding(const FName& MachineName, con
 
 void FAnimInstanceProxy::BindNativeDelegates()
 {
+	DECLARE_SCOPE_HIERARCHICAL_COUNTER_FUNC()
+
 	// if we have no root node, we are usually in error so early out
 	if(RootNode == nullptr)
 	{
@@ -1858,9 +2129,9 @@ void FAnimInstanceProxy::BindNativeDelegates()
 
 	auto ForEachStateLambda = [&](IAnimClassInterface* InAnimClassInterface, const FName& MachineName, const FName& StateName, TFunctionRef<void(FAnimNode_StateMachine*, const FBakedAnimationState&, int32)> Predicate)
 	{
-		for (UStructProperty* Property : InAnimClassInterface->GetAnimNodeProperties())
+		for (const FStructPropertyPath& Property : InAnimClassInterface->GetAnimNodeProperties())
 		{
-			if(Property && Property->Struct->IsChildOf(FAnimNode_StateMachine::StaticStruct()))
+			if(Property.Get() && Property->Struct->IsChildOf(FAnimNode_StateMachine::StaticStruct()))
 			{
 				FAnimNode_StateMachine* StateMachine = Property->ContainerPtrToValuePtr<FAnimNode_StateMachine>(AnimInstanceObject);
 				if(StateMachine)
@@ -1950,10 +2221,10 @@ FAnimNode_StateMachine* FAnimInstanceProxy::GetStateMachineInstanceFromName(FNam
 {
 	if (AnimClassInterface)
 	{
-		const TArray<UStructProperty*>& AnimNodeProperties = AnimClassInterface->GetAnimNodeProperties();
+		const TArray<FStructPropertyPath>& AnimNodeProperties = AnimClassInterface->GetAnimNodeProperties();
 		for (int32 MachineIndex = 0; MachineIndex < AnimNodeProperties.Num(); MachineIndex++)
 		{
-			UStructProperty* Property = AnimNodeProperties[AnimNodeProperties.Num() - 1 - MachineIndex];
+			FStructProperty* Property = AnimNodeProperties[AnimNodeProperties.Num() - 1 - MachineIndex].Get();
 			if (Property && Property->Struct->IsChildOf(FAnimNode_StateMachine::StaticStruct()))
 			{
 				FAnimNode_StateMachine* StateMachine = Property->ContainerPtrToValuePtr<FAnimNode_StateMachine>(AnimInstanceObject);
@@ -1978,10 +2249,10 @@ const FBakedAnimationStateMachine* FAnimInstanceProxy::GetStateMachineInstanceDe
 {
 	if (AnimClassInterface)
 	{
-		const TArray<UStructProperty*>& AnimNodeProperties = AnimClassInterface->GetAnimNodeProperties();
+		const TArray<FStructPropertyPath>& AnimNodeProperties = AnimClassInterface->GetAnimNodeProperties();
 		for (int32 MachineIndex = 0; MachineIndex < AnimNodeProperties.Num(); MachineIndex++)
 		{
-			UStructProperty* Property = AnimNodeProperties[AnimNodeProperties.Num() - 1 - MachineIndex];
+			FStructProperty* Property = AnimNodeProperties[AnimNodeProperties.Num() - 1 - MachineIndex].Get();
 			if(Property && Property->Struct->IsChildOf(FAnimNode_StateMachine::StaticStruct()))
 			{
 				FAnimNode_StateMachine* StateMachine = Property->ContainerPtrToValuePtr<FAnimNode_StateMachine>(AnimInstanceObject);
@@ -2006,10 +2277,10 @@ int32 FAnimInstanceProxy::GetStateMachineIndex(FName MachineName)
 {
 	if (AnimClassInterface)
 	{
-		const TArray<UStructProperty*>& AnimNodeProperties = AnimClassInterface->GetAnimNodeProperties();
+		const TArray<FStructPropertyPath>& AnimNodeProperties = AnimClassInterface->GetAnimNodeProperties();
 		for (int32 MachineIndex = 0; MachineIndex < AnimNodeProperties.Num(); MachineIndex++)
 		{
-			UStructProperty* Property = AnimNodeProperties[AnimNodeProperties.Num() - 1 - MachineIndex];
+			FStructProperty* Property = AnimNodeProperties[AnimNodeProperties.Num() - 1 - MachineIndex].Get();
 			if(Property && Property->Struct->IsChildOf(FAnimNode_StateMachine::StaticStruct()))
 			{
 				FAnimNode_StateMachine* StateMachine = Property->ContainerPtrToValuePtr<FAnimNode_StateMachine>(AnimInstanceObject);
@@ -2034,10 +2305,10 @@ void FAnimInstanceProxy::GetStateMachineIndexAndDescription(FName InMachineName,
 {
 	if (AnimClassInterface)
 	{
-		const TArray<UStructProperty*>& AnimNodeProperties = AnimClassInterface->GetAnimNodeProperties();
+		const TArray<FStructPropertyPath>& AnimNodeProperties = AnimClassInterface->GetAnimNodeProperties();
 		for (int32 MachineIndex = 0; MachineIndex < AnimNodeProperties.Num(); MachineIndex++)
 		{
-			UStructProperty* Property = AnimNodeProperties[AnimNodeProperties.Num() - 1 - MachineIndex];
+			FStructProperty* Property = AnimNodeProperties[AnimNodeProperties.Num() - 1 - MachineIndex].Get();
 			if (Property && Property->Struct->IsChildOf(FAnimNode_StateMachine::StaticStruct()))
 			{
 				FAnimNode_StateMachine* StateMachine = Property->ContainerPtrToValuePtr<FAnimNode_StateMachine>(AnimInstanceObject);
@@ -2073,7 +2344,7 @@ int32 FAnimInstanceProxy::GetInstanceAssetPlayerIndex(FName MachineName, FName S
 	{
 		if(const FBakedAnimationStateMachine* MachineDescription = GetStateMachineInstanceDesc(MachineName))
 		{
-			const TArray<UStructProperty*>& AnimNodeProperties = AnimClassInterface->GetAnimNodeProperties();
+			const TArray<FStructPropertyPath>& AnimNodeProperties = AnimClassInterface->GetAnimNodeProperties();
 			for(int32 StateIndex = 0; StateIndex < MachineDescription->States.Num(); StateIndex++)
 			{
 				const FBakedAnimationState& State = MachineDescription->States[StateIndex];
@@ -2082,7 +2353,7 @@ int32 FAnimInstanceProxy::GetInstanceAssetPlayerIndex(FName MachineName, FName S
 					for(int32 PlayerIndex = 0; PlayerIndex < State.PlayerNodeIndices.Num(); PlayerIndex++)
 					{
 						checkSlow(State.PlayerNodeIndices[PlayerIndex] < AnimNodeProperties.Num());
-						UStructProperty* AssetPlayerProperty = AnimNodeProperties[AnimNodeProperties.Num() - 1 - State.PlayerNodeIndices[PlayerIndex]];
+						FStructProperty* AssetPlayerProperty = AnimNodeProperties[AnimNodeProperties.Num() - 1 - State.PlayerNodeIndices[PlayerIndex]].Get();
 						if(AssetPlayerProperty && AssetPlayerProperty->Struct->IsChildOf(FAnimNode_AssetPlayerBase::StaticStruct()))
 						{
 							FAnimNode_AssetPlayerBase* AssetPlayer = AssetPlayerProperty->ContainerPtrToValuePtr<FAnimNode_AssetPlayerBase>(AnimInstanceObject);
@@ -2126,7 +2397,7 @@ float FAnimInstanceProxy::GetRecordedStateWeight(const int32 InMachineClassIndex
 	return 0.0f;
 }
 
-void FAnimInstanceProxy::RecordStateWeight(const int32 InMachineClassIndex, const int32 InStateIndex, const float InStateWeight)
+void FAnimInstanceProxy::RecordStateWeight(const int32 InMachineClassIndex, const int32 InStateIndex, const float InStateWeight, const float InElapsedTime)
 {
 	const int32* BaseIndexPtr = StateMachineClassIndexToWeightOffset.Find(InMachineClassIndex);
 
@@ -2135,10 +2406,18 @@ void FAnimInstanceProxy::RecordStateWeight(const int32 InMachineClassIndex, cons
 		const int32 StateIndex = *BaseIndexPtr + InStateIndex;
 		StateWeightArrays[GetSyncGroupWriteIndex()][StateIndex] = InStateWeight;
 	}
+
+#if WITH_EDITORONLY_DATA
+	if (FAnimBlueprintDebugData* DebugData = GetAnimBlueprintDebugData())
+	{
+		DebugData->RecordStateData(InMachineClassIndex, InStateIndex, InStateWeight, InElapsedTime);
+	}
+#endif
 }
 
 void FAnimInstanceProxy::ResetDynamics(ETeleportType InTeleportType)
 {
+	DECLARE_SCOPE_HIERARCHICAL_COUNTER_FUNC()
 	for(FAnimNode_Base* Node : DynamicResetNodes)
 	{
 		Node->ResetDynamics(InTeleportType);
@@ -2148,6 +2427,55 @@ void FAnimInstanceProxy::ResetDynamics(ETeleportType InTeleportType)
 void FAnimInstanceProxy::ResetDynamics()
 {
 	ResetDynamics(ETeleportType::ResetPhysics);
+}
+
+#if ANIM_TRACE_ENABLED
+void FAnimInstanceProxy::TraceMontageEvaluationData(const FAnimationUpdateContext& InContext, const FName& InSlotName)
+{
+	for (const FMontageEvaluationState& MontageEvaluationState : MontageEvaluationData)
+	{
+		if (MontageEvaluationState.Montage != nullptr && MontageEvaluationState.Montage->IsValidSlot(InSlotName))
+		{
+			if (const FAnimTrack* const Track = MontageEvaluationState.Montage->GetAnimationData(InSlotName))
+			{
+				if (const FAnimSegment* const Segment = Track->GetSegmentAtTime(MontageEvaluationState.MontagePosition))
+				{
+					float CurrentAnimPos;
+					if (UAnimSequenceBase* Anim = Segment->GetAnimationData(MontageEvaluationState.MontagePosition, CurrentAnimPos))
+					{
+						TRACE_ANIM_NODE_VALUE(InContext, TEXT("Montage"), MontageEvaluationState.Montage.Get());
+						TRACE_ANIM_NODE_VALUE(InContext, TEXT("Sequence"), Anim);
+						TRACE_ANIM_NODE_VALUE(InContext, TEXT("Sequence Playback Time"), CurrentAnimPos);
+						break;
+					}
+				}
+			}
+		}
+	}
+}
+#endif
+
+TArray<FAnimNode_AssetPlayerBase*> FAnimInstanceProxy::GetInstanceAssetPlayers(const FName& GraphName)
+{
+	TArray<FAnimNode_AssetPlayerBase*> Nodes;
+
+	// Retrieve all asset player nodes from the (named) Animation Layer Graph	
+	if (AnimClassInterface)
+	{
+		const TMap<FName, FGraphAssetPlayerInformation>& GrapInformationMap = AnimClassInterface->GetGraphAssetPlayerInformation();
+		if (const FGraphAssetPlayerInformation* Information = GrapInformationMap.Find(GraphName))
+		{
+			for (const int32& NodeIndex : Information->PlayerNodeIndices)
+			{
+				if (FAnimNode_AssetPlayerBase* Node = GetNodeFromIndex<FAnimNode_AssetPlayerBase>(NodeIndex))
+				{
+					Nodes.Add(Node);
+				}
+			}
+		}
+	}
+
+	return Nodes;
 }
 
 #if WITH_EDITOR
@@ -2191,6 +2519,7 @@ const FPoseSnapshot* FAnimInstanceProxy::GetPoseSnapshot(FName SnapshotName) con
 
 void FAnimInstanceProxy::ResetAnimationCurves()
 {
+	DECLARE_SCOPE_HIERARCHICAL_COUNTER_FUNC()
 	for (uint8 Index = 0; Index < (uint8)EAnimCurveType::MaxAnimCurveType; ++Index)
 	{
 		AnimationCurves[Index].Reset();
@@ -2199,6 +2528,7 @@ void FAnimInstanceProxy::ResetAnimationCurves()
 
 void FAnimInstanceProxy::UpdateCurvesToEvaluationContext(const FAnimationEvaluationContext& InContext)
 {
+	DECLARE_SCOPE_HIERARCHICAL_COUNTER_FUNC()
 	SCOPE_CYCLE_COUNTER(STAT_UpdateCurvesToEvaluationContext);
 
 	// Track material params we set last time round so we can clear them if they aren't set again.
@@ -2249,6 +2579,7 @@ void FAnimInstanceProxy::UpdateCurvesToEvaluationContext(const FAnimationEvaluat
 
 void FAnimInstanceProxy::UpdateCurvesPostEvaluation(USkeletalMeshComponent* SkelMeshComp)
 {
+	DECLARE_SCOPE_HIERARCHICAL_COUNTER_FUNC()
 	SCOPE_CYCLE_COUNTER(STAT_UpdateCurvesPostEvaluation);
 
 	// Add curves to reset parameters that we have previously set but didn't tick this frame.
@@ -2283,6 +2614,8 @@ bool FAnimInstanceProxy::HasActiveCurves() const
 
 void FAnimInstanceProxy::AddCurveValue(const FSmartNameMapping& Mapping, const FName& CurveName, float Value)
 {
+	DECLARE_SCOPE_HIERARCHICAL_COUNTER_FUNC()
+
 	// save curve value, it will overwrite if same exists, 
 	//CurveValues.Add(CurveName, Value);
 	float* CurveValPtr = AnimationCurves[(uint8)EAnimCurveType::AttributeCurve].Find(CurveName);
@@ -2327,6 +2660,59 @@ void FAnimInstanceProxy::AddCurveValue(const FSmartNameMapping& Mapping, const F
 				AnimationCurves[(uint8)EAnimCurveType::MaterialCurve].Add(CurveName, Value);
 			}
 		}
+	}
+}
+
+FAnimBlueprintDebugData* FAnimInstanceProxy::GetAnimBlueprintDebugData() const
+{
+#if WITH_EDITORONLY_DATA
+	if (bIsBeingDebugged)
+	{
+		UAnimBlueprint* AnimBP = GetAnimBlueprint();
+		return AnimBP ? AnimBP->GetDebugData() : nullptr;
+	}
+#endif
+
+	return nullptr;
+}
+
+void FAnimInstanceProxy::InitializeInputProxy(FAnimInstanceProxy* InputProxy, UAnimInstance* InAnimInstance)
+{
+	if (InAnimInstance && InputProxy)
+	{
+		InputProxy->Initialize(InAnimInstance);
+	}
+}
+
+void FAnimInstanceProxy::GatherInputProxyDebugData(FAnimInstanceProxy* InputProxy, FNodeDebugData& DebugData)
+{
+	if (InputProxy)
+	{
+		InputProxy->GatherDebugData(DebugData);
+	}
+}
+
+void FAnimInstanceProxy::CacheBonesInputProxy(FAnimInstanceProxy* InputProxy)
+{
+	if (InputProxy)
+	{
+		InputProxy->CacheBones();
+	}
+}
+
+void FAnimInstanceProxy::UpdateInputProxy(FAnimInstanceProxy* InputProxy, const FAnimationUpdateContext& Context)
+{
+	if (InputProxy)
+	{
+		InputProxy->UpdateAnimationNode(Context);
+	}
+}
+
+void FAnimInstanceProxy::EvaluateInputProxy(FAnimInstanceProxy* InputProxy, FPoseContext& Output)
+{
+	if (InputProxy)
+	{
+		InputProxy->Evaluate(Output);
 	}
 }
 

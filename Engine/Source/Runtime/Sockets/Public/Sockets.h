@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -21,7 +21,7 @@ protected:
 	FString SocketDescription;
 
 	/** Protocol used in creation of a socket */
-	ESocketProtocolFamily SocketProtocol;
+	FName SocketProtocol;
 
 public:
 
@@ -29,7 +29,7 @@ public:
 	inline FSocket() :
 		SocketType(SOCKTYPE_Unknown),
 		SocketDescription(TEXT("")),
-		SocketProtocol(ESocketProtocolFamily::None)
+		SocketProtocol(NAME_None)
 	{ }
 
 	/**
@@ -42,8 +42,27 @@ public:
 	inline FSocket(ESocketType InSocketType, const FString& InSocketDescription) :
 		SocketType(InSocketType),
 		SocketDescription(InSocketDescription),
-		SocketProtocol(ESocketProtocolFamily::None)
+		SocketProtocol(NAME_None)
 	{ }
+
+	UE_DEPRECATED(4.23, "Please migrate to the constructor that takes an FName for the protocol stack")
+		inline FSocket(ESocketType InSocketType, const FString& InSocketDescription, ESocketProtocolFamily InSocketProtocol) :
+		SocketType(InSocketType),
+		SocketDescription(InSocketDescription)
+	{ 
+		if (InSocketProtocol == ESocketProtocolFamily::IPv4)
+		{
+			SocketProtocol = FNetworkProtocolTypes::IPv4;
+		}
+		else if (InSocketProtocol == ESocketProtocolFamily::IPv6)
+		{
+			SocketProtocol = FNetworkProtocolTypes::IPv6;
+		}
+		else
+		{
+			SocketProtocol = NAME_None;
+		}
+	}
 
 	/**
 	 * Specifies the type of socket being created
@@ -52,7 +71,7 @@ public:
 	 * @param InSocketDescription The debug description of the socket
 	 * @param InSocketProtocol the protocol stack this socket should be created on.
 	 */
-	inline FSocket(ESocketType InSocketType, const FString& InSocketDescription, ESocketProtocolFamily InSocketProtocol) :
+	inline FSocket(ESocketType InSocketType, const FString& InSocketDescription, const FName& InSocketProtocol) :
 		SocketType(InSocketType),
 		SocketDescription(InSocketDescription),
 		SocketProtocol(InSocketProtocol)
@@ -198,6 +217,17 @@ public:
 	virtual bool Recv(uint8* Data, int32 BufferSize, int32& BytesRead, ESocketReceiveFlags::Type Flags = ESocketReceiveFlags::None);
 
 	/**
+	 * Reads multiple packets from the socket at once, gathering the source address and other optional platform specific data.
+	 * Use ISocketSubsystem::IsSocketRecvMultiSupported to check if the current socket platform supports this.
+	 * NOTE: For optimal performance, one FRecvMulti instance should be used, for the lifetime of the socket.
+	 *
+	 * @param MultiData		The FRecvMulti instance that receives packet data and holds platform specific buffers for receiving data.
+	 * @param Flags			The receive flags.
+	 * @return				Whether or not data was successfully received
+	 */
+	virtual bool RecvMulti(FRecvMulti& MultiData, ESocketReceiveFlags::Type Flags=ESocketReceiveFlags::None);
+
+	/**
 	 * Blocks until the specified condition is met.
 	 *
 	 * @param Condition The condition to wait for.
@@ -243,6 +273,14 @@ public:
 	 * @return true if successful, false otherwise.
 	 */
 	virtual bool SetBroadcast(bool bAllowBroadcast = true) = 0;
+
+	/**
+	 * Sets this socket into TCP_NODELAY mode (TCP only).
+	 *
+	 * @param bIsNoDelay Whether to enable no delay mode.
+	 * @return true if successful, false otherwise.
+	 */
+	virtual bool SetNoDelay(bool bIsNoDelay = true) = 0;
 
 	/**
 	 * Joins this socket to the specified multicast group.
@@ -367,6 +405,14 @@ public:
 	virtual bool SetReceiveBufferSize(int32 Size, int32& NewSize) = 0;
 
 	/**
+	 * Sets whether to retrieve the system-level receive timestamp, for sockets
+	 *
+	 * @param bRetrieveTimestamp	Whether to retrieve the timestamp upon receive
+	 * @return						True if the call succeeded, false otherwise.
+	 */
+	virtual bool SetRetrieveTimestamp(bool bRetrieveTimestamp=true);
+
+	/**
 	 * Reads the port this socket is bound to.
 	 *
 	 * @return Port number.
@@ -402,7 +448,7 @@ public:
 	 * @return Socket type.
 	 * @see GetDescription, GetPortNo
 	 */
-	FORCEINLINE ESocketProtocolFamily GetProtocol() const
+	FORCEINLINE FName GetProtocol() const
 	{
 		return SocketProtocol;
 	}

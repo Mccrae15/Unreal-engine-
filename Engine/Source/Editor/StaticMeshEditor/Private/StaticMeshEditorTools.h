@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -25,6 +25,7 @@ class FStaticMeshEditor;
 class IDetailCategoryBuilder;
 class IDetailChildrenBuilder;
 class IDetailLayoutBuilder;
+class IDetailGroup;
 class IStaticMeshEditor;
 class UMaterialInterface;
 struct FSectionLocalizer;
@@ -62,6 +63,21 @@ private:
 	TSharedPtr<FLevelOfDetailSettingsLayout> LevelOfDetailSettings;
 	/** Static mesh editor */
 	class FStaticMeshEditor& StaticMeshEditor;
+
+	// Property handle used to determine if the VertexColorImportOverride property should be enabled.
+	TSharedPtr<IPropertyHandle> VertexColorImportOptionHandle;
+	
+	// Property handle used during UI construction
+	TSharedPtr<IPropertyHandle> VertexColorImportOverrideHandle;
+
+	// Delegate implementation of FOnInstancedPropertyIteration used during DataImport UI construction
+	void OnInstancedFbxStaticMeshImportDataPropertyIteration(IDetailCategoryBuilder& BaseCategory, IDetailGroup* PropertyGroup, TSharedRef<IPropertyHandle>& Property) const;
+
+	// Delegate to ensure the lightmap settings are always valid.
+	void OnLightmapSettingsChanged();
+
+	// Delegate used at runtime to determine the state of the VertexOverrideColor property
+	bool GetVertexOverrideColorEnabledState() const;
 };
 
 
@@ -170,6 +186,7 @@ private:
 	ECheckBoxState ShouldRecomputeNormals() const;
 	ECheckBoxState ShouldRecomputeTangents() const;
 	ECheckBoxState ShouldUseMikkTSpace() const;
+	ECheckBoxState ShouldComputeWeightedNormals() const;
 	ECheckBoxState ShouldRemoveDegenerates() const;
 	ECheckBoxState ShouldBuildAdjacencyBuffer() const;
 	ECheckBoxState ShouldBuildReversedIndexBuffer() const;
@@ -188,6 +205,7 @@ private:
 	void OnRecomputeNormalsChanged(ECheckBoxState NewState);
 	void OnRecomputeTangentsChanged(ECheckBoxState NewState);
 	void OnUseMikkTSpaceChanged(ECheckBoxState NewState);
+	void OnComputeWeightedNormalsChanged(ECheckBoxState NewState);
 	void OnRemoveDegeneratesChanged(ECheckBoxState NewState);
 	void OnBuildAdjacencyBufferChanged(ECheckBoxState NewState);
 	void OnBuildReversedIndexBufferChanged(ECheckBoxState NewState);
@@ -366,6 +384,9 @@ private:
 	*/
 	TSharedRef<SWidget> OnGenerateCustomSectionWidgetsForSection(int32 ForLODIndex, int32 SectionIndex);
 
+	ECheckBoxState IsSectionOpaque(int32 SectionIndex) const;
+	void OnSectionForceOpaqueFlagChanged(ECheckBoxState NewState, int32 SectionIndex);
+	
 	ECheckBoxState DoesSectionCastShadow(int32 SectionIndex) const;
 	void OnSectionCastShadowChanged(ECheckBoxState NewState, int32 SectionIndex);
 	ECheckBoxState DoesSectionCollide(int32 SectionIndex) const;
@@ -378,7 +399,7 @@ private:
 	ECheckBoxState IsSectionIsolatedEnabled(int32 SectionIndex) const;
 	void OnSectionIsolatedChanged(ECheckBoxState NewState, int32 SectionIndex);
 
-	void CallPostEditChange(UProperty* PropertyChanged=nullptr);
+	void CallPostEditChange(FProperty* PropertyChanged=nullptr);
 	void UpdateLODCategoryVisibility();
 
 	IStaticMeshEditor& StaticMeshEditor;
@@ -420,7 +441,7 @@ public:
 
 	virtual ~FMeshMaterialsLayout();
 
-	void AddToCategory(IDetailCategoryBuilder& CategoryBuilder);
+	void AddToCategory(IDetailCategoryBuilder& CategoryBuilder, const TArray<FAssetData>& AssetDataArray);
 
 private:
 	UStaticMesh& GetStaticMesh() const;
@@ -462,7 +483,7 @@ private:
 
 	SVerticalBox::FSlot& GetUVDensitySlot(int32 SlotIndex, int32 UVChannelIndex) const;
 
-	void CallPostEditChange(UProperty* PropertyChanged = nullptr);
+	void CallPostEditChange(FProperty* PropertyChanged = nullptr);
 
 	void OnCopyMaterialList();
 	bool OnCanCopyMaterialList() const;

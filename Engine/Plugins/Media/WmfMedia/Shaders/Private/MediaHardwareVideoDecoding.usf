@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 /*=============================================================================
 MediaHardwareVideoDecoding.usf: Shaders to convert various media decoder outputs to RGBA
@@ -55,4 +55,22 @@ void NV12ConvertPS(in noperspective float2 InUV : TEXCOORD0
 	OutColor.xyz = YuvToRgb(YUV, ColorTransform, SrgbToLinear);
 	// no alpha support
 	OutColor.w = 1.0;
+}
+
+
+void PassThroughPS(in noperspective float2 InUV : TEXCOORD0
+		  , in float4 SvPosition : SV_POSITION
+		  , out float4 OutColor : SV_Target0)
+{
+	OutColor = TextureY.Sample(BilinearClampedSamplerUV, InUV);
+}
+
+void Y416ConvertPS(in noperspective float2 InUV : TEXCOORD0
+		  , in float4 SvPosition : SV_POSITION
+		  , out float4 OutColor : SV_Target0)
+{
+	float4 AVYU = TextureY.Sample(BilinearClampedSamplerUV, InUV);
+
+	OutColor.rgb = YuvToRgb(AVYU.yzw, ColorTransform, SrgbToLinear);
+	OutColor.a = AVYU.x;
 }

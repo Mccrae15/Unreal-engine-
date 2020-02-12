@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "TrackEditors/SubTrackEditor.h"
 #include "Rendering/DrawElements.h"
@@ -22,10 +22,16 @@
 #include "SequencerSectionPainter.h"
 #include "ISequenceRecorder.h"
 #include "SequenceRecorderSettings.h"
+#include "TrackEditors/SubTrackEditorBase.h"
 #include "DragAndDrop/AssetDragDropOp.h"
 #include "MovieSceneToolHelpers.h"
 #include "Misc/QualifiedFrameTime.h"
 #include "MovieSceneTimeHelpers.h"
+#include "EngineAnalytics.h"
+#include "Interfaces/IAnalyticsProvider.h"
+#include "Algo/Accumulate.h"
+
+#include "CommonMovieSceneTools.h"
 
 namespace SubTrackEditorConstants
 {
@@ -40,17 +46,14 @@ namespace SubTrackEditorConstants
  * A generic implementation for displaying simple property sections.
  */
 class FSubSection
-	: public ISequencerSection
+	: public TSubSectionMixin<>
 {
 public:
 
 	FSubSection(TSharedPtr<ISequencer> InSequencer, UMovieSceneSection& InSection, const FText& InDisplayName, TSharedPtr<FSubTrackEditor> InSubTrackEditor)
-		: DisplayName(InDisplayName)
-		, SectionObject(*CastChecked<UMovieSceneSubSection>(&InSection))
-		, Sequencer(InSequencer)
+		: TSubSectionMixin(InSequencer, *CastChecked<UMovieSceneSubSection>(&InSection))
+		, DisplayName(InDisplayName)
 		, SubTrackEditor(InSubTrackEditor)
-		, InitialStartOffsetDuringResize(0)
-		, InitialStartTimeDuringResize(0)
 	{
 	}
 
@@ -63,18 +66,11 @@ public:
 		return SubTrackEditorConstants::TrackHeight;
 	}
 
-	virtual UMovieSceneSection* GetSectionObject() override
-	{
-		return &SectionObject;
-	}
-
 	virtual FText GetSectionTitle() const override
 	{
-		if(SectionObject.GetSequence())
-		{
-			return FText::FromString(SectionObject.GetSequence()->GetName());
-		}
-		else if(UMovieSceneSubSection::GetRecordingSection() == &SectionObject)
+		const UMovieSceneSubSection& SectionObject = GetSubSectionObject();
+		
+		if(SectionObject.GetSequence() == nullptr && UMovieSceneSubSection::GetRecordingSection() == &SectionObject)
 		{
 			AActor* ActorToRecord = UMovieSceneSubSection::GetActorToRecord();
 
@@ -104,118 +100,29 @@ public:
 		}
 		else
 		{
-			return LOCTEXT("NoSequenceSelected", "No Sequence Selected");
+			return TSubSectionMixin::GetSectionTitle();
 		}
 	}
 	
 	virtual int32 OnPaintSection( FSequencerSectionPainter& InPainter ) const override
 	{
-		int32 LayerId = InPainter.PaintSectionBackground();
+		InPainter.PaintSectionBackground();
 
-		ESlateDrawEffect DrawEffects = InPainter.bParentEnabled ? ESlateDrawEffect::None : ESlateDrawEffect::DisabledEffect;
+		const UMovieSceneSubSection& SectionObject = GetSubSectionObject();
 
-		TRange<FFrameNumber> SectionRange = SectionObject.GetRange();
-		if (SectionRange.GetLowerBound().IsOpen() || SectionRange.GetUpperBound().IsOpen())
+		FSubSectionPainterResult PaintResult = FSubSectionPainterUtil::PaintSection(
+				GetSequencer(), SectionObject, InPainter, FSubSectionPainterParams(GetContentPadding()));
+		if (PaintResult == FSSPR_InvalidSection)
 		{
 			return InPainter.LayerId;
 		}
 
-		const FFrameNumber SectionStartFrame = SectionObject.GetInclusiveStartFrame();
-		const FFrameNumber SectionEndFrame   = SectionObject.GetExclusiveEndFrame();
-		const int32        SectionSize       = MovieScene::DiscreteSize(SectionRange);
+		int32 LayerId = InPainter.LayerId;
 
-		if (SectionSize <= 0)
+		if (SectionObject.GetSequence() == nullptr && UMovieSceneSubSection::GetRecordingSection() == &SectionObject)
 		{
-			return InPainter.LayerId;
-		}
+			const ESlateDrawEffect DrawEffects = InPainter.bParentEnabled ? ESlateDrawEffect::None : ESlateDrawEffect::DisabledEffect;
 
-		const float        PixelsPerFrame    = InPainter.SectionGeometry.Size.X / float(SectionSize);
-
-		UMovieSceneSequence* InnerSequence = SectionObject.GetSequence();
-		if (InnerSequence)
-		{
-			UMovieScene*         MovieScene    = InnerSequence->GetMovieScene();
-			TRange<FFrameNumber> PlaybackRange = MovieScene->GetPlaybackRange();
-
-			FMovieSceneSequenceTransform InnerToOuterTransform = SectionObject.OuterToInnerTransform().Inverse();
-
-			const FFrameNumber PlaybackStart = (MovieScene::DiscreteInclusiveLower(PlaybackRange) * InnerToOuterTransform).FloorToFrame();
-			if (SectionRange.Contains(PlaybackStart))
-			{
-				const int32 StartOffset = (PlaybackStart-SectionStartFrame).Value;
-				// add dark tint for left out-of-bounds
-				FSlateDrawElement::MakeBox(
-					InPainter.DrawElements,
-					InPainter.LayerId++,
-					InPainter.SectionGeometry.ToPaintGeometry(
-						FVector2D(0.0f, 0.f),
-						FVector2D(StartOffset * PixelsPerFrame, InPainter.SectionGeometry.Size.Y)
-					),
-					FEditorStyle::GetBrush("WhiteBrush"),
-					DrawEffects,
-					FLinearColor::Black.CopyWithNewOpacity(0.5f)
-				);
-
-				// add green line for playback start
-				FSlateDrawElement::MakeBox(
-					InPainter.DrawElements,
-					InPainter.LayerId++,
-					InPainter.SectionGeometry.ToPaintGeometry(
-						FVector2D(StartOffset * PixelsPerFrame, 0.f),
-						FVector2D(1.0f, InPainter.SectionGeometry.Size.Y)
-					),
-					FEditorStyle::GetBrush("WhiteBrush"),
-					DrawEffects,
-					FColor(32, 128, 32)	// 120, 75, 50 (HSV)
-				);
-			}
-
-			const FFrameNumber PlaybackEnd = (MovieScene::DiscreteExclusiveUpper(PlaybackRange) * InnerToOuterTransform).FloorToFrame();
-			if (SectionRange.Contains(PlaybackEnd))
-			{
-				// add dark tint for right out-of-bounds
-				const int32 EndOffset = (PlaybackEnd-SectionStartFrame).Value;
-				FSlateDrawElement::MakeBox(
-					InPainter.DrawElements,
-					InPainter.LayerId++,
-					InPainter.SectionGeometry.ToPaintGeometry(
-						FVector2D(EndOffset * PixelsPerFrame, 0.f),
-						FVector2D((SectionSize - EndOffset) * PixelsPerFrame, InPainter.SectionGeometry.Size.Y)
-					),
-					FEditorStyle::GetBrush("WhiteBrush"),
-					DrawEffects,
-					FLinearColor::Black.CopyWithNewOpacity(0.5f)
-				);
-
-
-				// add red line for playback end
-				FSlateDrawElement::MakeBox(
-					InPainter.DrawElements,
-					InPainter.LayerId++,
-					InPainter.SectionGeometry.ToPaintGeometry(
-						FVector2D(EndOffset * PixelsPerFrame, 0.f),
-						FVector2D(1.0f, InPainter.SectionGeometry.Size.Y)
-					),
-					FEditorStyle::GetBrush("WhiteBrush"),
-					DrawEffects,
-					FColor(128, 32, 32)	// 0, 75, 50 (HSV)
-				);
-			}
-
-			int32 NumTracks = MovieScene->GetPossessableCount() + MovieScene->GetSpawnableCount() + MovieScene->GetMasterTracks().Num();
-
-			FSlateDrawElement::MakeText(
-				InPainter.DrawElements,
-				++LayerId,
-				InPainter.SectionGeometry.ToOffsetPaintGeometry(FVector2D(11.0f, 32.0f)),
-				FText::Format(LOCTEXT("NumTracksFormat", "{0} track(s)"), FText::AsNumber(NumTracks)),
-				FEditorStyle::GetFontStyle("NormalFont"),
-				DrawEffects,
-				FColor(200, 200, 200)
-			);
-		}
-		else if (UMovieSceneSubSection::GetRecordingSection() == &SectionObject)
-		{
 			FColor SubSectionColor = FColor(180, 75, 75, 190);
 	
 			ISequenceRecorder& SequenceRecorder = FModuleManager::LoadModuleChecked<ISequenceRecorder>("SequenceRecorder");
@@ -255,20 +162,7 @@ public:
 		return LayerId;
 	}
 
-	virtual FReply OnSectionDoubleClicked(const FGeometry& SectionGeometry, const FPointerEvent& MouseEvent) override
-	{
-		if( MouseEvent.GetEffectingButton() == EKeys::LeftMouseButton )
-		{
-			if (SectionObject.GetSequence())
-			{
-				Sequencer.Pin()->FocusSequenceInstance(SectionObject);
-			}
-		}
-
-		return FReply::Handled();
-	}
-
-	virtual void BuildSectionContextMenu(FMenuBuilder& MenuBuilder, const FGuid& ObjectBinding)
+	virtual void BuildSectionContextMenu(FMenuBuilder& MenuBuilder, const FGuid& ObjectBinding) override
 	{
 		ISequencerSection::BuildSectionContextMenu(MenuBuilder, ObjectBinding);
 
@@ -276,67 +170,78 @@ public:
 			LOCTEXT("TakesMenu", "Takes"),
 			LOCTEXT("TakesMenuTooltip", "Sub section takes"),
 			FNewMenuDelegate::CreateLambda([=](FMenuBuilder& InMenuBuilder){ AddTakesMenu(InMenuBuilder); }));
+
+		MenuBuilder.AddMenuEntry(
+			LOCTEXT("PlayableDirectly_Label", "Playable Directly"),
+			LOCTEXT("PlayableDirectly_Tip", "When enabled, this sequence will also support being played directly outside of the master sequence. Disable this to save some memory on complex hierarchies of sequences."),
+			FSlateIcon(),
+			FUIAction(
+				FExecuteAction::CreateRaw(this, &FSubSection::TogglePlayableDirectly),
+				FCanExecuteAction::CreateLambda([]{ return true; }),
+				FGetActionCheckState::CreateRaw(this, &FSubSection::IsPlayableDirectly)
+			),
+			NAME_None,
+			EUserInterfaceActionType::ToggleButton
+		);
 	}
 
-	void BeginResizeSection()
+	void TogglePlayableDirectly()
 	{
-		InitialStartOffsetDuringResize = SectionObject.Parameters.StartFrameOffset;
-		InitialStartTimeDuringResize = SectionObject.HasStartFrame() ? SectionObject.GetInclusiveStartFrame() : 0;
-	}
-
-	void ResizeSection(ESequencerSectionResizeMode ResizeMode, FFrameNumber ResizeTime)
-	{
-		UMovieSceneSequence* InnerSequence = SectionObject.GetSequence();
-
-		// Adjust the start offset when resizing from the beginning
-		if (ResizeMode == SSRM_LeadingEdge && InnerSequence)
+		TSharedPtr<ISequencer> Sequencer = GetSequencer();
+		if (Sequencer)
 		{
-			const FFrameRate    OuterFrameRate   = SectionObject.GetTypedOuter<UMovieScene>()->GetTickResolution();
-			const FFrameRate    InnerFrameRate   = InnerSequence->GetMovieScene()->GetTickResolution();
-			const FFrameNumber  ResizeDifference = ResizeTime - InitialStartTimeDuringResize;
-			const FFrameTime    InnerFrameTime   = ConvertFrameTime(ResizeDifference, OuterFrameRate, InnerFrameRate);
-			FFrameNumber		NewStartOffset   = FFrameTime::FromDecimal(InnerFrameTime.AsDecimal() * SectionObject.Parameters.TimeScale).FrameNumber;
+			FScopedTransaction Transaction(LOCTEXT("SetPlayableDirectly_Transaction", "Set Playable Directly"));
 
-			NewStartOffset += InitialStartOffsetDuringResize;
+			TArray<UMovieSceneSection*> SelectedSections;
+			Sequencer->GetSelectedSections(SelectedSections);
 
-			// Ensure start offset is not less than 0
-			if (NewStartOffset < 0)
+			const bool bNewPlayableDirectly = IsPlayableDirectly() != ECheckBoxState::Checked;
+
+			for (UMovieSceneSection* Section : SelectedSections)
 			{
-				FFrameTime OuterFrameTimeOver = ConvertFrameTime(FFrameTime::FromDecimal(NewStartOffset.Value/SectionObject.Parameters.TimeScale), InnerFrameRate, OuterFrameRate);
-				ResizeTime = ResizeTime - OuterFrameTimeOver.GetFrame(); 
-				NewStartOffset = 0;
+				if (UMovieSceneSubSection* SubSection = Cast<UMovieSceneSubSection>(Section))
+				{
+					UMovieSceneSequence* Sequence = SubSection->GetSequence();
+					if (Sequence->IsPlayableDirectly() != bNewPlayableDirectly)
+					{
+						Sequence->SetPlayableDirectly(bNewPlayableDirectly);
+					}
+				}
 			}
-
-			SectionObject.Parameters.StartFrameOffset = FFrameNumber(NewStartOffset);
 		}
-
-		ISequencerSection::ResizeSection(ResizeMode, ResizeTime);
 	}
 
-	virtual void BeginSlipSection() override
+	ECheckBoxState IsPlayableDirectly() const
 	{
-		InitialStartOffsetDuringResize = SectionObject.Parameters.StartFrameOffset;
-		InitialStartTimeDuringResize = SectionObject.HasStartFrame() ? SectionObject.GetInclusiveStartFrame() : 0;
-	}
+		ECheckBoxState CheckboxState = ECheckBoxState::Undetermined;
 
-	virtual void SlipSection(FFrameNumber SlipTime) override
-	{
-		UMovieSceneSequence* InnerSequence = SectionObject.GetSequence();
-
-		// Adjust the start offset when resizing from the beginning
-		if (InnerSequence)
+		TSharedPtr<ISequencer> Sequencer = GetSequencer();
+		if (Sequencer)
 		{
-			const FFrameRate    OuterFrameRate   = SectionObject.GetTypedOuter<UMovieScene>()->GetTickResolution();
-			const FFrameRate    InnerFrameRate   = InnerSequence->GetMovieScene()->GetTickResolution();
-			const FFrameNumber  ResizeDifference = SlipTime - InitialStartTimeDuringResize;
-			const FFrameTime    InnerFrameTime = ConvertFrameTime(ResizeDifference, OuterFrameRate, InnerFrameRate);
-			const int32         NewStartOffset = FFrameTime::FromDecimal(InnerFrameTime.AsDecimal() * SectionObject.Parameters.TimeScale).FrameNumber.Value;
+			TArray<UMovieSceneSection*> SelectedSections;
+			Sequencer->GetSelectedSections(SelectedSections);
 
-			// Ensure start offset is not less than 0
-			SectionObject.Parameters.StartFrameOffset = FFrameNumber(FMath::Max(NewStartOffset, 0));
+			for (UMovieSceneSection* Section : SelectedSections)
+			{
+				if (UMovieSceneSubSection* SubSection = Cast<UMovieSceneSubSection>(Section))
+				{
+					UMovieSceneSequence* Sequence = SubSection->GetSequence();
+					if (Sequence)
+					{
+						if (CheckboxState == ECheckBoxState::Undetermined)
+						{
+							CheckboxState = Sequence->IsPlayableDirectly() ? ECheckBoxState::Checked : ECheckBoxState::Unchecked;
+						}
+						else if (CheckboxState == ECheckBoxState::Checked != Sequence->IsPlayableDirectly())
+						{
+							return ECheckBoxState::Undetermined;
+						}
+					}
+				}
+			}
 		}
 
-		ISequencerSection::SlipSection(SlipTime);
+		return CheckboxState;
 	}
 
 	virtual bool IsReadOnly() const override
@@ -349,18 +254,38 @@ private:
 
 	void AddTakesMenu(FMenuBuilder& MenuBuilder)
 	{
-		TArray<uint32> TakeNumbers;
+		TArray<FAssetData> AssetData;
 		uint32 CurrentTakeNumber = INDEX_NONE;
-		MovieSceneToolHelpers::GatherTakes(&SectionObject, TakeNumbers, CurrentTakeNumber);
+		UMovieSceneSubSection& SectionObject = GetSubSectionObject();
+		MovieSceneToolHelpers::GatherTakes(&SectionObject, AssetData, CurrentTakeNumber);
 
-		for (auto TakeNumber : TakeNumbers)
+		AssetData.Sort([&SectionObject](const FAssetData &A, const FAssetData &B) {
+			uint32 TakeNumberA = INDEX_NONE;
+			uint32 TakeNumberB = INDEX_NONE;
+			if (MovieSceneToolHelpers::GetTakeNumber(&SectionObject, A, TakeNumberA) && MovieSceneToolHelpers::GetTakeNumber(&SectionObject, B, TakeNumberB))
+			{
+				return TakeNumberA < TakeNumberB;
+			}
+			return true;
+		});
+
+		for (auto ThisAssetData : AssetData)
 		{
-			MenuBuilder.AddMenuEntry(
-				FText::Format(LOCTEXT("TakeNumber", "Take {0}"), FText::AsNumber(TakeNumber)),
-				FText::Format(LOCTEXT("TakeNumberTooltip", "Switch to take {0}"), FText::AsNumber(TakeNumber)),
-				TakeNumber == CurrentTakeNumber ? FSlateIcon(FEditorStyle::GetStyleSetName(), "Sequencer.Star") : FSlateIcon(FEditorStyle::GetStyleSetName(), "Sequencer.Empty"),
-				FUIAction(FExecuteAction::CreateSP(SubTrackEditor.Pin().ToSharedRef(), &FSubTrackEditor::SwitchTake, TakeNumber))
-			);
+			uint32 TakeNumber = INDEX_NONE;
+			if (MovieSceneToolHelpers::GetTakeNumber(&SectionObject, ThisAssetData, TakeNumber))
+			{
+				UObject* TakeObject = ThisAssetData.GetAsset();
+
+				if (TakeObject)
+				{
+					MenuBuilder.AddMenuEntry(
+						FText::Format(LOCTEXT("TakeNumber", "Take {0}"), FText::AsNumber(TakeNumber)),
+						FText::Format(LOCTEXT("TakeNumberTooltip", "Switch to {0}"), FText::FromString(TakeObject->GetPathName())),
+						TakeNumber == CurrentTakeNumber ? FSlateIcon(FEditorStyle::GetStyleSetName(), "Sequencer.Star") : FSlateIcon(FEditorStyle::GetStyleSetName(), "Sequencer.Empty"),
+						FUIAction(FExecuteAction::CreateSP(SubTrackEditor.Pin().ToSharedRef(), &FSubTrackEditor::SwitchTake, TakeObject))
+					);
+				}
+			}
 		}
 	}
 
@@ -369,20 +294,8 @@ private:
 	/** Display name of the section */
 	FText DisplayName;
 
-	/** The section we are visualizing */
-	UMovieSceneSubSection& SectionObject;
-
-	/** Sequencer interface */
-	TWeakPtr<ISequencer> Sequencer;
-
 	/** The sub track editor that contains this section */
 	TWeakPtr<FSubTrackEditor> SubTrackEditor;
-
-	/** Cached start offset value valid only during resize */
-	FFrameNumber InitialStartOffsetDuringResize;
-
-	/** Cached start time valid only during resize */
-	FFrameNumber InitialStartTimeDuringResize;
 };
 
 
@@ -455,6 +368,14 @@ bool FSubTrackEditor::HandleAssetAdded(UObject* Asset, const FGuid& TargetObject
 
 	if (FocusedMovieScene != nullptr && FocusedMovieScene->FindMasterTrack<UMovieSceneCinematicShotTrack>() != nullptr)
 	{
+		return false;
+	}
+
+	if (Sequence->GetMovieScene()->GetPlaybackRange().IsEmpty())
+	{
+		FNotificationInfo Info(FText::Format(LOCTEXT("InvalidSequenceDuration", "Invalid level sequence {0}. The sequence has no duration."), Sequence->GetDisplayName()));
+		Info.bUseLargeFont = false;
+		FSlateNotificationManager::Get().AddNotification(Info);
 		return false;
 	}
 
@@ -616,9 +537,8 @@ void FSubTrackEditor::HandleAddSubTrackMenuEntryExecute()
 
 	if (GetSequencer().IsValid())
 	{
-		GetSequencer()->OnAddTrack(NewTrack);
+		GetSequencer()->OnAddTrack(NewTrack, FGuid());
 	}
-	GetSequencer()->NotifyMovieSceneDataChanged( EMovieSceneDataChangeType::MovieSceneStructureItemAdded );
 }
 
 /** Helper function - get the first PIE world (or first PIE client world if there is more than one) */
@@ -726,6 +646,14 @@ FKeyPropertyResult FSubTrackEditor::AddKeyInternal(FFrameNumber KeyTime, UMovieS
 {	
 	FKeyPropertyResult KeyPropertyResult;
 
+	if (InMovieSceneSequence->GetMovieScene()->GetPlaybackRange().IsEmpty())
+	{
+		FNotificationInfo Info(FText::Format(LOCTEXT("InvalidSequenceDuration", "Invalid level sequence {0}. The sequence has no duration."), InMovieSceneSequence->GetDisplayName()));
+		Info.bUseLargeFont = false;
+		FSlateNotificationManager::Get().AddNotification(Info);
+		return KeyPropertyResult;
+	}
+
 	if (CanAddSubSequence(*InMovieSceneSequence))
 	{
 		UMovieSceneSubTrack* SubTrack = Cast<UMovieSceneSubTrack>(InTrack);
@@ -800,6 +728,12 @@ bool FSubTrackEditor::CanRecordNewSequence() const
 
 void FSubTrackEditor::HandleRecordNewSequence(AActor* InActorToRecord, UMovieSceneTrack* InTrack)
 {
+	// Keep track of how many people actually used record new sequence
+	if (FEngineAnalytics::IsAvailable())
+	{
+		FEngineAnalytics::GetProvider().RecordEvent(TEXT("Editor.Sequencer.RecordNewSequence"));
+	}
+
 	FSlateApplication::Get().DismissAllMenus();
 
 	const FScopedTransaction Transaction(LOCTEXT("AddRecordNewSequence_Transaction", "Add Record New Sequence"));
@@ -825,7 +759,7 @@ FKeyPropertyResult FSubTrackEditor::HandleRecordNewSequenceInternal(FFrameNumber
 	return KeyPropertyResult;
 }
 
-void FSubTrackEditor::SwitchTake(uint32 TakeNumber)
+void FSubTrackEditor::SwitchTake(UObject* TakeObject)
 {
 	bool bSwitchedTake = false;
 
@@ -842,8 +776,6 @@ void FSubTrackEditor::SwitchTake(uint32 TakeNumber)
 		}
 
 		UMovieSceneSubSection* Section = Cast<UMovieSceneSubSection>(Sections[SectionIndex]);
-
-		UObject* TakeObject = MovieSceneToolHelpers::GetTake(Section, TakeNumber);
 
 		if (TakeObject && TakeObject->IsA(UMovieSceneSequence::StaticClass()))
 		{

@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -9,9 +9,9 @@
 
 class IDetailsView;
 class FClothPainter;
-class UClothingAsset;
+class UClothingAssetCommon;
 class UClothPainterSettings;
-struct FClothParameterMask_PhysMesh;
+struct FPointWeightMap;
 
 class SClothPaintWidget : public SCompoundWidget
 {

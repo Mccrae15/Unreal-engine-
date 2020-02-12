@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "HotReloadClassReinstancer.h"
 #include "Serialization/MemoryWriter.h"
@@ -93,7 +93,7 @@ void FHotReloadClassReinstancer::SerializeCDOProperties(UObject* InObject, FHotR
 		virtual void Serialize(void* Data, int64 Num) override
 		{
 			// Collect serialized properties so we can later update their values on instances if they change
-			UProperty* SerializedProperty = GetSerializedProperty();
+			FProperty* SerializedProperty = GetSerializedProperty();
 			if (SerializedProperty != nullptr)
 			{
 				FCDOProperty& PropertyInfo = PropertyData.Properties.FindOrAdd(SerializedProperty->GetFName());
@@ -146,8 +146,8 @@ void FHotReloadClassReinstancer::SerializeCDOProperties(UObject* InObject, FHotR
 		virtual FArchive& operator<<(FName& InName) override
 		{
 			FArchive& Ar = *this;
-			NAME_INDEX ComparisonIndex = InName.GetComparisonIndex();
-			NAME_INDEX DisplayIndex = InName.GetDisplayIndex();
+			FNameEntryId ComparisonIndex = InName.GetComparisonIndex();
+			FNameEntryId DisplayIndex = InName.GetDisplayIndex();
 			int32 Number = InName.GetNumber();
 			Ar << ComparisonIndex;
 			Ar << DisplayIndex;
@@ -351,7 +351,7 @@ void FHotReloadClassReinstancer::UpdateDefaultProperties()
 {
 	struct FPropertyToUpdate
 	{
-		UProperty* Property;
+		FProperty* Property;
 		FName SubobjectName;
 		uint8* OldSerializedValuePtr;
 		uint8* NewValuePtr;
@@ -385,8 +385,8 @@ void FHotReloadClassReinstancer::UpdateDefaultProperties()
 		virtual FArchive& operator<<(FName& InName) override
 		{
 			FArchive& Ar = *this;
-			NAME_INDEX ComparisonIndex = InName.GetComparisonIndex();
-			NAME_INDEX DisplayIndex = InName.GetDisplayIndex();
+			FNameEntryId ComparisonIndex = InName.GetComparisonIndex();
+			FNameEntryId DisplayIndex = InName.GetDisplayIndex();
 			int32 Number = InName.GetNumber();
 			Ar << ComparisonIndex;
 			Ar << DisplayIndex;
@@ -454,14 +454,14 @@ void FHotReloadClassReinstancer::UpdateDefaultProperties()
 				PropertyToUpdate.NewValuePtr = nullptr;
 				PropertyToUpdate.SubobjectName = NewPropertyInfo.SubobjectName;
 
-				if (NewPropertyInfo.Property->GetOuter() == NewClass)
+				if (NewPropertyInfo.Property->GetOwner<UObject>() == NewClass)
 				{
 					PropertyToUpdate.NewValuePtr = PropertyToUpdate.Property->ContainerPtrToValuePtr<uint8>(NewClass->GetDefaultObject());
 				}
 				else if (NewPropertyInfo.SubobjectName != NAME_None)
 				{
 					UObject* DefaultSubobjectPtr = FindDefaultSubobject(DefaultSubobjectArray, NewPropertyInfo.SubobjectName);
-					if (DefaultSubobjectPtr && NewPropertyInfo.Property->GetOuter() == DefaultSubobjectPtr->GetClass())
+					if (DefaultSubobjectPtr && NewPropertyInfo.Property->GetOwner<UObject>() == DefaultSubobjectPtr->GetClass())
 					{
 						PropertyToUpdate.NewValuePtr = PropertyToUpdate.Property->ContainerPtrToValuePtr<uint8>(DefaultSubobjectPtr);
 					}
@@ -481,9 +481,15 @@ void FHotReloadClassReinstancer::UpdateDefaultProperties()
 		TArray<uint8> CurrentValueSerializedData;		
 
 		// Update properties on all existing instances of the class
+		const UPackage* TransientPackage = GetTransientPackage();
 		for (FObjectIterator It(NewClass); It; ++It)
 		{
 			UObject* ObjectPtr = *It;
+			if (ObjectPtr->IsPendingKill() || ObjectPtr->GetOutermost() == TransientPackage)
+			{
+				continue;
+			}
+
 			DefaultSubobjectArray.Empty(DefaultSubobjectArrayCapacity);
 			ObjectPtr->CollectDefaultSubobjects(DefaultSubobjectArray);
 
@@ -497,7 +503,7 @@ void FHotReloadClassReinstancer::UpdateDefaultProperties()
 				else
 				{
 					UObject* DefaultSubobjectPtr = FindDefaultSubobject(DefaultSubobjectArray, PropertyToUpdate.SubobjectName);
-					if (DefaultSubobjectPtr && PropertyToUpdate.Property->GetOuter() == DefaultSubobjectPtr->GetClass())
+					if (DefaultSubobjectPtr && PropertyToUpdate.Property->GetOwner<UObject>() == DefaultSubobjectPtr->GetClass())
 					{
 						InstanceValuePtr = PropertyToUpdate.Property->ContainerPtrToValuePtr<uint8>(DefaultSubobjectPtr);
 					}

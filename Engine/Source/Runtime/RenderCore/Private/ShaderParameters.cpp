@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 /*=============================================================================
 	ShaderParameters.cpp: Shader parameter implementation.
@@ -12,12 +12,13 @@
 #include "VertexFactory.h"
 #include "ShaderCodeLibrary.h"
 
+IMPLEMENT_TYPE_LAYOUT(FShaderParameter);
+IMPLEMENT_TYPE_LAYOUT(FShaderResourceParameter);
+IMPLEMENT_TYPE_LAYOUT(FRWShaderParameter);
+IMPLEMENT_TYPE_LAYOUT(FShaderUniformBufferParameter);
+
 void FShaderParameter::Bind(const FShaderParameterMap& ParameterMap,const TCHAR* ParameterName,EShaderParameterFlags Flags)
 {
-#if UE_BUILD_DEBUG
-	bInitialized = true;
-#endif
-
 	if (!ParameterMap.FindParameterAllocation(ParameterName,BufferIndex,BaseIndex,NumBytes) && Flags == SPF_Mandatory)
 	{
 		if (!UE_LOG_ACTIVE(LogShaders, Log))
@@ -36,13 +37,6 @@ void FShaderParameter::Bind(const FShaderParameterMap& ParameterMap,const TCHAR*
 
 FArchive& operator<<(FArchive& Ar,FShaderParameter& P)
 {
-#if UE_BUILD_DEBUG
-	if (Ar.IsLoading())
-	{
-		P.bInitialized = true;
-	}
-#endif
-
 	uint16& PBufferIndex = P.BufferIndex;
 	return Ar << P.BaseIndex << P.NumBytes << PBufferIndex;
 }
@@ -50,10 +44,6 @@ FArchive& operator<<(FArchive& Ar,FShaderParameter& P)
 void FShaderResourceParameter::Bind(const FShaderParameterMap& ParameterMap,const TCHAR* ParameterName,EShaderParameterFlags Flags)
 {
 	uint16 UnusedBufferIndex = 0;
-
-#if UE_BUILD_DEBUG
-	bInitialized = true;
-#endif
 
 	if(!ParameterMap.FindParameterAllocation(ParameterName,UnusedBufferIndex,BaseIndex,NumResources) && Flags == SPF_Mandatory)
 	{
@@ -73,13 +63,6 @@ void FShaderResourceParameter::Bind(const FShaderParameterMap& ParameterMap,cons
 
 FArchive& operator<<(FArchive& Ar,FShaderResourceParameter& P)
 {
-#if UE_BUILD_DEBUG
-	if (Ar.IsLoading())
-	{
-		P.bInitialized = true;
-	}
-#endif
-
 	return Ar << P.BaseIndex << P.NumResources;
 }
 
@@ -95,7 +78,7 @@ void FShaderUniformBufferParameter::ModifyCompilationEnvironment(const TCHAR* Pa
 	FString Include = FString::Printf(TEXT("#include \"/Engine/Generated/UniformBuffers/%s.ush\"") LINE_TERMINATOR, ParameterName);
 
 	GeneratedUniformBuffersInclude.Append(Include);
-	Struct.AddResourceTableEntries(OutEnvironment.ResourceTableMap, OutEnvironment.ResourceTableLayoutHashes);
+	Struct.AddResourceTableEntries(OutEnvironment.ResourceTableMap, OutEnvironment.ResourceTableLayoutHashes, OutEnvironment.ResourceTableLayoutSlots);
 }
 
 void FShaderUniformBufferParameter::Bind(const FShaderParameterMap& ParameterMap,const TCHAR* ParameterName,EShaderParameterFlags Flags)
@@ -103,13 +86,9 @@ void FShaderUniformBufferParameter::Bind(const FShaderParameterMap& ParameterMap
 	uint16 UnusedBaseIndex = 0;
 	uint16 UnusedNumBytes = 0;
 
-#if UE_BUILD_DEBUG
-	bInitialized = true;
-#endif
-
 	if(!ParameterMap.FindParameterAllocation(ParameterName,BaseIndex,UnusedBaseIndex,UnusedNumBytes))
 	{
-		bIsBound = false;
+		BaseIndex = 0xffff;
 		if(Flags == SPF_Mandatory)
 		{
 			if (!UE_LOG_ACTIVE(LogShaders, Log))
@@ -127,7 +106,7 @@ void FShaderUniformBufferParameter::Bind(const FShaderParameterMap& ParameterMap
 	}
 	else
 	{
-		bIsBound = true;
+		check(IsBound());
 	}
 }
 
@@ -154,8 +133,6 @@ static void CreateHLSLUniformBufferStructMembersDeclaration(
 {
 	const TArray<FShaderParametersMetadata::FMember>& StructMembers = UniformBufferStruct.GetMembers();
 	
-	int32 OpeningBraceLocPlusOne = Decl.Initializer.Len();
-
 	FString PreviousBaseTypeName = TEXT("float");
 	for (int32 MemberIndex = 0; MemberIndex < StructMembers.Num(); ++MemberIndex)
 	{
@@ -169,15 +146,15 @@ static void CreateHLSLUniformBufferStructMembersDeclaration(
 
 		if(Member.GetBaseType() == UBMT_NESTED_STRUCT)
 		{
+			checkf(Member.GetNumElements() == 0, TEXT("SHADER_PARAMETER_STRUCT_ARRAY() is not supported in uniform buffer yet."));
 			Decl.StructMembers += TEXT("struct {\r\n");
-			Decl.Initializer += TEXT(",{");
+			Decl.Initializer += TEXT("{");
 			CreateHLSLUniformBufferStructMembersDeclaration(*Member.GetStructMetadata(), FString::Printf(TEXT("%s%s_"), *NamePrefix, Member.GetName()), StructOffset + Member.GetOffset(), Decl, HLSLBaseOffset);
-			Decl.Initializer += TEXT("}");
+			Decl.Initializer += TEXT("},");
 			Decl.StructMembers += FString::Printf(TEXT("} %s%s;\r\n"),Member.GetName(),*ArrayDim);
 		}
 		else if (Member.GetBaseType() == UBMT_INCLUDED_STRUCT)
 		{
-			Decl.Initializer += TEXT(",");
 			CreateHLSLUniformBufferStructMembersDeclaration(*Member.GetStructMetadata(), NamePrefix, StructOffset + Member.GetOffset(), Decl, HLSLBaseOffset);
 		}
 		else if (IsShaderParameterTypeForUniformBufferLayout(Member.GetBaseType()))
@@ -192,7 +169,6 @@ static void CreateHLSLUniformBufferStructMembersDeclaration(
 			FString BaseTypeName;
 			switch(Member.GetBaseType())
 			{
-			case UBMT_BOOL:    BaseTypeName = TEXT("bool"); break;
 			case UBMT_INT32:   BaseTypeName = TEXT("int"); break;
 			case UBMT_UINT32:  BaseTypeName = TEXT("uint"); break;
 			case UBMT_FLOAT32: 
@@ -254,7 +230,7 @@ static void CreateHLSLUniformBufferStructMembersDeclaration(
 			FString ParameterName = FString::Printf(TEXT("%s%s"),*NamePrefix,Member.GetName());
 			Decl.ConstantBufferMembers += FString::Printf(TEXT("\t%s%s %s%s;\r\n"),*BaseTypeName,*TypeDim,*ParameterName,*ArrayDim);
 			Decl.StructMembers += FString::Printf(TEXT("\t%s%s %s%s;\r\n"),*BaseTypeName,*TypeDim,Member.GetName(),*ArrayDim);
-			Decl.Initializer += FString::Printf(TEXT(",%s"),*ParameterName);
+			Decl.Initializer += FString::Printf(TEXT("%s,"),*ParameterName);
 		}
 	}
 
@@ -265,13 +241,14 @@ static void CreateHLSLUniformBufferStructMembersDeclaration(
 		if (IsShaderParameterTypeForUniformBufferLayout(Member.GetBaseType()))
 		{
 			check(Member.GetBaseType() != UBMT_RDG_TEXTURE_SRV && Member.GetBaseType() != UBMT_RDG_TEXTURE_UAV);
+			checkf(Member.GetBaseType() != UBMT_RDG_TEXTURE_COPY_DEST && Member.GetBaseType() != UBMT_RDG_BUFFER_COPY_DEST, TEXT("Copy destination usage is not supported in uniform buffers."));
 			if (Member.GetBaseType() == UBMT_SRV)
 			{
 				// TODO: handle arrays?
 				FString ParameterName = FString::Printf(TEXT("%s%s"),*NamePrefix,Member.GetName());
 				Decl.ResourceMembers += FString::Printf(TEXT("PLATFORM_SUPPORTS_SRV_UB_MACRO( %s %s; ) \r\n"), Member.GetShaderType(), *ParameterName);
 				Decl.StructMembers += FString::Printf(TEXT("\tPLATFORM_SUPPORTS_SRV_UB_MACRO( %s %s; ) \r\n"), Member.GetShaderType(), Member.GetName());
-				Decl.Initializer += FString::Printf(TEXT(" PLATFORM_SUPPORTS_SRV_UB_MACRO( ,%s ) "), *ParameterName);
+				Decl.Initializer += FString::Printf(TEXT(" PLATFORM_SUPPORTS_SRV_UB_MACRO( %s, ) "), *ParameterName);
 			}
 			else
 			{
@@ -279,14 +256,9 @@ static void CreateHLSLUniformBufferStructMembersDeclaration(
 				FString ParameterName = FString::Printf(TEXT("%s%s"),*NamePrefix,Member.GetName());
 				Decl.ResourceMembers += FString::Printf(TEXT("%s %s;\r\n"), Member.GetShaderType(), *ParameterName);
 				Decl.StructMembers += FString::Printf(TEXT("\t%s %s;\r\n"), Member.GetShaderType(), Member.GetName());
-				Decl.Initializer += FString::Printf(TEXT(",%s"), *ParameterName);
+				Decl.Initializer += FString::Printf(TEXT("%s,"), *ParameterName);
 			}
 		}
-	}
-
-	if (Decl.Initializer[OpeningBraceLocPlusOne] == TEXT(','))
-	{
-		Decl.Initializer[OpeningBraceLocPlusOne] = TEXT(' ');
 	}
 }
 
@@ -379,7 +351,7 @@ void FShaderType::AddReferencedUniformBufferIncludes(FShaderCompilerEnvironment&
 		{
 			if (It.Key() == StructIt->GetShaderVariableName())
 			{
-				StructIt->AddResourceTableEntries(OutEnvironment.ResourceTableMap, OutEnvironment.ResourceTableLayoutHashes);
+				StructIt->AddResourceTableEntries(OutEnvironment.ResourceTableMap, OutEnvironment.ResourceTableLayoutHashes, OutEnvironment.ResourceTableLayoutSlots);
 			}
 		}
 	}
@@ -388,7 +360,7 @@ void FShaderType::AddReferencedUniformBufferIncludes(FShaderCompilerEnvironment&
 	GeneratedUniformBuffersInclude.Append(UniformBufferIncludes);
 
 	ERHIFeatureLevel::Type MaxFeatureLevel = GetMaxSupportedFeatureLevel(Platform);
-	if (MaxFeatureLevel >= ERHIFeatureLevel::SM4)
+	if (MaxFeatureLevel >= ERHIFeatureLevel::ES3_1)
 	{
 		OutEnvironment.SetDefine(TEXT("PLATFORM_SUPPORTS_SRV_UB"), TEXT("1"));
 	}
@@ -418,6 +390,7 @@ void FShaderType::DumpDebugInfo()
 		break;
 	}
 
+#if 0
 	UE_LOG(LogConsoleResponse, Display, TEXT("  --- %d shaders"), ShaderIdMap.Num());
 	int32 Index = 0;
 	for (auto& KeyValue : ShaderIdMap)
@@ -427,7 +400,7 @@ void FShaderType::DumpDebugInfo()
 		Shader->DumpDebugInfo();
 		Index++;
 	}
-
+#endif
 }
 
 void FShaderType::GetShaderStableKeyParts(FStableShaderKeyAndValue& SaveKeyVal)
@@ -456,24 +429,6 @@ void FShaderType::GetShaderStableKeyParts(FStableShaderKeyAndValue& SaveKeyVal)
 #endif
 }
 
-void FShaderType::SaveShaderStableKeys(EShaderPlatform TargetShaderPlatform)
-{
-#if WITH_EDITOR
-	FStableShaderKeyAndValue SaveKeyVal;
-	if (ShaderIdMap.Num())
-	{
-		for (auto& KeyValue : ShaderIdMap)
-		{
-			FShader* Shader = KeyValue.Value;
-			check(Shader);
-			check(Shader->Type == this);
-			Shader->SaveShaderStableKeys(TargetShaderPlatform, SaveKeyVal);
-		}
-	}
-#endif
-}
-
-
 void FVertexFactoryType::AddReferencedUniformBufferIncludes(FShaderCompilerEnvironment& OutEnvironment, FString& OutSourceFilePrefix, EShaderPlatform Platform)
 {
 	// Cache uniform buffer struct declarations referenced by this shader type's files
@@ -499,7 +454,7 @@ void FVertexFactoryType::AddReferencedUniformBufferIncludes(FShaderCompilerEnvir
 		{
 			if (It.Key() == StructIt->GetShaderVariableName())
 			{
-				StructIt->AddResourceTableEntries(OutEnvironment.ResourceTableMap, OutEnvironment.ResourceTableLayoutHashes);
+				StructIt->AddResourceTableEntries(OutEnvironment.ResourceTableMap, OutEnvironment.ResourceTableLayoutHashes, OutEnvironment.ResourceTableLayoutSlots);
 			}
 		}
 	}
@@ -508,7 +463,7 @@ void FVertexFactoryType::AddReferencedUniformBufferIncludes(FShaderCompilerEnvir
 	GeneratedUniformBuffersInclude.Append(UniformBufferIncludes);
 
 	ERHIFeatureLevel::Type MaxFeatureLevel = GetMaxSupportedFeatureLevel(Platform);
-	if (MaxFeatureLevel >= ERHIFeatureLevel::SM4)
+	if (MaxFeatureLevel >= ERHIFeatureLevel::ES3_1)
 	{
 		OutEnvironment.SetDefine(TEXT("PLATFORM_SUPPORTS_SRV_UB"), TEXT("1"));
 	}

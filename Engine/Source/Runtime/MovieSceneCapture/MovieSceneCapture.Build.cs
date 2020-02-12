@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 using UnrealBuildTool;
 
@@ -12,7 +12,7 @@ public class MovieSceneCapture : ModuleRules
 			}
 		);
 
-		if (Target.bBuildDeveloperTools)
+		if (Target.Type == TargetType.Editor || Target.Type == TargetType.Program)
 		{
 			PublicIncludePathModuleNames.Add("ImageWrapper");
 			DynamicallyLoadedModuleNames.Add("ImageWrapper");

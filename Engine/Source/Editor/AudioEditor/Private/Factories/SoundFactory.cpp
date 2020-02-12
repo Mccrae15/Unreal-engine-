@@ -1,15 +1,18 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "Factories/SoundFactory.h"
 #include "AssetRegistryModule.h"
-#include "Components/AudioComponent.h"
 #include "Audio.h"
+#include "Components/AudioComponent.h"
+#include "ContentBrowserModule.h"
+#include "IContentBrowserSingleton.h"
+#include "Modules/ModuleManager.h"
 #include "Sound/SoundCue.h"
-#include "Sound/SoundWave.h"
 #include "Sound/SoundNode.h"
 #include "Sound/SoundNodeWavePlayer.h"
 #include "Sound/SoundNodeModulator.h"
 #include "Sound/SoundNodeAttenuation.h"
+#include "Sound/SoundWave.h"
 #include "AudioDeviceManager.h"
 #include "AudioDevice.h"
 #include "AudioEditorModule.h"
@@ -17,84 +20,86 @@
 #include "Misc/MessageDialog.h"
 #include "Misc/FeedbackContext.h"
 #include "EditorFramework/AssetImportData.h"
-#include "AudioEditorModule.h"
-#include "AudioDevice.h"
+#include "AudioCompressionSettingsUtils.h"
 #include "SoundFileIO/SoundFileIO.h"
 
 
-static bool bSoundFactorySuppressImportOverwriteDialog = false;
-
-static void InsertSoundNode(USoundCue* SoundCue, UClass* NodeClass, int32 NodeIndex)
+namespace
 {
-	USoundNode* SoundNode = SoundCue->ConstructSoundNode<USoundNode>(NodeClass);
-
-	// If this node allows >0 children but by default has zero - create a connector for starters
-	if (SoundNode->GetMaxChildNodes() > 0 && SoundNode->ChildNodes.Num() == 0)
+	void InsertSoundNode(USoundCue* SoundCue, UClass* NodeClass, int32 NodeIndex)
 	{
-		SoundNode->CreateStartingConnectors();
+		USoundNode* SoundNode = SoundCue->ConstructSoundNode<USoundNode>(NodeClass);
+
+		// If this node allows >0 children but by default has zero - create a connector for starters
+		if (SoundNode->GetMaxChildNodes() > 0 && SoundNode->ChildNodes.Num() == 0)
+		{
+			SoundNode->CreateStartingConnectors();
+		}
+
+		SoundNode->GraphNode->NodePosX = -150 * NodeIndex - 100;
+		SoundNode->GraphNode->NodePosY = -35;
+
+		// Link the node to the cue.
+		SoundNode->ChildNodes[0] = SoundCue->FirstNode;
+
+		// Link the attenuation node to root.
+		SoundCue->FirstNode = SoundNode;
+
+		SoundCue->LinkGraphNodesFromSoundNodes();
 	}
 
-	SoundNode->GraphNode->NodePosX = -150 * NodeIndex - 100;
-	SoundNode->GraphNode->NodePosY = -35;
-
-	// Link the node to the cue.
-	SoundNode->ChildNodes[0] = SoundCue->FirstNode;
-
-	// Link the attenuation node to root.
-	SoundCue->FirstNode = SoundNode;
-
-	SoundCue->LinkGraphNodesFromSoundNodes();
-}
-
-static void CreateSoundCue(USoundWave* Sound, UObject* InParent, EObjectFlags Flags, bool bIncludeAttenuationNode, bool bIncludeModulatorNode, bool bIncludeLoopingNode, float CueVolume)
-{
-	// then first create the actual sound cue
-	FString SoundCueName = FString::Printf(TEXT("%s_Cue"), *Sound->GetName());
-
-	// Create sound cue and wave player
-	USoundCue* SoundCue = NewObject<USoundCue>(InParent, *SoundCueName, Flags);
-	USoundNodeWavePlayer* WavePlayer = SoundCue->ConstructSoundNode<USoundNodeWavePlayer>();
-
-	int32 NodeIndex = (int32)bIncludeAttenuationNode + (int32)bIncludeModulatorNode + (int32)bIncludeLoopingNode;
-
-	WavePlayer->GraphNode->NodePosX = -150 * NodeIndex - 100;
-	WavePlayer->GraphNode->NodePosY = -35;
-
-	// Apply the initial volume.
-	SoundCue->VolumeMultiplier = CueVolume;
-
-	WavePlayer->SetSoundWave(Sound);
-	SoundCue->FirstNode = WavePlayer;
-	SoundCue->LinkGraphNodesFromSoundNodes();
-
-	if (bIncludeLoopingNode)
+	void CreateSoundCue(USoundWave* Sound, UObject* InParent, EObjectFlags Flags, bool bIncludeAttenuationNode, bool bIncludeModulatorNode, bool bIncludeLoopingNode, float CueVolume)
 	{
-		WavePlayer->bLooping = true;
-	}
+		// then first create the actual sound cue
+		FString SoundCueName = FString::Printf(TEXT("%s_Cue"), *Sound->GetName());
 
-	if (bIncludeModulatorNode)
-	{
-		InsertSoundNode(SoundCue, USoundNodeModulator::StaticClass(), --NodeIndex);
-	}
+		// Create sound cue and wave player
+		USoundCue* SoundCue = NewObject<USoundCue>(InParent, *SoundCueName, Flags);
+		USoundNodeWavePlayer* WavePlayer = SoundCue->ConstructSoundNode<USoundNodeWavePlayer>();
 
-	if (bIncludeAttenuationNode)
-	{
-		InsertSoundNode(SoundCue, USoundNodeAttenuation::StaticClass(), --NodeIndex);
-	}
+		int32 NodeIndex = (int32)bIncludeAttenuationNode + (int32)bIncludeModulatorNode + (int32)bIncludeLoopingNode;
 
-	// Make sure the content browser finds out about this newly-created object.  This is necessary when sound
-	// cues are created automatically after creating a sound node wave.  See use of bAutoCreateCue in USoundTTSFactory.
-	if ((Flags & (RF_Public | RF_Standalone)) != 0)
-	{
-		// Notify the asset registry
-		FAssetRegistryModule::AssetCreated(SoundCue);
-	}
-}
+		WavePlayer->GraphNode->NodePosX = -150 * NodeIndex - 100;
+		WavePlayer->GraphNode->NodePosY = -35;
 
+		// Apply the initial volume.
+		SoundCue->VolumeMultiplier = CueVolume;
+
+		WavePlayer->SetSoundWave(Sound);
+		SoundCue->FirstNode = WavePlayer;
+		SoundCue->LinkGraphNodesFromSoundNodes();
+
+		if (bIncludeLoopingNode)
+		{
+			WavePlayer->bLooping = true;
+		}
+
+		if (bIncludeModulatorNode)
+		{
+			InsertSoundNode(SoundCue, USoundNodeModulator::StaticClass(), --NodeIndex);
+		}
+
+		if (bIncludeAttenuationNode)
+		{
+			InsertSoundNode(SoundCue, USoundNodeAttenuation::StaticClass(), --NodeIndex);
+		}
+
+		// Make sure the content browser finds out about this newly-created object.  This is necessary when sound
+		// cues are created automatically after creating a sound node wave.  See use of bAutoCreateCue in USoundTTSFactory.
+		if ((Flags & (RF_Public | RF_Standalone)) != 0)
+		{
+			// Notify the asset registry
+			FAssetRegistryModule::AssetCreated(SoundCue);
+		}
+	}
+} // namespace <>
 
 USoundFactory::USoundFactory(const FObjectInitializer& ObjectInitializer)
 	: Super(ObjectInitializer)
 {
+	SuppressImportDialogOptions = ESuppressImportDialog::None;
+	TemplateSoundWave = nullptr;
+
 	SupportedClass = USoundWave::StaticClass();
 	Formats.Add(TEXT("wav;Wave Audio File"));
 
@@ -131,12 +136,13 @@ UObject* USoundFactory::FactoryCreateBinary
 
 	UObject* SoundObject = nullptr;
 
-	const bool SuppressOverwrite = bSoundFactorySuppressImportOverwriteDialog;
+	// First, see if we support this file type in-engine:
 	if (FCString::Stricmp(FileType, TEXT("WAV")) == 0)
 	{
 		SoundObject = CreateObject(Class, InParent, Name, Flags, Context, FileType, Buffer, BufferEnd, Warn);
 	}
 
+	// If we do not, we can use LibSoundFile here to attempt to convert the file to a 16 bit wave file.
 #if WITH_SNDFILE_IO
 	if (!SoundObject)
 	{
@@ -154,8 +160,7 @@ UObject* USoundFactory::FactoryCreateBinary
 
 			// Perpetuate the setting of the suppression flag to avoid
 			// user notification if we attempt to call CreateObject twice
-			bSoundFactorySuppressImportOverwriteDialog = SuppressOverwrite;
-			SoundObject = CreateObject(Class, InParent, Name, Flags, Context, TEXT("WAV"), Ptr, Ptr + RawWaveData.Num() - 1, Warn);
+			SoundObject = CreateObject(Class, InParent, Name, Flags, Context, TEXT("WAV"), Ptr, Ptr + RawWaveData.Num(), Warn);
 		}
 	}
 #endif // WITH_SNDFILE_IO
@@ -168,11 +173,6 @@ UObject* USoundFactory::FactoryCreateBinary
 	}
 
 	return SoundObject;
-}
-
-void USoundFactory::SuppressImportOverwriteDialog()
-{
-	bSoundFactorySuppressImportOverwriteDialog = true;
 }
 
 UObject* USoundFactory::CreateObject
@@ -227,33 +227,43 @@ UObject* USoundFactory::CreateObject
 			// Will block internally on audio thread completing outstanding commands
 			AudioDeviceManager->StopSoundsUsingResource(ExistingSound, &ComponentsToRestart);
 
+			// We need to clear out any stale multichannel data on the sound wave in the case this is a reimport from multichannel to mono/stereo
+			ExistingSound->ChannelOffsets.Reset();
+			ExistingSound->ChannelSizes.Reset();
+			ExistingSound->bIsAmbisonics = false;
+
 			// Resource data is required to exist, if it hasn't been loaded yet,
 			// to properly flush compressed data.  This allows the new version
 			// to be auditioned in the editor properly.
 			if (!ExistingSound->ResourceData)
 			{
-				FAudioDevice* AudioDevice = AudioDeviceManager->GetActiveAudioDevice();
-				check(AudioDevice);
-
-				FName RuntimeFormat = AudioDevice->GetRuntimeFormat(ExistingSound);
-				ExistingSound->InitAudioResource(RuntimeFormat);
+				if (FAudioDeviceHandle AudioDevice = GEngine->GetMainAudioDevice())
+				{
+					FName RuntimeFormat = AudioDevice->GetRuntimeFormat(ExistingSound);
+					ExistingSound->InitAudioResource(RuntimeFormat);
+				}
 			}
 
-			UE_LOG(LogAudioEditor, Log, TEXT("Stopping Sound Resources of Existing Sound"));
 			if (ComponentsToRestart.Num() > 0)
 			{
+				UE_LOG(LogAudioEditor, Display, TEXT("Stopping the following AudioComponents referencing sound being imported"));
 				for (UAudioComponent* AudioComponent : ComponentsToRestart)
 				{
-					UE_LOG(LogAudioEditor, Log, TEXT("Component '%s' Stopped"), *AudioComponent->GetName());
+					UE_LOG(LogAudioEditor, Display, TEXT("Component '%s' Stopped"), *AudioComponent->GetName());
 					AudioComponent->Stop();
 				}
 			}
 		}
 
-		bool bUseExistingSettings = bSoundFactorySuppressImportOverwriteDialog;
-
-		if (ExistingSound && !bSoundFactorySuppressImportOverwriteDialog && !GIsAutomationTesting)
+		if (!ExistingSound)
 		{
+			UpdateTemplate();
+		}
+
+		bool bUseExistingSettings = SuppressImportDialogOptions & ESuppressImportDialog::Overwrite;
+		if (ExistingSound && !bUseExistingSettings && !GIsAutomationTesting)
+		{
+			SuppressImportDialogOptions |= ESuppressImportDialog::Overwrite;
 			DisplayOverwriteOptionsDialog(FText::Format(
 				NSLOCTEXT("SoundFactory", "ImportOverwriteWarning", "You are about to import '{0}' over an existing sound."),
 				FText::FromName(Name)));
@@ -292,9 +302,6 @@ UObject* USoundFactory::CreateObject
 		bool bIsAmbiX = (AmbiXTag == TEXT("_ambix"));
 		bool bIsFuMa = (FuMaTag == TEXT("_fuma"));
 
-		// Reset the flag back to false so subsequent imports are not suppressed unless the code explicitly suppresses it
-		bSoundFactorySuppressImportOverwriteDialog = false;
-
 		TArray<uint8> RawWaveData;
 		RawWaveData.Empty(BufferEnd - Buffer);
 		RawWaveData.AddUninitialized(BufferEnd - Buffer);
@@ -313,14 +320,15 @@ UObject* USoundFactory::CreateObject
 				return nullptr;
 			}
 
+			// If we are not using libSoundFile, we cannot support non-16 bit WAV files.
 			if (*WaveInfo.pBitsPerSample != 16)
 			{
 #if !WITH_SNDFILE_IO
 				WaveInfo.ReportImportFailure();
 				Warn->Logf(ELogVerbosity::Error, TEXT("Only 16 bit WAV source files are supported (%s) on this editor platform."), *Name.ToString());
-#endif // WITH_SNDFILE_IO
-
 				GEditor->GetEditorSubsystem<UImportSubsystem>()->BroadcastAssetPostImport(this, nullptr);
+#endif // WITH_SNDFILE_IO
+				
 				return nullptr;
 			}
 		}
@@ -334,25 +342,23 @@ UObject* USoundFactory::CreateObject
 
 		// Use pre-existing sound if it exists and we want to keep settings,
 		// otherwise create new sound and import raw data.
-		USoundWave* Sound = (bUseExistingSettings && ExistingSound) ? ExistingSound : NewObject<USoundWave>(InParent, Name, Flags);
+		USoundWave* Sound = (bUseExistingSettings && ExistingSound) ? ExistingSound : NewObject<USoundWave>(InParent, Name, Flags, TemplateSoundWave.Get());
 
-		if (bUseExistingSettings && ExistingSound)
+		// These get wiped in PostInitProperties by defaults set from Audio Settings,
+		// so set back to template in this specialized case
+		if (TemplateSoundWave.IsValid())
 		{
-			// Clear resources so that if it's already been played, it will reload the wave data
-			Sound->FreeResources();
+			Sound->SoundClassObject = TemplateSoundWave->SoundClassObject;
+			Sound->ConcurrencySet = TemplateSoundWave->ConcurrencySet;
 		}
 
-		// Store the current file path and timestamp for re-import purposes
-		Sound->AssetImportData->Update(CurrentFilename);
-
-		// Compressed data is now out of date.
-		Sound->InvalidateCompressedData();
-		 
 		// If we're a multi-channel file, we're going to spoof the behavior of the SoundSurroundFactory
 		int32 ChannelCount = (int32)*WaveInfo.pChannels;
 		check(ChannelCount >0);
 
-		int32 NumSamples = WaveInfo.SampleDataSize / sizeof(int16);
+		int32 SizeOfSample = (*WaveInfo.pBitsPerSample) / 8;
+
+		int32 NumSamples = WaveInfo.SampleDataSize / SizeOfSample;
 		int32 NumFrames = NumSamples / ChannelCount;
 
 		if (ChannelCount > 2)
@@ -483,6 +489,18 @@ UObject* USoundFactory::CreateObject
 		Sound->NumChannels = ChannelCount;
 		Sound->TotalSamples = *WaveInfo.pSamplesPerSec * Sound->Duration;
 
+		// Store the current file path and timestamp for re-import purposes
+		Sound->AssetImportData->Update(CurrentFilename);
+
+		// Compressed data is now out of date.
+		Sound->InvalidateCompressedData(true /* bFreeResources */);
+
+		// If stream caching is enabled, we need to make sure this asset is ready for playback.
+		if (FPlatformCompressionUtilities::IsCurrentPlatformUsingStreamCaching() && Sound->IsStreaming(nullptr))
+		{
+			Sound->EnsureZerothChunkIsLoaded();
+		}
+
 		GEditor->GetEditorSubsystem<UImportSubsystem>()->BroadcastAssetPostImport(this, Sound);
 
 		if (ExistingSound && bUseExistingSettings)
@@ -508,4 +526,42 @@ UObject* USoundFactory::CreateObject
 	}
 
 	return nullptr;
+}
+
+void USoundFactory::SuppressImportDialogs()
+{
+	SuppressImportDialogOptions = ESuppressImportDialog::Overwrite | ESuppressImportDialog::UseTemplate;
+}
+
+void USoundFactory::UpdateTemplate()
+{
+	if (!IsAutomatedImport() && !TemplateSoundWave.IsValid() && !(SuppressImportDialogOptions & ESuppressImportDialog::UseTemplate))
+	{
+		SuppressImportDialogOptions |= ESuppressImportDialog::UseTemplate;
+
+		FContentBrowserModule& ContentBrowserModule = FModuleManager::LoadModuleChecked<FContentBrowserModule>("ContentBrowser");
+		TArray<FAssetData> SelectedAssets;
+		ContentBrowserModule.Get().GetSelectedAssets(SelectedAssets);
+
+		if (SelectedAssets.Num() == 1)
+		{
+			if (USoundWave* SoundWave = Cast<USoundWave>(SelectedAssets[0].GetAsset()))
+			{
+				const bool bUseTemplateSoundWave = FMessageDialog::Open(EAppMsgType::YesNo, FText::Format(
+					NSLOCTEXT("SoundFactory", "UseSoundWaveTemplate", "Use the selected Sound Wave '{0}' in the Content Browser as a template for sound(s) being imported?"),
+					FText::FromString(SoundWave->GetName()))) == EAppReturnType::Yes;
+
+				if (bUseTemplateSoundWave)
+				{
+					TemplateSoundWave = SoundWave;
+				}
+			}
+		}
+	}
+}
+
+void USoundFactory::CleanUp()
+{
+	SuppressImportDialogOptions = ESuppressImportDialog::None;
+	TemplateSoundWave.Reset();
 }

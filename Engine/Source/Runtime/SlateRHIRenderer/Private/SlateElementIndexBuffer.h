@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -39,9 +39,6 @@ public:
 
 	/** Resizes buffer, accumulates states safely on render thread */
 	void PreFillBuffer(int32 RequiredIndexCount, bool bShrinkToMinSize);
-
-	void* LockBuffer_RenderThread(int32 NumIndices);
-	void UnlockBuffer_RenderThread();
 
 	int32 GetMinBufferSize() const { return MinBufferSize; }
 

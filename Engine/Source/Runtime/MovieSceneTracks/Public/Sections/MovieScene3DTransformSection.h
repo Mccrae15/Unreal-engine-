@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -9,6 +9,7 @@
 #include "MovieSceneSection.h"
 #include "MovieSceneKeyStruct.h"
 #include "Channels/MovieSceneFloatChannel.h"
+#include "TransformData.h"
 #include "MovieScene3DTransformSection.generated.h"
 
 
@@ -24,36 +25,6 @@ enum class EShow3DTrajectory : uint8
 #endif
 
 
-/**
-* Stores information about a transform for the purpose of adding keys to a transform section
-*/
-struct FTransformData
-{
-	/** Translation component */
-	FVector Translation;
-	/** Rotation component */
-	FRotator Rotation;
-	/** Scale component */
-	FVector Scale;
-
-	FTransformData()
-		: Translation( ForceInitToZero )
-		, Rotation( ForceInitToZero )
-		, Scale( ForceInitToZero )
-	{}
-
-	/**
-	* Constructor.  Builds the data from a scene component
-	* Uses relative transform only
-	*
-	* @param InComponent	The component to build from
-	*/
-	FTransformData( const USceneComponent* InComponent )
-		: Translation( InComponent->RelativeLocation )
-		, Rotation( InComponent->RelativeRotation )
-		, Scale( InComponent->RelativeScale3D )
-	{}
-};
 
 /**
  * Proxy structure for translation keys in 3D transform sections.
@@ -310,6 +281,12 @@ private:
 	/** Whether to use a quaternion linear interpolation between keys. This finds the 'shortest' distance between keys */
 	UPROPERTY(EditAnywhere, DisplayName = "Use Quaternion Interpolation", Category = "Rotation")
 	bool bUseQuaternionInterpolation;
+
+public:
+	/**
+	 * Access the interrogation key for transform data - any interrgation data stored with this key is guaranteed to be of type 'FTransform'
+	 */
+	MOVIESCENETRACKS_API static FMovieSceneInterrogationKey GetInterrogationKey();
 
 #if WITH_EDITORONLY_DATA
 

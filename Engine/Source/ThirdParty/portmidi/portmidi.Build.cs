@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 using UnrealBuildTool;
 
@@ -12,13 +12,11 @@ public class portmidi : ModuleRules
 
         if (Target.Platform == UnrealTargetPlatform.Win32)
         {
-            PublicLibraryPaths.Add(Target.UEThirdPartySourceDirectory + "portmidi/lib/Win32");
-            PublicAdditionalLibraries.Add("portmidi.lib");
+            PublicAdditionalLibraries.Add(Target.UEThirdPartySourceDirectory + "portmidi/lib/Win32/portmidi.lib");
         }
         else if (Target.Platform == UnrealTargetPlatform.Win64)
         {
-            PublicLibraryPaths.Add(Target.UEThirdPartySourceDirectory + "portmidi/lib/Win64");
-            PublicAdditionalLibraries.Add("portmidi_64.lib");
+            PublicAdditionalLibraries.Add(Target.UEThirdPartySourceDirectory + "portmidi/lib/Win64/portmidi_64.lib");
         }
         else if (Target.Platform == UnrealTargetPlatform.Mac)
         {

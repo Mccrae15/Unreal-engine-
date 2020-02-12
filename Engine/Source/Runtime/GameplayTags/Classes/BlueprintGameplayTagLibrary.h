@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -105,6 +105,16 @@ class UBlueprintGameplayTagLibrary : public UBlueprintFunctionLibrary
 	 */
 	UFUNCTION(BlueprintPure, Category="GameplayTags", meta = (Keywords = "DoesContainerMatchAllTagsInContainer", BlueprintThreadSafe))
 	static bool HasAllTags(const FGameplayTagContainer& TagContainer, const FGameplayTagContainer& OtherContainer, bool bExactMatch);
+
+	/**
+	 * Check if the specified tag query is empty
+	 * 
+	 * @param TagQuery				Query to check
+	 * 
+	 * @return True if the query is empty, false otherwise.
+	 */
+	UFUNCTION(BlueprintPure, Category = "GameplayTags", meta = (BlueprintThreadSafe))
+	static bool IsTagQueryEmpty(const FGameplayTagQuery& TagQuery);
 
 	/**
 	 * Check if the specified tag container matches the given Tag Query

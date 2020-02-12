@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "BuildPatchUtil.h"
 
@@ -98,7 +98,7 @@ FString FBuildPatchUtils::GetDataFilename(const FBuildPatchAppManifestRef& Manif
 	return GetDataFilename(Manifest.Get(), RootDirectory, DataGUID);
 }
 
-FString FBuildPatchUtils::GetDataFilename(const FBuildPatchAppManifest& Manifest, const FString& RootDirectory, const FGuid& DataGUID)
+FString FBuildPatchUtils::GetDataFilename(const FBuildPatchAppManifest&    Manifest, const FString& RootDirectory, const FGuid& DataGUID)
 {
 	const EBuildPatchDataType DataType = Manifest.IsFileDataManifest() ? EBuildPatchDataType::FileData : EBuildPatchDataType::ChunkData;
 	if (Manifest.GetFeatureLevel() < EFeatureLevel::DataFileRenames)
@@ -131,8 +131,6 @@ FString FBuildPatchUtils::GetDataFilename(const FBuildPatchAppManifest& Manifest
 	}
 	return TEXT("");
 }
-
-
 
 bool FBuildPatchUtils::GetGUIDFromFilename( const FString& DataFilename, FGuid& DataGUID )
 {

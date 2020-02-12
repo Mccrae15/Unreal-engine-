@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -43,7 +43,9 @@ class SAppIconWidget
 {
 	SLATE_BEGIN_ARGS( SAppIconWidget )
 		: _IconColorAndOpacity( FLinearColor::White )
-	{}
+	{
+		_AccessibleText = NSLOCTEXT("AppIconWidget", "System", "System Menu");
+	}
 
 	/** Icon color and opacity */
 	SLATE_ATTRIBUTE( FSlateColor, IconColorAndOpacity )
@@ -207,6 +209,7 @@ protected:
 						SNew(SImage)
 							.Image(this, &SWindowTitleBar::GetMinimizeImage)
 							.ColorAndOpacity(this, &SWindowTitleBar::GetWindowTitleContentColor)
+							.AccessibleText(NSLOCTEXT("WindowTitleBar", "Minimize", "Minimize"))
 					]
 				;
 
@@ -222,6 +225,7 @@ protected:
 						SNew(SImage)
 							.Image(this, &SWindowTitleBar::GetMaximizeRestoreImage)
 							.ColorAndOpacity(this, &SWindowTitleBar::GetWindowTitleContentColor)
+							.AccessibleText(NSLOCTEXT("WindowTitleBar", "Maximize", "Maximize"))
 					]
 				;
 
@@ -237,6 +241,7 @@ protected:
 						SNew(SImage)
 							.Image(this, &SWindowTitleBar::GetCloseImage)
 							.ColorAndOpacity(this, &SWindowTitleBar::GetWindowTitleContentColor)
+							.AccessibleText(NSLOCTEXT("WindowTitleBar", "Close", "Close"))
 					]
 				;
 		}
@@ -320,7 +325,7 @@ protected:
 			CenterContent = SNew(SBox)
 				.HAlign(HAlign_Center)
 				.Visibility(EVisibility::SelfHitTestInvisible)
-				.Padding(FMargin(5.0f, 2.0f, 2.0f, 5.0f))
+				.Padding(FMargin(5.0f, 2.0f, 5.0f, 2.0f))
 				[
 					// NOTE: We bind the window's title text to our window's GetTitle method, so that if the
 					//       title is changed later, the text will always be visually up to date
@@ -375,7 +380,7 @@ protected:
 
 						+ SHorizontalBox::Slot()
 							.HAlign(CenterContentAlignment)
-							.VAlign(VAlign_Top)
+							.VAlign(VAlign_Center)
 							.FillWidth(1.0f)
 							[
 								CenterContent.ToSharedRef()

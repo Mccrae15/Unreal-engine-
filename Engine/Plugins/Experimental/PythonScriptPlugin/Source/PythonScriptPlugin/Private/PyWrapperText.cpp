@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "PyWrapperText.h"
 #include "PyWrapperTypeRegistry.h"
@@ -225,13 +225,15 @@ PyTypeObject InitializePyWrapperTextType()
 			FText InitValue;
 
 			PyObject* PyObj = nullptr;
-			if (PyArg_ParseTuple(InArgs, "|O:call", &PyObj))
+			if (!PyArg_ParseTuple(InArgs, "|O:call", &PyObj))
 			{
-				if (PyObj && !PyConversion::Nativize(PyObj, InitValue))
-				{
-					PyUtil::SetPythonError(PyExc_TypeError, InSelf, *FString::Printf(TEXT("Failed to convert init argument '%s' to 'Text'"), *PyUtil::GetFriendlyTypename(PyObj)));
-					return -1;
-				}
+				return -1;
+			}
+			
+			if (PyObj && !PyConversion::Nativize(PyObj, InitValue))
+			{
+				PyUtil::SetPythonError(PyExc_TypeError, InSelf, *FString::Printf(TEXT("Failed to convert init argument '%s' to 'Text'"), *PyUtil::GetFriendlyTypename(PyObj)));
+				return -1;
 			}
 
 			return FPyWrapperText::Init(InSelf, InitValue);

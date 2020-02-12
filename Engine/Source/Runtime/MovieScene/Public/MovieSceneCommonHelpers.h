@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -8,6 +8,7 @@
 #include "UObject/ObjectKey.h"
 #include "Curves/KeyHandle.h"
 #include "Misc/FrameNumber.h"
+#include "UObject/WeakFieldPtr.h"
 
 class AActor;
 class UCameraComponent;
@@ -46,7 +47,7 @@ public:
 	 * @param Section The section that was modified 
 	 * @param bDelete Was this a deletion?
 	 */
-	static void FixupConsecutiveSections(TArray<UMovieSceneSection*>& Sections, UMovieSceneSection& Section, bool bDelete);
+	static void FixupConsecutiveSections(TArray<UMovieSceneSection*>& Sections, UMovieSceneSection& Section, bool bDelete, bool bOnlyOnSameRow = false, bool bAllowOverlapBlending = false);
 
 	/*
  	 * Sort consecutive sections so that they are in order based on start time
@@ -118,6 +119,14 @@ public:
 	 * Sort predicate that sorts overlapping sections by row primarily, then by overlap priority
 	 */
 	static bool SortOverlappingSections(const UMovieSceneSection* A, const UMovieSceneSection* B);
+
+	/*
+	* Get weight needed to modify the global difference in order to correctly key this section due to it possibly being blended by other sections.
+	* @param Section The Section who's weight we are calculating.
+	* @param  Time we are at.
+	* @return Returns the weight that needs to be applied to the global difference to correctly key this section.
+	*/
+	static float CalculateWeightForBlending(UMovieSceneSection* SectionToKey, FFrameNumber Time);
 };
 
 /**
@@ -141,8 +150,7 @@ public:
 		FPropertyAndFunction PropAndFunction = FindOrAdd(InRuntimeObject);
 		if (UFunction* SetterFunction = PropAndFunction.SetterFunction.Get())
 		{
-			// ProcessEvent should really be taking const void*
-			InRuntimeObject.ProcessEvent(SetterFunction, (void*)&PropertyValue);
+			InvokeSetterFunction(&InRuntimeObject, SetterFunction, PropertyValue);
 		}
 		else if (ValueType* Val = PropAndFunction.GetPropertyAddress<ValueType>())
 		{
@@ -171,12 +179,12 @@ public:
 	void CacheBinding( const UObject& InRuntimeObject );
 
 	/**
-	 * Gets the UProperty that is bound to the track instance
+	 * Gets the FProperty that is bound to the track instance
 	 *
 	 * @param Object	The Object that owns the property
 	 * @return			The property on the object if it exists
 	 */
-	UProperty* GetProperty(const UObject& Object) const;
+	FProperty* GetProperty(const UObject& Object) const;
 
 	/**
 	 * Gets the current value of a property on an object
@@ -252,14 +260,22 @@ public:
 
 private:
 
+	/**
+	 * Wrapper for UObject::ProcessEvent that attempts to pass the new property value directly to the function as a parameter,
+	 * but handles cases where multiple parameters or a return value exists. The setter parameter must be the first in the list,
+	 * any other parameters will be default constructed.
+	 */
+	template<typename T>
+	static void InvokeSetterFunction(UObject* InRuntimeObject, UFunction* Setter, T&& InPropertyValue);
+
 	struct FPropertyAddress
 	{
-		TWeakObjectPtr<UProperty> Property;
+		TWeakFieldPtr<FProperty> Property;
 		void* Address;
 
-		UProperty* GetProperty() const
+		FProperty* GetProperty() const
 		{
-			UProperty* PropertyPtr = Property.Get();
+			FProperty* PropertyPtr = Property.Get();
 			if (PropertyPtr && Address && !PropertyPtr->HasAnyFlags(RF_BeginDestroyed | RF_FinishDestroyed))
 			{
 				return PropertyPtr;
@@ -282,7 +298,7 @@ private:
 		template<typename ValueType>
 		ValueType* GetPropertyAddress() const
 		{
-			UProperty* PropertyPtr = PropertyAddress.GetProperty();
+			FProperty* PropertyPtr = PropertyAddress.GetProperty();
 			return PropertyPtr ? PropertyPtr->ContainerPtrToValuePtr<ValueType>(PropertyAddress.Address) : nullptr;
 		}
 
@@ -302,7 +318,7 @@ private:
 		FObjectKey ObjectKey(&InObject);
 
 		const FPropertyAndFunction* PropAndFunction = RuntimeObjectToFunctionMap.Find(ObjectKey);
-		if (PropAndFunction && (PropAndFunction->SetterFunction.IsValid() || PropAndFunction->PropertyAddress.Property.IsValid()))
+		if (PropAndFunction && (PropAndFunction->SetterFunction.IsValid() || PropAndFunction->PropertyAddress.Property.Get()))
 		{
 			return *PropAndFunction;
 		}
@@ -337,3 +353,53 @@ template<> MOVIESCENE_API void FTrackInstancePropertyBindings::SetCurrentValue<b
 template<> MOVIESCENE_API void FTrackInstancePropertyBindings::CallFunction<UObject*>(UObject& InRuntimeObject, UObject* PropertyValue);
 template<> MOVIESCENE_API UObject* FTrackInstancePropertyBindings::GetCurrentValue<UObject*>(const UObject& InRuntimeObject);
 template<> MOVIESCENE_API void FTrackInstancePropertyBindings::SetCurrentValue<UObject*>(UObject& InRuntimeObject, UObject* InValue);
+
+
+template<typename T>
+void FTrackInstancePropertyBindings::InvokeSetterFunction(UObject* InRuntimeObject, UFunction* Setter, T&& InPropertyValue)
+{
+	// CacheBinding already guarantees that the function has >= 1 parameters
+	const int32 ParmsSize = Setter->ParmsSize;
+
+	// This should all be const really, but ProcessEvent only takes a non-const void*
+	void* InputParameter = const_cast<typename TDecay<T>::Type*>(&InPropertyValue);
+
+	// By default we try and use the existing stack value
+	uint8* Params = reinterpret_cast<uint8*>(InputParameter);
+
+	check(InRuntimeObject && Setter);
+	if (Setter->ReturnValueOffset != MAX_uint16 || Setter->NumParms > 1)
+	{
+		// Function has a return value or multiple parameters, we need to initialize memory for the entire parameter pack
+		// We use alloca here (as in UObject::ProcessEvent) to avoid a heap allocation. Alloca memory survives the current function's stack frame.
+		Params = reinterpret_cast<uint8*>(FMemory_Alloca(ParmsSize));
+
+		bool bFirstProperty = true;
+		for (FProperty* Property = Setter->PropertyLink; Property; Property = Property->PropertyLinkNext)
+		{
+			// Initialize the parameter pack with any param properties that reside in the container
+			if (Property->IsInContainer(ParmsSize))
+			{
+				Property->InitializeValue_InContainer(Params);
+
+				// The first encountered property is assumed to be the input value so initialize this with the user-specified value from InPropertyValue
+				if (Property->HasAnyPropertyFlags(CPF_Parm) && !Property->HasAnyPropertyFlags(CPF_ReturnParm) && bFirstProperty)
+				{
+					const bool bIsValid = ensureMsgf(sizeof(T) == Property->ElementSize, TEXT("Property type does not match for Sequencer setter function %s::%s (%ibytes != %ibytes"), *InRuntimeObject->GetName(), *Setter->GetName(), sizeof(T), Property->ElementSize);
+					if (bIsValid)
+					{
+						Property->CopyCompleteValue(Property->ContainerPtrToValuePtr<void>(Params), &InPropertyValue);
+					}
+					else
+					{
+						return;
+					}
+				}
+				bFirstProperty = false;
+			}
+		}
+	}
+
+	// Now we have the parameters set up correctly, call the function
+	InRuntimeObject->ProcessEvent(Setter, Params);
+}

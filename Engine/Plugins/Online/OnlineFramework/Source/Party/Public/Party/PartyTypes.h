@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -12,7 +12,7 @@ class UPartyMember;
 class IOnlinePartySystem;
 class FOnlinePartyData;
 
-enum class EJoinPartyCompletionResult;
+enum class EJoinPartyCompletionResult : int8;
 
 UENUM()
 enum class EPartyType : uint8
@@ -263,18 +263,18 @@ struct FPartyPrivacySettings
 public:
 	/** The type of party in terms of advertised joinability restrictions */
 	UPROPERTY()
-	EPartyType PartyType = EPartyType::FriendsOnly;
+	EPartyType PartyType = EPartyType::Private;
 
 	/** Who is allowed to send invitataions to the party? */
 	UPROPERTY()
-	EPartyInviteRestriction PartyInviteRestriction = EPartyInviteRestriction::AnyMember;
+	EPartyInviteRestriction PartyInviteRestriction = EPartyInviteRestriction::NoInvites;
 
 	/** True to restrict the party exclusively to friends of the party leader */
 	UPROPERTY()
-	bool bOnlyLeaderFriendsCanJoin = false;
+	bool bOnlyLeaderFriendsCanJoin = true;
 
-	bool operator==(const FPartyPrivacySettings& Other) const;
-	bool operator!=(const FPartyPrivacySettings& Other) const { return !operator==(Other); }
+	bool PARTY_API operator==(const FPartyPrivacySettings& Other) const;
+	bool PARTY_API operator!=(const FPartyPrivacySettings& Other) const { return !operator==(Other); }
 
 	FPartyPrivacySettings() {}
 };
@@ -371,6 +371,7 @@ public:
 	FJoinPartyResult(FPartyJoinDenialReason InDenialReason);
 	FJoinPartyResult(EJoinPartyCompletionResult InResult);
 	FJoinPartyResult(EJoinPartyCompletionResult InResult, FPartyJoinDenialReason InDenialReason);
+	FJoinPartyResult(EJoinPartyCompletionResult InResult, int32 InResultSubCode);
 	
 	void SetDenialReason(FPartyJoinDenialReason InDenialReason);
 	void SetResult(EJoinPartyCompletionResult InResult);
@@ -379,10 +380,14 @@ public:
 
 	EJoinPartyCompletionResult GetResult() const { return Result; }
 	FPartyJoinDenialReason GetDenialReason() const { return DenialReason; }
+	int32 GetResultSubCode() const { return ResultSubCode; }
 
 private:
 	EJoinPartyCompletionResult Result;
+	/** Denial reason - used if Result is NotApproved */
 	FPartyJoinDenialReason DenialReason;
+	/** Result sub code - used for any other Result type */
+	int32 ResultSubCode = 0;
 };
 
 /** Base for all rep data structs */
@@ -404,11 +409,13 @@ protected:
 	/**
 	 * Called directly after an updated member state is received and copied into the local state
 	 */
-	virtual void PostReplication() {}
+	virtual void PostReplication(const FOnlinePartyRepDataBase& OldData) {}
 	virtual bool CanEditData() const { return false; }
 	virtual const USocialParty* GetOwnerParty() const { return nullptr; }
+	virtual const UPartyMember* GetOwningMember() const { return nullptr; }
 
-	void LogPropertyChanged(const TCHAR* OwningStructTypeName, const TCHAR* ProperyName, bool bFromReplication) const;
+	void LogSetPropertyFailure(const TCHAR* OwningStructTypeName, const TCHAR* PropertyName) const;
+	void LogPropertyChanged(const TCHAR* OwningStructTypeName, const TCHAR* PropertyName, bool bFromReplication) const;
 
 	friend class FPartyDataReplicatorHelper;
 	template <typename> friend class TPartyDataReplicator;
@@ -437,15 +444,9 @@ public:	\
 	FOn##Property##ChangedDif& On##Property##ChangedDif() const { return On##Property##ChangedDifEvent; }	\
 	\
 	Property##ArgType Get##Property() const { return Property; }	\
-	\
-	bool Has##Property##InitiallyReplicated() const { return b##Property##InitiallyReplicated; }	\
 private:	\
 	void Compare##Property(const Owner& OldData) const	\
 	{	\
-		if(!b##Property##InitiallyReplicated) \
-		{ \
-			b##Property##InitiallyReplicated = true; \
-		} \
 		if (Property != OldData.Property)	\
 		{	\
 			LogPropertyChanged(TEXT(#Owner), TEXT(#Property), true);	\
@@ -454,8 +455,7 @@ private:	\
 		}	\
 	}	\
 	mutable FOn##Property##Changed On##Property##ChangedEvent;	\
-	mutable FOn##Property##ChangedDif On##Property##ChangedDifEvent; \
-	mutable bool b##Property##InitiallyReplicated
+	mutable FOn##Property##ChangedDif On##Property##ChangedDifEvent
 
 /**
  * Exposes a rep data property and provides a default property setter.
@@ -466,21 +466,28 @@ EXPOSE_REP_DATA_PROPERTY_NO_SETTER(Owner, PropertyType, Property);	\
 SetterPrivacy:	\
 	void Set##Property(Property##ArgType New##Property)	\
 	{	\
-		if (CanEditData() && Property != New##Property)	\
+		if (CanEditData())	\
 		{	\
-			LogPropertyChanged(TEXT(#Owner), TEXT(#Property), false);	\
-			if (On##Property##ChangedDif().IsBound())	\
+			if (Property != New##Property)	\
 			{	\
-				PropertyType OldValue = Property;	\
-				Property = New##Property;	\
-				On##Property##ChangedDif().Broadcast(Property, OldValue);	\
+				LogPropertyChanged(TEXT(#Owner), TEXT(#Property), false);	\
+				if (On##Property##ChangedDif().IsBound())	\
+				{	\
+					PropertyType OldValue = Property;	\
+					Property = New##Property;	\
+					On##Property##ChangedDif().Broadcast(Property, OldValue);	\
+				}	\
+				else	\
+				{	\
+					Property = New##Property;	\
+				}	\
+				On##Property##Changed().Broadcast(Property);	\
+				OnDataChanged.ExecuteIfBound();	\
 			}	\
-			else	\
-			{	\
-				Property = New##Property;	\
-			}	\
-			On##Property##Changed().Broadcast(Property);	\
-			OnDataChanged.ExecuteIfBound();	\
+		}	\
+		else	\
+		{	\
+			LogSetPropertyFailure(TEXT(#Owner), TEXT(#Property));	\
 		}	\
 	}	\
 private: //

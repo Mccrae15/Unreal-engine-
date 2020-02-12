@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 /*=============================================================================
 	ApplePlatformMisc.mm: iOS implementations of misc functions
@@ -48,7 +48,7 @@ FString FApplePlatformMisc::GetEnvironmentVariable(const TCHAR* VariableName)
 	}
 }
 
-void FApplePlatformMisc::LowLevelOutputDebugString( const TCHAR *Message )
+void FApplePlatformMisc::LocalPrint(const TCHAR* Message)
 {
 	//NsLog will out to all iOS output consoles, instead of just the Xcode console.
 	NSLog(@"[UE4] %s", TCHAR_TO_UTF8(Message));
@@ -56,9 +56,15 @@ void FApplePlatformMisc::LowLevelOutputDebugString( const TCHAR *Message )
 
 const TCHAR* FApplePlatformMisc::GetSystemErrorMessage(TCHAR* OutBuffer, int32 BufferCount, int32 Error)
 {
-	// There's no iOS equivalent for GetLastError()
 	check(OutBuffer && BufferCount);
 	*OutBuffer = TEXT('\0');
+	if (Error == 0)
+	{
+		Error = errno;
+	}
+	char* ErrorBuffer = (char*)alloca(BufferCount);
+	strerror_r(Error, ErrorBuffer, BufferCount);
+	FCString::Strcpy(OutBuffer, BufferCount, UTF8_TO_TCHAR((const ANSICHAR*)ErrorBuffer));
 	return OutBuffer;
 }
 
@@ -91,7 +97,7 @@ int32 FApplePlatformMisc::NumberOfCores()
 	if (NumberOfCores == -1)
 	{
 		SIZE_T Size = sizeof(int32);
-		if (sysctlbyname("hw.ncpu", &NumberOfCores, &Size, NULL, 0) != 0)
+		if (sysctlbyname("hw.ncpu", &NumberOfCores, &Size, nullptr, 0) != 0)
 		{
 			NumberOfCores = 1;
 		}
@@ -328,6 +334,12 @@ void FApplePlatformMisc::BeginNamedEvent(const struct FColor& Color, const TCHAR
 #elif APPLE_PROFILING_ENABLED
 	FApplePlatformDebugEvents::BeginNamedEvent(Color, Text);
 #endif // FRAMEPRO_ENABLED
+#if CPUPROFILERTRACE_ENABLED
+	if (CpuChannel)
+	{
+		FCpuProfilerTrace::OutputBeginDynamicEvent(Text);
+	}
+#endif
 }
 
 void FApplePlatformMisc::BeginNamedEvent(const struct FColor& Color, const ANSICHAR* Text)
@@ -337,6 +349,12 @@ void FApplePlatformMisc::BeginNamedEvent(const struct FColor& Color, const ANSIC
 #elif APPLE_PROFILING_ENABLED
 	FApplePlatformDebugEvents::BeginNamedEvent(Color, Text);
 #endif // FRAMEPRO_ENABLED
+#if CPUPROFILERTRACE_ENABLED
+	if (CpuChannel)
+	{
+		FCpuProfilerTrace::OutputBeginDynamicEvent(Text);
+	}
+#endif
 }
 
 void FApplePlatformMisc::EndNamedEvent()
@@ -346,16 +364,22 @@ void FApplePlatformMisc::EndNamedEvent()
 #elif APPLE_PROFILING_ENABLED
 	FApplePlatformDebugEvents::EndNamedEvent();
 #endif // FRAMEPRO_ENABLED
+#if CPUPROFILERTRACE_ENABLED
+	if (CpuChannel)
+	{
+		FCpuProfilerTrace::OutputEndEvent();
+	}
+#endif
 }
 
 void FApplePlatformMisc::CustomNamedStat(const TCHAR* Text, float Value, const TCHAR* Graph, const TCHAR* Unit)
 {
-	FRAMEPRO_DYNAMIC_CUSTOM_STAT(TCHAR_TO_WCHAR(Text), Value, TCHAR_TO_WCHAR(Graph), TCHAR_TO_WCHAR(Unit));
+	FRAMEPRO_DYNAMIC_CUSTOM_STAT(TCHAR_TO_WCHAR(Text), Value, TCHAR_TO_WCHAR(Graph), TCHAR_TO_WCHAR(Unit), FRAMEPRO_COLOUR(255,255,255));
 }
 
 void FApplePlatformMisc::CustomNamedStat(const ANSICHAR* Text, float Value, const ANSICHAR* Graph, const ANSICHAR* Unit)
 {
-	FRAMEPRO_DYNAMIC_CUSTOM_STAT(Text, Value, Graph, Unit);
+	FRAMEPRO_DYNAMIC_CUSTOM_STAT(Text, Value, Graph, Unit, FRAMEPRO_COLOUR(255,255,255));
 }
 
 #endif // STATS || ENABLE_STATNAMEDEVENTS || APPLE_PROFILING_ENABLED

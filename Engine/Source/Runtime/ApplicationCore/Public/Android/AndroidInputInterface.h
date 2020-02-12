@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 #pragma once
 #include "GenericPlatform/GenericApplicationMessageHandler.h"
 
@@ -96,10 +96,18 @@ enum MappingState
 	Valid
 };
 
+enum ControllerClassType
+{
+	Generic,
+	XBoxWired,
+	XBoxWireless,
+	PS4Wireless
+};
+
 enum ButtonRemapType
 {
 	Normal,
-	XBoxWireless,
+	XBox,
 	PS4
 };
 
@@ -120,6 +128,9 @@ struct FAndroidGamepadDeviceMapping
 	// State of mapping
 	MappingState DeviceState;
 
+	// Type of controller
+	ControllerClassType ControllerClass;
+
 	// Type of button remapping to use
 	ButtonRemapType ButtonRemapping;
 
@@ -129,6 +140,9 @@ struct FAndroidGamepadDeviceMapping
 
 	// Device supports hat as dpad
 	bool bSupportsHat;
+
+	// Device uses threshold to send button pressed events.
+	bool bTriggersUseThresholdForClick;
 
 	// Map L1 and R1 to LTRIGGER and RTRIGGER
 	bool bMapL1R1ToTriggers;
@@ -249,10 +263,12 @@ public:
 	virtual void SetForceFeedbackChannelValue(int32 ControllerId, FForceFeedbackChannelType ChannelType, float Value) override;
 	virtual void SetForceFeedbackChannelValues(int32 ControllerId, const FForceFeedbackValues &values) override;
 	virtual void SetHapticFeedbackValues(int32 ControllerId, int32 Hand, const FHapticFeedbackValues& Values) override;
-	virtual void SetLightColor(int32 ControllerId, FColor Color) override {}
-	virtual void ResetLightColor(int32 ControllerId) override {}
+	virtual void SetLightColor(int32 ControllerId, FColor Color) override;
+	virtual void ResetLightColor(int32 ControllerId) override;
 
 	void SetGamepadsAllowed(bool bAllowed) { bAllowControllers = bAllowed; }
+	void SetGamepadsBlockDeviceFeedback(bool bBlock) { bControllersBlockDeviceFeedback = bBlock; }
+
 	virtual bool IsGamepadAttached() const;
 
 
@@ -264,6 +280,9 @@ private:
 
 	FAndroidInputInterface( const TSharedRef< FGenericApplicationMessageHandler >& InMessageHandler, const TSharedPtr< ICursor >& InCursor);
 
+public:
+
+	FAndroidGamepadDeviceMapping* GetDeviceMapping(int32 ControllerId);
 
 private:
 
@@ -314,6 +333,9 @@ private:
 
 	// should we allow controllers to send input
 	static bool bAllowControllers;
+
+	// bluetooth connected controllers will block force feedback.
+	static bool bControllersBlockDeviceFeedback;
 
 	// should we allow controllers to send Android_Back and Android_Menu events
 	static bool bBlockAndroidKeysOnControllers;

@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "MediaProfileCommands.h"
 
@@ -6,7 +6,7 @@
 #include "Framework/Commands/UICommandList.h"
 #include "Profile/IMediaProfileManager.h"
 #include "Profile/MediaProfile.h"
-#include "Toolkits/AssetEditorManager.h"
+
 
 
 #define LOCTEXT_NAMESPACE "MediaProfileCommands"

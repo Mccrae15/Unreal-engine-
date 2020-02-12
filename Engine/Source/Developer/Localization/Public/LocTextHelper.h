@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -842,10 +842,6 @@ public:
 	 * @return True if keys were found, false otherwise.
 	 */
 	static bool FindKeysForLegacyTranslation(const TSharedRef<const FInternationalizationManifest>& InManifest, const TSharedPtr<const FInternationalizationArchive>& InNativeArchive, const FLocKey& InNamespace, const FString& InSource, const TSharedPtr<FLocMetadataObject> InKeyMetadataObj, TArray<FLocKey>& OutKeys);
-
-	/** Publicly movable */
-	FLocTextHelper(FLocTextHelper&&) = default;
-	FLocTextHelper& operator=(FLocTextHelper&&) = default;
 
 private:
 	/** Non-copyable */

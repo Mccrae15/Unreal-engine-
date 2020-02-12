@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -34,15 +34,18 @@ public:
 private:
 	void PerformBindingCustomization(IDetailLayoutBuilder& DetailLayout);
 
-	void CreateEventCustomization( IDetailLayoutBuilder& DetailLayout, UDelegateProperty* Property, UWidget* Widget );
+	void CreateEventCustomization( IDetailLayoutBuilder& DetailLayout, FDelegateProperty* Property, UWidget* Widget );
 
-	void CreateMulticastEventCustomization(IDetailLayoutBuilder& DetailLayout, FName ThisComponentName, UClass* PropertyClass, UMulticastDelegateProperty* Property);
+	void CreateMulticastEventCustomization(IDetailLayoutBuilder& DetailLayout, FName ThisComponentName, UClass* PropertyClass, FMulticastDelegateProperty* Property);
 
 	void ResetToDefault_RemoveBinding(TSharedPtr<IPropertyHandle> PropertyHandle);
 
 	FReply HandleAddOrViewEventForVariable(const FName EventName, FName PropertyName, TWeakObjectPtr<UClass> PropertyClass);
 
 	int32 HandleAddOrViewIndexForButton(const FName EventName, FName PropertyName) const;
+
+	void PerformAccessibilityCustomization(IDetailLayoutBuilder& DetailLayout);
+	void CustomizeAccessibilityProperty(IDetailLayoutBuilder& DetailLayout, const FName& BehaviorPropertyName, const FName& TextPropertyName);
 private:
 
 	TWeakPtr<FWidgetBlueprintEditor> Editor;

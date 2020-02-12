@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -163,6 +163,10 @@ protected:
 	//~ End UWidget Interface
 
 	void SlateOnCheckStateChangedCallback(ECheckBoxState NewState);
+
+#if WITH_ACCESSIBILITY
+	virtual TSharedPtr<SWidget> GetAccessibleWidget() const override;
+#endif
 	
 protected:
 	TSharedPtr<SCheckBox> MyCheckbox;

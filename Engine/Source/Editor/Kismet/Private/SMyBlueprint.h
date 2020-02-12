@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -25,27 +25,6 @@ class UUserDefinedStruct;
 struct FEdGraphSchemaAction_K2Struct;
 struct FGraphActionNode;
 struct FGraphActionSort;
-
-/* Enums to use when grouping the blueprint members in the list panel. The order here will determine the order in the list */
-namespace NodeSectionID
-{
-	enum Type
-	{
-		NONE = 0,
-		GRAPH,					// Graph
-		FUNCTION,				// Functions
-		FUNCTION_OVERRIDABLE,	// Overridable functions
-		INTERFACE,				// Interface
-		MACRO,					// Macros
-		VARIABLE,				// Variables
-		COMPONENT,				// Components
-		DELEGATE,				// Delegate/Event
-		USER_ENUM,				// User defined enums
-		LOCAL_VARIABLE,			// Local variables
-		USER_STRUCT,			// User defined structs
-		USER_SORTED				// User sorted categories
-	};
-};
 
 class FMyBlueprintCommands : public TCommands<FMyBlueprintCommands>
 {
@@ -191,6 +170,7 @@ private:
 	TSharedRef<SWidget> OnGetFunctionListMenu();
 	void BuildOverridableFunctionsMenu(FMenuBuilder& MenuBuilder);
 	FReply OnAddButtonClickedOnSection(int32 InSectionID);
+	bool CanAddNewElementToSection(int32 InSectionID) const;
 
 	/** Support functions for checkbox to manage displaying user variables only */
 	bool IsShowingInheritedVariables() const;
@@ -204,8 +184,30 @@ private:
 	void OnToggleShowReplicatedVariablesOnly();
 	bool IsShowingReplicatedVariablesOnly() const;
 
+	/** Support functions for view options for bAlwaysShowInterfacesInOverrides blueprint editor setting */
+	void OnToggleAlwaysShowInterfacesInOverrides();
+	bool GetAlwaysShowInterfacesInOverrides() const;
+
+	/** Support functions for view options for bShowParentClassInOverrides blueprint editor setting */
+	void OnToggleShowParentClassInOverrides();
+	bool GetShowParentClassInOverrides() const;
+
+	/** Support functions for view options for bShowAccessSpecifier blueprint editor setting */
+	void OnToggleShowAccessSpecifier();
+	bool GetShowAccessSpecifier() const;
+
 	/** Helper function to open the selected graph */
 	void OpenGraph(FDocumentTracker::EOpenDocumentCause InCause);
+
+	/**
+	* Check if the override of a given function is most likely desired as a blueprint function 
+	* or as an event. 
+	* 
+	* @param OverrideFunc	Desired function to override
+	* 
+	* @return	True if the function is desired as a function, false if desired as an event
+	*/
+	bool IsImplementationDesiredAsFunction(const UFunction* OverrideFunc) const;
 
 	/** Callbacks for commands */
 	void OnOpenGraph();

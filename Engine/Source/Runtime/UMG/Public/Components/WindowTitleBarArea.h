@@ -1,4 +1,4 @@
-﻿// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+﻿// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -52,6 +52,12 @@ public:
 	//~ Begin UObject Interface
 	virtual void PostLoad() override;
 	//~ End UObject Interface
+
+	//~ Begin UWidget Interface
+#if WITH_EDITOR	
+	virtual const FText GetPaletteCategory() override;
+#endif
+	//~ End UWidget Interface
 
 protected:
 	//~ Begin UWidget Interface

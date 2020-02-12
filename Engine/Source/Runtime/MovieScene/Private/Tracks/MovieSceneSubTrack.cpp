@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "Tracks/MovieSceneSubTrack.h"
 #include "Evaluation/MovieSceneEvaluationField.h"
@@ -96,11 +96,22 @@ UMovieSceneSubSection* UMovieSceneSubTrack::AddSequenceToRecord()
 	return NewSection;
 }
 
-bool UMovieSceneSubTrack::ContainsSequence(const UMovieSceneSequence& Sequence, bool Recursively) const
+bool UMovieSceneSubTrack::ContainsSequence(const UMovieSceneSequence& Sequence, bool Recursively, const UMovieSceneSection* SectionToSkip) const
 {
+	UMovieSceneSequence* OuterSequence = GetTypedOuter<UMovieSceneSequence>();
+	if (OuterSequence == &Sequence)
+	{
+		return true;
+	}
+
 	for (const auto& Section : Sections)
 	{
 		const auto SubSection = CastChecked<UMovieSceneSubSection>(Section);
+
+		if (SubSection == SectionToSkip)
+		{
+			continue;
+		}
 
 		// is the section referencing the sequence?
 		const UMovieSceneSequence* SubSequence = SubSection->GetSequence();
@@ -190,6 +201,11 @@ void UMovieSceneSubTrack::RemoveAllAnimationData()
 void UMovieSceneSubTrack::RemoveSection(UMovieSceneSection& Section)
 {
 	Sections.Remove(&Section);
+}
+
+void UMovieSceneSubTrack::RemoveSectionAt(int32 SectionIndex)
+{
+	Sections.RemoveAt(SectionIndex);
 }
 
 

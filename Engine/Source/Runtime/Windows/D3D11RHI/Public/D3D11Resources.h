@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 /*=============================================================================
 	D3D11Resources.h: D3D resource RHI definitions.
@@ -40,9 +40,11 @@ public:
 
 struct FD3D11ShaderData
 {
-	FD3D11ShaderResourceTable	ShaderResourceTable;
-	TArray<FName>				UniformBuffers;
-	bool						bShaderNeedsGlobalConstantBuffer;
+	FD3D11ShaderResourceTable			ShaderResourceTable;
+	TArray<FName>						UniformBuffers;
+	TArray<FUniformBufferStaticSlot>	StaticSlots;
+	TArray<FShaderCodeVendorExtension>	VendorExtensions;
+	bool								bShaderNeedsGlobalConstantBuffer;
 };
 
 /** This represents a vertex shader that hasn't been combined with a specific declaration to create a bound shader. */
@@ -128,12 +130,12 @@ public:
 
 	/** Initialization constructor. */
 	FD3D11BoundShaderState(
-		FVertexDeclarationRHIParamRef InVertexDeclarationRHI,
-		FVertexShaderRHIParamRef InVertexShaderRHI,
-		FPixelShaderRHIParamRef InPixelShaderRHI,
-		FHullShaderRHIParamRef InHullShaderRHI,
-		FDomainShaderRHIParamRef InDomainShaderRHI,
-		FGeometryShaderRHIParamRef InGeometryShaderRHI,
+		FRHIVertexDeclaration* InVertexDeclarationRHI,
+		FRHIVertexShader* InVertexShaderRHI,
+		FRHIPixelShader* InPixelShaderRHI,
+		FRHIHullShader* InHullShaderRHI,
+		FRHIDomainShader* InDomainShaderRHI,
+		FRHIGeometryShader* InGeometryShaderRHI,
 		ID3D11Device* Direct3DDevice
 		);
 
@@ -305,10 +307,18 @@ public:
 		check(MemorySize == Texture->MemorySize);
 		check(bCreatedRTVsPerSlice == Texture->bCreatedRTVsPerSlice);
 		check(RTVArraySize == Texture->RTVArraySize);
+
+		// If we're creating an aliased texture, make sure we handle this case correctly.
+		if (Texture->NumDepthStencilViews && !NumDepthStencilViews)
+		{
+			NumDepthStencilViews = Texture->NumDepthStencilViews;
+		}
+
 		check(NumDepthStencilViews == Texture->NumDepthStencilViews);
 
+		// Do not copy the BaseShaderResource from the source texture (this is initialized correctly here, and is used for
+		// state caching logic).
 		Resource = Texture->Resource;
-		BaseShaderResource = Texture->BaseShaderResource;
 		ShaderResourceView = Texture->ShaderResourceView;
 		RenderTargetViews = Texture->RenderTargetViews;
 
@@ -418,7 +428,7 @@ public:
 	 * Locks one of the texture's mip-maps.
 	 * @return A pointer to the specified texture data.
 	 */
-	void* Lock(uint32 MipIndex,uint32 ArrayIndex,EResourceLockMode LockMode,uint32& DestStride);
+	void* Lock(uint32 MipIndex,uint32 ArrayIndex,EResourceLockMode LockMode,uint32& DestStride,bool bForceLockDeferred = false);
 
 	/** Unlocks a previously locked mip-map. */
 	void Unlock(uint32 MipIndex,uint32 ArrayIndex);
@@ -543,7 +553,7 @@ class FD3D11BaseTexture2DArray : public FRHITexture2DArray
 {
 public:
 	FD3D11BaseTexture2DArray(uint32 InSizeX, uint32 InSizeY, uint32 InSizeZ, uint32 InNumMips, uint32 InNumSamples, EPixelFormat InFormat, uint32 InFlags, const FClearValueBinding& InClearValue)
-	: FRHITexture2DArray(InSizeX,InSizeY,InSizeZ,InNumMips,InFormat,InFlags,InClearValue)
+	: FRHITexture2DArray(InSizeX,InSizeY,InSizeZ,InNumMips,InNumSamples, InFormat,InFlags,InClearValue)
 	{ check(InNumSamples == 1); }
 };
 
@@ -552,10 +562,14 @@ class FD3D11BaseTextureCube : public FRHITextureCube
 public:
 	FD3D11BaseTextureCube(uint32 InSizeX, uint32 InSizeY, uint32 InSizeZ, uint32 InNumMips, uint32 InNumSamples, EPixelFormat InFormat, uint32 InFlags, const FClearValueBinding& InClearValue)
 	: FRHITextureCube(InSizeX,InNumMips,InFormat,InFlags,InClearValue)
+	, SliceCount(InSizeZ)
 	{ check(InNumSamples == 1); }
 	uint32 GetSizeX() const { return GetSize(); }
 	uint32 GetSizeY() const { return GetSize(); } //-V524
-	uint32 GetSizeZ() const { return 0; }
+	uint32 GetSizeZ() const { return SliceCount; }
+
+private:
+	uint32 SliceCount;
 };
 
 typedef TD3D11Texture2D<FRHITexture>              FD3D11Texture;
@@ -694,6 +708,8 @@ public:
 	/** The index buffer resource */
 	TRefCountPtr<ID3D11Buffer> Resource;
 
+	FD3D11IndexBuffer() = default;
+
 	FD3D11IndexBuffer(ID3D11Buffer* InResource, uint32 InStride, uint32 InSize, uint32 InUsage)
 	: FRHIIndexBuffer(InStride,InSize,InUsage)
 	, Resource(InResource)
@@ -701,7 +717,26 @@ public:
 
 	virtual ~FD3D11IndexBuffer()
 	{
+		if (Resource)
+		{
+			UpdateBufferStats(Resource, false);
+		}
+	}
+
+	void Swap(FD3D11IndexBuffer& Other)
+	{
+		check(GetCurrentGPUAccess() == EResourceTransitionAccess::EReadable
+			&& GetCurrentGPUAccess() == Other.GetCurrentGPUAccess());
+		FRHIIndexBuffer::Swap(Other);
+		Resource.Swap(Other.Resource);
+	}
+
+	void ReleaseUnderlyingResource()
+	{
+		check(Resource);
 		UpdateBufferStats(Resource, false);
+		Resource = nullptr;
+		FRHIIndexBuffer::ReleaseUnderlyingResource();
 	}
 
 	// IRefCountedObject interface.
@@ -760,6 +795,8 @@ public:
 
 	TRefCountPtr<ID3D11Buffer> Resource;
 
+	FD3D11VertexBuffer() = default;
+
 	FD3D11VertexBuffer(ID3D11Buffer* InResource, uint32 InSize, uint32 InUsage)
 	: FRHIVertexBuffer(InSize,InUsage)
 	, Resource(InResource)
@@ -767,9 +804,28 @@ public:
 
 	virtual ~FD3D11VertexBuffer()
 	{
-		UpdateBufferStats(Resource, false);
+		if (Resource)
+		{
+			UpdateBufferStats(Resource, false);
+		}
 	}
-	
+
+	void Swap(FD3D11VertexBuffer& SrcBuffer)
+	{
+		check(GetCurrentGPUAccess() == EResourceTransitionAccess::EReadable
+			&& GetCurrentGPUAccess() == SrcBuffer.GetCurrentGPUAccess());
+		FRHIVertexBuffer::Swap(SrcBuffer);
+		Resource.Swap(SrcBuffer.Resource);
+	}
+
+	void ReleaseUnderlyingResource()
+	{
+		check(Resource);
+		UpdateBufferStats(Resource, false);
+		Resource = nullptr;
+		FRHIVertexBuffer::ReleaseUnderlyingResource();
+	}
+
 	// IRefCountedObject interface.
 	virtual uint32 AddRef() const
 	{
@@ -785,7 +841,7 @@ public:
 	}
 };
 
-class FD3D11StagingBuffer : public FRHIStagingBuffer
+class FD3D11StagingBuffer final : public FRHIStagingBuffer
 {
 	friend class FD3D11DynamicRHI;
 public:
@@ -793,10 +849,10 @@ public:
 		: FRHIStagingBuffer()
 	{}
 
-	virtual ~FD3D11StagingBuffer() final override;
+	~FD3D11StagingBuffer() override;
 
-	virtual void* Lock(uint32 Offset, uint32 NumBytes) final override;
-	virtual void Unlock() final override;
+	void* Lock(uint32 Offset, uint32 NumBytes) override;
+	void Unlock() override;
 
 private:
 	FD3D11DeviceContext* Context;

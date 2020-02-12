@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 /*=============================================================================
 	LightmassRender.h: lightmass rendering-related definitions.
@@ -13,6 +13,7 @@
 class FCanvas;
 class FLightmassMaterialProxy;
 class UMaterialInterface;
+class FSceneInterface;
 class UTextureRenderTarget2D;
 struct FLightmassMaterialExportSettings;
 
@@ -82,6 +83,7 @@ public:
 	 *	@return	bool					true if successful, false if not.
 	 */
 	bool GenerateMaterialData(
+		FSceneInterface* InSceneInterface,
 		UMaterialInterface& InMaterial,
 		const FLightmassMaterialExportSettings& InExportSettings,
 		Lightmass::FMaterialData& OutMaterialData,
@@ -115,6 +117,7 @@ protected:
 	 *	@return	bool					true if successful, false if not.
 	 */
 	bool GenerateMaterialPropertyData(
+		FSceneInterface* InSceneInterface,
 		UMaterialInterface& InMaterial, 
 		const FLightmassMaterialExportSettings& InExportSettings,
 		FLightmassMaterialProxy* MaterialProxy,

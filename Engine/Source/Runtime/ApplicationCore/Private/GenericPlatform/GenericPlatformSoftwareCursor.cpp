@@ -1,10 +1,10 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "GenericPlatform/GenericPlatformSoftwareCursor.h"
 #include "GenericPlatform/GenericApplication.h"
 
 // Windows has special needs with RECT, and we don't need this class on Windows anyway, so just skip it
-#if !PLATFORM_WINDOWS
+#if !PLATFORM_WINDOWS && !PLATFORM_HOLOLENS
 
 FGenericPlatformSoftwareCursor::FGenericPlatformSoftwareCursor() 
 	: CurrentType(EMouseCursor::None)

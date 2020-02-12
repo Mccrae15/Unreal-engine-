@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "AppleMovieStreamer.h"
 
@@ -9,6 +9,7 @@
 #include "Misc/ScopeLock.h"
 #include "Misc/Paths.h"
 #include "Misc/CoreDelegates.h"
+#include "Containers/ResourceArray.h"
 
 DEFINE_LOG_CATEGORY_STATIC(LogMoviePlayer, Log, All);
 
@@ -70,6 +71,54 @@ static FString ConvertToNativePath(const FString& Filename, bool bForWrite)
 }
 
 //
+// Clone from FAvfMediaVideoSampler
+//
+class FAppleMovieStreamerTexture2DResourceWrapper
+	: public FResourceBulkDataInterface
+{
+public:
+
+	FAppleMovieStreamerTexture2DResourceWrapper(CFTypeRef InImageBuffer)
+		: ImageBuffer(InImageBuffer)
+	{
+		check(ImageBuffer);
+		CFRetain(ImageBuffer);
+	}
+
+	virtual ~FAppleMovieStreamerTexture2DResourceWrapper()
+	{
+		CFRelease(ImageBuffer);
+		ImageBuffer = nullptr;
+	}
+
+public:
+
+	//~ FResourceBulkDataInterface interface
+
+	virtual void Discard() override
+	{
+		delete this;
+	}
+
+	virtual const void* GetResourceBulkData() const override
+	{
+		return ImageBuffer;
+	}
+	
+	virtual uint32 GetResourceBulkDataSize() const override
+	{
+		return ImageBuffer ? ~0u : 0;
+	}
+
+	virtual EBulkDataType GetResourceType() const override
+	{
+		return EBulkDataType::MediaTexture;
+	}
+	
+	CFTypeRef ImageBuffer;
+};
+
+//
 // Methods
 //
 
@@ -86,13 +135,12 @@ StartTime           ( 0.0 ),
 Cursor              ( 0.0 ),
 bVideoTracksLoaded  ( false ),
 bWasActive          ( false ),
-//interrupt
 bIsMovieInterrupted	( false ),
-ResumeTime			( kCMTimeZero )
+ResumeTime			( kCMTimeZero ),
+MetalTextureCache	( NULL )
 {
 	UE_LOG(LogMoviePlayer, Log, TEXT("FAVMoviePlayer ctor..."));
 
-    TextureData = MakeShareable(new FSlateTextureData());
     MovieViewport = MakeShareable(new FMovieViewport());
 }
 
@@ -104,10 +152,6 @@ FAVPlayerMovieStreamer::~FAVPlayerMovieStreamer()
 
     // Clean up any remaining resources
     Cleanup();
-
-    // Clear out the pending list
-    // NOTE: No guarantees here that the resources are actually freed, and we can't force them to be freed.
-    TexturesPendingDeletion.Empty();
 }
 
 void FAVPlayerMovieStreamer::ForceCompletion()
@@ -130,6 +174,21 @@ void FAVPlayerMovieStreamer::ForceCompletion()
 
 bool FAVPlayerMovieStreamer::Init(const TArray<FString>& MoviePaths, TEnumAsByte<EMoviePlaybackType> inPlaybackType)
 {
+	if(MetalTextureCache == NULL && FApp::CanEverRender())
+	{
+		id<MTLDevice> Device = (id<MTLDevice>)GDynamicRHI->RHIGetNativeDevice();
+		check(Device != nil);
+
+		CVReturn Return = CVMetalTextureCacheCreate(kCFAllocatorDefault, nullptr, Device, nullptr, &MetalTextureCache);
+		check(Return == kCVReturnSuccess);
+		check(MetalTextureCache != NULL);
+	}
+	
+	if(MetalTextureCache == NULL)
+	{
+		return false;
+	}
+
 	// 
 	// Initializes the streamer for audio and video playback of the given path(s).
 	// NOTE: If multiple paths are provided, it is expect that they be played back seamlessly.
@@ -150,37 +209,13 @@ bool FAVPlayerMovieStreamer::Tick(float DeltaTime)
 	{
 		return false;
 	}
-    // Check the list of textures pending deletion and remove any that are no longer valid
-    for (int32 TextureIndex = 0; TextureIndex < TexturesPendingDeletion.Num(); )
-    {
-        TSharedPtr<FSlateTexture2DRHIRef, ESPMode::ThreadSafe> Tex = TexturesPendingDeletion[TextureIndex];
-        if (!Tex->IsInitialized())
-        {
-            // Texture can now be removed from the list
-            TexturesPendingDeletion.RemoveAt(TextureIndex);
-
-            // Don't increment i, since element 'i' wasn't just filled by the next element
-        }
-        else
-        {
-            // Advance to the next one
-            ++TextureIndex;
-        }
-    }
 
     if( bVideoTracksLoaded )
     {
         // Remember that we were active. Used to edge detect active/not-active transitions
         bWasActive = true;
 
-        if( CheckForNextFrameAndCopy() )
-        {
-            // Copy new frame data.
-            uint32 Stride;
-            uint8* DestTextureData = (uint8*)RHILockTexture2D( Texture->GetTypedResource(), 0, RLM_WriteOnly, Stride, false );
-            FMemory::Memcpy( DestTextureData, TextureData->GetRawBytesPtr(), TextureData->GetRawBytes().Num() );
-            RHIUnlockTexture2D( Texture->GetTypedResource(), 0, false );
-        }
+		CheckForNextFrameAndCopy();
 
         check(AVReader != nil);
         AVAssetReaderStatus Status = [AVReader status];
@@ -268,15 +303,21 @@ void FAVPlayerMovieStreamer::Cleanup()
 		LatestSamples = NULL;
 	}
 	
-    MovieViewport->SetTexture(NULL);
-
-	// Schedule textures for release.
-    if (Texture.IsValid())
-    {
-        TexturesPendingDeletion.Add(Texture);
-        BeginReleaseResource(Texture.Get());
-        Texture.Reset();
-    }
+	MovieViewport->SetTexture(NULL);
+	
+	if(SlateTexture.IsValid() && SlateTexture->IsValid())
+	{
+		TSharedPtr<FSlateTexture2DRHIRef, ESPMode::ThreadSafe> SlateTextureCleanUp = SlateTexture;
+		ENQUEUE_RENDER_COMMAND(FAVPlayerMovieStreamerCleanUp)
+		(
+			[SlateTextureCleanUp](FRHICommandListImmediate& RHICmdList)
+			{
+				SlateTextureCleanUp->ReleaseDynamicRHI();
+			}
+		);
+		
+		SlateTexture.Reset();
+	}
 }
 
 bool FAVPlayerMovieStreamer::StartNextMovie()
@@ -325,14 +366,15 @@ bool FAVPlayerMovieStreamer::StartNextMovie()
 		MovieName = MovieQueue[0];
 		MovieQueue.RemoveAt(0);
 
-		bVideoTracksLoaded = LoadMovie(MovieName);
-
+		return LoadMovieAsync(MovieName);
 	}
-	return bVideoTracksLoaded;
+	return false;
 }
 
-bool FAVPlayerMovieStreamer::LoadMovie(FString InMovieName)
+bool FAVPlayerMovieStreamer::LoadMovieAsync(FString InMovieName)
 {
+	FScopeLock LockVideoTracksLoading(&VideoTracksLoadingLock);
+	
 	// Reset flag to indicate the movie may have started, but isn't playing yet.
 	bVideoTracksLoaded = false;
 	NSURL* nsURL = nil;
@@ -341,6 +383,7 @@ bool FAVPlayerMovieStreamer::LoadMovie(FString InMovieName)
 	{
 		nsURL = [NSURL fileURLWithPath : ConvertToNativePath(MoviePath, false).GetNSString()];
 	}
+	
 	if (nsURL == nil)
 	{
 		return false;
@@ -349,42 +392,21 @@ bool FAVPlayerMovieStreamer::LoadMovie(FString InMovieName)
 	// Load the Movie with the appropriate URL.
     AVMovie = [[AVURLAsset alloc] initWithURL:nsURL options:nil];
 
-	__block bool bLoadCompleted = false;
-
     // Obtain the tracks asynchronously.
     NSArray* nsTrackKeys = @[@"tracks"];
     [AVMovie loadValuesAsynchronouslyForKeys:nsTrackKeys completionHandler:^()
     {
-        // !!! This block will execute asynchronously !!!
-        // Once loaded, initialize our reader object to start pulling frames.
-		FScopeLock LockVideoTracksLoading(&VideoTracksLoadingLock);
-        bVideoTracksLoaded = FinishLoadingTracks();
+    	FScopeLock AynscLockVideoTracksLoading(&VideoTracksLoadingLock);
 
-		// Play the next movie in the queue
+        // Once loaded, initialize our reader object to start pulling frames
+        bVideoTracksLoaded = FinishLoadingTracks();
         
 #if PLATFORM_IOS
 		bIsMovieInterrupted = GIsSuspended;
 #endif
-        
-		if (!bIsMovieInterrupted && bVideoTracksLoaded && AudioPlayer != nil)
-        {
-            // Good time to start the audio playing.
-            [AudioPlayer play];
-        }
-
-        // !!!
-		bLoadCompleted = true;
     }];
-
-	while (!bLoadCompleted)
-	{
-		FPlatformProcess::Sleep(0);
-	}
-
-    // Movie has started.
-		
-	UE_LOG(LogMoviePlayer, Log, TEXT("Started next movie.") );
-	return bVideoTracksLoaded;
+	
+    return true;
 }
 
 bool FAVPlayerMovieStreamer::FinishLoadingTracks()
@@ -424,7 +446,12 @@ bool FAVPlayerMovieStreamer::FinishLoadingTracks()
 				
                 // Initialize our video output to match the format of the texture we'll create later.
                 NSMutableDictionary* OutputSettings = [NSMutableDictionary dictionary];
-                [OutputSettings setObject: [NSNumber numberWithInt:kCVPixelFormatType_32BGRA] forKey:(NSString*)kCVPixelBufferPixelFormatTypeKey];
+				
+                [OutputSettings setObject:[NSNumber numberWithInt:kCVPixelFormatType_32BGRA] forKey:(NSString*)kCVPixelBufferPixelFormatTypeKey];
+                [OutputSettings setObject:[NSDictionary dictionary] forKey:(id)kCVPixelBufferIOSurfacePropertiesKey];
+				[OutputSettings setObject:[NSNumber numberWithBool:YES] forKey:(NSString*)kCVPixelBufferMetalCompatibilityKey];
+				[OutputSettings setObject:[NSNumber numberWithInteger:1] forKey:(NSString*)kCVPixelBufferBytesPerRowAlignmentKey];
+				
                 AVVideoOutput = [[AVAssetReaderTrackOutput alloc] initWithTrack:AVVideoTrack outputSettings:OutputSettings];
                 AVVideoOutput.alwaysCopiesSampleData = NO;
 
@@ -444,8 +471,8 @@ bool FAVPlayerMovieStreamer::FinishLoadingTracks()
                 check( AVVideoTrack.nominalFrameRate );
                 VideoRate = 1.0f / AVVideoTrack.nominalFrameRate;
 
-                // Save the starting time.
-                StartTime = CACurrentMediaTime() - CMTimeGetSeconds(ResumeTime);
+                // Reset the starting time.
+                StartTime = 0.0;
 
                 // Good to go.
                 bLoadedAndReading = true;
@@ -476,14 +503,23 @@ bool FAVPlayerMovieStreamer::CheckForNextFrameAndCopy()
     bool bHasNewFrame = false;
 
     // We need to synchronize the video playback with the audio.
-    // If the video frame is within tolerance (Ready), update the Texture Data.
+    // If the video frame is within tolerance (Ready), update the Texture.
     // If the video is Behind, throw it away and get the next one until we catch up with the ref time.
-    // If the video is Ahead, update the TextureData but don't retrieve more frames until time catches up.
+    // If the video is Ahead, update the Texture but don't retrieve more frames until time catches up.
 
-    
+    if(StartTime == 0.0)
+    {
+    	// Now kick everything going at the same time
+		StartTime = CACurrentMediaTime() - CMTimeGetSeconds(ResumeTime);
+		
+		if(AudioPlayer != nil && !AudioPlayer.isPlaying)
+		{
+			[AudioPlayer play];
+		}
+    }
+	
     while( SyncStatus != Ready )
     {
-        double Delta;
         if( SyncStatus != Ahead )
         {
             LatestSamples = [AVVideoOutput copyNextSampleBuffer];
@@ -499,17 +535,16 @@ bool FAVPlayerMovieStreamer::CheckForNextFrameAndCopy()
 
         // Get the time since playback began
         Cursor = CACurrentMediaTime() - StartTime;
-        CMTime caCurrentTime = CMTimeMake(Cursor * TIMESCALE, TIMESCALE);
 
         // Compute delta of video frame and current playback times
-        Delta = CMTimeGetSeconds(caCurrentTime) - CMTimeGetSeconds(FrameTimeStamp);
+        double Delta = Cursor - CMTimeGetSeconds(FrameTimeStamp);
 
-        if( Delta < 0 ) 
+        if( Delta < 0.0 )
         {
-            Delta *= -1;  
+            Delta *= - 1.0;
             SyncStatus = Ahead;
         }
-        else 
+        else
         {
             SyncStatus = Behind;
         }
@@ -524,7 +559,7 @@ bool FAVPlayerMovieStreamer::CheckForNextFrameAndCopy()
             // Video ahead of audio: stay in Ahead state, exit loop
             break;
         }
-        else 
+        else
         {
             // Video behind audio (Behind): stay in loop
             CFRelease(LatestSamples);
@@ -537,62 +572,38 @@ bool FAVPlayerMovieStreamer::CheckForNextFrameAndCopy()
     if( SyncStatus == Ready )
     {
         check(LatestSamples != NULL);
+		check(MetalTextureCache != NULL);
 
-        // Grab the pixel buffer and lock it for reading.
         CVImageBufferRef pPixelBuffer = CMSampleBufferGetImageBuffer(LatestSamples);
-        CGSize Size                   = CVImageBufferGetEncodedSize( pPixelBuffer );
-        CVPixelBufferLockBaseAddress( pPixelBuffer, kCVPixelBufferLock_ReadOnly );
+		
+		CGSize Size = CVImageBufferGetEncodedSize(pPixelBuffer);
+		
+		uint32 Width  = (uint32)Size.width;
+		uint32 Height = (uint32)Size.height;
+	
+		CVMetalTextureRef TextureCacheRef = NULL;
+		CVReturn Result = CVMetalTextureCacheCreateTextureFromImage(kCFAllocatorDefault, MetalTextureCache, pPixelBuffer, nullptr, MTLPixelFormatBGRA8Unorm, Width, Height, 0, &TextureCacheRef);
+		check(Result == kCVReturnSuccess);
+		check(TextureCacheRef);
+	
+		FRHIResourceCreateInfo CreateInfo(new FAppleMovieStreamerTexture2DResourceWrapper(TextureCacheRef));
+		FTexture2DRHIRef MediaWrappedTexture = RHICreateTexture2D(Width, Height, PF_B8G8R8A8, 1, 1, TexCreate_Dynamic | TexCreate_NoTiling, CreateInfo);
+		
+		if(SlateTexture.IsValid())
+		{
+			if(SlateTexture->IsValid())
+			{
+				SlateTexture->ReleaseDynamicRHI();
+			}
+			SlateTexture->SetRHIRef(MediaWrappedTexture, Width, Height);
+		}
+		else
+		{
+			SlateTexture = MakeShareable(new FSlateTexture2DRHIRef(MediaWrappedTexture, Width, Height));
+			MovieViewport->SetTexture(SlateTexture);
+		}
 
-        uint8* pVideoData = (uint8*)CVPixelBufferGetBaseAddress(pPixelBuffer);
-
-        uint32 SrcWidth  = (uint32)Size.width;
-        uint32 SrcHeight = (uint32)Size.height;
-
-        // Now that we have video information, ensure that we have texture data in the right dimensions
-        if (TextureData->GetWidth() != SrcWidth || TextureData->GetHeight() != SrcHeight)
-        {
-            check( SrcWidth > 0 && SrcHeight > 0 );
-
-			TArray<uint8> TempData;
-			TempData.AddZeroed(SrcWidth * SrcHeight * 4);
-			TextureData->SetRawData(SrcWidth, SrcHeight, SrcWidth * 4, TempData);
-			check( TextureData->GetRawBytesPtr() != NULL );
-        }
-
-        // Now that we have video information, check on texture allocation. If we don't have a texture yet, create one.
-        if(!Texture.IsValid() || (Texture->GetWidth() != SrcWidth || Texture->GetHeight() != SrcHeight))
-        {
-            MovieViewport->SetTexture(NULL);
-
-            // Release any resources associated with the previous texture
-            if (Texture.IsValid())
-            {
-                // *** Aren't we already in the rendering thread? Why can't we just release the resource right here, right now?
-                TexturesPendingDeletion.Add(Texture);
-                BeginReleaseResource(Texture.Get());
-                Texture.Reset();
-            }
-
-            // Create and initialize a new texture
-            Texture = MakeShareable(new FSlateTexture2DRHIRef(SrcWidth, SrcHeight, PF_B8G8R8A8, nullptr, TexCreate_Dynamic | TexCreate_NoTiling, true));
-            Texture->InitResource();
-
-            // Make sure the texture is at least updated once.
-            Texture->UpdateRHI();
-            MovieViewport->SetTexture(Texture);
-        }
-
-        check( TextureData->GetBytesPerPixel() > 0 );
-        
-        // Copy the video data
-        uint32 Len = TextureData->GetBytesPerPixel() * SrcHeight;
-        check( Len > 0 );
-        FMemory::Memcpy(TextureData->GetRawBytesPtr(), pVideoData, Len);
-
-        // Re-lock and release the video data.
-        CVPixelBufferUnlockBaseAddress( pPixelBuffer, kCVPixelBufferLock_ReadOnly );
-        
-        // Processed this frame, so dump the samples.
+		CFRelease(TextureCacheRef);
         CFRelease(LatestSamples);
         LatestSamples = NULL;
 
@@ -616,12 +627,11 @@ void FAVPlayerMovieStreamer::TeardownPlayback()
     }
     
 	ReleaseMovie();
+	
     if ( AudioPlayer != nil )
     {
         AudioPlayer = nil;
     }
-
-    // NOTE: The any textures allocated are still allocated at this point. They will get released in Cleanup()
 }
 
 void FAVPlayerMovieStreamer::ReleaseMovie()
@@ -688,8 +698,6 @@ void FAVPlayerMovieStreamer::Resume()
 		//already resumed
 		return;
 	}
-	FScopeLock LockVideoTracksLoading(&VideoTracksLoadingLock);
-
-	LoadMovie(MovieName);
+	
+	LoadMovieAsync(MovieName);
 }
-

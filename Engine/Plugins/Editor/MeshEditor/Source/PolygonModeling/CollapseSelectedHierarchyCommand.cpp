@@ -1,12 +1,11 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "CollapseSelectedHierarchyCommand.h"
 #include "IMeshEditorModeEditingContract.h"
 #include "ScopedTransaction.h"
 #include "Editor.h"
 #include "Engine/Selection.h"
-#include "MeshAttributes.h"
-#include "MeshDescription.h"
+#include "StaticMeshAttributes.h"
 #include "PackageTools.h"
 #include "MeshFractureSettings.h"
 #include "EditableMeshFactory.h"
@@ -49,7 +48,7 @@ void UCollapseSelectedHierarchyCommand::Execute(IMeshEditorModeEditingContract& 
 
 	CollapseHierarchies(MeshEditorMode, SelectedActors);
 
-	UpdateExplodedView(MeshEditorMode, EViewResetType::RESET_TRANSFORMS);
+	UpdateExplodedView(MeshEditorMode, EViewResetType::RESET_ALL);
 }
 
 void UCollapseSelectedHierarchyCommand::CollapseHierarchies(IMeshEditorModeEditingContract& MeshEditorMode, TArray<UEditableMesh*>& SelectedMeshes)
@@ -63,7 +62,7 @@ void UCollapseSelectedHierarchyCommand::CollapseHierarchies(IMeshEditorModeEditi
 			FGeometryCollectionEdit GeometryCollectionEdit = GeometryCollectionComponent->EditRestCollection();
 			if (UGeometryCollection* GeometryCollectionObject = GeometryCollectionEdit.GetRestCollection())
 			{
-				TSharedPtr<FGeometryCollection> GeometryCollectionPtr = GeometryCollectionObject->GetGeometryCollection();
+				TSharedPtr<FGeometryCollection, ESPMode::ThreadSafe> GeometryCollectionPtr = GeometryCollectionObject->GetGeometryCollection();
 				if (FGeometryCollection* GeometryCollection = GeometryCollectionPtr.Get())
 				{
 

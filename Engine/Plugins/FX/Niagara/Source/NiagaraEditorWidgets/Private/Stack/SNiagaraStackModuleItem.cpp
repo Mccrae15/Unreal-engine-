@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "Stack/SNiagaraStackModuleItem.h"
 #include "NiagaraEditorWidgetsStyle.h"
@@ -20,11 +20,13 @@
 #include "Widgets/Images/SImage.h"
 #include "Framework/MultiBox/MultiBoxBuilder.h"
 #include "Framework/Application/SlateApplication.h"
-#include "Toolkits/AssetEditorManager.h"
 #include "SDropTarget.h"
-#include "SNiagaraStackErrorButton.h"
 #include "NiagaraEditorUtilities.h"
 #include "SGraphActionMenu.h"
+#include "NiagaraEditorWidgetsUtilities.h"
+#include "Subsystems/AssetEditorSubsystem.h"
+#include "Editor.h"
+#include "EditorFontGlyphs.h"
 
 #define LOCTEXT_NAMESPACE "NiagaraStackModuleItem"
 
@@ -49,27 +51,11 @@ void SNiagaraStackModuleItem::Construct(const FArguments& InArgs, UNiagaraStackM
 			// Name
 			+ SHorizontalBox::Slot()
 			.VAlign(VAlign_Center)
-			.Padding(0)
-			[
-				SNew(STextBlock)
-				.TextStyle(FNiagaraEditorWidgetsStyle::Get(), "NiagaraEditor.Stack.ItemText")
-				.ToolTipText_UObject(ModuleItem, &UNiagaraStackEntry::GetTooltipText)
-				.Text_UObject(ModuleItem, &UNiagaraStackEntry::GetDisplayName)
-				.HighlightText_UObject(InStackViewModel, &UNiagaraStackViewModel::GetCurrentSearchText)
-				.ColorAndOpacity(this, &SNiagaraStackModuleItem::GetTextColorForSearch)
-				.IsEnabled_UObject(ModuleItem, &UNiagaraStackModuleItem::GetIsEnabled)
-			]
-			// Stack issues icon
-			+ SHorizontalBox::Slot()
 			.Padding(2, 0, 0, 0)
-			.AutoWidth()
-			.VAlign(VAlign_Center)
 			[
-				SNew(SNiagaraStackErrorButton)
-				.IssueSeverity_UObject(ModuleItem, &UNiagaraStackModuleItem::GetHighestStackIssueSeverity)
-				.ErrorTooltip(this, &SNiagaraStackModuleItem::GetErrorButtonTooltipText)
-				.Visibility(this, &SNiagaraStackModuleItem::GetStackIssuesWarningVisibility)
-				.OnButtonClicked(this, &SNiagaraStackModuleItem::ExpandEntry)
+				SAssignNew(DisplayNameWidget, SNiagaraStackDisplayName, InModuleItem, *InStackViewModel, "NiagaraEditor.Stack.ItemText")
+				.OnRenameCommitted(this, &SNiagaraStackModuleItem::OnRenameCommitted)
+				.TypeNameStyle(FNiagaraEditorWidgetsStyle::Get(), "NiagaraEditor.Stack.TypeNameText")
 			]
 			// Raise Action Menu button
 			+ SHorizontalBox::Slot()
@@ -84,6 +70,7 @@ void SNiagaraStackModuleItem::Construct(const FArguments& InArgs, UNiagaraStackM
 				.HAlign(HAlign_Center)
 				.VAlign(VAlign_Center)
 				.Visibility(this, &SNiagaraStackModuleItem::GetRaiseActionMenuVisibility)
+				.IsEnabled(this, &SNiagaraStackModuleItem::GetButtonsEnabled)
 			]
 			// Refresh button
 			+ SHorizontalBox::Slot()
@@ -96,12 +83,13 @@ void SNiagaraStackModuleItem::Construct(const FArguments& InArgs, UNiagaraStackM
 				.ForegroundColor(FNiagaraEditorWidgetsStyle::Get().GetColor("NiagaraEditor.Stack.FlatButtonColor"))
 				.ToolTipText(LOCTEXT("RefreshTooltip", "Refresh this module"))
 				.Visibility(this, &SNiagaraStackModuleItem::GetRefreshVisibility)
+				.IsEnabled(this, &SNiagaraStackModuleItem::GetButtonsEnabled)
 				.OnClicked(this, &SNiagaraStackModuleItem::RefreshClicked)
 				.Content()
 				[
 					SNew(STextBlock)
 					.Font(FEditorStyle::Get().GetFontStyle("FontAwesome.10"))
-					.Text(FText::FromString(FString(TEXT("\xf021"))))
+					.Text(FEditorFontGlyphs::Refresh)
 				]
 			]
 			// Delete button
@@ -113,14 +101,14 @@ void SNiagaraStackModuleItem::Construct(const FArguments& InArgs, UNiagaraStackM
 				.ButtonStyle(FEditorStyle::Get(), "HoverHintOnly")
 				.IsFocusable(false)
 				.ForegroundColor(FNiagaraEditorWidgetsStyle::Get().GetColor("NiagaraEditor.Stack.FlatButtonColor"))
-				.ToolTipText(LOCTEXT("DeleteToolTip", "Delete this module"))
-				.Visibility(this, &SNiagaraStackModuleItem::GetEditButtonVisibility)
+				.ToolTipText(this, &SNiagaraStackModuleItem::GetDeleteButtonToolTipText)
+				.IsEnabled(this, &SNiagaraStackModuleItem::GetDeleteButtonEnabled)
 				.OnClicked(this, &SNiagaraStackModuleItem::DeleteClicked)
 				.Content()
 				[
 					SNew(STextBlock)
 					.Font(FEditorStyle::Get().GetFontStyle("FontAwesome.10"))
-					.Text(FText::FromString(FString(TEXT("\xf1f8"))))
+					.Text(FEditorFontGlyphs::Trash)
 				]
 			]
 			// Enabled checkbox
@@ -131,6 +119,7 @@ void SNiagaraStackModuleItem::Construct(const FArguments& InArgs, UNiagaraStackM
 				SNew(SCheckBox)
 				.IsChecked(this, &SNiagaraStackModuleItem::GetCheckState)
 				.OnCheckStateChanged(this, &SNiagaraStackModuleItem::OnCheckStateChanged)
+				.IsEnabled(this, &SNiagaraStackModuleItem::GetEnabledCheckBoxEnabled)
 			]
 		]
 	];
@@ -148,27 +137,8 @@ bool SNiagaraStackModuleItem::CheckEnabledStatus(bool bIsEnabled)
 
 void SNiagaraStackModuleItem::FillRowContextMenu(FMenuBuilder& MenuBuilder)
 {
-	MenuBuilder.AddMenuEntry(
-		LOCTEXT("InsertModuleAbove", "Insert Above"),
-		LOCTEXT("InsertModuleAboveToolTip", "Insert a new module above this module in the stack."),
-		FSlateIcon(),
-		FUIAction(FExecuteAction::CreateSP(this, &SNiagaraStackModuleItem::InsertModuleAbove)));
-	MenuBuilder.AddMenuEntry(
-		LOCTEXT("InsertModuleBelow", "Insert Below"),
-		LOCTEXT("InsertModuleBelowToolTip", "Insert a new module below this module in the stack."),
-		FSlateIcon(),
-		FUIAction(FExecuteAction::CreateSP(this, &SNiagaraStackModuleItem::InsertModuleBelow)));
-
-	FUIAction Action(FExecuteAction::CreateSP(this, &SNiagaraStackModuleItem::SetEnabled, !ModuleItem->GetIsEnabled()),
-		FCanExecuteAction(),
-		FIsActionChecked::CreateSP(this, &SNiagaraStackModuleItem::CheckEnabledStatus, true));
-	MenuBuilder.AddMenuEntry(
-		LOCTEXT("IsEnabled", "Is Enabled"),
-		LOCTEXT("ToggleModuleEnabledToolTip", "Toggle module enabled/disabled state"),
-		FSlateIcon(),
-		Action,
-		NAME_None,
-		EUserInterfaceActionType::Check);
+	FNiagaraStackEditorWidgetsUtilities::AddStackModuleItemContextMenuActions(MenuBuilder, *ModuleItem, this->AsShared());
+	FNiagaraStackEditorWidgetsUtilities::AddStackItemContextMenuActions(MenuBuilder, *ModuleItem);
 }
 
 FReply SNiagaraStackModuleItem::OnMouseButtonDoubleClick(const FGeometry& InMyGeometry, const FPointerEvent& InMouseEvent)
@@ -176,7 +146,7 @@ FReply SNiagaraStackModuleItem::OnMouseButtonDoubleClick(const FGeometry& InMyGe
 	const UNiagaraNodeFunctionCall& ModuleFunctionCall = ModuleItem->GetModuleNode();
 	if (ModuleFunctionCall.FunctionScript != nullptr && ModuleFunctionCall.FunctionScript->IsAsset())
 	{
-		FAssetEditorManager::Get().OpenEditorForAsset(const_cast<UNiagaraScript*>(ModuleFunctionCall.FunctionScript));
+		GEditor->GetEditorSubsystem<UAssetEditorSubsystem>()->OpenEditorForAsset(const_cast<UNiagaraScript*>(ModuleFunctionCall.FunctionScript));
 		return FReply::Handled();
 	}
 	return FReply::Unhandled();
@@ -189,6 +159,16 @@ void SNiagaraStackModuleItem::Tick(const FGeometry& AllottedGeometry, const doub
 		ModuleItem->SetIsModuleScriptReassignmentPending(false);
 		ShowReassignModuleScriptMenu();
 	}
+
+	if (StackEntryItem->GetIsRenamePending())
+	{
+		if (DisplayNameWidget.IsValid())
+		{
+			DisplayNameWidget->StartRename();
+		}
+		StackEntryItem->SetIsRenamePending(false);
+	}
+	SNiagaraStackEntryWidget::Tick(AllottedGeometry, InCurrentTime, InDeltaTime);
 }
 
 ECheckBoxState SNiagaraStackModuleItem::GetCheckState() const
@@ -201,9 +181,27 @@ void SNiagaraStackModuleItem::OnCheckStateChanged(ECheckBoxState InCheckState)
 	ModuleItem->SetIsEnabled(InCheckState == ECheckBoxState::Checked);
 }
 
-EVisibility SNiagaraStackModuleItem::GetEditButtonVisibility() const
+bool SNiagaraStackModuleItem::GetButtonsEnabled() const
 {
-	return ModuleItem->CanMoveAndDelete() ? EVisibility::Visible : EVisibility::Collapsed;
+	return ModuleItem->GetOwnerIsEnabled() && ModuleItem->GetIsEnabled();
+}
+
+FText SNiagaraStackModuleItem::GetDeleteButtonToolTipText() const
+{
+	FText CanDeleteMessage;
+	ModuleItem->TestCanDeleteWithMessage(CanDeleteMessage);
+	return CanDeleteMessage;
+}
+
+bool SNiagaraStackModuleItem::GetDeleteButtonEnabled() const
+{
+	FText CanDeleteMessage;
+	return ModuleItem->TestCanDeleteWithMessage(CanDeleteMessage);
+}
+
+bool SNiagaraStackModuleItem::GetEnabledCheckBoxEnabled() const
+{
+	return ModuleItem->GetOwnerIsEnabled();
 }
 
 EVisibility SNiagaraStackModuleItem::GetRaiseActionMenuVisibility() const
@@ -270,31 +268,12 @@ FReply SNiagaraStackModuleItem::RefreshClicked()
 	return FReply::Handled();
 }
 
-void SNiagaraStackModuleItem::InsertModuleAbove()
-{
-	ShowInsertModuleMenu(ModuleItem->GetModuleIndex());
-}
-
-void SNiagaraStackModuleItem::InsertModuleBelow()
-{
-	ShowInsertModuleMenu(ModuleItem->GetModuleIndex() + 1);
-}
-
-void SNiagaraStackModuleItem::ShowInsertModuleMenu(int32 InsertIndex)
-{
-	TSharedRef<SWidget> MenuContent = SNew(SNiagaraStackItemGroupAddMenu, ModuleItem->GetGroupAddUtilities(), InsertIndex);
-	FGeometry ThisGeometry = GetCachedGeometry();
-	bool bAutoAdjustForDpiScale = false; // Don't adjust for dpi scale because the push menu command is expecting an unscaled position.
-	FVector2D MenuPosition = FSlateApplication::Get().CalculatePopupWindowPosition(ThisGeometry.GetLayoutBoundingRect(), MenuContent->GetDesiredSize(), bAutoAdjustForDpiScale);
-	FSlateApplication::Get().PushMenu(AsShared(), FWidgetPath(), MenuContent, MenuPosition, FPopupTransitionEffect::ContextMenu);
-}
-
 FReply SNiagaraStackModuleItem::OnModuleItemDrop(TSharedPtr<FDragDropOperation> DragDropOperation)
 {
-	if (DragDropOperation->IsOfType<FNiagaraStackDragOperation>())
+	if (DragDropOperation->IsOfType<FNiagaraParameterDragOperation>())
 	{
-		TSharedPtr<FNiagaraStackDragOperation> InputDragDropOperation = StaticCastSharedPtr<FNiagaraStackDragOperation>(DragDropOperation);
-		TSharedPtr<FNiagaraParameterAction> Action = StaticCastSharedPtr<FNiagaraParameterAction>(InputDragDropOperation->GetAction());
+		TSharedPtr<FNiagaraParameterDragOperation> InputDragDropOperation = StaticCastSharedPtr<FNiagaraParameterDragOperation>(DragDropOperation);
+		TSharedPtr<FNiagaraParameterAction> Action = StaticCastSharedPtr<FNiagaraParameterAction>(InputDragDropOperation->GetSourceAction());
 		if (Action.IsValid() && ModuleItem->CanAddInput(Action->GetParameter()))
 		{
 			ModuleItem->AddInput(Action->GetParameter());
@@ -307,24 +286,14 @@ FReply SNiagaraStackModuleItem::OnModuleItemDrop(TSharedPtr<FDragDropOperation> 
 
 bool SNiagaraStackModuleItem::OnModuleItemAllowDrop(TSharedPtr<FDragDropOperation> DragDropOperation)
 {
-	if (DragDropOperation->IsOfType<FNiagaraStackDragOperation>())
+	if (DragDropOperation->IsOfType<FNiagaraParameterDragOperation>())
 	{
-		TSharedPtr<FNiagaraStackDragOperation> InputDragDropOperation = StaticCastSharedPtr<FNiagaraStackDragOperation>(DragDropOperation);
-		TSharedPtr<FNiagaraParameterAction> Action = StaticCastSharedPtr<FNiagaraParameterAction>(InputDragDropOperation->GetAction());
+		TSharedPtr<FNiagaraParameterDragOperation> InputDragDropOperation = StaticCastSharedPtr<FNiagaraParameterDragOperation>(DragDropOperation);
+		TSharedPtr<FNiagaraParameterAction> Action = StaticCastSharedPtr<FNiagaraParameterAction>(InputDragDropOperation->GetSourceAction());
 		return Action.IsValid() && ModuleItem->CanAddInput(Action->GetParameter());
 	}
 
 	return false;
-}
-
-EVisibility SNiagaraStackModuleItem::GetStackIssuesWarningVisibility() const
-{
-	return ModuleItem->GetRecursiveStackIssuesCount() > 0 ? EVisibility::Visible : EVisibility::Collapsed;
-}
-
-FText SNiagaraStackModuleItem::GetErrorButtonTooltipText() const
-{
-	return FText::Format(LOCTEXT("ModuleIssuesTooltip", "This module has {0} issues, click to expand."), ModuleItem->GetRecursiveStackIssuesCount());
 }
 
 void ReassignModuleScript(UNiagaraStackModuleItem* ModuleItem, FAssetData NewModuleScriptAsset)
@@ -352,7 +321,10 @@ void OnActionSelected(const TArray<TSharedPtr<FEdGraphSchemaAction>>& SelectedAc
 void CollectModuleActions(FGraphActionListBuilderBase& ModuleActions, UNiagaraStackModuleItem* ModuleItem)
 {
 	TArray<FAssetData> ModuleAssets;
-	FNiagaraStackGraphUtilities::GetScriptAssetsByUsage(ENiagaraScriptUsage::Module, ModuleItem->GetOutputNode()->GetUsage(), ModuleAssets);
+	FNiagaraEditorUtilities::FGetFilteredScriptAssetsOptions ModuleScriptFilterOptions;
+	ModuleScriptFilterOptions.ScriptUsageToInclude = ENiagaraScriptUsage::Module;
+	ModuleScriptFilterOptions.TargetUsageToMatch = ModuleItem->GetOutputNode()->GetUsage();
+	FNiagaraEditorUtilities::GetFilteredScriptAssets(ModuleScriptFilterOptions, ModuleAssets);
 	for (const FAssetData& ModuleAsset : ModuleAssets)
 	{
 		FText Category;
@@ -362,20 +334,13 @@ void CollectModuleActions(FGraphActionListBuilderBase& ModuleActions, UNiagaraSt
 			Category = LOCTEXT("ModuleNotCategorized", "Uncategorized Modules");
 		}
 
-		uint32 bDeprecatedModule;
-		ModuleAsset.GetTagValue(GET_MEMBER_NAME_CHECKED(UNiagaraScript, bDeprecated), bDeprecatedModule);
+		bool bIsInLibrary = FNiagaraEditorUtilities::IsScriptAssetInLibrary(ModuleAsset);
 
-		if (bDeprecatedModule)
-		{
-			continue;
-		}
-
-		FString DisplayNameString = FName::NameToDisplayString(ModuleAsset.AssetName.ToString(), false);
-		FText DisplayName = FText::FromString(DisplayNameString);
+		FText DisplayName = FNiagaraEditorUtilities::FormatScriptName(ModuleAsset.AssetName, bIsInLibrary);
 
 		FText AssetDescription;
 		ModuleAsset.GetTagValue(GET_MEMBER_NAME_CHECKED(UNiagaraScript, Description), AssetDescription);
-		FText Description = FNiagaraEditorUtilities::FormatScriptAssetDescription(AssetDescription, ModuleAsset.ObjectPath);
+		FText Description = FNiagaraEditorUtilities::FormatScriptDescription(AssetDescription, ModuleAsset.ObjectPath, bIsInLibrary);
 
 		FText Keywords;
 		ModuleAsset.GetTagValue(GET_MEMBER_NAME_CHECKED(UNiagaraScript, Keywords), Keywords);
@@ -407,6 +372,14 @@ void SNiagaraStackModuleItem::ShowReassignModuleScriptMenu()
 	bool bAutoAdjustForDpiScale = false; // Don't adjust for dpi scale because the push menu command is expecting an unscaled position.
 	FVector2D MenuPosition = FSlateApplication::Get().CalculatePopupWindowPosition(ThisGeometry.GetLayoutBoundingRect(), MenuWidget->GetDesiredSize(), bAutoAdjustForDpiScale);
 	FSlateApplication::Get().PushMenu(AsShared(), FWidgetPath(), MenuWidget, MenuPosition, FPopupTransitionEffect::ContextMenu);
+}
+
+void SNiagaraStackModuleItem::OnRenameCommitted(const FText& NewName, ETextCommit::Type CommitType)
+{
+	if (CommitType != ETextCommit::OnCleared)
+	{
+		StackEntryItem->OnRenamed(NewName);
+	}
 }
 
 #undef LOCTEXT_NAMESPACE

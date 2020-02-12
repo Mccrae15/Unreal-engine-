@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -21,8 +21,12 @@ public:
 	FXmppPubSubStrophe(class FXmppConnectionStrophe& InConnectionManager);
 	virtual ~FXmppPubSubStrophe() = default;
 
-	void OnDisconnect();
+	// XMPP Thread
 	bool ReceiveStanza(const FStropheStanza& IncomingStanza);
+
+	// Game Thread
+	void OnDisconnect();
+	void OnReconnect();
 
 	// IXmppPubSub
 	virtual bool CreateNode(const FXmppPubSubId& NodeId, const FXmppPubSubConfig& NodeConfig) override;

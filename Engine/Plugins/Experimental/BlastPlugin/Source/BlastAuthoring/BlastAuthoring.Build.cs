@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 namespace UnrealBuildTool.Rules
 {
@@ -13,7 +13,9 @@ namespace UnrealBuildTool.Rules
                     "CoreUObject",
                     "EditableMesh",
                     "MeshDescription",
+					"StaticMeshDescription",
                     "Blast",
+                    "BlastCore",
                     "GeometryCollectionCore",
                     "GeometryCollectionEngine"
 
@@ -26,7 +28,9 @@ namespace UnrealBuildTool.Rules
 				{
                     "Core",
                     "CoreUObject",
-                    "Blast"
+					"Engine",
+                    "Blast",
+                    "BlastCore"
 
 					// ... add private dependencies that you statically link with here ...
 				}

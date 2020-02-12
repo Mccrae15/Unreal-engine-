@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 #include "ViewModels/Stack/NiagaraStackItem.h"
@@ -55,7 +55,7 @@ public:
 	TSharedPtr<FStructOnScope> GetValueStruct();
 
 	/** Gets the current object value of this input is there is one. */
-	UNiagaraDataInterface* GetValueObject();
+	UObject* GetValueObject();
 
 	/** Called to notify the input that an ongoing change to it's value has begun. */
 	void NotifyBeginValueChange();
@@ -73,16 +73,10 @@ public:
 	void Reset();
 
 	/** Returns whether or not this input can be renamed. */
-	bool CanRenameInput() const;
-
-	/** Gets whether this input has a rename pending. */
-	bool GetIsRenamePending() const;
-
-	/** Sets whether this input has a rename pending. */
-	void SetIsRenamePending(bool bIsRenamePending);
+	virtual bool SupportsRename() const override { return true; }
 
 	/** Renames this input to the name specified. */
-	void RenameInput(FString NewName);
+	virtual void OnRenamed(FText NewName) override;
 
 	/** Checks if the chosen name is unique (not duplicate) */
 	bool IsUniqueName(FString NewName);
@@ -96,13 +90,16 @@ public:
 	/** Delete the parameter from the ParameterStore and notify that the store changed. */
 	void Delete();
 
+	/** Use an external asset instead of the local value object.*/
+	void ReplaceValueObject(UObject* Obj);
+
 protected:
 	//~ UNiagaraStackEntry interface
 	virtual void RefreshChildrenInternal(const TArray<UNiagaraStackEntry*>& CurrentChildren, TArray<UNiagaraStackEntry*>& NewChildren, TArray<FStackIssue>& NewIssues) override;
 
 	void RefreshValueAndHandle();
 	TSharedPtr<FNiagaraVariable> GetCurrentValueVariable();
-	UNiagaraDataInterface* GetCurrentValueObject();
+	UObject* GetCurrentValueObject();
 
 private:
 	void RemovePins(TArray<UEdGraphPin*> PinsToRemove);
@@ -128,11 +125,10 @@ private:
 	FOnParameterDeleted ParameterDeletedDelegate;
 
 	/** A pointer to the data interface object for this input if one is available. */
-	UPROPERTY()
-	UNiagaraDataInterface* ValueObject;
+	TWeakObjectPtr<UObject> ValueObject;
 
-	UPROPERTY()
-	UObject* Owner;
+	/** A pointer to the owner of the parameter store that owns this entry. */
+	TWeakObjectPtr<UObject> Owner;
 
 	FNiagaraParameterStore* ParameterStore;
 

@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 /*=============================================================================
 	GPUProfiler.h: Hierarchical GPU Profiler Implementation.
@@ -29,6 +29,12 @@ static TAutoConsoleVariable<FString> GProfileGPURootCVar(
 	TEXT("r.ProfileGPU.Root"),
 	TEXT("*"),
 	TEXT("Allows to filter the tree when using ProfileGPU, the pattern match is case sensitive."),
+	ECVF_Default);
+
+static TAutoConsoleVariable<float> GProfileThresholdPercent(
+	TEXT("r.ProfileGPU.ThresholdPercent"),
+	0.05f,
+	TEXT("Percent of the total execution duration the event needs to be larger than to be printed."),
 	ECVF_Default);
 
 static TAutoConsoleVariable<int32> GProfileShowEventHistogram(
@@ -108,10 +114,11 @@ struct FNodeStatsCompare
 /** Recursively generates a histogram of nodes and stores their timing in TimingResult. */
 static void GatherStatsEventNode(FGPUProfilerEventNode* Node, int32 Depth, TMap<FString, FGPUProfilerEventNodeStats>& EventHistogram)
 {
-	if (Node->NumDraws > 0 || Node->Children.Num() > 0)
+	if (Node->NumDraws > 0 || Node->NumDispatches > 0 || Node->Children.Num() > 0)
 	{
 		Node->TimingResult = Node->GetTiming() * 1000.0f;
 		Node->NumTotalDraws = Node->NumDraws;
+		Node->NumTotalDispatches = Node->NumDispatches;
 		Node->NumTotalPrimitives = Node->NumPrimitives;
 		Node->NumTotalVertices = Node->NumVertices;
 
@@ -119,6 +126,7 @@ static void GatherStatsEventNode(FGPUProfilerEventNode* Node, int32 Depth, TMap<
 		while (Parent)
 		{
 			Parent->NumTotalDraws += Node->NumDraws;
+			Parent->NumTotalDispatches += Node->NumDispatches;
 			Parent->NumTotalPrimitives += Node->NumPrimitives;
 			Parent->NumTotalVertices += Node->NumVertices;
 
@@ -275,42 +283,62 @@ struct FGPUProfileStatSummary
 };
 
 /** Recursively dumps stats for each node with a depth first traversal. */
-static void DumpStatsEventNode(FGPUProfilerEventNode* Node, float RootResult, int32 Depth, const FWildcardString& WildcardFilter, bool bParentMatchedFilter, FGPUProfileStatSummary& Summary)
+static void DumpStatsEventNode(FGPUProfilerEventNode* Node, float RootResult, int32 Depth, const FWildcardString& WildcardFilter, bool bParentMatchedFilter, float& ReportedTiming, FGPUProfileStatSummary& Summary)
 {
 	Summary.TotalNumNodes++;
-	if (Node->NumDraws > 0 || Node->Children.Num() > 0 || Summary.bDumpEventLeafNodes)
+	ReportedTiming = 0;
+
+	if (Node->NumDraws > 0 || Node->NumDispatches > 0 || Node->Children.Num() > 0 || Summary.bDumpEventLeafNodes)
 	{
 		Summary.TotalNumDraws += Node->NumDraws;
 		// Percent that this node was of the total frame time
 		const float Percent = Node->TimingResult * 100.0f / (RootResult * 1000.0f);
-
+		const float PercentThreshold = GProfileThresholdPercent.GetValueOnRenderThread();
 		const int32 EffectiveDepth = FMath::Max(Depth - 1, 0);
+		const bool bDisplayEvent = (bParentMatchedFilter || WildcardFilter.IsMatch(Node->Name)) && (Percent > PercentThreshold || Summary.bDumpEventLeafNodes);
 
-		const bool bMatchesFilter = bParentMatchedFilter || WildcardFilter.IsMatch(Node->Name);
-
-		if (bMatchesFilter)
+		if (bDisplayEvent)
 		{
-			FString Extra;
-			
-			if(Node->TimingResult >= 0.1f && Node->NumVertices * Node->NumDraws > 100)
+			FString NodeStats = TEXT("");
+
+			if (Node->NumTotalDraws > 0)
 			{
-				Extra = FString::Printf(TEXT(" %.0f prims/ms %.0f verts/ms"),
-					Node->NumPrimitives / Node->TimingResult,
-					Node->NumVertices / Node->TimingResult);
+				NodeStats = FString::Printf(TEXT("%u %s %u prims %u verts "), Node->NumTotalDraws, Node->NumTotalDraws == 1 ? TEXT("draw") : TEXT("draws"), Node->NumTotalPrimitives, Node->NumTotalVertices);
+			}
+
+			if (Node->NumTotalDispatches > 0)
+			{
+				NodeStats += FString::Printf(TEXT("%u %s"), Node->NumTotalDispatches, Node->NumTotalDispatches == 1 ? TEXT("dispatch") : TEXT("dispatches"));
+			
+				// Cumulative group stats are not meaningful, only include dispatch stats if there was one in the current node
+				if (Node->GroupCount.X > 0 && Node->NumDispatches == 1)
+				{
+					NodeStats += FString::Printf(TEXT(" %u"), Node->GroupCount.X);
+
+					if (Node->GroupCount.Y > 1)
+					{
+						NodeStats += FString::Printf(TEXT("x%u"), Node->GroupCount.Y);
+					}
+
+					if (Node->GroupCount.Z > 1)
+					{
+						NodeStats += FString::Printf(TEXT("x%u"), Node->GroupCount.Z);
+					}
+
+					NodeStats += TEXT(" groups");
+				}
 			}
 
 			// Print information about this node, padded to its depth in the tree
-			UE_LOG(LogRHI, Log, TEXT("%s%4.1f%%%5.2fms   %s %u draws %u prims %u verts%s"), 
+			UE_LOG(LogRHI, Log, TEXT("%s%4.1f%%%5.2fms   %s %s"), 
 				*FString(TEXT("")).LeftPad(EffectiveDepth * 3), 
 				Percent,
 				Node->TimingResult,
 				*Node->Name,
-				Node->NumTotalDraws,
-				Node->NumTotalPrimitives,
-				Node->NumTotalVertices,
-				*Extra
+				*NodeStats
 				);
 
+			ReportedTiming = Node->TimingResult;
 			Summary.ProcessMatch(Node);
 		}
 
@@ -349,10 +377,11 @@ static void DumpStatsEventNode(FGPUProfilerEventNode* Node, float RootResult, in
 
 			// Traverse children			
 			const int32 PrevNumDraws = Summary.TotalNumDraws;
-			DumpStatsEventNode(Node->Children[ChildIndex], RootResult, Depth + 1, WildcardFilter, bMatchesFilter, Summary);
+			float ChildReportedTiming = 0;
+			DumpStatsEventNode(Node->Children[ChildIndex], RootResult, Depth + 1, WildcardFilter, bDisplayEvent, ChildReportedTiming, Summary);
 			const int32 NumChildDraws = Summary.TotalNumDraws - PrevNumDraws;
 
-			TotalChildTime += ChildNode->TimingResult;
+			TotalChildTime += ChildReportedTiming;
 			TotalChildDraws += NumChildDraws;
 		}
 
@@ -360,7 +389,7 @@ static void DumpStatsEventNode(FGPUProfilerEventNode* Node, float RootResult, in
 		const float UnaccountedPercent = UnaccountedTime * 100.0f / (RootResult * 1000.0f);
 
 		// Add an 'Other Children' node if necessary to show time spent in the current node that is not in any of its children
-		if (bMatchesFilter && Node->Children.Num() > 0 && TotalChildDraws > 0 && (UnaccountedPercent > 2.0f || UnaccountedTime > .2f))
+		if (bDisplayEvent && Node->Children.Num() > 0 && TotalChildDraws > 0 && (UnaccountedPercent > 2.0f || UnaccountedTime > .2f))
 		{
 			UE_LOG(LogRHI, Log, TEXT("%s%4.1f%%%5.2fms   Other Children"), 
 				*FString(TEXT("")).LeftPad((EffectiveDepth + 1) * 3), 
@@ -426,7 +455,25 @@ void FGPUProfilerEventNodeFrame::DumpEventTree()
 	{
 		float RootResult = GetRootTimingResults();
 
-		UE_LOG(LogRHI, Log, TEXT("Perf marker hierarchy, total GPU time %.2fms"), RootResult * 1000.0f);
+		FString ConfigString;
+
+		if (GProfileGPURootCVar.GetValueOnRenderThread() != TEXT("*"))
+		{
+			ConfigString += FString::Printf(TEXT("Root filter: %s "), *GProfileGPURootCVar.GetValueOnRenderThread());
+		}
+
+		if (GProfileThresholdPercent.GetValueOnRenderThread() > 0.0f)
+		{
+			ConfigString += FString::Printf(TEXT("Threshold: %.2f%% "), GProfileThresholdPercent.GetValueOnRenderThread());
+		}
+
+		if (ConfigString.Len() > 0)
+		{
+			ConfigString = FString(TEXT(", ")) + ConfigString;
+		}
+
+		UE_LOG(LogRHI, Log, TEXT("Perf marker hierarchy, total GPU time %.2fms%s"), RootResult * 1000.0f, *ConfigString);
+		UE_LOG(LogRHI, Log, TEXT(""));
 
 		// Display a warning if this is a GPU profile and the GPU was profiled with v-sync enabled
 		FText VsyncEnabledWarningText = FText::GetEmpty();
@@ -453,7 +500,8 @@ void FGPUProfilerEventNodeFrame::DumpEventTree()
 		FGPUProfileStatSummary Summary;
 		for (int32 BaseNodeIndex = 0; BaseNodeIndex < EventTree.Num(); BaseNodeIndex++)
 		{
-			DumpStatsEventNode(EventTree[BaseNodeIndex], RootResult, 0, RootWildcard, false, /*inout*/ Summary);
+			float Unused = 0;
+			DumpStatsEventNode(EventTree[BaseNodeIndex], RootResult, 0, RootWildcard, false, Unused, /*inout*/ Summary);
 		}
 		Summary.PrintSummary();
 
@@ -616,37 +664,5 @@ FGPUTimingCalibrationTimestamp FGPUTiming::GCalibrationTimestamp = {};
 
 /** Whether the static variables have been initialized. */
 bool FGPUTiming::GAreGlobalsInitialized = false;
-
-
-
-float FWindowedGPUTimer::GetElapsedAverage(FRHICommandListImmediate& RHICmdList, float &OutAvgTimeInSeconds)
-{
-	if (QueriesFinished < StartQueries.Num())
-	{
-		return 0.0f;
-	}
-
-	float TotalTime = 0;
-
-	// Grab the queries in our window (specified number of frames old) and calculate total time as an average of the winow size
-	//
-	for (int32 i = StartQueries.Num() - WindowSize; i < StartQueries.Num(); i++)
-	{
-		uint64 StartTime, EndTime;
-		bool StartSucceeded = RHICmdList.GetRenderQueryResult(StartQueries[i], StartTime, false);
-		bool EndSucceeded = RHICmdList.GetRenderQueryResult(EndQueries[i], EndTime, false);
-
-		// figure out what the failure rate of the queries is; they fail because the GPU hasn't finished them when we
-		// try to get the data, so if the failure rate is too high, number of frames behind needs to be increased
-		QueriesFailed += StartSucceeded&&EndSucceeded ? -1 : 1;
-		QueriesFailed = FMath::Max<int32>(0, QueriesFailed);
-		TotalTime += (EndTime - StartTime) / 1000000.0f;
-	}
-
-	float FailRate = static_cast<float>(QueriesFailed) / WindowSize;
-	OutAvgTimeInSeconds = TotalTime / WindowSize;
-
-	return FailRate;
-}
 
 #undef LOCTEXT_NAMESPACE

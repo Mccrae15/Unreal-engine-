@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "Protocols/UserDefinedCaptureProtocol.h"
 #include "ImageWriteQueue.h"
@@ -7,6 +7,7 @@
 #include "Async/Async.h"
 #include "Engine/Texture.h"
 #include "UnrealClient.h"
+#include "MovieSceneCaptureModule.h"
 #include "MovieSceneCaptureSettings.h"
 #include "Slate/SceneViewport.h"
 #include "ImagePixelData.h"
@@ -114,7 +115,7 @@ void UUserDefinedCaptureProtocol::TickImpl()
 		for (FCapturedFrameData& Frame : CapturedFrames)
 		{
 			// Steal the frame and make it shareable
-			FCapturedPixels CapturedPixels { MakeShared<TImagePixelData<FColor>, ESPMode::ThreadSafe>( Frame.BufferSize, MoveTemp(Frame.ColorBuffer) ) };
+			FCapturedPixels CapturedPixels { MakeShared<TImagePixelData<FColor>, ESPMode::ThreadSafe>( Frame.BufferSize, TArray64<FColor>(MoveTemp(Frame.ColorBuffer) ) ) };
 			FFrameMetrics   CapturedMetrics = static_cast<FCaptureProtocolFrameData*>(Frame.Payload.Get())->Metrics;
 
 			// Call the handler
@@ -325,7 +326,7 @@ void UUserDefinedImageCaptureProtocol::OnLoadConfigImpl(FMovieSceneCaptureSettin
 		OutputFormat.Append(TEXT(".{frame}"));
 
 		InSettings.OutputFormat = OutputFormat;
-		UE_LOG(LogTemp, Warning, TEXT("Automatically appended .{frame} to the format string as specified format string did not provide a way to differentiate between frames via {frame} or {shot_frame}!"));
+		UE_LOG(LogMovieSceneCapture, Display, TEXT("Automatically appended .{frame} to the format string as specified format string did not provide a way to differentiate between frames via {frame} or {shot_frame}!"));
 	}
 }
 

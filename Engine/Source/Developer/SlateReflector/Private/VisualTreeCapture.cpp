@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "VisualTreeCapture.h"
 #include "Debugging/SlateDebugging.h"
@@ -6,6 +6,7 @@
 #include "Rendering/DrawElements.h"
 #include "Widgets/SWidget.h"
 #include "Framework/Application/SlateApplication.h"
+#include "Types/InvisibleToWidgetReflectorMetaData.h"
 
 static float VectorSign(const FVector2D& Vec, const FVector2D& A, const FVector2D& B)
 {
@@ -32,7 +33,7 @@ FVisualEntry::FVisualEntry(int32 InElementIndex)
 
 void FVisualEntry::Resolve(const FSlateWindowElementList& ElementList)
 {
-	const FSlateDrawElement& Element = ElementList.GetDrawElements()[ElementIndex];
+	const FSlateDrawElement& Element = ElementList.GetUncachedDrawElements()[ElementIndex];
 	const FSlateRenderTransform& Transform = Element.GetRenderTransform();
 	const FVector2D& LocalSize = Element.GetLocalSize();
 
@@ -42,7 +43,7 @@ void FVisualEntry::Resolve(const FSlateWindowElementList& ElementList)
 	BottomRight = Transform.TransformPoint(LocalSize);
 
 	LayerId = Element.GetLayer();
-	ClippingIndex = Element.GetClippingIndex();
+	ClippingIndex = Element.GetPrecachedClippingIndex();
 }
 
 bool FVisualEntry::IsPointInside(const FVector2D& Point) const
@@ -185,6 +186,12 @@ void FVisualTreeCapture::ElementAdded(const FSlateWindowElementList& ElementList
 	{
 		if (Tree->WidgetStack.Num() > 0)
 		{
+			// Ignore any element added from a widget that's invisible to the widget reflector.
+			if (Tree->WidgetStack.Top().Pin()->GetMetaData<FInvisibleToWidgetReflectorMetaData>())
+			{
+				return;
+			}
+
 			FVisualEntry Entry(InElementIndex);
 			Entry.Widget = Tree->WidgetStack.Top();
 			Tree->Entries.Add(Entry);

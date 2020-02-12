@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 namespace UnrealBuildTool.Rules
 {
@@ -14,9 +14,11 @@ namespace UnrealBuildTool.Rules
 					"Engine",
 					"InputCore",
 					"UnrealEd",
-					"EditableMesh",
+                    "SceneOutliner",
+                    "EditableMesh",
 					"MeshEditor",
                     "MeshDescription",
+					"StaticMeshDescription",
 					"SlateCore",
 					"ViewportInteraction",
                     "BlastAuthoring",

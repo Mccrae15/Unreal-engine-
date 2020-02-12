@@ -10,75 +10,64 @@ using System.Diagnostics;
 
 namespace UnrealBuildTool.Rules
 {
-    public class WindowsMixedRealityHMD : ModuleRules
-    {
-        private string ModulePath
+	public class WindowsMixedRealityHMD : ModuleRules
+	{
+		private string ModulePath
 		{
 			get { return ModuleDirectory; }
 		}
 	 
-		private string ThirdPartyPath
-		{
-			get { return Path.GetFullPath( Path.Combine( ModulePath, "../ThirdParty" ) ); }
-		}
-
 		private void LoadMixedReality(ReadOnlyTargetRules Target)
         {
-            int releaseId = 0;
-            string releaseIdString = Registry.GetValue(@"HKEY_LOCAL_MACHINE\SOFTWARE\Microsoft\Windows NT\CurrentVersion", "ReleaseId", "") as String;
-            if (!String.IsNullOrEmpty(releaseIdString))
+            // Set a macro allowing us to switch between debuggame/development configuration
+            if (Target.Configuration == UnrealTargetConfiguration.Debug)
             {
-                releaseId = Convert.ToInt32(releaseIdString);
+                PrivateDefinitions.Add("WINDOWS_MIXED_REALITY_DEBUG_DLL=1");
             }
-            bool bAllowWindowsMixedReality = (releaseId >= 1803);
-
-            if (bAllowWindowsMixedReality)
+            else
             {
-                string LibrariesPath = Path.Combine(ThirdPartyPath, "Lib", "x64");
-
-                if (Target.Platform == UnrealTargetPlatform.Win32)
-                {
-                    LibrariesPath = Path.Combine(ThirdPartyPath, "Lib", "x86");
-                    RuntimeDependencies.Add("$(EngineDir)/Binaries/Win32/HolographicStreamerDesktop.dll");
-                    RuntimeDependencies.Add("$(EngineDir)/Binaries/Win32/Microsoft.Perception.Simulation.dll");
-                    RuntimeDependencies.Add("$(EngineDir)/Binaries/Win32/PerceptionSimulationManager.dll");
-                }
-                else if (Target.Platform == UnrealTargetPlatform.Win64)
-                {
-                    RuntimeDependencies.Add("$(EngineDir)/Binaries/Win64/HolographicStreamerDesktop.dll");
-                    RuntimeDependencies.Add("$(EngineDir)/Binaries/Win64/Microsoft.Perception.Simulation.dll");
-                    RuntimeDependencies.Add("$(EngineDir)/Binaries/Win64/PerceptionSimulationManager.dll");
-                }
-
-                PublicLibraryPaths.Add(LibrariesPath);
-                PublicAdditionalLibraries.Add(Path.Combine(LibrariesPath, "MixedRealityInterop.lib"));
-                PublicAdditionalLibraries.Add(Path.Combine(LibrariesPath, "HolographicStreamerDesktop.lib"));
-                PublicAdditionalLibraries.Add(Path.Combine(LibrariesPath, "Microsoft.Perception.Simulation.lib"));
-                PublicAdditionalLibraries.Add(Path.Combine(LibrariesPath, "PerceptionSimulationManager.lib"));
-
-                // Win10 support
-                PublicAdditionalLibraries.Add(Path.Combine(LibrariesPath, "onecore.lib"));
-                // Explicitly load lib path since name conflicts with an existing lib in the DX11 dependency.
-                PublicAdditionalLibraries.Add(Path.Combine(LibrariesPath, "d3d11.lib"));
-
-                PublicIncludePaths.Add(Path.Combine(ThirdPartyPath, "Include"));
+                PrivateDefinitions.Add("WINDOWS_MIXED_REALITY_DEBUG_DLL=0");
             }
 
-            PublicDefinitions.Add("WITH_WINDOWS_MIXED_REALITY=" + (bAllowWindowsMixedReality ? "1" : "0"));
+			if(Target.Platform != UnrealTargetPlatform.Win32)
+            {
+				// HoloLens 2 Remoting
+                RuntimeDependencies.Add("$(EngineDir)/Binaries/ThirdParty/Windows/x64/Microsoft.Holographic.AppRemoting.dll");
+                RuntimeDependencies.Add("$(EngineDir)/Binaries/ThirdParty/Windows/x64/PerceptionDevice.dll");
+				
+				// HoloLens 1 Remoting
+                RuntimeDependencies.Add("$(EngineDir)/Binaries/Win64/HolographicStreamerDesktop.dll");
+                RuntimeDependencies.Add("$(EngineDir)/Binaries/Win64/Microsoft.Perception.Simulation.dll");
+                RuntimeDependencies.Add("$(EngineDir)/Binaries/Win64/PerceptionSimulationManager.dll");
+            }
+
+            PublicDefinitions.Add("WITH_WINDOWS_MIXED_REALITY=1");
         }
-
+        
         public WindowsMixedRealityHMD(ReadOnlyTargetRules Target) : base(Target)
-        {
-            bEnableExceptions = true;
+		{
+			bEnableExceptions = true;
 
-            if (Target.Platform == UnrealTargetPlatform.Win32 ||
-                Target.Platform == UnrealTargetPlatform.Win64)
-            {
+			if (Target.Platform == UnrealTargetPlatform.Win32 ||
+				Target.Platform == UnrealTargetPlatform.Win64 ||
+				Target.Platform == UnrealTargetPlatform.HoloLens)
+			{
+				PublicDependencyModuleNames.AddRange(
+					new string[]
+					{
+						"HeadMountedDisplay",
+						"ProceduralMeshComponent",
+                        "MixedRealityInteropLibrary",
+                        "InputDevice",
+					}
+				);
+			
 				PrivateDependencyModuleNames.AddRange(
 					new string[]
 					{
 						"Core",
 						"CoreUObject",
+                        "ApplicationCore",
 						"Engine",
 						"InputCore",
 						"RHI",
@@ -88,35 +77,76 @@ namespace UnrealBuildTool.Rules
 						"D3D11RHI",
 						"Slate",
 						"SlateCore",
-						"UtilityShaders",
 						"Projects",
-                    }
+                        "WindowsMixedRealityHandTracking",
+						"AugmentedReality",
+					}
 					);
+
+				if (Target.Platform == UnrealTargetPlatform.Win64 ||
+					Target.Platform == UnrealTargetPlatform.HoloLens)
+				{
+					PrivateDependencyModuleNames.Add("HoloLensAR");
+				}
 
 				if (Target.bBuildEditor == true)
 				{
 					PrivateDependencyModuleNames.Add("UnrealEd");
 				}
 
-				AddEngineThirdPartyPrivateStaticDependencies(Target, "NVAftermath");
-				AddEngineThirdPartyPrivateStaticDependencies(Target, "IntelMetricsDiscovery");
+				if (Target.Platform != UnrealTargetPlatform.HoloLens)
+				{
+					AddEngineThirdPartyPrivateStaticDependencies(Target, "NVAftermath");
+					AddEngineThirdPartyPrivateStaticDependencies(Target, "IntelMetricsDiscovery");
+				}
+
+                AddEngineThirdPartyPrivateStaticDependencies(Target, "WindowsMixedRealityInterop");
 
                 LoadMixedReality(Target);
 
                 PrivateIncludePaths.AddRange(
-                    new string[]
-                    {
-                    "WindowsMixedRealityHMD/Private",
-                    "../../../../Source/Runtime/Windows/D3D11RHI/Private",
-                    "../../../../Source/Runtime/Windows/D3D11RHI/Private/Windows",
-                    "../../../../Source/Runtime/Renderer/Private",
-                    });
+					new string[]
+					{
+					"WindowsMixedRealityHMD/Private",
+					"../../../../Source/Runtime/Windows/D3D11RHI/Private",
+					"../../../../Source/Runtime/Renderer/Private",
+					});
 
-                bFasterWithoutUnity = true;
+				if (Target.Platform == UnrealTargetPlatform.Win32 ||
+					Target.Platform == UnrealTargetPlatform.Win64)
+				{
+					PrivateIncludePaths.Add("../../../../Source/Runtime/Windows/D3D11RHI/Private/Windows");
+				}
+				else if (Target.Platform == UnrealTargetPlatform.HoloLens)
+				{
+					PrivateIncludePaths.Add("../../../../Source/Runtime/Windows/D3D11RHI/Private/HoloLens");
+                    PrivateDependencyModuleNames.Add("HoloLensAR");
+				}
 
-                PCHUsage = PCHUsageMode.NoSharedPCHs;
-                PrivatePCHHeaderFile = "Private/WindowsMixedRealityPrecompiled.h";
+				PCHUsage = PCHUsageMode.NoSharedPCHs;
+				PrivatePCHHeaderFile = "Private/WindowsMixedRealityPrecompiled.h";
+			}
+
+            if (Target.Platform == UnrealTargetPlatform.Win64 || (Target.Platform == UnrealTargetPlatform.HoloLens && Target.WindowsPlatform.Architecture == WindowsArchitecture.x64))
+            {
+                RuntimeDependencies.Add(Path.Combine("$(EngineDir)/Binaries/ThirdParty/Windows/x64", "QRCodesTrackerPlugin.dll"));
+
             }
-        }
-    }
+            else if (Target.Platform == UnrealTargetPlatform.HoloLens)
+            {
+				PublicDelayLoadDLLs.Add("QRCodesTrackerPlugin.dll");
+                RuntimeDependencies.Add(Path.Combine("$(EngineDir)/Binaries/ThirdParty/HoloLens/ARM64", "QRCodesTrackerPlugin.dll"));
+
+				string SceneUnderstandingPath = Path.Combine(Target.UEThirdPartyBinariesDirectory, "HoloLens", Target.WindowsPlatform.GetArchitectureSubpath(), "Microsoft.MixedReality.SceneUnderstanding.dll");
+				if (File.Exists(SceneUnderstandingPath))
+				{
+					PublicDefinitions.Add("WITH_SCENE_UNDERSTANDING=1");
+				}
+				else
+				{
+					PublicDefinitions.Add("WITH_SCENE_UNDERSTANDING=0");
+				}
+            }
+		}
+	}
 }

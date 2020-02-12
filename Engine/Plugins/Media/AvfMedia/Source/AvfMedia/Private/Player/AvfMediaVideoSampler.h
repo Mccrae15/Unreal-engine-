@@ -1,9 +1,11 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
 #include "HAL/CriticalSection.h"
 #include "Templates/SharedPointer.h"
+
+#include "IMediaTextureSample.h"
 
 #import <AVFoundation/AVFoundation.h>
 
@@ -33,11 +35,18 @@ public:
 	 *
 	 * @param Output The output object.
 	 */
-	void SetOutput(AVPlayerItemVideoOutput* Output, float InFrameRate);
+	void SetOutput(AVPlayerItemVideoOutput* Output, float InFrameRate, bool bFullRange = false);
 
 	/** Tick the video sampler (on the render thread). */
 	void Tick();
 
+	void ProcessFrame(CVPixelBufferRef Frame, FTimespan SampleTime, FTimespan SampleDuration);
+
+	void Reset();
+	
+protected:
+
+	virtual void ProcessOutputSample(const TSharedRef<IMediaTextureSample, ESPMode::ThreadSafe>& Sample);
 private:
 
 	/** Mutex to ensure thread-safe access */
@@ -52,9 +61,11 @@ private:
 	/** Video sample object pool. */
 	FAvfMediaTextureSamplePool* VideoSamplePool;
 
+	/** Current Video cached decode information */
 	float FrameDuration;
+	FMatrix const* ColorTransform;
 
-#if WITH_ENGINE && COREVIDEO_SUPPORTS_METAL
+#if WITH_ENGINE
 
 	/** The Metal texture cache for unbuffered texture uploads. */
 	CVMetalTextureCacheRef MetalTextureCache;

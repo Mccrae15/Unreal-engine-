@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "EdGraphSchema_K2_Actions.h"
 #include "Components/ActorComponent.h"
@@ -57,16 +57,16 @@ int32 FEdGraphSchemaAction_BlueprintVariableBase::GetReorderIndexInContainer() c
 
 bool FEdGraphSchemaAction_BlueprintVariableBase::ReorderToBeforeAction(TSharedRef<FEdGraphSchemaAction> OtherAction)
 {
-	if ((OtherAction->GetTypeId() == StaticGetTypeId()) && (OtherAction->GetPersistentItemDefiningObject() == GetPersistentItemDefiningObject()))
+	if (OtherAction->GetPersistentItemDefiningObject() == GetPersistentItemDefiningObject())
 	{
 		FEdGraphSchemaAction_BlueprintVariableBase* VarAction = (FEdGraphSchemaAction_BlueprintVariableBase*)&OtherAction.Get();
 
 		// Only let you drag and drop if variables are from same BP class, and not onto itself
 		UBlueprint* BP = GetSourceBlueprint();
 		FName TargetVarName = VarAction->GetVariableName();
-		if ((BP != nullptr) && (VarName != TargetVarName) && (VariableSource == VarAction->GetVariableClass()))
+		if ((BP != nullptr) && (VarName != TargetVarName) && (VariableSource == VarAction->GetVariableScope()))
 		{
-			if (FBlueprintEditorUtils::MoveVariableBeforeVariable(BP, VarName, TargetVarName, true))
+			if (FBlueprintEditorUtils::MoveVariableBeforeVariable(BP, VarAction->GetVariableScope(), VarName, TargetVarName, true))
 			{
 				// Change category of var to match the one we dragged on to as well
 				FText TargetVarCategory = FBlueprintEditorUtils::GetBlueprintVariableCategory(BP, TargetVarName, GetVariableScope());
@@ -87,7 +87,7 @@ bool FEdGraphSchemaAction_BlueprintVariableBase::ReorderToBeforeAction(TSharedRe
 FEdGraphSchemaActionDefiningObject FEdGraphSchemaAction_BlueprintVariableBase::GetPersistentItemDefiningObject() const
 {
 	UObject* DefiningObject = GetSourceBlueprint();
-	if (UProperty* Prop = GetProperty())
+	if (FProperty* Prop = GetProperty())
 	{
 		DefiningObject = Prop->GetOwnerStruct();
 	}
@@ -108,13 +108,28 @@ UBlueprint* FEdGraphSchemaAction_BlueprintVariableBase::GetSourceBlueprint() con
 }
 
 /////////////////////////////////////////////////////
+// FEdGraphSchemaAction_K2LocalVar
+
+int32 FEdGraphSchemaAction_K2LocalVar::GetReorderIndexInContainer() const
+{
+	return FBlueprintEditorUtils::FindLocalVariableIndex(GetSourceBlueprint(), GetVariableScope(), GetVariableName());
+}
+
+/////////////////////////////////////////////////////
 // FEdGraphSchemaAction_K2Graph
 
 void FEdGraphSchemaAction_K2Graph::MovePersistentItemToCategory(const FText& NewCategoryName)
 {
 	if ((GraphType == EEdGraphSchemaAction_K2Graph::Function) || (GraphType == EEdGraphSchemaAction_K2Graph::Macro))
 	{
-		FBlueprintEditorUtils::SetBlueprintFunctionOrMacroCategory(EdGraph, NewCategoryName);
+		if(EdGraph->GetSchema()->GetClass()->GetFName() == TEXT("AnimationGraphSchema"))
+		{
+			FBlueprintEditorUtils::SetAnimationGraphLayerGroup(EdGraph, NewCategoryName);
+		}
+		else
+		{
+			FBlueprintEditorUtils::SetBlueprintFunctionOrMacroCategory(EdGraph, NewCategoryName);
+		}
 	}
 }
 
@@ -125,7 +140,7 @@ int32 FEdGraphSchemaAction_K2Graph::GetReorderIndexInContainer() const
 
 bool FEdGraphSchemaAction_K2Graph::ReorderToBeforeAction(TSharedRef<FEdGraphSchemaAction> OtherAction)
 {
-	if ((OtherAction->GetTypeId() == GetTypeId()) && (OtherAction->GetPersistentItemDefiningObject() == GetPersistentItemDefiningObject()))
+	if (OtherAction->GetTypeId() == GetTypeId())
 	{
 		const int32 OldIndex = GetReorderIndexInContainer();
 		const int32 NewIndexToGoBefore = OtherAction->GetReorderIndexInContainer();
@@ -150,8 +165,14 @@ FEdGraphSchemaActionDefiningObject FEdGraphSchemaAction_K2Graph::GetPersistentIt
 	UObject* DefiningObject = GetSourceBlueprint();
 	if (UFunction* Func = GetFunction())
 	{
-		DefiningObject = Func->GetOwnerStruct();
+		// Use the class where the function was initially introduced as the defining object
+		while (Func->GetSuperFunction())
+		{
+			Func = Func->GetSuperFunction();
+		}
+		DefiningObject = Func->GetOuterUClassUnchecked();
 	}
+
 	return FEdGraphSchemaActionDefiningObject(DefiningObject, (void*)GraphType);
 }
 
@@ -369,7 +390,7 @@ UEdGraphNode* FEdGraphSchemaAction_K2AssignDelegate::AssignDelegate(class UK2Nod
 		}
 
 		BindNode = Cast<UK2Node_AddDelegate>(CreateNode(ParentGraph, MakeArrayView(&FromPin, 1), Location, NodeTemplate, bSelectNewNode ? EK2NewNodeFlags::SelectNewNode : EK2NewNodeFlags::None));
-		UMulticastDelegateProperty* DelegateProperty = BindNode ? Cast<UMulticastDelegateProperty>(BindNode->GetProperty()) : nullptr;
+		FMulticastDelegateProperty* DelegateProperty = BindNode ? CastField<FMulticastDelegateProperty>(BindNode->GetProperty()) : nullptr;
 		if(DelegateProperty)
 		{
 			const FString FunctionName = FString::Printf(TEXT("%s_Event"), *DelegateProperty->GetName());
@@ -694,4 +715,5 @@ UEdGraphNode* FEdGraphSchemaAction_K2PasteHere::PerformAction( class UEdGraph* P
 	FKismetEditorUtilities::PasteNodesHere(ParentGraph, Location);
 	return nullptr;
 }
+
 

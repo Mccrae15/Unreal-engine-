@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "PaperFlipbookComponent.h"
 #include "RenderingThread.h"
@@ -93,11 +93,18 @@ FPrimitiveSceneProxy* UPaperFlipbookComponent::CreateSceneProxy()
 
 	CalculateCurrentFrame();
 	UPaperSprite* SpriteToSend = GetSpriteAtCachedIndex();
+	const int32 SplitIndex = SpriteToSend ? SpriteToSend->AlternateMaterialSplitIndex : INDEX_NONE;
 
 	FSpriteDrawCallRecord DrawCall;
 	DrawCall.BuildFromSprite(SpriteToSend);
 	DrawCall.Color = SpriteColor.ToFColor(/*bSRGB=*/ false);
-	NewProxy->SetDrawCall_RenderThread(DrawCall);
+
+	FPaperFlipbookSceneProxy* InSceneProxy = (FPaperFlipbookSceneProxy*)NewProxy;
+	ENQUEUE_RENDER_COMMAND(FCreatePaperFlipbookProxy_SetSprite)(
+		[InSceneProxy, DrawCall, SplitIndex](FRHICommandListImmediate& RHICmdList)
+	{
+		InSceneProxy->SetSprite_RenderThread(DrawCall, SplitIndex);
+	});
 	return NewProxy;
 }
 
@@ -356,13 +363,14 @@ void UPaperFlipbookComponent::SendRenderDynamicData_Concurrent()
 		FSpriteDrawCallRecord DrawCall;
 		DrawCall.BuildFromSprite(SpriteToSend);
 		DrawCall.Color = SpriteColor.ToFColor(/*bSRGB=*/ false);
+		const int32 SplitIndex = SpriteToSend ? SpriteToSend->AlternateMaterialSplitIndex : INDEX_NONE;
 
-		FPaperRenderSceneProxy* InSceneProxy = (FPaperRenderSceneProxy*)SceneProxy;
+		FPaperFlipbookSceneProxy* InSceneProxy = (FPaperFlipbookSceneProxy*)SceneProxy;
 		UBodySetup* InBodySetup = CachedBodySetup;
 		ENQUEUE_RENDER_COMMAND(FSendPaperRenderComponentDynamicData)(
-			[InSceneProxy, DrawCall, InBodySetup](FRHICommandListImmediate& RHICmdList)
+			[InSceneProxy, DrawCall, InBodySetup, SplitIndex](FRHICommandListImmediate& RHICmdList)
 			{
-				InSceneProxy->SetDrawCall_RenderThread(DrawCall);
+				InSceneProxy->SetSprite_RenderThread(DrawCall, SplitIndex);
 				InSceneProxy->SetBodySetup_RenderThread(InBodySetup);
 			});
 	}

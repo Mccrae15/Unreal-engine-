@@ -1,11 +1,11 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
 #include "CoreMinimal.h"
 
 #if USE_ANDROID_JNI
-
+#include "Android/AndroidJavaEnv.h"
 #include <jni.h>
 
 /*
@@ -38,7 +38,7 @@ public:
 		return Object;
 	}
 
-	static jstring GetJString(const FString& String);
+	static FScopedJavaObject<jstring> GetJString(const FString& String);
 
 	void VerifyException();
 

@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 /*=============================================================================
 EditorLevelUtils.cpp: Editor-specific level management routines
@@ -10,7 +10,6 @@ EditorLevelUtils.cpp: Editor-specific level management routines
 #include "UObject/GarbageCollection.h"
 #include "UObject/Class.h"
 #include "UObject/Package.h"
-#include "Serialization/ArchiveTraceRoute.h"
 #include "Engine/EngineTypes.h"
 #include "GameFramework/Actor.h"
 #include "Engine/World.h"
@@ -23,6 +22,7 @@ EditorLevelUtils.cpp: Editor-specific level management routines
 #include "EngineGlobals.h"
 #include "UObject/UObjectHash.h"
 #include "UObject/UObjectIterator.h"
+#include "UObject/ReferenceChainSearch.h"
 #include "GameFramework/WorldSettings.h"
 #include "Engine/LevelStreaming.h"
 #include "Engine/Selection.h"
@@ -35,7 +35,7 @@ EditorLevelUtils.cpp: Editor-specific level management routines
 
 #include "BusyCursor.h"
 #include "LevelUtils.h"
-#include "Layers/ILayers.h"
+#include "Layers/LayersSubsystem.h"
 
 #include "ScopedTransaction.h"
 #include "ActorEditorUtils.h"
@@ -139,18 +139,26 @@ int32 UEditorLevelUtils::MoveActorsToLevel(const TArray<AActor*>& ActorsToMove, 
 				const bool bIsMove = true;
 				GEditor->CopySelectedActorsToClipboard(OwningWorld, bShoudCut, bIsMove, bWarnAboutReferences);
 
-				// Set the new level and force it visible while we do the paste
-				OwningWorld->SetCurrentLevel(DestLevel);
 				const bool bLevelVisible = DestLevel->bIsVisible;
 				if (!bLevelVisible)
 				{
 					UEditorLevelUtils::SetLevelVisibility(DestLevel, true, false);
 				}
 
-				const bool bDuplicate = false;
-				const bool bOffsetLocations = false;
-				const bool bWarnIfHidden = false;
-				GEditor->edactPasteSelected(OwningWorld, bDuplicate, bOffsetLocations, bWarnIfHidden);
+				// Scope this so that Actors that have been pasted will have their final levels set before doing the actor mapping
+				{
+					// Set the new level and force it visible while we do the paste
+					FLevelPartitionOperationScope LevelPartitionScope(DestLevel);
+					OwningWorld->SetCurrentLevel(LevelPartitionScope.GetLevel());
+										
+					const bool bDuplicate = false;
+					const bool bOffsetLocations = false;
+					const bool bWarnIfHidden = false;
+					GEditor->edactPasteSelected(OwningWorld, bDuplicate, bOffsetLocations, bWarnIfHidden);
+
+					// Restore the original current level
+					OwningWorld->SetCurrentLevel(OldCurrentLevel);
+				}
 
 				// Build a remapping of old to new names so we can do a fixup
 				for (FSelectionIterator It(GEditor->GetSelectedActorIterator()); It; ++It)
@@ -221,9 +229,6 @@ int32 UEditorLevelUtils::MoveActorsToLevel(const TArray<AActor*>& ActorsToMove, 
 				{
 					UEditorLevelUtils::SetLevelVisibility(DestLevel, false, false);
 				}
-
-				// Restore the original current level
-				OwningWorld->SetCurrentLevel(OldCurrentLevel);
 			}
 
 			// The moved (pasted) actors will now be selected
@@ -314,7 +319,10 @@ ULevel* UEditorLevelUtils::AddLevelsToWorld(UWorld* InWorld, TArray<FString> Pac
 	FEditorDelegates::RefreshLevelBrowser.Broadcast();
 
 	// Update volume actor visibility for each viewport since we loaded a level which could potentially contain volumes
-	GUnrealEd->UpdateVolumeActorVisibility(nullptr);
+	if (GUnrealEd)
+	{
+		GUnrealEd->UpdateVolumeActorVisibility(nullptr);
+	}
 
 	return NewLevel;
 }
@@ -362,7 +370,10 @@ ULevelStreaming* UEditorLevelUtils::AddLevelToWorld(UWorld* InWorld, const TCHAR
 	FEditorDelegates::RefreshLevelBrowser.Broadcast();
 
 	// Update volume actor visibility for each viewport since we loaded a level which could potentially contain volumes
-	GUnrealEd->UpdateVolumeActorVisibility(nullptr);
+	if (GUnrealEd)
+	{
+		GUnrealEd->UpdateVolumeActorVisibility(nullptr);
+	}
 
 	return NewStreamingLevel;
 }
@@ -376,7 +387,9 @@ ULevelStreaming* UEditorLevelUtils::AddLevelToWorld_Internal(UWorld* InWorld, co
 	if (bIsPersistentLevel || FLevelUtils::FindStreamingLevel(InWorld, LevelPackageName))
 	{
 		// Do nothing if the level already exists in the world.
-		FMessageDialog::Open(EAppMsgType::Ok, NSLOCTEXT("UnrealEd", "LevelAlreadyExistsInWorld", "A level with that name already exists in the world."));
+		const FString LevelName(LevelPackageName);
+		const FText MessageText = FText::Format(NSLOCTEXT("UnrealEd", "LevelAlreadyExistsInWorld", "A level with that name ({0}) already exists in the world."), FText::FromString(LevelName));
+		FMessageDialog::Open(EAppMsgType::Ok, MessageText);
 	}
 	else
 	{
@@ -670,10 +683,8 @@ ULevelStreaming* UEditorLevelUtils::CreateNewStreamingLevelForWorld(UWorld& InWo
 
 bool UEditorLevelUtils::RemoveLevelFromWorld(ULevel* InLevel)
 {
-	if (GEditor->Layers.IsValid())
-	{
-		GEditor->Layers->RemoveLevelLayerInformation(InLevel);
-	}
+	ULayersSubsystem* Layers = GEditor->GetEditorSubsystem<ULayersSubsystem>();
+	Layers->RemoveLevelLayerInformation(InLevel);
 
 	GEditor->CloseEditedWorldAssets(CastChecked<UWorld>(InLevel->GetOuter()));
 
@@ -713,10 +724,8 @@ bool UEditorLevelUtils::RemoveLevelFromWorld(ULevel* InLevel)
 			UWorld* TheWorld = UWorld::FindWorldInPackage(LevelPackage->GetOutermost());
 			if (TheWorld != nullptr)
 			{
-				StaticExec(NULL, *FString::Printf(TEXT("OBJ REFS CLASS=%s NAME=%s shortest"), *TheWorld->GetClass()->GetName(), *TheWorld->GetPathName()));
-				TMap<UObject*, UProperty*>	Route = FArchiveTraceRoute::FindShortestRootPath(TheWorld, true, GARBAGE_COLLECTION_KEEPFLAGS);
-				FString						ErrorString = FArchiveTraceRoute::PrintRootPath(Route, TheWorld);
-				UE_LOG(LogStreaming, Fatal, TEXT("%s didn't get garbage collected!") LINE_TERMINATOR TEXT("%s"), *TheWorld->GetFullName(), *ErrorString);
+				FReferenceChainSearch RefChainSearch(TheWorld, EReferenceChainSearchMode::Shortest | EReferenceChainSearchMode::PrintResults);
+				UE_LOG(LogStreaming, Fatal, TEXT("Removed world %s not cleaned up by garbage collection! Referenced by:") LINE_TERMINATOR TEXT("%s"), *TheWorld->GetPathName(), *RefChainSearch.GetRootPath());
 			}
 		}
 	}
@@ -809,9 +818,18 @@ bool UEditorLevelUtils::EditorDestroyLevel(ULevel* InLevel)
 {
 	UWorld* World = InLevel->OwningWorld;
 
-	InLevel->GetOuter()->MarkPendingKill();
+	UObject* Outer = InLevel->GetOuter();
+
+	// Call cleanup on the outer world of the level so external hooks can be properly released, so that unloading the package isn't prevented.
+	UWorld* OuterWorld = Cast<UWorld>(Outer);
+	if (OuterWorld && OuterWorld != World)
+	{
+		OuterWorld->CleanupWorld();
+	}
+
+	Outer->MarkPendingKill();
 	InLevel->MarkPendingKill();
-	InLevel->GetOuter()->ClearFlags(RF_Public | RF_Standalone);
+	Outer->ClearFlags(RF_Public | RF_Standalone);
 
 	UPackage* Package = InLevel->GetOutermost();
 	// We want to unconditionally destroy the level, so clear the dirty flag here so it can be unloaded successfully
@@ -903,7 +921,7 @@ void UEditorLevelUtils::SetLevelVisibilityTemporarily(ULevel* Level, bool bShoul
 	}
 }
 
-void UEditorLevelUtils::SetLevelVisibility(ULevel* Level, bool bShouldBeVisible, bool bForceLayersVisible, ELevelVisibilityDirtyMode ModifyMode)
+void SetLevelVisibilityNoGlobalUpdateInternal(ULevel* Level, const bool bShouldBeVisible, const bool bForceLayersVisible, const ELevelVisibilityDirtyMode ModifyMode)
 {
 	// Nothing to do
 	if (Level == NULL)
@@ -916,7 +934,7 @@ void UEditorLevelUtils::SetLevelVisibility(ULevel* Level, bool bShouldBeVisible,
 	// Also, intentionally do not force layers visible for the p-level
 	if (Level->IsPersistentLevel())
 	{
-		//create a transaction so we can undo the visibilty toggle
+		// Create a transaction so we can undo the visibility toggle
 		const FScopedTransaction Transaction(LOCTEXT("ToggleLevelVisibility", "Toggle Level Visibility"));
 		if (Level->bIsVisible != bShouldBeVisible && ModifyMode == ELevelVisibilityDirtyMode::ModifyOnChange)
 		{
@@ -973,7 +991,6 @@ void UEditorLevelUtils::SetLevelVisibility(ULevel* Level, bool bShouldBeVisible,
 		}
 
 		Level->GetWorld()->OnLevelsChanged().Broadcast();
-		FEditorSupportDelegates::RedrawAllViewports.Broadcast();
 	}
 	else
 	{
@@ -1002,9 +1019,10 @@ void UEditorLevelUtils::SetLevelVisibility(ULevel* Level, bool bShouldBeVisible,
 			StreamingLevel->SetShouldBeVisibleInEditor(bShouldBeVisible);
 		}
 
-		if (!bShouldBeVisible && GEditor->Layers.IsValid())
+		ULayersSubsystem* Layers = GEditor->GetEditorSubsystem<ULayersSubsystem>();
+		if (!bShouldBeVisible)
 		{
-			GEditor->Layers->RemoveLevelLayerInformation(Level);
+			Layers->RemoveLevelLayerInformation(Level);
 		}
 
 		// UpdateLevelStreaming sets Level->bIsVisible directly, so we need to make sure it gets saved to the transaction buffer.
@@ -1039,9 +1057,9 @@ void UEditorLevelUtils::SetLevelVisibility(ULevel* Level, bool bShouldBeVisible,
 			check(Level->bIsVisible == bShouldBeVisible);
 		}
 
-		if (bShouldBeVisible && GEditor->Layers.IsValid())
+		if (bShouldBeVisible)
 		{
-			GEditor->Layers->AddLevelLayerInformation(Level);
+			Layers->AddLevelLayerInformation(Level);
 		}
 
 		// Force the level's layers to be visible, if desired
@@ -1056,8 +1074,7 @@ void UEditorLevelUtils::SetLevelVisibility(ULevel* Level, bool bShouldBeVisible,
 			{
 				bool bModified = false;
 				if (bShouldBeVisible && bForceLayersVisible &&
-					GEditor->Layers.IsValid() &&
-					GEditor->Layers->IsActorValidForLayer(Actor))
+					Layers->IsActorValidForLayer(Actor))
 				{
 					// Make the actor layer visible, if it's not already.
 					if (Actor->bHiddenEdLayer)
@@ -1071,7 +1088,7 @@ void UEditorLevelUtils::SetLevelVisibility(ULevel* Level, bool bShouldBeVisible,
 					}
 
 					const bool bIsVisible = true;
-					GEditor->Layers->SetLayersVisibility(Actor->Layers, bIsVisible);
+					Layers->SetLayersVisibility(Actor->Layers, bIsVisible);
 				}
 
 				// Set the visibility of each actor in the streaming level
@@ -1096,17 +1113,14 @@ void UEditorLevelUtils::SetLevelVisibility(ULevel* Level, bool bShouldBeVisible,
 		}
 	}
 
-	FEditorDelegates::RefreshLayerBrowser.Broadcast();
+	Level->bIsVisible = bShouldBeVisible;
 
-	// Notify the Scene Outliner, as new Actors may be present in the world.
-	GEngine->BroadcastLevelActorListChanged();
-
-	// If the level is being hidden, deselect actors and surfaces that belong to this level.
+	// If the level is being hidden, deselect actors and surfaces that belong to this level. (Part 1/2)
 	if (!bShouldBeVisible && ModifyMode == ELevelVisibilityDirtyMode::ModifyOnChange)
 	{
 		USelection* SelectedActors = GEditor->GetSelectedActors();
 		SelectedActors->Modify();
-		TArray<AActor*>& Actors = Level->Actors;
+		const TArray<AActor*>& Actors = Level->Actors;
 		for (int32 ActorIndex = 0; ActorIndex < Actors.Num(); ++ActorIndex)
 		{
 			AActor* Actor = Actors[ActorIndex];
@@ -1116,17 +1130,80 @@ void UEditorLevelUtils::SetLevelVisibility(ULevel* Level, bool bShouldBeVisible,
 			}
 		}
 
-		DeselectAllSurfacesInLevel(Level);
-
-		// Tell the editor selection status was changed.
-		GEditor->NoteSelectionChange();
+		UEditorLevelUtils::DeselectAllSurfacesInLevel(Level);
 	}
-
-	Level->bIsVisible = bShouldBeVisible;
 
 	if (Level->bIsLightingScenario)
 	{
 		Level->OwningWorld->PropagateLightingScenarioChange();
+	}
+}
+
+void UEditorLevelUtils::SetLevelVisibility(ULevel* Level, const bool bShouldBeVisible, const bool bForceLayersVisible, const ELevelVisibilityDirtyMode ModifyMode)
+{
+	TArray<ULevel*> Levels({ Level });
+	TArray<bool> bTheyShouldBeVisible({ bShouldBeVisible });
+	SetLevelsVisibility(Levels, bTheyShouldBeVisible, bForceLayersVisible, ModifyMode);
+}
+
+void UEditorLevelUtils::SetLevelsVisibility(const TArray<ULevel*>& Levels, const TArray<bool>& bTheyShouldBeVisible, const bool bForceLayersVisible, const ELevelVisibilityDirtyMode ModifyMode)
+{
+	// Nothing to do
+	if (Levels.Num() == 0 || Levels.Num() != bTheyShouldBeVisible.Num())
+	{
+		return;
+	}
+
+	// Perform SetLevelVisibilityNoGlobalUpdateInternal for each Level
+	for (int32 LevelIndex = 0; LevelIndex < Levels.Num(); ++LevelIndex)
+	{
+		ULevel* Level = Levels[LevelIndex];
+		if (Level)
+		{
+			SetLevelVisibilityNoGlobalUpdateInternal(Level, bTheyShouldBeVisible[LevelIndex], bForceLayersVisible, ModifyMode);
+		}
+	}
+
+	// If at least 1 persistent level, then RedrawAllViewports.Broadcast
+	for (int32 LevelIndex = 0; LevelIndex < Levels.Num(); ++LevelIndex)
+	{
+		ULevel* Level = Levels[LevelIndex];
+		if (Level && Level->IsPersistentLevel())
+		{
+			FEditorSupportDelegates::RedrawAllViewports.Broadcast();
+			break;
+		}
+	}
+
+	// If at least 1 level becomes visible, force layers to update their actor status
+	// Otherwise, changes made on the layers for actors belonging to a non-visible level would not work
+	{
+		for (int32 LevelIndex = 0; LevelIndex < bTheyShouldBeVisible.Num(); ++LevelIndex)
+		{
+			if (bTheyShouldBeVisible[LevelIndex])
+			{
+				// Equivalent to GEditor->GetEditorSubsystem<ULayersSubsystem>()->UpdateAllActorsVisibilityDefault();
+				FEditorDelegates::RefreshLayerBrowser.Broadcast();
+				break;
+			}
+		}
+	}
+
+	// Notify the Scene Outliner, as new Actors may be present in the world.
+	GEngine->BroadcastLevelActorListChanged();
+
+	// If the level is being hidden, deselect actors and surfaces that belong to this level. (Part 2/2)
+	if (ModifyMode == ELevelVisibilityDirtyMode::ModifyOnChange)
+	{
+		for (int32 LevelIndex = 0; LevelIndex < bTheyShouldBeVisible.Num(); ++LevelIndex)
+		{
+			if (!bTheyShouldBeVisible[LevelIndex])
+			{
+				// Tell the editor selection status was changed.
+				GEditor->NoteSelectionChange();
+				break;
+			}
+		}
 	}
 }
 

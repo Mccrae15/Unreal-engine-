@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -15,6 +15,12 @@ class UHorizontalBoxSlot;
 class UOverlaySlot;
 class UUniformGridSlot;
 class UVerticalBoxSlot;
+class UScrollBoxSlot;
+class USafeZoneSlot;
+class UScaleBoxSlot;
+class USizeBoxSlot;
+class UWrapBoxSlot;
+class UWidgetSwitcherSlot;
 class UWidget;
 
 UCLASS()
@@ -30,10 +36,11 @@ public:
 	 * @param PlayerController The player controller to project the position in the world to their screen.
 	 * @param WorldLocation The world location to project from.
 	 * @param ScreenPosition The position in the viewport with quality scale removed and DPI scale remove.
+	 * @param bPlayerViewportRelative Should this be relative to the player viewport subregion (useful when using player attached widgets in split screen or when aspect-ratio constrained)
 	 * @return true if the position projects onto the screen.
 	 */
 	UFUNCTION(BlueprintPure, BlueprintCosmetic, Category="Viewport")
-	static bool ProjectWorldLocationToWidgetPosition(APlayerController* PlayerController, FVector WorldLocation, FVector2D& ScreenPosition);
+	static bool ProjectWorldLocationToWidgetPosition(APlayerController* PlayerController, FVector WorldLocation, FVector2D& ScreenPosition, bool bPlayerViewportRelative);
 
 	/**
 	 * Convert a World Space 3D position into a 2D Widget Screen Space position, with distance from the camera the Z component.  This
@@ -41,7 +48,7 @@ public:
 	 *
 	 * @return true if the world coordinate was successfully projected to the screen.
 	 */
-	static bool ProjectWorldLocationToWidgetPositionWithDistance(APlayerController* PlayerController, FVector WorldLocation, FVector& ScreenPosition);
+	static bool ProjectWorldLocationToWidgetPositionWithDistance(APlayerController* PlayerController, FVector WorldLocation, FVector& ScreenPosition, bool bPlayerViewportRelative);
 
 	/**
 	 * Gets the current DPI Scale being applied to the viewport and all the Widgets.
@@ -146,6 +153,49 @@ public:
 	 */
 	UFUNCTION(BlueprintPure, Category = "Slot")
 	static UVerticalBoxSlot* SlotAsVerticalBoxSlot(UWidget* Widget);
+
+
+	/**
+	* Gets the slot object on the child widget as a Scroll Box Slot, allowing you to manipulate its information.
+	* @param Widget The child widget of a Scroll Box.
+	*/
+	UFUNCTION(BlueprintPure, Category = "Slot")
+	static UScrollBoxSlot* SlotAsScrollBoxSlot(UWidget* Widget);
+
+	/**
+	 * Gets the slot object on the child widget as a Safe Box Slot, allowing you to manipulate its information.
+	 * @param Widget The child widget of a Safe Box.
+	 */
+	UFUNCTION(BlueprintPure, Category = "Slot")
+	static USafeZoneSlot* SlotAsSafeBoxSlot(UWidget* Widget);
+
+	/**
+	 * Gets the slot object on the child widget as a Scale Box Slot, allowing you to manipulate its information.
+	 * @param Widget The child widget of a Scale Box.
+	 */
+	UFUNCTION(BlueprintPure, Category = "Slot")
+	static UScaleBoxSlot* SlotAsScaleBoxSlot(UWidget* Widget);
+
+	/**
+	 * Gets the slot object on the child widget as a Size Box Slot, allowing you to manipulate its information.
+	 * @param Widget The child widget of a Size Box.
+	 */
+	UFUNCTION(BlueprintPure, Category = "Slot")
+	static USizeBoxSlot* SlotAsSizeBoxSlot(UWidget* Widget);
+
+	/**
+	 * Gets the slot object on the child widget as a Wrap Box Slot, allowing you to manipulate its information.
+	 * @param Widget The child widget of a Wrap Box.
+	 */
+	UFUNCTION(BlueprintPure, Category = "Slot")
+	static UWrapBoxSlot* SlotAsWrapBoxSlot(UWidget* Widget);
+
+	/**
+	 * Gets the slot object on the child widget as a Widget Switcher Slot, allowing you to manipulate its information.
+	 * @param Widget The child widget of a Widget Switcher Slot.
+	 */
+	UFUNCTION(BlueprintPure, Category = "Slot")
+	static UWidgetSwitcherSlot* SlotAsWidgetSwitcherSlot(UWidget* Widget);
 
 	/**
 	 * Removes all widgets from the viewport.

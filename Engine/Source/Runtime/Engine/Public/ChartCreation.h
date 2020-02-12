@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 /** 
  * ChartCreation
@@ -184,6 +184,11 @@ public:
 	int32 MaxDrawCalls;
 	int32 MinDrawCalls;
 	int32 TotalDrawCalls;
+
+	/** Total number of player ticks (note: it is up to the game to populate this field) */
+	int32 MaxPlayerTicks;
+	int32 MinPlayerTicks;
+	int32 TotalPlayerTicks;
 
 	/** Total number of primitives drawn */
 	int32 MaxDrawnPrimitives;

@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "Camera/CameraShake.h"
 #include "Camera/PlayerCameraManager.h"
@@ -412,7 +412,7 @@ void UCameraShake::SetCurrentTimeAndApplyShake(float NewTime, FMinimalViewInfo& 
 
 	if (OscillationDuration > 0.f)
 	{
-		if ((OscillationBlendOutTime > 0.f) && (NewTime > OscillationBlendOutTime))
+		if ((OscillationBlendOutTime > 0.f) && (NewTime > (OscillationDuration - OscillationBlendOutTime)))
 		{
 			bBlendingOut = true;
 			CurrentBlendOutTime = OscillationBlendOutTime - (OscillationDuration - NewTime);

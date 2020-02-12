@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 //Google Play Services
 
@@ -47,10 +47,12 @@ IOnlineIdentityPtr FOnlineSubsystemGooglePlay::GetIdentityInterface() const
 	return IdentityInterface;
 }
 
+PRAGMA_DISABLE_DEPRECATION_WARNINGS
 IOnlineStorePtr FOnlineSubsystemGooglePlay::GetStoreInterface() const
 {
 	return StoreInterface;
 }
+PRAGMA_ENABLE_DEPRECATION_WARNINGS
 
 IOnlineStoreV2Ptr FOnlineSubsystemGooglePlay::GetStoreV2Interface() const
 {
@@ -403,9 +405,7 @@ JNI_METHOD void Java_com_epicgames_ue4_GameActivity_nativeGoogleClientConnectCom
 	FString AccessToken;
 	if (bSuccess)
 	{
-		const char* charsToken = jenv->GetStringUTFChars(accessToken, 0);
-		AccessToken = FString(UTF8_TO_TCHAR(charsToken));
-		jenv->ReleaseStringUTFChars(accessToken, charsToken);
+		AccessToken = FJavaHelper::FStringFromParam(jenv, accessToken);
 	}
 
 	UE_LOG_ONLINE(Log, TEXT("nativeGoogleClientConnectCompleted Success: %d Token: %s"), bSuccess, *AccessToken);

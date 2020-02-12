@@ -1,6 +1,8 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "Evaluation/MovieScenePreAnimatedState.h"
+#include "GameFramework/Actor.h"
+#include "Components/ActorComponent.h"
 
 DECLARE_CYCLE_STAT(TEXT("Save Pre Animated State"), MovieSceneEval_SavePreAnimatedState, STATGROUP_MovieSceneEval);
 
@@ -32,6 +34,21 @@ namespace MovieSceneImpl
 	{
 		if (Object)
 		{
+			if (AActor* Actor = Cast<AActor>(Object))
+			{
+				if (Actor->IsActorBeingDestroyed())
+				{
+					return;
+				}
+			}
+			else if (UActorComponent* Component = Cast<UActorComponent>(Object))
+			{
+				if (Component->IsBeingDestroyed())
+				{
+					return;
+				}
+			}
+
 			if (Token.OptionalEntityToken.IsValid())
 			{
 				Token.OptionalEntityToken->RestoreState(*Object, Player);
@@ -157,6 +174,35 @@ void TMovieSceneSavedTokens<TokenType>::OnPreAnimated(ECapturePreAnimatedState C
 		AnimatedEntities.Add(EntityAndTypeID);
 	}
 }
+
+template<typename TokenType>
+void TMovieSceneSavedTokens<TokenType>::CopyFrom(TMovieSceneSavedTokens& OtherTokens)
+{
+	for (const FMovieSceneEntityAndAnimTypeID& Entity : OtherTokens.AnimatedEntities)
+	{
+		if (!AnimatedEntities.Contains(Entity))
+		{
+			AnimatedEntities.Add(Entity);
+		}
+	}
+
+	for (int32 OtherIndex = 0; OtherIndex < OtherTokens.AllAnimatedTypeIDs.Num(); ++OtherIndex)
+	{
+		FMovieSceneAnimTypeID OtherTypeID = OtherTokens.AllAnimatedTypeIDs[OtherIndex];
+
+		const int32 ExistingIndex = AllAnimatedTypeIDs.IndexOfByKey(OtherTypeID);
+		if (ExistingIndex != INDEX_NONE)
+		{
+			PreAnimatedTokens[ExistingIndex] = MoveTemp(OtherTokens.PreAnimatedTokens[OtherIndex]);
+		}
+		else
+		{
+			AllAnimatedTypeIDs.Add(OtherTypeID);
+			PreAnimatedTokens.Add(MoveTemp(OtherTokens.PreAnimatedTokens[OtherIndex]));
+		}
+	}
+}
+
 
 template<typename TokenType>
 void TMovieSceneSavedTokens<TokenType>::Restore(IMovieScenePlayer& Player)
@@ -304,6 +350,27 @@ void FMovieScenePreAnimatedState::RestorePreAnimatedState(IMovieScenePlayer& Pla
 	}
 }
 
+void FMovieScenePreAnimatedState::RestorePreAnimatedState(IMovieScenePlayer& Player, UClass* GeneratedClass)
+{
+	for (auto& ObjectTokenPair : ObjectTokens)
+	{
+		UObject* Object = ObjectTokenPair.Key.ResolveObjectPtr();
+		if (Object)
+		{
+			if (Object->IsA(GeneratedClass) || Object->GetOuter()->IsA(GeneratedClass))
+			{
+				ObjectTokenPair.Value.Restore(Player);
+
+				for (auto& Pair : EntityToAnimatedObjects)
+				{
+					Pair.Value.Remove(ObjectTokenPair.Key);
+				}
+			}
+		}
+	}
+}
+
+
 void FMovieScenePreAnimatedState::RestorePreAnimatedState(IMovieScenePlayer& Player, UObject& Object, TFunctionRef<bool(FMovieSceneAnimTypeID)> InFilter)
 {
 	auto* FoundObjectTokens = ObjectTokens.Find(&Object);
@@ -348,6 +415,63 @@ void FMovieScenePreAnimatedState::DiscardEntityTokens()
 	}
 
 	MasterTokens.DiscardEntityTokens();
+}
+
+void FMovieScenePreAnimatedState::DiscardAndRemoveEntityTokensForObject(UObject& Object)
+{
+	FObjectKey ObjectKey(&Object);
+
+	auto* FoundObjectTokens = ObjectTokens.Find(ObjectKey);
+	if (FoundObjectTokens)
+	{
+		FoundObjectTokens->DiscardEntityTokens();
+
+		ObjectTokens.Remove(ObjectKey);
+	}
+
+	for (auto& Pair : EntityToAnimatedObjects)
+	{
+		Pair.Value.Remove(ObjectKey);
+	}
+}
+
+void FMovieScenePreAnimatedState::OnObjectsReplaced(const TMap<UObject*, UObject*>& ReplacementMap)
+{
+	for (auto Iter = ReplacementMap.CreateConstIterator(); Iter; ++Iter)
+	{
+		UObject* OldObject = Iter->Key;
+		UObject* NewObject = Iter->Value;
+		if (!OldObject || !NewObject)
+		{
+			continue;
+		}
+
+		FObjectKey OldKey = FObjectKey(OldObject);
+		if (!ObjectTokens.Contains(OldKey))
+		{
+			continue;
+		}
+
+		FObjectKey NewKey = FObjectKey(NewObject);
+
+		{
+			TMovieSceneSavedTokens<IMovieScenePreAnimatedTokenPtr>& NewTokens = ObjectTokens.FindOrAdd(NewKey, TMovieSceneSavedTokens<IMovieScenePreAnimatedTokenPtr>(NewObject));
+			TMovieSceneSavedTokens<IMovieScenePreAnimatedTokenPtr>& OldTokens = ObjectTokens.FindChecked(OldKey);
+
+			NewTokens.CopyFrom(OldTokens);
+			ObjectTokens.Remove(OldKey);
+			// NewTokens is not invalid
+		}
+
+		for (auto& Pair : EntityToAnimatedObjects)
+		{
+			if (Pair.Value.Contains(OldKey))
+			{
+				Pair.Value.AddUnique(NewKey);
+				Pair.Value.Remove(OldKey);
+			}
+		}
+	}
 }
 
 /** Explicit, exported template instantiations */

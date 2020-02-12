@@ -1,4 +1,4 @@
-﻿// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+﻿// Copyright Epic Games, Inc. All Rights Reserved.
 
 using System;
 using System.Collections.Generic;
@@ -21,7 +21,7 @@ namespace UnrealBuildTool
 		/// <param name="TargetFile"></param>
 		public static void StripSymbols(FileReference SourceFile, FileReference TargetFile)
 		{
-			LinuxToolChain ToolChain = new LinuxToolChain(LinuxPlatform.DefaultArchitecture, new LinuxPlatformSDK());
+			LinuxToolChain ToolChain = new LinuxToolChain(LinuxPlatform.DefaultHostArchitecture, new LinuxPlatformSDK());
 			ToolChain.StripSymbols(SourceFile, TargetFile);
 		}
 	}

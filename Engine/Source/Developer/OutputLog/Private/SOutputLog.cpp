@@ -1,7 +1,6 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "SOutputLog.h"
-#include "Framework/Text/TextRange.h"
 #include "Framework/Text/IRun.h"
 #include "Framework/Text/TextLayout.h"
 #include "Misc/ConfigCacheIni.h"
@@ -21,15 +20,19 @@
 #include "EditorStyleSet.h"
 #include "Classes/EditorStyleSettings.h"
 #include "Widgets/Input/SSearchBox.h"
+#include "Widgets/Input/SCheckBox.h"
+#include "Widgets/Images/SImage.h"
 #include "Features/IModularFeatures.h"
 #include "Misc/CoreDelegates.h"
+#include "HAL/PlatformOutputDevices.h"
+#include "HAL/FileManager.h"
 
 #define LOCTEXT_NAMESPACE "SOutputLog"
 /** Expression context to test the given messages against the current text filter */
 class FLogFilter_TextFilterExpressionContext : public ITextFilterExpressionContext
 {
 public:
-	explicit FLogFilter_TextFilterExpressionContext(const FLogMessage& InMessage) : Message(&InMessage) {}
+	explicit FLogFilter_TextFilterExpressionContext(const FOutputLogMessage& InMessage) : Message(&InMessage) {}
 
 	/** Test the given value against the strings extracted from the current item */
 	virtual bool TestBasicStringExpression(const FTextFilterString& InValue, const ETextFilterTextComparisonMode InTextComparisonMode) const override { return TextFilterUtils::TestBasicStringExpression(*Message->Message, InValue, InTextComparisonMode); }
@@ -42,7 +45,7 @@ public:
 
 private:
 	/** Message that is being filtered */
-	const FLogMessage* Message;
+	const FOutputLogMessage* Message;
 };
 
 SConsoleInputBox::SConsoleInputBox()
@@ -643,7 +646,7 @@ FReply SConsoleInputBox::OnKeyCharHandler(const FGeometry& MyGeometry, const FCh
 	}
 }
 
-TSharedRef< FOutputLogTextLayoutMarshaller > FOutputLogTextLayoutMarshaller::Create(TArray< TSharedPtr<FLogMessage> > InMessages, FLogFilter* InFilter)
+TSharedRef< FOutputLogTextLayoutMarshaller > FOutputLogTextLayoutMarshaller::Create(TArray< TSharedPtr<FOutputLogMessage> > InMessages, FOutputLogFilter* InFilter)
 {
 	return MakeShareable(new FOutputLogTextLayoutMarshaller(MoveTemp(InMessages), InFilter));
 }
@@ -655,7 +658,8 @@ FOutputLogTextLayoutMarshaller::~FOutputLogTextLayoutMarshaller()
 void FOutputLogTextLayoutMarshaller::SetText(const FString& SourceString, FTextLayout& TargetTextLayout)
 {
 	TextLayout = &TargetTextLayout;
-	AppendMessagesToTextLayout(Messages);
+	NextPendingMessageIndex = 0;
+	SubmitPendingMessages();
 }
 
 void FOutputLogTextLayoutMarshaller::GetText(FString& TargetString, const FTextLayout& SourceTextLayout)
@@ -663,86 +667,69 @@ void FOutputLogTextLayoutMarshaller::GetText(FString& TargetString, const FTextL
 	SourceTextLayout.GetAsText(TargetString);
 }
 
-bool FOutputLogTextLayoutMarshaller::AppendMessage(const TCHAR* InText, const ELogVerbosity::Type InVerbosity, const FName& InCategory)
+bool FOutputLogTextLayoutMarshaller::AppendPendingMessage(const TCHAR* InText, const ELogVerbosity::Type InVerbosity, const FName& InCategory)
 {
-	TArray< TSharedPtr<FLogMessage> > NewMessages;
-	if(SOutputLog::CreateLogMessages(InText, InVerbosity, InCategory, NewMessages))
+	return SOutputLog::CreateLogMessages(InText, InVerbosity, InCategory, Messages);
+}
+
+bool FOutputLogTextLayoutMarshaller::SubmitPendingMessages()
+{
+	if (Messages.IsValidIndex(NextPendingMessageIndex))
 	{
-		const bool bWasEmpty = Messages.Num() == 0;
-		Messages.Append(NewMessages);
-
-		// Add new message categories to the filter's available log categories
-		for (const auto& NewMessage : NewMessages)
-		{
-			Filter->AddAvailableLogCategory(NewMessage->Category);
-		}
-
-		if(TextLayout)
-		{
-			// If we were previously empty, then we'd have inserted a dummy empty line into the document
-			// We need to remove this line now as it would cause the message indices to get out-of-sync with the line numbers, which would break auto-scrolling
-			if(bWasEmpty)
-			{
-				TextLayout->ClearLines();
-			}
-
-			// If we've already been given a text layout, then append these new messages rather than force a refresh of the entire document
-			AppendMessagesToTextLayout(NewMessages);
-		}
-		else
-		{
-			MarkMessagesCacheAsDirty();
-			MakeDirty();
-		}
-
+		const int32 CurrentMessagesCount = Messages.Num();
+		AppendPendingMessagesToTextLayout();
+		NextPendingMessageIndex = CurrentMessagesCount;
 		return true;
 	}
-
 	return false;
 }
 
-void FOutputLogTextLayoutMarshaller::AppendMessageToTextLayout(const TSharedPtr<FLogMessage>& InMessage)
+void FOutputLogTextLayoutMarshaller::AppendPendingMessagesToTextLayout()
 {
-	if (!Filter->IsMessageAllowed(InMessage))
+	const int32 CurrentMessagesCount = Messages.Num();
+	const int32 NumPendingMessages = CurrentMessagesCount - NextPendingMessageIndex;
+
+	if (NumPendingMessages == 0)
 	{
 		return;
 	}
 
-	// Increment the cached count if we're not rebuilding the log
-	if ( !IsDirty() )
+	if (TextLayout)
 	{
-		CachedNumMessages++;
+		// If we were previously empty, then we'd have inserted a dummy empty line into the document
+		// We need to remove this line now as it would cause the message indices to get out-of-sync with the line numbers, which would break auto-scrolling
+		const bool bWasEmpty = GetNumMessages() == 0;
+		if (bWasEmpty)
+		{
+			TextLayout->ClearLines();
+		}
+	}
+	else
+	{
+		MarkMessagesCacheAsDirty();
+		MakeDirty();
 	}
 
-	const FTextBlockStyle& MessageTextStyle = FEditorStyle::Get().GetWidgetStyle<FTextBlockStyle>(InMessage->Style);
-
-	TSharedRef<FString> LineText = InMessage->Message;
-
-	TArray<TSharedRef<IRun>> Runs;
-	Runs.Add(FSlateTextRun::Create(FRunInfo(), LineText, MessageTextStyle));
-
-	TextLayout->AddLine(FSlateTextLayout::FNewLineData(MoveTemp(LineText), MoveTemp(Runs)));
-}
-
-void FOutputLogTextLayoutMarshaller::AppendMessagesToTextLayout(const TArray<TSharedPtr<FLogMessage>>& InMessages)
-{
 	TArray<FTextLayout::FNewLineData> LinesToAdd;
-	LinesToAdd.Reserve(InMessages.Num());
+	LinesToAdd.Reserve(NumPendingMessages);
 
 	int32 NumAddedMessages = 0;
 
-	for (const auto& CurrentMessage : InMessages)
+	for (int32 MessageIndex = NextPendingMessageIndex; MessageIndex < CurrentMessagesCount; ++MessageIndex)
 	{
-		if (!Filter->IsMessageAllowed(CurrentMessage))
+		const TSharedPtr<FOutputLogMessage> Message = Messages[MessageIndex];
+
+		Filter->AddAvailableLogCategory(Message->Category);
+		if (!Filter->IsMessageAllowed(Message))
 		{
 			continue;
 		}
 
 		++NumAddedMessages;
 
-		const FTextBlockStyle& MessageTextStyle = FEditorStyle::Get().GetWidgetStyle<FTextBlockStyle>(CurrentMessage->Style);
+		const FTextBlockStyle& MessageTextStyle = FEditorStyle::Get().GetWidgetStyle<FTextBlockStyle>(Message->Style);
 
-		TSharedRef<FString> LineText = CurrentMessage->Message;
+		TSharedRef<FString> LineText = Message->Message;
 
 		TArray<TSharedRef<IRun>> Runs;
 		Runs.Add(FSlateTextRun::Create(FRunInfo(), LineText, MessageTextStyle));
@@ -761,6 +748,7 @@ void FOutputLogTextLayoutMarshaller::AppendMessagesToTextLayout(const TArray<TSh
 
 void FOutputLogTextLayoutMarshaller::ClearMessages()
 {
+	NextPendingMessageIndex = 0;
 	Messages.Empty();
 	MakeDirty();
 }
@@ -775,8 +763,9 @@ void FOutputLogTextLayoutMarshaller::CountMessages()
 
 	CachedNumMessages = 0;
 
-	for (const auto& CurrentMessage : Messages)
+	for (int32 MessageIndex = 0; MessageIndex < NextPendingMessageIndex; ++MessageIndex)
 	{
+		const TSharedPtr<FOutputLogMessage> CurrentMessage = Messages[MessageIndex];
 		if (Filter->IsMessageAllowed(CurrentMessage))
 		{
 			CachedNumMessages++;
@@ -789,7 +778,8 @@ void FOutputLogTextLayoutMarshaller::CountMessages()
 
 int32 FOutputLogTextLayoutMarshaller::GetNumMessages() const
 {
-	return Messages.Num();
+	const int32 NumPendingMessages = Messages.Num() - NextPendingMessageIndex;
+	return Messages.Num() - NumPendingMessages;
 }
 
 int32 FOutputLogTextLayoutMarshaller::GetNumFilteredMessages()
@@ -814,8 +804,9 @@ void FOutputLogTextLayoutMarshaller::MarkMessagesCacheAsDirty()
 	bNumMessagesCacheDirty = true;
 }
 
-FOutputLogTextLayoutMarshaller::FOutputLogTextLayoutMarshaller(TArray< TSharedPtr<FLogMessage> > InMessages, FLogFilter* InFilter)
+FOutputLogTextLayoutMarshaller::FOutputLogTextLayoutMarshaller(TArray< TSharedPtr<FOutputLogMessage> > InMessages, FOutputLogFilter* InFilter)
 	: Messages(MoveTemp(InMessages))
+	, NextPendingMessageIndex(0)
 	, CachedNumMessages(0)
 	, Filter(InFilter)
 	, TextLayout(nullptr)
@@ -833,7 +824,6 @@ void SOutputLog::Construct( const FArguments& InArgs )
 
 	MessagesTextMarshaller = FOutputLogTextLayoutMarshaller::Create(InArgs._Messages, &Filter);
 
-
 	MessagesTextBox = SNew(SMultiLineEditableTextBox)
 		.Style(FEditorStyle::Get(), "Log.TextBox")
 		.TextStyle(FEditorStyle::Get(), "Log.Normal")
@@ -841,6 +831,7 @@ void SOutputLog::Construct( const FArguments& InArgs )
 		.Marshaller(MessagesTextMarshaller)
 		.IsReadOnly(true)
 		.AlwaysShowScrollbars(true)
+		.AutoWrapText(this, &SOutputLog::IsWordWrapEnabled)
 		.OnVScrollBarUserScrolled(this, &SOutputLog::OnUserScrolled)
 		.ContextMenuExtender(this, &SOutputLog::ExtendTextBoxMenu);
 
@@ -915,16 +906,53 @@ void SOutputLog::Construct( const FArguments& InArgs )
 			// The console input box
 			+SVerticalBox::Slot()
 			.AutoHeight()
-			.Padding(FMargin(0.0f, 4.0f, 0.0f, 0.0f))
 			[
-				SNew(SBox)
-				.MaxDesiredHeight(180.0f)
-				[
-					SNew(SConsoleInputBox)
-					.OnConsoleCommandExecuted(this, &SOutputLog::OnConsoleCommandExecuted)
+				SNew(SHorizontalBox)
 
-					// Always place suggestions above the input line for the output log widget
-					.SuggestionListPlacement(MenuPlacement_AboveAnchor)
+				+SHorizontalBox::Slot()
+				.FillWidth(1.f)
+				.VAlign(VAlign_Center)
+				.Padding(FMargin(0.0f, 1.0f, 0.0f, 0.0f))
+				[
+					SNew(SBox)
+					.MaxDesiredHeight(180.0f)
+					[
+						SNew(SConsoleInputBox)
+						.OnConsoleCommandExecuted(this, &SOutputLog::OnConsoleCommandExecuted)
+
+						// Always place suggestions above the input line for the output log widget
+						.SuggestionListPlacement(MenuPlacement_AboveAnchor)
+					]
+				]
+
+				+SHorizontalBox::Slot()
+				.AutoWidth()
+				.Padding(4, 0, 0, 0)
+				[
+					SAssignNew(ViewOptionsComboButton, SComboButton)
+					.ContentPadding(0)
+					.ForegroundColor( this, &SOutputLog::GetViewButtonForegroundColor )
+					.ButtonStyle( FEditorStyle::Get(), "ToggleButton" ) // Use the tool bar item style for this button
+					.OnGetMenuContent( this, &SOutputLog::GetViewButtonContent )
+					.ButtonContent()
+					[
+						SNew(SHorizontalBox)
+ 
+						+SHorizontalBox::Slot()
+						.AutoWidth()
+						.VAlign(VAlign_Center)
+						[
+							SNew(SImage).Image( FEditorStyle::GetBrush("GenericViewButton") )
+						]
+ 
+						+SHorizontalBox::Slot()
+						.AutoWidth()
+						.Padding(2, 0, 0, 0)
+						.VAlign(VAlign_Center)
+						[
+							SNew(STextBlock).Text( LOCTEXT("ViewButton", "View Options") )
+						]
+					]
 				]
 			]
 		]
@@ -948,6 +976,20 @@ SOutputLog::~SOutputLog()
 	FCoreDelegates::OnHandleSystemError.RemoveAll(this);
 }
 
+void SOutputLog::Tick(const FGeometry& AllottedGeometry, const double InCurrentTime, const float InDeltaTime)
+{
+	if (MessagesTextMarshaller->SubmitPendingMessages())
+	{
+		// Don't scroll to the bottom automatically when the user is scrolling the view or has scrolled it away from the bottom.
+		if (!bIsUserScrolled)
+		{
+			RequestForceScroll();
+		}
+	}
+
+	SCompoundWidget::Tick(AllottedGeometry, InCurrentTime, InDeltaTime);
+}
+
 void SOutputLog::OnCrash()
 {
 	if (GLog != nullptr)
@@ -956,7 +998,7 @@ void SOutputLog::OnCrash()
 	}
 }
 
-bool SOutputLog::CreateLogMessages( const TCHAR* V, ELogVerbosity::Type Verbosity, const class FName& Category, TArray< TSharedPtr<FLogMessage> >& OutMessages )
+bool SOutputLog::CreateLogMessages( const TCHAR* V, ELogVerbosity::Type Verbosity, const class FName& Category, TArray< TSharedPtr<FOutputLogMessage> >& OutMessages )
 {
 	if (Verbosity == ELogVerbosity::SetColor)
 	{
@@ -1020,14 +1062,14 @@ bool SOutputLog::CreateLogMessages( const TCHAR* V, ELogVerbosity::Type Verbosit
 						HardWrapLineLen = FMath::Min(HardWrapLen - MessagePrefix.Len(), Line.Len() - CurrentStartIndex);
 						FString HardWrapLine = Line.Mid(CurrentStartIndex, HardWrapLineLen);
 
-						OutMessages.Add(MakeShared<FLogMessage>(MakeShared<FString>(MessagePrefix + HardWrapLine), Verbosity, Category, Style));
+						OutMessages.Add(MakeShared<FOutputLogMessage>(MakeShared<FString>(MessagePrefix + HardWrapLine), Verbosity, Category, Style));
 					}
 					else
 					{
 						HardWrapLineLen = FMath::Min(HardWrapLen, Line.Len() - CurrentStartIndex);
 						FString HardWrapLine = Line.Mid(CurrentStartIndex, HardWrapLineLen);
 
-						OutMessages.Add(MakeShared<FLogMessage>(MakeShared<FString>(MoveTemp(HardWrapLine)), Verbosity, Category, Style));
+						OutMessages.Add(MakeShared<FOutputLogMessage>(MakeShared<FString>(MoveTemp(HardWrapLine)), Verbosity, Category, Style));
 					}
 
 					bIsFirstLineInMessage = false;
@@ -1042,14 +1084,15 @@ bool SOutputLog::CreateLogMessages( const TCHAR* V, ELogVerbosity::Type Verbosit
 
 void SOutputLog::Serialize(const TCHAR* V, ELogVerbosity::Type Verbosity, const class FName& Category)
 {
-	if ( MessagesTextMarshaller->AppendMessage(V, Verbosity, Category) )
-	{
-		// Don't scroll to the bottom automatically when the user is scrolling the view or has scrolled it away from the bottom.
-		if( !bIsUserScrolled )
-		{
-			RequestForceScroll();
-		}
-	}
+	MessagesTextMarshaller->AppendPendingMessage(V, Verbosity, Category);
+}
+
+FSlateColor SOutputLog::GetViewButtonForegroundColor() const
+{
+	static const FName InvertedForegroundName("InvertedForeground");
+	static const FName DefaultForegroundName("DefaultForeground");
+
+	return ViewOptionsComboButton->IsHovered() ? FEditorStyle::GetSlateColor(InvertedForegroundName) : FEditorStyle::GetSlateColor(DefaultForegroundName);
 }
 
 void SOutputLog::ExtendTextBoxMenu(FMenuBuilder& Builder)
@@ -1089,6 +1132,8 @@ bool SOutputLog::CanClearLog() const
 
 void SOutputLog::OnConsoleCommandExecuted()
 {
+	// Submit pending messages when executing a command to keep the log feeling responsive to input
+	MessagesTextMarshaller->SubmitPendingMessages();
 	RequestForceScroll();
 }
 
@@ -1096,7 +1141,7 @@ void SOutputLog::RequestForceScroll()
 {
 	if (MessagesTextMarshaller->GetNumFilteredMessages() > 0)
 	{
-		MessagesTextBox->ScrollTo(FTextLocation(MessagesTextMarshaller->GetNumFilteredMessages() - 1));
+		MessagesTextBox->ScrollTo(ETextLocation::EndOfDocument);
 		bIsUserScrolled = false;
 	}
 }
@@ -1110,6 +1155,37 @@ void SOutputLog::Refresh()
 	MessagesTextMarshaller->MakeDirty();
 	MessagesTextBox->Refresh();
 	RequestForceScroll();
+}
+
+bool SOutputLog::IsWordWrapEnabled() const
+{
+	bool WordWrapEnabled = false;
+	GConfig->GetBool(TEXT("/Script/UnrealEd.EditorPerProjectUserSettings"), TEXT("bEnableOutputLogWordWrap"), WordWrapEnabled, GEditorPerProjectIni);
+	return WordWrapEnabled;
+}
+
+void SOutputLog::SetWordWrapEnabled(ECheckBoxState InValue)
+{
+	const bool WordWrapEnabled = (InValue == ECheckBoxState::Checked);
+	GConfig->SetBool(TEXT("/Script/UnrealEd.EditorPerProjectUserSettings"), TEXT("bEnableOutputLogWordWrap"), WordWrapEnabled, GEditorPerProjectIni);
+
+	if (!bIsUserScrolled)
+	{
+		RequestForceScroll();
+	}
+}
+
+bool SOutputLog::IsClearOnPIEEnabled() const
+{
+	bool ClearOnPIEEnabled = false;
+	GConfig->GetBool(TEXT("/Script/UnrealEd.EditorPerProjectUserSettings"), TEXT("bEnableOutputLogClearOnPIE"), ClearOnPIEEnabled, GEditorPerProjectIni);
+	return ClearOnPIEEnabled;
+}
+
+void SOutputLog::SetClearOnPIE(ECheckBoxState InValue)
+{
+	const bool ClearOnPIEEnabled = (InValue == ECheckBoxState::Checked);
+	GConfig->SetBool(TEXT("/Script/UnrealEd.EditorPerProjectUserSettings"), TEXT("bEnableOutputLogClearOnPIE"), ClearOnPIEEnabled, GEditorPerProjectIni);
 }
 
 void SOutputLog::OnFilterTextChanged(const FText& InFilterText)
@@ -1310,7 +1386,89 @@ void SOutputLog::CategoriesSingle_Execute(FName InName)
 	Refresh();
 }
 
-bool FLogFilter::IsMessageAllowed(const TSharedPtr<FLogMessage>& Message)
+TSharedRef<SWidget> SOutputLog::GetViewButtonContent()
+{
+	TSharedPtr<FExtender> Extender;
+	FMenuBuilder MenuBuilder(true, nullptr, Extender, true);
+	MenuBuilder.AddMenuEntry(
+		LOCTEXT("WordWrapEnabledOption", "Enable Word Wrapping"),
+		LOCTEXT("WordWrapEnabledOptionToolTip", "Enable word wrapping in the Output Log."),
+		FSlateIcon(),
+		FUIAction(
+			FExecuteAction::CreateLambda([this] {
+				// This is a toggle, hence that it is inverted
+				SetWordWrapEnabled(IsWordWrapEnabled() ? ECheckBoxState::Unchecked : ECheckBoxState::Checked);
+			}),
+			FCanExecuteAction::CreateLambda([] { return true; }),
+			FIsActionChecked::CreateSP(this, &SOutputLog::IsWordWrapEnabled)
+		),
+		NAME_None,
+		EUserInterfaceActionType::ToggleButton
+	);
+	MenuBuilder.AddMenuEntry(
+		LOCTEXT("ClearOnPIE", "Clear on PIE"),
+		LOCTEXT("ClearOnPIEToolTip", "Enable clearing of the Output Log on PIE startup."),
+		FSlateIcon(),
+		FUIAction(
+			FExecuteAction::CreateLambda([this] {
+				// This is a toggle, hence that it is inverted
+				SetClearOnPIE(IsClearOnPIEEnabled() ? ECheckBoxState::Unchecked : ECheckBoxState::Checked);
+			}),
+			FCanExecuteAction::CreateLambda([] { return true; }),
+			FIsActionChecked::CreateSP(this, &SOutputLog::IsClearOnPIEEnabled)
+		),
+		NAME_None,
+		EUserInterfaceActionType::ToggleButton
+	);
+	MenuBuilder.AddMenuSeparator();
+
+	//Show Source In Explorer
+	MenuBuilder.AddMenuEntry(
+		LOCTEXT("FindSourceFile", "Open Source Location"),
+		LOCTEXT("FindSourceFileTooltip", "Opens the folder containing the source of the Output Log."),
+		FSlateIcon(FEditorStyle::GetStyleSetName(), "OutputLog.OpenSourceLocation"),
+		FUIAction(
+			FExecuteAction::CreateSP(this, &SOutputLog::OpenLogFileInExplorer)
+		)
+	);
+	
+	// Open In External Editor
+	MenuBuilder.AddMenuEntry(
+		LOCTEXT("OpenInExternalEditor", "Open In External Editor"),
+		LOCTEXT("OpenInExternalEditorTooltip", "Opens the Output Log in the default external editor."),
+		FSlateIcon(FEditorStyle::GetStyleSetName(), "OutputLog.OpenInExternalEditor"),
+		FUIAction(
+			FExecuteAction::CreateSP(this, &SOutputLog::OpenLogFileInExternalEditor)
+		)
+	);
+
+
+	return MenuBuilder.MakeWidget();
+}
+
+void SOutputLog::OpenLogFileInExplorer()
+{
+	FString Path = FPaths::ConvertRelativePathToFull(FPaths::ProjectLogDir());
+	if (!Path.Len() || !IFileManager::Get().DirectoryExists(*Path))
+	{
+		return;
+	}
+
+	FPlatformProcess::ExploreFolder(*FPaths::GetPath(Path));
+}
+
+void SOutputLog::OpenLogFileInExternalEditor()
+{
+	FString Path = FPaths::ConvertRelativePathToFull(FGenericPlatformOutputDevices::GetAbsoluteLogFilename());
+	if (!Path.Len() || IFileManager::Get().FileSize(*Path) == INDEX_NONE)
+	{
+		return;
+	}
+
+	FPlatformProcess::LaunchFileInDefaultExternalApplication(*Path, NULL, ELaunchVerb::Open);
+} 
+
+bool FOutputLogFilter::IsMessageAllowed(const TSharedPtr<FOutputLogMessage>& Message)
 {
 	// Filter Verbosity
 	{
@@ -1349,7 +1507,7 @@ bool FLogFilter::IsMessageAllowed(const TSharedPtr<FLogMessage>& Message)
 	return true;
 }
 
-void FLogFilter::AddAvailableLogCategory(FName& LogCategory)
+void FOutputLogFilter::AddAvailableLogCategory(FName& LogCategory)
 {
 	// Use an insert-sort to keep AvailableLogCategories alphabetically sorted
 	int32 InsertIndex = 0;
@@ -1373,7 +1531,7 @@ void FLogFilter::AddAvailableLogCategory(FName& LogCategory)
 	}
 }
 
-void FLogFilter::ToggleLogCategory(const FName& LogCategory)
+void FOutputLogFilter::ToggleLogCategory(const FName& LogCategory)
 {
 	int32 FoundIndex = SelectedLogCategories.Find(LogCategory);
 	if (FoundIndex == INDEX_NONE)
@@ -1386,14 +1544,14 @@ void FLogFilter::ToggleLogCategory(const FName& LogCategory)
 	}
 }
 
-bool FLogFilter::IsLogCategoryEnabled(const FName& LogCategory) const
+bool FOutputLogFilter::IsLogCategoryEnabled(const FName& LogCategory) const
 {
 	return SelectedLogCategories.Contains(LogCategory);
 }
 
-void FLogFilter::ClearSelectedLogCategories()
+void FOutputLogFilter::ClearSelectedLogCategories()
 {
 	// No need to churn memory each time the selected categories are cleared
-	SelectedLogCategories.Reset(SelectedLogCategories.GetAllocatedSize());
+	SelectedLogCategories.Reset();
 }
 #undef LOCTEXT_NAMESPACE

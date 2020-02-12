@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "CoreTypes.h"
 #include "Math/UnrealMathUtility.h"
@@ -38,7 +38,7 @@ EHangulTextWrappingMethod GetHangulTextWrappingMethod()
 	return EHangulTextWrappingMethod::PerWord;
 }
 
-FORCEINLINE bool IsHangul(const TCHAR InChar)
+FORCEINLINE bool IsHangul(const UChar32 InChar)
 {
 	return InChar >= 0xAC00 && InChar <= 0xD7A3;
 }
@@ -52,6 +52,7 @@ public:
 	virtual void SetString(const FText& InText) override;
 	virtual void SetString(const FString& InString) override;
 	virtual void SetString(const TCHAR* const InString, const int32 InStringLength) override;
+	virtual void SetStringRef(const FString* InString) override;
 	virtual void ClearString() override;
 
 	virtual int32 GetCurrentPosition() const override;
@@ -102,6 +103,12 @@ void FICULineBreakIterator::SetString(const FString& InString)
 void FICULineBreakIterator::SetString(const TCHAR* const InString, const int32 InStringLength)
 {
 	GetInternalLineBreakIterator()->adoptText(new FICUTextCharacterIterator(InString, InStringLength)); // ICUBreakIterator takes ownership of this instance
+	ResetToBeginning();
+}
+
+void FICULineBreakIterator::SetStringRef(const FString* InString)
+{
+	GetInternalLineBreakIterator()->adoptText(new FICUTextCharacterIterator(InString)); // ICUBreakIterator takes ownership of this instance
 	ResetToBeginning();
 }
 
@@ -170,7 +177,7 @@ int32 FICULineBreakIterator::MoveToPreviousImpl()
 		if (IsHangul(CharIt.current32()))
 		{
 			// Walk to the start of the Hangul characters
-			while (CharIt.hasPrevious() && IsHangul(static_cast<TCHAR>(CharIt.previous32())))
+			while (CharIt.hasPrevious() && IsHangul(CharIt.previous32()))
 			{
 				InternalPosition = CharIt.getIndex();
 			}
@@ -199,7 +206,7 @@ int32 FICULineBreakIterator::MoveToNextImpl()
 		if (IsHangul(CharIt.current32()))
 		{
 			// Walk to the end of the Hangul characters
-			while (CharIt.hasNext() && IsHangul(static_cast<TCHAR>(CharIt.next32())))
+			while (CharIt.hasNext() && IsHangul(CharIt.next32()))
 			{
 				InternalPosition = CharIt.getIndex();
 			}

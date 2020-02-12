@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 using UnrealBuildTool;
 
@@ -11,17 +11,22 @@ public class VPUtilitiesEditor : ModuleRules
 		PublicDependencyModuleNames.AddRange(
 			new string[]
 			{
+                "Blutility",
 				"Core",
 				"CoreUObject",
-				"VPUtilities",
-			}
-		);
+				"EditorSubsystem",
+				"VPUtilities",                
+				"VREditor",
+				"Blutility",
+            }
+        );
 
 		PrivateDependencyModuleNames.AddRange(
 			new string[]
 			{
 				"EditorStyle",
 				"Engine",
+				"GameplayTags",
 				"LevelEditor",
 				"Settings",
 				"Slate",
@@ -31,9 +36,9 @@ public class VPUtilitiesEditor : ModuleRules
 				"UMGEditor",
 				"UnrealEd",
 				"VPBookmark",
-				"VREditor",
 				"WorkspaceMenuStructure",
-			}
+                "CinematicCamera",
+            }
 		);
 	}
 }

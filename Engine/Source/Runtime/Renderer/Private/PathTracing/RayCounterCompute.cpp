@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 /*=============================================================================
 	SkyLightCdfBuild.cpp: SkyLight CDF build algorithm.
@@ -49,11 +49,11 @@ public:
 
 	void SetParameters(
 		FRHICommandList& RHICmdList,
-		FTextureRHIParamRef RayCountPerPixelBuffer,
+		FRHITexture* RayCountPerPixelBuffer,
 		const FIntPoint& ViewSize,
-		FUnorderedAccessViewRHIParamRef TotalRayCountBuffer)
+		FRHIUnorderedAccessView* TotalRayCountBuffer)
 	{
-		FComputeShaderRHIParamRef ShaderRHI = GetComputeShader();
+		FRHIComputeShader* ShaderRHI = RHICmdList.GetBoundComputeShader();
 
 		SetTextureParameter(RHICmdList, ShaderRHI, RayCountPerPixelParameter, RayCountPerPixelBuffer);
 		SetShaderValue(RHICmdList, ShaderRHI, ViewSizeParameter, ViewSize);
@@ -65,50 +65,41 @@ public:
 		EResourceTransitionAccess TransitionAccess,
 		EResourceTransitionPipeline TransitionPipeline,
 		FRWBuffer& TotalRayCountBuffer,
-		FComputeFenceRHIParamRef Fence)
+		FRHIComputeFence* Fence)
 	{
-		FComputeShaderRHIParamRef ShaderRHI = GetComputeShader();
+		FRHIComputeShader* ShaderRHI = RHICmdList.GetBoundComputeShader();
 
 		RHICmdList.TransitionResource(TransitionAccess, TransitionPipeline, TotalRayCountBuffer.UAV, Fence);
 	}
 
-	virtual bool Serialize(FArchive& Ar)
-	{
-		bool bShaderHasOutdatedParameters = FGlobalShader::Serialize(Ar);
-		Ar << RayCountPerPixelParameter;
-		Ar << ViewSizeParameter;
-		Ar << TotalRayCountParameter;
-		return bShaderHasOutdatedParameters;
-	}
-
 private:
 	// Input parameters
-	FShaderResourceParameter RayCountPerPixelParameter;
-	FShaderParameter ViewSizeParameter;
+	LAYOUT_FIELD(FShaderResourceParameter, RayCountPerPixelParameter)
+	LAYOUT_FIELD(FShaderParameter, ViewSizeParameter)
 
 	// Output parameters
-	FShaderResourceParameter TotalRayCountParameter;
+	LAYOUT_FIELD(FShaderResourceParameter, TotalRayCountParameter)
 };
 
 IMPLEMENT_SHADER_TYPE(, FRayCounterCS, TEXT("/Engine/Private/PathTracing/PathTracingRayCounterComputeShader.usf"), TEXT("RayCounterCS"), SF_Compute)
 
 
-void FDeferredShadingSceneRenderer::ComputeRayCount(FRHICommandListImmediate& RHICmdList, const FViewInfo& View, FTextureRHIParamRef RayCountPerPixelTexture)
+void FDeferredShadingSceneRenderer::ComputeRayCount(FRHICommandListImmediate& RHICmdList, const FViewInfo& View, FRHITexture* RayCountPerPixelTexture)
 {
 	FSceneViewState* ViewState = (FSceneViewState*)View.State;
-	ClearUAV(RHICmdList, *ViewState->TotalRayCountBuffer, 0);
+	RHICmdList.ClearUAVUint(ViewState->TotalRayCountBuffer->UAV, FUintVector4(0, 0, 0, 0));
 
 	const auto ShaderMap = GetGlobalShaderMap(FeatureLevel);
 	TShaderMapRef<FRayCounterCS> RayCounterComputeShader(ShaderMap);
-	RHICmdList.SetComputeShader(RayCounterComputeShader->GetComputeShader());
+	RHICmdList.SetComputeShader(RayCounterComputeShader.GetComputeShader());
 
 	FIntPoint ViewSize = View.ViewRect.Size();
 	RayCounterComputeShader->SetParameters(RHICmdList, RayCountPerPixelTexture, ViewSize, ViewState->TotalRayCountBuffer->UAV);
 
 	int32 NumGroups = FMath::DivideAndRoundUp<int32>(ViewSize.Y, FRayCounterCS::GetGroupSize());
-	DispatchComputeShader(RHICmdList, *RayCounterComputeShader, NumGroups, 1, 1);
+	DispatchComputeShader(RHICmdList, RayCounterComputeShader.GetShader(), NumGroups, 1, 1);
 
-	FRHIGPUMemoryReadback* RayCountGPUReadback = ViewState->RayCountGPUReadback;
+	FRHIGPUBufferReadback* RayCountGPUReadback = ViewState->RayCountGPUReadback;
 
 	// Read read count data from the GPU using a stage buffer to avoid stalls
 	if (!ViewState->bReadbackInitialized)

@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -9,6 +9,7 @@
 #include "Templates/UnrealTemplate.h"
 #include "Containers/ContainerAllocationPolicies.h"
 #include "Serialization/Archive.h"
+#include "Serialization/MemoryImageWriter.h"
 #include "Math/UnrealMathUtility.h"
 
 template<typename Allocator > class TBitArray;
@@ -37,7 +38,8 @@ class TConstSetBitIterator;
 template<typename Allocator = FDefaultBitArrayAllocator,typename OtherAllocator = FDefaultBitArrayAllocator>
 class TConstDualSetBitIterator;
 
-class FScriptBitArray;
+template <typename AllocatorType, typename InDerivedType = void>
+class TScriptBitArray;
 
 
 /**
@@ -67,6 +69,20 @@ public:
 			Data |= Mask;
 		}
 		else
+		{
+			Data &= ~Mask;
+		}
+	}
+	FORCEINLINE void operator|=(const bool NewValue)
+	{
+		if (NewValue)
+		{
+			Data |= Mask;
+		}
+	}
+	FORCEINLINE void operator&=(const bool NewValue)
+	{
+		if (!NewValue)
 		{
 			Data &= ~Mask;
 		}
@@ -161,9 +177,12 @@ public:
 template<typename Allocator /*= FDefaultBitArrayAllocator*/>
 class TBitArray
 {
-	friend class FScriptBitArray;
+	template <typename, typename>
+	friend class TScriptBitArray;
 
 public:
+
+	typedef typename Allocator::template ForElementType<uint32> AllocatorType;
 
 	template<typename>
 	friend class TConstSetBitIterator;
@@ -171,16 +190,45 @@ public:
 	template<typename,typename>
 	friend class TConstDualSetBitIterator;
 
+	TBitArray()
+	:	NumBits(0)
+	,	MaxBits(AllocatorInstance.GetInitialCapacity() * NumBitsPerDWORD)
+	{}
+
 	/**
 	 * Minimal initialization constructor.
 	 * @param Value - The value to initial the bits to.
 	 * @param InNumBits - The initial number of bits in the array.
 	 */
-	explicit TBitArray( const bool Value = false, const int32 InNumBits = 0 )
-	:	NumBits(0)
-	,	MaxBits(0)
+	explicit TBitArray(bool bValue, int32 InNumBits)
+	:	NumBits(InNumBits)
+	,	MaxBits(AllocatorInstance.GetInitialCapacity() * NumBitsPerDWORD)
 	{
-		Init(Value,InNumBits);
+		if (NumBits > 0)
+		{
+			const int32 Words = FMath::DivideAndRoundUp(NumBits, NumBitsPerDWORD);
+
+			if (Words > FMath::DivideAndRoundUp(MaxBits, NumBitsPerDWORD))
+			{
+				AllocatorInstance.ResizeAllocation(0, Words, sizeof(uint32));
+				MaxBits = Words * NumBitsPerDWORD;
+			}
+			
+			if (Words > 8)
+			{
+				FMemory::Memset(GetData(), bValue ? 0xff : 0, Words * sizeof(uint32));
+			}
+			else
+			{
+				uint32 Word = bValue ? ~0u : 0;
+				int32 WordIdx = 0;
+				do
+				{
+					GetData()[WordIdx] = Word;
+				}
+				while (++WordIdx < Words);
+			}
+		}
 	}
 
 	/**
@@ -417,6 +465,24 @@ public:
 		}
 	}
 
+	/** Sets number of bits without initializing new bits. */
+	void SetNumUninitialized(int32 InNumBits)
+	{
+		int32 PreviousNumBits = NumBits;
+		NumBits = InNumBits;
+
+		if (InNumBits > MaxBits)
+		{
+			const int32 PreviousNumDWORDs = FMath::DivideAndRoundUp(PreviousNumBits, NumBitsPerDWORD);
+			const uint32 MaxDWORDs = AllocatorInstance.CalculateSlackReserve(
+				FMath::DivideAndRoundUp(InNumBits, NumBitsPerDWORD), sizeof(uint32));
+			
+			AllocatorInstance.ResizeAllocation(PreviousNumDWORDs, MaxDWORDs, sizeof(uint32));	
+
+			MaxBits = MaxDWORDs * NumBitsPerDWORD;
+		}
+	}
+
 	/**
 	 * Sets or unsets a range of bits within the array.
 	 * @param  Index  The index of the first bit to set.
@@ -582,7 +648,7 @@ public:
 		{
 			// If we're looking for a false, then we flip the bits - then we only need to find the first one bit
 			const uint32 Bits = bValue ? (DwordArray[DwordIndex]) : ~(DwordArray[DwordIndex]);
-			ASSUME(Bits != 0);
+			UE_ASSUME(Bits != 0);
 			const int32 LowestBitIndex = FMath::CountTrailingZeros(Bits) + (DwordIndex << NumBitsPerDWORDLogTwo);
 			if (LowestBitIndex < LocalNumBits)
 			{
@@ -625,7 +691,7 @@ public:
 
 		// Flip the bits, then we only need to find the first one bit -- easy.
 		const uint32 Bits = (bValue ? DwordArray[DwordIndex] : ~DwordArray[DwordIndex]) & Mask;
-		ASSUME(Bits != 0);
+		UE_ASSUME(Bits != 0);
 
 		uint32 BitIndex = (NumBitsPerDWORD - 1) - FMath::CountLeadingZeros(Bits);
 
@@ -642,13 +708,13 @@ public:
 	 * Finds the first zero bit in the array, sets it to true, and returns the bit index.
 	 * If there is none, INDEX_NONE is returned.
 	 */
-	int32 FindAndSetFirstZeroBit()
+	int32 FindAndSetFirstZeroBit(int32 ConservativeStartIndex = 0)
 	{
 		// Iterate over the array until we see a word with a zero bit.
 		uint32* RESTRICT DwordArray = GetData();
 		const int32 LocalNumBits = NumBits;
 		const int32 DwordCount = FMath::DivideAndRoundUp(LocalNumBits, NumBitsPerDWORD);
-		int32 DwordIndex = 0;
+		int32 DwordIndex = FMath::DivideAndRoundDown(ConservativeStartIndex, NumBitsPerDWORD);
 		while (DwordIndex < DwordCount && DwordArray[DwordIndex] == (uint32)-1)
 		{
 			++DwordIndex;
@@ -658,7 +724,7 @@ public:
 		{
 			// Flip the bits, then we only need to find the first one bit -- easy.
 			const uint32 Bits = ~(DwordArray[DwordIndex]);
-			ASSUME(Bits != 0);
+			UE_ASSUME(Bits != 0);
 			const uint32 LowestBit = (Bits) & (-(int32)Bits);
 			const int32 LowestBitIndex = FMath::CountTrailingZeros(Bits) + (DwordIndex << NumBitsPerDWORDLogTwo);
 			if (LowestBitIndex < LocalNumBits)
@@ -702,7 +768,7 @@ public:
 
 		// Flip the bits, then we only need to find the first one bit -- easy.
 		const uint32 Bits = ~DwordArray[DwordIndex] & Mask;
-		ASSUME(Bits != 0);
+		UE_ASSUME(Bits != 0);
 
 		uint32 BitIndex = (NumBitsPerDWORD - 1) - FMath::CountLeadingZeros(Bits);
 		DwordArray[DwordIndex] |= 1u << BitIndex;
@@ -888,8 +954,6 @@ public:
 	}
 
 private:
-	typedef typename Allocator::template ForElementType<uint32> AllocatorType;
-
 	AllocatorType AllocatorInstance;
 	int32         NumBits;
 	int32         MaxBits;
@@ -907,7 +971,44 @@ private:
 			FMemory::Memzero((uint32*)AllocatorInstance.GetAllocation() + PreviousNumDWORDs,(MaxDWORDs - PreviousNumDWORDs) * sizeof(uint32));
 		}
 	}
+
+	template<bool bFreezeMemoryImage, typename Dummy=void>
+	struct TSupportsFreezeMemoryImageHelper
+	{
+		static void WriteMemoryImage(FMemoryImageWriter& Writer, const TBitArray&) { Writer.WriteBytes(TBitArray()); }
+	};
+
+	template<typename Dummy>
+	struct TSupportsFreezeMemoryImageHelper<true, Dummy>
+	{
+		static void WriteMemoryImage(FMemoryImageWriter& Writer, const TBitArray& Object)
+		{
+			const int32 NumDWORDs = FMath::DivideAndRoundUp(Object.NumBits, NumBitsPerDWORD);
+			Object.AllocatorInstance.WriteMemoryImage(Writer, StaticGetTypeLayoutDesc<uint32>(), NumDWORDs);
+			Writer.WriteBytes(Object.NumBits);
+			Writer.WriteBytes(Object.NumBits);
+		}
+	};
+
+public:
+	void WriteMemoryImage(FMemoryImageWriter& Writer) const
+	{
+		static const bool bSupportsFreezeMemoryImage = TAllocatorTraits<Allocator>::SupportsFreezeMemoryImage;
+		checkf(!Writer.GetTargetLayoutParams().b32Bit, TEXT("TBitArray does not currently support freezing for 32bits"));
+		TSupportsFreezeMemoryImageHelper<bSupportsFreezeMemoryImage>::WriteMemoryImage(Writer, *this);
+	}
 };
+
+namespace Freeze
+{
+	template<typename Allocator>
+	void IntrinsicWriteMemoryImage(FMemoryImageWriter& Writer, const TBitArray<Allocator>& Object, const FTypeLayoutDesc&)
+	{
+		Object.WriteMemoryImage(Writer);
+	}
+}
+
+DECLARE_TEMPLATE_INTRINSIC_TYPE_LAYOUT(template<typename Allocator>, TBitArray<Allocator>);
 
 template<typename Allocator>
 FORCEINLINE uint32 GetTypeHash(const TBitArray<Allocator>& BitArray)
@@ -1153,15 +1254,18 @@ private:
 
 // Untyped bit array type for accessing TBitArray data, like FScriptArray for TArray.
 // Must have the same memory representation as a TBitArray.
-class FScriptBitArray
+template <typename Allocator, typename InDerivedType>
+class TScriptBitArray
 {
+	using DerivedType = typename TChooseClass<TIsVoidType<InDerivedType>::Value, TScriptBitArray, InDerivedType>::Result;
+
 public:
 	/**
 	 * Minimal initialization constructor.
 	 * @param Value - The value to initial the bits to.
 	 * @param InNumBits - The initial number of bits in the array.
 	 */
-	FScriptBitArray()
+	TScriptBitArray()
 		: NumBits(0)
 		, MaxBits(0)
 	{
@@ -1182,6 +1286,15 @@ public:
 	{
 		check(IsValidIndex(Index));
 		return FConstBitReference(GetData()[Index / NumBitsPerDWORD], 1 << (Index & (NumBitsPerDWORD - 1)));
+	}
+
+	void MoveAssign(DerivedType& Other)
+	{
+		checkSlow(this != &Other);
+		Empty(0);
+		AllocatorInstance.MoveToEmpty(Other.AllocatorInstance);
+		NumBits = Other.NumBits; Other.NumBits = 0;
+		MaxBits = Other.MaxBits; Other.MaxBits = 0;
 	}
 
 	void Empty(int32 Slack = 0)
@@ -1210,7 +1323,7 @@ public:
 	}
 
 private:
-	typedef FDefaultBitArrayAllocator::ForElementType<uint32> AllocatorType;
+	typedef typename Allocator::template ForElementType<uint32> AllocatorType;
 
 	AllocatorType AllocatorInstance;
 	int32         NumBits;
@@ -1219,22 +1332,22 @@ private:
 	// This function isn't intended to be called, just to be compiled to validate the correctness of the type.
 	static void CheckConstraints()
 	{
-		typedef FScriptBitArray ScriptType;
+		typedef TScriptBitArray ScriptType;
 		typedef TBitArray<>     RealType;
 
 		// Check that the class footprint is the same
-		static_assert(sizeof (ScriptType) == sizeof (RealType), "FScriptBitArray's size doesn't match TBitArray");
-		static_assert(alignof(ScriptType) == alignof(RealType), "FScriptBitArray's alignment doesn't match TBitArray");
+		static_assert(sizeof (ScriptType) == sizeof (RealType), "TScriptBitArray's size doesn't match TBitArray");
+		static_assert(alignof(ScriptType) == alignof(RealType), "TScriptBitArray's alignment doesn't match TBitArray");
 
 		// Check member sizes
-		static_assert(sizeof(DeclVal<ScriptType>().AllocatorInstance) == sizeof(DeclVal<RealType>().AllocatorInstance), "FScriptBitArray's AllocatorInstance member size does not match TBitArray's");
-		static_assert(sizeof(DeclVal<ScriptType>().NumBits)           == sizeof(DeclVal<RealType>().NumBits),           "FScriptBitArray's NumBits member size does not match TBitArray's");
-		static_assert(sizeof(DeclVal<ScriptType>().MaxBits)           == sizeof(DeclVal<RealType>().MaxBits),           "FScriptBitArray's MaxBits member size does not match TBitArray's");
+		static_assert(sizeof(DeclVal<ScriptType>().AllocatorInstance) == sizeof(DeclVal<RealType>().AllocatorInstance), "TScriptBitArray's AllocatorInstance member size does not match TBitArray's");
+		static_assert(sizeof(DeclVal<ScriptType>().NumBits)           == sizeof(DeclVal<RealType>().NumBits),           "TScriptBitArray's NumBits member size does not match TBitArray's");
+		static_assert(sizeof(DeclVal<ScriptType>().MaxBits)           == sizeof(DeclVal<RealType>().MaxBits),           "TScriptBitArray's MaxBits member size does not match TBitArray's");
 
 		// Check member offsets
-		static_assert(STRUCT_OFFSET(ScriptType, AllocatorInstance) == STRUCT_OFFSET(RealType, AllocatorInstance), "FScriptBitArray's AllocatorInstance member offset does not match TBitArray's");
-		static_assert(STRUCT_OFFSET(ScriptType, NumBits)           == STRUCT_OFFSET(RealType, NumBits),           "FScriptBitArray's NumBits member offset does not match TBitArray's");
-		static_assert(STRUCT_OFFSET(ScriptType, MaxBits)           == STRUCT_OFFSET(RealType, MaxBits),           "FScriptBitArray's MaxBits member offset does not match TBitArray's");
+		static_assert(STRUCT_OFFSET(ScriptType, AllocatorInstance) == STRUCT_OFFSET(RealType, AllocatorInstance), "TScriptBitArray's AllocatorInstance member offset does not match TBitArray's");
+		static_assert(STRUCT_OFFSET(ScriptType, NumBits)           == STRUCT_OFFSET(RealType, NumBits),           "TScriptBitArray's NumBits member offset does not match TBitArray's");
+		static_assert(STRUCT_OFFSET(ScriptType, MaxBits)           == STRUCT_OFFSET(RealType, MaxBits),           "TScriptBitArray's MaxBits member offset does not match TBitArray's");
 	}
 
 	FORCEINLINE uint32* GetData()
@@ -1285,12 +1398,20 @@ private:
 public:
 	// These should really be private, because they shouldn't be called, but there's a bunch of code
 	// that needs to be fixed first.
-	FScriptBitArray(const FScriptBitArray&) { check(false); }
-	void operator=(const FScriptBitArray&) { check(false); }
+	TScriptBitArray(const TScriptBitArray&) { check(false); }
+	void operator=(const TScriptBitArray&) { check(false); }
 };
 
-template <>
-struct TIsZeroConstructType<FScriptBitArray>
+template <typename AllocatorType, typename InDerivedType>
+struct TIsZeroConstructType<TScriptBitArray<AllocatorType, InDerivedType>>
 {
 	enum { Value = true };
+};
+
+class FScriptBitArray : public TScriptBitArray<FDefaultBitArrayAllocator, FScriptBitArray>
+{
+	using Super = TScriptBitArray<FDefaultBitArrayAllocator, FScriptBitArray>;
+
+public:
+	using Super::Super;
 };

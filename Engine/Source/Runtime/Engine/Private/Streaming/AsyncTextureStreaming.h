@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 /*=============================================================================
 AsyncTextureStreaming.h: Definitions of classes used for texture streaming async task.
@@ -185,6 +185,8 @@ private:
 	void UpdatePendingStreamingStatus_Async();
 
 	void UpdateStats_Async();
+
+	void UpdateCSVOnlyStats_Async();
 
 	FORCEINLINE TStatId GetStatId() const
 	{

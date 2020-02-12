@@ -1,8 +1,10 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
 #include "CoreMinimal.h"
+#include "HAL/CriticalSection.h"
+#include "Layout/WidgetPath.h"
 #include "ProxyMessageHandler.h"
 
 class SWindow;
@@ -58,29 +60,58 @@ public:
 
 	FRecordingMessageHandler(const TSharedPtr<FGenericApplicationMessageHandler>& InTargetHandler);
 
+	void Tick(const float DeltaTime);
+
+	bool PlayMessage(const TCHAR* Message, TArray<uint8> Data);
+
 	void SetRecordingHandler(IRecordingMessageHandlerWriter* InOutputWriter);
 
-	void SetConsumeInput(bool bConsume);
+	/**
+	 * Do not pass input to the target handler
+	 */
+	void SetConsumeInput(bool bConsume) { bConsumeInput = bConsume; }
 
-	bool IsRecording() const
-	{
-		return OutputWriter != nullptr;
-	}
+	/**
+	 * Returns true/false depending on whether input is blocked
+	 */
+	bool IsConsumingInput() const { return bConsumeInput; }
 
+	/**
+	 * Returns true/false depending on whether we are recording (RecordingHandler is != null)
+	 */
+	bool IsRecording() const {	return OutputWriter != nullptr; }
+
+	/**
+	 * Set the window to which the input should be forward to
+	 */
 	void SetPlaybackWindow(TWeakPtr<SWindow> InWindow, TWeakPtr<FSceneViewport> InViewport);
 
 	void SetInputRect(const FVector2D& TopLeft, const FVector2D& Extents);
 
+	/*
+	 * Send any received touch event from the client to the widget directly bypassing the message handler
+	 */
+	void TryRouteTouchMessageToWidget(bool bInRouteMessageToWidget) { bTryRouteTouchMessageToWidget = bInRouteMessageToWidget; }
+
 public:
 
+	/**
+	 * Keyboard handling
+	 */
 	virtual bool OnKeyChar(const TCHAR Character, const bool IsRepeat) override;
 	virtual bool OnKeyDown(const int32 KeyCode, const uint32 CharacterCode, const bool IsRepeat) override;
 	virtual bool OnKeyUp(const int32 KeyCode, const uint32 CharacterCode, const bool IsRepeat) override;
 
+	/**
+	 * High-level gesture events
+	 */
 	virtual void OnBeginGesture() override;
 	virtual bool OnTouchGesture(EGestureEvent GestureType, const FVector2D& Delta, float WheelDelta, bool bIsDirectionInvertedFromDevice) override;
 	virtual void OnEndGesture() override;
 
+	/**
+	 * Raw touch events
+	 */
 	virtual bool OnTouchStarted(const TSharedPtr< FGenericWindow >& Window, const FVector2D& Location, float Force, int32 TouchIndex, int32 ControllerId) override;
 	virtual bool OnTouchMoved(const FVector2D& Location, float Force, int32 TouchIndex, int32 ControllerId) override;
 	virtual bool OnTouchEnded(const FVector2D& Location, int32 TouchIndex, int32 ControllerId) override;
@@ -88,7 +119,12 @@ public:
 	virtual bool OnTouchFirstMove(const FVector2D& Location, float Force, int32 TouchIndex, int32 ControllerId) override;
 	virtual bool OnMotionDetected(const FVector& Tilt, const FVector& RotationRate, const FVector& Gravity, const FVector& Acceleration, int32 ControllerId) override;
 
-	bool PlayMessage(const TCHAR* Message, const TArray<uint8>& Data);
+	/**
+	 * Controller handling
+	 */
+	virtual bool OnControllerAnalog(FGamepadKeyNames::Type KeyName, int32 ControllerId, float AnalogValue) override;
+	virtual bool OnControllerButtonPressed(FGamepadKeyNames::Type KeyName, int32 ControllerId, bool IsRepeat) override;
+	virtual bool OnControllerButtonReleased(FGamepadKeyNames::Type KeyName, int32 ControllerId, bool IsRepeat) override;
 
 protected:
 
@@ -100,6 +136,7 @@ protected:
 	virtual void PlayOnKeyChar(FArchive& Ar);
 	virtual void PlayOnKeyDown(FArchive& Ar);
 	virtual void PlayOnKeyUp(FArchive& Ar);
+
 	virtual void PlayOnBeginGesture(FArchive& Ar);
 	virtual void PlayOnTouchGesture(FArchive& Ar);
 	virtual void PlayOnEndGesture(FArchive& Ar);
@@ -111,16 +148,30 @@ protected:
 	virtual void PlayOnTouchFirstMove(FArchive& Ar);
 	virtual void PlayOnMotionDetected(FArchive& Ar);
 
+	virtual void PlayOnControllerAnalog(FArchive& Ar);
+	virtual void PlayOnControllerButtonPressed(FArchive& Ar);
+	virtual void PlayOnControllerButtonReleased(FArchive& Ar);
+
+	FWidgetPath FindRoutingMessageWidget(const FVector2D& Location) const;
+
+	struct FDelayPlayMessage
+	{
+		FRecordedMessageDispatch* Dispatch;
+		TArray<uint8> Data;
+	};
 
 	IRecordingMessageHandlerWriter*		OutputWriter;
-	bool								ConsumeInput;
+	bool								bConsumeInput;
 	TWeakPtr<SWindow>					PlaybackWindow;
 	TWeakPtr<FSceneViewport>			PlaybackViewport;
 
 	TMap<FString, FRecordedMessageDispatch> DispatchTable;
 
-	FRect								InputRect;
-    FVector2D                           LastTouchLocation;
-    bool                                bIsTouching;
+	mutable FCriticalSection		MessagesCriticalSection;
+	TArray<FDelayPlayMessage>		DelayMessages;
 
+	FRect								InputRect;
+    FVector2D							LastTouchLocation;
+    bool								bIsTouching;
+	bool								bTryRouteTouchMessageToWidget;
 };

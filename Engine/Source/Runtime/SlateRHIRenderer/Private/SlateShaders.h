@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 
 #pragma once
@@ -10,6 +10,7 @@
 #include "GlobalShader.h"
 #include "ShaderParameterUtils.h"
 #include "Rendering/RenderingCommon.h"
+#include "RHIStaticStates.h"
 
 extern EColorVisionDeficiency GSlateColorDeficiencyType;
 extern int32 GSlateColorDeficiencySeverity;
@@ -92,22 +93,23 @@ public:
 	void SetVerticalAxisMultiplier(FRHICommandList& RHICmdList, float InMultiplier);
 
 	/** Serializes the shader data */
-	virtual bool Serialize( FArchive& Ar ) override;
+	//virtual bool Serialize( FArchive& Ar ) override;
 
 private:
 	/** ViewProjection parameter used by the shader */
-	FShaderParameter ViewProjection;
+	LAYOUT_FIELD(FShaderParameter, ViewProjection)
 	/** Shader parmeters used by the shader */
-	FShaderParameter VertexShaderParams;
+	LAYOUT_FIELD(FShaderParameter, VertexShaderParams)
 	/** Parameter used to determine if we need to swtich the vertical axis for opengl */
-	FShaderParameter SwitchVerticalAxisMultiplier;
+	LAYOUT_FIELD(FShaderParameter, SwitchVerticalAxisMultiplier)
 };
 
 /** 
  * Base class slate pixel shader for all elements
  */
 class FSlateElementPS : public FGlobalShader
-{	
+{
+	DECLARE_TYPE_LAYOUT(FSlateElementPS, NonVirtual);
 public:
 	/** Indicates that this shader should be cached */
 	static bool ShouldCompilePermutation(const FGlobalShaderPermutationParameters& Parameters) 
@@ -137,9 +139,9 @@ public:
 	 * @param Texture	Texture resource to use when this pixel shader is bound
 	 * @param SamplerState	Sampler state to use when sampling this texture
 	 */
-	void SetTexture(FRHICommandList& RHICmdList, const FTextureRHIParamRef InTexture, const FSamplerStateRHIRef SamplerState )
+	void SetTexture(FRHICommandList& RHICmdList, FRHITexture* InTexture, const FSamplerStateRHIRef SamplerState )
 	{
-		SetTextureParameter(RHICmdList, GetPixelShader(), TextureParameter, TextureParameterSampler, SamplerState, InTexture );
+		SetTextureParameter(RHICmdList, RHICmdList.GetBoundPixelShader(), TextureParameter, TextureParameterSampler, SamplerState, InTexture );
 	}
 
 	/**
@@ -149,7 +151,7 @@ public:
 	 */
 	void SetShaderParams(FRHICommandList& RHICmdList, const FVector4& InShaderParams )
 	{
-		SetShaderValue(RHICmdList, GetPixelShader(), ShaderParams, InShaderParams );
+		SetShaderValue(RHICmdList, RHICmdList.GetBoundPixelShader(), ShaderParams, InShaderParams );
 	}
 
 	/**
@@ -157,36 +159,26 @@ public:
 	 *
 	 * @param DisplayGamma The display gamma to use
 	 */
-	void SetDisplayGammaAndInvertAlpha(FRHICommandList& RHICmdList, float InDisplayGamma, float bInvertAlpha)
+	void SetDisplayGammaAndInvertAlphaAndContrast(FRHICommandList& RHICmdList, float InDisplayGamma, float bInvertAlpha, float InContrast)
 	{
-		FVector4 Values( 2.2f / InDisplayGamma, 1.0f/InDisplayGamma, bInvertAlpha, 0.0f);
+		FVector4 Values( 2.2f / InDisplayGamma, 1.0f/InDisplayGamma, bInvertAlpha, InContrast);
 
-		SetShaderValue(RHICmdList, GetPixelShader(), GammaAndAlphaValues, Values);
+		SetShaderValue(RHICmdList, RHICmdList.GetBoundPixelShader(), GammaAndAlphaValues, Values);
 	}
 
-	virtual bool Serialize( FArchive& Ar )
-	{
-		bool bShaderHasOutdatedParameters = FGlobalShader::Serialize( Ar );
-
-		Ar << TextureParameter;
-		Ar << TextureParameterSampler;
-		Ar << ShaderParams;
-		Ar << GammaAndAlphaValues;
-
-		return bShaderHasOutdatedParameters;
-	}
 private:
+	
 	/** Texture parameter used by the shader */
-	FShaderResourceParameter TextureParameter;
-	FShaderResourceParameter TextureParameterSampler;
-	FShaderParameter ShaderParams;
-	FShaderParameter GammaAndAlphaValues;
+	LAYOUT_FIELD(FShaderResourceParameter, TextureParameter);
+	LAYOUT_FIELD(FShaderResourceParameter, TextureParameterSampler);
+	LAYOUT_FIELD(FShaderParameter, ShaderParams);
+	LAYOUT_FIELD(FShaderParameter, GammaAndAlphaValues);
 };
 
 /** 
  * Pixel shader types for all elements
  */
-template<ESlateShader::Type ShaderType, bool bDrawDisabledEffect, bool bUseTextureAlpha=true>
+template<ESlateShader ShaderType, bool bDrawDisabledEffect, bool bUseTextureAlpha=true>
 class TSlateElementPS : public FSlateElementPS
 {
 	DECLARE_SHADER_TYPE( TSlateElementPS, Global );
@@ -216,14 +208,6 @@ public:
 
 		FSlateElementPS::ModifyCompilationEnvironment( Parameters, OutEnvironment );
 	}
-
-	/** Serializes the shader data */
-	virtual bool Serialize( FArchive& Ar ) override
-	{
-		return FSlateElementPS::Serialize( Ar );
-	}
-private:
-
 };
 
 /** 
@@ -248,13 +232,6 @@ public:
 		: FSlateElementPS( Initializer )
 	{
 	}
-
-
-	virtual bool Serialize( FArchive& Ar ) override
-	{
-		return FSlateElementPS::Serialize( Ar );
-	}
-private:
 };
 
 /** 
@@ -288,20 +265,11 @@ public:
 	*/
 	void SetBatchColor(FRHICommandList& RHICmdList, const FLinearColor& InBatchColor)
 	{
-		SetShaderValue(RHICmdList, GetPixelShader(), BatchColor, InBatchColor);
-	}
-
-	virtual bool Serialize( FArchive& Ar ) override
-	{
-		bool bShaderHasOutdatedParameters = FSlateElementPS::Serialize( Ar );
-
-		Ar << BatchColor;
-
-		return bShaderHasOutdatedParameters;
+		SetShaderValue(RHICmdList, RHICmdList.GetBoundPixelShader(), BatchColor, InBatchColor);
 	}
 
 private:
-	FShaderParameter BatchColor;
+	LAYOUT_FIELD(FShaderParameter, BatchColor);
 };
 
 const int32 MAX_BLUR_SAMPLES = 127;
@@ -332,35 +300,26 @@ public:
 
 	void SetBufferSizeAndDirection(FRHICommandList& RHICmdList, const FVector2D& InBufferSize, const FVector2D& InDir)
 	{
-		SetShaderValue(RHICmdList, GetPixelShader(), BufferSizeAndDirection, FVector4(InBufferSize, InDir));
+		SetShaderValue(RHICmdList, RHICmdList.GetBoundPixelShader(), BufferSizeAndDirection, FVector4(InBufferSize, InDir));
 	}
 
 	void SetWeightsAndOffsets(FRHICommandList& RHICmdList, const TArray<FVector4>& InWeightsAndOffsets, int32 NumSamples )
 	{
 		check(InWeightsAndOffsets.Num() <= MAX_BLUR_SAMPLES);
-		SetShaderValueArray<FPixelShaderRHIParamRef, FVector4>(RHICmdList, GetPixelShader(), WeightAndOffsets, InWeightsAndOffsets.GetData(), InWeightsAndOffsets.Num() );
-		SetShaderValue(RHICmdList, GetPixelShader(), SampleCount, NumSamples);
+		SetShaderValueArray<FRHIPixelShader*, FVector4>(RHICmdList, RHICmdList.GetBoundPixelShader(), WeightAndOffsets, InWeightsAndOffsets.GetData(), InWeightsAndOffsets.Num() );
+		SetShaderValue(RHICmdList, RHICmdList.GetBoundPixelShader(), SampleCount, NumSamples);
 	}
 
 	void SetUVBounds(FRHICommandList& RHICmdList, const FVector4& InUVBounds)
 	{
-		SetShaderValue(RHICmdList, GetPixelShader(), UVBounds, InUVBounds);
+		SetShaderValue(RHICmdList, RHICmdList.GetBoundPixelShader(), UVBounds, InUVBounds);
 	}
 
-	
-	virtual bool Serialize(FArchive& Ar) override
-	{
-		Ar << BufferSizeAndDirection;
-		Ar << WeightAndOffsets;
-		Ar << SampleCount;	
-		Ar << UVBounds;
-		return FSlateElementPS::Serialize(Ar);
-	}
 private:
-	FShaderParameter BufferSizeAndDirection;
-	FShaderParameter WeightAndOffsets;
-	FShaderParameter SampleCount;
-	FShaderParameter UVBounds;
+	LAYOUT_FIELD(FShaderParameter, BufferSizeAndDirection);
+	LAYOUT_FIELD(FShaderParameter, WeightAndOffsets);
+	LAYOUT_FIELD(FShaderParameter, SampleCount);
+	LAYOUT_FIELD(FShaderParameter, UVBounds);
 };
 
 
@@ -387,16 +346,11 @@ public:
 
 	void SetUVBounds(FRHICommandList& RHICmdList, const FVector4& InUVBounds)
 	{
-		SetShaderValue(RHICmdList, GetPixelShader(), UVBounds, InUVBounds);
+		SetShaderValue(RHICmdList, RHICmdList.GetBoundPixelShader(), UVBounds, InUVBounds);
 	}
 
-	virtual bool Serialize(FArchive& Ar) override
-	{
-		Ar << UVBounds;
-		return FSlateElementPS::Serialize(Ar);
-	}
 private:
-	FShaderParameter UVBounds;
+	LAYOUT_FIELD(FShaderParameter, UVBounds);
 };
 
 
@@ -426,29 +380,21 @@ public:
 
 	void SetColorRules(FRHICommandList& RHICmdList, bool bCorrect, EColorVisionDeficiency DeficiencyType, int32 Severity)
 	{
-		SetShaderValue(RHICmdList, GetPixelShader(), ColorVisionDeficiencyType, (float)DeficiencyType);
-		SetShaderValue(RHICmdList, GetPixelShader(), ColorVisionDeficiencySeverity, (float)Severity);
-		SetShaderValue(RHICmdList, GetPixelShader(), bCorrectDeficiency, bCorrect ? 1.0f : 0.0f);
+		SetShaderValue(RHICmdList, RHICmdList.GetBoundPixelShader(), ColorVisionDeficiencyType, (float)DeficiencyType);
+		SetShaderValue(RHICmdList, RHICmdList.GetBoundPixelShader(), ColorVisionDeficiencySeverity, (float)Severity);
+		SetShaderValue(RHICmdList, RHICmdList.GetBoundPixelShader(), bCorrectDeficiency, bCorrect ? 1.0f : 0.0f);
 	}
 
 	void SetShowCorrectionWithDeficiency(FRHICommandList& RHICmdList, bool bShowCorrectionWithDeficiency)
 	{
-		SetShaderValue(RHICmdList, GetPixelShader(), bSimulateCorrectionWithDeficiency, bShowCorrectionWithDeficiency ? 1.0f : 0.0f);
+		SetShaderValue(RHICmdList, RHICmdList.GetBoundPixelShader(), bSimulateCorrectionWithDeficiency, bShowCorrectionWithDeficiency ? 1.0f : 0.0f);
 	}
 
-	virtual bool Serialize(FArchive& Ar) override
-	{
-		Ar << ColorVisionDeficiencyType;
-		Ar << ColorVisionDeficiencySeverity;
-		Ar << bCorrectDeficiency;
-		Ar << bSimulateCorrectionWithDeficiency;
-		return FSlateElementPS::Serialize(Ar);
-	}
 private:
-	FShaderParameter ColorVisionDeficiencyType;
-	FShaderParameter ColorVisionDeficiencySeverity;
-	FShaderParameter bCorrectDeficiency;
-	FShaderParameter bSimulateCorrectionWithDeficiency;
+	LAYOUT_FIELD(FShaderParameter, ColorVisionDeficiencyType);
+	LAYOUT_FIELD(FShaderParameter, ColorVisionDeficiencySeverity);
+	LAYOUT_FIELD(FShaderParameter, bCorrectDeficiency);
+	LAYOUT_FIELD(FShaderParameter, bSimulateCorrectionWithDeficiency);
 };
 
 
@@ -486,15 +432,15 @@ public:
 	 */
 	void SetMaskRect(FRHICommandList& RHICmdList, const FVector2D& TopLeft, const FVector2D& TopRight, const FVector2D& BotLeft, const FVector2D& BotRight);
 
-	virtual bool Serialize(FArchive& Ar) override;
+	//virtual bool Serialize(FArchive& Ar) override;
 
 private:
 	/** Mask rect parameter */
-	FShaderParameter MaskRect;
+	LAYOUT_FIELD(FShaderParameter, MaskRect)
 	/** ViewProjection parameter used by the shader */
-	FShaderParameter ViewProjection;
+	LAYOUT_FIELD(FShaderParameter, ViewProjection)
 	/** Parameter used to determine if we need to swtich the vertical axis for opengl */
-	FShaderParameter SwitchVerticalAxisMultiplier;
+	LAYOUT_FIELD(FShaderParameter, SwitchVerticalAxisMultiplier)
 };
 
 class FSlateMaskingPS : public FGlobalShader
@@ -516,13 +462,61 @@ public:
 		: FGlobalShader(Initializer)
 	{
 	}
-
-	virtual bool Serialize(FArchive& Ar) override
-	{
-		return FGlobalShader::Serialize(Ar);
-	}
 };
 
+
+#if WITH_EDITOR
+// Pixel shader to convert UI from linear rec709 to PQ 2020 for HDR monitors
+class FHDREditorConvertPS : public FGlobalShader
+{
+	DECLARE_SHADER_TYPE(FHDREditorConvertPS, Global);
+public:
+
+	static bool ShouldCompilePermutation(const FGlobalShaderPermutationParameters& Parameters)
+	{
+		return IsFeatureLevelSupported(Parameters.Platform, ERHIFeatureLevel::SM5);
+	}
+
+	FHDREditorConvertPS(const ShaderMetaType::CompiledShaderInitializerType& Initializer) :
+		FGlobalShader(Initializer)
+	{
+		SceneTexture.Bind(Initializer.ParameterMap, TEXT("SceneTexture"));
+		SceneSampler.Bind(Initializer.ParameterMap, TEXT("SceneSampler"));
+		UILevel.Bind(Initializer.ParameterMap, TEXT("UILevel"));
+	}
+	FHDREditorConvertPS() {}
+
+	void SetParameters(FRHICommandList& RHICmdList, FRHITexture* SceneTextureRHI)
+	{
+		static const auto CVarOutputDevice = IConsoleManager::Get().FindTConsoleVariableDataInt(TEXT("r.HDR.Display.OutputDevice"));
+
+		SetTextureParameter(RHICmdList, RHICmdList.GetBoundPixelShader(), SceneTexture, SceneSampler, TStaticSamplerState<SF_Point>::GetRHI(), SceneTextureRHI);
+		
+		static auto CVarHDRNITLevel = IConsoleManager::Get().FindConsoleVariable(TEXT("Editor.HDRNITLevel"));
+		SetShaderValue(RHICmdList, RHICmdList.GetBoundPixelShader(), UILevel, CVarHDRNITLevel->GetFloat());
+	}
+
+	static void ModifyCompilationEnvironment(const FGlobalShaderPermutationParameters& Parameters, FShaderCompilerEnvironment& OutEnvironment)
+	{
+		FGlobalShader::ModifyCompilationEnvironment(Parameters, OutEnvironment);
+	}
+
+	static const TCHAR* GetSourceFilename()
+	{
+		return TEXT("/Engine/Private/CompositeUIPixelShader.usf");
+	}
+
+	static const TCHAR* GetFunctionName()
+	{
+		return TEXT("HDREditorConvert");
+	}
+
+private:
+	LAYOUT_FIELD(FShaderResourceParameter, SceneTexture);
+	LAYOUT_FIELD(FShaderResourceParameter, SceneSampler);
+	LAYOUT_FIELD(FShaderParameter, UILevel);
+};
+#endif
 
 /** The simple element vertex declaration. */
 extern TGlobalResource<FSlateVertexDeclaration> GSlateVertexDeclaration;

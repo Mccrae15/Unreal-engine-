@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 // This code is modified from that in the Mesa3D Graphics library available at
 // http://mesa3d.org/
@@ -116,11 +116,11 @@ glsl_type::glsl_type(enum glsl_base_type patch_type,
 
 
 glsl_type::glsl_type(
-	enum glsl_sampler_dim dim, bool array, bool is_sampler_buffer,
+	enum glsl_sampler_dim dim, bool array, bool is_sampler_buffer, bool is_shader_storage_buffer,
 	const struct glsl_type* type, const char *name) :
 	base_type(GLSL_TYPE_IMAGE),
 	sampler_dimensionality(dim), sampler_shadow(0),
-	sampler_array(array), sampler_ms(false), sampler_buffer(is_sampler_buffer),
+	sampler_array(array), sampler_ms(false), sampler_buffer(is_sampler_buffer), shader_storage_buffer(is_shader_storage_buffer),
 	outputstream_type(GLSL_OUTPUTSTREAM_NONE), sample_count(1),
 	inner_type(type), vector_elements(0), matrix_columns(0), HlslName(nullptr),
 	length(0), patch_length(0)
@@ -542,12 +542,12 @@ const glsl_type * glsl_type::get_templated_instance(const glsl_type *base, const
 		// Base sampler types.
 		hash_table_insert(sampler_types, new glsl_type(GLSL_SAMPLER_DIM_1D,   /*shadow=*/ false, /*array=*/ false, /*multisample=*/ false, /*samples=*/ 0, /*sampler_buffer=*/ true,  /*type=*/ NULL, "samplerBuffer", "sampler"), "Buffer");
 		hash_table_insert(sampler_types, new glsl_type(GLSL_SAMPLER_DIM_1D,   /*shadow=*/ false, /*array=*/ false, /*multisample=*/ false, /*samples=*/ 0, /*sampler_buffer=*/ false, /*type=*/ NULL, "sampler1D", "texture1d"), "Texture1D");
-		hash_table_insert(sampler_types, new glsl_type(GLSL_SAMPLER_DIM_1D,   /*shadow=*/ false, /*array=*/ true,  /*multisample=*/ false, /*samples=*/ 0, /*sampler_buffer=*/ false, /*type=*/ NULL, "sampler1DArray", nullptr), "Texture1DArray");
+		hash_table_insert(sampler_types, new glsl_type(GLSL_SAMPLER_DIM_1D,   /*shadow=*/ false, /*array=*/ true,  /*multisample=*/ false, /*samples=*/ 0, /*sampler_buffer=*/ false, /*type=*/ NULL, "sampler1DArray", "texture1darray"), "Texture1DArray");
 		hash_table_insert(sampler_types, new glsl_type(GLSL_SAMPLER_DIM_2D,   /*shadow=*/ false, /*array=*/ false, /*multisample=*/ false, /*samples=*/ 0, /*sampler_buffer=*/ false, /*type=*/ NULL, "sampler2D", "texture2d"), "Texture2D");
 		hash_table_insert(sampler_types, new glsl_type(GLSL_SAMPLER_DIM_2D,   /*shadow=*/ false, /*array=*/ false, /*multisample=*/ false, /*samples=*/ 0, /*sampler_buffer=*/ false, /*type=*/ NULL, "samplerExternalOES", "texture2d"), "TextureExternal");
-		hash_table_insert(sampler_types, new glsl_type(GLSL_SAMPLER_DIM_2D,   /*shadow=*/ false, /*array=*/ true,  /*multisample=*/ false, /*samples=*/ 0, /*sampler_buffer=*/ false, /*type=*/ NULL, "sampler2DArray", nullptr), "Texture2DArray");
-		hash_table_insert(sampler_types, new glsl_type(GLSL_SAMPLER_DIM_2D,   /*shadow=*/ false, /*array=*/ false, /*multisample=*/ true,  /*samples=*/ 0, /*sampler_buffer=*/ false, /*type=*/ NULL, "sampler2DMS", nullptr), "Texture2DMS");
-		hash_table_insert(sampler_types, new glsl_type(GLSL_SAMPLER_DIM_2D,   /*shadow=*/ false, /*array=*/ true,  /*multisample=*/ true,  /*samples=*/ 0, /*sampler_buffer=*/ false, /*type=*/ NULL, "sampler2DMSArray", nullptr), "Texture2DMSArray");
+		hash_table_insert(sampler_types, new glsl_type(GLSL_SAMPLER_DIM_2D,   /*shadow=*/ false, /*array=*/ true,  /*multisample=*/ false, /*samples=*/ 0, /*sampler_buffer=*/ false, /*type=*/ NULL, "sampler2DArray", "texture2darray"), "Texture2DArray");
+		hash_table_insert(sampler_types, new glsl_type(GLSL_SAMPLER_DIM_2D,   /*shadow=*/ false, /*array=*/ false, /*multisample=*/ true,  /*samples=*/ 0, /*sampler_buffer=*/ false, /*type=*/ NULL, "sampler2DMS", "texture2dms"), "Texture2DMS");
+		hash_table_insert(sampler_types, new glsl_type(GLSL_SAMPLER_DIM_2D,   /*shadow=*/ false, /*array=*/ true,  /*multisample=*/ true,  /*samples=*/ 0, /*sampler_buffer=*/ false, /*type=*/ NULL, "sampler2DMSArray", "texture2dmsarray"), "Texture2DMSArray");
 		hash_table_insert(sampler_types, new glsl_type(GLSL_SAMPLER_DIM_3D,   /*shadow=*/ false, /*array=*/ false, /*multisample=*/ false, /*samples=*/ 0, /*sampler_buffer=*/ false, /*type=*/ NULL, "sampler3D", "texture3d"), "Texture3D");
 		hash_table_insert(sampler_types, new glsl_type(GLSL_SAMPLER_DIM_CUBE, /*shadow=*/ false, /*array=*/ false, /*multisample=*/ false, /*samples=*/ 0, /*sampler_buffer=*/ false, /*type=*/ NULL, "samplerCube", "texturecube"), "TextureCube");
 		hash_table_insert(sampler_types, new glsl_type(GLSL_SAMPLER_DIM_CUBE, /*shadow=*/ false, /*array=*/ true,  /*multisample=*/ false, /*samples=*/ 0, /*sampler_buffer=*/ false, /*type=*/ NULL, "samplerCubeArray", "texturecubearray"), "TextureCubeArray");
@@ -587,14 +587,14 @@ const glsl_type * glsl_type::get_templated_instance(const glsl_type *base, const
 		image_types = hash_table_ctor(64, hash_table_string_hash, hash_table_string_compare);
 
 		// Base sampler types.
-		hash_table_insert(image_types, new glsl_type(GLSL_SAMPLER_DIM_1D, /*array=*/ false, /*sampler_buffer=*/ true,  /*type=*/ NULL, "imageBuffer"), "RWBuffer");
-		hash_table_insert(image_types, new glsl_type(GLSL_SAMPLER_DIM_1D, /*array=*/ false, /*sampler_buffer=*/ false, /*type=*/ NULL, "image1D"), "RWTexture1D");
-		hash_table_insert(image_types, new glsl_type(GLSL_SAMPLER_DIM_1D, /*array=*/ true,  /*sampler_buffer=*/ false, /*type=*/ NULL, "image1DArray"), "RWTexture1DArray");
-		hash_table_insert(image_types, new glsl_type(GLSL_SAMPLER_DIM_2D, /*array=*/ false, /*sampler_buffer=*/ false, /*type=*/ NULL, "image2D"), "RWTexture2D");
-		hash_table_insert(image_types, new glsl_type(GLSL_SAMPLER_DIM_2D, /*array=*/ true,  /*sampler_buffer=*/ false, /*type=*/ NULL, "image2DArray"), "RWTexture2DArray");
-		hash_table_insert(image_types, new glsl_type(GLSL_SAMPLER_DIM_3D, /*array=*/ false, /*sampler_buffer=*/ false, /*type=*/ NULL, "image3D"), "RWTexture3D");
-		hash_table_insert(image_types, new glsl_type(GLSL_SAMPLER_DIM_BUF, /*array=*/ false, /*sampler_buffer=*/ true, /*type=*/ NULL, "StructuredBuffer"), "RWStructuredBuffer");
-		hash_table_insert(image_types, new glsl_type(GLSL_SAMPLER_DIM_BUF, /*array=*/ false, /*sampler_buffer=*/ true, /*type=*/ NULL, "ByteAddressBuffer"), "RWByteAddressBuffer");
+		hash_table_insert(image_types, new glsl_type(GLSL_SAMPLER_DIM_1D,  /*array=*/ false, /*sampler_buffer=*/ true,  /*shader_storage_buffer=*/false, /*type=*/ NULL, "imageBuffer"), "RWBuffer");
+		hash_table_insert(image_types, new glsl_type(GLSL_SAMPLER_DIM_1D,  /*array=*/ false, /*sampler_buffer=*/ false, /*shader_storage_buffer=*/false, /*type=*/ NULL, "image1D"), "RWTexture1D");
+		hash_table_insert(image_types, new glsl_type(GLSL_SAMPLER_DIM_1D,  /*array=*/ true,  /*sampler_buffer=*/ false, /*shader_storage_buffer=*/false, /*type=*/ NULL, "image1DArray"), "RWTexture1DArray");
+		hash_table_insert(image_types, new glsl_type(GLSL_SAMPLER_DIM_2D,  /*array=*/ false, /*sampler_buffer=*/ false, /*shader_storage_buffer=*/false, /*type=*/ NULL, "image2D"), "RWTexture2D");
+		hash_table_insert(image_types, new glsl_type(GLSL_SAMPLER_DIM_2D,  /*array=*/ true,  /*sampler_buffer=*/ false, /*shader_storage_buffer=*/false, /*type=*/ NULL, "image2DArray"), "RWTexture2DArray");
+		hash_table_insert(image_types, new glsl_type(GLSL_SAMPLER_DIM_3D,  /*array=*/ false, /*sampler_buffer=*/ false, /*shader_storage_buffer=*/false, /*type=*/ NULL, "image3D"), "RWTexture3D");
+		hash_table_insert(image_types, new glsl_type(GLSL_SAMPLER_DIM_BUF, /*array=*/ false, /*sampler_buffer=*/ true,  /*shader_storage_buffer=*/ true, /*type=*/ NULL, "buffer"), "RWStructuredBuffer");
+		hash_table_insert(image_types, new glsl_type(GLSL_SAMPLER_DIM_BUF, /*array=*/ false, /*sampler_buffer=*/ true,  /*shader_storage_buffer=*/false, /*type=*/ NULL, "imageBuffer"), "RWByteAddressBuffer");
 	}
 
 	if (base == NULL)
@@ -687,6 +687,7 @@ const glsl_type * glsl_type::get_templated_instance(const glsl_type *base, const
 				(glsl_sampler_dim)(image_base_type->sampler_dimensionality),
 				image_base_type->sampler_array,
 				image_base_type->sampler_buffer,
+				image_base_type->shader_storage_buffer,
 				base,
 				ralloc_asprintf(mem_ctx, "%s%s", sampler_type_prefix[base->base_type], image_base_type->name));
 
@@ -743,7 +744,7 @@ const glsl_type* glsl_type::GetByteAddressBufferInstance(const char* TypeName)
 	const glsl_type* FoundType = (glsl_type *)hash_table_find(StructuredBufferTypes, TypeName);
 	if (!FoundType)
 	{
-		FoundType = new glsl_type(glsl_base_type::GLSL_TYPE_IMAGE, 1, 1, ralloc_strdup(mem_ctx, TypeName), ralloc_strdup(mem_ctx, TypeName));
+		FoundType = new glsl_type(glsl_base_type::GLSL_TYPE_IMAGE, 1, 1, ralloc_strdup(mem_ctx, "uimageBuffer"), ralloc_strdup(mem_ctx, TypeName));
 		((glsl_type*)FoundType)->inner_type = glsl_type::uint_type;
 		((glsl_type*)FoundType)->sampler_buffer = 1;
 		
@@ -770,6 +771,7 @@ const glsl_type* glsl_type::GetStructuredBufferInstance(const char* TypeName, co
 		FoundType = new glsl_type(glsl_base_type::GLSL_TYPE_IMAGE, 1, 1, ralloc_strdup(mem_ctx, Key), ralloc_strdup(mem_ctx, Key));
 		((glsl_type*)FoundType)->inner_type = InnerType;
 		((glsl_type*)FoundType)->sampler_buffer = 1;
+		((glsl_type*)FoundType)->shader_storage_buffer = 1;
 
 		hash_table_insert(StructuredBufferTypes, (void*)FoundType, ralloc_strdup(mem_ctx, Key));
 	}

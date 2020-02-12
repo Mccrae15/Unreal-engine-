@@ -1,19 +1,53 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
 #include "CoreMinimal.h"
 #include "Async/Future.h"
+#include "UObject/StructOnScope.h"
 #include "ConcertWorkspaceMessages.h"
-#include "ConcertActivityLedger.h"
+#include "ConcertSyncSessionTypes.h"
 
 class ISourceControlProvider;
 class IConcertClientSession;
 class IConcertClientDataStore;
-struct FConcertTransactionEventBase;
-struct FConcertPackageInfo;
 
 DECLARE_MULTICAST_DELEGATE(FOnWorkspaceSynchronized);
+DECLARE_MULTICAST_DELEGATE_ThreeParams(FOnActivityAddedOrUpdated, const FConcertClientInfo&/*InClientInfo*/, const FConcertSyncActivity&/*InActivity*/, const FStructOnScope&/*InActivitySummary*/);
+
+struct FConcertClientSessionActivity
+{
+	FConcertClientSessionActivity() = default;
+
+	FConcertClientSessionActivity(const FConcertSyncActivity& InActivity, const FStructOnScope& InActivitySummary, TUniquePtr<FConcertSessionSerializedPayload> OptionalEventPayload = nullptr)
+		: Activity(InActivity)
+		, EventPayload(MoveTemp(OptionalEventPayload))
+	{
+		ActivitySummary.InitializeFromChecked(InActivitySummary);
+	}
+
+	FConcertClientSessionActivity(FConcertSyncActivity&& InActivity, FStructOnScope&& InActivitySummary, TUniquePtr<FConcertSessionSerializedPayload> OptionalEventPayload = nullptr)
+		: Activity(MoveTemp(InActivity))
+		, EventPayload(MoveTemp(OptionalEventPayload))
+	{
+		ActivitySummary.InitializeFromChecked(MoveTemp(InActivitySummary));
+	}
+
+	/** The generic activity part. */
+	FConcertSyncActivity Activity;
+
+	/** Contains the activity summary to display as text. */
+	TStructOnScope<FConcertSyncActivitySummary> ActivitySummary;
+
+	/**
+	 * The activity event payload usable for activity inspection. Might be null if it was not requested or did not provide insightful information.
+	 *   - If the activity type is 'transaction' and EventPayload is not null, it contains a FConcertSyncTransactionEvent with full transaction data.
+	 *   - If the activity type is 'package' and EventPayload is not null, it contains a FConcertSyncPackageEvent with the package meta data only.
+	 *   - Not set for other activity types (connection/lock).
+	 * @see FConcertActivityStream
+	 */
+	TUniquePtr<FConcertSessionSerializedPayload> EventPayload;
+};
 
 class IConcertClientWorkspace
 {
@@ -21,7 +55,7 @@ public:
 	/**
 	 * Get the associated session.
 	 */
-	virtual TSharedPtr<IConcertClientSession> GetSession() const = 0;
+	virtual IConcertClientSession& GetSession() const = 0;
 
 	/**
 	 * @return the client id this workspace uses to lock resources.
@@ -57,54 +91,100 @@ public:
 	virtual TFuture<FConcertResourceLockResponse> UnlockResources(TArray<FName> InResourceName) = 0;
 
 	/**
+	 * Tell if a workspace contains session changes.
+	 * @return True if the session contains any changes.
+	 */
+	virtual bool HasSessionChanges() const = 0;
+
+	/**
 	 * Gather assets changes that happened on the workspace in this session.
-	 * @return a list of asset files that were modified during the session.
+	 * @param IgnorePersisted if true will not return packages which have already been persisted in their current state.
+	 * @return a list of package names that were modified during the session.
 	 */
-	virtual TArray<FString> GatherSessionChanges() = 0;
+	virtual TArray<FName> GatherSessionChanges(bool IgnorePersisted = true) = 0;
 
-	/** Persist the session changes from the file list and prepare it for source control submission */
-	virtual bool PersistSessionChanges(TArrayView<const FString> InFilesToPersist, ISourceControlProvider* SourceControlProvider, TArray<FText>* OutFailureReasonMap = nullptr) = 0;
-
-	/**
-	 * Get the number of activities in the workspace ledger.
-	 */
-	virtual uint64 GetActivityCount() const = 0;
+	/** Persist the session changes from the package list and prepare it for source control submission */
+	virtual bool PersistSessionChanges(TArrayView<const FName> InPackageToPersist, ISourceControlProvider* SourceControlProvider, TArray<FText>* OutFailureReasonMap = nullptr) = 0;
 
 	/**
-	 * Get the last activities from the ledger.
-	 * @param Limit the maximum number of activities returned.
-	 * @param OutActivities the activities fetched from the ledger.
-	 * @return the index of the first fetched activity.
+	 * Get Activities from the session.
+	 * @param FirstActivityIdToFetch The ID at which to start fetching activities.
+	 * @param MaxNumActivities The maximum number of activities to fetch.
+	 * @param OutEndpointClientInfoMap The client info for the activities fetched.
+	 * @param OutActivities the activities fetched.
 	 */
-	virtual uint64 GetLastActivities(uint32 Limit, TArray<FStructOnScope>& OutActivities) const = 0;
+	virtual void GetActivities(const int64 FirstActivityIdToFetch, const int64 MaxNumActivities, TMap<FGuid, FConcertClientInfo>& OutEndpointClientInfoMap, TArray<FConcertClientSessionActivity>& OutActivities) const = 0;
 
 	/**
-	 * Get Activities from the ledger.
-	 * @param Offset the index at which to start fetching activities.
-	 * @param Limit the maximum number of activities returned.
-	 * @param OutActivities the activities fetched from the ledger.
+	 * Get the ID of the last activity in the session.
 	 */
-	virtual void GetActivities(uint64 Offset, uint32 Limit, TArray<FStructOnScope>& OutActivities) const = 0;
+	virtual int64 GetLastActivityId() const = 0;
 
 	/**
-	 * @return the delegate called every time a new activity is added to the workspace ledger.
+	 * @return the delegate called every time an activity is added to or updated in the session.
 	 */
-	virtual FOnAddActivity& OnAddActivity() = 0;
+	virtual FOnActivityAddedOrUpdated& OnActivityAddedOrUpdated() = 0;
 
 	/**
-	 * @param[in] TransactionIndex index of the transaction to look for.
-	 * @param[out] OutTransaction The transaction corresponding to TransactionIndex if found.
-	 * @return whether or not the transaction event was found.
+	 * Indicate if an asset package is supported for live transactions.
+	 *
+	 * @param InAssetPackage The package to check
+	 * @return true if we support live transactions for objects inside the package
 	 */
-	virtual bool FindTransactionEvent(uint64 TransactionIndex, FConcertTransactionFinalizedEvent& OutTransaction) const = 0;
+	virtual bool HasLiveTransactionSupport(class UPackage* InPackage) const = 0;
 
 	/**
-	 * @param[in] PackageName name of the package to look for.
-	 * @param[in] Revision the package revision number.
-	 * @param[out] OutPackage Information about the package.
-	 * @return whether or not the package event was found.
+	 * Indicate if package dirty event should be ignored for a package
+	 * @param InPackage The package to check
+	 * @return true if dirty event should be ignored for said package.
 	 */
-	virtual bool FindPackageEvent(const FName& PackageName, const uint32 Revision, FConcertPackageInfo& OutPackage) const = 0;
+	virtual bool ShouldIgnorePackageDirtyEvent(class UPackage* InPackage) const = 0;
+
+	/**
+	 * Lookup the specified transaction event.
+	 * @param[in] TransactionEventId ID of the transaction to look for.
+	 * @param[out] OutTransactionEvent The transaction corresponding to TransactionEventId if found.
+	 * @param[in] bMetaDataOnly True to extract the event meta-data only (title, ids, etc), false to get the full transaction data (to reapply/inspect it).
+	 * @return Whether the transaction event was found and requested data available. If bMetaDataOnly is false and the event was partially
+	 *         synced (because it was superseded by another one), the function returns false.
+	 * @see FindOrRequestTransactionEvent() if the full transaction data is required.
+	 * @note This function is more efficient to use if only the meta data is required.
+	 */
+	virtual bool FindTransactionEvent(const int64 TransactionEventId, FConcertSyncTransactionEvent& OutTransactionEvent, const bool bMetaDataOnly) const = 0;
+
+	/**
+	 * Lookup the specified transaction events. By default, some transaction activities are partially synced (only the summary) when the system detects that
+	 * the transaction was superseded by another one.
+	 * @param[in] TransactionEventId ID of the transaction to look for.
+	 * @param[in] bMetaDataOnly True to extract the event meta-data only (title, IDs, etc), false to get the full transaction data (to reapply/inspect it).
+	 * @return A future containing the event, if found. If bMetaDataOnly is false and the event was partially synced (because it was superseded
+	 *         by another one) the function will perform an asynchronous server request to get the transaction data.
+	 * @note If only the meta data is required, consider using FindTransactionEvent() as it is more efficient.
+	 */
+	virtual TFuture<TOptional<FConcertSyncTransactionEvent>> FindOrRequestTransactionEvent(const int64 TransactionEventId, const bool bMetaDataOnly) = 0;
+
+	/**
+	 * Lookup the specified package event.
+	 * @param[in] PackageEventId ID of the package to look for.
+	 * @param[out] OutPackageEvent Information about the package.
+	 * @param[in] bMetaDataOnly True to extract the event meta-data only (title, ids, etc), false if the package data is also required.
+	 * @return Whether the package event was found and requested data available. If bMetaDataOnly is false and the event was partially
+	 *         synced (because it was superseded by another one), the function returns false.
+	 * @see FindOrRequestPackageEvent() if the package data (not only the activity summary) is required.
+	 * @note This function is more efficient to use if only the meta data is required.
+	 */
+	virtual bool FindPackageEvent(const int64 PackageEventId, FConcertSyncPackageEvent& OutPackageEvent, const bool bMetaDataOnly) const = 0;
+
+	/**
+	 * Lookup the specified package events. By default, some package activities are partially synced (only the summary) when the system detects that
+	 * the package data was superseded by another version.
+	 * @param[in] PackageEventId ID of the package to look for.
+	 * @param[in] bMetaDataOnly True to extract the event meta-data only (title, ids, etc), false if the package data is also required.
+	 * @return A future containing the event, if found. If bMetaDataOnly is false and the event was partially synced (because it was superseded
+	 *         by another one) the function will perform an asynchronous server request to get the package data.
+	 * @note If only the meta data is required, consider using FindPackageEvent() as it is more efficient.
+	 */
+	virtual TFuture<TOptional<FConcertSyncPackageEvent>> FindOrRequestPackageEvent(const int64 PackageEventId, const bool bMetaDataOnly) = 0;
 
 	/**
 	 * @return the delegate called every time the workspace is synced.
@@ -124,5 +204,13 @@ public:
 	 * @param[out] OutOtherClientsWithModifInfo If not null, will contain the other client(s) who modified the packages, up to OtherClientsWithModifMaxFetchNum.
 	 * @param[in] OtherClientsWithModifMaxFetchNum The maximum number of client info to store in OutOtherClientsWithModifInfo if the latter is not null.
 	 */
-	virtual bool IsAssetModifiedByOtherClients(const FName& AssetName, int* OutOtherClientsWithModifNum = nullptr, TArray<FConcertClientInfo>* OutOtherClientsWithModifInfo = nullptr, int OtherClientsWithModifMaxFetchNum = 0) const = 0;
+	virtual bool IsAssetModifiedByOtherClients(const FName& AssetName, int32* OutOtherClientsWithModifNum = nullptr, TArray<FConcertClientInfo>* OutOtherClientsWithModifInfo = nullptr, int32 OtherClientsWithModifMaxFetchNum = 0) const = 0;
+
+	/**
+	 * Controls whether the activities emitted to the server through this workspace are marked as 'ignored on restore'. By default, all activities are marked as 'restorable'. When
+	 * the workspace 'ignore' state is true, the events emitted are recorded by the server, but are marked as 'should not restore'. Non-restorable activities are used for inspection.
+	 * @note This was implemented to prevent multi-users transactions from being restored by disaster recovery in case of a crash during as multi-user session.
+	 * @param bIgnore Whether all further events emitted are marked as 'ignored on restore'.
+	 */
+	virtual void SetIgnoreOnRestoreFlagForEmittedActivities(bool bIgnore) = 0;
 };

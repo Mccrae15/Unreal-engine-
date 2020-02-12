@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -16,8 +16,7 @@ class UNiagaraEmitter;
 class FNiagaraScriptInputCollectionViewModel : public FNiagaraParameterCollectionViewModel, public TSharedFromThis<FNiagaraScriptInputCollectionViewModel>
 {
 public:
-	FNiagaraScriptInputCollectionViewModel(UNiagaraScript* InScript, FText InDisplayName, ENiagaraParameterEditMode InParameterEditMode);
-	FNiagaraScriptInputCollectionViewModel(UNiagaraEmitter* InEmitter, FText InDisplayName, ENiagaraParameterEditMode InParameterEditMode);
+	FNiagaraScriptInputCollectionViewModel(TAttribute<FText> InDisplayName, ENiagaraParameterEditMode InParameterEditMode);
 
 	~FNiagaraScriptInputCollectionViewModel();
 
@@ -51,7 +50,7 @@ private:
 	void OnGraphChanged(const struct FEdGraphEditAction& InAction);
 
 	/** Handles when the name on a parameter changes. */
-	void OnParameterNameChanged(FName OldName, FName NewName, FNiagaraVariable* ParameterVariable);
+	void OnParameterNameChanged(FName OldName, FName NewName, TWeakObjectPtr<UNiagaraNodeInput> InputNodeWeak);
 
 	/** Handles when the type on a parameter changes. */
 	void OnParameterTypeChanged(FNiagaraVariable* ParameterVariable);
@@ -70,7 +69,7 @@ private:
 	TWeakObjectPtr<UNiagaraGraph> Graph;
 
 	/** The display name for the view model. */
-	FText DisplayName;
+	TAttribute<FText> DisplayName;
 
 	/** The handle to the graph changed delegate. */
 	FDelegateHandle OnGraphChangedHandle;

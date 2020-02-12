@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "Commandlets/GatherTextFromSourceCommandlet.h"
 #include "HAL/FileManager.h"
@@ -1243,7 +1243,8 @@ void UGatherTextFromSourceCommandlet::FIfDescriptor::TryParse(const FString& Tex
 		// Handle "#if defined <defname>"
 		if (RemainingText.StartsWith(DefinedString, ESearchCase::CaseSensitive))
 		{
-			RemainingText = RemainingText.RightChop(DefinedString.Len()).TrimStart();
+			RemainingText.RightChopInline(DefinedString.Len(), false);
+			RemainingText.TrimStartInline();
 		}
 
 		Context.PushMacroBlock(RemainingText);
@@ -1279,7 +1280,8 @@ void UGatherTextFromSourceCommandlet::FElIfDescriptor::TryParse(const FString& T
 		// Handle "#elif defined <defname>"
 		if (RemainingText.StartsWith(DefinedString, ESearchCase::CaseSensitive))
 		{
-			RemainingText = RemainingText.RightChop(DefinedString.Len()).TrimStart();
+			RemainingText.RightChopInline(DefinedString.Len(), false);
+			RemainingText.TrimStartInline();
 		}
 
 		Context.PopMacroBlock(); // Pop the current #if or #ifdef state
@@ -1320,12 +1322,20 @@ bool UGatherTextFromSourceCommandlet::FMacroDescriptor::ParseArgsFromMacro(const
 
 	bool Success = false;
 
-	FString RemainingText = Text.RightChop(GetToken().Len()).TrimStart();
-	int32 OpenBracketIdx = RemainingText.Find(TEXT("("));
-	if (0 > OpenBracketIdx)
+	// Step over the token name and any whitespace after it
+	FString RemainingText = Text.RightChop(GetToken().Len());
+	RemainingText.TrimStartInline();
+
+	const int32 OpenBracketIdx = RemainingText.Find(TEXT("("), ESearchCase::CaseSensitive);
+	if (OpenBracketIdx == INDEX_NONE)
 	{
+		// No opening bracket; warn about this, but don't consider it an error as we're likely parsing something we shouldn't be
 		UE_LOG(LogGatherTextFromSourceCommandlet, Warning, TEXT("Missing bracket '(' in %s macro in %s(%d):%s"), *GetToken(), *Context.Filename, Context.LineNumber, *FLocTextHelper::SanitizeLogOutput(Context.LineText));
-		//Dont assume this is an error. It's more likely trying to parse something it shouldn't be.
+		return false;
+	}
+	else if (OpenBracketIdx > 0)
+	{
+		// We stepped over the whitespace when building RemainingText, so if the bracket isn't the first character in the text then it means we only partially matched a longer token and shouldn't parse it
 		return false;
 	}
 	else

@@ -27,7 +27,6 @@
 				"Win64",
 				"Linux",
 				"Mac",
-				"PS4",
 				"XboxOne",
 				"Android",
 				"IOS",
@@ -36,7 +35,7 @@
 		},
 		{
 			"Name" : "OodleCompressionFormat",
-			"Type" : "Runtime",
+			"Type" : "RuntimeAndProgram",
 			"LoadingPhase" : "EarliestPossible",
 			"WhitelistPlatforms" :
 			[
@@ -44,7 +43,6 @@
 				"Win64",
 				"Linux",
 				"Mac",
-				"PS4",
 				"XboxOne",
 				"Android",
 				"IOS",

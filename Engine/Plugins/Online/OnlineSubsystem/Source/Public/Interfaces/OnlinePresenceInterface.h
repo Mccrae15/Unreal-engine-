@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -27,25 +27,25 @@ typedef FString FPresenceKey;
 typedef FOnlineKeyValuePairs<FPresenceKey, FVariantData> FPresenceProperties;
 
 /** The default key that will update presence text in the platform's UI */
-const FString DefaultPresenceKey = TEXT("RichPresence");
+extern ONLINESUBSYSTEM_API const FString DefaultPresenceKey;
 
 /** Custom presence data that is not seen by users but can be polled */
-const FString CustomPresenceDataKey = TEXT("CustomData");
+extern ONLINESUBSYSTEM_API const FString CustomPresenceDataKey;
 
 /** Name of the client that sent the presence update */
-const FString DefaultAppIdKey = TEXT("AppId");
+extern ONLINESUBSYSTEM_API const FString DefaultAppIdKey;
 
 /** Platform of the client that sent the presence update */
-const FString DefaultPlatformKey = TEXT("Platform");
+extern ONLINESUBSYSTEM_API const FString DefaultPlatformKey;
 
 /** Override Id of the client to set the presence state to */
-const FString OverrideAppIdKey = TEXT("OverrideAppId");
+extern ONLINESUBSYSTEM_API const FString OverrideAppIdKey;
 
 /** Id of the session for the presence update. @todo samz - SessionId on presence data should be FUniqueNetId not uint64 */
-const FString DefaultSessionIdKey = TEXT("SessionId");
+extern ONLINESUBSYSTEM_API const FString DefaultSessionIdKey;
 
 /** Resource the client is logged in with */
-const FString PresenceResourceKey = TEXT("ResourceKey");
+extern ONLINESUBSYSTEM_API const FString PresenceResourceKey;
 
 namespace EOnlinePresenceState
 {
@@ -80,6 +80,39 @@ namespace EOnlinePresenceState
 			return TEXT("Chat");
 		}
 		return TEXT("");
+	}
+
+	/**
+	 * @return EOnlinePresenceState from the string passed in
+	 */
+	inline EOnlinePresenceState::Type FromString(const TCHAR* StringVal)
+	{
+		if (FCString::Stricmp(StringVal, TEXT("Online")) == 0)
+		{
+			return EOnlinePresenceState::Online;
+		}
+		else if (FCString::Stricmp(StringVal, TEXT("Offline")) == 0)
+		{
+			return EOnlinePresenceState::Offline;
+		}
+		else if (FCString::Stricmp(StringVal, TEXT("Away")) == 0)
+		{
+			return EOnlinePresenceState::Away;
+		}
+		else if (FCString::Stricmp(StringVal, TEXT("ExtendedAway")) == 0)
+		{
+			return EOnlinePresenceState::ExtendedAway;
+		}
+		else if (FCString::Stricmp(StringVal, TEXT("DoNotDisturb")) == 0)
+		{
+			return EOnlinePresenceState::DoNotDisturb;
+		}
+		else if (FCString::Stricmp(StringVal, TEXT("Chat")) == 0)
+		{
+			return EOnlinePresenceState::Chat;
+		}
+		// Default to Offline / generally unavailable
+		return EOnlinePresenceState::Offline;
 	}
 
 	static FText OnlineText =  NSLOCTEXT("OnlinePresence", "Online", "Online");
@@ -148,6 +181,7 @@ public:
 	uint32 bIsPlayingThisGame:1;
 	uint32 bIsJoinable:1;
 	uint32 bHasVoiceSupport:1;
+	FDateTime LastOnline;
 	FOnlineUserPresenceStatus Status;
 
 	/** Constructor */
@@ -165,6 +199,7 @@ public:
 		bIsJoinable = 0;
 		bHasVoiceSupport = 0;
 		Status = FOnlineUserPresenceStatus();
+		LastOnline = FDateTime::MaxValue();
 	}
 
 	const FString GetPlatform() const
@@ -204,7 +239,7 @@ public:
  * Delegate executed when new presence data is available for a user.
  *
  * @param UserId The unique id of the user whose presence was received.
- * @param Presence The unique id of the user whose presence was received.
+ * @param Presence The received presence
  */
 DECLARE_MULTICAST_DELEGATE_TwoParams(FOnPresenceReceived, const class FUniqueNetId& /*UserId*/, const TSharedRef<FOnlineUserPresence>& /*Presence*/);
 typedef FOnPresenceReceived::FDelegate FOnPresenceReceivedDelegate;

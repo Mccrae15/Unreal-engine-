@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -48,7 +48,6 @@ public:
 
 	//~ FThumbnailSection interface
 
-	virtual TSharedRef<SWidget> GenerateSectionWidget() override;
 	virtual FMargin GetContentPadding() const override;
 	virtual float GetSectionHeight() const override;
 	virtual FText GetSectionTitle() const override;

@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "DetailCategoryBuilderImpl.h"
 #include "ObjectPropertyNode.h"
@@ -8,10 +8,12 @@
 #include "DetailItemNode.h"
 #include "DetailAdvancedDropdownNode.h"
 #include "DetailPropertyRow.h"
+#include "SDetailSingleItemRow.h"
 #include "DetailGroup.h"
 #include "StructurePropertyNode.h"
 #include "ItemPropertyNode.h"
 #include "IPropertyGenerationUtilities.h"
+#include "DetailBuilderTypes.h"
 
 namespace DetailLayoutConstants
 {
@@ -67,6 +69,16 @@ bool FDetailLayoutCustomization::HasExternalPropertyRow() const
 {
 	return HasPropertyNode() && PropertyRow->HasExternalProperty();
 }
+
+bool FDetailLayoutCustomization::IsHidden() const
+{
+	return !IsValidCustomization()
+		|| (HasCustomWidget() && WidgetDecl->VisibilityAttr.Get() != EVisibility::Visible)
+		|| (HasPropertyNode() && PropertyRow->GetPropertyVisibility() != EVisibility::Visible);
+	/** Partial revert of CL 7273612 (fix for UE-76064) that caused a bunch of regressions in the details panel (UE-77377,UE-77376,UE-77451). */
+	//|| (HasCustomBuilder() && CustomBuilderRow->AreChildCustomizationsHidden());
+}
+
 
 TSharedPtr<FPropertyNode> FDetailLayoutCustomization::GetPropertyNode() const
 {
@@ -125,7 +137,6 @@ FDetailCategoryImpl::FDetailCategoryImpl(FName InCategoryName, TSharedRef<FDetai
 	GConfig->GetBool(TEXT("DetailCategoriesAdvanced"), *CategoryPathName, bUserShowAdvancedConfigValue, GEditorPerProjectIni);
 
 	bUserShowAdvanced = bUserShowAdvancedConfigValue;
-
 }
 
 FDetailCategoryImpl::~FDetailCategoryImpl()
@@ -138,6 +149,12 @@ FDetailWidgetRow& FDetailCategoryImpl::AddCustomRow(const FText& FilterString, b
 	FDetailLayoutCustomization NewCustomization;
 	NewCustomization.WidgetDecl = MakeShareable(new FDetailWidgetRow);
 	NewCustomization.WidgetDecl->FilterString(FilterString);
+
+	IDetailsViewPrivate* DetailsView = GetDetailsView();
+	if (DetailsView && DetailsView->IsCustomRowVisibilityFiltered() && !GetDetailsView()->IsCustomRowVisible(FName(*FilterString.ToString()), FName(*DisplayName.ToString())))
+	{
+		NewCustomization.WidgetDecl->Visibility(TAttribute<EVisibility>(EVisibility::Collapsed));
+	}
 
 	AddCustomLayout(NewCustomization, bForAdvanced);
 
@@ -244,6 +261,7 @@ IDetailCategoryBuilder& FDetailCategoryImpl::RestoreExpansionState(bool bRestore
 
 IDetailCategoryBuilder& FDetailCategoryImpl::HeaderContent(TSharedRef<SWidget> InHeaderContent)
 {
+	ensureMsgf(!this->HeaderContentWidget.IsValid(), TEXT("Category already has a header content widget defined!"));
 	this->HeaderContentWidget = InHeaderContent;
 	return *this;
 }
@@ -291,7 +309,6 @@ IDetailPropertyRow& FDetailCategoryImpl::AddProperty(TSharedPtr<IPropertyHandle>
 
 	bool bForAdvanced = false;
 
-
 	if (Location == EPropertyLocation::Default)
 	{
 		// Get the default location of this property
@@ -303,22 +320,42 @@ IDetailPropertyRow& FDetailCategoryImpl::AddProperty(TSharedPtr<IPropertyHandle>
 		bForAdvanced = true;
 	}
 
-
 	AddCustomLayout(NewCustomization, bForAdvanced);
 
 	return *NewCustomization.PropertyRow;
 }
 
-IDetailPropertyRow* FDetailCategoryImpl::AddExternalObjects(const TArray<UObject*>& Objects, EPropertyLocation::Type Location /*= EPropertyLocation::Default*/)
-{
-	return AddExternalObjectProperty(Objects, NAME_None, Location);
-}
-
-IDetailPropertyRow* FDetailCategoryImpl::AddExternalObjectProperty(const TArray<UObject*>& Objects, FName PropertyName, EPropertyLocation::Type Location)
+IDetailPropertyRow* FDetailCategoryImpl::AddExternalObjects(const TArray<UObject*>& Objects, EPropertyLocation::Type Location /*= EPropertyLocation::Default*/, const FAddPropertyParams& Params /*= FAddPropertyParams()*/)
 {
 	FDetailLayoutCustomization NewCustomization;
 
-	FDetailPropertyRow::MakeExternalPropertyRowCustomization(Objects, PropertyName, AsShared(), NewCustomization);
+	FAddPropertyParams AddPropertyParams = Params;
+	AddPropertyParams.AllowChildren(true);
+
+	FDetailPropertyRow::MakeExternalPropertyRowCustomization(Objects, NAME_None, AsShared(), NewCustomization, AddPropertyParams);
+
+	TSharedPtr<FDetailPropertyRow> NewRow = NewCustomization.PropertyRow;
+
+	if (NewRow.IsValid())
+	{
+		bool bForAdvanced = false;
+		if (Location == EPropertyLocation::Advanced)
+		{
+			// Force advanced
+			bForAdvanced = true;
+		}
+
+		AddCustomLayout(NewCustomization, bForAdvanced);
+	}
+
+	return NewRow.Get();
+}
+
+IDetailPropertyRow* FDetailCategoryImpl::AddExternalObjectProperty(const TArray<UObject*>& Objects, FName PropertyName, EPropertyLocation::Type Location, const FAddPropertyParams& Params)
+{
+	FDetailLayoutCustomization NewCustomization;
+
+	FDetailPropertyRow::MakeExternalPropertyRowCustomization(Objects, PropertyName, AsShared(), NewCustomization, Params);
 
 	TSharedPtr<FDetailPropertyRow> NewRow = NewCustomization.PropertyRow;
 
@@ -343,11 +380,11 @@ IDetailPropertyRow* FDetailCategoryImpl::AddExternalStructure(TSharedPtr<FStruct
 	return AddExternalStructureProperty(StructData, NAME_None, Location);
 }
 
-IDetailPropertyRow* FDetailCategoryImpl::AddExternalStructureProperty(TSharedPtr<FStructOnScope> StructData, FName PropertyName, EPropertyLocation::Type Location/* = EPropertyLocation::Default*/)
+IDetailPropertyRow* FDetailCategoryImpl::AddExternalStructureProperty(TSharedPtr<FStructOnScope> StructData, FName PropertyName, EPropertyLocation::Type Location/* = EPropertyLocation::Default*/, const FAddPropertyParams& Params)
 {
 	FDetailLayoutCustomization NewCustomization;
 
-	FDetailPropertyRow::MakeExternalPropertyRowCustomization(StructData, PropertyName, AsShared(), NewCustomization);
+	FDetailPropertyRow::MakeExternalPropertyRowCustomization(StructData, PropertyName, AsShared(), NewCustomization, Params);
 
 	TSharedPtr<FDetailPropertyRow> NewRow = NewCustomization.PropertyRow;
 
@@ -398,7 +435,7 @@ TArray<TSharedPtr<IPropertyHandle>> FDetailCategoryImpl::AddAllExternalStructure
 		for (int32 ChildIdx = 0; ChildIdx < RootPropertyNode->GetNumChildNodes(); ++ChildIdx)
 		{
 			TSharedPtr< FPropertyNode > PropertyNode = RootPropertyNode->GetChildNode(ChildIdx);
-			if (UProperty* Property = PropertyNode->GetProperty())
+			if (FProperty* Property = PropertyNode->GetProperty())
 			{
 				FDetailLayoutCustomization NewCustomization;
 				NewCustomization.PropertyRow = MakeShared<FDetailPropertyRow>(PropertyNode, AsShared(), RootPropertyNode);
@@ -577,33 +614,40 @@ void FDetailCategoryImpl::SetDisplayName(FName InCategoryName, const FText& Loca
 	{
 		DisplayName = LocalizedNameOverride;
 	}
+	else if (InCategoryName != NAME_None)
+	{
+		static const FTextKey CategoryLocalizationNamespace = TEXT("UObjectCategory");
+		static const FName CategoryMetaDataKey = TEXT("Category");
+
+		DisplayName = FText();
+
+		const FString NativeCategory = InCategoryName.ToString();
+		if (FText::FindText(CategoryLocalizationNamespace, NativeCategory, /*OUT*/DisplayName, &NativeCategory))
+		{
+			// Category names in English are typically gathered in their non-pretty form (eg "UserInterface" rather than "User Interface"), so skip 
+			// applying the localized variant if the text matches the raw category name, as in this case the pretty printer will do a better job
+			if (NativeCategory.Equals(DisplayName.ToString(), ESearchCase::CaseSensitive))
+			{
+				DisplayName = FText();
+			}
+		}
+		
+		if (DisplayName.IsEmpty())
+		{
+			DisplayName = FText::AsCultureInvariant(FName::NameToDisplayString(NativeCategory, false));
+		}
+	}
 	else
 	{
-		const UStruct* BaseStruct = GetParentLayoutImpl().GetRootNode()->GetBaseStructure();
 		// Use the base class name if there is one otherwise this is a generic category not specific to a class
-		FName BaseStructName = BaseStruct ? BaseStruct->GetFName() : FName("Generic");
-
-		FString CategoryStr = InCategoryName != NAME_None ? InCategoryName.ToString() : BaseStructName.ToString();
-		FString SourceCategoryStr = FName::NameToDisplayString(CategoryStr, false);
-
-		bool FoundText = false;
-		FText DisplayNameText;
-		if (InCategoryName != NAME_None)
+		const UStruct* BaseStruct = GetParentLayoutImpl().GetRootNode()->GetBaseStructure();
+		if (BaseStruct)
 		{
-			FoundText = FText::FindText(TEXT("DetailCategory.CategoryName"), InCategoryName.ToString(), /*OUT*/DisplayNameText);
+			DisplayName = BaseStruct->GetDisplayNameText();
 		}
 		else
 		{
-			FoundText = FText::FindText(TEXT("DetailCategory.ClassName"), BaseStructName.ToString(), /*OUT*/DisplayNameText);
-		}
-
-		if (FoundText)
-		{
-			DisplayName = DisplayNameText;
-		}
-		else
-		{
-			DisplayName = FText::FromString(SourceCategoryStr);
+			DisplayName = NSLOCTEXT("DetailCategory", "GenericCategory", "Generic");
 		}
 	}
 }
@@ -611,16 +655,33 @@ void FDetailCategoryImpl::SetDisplayName(FName InCategoryName, const FText& Loca
 
 TSharedRef<ITableRow> FDetailCategoryImpl::GenerateWidgetForTableView(const TSharedRef<STableViewBase>& OwnerTable, const FDetailColumnSizeData& ColumnSizeData, bool bAllowFavoriteSystem)
 {
+	TSharedPtr<SWidget> HeaderContent = HeaderContentWidget;
+	if (InlinePropertyNode.IsValid())
+	{
+		FDetailWidgetRow Row;
+		InlinePropertyNode->GenerateStandaloneWidget(Row);
+		HeaderContent = Row.ValueWidget.Widget;
+	}
+
 	return
 		SNew(SDetailCategoryTableRow, AsShared(), OwnerTable)
 		.InnerCategory(DetailLayoutBuilder.IsValid() ? DetailLayoutBuilder.Pin()->IsLayoutForExternalRoot() : false)
 		.DisplayName(GetDisplayName())
-		.HeaderContent(HeaderContentWidget);
+		.HeaderContent(HeaderContent)
+		.ColumnSizeData(&ColumnSizeData);
 }
 
 
 bool FDetailCategoryImpl::GenerateStandaloneWidget(FDetailWidgetRow& OutRow) const
 {
+	TSharedPtr<SWidget> HeaderContent = HeaderContentWidget;
+	if (InlinePropertyNode.IsValid())
+	{
+		FDetailWidgetRow Row;
+		InlinePropertyNode->GenerateStandaloneWidget(Row);
+		HeaderContent = Row.ValueWidget.Widget;
+	}
+
 	const bool bIsInnerCategory = DetailLayoutBuilder.Pin()->IsLayoutForExternalRoot();
 
 	OutRow.NameContent()
@@ -637,7 +698,7 @@ bool FDetailCategoryImpl::GenerateStandaloneWidget(FDetailWidgetRow& OutRow) con
 			.ValueContent()
 			.HAlign(HAlign_Fill)
 			[
-				HeaderContentWidget.ToSharedRef()
+				HeaderContent.ToSharedRef()
 			];
 	}
 
@@ -682,10 +743,11 @@ bool FDetailCategoryImpl::ShouldBeExpanded() const
 
 ENodeVisibility FDetailCategoryImpl::GetVisibility() const
 {
-	return bHasVisibleDetails && bIsCategoryVisible ? ENodeVisibility::Visible : ENodeVisibility::ForcedHidden;
+	return bHasVisibleDetails && bIsCategoryVisible ? 
+		ENodeVisibility::Visible : ENodeVisibility::ForcedHidden;
 }
 
-bool IsCustomProperty(const TSharedPtr<FPropertyNode>& PropertyNode)
+static bool IsCustomProperty(const TSharedPtr<FPropertyNode>& PropertyNode)
 {
 	// The property node is custom if it has a custom layout or if its a struct and any of its children have a custom layout
 	bool bIsCustom = !PropertyNode.IsValid() || PropertyNode->HasNodeFlags(EPropertyNodeFlags::IsCustomized) != 0;
@@ -693,6 +755,33 @@ bool IsCustomProperty(const TSharedPtr<FPropertyNode>& PropertyNode)
 	return bIsCustom;
 }
 
+static bool ShouldBeInlineNode(const TSharedRef<FDetailItemNode>& Node)
+{
+	TSharedPtr<FPropertyNode> PropertyNode = Node->GetPropertyNode();
+	if (PropertyNode.IsValid())
+	{
+		const FProperty* Property = PropertyNode->GetProperty();
+		if (Property != nullptr)
+		{
+			const FBoolProperty* BoolProperty = CastField<FBoolProperty>(Property);
+			const FEnumProperty* EnumProperty = CastField<FEnumProperty>(Property);
+			const FByteProperty* ByteProperty = CastField<FByteProperty>(Property);
+
+			// Only allow bools and enums as inline nodes.
+			if (BoolProperty != nullptr || EnumProperty != nullptr ||
+				(ByteProperty != nullptr && ByteProperty->IsEnum()))
+			{
+				static const FName Name_InlineCategoryProperty("InlineCategoryProperty");
+				if (Property->HasMetaData(Name_InlineCategoryProperty))
+				{
+					return true;
+				}
+			}
+		}
+	}
+
+	return false;
+}
 
 void FDetailCategoryImpl::GenerateNodesFromCustomizations(const FCustomizationList& InCustomizationList, bool bDefaultLayouts, FDetailNodeList& OutNodeList, bool &bOutLastItemHasMultipleColumns)
 {
@@ -707,6 +796,13 @@ void FDetailCategoryImpl::GenerateNodesFromCustomizations(const FCustomizationLi
 		{
 			TSharedRef<FDetailItemNode> NewNode = MakeShareable(new FDetailItemNode(Customization, AsShared(), IsParentEnabled));
 			NewNode->Initialize();
+
+			if (ShouldBeInlineNode(NewNode))
+			{
+				ensureMsgf(!InlinePropertyNode.IsValid(), TEXT("Multiple properties marked InlineCategoryProperty detected in category %s."), *DisplayName.ToString());
+				InlinePropertyNode = NewNode;
+				continue;
+			}
 
 			// Add the node unless only its children should be visible or it didnt generate any children or if it is a custom builder which can generate children at any point
 			if (!NewNode->ShouldShowOnlyChildren() || NewNode->HasGeneratedChildren() || Customization.HasCustomBuilder())
@@ -805,8 +901,6 @@ void FDetailCategoryImpl::GenerateChildrenForLayouts()
 			const bool bShouldShowGroup = LayoutMap.ShouldShowGroup(RequiredGroupName);
 			bGeneratedAnyChildren |= GenerateChildrenForSingleLayout(RequiredGroupName, bDefaultLayout, bShouldShowGroup, Layout.GetDefaultAdvancedLayouts(), AdvancedChildNodes, bLastItemHasMultipleColumns);
 		}
-
-
 	}
 
 	// Generate nodes for advanced dropdowns
@@ -817,8 +911,6 @@ void FDetailCategoryImpl::GenerateChildrenForLayouts()
 		}
 
 		const bool bShowSplitter = bLastItemHasMultipleColumns;
-		// if we are forcing advanced mode disable the dropdown
-		const bool bIsEnabled = !bForceAdvanced;
 		AdvancedDropdownNodeBottom = MakeShareable(new FAdvancedDropdownNode(*this, ShowAdvanced, IsEnabled, AdvancedChildNodes.Num() > 0, SimpleChildNodes.Num() == 0, bShowSplitter));
 	}
 }
@@ -831,9 +923,8 @@ void FDetailCategoryImpl::GetChildren(FDetailNodeList& OutChildren)
 
 void FDetailCategoryImpl::GetGeneratedChildren(FDetailNodeList& OutChildren, bool bIgnoreVisibility, bool bIgnoreAdvancedDropdown)
 {
-	for (int32 ChildIndex = 0; ChildIndex < SimpleChildNodes.Num(); ++ChildIndex)
+	for (TSharedRef<FDetailTreeNode>& Child : SimpleChildNodes)
 	{
-		TSharedRef<FDetailTreeNode>& Child = SimpleChildNodes[ChildIndex];
 		if (bIgnoreVisibility || Child->GetVisibility() == ENodeVisibility::Visible)
 		{
 			if (Child->ShouldShowOnlyChildren())
@@ -854,10 +945,8 @@ void FDetailCategoryImpl::GetGeneratedChildren(FDetailNodeList& OutChildren, boo
 			OutChildren.Add(AdvancedDropdownNodeTop.ToSharedRef());
 		}
 
-		for (int32 ChildIndex = 0; ChildIndex < AdvancedChildNodes.Num(); ++ChildIndex)
+		for (TSharedRef<FDetailTreeNode>& Child : AdvancedChildNodes)
 		{
-			TSharedRef<FDetailTreeNode>& Child = AdvancedChildNodes[ChildIndex];
-
 			if (bIgnoreVisibility || Child->GetVisibility() == ENodeVisibility::Visible)
 			{
 				if (Child->ShouldShowOnlyChildren())
@@ -885,9 +974,13 @@ void FDetailCategoryImpl::FilterNode(const FDetailFilter& InFilter)
 
 	bHasVisibleDetails = false;
 
-	for (int32 ChildIndex = 0; ChildIndex < SimpleChildNodes.Num(); ++ChildIndex)
+	if (InlinePropertyNode.IsValid())
 	{
-		TSharedRef<FDetailTreeNode>& Child = SimpleChildNodes[ChildIndex];
+		bHasVisibleDetails = true;
+	}
+
+	for (TSharedRef<FDetailTreeNode>& Child : SimpleChildNodes)
+	{
 		Child->FilterNode(InFilter);
 
 		if (Child->GetVisibility() == ENodeVisibility::Visible)
@@ -897,9 +990,8 @@ void FDetailCategoryImpl::FilterNode(const FDetailFilter& InFilter)
 		}
 	}
 
-	for (int32 ChildIndex = 0; ChildIndex < AdvancedChildNodes.Num(); ++ChildIndex)
+	for (TSharedRef<FDetailTreeNode>& Child : AdvancedChildNodes)
 	{
-		TSharedRef<FDetailTreeNode>& Child = AdvancedChildNodes[ChildIndex];
 		Child->FilterNode(InFilter);
 
 		if (Child->GetVisibility() == ENodeVisibility::Visible)
@@ -927,6 +1019,7 @@ void FDetailCategoryImpl::GenerateLayout()
 	AdvancedChildNodes.Empty();
 	AdvancedDropdownNodeTop.Reset();
 	AdvancedDropdownNodeBottom.Reset();
+	InlinePropertyNode.Reset();
 
 	GenerateChildrenForLayouts();
 

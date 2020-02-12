@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "K2Node_StructOperation.h"
 #include "Engine/UserDefinedStruct.h"
@@ -18,7 +18,7 @@ UK2Node_StructOperation::UK2Node_StructOperation(const FObjectInitializer& Objec
 void UK2Node_StructOperation::ValidateNodeDuringCompilation(class FCompilerResultsLog& MessageLog) const
 {
 	// Skip UK2Node_Variable's validation because it doesn't need a property (see CL# 1756451)
-	Super::Super::ValidateNodeDuringCompilation(MessageLog);
+	UK2Node::ValidateNodeDuringCompilation(MessageLog);
 }
 
 bool UK2Node_StructOperation::HasExternalDependencies(TArray<class UStruct*>* OptionalOutput) const
@@ -33,7 +33,7 @@ bool UK2Node_StructOperation::HasExternalDependencies(TArray<class UStruct*>* Op
 	return bSuperResult || bResult;
 }
 
-void UK2Node_StructOperation::FStructOperationOptionalPinManager::CustomizePinData(UEdGraphPin* Pin, FName SourcePropertyName, int32 ArrayIndex, UProperty* Property) const
+void UK2Node_StructOperation::FStructOperationOptionalPinManager::CustomizePinData(UEdGraphPin* Pin, FName SourcePropertyName, int32 ArrayIndex, FProperty* Property) const
 {
 	FOptionalPinManager::CustomizePinData(Pin, SourcePropertyName, ArrayIndex, Property);
 
@@ -85,9 +85,9 @@ bool UK2Node_StructOperation::DoRenamedPinsMatch(const UEdGraphPin* NewPin, cons
 
 FString UK2Node_StructOperation::GetPinMetaData(FName InPinName, FName InKey)
 {
-	for (TFieldIterator<UProperty> It(StructType); It; ++It)
+	for (TFieldIterator<FProperty> It(StructType); It; ++It)
 	{
-		const UProperty* Property = *It;
+		const FProperty* Property = *It;
 		if(Property && Property->GetFName() == InPinName)
 		{
 			return Property->GetMetaData(InKey);

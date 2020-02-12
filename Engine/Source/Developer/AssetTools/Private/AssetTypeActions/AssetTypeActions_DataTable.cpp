@@ -1,10 +1,10 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "AssetTypeActions/AssetTypeActions_DataTable.h"
-#include "Framework/MultiBox/MultiBoxBuilder.h"
+#include "ToolMenus.h"
 #include "Misc/FileHelper.h"
 #include "EditorFramework/AssetImportData.h"
-#include "Dialogs/Dialogs.h"
+#include "Misc/MessageDialog.h"
 #include "Framework/Application/SlateApplication.h"
 
 #include "Editor/DataTableEditor/Public/DataTableEditorModule.h"
@@ -13,7 +13,7 @@
 
 #define LOCTEXT_NAMESPACE "AssetTypeActions"
 
-void FAssetTypeActions_DataTable::GetActions( const TArray<UObject*>& InObjects, FMenuBuilder& MenuBuilder )
+void FAssetTypeActions_DataTable::GetActions(const TArray<UObject*>& InObjects, FToolMenuSection& Section)
 {
 	auto Tables = GetTypedWeakObjectPtrs<UObject>(InObjects);
 	
@@ -27,7 +27,8 @@ void FAssetTypeActions_DataTable::GetActions( const TArray<UObject*>& InObjects,
 		}
 	}
 
-	MenuBuilder.AddMenuEntry(
+	Section.AddMenuEntry(
+		"DataTable_ExportAsCSV",
 		LOCTEXT("DataTable_ExportAsCSV", "Export as CSV"),
 		LOCTEXT("DataTable_ExportAsCSVTooltip", "Export the data table as a file containing CSV data."),
 		FSlateIcon(),
@@ -37,7 +38,8 @@ void FAssetTypeActions_DataTable::GetActions( const TArray<UObject*>& InObjects,
 			)
 		);
 
-	MenuBuilder.AddMenuEntry(
+	Section.AddMenuEntry(
+		"DataTable_ExportAsJSON",
 		LOCTEXT("DataTable_ExportAsJSON", "Export as JSON"),
 		LOCTEXT("DataTable_ExportAsJSONTooltip", "Export the data table as a file containing JSON data."),
 		FSlateIcon(),
@@ -52,7 +54,8 @@ void FAssetTypeActions_DataTable::GetActions( const TArray<UObject*>& InObjects,
 	PotentialFileExtensions.Add(TEXT(".xlsm"));
 	PotentialFileExtensions.Add(TEXT(".csv"));
 	PotentialFileExtensions.Add(TEXT(".json"));
-	MenuBuilder.AddMenuEntry(
+	Section.AddMenuEntry(
+		"DataTable_OpenSourceData",
 		LOCTEXT("DataTable_OpenSourceData", "Open Source Data"),
 		LOCTEXT("DataTable_OpenSourceDataTooltip", "Opens the data table's source data file in an external editor. It will search using the following extensions: .xls/.xlsm/.csv/.json"),
 		FSlateIcon(),
@@ -91,7 +94,7 @@ void FAssetTypeActions_DataTable::ExecuteExportAsCSV(TArray< TWeakObjectPtr<UObj
 
 			if (OutFilenames.Num() > 0)
 			{
-				FFileHelper::SaveStringToFile(DataTable->GetTableAsCSV(EDataTableExportFlags::UsePrettyPropertyNames | EDataTableExportFlags::UsePrettyEnumNames), *OutFilenames[0]);
+				FFileHelper::SaveStringToFile(DataTable->GetTableAsCSV(), *OutFilenames[0]);
 			}
 		}
 	}
@@ -125,7 +128,7 @@ void FAssetTypeActions_DataTable::ExecuteExportAsJSON(TArray< TWeakObjectPtr<UOb
 
 			if (OutFilenames.Num() > 0)
 			{
-				FFileHelper::SaveStringToFile(DataTable->GetTableAsJSON(EDataTableExportFlags::UsePrettyPropertyNames | EDataTableExportFlags::UsePrettyEnumNames | EDataTableExportFlags::UseJsonObjectsForStructs), *OutFilenames[0]);
+				FFileHelper::SaveStringToFile(DataTable->GetTableAsJSON(EDataTableExportFlags::UseJsonObjectsForStructs), *OutFilenames[0]);
 			}
 		}
 	}
@@ -162,10 +165,11 @@ void FAssetTypeActions_DataTable::OpenAssetEditor( const TArray<UObject*>& InObj
 			DataTablesListText.AppendLineFormat(LOCTEXT("DataTable_MissingRowStructListEntry", "* {0} (Row Structure: {1})"), FText::FromString(Table->GetName()), FText::FromName(ResolvedRowStructName));
 		}
 
-		const EAppReturnType::Type DlgResult = OpenMsgDlgInt(
+		FText Title = LOCTEXT("DataTable_MissingRowStructTitle", "Continue?");
+		const EAppReturnType::Type DlgResult = FMessageDialog::Open(
 			EAppMsgType::YesNoCancel, 
 			FText::Format(LOCTEXT("DataTable_MissingRowStructMsg", "The following Data Tables are missing their row structure and will not be editable.\n\n{0}\n\nDo you want to open these data tables?"), DataTablesListText.ToText()), 
-			LOCTEXT("DataTable_MissingRowStructTitle", "Continue?")
+			&Title
 			);
 
 		switch(DlgResult)
@@ -209,8 +213,8 @@ void FAssetTypeActions_DataTable::PerformAssetDiff(UObject* OldAsset, UObject* N
 	FString AbsoluteNewTempFileName = FPaths::ConvertRelativePathToFull(RelNewTempFileName);
 
 	// save temp files
-	bool OldResult = FFileHelper::SaveStringToFile(OldDataTable->GetTableAsCSV(EDataTableExportFlags::UsePrettyPropertyNames | EDataTableExportFlags::UsePrettyEnumNames), *AbsoluteOldTempFileName);
-	bool NewResult = FFileHelper::SaveStringToFile(NewDataTable->GetTableAsCSV(EDataTableExportFlags::UsePrettyPropertyNames | EDataTableExportFlags::UsePrettyEnumNames), *AbsoluteNewTempFileName);
+	bool OldResult = FFileHelper::SaveStringToFile(OldDataTable->GetTableAsCSV(EDataTableExportFlags::UseSimpleText), *AbsoluteOldTempFileName);
+	bool NewResult = FFileHelper::SaveStringToFile(NewDataTable->GetTableAsCSV(EDataTableExportFlags::UseSimpleText), *AbsoluteNewTempFileName);
 
 	if (OldResult && NewResult)
 	{

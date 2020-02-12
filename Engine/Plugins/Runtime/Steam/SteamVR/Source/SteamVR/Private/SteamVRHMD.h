@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 #include "ISteamVRPlugin.h"
@@ -13,11 +13,11 @@
 #include "StereoLayerManager.h"
 #include "XRRenderTargetManager.h"
 #include "XRRenderBridge.h"
+#include "XRSwapChain.h"
 #include "IHeadMountedDisplayVulkanExtensions.h"
 
 #if PLATFORM_WINDOWS
 #include "Windows/AllowWindowsPlatformTypes.h"
-#include <d3d11.h>
 #include "Windows/HideWindowsPlatformTypes.h"
 #elif PLATFORM_MAC
 #include <IOSurface/IOSurface.h>
@@ -67,52 +67,6 @@ struct FSteamVRLayer
 };
 
 /**
- * Render target swap chain
- */
-class FRHITextureSet2D : public FRHITexture2D
-{
-public:
-	
-	FRHITextureSet2D(const uint32 TextureSetSize, EPixelFormat Format, uint32 SizeX, uint32 SizeY, uint32 NumMips, uint32 NumSamples, uint32 Flags, const FClearValueBinding& InClearValue)
-	: FRHITexture2D(SizeX, SizeY, NumMips, NumSamples, Format, Flags, InClearValue)
-	, TextureIndex(0)
-	{
-		TextureSet.AddZeroed(TextureSetSize);
-	}
-	
-	virtual ~FRHITextureSet2D()
-	{}
-	
-	void AddTexture(FTexture2DRHIRef& Texture, const uint32 Index)
-	{
-		check(Index < static_cast<uint32>(TextureSet.Num()));
-		// todo: Check texture format to ensure it matches the set
-		TextureSet[Index] = Texture;
-	}
-	
-	void Advance()
-	{
-		TextureIndex = (TextureIndex + 1) % static_cast<uint32>(TextureSet.Num());
-	}
-	
-	virtual void* GetTextureBaseRHI() override
-	{
-		check(TextureSet[TextureIndex].IsValid());
-		return TextureSet[TextureIndex]->GetTextureBaseRHI();
-	}
-	
-	virtual void* GetNativeResource() const override
-	{
-		check(TextureSet[TextureIndex].IsValid());
-		return TextureSet[TextureIndex]->GetNativeResource();
-	}
-	
-private:
-	TArray<FTexture2DRHIRef> TextureSet;
-	uint32 TextureIndex;
-};
-
-/**
  * SteamVR Head Mounted Display
  */
 class FSteamVRHMD : public FHeadMountedDisplayBase, public FXRRenderTargetManager, public FSteamVRAssetManager, public TStereoLayerManager<FSteamVRLayer>, public FSceneViewExtensionBase
@@ -126,7 +80,6 @@ public:
 		return SteamSystemName;
 	}
 	virtual FString GetVersionString() const override;
-
 
 	virtual class IHeadMountedDisplay* GetHMDDevice() override
 	{
@@ -163,7 +116,7 @@ public:
 	virtual void RecordAnalytics() override;
 
 	virtual void SetTrackingOrigin(EHMDTrackingOrigin::Type NewOrigin) override;
-	virtual EHMDTrackingOrigin::Type GetTrackingOrigin() override;
+	virtual EHMDTrackingOrigin::Type GetTrackingOrigin() const override;
 	virtual bool GetFloorToEyeTrackingTransform(FTransform& OutFloorToEye) const override;
 
 public:
@@ -191,8 +144,6 @@ public:
 
 	virtual void UpdateScreenSettings(const FViewport* InViewport) override {}
 	
-	virtual bool AllocateRenderTargetTexture(uint32 Index, uint32 SizeX, uint32 SizeY, uint8 Format, uint32 NumMips, uint32 InTexFlags, uint32 InTargetableTextureFlags, FTexture2DRHIRef& OutTargetableTexture, FTexture2DRHIRef& OutShaderResourceTexture, uint32 NumSamples = 1) override;
-
 	virtual bool GetHMDDistortionEnabled(EShadingPath ShadingPath) const override;
 
 	virtual void OnBeginRendering_GameThread() override;
@@ -208,7 +159,7 @@ public:
 	virtual void AdjustViewRect(EStereoscopicPass StereoPass, int32& X, int32& Y, uint32& SizeX, uint32& SizeY) const override;
 	virtual void CalculateStereoViewOffset(const EStereoscopicPass StereoPassType, FRotator& ViewRotation, const float MetersToWorld, FVector& ViewLocation) override;
 	virtual FMatrix GetStereoProjectionMatrix(const enum EStereoscopicPass StereoPassType) const override;
-	virtual void RenderTexture_RenderThread(FRHICommandListImmediate& RHICmdList, FTexture2DRHIParamRef BackBuffer, FTexture2DRHIParamRef SrcTexture, FVector2D WindowSize) const override;
+	virtual void RenderTexture_RenderThread(FRHICommandListImmediate& RHICmdList, FRHITexture2D* BackBuffer, FRHITexture2D* SrcTexture, FVector2D WindowSize) const override;
 	virtual void GetEyeRenderParams_RenderThread(const FRenderingCompositePassContext& Context, FVector2D& EyeToSrcUVScaleValue, FVector2D& EyeToSrcUVOffsetValue) const override;
 	virtual IStereoRenderTargetManager* GetRenderTargetManager() override { return this; }
 	virtual IStereoLayers* GetStereoLayers() override;
@@ -222,11 +173,12 @@ public:
 	}
 	virtual void CalculateRenderTargetSize(const class FViewport& Viewport, uint32& InOutSizeX, uint32& InOutSizeY) override;
 	virtual bool NeedReAllocateViewportRenderTarget(const class FViewport& Viewport) override;
+	virtual bool NeedReAllocateDepthTexture(const TRefCountPtr<struct IPooledRenderTarget>& DepthTarget) override;
+	virtual bool AllocateRenderTargetTexture(uint32 Index, uint32 SizeX, uint32 SizeY, uint8 Format, uint32 NumMips, uint32 InTexFlags, uint32 InTargetableTextureFlags, FTexture2DRHIRef& OutTargetableTexture, FTexture2DRHIRef& OutShaderResourceTexture, uint32 NumSamples = 1) override;
+	virtual bool AllocateDepthTexture(uint32 Index, uint32 SizeX, uint32 SizeY, uint8 Format, uint32 NumMips, uint32 Flags, uint32 TargetableTextureFlags, FTexture2DRHIRef& OutTargetableTexture, FTexture2DRHIRef& OutShaderResourceTexture, uint32 NumSamples = 1) override;
 
 	// IStereoLayers interface
-	// Create/Set/Get/Destroy inherited from TStereoLayerManager
-	virtual void UpdateSplashScreen() override;
-	virtual void GetAllocatedTexture(uint32 LayerId, FTextureRHIRef &Texture, FTextureRHIRef &LeftTexture) override;
+	// Create/Set/Get/Destroy and GetAllocatedTexture inherited from TStereoLayerManager
 	virtual bool ShouldCopyDebugLayersToSpectatorScreen() const override { return true; }
 
 	// ISceneViewExtension interface
@@ -243,7 +195,7 @@ private:
 	void CreateSpectatorScreenController();
 public:
 	virtual FIntRect GetFullFlatEyeRect_RenderThread(FTexture2DRHIRef EyeTexture) const override;
-	virtual void CopyTexture_RenderThread(FRHICommandListImmediate& RHICmdList, FTexture2DRHIParamRef SrcTexture, FIntRect SrcRect, FTexture2DRHIParamRef DstTexture, FIntRect DstRect, bool bClearBlack, bool bNoAlpha) const override;
+	virtual void CopyTexture_RenderThread(FRHICommandListImmediate& RHICmdList, FRHITexture2D* SrcTexture, FIntRect SrcRect, FRHITexture2D* DstTexture, FIntRect DstRect, bool bClearBlack, bool bNoAlpha) const override;
 
 	class BridgeBaseImpl : public FXRRenderBridge
 	{
@@ -267,28 +219,35 @@ public:
 			return bUseExplicitTimingMode;
 		}
 
+		FXRSwapChainPtr GetSwapChain() { return SwapChain; }
+		FXRSwapChainPtr GetDepthSwapChain() { return DepthSwapChain; }
+
 		/** Schedules BeginRendering_RHI on the RHI thread when in explicit timing mode */
 		void BeginRendering_RenderThread(FRHICommandListImmediate& RHICmdList);
 
 		/** Called only when we're in explicit timing mode, which needs to be paired with a call to PostPresentHandoff */
 		void BeginRendering_RHI();
 
+		void CreateSwapChain(const FTextureRHIRef& BindingTexture, TArray<FTextureRHIRef>&& SwapChainTextures);
+		void CreateDepthSwapChain(const FTextureRHIRef& BindingTexture, TArray<FTextureRHIRef>&& SwapChainTextures);
 
 		// Virtual interface implemented by subclasses
 		virtual void Reset() = 0;
+
 	private:
 		virtual void FinishRendering() = 0;
 
 	protected:
 		
 		FSteamVRHMD*			Plugin;
+		FXRSwapChainPtr			SwapChain;
+		FXRSwapChainPtr			DepthSwapChain;
+
 		bool					bInitialized;
 		
 		/** If we use explicit timing mode, we must have matching calls to BeginRendering_RHI and PostPresentHandoff */
 		bool					bUseExplicitTimingMode;
 		bool NeedsPostPresentHandoff() const;
-		
-
 	};
 
 #if PLATFORM_WINDOWS
@@ -297,13 +256,19 @@ public:
 	public:
 		D3D11Bridge(FSteamVRHMD* plugin);
 
+		virtual void FinishRendering() override;
+		virtual void UpdateViewport(const FViewport& Viewport, FRHIViewport* InViewportRHI) override;
+		virtual void Reset() override;
+	};
+
+	class D3D12Bridge : public BridgeBaseImpl
+	{
+	public:
+		D3D12Bridge(FSteamVRHMD* plugin);
 
 		virtual void FinishRendering() override;
 		virtual void UpdateViewport(const FViewport& Viewport, FRHIViewport* InViewportRHI) override;
 		virtual void Reset() override;
-
-	protected:
-		ID3D11Texture2D* RenderTargetTexture = NULL;
 	};
 #endif // PLATFORM_WINDOWS
 
@@ -330,10 +295,6 @@ public:
 		virtual void FinishRendering() override;
 		virtual void UpdateViewport(const FViewport& Viewport, FRHIViewport* InViewportRHI) override;
 		virtual void Reset() override;
-
-	protected:
-
-		FTexture2DRHIRef RenderTargetTexture;
 	};
 
 	class OpenGLBridge : public BridgeBaseImpl
@@ -344,10 +305,6 @@ public:
 		virtual void FinishRendering() override;
 		virtual void UpdateViewport(const FViewport& Viewport, FRHIViewport* InViewportRHI) override;
 		virtual void Reset() override;
-
-	protected:
-		GLuint RenderTargetTexture = 0;
-
 	};
 	
 #elif PLATFORM_MAC
@@ -361,8 +318,6 @@ public:
 		virtual void Reset() override;
 		
 		IOSurfaceRef GetSurface(const uint32 SizeX, const uint32 SizeY);
-		
-		FTexture2DRHIRef TextureSet;
 	};
 #endif // PLATFORM_MAC
 
@@ -387,10 +342,6 @@ public:
 
 	/** @return	True if the API was initialized OK */
 	bool IsInitialized() const;
-
-	vr::IVRSystem* GetVRSystem() const { return VRSystem; }
-	vr::IVRInput* GetVRInput() const { return VRInput; }
-	vr::IVRRenderModels* GetRenderModelManager() const { return VRRenderModels; }
 
 protected:
 
@@ -457,6 +408,36 @@ public:
 
 		return out;
 	}
+
+	static FORCEINLINE vr::HmdMatrix44_t ToHmdMatrix44(const FMatrix& tm)
+	{
+		// Rows and columns are swapped between vr::HmdMatrix44_t and FMatrix
+		vr::HmdMatrix44_t out;
+
+		out.m[0][0] = tm.M[0][0];
+		out.m[1][0] = tm.M[0][1];
+		out.m[2][0] = tm.M[0][2];
+		out.m[3][0] = tm.M[0][3];
+
+		out.m[0][1] = tm.M[1][0];
+		out.m[1][1] = tm.M[1][1];
+		out.m[2][1] = tm.M[1][2];
+		out.m[3][1] = tm.M[1][3];
+
+		out.m[0][2] = tm.M[2][0];
+		out.m[1][2] = tm.M[2][1];
+		out.m[2][2] = tm.M[2][2];
+		out.m[3][2] = tm.M[2][3];
+
+		out.m[0][3] = tm.M[3][0];
+		out.m[1][3] = tm.M[3][1];
+		out.m[2][3] = tm.M[3][2];
+		out.m[3][3] = tm.M[3][3];
+
+		return out;
+	}
+
+
 private:
 
 	void SetupOcclusionMeshes();
@@ -590,8 +571,6 @@ private:
 	vr::IVRCompositor* VRCompositor;
 	vr::IVROverlay* VROverlay;
 	vr::IVRChaperone* VRChaperone;
-	vr::IVRRenderModels* VRRenderModels;
-	vr::IVRInput* VRInput;
 
 	FString DisplayId;
 

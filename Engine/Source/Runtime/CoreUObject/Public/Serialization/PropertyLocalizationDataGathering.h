@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -36,9 +36,14 @@ enum class EPropertyLocalizationGathererTextFlags : uint8
 	ForceEditorOnly = ForceEditorOnlyProperties | ForceEditorOnlyScriptData,
 
 	/**
+	 * Force all gathered text to be considered "default" (matching its archetype value).
+	 */
+	ForceIsDefaultValue = 1<<3,
+
+	/**
 	 * Don't process any sub-objects (either inner objects or object pointers).
 	 */
-	SkipSubObjects = 1<<3,
+	SkipSubObjects = 1<<4,
 };
 ENUM_CLASS_FLAGS(EPropertyLocalizationGathererTextFlags);
 
@@ -72,13 +77,29 @@ public:
 	typedef TFunction<void(const UObject* const, FPropertyLocalizationDataGatherer&, const EPropertyLocalizationGathererTextFlags)> FLocalizationDataGatheringCallback;
 	typedef TMap<const UClass*, FLocalizationDataGatheringCallback> FLocalizationDataGatheringCallbackMap;
 
+	struct FGatherableFieldsForType
+	{
+		TArray<const FProperty*> Properties;
+		TArray<const UFunction*> Functions;
+		const FLocalizationDataGatheringCallback* CustomCallback = nullptr;
+
+		bool HasFields() const
+		{
+			return Properties.Num() > 0 || Functions.Num() > 0;
+		}
+	};
+
 	FPropertyLocalizationDataGatherer(TArray<FGatherableTextData>& InOutGatherableTextDataArray, const UPackage* const InPackage, EPropertyLocalizationGathererResultFlags& OutResultFlags);
+
+	// Non-copyable
+	FPropertyLocalizationDataGatherer(const FPropertyLocalizationDataGatherer&) = delete;
+	FPropertyLocalizationDataGatherer& operator=(const FPropertyLocalizationDataGatherer&) = delete;
 
 	void GatherLocalizationDataFromObjectWithCallbacks(const UObject* Object, const EPropertyLocalizationGathererTextFlags GatherTextFlags);
 	void GatherLocalizationDataFromObject(const UObject* Object, const EPropertyLocalizationGathererTextFlags GatherTextFlags);
 	void GatherLocalizationDataFromObjectFields(const FString& PathToParent, const UObject* Object, const EPropertyLocalizationGathererTextFlags GatherTextFlags);
 	void GatherLocalizationDataFromStructFields(const FString& PathToParent, const UStruct* Struct, const void* StructData, const void* DefaultStructData, const EPropertyLocalizationGathererTextFlags GatherTextFlags);
-	void GatherLocalizationDataFromChildTextProperties(const FString& PathToParent, const UProperty* const Property, const void* const ValueAddress, const void* const DefaultValueAddress, const EPropertyLocalizationGathererTextFlags GatherTextFlags);
+	void GatherLocalizationDataFromChildTextProperties(const FString& PathToParent, const FProperty* const Property, const void* const ValueAddress, const void* const DefaultValueAddress, const EPropertyLocalizationGathererTextFlags GatherTextFlags);
 
 	void GatherTextInstance(const FText& Text, const FString& Description, const bool bIsEditorOnly);
 	void GatherScriptBytecode(const FString& PathToScript, const TArray<uint8>& ScriptData, const bool bIsEditorOnly);
@@ -88,6 +109,8 @@ public:
 
 	bool ShouldProcessObject(const UObject* Object, const EPropertyLocalizationGathererTextFlags GatherTextFlags) const;
 	void MarkObjectProcessed(const UObject* Object, const EPropertyLocalizationGathererTextFlags GatherTextFlags);
+
+	const FGatherableFieldsForType& GetGatherableFieldsForType(const UStruct* InType);
 
 	static bool ExtractTextIdentity(const FText& Text, FString& OutNamespace, FString& OutKey, const bool bCleanNamespace);
 
@@ -104,6 +127,9 @@ public:
 	}
 
 private:
+	const FGatherableFieldsForType& CacheGatherableFieldsForType(const UStruct* InType);
+	bool CanGatherFromInnerProperty(const FProperty* InInnerProperty);
+
 	struct FObjectAndGatherFlags
 	{
 		FObjectAndGatherFlags(const UObject* InObject, const EPropertyLocalizationGathererTextFlags InGatherTextFlags)
@@ -140,6 +166,7 @@ private:
 	const UPackage* Package;
 	FString PackageNamespace;
 	EPropertyLocalizationGathererResultFlags& ResultFlags;
+	TMap<const UStruct*, TUniquePtr<FGatherableFieldsForType>> GatherableFieldsForTypes;
 	TSet<const UObject*> AllObjectsInPackage;
 	TSet<FObjectAndGatherFlags> ProcessedObjects;
 	TSet<FObjectAndGatherFlags> BytecodePendingGather;

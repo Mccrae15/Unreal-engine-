@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "MovieSceneCaptureDialogModule.h"
 #include "Dom/JsonValue.h"
@@ -64,6 +64,7 @@
 
 #include "GameFramework/WorldSettings.h"
 #include "FrameNumberNumericInterface.h"
+#include "Protocols/AudioCaptureProtocol.h"
 
 #define LOCTEXT_NAMESPACE "MovieSceneCaptureDialog"
 
@@ -409,13 +410,20 @@ void FInEditorCapture::Start()
 			CVarStreamingPoolSize->Set(UndefinedTexturePoolSize, ECVF_SetByConsole);
 		}
 
-			IConsoleVariable* CVarUseFixedPoolSize = IConsoleManager::Get().FindConsoleVariable(TEXT("r.Streaming.UseFixedPoolSize"));
-			if (CVarUseFixedPoolSize)
-			{
-				BackedUpUseFixedPoolSize = CVarUseFixedPoolSize->GetInt(); 
-				CVarUseFixedPoolSize->Set(0, ECVF_SetByConsole);
-			}
+		IConsoleVariable* CVarUseFixedPoolSize = IConsoleManager::Get().FindConsoleVariable(TEXT("r.Streaming.UseFixedPoolSize"));
+		if (CVarUseFixedPoolSize)
+		{
+			BackedUpUseFixedPoolSize = CVarUseFixedPoolSize->GetInt(); 
+			CVarUseFixedPoolSize->Set(0, ECVF_SetByConsole);
 		}
+
+		IConsoleVariable* CVarTextureStreaming = IConsoleManager::Get().FindConsoleVariable(TEXT("r.TextureStreaming"));
+		if (CVarTextureStreaming)
+		{
+			BackedUpTextureStreaming = CVarTextureStreaming->GetInt();
+			CVarTextureStreaming->Set(0, ECVF_SetByConsole);
+		}
+	}
 
 	FObjectWriter(PlayInEditorSettings, BackedUpPlaySettings);
 	OverridePlaySettings(PlayInEditorSettings);
@@ -426,14 +434,33 @@ void FInEditorCapture::Start()
 	UGameViewportClient::OnViewportCreated().AddRaw(this, &FInEditorCapture::OnPIEViewportStarted);
 	FEditorDelegates::EndPIE.AddRaw(this, &FInEditorCapture::OnEndPIE);
 		
-	FAudioDevice* AudioDevice = GEngine->GetMainAudioDevice();
-	if (AudioDevice != nullptr)
+	FAudioDeviceHandle AudioDevice = GEngine->GetMainAudioDevice();
+	if (AudioDevice)
 	{
 		TransientMasterVolume = AudioDevice->GetTransientMasterVolume();
 		AudioDevice->SetTransientMasterVolume(0.0f);
 	}
 
-	GEditor->RequestPlaySession(true, nullptr, false);
+	TSharedRef<SWindow> CustomWindow = SNew(SWindow)
+		.Title(LOCTEXT("MovieRenderPreviewTitle", "Movie Render - Preview"))
+		.AutoCenter(EAutoCenter::PrimaryWorkArea)
+		.UseOSWindowBorder(true)
+		.FocusWhenFirstShown(false)
+		.ActivationPolicy(EWindowActivationPolicy::Never)
+		.HasCloseButton(true)
+		.SupportsMaximize(false)
+		.SupportsMinimize(true)
+		.MaxWidth(CaptureObject->GetSettings().Resolution.ResX)
+		.MaxHeight(CaptureObject->GetSettings().Resolution.ResY)
+		.SizingRule(ESizingRule::FixedSize);
+
+	FSlateApplication::Get().AddWindow(CustomWindow);
+
+	FRequestPlaySessionParams Params;
+	Params.EditorPlaySettings = PlayInEditorSettings;
+	Params.CustomPIEWindow = CustomWindow;
+
+	GEditor->RequestPlaySession(Params);
 }
 
 void FInEditorCapture::Cancel()
@@ -453,29 +480,12 @@ void FInEditorCapture::OverridePlaySettings(ULevelEditorPlaySettings* PlayInEdit
 	PlayInEditorSettings->CenterNewWindow = true;
 	PlayInEditorSettings->LastExecutedPlayModeType = EPlayModeType::PlayMode_InEditorFloating;
 
-	TSharedRef<SWindow> CustomWindow = SNew(SWindow)
-		.Title(LOCTEXT("MovieRenderPreviewTitle", "Movie Render - Preview"))
-		.AutoCenter(EAutoCenter::PrimaryWorkArea)
-		.UseOSWindowBorder(true)
-		.FocusWhenFirstShown(false)
-		.ActivationPolicy(EWindowActivationPolicy::Never)
-		.HasCloseButton(true)
-		.SupportsMaximize(false)
-		.SupportsMinimize(true)
-		.MaxWidth( Settings.Resolution.ResX )
-		.MaxHeight( Settings.Resolution.ResY )
-		.SizingRule(ESizingRule::FixedSize);
-
-	FSlateApplication::Get().AddWindow(CustomWindow);
-
-	PlayInEditorSettings->CustomPIEWindow = CustomWindow;
-
 	// Reset everything else
 	PlayInEditorSettings->GameGetsMouseControl = false;
 	PlayInEditorSettings->ShowMouseControlLabel = false;
 	PlayInEditorSettings->ViewportGetsHMDControl = false;
 	PlayInEditorSettings->ShouldMinimizeEditorOnVRPIE = true;
-	PlayInEditorSettings->EnableGameSound = false;
+	PlayInEditorSettings->EnableGameSound = CaptureObject->AudioCaptureProtocolType != UNullAudioCaptureProtocol::StaticClass();
 	PlayInEditorSettings->bOnlyLoadVisibleLevelsInPIE = false;
 	PlayInEditorSettings->bPreferToStreamLevelsInPIE = false;
 	PlayInEditorSettings->PIEAlwaysOnTop = false;
@@ -485,7 +495,7 @@ void FInEditorCapture::OverridePlaySettings(ULevelEditorPlaySettings* PlayInEdit
 	PlayInEditorSettings->LaunchConfiguration = EPlayOnLaunchConfiguration::LaunchConfig_Default;
 	PlayInEditorSettings->SetPlayNetMode(EPlayNetMode::PIE_Standalone);
 	PlayInEditorSettings->SetRunUnderOneProcess(true);
-	PlayInEditorSettings->SetPlayNetDedicated(false);
+	PlayInEditorSettings->bLaunchSeparateServer = false;
 	PlayInEditorSettings->SetPlayNumberOfClients(1);
 }
 
@@ -529,6 +539,12 @@ void FInEditorCapture::OnPIEViewportStarted()
 					CapturingFromWorld->GetWorldSettings()->DefaultGameMode = CaptureObject->Settings.GameModeOverride;
 				}
 
+				CachedEngineShowFlags = SlatePlayInEditorSession->SlatePlayInEditorWindowViewport->GetClient()->GetEngineShowFlags();
+				if (CachedEngineShowFlags && Settings.bUsePathTracer)
+				{
+					CachedPathTracingMode = CachedEngineShowFlags->PathTracing;
+					CachedEngineShowFlags->SetPathTracing(true);
+				}
 				CaptureObject->Initialize(SlatePlayInEditorSession->SlatePlayInEditorWindowViewport, Context.PIEInstance);
 				OnCaptureStarted();
 			}
@@ -560,17 +576,28 @@ void FInEditorCapture::Shutdown()
 		{
 			CVarUseFixedPoolSize->Set(BackedUpUseFixedPoolSize, ECVF_SetByConsole);
 		}
+
+		IConsoleVariable* CVarTextureStreaming = IConsoleManager::Get().FindConsoleVariable(TEXT("r.TextureStreaming"));
+		if (CVarTextureStreaming)
+		{
+			CVarTextureStreaming->Set(BackedUpTextureStreaming, ECVF_SetByConsole);
+		}
 	}
 
 	if (CaptureObject->Settings.GameModeOverride != nullptr && CapturingFromWorld != nullptr)
 	{
 		CapturingFromWorld->GetWorldSettings()->DefaultGameMode = CachedGameMode;
 	}
+	
+	if (CachedEngineShowFlags)
+	{
+		CachedEngineShowFlags->SetPathTracing(CachedPathTracingMode);
+	}
 
 	FObjectReader(GetMutableDefault<ULevelEditorPlaySettings>(), BackedUpPlaySettings);
 
-	FAudioDevice* AudioDevice = GEngine->GetMainAudioDevice();
-	if (AudioDevice != nullptr)
+	FAudioDeviceHandle AudioDevice = GEngine->GetMainAudioDevice();
+	if (AudioDevice)
 	{
 		AudioDevice->SetTransientMasterVolume(TransientMasterVolume);
 	}

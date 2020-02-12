@@ -1,45 +1,148 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "NiagaraSpriteRendererProperties.h"
 #include "NiagaraRenderer.h"
 #include "Internationalization/Internationalization.h"
 #include "NiagaraConstants.h"
+#include "NiagaraRendererSprites.h"
+#include "NiagaraBoundsCalculatorHelper.h"
+#include "Modules/ModuleManager.h"
+#if WITH_EDITOR
+#include "DerivedDataCacheInterface.h"
+#include "Widgets/Images/SImage.h"
+#include "Styling/SlateIconFinder.h"
+#include "Widgets/SWidget.h"
+#include "Styling/SlateBrush.h"
+#include "AssetThumbnail.h"
+#include "Widgets/Text/STextBlock.h"
+#endif
 
 #define LOCTEXT_NAMESPACE "UNiagaraSpriteRendererProperties"
+
+TArray<TWeakObjectPtr<UNiagaraSpriteRendererProperties>> UNiagaraSpriteRendererProperties::SpriteRendererPropertiesToDeferredInit;
+
+#if ENABLE_COOK_STATS
+class NiagaraCutoutCookStats
+{
+public:
+	static FCookStats::FDDCResourceUsageStats UsageStats;
+	static FCookStatsManager::FAutoRegisterCallback RegisterCookStats;
+};
+
+FCookStats::FDDCResourceUsageStats NiagaraCutoutCookStats::UsageStats;
+FCookStatsManager::FAutoRegisterCallback NiagaraCutoutCookStats::RegisterCookStats([](FCookStatsManager::AddStatFuncRef AddStat)
+{
+	UsageStats.LogStats(AddStat, TEXT("NiagaraCutout.Usage"), TEXT(""));
+});
+#endif // ENABLE_COOK_STATS
 
 UNiagaraSpriteRendererProperties::UNiagaraSpriteRendererProperties()
 	: Alignment(ENiagaraSpriteAlignment::Unaligned)
 	, FacingMode(ENiagaraSpriteFacingMode::FaceCamera)
-	, CustomFacingVectorMask(ForceInitToZero)
 	, PivotInUVSpace(0.5f, 0.5f)
-	, SortMode(ENiagaraSortMode::ViewDistance)
+	, SortMode(ENiagaraSortMode::None)
 	, SubImageSize(1.0f, 1.0f)
 	, bSubImageBlend(false)
 	, bRemoveHMDRollInVR(false)
 	, bSortOnlyWhenTranslucent(true)
 	, MinFacingCameraBlendDistance(0.0f)
 	, MaxFacingCameraBlendDistance(0.0f)
-	, SyncId(0)
+#if WITH_EDITORONLY_DATA
+	, BoundingMode(BVC_EightVertices)
+	, AlphaThreshold(0.1f)
+#endif // WITH_EDITORONLY_DATA
 {
+	FNiagaraTypeDefinition MaterialDef(UMaterialInterface::StaticClass());
+	MaterialUserParamBinding.Parameter.SetType(MaterialDef);
 }
 
-NiagaraRenderer* UNiagaraSpriteRendererProperties::CreateEmitterRenderer(ERHIFeatureLevel::Type FeatureLevel)
+FNiagaraRenderer* UNiagaraSpriteRendererProperties::CreateEmitterRenderer(ERHIFeatureLevel::Type FeatureLevel, const FNiagaraEmitterInstance* Emitter)
 {
-	return new NiagaraRendererSprites(FeatureLevel, this);
+	FNiagaraRenderer* NewRenderer = new FNiagaraRendererSprites(FeatureLevel, this, Emitter);	
+	NewRenderer->Initialize(this, Emitter);
+	return NewRenderer;
 }
 
-void UNiagaraSpriteRendererProperties::GetUsedMaterials(TArray<UMaterialInterface*>& OutMaterials) const
+FNiagaraBoundsCalculator* UNiagaraSpriteRendererProperties::CreateBoundsCalculator()
 {
-	OutMaterials.Add(Material);
+	return new FNiagaraBoundsCalculatorHelper<true, false, false>();
+}
+
+void UNiagaraSpriteRendererProperties::GetUsedMaterials(const FNiagaraEmitterInstance* InEmitter, TArray<UMaterialInterface*>& OutMaterials) const
+{
+	bool bSet = false;
+	if (InEmitter != nullptr && MaterialUserParamBinding.Parameter.IsValid() && InEmitter->FindBinding(MaterialUserParamBinding, OutMaterials))
+	{
+		bSet = true;
+	}
+
+	if (!bSet)
+	{
+		OutMaterials.Add(Material);
+	}
+}
+
+void UNiagaraSpriteRendererProperties::PostLoad()
+{
+	Super::PostLoad();
+
+#if WITH_EDITORONLY_DATA
+
+	if (MaterialUserParamBinding.Parameter.GetType().GetClass() != UMaterialInterface::StaticClass())
+	{
+		FNiagaraTypeDefinition MaterialDef(UMaterialInterface::StaticClass());
+		MaterialUserParamBinding.Parameter.SetType(MaterialDef);
+	}
+
+	if (!FPlatformProperties::RequiresCookedData())
+	{
+		if (CutoutTexture)
+		{	// Here we don't call UpdateCutoutTexture() to avoid issue with the material postload.
+			CutoutTexture->ConditionalPostLoad();
+		}
+		CacheDerivedData();
+	}
+#endif // WITH_EDITORONLY_DATA
 }
 
 void UNiagaraSpriteRendererProperties::PostInitProperties()
 {
 	Super::PostInitProperties();
-	SyncId = 0;
+
 	if (HasAnyFlags(RF_ClassDefaultObject) == false)
 	{
+		// We can end up hitting PostInitProperties before the Niagara Module has initialized bindings this needs, mark this object for deferred init and early out.
+		if (FModuleManager::Get().IsModuleLoaded("Niagara") == false)
+		{
+			SpriteRendererPropertiesToDeferredInit.Add(this);
+			return;
+		}
 		InitBindings();
+	}
+}
+
+void UNiagaraSpriteRendererProperties::Serialize(FStructuredArchive::FRecord Record)
+{
+	FArchive& Ar = Record.GetUnderlyingArchive();
+	Ar.UsingCustomVersion(FNiagaraCustomVersion::GUID);
+	const int32 NiagaraVersion = Ar.CustomVer(FNiagaraCustomVersion::GUID);
+
+	if (Ar.IsLoading() && (NiagaraVersion < FNiagaraCustomVersion::DisableSortingByDefault))
+	{
+		SortMode = ENiagaraSortMode::ViewDistance;
+	}
+
+	Super::Serialize(Record);
+
+	bool bIsCookedForEditor = false;
+#if WITH_EDITORONLY_DATA
+	bIsCookedForEditor = GetOutermost()->bIsCookedForEditor;
+#endif // WITH_EDITORONLY_DATA
+
+	FArchive& UnderlyingArchive = Record.GetUnderlyingArchive();
+	if (UnderlyingArchive.IsCooking() || (FPlatformProperties::RequiresCookedData() && UnderlyingArchive.IsLoading()) || bIsCookedForEditor)
+	{
+		DerivedData.Serialize(Record.EnterField(SA_FIELD_NAME(TEXT("DerivedData"))));
 	}
 }
 
@@ -48,6 +151,14 @@ void UNiagaraSpriteRendererProperties::InitCDOPropertiesAfterModuleStartup()
 {
 	UNiagaraSpriteRendererProperties* CDO = CastChecked<UNiagaraSpriteRendererProperties>(UNiagaraSpriteRendererProperties::StaticClass()->GetDefaultObject());
 	CDO->InitBindings();
+
+	for (TWeakObjectPtr<UNiagaraSpriteRendererProperties>& WeakSpriteRendererProperties : SpriteRendererPropertiesToDeferredInit)
+	{
+		if (WeakSpriteRendererProperties.Get())
+		{
+			WeakSpriteRendererProperties->InitBindings();
+		}
+	}
 }
 
 void UNiagaraSpriteRendererProperties::InitBindings()
@@ -76,17 +187,33 @@ void UNiagaraSpriteRendererProperties::InitBindings()
 	}
 }
 
-
 #if WITH_EDITORONLY_DATA
+
 void UNiagaraSpriteRendererProperties::PostEditChangeProperty(struct FPropertyChangedEvent& PropertyChangedEvent) 
 {
-	Super::PostEditChangeProperty(PropertyChangedEvent);
-	if (PropertyChangedEvent.GetPropertyName() != TEXT("SyncId"))
-	{
-		SyncId++;
-	}
-}
+	SubImageSize.X = FMath::Max<float>(SubImageSize.X, 1.f);
+	SubImageSize.Y = FMath::Max<float>(SubImageSize.Y, 1.f);
 
+	// DerivedData.BoundingGeometry in case we cleared the CutoutTexture
+	if (bUseMaterialCutoutTexture || CutoutTexture || DerivedData.BoundingGeometry.Num())
+	{
+		const bool bUpdateCutoutDDC = 
+			PropertyChangedEvent.GetPropertyName() == TEXT("bUseMaterialCutoutTexture") ||
+			PropertyChangedEvent.GetPropertyName() == TEXT("CutoutTexture") ||
+			PropertyChangedEvent.GetPropertyName() == TEXT("BoundingMode") ||
+			PropertyChangedEvent.GetPropertyName() == TEXT("OpacitySourceMode") ||
+			PropertyChangedEvent.GetPropertyName() == TEXT("AlphaThreshold") ||
+			(bUseMaterialCutoutTexture && PropertyChangedEvent.GetPropertyName() == TEXT("Material"));
+
+		if (bUpdateCutoutDDC)
+		{
+			UpdateCutoutTexture();
+			CacheDerivedData();
+		}
+	}
+	
+	Super::PostEditChangeProperty(PropertyChangedEvent);
+}
 
 const TArray<FNiagaraVariable>& UNiagaraSpriteRendererProperties::GetRequiredAttributes()
 {
@@ -98,7 +225,6 @@ const TArray<FNiagaraVariable>& UNiagaraSpriteRendererProperties::GetRequiredAtt
 
 	return Attrs;
 }
-
 
 const TArray<FNiagaraVariable>& UNiagaraSpriteRendererProperties::GetOptionalAttributes()
 {
@@ -127,6 +253,45 @@ const TArray<FNiagaraVariable>& UNiagaraSpriteRendererProperties::GetOptionalAtt
 	return Attrs;
 }
 
+void UNiagaraSpriteRendererProperties::GetRendererWidgets(const FNiagaraEmitterInstance* InEmitter, TArray<TSharedPtr<SWidget>>& OutWidgets, TSharedPtr<FAssetThumbnailPool> InThumbnailPool) const
+{
+	TSharedRef<SWidget> ThumbnailWidget = SNullWidget::NullWidget;
+	int32 ThumbnailSize = 32;
+	TArray<UMaterialInterface*> Materials;
+	GetUsedMaterials(InEmitter, Materials);
+	for (UMaterialInterface* PreviewedMaterial : Materials)
+	{
+		TSharedPtr<FAssetThumbnail> AssetThumbnail = MakeShareable(new FAssetThumbnail(PreviewedMaterial, ThumbnailSize, ThumbnailSize, InThumbnailPool));
+		if (AssetThumbnail)
+		{
+			ThumbnailWidget = AssetThumbnail->MakeThumbnailWidget();
+		}
+		OutWidgets.Add(ThumbnailWidget);
+	}
+
+	if (Materials.Num() == 0)
+	{
+		TSharedRef<SWidget> SpriteWidget = SNew(SImage)
+			.Image(FSlateIconFinder::FindIconBrushForClass(GetClass()));
+		OutWidgets.Add(SpriteWidget);
+	}
+}
+
+void UNiagaraSpriteRendererProperties::GetRendererTooltipWidgets(const FNiagaraEmitterInstance* InEmitter, TArray<TSharedPtr<SWidget>>& OutWidgets, TSharedPtr<FAssetThumbnailPool> InThumbnailPool) const
+{
+	TArray<UMaterialInterface*> Materials;
+	GetUsedMaterials(InEmitter, Materials);
+	if (Materials.Num() > 0)
+	{
+		GetRendererWidgets(InEmitter, OutWidgets, InThumbnailPool);
+	}
+	else
+	{
+		TSharedRef<SWidget> SpriteTooltip = SNew(STextBlock)
+			.Text(LOCTEXT("SpriteRendererNoMat", "Sprite Renderer (No Material Set)"));
+		OutWidgets.Add(SpriteTooltip);
+	}
+}
 
 bool UNiagaraSpriteRendererProperties::IsMaterialValidForRenderer(UMaterial* InMaterial, FText& InvalidMessage)
 {
@@ -145,10 +310,97 @@ void UNiagaraSpriteRendererProperties::FixMaterial(UMaterial* InMaterial)
 	InMaterial->ForceRecompileForRendering();
 }
 
+void UNiagaraSpriteRendererProperties::UpdateCutoutTexture()
+{
+	if (bUseMaterialCutoutTexture)
+	{
+		CutoutTexture = nullptr;
+		if (Material)
+		{
+			// Try to find an opacity mask texture to default to, if not try to find an opacity texture
+			TArray<UTexture*> OpacityMaskTextures;
+			Material->GetTexturesInPropertyChain(MP_OpacityMask, OpacityMaskTextures, nullptr, nullptr);
+			if (OpacityMaskTextures.Num())
+			{
+				CutoutTexture = (UTexture2D*)OpacityMaskTextures[0];
+			}
+			else
+			{
+				TArray<UTexture*> OpacityTextures;
+				Material->GetTexturesInPropertyChain(MP_Opacity, OpacityTextures, nullptr, nullptr);
+				if (OpacityTextures.Num())
+				{
+					CutoutTexture = (UTexture2D*)OpacityTextures[0];
+				}
+			}
+		}
+	}
+}
+
+void UNiagaraSpriteRendererProperties::CacheDerivedData()
+{
+	if (CutoutTexture)
+	{
+		const FString KeyString = FSubUVDerivedData::GetDDCKeyString(CutoutTexture->Source.GetId(), (int32)SubImageSize.X, (int32)SubImageSize.Y, (int32)BoundingMode, AlphaThreshold, (int32)OpacitySourceMode);
+		TArray<uint8> Data;
+
+		COOK_STAT(auto Timer = NiagaraCutoutCookStats::UsageStats.TimeSyncWork());
+		if (GetDerivedDataCacheRef().GetSynchronous(*KeyString, Data, GetPathName()))
+		{
+			COOK_STAT(Timer.AddHit(Data.Num()));
+			DerivedData.BoundingGeometry.Empty(Data.Num() / sizeof(FVector2D));
+			DerivedData.BoundingGeometry.AddUninitialized(Data.Num() / sizeof(FVector2D));
+			FPlatformMemory::Memcpy(DerivedData.BoundingGeometry.GetData(), Data.GetData(), Data.Num() * Data.GetTypeSize());
+		}
+		else
+		{
+			DerivedData.Build(CutoutTexture, (int32)SubImageSize.X, (int32)SubImageSize.Y, BoundingMode, AlphaThreshold, OpacitySourceMode);
+
+			Data.Empty(DerivedData.BoundingGeometry.Num() * sizeof(FVector2D));
+			Data.AddUninitialized(DerivedData.BoundingGeometry.Num() * sizeof(FVector2D));
+			FPlatformMemory::Memcpy(Data.GetData(), DerivedData.BoundingGeometry.GetData(), DerivedData.BoundingGeometry.Num() * DerivedData.BoundingGeometry.GetTypeSize());
+			GetDerivedDataCacheRef().Put(*KeyString, Data, GetPathName());
+			COOK_STAT(Timer.AddMiss(Data.Num()));
+		}
+	}
+	else
+	{
+		DerivedData.BoundingGeometry.Empty();
+	}
+}
+
 #endif // WITH_EDITORONLY_DATA
 
+
+int32 UNiagaraSpriteRendererProperties::GetNumCutoutVertexPerSubimage() const
+{
+	if (DerivedData.BoundingGeometry.Num())
+	{
+		const int32 NumSubImages = FMath::Max<int32>(1, (int32)SubImageSize.X * (int32)SubImageSize.Y);
+		const int32 NumCutoutVertexPerSubImage = DerivedData.BoundingGeometry.Num() / NumSubImages;
+
+		// Based on BVC_FourVertices || BVC_EightVertices
+		ensure(NumCutoutVertexPerSubImage == 4 || NumCutoutVertexPerSubImage == 8);
+
+		return NumCutoutVertexPerSubImage;
+	}
+	else
+	{
+		return 0;
+	}
+}
+
+uint32 UNiagaraSpriteRendererProperties::GetNumIndicesPerInstance() const
+{
+	// This is a based on cutout vertices making a triangle strip.
+	if (GetNumCutoutVertexPerSubimage() == 8)
+	{
+		return 18;
+	}
+	else
+	{
+		return 6;
+	}
+}
+
 #undef LOCTEXT_NAMESPACE
-
-
-
-

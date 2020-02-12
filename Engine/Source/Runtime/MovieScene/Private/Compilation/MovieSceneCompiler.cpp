@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "Compilation/MovieSceneCompiler.h"
 
@@ -17,6 +17,21 @@
 DECLARE_CYCLE_STAT(TEXT("Full Compile"),  MovieSceneEval_CompileFull,  STATGROUP_MovieSceneEval);
 DECLARE_CYCLE_STAT(TEXT("Compile Range"), MovieSceneEval_CompileRange, STATGROUP_MovieSceneEval);
 
+/** Parameter structure used for keeping sub-sequence information we need for compilation */
+struct FMovieSceneSubSequenceGatherData
+{
+	FMovieSceneSubSequenceGatherData() : HierarchicalBias(0) {}
+
+	FMovieSceneSubSequenceGatherData(const FMovieSceneSubSequenceData& SubData)
+		: RootToSequenceTransform(SubData.RootToSequenceTransform)
+		, HierarchicalBias(SubData.HierarchicalBias)
+	{
+	}
+
+	FMovieSceneSequenceTransform RootToSequenceTransform;
+	int32 HierarchicalBias;
+};
+
 /** Parameter structure used for gathering entities for a given time or range */
 struct FGatherParameters
 {
@@ -32,30 +47,66 @@ struct FGatherParameters
 		, HierarchicalBias(0)
 	{}
 
-	FGatherParameters CreateForSubData(const FMovieSceneSubSequenceData& SubData) const
+	FGatherParameters CreateForSubGatherData(const FMovieSceneSubSequenceGatherData& SubGatherData) const
+	{
+		return CreateForSubGatherData(SubGatherData, RootCompileRange, RootClampRange, FMovieSceneTimeWarping::InvalidWarpCount);
+	}
+
+	FGatherParameters CreateForSubGatherData(const FMovieSceneSubSequenceGatherData& SubGatherData, TRange<FFrameNumber> InRootCompileRange, TRange<FFrameNumber> InRootClampRange, uint32 LoopIndex) const
 	{
 		FGatherParameters SubParams = *this;
 
-		SubParams.RootToSequenceTransform   = SubData.RootToSequenceTransform;
-		SubParams.HierarchicalBias          = SubData.HierarchicalBias;
+		SubParams.RootToSequenceTransform   = SubGatherData.RootToSequenceTransform;
+		SubParams.HierarchicalBias          = SubGatherData.HierarchicalBias;
 
-		SubParams.LocalCompileRange         = SubParams.RootCompileRange * SubData.RootToSequenceTransform;
-		SubParams.LocalClampRange           = SubParams.RootClampRange   * SubData.RootToSequenceTransform;
+		SubParams.RootCompileRange          = InRootCompileRange;
+		SubParams.RootClampRange            = InRootClampRange;
 
-		if (SubParams.LocalCompileRange.IsEmpty())
+		SubParams.LocalCompileRange         = SubGatherData.RootToSequenceTransform.TransformRangeConstrained(InRootCompileRange);
+		SubParams.LocalClampRange           = SubGatherData.RootToSequenceTransform.TransformRangeConstrained(InRootClampRange);
+
+		SubParams.AccountForRounding();
+
+		SubParams.SequenceLoopCounter.AddWarpingLevel(LoopIndex);
+
+		return SubParams;
+	}
+
+	void AccountForRounding()
+	{
+		if (LocalCompileRange.IsEmpty())
 		{
 			// Ensure that the compile range is not empty by extending the upper bound by one frame.
 			// This can happen when there is a scale < 1 on a sub section, and the root-space compile range is only 1 frame wide.
 			// We know that neither bound is Open by this point because such ranges would not be considered empty
-			SubParams.LocalCompileRange.SetUpperBoundValue(SubParams.LocalCompileRange.GetUpperBoundValue() + 1);
+			LocalCompileRange.SetUpperBoundValue(LocalCompileRange.GetUpperBoundValue() + 1);
 		}
-		return SubParams;
+
+		// Due to rounding caused by inner timescales, it is possible that the compile range can end up not overlapping the clamp range, which will result in corruption.
+		// Specifically this will happen when the root compile and clamp ranges overlap by < 0.5/InnerScale frames since frame numbers are floored when being transformed to local space.
+		// For example, a transformation of 0.5 scale to a root compile and clamp range of [-100, 101) and [100, 200) would yield [-50, 50) and [50, 100) which do not overlap.
+		// To alleviate this, we treat the clamp range as the authoritative range (it is always set to the boundaries for the eval field, whereas the compile range is simply used as a guide to know where to compile)
+		if (!LocalCompileRange.Overlaps(LocalClampRange))
+		{
+			if (LocalClampRange.GetLowerBound().IsClosed() && LocalCompileRange.GetUpperBound().IsClosed() && LocalCompileRange.GetUpperBoundValue() <= LocalClampRange.GetLowerBoundValue())
+			{
+				// Force inclusive bounds
+				LocalCompileRange.SetUpperBound(LocalClampRange.GetLowerBoundValue());
+			}
+			if (LocalClampRange.GetUpperBound().IsClosed() && LocalCompileRange.GetLowerBound().IsClosed() && LocalCompileRange.GetLowerBoundValue() >= LocalClampRange.GetUpperBoundValue())
+			{
+				// Force inclusive bounds
+				LocalCompileRange.SetLowerBound(LocalClampRange.GetLowerBoundValue());
+			}
+		}
 	}
 
 	void SetClampRange(TRange<FFrameNumber> InNewRootClampRange)
 	{
 		RootClampRange  = InNewRootClampRange;
-		LocalClampRange = InNewRootClampRange * RootToSequenceTransform;
+		LocalClampRange = RootToSequenceTransform.TransformRangeConstrained(InNewRootClampRange);
+
+		AccountForRounding();
 	}
 
 	/** Clamp the specified range to the current clamp range (in root space) */
@@ -86,6 +137,9 @@ struct FGatherParameters
 
 	/** Transform from the root time-space to the current sequence's time-space */
 	FMovieSceneSequenceTransform RootToSequenceTransform;
+
+	/** When we are looping the current sequence, which loop is this */
+	FMovieSceneWarpCounter SequenceLoopCounter;
 
 	/** Current accumulated hierarchical bias */
 	int32 HierarchicalBias;
@@ -198,7 +252,7 @@ void FMovieSceneCompiler::Compile(UMovieSceneSequence& InCompileSequence, IMovie
 		//  1. Group
 		//  2. Hierarchical bias
 		//  3. Evaluation priority
-		CompileData.Sort(SortPredicate);
+		CompileData.StableSort(SortPredicate);
 
 		// Compose the final result for the compiled range
 		FCompiledGroupResult Result(It.Range());
@@ -299,7 +353,7 @@ void FMovieSceneCompiler::CompileRange(TRange<FFrameNumber> InGlobalRange, UMovi
 		//  1. Group
 		//  2. Hierarchical bias
 		//  3. Evaluation priority
-		SortedCompileData.Sort(SortPredicate);
+		SortedCompileData.StableSort(SortPredicate);
 
 		// Compose the final result for the compiled range
 		FCompiledGroupResult Result(CompiledRange);
@@ -428,7 +482,7 @@ void FMovieSceneCompiler::GatherCompileOnTheFlyData(UMovieSceneSequence& InSeque
 
 	for ( ; SubSectionIt && SubSectionIt.Range().Overlaps(CompileClampIntersection); ++SubSectionIt)
 	{
-		TRange<FFrameNumber> ThisSegmentRangeRoot = Params.ClampRoot(SubSectionIt.Range() * Params.RootToSequenceTransform.Inverse());
+		TRange<FFrameNumber> ThisSegmentRangeRoot = Params.ClampRoot(SubSectionIt.Range() * Params.RootToSequenceTransform.InverseFromWarp(Params.SequenceLoopCounter));
 		if (ThisSegmentRangeRoot.IsEmpty())
 		{
 			continue;
@@ -459,19 +513,19 @@ void FMovieSceneCompiler::GatherCompileOnTheFlyData(UMovieSceneSequence& InSeque
 
 				SubSectionGatherParams.Flags = SubSectionData.Flags;
 
-				GatherCompileDataForSubSection(*SubSection, SubSectionData.ObjectBindingId, SubSectionGatherParams, OutData);
+				GatherCompileDataForSubSection(InSequence, *SubSection, SubSectionData.ObjectBindingId, SubSectionGatherParams, OutData);
 			}
 		}
 
 		if (!bAnySubSections)
 		{
 			// Intersect the unique range in the tree with the current overlapping empty range to constrict the resulting compile range in the case where this is a gap between sub sections
-			OutData.EmptySpace.AddTimeRange(Params.ClampRoot(SubSectionIt.Range() * Params.RootToSequenceTransform.Inverse()));
+			OutData.EmptySpace.AddTimeRange(Params.ClampRoot(SubSectionIt.Range() * Params.RootToSequenceTransform.InverseFromWarp(Params.SequenceLoopCounter)));
 		}
 	}
 }
 
-void FMovieSceneCompiler::GatherCompileDataForSubSection(const UMovieSceneSubSection& SubSection, const FGuid& InObjectBindingId, const FGatherParameters& Params, FMovieSceneGatheredCompilerData& OutData)
+void FMovieSceneCompiler::GatherCompileDataForSubSection(const UMovieSceneSequence& InOuterSequence, const UMovieSceneSubSection& SubSection, const FGuid& InObjectBindingId, const FGatherParameters& Params, FMovieSceneGatheredCompilerData& OutData)
 {
 	UMovieSceneSequence* SubSequence = SubSection.GetSequence();
 	if (!SubSequence)
@@ -492,20 +546,98 @@ void FMovieSceneCompiler::GatherCompileDataForSubSection(const UMovieSceneSubSec
 	Params.RootPath.Push(UnAccumulatedSequenceID);
 
 	// Find/add sub data in the root template
-	TOptional<FGatherParameters> SubParams;
+	TOptional<FMovieSceneSubSequenceGatherData> SubGatherData;
 
 	{
 		const FMovieSceneSubSequenceData* CompilationSubData = GetOrCreateSubSequenceData(InnerSequenceID, ParentSequenceID, SubSection, InObjectBindingId, Params.RootHierarchy);
 		check(CompilationSubData);
 
-		SubParams = Params.CreateForSubData(*CompilationSubData);
+		SubGatherData = FMovieSceneSubSequenceGatherData(*CompilationSubData);
 		// Any code after this point may reallocate the root hierarchy, so CompilationSubData cannot be used
 	}
 
-	GatherCompileOnTheFlyData(*SubSequence, SubParams.GetValue(), OutData);
+	if (!SubSection.Parameters.bCanLoop)
+	{
+		// The section isn't looping, so we can just compile the sub-sequence into the parent sequence's compiled data.
+		FGatherParameters SubParams = Params.CreateForSubGatherData(SubGatherData.GetValue());
+		GatherCompileOnTheFlyData(*SubSequence, SubParams, OutData);
+	}
+	else
+	{
+		// The section is looping so we need to compile it as many times as we have loops.
+		const FMovieSceneSequenceTransform SequenceToRootTransform = Params.RootToSequenceTransform.InverseFromWarp(Params.SequenceLoopCounter);
+		const float RootToSubSequenceTimeScale = SubGatherData.GetValue().RootToSequenceTransform.GetTimeScale();
+		const float SubSequenceToRootTimeScale = (RootToSubSequenceTimeScale != 0.f) ? 1.0f / RootToSubSequenceTimeScale : 1.f;
+		
+		const TRange<FFrameNumber> SubSequencePlaybackRange = SubSequence->GetMovieScene()->GetPlaybackRange();
+		const FFrameNumber SubSequenceLength = SubSequencePlaybackRange.Size<FFrameNumber>();
+
+		const FFrameTime RootLoopLength = FMath::Max(
+			FFrameTime(SubSequenceLength - SubSection.Parameters.StartFrameOffset - SubSection.Parameters.EndFrameOffset) * SubSequenceToRootTimeScale,
+			FFrameTime(1));
+		const FFrameTime FirstRootLoopLength = FMath::Max(
+			RootLoopLength - SubSection.Parameters.FirstLoopStartFrameOffset * SubSequenceToRootTimeScale,
+			FFrameTime(1));
+
+		const TOptional<FFrameNumber> LocalSectionEndTime = GetLoopingSubSectionEndTime(InOuterSequence, SubSection, Params);
+		if (LocalSectionEndTime.IsSet() && !SubSection.SectionRange.GetLowerBound().IsOpen())
+		{
+			uint32 LoopCount = 0;
+			FFrameTime CurRootRangeStart = MovieScene::DiscreteInclusiveLower(SubSection.SectionRange.GetLowerBound()) * SequenceToRootTransform;
+			TRange<FFrameNumber> CurRootRange(CurRootRangeStart.FloorToFrame(), (CurRootRangeStart + FirstRootLoopLength).FloorToFrame());
+			const FFrameNumber RootSectionEndTime = (LocalSectionEndTime.GetValue() * SequenceToRootTransform).FloorToFrame();
+
+			while (CurRootRange.GetLowerBoundValue() < RootSectionEndTime)
+			{
+				if (CurRootRange.Overlaps(Params.RootCompileRange) && CurRootRange.Overlaps(Params.RootClampRange))
+				{
+					FGatherParameters CurLoopParams = Params.CreateForSubGatherData(
+							SubGatherData.GetValue(), 
+							Params.RootCompileRange, CurRootRange,
+							LoopCount);
+					GatherCompileOnTheFlyData(*SubSequence, CurLoopParams, OutData);
+				}
+
+				CurRootRangeStart = CurRootRange.GetUpperBoundValue();
+				CurRootRange = TRange<FFrameNumber>(CurRootRangeStart.FloorToFrame(), (CurRootRangeStart + RootLoopLength).FloorToFrame());
+				if (CurRootRange.GetUpperBoundValue() > RootSectionEndTime)
+					CurRootRange.SetUpperBoundValue(RootSectionEndTime);
+				++LoopCount;
+			}
+		}
+		// Faced with the cosmic horror or infinites, we choose to shield our sanity and skip this sub-section.
+		// (it either has an open-ended start time, which means we needed to loop since before time began, which means
+		//  we don't know where loops are in the present... or it means the section and root sequence have open-ended
+		//  end times, which means we would need to compile loops forever)
+		// TODO-ludovic: error reporting?
+	}
 
 	// Pop the path off the root path
 	Params.RootPath.Pop();
+}
+
+TOptional<FFrameNumber> FMovieSceneCompiler::GetLoopingSubSectionEndTime(const UMovieSceneSequence& InRootSequence, const UMovieSceneSubSection& SubSection, const FGatherParameters& Params)
+{
+	TRangeBound<FFrameNumber> SectionRangeEnd = SubSection.SectionRange.GetUpperBound();
+	if (!SectionRangeEnd.IsOpen())
+	{
+		return MovieScene::DiscreteExclusiveUpper(SectionRangeEnd);
+	}
+
+	// This section is open ended... we don't want to compile its sub-sequence in an infinite loop so we'll bound
+	// that by the playback end of is own sequence.
+	if (const UMovieScene* MovieScene = InRootSequence.GetMovieScene())
+	{
+		const TRange<FFrameNumber> PlaybackRange = MovieScene->GetPlaybackRange();
+		if (!PlaybackRange.GetUpperBound().IsOpen())
+		{
+			return MovieScene::DiscreteExclusiveUpper(PlaybackRange.GetUpperBound());
+		}
+	}
+
+	// Sadly, the root sequence is also open ended, so we effectively would need to loop the sub-sequence
+	// indefinitely... we don't support that yet.
+	return TOptional<FFrameNumber>();
 }
 
 const FMovieSceneSubSequenceData* FMovieSceneCompiler::GetOrCreateSubSequenceData(FMovieSceneSequenceID InnerSequenceID, FMovieSceneSequenceID ParentSequenceID, const UMovieSceneSubSection& SubSection, const FGuid& InObjectBindingId, FMovieSceneSequenceHierarchy& InOutHierarchy)
@@ -529,8 +661,12 @@ const FMovieSceneSubSequenceData* FMovieSceneCompiler::GetOrCreateSubSequenceDat
 	const FMovieSceneSubSequenceData* ParentSubData = ParentSequenceID != MovieSceneSequenceID::Root ? InOutHierarchy.FindSubData(ParentSequenceID) : nullptr;
 	if (ParentSubData)
 	{
-		TRange<FFrameNumber> ParentPlayRangeChildSpace = ParentSubData->PlayRange.Value * NewSubData.RootToSequenceTransform;
-		NewSubData.PlayRange = TRange<FFrameNumber>::Intersection(ParentPlayRangeChildSpace, NewSubData.PlayRange.Value);
+		if (!NewSubData.RootToSequenceTransform.IsWarping())
+		{
+			TRange<FFrameNumber> ParentPlayRangeChildSpace = ParentSubData->PlayRange.Value * NewSubData.RootToSequenceTransform.LinearTransform;
+			NewSubData.PlayRange = TRange<FFrameNumber>::Intersection(ParentPlayRangeChildSpace, NewSubData.PlayRange.Value);
+		}
+		// else: the sub-sequence is looping so we'll probably need the whole playback range.
 
 		// Accumulate parent transform
 		NewSubData.RootToSequenceTransform = NewSubData.RootToSequenceTransform * ParentSubData->RootToSequenceTransform;
@@ -552,10 +688,10 @@ void FMovieSceneCompiler::GatherCompileDataForTrack(FMovieSceneEvaluationTrack& 
 		return Track.HasChildTemplate(EvalData.ImplIndex) && Track.GetChildTemplate(EvalData.ImplIndex).RequiresInitialization();
 	};
 
-	FMovieSceneSequenceTransform SequenceToRootTransform  = Params.RootToSequenceTransform.Inverse();
+	FMovieSceneSequenceTransform SequenceToRootTransform  = Params.RootToSequenceTransform.InverseFromWarp(Params.SequenceLoopCounter);
 	FMovieSceneSequenceID        CurrentSequenceID        = Params.RootPath.Remap(MovieSceneSequenceID::Root);
 	TRange<FFrameNumber>         CompileClampIntersection = TRange<FFrameNumber>::Intersection(Params.LocalCompileRange, Params.LocalClampRange);
-
+	
 	FMovieSceneEvaluationTreeRangeIterator TrackIter = Track.IterateFrom(CompileClampIntersection.GetLowerBound());
 	for ( ; TrackIter && TrackIter.Range().Overlaps(CompileClampIntersection); ++TrackIter)
 	{
@@ -563,7 +699,7 @@ void FMovieSceneCompiler::GatherCompileDataForTrack(FMovieSceneEvaluationTrack& 
 		if (!SegmentID.IsValid())
 		{
 			// No segment at this time, so just report the time range of the empty space.
-			TRange<FFrameNumber> ClampedEmptyTrackSpaceRoot = Params.ClampRoot(TrackIter.Range() * SequenceToRootTransform);
+			TRange<FFrameNumber> ClampedEmptyTrackSpaceRoot = Params.ClampRoot(TrackIter.Range() * SequenceToRootTransform.LinearTransform);
 			OutData.EmptySpace.AddTimeRange(ClampedEmptyTrackSpaceRoot);
 		}
 		else
@@ -579,7 +715,7 @@ void FMovieSceneCompiler::GatherCompileDataForTrack(FMovieSceneEvaluationTrack& 
 			Data.bRequiresInit = ThisSegment.Impls.ContainsByPredicate(RequiresInit);
 
 			TRange<FFrameNumber> SegmentTrackIntersection = TRange<FFrameNumber>::Intersection(ThisSegment.Range, TrackIter.Range());
-			TRange<FFrameNumber> IntersectionRange        = Params.ClampRoot(SegmentTrackIntersection * SequenceToRootTransform);
+			TRange<FFrameNumber> IntersectionRange        = Params.ClampRoot(SegmentTrackIntersection * SequenceToRootTransform.LinearTransform);
 			if (!IntersectionRange.IsEmpty())
 			{
 				OutData.Tracks.Add(IntersectionRange, Data);
@@ -593,7 +729,8 @@ void FMovieSceneCompiler::PopulateMetaData(FCompiledGroupResult& OutResult, cons
 	OutResult.MetaData.Reset();
 
 	// Add all the init tracks first
-	uint32 SortOrder = 0;
+	uint16 SetupIndex    = 0;
+	uint16 TearDownIndex = 0;
 	for (const FCompileOnTheFlyData& CompileData : SortedCompileData)
 	{
 		if (!CompileData.bRequiresInit)
@@ -601,16 +738,21 @@ void FMovieSceneCompiler::PopulateMetaData(FCompiledGroupResult& OutResult, cons
 			continue;
 		}
 
+		const bool bPriorityTearDown = CompileData.Track->HasTearDownPriority();
+
 		FMovieSceneEvaluationFieldSegmentPtr SegmentPtr = CompileData.Segment;
 
 		// Add the track key
 		FMovieSceneEvaluationKey TrackKey(SegmentPtr.SequenceID, SegmentPtr.TrackIdentifier);
-		OutResult.MetaData.ActiveEntities.Add(FMovieSceneOrderedEvaluationKey{ TrackKey, SortOrder++ });
+		OutResult.MetaData.ActiveEntities.Add(FMovieSceneOrderedEvaluationKey{ TrackKey, SetupIndex++, (bPriorityTearDown ? TearDownIndex : uint16(MAX_uint16-TearDownIndex)) });
+		++TearDownIndex;
 
 		for (FSectionEvaluationData EvalData : CompileData.Track->GetSegment(SegmentPtr.SegmentID).Impls)
 		{
 			FMovieSceneEvaluationKey SectionKey = TrackKey.AsSection(EvalData.ImplIndex);
-			OutResult.MetaData.ActiveEntities.Add(FMovieSceneOrderedEvaluationKey{ SectionKey, SortOrder++ });
+			OutResult.MetaData.ActiveEntities.Add(FMovieSceneOrderedEvaluationKey{ SectionKey, SetupIndex++, (bPriorityTearDown ? TearDownIndex : uint16(MAX_uint16 - TearDownIndex)) });
+
+			++TearDownIndex;
 		}
 	}
 
@@ -622,16 +764,21 @@ void FMovieSceneCompiler::PopulateMetaData(FCompiledGroupResult& OutResult, cons
 			continue;
 		}
 
+		const bool bPriorityTearDown = CompileData.Track->HasTearDownPriority();
+
 		FMovieSceneEvaluationFieldSegmentPtr SegmentPtr = CompileData.Segment;
 
 		// Add the track key
 		FMovieSceneEvaluationKey TrackKey(SegmentPtr.SequenceID, SegmentPtr.TrackIdentifier);
-		OutResult.MetaData.ActiveEntities.Add(FMovieSceneOrderedEvaluationKey{ TrackKey, SortOrder++ });
+		OutResult.MetaData.ActiveEntities.Add(FMovieSceneOrderedEvaluationKey{ TrackKey, SetupIndex++, (bPriorityTearDown ? TearDownIndex : uint16(MAX_uint16 - TearDownIndex)) });
+		++TearDownIndex;
 
 		for (FSectionEvaluationData EvalData : CompileData.Track->GetSegment(SegmentPtr.SegmentID).Impls)
 		{
 			FMovieSceneEvaluationKey SectionKey = TrackKey.AsSection(EvalData.ImplIndex);
-			OutResult.MetaData.ActiveEntities.Add(FMovieSceneOrderedEvaluationKey{ SectionKey, SortOrder++ });
+			OutResult.MetaData.ActiveEntities.Add(FMovieSceneOrderedEvaluationKey{ SectionKey, SetupIndex++, (bPriorityTearDown ? TearDownIndex : uint16(MAX_uint16 - TearDownIndex)) });
+
+			++TearDownIndex;
 		}
 	}
 

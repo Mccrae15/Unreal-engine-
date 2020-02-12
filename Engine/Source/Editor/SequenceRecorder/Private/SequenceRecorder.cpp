@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "SequenceRecorder.h"
 #include "ISequenceAudioRecorder.h"
@@ -13,7 +13,7 @@
 #include "Framework/Application/SlateApplication.h"
 #include "Editor.h"
 #include "EngineGlobals.h"
-#include "Toolkits/AssetEditorManager.h"
+
 #include "LevelEditor.h"
 #include "AnimationRecorder.h"
 #include "ActorRecording.h"
@@ -28,7 +28,7 @@
 #include "Framework/Notifications/NotificationManager.h"
 #include "Widgets/Notifications/SNotificationList.h"
 #include "LevelSequenceActor.h"
-#include "ILevelViewport.h"
+#include "IAssetViewport.h"
 #include "Tracks/MovieSceneAudioTrack.h"
 #include "Sections/MovieSceneAudioSection.h"
 #include "Sound/SoundWave.h"
@@ -41,8 +41,8 @@
 #include "ISequenceRecorderExtender.h"
 #include "ScopedTransaction.h"
 #include "Features/IModularFeatures.h"
-#include "ILiveLinkClient.h"
 #include "ScopedTransaction.h"
+#include "Subsystems/AssetEditorSubsystem.h"
 
 #define LOCTEXT_NAMESPACE "SequenceRecorder"
 
@@ -51,7 +51,6 @@ FSequenceRecorder::FSequenceRecorder()
 	, bWasImmersive(false)
 	, CurrentDelay(0.0f)
 	, CurrentTime(0.0f)
-	, bLiveLinkWasSaving(false)
 {
 }
 
@@ -879,17 +878,6 @@ bool FSequenceRecorder::StartRecordingInternal(UWorld* World)
 			}
 		}
 
-		IModularFeatures& ModularFeatures = IModularFeatures::Get();
-		if (ModularFeatures.IsModularFeatureAvailable(ILiveLinkClient::ModularFeatureName))
-		{
-			ILiveLinkClient* LiveLinkClient = &IModularFeatures::Get().GetModularFeature<ILiveLinkClient>(ILiveLinkClient::ModularFeatureName);
-			if (LiveLinkClient)
-			{
-				LiveLinkClient->ClearAllSubjectsFrames();
-				bLiveLinkWasSaving = LiveLinkClient->SetSaveFrames(true);
-			}
-		}
-
 		if (OnRecordingStartedDelegate.IsBound())
 		{
 			OnRecordingStartedDelegate.Broadcast(CurrentSequence.Get());
@@ -1140,7 +1128,7 @@ bool FSequenceRecorder::StopRecording(bool bAllowLooping)
 				{
 					TArray<UObject*> Assets;
 					Assets.Add(LevelSequence);
-					FAssetEditorManager::Get().OpenEditorForAssets(Assets);
+					GEditor->GetEditorSubsystem<UAssetEditorSubsystem>()->OpenEditorForAssets(Assets);
 				});
 				Info.HyperlinkText = FText::Format(LOCTEXT("OpenNewAnimationHyperlink", "Open {0}"), FText::FromString(LevelSequence->GetName()));
 				TSharedPtr<SNotificationItem> Notification = FSlateNotificationManager::Get().AddNotification(Info);
@@ -1157,16 +1145,6 @@ bool FSequenceRecorder::StopRecording(bool bAllowLooping)
 				OnRecordingFinishedDelegate.Broadcast(LevelSequence);
 			}
 			
-			IModularFeatures& ModularFeatures = IModularFeatures::Get();
-			if (ModularFeatures.IsModularFeatureAvailable(ILiveLinkClient::ModularFeatureName))
-			{
-				ILiveLinkClient* LiveLinkClient = &IModularFeatures::Get().GetModularFeature<ILiveLinkClient>(ILiveLinkClient::ModularFeatureName);
-				if (LiveLinkClient)
-				{
-					LiveLinkClient->SetSaveFrames(bLiveLinkWasSaving);
-				}
-			}
-
 			// Restart the recording if it's allowed, ie. the user has not pressed stop
 			if (bAllowLooping)
 			{
@@ -1281,16 +1259,20 @@ void FSequenceRecorder::RefreshNextSequence()
 		SequenceName = GetSequenceRecordingName().Len() > 0 ? GetSequenceRecordingName() : TEXT("RecordedSequence");
 	}
 
+	FString BasePath = GetSequenceRecordingBasePath() / SequenceName;
+
 	// Cache the name of the next sequence we will try to record to
-	NextSequenceName = SequenceRecorderUtils::MakeNewAssetName(GetSequenceRecordingBasePath(), SequenceName);
+	NextSequenceName = SequenceRecorderUtils::MakeNewAssetName(BasePath, SequenceName);
 }
 
 void FSequenceRecorder::ForceRefreshNextSequence()
 {
 	SequenceName = GetSequenceRecordingName().Len() > 0 ? GetSequenceRecordingName() : TEXT("RecordedSequence");
 
+	FString BasePath = GetSequenceRecordingBasePath() / SequenceName;
+
 	// Cache the name of the next sequence we will try to record to
-	NextSequenceName = SequenceRecorderUtils::MakeNewAssetName(GetSequenceRecordingBasePath(), SequenceName);
+	NextSequenceName = SequenceRecorderUtils::MakeNewAssetName(BasePath, SequenceName);
 }
 
 TWeakObjectPtr<ASequenceRecorderGroup> FSequenceRecorder::GetRecordingGroupActor()
@@ -1542,7 +1524,7 @@ void FSequenceRecorder::SetImmersive()
 	if (Settings->bImmersiveMode)
 	{
 		FLevelEditorModule& LevelEditorModule = FModuleManager::Get().LoadModuleChecked<FLevelEditorModule>("LevelEditor");
-		TSharedPtr< ILevelViewport > ActiveLevelViewport = LevelEditorModule.GetFirstActiveViewport();
+		TSharedPtr< IAssetViewport > ActiveLevelViewport = LevelEditorModule.GetFirstActiveViewport();
 
 		if( ActiveLevelViewport.IsValid() )
 		{
@@ -1566,7 +1548,7 @@ void FSequenceRecorder::RestoreImmersive()
 	if (Settings->bImmersiveMode)
 	{
 		FLevelEditorModule& LevelEditorModule = FModuleManager::Get().LoadModuleChecked<FLevelEditorModule>("LevelEditor");
-		TSharedPtr< ILevelViewport > ActiveLevelViewport = LevelEditorModule.GetFirstActiveViewport();
+		TSharedPtr< IAssetViewport > ActiveLevelViewport = LevelEditorModule.GetFirstActiveViewport();
 
 		if( ActiveLevelViewport.IsValid() )
 		{

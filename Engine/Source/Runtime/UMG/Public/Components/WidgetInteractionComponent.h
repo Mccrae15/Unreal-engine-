@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -12,7 +12,7 @@
 #include "Layout/WidgetPath.h"
 #include "WidgetInteractionComponent.generated.h"
 
-class FSlateVirtualUser;
+class FSlateVirtualUserHandle;
 class UPrimitiveComponent;
 class UWidgetComponent;
 
@@ -75,6 +75,10 @@ public:
 	virtual void TickComponent(float DeltaTime, enum ELevelTick TickType, FActorComponentTickFunction* ThisTickFunction) override;
 	// End UActorComponent
 	
+	// Begin UObject interface
+	virtual bool IsDestructionThreadSafe() const override { return false; }
+	// End UObject
+
 	/**
 	 * Presses a key as if the mouse/pointer were the source of it.  Normally you would just use
 	 * Left/Right mouse button for the Key.  However - advanced uses could also be imagined where you
@@ -174,7 +178,13 @@ public:
 	UFUNCTION(BlueprintCallable, Category="Interaction")
 	void SetCustomHitResult(const FHitResult& HitResult);
 
-private:
+	/**
+	 * Set the focus target of the virtual user managed by this component
+	 */
+	UFUNCTION(BlueprintCallable, Category = "Interaction")
+	void SetFocus(UWidget* FocusWidget);
+
+protected:
 	/**
 	 * Represents the virtual user in slate.  When this component is registered, it gets a handle to the 
 	 * virtual slate user it will be, so virtual slate user 0, is probably real slate user 8, as that's the first
@@ -183,7 +193,7 @@ private:
 	 * the mouse and keyboard focus input (the viewport), so that things like the player controller receive
 	 * standard hardware input.
 	 */
-	TSharedPtr<FSlateVirtualUser> VirtualUser;
+	TSharedPtr<FSlateVirtualUserHandle> VirtualUser;
 
 public:
 

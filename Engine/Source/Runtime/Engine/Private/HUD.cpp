@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 /*=============================================================================
 	HUD.cpp: Heads up Display related functionality
@@ -65,13 +65,13 @@ AHUD::AHUD(const FObjectInitializer& ObjectInitializer)
 {
 	PrimaryActorTick.TickGroup = TG_DuringPhysics;
 	PrimaryActorTick.bCanEverTick = true;
-	bHidden = true;
+	SetHidden(true);
 	bReplicates = false;
 
 	bLostFocusPaused = false;
 	bShowHUD = true;
 
-	bCanBeDamaged = false;
+	SetCanBeDamaged(false);
 	bEnableDebugTextShadow = false;
 }
 
@@ -455,7 +455,7 @@ void AHUD::ShowDebugInfo(float& YL, float& YPos)
 #endif
 			ShowDebugTargetActor->DisplayDebug(DebugCanvas, DisplayInfo, YL, YPos);
 
-			if (!bShowDebugForReticleTarget && ShowDebugTargetActor->Role == ROLE_SimulatedProxy)
+			if (!bShowDebugForReticleTarget && ShowDebugTargetActor->GetLocalRole() == ROLE_SimulatedProxy)
 			{
 				PlayerOwner->DisplayDebug(DebugCanvas, DisplayInfo, YL, YPos);
 			}

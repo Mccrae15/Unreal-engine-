@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -10,6 +10,8 @@
 #include "UObject/UnrealType.h"
 #include "Misc/ScopeLock.h"
 #include "HAL/PlatformProcess.h"
+#include "UObject/FieldPath.h"
+#include "UObject/UObjectArray.h"
 
 struct FStackEntry;
 
@@ -262,7 +264,7 @@ private:
 		 void ReturnToPool(FGCArrayStruct* ArrayStruct);
 	 };
  */
-template <bool bParallel, typename ReferenceProcessorType, typename CollectorType, typename ArrayPoolType, bool bAutoGenerateTokenStream = false>
+template <bool bParallel, typename ReferenceProcessorType, typename CollectorType, typename ArrayPoolType, bool bAutoGenerateTokenStream = false, bool bIgnoreNoopTokens = false>
 class TFastReferenceCollector
 {
 private:
@@ -525,6 +527,9 @@ public:
 
 				int32 NumThreads = FTaskGraphInterface::Get().GetNumWorkerThreads();
 				int32 NumBackgroundThreads = ENamedThreads::bHasBackgroundThreads ? NumThreads : 0;
+				ENamedThreads::Type NormalThreadName = ENamedThreads::AnyNormalThreadNormalTask;
+				ENamedThreads::Type BackgroundThreadName = ENamedThreads::AnyBackgroundThreadNormalTask;
+
 #if ((PLATFORM_PS4 && USE_7TH_CORE) || PLATFORM_XBOXONE)
 				if (NumBackgroundThreads)
 				{
@@ -535,6 +540,10 @@ public:
 				{
 					NumBackgroundThreads = 6 - NumThreads;
 				}
+#elif PLATFORM_ANDROID
+				// On devices with overridden affinity only HiPri threads can run on big cores
+				NormalThreadName = ENamedThreads::AnyHiPriThreadHiPriTask; 
+				NumBackgroundThreads = 0; // run on single group
 #endif
 				int32 NumTasks = NumThreads + NumBackgroundThreads;
 
@@ -553,7 +562,7 @@ public:
 				}
 				for (int32 Chunk = 0; Chunk < NumTasks; Chunk++)
 				{
-					ChunkTasks.Add(TGraphTask< FCollectorTaskProcessorTask >::CreateTask().ConstructAndDispatchWhenReady(TaskQueue, Chunk >= NumThreads ? ENamedThreads::AnyBackgroundThreadNormalTask : ENamedThreads::AnyNormalThreadNormalTask));
+					ChunkTasks.Add(TGraphTask< FCollectorTaskProcessorTask >::CreateTask().ConstructAndDispatchWhenReady(TaskQueue, Chunk >= NumThreads ? BackgroundThreadName : NormalThreadName));
 				}
 
 				QUICK_SCOPE_CYCLE_COUNTER(STAT_GC_Subtask_Wait);
@@ -605,6 +614,7 @@ private:
 				uint32 StartCycles = FPlatformTime::Cycles();
 #endif
 				CurrentObject = ObjectsToSerialize[CurrentIndex++];
+				checkSlow(CurrentObject);
 
 				// GetData() used to avoiding bounds checking (min and max)
 				// FMath::Min used to avoid out of bounds (without branching) on last iteration. Though anything can be passed into PrefetchBlock, 
@@ -692,8 +702,9 @@ private:
 					switch(ReferenceInfo.Type)
 					{
 					case GCRT_Object:
+					case GCRT_Class:
 					{
-						// We're dealing with an object reference.
+						// We're dealing with an object reference (this code should be identical to GCRT_NoopClass if !bIgnoreNoopTokens)
 						UObject**	ObjectPtr = (UObject**)(StackEntryData + ReferenceInfo.Offset);
 						UObject*&	Object = *ObjectPtr;
 						TokenReturnCount = ReferenceInfo.ReturnCount;
@@ -704,6 +715,17 @@ private:
 					{
 						// We're dealing with an array of object references.
 						TArray<UObject*>& ObjectArray = *((TArray<UObject*>*)(StackEntryData + ReferenceInfo.Offset));
+						TokenReturnCount = ReferenceInfo.ReturnCount;
+						for (int32 ObjectIndex = 0, ObjectNum = ObjectArray.Num(); ObjectIndex < ObjectNum; ++ObjectIndex)
+						{
+							ReferenceProcessor.HandleTokenStreamObjectReference(NewObjectsToSerialize, CurrentObject, ObjectArray[ObjectIndex], ReferenceTokenStreamIndex, true);
+						}
+					}
+					break;
+					case GCRT_ArrayObjectFreezable:
+					{
+						// We're dealing with an array of object references.
+						TArray<UObject*, FMemoryImageAllocator>& ObjectArray = *((TArray<UObject*, FMemoryImageAllocator>*)(StackEntryData + ReferenceInfo.Offset));
 						TokenReturnCount = ReferenceInfo.ReturnCount;
 						for (int32 ObjectIndex = 0, ObjectNum = ObjectArray.Num(); ObjectIndex < ObjectNum; ++ObjectIndex)
 						{
@@ -738,9 +760,36 @@ private:
 						}
 					}
 					break;
+					case GCRT_ArrayStructFreezable:
+					{
+						// We're dealing with a dynamic array of structs.
+						const FFreezableScriptArray& Array = *((FFreezableScriptArray*)(StackEntryData + ReferenceInfo.Offset));
+						StackEntry++;
+						StackEntryData = (uint8*)Array.GetData();
+						StackEntry->Data = StackEntryData;
+						StackEntry->Stride = TokenStream->ReadStride(TokenStreamIndex);
+						StackEntry->Count = Array.Num();
+
+						const FGCSkipInfo SkipInfo = TokenStream->ReadSkipInfo(TokenStreamIndex);
+						StackEntry->LoopStartIndex = TokenStreamIndex;
+
+						if (StackEntry->Count == 0)
+						{
+							// Skip empty array by jumping to skip index and set return count to the one about to be read in.
+							TokenStreamIndex = SkipInfo.SkipIndex;
+							TokenReturnCount = TokenStream->GetSkipReturnCount(SkipInfo);
+						}
+						else
+						{
+							// Loop again.
+							check(StackEntry->Data);
+							TokenReturnCount = 0;
+						}
+					}
+					break;
 					case GCRT_PersistentObject:
 					{
-						// We're dealing with an object reference.
+						// We're dealing with an object reference (this code should be identical to GCRT_NoopPersistentObject if !bIgnoreNoopTokens)
 						UObject**	ObjectPtr = (UObject**)(StackEntryData + ReferenceInfo.Offset);
 						UObject*&	Object = *ObjectPtr;
 						TokenReturnCount = ReferenceInfo.ReturnCount;
@@ -780,22 +829,108 @@ private:
 					case GCRT_AddTMapReferencedObjects:
 					{
 						void*         Map = StackEntryData + ReferenceInfo.Offset;
-						UMapProperty* MapProperty = (UMapProperty*)TokenStream->ReadPointer(TokenStreamIndex);
+						FMapProperty* MapProperty = (FMapProperty*)TokenStream->ReadPointer(TokenStreamIndex);
 						TokenReturnCount = ReferenceInfo.ReturnCount;
-						MapProperty->SerializeItem(FStructuredArchiveFromArchive(ReferenceCollector.GetVerySlowReferenceCollectorArchive()).GetSlot(), Map, nullptr);
+
+						FReferenceCollectorArchive& Ar = ReferenceCollector.GetVerySlowReferenceCollectorArchive();
+						checkSlow(Ar.GetSerializingObject() == nullptr);
+						Ar.SetSerializingObject(CurrentObject);
+						MapProperty->SerializeItem(FStructuredArchiveFromArchive(Ar).GetSlot(), Map, nullptr);
+						Ar.SetSerializingObject(nullptr);
 					}
 					break;
 					case GCRT_AddTSetReferencedObjects:
 					{
 						void*         Set = StackEntryData + ReferenceInfo.Offset;
-						USetProperty* SetProperty = (USetProperty*)TokenStream->ReadPointer(TokenStreamIndex);
+						FSetProperty* SetProperty = (FSetProperty*)TokenStream->ReadPointer(TokenStreamIndex);
 						TokenReturnCount = ReferenceInfo.ReturnCount;
-						SetProperty->SerializeItem(FStructuredArchiveFromArchive(ReferenceCollector.GetVerySlowReferenceCollectorArchive()).GetSlot(), Set, nullptr);
+
+						FReferenceCollectorArchive& Ar = ReferenceCollector.GetVerySlowReferenceCollectorArchive();
+						checkSlow(Ar.GetSerializingObject() == nullptr);
+						Ar.SetSerializingObject(CurrentObject);
+						SetProperty->SerializeItem(FStructuredArchiveFromArchive(Ar).GetSlot(), Set, nullptr);
+						Ar.SetSerializingObject(nullptr);
+					}
+					break;
+					case GCRT_AddFieldPathReferencedObject:
+					{
+						FFieldPath*	FieldPathPtr = (FFieldPath*)(StackEntryData + ReferenceInfo.Offset);
+						FField*& Field = FieldPathPtr->GetResolvedFieldInternal();
+						int32& FieldOwnerIndex = FieldPathPtr->GetResolvedFieldOwnerInternal();
+						TokenReturnCount = ReferenceInfo.ReturnCount;
+						if (FieldOwnerIndex >= 0)
+						{
+							UObject* OwnerObject = static_cast<UObject*>(GUObjectArray.IndexToObjectUnsafeForGC(FieldOwnerIndex)->Object);
+							UObject* PreviousOwner = OwnerObject;
+							ReferenceProcessor.HandleTokenStreamObjectReference(NewObjectsToSerialize, CurrentObject, OwnerObject, ReferenceTokenStreamIndex, true);
+							// Handle reference elimination (PendingKill owner)
+							if (PreviousOwner && !OwnerObject)
+							{
+								Field = nullptr;
+								FieldOwnerIndex = -1;
+							}
+						}
+					}
+					break;
+					case GCRT_ArrayAddFieldPathReferencedObject:
+					{
+						// We're dealing with an array of object references.
+						TArray<FFieldPath>& FieldArray = *((TArray<FFieldPath>*)(StackEntryData + ReferenceInfo.Offset));
+						TokenReturnCount = ReferenceInfo.ReturnCount;
+						for (int32 FieldIndex = 0, FieldNum = FieldArray.Num(); FieldIndex < FieldNum; ++FieldIndex)
+						{
+							FField*& Field = FieldArray[FieldIndex].GetResolvedFieldInternal();
+							int32& FieldOwnerIndex = FieldArray[FieldIndex].GetResolvedFieldOwnerInternal();
+							if (FieldOwnerIndex >= 0)
+							{
+								UObject* OwnerObject = static_cast<UObject*>(GUObjectArray.IndexToObjectUnsafeForGC(FieldOwnerIndex)->Object);
+								UObject* PreviousOwner = OwnerObject;
+								ReferenceProcessor.HandleTokenStreamObjectReference(NewObjectsToSerialize, CurrentObject, OwnerObject, ReferenceTokenStreamIndex, true);
+								// Handle reference elimination (PendingKill owner)
+								if (PreviousOwner && !OwnerObject)
+								{
+									Field = nullptr;
+									FieldOwnerIndex = -1;
+								}
+							}
+						}
 					}
 					break;
 					case GCRT_EndOfPointer:
 					{
 						TokenReturnCount = ReferenceInfo.ReturnCount;
+					}
+					break;
+					case GCRT_NoopPersistentObject:
+					{
+						if (!bIgnoreNoopTokens)
+						{
+							// We're dealing with an object reference (this code should be identical to GCRT_PersistentObject)
+							UObject**	ObjectPtr = (UObject**)(StackEntryData + ReferenceInfo.Offset);
+							UObject*&	Object = *ObjectPtr;
+							TokenReturnCount = ReferenceInfo.ReturnCount;
+							ReferenceProcessor.HandleTokenStreamObjectReference(NewObjectsToSerialize, CurrentObject, Object, ReferenceTokenStreamIndex, false);
+						}
+						else
+						{
+							TokenReturnCount = ReferenceInfo.ReturnCount;
+						}
+					}
+					break;
+					case GCRT_NoopClass:
+					{
+						if (!bIgnoreNoopTokens)
+						{
+							// We're dealing with an object reference (this code should be identical to GCRT_Object and GCRT_Class)
+							UObject**	ObjectPtr = (UObject**)(StackEntryData + ReferenceInfo.Offset);
+							UObject*&	Object = *ObjectPtr;
+							TokenReturnCount = ReferenceInfo.ReturnCount;
+							ReferenceProcessor.HandleTokenStreamObjectReference(NewObjectsToSerialize, CurrentObject, Object, ReferenceTokenStreamIndex, true);
+						}
+						else
+						{
+							TokenReturnCount = ReferenceInfo.ReturnCount;
+						}
 					}
 					break;
 					case GCRT_EndOfStream:
@@ -897,11 +1032,11 @@ public:
 		, ObjectArrayStruct(InObjectArrayStruct)
 	{
 	}
-	virtual void HandleObjectReference(UObject*& Object, const UObject* ReferencingObject, const UProperty* ReferencingProperty) override
+	virtual void HandleObjectReference(UObject*& Object, const UObject* ReferencingObject, const FProperty* ReferencingProperty) override
 	{
 		Processor.HandleTokenStreamObjectReference(ObjectArrayStruct.ObjectsToSerialize, const_cast<UObject*>(ReferencingObject), Object, INDEX_NONE, false);
 	}
-	virtual void HandleObjectReferences(UObject** InObjects, const int32 ObjectNum, const UObject* ReferencingObject, const UProperty* InReferencingProperty) override
+	virtual void HandleObjectReferences(UObject** InObjects, const int32 ObjectNum, const UObject* ReferencingObject, const FProperty* InReferencingProperty) override
 	{
 		for (int32 ObjectIndex = 0; ObjectIndex < ObjectNum; ++ObjectIndex)
 		{

@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -20,8 +20,15 @@ public:
 
 private:
 	FEdModeLandscape* GetEditorMode() const;
+	FText OnGetSplineOwningLandscapeText() const;
 	FReply OnSelectConnectedControlPointsButtonClicked();
 	FReply OnSelectConnectedSegmentsButtonClicked();
 	FReply OnMoveToCurrentLevelButtonClicked();
 	bool IsMoveToCurrentLevelButtonEnabled() const;
+
+	FReply OnUpdateSplineMeshLevelsButtonClicked();
+	bool IsUpdateSplineMeshLevelsButtonEnabled() const;
+	
+	FReply OnFlipSegmentButtonClicked();
+	bool IsFlipSegmentButtonEnabled() const;
 };

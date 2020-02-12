@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 // This code is modified from that in the Mesa3D Graphics library available at
 // http://mesa3d.org/
@@ -383,6 +383,12 @@ void ir_copy_propagation_elements_visitor::handle_rvalue(ir_rvalue **ir)
 		return;
 
 	ir_variable *var = deref_var->var;
+
+	// Shared variables should be considered volatile
+	if (var->mode == ir_var_shared)
+	{
+		return;
+	}
 
 	/* Try to find ACP entries covering swizzle_chan[], hoping they're
 	* the same source variable.

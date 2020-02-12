@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 using System;
 using System.Collections.Generic;
 using System.Text;
@@ -101,7 +101,7 @@ class MegaXGE : BuildCommand
 					foreach (var SubPart in SubParts)
 					{
 						UnrealTargetPlatform Platform;
-						if(Enum.TryParse(SubPart, true, out Platform))
+						if (UnrealTargetPlatform.TryParse(SubPart, out Platform))
 						{
 							Platforms.Add(Platform);
 						}

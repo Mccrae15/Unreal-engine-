@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 using UnrealBuildTool;
 
@@ -27,14 +27,6 @@ public class NetworkFile : ModuleRules
 				});
 		}
 
-		if (Target.Platform == UnrealTargetPlatform.HTML5)
-		{
-			PublicDefinitions.Add("ENABLE_HTTP_FOR_NF=1");
-			PrivateDependencyModuleNames.Add("HTML5JS");
-		}
-		else
-		{
-			PublicDefinitions.Add("ENABLE_HTTP_FOR_NF=0");
-		}
+		PublicDefinitions.Add("ENABLE_HTTP_FOR_NETWORK_FILE=0");
 	}
 }

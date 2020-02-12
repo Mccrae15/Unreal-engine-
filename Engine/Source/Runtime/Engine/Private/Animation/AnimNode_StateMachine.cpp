@@ -1,11 +1,22 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "Animation/AnimNode_StateMachine.h"
 #include "Animation/AnimInstanceProxy.h"
 #include "Animation/AnimNode_TransitionResult.h"
 #include "Animation/AnimNode_TransitionPoseEvaluator.h"
 #include "Animation/AnimNode_AssetPlayerBase.h"
+#include "Animation/AnimNode_Inertialization.h"
 #include "Animation/BlendProfile.h"
+#include "Animation/AnimNode_LinkedAnimLayer.h"
+#include "Animation/AnimInstance.h"
+#include "Animation/AnimTrace.h"
+
+#if WITH_EDITORONLY_DATA
+#include "Animation/AnimBlueprintGeneratedClass.h"
+#include "Animation/AnimBlueprint.h"
+#endif
+
+#define LOCTEXT_NAMESPACE "AnimNode_StateMachine"
 
 DECLARE_CYCLE_STAT(TEXT("StateMachine SetState"), Stat_StateMachineSetState, STATGROUP_Anim);
 
@@ -42,7 +53,7 @@ FAnimationActiveTransitionEntry::FAnimationActiveTransitionEntry(int32 NextState
 	, bActive(true)
 {
 	const float Scaler = 1.0f - ExistingWeightOfNextState;
-	CrossfadeDuration = ReferenceTransitionInfo.CrossfadeDuration * CalculateInverseAlpha(BlendOption, Scaler);
+	CrossfadeDuration = (LogicType == ETransitionLogicType::TLT_Inertialization) ? 0.0f : ReferenceTransitionInfo.CrossfadeDuration * CalculateInverseAlpha(BlendOption, Scaler);
 
 	Blend.SetBlendTime(CrossfadeDuration);
 	Blend.SetBlendOption(BlendOption);
@@ -331,6 +342,19 @@ const FAnimationTransitionBetweenStates& FAnimNode_StateMachine::GetTransitionIn
 	return PRIVATE_MachineDescription->Transitions[TransIndex];
 }
 
+void FAnimNode_StateMachine::LogInertializationRequestError(const FAnimationUpdateContext& Context, int32 PreviousState, int32 NextState)
+{
+#if WITH_EDITORONLY_DATA
+	const FBakedAnimationStateMachine* Machine = GetMachineDescription();
+	FText Message = FText::Format(LOCTEXT("InertialTransitionError", "No Inertialization node found for request from transition '{0}' to '{1}' in state machine '{2}' in anim blueprint '{3}'. Add an Inertialization node after this state machine."),
+		FText::FromName(GetStateInfo(PreviousState).StateName),
+		FText::FromName(GetStateInfo(NextState).StateName),
+		FText::FromName(Machine->MachineName),
+		FText::FromString(GetPathNameSafe(Context.AnimInstanceProxy->GetAnimBlueprint())));
+	Context.LogMessage(EMessageSeverity::Error, Message);
+#endif
+}
+
 // Temporarily turned off while we track down and fix https://jira.ol.epicgames.net/browse/OR-17066
 TAutoConsoleVariable<int32> CVarAnimStateMachineRelevancyReset(TEXT("a.AnimNode.StateMachine.EnableRelevancyReset"), 1, TEXT("Reset State Machine when it becomes relevant"));
 
@@ -441,9 +465,20 @@ void FAnimNode_StateMachine::Update_AnyThread(const FAnimationUpdateContext& Con
 			{
 				NewTransition->InitializeCustomGraphLinks(Context, *(PotentialTransition.TransitionRule));
 
-#if WITH_EDITORONLY_DATA
+				if (ReferenceTransition.LogicType == ETransitionLogicType::TLT_Inertialization)
+				{
+					FAnimNode_Inertialization* InertializationNode = Context.GetAncestor<FAnimNode_Inertialization>();
+					if (InertializationNode)
+					{
+						InertializationNode->RequestInertialization(ReferenceTransition.CrossfadeDuration);
+					}
+					else
+					{
+						LogInertializationRequestError(Context, PreviousState, NextState);
+					}
+				}
+
 				NewTransition->SourceTransitionIndices = PotentialTransition.SourceTransitionIndices;
-#endif
 
 				if (!bFirstUpdate)
 				{
@@ -515,24 +550,59 @@ void FAnimNode_StateMachine::Update_AnyThread(const FAnimationUpdateContext& Con
 	if (ActiveTransitionArray.Num() == 0 && !IsAConduitState(CurrentState) && !StatesUpdated.Contains(CurrentState))
 	{
 		StatePoseLinks[CurrentState].Update(Context);
-		Context.AnimInstanceProxy->RecordStateWeight(StateMachineIndexInClass, CurrentState, GetStateWeight(CurrentState));
+
+		const float StateWeight = GetStateWeight(CurrentState);
+		const float CurrentStateElapsedTime = GetCurrentStateElapsedTime();
+		Context.AnimInstanceProxy->RecordStateWeight(StateMachineIndexInClass, CurrentState, StateWeight, CurrentStateElapsedTime);
+
+		TRACE_ANIM_STATE_MACHINE_STATE(Context, StateMachineIndexInClass, CurrentState, StateWeight, CurrentStateElapsedTime);
 	}
 
 	ElapsedTime += Context.GetDeltaTime();
+
+#if ANIM_TRACE_ENABLED
+	TRACE_ANIM_NODE_VALUE(Context, TEXT("Name"), GetMachineDescription()->MachineName);
+	TRACE_ANIM_NODE_VALUE(Context, TEXT("Current State"), GetStateInfo().StateName);
+#endif
 }
 
 FAnimNode_AssetPlayerBase* FAnimNode_StateMachine::GetRelevantAssetPlayerFromState(const FAnimationUpdateContext& Context, const FBakedAnimationState& StateInfo)
 {
 	FAnimNode_AssetPlayerBase* ResultPlayer = nullptr;
 	float MaxWeight = 0.0f;
+
+	auto EvaluatePlayerWeight = [&MaxWeight, &ResultPlayer](FAnimNode_AssetPlayerBase* Player)
+	{
+		if (!Player->bIgnoreForRelevancyTest && (Player->GetCachedBlendWeight() > MaxWeight))
+		{
+			MaxWeight = Player->GetCachedBlendWeight();
+			ResultPlayer = Player;
+		}
+	};
+
 	for (const int32& PlayerIdx : StateInfo.PlayerNodeIndices)
 	{
 		if (FAnimNode_AssetPlayerBase* Player = Context.AnimInstanceProxy->GetNodeFromIndex<FAnimNode_AssetPlayerBase>(PlayerIdx))
 		{
-			if (!Player->bIgnoreForRelevancyTest && (Player->GetCachedBlendWeight() > MaxWeight))
+			EvaluatePlayerWeight(Player);
+		}
+	}
+
+	// Get all layer node indices that are part of this state
+	for (const int32& LayerIdx : StateInfo.LayerNodeIndices)
+	{
+		// Try and retrieve the actual node object
+		if (FAnimNode_LinkedAnimLayer* Layer = Context.AnimInstanceProxy->GetNodeFromIndex<FAnimNode_LinkedAnimLayer>(LayerIdx))
+		{
+			// Retrieve the AnimInstance running for this layer
+			if (UAnimInstance* CurrentTarget = Layer->GetTargetInstance<UAnimInstance>())
 			{
-				MaxWeight = Player->GetCachedBlendWeight();
-				ResultPlayer = Player;
+				// Retrieve all asset player nodes from the corresponding Anim blueprint class and apply same logic to find highest weighted asset player 
+				TArray<FAnimNode_AssetPlayerBase*> PlayerNodesInLayer = CurrentTarget->GetInstanceAssetPlayers(Layer->Layer);
+				for (FAnimNode_AssetPlayerBase* Player : PlayerNodesInLayer)
+				{
+					EvaluatePlayerWeight(Player);
+				}
 			}
 		}
 	}
@@ -659,6 +729,13 @@ void FAnimNode_StateMachine::UpdateTransitionStates(const FAnimationUpdateContex
 			}
 			break;
 
+		case ETransitionLogicType::TLT_Inertialization:
+			{
+				// update target state
+				UpdateState(Transition.NextState, Context);
+			}
+			break;
+
 		case ETransitionLogicType::TLT_Custom:
 			{
 				if (Transition.CustomTransitionGraph.LinkID != INDEX_NONE)
@@ -727,6 +804,9 @@ void FAnimNode_StateMachine::Evaluate_AnyThread(FPoseContext& Output)
 				{
 				case ETransitionLogicType::TLT_StandardBlend:
 					EvaluateTransitionStandardBlend(Output, ActiveTransition, bIntermediatePoseIsValid);
+					break;
+				case ETransitionLogicType::TLT_Inertialization:
+					EvaluateState(ActiveTransition.NextState, Output);
 					break;
 				case ETransitionLogicType::TLT_Custom:
 					EvaluateTransitionCustomBlend(Output, ActiveTransition, bIntermediatePoseIsValid);
@@ -915,7 +995,14 @@ void FAnimNode_StateMachine::SetState(const FAnimationBaseContext& Context, int3
 			StatePoseLinks[NewStateIndex].Initialize(InitContext);
 
 			// Also call cache bones if needed
-			ConditionallyCacheBonesForState(NewStateIndex, Context);
+			// Note dont call CacheBones here if we are in the process of whole-graph initialization as a 'never updated' counter
+			// will not perform its 'minimal update guard' duty and every call will end up getting though, performing duplicate work
+			// over Save/UseCachedPose boundaries etc.
+			// This is OK because CacheBones is actually called before updating the graph anyway after whole-graph initialization
+			if(Context.AnimInstanceProxy->GetCachedBonesCounter().HasEverBeenUpdated())
+			{
+				ConditionallyCacheBonesForState(NewStateIndex, Context);
+			}
 		}
 
 		if(CurrentState != INDEX_NONE && CurrentState < OnGraphStatesEntered.Num())
@@ -986,7 +1073,11 @@ void FAnimNode_StateMachine::UpdateState(int32 StateIndex, const FAnimationUpdat
 		StatesUpdated.Add(StateIndex);
 		StatePoseLinks[StateIndex].Update(Context);
 
-		Context.AnimInstanceProxy->RecordStateWeight(StateMachineIndexInClass, StateIndex, GetStateWeight(StateIndex));
+		const float StateWeight = GetStateWeight(StateIndex);
+		const float CurrentStateElapsedTime = StateIndex == CurrentState ? GetCurrentStateElapsedTime() : 0.0f;
+		Context.AnimInstanceProxy->RecordStateWeight(StateMachineIndexInClass, StateIndex, StateWeight, CurrentStateElapsedTime);
+
+		TRACE_ANIM_STATE_MACHINE_STATE(Context, StateMachineIndexInClass, StateIndex, StateWeight, CurrentStateElapsedTime);
 	}
 }
 
@@ -1037,3 +1128,5 @@ void FAnimNode_StateMachine::CacheMachineDescription(IAnimClassInterface* AnimBl
 {
 	PRIVATE_MachineDescription = AnimBlueprintClass->GetBakedStateMachines().IsValidIndex(StateMachineIndexInClass) ? &(AnimBlueprintClass->GetBakedStateMachines()[StateMachineIndexInClass]) : nullptr;
 }
+
+#undef LOCTEXT_NAMESPACE

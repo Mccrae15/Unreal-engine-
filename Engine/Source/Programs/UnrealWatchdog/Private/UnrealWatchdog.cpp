@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "UnrealWatchdog.h"
 #include "RequiredProgramMainCPPInclude.h"
@@ -371,7 +371,7 @@ bool WaitForProcess(IAnalyticsProviderET& Analytics, const FWatchdogCommandLine&
 	FProcHandle ParentProcess = GetProcessHandle(CommandLine);
 	if (ParentProcess.IsValid())
 	{
-		while (!GIsRequestingExit)
+		while (!IsEngineExitRequested())
 		{
 			TickHeartbeat(Analytics, CommandLine, NextHeartbeatSend);
 

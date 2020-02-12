@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -235,7 +235,10 @@ public:
 	 */
 	void Wait() const
 	{
-		while (!WaitFor(FTimespan::MaxValue()));
+		if (State.IsValid())
+		{
+			while (!WaitFor(FTimespan::MaxValue()));
+		}
 	}
 
 	/**

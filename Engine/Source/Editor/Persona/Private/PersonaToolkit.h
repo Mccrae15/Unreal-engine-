@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -43,6 +43,8 @@ public:
 	virtual class TSharedRef<IPersonaPreviewScene> GetPreviewScene() const override;
 	virtual class USkeletalMesh* GetPreviewMesh() const override;
 	virtual void SetPreviewMesh(class USkeletalMesh* InSkeletalMesh, bool bSetPreviewMeshInAsset = true) override;
+	virtual void SetPreviewAnimationBlueprint(UAnimBlueprint* InAnimBlueprint) override;
+	virtual UAnimBlueprint* GetPreviewAnimationBlueprint() const override;
 	virtual int32 GetCustomData(const int32 Key) const override;
 	virtual void SetCustomData(const int32 Key, const int32 CustomData) override;
 	virtual FName GetContext() const override;

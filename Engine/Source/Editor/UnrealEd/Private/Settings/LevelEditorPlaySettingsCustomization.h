@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -187,9 +187,9 @@ public:
 					[
 						SNew(STextBlock)
 						.Font(LayoutBuilder->GetDetailFont())
-						.Text(LOCTEXT("CommonResolutionsButtonText", "Common Window Sizes"))
+						.Text(LOCTEXT("CommonResolutionsButtonText", "Common Resolutions"))
 					]
-					.ContentPadding(FMargin(6.0f, 2.0f))
+					.ContentPadding(FMargin(6,2))
 					.MenuContent()
 					[
 						MakeCommonResolutionsMenu()
@@ -197,12 +197,13 @@ public:
 					.ToolTipText(LOCTEXT("CommonResolutionsButtonTooltip", "Pick from a list of common screen resolutions"))
 				]
 				+ SHorizontalBox::Slot()
+				.Padding(0,0,6,0)
 				.AutoWidth()
 				.VAlign(VAlign_Center)
 				[
 					SNew(SButton)
 					.OnClicked(this, &SScreenResolutionCustomization::HandleSwapAspectRatioClicked)
-					.ContentPadding(FMargin(3.0f, 0.0f, 3.0f, 1.0f))
+					.ContentPadding(FMargin(3,0,3,1))
 					.Content()
 					[
 						SNew(SImage)
@@ -221,7 +222,7 @@ public:
 					+ SVerticalBox::Slot()
 					.AutoHeight()
 					[
-						WindowWidthProperty->CreatePropertyNameWidget(LOCTEXT("WindowWidthLabel", "Window Width"))
+						WindowWidthProperty->CreatePropertyNameWidget(LOCTEXT("ViewportWidthLabel", "Viewport Width"))
 					]
 					+ SVerticalBox::Slot()
 					[
@@ -229,13 +230,13 @@ public:
 					]
 				]
 				+ SHorizontalBox::Slot()
-				.Padding(8.0f, 0.0f, 0.0f, 0.0f)
+				.Padding(8,0,0,0)
 				[
 					SNew(SVerticalBox)
 					+ SVerticalBox::Slot()
 					.AutoHeight()
 					[
-						WindowHeightProperty->CreatePropertyNameWidget(LOCTEXT("WindowHeightLabel", "Window Height"))
+						WindowHeightProperty->CreatePropertyNameWidget(LOCTEXT("ViewportHeightLabel", "Viewport Height"))
 					]
 					+ SVerticalBox::Slot()
 					.AutoHeight()
@@ -379,12 +380,24 @@ protected:
 private:
 
 	// Handles selecting a common screen resolution.
-	void HandleCommonResolutionSelected(FPlayScreenResolution Resolution)
+	void HandleCommonResolutionSelected(const FPlayScreenResolution Resolution)
 	{
 		int32 Width = Resolution.Width;
 		int32 Height = Resolution.Height;
 		float ScaleFactor;
 		ULevelEditorPlaySettings* PlayInSettings = GetMutableDefault<ULevelEditorPlaySettings>();
+		// Maintain previous orientation (i.e., swap Width and Height if required)
+		int32 PreviousWidth;
+		int32 PreviousHeight;
+		if (WindowWidthProperty->GetValue(PreviousWidth) == FPropertyAccess::Success && WindowHeightProperty->GetValue(PreviousHeight) == FPropertyAccess::Success)
+		{
+			const bool bIsOrientationPreserved = (PreviousWidth < PreviousHeight) != (Width < Height);
+			if (bIsOrientationPreserved)
+			{
+				Width = Resolution.Height;
+				Height = Resolution.Width;
+			}
+		}
 
 		UDeviceProfile* DeviceProfile = UDeviceProfileManager::Get().FindProfile(Resolution.ProfileName, false);
 		if (DeviceProfile)
@@ -526,7 +539,7 @@ public:
 		}
 		IDetailCategoryBuilder& GameViewportSettings = LayoutBuilder.EditCategory("GameViewportSettings");
 		{
-		// new window size
+		// new window resolution
 		TSharedRef<IPropertyHandle> WindowHeightHandle = LayoutBuilder.GetProperty(GET_MEMBER_NAME_CHECKED(ULevelEditorPlaySettings, NewWindowHeight));
 		TSharedRef<IPropertyHandle> WindowWidthHandle = LayoutBuilder.GetProperty(GET_MEMBER_NAME_CHECKED(ULevelEditorPlaySettings, NewWindowWidth));
 		TSharedRef<IPropertyHandle> WindowPositionHandle = LayoutBuilder.GetProperty(GET_MEMBER_NAME_CHECKED(ULevelEditorPlaySettings, NewWindowPosition));
@@ -539,12 +552,12 @@ public:
 		CenterNewWindowHandle->MarkHiddenByCustomization();
 		EmulatedDeviceHandle->MarkHiddenByCustomization();
 
-		GameViewportSettings.AddCustomRow(LOCTEXT("NewWindowSizeRow", "New Window Size"), false)
+		GameViewportSettings.AddCustomRow(LOCTEXT("NewViewportResolutionRow", "New Viewport Resolution"), false)
 			.NameContent()
 			[
 				SNew(STextBlock)
 				.Font(LayoutBuilder.GetDetailFont())
-				.Text(LOCTEXT("NewWindowSizeName", "New Window Size"))
+				.Text(LOCTEXT("NewViewportResolutionName", "New Viewport Resolution"))
 				.ToolTipText(LOCTEXT("NewWindowSizeTooltip", "Sets the width and height of floating PIE windows (in pixels)"))
 			]
 			.ValueContent()
@@ -553,7 +566,7 @@ public:
 				SNew(SScreenResolutionCustomization, &LayoutBuilder, WindowHeightHandle, WindowWidthHandle)
 			];
 
-			GameViewportSettings.AddCustomRow(LOCTEXT("NewWindowPositionRow", "New Window Position"), false)
+		GameViewportSettings.AddCustomRow(LOCTEXT("NewWindowPositionRow", "New Window Position"), false)
 			.NameContent()
 			[
 				SNew(STextBlock)
@@ -567,19 +580,19 @@ public:
 				SNew(SScreenPositionCustomization, &LayoutBuilder, WindowPositionHandle, CenterNewWindowHandle)
 			];
 
-			GameViewportSettings.AddCustomRow(LOCTEXT("SafeZonePreviewName", "Safe Zone Preview"), false)
-				.NameContent()
-				[
-					SNew(STextBlock)
-					.Font(LayoutBuilder.GetDetailFont())
-					.Text(LOCTEXT("SafeZonePreviewName", "Safe Zone Preview"))
-				]
-				.ValueContent()
-				[
-					SNew(STextBlock)
-					.Font(LayoutBuilder.GetDetailFont())
-					.Text(this, &FLevelEditorPlaySettingsCustomization::GetPreviewText)
-				];
+		GameViewportSettings.AddCustomRow(LOCTEXT("SafeZonePreviewName", "Safe Zone Preview"), false)
+			.NameContent()
+			[
+				SNew(STextBlock)
+				.Font(LayoutBuilder.GetDetailFont())
+				.Text(LOCTEXT("SafeZonePreviewName", "Safe Zone Preview"))
+			]
+			.ValueContent()
+			[
+				SNew(STextBlock)
+				.Font(LayoutBuilder.GetDetailFont())
+				.Text(this, &FLevelEditorPlaySettingsCustomization::GetPreviewText)
+			];
 		}
 
 		// play in new window settings
@@ -636,24 +649,17 @@ public:
 		}
 
 		// multi-player options
-		IDetailCategoryBuilder& NetworkCategory = LayoutBuilder.EditCategory("MultiplayerOptions");
+		IDetailCategoryBuilder& NetworkCategory = LayoutBuilder.EditCategory("Multiplayer Options");
+		TArray<TSharedRef<IPropertyHandle>> AllProperties;
+		NetworkCategory.GetDefaultProperties(AllProperties);
+
 		{
-			// Number of players
-			NetworkCategory.AddProperty("PlayNumberOfClients")
-				.DisplayName(LOCTEXT("NumberOfPlayersLabel", "Number of Players"))
-				.IsEnabled(TAttribute<bool>::Create(TAttribute<bool>::FGetter::CreateSP(this, &FLevelEditorPlaySettingsCustomization::HandlePlayNumberOfClientsIsEnabled)));
-
-			NetworkCategory.AddProperty("ServerPort")
-				.DisplayName(LOCTEXT("ServerPortLabel", "Server Port"))
-				.IsEnabled(TAttribute<bool>::Create(TAttribute<bool>::FGetter::CreateSP(this, &FLevelEditorPlaySettingsCustomization::HandleServerPortIsEnabled)));
-
-			NetworkCategory.AddProperty("AdditionalServerGameOptions")
-				.DisplayName(LOCTEXT("ServerGameOptionsLabel", "Server Game Options"))
-				.IsEnabled(TAttribute<bool>::Create(TAttribute<bool>::FGetter::CreateSP(this, &FLevelEditorPlaySettingsCustomization::HandleGameOptionsIsEnabled)));
-
-			NetworkCategory.AddProperty("PlayNetDedicated")
-				.DisplayName(LOCTEXT("RunDedicatedServerLabel", "Run Dedicated Server"))
-				.IsEnabled(TAttribute<bool>::Create(TAttribute<bool>::FGetter::CreateSP(this, &FLevelEditorPlaySettingsCustomization::HandlePlayNetDedicatedPropertyIsEnabled)));
+			// Add all the default properties in before we add custom rows at the bottom.
+			for (TSharedRef<IPropertyHandle> DefaultProperty : AllProperties)
+			{
+				NetworkCategory.AddProperty(DefaultProperty);
+			}
+			
 
 			// client window size
 			TSharedRef<IPropertyHandle> WindowHeightHandle = LayoutBuilder.GetProperty("ClientWindowHeight");
@@ -662,51 +668,19 @@ public:
 			WindowHeightHandle->MarkHiddenByCustomization();
 			WindowWidthHandle->MarkHiddenByCustomization();
 
-			NetworkCategory.AddProperty("AutoConnectToServer")
-				.DisplayName(LOCTEXT("AutoConnectToServerLabel", "Auto Connect To Server"))
-				.IsEnabled(TAttribute<bool>::Create(TAttribute<bool>::FGetter::CreateSP(this, &FLevelEditorPlaySettingsCustomization::HandleAutoConnectToServerEnabled)))
-				.Visibility(TAttribute<EVisibility>::Create(TAttribute<EVisibility>::FGetter::CreateSP(this, &FLevelEditorPlaySettingsCustomization::HandleAutoConnectToServerVisibility)));
-
-			NetworkCategory.AddProperty("RouteGamepadToSecondWindow")
-				.DisplayName(LOCTEXT("RouteGamepadToSecondWindowLabel", "Route 1st Gamepad to 2nd Client"))
-				.IsEnabled(TAttribute<bool>::Create(TAttribute<bool>::FGetter::CreateSP(this, &FLevelEditorPlaySettingsCustomization::HandleRerouteInputToSecondWindowEnabled)))
-				.Visibility(TAttribute<EVisibility>::Create(TAttribute<EVisibility>::FGetter::CreateSP(this, &FLevelEditorPlaySettingsCustomization::HandleRerouteInputToSecondWindowVisibility)));
 			
-			// Run under one instance
-			if (GEditor && GEditor->bAllowMultiplePIEWorlds)
-			{
-				NetworkCategory.AddProperty("RunUnderOneProcess")
-					.DisplayName(LOCTEXT("RunUnderOneProcessEnabledLabel", "Use Single Process"));
-			}
-			else
-			{
-				NetworkCategory.AddProperty("RunUnderOneProcess")
-					.DisplayName( LOCTEXT("RunUnderOneProcessDisabledLabel", "Run Under One Process is disabled.") )
-					.Visibility( EVisibility::Collapsed )
-					.IsEnabled( false );
-			}
 
-			// Net Mode
-			NetworkCategory.AddProperty("PlayNetMode")
-				.Visibility(TAttribute<EVisibility>::Create(TAttribute<EVisibility>::FGetter::CreateSP(this, &FLevelEditorPlaySettingsCustomization::HandlePlayNetModeVisibility)))
-				.DisplayName(LOCTEXT("PlayNetModeLabel", "Editor Multiplayer Mode"));
-
-			NetworkCategory.AddProperty("AdditionalLaunchOptions")
-				.DisplayName(LOCTEXT("AdditionalLaunchOptionsLabel", "Command Line Arguments"))
-				.Visibility(TAttribute<EVisibility>::Create(TAttribute<EVisibility>::FGetter::CreateSP(this, &FLevelEditorPlaySettingsCustomization::HandleCmdLineVisibility)));
-
-			NetworkCategory.AddCustomRow(LOCTEXT("PlayInNetworkWindowDetails", "Multiplayer Window Size"), false)
+			NetworkCategory.AddCustomRow(LOCTEXT("PlayInNetworkViewportSize", "Viewport Size\n(Additional Clients)"), false)
 				.NameContent()
 				[
-					WindowHeightHandle->CreatePropertyNameWidget(LOCTEXT("ClientWindowSizeName", "Multiplayer Window Size (in pixels)"), LOCTEXT("ClientWindowSizeTooltip", "Width and Height to use when spawning additional windows."))
+					WindowHeightHandle->CreatePropertyNameWidget(LOCTEXT("ClientViewportSizeName", "Multiplayer Viewport Size (in pixels)"), LOCTEXT("ClientWindowSizeTooltip", "Width and Height to use when spawning additional clients. Useful when you need multiple clients connected but only interact with one window."))
 				]
 				.ValueContent()
 				.MaxDesiredWidth(MaxPropertyWidth)
 				[
 					SNew(SScreenResolutionCustomization, &LayoutBuilder, WindowHeightHandle, WindowWidthHandle)
 				]
-				.IsEnabled(TAttribute<bool>(this, &FLevelEditorPlaySettingsCustomization::HandleClientWindowSizePropertyIsEnabled))
-				.Visibility(TAttribute<EVisibility>::Create(TAttribute<EVisibility>::FGetter::CreateSP(this, &FLevelEditorPlaySettingsCustomization::HandleClientWindowSizePropertyVisibility)));
+				.IsEnabled(TAttribute<bool>(this, &FLevelEditorPlaySettingsCustomization::HandleClientWindowSizePropertyIsEnabled));
 				
 			NetworkCategory.AddCustomRow(LOCTEXT("AdditionalMultiplayerDetails", "Additional Options"), true)
 				.NameContent()
@@ -747,17 +721,17 @@ private:
 	FText HandleMultiplayerOptionsDescription( ) const
 	{
 		const ULevelEditorPlaySettings* PlayInSettings = GetDefault<ULevelEditorPlaySettings>();
+		const bool bLaunchSeparateServer = PlayInSettings->bLaunchSeparateServer;
 		const bool CanRunUnderOneProcess = [&PlayInSettings]{ bool RunUnderOneProcess(false); return (PlayInSettings->GetRunUnderOneProcess(RunUnderOneProcess) && RunUnderOneProcess); }();
-		const bool CanPlayNetDedicated = [&PlayInSettings]{ bool PlayNetDedicated(false); return (PlayInSettings->GetPlayNetDedicated(PlayNetDedicated) && PlayNetDedicated); }();
-		const int32 PlayNumberOfClients = [&PlayInSettings]{ int32 NumberOfClients(0); return (PlayInSettings->GetPlayNumberOfClients(NumberOfClients) ? NumberOfClients : 0); }();
+		const int32 PlayNumberOfClients = [&PlayInSettings] { int32 NumClients(0); return (PlayInSettings->GetPlayNumberOfClients(NumClients) ? NumClients : 0); }();
 		const EPlayNetMode PlayNetMode = [&PlayInSettings]{ EPlayNetMode NetMode(PIE_Standalone); return (PlayInSettings->GetPlayNetMode(NetMode) ? NetMode : PIE_Standalone); }();
 		FString Desc;
 		if (CanRunUnderOneProcess)
 		{
 			Desc += LOCTEXT("MultiplayerDescription_OneProcess", "The following will all run under one UE4 instance:\n").ToString();
-			if (CanPlayNetDedicated)
+			if (PlayNetMode == EPlayNetMode::PIE_Client)
 			{
-				Desc += LOCTEXT("MultiplayerDescription_DedicatedServer", "A dedicated server will open in a new window. ").ToString();
+				Desc += LOCTEXT("MultiplayerDescription_DedicatedServerHidden", "A hidden dedicated server instance will run in editor. ").ToString();
 				if (PlayNumberOfClients == 1)
 				{
 					Desc += LOCTEXT("MultiplayerDescription_EditorClient", "The editor will connect as a client. ").ToString();
@@ -767,7 +741,7 @@ private:
 					Desc += FText::Format(LOCTEXT("MultiplayerDescription_EditorAndClients", "The editor will connect as a client and {0} additional client window(s) will also connect. "), FText::AsNumber(PlayNumberOfClients-1)).ToString();
 				}
 			}
-			else
+			else if(PlayNetMode == EPlayNetMode::PIE_ListenServer)
 			{
 				if (PlayNumberOfClients == 1)
 				{
@@ -778,13 +752,41 @@ private:
 					Desc += FText::Format(LOCTEXT("MultiplayerDescription_EditorListenServerAndClients", "The editor will run as a listen server and {0} additional client window(s) will also connect to it. "), FText::AsNumber(PlayNumberOfClients-1)).ToString();
 				}
 			}
+			else
+			{
+				if (PlayNumberOfClients == 1)
+				{
+					Desc += LOCTEXT("MultiplayerDescription_EditorStandalone", "The editor will run in offline mode. ").ToString();
+				}
+				else
+				{
+					Desc += FText::Format(LOCTEXT("MultiplayerDescription_StandaloneAndClients", "The editor will run offline and {0} additional offline mode window(s) will also open. "), FText::AsNumber(PlayNumberOfClients - 1)).ToString();
+				}
+
+				if (bLaunchSeparateServer)
+				{
+					Desc += LOCTEXT("MultiplayerDescription_StandaloneSeparateServer", "\nAn additional server instance will be launched but not connected to. Use \"open 127.0.0.1:<port>\" to connect. ").ToString();
+				}
+			}
 		}
 		else
 		{
 			Desc += LOCTEXT("MultiplayerDescription_MultiProcess", "The following will run with multiple UE4 instances:\n").ToString();
 			if (PlayNetMode == PIE_Standalone)
 			{
-				Desc += LOCTEXT("MultiplayerDescription_EditorOffline", "The editor will run offline. ").ToString();
+				if (PlayNumberOfClients == 1)
+				{
+					Desc += LOCTEXT("MultiplayerDescription_EditorStandalone", "The editor will run in offline mode. ").ToString();
+				}
+				else
+				{
+					Desc += FText::Format(LOCTEXT("MultiplayerDescription_StandaloneAndClients", "The editor will run offline and {0} additional offline mode window(s) will also open. "), FText::AsNumber(PlayNumberOfClients - 1)).ToString();
+				}
+
+				if (bLaunchSeparateServer)
+				{
+					Desc += LOCTEXT("MultiplayerDescription_StandaloneSeparateServer", "\nAn additional server instance will be launched but not connected to. Use \"open 127.0.0.1:<port>\" to connect. ").ToString();
+				}
 			}
 			else if (PlayNetMode == PIE_ListenServer)
 			{
@@ -799,29 +801,17 @@ private:
 			}
 			else
 			{
-				if (CanPlayNetDedicated)
+				// Client requires additional dedicated server instance
+				Desc += LOCTEXT("MultiplayerDescription_DedicatedServerNewWindow", "A dedicated server will open in a new window. ").ToString();
+				if (PlayNumberOfClients == 1)
 				{
-					Desc += LOCTEXT("MultiplayerDescription_DedicatedServer", "A dedicated server will open in a new window. ").ToString();
-					if (PlayNumberOfClients == 1)
-					{
-						Desc += LOCTEXT("MultiplayerDescription_EditorClient", "The editor will connect as a client. ").ToString();
-					}
-					else
-					{
-						Desc += FText::Format(LOCTEXT("MultiplayerDescription_EditorAndClients", "The editor will connect as a client and {0} additional client window(s) will also connect. "), FText::AsNumber(PlayNumberOfClients-1)).ToString();
-					}
+					Desc += LOCTEXT("MultiplayerDescription_EditorClient", "The editor will connect as a client. ").ToString();
 				}
 				else
 				{
-					if (PlayNumberOfClients <= 2)
-					{
-						Desc += LOCTEXT("MultiplayerDescription_EditorClientAndListenServer", "A listen server will open in a new window and the editor will connect to it. ").ToString();
-					}
-					else
-					{
-						Desc += FText::Format(LOCTEXT("MultiplayerDescription_EditorClientAndListenServerClients", "A listen server will open in a new window and the editor will connect as a client and {0} additional client window(s) will also connect to it. "), FText::AsNumber(FMath::Max(0, PlayNumberOfClients-2))).ToString(); 
-					}
+					Desc += FText::Format(LOCTEXT("MultiplayerDescription_EditorAndClients", "The editor will connect as a client and {0} additional client window(s) will also connect. "), FText::AsNumber(PlayNumberOfClients-1)).ToString();
 				}
+
 			}
 		}
 		return FText::FromString(Desc);
@@ -833,46 +823,10 @@ private:
 		return GetDefault<ULevelEditorPlaySettings>()->IsClientWindowSizeActive();
 	}
 
-	// Callback for getting the visibility of the ClientWindowHeight and ClientWindowWidth properties.
-	EVisibility HandleClientWindowSizePropertyVisibility() const
-	{
-		return GetDefault<ULevelEditorPlaySettings>()->GetClientWindowSizeVisibility();
-	}
-
-	// Callback for checking whether the PlayNetDedicated is enabled.
-	bool HandlePlayNetDedicatedPropertyIsEnabled( ) const
-	{		
-		return GetDefault<ULevelEditorPlaySettings>()->IsPlayNetDedicatedActive();
-	}
-
-	// Callback for checking whether the PlayNumberOfClients is enabled.
-	bool HandlePlayNumberOfClientsIsEnabled( ) const
-	{
-		return GetDefault<ULevelEditorPlaySettings>()->IsPlayNumberOfClientsActive();
-	}
-
-	// Callback for checking whether the ServerPort is enabled.
-	bool HandleServerPortIsEnabled() const
-	{
-		return GetDefault<ULevelEditorPlaySettings>()->IsServerPortActive();
-	}
-
 	// Callback for checking whether the AdditionalServerGameOptions is enabled.
 	bool HandleGameOptionsIsEnabled( ) const
 	{
 		return GetDefault<ULevelEditorPlaySettings>()->IsAdditionalServerGameOptionsActive();
-	}
-
-	// Callback for getting the enabled state of the AutoConnectToServer property.
-	bool HandleAutoConnectToServerEnabled() const
-	{
-		return GetDefault<ULevelEditorPlaySettings>()->IsAutoConnectToServerActive();
-	}
-
-	// Callback for getting the visibility of the RerouteInputToSecondWindow property.
-	EVisibility HandleAutoConnectToServerVisibility() const
-	{
-		return GetDefault<ULevelEditorPlaySettings>()->GetAutoConnectToServerVisibility();
 	}
 
 	// Callback for getting the enabled state of the RerouteInputToSecondWindow property.
@@ -885,18 +839,6 @@ private:
 	EVisibility HandleRerouteInputToSecondWindowVisibility( ) const
 	{
 		return GetDefault<ULevelEditorPlaySettings>()->GetRouteGamepadToSecondWindowVisibility();
-	}
-
-	// Callback for getting the visibility of the PlayNetMode property.
-	EVisibility HandlePlayNetModeVisibility( ) const
-	{
-		return GetDefault<ULevelEditorPlaySettings>()->GetPlayNetModeVisibility();
-	}
-
-	// Callback for getting the visibility of the AdditionalLaunchOptions property.
-	EVisibility HandleCmdLineVisibility( ) const
-	{
-		return GetDefault<ULevelEditorPlaySettings>()->GetAdditionalLaunchOptionsVisibility();
 	}
 
 	void HandleQualityLevelComboBoxOpening()

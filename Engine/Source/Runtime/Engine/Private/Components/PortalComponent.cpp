@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 /*=============================================================================
 	
@@ -17,7 +17,7 @@ ALightmassPortal::ALightmassPortal(const FObjectInitializer& ObjectInitializer)
 	: Super(ObjectInitializer)
 {
 	PortalComponent = CreateDefaultSubobject<ULightmassPortalComponent>(TEXT("PortalComponent"));
-	PortalComponent->RelativeScale3D = FVector(10, 100, 100);
+	PortalComponent->SetRelativeScale3D_Direct(FVector(10, 100, 100));
 	RootComponent = PortalComponent;
 	UBoxComponent* DrawInfluenceBox = CreateDefaultSubobject<UBoxComponent>(TEXT("DrawBox0"));
 	DrawInfluenceBox->SetupAttachment(GetPortalComponent());
@@ -42,9 +42,9 @@ ALightmassPortal::ALightmassPortal(const FObjectInitializer& ObjectInitializer)
 		static FConstructorStatics ConstructorStatics;
 
 		SpriteComponent->Sprite = ConstructorStatics.DecalTexture.Get();
-		SpriteComponent->RelativeScale3D = FVector(0.5f, 0.5f, 0.5f);
+		SpriteComponent->SetRelativeScale3D_Direct(FVector(0.5f, 0.5f, 0.5f));
 		SpriteComponent->bHiddenInGame = true;
-		SpriteComponent->bAbsoluteScale = true;
+		SpriteComponent->SetUsingAbsoluteScale(true);
 		SpriteComponent->SetCollisionProfileName(UCollisionProfile::NoCollision_ProfileName);
 		SpriteComponent->bIsScreenSizeScaled = true;
 		SpriteComponent->SetupAttachment(PortalComponent);
@@ -57,7 +57,7 @@ void ALightmassPortal::PostEditMove(bool bFinished)
 {
 	Super::PostEditMove(bFinished);
 
-	PortalComponent->RelativeScale3D.X = 10;
+	PortalComponent->GetRelativeScale3D_DirectMutable().X = 10;
 	PortalComponent->MarkRenderStateDirty();
 }
 #endif // WITH_EDITOR
@@ -76,9 +76,9 @@ void ULightmassPortalComponent::UpdatePreviewShape()
 	}
 }
 
-void ULightmassPortalComponent::CreateRenderState_Concurrent()
+void ULightmassPortalComponent::CreateRenderState_Concurrent(FRegisterComponentContext* Context)
 {
-	Super::CreateRenderState_Concurrent();
+	Super::CreateRenderState_Concurrent(Context);
 
 	UpdatePreviewShape();
 }

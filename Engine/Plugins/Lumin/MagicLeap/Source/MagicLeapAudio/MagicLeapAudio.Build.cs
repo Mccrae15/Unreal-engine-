@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 using UnrealBuildTool;
 using System.IO;
@@ -13,15 +13,16 @@ public class MagicLeapAudio : ModuleRules
 		PublicIncludePaths.Add(Path.Combine(EngineDir, "Source/Runtime/AudioMixer/Public"));
 		PrivateIncludePaths.Add(Path.Combine(EngineDir, "Source/Runtime/AudioMixer/Private"));
 
-		PrivateIncludePaths.Add("MagicLeap/Private");
-
 		PrivateDependencyModuleNames.AddRange(
 			new string[] {
 				"Core",
 				"CoreUObject",
 				"Engine",
 				"MLSDK",
-				"AudioMixer"
+				"AudioMixer",
+				"AudioMixerCore",
+				"HeadMountedDisplay",
+				"MagicLeap"
 			}
 		);
 

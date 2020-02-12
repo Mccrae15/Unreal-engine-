@@ -1,11 +1,11 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "GameplayEffectCreationMenu.h"
 #include "GameplayAbilitiesEditor.h"
 
 
 #include "LevelEditor.h"
-#include "Toolkits/AssetEditorManager.h"
+
 #include "Modules/ModuleManager.h"
 #include "Framework/MultiBox/MultiBoxBuilder.h"
 #include "ContentBrowserModule.h"

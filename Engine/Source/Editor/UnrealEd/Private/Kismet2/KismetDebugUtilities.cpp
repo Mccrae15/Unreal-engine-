@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "Kismet2/KismetDebugUtilities.h"
 #include "Engine/BlueprintGeneratedClass.h"
@@ -29,6 +29,7 @@
 #include "K2Node.h"
 #include "K2Node_Tunnel.h"
 #include "K2Node_FunctionEntry.h"
+#include "K2Node_Knot.h"
 #include "K2Node_MacroInstance.h"
 #include "K2Node_Message.h"
 #include "Kismet2/KismetEditorUtilities.h"
@@ -167,7 +168,17 @@ void FKismetDebugUtilities::RequestStepOver()
 						{
 							for(UEdGraphPin* LinkedTo : Pin->LinkedTo)
 							{
-								Data.TargetGraphNodes.AddUnique(LinkedTo->GetOwningNode());
+								UEdGraphNode* GraphNode = LinkedTo->GetOwningNode();
+								if(UK2Node_Knot* Knot = Cast<UK2Node_Knot>(GraphNode))
+								{
+									// search the knot chain to find the actual node:
+									GraphNode = Knot->GetExecTerminal();
+								}
+
+								if(GraphNode)
+								{
+									Data.TargetGraphNodes.AddUnique(GraphNode);
+								}
 							}
 						}
 					}
@@ -913,16 +924,14 @@ void FKismetDebugUtilities::GetValidBreakpointLocations(const UK2Node_MacroInsta
 	if (!bIsMacroPure && MacroEntryNode)
 	{
 		// Get the execute pin outputs on the entry node
-		for (auto PinIt = MacroEntryNode->Pins.CreateConstIterator(); PinIt; ++PinIt)
+		for (const UEdGraphPin* ExecPin : MacroEntryNode->Pins)
 		{
-			const UEdGraphPin* ExecPin = *PinIt;
 			if (ExecPin && ExecPin->Direction == EGPD_Output
 				&& ExecPin->PinType.PinCategory == UEdGraphSchema_K2::PC_Exec)
 			{
 				// For each pin linked to each execute pin, collect the node that owns it
-				for (auto LinkedToPinIt = ExecPin->LinkedTo.CreateConstIterator(); LinkedToPinIt; ++LinkedToPinIt)
+				for (const UEdGraphPin* LinkedToPin : ExecPin->LinkedTo)
 				{
-					const UEdGraphPin* LinkedToPin = *LinkedToPinIt;
 					check(LinkedToPin);
 
 					const UEdGraphNode* LinkedToNode = LinkedToPin->GetOwningNode();
@@ -1004,9 +1013,9 @@ bool FKismetDebugUtilities::HasDebuggingData(const UBlueprint* Blueprint)
 // Blueprint utils
 
 // Looks thru the debugging data for any class variables associated with the node
-UProperty* FKismetDebugUtilities::FindClassPropertyForPin(UBlueprint* Blueprint, const UEdGraphPin* Pin)
+FProperty* FKismetDebugUtilities::FindClassPropertyForPin(UBlueprint* Blueprint, const UEdGraphPin* Pin)
 {
-	UProperty* FoundProperty = nullptr;
+	FProperty* FoundProperty = nullptr;
 
 	UClass* Class = Blueprint->GeneratedClass;
 	while (UBlueprintGeneratedClass* BlueprintClass = Cast<UBlueprintGeneratedClass>(Class))
@@ -1024,7 +1033,7 @@ UProperty* FKismetDebugUtilities::FindClassPropertyForPin(UBlueprint* Blueprint,
 }
 
 // Looks thru the debugging data for any class variables associated with the node (e.g., temporary variables or timelines)
-UProperty* FKismetDebugUtilities::FindClassPropertyForNode(UBlueprint* Blueprint, const UEdGraphNode* Node)
+FProperty* FKismetDebugUtilities::FindClassPropertyForNode(UBlueprint* Blueprint, const UEdGraphNode* Node)
 {
 	if (UBlueprintGeneratedClass* Class = Cast<UBlueprintGeneratedClass>(*Blueprint->GeneratedClass))
 	{
@@ -1109,11 +1118,12 @@ void FKismetDebugUtilities::ClearPinWatches(UBlueprint* Blueprint)
 // Gets the watched tooltip for a specified site
 FKismetDebugUtilities::EWatchTextResult FKismetDebugUtilities::GetWatchText(FString& OutWatchText, UBlueprint* Blueprint, UObject* ActiveObject, const UEdGraphPin* WatchPin)
 {
-	UProperty* PropertyToDebug = nullptr;
+	FProperty* PropertyToDebug = nullptr;
 	void* DataPtr = nullptr;
 	void* DeltaPtr = nullptr;
 	UObject* ParentObj = nullptr;
-	FKismetDebugUtilities::EWatchTextResult Result = FindDebuggingData(Blueprint, ActiveObject, WatchPin, PropertyToDebug, DataPtr, DeltaPtr, ParentObj);
+	TArray<UObject*> SeenObjects;
+	FKismetDebugUtilities::EWatchTextResult Result = FindDebuggingData(Blueprint, ActiveObject, WatchPin, PropertyToDebug, DataPtr, DeltaPtr, ParentObj, SeenObjects);
 
 	if (Result == FKismetDebugUtilities::EWatchTextResult::EWTR_Valid)
 	{
@@ -1125,11 +1135,12 @@ FKismetDebugUtilities::EWatchTextResult FKismetDebugUtilities::GetWatchText(FStr
 
 FKismetDebugUtilities::EWatchTextResult FKismetDebugUtilities::GetDebugInfo(FDebugInfo& OutDebugInfo, UBlueprint* Blueprint, UObject* ActiveObject, const UEdGraphPin* WatchPin)
 {
-	UProperty* PropertyToDebug = nullptr;
+	FProperty* PropertyToDebug = nullptr;
 	void* DataPtr = nullptr;
 	void* DeltaPtr = nullptr;
 	UObject* ParentObj = nullptr;
-	FKismetDebugUtilities::EWatchTextResult Result = FindDebuggingData(Blueprint, ActiveObject, WatchPin, PropertyToDebug, DataPtr, DeltaPtr, ParentObj);
+	TArray<UObject*> SeenObjects;
+	FKismetDebugUtilities::EWatchTextResult Result = FindDebuggingData(Blueprint, ActiveObject, WatchPin, PropertyToDebug, DataPtr, DeltaPtr, ParentObj, SeenObjects);
 
 	if (Result == FKismetDebugUtilities::EWatchTextResult::EWTR_Valid)
 	{
@@ -1139,11 +1150,11 @@ FKismetDebugUtilities::EWatchTextResult FKismetDebugUtilities::GetDebugInfo(FDeb
 	return Result;
 }
 
-FKismetDebugUtilities::EWatchTextResult FKismetDebugUtilities::FindDebuggingData(UBlueprint* Blueprint, UObject* ActiveObject, const UEdGraphPin* WatchPin, UProperty*& OutProperty, void*& OutData, void*& OutDelta, UObject*& OutParent)
+FKismetDebugUtilities::EWatchTextResult FKismetDebugUtilities::FindDebuggingData(UBlueprint* Blueprint, UObject* ActiveObject, const UEdGraphPin* WatchPin, FProperty*& OutProperty, void*& OutData, void*& OutDelta, UObject*& OutParent, TArray<UObject*>& SeenObjects)
 {
 	FKismetDebugUtilitiesData& Data = FKismetDebugUtilitiesData::Get();
 
-	if (UProperty* Property = FKismetDebugUtilities::FindClassPropertyForPin(Blueprint, WatchPin))
+	if (FProperty* Property = FKismetDebugUtilities::FindClassPropertyForPin(Blueprint, WatchPin))
 	{
 		if (!Property->IsValidLowLevel())
 		{
@@ -1178,13 +1189,32 @@ FKismetDebugUtilities::EWatchTextResult FKismetDebugUtilities::FindDebuggingData
 			{
 				if (Property->IsIn(TestFrame->Node))
 				{
-					PropertyBase = TestFrame->Locals;
+					// output parameters need special handling
+					for (FOutParmRec* OutParmRec = TestFrame->OutParms; OutParmRec != nullptr; OutParmRec = OutParmRec->NextOutParm)
+					{
+						if (OutParmRec->Property == Property)
+						{
+							// try to use the output pin we're linked to
+							// otherwise the output param won't show any data since the return node hasn't executed when we stop here
+							if (WatchPin->Direction == EEdGraphPinDirection::EGPD_Input && WatchPin->LinkedTo.Num() == 1)
+							{
+								return FindDebuggingData(Blueprint, ActiveObject, WatchPin->LinkedTo[0], OutProperty, OutData, OutDelta, OutParent, SeenObjects);
+							}
+
+							PropertyBase = OutParmRec->PropAddr;
+							break;
+						}
+					}
+					if (PropertyBase == nullptr)
+					{
+						PropertyBase = TestFrame->Locals;
+					}
 					break;
 				}
 			}
 
 			// Try at member scope if it wasn't part of a current function scope
-			UClass* PropertyClass = Cast<UClass>(Property->GetOuter());
+			UClass* PropertyClass = Property->GetOwner<UClass>();
 			if (!PropertyBase && PropertyClass)
 			{
 				if (ActiveObject->GetClass()->IsChildOf(PropertyClass))
@@ -1194,7 +1224,7 @@ FKismetDebugUtilities::EWatchTextResult FKismetDebugUtilities::FindDebuggingData
 				else if (AActor* Actor = Cast<AActor>(ActiveObject))
 				{
 					// Try and locate the propertybase in the actor components
-					for (auto ComponentIter : Actor->GetComponents())
+					for (UActorComponent* ComponentIter : Actor->GetComponents())
 					{
 						if (ComponentIter->GetClass()->IsChildOf(PropertyClass))
 						{
@@ -1206,13 +1236,13 @@ FKismetDebugUtilities::EWatchTextResult FKismetDebugUtilities::FindDebuggingData
 			}
 #if USE_UBER_GRAPH_PERSISTENT_FRAME
 			// Try find the propertybase in the persistent ubergraph frame
-			UFunction* OuterFunction = Cast<UFunction>(Property->GetOuter());
+			UFunction* OuterFunction = Property->GetOwner<UFunction>();
 			if (!PropertyBase && OuterFunction)
 			{
-				UBlueprintGeneratedClass* BPGC = Cast<UBlueprintGeneratedClass>(OuterFunction->GetOuter());
+				UBlueprintGeneratedClass* BPGC = Cast<UBlueprintGeneratedClass>(Blueprint->GeneratedClass);
 				if (BPGC && ActiveObject->IsA(BPGC))
 				{
-					PropertyBase = GetPersistentUberGraphFrame( OuterFunction, ActiveObject );
+					PropertyBase = BPGC->GetPersistentUberGraphFrame(ActiveObject, OuterFunction);
 				}
 			}
 #endif // USE_UBER_GRAPH_PERSISTENT_FRAME
@@ -1222,7 +1252,7 @@ FKismetDebugUtilities::EWatchTextResult FKismetDebugUtilities::FindDebuggingData
 			if (!PropertyBase && AnimBlueprintGeneratedClass)
 			{
 				// are we linked to an anim graph node?
-				UProperty* LinkedProperty = Property;
+				FProperty* LinkedProperty = Property;
 				const UAnimGraphNode_Base* Node = Cast<UAnimGraphNode_Base>(WatchPin->GetOuter());
 				if (Node == nullptr && WatchPin->LinkedTo.Num() > 0)
 				{
@@ -1234,12 +1264,12 @@ FKismetDebugUtilities::EWatchTextResult FKismetDebugUtilities::FindDebuggingData
 
 				if (Node && LinkedProperty)
 				{
-					UStructProperty* NodeStructProperty = Cast<UStructProperty>(FKismetDebugUtilities::FindClassPropertyForNode(Blueprint, Node));
+					FStructProperty* NodeStructProperty = CastField<FStructProperty>(FKismetDebugUtilities::FindClassPropertyForNode(Blueprint, Node));
 					if (NodeStructProperty)
 					{
-						for (UStructProperty* NodeProperty : AnimBlueprintGeneratedClass->AnimNodeProperties)
+						for (const FStructPropertyPath& NodeProperty : AnimBlueprintGeneratedClass->AnimNodeProperties)
 						{
-							if (NodeProperty == NodeStructProperty)
+							if (NodeProperty.Get() == NodeStructProperty)
 							{
 								void* NodePtr = NodeProperty->ContainerPtrToValuePtr<void>(ActiveObject);
 								OutProperty = LinkedProperty;
@@ -1263,19 +1293,23 @@ FKismetDebugUtilities::EWatchTextResult FKismetDebugUtilities::FindDebuggingData
 					UEdGraphPin* SelfPin = WatchNode->FindPin(TEXT("self"));
 					if (SelfPin && SelfPin != WatchPin)
 					{
-						UProperty* SelfPinProperty = nullptr;
+						FProperty* SelfPinProperty = nullptr;
 						void* SelfPinData = nullptr;
 						void* SelfPinDelta = nullptr;
 						UObject* SelfPinParent = nullptr;
-						FKismetDebugUtilities::EWatchTextResult Result = FindDebuggingData(Blueprint, ActiveObject, SelfPin, SelfPinProperty, SelfPinData, SelfPinDelta, SelfPinParent);
-						UObjectPropertyBase* SelfPinPropertyBase = Cast<UObjectPropertyBase>(SelfPinProperty);
+						SeenObjects.AddUnique(ActiveObject);
+						FKismetDebugUtilities::EWatchTextResult Result = FindDebuggingData(Blueprint, ActiveObject, SelfPin, SelfPinProperty, SelfPinData, SelfPinDelta, SelfPinParent, SeenObjects);
+						FObjectPropertyBase* SelfPinPropertyBase = CastField<FObjectPropertyBase>(SelfPinProperty);
 						if (Result == EWTR_Valid && SelfPinPropertyBase != nullptr)
 						{
 							void* PropertyValue = SelfPinProperty->ContainerPtrToValuePtr<void>(SelfPinData);
 							UObject* TempActiveObject = SelfPinPropertyBase->GetObjectPropertyValue(PropertyValue);
 							if (TempActiveObject && TempActiveObject != ActiveObject)
 							{
-								return FindDebuggingData(Blueprint, TempActiveObject, WatchPin, OutProperty, OutData, OutDelta, OutParent);
+								if (!SeenObjects.Contains(TempActiveObject))
+								{
+									return FindDebuggingData(Blueprint, TempActiveObject, WatchPin, OutProperty, OutData, OutDelta, OutParent, SeenObjects);
+								}
 							}
 						}
 					}
@@ -1307,12 +1341,12 @@ FKismetDebugUtilities::EWatchTextResult FKismetDebugUtilities::FindDebuggingData
 	}
 }
 
-void FKismetDebugUtilities::GetDebugInfo_InContainer(int32 Index, FDebugInfo& DebugInfo, UProperty* Property, const void* Data)
+void FKismetDebugUtilities::GetDebugInfo_InContainer(int32 Index, FDebugInfo& DebugInfo, FProperty* Property, const void* Data)
 {
 	GetDebugInfoInternal(DebugInfo, Property, Property->ContainerPtrToValuePtr<void>(Data, Index));
 }
 
-void FKismetDebugUtilities::GetDebugInfoInternal(FDebugInfo& DebugInfo, UProperty* Property, const void* PropertyValue)
+void FKismetDebugUtilities::GetDebugInfoInternal(FDebugInfo& DebugInfo, FProperty* Property, const void* PropertyValue)
 {
 	if (Property == nullptr)
 	{
@@ -1322,7 +1356,7 @@ void FKismetDebugUtilities::GetDebugInfoInternal(FDebugInfo& DebugInfo, UPropert
 	DebugInfo.Type = UEdGraphSchema_K2::TypeToText(Property);
 	DebugInfo.DisplayName = Property->GetDisplayNameText();
 
-	UByteProperty* ByteProperty = Cast<UByteProperty>(Property);
+	FByteProperty* ByteProperty = CastField<FByteProperty>(Property);
 	if (ByteProperty)
 	{
 		UEnum* Enum = ByteProperty->GetIntPropertyEnum();
@@ -1340,45 +1374,47 @@ void FKismetDebugUtilities::GetDebugInfoInternal(FDebugInfo& DebugInfo, UPropert
 			return;
 		}
 
-		// if there is no Enum we need to fall through and treat this as a UNumericProperty
+		// if there is no Enum we need to fall through and treat this as a FNumericProperty
 	}
 
-	UNumericProperty* NumericProperty = Cast<UNumericProperty>(Property);
+	FNumericProperty* NumericProperty = CastField<FNumericProperty>(Property);
 	if (NumericProperty)
 	{
 		DebugInfo.Value = FText::FromString(NumericProperty->GetNumericPropertyValueToString(PropertyValue));
 		return;
 	}
 
-	UBoolProperty* BoolProperty = Cast<UBoolProperty>(Property);
+	FBoolProperty* BoolProperty = CastField<FBoolProperty>(Property);
 	if (BoolProperty)
 	{
-		DebugInfo.Value = BoolProperty->GetPropertyValue(PropertyValue) ? GTrue : GFalse;
+		const FCoreTexts& CoreTexts = FCoreTexts::Get();
+
+		DebugInfo.Value = BoolProperty->GetPropertyValue(PropertyValue) ? CoreTexts.True : CoreTexts.False;
 		return;
 	}
 
-	UNameProperty* NameProperty = Cast<UNameProperty>(Property);
+	FNameProperty* NameProperty = CastField<FNameProperty>(Property);
 	if (NameProperty)
 	{
 		DebugInfo.Value = FText::FromName(*(FName*)PropertyValue);
 		return;
 	}
 
-	UTextProperty* TextProperty = Cast<UTextProperty>(Property);
+	FTextProperty* TextProperty = CastField<FTextProperty>(Property);
 	if (TextProperty)
 	{
 		DebugInfo.Value = TextProperty->GetPropertyValue(PropertyValue);
 		return;
 	}
 
-	UStrProperty* StringProperty = Cast<UStrProperty>(Property);
+	FStrProperty* StringProperty = CastField<FStrProperty>(Property);
 	if (StringProperty)
 	{
 		DebugInfo.Value = FText::FromString(StringProperty->GetPropertyValue(PropertyValue));
 		return;
 	}
 
-	UArrayProperty* ArrayProperty = Cast<UArrayProperty>(Property);
+	FArrayProperty* ArrayProperty = CastField<FArrayProperty>(Property);
 	if (ArrayProperty)
 	{
 		checkSlow(ArrayProperty->Inner);
@@ -1401,14 +1437,14 @@ void FKismetDebugUtilities::GetDebugInfoInternal(FDebugInfo& DebugInfo, UPropert
 		return;
 	}
 
-	UStructProperty* StructProperty = Cast<UStructProperty>(Property);
+	FStructProperty* StructProperty = CastField<FStructProperty>(Property);
 	if (StructProperty)
 	{
 		FString WatchText;
 		StructProperty->ExportTextItem(WatchText, PropertyValue, PropertyValue, nullptr, PPF_PropertyWindow | PPF_BlueprintDebugView, nullptr);
 		DebugInfo.Value = FText::FromString(WatchText);
 
-		for (TFieldIterator<UProperty> It(StructProperty->Struct); It; ++It)
+		for (TFieldIterator<FProperty> It(StructProperty->Struct); It; ++It)
 		{
 			FDebugInfo StructDebugInfo;
 			GetDebugInfoInternal(StructDebugInfo, *It, It->ContainerPtrToValuePtr<void>(PropertyValue, 0));
@@ -1419,10 +1455,10 @@ void FKismetDebugUtilities::GetDebugInfoInternal(FDebugInfo& DebugInfo, UPropert
 		return;
 	}
 
-	UEnumProperty* EnumProperty = Cast<UEnumProperty>(Property);
+	FEnumProperty* EnumProperty = CastField<FEnumProperty>(Property);
 	if (EnumProperty)
 	{
-		UNumericProperty* LocalUnderlyingProp = EnumProperty->GetUnderlyingProperty();
+		FNumericProperty* LocalUnderlyingProp = EnumProperty->GetUnderlyingProperty();
 		UEnum* Enum = EnumProperty->GetEnum();
 
 		int64 Value = LocalUnderlyingProp->GetSignedIntPropertyValue(PropertyValue);
@@ -1448,7 +1484,7 @@ void FKismetDebugUtilities::GetDebugInfoInternal(FDebugInfo& DebugInfo, UPropert
 		return;
 	}
 
-	UMapProperty* MapProperty = Cast<UMapProperty>(Property);
+	FMapProperty* MapProperty = CastField<FMapProperty>(Property);
 	if (MapProperty)
 	{
 		FScriptMapHelper MapHelper(MapProperty, PropertyValue);
@@ -1480,7 +1516,7 @@ void FKismetDebugUtilities::GetDebugInfoInternal(FDebugInfo& DebugInfo, UPropert
 		return;
 	}
 
-	USetProperty* SetProperty = Cast<USetProperty>(Property);
+	FSetProperty* SetProperty = CastField<FSetProperty>(Property);
 	if (SetProperty)
 	{
 		FScriptSetHelper SetHelper(SetProperty, PropertyValue);
@@ -1507,7 +1543,7 @@ void FKismetDebugUtilities::GetDebugInfoInternal(FDebugInfo& DebugInfo, UPropert
 		return;
 	}
 
-	UObjectPropertyBase* ObjectPropertyBase = Cast<UObjectPropertyBase>(Property);
+	FObjectPropertyBase* ObjectPropertyBase = CastField<FObjectPropertyBase>(Property);
 	if (ObjectPropertyBase)
 	{
 		UObject* Obj = ObjectPropertyBase->GetObjectPropertyValue(PropertyValue);
@@ -1523,7 +1559,7 @@ void FKismetDebugUtilities::GetDebugInfoInternal(FDebugInfo& DebugInfo, UPropert
 		return;
 	}
 
-	UDelegateProperty* DelegateProperty = Cast<UDelegateProperty>(Property);
+	FDelegateProperty* DelegateProperty = CastField<FDelegateProperty>(Property);
 	if (DelegateProperty)
 	{
 		if (DelegateProperty->SignatureFunction)
@@ -1538,7 +1574,7 @@ void FKismetDebugUtilities::GetDebugInfoInternal(FDebugInfo& DebugInfo, UPropert
 		return;
 	}
 
-	UMulticastDelegateProperty* MulticastDelegateProperty = Cast<UMulticastDelegateProperty>(Property);
+	FMulticastDelegateProperty* MulticastDelegateProperty = CastField<FMulticastDelegateProperty>(Property);
 	if (MulticastDelegateProperty)
 	{
 		if (MulticastDelegateProperty->SignatureFunction)

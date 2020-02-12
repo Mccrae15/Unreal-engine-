@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "AudioCaptureTimecodeProvider.h"
 #include "AudioCaptureTimecodeProviderModule.h"
@@ -8,10 +8,11 @@
 #include "LinearTimecodeDecoder.h"
 #include "Stats/StatsMisc.h"
 
+PRAGMA_DISABLE_DEPRECATION_WARNINGS
 
 /* FLinearTimecodeAudioCaptureCustomTimeStepImplementation implementation
 *****************************************************************************/
-struct UAudioCaptureTimecodeProvider::FLinearTimecodeAudioCaptureCustomTimeStepImplementation : public Audio::IAudioCaptureCallback
+struct UAudioCaptureTimecodeProvider::FLinearTimecodeAudioCaptureCustomTimeStepImplementation
 {
 public:
 	FLinearTimecodeAudioCaptureCustomTimeStepImplementation(UAudioCaptureTimecodeProvider* InOwner)
@@ -35,10 +36,14 @@ public:
 		//We want a fast timecode detection but we don't want to be called too often.
 		const int32 NumberCaptureFrames = 64;
 
-		Audio::FAudioCaptureStreamParam StreamParam;
-		StreamParam.Callback = this;
-		StreamParam.NumFramesDesired = NumberCaptureFrames;
-		if (!AudioCapture.OpenDefaultCaptureStream(StreamParam))
+		Audio::FOnCaptureFunction OnCapture = [this](const float* AudioData, int32 NumFrames, int32 NumChannels, double StreamTime, bool bOverFlow)
+		{
+			OnAudioCapture(AudioData, NumFrames, NumChannels, StreamTime, bOverFlow);
+		};
+
+		Audio::FAudioCaptureDeviceParams Params = Audio::FAudioCaptureDeviceParams();
+
+		if (!AudioCapture.OpenCaptureStream(Params, MoveTemp(OnCapture), NumberCaptureFrames))
 		{
 			UE_LOG(LogAudioCaptureTimecodeProvider, Error, TEXT("Can't open the default capture stream for %s."), *Owner->GetName());
 			return false;
@@ -57,8 +62,7 @@ public:
 		return true;
 	}
 
-	//~ Audio::IAudioCaptureCallback interface
-	virtual void OnAudioCapture(float* AudioData, int32 NumFrames, int32 NumChannels, double StreamTime, bool bOverflow) override
+	void OnAudioCapture(const float* AudioData, int32 NumFrames, int32 NumChannels, double StreamTime, bool bOverflow)
 	{
 		check(Owner);
 
@@ -78,9 +82,9 @@ public:
 		AudioData += AudioChannelIndex;
 
 		int32 NumSamples = NumChannels * NumFrames;
-		float* End = AudioData + NumSamples;
+		const float* End = AudioData + NumSamples;
 
-		for (float* Begin = AudioData; Begin != End; Begin += NumChannels)
+		for (const float* Begin = AudioData; Begin != End; Begin += NumChannels)
 		{
 			if (TimecodeDecoder.Sample(*Begin, CurrentDecodingTimecode))
 			{
@@ -154,7 +158,12 @@ UAudioCaptureTimecodeProvider::UAudioCaptureTimecodeProvider(const FObjectInitia
 
 /* UTimecodeProvider interface implementation
 *****************************************************************************/
-FTimecode UAudioCaptureTimecodeProvider::GetTimecode() const
+FQualifiedFrameTime UAudioCaptureTimecodeProvider::GetQualifiedFrameTime() const
+{
+	return FQualifiedFrameTime(GetTimecodeInternal(), GetFrameRateInternal());
+}
+
+FTimecode UAudioCaptureTimecodeProvider::GetTimecodeInternal() const
 {
 	FTimecode Result;
 	{
@@ -177,7 +186,7 @@ FTimecode UAudioCaptureTimecodeProvider::GetTimecode() const
 	return Result;
 }
 
-FFrameRate UAudioCaptureTimecodeProvider::GetFrameRate() const
+FFrameRate UAudioCaptureTimecodeProvider::GetFrameRateInternal() const
 {
 	FFrameRate Result = FrameRate;
 	if (bDetectFrameRate)
@@ -245,3 +254,5 @@ void UAudioCaptureTimecodeProvider::BeginDestroy()
 	delete Implementation;
 	Super::BeginDestroy();
 }
+
+PRAGMA_ENABLE_DEPRECATION_WARNINGS

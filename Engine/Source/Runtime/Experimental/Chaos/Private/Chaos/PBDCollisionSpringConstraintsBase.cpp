@@ -1,8 +1,8 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 #include "Chaos/PBDCollisionSpringConstraintsBase.h"
 
 #if !COMPILE_WITHOUT_UNREAL_SUPPORT
-#include "Chaos/ParallelFor.h"
+#include "Chaos/Framework/Parallel.h"
 #if PLATFORM_DESKTOP && PLATFORM_64BITS
 #include "kDOP.h"
 #endif

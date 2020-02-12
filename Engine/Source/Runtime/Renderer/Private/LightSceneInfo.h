@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 /*=============================================================================
 	LightSceneInfo.h: Light scene info definitions.
@@ -8,10 +8,10 @@
 
 #include "CoreMinimal.h"
 #include "RenderResource.h"
-#include "Templates/ScopedPointer.h"
-#include "GenericOctreePublic.h"
+#include "Math/GenericOctreePublic.h"
 #include "SceneManagement.h"
-#include "GenericOctree.h"
+#include "Math/GenericOctree.h"
+#include "PrimitiveSceneProxy.h"
 #include "Templates/UniquePtr.h"
 
 class FLightPrimitiveInteraction;
@@ -36,6 +36,9 @@ public:
 	uint32 bCastDynamicShadow : 1;
 	uint32 bCastStaticShadow : 1;
 	uint32 bStaticLighting : 1;
+	uint32 bAffectReflection : 1;
+	uint32 bAffectGlobalIllumination : 1;
+	uint32 bCastRaytracedShadow : 1;
 
 	/** Initializes the compact scene info from the light's full scene info. */
 	void Init(FLightSceneInfo* InLightSceneInfo);
@@ -80,21 +83,57 @@ struct FSortedLightSceneInfo
 			uint32 bShadowed : 1;
 			/** Whether the light uses lighting channels. */
 			uint32 bUsesLightingChannels : 1;
+			/** Whether the light is NOT a simple light - they always support tiled/clustered but may want to be selected separately. */
+			uint32 bIsNotSimpleLight : 1;
 			/** True if the light doesn't support tiled deferred, logic is inverted so that lights that DO support tiled deferred will sort first in list */
 			uint32 bTiledDeferredNotSupported : 1;
+			/** 
+			 * True if the light doesn't support clustered deferred, logic is inverted so that lights that DO support clustered deferred will sort first in list 
+			 * Super-set of lights supporting tiled, so the tiled lights will end up in the first part of this range.
+			 */
+			uint32 bClusteredDeferredNotSupported : 1;
 		} Fields;
 		/** Sort key bits packed into an integer. */
 		int32 Packed;
 	} SortKey;
 
 	const FLightSceneInfo* LightSceneInfo;
+	int32 SimpleLightIndex;
 
 	/** Initialization constructor. */
 	explicit FSortedLightSceneInfo(const FLightSceneInfo* InLightSceneInfo)
-		: LightSceneInfo(InLightSceneInfo)
+		: LightSceneInfo(InLightSceneInfo),
+		SimpleLightIndex(-1)
 	{
 		SortKey.Packed = 0;
+		SortKey.Fields.bIsNotSimpleLight = 1;
 	}
+
+	explicit FSortedLightSceneInfo(int32 InSimpleLightIndex)
+		: LightSceneInfo(nullptr),
+		SimpleLightIndex(InSimpleLightIndex)
+	{
+		SortKey.Packed = 0;
+		SortKey.Fields.bIsNotSimpleLight = 0;
+	}
+};
+
+/** 
+ * Stores info about sorted lights and ranges. 
+ * The sort-key in FSortedLightSceneInfo gives rise to the following order:
+ *  [SimpleLights,Tiled/Clustered,LightFunction/Shadow/LightChannels/TextureProfile]
+ */
+struct FSortedLightSetSceneInfo
+{
+	int SimpleLightsEnd;
+	int TiledSupportedEnd;
+	int ClusteredSupportedEnd;
+
+	/** First light with shadow map or */
+	int AttenuationLightStart;
+
+	FSimpleLightArray SimpleLights;
+	TArray<FSortedLightSceneInfo, SceneRenderingAllocator> SortedLights;
 };
 
 template <>
@@ -112,14 +151,16 @@ typedef TOctree<FLightSceneInfoCompact,struct FLightOctreeSemantics> FSceneLight
  */
 class FLightSceneInfo : public FRenderResource
 {
-public:
-	/** The light's scene proxy. */
-	FLightSceneProxy* Proxy;
+	friend class FLightPrimitiveInteraction;
 
 	/** The list of dynamic primitives affected by the light. */
 	FLightPrimitiveInteraction* DynamicInteractionOftenMovingPrimitiveList;
 
 	FLightPrimitiveInteraction* DynamicInteractionStaticPrimitiveList;
+
+public:
+	/** The light's scene proxy. */
+	FLightSceneProxy* Proxy;
 
 	/** If bVisible == true, this is the index of the primitive in Scene->Lights. */
 	int32 Id;
@@ -129,6 +170,7 @@ public:
 
 	/** Tile intersection buffer for distance field shadowing, stored on the light to avoid reallocating each frame. */
 	mutable TUniquePtr<class FLightTileIntersectionResources> TileIntersectionResources;
+	mutable TUniquePtr<class FLightTileIntersectionResources> HeightFieldTileIntersectionResources;
 
 	mutable FVertexBufferRHIRef ShadowCapsuleShapesVertexBuffer;
 	mutable FShaderResourceViewRHIRef ShadowCapsuleShapesSRV;
@@ -164,6 +206,9 @@ public:
 
 	/** Scene color must be larger than this to create bloom in the light shafts. */
 	float BloomThreshold;
+
+	/** After exposure is applied, scene color brightness larger than BloomMaxBrightness will be rescaled down to BloomMaxBrightness. */
+	float BloomMaxBrightness;
 
 	/** Multiplies against scene color to create the bloom color. */
 	FColor BloomTint;
@@ -257,6 +302,10 @@ public:
 		return DynamicShadowMapChannel;
 	}
 
+	FLightPrimitiveInteraction* GetDynamicInteractionOftenMovingPrimitiveList(bool bSync = true) const;
+
+	FLightPrimitiveInteraction* GetDynamicInteractionStaticPrimitiveList(bool bSync = true) const;
+
 	/** Hash function. */
 	friend uint32 GetTypeHash(const FLightSceneInfo* LightSceneInfo)
 	{
@@ -296,18 +345,4 @@ struct FLightOctreeSemantics
 		VectorRegister OffsetReg = VectorLoadFloat3_W0(&Offset);
 		Element.BoundingSphereVector = VectorAdd(Element.BoundingSphereVector, OffsetReg);
 	}
-};
-
-/** Stores lighting information for the clustered forward shading path */
-struct FClusteredLightsSceneInfo
-{
-	FIntPoint TileSize;			// In pixels
-	FIntVector GridSize;		// In tiles (x,y) + slices (z)
-	FVector4 LightGridZParams;
-
-	// Index of the light in this array corresponds to the bit set in the grid.
-	TArray<FLightSceneInfoCompact> ClusteredLights;
-
-	// The light grid.  Size is >= GridSize.
-	FTexture3DRHIRef LightGridTex;
 };

@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 /*=============================================================================
 	ParticleModules.cpp: Particle module implementation.
@@ -10,9 +10,11 @@
 #include "Serialization/ArchiveUObject.h"
 #include "UObject/UnrealType.h"
 #include "HAL/IConsoleManager.h"
+#include "HAL/LowLevelMemTracker.h"
 #include "UObject/RenderingObjectVersion.h"
 #include "UObject/UObjectHash.h"
 #include "UObject/Package.h"
+#include "Misc/App.h"
 #include "GameFramework/WorldSettings.h"
 #include "Particles/ParticleSystem.h"
 #include "ParticleHelper.h"
@@ -157,34 +159,13 @@ void UParticleModule::FinalUpdate(FParticleEmitterInstance* Owner, int32 Offset,
 
 uint32 UParticleModule::RequiredBytes(UParticleModuleTypeDataBase* TypeData)
 {
-PRAGMA_DISABLE_DEPRECATION_WARNINGS
-		// To try and handle deprecation, if function is not overriden, call old function
-	// Will fail though if actually trying to use Owner
-	return RequiredBytes(static_cast<FParticleEmitterInstance*>(nullptr));
-PRAGMA_ENABLE_DEPRECATION_WARNINGS
+	return 0;
 }
 
 uint32 UParticleModule::RequiredBytesPerInstance()
 {
-PRAGMA_DISABLE_DEPRECATION_WARNINGS
-	// To try and handle deprecation, if function is not overriden, call old function
-	// Will fail though if actually trying to use Owner
-	return RequiredBytesPerInstance(nullptr);
-PRAGMA_ENABLE_DEPRECATION_WARNINGS
-}
-
-// DEPRECATED 4.11
-uint32 UParticleModule::RequiredBytes(FParticleEmitterInstance* Owner)
-{
 	return 0;
 }
-
-// DEPRECATED 4.11
-uint32 UParticleModule::RequiredBytesPerInstance(FParticleEmitterInstance* Owner)
-{
-	return 0;
-}
-
 
 uint32 UParticleModule::PrepPerInstanceBlock(FParticleEmitterInstance* Owner, void* InstData)
 {
@@ -199,20 +180,20 @@ void UParticleModule::SetToSensibleDefaults(UParticleEmitter* Owner)
 
 void UParticleModule::GetCurveObjects(TArray<FParticleCurvePair>& OutCurves)
 {
-	for (TFieldIterator<UProperty> It(GetClass()); It; ++It)
+	for (TFieldIterator<FProperty> It(GetClass()); It; ++It)
 	{
 		UObject* Distribution = NULL;
-		UProperty* Property = *It;
+		FProperty* Property = *It;
 		check(Property != NULL);
 
 		// attempt to get a distribution from a random struct property
-		if (Property->IsA(UStructProperty::StaticClass()))
+		if (Property->IsA(FStructProperty::StaticClass()))
 		{
-			Distribution = FRawDistribution::TryGetDistributionObjectFromRawDistributionProperty((UStructProperty*)Property, (uint8*)this);
+			Distribution = FRawDistribution::TryGetDistributionObjectFromRawDistributionProperty((FStructProperty*)Property, (uint8*)this);
 		}
-		else if (Property->IsA(UObjectPropertyBase::StaticClass()))
+		else if (Property->IsA(FObjectPropertyBase::StaticClass()))
 		{
-			UObjectPropertyBase* ObjProperty = (UObjectPropertyBase*)(Property);
+			FObjectPropertyBase* ObjProperty = (FObjectPropertyBase*)(Property);
 			if (ObjProperty && (ObjProperty->PropertyClass == UDistributionFloat::StaticClass() ||
 				ObjProperty->PropertyClass == UDistributionVector::StaticClass()))
 			{
@@ -317,7 +298,7 @@ void UParticleModule::ChangeEditorColor(FColor& Color, UInterpCurveEdSetup* EdSe
 void UParticleModule::AutoPopulateInstanceProperties(UParticleSystemComponent* PSysComp)
 {
 	check(IsInGameThread());
-	for (TFieldIterator<UStructProperty> It(GetClass()); It; ++It)
+	for (TFieldIterator<FStructProperty> It(GetClass()); It; ++It)
 	{
 		// attempt to get a distribution from a random struct property
 		UObject* Distribution = FRawDistribution::TryGetDistributionObjectFromRawDistributionProperty(*It, (uint8*)this);
@@ -600,7 +581,7 @@ void UParticleModule::GetParticleSysParamsUtilized(TArray<FString>& ParticleSysP
 
 void UParticleModule::GetParticleParametersUtilized(TArray<FString>& ParticleParameterList)
 {
-	for (TFieldIterator<UStructProperty> It(GetClass()); It; ++It)
+	for (TFieldIterator<FStructProperty> It(GetClass()); It; ++It)
 	{
 		// attempt to get a distribution from a random struct property
 		UObject* Distribution = FRawDistribution::TryGetDistributionObjectFromRawDistributionProperty(*It, (uint8*)this);
@@ -665,12 +646,18 @@ void UParticleModule::GetParticleParametersUtilized(TArray<FString>& ParticlePar
 
 uint32 UParticleModule::PrepRandomSeedInstancePayload(FParticleEmitterInstance* Owner, FParticleRandomSeedInstancePayload* InRandSeedPayload, const FParticleRandomSeedInfo& InRandSeedInfo)
 {
-	if (InRandSeedPayload != NULL)
+    // These should never be null
+	if (!ensure( Owner != nullptr && Owner->Component != nullptr ))
 	{
-		FMemory::Memzero(InRandSeedPayload, sizeof(FParticleRandomSeedInstancePayload));
+		return 0xffffffff;
+	}
+
+	if (InRandSeedPayload != nullptr)
+	{
+		new(InRandSeedPayload) FParticleRandomSeedInstancePayload();
 
 		// See if the parameter is set on the instance...
-		if ((Owner != NULL) && (Owner->Component != NULL) && (InRandSeedInfo.bGetSeedFromInstance == true))
+		if (InRandSeedInfo.bGetSeedFromInstance == true)
 		{
 			float SeedValue;
 			if (Owner->Component->GetFloatParameter(InRandSeedInfo.ParameterName, SeedValue) == true)
@@ -699,15 +686,19 @@ uint32 UParticleModule::PrepRandomSeedInstancePayload(FParticleEmitterInstance* 
 		// Pick a seed to use and initialize it!!!!
 		if (InRandSeedInfo.RandomSeeds.Num() > 0)
 		{
+			int32 Index = 0;
+
 			if (InRandSeedInfo.bRandomlySelectSeedArray)
 			{
-				int32 Index = FMath::RandRange(0, InRandSeedInfo.RandomSeeds.Num() - 1);
-				InRandSeedPayload->RandomStream.Initialize(InRandSeedInfo.RandomSeeds[Index]);
+				Index = Owner->Component->RandomStream.RandHelper(InRandSeedInfo.RandomSeeds.Num());
 			}
-			else
-			{
-				InRandSeedPayload->RandomStream.Initialize(InRandSeedInfo.RandomSeeds[0]);
-			}
+
+			InRandSeedPayload->RandomStream.Initialize(InRandSeedInfo.RandomSeeds[Index]);
+			return 0;
+		}
+		else if (FApp::bUseFixedSeed)
+		{
+			InRandSeedPayload->RandomStream.Initialize(GetFName());
 			return 0;
 		}
 	}
@@ -788,16 +779,23 @@ bool UParticleModule::IsUsedInGPUEmitter()const
 	return false;
 }
 
+FRandomStream& UParticleModule::GetRandomStream(FParticleEmitterInstance* Owner)
+{
+	FParticleRandomSeedInstancePayload* Payload = Owner->GetModuleRandomSeedInstanceData(this);
+	FRandomStream& RandomStream = (Payload != nullptr) ? Payload->RandomStream : Owner->Component->RandomStream;
+	return RandomStream;
+}
+
 #if WITH_EDITOR
 void UParticleModule::SetTransactionFlag()
 {
 	SetFlags( RF_Transactional );
 
-	for( TFieldIterator<UProperty> It(GetClass()); It; ++It )
+	for( TFieldIterator<FProperty> It(GetClass()); It; ++It )
 	{
-		UProperty* Property = *It;
+		FProperty* Property = *It;
 
-		if( UStructProperty* StructProp = Cast<UStructProperty>(Property) )
+		if( FStructProperty* StructProp = CastField<FStructProperty>(Property) )
 		{
 			UObject* Distribution = FRawDistribution::TryGetDistributionObjectFromRawDistributionProperty( StructProp, reinterpret_cast<uint8*>(this) );
 			if( Distribution )
@@ -805,7 +803,7 @@ void UParticleModule::SetTransactionFlag()
 				Distribution->SetFlags( RF_Transactional );
 			}
 		}
-		else if( UObjectPropertyBase* ObjectPropertyBase = Cast<UObjectPropertyBase>(Property) )
+		else if( FObjectPropertyBase* ObjectPropertyBase = CastField<FObjectPropertyBase>(Property) )
 		{
 			if( (ObjectPropertyBase->PropertyClass == UDistributionFloat::StaticClass() ||
 				 ObjectPropertyBase->PropertyClass == UDistributionVector::StaticClass()) )
@@ -821,16 +819,16 @@ void UParticleModule::SetTransactionFlag()
 				}
 			}
 		}
-		else if( UArrayProperty* ArrayProp = Cast<UArrayProperty>(Property) )
+		else if( FArrayProperty* ArrayProp = CastField<FArrayProperty>(Property) )
 		{
-			if( UStructProperty* InnerStructProp = Cast<UStructProperty>(ArrayProp->Inner) )
+			if( FStructProperty* InnerStructProp = CastField<FStructProperty>(ArrayProp->Inner) )
 			{
 				FScriptArrayHelper ArrayHelper( ArrayProp, Property->ContainerPtrToValuePtr<void>(this) );
 				for( int32 Idx = 0; Idx < ArrayHelper.Num(); ++Idx )
 				{
-					for( UProperty* ArrayProperty = InnerStructProp->Struct->PropertyLink; ArrayProperty; ArrayProperty = ArrayProperty->PropertyLinkNext )
+					for( FProperty* ArrayProperty = InnerStructProp->Struct->PropertyLink; ArrayProperty; ArrayProperty = ArrayProperty->PropertyLinkNext )
 					{
-						if( UStructProperty* ArrayStructProp = Cast<UStructProperty>(ArrayProperty) )
+						if( FStructProperty* ArrayStructProp = CastField<FStructProperty>(ArrayProperty) )
 						{
 							UObject* Distribution = FRawDistribution::TryGetDistributionObjectFromRawDistributionProperty( ArrayStructProp, ArrayHelper.GetRawPtr( Idx ) );
 							if( Distribution )
@@ -1035,7 +1033,7 @@ void UParticleModuleOrientationAxisLock::PostEditChangeProperty(FPropertyChanged
 	}
 	UParticleSystem* PartSys = PartSys = CastChecked<UParticleSystem>(OuterObj);
 
-	UProperty* PropertyThatChanged = PropertyChangedEvent.Property;
+	FProperty* PropertyThatChanged = PropertyChangedEvent.Property;
 	if (PropertyThatChanged)
 	{
 		if (PropertyThatChanged->GetFName() == FName(TEXT("LockAxisFlags")))
@@ -1117,7 +1115,7 @@ void UParticleModuleRequired::Serialize(FStructuredArchive::FRecord Record)
 
 		// Save a bool indicating whether this is cooked data
 		// This is needed when loading cooked data, to know to serialize differently
-		Record << NAMED_FIELD(bCooked);
+		Record << SA_VALUE(TEXT("bCooked"), bCooked);
 
 		if (FPlatformProperties::RequiresCookedData() && !bCooked && UnderlyingArchive.IsLoading())
 		{
@@ -1126,13 +1124,13 @@ void UParticleModuleRequired::Serialize(FStructuredArchive::FRecord Record)
 
 		if (bCooked)
 		{
-			DerivedData.Serialize(Record.EnterField(FIELD_NAME_TEXT("DerivedData")));
+			DerivedData.Serialize(Record.EnterField(SA_FIELD_NAME(TEXT("DerivedData"))));
 		}
 	}
 }
 
 #if WITH_EDITOR
-void UParticleModuleRequired::PreEditChange(UProperty* PropertyThatChanged)
+void UParticleModuleRequired::PreEditChange(FProperty* PropertyThatChanged)
 {
 	Super::PreEditChange(PropertyThatChanged);
 
@@ -1152,7 +1150,7 @@ void UParticleModuleRequired::PostEditChangeProperty(FPropertyChangedEvent& Prop
 	// Wait until unregister commands are processed on the RT
 	FlushRenderingCommands();
 
-	UProperty* PropertyThatChanged = PropertyChangedEvent.Property;
+	FProperty* PropertyThatChanged = PropertyChangedEvent.Property;
 	if (PropertyThatChanged)
 	{
 		if (PropertyThatChanged->GetFName() == FName(TEXT("MaxDrawCount")))
@@ -1298,7 +1296,7 @@ void UParticleModuleRequired::CacheDerivedData()
 	TArray<uint8> Data;
 
 	COOK_STAT(auto Timer = SubUVAnimationCookStats::UsageStats.TimeSyncWork());
-	if (GetDerivedDataCacheRef().GetSynchronous(*KeyString, Data))
+	if (GetDerivedDataCacheRef().GetSynchronous(*KeyString, Data, GetPathName()))
 	{
 		COOK_STAT(Timer.AddHit(Data.Num()));
 		DerivedData.BoundingGeometry.Empty(Data.Num() / sizeof(FVector2D));
@@ -1312,7 +1310,7 @@ void UParticleModuleRequired::CacheDerivedData()
 		Data.Empty(DerivedData.BoundingGeometry.Num() * sizeof(FVector2D));
 		Data.AddUninitialized(DerivedData.BoundingGeometry.Num() * sizeof(FVector2D));
 		FPlatformMemory::Memcpy(Data.GetData(), DerivedData.BoundingGeometry.GetData(), DerivedData.BoundingGeometry.Num() * DerivedData.BoundingGeometry.GetTypeSize());
-		GetDerivedDataCacheRef().Put(*KeyString, Data);
+		GetDerivedDataCacheRef().Put(*KeyString, Data, GetPathName());
 		COOK_STAT(Timer.AddMiss(Data.Num()));
 	}
 #endif
@@ -1321,7 +1319,7 @@ void UParticleModuleRequired::CacheDerivedData()
 void UParticleModuleRequired::InitBoundingGeometryBuffer()
 {
 	// The SRV is only needed for platforms that can render particles with instancing
-	if (GRHISupportsInstancing && BoundingGeometryBuffer->Vertices->Num())
+	if (BoundingGeometryBuffer->Vertices->Num())
 	{
 		BeginInitResource(BoundingGeometryBuffer);
 	}
@@ -1403,7 +1401,7 @@ void UParticleModuleMeshRotation::PostEditChangeProperty(FPropertyChangedEvent& 
 
 void UParticleModuleMeshRotation::Spawn(FParticleEmitterInstance* Owner, int32 Offset, float SpawnTime, FBaseParticle* ParticleBase)
 {
-	SpawnEx(Owner, Offset, SpawnTime, NULL, ParticleBase);
+	SpawnEx(Owner, Offset, SpawnTime, &GetRandomStream(Owner), ParticleBase);
 }
 
 
@@ -1444,27 +1442,11 @@ UParticleModuleMeshRotation_Seeded::UParticleModuleMeshRotation_Seeded(const FOb
 	bRequiresLoopingNotification = true;
 }
 
-void UParticleModuleMeshRotation_Seeded::Spawn(FParticleEmitterInstance* Owner, int32 Offset, float SpawnTime, FBaseParticle* ParticleBase)
-{
-	FParticleRandomSeedInstancePayload* Payload = (FParticleRandomSeedInstancePayload*)(Owner->GetModuleInstanceData(this));
-	SpawnEx(Owner, Offset, SpawnTime, (Payload != NULL) ? &(Payload->RandomStream) : NULL, ParticleBase);
-}
-
-uint32 UParticleModuleMeshRotation_Seeded::RequiredBytesPerInstance()
-{
-	return RandomSeedInfo.GetInstancePayloadSize();
-}
-
-uint32 UParticleModuleMeshRotation_Seeded::PrepPerInstanceBlock(FParticleEmitterInstance* Owner, void* InstData)
-{
-	return PrepRandomSeedInstancePayload(Owner, (FParticleRandomSeedInstancePayload*)InstData, RandomSeedInfo);
-}
-
 void UParticleModuleMeshRotation_Seeded::EmitterLoopingNotify(FParticleEmitterInstance* Owner)
 {
 	if (RandomSeedInfo.bResetSeedOnEmitterLooping == true)
 	{
-		FParticleRandomSeedInstancePayload* Payload = (FParticleRandomSeedInstancePayload*)(Owner->GetModuleInstanceData(this));
+		FParticleRandomSeedInstancePayload* Payload = Owner->GetModuleRandomSeedInstanceData(this);
 		PrepRandomSeedInstancePayload(Owner, Payload, RandomSeedInfo);
 	}
 }
@@ -1517,7 +1499,7 @@ void UParticleModuleMeshRotationRate::PostEditChangeProperty(FPropertyChangedEve
 
 void UParticleModuleMeshRotationRate::Spawn(FParticleEmitterInstance* Owner, int32 Offset, float SpawnTime, FBaseParticle* ParticleBase)
 {
-	SpawnEx(Owner, Offset, SpawnTime, NULL, ParticleBase);
+	SpawnEx(Owner, Offset, SpawnTime, &GetRandomStream(Owner), ParticleBase);
 }
 
 void UParticleModuleMeshRotationRate::SpawnEx(FParticleEmitterInstance* Owner, int32 Offset, float SpawnTime, struct FRandomStream* InRandomStream, FBaseParticle* ParticleBase)
@@ -1562,28 +1544,11 @@ UParticleModuleMeshRotationRate_Seeded::UParticleModuleMeshRotationRate_Seeded(c
 	bRequiresLoopingNotification = true;
 }
 
-void UParticleModuleMeshRotationRate_Seeded::Spawn(FParticleEmitterInstance* Owner, int32 Offset, float SpawnTime, FBaseParticle* ParticleBase)
-{
-	FParticleRandomSeedInstancePayload* Payload = (FParticleRandomSeedInstancePayload*)(Owner->GetModuleInstanceData(this));
-	SpawnEx(Owner, Offset, SpawnTime, (Payload != NULL) ? &(Payload->RandomStream) : NULL, ParticleBase);
-}
-
-uint32 UParticleModuleMeshRotationRate_Seeded::RequiredBytesPerInstance()
-{
-	return RandomSeedInfo.GetInstancePayloadSize();
-}
-
-
-uint32 UParticleModuleMeshRotationRate_Seeded::PrepPerInstanceBlock(FParticleEmitterInstance* Owner, void* InstData)
-{
-	return PrepRandomSeedInstancePayload(Owner, (FParticleRandomSeedInstancePayload*)InstData, RandomSeedInfo);
-}
-
 void UParticleModuleMeshRotationRate_Seeded::EmitterLoopingNotify(FParticleEmitterInstance* Owner)
 {
 	if (RandomSeedInfo.bResetSeedOnEmitterLooping == true)
 	{
-		FParticleRandomSeedInstancePayload* Payload = (FParticleRandomSeedInstancePayload*)(Owner->GetModuleInstanceData(this));
+		FParticleRandomSeedInstancePayload* Payload = Owner->GetModuleRandomSeedInstanceData(this);
 		PrepRandomSeedInstancePayload(Owner, Payload, RandomSeedInfo);
 	}
 }
@@ -1809,7 +1774,7 @@ void UParticleModuleRotation::PostEditChangeProperty(FPropertyChangedEvent& Prop
 
 void UParticleModuleRotation::Spawn(FParticleEmitterInstance* Owner, int32 Offset, float SpawnTime, FBaseParticle* ParticleBase)
 {
-	SpawnEx(Owner, Offset, SpawnTime, NULL, ParticleBase);
+	SpawnEx(Owner, Offset, SpawnTime, &GetRandomStream(Owner), ParticleBase);
 }
 
 void UParticleModuleRotation::SpawnEx(FParticleEmitterInstance* Owner, int32 Offset, float SpawnTime, struct FRandomStream* InRandomStream, FBaseParticle* ParticleBase)
@@ -1831,27 +1796,11 @@ UParticleModuleRotation_Seeded::UParticleModuleRotation_Seeded(const FObjectInit
 	bRequiresLoopingNotification = true;
 }
 
-void UParticleModuleRotation_Seeded::Spawn(FParticleEmitterInstance* Owner, int32 Offset, float SpawnTime, FBaseParticle* ParticleBase)
-{
-	FParticleRandomSeedInstancePayload* Payload = (FParticleRandomSeedInstancePayload*)(Owner->GetModuleInstanceData(this));
-	SpawnEx(Owner, Offset, SpawnTime, (Payload != NULL) ? &(Payload->RandomStream) : NULL, ParticleBase);
-}
-
-uint32 UParticleModuleRotation_Seeded::RequiredBytesPerInstance()
-{
-	return RandomSeedInfo.GetInstancePayloadSize();
-}
-
-uint32 UParticleModuleRotation_Seeded::PrepPerInstanceBlock(FParticleEmitterInstance* Owner, void* InstData)
-{
-	return PrepRandomSeedInstancePayload(Owner, (FParticleRandomSeedInstancePayload*)InstData, RandomSeedInfo);
-}
-
 void UParticleModuleRotation_Seeded::EmitterLoopingNotify(FParticleEmitterInstance* Owner)
 {
 	if (RandomSeedInfo.bResetSeedOnEmitterLooping == true)
 	{
-		FParticleRandomSeedInstancePayload* Payload = (FParticleRandomSeedInstancePayload*)(Owner->GetModuleInstanceData(this));
+		FParticleRandomSeedInstancePayload* Payload = Owner->GetModuleRandomSeedInstanceData(this);
 		PrepRandomSeedInstancePayload(Owner, Payload, RandomSeedInfo);
 	}
 }
@@ -1904,7 +1853,7 @@ void UParticleModuleRotationRate::PostEditChangeProperty(FPropertyChangedEvent& 
 
 void UParticleModuleRotationRate::Spawn(FParticleEmitterInstance* Owner, int32 Offset, float SpawnTime, FBaseParticle* ParticleBase)
 {
-	SpawnEx(Owner, Offset, SpawnTime, NULL, ParticleBase);
+	SpawnEx(Owner, Offset, SpawnTime, &GetRandomStream(Owner), ParticleBase);
 }
 
 void UParticleModuleRotationRate::SpawnEx(FParticleEmitterInstance* Owner, int32 Offset, float SpawnTime, struct FRandomStream* InRandomStream, FBaseParticle* ParticleBase)
@@ -1940,27 +1889,11 @@ UParticleModuleRotationRate_Seeded::UParticleModuleRotationRate_Seeded(const FOb
 	bRequiresLoopingNotification = true;
 }
 
-void UParticleModuleRotationRate_Seeded::Spawn(FParticleEmitterInstance* Owner, int32 Offset, float SpawnTime, FBaseParticle* ParticleBase)
-{
-	FParticleRandomSeedInstancePayload* Payload = (FParticleRandomSeedInstancePayload*)(Owner->GetModuleInstanceData(this));
-	SpawnEx(Owner, Offset, SpawnTime, (Payload != NULL) ? &(Payload->RandomStream) : NULL, ParticleBase);
-}
-
-uint32 UParticleModuleRotationRate_Seeded::RequiredBytesPerInstance()
-{
-	return RandomSeedInfo.GetInstancePayloadSize();
-}
-
-uint32 UParticleModuleRotationRate_Seeded::PrepPerInstanceBlock(FParticleEmitterInstance* Owner, void* InstData)
-{
-	return PrepRandomSeedInstancePayload(Owner, (FParticleRandomSeedInstancePayload*)InstData, RandomSeedInfo);
-}
-
 void UParticleModuleRotationRate_Seeded::EmitterLoopingNotify(FParticleEmitterInstance* Owner)
 {
 	if (RandomSeedInfo.bResetSeedOnEmitterLooping == true)
 	{
-		FParticleRandomSeedInstancePayload* Payload = (FParticleRandomSeedInstancePayload*)(Owner->GetModuleInstanceData(this));
+		FParticleRandomSeedInstancePayload* Payload = Owner->GetModuleRandomSeedInstanceData(this);
 		PrepRandomSeedInstancePayload(Owner, Payload, RandomSeedInfo);
 	}
 }
@@ -2247,8 +2180,7 @@ float UParticleModuleSubUV::DetermineImageIndex(FParticleEmitterInstance* Owner,
 			((Particle->RelativeTime - SubUVPayload.RandomImageTime) > LODLevel->RequiredModule->RandomImageTime) ||
 			(SubUVPayload.RandomImageTime == 0.0f))
 		{
-			const float RandomNumber = FMath::SRand();
-			ImageIndex = FMath::TruncToInt(RandomNumber * TotalSubImages);
+			ImageIndex = GetRandomStream(Owner).RandHelper(TotalSubImages);
 			SubUVPayload.RandomImageTime	= Particle->RelativeTime;
 		}
 
@@ -2380,7 +2312,8 @@ void UParticleModuleSubUVMovie::Spawn(FParticleEmitterInstance* Owner, int32 Off
 			}
 			else if (StartingFrame == 0)
 			{
-				MoviePayload.Time = FMath::TruncToFloat(FMath::SRand() * (TotalSubImages-1));
+				FRandomStream& RandomStream = GetRandomStream(Owner);
+				MoviePayload.Time = FMath::TruncToFloat(RandomStream.FRand() * (TotalSubImages-1));
 			}
 
 			// Update the payload
@@ -3116,7 +3049,7 @@ void UParticleModuleLight::SpawnEx(FParticleEmitterInstance* Owner, int32 Offset
 		LightData.RadiusScale = RadiusScale.GetValue(Owner->EmitterTime, Owner->Component, InRandomStream);
 		// Exponent of 0 is interpreted by renderer as inverse squared falloff
 		LightData.LightExponent = bUseInverseSquaredFalloff ? 0 : LightExponent.GetValue(Owner->EmitterTime, Owner->Component, InRandomStream);
-		const float RandomNumber = InRandomStream ? InRandomStream->GetFraction() : FMath::SRand();
+		const float RandomNumber = InRandomStream->GetFraction();
 		LightData.bValid = RandomNumber < SpawnFraction;
 		LightData.bAffectsTranslucency = bAffectsTranslucency;
 		LightData.bHighQuality = bHighQualityLights;
@@ -3239,7 +3172,7 @@ void UParticleModuleLight::UpdateHQLight(UPointLightComponent* PointLightCompone
 
 void UParticleModuleLight::Spawn(FParticleEmitterInstance* Owner, int32 Offset, float SpawnTime, FBaseParticle* ParticleBase)
 {
-	SpawnEx(Owner, Offset, SpawnTime, NULL, ParticleBase);
+	SpawnEx(Owner, Offset, SpawnTime, &GetRandomStream(Owner), ParticleBase);
 }
 
 void UParticleModuleLight::Update(FParticleEmitterInstance* Owner, int32 Offset, float DeltaTime)
@@ -3388,27 +3321,11 @@ UParticleModuleLight_Seeded::UParticleModuleLight_Seeded(const FObjectInitialize
 	bRequiresLoopingNotification = true;
 }
 
-void UParticleModuleLight_Seeded::Spawn(FParticleEmitterInstance* Owner, int32 Offset, float SpawnTime, FBaseParticle* ParticleBase)
-{
-	FParticleRandomSeedInstancePayload* Payload = (FParticleRandomSeedInstancePayload*)(Owner->GetModuleInstanceData(this) + Super::RequiredBytesPerInstance());
-	SpawnEx(Owner, Offset, SpawnTime, (Payload != NULL) ? &(Payload->RandomStream) : NULL, ParticleBase);
-}
-
-uint32 UParticleModuleLight_Seeded::RequiredBytesPerInstance()
-{
-	return Super::RequiredBytesPerInstance() + RandomSeedInfo.GetInstancePayloadSize();
-}
-
-uint32 UParticleModuleLight_Seeded::PrepPerInstanceBlock(FParticleEmitterInstance* Owner, void* InstData)
-{
-	return PrepRandomSeedInstancePayload(Owner, (FParticleRandomSeedInstancePayload*)((uint8*)InstData + Super::RequiredBytesPerInstance()), RandomSeedInfo);
-}
-
 void UParticleModuleLight_Seeded::EmitterLoopingNotify(FParticleEmitterInstance* Owner)
 {
 	if (RandomSeedInfo.bResetSeedOnEmitterLooping == true)
 	{
-		FParticleRandomSeedInstancePayload* Payload = (FParticleRandomSeedInstancePayload*)(Owner->GetModuleInstanceData(this) + Super::RequiredBytesPerInstance());
+		FParticleRandomSeedInstancePayload* Payload = Owner->GetModuleRandomSeedInstanceData(this);
 		PrepRandomSeedInstancePayload(Owner, Payload, RandomSeedInfo);
 	}
 }
@@ -3445,7 +3362,7 @@ int32 UParticleModuleTypeDataMesh::GetCurrentDetailMode()
 
 int32 UParticleModuleTypeDataMesh::GetMeshParticleMotionBlurMinDetailMode()
 {
-	return CVarMinDetailModeForMeshParticleMotionBlur.GetValueOnGameThread();
+	return CVarMinDetailModeForMeshParticleMotionBlur.GetValueOnAnyThread();
 }
 
 UParticleModuleTypeDataMesh::UParticleModuleTypeDataMesh(const FObjectInitializer& ObjectInitializer)
@@ -3472,6 +3389,13 @@ FParticleEmitterInstance* UParticleModuleTypeDataMesh::CreateInstance(UParticleE
 
 	CreateDistribution();
 
+#if WITH_EDITOR
+	if (GIsEditor && (Mesh != nullptr))
+	{
+		Mesh->GetOnMeshChanged().AddUObject(this, &UParticleModuleTypeDataMesh::OnMeshChanged);
+	}
+#endif
+
 	return Instance;
 }
 
@@ -3488,7 +3412,7 @@ void UParticleModuleTypeDataMesh::Serialize(FArchive& Ar)
 	Super::Serialize(Ar);
 	if (Ar.IsLoading() && Ar.UE4Ver() < VER_UE4_MESH_EMITTER_INITIAL_ORIENTATION_DISTRIBUTION)
 	{
-		FVector oldOrient(Roll_DEPRECATED, Pitch_DEPRECATED, Yaw_DEPRECATED);
+		FVector oldOrient(0.0f, 0.0f, 0.0f);
 		CreateDistribution();
 		UDistributionVectorUniform* RPYDistribution = Cast<UDistributionVectorUniform>(RollPitchYawRange.Distribution);
 		RPYDistribution->Min = oldOrient;
@@ -3517,6 +3441,12 @@ void UParticleModuleTypeDataMesh::PostLoad()
 	if (Mesh != nullptr)
 	{
 		Mesh->ConditionalPostLoad();
+#if WITH_EDITOR
+		if ( GIsEditor )
+		{
+			Mesh->GetOnMeshChanged().AddUObject(this, &UParticleModuleTypeDataMesh::OnMeshChanged);
+		}
+#endif
 	}
 }
 
@@ -3526,29 +3456,61 @@ bool UParticleModuleTypeDataMesh::IsPostLoadThreadSafe() const
 }
 
 #if WITH_EDITOR
+void UParticleModuleTypeDataMesh::OnMeshChanged()
+{
+	UObject* OuterObj = GetOuter();
+	check(OuterObj);
+	UParticleLODLevel* LODLevel = Cast<UParticleLODLevel>(OuterObj);
+	if (LODLevel)
+	{
+		// The outer is incorrect - warn the user and handle it
+		UE_LOG(LogParticles, Warning, TEXT("UParticleModuleTypeDataMesh has an incorrect outer... run FixupEmitters on package %s"),
+			*(OuterObj->GetOutermost()->GetPathName()));
+		OuterObj = LODLevel->GetOuter();
+		UParticleEmitter* Emitter = Cast<UParticleEmitter>(OuterObj);
+		check(Emitter);
+		OuterObj = Emitter->GetOuter();
+	}
+
+	FProperty* MeshProperty = FindField<FProperty>(UParticleModuleTypeDataMesh::StaticClass(), FName(TEXT("Mesh")));
+	FPropertyChangedEvent PropertyChangedEvent(MeshProperty);
+
+	UParticleSystem* PartSys = CastChecked<UParticleSystem>(OuterObj);
+	PartSys->PostEditChangeProperty(PropertyChangedEvent);
+}
+
+void UParticleModuleTypeDataMesh::PreEditChange(FProperty* PropertyThatWillChange)
+{
+	if ( (PropertyThatWillChange != nullptr) && (PropertyThatWillChange->GetFName() == FName(TEXT("Mesh"))) )
+	{
+		if ( GIsEditor && (Mesh != nullptr) )
+		{
+			Mesh->GetOnMeshChanged().RemoveAll(this);
+		}
+	}
+}
+
+void UParticleModuleTypeDataMesh::BeginDestroy()
+{
+	Super::BeginDestroy();
+	if (GIsEditor && (Mesh != nullptr))
+	{
+		Mesh->GetOnMeshChanged().RemoveAll(this);
+	}
+}
+
 void UParticleModuleTypeDataMesh::PostEditChangeProperty(FPropertyChangedEvent& PropertyChangedEvent)
 {
-	UProperty* PropertyThatChanged = PropertyChangedEvent.Property;
+	FProperty* PropertyThatChanged = PropertyChangedEvent.Property;
 	if (PropertyThatChanged)
 	{
 		if (PropertyThatChanged->GetFName() == FName(TEXT("Mesh")))
 		{
-			UObject* OuterObj = GetOuter();
-			check(OuterObj);
-			UParticleLODLevel* LODLevel = Cast<UParticleLODLevel>(OuterObj);
-			if (LODLevel)
-			{
-				// The outer is incorrect - warn the user and handle it
-				UE_LOG(LogParticles, Warning, TEXT("UParticleModuleTypeDataMesh has an incorrect outer... run FixupEmitters on package %s"),
-					*(OuterObj->GetOutermost()->GetPathName()));
-				OuterObj = LODLevel->GetOuter();
-				UParticleEmitter* Emitter = Cast<UParticleEmitter>(OuterObj);
-				check(Emitter);
-				OuterObj = Emitter->GetOuter();
-			}
-			UParticleSystem* PartSys = CastChecked<UParticleSystem>(OuterObj);
-
-			PartSys->PostEditChangeProperty(PropertyChangedEvent);
+			OnMeshChanged();
+		}
+		if (GIsEditor && (Mesh != nullptr))
+		{
+			Mesh->GetOnMeshChanged().AddUObject(this, &UParticleModuleTypeDataMesh::OnMeshChanged);
 		}
 	}
 	Super::PostEditChangeProperty(PropertyChangedEvent);
@@ -3875,7 +3837,7 @@ void UParticleModuleLifetime::CompileModule( struct FParticleEmitterBuildInfo& E
 
 void UParticleModuleLifetime::Spawn(FParticleEmitterInstance* Owner, int32 Offset, float SpawnTime, FBaseParticle* ParticleBase)
 {
-	SpawnEx(Owner, Offset, SpawnTime, NULL, ParticleBase);
+	SpawnEx(Owner, Offset, SpawnTime, &GetRandomStream(Owner), ParticleBase);
 }
 
 void UParticleModuleLifetime::SpawnEx(FParticleEmitterInstance* Owner, int32 Offset, float SpawnTime, struct FRandomStream* InRandomStream, FBaseParticle* ParticleBase)
@@ -3941,39 +3903,18 @@ UParticleModuleLifetime_Seeded::UParticleModuleLifetime_Seeded(const FObjectInit
 	bRequiresLoopingNotification = true;
 }
 
-void UParticleModuleLifetime_Seeded::Spawn(FParticleEmitterInstance* Owner, int32 Offset, float SpawnTime, FBaseParticle* ParticleBase)
-{
-	FParticleRandomSeedInstancePayload* Payload = (FParticleRandomSeedInstancePayload*)(Owner->GetModuleInstanceData(this));
-	SpawnEx(Owner, Offset, SpawnTime, (Payload != NULL) ? &(Payload->RandomStream) : NULL, ParticleBase);
-}
-
-uint32 UParticleModuleLifetime_Seeded::RequiredBytesPerInstance()
-{
-	return RandomSeedInfo.GetInstancePayloadSize();
-}
-
-uint32 UParticleModuleLifetime_Seeded::PrepPerInstanceBlock(FParticleEmitterInstance* Owner, void* InstData)
-{
-	return PrepRandomSeedInstancePayload(Owner, (FParticleRandomSeedInstancePayload*)InstData, RandomSeedInfo);
-}
-
 void UParticleModuleLifetime_Seeded::EmitterLoopingNotify(FParticleEmitterInstance* Owner)
 {
 	if (RandomSeedInfo.bResetSeedOnEmitterLooping == true)
 	{
-		FParticleRandomSeedInstancePayload* Payload = (FParticleRandomSeedInstancePayload*)(Owner->GetModuleInstanceData(this));
+		FParticleRandomSeedInstancePayload* Payload = Owner->GetModuleRandomSeedInstanceData(this);
 		PrepRandomSeedInstancePayload(Owner, Payload, RandomSeedInfo);
 	}
 }
 
 float UParticleModuleLifetime_Seeded::GetLifetimeValue(FParticleEmitterInstance* Owner, float InTime, UObject* Data )
 {
-	FParticleRandomSeedInstancePayload* Payload = (FParticleRandomSeedInstancePayload*)(Owner->GetModuleInstanceData(this));
-	if (Payload != NULL)
-	{		
-		return Lifetime.GetValue(InTime, Data, &(Payload->RandomStream));
-	}
-	return UParticleModuleLifetime::GetLifetimeValue(Owner, InTime, Data);
+	return Lifetime.GetValue(InTime, Data, &GetRandomStream(Owner));
 }
 
 /*-----------------------------------------------------------------------------
@@ -4207,7 +4148,7 @@ void UParticleModuleAttractorParticle::Spawn(FParticleEmitterInstance* Owner, in
 			switch (SelectionMethod)
 			{
 			case EAPSM_Random:
-				LastSelIndex		= FMath::TruncToInt(FMath::SRand() * AttractorEmitterInst->ActiveParticles);
+				LastSelIndex		= GetRandomStream(Owner).RandHelper(AttractorEmitterInst->ActiveParticles);
 				Data.SourceIndex	= LastSelIndex;
 				break;
 			case EAPSM_Sequential:
@@ -4621,6 +4562,11 @@ void UParticleModuleTypeDataGpu::BeginDestroy()
 void UParticleModuleTypeDataGpu::Build( FParticleEmitterBuildInfo& EmitterBuildInfo )
 {
 #if WITH_EDITOR
+	if (GetOutermost()->bIsCookedForEditor)
+	{
+		return;
+	}
+
 	FVector4Distribution Curve;
 	FComposableFloatDistribution ZeroDistribution;
 	FComposableFloatDistribution OneDistribution;
@@ -4953,6 +4899,8 @@ FParticleEmitterInstance* UParticleModuleTypeDataGpu::CreateInstance(UParticleEm
 	FParticleEmitterInstance* Instance = NULL;
 	if (World->Scene && RHISupportsGPUParticles())
 	{
+		LLM_SCOPE(ELLMTag::Particles);
+
 		check( InComponent && InComponent->FXSystem );
 		Instance = InComponent->FXSystem->CreateGPUSpriteEmitterInstance( EmitterInfo );
 		Instance->InitParameters( InEmitterParent, InComponent );

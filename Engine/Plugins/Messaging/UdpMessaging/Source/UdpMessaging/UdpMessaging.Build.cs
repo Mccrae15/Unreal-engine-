@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 namespace UnrealBuildTool.Rules
 {
@@ -6,11 +6,6 @@ namespace UnrealBuildTool.Rules
 	{
 		public UdpMessaging(ReadOnlyTargetRules Target) : base(Target)
 		{
-			DynamicallyLoadedModuleNames.AddRange(
-				new string[] {
-					"Messaging",
-				});
-
 			PublicDependencyModuleNames.AddRange(
 				new string[]
 				{
@@ -22,14 +17,14 @@ namespace UnrealBuildTool.Rules
 					"CoreUObject",
 					"Json",
 					"Cbor",
-					"Networking",
+                    "Messaging",
+                    "Networking",
 					"Serialization",
 					"Sockets",
 				});
 
 			PrivateIncludePathModuleNames.AddRange(
 				new string[] {
-					"Messaging",
 					"MessagingCommon",
 				});
 

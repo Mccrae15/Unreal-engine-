@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "AnimationRecorder.h"
 #include "Widgets/DeclarativeSyntaxSupport.h"
@@ -7,7 +7,7 @@
 #include "UObject/Package.h"
 #include "Misc/PackageName.h"
 #include "Editor.h"
-#include "Toolkits/AssetEditorManager.h"
+
 #include "Animation/AnimInstance.h"
 #include "Animation/AnimCompress.h"
 #include "Animation/AnimCompress_BitwiseCompressOnly.h"
@@ -15,10 +15,10 @@
 #include "AssetRegistryModule.h"
 #include "Framework/Notifications/NotificationManager.h"
 #include "Widgets/Notifications/SNotificationList.h"
-#include "Animation/AnimationSettings.h"
 #include "Animation/AnimationRecordingSettings.h"
 #include "Animation/AnimNotifies/AnimNotify.h"
 #include "Animation/AnimNotifies/AnimNotifyState.h"
+#include "Subsystems/AssetEditorSubsystem.h"
 
 #define LOCTEXT_NAMESPACE "FAnimationRecorder"
 
@@ -29,6 +29,7 @@ FAnimationRecorder::FAnimationRecorder()
 	, bRecordLocalToWorld(false)
 	, bAutoSaveAsset(false)
 	, bRemoveRootTransform(true)
+	, bCheckDeltaTimeAtBeginning(true)
 	, InterpMode(ERichCurveInterpMode::RCIM_Linear)
 	, TangentMode(ERichCurveTangentMode::RCTM_Auto)
 	, AnimationSerializer(nullptr)
@@ -68,16 +69,18 @@ void FAnimationRecorder::SetSampleRateAndLength(float SampleRateHz, float Length
 	}
 }
 
-bool FAnimationRecorder::SetAnimCompressionScheme(TSubclassOf<UAnimCompress> SchemeClass)
+bool FAnimationRecorder::SetAnimCompressionScheme(UAnimBoneCompressionSettings* Settings)
 {
 	if (AnimationObject)
 	{
-		UAnimCompress* const SchemeObject = NewObject<UAnimCompress>(GetTransientPackage(), SchemeClass);
-		if (SchemeObject)
+		if (Settings == nullptr)
 		{
-			AnimationObject->CompressionScheme = SchemeObject;
-			return true;
+			// The caller has not supplied a settings asset, use our default value
+			Settings = FAnimationUtils::GetDefaultAnimationRecorderBoneCompressionSettings();
 		}
+
+		AnimationObject->BoneCompressionSettings = Settings;
+		return true;
 	}
 
 	return false;
@@ -146,7 +149,7 @@ bool FAnimationRecorder::TriggerRecordAnimation(USkeletalMeshComponent* Componen
 		Parent = CreatePackage(nullptr, *ValidatedAssetPath);
 	}
 
-	UObject* const Object = LoadObject<UObject>(Parent, *ValidatedAssetName, nullptr, LOAD_None, nullptr);
+	UObject* const Object = LoadObject<UObject>(Parent, *ValidatedAssetName, nullptr, LOAD_Quiet, nullptr);
 	// if object with same name exists, warn user
 	if (Object)
 	{
@@ -214,6 +217,7 @@ void FAnimationRecorder::StartRecord(USkeletalMeshComponent* Component, UAnimSeq
 	AnimationObject = InAnimationObject;
 
 	AnimationObject->RecycleAnimSequence();
+	AnimationObject->BoneCompressionSettings = FAnimationUtils::GetDefaultAnimationRecorderBoneCompressionSettings();
 
 	GetBoneTransforms(Component, PreviousSpacesBases);
 	PreviousAnimCurves = Component->GetAnimationCurves();
@@ -290,16 +294,6 @@ UAnimSequence* FAnimationRecorder::StopRecord(bool bShowMessage)
 
 		FixupNotifies();
 
-		// force anim settings for speed, we dont want any fancy recompression at present
-		UAnimationSettings* AnimationSettings = GetMutableDefault<UAnimationSettings>();
-		TSubclassOf<UAnimCompress> OldDefaultCompressionAlgorithm = AnimationSettings->DefaultCompressionAlgorithm;
-		TEnumAsByte<AnimationCompressionFormat> OldRotationCompressionFormat = AnimationSettings->RotationCompressionFormat;
-		TEnumAsByte<AnimationCompressionFormat> OldTranslationCompressionFormat = AnimationSettings->TranslationCompressionFormat;
-
-		AnimationSettings->DefaultCompressionAlgorithm = UAnimCompress_BitwiseCompressOnly::StaticClass();
-		AnimationSettings->RotationCompressionFormat = ACF_None;
-		AnimationSettings->TranslationCompressionFormat = ACF_None;
-
 		// post-process applies compression etc.
 		// @todo figure out why removing redundant keys is inconsistent
 
@@ -370,11 +364,6 @@ UAnimSequence* FAnimationRecorder::StopRecord(bool bShowMessage)
 		//AnimationObject->RawCurveData.RemoveRedundantKeys();
 		AnimationObject->PostProcessSequence();
 
-		// restore old settings
-		AnimationSettings->DefaultCompressionAlgorithm = OldDefaultCompressionAlgorithm;
-		AnimationSettings->RotationCompressionFormat = OldRotationCompressionFormat;
-		AnimationSettings->TranslationCompressionFormat = OldTranslationCompressionFormat;
-
 		AnimationObject->MarkPackageDirty();
 		
 		// save the package to disk, for convenience and so we can run this in standalone mode
@@ -408,7 +397,7 @@ UAnimSequence* FAnimationRecorder::StopRecord(bool bShowMessage)
 				{
 					TArray<UObject*> Assets;
 					Assets.Add(ReturnObject);
-					FAssetEditorManager::Get().OpenEditorForAssets(Assets);
+					GEditor->GetEditorSubsystem<UAssetEditorSubsystem>()->OpenEditorForAssets(Assets);
 				});
 				Info.HyperlinkText = FText::Format(LOCTEXT("OpenNewAnimationHyperlink", "Open {0}"), FText::FromString(AnimationObject->GetName()));
 				TSharedPtr<SNotificationItem> Notification = FSlateNotificationManager::Get().AddNotification(Info);
@@ -456,10 +445,14 @@ void FAnimationRecorder::UpdateRecord(USkeletalMeshComponent* Component, float D
 		return;
 	}
 
-	// in-editor we can get a long frame update because of the modal dialog used to pick paths
-	if(DeltaTime > IntervalTime && (LastFrame == 0 || LastFrame == 1))
+	// Take Recorder will turn this off, not sure if it's needed for persona animation recording or not.
+	if (bCheckDeltaTimeAtBeginning)
 	{
-		DeltaTime = IntervalTime;
+		// in-editor we can get a long frame update because of the modal dialog used to pick paths
+		if (DeltaTime > IntervalTime && (LastFrame == 0 || LastFrame == 1))
+		{
+			DeltaTime = IntervalTime;
+		}
 	}
 
 	float const PreviousTimePassed = TimePassed;
@@ -576,11 +569,12 @@ bool FAnimationRecorder::Record(USkeletalMeshComponent* Component, FTransform co
 							// we make about root motion use are incorrect.
 							// NEW. But we don't do this if there is just one root bone. This has come up with recording
 							// single bone props and cameras.
+							InitialRootTransform = LocalTransform;
 							InvInitialRootTransform = LocalTransform.Inverse();
 						}
 						else
 						{
-							InvInitialRootTransform = FTransform::Identity;
+							InitialRootTransform = InvInitialRootTransform = FTransform::Identity;
 						}
 						SkeletonRootIndex = BoneIndex;
 						break;
@@ -602,23 +596,11 @@ bool FAnimationRecorder::Record(USkeletalMeshComponent* Component, FTransform co
 				FTransform LocalTransform = SpacesBases[BoneIndex];
 				if ( ParentIndex != INDEX_NONE )
 				{
-					if (ParentIndex == SkeletonRootIndex)
-					{
-						// Remove initial root transform
-						LocalTransform.SetToRelativeTransform(SpacesBases[ParentIndex] * InvInitialRootTransform);
-					}
-					else
-					{
-						LocalTransform.SetToRelativeTransform(SpacesBases[ParentIndex]);
-					}
+					LocalTransform.SetToRelativeTransform(SpacesBases[ParentIndex]);
 				}
 				// if record local to world, we'd like to consider component to world to be in root
 				else
 				{
-					// Remove initial root transform
-					LocalTransform *= InvInitialRootTransform;
-					//LocalTransform = InvInitialRootTransform * LocalTransform;
-
 					if (bRecordLocalToWorld)
 					{
 						LocalTransform *= ComponentToWorld;
@@ -820,15 +802,15 @@ void FAnimRecorderInstance::InitInternal(USkeletalMeshComponent* InComponent, co
 	Recorder->bRecordLocalToWorld = Settings.bRecordInWorldSpace;
 	Recorder->InterpMode = Settings.InterpMode;
 	Recorder->TangentMode = Settings.TangentMode;
-	Recorder->SetAnimCompressionScheme(UAnimCompress_BitwiseCompressOnly::StaticClass());
 	Recorder->bAutoSaveAsset = Settings.bAutoSaveAsset;
 	Recorder->bRemoveRootTransform = Settings.bRemoveRootAnimation;
+	Recorder->bCheckDeltaTimeAtBeginning = Settings.bCheckDeltaTimeAtBeginning;
 	Recorder->AnimationSerializer = InAnimationSerializer;
 
 	if (InComponent)
 	{
-		CachedSkelCompForcedLodModel = InComponent->ForcedLodModel;
-		InComponent->ForcedLodModel = 1;
+		CachedSkelCompForcedLodModel = InComponent->GetForcedLOD();
+		InComponent->SetForcedLOD(1);
 
 		// turn off URO and make sure we always update even if out of view
 		bCachedEnableUpdateRateOptimizations = InComponent->bEnableUpdateRateOptimizations;
@@ -880,7 +862,7 @@ void FAnimRecorderInstance::FinishRecording(bool bShowMessage)
 	if (SkelComp.IsValid())
 	{
 		// restore force lod setting
-		SkelComp->ForcedLodModel = CachedSkelCompForcedLodModel;
+		SkelComp->SetForcedLOD(CachedSkelCompForcedLodModel);
 
 		// restore update flags
 		SkelComp->bEnableUpdateRateOptimizations = bCachedEnableUpdateRateOptimizations;
@@ -1028,6 +1010,18 @@ float FAnimationRecorderManager::GetCurrentRecordingTime(USkeletalMeshComponent*
 	}
 
 	return 0.0f;
+}
+
+const FTransform&  FAnimationRecorderManager::GetInitialRootTransform(USkeletalMeshComponent* Component) const
+{
+	for (const FAnimRecorderInstance& Instance : RecorderInstances)
+	{
+		if (Instance.SkelComp == Component)
+		{
+			return Instance.Recorder->GetInitialRootTransform();
+		}
+	}
+	return FTransform::Identity;
 }
 
 void FAnimationRecorderManager::StopRecordingAnimation(USkeletalMeshComponent* Component, bool bShowMessage)

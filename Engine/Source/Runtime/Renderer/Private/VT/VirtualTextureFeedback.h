@@ -1,9 +1,9 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
 #include "CoreMinimal.h"
-#include "RenderTargetPool.h"
+#include "RenderCore/Public/RenderTargetPool.h"
 
 /*
 ====================================
@@ -14,26 +14,78 @@
 	a GPU structured buffer to a CPU read only version.
 ====================================
 */
-class FVirtualTextureFeedback : public FRenderResource
+class FVirtualTextureFeedback
 {
 public:
-					FVirtualTextureFeedback();
-					~FVirtualTextureFeedback() {}
+	FVirtualTextureFeedback();
+	~FVirtualTextureFeedback();
 
-	// FRenderResource interface
-	virtual void	InitDynamicRHI() override;
-	virtual void	ReleaseDynamicRHI() override;
+	static const uint32 TargetCapacity = 4u;
+	static const uint32 MaxRectPerTarget = 4u;
 
-	void			CreateResourceGPU( FRHICommandListImmediate& RHICmdList, int32 SizeX, int32 SizeY );
-	void			TransferGPUToCPU( FRHICommandListImmediate& RHICmdList );
+	struct MapResult
+	{
+		TArray<uint32> Buffer;
+		int32 Pitch;
+		int32 NumRects;
+		FIntRect Rects[MaxRectPerTarget];
+	};
 
-	uint32*			Map( FRHICommandListImmediate& RHICmdList, int32& Pitch );
-	void			Unmap( FRHICommandListImmediate& RHICmdList );
+	FVertexBufferRHIRef FeedbackBuffer;
+	FUnorderedAccessViewRHIRef FeedbackBufferUAV;
 
-	FIntPoint		Size;
+	void			CreateResourceGPU(FRHICommandListImmediate& RHICmdList, FIntPoint InSize);
+	void			ReleaseResources();
 
-	TRefCountPtr< IPooledRenderTarget >	FeedbackTextureGPU;
-	TRefCountPtr< IPooledRenderTarget >	FeedbackTextureCPU;
+	void			TransferGPUToCPU(FRHICommandListImmediate& RHICmdList, TArrayView<FIntRect> const& ViewRects);
+
+	uint32			GetPendingTargetCount() const { return PendingTargetCount; }
+	uint32			GetFeedbackStride() const { return (uint32)Size.X; }
+
+	bool			CanMap(FRHICommandListImmediate& RHICmdList);
+	bool			Map(FRHICommandListImmediate& RHICmdList, MapResult& OutResult);
+
+private:
+	struct FFeedBackItem
+	{
+		int32 NumRects;
+		FIntRect Rects[MaxRectPerTarget];
+		FRHIGPUMask GPUMask;
+		FStagingBufferRHIRef ReadbackBuffer;
+	};
+
+	FFeedBackItem FeedbackCPU[TargetCapacity];
+
+	class FFeedbackFences* FeedBackFences;
+
+	FIntPoint Size;
+	uint32 NumBytes;
+
+	uint32 GPUWriteIndex;
+	uint32 CPUReadIndex;
+	uint32 PendingTargetCount;
 };
 
-extern TGlobalResource< FVirtualTextureFeedback > GVirtualTextureFeedback;
+
+/* Dummy resource for VT feedback, used to bypass UB validation errors when VT is disabled */
+class FVirtualTextureFeedbackDummyResource : public FRenderResource
+{
+public:
+	FVertexBufferRHIRef			VertexBufferRHI;
+	FUnorderedAccessViewRHIRef	UAV;
+
+	virtual void InitRHI() override
+	{
+		FRHIResourceCreateInfo CreateInfo(TEXT("VTFeedbackDummy"));
+		VertexBufferRHI = RHICreateVertexBuffer(4, BUF_Static | BUF_ShaderResource | BUF_UnorderedAccess, CreateInfo);
+		UAV = RHICreateUnorderedAccessView(VertexBufferRHI, /*Format=*/ PF_R32_UINT);
+	}
+	virtual void ReleaseRHI() override
+	{
+		UAV.SafeRelease();
+		VertexBufferRHI.SafeRelease();
+	}
+};
+
+extern TGlobalResource<FVirtualTextureFeedbackDummyResource> GVirtualTextureFeedbackDummyResource;
+

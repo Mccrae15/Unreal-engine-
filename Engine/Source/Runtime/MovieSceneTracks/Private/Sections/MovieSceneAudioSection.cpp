@@ -1,6 +1,7 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "Sections/MovieSceneAudioSection.h"
+#include "Tracks/MovieSceneAudioTrack.h"
 #include "Sound/SoundBase.h"
 #include "Evaluation/MovieSceneAudioTemplate.h"
 #include "UObject/SequencerObjectVersion.h"
@@ -16,9 +17,10 @@ struct FAudioChannelEditorData
 	{
 		Data[0].SetIdentifiers("Volume", NSLOCTEXT("MovieSceneAudioSection", "SoundVolumeText", "Volume"));
 		Data[1].SetIdentifiers("Pitch", NSLOCTEXT("MovieSceneAudioSection", "PitchText", "Pitch"));
+		Data[2].SetIdentifiers("AttachActor", NSLOCTEXT("MovieSceneAudioSection", "AttachActorText", "Attach"));
 	}
 
-	FMovieSceneChannelMetaData Data[2];
+	FMovieSceneChannelMetaData Data[3];
 };
 
 #endif // WITH_EDITOR
@@ -38,6 +40,7 @@ UMovieSceneAudioSection::UMovieSceneAudioSection( const FObjectInitializer& Obje
 	AudioVolume_DEPRECATED = AudioDeprecatedMagicNumber;
 	bSuppressSubtitles = false;
 	bOverrideAttenuation = false;
+	BlendType = EMovieSceneBlendType::Absolute;
 
 	EvalOptions.EnableAndSetCompletionMode
 		(GetLinkerCustomVersion(FSequencerObjectVersion::GUID) < FSequencerObjectVersion::WhenFinishedDefaultsToProjectDefault ? 
@@ -47,23 +50,56 @@ UMovieSceneAudioSection::UMovieSceneAudioSection( const FObjectInitializer& Obje
 	SoundVolume.SetDefault(1.f);
 	PitchMultiplier.SetDefault(1.f);
 
+	UpdateChannelProxy();
+}
+
+void UMovieSceneAudioSection::UpdateChannelProxy()
+{
 	// Set up the channel proxy
 	FMovieSceneChannelProxyData Channels;
 
+	UMovieSceneAudioTrack* AudioTrack = Cast<UMovieSceneAudioTrack>(GetOuter());
+
 #if WITH_EDITOR
 
-	static const FAudioChannelEditorData EditorData;
+	FAudioChannelEditorData EditorData;
 	Channels.Add(SoundVolume,     EditorData.Data[0], TMovieSceneExternalValue<float>());
 	Channels.Add(PitchMultiplier, EditorData.Data[1], TMovieSceneExternalValue<float>());
+
+	if (AudioTrack && AudioTrack->IsAMasterTrack())
+	{
+		Channels.Add(AttachActorData, EditorData.Data[2]);
+	}
 
 #else
 
 	Channels.Add(SoundVolume);
 	Channels.Add(PitchMultiplier);
+	if (AudioTrack && AudioTrack->IsAMasterTrack())
+	{
+		Channels.Add(AttachActorData);
+	}
 
 #endif
 
 	ChannelProxy = MakeShared<FMovieSceneChannelProxy>(MoveTemp(Channels));
+}
+
+void UMovieSceneAudioSection::Serialize(FArchive& Ar)
+{
+	Super::Serialize(Ar);
+
+	if (Ar.IsLoading())
+	{
+		UpdateChannelProxy();
+	}
+}
+
+void UMovieSceneAudioSection::PostEditImport()
+{
+	Super::PostEditImport();
+
+	UpdateChannelProxy();
 }
 
 FMovieSceneEvalTemplatePtr UMovieSceneAudioSection::GenerateTemplate() const
@@ -117,8 +153,10 @@ void UMovieSceneAudioSection::PostLoad()
 
 	if (StartOffsetToUpgrade.IsSet())
 	{
-		FFrameNumber StartFrame = UpgradeLegacyMovieSceneTime(this, LegacyFrameRate, StartOffsetToUpgrade.GetValue());
-		StartFrameOffset = StartFrame.Value;
+		FFrameRate DisplayRate = GetTypedOuter<UMovieScene>()->GetDisplayRate();
+		FFrameRate TickResolution = GetTypedOuter<UMovieScene>()->GetTickResolution();
+
+		StartFrameOffset = ConvertFrameTime(FFrameTime::FromDecimal(DisplayRate.AsDecimal() * StartOffsetToUpgrade.GetValue()), DisplayRate, TickResolution).FrameNumber;
 	}
 }
 
@@ -153,7 +191,7 @@ TOptional<TRange<FFrameNumber> > UMovieSceneAudioSection::GetAutoSizeRange() con
 }
 
 	
-void UMovieSceneAudioSection::TrimSection(FQualifiedFrameTime TrimTime, bool bTrimLeft)
+void UMovieSceneAudioSection::TrimSection(FQualifiedFrameTime TrimTime, bool bTrimLeft, bool bDeleteKeys)
 {
 	SetFlags(RF_Transactional);
 
@@ -164,19 +202,72 @@ void UMovieSceneAudioSection::TrimSection(FQualifiedFrameTime TrimTime, bool bTr
 			StartFrameOffset = HasStartFrame() ? GetStartOffsetAtTrimTime(TrimTime, StartFrameOffset, GetInclusiveStartFrame()) : 0;
 		}
 
-		Super::TrimSection(TrimTime, bTrimLeft);
+		Super::TrimSection(TrimTime, bTrimLeft, bDeleteKeys);
 	}
 }
 
-UMovieSceneSection* UMovieSceneAudioSection::SplitSection(FQualifiedFrameTime SplitTime)
+UMovieSceneSection* UMovieSceneAudioSection::SplitSection(FQualifiedFrameTime SplitTime, bool bDeleteKeys)
 {
+	const FFrameNumber InitialStartFrameOffset = StartFrameOffset;
+
 	const FFrameNumber NewOffset = HasStartFrame() ? GetStartOffsetAtTrimTime(SplitTime, StartFrameOffset, GetInclusiveStartFrame()) : 0;
 
-	UMovieSceneSection* NewSection = Super::SplitSection(SplitTime);
+	UMovieSceneSection* NewSection = Super::SplitSection(SplitTime, bDeleteKeys);
 	if (NewSection != nullptr)
 	{
 		UMovieSceneAudioSection* NewAudioSection = Cast<UMovieSceneAudioSection>(NewSection);
 		NewAudioSection->StartFrameOffset = NewOffset;
 	}
+
+	// Restore original offset modified by splitting
+	StartFrameOffset = InitialStartFrameOffset;
+
 	return NewSection;
 }
+
+
+USceneComponent* UMovieSceneAudioSection::GetAttachComponent(const AActor* InParentActor, const FMovieSceneActorReferenceKey& Key) const
+{
+	FName AttachComponentName = Key.ComponentName;
+	FName AttachSocketName = Key.SocketName;
+
+	if (AttachSocketName != NAME_None)
+	{
+		if (AttachComponentName != NAME_None)
+		{
+			TInlineComponentArray<USceneComponent*> PotentialAttachComponents(InParentActor);
+			for (USceneComponent* PotentialAttachComponent : PotentialAttachComponents)
+			{
+				if (PotentialAttachComponent->GetFName() == AttachComponentName && PotentialAttachComponent->DoesSocketExist(AttachSocketName))
+				{
+					return PotentialAttachComponent;
+				}
+			}
+		}
+		else if (InParentActor->GetRootComponent()->DoesSocketExist(AttachSocketName))
+		{
+			return InParentActor->GetRootComponent();
+		}
+	}
+	else if (AttachComponentName != NAME_None)
+	{
+		TInlineComponentArray<USceneComponent*> PotentialAttachComponents(InParentActor);
+		for (USceneComponent* PotentialAttachComponent : PotentialAttachComponents)
+		{
+			if (PotentialAttachComponent->GetFName() == AttachComponentName)
+			{
+				return PotentialAttachComponent;
+			}
+		}
+	}
+
+	if (InParentActor->GetDefaultAttachComponent())
+	{
+		return InParentActor->GetDefaultAttachComponent();
+	}
+	else
+	{
+		return InParentActor->GetRootComponent();
+	}
+}
+

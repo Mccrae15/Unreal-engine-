@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 /*=============================================================================
 	UnrealEngine.h: Unreal engine helper definitions.
@@ -55,15 +55,15 @@ public:
 		++Iter;
 		GetCurrent();
 	}
-	ULocalPlayer* operator*()
+	ULocalPlayer* operator*() const
 	{
 		return *Iter;
 	}
-	ULocalPlayer* operator->()
+	ULocalPlayer* operator->() const
 	{
 		return *Iter;
 	}
-	operator bool()
+	explicit operator bool() const
 	{
 		return (bool)Iter;
 	}
@@ -112,15 +112,15 @@ public:
 	{
 		Next();
 	}
-	T* operator*()
+	T* operator*() const
 	{
 		return Current;
 	}
-	T* operator->()
+	T* operator->() const
 	{
 		return Current;
 	}
-	operator bool()
+	explicit operator bool() const
 	{
 		return (Current!=NULL);
 	}
@@ -299,25 +299,35 @@ private:
 
 
 /** Delegate for switching between PIE and Editor worlds without having access to them */
-DECLARE_DELEGATE_OneParam( FOnSwitchWorldForPIE, bool );
+DECLARE_DELEGATE_TwoParams( FOnSwitchWorldForPIE, bool, UWorld* );
 
 #if WITH_EDITOR
 /**
- * When created, tells the viewport client to set the appropriate GWorld
- * When destroyed, tells the viewport client to reset the GWorld back to what it was
+ * When created, switches global context to a PIE world
+ * When destroyed, resets the GWorld back to what it was before
  */
 class ENGINE_API FScopedConditionalWorldSwitcher
 {
 public:
+	/** Use the viewport to figure out what world to set temporarily */
 	FScopedConditionalWorldSwitcher( class FViewportClient* InViewportClient );
+
+	/** Explicitly set to the specific world */
+	FScopedConditionalWorldSwitcher( UWorld* InWorld );
+
+	/** Resets back to initial world */
 	~FScopedConditionalWorldSwitcher();
 
 	/** Delegate to call to switch worlds for PIE viewports.  Is not called when simulating (non-gameviewportclient) */
 	static FOnSwitchWorldForPIE SwitchWorldForPIEDelegate;
 private:
+	/** Called by constructors to do actual switch */
+	void ConditionalSwitchWorld( class FViewportClient* InViewportClient, UWorld* InWorld );
+
 	/** Viewport client used to set the world */
 	FViewportClient* ViewportClient;
-	/** World to reset when this is destoyed.  Can be null if nothing needs to be reset */	
+
+	/** World to reset when this is destroyed.  Can be null if nothing needs to be reset */
 	UWorld* OldWorld;
 };
 #else
@@ -325,7 +335,8 @@ private:
 class ENGINE_API FScopedConditionalWorldSwitcher
 {
 public:
-	FScopedConditionalWorldSwitcher( class FViewportClient* InViewportClient ){}
+	FScopedConditionalWorldSwitcher( class FViewportClient* InViewportClient ) {}
+	FScopedConditionalWorldSwitcher( UWorld* InWorld ) {}
 	~FScopedConditionalWorldSwitcher() {}
 };
 
@@ -446,7 +457,7 @@ protected:
 	friend void ScalabilityCVarsSinkCallback();
 };
 
-ENGINE_API bool AllowHighQualityLightmaps(ERHIFeatureLevel::Type FeatureLevel);
+ENGINE_API bool AllowHighQualityLightmaps(const FStaticFeatureLevel FeatureLevel);
 
 ENGINE_API const FCachedSystemScalabilityCVars& GetCachedScalabilityCVars();
 
@@ -480,3 +491,19 @@ struct ENGINE_API FSystemResolution
 
 ENGINE_API extern FSystemResolution GSystemResolution;
 ENGINE_API extern int32 GUnbuiltHLODCount;
+
+// Update the debugging aid GPlayInEditorContextString based on the current world context (does nothing in WITH_EDITOR=0 builds)
+ENGINE_API void UpdatePlayInEditorWorldDebugString(const FWorldContext* WorldContext);
+
+// Used to temporarily override GPlayInEditorID, correctly updating the debug string and other state as necessary
+struct ENGINE_API FTemporaryPlayInEditorIDOverride
+{
+public:
+	FTemporaryPlayInEditorIDOverride(int32 NewOverrideID);
+	~FTemporaryPlayInEditorIDOverride();
+
+private:
+	int32 PreviousID;
+
+	void SetID(int32 NewID);
+};

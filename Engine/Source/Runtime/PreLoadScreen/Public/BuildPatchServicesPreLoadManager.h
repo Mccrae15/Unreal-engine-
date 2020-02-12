@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -16,10 +16,10 @@ public:
     virtual void Init();
     
     //Setup BPT with everything now loaded
-    virtual void StartBuildPatchServices(BuildPatchServices::FInstallerConfiguration Settings);
+    virtual void StartBuildPatchServices(BuildPatchServices::FBuildInstallerConfiguration Settings);
 
     //BPT finished
-    virtual void OnContentBuildInstallerComplete(bool bInstallSuccess, IBuildManifestRef InstallationManifest);
+    virtual void OnContentBuildInstallerComplete(const IBuildInstallerRef& Installer);
 
     virtual bool IsDone() const;
 

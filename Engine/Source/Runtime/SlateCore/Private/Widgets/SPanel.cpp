@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "Widgets/SPanel.h"
 #include "Types/PaintArgs.h"
@@ -29,6 +29,10 @@ int32 SPanel::PaintArrangedChildren( const FPaintArgs& Args, const FArrangedChil
 		{
 			const int32 CurWidgetsMaxLayerId = CurWidget.Widget->Paint(NewArgs, CurWidget.Geometry, MyCullingRect, OutDrawElements, LayerId, InWidgetStyle, bShouldBeEnabled);
 			MaxLayerId = FMath::Max(MaxLayerId, CurWidgetsMaxLayerId);
+		}
+		else
+		{
+			//SlateGI - RemoveContent
 		}
 	}
 	

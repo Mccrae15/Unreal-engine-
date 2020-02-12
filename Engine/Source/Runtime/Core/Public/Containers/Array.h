@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -6,19 +6,23 @@
 #include "Misc/AssertionMacros.h"
 #include "HAL/UnrealMemory.h"
 #include "Templates/AreTypesEqual.h"
+#include "Templates/IsSigned.h"
 #include "Templates/UnrealTypeTraits.h"
 #include "Templates/UnrealTemplate.h"
 #include "Containers/ContainerAllocationPolicies.h"
 #include "Serialization/Archive.h"
+#include "Serialization/MemoryImageWriter.h"
 
 #include "Algo/Heapify.h"
 #include "Algo/HeapSort.h"
 #include "Algo/IsHeap.h"
 #include "Algo/Impl/BinaryHeap.h"
+#include "Templates/AndOrNot.h"
 #include "Templates/IdentityFunctor.h"
 #include "Templates/Less.h"
 #include "Templates/ChooseClass.h"
 #include "Templates/Sorting.h"
+#include "Templates/AlignmentTemplates.h"
 
 
 #if UE_BUILD_SHIPPING || UE_BUILD_TEST
@@ -27,19 +31,25 @@
 	#define TARRAY_RANGED_FOR_CHECKS 1
 #endif
 
+template <typename T> struct TCanBulkSerialize { enum { Value = false }; };
+template<> struct TCanBulkSerialize<unsigned int> { enum { Value = true }; };
+template<> struct TCanBulkSerialize<unsigned short> { enum { Value = true }; };
+template<> struct TCanBulkSerialize<int> { enum { Value = true }; };
+
+
 /**
  * Generic iterator which can operate on types that expose the following:
  * - A type called ElementType representing the contained type.
- * - A method IndexType Num() const that returns the number of items in the container.
- * - A method bool IsValidIndex(IndexType index) which returns whether a given index is valid in the container.
- * - A method T& operator\[\](IndexType index) which returns a reference to a contained object by index.
- * - A method void RemoveAt(IndexType index) which removes the element at index
+ * - A method SizeType Num() const that returns the number of items in the container.
+ * - A method bool IsValidIndex(SizeType index) which returns whether a given index is valid in the container.
+ * - A method T& operator\[\](SizeType index) which returns a reference to a contained object by index.
+ * - A method void RemoveAt(SizeType index) which removes the element at index
  */
-template< typename ContainerType, typename ElementType, typename IndexType>
+template< typename ContainerType, typename ElementType, typename SizeType>
 class TIndexedContainerIterator
 {
 public:
-	TIndexedContainerIterator(ContainerType& InContainer, IndexType StartIndex = 0)
+	TIndexedContainerIterator(ContainerType& InContainer, SizeType StartIndex = 0)
 		: Container(InContainer)
 		, Index    (StartIndex)
 	{
@@ -72,24 +82,24 @@ public:
 	}
 
 	/** iterator arithmetic support */
-	TIndexedContainerIterator& operator+=(int32 Offset)
+	TIndexedContainerIterator& operator+=(SizeType Offset)
 	{
 		Index += Offset;
 		return *this;
 	}
 
-	TIndexedContainerIterator operator+(int32 Offset) const
+	TIndexedContainerIterator operator+(SizeType Offset) const
 	{
 		TIndexedContainerIterator Tmp(*this);
 		return Tmp += Offset;
 	}
 
-	TIndexedContainerIterator& operator-=(int32 Offset)
+	TIndexedContainerIterator& operator-=(SizeType Offset)
 	{
 		return *this += -Offset;
 	}
 
-	TIndexedContainerIterator operator-(int32 Offset) const
+	TIndexedContainerIterator operator-(SizeType Offset) const
 	{
 		TIndexedContainerIterator Tmp(*this);
 		return Tmp -= Offset;
@@ -112,7 +122,7 @@ public:
 	}
 
 	/** Returns an index to the current element. */
-	IndexType GetIndex() const
+	SizeType GetIndex() const
 	{
 		return Index;
 	}
@@ -142,13 +152,13 @@ public:
 private:
 
 	ContainerType& Container;
-	IndexType      Index;
+	SizeType      Index;
 };
 
 
 /** operator + */
-template <typename ContainerType, typename ElementType, typename IndexType>
-FORCEINLINE TIndexedContainerIterator<ContainerType, ElementType, IndexType> operator+(int32 Offset, TIndexedContainerIterator<ContainerType, ElementType, IndexType> RHS)
+template <typename ContainerType, typename ElementType, typename SizeType>
+FORCEINLINE TIndexedContainerIterator<ContainerType, ElementType, SizeType> operator+(SizeType Offset, TIndexedContainerIterator<ContainerType, ElementType, SizeType> RHS)
 {
 	return RHS + Offset;
 }
@@ -159,7 +169,7 @@ FORCEINLINE TIndexedContainerIterator<ContainerType, ElementType, IndexType> ope
 	 * Pointer-like iterator type for ranged-for loops which checks that the
 	 * container hasn't been resized during iteration.
 	 */
-	template <typename ElementType>
+	template <typename ElementType, typename SizeType>
 	struct TCheckedPointerIterator
 	{
 		// This iterator type only supports the minimal functionality needed to support
@@ -167,7 +177,7 @@ FORCEINLINE TIndexedContainerIterator<ContainerType, ElementType, IndexType> ope
 		//
 		// We do add an operator-- to help FString implementation
 
-		explicit TCheckedPointerIterator(const int32& InNum, ElementType* InPtr)
+		explicit TCheckedPointerIterator(const SizeType& InNum, ElementType* InPtr)
 			: Ptr       (InPtr)
 			, CurrentNum(InNum)
 			, InitialNum(InNum)
@@ -192,9 +202,9 @@ FORCEINLINE TIndexedContainerIterator<ContainerType, ElementType, IndexType> ope
 		}
 
 	private:
-		ElementType* Ptr;
-		const int32& CurrentNum;
-		int32        InitialNum;
+		ElementType*    Ptr;
+		const SizeType& CurrentNum;
+		SizeType        InitialNum;
 
 		FORCEINLINE friend bool operator!=(const TCheckedPointerIterator& Lhs, const TCheckedPointerIterator& Rhs)
 		{
@@ -251,7 +261,7 @@ namespace UE4Array_Private
 		enum
 		{
 			Value =
-				TAreTypesEqual<FromAllocatorType, ToAllocatorType>::Value && // Allocators must be equal
+				TOr<TAreTypesEqual<FromAllocatorType, ToAllocatorType>, TCanMoveBetweenAllocators<FromAllocatorType, ToAllocatorType>>::Value && // Allocators must be equal or move-compatible
 				TContainerTraits<FromArrayType>::MoveWillEmptyContainer &&   // A move must be allowed to leave the source array empty
 				(
 					TAreTypesEqual         <ToElementType, FromElementType>::Value || // The element type of the container must be the same, or...
@@ -280,16 +290,24 @@ class TArray
 	friend class TArray;
 
 public:
-
+	typedef typename InAllocator::SizeType SizeType;
 	typedef InElementType ElementType;
 	typedef InAllocator   Allocator;
+
+	typedef typename TChooseClass<
+		Allocator::NeedsElementType,
+		typename Allocator::template ForElementType<ElementType>,
+		typename Allocator::ForAnyElementType
+	>::Result ElementAllocatorType;
+
+	static_assert(TIsSigned<SizeType>::Value, "TArray only supports signed index types");
 
 	/**
 	 * Constructor, initializes element number counters.
 	 */
 	FORCEINLINE TArray()
 		: ArrayNum(0)
-		, ArrayMax(0)
+		, ArrayMax(AllocatorInstance.GetInitialCapacity())
 	{}
 
 	/**
@@ -299,12 +317,15 @@ public:
 	 * @param Count The number of elements to copy from Ptr.
 	 * @see Append
 	 */
-	FORCEINLINE TArray(const ElementType* Ptr, int32 Count)
+	FORCEINLINE TArray(const ElementType* Ptr, SizeType Count)
 	{
 		check(Ptr != nullptr || Count == 0);
 
 		CopyToEmpty(Ptr, Count, 0, 0);
 	}
+
+	template <typename OtherElementType>
+	explicit TArray(const TArrayView<OtherElementType>& Other);
 
 	/**
 	 * Initializer list constructor
@@ -314,7 +335,7 @@ public:
 		// This is not strictly legal, as std::initializer_list's iterators are not guaranteed to be pointers, but
 		// this appears to be the case on all of our implementations.  Also, if it's not true on a new implementation,
 		// it will fail to compile rather than behave badly.
-		CopyToEmpty(InitList.begin(), (int32)InitList.size(), 0, 0);
+		CopyToEmpty(InitList.begin(), (SizeType)InitList.size(), 0, 0);
 	}
 
 	/**
@@ -345,7 +366,7 @@ public:
 	 * @param ExtraSlack Tells how much extra memory should be preallocated
 	 *                   at the end of the array in the number of elements.
 	 */
-	FORCEINLINE TArray(const TArray& Other, int32 ExtraSlack)
+	FORCEINLINE TArray(const TArray& Other, SizeType ExtraSlack)
 	{
 		CopyToEmpty(Other.GetData(), Other.Num(), 0, ExtraSlack);
 	}
@@ -362,7 +383,7 @@ public:
 		// This is not strictly legal, as std::initializer_list's iterators are not guaranteed to be pointers, but
 		// this appears to be the case on all of our implementations.  Also, if it's not true on a new implementation,
 		// it will fail to compile rather than behave badly.
-		CopyToEmpty(InitList.begin(), (int32)InitList.size(), ArrayMax, 0);
+		CopyToEmpty(InitList.begin(), (SizeType)InitList.size(), ArrayMax, 0);
 		return *this;
 	}
 
@@ -398,7 +419,31 @@ public:
 		return *this;
 	}
 
+	template <typename OtherElementType>
+	TArray& operator=(const TArrayView<OtherElementType>& Other);
+
 private:
+#if !PLATFORM_COMPILER_HAS_IF_CONSTEXPR
+	template <
+		typename FromArrayType,
+		typename ToArrayType,
+		typename TEnableIf<TCanMoveBetweenAllocators<typename FromArrayType::Allocator, typename ToArrayType::Allocator>::Value>::Type* = nullptr
+	>
+	static FORCEINLINE void MoveAllocatorToEmpty(FromArrayType& FromArray, ToArrayType& ToArray)
+	{
+		ToArray.AllocatorInstance.template MoveToEmptyFromOtherAllocator<typename FromArrayType::Allocator>(FromArray.AllocatorInstance);
+	}
+
+	template <
+		typename FromArrayType,
+		typename ToArrayType,
+		typename TEnableIf<!TCanMoveBetweenAllocators<typename FromArrayType::Allocator, typename ToArrayType::Allocator>::Value>::Type* = nullptr
+	>
+	static FORCEINLINE void MoveAllocatorToEmpty(FromArrayType& FromArray, ToArrayType& ToArray)
+	{
+		ToArray.AllocatorInstance.MoveToEmpty(FromArray.AllocatorInstance);
+	}
+#endif
 
 	/**
 	 * Moves or copies array. Depends on the array type traits.
@@ -409,14 +454,32 @@ private:
 	 * @param FromArray Array to move from.
 	 */
 	template <typename FromArrayType, typename ToArrayType>
-	static FORCEINLINE typename TEnableIf<UE4Array_Private::TCanMoveTArrayPointersBetweenArrayTypes<FromArrayType, ToArrayType>::Value>::Type MoveOrCopy(ToArrayType& ToArray, FromArrayType& FromArray, int32 PrevMax)
+	static FORCEINLINE typename TEnableIf<UE4Array_Private::TCanMoveTArrayPointersBetweenArrayTypes<FromArrayType, ToArrayType>::Value>::Type MoveOrCopy(ToArrayType& ToArray, FromArrayType& FromArray, SizeType PrevMax)
 	{
-		ToArray.AllocatorInstance.MoveToEmpty(FromArray.AllocatorInstance);
+		using FromAllocatorType = typename FromArrayType::Allocator;
+		using ToAllocatorType   = typename ToArrayType::Allocator;
+
+#if PLATFORM_COMPILER_HAS_IF_CONSTEXPR
+		if constexpr (TCanMoveBetweenAllocators<FromAllocatorType, ToAllocatorType>::Value)
+		{
+			ToArray.AllocatorInstance.template MoveToEmptyFromOtherAllocator<FromAllocatorType>(FromArray.AllocatorInstance);
+		}
+		else
+		{
+			ToArray.AllocatorInstance.MoveToEmpty(FromArray.AllocatorInstance);
+		}
+#else
+		MoveAllocatorToEmpty(FromArray, ToArray);
+#endif
 
 		ToArray  .ArrayNum = FromArray.ArrayNum;
 		ToArray  .ArrayMax = FromArray.ArrayMax;
+
+		// Ensure the destination container could hold the source range (when the allocator size types shrink)
+		checkf(ToArray.ArrayNum == FromArray.ArrayNum && ToArray.ArrayMax == FromArray.ArrayMax, TEXT("Data lost when moving to a container with a more constrained size type"));
+
 		FromArray.ArrayNum = 0;
-		FromArray.ArrayMax = 0;
+		FromArray.ArrayMax = FromArray.AllocatorInstance.GetInitialCapacity();
 	}
 
 	/**
@@ -430,7 +493,7 @@ private:
 	 *                   at the end of the array in the number of elements.
 	 */
 	template <typename FromArrayType, typename ToArrayType>
-	static FORCEINLINE typename TEnableIf<!UE4Array_Private::TCanMoveTArrayPointersBetweenArrayTypes<FromArrayType, ToArrayType>::Value>::Type MoveOrCopy(ToArrayType& ToArray, FromArrayType& FromArray, int32 PrevMax)
+	static FORCEINLINE typename TEnableIf<!UE4Array_Private::TCanMoveTArrayPointersBetweenArrayTypes<FromArrayType, ToArrayType>::Value>::Type MoveOrCopy(ToArrayType& ToArray, FromArrayType& FromArray, SizeType PrevMax)
 	{
 		ToArray.CopyToEmpty(FromArray.GetData(), FromArray.Num(), PrevMax, 0);
 	}
@@ -446,7 +509,7 @@ private:
 	 *                   at the end of the array in the number of elements.
 	 */
 	template <typename FromArrayType, typename ToArrayType>
-	static FORCEINLINE typename TEnableIf<UE4Array_Private::TCanMoveTArrayPointersBetweenArrayTypes<FromArrayType, ToArrayType>::Value>::Type MoveOrCopyWithSlack(ToArrayType& ToArray, FromArrayType& FromArray, int32 PrevMax, int32 ExtraSlack)
+	static FORCEINLINE typename TEnableIf<UE4Array_Private::TCanMoveTArrayPointersBetweenArrayTypes<FromArrayType, ToArrayType>::Value>::Type MoveOrCopyWithSlack(ToArrayType& ToArray, FromArrayType& FromArray, SizeType PrevMax, SizeType ExtraSlack)
 	{
 		MoveOrCopy(ToArray, FromArray, PrevMax);
 
@@ -464,7 +527,7 @@ private:
 	 *                   at the end of the array in the number of elements.
 	 */
 	template <typename FromArrayType, typename ToArrayType>
-	static FORCEINLINE typename TEnableIf<!UE4Array_Private::TCanMoveTArrayPointersBetweenArrayTypes<FromArrayType, ToArrayType>::Value>::Type MoveOrCopyWithSlack(ToArrayType& ToArray, FromArrayType& FromArray, int32 PrevMax, int32 ExtraSlack)
+	static FORCEINLINE typename TEnableIf<!UE4Array_Private::TCanMoveTArrayPointersBetweenArrayTypes<FromArrayType, ToArrayType>::Value>::Type MoveOrCopyWithSlack(ToArrayType& ToArray, FromArrayType& FromArray, SizeType PrevMax, SizeType ExtraSlack)
 	{
 		ToArray.CopyToEmpty(FromArray.GetData(), FromArray.Num(), PrevMax, ExtraSlack);
 	}
@@ -499,7 +562,7 @@ public:
 	 *                   at the end of the array in the number of elements.
 	 */
 	template <typename OtherElementType>
-	TArray(TArray<OtherElementType, Allocator>&& Other, int32 ExtraSlack)
+	TArray(TArray<OtherElementType, Allocator>&& Other, SizeType ExtraSlack)
 	{
 		// We don't implement move semantics for general OtherAllocators, as there's no way
 		// to tell if they're compatible with the current one.  Probably going to be a pretty
@@ -572,7 +635,7 @@ public:
 	 *
 	 * @returns Number of bytes allocated by this container.
 	 */
-	FORCEINLINE uint32 GetAllocatedSize(void) const
+	FORCEINLINE SIZE_T GetAllocatedSize(void) const
 	{
 		return AllocatorInstance.GetAllocatedSize(ArrayMax, sizeof(ElementType));
 	}
@@ -582,7 +645,7 @@ public:
 	 *
 	 * @see Num, Shrink
 	 */
-	FORCEINLINE int32 GetSlack() const
+	FORCEINLINE SizeType GetSlack() const
 	{
 		return ArrayMax - ArrayNum;
 	}
@@ -601,7 +664,7 @@ public:
 	 *
 	 * @param Index Index to check.
 	 */
-	FORCEINLINE void RangeCheck(int32 Index) const
+	FORCEINLINE void RangeCheck(SizeType Index) const
 	{
 		CheckInvariants();
 
@@ -618,7 +681,7 @@ public:
 	 * @param Index Index to test.
 	 * @returns True if index is valid. False otherwise.
 	 */
-	FORCEINLINE bool IsValidIndex(int32 Index) const
+	FORCEINLINE bool IsValidIndex(SizeType Index) const
 	{
 		return Index >= 0 && Index < ArrayNum;
 	}
@@ -629,7 +692,7 @@ public:
 	 * @returns Number of elements in array.
 	 * @see GetSlack
 	 */
-	FORCEINLINE int32 Num() const
+	FORCEINLINE SizeType Num() const
 	{
 		return ArrayNum;
 	}
@@ -640,7 +703,7 @@ public:
 	 * @returns Maximum number of elements in array.
 	 * @see GetSlack
 	 */
-	FORCEINLINE int32 Max() const
+	FORCEINLINE SizeType Max() const
 	{
 		return ArrayMax;
 	}
@@ -650,7 +713,7 @@ public:
 	 *
 	 * @returns Reference to indexed element.
 	 */
-	FORCEINLINE ElementType& operator[](int32 Index)
+	FORCEINLINE ElementType& operator[](SizeType Index)
 	{
 		RangeCheck(Index);
 		return GetData()[Index];
@@ -663,7 +726,7 @@ public:
 	 *
 	 * @returns Reference to indexed element.
 	 */
-	FORCEINLINE const ElementType& operator[](int32 Index) const
+	FORCEINLINE const ElementType& operator[](SizeType Index) const
 	{
 		RangeCheck(Index);
 		return GetData()[Index];
@@ -736,7 +799,7 @@ public:
 	 * @param IndexFromTheEnd (Optional) Index from the end of array (default = 0).
 	 * @returns Reference to n-th last element from the array.
 	 */
-	FORCEINLINE ElementType& Last(int32 IndexFromTheEnd = 0)
+	FORCEINLINE ElementType& Last(SizeType IndexFromTheEnd = 0)
 	{
 		RangeCheck(ArrayNum - IndexFromTheEnd - 1);
 		return GetData()[ArrayNum - IndexFromTheEnd - 1];
@@ -750,7 +813,7 @@ public:
 	 * @param IndexFromTheEnd (Optional) Index from the end of array (default = 0).
 	 * @returns Reference to n-th last element from the array.
 	 */
-	FORCEINLINE const ElementType& Last(int32 IndexFromTheEnd = 0) const
+	FORCEINLINE const ElementType& Last(SizeType IndexFromTheEnd = 0) const
 	{
 		RangeCheck(ArrayNum - IndexFromTheEnd - 1);
 		return GetData()[ArrayNum - IndexFromTheEnd - 1];
@@ -778,7 +841,7 @@ public:
 	 * @returns True if found. False otherwise.
 	 * @see FindLast, FindLastByPredicate
 	 */
-	FORCEINLINE bool Find(const ElementType& Item, int32& Index) const
+	FORCEINLINE bool Find(const ElementType& Item, SizeType& Index) const
 	{
 		Index = this->Find(Item);
 		return Index != INDEX_NONE;
@@ -791,14 +854,14 @@ public:
 	 * @returns Index of the found element. INDEX_NONE otherwise.
 	 * @see FindLast, FindLastByPredicate
 	 */
-	int32 Find(const ElementType& Item) const
+	SizeType Find(const ElementType& Item) const
 	{
 		const ElementType* RESTRICT Start = GetData();
 		for (const ElementType* RESTRICT Data = Start, *RESTRICT DataEnd = Data + ArrayNum; Data != DataEnd; ++Data)
 		{
 			if (*Data == Item)
 			{
-				return static_cast<int32>(Data - Start);
+				return static_cast<SizeType>(Data - Start);
 			}
 		}
 		return INDEX_NONE;
@@ -812,7 +875,7 @@ public:
 	 * @returns True if found. False otherwise.
 	 * @see Find, FindLastByPredicate
 	 */
-	FORCEINLINE bool FindLast(const ElementType& Item, int32& Index) const
+	FORCEINLINE bool FindLast(const ElementType& Item, SizeType& Index) const
 	{
 		Index = this->FindLast(Item);
 		return Index != INDEX_NONE;
@@ -824,14 +887,14 @@ public:
 	 * @param Item Item to look for.
 	 * @returns Index of the found element. INDEX_NONE otherwise.
 	 */
-	int32 FindLast(const ElementType& Item) const
+	SizeType FindLast(const ElementType& Item) const
 	{
 		for (const ElementType* RESTRICT Start = GetData(), *RESTRICT Data = Start + ArrayNum; Data != Start; )
 		{
 			--Data;
 			if (*Data == Item)
 			{
-				return static_cast<int32>(Data - Start);
+				return static_cast<SizeType>(Data - Start);
 			}
 		}
 		return INDEX_NONE;
@@ -845,7 +908,7 @@ public:
 	 * @returns Index of the found element. INDEX_NONE otherwise.
 	 */
 	template <typename Predicate>
-	int32 FindLastByPredicate(Predicate Pred, int32 Count) const
+	SizeType FindLastByPredicate(Predicate Pred, SizeType Count) const
 	{
 		check(Count >= 0 && Count <= this->Num());
 		for (const ElementType* RESTRICT Start = GetData(), *RESTRICT Data = Start + Count; Data != Start; )
@@ -853,7 +916,7 @@ public:
 			--Data;
 			if (Pred(*Data))
 			{
-				return static_cast<int32>(Data - Start);
+				return static_cast<SizeType>(Data - Start);
 			}
 		}
 		return INDEX_NONE;
@@ -866,7 +929,7 @@ public:
 	 * @returns Index of the found element. INDEX_NONE otherwise.
 	 */
 	template <typename Predicate>
-	FORCEINLINE int32 FindLastByPredicate(Predicate Pred) const
+	FORCEINLINE SizeType FindLastByPredicate(Predicate Pred) const
 	{
 		return FindLastByPredicate(Pred, ArrayNum);
 	}
@@ -879,14 +942,14 @@ public:
 	 * @returns Index to the first matching element, or INDEX_NONE if none is found.
 	 */
 	template <typename KeyType>
-	int32 IndexOfByKey(const KeyType& Key) const
+	SizeType IndexOfByKey(const KeyType& Key) const
 	{
 		const ElementType* RESTRICT Start = GetData();
 		for (const ElementType* RESTRICT Data = Start, *RESTRICT DataEnd = Start + ArrayNum; Data != DataEnd; ++Data)
 		{
 			if (*Data == Key)
 			{
-				return static_cast<int32>(Data - Start);
+				return static_cast<SizeType>(Data - Start);
 			}
 		}
 		return INDEX_NONE;
@@ -899,14 +962,14 @@ public:
 	 * @returns Index to the first matching element, or INDEX_NONE if none is found.
 	 */
 	template <typename Predicate>
-	int32 IndexOfByPredicate(Predicate Pred) const
+	SizeType IndexOfByPredicate(Predicate Pred) const
 	{
 		const ElementType* RESTRICT Start = GetData();
 		for (const ElementType* RESTRICT Data = Start, *RESTRICT DataEnd = Start + ArrayNum; Data != DataEnd; ++Data)
 		{
 			if (Pred(*Data))
 			{
-				return static_cast<int32>(Data - Start);
+				return static_cast<SizeType>(Data - Start);
 			}
 		}
 		return INDEX_NONE;
@@ -1043,7 +1106,7 @@ public:
 	 */
 	bool operator==(const TArray& OtherArray) const
 	{
-		int32 Count = Num();
+		SizeType Count = Num();
 
 		return Count == OtherArray.Num() && CompareItems(GetData(), OtherArray.GetData(), Count);
 	}
@@ -1071,16 +1134,22 @@ public:
 		A.CountBytes(Ar);
 
 		// For net archives, limit serialization to 16MB, to protect against excessive allocation
-		const int32 MaxNetArraySerialize = (16 * 1024 * 1024) / sizeof(ElementType);
-		int32 SerializeNum = (Ar.IsLoading() ? 0 : A.ArrayNum);
+		constexpr SizeType MaxNetArraySerialize = (16 * 1024 * 1024) / sizeof(ElementType);
+		SizeType SerializeNum = Ar.IsLoading() ? 0 : A.ArrayNum;
 
 		Ar << SerializeNum;
 
+		if (SerializeNum == 0)
+		{
+			return Ar;
+		}
+
 		check(SerializeNum >= 0);
 
-		if (!Ar.IsError() && SerializeNum >= 0 && ensure(!Ar.IsNetArchive() || SerializeNum <= MaxNetArraySerialize))
+		if (!Ar.IsError() && SerializeNum > 0 && ensure(!Ar.IsNetArchive() || SerializeNum <= MaxNetArraySerialize))
 		{
-			if (sizeof(ElementType) == 1)
+			// if we don't need to perform per-item serialization, just read it in bulk
+			if (sizeof(ElementType) == 1 || TCanBulkSerialize<ElementType>::Value)
 			{
 				A.ArrayNum = SerializeNum;
 
@@ -1090,14 +1159,14 @@ public:
 					A.ResizeForCopy(A.ArrayNum, A.ArrayMax);
 				}
 
-				Ar.Serialize(A.GetData(), A.Num());
+				Ar.Serialize(A.GetData(), A.Num() * sizeof(ElementType));
 			}
 			else if (Ar.IsLoading())
 			{
 				// Required for resetting ArrayNum
 				A.Empty(SerializeNum);
 
-				for (int32 i=0; i<SerializeNum; i++)
+				for (SizeType i=0; i<SerializeNum; i++)
 				{
 					Ar << *::new(A) ElementType;
 				}
@@ -1106,7 +1175,7 @@ public:
 			{
 				A.ArrayNum = SerializeNum;
 
-				for (int32 i=0; i<A.ArrayNum; i++)
+				for (SizeType i=0; i<A.ArrayNum; i++)
 				{
 					Ar << A[i];
 				}
@@ -1170,7 +1239,7 @@ public:
 				// Serialize the number of elements, block allocate the right amount of memory and deserialize
 				// the data as a giant memory blob in a single call to Serialize. Please see the function header
 				// for detailed documentation on limitations and implications.
-				int32 NewArrayNum = 0;
+				SizeType NewArrayNum = 0;
 				Ar << NewArrayNum;
 				Empty(NewArrayNum);
 				AddUninitialized(NewArrayNum);
@@ -1178,7 +1247,7 @@ public:
 			}
 			else if (Ar.IsSaving())
 			{
-				int32 ArrayCount = Num();
+				SizeType ArrayCount = Num();
 				Ar << ArrayCount;
 				Ar.Serialize(GetData(), ArrayCount * SerializedElementSize);
 			}
@@ -1205,12 +1274,12 @@ public:
 	 * @param Count Number of elements to add.
 	 * @returns Number of elements in array before addition.
 	 */
-	FORCEINLINE int32 AddUninitialized(int32 Count = 1)
+	FORCEINLINE SizeType AddUninitialized(SizeType Count = 1)
 	{
 		CheckInvariants();
 		checkSlow(Count >= 0);
 
-		const int32 OldNum = ArrayNum;
+		const SizeType OldNum = ArrayNum;
 		if ((ArrayNum += Count) > ArrayMax)
 		{
 			ResizeGrow(OldNum);
@@ -1218,6 +1287,26 @@ public:
 		return OldNum;
 	}
 
+private:
+	template <typename OtherSizeType>
+	void InsertUninitializedImpl(SizeType Index, OtherSizeType Count)
+	{
+		CheckInvariants();
+		checkSlow((Count >= 0) & (Index >= 0) & (Index <= ArrayNum));
+
+		SizeType NewNum = Count;
+		checkf((OtherSizeType)NewNum == Count, TEXT("Invalid number of elements to add to this array type: %llu"), (unsigned long long)NewNum);
+
+		const SizeType OldNum = ArrayNum;
+		if ((ArrayNum += Count) > ArrayMax)
+		{
+			ResizeGrow(OldNum);
+		}
+		ElementType* Data = GetData() + Index;
+		RelocateConstructItems<ElementType>(Data + Count, Data, OldNum - Index);
+	}
+
+public:
 	/**
 	 * Inserts a given number of uninitialized elements into the array at given
 	 * location.
@@ -1230,18 +1319,9 @@ public:
 	 * @param Count Number of elements to add.
 	 * @see Insert, InsertZeroed, InsertDefaulted
 	 */
-	void InsertUninitialized(int32 Index, int32 Count = 1)
+	FORCEINLINE void InsertUninitialized(SizeType Index, SizeType Count = 1)
 	{
-		CheckInvariants();
-		checkSlow((Count >= 0) & (Index >= 0) & (Index <= ArrayNum));
-
-		const int32 OldNum = ArrayNum;
-		if ((ArrayNum += Count) > ArrayMax)
-		{
-			ResizeGrow(OldNum);
-		}
-		ElementType* Data = GetData() + Index;
-		RelocateConstructItems<ElementType>(Data + Count, Data, OldNum - Index);
+		InsertUninitializedImpl(Index, Count);
 	}
 
 	/**
@@ -1256,9 +1336,9 @@ public:
 	 * @param Count Number of elements to add.
 	 * @see Insert, InsertUninitialized, InsertDefaulted
 	 */
-	void InsertZeroed(int32 Index, int32 Count = 1)
+	void InsertZeroed(SizeType Index, SizeType Count = 1)
 	{
-		InsertUninitialized(Index, Count);
+		InsertUninitializedImpl(Index, Count);
 		FMemory::Memzero(GetData() + Index, Count * sizeof(ElementType));
 	}
 
@@ -1273,9 +1353,9 @@ public:
 	 * @return A reference to the newly-inserted element.
 	 * @see Insert_GetRef, InsertDefaulted_GetRef
 	 */
-	ElementType& InsertZeroed_GetRef(int32 Index)
+	ElementType& InsertZeroed_GetRef(SizeType Index)
 	{
-		InsertUninitialized(Index, 1);
+		InsertUninitializedImpl(Index, 1);
 		ElementType* Ptr = GetData() + Index;
 		FMemory::Memzero(Ptr, sizeof(ElementType));
 		return *Ptr;
@@ -1289,9 +1369,9 @@ public:
 	 * @param Count Number of elements to add.
 	 * @see Insert, InsertUninitialized, InsertZeroed
 	 */
-	void InsertDefaulted(int32 Index, int32 Count = 1)
+	void InsertDefaulted(SizeType Index, SizeType Count = 1)
 	{
-		InsertUninitialized(Index, Count);
+		InsertUninitializedImpl(Index, Count);
 		DefaultConstructItems<ElementType>(GetData() + Index, Count);
 	}
 
@@ -1303,9 +1383,9 @@ public:
 	 * @return A reference to the newly-inserted element.
 	 * @see Insert_GetRef, InsertZeroed_GetRef
 	 */
-	ElementType& InsertDefaulted_GetRef(int32 Index)
+	ElementType& InsertDefaulted_GetRef(SizeType Index)
 	{
-		InsertUninitialized(Index, 1);
+		InsertUninitializedImpl(Index, 1);
 		ElementType* Ptr = GetData() + Index;
 		DefaultConstructItems<ElementType>(Ptr, 1);
 		return *Ptr;
@@ -1318,11 +1398,11 @@ public:
 	 * @param InIndex Tells where to insert the new elements.
 	 * @returns Location at which the item was inserted.
 	 */
-	int32 Insert(std::initializer_list<ElementType> InitList, const int32 InIndex)
+	SizeType Insert(std::initializer_list<ElementType> InitList, const SizeType InIndex)
 	{
-		int32 NumNewElements = (int32)InitList.size();
+		SizeType NumNewElements = (SizeType)InitList.size();
 
-		InsertUninitialized(InIndex, NumNewElements);
+		InsertUninitializedImpl(InIndex, NumNewElements);
 		ConstructItems<ElementType>(GetData() + InIndex, InitList.begin(), NumNewElements);
 
 		return InIndex;
@@ -1336,13 +1416,13 @@ public:
 	 * @returns Location at which the item was inserted.
 	 */
 	template <typename OtherAllocator>
-	int32 Insert(const TArray<ElementType, OtherAllocator>& Items, const int32 InIndex)
+	SizeType Insert(const TArray<ElementType, OtherAllocator>& Items, const SizeType InIndex)
 	{
 		check((const void*)this != (const void*)&Items);
 
-		int32 NumNewElements = Items.Num();
+		auto NumNewElements = Items.Num();
 
-		InsertUninitialized(InIndex, NumNewElements);
+		InsertUninitializedImpl(InIndex, NumNewElements);
 		ConstructItems<ElementType>(GetData() + InIndex, Items.GetData(), NumNewElements);
 
 		return InIndex;
@@ -1356,13 +1436,13 @@ public:
 	 * @returns Location at which the item was inserted.
 	 */
 	template <typename OtherAllocator>
-	int32 Insert(TArray<ElementType, OtherAllocator>&& Items, const int32 InIndex)
+	SizeType Insert(TArray<ElementType, OtherAllocator>&& Items, const SizeType InIndex)
 	{
 		check((const void*)this != (const void*)&Items);
 
-		int32 NumNewElements = Items.Num();
+		auto NumNewElements = Items.Num();
 
-		InsertUninitialized(InIndex, NumNewElements);
+		InsertUninitializedImpl(InIndex, NumNewElements);
 		RelocateConstructItems<ElementType>(GetData() + InIndex, Items.GetData(), NumNewElements);
 		Items.ArrayNum = 0;
 
@@ -1378,11 +1458,11 @@ public:
 	 * @return The index of the first element inserted.
 	 * @see Add, Remove
 	 */
-	int32 Insert(const ElementType* Ptr, int32 Count, int32 Index)
+	SizeType Insert(const ElementType* Ptr, SizeType Count, SizeType Index)
 	{
 		check(Ptr != nullptr);
 
-		InsertUninitialized(Index, Count);
+		InsertUninitializedImpl(Index, Count);
 		ConstructItems<ElementType>(GetData() + Index, Ptr, Count);
 
 		return Index;
@@ -1410,13 +1490,13 @@ public:
 	 * @returns Location at which the insert was done.
 	 * @see Add, Remove
 	 */
-	int32 Insert(ElementType&& Item, int32 Index)
+	SizeType Insert(ElementType&& Item, SizeType Index)
 	{
 		CheckAddress(&Item);
 
 		// construct a copy in place at Index (this new operator will insert at 
 		// Index, then construct that memory with Item)
-		InsertUninitialized(Index, 1);
+		InsertUninitializedImpl(Index, 1);
 		new(GetData() + Index) ElementType(MoveTempIfPossible(Item));
 		return Index;
 	}
@@ -1429,13 +1509,13 @@ public:
 	 * @returns Location at which the insert was done.
 	 * @see Add, Remove
 	 */
-	int32 Insert(const ElementType& Item, int32 Index)
+	SizeType Insert(const ElementType& Item, SizeType Index)
 	{
 		CheckAddress(&Item);
 
 		// construct a copy in place at Index (this new operator will insert at 
 		// Index, then construct that memory with Item)
-		InsertUninitialized(Index, 1);
+		InsertUninitializedImpl(Index, 1);
 		new(GetData() + Index) ElementType(Item);
 		return Index;
 	}
@@ -1449,13 +1529,13 @@ public:
 	 * @return A reference to the newly-inserted element.
 	 * @see Add, Remove
 	 */
-	ElementType& Insert_GetRef(ElementType&& Item, int32 Index)
+	ElementType& Insert_GetRef(ElementType&& Item, SizeType Index)
 	{
 		CheckAddress(&Item);
 
 		// construct a copy in place at Index (this new operator will insert at 
 		// Index, then construct that memory with Item)
-		InsertUninitialized(Index, 1);
+		InsertUninitializedImpl(Index, 1);
 		ElementType* Ptr = GetData() + Index;
 		new(Ptr) ElementType(MoveTempIfPossible(Item));
 		return *Ptr;
@@ -1469,20 +1549,20 @@ public:
 	 * @return A reference to the newly-inserted element.
 	 * @see Add, Remove
 	 */
-	ElementType& Insert_GetRef(const ElementType& Item, int32 Index)
+	ElementType& Insert_GetRef(const ElementType& Item, SizeType Index)
 	{
 		CheckAddress(&Item);
 
 		// construct a copy in place at Index (this new operator will insert at 
 		// Index, then construct that memory with Item)
-		InsertUninitialized(Index, 1);
+		InsertUninitializedImpl(Index, 1);
 		ElementType* Ptr = GetData() + Index;
 		new(Ptr) ElementType(Item);
 		return *Ptr;
 	}
 
 private:
-	void RemoveAtImpl(int32 Index, int32 Count, bool bAllowShrinking)
+	void RemoveAtImpl(SizeType Index, SizeType Count, bool bAllowShrinking)
 	{
 		if (Count)
 		{
@@ -1492,7 +1572,7 @@ private:
 			DestructItems(GetData() + Index, Count);
 
 			// Skip memmove in the common case that there is nothing to move.
-			int32 NumToMove = ArrayNum - Index - Count;
+			SizeType NumToMove = ArrayNum - Index - Count;
 			if (NumToMove)
 			{
 				FMemory::Memmove
@@ -1520,7 +1600,7 @@ public:
 	 * @param Count (Optional) Number of elements to remove. Default is 1.
 	 * @param bAllowShrinking (Optional) Tells if this call can shrink array if suitable after remove. Default is true.
 	 */
-	FORCEINLINE void RemoveAt(int32 Index)
+	FORCEINLINE void RemoveAt(SizeType Index)
 	{
 		RemoveAtImpl(Index, 1, true);
 	}
@@ -1534,14 +1614,14 @@ public:
 	 * @param bAllowShrinking (Optional) Tells if this call can shrink array if suitable after remove. Default is true.
 	 */
 	template <typename CountType>
-	FORCEINLINE void RemoveAt(int32 Index, CountType Count, bool bAllowShrinking = true)
+	FORCEINLINE void RemoveAt(SizeType Index, CountType Count, bool bAllowShrinking = true)
 	{
 		static_assert(!TAreTypesEqual<CountType, bool>::Value, "TArray::RemoveAt: unexpected bool passed as the Count argument");
-		RemoveAtImpl(Index, Count, bAllowShrinking);
+		RemoveAtImpl(Index, (SizeType)Count, bAllowShrinking);
 	}
 
 private:
-	void RemoveAtSwapImpl(int32 Index, int32 Count = 1, bool bAllowShrinking = true)
+	void RemoveAtSwapImpl(SizeType Index, SizeType Count = 1, bool bAllowShrinking = true)
 	{
 		if (Count)
 		{
@@ -1551,9 +1631,9 @@ private:
 			DestructItems(GetData() + Index, Count);
 
 			// Replace the elements in the hole created by the removal with elements from the end of the array, so the range of indices used by the array is contiguous.
-			const int32 NumElementsInHole = Count;
-			const int32 NumElementsAfterHole = ArrayNum - (Index + Count);
-			const int32 NumElementsToMoveIntoHole = FPlatformMath::Min(NumElementsInHole, NumElementsAfterHole);
+			const SizeType NumElementsInHole = Count;
+			const SizeType NumElementsAfterHole = ArrayNum - (Index + Count);
+			const SizeType NumElementsToMoveIntoHole = FPlatformMath::Min(NumElementsInHole, NumElementsAfterHole);
 			if (NumElementsToMoveIntoHole)
 			{
 				FMemory::Memcpy(
@@ -1584,7 +1664,7 @@ public:
 	 * @param bAllowShrinking (Optional) Tells if this call can shrink array if
 	 *                        suitable after remove. Default is true.
 	 */
-	FORCEINLINE void RemoveAtSwap(int32 Index)
+	FORCEINLINE void RemoveAtSwap(SizeType Index)
 	{
 		RemoveAtSwapImpl(Index, 1, true);
 	}
@@ -1602,7 +1682,7 @@ public:
 	 *                        suitable after remove. Default is true.
 	 */
 	template <typename CountType>
-	FORCEINLINE void RemoveAtSwap(int32 Index, CountType Count, bool bAllowShrinking = true)
+	FORCEINLINE void RemoveAtSwap(SizeType Index, CountType Count, bool bAllowShrinking = true)
 	{
 		static_assert(!TAreTypesEqual<CountType, bool>::Value, "TArray::RemoveAtSwap: unexpected bool passed as the Count argument");
 		RemoveAtSwapImpl(Index, Count, bAllowShrinking);
@@ -1614,7 +1694,7 @@ public:
 	 *
 	 * @param NewSize The expected usage size after calling this function.
 	 */
-	void Reset(int32 NewSize = 0)
+	void Reset(SizeType NewSize = 0)
 	{
 		// If we have space to hold the excepted size, then don't reallocate
 		if (NewSize <= ArrayMax)
@@ -1633,7 +1713,7 @@ public:
 	 *
 	 * @param Slack (Optional) The expected usage size after empty operation. Default is 0.
 	 */
-	void Empty(int32 Slack = 0)
+	void Empty(SizeType Slack = 0)
 	{
 		DestructItems(GetData(), ArrayNum);
 
@@ -1652,12 +1732,12 @@ public:
 	 * @param NewNum New size of the array.
 	 * @param bAllowShrinking Tell if this function can shrink the memory in-use if suitable.
 	 */
-	void SetNum(int32 NewNum, bool bAllowShrinking = true)
+	void SetNum(SizeType NewNum, bool bAllowShrinking = true)
 	{
 		if (NewNum > Num())
 		{
-			const int32 Diff = NewNum - ArrayNum;
-			const int32 Index = AddUninitialized(Diff);
+			const SizeType Diff = NewNum - ArrayNum;
+			const SizeType Index = AddUninitialized(Diff);
 			DefaultConstructItems<ElementType>((uint8*)AllocatorInstance.GetAllocation() + Index * sizeof(ElementType), Diff);
 		}
 		else if (NewNum < Num())
@@ -1671,7 +1751,7 @@ public:
 	 *
 	 * @param NewNum New size of the array.
 	 */
-	void SetNumZeroed(int32 NewNum, bool bAllowShrinking = true)
+	void SetNumZeroed(SizeType NewNum, bool bAllowShrinking = true)
 	{
 		if (NewNum > Num())
 		{
@@ -1688,7 +1768,7 @@ public:
 	 *
 	 * @param NewNum New size of the array.
 	 */
-	void SetNumUninitialized(int32 NewNum, bool bAllowShrinking = true)
+	void SetNumUninitialized(SizeType NewNum, bool bAllowShrinking = true)
 	{
 		if (NewNum > Num())
 		{
@@ -1704,7 +1784,7 @@ public:
 	 * Does nothing except setting the new number of elements in the array. Does not destruct items, does not de-allocate memory.
 	 * @param NewNum New number of elements in the array, must be <= the current number of elements in the array.
 	 */
-	void SetNumUnsafeInternal(int32 NewNum)
+	void SetNumUnsafeInternal(SizeType NewNum)
 	{
 		checkSlow(NewNum <= Num() && NewNum >= 0);
 		ArrayNum = NewNum;
@@ -1723,7 +1803,7 @@ public:
 	{
 		check((void*)this != (void*)&Source);
 
-		int32 SourceCount = Source.Num();
+		SizeType SourceCount = Source.Num();
 
 		// Do nothing if the source is empty.
 		if (!SourceCount)
@@ -1749,7 +1829,7 @@ public:
 	{
 		check((void*)this != (void*)&Source);
 
-		int32 SourceCount = Source.Num();
+		SizeType SourceCount = Source.Num();
 
 		// Do nothing if the source is empty.
 		if (!SourceCount)
@@ -1772,11 +1852,11 @@ public:
 	 * @param Count The number of elements to insert from Ptr.
 	 * @see Add, Insert
 	 */
-	void Append(const ElementType* Ptr, int32 Count)
+	void Append(const ElementType* Ptr, SizeType Count)
 	{
 		check(Ptr != nullptr || Count == 0);
 
-		int32 Pos = AddUninitialized(Count);
+		SizeType Pos = AddUninitialized(Count);
 		ConstructItems<ElementType>(GetData() + Pos, Ptr, Count);
 	}
 
@@ -1788,9 +1868,9 @@ public:
 	 */
 	FORCEINLINE void Append(std::initializer_list<ElementType> InitList)
 	{
-		int32 Count = (int32)InitList.size();
+		SizeType Count = (SizeType)InitList.size();
 
-		int32 Pos = AddUninitialized(Count);
+		SizeType Pos = AddUninitialized(Count);
 		ConstructItems<ElementType>(GetData() + Pos, InitList.begin(), Count);
 	}
 
@@ -1838,9 +1918,9 @@ public:
 	 * @return		Index to the new item
 	 */
 	template <typename... ArgsType>
-	FORCEINLINE int32 Emplace(ArgsType&&... Args)
+	FORCEINLINE SizeType Emplace(ArgsType&&... Args)
 	{
-		const int32 Index = AddUninitialized(1);
+		const SizeType Index = AddUninitialized(1);
 		new(GetData() + Index) ElementType(Forward<ArgsType>(Args)...);
 		return Index;
 	}
@@ -1854,7 +1934,7 @@ public:
 	template <typename... ArgsType>
 	FORCEINLINE ElementType& Emplace_GetRef(ArgsType&&... Args)
 	{
-		const int32 Index = AddUninitialized(1);
+		const SizeType Index = AddUninitialized(1);
 		ElementType* Ptr = GetData() + Index;
 		new(Ptr) ElementType(Forward<ArgsType>(Args)...);
 		return *Ptr;
@@ -1867,9 +1947,9 @@ public:
 	 * @param Args	The arguments to forward to the constructor of the new item.
 	 */
 	template <typename... ArgsType>
-	FORCEINLINE void EmplaceAt(int32 Index, ArgsType&&... Args)
+	FORCEINLINE void EmplaceAt(SizeType Index, ArgsType&&... Args)
 	{
-		InsertUninitialized(Index, 1);
+		InsertUninitializedImpl(Index, 1);
 		new(GetData() + Index) ElementType(Forward<ArgsType>(Args)...);
 	}
 
@@ -1881,9 +1961,9 @@ public:
 	 * @return A reference to the newly-inserted element.
 	 */
 	template <typename... ArgsType>
-	FORCEINLINE ElementType& EmplaceAt_GetRef(int32 Index, ArgsType&&... Args)
+	FORCEINLINE ElementType& EmplaceAt_GetRef(SizeType Index, ArgsType&&... Args)
 	{
-		InsertUninitialized(Index, 1);
+		InsertUninitializedImpl(Index, 1);
 		ElementType* Ptr = GetData() + Index;
 		new(Ptr) ElementType(Forward<ArgsType>(Args)...);
 		return *Ptr;
@@ -1898,7 +1978,7 @@ public:
 	 * @return Index to the new item
 	 * @see AddDefaulted, AddUnique, AddZeroed, Append, Insert
 	 */
-	FORCEINLINE int32 Add(ElementType&& Item)
+	FORCEINLINE SizeType Add(ElementType&& Item)
 	{
 		CheckAddress(&Item);
 		return Emplace(MoveTempIfPossible(Item));
@@ -1911,7 +1991,7 @@ public:
 	 * @return Index to the new item
 	 * @see AddDefaulted, AddUnique, AddZeroed, Append, Insert
 	 */
-	FORCEINLINE int32 Add(const ElementType& Item)
+	FORCEINLINE SizeType Add(const ElementType& Item)
 	{
 		CheckAddress(&Item);
 		return Emplace(Item);
@@ -1957,9 +2037,9 @@ public:
 	 * @return Index to the first of the new items.
 	 * @see Add, AddDefaulted, AddUnique, Append, Insert
 	 */
-	int32 AddZeroed(int32 Count = 1)
+	SizeType AddZeroed(SizeType Count = 1)
 	{
-		const int32 Index = AddUninitialized(Count);
+		const SizeType Index = AddUninitialized(Count);
 		FMemory::Memzero((uint8*)AllocatorInstance.GetAllocation() + Index*sizeof(ElementType), Count*sizeof(ElementType));
 		return Index;
 	}
@@ -1977,7 +2057,7 @@ public:
 	 */
 	ElementType& AddZeroed_GetRef()
 	{
-		const int32 Index = AddUninitialized(1);
+		const SizeType Index = AddUninitialized(1);
 		ElementType* Ptr = GetData() + Index;
 		FMemory::Memzero(Ptr, sizeof(ElementType));
 		return *Ptr;
@@ -1991,9 +2071,9 @@ public:
 	 * @return Index to the first of the new items.
 	 * @see Add, AddZeroed, AddUnique, Append, Insert
 	 */
-	int32 AddDefaulted(int32 Count = 1)
+	SizeType AddDefaulted(SizeType Count = 1)
 	{
-		const int32 Index = AddUninitialized(Count);
+		const SizeType Index = AddUninitialized(Count);
 		DefaultConstructItems<ElementType>((uint8*)AllocatorInstance.GetAllocation() + Index * sizeof(ElementType), Count);
 		return Index;
 	}
@@ -2007,7 +2087,7 @@ public:
 	 */
 	ElementType& AddDefaulted_GetRef()
 	{
-		const int32 Index = AddUninitialized(1);
+		const SizeType Index = AddUninitialized(1);
 		ElementType* Ptr = GetData() + Index;
 		DefaultConstructItems<ElementType>(Ptr, 1);
 		return *Ptr;
@@ -2022,9 +2102,9 @@ private:
 	 * @returns Index of the element in the array.
 	 */
 	template <typename ArgsType>
-	int32 AddUniqueImpl(ArgsType&& Args)
+	SizeType AddUniqueImpl(ArgsType&& Args)
 	{
-		int32 Index;
+		SizeType Index;
 		if (Find(Args, Index))
 		{
 			return Index;
@@ -2044,7 +2124,7 @@ public:
 	 * @returns Index of the element in the array.
 	 * @see Add, AddDefaulted, AddZeroed, Append, Insert
 	 */
-	FORCEINLINE int32 AddUnique(ElementType&& Item) { return AddUniqueImpl(MoveTempIfPossible(Item)); }
+	FORCEINLINE SizeType AddUnique(ElementType&& Item) { return AddUniqueImpl(MoveTempIfPossible(Item)); }
 
 	/**
 	 * Adds unique element to array if it doesn't exist.
@@ -2053,7 +2133,7 @@ public:
 	 * @returns Index of the element in the array.
 	 * @see Add, AddDefaulted, AddZeroed, Append, Insert
 	 */
-	FORCEINLINE int32 AddUnique(const ElementType& Item) { return AddUniqueImpl(Item); }
+	FORCEINLINE SizeType AddUnique(const ElementType& Item) { return AddUniqueImpl(Item); }
 
 	/**
 	 * Reserves memory such that the array can contain at least Number elements.
@@ -2061,7 +2141,7 @@ public:
 	 * @param Number The number of elements that the array should be able to contain after allocation.
 	 * @see Shrink
 	 */
-	FORCEINLINE void Reserve(int32 Number)
+	FORCEINLINE void Reserve(SizeType Number)
 	{
 		checkSlow(Number >= 0);
 		if (Number > ArrayMax)
@@ -2076,10 +2156,10 @@ public:
 	 * @param Element The element to fill array with.
 	 * @param Number The number of elements that the array should be able to contain after allocation.
 	 */
-	void Init(const ElementType& Element, int32 Number)
+	void Init(const ElementType& Element, SizeType Number)
 	{
 		Empty(Number);
-		for (int32 Index = 0; Index < Number; ++Index)
+		for (SizeType Index = 0; Index < Number; ++Index)
 		{
 			new(*this) ElementType(Element);
 		}
@@ -2093,9 +2173,9 @@ public:
 	 * @returns The number of items removed. For RemoveSingleItem, this is always either 0 or 1.
 	 * @see Add, Insert, Remove, RemoveAll, RemoveAllSwap
 	 */
-	int32 RemoveSingle(const ElementType& Item)
+	SizeType RemoveSingle(const ElementType& Item)
 	{
-		int32 Index = Find(Item);
+		SizeType Index = Find(Item);
 		if (Index == INDEX_NONE)
 		{
 			return 0;
@@ -2105,7 +2185,7 @@ public:
 
 		// Destruct items that match the specified Item.
 		DestructItems(RemovePtr, 1);
-		const int32 NextIndex = Index + 1;
+		const SizeType NextIndex = Index + 1;
 		RelocateConstructItems<ElementType>(RemovePtr, RemovePtr + 1, ArrayNum - (Index + 1));
 
 		// Update the array count
@@ -2123,7 +2203,7 @@ public:
 	 * @returns Number of removed elements.
 	 * @see Add, Insert, RemoveAll, RemoveAllSwap, RemoveSingle, RemoveSwap
 	 */
-	int32 Remove(const ElementType& Item)
+	SizeType Remove(const ElementType& Item)
 	{
 		CheckAddress(&Item);
 
@@ -2140,25 +2220,25 @@ public:
 	 * @see Add, Insert, RemoveAllSwap, RemoveSingle, RemoveSwap
 	 */
 	template <class PREDICATE_CLASS>
-	int32 RemoveAll(const PREDICATE_CLASS& Predicate)
+	SizeType RemoveAll(const PREDICATE_CLASS& Predicate)
 	{
-		const int32 OriginalNum = ArrayNum;
+		const SizeType OriginalNum = ArrayNum;
 		if (!OriginalNum)
 		{
 			return 0; // nothing to do, loop assumes one item so need to deal with this edge case here
 		}
 
-		int32 WriteIndex = 0;
-		int32 ReadIndex = 0;
+		SizeType WriteIndex = 0;
+		SizeType ReadIndex = 0;
 		bool NotMatch = !Predicate(GetData()[ReadIndex]); // use a ! to guarantee it can't be anything other than zero or one
 		do
 		{
-			int32 RunStartIndex = ReadIndex++;
+			SizeType RunStartIndex = ReadIndex++;
 			while (ReadIndex < OriginalNum && NotMatch == !Predicate(GetData()[ReadIndex]))
 			{
 				ReadIndex++;
 			}
-			int32 RunLength = ReadIndex - RunStartIndex;
+			SizeType RunLength = ReadIndex - RunStartIndex;
 			checkSlow(RunLength > 0);
 			if (NotMatch)
 			{
@@ -2190,7 +2270,7 @@ public:
 	template <class PREDICATE_CLASS>
 	void RemoveAllSwap(const PREDICATE_CLASS& Predicate, bool bAllowShrinking = true)
 	{
-		for (int32 ItemIndex = 0; ItemIndex < Num();)
+		for (SizeType ItemIndex = 0; ItemIndex < Num();)
 		{
 			if (Predicate((*this)[ItemIndex]))
 			{
@@ -2212,9 +2292,9 @@ public:
 	 * @returns The number of items removed. For RemoveSingleItem, this is always either 0 or 1.
 	 * @see Add, Insert, Remove, RemoveAll, RemoveAllSwap, RemoveSwap
 	 */
-	int32 RemoveSingleSwap(const ElementType& Item, bool bAllowShrinking = true)
+	SizeType RemoveSingleSwap(const ElementType& Item, bool bAllowShrinking = true)
 	{
-		int32 Index = Find(Item);
+		SizeType Index = Find(Item);
 		if (Index == INDEX_NONE)
 		{
 			return 0;
@@ -2236,12 +2316,12 @@ public:
 	 * @returns Number of elements removed.
 	 * @see Add, Insert, Remove, RemoveAll, RemoveAllSwap
 	 */
-	int32 RemoveSwap(const ElementType& Item)
+	SizeType RemoveSwap(const ElementType& Item)
 	{
 		CheckAddress(&Item);
 
-		const int32 OriginalNum = ArrayNum;
-		for (int32 Index = 0; Index < ArrayNum; Index++)
+		const SizeType OriginalNum = ArrayNum;
+		for (SizeType Index = 0; Index < ArrayNum; Index++)
 		{
 			if ((*this)[Index] == Item)
 			{
@@ -2257,7 +2337,7 @@ public:
 	 * @param FirstIndexToSwap Position of the first element to swap.
 	 * @param SecondIndexToSwap Position of the second element to swap.
 	 */
-	FORCEINLINE void SwapMemory(int32 FirstIndexToSwap, int32 SecondIndexToSwap)
+	FORCEINLINE void SwapMemory(SizeType FirstIndexToSwap, SizeType SecondIndexToSwap)
 	{
 		FMemory::Memswap(
 			(uint8*)AllocatorInstance.GetAllocation() + (sizeof(ElementType)*FirstIndexToSwap),
@@ -2274,7 +2354,7 @@ public:
 	 * @param FirstIndexToSwap Position of the first element to swap.
 	 * @param SecondIndexToSwap Position of the second element to swap.
 	 */
-	FORCEINLINE void Swap(int32 FirstIndexToSwap, int32 SecondIndexToSwap)
+	FORCEINLINE void Swap(SizeType FirstIndexToSwap, SizeType SecondIndexToSwap)
 	{
 		check((FirstIndexToSwap >= 0) && (SecondIndexToSwap >= 0));
 		check((ArrayNum > FirstIndexToSwap) && (ArrayNum > SecondIndexToSwap));
@@ -2299,10 +2379,10 @@ public:
 	 * @returns True if element was found. False otherwise.
 	 */
 	template<typename SearchType>
-	bool FindItemByClass(SearchType **Item = nullptr, int32 *ItemIndex = nullptr, int32 StartIndex = 0) const
+	bool FindItemByClass(SearchType **Item = nullptr, SizeType *ItemIndex = nullptr, SizeType StartIndex = 0) const
 	{
 		UClass* SearchClass = SearchType::StaticClass();
-		for (int32 Idx = StartIndex; Idx < ArrayNum; Idx++)
+		for (SizeType Idx = StartIndex; Idx < ArrayNum; Idx++)
 		{
 			if ((*this)[Idx] != nullptr && (*this)[Idx]->IsA(SearchClass))
 			{
@@ -2321,8 +2401,8 @@ public:
 	}
 
 	// Iterators
-	typedef TIndexedContainerIterator<      TArray,       ElementType, int32> TIterator;
-	typedef TIndexedContainerIterator<const TArray, const ElementType, int32> TConstIterator;
+	typedef TIndexedContainerIterator<      TArray,       ElementType, SizeType> TIterator;
+	typedef TIndexedContainerIterator<const TArray, const ElementType, SizeType> TConstIterator;
 
 	/**
 	 * Creates an iterator for the contents of this array
@@ -2345,8 +2425,8 @@ public:
 	}
 
 	#if TARRAY_RANGED_FOR_CHECKS
-		typedef TCheckedPointerIterator<      ElementType> RangedForIteratorType;
-		typedef TCheckedPointerIterator<const ElementType> RangedForConstIteratorType;
+		typedef TCheckedPointerIterator<      ElementType, SizeType> RangedForIteratorType;
+		typedef TCheckedPointerIterator<const ElementType, SizeType> RangedForConstIteratorType;
 	#else
 		typedef       ElementType* RangedForIteratorType;
 		typedef const ElementType* RangedForConstIteratorType;
@@ -2440,7 +2520,7 @@ private:
 	 * @param Index Position to get.
 	 * @returns Reference to the element at given position.
 	 */
-	FORCENOINLINE const ElementType& DebugGet(int32 Index) const
+	FORCENOINLINE const ElementType& DebugGet(SizeType Index) const
 	{
 		return GetData()[Index];
 	}
@@ -2448,14 +2528,14 @@ private:
 
 private:
 
-	FORCENOINLINE void ResizeGrow(int32 OldNum)
+	FORCENOINLINE void ResizeGrow(SizeType OldNum)
 	{
 		ArrayMax = AllocatorInstance.CalculateSlackGrow(ArrayNum, ArrayMax, sizeof(ElementType));
 		AllocatorInstance.ResizeAllocation(OldNum, ArrayMax, sizeof(ElementType));
 	}
 	FORCENOINLINE void ResizeShrink()
 	{
-		const int32 NewArrayMax = AllocatorInstance.CalculateSlackShrink(ArrayNum, ArrayMax, sizeof(ElementType));
+		const SizeType NewArrayMax = AllocatorInstance.CalculateSlackShrink(ArrayNum, ArrayMax, sizeof(ElementType));
 		if (NewArrayMax != ArrayMax)
 		{
 			ArrayMax = NewArrayMax;
@@ -2463,7 +2543,7 @@ private:
 			AllocatorInstance.ResizeAllocation(ArrayNum, ArrayMax, sizeof(ElementType));
 		}
 	}
-	FORCENOINLINE void ResizeTo(int32 NewMax)
+	FORCENOINLINE void ResizeTo(SizeType NewMax)
 	{
 		if (NewMax)
 		{
@@ -2475,17 +2555,21 @@ private:
 			AllocatorInstance.ResizeAllocation(ArrayNum, ArrayMax, sizeof(ElementType));
 		}
 	}
-	FORCENOINLINE void ResizeForCopy(int32 NewMax, int32 PrevMax)
+	FORCENOINLINE void ResizeForCopy(SizeType NewMax, SizeType PrevMax)
 	{
 		if (NewMax)
 		{
 			NewMax = AllocatorInstance.CalculateSlackReserve(NewMax, sizeof(ElementType));
 		}
-		if (NewMax != PrevMax)
+		if (NewMax > PrevMax)
 		{
 			AllocatorInstance.ResizeAllocation(0, NewMax, sizeof(ElementType));
+			ArrayMax = NewMax;
 		}
-		ArrayMax = NewMax;
+		else
+		{
+			ArrayMax = PrevMax;
+		}
 	}
 
 
@@ -2499,40 +2583,94 @@ private:
 	 *                   the end of the buffer. Counted in elements. Zero by
 	 *                   default.
 	 */
-	template <typename OtherElementType>
-	void CopyToEmpty(const OtherElementType* OtherData, int32 OtherNum, int32 PrevMax, int32 ExtraSlack)
+	template <typename OtherElementType, typename OtherSizeType>
+	void CopyToEmpty(const OtherElementType* OtherData, OtherSizeType OtherNum, SizeType PrevMax, SizeType ExtraSlack)
 	{
+		SizeType NewNum = (SizeType)OtherNum;
+		checkf((OtherSizeType)NewNum == OtherNum, TEXT("Invalid number of elements to add to this array type: %llu"), (unsigned long long)NewNum);
+
 		checkSlow(ExtraSlack >= 0);
-		ArrayNum = OtherNum;
+		ArrayNum = NewNum;
 		if (OtherNum || ExtraSlack || PrevMax)
 		{
-			ResizeForCopy(OtherNum + ExtraSlack, PrevMax);
+			ResizeForCopy(NewNum + ExtraSlack, PrevMax);
 			ConstructItems<ElementType>(GetData(), OtherData, OtherNum);
 		}
 		else
 		{
-			ArrayMax = 0;
+			ArrayMax = AllocatorInstance.GetInitialCapacity();
 		}
 	}
 
 protected:
 
-	typedef typename TChooseClass<
-		Allocator::NeedsElementType,
-		typename Allocator::template ForElementType<ElementType>,
-		typename Allocator::ForAnyElementType
-		>::Result ElementAllocatorType;
+	template<typename ElementType, typename Allocator>
+	friend class TIndirectArray;
 
 	ElementAllocatorType AllocatorInstance;
-	int32	  ArrayNum;
-	int32	  ArrayMax;
+	SizeType             ArrayNum;
+	SizeType             ArrayMax;
 
-	/**
-	 * Implicit heaps
-	 */
+private:
+	template<bool bFreezeMemoryImage, typename Dummy=void>
+	struct TSupportsFreezeMemoryImageHelper
+	{
+		static void WriteMemoryImage(FMemoryImageWriter& Writer, const TArray&)
+		{
+			// Writing non-freezable TArray is only supported for 64-bit target for now
+			// Would need complete layout macros for all allocator types in order to properly write (empty) 32bit versions
+			check(Writer.Is64BitTarget());
+			Writer.WriteBytes(TArray());
+		}
+
+		static void CopyUnfrozen(const FMemoryUnfreezeContent& Context, const TArray&, void* Dst) { new(Dst) TArray(); }
+		static void AppendHash(const FPlatformTypeLayoutParameters& LayoutParams, FSHA1& Hasher) {}
+	};
+
+	template<typename Dummy>
+	struct TSupportsFreezeMemoryImageHelper<true, Dummy>
+	{
+		static void WriteMemoryImage(FMemoryImageWriter& Writer, const TArray& Object)
+		{
+			Object.AllocatorInstance.WriteMemoryImage(Writer, StaticGetTypeLayoutDesc<ElementType>(), Object.ArrayNum);
+			Writer.WriteBytes(Object.ArrayNum);
+			Writer.WriteBytes(Object.ArrayNum);
+		}
+		static void CopyUnfrozen(const FMemoryUnfreezeContent& Context, const TArray& Object, void* Dst)
+		{
+			TArray* DstArray = new(Dst) TArray();
+			DstArray->SetNumZeroed(Object.ArrayNum);
+			Object.AllocatorInstance.CopyUnfrozen(Context, StaticGetTypeLayoutDesc<ElementType>(), Object.ArrayNum, DstArray->GetData());
+		}
+		static void AppendHash(const FPlatformTypeLayoutParameters& LayoutParams, FSHA1& Hasher)
+		{
+			Freeze::AppendHash(StaticGetTypeLayoutDesc<ElementType>(), LayoutParams, Hasher);
+		}
+	};
 
 public:
+	void WriteMemoryImage(FMemoryImageWriter& Writer) const
+	{
+		static const bool bSupportsFreezeMemoryImage = TAllocatorTraits<Allocator>::SupportsFreezeMemoryImage && THasTypeLayout<ElementType>::Value;
+		TSupportsFreezeMemoryImageHelper<bSupportsFreezeMemoryImage>::WriteMemoryImage(Writer, *this);
+	}
 
+	void CopyUnfrozen(const FMemoryUnfreezeContent& Context, void* Dst) const
+	{
+		static const bool bSupportsFreezeMemoryImage = TAllocatorTraits<Allocator>::SupportsFreezeMemoryImage && THasTypeLayout<ElementType>::Value;
+		TSupportsFreezeMemoryImageHelper<bSupportsFreezeMemoryImage>::CopyUnfrozen(Context, *this, Dst);
+	}
+
+	static void AppendHash(const FPlatformTypeLayoutParameters& LayoutParams, FSHA1& Hasher)
+	{
+		static const bool bSupportsFreezeMemoryImage = TAllocatorTraits<Allocator>::SupportsFreezeMemoryImage && THasTypeLayout<ElementType>::Value;
+		TSupportsFreezeMemoryImageHelper<bSupportsFreezeMemoryImage>::AppendHash(LayoutParams, Hasher);
+	}
+
+	/**
+	* Implicit heaps
+	*/
+public:
 	/** 
 	 * Builds an implicit heap from the array.
 	 *
@@ -2574,12 +2712,12 @@ public:
 	 *        The auto-dereferencing behavior does not occur with smart pointers.
 	 */
 	template <class PREDICATE_CLASS>
-	int32 HeapPush(ElementType&& InItem, const PREDICATE_CLASS& Predicate)
+	SizeType HeapPush(ElementType&& InItem, const PREDICATE_CLASS& Predicate)
 	{
 		// Add at the end, then sift up
 		Add(MoveTempIfPossible(InItem));
 		TDereferenceWrapper<ElementType, PREDICATE_CLASS> PredicateWrapper(Predicate);
-		int32 Result = AlgoImpl::HeapSiftUp(GetData(), 0, Num() - 1, FIdentityFunctor(), PredicateWrapper);
+		SizeType Result = AlgoImpl::HeapSiftUp(GetData(), 0, Num() - 1, FIdentityFunctor(), PredicateWrapper);
 
 		return Result;
 	}
@@ -2596,12 +2734,12 @@ public:
 	 *        The auto-dereferencing behavior does not occur with smart pointers.
 	 */
 	template <class PREDICATE_CLASS>
-	int32 HeapPush(const ElementType& InItem, const PREDICATE_CLASS& Predicate)
+	SizeType HeapPush(const ElementType& InItem, const PREDICATE_CLASS& Predicate)
 	{
 		// Add at the end, then sift up
 		Add(InItem);
 		TDereferenceWrapper<ElementType, PREDICATE_CLASS> PredicateWrapper(Predicate);
-		int32 Result = AlgoImpl::HeapSiftUp(GetData(), 0, Num() - 1, FIdentityFunctor(), PredicateWrapper);
+		SizeType Result = AlgoImpl::HeapSiftUp(GetData(), 0, Num() - 1, FIdentityFunctor(), PredicateWrapper);
 
 		return Result;
 	}
@@ -2617,7 +2755,7 @@ public:
 	 *        Therefore, your array will be heapified by the values being pointed to, rather than the pointers' values.
 	 *        The auto-dereferencing behavior does not occur with smart pointers.
 	 */
-	int32 HeapPush(ElementType&& InItem)
+	SizeType HeapPush(ElementType&& InItem)
 	{
 		return HeapPush(MoveTempIfPossible(InItem), TLess<ElementType>());
 	}
@@ -2633,7 +2771,7 @@ public:
 	 *        Therefore, your array will be heapified by the values being pointed to, rather than the pointers' values.
 	 *        The auto-dereferencing behavior does not occur with smart pointers.
 	 */
-	int32 HeapPush(const ElementType& InItem)
+	SizeType HeapPush(const ElementType& InItem)
 	{
 		return HeapPush(InItem, TLess<ElementType>());
 	}
@@ -2753,7 +2891,7 @@ public:
 	 *        The auto-dereferencing behavior does not occur with smart pointers.
 	 */
 	template <class PREDICATE_CLASS>
-	void HeapRemoveAt(int32 Index, const PREDICATE_CLASS& Predicate, bool bAllowShrinking = true)
+	void HeapRemoveAt(SizeType Index, const PREDICATE_CLASS& Predicate, bool bAllowShrinking = true)
 	{
 		RemoveAtSwap(Index, 1, bAllowShrinking);
 
@@ -2773,7 +2911,7 @@ public:
 	 *        Therefore, your array will be heapified by the values being pointed to, rather than the pointers' values.
 	 *        The auto-dereferencing behavior does not occur with smart pointers.
 	 */
-	void HeapRemoveAt(int32 Index, bool bAllowShrinking = true)
+	void HeapRemoveAt(SizeType Index, bool bAllowShrinking = true)
 	{
 		HeapRemoveAt(Index, TLess< ElementType >(), bAllowShrinking);
 	}
@@ -2806,8 +2944,45 @@ public:
 	{
 		HeapSort(TLess<ElementType>());
 	}
+
+	const ElementAllocatorType& GetAllocatorInstance() const { return AllocatorInstance; }
+	ElementAllocatorType& GetAllocatorInstance() { return AllocatorInstance; }
 };
 
+
+namespace Freeze
+{
+	template<typename T, typename AllocatorType>
+	void IntrinsicWriteMemoryImage(FMemoryImageWriter& Writer, const TArray<T, AllocatorType>& Object, const FTypeLayoutDesc&)
+	{
+		Object.WriteMemoryImage(Writer);
+	}
+
+	template<typename T, typename AllocatorType>
+	void IntrinsicUnfrozenCopy(const FMemoryUnfreezeContent& Context, const TArray<T, AllocatorType>& Object, void* OutDst)
+	{
+		Object.CopyUnfrozen(Context, OutDst);
+	}
+
+	template<typename T, typename AllocatorType>
+	uint32 IntrinsicAppendHash(const TArray<T, AllocatorType>* DummyObject, const FTypeLayoutDesc& TypeDesc, const FPlatformTypeLayoutParameters& LayoutParams, FSHA1& Hasher)
+	{
+		// sizeof(TArray) changes depending on target platform 32bit vs 64bit
+		// For now, calculate the size manually
+		static_assert(sizeof(TArray<T, AllocatorType>) == sizeof(FMemoryImageUPtrInt) + sizeof(int32) + sizeof(int32), "Unexpected TArray size");
+		const uint32 SizeFromFields = LayoutParams.GetMemoryImagePointerSize() + sizeof(int32) + sizeof(int32);
+		return AppendHashForNameAndSize(TypeDesc.Name, SizeFromFields, Hasher);;
+	}
+
+	template<typename T, typename AllocatorType>
+	uint32 IntrinsicGetTargetAlignment(const TArray<T, AllocatorType>* DummyObject, const FTypeLayoutDesc& TypeDesc, const FPlatformTypeLayoutParameters& LayoutParams)
+	{
+		// Assume alignment of array is drive by pointer
+		return FMath::Min(LayoutParams.GetMemoryImagePointerSize(), LayoutParams.MaxFieldAlignment);
+	}
+}
+
+DECLARE_TEMPLATE_INTRINSIC_TYPE_LAYOUT((template <typename T, typename AllocatorType>), (TArray<T, AllocatorType>));
 
 template <typename InElementType, typename Allocator>
 struct TIsZeroConstructType<TArray<InElementType, Allocator>>
@@ -2828,7 +3003,6 @@ struct TIsContiguousContainer<TArray<T, Allocator>>
 	enum { Value = true };
 };
 
-
 /**
  * Traits class which determines whether or not a type is a TArray.
  */
@@ -2846,13 +3020,12 @@ template <typename InElementType, typename Allocator> struct TIsTArray<const vol
 template <typename T,typename Allocator> void* operator new( size_t Size, TArray<T,Allocator>& Array )
 {
 	check(Size == sizeof(T));
-	const int32 Index = Array.AddUninitialized(1);
+	const auto Index = Array.AddUninitialized(1);
 	return &Array[Index];
 }
-template <typename T,typename Allocator> void* operator new( size_t Size, TArray<T,Allocator>& Array, int32 Index )
+template <typename T,typename Allocator> void* operator new( size_t Size, TArray<T,Allocator>& Array, typename TArray<T, Allocator>::SizeType Index )
 {
 	check(Size == sizeof(T));
-	Array.InsertUninitialized(Index,1);
+	Array.InsertUninitialized(Index);
 	return &Array[Index];
 }
-

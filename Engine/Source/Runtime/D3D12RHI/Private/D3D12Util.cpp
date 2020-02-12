@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 /*=============================================================================
 D3D12Util.h: D3D RHI utility implementation.
@@ -30,12 +30,24 @@ D3D12Util.h: D3D RHI utility implementation.
 
 extern bool D3D12RHI_ShouldCreateWithD3DDebug();
 
+static FString GetUniqueName()
+{
+	static int64 ID = 0;
+	const int64 UniqueID = FPlatformAtomics::InterlockedIncrement(&ID);
+	const FString UniqueName = FString::Printf(TEXT("D3D12RHIObjectUniqueName%lld"), UniqueID);
+	return UniqueName;
+}
+
 void SetName(ID3D12Object* const Object, const TCHAR* const Name)
 {
 #if NAME_OBJECTS
-	if (Object)
+	if (Object && Name)
 	{
 		VERIFYD3D12RESULT(Object->SetName(Name));
+	}
+	else if (Object)
+	{
+		VERIFYD3D12RESULT(Object->SetName(*GetUniqueName()));
 	}
 #else
 	UNREFERENCED_PARAMETER(Object);
@@ -47,9 +59,13 @@ void SetName(FD3D12Resource* const Resource, const TCHAR* const Name)
 {
 #if NAME_OBJECTS
 	// Special case for FD3D12Resources because we also store the name as a member in FD3D12Resource
-	if (Resource)
+	if (Resource && Name)
 	{
 		Resource->SetName(Name);
+	}
+	else if (Resource)
+	{
+		Resource->SetName(*GetUniqueName());
 	}
 #else
 	UNREFERENCED_PARAMETER(Resource);
@@ -64,11 +80,12 @@ static FString GetD3D12DeviceHungErrorString(HRESULT ErrorCode)
 	switch (ErrorCode)
 	{
 		D3DERR(DXGI_ERROR_DEVICE_HUNG)
-			D3DERR(DXGI_ERROR_DEVICE_REMOVED)
-			D3DERR(DXGI_ERROR_DEVICE_RESET)
-			D3DERR(DXGI_ERROR_DRIVER_INTERNAL_ERROR)
-			D3DERR(DXGI_ERROR_INVALID_CALL)
-	default: ErrorCodeText = FString::Printf(TEXT("%08X"), (int32)ErrorCode);
+		D3DERR(DXGI_ERROR_DEVICE_REMOVED)
+		D3DERR(DXGI_ERROR_DEVICE_RESET)
+		D3DERR(DXGI_ERROR_DRIVER_INTERNAL_ERROR)
+		D3DERR(DXGI_ERROR_INVALID_CALL)
+		default:
+			ErrorCodeText = FString::Printf(TEXT("%08X"), (int32)ErrorCode);
 	}
 
 	return ErrorCodeText;
@@ -82,24 +99,28 @@ static FString GetD3D12ErrorString(HRESULT ErrorCode, ID3D12Device* Device)
 	{
 		D3DERR(S_OK);
 		D3DERR(D3D11_ERROR_FILE_NOT_FOUND)
-			D3DERR(D3D11_ERROR_TOO_MANY_UNIQUE_STATE_OBJECTS)
+		D3DERR(D3D11_ERROR_TOO_MANY_UNIQUE_STATE_OBJECTS)
 #if WITH_D3DX_LIBS
-			D3DERR(D3DERR_INVALIDCALL)
-			D3DERR(D3DERR_WASSTILLDRAWING)
+		D3DERR(D3DERR_INVALIDCALL)
+		D3DERR(D3DERR_WASSTILLDRAWING)
 #endif	//WITH_D3DX_LIBS
-			D3DERR(E_FAIL)
-			D3DERR(E_INVALIDARG)
-			D3DERR(E_OUTOFMEMORY)
-			D3DERR(DXGI_ERROR_INVALID_CALL)
-			D3DERR(E_NOINTERFACE)
-			D3DERR(DXGI_ERROR_DEVICE_REMOVED)
-	default: ErrorCodeText = FString::Printf(TEXT("%08X"), (int32)ErrorCode);
+		D3DERR(E_FAIL)
+		D3DERR(E_INVALIDARG)
+		D3DERR(E_OUTOFMEMORY)
+		D3DERR(DXGI_ERROR_INVALID_CALL)
+		D3DERR(E_NOINTERFACE)
+		D3DERR(DXGI_ERROR_DEVICE_REMOVED)
+#if PLATFORM_WINDOWS
+		EMBED_DXGI_ERROR_LIST(D3DERR, )
+#endif
+		default:
+			ErrorCodeText = FString::Printf(TEXT("%08X"), (int32)ErrorCode);
 	}
 
 	if (ErrorCode == DXGI_ERROR_DEVICE_REMOVED && Device)
 	{
 		HRESULT hResDeviceRemoved = Device->GetDeviceRemovedReason();
-		ErrorCodeText += FString(TEXT(" ")) + GetD3D12DeviceHungErrorString(hResDeviceRemoved);
+		ErrorCodeText += FString(TEXT(" with Reason: ")) + GetD3D12DeviceHungErrorString(hResDeviceRemoved);
 	}
 
 	return ErrorCodeText;
@@ -184,6 +205,11 @@ static FString GetD3D12TextureFlagString(uint32 TextureFlags)
 extern CORE_API bool GIsGPUCrashed;
 static void TerminateOnDeviceRemoved(HRESULT D3DResult)
 {
+	if (GDynamicRHI)
+	{
+		GDynamicRHI->CheckGpuHeartbeat();
+	}
+
 	if (D3DResult == DXGI_ERROR_DEVICE_REMOVED)
 	{
 		GIsGPUCrashed = true;
@@ -226,26 +252,25 @@ static void TerminateOnOutOfMemory(HRESULT D3DResult, bool bCreatingTextures)
 
 namespace D3D12RHI
 {
-	void VerifyD3D12Result(HRESULT D3DResult, const ANSICHAR* Code, const ANSICHAR* Filename, uint32 Line, ID3D12Device* Device)
+	void VerifyD3D12Result(HRESULT D3DResult, const ANSICHAR* Code, const ANSICHAR* Filename, uint32 Line, ID3D12Device* Device, FString Message)
 	{
 		check(FAILED(D3DResult));
 
 		const FString& ErrorString = GetD3D12ErrorString(D3DResult, Device);
-
-		UE_LOG(LogD3D12RHI, Error, TEXT("%s failed \n at %s:%u \n with error %s"), ANSI_TO_TCHAR(Code), ANSI_TO_TCHAR(Filename), Line, *ErrorString);
+		UE_LOG(LogD3D12RHI, Error, TEXT("%s failed \n at %s:%u \n with error %s\n%s"), ANSI_TO_TCHAR(Code), ANSI_TO_TCHAR(Filename), Line, *ErrorString, *Message);
 
 		TerminateOnDeviceRemoved(D3DResult);
 		TerminateOnOutOfMemory(D3DResult, false);
 
-		UE_LOG(LogD3D12RHI, Fatal, TEXT("%s failed \n at %s:%u \n with error %s"), ANSI_TO_TCHAR(Code), ANSI_TO_TCHAR(Filename), Line, *ErrorString);
+		UE_LOG(LogD3D12RHI, Fatal, TEXT("%s failed \n at %s:%u \n with error %s\n%s"), ANSI_TO_TCHAR(Code), ANSI_TO_TCHAR(Filename), Line, *ErrorString, *Message);
 	}
 
-	void VerifyD3D12CreateTextureResult(HRESULT D3DResult, const ANSICHAR* Code, const ANSICHAR* Filename, uint32 Line, uint32 SizeX, uint32 SizeY, uint32 SizeZ, uint8 Format, uint32 NumMips, uint32 Flags)
+	void VerifyD3D12CreateTextureResult(HRESULT D3DResult, const ANSICHAR* Code, const ANSICHAR* Filename, uint32 Line, const D3D12_RESOURCE_DESC& TextureDesc)
 	{
 		check(FAILED(D3DResult));
 
 		const FString ErrorString = GetD3D12ErrorString(D3DResult, 0);
-		const TCHAR* D3DFormatString = GetD3D12TextureFormatString((DXGI_FORMAT)Format);
+		const TCHAR* D3DFormatString = GetD3D12TextureFormatString(TextureDesc.Format);
 
 		UE_LOG(LogD3D12RHI, Error,
 			TEXT("%s failed \n at %s:%u \n with error %s, \n Size=%ix%ix%i Format=%s(0x%08X), NumMips=%i, Flags=%s"),
@@ -253,13 +278,13 @@ namespace D3D12RHI
 			ANSI_TO_TCHAR(Filename),
 			Line,
 			*ErrorString,
-			SizeX,
-			SizeY,
-			SizeZ,
+			TextureDesc.Width,
+			TextureDesc.Height,
+			TextureDesc.DepthOrArraySize,
 			D3DFormatString,
-			Format,
-			NumMips,
-			*GetD3D12TextureFlagString(Flags));
+			TextureDesc.Format,
+			TextureDesc.MipLevels,
+			*GetD3D12TextureFlagString(TextureDesc.Flags));
 
 		TerminateOnDeviceRemoved(D3DResult);
 		TerminateOnOutOfMemory(D3DResult, true);
@@ -278,13 +303,13 @@ namespace D3D12RHI
 			ANSI_TO_TCHAR(Filename),
 			Line,
 			*ErrorString,
-			SizeX,
-			SizeY,
-			SizeZ,
+			TextureDesc.Width,
+			TextureDesc.Height,
+			TextureDesc.DepthOrArraySize,
 			D3DFormatString,
-			Format,
-			NumMips,
-			*GetD3D12TextureFlagString(Flags));
+			TextureDesc.Format,
+			TextureDesc.MipLevels,
+			*GetD3D12TextureFlagString(TextureDesc.Flags));
 	}
 
 	void VerifyComRefCount(IUnknown* Object, int32 ExpectedRefs, const TCHAR* Code, const TCHAR* Filename, int32 Line)
@@ -405,6 +430,7 @@ void QuantizeBoundShaderState(
 
 #if D3D12_RHI_RAYTRACING
 void QuantizeBoundShaderState(
+	EShaderFrequency ShaderFrequency,
 	const D3D12_RESOURCE_BINDING_TIER& ResourceBindingTier,
 	const FD3D12RayTracingShader* const RayTracingShader,
 	FD3D12QuantizedBoundShaderState &OutQBSS
@@ -417,15 +443,43 @@ void QuantizeBoundShaderState(
 	FMemory::Memzero(&OutQBSS, sizeof(OutQBSS));
 	FShaderRegisterCounts& QBSSRegisterCounts = OutQBSS.RegisterCounts[SV_All];
 
-	QBSSRegisterCounts.SamplerCount = Counts.NumSamplers;
-	QBSSRegisterCounts.ShaderResourceCount = Counts.NumSRVs;
-	QBSSRegisterCounts.ConstantBufferCount = Counts.NumCBs;
-	QBSSRegisterCounts.UnorderedAccessCount = Counts.NumUAVs;
+	switch (ShaderFrequency)
+	{
+	case SF_RayGen:
 
-	check(QBSSRegisterCounts.SamplerCount < MAX_SAMPLERS);
-	check(QBSSRegisterCounts.ShaderResourceCount < MAX_SRVS);
-	check(QBSSRegisterCounts.ConstantBufferCount < MAX_CBS);
-	check(QBSSRegisterCounts.UnorderedAccessCount < MAX_UAVS);
+		// Shared conservative root signature layout is used for all raygen and miss shaders.
+
+		OutQBSS.RootSignatureType = RS_RayTracingGlobal;
+
+		QBSSRegisterCounts.SamplerCount = MAX_SAMPLERS;
+		QBSSRegisterCounts.ShaderResourceCount = MAX_SRVS;
+		QBSSRegisterCounts.ConstantBufferCount = MAX_CBS;
+		QBSSRegisterCounts.UnorderedAccessCount = MAX_UAVS;
+
+		break;
+
+	case SF_RayHitGroup:
+	case SF_RayCallable:
+	case SF_RayMiss:
+
+		// Local root signature is used for hit group shaders, using the exact number of resources to minimize shader binding table record size.
+
+		OutQBSS.RootSignatureType = RS_RayTracingLocal;
+
+		QBSSRegisterCounts.SamplerCount = Counts.NumSamplers;
+		QBSSRegisterCounts.ShaderResourceCount = Counts.NumSRVs;
+		QBSSRegisterCounts.ConstantBufferCount = Counts.NumCBs;
+		QBSSRegisterCounts.UnorderedAccessCount = Counts.NumUAVs;
+
+		check(QBSSRegisterCounts.SamplerCount <= MAX_SAMPLERS);
+		check(QBSSRegisterCounts.ShaderResourceCount <= MAX_SRVS);
+		check(QBSSRegisterCounts.ConstantBufferCount <= MAX_CBS);
+		check(QBSSRegisterCounts.UnorderedAccessCount <= MAX_UAVS);
+
+		break;
+	default:
+		checkNoEntry(); // Unexpected shader target frequency
+	}
 }
 #endif // D3D12_RHI_RAYTRACING
 

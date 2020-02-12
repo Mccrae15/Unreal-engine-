@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "LobbyBeaconPlayerState.h"
 #include "Net/UnrealNetwork.h"
@@ -18,9 +18,6 @@ void ALobbyBeaconPlayerState::PostInitializeComponents()
 {
 	Super::PostInitializeComponents();
 
-	if (Role == ROLE_Authority)
-	{
-	}
 }
 
 void ALobbyBeaconPlayerState::GetLifetimeReplicatedProps(TArray< FLifetimeProperty >& OutLifetimeProps) const
@@ -43,6 +40,14 @@ bool ALobbyBeaconPlayerState::IsNetRelevantFor(const AActor* RealViewer, const A
 bool ALobbyBeaconPlayerState::IsValid() const
 { 
 	return UniqueId.IsValid();
+}
+
+void ALobbyBeaconPlayerState::OnRep_UniqueId()
+{
+	if (UniqueIdReplicatedEvent.IsBound())
+	{
+		UniqueIdReplicatedEvent.Broadcast(UniqueId);
+	}
 }
 
 void ALobbyBeaconPlayerState::OnRep_PartyOwner()

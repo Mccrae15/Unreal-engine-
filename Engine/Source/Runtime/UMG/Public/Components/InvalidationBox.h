@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -70,8 +70,8 @@ protected:
 	 * this adds extra overhead to drawing them every frame.  However, in cases where
 	 * the position of the invalidation boxes changes every frame this can be a big savings.
 	 */
-	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category="Caching")
-	bool CacheRelativeTransforms;
+	UPROPERTY()
+	bool CacheRelativeTransforms_DEPRECATED;
 
 protected:
 	TSharedPtr<class SInvalidationPanel> MyInvalidationPanel;

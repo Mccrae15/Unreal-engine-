@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 /*=============================================================================
 	LinkerManager.h: Unreal object linker manager
@@ -10,10 +10,13 @@
 #include "UObject/ObjectMacros.h"
 #include "Misc/CoreMisc.h"
 #include "Misc/ScopeLock.h"
+#include "HAL/ThreadSafeBool.h"
 
 class FLinkerManager : private FSelfRegisteringExec
 {
 public:
+	FLinkerManager();
+	~FLinkerManager();
 
 	static FLinkerManager& Get();
 
@@ -91,9 +94,16 @@ public:
 	}
 
 #if !UE_BUILD_SHIPPING && !UE_BUILD_TEST
-	FORCEINLINE TArray<FLinkerLoad*>& GetLiveLinkers()
+	FORCEINLINE void AddLiveLinker(FLinkerLoad* Linker)
 	{
-		return LiveLinkers;
+		FScopeLock LiveLinkersLock(&LiveLinkersCritical);
+		LiveLinkers.Add(Linker);
+	}
+
+	FORCEINLINE void RemoveLiveLinker(FLinkerLoad* Linker)
+	{
+		FScopeLock LiveLinkersLock(&LiveLinkersCritical);
+		LiveLinkers.Remove(Linker);
 	}
 #endif
 
@@ -102,6 +112,9 @@ public:
 
 	/** Empty the loaders */
 	void ResetLoaders(UObject* InPkg);
+
+	/** Complete all loading (thumbnails/bulkdata) for the given Package */
+	void EnsureLoadingComplete(UPackage* Package);
 
 	/**
 	* Dissociates all linker import and forced export object references. This currently needs to
@@ -130,6 +143,7 @@ private:
 #endif
 #if !UE_BUILD_SHIPPING && !UE_BUILD_TEST
 	/** List of all the existing linker loaders **/
+	FCriticalSection LiveLinkersCritical;
 	TArray<FLinkerLoad*> LiveLinkers;
 #endif
 	
@@ -144,4 +158,5 @@ private:
 #if THREADSAFE_UOBJECTS
 	FCriticalSection PendingCleanupListCritical;
 #endif
+	FThreadSafeBool bHasPendingCleanup;
 };

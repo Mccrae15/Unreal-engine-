@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "Kismet/KismetMathLibrary.h"
 #include "EngineGlobals.h"
@@ -126,6 +126,16 @@ void UKismetMathLibrary::ReportError_ProjectVectorOnToVector()
 void UKismetMathLibrary::ReportError_Divide_Vector2DFloat()
 {
 	FFrame::KismetExecutionMessage(TEXT("Divide by zero: Divide_Vector2DFloat"), ELogVerbosity::Warning, DivideByZeroWarning);
+}
+
+void UKismetMathLibrary::ReportError_Divide_IntPointOnInt()
+{
+	FFrame::KismetExecutionMessage(TEXT("Divide by zero: Divide_IntPointInt"), ELogVerbosity::Warning, DivideByZeroWarning);
+}
+
+void UKismetMathLibrary::ReportError_Divide_IntPointOnIntPoint()
+{
+	FFrame::KismetExecutionMessage(TEXT("Divide by zero: Divide_IntPointIntPoint"), ELogVerbosity::Warning, DivideByZeroWarning);
 }
 
 void UKismetMathLibrary::ReportError_DaysInMonth()
@@ -283,6 +293,11 @@ float UKismetMathLibrary::FInterpEaseInOut(float A, float B, float Alpha, float 
 float UKismetMathLibrary::MakePulsatingValue(float InCurrentTime, float InPulsesPerSecond, float InPhase)
 {
 	return FMath::MakePulsatingValue((double)InCurrentTime, InPulsesPerSecond, InPhase);
+}
+
+float UKismetMathLibrary::SafeDivide(float A, float B)
+{
+	return (B != 0.0f) ? (A / B) : 0.0f;
 }
 
 void UKismetMathLibrary::MaxOfIntArray(const TArray<int32>& IntArray, int32& IndexOfMaxValue, int32& MaxValue)
@@ -568,6 +583,11 @@ bool UKismetMathLibrary::NearlyEqual_TransformTransform(const FTransform& A, con
 float UKismetMathLibrary::Transform_Determinant(const FTransform& Transform)
 {
 	return Transform.ToMatrixWithScale().Determinant();
+}
+
+FMatrix UKismetMathLibrary::Conv_TransformToMatrix(const FTransform& Tranform)
+{
+	return Tranform.ToMatrixWithScale();
 }
 
 bool UKismetMathLibrary::ClassIsChildOf(TSubclassOf<class UObject> TestClass, TSubclassOf<class UObject> ParentClass)
@@ -962,7 +982,7 @@ void UKismetMathLibrary::MinimumAreaRectangle(class UObject* WorldContextObject,
 	OutRectCenter /= InVerts.Num();
 
 	// Compute the convex hull of the sample points
-	ConvexHull2D::ComputeConvexHull(TransformedVerts, PolyVertIndices);
+	ConvexHull2D::ComputeConvexHullLegacy(TransformedVerts, PolyVertIndices);
 
 	// Minimum area rectangle as computed by http://www.geometrictools.com/Documentation/MinimumAreaRectangle.pdf
 	for (int32 Idx = 1; Idx < PolyVertIndices.Num() - 1; ++Idx)
@@ -1130,5 +1150,52 @@ float UKismetMathLibrary::PerlinNoise1D(const float Value)
 {
 	return FMath::PerlinNoise1D(Value);
 }
+
+float UKismetMathLibrary::WeightedMovingAverage_Float(float CurrentSample, float PreviousSample, float Weight)
+{
+	return FMath::WeightedMovingAverage(CurrentSample, PreviousSample, Weight);
+}
+
+FVector UKismetMathLibrary::WeightedMovingAverage_FVector(FVector CurrentSample, FVector PreviousSample, float Weight)
+{
+	FVector OutVector;
+	OutVector.X = FMath::WeightedMovingAverage(CurrentSample.X, PreviousSample.X, Weight);
+	OutVector.Y = FMath::WeightedMovingAverage(CurrentSample.Y, PreviousSample.Y, Weight);
+	OutVector.Z = FMath::WeightedMovingAverage(CurrentSample.Z, PreviousSample.Z, Weight);
+	return OutVector;
+}
+
+FRotator UKismetMathLibrary::WeightedMovingAverage_FRotator(FRotator CurrentSample, FRotator PreviousSample, float Weight)
+{
+	FRotator OutRotator;
+	OutRotator.Yaw = FMath::Clamp(FMath::WeightedMovingAverage(CurrentSample.Yaw, PreviousSample.Yaw, Weight), -180.f, 180.f);
+	OutRotator.Pitch = FMath::Clamp(FMath::WeightedMovingAverage(CurrentSample.Pitch, PreviousSample.Pitch, Weight), -180.f, 180.f);
+	OutRotator.Roll = FMath::Clamp(FMath::WeightedMovingAverage(CurrentSample.Roll, PreviousSample.Roll, Weight), -180.f, 180.f);
+	return OutRotator;
+}
+
+float UKismetMathLibrary::DynamicWeightedMovingAverage_Float(float CurrentSample, float PreviousSample, float MaxDistance, float MinWeight, float MaxWeight)
+{
+	return FMath::DynamicWeightedMovingAverage(CurrentSample, PreviousSample, MaxDistance, MinWeight, MaxWeight);
+}
+
+FVector UKismetMathLibrary::DynamicWeightedMovingAverage_FVector(FVector CurrentSample, FVector PreviousSample, float MaxDistance, float MinWeight, float MaxWeight)
+{
+	FVector OutVector;
+	OutVector.X = FMath::DynamicWeightedMovingAverage(CurrentSample.X, PreviousSample.X, MaxDistance, MinWeight, MaxWeight);
+	OutVector.Y = FMath::DynamicWeightedMovingAverage(CurrentSample.Y, PreviousSample.Y, MaxDistance, MinWeight, MaxWeight);
+	OutVector.Z = FMath::DynamicWeightedMovingAverage(CurrentSample.Z, PreviousSample.Z, MaxDistance, MinWeight, MaxWeight);
+	return OutVector;
+}
+
+FRotator UKismetMathLibrary::DynamicWeightedMovingAverage_FRotator(FRotator CurrentSample, FRotator PreviousSample, float MaxDistance, float MinWeight, float MaxWeight)
+{
+	FRotator OutRotator;
+	OutRotator.Yaw = FMath::Clamp(FMath::DynamicWeightedMovingAverage(CurrentSample.Yaw, PreviousSample.Yaw, MaxDistance, MinWeight, MaxWeight), -180.f, 180.f);
+	OutRotator.Pitch = FMath::Clamp(FMath::DynamicWeightedMovingAverage(CurrentSample.Pitch, PreviousSample.Pitch, MaxDistance, MinWeight, MaxWeight), -180.f, 180.f);
+	OutRotator.Roll = FMath::Clamp(FMath::DynamicWeightedMovingAverage(CurrentSample.Roll, PreviousSample.Roll, MaxDistance, MinWeight, MaxWeight), -180.f, 180.f);
+	return OutRotator;
+}
+
 
 #undef LOCTEXT_NAMESPACE

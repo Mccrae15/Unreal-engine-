@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -143,9 +143,10 @@ private:
 
 	FReply OnAnyDown();
 	
-	/** The movie streaming system that will be used by us */
-	TSharedPtr<IMovieStreamer> MovieStreamer;
-	
+	/** The movie streaming systems that will be used by us */
+	TArray<TSharedPtr<IMovieStreamer>> MovieStreamers;
+	TSharedPtr<IMovieStreamer> ActiveMovieStreamer;
+
 	/** The window that the loading screen resides in */
 	TWeakPtr<class SWindow> MainWindow;
 	/** The widget which includes all contents of the loading screen, widgets and movie player and all */

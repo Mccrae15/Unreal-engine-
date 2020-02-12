@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 #include "PropertyChangeListener.h"
 #include "UObject/UnrealType.h"
 #include "PropertyNode.h"
@@ -39,25 +39,16 @@ void FPropertyChangeListener::SetObject( UObject& Object, const FPropertyListene
 class FValueCache
 {
 public:
-	/**
-	 * A union which allows a single address to be represented as a pointer to a uint8
-	 * or a pointer to a UObject.
-	 */
-	union FPropertyValueRoot
-	{
-		UObject*	OwnerObject;
-		uint8*		ValueAddress;
-	};
 
 	FValueCache( TSharedRef<FPropertyNode> InPropertyNode, UObject* InOwnerObject )
 		: PropertyNode( InPropertyNode )
 	{
-		PropertyValueRoot.OwnerObject = InOwnerObject;
+		OwnerObject = InOwnerObject;
 
-		UProperty* Property = InPropertyNode->GetProperty();
+		FProperty* Property = InPropertyNode->GetProperty();
 
 		check(Property);
-		check(PropertyValueRoot.OwnerObject);
+		check(OwnerObject);
 
 		FPropertyNode* ParentNode = InPropertyNode->GetParentNode();
 	}
@@ -76,12 +67,12 @@ public:
 		Data.Reset();
 
 		FPropertyNode& PropertyNodeRef = *PropertyNode.Pin();
-		UProperty* Property = PropertyNodeRef.GetProperty();
+		FProperty* Property = PropertyNodeRef.GetProperty();
 		{
 			// Not supported yet
-			check( !Property->IsA( UArrayProperty::StaticClass() ) );
-			check( !Property->IsA( USetProperty::StaticClass() ) );
-			check( !Property->IsA( UMapProperty::StaticClass() ) );
+			check( !Property->IsA( FArrayProperty::StaticClass() ) );
+			check( !Property->IsA( FSetProperty::StaticClass() ) );
+			check( !Property->IsA( FMapProperty::StaticClass() ) );
 
 			if( PropertyNodeRef.GetArrayIndex() == INDEX_NONE && Property->ArrayDim > 1 )
 			{
@@ -107,7 +98,7 @@ public:
 	bool ScanForChanges( bool bRecacheNewValues )
 	{
 		FPropertyNode& PropertyNodeRef = *PropertyNode.Pin();
-		UProperty* Property = PropertyNodeRef.GetProperty();
+		FProperty* Property = PropertyNodeRef.GetProperty();
 		FPropertyValueAddresses PropertyValueAddresses = GetPropertyValueAddresses();
 
 		bool bPropertyValid = true;
@@ -115,14 +106,15 @@ public:
 
 		if ( PropertyValueAddresses.BaseAddress != nullptr && PropertyValueAddresses.Address != nullptr )
 		{
-			UArrayProperty* OuterArrayProperty = Cast<UArrayProperty>( Property->GetOuter() );
-			USetProperty* OuterSetProperty = Cast<USetProperty>( Property->GetOuter() );
-			UMapProperty* OuterMapProperty = Cast<UMapProperty>( Property->GetOuter() );
+			FArrayProperty* OuterArrayProperty = Property->GetOwner<FArrayProperty>();
+			FSetProperty* OuterSetProperty = Property->GetOwner<FSetProperty>();
+			FMapProperty* OuterMapProperty = Property->GetOwner<FMapProperty>();
 
 			if ( OuterArrayProperty != NULL )
 			{
 				// make sure we're not trying to compare against an element that doesn't exist
-				if ( PropertyNodeRef.GetArrayIndex() >= FScriptArrayHelper::Num( PropertyValueAddresses.BaseAddress ) )
+				FScriptArrayHelper ArrayHelper(OuterArrayProperty, PropertyValueAddresses.BaseAddress);
+				if ( PropertyNodeRef.GetArrayIndex() >= ArrayHelper.Num() )
 				{
 					bPropertyValid = false;
 				}
@@ -131,7 +123,8 @@ public:
 			{
 				FScriptSetHelper SetHelper(OuterSetProperty, PropertyValueAddresses.BaseAddress);
 				
-				if ( !SetHelper.IsValidIndex(PropertyNodeRef.GetArrayIndex()) )
+				bool bIsValidIndex = PropertyNodeRef.GetArrayIndex() >= 0 && PropertyNodeRef.GetArrayIndex() < SetHelper.Num();
+				if (!bIsValidIndex)
 				{
 					bPropertyValid = false;
 				}
@@ -140,7 +133,8 @@ public:
 			{
 				FScriptMapHelper MapHelper(OuterMapProperty, PropertyValueAddresses.BaseAddress);
 
-				if ( !MapHelper.IsValidIndex(PropertyNodeRef.GetArrayIndex()) )
+				bool bIsValidIndex = PropertyNodeRef.GetArrayIndex() >= 0 && PropertyNodeRef.GetArrayIndex() < MapHelper.Num();
+				if (!bIsValidIndex)
 				{
 					bPropertyValid = false;
 				}
@@ -184,20 +178,20 @@ private:
 	FPropertyValueAddresses GetPropertyValueAddresses()
 	{
 		FPropertyNode& PropertyNodeRef = *PropertyNode.Pin();
-		UProperty* Property = PropertyNodeRef.GetProperty();
+		FProperty* Property = PropertyNodeRef.GetProperty();
 
 		FPropertyNode* ParentNode = PropertyNodeRef.GetParentNode();
-		UArrayProperty* OuterArrayProp = Cast<UArrayProperty>( Property->GetOuter() );
-		USetProperty* OuterSetProp = Cast<USetProperty>( Property->GetOuter() );
-		UMapProperty* OuterMapProp = Cast<UMapProperty>( Property->GetOuter() );
+		FArrayProperty* OuterArrayProp = Property->GetOwner<FArrayProperty>();
+		FSetProperty* OuterSetProp = Property->GetOwner<FSetProperty>();
+		FMapProperty* OuterMapProp = Property->GetOwner<FMapProperty>();
 
 		FPropertyValueAddresses ValueAddresses;
 
 		ValueAddresses.BaseAddress = (OuterArrayProp == NULL && OuterSetProp == NULL && OuterMapProp == NULL)
-			? PropertyNodeRef.GetValueBaseAddress( PropertyValueRoot.ValueAddress )
-			: ParentNode->GetValueBaseAddress( PropertyValueRoot.ValueAddress );
+			? PropertyNodeRef.GetValueBaseAddressFromObject(OwnerObject)
+			: ParentNode->GetValueBaseAddressFromObject(OwnerObject);
 
-		ValueAddresses.Address = PropertyNodeRef.GetValueAddress( PropertyValueRoot.ValueAddress );
+		ValueAddresses.Address = PropertyNodeRef.GetValueAddressFromObject(OwnerObject);
 
 		return ValueAddresses;
 	}
@@ -213,7 +207,7 @@ private:
 	TWeakObjectPtr<UObject> CachedTopLevelObject;
 
 	/** The address of the owning object */
-	FPropertyValueRoot PropertyValueRoot;
+	UObject*	OwnerObject;
 };
 
 
@@ -240,6 +234,8 @@ bool FPropertyChangeListener::ScanForChanges( bool bRecacheNewValues )
 			TArray<UObject*> ObjectsThatChanged;
 			if (ObjectNode)
 			{
+				ObjectNode->PurgeKilledObjects();
+
 				for (auto It = ObjectNode->ObjectConstIterator(); It; ++It)
 				{
 					UObject* Obj = It->Get();
@@ -279,6 +275,8 @@ void FPropertyChangeListener::TriggerAllPropertiesChangedDelegate()
 		TArray<UObject*> ObjectsThatChanged;
 		if (ObjectNode)
 		{
+			ObjectNode->PurgeKilledObjects();
+
 			for (auto It = ObjectNode->ObjectConstIterator(); It; ++It)
 			{
 				UObject* Obj = It->Get();
@@ -300,22 +298,22 @@ void FPropertyChangeListener::TriggerAllPropertiesChangedDelegate()
 void FPropertyChangeListener::CreatePropertyCaches( TSharedRef<FPropertyNode>& PropertyNode, UObject* ParentObject )
 {
 	FObjectPropertyNode* ObjectNode = PropertyNode->AsObjectNode();
-	UProperty* Property = PropertyNode->GetProperty();
+	FProperty* Property = PropertyNode->GetProperty();
 
 	bool bIsBuiltInStructProp = PropertyEditorHelpers::IsBuiltInStructProperty( Property );
 
 	if( PropertyNode->AsItemPropertyNode() && Property )
 	{
 		// Check whether or not we should ignore object properties
-		bool bValidProperty = ( !PropertyListenerSettings.bIgnoreObjectProperties || !Property->IsA( UObjectPropertyBase::StaticClass() ) );
+		bool bValidProperty = ( !PropertyListenerSettings.bIgnoreObjectProperties || !Property->IsA( FObjectPropertyBase::StaticClass() ) );
 		// Check whether or not we should ignore array properties
-		bValidProperty &= ( !PropertyListenerSettings.bIgnoreArrayProperties || ! ( Property->IsA(UArrayProperty::StaticClass()) || Property->IsA(USetProperty::StaticClass()) || Property->IsA(UMapProperty::StaticClass()) ) );
+		bValidProperty &= ( !PropertyListenerSettings.bIgnoreArrayProperties || ! ( Property->IsA(FArrayProperty::StaticClass()) || Property->IsA(FSetProperty::StaticClass()) || Property->IsA(FMapProperty::StaticClass()) ) );
 		// Check whether or not the required property flags are set
 		bValidProperty &= ( PropertyListenerSettings.RequiredPropertyFlags == 0 || Property->HasAllPropertyFlags( PropertyListenerSettings.RequiredPropertyFlags ) );
 		// Check to make sure the disallowed property flags are not set
 		bValidProperty &= (PropertyListenerSettings.DisallowedPropertyFlags == 0 || !Property->HasAnyPropertyFlags( PropertyListenerSettings.DisallowedPropertyFlags ) );
 		// Only examine struct properties if they are built in (they are treated as whole units).  Otherwise just examine the children
-		bValidProperty &= ( bIsBuiltInStructProp || !Property->IsA( UStructProperty::StaticClass() ) );
+		bValidProperty &= ( bIsBuiltInStructProp || !Property->IsA( FStructProperty::StaticClass() ) );
 
 		if( bValidProperty )
 		{

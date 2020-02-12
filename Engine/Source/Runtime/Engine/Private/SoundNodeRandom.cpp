@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 
 #include "Sound/SoundNodeRandom.h"
@@ -15,6 +15,13 @@ FAutoConsoleVariableRef CVarMaxRandomBranches(
 	MaxRandomBranchesCVar,
 	TEXT("Sets the max amount of branches to play from for any random node. The rest of the branches will be released from memory.\n")
 	TEXT("0: No culling, Any other value: The amount of branches we should use as a maximum for any random node."),
+	ECVF_Default);
+
+static int32 PrimeRandomSoundNodesCVar = 0;
+FAutoConsoleVariableRef CVarPrimeRandomSoundNodes(
+	TEXT("au.streamcache.priming.PrimeRandomNodes"),
+	PrimeRandomSoundNodesCVar,
+	TEXT("When set to 1, sounds will be loaded into the cache automatically when a random node is hit.\n"),
 	ECVF_Default);
 
 /*-----------------------------------------------------------------------------
@@ -168,6 +175,10 @@ int32 USoundNodeRandom::DetermineAmountOfBranchesToPreselect()
 		// use the minimum of either:
 		AmountOfBranchesToPreselect = FMath::Min(PreselectAtLevelLoad, OverrideForAmountOfBranchesToPreselect);
 	}
+	else if (PreselectAtLevelLoad > 0)
+	{
+		AmountOfBranchesToPreselect = PreselectAtLevelLoad;
+	}
 	else
 	{
 		// Otherwise, just use the override:
@@ -185,6 +196,11 @@ void USoundNodeRandom::ParseNodes( FAudioDevice* AudioDevice, const UPTRINT Node
 	// Pick a random child node and save the index.
 	if (*RequiresInitialization)
 	{
+		if (PrimeRandomSoundNodesCVar != 0)
+		{
+			PrimeChildWavePlayers(true);
+		}
+
 		NodeIndex = ChooseNodeIndex(ActiveSound);
 		*RequiresInitialization = 0;
 	}

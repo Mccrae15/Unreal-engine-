@@ -1,14 +1,18 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "HAL/Allocators/PooledVirtualMemoryAllocator.h"
 #include "HAL/UnrealMemory.h"
 #include "Logging/LogMacros.h"
 #include "CoreGlobals.h"
 #include "HAL/LowLevelMemTracker.h"
-#include "Core/Public/Misc/AssertionMacros.h"
+#include "Misc/AssertionMacros.h"
+#include "Misc/ScopeLock.h"
+#include "Templates/AlignmentTemplates.h"
 #include "GenericPlatform/OSAllocationPool.h"
 
-using T64KBAlignedPool = TMemoryPool< FPlatformMemory::MemoryRangeCommit, FPlatformMemory::MemoryRangeDecommit, 65536 >;
+#if PLATFORM_HAS_FPlatformVirtualMemoryBlock
+
+using T64KBAlignedPool = TMemoryPool<65536>;
 
 /** Scale parameter used when growing the pools on allocation (and scaling them back), configurable from the commandline */
 float GVMAPoolScale = 1.4f;
@@ -41,7 +45,10 @@ void* FPooledVirtualMemoryAllocator::Allocate(SIZE_T Size)
 {
 	if (Size > Limits::MaxAllocationSizeToPool)
 	{
-		return FPlatformMemory::BinnedAllocFromOS(Size);
+		// do not report to LLM here, the platform functions will do that
+		FScopeLock Lock(&OsAllocatorCacheLock);
+		void* Ptr = OsAllocatorCache.Allocate(Size);
+		return Ptr;
 	}
 	else
 	{
@@ -95,7 +102,9 @@ void FPooledVirtualMemoryAllocator::Free(void* Ptr, SIZE_T Size)
 {
 	if (Size > Limits::MaxAllocationSizeToPool)
 	{
-		return FPlatformMemory::BinnedFreeToOS(Ptr, Size);
+		// do not report to LLM here, the platform functions will do that
+		FScopeLock Lock(&OsAllocatorCacheLock);
+		OsAllocatorCache.Free(Ptr, Size);
 	}
 	else
 	{
@@ -179,17 +188,19 @@ FPooledVirtualMemoryAllocator::FPoolDescriptorBase* FPooledVirtualMemoryAllocato
 	// now add the main memory requirements
 	TotalSize += AllocationSize * static_cast<SIZE_T>(NumPooledAllocations);
 
-	uint8* RawPtr = static_cast<uint8*>(FPlatformMemory::MemoryRangeReserve(TotalSize));
+	FPlatformMemory::FPlatformVirtualMemoryBlock VMBlock = FPlatformMemory::FPlatformVirtualMemoryBlock::AllocateVirtual(Align(TotalSize, FPlatformMemory::FPlatformVirtualMemoryBlock::GetVirtualSizeAlignment()));
+
+	uint8* RawPtr = static_cast<uint8*>(VMBlock.GetVirtualPointer());
 	if (RawPtr == nullptr)
 	{
 		return nullptr;
 	}    
 
 	// Commit the header so we can touch it
-	FPlatformMemory::MemoryRangeCommit(RawPtr, HeaderSize);
+	VMBlock.Commit(0, Align(HeaderSize, FPlatformMemory::FPlatformVirtualMemoryBlock::GetCommitAlignment()));
 	FPoolDescriptor* Ptr = reinterpret_cast<FPoolDescriptor*>(RawPtr);
 	// store the total size to deallocate
-	Ptr->TotalSize = TotalSize;
+	Ptr->VMSizeDivVirtualSizeAlignment = VMBlock.GetActualSizeInPages();
 
 	// find different offsets
 	uint8* PointerToPool = RawPtr + DescriptorSize;
@@ -198,7 +209,7 @@ FPooledVirtualMemoryAllocator::FPoolDescriptorBase* FPooledVirtualMemoryAllocato
 
 	uint8* AlignedMemoryForThePool = Align(MemoryAfterTheHeader, 65536);
 	Ptr->Pool = new (PointerToPool) T64KBAlignedPool(AllocationSize, reinterpret_cast<SIZE_T>(AlignedMemoryForThePool), NumPooledAllocations, 
-		PointerToBookkeepingMemory);
+		PointerToBookkeepingMemory, VMBlock);
 
 	return Ptr;
 }
@@ -212,12 +223,16 @@ void FPooledVirtualMemoryAllocator::DestroyPool(FPoolDescriptorBase* Pool)
 	// allocated with placement new, do not call delete
 	PoolDesc.Pool->~T64KBAlignedPool();
 
-	FPlatformMemory::MemoryRangeFree(Pool, Pool->TotalSize);
+	FPlatformMemory::FPlatformVirtualMemoryBlock VMBlock(Pool, (uint32)Pool->VMSizeDivVirtualSizeAlignment);
+	VMBlock.FreeVirtual();
 }
 
 void FPooledVirtualMemoryAllocator::FreeAll()
 {
-	// Currently, there's nothing to trim.
+	FScopeLock Lock(&OsAllocatorCacheLock);
+	OsAllocatorCache.FreeAll();
+
+	// Currently, there's nothing else to trim.
 	// We could avoid deleting pools on Free() and instead keep them in a separate list to delete on FreeAll() (unless they're reused before that).
 	// That would be a speed optimization and not a size optimization so I'm not going for this at this point, this method is speedy enough.
 };
@@ -242,3 +257,4 @@ uint64 FPooledVirtualMemoryAllocator::GetCachedFreeTotal()
 
 	return TotalFree;
 }
+#endif

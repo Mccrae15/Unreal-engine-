@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "TargetDeviceProxy.h"
 
@@ -15,7 +15,6 @@
 FTargetDeviceProxy::FTargetDeviceProxy(const FString& InName)
 	: Connected(false)
 	, Authorized(false)
-	, LastUpdateTime(0)
 	, Name(InName)
 	, SupportsMultiLaunch(false)
 	, SupportsPowerOff(false)
@@ -93,7 +92,7 @@ void FTargetDeviceProxy::UpdateFromMessage( const FTargetDeviceServicePong& Mess
 		}
 	}
 
-	LastUpdateTime = FDateTime::UtcNow();
+	PingTimeout.Reset();
 }
 
 
@@ -275,7 +274,7 @@ bool FTargetDeviceProxy::DeployApp(FName InVariant, const TMap<FString, FString>
 }
 
 
-bool FTargetDeviceProxy::LaunchApp(FName InVariant, const FString& AppId, EBuildConfigurations::Type BuildConfiguration, const FString& Params)
+bool FTargetDeviceProxy::LaunchApp(FName InVariant, const FString& AppId, EBuildConfiguration BuildConfiguration, const FString& Params)
 {
 	MessageEndpoint->Send(new FTargetDeviceServiceLaunchApp(InVariant, AppId, BuildConfiguration, Params), MessageAddress);
 

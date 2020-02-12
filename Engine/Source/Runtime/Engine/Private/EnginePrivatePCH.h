@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -211,7 +211,6 @@
 #include "Misc/SecureHash.h"
 #include "Containers/StaticArray.h"
 #include "Async/Future.h"
-#include "Templates/ScopedPointer.h"
 #include "Serialization/ArchiveProxy.h"
 #include "UObject/DebugSerializationFlags.h"
 #include "Math/SHMath.h"
@@ -446,7 +445,6 @@
 #include "BatchedElements.h"
 #include "GameFramework/Volume.h"
 #include "EngineGlobals.h"
-#include "Sound/SoundClass.h"
 #include "Audio.h"
 #include "Sound/SoundAttenuation.h"
 #include "IAudioExtensionPlugin.h"
@@ -484,7 +482,7 @@
 #include "GameFramework/OnlineReplStructs.h"
 #include "PhysicsEngine/BodySetupEnums.h"
 #include "Animation/AnimSequenceBase.h"
-#include "GenericOctreePublic.h"
+#include "Math/GenericOctreePublic.h"
 #include "Camera/PlayerCameraManager.h"
 #include "Camera/CameraShake.h"
 #include "GameFramework/ForceFeedbackEffect.h"

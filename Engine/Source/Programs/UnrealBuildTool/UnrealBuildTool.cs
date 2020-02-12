@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 using System;
 using System.Collections.Generic;
@@ -40,9 +40,14 @@ namespace UnrealBuildTool
 		static FileReference InstalledProjectFile;
 
 		/// <summary>
+		/// The path to UBT
+		/// </summary>
+		public static readonly FileReference UnrealBuildToolPath = FileReference.FindCorrectCase(new FileReference(Assembly.GetExecutingAssembly().GetOriginalLocation()));
+
+		/// <summary>
 		/// The full name of the Root UE4 directory
 		/// </summary>
-		public static readonly DirectoryReference RootDirectory = new DirectoryReference(Path.Combine(Path.GetDirectoryName(Assembly.GetExecutingAssembly().GetOriginalLocation()), "..", "..", ".."));
+		public static readonly DirectoryReference RootDirectory = DirectoryReference.Combine(UnrealBuildToolPath.Directory, "..", "..", "..");
 
 		/// <summary>
 		/// The full name of the Engine directory
@@ -80,6 +85,11 @@ namespace UnrealBuildTool
 		public static readonly DirectoryReference EngineSourceThirdPartyDirectory = DirectoryReference.Combine(EngineSourceDirectory, "ThirdParty");
 
 		/// <summary>
+		/// The full name of the Engine's PlatformExtensions directory
+		/// </summary>
+		public static readonly DirectoryReference EnginePlatformExtensionsDirectory = DirectoryReference.Combine(EngineDirectory, "Platforms");
+
+		/// <summary>
 		/// The full name of the Enterprise directory
 		/// </summary>
 		public static readonly DirectoryReference EnterpriseDirectory = DirectoryReference.Combine(RootDirectory, "Enterprise");
@@ -98,6 +108,82 @@ namespace UnrealBuildTool
 		/// The full name of the Enterprise/Intermediate directory
 		/// </summary>
 		public static readonly DirectoryReference EnterpriseIntermediateDirectory = DirectoryReference.Combine(EnterpriseDirectory, "Intermediate");
+
+		/// <summary>
+		/// Returns the root location of platform extensions within the given project
+		/// </summary>
+		/// <param name="ProjectDirectory">Location of the project on disk</param>
+		/// <returns>the root location of platform extensions within the given project</returns>
+		public static DirectoryReference ProjectPlatformExtensionsDirectory(DirectoryReference ProjectDirectory)
+		{
+			return DirectoryReference.Combine(ProjectDirectory, "Platforms");
+		}
+
+		/// <summary>
+		/// Returns the root location of platform extensions within the given project
+		/// </summary>
+		/// <param name="ProjectFile">Location of the .uproject file on disk</param>
+		/// <returns>the root location of platform extensions within the given project</returns>
+		public static DirectoryReference ProjectPlatformExtensionsDirectory(FileReference ProjectFile)
+		{
+			return ProjectPlatformExtensionsDirectory(ProjectFile.Directory);
+		}
+
+		/// <summary>
+		/// The main engine directory and all found platform extension engine directories
+		/// </summary>
+		public static DirectoryReference[] GetAllEngineDirectories(string Suffix="")
+		{
+			List<DirectoryReference> EngineDirectories = new List<DirectoryReference>() { DirectoryReference.Combine(EngineDirectory, Suffix) };
+			if (DirectoryReference.Exists(EnginePlatformExtensionsDirectory))
+			{
+				foreach (DirectoryReference PlatformDirectory in DirectoryReference.EnumerateDirectories(EnginePlatformExtensionsDirectory))
+				{
+					DirectoryReference PlatformEngineDirectory = DirectoryReference.Combine(PlatformDirectory, Suffix);
+					if (DirectoryReference.Exists(PlatformEngineDirectory))
+					{
+						EngineDirectories.Add(PlatformEngineDirectory);
+					}
+				}
+			}
+			return EngineDirectories.ToArray();
+		}
+
+		/// <summary>
+		/// Returns the main project directory and all found platform extension project directories, with
+		/// an optional subdirectory to look for within each location (ie, "Config" or "Source/Runtime")
+		/// </summary>
+		/// <param name="ProjectDirectory">Location of the project on disk</param>
+		/// <param name="Suffix">Optional subdirectory to look in for each location</param>
+		/// <returns>the main project directory and all found platform extension project directories</returns>
+		public static DirectoryReference[] GetAllProjectDirectories(DirectoryReference ProjectDirectory, string Suffix = "")
+		{
+			List<DirectoryReference> ProjectDirectories = new List<DirectoryReference>() { DirectoryReference.Combine(ProjectDirectory, Suffix) };
+			if (DirectoryReference.Exists(ProjectPlatformExtensionsDirectory(ProjectDirectory)))
+			{
+				foreach (DirectoryReference PlatformDirectory in DirectoryReference.EnumerateDirectories(ProjectPlatformExtensionsDirectory(ProjectDirectory), "*", SearchOption.TopDirectoryOnly))
+				{
+					DirectoryReference PlatformEngineDirectory = DirectoryReference.Combine(PlatformDirectory, Suffix);
+					if (DirectoryReference.Exists(PlatformEngineDirectory))
+					{
+						ProjectDirectories.Add(PlatformEngineDirectory);
+					}
+				}
+			}
+			return ProjectDirectories.ToArray();
+		}
+
+		/// <summary>
+		/// Returns the main project directory and all found platform extension project directories, with
+		/// an optional subdirectory to look for within each location (ie, "Config" or "Source/Runtime")
+		/// </summary>
+		/// <param name="ProjectFile">Location of the .uproject file on disk</param>
+		/// <param name="Suffix">Optional subdirectory to look in for each location</param>
+		/// <returns>the main project directory and all found platform extension project directories</returns>
+		public static DirectoryReference[] GetAllProjectDirectories(FileReference ProjectFile, string Suffix = "")
+		{
+			return GetAllProjectDirectories(ProjectFile.Directory, Suffix);
+		}
 
 		/// <summary>
 		/// The Remote Ini directory.  This should always be valid when compiling using a remote server.
@@ -197,7 +283,6 @@ namespace UnrealBuildTool
 		/// <returns>A string containing the path to the UBT assembly.</returns>
 		static public FileReference GetUBTPath()
 		{
-			FileReference UnrealBuildToolPath = new FileReference(Assembly.GetExecutingAssembly().GetOriginalLocation());
 			return UnrealBuildToolPath;
 		}
 
@@ -213,20 +298,6 @@ namespace UnrealBuildTool
 		static public void SetRemoteIniPath(string Path)
 		{
 			RemoteIniPath = Path;
-		}
-
-		/// <summary>
-		/// Determines whether a directory is part of the engine
-		/// </summary>
-		/// <param name="InDirectory"></param>
-		/// <returns>true if the directory is under of the engine directories, false if not</returns>
-		static public bool IsUnderAnEngineDirectory(DirectoryReference InDirectory)
-		{
-			// Enterprise modules are considered as engine modules
-			return InDirectory.IsUnderDirectory(UnrealBuildTool.EngineDirectory) 
-				|| InDirectory.IsUnderDirectory(UnrealBuildTool.EnterpriseSourceDirectory) 
-				|| InDirectory.IsUnderDirectory(UnrealBuildTool.EnterprisePluginsDirectory) 
-				|| InDirectory.IsUnderDirectory(UnrealBuildTool.EnterpriseIntermediateDirectory);
 		}
 
 		/// <summary>
@@ -278,6 +349,12 @@ namespace UnrealBuildTool
 			public bool bWaitMutex = false;
 
 			/// <summary>
+			/// Whether to wait for the mutex rather than aborting immediately
+			/// </summary>
+			[CommandLine(Prefix = "-RemoteIni")]
+			public string RemoteIni = "";
+
+			/// <summary>
 			/// The mode to execute
 			/// </summary>
 			[CommandLine]
@@ -303,6 +380,10 @@ namespace UnrealBuildTool
 			public GlobalOptions(CommandLineArguments Arguments)
 			{
 				Arguments.ApplyTo(this);
+				if (!string.IsNullOrEmpty(RemoteIni))
+				{
+					UnrealBuildTool.SetRemoteIniPath(RemoteIni);
+				}
 			}
 		}
 
@@ -399,22 +480,6 @@ namespace UnrealBuildTool
 					}
 				}
 
-				// Register all the build platforms
-				if((ModeOptions & ToolModeOptions.BuildPlatforms) != 0)
-				{
-					using(Timeline.ScopeEvent("UEBuildPlatform.RegisterPlatforms()"))
-					{
-						UEBuildPlatform.RegisterPlatforms(false);
-					}
-				}
-				if((ModeOptions & ToolModeOptions.BuildPlatformsForValidation) != 0)
-				{
-					using(Timeline.ScopeEvent("UEBuildPlatform.RegisterPlatforms()"))
-					{
-						UEBuildPlatform.RegisterPlatforms(true);
-					}
-				}
-
 				// Acquire a lock for this branch
 				if((ModeOptions & ToolModeOptions.SingleInstance) != 0 && !Options.bNoMutex)
 				{
@@ -425,9 +490,39 @@ namespace UnrealBuildTool
 					}
 				}
 
+				// Register all the build platforms
+				if((ModeOptions & ToolModeOptions.BuildPlatforms) != 0)
+				{
+					using(Timeline.ScopeEvent("UEBuildPlatform.RegisterPlatforms()"))
+					{
+						UEBuildPlatform.RegisterPlatforms(false, false);
+					}
+				}
+				if ((ModeOptions & ToolModeOptions.BuildPlatformsHostOnly) != 0)
+				{
+					using (Timeline.ScopeEvent("UEBuildPlatform.RegisterPlatforms()"))
+					{
+						UEBuildPlatform.RegisterPlatforms(false, true);
+					}
+				}
+				if ((ModeOptions & ToolModeOptions.BuildPlatformsForValidation) != 0)
+				{
+					using(Timeline.ScopeEvent("UEBuildPlatform.RegisterPlatforms()"))
+					{
+						UEBuildPlatform.RegisterPlatforms(true, false);
+					}
+				}
+
 				// Create the appropriate handler
 				ToolMode Mode = (ToolMode)Activator.CreateInstance(ModeType);
-				return Mode.Execute(Arguments);
+
+				// Execute the mode
+				int Result = Mode.Execute(Arguments);
+				if((ModeOptions & ToolModeOptions.ShowExecutionTime) != 0)
+				{
+					Log.TraceInformation("Total execution time: {0:0.00} seconds", Timeline.Elapsed.TotalSeconds);
+				}
+				return Result;
 			}
 			catch (CompilationResultException Ex)
 			{
@@ -438,25 +533,19 @@ namespace UnrealBuildTool
 			catch (BuildException Ex)
 			{
 				// BuildExceptions should have nicely formatted messages. We can log these directly.
-				Log.TraceError(Ex.Message.ToString());
+				Log.TraceError(ExceptionUtils.FormatException(Ex));
 				Log.TraceLog(ExceptionUtils.FormatExceptionDetails(Ex));
 				return (int)CompilationResult.OtherCompilationError;
 			}
 			catch (Exception Ex)
 			{
 				// Unhandled exception. 
-				Log.TraceError("Unhandled exception: {0}", Ex);
+				Log.TraceError("Unhandled exception: {0}", ExceptionUtils.FormatException(Ex));
 				Log.TraceLog(ExceptionUtils.FormatExceptionDetails(Ex));
 				return (int)CompilationResult.OtherCompilationError;
 			}
 			finally
 			{
-				// Dispose of the mutex
-				if(Mutex != null)
-				{
-					Mutex.Dispose();
-				}
-
 				// Cancel the prefetcher
 				using(Timeline.ScopeEvent("FileMetadataPrefetch.Stop()"))
 				{
@@ -468,6 +557,12 @@ namespace UnrealBuildTool
 
 				// Make sure we flush the logs however we exit
 				Trace.Close();
+
+				// Dispose of the mutex. Must be done last to ensure that another process does not startup and start trying to write to the same log file.
+				if(Mutex != null)
+				{
+					Mutex.Dispose();
+				}
 			}
 		}
 	}

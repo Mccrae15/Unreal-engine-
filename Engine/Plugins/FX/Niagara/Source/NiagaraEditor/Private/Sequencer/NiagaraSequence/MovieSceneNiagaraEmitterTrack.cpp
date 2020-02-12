@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "MovieSceneNiagaraEmitterTrack.h"
 #include "NiagaraEmitterHandle.h"
@@ -14,6 +14,7 @@
 #include "NiagaraScriptSource.h"
 #include "ViewModels/Stack/NiagaraStackGraphUtilities.h"
 #include "NiagaraEditorStyle.h"
+#include "Sections/MovieSceneNiagaraEmitterSection.h"
 
 #include "ISequencerSection.h"
 #include "SequencerSectionPainter.h"
@@ -72,6 +73,7 @@ TSharedRef<ISequencerSection> UMovieSceneNiagaraEmitterSectionBase::MakeInvalidS
 UMovieSceneNiagaraEmitterTrack::UMovieSceneNiagaraEmitterTrack(const FObjectInitializer& ObjectInitializer)
 	: Super(ObjectInitializer)
 {
+	bSectionsWereModified = false;
 }
 
 void UMovieSceneNiagaraEmitterTrack::Initialize(FNiagaraSystemViewModel& InSystemViewModel, TSharedRef<FNiagaraEmitterHandleViewModel> InEmitterHandleViewModel, const FFrameRate& InFrameResolution)
@@ -81,6 +83,7 @@ void UMovieSceneNiagaraEmitterTrack::Initialize(FNiagaraSystemViewModel& InSyste
 	EmitterHandleViewModel = InEmitterHandleViewModel;
 	SetDisplayName(InEmitterHandleViewModel->GetNameText());
 	EmitterHandleId = InEmitterHandleViewModel->GetId();
+	SystemPath = SystemViewModel->GetSystem().GetPathName();
 	SetColorTint(FNiagaraEditorStyle::Get().GetColor("NiagaraEditor.NiagaraSequence.DefaultTrackColor").ToFColor(true));
 	CreateSections(InFrameResolution);
 }
@@ -154,14 +157,37 @@ void UMovieSceneNiagaraEmitterTrack::UpdateEmitterHandleFromTrackChange(const FF
 	}
 }
 
+bool UMovieSceneNiagaraEmitterTrack::GetSectionsWereModified() const
+{
+	return bSectionsWereModified;
+}
+
 bool UMovieSceneNiagaraEmitterTrack::HasSection(const UMovieSceneSection& Section) const
 {
 	return Sections.Contains(&Section);
 }
 
+void UMovieSceneNiagaraEmitterTrack::AddSection(UMovieSceneSection& Section)
+{
+	Sections.Add(&Section);
+	bSectionsWereModified = true;
+}
+
+bool UMovieSceneNiagaraEmitterTrack::SupportsType(TSubclassOf<UMovieSceneSection> SectionClass) const
+{
+	return SectionClass == UMovieSceneNiagaraEmitterSection::StaticClass();
+}
+
 void UMovieSceneNiagaraEmitterTrack::RemoveSection(UMovieSceneSection& Section)
 {
 	Sections.Remove(&Section);
+	bSectionsWereModified = true;
+}
+
+void UMovieSceneNiagaraEmitterTrack::RemoveSectionAt(int32 SectionIndex)
+{
+	Sections.RemoveAt(SectionIndex);
+	bSectionsWereModified = true;
 }
 
 bool UMovieSceneNiagaraEmitterTrack::IsEmpty() const
@@ -182,6 +208,11 @@ bool UMovieSceneNiagaraEmitterTrack::SupportsMultipleRows() const
 FGuid UMovieSceneNiagaraEmitterTrack::GetEmitterHandleId() const
 {
 	return EmitterHandleId;
+}
+
+const FString& UMovieSceneNiagaraEmitterTrack::GetSystemPath() const
+{
+	return SystemPath;
 }
 
 const TArray<FText>& UMovieSceneNiagaraEmitterTrack::GetSectionInitializationErrors() const
@@ -254,6 +285,7 @@ void UMovieSceneNiagaraEmitterTrack::CreateSections(const FFrameRate& InFrameRes
 	}
 
 	UpdateTrackFromEmitterParameterChange(InFrameResolution);
+	bSectionsWereModified = false;
 }
 
 #undef LOCTEXT_NAMESPACE

@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -20,6 +20,15 @@ class ENGINE_API ULocalPlayerSubsystem : public USubsystem
 public:
 	ULocalPlayerSubsystem();
 
-	ULocalPlayer* GetLocalPlayer() const;
+	template<typename LocalPlayerType = ULocalPlayer>
+	LocalPlayerType* GetLocalPlayer() const
+	{
+		return Cast<LocalPlayerType>(GetOuter());
+	}
 
+	template<typename LocalPlayerType = ULocalPlayer>
+	LocalPlayerType* GetLocalPlayerChecked() const
+	{
+		return CastChecked<LocalPlayerType>(GetOuter());
+	}
 };

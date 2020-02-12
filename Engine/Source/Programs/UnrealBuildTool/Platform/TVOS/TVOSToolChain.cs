@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 
 using System;
@@ -26,7 +26,7 @@ namespace UnrealBuildTool
 	class TVOSToolChain : IOSToolChain
 	{
 		public TVOSToolChain(ReadOnlyTargetRules InTarget, TVOSProjectSettings InProjectSettings)
-			: base(CppPlatform.TVOS, InTarget, InProjectSettings, () => new TVOSToolChainSettings())
+			: base(InTarget, InProjectSettings, () => new TVOSToolChainSettings())
 		{
 		}
 

@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 #include "CoreMinimal.h"
@@ -24,7 +24,7 @@ namespace UtilityHelpers
 	}
 
 	template <typename Predicate>
-	FTransform GetBaseTransformByMode(ETransformSpaceMode TransformSpaceMode, Predicate TransformGetter, const FName& ParentName, const FName& BaseJoint, const FTransform& BaseTransform)
+	FTransform GetBaseTransformByMode(ETransformSpaceMode TransformSpaceMode, Predicate TransformGetter, const FName& ParentName, const FName& BaseBone, const FTransform& BaseTransform)
 	{
 		switch (TransformSpaceMode)
 		{
@@ -38,7 +38,7 @@ namespace UtilityHelpers
 		}
 		case ETransformSpaceMode::BaseJoint:
 		{
-			return TransformGetter(BaseJoint);
+			return TransformGetter(BaseBone);
 		}
 		case ETransformSpaceMode::GlobalSpace:
 		default:

@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 using UnrealBuildTool;
 using System.Diagnostics;
@@ -17,25 +17,27 @@ public class AlembicLib : ModuleRules
             string LibDir = ModuleDirectory + "/AlembicDeploy/";
             string Platform;
             bool bAllowDynamicLibs = true;
-            switch (Target.Platform)
-            {
-                case UnrealTargetPlatform.Win64:
-                    Platform = "x64";
-                    LibDir += "VS" + Target.WindowsPlatform.GetVisualStudioCompilerVersionName() + "/";
-                    break;
-                case UnrealTargetPlatform.Mac:
-                    Platform = "Mac";
-                    bAllowDynamicLibs = false;
-                    break;
-                case UnrealTargetPlatform.Linux:
-                    Platform = "Linux";
-                    bAllowDynamicLibs = false;
-                    break;
-                default:
-                    return;
+			if (Target.Platform == UnrealTargetPlatform.Win64)
+			{
+				Platform = "x64";
+				LibDir += "VS" + Target.WindowsPlatform.GetVisualStudioCompilerVersionName() + "/";
+			}
+			else if (Target.Platform == UnrealTargetPlatform.Mac)
+			{
+				Platform = "Mac";
+				bAllowDynamicLibs = false;
+			}
+			else if (Target.Platform == UnrealTargetPlatform.Linux)
+			{ 
+				Platform = "Linux";
+				bAllowDynamicLibs = false;
             }
+			else
+			{
+				// unsupported
+				return;
+			}
             LibDir = LibDir + "/" + Platform + "/lib/";
-            PublicLibraryPaths.Add(LibDir);
 
             string LibPostFix = bDebug && bAllowDynamicLibs ? "d" : "";
             string LibExtension = (Target.Platform == UnrealTargetPlatform.Mac || Target.Platform == UnrealTargetPlatform.Linux) ? ".a" : ".lib";
@@ -59,17 +61,17 @@ public class AlembicLib : ModuleRules
                 });
                 foreach (string LibraryName in ReqLibraryNames)
                 {
-                    PublicAdditionalLibraries.Add(LibraryName + LibPostFix + LibExtension);
+                    PublicAdditionalLibraries.Add(LibDir + LibraryName + LibPostFix + LibExtension);
                 }
 
                 if (Target.bDebugBuildsActuallyUseDebugCRT && bDebug)
                 {
-                    RuntimeDependencies.Add("$(EngineDir)/Plugins/Experimental/AlembicImporter/Binaries/Win64/zlibd1.dll");
-                    RuntimeDependencies.Add("$(EngineDir)/Plugins/Experimental/AlembicImporter/Binaries/Win64/hdf5_D.dll");
+                    RuntimeDependencies.Add("$(BinaryOutputDir)/zlibd1.dll", "$(ModuleDir)/Binaries/Win64/zlibd1.dll", StagedFileType.NonUFS);
+                    RuntimeDependencies.Add("$(BinaryOutputDir)/hdf5_D.dll", "$(ModuleDir)/Binaries/Win64/hdf5_D.dll", StagedFileType.NonUFS);
                 }
                 else
                 {
-                    RuntimeDependencies.Add("$(EngineDir)/Plugins/Experimental/AlembicImporter/Binaries/Win64/hdf5.dll");
+                    RuntimeDependencies.Add("$(BinaryOutputDir)/hdf5.dll", "$(ModuleDir)/Binaries/Win64/hdf5.dll", StagedFileType.NonUFS);
                 }
             }
             else if (Target.Platform == UnrealTargetPlatform.Mac)

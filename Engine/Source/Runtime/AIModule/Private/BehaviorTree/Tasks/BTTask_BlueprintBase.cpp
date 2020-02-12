@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "BehaviorTree/Tasks/BTTask_BlueprintBase.h"
 #include "AIController.h"
@@ -97,20 +97,29 @@ EBTNodeResult::Type UBTTask_BlueprintBase::AbortTask(UBehaviorTreeComponent& Own
 
 void UBTTask_BlueprintBase::TickTask(UBehaviorTreeComponent& OwnerComp, uint8* NodeMemory, float DeltaSeconds)
 {
-	if (AIOwner != nullptr && (ReceiveTickImplementations & FBTNodeBPImplementationHelper::AISpecific))
+	if (TickInterval.Tick(DeltaSeconds))
 	{
-		ReceiveTickAI(AIOwner, AIOwner->GetPawn(), DeltaSeconds);
-	}
-	else if (ReceiveTickImplementations & FBTNodeBPImplementationHelper::Generic)
-	{
-		ReceiveTick(ActorOwner, DeltaSeconds);
+		DeltaSeconds = TickInterval.GetElapsedTimeWithFallback(DeltaSeconds);
+
+		if (AIOwner != nullptr && (ReceiveTickImplementations & FBTNodeBPImplementationHelper::AISpecific))
+		{
+			ReceiveTickAI(AIOwner, AIOwner->GetPawn(), DeltaSeconds);
+		}
+		else if (ReceiveTickImplementations & FBTNodeBPImplementationHelper::Generic)
+		{
+			ReceiveTick(ActorOwner, DeltaSeconds);
+		}
+
+		TickInterval.Reset();
 	}
 }
 
 void UBTTask_BlueprintBase::OnTaskFinished(UBehaviorTreeComponent& OwnerComp, uint8* NodeMemory, EBTNodeResult::Type TaskResult)
 {
 	Super::OnTaskFinished(OwnerComp, NodeMemory, TaskResult);
-	
+
+	TickInterval.Set(0); // so that we tick as soon as enabled back
+
 	if (TaskResult != EBTNodeResult::InProgress)
 	{
 		BlueprintNodeHelpers::AbortLatentActions(OwnerComp, *this);
@@ -181,7 +190,11 @@ void UBTTask_BlueprintBase::SetFinishOnMessageWithId(FName MessageName, int32 Re
 
 FString UBTTask_BlueprintBase::GetStaticDescription() const
 {
-	FString ReturnDesc = Super::GetStaticDescription();
+	FString ReturnDesc =
+#if WITH_EDITORONLY_DATA
+		CustomDescription.Len() ? CustomDescription :
+#endif // WITH_EDITORONLY_DATA
+		Super::GetStaticDescription();
 
 	UBTTask_BlueprintBase* CDO = (UBTTask_BlueprintBase*)(GetClass()->GetDefaultObject());
 	if (bShowPropertyDetails && CDO)

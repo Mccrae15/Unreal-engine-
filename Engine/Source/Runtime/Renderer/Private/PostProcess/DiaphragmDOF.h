@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 /*=============================================================================
 	PostProcessDOF.h: Post process Depth of Field implementation.
@@ -10,13 +10,19 @@
 #include "RendererInterface.h"
 #include "PostProcess/PostProcessing.h"
 
-
-// Whitelist diaphragm DOF for platforms that actually have been tested.
-#define WITH_DIAPHRAGM_DOF (PLATFORM_WINDOWS || PLATFORM_XBOXONE || PLATFORM_PS4 || PLATFORM_MAC || PLATFORM_LINUX || PLATFORM_IOS || PLATFORM_SWITCH)
+class FViewInfo;
+class FSceneTextureParameters;
+struct FTemporalAAHistory;
 
 
 namespace DiaphragmDOF
 {
+
+// Whether DOF is enabled for the requested view.
+bool IsEnabled(const FViewInfo& View);
+
+float ComputeFocalLengthFromFov(const FSceneView& View);
+FVector4 CircleDofHalfCoc(const FViewInfo& View);
 
 /** Physically based circle of confusion computation model. */
 struct FPhysicalCocModel
@@ -109,13 +115,8 @@ struct FBokehModel
 
 
 /** Returns whether DOF is supported. */
-inline bool IsSupported(EShaderPlatform ShaderPlatform)
+inline bool IsSupported(const FStaticShaderPlatform ShaderPlatform)
 {
-	// Since this is still prototype, only allow it on D3D.
-	#if !WITH_DIAPHRAGM_DOF
-		return false;
-	#endif
-
 	// Only compile diaphragm DOF on platform it has been tested to ensure this is not blocking anyone else.
 	return 
 		ShaderPlatform == SP_PCD3D_SM5 ||
@@ -123,11 +124,17 @@ inline bool IsSupported(EShaderPlatform ShaderPlatform)
 		ShaderPlatform == SP_PS4 ||
 		IsVulkanSM5Platform(ShaderPlatform) ||
 		IsMetalSM5Platform(ShaderPlatform) ||
-		ShaderPlatform == SP_SWITCH;
+		ShaderPlatform == SP_SWITCH ||
+		FDataDrivenShaderPlatformInfo::GetSupportsDiaphragmDOF(ShaderPlatform);
 }
 
 
-/** Wire all DOF's passes according to view settings and cvars to convolve the scene color (Context.FinalOutput). */
-RENDERER_API bool WireSceneColorPasses(FPostprocessContext& Context, const FRenderingCompositeOutputRef& VelocityInput, const FRenderingCompositeOutputRef& SeparateTranslucency);
+/** Wire all DOF's passes according to view settings and cvars to convolve the scene color. */
+RENDERER_API FRDGTextureRef AddPasses(
+	FRDGBuilder& GraphBuilder,
+	const FSceneTextureParameters& SceneTextures,
+	const FViewInfo& View,
+	FRDGTextureRef InputSceneColor,
+	FRDGTextureRef SeparateTranslucency);
 
-}
+} // namespace DiaphragmDOF

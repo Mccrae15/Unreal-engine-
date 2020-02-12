@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "PlacementMode.h"
 #include "EditorViewportClient.h"
@@ -13,7 +13,8 @@
 #include "ScopedTransaction.h"
 
 #include "Toolkits/ToolkitManager.h"
-#include "ILevelViewport.h"
+#include "IAssetViewport.h"
+#include "Classes/EditorStyleSettings.h"
 
 FPlacementMode::FPlacementMode()
 	: AssetsToPlace()
@@ -30,13 +31,11 @@ FPlacementMode::~FPlacementMode()
 
 void FPlacementMode::Initialize()
 {
-	//GConfig->GetFloat(TEXT("PlacementMode"), TEXT("AssetThumbnailScale"), AssetThumbnailScale, GEditorPerProjectIni);
-	//GConfig->GetBool( TEXT( "PlacementMode" ), TEXT( "ShowOtherDeveloperAssets" ), ShowOtherDeveloperAssets, GEditorPerProjectIni );
 }
 
 bool FPlacementMode::UsesToolkits() const
 {
-	return true;
+	return GetDefault<UEditorStyleSettings>()->bEnableLegacyEditorModeUI;
 }
 
 void FPlacementMode::Enter()
@@ -44,7 +43,8 @@ void FPlacementMode::Enter()
 	// Call parent implementation
 	FEdMode::Enter();
 
-	if ( !Toolkit.IsValid() )
+	
+	if(!Toolkit.IsValid() && GetDefault<UEditorStyleSettings>()->bEnableLegacyEditorModeUI)
 	{
 		Toolkit = MakeShareable( new FPlacementModeToolkit );
 		Toolkit->Init(Owner->GetToolkitHost());
@@ -96,10 +96,10 @@ void FPlacementMode::Tick(FEditorViewportClient* ViewportClient,float DeltaTime)
 			if(LevelEditorModule != NULL)
 			{
 				TSharedPtr<ILevelEditor> LevelEditor = LevelEditorModule->GetFirstLevelEditor();
-				const TArray< TSharedPtr<ILevelViewport> >& LevelViewports = LevelEditor->GetViewports();
+				const TArray< TSharedPtr<IAssetViewport> >& LevelViewports = LevelEditor->GetViewports();
 				for(auto It(LevelViewports.CreateConstIterator()); !HasValidFocusTarget && It; It++)
 				{
-					const TSharedPtr<ILevelViewport>& Viewport = *It;
+					const TSharedPtr<IAssetViewport>& Viewport = *It;
 					const TSharedPtr<const SWidget> ViewportWidget = Viewport->AsWidget();
 					HasValidFocusTarget = ViewportWidget->HasKeyboardFocus() || ViewportWidget->HasFocusedDescendants();
 				}
@@ -449,8 +449,6 @@ bool FPlacementMode::UsesPropertyWidgets() const
 bool FPlacementMode::IsCompatibleWith(FEditorModeID OtherModeID) const
 {
 	return
-		OtherModeID == FBuiltinEditorModes::EM_Bsp			||
-		OtherModeID == FBuiltinEditorModes::EM_Geometry		||
 		OtherModeID == FBuiltinEditorModes::EM_InterpEdit	||
 		OtherModeID == FBuiltinEditorModes::EM_MeshPaint	||
 		OtherModeID == FBuiltinEditorModes::EM_Foliage		||

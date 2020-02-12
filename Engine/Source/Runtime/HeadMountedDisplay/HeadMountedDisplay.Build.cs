@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 using UnrealBuildTool;
 
@@ -29,7 +29,6 @@ public class HeadMountedDisplay : ModuleRules
                 "RHI",
                 "Renderer",
                 "RenderCore",
-                "UtilityShaders",
                 "Analytics",
                 "EngineSettings",
             }

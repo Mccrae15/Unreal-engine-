@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 /*=============================================================================
 	EditorExporters.cpp: Editor exporters.
@@ -59,8 +59,8 @@
 #include "Editor.h"
 #include "MatineeExporter.h"
 #include "FbxExporter.h"
-#include "MeshDescription.h"
-#include "MeshDescriptionOperations.h"
+#include "StaticMeshAttributes.h"
+#include "StaticMeshOperations.h"
 #include "MaterialUtilities.h"
 #include "InstancedFoliageActor.h"
 #include "LandscapeProxy.h"
@@ -217,12 +217,12 @@ bool USoundSurroundExporterWAV::SupportsObject(UObject* Object) const
 	return bSupportsObject;
 }
 
-int32 USoundSurroundExporterWAV::GetFileCount( void ) const
+int32 USoundSurroundExporterWAV::GetFileCount( UObject* Object ) const
 {
 	return( SPEAKER_Count );
 }
 
-FString USoundSurroundExporterWAV::GetUniqueFilename( const TCHAR* Filename, int32 FileIndex )
+FString USoundSurroundExporterWAV::GetUniqueFilename( const TCHAR* Filename, int32 FileIndex, int32 FileCount )
 {
 	static FString SpeakerLocations[SPEAKER_Count] =
 	{
@@ -847,19 +847,23 @@ static void AddActorToOBJs(AActor* Actor, TArray<FOBJGeom*>& Objects, TSet<UMate
 			OBJGeom->Faces.AddZeroed( FMath::Square(ComponentSizeQuads) * 2 );
 
 			// Check if there are any holes
-			TArray<uint8> RawVisData;
+			TArray64<uint8> RawVisData;
 			uint8* VisDataMap = NULL;
 			int32 TexIndex = INDEX_NONE;
 			int32 WeightMapSize = (SubsectionSizeQuads + 1) * Component->NumSubsections;
 			int32 ChannelOffsets[4] = {(int32)STRUCT_OFFSET(FColor,R),(int32)STRUCT_OFFSET(FColor,G),(int32)STRUCT_OFFSET(FColor,B),(int32)STRUCT_OFFSET(FColor,A)};
 
-			for( int32 AllocIdx=0;AllocIdx < Component->WeightmapLayerAllocations.Num(); AllocIdx++ )
+			TArray<FWeightmapLayerAllocationInfo>& ComponentWeightmapLayerAllocations = Component->GetWeightmapLayerAllocations();
+			TArray<UTexture2D*>& ComponentWeightmapTextures = Component->GetWeightmapTextures();
+
+			for( int32 AllocIdx=0;AllocIdx < ComponentWeightmapLayerAllocations.Num(); AllocIdx++ )
 			{
-				FWeightmapLayerAllocationInfo& AllocInfo = Component->WeightmapLayerAllocations[AllocIdx];
+				FWeightmapLayerAllocationInfo& AllocInfo = ComponentWeightmapLayerAllocations[AllocIdx];
 				if( AllocInfo.LayerInfo == ALandscapeProxy::VisibilityLayer )
 				{
 					TexIndex = AllocInfo.WeightmapTextureIndex;
-					Component->WeightmapTextures[TexIndex]->Source.GetMipData(RawVisData, 0);
+
+					ComponentWeightmapTextures[TexIndex]->Source.GetMipData(RawVisData, 0);
 					VisDataMap = RawVisData.GetData() + ChannelOffsets[AllocInfo.WeightmapTextureChannel];
 				}
 			}
@@ -1747,16 +1751,12 @@ bool UStaticMeshExporterOBJ::ExportText(const FExportObjectInnerContext* Context
 		FMeshDescription* MeshDescription = StaticMesh->GetMeshDescription(0);
 		if (MeshDescription != nullptr)
 		{
-			uint32 TriangleCount = 0;
-			for (const FPolygonID PolygonID : MeshDescription->Polygons().GetElementIDs())
-			{
-				TriangleCount += MeshDescription->GetPolygonTriangles(PolygonID).Num();
-			}
+			uint32 TriangleCount = MeshDescription->Triangles().Num();
 			if (Count == TriangleCount)
 			{
 				SmoothingMasks.AddZeroed(TriangleCount);
 
-				FMeshDescriptionOperations::ConvertHardEdgesToSmoothGroup(*MeshDescription, SmoothingMasks);
+				FStaticMeshOperations::ConvertHardEdgesToSmoothGroup(*MeshDescription, SmoothingMasks);
 				for (uint32 SmoothValue : SmoothingMasks)
 				{
 					UniqueSmoothingMasks.AddUnique(SmoothValue);

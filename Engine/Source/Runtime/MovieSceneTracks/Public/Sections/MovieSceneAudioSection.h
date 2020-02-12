@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -8,6 +8,7 @@
 #include "Runtime/Engine/Classes/Components/AudioComponent.h"
 #include "Sound/SoundAttenuation.h"
 #include "Channels/MovieSceneFloatChannel.h"
+#include "Sections/MovieSceneActorReferenceSection.h"
 #include "MovieSceneAudioSection.generated.h"
 
 class USoundBase;
@@ -103,6 +104,16 @@ public:
 		return AttenuationSettings;
 	}
 
+	/*
+	 * @return The attach actor data
+	 */
+	const FMovieSceneActorReferenceData& GetAttachActorData() const { return AttachActorData; }
+
+	/*
+	 * @return The attach component given the bound actor and the actor attach key with the component and socket names
+	 */
+	USceneComponent* GetAttachComponent(const AActor* InParentActor, const FMovieSceneActorReferenceKey& Key) const;
+
 	/** ~UObject interface */
 	virtual void PostLoad() override;
 
@@ -144,10 +155,16 @@ public:
 
 	//~ UMovieSceneSection interface
 	virtual TOptional<TRange<FFrameNumber> > GetAutoSizeRange() const override;
-	virtual void TrimSection(FQualifiedFrameTime TrimTime, bool bTrimLeft) override;
-	virtual UMovieSceneSection* SplitSection(FQualifiedFrameTime SplitTime) override;
+	virtual void TrimSection(FQualifiedFrameTime TrimTime, bool bTrimLeft, bool bDeleteKeys) override;
+	virtual UMovieSceneSection* SplitSection(FQualifiedFrameTime SplitTime, bool bDeleteKeys) override;
 	virtual TOptional<FFrameTime> GetOffsetTime() const override;
 	virtual FMovieSceneEvalTemplatePtr GenerateTemplate() const override;
+
+protected:
+
+	virtual void Serialize(FArchive& Ar) override;
+	virtual void PostEditImport() override;
+	void UpdateChannelProxy();
 
 private:
 
@@ -160,6 +177,7 @@ private:
 	FFrameNumber StartFrameOffset;
 
 	/** The offset into the beginning of the audio clip */
+	UPROPERTY()
 	float StartOffset_DEPRECATED;
 
 	/** The absolute time that the sound starts playing at */
@@ -181,6 +199,9 @@ private:
 	/** The pitch multiplier the sound will be played with. */
 	UPROPERTY( )
 	FMovieSceneFloatChannel PitchMultiplier;
+
+	UPROPERTY()
+	FMovieSceneActorReferenceData AttachActorData;
 
 	UPROPERTY( EditAnywhere, Category="Audio" )
 	bool bSuppressSubtitles;

@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "BaseMediaSource.h"
 #include "UObject/SequencerObjectVersion.h"
@@ -54,7 +54,7 @@ void UBaseMediaSource::Serialize(FArchive& Ar)
 #if WITH_EDITORONLY_DATA
 		if (Ar.IsFilterEditorOnly())
 		{
-			if (Ar.IsSaving())
+			if (Ar.IsSaving() && (Ar.CookingTarget() != nullptr))
 			{
 				const FName* PlatformPlayerName = PlatformPlayerNames.Find(Ar.CookingTarget()->IniPlatformName());
 				PlayerName = (PlatformPlayerName != nullptr) ? *PlatformPlayerName : NAME_None;

@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "Windows/WindowsErrorOutputDevice.h"
 #include "Logging/LogMacros.h"
@@ -20,6 +20,8 @@
 #include "HAL/ThreadHeartBeat.h"
 #include "HAL/ExceptionHandling.h"
 #include "Windows/WindowsHWrapper.h"
+
+extern CORE_API bool GIsGPUCrashed;
 
 FWindowsErrorOutputDevice::FWindowsErrorOutputDevice()
 {
@@ -60,12 +62,19 @@ void FWindowsErrorOutputDevice::Serialize( const TCHAR* Msg, ELogVerbosity::Type
 		UE_DEBUG_BREAK();
 #endif
 		// Generate the portable callstack. For asserts, we ignore the following frames:
-		//     FDebug::AssertFailed()
-		//   [ FOutputDevice::Logf() ] - force-inlined; ignored
-		//     FOutputDevice::LogfImpl()
-		//     FWindowsErrorOutputDevice::Serialize()
-		const int32 NumStackFramesToIgnore = 3;
-		ReportAssert(Msg, NumStackFramesToIgnore);
+		// We do not ignore any stack frames since the optimization is
+		// brittle and the risk of trimming the valid frames is too high.
+		// The common frames will be instead filtered out in the web UI
+		const int32 NumStackFramesToIgnore = 0;
+
+		if (GIsGPUCrashed)
+		{
+			ReportGPUCrash(Msg, NumStackFramesToIgnore);
+		}
+		else
+		{
+			ReportAssert(Msg, NumStackFramesToIgnore);
+		}
 	}
 	else
 	{
@@ -90,7 +99,7 @@ void FWindowsErrorOutputDevice::HandleError()
 	GIsRunning				= 0;
 	GIsCriticalError		= 1;
 	GLogConsole				= NULL;
-	GErrorHist[ARRAY_COUNT(GErrorHist)-1]=0;
+	GErrorHist[UE_ARRAY_COUNT(GErrorHist)-1]=0;
 
 	// Trigger the OnSystemFailure hook if it exists
 	// make sure it happens after GIsGuarded is set to 0 in case this hook crashes

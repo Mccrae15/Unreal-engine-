@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "ObjectTemplates/DatasmithStaticMeshTemplate.h"
 
@@ -6,6 +6,7 @@
 
 #include "CoreTypes.h"
 #include "Engine/StaticMesh.h"
+#include "StaticMeshAttributes.h"
 #include "Templates/Casts.h"
 
 FDatasmithMeshBuildSettingsTemplate::FDatasmithMeshBuildSettingsTemplate()
@@ -19,9 +20,9 @@ void FDatasmithMeshBuildSettingsTemplate::Apply( FMeshBuildSettings* Destination
 
 	// The settings for RecomputeNormals and RecomputeTangents when True must be honored irrespective of the previous template settings
 	// because their values are determined by ShouldRecomputeNormals/ShouldRecomputeTangents which determine if they are needed by the renderer
-	Destination->bRecomputeNormals = PreviousTemplate ? Destination->bRecomputeNormals | bRecomputeNormals : bRecomputeNormals;
+	Destination->bRecomputeNormals = PreviousTemplate ? PreviousTemplate->bRecomputeNormals | bRecomputeNormals : bRecomputeNormals;
 
-	Destination->bRecomputeTangents = PreviousTemplate ? Destination->bRecomputeTangents | bRecomputeTangents : bRecomputeTangents;
+	Destination->bRecomputeTangents = PreviousTemplate ? PreviousTemplate->bRecomputeTangents | bRecomputeTangents : bRecomputeTangents;
 
 	DATASMITHOBJECTTEMPLATE_CONDITIONALSET( bRemoveDegenerates, Destination, PreviousTemplate );
 
@@ -175,16 +176,16 @@ bool FDatasmithMeshSectionInfoMapTemplate::Equals( const FDatasmithMeshSectionIn
 	return bEquals;
 }
 
-void UDatasmithStaticMeshTemplate::Apply( UObject* Destination, bool bForce )
+UObject* UDatasmithStaticMeshTemplate::UpdateObject( UObject* Destination, bool bForce )
 {
-#if WITH_EDITORONLY_DATA
 	UStaticMesh* StaticMesh = Cast< UStaticMesh >( Destination );
 
 	if ( !StaticMesh )
 	{
-		return;
+		return nullptr;
 	}
 
+#if WITH_EDITORONLY_DATA
 	UDatasmithStaticMeshTemplate* PreviousStaticMeshTemplate = !bForce ? FDatasmithObjectTemplateUtils::GetObjectTemplate< UDatasmithStaticMeshTemplate >( StaticMesh ) : nullptr;
 
 	DATASMITHOBJECTTEMPLATE_CONDITIONALSET( LightMapCoordinateIndex, StaticMesh, PreviousStaticMeshTemplate );
@@ -196,20 +197,20 @@ void UDatasmithStaticMeshTemplate::Apply( UObject* Destination, bool bForce )
 	if ( PreviousStaticMeshTemplate )
 	{
 		// If the number of sections is different, their order might be different (eg. from mesh editing) so the SectionInfoMap must be reset
-		bResetSectionInfoMap = PreviousStaticMeshTemplate->SectionInfoMap.Map.Num() != StaticMesh->SectionInfoMap.Map.Num();
+		bResetSectionInfoMap = PreviousStaticMeshTemplate->SectionInfoMap.Map.Num() != StaticMesh->GetSectionInfoMap().Map.Num();
 	}
 
-	SectionInfoMap.Apply(&StaticMesh->SectionInfoMap, !bResetSectionInfoMap && PreviousStaticMeshTemplate ? &PreviousStaticMeshTemplate->SectionInfoMap : nullptr);
+	SectionInfoMap.Apply(&StaticMesh->GetSectionInfoMap(), !bResetSectionInfoMap && PreviousStaticMeshTemplate ? &PreviousStaticMeshTemplate->SectionInfoMap : nullptr);
 
 	// Build settings
 	for ( int32 SourceModelIndex = 0; SourceModelIndex < BuildSettings.Num(); ++SourceModelIndex )
 	{
-		if ( !StaticMesh->SourceModels.IsValidIndex( SourceModelIndex ) )
+		if ( !StaticMesh->IsSourceModelValid( SourceModelIndex ) )
 		{
 			continue;
 		}
 
-		FStaticMeshSourceModel& SourceModel = StaticMesh->SourceModels[ SourceModelIndex ];
+		FStaticMeshSourceModel& SourceModel = StaticMesh->GetSourceModel( SourceModelIndex );
 		
 		FDatasmithMeshBuildSettingsTemplate* PreviousBuildSettingsTemplate = nullptr;
 		
@@ -257,8 +258,45 @@ void UDatasmithStaticMeshTemplate::Apply( UObject* Destination, bool bForce )
 		}
 	}
 
-	FDatasmithObjectTemplateUtils::SetObjectTemplate( Destination, this );
+	// Make sure that the StaticMaterials are in the same order than the StaticMeshLODResources.Sections will be after the StaticMesh is built (see BuildVertexBuffer in StaticMeshBuilder.cpp)
+	const int32 NumLODs = StaticMesh->GetNumLODs();
+	for ( int32 LODIndex = 0; LODIndex < NumLODs; ++LODIndex )
+	{
+		const FMeshDescription* MeshDescription = StaticMesh->GetMeshDescription( LODIndex );
+		if ( MeshDescription && MeshDescription->PolygonGroups().Num() == StaticMesh->StaticMaterials.Num() )
+		{
+			FStaticMeshConstAttributes Attributes(*MeshDescription);
+			TArray< FStaticMaterial > TempStaticMaterials;
+			TPolygonGroupAttributesConstRef< FName > PolygonGroupImportedMaterialSlotNames = Attributes.GetPolygonGroupMaterialSlotNames();
+			int32 SectionIndex = 0;
+			for ( const FPolygonGroupID PolygonGroupID : MeshDescription->PolygonGroups().GetElementIDs() )
+			{
+				int32 MaterialIndex = StaticMesh->GetMaterialIndexFromImportedMaterialSlotName( PolygonGroupImportedMaterialSlotNames[ PolygonGroupID ] );
+				if ( MaterialIndex == INDEX_NONE )
+				{
+					MaterialIndex = PolygonGroupID.GetValue();
+				}
+				TempStaticMaterials.Add( StaticMesh->StaticMaterials[ MaterialIndex ] );
+
+				// Note that the StaticMesh.SectionInfoMap MaterialIndex will overwrite the StaticMeshLODResources.Sections MaterialIndex through FStaticMeshRenderData::ResolveSectionInfo()
+				// This ensures there won't be any mismatch when that happens
+				FMeshSectionInfo SectionInfo = StaticMesh->GetSectionInfoMap().Get( LODIndex, SectionIndex );
+				SectionInfo.MaterialIndex = SectionIndex;
+				StaticMesh->GetSectionInfoMap().Set( LODIndex, SectionIndex, SectionInfo );
+
+				++SectionIndex;
+			}
+
+			// Set the StaticMaterials with respect to LOD 0
+			if ( LODIndex == 0 )
+			{
+				StaticMesh->StaticMaterials = MoveTemp( TempStaticMaterials );
+			}
+		}
+	}
 #endif // #if WITH_EDITORONLY_DATA
+
+	return Destination;
 }
 
 void UDatasmithStaticMeshTemplate::Load( const UObject* Source )
@@ -275,12 +313,12 @@ void UDatasmithStaticMeshTemplate::Load( const UObject* Source )
 	LightMapResolution = SourceStaticMesh->LightMapResolution;
 
 	// Section info map
-	SectionInfoMap.Load( SourceStaticMesh->SectionInfoMap );
+	SectionInfoMap.Load( SourceStaticMesh->GetSectionInfoMap() );
 
 	// Build settings
-	BuildSettings.Empty( SourceStaticMesh->SourceModels.Num() );
+	BuildSettings.Empty( SourceStaticMesh->GetNumSourceModels() );
 
-	for ( const FStaticMeshSourceModel& SourceModel : SourceStaticMesh->SourceModels )
+	for ( const FStaticMeshSourceModel& SourceModel : SourceStaticMesh->GetSourceModels() )
 	{
 		FDatasmithMeshBuildSettingsTemplate BuildSettingsTemplate;
 		BuildSettingsTemplate.Load( SourceModel.BuildSettings );

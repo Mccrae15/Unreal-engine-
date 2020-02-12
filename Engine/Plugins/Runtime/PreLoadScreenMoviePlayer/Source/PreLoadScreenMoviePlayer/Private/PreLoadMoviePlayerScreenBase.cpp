@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "PreLoadMoviePlayerScreenBase.h"
 #include "PreLoadScreenManager.h"
@@ -156,7 +156,7 @@ void FPreLoadMoviePlayerScreenBase::Tick(float DeltaTime)
     const bool bEnforceMinimumTime = MovieAttributes.MinimumLoadingScreenDisplayTime >= 0.0f;
 
     //Check if we should be done with displaying the movie
-    if ( GIsRequestingExit ||
+    if ( IsEngineExitRequested() ||
             ((bWaitForManualStop && bUserCalledFinish)
              || (!bEnforceMinimumTime && bAutoCompleteWhenLoadingCompletes && bIsEngineLoadingFinished)
              || (bEnforceMinimumTime && (FPlatformTime::Seconds() - LastPlayTime) >= MovieAttributes.MinimumLoadingScreenDisplayTime)

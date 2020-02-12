@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 /*=============================================================================
 AsyncTextureStreaming.cpp: Definitions of classes used for texture streaming async task.
@@ -8,7 +8,6 @@ AsyncTextureStreaming.cpp: Definitions of classes used for texture streaming asy
 #include "Misc/App.h"
 #include "Streaming/StreamingManagerTexture.h"
 #include "Engine/World.h"
-#include "ProfilingDebugging/CsvProfiler.h"
 
 void FAsyncRenderAssetStreamingData::Init(
 	TArray<FStreamingViewInfo> InViewInfos,
@@ -86,7 +85,8 @@ void FAsyncRenderAssetStreamingData::UpdateBoundSizes_Async(const FRenderAssetSt
 		StaticInstancesView.UpdateBoundSizes_Async(ViewInfos, ViewInfoExtras, LastUpdateTime, Settings);
 
 		// Skip levels that can not contribute to resolution.
-		if (StaticInstancesView.GetMaxLevelRenderAssetScreenSize() > Settings.MinLevelRenderAssetScreenSize)
+		if (StaticInstancesView.GetMaxLevelRenderAssetScreenSize() > Settings.MinLevelRenderAssetScreenSize
+			|| StaticInstancesView.HasAnyComponentWithForcedLOD())
 		{
 			StaticInstancesViewIndices.Add(StaticViewIndex);
 		}
@@ -176,7 +176,8 @@ void FAsyncRenderAssetStreamingData::UpdatePerfectWantedMips_Async(FStreamingRen
 					continue;
 				}
 
-				if (StaticInstancesView.GetMaxLevelRenderAssetScreenSize() < Settings.MinLevelRenderAssetScreenSize)
+				if (StaticInstancesView.GetMaxLevelRenderAssetScreenSize() < Settings.MinLevelRenderAssetScreenSize
+					&& !StaticInstancesView.HasComponentWithForcedLOD(RenderAsset))
 				{
 					bCulled = true;
 					continue;
@@ -256,7 +257,9 @@ void FAsyncRenderAssetStreamingData::UpdatePerfectWantedMips_Async(FStreamingRen
 				}
 			}
 
-			if (StreamingRenderAsset.bUseUnkownRefHeuristic)
+			// Ignore bUseUnkownRefHeuristic if they haven't been used in the last 90 sec.
+			// If critical, it must be implemented using the ForceFullyLoad logic.
+			if (StreamingRenderAsset.bUseUnkownRefHeuristic && StreamingRenderAsset.LastRenderTime < 90.0f)
 			{
 				if (bOutputToLog) UE_LOG(LogContentStreaming, Log,  TEXT("  UnkownRef"));
 				MaxSize = FMath::Max<int32>(MaxSize, MaxAllowedSize); // affected by HiddenPrimitiveScale
@@ -328,6 +331,7 @@ void FRenderAssetStreamingMipCalcTask::UpdateBudgetedMips_Async(int64& MemoryUse
 	TArray<int32> PrioritizedRenderAssets;
 
 	int64 MemoryBudgeted = 0;
+	int64 MemoryUsedByNonTextures = 0;
 	MemoryUsed = 0;
 	TempMemoryUsed = 0;
 
@@ -335,8 +339,15 @@ void FRenderAssetStreamingMipCalcTask::UpdateBudgetedMips_Async(int64& MemoryUse
 	{
 		if (IsAborted()) break;
 
-		MemoryBudgeted += StreamingRenderAsset.UpdateRetentionPriority_Async();
-		MemoryUsed += StreamingRenderAsset.GetSize(StreamingRenderAsset.ResidentMips);
+		MemoryBudgeted += StreamingRenderAsset.UpdateRetentionPriority_Async(Settings.bPrioritizeMeshLODRetention);
+		const int32 AssetMemUsed = StreamingRenderAsset.GetSize(StreamingRenderAsset.ResidentMips);
+		MemoryUsed += AssetMemUsed;
+
+		// TODO: Use RHI metrics
+		if (!StreamingRenderAsset.IsTexture())
+		{
+			MemoryUsedByNonTextures += AssetMemUsed;
+		}
 
 		if (StreamingRenderAsset.ResidentMips != StreamingRenderAsset.RequestedMips)
 		{
@@ -363,7 +374,7 @@ void FRenderAssetStreamingMipCalcTask::UpdateBudgetedMips_Async(int64& MemoryUse
 	}
 
 
-	const int64 NonStreamingRenderAssetMemory =  AllocatedMemory - MemoryUsed;
+	const int64 NonStreamingRenderAssetMemory =  AllocatedMemory - MemoryUsed + MemoryUsedByNonTextures;
 	int64 AvailableMemoryForStreaming = PoolSize - NonStreamingRenderAssetMemory - MemoryMargin;
 
 	// If the platform defines a max VRAM usage, check if the pool size must be reduced,
@@ -371,8 +382,9 @@ void FRenderAssetStreamingMipCalcTask::UpdateBudgetedMips_Async(int64& MemoryUse
 	// The later helps significantly in low budget settings, where NonStreamingRenderAssetMemory would take too much of the pool.
 	if (GPoolSizeVRAMPercentage > 0 && TotalGraphicsMemory > 0)
 	{
-		const int64 UsableVRAM = TotalGraphicsMemory * GPoolSizeVRAMPercentage / 100 - (int64)GCurrentRendertargetMemorySize * 1024ll; // Add any other...
-		const int64 AvailableVRAMForStreaming = FMath::Min<int64>(UsableVRAM - NonStreamingRenderAssetMemory - MemoryMargin, PoolSize);
+		const int64 UsableVRAM = FMath::Max<int64>(TotalGraphicsMemory * GPoolSizeVRAMPercentage / 100, TotalGraphicsMemory - Settings.VRAMPercentageClamp * 1024ll * 1024ll);
+		const int64 UsedVRAM = (int64)GCurrentRendertargetMemorySize * 1024ll + NonStreamingRenderAssetMemory; // Add any other...
+		const int64 AvailableVRAMForStreaming = FMath::Min<int64>(UsableVRAM - UsedVRAM - MemoryMargin, PoolSize);
 		if (Settings.bLimitPoolSizeToVRAM || AvailableVRAMForStreaming > AvailableMemoryForStreaming)
 		{
 			AvailableMemoryForStreaming = AvailableVRAMForStreaming;
@@ -463,6 +475,10 @@ void FRenderAssetStreamingMipCalcTask::UpdateBudgetedMips_Async(int64& MemoryUse
 			{
 				const int64 PreviousMemoryBudgeted = MemoryBudgeted;
 
+				// Heuristic: Only consider dropping max resolution for a mesh if it has reasonable impact on memory reduction.
+				// Currently, reasonable impact is defined as MemDeltaOfDroppingOneLOD >= MinTextureMemDelta in this pass.
+				int64 MinTextureMemDelta = MAX_int64;
+
 				for (int32 PriorityIndex = PrioritizedRenderAssets.Num() - 1; PriorityIndex >= 0 && MemoryBudgeted > MemoryBudget && !IsAborted(); --PriorityIndex)
 				{
 					int32 AssetIndex = PrioritizedRenderAssets[PriorityIndex];
@@ -482,7 +498,22 @@ void FRenderAssetStreamingMipCalcTask::UpdateBudgetedMips_Async(int64& MemoryUse
 					// But when considering dropping the second mip, textures/meshes using their first and second mips will loose it.
 					if (StreamingRenderAsset.MaxAllowedMips + StreamingRenderAsset.BudgetMipBias - NumDroppedMips <= StreamingRenderAsset.BudgetedMips)
 					{
-						MemoryBudgeted -= StreamingRenderAsset.DropMaxResolution_Async(NumDroppedMips + 1 - StreamingRenderAsset.BudgetMipBias);
+						const int32 NumMipsToDrop = NumDroppedMips + 1 - StreamingRenderAsset.BudgetMipBias;
+
+						if (Settings.bPrioritizeMeshLODRetention)
+						{
+							const bool bIsTexture = StreamingRenderAsset.IsTexture();
+							const int64 MemDeltaFromMaxResDrop = StreamingRenderAsset.GetDropMaxResMemDelta(NumMipsToDrop);
+
+							if (!MemDeltaFromMaxResDrop || (!bIsTexture && MemDeltaFromMaxResDrop < MinTextureMemDelta && MinTextureMemDelta != MAX_int64))
+							{
+								continue;
+							}
+
+							MinTextureMemDelta = bIsTexture ? FMath::Min(MinTextureMemDelta, MemDeltaFromMaxResDrop) : MinTextureMemDelta;
+						}
+
+						MemoryBudgeted -= StreamingRenderAsset.DropMaxResolution_Async(NumMipsToDrop);
 					}
 				}
 
@@ -502,6 +533,9 @@ void FRenderAssetStreamingMipCalcTask::UpdateBudgetedMips_Async(int64& MemoryUse
 		{
 			const int64 PreviousMemoryBudgeted = MemoryBudgeted;
 
+			// Heuristic: only start considering dropping mesh LODs if it has reasonable impact on memory reduction.
+			int64 MinTextureMemDelta = MAX_int64;
+
 			// Drop from the lowest priority first (starting with last elements)
 			for (int32 PriorityIndex = PrioritizedRenderAssets.Num() - 1; PriorityIndex >= 0 && MemoryBudgeted > MemoryBudget && !IsAborted(); --PriorityIndex)
 			{
@@ -517,6 +551,17 @@ void FRenderAssetStreamingMipCalcTask::UpdateBudgetedMips_Async(int64& MemoryUse
 					continue;
 				}
 
+				const bool bIsTexture = StreamingRenderAsset.IsTexture();
+				const bool bIsMesh = !bIsTexture;
+				if (Settings.bPrioritizeMeshLODRetention && bIsMesh)
+				{
+					const int64 PredictedMemDelta = StreamingRenderAsset.GetDropOneMipMemDelta();
+					if (PredictedMemDelta < MinTextureMemDelta && MinTextureMemDelta != MAX_int64)
+					{
+						continue;
+					}
+				}
+
 				// If this texture/mesh has already missing mips for its normal quality, don't drop more than required..
 				if (StreamingRenderAsset.NumMissingMips > 0)
 				{
@@ -524,7 +569,12 @@ void FRenderAssetStreamingMipCalcTask::UpdateBudgetedMips_Async(int64& MemoryUse
 					continue;
 				}
 
-				MemoryBudgeted -= StreamingRenderAsset.DropOneMip_Async();
+				const int64 MemDelta = StreamingRenderAsset.DropOneMip_Async();
+				MemoryBudgeted -= MemDelta;
+				if (Settings.bPrioritizeMeshLODRetention && bIsTexture && MemDelta > 0)
+				{
+					MinTextureMemDelta = FMath::Min(MinTextureMemDelta, MemDelta);
+				}
 			}
 
 			// Break when memory does not change anymore
@@ -671,16 +721,13 @@ void FRenderAssetStreamingMipCalcTask::UpdateLoadAndCancelationRequests_Async(in
 				TempMemoryUsed += TempMemoryRequired;
 			}
 		}
-		else if (StreamingRenderAsset.WantedMips > StreamingRenderAsset.ResidentMips
-			&& (MemoryUsed < MemoryBudget || StreamingRenderAsset.NumForcedMips > StreamingRenderAsset.ResidentMips)
-			&& TempMemoryUsed < TempMemoryBudget)
+		else if (StreamingRenderAsset.WantedMips > StreamingRenderAsset.ResidentMips && TempMemoryUsed < TempMemoryBudget)
 		{
 			const int64 UsedMemoryRequired = StreamingRenderAsset.GetSize(StreamingRenderAsset.WantedMips) - StreamingRenderAsset.GetSize(StreamingRenderAsset.ResidentMips);
 			const int64 TempMemoryRequired = StreamingRenderAsset.GetSize(StreamingRenderAsset.WantedMips);
 
 			// Respect the temporary budget unless this is the first load request. This allows a single mip update of any size.
-			if ((StreamingRenderAsset.NumForcedMips > StreamingRenderAsset.ResidentMips || MemoryUsed + UsedMemoryRequired <= MemoryBudget)
-				&& (TempMemoryUsed + TempMemoryRequired <= TempMemoryBudget || !LoadRequests.Num()))
+			if (TempMemoryUsed + TempMemoryRequired <= TempMemoryBudget || !LoadRequests.Num())
 			{
 				LoadRequests.Add(AssetIndex);
 	
@@ -713,7 +760,6 @@ void FRenderAssetStreamingMipCalcTask::DoWork()
 {
 	SCOPED_NAMED_EVENT(FRenderAssetStreamingMipCalcTask_DoWork, FColor::Turquoise);
 	DECLARE_SCOPE_CYCLE_COUNTER(TEXT("FRenderAssetStreamingMipCalcTask::DoWork"), STAT_FRenderAssetStreamingMipCalcTask_DoWork, STATGROUP_StreamingDetails);
-	CSV_SCOPED_TIMING_STAT_GLOBAL(FRenderAssetStreamingMipCalcTask);
 
 	// While the async task is runnning, the StreamingRenderAssets are guarantied not to be reallocated.
 	// 2 things can happen : a texture can be removed, in which case the texture will be set to null
@@ -757,7 +803,11 @@ void FRenderAssetStreamingMipCalcTask::DoWork()
 
 	StreamingData.OnTaskDone_Async();
 
-	STAT(UpdateStats_Async());
+#if STATS
+	UpdateStats_Async();
+#elif UE_BUILD_TEST
+	UpdateCSVOnlyStats_Async();
+#endif // STATS
 }
 
 void FRenderAssetStreamingMipCalcTask::UpdateStats_Async()
@@ -790,6 +840,17 @@ void FRenderAssetStreamingMipCalcTask::UpdateStats_Async()
 
 	Stats.OverBudget = 0;
 
+	Stats.NumStreamedMeshes = 0;
+	Stats.AvgNumStreamedLODs = 0.f;
+	Stats.AvgNumResidentLODs = 0.f;
+	Stats.AvgNumEvictedLODs = 0.f;
+	Stats.StreamedMeshMem = 0;
+	Stats.ResidentMeshMem = 0;
+	Stats.EvictedMeshMem = 0;
+	int32 TotalNumStreamedLODs = 0;
+	int32 TotalNumResidentLODs = 0;
+	int32 TotalNumEvictedLODs = 0;
+
 	for (FStreamingRenderAsset& StreamingRenderAsset : StreamingRenderAssets)
 	{
 		if (IsAborted()) break;
@@ -808,7 +869,7 @@ void FRenderAssetStreamingMipCalcTask::UpdateStats_Async()
 		Stats.UsedStreamingPool += FMath::Min<int64>(RequiredSize, BudgetedSize);
 
 		// Remove from the non streaming budget what is actually taken by streaming.
-		Stats.NonStreamingMips -= ResidentSize;
+		Stats.NonStreamingMips -= ResidentSize * StreamingRenderAsset.IsTexture();
 
 		// All persistent mip bias bigger than the expected is considered overbudget.
 		const int32 OverBudgetBias = FMath::Max<int32>(0, StreamingRenderAsset.BudgetMipBias - Settings.GlobalMipBias);
@@ -839,7 +900,7 @@ void FRenderAssetStreamingMipCalcTask::UpdateStats_Async()
 
 				// Forced mips are not the same as hidden mips as they are loaded because the user wants them absolutly
 				if (StreamingRenderAsset.bForceFullyLoadHeuristic
-					|| (StreamingRenderAsset.RenderAssetType == FStreamingRenderAsset::AT_Texture
+					|| (StreamingRenderAsset.IsTexture()
 						&& StreamingRenderAsset.LODGroup == TEXTUREGROUP_HierarchicalLOD
 						&& Settings.HLODStrategy > 0))
 				{
@@ -856,9 +917,75 @@ void FRenderAssetStreamingMipCalcTask::UpdateStats_Async()
 		{
 			Stats.PendingRequests += StreamingRenderAsset.GetSize(StreamingRenderAsset.RequestedMips) - ResidentSize;
 		}
+
+		if (StreamingRenderAsset.IsMesh())
+		{
+			const bool bOptLODsExist = StreamingRenderAsset.OptionalMipsState == FStreamingRenderAsset::OMS_HasOptionalMips;
+			const int32 NumLODs = bOptLODsExist ? StreamingRenderAsset.MipCount : StreamingRenderAsset.NumNonOptionalMips;
+			const int32 NumStreamedLODs = NumLODs - StreamingRenderAsset.NumNonStreamingMips;
+			const int32 NumResidentLODs = StreamingRenderAsset.ResidentMips;
+			const int32 NumEvictedLODs = NumLODs - NumResidentLODs;
+			const int64 TotalSize = StreamingRenderAsset.GetSize(NumLODs);
+			const int64 StreamedSize = TotalSize - StreamingRenderAsset.GetSize(StreamingRenderAsset.NumNonStreamingMips);
+			const int64 EvictedSize = TotalSize - ResidentSize;
+
+			++Stats.NumStreamedMeshes;
+			TotalNumStreamedLODs += NumStreamedLODs;
+			TotalNumResidentLODs += NumResidentLODs;
+			TotalNumEvictedLODs += NumEvictedLODs;
+			Stats.StreamedMeshMem += StreamedSize;
+			Stats.ResidentMeshMem += ResidentSize;
+			Stats.EvictedMeshMem += EvictedSize;
+		}
+	}
+
+	if (Stats.NumStreamedMeshes > 0)
+	{
+		Stats.AvgNumStreamedLODs = (float)TotalNumStreamedLODs / Stats.NumStreamedMeshes;
+		Stats.AvgNumResidentLODs = (float)TotalNumResidentLODs / Stats.NumStreamedMeshes;
+		Stats.AvgNumEvictedLODs = (float)TotalNumEvictedLODs / Stats.NumStreamedMeshes;
 	}
 
 	Stats.OverBudget += FMath::Max<int64>(Stats.RequiredPool - Stats.StreamingPool, 0);
 	Stats.Timestamp = FPlatformTime::Seconds();
 #endif
+}
+
+void FRenderAssetStreamingMipCalcTask::UpdateCSVOnlyStats_Async()
+{
+	const TArray<FStreamingRenderAsset>& StreamingRenderAssets = StreamingManager.StreamingRenderAssets;
+
+	FRenderAssetStreamingStats& Stats = StreamingManager.GatheredStats;
+
+	Stats.RenderAssetPool = PoolSize;
+
+	Stats.SafetyPool = MemoryMargin;
+	Stats.TemporaryPool = TempMemoryBudget;
+	Stats.StreamingPool = MemoryBudget;
+	Stats.NonStreamingMips = AllocatedMemory;
+
+	Stats.RequiredPool = 0;
+	Stats.CachedMips = 0;
+	Stats.WantedMips = 0;
+
+	for (const FStreamingRenderAsset& StreamingRenderAsset : StreamingRenderAssets)
+	{
+		if (IsAborted()) break;
+		if (!StreamingRenderAsset.RenderAsset) continue;
+
+		const int64 ResidentSize = StreamingRenderAsset.GetSize(StreamingRenderAsset.ResidentMips);
+		const int64 RequiredSize = StreamingRenderAsset.GetSize(StreamingRenderAsset.GetPerfectWantedMips());
+		const int64 BudgetedSize = StreamingRenderAsset.GetSize(StreamingRenderAsset.BudgetedMips);
+
+		// How much the streamer would use if there was no limit.
+		Stats.RequiredPool += RequiredSize;
+
+		// Remove from the non streaming budget what is actually taken by streaming.
+		Stats.NonStreamingMips -= ResidentSize * StreamingRenderAsset.IsTexture();
+
+		const int64 UsedSize = FMath::Min3<int64>(RequiredSize, BudgetedSize, ResidentSize);
+
+		Stats.WantedMips += UsedSize;
+		Stats.CachedMips += FMath::Max<int64>(ResidentSize - UsedSize, 0);
+	}
 }

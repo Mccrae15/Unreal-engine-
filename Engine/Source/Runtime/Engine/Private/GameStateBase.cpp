@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 /*=============================================================================
 	GameState.cpp: GameState C++ code.
@@ -12,6 +12,8 @@
 
 DEFINE_LOG_CATEGORY(LogGameState);
 
+DEFINE_STAT(STAT_GetPlayerStateFromUniqueId);
+
 AGameStateBase::AGameStateBase(const FObjectInitializer& ObjectInitializer)
 	: Super(ObjectInitializer
 		.DoNotCreateDefaultSubobject(TEXT("Sprite")) )
@@ -19,7 +21,7 @@ AGameStateBase::AGameStateBase(const FObjectInitializer& ObjectInitializer)
 	SetRemoteRoleForBackwardsCompat(ROLE_SimulatedProxy);
 	bReplicates = true;
 	bAlwaysRelevant = true;
-	bReplicateMovement = false;
+	SetReplicatingMovement(false);
 
 	// Note: this is very important to set to false. Though all replication infos are spawned at run time, during seamless travel
 	// they are held on to and brought over into the new world. In ULevel::InitializeNetworkActors, these PlayerStates may be treated as map/startup actors
@@ -28,7 +30,10 @@ AGameStateBase::AGameStateBase(const FObjectInitializer& ObjectInitializer)
 	bNetLoadOnClient = false;
 
 	// Default to every few seconds.
-	ServerWorldTimeSecondsUpdateFrequency = 5.f;
+	ServerWorldTimeSecondsUpdateFrequency = 0.1f;
+
+	SumServerWorldTimeSecondsDelta = 0.0;
+	NumServerWorldTimeSecondsDeltas = 0;
 }
 
 const AGameModeBase* AGameStateBase::GetDefaultGameMode() const
@@ -49,7 +54,7 @@ void AGameStateBase::PostInitializeComponents()
 	World->SetGameState(this);
 
 	FTimerManager& TimerManager = GetWorldTimerManager();
-	if (World->IsGameWorld() && Role == ROLE_Authority)
+	if (World->IsGameWorld() && GetLocalRole() == ROLE_Authority)
 	{
 		UpdateServerTimeSeconds();
 		if (ServerWorldTimeSecondsUpdateFrequency > 0.f)
@@ -105,14 +110,14 @@ void AGameStateBase::SeamlessTravelTransitionCheckpoint(bool bToTransitionMap)
 	// mark all existing player states as from previous level for various bookkeeping
 	for (int32 i = 0; i < PlayerArray.Num(); i++)
 	{
-		PlayerArray[i]->bFromPreviousLevel = true;
+		PlayerArray[i]->SetIsFromPreviousLevel(true);
 	}
 }
 
 void AGameStateBase::AddPlayerState(APlayerState* PlayerState)
 {
 	// Determine whether it should go in the active or inactive list
-	if (!PlayerState->bIsInactive)
+	if (!PlayerState->IsInactive())
 	{
 		// make sure no duplicates
 		PlayerArray.AddUnique(PlayerState);
@@ -156,13 +161,36 @@ void AGameStateBase::OnRep_ReplicatedWorldTimeSeconds()
 	UWorld* World = GetWorld();
 	if (World)
 	{
-		ServerWorldTimeSecondsDelta = ReplicatedWorldTimeSeconds - World->GetTimeSeconds();
+		const float ServerWorldTimeDelta = ReplicatedWorldTimeSeconds - World->GetTimeSeconds();
+
+		// Accumulate the computed server world delta
+		SumServerWorldTimeSecondsDelta += ServerWorldTimeDelta;
+		NumServerWorldTimeSecondsDeltas += 1.0;
+
+		// Reset the accumulated values to ensure that we remain representative of the current delta
+		if (NumServerWorldTimeSecondsDeltas > 250)
+		{
+			SumServerWorldTimeSecondsDelta /= NumServerWorldTimeSecondsDeltas;
+			NumServerWorldTimeSecondsDeltas = 1;
+		}
+
+		double TargetWorldTimeSecondsDelta = SumServerWorldTimeSecondsDelta / NumServerWorldTimeSecondsDeltas;
+
+		// Smoothly interpolate towards the new delta if we've already got one to avoid significant spikes
+		if (ServerWorldTimeSecondsDelta == 0.0)
+		{
+			ServerWorldTimeSecondsDelta = TargetWorldTimeSecondsDelta;
+		}
+		else
+		{
+			ServerWorldTimeSecondsDelta += (TargetWorldTimeSecondsDelta - ServerWorldTimeSecondsDelta) * 0.5;
+		}
 	}
 }
 
 void AGameStateBase::OnRep_ReplicatedHasBegunPlay()
 {
-	if (bReplicatedHasBegunPlay && Role != ROLE_Authority)
+	if (bReplicatedHasBegunPlay && GetLocalRole() != ROLE_Authority)
 	{
 		GetWorldSettings()->NotifyBeginPlay();
 		GetWorldSettings()->NotifyMatchStarted();
@@ -219,4 +247,19 @@ void AGameStateBase::GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLi
 
 	DOREPLIFETIME( AGameStateBase, ReplicatedWorldTimeSeconds );
 	DOREPLIFETIME( AGameStateBase, bReplicatedHasBegunPlay );
+}
+
+APlayerState* AGameStateBase::GetPlayerStateFromUniqueNetId(const FUniqueNetIdWrapper& InPlayerId) const
+{
+	SCOPE_CYCLE_COUNTER(STAT_GetPlayerStateFromUniqueId);
+	const TArray<APlayerState*>& Players = PlayerArray;
+	for (APlayerState* Player : Players)
+	{
+		if (Player && Player->GetUniqueId() == InPlayerId)
+		{
+			return Player;
+		}
+	}
+
+	return nullptr;
 }

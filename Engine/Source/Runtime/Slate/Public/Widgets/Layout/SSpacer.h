@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -49,6 +49,7 @@ public:
 	void SetSize( TAttribute<FVector2D> InSpacerSize )
 	{
 		SpacerSize = InSpacerSize;
+		Invalidate(EInvalidateWidget::Layout);
 	}
 
 protected:

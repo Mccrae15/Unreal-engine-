@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 
 #include "K2Node_FunctionTerminator.h"
@@ -43,7 +43,7 @@ FName UK2Node_FunctionTerminator::CreateUniquePinName(FName InSourcePinName) con
 	FName ResultName = InSourcePinName;
 	int UniqueNum = 0;
 	// Prevent the unique name from being the same as another of the UFunction's properties
-	while(FindPin(ResultName) || FindField<const UProperty>(FoundFunction, ResultName) != nullptr)
+	while(FindPin(ResultName) || FindField<const FProperty>(FoundFunction, ResultName) != nullptr)
 	{
 		ResultName = *FString::Printf(TEXT("%s%d"), *InSourcePinName.ToString(), ++UniqueNum);
 	}
@@ -109,16 +109,35 @@ void UK2Node_FunctionTerminator::PromoteFromInterfaceOverride(bool bIsPrimaryTer
 {
 	// Remove the signature class, that is not relevant.
 	FunctionReference.SetSelfMember(FunctionReference.GetMemberName());
-	TArray<UEdGraphPin*> OriginalPins = Pins;
-	for (const UEdGraphPin* Pin : OriginalPins)
+	
+	// For every pin that has been defined, make it a user defined pin if we can
+	for (UEdGraphPin* const Pin : Pins)
 	{
-		if (Pin->PinType.PinCategory != UEdGraphSchema_K2::PC_Exec)
+		if (Pin->PinType.PinCategory != UEdGraphSchema_K2::PC_Exec && !UserDefinedPinExists(Pin->PinName))
 		{
-			CreateUserDefinedPin(Pin->PinName, Pin->PinType, Pin->Direction, false);
+			TSharedPtr<FUserPinInfo> NewPinInfo = MakeShareable(new FUserPinInfo());
+			NewPinInfo->PinName = Pin->PinName;
+			NewPinInfo->PinType = Pin->PinType;
+			NewPinInfo->DesiredPinDirection = Pin->Direction;
+			UserDefinedPins.Add(NewPinInfo);
 		}
 	}
 	const UEdGraphSchema_K2* Schema = GetDefault<UEdGraphSchema_K2>();
 	Schema->ReconstructNode(*this, true);
+}
+
+UFunction* UK2Node_FunctionTerminator::FindSignatureFunction() const
+{
+	UClass* FoundClass = GetBlueprintClassFromNode();
+	UFunction* FoundFunction = FunctionReference.ResolveMember<UFunction>(FoundClass);
+
+	if (!FoundFunction && FoundClass && GetOuter())
+	{
+		// The resolve will fail if this is a locally-created function, so search using the event graph name
+		FoundFunction = FindField<UFunction>(FoundClass, *GetOuter()->GetName());
+	}
+
+	return FoundFunction;
 }
 
 void UK2Node_FunctionTerminator::ValidateNodeDuringCompilation(FCompilerResultsLog& MessageLog) const

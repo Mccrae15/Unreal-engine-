@@ -1,11 +1,12 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "Network/DisplayClusterClient.h"
 #include "Common/TcpSocketBuilder.h"
 
 #include "Misc/DisplayClusterAppExit.h"
-#include "Misc/DisplayClusterLog.h"
 #include "Misc/ScopeLock.h"
+
+#include "DisplayClusterLog.h"
 
 
 FDisplayClusterClient::FDisplayClusterClient(const FString& InName) :
@@ -40,8 +41,8 @@ bool FDisplayClusterClient::Connect(const FString& InAddr, const int32 InPort, c
 	int32 TryIdx = 0;
 	while(GetSocket()->Connect(*InternetAddr) == false)
 	{
-		UE_LOG(LogDisplayClusterNetwork, Log, TEXT("%s couldn't connect to the server %s [%d]"), *GetName(), *(InternetAddr->ToString(true)), TryIdx++);
-		if (TriesAmount > 0 && TryIdx >= TriesAmount)
+		UE_LOG(LogDisplayClusterNetwork, Log, TEXT("%s couldn't connect to the server %s [%d]"), *GetName(), *(InternetAddr->ToString(true)), TryIdx);
+		if (TriesAmount > 0 && ++TryIdx >= TriesAmount)
 		{
 			UE_LOG(LogDisplayClusterNetwork, Error, TEXT("%s connection attempts limit reached"), *GetName());
 			break;
@@ -66,9 +67,9 @@ void FDisplayClusterClient::Disconnect()
 	}
 }
 
-FSocket* FDisplayClusterClient::CreateSocket(const FString& InName, const int32 BuffSize)
+FSocket* FDisplayClusterClient::CreateSocket(const FString& InName)
 {
-	FSocket* pSock = FTcpSocketBuilder(*InName).AsBlocking().WithReceiveBufferSize(BuffSize).WithSendBufferSize(BuffSize);
+	FSocket* pSock = FTcpSocketBuilder(*InName).AsBlocking();
 	check(pSock);
 	return pSock;
 }

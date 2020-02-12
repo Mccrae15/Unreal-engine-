@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "Components/ScaleBox.h"
 #include "Components/ScaleBoxSlot.h"
@@ -34,7 +34,7 @@ TSharedRef<SWidget> UScaleBox::RebuildWidget()
 #if WITH_EDITOR
 		.OverrideScreenSize(DesignerSize)
 #endif
-	.SingleLayoutPass(bSingleLayoutPass);
+	;
 
 	if ( GetChildrenCount() > 0 )
 	{
@@ -127,7 +127,7 @@ const FText UScaleBox::GetPaletteCategory()
 	return LOCTEXT("Panel", "Panel");
 }
 
-bool UScaleBox::CanEditChange(const UProperty* InProperty) const
+bool UScaleBox::CanEditChange(const FProperty* InProperty) const
 {
 	bool bIsEditable = Super::CanEditChange(InProperty);
 	if (bIsEditable && InProperty)

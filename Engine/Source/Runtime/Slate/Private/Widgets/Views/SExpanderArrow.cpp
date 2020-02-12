@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "Widgets/Views/SExpanderArrow.h"
 #include "Framework/Application/SlateApplication.h"
@@ -56,8 +56,9 @@ int32 SExpanderArrow::OnPaint(const FPaintArgs& Args, const FGeometry& AllottedG
 	//   
 	//
 
+	static const FName NAME_VerticalBarBrush = TEXT("WhiteBrush");
 	const float Indent = IndentAmount.Get(10.f);
-	const FSlateBrush* VerticalBarBrush = (StyleSet == nullptr) ? nullptr : StyleSet->GetBrush("WhiteBrush");
+	const FSlateBrush* VerticalBarBrush = (StyleSet == nullptr) ? nullptr : StyleSet->GetBrush(NAME_VerticalBarBrush);
 
 	if (ShouldDrawWires.Get() == true && VerticalBarBrush != nullptr)
 	{

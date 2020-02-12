@@ -1,12 +1,12 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
 #include "CoreMinimal.h"
 #include "AssetData.h"
 #include "ARFilter.h"
+#include "IAssetRegistry.h"
 #include "AssetRegistryHelpers.generated.h"
-
 
 USTRUCT(BlueprintType)
 struct FTagAndValue
@@ -82,4 +82,14 @@ public:
 	 */
 	UFUNCTION(BlueprintPure, Category = "Asset Registry")
 	static FARFilter SetFilterTagsAndValues(const FARFilter& InFilter, const TArray<FTagAndValue>& InTagsAndValues);
+
+	/** Enable/disable asset registry caching mode for the duration of the scope */
+	struct ASSETREGISTRY_API FTemporaryCachingModeScope
+	{
+		FTemporaryCachingModeScope(bool InTempCachingMode);
+		~FTemporaryCachingModeScope();
+
+	private:
+		bool PreviousCachingMode;
+	};
 };

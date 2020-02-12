@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 /*=============================================================================
 	LightFunction.usf: Pixel shader for computing a light function.
@@ -59,6 +59,6 @@ void Main(
 	float EncodedLightAttenuation = EncodeLightAttenuation(GreyScale);
 
 	// Light function shadows write to the blue channel.
-	OutColor = lerp(float4(1, 1, EncodedLightAttenuation, 1), EncodedLightAttenuation.xxxx, LightFunctionParameters2.z);
+	OutColor = lerp(float4(1, 1, EncodedLightAttenuation.xx), EncodedLightAttenuation.xxxx, LightFunctionParameters2.z);
 #endif
 }

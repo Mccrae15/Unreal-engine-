@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 #pragma once
 
 #include "CoreMinimal.h"
@@ -426,6 +426,13 @@ public:
 	bool FromJson(const TSharedRef<class FJsonObject>& JsonObject);
 
 	/**
+	 * Combine the type suffix given this variant's type
+	 *
+	 * @return the the type suffix
+	 */
+	FString GetTypeSuffix() const;
+	
+	/**
 	* Insert variant data into json object
 	*
 	* @param JsonObject json object to insert data into
@@ -476,7 +483,7 @@ public:
 	static bool UStructToVariantMap(const UStruct* StructDefinition, const void* Struct, FOnlineKeyValuePairs<FString, FVariantData>& OutVariantMap, int64 CheckFlags, int64 SkipFlags);
 
 	/**
-	 * Convert a single UProperty to an FVariantData
+	 * Convert a single FProperty to an FVariantData
 	 *
 	 * @param Property definition of the property
 	 * @param Value actual property data
@@ -486,7 +493,7 @@ public:
 	 * 
 	 * @return true if it was successful, false otherwise
 	 */
-	static bool UPropertyToVariantData(UProperty* Property, const void* Value, int64 CheckFlags, int64 SkipFlags, FVariantData& OutVariantData);
+	static bool FPropertyToVariantData(FProperty* Property, const void* Value, int64 CheckFlags, int64 SkipFlags, FVariantData& OutVariantData);
 
 public:
 
@@ -504,7 +511,7 @@ public:
 	static bool VariantMapToUStruct(const FOnlineKeyValuePairs<FString, FVariantData>& VariantMap, const UStruct* StructDefinition, void* OutStruct, int64 CheckFlags, int64 SkipFlags);
 
 	/**
-	 * Convert an FVariantData to a UProperty
+	 * Convert an FVariantData to a FProperty
 	 *
 	 * @param Variant Input variant data
 	 * @param Property definition of the property
@@ -514,12 +521,12 @@ public:
 	 * 
 	 * @return true if it was successful, false otherwise
 	 */
-	static bool VariantDataToUProperty(const FVariantData* Variant, UProperty* Property, void* OutValue, int64 CheckFlags, int64 SkipFlags);
+	static bool VariantDataToFProperty(const FVariantData* Variant, FProperty* Property, void* OutValue, int64 CheckFlags, int64 SkipFlags);
 	
 private:
 
 	/**
-	 * Convert a single UProperty to an FVariantData
+	 * Convert a single FProperty to an FVariantData
 	 *
 	 * @param Property definition of the property
 	 * @param Value actual property data
@@ -529,10 +536,10 @@ private:
 	 * 
 	 * @return true if it was successful, false otherwise
 	 */
-	static bool ConvertScalarUPropertyToVariant(UProperty* Property, const void* Value, FVariantData& OutVariantData, int64 CheckFlags, int64 SkipFlags);
+	static bool ConvertScalarFPropertyToVariant(FProperty* Property, const void* Value, FVariantData& OutVariantData, int64 CheckFlags, int64 SkipFlags);
 
 	/**
-	 * Convert an FVariantData to a UProperty
+	 * Convert an FVariantData to a FProperty
 	 *
 	 * @param Variant Input variant data
 	 * @param Property definition of the property
@@ -542,6 +549,6 @@ private:
 	 * 
 	 * @return true if it was successful, false otherwise
 	 */
-	static bool ConvertScalarVariantToUProperty(const FVariantData* Variant, UProperty* Property, void* OutValue, int64 CheckFlags, int64 SkipFlags);
+	static bool ConvertScalarVariantToFProperty(const FVariantData* Variant, FProperty* Property, void* OutValue, int64 CheckFlags, int64 SkipFlags);
 };
 

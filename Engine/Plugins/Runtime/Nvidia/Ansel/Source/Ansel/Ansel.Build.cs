@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 using UnrealBuildTool;
 using System.IO;
@@ -31,9 +31,6 @@ public class Ansel : ModuleRules
 
         string NvCameraSDKIncPath = NvCameraSDKSourcePath + "include/";
         PublicSystemIncludePaths.Add(NvCameraSDKIncPath);
-
-        string NvCameraSDKLibPath = NvCameraSDKSourcePath + "lib/";
-        PublicLibraryPaths.Add(NvCameraSDKLibPath);
 
         bool FoundAnselDirs = true;
         if (!Directory.Exists(NvCameraSDKSourcePath))
@@ -76,16 +73,17 @@ public class Ansel : ModuleRules
         }
         else
         {
-            PublicDefinitions.Add("WITH_ANSEL=0");
             PublicDefinitions.Add("ANSEL_DLL=");
-        }        
+			PublicDefinitions.Add("WITH_ANSEL=0");
+		}
 
-        PrivateDependencyModuleNames.AddRange(new string[]
+		PrivateDependencyModuleNames.AddRange(new string[]
         {
 			"Core",
 			"CoreUObject",
             "SlateCore",
 			"Engine",
+			"RHI",
 		});
 
         PublicDependencyModuleNames.Add("Engine");

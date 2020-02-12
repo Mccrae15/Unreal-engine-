@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 using System;
 using System.Collections.Generic;
@@ -90,6 +90,14 @@ namespace UnrealBuildTool
 		static List<Event> Events = new List<Event>();
 
 		/// <summary>
+		/// Property for the total time elapsed
+		/// </summary>
+		public static TimeSpan Elapsed
+		{
+			get { return Stopwatch.Elapsed; }
+		}
+
+		/// <summary>
 		/// Start the stopwatch
 		/// </summary>
 		public static void Start()
@@ -142,7 +150,7 @@ namespace UnrealBuildTool
 				Event Event = Events[EventIdx];
 
 				// Pop events off the stack
-				for (; OuterEvents.Count > 0; OuterEvents.RemoveAt(OuterEvents.Count - 1))
+				for (; OuterEvents.Count > 1; OuterEvents.RemoveAt(OuterEvents.Count - 1))
 				{
 					Event OuterEvent = OuterEvents.Last();
 					if (Event.StartTime < OuterEvent.FinishTime.Value)

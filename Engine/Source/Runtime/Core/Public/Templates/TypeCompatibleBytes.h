@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -59,4 +59,7 @@ struct TTypeCompatibleBytes :
 		sizeof(ElementType),
 		alignof(ElementType)
 		>
-{};
+{
+	ElementType*		GetTypedPtr()		{ return (ElementType*)this;  }
+	const ElementType*	GetTypedPtr() const	{ return (const ElementType*)this; }
+};

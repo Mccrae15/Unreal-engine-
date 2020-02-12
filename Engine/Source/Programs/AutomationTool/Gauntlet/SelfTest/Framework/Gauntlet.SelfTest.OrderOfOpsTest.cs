@@ -1,4 +1,4 @@
-﻿// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+﻿// Copyright Epic Games, Inc. All Rights Reserved.
 
 using AutomationTool;
 using System;
@@ -84,6 +84,7 @@ namespace Gauntlet.SelfTest
 			return "";
 		}
 
+
 		public TestStatus GetTestStatus()
 		{
 			SetNewStage(TestStages.Status);
@@ -95,6 +96,24 @@ namespace Gauntlet.SelfTest
 			SetNewStage(TestStages.SubTests);
 			return new ITestNode[0];
 		}*/
+
+		/// <summary>
+		/// Return list of warnings. Empty by default
+		/// </summary>
+		/// <returns></returns>
+		public virtual IEnumerable<string> GetWarnings()
+		{
+			return new string[0];
+		}
+
+		/// <summary>
+		/// Return list of errors. Empty by default
+		/// </summary>
+		/// <returns></returns>
+		public virtual IEnumerable<string> GetErrors()
+		{
+			return new string[0];
+		}
 
 		public bool IsReadyToStart()
 		{

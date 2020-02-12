@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "ProceduralFoliageInstance.h"
 #include "FoliageType_InstancedStaticMesh.h"
@@ -57,8 +57,8 @@ FProceduralFoliageInstance* GetLessFit(FProceduralFoliageInstance* A, FProcedura
 
 FProceduralFoliageInstance* FProceduralFoliageInstance::Domination(FProceduralFoliageInstance* A, FProceduralFoliageInstance* B, ESimulationOverlap::Type OverlapType)
 {
-	const UFoliageType_InstancedStaticMesh* AType = A->Type;
-	const UFoliageType_InstancedStaticMesh* BType = B->Type;
+	const UFoliageType* AType = A->Type;
+	const UFoliageType* BType = B->Type;
 
 	FProceduralFoliageInstance* Dominated = GetLessFit(A, B);
 

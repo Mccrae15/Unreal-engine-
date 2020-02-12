@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -335,7 +335,7 @@ struct FEdGraphSchemaAction_K2AddCallOnActor : public FEdGraphSchemaAction_K2New
 
 /** Action to add a 'comment' node to the graph */
 USTRUCT()
-struct FEdGraphSchemaAction_K2AddComment : public FEdGraphSchemaAction
+struct BLUEPRINTGRAPH_VTABLE FEdGraphSchemaAction_K2AddComment : public FEdGraphSchemaAction
 {
 	GENERATED_USTRUCT_BODY()
 
@@ -392,7 +392,7 @@ struct BLUEPRINTGRAPH_API FEdGraphSchemaAction_K2TargetNode : public FEdGraphSch
 
 /** Action to paste at this location on graph*/
 USTRUCT()
-struct BLUEPRINTGRAPH_API FEdGraphSchemaAction_K2PasteHere : public FEdGraphSchemaAction_K2NewNode
+struct BLUEPRINTGRAPH_API FEdGraphSchemaAction_K2PasteHere : public FEdGraphSchemaAction
 {
 	GENERATED_USTRUCT_BODY()
 
@@ -400,12 +400,12 @@ struct BLUEPRINTGRAPH_API FEdGraphSchemaAction_K2PasteHere : public FEdGraphSche
 	static FName StaticGetTypeId() {static FName Type("FEdGraphSchemaAction_K2PasteHere"); return Type;}
 	virtual FName GetTypeId() const override { return StaticGetTypeId(); } 
 
-	FEdGraphSchemaAction_K2PasteHere ()
-		: FEdGraphSchemaAction_K2NewNode()
+	FEdGraphSchemaAction_K2PasteHere()
+		: FEdGraphSchemaAction()
 	{}
 
 	FEdGraphSchemaAction_K2PasteHere (FText InNodeCategory, FText InMenuDesc, FText InToolTip, const int32 InGrouping)
-		: FEdGraphSchemaAction_K2NewNode(MoveTemp(InNodeCategory), MoveTemp(InMenuDesc), MoveTemp(InToolTip), InGrouping)
+		: FEdGraphSchemaAction(MoveTemp(InNodeCategory), MoveTemp(InMenuDesc), MoveTemp(InToolTip), InGrouping)
 	{}
 
 	// FEdGraphSchemaAction interface
@@ -515,9 +515,9 @@ public:
 		return VariableSource.Get();
 	}
 
-	UProperty* GetProperty() const
+	FProperty* GetProperty() const
 	{
-		return FindField<UProperty>(GetVariableScope(), VarName);
+		return FindField<FProperty>(GetVariableScope(), VarName);
 	}
 	
 	// FEdGraphSchemaAction interface
@@ -569,6 +569,7 @@ public:
 	// Simple type info
 	static FName StaticGetTypeId() {static FName Type("FEdGraphSchemaAction_K2LocalVar"); return Type;}
 	virtual FName GetTypeId() const override { return StaticGetTypeId(); } 
+	virtual int32 GetReorderIndexInContainer() const override;
 
 	FEdGraphSchemaAction_K2LocalVar() 
 		: FEdGraphSchemaAction_BlueprintVariableBase()
@@ -778,9 +779,9 @@ public:
 		return GetVariableClass();
 	}
 
-	UMulticastDelegateProperty* GetDelegateProperty() const
+	FMulticastDelegateProperty* GetDelegateProperty() const
 	{
-		return FindField<UMulticastDelegateProperty>(GetVariableClass(), GetVariableName());
+		return FindField<FMulticastDelegateProperty>(GetVariableClass(), GetVariableName());
 	}
 };
 

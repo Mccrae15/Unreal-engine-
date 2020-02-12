@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 /*=============================================================================
 	D3D11Util.h: D3D RHI utility definitions.
@@ -27,6 +27,19 @@
 
 #endif
 
+#define D3D11RHI_IMMEDIATE_CONTEXT	(GD3D11RHI->GetDeviceContext())
+#define D3D11RHI_DEVICE				(GD3D11RHI->GetDevice())
+
+
+/**
+ * Checks that the given result isn't a failure.  If it is, the application does not exit and only logs an appropriate error message.
+ * @param	Result - The result code to check.
+ * @param	Code - The code which yielded the result.
+ * @param	Filename - The filename of the source file containing Code.
+ * @param	Line - The line number of Code within Filename.
+ */
+extern D3D11RHI_API void VerifyD3D11ResultNoExit(HRESULT Result, const ANSICHAR* Code, const ANSICHAR* Filename, uint32 Line, ID3D11Device* Device);
+
 /**
  * Checks that the given result isn't a failure.  If it is, the application exits with an appropriate error message.
  * @param	Result - The result code to check.
@@ -43,7 +56,7 @@ extern D3D11RHI_API void VerifyD3D11Result(HRESULT Result,const ANSICHAR* Code,c
  * @param	Code - The code which yielded the result.
  * @param	Filename - The filename of the source file containing Code.
  * @param	Line - The line number of Code within Filename.
- * @param	Device - The D3D device used to create the shadr.
+ * @param	Device - The D3D device used to create the shader.
  */
 extern D3D11RHI_API void VerifyD3D11ShaderResult(class FRHIShader* Shader, HRESULT Result, const ANSICHAR* Code, const ANSICHAR* Filename, uint32 Line, ID3D11Device* Device);
 
@@ -54,7 +67,7 @@ extern D3D11RHI_API void VerifyD3D11ShaderResult(class FRHIShader* Shader, HRESU
 * @param	Filename - The filename of the source file containing Code.
 * @param	Line - The line number of Code within Filename.	
 */
-extern D3D11RHI_API void VerifyD3D11CreateTextureResult(HRESULT D3DResult,const ANSICHAR* Code,const ANSICHAR* Filename,uint32 Line,
+extern D3D11RHI_API void VerifyD3D11CreateTextureResult(HRESULT D3DResult, int32 UEFormat,const ANSICHAR* Code,const ANSICHAR* Filename,uint32 Line,
 										 uint32 SizeX,uint32 SizeY,uint32 SizeZ,uint8 D3DFormat,uint32 NumMips,uint32 Flags, D3D11_USAGE Usage,
 										 uint32 CPUAccessFlags, uint32 MiscFlags, uint32 SampleCount, uint32 SampleQuality,
 										 const void* SubResPtr, uint32 SubResPitch, uint32 SubResSlicePitch,ID3D11Device* Device);
@@ -68,9 +81,10 @@ extern D3D11RHI_API void VerifyD3D11ResizeViewportResult(HRESULT D3DResult, cons
  */
 #define VERIFYD3D11RESULT_EX(x, Device)	{HRESULT hr = x; if (FAILED(hr)) { VerifyD3D11Result(hr,#x,__FILE__,__LINE__, Device); }}
 #define VERIFYD3D11RESULT(x)			{HRESULT hr = x; if (FAILED(hr)) { VerifyD3D11Result(hr,#x,__FILE__,__LINE__, 0); }}
+#define VERIFYD3D11RESULT_NOEXIT(x)		{HRESULT hr = x; if (FAILED(hr)) { VerifyD3D11ResultNoExit(hr,#x,__FILE__,__LINE__, 0); }}
 #define VERIFYD3D11SHADERRESULT(Result, Shader, Device) {HRESULT hr = (Result); if (FAILED(hr)) { VerifyD3D11ShaderResult(Shader, hr, #Result,__FILE__,__LINE__, Device); }}
-
-#define VERIFYD3D11CREATETEXTURERESULT(x,SizeX,SizeY,SizeZ,Format,NumMips,Flags,Usage,CPUAccessFlags,MiscFlags,SampleCount,SampleQuality,SubResPtr,SubResPitch,SubResSlicePitch,Device) {HRESULT hr = x; if (FAILED(hr)) { VerifyD3D11CreateTextureResult(hr,#x,__FILE__,__LINE__,SizeX,SizeY,SizeZ,Format,NumMips,Flags,Usage,CPUAccessFlags,MiscFlags,SampleCount,SampleQuality,SubResPtr,SubResPitch,SubResSlicePitch,Device); }}
+#define VERIFYD3D11RESULT_NOEXIT(x)		{HRESULT hr = x; if (FAILED(hr)) { VerifyD3D11ResultNoExit(hr,#x,__FILE__,__LINE__, 0); }}
+#define VERIFYD3D11CREATETEXTURERESULT(x,UEFormat,SizeX,SizeY,SizeZ,Format,NumMips,Flags,Usage,CPUAccessFlags,MiscFlags,SampleCount,SampleQuality,SubResPtr,SubResPitch,SubResSlicePitch,Device) {HRESULT hr = x; if (FAILED(hr)) { VerifyD3D11CreateTextureResult(hr, UEFormat,#x,__FILE__,__LINE__,SizeX,SizeY,SizeZ,Format,NumMips,Flags,Usage,CPUAccessFlags,MiscFlags,SampleCount,SampleQuality,SubResPtr,SubResPitch,SubResSlicePitch,Device); }}
 #define VERIFYD3D11RESIZEVIEWPORTRESULT(x,SizeX,SizeY,Format, Device) {HRESULT hr = x; if (FAILED(hr)) { VerifyD3D11ResizeViewportResult(hr,#x,__FILE__,__LINE__,SizeX,SizeY,Format, Device); }}
 /**
  * Checks that a COM object has the expected number of references.
@@ -164,6 +178,7 @@ struct FD3D11LockedData
 	// constructor
 	FD3D11LockedData()
 		: bAllocDataWasUsed(false)
+		, bLockDeferred(false)
 	{
 	}
 
@@ -198,6 +213,9 @@ private:
 	uint8* Data;
 	// then FreeData
 	bool bAllocDataWasUsed;
+public:
+	// Whether the lock op is deferred
+	bool bLockDeferred;
 };
 
 /**
@@ -226,38 +244,59 @@ private:
 	int32 NumActiveTargets;
 };
 
-/**
- * Class for managing dynamic buffers.
- */
-class FD3D11DynamicBuffer : public FRenderResource, public FRefCountedObject
+struct FD3D11RHIGenericCommandString
+{
+	static const TCHAR* TStr() { return TEXT("FD3D11RHIGenericCommand"); }
+};
+template <
+	typename JobType,
+	typename = TEnableIf<TOr<
+	TIsSame<JobType, TFunction<void()>>,
+	TIsSame<JobType, TFunction<void()>&>>::Value>>
+	class TD3D11RHIGenericCommand final : public FRHICommand<TD3D11RHIGenericCommand<JobType>, FD3D11RHIGenericCommandString>
 {
 public:
-	/** Initialization constructor. */
-	FD3D11DynamicBuffer(class FD3D11DynamicRHI* InD3DRHI, D3D11_BIND_FLAG InBindFlags, uint32* InBufferSizes);
-	/** Destructor. */
-	~FD3D11DynamicBuffer();
+	// InRHIJob is supposed to be called on RHIT (don't capture things that can become outdated here)
+	TD3D11RHIGenericCommand(JobType&& InRHIJob)
+		: RHIJob(Forward<JobType>(InRHIJob))
+	{}
 
-	/** Locks the buffer returning at least Size bytes. */
-	void* Lock(uint32 Size);
-	/** Unlocks the buffer returning the underlying D3D11 buffer to use as a resource. */
-	ID3D11Buffer* Unlock();
-
-	//~ Begin FRenderResource Interface.
-	virtual void InitRHI() override;
-	virtual void ReleaseRHI() override;
-	// End FRenderResource interface.
+	void Execute(FRHICommandListBase& RHICmdList)
+	{
+		RHIJob();
+	}
 
 private:
-	/** The maximum number of sub-buffers supported. */
-	enum { MAX_BUFFER_SIZES = 4 };
-	/** The size of each sub-buffer. */
-	TArray<uint32,TFixedAllocator<MAX_BUFFER_SIZES> > BufferSizes;
-	/** The sub-buffers. */
-	TArray<TRefCountPtr<ID3D11Buffer>,TFixedAllocator<MAX_BUFFER_SIZES> > Buffers;
-	/** The D3D11 RHI to that owns this dynamic buffer. */
-	class FD3D11DynamicRHI* D3DRHI;
-	/** Bind flags to use when creating sub-buffers. */
-	D3D11_BIND_FLAG BindFlags;
-	/** The index of the currently locked sub-buffer. */
-	int32 LockedBufferIndex;
+	JobType RHIJob;
 };
+
+template<typename JobType>
+inline void RunOnRHIThread(JobType&& InRHIJob)
+{
+	//check(IsInRenderingThread());
+	typedef TD3D11RHIGenericCommand<JobType> CmdType;
+	FRHICommandListImmediate& RHICmdList = FRHICommandListExecutor::GetImmediateCommandList();
+	new (RHICmdList.AllocCommand<CmdType>()) CmdType(Forward<JobType>(InRHIJob));
+}
+
+inline bool ShouldNotEnqueueRHICommand()
+{
+	FRHICommandListImmediate& RHICmdList = FRHICommandListExecutor::GetImmediateCommandList();
+	return RHICmdList.Bypass() || (IsRunningRHIInSeparateThread() && IsInRHIThread()) || (!IsRunningRHIInSeparateThread() && IsInRenderingThread());
+}
+
+inline void D3D11StallRHIThread()
+{
+	if (IsRunningRHIInSeparateThread() && IsInRenderingThread() && GRHICommandList.IsRHIThreadActive())
+	{
+		FRHICommandListExecutor::GetImmediateCommandList().StallRHIThread();
+	}
+}
+
+inline void D3D11UnstallRHIThread()
+{
+	if (IsRunningRHIInSeparateThread() && IsInRenderingThread() && FRHICommandListExecutor::GetImmediateCommandList().IsStalled())
+	{
+		FRHICommandListExecutor::GetImmediateCommandList().UnStallRHIThread();
+	}
+}

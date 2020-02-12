@@ -26,36 +26,9 @@ namespace ResonanceAudio
 			return DisplayName;
 		}
 
-		virtual bool SupportsPlatform(EAudioPlatform Platform) override
+		virtual bool SupportsPlatform(const FString& PlatformName) override
 		{
-			if (Platform == EAudioPlatform::Android)
-			{
-				return true;
-			}
-			else if (Platform == EAudioPlatform::IOS)
-			{
-				return true;
-			}
-			else if (Platform == EAudioPlatform::Linux)
-			{
-				return true;
-			}
-			else if (Platform == EAudioPlatform::Mac)
-			{
-				return true;
-			}
-			else if (Platform == EAudioPlatform::Windows)
-			{
-				return true;
-			}
-			else if (Platform == EAudioPlatform::Lumin)
-			{
-				return true;
-			}
-			else
-			{
-				return false;
-			}
+			return true;
 		}
 
 		virtual TAudioSpatializationPtr CreateNewSpatializationPlugin(FAudioDevice* OwningDevice) override;
@@ -63,7 +36,10 @@ namespace ResonanceAudio
 		
 		virtual bool IsExternalSend() override { return true; }
 
-		virtual TAmbisonicsMixerPtr CreateNewAmbisonicsMixer(FAudioDevice* OwningDevice) override;
+		virtual int32 GetMaxSupportedChannels() override
+		{
+			return 2;
+		}
 
 	};
 
@@ -80,36 +56,9 @@ namespace ResonanceAudio
 			return DisplayName;
 		}
 
-		virtual bool SupportsPlatform(EAudioPlatform Platform) override
+		virtual bool SupportsPlatform(const FString& PlatformName) override
 		{
-			if (Platform == EAudioPlatform::Android)
-			{
-				return true;
-			}
-			else if (Platform == EAudioPlatform::IOS)
-			{
-				return true;
-			}
-			else if (Platform == EAudioPlatform::Linux)
-			{
-				return true;
-			}
-			else if (Platform == EAudioPlatform::Mac)
-			{
-				return true;
-			}
-			else if (Platform == EAudioPlatform::Windows)
-			{
-				return true;
-			}
-			else if (Platform == EAudioPlatform::Lumin)
-			{
-				return true;
-			}
-			else
-			{
-				return false;
-			}
+			return true;
 		}
 
 		virtual TAudioReverbPtr CreateNewReverbPlugin(FAudioDevice* OwningDevice) override;
@@ -143,9 +92,15 @@ namespace ResonanceAudio
 		// Returns Resonance Audio API dynamic library handle.
 		static void* GetResonanceAudioDynamicLibraryHandle() { return ResonanceAudioDynamicLibraryHandle; };
 
+		// Returns the global spatialization source settings set in the project settings
+		static UResonanceAudioSpatializationSourceSettings* GetGlobalSpatializationSourceSettings();
+
 	private:
 		// Resonance Audio API dynamic library handle.
 		static void* ResonanceAudioDynamicLibraryHandle;
+
+		// The global resonance audio spatialization source settings
+		static UResonanceAudioSpatializationSourceSettings* GlobalSpatializationSourceSettings;
 
 		// List of registered audio devices.
 		TArray<FAudioDevice*> RegisteredAudioDevices;
@@ -153,6 +108,7 @@ namespace ResonanceAudio
 		// Plugin factories.
 		FSpatializationPluginFactory SpatializationPluginFactory;
 		FReverbPluginFactory ReverbPluginFactory;
+		FAmbisonicsFactory AmbisonicsFactory;
 	};
 
 }  // namespace ResonanceAudio

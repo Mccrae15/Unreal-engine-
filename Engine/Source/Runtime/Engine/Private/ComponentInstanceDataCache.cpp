@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "ComponentInstanceDataCache.h"
 #include "Serialization/ObjectWriter.h"
@@ -6,6 +6,7 @@
 #include "Serialization/DuplicatedObject.h"
 #include "Serialization/MemoryWriter.h"
 #include "Serialization/MemoryReader.h"
+#include "Serialization/ObjectAndNameAsStringProxyArchive.h"
 #include "UObject/Package.h"
 #include "UObject/UObjectAnnotation.h"
 #include "UObject/UObjectGlobals.h"
@@ -37,9 +38,9 @@ public:
 				// If this is the owning Actor's root scene component, don't include relative transform properties. This is handled elsewhere.
 				if (Component == ComponentOwner->GetRootComponent())
 				{
-					PropertiesToSkip.Add(ComponentClass->FindPropertyByName(GET_MEMBER_NAME_CHECKED(USceneComponent, RelativeLocation)));
-					PropertiesToSkip.Add(ComponentClass->FindPropertyByName(GET_MEMBER_NAME_CHECKED(USceneComponent, RelativeRotation)));
-					PropertiesToSkip.Add(ComponentClass->FindPropertyByName(GET_MEMBER_NAME_CHECKED(USceneComponent, RelativeScale3D)));
+					PropertiesToSkip.Add(ComponentClass->FindPropertyByName(USceneComponent::GetRelativeLocationPropertyName()));
+					PropertiesToSkip.Add(ComponentClass->FindPropertyByName(USceneComponent::GetRelativeRotationPropertyName()));
+					PropertiesToSkip.Add(ComponentClass->FindPropertyByName(USceneComponent::GetRelativeScale3DPropertyName()));
 				}
 			}
 
@@ -52,18 +53,18 @@ public:
 		DuplicatedObjectAnnotation.RemoveAllAnnotations();
 	}
 
-	virtual bool ShouldSkipProperty(const UProperty* InProperty) const override
+	virtual bool ShouldSkipProperty(const FProperty* InProperty) const override
 	{
 		// Immutable structs expect to serialize all properties so don't skip regardless of other conditions
-		UScriptStruct* ScriptStruct = Cast<UScriptStruct>(InProperty->GetOuter());
+		UScriptStruct* ScriptStruct = InProperty->GetOwner<UScriptStruct>();
 		const bool bPropertyInImmutableStruct = ScriptStruct && ((ScriptStruct->StructFlags & STRUCT_Immutable) != 0);
-		
+
 		return (!bPropertyInImmutableStruct
-		        && (   InProperty->HasAnyPropertyFlags(CPF_Transient)
-		            || !InProperty->HasAnyPropertyFlags(CPF_Edit | CPF_Interp)
-		            || PropertiesToSkip.Contains(InProperty)
-		           )
-		       );
+			&& (InProperty->HasAnyPropertyFlags(CPF_Transient)
+				|| !InProperty->HasAnyPropertyFlags(CPF_Edit | CPF_Interp)
+				|| PropertiesToSkip.Contains(InProperty)
+				)
+			);
 	}
 
 
@@ -149,7 +150,7 @@ public:
 private:
 	const UActorComponent* Component;
 	FActorComponentInstanceData& ActorInstanceData;
-	TSet<const UProperty*> PropertiesToSkip;
+	TSet<const FProperty*> PropertiesToSkip;
 	FUObjectAnnotationSparse<FDuplicatedObject,false> DuplicatedObjectAnnotation;
 };
 
@@ -169,7 +170,7 @@ public:
 		Class->SerializeTaggedProperties(*this, (uint8*)InComponent, Class, (uint8*)InComponent->GetArchetype());
 	}
 
-	virtual bool ShouldSkipProperty(const UProperty* InProperty) const override
+	virtual bool ShouldSkipProperty(const FProperty* InProperty) const override
 	{
 		return PropertiesToSkip.Contains(InProperty);
 	}
@@ -200,7 +201,7 @@ public:
 	}
 
 	FActorComponentInstanceData& ActorInstanceData;
-	TSet<const UProperty*> PropertiesToSkip;
+	TSet<const FProperty*> PropertiesToSkip;
 };
 
 
@@ -251,7 +252,8 @@ bool FActorComponentDuplicatedObjectData::Serialize(FArchive& Ar)
 		ObjectPersistentFlags = DuplicatedObject->GetFlags() & RF_Load;
 		if (ObjectClass)
 		{
-			FMemoryWriter Writer(ObjectData);
+			FMemoryWriter MemAr(ObjectData);
+			FObjectAndNameAsStringProxyArchive Writer(MemAr, false);
 			ObjectClass->SerializeTaggedProperties(Writer, (uint8*)DuplicatedObject, ObjectClass, nullptr);
 		}
 	}
@@ -276,7 +278,8 @@ bool FActorComponentDuplicatedObjectData::Serialize(FArchive& Ar)
 				DuplicatedObject = NewObject<UObject>(FoundOuter, ObjectClass, *ObjectName.ToString(), (EObjectFlags)ObjectPersistentFlags);
 
 				// Deserialize the duplicated object
-				FMemoryReader Reader(ObjectData);
+				FMemoryReader MemAr(ObjectData);
+				FObjectAndNameAsStringProxyArchive Reader(MemAr, false);
 				ObjectClass->SerializeTaggedProperties(Reader, (uint8*)DuplicatedObject, ObjectClass, nullptr);
 			}
 		}
@@ -297,37 +300,7 @@ FActorComponentInstanceData::FActorComponentInstanceData(const UActorComponent* 
 	SourceComponentTemplate = SourceComponent->GetArchetype();
 	SourceComponentCreationMethod = SourceComponent->CreationMethod;
 	SourceComponentTypeSerializedIndex = INDEX_NONE;
-
-	// UCS components can share the same template (e.g. an AddComponent node inside a loop), so we also cache their serialization index here (relative to the shared template) as a means for identification
-	if(SourceComponentCreationMethod == EComponentCreationMethod::UserConstructionScript)
-	{
-		AActor* ComponentOwner = SourceComponent->GetOwner();
-		if (ComponentOwner)
-		{
-			bool bFound = false;
-			for (const UActorComponent* BlueprintCreatedComponent : ComponentOwner->BlueprintCreatedComponents)
-			{
-				if (BlueprintCreatedComponent)
-				{
-					if (BlueprintCreatedComponent == SourceComponent)
-					{
-						++SourceComponentTypeSerializedIndex;
-						bFound = true;
-						break;
-					}
-					else if (   BlueprintCreatedComponent->CreationMethod == SourceComponentCreationMethod
-						&& BlueprintCreatedComponent->GetArchetype() == SourceComponentTemplate)
-					{
-						++SourceComponentTypeSerializedIndex;
-					}
-				}
-			}
-			if (!bFound)
-			{
-				SourceComponentTypeSerializedIndex = INDEX_NONE;
-			}
-		}
-	}
+	SourceComponentTypeSerializedIndex = SourceComponent->GetUCSSerializationIndex();
 
 	if (SourceComponent->IsEditableWhenInherited())
 	{
@@ -381,24 +354,7 @@ bool FActorComponentInstanceData::MatchesComponent(const UActorComponent* Compon
 		}
 		else if (SourceComponentTypeSerializedIndex >= 0)
 		{
-			int32 FoundSerializedComponentsOfType = -1;
-			AActor* ComponentOwner = Component->GetOwner();
-			if (ComponentOwner)
-			{
-				for (const UActorComponent* BlueprintCreatedComponent : ComponentOwner->BlueprintCreatedComponents)
-				{
-					if (BlueprintCreatedComponent != nullptr && BlueprintCreatedComponent->CreationMethod == SourceComponentCreationMethod)
-					{
-						const UObject* BlueprintComponentTemplate = ComponentToArchetypeMap.FindChecked(BlueprintCreatedComponent);
-						if (   (BlueprintComponentTemplate == SourceComponentTemplate || (GIsReinstancing && BlueprintComponentTemplate->GetFName() == SourceComponentTemplate->GetFName()))
-							&& (++FoundSerializedComponentsOfType == SourceComponentTypeSerializedIndex))
-						{
-							bMatches = (BlueprintCreatedComponent == Component);
-							break;
-						}
-					}
-				}
-			}
+			bMatches = (SourceComponentTypeSerializedIndex == Component->GetUCSSerializationIndex());
 		}
 	}
 	return bMatches;
@@ -530,7 +486,7 @@ void FComponentInstanceDataCache::ApplyToActor(AActor* Actor, const ECacheApplyP
 		TInlineComponentArray<UActorComponent*> Components;
 		Components.Reserve(Actor->GetComponents().Num());
 
-		auto AddComponentHierarchy = [&Components](USceneComponent* Component)
+		auto AddComponentHierarchy = [Actor, &Components](USceneComponent* Component)
 		{
 			int32 FirstProcessIndex = Components.Num();
 
@@ -554,9 +510,14 @@ void FComponentInstanceDataCache::ApplyToActor(AActor* Actor, const ECacheApplyP
 					{
 						if (USceneComponent* ChildComponent = SceneComponent->GetChildComponent(ChildIndex))
 						{
+							// We don't want to recurse in to child actors (or any other attached actor) when applying the instance cache, 
+							// components within a child actor are handled by applying the instance data to the child actor component
+							if (ChildComponent->GetOwner() == Actor)
+							{
 							Components.Add(ChildComponent);
 						}
 					}
+				}
 				}
 
 				// next loop start with the nodes we just added
@@ -574,11 +535,20 @@ void FComponentInstanceDataCache::ApplyToActor(AActor* Actor, const ECacheApplyP
 		{
 			if (USceneComponent* SceneComponent = Cast<USceneComponent>(Component))
 			{
+				if (SceneComponent != Actor->GetRootComponent())
+				{
+					// Scene components that aren't attached to the root component hierarchy won't already have been processed so process them now.
+					// * If there is an unattached scene component 
+					// * If there is a scene component attached to another Actor's hierarchy
+					// * If the scene is not registered (likely because bAutoRegister is false or component is marked pending kill), then we may not have successfully attached to our parent and properly been handled
 				USceneComponent* ParentComponent = SceneComponent->GetAttachParent();
-				if ((ParentComponent == nullptr && SceneComponent != Actor->GetRootComponent()) || (ParentComponent && ParentComponent->GetOwner() != Actor))
+					if (   (ParentComponent == nullptr)
+					    || (ParentComponent->GetOwner() != Actor) 					
+					    || (!SceneComponent->IsRegistered() && !ParentComponent->GetAttachChildren().Contains(SceneComponent)))
 				{
 					AddComponentHierarchy(SceneComponent);
 				}
+			}
 			}
 			else if (Component)
 			{
@@ -592,13 +562,22 @@ void FComponentInstanceDataCache::ApplyToActor(AActor* Actor, const ECacheApplyP
 
 		for (UActorComponent* ComponentInstance : Components)
 		{
-			if (ComponentInstance && (bIsChildActor || ComponentInstance->IsCreatedByConstructionScript()))
+			if (bIsChildActor || ComponentInstance->IsCreatedByConstructionScript())
 			{
 				ComponentToArchetypeMap.Add(ComponentInstance, ComponentInstance->GetArchetype());
 			}
 		}
 
 		// Apply per-instance data.
+		TBitArray<> ComponentInstanceDataToConsider(true, ComponentsInstanceData.Num());
+		for (int32 Index = 0; Index < ComponentsInstanceData.Num(); ++Index)
+		{
+			if (!ComponentsInstanceData[Index].IsValid())
+			{
+				ComponentInstanceDataToConsider[Index] = false;
+			}
+		}
+
 		for (UActorComponent* ComponentInstance : Components)
 		{
 			if (ComponentInstance && (bIsChildActor || ComponentInstance->IsCreatedByConstructionScript())) // Only try and apply data to 'created by construction script' components
@@ -606,13 +585,14 @@ void FComponentInstanceDataCache::ApplyToActor(AActor* Actor, const ECacheApplyP
 				// Cache template here to avoid redundant calls in the loop below
 				const UObject* ComponentTemplate = ComponentToArchetypeMap.FindChecked(ComponentInstance);
 
-				for (const TStructOnScope<FActorComponentInstanceData>& ComponentInstanceData : ComponentsInstanceData)
+				for (TConstSetBitIterator<> ComponentInstanceDataIt(ComponentInstanceDataToConsider); ComponentInstanceDataIt; ++ComponentInstanceDataIt)
 				{
-					if (	ComponentInstanceData.IsValid()
-						&&	ComponentInstanceData->GetComponentClass() == ComponentTemplate->GetClass() // filter on class early to avoid unnecessary virtual and expensive tests
-						&&	ComponentInstanceData->MatchesComponent(ComponentInstance, ComponentTemplate, ComponentToArchetypeMap))
+					const TStructOnScope<FActorComponentInstanceData>& ComponentInstanceData = ComponentsInstanceData[ComponentInstanceDataIt.GetIndex()];
+					if (   ComponentInstanceData->GetComponentClass() == ComponentTemplate->GetClass() // filter on class early to avoid unnecessary virtual and expensive tests
+					    && ComponentInstanceData->MatchesComponent(ComponentInstance, ComponentTemplate, ComponentToArchetypeMap))
 					{
 						ComponentInstanceData->ApplyToComponent(ComponentInstance, CacheApplyPhase);
+						ComponentInstanceDataToConsider[ComponentInstanceDataIt.GetIndex()] = false;
 						break;
 					}
 				}
@@ -620,7 +600,7 @@ void FComponentInstanceDataCache::ApplyToActor(AActor* Actor, const ECacheApplyP
 		}
 
 		// Once we're done attaching, if we have any unattached instance components move them to the root
-		for (auto InstanceTransformPair : InstanceComponentTransformToRootMap)
+		for (const TPair<USceneComponent*, FTransform>& InstanceTransformPair : InstanceComponentTransformToRootMap)
 		{
 			check(Actor->GetRootComponent());
 
@@ -679,7 +659,7 @@ void FComponentInstanceDataCache::CopySerializableProperties(TArray<TStructOnSco
 {
 	auto CopyProperties = [](TStructOnScope<FActorComponentInstanceData>& DestData, const TStructOnScope<FActorComponentInstanceData>& SrcData)
 	{
-		for (TFieldIterator<const UProperty> PropertyIt(SrcData.GetStruct(), EFieldIteratorFlags::IncludeSuper, EFieldIteratorFlags::IncludeDeprecated, EFieldIteratorFlags::ExcludeInterfaces); PropertyIt; ++PropertyIt)
+		for (TFieldIterator<const FProperty> PropertyIt(SrcData.GetStruct(), EFieldIteratorFlags::IncludeSuper, EFieldIteratorFlags::IncludeDeprecated, EFieldIteratorFlags::ExcludeInterfaces); PropertyIt; ++PropertyIt)
 		{
 			const void* SrcValuePtr = PropertyIt->ContainerPtrToValuePtr<void>(SrcData.Get());
 			void* DestValuePtr = PropertyIt->ContainerPtrToValuePtr<void>(DestData.Get());

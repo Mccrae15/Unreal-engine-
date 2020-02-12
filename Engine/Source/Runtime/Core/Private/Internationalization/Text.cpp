@@ -1,6 +1,7 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "Internationalization/Text.h"
+#include "Algo/Transform.h"
 #include "Misc/Parse.h"
 #include "UObject/ObjectVersion.h"
 #include "UObject/DebugSerializationFlags.h"
@@ -18,7 +19,7 @@
 #include "Internationalization/FastDecimalFormat.h"
 #include "Internationalization/TextGeneratorRegistry.h"
 
-#include "Serialization/ArchiveFromStructuredArchive.h"
+#include "Serialization/StructuredArchive.h"
 
 #include "UObject/EditorObjectVersion.h"
 #include "HAL/PlatformProcess.h"
@@ -130,19 +131,19 @@ void operator<<(FStructuredArchive::FSlot Slot, FNumberFormattingOptions& Value)
 
 	if (UnderlyingArchive.CustomVer(FEditorObjectVersion::GUID) >= FEditorObjectVersion::AddedAlwaysSignNumberFormattingOption)
 	{
-		Record << NAMED_ITEM("AlwaysSign", Value.AlwaysSign);
+		Record << SA_VALUE(TEXT("AlwaysSign"), Value.AlwaysSign);
 	}
 
-	Record << NAMED_ITEM("UseGrouping", Value.UseGrouping);
+	Record << SA_VALUE(TEXT("UseGrouping"), Value.UseGrouping);
 
 	int8 RoundingModeInt8 = (int8)Value.RoundingMode;
-	Record << NAMED_ITEM("RoundingMode", RoundingModeInt8);
+	Record << SA_VALUE(TEXT("RoundingMode"), RoundingModeInt8);
 	Value.RoundingMode = (ERoundingMode)RoundingModeInt8;
 
-	Record << NAMED_ITEM("MinimumIntegralDigits", Value.MinimumIntegralDigits);
-	Record << NAMED_ITEM("MaximumIntegralDigits", Value.MaximumIntegralDigits);
-	Record << NAMED_ITEM("MinimumFractionalDigits", Value.MinimumFractionalDigits);
-	Record << NAMED_ITEM("MaximumFractionalDigits", Value.MaximumFractionalDigits);
+	Record << SA_VALUE(TEXT("MinimumIntegralDigits"), Value.MinimumIntegralDigits);
+	Record << SA_VALUE(TEXT("MaximumIntegralDigits"), Value.MaximumIntegralDigits);
+	Record << SA_VALUE(TEXT("MinimumFractionalDigits"), Value.MinimumFractionalDigits);
+	Record << SA_VALUE(TEXT("MaximumFractionalDigits"), Value.MaximumFractionalDigits);
 }
 
 uint32 GetTypeHash( const FNumberFormattingOptions& Key )
@@ -244,10 +245,10 @@ FText::FText( TSharedRef<ITextData, ESPMode::ThreadSafe> InTextData )
 }
 
 FText::FText( FString&& InSourceString )
-	: TextData(new TGeneratedTextData<FTextHistory_Base>(FString(InSourceString)))
+	: TextData(new TGeneratedTextData<FTextHistory_Base>(CopyTemp(InSourceString))) // Copy the source string as the live display string
 	, Flags(0)
 {
-	TextData->SetTextHistory(FTextHistory_Base(MoveTemp(InSourceString)));
+	TextData->SetTextHistory(FTextHistory_Base(MoveTemp(InSourceString))); // Move the source string as the historic source string
 }
 
 FText::FText( FName InTableId, FString InKey, const EStringTableLoadingPolicy InLoadingPolicy )
@@ -320,119 +321,91 @@ FText FText::ToUpper() const
 
 FText FText::TrimPreceding( const FText& InText )
 {
-	FString TrimmedString = InText.ToString();
-	{
-		int32 StartPos = 0;
-		while ( StartPos < TrimmedString.Len() )
-		{
-			if( !FText::IsWhitespace( TrimmedString[StartPos] ) )
-			{
-				break;
-			}
+	const FString& CurrentString = InText.ToString();
 
-			++StartPos;
+	int32 StartPos = 0;
+	while (StartPos < CurrentString.Len())
+	{
+		if (!FText::IsWhitespace(CurrentString[StartPos]))
+		{
+			break;
 		}
 
-		TrimmedString = TrimmedString.Right( TrimmedString.Len() - StartPos );
+		++StartPos;
 	}
 
-	FText NewText = FText( MoveTemp( TrimmedString ) );
-
-	if (!GIsEditor)
+	if (StartPos == 0)
 	{
-		if( (NewText.Flags & ETextFlag::CultureInvariant) != 0 )
-		{
-			NewText.Flags |= ETextFlag::Transient;
-		}
-		else
-		{
-			NewText.Flags |= ETextFlag::CultureInvariant;
-		}
+		// Nothing to trim!
+		return InText;
 	}
 
-	return NewText;
+	// Trim the string, preserving culture invariance if set
+	FString TrimmedString = CurrentString.Right(CurrentString.Len() - StartPos);
+	return InText.IsCultureInvariant() ? FText::AsCultureInvariant(MoveTemp(TrimmedString)) : FText::FromString(MoveTemp(TrimmedString));
 }
 
 FText FText::TrimTrailing( const FText& InText )
 {
-	FString TrimmedString = InText.ToString();
-	{
-		int32 EndPos = TrimmedString.Len() - 1;
-		while( EndPos >= 0 )
-		{
-			if( !FText::IsWhitespace( TrimmedString[EndPos] ) )
-			{
-				break;
-			}
+	const FString& CurrentString = InText.ToString();
 
-			EndPos--;
+	int32 EndPos = CurrentString.Len() - 1;
+	while (EndPos >= 0)
+	{
+		if (!FText::IsWhitespace(CurrentString[EndPos]))
+		{
+			break;
 		}
 
-		TrimmedString = TrimmedString.Left( EndPos + 1 );
+		--EndPos;
 	}
 
-	FText NewText = FText( MoveTemp ( TrimmedString ) );
-
-	if (!GIsEditor)
+	if (EndPos == CurrentString.Len() - 1)
 	{
-		if( (NewText.Flags & ETextFlag::CultureInvariant) != 0 )
-		{
-			NewText.Flags |= ETextFlag::Transient;
-		}
-		else
-		{
-			NewText.Flags |= ETextFlag::CultureInvariant;
-		}
+		// Nothing to trim!
+		return InText;
 	}
 
-	return NewText;
+	// Trim the string, preserving culture invariance if set
+	FString TrimmedString = CurrentString.Left(EndPos + 1);
+	return InText.IsCultureInvariant() ? FText::AsCultureInvariant(MoveTemp(TrimmedString)) : FText::FromString(MoveTemp(TrimmedString));
 }
 
 FText FText::TrimPrecedingAndTrailing( const FText& InText )
 {
-	FString TrimmedString = InText.ToString();
+	const FString& CurrentString = InText.ToString();
+
+	int32 StartPos = 0;
+	while (StartPos < CurrentString.Len())
 	{
-		int32 StartPos = 0;
-		while ( StartPos < TrimmedString.Len() )
+		if (!FText::IsWhitespace(CurrentString[StartPos]))
 		{
-			if( !FText::IsWhitespace( TrimmedString[StartPos] ) )
-			{
-				break;
-			}
-
-			++StartPos;
+			break;
 		}
 
-		int32 EndPos = TrimmedString.Len();
-		while( EndPos > StartPos )
-		{
-			if( !FText::IsWhitespace( TrimmedString[EndPos - 1] ) )
-			{
-				break;
-			}
-
-			--EndPos;
-		}
-
-		const int32 Len = EndPos - StartPos;
-		TrimmedString = TrimmedString.Mid( StartPos, Len );
+		++StartPos;
 	}
 
-	FText NewText = FText( MoveTemp( TrimmedString ) );
-
-	if (!GIsEditor)
+	int32 EndPos = CurrentString.Len() - 1;
+	while (EndPos > StartPos)
 	{
-		if( (NewText.Flags & ETextFlag::CultureInvariant) != 0 )
+		if (!FText::IsWhitespace(CurrentString[EndPos]))
 		{
-			NewText.Flags |= ETextFlag::Transient;
+			break;
 		}
-		else
-		{
-			NewText.Flags |= ETextFlag::CultureInvariant;
-		}
+
+		--EndPos;
 	}
 
-	return NewText;
+	if (StartPos == 0 && EndPos == CurrentString.Len() - 1)
+	{
+		// Nothing to trim!
+		return InText;
+	}
+
+	// Trim the string, preserving culture invariance if set
+	FString TrimmedString = CurrentString.Mid(StartPos, EndPos - StartPos + 1);
+	return InText.IsCultureInvariant() ? FText::AsCultureInvariant(MoveTemp(TrimmedString)) : FText::FromString(MoveTemp(TrimmedString));
 }
 
 void FText::GetFormatPatternParameters(const FTextFormat& Fmt, TArray<FString>& ParameterNames)
@@ -468,6 +441,58 @@ FText FText::FormatNamedImpl(FTextFormat&& Fmt, FFormatNamedArguments&& InArgume
 FText FText::FormatOrderedImpl(FTextFormat&& Fmt, FFormatOrderedArguments&& InArguments)
 {
 	return FTextFormatter::Format(MoveTemp(Fmt), MoveTemp(InArguments), false, false);
+}
+
+template <typename T>
+FText TextJoinImpl(const FText& Delimiter, const TArray<T>& Args)
+{
+	if (Args.Num() > 0)
+	{
+		FText NamedFmtPattern;
+		FFormatNamedArguments NamedArgs;
+		{
+			FString FmtPattern;
+
+			const int32 ArgsCount = Args.Num();
+			NamedArgs.Reserve(ArgsCount + 1);
+			NamedArgs.Add(TEXT("Delimiter"), Delimiter);
+
+			for (int32 ArgIndex = 0; ArgIndex < ArgsCount; ++ArgIndex)
+			{
+				const T& Arg = Args[ArgIndex];
+				NamedArgs.Add(FString::Printf(TEXT("%d"), ArgIndex), Arg);
+
+				FmtPattern += TEXT('{');
+				FmtPattern.AppendInt(ArgIndex);
+				FmtPattern += TEXT('}');
+
+				if (ArgIndex + 1 < ArgsCount)
+				{
+					FmtPattern += TEXT("{Delimiter}");
+				}
+			}
+
+			NamedFmtPattern = FText::AsCultureInvariant(MoveTemp(FmtPattern));
+		}
+
+		return FTextFormatter::Format(MoveTemp(NamedFmtPattern), MoveTemp(NamedArgs), false, false);
+	}
+
+	return FText::GetEmpty();
+}
+
+FText FText::Join(const FText& Delimiter, const FFormatOrderedArguments& Args)
+{
+	return TextJoinImpl(Delimiter, Args);
+}
+
+FText FText::Join(const FText& Delimiter, const TArray<FText>& Args)
+{
+	if (Args.Num() == 1)
+	{
+		return Args[0];
+	}
+	return TextJoinImpl(Delimiter, Args);
 }
 
 FText FText::FromTextGenerator(const TSharedRef<ITextGenerator>& TextGenerator)
@@ -583,7 +608,7 @@ FText FText::AsCurrencyBase(int64 BaseVal, const FString& CurrencyCode, const FC
 
 	const FDecimalNumberFormattingRules& FormattingRules = Culture.GetCurrencyFormattingRules(CurrencyCode);
 	const FNumberFormattingOptions& FormattingOptions = FormattingRules.CultureDefaultFormattingOptions;
-	double Val = static_cast<double>(BaseVal) / FMath::Pow(10.0f, FormattingOptions.MaximumFractionalDigits);
+	double Val = static_cast<double>(BaseVal) / FMath::Pow(10.0f, (float)FormattingOptions.MaximumFractionalDigits);
 	FString NativeString = FastDecimalFormat::NumberToString(Val, FormattingRules, FormattingOptions);
 
 	FText Result = FText(MakeShared<TGeneratedTextData<FTextHistory_AsCurrency>, ESPMode::ThreadSafe>(MoveTemp(NativeString), FTextHistory_AsCurrency(Val, CurrencyCode, nullptr, TargetCulture)));
@@ -771,6 +796,8 @@ void FText::SerializeText(FStructuredArchive::FSlot Slot, FText& Value)
 	FArchive& UnderlyingArchive = Slot.GetUnderlyingArchive();
 	FStructuredArchive::FRecord Record = Slot.EnterRecord();
 
+	UnderlyingArchive.UsingCustomVersion(FEditorObjectVersion::GUID);
+
 	//When duplicating, the CDO is used as the template, then values for the instance are assigned.
 	//If we don't duplicate the string, the CDO and the instance are both pointing at the same thing.
 	//This would result in all subsequently duplicated objects stamping over formerly duplicated ones.
@@ -779,7 +806,7 @@ void FText::SerializeText(FStructuredArchive::FSlot Slot, FText& Value)
 	if (UnderlyingArchive.IsLoading() && UnderlyingArchive.UE4Ver() < VER_UE4_FTEXT_HISTORY)
 	{
 		FString SourceStringToImplantIntoHistory;
-		Record << NAMED_FIELD(SourceStringToImplantIntoHistory);
+		Record << SA_VALUE(TEXT("SourceStringToImplantIntoHistory"), SourceStringToImplantIntoHistory);
 
 		FTextDisplayStringPtr DisplayString;
 
@@ -789,8 +816,8 @@ void FText::SerializeText(FStructuredArchive::FSlot Slot, FText& Value)
 			FString Namespace;
 			FString Key;
 
-			Record << NAMED_FIELD(Namespace);
-			Record << NAMED_FIELD(Key);
+			Record << SA_VALUE(TEXT("Namespace"), Namespace);
+			Record << SA_VALUE(TEXT("Key"), Key);
 
 			// Get the DisplayString using the namespace, key, and source string.
 			DisplayString = FTextLocalizationManager::Get().GetDisplayString(Namespace, Key, &SourceStringToImplantIntoHistory);
@@ -828,7 +855,7 @@ void FText::SerializeText(FStructuredArchive::FSlot Slot, FText& Value)
 			Value.Flags &= ~(ETextFlag::ConvertedProperty | ETextFlag::InitializedFromString); // Remove conversion flag before saving.
 		}
 	}
-	Record << NAMED_ITEM("Flags", Value.Flags);
+	Record << SA_VALUE(TEXT("Flags"), Value.Flags);
 
 	if (UnderlyingArchive.IsLoading() && UnderlyingArchive.IsPersistent())
 	{
@@ -847,19 +874,27 @@ void FText::SerializeText(FStructuredArchive::FSlot Slot, FText& Value)
 		if (UnderlyingArchive.IsSaving())
 		{
 			// Skip the history for empty texts
-			bSerializeHistory = !Value.IsEmpty();
+			bSerializeHistory = !Value.IsEmpty() && !Value.IsCultureInvariant();
 
 			if (!bSerializeHistory)
 			{
 				int8 HistoryType = (int8)ETextHistoryType::None;
-				Record << NAMED_FIELD(HistoryType);
+				Record << SA_VALUE(TEXT("HistoryType"), HistoryType);
+
+				bool bHasCultureInvariantString = !Value.IsEmpty() && Value.IsCultureInvariant();
+				Record << SA_VALUE(TEXT("bHasCultureInvariantString"), bHasCultureInvariantString);
+				if (bHasCultureInvariantString)
+				{
+					FString CultureInvariantString = Value.GetSourceString();
+					Record << SA_VALUE(TEXT("CultureInvariantString"), CultureInvariantString);
+				}
 			}
 		}
 		else if (UnderlyingArchive.IsLoading())
 		{
 			// The type is serialized during the serialization of the history, during deserialization we need to deserialize it and create the correct history
 			int8 HistoryType = (int8)ETextHistoryType::None;
-			Record << NAMED_FIELD(HistoryType);
+			Record << SA_VALUE(TEXT("HistoryType"), HistoryType);
 
 			// Create the history class based on the serialized type
 			switch((ETextHistoryType)HistoryType)
@@ -933,6 +968,18 @@ void FText::SerializeText(FStructuredArchive::FSlot Slot, FText& Value)
 				{
 					bSerializeHistory = false;
 					Value.TextData = FText::GetEmpty().TextData;
+
+					if (UnderlyingArchive.CustomVer(FEditorObjectVersion::GUID) >= FEditorObjectVersion::CultureInvariantTextSerializationKeyStability)
+					{
+						bool bHasCultureInvariantString = false;
+						Record << SA_VALUE(TEXT("bHasCultureInvariantString"), bHasCultureInvariantString);
+						if (bHasCultureInvariantString)
+						{
+							FString CultureInvariantString;
+							Record << SA_VALUE(TEXT("CultureInvariantString"), CultureInvariantString);
+							Value.TextData = FText(MoveTemp(CultureInvariantString)).TextData;
+						}
+					}
 				}
 			}
 		}
@@ -985,7 +1032,7 @@ FText FText::FromName( const FName& Val)
 
 FText FText::FromString( const FString& String )
 {
-	FText NewText = String.IsEmpty() ? FText::GetEmpty() : FText( FString(String) );
+	FText NewText = String.IsEmpty() ? FText::GetEmpty() : FText(CopyTemp(String));
 
 	if (!GIsEditor)
 	{
@@ -998,7 +1045,7 @@ FText FText::FromString( const FString& String )
 
 FText FText::FromString( FString&& String )
 {
-	FText NewText = String.IsEmpty() ? FText::GetEmpty() : FText( MoveTemp(String) );
+	FText NewText = String.IsEmpty() ? FText::GetEmpty() : FText(MoveTemp(String));
 
 	if (!GIsEditor)
 	{
@@ -1011,7 +1058,7 @@ FText FText::FromString( FString&& String )
 
 FText FText::AsCultureInvariant( const FString& String )
 {
-	FText NewText = String.IsEmpty() ? FText::GetEmpty() : FText( FString(String) );
+	FText NewText = String.IsEmpty() ? FText::GetEmpty() : FText(CopyTemp(String));
 	NewText.Flags |= ETextFlag::CultureInvariant;
 
 	return NewText;
@@ -1019,7 +1066,7 @@ FText FText::AsCultureInvariant( const FString& String )
 
 FText FText::AsCultureInvariant( FString&& String )
 {
-	FText NewText = String.IsEmpty() ? FText() : FText( MoveTemp(String) );
+	FText NewText = String.IsEmpty() ? FText::GetEmpty() : FText(MoveTemp(String));
 	NewText.Flags |= ETextFlag::CultureInvariant;
 
 	return NewText;
@@ -1027,7 +1074,7 @@ FText FText::AsCultureInvariant( FString&& String )
 
 FText FText::AsCultureInvariant( FText Text )
 {
-	FText NewText = FText( MoveTemp(Text) );
+	FText NewText = FText(MoveTemp(Text));
 	NewText.Flags |= ETextFlag::CultureInvariant;
 
 	return NewText;
@@ -1128,48 +1175,56 @@ bool FText::GetHistoricNumericData(FHistoricTextNumericData& OutHistoricNumericD
 
 bool FText::IdenticalTo( const FText& Other ) const
 {
-	// If both instances point to the same data or localized string, then both instances are considered identical.
+	// If both instances point to the same data, then both instances are considered identical.
+	if (TextData == Other.TextData)
+	{
+		return true;
+	}
+
+	// If both instances point to the same localized string, then both instances are considered identical.
 	// This is fast as it skips a lexical compare, however it can also return false for two instances that have identical strings, but in different pointers.
-	// For instance, this method will return false for two FText objects created from FText::FromString("Wooble") as they each have unique, non-shared instances.
-	return TextData == Other.TextData || TextData->GetLocalizedString() == Other.TextData->GetLocalizedString();
+	// For instance, this method will return false for two FText objects created from FText::FromString("Wooble") as they each have unique (or null), non-shared instances.
+	FTextDisplayStringPtr DisplayStringPtr = TextData->GetLocalizedString();
+	FTextDisplayStringPtr OtherDisplayStringPtr = Other.TextData->GetLocalizedString();
+	return DisplayStringPtr && OtherDisplayStringPtr && DisplayStringPtr == OtherDisplayStringPtr;
 }
 
 void operator<<(FStructuredArchive::FSlot Slot, FFormatArgumentValue& Value)
 {
 	FStructuredArchive::FRecord Record = Slot.EnterRecord();
-	int8 TypeAsInt8 = Value.GetType();
-	Record << NAMED_ITEM("Type", TypeAsInt8);
+	int8 TypeAsInt8 = (int8)Value.GetType();
+	Record << SA_VALUE(TEXT("Type"), TypeAsInt8);
 	Value.Type = (EFormatArgumentType::Type)TypeAsInt8;
 
 	switch(Value.Type)
 	{
 	case EFormatArgumentType::Double:
 		{
-			Record << NAMED_ITEM("Value", Value.DoubleValue);
+			Record << SA_VALUE(TEXT("Value"), Value.DoubleValue);
 			break;
 		}
 	case EFormatArgumentType::Float:
 		{
-			Record << NAMED_ITEM("Value", Value.FloatValue);
+			Record << SA_VALUE(TEXT("Value"), Value.FloatValue);
 			break;
 		}
 	case EFormatArgumentType::Int:
 		{
-			Record << NAMED_ITEM("Value", Value.IntValue);
+			Record << SA_VALUE(TEXT("Value"), Value.IntValue);
 			break;
 		}
 	case EFormatArgumentType::UInt:
 		{
-			Record << NAMED_ITEM("Value", Value.UIntValue);
+			Record << SA_VALUE(TEXT("Value"), Value.UIntValue);
 			break;
 		}
 	case EFormatArgumentType::Text:
 		{
-			if(Slot.GetUnderlyingArchive().IsLoading())
+			if(Slot.GetArchiveState().IsLoading())
 			{
 				Value.TextValue = FText();
 			}
-			Record << NAMED_ITEM("Value", Value.TextValue.GetValue());
+			Record << SA_VALUE(TEXT("Value"), Value.TextValue.GetValue());
 			break;
 		}
 	}
@@ -1344,28 +1399,28 @@ void operator<<(FStructuredArchive::FSlot Slot, FFormatArgumentData& Value)
 		// ArgumentName was changed to be FString rather than FText, so we need to convert older data to ensure serialization stays happy outside of UStruct::SerializeTaggedProperties.
 		if (UnderlyingArchive.UE4Ver() >= VER_UE4_K2NODE_VAR_REFERENCEGUIDS) // There was no version bump for this change, but VER_UE4_K2NODE_VAR_REFERENCEGUIDS was made at almost the same time.
 		{
-			Record << NAMED_ITEM("ArgumentName", Value.ArgumentName);
+			Record << SA_VALUE(TEXT("ArgumentName"), Value.ArgumentName);
 		}
 		else
 		{
 			FText TempValue;
-			Record << NAMED_ITEM("ArgumentName", TempValue);
+			Record << SA_VALUE(TEXT("ArgumentName"), TempValue);
 			Value.ArgumentName = TempValue.ToString();
 		}
 	}
 	if (UnderlyingArchive.IsSaving())
 	{
-		Record << NAMED_ITEM("ArgumentName", Value.ArgumentName);
+		Record << SA_VALUE(TEXT("ArgumentName"), Value.ArgumentName);
 	}
 
-	uint8 TypeAsByte = Value.ArgumentValueType;
+	uint8 TypeAsByte = (uint8)Value.ArgumentValueType;
 	if (UnderlyingArchive.IsLoading())
 	{
 		Value.ResetValue();
 
 		if (UnderlyingArchive.CustomVer(FEditorObjectVersion::GUID) >= FEditorObjectVersion::TextFormatArgumentDataIsVariant)
 		{
-			Record << NAMED_ITEM("Type", TypeAsByte);
+			Record << SA_VALUE(TEXT("Type"), TypeAsByte);
 		}
 		else
 		{
@@ -1375,25 +1430,25 @@ void operator<<(FStructuredArchive::FSlot Slot, FFormatArgumentData& Value)
 	}
 	else if (UnderlyingArchive.IsSaving())
 	{
-		Record << NAMED_ITEM("Type", TypeAsByte);
+		Record << SA_VALUE(TEXT("Type"), TypeAsByte);
 	}
 
 	Value.ArgumentValueType = (EFormatArgumentType::Type)TypeAsByte;
 	switch (Value.ArgumentValueType)
 	{
 	case EFormatArgumentType::Int:
-		Record << NAMED_ITEM("Value", Value.ArgumentValueInt);
+		Record << SA_VALUE(TEXT("Value"), Value.ArgumentValueInt);
 		break;
 	case EFormatArgumentType::Float:
-		Record << NAMED_ITEM("Value", Value.ArgumentValueFloat);
+		Record << SA_VALUE(TEXT("Value"), Value.ArgumentValueFloat);
 		break;
 	case EFormatArgumentType::Text:
-		Record << NAMED_ITEM("Value", Value.ArgumentValue);
+		Record << SA_VALUE(TEXT("Value"), Value.ArgumentValue);
 		break;
 	case EFormatArgumentType::Gender:
 		{
 			uint8& Gender = (uint8&)Value.ArgumentValueGender;
-			Record << NAMED_ITEM("Value", Gender);
+			Record << SA_VALUE(TEXT("Value"), Gender);
 			break;
 		}
 	default:
@@ -1411,8 +1466,8 @@ FTextSnapshot::FTextSnapshot()
 
 FTextSnapshot::FTextSnapshot(const FText& InText)
 	: TextDataPtr(InText.TextData)
-	, GlobalHistoryRevision(InText.TextData->GetGlobalHistoryRevision())
-	, LocalHistoryRevision(InText.TextData->GetLocalHistoryRevision())
+	, GlobalHistoryRevision(GetGlobalHistoryRevisionForText(InText))
+	, LocalHistoryRevision(GetLocalHistoryRevisionForText(InText))
 	, Flags(InText.Flags)
 {
 }
@@ -1424,8 +1479,8 @@ bool FTextSnapshot::IdenticalTo(const FText& InText) const
 	InText.Rebuild();
 
 	return TextDataPtr == InText.TextData 
-		&& GlobalHistoryRevision == InText.TextData->GetGlobalHistoryRevision()
-		&& LocalHistoryRevision == InText.TextData->GetLocalHistoryRevision()
+		&& GlobalHistoryRevision == GetGlobalHistoryRevisionForText(InText)
+		&& LocalHistoryRevision == GetLocalHistoryRevisionForText(InText)
 		&& Flags == InText.Flags;
 }
 
@@ -1437,9 +1492,19 @@ bool FTextSnapshot::IsDisplayStringEqualTo(const FText& InText) const
 
 	// We have to assume that the display string has changed if the history of the text has changed
 	// (due to a culture change), as we no longer have the old display string to compare against
-	return GlobalHistoryRevision == InText.TextData->GetGlobalHistoryRevision()
-		&& LocalHistoryRevision == InText.TextData->GetLocalHistoryRevision()
+	return GlobalHistoryRevision == GetGlobalHistoryRevisionForText(InText)
+		&& LocalHistoryRevision == GetLocalHistoryRevisionForText(InText)
 		&& TextDataPtr.IsValid() && TextDataPtr->GetDisplayString().Equals(InText.ToString(), ESearchCase::CaseSensitive);
+}
+
+uint16 FTextSnapshot::GetGlobalHistoryRevisionForText(const FText& InText)
+{
+	return (InText.IsEmpty() || InText.IsCultureInvariant()) ? 0 : InText.TextData->GetGlobalHistoryRevision();
+}
+
+uint16 FTextSnapshot::GetLocalHistoryRevisionForText(const FText& InText)
+{
+	return (InText.IsEmpty() || InText.IsCultureInvariant()) ? 0 : InText.TextData->GetLocalHistoryRevision();
 }
 
 FScopedTextIdentityPreserver::FScopedTextIdentityPreserver(FText& InTextToPersist)
@@ -1494,6 +1559,7 @@ bool TextBiDi::IsControlCharacter(const TCHAR InChar)
 }
 
 FText FTextStringHelper::CreateFromBuffer(const TCHAR* Buffer, const TCHAR* TextNamespace, const TCHAR* PackageNamespace, const bool bRequiresQuotes)
+
 {
 	FText Value;
 	if (!ReadFromBuffer(Buffer, Value, TextNamespace, PackageNamespace, bRequiresQuotes))
@@ -1644,7 +1710,7 @@ bool FTextStringHelper::ReadFromString(const TCHAR* Buffer, FText& OutValue, con
 	{
 		if (OutNumCharsRead)
 		{
-			*OutNumCharsRead = (Buffer - Start);
+			*OutNumCharsRead = UE_PTRDIFF_TO_INT32(Buffer - Start);
 		}
 		return true;
 	}
@@ -1706,6 +1772,99 @@ bool FTextStringHelper::IsComplexText(const TCHAR* Buffer)
 		|| FTextHistory_Transform::StaticShouldReadFromBuffer(Buffer)
 		|| FTextHistory_StringTableEntry::StaticShouldReadFromBuffer(Buffer);
 #undef LOC_DEFINE_REGION
+}
+
+void FTextBuilder::Indent()
+{
+	++IndentCount;
+}
+
+void FTextBuilder::Unindent()
+{
+	--IndentCount;
+}
+
+void FTextBuilder::AppendLine()
+{
+	BuildAndAppendLine(FText());
+}
+
+void FTextBuilder::AppendLine(const FText& Text)
+{
+	BuildAndAppendLine(CopyTemp(Text));
+}
+
+void FTextBuilder::AppendLine(const FString& String)
+{
+	BuildAndAppendLine(CopyTemp(String));
+}
+
+void FTextBuilder::AppendLine(const FName& Name)
+{
+	BuildAndAppendLine(Name.ToString());
+}
+
+void FTextBuilder::AppendLineFormat(const FTextFormat& Pattern, const FFormatNamedArguments& Arguments)
+{
+	BuildAndAppendLine(FText::Format(Pattern, Arguments));
+}
+
+void FTextBuilder::AppendLineFormat(const FTextFormat& Pattern, const FFormatOrderedArguments& Arguments)
+{
+	BuildAndAppendLine(FText::Format(Pattern, Arguments));
+}
+
+void FTextBuilder::Clear()
+{
+	Lines.Reset();
+}
+
+bool FTextBuilder::IsEmpty()
+{
+	return Lines.Num() == 0;
+}
+
+FText FTextBuilder::ToText() const
+{
+	return FText::Join(FText::AsCultureInvariant(LINE_TERMINATOR), Lines);
+}
+
+void FTextBuilder::BuildAndAppendLine(FString&& Data)
+{
+	if (IndentCount <= 0)
+	{
+		Lines.Emplace(FText::AsCultureInvariant(MoveTemp(Data)));
+	}
+	else
+	{
+		FString IndentedLine;
+		IndentedLine.Reserve((4 * IndentCount) + Data.Len());
+		for (int32 Index = 0; Index < IndentCount; ++Index)
+		{
+			IndentedLine += TEXT("    ");
+		}
+		IndentedLine += Data;
+		Lines.Emplace(FText::AsCultureInvariant(MoveTemp(IndentedLine)));
+	}
+}
+
+void FTextBuilder::BuildAndAppendLine(FText&& Data)
+{
+	if (IndentCount <= 0)
+	{
+		Lines.Emplace(MoveTemp(Data));
+	}
+	else
+	{
+		FString IndentedFmtPattern;
+		IndentedFmtPattern.Reserve((4 * IndentCount) + 3);
+		for (int32 Index = 0; Index < IndentCount; ++Index)
+		{
+			IndentedFmtPattern += TEXT("    ");
+		}
+		IndentedFmtPattern += TEXT("{0}");
+		Lines.Emplace(FText::Format(FText::AsCultureInvariant(MoveTemp(IndentedFmtPattern)), MoveTemp(Data)));
+	}
 }
 
 bool LexTryParseString(ETextGender& OutValue, const TCHAR* Buffer)

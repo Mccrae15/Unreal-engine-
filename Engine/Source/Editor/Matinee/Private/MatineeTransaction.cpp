@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "MatineeTransaction.h"
 #include "Matinee/InterpGroup.h"
@@ -25,7 +25,7 @@ void FMatineeTransaction::SaveObject( UObject* Object )
 		Object->IsA( UK2Node_MatineeController::StaticClass() ) )
 	{
 		// Save the object.
-		new( Records )FObjectRecord( this, Object, nullptr, NULL, 0, 0, 0, 0, NULL, NULL, NULL );
+		Records.Add(new FObjectRecord( this, Object, nullptr, nullptr, 0, 0, 0, 0, nullptr, nullptr, nullptr));
 	}
 }
 

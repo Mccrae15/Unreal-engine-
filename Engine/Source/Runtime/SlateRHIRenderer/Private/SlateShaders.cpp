@@ -1,13 +1,16 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "SlateShaders.h"
 #include "Rendering/RenderingCommon.h"
+#include "PipelineStateCache.h"
 
 /** Flag to determine if we are running with a color vision deficiency shader on */
 EColorVisionDeficiency GSlateColorDeficiencyType = EColorVisionDeficiency::NormalVision;
 int32 GSlateColorDeficiencySeverity = 0;
 bool GSlateColorDeficiencyCorrection = false;
 bool GSlateShowColorDeficiencyCorrectionWithDeficiency = false;
+
+IMPLEMENT_TYPE_LAYOUT(FSlateElementPS);
 
 IMPLEMENT_SHADER_TYPE(, FSlateElementVS, TEXT("/Engine/Private/SlateVertexShader.usf"), TEXT("Main"), SF_Vertex);
 
@@ -26,6 +29,9 @@ IMPLEMENT_SHADER_TYPE(, FSlateDebugBatchingPS, TEXT("/Engine/Private/SlateElemen
 	typedef TSlateElementPS<ESlateShader::ShaderType,bDrawDisabledEffect,bUseTextureAlpha> TSlateElementPS##ShaderType##bDrawDisabledEffect##bUseTextureAlpha##A; \
 	IMPLEMENT_SHADER_TYPE(template<>,TSlateElementPS##ShaderType##bDrawDisabledEffect##bUseTextureAlpha##A,TEXT("/Engine/Private/SlateElementPixelShader.usf"),TEXT("Main"),SF_Pixel);
 
+#if WITH_EDITOR
+IMPLEMENT_SHADER_TYPE(, FHDREditorConvertPS, TEXT("/Engine/Private/CompositeUIPixelShader.usf"), TEXT("HDREditorConvert"), SF_Pixel);
+#endif
 /**
 * All the different permutations of shaders used by slate. Uses #defines to avoid dynamic branches
 */
@@ -38,9 +44,13 @@ IMPLEMENT_SLATE_PIXELSHADER_TYPE(Border, false, false);
 IMPLEMENT_SLATE_PIXELSHADER_TYPE(Default, true, false);
 IMPLEMENT_SLATE_PIXELSHADER_TYPE(Border, true, false);
 
-IMPLEMENT_SLATE_PIXELSHADER_TYPE(Font, false, true);
+IMPLEMENT_SLATE_PIXELSHADER_TYPE(GrayscaleFont, false, true);
+IMPLEMENT_SLATE_PIXELSHADER_TYPE(GrayscaleFont, true, true);
+
+IMPLEMENT_SLATE_PIXELSHADER_TYPE(ColorFont, false, true);
+IMPLEMENT_SLATE_PIXELSHADER_TYPE(ColorFont, true, true);
+
 IMPLEMENT_SLATE_PIXELSHADER_TYPE(LineSegment, false, true);
-IMPLEMENT_SLATE_PIXELSHADER_TYPE(Font, true, true);
 IMPLEMENT_SLATE_PIXELSHADER_TYPE(LineSegment, true, true);
 
 /** The Slate vertex declaration. */
@@ -62,7 +72,7 @@ void FSlateVertexDeclaration::InitRHI()
 	Elements.Add(FVertexElement(0, STRUCT_OFFSET(FSlateVertex, Color), VET_Color, 3, Stride));
 	Elements.Add(FVertexElement(0, STRUCT_OFFSET(FSlateVertex, PixelSize), VET_UShort2, 4, Stride));
 
-	VertexDeclarationRHI = RHICreateVertexDeclaration(Elements);
+	VertexDeclarationRHI = PipelineStateCache::GetOrCreateVertexDeclaration(Elements);
 }
 
 void FSlateVertexDeclaration::ReleaseRHI()
@@ -84,7 +94,7 @@ void FSlateInstancedVertexDeclaration::InitRHI()
 	Elements.Add(FVertexElement(0, STRUCT_OFFSET(FSlateVertex, Color), VET_Color, 3, Stride));
 	Elements.Add(FVertexElement(1, 0, VET_Float4, 4, sizeof(FVector4), true));
 	
-	VertexDeclarationRHI = RHICreateVertexDeclaration(Elements);
+	VertexDeclarationRHI = PipelineStateCache::GetOrCreateVertexDeclaration(Elements);
 }
 
 void FSlateElementPS::ModifyCompilationEnvironment(const FGlobalShaderPermutationParameters& Parameters, FShaderCompilerEnvironment& OutEnvironment)
@@ -103,7 +113,7 @@ void FSlateMaskingVertexDeclaration::InitRHI()
 	uint32 Stride = sizeof(uint32);
 	Elements.Add(FVertexElement(0, 0, VET_UByte4, 0, Stride));
 
-	VertexDeclarationRHI = RHICreateVertexDeclaration(Elements);
+	VertexDeclarationRHI = PipelineStateCache::GetOrCreateVertexDeclaration(Elements);
 }
 
 void FSlateMaskingVertexDeclaration::ReleaseRHI()
@@ -126,21 +136,21 @@ FSlateElementVS::FSlateElementVS( const ShaderMetaType::CompiledShaderInitialize
 
 void FSlateElementVS::SetViewProjection(FRHICommandList& RHICmdList, const FMatrix& InViewProjection )
 {
-	SetShaderValue(RHICmdList, GetVertexShader(), ViewProjection, InViewProjection );
+	SetShaderValue(RHICmdList, RHICmdList.GetBoundVertexShader(), ViewProjection, InViewProjection );
 }
 
 void FSlateElementVS::SetShaderParameters(FRHICommandList& RHICmdList, const FVector4& ShaderParams )
 {
-	SetShaderValue(RHICmdList, GetVertexShader(), VertexShaderParams, ShaderParams );
+	SetShaderValue(RHICmdList, RHICmdList.GetBoundVertexShader(), VertexShaderParams, ShaderParams );
 }
 
 void FSlateElementVS::SetVerticalAxisMultiplier(FRHICommandList& RHICmdList, float InMultiplier )
 {
-	SetShaderValue(RHICmdList, GetVertexShader(), SwitchVerticalAxisMultiplier, InMultiplier );
+	SetShaderValue(RHICmdList, RHICmdList.GetBoundVertexShader(), SwitchVerticalAxisMultiplier, InMultiplier );
 }
 
 /** Serializes the shader data */
-bool FSlateElementVS::Serialize( FArchive& Ar )
+/*bool FSlateElementVS::Serialize( FArchive& Ar )
 {
 	bool bShaderHasOutdatedParameters = FGlobalShader::Serialize( Ar );
 
@@ -149,7 +159,7 @@ bool FSlateElementVS::Serialize( FArchive& Ar )
 	Ar << SwitchVerticalAxisMultiplier;
 
 	return bShaderHasOutdatedParameters;
-}
+}*/
 
 
 /************************************************************************/
@@ -166,12 +176,12 @@ FSlateMaskingVS::FSlateMaskingVS(const ShaderMetaType::CompiledShaderInitializer
 
 void FSlateMaskingVS::SetViewProjection(FRHICommandList& RHICmdList, const FMatrix& InViewProjection)
 {
-	SetShaderValue(RHICmdList, GetVertexShader(), ViewProjection, InViewProjection);
+	SetShaderValue(RHICmdList, RHICmdList.GetBoundVertexShader(), ViewProjection, InViewProjection);
 }
 
 void FSlateMaskingVS::SetVerticalAxisMultiplier(FRHICommandList& RHICmdList, float InMultiplier )
 {
-	SetShaderValue(RHICmdList, GetVertexShader(), SwitchVerticalAxisMultiplier, InMultiplier );
+	SetShaderValue(RHICmdList, RHICmdList.GetBoundVertexShader(), SwitchVerticalAxisMultiplier, InMultiplier );
 }
 
 void FSlateMaskingVS::SetMaskRect(FRHICommandList& RHICmdList, const FVector2D& TopLeft, const FVector2D& TopRight, const FVector2D& BotLeft, const FVector2D& BotRight)
@@ -179,11 +189,11 @@ void FSlateMaskingVS::SetMaskRect(FRHICommandList& RHICmdList, const FVector2D& 
 	//FVector4 MaskRectVal[4] = { FVector4(TopLeft, FVector2D::ZeroVector), FVector4(TopRight, FVector2D::ZeroVector), FVector4(BotLeft, FVector2D::ZeroVector), FVector4(BotRight, FVector2D::ZeroVector) };
 	FVector4 MaskRectVal[2] = { FVector4(TopLeft, TopRight), FVector4(BotLeft, BotRight) };
 
-	SetShaderValue(RHICmdList, GetVertexShader(), MaskRect, MaskRectVal);
+	SetShaderValue(RHICmdList, RHICmdList.GetBoundVertexShader(), MaskRect, MaskRectVal);
 }
 
 /** Serializes the shader data */
-bool FSlateMaskingVS::Serialize(FArchive& Ar)
+/*bool FSlateMaskingVS::Serialize(FArchive& Ar)
 {
 	bool bShaderHasOutdatedParameters = FGlobalShader::Serialize(Ar);
 
@@ -192,4 +202,4 @@ bool FSlateMaskingVS::Serialize(FArchive& Ar)
 	Ar << SwitchVerticalAxisMultiplier;
 
 	return bShaderHasOutdatedParameters;
-}
+}*/

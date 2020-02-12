@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "FoliageTypeObject.h"
 #include "UObject/Package.h"
@@ -6,9 +6,10 @@
 void FFoliageTypeObject::RefreshInstance()
 {
 	//@todo: should verify that the instance is dirty before updating
+	TypeInstance = nullptr;
 
 	// If the foliage type is an asset, use that
-	if (auto FoliageTypeAsAsset = Cast<UFoliageType_InstancedStaticMesh>(FoliageTypeObject))
+	if (auto FoliageTypeAsAsset = Cast<UFoliageType>(FoliageTypeObject))
 	{
 		bIsAsset = true;
 		TypeInstance = FoliageTypeAsAsset;
@@ -19,12 +20,12 @@ void FFoliageTypeObject::RefreshInstance()
 		if (FoliageTypeAsBP->ParentClass->IsChildOf<UFoliageType_InstancedStaticMesh>())
 		{
 			bIsAsset = false;
-			TypeInstance = NewObject<UFoliageType_InstancedStaticMesh>(GetTransientPackage(), *FoliageTypeAsBP->GeneratedClass);
+			TypeInstance = NewObject<UFoliageType_InstancedStaticMesh>(GetTransientPackage(), *FoliageTypeAsBP->GeneratedClass, NAME_None, RF_Transactional);
 		}
 	}
 }
 
-const UFoliageType_InstancedStaticMesh* FFoliageTypeObject::GetInstance()
+const UFoliageType* FFoliageTypeObject::GetInstance()
 {
 	if (!TypeInstance)
 	{
@@ -35,7 +36,7 @@ const UFoliageType_InstancedStaticMesh* FFoliageTypeObject::GetInstance()
 	return TypeInstance;
 }
 
-const UFoliageType_InstancedStaticMesh* FFoliageTypeObject::GetInstance() const
+const UFoliageType* FFoliageTypeObject::GetInstance() const
 {
 	return TypeInstance;
 }
@@ -53,14 +54,14 @@ bool FFoliageTypeObject::HasFoliageType() const
 bool FFoliageTypeObject::IsDirty() const
 {
 	//@todo: make sure this works when the object isn't an asset
-	return (!TypeInstance || TypeInstance->ChangeCount != TypeInstance->GetClass()->GetDefaultObject<UFoliageType_InstancedStaticMesh>()->ChangeCount);
+	return (!TypeInstance || TypeInstance->ChangeCount != TypeInstance->GetClass()->GetDefaultObject<UFoliageType>()->ChangeCount);
 }
 
 void FFoliageTypeObject::SetClean()
 {
 	if (TypeInstance)
 	{
-		TypeInstance->ChangeCount = TypeInstance->GetClass()->GetDefaultObject<UFoliageType_InstancedStaticMesh>()->ChangeCount;
+		TypeInstance->ChangeCount = TypeInstance->GetClass()->GetDefaultObject<UFoliageType>()->ChangeCount;
 	}
 }
 

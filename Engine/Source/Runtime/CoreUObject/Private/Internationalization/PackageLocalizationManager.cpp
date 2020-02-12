@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "Internationalization/PackageLocalizationManager.h"
 #include "Misc/Paths.h"
@@ -143,6 +143,14 @@ FName FPackageLocalizationManager::FindLocalizedPackageNameNoCache(const FName I
 	}
 
 	return NAME_None;
+}
+
+void FPackageLocalizationManager::ConditionalUpdateCache()
+{
+	if (ActiveCache.IsValid())
+	{
+		ActiveCache->ConditionalUpdateCache();
+	}
 }
 
 FPackageLocalizationManager& FPackageLocalizationManager::Get()

@@ -1,9 +1,14 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 
 #include "Sound/SoundNode.h"
 #include "EngineUtils.h"
 #include "Sound/SoundCue.h"
+#include "Misc/App.h"
+#include "Sound/SoundNodeWavePlayer.h"
+#include "ContentStreaming.h"
+#include "Sound/SoundWave.h"
+#include "AudioCompressionSettingsUtils.h"
 
 /*-----------------------------------------------------------------------------
 	USoundNode implementation.
@@ -11,6 +16,8 @@
 USoundNode::USoundNode(const FObjectInitializer& ObjectInitializer)
 	: Super(ObjectInitializer)
 {
+	RandomStream.Initialize(FApp::bUseFixedSeed ? GetFName() : NAME_None);
+	bIsRetainingAudio = false;
 }
 
 
@@ -67,13 +74,118 @@ UEdGraphNode* USoundNode::GetGraphNode() const
 UPTRINT USoundNode::GetNodeWaveInstanceHash(const UPTRINT ParentWaveInstanceHash, const USoundNode* ChildNode, const uint32 ChildIndex)
 {
 	checkf(ChildIndex < MAX_ALLOWED_CHILD_NODES, TEXT("Too many children (%d) in SoundCue '%s'"), ChildIndex, *CastChecked<USoundCue>(ChildNode->GetOuter())->GetFullName());
-	return ((ParentWaveInstanceHash << ChildIndex) ^ (UPTRINT)ChildNode);
+
+	return GetNodeWaveInstanceHash(ParentWaveInstanceHash, reinterpret_cast<const UPTRINT>(ChildNode), ChildIndex);
 }
 
 UPTRINT USoundNode::GetNodeWaveInstanceHash(const UPTRINT ParentWaveInstanceHash, const UPTRINT ChildNodeHash, const uint32 ChildIndex)
 {
-	checkf(ChildIndex < MAX_ALLOWED_CHILD_NODES, TEXT("Too many children (%d) in SoundCue"), ChildIndex);
+#define USE_NEW_SOUNDCUE_NODE_HASH 1
+#if USE_NEW_SOUNDCUE_NODE_HASH
+	const uint32 ChildHash = PointerHash(reinterpret_cast<const void*>(ChildNodeHash), GetTypeHash(ChildIndex));
+	const uint32 Hash = PointerHash(reinterpret_cast<const void*>(ParentWaveInstanceHash), ChildHash);
+
+	return static_cast<UPTRINT>(Hash);
+#else
 	return ((ParentWaveInstanceHash << ChildIndex) ^ ChildNodeHash);
+#endif // USE_NEW_SOUNDCUE_NODE_HASH
+}
+
+void USoundNode::PrimeChildWavePlayers(bool bRecurse)
+{
+	if (FPlatformCompressionUtilities::IsCurrentPlatformUsingStreamCaching())
+	{
+		// Search child nodes for wave players, then prime their waves.
+		for (USoundNode* ChildNode : ChildNodes)
+		{
+			if (ChildNode)
+			{
+				ChildNode->ConditionalPostLoad();
+				if (bRecurse)
+				{
+					ChildNode->PrimeChildWavePlayers(true);
+				}
+
+				USoundNodeWavePlayer* WavePlayer = Cast<USoundNodeWavePlayer>(ChildNode);
+				if (WavePlayer != nullptr)
+				{
+					USoundWave* SoundWave = WavePlayer->GetSoundWave();
+					if (SoundWave && SoundWave->IsStreaming(nullptr) && SoundWave->GetNumChunks() > 1)
+					{
+						IStreamingManager::Get().GetAudioStreamingManager().RequestChunk(SoundWave, 1, [](EAudioChunkLoadResult) {});
+					}
+				}
+			}
+		}
+	}
+}
+
+void USoundNode::RetainChildWavePlayers(bool bRecurse)
+{
+	if (FPlatformCompressionUtilities::IsCurrentPlatformUsingStreamCaching())
+	{
+		// Search child nodes for wave players, then prime their waves.
+		for (USoundNode* ChildNode : ChildNodes)
+		{
+			if (ChildNode)
+			{
+				ChildNode->ConditionalPostLoad();
+				if (bRecurse)
+				{
+					ChildNode->RetainChildWavePlayers(true);
+				}
+
+				USoundNodeWavePlayer* WavePlayer = Cast<USoundNodeWavePlayer>(ChildNode);
+				if (WavePlayer != nullptr)
+				{
+					USoundWave* SoundWave = WavePlayer->GetSoundWave();
+					if (SoundWave)
+					{
+						SoundWave->ConditionalPostLoad();
+						SoundWave->RetainCompressedAudio();
+					}
+				}
+			}
+		}
+	}
+
+	bIsRetainingAudio = true;
+}
+
+void USoundNode::ReleaseRetainerOnChildWavePlayers(bool bRecurse)
+{
+	if (bIsRetainingAudio && FPlatformCompressionUtilities::IsCurrentPlatformUsingStreamCaching())
+	{
+		// Search child nodes for wave players, then prime their waves.
+		for (USoundNode* ChildNode : ChildNodes)
+		{
+			if (ChildNode)
+			{
+				ChildNode->ConditionalPostLoad();
+				if (bRecurse)
+				{
+					ChildNode->ReleaseRetainerOnChildWavePlayers(true);
+				}
+
+				USoundNodeWavePlayer* WavePlayer = Cast<USoundNodeWavePlayer>(ChildNode);
+				if (WavePlayer != nullptr)
+				{
+					USoundWave* SoundWave = WavePlayer->GetSoundWave();
+					if (SoundWave)
+					{
+						SoundWave->ReleaseCompressedAudio();
+					}
+				}
+			}
+		}
+	}
+
+	bIsRetainingAudio = false;
+}
+
+void USoundNode::BeginDestroy()
+{
+	Super::BeginDestroy();
 }
 
 void USoundNode::ParseNodes( FAudioDevice* AudioDevice, const UPTRINT NodeWaveInstanceHash, FActiveSound& ActiveSound, const FSoundParseParameters& ParseParams, TArray<FWaveInstance*>& WaveInstances )
@@ -204,14 +316,14 @@ bool USoundNode::HasConcatenatorNode() const
 	return false;
 }
 
-bool USoundNode::IsVirtualizeWhenSilent() const
+bool USoundNode::IsPlayWhenSilent() const
 {
 	for (USoundNode* ChildNode : ChildNodes)
 	{
 		if (ChildNode)
 		{
 			ChildNode->ConditionalPostLoad();
-			if (ChildNode->IsVirtualizeWhenSilent())
+			if (ChildNode->IsPlayWhenSilent())
 			{
 				return true;
 			}

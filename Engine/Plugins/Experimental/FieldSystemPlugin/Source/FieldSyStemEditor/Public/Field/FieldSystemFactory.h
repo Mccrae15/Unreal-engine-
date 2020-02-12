@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 /** Factory which allows import of an FieldSystemAsset */
 
@@ -8,6 +8,7 @@
 #include "UObject/ObjectMacros.h"
 #include "Factories/Factory.h"
 #include "Field/FieldSystem.h"
+#include "Field/FieldSystemAsset.h"
 
 #include "FieldSystemFactory.generated.h"
 

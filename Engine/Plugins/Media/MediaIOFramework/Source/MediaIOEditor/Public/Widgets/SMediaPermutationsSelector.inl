@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "Framework/MultiBox/MultiBoxBuilder.h"
 #include "Widgets/SBoxPanel.h"
@@ -22,7 +22,8 @@ ItemType SMediaPermutationsSelector<ItemType, ItemBuilder>::GetSelectedItem() co
 template <typename ItemType, typename ItemBuilder>
 void SMediaPermutationsSelector<ItemType, ItemBuilder>::Construct(const FArguments& InArgs)
 {
-	SWidget::Construct(InArgs._ToolTipText, InArgs._ToolTip, InArgs._Cursor, InArgs._IsEnabled, InArgs._Visibility, InArgs._RenderOpacity, InArgs._RenderTransform, InArgs._RenderTransformPivot, InArgs._Tag, InArgs._ForceVolatile, InArgs._Clipping, InArgs._FlowDirectionPreference, InArgs.MetaData);
+	SWidget::Construct(InArgs._ToolTipText, InArgs._ToolTip, InArgs._Cursor, InArgs._IsEnabled, InArgs._Visibility, InArgs._RenderOpacity, InArgs._RenderTransform, InArgs._RenderTransformPivot, InArgs._Tag, InArgs._ForceVolatile, InArgs._Clipping,
+					   InArgs._FlowDirectionPreference, InArgs._AccessibleParams, InArgs.MetaData);
 
 	PermutationsSource = InArgs._PermutationsSource;
 	SelectedPermutationIndex = INDEX_NONE;

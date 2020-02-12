@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 /*=============================================================================
 	LandscapeBlueprintSupport.cpp: Landscape blueprint functions
@@ -20,7 +20,8 @@ void ALandscapeProxy::EditorApplySpline(USplineComponent* InSplineComponent, flo
 	if (InSplineComponent && !GetWorld()->IsGameWorld())
 	{
 		TArray<FLandscapeSplineInterpPoint> Points;
-		LandscapeSplineRaster::Pointify(InSplineComponent->SplineCurves.Position, Points, NumSubdivisions, 0.0f, 0.0f, StartWidth, EndWidth, StartSideFalloff, EndSideFalloff, StartRoll, EndRoll);
+		LandscapeSplineRaster::FPointifyFalloffs Falloffs(StartSideFalloff, EndSideFalloff);
+		LandscapeSplineRaster::Pointify(InSplineComponent->SplineCurves.Position, Points, NumSubdivisions, 0.0f, 0.0f, StartWidth, EndWidth, StartWidth, EndWidth, Falloffs, StartRoll, EndRoll);
 
 		FTransform SplineToWorld = InSplineComponent->GetComponentTransform();
 		LandscapeSplineRaster::RasterizeSegmentPoints(GetLandscapeInfo(), MoveTemp(Points), SplineToWorld, bRaiseHeights, bLowerHeights, PaintLayer);
@@ -85,8 +86,30 @@ void ALandscapeProxy::EditorSetLandscapeMaterial(UMaterialInterface* NewLandscap
 	if (!GetWorld()->IsGameWorld())
 	{
 		LandscapeMaterial = NewLandscapeMaterial;
-		FPropertyChangedEvent PropertyChangedEvent(FindFieldChecked<UProperty>(GetClass(), FName("LandscapeMaterial")));
+		FPropertyChangedEvent PropertyChangedEvent(FindFieldChecked<FProperty>(GetClass(), FName("LandscapeMaterial")));
 		PostEditChangeProperty(PropertyChangedEvent);
 	}
 #endif
+}
+
+float ULandscapeComponent::EditorGetPaintLayerWeightByNameAtLocation(const FVector& InLocation, const FName InPaintLayerName)
+{
+#if WITH_EDITOR
+	ULandscapeInfo* LandscapeInfo = GetLandscapeInfo();
+	ULandscapeLayerInfoObject* PaintLayer = LandscapeInfo ? LandscapeInfo->GetLayerInfoByName(InPaintLayerName) : nullptr;
+	return GetLayerWeightAtLocation(InLocation, PaintLayer);
+#else
+	return 0.f;
+#endif
+}
+
+float ULandscapeComponent::EditorGetPaintLayerWeightAtLocation(const FVector& InLocation, ULandscapeLayerInfoObject* PaintLayer)
+{
+#if WITH_EDITOR
+	if (PaintLayer)
+	{
+		return GetLayerWeightAtLocation(InLocation, PaintLayer);
+	}
+#endif
+	return 0.f;
 }

@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 using System;
 using System.IO;
@@ -9,7 +9,7 @@ public class OpenVR : ModuleRules
 	public OpenVR(ReadOnlyTargetRules Target) : base(Target)
 	{
 		/** Mark the current version of the OpenVR SDK */
-		string OpenVRVersion = "v1_0_16";
+		string OpenVRVersion = "v1_5_17";
 		Type = ModuleType.External;
 
 		string SdkBase = Target.UEThirdPartySourceDirectory + "OpenVR/OpenVR" + OpenVRVersion;
@@ -26,8 +26,8 @@ public class OpenVR : ModuleRules
 
 		if(Target.Platform == UnrealTargetPlatform.Win32)
 		{
-			PublicLibraryPaths.Add(LibraryPath + "win32");
-			PublicAdditionalLibraries.Add("openvr_api.lib");
+			LibraryPath += "win32/";
+			PublicAdditionalLibraries.Add(LibraryPath + "openvr_api.lib");
 			PublicDelayLoadDLLs.Add("openvr_api.dll");
 
 			string OpenVRBinariesDir = String.Format("$(EngineDir)/Binaries/ThirdParty/OpenVR/OpenVR{0}/Win32/", OpenVRVersion);
@@ -35,8 +35,8 @@ public class OpenVR : ModuleRules
 		}
 		else if(Target.Platform == UnrealTargetPlatform.Win64)
 		{
-			PublicLibraryPaths.Add(LibraryPath + "win64");
-			PublicAdditionalLibraries.Add("openvr_api.lib");
+			LibraryPath += "win64/";
+			PublicAdditionalLibraries.Add(LibraryPath + "openvr_api.lib");
 			PublicDelayLoadDLLs.Add("openvr_api.dll");
 
 			string OpenVRBinariesDir = String.Format("$(EngineDir)/Binaries/ThirdParty/OpenVR/OpenVR{0}/Win64/", OpenVRVersion);
@@ -50,8 +50,9 @@ public class OpenVR : ModuleRules
 		}
 		else if (Target.Platform == UnrealTargetPlatform.Linux && Target.Architecture.StartsWith("x86_64"))
 		{
-			PublicLibraryPaths.Add(LibraryPath + "linux64");
-			PublicAdditionalLibraries.Add("openvr_api");
+			LibraryPath += "linux64/";
+			//PublicLibraryPaths.Add(LibraryPath);
+			PublicAdditionalLibraries.Add(LibraryPath + "libopenvr_api.so");
 
 			string DylibDir = Target.UEThirdPartyBinariesDirectory + "OpenVR/OpenVR" + OpenVRVersion + "/linux64";
 			PrivateRuntimeLibraryPaths.Add(DylibDir);

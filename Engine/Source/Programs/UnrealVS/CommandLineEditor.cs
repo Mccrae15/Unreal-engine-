@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 using System;
 using System.Diagnostics;
@@ -13,7 +13,7 @@ using EnvDTE;
 using System.Runtime.InteropServices;
 using System.Collections.Generic;
 using EnvDTE80;
-
+using System.Timers;
 
 namespace UnrealVS
 {
@@ -28,6 +28,11 @@ namespace UnrealVS
 		/** methods */
 
 		public CommandLineEditor()
+		{
+		}
+
+
+		public void Initialize()
 		{
 			// Create the handlers for our commands
 			{
@@ -57,14 +62,38 @@ namespace UnrealVS
 		/// </summary>
 		public void OnStartupProjectPropertyChanged(UInt32 itemid, Int32 propid, UInt32 flags)
 		{
+			// Filter out Helix VS plugin sending thousands of VSHPROPID_StateIconIndex in UE4.sln
+			// This event type is not usefull at all for the commandline editor
+			if (propid == (Int32)__VSHPROPID.VSHPROPID_StateIconIndex)
+			{
+				return;
+			}
+
 			IVsHierarchy ProjectHierarchy;
 			UnrealVSPackage.Instance.SolutionBuildManager.get_StartupProject(out ProjectHierarchy);
 			if (ProjectHierarchy != null)
 			{
 				
 				// @todo: filter this so that we only respond to changes in the command line property
-				UpdateCommandLineCombo();
+				// Setup a timer to prevent any more performance problem from spamming events
+				if( UpdateCommandLineComboTimer == null )
+				{
+					UpdateCommandLineComboTimer = new System.Timers.Timer(1000);
+					UpdateCommandLineComboTimer.AutoReset = false;
+					UpdateCommandLineComboTimer.Elapsed += OnUpdateCommandLineCombo;
+				}
+				// Restart timer to raise the event only after 1s of no notification
+				UpdateCommandLineComboTimer.Stop();
+				UpdateCommandLineComboTimer.Start();
 			}
+		}
+
+		/// <summary>
+		/// Timer callback to UpdateCommandLineCombo
+		/// </summary>
+		private void OnUpdateCommandLineCombo(Object source, ElapsedEventArgs e)
+		{
+            ThreadHelper.Generic.BeginInvoke(UpdateCommandLineCombo);
 		}
 
 		/// <summary>
@@ -366,5 +395,8 @@ namespace UnrealVS
 
 		/// Used to store the user edited commandline mid-edit, in the combo handler
 		private string DesiredCommandLine;
+
+		/// used to shield against too many property changes in the future
+		private System.Timers.Timer UpdateCommandLineComboTimer = null;
 	}
 }

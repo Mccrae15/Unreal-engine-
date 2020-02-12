@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 using System.IO;
 
@@ -29,12 +29,9 @@ namespace UnrealBuildTool.Rules
 					"MagicLeap",
 					"MLSDK",
 					"SlateCore",
-					"LiveLinkInterface"
+					"LiveLinkInterface",
 				}
 			);
-
-			// This is not ideal but needs to be done in order to expose the private MagicLeapHMD header to this module.
-			PrivateIncludePaths.Add(Path.Combine(new string[] { ModuleDirectory, "..", "MagicLeap", "Private" }));
 		}
 	}
 }

@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "Subsystems/SubsystemCollection.h"
 
@@ -38,13 +38,12 @@ FSubsystemCollectionBase::FSubsystemCollectionBase()
 {
 }
 
-FSubsystemCollectionBase::FSubsystemCollectionBase(UObject* InOuter, TSubclassOf<USubsystem> InBaseType)
+FSubsystemCollectionBase::FSubsystemCollectionBase(TSubclassOf<USubsystem> InBaseType)
 	: BaseType(InBaseType)
-	, Outer(InOuter)
+	, Outer(nullptr)
 	, bPopulating(false)
 {
 	check(BaseType);
-	check(Outer);
 }
 
 USubsystem* FSubsystemCollectionBase::GetSubsystemInternal(TSubclassOf<USubsystem> SubsystemClass) const
@@ -89,11 +88,18 @@ const TArray<USubsystem*>& FSubsystemCollectionBase::GetSubsystemArrayInternal(T
 	return List;
 }
 
-void FSubsystemCollectionBase::Initialize()
+void FSubsystemCollectionBase::Initialize(UObject* NewOuter)
 {
+	if (Outer != nullptr)
+	{
+		// already initialized
+		return;
+	}
+
+	Outer = NewOuter;
+	check(Outer);
 	if (ensure(BaseType) && ensureMsgf(SubsystemMap.Num() == 0, TEXT("Currently don't support repopulation of Subsystem Collections.")))
 	{
-		check(Outer);
 		check(!bPopulating); //Populating collections on multiple threads?
 		
 		if (SubsystemCollections.Num() == 0)
@@ -154,6 +160,7 @@ void FSubsystemCollectionBase::Deinitialize()
 		}
 	}
 	SubsystemMap.Empty();
+	Outer = nullptr;
 }
 
 bool FSubsystemCollectionBase::InitializeDependency(TSubclassOf<USubsystem> SubsystemClass)
@@ -169,8 +176,12 @@ bool FSubsystemCollectionBase::InitializeDependency(TSubclassOf<USubsystem> Subs
 
 void FSubsystemCollectionBase::AddReferencedObjects(FReferenceCollector& Collector)
 {
-	Collector.AddReferencedObject(Outer);
 	Collector.AddReferencedObjects(SubsystemMap);
+}
+
+FString FSubsystemCollectionBase::GetReferencerName() const
+{
+	return TEXT("FSubsystemCollectionBase");
 }
 
 bool FSubsystemCollectionBase::AddAndInitializeSubsystem(UClass* SubsystemClass)
@@ -287,6 +298,7 @@ void FSubsystemModuleWatcher::DeinitializeModuleWatcher()
 	if (ModulesChangedHandle.IsValid())
 	{
 		FModuleManager::Get().OnModulesChanged().Remove(ModulesChangedHandle);
+		ModulesChangedHandle.Reset();
 	}
 }
 

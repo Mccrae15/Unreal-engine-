@@ -1,11 +1,11 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "Rendering/ColorVertexBuffer.h"
 #include "CoreMinimal.h"
 #include "RHI.h"
 #include "Components.h"
 #include "EngineUtils.h"
-#include "StaticMeshVertexData.h"
+#include "ProfilingDebugging/LoadTimeTracker.h"
 
 /*-----------------------------------------------------------------------------
 FColorVertexBuffer
@@ -16,8 +16,8 @@ class FColorVertexData :
 	public TStaticMeshVertexData<FColor>
 {
 public:
-	FColorVertexData( bool InNeedsCPUAccess=false )
-		: TStaticMeshVertexData<FColor>( InNeedsCPUAccess )
+	FColorVertexData(bool InNeedsCPUAccess = false)
+		: TStaticMeshVertexData<FColor>(InNeedsCPUAccess)
 	{
 	}
 };
@@ -27,8 +27,7 @@ FColorVertexBuffer::FColorVertexBuffer():
 	VertexData(NULL),
 	Data(NULL),
 	Stride(0),
-	NumVertices(0),
-	bStreamed(false)
+	NumVertices(0)
 {
 }
 
@@ -243,6 +242,11 @@ void FColorVertexBuffer::SerializeMetaData(FArchive& Ar)
 	Ar << Stride << NumVertices;
 }
 
+void FColorVertexBuffer::ClearMetaData()
+{
+	Stride = NumVertices = 0;
+}
+
 
 /** Export the data to a string, used for editor Copy&Paste. */
 void FColorVertexBuffer::ExportText(FString &ValueStr) const
@@ -326,6 +330,7 @@ void FColorVertexBuffer::ImportText(const TCHAR* SourceText)
 void FColorVertexBuffer::operator=(const FColorVertexBuffer &Other)
 {
 	//VertexData doesn't need to be allocated here because Build will be called next,
+	delete VertexData;
 	VertexData = NULL;
 }
 
@@ -384,21 +389,19 @@ uint32 FColorVertexBuffer::GetAllocatedSize() const
 template <bool bRenderThread>
 FVertexBufferRHIRef FColorVertexBuffer::CreateRHIBuffer_Internal()
 {
-	if (VertexData != NULL)
+	if (NumVertices)
 	{
-		FResourceArrayInterface* ResourceArray = VertexData->GetResourceArray();
-		if (ResourceArray->GetResourceDataSize())
+		FResourceArrayInterface* RESTRICT ResourceArray = VertexData ? VertexData->GetResourceArray() : nullptr;
+		const uint32 SizeInBytes = ResourceArray ? ResourceArray->GetResourceDataSize() : 0;
+		FRHIResourceCreateInfo CreateInfo(ResourceArray);
+		CreateInfo.bWithoutNativeResource = !VertexData;
+		if (bRenderThread)
 		{
-			// Create the vertex buffer.
-			FRHIResourceCreateInfo CreateInfo(ResourceArray);
-			if (bRenderThread)
-			{
-				return RHICreateVertexBuffer(ResourceArray->GetResourceDataSize(), BUF_Static | BUF_ShaderResource, CreateInfo);
-			}
-			else
-			{
-				return RHIAsyncCreateVertexBuffer(ResourceArray->GetResourceDataSize(), BUF_Static | BUF_ShaderResource, CreateInfo);
-			}
+			return RHICreateVertexBuffer(SizeInBytes, BUF_Static | BUF_ShaderResource, CreateInfo);
+		}
+		else
+		{
+			return RHIAsyncCreateVertexBuffer(SizeInBytes, BUF_Static | BUF_ShaderResource, CreateInfo);
 		}
 	}
 	return nullptr;
@@ -416,13 +419,13 @@ FVertexBufferRHIRef FColorVertexBuffer::CreateRHIBuffer_Async()
 
 void FColorVertexBuffer::InitRHI()
 {
-	if (!bStreamed)
+	SCOPED_LOADTIMER(FColorVertexBuffer_InitRHI);
+
+	VertexBufferRHI = CreateRHIBuffer_RenderThread();
+
+	if (VertexBufferRHI && RHISupportsManualVertexFetch(GMaxRHIShaderPlatform))
 	{
-		VertexBufferRHI = CreateRHIBuffer_RenderThread();
-	}
-	if (bStreamed || VertexBufferRHI)
-	{
-		ColorComponentsSRV = RHICreateShaderResourceView(VertexBufferRHI, 4, PF_R8G8B8A8);
+		ColorComponentsSRV = RHICreateShaderResourceView(VertexData ? VertexBufferRHI : nullptr, 4, PF_R8G8B8A8);
 	}
 }
 

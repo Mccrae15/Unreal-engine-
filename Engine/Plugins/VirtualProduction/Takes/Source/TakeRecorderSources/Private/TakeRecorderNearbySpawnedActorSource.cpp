@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "TakeRecorderNearbySpawnedActorSource.h"
 
@@ -7,7 +7,7 @@
 #include "TakeRecorderActorSource.h"
 #include "TakeRecorderSourcesUtils.h"
 #include "TakesUtils.h"
-#include "TakesCoreFwd.h"
+#include "TakesCoreLog.h"
 
 #include "LevelSequence.h"
 #include "Engine/Engine.h"

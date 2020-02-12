@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -17,6 +17,7 @@
 #include "Animation/AnimClassInterface.h"
 #include "Animation/AnimBlueprintGeneratedClass.h"
 #include "Logging/TokenizedMessage.h"
+#include "Animation/AnimTrace.h"
 
 #include "AnimInstanceProxy.generated.h"
 
@@ -25,7 +26,7 @@ struct FAnimNode_AssetPlayerBase;
 struct FAnimNode_Base;
 struct FAnimNode_SaveCachedPose;
 struct FAnimNode_StateMachine;
-struct FAnimNode_SubInput;
+struct FAnimNode_LinkedInputPose;
 struct FNodeDebugData;
 struct FPoseContext;
 
@@ -34,6 +35,11 @@ struct FPoseContext;
 
 // Disable node logging for shipping and test builds
 #define ENABLE_ANIM_LOGGING (1 && !NO_LOGGING && !(UE_BUILD_SHIPPING || UE_BUILD_TEST))
+
+extern const FName NAME_AnimBlueprintLog;
+extern const FName NAME_Evaluate;
+extern const FName NAME_Update;
+extern const FName NAME_AnimGraph;
 
 UENUM()
 namespace EDrawDebugItemType
@@ -111,11 +117,16 @@ public:
 		, CurrentDeltaSeconds(0.0f)
 		, CurrentTimeDilation(1.0f)
 		, RootNode(nullptr)
-		, SubInstanceInputNode(nullptr)
+		, DefaultLinkedInstanceInputNode(nullptr)
 		, SyncGroupWriteIndex(0)
 		, RootMotionMode(ERootMotionMode::NoRootMotionExtraction)
+		, FrameCounterForUpdate(0)
+		, FrameCounterForNodeUpdate(0)
+		, CacheBonesRecursionCounter(0)
+		, bUpdatingRoot(false)
 		, bBoneCachesInvalidated(false)
 		, bShouldExtractRootMotion(false)
+		, bDeferRootNodeInitialization(false)
 #if WITH_EDITORONLY_DATA
 		, bIsBeingDebugged(false)
 #endif
@@ -130,11 +141,16 @@ public:
 		, CurrentDeltaSeconds(0.0f)
 		, CurrentTimeDilation(1.0f)
 		, RootNode(nullptr)
-		, SubInstanceInputNode(nullptr)
+		, DefaultLinkedInstanceInputNode(nullptr)
 		, SyncGroupWriteIndex(0)
 		, RootMotionMode(ERootMotionMode::NoRootMotionExtraction)
+		, FrameCounterForUpdate(0)
+		, FrameCounterForNodeUpdate(0)
+		, CacheBonesRecursionCounter(0)
+		, bUpdatingRoot(false)
 		, bBoneCachesInvalidated(false)
 		, bShouldExtractRootMotion(false)
+		, bDeferRootNodeInitialization(false)
 #if WITH_EDITORONLY_DATA
 		, bIsBeingDebugged(false)
 #endif
@@ -212,8 +228,11 @@ public:
 		return UngroupedActivePlayerArrays[GetSyncGroupReadIndex()]; 
 	}
 
-	/** Tick active asset players */
+	/** Tick active asset players. */
 	void TickAssetPlayerInstances(float DeltaSeconds);
+
+	/** Tick active asset players. This overload with no parameters uses CurrentDeltaSeconds */
+	void TickAssetPlayerInstances();
 
 	/** Queues an Anim Notify from the shared list on our generated class */
 	void AddAnimNotifyFromGeneratedClass(int32 NotifyIndex);
@@ -369,6 +388,9 @@ public:
 	/** Gather debug data from this instance proxy and the blend tree for display */
 	void GatherDebugData(FNodeDebugData& DebugData);
 
+	/** Gather debug data from this instance proxy and the specified blend tree root for display */
+	void GatherDebugData_WithRoot(FNodeDebugData& DebugData, FAnimNode_Base* InRootNode, FName InLayerName);
+
 #if ENABLE_ANIM_DRAW_DEBUG
 	TArray<FQueuedDrawDebugItem> QueuedDrawDebugItems;
 
@@ -415,11 +437,14 @@ public:
 	void RecordMachineWeight(const int32 InMachineClassIndex, const float InMachineWeight);
 
 	float GetRecordedStateWeight(const int32 InMachineClassIndex, const int32 InStateIndex) const;
-	void RecordStateWeight(const int32 InMachineClassIndex, const int32 InStateIndex, const float InStateWeight);
+	void RecordStateWeight(const int32 InMachineClassIndex, const int32 InStateIndex, const float InStateWeight, const float InElapsedTime);
 
 	bool IsSlotNodeRelevantForNotifies(const FName& SlotNodeName) const;
 	/** Reset any dynamics running simulation-style updates (e.g. on teleport, time skip etc.) */
 	void ResetDynamics(ETeleportType InTeleportType);
+
+	/** Returns all Animation Nodes of FAnimNode_AssetPlayerBase class within the specified (named) Animation Graph */
+	TArray<FAnimNode_AssetPlayerBase*> GetInstanceAssetPlayers(const FName& GraphName);
 
 	UE_DEPRECATED(4.20, "Please use ResetDynamics with a ETeleportType argument")
 	void ResetDynamics();
@@ -433,12 +458,21 @@ public:
 	/** Get the transform of the actor we are running on */
 	const FTransform& GetActorTransform() { return ActorTransform; }
 
+#if ANIM_TRACE_ENABLED
+	// Trace montage debug data for the specified slot
+	void TraceMontageEvaluationData(const FAnimationUpdateContext& InContext, const FName& InSlotName);
+#endif
+
+	/** Get the debug data for this instance's anim bp */
+	FAnimBlueprintDebugData* GetAnimBlueprintDebugData() const;
+
 	/** Only restricted classes can access the protected interface */
 	friend class UAnimInstance;
 	friend class UAnimSingleNodeInstance;
 	friend class USkeletalMeshComponent;
-	friend struct FAnimNode_SubInstance;
+	friend struct FAnimNode_LinkedAnimGraph;
 	friend struct FAnimationBaseContext;
+	friend struct FAnimTrace;
 
 protected:
 	/** Called when our anim instance is being initialized */
@@ -456,8 +490,25 @@ protected:
 	/** Update override point */
 	virtual void Update(float DeltaSeconds) {}
 
+	UE_DEPRECATED(4.24, "Please use the overload that takes an FAnimationUpdateContext")
+	virtual void UpdateAnimationNode(float DeltaSeconds)
+	{
+		FAnimationUpdateContext Context(this, DeltaSeconds);
+		UpdateAnimationNode(Context);
+	}
+
 	/** Updates the anim graph */
-	virtual void UpdateAnimationNode(float DeltaSeconds);
+	virtual void UpdateAnimationNode(const FAnimationUpdateContext& InContext);
+
+	UE_DEPRECATED(4.24, "Please use the overload that takes an FAnimationUpdateContext")
+	virtual void UpdateAnimationNode_WithRoot(float DeltaSeconds, FAnimNode_Base* InRootNode, FName InLayerName) 
+	{
+		FAnimationUpdateContext Context(this, DeltaSeconds);
+		UpdateAnimationNode_WithRoot(Context, InRootNode, InLayerName);
+	}
+
+	/** Updates the anim graph using a specified root node */
+	virtual void UpdateAnimationNode_WithRoot(const FAnimationUpdateContext& InContext, FAnimNode_Base* InRootNode, FName InLayerName);
 
 	/** Called on the game thread pre-evaluate. */
 	virtual void PreEvaluateAnimation(UAnimInstance* InAnimInstance);
@@ -481,11 +532,25 @@ protected:
 	virtual void CacheBones();
 
 	/** 
+	 * Cache bones override point. You should call CacheBones on any nodes that need it here.
+	 * bBoneCachesInvalidated is used to only perform this when needed (e.g. when a LOD changes), 
+	 * as it is usually an expensive operation.
+	 */
+	virtual void CacheBones_WithRoot(FAnimNode_Base* InRootNode);
+
+	/** 
 	 * Evaluate override point 
 	 * @return true if this function is implemented, false otherwise.
 	 * Note: the node graph will not be evaluated if this function returns true
 	 */
 	virtual bool Evaluate(FPoseContext& Output) { return false; }
+
+	/** 
+	 * Evaluate override point with root node override.
+	 * @return true if this function is implemented, false otherwise.
+	 * Note: the node graph will not be evaluated if this function returns true
+	 */
+	virtual bool Evaluate_WithRoot(FPoseContext& Output, FAnimNode_Base* InRootNode) { return Evaluate(Output); }
 
 	/** Called after update so we can copy any data we need */
 	virtual void PostUpdate(UAnimInstance* InAnimInstance) const;
@@ -506,11 +571,27 @@ protected:
 	/** Calls Update(), updates the anim graph, ticks asset players */
 	void UpdateAnimation();
 
+	UE_DEPRECATED(4.24, "Please use the overload that takes an FAnimationUpdateContext")
+	void UpdateAnimation_WithRoot(FAnimNode_Base* InRootNode, FName InLayerName)
+	{
+		FAnimationUpdateContext Context(this, CurrentDeltaSeconds);
+		UpdateAnimation_WithRoot(Context, InRootNode, InLayerName);
+	}
+
+	/** Calls Update(), updates the anim graph from the specified root, ticks asset players */
+	void UpdateAnimation_WithRoot(const FAnimationUpdateContext& InContext, FAnimNode_Base* InRootNode, FName InLayerName);
+
 	/** Evaluates the anim graph if Evaluate() returns false */
 	void EvaluateAnimation(FPoseContext& Output);
 
+	/** Evaluates the anim graph given the specified root if Evaluate() returns false */
+	void EvaluateAnimation_WithRoot(FPoseContext& Output, FAnimNode_Base* InRootNode);
+
 	/** Evaluates the anim graph */
 	void EvaluateAnimationNode(FPoseContext& Output);
+
+	/** Evaluates the anim graph given the specified root */
+	void EvaluateAnimationNode_WithRoot(FPoseContext& Output, FAnimNode_Base* InRootNode);
 
 	// @todo document
 	void SequenceAdvanceImmediate(UAnimSequenceBase* Sequence, bool bLooping, float PlayRate, float DeltaSeconds, /*inout*/ float& CurrentTime, FMarkerTickRecord& MarkerTickRecord);
@@ -601,7 +682,7 @@ protected:
 
 	/** Gets an unchecked (can return nullptr) node given a property of the anim instance */
 	template<class NodeType>
-	NodeType* GetNodeFromProperty(UProperty* Property)
+	NodeType* GetNodeFromProperty(FProperty* Property)
 	{
 		return (NodeType*)Property->ContainerPtrToValuePtr<NodeType>(AnimInstanceObject);
 	}
@@ -685,13 +766,16 @@ protected:
 	void GetStateMachineIndexAndDescription(FName InMachineName, int32& OutMachineIndex, const FBakedAnimationStateMachine** OutMachineDescription);
 
 	/** Initialize the root node - split into a separate function for backwards compatibility (initialization order) reasons */
-	void InitializeRootNode();
+	void InitializeRootNode(bool bInDeferRootNodeInitialization = false);
+
+	/** Initialize the specified root node */
+	void InitializeRootNode_WithRoot(FAnimNode_Base* InRootNode);
 
 	/** Manually add object references to GC */
-	void AddReferencedObjects(UAnimInstance* InAnimInstance, FReferenceCollector& Collector);
+	virtual void AddReferencedObjects(UAnimInstance* InAnimInstance, FReferenceCollector& Collector);
 
 	/** Allow nodes to register log messages to be processed on the game thread */
-	void LogMessage(FName InLogType, EMessageSeverity::Type InSeverity, const FText& InMessage);
+	void LogMessage(FName InLogType, EMessageSeverity::Type InSeverity, const FText& InMessage) const;
 
 	/** Get the current value of all animation curves **/
 	TMap<FName, float>& GetAnimationCurves(EAnimCurveType InCurveType) { return AnimationCurves[(uint8)InCurveType]; }
@@ -711,6 +795,13 @@ protected:
 
 	/** Add a curve value */
 	void AddCurveValue(const FSmartNameMapping& Mapping, const FName& CurveName, float Value);
+
+	/** Custom proxy Init/Cache/Update/Evaluate functions */
+	static void InitializeInputProxy(FAnimInstanceProxy* InputProxy, UAnimInstance* InAnimInstance);
+	static void GatherInputProxyDebugData(FAnimInstanceProxy* InputProxy, FNodeDebugData& DebugData);
+	static void CacheBonesInputProxy(FAnimInstanceProxy* InputProxy);
+	static void UpdateInputProxy(FAnimInstanceProxy* InputProxy, const FAnimationUpdateContext& Context);
+	static void EvaluateInputProxy(FAnimInstanceProxy* InputProxy, FPoseContext& Output);
 
 private:
 	/** The component to world transform of the component we are running on */
@@ -759,11 +850,11 @@ private:
 	/** Anim graph */
 	FAnimNode_Base* RootNode;
 
-	/** Subinstance input node if available */
-	FAnimNode_SubInput* SubInstanceInputNode;
+	/** Default linked instance input node if available */
+	FAnimNode_LinkedInputPose* DefaultLinkedInstanceInputNode;
 
-	/** List of saved pose nodes to process after the graph has been updated */
-	TArray<FAnimNode_SaveCachedPose*> SavedPoseQueue;
+	/** Map of layer name to saved pose nodes to process after the graph has been updated */
+	TMap<FName, TArray<FAnimNode_SaveCachedPose*>> SavedPoseQueueMap;
 
 	/** The list of animation assets which are going to be evaluated this frame and need to be ticked (ungrouped) */
 	TArray<FAnimTickRecord> UngroupedActivePlayerArrays[2];
@@ -807,6 +898,10 @@ protected:
 	FGraphTraversalCounter EvaluationCounter;
 	FGraphTraversalCounter SlotNodeInitializationCounter;
 
+	// Sync counter
+	uint64 FrameCounterForUpdate;
+	uint64 FrameCounterForNodeUpdate;
+
 private:
 	// Root motion extracted from animation since the last time ConsumeExtractedRootMotion was called
 	FRootMotionMovementParams ExtractedRootMotion;
@@ -815,7 +910,10 @@ private:
 	FBoneContainer RequiredBones;
 
 	/** LODLevel used by RequiredBones */
-	int32 LODLevel;
+	int32 LODLevel = 0;
+
+	/** Counter used to control CacheBones recursion behavior - makes sure we cache bones correctly when recursing into different subgraphs */
+	int32 CacheBonesRecursionCounter;
 
 	/** Cached SkeletalMeshComponent LocalToWorld transform. */
 	FTransform SkelMeshCompLocalToWorld;
@@ -857,11 +955,14 @@ private:
 	 *  on a worked thread
 	 */
 	typedef TPair<EMessageSeverity::Type, FText> FLogMessageEntry;
-	TMap<FName, TArray<FLogMessageEntry>> LoggedMessagesMap;
+	mutable TMap<FName, TArray<FLogMessageEntry>> LoggedMessagesMap;
 
 	/** Cache of guids generated from previously sent messages so we can stop spam*/
-	TArray<FGuid> PreviouslyLoggedMessages;
+	mutable TArray<FGuid> PreviouslyLoggedMessages;
 #endif
+
+	/** Scope guard to prevent duplicate work on re-entracy */
+	bool bUpdatingRoot;
 
 protected:
 
@@ -872,6 +973,9 @@ private:
 
 	// Diplicate of bool result of ShouldExtractRootMotion()
 	uint8 bShouldExtractRootMotion : 1;
+
+	/** We can defer initialization until first update */
+	uint8 bDeferRootNodeInitialization : 1;
 
 #if WITH_EDITORONLY_DATA
 	/** Whether this UAnimInstance is currently being debugged in the editor */

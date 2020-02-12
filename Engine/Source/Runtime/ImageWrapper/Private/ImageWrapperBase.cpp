@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "ImageWrapperBase.h"
 
@@ -13,6 +13,8 @@ FImageWrapperBase::FImageWrapperBase()
 	, BitDepth(0)
 	, Width(0)
 	, Height(0)
+	, NumFrames(1)
+	, Framerate(0)
 { }
 
 
@@ -29,6 +31,8 @@ void FImageWrapperBase::Reset()
 	BitDepth = 0;
 	Width = 0;
 	Height = 0;
+	NumFrames = 1;
+	Framerate = 0;
 }
 
 
@@ -41,7 +45,7 @@ void FImageWrapperBase::SetError(const TCHAR* ErrorMessage)
 /* IImageWrapper structors
  *****************************************************************************/
 
-const TArray<uint8>& FImageWrapperBase::GetCompressed(int32 Quality)
+const TArray64<uint8>& FImageWrapperBase::GetCompressed(int32 Quality)
 {
 	LastError.Empty();
 	Compress(Quality);
@@ -50,21 +54,21 @@ const TArray<uint8>& FImageWrapperBase::GetCompressed(int32 Quality)
 }
 
 
-bool FImageWrapperBase::GetRaw(const ERGBFormat InFormat, int32 InBitDepth, const TArray<uint8>*& OutRawData)
+bool FImageWrapperBase::GetRaw(const ERGBFormat InFormat, int32 InBitDepth, TArray64<uint8>& OutRawData)
 {
 	LastError.Empty();
 	Uncompress(InFormat, InBitDepth);
 
 	if (LastError.IsEmpty())
 	{
-		OutRawData = &RawData;
+		OutRawData = MoveTemp(RawData);
 	}
 
 	return LastError.IsEmpty();
 }
 
 
-bool FImageWrapperBase::SetCompressed(const void* InCompressedData, int32 InCompressedSize)
+bool FImageWrapperBase::SetCompressed(const void* InCompressedData, int64 InCompressedSize)
 {
 	if(InCompressedSize > 0 && InCompressedData != nullptr)
 	{
@@ -82,7 +86,7 @@ bool FImageWrapperBase::SetCompressed(const void* InCompressedData, int32 InComp
 }
 
 
-bool FImageWrapperBase::SetRaw(const void* InRawData, int32 InRawSize, const int32 InWidth, const int32 InHeight, const ERGBFormat InFormat, const int32 InBitDepth)
+bool FImageWrapperBase::SetRaw(const void* InRawData, int64 InRawSize, const int32 InWidth, const int32 InHeight, const ERGBFormat InFormat, const int32 InBitDepth)
 {
 	check(InRawData != NULL);
 	check(InRawSize > 0);
@@ -102,5 +106,13 @@ bool FImageWrapperBase::SetRaw(const void* InRawData, int32 InRawSize, const int
 	Width = InWidth;
 	Height = InHeight;
 
+	return true;
+}
+
+bool FImageWrapperBase::SetAnimationInfo(int32 InNumFrames, int32 InFramerate)
+{
+	NumFrames = InNumFrames;
+	Framerate = InFramerate;
+	
 	return true;
 }

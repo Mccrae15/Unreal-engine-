@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -13,7 +13,7 @@
 class UTimelineTemplate;
 
 USTRUCT()
-struct FTTTrackBase
+struct ENGINE_VTABLE FTTTrackBase
 {
 	GENERATED_USTRUCT_BODY()
 
@@ -43,7 +43,7 @@ public:
 
 /** Structure storing information about one event track */
 USTRUCT()
-struct FTTEventTrack : public FTTTrackBase
+struct ENGINE_VTABLE FTTEventTrack : public FTTTrackBase
 {
 	GENERATED_USTRUCT_BODY()
 
@@ -69,7 +69,7 @@ public:
 };
 
 USTRUCT()
-struct FTTPropertyTrack : public FTTTrackBase
+struct ENGINE_VTABLE FTTPropertyTrack : public FTTTrackBase
 {
 	GENERATED_USTRUCT_BODY()
 
@@ -166,10 +166,6 @@ class UTimelineTemplate : public UObject
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category=TimelineTemplate)
 	uint8 bReplicated:1;
 
-	/** Compiler Validated As Wired up */
-	UPROPERTY()
-	uint8 bValidatedAsWired:1;
-
 	/** If we want the timeline to ignore global time dilation */
 	UPROPERTY(EditAnywhere, Category = TimelineTemplate)
 	uint8 bIgnoreTimeDilation : 1;
@@ -253,11 +249,12 @@ class UTimelineTemplate : public UObject
 	virtual void PostLoad() override;
 	virtual bool Rename(const TCHAR* InName, UObject* NewOuter, ERenameFlags Flags) override;
 	virtual void Serialize(FArchive& Ar) override;
+	virtual void PostInitProperties() override;
 	//~ End UObject Interface
 
 private:
 	/** Helper function to make sure all the cached FNames for the timeline template are updated relative to the current name of the template. */
-	void UpdateCachedNames();
+	ENGINE_API void UpdateCachedNames();
 
 	friend struct FUpdateTimelineCachedNames;
 
@@ -278,8 +275,7 @@ public:
 };
 
 /**
- *  Helper class that gives blueprint compilation manager permission to update the cached names for
- *  backwards compatibility purposes as PostLoad will not have occurred yet for compile on load.
+ *  Helper class that gives external implementations permission to update cached names.
  */
 struct ENGINE_API FUpdateTimelineCachedNames
 {
@@ -289,5 +285,9 @@ private:
 		TimelineTemplate->UpdateCachedNames();
 	}
 
+	/** Grant external permission to the compilation manager for backwards compatibility purposes as PostLoad will not have occurred yet for compile on load. */
 	friend struct FBlueprintCompilationManagerImpl;
+
+	/** Grant external permission to Blueprint editor utility methods. For example, duplicating a Blueprint for conversion to C++ requires that cached names be updated. */
+	friend class FBlueprintEditorUtils;
 };

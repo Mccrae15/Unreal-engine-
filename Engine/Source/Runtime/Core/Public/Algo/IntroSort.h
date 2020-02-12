@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -22,8 +22,8 @@ namespace AlgoImpl
 	 * @param Projection	The projection to sort by when applied to the element.
 	 * @param Predicate		predicate class
 	 */
-	template <typename T, typename ProjectionType, typename PredicateType> 
-	void IntroSortInternal(T* First, SIZE_T Num, ProjectionType Projection, PredicateType Predicate)
+	template <typename T, typename IndexType, typename ProjectionType, typename PredicateType> 
+	void IntroSortInternal(T* First, IndexType Num, ProjectionType Projection, PredicateType Predicate)
 	{
 		struct FStack
 		{
@@ -37,13 +37,13 @@ namespace AlgoImpl
 			return;
 		}
 
-		FStack RecursionStack[32]={{First, First+Num-1, (uint32)(FMath::Loge(Num) * 2.f)}}, Current, Inner;
+		FStack RecursionStack[32]={{First, First+Num-1, (uint32)(FMath::Loge((float)Num) * 2.f)}}, Current, Inner;
 		for( FStack* StackTop=RecursionStack; StackTop>=RecursionStack; --StackTop ) //-V625
 		{
 			Current = *StackTop;
 
 		Loop:
-			PTRINT Count = Current.Max - Current.Min + 1;
+			IndexType Count = (IndexType)(Current.Max - Current.Min + 1);
 
 			if ( Current.MaxDepth == 0 )
 			{
@@ -60,7 +60,7 @@ namespace AlgoImpl
 					T *Max, *Item;
 					for( Max=Current.Min, Item=Current.Min+1; Item<=Current.Max; Item++ )
 					{
-						if( Predicate( Invoke( Projection, *Max ), Invoke( Projection, *Item ) ) )
+						if( Invoke( Predicate, Invoke( Projection, *Max ), Invoke( Projection, *Item ) ) )
 						{
 							Max = Item;
 						}
@@ -78,8 +78,8 @@ namespace AlgoImpl
 				Inner.Max = Current.Max+1;
 				for( ; ; )
 				{
-					while( ++Inner.Min<=Current.Max && !Predicate( Invoke( Projection, *Current.Min ), Invoke( Projection, *Inner.Min ) ) );
-					while( --Inner.Max> Current.Min && !Predicate( Invoke( Projection, *Inner.Max ), Invoke( Projection, *Current.Min ) ) );
+					while( ++Inner.Min<=Current.Max && !Invoke( Predicate, Invoke( Projection, *Current.Min ), Invoke( Projection, *Inner.Min ) ) );
+					while( --Inner.Max> Current.Min && !Invoke( Predicate, Invoke( Projection, *Inner.Max ), Invoke( Projection, *Current.Min ) ) );
 					if( Inner.Min>Inner.Max )
 					{
 						break;

@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 
 #include "Engine/Light.h"
@@ -16,7 +16,7 @@
 ALight::ALight(const FObjectInitializer& ObjectInitializer)
 	: Super(ObjectInitializer)
 {
-	LightComponent = CreateAbstractDefaultSubobject<ULightComponent>(TEXT("LightComponent0"));
+	LightComponent = CreateDefaultSubobject<ULightComponent>(TEXT("LightComponent0"));
 
 	bCollideWhenPlacing = true;
 	SpawnCollisionHandlingMethod = ESpawnActorCollisionHandlingMethod::AdjustIfPossibleButDontSpawnIfColliding;
@@ -104,7 +104,7 @@ void ALight::SetEnabled(bool bSetEnabled)
 
 bool ALight::IsEnabled() const
 {
-	return LightComponent ? LightComponent->bVisible : false;
+	return LightComponent ? LightComponent->GetVisibleFlag() : false;
 }
 
 void ALight::ToggleEnabled()
@@ -232,9 +232,12 @@ ADirectionalLight::ADirectionalLight(const FObjectInitializer& ObjectInitializer
 	};
 	static FConstructorStatics ConstructorStatics;
 
-	UDirectionalLightComponent* DirectionalLightComponent = CastChecked<UDirectionalLightComponent>(GetLightComponent());
+#if !WITH_EDITORONLY_DATA
+	UDirectionalLightComponent* DirectionalLightComponent;
+#endif
+	DirectionalLightComponent = CastChecked<UDirectionalLightComponent>(GetLightComponent());
 	DirectionalLightComponent->Mobility = EComponentMobility::Stationary;
-	DirectionalLightComponent->RelativeRotation = FRotator(-46.0f, 0.0f, 0.0f);
+	DirectionalLightComponent->SetRelativeRotation(FRotator(-46.0f, 0.0f, 0.0f));
 	// Make directional light icons big since they tend to be important
 	// This is the root component so its scale affects all other components
 	DirectionalLightComponent->SetRelativeScale3D(FVector(2.5f, 2.5f, 2.5f));

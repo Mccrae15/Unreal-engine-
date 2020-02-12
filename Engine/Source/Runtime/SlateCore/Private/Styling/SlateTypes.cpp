@@ -1,9 +1,10 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "Styling/SlateTypes.h"
 #include "Brushes/SlateNoResource.h"
 #include "Styling/StyleDefaults.h"
-
+#include "Widgets/InvalidateWidgetReason.h"
+#include "Widgets/SWidget.h"
 
 namespace SlateTypeDefs
 {
@@ -133,7 +134,9 @@ void FButtonStyle::PostSerialize(const FArchive& Ar)
 #endif
 
 FComboButtonStyle::FComboButtonStyle()
-	: MenuBorderPadding(FMargin(0.0f))
+	: ShadowOffset(FVector2D::ZeroVector)
+	, ShadowColorAndOpacity(FLinearColor::Black)
+	, MenuBorderPadding(FMargin(0.0f))
 {
 }
 
@@ -672,4 +675,22 @@ const FWindowStyle& FWindowStyle::GetDefault()
 	return Default;
 }
 
+void FInvalidatableBrushAttribute::SetImage(SWidget& ThisWidget, const TAttribute< const FSlateBrush* >& InImage)
+{
+	const bool bImagePointerChanged = SetWidgetAttribute(ThisWidget, Image, InImage, EInvalidateWidgetReason::Layout);
 
+	const FSlateBrush* ImagePtr = Image.Get();
+	const FSlateBrush NewImageToCache = ImagePtr ? *ImagePtr : FSlateBrush();
+
+	// If the slate brush pointer didn't change, that may not mean nothing changed.  We
+	// sometimes reuse the slate brush memory address and change out the texture.  In those
+	// circumstances we need to actually look at the data the brush has compared to what it had
+	// previously.
+	if (!bImagePointerChanged && ImageCache != NewImageToCache)
+	{
+		ThisWidget.Invalidate(EInvalidateWidgetReason::Layout);
+	}
+
+	// Cache the new image's value in case the memory changes later.
+	ImageCache = NewImageToCache;
+}

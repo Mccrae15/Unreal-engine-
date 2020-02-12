@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "OculusAudio.h"
 #include "OculusAmbisonicSpatializer.h"
@@ -8,9 +8,9 @@
 
 TAudioSpatializationPtr FOculusSpatializationPluginFactory::CreateNewSpatializationPlugin(FAudioDevice* OwningDevice)
 {
-    FOculusAudioPlugin* Plugin = &FModuleManager::GetModuleChecked<FOculusAudioPlugin>("OculusAudio");
-    check(Plugin != nullptr);
-    Plugin->RegisterAudioDevice(OwningDevice);
+	FOculusAudioPlugin* Plugin = &FModuleManager::GetModuleChecked<FOculusAudioPlugin>("OculusAudio");
+	check(Plugin != nullptr);
+	Plugin->RegisterAudioDevice(OwningDevice);
 
 #if PLATFORM_WINDOWS
 	if (OwningDevice->IsAudioMixerEnabled())
@@ -27,16 +27,11 @@ TAudioSpatializationPtr FOculusSpatializationPluginFactory::CreateNewSpatializat
 }
 
 
-TAmbisonicsMixerPtr FOculusSpatializationPluginFactory::CreateNewAmbisonicsMixer(FAudioDevice* OwningDevice)
-{
-	return TAmbisonicsMixerPtr(new FOculusAmbisonicsMixer());
-}
-
 TAudioReverbPtr FOculusReverbPluginFactory::CreateNewReverbPlugin(FAudioDevice* OwningDevice)
 {
-    FOculusAudioPlugin* Plugin = &FModuleManager::GetModuleChecked<FOculusAudioPlugin>("OculusAudio");
-    check(Plugin != nullptr);
-    Plugin->RegisterAudioDevice(OwningDevice);
+	FOculusAudioPlugin* Plugin = &FModuleManager::GetModuleChecked<FOculusAudioPlugin>("OculusAudio");
+	check(Plugin != nullptr);
+	Plugin->RegisterAudioDevice(OwningDevice);
 
-    return TAudioReverbPtr(new OculusAudioReverb());
+	return TAudioReverbPtr(new OculusAudioReverb());
 }

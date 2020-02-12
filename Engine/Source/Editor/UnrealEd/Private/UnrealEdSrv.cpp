@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 
 #include "CoreMinimal.h"
@@ -78,7 +78,6 @@
 #include "AssetToolsModule.h"
 #include "IContentBrowserSingleton.h"
 #include "ContentBrowserModule.h"
-#include "Editor/GeometryMode/Public/GeometryEdMode.h"
 #include "AssetRegistryModule.h"
 #include "Matinee/MatineeActor.h"
 #include "MatineeExporter.h"
@@ -103,6 +102,8 @@
 	#include "Windows/WindowsHWrapper.h"
 #endif
 #include "ActorGroupingUtils.h"
+#include "EdMode.h"
+#include "Subsystems/BrushEditingSubsystem.h"
 
 DEFINE_LOG_CATEGORY_STATIC(LogUnrealEdSrv, Log, All);
 
@@ -279,6 +280,11 @@ UPackage* UUnrealEdEngine::GeneratePackageThumbnailsIfRequired( const TCHAR* Str
 		FString TempFname;
 		if( FParse::Value( Str, TEXT( "FILE=" ), TempFname ) && ParseObject<UPackage>( Str, TEXT( "Package=" ), Pkg, NULL ) )
 		{
+			if (Pkg == nullptr)
+			{
+				return nullptr;
+			}
+
 			// Update any thumbnails for objects in this package that were modified or generate
 			// new thumbnails for objects that don't have any
 
@@ -629,8 +635,8 @@ bool UUnrealEdEngine::HandleConvertMatineesCommand( const TCHAR* Str, FOutputDev
 				StartLocation.Y += 50;
 
 				MatineeActor->MatineeData = InterpData;
-				UProperty* MatineeDataProp = NULL;
-				for( UProperty* Property = MatineeActor->GetClass()->PropertyLink; Property != NULL; Property = Property->PropertyLinkNext )
+				FProperty* MatineeDataProp = NULL;
+				for( FProperty* Property = MatineeActor->GetClass()->PropertyLink; Property != NULL; Property = Property->PropertyLinkNext )
 				{
 					if( Property->GetName() == TEXT("MatineeData") )
 					{
@@ -647,17 +653,17 @@ bool UUnrealEdEngine::HandleConvertMatineesCommand( const TCHAR* Str, FOutputDev
 		return true;
 	}
 
-bool UUnrealEdEngine::HandleDisasmScriptCommand( const TCHAR* Str, FOutputDevice& Ar )
+bool UUnrealEdEngine::HandleDisasmScriptCommand(const TCHAR* Str, FOutputDevice& Ar)
+{
+	FString ClassName;
+
+	if (FParse::Token(Str, ClassName, false))
 	{
-		FString ClassName;
-
-		if (FParse::Token(Str, ClassName, false))
-		{
-			FKismetBytecodeDisassembler::DisassembleAllFunctionsInClasses(Ar, ClassName);
-		}
-
-		return true;
+		FKismetBytecodeDisassembler::DisassembleAllFunctionsInClasses(Ar, ClassName);
 	}
+
+	return true;
+}
 
 bool UUnrealEdEngine::Exec( UWorld* InWorld, const TCHAR* Stream, FOutputDevice& Ar )
 {
@@ -1023,13 +1029,13 @@ bool UUnrealEdEngine::Exec( UWorld* InWorld, const TCHAR* Stream, FOutputDevice&
 				{
 					UStaticMesh* Mesh = SelectedMeshes[MeshIndex];
 
-					if (Mesh && Mesh->SourceModels.Num() > 0)
+					if (Mesh && Mesh->GetNumSourceModels() > 0)
 					{
 						Mesh->Modify();
 
 						GWarn->StatusUpdate(MeshIndex + 1, SelectedMeshes.Num(), FText::Format(NSLOCTEXT("UnrealEd", "ScalingStaticMeshes_Value", "Static Mesh: {0}"), FText::FromString(Mesh->GetName())));
 
-						FStaticMeshSourceModel& Model = Mesh->SourceModels[0];
+						FStaticMeshSourceModel& Model = Mesh->GetSourceModel(0);
 
 						FVector ScaleVec(Scale, Scale, Scale);	// bScale
 						if ( bScaleVec )
@@ -1080,7 +1086,7 @@ bool UUnrealEdEngine::Exec( UWorld* InWorld, const TCHAR* Stream, FOutputDevice&
 						UAssetImportData* ImportData = nullptr;
 
 						// Root out the asset import data property
-						for (UObjectProperty* Property : TFieldRange<UObjectProperty>(Asset->GetClass()))
+						for (FObjectProperty* Property : TFieldRange<FObjectProperty>(Asset->GetClass()))
 						{
 							ImportData = Cast<UAssetImportData>(Property->GetObjectPropertyValue(Property->ContainerPtrToValuePtr<UObject*>(Asset)));
 							if (ImportData)
@@ -1264,9 +1270,9 @@ bool UUnrealEdEngine::Exec( UWorld* InWorld, const TCHAR* Stream, FOutputDevice&
 						FString CurrentWindowName = OpenWindows[WindowId]->GetTitle().ToString();
 
 						//Strip off the * from the end if it exists
-						if( CurrentWindowName.EndsWith(TEXT("*")) )
+						if( CurrentWindowName.EndsWith(TEXT("*"), ESearchCase::CaseSensitive) )
 						{
-							CurrentWindowName = CurrentWindowName.LeftChop(1);
+							CurrentWindowName.LeftChopInline(1, false);
 						}
 
 						if( CurrentWindowName == WindowNameStr )
@@ -1567,14 +1573,9 @@ bool UUnrealEdEngine::Exec_Edit( UWorld* InWorld, const TCHAR* Str, FOutputDevic
 
 	if( FParse::Command(&Str,TEXT("CUT")) )
 	{
-		TArray<FEdMode*> ActiveModes;
-		GLevelEditorModeTools().GetActiveModes(ActiveModes);
-		for (int32 ModeIndex = 0; ModeIndex < ActiveModes.Num(); ++ModeIndex)
+		if (GLevelEditorModeTools().ProcessEditCut())
 		{
-			if (ActiveModes[ModeIndex]->ProcessEditCut())
-			{
-				return true;
-			}
+			return true;
 		}
 
 		if (bComponentsSelected)
@@ -1595,14 +1596,9 @@ bool UUnrealEdEngine::Exec_Edit( UWorld* InWorld, const TCHAR* Str, FOutputDevic
 	}
 	else if( FParse::Command(&Str,TEXT("COPY")) )
 	{
-		TArray<FEdMode*> ActiveModes;
-		GLevelEditorModeTools().GetActiveModes(ActiveModes);
-		for (int32 ModeIndex = 0; ModeIndex < ActiveModes.Num(); ++ModeIndex)
+		if (GLevelEditorModeTools().ProcessEditCopy())
 		{
-			if (ActiveModes[ModeIndex]->ProcessEditCopy())
-			{
-				return true;
-			}
+			return true;
 		}
 
 		if (bComponentsSelected)
@@ -1618,14 +1614,9 @@ bool UUnrealEdEngine::Exec_Edit( UWorld* InWorld, const TCHAR* Str, FOutputDevic
 	}
 	else if( FParse::Command(&Str,TEXT("PASTE")) )
 	{
-		TArray<FEdMode*> ActiveModes;
-		GLevelEditorModeTools().GetActiveModes(ActiveModes);
-		for (int32 ModeIndex = 0; ModeIndex < ActiveModes.Num(); ++ModeIndex)
+		if (GLevelEditorModeTools().ProcessEditPaste())
 		{
-			if (ActiveModes[ModeIndex]->ProcessEditPaste())
-			{
-				return true;
-			}
+			return true;
 		}
 
 		if (bComponentsSelected)
@@ -1784,11 +1775,9 @@ static void MirrorActors(const FVector& MirrorScale)
 		LevelDirtyCallback.Request();
 	}
 
-	if ( GLevelEditorModeTools().IsModeActive( FBuiltinEditorModes::EM_Geometry ) )
+	if (UBrushEditingSubsystem* BrushSubsystem = GEditor->GetEditorSubsystem<UBrushEditingSubsystem>())
 	{
-		// If we are in geometry mode, make sure to update the mode with new source data for selected brushes
-		FEdModeGeometry* Mode = (FEdModeGeometry*)GLevelEditorModeTools().GetActiveMode( FBuiltinEditorModes::EM_Geometry );
-		Mode->GetFromSource();
+		BrushSubsystem->UpdateGeometryFromSelectedBrushes();
 	}
 
 	GEditor->RedrawLevelEditingViewports();
@@ -2558,13 +2547,9 @@ bool UUnrealEdEngine::Exec_Actor( UWorld* InWorld, const TCHAR* Str, FOutputDevi
 	}
 	else if( FParse::Command(&Str,TEXT("DELETE")) )		// ACTOR SELECT DELETE
 	{
+	
 		bool bHandled = false;
-		TArray<FEdMode*> ActiveModes; 
-		GLevelEditorModeTools().GetActiveModes( ActiveModes );
-		for( int32 ModeIndex = 0; ModeIndex < ActiveModes.Num(); ++ModeIndex )
-		{
-			bHandled |= ActiveModes[ModeIndex]->ProcessEditDelete();
-		}
+		bHandled |= GLevelEditorModeTools().ProcessEditDelete();
 
 		// if not specially handled by the current editing mode,
 		if (!bHandled)
@@ -2743,12 +2728,7 @@ bool UUnrealEdEngine::Exec_Actor( UWorld* InWorld, const TCHAR* Str, FOutputDevi
 	else if( FParse::Command(&Str,TEXT("DUPLICATE")) )
 	{
 		bool bHandled = false;
-		TArray<FEdMode*> ActiveModes; 
-		GLevelEditorModeTools().GetActiveModes( ActiveModes );
-		for( int32 ModeIndex = 0; ModeIndex < ActiveModes.Num(); ++ModeIndex )
-		{
-			bHandled |= ActiveModes[ModeIndex]->ProcessEditDuplicate();
-		}
+		bHandled |= GLevelEditorModeTools().ProcessEditDuplicate();
 
 		// if not specially handled by the current editing mode,
 		if (!bHandled)
@@ -3022,22 +3002,12 @@ bool UUnrealEdEngine::Exec_Mode( const TCHAR* Str, FOutputDevice& Ar )
 	//
 	FEditorModeID EditorMode = FBuiltinEditorModes::EM_None;
 
-	if 		(FParse::Command(&Str,TEXT("CAMERAMOVE")))		{ EditorMode = FBuiltinEditorModes::EM_Default;		}
-	else if	(FParse::Command(&Str,TEXT("GEOMETRY"))) 		{ EditorMode = FBuiltinEditorModes::EM_Geometry;	}
-	else if	(FParse::Command(&Str,TEXT("TEXTURE"))) 		{ EditorMode = FBuiltinEditorModes::EM_Texture;		}
-	else if (FParse::Command(&Str,TEXT("MESHPAINT")))		{ EditorMode = FBuiltinEditorModes::EM_MeshPaint;	}
-	else if (FParse::Command(&Str,TEXT("LANDSCAPE")))		{ EditorMode = FBuiltinEditorModes::EM_Landscape;	}
-	else if (FParse::Command(&Str,TEXT("FOLIAGE")))			{ EditorMode = FBuiltinEditorModes::EM_Foliage;		}
+	FString CommandToken = FParse::Token(Str, false);
+	FEdMode* FoundMode = GLevelEditorModeTools().GetActiveMode(FName(*CommandToken));
 
-	if ( EditorMode == FBuiltinEditorModes::EM_None )
+	if (FoundMode != NULL)
 	{
-		FString CommandToken = FParse::Token(Str, false);
-		FEdMode* FoundMode = GLevelEditorModeTools().FindMode( FName( *CommandToken ) );
-
-		if ( FoundMode != NULL )
-		{
-			EditorMode = FName( *CommandToken );
-		}
+		EditorMode = FName( *CommandToken );
 	}
 
 	if( EditorMode != FBuiltinEditorModes::EM_None )

@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 /*=============================================================================
 	D3D11Viewport.cpp: D3D viewport RHI implementation.
@@ -21,6 +21,15 @@
 	#include "Windows/AllowWindowsPlatformTypes.h"
 		#include <dwmapi.h>
 #endif	//D3D11_WITH_DWMAPI
+
+#ifndef DXGI_PRESENT_ALLOW_TEARING
+#define DXGI_PRESENT_ALLOW_TEARING          0x00000200UL
+#endif
+
+#ifndef DXGI_SWAP_CHAIN_FLAG_ALLOW_TEARING
+#define DXGI_SWAP_CHAIN_FLAG_ALLOW_TEARING  2048
+#endif
+
 
 /**
  * RHI console variables used by viewports.
@@ -85,11 +94,12 @@ namespace RHIConsoleVariables
 };
 
 extern void D3D11TextureAllocated2D( FD3D11Texture2D& Texture );
+extern uint32 D3D11GetSwapChainFlags();
 
 /**
  * Creates a FD3D11Surface to represent a swap chain's back buffer.
  */
-FD3D11Texture2D* GetSwapChainSurface(FD3D11DynamicRHI* D3DRHI, EPixelFormat PixelFormat, uint32 SizeX, uint32 SizeY, IDXGISwapChain* SwapChain)
+FD3D11Texture2D* FD3D11Viewport::GetSwapChainSurface(FD3D11DynamicRHI* D3DRHI, EPixelFormat PixelFormat, uint32 SizeX, uint32 SizeY, IDXGISwapChain* SwapChain)
 {
 	// Grab the back buffer
 	TRefCountPtr<ID3D11Texture2D> BackBufferResource;
@@ -196,7 +206,12 @@ FD3D11Viewport::~FD3D11Viewport()
 
 	// If the swap chain was in fullscreen mode, switch back to windowed before releasing the swap chain.
 	// DXGI throws an error otherwise.
-	VERIFYD3D11RESULT_EX(SwapChain->SetFullscreenState(false,NULL), D3DRHI->GetDevice());
+#if !PLATFORM_HOLOLENS
+	if (SwapChain)
+	{
+		VERIFYD3D11RESULT_EX(SwapChain->SetFullscreenState(false, NULL), D3DRHI->GetDevice());
+	}
+#endif
 
 	FrameSyncEvent.ReleaseResource();
 
@@ -221,7 +236,7 @@ DXGI_MODE_DESC FD3D11Viewport::SetupDXGI_MODE_DESC() const
 void FD3D11Viewport::Resize(uint32 InSizeX, uint32 InSizeY, bool bInIsFullscreen, EPixelFormat PreferredPixelFormat)
 {
 	// Unbind any dangling references to resources
-	D3DRHI->RHISetRenderTargets(0, nullptr, nullptr, 0, nullptr);
+	D3DRHI->RHISetRenderTargets(0, nullptr, nullptr);
 	D3DRHI->ClearState();
 	D3DRHI->GetDeviceContext()->Flush(); // Potential perf hit
 
@@ -254,7 +269,8 @@ void FD3D11Viewport::Resize(uint32 InSizeX, uint32 InSizeY, bool bInIsFullscreen
 		{
 			// Resize the swap chain.
 			DXGI_FORMAT RenderTargetFormat = GetRenderTargetFormat(PixelFormat);
-			VERIFYD3D11RESIZEVIEWPORTRESULT(SwapChain->ResizeBuffers(1, SizeX, SizeY, RenderTargetFormat, DXGI_SWAP_CHAIN_FLAG_ALLOW_MODE_SWITCH), SizeX, SizeY, RenderTargetFormat, D3DRHI->GetDevice());
+			// Resize all existing buffers, don't change count
+			VERIFYD3D11RESIZEVIEWPORTRESULT(SwapChain->ResizeBuffers(0, SizeX, SizeY, RenderTargetFormat, D3D11GetSwapChainFlags()), SizeX, SizeY, RenderTargetFormat, D3DRHI->GetDevice());
 
 			if (bInIsFullscreen)
 			{
@@ -262,7 +278,8 @@ void FD3D11Viewport::Resize(uint32 InSizeX, uint32 InSizeY, bool bInIsFullscreen
 
 				if (FAILED(SwapChain->ResizeTarget(&BufferDesc)))
 				{
-					ConditionalResetSwapChain(true);
+					ResetSwapChainInternal(true);
+					VERIFYD3D11RESIZEVIEWPORTRESULT(SwapChain->ResizeBuffers(0, SizeX, SizeY, RenderTargetFormat, D3D11GetSwapChainFlags()), SizeX, SizeY, RenderTargetFormat, D3DRHI->GetDevice());
 				}
 			}
 		}
@@ -277,7 +294,9 @@ void FD3D11Viewport::Resize(uint32 InSizeX, uint32 InSizeY, bool bInIsFullscreen
 		{
 			// Use ConditionalResetSwapChain to call SetFullscreenState, to handle the failure case.
 			// Ignore the viewport's focus state; since Resize is called as the result of a user action we assume authority without waiting for Focus.
-			ConditionalResetSwapChain(true);
+			ResetSwapChainInternal(true);
+			DXGI_FORMAT RenderTargetFormat = GetRenderTargetFormat(PixelFormat);
+			VERIFYD3D11RESIZEVIEWPORTRESULT(SwapChain->ResizeBuffers(0, SizeX, SizeY, RenderTargetFormat, D3D11GetSwapChainFlags()), SizeX, SizeY, RenderTargetFormat, D3DRHI->GetDevice());
 		}
 	}
 
@@ -291,6 +310,9 @@ void FD3D11Viewport::Resize(uint32 InSizeX, uint32 InSizeY, bool bInIsFullscreen
 		D3DRHI->ShutdownHDR();
 	}
 
+	// If the window has been moved or resized it may have moved focus to and from a HDR monitor
+	CheckHDRMonitorStatus();
+	
 	// Create a RHI surface to represent the viewport's back buffer.
 	BackBuffer = GetSwapChainSurface(D3DRHI, PixelFormat, SizeX, SizeY, SwapChain);
 }
@@ -322,7 +344,13 @@ bool FD3D11Viewport::PresentChecked(int32 SyncInterval)
 		if (SwapChain.IsValid())
 		{
 			// Present the back buffer to the viewport window.
-			Result = SwapChain->Present(SyncInterval, 0);
+			uint32 Flags = 0;
+			if( (D3D11GetSwapChainFlags() & DXGI_SWAP_CHAIN_FLAG_ALLOW_TEARING) != 0 && !SyncInterval && !bIsFullscreen )
+			{
+				Flags |= DXGI_PRESENT_ALLOW_TEARING;
+			}
+
+			Result = SwapChain->Present(SyncInterval, Flags);
 		}
 
 		if (IsValidRef(CustomPresent))
@@ -359,7 +387,8 @@ bool FD3D11Viewport::PresentChecked(int32 SyncInterval)
 	FThreadHeartBeat::Get().PresentFrame();
 
 	VERIFYD3D11RESULT_EX(Result, D3DRHI->GetDevice());
-	
+	D3DRHI->GetDeviceContext()->OMSetRenderTargets(0,0,0);
+
 	return bNeedNativePresent;
 }
 
@@ -499,6 +528,7 @@ bool FD3D11Viewport::Present(bool bLockToVsync)
 {
 	bool bNativelyPresented = true;
 #if	D3D11_WITH_DWMAPI
+#if !PLATFORM_HOLOLENS
 	// We can't call Present if !bIsValid, as it waits a window message to be processed, but the main thread may not be pumping the message handler.
 	if(bIsValid && SwapChain.IsValid())
 	{
@@ -512,7 +542,7 @@ bool FD3D11Viewport::Present(bool bLockToVsync)
 			bIsValid = false;
 		}
 	}
-
+#endif
 	if (MaximumFrameLatency != RHIConsoleVariables::MaximumFrameLatency)
 	{
 		MaximumFrameLatency = RHIConsoleVariables::MaximumFrameLatency;	
@@ -521,6 +551,10 @@ bool FD3D11Viewport::Present(bool bLockToVsync)
 		DXGIDevice->SetMaximumFrameLatency(MaximumFrameLatency);
 	}
 
+	if (!bIsValid)
+	{
+		return false;
+	}
 	// When desktop composition is enabled, locking to vsync via the Present
 	// call is unreliable. Instead, communicate with the desktop window manager
 	// directly to enable vsync.
@@ -536,6 +570,18 @@ bool FD3D11Viewport::Present(bool bLockToVsync)
 		bNativelyPresented = PresentChecked(bLockToVsync ? RHIGetSyncInterval() : 0);
 	}
 	return bNativelyPresented;
+}
+
+EColorSpaceAndEOTF FD3D11DynamicRHI::RHIGetColorSpace(FRHIViewport* ViewportRHI)
+{
+	FD3D11Viewport* Viewport = ResourceCast(ViewportRHI);
+	return Viewport->GetPixelColorSpace();
+}
+
+void  FD3D11DynamicRHI::RHICheckViewportHDRStatus(FRHIViewport* ViewportRHI)
+{
+	FD3D11Viewport* Viewport = ResourceCast(ViewportRHI);
+	return Viewport->CheckHDRMonitorStatus();
 }
 
 /*=============================================================================
@@ -555,7 +601,7 @@ FViewportRHIRef FD3D11DynamicRHI::RHICreateViewport(void* WindowHandle,uint32 Si
 	return new FD3D11Viewport(this,(HWND)WindowHandle,SizeX,SizeY,bIsFullscreen,PreferredPixelFormat);
 }
 
-void FD3D11DynamicRHI::RHIResizeViewport(FViewportRHIParamRef ViewportRHI,uint32 SizeX,uint32 SizeY,bool bIsFullscreen)
+void FD3D11DynamicRHI::RHIResizeViewport(FRHIViewport* ViewportRHI,uint32 SizeX,uint32 SizeY,bool bIsFullscreen)
 {
 	FD3D11Viewport* Viewport = ResourceCast(ViewportRHI);
 
@@ -563,7 +609,7 @@ void FD3D11DynamicRHI::RHIResizeViewport(FViewportRHIParamRef ViewportRHI,uint32
 	Viewport->Resize(SizeX,SizeY,bIsFullscreen, PF_Unknown);
 }
 
-void FD3D11DynamicRHI::RHIResizeViewport(FViewportRHIParamRef ViewportRHI, uint32 SizeX, uint32 SizeY, bool bIsFullscreen, EPixelFormat PreferredPixelFormat)
+void FD3D11DynamicRHI::RHIResizeViewport(FRHIViewport* ViewportRHI, uint32 SizeX, uint32 SizeY, bool bIsFullscreen, EPixelFormat PreferredPixelFormat)
 {
 	check(IsInGameThread());
 
@@ -593,7 +639,7 @@ void FD3D11DynamicRHI::RHITick( float DeltaTime )
  *	Viewport functions.
  *=============================================================================*/
 
-void FD3D11DynamicRHI::RHIBeginDrawingViewport(FViewportRHIParamRef ViewportRHI, FTextureRHIParamRef RenderTarget)
+void FD3D11DynamicRHI::RHIBeginDrawingViewport(FRHIViewport* ViewportRHI, FRHITexture* RenderTarget)
 {
 	FD3D11Viewport* Viewport = ResourceCast(ViewportRHI);
 
@@ -609,13 +655,13 @@ void FD3D11DynamicRHI::RHIBeginDrawingViewport(FViewportRHIParamRef ViewportRHI,
 		RHITransitionResources(EResourceTransitionAccess::EWritable, &RenderTarget, 1);
 	}
 	FRHIRenderTargetView View(RenderTarget, ERenderTargetLoadAction::ELoad);
-	RHISetRenderTargets(1,&View,nullptr,0,NULL);
+	RHISetRenderTargets(1,&View,nullptr);
 
 	// Set an initially disabled scissor rect.
 	RHISetScissorRect(false,0,0,0,0);
 }
 
-void FD3D11DynamicRHI::RHIEndDrawingViewport(FViewportRHIParamRef ViewportRHI,bool bPresent,bool bLockToVsync)
+void FD3D11DynamicRHI::RHIEndDrawingViewport(FRHIViewport* ViewportRHI,bool bPresent,bool bLockToVsync)
 {
 	++PresentCounter;
 	FD3D11Viewport* Viewport = ResourceCast(ViewportRHI);
@@ -704,11 +750,11 @@ void FD3D11DynamicRHI::RHIEndDrawingViewport(FViewportRHIParamRef ViewportRHI,bo
 #endif
 }
 
-void FD3D11DynamicRHI::RHIAdvanceFrameForGetViewportBackBuffer(FViewportRHIParamRef Viewport)
+void FD3D11DynamicRHI::RHIAdvanceFrameForGetViewportBackBuffer(FRHIViewport* Viewport)
 {
 }
 
-FTexture2DRHIRef FD3D11DynamicRHI::RHIGetViewportBackBuffer(FViewportRHIParamRef ViewportRHI)
+FTexture2DRHIRef FD3D11DynamicRHI::RHIGetViewportBackBuffer(FRHIViewport* ViewportRHI)
 {
 	FD3D11Viewport* Viewport = ResourceCast(ViewportRHI);
 

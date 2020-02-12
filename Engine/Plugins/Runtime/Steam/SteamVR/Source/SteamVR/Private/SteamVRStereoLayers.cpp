@@ -1,11 +1,14 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 //
+#include "SteamVRStereoLayers.h"
 #include "CoreMinimal.h"
 #include "SteamVRPrivate.h"
 #include "StereoLayerManager.h"
 #include "SteamVRHMD.h"
 #include "Misc/ScopeLock.h"
 #include "DefaultXRCamera.h"
+
+const FName FSteamVRHQLayer::ShapeName = FName("SteamVRHQLayer");
 
 #if STEAMVR_SUPPORTED_PLATFORMS
 
@@ -17,6 +20,10 @@ static vr::EVROverlayError sOvrError;
 #define OVR_VERIFY(x) x
 #endif
 
+#if !PLATFORM_MAC
+#include "VulkanRHIPrivate.h"
+#endif
+
 /*=============================================================================
 *
 * Helper functions
@@ -26,8 +33,8 @@ static vr::EVROverlayError sOvrError;
 //=============================================================================
 static void TransformToSteamSpace(const FTransform& In, vr::HmdMatrix34_t& Out, float WorldToMeterScale)
 {
-	const FRotator InRot = In.Rotator();
-	FRotator OutRot(InRot.Yaw, -InRot.Roll, -InRot.Pitch);
+	const FQuat InRot = In.GetRotation();
+	FQuat OutRot(InRot.Y, InRot.Z, -InRot.X, -InRot.W);
 
 	const FVector InPos = In.GetTranslation();
 	FVector OutPos(InPos.Y, InPos.Z, -InPos.X);
@@ -70,52 +77,6 @@ void MarkLayerTextureForUpdate(FSteamVRLayer& Layer)
 }
 
 //=============================================================================
-void FSteamVRHMD::UpdateSplashScreen()
-{
-	FTexture2DRHIRef Texture = (bSplashShowMovie && SplashMovie.IsValid()) ? SplashMovie : SplashTexture;
-	if (bSplashIsShown && Texture.IsValid())
-	{
-		FLayerDesc LayerDesc;
-		LayerDesc.Flags = ELayerFlags::LAYER_FLAG_TEX_NO_ALPHA_CHANNEL;
-		LayerDesc.PositionType = ELayerType::TrackerLocked;
-		LayerDesc.Texture = Texture;
-		const FIntPoint TextureSize = Texture->GetSizeXY();
-		const float	InvAspectRatio = (TextureSize.X > 0) ? float(TextureSize.Y) / float(TextureSize.X) : 1.0f;
-
-		// Get the current pose of the HMD
-		FVector HMDPosition;
-		FQuat HMDOrientation;
-		GetCurrentPose(IXRTrackingSystem::HMDDeviceId, HMDOrientation, HMDPosition);
-
-		FTransform Translation(FVector(500.0f, 0.0f, 100.0f) + SplashOffset);
-		FRotator Rotation(HMDOrientation);
-		Rotation.Pitch = 0.0f;
-		Rotation.Roll = 0.0f;
-		LayerDesc.Transform = Translation * FTransform(Rotation.Quaternion());
-
-		// Set texture size to 8m wide, keeping the aspect ratio.
-		LayerDesc.QuadSize = FVector2D(800.0f, 800.0f*InvAspectRatio) * SplashScale;
-
-		if (SplashLayerHandle)
-		{
-			SetLayerDesc(SplashLayerHandle, LayerDesc);
-		}
-		else
-		{
-			SplashLayerHandle = CreateLayer(LayerDesc);
-		}
-	}
-	else
-	{
-		if (SplashLayerHandle)
-		{
-			DestroyLayer(SplashLayerHandle);
-			SplashLayerHandle = 0;
-		}
-	}
-}
-
-//=============================================================================
 void FSteamVRHMD::UpdateLayer(struct FSteamVRLayer& Layer, uint32 LayerId, bool bIsValid) const
 {
 	if (bIsValid && Layer.OverlayHandle == vr::k_ulOverlayHandleInvalid)
@@ -141,20 +102,52 @@ void FSteamVRHMD::UpdateLayer(struct FSteamVRLayer& Layer, uint32 LayerId, bool 
 	{
 		UE_LOG(LogHMD, Warning, TEXT("Unsupported StereoLayer flag. SteamVR StereoLayers do not support disabling alpha renderding. Make the texture opaque instead."));
 	}
-	if (Layer.LayerDesc.ShapeType != IStereoLayers::QuadLayer)
+
+	const float WorldToMeterScale = GetWorldToMetersScale();
+	check(WorldToMeterScale > 0.f);
+
+	if (Layer.LayerDesc.HasShape<FSteamVRHQLayer>())
 	{
-		UE_LOG(LogHMD, Warning, TEXT("Unsupported StereoLayer shape. SteamVR StereoLayers can only be Quads."));
+		vr::VROverlayHandle_t ExistingHQLayer = VROverlay->GetHighQualityOverlay();
+		if (ExistingHQLayer != vr::k_ulOverlayHandleInvalid && ExistingHQLayer != Layer.OverlayHandle)
+		{
+			UE_LOG(LogHMD, Warning, TEXT("There can only be one high-quality stereo layer active at a time. Please disable or change one or more layers to non-high-quality."));
+		}
+		else
+		{
+			VROverlay->SetHighQualityOverlay(Layer.OverlayHandle);
+
+			const auto& HQSettings = Layer.LayerDesc.GetShape<FSteamVRHQLayer>();
+			VROverlay->SetOverlayFlag(Layer.OverlayHandle, vr::VROverlayFlags_Curved, HQSettings.bCurved);
+			VROverlay->SetOverlayFlag(Layer.OverlayHandle, vr::VROverlayFlags_RGSS4X, HQSettings.bAntiAlias);
+			if (HQSettings.bCurved)
+			{
+				VROverlay->SetOverlayAutoCurveDistanceRangeInMeters(Layer.OverlayHandle, HQSettings.AutoCurveMinDistance / WorldToMeterScale, HQSettings.AutoCurveMaxDistance / WorldToMeterScale);
+			}
+		}
+	}
+	else if (!Layer.LayerDesc.HasShape<FQuadLayer>())
+	{
+		UE_LOG(LogHMD, Warning, TEXT("Unsupported StereoLayer shape. SteamVR StereoLayers can only be Quads or High Quality Quads."));
 	}
 
 	// UVs
 	vr::VRTextureBounds_t TextureBounds;
     TextureBounds.uMin = Layer.LayerDesc.UVRect.Min.X;
     TextureBounds.uMax = Layer.LayerDesc.UVRect.Max.X;
-    TextureBounds.vMin = Layer.LayerDesc.UVRect.Min.Y;
-    TextureBounds.vMax = Layer.LayerDesc.UVRect.Max.Y;
+
+	if ( IsOpenGLPlatform( GMaxRHIShaderPlatform ) )
+	{
+		TextureBounds.vMin = Layer.LayerDesc.UVRect.Max.Y;
+		TextureBounds.vMax = Layer.LayerDesc.UVRect.Min.Y;
+	}
+	else
+	{
+		TextureBounds.vMin = Layer.LayerDesc.UVRect.Min.Y;
+		TextureBounds.vMax = Layer.LayerDesc.UVRect.Max.Y;
+	}
+
 	OVR_VERIFY(VROverlay->SetOverlayTextureBounds(Layer.OverlayHandle, &TextureBounds));
-	const float WorldToMeterScale = GetWorldToMetersScale();
-	check(WorldToMeterScale > 0.f);
 	OVR_VERIFY(VROverlay->SetOverlayWidthInMeters(Layer.OverlayHandle, Layer.LayerDesc.QuadSize.X / WorldToMeterScale));
 	
 	float TexelAspect = 1.0f;
@@ -179,7 +172,7 @@ void FSteamVRHMD::UpdateLayer(struct FSteamVRLayer& Layer, uint32 LayerId, bool 
 
 	// Shift layer priority values up by -INT32_MIN, as SteamVR uses unsigned integers for the layer order where UE uses signed integers.
 	// This will preserve the correct order between layers with negative and positive priorities
-	OVR_VERIFY(VROverlay->SetOverlaySortOrder(Layer.OverlayHandle, Layer.LayerDesc.Priority-INT32_MIN)); 
+	OVR_VERIFY(VROverlay->SetOverlaySortOrder(Layer.OverlayHandle, Layer.LayerDesc.Priority-INT32_MIN));
 
 	// Transform
 	switch (Layer.LayerDesc.PositionType)
@@ -201,11 +194,10 @@ void FSteamVRHMD::UpdateLayer(struct FSteamVRLayer& Layer, uint32 LayerId, bool 
 	{
 		vr::HmdMatrix34_t HmdTransform;
 		TransformToSteamSpace(Layer.LayerDesc.Transform, HmdTransform, WorldToMeterScale);
-		OVR_VERIFY(VROverlay->SetOverlayTransformTrackedDeviceRelative(Layer.OverlayHandle, 0, &HmdTransform));
+		OVR_VERIFY(VROverlay->SetOverlayTransformTrackedDeviceRelative(Layer.OverlayHandle, vr::TrackingUniverseSeated, &HmdTransform));
 	}
 	};
 }
-
 
 //=============================================================================
 void FSteamVRHMD::UpdateStereoLayers_RenderThread()
@@ -226,22 +218,20 @@ void FSteamVRHMD::UpdateStereoLayers_RenderThread()
 	TArray<LayerPriorityInfo> LayerPriorities;
 
 	const float WorldToMeterScale = GetWorldToMetersScale();
-	check(WorldToMeterScale > 0.f);
-	FQuat AdjustedPlayerOrientation = BaseOrientation.Inverse() * PlayerOrientation;
-	AdjustedPlayerOrientation.Normalize();
-
-	check(XRCamera.IsValid());
-	FVector AdjustedPlayerLocation = PlayerLocation;
-	if (XRCamera->GetUseImplicitHMDPosition())
+	FTransform InvWorldTransform {ENoInit::NoInit};
 	{
-		FQuat DeviceOrientation; // Unused
-		FVector DevicePosition;
-		GetCurrentPose(IXRTrackingSystem::HMDDeviceId, DeviceOrientation, DevicePosition);
-		AdjustedPlayerLocation -= BaseOrientation.Inverse().RotateVector(DevicePosition);
+		// Calculate a transform to translate from world to tracker relative coordinates.
+		FQuat AdjustedPlayerOrientation = BaseOrientation.Inverse() * PlayerOrientation;
+		AdjustedPlayerOrientation.Normalize();
+
+		FVector AdjustedPlayerLocation = PlayerLocation - AdjustedPlayerOrientation.RotateVector(BaseOffset);
+		if (XRCamera.IsValid() && XRCamera->GetUseImplicitHMDPosition())
+		{
+			AdjustedPlayerLocation -= PlayerOrientation.RotateVector(RenderTrackingFrame.DevicePosition[IXRTrackingSystem::HMDDeviceId]);
+		}
+
+		InvWorldTransform = FTransform(AdjustedPlayerOrientation, AdjustedPlayerLocation).Inverse();
 	}
-
-	FTransform InvWorldTransform = FTransform(AdjustedPlayerOrientation, AdjustedPlayerLocation).Inverse();
-
 
 	// We have loop through all layers every frame, in case we have world locked layers or continuously updated textures.
 	ForEachLayer([&](uint32 /* unused */, FSteamVRLayer& Layer)
@@ -260,18 +250,43 @@ void FSteamVRHMD::UpdateStereoLayers_RenderThread()
 			if (Layer.bUpdateTexture || (Layer.LayerDesc.Flags & LAYER_FLAG_TEX_CONTINUOUS_UPDATE))
 			{
 				vr::Texture_t Texture;
-				Texture.handle = Layer.LayerDesc.Texture->GetNativeResource();
+				vr::VRVulkanTextureData_t VulkanTexture{};
 				if ( IsVulkanPlatform( GMaxRHIShaderPlatform ) )
 				{
+#if PLATFORM_MAC
+					check( 0 );
+#else
+					auto vlkRHI = static_cast<FVulkanDynamicRHI*>(GDynamicRHI);
+					FRHITexture2D* TextureRHI2D = Layer.LayerDesc.Texture->GetTexture2D();
+					check(TextureRHI2D);
+					FVulkanTexture2D* Texture2D = (FVulkanTexture2D*)TextureRHI2D;
+
+					VulkanTexture.m_pInstance = vlkRHI->GetInstance();
+					VulkanTexture.m_pDevice = vlkRHI->GetDevice()->GetInstanceHandle();
+					VulkanTexture.m_pPhysicalDevice = vlkRHI->GetDevice()->GetPhysicalHandle();
+					VulkanTexture.m_pQueue = vlkRHI->GetDevice()->GetGraphicsQueue()->GetHandle();
+					VulkanTexture.m_nQueueFamilyIndex = vlkRHI->GetDevice()->GetGraphicsQueue()->GetFamilyIndex();
+					VulkanTexture.m_nImage = (uint64_t)Texture2D->Surface.Image;
+					VulkanTexture.m_nWidth = Texture2D->Surface.Width;
+					VulkanTexture.m_nHeight = Texture2D->Surface.Height;
+					VulkanTexture.m_nFormat = (uint32_t)Texture2D->Surface.ViewFormat;
+					VulkanTexture.m_nSampleCount = 1;
+
+					Texture.handle = &VulkanTexture;
 					Texture.eType = vr::TextureType_Vulkan;
+#endif
 				}
 				else if ( IsOpenGLPlatform( GMaxRHIShaderPlatform ) )
 				{
+					// We need to dereference the pointer to the real handle
+					uintptr_t TextureID = *reinterpret_cast<uint32*>(Layer.LayerDesc.Texture->GetNativeResource());
+					Texture.handle = reinterpret_cast<void*>(TextureID);
 					Texture.eType = vr::TextureType_OpenGL;
 				}
 				else
 				{
 #if PLATFORM_WINDOWS
+					Texture.handle = Layer.LayerDesc.Texture->GetNativeResource();
 					Texture.eType = vr::TextureType_DirectX;
 #else
 					check( 0 );
@@ -329,49 +344,6 @@ void FSteamVRHMD::UpdateStereoLayers_RenderThread()
 	}
 }
 
-void FSteamVRHMD::GetAllocatedTexture(uint32 LayerId, FTextureRHIRef &Texture, FTextureRHIRef &LeftTexture)
-{
-	Texture = LeftTexture = nullptr;
-	FSteamVRLayer* LayerFound = nullptr;
-
-	if (IsInRenderingThread())
-	{
-		ForEachLayer([&](uint32 /* unused */, FSteamVRLayer& Layer)
-		{
-			if (Layer.GetLayerId() == LayerId)
-			{
-				LayerFound = &Layer;
-			}
-		});
-	}
-	else
-	{
-		// Only supporting the use of this function on RenderingThread.
-		check(false);
-		return;
-	}
-
-	if (LayerFound && LayerFound->LayerDesc.Texture)
-	{
-		switch (LayerFound->LayerDesc.ShapeType)
-		{
-		case IStereoLayers::CubemapLayer:
-			Texture = LayerFound->LayerDesc.Texture->GetTextureCube();
-			LeftTexture = LayerFound->LayerDesc.LeftTexture ? LayerFound->LayerDesc.LeftTexture->GetTextureCube() : nullptr;
-			break;
-
-		case IStereoLayers::CylinderLayer:
-		case IStereoLayers::QuadLayer:
-			Texture = LayerFound->LayerDesc.Texture->GetTexture2D();
-			LeftTexture = LayerFound->LayerDesc.LeftTexture ? LayerFound->LayerDesc.LeftTexture->GetTexture2D() : nullptr;
-			break;
-
-		default:
-			break;
-		}
-	}
-}
-
 //=============================================================================
 IStereoLayers* FSteamVRHMD::GetStereoLayers()
 {
@@ -381,7 +353,6 @@ IStereoLayers* FSteamVRHMD::GetStereoLayers()
 		return FHeadMountedDisplayBase::GetStereoLayers();
 	}
 
-	ensure(VROverlay);
 	if (VROverlay)
 	{
 		return this;

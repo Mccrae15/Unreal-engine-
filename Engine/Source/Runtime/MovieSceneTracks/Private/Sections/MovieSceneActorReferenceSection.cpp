@@ -1,18 +1,20 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "Sections/MovieSceneActorReferenceSection.h"
 #include "Channels/MovieSceneChannelProxy.h"
 
 
-FMovieSceneActorReferenceKey FMovieSceneActorReferenceData::Evaluate(FFrameTime InTime) const
+bool FMovieSceneActorReferenceData::Evaluate(FFrameTime InTime, FMovieSceneActorReferenceKey& OutValue) const
 {
 	if (KeyTimes.Num())
 	{
 		const int32 Index = FMath::Max(0, Algo::UpperBound(KeyTimes, InTime.FrameNumber)-1);
-		return KeyValues[Index];
+		OutValue = KeyValues[Index];
+		return true;
 	}
 
-	return DefaultValue;
+	OutValue = DefaultValue;
+	return true;
 }
 
 void FMovieSceneActorReferenceData::GetKeys(const TRange<FFrameNumber>& WithinRange, TArray<FFrameNumber>* OutKeyTimes, TArray<FKeyHandle>* OutKeyHandles)
@@ -38,6 +40,19 @@ void FMovieSceneActorReferenceData::DuplicateKeys(TArrayView<const FKeyHandle> I
 void FMovieSceneActorReferenceData::DeleteKeys(TArrayView<const FKeyHandle> InHandles)
 {
 	GetData().DeleteKeys(InHandles);
+}
+
+void FMovieSceneActorReferenceData::DeleteKeysFrom(FFrameNumber InTime, bool bDeleteKeysBefore)
+{
+	// Insert a key at the current time to maintain evaluation
+	if (GetData().GetTimes().Num() > 0)
+	{
+		FMovieSceneActorReferenceKey Value;
+		Evaluate(InTime, Value);
+		GetData().UpdateOrAddKey(InTime, Value);
+	}
+
+	GetData().DeleteKeysFrom(InTime, bDeleteKeysBefore);
 }
 
 void FMovieSceneActorReferenceData::ChangeFrameResolution(FFrameRate SourceRate, FFrameRate DestinationRate)

@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -157,7 +157,7 @@ protected:
 		else
 		{
 			DestData.Reserve( EStatsFileConstants::MAX_COMPRESSED_SIZE );
-			int32 CompressedSize = DestData.GetAllocatedSize();
+			int32 CompressedSize = (int32)DestData.GetAllocatedSize();
 
 			const bool bResult = FCompression::CompressMemory( NAME_Zlib, DestData.GetData(), CompressedSize, SrcData.GetData(), UncompressedSize );
 			check( bResult );
@@ -363,8 +363,10 @@ protected:
 	{
 		FName RawName = NameAndInfo.GetRawName();
 		bool bSendFName = !FNamesSent.Contains( RawName.GetComparisonIndex() );
-		int32 Index = RawName.GetComparisonIndex();
-		Ar << Index;
+
+		int32 ComparisonInt = RawName.GetComparisonIndex().ToUnstableInt();
+		Ar << ComparisonInt;
+
 		int32 Number = NameAndInfo.GetRawNumber();
 		if (bSendFName)
 		{
@@ -415,7 +417,7 @@ protected:
 	}
 
 	/** Set of names already sent. */
-	TSet<int32> FNamesSent;
+	TSet<FNameEntryId> FNamesSent;
 
 	/** Data to write. */
 	TArray<uint8> OutData;
@@ -501,6 +503,9 @@ protected:
 protected:
 	/**	Finalizes writing to the file. */
 	void Finalize();
+
+	/** Waits on the async send task to complete. */
+	void WaitTask();
 
 	/** Sends the data to the file via async task. */
 	void SendTask();
@@ -609,7 +614,7 @@ public:
 	FStatsStreamHeader Header;
 
 	/** FNames have a different index on each machine, so we translate via this map. **/
-	TMap<int32, int32> FNamesIndexMap;
+	TMap<int32, FNameEntryId> FNamesIndexMap;
 
 	/** Array of stats frame info. Empty for the raw stats. */
 	TArray<FStatsFrameInfo> FramesInfo;
@@ -699,7 +704,7 @@ public:
 			{
 				if( FNamesIndexMap.Contains( Index ) )
 				{
-					const int32 MyIndex = FNamesIndexMap.FindChecked( Index );
+					const FNameEntryId MyIndex = FNamesIndexMap.FindChecked( Index );
 					TheFName = FName( MyIndex, MyIndex, 0 );
 				}
 				else
@@ -720,7 +725,7 @@ public:
 			}
 			if( FNamesIndexMap.Contains( Index ) )
 			{
-				const int32 MyIndex = FNamesIndexMap.FindChecked( Index );
+				const FNameEntryId MyIndex = FNamesIndexMap.FindChecked( Index );
 				TheFName = FName( MyIndex, MyIndex, 0 );
 			}
 			else
@@ -795,7 +800,7 @@ public:
 	{
 		// Read FNames.
 		Ar.Seek( Header.FNameTableOffset );
-		out_MetadataMessages.Reserve( Header.NumFNames );
+		out_MetadataMessages.Reserve( (int32)Header.NumFNames );
 		for( int32 Index = 0; Index < Header.NumFNames; Index++ )
 		{
 			ReadFName( Ar, false );
@@ -803,7 +808,7 @@ public:
 
 		// Read metadata messages.
 		Ar.Seek( Header.MetadataMessagesOffset );
-		out_MetadataMessages.Reserve( Header.NumMetadataMessages );
+		out_MetadataMessages.Reserve((int32)Header.NumMetadataMessages );
 		for( int32 Index = 0; Index < Header.NumMetadataMessages; Index++ )
 		{
 			new(out_MetadataMessages)FStatMessage( ReadMessage( Ar, false ) );

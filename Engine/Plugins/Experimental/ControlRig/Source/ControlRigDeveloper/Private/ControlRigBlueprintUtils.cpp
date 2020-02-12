@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "ControlRigBlueprintUtils.h"
 #include "Kismet2/BlueprintEditorUtils.h"
@@ -7,121 +7,94 @@
 #include "ControlRig.h"
 #include "Graph/ControlRigGraphNode.h"
 #include "ControlRigBlueprint.h"
+#include "Kismet2/Kismet2NameValidators.h"
 
 #define LOCTEXT_NAMESPACE "ControlRigBlueprintUtils"
 
-FName FControlRigBlueprintUtils::GetNewUnitMemberName(UBlueprint* InBlueprint, UStruct* InStructTemplate)
+FName FControlRigBlueprintUtils::ValidateName(UBlueprint* InBlueprint, const FString& InName)
 {
-	FString VariableBaseName = InStructTemplate->GetName();
-	VariableBaseName.RemoveFromStart(TEXT("RigUnit_"));
-	return FBlueprintEditorUtils::FindUniqueKismetName(InBlueprint, VariableBaseName);
-}
+	DECLARE_SCOPE_HIERARCHICAL_COUNTER_FUNC()
 
-FName FControlRigBlueprintUtils::AddUnitMember(UBlueprint* InBlueprint, UStruct* InStructTemplate)
-{
-	FName VarName = FControlRigBlueprintUtils::GetNewUnitMemberName(InBlueprint, InStructTemplate);
-
-	UScriptStruct* ScriptStruct = FindObjectChecked<UScriptStruct>(ANY_PACKAGE, *InStructTemplate->GetName());
-	UEdGraphSchema_K2 const* K2Schema = GetDefault<UEdGraphSchema_K2>();
-	if(FBlueprintEditorUtils::AddMemberVariable(InBlueprint, VarName, FEdGraphPinType(UEdGraphSchema_K2::PC_Struct, InStructTemplate->GetFName(), ScriptStruct, EPinContainerType::None, false, FEdGraphTerminalType())))
+	FString Name = InName;
+	if (Name.StartsWith(TEXT("RigUnit_")))
 	{
-		FBPVariableDescription& Variable = InBlueprint->NewVariables.Last();
-		Variable.Category = LOCTEXT("UnitsCategory", "Units");
-
-		FBlueprintEditorUtils::MarkBlueprintAsStructurallyModified(InBlueprint);	
-
-		return Variable.VarName;
+		Name.RightChopInline(8, false);
 	}
 
-	return NAME_None;
-}
+	TSharedPtr<FKismetNameValidator> NameValidator;
+	NameValidator = MakeShareable(new FKismetNameValidator(InBlueprint));
 
-FName FControlRigBlueprintUtils::GetNewPropertyMemberName(UBlueprint* InBlueprint, const FString& InVariableDesc)
-{
-	FString VariableBaseName(TEXT("New"));
-	VariableBaseName += InVariableDesc;
-	
-	return FBlueprintEditorUtils::FindUniqueKismetName(InBlueprint, VariableBaseName);
-}
-
-FName FControlRigBlueprintUtils::AddPropertyMember(UBlueprint* InBlueprint, const FEdGraphPinType& InPinType, const FString& InVariableDesc)
-{
-	FName VarName = GetNewPropertyMemberName(InBlueprint, InVariableDesc);
-	if(FBlueprintEditorUtils::AddMemberVariable(InBlueprint, VarName, InPinType))
+	// Clean up BaseName to not contain any invalid characters, which will mean we can never find a legal name no matter how many numbers we add
+	if (NameValidator->IsValid(Name) == EValidatorResult::ContainsInvalidCharacters)
 	{
-		return InBlueprint->NewVariables.Last().VarName;
-	}
-
-	return NAME_None;
-}
-
-UControlRigGraphNode* FControlRigBlueprintUtils::InstantiateGraphNodeForProperty(UEdGraph* InGraph, const FName& InPropertyName, const FVector2D& InLocation)
-{
-	check(InGraph);
-
-	InGraph->Modify();
-
-	UControlRigGraphNode* NewNode = NewObject<UControlRigGraphNode>(InGraph);
-	NewNode->SetPropertyName(InPropertyName);
-
-	InGraph->AddNode(NewNode, true);
-
-	NewNode->CreateNewGuid();
-	NewNode->PostPlacedNewNode();
-	NewNode->AllocateDefaultPins();
-
-	NewNode->NodePosX = InLocation.X;
-	NewNode->NodePosY = InLocation.Y;
-
-	NewNode->SetFlags(RF_Transactional);
-
-	return NewNode;
-}
-
-bool FControlRigBlueprintUtils::CanInstantiateGraphNodeForProperty(UEdGraph* InGraph, const FName& InPropertyName)
-{
-	for(UEdGraphNode* Node : InGraph->Nodes)
-	{
-		if(UControlRigGraphNode* ControlRigGraphNode = Cast<UControlRigGraphNode>(Node))
+		for (TCHAR& TestChar : Name)
 		{
-			if(ControlRigGraphNode->GetPropertyName() == InPropertyName)
+			for (TCHAR BadChar : UE_BLUEPRINT_INVALID_NAME_CHARACTERS)
 			{
-				return false;
+				if (TestChar == BadChar)
+				{
+					TestChar = TEXT('_');
+					break;
+				}
 			}
 		}
 	}
 
-	return true;
+	if (UClass* ParentClass = InBlueprint->ParentClass)
+	{
+		if (UField* ExisingField = FindField<UField>(ParentClass, *Name))
+		{
+			Name = FString::Printf(TEXT("%s_%d"), *Name, 0);
+		}
+	}
+
+	int32 Count = 0;
+	FString BaseName = Name;
+	while (NameValidator->IsValid(Name) != EValidatorResult::Ok)
+	{
+		// Calculate the number of digits in the number, adding 2 (1 extra to correctly count digits, another to account for the '_' that will be added to the name
+		int32 CountLength = Count > 0 ? (int32)log((double)Count) + 2 : 2;
+
+		// If the length of the final string will be too long, cut off the end so we can fit the number
+		if (CountLength + BaseName.Len() > NameValidator->GetMaximumNameLength())
+		{
+			BaseName.LeftInline(NameValidator->GetMaximumNameLength() - CountLength);
+		}
+		Name = FString::Printf(TEXT("%s_%d"), *BaseName, Count);
+		Count++;
+	}
+
+	return *Name;
 }
 
-void FControlRigBlueprintUtils::ForAllRigUnits(TFunction<void(UStruct*)> InFunction)
+void FControlRigBlueprintUtils::ForAllRigUnits(TFunction<void(UScriptStruct*)> InFunction)
 {
+	DECLARE_SCOPE_HIERARCHICAL_COUNTER_FUNC()
+
 	// Run over all unit types
 	for(TObjectIterator<UStruct> StructIt; StructIt; ++StructIt)
 	{
 		if(StructIt->IsChildOf(FRigUnit::StaticStruct()) && !StructIt->HasMetaData(UControlRig::AbstractMetaName))
 		{
-			InFunction(*StructIt);
+			if (UScriptStruct* ScriptStruct = Cast<UScriptStruct>(*StructIt))
+			{
+				InFunction(ScriptStruct);
+			}
 		}
 	}
 }
 
 void FControlRigBlueprintUtils::HandleReconstructAllNodes(UBlueprint* InBlueprint)
 {
-	if(InBlueprint->IsA<UControlRigBlueprint>())
-	{
-		TArray<UControlRigGraphNode*> AllNodes;
-		FBlueprintEditorUtils::GetAllNodesOfClass(InBlueprint, AllNodes);
+	DECLARE_SCOPE_HIERARCHICAL_COUNTER_FUNC()
 
-		for(UControlRigGraphNode* Node : AllNodes)
-		{
-			Node->ReconstructNode();
-		}
-	}
+	return HandleRefreshAllNodes(InBlueprint);
 }
 
 void FControlRigBlueprintUtils::HandleRefreshAllNodes(UBlueprint* InBlueprint)
 {
+	DECLARE_SCOPE_HIERARCHICAL_COUNTER_FUNC()
+
 	if(InBlueprint->IsA<UControlRigBlueprint>())
 	{
 		TArray<UControlRigGraphNode*> AllNodes;
@@ -130,46 +103,17 @@ void FControlRigBlueprintUtils::HandleRefreshAllNodes(UBlueprint* InBlueprint)
 		for(UControlRigGraphNode* Node : AllNodes)
 		{
 			Node->ReconstructNode();
-		}
-	}
-}
-
-void FControlRigBlueprintUtils::HandleRenameVariableReferencesEvent(UBlueprint* InBlueprint, UClass* InVariableClass, const FName& InOldVarName, const FName& InNewVarName)
-{
-	if(InBlueprint->IsA<UControlRigBlueprint>())
-	{
-		TArray<UControlRigGraphNode*> AllNodes;
-		FBlueprintEditorUtils::GetAllNodesOfClass(InBlueprint, AllNodes);
-
-		for(UControlRigGraphNode* Node : AllNodes)
-		{
-			Node->HandleVariableRenamed(InBlueprint, InVariableClass, Node->GetGraph(), InOldVarName, InNewVarName);
 		}
 	}
 }
 
 void FControlRigBlueprintUtils::RemoveMemberVariableIfNotUsed(UBlueprint* Blueprint, const FName VarName, UControlRigGraphNode* ToBeDeleted)
 {
+	DECLARE_SCOPE_HIERARCHICAL_COUNTER_FUNC()
+
 	if (Blueprint->IsA<UControlRigBlueprint>())
 	{
-		bool bDeleteVariable = true;
-
-		TArray<UControlRigGraphNode*> AllNodes;
-		FBlueprintEditorUtils::GetAllNodesOfClass(Blueprint, AllNodes);
-
-		for (UControlRigGraphNode* Node : AllNodes)
-		{
-			if (Node != ToBeDeleted && Node->GetPropertyName() == VarName)
-			{
-				bDeleteVariable = false;
-				break;
-			}
-		}
-
-		if (bDeleteVariable)
-		{
-			FBlueprintEditorUtils::RemoveMemberVariable(Blueprint, VarName);
-		}
+		FBlueprintEditorUtils::RemoveMemberVariable(Blueprint, VarName);
 	}
 }
 #undef LOCTEXT_NAMESPACE

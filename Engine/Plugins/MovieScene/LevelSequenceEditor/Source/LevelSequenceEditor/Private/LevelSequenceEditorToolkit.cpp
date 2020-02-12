@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "LevelSequenceEditorToolkit.h"
 #include "Misc/LevelSequencePlaybackContext.h"
@@ -38,7 +38,6 @@
 #include "Sections/MovieSceneSubSection.h"
 #include "Tracks/MovieSceneSubTrack.h"
 #include "Tracks/MovieSceneCinematicShotTrack.h"
-#include "Tracks/MovieSceneMaterialTrack.h"
 #include "Tracks/MovieScenePropertyTrack.h"
 #include "MovieSceneToolsProjectSettings.h"
 #include "MovieSceneToolHelpers.h"
@@ -48,6 +47,7 @@
 #include "Widgets/Docking/SDockTab.h"
 #include "SequencerSettings.h"
 #include "LevelEditorSequencerIntegration.h"
+#include "LevelSequenceEditorBlueprintLibrary.h"
 #include "MovieSceneCaptureDialogModule.h"
 #include "MovieScene.h"
 #include "UnrealEdMisc.h"
@@ -183,6 +183,9 @@ void FLevelSequenceEditorToolkit::Initialize(const EToolkitMode::Type Mode, cons
 		SequencerInitParams.ViewParams.ScrubberStyle = ESequencerScrubberStyle::FrameBlock;
 		SequencerInitParams.ViewParams.OnReceivedFocus.BindRaw(this, &FLevelSequenceEditorToolkit::OnSequencerReceivedFocus);
 
+		SequencerInitParams.HostCapabilities.bSupportsCurveEditor = true;
+		SequencerInitParams.HostCapabilities.bSupportsSaveMovieSceneAsset = true;
+
 		TSharedRef<FExtender> ToolbarExtender = MakeShared<FExtender>();
 		ToolbarExtender->AddToolBarExtension("Base Commands", EExtensionHook::Before, nullptr, FToolBarExtensionDelegate::CreateSP(this, &FLevelSequenceEditorToolkit::ExtendSequencerToolbar));
 		SequencerInitParams.ViewParams.ToolbarExtender = ToolbarExtender;
@@ -198,16 +201,20 @@ void FLevelSequenceEditorToolkit::Initialize(const EToolkitMode::Type Mode, cons
 	Options.bCanRecord = true;
 
 	FLevelEditorSequencerIntegration::Get().AddSequencer(Sequencer.ToSharedRef(), Options);
+	ULevelSequenceEditorBlueprintLibrary::SetSequencer(Sequencer.ToSharedRef());
 
 	// @todo remove when world-centric mode is added
 	FLevelEditorModule& LevelEditorModule = FModuleManager::LoadModuleChecked<FLevelEditorModule>("LevelEditor");
 
 	// Reopen the scene outliner so that is refreshed with the sequencer info column
-	TSharedPtr<FTabManager> LevelEditorTabManager = LevelEditorModule.GetLevelEditorTabManager();
-	if (LevelEditorTabManager->FindExistingLiveTab(FName("LevelEditorSceneOutliner")).IsValid())
+	if (Sequencer->GetSequencerSettings()->GetShowOutlinerInfoColumn())
 	{
-		LevelEditorTabManager->InvokeTab(FName("LevelEditorSceneOutliner"))->RequestCloseTab();
-		LevelEditorTabManager->InvokeTab(FName("LevelEditorSceneOutliner"));
+		TSharedPtr<FTabManager> LevelEditorTabManager = LevelEditorModule.GetLevelEditorTabManager();
+		if (LevelEditorTabManager->FindExistingLiveTab(FName("LevelEditorSceneOutliner")).IsValid())
+		{
+			LevelEditorTabManager->InvokeTab(FName("LevelEditorSceneOutliner"))->RequestCloseTab();
+			LevelEditorTabManager->InvokeTab(FName("LevelEditorSceneOutliner"));
+		}
 	}
 	
 	// Now Attach so this window will apear in the correct front first order
@@ -273,6 +280,10 @@ FString FLevelSequenceEditorToolkit::GetWorldCentricTabPrefix() const
 
 void FLevelSequenceEditorToolkit::RegisterTabSpawners(const TSharedRef<class FTabManager>& InTabManager)
 {
+	// For World Centric Asset Editors this isn't called until way too late in the initialization flow
+	// (ie: when you actually start to edit an asset), so the tab will be unrecognized upon restore.
+	// Because of this, the Sequencer Tab Spawner is actually registered in SLevelEditor.cpp manually
+	// which is early enough that you can restore the tab after an editor restart.
 	if (IsWorldCentricAssetEditor())
 	{
 		return;
@@ -500,14 +511,14 @@ void FLevelSequenceEditorToolkit::AddDefaultTracksForActor(AActor& Actor, const 
 					break;
 				}
 
-				UProperty* Property = PropertyOwnerClass->FindPropertyByName(*PropertyName);
+				FProperty* Property = PropertyOwnerClass->FindPropertyByName(*PropertyName);
 
 				if (Property != nullptr)
 				{
 					PropertyPath->AddProperty(FPropertyInfo(Property));
 				}
 
-				UStructProperty* StructProperty = Cast<UStructProperty>(Property);
+				FStructProperty* StructProperty = CastField<FStructProperty>(Property);
 
 				if (StructProperty != nullptr)
 				{
@@ -515,7 +526,7 @@ void FLevelSequenceEditorToolkit::AddDefaultTracksForActor(AActor& Actor, const 
 					continue;
 				}
 
-				UObjectProperty* ObjectProperty = Cast<UObjectProperty>(Property);
+				FObjectProperty* ObjectProperty = CastField<FObjectProperty>(Property);
 
 				if (ObjectProperty != nullptr)
 				{
@@ -553,31 +564,36 @@ void FLevelSequenceEditorToolkit::OnSequencerReceivedFocus()
 
 void FLevelSequenceEditorToolkit::HandleAddComponentActionExecute(UActorComponent* Component)
 {
-	Sequencer->GetHandleToObject(Component);
-}
+	const FScopedTransaction Transaction(LOCTEXT("AddComponent", "Add Component"));
 
+	FString ComponentName = Component->GetName();
 
-void FLevelSequenceEditorToolkit::HandleAddComponentMaterialActionExecute(UPrimitiveComponent* Component, int32 MaterialIndex)
-{
-	FGuid ObjectHandle = Sequencer->GetHandleToObject(Component);
-	UMovieScene* FocusedMovieScene = Sequencer->GetFocusedMovieSceneSequence()->GetMovieScene();
-	FName IndexName( *FString::FromInt(MaterialIndex) );
-	if ( FocusedMovieScene->FindTrack( UMovieSceneComponentMaterialTrack::StaticClass(), ObjectHandle, IndexName ) == nullptr )
+	TArray<UActorComponent*> ActorComponents;
+	ActorComponents.Add(Component);
+
+	USelection* SelectedActors = GEditor->GetSelectedActors();
+	if (SelectedActors && SelectedActors->Num() > 0)
 	{
-		if (FocusedMovieScene->IsReadOnly())
+		for (FSelectionIterator Iter(*SelectedActors); Iter; ++Iter)
 		{
-			return;
+			AActor* Actor = CastChecked<AActor>(*Iter);
+
+			TArray<UActorComponent*> OutActorComponents;
+			Actor->GetComponents(OutActorComponents);
+	
+			for (UActorComponent* ActorComponent : OutActorComponents)
+			{
+				if (ActorComponent->GetName() == ComponentName)
+				{
+					ActorComponents.AddUnique(ActorComponent);
+				}
+			}
 		}
+	}
 
-		const FScopedTransaction Transaction( LOCTEXT( "AddComponentMaterialTrack", "Add component material track" ) );
-
-		FocusedMovieScene->Modify();
-
-		UMovieSceneComponentMaterialTrack* MaterialTrack = FocusedMovieScene->AddTrack<UMovieSceneComponentMaterialTrack>( ObjectHandle );
-		MaterialTrack->Modify();
-		MaterialTrack->SetMaterialIndex( MaterialIndex );
-
-		Sequencer->NotifyMovieSceneDataChanged( EMovieSceneDataChangeType::MovieSceneStructureItemAdded );
+	for (UActorComponent* ActorComponent : ActorComponents)
+	{
+		Sequencer->GetHandleToObject(ActorComponent);
 	}
 }
 
@@ -605,6 +621,7 @@ void FLevelSequenceEditorToolkit::HandleMapChanged(class UWorld* NewWorld, EMapC
 	if( ( MapChangeType == EMapChangeType::LoadMap || MapChangeType == EMapChangeType::NewMap || MapChangeType == EMapChangeType::TearDownWorld) )
 	{
 		Sequencer->GetSpawnRegister().CleanUp(*Sequencer);
+		CloseWindow();
 	}
 }
 
@@ -841,25 +858,6 @@ void FLevelSequenceEditorToolkit::HandleTrackMenuExtensionAddTrack(FMenuBuilder&
 	}
 	else
 	{
-		if (UPrimitiveComponent* PrimitiveComponent = Cast<UPrimitiveComponent>(ContextObjects[0]))
-		{
-			int32 NumMaterials = PrimitiveComponent->GetNumMaterials();
-			if (NumMaterials > 0)
-			{
-				AddTrackMenuBuilder.BeginSection("Materials", LOCTEXT("MaterialSection", "Material Parameters"));
-				{
-					for (int32 MaterialIndex = 0; MaterialIndex < NumMaterials; MaterialIndex++)
-					{
-						FUIAction AddComponentMaterialAction(FExecuteAction::CreateSP(this, &FLevelSequenceEditorToolkit::HandleAddComponentMaterialActionExecute, PrimitiveComponent, MaterialIndex));
-						FText AddComponentMaterialLabel = FText::Format(LOCTEXT("ComponentMaterialIndexLabelFormat", "Element {0}"), FText::AsNumber(MaterialIndex));
-						FText AddComponentMaterialToolTip = FText::Format(LOCTEXT("ComponentMaterialIndexToolTipFormat", "Add material element {0}"), FText::AsNumber(MaterialIndex));
-						AddTrackMenuBuilder.AddMenuEntry(AddComponentMaterialLabel, AddComponentMaterialToolTip, FSlateIcon(), AddComponentMaterialAction);
-					}
-				}
-				AddTrackMenuBuilder.EndSection();
-			}
-		}
-
 		if (USkeletalMeshComponent* SkeletalComponent = Cast<USkeletalMeshComponent>(ContextObjects[0]))
 		{
 			UAnimInstance* AnimInstance = SkeletalComponent->GetAnimInstance();

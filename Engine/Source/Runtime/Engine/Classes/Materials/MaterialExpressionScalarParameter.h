@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 
 #pragma once
@@ -17,6 +17,12 @@ class UMaterialExpressionScalarParameter : public UMaterialExpressionParameter
 
 	UPROPERTY(EditAnywhere, Category=MaterialExpressionScalarParameter)
 	float DefaultValue;
+
+	UPROPERTY(EditAnywhere, Category=CustomPrimitiveData)
+	bool bUseCustomPrimitiveData = false;
+
+	UPROPERTY(EditAnywhere, Category=CustomPrimitiveData, meta=(ClampMin="0"))
+	uint8 PrimitiveDataIndex = 0;
 
 #if WITH_EDITORONLY_DATA
 	/** 
@@ -41,7 +47,7 @@ class UMaterialExpressionScalarParameter : public UMaterialExpressionParameter
 	//~ End UMaterialExpression Interface
 
 	/** Return whether this is the named parameter, and fill in its value */
-	bool IsNamedParameter(const FMaterialParameterInfo& ParameterInfo, float& OutValue) const;
+	bool IsNamedParameter(const FHashedMaterialParameterInfo& ParameterInfo, float& OutValue) const;
 
 #if WITH_EDITOR
 	bool SetParameterValue(FName InParameterName, float InValue);
@@ -53,6 +59,8 @@ class UMaterialExpressionScalarParameter : public UMaterialExpressionParameter
 #endif
 
 	virtual bool IsUsedAsAtlasPosition() const { return false; }
+
+	virtual void GetAllParameterInfo(TArray<FMaterialParameterInfo> &OutParameterInfo, TArray<FGuid> &OutParameterIds, const FMaterialParameterInfo& InBaseParameterInfo) const override;
 };
 
 

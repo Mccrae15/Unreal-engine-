@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -94,11 +94,14 @@ protected:
 	 */
 	FGauntletModule* GetGauntlet();
 
+	/**
+	 * Marks the next heartbeat as active and immediately forces a heartbeat with the given status message if one is specified.
+	 * Test controllers should call this regularly as purposeful actions happens or meaningful states are achieved within the test.
+	 */
+	void MarkHeartbeatActive(const FString& OptionalStatusMessage = FString());
+
 private:
 
 	FGauntletModule*  ParentModule;
+
 };
-
-
-
-

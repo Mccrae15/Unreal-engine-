@@ -1,5 +1,5 @@
 #!/bin/bash
-## Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+## Copyright Epic Games, Inc. All Rights Reserved.
 ##
 ## Unreal Engine 4 AutomationTool setup script
 ##
@@ -51,6 +51,10 @@ else
 	UATCompileArg=-compile
 fi
 
+if [ -f Build\InstalledBuild.txt ]; then
+	UATCompileArg=
+fi
+
 if [ "$(uname)" = "Darwin" ]; then
 	# Setup Mono
 	source "$SCRIPT_DIR/Mac/SetupMono.sh" "$SCRIPT_DIR/Mac"
@@ -61,33 +65,29 @@ if [ "$(uname)" = "Linux" ]; then
 	source "$SCRIPT_DIR/Linux/SetupMono.sh" "$SCRIPT_DIR/Linux"
 fi
 
+
 if [ "$UATCompileArg" = "-compile" ]; then
   # see if the .csproj exists to be compiled
 	if [ ! -f Source/Programs/AutomationTool/AutomationTool.csproj ]; then
 		echo No project to compile, attempting to use precompiled AutomationTool
 		UATCompileArg=
 	else
-		if [ -f "$UATDirectory/AutomationTool.exe" ]; then
-			echo AutomationTool exists: Deleting
-			rm -f $UATDirectory/AutomationTool.exe
-			if [ -d "$UATDirectory/AutomationScripts" ]; then
-				echo Deleting all AutomationScript dlls
-				rm -rf $UATDirectory/AutomationScripts
-			fi
+		# mono 5.0 and up include msbuild
+		if [ "$IS_MS_BUILD_AVAILABLE" == "1" ]; then
+			BUILD_TOOL=msbuild
+		else
+			BUILD_TOOL=xbuild
 		fi
-		echo Compiling AutomationTool with xbuild
 
-		ARGS="/p:Configuration=Development /p:Platform=AnyCPU /verbosity:quiet /nologo"
+		ARGS="/p:Configuration=Development /p:Platform=AnyCPU /verbosity:quiet /nologo /p:NoWarn=1591 /property:AutomationToolProjectOnly=true"
 		ARGS="${ARGS} /p:TargetFrameworkProfile="
 
-		echo "xbuild Source/Programs/AutomationTool/AutomationTool.csproj $ARGS"
-		xbuild Source/Programs/AutomationTool/AutomationTool.csproj $ARGS
+		echo "$BUILD_TOOL Source/Programs/AutomationTool/AutomationTool.csproj $ARGS"
+		$BUILD_TOOL Source/Programs/AutomationTool/AutomationTool.csproj $ARGS
 		# make sure it succeeded
 		if [ $? -ne 0 ]; then
 			echo RunUAT ERROR: AutomationTool failed to compile.
 			exit 1
-		else
-			echo Compilation Succeeded
 		fi
 	fi
 fi

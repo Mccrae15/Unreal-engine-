@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 /*=============================================================================
 	GenericMacTargetPlatform.h: Declares the TGenericMacTargetPlatform class template.
@@ -66,7 +66,7 @@ public:
 		}
 	}
 
-	virtual bool GenerateStreamingInstallManifest(const TMultiMap<FString, int32>& ChunkMap, const TSet<int32>& ChunkIDsInUse) const override
+	virtual bool GenerateStreamingInstallManifest(const TMultiMap<FString, int32>& PakchunkMap, const TSet<int32>& PakchunkIndicesInUse) const override
 	{
 		return true;
 	}
@@ -120,8 +120,6 @@ return TSuper::SupportsFeature(Feature);
 			OutFormats.AddUnique(NAME_SF_METAL_SM5);
 			static FName NAME_SF_METAL_MACES3_1(TEXT("SF_METAL_MACES3_1"));
 			OutFormats.AddUnique(NAME_SF_METAL_MACES3_1);
-			static FName NAME_SF_METAL_MACES2(TEXT("SF_METAL_MACES2"));
-			OutFormats.AddUnique(NAME_SF_METAL_MACES2);
 			static FName NAME_SF_METAL_MRT_MAC(TEXT("SF_METAL_MRT_MAC"));
 			OutFormats.AddUnique(NAME_SF_METAL_MRT_MAC);
 		}
@@ -156,13 +154,12 @@ return TSuper::SupportsFeature(Feature);
 		return StaticMeshLODSettings;
 	}
 
-	virtual void GetTextureFormats( const UTexture* Texture, TArray<FName>& OutFormats ) const override
+	virtual void GetTextureFormats( const UTexture* Texture, TArray< TArray<FName> >& OutFormats) const override
 	{
 		if (!IS_DEDICATED_SERVER)
 		{
 			// just use the standard texture format name for this texture (with DX11 support)
-			FName TextureFormatName = GetDefaultTextureFormatName(this, Texture, EngineSettings, true);
-			OutFormats.Add(TextureFormatName);
+			GetDefaultTextureFormatNamePerLayer(OutFormats.AddDefaulted_GetRef(), this, Texture, EngineSettings, true);
 		}
 	}
 
@@ -190,6 +187,7 @@ return TSuper::SupportsFeature(Feature);
 		static FName NameBGRA8(TEXT("BGRA8"));
 		static FName NameXGXR8(TEXT("XGXR8"));
 		static FName NameG8(TEXT("G8"));
+		static FName NameG16(TEXT("G16"));
 		static FName NameVU8(TEXT("VU8"));
 		static FName NameRGBA16F(TEXT("RGBA16F"));
 		static FName NameBC6H(TEXT("BC6H"));
@@ -212,6 +210,10 @@ return TSuper::SupportsFeature(Feature);
 			if (SourceFormat == TSF_RGBA16F)
 			{
 				TextureFormatName = NameRGBA16F;
+			}
+			else if (SourceFormat == TSF_G16)
+			{
+				TextureFormatName = NameG16;
 			}
 			else if (SourceFormat == TSF_G8 || Settings == TC_Grayscale)
 			{
@@ -309,10 +311,16 @@ return TSuper::SupportsFeature(Feature);
 
 	virtual FName GetWaveFormat( const class USoundWave* Wave ) const override
 	{
-		static FName NAME_OGG(TEXT("OGG"));
-		static FName NAME_OPUS(TEXT("OPUS"));
+		static const FName NAME_ADPCM(TEXT("ADPCM"));
+		static const FName NAME_OGG(TEXT("OGG"));
+		static const FName NAME_OPUS(TEXT("OPUS"));
 
-		if (Wave->IsStreaming())
+		if (Wave->IsSeekableStreaming())
+		{
+			return NAME_ADPCM;
+		}
+
+		if (Wave->IsStreaming(*this->IniPlatformName()))
 		{
 			return NAME_OPUS;
 		}
@@ -322,15 +330,13 @@ return TSuper::SupportsFeature(Feature);
 
 	virtual void GetAllWaveFormats(TArray<FName>& OutFormats) const override
 	{
-		static FName NAME_OGG(TEXT("OGG"));
-		static FName NAME_OPUS(TEXT("OPUS"));
+		static const FName NAME_ADPCM(TEXT("ADPCM"));
+		static const FName NAME_OGG(TEXT("OGG"));
+		static const FName NAME_OPUS(TEXT("OPUS"));
+
+		OutFormats.Add(NAME_ADPCM);
 		OutFormats.Add(NAME_OGG);
 		OutFormats.Add(NAME_OPUS);
-	}
-
-	virtual FPlatformAudioCookOverrides* GetAudioCompressionSettings() const override
-	{
-		return nullptr;
 	}
 
 #endif //WITH_ENGINE

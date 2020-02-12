@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 /*=============================================================================
 	GPUProfiler.h: Hierarchical GPU Profiler.
@@ -18,6 +18,9 @@ public:
 		NumDraws(0),
 		NumPrimitives(0),
 		NumVertices(0),
+		NumDispatches(0),
+		GroupCount(FIntVector(0, 0, 0)),
+		NumTotalDispatches(0),
 		NumTotalDraws(0),
 		NumTotalPrimitives(0),
 		NumTotalVertices(0),
@@ -34,6 +37,11 @@ public:
 
 	/** Exclusive number of vertices rendered in this event. */
 	uint32 NumVertices;
+
+	/** Compute stats */
+	uint32 NumDispatches;
+	FIntVector GroupCount;
+	uint32 NumTotalDispatches;
 
 	/** Inclusive number of draw calls rendered in this event and children. */
 	uint32 NumTotalDraws;
@@ -55,6 +63,8 @@ public:
 		NumDraws += rhs.NumDraws;
 		NumPrimitives += rhs.NumPrimitives;
 		NumVertices += rhs.NumVertices;
+		NumDispatches += rhs.NumDispatches;
+		NumTotalDispatches += rhs.NumTotalDispatches;
 		NumTotalDraws += rhs.NumDraws;
 		NumTotalPrimitives += rhs.NumPrimitives;
 		NumTotalVertices += rhs.NumVertices;
@@ -148,7 +158,7 @@ public:
 	 *
 	 * @return Frequency for the timing values, in number of ticks per seconds, or 0 if the feature isn't supported.
 	 */
-	static uint64 GetTimingFrequency()
+	static uint64 GetTimingFrequency(uint32 GPUIndex = 0)
 	{
 		return GTimingFrequency;
 	}
@@ -158,7 +168,7 @@ public:
 	*
 	* @return CPU and GPU timestamps, in microseconds. Both are 0 if feature isn't supported.
 	*/
-	static FGPUTimingCalibrationTimestamp GetCalibrationTimestamp()
+	static FGPUTimingCalibrationTimestamp GetCalibrationTimestamp(uint32 GPUIndex = 0)
 	{
 		return GCalibrationTimestamp;
 	}
@@ -269,6 +279,16 @@ struct RHI_API FGPUProfiler
 		}
 	}
 
+	void RegisterGPUDispatch(FIntVector GroupCount)
+	{
+		if (bTrackingEvents && CurrentEventNode)
+		{
+			check(IsInRenderingThread() || IsInRHIThread());
+			CurrentEventNode->NumDispatches++;
+			CurrentEventNode->GroupCount = GroupCount;
+		}
+	}
+
 	virtual FGPUProfilerEventNode* CreateEventNode(const TCHAR* InName, FGPUProfilerEventNode* InParent)
 	{
 		return new FGPUProfilerEventNode(InName, InParent);
@@ -276,78 +296,4 @@ struct RHI_API FGPUProfiler
 
 	virtual void PushEvent(const TCHAR* Name, FColor Color);
 	virtual void PopEvent();
-};
-
-
-
-/**
- * Simple moving window averaged GPU timer; create an instance, call Begin() and End() around the block to time, 
- * then call GetElapsedAverage to get the averaged timings; BufferSize determines the number of queries in the window,
- * FramesBehind determines how long we wait to grab query results, so we don't have to block on them, so the effective
- * window size is BufferSize - FramesBehind
- * The timer keeps track of failed queries; GetElapsedAverage returns a float [0;1] that indicates fail rate: 0 means
- * no queries have failed, 1 means all queries within the window have failed. If more than 0.1, it's a good indication
- * that FramesBehind has to be increased.
- */
-class FWindowedGPUTimer
-{
-public:
-	explicit FWindowedGPUTimer(FRHICommandListImmediate& RHICmdList)
-	{
-		PrivateInit(10,2,RHICmdList);
-	}
-
-	FWindowedGPUTimer(uint32 BufferSize, uint32 FramesBehind, FRHICommandListImmediate& RHICmdList)
-	{
-		PrivateInit(BufferSize,FramesBehind,RHICmdList);
-	}
-
-	void Begin(FRHICommandListImmediate& RHICmdList)
-	{
-		RotateQueryBuffer(StartQueries);
-		RHICmdList.EndRenderQuery(StartQueries[0]);
-	}
-
-
-	void End(FRHICommandListImmediate& RHICmdList)
-	{
-		RotateQueryBuffer(EndQueries);
-		RHICmdList.EndRenderQuery(EndQueries[0]);
-		QueriesFinished++;
-	}
-
-	void RotateQueryBuffer(TArray<FRenderQueryRHIRef> &QueryArray)
-	{
-		FRenderQueryRHIRef LastQuery = QueryArray.Last();
-
-		for (int32 i = QueryArray.Num() - 1; i > 0; --i)
-		{
-			QueryArray[i] = QueryArray[i - 1];
-		}
-		QueryArray[0] = LastQuery;
-	}
-
-
-	float GetElapsedAverage(FRHICommandListImmediate& RHICmdList, float &OutAvgTimeInSeconds);
-
-private:
-	void PrivateInit(uint32 BufferSize, uint32 FramesBehind, FRHICommandListImmediate& RHICmdList)
-	{
-		QueriesFailed = 0;
-		QueriesFinished = 0;
-		StartQueries.AddZeroed(BufferSize);
-		EndQueries.AddZeroed(BufferSize);
-		for (uint32 i = 0; i < BufferSize; i++)
-		{
-			StartQueries[i] = RHICmdList.CreateRenderQuery(RQT_AbsoluteTime);;
-			EndQueries[i] = RHICmdList.CreateRenderQuery(RQT_AbsoluteTime);;
-		}
-		WindowSize = BufferSize - FramesBehind;
-	}
-
-	int32 QueriesFailed;
-	uint32 WindowSize;
-	int32 QueriesFinished;
-	TArray<FRenderQueryRHIRef> StartQueries;
-	TArray<FRenderQueryRHIRef> EndQueries;
 };

@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "Containers/StackTracker.h"
 #include "HAL/PlatformStackWalk.h"
@@ -52,12 +52,12 @@ void FStackTracker::CaptureStackTrace(int32 EntriesToIgnore, void* UserData, int
 					{
 						ANSICHAR AddressInformation[512];
 						AddressInformation[0] = 0;
-						FPlatformStackWalk::ProgramCounterToHumanReadableString( 1, BackTrace[Index], AddressInformation, ARRAY_COUNT(AddressInformation)-1 );
+						FPlatformStackWalk::ProgramCounterToHumanReadableString( 1, BackTrace[Index], AddressInformation, UE_ARRAY_COUNT(AddressInformation)-1 );
 						FString Symbol(AddressInformation);
-						int32 Spot = Symbol.Find(TEXT(" - "));
+						int32 Spot = Symbol.Find(TEXT(" - "), ESearchCase::CaseSensitive);
 						if (Spot != INDEX_NONE)
 						{
-							Symbol = Symbol.RightChop(Spot + 3);
+							Symbol.RightChopInline(Spot + 3, false);
 						}
 						Existing = StringAliasMap.Find(Symbol);
 						if (Existing)
@@ -143,7 +143,7 @@ void FStackTracker::DumpStackTraces(int32 StackThreshold, FOutputDevice& Ar, flo
 	}
 
 	// Calculate the number of frames we captured.
-	int32 FramesCaptured = 0;
+	uint64 FramesCaptured = 0;
 	if( bIsEnabled )
 	{
 		FramesCaptured = GFrameCounter - StartFrameCounter;
@@ -193,11 +193,11 @@ void FStackTracker::DumpStackTraces(int32 StackThreshold, FOutputDevice& Ar, flo
 			
 
 			// Iterate over all addresses in the callstack to look up symbol name.
-			for( int32 AddressIndex=0; AddressIndex<ARRAY_COUNT(CallStack.Addresses) && CallStack.Addresses[AddressIndex]; AddressIndex++ )
+			for( int32 AddressIndex=0; AddressIndex<UE_ARRAY_COUNT(CallStack.Addresses) && CallStack.Addresses[AddressIndex]; AddressIndex++ )
 			{
 				ANSICHAR AddressInformation[512];
 				AddressInformation[0] = 0;
-				FPlatformStackWalk::ProgramCounterToHumanReadableString( AddressIndex, CallStack.Addresses[AddressIndex], AddressInformation, ARRAY_COUNT(AddressInformation)-1 );
+				FPlatformStackWalk::ProgramCounterToHumanReadableString( AddressIndex, CallStack.Addresses[AddressIndex], AddressInformation, UE_ARRAY_COUNT(AddressInformation)-1 );
 				CallStackString = CallStackString + LINE_TERMINATOR TEXT(",,,") + FString(AddressInformation);
 			}
 

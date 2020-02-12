@@ -1,17 +1,195 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "ProxyLODMeshParameterization.h"
+#include "CoreMinimal.h"
 
+THIRD_PARTY_INCLUDES_START
 #include <UVAtlasCode/UVAtlas/inc/UVAtlas.h>
 #include <DirectXMeshCode/DirectXMesh/DirectXMesh.h>
+THIRD_PARTY_INCLUDES_END
 
 
 #include "ProxyLODThreadedWrappers.h"
 #include "ProxyLODMeshUtilities.h"
 
 
+bool ProxyLOD::GenerateUVs(const FTextureAtlasDesc& TextureAtlasDesc,
+	                       const TArray<FVector>&   VertexBuffer, 
+	                       const TArray<int32>&     IndexBuffer, 
+						   const TArray<int32>&     AdjacencyBuffer,
+	                       TFunction<bool(float)>&  Callback, 
+	                       TArray<FVector2D>&       UVVertexBuffer, 
+	                       TArray<int32>&           UVIndexBuffer, 
+	                       TArray<int32>&           VertexRemapArray, 
+	                       float&                   MaxStretch, 
+	                       int32&                   NumCharts)
+{
+	const int32 NumVerts   = VertexBuffer.Num();
+	const int32 NumFaces   = IndexBuffer.Num() / 3;
+
+	// Copy data into DirectX library format
+
+	TArray<DirectX::XMFLOAT3> PosArray;
+	PosArray.Empty(NumVerts);
+	for (int32 i = 0; i < NumVerts; ++i)
+	{
+		const FVector& Vertex = VertexBuffer[i];
+		PosArray.Emplace(DirectX::XMFLOAT3(Vertex.X, Vertex.Y, Vertex.Z));
+	}
+	
+	TArray<uint32_t> Indices;
+	Indices.Empty(3 * NumFaces);
+	for (int32 i = 0, I = NumFaces * 3; i < I; ++i)
+	{
+		Indices.Add(IndexBuffer[i]);
+	}
+
+	TArray<uint32_t> AdjacencyArray;
+	AdjacencyArray.Empty(3 * NumFaces);
+	for (int32 i = 0, I = NumFaces * 3; i < I; ++i)
+	{
+		AdjacencyArray.Add( static_cast<uint32_t>(AdjacencyBuffer[i]) );
+	}
+
+
+
+	// Verify the mesh is valid
+	{
+	
+		HRESULT ValidateHR = DirectX::Validate(Indices.GetData(), NumFaces, NumVerts, AdjacencyArray.GetData(), DirectX::VALIDATE_DEFAULT, NULL);
+		if (FAILED(ValidateHR))
+		{
+			return false;
+		}
+	}
+
+	// Capture the callback and convert result type
+	auto StatusCallBack = [&Callback](float percentComplete)->HRESULT
+	{
+		//return S_OK;
+		return (Callback(percentComplete)) ? S_OK : S_FALSE;
+	};
+
+	
+
+	// Translate controls into corret types
+	const size_t NumChartsIn  = (size_t)NumCharts;
+	const float  MaxStretchIn = MaxStretch;
+
+	const size_t Width  = TextureAtlasDesc.Size.X;
+	const size_t Height = TextureAtlasDesc.Size.Y;
+	const float  Gutter = TextureAtlasDesc.Gutter;
+
+	// Symmetric Identity matrix used for the signal
+	float * pIMTArray = new float[NumFaces * 3];
+	{
+		for (int32 f = 0; f < NumFaces; ++f)
+		{
+			int32 offset = 3 * f;
+			{
+				pIMTArray[offset + 0] = 1.f;
+				pIMTArray[offset + 1] = 0.f;
+				pIMTArray[offset + 2] = 1.f;
+			}
+		}
+	}
+
+
+	size_t NumChartsOut = 0;
+	float MaxStretchOut = 0.f;
+	
+	// info to capture
+	std::vector<DirectX::UVAtlasVertex> VB;
+	std::vector<uint8>  IB;
+	std::vector<uint32> RemapArray;
+	std::vector<uint32> FacePartitioning;
+
+	// Generate UVs
+	HRESULT hr = DirectX::UVAtlasCreate(PosArray.GetData(), NumVerts,
+		                                Indices.GetData(), DXGI_FORMAT_R32_UINT, NumFaces,
+		                                NumChartsIn, MaxStretchIn,
+		                                Width, Height, Gutter,
+		                                AdjacencyArray.GetData(), NULL /*false adj*/, pIMTArray /*IMTArray*/,
+		                                StatusCallBack, DirectX::UVATLAS_DEFAULT_CALLBACK_FREQUENCY,
+		                                DirectX::UVATLAS_DEFAULT, VB, IB,
+		                                &FacePartitioning, &RemapArray, &MaxStretchOut, &NumChartsOut);
+
+
+	// Translate results to output form.
+	if (hr == S_OK)
+	{
+		const int32 NumUVverts    = (int32)VB.size();
+		const int32 NumUVindices  = (int32)IB.size();
+		const int32 NumRemapArray = (int32)RemapArray.size();
+
+		// empty and resize
+
+		UVVertexBuffer.Empty(NumUVverts);
+		UVIndexBuffer.Empty(NumUVindices);
+		VertexRemapArray.Empty(NumRemapArray);
+
+		for (const DirectX::UVAtlasVertex& UVvertex : VB)
+		{
+			const auto& UV = UVvertex.uv;
+			UVVertexBuffer.Emplace(FVector2D(UV.x, UV.y));
+		}
+
+		// This part is weird
+		{
+			std::vector<uint32> indices;
+			indices.resize(3 * NumFaces);
+			std::memcpy(indices.data(), IB.data(), sizeof(uint32) * 3 * NumFaces);
+
+			for (uint32 i : indices)
+			{
+				UVIndexBuffer.Add(i);
+			}
+		}
+
+		for (const uint32 i : RemapArray)
+		{
+			int32 r = i;
+			VertexRemapArray.Add(r);
+		}
+
+		MaxStretch = MaxStretchOut;
+		NumCharts  = (int32)NumChartsOut;
+	}
+	
+
+	return (hr == S_OK) ? true : false;
+}
+
+
 bool ProxyLOD::GenerateUVs(FVertexDataMesh& InOutMesh, const FTextureAtlasDesc& TextureAtlasDesc, const bool VertexColorParts)
 {
+	TRACE_CPUPROFILER_EVENT_SCOPE(ProxyLOD::GenerateUVs)
+
+	// desired parameters for ISO-Chart method
+
+	// MaxChartNum = 0 will allow any number of charts to be generated.
+
+	const size_t MaxChartNumber = 0;
+
+	// Let the polys in the partitions stretch some..  1.f will let it stretch freely
+
+	const float MaxStretch = 0.125f; // Question.  Does this override the pIMT?
+	
+	// Note: I tried constructing this from the normals, but that resulted in some large planar regions being really compressed in the
+	// UV chart.
+	const bool bComputeIMTFromVertexNormal = false;
+
+	// No Op
+	auto NoOpCallBack = [](float percent)->HRESULT {return  S_OK; };
+
+	return GenerateUVs(InOutMesh, TextureAtlasDesc, VertexColorParts, MaxStretch, MaxChartNumber, bComputeIMTFromVertexNormal, NoOpCallBack);
+}
+
+bool ProxyLOD::GenerateUVs(FVertexDataMesh& InOutMesh, const FTextureAtlasDesc& TextureAtlasDesc, const bool VertexColorParts, 
+	                      const float MaxStretch, const size_t MaxChartNumber, const bool bComputeIMTFromVertexNormal, 
+	                      std::function<HRESULT __cdecl(float percentComplete)> StatusCallBack, float* MaxStretchOut, size_t* NumChartsOut)
+{
+	TRACE_CPUPROFILER_EVENT_SCOPE(ProxyLOD::GenerateUVs)
 
 	std::vector<uint32> DirextXAdjacency;
 
@@ -19,11 +197,6 @@ bool ProxyLOD::GenerateUVs(FVertexDataMesh& InOutMesh, const FTextureAtlasDesc& 
 
 	if (!bValidMesh) return false;
 
-
-	// No Op
-	auto NoOpCallBack = [](float percent)->HRESULT {return  S_OK; };
-
-	// Gather data for UVAtlas Create
 
 	// Data from the existing mesh
 
@@ -37,16 +210,6 @@ bool ProxyLOD::GenerateUVs(FVertexDataMesh& InOutMesh, const FTextureAtlasDesc& 
 	// The mesh adjacency
 
 	const uint32* adjacency = DirextXAdjacency.data();
-
-	// desired parameters for ISO-Chart method
-
-	// MaxChartNum = 0 will allow any number of charts to be generated.
-
-	const size_t MaxChartNumber = 0;
-
-	// Let the polys in the partitions stretch some..  1.f will let it stretch freely
-
-	const float MaxStretch = 0.125f; // Question.  Does this override the pIMT?
 
 
 	// Size of the texture atlas
@@ -64,37 +227,79 @@ bool ProxyLOD::GenerateUVs(FVertexDataMesh& InOutMesh, const FTextureAtlasDesc& 
 	std::vector<uint32> facePartitioning;
 
 	// Capture stats about the result.
-	float maxStretchOut = 0.f;
-	size_t numChartsOut = 0;
+	float maxStretchUsed = 0.f;
+	size_t numChartsUsed = 0;
 
-	// per-triangle IMT from per-vertex data(normal).  Note: I tried constructing this from
-	// the normals, but that resulted in some large planar regions being really compressed in the
-	// UV chart.
+	TArray<float> IMTArray;
+	IMTArray.SetNumUninitialized(NumFaces * 3);
+	float* pIMTArray = IMTArray.GetData();
 
-	float * pIMTArray = new float[NumFaces * 3];
-	for (int32 f = 0; f < NumFaces; ++f)
+	if (!bComputeIMTFromVertexNormal)
 	{
-		int32 offset = 3 * f;
+		for (int32 f = 0; f < NumFaces; ++f)
 		{
-			pIMTArray[offset    ] = 1.f;
-			pIMTArray[offset + 1] = 0.f;
-			pIMTArray[offset + 2] = 1.f;
+			int32 offset = 3 * f;
+			{
+				pIMTArray[offset] = 1.f;
+				pIMTArray[offset + 1] = 0.f;
+				pIMTArray[offset + 2] = 1.f;
+			}
+		}
+	}
+	else
+	{
+		// per-triangle IMT from per-vertex data(normal). 
+
+		const TArray<FVector>& Normals = InOutMesh.Normal;
+		const float* PerVertSignal = (float*)Normals.GetData();
+		size_t SignalStride = 3 * sizeof(float);
+		HRESULT IMTResult = UVAtlasComputeIMTFromPerVertexSignal(Pos, NumVerts, indices, DXGI_FORMAT_R32_UINT, NumFaces, PerVertSignal, 3, SignalStride, StatusCallBack, pIMTArray);
+
+		if (FAILED(IMTResult))
+		{
+			return false;
 		}
 	}
 
-	HRESULT hr = DirectX::UVAtlasCreate(Pos, NumVerts,
-		indices, DXGI_FORMAT_R32_UINT, NumFaces,
-		MaxChartNumber, MaxStretch,
-		width, height, gutter,
-		adjacency, NULL /*false adj*/, pIMTArray /*IMTArray*/,
-		NoOpCallBack, DirectX::UVATLAS_DEFAULT_CALLBACK_FREQUENCY,
-		DirectX::UVATLAS_DEFAULT, vb, ib,
-		&facePartitioning, &vertexRemapArray, &maxStretchOut, &numChartsOut);
+	std::vector<uint32_t> vPartitionResultAdjacency;
+	HRESULT hr;
+	{
+		TRACE_CPUPROFILER_EVENT_SCOPE(DirectX::UVAtlasPartition)
+		hr = DirectX::UVAtlasPartition(Pos, NumVerts, 
+			indices, DXGI_FORMAT_R32_UINT, NumFaces,
+			MaxChartNumber, MaxStretch,
+			adjacency, NULL /*false adj*/, pIMTArray,
+			StatusCallBack, DirectX::UVATLAS_DEFAULT_CALLBACK_FREQUENCY,
+			DirectX::UVATLAS_DEFAULT, vb, ib,
+			&facePartitioning, &vertexRemapArray,
+			vPartitionResultAdjacency,
+			&maxStretchUsed, &numChartsUsed);
+	}
 
-	if (FAILED(hr)) return false;
+	if (SUCCEEDED(hr))
+	{
+		TRACE_CPUPROFILER_EVENT_SCOPE(DirectX::UVAtlasPack)
+		hr = DirectX::UVAtlasPack(
+			vb, ib,
+			DXGI_FORMAT_R32_UINT,
+			width, height, gutter,
+			vPartitionResultAdjacency,
+			StatusCallBack, DirectX::UVATLAS_DEFAULT_CALLBACK_FREQUENCY);
+	}
 
-	if (pIMTArray) delete[] pIMTArray;
-	
+	if (MaxStretchOut)
+	{
+		*MaxStretchOut = maxStretchUsed;
+	}
+	if (NumChartsOut)
+	{
+		*NumChartsOut = numChartsUsed;
+	}
+
+	if (FAILED(hr))
+	{
+		return false;
+	}
 
 	// testing
 	check(ib.size() / sizeof(uint32) == NumFaces * 3);
@@ -264,11 +469,7 @@ void ProxyLOD::GenerateAdjacency(const FVertexDataMesh& Mesh, std::vector<uint32
 }
 void ProxyLOD::GenerateAdjacency(const FMeshDescription& RawMesh, std::vector<uint32>& AdjacencyArray)
 {
-	uint32 NumTris = 0;
-	for (const FPolygonID& PolygonID : RawMesh.Polygons().GetElementIDs())
-	{
-		NumTris += RawMesh.GetPolygonTriangles(PolygonID).Num();
-	}
+	uint32 NumTris = RawMesh.Triangles().Num();
 	const uint32 NumVerts = RawMesh.Vertices().Num();
 	const uint32 AdjacencySize = RawMesh.VertexInstances().Num(); // 3 for each face
 

@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 /*=============================================================================
 	D3D12Viewport.cpp: D3D viewport RHI implementation.
@@ -161,6 +161,7 @@ void FD3D12FramePacing::PrePresentQueued(ID3D12CommandQueue* Queue)
 	const float Alpha = FMath::Clamp(Delta / 1000.0f / FramePacingAvgTimePeriod, 0.0f, 1.0f);
 
 	/** Number of milliseconds the GPU was busy last frame. */
+	// Multi-GPU support : Should be updated to use GPUIndex for AFR.
 	const uint32 GPUCycles = RHIGetGPUFrameCycles();
 	const float GPUMsForFrame = FPlatformTime::ToMilliseconds(GPUCycles);
 
@@ -176,16 +177,45 @@ void FD3D12FramePacing::PrePresentQueued(ID3D12CommandQueue* Queue)
 }
 #endif //WITH_MGPU
 
+// TODO: Move this bool into D3D12Viewport.h where it belongs. It's here because it was added as a hotfix for 4.23 and we don't want to touch public headers.
+// Whether to create swap chain and use swap chain's back buffer surface,
+// or don't create swap chain and create an off-screen back buffer surface.
+// Currently used for pixel streaming plugin "windowless" mode to run in the cloud without on screen display.
+bool bNeedSwapChain = true;
+
 /**
  * Creates a FD3D12Surface to represent a swap chain's back buffer.
  */
-FD3D12Texture2D* GetSwapChainSurface(FD3D12Device* Parent, EPixelFormat PixelFormat, IDXGISwapChain* SwapChain, uint32 BackBufferIndex)
+FD3D12Texture2D* GetSwapChainSurface(FD3D12Device* Parent, EPixelFormat PixelFormat, uint32 SizeX, uint32 SizeY, IDXGISwapChain* SwapChain, uint32 BackBufferIndex)
 {
 	FD3D12Adapter* Adapter = Parent->GetParentAdapter();
 
 	// Grab the back buffer
 	TRefCountPtr<ID3D12Resource> BackBufferResource;
-	VERIFYD3D12RESULT_EX(SwapChain->GetBuffer(BackBufferIndex, IID_PPV_ARGS(BackBufferResource.GetInitReference())), Parent->GetDevice());
+	if (SwapChain)
+	{
+		VERIFYD3D12RESULT_EX(SwapChain->GetBuffer(BackBufferIndex, IID_PPV_ARGS(BackBufferResource.GetInitReference())), Parent->GetDevice());
+	}
+	else
+	{
+		const D3D12_HEAP_PROPERTIES HeapProps = CD3DX12_HEAP_PROPERTIES(D3D12_HEAP_TYPE_DEFAULT, (uint32)Parent->GetGPUIndex(), Parent->GetGPUMask().GetNative());
+
+		// Create custom back buffer texture as no swap chain is created in pixel streaming windowless mode
+		D3D12_RESOURCE_DESC TextureDesc;
+		TextureDesc.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
+		TextureDesc.Alignment = 0;
+		TextureDesc.Width  = SizeX;
+		TextureDesc.Height = SizeY;
+		TextureDesc.DepthOrArraySize = 1;
+		TextureDesc.MipLevels = 1;
+		TextureDesc.Format = GetRenderTargetFormat(PixelFormat);
+		TextureDesc.SampleDesc.Count = 1;
+		TextureDesc.SampleDesc.Quality = 0;
+		TextureDesc.Layout = D3D12_TEXTURE_LAYOUT_UNKNOWN;
+		TextureDesc.Flags = D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET;
+
+		Parent->GetDevice()->CreateCommittedResource(&HeapProps, D3D12_HEAP_FLAG_NONE, &TextureDesc, D3D12_RESOURCE_STATE_PRESENT, nullptr, IID_PPV_ARGS(BackBufferResource.GetInitReference()));
+	}
 
 	D3D12_RESOURCE_DESC BackBufferDesc = BackBufferResource->GetDesc();
 
@@ -221,7 +251,8 @@ FD3D12Texture2D* GetSwapChainSurface(FD3D12Device* Parent, EPixelFormat PixelFor
 				&NewTexture->ResourceLocation,
 				PixelFormat,
 				TexCreate_RenderTargetable |  TexCreate_ShaderResource,
-				D3D12_RESOURCE_STATE_PRESENT);
+				D3D12_RESOURCE_STATE_PRESENT,
+				TEXT("SwapChainSurface"));
 		}
 
 		FD3D12RenderTargetView* BackBufferRenderTargetView = nullptr;
@@ -288,6 +319,9 @@ FD3D12Texture2D* GetSwapChainSurface(FD3D12Device* Parent, EPixelFormat PixelFor
 		return NewTexture;
 	});
 
+	FString Name = FString::Printf(TEXT("BackBuffer%d"), BackBufferIndex);
+	SetName(SwapChainTexture->GetResource(), *Name);
+
 	FD3D12TextureStats::D3D12TextureAllocated2D(*SwapChainTexture);
 	return SwapChainTexture;
 }
@@ -295,6 +329,15 @@ FD3D12Texture2D* GetSwapChainSurface(FD3D12Device* Parent, EPixelFormat PixelFor
 FD3D12Viewport::~FD3D12Viewport()
 {
 	check(IsInRenderingThread());
+
+	// If the swap chain was in fullscreen mode, switch back to windowed before releasing the swap chain.
+	// DXGI throws an error otherwise.
+#if !PLATFORM_HOLOLENS
+	if (SwapChain1)
+	{
+		SwapChain1->SetFullscreenState(0, nullptr);
+	}
+#endif
 
 	GetParentAdapter()->GetViewports().Remove(this);
 
@@ -337,11 +380,10 @@ void FD3D12Viewport::CalculateSwapChainDepth(int32 DefaultSwapChainDepth)
 		{
 			BackbufferMultiGPUBinding = FMath::Clamp<int32>(BackbufferMultiGPUBinding, INDEX_NONE, (int32)GNumExplicitGPUsForRendering - 1) ;
 		}
-		else if (FParse::Param(FCommandLine::Get(), TEXT("AFR")))
+		else if (GNumAlternateFrameRenderingGroups > 1)
 		{
-				BackbufferMultiGPUBinding = INDEX_NONE;
-				NumBackBuffers = GNumExplicitGPUsForRendering > 2 ? GNumExplicitGPUsForRendering : 4;
-				GNumAlternateFrameRenderingGroups = GNumExplicitGPUsForRendering;
+			BackbufferMultiGPUBinding = INDEX_NONE;
+			NumBackBuffers = GNumExplicitGPUsForRendering > 2 ? GNumExplicitGPUsForRendering : 4;
 		}
 	}
 #endif // WITH_MGPU
@@ -431,12 +473,15 @@ void FD3D12Viewport::Resize(uint32 InSizeX, uint32 InSizeY, bool bInIsFullscreen
 		check(SizeX > 0);
 		check(SizeY > 0);
 
-		if (bInIsFullscreen)
+		if (bNeedSwapChain)
 		{
-			const DXGI_MODE_DESC BufferDesc = SetupDXGI_MODE_DESC();
-			if (FAILED(SwapChain1->ResizeTarget(&BufferDesc)))
+			if (bInIsFullscreen)
 			{
-				ConditionalResetSwapChain(true);
+				const DXGI_MODE_DESC BufferDesc = SetupDXGI_MODE_DESC();
+				if (FAILED(SwapChain1->ResizeTarget(&BufferDesc)))
+				{
+					ConditionalResetSwapChain(true);
+				}
 			}
 		}
 	}
@@ -446,9 +491,12 @@ void FD3D12Viewport::Resize(uint32 InSizeX, uint32 InSizeY, bool bInIsFullscreen
 		bIsFullscreen = bInIsFullscreen;
 		bIsValid = false;
 
-		// Use ConditionalResetSwapChain to call SetFullscreenState, to handle the failure case.
-		// Ignore the viewport's focus state; since Resize is called as the result of a user action we assume authority without waiting for Focus.
-		ConditionalResetSwapChain(true);
+		if (bNeedSwapChain)
+		{
+			// Use ConditionalResetSwapChain to call SetFullscreenState, to handle the failure case.
+			// Ignore the viewport's focus state; since Resize is called as the result of a user action we assume authority without waiting for Focus.
+			ConditionalResetSwapChain(true);
+		}
 	}
 
 	ResizeInternal();
@@ -477,6 +525,28 @@ static bool IsCompositionEnabled()
 /** Presents the swap chain checking the return result. */
 bool FD3D12Viewport::PresentChecked(int32 SyncInterval)
 {
+#if PLATFORM_WINDOWS
+	// We can't call Present if !bIsValid, as it waits a window message to be processed, but the main thread may not be pumping the message handler.
+	if (bIsValid && SwapChain1.IsValid())
+	{
+		// Check if the viewport's swap chain has been invalidated by DXGI.
+		BOOL bSwapChainFullscreenState;
+		TRefCountPtr<IDXGIOutput> SwapChainOutput;
+		SwapChain1->GetFullscreenState(&bSwapChainFullscreenState, SwapChainOutput.GetInitReference());
+		// Can't compare BOOL with bool...
+		if ( (!!bSwapChainFullscreenState)  != bIsFullscreen )
+		{
+			bFullscreenLost = true;
+			bIsValid = false;
+		}
+	}
+
+	if (!bIsValid)
+	{
+		return false;
+	}
+#endif
+
 	HRESULT Result = S_OK;
 	bool bNeedNativePresent = true;
 
@@ -665,44 +735,22 @@ bool FD3D12Viewport::Present(bool bLockToVsync)
 			FD3D12DynamicRHI::TransitionResource(DefaultContext.CommandListHandle, DeviceSDRBackBuffer->GetShaderResourceView(), D3D12_RESOURCE_STATE_PRESENT);
 		}
 		DefaultContext.CommandListHandle.FlushResourceBarriers();
-	}
-
-	// Stop Timing at the very last moment
-	Adapter->GetGPUProfiler().EndFrame(Adapter->GetOwningRHI());
-
-	for (uint32 GPUIndex : FRHIGPUMask::All())
-	{
-		FD3D12Device* Device = Adapter->GetDevice(GPUIndex);
-		FD3D12CommandContext& DefaultContext = Device->GetDefaultCommandContext();
-
-		// Execute the current command lists, and then open a new command list with a new command allocator.
-		DefaultContext.ReleaseCommandAllocator();
-		DefaultContext.ClearState();
 		DefaultContext.FlushCommands();
-
-		if (GEnableAsyncCompute)
-		{
-			FD3D12CommandContext& DefaultAsyncComputeContext = Device->GetDefaultAsyncComputeContext();
-			DefaultAsyncComputeContext.ReleaseCommandAllocator();
-			DefaultAsyncComputeContext.ClearState();
-		}
 	}
 
 #if WITH_MGPU
-#if 0 // Multi-GPU support : figure out what kind of synchronization is needed.
-	if (Adapter->GetMultiGPUMode() == EMultiGPUMode::MGPU_AFR)
+	if (GNumAlternateFrameRenderingGroups > 1)
 	{
-		FD3D12Fence& FrameFence = Adapter->GetFrameFence();
-		const uint64 CurrentValue = FrameFence.GetCurrentFence();
-		const uint64 FenceToWait = (CurrentValue == 0) ? 0 :
-			CurrentValue - 1;
-	
-		// Broadcast to all queues on the device.
-		// TODO: if we do more than texture uploading on the Copy Queue that will have to wait too.
-		FrameFence.GpuWait(Device->GetAsyncCommandListManager().GetD3DCommandQueue(), FenceToWait);
-		FrameFence.GpuWait(Device->GetCommandListManager().GetD3DCommandQueue(), FenceToWait);
+		// In AFR it's possible that the current frame will complete faster than the frame
+		// already in progress so we need to add synchronization to ensure that our Present
+		// occurs after the previous frame's Present. Otherwise we can put frames in the
+		// system present queue out of order.
+		const uint32 PresentGPUIndex = BackBufferGPUIndices[CurrentBackBufferIndex_RHIThread];
+		const uint32 LastGPUIndex = BackBufferGPUIndices[(CurrentBackBufferIndex_RHIThread + NumBackBuffers - 1) % NumBackBuffers];
+		Fence.GpuWait(PresentGPUIndex, ED3D12CommandQueueType::Default, LastSignaledValue, LastGPUIndex);
 	}
 
+#if 0 // Multi-GPU support : figure out what kind of synchronization is needed.
 	// When using an alternating frame rendering technique with multiple GPUs the time of frame
 	// delivery must be paced in order to provide a nice experience.
 	if (Adapter->GetMultiGPUMode() == MGPU_AFR && RHIConsoleVariables::AFRUseFramePacing && !bLockToVsync)
@@ -786,7 +834,7 @@ FViewportRHIRef FD3D12DynamicRHI::RHICreateViewport(void* WindowHandle, uint32 S
 	return RenderingViewport;
 }
 
-void FD3D12DynamicRHI::RHIResizeViewport(FViewportRHIParamRef ViewportRHI, uint32 SizeX, uint32 SizeY, bool bIsFullscreen)
+void FD3D12DynamicRHI::RHIResizeViewport(FRHIViewport* ViewportRHI, uint32 SizeX, uint32 SizeY, bool bIsFullscreen)
 {
 	check(IsInGameThread());
 
@@ -794,7 +842,7 @@ void FD3D12DynamicRHI::RHIResizeViewport(FViewportRHIParamRef ViewportRHI, uint3
 	Viewport->Resize(SizeX, SizeY, bIsFullscreen, PF_Unknown);
 }
 
-void FD3D12DynamicRHI::RHIResizeViewport(FViewportRHIParamRef ViewportRHI, uint32 SizeX, uint32 SizeY, bool bIsFullscreen, EPixelFormat PreferredPixelFormat)
+void FD3D12DynamicRHI::RHIResizeViewport(FRHIViewport* ViewportRHI, uint32 SizeX, uint32 SizeY, bool bIsFullscreen, EPixelFormat PreferredPixelFormat)
 {
 	check(IsInGameThread());
 
@@ -825,7 +873,7 @@ void FD3D12DynamicRHI::RHITick(float DeltaTime)
  *	Viewport functions.
  *=============================================================================*/
 
-void FD3D12CommandContextBase::RHIBeginDrawingViewport(FViewportRHIParamRef ViewportRHI, FTextureRHIParamRef RenderTargetRHI)
+void FD3D12CommandContextBase::RHIBeginDrawingViewport(FRHIViewport* ViewportRHI, FRHITexture* RenderTargetRHI)
 {
 	FD3D12Viewport* Viewport = FD3D12DynamicRHI::ResourceCast(ViewportRHI);
 
@@ -847,10 +895,10 @@ void FD3D12CommandContextBase::RHIBeginDrawingViewport(FViewportRHIParamRef View
 
 	// Set the render target.
 	const FRHIRenderTargetView RTView(RenderTargetRHI, ERenderTargetLoadAction::ELoad);
-	RHISetRenderTargets(1, &RTView, nullptr, 0, nullptr);
+	RHISetRenderTargets(1, &RTView, nullptr);
 }
 
-void FD3D12CommandContextBase::RHIEndDrawingViewport(FViewportRHIParamRef ViewportRHI, bool bPresent, bool bLockToVsync)
+void FD3D12CommandContextBase::RHIEndDrawingViewport(FRHIViewport* ViewportRHI, bool bPresent, bool bLockToVsync)
 {
 	FD3D12DynamicRHI& RHI = *ParentAdapter->GetOwningRHI();
 	FD3D12Viewport* Viewport = FD3D12DynamicRHI::ResourceCast(ViewportRHI);
@@ -897,7 +945,53 @@ void FD3D12CommandContextBase::RHIEndDrawingViewport(FViewportRHIParamRef Viewpo
 	}
 }
 
-void FD3D12DynamicRHI::RHIAdvanceFrameForGetViewportBackBuffer(FViewportRHIParamRef ViewportRHI)
+struct FRHICommandSignalFrameFenceString
+{
+	static const TCHAR* TStr() { return TEXT("FRHICommandSignalFrameFence"); }
+};
+struct FRHICommandSignalFrameFence final : public FRHICommand<FRHICommandSignalFrameFence, FRHICommandSignalFrameFenceString>
+{
+	ED3D12CommandQueueType QueueType;
+	FD3D12ManualFence* const Fence;
+	const uint64 Value;
+	FORCEINLINE_DEBUGGABLE FRHICommandSignalFrameFence(ED3D12CommandQueueType InQueueType, FD3D12ManualFence* InFence, uint64 InValue)
+		: QueueType(InQueueType)
+		, Fence(InFence)
+		, Value(InValue)
+	{ 
+	}
+
+	void Execute(FRHICommandListBase& CmdList)
+	{
+		Fence->Signal(QueueType, Value);
+		check(Fence->GetLastSignaledFence() == Value);
+	}
+};
+
+void FD3D12DynamicRHI::RHIAdvanceFrameFence()
+{
+	check(IsInRenderingThread());
+
+	// Increment the current fence (on render thread timeline).
+	FD3D12ManualFence* FrameFence = &GetAdapter().GetFrameFence();
+	const uint64 PreviousFence = FrameFence->IncrementCurrentFence();
+
+	FRHICommandListImmediate& RHICmdList = FRHICommandListExecutor::GetImmediateCommandList();
+	if (RHICmdList.Bypass())
+	{
+		// In bypass mode, we should execute this directly
+		FRHICommandSignalFrameFence Cmd(ED3D12CommandQueueType::Default, FrameFence, PreviousFence);
+		Cmd.Execute(RHICmdList);
+	}
+	else
+	{
+		// Queue a command to signal on RHI thread that the current frame is a complete on the GPU.
+		// This must be done in a deferred way even if RHI thread is disabled, just for correct ordering of operations.
+		ALLOC_COMMAND_CL(RHICmdList, FRHICommandSignalFrameFence)(ED3D12CommandQueueType::Default, FrameFence, PreviousFence);
+	}
+}
+
+void FD3D12DynamicRHI::RHIAdvanceFrameForGetViewportBackBuffer(FRHIViewport* ViewportRHI)
 {
 	check(IsInRenderingThread());
 
@@ -906,21 +1000,12 @@ void FD3D12DynamicRHI::RHIAdvanceFrameForGetViewportBackBuffer(FViewportRHIParam
 	UE_LOG(LogD3D12RHI, Log, TEXT("Thread %s: RHIAdvanceFrameForGetViewportBackBuffer"), ThreadName.GetCharArray().GetData());
 #endif
 
-	// Queue a command to signal the current frame is a complete on the GPU.
-	// Note: No need to handle multiple adapters yet, eventually this function will take a viewport as input.
-	FRHICommandListImmediate& RHICmdList = FRHICommandListExecutor::GetImmediateCommandList();
-	auto& Adapter = ChosenAdapters[0];
-	{
-		check(Adapter != nullptr);
-		Adapter->SignalFrameFence_RenderThread(RHICmdList);
-	}
-
 	// Advance frame so the next call to RHIGetViewportBackBuffer returns the next buffer in the swap chain.
 	FD3D12Viewport* Viewport = FD3D12DynamicRHI::ResourceCast(ViewportRHI);
 	Viewport->AdvanceBackBufferFrame_RenderThread();
 }
 
-uint32 FD3D12DynamicRHI::RHIGetViewportNextPresentGPUIndex(FViewportRHIParamRef ViewportRHI)
+uint32 FD3D12DynamicRHI::RHIGetViewportNextPresentGPUIndex(FRHIViewport* ViewportRHI)
 {
 	check(IsInRenderingThread());
 #if WITH_MGPU
@@ -933,7 +1018,7 @@ uint32 FD3D12DynamicRHI::RHIGetViewportNextPresentGPUIndex(FViewportRHIParamRef 
 	return 0;
 }
 
-FTexture2DRHIRef FD3D12DynamicRHI::RHIGetViewportBackBuffer(FViewportRHIParamRef ViewportRHI)
+FTexture2DRHIRef FD3D12DynamicRHI::RHIGetViewportBackBuffer(FRHIViewport* ViewportRHI)
 {
 	check(IsInRenderingThread());
 

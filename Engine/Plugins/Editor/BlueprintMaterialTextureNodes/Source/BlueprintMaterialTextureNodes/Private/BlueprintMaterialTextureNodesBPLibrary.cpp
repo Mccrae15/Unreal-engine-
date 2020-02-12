@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "BlueprintMaterialTextureNodesBPLibrary.h"
 #include "BlueprintMaterialTextureNodes.h"
@@ -80,7 +80,7 @@ FLinearColor UBlueprintMaterialTextureNodesBPLibrary::Texture2D_SampleUV_EditorO
 		{
 			FTextureSource& TextureSource = Texture->Source;
 
-			TArray<uint8> SourceData;
+			TArray64<uint8> SourceData;
 			Texture->Source.GetMipData(SourceData, Mip);
 			ETextureSourceFormat SourceFormat = TextureSource.GetFormat();
 			int32 Index = ((Y * MipWidth) + X) * TextureSource.GetBytesPerPixel();

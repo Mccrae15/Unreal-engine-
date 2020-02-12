@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -9,7 +9,7 @@
 #include "ContentBrowserDelegates.h"
 #include "SourcesData.h"
 
-class FMenuBuilder;
+class UToolMenu;
 class FUICommandList;
 class SAssetView;
 class SWindow;
@@ -99,6 +99,9 @@ private:
 	/** Handler to check to see if imported asset actions are allowed */
 	bool CanExecuteImportedAssetActions(const TArray<FString> ResolvedFilePaths) const;
 
+	/** Handler to check to see if reimport asset actions are allowed */
+	bool CanExecuteReimportAssetActions(const TArray<FString> ResolvedFilePaths) const;
+
 	/** Handler for Reimport */
 	void ExecuteReimport(int32 SourceFileIndex = INDEX_NONE);
 
@@ -117,35 +120,45 @@ private:
 	void ExecuteDuplicate();
 
 private:
-	/** Adds asset type-specific menu options to a menu builder. Returns true if any options were added. */
-	bool AddAssetTypeMenuOptions(FMenuBuilder& MenuBuilder);
+
+	/** Is allowed to modify files or folders under this path */
+	bool CanModifyPath(const FString& InPath) const;
+
+	/** Registers all unregistered menus in the hierarchy for a class */
+	static void RegisterMenuHierarchy(UClass* InClass);
+
+	/** Adds options to menu */
+	void AddMenuOptions(UToolMenu* InMenu);
 
 	/** Adds asset type-specific menu options to a menu builder. Returns true if any options were added. */
-	bool AddImportedAssetMenuOptions(FMenuBuilder& MenuBuilder);
+	bool AddAssetTypeMenuOptions(UToolMenu* Menu, bool bHasObjectsSelected);
+
+	/** Adds asset type-specific menu options to a menu builder. Returns true if any options were added. */
+	bool AddImportedAssetMenuOptions(UToolMenu* Menu);
 	
 	/** Adds common menu options to a menu builder. Returns true if any options were added. */
-	bool AddCommonMenuOptions(FMenuBuilder& MenuBuilder);
+	bool AddCommonMenuOptions(UToolMenu* Menu);
 
 	/** Adds explore menu options to a menu builder. */
-	void AddExploreMenuOptions(FMenuBuilder& MenuBuilder);
+	void AddExploreMenuOptions(UToolMenu* Menu);
 
 	/** Adds Asset Actions sub-menu to a menu builder. */
-	void MakeAssetActionsSubMenu(FMenuBuilder& MenuBuilder);
+	void MakeAssetActionsSubMenu(UToolMenu* Menu);
 
 	/** Handler to check to see if "Asset Actions" are allowed */
 	bool CanExecuteAssetActions() const;
 
 	/** Adds Asset Localization sub-menu to a menu builder. */
-	void MakeAssetLocalizationSubMenu(FMenuBuilder& MenuBuilder);
+	void MakeAssetLocalizationSubMenu(UToolMenu* Menu);
 
 	/** Adds the Create Localized Asset sub-menu to a menu builder. */
-	void MakeCreateLocalizedAssetSubMenu(FMenuBuilder& MenuBuilder, TSet<FName> InSelectedSourceAssets, TArray<FLocalizedAssetsState> InLocalizedAssetsState);
+	void MakeCreateLocalizedAssetSubMenu(UToolMenu* Menu, TSet<FName> InSelectedSourceAssets, TArray<FLocalizedAssetsState> InLocalizedAssetsState);
 
 	/** Adds the Show Localized Assets sub-menu to a menu builder. */
-	void MakeShowLocalizedAssetSubMenu(FMenuBuilder& MenuBuilder, TArray<FLocalizedAssetsState> InLocalizedAssetsState);
+	void MakeShowLocalizedAssetSubMenu(UToolMenu* Menu, TArray<FLocalizedAssetsState> InLocalizedAssetsState);
 
 	/** Adds the Edit Localized Assets sub-menu to a menu builder. */
-	void MakeEditLocalizedAssetSubMenu(FMenuBuilder& MenuBuilder, TArray<FLocalizedAssetsState> InLocalizedAssetsState);
+	void MakeEditLocalizedAssetSubMenu(UToolMenu* Menu, TArray<FLocalizedAssetsState> InLocalizedAssetsState);
 
 	/** Create new localized assets for the given culture */
 	void ExecuteCreateLocalizedAsset(TSet<FName> InSelectedSourceAssets, FLocalizedAssetsState InLocalizedAssetsStateForCulture);
@@ -157,25 +170,25 @@ private:
 	void ExecuteOpenEditorsForAssets(TArray<FName> InAssets);
 
 	/** Adds asset reference menu options to a menu builder. Returns true if any options were added. */
-	bool AddReferenceMenuOptions(FMenuBuilder& MenuBuilder);
+	bool AddReferenceMenuOptions(UToolMenu* Menu);
 
 	/** Adds asset documentation menu options to a menu builder. Returns true if any options were added. */
-	bool AddDocumentationMenuOptions(FMenuBuilder& MenuBuilder);
+	bool AddDocumentationMenuOptions(UToolMenu* Menu);
 	
 	/** Adds source control menu options to a menu builder. */
-	bool AddSourceControlMenuOptions(FMenuBuilder& MenuBuilder);
+	bool AddSourceControlMenuOptions(UToolMenu* Menu);
 
 	/** Fills the source control sub-menu */
-	void FillSourceControlSubMenu(FMenuBuilder& MenuBuilder);
+	void FillSourceControlSubMenu(UToolMenu* Menu);
 
 	/** Handler to check to see if SCC actions are allowed */
 	bool CanExecuteSourceControlActions() const;
 
 	/** Adds menu options related to working with collections */
-	bool AddCollectionMenuOptions(FMenuBuilder& MenuBuilder);
+	bool AddCollectionMenuOptions(UToolMenu* Menu);
 
 	/** Creates a sub-menu of Chunk IDs that are are assigned to all selected assets */
-	void MakeChunkIDListMenu(FMenuBuilder& MenuBuilder);
+	void MakeChunkIDListMenu(UToolMenu* Menu);
 
 	/** Handler for when sync to asset tree is selected */
 	void ExecuteSyncToAssetTree();
@@ -227,6 +240,9 @@ private:
 
 	/** Handler for CopyReference */
 	void ExecuteCopyReference();
+
+	/** Handler for CopyFilePath */
+	void ExecuteCopyFilePath();
 
 	/** Handler to copy the given text to the clipboard */
 	void ExecuteCopyTextToClipboard(FString InText);
@@ -288,8 +304,12 @@ private:
 	/** Handler to export the selected asset(s) to experimental text format */
 	void ExportSelectedAssetsToText();
 
-	/** Handler to check if we can export the selected asset(s) to experimental text format */
-	bool CanExportSelectedAssetsToText() const;
+	/** Handler to export the selected asset(s) to experimental text format */
+	void ViewSelectedAssetAsText();
+	bool CanViewSelectedAssetAsText() const;
+
+	/** Run the rountrip test on this asset */
+	void DoTextFormatRoundtrip();
 
 	/** Handler to check to see if a sync to asset tree command is allowed */
 	bool CanExecuteSyncToAssetTree() const;
@@ -386,6 +406,10 @@ private:
 	FText GetExecutePropertyMatrixTooltip() const;
 
 private:
+
+	/** Registers the base context menu for assets */
+	void RegisterContextMenu(const FName MenuName);
+
 	/** Generates a list of selected assets in the content browser */
 	void GetSelectedAssets(TArray<UObject*>& Assets, bool SkipRedirectors) const;
 

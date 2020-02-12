@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "DeployCommand.h"
 #include "Interfaces/IPluginManager.h"
@@ -56,7 +56,7 @@ bool FDeployCommand::Run( )
 		double MessageSentTime = 0.0;
 		bool bMessageSent = false;
 
-		while (!GIsRequestingExit && ((MessageSentTime > LastTime + 1.0) || (MessageSentTime <= 0.1)))
+		while (!IsEngineExitRequested() && ((MessageSentTime > LastTime + 1.0) || (MessageSentTime <= 0.1)))
 		{
 			FTaskGraphInterface::Get().ProcessThreadUntilIdle(ENamedThreads::GameThread);
 			FTicker::GetCoreTicker().Tick(DeltaTime);

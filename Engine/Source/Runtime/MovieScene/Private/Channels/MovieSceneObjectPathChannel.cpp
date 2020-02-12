@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "Channels/MovieSceneObjectPathChannel.h"
 #include "Engine/World.h"
@@ -25,6 +25,13 @@ bool FMovieSceneObjectPathChannelKeyValue::SerializeFromMismatchedTag(const FPro
 		return true;
 	}
 	return false;
+}
+
+FMovieSceneObjectPathChannelKeyValue::FMovieSceneObjectPathChannelKeyValue(UObject* InObject)
+	: SoftPtr(nullptr)
+	, HardPtr(nullptr)
+{
+	*this = InObject;
 }
 
 FMovieSceneObjectPathChannelKeyValue& FMovieSceneObjectPathChannelKeyValue::operator=(UObject* NewObject)
@@ -99,6 +106,21 @@ void FMovieSceneObjectPathChannel::SetKeyTimes(TArrayView<const FKeyHandle> InHa
 void FMovieSceneObjectPathChannel::DuplicateKeys(TArrayView<const FKeyHandle> InHandles, TArrayView<FKeyHandle> OutNewHandles)
 {
 	GetData().DuplicateKeys(InHandles, OutNewHandles);
+}
+
+void FMovieSceneObjectPathChannel::DeleteKeysFrom(FFrameNumber InTime, bool bDeleteKeysBefore)
+{
+	// Insert a key at the current time to maintain evaluation
+	if (GetData().GetTimes().Num() > 0)
+	{
+		UObject* Value = nullptr;
+		if (Evaluate(InTime, Value))
+		{
+			GetData().UpdateOrAddKey(InTime, Value);
+		}
+	}
+
+	GetData().DeleteKeysFrom(InTime, bDeleteKeysBefore);
 }
 
 void FMovieSceneObjectPathChannel::DeleteKeys(TArrayView<const FKeyHandle> InHandles)

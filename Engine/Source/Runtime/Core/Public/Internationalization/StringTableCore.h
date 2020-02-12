@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 #pragma once
 
 #include "Internationalization/StringTableCoreFwd.h"
@@ -7,6 +7,7 @@
 #include "Containers/UnrealString.h"
 #include "Internationalization/Text.h"
 #include "Internationalization/LocKeyFuncs.h"
+#include "Internationalization/Internationalization.h"
 
 DECLARE_LOG_CATEGORY_EXTERN(LogStringTable, Log, All);
 
@@ -178,6 +179,16 @@ public:
 	 */
 	typedef TFunction<void(FName, FName)> FLoadStringTableAssetCallback;
 
+	/** 
+	 * Check to see whether it is currently safe to attempt to find or load a string table asset.
+	 * @return True if it is safe to attempt to find or load a string table asset, false otherwise.
+	 */
+	static bool CanFindOrLoadStringTableAsset()
+	{
+		return FInternationalization::IsAvailable()
+			&& (!InstancePtr || InstancePtr->CanFindOrLoadStringTableAssetImpl());
+	}
+
 	/**
 	 * Load a string table asset by its name, potentially doing so asynchronously. 
 	 * @note If the string table is already loaded, or loading is perform synchronously, then the callback will be called before this function returns.
@@ -185,7 +196,7 @@ public:
 	 */
 	static int32 LoadStringTableAsset(const FName InTableId, FLoadStringTableAssetCallback InLoadedCallback = FLoadStringTableAssetCallback())
 	{
-		check(IsInGameThread());
+		check(CanFindOrLoadStringTableAsset());
 
 		if (InstancePtr)
 		{
@@ -206,7 +217,7 @@ public:
 	 */
 	static void FullyLoadStringTableAsset(FName& InOutTableId)
 	{
-		check(IsInGameThread());
+		check(CanFindOrLoadStringTableAsset());
 
 		if (InstancePtr)
 		{
@@ -217,6 +228,8 @@ public:
 	/** Redirect string table asset by its name */
 	static void RedirectStringTableAsset(FName& InOutTableId)
 	{
+		check(CanFindOrLoadStringTableAsset());
+
 		if (InstancePtr)
 		{
 			InstancePtr->RedirectStringTableAssetImpl(InOutTableId);
@@ -224,11 +237,11 @@ public:
 	}
 
 	/** Collect a string table asset reference */
-	static void CollectStringTableAssetReferences(const FName InTableId, FStructuredArchive::FSlot Slot)
+	static void CollectStringTableAssetReferences(FName& InOutTableId, FStructuredArchive::FSlot Slot)
 	{
 		if (InstancePtr)
 		{
-			InstancePtr->CollectStringTableAssetReferencesImpl(InTableId, Slot);
+			InstancePtr->CollectStringTableAssetReferencesImpl(InOutTableId, Slot);
 		}
 	}
 
@@ -245,12 +258,13 @@ public:
 	}
 
 protected:
-	virtual ~IStringTableEngineBridge() {}
+	virtual ~IStringTableEngineBridge() = default;
 
+	virtual bool CanFindOrLoadStringTableAssetImpl() = 0;
 	virtual int32 LoadStringTableAssetImpl(const FName InTableId, FLoadStringTableAssetCallback InLoadedCallback) = 0;
 	virtual void FullyLoadStringTableAssetImpl(FName& InOutTableId) = 0;
 	virtual void RedirectStringTableAssetImpl(FName& InOutTableId) = 0;
-	virtual void CollectStringTableAssetReferencesImpl(const FName InTableId, FStructuredArchive::FSlot Slot) = 0;
+	virtual void CollectStringTableAssetReferencesImpl(FName& InOutTableId, FStructuredArchive::FSlot Slot) = 0;
 	virtual bool IsStringTableFromAssetImpl(const FName InTableId) = 0;
 	virtual bool IsStringTableAssetBeingReplacedImpl(const UStringTable* InStringTableAsset) = 0;
 

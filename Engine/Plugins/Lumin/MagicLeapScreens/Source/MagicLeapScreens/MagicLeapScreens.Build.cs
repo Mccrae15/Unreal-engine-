@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 using System.IO;
 
@@ -27,16 +27,6 @@ namespace UnrealBuildTool.Rules
 					"MagicLeap",
 					"HeadMountedDisplay",
 				}
-			);
-
-			// This is not ideal but needs to be done in order to expose the private MagicLeapHMD headers to this module.
-			PrivateIncludePaths.Add(Path.Combine(
-				new string[] 
-				{
-					ModuleDirectory,
-					"..", "..", "..",
-					"MagicLeap", "Source", "MagicLeap", "Private"
-				})
 			);
 		}
 	}

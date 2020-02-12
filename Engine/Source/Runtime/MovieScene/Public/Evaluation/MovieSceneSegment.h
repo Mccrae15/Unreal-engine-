@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -161,6 +161,11 @@ struct FMovieSceneSegment
 		{
 			Impls.Add(Impl);
 		}
+	}
+
+	FMovieSceneSegment(const TRange<FFrameNumber>& InRange, std::initializer_list<FSectionEvaluationData> InApplicationImpls)
+		: FMovieSceneSegment(InRange, MakeArrayView(InApplicationImpls))
+	{
 	}
 
 	friend bool operator==(const FMovieSceneSegment& A, const FMovieSceneSegment& B)

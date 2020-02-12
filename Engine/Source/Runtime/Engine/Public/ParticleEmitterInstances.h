@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 /*=============================================================================
 	UnParticleEmitterInstances.h: 
@@ -438,6 +438,8 @@ public:
 	uint32 GetModuleDataOffset(UParticleModule* Module);
 	/** Get pointer to emitter instance payload data for a particular module */
 	uint8* GetModuleInstanceData(UParticleModule* Module);
+	/** Get pointer to emitter instance random seed payload data for a particular module */
+	FParticleRandomSeedInstancePayload* GetModuleRandomSeedInstanceData(UParticleModule* Module);
 	virtual uint8* GetTypeDataModuleInstanceData();
 	virtual uint32 CalculateParticleStride(uint32 ParticleSize);
 	virtual void ResetBurstList();
@@ -756,6 +758,12 @@ protected:
 	 * Get the current material to render with.
 	 */
 	UMaterialInterface* GetCurrentMaterial();
+
+
+	/**
+	 * Fixup particle indices to only have valid entries.
+	 */
+	void FixupParticleIndices();
 
 };
 
@@ -1350,6 +1358,21 @@ void ClearIndices(int32 TrailIndex, int32 ParticleIndex){}
 void CheckIndices(int32 TrailIdx){}
 void CheckAllIndices(){}
 
+#endif
+
+	void DumpCircularTrailsSpam();
+#if !UE_BUILD_SHIPPING
+	bool CheckForCircularTrail(FBaseParticle* StartParticle, FBaseParticle* CheckParticle)
+	{
+		if (StartParticle == CheckParticle)
+		{
+			DumpCircularTrailsSpam();
+			return true;
+		}
+		return false;
+	}
+#else
+	bool CheckForCircularTrail(FBaseParticle* StartParticle, FBaseParticle* CheckParticle) { return StartParticle == CheckParticle; }
 #endif
 
 	/** Constructor	*/

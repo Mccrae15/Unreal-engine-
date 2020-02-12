@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "Channels/MovieSceneChannelProxy.h"
 #include "Algo/BinarySearch.h"
@@ -12,7 +12,7 @@ FMovieSceneChannelHandle FMovieSceneChannelProxy::MakeHandle(FName ChannelTypeNa
 
 const FMovieSceneChannelEntry* FMovieSceneChannelProxy::FindEntry(FName ChannelTypeName) const
 {
-	const int32 ChannelTypeIndex = Algo::BinarySearchBy(Entries, ChannelTypeName, &FMovieSceneChannelEntry::ChannelTypeName);
+	const int32 ChannelTypeIndex = Algo::BinarySearchBy(Entries, ChannelTypeName, &FMovieSceneChannelEntry::ChannelTypeName, FNameLexicalLess());
 
 	if (ChannelTypeIndex != INDEX_NONE)
 	{

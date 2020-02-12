@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 /*=============================================================================
 	NOTE: This file should ONLY be included by UnrealMath.h!
@@ -266,6 +266,15 @@ inline FMatrix FMatrix::InverseFast() const
 		GetScaledAxis( EAxis::Z ).IsNearlyZero(SMALL_NUMBER) ) 
 	{
 		ErrorEnsure(TEXT("FMatrix::InverseFast(), trying to invert a NIL matrix, this results in NaNs! Use Inverse() instead."));
+	}
+	else
+	{
+		const float	Det = Determinant();
+
+		if (Det == 0.0f || !FMath::IsFinite(Det))
+		{
+			ErrorEnsure(TEXT("FMatrix::InverseFast(), trying to invert a non-invertible matrix, this results in NaNs! Use Inverse() instead."));
+		}
 	}
 #endif
 	FMatrix Result;
@@ -606,6 +615,14 @@ inline FVector FMatrix::GetColumn(int32 i) const
 	return FVector(M[0][i], M[1][i], M[2][i]);
 }
 
+inline void FMatrix::SetColumn(int32 i, FVector Value)
+{
+	checkSlow(i >= 0 && i <= 3);
+	M[0][i] = Value.X;
+	M[1][i] = Value.Y;
+	M[2][i] = Value.Z;
+}
+
 FORCEINLINE bool MakeFrustumPlane(float A,float B,float C,float D,FPlane& OutPlane)
 {
 	const float	LengthSquared = A * A + B * B + C * C;
@@ -740,7 +757,7 @@ inline void FMatrix::Mirror(EAxis::Type MirrorAxis, EAxis::Type FlipAxis)
 /** 
  * Apply Scale to this matrix
  */
-inline FMatrix FMatrix::ApplyScale(float Scale)
+inline FMatrix FMatrix::ApplyScale(float Scale) const
 {
 	FMatrix ScaleMatrix(
 		FPlane(Scale, 0.0f, 0.0f, 0.0f),

@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -53,7 +53,9 @@ private:
 		FDelayedDrag_Hotspot(FVector2D InInitialPosition, FKey InApplicableKey, TSharedPtr<ISequencerHotspot> InHotspot)
 			: FDelayedDrag(InInitialPosition, InApplicableKey)
 			, Hotspot(MoveTemp(InHotspot))
-		{ }
+		{
+			SetTriggerScaleFactor(0.1f);
+		}
 
 		TSharedPtr<ISequencerHotspot> Hotspot;
 	};

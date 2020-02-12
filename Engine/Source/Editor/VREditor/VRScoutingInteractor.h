@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -16,7 +16,7 @@ class UStaticMeshSocket;
 /**
  * Represents the interactor in the world
  */
-UCLASS()
+UCLASS(Abstract)
 class VREDITOR_API UVRScoutingInteractor: public UVREditorInteractor
 {
 	GENERATED_BODY()
@@ -35,9 +35,17 @@ public:
 	// IViewportInteractorInterface overrides
 	virtual void Shutdown_Implementation() override;
 
-	/** Set the VR flight speed cvar */
+	/** Sets the gizmo mode for selected object */
 	UFUNCTION(BlueprintCallable, Category = "Scouting")
-	static TArray<AActor*> GetSelectedActors() ;
+	void SetGizmoMode(EGizmoHandleTypes InGizmoMode);
+
+	/** Gets the gizmo mode for selected object */
+	UFUNCTION(BlueprintCallable, Category = "Scouting")
+	EGizmoHandleTypes GetGizmoMode() const;
+
+	/** Gets all actors that are selected in the world editor */
+	UFUNCTION(BlueprintCallable, Category = "Scouting")
+	static TArray<AActor*> GetSelectedActors();
 
 	/** Shown in Navigation mode */
 	UPROPERTY(Category = Interactor, EditAnywhere, BlueprintReadOnly)

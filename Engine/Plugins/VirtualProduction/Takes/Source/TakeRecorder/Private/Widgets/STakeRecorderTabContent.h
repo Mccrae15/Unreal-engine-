@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -42,6 +42,12 @@ public:
 	ULevelSequence* GetLevelSequence() const;
 
 	UTakeMetaData* GetTakeMetaData() const;
+
+	FFrameRate GetFrameRate() const;
+
+	void SetFrameRate(FFrameRate InFrameRate);
+
+	void SetFrameRateFromTimecode(bool  bInFromTimecode);
 
 	UTakeRecorderSources* GetSources() const;
 

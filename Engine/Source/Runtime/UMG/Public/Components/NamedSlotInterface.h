@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -39,7 +39,8 @@ public:
 
 	/**  */
 	void ReleaseNamedSlotSlateResources(bool bReleaseChildren);
+
 #if WITH_EDITOR
-	void SetNamedSlotDesignerFlags(EWidgetDesignFlags::Type NewFlags);
+	void SetNamedSlotDesignerFlags(EWidgetDesignFlags NewFlags);
 #endif
 };

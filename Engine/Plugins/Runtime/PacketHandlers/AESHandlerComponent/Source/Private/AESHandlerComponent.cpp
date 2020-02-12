@@ -1,8 +1,12 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "AESHandlerComponent.h"
 
 IMPLEMENT_MODULE( FAESHandlerComponentModule, AESHandlerComponent )
+
+const int32 FAESHandlerComponent::KeySizeInBytes;
+const int32 FAESHandlerComponent::BlockSizeInBytes;
+
 
 TSharedPtr<HandlerComponent> FAESHandlerComponentModule::CreateComponentInstance(FString& Options)
 {
@@ -21,16 +25,16 @@ FAESHandlerComponent::FAESHandlerComponent()
 	EncryptionContext = IPlatformCrypto::Get().CreateContext();
 }
 
-void FAESHandlerComponent::SetEncryptionKey(TArrayView<const uint8> NewKey)
+void FAESHandlerComponent::SetEncryptionData(const FEncryptionData& EncryptionData)
 {
-	if (NewKey.Num() != KeySizeInBytes)
+	if (EncryptionData.Key.Num() != KeySizeInBytes)
 	{
 		UE_LOG(PacketHandlerLog, Log, TEXT("FAESHandlerComponent::SetEncryptionKey. NewKey is not %d bytes long, ignoring."), KeySizeInBytes);
 		return;
 	}
 
 	Key.Reset(KeySizeInBytes);
-	Key.Append(NewKey.GetData(), NewKey.Num());
+	Key.Append(EncryptionData.Key.GetData(), EncryptionData.Key.Num());
 }
 
 void FAESHandlerComponent::EnableEncryption()
@@ -79,9 +83,18 @@ void FAESHandlerComponent::Incoming(FBitReader& Packet)
 			}
 
 			// Copy remaining bits to a TArray so that they are byte-aligned.
-			Ciphertext.Reset();
-			Ciphertext.AddUninitialized(Packet.GetBytesLeft());
-			Ciphertext[Ciphertext.Num()-1] = 0;
+			if (Packet.GetBytesLeft() > 0)
+			{
+				Ciphertext.Reset();
+				Ciphertext.AddUninitialized(Packet.GetBytesLeft());
+				Ciphertext[Ciphertext.Num() - 1] = 0;
+			}
+			else
+			{
+				UE_LOG(PacketHandlerLog, Log, TEXT("FAESHandlerComponent::Incoming: missing ciphertext"));
+				Packet.SetError();
+				return;
+			}
 
 			Packet.SerializeBits(Ciphertext.GetData(), Packet.GetBitsLeft());
 
@@ -192,14 +205,6 @@ void FAESHandlerComponent::Outgoing(FBitWriter& Packet, FOutPacketTraits& Traits
 
 		Packet = MoveTemp(NewPacket);
 	}
-}
-
-void FAESHandlerComponent::IncomingConnectionless(const FString& Address, FBitReader& Packet)
-{
-}
-
-void FAESHandlerComponent::OutgoingConnectionless(const FString& Address, FBitWriter& Packet, FOutPacketTraits& Traits)
-{
 }
 
 int32 FAESHandlerComponent::GetReservedPacketBits() const

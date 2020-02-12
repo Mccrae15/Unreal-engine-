@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "OculusHMD_CustomPresent.h"
 
@@ -23,21 +23,16 @@ namespace OculusHMD
 // FCustomPresent
 //-------------------------------------------------------------------------------------------------
 
-FCustomPresent::FCustomPresent(class FOculusHMD* InOculusHMD, ovrpRenderAPIType InRenderAPI, EPixelFormat InDefaultPixelFormat, bool bInSupportsSRGB, bool bInSupportsDepth)
+FCustomPresent::FCustomPresent(class FOculusHMD* InOculusHMD, ovrpRenderAPIType InRenderAPI, EPixelFormat InDefaultPixelFormat, bool bInSupportsSRGB)
 	: OculusHMD(InOculusHMD)
 	, RenderAPI(InRenderAPI)
 	, DefaultPixelFormat(InDefaultPixelFormat)
 	, bSupportsSRGB(bInSupportsSRGB)
-#if PLATFORM_ANDROID
-	, bSupportsDepth(false)
-#else
-	, bSupportsDepth(bInSupportsDepth)
-#endif
 {
 	CheckInGameThread();
 
 	DefaultOvrpTextureFormat = GetOvrpTextureFormat(GetDefaultPixelFormat());
-	DefaultDepthOvrpTextureFormat = bSupportsDepth ? ovrpTextureFormat_D24_S8 : ovrpTextureFormat_None;
+	DefaultDepthOvrpTextureFormat = ovrpTextureFormat_None;
 
 	// grab a pointer to the renderer module for displaying our mirror window
 	static const FName RendererModuleName("Renderer");
@@ -281,15 +276,11 @@ int FCustomPresent::GetSystemRecommendedMSAALevel() const
 }
 
 
-FTextureSetProxyPtr FCustomPresent::CreateTextureSetProxy_RenderThread(uint32 InSizeX, uint32 InSizeY, EPixelFormat InFormat, FClearValueBinding InBinding, uint32 InNumMips, uint32 InNumSamples, uint32 InNumSamplesTileMem, ERHIResourceType InResourceType, const TArray<ovrpTextureHandle>& InTextures, uint32 InTexCreateFlags)
+FXRSwapChainPtr FCustomPresent::CreateSwapChain_RenderThread(uint32 InSizeX, uint32 InSizeY, EPixelFormat InFormat, FClearValueBinding InBinding, uint32 InNumMips, uint32 InNumSamples, uint32 InNumSamplesTileMem, ERHIResourceType InResourceType, const TArray<ovrpTextureHandle>& InTextures, uint32 InTexCreateFlags)
 {
 	CheckInRenderThread();
 
 	FTextureRHIRef RHITexture;
-	{
-		RHITexture = CreateTexture_RenderThread(InSizeX, InSizeY, InFormat, InBinding, InNumMips, InNumSamples, InNumSamplesTileMem, InResourceType, InTextures[0], InTexCreateFlags);
-	}
-
 	TArray<FTextureRHIRef> RHITextureSwapChain;
 	{
 		for (int32 TextureIndex = 0; TextureIndex < InTextures.Num(); ++TextureIndex)
@@ -298,19 +289,21 @@ FTextureSetProxyPtr FCustomPresent::CreateTextureSetProxy_RenderThread(uint32 In
 		}
 	}
 
-	return MakeShareable(new FTextureSetProxy(RHITexture, RHITextureSwapChain));
+	RHITexture = GDynamicRHI->RHICreateAliasedTexture(RHITextureSwapChain[0]);
+
+	return CreateXRSwapChain(MoveTemp(RHITextureSwapChain), RHITexture);
 }
 
 
-void FCustomPresent::CopyTexture_RenderThread(FRHICommandListImmediate& RHICmdList, FTextureRHIParamRef DstTexture, FTextureRHIParamRef SrcTexture,
+void FCustomPresent::CopyTexture_RenderThread(FRHICommandListImmediate& RHICmdList, FRHITexture* DstTexture, FRHITexture* SrcTexture,
 	FIntRect DstRect, FIntRect SrcRect, bool bAlphaPremultiply, bool bNoAlphaWrite, bool bInvertY, bool sRGBSource) const
 {
 	CheckInRenderThread();
 
-	FTexture2DRHIParamRef DstTexture2D = DstTexture->GetTexture2D();
-	FTextureCubeRHIParamRef DstTextureCube = DstTexture->GetTextureCube();
-	FTexture2DRHIParamRef SrcTexture2D = SrcTexture->GetTexture2D();
-	FTextureCubeRHIParamRef SrcTextureCube = SrcTexture->GetTextureCube();
+	FRHITexture2D* DstTexture2D = DstTexture->GetTexture2D();
+	FRHITextureCube* DstTextureCube = DstTexture->GetTextureCube();
+	FRHITexture2D* SrcTexture2D = SrcTexture->GetTexture2D();
+	FRHITextureCube* SrcTextureCube = SrcTexture->GetTextureCube();
 
 	FIntPoint DstSize;
 	FIntPoint SrcSize;
@@ -394,7 +387,7 @@ void FCustomPresent::CopyTexture_RenderThread(FRHICommandListImmediate& RHICmdLi
 	auto ShaderMap = GetGlobalShaderMap(FeatureLevel);
 	TShaderMapRef<FScreenVS> VertexShader(ShaderMap);
 	GraphicsPSOInit.BoundShaderState.VertexDeclarationRHI = GFilterVertexDeclaration.VertexDeclarationRHI;
-	GraphicsPSOInit.BoundShaderState.VertexShaderRHI = GETSAFERHISHADER_VERTEX(*VertexShader);
+	GraphicsPSOInit.BoundShaderState.VertexShaderRHI = VertexShader.GetVertexShader();
 
 	if (DstTexture2D)
 	{
@@ -411,19 +404,19 @@ void FCustomPresent::CopyTexture_RenderThread(FRHICommandListImmediate& RHICmdLi
 			}
 
 			RHICmdList.ApplyCachedRenderTargets(GraphicsPSOInit);
-			FSamplerStateRHIParamRef SamplerState = DstRect.Size() == SrcRect.Size() ? TStaticSamplerState<SF_Point>::GetRHI() : TStaticSamplerState<SF_Bilinear>::GetRHI();
+			FRHISamplerState* SamplerState = DstRect.Size() == SrcRect.Size() ? TStaticSamplerState<SF_Point>::GetRHI() : TStaticSamplerState<SF_Bilinear>::GetRHI();
 
 			if (!sRGBSource)
 			{
 				TShaderMapRef<FScreenPS> PixelShader(ShaderMap);
-				GraphicsPSOInit.BoundShaderState.PixelShaderRHI = GETSAFERHISHADER_PIXEL(*PixelShader);
+				GraphicsPSOInit.BoundShaderState.PixelShaderRHI = PixelShader.GetPixelShader();
 				SetGraphicsPipelineState(RHICmdList, GraphicsPSOInit);
 				PixelShader->SetParameters(RHICmdList, SamplerState, SrcTextureRHI);
 			}
 			else
 			{
 				TShaderMapRef<FScreenPSsRGBSource> PixelShader(ShaderMap);
-				GraphicsPSOInit.BoundShaderState.PixelShaderRHI = GETSAFERHISHADER_PIXEL(*PixelShader);
+				GraphicsPSOInit.BoundShaderState.PixelShaderRHI = PixelShader.GetPixelShader();
 				SetGraphicsPipelineState(RHICmdList, GraphicsPSOInit);
 				PixelShader->SetParameters(RHICmdList, SamplerState, SrcTextureRHI);
 			}
@@ -433,14 +426,10 @@ void FCustomPresent::CopyTexture_RenderThread(FRHICommandListImmediate& RHICmdLi
 			RendererModule->DrawRectangle(
 				RHICmdList,
 				0, 0, ViewportWidth, ViewportHeight,
-#if PLATFORM_ANDROID
 				U, V, USize, VSize,
-#else
-				U, 1.0 - V, USize, -VSize,
-#endif
 				TargetSize,
 				FIntPoint(1, 1),
-				*VertexShader,
+				VertexShader,
 				EDRF_Default);
 		}
 		RHICmdList.EndRenderPass();
@@ -462,9 +451,9 @@ void FCustomPresent::CopyTexture_RenderThread(FRHICommandListImmediate& RHICmdLi
 				RHICmdList.ApplyCachedRenderTargets(GraphicsPSOInit);
 
 				TShaderMapRef<FOculusCubemapPS> PixelShader(ShaderMap);
-				GraphicsPSOInit.BoundShaderState.PixelShaderRHI = GETSAFERHISHADER_PIXEL(*PixelShader);
+				GraphicsPSOInit.BoundShaderState.PixelShaderRHI = PixelShader.GetPixelShader();
 				SetGraphicsPipelineState(RHICmdList, GraphicsPSOInit);
-				FSamplerStateRHIParamRef SamplerState = DstRect.Size() == SrcRect.Size() ? TStaticSamplerState<SF_Point>::GetRHI() : TStaticSamplerState<SF_Bilinear>::GetRHI();
+				FRHISamplerState* SamplerState = DstRect.Size() == SrcRect.Size() ? TStaticSamplerState<SF_Point>::GetRHI() : TStaticSamplerState<SF_Bilinear>::GetRHI();
 				PixelShader->SetParameters(RHICmdList, SamplerState, SrcTextureRHI, FaceIndex);
 
 				RHICmdList.SetViewport(DstRect.Min.X, DstRect.Min.Y, 0.0f, DstRect.Max.X, DstRect.Max.Y, 1.0f);
@@ -472,10 +461,14 @@ void FCustomPresent::CopyTexture_RenderThread(FRHICommandListImmediate& RHICmdLi
 				RendererModule->DrawRectangle(
 					RHICmdList,
 					0, 0, ViewportWidth, ViewportHeight,
+#if PLATFORM_ANDROID
 					U, V, USize, VSize,
+#else
+					U, 1.0 - V, USize, -VSize,
+#endif
 					TargetSize,
 					FIntPoint(1, 1),
-					*VertexShader,
+					VertexShader,
 					EDRF_Default);
 			}
 			RHICmdList.EndRenderPass();

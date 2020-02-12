@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 
 #include "SGraphPanel.h"
@@ -18,6 +18,7 @@
 #include "DragAndDrop/ActorDragDropGraphEdOp.h"
 #include "DragAndDrop/AssetDragDropOp.h"
 #include "DragAndDrop/LevelDragDropOp.h"
+#include "DragAndDrop/GraphNodeDragDropOp.h"
 
 #include "GraphEditorActions.h"
 
@@ -27,6 +28,9 @@
 
 #include "KismetNodes/KismetNodeInfoContext.h"
 #include "GraphDiffControl.h"
+
+#include "Editor/UnrealEdEngine.h"
+#include "UnrealEdGlobals.h"
 
 DEFINE_LOG_CATEGORY_STATIC(LogGraphPanel, Log, All);
 
@@ -171,6 +175,9 @@ int32 SGraphPanel::OnPaint( const FPaintArgs& Args, const FGeometry& AllottedGeo
 			if (bNodeIsVisible)
 			{
 				const bool bSelected = SelectionToVisualize->Contains( StaticCastSharedRef<SNodePanel::SNode>(CurWidget.Widget)->GetObjectBeingDisplayed() );
+				
+				UEdGraphNode* NodeObj = Cast<UEdGraphNode>(ChildNode->GetObjectBeingDisplayed());
+				float Alpha = 1.0f;
 
 				// Handle Node renaming once the node is visible
 				if( bSelected && ChildNode->IsRenamePending() )
@@ -191,7 +198,9 @@ int32 SGraphPanel::OnPaint( const FPaintArgs& Args, const FGeometry& AllottedGeo
 						OutDrawElements,
 						ShadowLayerId,
 						CurWidget.Geometry.ToInflatedPaintGeometry(NodeShadowSize),
-						ShadowBrush
+						ShadowBrush,
+						ESlateDrawEffect::None,
+						FLinearColor(1.0f, 1.0f, 1.0f, Alpha)
 						);
 				}
 
@@ -215,8 +224,6 @@ int32 SGraphPanel::OnPaint( const FPaintArgs& Args, const FGeometry& AllottedGeo
 
 				int32 CurWidgetsMaxLayerId;
 				{
-					UEdGraphNode* NodeObj = Cast<UEdGraphNode>(ChildNode->GetObjectBeingDisplayed());
-
 					/** When diffing nodes, nodes that are different between revisions are opaque, nodes that have not changed are faded */
 					FGraphDiffControl::FNodeMatch NodeMatch = FGraphDiffControl::FindNodeMatch(GraphObjToDiff, NodeObj, NodeMatches);
 					if (NodeMatch.IsValid())
@@ -228,7 +235,10 @@ int32 SGraphPanel::OnPaint( const FPaintArgs& Args, const FGeometry& AllottedGeo
 					/* When dragging off a pin, we want to duck the alpha of some nodes */
 					TSharedPtr< SGraphPin > OnlyStartPin = (1 == PreviewConnectorFromPins.Num()) ? PreviewConnectorFromPins[0].FindInGraphPanel(*this) : TSharedPtr< SGraphPin >();
 					const bool bNodeIsNotUsableInCurrentContext = Schema->FadeNodeWhenDraggingOffPin(NodeObj, OnlyStartPin.IsValid() ? OnlyStartPin.Get()->GetPinObj() : nullptr);
-					const FWidgetStyle& NodeStyleToUse = (bNodeIsDifferent && !bNodeIsNotUsableInCurrentContext)? InWidgetStyle : FadedStyle;
+					
+					const FWidgetStyle& NodeStyle = (bNodeIsDifferent && !bNodeIsNotUsableInCurrentContext)? InWidgetStyle : FadedStyle;
+					FWidgetStyle NodeStyleToUse = NodeStyle;
+					NodeStyleToUse.BlendColorAndOpacityTint(FLinearColor(1.0f, 1.0f, 1.0f, Alpha));
 
 					// Draw the node.O
 					CurWidgetsMaxLayerId = CurWidget.Widget->Paint(NewArgs, CurWidget.Geometry, MyCullingRect, OutDrawElements, ChildLayerId, NodeStyleToUse, !DisplayAsReadOnly.Get() && ShouldBeEnabled( bParentEnabled ) );
@@ -260,7 +270,9 @@ int32 SGraphPanel::OnPaint( const FPaintArgs& Args, const FGeometry& AllottedGeo
 									OutDrawElements,
 									CurWidgetsMaxLayerId,
 									BouncedGeometry,
-									OverlayBrush
+									OverlayBrush,
+									ESlateDrawEffect::None,
+									FLinearColor(1.0f, 1.0f, 1.0f, Alpha)
 									);
 							}
 
@@ -334,14 +346,14 @@ int32 SGraphPanel::OnPaint( const FPaintArgs& Args, const FGeometry& AllottedGeo
 				ChildNode->GetPins(NodePins);
 
 				const FVector2D NodeLoc = ChildNode->GetPosition();
-				const FGeometry SynthesizedNodeGeometry(GraphCoordToPanelCoord(NodeLoc), AllottedGeometry.AbsolutePosition, FVector2D::ZeroVector, 1.f);
+				const FGeometry SynthesizedNodeGeometry(GraphCoordToPanelCoord(NodeLoc) * AllottedGeometry.Scale, AllottedGeometry.AbsolutePosition, FVector2D::ZeroVector, 1.f);
 
 				for (TArray< TSharedRef<SWidget> >::TConstIterator NodePinIterator(NodePins); NodePinIterator; ++NodePinIterator)
 				{
 					const SGraphPin& PinWidget = static_cast<const SGraphPin&>((*NodePinIterator).Get());
 					FVector2D PinLoc = NodeLoc + PinWidget.GetNodeOffset();
 
-					const FGeometry SynthesizedPinGeometry(GraphCoordToPanelCoord(PinLoc), AllottedGeometry.AbsolutePosition, FVector2D::ZeroVector, 1.f);
+					const FGeometry SynthesizedPinGeometry(GraphCoordToPanelCoord(PinLoc) * AllottedGeometry.Scale, AllottedGeometry.AbsolutePosition, FVector2D::ZeroVector, 1.f);
 					PinGeometries.Add(*NodePinIterator, FArrangedWidget(*NodePinIterator, SynthesizedPinGeometry));
 				}
 
@@ -900,13 +912,25 @@ FReply SGraphPanel::OnDragOver( const FGeometry& MyGeometry, const FDragDropEven
 		{
 			TSharedPtr<FAssetDragDropOp> AssetOp = StaticCastSharedPtr<FAssetDragDropOp>(Operation);
 			bool bOkIcon = false;
-			FString TooltipText;
+			FText TooltipText;
 			if (AssetOp->HasAssets())
 			{
-				GraphObj->GetSchema()->GetAssetsGraphHoverMessage(AssetOp->GetAssets(), GraphObj, /*out*/ TooltipText, /*out*/ bOkIcon);
+				const TArray<FAssetData>& HoveredAssetData = AssetOp->GetAssets();
+				FText AssetReferenceFilterFailureReason;
+				if (PassesAssetReferenceFilter(HoveredAssetData, &AssetReferenceFilterFailureReason))
+				{
+					FString TooltipTextString;
+					GraphObj->GetSchema()->GetAssetsGraphHoverMessage(HoveredAssetData, GraphObj, /*out*/ TooltipTextString, /*out*/ bOkIcon);
+					TooltipText = FText::FromString(TooltipTextString);
+				}
+				else
+				{
+					TooltipText = AssetReferenceFilterFailureReason;
+					bOkIcon = false;
+				}
 			}
 			const FSlateBrush* TooltipIcon = bOkIcon ? FEditorStyle::GetBrush(TEXT("Graph.ConnectorFeedback.OK")) : FEditorStyle::GetBrush(TEXT("Graph.ConnectorFeedback.Error"));
-			AssetOp->SetToolTip(FText::FromString(TooltipText), TooltipIcon);
+			AssetOp->SetToolTip(TooltipText, TooltipIcon);
 		}
 		return FReply::Handled();
 	} 
@@ -952,6 +976,13 @@ FReply SGraphPanel::OnDrop( const FGeometry& MyGeometry, const FDragDropEvent& D
 		OnDropStreamingLevel.ExecuteIfBound(LevelOp->StreamingLevelsToDrop, GraphObj, NodeAddPosition);
 		return FReply::Handled();
 	}
+
+	else if (Operation->IsOfType<FGraphNodeDragDropOp>())
+	{
+		TSharedPtr<FGraphNodeDragDropOp> NodeDropOp = StaticCastSharedPtr<FGraphNodeDragDropOp>(Operation);
+		NodeDropOp->OnPerformDropToGraph.ExecuteIfBound(NodeDropOp, GraphObj, NodeAddPosition, DragDropEvent.GetScreenSpacePosition());
+		return FReply::Handled();
+	}
 	else
 	{
 		if ((GraphObj != nullptr) && (GraphObj->GetSchema() != nullptr))
@@ -960,13 +991,42 @@ FReply SGraphPanel::OnDrop( const FGeometry& MyGeometry, const FDragDropEvent& D
 
 			if ( DroppedAssetData.Num() > 0 )
 			{
-				GraphObj->GetSchema()->DroppedAssetsOnGraph( DroppedAssetData, NodeAddPosition, GraphObj );
+				if (PassesAssetReferenceFilter(DroppedAssetData))
+				{
+					GraphObj->GetSchema()->DroppedAssetsOnGraph( DroppedAssetData, NodeAddPosition, GraphObj );
+				}
 				return FReply::Handled();
 			}
 		}
 
 		return FReply::Unhandled();
 	}
+}
+
+bool SGraphPanel::PassesAssetReferenceFilter(const TArray<FAssetData>& ReferencedAssets, FText* OutFailureReason) const
+{
+	if (GEditor)
+	{
+		FAssetReferenceFilterContext AssetReferenceFilterContext;
+		UObject* GraphOuter = GraphObj ? GraphObj->GetOuter() : nullptr;
+		if (GraphOuter)
+		{
+			AssetReferenceFilterContext.ReferencingAssets.Add(FAssetData(GraphOuter));
+		}
+		TSharedPtr<IAssetReferenceFilter> AssetReferenceFilter = GEditor->MakeAssetReferenceFilter(AssetReferenceFilterContext);
+		if (AssetReferenceFilter.IsValid())
+		{
+			for (const FAssetData& Asset : ReferencedAssets)
+			{
+				if (!AssetReferenceFilter->PassesFilter(Asset, OutFailureReason))
+				{
+					return false;
+				}
+			}
+		}
+	}
+
+	return true;
 }
 
 void SGraphPanel::OnBeginMakingConnection(UEdGraphPin* InOriginatingPin)
@@ -1708,6 +1768,11 @@ void SGraphPanel::AddReferencedObjects(FReferenceCollector& Collector)
 {
 	Collector.AddReferencedObject( GraphObj );
 	Collector.AddReferencedObject( GraphObjToDiff );
+}
+
+FString SGraphPanel::GetReferencerName() const
+{
+	return TEXT("SGraphPanel");
 }
 
 EActiveTimerReturnType SGraphPanel::InvalidatePerTick(double InCurrentTime, float InDeltaTime)

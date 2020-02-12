@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 /*=============================================================================
 	MobileShadingRenderer.cpp: Scene rendering code for the ES2 feature level.
@@ -43,8 +43,13 @@
 #include "VisualizeTexturePresent.h"
 #include "RendererModule.h"
 #include "EngineModule.h"
-
+#include "GPUScene.h"
+#include "MaterialSceneTextureId.h"
+#include "DebugViewModeRendering.h"
+#include "SkyAtmosphereRendering.h"
 #include "VisualizeTexture.h"
+#include "VT/VirtualTextureSystem.h"
+#include "GPUSortManager.h"
 
 uint32 GetShadowQuality();
 
@@ -62,37 +67,92 @@ static TAutoConsoleVariable<int32> CVarMobileForceDepthResolve(
 	TEXT("1: Depth buffer is resolved by switching out render targets and drawing with the depth texture.\n"),
 	ECVF_Scalability | ECVF_RenderThreadSafe);
 
-static TAutoConsoleVariable<int32> CVarMobileMoveSubmissionHintAfterTranslucency(
-	TEXT("r.Mobile.MoveSubmissionHintAfterTranslucency"),
+static TAutoConsoleVariable<int32> CVarMobileAdrenoOcclusionMode(
+	TEXT("r.Mobile.AdrenoOcclusionMode"),
+	0,
+	TEXT("0: Render occlusion queries after the base pass (default).\n")
+	TEXT("1: Render occlusion queries after translucency and a flush, which can help Adreno devices in GL mode."),
+	ECVF_RenderThreadSafe);
+
+static TAutoConsoleVariable<int32> CVarMobileCustomDepthForTranslucency(
+	TEXT("r.Mobile.CustomDepthForTranslucency"),
 	1,
-	TEXT("0: Submission hint occurs after occlusion query.\n")
-	TEXT("1: Submission hint occurs after translucency. (Default)"),
+	TEXT(" Whether to render custom depth/stencil if any tranclucency in the scene uses it. \n")
+	TEXT(" 0 = Off \n")
+	TEXT(" 1 = On [default]"),
 	ECVF_Scalability | ECVF_RenderThreadSafe);
 
-static TAutoConsoleVariable<int32> CVarMobileDisableGPUParticleCollision(
-	TEXT("r.Mobile.DisableGPUParticleCollision"),
-	1,
-	TEXT("0: Allow GPU particle collision simulation if supported (Default).\n")
-	TEXT("1: Disable GPU particle collision simulation"),
-	ECVF_RenderThreadSafe);
+DECLARE_GPU_STAT_NAMED(MobileSceneRender, TEXT("Mobile Scene Render"));
 
 DECLARE_CYCLE_STAT(TEXT("SceneStart"), STAT_CLMM_SceneStart, STATGROUP_CommandListMarkers);
 DECLARE_CYCLE_STAT(TEXT("SceneEnd"), STAT_CLMM_SceneEnd, STATGROUP_CommandListMarkers);
-DECLARE_CYCLE_STAT(TEXT("InitVIews"), STAT_CLMM_InitVIews, STATGROUP_CommandListMarkers);
-DECLARE_CYCLE_STAT(TEXT("BasePass"), STAT_CLMM_BasePass, STATGROUP_CommandListMarkers);
+DECLARE_CYCLE_STAT(TEXT("InitViews"), STAT_CLMM_InitViews, STATGROUP_CommandListMarkers);
+DECLARE_CYCLE_STAT(TEXT("Opaque"), STAT_CLMM_Opaque, STATGROUP_CommandListMarkers);
 DECLARE_CYCLE_STAT(TEXT("Occlusion"), STAT_CLMM_Occlusion, STATGROUP_CommandListMarkers);
 DECLARE_CYCLE_STAT(TEXT("Post"), STAT_CLMM_Post, STATGROUP_CommandListMarkers);
 DECLARE_CYCLE_STAT(TEXT("Translucency"), STAT_CLMM_Translucency, STATGROUP_CommandListMarkers);
 DECLARE_CYCLE_STAT(TEXT("Shadows"), STAT_CLMM_Shadows, STATGROUP_CommandListMarkers);
+DECLARE_CYCLE_STAT(TEXT("SceneSimulation"), STAT_CLMM_SceneSim, STATGROUP_CommandListMarkers);
+DECLARE_CYCLE_STAT(TEXT("PrePass"), STAT_CLM_MobilePrePass, STATGROUP_CommandListMarkers);
 
 FGlobalDynamicIndexBuffer FMobileSceneRenderer::DynamicIndexBuffer;
 FGlobalDynamicVertexBuffer FMobileSceneRenderer::DynamicVertexBuffer;
 TGlobalResource<FGlobalDynamicReadBuffer> FMobileSceneRenderer::DynamicReadBuffer;
 
+static bool UsesCustomDepthStencilLookup(const FViewInfo& View)
+{
+	bool bUsesCustomDepthStencil = false;
+
+	// Find out whether CustomDepth/Stencil used in translucent materials
+	if (View.bUsesCustomDepthStencilInTranslucentMaterials && CVarMobileCustomDepthForTranslucency.GetValueOnAnyThread() != 0)
+	{
+		bUsesCustomDepthStencil = true;
+	}
+	else
+	{
+		// Find out whether post-process materials use CustomDepth/Stencil lookups
+		const FBlendableManager& BlendableManager = View.FinalPostProcessSettings.BlendableManager;
+		FBlendableEntry* BlendableIt = nullptr;
+
+		while (FPostProcessMaterialNode* DataPtr = BlendableManager.IterateBlendables<FPostProcessMaterialNode>(BlendableIt))
+		{
+			if (DataPtr->IsValid())
+			{
+				FMaterialRenderProxy* Proxy = DataPtr->GetMaterialInterface()->GetRenderProxy();
+				check(Proxy);
+
+				const FMaterial* Material = Proxy->GetMaterial(View.GetFeatureLevel());
+				check(Material);
+				if (Material->IsStencilTestEnabled())
+				{
+					bUsesCustomDepthStencil = true;
+					break;
+				}
+
+				const FMaterialShaderMap* MaterialShaderMap = Material->GetRenderingThreadShaderMap();
+				if (MaterialShaderMap->UsesSceneTexture(PPI_CustomDepth) || MaterialShaderMap->UsesSceneTexture(PPI_CustomStencil))
+				{
+					bUsesCustomDepthStencil = true;
+					break;
+				}
+			}
+		}
+	}
+
+	// Find out whether there are primitives will render in custom depth pass or just always render custom depth 
+	static const auto CVarCustomDepth = IConsoleManager::Get().FindTConsoleVariableDataInt(TEXT("r.CustomDepth"));
+
+	bUsesCustomDepthStencil &= (View.bHasCustomDepthPrimitives || (CVarCustomDepth && CVarCustomDepth->GetValueOnRenderThread() > 1));
+	
+	return bUsesCustomDepthStencil;
+}
+
+
 FMobileSceneRenderer::FMobileSceneRenderer(const FSceneViewFamily* InViewFamily,FHitProxyConsumer* HitProxyConsumer)
 	:	FSceneRenderer(InViewFamily, HitProxyConsumer)
 {
 	bModulatedShadowsInUse = false;
+	bShouldRenderCustomDepth = false;
 }
 
 class FMobileDirLightShaderParamsRenderResource : public FRenderResource
@@ -189,11 +249,14 @@ void FMobileSceneRenderer::SetupMobileBasePassAfterShadowInit(FExclusiveDepthSte
  */
 void FMobileSceneRenderer::InitViews(FRHICommandListImmediate& RHICmdList)
 {
-	RHICmdList.SetCurrentStat(GET_STATID(STAT_CLMM_InitVIews));
+	RHICmdList.SetCurrentStat(GET_STATID(STAT_CLMM_InitViews));
 
 	SCOPED_DRAW_EVENT(RHICmdList, InitViews);
 
 	SCOPE_CYCLE_COUNTER(STAT_InitViewsTime);
+	CSV_SCOPED_TIMING_STAT_EXCLUSIVE(InitViews_Scene);
+
+	check(Scene);
 
 	FILCUpdatePrimTaskData ILCTaskData;
 	FViewVisibleCommandsPerView ViewCommandsPerView;
@@ -203,14 +266,35 @@ void FMobileSceneRenderer::InitViews(FRHICommandListImmediate& RHICmdList)
 
 	PreVisibilityFrameSetup(RHICmdList);
 	ComputeViewVisibility(RHICmdList, BasePassDepthStencilAccess, ViewCommandsPerView, DynamicIndexBuffer, DynamicVertexBuffer, DynamicReadBuffer);
+
+	// Initialise Sky/View resources before the view global uniform buffer is built.
+	if (ShouldRenderSkyAtmosphere(Scene, ViewFamily.EngineShowFlags))
+	{
+		InitSkyAtmosphereForViews(RHICmdList);
+	}
+
 	PostVisibilityFrameSetup(ILCTaskData);
+
+	// Find out whether custom depth pass should be rendered.
+	{
+		const bool bGammaSpace = !IsMobileHDR();
+
+		bool bCouldUseCustomDepthStencil = !bGammaSpace && (!Scene->World || (Scene->World->WorldType != EWorldType::EditorPreview && Scene->World->WorldType != EWorldType::Inactive));
+
+		for (int32 ViewIndex = 0; ViewIndex < Views.Num(); ViewIndex++)
+		{
+			Views[ViewIndex].bCustomDepthStencilValid = bCouldUseCustomDepthStencil && UsesCustomDepthStencilLookup(Views[ViewIndex]);
+
+			bShouldRenderCustomDepth |= Views[ViewIndex].bCustomDepthStencilValid;
+		}
+	}
 
 	const bool bDynamicShadows = ViewFamily.EngineShowFlags.DynamicShadows;
 
 	if (bDynamicShadows && !IsSimpleForwardShadingEnabled(ShaderPlatform))
 	{
 		// Setup dynamic shadows.
-		InitDynamicShadows(RHICmdList);
+		InitDynamicShadows(RHICmdList);		
 	}
 	else
 	{
@@ -236,13 +320,33 @@ void FMobileSceneRenderer::InitViews(FRHICommandListImmediate& RHICmdList)
 		// Create the directional light uniform buffers
 		CreateDirectionalLightUniformBuffers(Views[ViewIndex]);
 	}
-	
+
+	UpdateGPUScene(RHICmdList, *Scene);
+	for (int32 ViewIndex = 0; ViewIndex < Views.Num(); ViewIndex++)
+	{
+		UploadDynamicPrimitiveShaderDataForView(RHICmdList, *Scene, Views[ViewIndex]);
+	}
+
+	extern TSet<IPersistentViewUniformBufferExtension*> PersistentViewUniformBufferExtensions;
+
+	for (IPersistentViewUniformBufferExtension* Extension : PersistentViewUniformBufferExtensions)
+	{
+		Extension->BeginFrame();
+
+		for (int32 ViewIndex = 0; ViewIndex < Views.Num(); ViewIndex++)
+		{
+			// Must happen before RHI thread flush so any tasks we dispatch here can land in the idle gap during the flush
+			Extension->PrepareView(&Views[ViewIndex]);
+		}
+	}
+
 	// update buffers used in cached mesh path
 	// in case there are multiple views, these buffers will be updated before rendering each view
 	if (Views.Num() > 0)
 	{
 		const FViewInfo& View = Views[0];
-		Scene->UniformBuffers.UpdateViewUniformBuffer(View);
+		// We want to wait for the extension jobs only when the view is being actually rendered for the first time
+		Scene->UniformBuffers.UpdateViewUniformBuffer(View, false);
 		UpdateOpaqueBasePassUniformBuffer(RHICmdList, View);
 		UpdateTranslucentBasePassUniformBuffer(RHICmdList, View);
 		UpdateDirectionalLightUniformBuffers(RHICmdList, View);
@@ -251,10 +355,11 @@ void FMobileSceneRenderer::InitViews(FRHICommandListImmediate& RHICmdList)
 		SetupMobileDistortionPassUniformBuffer(RHICmdList, View, DistortionPassParameters);
 		Scene->UniformBuffers.MobileDistortionPassUniformBuffer.UpdateUniformBufferImmediate(DistortionPassParameters);
 	}
+	UpdateSkyReflectionUniformBuffer();
 
 	// Now that the indirect lighting cache is updated, we can update the uniform buffers.
 	UpdatePrimitiveIndirectLightingCacheBuffers();
-
+	
 	OnStartRender(RHICmdList);
 }
 
@@ -265,8 +370,29 @@ void FMobileSceneRenderer::Render(FRHICommandListImmediate& RHICmdList)
 {
 	RHICmdList.SetCurrentStat(GET_STATID(STAT_CLMM_SceneStart));
 
+	SCOPED_DRAW_EVENT(RHICmdList, MobileSceneRender);
+	SCOPED_GPU_STAT(RHICmdList, MobileSceneRender);
+
+	Scene->UpdateAllPrimitiveSceneInfos(RHICmdList);
+
 	PrepareViewRectsForRendering();
 
+	if (ShouldRenderSkyAtmosphere(Scene, ViewFamily.EngineShowFlags))
+	{
+		for (int32 LightIndex = 0; LightIndex < NUM_ATMOSPHERE_LIGHTS; ++LightIndex)
+		{
+			if (Scene->AtmosphereLights[LightIndex])
+			{
+				PrepareSunLightProxy(*Scene->GetSkyAtmosphereSceneInfo(), LightIndex, *Scene->AtmosphereLights[LightIndex]);
+			}
+		}
+	}
+	else
+	{
+		Scene->ResetAtmosphereLightsProperties();
+	}
+
+	CSV_SCOPED_TIMING_STAT_EXCLUSIVE(RenderOther);
 	QUICK_SCOPE_CYCLE_COUNTER(STAT_FMobileSceneRenderer_Render);
 	//FRHICommandListExecutor::GetImmediateCommandList().ImmediateFlush(EImmediateFlushType::DispatchToRHIThread);
 
@@ -279,15 +405,54 @@ void FMobileSceneRenderer::Render(FRHICommandListImmediate& RHICmdList)
 	FRHICommandListExecutor::GetImmediateCommandList().PollOcclusionQueries();
 	RHICmdList.ImmediateFlush(EImmediateFlushType::DispatchToRHIThread);
 
-
 	const ERHIFeatureLevel::Type ViewFeatureLevel = ViewFamily.GetFeatureLevel();
+
+	// This might eventually be a problem with multiple views.
+	// Using only view 0 to check to do on-chip transform of alpha.
+	FViewInfo& View = Views[0];
+
+	const bool bGammaSpace = !IsMobileHDR();
+
+	const FIntPoint RenderTargetSize = (ViewFamily.RenderTarget->GetRenderTargetTexture().IsValid()) ? ViewFamily.RenderTarget->GetRenderTargetTexture()->GetSizeXY() : ViewFamily.RenderTarget->GetSizeXY();
+	const bool bRequiresUpscale = ((int32)RenderTargetSize.X > FamilySize.X || (int32)RenderTargetSize.Y > FamilySize.Y);
+
+	// ES2 requires that the back buffer and depth match dimensions.
+	// For the most part this is not the case when using scene captures. Thus scene captures always render to scene color target.
+	const bool bStereoRenderingAndHMD = View.Family->EngineShowFlags.StereoRendering && View.Family->EngineShowFlags.HMDDistortion;
+	const bool bRenderToSceneColor = bStereoRenderingAndHMD || bRequiresUpscale || FSceneRenderer::ShouldCompositeEditorPrimitives(View) || View.bIsSceneCapture || View.bIsReflectionCapture;
+
+	// Whether we need to render translucency in a separate render pass
+	// On mobile it's better to render as much as possible in a single pass
+	const bool bRequiresTranslucencyPass = RequiresTranslucencyPass(RHICmdList, View);
+	// Whether we need to store depth for post-processing
+	// On PowerVR we see flickering of shadows and depths not updating correctly if targets are discarded.
+	// See CVarMobileForceDepthResolve use in ConditionalResolveSceneDepth.
+	const bool bForceDepthResolve = CVarMobileForceDepthResolve.GetValueOnRenderThread() == 1;
+	const bool bSeparateTranslucencyActive = IsMobileSeparateTranslucencyActive(View);
+	bool bKeepDepthContent = bForceDepthResolve || (bRenderToSceneColor &&
+		(bSeparateTranslucencyActive ||
+		 View.bIsReflectionCapture ||
+		 (View.bIsSceneCapture && (ViewFamily.SceneCaptureSource == ESceneCaptureSource::SCS_SceneColorHDR || ViewFamily.SceneCaptureSource == ESceneCaptureSource::SCS_SceneColorSceneDepth))));
+
+	// Whether to submit cmdbuffer with offscreen rendering before doing post-processing
+	bool bSubmitOffscreenRendering = !bGammaSpace || bRenderToSceneColor;
 
 	// Initialize global system textures (pass-through if already initialized).
 	GSystemTextures.InitializeTextures(RHICmdList, ViewFeatureLevel);
 	FSceneRenderTargets& SceneContext = FSceneRenderTargets::Get(RHICmdList);
 
 	// Allocate the maximum scene render target space for the current view family.
+	SceneContext.ReleaseSceneColor();
+	SceneContext.SetKeepDepthContent(bKeepDepthContent);
 	SceneContext.Allocate(RHICmdList, this);
+
+	const bool bUseVirtualTexturing = UseVirtualTexturing(ViewFeatureLevel);
+	if (bUseVirtualTexturing)
+	{
+		// AllocateResources needs to be called before RHIBeginScene
+		FVirtualTextureSystem::Get().AllocateResources(RHICmdList, ViewFeatureLevel);
+		FVirtualTextureSystem::Get().CallPendingCallbacks();
+	}
 
 	//make sure all the targets we're going to use will be safely writable.
 	GRenderTargetPool.TransitionTargetsWritable(RHICmdList);
@@ -295,6 +460,11 @@ void FMobileSceneRenderer::Render(FRHICommandListImmediate& RHICmdList)
 	// Find the visible primitives.
 	InitViews(RHICmdList);
 
+	if (bUseVirtualTexturing)
+	{
+		FVirtualTextureSystem::Get().Update(RHICmdList, ViewFeatureLevel, Scene);
+	}
+	
 	if (GRHINeedsExtraDeletionLatency || !GRHICommandList.Bypass())
 	{
 		QUICK_SCOPE_CYCLE_COUNTER(STAT_FMobileSceneRenderer_PostInitViewsFlushDel);
@@ -312,10 +482,24 @@ void FMobileSceneRenderer::Render(FRHICommandListImmediate& RHICmdList)
 	DynamicReadBuffer.Commit();
 	RHICmdList.ImmediateFlush(EImmediateFlushType::DispatchToRHIThread);
 
-	// Notify the FX system that the scene is about to be rendered.
-	if (Scene->FXSystem && !Views[0].bIsPlanarReflection && ViewFamily.EngineShowFlags.Particles)
+	RHICmdList.SetCurrentStat(GET_STATID(STAT_CLMM_SceneSim));
+
+	// Generate the Sky/Atmosphere look up tables
+	// Do compute work first, before any graphics work
+	const bool bShouldRenderSkyAtmosphere = ShouldRenderSkyAtmosphere(Scene, ViewFamily.EngineShowFlags);
+	if (bShouldRenderSkyAtmosphere)
 	{
-		Scene->FXSystem->PreRender(RHICmdList, NULL);
+		RenderSkyAtmosphereLookUpTables(RHICmdList);
+	}
+
+	// Notify the FX system that the scene is about to be rendered.
+	if (Scene->FXSystem && ViewFamily.EngineShowFlags.Particles)
+	{
+		Scene->FXSystem->PreRender(RHICmdList, NULL, !Views[0].bIsPlanarReflection);
+		if (FGPUSortManager* GPUSortManager = Scene->FXSystem->GetGPUSortManager())
+		{
+			GPUSortManager->OnPreRender(RHICmdList);
+		}
 	}
 	FRHICommandListExecutor::GetImmediateCommandList().PollOcclusionQueries();
 	RHICmdList.ImmediateFlush(EImmediateFlushType::DispatchToRHIThread);
@@ -326,10 +510,6 @@ void FMobileSceneRenderer::Render(FRHICommandListImmediate& RHICmdList)
 	FRHICommandListExecutor::GetImmediateCommandList().PollOcclusionQueries();
 	RHICmdList.ImmediateFlush(EImmediateFlushType::DispatchToRHIThread);
 
-	// This might eventually be a problem with multiple views.
-	// Using only view 0 to check to do on-chip transform of alpha.
-	FViewInfo& View = Views[0];
-
 	// Default view list
 	TArray<const FViewInfo*> ViewList;
 	for (int32 ViewIndex = 0; ViewIndex < Views.Num(); ViewIndex++) 
@@ -337,107 +517,125 @@ void FMobileSceneRenderer::Render(FRHICommandListImmediate& RHICmdList)
 		ViewList.Add(&Views[ViewIndex]);
 	}
 
-	const bool bGammaSpace = !IsMobileHDR();
-	
-	const FIntPoint RenderTargetSize = (ViewFamily.RenderTarget->GetRenderTargetTexture().IsValid()) ? ViewFamily.RenderTarget->GetRenderTargetTexture()->GetSizeXY() : ViewFamily.RenderTarget->GetSizeXY();
-	const bool bRequiresUpscale = ((int32)RenderTargetSize.X > FamilySize.X || (int32)RenderTargetSize.Y > FamilySize.Y);
-
-	// ES2 requires that the back buffer and depth match dimensions.
-	// For the most part this is not the case when using scene captures. Thus scene captures always render to scene color target.
-	const bool bStereoRenderingAndHMD = View.Family->EngineShowFlags.StereoRendering && View.Family->EngineShowFlags.HMDDistortion;
-	const bool bRenderToSceneColor = bStereoRenderingAndHMD || bRequiresUpscale || FSceneRenderer::ShouldCompositeEditorPrimitives(View) || View.bIsSceneCapture || View.bIsReflectionCapture;
-
-	if (!bGammaSpace)
+	// Custom depth
+	// bShouldRenderCustomDepth has been initialized in InitViews on mobile platform
+	if (bShouldRenderCustomDepth)
 	{
 		RenderCustomDepthPass(RHICmdList);
 	}
-
-	//FTextureRHIParamRef SceneColor = nullptr;
-
-	// #todo-renderpasses clean this up
-	bool bIsRenderingSceneColor = false;
+		
+	//
+	FRHITexture* SceneColor = nullptr;
+	FRHITexture* SceneColorResolve = nullptr;
+	FRHITexture* SceneDepth = nullptr;
+	ERenderTargetActions ColorTargetAction = ERenderTargetActions::Clear_Store;
+	EDepthStencilTargetActions DepthTargetAction = EDepthStencilTargetActions::ClearDepthStencil_DontStoreDepthStencil;
+	bool bMobileMSAA = SceneContext.GetSceneColorSurface()->GetNumSamples() > 1;
 	
 	if (bGammaSpace && !bRenderToSceneColor)
 	{
-		FTextureRHIParamRef SceneColor = GetMultiViewSceneColor(SceneContext);
-		const FTextureRHIParamRef SceneDepth = (View.bIsMobileMultiViewEnabled) ? SceneContext.MobileMultiViewSceneDepthZ->GetRenderTargetItem().TargetableTexture : static_cast<FTextureRHIRef>(SceneContext.GetSceneDepthTexture());
-
-		FRHIRenderPassInfo RPInfo(SceneColor, ERenderTargetActions::Clear_Store);
-		RPInfo.DepthStencilRenderTarget.Action = EDepthStencilTargetActions::ClearDepthStencil_StoreDepthStencil;
-		RPInfo.DepthStencilRenderTarget.DepthStencilTarget = SceneDepth;
-		RPInfo.DepthStencilRenderTarget.ExclusiveDepthStencil = FExclusiveDepthStencil::DepthWrite_StencilWrite;
-
-		RHICmdList.BeginRenderPass(RPInfo, TEXT("MultiviewRender"));
-	}
-	else
-	{
-		if (IsVulkanPlatform(ViewFamily.GetShaderPlatform()) || 
-			IsOpenGLPlatform(ViewFamily.GetShaderPlatform()) ||
-			IsSwitchPlatform(ViewFamily.GetShaderPlatform()))
-		{	
-			FTextureRHIParamRef SceneColor = SceneContext.GetSceneColorSurface();
-			// decals/translucency need to read/test depth
-			// TODO: Vulkan add sub-passes! this is expensive, especially with MSAA
-			EDepthStencilTargetActions DepthStoreAction = EDepthStencilTargetActions::ClearDepthStencil_StoreDepthStencil;
-						
-			FRHIRenderPassInfo RPInfo(
-				SceneColor,
-				ERenderTargetActions::Clear_Store,
-				SceneContext.GetSceneDepthSurface(),
-				DepthStoreAction, 
-				FExclusiveDepthStencil::DepthWrite_StencilWrite
-			);
-			RPInfo.NumOcclusionQueries = ComputeNumOcclusionQueriesToBatch();
-			RPInfo.bOcclusionQueries = RPInfo.NumOcclusionQueries != 0;
-			RHICmdList.BeginRenderPass(RPInfo, TEXT("BasePass"));
+		if (bMobileMSAA)
+		{
+			SceneColor = (View.bIsMobileMultiViewEnabled) ? SceneContext.MobileMultiViewSceneColor->GetRenderTargetItem().TargetableTexture : SceneContext.GetSceneColorSurface();
+			SceneColorResolve = GetMultiViewSceneColor(SceneContext);
+			ColorTargetAction = ERenderTargetActions::Clear_Resolve;
+			// Rendering to a backbuffer, make sure it's writeable
+			RHICmdList.TransitionResource(EResourceTransitionAccess::EWritable, SceneColorResolve);
 		}
 		else
 		{
-			// Begin rendering to scene color
-			SceneContext.BeginRenderingSceneColor(RHICmdList, ESimpleRenderTargetMode::EClearColorAndDepth);
-			/*SceneColor = SceneContext.GetSceneColorSurface();*/
-			bIsRenderingSceneColor = true;
+			SceneColor = GetMultiViewSceneColor(SceneContext);
+			// Rendering to a backbuffer, make sure it's writeable
+			RHICmdList.TransitionResource(EResourceTransitionAccess::EWritable, SceneColor);
+		}
+		SceneDepth = (View.bIsMobileMultiViewEnabled) ? SceneContext.MobileMultiViewSceneDepthZ->GetRenderTargetItem().TargetableTexture : static_cast<FTextureRHIRef>(SceneContext.GetSceneDepthSurface());
+	}
+	else
+	{
+		SceneColor = SceneContext.GetSceneColorSurface();
+		SceneColorResolve = bMobileMSAA ? SceneContext.GetSceneColorTexture() : nullptr;
+		ColorTargetAction = bMobileMSAA ? ERenderTargetActions::Clear_Resolve : ERenderTargetActions::Clear_Store;
+		SceneDepth = SceneContext.GetSceneDepthSurface();
+				
+		if (bRequiresTranslucencyPass)
+		{	
+			// store targets after opaque so translucency render pass can be restarted
+			ColorTargetAction = ERenderTargetActions::Clear_Store;
+			DepthTargetAction = EDepthStencilTargetActions::ClearDepthStencil_StoreDepthStencil;
+		}
+						
+		if (bKeepDepthContent && !bMobileMSAA)
+		{
+			// store depth if post-processing/capture needs it
+			DepthTargetAction = EDepthStencilTargetActions::ClearDepthStencil_StoreDepthStencil;
 		}
 	}
+
+	FRHITexture* FoveationTexture = nullptr;
+	
+	if (SceneContext.IsFoveationTextureAllocated()	&& !View.bIsSceneCapture && !View.bIsReflectionCapture)
+	{
+		FoveationTexture = SceneContext.GetFoveationTexture();
+	}
+
+	FRHIRenderPassInfo SceneColorRenderPassInfo(
+		SceneColor,
+		ColorTargetAction,
+		SceneColorResolve,
+		SceneDepth,
+		DepthTargetAction,
+		nullptr, // we never resolve scene depth on mobile
+		FoveationTexture,
+		FExclusiveDepthStencil::DepthWrite_StencilWrite
+	);
+	SceneColorRenderPassInfo.SubpassHint = ESubpassHint::DepthReadSubpass;
+	SceneColorRenderPassInfo.NumOcclusionQueries = ComputeNumOcclusionQueriesToBatch();
+	SceneColorRenderPassInfo.bOcclusionQueries = SceneColorRenderPassInfo.NumOcclusionQueries != 0;
+	SceneColorRenderPassInfo.bMultiviewPass = View.bIsMobileMultiViewEnabled;
+
+	// TODO: required only for DX11 ?
+	if (UseVirtualTexturing(ViewFeatureLevel) && !IsHlslccShaderPlatform(View.GetShaderPlatform()))
+	{
+		SceneContext.BindVirtualTextureFeedbackUAV(SceneColorRenderPassInfo);
+	}
+	
+	RHICmdList.BeginRenderPass(SceneColorRenderPassInfo, TEXT("SceneColorRendering"));
+
+	RHICmdList.SetCurrentStat(GET_STATID(STAT_CLM_MobilePrePass));
+	RenderPrePass(RHICmdList);
 
 	if (GIsEditor && !View.bIsSceneCapture)
 	{
 		DrawClearQuad(RHICmdList, Views[0].BackgroundColor);
 	}
 	
-	RHICmdList.SetCurrentStat(GET_STATID(STAT_CLMM_BasePass));
-
+	// Opaque and masked
+	RHICmdList.SetCurrentStat(GET_STATID(STAT_CLMM_Opaque));
 	RenderMobileBasePass(RHICmdList, ViewList);
-
-	RHICmdList.SetCurrentStat(GET_STATID(STAT_CLMM_Occlusion));
-	// Issue occlusion queries
-	RenderOcclusion(RHICmdList);
-	
-	RHICmdList.SetCurrentStat(GET_STATID(STAT_CLMM_Post));
-
-	if (bIsRenderingSceneColor)
-	{
-		SceneContext.FinishRenderingSceneColor(RHICmdList);
-	}
-
-	// #todo-renderpasses convert everything and call the correct FinishRenderingScene/Occlusion/etc
-	if (RHICmdList.IsInsideRenderPass())
-	{
-		// END BasePass
-		RHICmdList.EndRenderPass();
-	}
-	else
-	{
-		// #todo-renderpasses should never get here. Remove once everything is converted.
-		UnbindRenderTargets(RHICmdList);
-	}
-	
-	// this causes decal flicker on Adreno for some reason, FORT-112023
-	//FRHICommandListExecutor::GetImmediateCommandList().PollOcclusionQueries();
-
 	RHICmdList.ImmediateFlush(EImmediateFlushType::DispatchToRHIThread);
 
+#if !(UE_BUILD_SHIPPING || UE_BUILD_TEST)
+	if (ViewFamily.UseDebugViewPS())
 	{
+		// Here we use the base pass depth result to get z culling for opaque and masque.
+		// The color needs to be cleared at this point since shader complexity renders in additive.
+		DrawClearQuad(RHICmdList, FLinearColor::Black);
+		RenderMobileDebugView(RHICmdList, ViewList);
+		RHICmdList.ImmediateFlush(EImmediateFlushType::DispatchToRHIThread);
+	}
+#endif // !(UE_BUILD_SHIPPING || UE_BUILD_TEST)
+
+	const bool bAdrenoOcclusionMode = CVarMobileAdrenoOcclusionMode.GetValueOnRenderThread() != 0;
+	if (!bAdrenoOcclusionMode)
+	{
+	    // Issue occlusion queries
+	    RHICmdList.SetCurrentStat(GET_STATID(STAT_CLMM_Occlusion));
+	    RenderOcclusion(RHICmdList);
+	    RHICmdList.ImmediateFlush(EImmediateFlushType::DispatchToRHIThread);
+	}
+
+	{
+		CSV_SCOPED_TIMING_STAT_EXCLUSIVE(ViewExtensionPostRenderBasePass);
 		QUICK_SCOPE_CYCLE_COUNTER(STAT_FMobileSceneRenderer_ViewExtensionPostRenderBasePass);
 		for (int32 ViewExt = 0; ViewExt < ViewFamily.ViewExtensions.Num(); ++ViewExt)
 		{
@@ -448,104 +646,150 @@ void FMobileSceneRenderer::Render(FRHICommandListImmediate& RHICmdList)
 		}
 	}
 
-	// Make a copy of the scene depth if the current hardware doesn't support reading and writing to the same depth buffer
-	ConditionalResolveSceneDepth(RHICmdList, View);
-	
-	if (ViewFamily.EngineShowFlags.Decals && !View.bIsPlanarReflection)
+	// scene depth is read only and can be fetched
+	RHICmdList.NextSubpass();
+		
+	// Split if we need to render translucency in a separate render pass
+	if (bRequiresTranslucencyPass)
 	{
-		RenderDecals(RHICmdList);
+		RHICmdList.EndRenderPass();
 	}
+	   
+	RHICmdList.SetCurrentStat(GET_STATID(STAT_CLMM_Translucency));
 
-	// Notify the FX system that opaque primitives have been rendered.
-	if (Scene->FXSystem && IsGPUParticleCollisionEnabled(Views[0]))
+		
+	// Restart translucency render pass if needed
+	if (bRequiresTranslucencyPass)
 	{
-		FMobileSceneTextureUniformParameters MobileSceneTextureParameters;
-		SetupMobileSceneTextureUniformParameters(SceneContext, FeatureLevel, true, MobileSceneTextureParameters);
-		TUniformBufferRef<FMobileSceneTextureUniformParameters> MobileSceneTextureUniformBuffer = TUniformBufferRef<FMobileSceneTextureUniformParameters>::CreateUniformBufferImmediate(MobileSceneTextureParameters, UniformBuffer_SingleFrame);
+		check(RHICmdList.IsOutsideRenderPass());
 
-		// This is switching to another RT!
-		Scene->FXSystem->PostRenderOpaque(RHICmdList, View.ViewUniformBuffer, &FMobileSceneTextureUniformParameters::StaticStructMetadata, MobileSceneTextureUniformBuffer.GetReference());
+		// Make a copy of the scene depth if the current hardware doesn't support reading and writing to the same depth buffer
+		ConditionalResolveSceneDepth(RHICmdList, View);
+
+		DepthTargetAction = EDepthStencilTargetActions::LoadDepthStencil_DontStoreDepthStencil;
+		FExclusiveDepthStencil::Type ExclusiveDepthStencil = FExclusiveDepthStencil::DepthRead_StencilRead;
+		if (bModulatedShadowsInUse)
+		{
+			// FIXME: modulated shadows write to stencil
+			ExclusiveDepthStencil = FExclusiveDepthStencil::DepthRead_StencilWrite;
+		}
+		
+		if (bKeepDepthContent && !bMobileMSAA)
+		{
+			DepthTargetAction = EDepthStencilTargetActions::LoadDepthStencil_StoreDepthStencil;
+		}
+
+		FRHIRenderPassInfo TranslucentRenderPassInfo(
+			SceneColor,
+			SceneColorResolve ? ERenderTargetActions::Load_Resolve : ERenderTargetActions::Load_Store,
+			SceneColorResolve,
+			SceneDepth,
+			DepthTargetAction, 
+			nullptr,
+			FoveationTexture,
+			ExclusiveDepthStencil
+		);
+		TranslucentRenderPassInfo.NumOcclusionQueries = 0;
+		TranslucentRenderPassInfo.bOcclusionQueries = false;
+		RHICmdList.BeginRenderPass(TranslucentRenderPassInfo, TEXT("SceneColorTranslucencyRendering"));
 	}
-
-	IRendererModule& RendererModule = GetRendererModule();
-
+			
 	if (!View.bIsPlanarReflection)
 	{
-		RenderModulatedShadowProjections(RHICmdList);
+		if (ViewFamily.EngineShowFlags.Decals)
+		{
+			CSV_SCOPED_TIMING_STAT_EXCLUSIVE(RenderDecals);
+			RenderDecals(RHICmdList);
+		}
+
+		if (ViewFamily.EngineShowFlags.DynamicShadows)
+		{
+			CSV_SCOPED_TIMING_STAT_EXCLUSIVE(RenderShadowProjections);
+			RenderModulatedShadowProjections(RHICmdList);
+		}
 	}
 	
 	// Draw translucency.
 	if (ViewFamily.EngineShowFlags.Translucency)
 	{
+		CSV_SCOPED_TIMING_STAT_EXCLUSIVE(RenderTranslucency);
 		SCOPE_CYCLE_COUNTER(STAT_TranslucencyDrawTime);
 		RenderTranslucency(RHICmdList, ViewList, !bGammaSpace || bRenderToSceneColor);
 		FRHICommandListExecutor::GetImmediateCommandList().PollOcclusionQueries();
 		RHICmdList.ImmediateFlush(EImmediateFlushType::DispatchToRHIThread);
 	}
 
+	if (bAdrenoOcclusionMode)
+	{
+	    RHICmdList.SetCurrentStat(GET_STATID(STAT_CLMM_Occlusion));
+		// flush
+		RHICmdList.SubmitCommandsHint();
+		bSubmitOffscreenRendering = false; // submit once
+		// Issue occlusion queries
+	    RenderOcclusion(RHICmdList);
+	    RHICmdList.ImmediateFlush(EImmediateFlushType::DispatchToRHIThread);
+	}
+
+	// Pre-tonemap before MSAA resolve (iOS only)
+	if (!bGammaSpace)
+	{
+		PreTonemapMSAA(RHICmdList);
+	}
+	
+	// End of scene color rendering
+	RHICmdList.EndRenderPass();
+
+	if (Scene->FXSystem && Views.IsValidIndex(0))
+	{
+		check(RHICmdList.IsOutsideRenderPass());
+
+		Scene->FXSystem->PostRenderOpaque(
+			RHICmdList,
+			Views[0].ViewUniformBuffer,
+			nullptr,
+			nullptr,
+			Views[0].AllowGPUParticleUpdate()
+		);
+		if (FGPUSortManager* GPUSortManager = Scene->FXSystem->GetGPUSortManager())
+		{
+			GPUSortManager->OnPostRenderOpaque(RHICmdList);
+		}
+		RHICmdList.ImmediateFlush(EImmediateFlushType::DispatchToRHIThread);
+	}
+
+	// Flush / submit cmdbuffer
+	if (bSubmitOffscreenRendering)
+	{
+		RHICmdList.SubmitCommandsHint();
+		RHICmdList.ImmediateFlush(EImmediateFlushType::DispatchToRHIThread);
+	}
+	
+	if (!bGammaSpace || bRenderToSceneColor)
+	{
+		// transition scene color to Readable for post-processing
+		RHICmdList.TransitionResource(EResourceTransitionAccess::EReadable, SceneColor);
+	}
+
+	RHICmdList.SetCurrentStat(GET_STATID(STAT_CLMM_Post));
+
 	if (!View.bIsMobileMultiViewDirectEnabled)
 	{
 		CopyMobileMultiViewSceneColor(RHICmdList);
 	}
 
-	static const auto CVarMobileMSAA = IConsoleManager::Get().FindTConsoleVariableDataInt(TEXT("r.MobileMSAA"));
-	bool bOnChipPP =
-		GSupportsRenderTargetFormat_PF_FloatRGBA &&
-		GSupportsShaderFramebufferFetch &&
-		ViewFamily.EngineShowFlags.PostProcessing;
-	bool bOnChipSunMask = bOnChipPP && (View.bLightShaftUse || GetMobileDepthOfFieldScale(View) > 0.0) && !IsMobileDistortionActive(View);
-	bool bOnChipPreResolveMSAA = bOnChipPP && IsMetalMobilePlatform(ViewFamily.GetShaderPlatform()) && (CVarMobileMSAA ? CVarMobileMSAA->GetValueOnAnyThread() > 1 : false);
-
-	if (!bGammaSpace && (bOnChipSunMask || bOnChipPreResolveMSAA))
-	{
-		// Convert alpha from depth to circle of confusion with sunshaft intensity.
-		// This is done before resolve on hardware with framebuffer fetch.
-		// This will break when PrePostSourceViewportSize is not full size.
-		FIntPoint PrePostSourceViewportSize = SceneContext.GetBufferSizeXY();
-
-		FMemMark Mark(FMemStack::Get());
-		FRenderingCompositePassContext CompositeContext(RHICmdList, View);
-
-		FRenderingCompositePass* PostProcessSunMask = CompositeContext.Graph.RegisterPass(new(FMemStack::Get()) FRCPassPostProcessSunMaskES2(PrePostSourceViewportSize, true));
-		CompositeContext.Process(PostProcessSunMask, TEXT("OnChipAlphaTransform"));
-	}
-
-	bool bKeepDepthContent = false;
-
-	if (!bGammaSpace || bRenderToSceneColor)
-	{
-		// Resolve the scene color for post processing.
-		RHICmdList.CopyToResolveTarget(SceneContext.GetSceneColorSurface(), SceneContext.GetSceneColorTexture(), FResolveRect(0, 0, FamilySize.X, FamilySize.Y));
-
-		// On PowerVR we see flickering of shadows and depths not updating correctly if targets are discarded.
-		// See CVarMobileForceDepthResolve use in ConditionalResolveSceneDepth.
-		const bool bForceDepthResolve = CVarMobileForceDepthResolve.GetValueOnRenderThread() == 1;
-		const bool bSeparateTranslucencyActive = IsMobileSeparateTranslucencyActive(View);
-
-		bKeepDepthContent = bForceDepthResolve || bSeparateTranslucencyActive ||
-			(View.bIsSceneCapture && (ViewFamily.SceneCaptureSource == ESceneCaptureSource::SCS_SceneColorHDR || ViewFamily.SceneCaptureSource == ESceneCaptureSource::SCS_SceneColorSceneDepth));
-	}
-
-	// Drop depth and stencil before post processing to avoid export.
-	if (!bKeepDepthContent)
-	{
-		RHICmdList.DiscardRenderTargets(true, true, 0);
-	}
-
-	if (DoOcclusionQueries(FeatureLevel))
-	{
-		// Optionally hint submission later to avoid render pass churn but delay query results
-		const bool bSubmissionAfterTranslucency = (CVarMobileMoveSubmissionHintAfterTranslucency.GetValueOnRenderThread() == 1);
-		if (bSubmissionAfterTranslucency)
+	if (bUseVirtualTexturing)
+	{	
+		// No pass after this can make VT page requests
+		TArray<FIntRect, TInlineAllocator<FVirtualTextureFeedback::MaxRectPerTarget>> ViewRects;
+		ViewRects.AddUninitialized(Views.Num());
+		for (int32 ViewIndex = 0; ViewIndex < Views.Num(); ++ViewIndex)
 		{
-			RHICmdList.SubmitCommandsHint();
-			FRHICommandListExecutor::GetImmediateCommandList().PollOcclusionQueries();
-			RHICmdList.ImmediateFlush(EImmediateFlushType::DispatchToRHIThread);
+			ViewRects[ViewIndex] = Views[ViewIndex].ViewRect;
 		}
+		
+		SceneContext.VirtualTextureFeedback.TransferGPUToCPU(RHICmdList, ViewRects);
 	}
 	
-	RHICmdList.SetCurrentStat(GET_STATID(STAT_CLMM_Post));
-
 	if (ViewFamily.bResolveScene)
 	{
 		if (!bGammaSpace)
@@ -557,7 +801,7 @@ void FMobileSceneRenderer::Render(FRHICommandListImmediate& RHICmdList)
 				for (int32 ViewIndex = 0; ViewIndex < Views.Num(); ViewIndex++)
 				{
 					SCOPED_CONDITIONAL_DRAW_EVENTF(RHICmdList, EventView, Views.Num() > 1, TEXT("View%d"), ViewIndex);
-					GPostProcessing.ProcessES2(RHICmdList, Scene, Views[ViewIndex], bOnChipSunMask);
+					GPostProcessing.ProcessES2(RHICmdList, Scene, Views[ViewIndex]);
 				}
 			}
 		}
@@ -587,39 +831,24 @@ void FMobileSceneRenderer::BasicPostProcess(FRHICommandListImmediate& RHICmdList
 	const bool bBlitRequired = !bDoUpscale && !bDoEditorPrimitives;
 
 	if (bDoUpscale || bBlitRequired)
-	{	// blit from sceneRT to view family target, simple bilinear if upscaling otherwise point filtered.
-		uint32 UpscaleQuality = bDoUpscale ? 1 : 0;
-		FRenderingCompositePass* Node = Context.Graph.RegisterPass(new(FMemStack::Get()) FRCPassPostProcessUpscaleES2(View, UpscaleQuality, false));
+	{
+		const EUpscaleMethod UpscaleMethod = bDoUpscale ? EUpscaleMethod::Bilinear : EUpscaleMethod::Nearest;
 
-		Node->SetInput(ePId_Input0, FRenderingCompositeOutputRef(Context.FinalOutput));
-		Node->SetInput(ePId_Input1, FRenderingCompositeOutputRef(Context.FinalOutput));
-
-		Context.FinalOutput = FRenderingCompositeOutputRef(Node);
+		Context.FinalOutput = AddUpscalePass(Context.Graph, Context.FinalOutput, UpscaleMethod, EUpscaleStage::PrimaryToOutput);
 	}
 
 #if WITH_EDITOR
 	// Composite editor primitives if we had any to draw and compositing is enabled
 	if (bDoEditorPrimitives)
 	{
-		FRenderingCompositePass* EditorCompNode = Context.Graph.RegisterPass(new(FMemStack::Get()) FRCPassPostProcessCompositeEditorPrimitives(false));
-		EditorCompNode->SetInput(ePId_Input0, FRenderingCompositeOutputRef(Context.FinalOutput));
-		//Node->SetInput(ePId_Input1, FRenderingCompositeOutputRef(Context.SceneDepth));
-		Context.FinalOutput = FRenderingCompositeOutputRef(EditorCompNode);
+		Context.FinalOutput = AddEditorPrimitivePass(Context.Graph, Context.FinalOutput, FEditorPrimitiveInputs::EBasePassType::Mobile);
 	}
 #endif
 
 	bool bStereoRenderingAndHMD = View.Family->EngineShowFlags.StereoRendering && View.Family->EngineShowFlags.HMDDistortion;
 	if (bStereoRenderingAndHMD)
 	{
-		const IHeadMountedDisplay* HMD =  GEngine->XRSystem->GetHMDDevice();
-		checkf(HMD, TEXT("EngineShowFlags.HMDDistortion can not be true when IXRTrackingSystem::GetHMDDevice returns null"));
-		FRenderingCompositePass* Node = Context.Graph.RegisterPass(new FRCPassPostProcessHMD());
-
-		if (Node)
-		{
-			Node->SetInput(ePId_Input0, FRenderingCompositeOutputRef(Context.FinalOutput));
-			Context.FinalOutput = FRenderingCompositeOutputRef(Node);
-		}
+		Context.FinalOutput = AddHMDDistortionPass(Context.Graph, Context.FinalOutput);
 	}
 
 	// currently created on the heap each frame but View.Family->RenderTarget could keep this object and all would be cleaner
@@ -634,6 +863,7 @@ void FMobileSceneRenderer::BasicPostProcess(FRHICommandListImmediate& RHICmdList
 	// todo: this should come from View.Family->RenderTarget
 	Desc.Format = PF_B8G8R8A8;
 	Desc.NumMips = 1;
+	Desc.TargetableFlags |= TexCreate_RenderTargetable;
 
 	GRenderTargetPool.CreateUntrackedElement(Desc, Temp, Item);
 
@@ -641,6 +871,33 @@ void FMobileSceneRenderer::BasicPostProcess(FRHICommandListImmediate& RHICmdList
 	Context.FinalOutput.GetOutput()->RenderTargetDesc = Desc;
 
 	CompositeContext.Process(Context.FinalOutput.GetPass(), TEXT("ES2BasicPostProcess"));
+}
+
+void FMobileSceneRenderer::RenderMobileDebugView(FRHICommandListImmediate& RHICmdList, const TArrayView<const FViewInfo*> PassViews)
+{
+#if !(UE_BUILD_SHIPPING || UE_BUILD_TEST)
+	CSV_SCOPED_TIMING_STAT_EXCLUSIVE(RenderDebugView);
+	SCOPED_DRAW_EVENT(RHICmdList, MobileDebugView);
+	SCOPE_CYCLE_COUNTER(STAT_BasePassDrawTime);
+
+	for (int32 ViewIndex = 0; ViewIndex < PassViews.Num(); ViewIndex++)
+	{
+		SCOPED_CONDITIONAL_DRAW_EVENTF(RHICmdList, EventView, Views.Num() > 1, TEXT("View%d"), ViewIndex);
+		const FViewInfo& View = *PassViews[ViewIndex];
+		if (!View.ShouldRenderView())
+		{
+			continue;
+		}
+
+		FSceneRenderTargets& SceneContext = FSceneRenderTargets::Get(RHICmdList);
+		FDebugViewModePassPassUniformParameters PassParameters;
+		SetupDebugViewModePassUniformBuffer(SceneContext, View.GetFeatureLevel(), PassParameters);
+		Scene->UniformBuffers.DebugViewModePassUniformBuffer.UpdateUniformBufferImmediate(PassParameters);
+		
+		RHICmdList.SetViewport(View.ViewRect.Min.X, View.ViewRect.Min.Y, 0, View.ViewRect.Max.X, View.ViewRect.Max.Y, 1);
+		View.ParallelMeshDrawCommandPasses[EMeshPass::DebugViewMode].DispatchDraw(nullptr, RHICmdList);
+	}
+#endif // !(UE_BUILD_SHIPPING || UE_BUILD_TEST)
 }
 
 void FMobileSceneRenderer::RenderOcclusion(FRHICommandListImmediate& RHICmdList)
@@ -652,13 +909,6 @@ void FMobileSceneRenderer::RenderOcclusion(FRHICommandListImmediate& RHICmdList)
 
 	BeginOcclusionTests(RHICmdList, true);
 	FenceOcclusionTests(RHICmdList);
-
-	// Optionally hint submission later to avoid render pass churn but delay query results
-	const bool bSubmissionAfterTranslucency = (CVarMobileMoveSubmissionHintAfterTranslucency.GetValueOnRenderThread() == 1);
-	if (!bSubmissionAfterTranslucency)
-	{	
-		RHICmdList.SubmitCommandsHint();
-	}
 }
 
 int32 FMobileSceneRenderer::ComputeNumOcclusionQueriesToBatch() const
@@ -680,97 +930,130 @@ int32 FMobileSceneRenderer::ComputeNumOcclusionQueriesToBatch() const
 	return NumQueriesForBatch;
 }
 
+// Whether we need a separate translucency render pass
+bool FMobileSceneRenderer::RequiresTranslucencyPass(FRHICommandListImmediate& RHICmdList, const FViewInfo& View) const
+{
+	// Translucency needs to fetch scene depth, 
+	// we render opaque and translucency in a single pass if device supports frame_buffer_fetch
+
+	// All iOS support frame_buffer_fetch
+	if (IsMetalMobilePlatform(ShaderPlatform))
+	{
+		return false;
+	}
+	
+	// Vulkan uses subpasses for depth fetch
+	if (IsVulkanPlatform(ShaderPlatform))
+	{
+		return false;
+	}
+	
+	// Some Androids support frame_buffer_fetch
+	if (IsAndroidOpenGLESPlatform(ShaderPlatform) && (GSupportsShaderFramebufferFetch || GSupportsShaderDepthStencilFetch))
+	{
+		return false;
+	}
+		
+	// Always render reflection capture in single pass
+	if (View.bIsPlanarReflection || View.bIsSceneCapture)
+	{
+		return false;
+	}
+
+	// Always render LDR in single pass
+	if (!IsMobileHDR() && (ShaderPlatform != SP_OPENGL_ES2_WEBGL))
+	{
+		return false;
+	}
+
+	// MSAA depth can't be sampled or resolved, unless we are on PC (no vulkan)
+	static const auto CVarMobileMSAA = IConsoleManager::Get().FindTConsoleVariableDataInt(TEXT("r.MobileMSAA"));
+	const bool bMobileMSAA = (CVarMobileMSAA ? CVarMobileMSAA->GetValueOnAnyThread() > 1 : false);
+	if (bMobileMSAA && !IsSimulatedPlatform(ShaderPlatform))
+	{
+		return false;
+	}
+
+	return true;
+}
+
+
 void FMobileSceneRenderer::ConditionalResolveSceneDepth(FRHICommandListImmediate& RHICmdList, const FViewInfo& View)
 {
 	FSceneRenderTargets& SceneContext = FSceneRenderTargets::Get(RHICmdList);
-	SceneContext.ResolveSceneDepthToAuxiliaryTexture(RHICmdList);
 	
 	if (IsSimulatedPlatform(ShaderPlatform)) // mobile emulation on PC
 	{
 		// resolve MSAA depth for translucency
 		SceneContext.ResolveSceneDepthTexture(RHICmdList, FResolveRect(0, 0, FamilySize.X, FamilySize.Y));
 	}
-	else if ((IsMobileHDR() || IsHTML5Platform())
-		&& IsMobilePlatform(ShaderPlatform) 
-		&& !IsMetalPlatform(ShaderPlatform) // iOS supports framebuffer fetch
-		&& !IsVulkanPlatform(ShaderPlatform) // don't need this on vulkan?
-		&& !IsPCPlatform(ShaderPlatform) // exclude mobile emulation on PC
-		&& !View.bIsPlanarReflection)	// exclude depth resolve from planar reflection captures, can't do it reliably more than once per frame
+	else if ((ShaderPlatform == SP_OPENGL_ES2_WEBGL) || IsAndroidOpenGLESPlatform(ShaderPlatform))
 	{
-		bool bSceneDepthInAlpha = (SceneContext.GetSceneColor()->GetDesc().Format == PF_FloatRGBA);
-		bool bOnChipDepthFetch = (GSupportsShaderDepthStencilFetch || (GSupportsShaderFramebufferFetch && bSceneDepthInAlpha));
-
+		const bool bSceneDepthInAlpha = (SceneContext.GetSceneColor()->GetDesc().Format == PF_FloatRGBA);
 		const bool bAlwaysResolveDepth = CVarMobileAlwaysResolveDepth.GetValueOnRenderThread() == 1;
-		
-		static const auto CVarMobileMSAA = IConsoleManager::Get().FindTConsoleVariableDataInt(TEXT("r.MobileMSAA"));
-		const bool bMobileMSAA = (CVarMobileMSAA ? CVarMobileMSAA->GetValueOnAnyThread() > 1 : false);
-		
-		if (!bOnChipDepthFetch || bAlwaysResolveDepth)
+		// Only these features require depth texture
+		bool bDecals = ViewFamily.EngineShowFlags.Decals && Scene->Decals.Num();
+		bool bModulatedShadows = ViewFamily.EngineShowFlags.DynamicShadows && bModulatedShadowsInUse;
+
+		if (bDecals || bModulatedShadows || bAlwaysResolveDepth || View.bUsesSceneDepth)
 		{
-			// Only these features require depth texture
-			bool bDecals = ViewFamily.EngineShowFlags.Decals && Scene->Decals.Num();
-			bool bModulatedShadows = ViewFamily.EngineShowFlags.DynamicShadows && bModulatedShadowsInUse;
+			SCOPED_DRAW_EVENT(RHICmdList, ConditionalResolveSceneDepth);
 
-			if (bDecals || bModulatedShadows || bAlwaysResolveDepth || View.bUsesSceneDepth)
+			// WEBGL copies depth from SceneColor alpha to a separate texture
+			if (ShaderPlatform == SP_OPENGL_ES2_WEBGL)
 			{
-				SCOPED_DRAW_EVENT(RHICmdList, ConditionalResolveSceneDepth);
-
-				// WEBGL copies depth from SceneColor alpha to a separate texture
-				if (ShaderPlatform == SP_OPENGL_ES2_WEBGL)
+				if (bSceneDepthInAlpha)
 				{
-					if (bSceneDepthInAlpha)
-					{
-						CopySceneAlpha(RHICmdList, View);
-					}
+					CopySceneAlpha(RHICmdList, View);
 				}
-				else if (!bMobileMSAA)
+			}
+			else
+			{
+				// Switch target to force hardware flush current depth to texture
+				FTextureRHIRef DummySceneColor = GSystemTextures.BlackDummy->GetRenderTargetItem().TargetableTexture;
+				FTextureRHIRef DummyDepthTarget = GSystemTextures.DepthDummy->GetRenderTargetItem().TargetableTexture;
+					
+				FRHIRenderPassInfo RPInfo(DummySceneColor, ERenderTargetActions::DontLoad_DontStore);
+				RPInfo.DepthStencilRenderTarget.Action = EDepthStencilTargetActions::ClearDepthStencil_StoreDepthStencil;
+				RPInfo.DepthStencilRenderTarget.DepthStencilTarget = DummyDepthTarget;
+				RPInfo.DepthStencilRenderTarget.ExclusiveDepthStencil = FExclusiveDepthStencil::DepthWrite_StencilWrite;
+				RHICmdList.BeginRenderPass(RPInfo, TEXT("ResolveDepth"));
 				{
-					// Switch target to force hardware flush current depth to texture
-					FTextureRHIRef DummySceneColor = GSystemTextures.BlackDummy->GetRenderTargetItem().TargetableTexture;
-					FTextureRHIRef DummyDepthTarget = GSystemTextures.DepthDummy->GetRenderTargetItem().TargetableTexture;
+					FGraphicsPipelineStateInitializer GraphicsPSOInit;
+					RHICmdList.ApplyCachedRenderTargets(GraphicsPSOInit);
+					GraphicsPSOInit.BlendState = TStaticBlendState<>::GetRHI();
+					GraphicsPSOInit.RasterizerState = TStaticRasterizerState<>::GetRHI();
+					GraphicsPSOInit.DepthStencilState = TStaticDepthStencilState<false, CF_Always>::GetRHI();
+
+					// for devices that do not support framebuffer fetch we rely on undocumented behavior:
+					// Depth reading features will have the depth bound as an attachment AND as a sampler this means
+					// some driver implementations will ignore our attempts to resolve, here we draw with the depth texture to force a resolve.
+					// See UE-37809 for a description of the desired fix.
+					// The results of this draw are irrelevant.
+					TShaderMapRef<FScreenVS> ScreenVertexShader(View.ShaderMap);
+					TShaderMapRef<FScreenPS> PixelShader(View.ShaderMap);
 					
-					FRHIRenderPassInfo RPInfo(DummySceneColor, ERenderTargetActions::DontLoad_DontStore);
-					RPInfo.DepthStencilRenderTarget.Action = EDepthStencilTargetActions::ClearDepthStencil_StoreDepthStencil;
-					RPInfo.DepthStencilRenderTarget.DepthStencilTarget = DummyDepthTarget;
-					RPInfo.DepthStencilRenderTarget.ExclusiveDepthStencil = FExclusiveDepthStencil::DepthWrite_StencilWrite;
-					RHICmdList.BeginRenderPass(RPInfo, TEXT("ResolveDepth"));
-					{
-						FGraphicsPipelineStateInitializer GraphicsPSOInit;
-						RHICmdList.ApplyCachedRenderTargets(GraphicsPSOInit);
-						GraphicsPSOInit.BlendState = TStaticBlendState<>::GetRHI();
-						GraphicsPSOInit.RasterizerState = TStaticRasterizerState<>::GetRHI();
-						GraphicsPSOInit.DepthStencilState = TStaticDepthStencilState<false, CF_Always>::GetRHI();
+					GraphicsPSOInit.BoundShaderState.VertexDeclarationRHI = GFilterVertexDeclaration.VertexDeclarationRHI;
+					GraphicsPSOInit.BoundShaderState.VertexShaderRHI = ScreenVertexShader.GetVertexShader();
+					GraphicsPSOInit.BoundShaderState.PixelShaderRHI = PixelShader.GetPixelShader();
+					GraphicsPSOInit.PrimitiveType = PT_TriangleList;
 
-						// for devices that do not support framebuffer fetch we rely on undocumented behavior:
-						// Depth reading features will have the depth bound as an attachment AND as a sampler this means
-						// some driver implementations will ignore our attempts to resolve, here we draw with the depth texture to force a resolve.
-						// See UE-37809 for a description of the desired fix.
-						// The results of this draw are irrelevant.
-						TShaderMapRef<FScreenVS> ScreenVertexShader(View.ShaderMap);
-						TShaderMapRef<FScreenPS> PixelShader(View.ShaderMap);
-					
-						GraphicsPSOInit.BoundShaderState.VertexDeclarationRHI = GFilterVertexDeclaration.VertexDeclarationRHI;
-						GraphicsPSOInit.BoundShaderState.VertexShaderRHI = GETSAFERHISHADER_VERTEX(*ScreenVertexShader);
-						GraphicsPSOInit.BoundShaderState.PixelShaderRHI = GETSAFERHISHADER_PIXEL(*PixelShader);
-						GraphicsPSOInit.PrimitiveType = PT_TriangleList;
+					SetGraphicsPipelineState(RHICmdList, GraphicsPSOInit);
 
-						SetGraphicsPipelineState(RHICmdList, GraphicsPSOInit);
-
-						ScreenVertexShader->SetParameters(RHICmdList, View.ViewUniformBuffer);
-						PixelShader->SetParameters(RHICmdList, TStaticSamplerState<SF_Point>::GetRHI(), SceneContext.GetSceneDepthTexture());
-						DrawRectangle(
-							RHICmdList,
-							0, 0,
-							0, 0,
-							0, 0,
-							1, 1,
-							FIntPoint(1, 1),
-							FIntPoint(1, 1),
-							*ScreenVertexShader,
-							EDRF_UseTriangleOptimization);
-					} // force depth resolve
-					RHICmdList.EndRenderPass();
-				}
+					ScreenVertexShader->SetParameters(RHICmdList, View.ViewUniformBuffer);
+					PixelShader->SetParameters(RHICmdList, TStaticSamplerState<SF_Point>::GetRHI(), SceneContext.GetSceneDepthTexture());
+					DrawRectangle(
+						RHICmdList,
+						0, 0,
+						0, 0,
+						0, 0,
+						1, 1,
+						FIntPoint(1, 1),
+						FIntPoint(1, 1),
+						ScreenVertexShader,
+						EDRF_UseTriangleOptimization);
+				} // force depth resolve
+				RHICmdList.EndRenderPass();
 			}
 		}
 	}
@@ -794,12 +1077,29 @@ void FMobileSceneRenderer::UpdateDirectionalLightUniformBuffers(FRHICommandListI
 {
 	bool bDynamicShadows = ViewFamily.EngineShowFlags.DynamicShadows;
 	// Fill in the other entries based on the lights
-	for (int32 ChannelIdx = 0; ChannelIdx < ARRAY_COUNT(Scene->MobileDirectionalLights); ChannelIdx++)
+	for (int32 ChannelIdx = 0; ChannelIdx < UE_ARRAY_COUNT(Scene->MobileDirectionalLights); ChannelIdx++)
 	{
 		FMobileDirectionalLightShaderParameters Params;
 		SetupMobileDirectionalLightUniformParameters(*Scene, View, VisibleLightInfos, ChannelIdx, bDynamicShadows, Params);
 		Scene->UniformBuffers.MobileDirectionalLightUniformBuffers[ChannelIdx + 1].UpdateUniformBufferImmediate(Params);
 	}
+}
+
+void FMobileSceneRenderer::UpdateSkyReflectionUniformBuffer()
+{
+	FSkyLightSceneProxy* SkyLight = nullptr;
+	if (Scene->ReflectionSceneData.RegisteredReflectionCapturePositions.Num() == 0
+		&& Scene->SkyLight
+		&& Scene->SkyLight->ProcessedTexture->TextureRHI
+		// Don't use skylight reflection if it is a static sky light for keeping coherence with PC.
+		&& !Scene->SkyLight->bHasStaticLighting)
+	{
+		SkyLight = Scene->SkyLight;
+	}
+
+	FMobileReflectionCaptureShaderParameters Parameters;
+	SetupMobileSkyReflectionUniformParameters(SkyLight, Parameters);
+	Scene->UniformBuffers.MobileSkyReflectionUniformBuffer.UpdateUniformBufferImmediate(Parameters);
 }
 
 void FMobileSceneRenderer::CreateDirectionalLightUniformBuffers(FViewInfo& View)
@@ -808,7 +1108,7 @@ void FMobileSceneRenderer::CreateDirectionalLightUniformBuffers(FViewInfo& View)
 	// First array entry is used for primitives with no lighting channel set
 	View.MobileDirectionalLightUniformBuffers[0] = TUniformBufferRef<FMobileDirectionalLightShaderParameters>::CreateUniformBufferImmediate(FMobileDirectionalLightShaderParameters(), UniformBuffer_SingleFrame);
 	// Fill in the other entries based on the lights
-	for (int32 ChannelIdx = 0; ChannelIdx < ARRAY_COUNT(Scene->MobileDirectionalLights); ChannelIdx++)
+	for (int32 ChannelIdx = 0; ChannelIdx < UE_ARRAY_COUNT(Scene->MobileDirectionalLights); ChannelIdx++)
 	{
 		FMobileDirectionalLightShaderParameters Params;
 		SetupMobileDirectionalLightUniformParameters(*Scene, View, VisibleLightInfos, ChannelIdx, bDynamicShadows, Params);
@@ -835,9 +1135,9 @@ public:
 
 	FCopyMobileMultiViewSceneColorPS() {}
 
-	void SetParameters(FRHICommandList& RHICmdList, const FUniformBufferRHIParamRef ViewUniformBuffer, FTextureRHIRef InMobileMultiViewSceneColorTexture)
+	void SetParameters(FRHICommandList& RHICmdList, FRHIUniformBuffer* ViewUniformBuffer, FTextureRHIRef InMobileMultiViewSceneColorTexture)
 	{
-		const FPixelShaderRHIParamRef ShaderRHI = GetPixelShader();
+		FRHIPixelShader* ShaderRHI = RHICmdList.GetBoundPixelShader();
 		FGlobalShader::SetParameters<FViewUniformShaderParameters>(RHICmdList, ShaderRHI, ViewUniformBuffer);
 		SetTextureParameter(
 			RHICmdList,
@@ -848,23 +1148,15 @@ public:
 			InMobileMultiViewSceneColorTexture);
 	}
 
-	virtual bool Serialize(FArchive& Ar) override
-	{
-		const bool bShaderHasOutdatedParameters = FGlobalShader::Serialize(Ar);
-		Ar << MobileMultiViewSceneColorTexture;
-		Ar << MobileMultiViewSceneColorTextureSampler;
-		return bShaderHasOutdatedParameters;
-	}
-
-	FShaderResourceParameter MobileMultiViewSceneColorTexture;
-	FShaderResourceParameter MobileMultiViewSceneColorTextureSampler;
+	LAYOUT_FIELD(FShaderResourceParameter, MobileMultiViewSceneColorTexture)
+	LAYOUT_FIELD(FShaderResourceParameter, MobileMultiViewSceneColorTextureSampler)
 };
 
 IMPLEMENT_SHADER_TYPE(, FCopyMobileMultiViewSceneColorPS, TEXT("/Engine/Private/MobileMultiView.usf"), TEXT("MainPS"), SF_Pixel);
 
 void FMobileSceneRenderer::CopyMobileMultiViewSceneColor(FRHICommandListImmediate& RHICmdList)
 {
-	if (!Views[0].bIsMobileMultiViewEnabled)
+	if (Views.Num() <= 1 || !Views[0].bIsMobileMultiViewEnabled)
 	{
 		return;
 	}
@@ -894,8 +1186,8 @@ void FMobileSceneRenderer::CopyMobileMultiViewSceneColor(FRHICommandListImmediat
 	extern TGlobalResource<FFilterVertexDeclaration> GFilterVertexDeclaration;
 
 	GraphicsPSOInit.BoundShaderState.VertexDeclarationRHI = GFilterVertexDeclaration.VertexDeclarationRHI;
-	GraphicsPSOInit.BoundShaderState.VertexShaderRHI = GETSAFERHISHADER_VERTEX(*VertexShader);
-	GraphicsPSOInit.BoundShaderState.PixelShaderRHI = GETSAFERHISHADER_PIXEL(*PixelShader);
+	GraphicsPSOInit.BoundShaderState.VertexShaderRHI = VertexShader.GetVertexShader();
+	GraphicsPSOInit.BoundShaderState.PixelShaderRHI = PixelShader.GetPixelShader();
 	GraphicsPSOInit.PrimitiveType = PT_TriangleList;
 
 	SetGraphicsPipelineState(RHICmdList, GraphicsPSOInit);
@@ -918,7 +1210,7 @@ void FMobileSceneRenderer::CopyMobileMultiViewSceneColor(FRHICommandListImmediat
 			View.ViewRect.Width(), View.ViewRect.Height(),
 			TargetSize,
 			TargetSize,
-			*VertexShader,
+			VertexShader,
 			EDRF_UseTriangleOptimization);
 	}
 
@@ -926,11 +1218,71 @@ void FMobileSceneRenderer::CopyMobileMultiViewSceneColor(FRHICommandListImmediat
 	RHICmdList.EndRenderPass();
 }
 
-bool FMobileSceneRenderer::IsGPUParticleCollisionEnabled(const FViewInfo& View)
+class FPreTonemapMSAA_ES2 : public FGlobalShader
 {
-	if (!View.bIsPlanarReflection && ViewFamily.EngineShowFlags.Particles)
+	DECLARE_SHADER_TYPE(FPreTonemapMSAA_ES2, Global);
+
+	static bool ShouldCompilePermutation(const FGlobalShaderPermutationParameters& Parameters)
 	{
-		return CVarMobileDisableGPUParticleCollision.GetValueOnRenderThread() == 0;
+		return !IsConsolePlatform(Parameters.Platform);
+	}	
+
+	FPreTonemapMSAA_ES2() {}
+
+public:
+	FPreTonemapMSAA_ES2(const ShaderMetaType::CompiledShaderInitializerType& Initializer)
+		: FGlobalShader(Initializer)
+	{
 	}
-	return false;
+};
+
+IMPLEMENT_SHADER_TYPE(,FPreTonemapMSAA_ES2,TEXT("/Engine/Private/PostProcessMobile.usf"),TEXT("PreTonemapMSAA_ES2"),SF_Pixel);
+
+void FMobileSceneRenderer::PreTonemapMSAA(FRHICommandListImmediate& RHICmdList)
+{
+	// iOS only
+	static const auto CVarMobileMSAA = IConsoleManager::Get().FindTConsoleVariableDataInt(TEXT("r.MobileMSAA"));
+	bool bOnChipPP = GSupportsRenderTargetFormat_PF_FloatRGBA && GSupportsShaderFramebufferFetch &&	ViewFamily.EngineShowFlags.PostProcessing;
+	bool bOnChipPreTonemapMSAA = bOnChipPP && IsMetalMobilePlatform(ViewFamily.GetShaderPlatform()) && (CVarMobileMSAA ? CVarMobileMSAA->GetValueOnAnyThread() > 1 : false);
+	if (!bOnChipPreTonemapMSAA)
+	{
+		return;
+	}
+	
+	// Part of scene rendering pass
+	check (RHICmdList.IsInsideRenderPass());
+
+	FSceneRenderTargets& SceneContext = FSceneRenderTargets::Get(RHICmdList);
+
+	FGraphicsPipelineStateInitializer GraphicsPSOInit;
+	RHICmdList.ApplyCachedRenderTargets(GraphicsPSOInit);
+	GraphicsPSOInit.BlendState = TStaticBlendState<>::GetRHI();
+	GraphicsPSOInit.RasterizerState = TStaticRasterizerState<>::GetRHI();
+	GraphicsPSOInit.DepthStencilState = TStaticDepthStencilState<false, CF_Always>::GetRHI();
+
+	const auto ShaderMap = GetGlobalShaderMap(FeatureLevel);
+	TShaderMapRef<FScreenVS> VertexShader(ShaderMap);
+	TShaderMapRef<FPreTonemapMSAA_ES2> PixelShader(ShaderMap);
+
+	extern TGlobalResource<FFilterVertexDeclaration> GFilterVertexDeclaration;
+	GraphicsPSOInit.BoundShaderState.VertexDeclarationRHI = GFilterVertexDeclaration.VertexDeclarationRHI;
+	GraphicsPSOInit.BoundShaderState.VertexShaderRHI = VertexShader.GetVertexShader();
+	GraphicsPSOInit.BoundShaderState.PixelShaderRHI = PixelShader.GetPixelShader();
+	GraphicsPSOInit.PrimitiveType = PT_TriangleList;
+
+	SetGraphicsPipelineState(RHICmdList, GraphicsPSOInit);
+	
+	const FIntPoint TargetSize = SceneContext.GetBufferSizeXY();
+	RHICmdList.SetViewport(0, 0, 0.0f, TargetSize.X, TargetSize.Y, 1.0f);
+
+	DrawRectangle(
+		RHICmdList,
+		0, 0,
+		TargetSize.X, TargetSize.Y,
+		0, 0,
+		TargetSize.X, TargetSize.Y,
+		TargetSize,
+		TargetSize,
+		VertexShader,
+		EDRF_UseTriangleOptimization);
 }

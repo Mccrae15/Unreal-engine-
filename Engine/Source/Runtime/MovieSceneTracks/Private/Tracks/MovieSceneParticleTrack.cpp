@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "Tracks/MovieSceneParticleTrack.h"
 #include "MovieSceneCommonHelpers.h"
@@ -44,6 +44,12 @@ void UMovieSceneParticleTrack::AddSection(UMovieSceneSection& Section)
 void UMovieSceneParticleTrack::RemoveSection(UMovieSceneSection& Section)
 {
 	ParticleSections.Remove(&Section);
+}
+
+
+void UMovieSceneParticleTrack::RemoveSectionAt(int32 SectionIndex)
+{
+	ParticleSections.RemoveAt(SectionIndex);
 }
 
 

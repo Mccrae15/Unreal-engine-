@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -97,11 +97,14 @@ private:
 	/** Checks to see if any of the selected collections use custom colors */
 	bool SelectedHasCustomColors() const;
 
-	/** Callback when the color picker dialog has been closed */
-	void NewColorComplete(const TSharedRef<SWindow>& Window);
+	/** Handler to check to see if "Set/Clear Color" can be executed */
+	bool CanExecuteColorChange() const;
 
 	/** Callback when the color is picked from the set color submenu */
 	FReply OnColorClicked( const FLinearColor InColor );
+
+	/** Callback when the color is picked from the set color submenu or picker */
+	void OnColorCommitted( const FLinearColor InColor );
 
 	/** Resets the colors of the selected collections */
 	void ResetColors();

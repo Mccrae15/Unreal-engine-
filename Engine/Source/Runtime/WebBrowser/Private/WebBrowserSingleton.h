@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -89,6 +89,10 @@ public:
 		const TArray<FString>& AltRetryDomains = TArray<FString>()) override;
 
 	TSharedPtr<IWebBrowserWindow> CreateBrowserWindow(const FCreateBrowserWindowSettings& Settings) override;
+
+#if	BUILD_EMBEDDED_APP
+	TSharedPtr<IWebBrowserWindow> CreateNativeBrowserProxy() override;
+#endif
 
 	virtual void DeleteBrowserCookies(FString URL = TEXT(""), FString CookieName = TEXT(""), TFunction<void(int)> Completed = nullptr) override;
 

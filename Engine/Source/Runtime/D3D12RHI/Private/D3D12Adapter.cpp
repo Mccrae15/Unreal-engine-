@@ -1,41 +1,27 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 /*=============================================================================
 D3D12Adapter.cpp:D3D12 Adapter implementation.
 =============================================================================*/
 
 #include "D3D12RHIPrivate.h"
+#include "Misc/CommandLine.h"
+#include "Misc/EngineVersion.h"
+#include "Windows/AllowWindowsPlatformTypes.h"
+#if !PLATFORM_CPU_ARM_FAMILY && !PLATFORM_XBOXONE
+	#include "amd_ags.h"
+#endif
+#include "Windows/HideWindowsPlatformTypes.h"
 
 #if ENABLE_RESIDENCY_MANAGEMENT
 bool GEnableResidencyManagement = true;
-#endif
-
-static TAutoConsoleVariable<int32> CVarTransientUniformBufferAllocatorSizeKB(
-	TEXT("D3D12.TransientUniformBufferAllocatorSizeKB"),
-	2 * 1024,
-	TEXT(""),
+static TAutoConsoleVariable<int32> CVarResidencyManagement(
+	TEXT("D3D12.ResidencyManagement"),
+	1,
+	TEXT("Controls whether D3D12 resource residency management is active (default = on)."),
 	ECVF_ReadOnly
 );
-
-
-struct FRHICommandSignalFrameFence final : public FRHICommand<FRHICommandSignalFrameFence>
-{
-	ED3D12CommandQueueType QueueType;
-	FD3D12ManualFence* const Fence;
-	const uint64 Value;
-	FORCEINLINE_DEBUGGABLE FRHICommandSignalFrameFence(ED3D12CommandQueueType InQueueType, FD3D12ManualFence* InFence, uint64 InValue)
-		: QueueType(InQueueType)
-		, Fence(InFence)
-		, Value(InValue)
-	{ 
-	}
-
-	void Execute(FRHICommandListBase& CmdList)
-	{
-		Fence->Signal(QueueType, Value);
-		check(Fence->GetLastSignaledFence() == Value);
-	}
-};
+#endif // ENABLE_RESIDENCY_MANAGEMENT
 
 FD3D12Adapter::FD3D12Adapter(FD3D12AdapterDesc& DescIn)
 	: OwningRHI(nullptr)
@@ -64,8 +50,21 @@ FD3D12Adapter::FD3D12Adapter(FD3D12AdapterDesc& DescIn)
 			MaxGPUCount = MAX_NUM_GPUS;
 		}
 	}
+	if (FParse::Param(FCommandLine::Get(), TEXT("VMGPU")))
+	{
+		GVirtualMGPU = 1;
+		UE_LOG(LogD3D12RHI, Log, TEXT("Enabling virtual multi-GPU mode"), Desc.NumDeviceNodes);
+	}
 #endif
-	Desc.NumDeviceNodes = FMath::Min3<uint32>(Desc.NumDeviceNodes, MaxGPUCount, MAX_NUM_GPUS);
+
+	if (GVirtualMGPU)
+	{
+		Desc.NumDeviceNodes = FMath::Min<uint32>(MaxGPUCount, MAX_NUM_GPUS);
+	}
+	else
+	{
+		Desc.NumDeviceNodes = FMath::Min3<uint32>(Desc.NumDeviceNodes, MaxGPUCount, MAX_NUM_GPUS);
+	}
 }
 
 void FD3D12Adapter::Initialize(FD3D12DynamicRHI* RHI)
@@ -75,6 +74,8 @@ void FD3D12Adapter::Initialize(FD3D12DynamicRHI* RHI)
 
 void FD3D12Adapter::CreateRootDevice(bool bWithDebug)
 {
+	const bool bAllowVendorDevice = !FParse::Param(FCommandLine::Get(), TEXT("novendordevice"));
+
 	CreateDXGIFactory();
 
 	// QI for the Adapter
@@ -87,39 +88,32 @@ void FD3D12Adapter::CreateRootDevice(bool bWithDebug)
 	//		Software must be NULL. 
 	D3D_DRIVER_TYPE DriverType = D3D_DRIVER_TYPE_UNKNOWN;
 
-#if PLATFORM_WINDOWS
+#if PLATFORM_WINDOWS || (PLATFORM_HOLOLENS && !UE_BUILD_SHIPPING && D3D12_PROFILING_ENABLED)
 	if (bWithDebug)
 	{
 		TRefCountPtr<ID3D12Debug> DebugController;
-		VERIFYD3D12RESULT(D3D12GetDebugInterface(IID_PPV_ARGS(DebugController.GetInitReference())));
-		DebugController->EnableDebugLayer();
-
-		// TODO: MSFT: BEGIN TEMPORARY WORKAROUND for a debug layer issue with the Editor creating lots of viewports (swapchains).
-		// Without this you could see this error: D3D12 ERROR: ID3D12CommandQueue::ExecuteCommandLists: Up to 8 swapchains can be written to by a single command queue. Present must be called on one of the swapchains to enable a command queue to execute command lists that write to more.  [ STATE_SETTING ERROR #906: COMMAND_QUEUE_TOO_MANY_SWAPCHAIN_REFERENCES]
-		if (GIsEditor)
+		if (SUCCEEDED(D3D12GetDebugInterface(IID_PPV_ARGS(DebugController.GetInitReference()))))
 		{
-			TRefCountPtr<ID3D12Debug1> DebugController1;
-			const HRESULT HrDebugController1 = D3D12GetDebugInterface(IID_PPV_ARGS(DebugController1.GetInitReference()));
-			if (DebugController1.GetReference())
+			DebugController->EnableDebugLayer();
+
+			bool bD3d12gpuvalidation = false;
+			if (FParse::Param(FCommandLine::Get(), TEXT("d3d12gpuvalidation")) || FParse::Param(FCommandLine::Get(), TEXT("gpuvalidation")))
 			{
-				DebugController1->SetEnableSynchronizedCommandQueueValidation(false);
-				UE_LOG(LogD3D12RHI, Warning, TEXT("Disabling the debug layer's Synchronized Command Queue Validation. This means many debug layer features won't do anything. This code should be removed as soon as possible with an update debug layer."));
+				TRefCountPtr<ID3D12Debug1> DebugController1;
+				VERIFYD3D12RESULT(DebugController->QueryInterface(IID_PPV_ARGS(DebugController1.GetInitReference())));
+				DebugController1->SetEnableGPUBasedValidation(true);
+				bD3d12gpuvalidation = true;
 			}
-		}
-		// END TEMPORARY WORKAROUND
 
-		bool bD3d12gpuvalidation = false;
-		if (FParse::Param(FCommandLine::Get(), TEXT("d3d12gpuvalidation")))
+			UE_LOG(LogD3D12RHI, Log, TEXT("InitD3DDevice: -D3DDebug = %s -D3D12GPUValidation = %s"), bWithDebug ? TEXT("on") : TEXT("off"), bD3d12gpuvalidation ? TEXT("on") : TEXT("off"));
+		}
+		else
 		{
-			TRefCountPtr<ID3D12Debug1> DebugController1;
-			VERIFYD3D12RESULT(DebugController->QueryInterface(IID_PPV_ARGS(DebugController1.GetInitReference())));
-			DebugController1->SetEnableGPUBasedValidation(true);
-			bD3d12gpuvalidation = true;
+			bWithDebug = false;
+			UE_LOG(LogD3D12RHI, Fatal, TEXT("The debug interface requires the D3D12 SDK Layers. Please install the Graphics Tools for Windows. See: https://docs.microsoft.com/en-us/windows/uwp/gaming/use-the-directx-runtime-and-visual-studio-graphics-diagnostic-features"));
 		}
-
-		UE_LOG(LogD3D12RHI, Log, TEXT("InitD3DDevice: -D3DDebug = %s -D3D12GPUValidation = %s"), bWithDebug ? TEXT("on") : TEXT("off"), bD3d12gpuvalidation ? TEXT("on") : TEXT("off") );
 	}
-#endif // PLATFORM_WINDOWS
+#endif // PLATFORM_WINDOWS || (PLATFORM_HOLOLENS && !UE_BUILD_SHIPPING && D3D12_PROFILING_ENABLED)
 
 #if USE_PIX
 	UE_LOG(LogD3D12RHI, Log, TEXT("Emitting draw events for PIX profiling."));
@@ -132,12 +126,61 @@ void FD3D12Adapter::CreateRootDevice(bool bWithDebug)
 		DriverType = D3D_DRIVER_TYPE_REFERENCE;
 	}
 
-	// Creating the Direct3D device.
-	VERIFYD3D12RESULT(D3D12CreateDevice(
-		GetAdapter(),
-		GetFeatureLevel(),
-		IID_PPV_ARGS(RootDevice.GetInitReference())
-	));
+	bool bDeviceCreated = false;
+#if !PLATFORM_CPU_ARM_FAMILY && !PLATFORM_XBOXONE
+	if (IsRHIDeviceAMD() && OwningRHI->GetAmdAgsContext())
+	{
+		auto* CVarShaderDevelopmentMode = IConsoleManager::Get().FindTConsoleVariableDataInt(TEXT("r.ShaderDevelopmentMode"));
+		auto* CVarDisableEngineAndAppRegistration = IConsoleManager::Get().FindTConsoleVariableDataInt(TEXT("r.DisableEngineAndAppRegistration"));
+
+		const bool bDisableEngineRegistration = (CVarShaderDevelopmentMode && CVarShaderDevelopmentMode->GetValueOnAnyThread() != 0) ||
+			(CVarDisableEngineAndAppRegistration && CVarDisableEngineAndAppRegistration->GetValueOnAnyThread() != 0);
+		const bool bDisableAppRegistration = bDisableEngineRegistration || !FApp::HasProjectName();
+
+		// Creating the Direct3D device with AGS registration and extensions.
+		AGSDX12DeviceCreationParams AmdDeviceCreationParams = {
+			GetAdapter(),											// IDXGIAdapter*               pAdapter;
+			__uuidof(**(RootDevice.GetInitReference())),			// IID                         iid;
+			GetFeatureLevel(),										// D3D_FEATURE_LEVEL           FeatureLevel;
+		};
+
+		AGSDX12ExtensionParams AmdExtensionParams;
+		FMemory::Memzero(&AmdExtensionParams, sizeof(AmdExtensionParams));
+		// Register the engine name with the AMD driver, e.g. "UnrealEngine4.19", unless disabled
+		// (note: to specify nothing for pEngineName below, you need to pass an empty string, not a null pointer)
+		FString EngineName = FApp::GetEpicProductIdentifier() + FEngineVersion::Current().ToString(EVersionComponent::Minor);
+		AmdExtensionParams.pEngineName = bDisableEngineRegistration ? TEXT("") : *EngineName;
+		AmdExtensionParams.engineVersion = AGS_UNSPECIFIED_VERSION;
+
+		// Register the project name with the AMD driver, unless disabled or no project name
+		// (note: to specify nothing for pAppName below, you need to pass an empty string, not a null pointer)
+		AmdExtensionParams.pAppName = bDisableAppRegistration ? TEXT("") : FApp::GetProjectName();
+		AmdExtensionParams.appVersion = AGS_UNSPECIFIED_VERSION;
+
+		// Specify custom UAV bind point for the special UAV (custom slot will always assume space0 in the root signature).
+		AmdExtensionParams.uavSlot = 7;
+
+		AGSDX12ReturnedParams DeviceCreationReturnedParams;
+		AGSReturnCode DeviceCreation = agsDriverExtensionsDX12_CreateDevice(OwningRHI->GetAmdAgsContext(), &AmdDeviceCreationParams, &AmdExtensionParams, &DeviceCreationReturnedParams);
+
+		if (DeviceCreation == AGS_SUCCESS)
+		{
+			RootDevice = DeviceCreationReturnedParams.pDevice;
+			OwningRHI->SetAmdSupportedExtensionFlags(DeviceCreationReturnedParams.extensionsSupported);
+			bDeviceCreated = true;
+		}
+	}
+#endif
+
+	if (!bDeviceCreated)
+	{
+		// Creating the Direct3D device.
+		VERIFYD3D12RESULT(D3D12CreateDevice(
+			GetAdapter(),
+			GetFeatureLevel(),
+			IID_PPV_ARGS(RootDevice.GetInitReference())
+		));
+	}
 
 	// Detect availability of shader model 6.0 wave operations
 	{
@@ -145,6 +188,15 @@ void FD3D12Adapter::CreateRootDevice(bool bWithDebug)
 		RootDevice->CheckFeatureSupport(D3D12_FEATURE_D3D12_OPTIONS1, &Features, sizeof(Features));
 		GRHISupportsWaveOperations = Features.WaveOps;
 	}
+
+#if ENABLE_RESIDENCY_MANAGEMENT
+	if (!CVarResidencyManagement.GetValueOnAnyThread())
+	{
+		UE_LOG(LogD3D12RHI, Log, TEXT("D3D12 resource residency management is disabled."));
+		GEnableResidencyManagement = false;
+	}
+#endif // ENABLE_RESIDENCY_MANAGEMENT
+
 
 #if D3D12_RHI_RAYTRACING
 	bool bRayTracingSupported = false;
@@ -170,11 +222,12 @@ void FD3D12Adapter::CreateRootDevice(bool bWithDebug)
 		if (RootRayTracingDevice)
 		{
 			UE_LOG(LogD3D12RHI, Log, TEXT("D3D12 ray tracing enabled."));
-#if ENABLE_RESIDENCY_MANAGEMENT
-			// #dxr_todo: implement resource residency management for ray tracing resources
-			UE_LOG(LogD3D12RHI, Log, TEXT("Ray tracing resource residency tracking is not implemented. Disabling D3D12 residency management."));
-			GEnableResidencyManagement = false;
-#endif // ENABLE_RESIDENCY_MANAGEMENT
+
+			static auto CVarSkinCache = IConsoleManager::Get().FindConsoleVariable(TEXT("r.SkinCache.CompileShaders"));
+			if (CVarSkinCache->GetInt() <= 0)
+			{
+				UE_LOG(LogD3D12RHI, Fatal, TEXT("D3D12 ray tracing requires skin cache to be enabled. Set r.SkinCache.CompileShaders=1."));
+			}
 		}
 		else
 		{
@@ -183,7 +236,48 @@ void FD3D12Adapter::CreateRootDevice(bool bWithDebug)
 	}
 #endif // D3D12_RHI_RAYTRACING
 
-#if UE_BUILD_DEBUG	&& PLATFORM_WINDOWS
+#if NV_AFTERMATH
+	// Two ways to enable aftermath, command line or the r.GPUCrashDebugging variable
+	// Note: If intending to change this please alert game teams who use this for user support.
+	if (FParse::Param(FCommandLine::Get(), TEXT("gpucrashdebugging")))
+	{
+		GDX12NVAfterMathEnabled = true;
+	}
+	else
+	{
+		static IConsoleVariable* GPUCrashDebugging = IConsoleManager::Get().FindConsoleVariable(TEXT("r.GPUCrashDebugging"));
+		if (GPUCrashDebugging)
+		{
+			GDX12NVAfterMathEnabled = GPUCrashDebugging->GetInt();
+		}
+	}
+
+	if (GDX12NVAfterMathEnabled)
+	{
+		if (IsRHIDeviceNVIDIA() && bAllowVendorDevice)
+		{
+			GFSDK_Aftermath_Result Result = GFSDK_Aftermath_DX12_Initialize(GFSDK_Aftermath_Version_API, GFSDK_Aftermath_FeatureFlags_Maximum, RootDevice);
+			if (Result == GFSDK_Aftermath_Result_Success)
+			{
+				UE_LOG(LogD3D12RHI, Log, TEXT("[Aftermath] Aftermath enabled and primed"));
+				SetEmitDrawEvents(true);
+			}
+			else
+			{
+				UE_LOG(LogD3D12RHI, Log, TEXT("[Aftermath] Aftermath enabled but failed to initialize (%x)"), Result);
+				GDX12NVAfterMathEnabled = 0;
+			}
+		}
+		else
+		{
+			GDX12NVAfterMathEnabled = 0;
+			UE_LOG(LogD3D12RHI, Warning, TEXT("[Aftermath] Skipping aftermath initialization on non-Nvidia device"));
+		}
+	}
+#endif
+
+
+#if UE_BUILD_DEBUG	&& (PLATFORM_WINDOWS || PLATFORM_HOLOLENS)
 	//break on debug
 	TRefCountPtr<ID3D12Debug> d3dDebug;
 	if (SUCCEEDED(RootDevice->QueryInterface(__uuidof(ID3D12Debug), (void**)d3dDebug.GetInitReference())))
@@ -198,7 +292,7 @@ void FD3D12Adapter::CreateRootDevice(bool bWithDebug)
 	}
 #endif
 
-#if !(UE_BUILD_SHIPPING && WITH_EDITOR) && PLATFORM_WINDOWS
+#if !(UE_BUILD_SHIPPING && WITH_EDITOR) && (PLATFORM_WINDOWS || PLATFORM_HOLOLENS)
 	// Add some filter outs for known debug spew messages (that we don't care about)
 	if (bWithDebug)
 	{
@@ -314,6 +408,40 @@ void FD3D12Adapter::CreateRootDevice(bool bWithDebug)
 			UE_LOG(LogD3D12RHI, Log, TEXT("Enabling multi-GPU with %d nodes"), Desc.NumDeviceNodes);
 		}
 	}
+
+	// Viewport ignores AFR if PresentGPU is specified.
+	int32 Dummy;
+	if (!FParse::Value(FCommandLine::Get(), TEXT("PresentGPU="), Dummy))
+	{
+		bool bWantsAFR = false;
+		if (FParse::Value(FCommandLine::Get(), TEXT("NumAFRGroups="), GNumAlternateFrameRenderingGroups))
+		{
+			bWantsAFR = true;
+		}
+		else if (FParse::Param(FCommandLine::Get(), TEXT("AFR")))
+		{
+			bWantsAFR = true;
+			GNumAlternateFrameRenderingGroups = GNumExplicitGPUsForRendering;
+		}
+
+		if (bWantsAFR)
+		{
+			if (GNumAlternateFrameRenderingGroups <= 1 || GNumAlternateFrameRenderingGroups > GNumExplicitGPUsForRendering)
+			{
+				UE_LOG(LogD3D12RHI, Error, TEXT("Cannot enable alternate frame rendering because NumAFRGroups (%u) must be > 1 and <= MaxGPUCount (%u)"), GNumAlternateFrameRenderingGroups, GNumExplicitGPUsForRendering);
+				GNumAlternateFrameRenderingGroups = 1;
+			}
+			else if (GNumExplicitGPUsForRendering % GNumAlternateFrameRenderingGroups != 0)
+			{
+				UE_LOG(LogD3D12RHI, Error, TEXT("Cannot enable alternate frame rendering because MaxGPUCount (%u) must be evenly divisible by NumAFRGroups (%u)"), GNumExplicitGPUsForRendering, GNumAlternateFrameRenderingGroups);
+				GNumAlternateFrameRenderingGroups = 1;
+			}
+			else
+			{
+				UE_LOG(LogD3D12RHI, Log, TEXT("Enabling alternate frame rendering with %u AFR groups"), GNumAlternateFrameRenderingGroups);
+			}
+		}
+	}
 #endif
 }
 
@@ -370,7 +498,7 @@ void FD3D12Adapter::InitializeDevices()
 				UE_LOG(LogD3D12RHI, Log, TEXT("The system supports ID3D12Device1."));
 			}
 
-	#if PLATFORM_WINDOWS
+	#if PLATFORM_WINDOWS || PLATFORM_HOLOLENS
 			if (SUCCEEDED(RootDevice->QueryInterface(IID_PPV_ARGS(RootDevice2.GetInitReference()))))
 			{
 				UE_LOG(LogD3D12RHI, Log, TEXT("The system supports ID3D12Device2."));
@@ -383,7 +511,7 @@ void FD3D12Adapter::InitializeDevices()
 		ResourceHeapTier = D3D12Caps.ResourceHeapTier;
 		ResourceBindingTier = D3D12Caps.ResourceBindingTier;
 
-#if PLATFORM_WINDOWS
+#if PLATFORM_WINDOWS || PLATFORM_HOLOLENS
 		D3D12_FEATURE_DATA_D3D12_OPTIONS2 D3D12Caps2 = {};
 		if (FAILED(RootDevice->CheckFeatureSupport(D3D12_FEATURE_D3D12_OPTIONS2, &D3D12Caps2, sizeof(D3D12Caps2))))
 		{
@@ -409,7 +537,17 @@ void FD3D12Adapter::InitializeDevices()
 
 		CreateSignatures();
 
-		//Create all of the FD3D12Devices
+		// Context redirectors allow RHI commands to be executed on multiple GPUs at the
+		// same time in a multi-GPU system. Redirectors have a physical mask for the GPUs
+		// they can support and an active mask which restricts commands to operate on a
+		// subset of the physical GPUs. The default context redirectors used by the
+		// immediate command list can support all physical GPUs, whereas context containers
+		// used by the parallel command lists might only support a subset of GPUs in the
+		// system.
+		DefaultContextRedirector.SetPhysicalGPUMask(FRHIGPUMask::All());
+		DefaultAsyncComputeContextRedirector.SetPhysicalGPUMask(FRHIGPUMask::All());
+
+		// Create all of the FD3D12Devices.
 		for (uint32 GPUIndex : FRHIGPUMask::All())
 		{
 			Devices[GPUIndex] = new FD3D12Device(FRHIGPUMask::FromIndex(GPUIndex), this);
@@ -422,13 +560,6 @@ void FD3D12Adapter::InitializeDevices()
 				DefaultAsyncComputeContextRedirector.SetPhysicalContext(&Devices[GPUIndex]->GetDefaultAsyncComputeContext());
 			}
 		}
-
-		DefaultContextRedirector.SetGPUMask(FRHIGPUMask::All());
-		DefaultAsyncComputeContextRedirector.SetGPUMask(FRHIGPUMask::All());
-
-		// Initialize the immediate command list GPU mask now that everything is set.
-		FRHICommandListExecutor::GetImmediateCommandList().SetGPUMask(FRHIGPUMask::All());
-		FRHICommandListExecutor::GetImmediateAsyncComputeCommandList().SetGPUMask(FRHIGPUMask::All());
 
 		GPUProfilingData.Init();
 
@@ -461,7 +592,7 @@ void FD3D12Adapter::InitializeDevices()
 		ID3D12RootSignature* StaticGraphicsRS = (GetStaticGraphicsRootSignature()) ? GetStaticGraphicsRootSignature()->GetRootSignature() : nullptr;
 		ID3D12RootSignature* StaticComputeRS = (GetStaticComputeRootSignature()) ? GetStaticComputeRootSignature()->GetRootSignature() : nullptr;
 
-		// #dxr_todo: verify that disk cache works correctly with DXR
+		// #dxr_todo UE-68235: verify that disk cache works correctly with DXR
 		PipelineStateCache.RebuildFromDiskCache(StaticGraphicsRS, StaticComputeRS);
 	}
 }
@@ -487,7 +618,7 @@ void FD3D12Adapter::CreateSignatures()
 	D3D12_COMMAND_SIGNATURE_DESC commandSignatureDesc = {};
 	commandSignatureDesc.NumArgumentDescs = 1;
 	commandSignatureDesc.ByteStride = 20;
-	commandSignatureDesc.NodeMask = (uint32)FRHIGPUMask::All();
+	commandSignatureDesc.NodeMask = FRHIGPUMask::All().GetNative();
 
 	D3D12_INDIRECT_ARGUMENT_DESC indirectParameterDesc[1] = {};
 	commandSignatureDesc.pArgumentDescs = indirectParameterDesc;
@@ -517,6 +648,8 @@ void FD3D12Adapter::Cleanup()
 		Viewport->WaitForFrameEventCompletion();
 	}
 
+	BlockUntilIdle();
+
 #if D3D12_RHI_RAYTRACING
 	for (uint32 GPUIndex : FRHIGPUMask::All())
 	{
@@ -524,44 +657,28 @@ void FD3D12Adapter::Cleanup()
 	}
 #endif // D3D12_RHI_RAYTRACING
 
+#if WITH_MGPU
 	// Manually destroy the effects as we can't do it in their destructor.
 	for (auto& Effect : TemporalEffectMap)
 	{
 		Effect.Value.Destroy();
 	}
+#endif
 
 	// Ask all initialized FRenderResources to release their RHI resources.
-	for (TLinkedList<FRenderResource*>::TIterator ResourceIt(FRenderResource::GetResourceList()); ResourceIt; ResourceIt.Next())
-	{
-		FRenderResource* Resource = *ResourceIt;
-		check(Resource->IsInitialized());
-		Resource->ReleaseRHI();
-	}
-
-	for (TLinkedList<FRenderResource*>::TIterator ResourceIt(FRenderResource::GetResourceList()); ResourceIt; ResourceIt.Next())
-	{
-		ResourceIt->ReleaseDynamicRHI();
-	}
-
-	TransientUniformBufferAllocator.Destroy();
+	FRenderResource::ReleaseRHIForAllResources();
 
 	FRHIResource::FlushPendingDeletes();
 
-	// Clean up the asnyc texture thread allocators
-	for (int32 i = 0; i < GetOwningRHI()->NumThreadDynamicHeapAllocators; i++)
-	{
-		GetOwningRHI()->ThreadDynamicHeapAllocatorArray[i]->Destroy<FD3D12ScopeLock>();
-		delete(GetOwningRHI()->ThreadDynamicHeapAllocatorArray[i]);
-	}
-
 	// Cleanup resources
-	DeferredDeletionQueue.Clear();
+	DeferredDeletionQueue.ReleaseResources(true, true);
 
 	// First clean up everything before deleting as there are shared resource location between devices.
 	for (uint32 GPUIndex : FRHIGPUMask::All())
 	{
 		Devices[GPUIndex]->Cleanup();
 	}	
+
 	for (uint32 GPUIndex : FRHIGPUMask::All())
 	{
 		delete(Devices[GPUIndex]);
@@ -610,29 +727,10 @@ void FD3D12Adapter::EndFrame()
 	{
 		GetUploadHeapAllocator(GPUIndex).CleanUpAllocations();
 	}
-	GetDeferredDeletionQueue().ReleaseResources();
+	GetDeferredDeletionQueue().ReleaseResources(false, false);
 }
 
-void FD3D12Adapter::SignalFrameFence_RenderThread(FRHICommandListImmediate& RHICmdList)
-{
-	check(IsInRenderingThread());
-	check(RHICmdList.IsImmediate());
-
-	// Increment the current fence (on render thread timeline).
-	const uint64 PreviousFence = FrameFence->IncrementCurrentFence();
-
-	// Queue a command to signal the frame fence is complete on the GPU (on the RHI thread timeline if using an RHI thread).
-	if (RHICmdList.Bypass() || !IsRunningRHIInSeparateThread())
-	{
-		FRHICommandSignalFrameFence Cmd(ED3D12CommandQueueType::Default, FrameFence, PreviousFence);
-		Cmd.Execute(RHICmdList);
-	}
-	else
-	{
-		ALLOC_COMMAND_CL(RHICmdList, FRHICommandSignalFrameFence)(ED3D12CommandQueueType::Default, FrameFence, PreviousFence);
-	}
-}
-
+#if WITH_MGPU
 FD3D12TemporalEffect* FD3D12Adapter::GetTemporalEffect(const FName& EffectName)
 {
 	FD3D12TemporalEffect* Effect = TemporalEffectMap.Find(EffectName);
@@ -646,32 +744,40 @@ FD3D12TemporalEffect* FD3D12Adapter::GetTemporalEffect(const FName& EffectName)
 	check(Effect);
 	return Effect;
 }
+#endif // WITH_MGPU
 
 FD3D12FastConstantAllocator& FD3D12Adapter::GetTransientUniformBufferAllocator()
 {
-	// Multi-GPU support : is using device 0 always appropriate here?
-	return *TransientUniformBufferAllocator.GetObjectForThisThread([this]() -> FD3D12FastConstantAllocator*
+	class FTransientUniformBufferAllocator : public FD3D12FastConstantAllocator, public TThreadSingleton<FTransientUniformBufferAllocator>
 	{
-		FD3D12FastConstantAllocator* Alloc = new FD3D12FastConstantAllocator(Devices[0], FRHIGPUMask::All(), CVarTransientUniformBufferAllocatorSizeKB.GetValueOnAnyThread() * 1024);
-		Alloc->Init();
+		using FD3D12FastConstantAllocator::FD3D12FastConstantAllocator;
+	};
+
+	// Multi-GPU support : is using device 0 always appropriate here?
+	return FTransientUniformBufferAllocator::Get([this]() -> FTransientUniformBufferAllocator*
+	{
+		FTransientUniformBufferAllocator* Alloc = new FTransientUniformBufferAllocator(Devices[0], FRHIGPUMask::All());
 		return Alloc;
 	});
 }
 
 void FD3D12Adapter::GetLocalVideoMemoryInfo(DXGI_QUERY_VIDEO_MEMORY_INFO* LocalVideoMemoryInfo)
 {
-#if PLATFORM_WINDOWS
+#if PLATFORM_WINDOWS || PLATFORM_HOLOLENS
 	TRefCountPtr<IDXGIAdapter3> Adapter3;
 	VERIFYD3D12RESULT(GetAdapter()->QueryInterface(IID_PPV_ARGS(Adapter3.GetInitReference())));
 
 	VERIFYD3D12RESULT(Adapter3->QueryVideoMemoryInfo(0, DXGI_MEMORY_SEGMENT_GROUP_LOCAL, LocalVideoMemoryInfo));
 
-	for (uint32 Index = 1; Index < GNumExplicitGPUsForRendering; ++Index)
+	if (!GVirtualMGPU)
 	{
-		DXGI_QUERY_VIDEO_MEMORY_INFO TempVideoMemoryInfo;
-		VERIFYD3D12RESULT(Adapter3->QueryVideoMemoryInfo(Index, DXGI_MEMORY_SEGMENT_GROUP_LOCAL, &TempVideoMemoryInfo));
-		LocalVideoMemoryInfo->Budget = FMath::Min(LocalVideoMemoryInfo->Budget, TempVideoMemoryInfo.Budget);
-		LocalVideoMemoryInfo->Budget = FMath::Min(LocalVideoMemoryInfo->CurrentUsage, TempVideoMemoryInfo.CurrentUsage);
+		for (uint32 Index = 1; Index < GNumExplicitGPUsForRendering; ++Index)
+		{
+			DXGI_QUERY_VIDEO_MEMORY_INFO TempVideoMemoryInfo;
+			VERIFYD3D12RESULT(Adapter3->QueryVideoMemoryInfo(Index, DXGI_MEMORY_SEGMENT_GROUP_LOCAL, &TempVideoMemoryInfo));
+			LocalVideoMemoryInfo->Budget = FMath::Min(LocalVideoMemoryInfo->Budget, TempVideoMemoryInfo.Budget);
+			LocalVideoMemoryInfo->Budget = FMath::Min(LocalVideoMemoryInfo->CurrentUsage, TempVideoMemoryInfo.CurrentUsage);
+		}
 	}
 #endif
 }

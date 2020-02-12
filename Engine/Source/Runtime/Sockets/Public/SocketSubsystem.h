@@ -1,13 +1,15 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
 #include "CoreMinimal.h"
 #include "SocketTypes.h"
+#include "IPAddress.h"
 #include "AddressInfoTypes.h"
 
 class Error;
 class FInternetAddr;
+class FSocket;
 
 SOCKETS_API DECLARE_LOG_CATEGORY_EXTERN(LogSockets, Log, All);
 
@@ -28,8 +30,6 @@ SOCKETS_API DECLARE_LOG_CATEGORY_EXTERN(LogSockets, Log, All);
 		#define PLATFORM_SOCKETSUBSYSTEM FName(TEXT("PS4"))
 	#elif PLATFORM_XBOXONE
 		#define PLATFORM_SOCKETSUBSYSTEM FName(TEXT("XBOXONE"))
-	#elif PLATFORM_HTML5
-		#define PLATFORM_SOCKETSUBSYSTEM FName(TEXT("HTML5"))
 	#elif PLATFORM_SWITCH
 		#define PLATFORM_SOCKETSUBSYSTEM FName(TEXT("SWITCH"))
 	#else
@@ -43,7 +43,6 @@ SOCKETS_API DECLARE_LOG_CATEGORY_EXTERN(LogSockets, Log, All);
  */
 class SOCKETS_API ISocketSubsystem
 {
-
 public:
 
 	/**
@@ -82,9 +81,10 @@ public:
 	 *
 	 * @return the new socket or NULL if failed
 	 */
-	virtual class FSocket* CreateSocket(const FName& SocketType, const FString& SocketDescription, bool bForceUDP = false)
+	virtual FSocket* CreateSocket(const FName& SocketType, const FString& SocketDescription, bool bForceUDP = false)
 	{
-		return CreateSocket(SocketType, SocketDescription, ESocketProtocolFamily::None);
+		const FName NoProtocolTypeName(NAME_None);
+		return CreateSocket(SocketType, SocketDescription, NoProtocolTypeName);
 	}
 
 	/**
@@ -92,11 +92,26 @@ public:
 	 *
 	 * @Param SocketType type of socket to create (DGram, Stream, etc)
 	 * @param SocketDescription debug description
-	 * @param ProtocolType the socket protocol to be used
+	 * @param ProtocolType the socket protocol to be used. Each subsystem must handle the None case and output a valid socket regardless.
 	 *
 	 * @return the new socket or NULL if failed
 	 */
-	virtual class FSocket* CreateSocket(const FName& SocketType, const FString& SocketDescription, ESocketProtocolFamily ProtocolType) = 0;
+	UE_DEPRECATED(4.23, "Use the CreateSocket with the FName parameter for support for multiple protocol types.")
+	virtual FSocket* CreateSocket(const FName& SocketType, const FString& SocketDescription, ESocketProtocolFamily ProtocolType)
+	{
+		return CreateSocket(SocketType, SocketDescription, GetProtocolNameFromFamily(ProtocolType));
+	}
+
+	/**
+	 * Creates a socket using the given protocol name.
+	 *
+	 * @Param SocketType type of socket to create (DGram, Stream, etc)
+	 * @param SocketDescription debug description
+	 * @param ProtocolName the name of the internet protocol to use for this socket. None should be handled.
+	 *
+	 * @return the new socket or NULL if failed
+	 */
+	virtual FSocket* CreateSocket(const FName& SocketType, const FString& SocketDescription, const FName& ProtocolName) = 0;
 
 	/**
 	 * Creates a resolve info cached struct to hold the resolved address
@@ -112,7 +127,7 @@ public:
 	 *
 	 * @param Socket the socket object to destroy
 	 */
-	virtual void DestroySocket(class FSocket* Socket) = 0;
+	virtual void DestroySocket(FSocket* Socket) = 0;
 
 	/**
 	 * Gets the address information of the given hostname and outputs it into an array of resolvable addresses.
@@ -130,18 +145,99 @@ public:
 	 *
 	 * @return the results structure containing the array of address results to this query
 	 */
+	UE_DEPRECATED(4.23, "Migrate to GetAddressInfo that takes an FName as the protocol specification.")
 	virtual FAddressInfoResult GetAddressInfo(const TCHAR* HostName, const TCHAR* ServiceName = nullptr,
 		EAddressInfoFlags QueryFlags = EAddressInfoFlags::Default,
 		ESocketProtocolFamily ProtocolType = ESocketProtocolFamily::None,
+		ESocketType SocketType = ESocketType::SOCKTYPE_Unknown)
+	{
+		return GetAddressInfo(HostName, ServiceName, QueryFlags, GetProtocolNameFromFamily(ProtocolType), SocketType);
+	}
+
+	/**
+	 * Gets the address information of the given hostname and outputs it into an array of resolvable addresses.
+	 * It is up to the caller to determine which one is valid for their environment.
+	 *
+	 * This function allows for specifying FNames for the protocol type, allowing for support of other 
+	 * platform protocols
+	 *
+	 * @param HostName string version of the queryable hostname or ip address
+	 * @param ServiceName string version of a service name ("http") or a port number ("80")
+	 * @param QueryFlags What flags are used in making the getaddrinfo call. Several flags can be used at once by
+	 *                   bitwise OR-ing the flags together.
+	 *                   Platforms are required to translate this value into a the correct flag representation.
+	 * @param ProtocolTypeName Used to limit results from the call. Specifying None will search all valid protocols.
+	 *					   Callers will find they rarely have to specify this flag.
+	 * @param SocketType What socket type should the results be formatted for. This typically does not change any
+	 *                   formatting results and can be safely left to the default value.
+	 *
+	 * @return the results structure containing the array of address results to this query
+	 */
+	virtual FAddressInfoResult GetAddressInfo(const TCHAR* HostName, const TCHAR* ServiceName = nullptr,
+		EAddressInfoFlags QueryFlags = EAddressInfoFlags::Default,
+		const FName ProtocolTypeName = NAME_None,
 		ESocketType SocketType = ESocketType::SOCKTYPE_Unknown) = 0;
 
 	/**
+	 * Async variant of GetAddressInfo that fetches the data from the above function in an 
+	 * asynchronous task executed on an available background thread.
+	 * 
+	 * On Completion, this fires a callback function that will be executed on the same thread as
+	 * the task's execution. The caller is responsible for either dispatching the result to the thread of their choosing
+	 * or to allow the result callback execute on the task's thread.
+	 *
+	 * This function allows for specifying FNames for the protocol type, allowing for support of other
+	 * platform protocols
+	 *
+	 * @param Callback the callback function to fire when this query completes. Contains the FAddressInfoResult structure.
+	 * @param HostName string version of the queryable hostname or ip address
+	 * @param ServiceName string version of a service name ("http") or a port number ("80")
+	 * @param QueryFlags What flags are used in making the getaddrinfo call. Several flags can be used at once by
+	 *                   bitwise OR-ing the flags together.
+	 *                   Platforms are required to translate this value into a the correct flag representation.
+	 * @param ProtocolTypeName Used to limit results from the call. Specifying None will search all valid protocols.
+	 *					   Callers will find they rarely have to specify this flag.
+	 * @param SocketType What socket type should the results be formatted for. This typically does not change any
+	 *                   formatting results and can be safely left to the default value.
+	 *
+	 */
+	virtual void GetAddressInfoAsync(FAsyncGetAddressInfoCallback Callback, const TCHAR* HostName,
+		const TCHAR* ServiceName = nullptr, EAddressInfoFlags QueryFlags = EAddressInfoFlags::Default,
+		const FName ProtocolTypeName = NAME_None,
+		ESocketType SocketType = ESocketType::SOCKTYPE_Unknown);
+
+	/**
+	 * Serializes a string that only contains an address.
+	 * 
+	 * This is a what you see is what you get, there is no DNS resolution of the input string,
+	 * so only use this if you know you already have a valid address and will not need to convert.
+	 * Otherwise, feed the address to GetAddressInfo for guaranteed results.
+	 *
+	 * @param InAddress the address to serialize
+	 *
+	 * @return The FInternetAddr of the given string address. This will point to nullptr on failure.
+	 */
+	virtual TSharedPtr<FInternetAddr> GetAddressFromString(const FString& InAddress) = 0;
+
+	/**
 	 * Does a DNS look up of a host name
+	 * This code assumes a lot, and as such, it's not guaranteed that the results provided by it are correct.
 	 *
 	 * @param HostName the name of the host to look up
 	 * @param Addr the address to copy the IP address to
 	 */
-	virtual ESocketErrors GetHostByName(const ANSICHAR* HostName, FInternetAddr& OutAddr) = 0;
+	UE_DEPRECATED(4.23, "Please use GetAddressInfo to query hostnames")
+	virtual ESocketErrors GetHostByName(const ANSICHAR* HostName, FInternetAddr& OutAddr)
+	{
+		FAddressInfoResult GAIResult = GetAddressInfo(ANSI_TO_TCHAR(HostName), nullptr, EAddressInfoFlags::Default, NAME_None);
+		if (GAIResult.Results.Num() > 0)
+		{
+			OutAddr.SetRawIp(GAIResult.Results[0].Address->GetRawIp());
+			return SE_NO_ERROR;
+		}
+
+		return SE_HOST_NOT_FOUND;
+	}
 
 	/**
 	 * Creates a platform specific async hostname resolution object
@@ -179,7 +275,41 @@ public:
 	 * @param Address host address
 	 * @param Port host port
 	 */
-	virtual TSharedRef<FInternetAddr> CreateInternetAddr(uint32 Address=0, uint32 Port=0) = 0;
+	UE_DEPRECATED(4.23, "To support different address sizes, use CreateInternetAddr with no arguments and call SetIp/SetRawIp and SetPort on the returned object")
+	virtual TSharedRef<FInternetAddr> CreateInternetAddr(uint32 Address, uint32 Port = 0)
+	{
+		TSharedRef<FInternetAddr> ReturnAddr = CreateInternetAddr();
+		PRAGMA_DISABLE_DEPRECATION_WARNINGS
+		ReturnAddr->SetIp(Address);
+		ReturnAddr->SetPort(Port);
+		PRAGMA_ENABLE_DEPRECATION_WARNINGS
+		return ReturnAddr;
+	}
+
+	/**
+	 * Create a proper FInternetAddr representation
+	 */
+	virtual TSharedRef<FInternetAddr> CreateInternetAddr() = 0;
+
+	/**
+	 * Create a FInternetAddr of the desired protocol
+	 */
+	virtual TSharedRef<FInternetAddr> CreateInternetAddr(const FName ProtocolType)
+	{
+		// If not implemented, returns the base version
+		return CreateInternetAddr();
+	}
+
+	/**
+	 * Create a platform specific FRecvMulti representation
+	 *
+	 * @param MaxNumPackets			The maximum number of packet receives supported
+	 * @param MaxPacketSize			The maximum supported packet size
+	 * @param Flags					Flags for specifying how FRecvMulti should be initialized (for e.g. retrieving timestamps)
+	 * @return						Returns the platform specific FRecvMulti instance
+	 */
+	virtual TUniquePtr<FRecvMulti> CreateRecvMulti(int32 MaxNumPackets, int32 MaxPacketSize,
+													ERecvMultiFlags Flags=ERecvMultiFlags::None);
 
 	/**
 	 * @return Whether the machine has a properly configured network device or not
@@ -214,17 +344,31 @@ public:
 
 	/**
 	 * Gets the list of addresses associated with the adapters on the local computer.
+	 * Unlike GetLocalHostAddr, this function does not give preferential treatment to multihome options in results.
+	 * It's encouraged that users check for multihome before using the results of this function.
 	 *
-	 * @param OutAdresses - Will hold the address list.
+	 * @param OutAddresses - Will hold the address list.
 	 *
 	 * @return true on success, false otherwise.
 	 */
-	virtual bool GetLocalAdapterAddresses( TArray<TSharedPtr<FInternetAddr> >& OutAdresses ) = 0;
+	virtual bool GetLocalAdapterAddresses(TArray<TSharedPtr<FInternetAddr>>& OutAddresses);
 
 	/**
-	 *	Get local IP to bind to
+	 * Get a local IP to bind to.
+	 *
+	 * Typically, it is better to use GetLocalBindAddresses as it better supports hybrid network functionality
+	 * and less chances for connections to fail due to mismatched protocols.
 	 */
 	virtual TSharedRef<FInternetAddr> GetLocalBindAddr(FOutputDevice& Out);
+
+	/**
+	 * Get bindable addresses that this machine can use as reported by GetAddressInfo with the BindableAddress flag.
+	 * This will return the various any address for usage. If multihome has been specified, only the multihome address
+	 * will be returned in the array.
+	 *
+	 * @return If GetAddressInfo succeeded or multihome is specified, an array of addresses that can be binded on. Failure returns an empty array.
+	 */
+	virtual TArray<TSharedRef<FInternetAddr>> GetLocalBindAddresses();
 
 	/**
 	 * Bind to next available port.
@@ -236,10 +380,14 @@ public:
 	 *
 	 * @return The bound port number, or 0 on failure
 	 */
-	int32 BindNextPort(class FSocket* Socket, FInternetAddr& Addr, int32 PortCount, int32 PortIncrement);
+	int32 BindNextPort(FSocket* Socket, FInternetAddr& Addr, int32 PortCount, int32 PortIncrement);
 
 	/**
 	 * Uses the platform specific look up to determine the host address
+	 *
+	 * To better support multiple network interfaces and remove ambiguity between address protocols, 
+	 * it is encouraged to use GetLocalAdapterAddresses to determine machine addresses. 
+	 * Be sure to check GetMultihomeAddress ahead of time.
 	 *
 	 * @param Out the output device to log messages to
 	 * @param bCanBindAll true if all can be bound (no primarynet), false otherwise
@@ -254,9 +402,9 @@ public:
 	 * 
 	 * @param Addr the address structure which will have the Multihome address in it if set.
 	 *
-	 * @return If the multihome address is valid or not.
+	 * @return If the multihome address was set and valid
 	 */
-	virtual bool GetMultihomeAddress(TSharedRef<class FInternetAddr>& Addr);
+	virtual bool GetMultihomeAddress(TSharedRef<FInternetAddr>& Addr);
 
 	/**
 	 * Checks the host name cache for an existing entry (faster than resolving again)
@@ -284,9 +432,35 @@ public:
 	void RemoveHostNameFromCache(const ANSICHAR* HostName);
 
 	/**
+	 * Returns true if FSocket::RecvMulti is supported by this socket subsystem
+	 */
+	virtual bool IsSocketRecvMultiSupported() const;
+
+
+	/**
 	 * Returns true if FSocket::Wait is supported by this socket subsystem.
 	 */
 	virtual bool IsSocketWaitSupported() const = 0;
+
+
+	/**
+	 * Converts a platform packet timestamp, into a local timestamp, or into a time delta etc.
+	 *
+	 * @param Timestamp		The timestamp to translate
+	 * @param Translation	The type of translation to perform on the timestamp (time delta is usually faster than local timestamp)
+	 * @return				Returns the translated timestamp or delta
+	 */
+	virtual double TranslatePacketTimestamp(const FPacketTimestamp& Timestamp,
+											ETimestampTranslation Translation=ETimestampTranslation::LocalTimestamp);
+
+protected:
+
+	/**
+	 * Conversion functions from the SocketProtocolFamily enum to the new FName system.
+	 * For now, both are supported, but it's better to use the FName when possible.
+	 */
+	virtual ESocketProtocolFamily GetProtocolFamilyFromName(const FName& InProtocolName) const;
+	virtual FName GetProtocolNameFromFamily(ESocketProtocolFamily InProtocolFamily) const;
 
 private:
 

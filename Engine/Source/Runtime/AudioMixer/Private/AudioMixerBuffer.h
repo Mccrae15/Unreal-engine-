@@ -1,10 +1,10 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
 #include "CoreMinimal.h"
-#include "AudioMixerSourceDecode.h"
 #include "AudioMixer.h"
+#include "Audio.h"
 
 namespace Audio
 {
@@ -22,6 +22,7 @@ namespace Audio
 
 	class FMixerDevice;
 	class FMixerBuffer;
+	class IAudioTask;
 
 	class FMixerBuffer : public FSoundBuffer
 	{
@@ -35,7 +36,6 @@ namespace Audio
 		int32 GetCurrentChunkOffset() const override;
 		bool IsRealTimeSourceReady() override;
 		bool ReadCompressedInfo(USoundWave* SoundWave) override;
-		bool ReadCompressedData(uint8* Destination, int32 NumFrames, bool bLooping) override;
 		void Seek(const float SeekTime) override;
 		//~ End FSoundBuffer Interface
 
@@ -49,6 +49,9 @@ namespace Audio
 		/** Returns the buffer's format */
 		EBufferType::Type GetType() const;
 		bool IsRealTimeBuffer() const;
+
+		/** Retrieve the compressed audio info pointer. This transfers ownership of the decompression state. */
+		ICompressedAudioInfo* GetDecompressionState(bool bTakesOwnership = false);
 
 		/** Returns the contained raw PCM data and data size */
 		void GetPCMData(uint8** OutData, uint32* OutDataSize);

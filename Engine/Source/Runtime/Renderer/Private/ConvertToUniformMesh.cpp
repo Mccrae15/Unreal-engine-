@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 /*=============================================================================
 	ConvertToUniformMesh.cpp
@@ -15,6 +15,7 @@
 #include "ScenePrivate.h"
 #include "DistanceFieldLightingShared.h"
 #include "MeshPassProcessor.inl"
+#include "MaterialShared.h"
 
 class FConvertToUniformMeshVS : public FMeshMaterialShader
 {
@@ -32,12 +33,12 @@ protected:
 	{
 	}
 
-	static bool ShouldCompilePermutation(EShaderPlatform Platform,const FMaterial* Material,const FVertexFactoryType* VertexFactoryType)
+	static bool ShouldCompilePermutation(const FMeshMaterialShaderPermutationParameters& Parameters)
 	{
-		return IsFeatureLevelSupported(Platform, ERHIFeatureLevel::SM5) 
-			&& DoesPlatformSupportDistanceFieldGI(Platform)
-			&& (FCString::Strstr(VertexFactoryType->GetName(), TEXT("LocalVertexFactory")) != NULL
-				|| FCString::Strstr(VertexFactoryType->GetName(), TEXT("InstancedStaticMeshVertexFactory")) != NULL);
+		return IsFeatureLevelSupported(Parameters.Platform, ERHIFeatureLevel::SM5) 
+			&& DoesPlatformSupportDistanceFieldGI(Parameters.Platform)
+			&& (FCString::Strstr(Parameters.VertexFactoryType->GetName(), TEXT("LocalVertexFactory")) != NULL
+				|| FCString::Strstr(Parameters.VertexFactoryType->GetName(), TEXT("InstancedStaticMeshVertexFactory")) != NULL);
 	}
 };
 
@@ -104,19 +105,12 @@ protected:
 	{
 	}
 
-	static bool ShouldCompilePermutation(EShaderPlatform Platform,const FMaterial* Material,const FVertexFactoryType* VertexFactoryType)
+	static bool ShouldCompilePermutation(const FMeshMaterialShaderPermutationParameters& Parameters)
 	{
-		return IsFeatureLevelSupported(Platform, ERHIFeatureLevel::SM5) 
-			&& DoesPlatformSupportDistanceFieldGI(Platform)
-			&& (FCString::Strstr(VertexFactoryType->GetName(), TEXT("LocalVertexFactory")) != NULL
-				|| FCString::Strstr(VertexFactoryType->GetName(), TEXT("InstancedStaticMeshVertexFactory")) != NULL);
-	}
-
-	static void GetStreamOutElements(FStreamOutElementList& ElementList, TArray<uint32>& StreamStrides, int32& RasterizedStream)
-	{
-		StreamStrides.Add(ComputeUniformVertexStride() * 4);
-		GetUniformMeshStreamOutLayout(ElementList);
-		RasterizedStream = -1;
+		return IsFeatureLevelSupported(Parameters.Platform, ERHIFeatureLevel::SM5) 
+			&& DoesPlatformSupportDistanceFieldGI(Parameters.Platform)
+			&& (FCString::Strstr(Parameters.VertexFactoryType->GetName(), TEXT("LocalVertexFactory")) != NULL
+				|| FCString::Strstr(Parameters.VertexFactoryType->GetName(), TEXT("InstancedStaticMeshVertexFactory")) != NULL);
 	}
 };
 
@@ -160,8 +154,9 @@ void FConvertToUniformMeshProcessor::AddMeshBatch(const FMeshBatch& RESTRICT Mes
 
 	const FMaterialRenderProxy& MaterialRenderProxy = FallbackMaterialRenderProxyPtr ? *FallbackMaterialRenderProxyPtr : *MeshBatch.MaterialRenderProxy;
 
-	const ERasterizerFillMode MeshFillMode = ComputeMeshFillMode(MeshBatch, Material);
-	const ERasterizerCullMode MeshCullMode = ComputeMeshCullMode(MeshBatch, Material);
+	const FMeshDrawingPolicyOverrideSettings OverrideSettings = ComputeMeshOverrideSettings(MeshBatch);
+	const ERasterizerFillMode MeshFillMode = ComputeMeshFillMode(MeshBatch, Material, OverrideSettings);
+	const ERasterizerCullMode MeshCullMode = ComputeMeshCullMode(MeshBatch, Material, OverrideSettings);
 
 	Process(MeshBatch, BatchElementMask, PrimitiveSceneProxy, MaterialRenderProxy, Material, MeshFillMode, MeshCullMode);
 }
@@ -212,7 +207,7 @@ bool ShouldGenerateSurfelsOnMesh(const FMeshBatch& Mesh, ERHIFeatureLevel::Type 
 	//@todo - support for tessellated meshes
 	return Mesh.Type == PT_TriangleList 
 		&& !Mesh.IsTranslucent(FeatureLevel) 
-		&& Mesh.MaterialRenderProxy->GetMaterial(FeatureLevel)->GetShadingModel() != MSM_Unlit;
+		&& Mesh.MaterialRenderProxy->GetMaterial(FeatureLevel)->GetShadingModels().IsLit();
 }
 
 bool ShouldConvertMesh(const FMeshBatch& Mesh)
@@ -233,7 +228,7 @@ int32 FUniformMeshConverter::Convert(
 	int32 LODIndex,
 	FUniformMeshBuffers*& OutUniformMeshBuffers,
 	const FMaterialRenderProxy*& OutMaterialRenderProxy,
-	FUniformBufferRHIParamRef& OutPrimitiveUniformBuffer)
+	FRHIUniformBuffer*& OutPrimitiveUniformBuffer)
 {
 	const FPrimitiveSceneProxy* PrimitiveSceneProxy = PrimitiveSceneInfo->Proxy;
 	const auto FeatureLevel = View.GetFeatureLevel();
@@ -263,8 +258,10 @@ int32 FUniformMeshConverter::Convert(
 		UnbindRenderTargets(RHICmdList);
 
 		uint32 Offsets[1] = {0};
-		const FVertexBufferRHIParamRef StreamOutTargets[1] = {GUniformMeshTemporaryBuffers.TriangleData.GetReference()};
-		RHICmdList.SetStreamOutTargets(1, StreamOutTargets, Offsets);
+		FRHIVertexBuffer* const StreamOutTargets[1] = {GUniformMeshTemporaryBuffers.TriangleData.GetReference()};
+		//#todo-RemoveStreamOut
+		checkf(0, TEXT("SetStreamOutTargets() is not supported"));
+		//RHICmdList.SetStreamOutTargets(1, StreamOutTargets, Offsets);
 
 		for (int32 MeshIndex = 0; MeshIndex < MeshElements.Num(); MeshIndex++)
 		{
@@ -290,7 +287,9 @@ int32 FUniformMeshConverter::Convert(
 			}
 		}
 
-		RHICmdList.SetStreamOutTargets(1, (const FVertexBufferRHIParamRef*)NULL, Offsets);
+		//#todo-RemoveStreamOut
+		checkf(0, TEXT("SetStreamOutTargets() is not supported"));
+		//RHICmdList.SetStreamOutTargets(1, nullptr, Offsets);
 	}
 
 	OutUniformMeshBuffers = &GUniformMeshTemporaryBuffers;
@@ -304,15 +303,24 @@ class FEvaluateSurfelMaterialCS : public FMaterialShader
 	DECLARE_SHADER_TYPE(FEvaluateSurfelMaterialCS,Material)
 public:
 
-	static bool ShouldCompilePermutation(EShaderPlatform Platform, const FMaterial* Material)
+	static bool ShouldCompilePermutation(const FMaterialShaderPermutationParameters& Parameters)
 	{
-		//@todo - lit materials only 
-		return IsFeatureLevelSupported(Platform, ERHIFeatureLevel::SM5) && DoesPlatformSupportDistanceFieldGI(Platform);
+		if (Parameters.MaterialParameters.MaterialDomain == MD_UI)
+		{
+			return false;
+		}
+
+		if (Parameters.MaterialParameters.ShadingModels.IsUnlit())
+		{
+			return false;
+		}
+
+		return IsFeatureLevelSupported(Parameters.Platform, ERHIFeatureLevel::SM5) && DoesPlatformSupportDistanceFieldGI(Parameters.Platform);
 	}
 
-	static void ModifyCompilationEnvironment(EShaderPlatform Platform, const FMaterial* Material, FShaderCompilerEnvironment& OutEnvironment)
+	static void ModifyCompilationEnvironment(const FMaterialShaderPermutationParameters& Parameters, FShaderCompilerEnvironment& OutEnvironment)
 	{
-		FMaterialShader::ModifyCompilationEnvironment(Platform,OutEnvironment);
+		FMaterialShader::ModifyCompilationEnvironment(Parameters, OutEnvironment);
 		OutEnvironment.SetDefine(TEXT("EVALUATE_SURFEL_MATERIAL_GROUP_SIZE"), GEvaluateSurfelMaterialGroupSize);
 		OutEnvironment.SetDefine(TEXT("HAS_PRIMITIVE_UNIFORM_BUFFER"), 1);
 	}
@@ -336,20 +344,20 @@ public:
 		int32 SurfelStartIndexValue,
 		int32 NumSurfelsToGenerateValue,
 		const FMaterialRenderProxy* MaterialProxy,
-		FUniformBufferRHIParamRef PrimitiveUniformBuffer,
+		FRHIUniformBuffer* PrimitiveUniformBuffer,
 		const FMatrix& Instance0Transform
 		)
 	{
-		FComputeShaderRHIParamRef ShaderRHI = GetComputeShader();
+		FRHIComputeShader* ShaderRHI = RHICmdList.GetBoundComputeShader();
 		FMaterialShader::SetParameters(RHICmdList, ShaderRHI, MaterialProxy, *MaterialProxy->GetMaterial(View.GetFeatureLevel()), View, View.ViewUniformBuffer, ESceneTextureSetupMode::None);
 
 		SetUniformBufferParameter(RHICmdList, ShaderRHI,GetUniformBufferParameter<FPrimitiveUniformShaderParameters>(),PrimitiveUniformBuffer);
 
 		const FScene* Scene = (const FScene*)View.Family->Scene;
 
-		FUnorderedAccessViewRHIParamRef UniformMeshUAVs[1];
+		FRHIUnorderedAccessView* UniformMeshUAVs[1];
 		UniformMeshUAVs[0] = Scene->DistanceFieldSceneData.SurfelBuffers->Surfels.UAV;
-		RHICmdList.TransitionResources(EResourceTransitionAccess::ERWBarrier, EResourceTransitionPipeline::EComputeToCompute, UniformMeshUAVs, ARRAY_COUNT(UniformMeshUAVs));
+		RHICmdList.TransitionResources(EResourceTransitionAccess::ERWBarrier, EResourceTransitionPipeline::EComputeToCompute, UniformMeshUAVs, UE_ARRAY_COUNT(UniformMeshUAVs));
 
 		SurfelBufferParameters.Set(RHICmdList, ShaderRHI, *Scene->DistanceFieldSceneData.SurfelBuffers, *Scene->DistanceFieldSceneData.InstancedSurfelBuffers);
 		
@@ -361,31 +369,21 @@ public:
 
 	void UnsetParameters(FRHICommandList& RHICmdList, FViewInfo& View)
 	{
-		FComputeShaderRHIParamRef ShaderRHI = GetComputeShader();
+		FRHIComputeShader* ShaderRHI = RHICmdList.GetBoundComputeShader();
 		SurfelBufferParameters.UnsetParameters(RHICmdList, ShaderRHI);
 
 		const FScene* Scene = (const FScene*)View.Family->Scene;
-		FUnorderedAccessViewRHIParamRef UniformMeshUAVs[1];
+		FRHIUnorderedAccessView* UniformMeshUAVs[1];
 		UniformMeshUAVs[0] = Scene->DistanceFieldSceneData.SurfelBuffers->Surfels.UAV;
-		RHICmdList.TransitionResources(EResourceTransitionAccess::EReadable, EResourceTransitionPipeline::EComputeToCompute, UniformMeshUAVs, ARRAY_COUNT(UniformMeshUAVs));
-	}
-
-	virtual bool Serialize(FArchive& Ar) override
-	{		
-		bool bShaderHasOutdatedParameters = FMaterialShader::Serialize(Ar);
-		Ar << SurfelBufferParameters;
-		Ar << SurfelStartIndex;
-		Ar << NumSurfelsToGenerate;
-		Ar << Instance0InverseTransform;
-		return bShaderHasOutdatedParameters;
+		RHICmdList.TransitionResources(EResourceTransitionAccess::EReadable, EResourceTransitionPipeline::EComputeToCompute, UniformMeshUAVs, UE_ARRAY_COUNT(UniformMeshUAVs));
 	}
 
 private:
 
-	FSurfelBufferParameters SurfelBufferParameters;
-	FShaderParameter SurfelStartIndex;
-	FShaderParameter NumSurfelsToGenerate;
-	FShaderParameter Instance0InverseTransform;
+	LAYOUT_FIELD(FSurfelBufferParameters, SurfelBufferParameters);
+	LAYOUT_FIELD(FShaderParameter, SurfelStartIndex);
+	LAYOUT_FIELD(FShaderParameter, NumSurfelsToGenerate);
+	LAYOUT_FIELD(FShaderParameter, Instance0InverseTransform);
 };
 
 IMPLEMENT_MATERIAL_SHADER_TYPE(,FEvaluateSurfelMaterialCS,TEXT("/Engine/Private/EvaluateSurfelMaterial.usf"),TEXT("EvaluateSurfelMaterialCS"),SF_Compute);
@@ -395,18 +393,18 @@ void FUniformMeshConverter::GenerateSurfels(
 	FViewInfo& View, 
 	const FPrimitiveSceneInfo* PrimitiveSceneInfo, 
 	const FMaterialRenderProxy* MaterialProxy,
-	FUniformBufferRHIParamRef PrimitiveUniformBuffer, 
+	FRHIUniformBuffer* PrimitiveUniformBuffer,
 	const FMatrix& Instance0Transform,
 	int32 SurfelOffset,
 	int32 NumSurfels)
 {
 	const FMaterial* Material = MaterialProxy->GetMaterial(View.GetFeatureLevel());
 	const FMaterialShaderMap* MaterialShaderMap = Material->GetRenderingThreadShaderMap();
-	FEvaluateSurfelMaterialCS* ComputeShader = MaterialShaderMap->GetShader<FEvaluateSurfelMaterialCS>();
+	TShaderRef<FEvaluateSurfelMaterialCS> ComputeShader = MaterialShaderMap->GetShader<FEvaluateSurfelMaterialCS>();
 
-	RHICmdList.SetComputeShader(ComputeShader->GetComputeShader());
+	RHICmdList.SetComputeShader(ComputeShader.GetComputeShader());
 	ComputeShader->SetParameters(RHICmdList, View, SurfelOffset, NumSurfels, MaterialProxy, PrimitiveUniformBuffer, Instance0Transform);
-	DispatchComputeShader(RHICmdList, ComputeShader, FMath::DivideAndRoundUp(NumSurfels, GEvaluateSurfelMaterialGroupSize), 1, 1);
+	DispatchComputeShader(RHICmdList, ComputeShader.GetShader(), FMath::DivideAndRoundUp(NumSurfels, GEvaluateSurfelMaterialGroupSize), 1, 1);
 
 	ComputeShader->UnsetParameters(RHICmdList, View);
 }

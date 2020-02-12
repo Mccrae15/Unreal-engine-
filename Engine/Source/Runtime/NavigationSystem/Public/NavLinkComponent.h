@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -36,4 +36,9 @@ class NAVIGATIONSYSTEM_API UNavLinkComponent : public UPrimitiveComponent, publi
 	virtual void PostEditUndo() override;
 	virtual void PostEditImport() override;
 #endif // WITH_EDITOR
+
+	virtual void OnRegister() override;
+
+protected:
+	void InitializeLinksAreaClasses();
 };

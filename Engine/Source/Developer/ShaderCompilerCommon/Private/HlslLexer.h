@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 /*=============================================================================
 	HlslLexer.h - Interface for scanning & tokenizing hlsl.
@@ -83,6 +83,7 @@ namespace CrossCompiler
 		// Types
 		Void,
 		Const,
+		Precise,
 
 		Bool,
 		Bool1,
@@ -194,7 +195,7 @@ namespace CrossCompiler
 		Float3x4,
 		Float4x4,
 
-		Texture,
+		Texture, // texture (SM3)
 		Texture1D,
 		Texture1DArray,
 		Texture2D,
@@ -205,11 +206,11 @@ namespace CrossCompiler
 		TextureCube,
 		TextureCubeArray,
 
-		Sampler,
-		Sampler1D,
-		Sampler2D,
-		Sampler3D,
-		SamplerCube,
+		Sampler, // sampler (SM3)
+		Sampler1D, // sampler1D (SM3)
+		Sampler2D, // sampler2D (SM3)
+		Sampler3D, // sampler3D (SM3)
+		SamplerCube, // samplerCUBE (SM3)
 		SamplerState,
 		SamplerComparisonState,
 
@@ -226,6 +227,8 @@ namespace CrossCompiler
 		RWTexture2DArray,
 		RWTexture3D,
 		StructuredBuffer,
+		ConstantBuffer,
+		RaytracingAccelerationStructure,
 
 		// Modifiers
 		In,
@@ -246,28 +249,71 @@ namespace CrossCompiler
 		CBuffer,
 		GroupShared,
 		RowMajor,
+		Register,
+		Inline,
+		Typedef,
+		PackOffset,
 
 		Identifier,
-		UnsignedIntegerConstant,
-		FloatConstant,
+		Literal,
 		BoolConstant,
 		StringConstant,	// C-style "string"
 	};
 
+	enum class ELiteralType
+	{
+		Unknown = -1,
+
+		Float,			// All variations
+		FloatSuffix,	// All variations, ends with 'f'
+		Integer,		// Just digits
+		IntegerSuffix,	// has a 'u|U|l|L' suffix
+		Hex,			// has '0x' or '0X' prefix
+		HexSuffix,		// Hex + has a 'u|U|l|L' suffix
+		Octal,			// 0[0..7]+
+		Bool,			// true or false
+	};
+
+	static inline bool IsIntegerType(ELiteralType Type)
+	{
+		switch (Type)
+		{
+		case ELiteralType::Integer:
+		case ELiteralType::IntegerSuffix:
+		case ELiteralType::Hex:
+		case ELiteralType::HexSuffix:
+		case ELiteralType::Octal:
+			return true;
+		default:
+			break;
+		}
+
+		return false;
+	}
+
 	struct FHlslToken
 	{
 		EHlslToken Token;
+		ELiteralType LiteralType = ELiteralType::Unknown;
 		FString String;
-		uint32 UnsignedInteger;
-		float Float;
-
 		FSourceInfo SourceInfo;
 
-		explicit FHlslToken(const FString& Identifier) : Token(EHlslToken::Identifier), String(Identifier), UnsignedInteger(0), Float(0) { }
-		explicit FHlslToken(EHlslToken InToken, const FString& Identifier) : Token(InToken), String(Identifier), UnsignedInteger(0), Float(0) { }
-		explicit FHlslToken(uint32 InUnsignedInteger) : Token(EHlslToken::UnsignedIntegerConstant), UnsignedInteger(InUnsignedInteger), Float(0) { }
-		explicit FHlslToken(float InFloat) : Token(EHlslToken::FloatConstant), UnsignedInteger(0), Float(InFloat) { }
-		explicit FHlslToken(bool bInValue) : Token(EHlslToken::BoolConstant), UnsignedInteger(bInValue ? 1 : 0), Float(0) { }
+		explicit FHlslToken(const FString& Identifier) : Token(EHlslToken::Identifier), String(Identifier) { DebugId(); }
+		explicit FHlslToken(EHlslToken InToken, const FString& Identifier) : Token(InToken), String(Identifier) { DebugId(); }
+		explicit FHlslToken(const FString& InLiteral, ELiteralType InLiteralType) :
+			Token(EHlslToken::Literal),
+			LiteralType(InLiteralType),
+			String(InLiteral)
+			{ DebugId(); }
+
+		void DebugId()
+		{
+#if UE_BUILD_DEBUG
+			static int32 DebugID = 0;
+			//ensure(DebugID != 4787);
+			++DebugID;
+#endif
+		}
 	};
 
 	class FHlslScanner
@@ -290,6 +336,7 @@ namespace CrossCompiler
 
 		bool HasMoreTokens() const;
 		bool MatchToken(EHlslToken InToken);
+		bool MatchIntegerLiteral();
 		const FHlslToken* PeekToken(uint32 LookAhead = 0) const;
 		const FHlslToken* GetCurrentToken() const;
 		const FHlslToken* GetCurrentTokenAndAdvance();

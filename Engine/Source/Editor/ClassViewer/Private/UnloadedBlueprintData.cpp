@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "UnloadedBlueprintData.h"
 #include "Engine/BlueprintGeneratedClass.h"
@@ -116,6 +116,25 @@ const UClass* FUnloadedBlueprintData::GetNativeParent() const
 	return nullptr;
 }
 
+TSharedPtr<FString> FUnloadedBlueprintData::GetClassName() const
+{
+	if (ClassViewerNode.IsValid())
+	{
+		return ClassViewerNode.Pin()->GetClassName();
+	}
+
+	return TSharedPtr<FString>();
+}
+
+FName FUnloadedBlueprintData::GetClassPath() const
+{
+	if (ClassViewerNode.IsValid())
+	{
+		return ClassViewerNode.Pin()->ClassPath;
+	}
+
+	return FName();
+}
 
 const TWeakPtr<FClassViewerNode>& FUnloadedBlueprintData::GetClassViewerNode() const
 {

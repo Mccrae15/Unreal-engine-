@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -45,15 +45,15 @@ struct UMGEDITOR_API FEditorPropertyPathSegment
 
 public:
 	FEditorPropertyPathSegment();
-	FEditorPropertyPathSegment(const UProperty* InProperty);
+	FEditorPropertyPathSegment(const FProperty* InProperty);
 	FEditorPropertyPathSegment(const UFunction* InFunction);
 	FEditorPropertyPathSegment(const UEdGraph* InFunctionGraph);
 
 	UStruct* GetStruct() const { return Struct; }
-	UField* GetMember() const;
+	FFieldVariant GetMember() const;
 
 	void Rebase(UBlueprint* SegmentBase);
-	bool ValidateMember(UDelegateProperty* DelegateProperty, FText& OutError) const;
+	bool ValidateMember(FDelegateProperty* DelegateProperty, FText& OutError) const;
 
 	FName GetMemberName() const;
 	FText GetMemberDisplayText() const;
@@ -94,7 +94,7 @@ public:
 	FEditorPropertyPath();
 
 	/**  */
-	FEditorPropertyPath(const TArray<UField*>& BindingChain);
+	FEditorPropertyPath(const TArray<FFieldVariant>& BindingChain);
 
 	/**  */
 	bool Rebase(UBlueprint* SegmentBase);
@@ -103,7 +103,7 @@ public:
 	bool IsEmpty() const { return Segments.Num() == 0; }
 
 	/**  */
-	bool Validate(UDelegateProperty* Destination, FText& OutError) const;
+	bool Validate(FDelegateProperty* Destination, FText& OutError) const;
 
 	/**  */
 	FText GetDisplayText() const;
@@ -275,6 +275,7 @@ public:
 #if WITH_EDITOR
 	virtual void GetAssetRegistryTags(TArray<FAssetRegistryTag>& OutTags) const override;
 	virtual void NotifyGraphRenamed(class UEdGraph* Graph, FName OldName, FName NewName) override;
+	virtual bool FindDiffs(const UBlueprint* OtherBlueprint, FDiffResults& Results) const override;
 #endif
 
 	virtual void Serialize(FArchive& Ar) override;
@@ -314,7 +315,10 @@ public:
 
 	bool ArePropertyBindingsAllowed() const;
 
-private:
+	/** Does the editor support widget from an editor package. */
+	virtual bool AllowEditorWidget() const { return false; }
+
+protected:
 #if WITH_EDITOR
 	virtual void LoadModulesRequiredForCompilation() override;
 

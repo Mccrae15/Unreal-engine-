@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "WorldTreeItemTypes.h"
 #include "Templates/Casts.h"
@@ -7,7 +7,7 @@
 #include "Misc/PackageName.h"
 #include "Engine/Engine.h"
 #include "SWorldHierarchyImpl.h"
-#include "Framework/MultiBox/MultiBoxBuilder.h"
+#include "ToolMenus.h"
 #include "EditorStyleSet.h"
 #include "AssetSelection.h"
 #include "SWorldHierarchyImpl.h"
@@ -476,7 +476,7 @@ namespace WorldHierarchy
 		return Parent.IsValid();
 	}
 
-	void FLevelModelTreeItem::GenerateContextMenu(FMenuBuilder& MenuBuilder, const SWorldHierarchyImpl& Hierarchy)
+	void FLevelModelTreeItem::GenerateContextMenu(UToolMenu* Menu, const SWorldHierarchyImpl& Hierarchy)
 	{
 		if (!Parent.IsValid() && WorldModel.Pin()->HasFolderSupport())
 		{
@@ -484,9 +484,10 @@ namespace WorldHierarchy
 			const FSlateIcon NewFolderIcon(FEditorStyle::GetStyleSetName(), "WorldBrowser.NewFolderIcon");
 
 			FName RootPath = LevelModel.Pin()->GetFolderPath();
-			auto NewFolderAction = FExecuteAction::CreateSP(&Hierarchy, &SWorldHierarchyImpl::CreateFolder, LevelModel.Pin(), RootPath);
+			auto NewFolderAction = FExecuteAction::CreateSP(const_cast<SWorldHierarchyImpl*>(&Hierarchy), &SWorldHierarchyImpl::CreateFolder, LevelModel.Pin(), RootPath);
 
-			MenuBuilder.AddMenuEntry(LOCTEXT("CreateFolder", "Create Folder"), FText(), NewFolderIcon, FUIAction(NewFolderAction));
+			FToolMenuSection& Section = Menu->AddSection("Section");
+			Section.AddMenuEntry("CreateFolder", LOCTEXT("CreateFolder", "Create Folder"), FText(), NewFolderIcon, FUIAction(NewFolderAction));
 		}
 	}
 
@@ -903,7 +904,7 @@ namespace WorldHierarchy
 		return FEditorStyle::Get().GetBrush("WorldBrowser.FolderClosed");
 	}
 
-	void FFolderTreeItem::GenerateContextMenu(FMenuBuilder& MenuBuilder, const SWorldHierarchyImpl& Hierarchy)
+	void FFolderTreeItem::GenerateContextMenu(UToolMenu* Menu, const SWorldHierarchyImpl& Hierarchy)
 	{
 		// Folder items should be able to create subfolders, rename themselves, or delete themselves from the tree
 		const FSlateIcon NewFolderIcon(FEditorStyle::GetStyleSetName(), "WorldBrowser.NewFolderIcon");
@@ -912,13 +913,14 @@ namespace WorldHierarchy
 		TArray<FWorldTreeItemPtr> Folders;
 		Folders.Add(AsShared());
 
-		auto NewFolderAction = FExecuteAction::CreateSP(&Hierarchy, &SWorldHierarchyImpl::CreateFolder, RootLevel, Path);
-		auto RenameFolderAction = FExecuteAction::CreateSP(&Hierarchy, &SWorldHierarchyImpl::InitiateRename, AsShared());
-		auto DeleteFolderAction = FExecuteAction::CreateSP(&Hierarchy, &SWorldHierarchyImpl::DeleteFolders, Folders, /*bTransactional*/ true);
+		auto NewFolderAction = FExecuteAction::CreateSP(const_cast<SWorldHierarchyImpl*>(&Hierarchy), &SWorldHierarchyImpl::CreateFolder, RootLevel, Path);
+		auto RenameFolderAction = FExecuteAction::CreateSP(const_cast<SWorldHierarchyImpl*>(&Hierarchy), &SWorldHierarchyImpl::InitiateRename, AsShared());
+		auto DeleteFolderAction = FExecuteAction::CreateSP(const_cast<SWorldHierarchyImpl*>(&Hierarchy), &SWorldHierarchyImpl::DeleteFolders, Folders, /*bTransactional*/ true);
 
-		MenuBuilder.AddMenuEntry(LOCTEXT("CreateSubFolder", "Create Subfolder"), FText(), NewFolderIcon, FUIAction(NewFolderAction));
-		MenuBuilder.AddMenuEntry(LOCTEXT("RenameFolder", "Rename"), FText(), FSlateIcon(FEditorStyle::GetStyleSetName(), "ContentBrowser.AssetActions.Rename"), FUIAction(RenameFolderAction));
-		MenuBuilder.AddMenuEntry(LOCTEXT("DeleteFolder", "Delete"), FText(), FSlateIcon(FEditorStyle::GetStyleSetName(), "ContentBrowser.AssetActions.Delete"), FUIAction(DeleteFolderAction));
+		FToolMenuSection& Section = Menu->AddSection("Section");
+		Section.AddMenuEntry("CreateSubFolder", LOCTEXT("CreateSubFolder", "Create Subfolder"), FText(), NewFolderIcon, FUIAction(NewFolderAction));
+		Section.AddMenuEntry("RenameFolder", LOCTEXT("RenameFolder", "Rename"), FText(), FSlateIcon(FEditorStyle::GetStyleSetName(), "ContentBrowser.AssetActions.Rename"), FUIAction(RenameFolderAction));
+		Section.AddMenuEntry("DeleteFolder", LOCTEXT("DeleteFolder", "Delete"), FText(), FSlateIcon(FEditorStyle::GetStyleSetName(), "ContentBrowser.AssetActions.Delete"), FUIAction(DeleteFolderAction));
 	}
 
 	FValidationInfo FFolderTreeItem::ValidateDrop(const FDragDropEvent& DragEvent) const

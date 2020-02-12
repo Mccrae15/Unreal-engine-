@@ -1,9 +1,8 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "Commandlets/GenerateTextLocalizationResourceCommandlet.h"
 #include "HAL/FileManager.h"
 #include "Misc/Paths.h"
-#include "Templates/ScopedPointer.h"
 #include "Internationalization/TextLocalizationResource.h"
 #include "TextLocalizationResourceGenerator.h"
 #include "Templates/UniquePtr.h"
@@ -117,11 +116,27 @@ int32 UGenerateTextLocalizationResourceCommandlet::Main(const FString& Params)
 		return -1;
 	}
 
+	EGenerateLocResFlags GenerateFlags = EGenerateLocResFlags::None;
+
 	// Get whether to skip the source check.
-	bool bSkipSourceCheck = false;
-	if (!GetBoolFromConfig(*SectionName, TEXT("bSkipSourceCheck"), bSkipSourceCheck, GatherTextConfigPath))
 	{
-		bSkipSourceCheck = false;
+		bool bSkipSourceCheck = false;
+		GetBoolFromConfig(*SectionName, TEXT("bSkipSourceCheck"), bSkipSourceCheck, GatherTextConfigPath);
+		GenerateFlags |= (bSkipSourceCheck ? EGenerateLocResFlags::AllowStaleTranslations : EGenerateLocResFlags::None);
+	}
+
+	// Get whether to validate format patterns.
+	{
+		bool bValidateFormatPatterns = false;
+		GetBoolFromConfig(*SectionName, TEXT("bValidateFormatPatterns"), bValidateFormatPatterns, GatherTextConfigPath);
+		GenerateFlags |= (bValidateFormatPatterns ? EGenerateLocResFlags::ValidateFormatPatterns : EGenerateLocResFlags::None);
+	}
+
+	// Get whether to validate whitespace.
+	{
+		bool bValidateSafeWhitespace = false;
+		GetBoolFromConfig(*SectionName, TEXT("bValidateSafeWhitespace"), bValidateSafeWhitespace, GatherTextConfigPath);
+		GenerateFlags |= (bValidateSafeWhitespace ? EGenerateLocResFlags::ValidateSafeWhitespace : EGenerateLocResFlags::None);
 	}
 
 	// Load the manifest and all archives
@@ -184,7 +199,7 @@ int32 UGenerateTextLocalizationResourceCommandlet::Main(const FString& Params)
 		FTextLocalizationResource PlatformAgnosticLocRes;
 		TMap<FName, TSharedRef<FTextLocalizationResource>> PerPlatformLocRes;
 		const FTextKey LocResId = DestinationPath / CultureName / ResourceName;
-		if (!FTextLocalizationResourceGenerator::GenerateLocRes(LocTextHelper, CultureName, bSkipSourceCheck, LocResId, PlatformAgnosticLocRes, PerPlatformLocRes))
+		if (!FTextLocalizationResourceGenerator::GenerateLocRes(LocTextHelper, CultureName, GenerateFlags, LocResId, PlatformAgnosticLocRes, PerPlatformLocRes))
 		{
 			UE_LOG(LogGenerateTextLocalizationResourceCommandlet, Error, TEXT("Failed to generate LocRes %s"), LocResId.GetChars());
 			return false;

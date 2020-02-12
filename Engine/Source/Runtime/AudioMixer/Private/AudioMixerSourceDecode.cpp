@@ -1,13 +1,22 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "AudioMixerSourceDecode.h"
 #include "CoreMinimal.h"
 #include "Stats/Stats.h"
 #include "AudioMixer.h"
-#include "Sound/SoundWave.h"
+#include "Sound/SoundWaveProcedural.h"
 #include "HAL/RunnableThread.h"
 #include "AudioMixerBuffer.h"
 #include "Async/Async.h"
+#include "AudioDecompress.h"
+
+static int32 ForceSyncAudioDecodesCvar = 0;
+FAutoConsoleVariableRef CVarForceSyncAudioDecodes(
+	TEXT("au.ForceSyncAudioDecodes"),
+	ForceSyncAudioDecodesCvar,
+	TEXT("Disables using async tasks for processing sources.\n")
+	TEXT("0: Not Disabled, 1: Disabled"),
+	ECVF_Default);
 
 namespace Audio
 {
@@ -47,8 +56,11 @@ public:
 			case EAudioTaskType::Procedural:
 			{
 				// Make sure we've been flagged as active
-				if (!ProceduralTaskData.ProceduralSoundWave->IsGenerating())
+				if (!ProceduralTaskData.ProceduralSoundWave || !ProceduralTaskData.ProceduralSoundWave->IsGeneratingAudio())
 				{
+					// Act as if we generated audio, but return silence.
+					FMemory::Memzero(ProceduralTaskData.AudioData, ProceduralTaskData.NumSamples * sizeof(float));
+					ProceduralResult.NumSamplesWritten = ProceduralTaskData.NumSamples;
 					return;
 				}
 
@@ -93,23 +105,42 @@ public:
 
 			case EAudioTaskType::Decode:
 			{
-				int32 NumChannels = DecodeTaskData.MixerBuffer->GetNumChannels();
+				int32 NumChannels = DecodeTaskData.NumChannels;
 				int32 ByteSize = NumChannels * DecodeTaskData.NumFramesToDecode * sizeof(int16);
 
 				// Create a buffer to decode into that's of the appropriate size
 				TArray<uint8> DecodeBuffer;
-				DecodeBuffer.AddUninitialized(ByteSize);
+				DecodeBuffer.AddZeroed(ByteSize);
 
 				// skip the first buffers if we've already decoded them during Precache:
 				if (DecodeTaskData.bSkipFirstBuffer)
 				{
-					for (int32 NumberOfBuffersToSkip = 0; NumberOfBuffersToSkip < PLATFORM_NUM_AUDIODECOMPRESSION_PRECACHE_BUFFERS; NumberOfBuffersToSkip++)
+					const int32 kPCMBufferSize = NumChannels * DecodeTaskData.NumPrecacheFrames * sizeof(int16);
+					if (DecodeTaskData.BufferType == EBufferType::Streaming)
 					{
-						DecodeTaskData.MixerBuffer->ReadCompressedData(DecodeBuffer.GetData(), DecodeTaskData.NumPrecacheFrames, DecodeTaskData.bLoopingMode);
+						for (int32 NumberOfBuffersToSkip = 0; NumberOfBuffersToSkip < PLATFORM_NUM_AUDIODECOMPRESSION_PRECACHE_BUFFERS; NumberOfBuffersToSkip++)
+						{
+							DecodeTaskData.DecompressionState->StreamCompressedData(DecodeBuffer.GetData(), DecodeTaskData.bLoopingMode, kPCMBufferSize);
+						}
+					}
+					else
+					{
+						for (int32 NumberOfBuffersToSkip = 0; NumberOfBuffersToSkip < PLATFORM_NUM_AUDIODECOMPRESSION_PRECACHE_BUFFERS; NumberOfBuffersToSkip++)
+						{
+							DecodeTaskData.DecompressionState->ReadCompressedData(DecodeBuffer.GetData(), DecodeTaskData.bLoopingMode, kPCMBufferSize);
+						}
 					}
 				}
 
-				DecodeResult.bLooped = DecodeTaskData.MixerBuffer->ReadCompressedData(DecodeBuffer.GetData(), DecodeTaskData.NumFramesToDecode, DecodeTaskData.bLoopingMode);
+				const int32 kPCMBufferSize = NumChannels * DecodeTaskData.NumFramesToDecode * sizeof(int16);
+				if (DecodeTaskData.BufferType == EBufferType::Streaming)
+				{
+					DecodeResult.bLooped = DecodeTaskData.DecompressionState->StreamCompressedData(DecodeBuffer.GetData(), DecodeTaskData.bLoopingMode, kPCMBufferSize);
+				}
+				else
+				{
+					DecodeResult.bLooped = DecodeTaskData.DecompressionState->ReadCompressedData(DecodeBuffer.GetData(), DecodeTaskData.bLoopingMode, kPCMBufferSize);
+				}
 
 				// Convert the decoded PCM data into a float buffer while still in the async task
 				int32 SampleIndex = 0;
@@ -174,6 +205,18 @@ public:
 		}
 	}
 
+	virtual void CancelTask() override
+	{
+		if (Task)
+		{
+			// If Cancel returns false, it means we weren't able to cancel. So lets then fallback to ensure complete.
+			if (!Task->Cancel())
+			{
+				Task->EnsureCompletion();
+			}
+		}
+	}
+
 protected:
 
 	FAsyncTask<FAsyncDecodeWorker>* Task;
@@ -185,6 +228,12 @@ public:
 	FHeaderDecodeHandle(const FHeaderParseAudioTaskData& InJobData)
 	{
 		Task = new FAsyncTask<FAsyncDecodeWorker>(InJobData);
+        if (ForceSyncAudioDecodesCvar)
+        {
+            Task->StartSynchronousTask();
+            return;
+        }
+        
 		Task->StartBackgroundTask();
 	}
 
@@ -200,6 +249,12 @@ public:
 	FProceduralDecodeHandle(const FProceduralAudioTaskData& InJobData)
 	{
 		Task = new FAsyncTask<FAsyncDecodeWorker>(InJobData);
+        if (ForceSyncAudioDecodesCvar || InJobData.bForceSyncDecode)
+        {
+            Task->StartSynchronousTask();
+            return;
+        }
+        
 		Task->StartBackgroundTask();
 	}
 
@@ -222,7 +277,14 @@ public:
 	FDecodeHandle(const FDecodeAudioTaskData& InJobData)
 	{
 		Task = new FAsyncTask<FAsyncDecodeWorker>(InJobData);
-		Task->StartBackgroundTask();
+        if (ForceSyncAudioDecodesCvar || InJobData.bForceSyncDecode)
+        {
+            Task->StartSynchronousTask();
+            return;
+        }
+        
+		const bool bUseBackground = ShouldUseBackgroundPoolFor_FAsyncRealtimeAudioTask();
+		Task->StartBackgroundTask(bUseBackground ? GBackgroundPriorityThreadPool : GThreadPool);
 	}
 
 	virtual EAudioTaskType GetType() const override

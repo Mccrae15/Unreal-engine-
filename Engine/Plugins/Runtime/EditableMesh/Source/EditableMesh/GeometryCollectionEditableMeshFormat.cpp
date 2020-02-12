@@ -1,11 +1,11 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "GeometryCollectionEditableMeshFormat.h"
 #include "EditableMesh.h"
 #include "Engine/StaticMesh.h"
 #include "GeometryCollection/GeometryCollectionComponent.h"
 #include "EditableGeometryCollectionAdapter.h"
-#include "MeshAttributes.h"
+#include "StaticMeshAttributes.h"
 
 bool FGeometryCollectionEditableMeshFormat::HandlesComponentType(class UPrimitiveComponent& Component)
 {
@@ -26,7 +26,7 @@ void FGeometryCollectionEditableMeshFormat::FillMeshObjectPtr( UPrimitiveCompone
 	{
 		UGeometryCollectionComponent& GeometryCollectionComponent = *GeometryCollectionComponentPtr;
 
-		FGeometryCollectionEdit GeometryCollectionEdit = GeometryCollectionComponent.EditRestCollection(false);
+		FGeometryCollectionEdit GeometryCollectionEdit = GeometryCollectionComponent.EditRestCollection(GeometryCollection::EEditUpdate::None);
 		UGeometryCollection* GeometryCollection = GeometryCollectionEdit.GetRestCollection();
 		if( GeometryCollection != nullptr)
 		{
@@ -34,7 +34,6 @@ void FGeometryCollectionEditableMeshFormat::FillMeshObjectPtr( UPrimitiveCompone
 		}
 	}
 
-	check(SubMeshAddress.MeshObjectPtr);
 }
 
 
@@ -124,7 +123,6 @@ void FGeometryCollectionEditableMeshFormat::RegisterMeshAttributes(FMeshDescript
 
 	// Add basic edge attributes
 	MeshDescription->EdgeAttributes().RegisterAttribute<bool>(MeshAttribute::Edge::IsHard, 1, false);
-	MeshDescription->EdgeAttributes().RegisterAttribute<bool>(MeshAttribute::Edge::IsUVSeam, 1, false);
 	MeshDescription->EdgeAttributes().RegisterAttribute<float>(MeshAttribute::Edge::CreaseSharpness, 1, 0.0f, EMeshAttributeFlags::Lerpable);
 
 	// Add basic polygon attributes

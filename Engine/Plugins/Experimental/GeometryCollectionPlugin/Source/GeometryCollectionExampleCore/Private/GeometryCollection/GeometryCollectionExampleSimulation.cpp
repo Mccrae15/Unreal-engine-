@@ -1,558 +1,516 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "GeometryCollection/GeometryCollectionExampleSimulation.h"
 #include "GeometryCollection/GeometryCollectionExampleUtility.h"
+#include "GeometryCollection/GeometryCollectionExampleSimulationObject.h"
 
 #include "GeometryCollection/GeometryCollection.h"
-#include "GeometryCollection/GeometryCollectionSolverCallbacks.h"
 #include "GeometryCollection/GeometryCollectionUtility.h"
 #include "GeometryCollection/TransformCollection.h"
 #include "UObject/Package.h"
 #include "UObject/UObjectGlobals.h"
 
-#include "Field/FieldSystem.h"
-#include "Field/FieldSystemNodes.h"
-#include "Field/FieldSystemSimulationCoreCallbacks.h"
+#include "GeometryCollection/GeometryDynamicCollection.h"
+#include "GeometryCollection/GeometryCollectionSimulationTypes.h"
+#include "PhysicsProxy/PhysicsProxies.h"
+#include "Chaos/ErrorReporter.h"
+#include "ChaosSolversModule.h"
+#include "PBDRigidsSolver.h"
 
 #define SMALL_THRESHOLD 1e-4
 
+// #TODO Lots of duplication in here, anyone making solver or object changes
+// has to go and fix up so many callsites here and they're all pretty much
+// Identical. The similar code should be pulled out
 
 namespace GeometryCollectionExample
 {
+	
 	template<class T>
-	bool RigidBodiesFallingUnderGravity(ExampleResponse&& R)
+	void RigidBodiesFallingUnderGravity()
 	{
-#if INCLUDE_CHAOS
-		TSharedPtr<FGeometryCollection> RestCollection = GeometryCollection::MakeCubeElement(FTransform::Identity, FVector(1.0));
-		TSharedPtr<FGeometryCollection> DynamicCollection = CopyGeometryCollection(RestCollection.Get());
+		FChaosSolversModule* Module = FChaosSolversModule::GetModule();
+		Module->ChangeThreadingMode(EChaosThreadingMode::SingleThread);
 
-		FGeometryCollectionSolverCallbacks SolverCallbacks;
-		FSimulationParameters Parameters;
+		//
+		//  Rigid Body Setup
+		//
 
-		Parameters.RestCollection = RestCollection.Get();
-		Parameters.DynamicCollection = DynamicCollection.Get();
-		Parameters.CollisionType = ECollisionTypeEnum::Chaos_Volumetric;
-		Parameters.Simulating = true;
+		InitCollectionsParameters InitParams = 
+		{ 
+			FTransform::Identity,	// RestCenter
+			FVector(1.0),			// RestScale
+			nullptr,				// RestInitFunc
+			(int32)EObjectStateTypeEnum::Chaos_Object_Kinematic // DynamicStateDefault
+		};
 
-		SolverCallbacks.UpdateParameters(Parameters);
-		SolverCallbacks.Initialize();
+		TUniquePtr<Chaos::FChaosPhysicsMaterial> PhysicalMaterial = nullptr; // Allocated and zero'ed
+		TSharedPtr<FGeometryCollection> RestCollection = nullptr;				// GeometryCollection::MakeCubeElement(InitParams)
+		TSharedPtr<FGeometryDynamicCollection> GTDynamicCollection = nullptr;		// New'ed w/copy of RestCollection Transform, Parent, Children, SimulationType, and StatusFlags attrs.
+		InitCollections(PhysicalMaterial, RestCollection, GTDynamicCollection, InitParams);
 
-		Chaos::PBDRigidsSolver Solver;
-		Solver.RegisterCallbacks(&SolverCallbacks);
-		Solver.SetHasFloor(false);
-		Solver.SetEnabled(true);
+		//
+		// Sim Initialization
+		//
+		
+		// Creates FGeometryCollectionPhysicsProxy with GTDynamicCollection, and 
+		// an InitFunc that sets FSimulationParametes's RestCollection and 
+		// DynamicCollection pointers.  Calls FGeometryCollectionPhysicsProx::Initialize().
+		FGeometryCollectionPhysicsProxy* PhysObject = RigidBodySetup(PhysicalMaterial, RestCollection, GTDynamicCollection);
 
-		Solver.AdvanceSolverBy(1 / 24.);
+		Chaos::FPBDRigidsSolver* Solver = FChaosSolversModule::GetModule()->CreateSolver(true);
+		Solver->RegisterObject(PhysObject);
+		Solver->SetHasFloor(false);
+		Solver->SetEnabled(true);
+		PhysObject->ActivateBodies();
+
+		Solver->AddDirtyProxy(PhysObject); // why?
+		Solver->PushPhysicsState(Module->GetDispatcher());
+
+		Solver->AdvanceSolverBy(1 / 24.);
+
+		// Calls BufferPhysicsResults(), FlipBuffer(), and PullFromPhysicsState() on each proxy.
+		//FinalizeSolver(*Solver);
+
+		Solver->BufferPhysicsResults();
+		Solver->FlipBuffers();
+		Solver->UpdateGameThreadStructures();
 
 		// never touched
-		TManagedArray<FTransform>& RestTransform = *RestCollection->Transform;
-		R.ExpectTrue(FMath::Abs(RestTransform[0].GetTranslation().Z) < SMALL_THRESHOLD);
+		TManagedArray<FTransform>& RestTransform = RestCollection->Transform;
+		EXPECT_LT(FMath::Abs(RestTransform[0].GetTranslation().Z), SMALL_THRESHOLD);
 
 		// simulated
-		TManagedArray<FTransform>& Transform = *DynamicCollection->Transform;
-		R.ExpectTrue(Transform.Num() == 1);
-		R.ExpectTrue(Transform[0].GetTranslation().Z < 0);
-#endif
+		TManagedArray<FTransform>& Transform = GTDynamicCollection->Transform;
+		EXPECT_EQ(Transform.Num(), 1);
+		EXPECT_LT(Transform[0].GetTranslation().Z, 0);
+		
+		FChaosSolversModule::GetModule()->DestroySolver(Solver);
 
-		return !R.HasError();
+		delete PhysObject;
 	}
-	template bool RigidBodiesFallingUnderGravity<float>(ExampleResponse&& R);
+	template void RigidBodiesFallingUnderGravity<float>();
 
 
 
 	template<class T>
-	bool RigidBodiesCollidingWithSolverFloor(ExampleResponse&& R)
+	void RigidBodiesCollidingWithSolverFloor()
 	{
-#if INCLUDE_CHAOS
-		TSharedPtr<FGeometryCollection> RestCollection = GeometryCollection::MakeCubeElement(FTransform::Identity, FVector(1.0));
-		TSharedPtr<FGeometryCollection> DynamicCollection = CopyGeometryCollection(RestCollection.Get());
+		TUniquePtr<Chaos::FChaosPhysicsMaterial> PhysicalMaterial = nullptr;
+		TSharedPtr<FGeometryCollection> RestCollection = nullptr;
+		TSharedPtr<FGeometryDynamicCollection> DynamicCollection = nullptr;
 
-		FGeometryCollectionSolverCallbacks SolverCallbacks;
-		FSimulationParameters Parameters;
+		//
+		//  Rigid Body Setup
+		//
+		InitCollectionsParameters InitParams = { FTransform::Identity, FVector(1.0), nullptr, (int32)EObjectStateTypeEnum::Chaos_Object_Kinematic };
+		InitCollections(PhysicalMaterial, RestCollection, DynamicCollection, InitParams);
+				
+		auto CustomFunc = [&RestCollection, &DynamicCollection, &PhysicalMaterial](FSimulationParameters& InParams)
+		{
+			InParams.Shared.SizeSpecificData[0].ImplicitType = EImplicitTypeEnum::Chaos_Implicit_Box;
+		};
 
-		Parameters.RestCollection = RestCollection.Get();
-		Parameters.DynamicCollection = DynamicCollection.Get();
-		Parameters.CollisionType = ECollisionTypeEnum::Chaos_Volumetric;
-		Parameters.ImplicitType = EImplicitTypeEnum::Chaos_Implicit_Cube;
-		Parameters.Simulating = true;
+		FGeometryCollectionPhysicsProxy* PhysObject = RigidBodySetup(PhysicalMaterial, RestCollection, DynamicCollection, CustomFunc);
 
-		SolverCallbacks.UpdateParameters(Parameters);
-		SolverCallbacks.Initialize();
+		Chaos::FPBDRigidsSolver* Solver = FChaosSolversModule::GetModule()->CreateSolver(true);
+#if CHAOS_PARTICLEHANDLE_TODO
+		Solver->RegisterObject(PhysObject);
+#endif
+		Solver->SetHasFloor(true);
+		Solver->SetIsFloorAnalytic(true);
+		Solver->SetEnabled(true);
+		PhysObject->ActivateBodies();
 
-		Chaos::PBDRigidsSolver Solver;
-		Solver.RegisterCallbacks(&SolverCallbacks);
-		Solver.SetHasFloor(true);
-		Solver.SetIsFloorAnalytic(true);
-		Solver.SetEnabled(true);
+		Solver->AdvanceSolverBy(1 / 24.);
 
-		Solver.AdvanceSolverBy(1 / 24.);
+		FinalizeSolver(*Solver);
 
 		// never touched
-		TManagedArray<FTransform>& RestTransform = *RestCollection->Transform;
-		R.ExpectTrue(FMath::Abs(RestTransform[0].GetTranslation().Z) < SMALL_THRESHOLD);
+		TManagedArray<FTransform>& RestTransform = RestCollection->Transform;
+		EXPECT_LT(FMath::Abs(RestTransform[0].GetTranslation().Z), SMALL_THRESHOLD);
 
 		// simulated
-		TManagedArray<FTransform>& Transform = *DynamicCollection->Transform;
-		R.ExpectTrue(Transform.Num() == 1);
-		R.ExpectTrue(FMath::Abs(Transform[0].GetTranslation().Z - 0.5) < SMALL_THRESHOLD);
-#endif
+		TManagedArray<FTransform>& Transform = DynamicCollection->Transform;
+		EXPECT_EQ(Transform.Num(), 1);
+		EXPECT_LT(FMath::Abs(Transform[0].GetTranslation().Z - 0.5), SMALL_THRESHOLD);
+		
 
-		return !R.HasError();
+		FChaosSolversModule::GetModule()->DestroySolver(Solver);
+
+		delete PhysObject;
 	}
-	template bool RigidBodiesCollidingWithSolverFloor<float>(ExampleResponse&& R);
+	template void RigidBodiesCollidingWithSolverFloor<float>();
 
 
 	template<class T>
-	bool RigidBodiesSingleSphereCollidingWithSolverFloor(ExampleResponse&& R)
+	void RigidBodiesSingleSphereCollidingWithSolverFloor()
 	{
-#if INCLUDE_CHAOS
-		TSharedPtr<FGeometryCollection> RestCollection = GeometryCollection::MakeCubeElement(FTransform::Identity, FVector(1.0));
-		(*RestCollection->Transform)[0].SetTranslation(FVector(0, 0, 10));
-		TSharedPtr<FGeometryCollection> DynamicCollection = CopyGeometryCollection(RestCollection.Get());
+		TUniquePtr<Chaos::FChaosPhysicsMaterial> PhysicalMaterial = nullptr;
+		TSharedPtr<FGeometryCollection> RestCollection = nullptr;
+		TSharedPtr<FGeometryDynamicCollection> DynamicCollection = nullptr;
 
-		FGeometryCollectionSolverCallbacks SolverCallbacks;
-		FSimulationParameters Parameters;
+		//
+		//  Rigid Body Setup
+		//
+		auto RestInitFunc = [](TSharedPtr<FGeometryCollection>& RestCollection)
+		{
+			RestCollection->Transform[0].SetTranslation(FVector(0, 0, 10));
+		};
 
-		Parameters.RestCollection = RestCollection.Get();
-		Parameters.DynamicCollection = DynamicCollection.Get();
-		Parameters.Bouncyness = 0.f;
-		Parameters.CollisionType = ECollisionTypeEnum::Chaos_Volumetric;
-		Parameters.ImplicitType = EImplicitTypeEnum::Chaos_Implicit_Sphere;
-		Parameters.Simulating = true;
+		InitCollectionsParameters InitParams = { FTransform::Identity, FVector(1.0), RestInitFunc, (int32)EObjectStateTypeEnum::Chaos_Object_Kinematic };
+		InitCollections(PhysicalMaterial, RestCollection, DynamicCollection, InitParams);
+				
+		auto CustomFunc = [&RestCollection, &DynamicCollection, &PhysicalMaterial](FSimulationParameters& InParams)
+		{
+			InParams.Shared.SizeSpecificData[0].ImplicitType = EImplicitTypeEnum::Chaos_Implicit_Sphere;
+		};
 
-		SolverCallbacks.UpdateParameters(Parameters);
-		SolverCallbacks.Initialize();
+		FGeometryCollectionPhysicsProxy* PhysObject = RigidBodySetup(PhysicalMaterial, RestCollection, DynamicCollection, CustomFunc);
 
-		Chaos::PBDRigidsSolver Solver;
-		Solver.RegisterCallbacks(&SolverCallbacks);
-		Solver.SetHasFloor(true);
-		Solver.SetIsFloorAnalytic(true);
-		Solver.SetEnabled(true);
+		Chaos::FPBDRigidsSolver* Solver = FChaosSolversModule::GetModule()->CreateSolver(true);
+#if CHAOS_PARTICLEHANDLE_TODO
+		Solver->RegisterObject(PhysObject);
+#endif
+		Solver->SetHasFloor(true);
+		Solver->SetIsFloorAnalytic(true);
+		Solver->SetEnabled(true);
+		PhysObject->ActivateBodies();
 
 		for (int i = 0; i < 100; i++)
 		{
-			Solver.AdvanceSolverBy(1 / 240.);
+			Solver->AdvanceSolverBy(1 / 240.);
 		}
 		
+		FinalizeSolver(*Solver);
+
 		// never touched
-		TManagedArray<FTransform>& RestTransform = *RestCollection->Transform;
-		R.ExpectTrue(FMath::Abs(RestTransform[0].GetTranslation().Z-10.0) < KINDA_SMALL_NUMBER);
+		TManagedArray<FTransform>& RestTransform = RestCollection->Transform;
+		EXPECT_LT(FMath::Abs(RestTransform[0].GetTranslation().Z-10.0), KINDA_SMALL_NUMBER);
 
 		// simulated
-		TManagedArray<FTransform>& Transform = *DynamicCollection->Transform;
-		TManagedArray<float>& InnerRadius = *DynamicCollection->InnerRadius;
+		TManagedArray<FTransform>& Transform = DynamicCollection->Transform;
+		TManagedArray<float>& InnerRadius = RestCollection->InnerRadius;
 		//UE_LOG(LogTest, Verbose, TEXT("Height : (%3.5f), Inner Radius:%3.5f"), Transform[0].GetTranslation().Z, InnerRadius[0]);
 
-		R.ExpectTrue(Transform.Num() == 1);
-		R.ExpectTrue(FMath::Abs(Transform[0].GetTranslation().Z - 0.5) < 0.1); // @todo - Why is this not 0.5f
-#endif
+		EXPECT_EQ(Transform.Num(), 1);
+		EXPECT_LT(FMath::Abs(Transform[0].GetTranslation().Z - 0.5), 0.1); // @todo - Why is this not 0.5f
+		
+		FChaosSolversModule::GetModule()->DestroySolver(Solver);
 
-		return !R.HasError();
+		delete PhysObject;
 	}
-	template bool RigidBodiesSingleSphereCollidingWithSolverFloor<float>(ExampleResponse&& R);
+	template void RigidBodiesSingleSphereCollidingWithSolverFloor<float>();
 
 
 	template<class T>
-	bool RigidBodiesSingleSphereIntersectingWithSolverFloor(ExampleResponse&& R)
+	void RigidBodiesSingleSphereIntersectingWithSolverFloor()
 	{
-#if INCLUDE_CHAOS
-		TSharedPtr<FGeometryCollection> RestCollection = GeometryCollection::MakeCubeElement(FTransform::Identity, FVector(1.0));
-		TSharedPtr<FGeometryCollection> DynamicCollection = CopyGeometryCollection(RestCollection.Get());
+		TUniquePtr<Chaos::FChaosPhysicsMaterial> PhysicalMaterial = nullptr;
+		TSharedPtr<FGeometryCollection> RestCollection = nullptr;
+		TSharedPtr<FGeometryDynamicCollection> DynamicCollection = nullptr;
 
-		FGeometryCollectionSolverCallbacks SolverCallbacks;
-		FSimulationParameters Parameters;
+		//
+		//  Rigid Body Setup
+		//
+		InitCollectionsParameters InitParams = { FTransform::Identity, FVector(1.0), nullptr, (int32)EObjectStateTypeEnum::Chaos_Object_Kinematic };
+		InitCollections(PhysicalMaterial, RestCollection, DynamicCollection, InitParams);
 
-		Parameters.RestCollection = RestCollection.Get();
-		Parameters.DynamicCollection = DynamicCollection.Get();
-		Parameters.CollisionType = ECollisionTypeEnum::Chaos_Volumetric;
-		Parameters.ImplicitType = EImplicitTypeEnum::Chaos_Implicit_Sphere;
-		Parameters.Simulating = true;
+		auto CustomFunc = [&RestCollection, &DynamicCollection, &PhysicalMaterial](FSimulationParameters& InParams)
+		{
+			InParams.Shared.SizeSpecificData[0].ImplicitType = EImplicitTypeEnum::Chaos_Implicit_Sphere;
+		};
 
-		SolverCallbacks.UpdateParameters(Parameters);
-		SolverCallbacks.Initialize();
+		FGeometryCollectionPhysicsProxy* PhysObject = RigidBodySetup(PhysicalMaterial, RestCollection, DynamicCollection, CustomFunc);
 
-		Chaos::PBDRigidsSolver Solver;
-		Solver.RegisterCallbacks(&SolverCallbacks);
-		Solver.SetHasFloor(true);
-		Solver.SetIsFloorAnalytic(true);
-		Solver.SetEnabled(true);
+		Chaos::FPBDRigidsSolver* Solver = FChaosSolversModule::GetModule()->CreateSolver(true);
+#if CHAOS_PARTICLEHANDLE_TODO
+		Solver->RegisterObject(PhysObject);
+#endif
+		Solver->SetHasFloor(true);
+		Solver->SetIsFloorAnalytic(true);
+		Solver->SetEnabled(true);
+		PhysObject->ActivateBodies();
 
-		Solver.AdvanceSolverBy(1 / 24.);
+		Solver->AdvanceSolverBy(1 / 24.);
+
+		FinalizeSolver(*Solver);
 
 		// never touched
-		TManagedArray<FTransform>& RestTransform = *RestCollection->Transform;
-		R.ExpectTrue(FMath::Abs(RestTransform[0].GetTranslation().Z) < KINDA_SMALL_NUMBER);
+		TManagedArray<FTransform>& RestTransform = RestCollection->Transform;
+		EXPECT_LT(FMath::Abs(RestTransform[0].GetTranslation().Z), KINDA_SMALL_NUMBER);
 
 		// simulated
-		TManagedArray<FTransform>& Transform = *DynamicCollection->Transform;
-		R.ExpectTrue(Transform.Num() == 1);
+		TManagedArray<FTransform>& Transform = DynamicCollection->Transform;
+		EXPECT_EQ(Transform.Num(), 1);
 		//UE_LOG(LogTest, Verbose, TEXT("Position : (%3.5f,%3.5f,%3.5f)"), Transform[0].GetTranslation().X, Transform[0].GetTranslation().Y, Transform[0].GetTranslation().Z);
 
-		R.ExpectTrue(FMath::Abs(Transform[0].GetTranslation().Z - 0.5) < KINDA_SMALL_NUMBER);
-#endif
+		EXPECT_LT(FMath::Abs(Transform[0].GetTranslation().Z - 0.5), KINDA_SMALL_NUMBER);
+		
 
-		return !R.HasError();
+		FChaosSolversModule::GetModule()->DestroySolver(Solver);
+
+		delete PhysObject;
+
 	}
-	template bool RigidBodiesSingleSphereIntersectingWithSolverFloor<float>(ExampleResponse&& R);
+	template void RigidBodiesSingleSphereIntersectingWithSolverFloor<float>();
 
 
 	template<class T>
-	bool RigidBodiesKinematic(ExampleResponse&& R)
+	void RigidBodiesKinematic()
 	{
-#if INCLUDE_CHAOS
-		TSharedPtr<FGeometryCollection> RestCollection = GeometryCollection::MakeCubeElement(FTransform::Identity, FVector(1.0));
-		TSharedPtr<FGeometryCollection> DynamicCollection = CopyGeometryCollection(RestCollection.Get());
+		TUniquePtr<Chaos::FChaosPhysicsMaterial> PhysicalMaterial = nullptr;
+		TSharedPtr<FGeometryCollection> RestCollection = nullptr;
+		TSharedPtr<FGeometryDynamicCollection> DynamicCollection = nullptr;
 
-		FGeometryCollectionSolverCallbacks SolverCallbacks;
-		FSimulationParameters Parameters;
+		//
+		//  Rigid Body Setup
+		//
+		InitCollectionsParameters InitParams = { FTransform::Identity, FVector(1.0), nullptr, (uint8)EObjectStateTypeEnum::Chaos_Object_Kinematic };
+		InitCollections(PhysicalMaterial, RestCollection, DynamicCollection, InitParams);
 
-		Parameters.RestCollection = RestCollection.Get();
-		Parameters.DynamicCollection = DynamicCollection.Get();
-		Parameters.CollisionType = ECollisionTypeEnum::Chaos_Volumetric;
-		Parameters.ObjectType = EObjectTypeEnum::Chaos_Object_Kinematic;
-		Parameters.Simulating = true;
+		FGeometryCollectionPhysicsProxy* PhysObject = RigidBodySetup(PhysicalMaterial, RestCollection, DynamicCollection);
 
-		SolverCallbacks.UpdateParameters(Parameters);
-		SolverCallbacks.Initialize();
-
-		Chaos::PBDRigidsSolver Solver;
-		Solver.RegisterCallbacks(&SolverCallbacks);
-		Solver.SetHasFloor(false);
-		Solver.SetIsFloorAnalytic(true);
-		Solver.SetEnabled(true);
+		Chaos::FPBDRigidsSolver* Solver = FChaosSolversModule::GetModule()->CreateSolver(true);
+#if CHAOS_PARTICLEHANDLE_TODO
+		Solver->RegisterObject(PhysObject);
+#endif
+		Solver->SetHasFloor(false);
+		Solver->SetIsFloorAnalytic(true);
+		Solver->SetEnabled(true);
+		PhysObject->ActivateBodies();
 
 		for (int i = 0; i < 100; i++)
 		{
-			Solver.AdvanceSolverBy(1 / 24.);
+			Solver->AdvanceSolverBy(1 / 24.);
 		}
+
+		FinalizeSolver(*Solver);
 
 		// simulated
-		TManagedArray<FTransform>& Transform = *DynamicCollection->Transform;
-		R.ExpectTrue(Transform.Num() == 1);
+		TManagedArray<FTransform>& Transform = DynamicCollection->Transform;
+		EXPECT_EQ(Transform.Num(), 1);
 		//UE_LOG(LogTest, Verbose, TEXT("Position : (%3.5f,%3.5f,%3.5f)"), Transform[0].GetTranslation().X, Transform[0].GetTranslation().Y, Transform[0].GetTranslation().Z);
-		R.ExpectTrue(Transform[0].GetTranslation().Z == 0.f);
-#endif
+		EXPECT_EQ(Transform[0].GetTranslation().Z, 0.f);
+		
+		FChaosSolversModule::GetModule()->DestroySolver(Solver);
 
-		return !R.HasError();
+		delete PhysObject;
+
 	}
-	template bool RigidBodiesKinematic<float>(ExampleResponse&& R);
-
-	template<class T>
-	bool RigidBodiesKinematicFieldActivation(ExampleResponse&& R)
-	{
-#if INCLUDE_CHAOS
-		TSharedPtr<FGeometryCollection> RestCollection = GeometryCollection::MakeCubeElement(FTransform::Identity, FVector(1.0));
-		TSharedPtr<FGeometryCollection> DynamicCollection = CopyGeometryCollection(RestCollection.Get());
-
-		FGeometryCollectionSolverCallbacks SolverCallbacks;
-		FSimulationParameters Parameters;
-
-		Parameters.RestCollection = RestCollection.Get();
-		Parameters.DynamicCollection = DynamicCollection.Get();
-		Parameters.CollisionType = ECollisionTypeEnum::Chaos_Volumetric;
-		Parameters.ObjectType = EObjectTypeEnum::Chaos_Object_Kinematic;
-		Parameters.Simulating = true;
-
-		TSharedPtr<UFieldSystem> System(NewObject<UFieldSystem>());
-		Parameters.FieldSystem = &System->GetFieldData();
-
-		FRadialIntMask & RadialMask = System->NewNode<FRadialIntMask>("StayDynamic");
-		RadialMask.Position = FVector(0.0, 0.0, 0.0);
-		RadialMask.Radius = 100.0;
-		RadialMask.InteriorValue = 1.0;
-		RadialMask.ExteriorValue = 0.0;
-		RadialMask.SetMaskCondition = ESetMaskConditionType::Field_Set_IFF_NOT_Interior;
-
-		SolverCallbacks.UpdateParameters(Parameters);
-		SolverCallbacks.Initialize();
-
-		Chaos::PBDRigidsSolver Solver;
-		Solver.RegisterCallbacks(&SolverCallbacks);
-		Solver.SetHasFloor(false);
-		Solver.SetIsFloorAnalytic(true);
-		Solver.SetEnabled(true);
-
-		for (int i = 0; i < 100; i++)
-		{
-			Solver.AdvanceSolverBy(1 / 24.);
-		}
-
-		// simulated
-		TManagedArray<FTransform>& Transform = *DynamicCollection->Transform;
-		R.ExpectTrue(Transform.Num() == 1);
-		R.ExpectTrue(Transform[0].GetTranslation().Z == 0.f);
-		//UE_LOG(LogTest, Verbose, TEXT("Position : (%3.5f,%3.5f,%3.5f)"), Transform[0].GetTranslation().X, Transform[0].GetTranslation().Y, Transform[0].GetTranslation().Z);
-
-		RadialMask.InteriorValue = 0.0;
-		RadialMask.ExteriorValue = 1.0;
-
-		for (int i = 0; i < 100; i++)
-		{
-			Solver.AdvanceSolverBy(1 / 24.);
-		}
-
-		//UE_LOG(LogTest, Verbose, TEXT("Position : (%3.5f,%3.5f,%3.5f)"), Transform[0].GetTranslation().X, Transform[0].GetTranslation().Y, Transform[0].GetTranslation().Z);
-		R.ExpectTrue(Transform[0].GetTranslation().Z <= 0.f);
-#endif
-
-		return !R.HasError();
-	}
-	template bool RigidBodiesKinematicFieldActivation<float>(ExampleResponse&& R);
+	template void RigidBodiesKinematic<float>();
 
 
 	template<class T>
-	bool RigidBodiesSleepingActivation(ExampleResponse&& R)
+	void RigidBodiesSleepingActivation()
 	{
-#if INCLUDE_CHAOS
-		TSharedPtr<FGeometryCollection> RestCollection = GeometryCollection::MakeCubeElement(FTransform::Identity, FVector(1.0));
-
-		RestCollection->AppendGeometry(*RestCollection);
-		TManagedArray<FTransform>& RestTransform = *RestCollection->Transform;
-		RestTransform[1].SetTranslation(FVector(0.f, 0.f, 5.f));
-
-		TSharedPtr<FGeometryCollection> DynamicCollection = CopyGeometryCollection(RestCollection.Get());
-
-		FGeometryCollectionSolverCallbacks SolverCallbacks;
-		FSimulationParameters Parameters;
-
-		Parameters.RestCollection = RestCollection.Get();
-		Parameters.DynamicCollection = DynamicCollection.Get();
-		Parameters.CollisionType = ECollisionTypeEnum::Chaos_Volumetric;
-		Parameters.ObjectType = EObjectTypeEnum::Chaos_Object_Kinematic;
-		Parameters.ImplicitType = EImplicitTypeEnum::Chaos_Implicit_Cube;
-		Parameters.Simulating = true;
-
-		SolverCallbacks.UpdateParameters(Parameters);
-		SolverCallbacks.Initialize();
+		TUniquePtr<Chaos::FChaosPhysicsMaterial> PhysicalMaterial = nullptr;
+		TSharedPtr<FGeometryCollection> RestCollection = nullptr;
+		TSharedPtr<FGeometryDynamicCollection> DynamicCollection = nullptr;
 
 		//
+		//  Rigid Body Setup
 		//
-		//
-		TSharedPtr< TManagedArray<int32> > ObjectTypeArray = DynamicCollection->FindAttribute<int32>("DynamicState", FTransformCollection::TransformGroup);
-		TManagedArray<int32> & ObjectType = *ObjectTypeArray;
-		ObjectType[0] = (int32)EObjectTypeEnum::Chaos_Object_Sleeping;
-		ObjectType[1] = (int32)EObjectTypeEnum::Chaos_Object_Dynamic;
+		auto RestInitFunc = [](TSharedPtr<FGeometryCollection>& RestCollection)
+		{
+			RestCollection->AppendGeometry(*GeometryCollection::MakeCubeElement(FTransform(FVector(0, 0, 0)), FVector(100.0)));
+			RestCollection->AppendGeometry(*GeometryCollection::MakeCubeElement(FTransform(FVector(0, 0, 0)), FVector(100.0)));
+			RestCollection->Transform[1].SetTranslation(FVector(0.f, 0.f, 5.f));
+		};
 
-		Chaos::PBDRigidsSolver Solver;
-		Solver.RegisterCallbacks(&SolverCallbacks);
-		Solver.SetHasFloor(false);
-		Solver.SetIsFloorAnalytic(true);
-		Solver.SetEnabled(true);
+		InitCollectionsParameters InitParams = { FTransform::Identity, FVector(1.0), RestInitFunc, (int32)EObjectStateTypeEnum::Chaos_Object_Kinematic };
+		InitCollections(PhysicalMaterial, RestCollection, DynamicCollection, InitParams);
 
-		TManagedArray<FTransform>& Transform = *DynamicCollection->Transform;
+		auto CustomFunc = [&RestCollection, &DynamicCollection, &PhysicalMaterial](FSimulationParameters& InParams)
+		{
+			//InParams.Shared.SizeSpecificData[0].ImplicitType = EImplicitTypeEnum::Chaos_Implicit_Cube;
+		};
+
+		FGeometryCollectionPhysicsProxy* PhysObject = RigidBodySetup(PhysicalMaterial, RestCollection, DynamicCollection, CustomFunc);
+
+		TManagedArray<int32>& ObjectType = DynamicCollection->GetAttribute<int32>("DynamicState", FTransformCollection::TransformGroup);
+		ObjectType[0] = (int32)EObjectStateTypeEnum::Chaos_Object_Sleeping;
+		ObjectType[1] = (int32)EObjectStateTypeEnum::Chaos_Object_Dynamic;
+
+		Chaos::FPBDRigidsSolver* Solver = FChaosSolversModule::GetModule()->CreateSolver(true);
+#if CHAOS_PARTICLEHANDLE_TODO
+		Solver->RegisterObject(PhysObject);
+#endif
+		Solver->SetHasFloor(false);
+		Solver->SetIsFloorAnalytic(true);
+		Solver->SetEnabled(true);
+		PhysObject->ActivateBodies();
+
+		TManagedArray<FTransform>& Transform = DynamicCollection->Transform;
 		for (int i = 0; i < 100; i++)
 		{
-			Solver.AdvanceSolverBy(1 / 24.);
+			Solver->AdvanceSolverBy(1 / 24.);
 			//UE_LOG(LogTest, Verbose, TEXT("Position[0] : (%3.5f,%3.5f,%3.5f)"), Transform[0].GetTranslation().X, Transform[0].GetTranslation().Y, Transform[0].GetTranslation().Z);
 			//UE_LOG(LogTest, Verbose, TEXT("Position[1] : (%3.5f,%3.5f,%3.5f)"), Transform[1].GetTranslation().X, Transform[1].GetTranslation().Y, Transform[1].GetTranslation().Z);
 		}
 
-		// todo: WIP
-#endif
+		FinalizeSolver(*Solver);
 
-		return !R.HasError();
-	}
-	template bool RigidBodiesSleepingActivation<float>(ExampleResponse&& R);
-
-
-	template<class T>
-	bool RigidBodiesInitialLinearVelocity(ExampleResponse&& R)
-	{
-#if INCLUDE_CHAOS
-		TSharedPtr<FGeometryCollection> RestCollection = GeometryCollection::MakeCubeElement(FTransform::Identity, FVector(1.0));
-		TSharedPtr<FGeometryCollection> DynamicCollection = CopyGeometryCollection(RestCollection.Get());
-
-		FGeometryCollectionSolverCallbacks SolverCallbacks;
-		FSimulationParameters Parameters;
-
-		Parameters.RestCollection = RestCollection.Get();
-		Parameters.DynamicCollection = DynamicCollection.Get();
-		Parameters.CollisionType = ECollisionTypeEnum::Chaos_Volumetric;
-		Parameters.InitialVelocityType = EInitialVelocityTypeEnum::Chaos_Initial_Velocity_User_Defined;
-		Parameters.InitialLinearVelocity = FVector(0.f, 100.f, 0.f);
-		Parameters.Simulating = true;
-
-		SolverCallbacks.UpdateParameters(Parameters);
-		SolverCallbacks.Initialize();
-
-		Chaos::PBDRigidsSolver Solver;
-		Solver.RegisterCallbacks(&SolverCallbacks);
-		Solver.SetHasFloor(false);
-		Solver.SetIsFloorAnalytic(true);
-		Solver.SetEnabled(true);
-
-		TManagedArray<FTransform>& Transform = *DynamicCollection->Transform;
-
-		float PreviousY = 0.f;
-		R.ExpectTrue(Transform[0].GetTranslation().X == 0 );
-		R.ExpectTrue(Transform[0].GetTranslation().Y == 0 );
-
-		for (int i = 0; i < 10; i++)
-		{
-			Solver.AdvanceSolverBy(1 / 24.);
-			R.ExpectTrue(Transform[0].GetTranslation().X == 0);
-			R.ExpectTrue(Transform[0].GetTranslation().Y > PreviousY);
-			PreviousY = Transform[0].GetTranslation().Y;
-		}
-#endif
-
-		return !R.HasError();
-	}
-	template bool RigidBodiesInitialLinearVelocity<float>(ExampleResponse&& R);
-
-	template<class T>
-	bool RigidBodies_Field_StayDynamic(ExampleResponse&& R)
-	{
-#if INCLUDE_CHAOS
-		//
-		//  Rigid Body Setup
-		//
-		TSharedPtr<FGeometryCollection> RestCollection = GeometryCollection::MakeCubeElement(FTransform::Identity, FVector(1.0));
-		TManagedArray<FTransform>& RestTransform = *RestCollection->Transform;
-		RestTransform[0].SetTranslation(FVector(0.f, 0.f, 5.f));
-		TSharedPtr<FGeometryCollection> DynamicCollection = CopyGeometryCollection(RestCollection.Get());
-		FGeometryCollectionSolverCallbacks SolverCallbacks;
-		FSimulationParameters Parameters;
-		Parameters.RestCollection = RestCollection.Get();
-		Parameters.DynamicCollection = DynamicCollection.Get();
-		Parameters.CollisionType = ECollisionTypeEnum::Chaos_Volumetric;
-		Parameters.ObjectType = EObjectTypeEnum::Chaos_Object_Kinematic;
-		Parameters.Simulating = true;
-		SolverCallbacks.UpdateParameters(Parameters);
-		SolverCallbacks.Initialize();
-
-		//
-		// Field setup
-		//
-		FFieldSystem System;
-		FRadialIntMask & RadialMask = System.NewNode<FRadialIntMask>("StayDynamic");
-		RadialMask.Position = FVector(0.0, 0.0, 0.0);
-		RadialMask.Radius = 5.0;
-		RadialMask.InteriorValue = 0;
-		RadialMask.ExteriorValue = 1;
-		RadialMask.SetMaskCondition = ESetMaskConditionType::Field_Set_IFF_NOT_Interior;
-		FFieldSystemSolverCallbacks FieldCallbacks(System);
+		// @todo(enable): Validated the sleeping object was woken up during the collision. 
 		
-		//
-		// Solver setup
-		//
-		Chaos::PBDRigidsSolver Solver;
-		Solver.RegisterCallbacks(&SolverCallbacks);
-		Solver.RegisterFieldCallbacks(&FieldCallbacks);
-		Solver.SetHasFloor(false);
-		Solver.SetEnabled(true);
+		FChaosSolversModule::GetModule()->DestroySolver(Solver);
 
-		TManagedArray<FTransform>& Transform = *DynamicCollection->Transform;
-		float PreviousHeight = 5.f;
-		for (int Frame = 0; Frame < 10; Frame++)
-		{
-			//UE_LOG(LogTest, Verbose, TEXT("Frame[%d]"), Frame);
-
-			if (Frame == 5)
-			{
-				FFieldSystemCommand Command("StayDynamic", EFieldPhysicsType::Field_StayDynamic, FVector(0.0,0.0,5.0), FVector(0), 5.f, 0.f);
-				FieldCallbacks.BufferCommand(Command);
-			}
-
-			Solver.AdvanceSolverBy(1 / 24.);
-			const Chaos::TPBDRigidParticles<float, 3>& Particles = Solver.GetRigidParticles();
-
-			if(Frame < 5)
-			{
-				R.ExpectTrue(FMath::Abs(Transform[0].GetTranslation().Z-5.f) < SMALL_THRESHOLD);
-			}
-			else
-			{
-				R.ExpectTrue(Transform[0].GetTranslation().Z < PreviousHeight);
-			}
-			PreviousHeight = Transform[0].GetTranslation().Z;
-
-			//UE_LOG(LogTest, Verbose, TEXT("Position[0] : (%3.5f,%3.5f,%3.5f)"), Transform[0].GetTranslation().X, Transform[0].GetTranslation().Y, Transform[0].GetTranslation().Z);
-			//for (int32 rdx = 0; rdx < (int32)Particles.Size(); rdx++)
-			//{
-			//	UE_LOG(GCTCL_Log, Verbose, TEXT("... ... ...Disabled[%d] : %d"), rdx, Particles.Disabled(rdx));
-			//}
-		}
-#endif
-
-		return !R.HasError();
+		delete PhysObject;
 	}
-	template bool RigidBodies_Field_StayDynamic<float>(ExampleResponse&& R);
-
+	template void RigidBodiesSleepingActivation<float>();
 
 	template<class T>
-	bool RigidBodies_Field_LinearForce(ExampleResponse&& R)
+	void RigidBodies_CollisionGroup()
 	{
-		/*
+		TUniquePtr<Chaos::FChaosPhysicsMaterial> PhysicalMaterial = nullptr;
+		TSharedPtr<FGeometryCollection> RestCollection = nullptr;
+		TSharedPtr<FGeometryDynamicCollection> DynamicCollection = nullptr;
+
 		//
 		//  Rigid Body Setup
 		//
-		TSharedPtr<FGeometryCollection> RestCollection = GeometryCollection::MakeCubeElement(FTransform::Identity, FVector(1.0));
-		TManagedArray<FTransform>& RestTransform = *RestCollection->Transform;
-		RestTransform[0].SetTranslation(FVector(0.f, 0.f, 5.f));
-		TSharedPtr<FGeometryCollection> DynamicCollection = CopyGeometryCollection(RestCollection.Get());
-		FGeometryCollectionSolverCallbacks SolverCallbacks;
-		FSimulationParameters Parameters;
-		Parameters.RestCollection = RestCollection.Get();
-		Parameters.DynamicCollection = DynamicCollection.Get();
-		Parameters.CollisionType = ECollisionTypeEnum::Chaos_Volumetric;
-		Parameters.ObjectType = EObjectTypeEnum::Chaos_Object_Dynamic;
-		Parameters.Simulating = true;
-		SolverCallbacks.UpdateParameters(Parameters);
-		SolverCallbacks.Initialize();
+		auto RestInitFunc = [](TSharedPtr<FGeometryCollection>& RestCollection)
+		{
+			RestCollection->AppendGeometry(*GeometryCollection::MakeCubeElement(FTransform(FVector(0, 0, 210.0)), FVector(100.0)));
+			RestCollection->AppendGeometry(*GeometryCollection::MakeCubeElement(FTransform(FVector(0, 0, 320.0)), FVector(100.0)));
+			RestCollection->AppendGeometry(*GeometryCollection::MakeCubeElement(FTransform(FVector(0, 0, 430.0)), FVector(100.0)));
+		};
 
-		//
-		// Field setup
-		//
-		FFieldSystem System;
-		FUniformVector & UniformVector = System.NewNode<FUniformVector>("LinearForce");
-		UniformVector.Direction = FVector(1.0, 0.0, 0.0);
-		UniformVector.Magnitude = 0.0;
-		FFieldSystemSolverCallbacks FieldCallbacks(System);
+		InitCollectionsParameters InitParams = { FTransform(FVector(0, 0, 100.0)), FVector(100.0), RestInitFunc, (int32)EObjectStateTypeEnum::Chaos_Object_Kinematic };
+		InitCollections(PhysicalMaterial, RestCollection, DynamicCollection, InitParams);
 
 		//
 		// Solver setup
 		//
-		Chaos::PBDRigidsSolver Solver;
-		Solver.RegisterCallbacks(&SolverCallbacks);
-		Solver.RegisterFieldCallbacks(&FieldCallbacks);
-		Solver.SetHasFloor(false);
-		Solver.SetEnabled(true);
-
-		TManagedArray<FTransform>& Transform = *DynamicCollection->Transform;
-		float PreviousY = 0.f;
-		for (int Frame = 0; Frame < 10; Frame++)
+		auto CustomFunc = [&RestCollection, &DynamicCollection, &PhysicalMaterial](FSimulationParameters& InParams)
 		{
-			//UE_LOG(LogTest, Verbose, TEXT("Frame[%d]"), Frame);
+			InParams.Shared.SizeSpecificData[0].ImplicitType = EImplicitTypeEnum::Chaos_Implicit_Box;
+		};
 
-			if (Frame >= 5)
-			{
-				FFieldSystemCommand Command("LinearForce", EFieldPhysicsType::Field_LinearForce, FVector(0), FVector(0,1,0), 0.f, 100.f);
-				FieldCallbacks.BufferCommand(Command);
-			}
+		FGeometryCollectionPhysicsProxy* PhysObject = RigidBodySetup(PhysicalMaterial, RestCollection, DynamicCollection, CustomFunc);
+		PhysObject->SetCollisionParticlesPerObjectFraction( 1.0 );
 
-			Solver.AdvanceSolverBy(1 / 24.);
+		Chaos::FPBDRigidsSolver* Solver = FChaosSolversModule::GetModule()->CreateSolver(true);
+#if CHAOS_PARTICLEHANDLE_TODO
+		Solver->RegisterObject(PhysObject);
+#endif
+		Solver->SetHasFloor(true);
+		Solver->SetEnabled(true);
+		PhysObject->ActivateBodies();
 
+		Solver->AdvanceSolverBy(1 / 24.);
+#if TODO_REIMPLEMENT_GET_RIGID_PARTICLES
+		Chaos::TPBDRigidParticles<float, 3>& Particles = Solver->GetRigidParticles();
+
+		for (int Frame = 1; Frame < 200; Frame++)
+		{
+			Solver->AdvanceSolverBy(1 / 24.);
+			FinalizeSolver(*Solver);
 			
-			if (Frame < 5)
+			if (Frame == 1)
 			{
-				R.ExpectTrue(FMath::Abs(Transform[0].GetTranslation().Y) < SMALL_THRESHOLD);
+				Particles.CollisionGroup(0)=  0;
+				Particles.CollisionGroup(1)=  1;
+				Particles.CollisionGroup(2)=  1;
+				Particles.CollisionGroup(3)=  3;
+				Particles.CollisionGroup(4)= -1;
+			}
+			if (Frame == 13)
+			{
+				EXPECT_LT(FMath::Abs(Particles.X(0).Z), SMALL_NUMBER);
+				EXPECT_LT(FMath::Abs(Particles.X(1).Z - 50.f), 10.f);
+				EXPECT_LT(FMath::Abs(Particles.X(2).Z - 150.f), 10.f);
+			}
+			if( Frame == 30 )
+			{
+				EXPECT_LT(FMath::Abs(Particles.X(0).Z), SMALL_NUMBER);
+				EXPECT_LT(FMath::Abs(Particles.X(1).Z - 50.f), 10.f);
+				EXPECT_LT(FMath::Abs(Particles.X(2).Z - 150.f), 10.f);
+				EXPECT_GT(Particles.X(3).Z, 50.f);
+				EXPECT_LT(Particles.X(4).Z, -100);
+			}
+			if (Frame == 31)
+			{
+				Particles.CollisionGroup(0) = 0;
+				Particles.CollisionGroup(1) = -1;
+				Particles.CollisionGroup(2) = 1;
+				Particles.CollisionGroup(3) = -1;
+				Particles.CollisionGroup(4) = -1;
+			}
+		}
+
+		EXPECT_LT(FMath::Abs(Particles.X(0).Z), SMALL_NUMBER);
+		EXPECT_LT(Particles.X(1).Z, -10000);
+		EXPECT_GT(Particles.X(2).Z, 50.0);
+		EXPECT_LT(Particles.X(3).Z, -10000);
+		EXPECT_LT(Particles.X(4).Z, -10000);
+#endif
+
+		FChaosSolversModule::GetModule()->DestroySolver(Solver);
+		delete PhysObject;
+	}
+	template void RigidBodies_CollisionGroup<float>();
+
+
+
+	template<class T>
+	void RigidBodies_Initialize_ParticleImplicitCollisionGeometry()
+	{
+		typedef Chaos::TVector<T, 3> Vec;
+
+		typename SimulationObjects<T>::FParameters P;
+		P.CollisionGroup = -1;
+		P.SizeData.ImplicitType = EImplicitTypeEnum::Chaos_Implicit_LevelSet;
+		P.SizeData.CollisionType = ECollisionTypeEnum::Chaos_Surface_Volumetric;
+
+		SimulationObjects<T>* Object = new SimulationObjects<T>(P);
+		Object->PhysicsProxy->Initialize();
+
+		// check implicit domain
+		typedef TUniquePtr<Chaos::FImplicitObject> FImplicitPointer;
+		const TManagedArray<FImplicitPointer> & Implicits = Object->RestCollection->template GetAttribute<FImplicitPointer>("Implicits", FTransformCollection::TransformGroup);
+		EXPECT_EQ(Implicits.Num(), 1);
+
+		const Chaos::FImplicitObject & Implicit = *Implicits[0];
+		for (float x = -1.05; x < 1.0; x += 0.1)
+		{
+			Vec Normal;
+			T phi = Implicit.PhiWithNormal(Vec(x, 0, 0), Normal);
+			if (x < -0.5 || 0.5 < x)
+			{
+				EXPECT_GT(phi, 0);
 			}
 			else
 			{
-				R.ExpectTrue(Transform[0].GetTranslation().Y > PreviousY);
+				EXPECT_LT(phi, 0);
 			}
-			
-			PreviousY = Transform[0].GetTranslation().Y;
 
-			//UE_LOG(LogTest, Verbose, TEXT("Position[0] : (%3.5f,%3.5f,%3.5f)"), Transform[0].GetTranslation().X, Transform[0].GetTranslation().Y, Transform[0].GetTranslation().Z);
+			if (x < -0.25)
+			{
+				EXPECT_LT((Normal-Vec(-1,0,0)).Size(), KINDA_SMALL_NUMBER);
+			}
+			else if (x > 0.25)
+			{
+				EXPECT_LT((Normal - Vec(1, 0, 0)).Size(), KINDA_SMALL_NUMBER);
+			}
 		}
 
-		return !R.HasError();
-		*/
-		return true;
+
+		// check simplicial elements
+		typedef TUniquePtr< FCollisionStructureManager::FSimplicial > FSimplicialPointer;
+		const TManagedArray<FSimplicialPointer> & Simplicials = Object->RestCollection->template GetAttribute<FSimplicialPointer>(FGeometryCollectionPhysicsProxy::SimplicialsAttribute, FTransformCollection::TransformGroup);
+		EXPECT_EQ(Simplicials.Num(), 1);
+		EXPECT_TRUE(Simplicials[0].IsValid());
+		EXPECT_EQ(Simplicials[0]->Size(), 8);
+		for (int32 Index = 0; Index < (int32)Simplicials[0]->Size(); Index++)
+		{
+			//const FCollisionStructureManager::FSimplicial & Simplical = Simplicials[0];
+			Chaos::TVector<float, 3> Vert = Simplicials[0]->X(Index);
+			EXPECT_LT((FMath::Abs(FMath::Abs(Vert.X) + FMath::Abs(Vert.Y) + FMath::Abs(Vert.Z))-1.5), KINDA_SMALL_NUMBER );
+		}
+		delete Object;
 	}
-	template bool RigidBodies_Field_LinearForce<float>(ExampleResponse&& R);
+	template void RigidBodies_Initialize_ParticleImplicitCollisionGeometry<float>();
 
 }
 

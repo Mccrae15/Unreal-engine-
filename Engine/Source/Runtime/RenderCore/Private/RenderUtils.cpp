@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "RenderUtils.h"
 #include "Containers/ResourceArray.h"
@@ -6,6 +6,7 @@
 #include "RenderResource.h"
 #include "RHIStaticStates.h"
 #include "RenderGraphUtils.h"
+#include "PipelineStateCache.h"
 
 #if WITH_EDITOR
 #include "Misc/CoreMisc.h"
@@ -32,6 +33,7 @@ const uint16 GCubeIndices[12*3] =
 TGlobalResource<FCubeIndexBuffer> GCubeIndexBuffer;
 TGlobalResource<FTwoTrianglesIndexBuffer> GTwoTrianglesIndexBuffer;
 TGlobalResource<FScreenSpaceVertexBuffer> GScreenSpaceVertexBuffer;
+TGlobalResource<FTileVertexDeclaration> GTileVertexDeclaration;
 
 //
 // FPackedNormal serializer
@@ -137,21 +139,25 @@ FPixelFormatInfo	GPixelFormats[PF_MAX] =
 
 	{ TEXT("R16G16B16A16_UINT"),1,			1,			1,			8,			4,				0,				1,				PF_R16G16B16A16_UNORM },
 	{ TEXT("R16G16B16A16_SINT"),1,			1,			1,			8,			4,				0,				1,				PF_R16G16B16A16_SNORM },
-	{ TEXT("PLATFORM_HDR_0"),	0,			0,			0,			0,			0,				0,				0,				PF_PLATFORM_HDR_0 },
-	{ TEXT("PLATFORM_HDR_1"),	0,			0,			0,			0,			0,				0,				0,				PF_PLATFORM_HDR_1 },
-	{ TEXT("PLATFORM_HDR_2"),	0,			0,			0,			0,			0,				0,				0,				PF_PLATFORM_HDR_2 },
+	{ TEXT("PLATFORM_HDR_0"),	0,			0,			0,			0,			0,				0,				0,				PF_PLATFORM_HDR_0   },
+	{ TEXT("PLATFORM_HDR_1"),	0,			0,			0,			0,			0,				0,				0,				PF_PLATFORM_HDR_1   },
+	{ TEXT("PLATFORM_HDR_2"),	0,			0,			0,			0,			0,				0,				0,				PF_PLATFORM_HDR_2   },
 
 	// NV12 contains 2 textures: R8 luminance plane followed by R8G8 1/4 size chrominance plane.
 	// BlockSize/BlockBytes/NumComponents values don't make much sense for this format, so set them all to one.
-	{ TEXT("NV12"),				1,			1,			1,			1,			1,				0,				0,				PF_NV12 },
+	{ TEXT("NV12"),				1,			1,			1,			1,			1,				0,				0,				PF_NV12             },
 
+	{ TEXT("PF_R32G32_UINT"),   1,   		1,			1,			8,			2,				0,				1,				PF_R32G32_UINT      },
+
+	{ TEXT("PF_ETC2_R11_EAC"),  4,   		4,			1,			8,			1,				0,				0,				PF_ETC2_R11_EAC     },
+	{ TEXT("PF_ETC2_RG11_EAC"), 4,   		4,			1,			16,			2,				0,				0,				PF_ETC2_RG11_EAC    },
 };
 
 static struct FValidatePixelFormats
 {
 	FValidatePixelFormats()
 	{
-		for (int32 X = 0; X < ARRAY_COUNT(GPixelFormats); ++X)
+		for (int32 X = 0; X < UE_ARRAY_COUNT(GPixelFormats); ++X)
 		{
 			// Make sure GPixelFormats has an entry for every unreal format
 			check(X == GPixelFormats[X].UnrealFormat);
@@ -174,11 +180,11 @@ SIZE_T CalculateImageBytes(uint32 SizeX,uint32 SizeY,uint32 SizeZ,uint8 Format)
 	}
 	else if( SizeZ > 0 )
 	{
-		return (SizeX / GPixelFormats[Format].BlockSizeX) * (SizeY / GPixelFormats[Format].BlockSizeY) * (SizeZ / GPixelFormats[Format].BlockSizeZ) * GPixelFormats[Format].BlockBytes;
+		return static_cast<SIZE_T>(SizeX / GPixelFormats[Format].BlockSizeX) * (SizeY / GPixelFormats[Format].BlockSizeY) * (SizeZ / GPixelFormats[Format].BlockSizeZ) * GPixelFormats[Format].BlockBytes;
 	}
 	else
-	{	
-		return (SizeX / GPixelFormats[Format].BlockSizeX) * (SizeY / GPixelFormats[Format].BlockSizeY) * GPixelFormats[Format].BlockBytes;
+	{
+		return static_cast<SIZE_T>(SizeX / GPixelFormats[Format].BlockSizeX) * (SizeY / GPixelFormats[Format].BlockSizeY) * GPixelFormats[Format].BlockBytes;
 	}
 }
 
@@ -189,16 +195,22 @@ SIZE_T CalculateImageBytes(uint32 SizeX,uint32 SizeY,uint32 SizeZ,uint8 Format)
 /**
  * A solid-colored 1x1 texture.
  */
-template <int32 R, int32 G, int32 B, int32 A>
-class FColoredTexture : public FTexture
+template <int32 R, int32 G, int32 B, int32 A, bool bWithUAV = false>
+class FColoredTexture : public FTextureWithSRV
 {
 public:
 	// FResource interface.
 	virtual void InitRHI() override
 	{
 		// Create the texture RHI.  		
-		FRHIResourceCreateInfo CreateInfo;
-		FTexture2DRHIRef Texture2D = RHICreateTexture2D(1, 1, PF_B8G8R8A8, 1, 1, TexCreate_ShaderResource, CreateInfo);
+		FRHIResourceCreateInfo CreateInfo(TEXT("ColoredTexture"));
+		uint32 CreateFlags = TexCreate_ShaderResource;
+		if(bWithUAV)
+		{
+			CreateFlags |= TexCreate_UAV;
+		}
+		// BGRA typed UAV is unsupported per D3D spec, use RGBA here.
+		FTexture2DRHIRef Texture2D = RHICreateTexture2D(1, 1, PF_R8G8B8A8, 1, 1, CreateFlags, CreateInfo);
 		TextureRHI = Texture2D;
 
 		// Write the contents of the texture.
@@ -210,6 +222,13 @@ public:
 		// Create the sampler state RHI resource.
 		FSamplerStateInitializerRHI SamplerStateInitializer(SF_Point,AM_Wrap,AM_Wrap,AM_Wrap);
 		SamplerStateRHI = RHICreateSamplerState(SamplerStateInitializer);
+
+		// Create a view of the texture
+		ShaderResourceViewRHI = RHICreateShaderResourceView(TextureRHI, 0u);
+		if(bWithUAV)
+		{
+			UnorderedAccessViewRHI = RHICreateUnorderedAccessView(TextureRHI, 0u);
+		}
 	}
 
 	/** Returns the width of the texture in pixels. */
@@ -225,8 +244,29 @@ public:
 	}
 };
 
-FTexture* GWhiteTexture = new TGlobalResource<FColoredTexture<255,255,255,255> >;
-FTexture* GBlackTexture = new TGlobalResource<FColoredTexture<0,0,0,255> >;
+class FEmptyVertexBuffer : public FVertexBufferWithSRV
+{
+public:
+	virtual void InitRHI() override
+	{
+		// Create the texture RHI.  		
+		FRHIResourceCreateInfo CreateInfo(TEXT("EmptyVertexBuffer"));
+		
+		VertexBufferRHI = RHICreateVertexBuffer(16u, BUF_Static | BUF_ShaderResource | BUF_UnorderedAccess, CreateInfo);
+
+		// Create a view of the buffer
+		ShaderResourceViewRHI = RHICreateShaderResourceView(VertexBufferRHI, 4u, PF_R32_UINT);
+		UnorderedAccessViewRHI = RHICreateUnorderedAccessView(VertexBufferRHI, PF_R32_UINT);
+	}
+};
+
+FTextureWithSRV* GWhiteTextureWithSRV = new TGlobalResource<FColoredTexture<255,255,255,255> >;
+FTextureWithSRV* GBlackTextureWithSRV = new TGlobalResource<FColoredTexture<0,0,0,255> >;
+FTexture* GWhiteTexture = GWhiteTextureWithSRV;
+FTexture* GBlackTexture = GBlackTextureWithSRV;
+FTextureWithSRV* GBlackTextureWithUAV = new TGlobalResource<FColoredTexture<0,0,0,0,true> >;
+
+FVertexBufferWithSRV* GEmptyVertexBufferWithUAV = new TGlobalResource<FEmptyVertexBuffer>;
 
 /**
  * Bulk data interface for providing a single black color used to initialize a
@@ -237,8 +277,8 @@ class FBlackVolumeTextureResourceBulkDataInterface : public FResourceBulkDataInt
 public:
 
 	/** Default constructor. */
-	FBlackVolumeTextureResourceBulkDataInterface()
-		: Color(0)
+	FBlackVolumeTextureResourceBulkDataInterface(uint8 Alpha)
+		: Color(0, 0, 0, Alpha)
 	{
 	}
 
@@ -274,7 +314,7 @@ private:
 /**
  * A class representing a 1x1x1 black volume texture.
  */
-template <EPixelFormat PixelFormat>
+template <EPixelFormat PixelFormat, uint8 Alpha>
 class FBlackVolumeTexture : public FTexture
 {
 public:
@@ -287,15 +327,16 @@ public:
 		if (GSupportsTexture3D)
 		{
 			// Create the texture.
-			FBlackVolumeTextureResourceBulkDataInterface BlackTextureBulkData;
+			FBlackVolumeTextureResourceBulkDataInterface BlackTextureBulkData(Alpha);
 			FRHIResourceCreateInfo CreateInfo(&BlackTextureBulkData);
+			CreateInfo.DebugName = TEXT("BlackVolumeTexture");
 			FTexture3DRHIRef Texture3D = RHICreateTexture3D(1,1,1,PixelFormat,1,TexCreate_ShaderResource,CreateInfo);
 			TextureRHI = Texture3D;	
 		}
 		else
 		{
 			// Create a texture, even though it's not a volume texture
-			FBlackVolumeTextureResourceBulkDataInterface BlackTextureBulkData;
+			FBlackVolumeTextureResourceBulkDataInterface BlackTextureBulkData(Alpha);
 			FRHIResourceCreateInfo CreateInfo(&BlackTextureBulkData);
 			FTexture2DRHIRef Texture2D = RHICreateTexture2D(1, 1, PixelFormat, 1, 1, TexCreate_ShaderResource, CreateInfo);
 			TextureRHI = Texture2D;
@@ -324,10 +365,11 @@ public:
 };
 
 /** Global black volume texture resource. */
-FTexture* GBlackVolumeTexture = new TGlobalResource<FBlackVolumeTexture<PF_B8G8R8A8>>();
+FTexture* GBlackVolumeTexture = new TGlobalResource<FBlackVolumeTexture<PF_B8G8R8A8, 0>>();
+FTexture* GBlackAlpha1VolumeTexture = new TGlobalResource<FBlackVolumeTexture<PF_B8G8R8A8, 255>>();
 
 /** Global black volume texture resource. */
-FTexture* GBlackUintVolumeTexture = new TGlobalResource<FBlackVolumeTexture<PF_R8G8B8A8_UINT>>();
+FTexture* GBlackUintVolumeTexture = new TGlobalResource<FBlackVolumeTexture<PF_R8G8B8A8_UINT, 0>>();
 
 class FBlackArrayTexture : public FTexture
 {
@@ -335,12 +377,13 @@ public:
 	// FResource interface.
 	virtual void InitRHI() override
 	{
-		if (GetFeatureLevel() >= ERHIFeatureLevel::SM4)
+		if (GetFeatureLevel() >= ERHIFeatureLevel::SM5)
 		{
 			// Create the texture RHI.
-			FBlackVolumeTextureResourceBulkDataInterface BlackTextureBulkData;
+			FBlackVolumeTextureResourceBulkDataInterface BlackTextureBulkData(0);
 			FRHIResourceCreateInfo CreateInfo(&BlackTextureBulkData);
-			FTexture2DArrayRHIRef TextureArray = RHICreateTexture2DArray(1, 1, 1, PF_B8G8R8A8, 1, TexCreate_ShaderResource, CreateInfo);
+			CreateInfo.DebugName = TEXT("BlackArrayTexture");
+			FTexture2DArrayRHIRef TextureArray = RHICreateTexture2DArray(1, 1, 1, PF_B8G8R8A8, 1, 1, TexCreate_ShaderResource, CreateInfo);
 			TextureRHI = TextureArray;
 
 			// Create the sampler state RHI resource.
@@ -471,7 +514,7 @@ public:
 	virtual void InitRHI() override
 	{
 		// Create the texture RHI.
-		FRHIResourceCreateInfo CreateInfo;
+		FRHIResourceCreateInfo CreateInfo(TEXT("SolidColorCube"));
 		FTextureCubeRHIRef TextureCube = RHICreateTextureCube(1, PixelFormat, 1, TexCreate_ShaderResource, CreateInfo);
 		TextureRHI = TextureCube;
 
@@ -547,7 +590,7 @@ public:
 		if (GetFeatureLevel() >= ERHIFeatureLevel::SM5)
 		{
 			// Create the texture RHI.
-			FRHIResourceCreateInfo CreateInfo;
+			FRHIResourceCreateInfo CreateInfo(TEXT("BlackCubeArray"));
 			FTextureCubeRHIRef TextureCubeArray = RHICreateTextureCubeArray(1,1,PF_B8G8R8A8,1,TexCreate_ShaderResource,CreateInfo);
 			TextureRHI = TextureCubeArray;
 
@@ -579,6 +622,89 @@ public:
 	}
 };
 FTexture* GBlackCubeArrayTexture = new TGlobalResource<FBlackCubeArrayTexture>;
+
+/**
+ * A UINT 1x1 texture.
+ */
+template <EPixelFormat Format, uint32 R = 0, uint32 G = 0, uint32 B = 0, uint32 A = 0>
+class FUintTexture : public FTextureWithSRV
+{
+public:
+	// FResource interface.
+	virtual void InitRHI() override
+	{
+		// Create the texture RHI.  		
+		FRHIResourceCreateInfo CreateInfo(TEXT("UintTexture"));
+		FTexture2DRHIRef Texture2D = RHICreateTexture2D(1, 1, Format, 1, 1, TexCreate_ShaderResource, CreateInfo);
+		TextureRHI = Texture2D;
+
+		// Write the contents of the texture.
+		uint32 DestStride;
+		void* DestBuffer = RHILockTexture2D(Texture2D, 0, RLM_WriteOnly, DestStride, false);
+		WriteData(DestBuffer);
+		RHIUnlockTexture2D(Texture2D, 0, false);
+
+		// Create the sampler state RHI resource.
+		FSamplerStateInitializerRHI SamplerStateInitializer(SF_Point, AM_Wrap, AM_Wrap, AM_Wrap);
+		SamplerStateRHI = RHICreateSamplerState(SamplerStateInitializer);
+
+		// Create a view of the texture
+		ShaderResourceViewRHI = RHICreateShaderResourceView(TextureRHI, 0u);
+	}
+
+	/** Returns the width of the texture in pixels. */
+	virtual uint32 GetSizeX() const override
+	{
+		return 1;
+	}
+
+	/** Returns the height of the texture in pixels. */
+	virtual uint32 GetSizeY() const override
+	{
+		return 1;
+	}
+
+protected:
+	static int32 GetNumChannels()
+	{
+		return GPixelFormats[Format].NumComponents;
+	}
+
+	static int32 GetBytesPerChannel()
+	{
+		return GPixelFormats[Format].BlockBytes / GPixelFormats[Format].NumComponents;
+	}
+
+	template<typename T>
+	static void DoWriteData(T* DataPtr)
+	{
+		T Values[] = { R, G, B, A };
+		for (int32 i = 0; i < GetNumChannels(); ++i)
+		{
+			DataPtr[i] = Values[i];
+		}
+	}
+
+	static void WriteData(void* DataPtr)
+	{
+		switch (GetBytesPerChannel())
+		{
+		case 1: 
+			DoWriteData((uint8*)DataPtr);
+			return;
+		case 2:
+			DoWriteData((uint16*)DataPtr);
+			return;
+		case 4:
+			DoWriteData((uint32*)DataPtr);
+			return;
+		}
+		// Unsupported format
+		check(0);
+	}
+};
+
+FTexture* GBlackUintTexture = new TGlobalResource< FUintTexture<PF_R32G32B32A32_UINT> >;
 
 /*
 	3 XYZ packed in 4 bytes. (11:11:10 for X:Y:Z)
@@ -656,7 +782,7 @@ SIZE_T CalcTextureMipMapSize3D( uint32 TextureSizeX, uint32 TextureSizeY, uint32
 	const uint32 NumRows = YExtent / GPixelFormats[Format].BlockSizeY;
 	const uint32 NumLayers = ZExtent / GPixelFormats[Format].BlockSizeZ;
 
-	return NumLayers * NumRows * XPitch;
+	return static_cast<SIZE_T>(NumLayers) * NumRows * XPitch;
 }
 
 SIZE_T CalcTextureSize3D( uint32 SizeX, uint32 SizeY, uint32 SizeZ, EPixelFormat Format, uint32 MipCount )
@@ -694,7 +820,7 @@ SIZE_T CalcTextureMipMapSize( uint32 TextureSizeX, uint32 TextureSizeY, EPixelFo
 {
 	const uint32 WidthInBlocks = CalcTextureMipWidthInBlocks(TextureSizeX, Format, MipIndex);
 	const uint32 HeightInBlocks = CalcTextureMipHeightInBlocks(TextureSizeY, Format, MipIndex);
-	return WidthInBlocks * HeightInBlocks * GPixelFormats[Format].BlockBytes;
+	return static_cast<SIZE_T>(WidthInBlocks) * HeightInBlocks * GPixelFormats[Format].BlockBytes;
 }
 
 SIZE_T CalcTextureSize( uint32 SizeX, uint32 SizeY, EPixelFormat Format, uint32 MipCount )
@@ -821,7 +947,7 @@ public:
 	{
 		FVertexDeclarationElementList Elements;
 		Elements.Add(FVertexElement(0, 0, VET_Float4, 0, sizeof(FVector4)));
-		VertexDeclarationRHI = RHICreateVertexDeclaration(Elements);
+		VertexDeclarationRHI = PipelineStateCache::GetOrCreateVertexDeclaration(Elements);
 	}
 	virtual void ReleaseRHI() override
 	{
@@ -844,7 +970,7 @@ public:
 	{
 		FVertexDeclarationElementList Elements;
 		Elements.Add(FVertexElement(0, 0, VET_Float3, 0, sizeof(FVector)));
-		VertexDeclarationRHI = RHICreateVertexDeclaration(Elements);
+		VertexDeclarationRHI = PipelineStateCache::GetOrCreateVertexDeclaration(Elements);
 	}
 	virtual void ReleaseRHI() override
 	{
@@ -867,7 +993,7 @@ public:
 	{
 		FVertexDeclarationElementList Elements;
 		Elements.Add(FVertexElement(0, 0, VET_Float2, 0, sizeof(FVector2D)));
-		VertexDeclarationRHI = RHICreateVertexDeclaration(Elements);
+		VertexDeclarationRHI = PipelineStateCache::GetOrCreateVertexDeclaration(Elements);
 	}
 	virtual void ReleaseRHI() override
 	{
@@ -882,17 +1008,65 @@ RENDERCORE_API FVertexDeclarationRHIRef& GetVertexDeclarationFVector2()
 	return GVector2VertexDeclaration.VertexDeclarationRHI;
 }
 
-RENDERCORE_API bool PlatformSupportsSimpleForwardShading(EShaderPlatform Platform)
+RENDERCORE_API bool PlatformSupportsSimpleForwardShading(const FStaticShaderPlatform Platform)
 {
 	static const auto SupportSimpleForwardShadingCVar = IConsoleManager::Get().FindTConsoleVariableDataInt(TEXT("r.SupportSimpleForwardShading"));
 	// Scalability feature only needed / used on PC
 	return IsPCPlatform(Platform) && SupportSimpleForwardShadingCVar->GetValueOnAnyThread() != 0;
 }
 
-RENDERCORE_API bool IsSimpleForwardShadingEnabled(EShaderPlatform Platform)
+RENDERCORE_API bool IsSimpleForwardShadingEnabled(const FStaticShaderPlatform Platform)
 {
 	static const auto CVar = IConsoleManager::Get().FindTConsoleVariableDataInt(TEXT("r.SimpleForwardShading"));
 	return CVar->GetValueOnAnyThread() != 0 && PlatformSupportsSimpleForwardShading(Platform);
+}
+
+RENDERCORE_API bool MobileSupportsGPUScene(const FStaticShaderPlatform Platform)
+{
+	// make it shader platform setting?
+	static TConsoleVariableData<int32>* CVar = IConsoleManager::Get().FindTConsoleVariableDataInt(TEXT("r.Mobile.SupportGPUScene"));
+	return (CVar && CVar->GetValueOnAnyThread() != 0) ? true : false;
+}
+
+RENDERCORE_API bool GPUSceneUseTexture2D(const FStaticShaderPlatform Platform)
+{
+	if (IsMobilePlatform(Platform))
+	{
+		static TConsoleVariableData<int32>* CVar = IConsoleManager::Get().FindTConsoleVariableDataInt(TEXT("r.Mobile.UseGPUSceneTexture"));
+		if (Platform == SP_OPENGL_ES3_1_ANDROID)
+		{
+			return true;
+		}
+		else
+		{
+			return (CVar && CVar->GetValueOnAnyThread() != 0) ? true : false;
+		}
+	}
+	return false;
+}
+
+RENDERCORE_API bool MaskedInEarlyPass(const FStaticShaderPlatform Platform)
+{
+	static IConsoleVariable* CVarMobileEarlyZPassOnlyMaterialMasking = IConsoleManager::Get().FindConsoleVariable(TEXT("r.Mobile.EarlyZPassOnlyMaterialMasking"));
+	static IConsoleVariable* CVarEarlyZPassOnlyMaterialMasking = IConsoleManager::Get().FindConsoleVariable(TEXT("r.EarlyZPassOnlyMaterialMasking"));
+	if (IsMobilePlatform(Platform))
+	{
+		return (CVarMobileEarlyZPassOnlyMaterialMasking && CVarMobileEarlyZPassOnlyMaterialMasking->GetInt() != 0);
+	}
+	else
+	{
+		return (CVarEarlyZPassOnlyMaterialMasking && CVarEarlyZPassOnlyMaterialMasking->GetInt() != 0);
+	}
+}
+
+RENDERCORE_API bool AllowPixelDepthOffset(const FStaticShaderPlatform Platform)
+{
+	if (IsMobilePlatform(Platform))
+	{
+		static const auto CVar = IConsoleManager::Get().FindTConsoleVariableDataInt(TEXT("r.Mobile.AllowPixelDepthOffset"));
+		return CVar->GetValueOnAnyThread() != 0;
+	}
+	return true;
 }
 
 RENDERCORE_API int32 GUseForwardShading = 0;
@@ -905,23 +1079,60 @@ static FAutoConsoleVariableRef CVarForwardShading(
 	ECVF_RenderThreadSafe | ECVF_ReadOnly
 	); 
 
-RENDERCORE_API uint32 GForwardShadingPlatformMask = 0;
+static TAutoConsoleVariable<int32> CVarDistanceFields(
+	TEXT("r.DistanceFields"),
+	1,
+	TEXT("Enables distance fields rendering.\n") \
+	TEXT(" 0: Disabled.\n") \
+	TEXT(" 1: Enabled."),
+	ECVF_RenderThreadSafe | ECVF_ReadOnly
+	); 
+
+
+RENDERCORE_API uint64 GForwardShadingPlatformMask = 0;
 static_assert(SP_NumPlatforms <= sizeof(GForwardShadingPlatformMask) * 8, "GForwardShadingPlatformMask must be large enough to support all shader platforms");
 
-RENDERCORE_API uint32 GDBufferPlatformMask = 0;
+RENDERCORE_API uint64 GDBufferPlatformMask = 0;
 static_assert(SP_NumPlatforms <= sizeof(GDBufferPlatformMask) * 8, "GDBufferPlatformMask must be large enough to support all shader platforms");
+
+RENDERCORE_API uint64 GBasePassVelocityPlatformMask = 0;
+static_assert(SP_NumPlatforms <= sizeof(GBasePassVelocityPlatformMask) * 8, "GBasePassVelocityPlatformMask must be large enough to support all shader platforms");
+
+RENDERCORE_API uint64 GSelectiveBasePassOutputsPlatformMask = 0;
+static_assert(SP_NumPlatforms <= sizeof(GSelectiveBasePassOutputsPlatformMask) * 8, "GSelectiveBasePassOutputsPlatformMask must be large enough to support all shader platforms");
+
+RENDERCORE_API uint64 GDistanceFieldsPlatformMask = 0;
+static_assert(SP_NumPlatforms <= sizeof(GDistanceFieldsPlatformMask) * 8, "GDistanceFieldsPlatformMask must be large enough to support all shader platforms");
 
 RENDERCORE_API void RenderUtilsInit()
 {
 	if (GUseForwardShading)
 	{
-		GForwardShadingPlatformMask = ~0u;
+		GForwardShadingPlatformMask = ~0ull;
 	}
 
-	static IConsoleVariable* CDBufferVar = IConsoleManager::Get().FindConsoleVariable(TEXT("r.DBuffer"));
-	if (CDBufferVar && CDBufferVar->GetInt())
+	static IConsoleVariable* DBufferVar = IConsoleManager::Get().FindConsoleVariable(TEXT("r.DBuffer"));
+	if (DBufferVar && DBufferVar->GetInt())
 	{
-		GDBufferPlatformMask = ~0u;
+		GDBufferPlatformMask = ~0ull;
+	}
+
+	static IConsoleVariable* BasePassVelocityCVar = IConsoleManager::Get().FindConsoleVariable(TEXT("r.BasePassOutputsVelocity"));
+	if (BasePassVelocityCVar && BasePassVelocityCVar->GetInt())
+	{
+		GBasePassVelocityPlatformMask = ~0ull;
+	}
+
+	static IConsoleVariable* SelectiveBasePassOutputsCVar = IConsoleManager::Get().FindConsoleVariable(TEXT("r.SelectiveBasePassOutputs"));
+	if (SelectiveBasePassOutputsCVar && SelectiveBasePassOutputsCVar->GetInt())
+	{
+		GSelectiveBasePassOutputsPlatformMask = ~0ull;
+	}
+
+	static IConsoleVariable* DistanceFieldsCVar = IConsoleManager::Get().FindConsoleVariable(TEXT("r.DistanceFields")); 
+	if (DistanceFieldsCVar && DistanceFieldsCVar->GetInt())
+	{
+		GDistanceFieldsPlatformMask = ~0ull;
 	}
 
 #if WITH_EDITOR
@@ -935,7 +1146,7 @@ RENDERCORE_API void RenderUtilsInit()
 			ITargetPlatform* TargetPlatform = TargetPlatformManager->FindTargetPlatform(PlatformName.ToString());
 			if (TargetPlatform)
 			{
-				uint32 Mask = 1u << ShaderPlatformIndex;
+				uint64 Mask = 1ull << ShaderPlatformIndex;
 
 				if (TargetPlatform->UsesForwardShading())
 				{
@@ -953,6 +1164,33 @@ RENDERCORE_API void RenderUtilsInit()
 				else
 				{
 					GDBufferPlatformMask &= ~Mask;
+				}
+
+				if (TargetPlatform->UsesBasePassVelocity())
+				{
+					GBasePassVelocityPlatformMask |= Mask;
+				}
+				else
+				{
+					GBasePassVelocityPlatformMask &= ~Mask;
+				}
+
+				if (TargetPlatform->UsesSelectiveBasePassOutputs())
+				{
+					GSelectiveBasePassOutputsPlatformMask |= Mask;
+				}
+				else
+				{
+					GSelectiveBasePassOutputsPlatformMask &= ~Mask;
+				}
+
+				if (TargetPlatform->UsesDistanceFields())
+				{
+					GDistanceFieldsPlatformMask |= Mask;
+				}
+				else
+				{
+					GDistanceFieldsPlatformMask &= ~Mask;
 				}
 			}
 		}
@@ -1008,7 +1246,7 @@ public:
 	{
 		TResourceArray<uint16, INDEXBUFFER_ALIGNMENT> Indices;
 		
-		int32 NumIndices = ARRAY_COUNT(GCubeIndices);
+		int32 NumIndices = UE_ARRAY_COUNT(GCubeIndices);
 		Indices.AddUninitialized(NumIndices);
 		FMemory::Memcpy(Indices.GetData(), GCubeIndices, NumIndices * sizeof(uint16));
 
@@ -1037,11 +1275,57 @@ RENDERCORE_API FIndexBufferRHIRef& GetUnitCubeIndexBuffer()
 RENDERCORE_API void QuantizeSceneBufferSize(const FIntPoint& InBufferSize, FIntPoint& OutBufferSize)
 {
 	// Ensure sizes are dividable by the ideal group size for 2d tiles to make it more convenient.
-	const uint32 DividableBy = FComputeShaderUtils::kGolden2DGroupSize;
+	const uint32 DividableBy = 4;
 
 	check(DividableBy % 4 == 0); // A lot of graphic algorithms where previously assuming DividableBy == 4.
 
 	const uint32 Mask = ~(DividableBy - 1);
 	OutBufferSize.X = (InBufferSize.X + DividableBy - 1) & Mask;
 	OutBufferSize.Y = (InBufferSize.Y + DividableBy - 1) & Mask;
+}
+
+RENDERCORE_API bool UseVirtualTexturing(const FStaticFeatureLevel InFeatureLevel, const ITargetPlatform* TargetPlatform)
+{
+#if !PLATFORM_SUPPORTS_VIRTUAL_TEXTURE_STREAMING
+	if (GIsEditor == false)
+	{
+		return false;
+	}
+	else
+#endif
+	{
+		// does the platform supports it.
+#if WITH_EDITOR
+		if (GIsEditor && TargetPlatform == nullptr)
+		{
+			ITargetPlatformManagerModule* TPM = GetTargetPlatformManager();
+			if (TPM)
+			{
+				TargetPlatform = TPM->GetRunningTargetPlatform();
+			}
+		}
+
+		if (TargetPlatform && TargetPlatform->SupportsFeature(ETargetPlatformFeatures::VirtualTextureStreaming) == false)
+		{
+			return false;
+		}
+#endif
+
+		// does the project has it enabled ?
+		static const auto CVarVirtualTexture = IConsoleManager::Get().FindTConsoleVariableDataInt(TEXT("r.VirtualTextures"));
+		check(CVarVirtualTexture);
+		if (CVarVirtualTexture->GetValueOnAnyThread() == 0)
+		{
+			return false;
+		}		
+
+		// mobile needs an additional switch to enable VT		
+		static const auto CVarMobileVirtualTexture = IConsoleManager::Get().FindTConsoleVariableDataInt(TEXT("r.Mobile.VirtualTextures"));
+		if (InFeatureLevel == ERHIFeatureLevel::ES3_1 && CVarMobileVirtualTexture->GetValueOnAnyThread() == 0)
+		{
+			return false;
+		}
+
+		return true;
+	}
 }

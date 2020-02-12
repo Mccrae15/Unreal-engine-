@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -52,13 +52,14 @@ struct FTableRowBase
 /**
  * Imported spreadsheet table.
  */
-UCLASS(MinimalAPI, BlueprintType)
-class UDataTable
+UCLASS(MinimalAPI, BlueprintType, AutoExpandCategories = "DataTable,ImportOptions")
+class ENGINE_VTABLE UDataTable
 	: public UObject
 {
 	GENERATED_UCLASS_BODY()
 
 	DECLARE_MULTICAST_DELEGATE(FOnDataTableChanged);
+	DECLARE_MULTICAST_DELEGATE(FOnDataTableImport);
 	
 	friend FDataTableEditorUtils;
 	friend UGameplayTagTableManager;
@@ -66,8 +67,9 @@ class UDataTable
 	friend FDataTableImporterJSON;
 
 	/** Structure to use for each row of the table, must inherit from FTableRowBase */
-	UPROPERTY()
+	UPROPERTY(VisibleAnywhere, Category=DataTable, meta=(DisplayThumbnail="false"))
 	UScriptStruct*			RowStruct;
+
 protected:
 	/** Map of name of row to row data structure. */
 	TMap<FName, uint8*>		RowMap;
@@ -78,6 +80,7 @@ protected:
 	/** Called to add rows to the data table */
 	ENGINE_API virtual void AddRowInternal(FName RowName, uint8* RowDataPtr);
 public:
+
 	virtual const TMap<FName, uint8*>& GetRowMap() const { return RowMap; }
 	virtual const TMap<FName, uint8*>& GetRowMap() { return RowMap; }
 
@@ -90,13 +93,25 @@ public:
 	UPROPERTY(EditAnywhere, Category=DataTable)
 	uint8 bStripFromClientBuilds : 1;
 
+	/** Set to true to ignore extra fields in the import data, if false it will warn about them */
+	UPROPERTY(EditAnywhere, Category=ImportOptions)
+	uint8 bIgnoreExtraFields : 1;
+
+	/** Set to true to ignore any fields that are expected but missing, if false it will warn about them */
+	UPROPERTY(EditAnywhere, Category = ImportOptions)
+	uint8 bIgnoreMissingFields : 1;
+
+	/** Explicit field in import data to use as key. If this is empty it uses Name for JSON and the first field found for CSV */
+	UPROPERTY(EditAnywhere, Category=ImportOptions)
+	FString ImportKeyField;
+	
 #if WITH_EDITOR
 	ENGINE_API virtual void PostEditChangeProperty(FPropertyChangedEvent& PropertyChangedEvent) override;
 #endif // WITH_EDITOR
 
 	//~ Begin UObject Interface.
 	ENGINE_API virtual void FinishDestroy() override;
-	ENGINE_API virtual void Serialize(FArchive& Ar) override;
+	ENGINE_API virtual void Serialize(FStructuredArchiveRecord Record) override;
 	ENGINE_API static void AddReferencedObjects(UObject* InThis, FReferenceCollector& Collector);
 	ENGINE_API virtual void GetPreloadDependencies(TArray<UObject*>& OutDeps) override;
 	ENGINE_API virtual void GetResourceSizeEx(FResourceSizeEx& CumulativeResourceSize) override;
@@ -109,7 +124,8 @@ public:
 	ENGINE_API virtual void PostLoad() override;
 	//~ End UObject Interface
 
-	UPROPERTY(VisibleAnywhere, Instanced, Category=ImportSettings)
+	/** The file this data table was imported from, may be empty */
+	UPROPERTY(VisibleAnywhere, Instanced, Category=ImportSource)
 	class UAssetImportData* AssetImportData;
 
 	/** The filename imported to create this object. Relative to this object's package, BaseDir() or absolute */
@@ -127,16 +143,22 @@ protected:
 
 	UPROPERTY(Transient)
 	TSet<UObject*> TemporarilyReferencedObjects;
-
 #endif	// WITH_EDITORONLY_DATA
-private:
 
+private:
 	/** A multicast delegate that is called any time the data table changes. */
 	FOnDataTableChanged OnDataTableChangedDelegate;
+
+	/** A multicast delegate that is called any time a data table is imported. */
+	FOnDataTableChanged OnDataTableImportedDelegate;
 
 public:
 	/** Gets a multicast delegate that is called any time the data table changes. */
 	FOnDataTableChanged& OnDataTableChanged() { return OnDataTableChangedDelegate; }
+
+	/** Gets a multicast delegate that is called any time a data table is imported. */
+	FOnDataTableImport& OnDataTableImported() { return OnDataTableImportedDelegate; }
+
 
 	//~ Begin UDataTable Interface
 
@@ -146,11 +168,11 @@ public:
 	{
 		if (RowStruct == nullptr)
 		{
-			UE_LOG(LogDataTable, Error, TEXT("UDataTable::FindRow : DataTable '%s' has no RowStruct specified (%s)."), *GetPathName(), ContextString);
+			UE_LOG(LogDataTable, Error, TEXT("UDataTable::GetAllRows : DataTable '%s' has no RowStruct specified (%s)."), *GetPathName(), ContextString);
 		}
 		else if (!RowStruct->IsChildOf(T::StaticStruct()))
 		{
-			UE_LOG(LogDataTable, Error, TEXT("UDataTable::FindRow : Incorrect type specified for DataTable '%s' (%s)."), *GetPathName(), ContextString);
+			UE_LOG(LogDataTable, Error, TEXT("UDataTable::GetAllRows : Incorrect type specified for DataTable '%s' (%s)."), *GetPathName(), ContextString);
 		}
 		else
 		{
@@ -218,11 +240,11 @@ public:
 	{
 		if (RowStruct == nullptr)
 		{
-			UE_LOG(LogDataTable, Error, TEXT("UDataTable::FindRow : DataTable '%s' has no RowStruct specified (%s)."), *GetPathName(), ContextString);
+			UE_LOG(LogDataTable, Error, TEXT("UDataTable::ForeachRow : DataTable '%s' has no RowStruct specified (%s)."), *GetPathName(), ContextString);
 		}
 		else if (!RowStruct->IsChildOf(T::StaticStruct()))
 		{
-			UE_LOG(LogDataTable, Error, TEXT("UDataTable::FindRow : Incorrect type specified for DataTable '%s' (%s)."), *GetPathName(), ContextString);
+			UE_LOG(LogDataTable, Error, TEXT("UDataTable::ForeachRow : Incorrect type specified for DataTable '%s' (%s)."), *GetPathName(), ContextString);
 		}
 		else
 		{
@@ -241,19 +263,19 @@ public:
 	}
 
 	/** Returns the column property where PropertyName matches the name of the column property. Returns nullptr if no match is found or the match is not a supported table property */
-	ENGINE_API UProperty* FindTableProperty(const FName& PropertyName) const;
+	ENGINE_API FProperty* FindTableProperty(const FName& PropertyName) const;
 
 	uint8* FindRowUnchecked(FName RowName, bool MustExist=false) const
 	{
 		if(RowStruct == nullptr)
 		{
-			//UE_CLOG(MustExist, LogDataTable, Error, TEXT("UDataTable::FindRow : DataTable '%s' has no RowStruct specified (%s)."), *GetPathName(), *ContextString);
+			//UE_CLOG(MustExist, LogDataTable, Error, TEXT("UDataTable::FindRowUnchecked : DataTable '%s' has no RowStruct specified (%s)."), *GetPathName(), *ContextString);
 			return nullptr;
 		}
 
 		if(RowName == NAME_None)
 		{
-			//UE_CLOG(MustExist, LogDataTable, Warning, TEXT("UDataTable::FindRow : NAME_None is invalid row name for DataTable '%s' (%s)."), *GetPathName(), *ContextString);
+			//UE_CLOG(MustExist, LogDataTable, Warning, TEXT("UDataTable::FindRowUnchecked : NAME_None is invalid row name for DataTable '%s' (%s)."), *GetPathName(), *ContextString);
 			return nullptr;
 		}
 
@@ -295,13 +317,19 @@ public:
 	ENGINE_API FString GetTableAsJSON(const EDataTableExportFlags InDTExportFlags = EDataTableExportFlags::None) const;
 
 	/** Output entire contents of table as JSON */
-	ENGINE_API bool WriteTableAsJSON(const TSharedRef< TJsonWriter<TCHAR, TPrettyJsonPrintPolicy<TCHAR> > >& JsonWriter, const EDataTableExportFlags InDTExportFlags = EDataTableExportFlags::None) const;
+	template<typename CharType = TCHAR>
+	ENGINE_API bool WriteTableAsJSON(const TSharedRef< TJsonWriter<CharType, TPrettyJsonPrintPolicy<CharType> > >& JsonWriter, const EDataTableExportFlags InDTExportFlags = EDataTableExportFlags::None) const;
 
 	/** Output entire contents of table as a JSON Object*/
-	ENGINE_API bool WriteTableAsJSONObject(const TSharedRef< TJsonWriter<TCHAR, TPrettyJsonPrintPolicy<TCHAR> > >& JsonWriter, const EDataTableExportFlags InDTExportFlags = EDataTableExportFlags::None) const;
+	template<typename CharType = TCHAR>
+	ENGINE_API bool WriteTableAsJSONObject(const TSharedRef< TJsonWriter<CharType, TPrettyJsonPrintPolicy<CharType> > >& JsonWriter, const EDataTableExportFlags InDTExportFlags = EDataTableExportFlags::None) const;
 
 	/** Output the fields from a particular row (use RowMap to get RowData) to an existing JsonWriter */
-	ENGINE_API bool WriteRowAsJSON(const TSharedRef< TJsonWriter<TCHAR, TPrettyJsonPrintPolicy<TCHAR> > >& JsonWriter, const void* RowData, const EDataTableExportFlags InDTExportFlags = EDataTableExportFlags::None) const;
+	template<typename CharType = TCHAR>
+	ENGINE_API bool WriteRowAsJSON(const TSharedRef< TJsonWriter<CharType, TPrettyJsonPrintPolicy<CharType> > >& JsonWriter, const void* RowData, const EDataTableExportFlags InDTExportFlags = EDataTableExportFlags::None) const;
+
+	/** Copies all the import options from another table, this does not copy row dawta */
+	ENGINE_API bool CopyImportOptions(UDataTable* SourceTable);
 #endif
 	/** 
 	 *	Create table from CSV style comma-separated string. 
@@ -317,7 +345,8 @@ public:
 	*/
 	ENGINE_API TArray<FString> CreateTableFromJSONString(const FString& InString);
 
-	TArray<UProperty*> GetTablePropertyArray(const TArray<const TCHAR*>& Cells, UStruct* RowStruct, TArray<FString>& OutProblems);
+	/** Get array of UProperties that corresponds to columns in the table */
+	TArray<FProperty*> GetTablePropertyArray(const TArray<const TCHAR*>& Cells, UStruct* RowStruct, TArray<FString>& OutProblems, int32 KeyColumn = 0);
 	
 	/** 
 	 *	Create table from another Data Table
@@ -339,8 +368,8 @@ public:
 	//~ End UDataTable Interface
 
 protected:
-	void SaveStructData(FArchive& Ar);
-	void LoadStructData(FArchive& Ar);
+	void SaveStructData(FStructuredArchiveSlot Slot);
+	void LoadStructData(FStructuredArchiveSlot Slot);
 
 	/**
 	 * Called whenever new data is imported into the data table via CreateTableFrom*; Alerts each imported row and gives the
@@ -390,7 +419,7 @@ struct ENGINE_API FDataTableRowHandle
 		{
 			if (RowName != NAME_None)
 			{
-				UE_LOG(LogDataTable, Warning, TEXT("FDataTableRowHandle::FindRow : No DataTable for row %s (%s)."), *RowName.ToString(), ContextString);
+				UE_LOG(LogDataTable, Warning, TEXT("FDataTableRowHandle::GetRow : No DataTable for row %s (%s)."), *RowName.ToString(), ContextString);
 			}
 			return nullptr;
 		}
@@ -461,7 +490,7 @@ struct ENGINE_API FDataTableCategoryHandle
 		{
 			if (RowContents != NAME_None)
 			{
-				UE_LOG(LogDataTable, Warning, TEXT("FDataTableCategoryHandle::FindRow : No DataTable for row %s (%s)."), *RowContents.ToString(), *ContextString);
+				UE_LOG(LogDataTable, Warning, TEXT("FDataTableCategoryHandle::GetRows : No DataTable for row %s (%s)."), *RowContents.ToString(), *ContextString);
 			}
 
 			return;
@@ -471,14 +500,14 @@ struct ENGINE_API FDataTableCategoryHandle
 		{
 			if (RowContents != NAME_None)
 			{
-				UE_LOG(LogDataTable, Warning, TEXT("FDataTableCategoryHandle::FindRow : No Column selected for row %s (%s)."), *RowContents.ToString(), *ContextString);
+				UE_LOG(LogDataTable, Warning, TEXT("FDataTableCategoryHandle::GetRows : No Column selected for row %s (%s)."), *RowContents.ToString(), *ContextString);
 			}
 
 			return;
 		}
 
 		// Find the property that matches the desired column (ColumnName)
-		UProperty* Property = DataTable->FindTableProperty(ColumnName);
+		FProperty* Property = DataTable->FindTableProperty(ColumnName);
 		if (Property == nullptr)
 		{
 			return;

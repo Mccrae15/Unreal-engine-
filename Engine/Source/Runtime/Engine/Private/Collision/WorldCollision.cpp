@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 /*=============================================================================
 	WorldCollision.cpp: UWorld collision implementation
@@ -15,6 +15,10 @@
 #include "Physics/PhysicsInterfaceCore.h"
 #include "PhysXPublic.h"
 #include "Physics/PhysicsInterfaceTypes.h"
+
+#if WITH_CHAOS
+#include "Chaos/ImplicitObject.h"
+#endif
 
 using namespace PhysicsInterfaceTypes;
 
@@ -391,7 +395,7 @@ bool UWorld::ComponentSweepMulti(TArray<struct FHitResult>& OutHits, class UPrim
 #if WITH_PHYSX
 	FPhysicsCommand::ExecuteRead(BodyInstance->ActorHandle, [&](const FPhysicsActorHandle& Actor)
 	{
-		if(!Actor.IsValid())
+		if(!FPhysicsInterface::IsValid(Actor))
 		{
 			return;
 		}
@@ -409,11 +413,19 @@ bool UWorld::ComponentSweepMulti(TArray<struct FHitResult>& OutHits, class UPrim
 			check(Shape.IsValid());
 			ECollisionShapeType ShapeType = FPhysicsInterface::GetShapeType(Shape);
 
+#if WITH_CHAOS
+			if (!Shape.GetGeometry().IsConvex())
+			{
+				//We skip complex shapes. Should this respect complex as simple?
+				continue;
+			}
+#else
 			if(ShapeType == ECollisionShapeType::Heightfield || ShapeType == ECollisionShapeType::Trimesh)
 			{
 				//We skip complex shapes. Should this respect complex as simple?
 				continue;
 			}
+#endif
 
 			// Calc shape global pose
 			const FTransform ShapeLocalTransform = FPhysicsInterface::GetLocalTransform(Shape);
@@ -424,17 +436,12 @@ bool UWorld::ComponentSweepMulti(TArray<struct FHitResult>& OutHits, class UPrim
 			const FQuat ShapeQuat = Quat * ShapeLocalTransform.GetRotation();
 
 			FPhysicsGeometryCollection GeomCollection = FPhysicsInterface::GetGeometryCollection(Shape);
-
-#if WITH_CHAOS
-            check(false);
-#else
 			TArray<FHitResult> TmpHits;
 			if(FPhysicsInterface::GeomSweepMulti(this, GeomCollection, ShapeQuat, TmpHits, GlobalStartTransform_Shape.GetTranslation(), GlobalEndTransform_Shape.GetTranslation(), TraceChannel, Params, FCollisionResponseParams(PrimComp->GetCollisionResponseToChannels())))
 			{
 				bHaveBlockingHit = true;
 			}
 			OutHits.Append(TmpHits);	//todo: should these be made unique?
-#endif
 		}
 	});
 #endif //WITH_PHYSX

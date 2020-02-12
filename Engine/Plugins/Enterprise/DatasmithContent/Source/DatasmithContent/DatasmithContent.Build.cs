@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 namespace UnrealBuildTool.Rules
 {
@@ -14,8 +14,8 @@ namespace UnrealBuildTool.Rules
 					"Core",
 					"CoreUObject",
 					"Engine",
-                    "RenderCore",
-                }
+					"RenderCore",
+				}
 			);
 
 			PrivateDependencyModuleNames.AddRange(
@@ -23,9 +23,22 @@ namespace UnrealBuildTool.Rules
 				{
 					"Landscape",
 					"LevelSequence",
-                    "Projects",
-                }
+					"MeshDescription",
+					"Projects",
+					"StaticMeshDescription",
+					"VariantManagerContent",
+				}
 			);
+
+			if (Target.Type == TargetType.Editor)
+			{
+				PrivateDependencyModuleNames.AddRange(
+					new string[]
+					{
+						"UnrealEd"
+					}
+				);
+			}
 		}
 	}
 }

@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "Framework/MultiBox/SToolBarButtonBlock.h"
 #include "Widgets/SBoxPanel.h"
@@ -22,7 +22,7 @@ FToolBarButtonBlock::FToolBarButtonBlock( const TSharedPtr< const FUICommandInfo
 {
 }
 
-FToolBarButtonBlock::FToolBarButtonBlock( const TAttribute<FText>& InLabel, const TAttribute<FText>& InToolTip, const TAttribute<FSlateIcon>& InIcon, const FUIAction& InUIAction, const EUserInterfaceActionType::Type InUserInterfaceActionType )
+FToolBarButtonBlock::FToolBarButtonBlock( const TAttribute<FText>& InLabel, const TAttribute<FText>& InToolTip, const TAttribute<FSlateIcon>& InIcon, const FUIAction& InUIAction, const EUserInterfaceActionType InUserInterfaceActionType )
 	: FMultiBlock( InUIAction )
 	, LabelOverride( InLabel )
 	, ToolTipOverride( InToolTip )
@@ -132,6 +132,8 @@ void SToolBarButtonBlock::BuildMultiBlockWidget(const ISlateStyle* StyleSet, con
 	
 	TSharedRef< const FToolBarButtonBlock > ToolBarButtonBlock = StaticCastSharedRef< const FToolBarButtonBlock >( MultiBlock.ToSharedRef() );
 
+	TSharedPtr< const FUICommandInfo > UICommand = ToolBarButtonBlock->GetAction();
+
 	// Allow the block to override the action's label and tool tip string, if desired
 	TAttribute<FText> ActualLabel;
 	if (ToolBarButtonBlock->LabelOverride.IsSet())
@@ -140,7 +142,7 @@ void SToolBarButtonBlock::BuildMultiBlockWidget(const ISlateStyle* StyleSet, con
 	}
 	else
 	{
-		ActualLabel = ToolBarButtonBlock->GetAction()->GetLabel();
+		ActualLabel = UICommand.IsValid() ? UICommand->GetLabel() : FText::GetEmpty();
 	}
 
 	// Add this widget to the search list of the multibox
@@ -154,7 +156,7 @@ void SToolBarButtonBlock::BuildMultiBlockWidget(const ISlateStyle* StyleSet, con
 	}
 	else
 	{
-		ActualToolTip = ToolBarButtonBlock->GetAction()->GetDescription();
+		ActualToolTip = UICommand.IsValid() ? UICommand->GetDescription() : FText::GetEmpty();
 	}
 
 	// If a key is bound to the command, append it to the tooltip text.
@@ -198,6 +200,7 @@ void SToolBarButtonBlock::BuildMultiBlockWidget(const ISlateStyle* StyleSet, con
 
 			// Label text
 			+ SVerticalBox::Slot().AutoHeight()
+			.Padding(StyleSet->GetMargin(ISlateStyle::Join( StyleName, ".Label.Padding" )))
 			.HAlign( HAlign_Center )	// Center the label text horizontally
 			[
 				SNew( STextBlock )
@@ -211,7 +214,7 @@ void SToolBarButtonBlock::BuildMultiBlockWidget(const ISlateStyle* StyleSet, con
 	EMultiBlockLocation::Type BlockLocation = GetMultiBlockLocation();
 	
 	// What type of UI should we create for this block?
-	EUserInterfaceActionType::Type UserInterfaceType = ToolBarButtonBlock->UserInterfaceActionType;
+	EUserInterfaceActionType UserInterfaceType = ToolBarButtonBlock->UserInterfaceActionType;
 	if ( Action.IsValid() )
 	{
 		// If we have a UICommand, then this is specified in the command.

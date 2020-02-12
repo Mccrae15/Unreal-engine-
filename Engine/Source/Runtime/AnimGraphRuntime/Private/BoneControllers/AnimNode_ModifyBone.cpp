@@ -1,8 +1,9 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "BoneControllers/AnimNode_ModifyBone.h"
 #include "AnimationRuntime.h"
 #include "Animation/AnimInstanceProxy.h"
+#include "Animation/AnimTrace.h"
 
 /////////////////////////////////////////////////////
 // FAnimNode_ModifyBone
@@ -22,6 +23,7 @@ FAnimNode_ModifyBone::FAnimNode_ModifyBone()
 
 void FAnimNode_ModifyBone::GatherDebugData(FNodeDebugData& DebugData)
 {
+	DECLARE_SCOPE_HIERARCHICAL_COUNTER_ANIMNODE(GatherDebugData)
 	FString DebugLine = DebugData.GetNodeName(this);
 
 	DebugLine += "(";
@@ -34,6 +36,7 @@ void FAnimNode_ModifyBone::GatherDebugData(FNodeDebugData& DebugData)
 
 void FAnimNode_ModifyBone::EvaluateSkeletalControl_AnyThread(FComponentSpacePoseContext& Output, TArray<FBoneTransform>& OutBoneTransforms)
 {
+	DECLARE_SCOPE_HIERARCHICAL_COUNTER_ANIMNODE(EvaluateSkeletalControl_AnyThread)
 	check(OutBoneTransforms.Num() == 0);
 
 	// the way we apply transform is same as FMatrix or FTransform
@@ -101,6 +104,8 @@ void FAnimNode_ModifyBone::EvaluateSkeletalControl_AnyThread(FComponentSpacePose
 	}
 	
 	OutBoneTransforms.Add( FBoneTransform(BoneToModify.GetCompactPoseIndex(BoneContainer), NewBoneTM) );
+
+	TRACE_ANIM_NODE_VALUE(Output, TEXT("Target"), BoneToModify.BoneName);
 }
 
 bool FAnimNode_ModifyBone::IsValidToEvaluate(const USkeleton* Skeleton, const FBoneContainer& RequiredBones) 
@@ -111,5 +116,6 @@ bool FAnimNode_ModifyBone::IsValidToEvaluate(const USkeleton* Skeleton, const FB
 
 void FAnimNode_ModifyBone::InitializeBoneReferences(const FBoneContainer& RequiredBones) 
 {
+	DECLARE_SCOPE_HIERARCHICAL_COUNTER_ANIMNODE(InitializeBoneReferences)
 	BoneToModify.Initialize(RequiredBones);
 }

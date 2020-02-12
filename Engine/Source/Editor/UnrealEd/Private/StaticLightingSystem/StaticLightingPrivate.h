@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 /*=============================================================================
 	StaticLightingPrivate.h: Private static lighting system definitions.
@@ -11,7 +11,6 @@
 #include "CoreMinimal.h"
 #include "SlateFwd.h"
 #include "Engine/Level.h"
-#include "Templates/ScopedPointer.h"
 #include "StaticLighting.h"
 #include "LightingBuildOptions.h"
 #include "Templates/UniquePtr.h"

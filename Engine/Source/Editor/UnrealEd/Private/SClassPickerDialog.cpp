@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 
 #include "Kismet2/SClassPickerDialog.h"
@@ -22,7 +22,7 @@
 #include "Widgets/Views/STableViewBase.h"
 #include "Widgets/Views/STableRow.h"
 #include "Widgets/Views/SListView.h"
-#include "Editor/ClassViewer/Private/SClassViewer.h"
+#include "SClassViewer.h"
 #include "EditorClassUtils.h"
 #include "Widgets/Layout/SExpandableArea.h"
 #include "Styling/SlateIconFinder.h"
@@ -32,6 +32,7 @@
 void SClassPickerDialog::Construct(const FArguments& InArgs)
 {
 	WeakParentWindow = InArgs._ParentWindow;
+	bAllowNone = InArgs._Options.bShowNoneOption;
 
 	bPressedOk = false;
 	ChosenClass = NULL;
@@ -44,9 +45,14 @@ void SClassPickerDialog::Construct(const FArguments& InArgs)
 	for (const FClassPickerDefaults& DefaultObj : GUnrealEd->GetUnrealEdOptions()->NewAssetDefaultClasses)
 	{
 		UClass* AssetType = LoadClass<UObject>(NULL, *DefaultObj.AssetClass, NULL, LOAD_None, NULL);
-
+		
 		if (InArgs._AssetType->IsChildOf(AssetType))
 		{
+			if (InArgs._Options.bEditorClassesOnly && !IsEditorOnlyObject(AssetType))
+			{
+				// Don't add if we are looking for editor classes only and this isn't an editor only class
+				break;
+			}
 			AssetDefaultClasses.Add(MakeShareable(new FClassPickerDefaults(DefaultObj)));
 		}
 	}
@@ -274,7 +280,7 @@ FReply SClassPickerDialog::OnDefaultClassPicked(UClass* InChosenClass)
 
 FReply SClassPickerDialog::OnClassPickerConfirmed()
 {
-	if (ChosenClass == NULL)
+	if (!bAllowNone && ChosenClass == NULL)
 	{
 		FMessageDialog::Open(EAppMsgType::Ok, NSLOCTEXT("EditorFactories", "MustChooseClassWarning", "You must choose a class."));
 	}
@@ -328,7 +334,7 @@ void SClassPickerDialog::OnCustomAreaExpansionChanged(bool bExpanded)
 EVisibility SClassPickerDialog::GetSelectButtonVisibility() const
 {
 	EVisibility ButtonVisibility = EVisibility::Hidden;
-	if( ChosenClass != nullptr )
+	if(bAllowNone || ChosenClass != nullptr )
 	{
 		ButtonVisibility = EVisibility::Visible;
 	}

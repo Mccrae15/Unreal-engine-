@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 /*=============================================================================
 LandscapeDataAccess.h: Classes for the editor to access to Landscape data
@@ -55,7 +55,7 @@ private:
 		:	LockCount(0)
 		{}
 
-		TArray<uint8> MipData;
+		TArray64<uint8> MipData;
 		int32 LockCount;
 	};
 
@@ -115,7 +115,7 @@ struct FLandscapeComponentDataInterface
 	friend struct FLandscapeDataInterface;
 
 	// tors
-	LANDSCAPE_API FLandscapeComponentDataInterface(ULandscapeComponent* InComponent, int32 InMipLevel = 0);
+	LANDSCAPE_API FLandscapeComponentDataInterface(ULandscapeComponent* InComponent, int32 InMipLevel = 0, bool InWorkOnEditingLayer = true);
 	LANDSCAPE_API ~FLandscapeComponentDataInterface();
 
 	// Accessors
@@ -210,10 +210,13 @@ struct FLandscapeComponentDataInterface
 		XYOffsetMipData = NewXYOffsetData;
 	}
 
+	LANDSCAPE_API int32 GetHeightmapSizeX(int32 MipIndex) const;
+	LANDSCAPE_API int32 GetHeightmapSizeY(int32 MipIndex) const;
+
 	/* Return the raw heightmap data exactly same size for Heightmap texture which belong to only this component */
 	LANDSCAPE_API void GetHeightmapTextureData(TArray<FColor>& OutData, bool bOkToFail = false);
 
-	LANDSCAPE_API bool GetWeightmapTextureData(ULandscapeLayerInfoObject* LayerInfo, TArray<uint8>& OutData);
+	LANDSCAPE_API bool GetWeightmapTextureData(ULandscapeLayerInfoObject* LayerInfo, TArray<uint8>& OutData, bool InUseEditingWeightmap = false);
 
 	FColor* GetHeightData(int32 LocalX, int32 LocalY) const
 	{
@@ -323,6 +326,7 @@ struct FLandscapeComponentDataInterface
 private:
 	FLandscapeDataInterface DataInterface;
 	ULandscapeComponent* Component;
+	bool bWorkOnEditingLayer;
 
 public:
 	// offset of this component's data into heightmap texture

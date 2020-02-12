@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -6,8 +6,8 @@
 #include "UObject/ObjectMacros.h"
 #include "NiagaraCommon.h"
 #include "NiagaraRendererProperties.h"
+#include "Particles/SubUVAnimation.h"
 #include "NiagaraSpriteRendererProperties.generated.h"
-
 
 /** This enum decides how a sprite particle will orient its "up" axis. Must keep these in sync with NiagaraSpriteVertexFactory.ush*/
 UENUM()
@@ -30,7 +30,7 @@ enum class ENiagaraSpriteFacingMode : uint8
 	FaceCamera,
 	/** The sprite billboard plane is completely parallel to the camera plane. Particle always looks "flat" */
 	FaceCameraPlane,
-	/** The sprite billboard faces toward the "Particles.SpriteFacing" vector attribute, using the per-axis CustomFacingVectorMask as a lerp factor from the standard FaceCamera mode. If the "Particles.SpriteFacing" attribute is missing, this falls back to FaceCamera mode.*/
+	/** The sprite billboard faces toward the "Particles.SpriteFacing" vector attribute. If the "Particles.SpriteFacing" attribute is missing, this falls back to FaceCamera mode.*/
 	CustomFacingVector,
 	/** Faces the camera position, but is not dependent on the camera rotation.  This method produces more stable particles under camera rotation. Uses the up axis of (0,0,1).*/
 	FaceCameraPosition,
@@ -38,8 +38,10 @@ enum class ENiagaraSpriteFacingMode : uint8
 	FaceCameraDistanceBlend
 };
 
+class FAssetThumbnailPool;
+class SWidget;
 
-UCLASS(editinlinenew)
+UCLASS(editinlinenew, meta = (DisplayName = "Sprite Renderer"))
 class NIAGARA_API UNiagaraSpriteRendererProperties : public UNiagaraRendererProperties
 {
 public:
@@ -47,28 +49,42 @@ public:
 
 	UNiagaraSpriteRendererProperties();
 
+	//UObject Interface
+	virtual void PostLoad() override;
 	virtual void PostInitProperties() override;
+	virtual void Serialize(FStructuredArchive::FRecord Record) override;
+#if WITH_EDITORONLY_DATA
+	virtual void PostEditChangeProperty(struct FPropertyChangedEvent& PropertyChangedEvent) override;
+#endif // WITH_EDITORONLY_DATA
+	//UObject Interface END
 
 	static void InitCDOPropertiesAfterModuleStartup();
 
-	//~ UNiagaraRendererProperties interface
-	virtual NiagaraRenderer* CreateEmitterRenderer(ERHIFeatureLevel::Type FeatureLevel) override;
-	virtual void GetUsedMaterials(TArray<UMaterialInterface*>& OutMaterials) const override;
+	//UNiagaraRendererProperties interface
+	virtual FNiagaraRenderer* CreateEmitterRenderer(ERHIFeatureLevel::Type FeatureLevel, const FNiagaraEmitterInstance* Emitter) override;
+	virtual class FNiagaraBoundsCalculator* CreateBoundsCalculator() override;
+	virtual void GetUsedMaterials(const FNiagaraEmitterInstance* InEmitter, TArray<UMaterialInterface*>& OutMaterials) const override;
 	virtual bool IsSimTargetSupported(ENiagaraSimTarget InSimTarget) const override { return true; };
-#if WITH_EDITORONLY_DATA
-	virtual void PostEditChangeProperty(struct FPropertyChangedEvent& PropertyChangedEvent) override;
+#if WITH_EDITOR
 	virtual bool IsMaterialValidForRenderer(UMaterial* Material, FText& InvalidMessage) override;
 	virtual void FixMaterial(UMaterial* Material) override;
 	virtual const TArray<FNiagaraVariable>& GetRequiredAttributes() override;
 	virtual const TArray<FNiagaraVariable>& GetOptionalAttributes() override;
-#endif // WITH_EDITORONLY_DATA
+	virtual void GetRendererWidgets(const FNiagaraEmitterInstance* InEmitter, TArray<TSharedPtr<SWidget>>& OutWidgets, TSharedPtr<FAssetThumbnailPool> InThumbnailPool) const override;
+	virtual void GetRendererTooltipWidgets(const FNiagaraEmitterInstance* InEmitter, TArray<TSharedPtr<SWidget>>& OutWidgets, TSharedPtr<FAssetThumbnailPool> InThumbnailPool) const override;
+#endif
+	//UNiagaraMaterialRendererProperties interface END
 
-	// TODO: once we support cutouts, need to change this
-	virtual uint32 GetNumIndicesPerInstance() { return 6; }
+	int32 GetNumCutoutVertexPerSubimage() const;
+	virtual uint32 GetNumIndicesPerInstance() const;
 
 	/** The material used to render the particle. Note that it must have the Use with Niagara Sprites flag checked.*/
 	UPROPERTY(EditAnywhere, Category = "Sprite Rendering")
 	UMaterialInterface* Material;
+
+	/** Use the UMaterialInterface bound to this user variable if it is set to a valid value. If this is bound to a valid value and Material is also set, UserParamBinding wins.*/
+	UPROPERTY(EditAnywhere, Category = "Sprite Rendering")
+	FNiagaraUserParameterBinding MaterialUserParamBinding;
 	
 	/** Imagine the particle texture having an arrow pointing up, these modes define how the particle aligns that texture to other particle attributes.*/
 	UPROPERTY(EditAnywhere, Category = "Sprite Rendering")
@@ -77,10 +93,6 @@ public:
 	/** Determines how the particle billboard orients itself relative to the camera.*/
 	UPROPERTY(EditAnywhere, Category = "Sprite Rendering")
 	ENiagaraSpriteFacingMode FacingMode;
-
-	/** Used as a per-axis interpolation factor with the CustomFacingVector mode to determine how the billboard orients itself relative to the camera. A value of 1.0 is fully facing the custom vector. A value of 0.0 uses the standard facing strategy.*/
-	UPROPERTY(EditAnywhere, Category = "Sprite Rendering")
-	FVector CustomFacingVectorMask;
 
 	/** Determines the location of the pivot point of this particle. It follows Unreal's UV space, which has the upper left of the image at 0,0 and bottom right at 1,1. The middle is at 0.5, 0.5. */
 	UPROPERTY(EditAnywhere, Category = "Sprite Rendering")
@@ -174,7 +186,7 @@ public:
 	UPROPERTY(EditAnywhere, Category = "Bindings")
 	FNiagaraVariableAttributeBinding MaterialRandomBinding;
 
-	/** Which attribute should we use for custom sorting? */
+	/** Which attribute should we use for custom sorting? Defaults to Particles.NormalizedAge. */
 	UPROPERTY(EditAnywhere, Category = "Bindings")
 	FNiagaraVariableAttributeBinding CustomSortingBinding;
 
@@ -182,11 +194,46 @@ public:
 	UPROPERTY(EditAnywhere, Category = "Bindings")
 	FNiagaraVariableAttributeBinding NormalizedAgeBinding;
 
-	UPROPERTY(Transient)
-	int32 SyncId;
-
 	void InitBindings();
+
+#if WITH_EDITORONLY_DATA
+
+	/** Use the cutout texture from the material opacity mask, or if none exist, from the material opacity.	*/
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Cutout")
+	bool bUseMaterialCutoutTexture;
+
+	/** Texture to generate bounding geometry from.	*/
+	UPROPERTY(EditAnywhere, Category="Cutout", meta = (EditCondition = "!bUseMaterialCutoutTexture"))
+	UTexture2D* CutoutTexture;
+	
+	/**
+	* More bounding vertices results in reduced overdraw, but adds more triangle overhead.
+	* The eight vertex mode is best used when the SubUV texture has a lot of space to cut out that is not captured by the four vertex version,
+	* and when the particles using the texture will be few and large.
+	*/
+	UPROPERTY(EditAnywhere, Category= "Cutout")
+	TEnumAsByte<enum ESubUVBoundingVertexCount> BoundingMode;
+
+	UPROPERTY(EditAnywhere, Category="Cutout")
+	TEnumAsByte<enum EOpacitySourceMode> OpacitySourceMode;
+	
+	/**
+	* Alpha channel values larger than the threshold are considered occupied and will be contained in the bounding geometry.
+	* Raising this threshold slightly can reduce overdraw in particles using this animation asset.
+	*/
+	UPROPERTY(EditAnywhere, Category="Cutout", meta=(UIMin = "0", UIMax = "1"))
+	float AlphaThreshold;
+
+	void UpdateCutoutTexture();
+	void CacheDerivedData();
+#endif
+
+	const TArray<FVector2D>& GetCutoutData() const { return DerivedData.BoundingGeometry; }
+
+private:
+
+	/** Derived data for this asset, generated off of SubUVTexture. */
+	FSubUVDerivedData DerivedData;
+
+	static TArray<TWeakObjectPtr<UNiagaraSpriteRendererProperties>> SpriteRendererPropertiesToDeferredInit;
 };
-
-
-

@@ -1,11 +1,11 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
 #include "IMovieSceneTrackInstance.h"
 
 class UMovieSceneNiagaraEmitterTrack;
-struct FNiagaraEmitterInstance;
+class FNiagaraEmitterInstance;
 
 /**
 *	One instance of a UEmitterMovieSceneTrack

@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 /*=============================================================================
 	HeightfieldLighting.h
@@ -54,14 +54,15 @@ class FHeightfieldComponentTextures
 {
 public:
 
-	FHeightfieldComponentTextures(UTexture2D* InHeightAndNormal, UTexture2D* InDiffuseColor) :
+	FHeightfieldComponentTextures(UTexture2D* InHeightAndNormal, UTexture2D* InDiffuseColor, UTexture2D* InVisibility) :
 		HeightAndNormal(InHeightAndNormal),
-		DiffuseColor(InDiffuseColor)
+		DiffuseColor(InDiffuseColor),
+		Visibility(InVisibility)
 	{}
 
 	FORCEINLINE bool operator==(FHeightfieldComponentTextures Other) const
 	{
-		return HeightAndNormal == Other.HeightAndNormal && DiffuseColor == Other.DiffuseColor;
+		return HeightAndNormal == Other.HeightAndNormal && DiffuseColor == Other.DiffuseColor && Visibility == Other.Visibility;
 	}
 
 	FORCEINLINE friend uint32 GetTypeHash(FHeightfieldComponentTextures ComponentTextures)
@@ -71,6 +72,7 @@ public:
 
 	UTexture2D* HeightAndNormal;
 	UTexture2D* DiffuseColor;
+	UTexture2D* Visibility;
 };
 
 class FHeightfieldDescription
@@ -142,10 +144,11 @@ private:
 	FHeightfieldDescription Heightfield;
 };
 
-extern FShaderResourceViewRHIParamRef GetHeightfieldDescriptionsSRV();
+extern FRHIShaderResourceView* GetHeightfieldDescriptionsSRV();
 
 class FHeightfieldDescriptionParameters
 {
+	DECLARE_TYPE_LAYOUT(FHeightfieldDescriptionParameters, NonVirtual);
 public:
 	void Bind(const FShaderParameterMap& ParameterMap)
 	{
@@ -161,19 +164,22 @@ public:
 	}
 
 	template<typename ShaderRHIParamRef>
-	void Set(FRHICommandList& RHICmdList, const ShaderRHIParamRef ShaderRHI, FShaderResourceViewRHIParamRef HeightfieldDescriptionsValue, int32 NumHeightfieldsValue)
+	void Set(FRHICommandList& RHICmdList, const ShaderRHIParamRef ShaderRHI, FRHIShaderResourceView* HeightfieldDescriptionsValue, int32 NumHeightfieldsValue)
 	{
 		SetSRVParameter(RHICmdList, ShaderRHI, HeightfieldDescriptions, HeightfieldDescriptionsValue);
 		SetShaderValue(RHICmdList, ShaderRHI, NumHeightfields, NumHeightfieldsValue);
 	}
 
 private:
-	FShaderResourceParameter HeightfieldDescriptions;
-	FShaderParameter NumHeightfields;
+	
+		LAYOUT_FIELD(FShaderResourceParameter, HeightfieldDescriptions)
+		LAYOUT_FIELD(FShaderParameter, NumHeightfields)
+	
 };
 
 class FHeightfieldTextureParameters
 {
+	DECLARE_TYPE_LAYOUT(FHeightfieldTextureParameters, NonVirtual);
 public:
 	void Bind(const FShaderParameterMap& ParameterMap)
 	{
@@ -181,6 +187,8 @@ public:
 		HeightfieldSampler.Bind(ParameterMap, TEXT("HeightfieldSampler"));
 		DiffuseColorTexture.Bind(ParameterMap, TEXT("DiffuseColorTexture"));
 		DiffuseColorSampler.Bind(ParameterMap, TEXT("DiffuseColorSampler"));
+		VisibilityTexture.Bind(ParameterMap, TEXT("VisibilityTexture"));
+		VisibilitySampler.Bind(ParameterMap, TEXT("VisibilitySampler"));
 	}
 
 	friend FArchive& operator<<(FArchive& Ar, FHeightfieldTextureParameters& Parameters)
@@ -189,11 +197,13 @@ public:
 		Ar << Parameters.HeightfieldSampler;
 		Ar << Parameters.DiffuseColorTexture;
 		Ar << Parameters.DiffuseColorSampler;
+		Ar << Parameters.VisibilityTexture;
+		Ar << Parameters.VisibilitySampler;
 		return Ar;
 	}
 
 	template<typename ShaderRHIParamRef>
-	void Set(FRHICommandList& RHICmdList, const ShaderRHIParamRef ShaderRHI, UTexture2D* HeightfieldTextureValue, UTexture2D* DiffuseColorTextureValue)
+	void Set(FRHICommandList& RHICmdList, const ShaderRHIParamRef ShaderRHI, UTexture2D* HeightfieldTextureValue, UTexture2D* DiffuseColorTextureValue, UTexture2D* VisibilityTextureValue)
 	{
 		//@todo - shouldn't filter the heightfield, it's packed
 		SetTextureParameter(RHICmdList, ShaderRHI, HeightfieldTexture, HeightfieldSampler, TStaticSamplerState<SF_Bilinear>::GetRHI(), HeightfieldTextureValue->Resource->TextureRHI);
@@ -206,11 +216,24 @@ public:
 		{
 			SetTextureParameter(RHICmdList, ShaderRHI, DiffuseColorTexture, DiffuseColorSampler, TStaticSamplerState<SF_Bilinear>::GetRHI(), GBlackTexture->TextureRHI);
 		}
+
+		if (VisibilityTextureValue)
+		{
+			SetTextureParameter(RHICmdList, ShaderRHI, VisibilityTexture, VisibilitySampler, TStaticSamplerState<SF_Bilinear>::GetRHI(), VisibilityTextureValue->Resource->TextureRHI);
+		}
+		else
+		{
+			SetTextureParameter(RHICmdList, ShaderRHI, VisibilityTexture, VisibilitySampler, TStaticSamplerState<SF_Bilinear>::GetRHI(), GBlackTexture->TextureRHI);
+		}
 	}
 
 private:
-	FShaderResourceParameter HeightfieldTexture;
-	FShaderResourceParameter HeightfieldSampler;
-	FShaderResourceParameter DiffuseColorTexture;
-	FShaderResourceParameter DiffuseColorSampler;
+	
+		LAYOUT_FIELD(FShaderResourceParameter, HeightfieldTexture)
+		LAYOUT_FIELD(FShaderResourceParameter, HeightfieldSampler)
+		LAYOUT_FIELD(FShaderResourceParameter, DiffuseColorTexture)
+		LAYOUT_FIELD(FShaderResourceParameter, DiffuseColorSampler)
+		LAYOUT_FIELD(FShaderResourceParameter, VisibilityTexture)
+		LAYOUT_FIELD(FShaderResourceParameter, VisibilitySampler)
+	
 };

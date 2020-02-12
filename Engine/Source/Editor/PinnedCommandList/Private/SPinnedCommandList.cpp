@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "SPinnedCommandList.h"
 #include "Styling/SlateTypes.h"
@@ -722,7 +722,7 @@ void SPinnedCommandList::SortCommands()
 		}
 
 		// fallback to lexical sort
-		return CommandIdentifier0 < CommandIdentifier1;
+		return CommandIdentifier0.LexicalLess(CommandIdentifier1);
 	});
 
 	RefreshCommandWidgets();

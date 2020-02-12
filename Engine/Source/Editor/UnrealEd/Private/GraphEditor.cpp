@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 
 #include "GraphEditor.h"
@@ -17,6 +17,7 @@ void SGraphEditor::ConstructImplementation( const FArguments& InArgs )
 {
 	FGraphEditorModule& GraphEdModule = FModuleManager::LoadModuleChecked<FGraphEditorModule>(TEXT("GraphEditor"));
 	
+
 	// Construct the implementation and make it the contents of this widget.
 	Implementation = GraphEdModule.PRIVATE_MakeGraphEditor( InArgs._AdditionalCommands, 
 		InArgs._IsEditable, 
@@ -117,3 +118,55 @@ void SGraphEditor::NotifyPostPropertyChange( const FPropertyChangedEvent& Proper
 	}
 }
 
+void SGraphEditor::ResetAllNodesUnrelatedStates()
+{
+	TArray<class UEdGraphNode*> AllNodes = GetCurrentGraph()->Nodes;
+
+	for (auto& GraphNode : AllNodes)
+	{
+		if (GraphNode->IsNodeUnrelated())
+		{
+			GraphNode->SetNodeUnrelated(false);
+		}
+	}
+}
+
+void SGraphEditor::FocusCommentNodes(TArray<UEdGraphNode*> &CommentNodes, TArray<UEdGraphNode*> &RelatedNodes)
+{
+	for (auto& CommentNode : CommentNodes)
+	{
+		CommentNode->SetNodeUnrelated(true);
+
+		const FSlateRect CommentRect(
+			CommentNode->NodePosX, 
+			CommentNode->NodePosY, 
+			CommentNode->NodePosX + CommentNode->NodeWidth, 
+			CommentNode->NodePosY + CommentNode->NodeHeight
+		);
+
+		for (auto& RelatedNode : RelatedNodes)
+		{
+			const FVector2D NodePos(RelatedNode->NodePosX, RelatedNode->NodePosY);
+
+			if (CommentRect.ContainsPoint(NodePos))
+			{
+				CommentNode->SetNodeUnrelated(false);
+				break;
+			}
+		}
+	}
+}
+
+TSharedPtr<SGraphEditor> SGraphEditor::FindGraphEditorForGraph(const UEdGraph* Graph)
+{
+	for (TWeakPtr<SGraphEditor>& WeakWidget : AllInstances)
+	{
+		TSharedPtr<SGraphEditor> WidgetPtr = WeakWidget.Pin();
+		if (WidgetPtr.IsValid() && (WidgetPtr->GetCurrentGraph() == Graph))
+		{
+			return WidgetPtr;
+		}
+	}
+
+	return nullptr;
+}

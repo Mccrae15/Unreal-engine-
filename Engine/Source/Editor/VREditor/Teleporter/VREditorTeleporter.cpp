@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "VREditorTeleporter.h"
 
@@ -209,7 +209,7 @@ void AVREditorTeleporter::StopAiming( )
 		InteractorTryingTeleport = nullptr;
 
 		TeleportingState = EState::None;
-
+		VRMode->GetWorldInteraction().AllowWorldMovement(true);
 	}
 }
 
@@ -370,7 +370,7 @@ void AVREditorTeleporter::UpdateTeleportAim(const float DeltaTime)
 			}
 
 			// If the laser is hitting something the teleport will go their with an appropriate offset.
-			FHitResult HitResult = VREditorInteractor->GetHitResultFromLaserPointer(nullptr, true, nullptr, false, VREd::TeleportLaserPointerLength->GetFloat());
+			FHitResult HitResult = VREditorInteractor->GetHitResultFromLaserPointer(nullptr, EHitResultGizmoFilterMode::NoGizmos, nullptr, false, VREd::TeleportLaserPointerLength->GetFloat());
 			if (HitResult.bBlockingHit && !bPushedFromEndOfLaser)
 			{
 				// Calculate an offset with the impact normal, so the teleporter will show up on-top, underneath or next to where laser is aiming at.

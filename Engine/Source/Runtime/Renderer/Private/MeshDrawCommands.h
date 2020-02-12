@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 /*=============================================================================
 MeshDrawCommands.h: Mesh draw commands.
@@ -22,7 +22,7 @@ public:
 	FPrimitiveIdVertexBufferPool();
 	~FPrimitiveIdVertexBufferPool();
 
-	FVertexBufferRHIParamRef Allocate(int32 BufferSize);
+	FRHIVertexBuffer* Allocate(int32 BufferSize);
 	void DiscardAll();
 
 	virtual void ReleaseDynamicRHI() override;
@@ -62,6 +62,7 @@ public:
 		, InstanceFactor(1)
 		, NumDynamicMeshElements(0)
 		, NumDynamicMeshCommandBuildRequestElements(0)
+		, NeedsShaderInitialisation(false)
 		, PrimitiveIdBufferData(nullptr)
 		, PrimitiveIdBufferDataSize(0)
 		, PrimitiveBounds(nullptr)
@@ -73,12 +74,14 @@ public:
 
 	const FViewInfo* View;
 	EShadingPath ShadingPath;
+	EShaderPlatform ShaderPlatform;
 	EMeshPass::Type PassType;
 	bool bUseGPUScene;
 	bool bDynamicInstancing;
 	bool bReverseCulling;
 	bool bRenderSceneTwoSided;
 	FExclusiveDepthStencil::Type BasePassDepthStencilAccess;
+	FExclusiveDepthStencil::Type DefaultBasePassDepthStencilAccess;
 
 	// Mesh pass processor.
 	FMeshPassProcessor* MeshPassProcessor;
@@ -95,6 +98,8 @@ public:
 	TArray<const FStaticMeshBatch*, SceneRenderingAllocator> DynamicMeshCommandBuildRequests;
 	TArray<const FStaticMeshBatch*, SceneRenderingAllocator> MobileBasePassCSMDynamicMeshCommandBuildRequests;
 	FDynamicMeshDrawCommandStorage MeshDrawCommandStorage;
+	FGraphicsMinimalPipelineStateSet MinimalPipelineStatePassSet;
+	bool NeedsShaderInitialisation;
 
 	// Resources preallocated on rendering thread.
 	void* PrimitiveIdBufferData;
@@ -123,7 +128,8 @@ class FParallelMeshDrawCommandPass
 {
 public:
 	FParallelMeshDrawCommandPass()
-		: bPrimitiveIdBufferDataOwnedByRHIThread(false)
+		: PrimitiveIdVertexBufferRHI(nullptr)
+		, bPrimitiveIdBufferDataOwnedByRHIThread(false)
 		, MaxNumDraws(0)
 	{
 	}
@@ -155,13 +161,17 @@ public:
 	 */
 	void DispatchDraw(FParallelCommandListSet* ParallelCommandListSet, FRHICommandList& RHICmdList) const;
 
-	void Empty();
+	void WaitForTasksAndEmpty();
 	void SetDumpInstancingStats(const FString& InPassName);
 	bool HasAnyDraw() const { return MaxNumDraws > 0; }
 
+	void InitCreateSnapshot()
+	{
+		new (&TaskContext.MinimalPipelineStatePassSet) FGraphicsMinimalPipelineStateSet();
+	}
 
 private:
-	FVertexBufferRHIParamRef PrimitiveIdVertexBufferRHI;
+	FRHIVertexBuffer* PrimitiveIdVertexBufferRHI;
 	FMeshDrawCommandPassSetupTaskContext TaskContext;
 	FGraphEventRef TaskEventRef;
 	FString PassNameForStats;
@@ -181,5 +191,5 @@ extern void SortAndMergeDynamicPassMeshDrawCommands(
 	ERHIFeatureLevel::Type FeatureLevel,
 	FMeshCommandOneFrameArray& VisibleMeshDrawCommands,
 	FDynamicMeshDrawCommandStorage& MeshDrawCommandStorage,
-	FVertexBufferRHIParamRef& OutPrimitiveIdVertexBuffer,
+	FRHIVertexBuffer*& OutPrimitiveIdVertexBuffer,
 	uint32 InstanceFactor);

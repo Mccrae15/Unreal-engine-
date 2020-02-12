@@ -1,10 +1,11 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
 #include "CoreMinimal.h"
 #include "NiagaraEditorCommon.h"
 #include "NiagaraParameters.h"
+#include "NiagaraScript.h"
 
 class Error;
 class UEdGraphPin;
@@ -17,34 +18,7 @@ struct FNiagaraTranslatorOutput;
 struct FNiagaraVMExecutableData;
 class FNiagaraCompileRequestData;
 class FNiagaraCompileOptions;
-
-/** Defines the compile event types for translation/compilation.*/
-enum FNiagaraCompileEventType
-{
-	Log = 0,
-	Warning = 1,
-	Error = 2
-};
-
-/** Records necessary information to give UI cues for errors/logs/warnings during compile.*/
-struct FNiagaraCompileEvent
-{
-public:
-	FNiagaraCompileEvent(FNiagaraCompileEventType InType, const FString& InMessage, FGuid InNodeGuid = FGuid(), FGuid InPinGuid = FGuid(), const TArray<FGuid>& InCallstackGuids = TArray<FGuid>())
-	: Type(InType), Message(InMessage), NodeGuid(InNodeGuid), PinGuid(InPinGuid), StackGuids(InCallstackGuids){}
-
-	/** Whether or not this is an error, warning, or info*/
-	FNiagaraCompileEventType Type;
-	/* The message itself*/
-	FString Message;
-	/** The node guid that generated the compile event*/
-	FGuid NodeGuid;
-	/** The pin persistent id that generated the compile event*/
-	FGuid PinGuid;
-	/** The compile stack frame of node id's*/
-	TArray<FGuid> StackGuids;
-};
-
+//struct FNiagaraCompileEvent;
 
 /** Defines information about the results of a Niagara script compile. */
 struct FNiagaraCompileResults
@@ -65,6 +39,8 @@ struct FNiagaraCompileResults
 	uint32 NumErrors;
 	uint32 NumWarnings;
 
+	FString DumpDebugInfoPath;
+
 	FNiagaraCompileResults()
 		: CompileTime(0.0f), NumErrors(0), NumWarnings(0)
 	{
@@ -79,8 +55,11 @@ struct FNiagaraCompileResults
 class INiagaraCompiler
 {
 public:
-	/** Compiles a script. */
-	virtual FNiagaraCompileResults CompileScript(const FNiagaraCompileRequestData* InCompileRequest, const FNiagaraCompileOptions& InOptions, FNiagaraTranslatorOutput *TranslatorOutput, FString& TranslatedHLSL) = 0;
+	/** Starts the async compilation of a script and returns the job handle to retrieve the results */
+	virtual int32 CompileScript(const FNiagaraCompileRequestData* InCompileRequest, const FNiagaraCompileOptions& InOptions, FNiagaraTranslatorOutput *TranslatorOutput, FString& TranslatedHLSL) = 0;
+
+	/** Returns the compile result for a given job id once the job has finished compiling. */
+	virtual TOptional<FNiagaraCompileResults> GetCompileResult(int32 JobID, bool bWait = false) = 0;
 
 	/** Adds an error to be reported to the user. Any error will lead to compilation failure. */
 	virtual void Error(FText ErrorText) = 0 ;

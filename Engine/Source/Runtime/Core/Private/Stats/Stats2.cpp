@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "Stats/Stats2.h"
 #include "Misc/AssertionMacros.h"
@@ -92,7 +92,7 @@ void DebugLeakTest()
 
 		if (GFrameCounter == 300)
 		{
-			GIsRequestingExit = true;
+			RequestEngineExit(TEXT("DebugLeakTest hit frame 300"));
 		}
 
 		// Realloc.
@@ -169,7 +169,7 @@ void DebugLeakTest()
 			delete[] IntAlloc;
 		} //-V773
 
-		if (GIsRequestingExit)
+		if (IsEngineExitRequested())
 		{
 			// If we are writing stats data, stop it now.
 			DirectStatsCommand( TEXT( "stat stopfile" ), true );
@@ -321,6 +321,7 @@ void FStartupMessages::AddThreadMetadata( const FName InThreadName, uint32 InThr
 
 void FStartupMessages::AddMetadata( FName InStatName, const TCHAR* InStatDesc, const char* InGroupName, const char* InGroupCategory, const TCHAR* InGroupDesc, bool bShouldClearEveryFrame, EStatDataType::Type InStatType, bool bCycleStat, bool bSortByName, FPlatformMemory::EMemoryCounterRegion InMemoryRegion /*= FPlatformMemory::MCR_Invalid*/ )
 {
+	LLM_SCOPE(ELLMTag::Stats);
 	FScopeLock Lock( &CriticalSection );
 
 	new (DelayedMessages)FStatMessage( InGroupName, EStatDataType::ST_None, "Groups", InGroupCategory, InGroupDesc, false, false, bSortByName );
@@ -333,6 +334,7 @@ FStartupMessages& FStartupMessages::Get()
 	static FStartupMessages* Messages = NULL;
 	if( !Messages )
 	{
+		LLM_SCOPE(ELLMTag::Stats);
 		check( IsInGameThread() );
 		Messages = new FStartupMessages;
 	}
@@ -506,100 +508,114 @@ public:
 	{
 		LLM_SCOPE(ELLMTag::Stats);
 
-		FScopeLock ScopeLock(&SynchronizationObject);
-
-		FStatNameAndInfo LongName(StatShortName, InGroup, InCategory, InDescription, InStatType, bShouldClearEveryFrame, bCycleStat, bSortByName, MemoryRegion);
-
-		FName Stat = LongName.GetEncodedName();
-
-		FName Group(InGroup);
-		FGroupEnable* Found = HighPerformanceEnable.Find(Group);
-		if (Found)
+		FName Stat;
+		TStatIdData* Result;
+		FString StatDescription;
 		{
-			if (Found->DefaultEnable != bDefaultEnable)
+			FScopeLock ScopeLock(&SynchronizationObject);
+
+			FStatNameAndInfo LongName(StatShortName, InGroup, InCategory, InDescription, InStatType, bShouldClearEveryFrame, bCycleStat, bSortByName, MemoryRegion);
+
+			Stat = LongName.GetEncodedName();
+
+			FName Group(InGroup);
+			FGroupEnable* Found = HighPerformanceEnable.Find(Group);
+			if (Found)
 			{
-				UE_LOG(LogStatGroupEnableManager, Fatal, TEXT("Stat group %s was was defined both on and off by default."), *Group.ToString());
-			}
-			TStatIdData** StatFound = Found->NamesInThisGroup.Find( Stat );
-			TStatIdData** StatFoundAlways = Found->AlwaysEnabledNamesInThisGroup.Find( Stat );
-			if( StatFound )
-			{
-				if( StatFoundAlways )
+				if (Found->DefaultEnable != bDefaultEnable)
 				{
-					UE_LOG( LogStatGroupEnableManager, Fatal, TEXT( "Stat %s is both always enabled and not always enabled, so it was used for two different things." ), *Stat.ToString() );
+					UE_LOG(LogStatGroupEnableManager, Fatal, TEXT("Stat group %s was was defined both on and off by default."), *Group.ToString());
 				}
-				return TStatId( *StatFound );
+				TStatIdData** StatFound = Found->NamesInThisGroup.Find( Stat );
+				TStatIdData** StatFoundAlways = Found->AlwaysEnabledNamesInThisGroup.Find( Stat );
+				if( StatFound )
+				{
+					if( StatFoundAlways )
+					{
+						UE_LOG( LogStatGroupEnableManager, Fatal, TEXT( "Stat %s is both always enabled and not always enabled, so it was used for two different things." ), *Stat.ToString() );
+					}
+					return TStatId( *StatFound );
+				}
+				else if( StatFoundAlways )
+				{
+					return TStatId( *StatFoundAlways );
+				}
 			}
-			else if( StatFoundAlways )
+			else
 			{
-				return TStatId( *StatFoundAlways );
-			}
-		}
-		else
-		{
-			Found = &HighPerformanceEnable.Add( Group, FGroupEnable( bDefaultEnable || !bShouldClearEveryFrame ) );
+				Found = &HighPerformanceEnable.Add( Group, FGroupEnable( bDefaultEnable || !bShouldClearEveryFrame ) );
 
-			// this was set up before we saw the group, so set the enable now
-			if (EnableForNewGroup.Contains(Group))
+				// this was set up before we saw the group, so set the enable now
+				if (EnableForNewGroup.Contains(Group))
+				{
+					Found->CurrentEnable = EnableForNewGroup.FindChecked(Group);
+					EnableForNewGroup.Remove(Group); // by definition, we will never need this again
+				}
+				else if (UseEnableForNewGroups)
+				{
+					Found->CurrentEnable = EnableForNewGroups;
+				}
+			}
+			if (StatIDs.Num() == 0 || StatIDs.Last().Num() == NUM_PER_BLOCK)
 			{
-				Found->CurrentEnable = EnableForNewGroup.FindChecked(Group);
-				EnableForNewGroup.Remove(Group); // by definition, we will never need this again
+				TArray<TStatIdData>& NewBlock = StatIDs.AddDefaulted_GetRef();
+				NewBlock.Reserve(NUM_PER_BLOCK);
 			}
-			else if (UseEnableForNewGroups)
+			Result = &StatIDs.Last().AddDefaulted_GetRef();
+
+			StatDescription = InDescription ? InDescription : StatShortName.GetPlainNameString();
+
+			const int32 StatDescLen = StatDescription.Len() + 1;
+
+			int32 MemoryAllocated = 0;
+
+			// Get the wide stat description.
 			{
-				Found->CurrentEnable = EnableForNewGroups;
+				auto StatDescriptionWide = StringCast<WIDECHAR>(*StatDescription, StatDescLen);
+				int32 StatDescriptionWideLength = StatDescriptionWide.Length();
+				TUniquePtr<WIDECHAR[]> StatDescWide = MakeUnique<WIDECHAR[]>(StatDescriptionWideLength + 1);
+				TCString<WIDECHAR>::Strcpy(StatDescWide.Get(), StatDescriptionWideLength + 1, StatDescriptionWide.Get());
+				Result->StatDescriptionWide = MoveTemp(StatDescWide);
+
+				MemoryAllocated += StatDescriptionWideLength * sizeof(WIDECHAR);
+			}
+
+			// Get the ansi stat description.
+			{
+				auto StatDescriptionAnsi = StringCast<ANSICHAR>(*StatDescription, StatDescLen);
+				int32 StatDescriptionAnsiLength = StatDescriptionAnsi.Length();
+				TUniquePtr<ANSICHAR[]> StatDescAnsi = MakeUnique<ANSICHAR[]>(StatDescriptionAnsiLength + 1);
+				TCString<ANSICHAR>::Strcpy(StatDescAnsi.Get(), StatDescriptionAnsiLength + 1, StatDescriptionAnsi.Get());
+				Result->StatDescriptionAnsi = MoveTemp(StatDescAnsi);
+
+				MemoryAllocated += StatDescriptionAnsiLength * sizeof(ANSICHAR);
+			}
+
+			MemoryCounter.Add( MemoryAllocated );
+
+			if( Found->CurrentEnable )
+			{
+				EnableStat( Stat, Result );
+			}
+
+			if( bShouldClearEveryFrame )
+			{
+				Found->NamesInThisGroup.Add( Stat, Result );
+			}
+			else
+			{
+				Found->AlwaysEnabledNamesInThisGroup.Add( Stat, Result );
 			}
 		}
-		if (StatIDs.Num() == 0 || StatIDs.Last().Num() == NUM_PER_BLOCK)
+
+#if STATSTRACE_ENABLED
+		if (!bCycleStat && (InStatType == EStatDataType::ST_int64 || InStatType == EStatDataType::ST_double))
 		{
-			TArray<TStatIdData>& NewBlock = StatIDs.AddDefaulted_GetRef();
-			NewBlock.Reserve(NUM_PER_BLOCK);
+			ANSICHAR NameBuffer[1024];
+			StatShortName.GetPlainANSIString(NameBuffer);
+			FStatsTrace::DeclareStat(Stat, NameBuffer, *StatDescription, InStatType == EStatDataType::ST_double, MemoryRegion != FPlatformMemory::MCR_Invalid, bShouldClearEveryFrame);
 		}
-		TStatIdData* Result = &StatIDs.Last().AddDefaulted_GetRef();
-
-		const FString StatDescription = InDescription ? InDescription : StatShortName.GetPlainNameString();
-
-		const int32 StatDescLen = StatDescription.Len() + 1;
-
-		int32 MemoryAllocated = 0;
-
-		// Get the wide stat description.
-		{
-			auto StatDescriptionWide = StringCast<WIDECHAR>(*StatDescription, StatDescLen);
-			int32 StatDescriptionWideLength = StatDescriptionWide.Length();
-			TUniquePtr<WIDECHAR[]> StatDescWide = MakeUnique<WIDECHAR[]>(StatDescriptionWideLength + 1);
-			TCString<WIDECHAR>::Strcpy(StatDescWide.Get(), StatDescriptionWideLength + 1, StatDescriptionWide.Get());
-			Result->StatDescriptionWide = MoveTemp(StatDescWide);
-
-			MemoryAllocated += StatDescriptionWideLength * sizeof(WIDECHAR);
-		}
-
-		// Get the ansi stat description.
-		{
-			auto StatDescriptionAnsi = StringCast<ANSICHAR>(*StatDescription, StatDescLen);
-			int32 StatDescriptionAnsiLength = StatDescriptionAnsi.Length();
-			TUniquePtr<ANSICHAR[]> StatDescAnsi = MakeUnique<ANSICHAR[]>(StatDescriptionAnsiLength + 1);
-			TCString<ANSICHAR>::Strcpy(StatDescAnsi.Get(), StatDescriptionAnsiLength + 1, StatDescriptionAnsi.Get());
-			Result->StatDescriptionAnsi = MoveTemp(StatDescAnsi);
-
-			MemoryAllocated += StatDescriptionAnsiLength * sizeof(ANSICHAR);
-		}
-
-		MemoryCounter.Add( MemoryAllocated );
-
-		if( Found->CurrentEnable )
-		{
-			EnableStat( Stat, Result );
-		}
-
-		if( bShouldClearEveryFrame )
-		{
-			Found->NamesInThisGroup.Add( Stat, Result );
-		}
-		else
-		{
-			Found->AlwaysEnabledNamesInThisGroup.Add( Stat, Result );
-		}
+#endif
 		return TStatId(Result);
 	}
 
@@ -743,29 +759,29 @@ FName FStatNameAndInfo::GetShortNameFrom(FName InLongName)
 
 	if (Input.StartsWith(TEXT("//"), ESearchCase::CaseSensitive))
 	{
-		Input = Input.RightChop(2);
+		Input.RightChopInline(2, false);
 		const int32 IndexEnd = Input.Find(TEXT("//"), ESearchCase::CaseSensitive);
 		if (IndexEnd == INDEX_NONE)
 		{
 			checkStats(0);
 			return InLongName;
 		}
-		Input = Input.RightChop(IndexEnd + 2);
+		Input.RightChopInline(IndexEnd + 2, false);
 	}
 	const int32 DescIndexEnd = Input.Find(TEXT("///"), ESearchCase::CaseSensitive);
 	if (DescIndexEnd != INDEX_NONE)
 	{
-		Input = Input.Left(DescIndexEnd);
+		Input.LeftInline(DescIndexEnd, false);
 	}
 	const int32 CategoryIndexEnd = Input.Find( TEXT( "####" ), ESearchCase::CaseSensitive );
 	if( DescIndexEnd == INDEX_NONE && CategoryIndexEnd != INDEX_NONE )
 	{
-		Input = Input.Left(CategoryIndexEnd);
+		Input.LeftInline(CategoryIndexEnd, false);
 	}
 	const int32 SortByNameIndexEnd = Input.Find( TEXT( "/#/#" ), ESearchCase::CaseSensitive );
 	if( DescIndexEnd == INDEX_NONE && CategoryIndexEnd == INDEX_NONE && SortByNameIndexEnd != INDEX_NONE )
 	{
-		Input = Input.Left(SortByNameIndexEnd);
+		Input.LeftInline(SortByNameIndexEnd, false);
 	}
 	return FName(*Input);
 }
@@ -776,10 +792,10 @@ FName FStatNameAndInfo::GetGroupNameFrom(FName InLongName)
 
 	if (Input.StartsWith(TEXT("//"), ESearchCase::CaseSensitive))
 	{
-		Input = Input.RightChop(2);
+		Input.RightChopInline(2, false);
 		if (Input.StartsWith(TEXT("Groups//")))
 		{
-			Input = Input.RightChop(8);
+			Input.RightChopInline(8, false);
 		}
 		const int32 IndexEnd = Input.Find(TEXT("//"), ESearchCase::CaseSensitive);
 		if (IndexEnd != INDEX_NONE)
@@ -798,7 +814,7 @@ FString FStatNameAndInfo::GetDescriptionFrom(FName InLongName)
 	const int32 IndexStart = Input.Find(TEXT("///"), ESearchCase::CaseSensitive);
 	if (IndexStart != INDEX_NONE)
 	{
-		Input = Input.RightChop(IndexStart + 3);
+		Input.RightChopInline(IndexStart + 3, false);
 		const int32 IndexEnd = Input.Find(TEXT("///"), ESearchCase::CaseSensitive);
 		if (IndexEnd != INDEX_NONE)
 		{
@@ -815,7 +831,7 @@ FName FStatNameAndInfo::GetGroupCategoryFrom(FName InLongName)
 	const int32 IndexStart = Input.Find(TEXT("####"), ESearchCase::CaseSensitive);
 	if (IndexStart != INDEX_NONE)
 	{
-		Input = Input.RightChop(IndexStart + 4);
+		Input.RightChopInline(IndexStart + 4, false);
 		const int32 IndexEnd = Input.Find(TEXT("####"), ESearchCase::CaseSensitive);
 		if (IndexEnd != INDEX_NONE)
 		{
@@ -833,7 +849,7 @@ bool FStatNameAndInfo::GetSortByNameFrom(FName InLongName)
 	const int32 IndexStart = Input.Find(TEXT("/#/#"), ESearchCase::CaseSensitive);
 	if (IndexStart != INDEX_NONE)
 	{
-		Input = Input.RightChop(IndexStart + 4);
+		Input.RightChopInline(IndexStart + 4, false);
 		const int32 IndexEnd = Input.Find(TEXT("/#/#"), ESearchCase::CaseSensitive);
 		if (IndexEnd != INDEX_NONE)
 		{
@@ -1056,6 +1072,7 @@ public:
 
 FThreadStatsPool::FThreadStatsPool()
 {
+	LLM_SCOPE(ELLMTag::Stats);
 	for( int32 Index = 0; Index < NUM_ELEMENTS_IN_POOL; ++Index )
 	{
 		Pool.Push( new FThreadStats(EConstructor::FOR_POOL) );
@@ -1064,6 +1081,7 @@ FThreadStatsPool::FThreadStatsPool()
 
 FThreadStats* FThreadStatsPool::GetFromPool()
 {
+	LLM_SCOPE(ELLMTag::Stats);
 	FPlatformMisc::MemoryBarrier();
 	FThreadStats* Address = Pool.Pop();
 	while (!Address)
@@ -1221,6 +1239,8 @@ void FThreadStats::FlushRegularStats( bool bHasBrokenCallstacks, bool bForceFlus
 
 void FThreadStats::FlushRawStats( bool bHasBrokenCallstacks /*= false*/, bool bForceFlush /*= false*/ )
 {
+	LLM_SCOPE(ELLMTag::Stats);
+
 	if (bReentranceGuard)
 	{
 		return;
@@ -1296,7 +1316,7 @@ void FThreadStats::CheckForCollectingStartupStats()
 		{
 			break;
 		}
-		CmdLine = CmdLine.Mid(Index + StatCmds.Len());
+		CmdLine.MidInline(Index + StatCmds.Len(), MAX_int32, false);
 	}
 
 	if (FParse::Param( FCommandLine::Get(), TEXT( "LoadTimeStats" ) ))
@@ -1416,9 +1436,10 @@ void FThreadStats::StopThread()
 
 void FThreadStats::WaitForStats()
 {
-#if PLATFORM_HTML5
-	return;	// even checking FPlatformProcess::SupportsMultithreading() -- CreateTask() is still crashing on HTML5 -- TODO: check back after WASM w/multi-threading is in....
-#endif
+	if (FPlatformProcess::SkipWaitForStats())
+	{
+		return;
+	}
 
 	check(IsInGameThread());
 	if (IsThreadingReady() && !bMasterDisableForever)

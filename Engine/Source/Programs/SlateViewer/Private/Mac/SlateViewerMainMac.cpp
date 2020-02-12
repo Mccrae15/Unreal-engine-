@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "SlateViewerApp.h"
 #include "HAL/ExceptionHandling.h"
@@ -32,9 +32,9 @@ static FString GSavedCommandLine;
 
 - (NSApplicationTerminateReply)applicationShouldTerminate:(NSApplication *)Sender;
 {
-	if(!GIsRequestingExit || ([NSThread gameThread] && [NSThread gameThread] != [NSThread mainThread]))
+	if(!IsEngineExitRequested() || ([NSThread gameThread] && [NSThread gameThread] != [NSThread mainThread]))
 	{
-		GIsRequestingExit = true;
+		RequestEngineExit(TEXT("applicationShouldTerminate"));
 		return NSTerminateLater;
 	}
 	else

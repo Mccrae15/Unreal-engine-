@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "BlutilityLevelEditorExtensions.h"
 #include "Modules/ModuleManager.h"
@@ -27,7 +27,7 @@ public:
 		TSharedRef<FExtender> Extender(new FExtender());
 
 		// Run thru the assets to determine if any meet our criteria
-		TArray<UGlobalEditorUtilityBase*> SupportedUtils;
+		TArray<IEditorUtilityExtension*> SupportedUtils;
 		if (SelectedActors.Num() > 0)
 		{
 			// Check blueprint utils (we need to load them to query their validity against these actors)

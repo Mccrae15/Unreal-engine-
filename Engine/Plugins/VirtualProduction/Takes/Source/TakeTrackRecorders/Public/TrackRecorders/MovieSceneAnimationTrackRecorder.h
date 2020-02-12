@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -10,6 +10,7 @@
 #include "Animation/AnimSequence.h"
 #include "Serializers/MovieSceneAnimationSerialization.h"
 #include "Sections/MovieSceneSkeletalAnimationSection.h"
+#include "AnimationRecorder.h"
 #include "MovieSceneAnimationTrackRecorder.generated.h"
 
 class FMovieScene3DTransformTrackRecorder;
@@ -26,7 +27,7 @@ public:
 	virtual bool CanRecordObject(class UObject* InObjectToRecord) const override;
 	virtual UMovieSceneTrackRecorder* CreateTrackRecorderForObject() const override;
 
-	virtual bool CanRecordProperty(class UObject* InObjectToRecord, class UProperty* InPropertyToRecord) const override { return false; }
+	virtual bool CanRecordProperty(class UObject* InObjectToRecord, class FProperty* InPropertyToRecord) const override { return false; }
 	virtual UMovieSceneTrackRecorder* CreateTrackRecorderForProperty(UObject* InObjectToRecord, const FName& InPropertyToRecord) const override { return nullptr; }
 
 	virtual FText GetDisplayName() const override { return NSLOCTEXT("MovieSceneAnimationTrackRecorderFactory", "DisplayName", "Animation Track"); }
@@ -56,11 +57,12 @@ protected:
 
 public:
 	void RemoveRootMotion();
-	
+
 	UAnimSequence* GetAnimSequence() const { return AnimSequence.Get(); }
 	USkeletalMesh* GetSkeletalMesh() const { return SkeletalMesh.Get(); }
 	USkeletalMeshComponent* GetSkeletalMeshComponent() const { return SkeletalMeshComponent.Get(); }
 	const FTransform& GetComponentTransform() const { return ComponentTransform; }
+	const FTransform& GetInitialRootTransform() const { return InitialRootTransform; }
 
 private:
 	bool ResolveTransformToRecord(FTransform& TransformToRecord);
@@ -78,7 +80,17 @@ private:
 	/** Local transform of the component we are recording */
 	FTransform ComponentTransform;
 
-	bool bAnimationRecorderCreated; 
+	/** Inverse we are using to zero out root motion */
+	FTransform InitialRootTransform;
+
+	bool bAnimationRecorderCreated;
+
+	/** Animatinon Recorder */
+	FAnimRecorderInstance AnimationRecorder;
+
+	/** Previous Seconds to calc Delta used by Animation Recorder **/
+	float  PreviousSeconds;
+
 	/**Serializer */
 	FAnimationSerializer AnimationSerializer;
 };

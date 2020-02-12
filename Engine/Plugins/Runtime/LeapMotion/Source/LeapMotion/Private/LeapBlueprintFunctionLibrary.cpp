@@ -1,6 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
-
-#pragma once
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "LeapBlueprintFunctionLibrary.h"
 #include "ILeapMotionPlugin.h"

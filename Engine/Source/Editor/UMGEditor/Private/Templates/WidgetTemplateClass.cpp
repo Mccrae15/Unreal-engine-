@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "Templates/WidgetTemplateClass.h"
 
@@ -110,6 +110,19 @@ TSharedRef<IToolTip> FWidgetTemplateClass::GetToolTip() const
 		}
 
 		return IDocumentation::Get()->CreateToolTip(Description, nullptr, FString(TEXT("Shared/Types/")) + Name.ToString(), TEXT("Class"));
+	}
+}
+
+void FWidgetTemplateClass::GetFilterStrings(TArray<FString>& OutStrings) const
+{
+	FWidgetTemplate::GetFilterStrings(OutStrings);
+	if (WidgetClass.IsValid())
+	{
+		OutStrings.Add(WidgetClass->GetName());
+	}
+	if (WidgetAssetData.IsValid())
+	{
+		OutStrings.Add(WidgetAssetData.AssetName.ToString());
 	}
 }
 

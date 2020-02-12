@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "CoreMinimal.h"
 #include "Modules/ModuleManager.h"
@@ -10,16 +10,31 @@
 #include "SequencerCommands.h"
 #include "ISequencerObjectChangeListener.h"
 #include "Sequencer.h"
+#include "SequencerCustomizationManager.h"
 #include "SequencerEdMode.h"
 #include "SequencerObjectChangeListener.h"
 #include "IDetailKeyframeHandler.h"
+#include "Tree/CurveEditorTreeFilter.h"
 #include "AnimatedPropertyKey.h"
+
+#include "ToolMenus.h"
+#include "ContentBrowserMenuContexts.h"
+#include "FileHelpers.h"
+#include "LevelSequence.h"
+#include "AssetRegistryModule.h"
+
 
 #define LOCTEXT_NAMESPACE "SequencerEditor"
 
 // Destructor defined in CPP to avoid having to #include SequencerChannelInterface.h in the main module definition
 ISequencerModule::~ISequencerModule()
 {
+}
+
+ECurveEditorTreeFilterType ISequencerModule::GetSequencerSelectionFilterType()
+{
+	static ECurveEditorTreeFilterType FilterType = FCurveEditorTreeFilter::RegisterFilterType();
+	return FilterType;
 }
 
 /**
@@ -34,8 +49,10 @@ public:
 
 	virtual TSharedRef<ISequencer> CreateSequencer(const FSequencerInitParams& InitParams) override
 	{
-		TSharedRef<FSequencer> Sequencer = MakeShareable(new FSequencer);
-		TSharedRef<ISequencerObjectChangeListener> ObjectChangeListener = MakeShareable(new FSequencerObjectChangeListener(Sequencer));
+		TSharedRef<FSequencer> Sequencer = MakeShared<FSequencer>();
+		TSharedRef<ISequencerObjectChangeListener> ObjectChangeListener = MakeShared<FSequencerObjectChangeListener>(Sequencer);
+
+		OnPreSequencerInit.Broadcast(Sequencer, ObjectChangeListener, InitParams);
 
 		Sequencer->InitSequencer(InitParams, ObjectChangeListener, TrackEditorDelegates, EditorObjectBindingDelegates);
 
@@ -90,6 +107,16 @@ public:
 		OnSequencerCreated.Remove(InHandle);
 	}
 
+	virtual FDelegateHandle RegisterOnPreSequencerInit(FOnPreSequencerInit::FDelegate InOnPreSequencerInit) override
+	{
+		return OnPreSequencerInit.Add(InOnPreSequencerInit);
+	}
+
+	virtual void UnregisterOnPreSequencerInit(FDelegateHandle InHandle) override
+	{
+		OnPreSequencerInit.Remove(InHandle);
+	}
+
 	virtual FDelegateHandle RegisterEditorObjectBinding(FOnCreateEditorObjectBinding InOnCreateEditorObjectBinding) override
 	{
 		EditorObjectBindingDelegates.Add(InOnCreateEditorObjectBinding);
@@ -101,10 +128,91 @@ public:
 		EditorObjectBindingDelegates.RemoveAll([=](const FOnCreateEditorObjectBinding& Delegate) { return Delegate.GetHandle() == InHandle; });
 	}
 
+	void RegisterMenus()
+	{
+		UToolMenus* ToolMenus = UToolMenus::Get();
+		UToolMenu* Menu = ToolMenus->ExtendMenu("ContentBrowser.AssetContextMenu.LevelSequence");
+		if (!Menu)
+		{
+			return;
+		}
+
+		FToolMenuSection& Section = Menu->FindOrAddSection("GetAssetActions");
+		Section.AddDynamicEntry("SequencerActions", FNewToolMenuSectionDelegate::CreateLambda([](FToolMenuSection& InSection)
+		{
+			UContentBrowserAssetContextMenuContext* Context = InSection.FindContext<UContentBrowserAssetContextMenuContext>();
+			if (!Context)
+			{
+				return;
+			}
+
+			ULevelSequence* LevelSequence = Context->SelectedObjects.Num() == 1 ? Cast<ULevelSequence>(Context->SelectedObjects[0]) : nullptr;
+			if (LevelSequence)
+			{
+				// if this LevelSequence has associated maps, offer to load them
+
+				FAssetRegistryModule& AssetRegistryModule = FModuleManager::LoadModuleChecked<FAssetRegistryModule>("AssetRegistry");
+				const FName LSMapPathName = *LevelSequence->GetOutermost()->GetPathName();
+
+				TArray<FString> AssociatedMaps;
+
+				TArray<FAssetIdentifier> AssociatedAssets;
+
+				// This makes the assumption these functions will append the array, and not clear it.
+				AssetRegistryModule.Get().GetReferencers(LSMapPathName, AssociatedAssets);
+				AssetRegistryModule.Get().GetDependencies(LSMapPathName, AssociatedAssets);
+
+				for (FAssetIdentifier& AssociatedMap : AssociatedAssets)
+				{
+					FString MapFilePath;
+					FString LevelPath = AssociatedMap.PackageName.ToString();
+					if (FEditorFileUtils::IsMapPackageAsset(LevelPath, MapFilePath))
+					{
+						AssociatedMaps.AddUnique(LevelPath);
+					}
+				}
+
+				AssociatedMaps.Sort([](const FString& One, const FString& Two){ return FPaths::GetBaseFilename(One) < FPaths::GetBaseFilename(Two); });
+
+				if(AssociatedMaps.Num()>0)
+				{
+					InSection.AddSubMenu(
+						"SequencerOpenMap_Label",
+						LOCTEXT("SequencerOpenMap_Label", "Open Map"),
+						LOCTEXT("SequencerOpenMap_Tooltip", "Open a map associated with this Level Sequence Asset"),
+						FNewMenuDelegate::CreateLambda(
+							[AssociatedMaps](FMenuBuilder& SubMenuBuilder)
+							{
+								for (const FString& AssociatedMap : AssociatedMaps)
+								{
+									SubMenuBuilder.AddMenuEntry(
+										FText::FromString(FPaths::GetBaseFilename(AssociatedMap)),
+										FText(),
+										FSlateIcon(FEditorStyle::GetStyleSetName(), "LevelEditor.Tabs.Levels"),
+										FExecuteAction::CreateLambda(
+											[AssociatedMap]
+											{
+												FEditorFileUtils::LoadMap(AssociatedMap);
+											}
+										)
+									);
+								}
+							}
+						),
+						false,
+						FSlateIcon(FEditorStyle::GetStyleSetName(), "LevelEditor.Tabs.Levels")
+					);
+				}
+			}
+		}));
+	}
+
 	virtual void StartupModule() override
 	{
 		if (GIsEditor)
 		{
+			// EditorStyle must be initialized by now
+			FModuleManager::Get().LoadModule("EditorStyle");
 			FSequencerCommands::Register();
 
 			FEditorModeRegistry::Get().RegisterMode<FSequencerEdMode>(
@@ -112,11 +220,22 @@ public:
 				NSLOCTEXT("Sequencer", "SequencerEditMode", "Sequencer Mode"),
 				FSlateIcon(),
 				false);
+
+			if (UToolMenus::TryGet())
+			{
+				RegisterMenus();
+			}
+			else
+			{
+				FCoreDelegates::OnPostEngineInit.AddRaw(this, &FSequencerModule::RegisterMenus);
+			}
 		}
 
 		ObjectBindingContextMenuExtensibilityManager = MakeShareable( new FExtensibilityManager );
 		AddTrackMenuExtensibilityManager = MakeShareable( new FExtensibilityManager );
 		ToolBarExtensibilityManager = MakeShareable(new FExtensibilityManager);
+
+		SequencerCustomizationManager = MakeShareable(new FSequencerCustomizationManager);
 	}
 
 	virtual void ShutdownModule() override
@@ -139,18 +258,18 @@ public:
 		PropertyAnimators.Remove(Key);
 	}
 
-	virtual bool CanAnimateProperty(UProperty* Property) override
+	virtual bool CanAnimateProperty(FProperty* Property) override
 	{
 		if (PropertyAnimators.Contains(FAnimatedPropertyKey::FromProperty(Property)))
 		{
 			return true;
 		}
 
-		UObjectPropertyBase* ObjectProperty = Cast<UObjectPropertyBase>(Property);
+		FObjectPropertyBase* ObjectProperty = CastField<FObjectPropertyBase>(Property);
 
 		// Check each level of the property hierarchy
-		UClass* PropertyType = Property->GetClass();
-		while (PropertyType && PropertyType != UProperty::StaticClass())
+		FFieldClass* PropertyType = Property->GetClass();
+		while (PropertyType && PropertyType != FProperty::StaticClass())
 		{
 			FAnimatedPropertyKey Key = FAnimatedPropertyKey::FromPropertyTypeName(PropertyType->GetFName());
 
@@ -183,6 +302,8 @@ public:
 	virtual TSharedPtr<FExtensibilityManager> GetAddTrackMenuExtensibilityManager() const override { return AddTrackMenuExtensibilityManager; }
 	virtual TSharedPtr<FExtensibilityManager> GetToolBarExtensibilityManager() const override { return ToolBarExtensibilityManager; }
 
+	virtual TSharedPtr<FSequencerCustomizationManager> GetSequencerCustomizationManager() const override { return SequencerCustomizationManager; }
+
 private:
 
 	TSet<FAnimatedPropertyKey> PropertyAnimators;
@@ -192,6 +313,9 @@ private:
 
 	/** List of object binding handler delegates sequencers will execute when they are created */
 	TArray< FOnCreateEditorObjectBinding > EditorObjectBindingDelegates;
+
+	/** Multicast delegate used to notify others of sequencer initialization params and allow modification. */
+	FOnPreSequencerInit OnPreSequencerInit;
 
 	/** Multicast delegate used to notify others of sequencer creations */
 	FOnSequencerCreated OnSequencerCreated;
@@ -208,6 +332,8 @@ private:
 	TSharedPtr<FExtensibilityManager> ObjectBindingContextMenuExtensibilityManager;
 	TSharedPtr<FExtensibilityManager> AddTrackMenuExtensibilityManager;
 	TSharedPtr<FExtensibilityManager> ToolBarExtensibilityManager;
+
+	TSharedPtr<FSequencerCustomizationManager> SequencerCustomizationManager;
 };
 
 IMPLEMENT_MODULE(FSequencerModule, Sequencer);

@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -47,28 +47,10 @@ public:
 	/** Closes the debug console for the specified window */
 	virtual void CloseDebugConsole();
 
-	/**  Sets the active command executor from another module */
-	virtual void SetActiveCommandExecutor(TSharedPtr<IConsoleCommandExecutor> InExecutor)
-	{
-		CmdExec = InExecutor;
-		IModularFeatures::Get().RegisterModularFeature(IConsoleCommandExecutor::ModularFeatureName(), CmdExec.Get());
-	};
-
-	/** Removes an active command executor from another module */
-	virtual void RemoveActiveCommandExecutor(TSharedPtr<IConsoleCommandExecutor> InExecutor)
-	{
-		if (CmdExec.IsValid())
-		{
-			IModularFeatures::Get().UnregisterModularFeature(IConsoleCommandExecutor::ModularFeatureName(), CmdExec.Get());
-		}
-		CmdExec = nullptr;
-	};
+	virtual void ClearOnPIE(const bool bIsSimulating);
 
 private:
 
 	/** Weak pointer to a debug console that's currently open, if any */
 	TWeakPtr< SWidget > DebugConsole;
-
-	/** Pointer to the classic "Cmd" executor */
-	TSharedPtr<IConsoleCommandExecutor> CmdExec;
 };

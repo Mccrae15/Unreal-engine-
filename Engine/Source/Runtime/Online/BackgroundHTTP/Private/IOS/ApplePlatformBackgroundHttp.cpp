@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "IOS/ApplePlatformBackgroundHttp.h"
 #include "IOS/ApplePlatformBackgroundHttpManager.h"
@@ -41,11 +41,5 @@ const FString FApplePlatformBackgroundHttp::GetTemporaryFilePathFromURL(const FS
 
 const FString& FApplePlatformBackgroundHttp::GetTemporaryRootPath()
 {
-    static FString BackgroundHttpDir = FPaths::Combine(FPlatformMisc::GamePersistentDownloadDir(), TEXT("BackgroundHttpTemp"));
-    return BackgroundHttpDir;
-}
-
-int FApplePlatformBackgroundHttp::GetPlatformMaxActiveDownloads()
-{
-	return 4;
+    return FBackgroundURLSessionHandler::GetBackgroundSessionWorkingDirectoryPath();
 }

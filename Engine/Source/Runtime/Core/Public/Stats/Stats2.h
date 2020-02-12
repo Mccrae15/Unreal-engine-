@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -7,6 +7,7 @@
 #include "HAL/ThreadSafeCounter.h"
 #include "Math/NumericLimits.h"
 #include "HAL/ThreadSingleton.h"
+#include "HAL/LowLevelMemTracker.h"
 #include "Containers/Array.h"
 #include "Containers/UnrealString.h"
 #include "HAL/PlatformTime.h"
@@ -18,12 +19,13 @@
 #include "Math/Color.h"
 #include "StatsCommon.h"
 #include "Templates/UniquePtr.h"
+#include "ProfilingDebugging/CpuProfilerTrace.h"
+#include "ProfilingDebugging/MiscTrace.h"
+#include "StatsTrace.h"
 
 class FScopeCycleCounter;
 class FThreadStats;
 struct TStatId;
-
-template < class T > class TThreadSingleton;
 
 /**
 * This is thread-private information about the thread idle stats, which we always collect, even in final builds
@@ -49,6 +51,13 @@ public:
 		/** If true, we ignore this thread idle stats. */
 		const bool bIgnore;
 
+#if defined(DISABLE_THREAD_IDLE_STATS) && DISABLE_THREAD_IDLE_STATS
+		FScopeIdle( bool bInIgnore = false )
+			: Start(0)
+			, bIgnore( bInIgnore )
+		{
+		}
+#else
 		FScopeIdle( bool bInIgnore = false )
 			: Start(FPlatformTime::Cycles())
 			, bIgnore( bInIgnore )
@@ -62,6 +71,7 @@ public:
 				FThreadIdleStats::Get().Waits += FPlatformTime::Cycles() - Start;
 			}
 		}
+#endif
 	};
 };
 
@@ -392,16 +402,6 @@ public:
 	}
 
 	/**
-	 * Copy constructor
-	 */
-	FORCEINLINE_STATS FStatNameAndInfo(FStatNameAndInfo const& Other)
-		: NameAndInfo(Other.NameAndInfo)
-	{
-		static_assert(EStatAllFields::StartShift >= 0, "Too many fields.");
-		CheckInvariants();
-	}
-
-	/**
 	 * Build from a raw FName
 	 */
 	FORCEINLINE_STATS FStatNameAndInfo(FName Other, bool bAlreadyHasMeta)
@@ -650,7 +650,7 @@ private:
 	/** For FName. */
 	CORE_API const FString GetName() const
 	{
-		return FName::SafeString( (int32)Cycles );
+		return FName::SafeString(FNameEntryId::FromUnstableInt(static_cast<uint32>(Cycles)));
 	}
 };
 
@@ -684,15 +684,6 @@ struct FStatMessage
 	{
 	}
 
-	/**
-	* Copy constructor
-	*/
-	FORCEINLINE_STATS FStatMessage(FStatMessage const& Other)
-		: StatData(Other.StatData)
-		, NameAndInfo(Other.NameAndInfo)
-	{
-	}
-	
 	/**
 	* Build a meta data message
 	*/
@@ -907,19 +898,6 @@ struct TStatMessage
 		// Reset data type and clear all fields.
 		NameAndInfo.SetField<EStatDataType>( EStatDataType::ST_None );
 		Clear();
-	}
-
-	/**
-	* Copy constructor
-	*/
-	explicit FORCEINLINE_STATS TStatMessage(const TStatMessage& Other)
-		: NameAndInfo(Other.NameAndInfo)
-	{
-		// Copy all fields.
-		for( int32 FieldIndex = 0; FieldIndex < EnumCount; ++FieldIndex )
-		{
-			*((int64*)&StatData+FieldIndex) = *((int64*)&Other.StatData+FieldIndex);
-		}
 	}
 
 	/** Assignment operator for FStatMessage. */
@@ -1309,7 +1287,7 @@ public:
 		if( Packet.ThreadType == EThreadType::Other )
 		{
 			FPlatformMisc::MemoryBarrier();
-			uint64 Frame = FStats::GameThreadStatsFrame;
+			int32 Frame = FStats::GameThreadStatsFrame;
 			const bool bFrameHasChanged = Frame > CurrentGameFrame;
 			if( bFrameHasChanged )
 			{
@@ -1347,6 +1325,7 @@ public:
 
 	FORCEINLINE_STATS void AddStatMessage( const FStatMessage& StatMessage )
 	{
+		LLM_SCOPE(ELLMTag::Stats);
 		FStatMessageLock MessageLock(MemoryMessageScope);
 		Packet.StatMessages.AddElement(StatMessage);
 	}
@@ -1543,6 +1522,7 @@ class FCycleCounter
 {
 	/** Name of the stat, usually a short name **/
 	FName StatId;
+	bool bEmittedNamedEvent = false;
 
 public:
 
@@ -1558,21 +1538,22 @@ public:
 			return;
 		}
 
+		// Emit named event for active cycle stat.
+		if ( GCycleStatsShouldEmitNamedEvents > 0 )
+		{
+#if	PLATFORM_USES_ANSI_STRING_FOR_EXTERNAL_PROFILING
+			FPlatformMisc::BeginNamedEvent( FColor( 0 ), InStatId.GetStatDescriptionANSI() );
+#else
+			FPlatformMisc::BeginNamedEvent( FColor( 0 ), InStatId.GetStatDescriptionWIDE() );
+#endif // PLATFORM_USES_ANSI_STRING_FOR_EXTERNAL_PROFILING
+			bEmittedNamedEvent = true;
+		}
+
 		if( (bAlways && FThreadStats::WillEverCollectData()) || FThreadStats::IsCollectingData() )
 		{
 			FName StatName = MinimalNameToName(StatMinimalName);
 			StatId = StatName;
 			FThreadStats::AddMessage( StatName, EStatOperation::CycleScopeStart );
-
-			// Emit named event for active cycle stat.
-			if( GCycleStatsShouldEmitNamedEvents > 0 )
-			{
-#if	PLATFORM_USES_ANSI_STRING_FOR_EXTERNAL_PROFILING
-				FPlatformMisc::BeginNamedEvent( FColor( 0 ), InStatId.GetStatDescriptionANSI() );
-#else
-				FPlatformMisc::BeginNamedEvent( FColor( 0 ), InStatId.GetStatDescriptionWIDE() );
-#endif // PLATFORM_USES_ANSI_STRING_FOR_EXTERNAL_PROFILING
-			}
 		}
 	}
 
@@ -1581,15 +1562,15 @@ public:
 	 */
 	FORCEINLINE_STATS void Stop()
 	{
+		if ( bEmittedNamedEvent )
+		{
+			bEmittedNamedEvent = false;
+			FPlatformMisc::EndNamedEvent();
+		}
+
 		if( !StatId.IsNone() )
 		{
 			FThreadStats::AddMessage(StatId, EStatOperation::CycleScopeEnd);
-
-			// End named event for active cycle stat.
-			if( GCycleStatsShouldEmitNamedEvents > 0 )
-			{
-				FPlatformMisc::EndNamedEvent();
-			}
 		}
 	}
 
@@ -1607,16 +1588,17 @@ class FSimpleScopeSecondsStat
 {
 public:
 
-	FSimpleScopeSecondsStat(TStatId InStatId)
+	FSimpleScopeSecondsStat(TStatId InStatId, double InScale=1.0)
 		: StartTime(FPlatformTime::Seconds())
 		, StatId(InStatId)
+		, Scale(InScale)
 	{
 
 	}
 
 	virtual ~FSimpleScopeSecondsStat()
 	{
-		double TotalTime = FPlatformTime::Seconds() - StartTime;
+		double TotalTime = (FPlatformTime::Seconds() - StartTime) * Scale;
 		FThreadStats::AddMessage(StatId.GetName(), EStatOperation::Add, TotalTime);
 	}
 
@@ -1624,6 +1606,7 @@ private:
 
 	double StartTime;
 	TStatId StatId;
+	double Scale;
 };
 
 /** Manages startup messages, usually to update the metadata. */
@@ -1935,6 +1918,9 @@ struct FStat_##StatName\
 #define SCOPE_SECONDS_ACCUMULATOR(Stat) \
 	FSimpleScopeSecondsStat SecondsAccum_##Stat(GET_STATID(Stat));
 
+#define SCOPE_MS_ACCUMULATOR(Stat) \
+	FSimpleScopeSecondsStat SecondsAccum_##Stat(GET_STATID(Stat), 1000.0);
+
 #define SET_CYCLE_COUNTER(Stat,Cycles) \
 {\
 	if (FThreadStats::IsCollectingData() || !GET_STATISEVERYFRAME(Stat)) \
@@ -1944,74 +1930,126 @@ struct FStat_##StatName\
 #define INC_DWORD_STAT(Stat) \
 {\
 	if (FThreadStats::IsCollectingData() || !GET_STATISEVERYFRAME(Stat)) \
+	{ \
 		FThreadStats::AddMessage(GET_STATFNAME(Stat), EStatOperation::Add, int64(1));\
+		TRACE_STAT_INCREMENT(GET_STATFNAME(Stat)); \
+	} \
 }
 #define INC_FLOAT_STAT_BY(Stat, Amount) \
 {\
 	if (Amount != 0.0f) \
+	{ \
 		if (FThreadStats::IsCollectingData() || !GET_STATISEVERYFRAME(Stat)) \
-				FThreadStats::AddMessage(GET_STATFNAME(Stat), EStatOperation::Add, double(Amount));\
+		{ \
+			FThreadStats::AddMessage(GET_STATFNAME(Stat), EStatOperation::Add, double(Amount));\
+			TRACE_STAT_ADD(GET_STATFNAME(Stat), double(Amount)); \
+		} \
+	} \
 }
 #define INC_DWORD_STAT_BY(Stat, Amount) \
 {\
 	if (Amount != 0) \
+	{ \
 		if (FThreadStats::IsCollectingData() || !GET_STATISEVERYFRAME(Stat)) \
+		{ \
 			FThreadStats::AddMessage(GET_STATFNAME(Stat), EStatOperation::Add, int64(Amount));\
+			TRACE_STAT_ADD(GET_STATFNAME(Stat), int64(Amount)); \
+		} \
+	} \
 }
 #define INC_DWORD_STAT_FNAME_BY(StatFName, Amount) \
 {\
 	if (Amount != 0) \
-			FThreadStats::AddMessage(StatFName, EStatOperation::Add, int64(Amount));\
+	{ \
+		FThreadStats::AddMessage(StatFName, EStatOperation::Add, int64(Amount));\
+		TRACE_STAT_ADD(StatFName, int64(Amount)); \
+	} \
 }
 #define INC_MEMORY_STAT_BY(Stat, Amount) \
 {\
 	if (Amount != 0) \
+	{ \
 		if (FThreadStats::IsCollectingData() || !GET_STATISEVERYFRAME(Stat)) \
+		{ \
 			FThreadStats::AddMessage(GET_STATFNAME(Stat), EStatOperation::Add, int64(Amount));\
+			TRACE_STAT_ADD(GET_STATFNAME(Stat), int64(Amount)); \
+		} \
+	} \
 }
 #define DEC_DWORD_STAT(Stat) \
 {\
 	if (FThreadStats::IsCollectingData() || !GET_STATISEVERYFRAME(Stat)) \
+	{ \
 		FThreadStats::AddMessage(GET_STATFNAME(Stat), EStatOperation::Subtract, int64(1));\
+		TRACE_STAT_DECREMENT(GET_STATFNAME(Stat)); \
+	} \
 }
 #define DEC_FLOAT_STAT_BY(Stat,Amount) \
 {\
 	if (Amount != 0.0f) \
+	{ \
 		if (FThreadStats::IsCollectingData() || !GET_STATISEVERYFRAME(Stat)) \
+		{ \
 			FThreadStats::AddMessage(GET_STATFNAME(Stat), EStatOperation::Subtract, double(Amount));\
+			TRACE_STAT_ADD(GET_STATFNAME(Stat), -double(Amount)); \
+		} \
+	} \
 }
 #define DEC_DWORD_STAT_BY(Stat,Amount) \
 {\
 	if (Amount != 0) \
+	{ \
 		if (FThreadStats::IsCollectingData() || !GET_STATISEVERYFRAME(Stat)) \
+		{ \
 			FThreadStats::AddMessage(GET_STATFNAME(Stat), EStatOperation::Subtract, int64(Amount));\
+			TRACE_STAT_ADD(GET_STATFNAME(Stat), -int64(Amount)); \
+		} \
+	} \
 }
 #define DEC_DWORD_STAT_FNAME_BY(StatFName,Amount) \
 {\
 	if (Amount != 0) \
- 			FThreadStats::AddMessage(StatFName, EStatOperation::Subtract, int64(Amount));\
+	{ \
+		FThreadStats::AddMessage(StatFName, EStatOperation::Subtract, int64(Amount));\
+		TRACE_STAT_ADD(StatFName, -int64(Amount)); \
+	} \
 }
 #define DEC_MEMORY_STAT_BY(Stat,Amount) \
 {\
 	if (Amount != 0) \
+	{ \
 		if (FThreadStats::IsCollectingData() || !GET_STATISEVERYFRAME(Stat)) \
+		{ \
 			FThreadStats::AddMessage(GET_STATFNAME(Stat), EStatOperation::Subtract, int64(Amount));\
+			TRACE_STAT_ADD(GET_STATFNAME(Stat), -int64(Amount)); \
+		} \
+	} \
 }
 #define SET_MEMORY_STAT(Stat,Value) \
 {\
 	if (FThreadStats::IsCollectingData() || !GET_STATISEVERYFRAME(Stat)) \
+	{ \
 		FThreadStats::AddMessage(GET_STATFNAME(Stat), EStatOperation::Set, int64(Value));\
+		TRACE_STAT_SET(GET_STATFNAME(Stat), int64(Value)); \
+	} \
 }
 #define SET_DWORD_STAT(Stat,Value) \
 {\
 	if (FThreadStats::IsCollectingData() || !GET_STATISEVERYFRAME(Stat)) \
+	{ \
 		FThreadStats::AddMessage(GET_STATFNAME(Stat), EStatOperation::Set, int64(Value));\
+		TRACE_STAT_SET(GET_STATFNAME(Stat), int64(Value)); \
+	} \
 }
 #define SET_FLOAT_STAT(Stat,Value) \
 {\
 	if (FThreadStats::IsCollectingData() || !GET_STATISEVERYFRAME(Stat)) \
+	{ \
 		FThreadStats::AddMessage(GET_STATFNAME(Stat), EStatOperation::Set, double(Value));\
+		TRACE_STAT_SET(GET_STATFNAME(Stat), double(Value)); \
+	} \
 }
+
 #define STAT_ADD_CUSTOMMESSAGE_NAME(Stat,Value) \
 {\
 	FThreadStats::AddMessage(GET_STATFNAME(Stat), EStatOperation::SpecialMessageMarker, FName(Value));\
@@ -2029,52 +2067,75 @@ struct FStat_##StatName\
 #define INC_DWORD_STAT_FName(Stat) \
 {\
 	FThreadStats::AddMessage(Stat, EStatOperation::Add, int64(1));\
+	TRACE_STAT_INCREMENT(Stat); \
 }
 #define INC_FLOAT_STAT_BY_FName(Stat, Amount) \
 {\
 	if (Amount != 0.0f) \
+	{ \
 		FThreadStats::AddMessage(Stat, EStatOperation::Add, double(Amount));\
+		TRACE_STAT_ADD(Stat, double(Amount)); \
+	} \
 }
 #define INC_DWORD_STAT_BY_FName(Stat, Amount) \
 {\
 	if (Amount != 0) \
+	{ \
 		FThreadStats::AddMessage(Stat, EStatOperation::Add, int64(Amount));\
+		TRACE_STAT_ADD(Stat, int64(Amount)); \
+	} \
 }
 #define INC_MEMORY_STAT_BY_FName(Stat, Amount) \
 {\
 	if (Amount != 0) \
+	{ \
 		FThreadStats::AddMessage(Stat, EStatOperation::Add, int64(Amount));\
+		TRACE_STAT_ADD(Stat, int64(Amount)); \
+	} \
 }
 #define DEC_DWORD_STAT_FName(Stat) \
 {\
 	FThreadStats::AddMessage(Stat, EStatOperation::Subtract, int64(1));\
+	TRACE_STAT_DECREMENT(Stat); \
 }
 #define DEC_FLOAT_STAT_BY_FName(Stat,Amount) \
 {\
 	if (Amount != 0.0f) \
+	{ \
 		FThreadStats::AddMessage(Stat, EStatOperation::Subtract, double(Amount));\
+		TRACE_STAT_ADD(Stat, -double(Amount)); \
+	} \
 }
 #define DEC_DWORD_STAT_BY_FName(Stat,Amount) \
 {\
 	if (Amount != 0) \
+	{ \
 		FThreadStats::AddMessage(Stat, EStatOperation::Subtract, int64(Amount));\
+		TRACE_STAT_ADD(Stat, -int64(Amount)); \
+	} \
 }
 #define DEC_MEMORY_STAT_BY_FName(Stat,Amount) \
 {\
 	if (Amount != 0) \
+	{ \
 		FThreadStats::AddMessage(Stat, EStatOperation::Subtract, int64(Amount));\
+		TRACE_STAT_ADD(Stat, -int64(Amount)); \
+	} \
 }
 #define SET_MEMORY_STAT_FName(Stat,Value) \
 {\
 	FThreadStats::AddMessage(Stat, EStatOperation::Set, int64(Value));\
+	TRACE_STAT_SET(Stat, int64(Value)); \
 }
 #define SET_DWORD_STAT_FName(Stat,Value) \
 {\
 	FThreadStats::AddMessage(Stat, EStatOperation::Set, int64(Value));\
+	TRACE_STAT_SET(Stat, int64(Value)); \
 }
 #define SET_FLOAT_STAT_FName(Stat,Value) \
 {\
 	FThreadStats::AddMessage(Stat, EStatOperation::Set, double(Value));\
+	TRACE_STAT_SET(Stat, double(Value)); \
 }
 
 
@@ -2109,6 +2170,8 @@ DECLARE_STATS_GROUP(TEXT("Init Views"),STATGROUP_InitViews, STATCAT_Advanced);
 DECLARE_STATS_GROUP(TEXT("Landscape"),STATGROUP_Landscape, STATCAT_Advanced);
 DECLARE_STATS_GROUP(TEXT("Light Rendering"),STATGROUP_LightRendering, STATCAT_Advanced);
 DECLARE_STATS_GROUP(TEXT("LoadTime"), STATGROUP_LoadTime, STATCAT_Advanced);
+DECLARE_STATS_GROUP(TEXT("LoadTimeClass"), STATGROUP_LoadTimeClass, STATCAT_Advanced);
+DECLARE_STATS_GROUP(TEXT("LoadTimeClassCount"), STATGROUP_LoadTimeClassCount, STATCAT_Advanced);
 DECLARE_STATS_GROUP_VERBOSE(TEXT("LoadTimeVerbose"), STATGROUP_LoadTimeVerbose, STATCAT_Advanced);
 DECLARE_STATS_GROUP_VERBOSE(TEXT("MathVerbose"), STATGROUP_MathVerbose, STATCAT_Advanced);
 DECLARE_STATS_GROUP(TEXT("Media"),STATGROUP_Media, STATCAT_Advanced);
@@ -2147,9 +2210,11 @@ DECLARE_STATS_GROUP(TEXT("MapBuildData"),STATGROUP_MapBuildData, STATCAT_Advance
 DECLARE_STATS_GROUP(TEXT("Shader Compiling"),STATGROUP_ShaderCompiling, STATCAT_Advanced);
 DECLARE_STATS_GROUP(TEXT("Shader Compression"),STATGROUP_Shaders, STATCAT_Advanced);
 DECLARE_STATS_GROUP(TEXT("Shadow Rendering"),STATGROUP_ShadowRendering, STATCAT_Advanced);
+DECLARE_STATS_GROUP_VERBOSE(TEXT("Shadow Rendering Verbose"), STATGROUP_ShadowRenderingVerbose, STATCAT_Advanced);
 DECLARE_STATS_GROUP(TEXT("Stat System"),STATGROUP_StatSystem, STATCAT_Advanced);
 DECLARE_STATS_GROUP_SORTBYNAME(TEXT("Streaming Overview"),STATGROUP_StreamingOverview, STATCAT_Advanced);
 DECLARE_STATS_GROUP_SORTBYNAME(TEXT("Streaming Details"),STATGROUP_StreamingDetails, STATCAT_Advanced);
+DECLARE_STATS_GROUP_VERBOSE(TEXT("Streaming Details Verbose"), STATGROUP_StreamingDetailsVerbose, STATCAT_Advanced);
 DECLARE_STATS_GROUP_SORTBYNAME(TEXT("Streaming"),STATGROUP_Streaming, STATCAT_Advanced);
 DECLARE_STATS_GROUP(TEXT("Target Platform"),STATGROUP_TargetPlatform, STATCAT_Advanced);
 DECLARE_STATS_GROUP(TEXT("Text"),STATGROUP_Text, STATCAT_Advanced);

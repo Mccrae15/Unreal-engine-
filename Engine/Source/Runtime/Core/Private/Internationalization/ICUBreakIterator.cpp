@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "Internationalization/ICUBreakIterator.h"
 #include "Misc/ScopeLock.h"
@@ -104,6 +104,12 @@ void FICUBreakIterator::SetString(const FString& InString)
 void FICUBreakIterator::SetString(const TCHAR* const InString, const int32 InStringLength) 
 {
 	GetInternalBreakIterator()->adoptText(new FICUTextCharacterIterator(InString, InStringLength)); // ICUBreakIterator takes ownership of this instance
+	ResetToBeginning();
+}
+
+void FICUBreakIterator::SetStringRef(const FString* InString)
+{
+	GetInternalBreakIterator()->adoptText(new FICUTextCharacterIterator(InString)); // ICUBreakIterator takes ownership of this instance
 	ResetToBeginning();
 }
 

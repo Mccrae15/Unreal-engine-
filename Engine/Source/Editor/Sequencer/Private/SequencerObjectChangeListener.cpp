@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "SequencerObjectChangeListener.h"
 #include "Components/ActorComponent.h"
@@ -8,6 +8,7 @@
 #include "PropertyEditorModule.h"
 #include "IPropertyChangeListener.h"
 #include "MovieSceneSequence.h"
+#include "ScopedTransaction.h"
 
 DEFINE_LOG_CATEGORY_STATIC(LogSequencerTools, Log, All);
 
@@ -62,21 +63,33 @@ void FSequencerObjectChangeListener::BroadcastPropertyChanged( FKeyPropertyParam
 	// both the CameraActor and the CameraComponent.
 	TArray<UObject*> KeyableObjects;
 	FOnAnimatablePropertyChanged Delegate;
-	UProperty* Property = nullptr;
+	FProperty* Property = nullptr;
 	FPropertyPath PropertyPath;
 	for (auto ObjectToKey : KeyPropertyParams.ObjectsToKey)
 	{
 		if (KeyPropertyParams.PropertyPath.GetNumProperties() > 0)
 		{
-			for (TFieldIterator<UProperty> PropertyIterator(ObjectToKey->GetClass()); PropertyIterator; ++PropertyIterator)
+			for (TFieldIterator<FProperty> PropertyIterator(ObjectToKey->GetClass()); PropertyIterator; ++PropertyIterator)
 			{
-				UProperty* CheckProperty = *PropertyIterator;
-				if (CheckProperty == KeyPropertyParams.PropertyPath.GetRootProperty().Property.Get())
+				FProperty* CheckProperty = *PropertyIterator;
+
+				for (int32 Index = 0; Index < KeyPropertyParams.PropertyPath.GetNumProperties(); ++Index)
 				{
-					if (CanKeyProperty_Internal(FCanKeyPropertyParams(ObjectToKey->GetClass(), KeyPropertyParams.PropertyPath), Delegate, Property, PropertyPath))
+					const FPropertyInfo& PropertyInfo = KeyPropertyParams.PropertyPath.GetPropertyInfo(Index);
+
+					if (CheckProperty == PropertyInfo.Property.Get())
 					{
-						KeyableObjects.Add(ObjectToKey);
-						break;
+						FPropertyPath TrimmedPropertyPath;
+						for (int32 TrimmedIndex = Index; TrimmedIndex < KeyPropertyParams.PropertyPath.GetNumProperties(); ++TrimmedIndex)
+						{
+							TrimmedPropertyPath.AddProperty(KeyPropertyParams.PropertyPath.GetPropertyInfo(TrimmedIndex));
+						}
+
+						if (CanKeyProperty_Internal(FCanKeyPropertyParams(ObjectToKey->GetClass(), TrimmedPropertyPath), Delegate, Property, PropertyPath))
+						{
+							KeyableObjects.Add(ObjectToKey);
+							break;
+						}
 					}
 				}
 			}
@@ -97,6 +110,11 @@ void FSequencerObjectChangeListener::BroadcastPropertyChanged( FKeyPropertyParam
 		{
 			StructPathToKey = *KeyPropertyParams.PropertyPath.TrimRoot(PropertyPath.GetNumProperties());
 		}
+
+		// Create a transaction record because we are about to add keys/tracks
+		const bool bShouldActuallyTransact = !GIsTransacting;		// Don't transact if we're recording in a PIE world.  That type of keyframe capture cannot be undone.
+		FScopedTransaction PropertyChangedTransaction(NSLOCTEXT("Sequencer", "PropertyChanged", "Animatable Property Changed"), bShouldActuallyTransact);
+
 		FPropertyChangedParams Params(KeyableObjects, PropertyPath, StructPathToKey, KeyPropertyParams.KeyMode);
 		Delegate.Broadcast(Params);
 	}
@@ -170,7 +188,7 @@ bool IsHiddenFunction(const UStruct& PropertyStructure, FAnimatedPropertyKey Pro
 	return HideFunctions.Contains(FunctionName.ToString());
 }
 
-const FOnAnimatablePropertyChanged* FSequencerObjectChangeListener::FindPropertySetter(const UStruct& PropertyStructure, FAnimatedPropertyKey PropertyKey, const UProperty& Property) const
+const FOnAnimatablePropertyChanged* FSequencerObjectChangeListener::FindPropertySetter(const UStruct& PropertyStructure, FAnimatedPropertyKey PropertyKey, const FProperty& Property) const
 {
 	const FOnAnimatablePropertyChanged* DelegatePtr = PropertyChangedEventMap.Find(PropertyKey);
 	if (DelegatePtr != nullptr)
@@ -199,7 +217,11 @@ const FOnAnimatablePropertyChanged* FSequencerObjectChangeListener::FindProperty
 		bool bFoundValidFunction = false;
 		if (Function && !Function->HasMetaData(DeprecatedFunctionName))
 		{
-			bFoundValidFunction = true;
+			// FIXME: FTrackInstancePropertyBindings::InvokeSetterFunction doesn't support array properties.
+			if (!CastField<const FArrayProperty>(&Property))
+			{
+				bFoundValidFunction = true;
+			}
 		}
 
 		bool bFoundValidInterp = false;
@@ -236,12 +258,12 @@ const FOnAnimatablePropertyChanged* FSequencerObjectChangeListener::FindProperty
 bool FSequencerObjectChangeListener::CanKeyProperty(FCanKeyPropertyParams CanKeyPropertyParams) const
 {
 	FOnAnimatablePropertyChanged Delegate;
-	UProperty* Property = nullptr;
+	FProperty* Property = nullptr;
 	FPropertyPath PropertyPath;
 	return CanKeyProperty_Internal(CanKeyPropertyParams, Delegate, Property, PropertyPath);
 }
 
-bool FSequencerObjectChangeListener::CanKeyProperty_Internal(FCanKeyPropertyParams CanKeyPropertyParams, FOnAnimatablePropertyChanged& InOutDelegate, UProperty*& InOutProperty, FPropertyPath& InOutPropertyPath) const
+bool FSequencerObjectChangeListener::CanKeyProperty_Internal(FCanKeyPropertyParams CanKeyPropertyParams, FOnAnimatablePropertyChanged& InOutDelegate, FProperty*& InOutProperty, FPropertyPath& InOutPropertyPath) const
 {
 	if (CanKeyPropertyParams.PropertyPath.GetNumProperties() == 0)
 	{
@@ -257,7 +279,7 @@ bool FSequencerObjectChangeListener::CanKeyProperty_Internal(FCanKeyPropertyPara
 		// Add this to our 'potentially truncated' path
 		InOutPropertyPath.AddProperty(PropertyInfo);
 
-		UProperty* Property = CanKeyPropertyParams.PropertyPath.GetPropertyInfo(Index).Property.Get();
+		FProperty* Property = CanKeyPropertyParams.PropertyPath.GetPropertyInfo(Index).Property.Get();
 		if (Property)
 		{
 			const UStruct* PropertyContainer = CanKeyPropertyParams.FindPropertyContainer(Property);
@@ -275,11 +297,11 @@ bool FSequencerObjectChangeListener::CanKeyProperty_Internal(FCanKeyPropertyPara
 				}
 
 
-				UObjectPropertyBase* ObjectProperty = Cast<UObjectPropertyBase>(Property);
+				FObjectPropertyBase* ObjectProperty = CastField<FObjectPropertyBase>(Property);
 
 				// Check each level of the property hierarchy
-				UClass* PropertyType = Property->GetClass();
-				while (PropertyType && PropertyType != UProperty::StaticClass())
+				FFieldClass* PropertyType = Property->GetClass();
+				while (PropertyType && PropertyType != FProperty::StaticClass())
 				{
 					FAnimatedPropertyKey Key = FAnimatedPropertyKey::FromPropertyTypeName(PropertyType->GetFName());
 

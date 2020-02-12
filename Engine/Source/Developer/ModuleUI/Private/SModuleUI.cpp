@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "SModuleUI.h"
 #include "HAL/PlatformFilemanager.h"
@@ -202,7 +202,7 @@ void SModuleUI::UpdateModuleListItems()
 	{
 		FORCEINLINE bool operator()( const TSharedPtr<FModuleListItem>& A, const TSharedPtr<FModuleListItem>& B ) const
 		{
-			return A->ModuleName < B->ModuleName;
+			return A->ModuleName.LexicalLess(B->ModuleName);
 		}
 	};
 	ModuleListItems.Sort( FModuleSorter() );
@@ -289,10 +289,7 @@ FReply SModuleUI::FModuleListItem::OnRecompileClicked()
 		else
 		{
 			// Perform a regular unload, then reload
-			const bool bReloadAfterRecompile = true;
-			const bool bForceCodeProject = false;
-			const bool bFailIfGeneratedCodeChanges = true;
-			const bool bRecompileSucceeded = HotReloadSupport.RecompileModule(ModuleName, bReloadAfterRecompile, *GLog, bFailIfGeneratedCodeChanges, bForceCodeProject);
+			const bool bRecompileSucceeded = HotReloadSupport.RecompileModule(ModuleName, *GLog, ERecompileModuleFlags::ReloadAfterRecompile | ERecompileModuleFlags::FailIfGeneratedCodeChanges);
 		}
 	}
 

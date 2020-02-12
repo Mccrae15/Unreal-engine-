@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -13,9 +13,9 @@ class ALevelSequenceActor;
 class FJsonObject;
 class FSceneViewport;
 class ULevelSequenceBurnInOptions;
+struct FMovieSceneTimeController_FrameStep;
 
-
-UCLASS(config=EditorPerProjectUserSettings, PerObjectConfig)
+UCLASS(config=EditorPerProjectUserSettings, PerObjectConfig, BlueprintType)
 class MOVIESCENETOOLS_API UAutomatedLevelSequenceCapture : public UMovieSceneCapture
 {
 public:
@@ -29,6 +29,10 @@ public:
 	/** A level sequence asset to playback at runtime - used where the level sequence does not already exist in the world. */
 	UPROPERTY(BlueprintReadWrite, Category=Animation)
 	FSoftObjectPath LevelSequenceAsset;
+
+	/** Optional shot name to render. The frame range to render will be set to the shot frame range. */
+	UPROPERTY(BlueprintReadWrite, Category=Animation)
+	FString ShotName;
 
 	/** When enabled, the StartFrame setting will override the default starting frame number */
 	UPROPERTY(config, EditAnywhere, BlueprintReadWrite, Category=Animation, AdvancedDisplay)
@@ -56,8 +60,12 @@ public:
 	float DelayBeforeWarmUp;
 
 	/** The number of seconds to wait (in real-time) at shot boundaries.  Useful for allowing post processing effects to settle down before capturing the animation. */
-	UPROPERTY(config, EditAnywhere, BlueprintReadWrite, Category=Animation, AdvancedDisplay, meta=(Units=Seconds, ClampMin=0))
+	UPROPERTY(config, EditAnywhere, BlueprintReadWrite, Category = Animation, AdvancedDisplay, meta = (Units = Seconds, ClampMin = 0))
 	float DelayBeforeShotWarmUp;
+
+	/** The number of seconds to wait (in real-time) at every frame.  Useful for allowing post processing effects to settle down before capturing the animation. */
+	UPROPERTY(config, EditAnywhere, BlueprintReadWrite, Category = Animation, AdvancedDisplay, meta = (Units = Seconds, ClampMin = 0))
+	float DelayEveryFrame;
 
 	UPROPERTY(Transient, EditAnywhere, BlueprintReadWrite, Category=CaptureSettings, AdvancedDisplay, meta=(EditInline))
 	ULevelSequenceBurnInOptions* BurnInOptions;
@@ -67,7 +75,7 @@ public:
 	bool bWriteEditDecisionList;
 
 	/** Whether to write Final Cut Pro XML files (XMLs) if the sequence contains shots */
-	UPROPERTY(config, EditAnywhere, Category=Sequence)
+	UPROPERTY(config, EditAnywhere, BlueprintReadWrite, Category=Sequence)
 	bool bWriteFinalCutProXML;
 
 public:
@@ -169,8 +177,6 @@ private:
 
 	FLevelSequencePlayerSnapshot CachedState;
 
-	TOptional<float> CachedPlayRate;
-
 	FTimerHandle DelayTimer;
 
 	struct FCinematicShotCache
@@ -196,5 +202,12 @@ private:
 	TOptional<FFrameNumber> CachedEndFrame;
 	TOptional<bool> bCachedUseCustomStartFrame;
 	TOptional<bool> bCachedUseCustomEndFrame;
+
+	TSharedPtr<FMovieSceneTimeController_FrameStep> TimeController;
+
+	// We cache these off on initialization so we can restore to them after running an audio pass.
+	int32 CachedWarmUpFrameCount;
+	int32 CachedDelayBeforeWarmUp;
+	int32 CachedDelayBeforeShotWarmUp;
 };
 

@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "User/SocialUser.h"
 
@@ -228,6 +228,12 @@ TArray<ESocialSubsystem> USocialUser::GetRelationshipSubsystems(ESocialRelations
 		{
 			switch (Relationship)
 			{
+			case ESocialRelationship::Any:
+				if (!IsLocalUser())
+				{
+					RelationshipSubsystems.Add(SubsystemInfoPair.Key);
+				}
+				break;
 			case ESocialRelationship::FriendInviteReceived:
 				if (SubsystemInfoPair.Value.GetFriendInviteStatus() == EInviteStatus::PendingInbound)
 				{
@@ -236,6 +242,12 @@ TArray<ESocialSubsystem> USocialUser::GetRelationshipSubsystems(ESocialRelations
 				break;
 			case ESocialRelationship::FriendInviteSent:
 				if (SubsystemInfoPair.Value.GetFriendInviteStatus() == EInviteStatus::PendingOutbound)
+				{
+					RelationshipSubsystems.Add(SubsystemInfoPair.Key);
+				}
+				break;
+			case ESocialRelationship::SuggestedFriend:
+				if (SubsystemInfoPair.Value.GetFriendInviteStatus() == EInviteStatus::Suggested)
 				{
 					RelationshipSubsystems.Add(SubsystemInfoPair.Key);
 				}
@@ -293,6 +305,13 @@ EOnlinePresenceState::Type USocialUser::GetOnlineStatus() const
 		return EOnlinePresenceState::Offline;
 	}
 
+#if WITH_EDITOR
+	if (bDebug_IsPresenceArtificial && !IsBlocked())
+	{
+		return Debug_RandomPresence;
+	}
+#endif
+
 	EOnlinePresenceState::Type OnlineStatus = EOnlinePresenceState::Offline;
 
 	// Get the most "present" status available on any of the associated platforms
@@ -339,7 +358,7 @@ void USocialUser::TryBroadcastInitializationComplete()
 				InitEventsByUser.Remove(this);
 
 				// Remove Toolkit's reference to the SocialUser, GC will clean it
-				GetOwningToolkit().HandleUserInvalidated(this);
+				GetOwningToolkit().HandleUserInvalidated(*this);
 			}
 		}
 	}
@@ -385,6 +404,62 @@ FString USocialUser::GetDisplayName(ESocialSubsystem SubsystemType) const
 		return SubsystemInfo->GetDisplayName();
 	}
 	return FString();
+}
+
+FString USocialUser::GetNickname() const
+{
+	if (IsFriend())
+	{
+#if WITH_EDITOR
+		bool bRandomNickname = FParse::Param(FCommandLine::Get(), TEXT("RandomNickname"));
+		if (bRandomNickname && !IsLocalUser())
+		{
+			if (GetTypeHash(GetUserId(ESocialSubsystem::Primary)) % 2)
+			{
+				FString RandomNickname = GetDisplayName(ESocialSubsystem::Primary);
+				for (int i = 1; i < RandomNickname.Len(); i += 2)
+				{
+					RandomNickname.RemoveAt(i);
+				}
+				return RandomNickname;
+			}
+		}
+#endif
+
+		if (const FSubsystemUserInfo* SubsystemInfo = SubsystemInfoByType.Find(ESocialSubsystem::Primary))
+		{
+			if (SubsystemInfo->FriendInfo.IsValid())
+			{
+				TSharedPtr<FOnlineFriend> OnlineFriend = SubsystemInfo->FriendInfo.Pin();
+				FString Nickname;
+				OnlineFriend->GetUserAttribute(USER_ATTR_ALIAS, Nickname);
+				return Nickname;
+			}
+		}
+	}
+	return TEXT("");
+}
+
+bool USocialUser::SetNickname(const FString& InNickname)
+{
+	if (IsFriend())
+	{
+		IOnlineFriendsPtr FriendsInterface = GetOwningToolkit().GetSocialOss(ESocialSubsystem::Primary)->GetFriendsInterface();
+		check(FriendsInterface.IsValid());
+
+		if (!InNickname.IsEmpty())
+		{
+			FriendsInterface->SetFriendAlias(GetOwningToolkit().GetLocalUserNum(), *GetUserId(ESocialSubsystem::Primary), EFriendsLists::ToString(EFriendsLists::Default), InNickname, FOnSetFriendAliasComplete::CreateUObject(const_cast<USocialUser*>(this), &USocialUser::HandleSetNicknameComplete));
+			return true;
+		}
+		else if (!GetNickname().IsEmpty())
+		{
+			FriendsInterface->DeleteFriendAlias(GetOwningToolkit().GetLocalUserNum(), *GetUserId(ESocialSubsystem::Primary), EFriendsLists::ToString(EFriendsLists::Default), FOnDeleteFriendAliasComplete::CreateUObject(const_cast<USocialUser*>(this), &USocialUser::HandleSetNicknameComplete));
+			return true;
+		}
+	}
+	OnSetNicknameCompleted().Broadcast(FText::GetEmpty());
+	return false;
 }
 
 EInviteStatus::Type USocialUser::GetFriendInviteStatus(ESocialSubsystem SubsystemType) const
@@ -442,7 +517,8 @@ const FOnlineUserPresence* USocialUser::GetFriendPresenceInfo(ESocialSubsystem S
 		if (IOnlinePresencePtr PresenceInterface = SocialOss ? SocialOss->GetPresenceInterface() : nullptr)
 		{
 			TSharedPtr<FOnlineUserPresence> LocalUserPresence;
-			if (PresenceInterface->GetCachedPresence(*GetUserId(SubsystemType), LocalUserPresence) == EOnlineCachedResult::Success)
+			const FUniqueNetIdRepl& UserId = GetUserId(SubsystemType);
+			if (UserId.IsValid() && PresenceInterface->GetCachedPresence(*UserId, LocalUserPresence) == EOnlineCachedResult::Success)
 			{
 				return LocalUserPresence.Get();
 			}
@@ -470,6 +546,20 @@ FDateTime USocialUser::GetFriendshipCreationDate() const
 					}
 				}
 			}
+		}
+	}
+
+	return FDateTime::MaxValue();
+}
+
+FDateTime USocialUser::GetLastOnlineDate() const
+{
+	if (IsFriend(ESocialSubsystem::Primary))
+	{
+		const FOnlineUserPresence* PrimaryPresence = GetFriendPresenceInfo(ESocialSubsystem::Primary);
+		if (PrimaryPresence)
+		{
+			return PrimaryPresence->LastOnline;
 		}
 	}
 
@@ -531,9 +621,82 @@ FUserPlatform USocialUser::GetCurrentPlatform() const
 		// We have no platform presence, but we do have primary, so get the platform from that
 		return FUserPlatform(PrimaryPresence->GetPlatform());
 	}
-	
+
+	UE_LOG(LogOnline, VeryVerbose, TEXT("*!* %s - No Presence found for user, searching Party..."), ANSI_TO_TCHAR(__FUNCTION__));
+	if (USocialParty* Party = GetOwningToolkit().GetSocialManager().GetPersistentParty())
+	{
+		if (UPartyMember* PartyMember = Party->GetPartyMember(GetUserId(ESocialSubsystem::Primary)))
+		{
+			FUserPlatform Platform = PartyMember->GetRepData().GetPlatform();
+			UE_LOG(LogOnline, VeryVerbose, TEXT("*!* %s - Party Member Found for user! RepDataPlatform: %s"), ANSI_TO_TCHAR(__FUNCTION__), *Platform.ToString());
+			if (Platform.IsValid())
+			{
+				return Platform;
+			}
+		}
+	}
+
 	// We don't have any presence for this user (or we do and they're offline) and they aren't the local player, so we really don't have any idea what their current platform is
 	return FUserPlatform();
+}
+
+FString USocialUser::GetPlatformIconMarkupTag(EPlatformIconDisplayRule DisplayRule) const
+{
+	FString DummyString;
+	return GetPlatformIconMarkupTag(DisplayRule, DummyString);
+}
+
+FString USocialUser::GetPlatformIconMarkupTag(EPlatformIconDisplayRule DisplayRule, FString& OutLegacyString) const
+{
+	const FUserPlatform UserPlatform = GetCurrentPlatform();
+	const FUserPlatform LocalPlatform = FUserPlatform(IOnlineSubsystem::GetLocalPlatformName());
+
+	OutLegacyString = UserPlatform;
+	switch (DisplayRule)
+	{
+	case EPlatformIconDisplayRule::Always:
+		UE_LOG(LogOnline, VeryVerbose, TEXT("*!*    %s - User: %s - Returning TypeName %s due to ALWAYS"), ANSI_TO_TCHAR(__FUNCTION__), *GetDisplayName(), *UserPlatform.GetTypeName());
+		return UserPlatform.GetTypeName();
+	case EPlatformIconDisplayRule::AlwaysIfDifferent:
+		UE_LOG(LogOnline, VeryVerbose, TEXT("*!*    %s - User: %s - CrossplayLocalPlatform? %d Returning %s due to ALWAYSIFDIFFERENT"), ANSI_TO_TCHAR(__FUNCTION__), *GetDisplayName(), UserPlatform.IsCrossplayWithLocalPlatform(), UserPlatform.IsCrossplayWithLocalPlatform() ? *UserPlatform.GetTypeName() : TEXT(""));
+		if (!UserPlatform.IsCrossplayWithLocalPlatform())
+		{
+			OutLegacyString = TEXT("");
+			return TEXT("");
+		}
+		return UserPlatform.GetTypeName();
+	case EPlatformIconDisplayRule::Never:
+		UE_LOG(LogOnline, VeryVerbose, TEXT("*!*    %s - User: %s - Returning nothing due to NEVER"), ANSI_TO_TCHAR(__FUNCTION__), *GetDisplayName());
+		OutLegacyString = TEXT("");
+		return TEXT("");
+	}
+
+	if (DisplayRule == EPlatformIconDisplayRule::AlwaysWhenInCrossplayParty ||
+		DisplayRule == EPlatformIconDisplayRule::AlwaysIfDifferentWhenInCrossplayParty)
+	{
+		if (USocialParty* Party = GetOwningToolkit().GetSocialManager().GetPersistentParty())
+		{
+			if (!Party->IsCurrentlyCrossplaying())
+			{
+				UE_LOG(LogOnline, VeryVerbose, TEXT("*!*    %s - User: %s - Returning nothing due to Not Being In Crossplay with WHENINCROSSPLAYPARTY specified"), ANSI_TO_TCHAR(__FUNCTION__), *GetDisplayName());
+				OutLegacyString = TEXT("");
+				return TEXT("");
+			}
+		}
+	}
+
+	const bool bIsCrossplayWithMe = UserPlatform.IsCrossplayWithLocalPlatform();
+	if (DisplayRule == EPlatformIconDisplayRule::AlwaysWhenInCrossplayParty ||
+		(DisplayRule == EPlatformIconDisplayRule::AlwaysIfDifferentWhenInCrossplayParty && bIsCrossplayWithMe))
+	{
+		FString TypeName = UserPlatform.GetTypeName();
+		UE_LOG(LogOnline, VeryVerbose, TEXT("*!*    %s - User: %s - Returning TypeName %s, DisplayRule: %d, bIsCrossplayWithMe: %d"), ANSI_TO_TCHAR(__FUNCTION__), *GetDisplayName(), *TypeName, (int32)DisplayRule, bIsCrossplayWithMe);
+		return TypeName;
+	}
+
+	UE_LOG(LogOnline, VeryVerbose, TEXT("*!*    %s - User: %s - Returning nothing, likely due to AlwaysIfDifferentWhenInCrossplayParty and not being different, being in a Crossplay Party, and not being Different"), ANSI_TO_TCHAR(__FUNCTION__), *GetDisplayName());
+	OutLegacyString = TEXT("");
+	return TEXT("");
 }
 
 void USocialUser::GetRichPresenceText(FText& OutRichPresence) const
@@ -547,14 +710,14 @@ void USocialUser::GetRichPresenceText(FText& OutRichPresence) const
 		const FOnlineUserPresence* PrimaryPresence = GetFriendPresenceInfo(ESocialSubsystem::Primary);
 		if (PrimaryPresence && !PrimaryPresence->Status.StatusStr.IsEmpty())
 		{
-			OutRichPresence = FText::FromString(PrimaryPresence->Status.StatusStr);
+			OutRichPresence = FText::FromString(SanitizePresenceString(PrimaryPresence->Status.StatusStr));
 		}
 		else
 		{
 			const FOnlineUserPresence* PlatformPresence = GetFriendPresenceInfo(ESocialSubsystem::Platform);
 			if (PlatformPresence && !PlatformPresence->Status.StatusStr.IsEmpty())
 			{
-				OutRichPresence = FText::FromString(PlatformPresence->Status.StatusStr);
+				OutRichPresence = FText::FromString(SanitizePresenceString(PlatformPresence->Status.StatusStr)); 
 			}
 			else
 			{
@@ -562,6 +725,27 @@ void USocialUser::GetRichPresenceText(FText& OutRichPresence) const
 			}
 		}
 	}
+}
+
+bool USocialUser::IsRecentPlayer(ESocialSubsystem SubsystemType) const
+{
+	if (const FSubsystemUserInfo* SubsystemInfo = SubsystemInfoByType.Find(SubsystemType))
+	{
+		return SubsystemInfo->RecentPlayerInfo.IsValid();
+	}
+	return false;
+}
+
+bool USocialUser::IsRecentPlayer() const
+{
+	for (const TPair<ESocialSubsystem, FSubsystemUserInfo>& SubsystemInfoPair : SubsystemInfoByType)
+	{
+		if (SubsystemInfoPair.Value.RecentPlayerInfo.IsValid())
+		{
+			return true;
+		}
+	}
+	return false;
 }
 
 bool USocialUser::IsBlocked(ESocialSubsystem SubsystemType) const
@@ -671,7 +855,7 @@ bool USocialUser::CanSendFriendInvite(ESocialSubsystem SubsystemType) const
 		}
 	}
 
-	return HasSubsystemInfo(SubsystemType) && !IsFriend(SubsystemType) && !IsBlocked(SubsystemType) && !IsFriendshipPending(SubsystemType);
+	return HasSubsystemInfo(SubsystemType) && !IsLocalUser() && !IsFriend(SubsystemType) && !IsBlocked(SubsystemType) && !IsFriendshipPending(SubsystemType);
 }
 
 void USocialUser::JoinParty(const FOnlinePartyTypeId& PartyTypeId) const
@@ -684,8 +868,8 @@ void USocialUser::JoinParty(const FOnlinePartyTypeId& PartyTypeId) const
 	if (bHasSentInvite)
 	{
 		IOnlinePartyPtr PartyInterface = Online::GetPartyInterfaceChecked(GetWorld());
-		PartyInterface->AcceptInvitation(*GetOwningToolkit().GetLocalUserNetId(ESocialSubsystem::Primary), *GetUserId(ESocialSubsystem::Primary));
-		OnPartyInviteAccepted().Broadcast();
+		PartyInterface->ClearInvitations(*GetOwningToolkit().GetLocalUserNetId(ESocialSubsystem::Primary), *GetUserId(ESocialSubsystem::Primary), nullptr);
+		OnPartyInviteAcceptedInternal(PartyTypeId);
 	}
 }
 
@@ -695,7 +879,7 @@ void USocialUser::RejectPartyInvite(const FOnlinePartyTypeId& PartyTypeId)
 	{
 		IOnlinePartyPtr PartyInterface = Online::GetPartyInterfaceChecked(GetWorld());
 		PartyInterface->RejectInvitation(*GetOwningToolkit().GetLocalUserNetId(ESocialSubsystem::Primary), *GetUserId(ESocialSubsystem::Primary));
-		OnPartyInviteRejected().Broadcast();
+		OnPartyInviteRejectedInternal(PartyTypeId);
 	}
 }
 
@@ -728,7 +912,7 @@ bool USocialUser::InviteToParty(const FOnlinePartyTypeId& PartyTypeId) const
 	return false;
 }
 
-bool USocialUser::BlockUser(ESocialSubsystem Subsystem)
+bool USocialUser::BlockUser(ESocialSubsystem Subsystem) const
 {
 	if (IOnlineSubsystem* Oss = GetOwningToolkit().GetSocialOss(Subsystem))
 	{
@@ -746,7 +930,7 @@ bool USocialUser::BlockUser(ESocialSubsystem Subsystem)
 	return false;
 }
 
-bool USocialUser::UnblockUser(ESocialSubsystem Subsystem)
+bool USocialUser::UnblockUser(ESocialSubsystem Subsystem) const
 {
 	if (IOnlineSubsystem* Oss = GetOwningToolkit().GetSocialOss(Subsystem))
 	{
@@ -790,14 +974,7 @@ bool USocialUser::SendFriendInvite(ESocialSubsystem SubsystemType)
 
 bool USocialUser::AcceptFriendInvite(ESocialSubsystem SocialSubsystem) const
 {
-	if (GetFriendInviteStatus(SocialSubsystem) == EInviteStatus::PendingInbound)
-	{
-		IOnlineFriendsPtr FriendsInterface = GetOwningToolkit().GetSocialOss(SocialSubsystem)->GetFriendsInterface();
-		check(FriendsInterface.IsValid());
-
-		return FriendsInterface->AcceptInvite(GetOwningToolkit().GetLocalUserNum(), *GetUserId(SocialSubsystem), EFriendsLists::ToString(EFriendsLists::Default));
-	}
-	return false;
+	return GetOwningToolkit().AcceptFriendInvite(*this, SocialSubsystem);
 }
 
 bool USocialUser::RejectFriendInvite(ESocialSubsystem SocialSubsystem) const
@@ -857,10 +1034,10 @@ TSharedPtr<const IOnlinePartyJoinInfo> USocialUser::GetPartyJoinInfo(const FOnli
 			if (!JoinInfo.IsValid())
 			{
 				// No advertised party info, check to see if this user has sent an invite
-				TArray<TSharedRef<IOnlinePartyJoinInfo>> AllPendingInvites;
+				TArray<IOnlinePartyJoinInfoConstRef> AllPendingInvites;
 				if (PartyInterface->GetPendingInvites(*LocalUserId, AllPendingInvites))
 				{
-					for (const TSharedRef<IOnlinePartyJoinInfo>& InvitationJoinInfo : AllPendingInvites)
+					for (const IOnlinePartyJoinInfoConstRef& InvitationJoinInfo : AllPendingInvites)
 					{
 						if (*InvitationJoinInfo->GetSourceUserId() == *UserId)
 						{
@@ -886,10 +1063,10 @@ bool USocialUser::HasSentPartyInvite(const FOnlinePartyTypeId& PartyTypeId) cons
 		const FUniqueNetIdRepl UserId = GetUserId(ESocialSubsystem::Primary);
 		if (ensure(LocalUserId.IsValid()) && UserId.IsValid())
 		{
-			TArray<TSharedRef<IOnlinePartyJoinInfo>> AllPendingInvites;
+			TArray<IOnlinePartyJoinInfoConstRef> AllPendingInvites;
 			if (PartyInterface->GetPendingInvites(*LocalUserId, AllPendingInvites))
 			{
-				for (const TSharedRef<IOnlinePartyJoinInfo>& InvitationJoinInfo : AllPendingInvites)
+				for (const IOnlinePartyJoinInfoConstRef& InvitationJoinInfo : AllPendingInvites)
 				{
 					if (*InvitationJoinInfo->GetSourceUserId() == *UserId && InvitationJoinInfo->GetPartyTypeId() == PartyTypeId)
 					{
@@ -1030,9 +1207,27 @@ void USocialUser::EstablishOssInfo(const TSharedRef<FOnlineRecentPlayer>& InRece
 	}
 }
 
+#if WITH_EDITOR
+void USocialUser::Debug_RandomizePresence()
+{
+	bDebug_IsPresenceArtificial = true;
+	Debug_RandomPresence = static_cast<EOnlinePresenceState::Type>(FMath::RandRange((int32)EOnlinePresenceState::Online, (int32)EOnlinePresenceState::Away));
+}
+#endif
+
 void USocialUser::OnPresenceChangedInternal(ESocialSubsystem SubsystemType)
 {
 	OnUserPresenceChanged().Broadcast(SubsystemType);
+}
+
+void USocialUser::OnPartyInviteAcceptedInternal(const FOnlinePartyTypeId& PartyTypeId) const
+{
+	OnPartyInviteAccepted().Broadcast();
+}
+
+void USocialUser::OnPartyInviteRejectedInternal(const FOnlinePartyTypeId& PartyTypeId) const
+{
+	OnPartyInviteRejected().Broadcast();
 }
 
 void USocialUser::NotifyPresenceChanged(ESocialSubsystem SubsystemType)
@@ -1052,19 +1247,23 @@ void USocialUser::SetSubsystemId(ESocialSubsystem SubsystemType, const FUniqueNe
 		IOnlineSubsystem* OSS = OwningToolkit.GetSocialOss(SubsystemType);
 		if (ensure(OSS))
 		{
-			TSharedPtr<FOnlineUser> UserInfo = OSS->GetUserInterface()->GetUserInfo(OwningToolkit.GetLocalUserNum(), *SubsystemId);
-			if (UserInfo.IsValid())
+			IOnlineUserPtr UserInterface = OSS->GetUserInterface();
+			if (UserInterface.IsValid())
 			{
-				SetUserInfo(SubsystemType, UserInfo.ToSharedRef());
-			}
-			else
-			{
-				UE_LOG(LogParty, VeryVerbose, TEXT("SocialUser [%s] querying user info on subsystem [%s]"), *ToDebugString(), ToString(SubsystemType));
+				TSharedPtr<FOnlineUser> UserInfo = UserInterface->GetUserInfo(OwningToolkit.GetLocalUserNum(), *SubsystemId);
+				if (UserInfo.IsValid())
+				{
+					SetUserInfo(SubsystemType, UserInfo.ToSharedRef());
+				}
+				else
+				{
+					UE_LOG(LogParty, VeryVerbose, TEXT("SocialUser [%s] querying user info on subsystem [%s]"), *ToDebugString(), ToString(SubsystemType));
 
-				// No valid user info exists on this subsystem, so queue up a query for it
-				auto QueryCompleteHandler = FSocialQuery_UserInfo::FOnQueryComplete::CreateUObject(this, &USocialUser::HandleQueryUserInfoComplete);
-				FSocialQueryManager::AddUserId<FSocialQuery_UserInfo>(OwningToolkit, SubsystemType, SubsystemId.GetUniqueNetId().ToSharedRef(), QueryCompleteHandler);
-				NumPendingQueries++;
+					// No valid user info exists on this subsystem, so queue up a query for it
+					auto QueryCompleteHandler = FSocialQuery_UserInfo::FOnQueryComplete::CreateUObject(this, &USocialUser::HandleQueryUserInfoComplete);
+					FSocialQueryManager::AddUserId<FSocialQuery_UserInfo>(OwningToolkit, SubsystemType, SubsystemId.GetUniqueNetId().ToSharedRef(), QueryCompleteHandler);
+					NumPendingQueries++;
+				}
 			}
 		}
 	}
@@ -1116,6 +1315,20 @@ void USocialUser::HandleQueryUserInfoComplete(ESocialSubsystem SubsystemType, bo
 
 	UE_LOG(LogParty, VeryVerbose, TEXT("User [%s] finished querying user info on subsystem [%s] with result [%d]. [%d] queries still pending."), *ToDebugString(), ToString(SubsystemType), UserInfo.IsValid(), NumPendingQueries);
 	TryBroadcastInitializationComplete();
+}
+
+void USocialUser::HandleSetNicknameComplete(int32 LocalUserNum, const FUniqueNetId& FriendId, const FString& ListName, const FOnlineError& Error)
+{
+	if (!Error.WasSuccessful())
+	{
+		UE_LOG(LogOnline, Log, TEXT("Set nickname request failed for user: %s with error message: %s"), *FriendId.ToDebugString(), *Error.GetErrorMessage().ToString());
+	}
+	OnSetNicknameCompleted().Broadcast(Error.GetErrorMessage());
+}
+
+FString USocialUser::SanitizePresenceString(FString InString) const
+{
+	return InString;
 }
 
 #undef LOCTEXT_NAMESPACE

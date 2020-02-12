@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -16,13 +16,18 @@ typedef FName VREditorPanelID;
 /**
  * Represents an interactive floating UI camera preview panel in the VR Editor
  */
-UCLASS()
+UCLASS(Transient)
 class AVREditorFloatingCameraUI : public AVREditorFloatingUI
 {
 	GENERATED_BODY()
 
 public:
-	AVREditorFloatingCameraUI();
+
+	/** The offset of this UI from its camera */
+	UPROPERTY(EditDefaultsOnly, Category = "FloatingCameraUI")
+	FVector OffsetFromCamera;
+
+	AVREditorFloatingCameraUI(const FObjectInitializer& ObjectInitializer);
 	void SetLinkedActor(class AActor* InActor);
 
 	virtual FTransform MakeCustomUITransform() override;
@@ -30,5 +35,4 @@ public:
 private:
 	UPROPERTY( )
 	TWeakObjectPtr<AActor> LinkedActor;
-
 };

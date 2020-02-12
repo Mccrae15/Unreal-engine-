@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 using UnrealBuildTool;
 
@@ -47,7 +47,8 @@ public class GameProjectGeneration : ModuleRules
 				"LauncherPlatform",
 				"HardwareTargeting",
 				"AddContentDialog",
-                "AudioMixer"
+                "AudioMixer",
+				"AudioMixerCore"
 			}
 		);
 
@@ -59,5 +60,10 @@ public class GameProjectGeneration : ModuleRules
                 "MainFrame",
             }
 		);
+
+		if(Target.bWithLiveCoding)
+		{
+			PrivateIncludePathModuleNames.Add("LiveCoding");
+		}
 	}
 }

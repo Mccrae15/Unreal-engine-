@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "PropertyEditorToolkit.h"
 #include "Engine/Blueprint.h"
@@ -13,6 +13,7 @@
 #include "IPropertyTableRow.h"
 
 #include "Widgets/Docking/SDockTab.h"
+#include "Subsystems/AssetEditorSubsystem.h"
 
 #define LOCTEXT_NAMESPACE "PropertyEditorToolkit"
 
@@ -55,7 +56,7 @@ FPropertyEditorToolkit::FPropertyEditorToolkit()
 TSharedPtr<FPropertyEditorToolkit> FPropertyEditorToolkit::FindExistingEditor( UObject* Object )
 {
 	// Find any existing property editor instances for this asset
-	const TArray<IAssetEditorInstance*> Editors = FAssetEditorManager::Get().FindEditorsForAsset( Object );
+	const TArray<IAssetEditorInstance*> Editors = GEditor->GetEditorSubsystem<UAssetEditorSubsystem>()->FindEditorsForAsset( Object );
 
 	IAssetEditorInstance* const * ExistingInstance = Editors.FindByPredicate( [&]( IAssetEditorInstance* Editor ){
 		return Editor->GetEditorName() == ToolkitFName;
@@ -163,7 +164,7 @@ void FPropertyEditorToolkit::Initialize( const EToolkitMode::Type Mode, const TS
 		const bool bCreateDefaultToolbar = false;
 		FAssetEditorToolkit::InitAssetEditor(Mode, InitToolkitHost, ApplicationId, StandaloneDefaultLayout, bCreateDefaultStandaloneMenu, bCreateDefaultToolbar, AdjustedObjectsToEdit);
 
-		TArray< TWeakObjectPtr<UObject> > AdjustedObjectsToEditWeak;
+		TArray<UObject*> AdjustedObjectsToEditWeak;
 		for (auto ObjectIter = AdjustedObjectsToEdit.CreateConstIterator(); ObjectIter; ++ObjectIter)
 		{
 			AdjustedObjectsToEditWeak.Add(*ObjectIter);
@@ -459,9 +460,24 @@ void FPropertyEditorToolkit::TableColumnsChanged()
 
 void FPropertyEditorToolkit::GridSelectionChanged()
 {
-	TArray< TWeakObjectPtr< UObject > > SelectedObjects;
+	TArray<TWeakObjectPtr<UObject>> SelectedObjects;
 	PropertyTable->GetSelectedTableObjects( SelectedObjects );
-	PropertyTree->SetObjectArray( SelectedObjects );
+
+	if (SelectedObjects.Num() == 0)
+	{
+		// If none are selected, show all of them to match the initial open behavior
+		SelectedObjects = PropertyTable->GetSelectedObjects();
+	}
+
+	TArray<UObject*> SelectedRawObjects;
+	SelectedRawObjects.Reserve(SelectedObjects.Num());
+
+	for (const TWeakObjectPtr<UObject>& Object : SelectedObjects)
+	{
+		SelectedRawObjects.Add(Object.Get());
+	}
+
+	PropertyTree->SetObjectArray(SelectedRawObjects);
 
 	const TSet< TSharedRef< IPropertyTableRow > > SelectedRows = PropertyTable->GetSelectedRows();
 

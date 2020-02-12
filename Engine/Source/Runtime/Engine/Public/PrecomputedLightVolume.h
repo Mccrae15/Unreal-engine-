@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 /*=============================================================================
 	PrecomputedLightVolume.h: Declarations for precomputed light volumes.
@@ -9,8 +9,8 @@
 #include "CoreMinimal.h"
 #include "Misc/Guid.h"
 #include "Math/SHMath.h"
-#include "GenericOctreePublic.h"
-#include "GenericOctree.h"
+#include "Math/GenericOctreePublic.h"
+#include "Math/GenericOctree.h"
 
 class FSceneInterface;
 

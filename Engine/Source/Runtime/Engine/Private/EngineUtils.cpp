@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 /*=============================================================================
 =============================================================================*/
@@ -15,9 +15,21 @@
 #include "Engine/Engine.h"
 #include "Engine/LevelStreaming.h"
 #include "Engine/Console.h"
+#include "Engine/Texture.h"
+#include "Logging/MessageLog.h"
+#include "Misc/UObjectToken.h"
+#include "Misc/MapErrors.h"
+#include "EngineModule.h"
+#include "Engine/AssetManager.h"
+#include "Misc/PathViews.h"
+#include "IO/IoDispatcher.h"
 
 #include "ProfilingDebugging/DiagnosticTable.h"
 #include "Interfaces/ITargetPlatform.h"
+
+#include "TextureResource.h"
+#include "Engine/Texture2D.h"
+#include "VirtualTexturing.h"
 
 DEFINE_LOG_CATEGORY_STATIC(LogEngineUtils, Log, All);
 
@@ -25,6 +37,8 @@ IMPLEMENT_HIT_PROXY(HActor,HHitProxy)
 IMPLEMENT_HIT_PROXY(HBSPBrushVert,HHitProxy);
 IMPLEMENT_HIT_PROXY(HStaticMeshVert,HHitProxy);
 IMPLEMENT_HIT_PROXY(HTranslucentActor,HActor)
+
+#define LOCTEXT_NAMESPACE "EngineUtils"
 
 
 #if !UE_BUILD_SHIPPING
@@ -264,29 +278,57 @@ bool EngineUtils::FindOrLoadAssetsByPath(const FString& Path, TArray<UObject*>& 
 		return false;
 	}
 
-	// Convert the package path to a filename with no extension (directory)
-	const FString FilePath = FPackageName::LongPackageNameToFilename(Path);
+	using FPackageNames = TArray<FName, TInlineAllocator<16>>;
 
-	// Gather the package files in that directory and subdirectories
-	TArray<FString> Filenames;
-	FPackageName::FindPackagesInDirectory(Filenames, FilePath);
-
-	// Cull out map files
-	for (int32 FilenameIdx = Filenames.Num() - 1; FilenameIdx >= 0; --FilenameIdx)
+	auto GetPackageNamesFromPath = [](const FString& InPath, FPackageNames& OutPackageNames)
 	{
-		const FString Extension = FPaths::GetExtension(Filenames[FilenameIdx], true);
-		if ( Extension == FPackageName::GetMapPackageExtension() )
+		// There is no filesystem support for packages when using the I/O dispatcher
+		if (FIoDispatcher::IsInitialized())
 		{
-			Filenames.RemoveAt(FilenameIdx);
+			FAssetRegistryModule& AssetRegistryModule = FModuleManager::LoadModuleChecked<FAssetRegistryModule>(TEXT("AssetRegistry"));
+			IAssetRegistry& AssetRegistry = AssetRegistryModule.Get();
+
+			TArray<FAssetData> Assets;
+			AssetRegistry.GetAssetsByPath(FName(*InPath), Assets, true);
+
+			for (const FAssetData& Asset : Assets)
+			{
+				// Cull packages containing maps
+				if ((Asset.PackageFlags & PKG_ContainsMap) != PKG_ContainsMap)
+				{
+					OutPackageNames.Emplace(Asset.PackageName);
+				}
+			}
 		}
-	}
+		else
+		{
+			// Convert the package path to a filename with no extension (directory)
+			const FString FilePath = FPackageName::LongPackageNameToFilename(InPath);
 
-	// Load packages or find existing ones and fully load them
-	for (int32 FileIdx = 0; FileIdx < Filenames.Num(); ++FileIdx)
+			// Gather the package files in that directory and subdirectories
+			TArray<FString> Filenames;
+			FPackageName::FindPackagesInDirectory(Filenames, FilePath);
+
+			// Cull out map files
+			for (const FString& Filename : Filenames)
+			{
+				FStringView Extension = FPathViews::GetExtension(Filename, true);
+				if (Extension != FPackageName::GetMapPackageExtension())
+				{
+					OutPackageNames.Emplace(*FPackageName::FilenameToLongPackageName(Filename));
+				}
+			}
+		}
+	};
+
+	FPackageNames PackageNames;
+	GetPackageNamesFromPath(Path, PackageNames);
+	TCHAR PackageName[FName::StringBufferSize];
+
+	for (const FName& Name : PackageNames)
 	{
-		const FString& Filename = Filenames[FileIdx];
-
-		UPackage* Package = FindPackage(NULL, *FPackageName::FilenameToLongPackageName(Filename));
+		Name.ToString(PackageName);
+		UPackage* Package = FindPackage(NULL, PackageName);
 
 		if (Package)
 		{
@@ -294,7 +336,7 @@ bool EngineUtils::FindOrLoadAssetsByPath(const FString& Path, TArray<UObject*>& 
 		}
 		else
 		{
-			Package = LoadPackage(NULL, *Filename, LOAD_None);
+			Package = LoadPackage(NULL, PackageName, LOAD_None);
 		}
 
 		if (Package)
@@ -540,8 +582,8 @@ FStripDataFlags::FStripDataFlags(FStructuredArchive::FSlot Slot, uint8 InClassFl
 			GlobalStripFlags |= UnderlyingArchive.CookingTarget()->IsServerOnly() ? FStripDataFlags::Server : FStripDataFlags::None;
 			ClassStripFlags = InClassFlags;
 		}
-		Record << NAMED_FIELD(GlobalStripFlags);
-		Record << NAMED_FIELD(ClassStripFlags);
+		Record << SA_VALUE(TEXT("GlobalStripFlags"), GlobalStripFlags);
+		Record << SA_VALUE(TEXT("ClassStripFlags"), ClassStripFlags);
 	}
 }
 
@@ -561,7 +603,27 @@ FStripDataFlags::FStripDataFlags(FStructuredArchive::FSlot Slot, uint8 InGlobalF
 			GlobalStripFlags = InGlobalFlags;
 			ClassStripFlags = InClassFlags;
 		}
-		Record << NAMED_FIELD(GlobalStripFlags);
-		Record << NAMED_FIELD(ClassStripFlags);
+		Record << SA_VALUE(TEXT("GlobalStripFlags"), GlobalStripFlags);
+		Record << SA_VALUE(TEXT("ClassStripFlags"), ClassStripFlags);
 	}
 }
+
+
+void VirtualTextureUtils::CheckAndReportInvalidUsage(const UObject* Owner, const FName& PropertyName, const UTexture* Texture)
+{
+	if (Texture && Texture->VirtualTextureStreaming)
+	{
+		FFormatNamedArguments Arguments;
+		Arguments.Add(TEXT("TextureName"), FText::FromName(Texture->GetFName()));
+		Arguments.Add(TEXT("ObjectName"), FText::FromName(Owner->GetFName()));
+		Arguments.Add(TEXT("PropertyName"), FText::FromName(PropertyName));
+		auto Log = FMessageLog("MapCheck");
+		Log.Warning()
+			->AddToken(FUObjectToken::Create(Owner))
+			->AddToken(FTextToken::Create(FText::Format(LOCTEXT("MapCheck_Message_InvalidVirtualTextureUsage", "{ObjectName} is using a virtual texture ('{TextureName}') on an unsupported property ('{PropertyName}')."), Arguments)))
+			->AddToken(FMapErrorToken::Create(FMapErrors::InvalidVirtualTextureUsage));
+		Log.Open();
+	}
+}
+
+#undef LOCTEXT_NAMESPACE

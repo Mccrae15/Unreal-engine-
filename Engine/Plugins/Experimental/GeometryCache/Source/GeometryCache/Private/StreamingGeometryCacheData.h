@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -7,8 +7,8 @@
 #include "Containers/Array.h"
 #include "Containers/Queue.h"
 
-class IAsyncReadFileHandle;
 class IAsyncReadRequest;
+class IBulkDataIORequest;
 class UGeometryCacheTrackStreamable;
 class UGeometryCacheComponent;
 struct FStreamedGeometryCacheChunk;
@@ -21,7 +21,7 @@ struct FResidentChunk
 	void* Memory;
 	int32 DataSize;
 	int32 Refcount;
-	IAsyncReadRequest* IORequest; //null when resident, nonnull when being loaded
+	IBulkDataIORequest* IORequest; //null when resident, nonnull when being loaded
 };
 
 /**
@@ -29,11 +29,11 @@ struct FResidentChunk
 */
 struct FCompletedChunk
 {
-	IAsyncReadRequest* ReadRequest;
+	IBulkDataIORequest* ReadRequest;
 	int32 LoadedChunkIndex;
 
 	FCompletedChunk() : ReadRequest(nullptr), LoadedChunkIndex(0) {}
-	FCompletedChunk(int32 SetLoadedChunkIndex, IAsyncReadRequest* SetReadRequest) : ReadRequest(SetReadRequest), LoadedChunkIndex(SetLoadedChunkIndex) {}
+	FCompletedChunk(int32 SetLoadedChunkIndex, IBulkDataIORequest* SetReadRequest) : ReadRequest(SetReadRequest), LoadedChunkIndex(SetLoadedChunkIndex) {}
 };
 
 /**
@@ -63,13 +63,11 @@ private:
 
 	FResidentChunk &AddResidentChunk(int32 ChunkId, const FStreamedGeometryCacheChunk &ChunkInfo);
 	void RemoveResidentChunk(FResidentChunk& LoadedChunk);
-	void OnAsyncReadComplete(int32 LoadedChunkIndex, IAsyncReadRequest* ReadRequest);
+	void OnAsyncReadComplete(int32 LoadedChunkIndex, IBulkDataIORequest* ReadRequest);
 	void ProcessCompletedChunks();
 
 	// The track we are associated with
 	UGeometryCacheTrackStreamable *Track;
-
-	IAsyncReadFileHandle* IORequestHandle;
 
 	// Chunks that ideally would be loaded at this point in time
 	// There may be more or less actual chunks loaded (more = cached chunks, less = we're still waiting for the disc)

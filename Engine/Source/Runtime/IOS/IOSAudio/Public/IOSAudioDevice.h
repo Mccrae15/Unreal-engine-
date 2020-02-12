@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 /*=============================================================================
 	IOSAudioDevice.h: Unreal IOSAudio audio interface object.
@@ -85,6 +85,7 @@ public:
 	 */
 	virtual bool ReadCompressedData( uint8* Destination, int32 NumFramesToDecode, bool bLooping ) override;
 	
+	bool ReleaseCurrentChunk();
 	
 	int32  RenderCallbackBufferSize;
 	int32  SampleRate;
@@ -180,6 +181,8 @@ private:
 	                                       const AudioTimeStamp *InTimeStamp, UInt32 InBusNumber,
 	                                       UInt32 InNumberFrames, AudioBufferList *IOData);
 
+	void CleanupAudioBuffer();
+
 	friend class FIOSAudioDevice;
 };
 
@@ -209,10 +212,10 @@ public:
 	
 	virtual bool Exec( UWorld* InWorld, const TCHAR* Cmd, FOutputDevice& Ar = *GLog ) override;
 
-	static int32& GetSuspendCounter();
-
-
 	virtual void UpdateDeviceDeltaTime() override;
+    
+    static void IncrementSuspendCounter();
+    static void DecrementSuspendCounter();
 
 protected:
 	/** Starts up any platform specific hardware/APIs */
@@ -237,7 +240,10 @@ protected:
 
 	/** Check if any background music or sound is playing through the audio device */
 	virtual bool IsExernalBackgroundSoundActive() override;
-	
+
+	/** Retrieves the platform settings */
+	virtual FAudioPlatformSettings GetPlatformSettings() const override;
+
 private:
 
 	// Used to support adpcm streaming

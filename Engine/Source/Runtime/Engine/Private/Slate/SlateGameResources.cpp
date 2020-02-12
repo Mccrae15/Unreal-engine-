@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "Slate/SlateGameResources.h"
 #include "Curves/CurveBase.h"
@@ -305,4 +305,9 @@ FName FSlateGameResources::GetCleanName(const FName& AssetName) const
 void FSlateGameResources::AddReferencedObjects( FReferenceCollector& Collector )
 {
 	Collector.AddReferencedObjects( UIResources );
+}
+
+FString FSlateGameResources::GetReferencerName() const
+{
+	return TEXT("FSlateGameResources");
 }

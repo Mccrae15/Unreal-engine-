@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -294,6 +294,25 @@ public:
 	virtual bool FlushOnSeekCompleted() const
 	{
 		return true;
+	}
+
+	/**
+	 * Any extra processing that the player should do when FMediaPlayerFacade::ProcessVideoSamples
+	 * is run should be put here.
+	 */
+	virtual void ProcessVideoSamples()
+	{
+		// Override in child class if needed.
+	}
+
+	enum class FeatureFlag {
+		AllowShutdownOnClose = 0,	//!< Allow player to be shutdown right after 'close' event is received from it
+	};
+	
+	virtual bool GetPlayerFeatureFlag(FeatureFlag /*flag*/) const
+	{
+		// Override in child class if needed.
+		return false;
 	}
 
 public:

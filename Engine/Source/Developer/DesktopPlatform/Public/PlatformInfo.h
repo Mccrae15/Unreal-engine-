@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -6,22 +6,6 @@
 
 namespace PlatformInfo
 {
-	/** The target type of the given platform */
-	enum class EPlatformType : uint8
-	{
-		/** The platform targets cooked monolithic game executables */
-		Game,
-
-		/** The platform targets uncooked modular editor executables and DLLs */
-		Editor,
-
-		/** The platform targets cooked monolithic game client executables (but no server code) */
-		Client,
-
-		/** The platform targets cooked monolithic game server executables (but no client code) */
-		Server,
-	};
-
 	/** Available icon sizes (see FPlatformIconPaths) */
 	enum class EPlatformIconSize : uint8
 	{
@@ -134,7 +118,7 @@ namespace PlatformInfo
 		FText DisplayName;
 
 		/** Type of this platform */
-		EPlatformType PlatformType;
+		EBuildTargetType PlatformType;
 
 		/** Flags for this platform */
 		EPlatformFlags::Flags PlatformFlags;
@@ -172,11 +156,17 @@ namespace PlatformInfo
 		/** Whether or not the platform is confidential in nature */
 		bool bIsConfidential;
 
+		/** Whether or not the platform can use Crash Reporter */
+		bool bTargetPlatformCanUseCrashReporter;
+
 		/** An identifier that corresponds to UBT's UnrealTargetPlatform enum (and by proxy, FGenericPlatformMisc::GetUBTPlatform()) */
 		FName UBTTargetId;
 
 		/** An identifier to group similar platforms together, such as "Mobile" and "Console". Used for Per-Platform Override Properties. */
 		FName PlatformGroupName;
+
+		/** Submenu name to group similar platforms together in menus, such as "Linux" and "LinuxAArch64".  */
+		FName PlatformSubMenu;
 
 		/** Returns true if this platform is vanilla */
 		FORCEINLINE bool IsVanilla() const
@@ -246,61 +236,6 @@ namespace PlatformInfo
 		TArray<const FPlatformInfo*> PlatformFlavors;
 	};
 
-	/** Simple wrapper class to allow range-based-for enumeration from a call to EnumeratePlatforms */
-	class FPlatformEnumerator
-	{
-	public:
-		FPlatformEnumerator(const FPlatformInfo* InPlatformsArray, const int32 InNumPlatforms)
-			: PlatformsArray(InPlatformsArray)
-			, CurrentPlatform(InPlatformsArray)
-			, NumPlatforms(InNumPlatforms)
-		{
-		}
-
-		FORCEINLINE const FPlatformInfo* begin() const
-		{
-			return PlatformsArray;
-		}
-
-		FORCEINLINE const FPlatformInfo* end() const
-		{
-			return PlatformsArray + NumPlatforms;
-		}
-
-		FORCEINLINE const FPlatformInfo* operator->() const
-		{
-			return CurrentPlatform;
-		}
-
-		FORCEINLINE const FPlatformInfo& operator*() const
-		{
-			return *CurrentPlatform;
-		}
-
-		FORCEINLINE FPlatformEnumerator& operator++()
-		{
-			++CurrentPlatform;
-			return *this;
-		}
-
-		FORCEINLINE FPlatformEnumerator operator++(int)
-		{
-			FPlatformEnumerator Copy(*this);
-			++CurrentPlatform;
-			return Copy;
-		}
-
-		FORCEINLINE operator bool() const
-		{
-			return CurrentPlatform < end();
-		}
-
-	private:
-		const FPlatformInfo* PlatformsArray;
-		const FPlatformInfo* CurrentPlatform;
-		int32 NumPlatforms;
-	};
-
 	/**
 	 * Try and find the information for the given platform
 	 * @param InPlatformName - The name of the platform to find
@@ -317,35 +252,24 @@ namespace PlatformInfo
 
 	/**
 	 * Get an array of all the platforms we know about
-	 * @param OutNumPlatforms - The number of platforms in the array
 	 * @return The pointer to the start of the platform array
 	 */
-	DESKTOPPLATFORM_API const FPlatformInfo* GetPlatformInfoArray(int32& OutNumPlatforms);
-
-	/**
-	 * Convenience function to enumerate all the platforms we know about (compatible with range-based-for)
-	 *
-	 * @param bAccessiblePlatformsOnly	If true, only the accessible platforms(installed, or could be installed) will be returned
-	 * @return An enumerator for the platforms (see FPlatformEnumerator)
-	 */
-	DESKTOPPLATFORM_API FPlatformEnumerator EnumeratePlatformInfoArray(bool bAccessiblePlatformsOnly = true);
+	DESKTOPPLATFORM_API const TArray<FPlatformInfo>& GetPlatformInfoArray();
 
 	/**
 	 * Build a hierarchy mapping vanilla platforms to their flavors
 	 * @param InFilter - Flags to control which kinds of flavors you want to include
-	 * @param bAccessiblePlatformsOnly	If true, only the accessible platforms(installed, or could be installed) will be returned
 	 * @return An array of vanilla platforms, potentially containing flavors
 	 */
-	DESKTOPPLATFORM_API TArray<FVanillaPlatformEntry> BuildPlatformHierarchy(const EPlatformFilter InFilter, bool bAccessiblePlatformsOnly = true);
+	DESKTOPPLATFORM_API TArray<FVanillaPlatformEntry> BuildPlatformHierarchy(const EPlatformFilter InFilter);
 
 	/**
 	* Build a hierarchy mapping for specified vanilla platform to it flavors
 	* @param InPlatformName - Platform name to build hierarchy for, could be vanilla or flavor name
 	* @param InFilter - Flags to control which kinds of flavors you want to include
-	* @param bAccessiblePlatformsOnly	If true, only the accessible platforms(installed, or could be installed) will be returned
 	* @return Vanilla platform potentially containing flavors
 	*/
-	DESKTOPPLATFORM_API FVanillaPlatformEntry BuildPlatformHierarchy(const FName& InPlatformName, const EPlatformFilter InFilter, bool bAccessiblePlatformsOnly = true);
+	DESKTOPPLATFORM_API FVanillaPlatformEntry BuildPlatformHierarchy(const FName& InPlatformName, const EPlatformFilter InFilter);
 
 	/**
 	 * Get an array of all the platforms we know about
@@ -362,13 +286,6 @@ namespace PlatformInfo
 	DESKTOPPLATFORM_API void UpdatePlatformDisplayName(FString InPlatformName, FText InDisplayName);
 
 	/**
-	* Returns an EPlatformType value from a string representation.
-	* @param PlatformTypeName The string to get the EPlatformType for.
-	* @return An EPlatformType value.
-	*/
-	DESKTOPPLATFORM_API EPlatformType EPlatformTypeFromString(const FString& PlatformTypeName);
-
-	/**
 	* Returns a list of all defined Platform Groups, excluding None.
     * Used to to present a list in the Per-Platform Properties UI.
 	* @return An array of FNames.
@@ -381,11 +298,4 @@ namespace PlatformInfo
 	* @return An array of FNames.
 	*/
 	DESKTOPPLATFORM_API const TArray<FName>& GetAllVanillaPlatformNames();
-}
-
-DESKTOPPLATFORM_API FString LexToString(const PlatformInfo::EPlatformType Value);
-
-inline void LexFromString(PlatformInfo::EPlatformType& OutValue, const TCHAR* Buffer)
-{
-	OutValue = PlatformInfo::EPlatformTypeFromString(FString(Buffer));
 }

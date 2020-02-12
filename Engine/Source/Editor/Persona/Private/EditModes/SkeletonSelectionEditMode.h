@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -46,6 +46,9 @@ private:
 
 	/** Check whether the currently selected bone is in the required bones list */
 	bool IsSelectedBoneRequired() const;
+
+	/** Unscale a viewport's size by its DPI factor */
+	static FIntPoint GetDPIUnscaledSize(FViewport* Viewport, FViewportClient* Client);
 
 private:
 	/** Whether we are currently in a manipulation  */

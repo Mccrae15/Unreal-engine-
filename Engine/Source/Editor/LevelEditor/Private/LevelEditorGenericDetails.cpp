@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "LevelEditorGenericDetails.h"
 #include "Modules/ModuleManager.h"
@@ -22,8 +22,7 @@
 #include "SurfaceIterators.h"
 #include "ScopedTransaction.h"
 #include "FunctionalTest.h"
-
-#include "PropertyCustomizationHelpers.h"
+#include "MaterialList.h"
 
 #define LOCTEXT_NAMESPACE "FLevelEditorGenericDetails"
 
@@ -218,7 +217,10 @@ void FLevelEditorGenericDetails::AddSurfaceDetails( IDetailLayoutBuilder& Detail
 		MaterialListDelegates.OnGetMaterials.BindSP(this, &FLevelEditorGenericDetails::GetSelectedSurfaceMaterials);
 		MaterialListDelegates.OnMaterialChanged.BindSP(this, &FLevelEditorGenericDetails::OnMaterialChanged);
 
-		TSharedRef<FMaterialList> MaterialList = MakeShareable(new FMaterialList(DetailBuilder, MaterialListDelegates));
+		//Pass an empty material list owner (owner can be use by the asset picker filter. In this case we do not need it)
+		TArray<FAssetData> MaterialListOwner;
+
+		TSharedRef<FMaterialList> MaterialList = MakeShareable(new FMaterialList(DetailBuilder, MaterialListDelegates, MaterialListOwner));
 
 		MaterialsCategory.AddCustomBuilder( MaterialList );
 	}

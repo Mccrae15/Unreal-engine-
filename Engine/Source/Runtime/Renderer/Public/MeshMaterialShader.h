@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 /*=============================================================================
 	MeshMaterialShader.h: Shader base classes
@@ -23,38 +23,53 @@ template<typename TBufferStruct> class TUniformBufferRef;
 class FMeshMaterialShaderElementData
 {
 public:
-	FUniformBufferRHIParamRef FadeUniformBuffer = nullptr;
-	FUniformBufferRHIParamRef DitherUniformBuffer = nullptr;
+	FRHIUniformBuffer* FadeUniformBuffer = nullptr;
+	FRHIUniformBuffer* DitherUniformBuffer = nullptr;
 
 	RENDERER_API void InitializeMeshMaterialData(const FSceneView* SceneView, const FPrimitiveSceneProxy* RESTRICT PrimitiveSceneProxy, const FMeshBatch& RESTRICT MeshBatch, int32 StaticMeshId, bool bAllowStencilDither);
+};
+
+struct FMeshMaterialShaderPermutationParameters : public FMaterialShaderPermutationParameters
+{
+	// Type of vertex factory to compile.
+	const FVertexFactoryType* VertexFactoryType;
+
+	FMeshMaterialShaderPermutationParameters(EShaderPlatform InPlatform, const FMaterialShaderParameters& InMaterialParameters, const FVertexFactoryType* InVertexFactoryType, const int32 InPermutationId)
+		: FMaterialShaderPermutationParameters(InPlatform, InMaterialParameters, InPermutationId)
+		, VertexFactoryType(InVertexFactoryType)
+	{}
+};
+
+struct FVertexFactoryShaderPermutationParameters
+{
+	EShaderPlatform Platform;
+	FMaterialShaderParameters MaterialParameters;
+	const FVertexFactoryType* VertexFactoryType;
+
+	FVertexFactoryShaderPermutationParameters(EShaderPlatform InPlatform, const FMaterialShaderParameters& InMaterialParameters, const FVertexFactoryType* InVertexFactoryType)
+		: Platform(InPlatform)
+		, MaterialParameters(InMaterialParameters)
+		, VertexFactoryType(InVertexFactoryType)
+	{}
 };
 
 /** Base class of all shaders that need material and vertex factory parameters. */
 class RENDERER_API FMeshMaterialShader : public FMaterialShader
 {
+	DECLARE_TYPE_LAYOUT(FMeshMaterialShader, NonVirtual);
 public:
+	using FPermutationParameters = FMeshMaterialShaderPermutationParameters;
+	using ShaderMetaType = FMeshMaterialShaderType;
+
 	FMeshMaterialShader() {}
 
-	FMeshMaterialShader(const FMeshMaterialShaderType::CompiledShaderInitializerType& Initializer)
-		:	FMaterialShader(Initializer)
-		,	VertexFactoryParameters(Initializer.VertexFactoryType, Initializer.ParameterMap, Initializer.Target.GetFrequency(), Initializer.Target.GetPlatform())
-	{
-	}
+	FMeshMaterialShader(const FMeshMaterialShaderType::CompiledShaderInitializerType& Initializer);
 
-	static bool ValidateCompiledResult(EShaderPlatform Platform, const TArray<FMaterial*>& Materials, const FVertexFactoryType* VertexFactoryType, const FShaderParameterMap& ParameterMap, TArray<FString>& OutError)
+	// Declared as a friend, so that it can be called from other modules via static linkage, even if the compiler doesn't inline it.
+	FORCEINLINE friend void ValidateAfterBind(const FShaderType* Type, FMeshMaterialShader* Shader)
 	{
-		return true;
+		checkfSlow(Shader->PassUniformBuffer.IsInitialized(), TEXT("FMeshMaterialShader must bind a pass uniform buffer, even if it is just FSceneTexturesUniformParameters: %s"), Type->GetName());
 	}
-
-	// Clang treats FORCEINLINE as adivsory, and will not inline it on debug builds. Since Engine does not depend on the Renderer module, it fails to link against it.
-#if PLATFORM_WINDOWS && defined(__clang__)
-	void ValidateAfterBind();
-#else
-	FORCEINLINE void ValidateAfterBind()
-	{
-		checkfSlow(PassUniformBuffer.IsInitialized(), TEXT("FMeshMaterialShader must bind a pass uniform buffer, even if it is just FSceneTexturesUniformParameters: %s"), GetType()->GetName());
-	}
-#endif
 
 	void GetShaderBindings(
 		const FScene* Scene,
@@ -67,11 +82,12 @@ public:
 		FMeshDrawSingleShaderBindings& ShaderBindings) const;
 
 	void GetElementShaderBindings(
+		const FShaderMapPointerTable& PointerTable,
 		const FScene* Scene, 
 		const FSceneView* ViewIfDynamicMeshCommand, 
 		const FVertexFactory* VertexFactory,
-		bool bShaderRequiresPositionOnlyStream,
-		ERHIFeatureLevel::Type FeatureLevel,
+		const EVertexInputStreamType InputStreamType,
+		const FStaticFeatureLevel FeatureLevel,
 		const FPrimitiveSceneProxy* PrimitiveSceneProxy,
 		const FMeshBatch& MeshBatch,
 		const FMeshBatchElement& BatchElement, 
@@ -79,14 +95,27 @@ public:
 		FMeshDrawSingleShaderBindings& ShaderBindings,
 		FVertexInputStreamArray& VertexStreams) const;
 
-	// FShader interface.
-	virtual const FVertexFactoryParameterRef* GetVertexFactoryParameterRef() const override { return &VertexFactoryParameters; }
-	virtual bool Serialize(FArchive& Ar) override;
-	virtual uint32 GetAllocatedSize() const override;
-
-protected:
-	FShaderUniformBufferParameter PassUniformBuffer;
+	template<typename ShaderType, typename PointerTableType, typename ShaderElementDataType>
+	static inline void GetElementShaderBindings(const TShaderRefBase<ShaderType, PointerTableType>& Shader,
+		const FScene* Scene,
+		const FSceneView* ViewIfDynamicMeshCommand,
+		const FVertexFactory* VertexFactory,
+		const EVertexInputStreamType InputStreamType,
+		ERHIFeatureLevel::Type FeatureLevel,
+		const FPrimitiveSceneProxy* PrimitiveSceneProxy,
+		const FMeshBatch& MeshBatch,
+		const FMeshBatchElement& BatchElement,
+		const ShaderElementDataType& ShaderElementData,
+		FMeshDrawSingleShaderBindings& ShaderBindings,
+		FVertexInputStreamArray& VertexStreams)
+	{
+		Shader->GetElementShaderBindings(Shader.GetPointerTable(), Scene, ViewIfDynamicMeshCommand, VertexFactory, InputStreamType, FeatureLevel, PrimitiveSceneProxy, MeshBatch, BatchElement, ShaderElementData, ShaderBindings, VertexStreams);
+	}
 
 private:
-	FVertexFactoryParameterRef VertexFactoryParameters;
+	void WriteFrozenVertexFactoryParameters(FMemoryImageWriter& Writer, const TMemoryImagePtr<FVertexFactoryShaderParameters>& InVertexFactoryParameters) const;
+	LAYOUT_FIELD_WITH_WRITER(TMemoryImagePtr<FVertexFactoryShaderParameters>, VertexFactoryParameters, WriteFrozenVertexFactoryParameters);
+
+protected:
+	LAYOUT_FIELD(FShaderUniformBufferParameter, PassUniformBuffer);
 };

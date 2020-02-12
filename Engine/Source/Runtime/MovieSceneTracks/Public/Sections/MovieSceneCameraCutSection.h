@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -11,6 +11,9 @@
 #include "MovieSceneObjectBindingID.h"
 #include "MovieSceneCameraCutSection.generated.h"
 
+struct FMovieSceneSequenceID;
+class IMovieScenePlayer;
+class UCameraComponent;
 
 /**
  * Movie CameraCuts are sections on the CameraCuts track, that show what the viewer "sees"
@@ -22,14 +25,8 @@ class UMovieSceneCameraCutSection
 	GENERATED_BODY()
 
 public:
-	UMovieSceneCameraCutSection(const FObjectInitializer& Init)
-		: Super(Init)
-	{
-		EvalOptions.EnableAndSetCompletionMode
-			(GetLinkerCustomVersion(FSequencerObjectVersion::GUID) < FSequencerObjectVersion::WhenFinishedDefaultsToProjectDefault ? 
-				EMovieSceneCompletionMode::RestoreState : 
-				EMovieSceneCompletionMode::ProjectDefault);
-	}
+	/** Constructs a new camera cut section */
+	UMovieSceneCameraCutSection(const FObjectInitializer& Init);
 
 	/** Sets the camera binding for this CameraCut section. Evaluates from the sequence binding ID */
 	void SetCameraGuid(const FGuid& InGuid)
@@ -38,12 +35,14 @@ public:
 	}
 
 	/** Gets the camera binding for this CameraCut section */
+	UFUNCTION(BlueprintPure, Category = "Movie Scene Section")
 	const FMovieSceneObjectBindingID& GetCameraBindingID() const
 	{
 		return CameraBindingID;
 	}
 
 	/** Sets the camera binding for this CameraCut section */
+	UFUNCTION(BlueprintCallable, Category = "Movie Scene Section")
 	void SetCameraBindingID(const FMovieSceneObjectBindingID& InCameraBindingID)
 	{
 		CameraBindingID = InCameraBindingID;
@@ -56,6 +55,20 @@ public:
 
 	/** ~UObject interface */
 	virtual void PostLoad() override;
+
+	/**
+	 * Resolve a camera component for this cut section from the specified player and sequence ID
+	 *
+	 * @param Player     The sequence player to use to resolve the object binding for this camera
+	 * @param SequenceID The sequence ID for the specific instance that this section exists within
+	 *
+	 * @return A camera component to be used for this cut section, or nullptr if one was not found.
+	 */
+	MOVIESCENETRACKS_API UCameraComponent* GetFirstCamera(IMovieScenePlayer& Player, FMovieSceneSequenceID SequenceID) const;
+
+#if WITH_EDITOR
+	MOVIESCENETRACKS_API virtual void PostEditChangeProperty(FPropertyChangedEvent& PropertyChangedEvent) override;
+#endif
 
 private:
 

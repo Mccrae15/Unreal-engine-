@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 /*=============================================================================
 	EditorBuildUtils.cpp: Utilities for building in the editor
@@ -41,6 +41,8 @@
 #include "DebugViewModeHelpers.h"
 #include "MaterialStatsCommon.h"
 #include "Materials/MaterialInstance.h"
+#include "VirtualTexturingEditorModule.h"
+#include "Components/RuntimeVirtualTextureComponent.h"
 
 DEFINE_LOG_CATEGORY_STATIC(LogEditorBuildUtils, Log, All);
 
@@ -60,6 +62,7 @@ const FName FBuildOptions::BuildAllSubmit(TEXT("BuildAllSubmit"));
 const FName FBuildOptions::BuildAllOnlySelectedPaths(TEXT("BuildAllOnlySelectedPaths"));
 const FName FBuildOptions::BuildHierarchicalLOD(TEXT("BuildHierarchicalLOD"));
 const FName FBuildOptions::BuildTextureStreaming(TEXT("BuildTextureStreaming"));
+const FName FBuildOptions::BuildVirtualTexture(TEXT("BuildVirtualTexture"));
 
 bool FEditorBuildUtils::bBuildingNavigationFromUserRequest = false;
 TMap<FName, FEditorBuildUtils::FCustomBuildType> FEditorBuildUtils::CustomBuildTypes;
@@ -139,6 +142,15 @@ bool FEditorBuildUtils::EditorAutomatedBuildAndSubmit( const FEditorAutomatedBui
 		{
 			LogErrorMessage( NSLOCTEXT("UnrealEd", "AutomatedBuild_Error_BuildFailed", "The map build failed or was canceled."), OutErrorMessages );
 		}
+
+		// If we are going to shutdown after this has run (ie running from the cmdline) then we should wait for the distributed lighting build to complete.
+		if (BuildSettings.bShutdownEditorOnCompletion)
+		{
+			while (GUnrealEd->IsLightingBuildCurrentlyRunning())
+			{
+				GUnrealEd->UpdateBuildLighting();
+			}
+		}	
 	}
 
 	// If any map errors resulted from the build, process them according to the behavior specified in the build settings
@@ -288,6 +300,10 @@ bool FEditorBuildUtils::EditorBuild( UWorld* InWorld, FName Id, const bool bAllo
 	{
 		BuildType = SBuildProgressWidget::BUILDTYPE_TextureStreaming;
 	}
+	else if (Id == FBuildOptions::BuildVirtualTexture)
+	{
+		BuildType = SBuildProgressWidget::BUILDTYPE_VirtualTexture;
+	}
 	else
 	{
 		BuildType = SBuildProgressWidget::BUILDTYPE_Unknown;	
@@ -299,7 +315,7 @@ bool FEditorBuildUtils::EditorBuild( UWorld* InWorld, FName Id, const bool bAllo
 		BuildProgressWidget.Pin()->SetBuildType(BuildType);
 	}
 
-	bool bShouldMapCheck = true;
+	bool bShouldMapCheck = !FParse::Param(FCommandLine::Get(), TEXT("SkipMapCheck"));
 	if (Id == FBuildOptions::BuildGeometry)
 	{
 		// We can't set the busy cursor for all windows, because lighting
@@ -711,12 +727,13 @@ bool FEditorBuildUtils::PrepForAutomatedBuild( const FEditorAutomatedBuildSettin
 	if ( bBuildSuccessful )
 	{
 		bool bVisibilityToggled = false;
-		if ( !FLevelUtils::IsLevelVisible( GWorld->PersistentLevel ) )
+		UWorld* World = GWorld;
+		if ( !FLevelUtils::IsLevelVisible( World->PersistentLevel ) )
 		{
-			EditorLevelUtils::SetLevelVisibility( GWorld->PersistentLevel, true, false );
+			EditorLevelUtils::SetLevelVisibility( World->PersistentLevel, true, false );
 			bVisibilityToggled = true;
 		}
-		for (ULevelStreaming* CurStreamingLevel : GWorld->GetStreamingLevels())
+		for (ULevelStreaming* CurStreamingLevel : World->GetStreamingLevels())
 		{
 			if ( CurStreamingLevel && !FLevelUtils::IsStreamingLevelVisibleInEditor( CurStreamingLevel ) )
 			{
@@ -726,7 +743,7 @@ bool FEditorBuildUtils::PrepForAutomatedBuild( const FEditorAutomatedBuildSettin
 		}
 		if ( bVisibilityToggled )
 		{
-			GWorld->FlushLevelStreaming();
+			World->FlushLevelStreaming();
 		}
 	}
 
@@ -991,6 +1008,11 @@ void FBuildAllHandler::ProcessBuild(const TWeakPtr<SBuildProgressWidget>& BuildP
 			BuildProgressWidget.Pin()->SetBuildType(SBuildProgressWidget::BUILDTYPE_TextureStreaming);
 			FEditorBuildUtils::EditorBuildTextureStreaming(CurrentWorld);
 		}
+		else if (StepId == FBuildOptions::BuildVirtualTexture)
+		{
+			BuildProgressWidget.Pin()->SetBuildType(SBuildProgressWidget::BUILDTYPE_VirtualTexture);
+			FEditorBuildUtils::EditorBuildVirtualTexture(CurrentWorld);
+		}
 		else if (StepId == FBuildOptions::BuildAIPaths)
 		{
 			BuildProgressWidget.Pin()->SetBuildType(SBuildProgressWidget::BUILDTYPE_Paths);
@@ -1076,16 +1098,77 @@ EDebugViewShaderMode ViewModeIndexToDebugViewShaderMode(EViewModeIndex SelectedV
 		return DVSM_PrimitiveDistanceAccuracy;
 	case VMI_MeshUVDensityAccuracy:
 		return DVSM_MeshUVDensityAccuracy;
-	case VMI_Unknown:
-		return DVSM_OutputMaterialTextureScales;
 	case VMI_MaterialTextureScaleAccuracy:
 		return DVSM_MaterialTextureScaleAccuracy;
 	case VMI_RequiredTextureResolution:
 		return DVSM_RequiredTextureResolution;
+	case VMI_RayTracingDebug:
+		return DVSM_RayTracingDebug;
+	case VMI_Unknown:
 	default :
 		return DVSM_None;
 	}
 }
+
+void FEditorBuildUtils::UpdateTextureStreamingMaterialBindings(UWorld* InWorld)
+{
+	const EMaterialQualityLevel::Type QualityLevel = EMaterialQualityLevel::High;
+	const ERHIFeatureLevel::Type FeatureLevel = GMaxRHIFeatureLevel;
+
+	CollectGarbage( GARBAGE_COLLECTION_KEEPFLAGS );
+
+	TSet<UMaterialInterface*> Materials;
+	if (GetUsedMaterialsInWorld(InWorld, Materials, nullptr))
+	{
+		// Flush renderthread since we are about to update the material streaming data.
+		FlushRenderingCommands();
+
+		for (UMaterialInterface* MaterialInterface : Materials)
+		{
+			if (!MaterialInterface)
+			{
+				continue;
+			}
+
+			TArray<UTexture*> UsedTextures;
+			TArray< TArray<int32> > UsedIndices;
+			MaterialInterface->GetUsedTexturesAndIndices(UsedTextures, UsedIndices, QualityLevel, FeatureLevel);
+			MaterialInterface->SortTextureStreamingData(true, false);
+
+			MaterialInterface->TextureStreamingDataMissingEntries.Empty();
+
+			for (int32 UsedIndex = 0; UsedIndex < UsedTextures.Num(); ++UsedIndex)
+			{
+				if (UsedTextures[UsedIndex])
+				{
+					TArray<FMaterialTextureInfo>& MaterialData = MaterialInterface->GetTextureStreamingData();
+
+					int32 LowerIndex = INDEX_NONE;
+					int32 HigherIndex = INDEX_NONE;
+					if (MaterialInterface->FindTextureStreamingDataIndexRange(UsedTextures[UsedIndex]->GetFName(), LowerIndex, HigherIndex))
+					{
+						// Here we expect every entry in UsedIndices to match one of the entry in the range.
+						for (int32 SubIndex = 0; LowerIndex <= HigherIndex && SubIndex < UsedIndices[UsedIndex].Num(); ++LowerIndex, ++SubIndex)
+						{
+							MaterialData[LowerIndex].TextureIndex = UsedIndices[UsedIndex][SubIndex];
+						}
+					}
+					else // If the texture is missing in the material data, add it ass missing
+					{
+						FMaterialTextureInfo MissingInfo;
+						MissingInfo.TextureName = UsedTextures[UsedIndex]->GetFName();
+						for (int32 SubIndex = 0; SubIndex < UsedIndices[UsedIndex].Num(); ++SubIndex)
+						{
+							MissingInfo.TextureIndex = UsedIndices[UsedIndex][SubIndex];
+							MaterialInterface->TextureStreamingDataMissingEntries.Add(MissingInfo);
+						}
+					}
+				}
+			}
+		}
+	}
+}
+
 
 bool FEditorBuildUtils::EditorBuildTextureStreaming(UWorld* InWorld, EViewModeIndex SelectedViewMode)
 {
@@ -1104,14 +1187,14 @@ bool FEditorBuildUtils::EditorBuildTextureStreaming(UWorld* InWorld, EViewModeIn
 	if (bNeedsMaterialData)
 	{
 		TSet<UMaterialInterface*> Materials;
-		if (!GetUsedMaterialsInWorld(InWorld, Materials, BuildTextureStreamingTask))
+		if (!GetUsedMaterialsInWorld(InWorld, Materials, &BuildTextureStreamingTask))
 		{
 			return false;
 		}
 
 		if (Materials.Num())
 		{
-			if (!CompileDebugViewModeShaders(DVSM_OutputMaterialTextureScales, QualityLevel, FeatureLevel, SelectedViewMode == VMI_Unknown, true, Materials, BuildTextureStreamingTask))
+			if (!CompileDebugViewModeShaders(DVSM_OutputMaterialTextureScales, QualityLevel, FeatureLevel, SelectedViewMode == VMI_Unknown, true, Materials, &BuildTextureStreamingTask))
 			{
 				return false;
 			}
@@ -1199,7 +1282,7 @@ bool FEditorBuildUtils::EditorBuildMaterialTextureStreamingData(UPackage* Packag
 				FMaterialResource* Resource = Material->GetMaterialResource(FeatureLevel);
 				if (Resource)
 				{
-					Resource->CacheShaders(GMaxRHIShaderPlatform, false);
+					Resource->CacheShaders(GMaxRHIShaderPlatform);
 					Materials.Add(Material);
 				}
 			}
@@ -1229,7 +1312,7 @@ bool FEditorBuildUtils::EditorBuildMaterialTextureStreamingData(UPackage* Packag
 	const float OneOverNumMaterials = 1.f / FMath::Max(1.f, (float)Materials.Num());
 
 	bool bAnyPackagesDirtied = false;
-	if (CompileDebugViewModeShaders(DVSM_OutputMaterialTextureScales, QualityLevel, FeatureLevel, true, true, Materials, SlowTask))
+	if (CompileDebugViewModeShaders(DVSM_OutputMaterialTextureScales, QualityLevel, FeatureLevel, true, true, Materials, &SlowTask))
 	{
 		FMaterialUtilities::FExportErrorManager ExportErrors(FeatureLevel);
 		for (UMaterialInterface* MaterialInterface : Materials)
@@ -1276,64 +1359,50 @@ bool FEditorBuildUtils::EditorBuildMaterialTextureStreamingData(UPackage* Packag
 	return bAnyPackagesDirtied;
 }
 
-bool FEditorBuildUtils::CompileViewModeShaders(UWorld* InWorld, EViewModeIndex SelectedViewMode)
+bool FEditorBuildUtils::EditorBuildVirtualTexture(UWorld* InWorld)
 {
-	if (!InWorld)
+	if (InWorld == nullptr)
+	{
+		return true;
+	}
+
+	IVirtualTexturingEditorModule* Module = FModuleManager::Get().GetModulePtr<IVirtualTexturingEditorModule>("VirtualTexturingEditor");
+	if (Module == nullptr)
 	{
 		return false;
 	}
-
-	// This process is incredibly slow for large projects even if we end up compiling no shaders
-	// but isn't essential and we will lazily compile shaders afterwards. This upfront compile
-	// was found to cause minute-long stalls every time the view mode was activated on a simulated
-	// feature level so the check for !bExtractComplexityStats has been removed for shader complexity.
-	//const EShaderPlatform ShaderPlatform = GetFeatureLevelShaderPlatform(FeatureLevel);
-	//bool bIsSimulated = IsSimulatedPlatform(ShaderPlatform);
-	//bool bExtractComplexityStats = bIsSimulated && (SelectedViewMode == VMI_ShaderComplexity || SelectedViewMode == VMI_ShaderComplexityWithQuadOverdraw);
-	EDebugViewShaderMode DebugViewMode = ViewModeIndexToDebugViewShaderMode(SelectedViewMode);
-	if (DebugViewMode == DVSM_None)
-	{
-		return false;
-	}
-
-	const ERHIFeatureLevel::Type FeatureLevel = InWorld->FeatureLevel;
-	const EMaterialQualityLevel::Type QualityLevel = GetCachedScalabilityCVars().MaterialQualityLevel;;
-
-	FScopedSlowTask CompileShaderTask(3.f, LOCTEXT("CompileMissingViewModeShaders", "Compiling Missing ViewMode Shaders")); // { Get Used Materials, Sync Pending Shader, Wait for Compilation }
-	CompileShaderTask.MakeDialog(true);
 
 	CollectGarbage(GARBAGE_COLLECTION_KEEPFLAGS);
 
-	TSet<UMaterialInterface*> Materials;
-	if (!GetUsedMaterialsInWorld(InWorld, Materials, CompileShaderTask))
+	TArray<URuntimeVirtualTextureComponent*> Components;
+	for (TObjectIterator<URuntimeVirtualTextureComponent> It; It; ++It)
 	{
-		return false;
+		if (Module->HasStreamedMips(*It))
+		{
+			Components.Add(*It);
+		}
 	}
 
-	if (Materials.Num())
+	if (Components.Num() == 0)
 	{
-		// As mentioned above this is now only done if the SelectedViewMode is VMI_RequiredTextureResolution so removing the unused code
-/*		if (SelectedViewMode == VMI_ShaderComplexity || SelectedViewMode == VMI_ShaderComplexityWithQuadOverdraw)
-		{
-			if (!CompileShadersComplexityViewMode(QualityLevel, FeatureLevel, Materials, CompileShaderTask))
-			{
-				return false;
-			}
-		}
-		else if (SelectedViewMode == VMI_RequiredTextureResolution)*/
-		{
-			if (!CompileDebugViewModeShaders(DebugViewMode, QualityLevel, FeatureLevel, false, true, Materials, CompileShaderTask))
-			{
-				return false;
-			}
-		}
+		return true;
 	}
-	else
+
+	FScopedSlowTask BuildTask(Components.Num(), LOCTEXT("VirtualTextureBuild", "Building Virtual Textures"));
+	BuildTask.MakeDialog(true);
+
+	for (URuntimeVirtualTextureComponent* Component : Components)
 	{
-		CompileShaderTask.EnterProgressFrame();
+		BuildTask.EnterProgressFrame();
+
+		if (BuildTask.ShouldCancel() || !Module->BuildStreamedMips(Component))
+		{
+			return false;
+		}
 	}
 
 	CollectGarbage(GARBAGE_COLLECTION_KEEPFLAGS);
+
 	return true;
 }
 
@@ -1361,7 +1430,7 @@ bool FEditorBuildUtils::CompileShadersComplexityViewMode(EMaterialQualityLevel::
 	check(Materials.Num());
 
 	// Finish compiling pending shaders first.
-	if (!WaitForShaderCompilation(LOCTEXT("CompileShaders_Complexity_FinishPendingShadersCompilation", "Waiting For Pending Shaders Compilation"), ProgressTask))
+	if (!WaitForShaderCompilation(LOCTEXT("CompileShaders_Complexity_FinishPendingShadersCompilation", "Waiting For Pending Shaders Compilation"), &ProgressTask))
 	{
 		return false;
 	}
@@ -1384,15 +1453,13 @@ bool FEditorBuildUtils::CompileShadersComplexityViewMode(EMaterialQualityLevel::
 		TSharedPtr<FMaterialOfflineCompilation> SpecialResource = MakeShareable(new FMaterialOfflineCompilation());
 		SpecialResource->SetMaterial(MaterialInterface->GetMaterial(), QualityLevel, true, FeatureLevel, Cast<UMaterialInstance>(MaterialInterface));
 
-		FMaterialShaderMapId ResourceId;
-		SpecialResource->GetShaderMapId(ShaderPlatform, ResourceId);
-		SpecialResource->CacheShaders(ResourceId, ShaderPlatform, false);
+		SpecialResource->CacheShaders(ShaderPlatform);
 
 		OfflineShaderResources.Add(SpecialResource);
 	}
 
 	// wait for compilation to be done and copy the number of instruction from the compiled shaders to the emulated shader set
-	if (WaitForShaderCompilation(LOCTEXT("OfflineShaderCompilation", "Offline Shader Compilation"), ProgressTask))
+	if (WaitForShaderCompilation(LOCTEXT("OfflineShaderCompilation", "Offline Shader Compilation"), &ProgressTask))
 	{
 		FSuspendRenderingThread SuspendObject(false);
 
@@ -1429,10 +1496,10 @@ void FMaterialOfflineCompilation::CopyPlatformSpecificStats()
 		return;
 	}
 
-	TMap<FName, FShader*> SrcShaders;
+	TMap<FHashedName, TShaderRef<FShader>> SrcShaders;
 	SrcShaderMap->GetShaderList(SrcShaders);
 
-	TMap<FName, FShader*> DstShaders;
+	TMap<FHashedName, TShaderRef<FShader>> DstShaders;
 	DstShaderMap->GetShaderList(DstShaders);
 
 	for (auto Pair : SrcShaders)
@@ -1440,11 +1507,8 @@ void FMaterialOfflineCompilation::CopyPlatformSpecificStats()
 		auto *DestinationShaderPtr = DstShaders.Find(Pair.Key);
 		if (DestinationShaderPtr != nullptr)
 		{
-			FShader *DestinationShader = *DestinationShaderPtr;
-			FShader *SourceShader = Pair.Value;
-
-			auto NumInstructions = SourceShader->GetNumInstructions();
-			DestinationShader->SetNumInstructions(NumInstructions);
+			auto NumInstructions = Pair.Value->GetNumInstructions();
+			(*DestinationShaderPtr)->SetNumInstructions(NumInstructions);
 		}
 	}
 }

@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "CoreMinimal.h"
 #include "Misc/ScopeLock.h"
@@ -226,6 +226,7 @@ public:
 	/** Run the compressor. */
 	bool Compress()
 	{
+		TRACE_CPUPROFILER_EVENT_SCOPE(FNVTTCompressor::Compress);
 		return Compressor.process(InputOptions, CompressionOptions, OutputOptions) && ErrorHandler.bSuccess;
 	}
 };
@@ -295,7 +296,7 @@ static bool CompressImageUsingNVTT(
 	bool bSRGB,
 	bool bIsNormalMap,
 	bool bIsPreview,
-	TArray<uint8>& OutCompressedData
+	TArray64<uint8>& OutCompressedData
 	)
 {
 	check(PixelFormat == PF_DXT1 || PixelFormat == PF_DXT3 || PixelFormat == PF_DXT5 || PixelFormat == PF_BC4 || PixelFormat == PF_BC5);
@@ -310,9 +311,16 @@ static bool CompressImageUsingNVTT(
 	const int32 RowsPerBatch = BlocksPerBatch / ImageBlocksX;
 	const int32 NumBatches = ImageBlocksY / RowsPerBatch;
 
+	// nvtt doesn't support 64-bit output sizes.
+	int64 OutDataSize = (int64)ImageBlocksX * ImageBlocksY * BlockBytes;
+	if (OutDataSize > MAX_uint32)
+	{
+		return false;
+	}
+
 	// Allocate space to store compressed data.
-	OutCompressedData.Empty(ImageBlocksX * ImageBlocksY * BlockBytes);
-	OutCompressedData.AddUninitialized(ImageBlocksX * ImageBlocksY * BlockBytes);
+	OutCompressedData.Empty(OutDataSize);
+	OutCompressedData.AddUninitialized(OutDataSize);
 
 	if (ImageBlocksX * ImageBlocksY <= BlocksPerBatch ||
 		BlocksPerBatch % ImageBlocksX != 0 ||
@@ -342,7 +350,7 @@ static bool CompressImageUsingNVTT(
 		return bSuccess;
 	}
 
-	int32 UncompressedStride = RowsPerBatch * BlockSizeY * SizeX * sizeof(FColor);
+	int64 UncompressedStride = (int64)RowsPerBatch * BlockSizeY * SizeX * sizeof(FColor);
 	int32 CompressedStride = RowsPerBatch * ImageBlocksX * BlockBytes;
 
 	// Create compressors for each batch.
@@ -420,7 +428,7 @@ class FTextureFormatDXT : public ITextureFormat
 
 	virtual void GetSupportedFormats(TArray<FName>& OutFormats) const override
 	{
-		for (int32 i = 0; i < ARRAY_COUNT(GSupportedTextureFormatNames); ++i)
+		for (int32 i = 0; i < UE_ARRAY_COUNT(GSupportedTextureFormatNames); ++i)
 		{
 			OutFormats.Add(GSupportedTextureFormatNames[i]);
 		}
@@ -438,6 +446,8 @@ class FTextureFormatDXT : public ITextureFormat
 		FCompressedImage2D& OutCompressedImage
 		) const override
 	{
+		TRACE_CPUPROFILER_EVENT_SCOPE(FTextureFormatDXT::CompressImage);
+
 		FImage Image;
 		InImage.CopyTo(Image, ERawImageFormat::BGRA8, BuildSettings.GetGammaSpace());
 
@@ -475,10 +485,10 @@ class FTextureFormatDXT : public ITextureFormat
 		}
 
 		bool bCompressionSucceeded = true;
-		int32 SliceSize = Image.SizeX * Image.SizeY;
+		int64 SliceSize = (int64)Image.SizeX * Image.SizeY;
 		for (int32 SliceIndex = 0; SliceIndex < Image.NumSlices && bCompressionSucceeded; ++SliceIndex)
 		{
-			TArray<uint8> CompressedSliceData;
+			TArray64<uint8> CompressedSliceData;
 			bCompressionSucceeded = CompressImageUsingNVTT(
 				Image.AsBGRA8() + SliceIndex * SliceSize,
 				CompressedPixelFormat,
@@ -496,7 +506,7 @@ class FTextureFormatDXT : public ITextureFormat
 		{
 			OutCompressedImage.SizeX = FMath::Max(Image.SizeX, 4);
 			OutCompressedImage.SizeY = FMath::Max(Image.SizeY, 4);
-			OutCompressedImage.SizeZ = BuildSettings.bVolume ? Image.NumSlices : 1;
+			OutCompressedImage.SizeZ = (BuildSettings.bVolume || BuildSettings.bTextureArray) ? Image.NumSlices : 1;
 			OutCompressedImage.PixelFormat = CompressedPixelFormat;
 		}
 		return bCompressionSucceeded;

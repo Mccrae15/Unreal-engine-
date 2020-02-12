@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 /*=============================================================================
 D3D12DescriptorCache.h: D3D12 State application functionality
@@ -87,8 +87,8 @@ struct FD3D12SamplerArrayDesc
 	uint16 SamplerID[16];
 	inline bool operator==(const FD3D12SamplerArrayDesc& rhs) const
 	{
-		check(Count <= ARRAY_COUNT(SamplerID));
-		check(rhs.Count <= ARRAY_COUNT(rhs.SamplerID));
+		check(Count <= UE_ARRAY_COUNT(SamplerID));
+		check(rhs.Count <= UE_ARRAY_COUNT(rhs.SamplerID));
 
 		if (Count != rhs.Count)
 		{
@@ -186,7 +186,7 @@ private: // Types
 		Desc.Type = Type;
 		Desc.NumDescriptors = NumDescriptorsPerHeap;
 		Desc.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_NONE;// None as this heap is offline
-		Desc.NodeMask = (uint32)Node;
+		Desc.NodeMask = Node.GetNative();
 
 		return Desc;
 	}
@@ -561,7 +561,6 @@ public:
 #endif
 	TRefCountPtr<FD3D12SamplerState> pDefaultSampler;
 
-	void SetIndexBuffer(FD3D12IndexBufferCache& Cache);
 	void SetVertexBuffers(FD3D12VertexBufferCache& Cache);
 	void SetRenderTargets(FD3D12RenderTargetView** RenderTargetViewArray, uint32 Count, FD3D12DepthStencilView* DepthStencilTarget);
 

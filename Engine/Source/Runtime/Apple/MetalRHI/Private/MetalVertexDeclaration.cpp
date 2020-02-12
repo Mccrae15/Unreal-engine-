@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 /*=============================================================================
 	MetalVertexDeclaration.cpp: Metal vertex declaration RHI implementation.
@@ -33,8 +33,8 @@ static mtlpp::VertexFormat TranslateElementTypeToMTLType(EVertexElementType Type
 		case VET_UShort4N:		return mtlpp::VertexFormat::UShort4Normalized;
 		case VET_URGB10A2N:		return mtlpp::VertexFormat::UInt1010102Normalized;
 		case VET_UInt:			return mtlpp::VertexFormat::UInt;
-		default:				UE_LOG(LogMetal, Fatal, TEXT("Unknown vertex element type!")); return mtlpp::VertexFormat::Float;
-	};
+        default:				METAL_FATAL_ERROR(TEXT("Unknown vertex element type %d!"), (uint32)Type); return mtlpp::VertexFormat::Float;
+    };
 
 }
 
@@ -62,7 +62,7 @@ uint32 TranslateElementTypeToSize(EVertexElementType Type)
 		case VET_UShort4N:		return 8;
 		case VET_URGB10A2N:		return 4;
 		case VET_UInt:			return 4;
-		default:				UE_LOG(LogMetal, Fatal, TEXT("Unknown vertex element type!")); return 0;
+		default:				METAL_FATAL_ERROR(TEXT("Unknown vertex element type %d!"), (uint32)Type); return 0;
 	};
 }
 
@@ -161,11 +161,6 @@ FMetalVertexDeclaration::FMetalVertexDeclaration(const FVertexDeclarationElement
 
 FMetalVertexDeclaration::~FMetalVertexDeclaration()
 {
-}
-
-FVertexDeclarationRHIRef FMetalDynamicRHI::CreateVertexDeclaration_RenderThread(class FRHICommandListImmediate& RHICmdList, const FVertexDeclarationElementList& Elements)
-{
-	return GDynamicRHI->RHICreateVertexDeclaration(Elements);
 }
 
 FVertexDeclarationRHIRef FMetalDynamicRHI::RHICreateVertexDeclaration(const FVertexDeclarationElementList& Elements)

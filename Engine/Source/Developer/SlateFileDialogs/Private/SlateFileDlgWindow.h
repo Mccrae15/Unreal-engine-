@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -151,7 +151,7 @@ public:
 
 private:	
 	void OnPathClicked( const FString& CrumbData );
-	TSharedPtr<SWidget> OnGetCrumbDelimiterContent(const FString& CrumbData) const;
+	TSharedRef<SWidget> OnGetCrumbDelimiterContent(const FString& CrumbData) const;
 	void RebuildFileTable();
 	void BuildDirectoryPath();
 	void ReadDir(bool bIsRefresh = false);

@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -44,7 +44,7 @@ public:
 
 private:
 	/** Called when we are about to rename a virtual bone */
-	void OnVirtualBoneNameEditing(const FText& OriginalText);
+	void OnVirtualBoneNameEditing();
 
 	/** Called when user is renaming this bone to verify the name **/
 	bool OnVerifyBoneNameChanged(const FText& InText, FText& OutErrorMessage);

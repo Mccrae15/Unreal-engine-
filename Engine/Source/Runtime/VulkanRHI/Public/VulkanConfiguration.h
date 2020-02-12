@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 /*=============================================================================
 	VulkanConfiguration.h: Control compilation of the runtime RHI.
@@ -83,12 +83,6 @@
 	#define VULKAN_USE_IMAGE_ACQUIRE_FENCES						1
 #endif
 
-#ifndef VULKAN_HAS_PHYSICAL_DEVICE_PROPERTIES2
-	#define VULKAN_HAS_PHYSICAL_DEVICE_PROPERTIES2				0
-#endif
-
-#define VULKAN_USE_MSAA_RESOLVE_ATTACHMENTS						1
-
 #define VULKAN_ENABLE_AGGRESSIVE_STATS							0
 
 #define VULKAN_REUSE_FENCES										1
@@ -128,7 +122,12 @@
 #endif
 
 #ifndef VULKAN_SUPPORTS_DEDICATED_ALLOCATION
-	#define VULKAN_SUPPORTS_DEDICATED_ALLOCATION				0
+	#ifdef VK_KHR_dedicated_allocation
+		// Disable this for now as it is causing a large memory leak
+		#define VULKAN_SUPPORTS_DEDICATED_ALLOCATION			0
+	#else
+		#define VULKAN_SUPPORTS_DEDICATED_ALLOCATION			0
+	#endif
 #endif
 
 #ifndef VULKAN_SUPPORTS_GOOGLE_DISPLAY_TIMING
@@ -167,14 +166,57 @@
 	#define VULKAN_SUPPORTS_NV_DIAGNOSTIC_CHECKPOINT			0
 #endif
 
-#define VULKAN_SUPPORTS_GPU_CRASH_DUMPS							(VULKAN_SUPPORTS_AMD_BUFFER_MARKER || VULKAN_SUPPORTS_NV_DIAGNOSTIC_CHECKPOINT)
-
-#ifdef VK_EXT_debug_utils
-	#define VULKAN_SUPPORTS_DEBUG_UTILS							1
-#else
-	#define VULKAN_SUPPORTS_DEBUG_UTILS							0
+#ifndef VULKAN_SUPPORTS_GPU_CRASH_DUMPS
+	#define VULKAN_SUPPORTS_GPU_CRASH_DUMPS						(VULKAN_SUPPORTS_AMD_BUFFER_MARKER || VULKAN_SUPPORTS_NV_DIAGNOSTIC_CHECKPOINT)
 #endif
 
+#ifndef VULKAN_SUPPORTS_DEBUG_UTILS
+	#ifdef VK_EXT_debug_utils
+		#define VULKAN_SUPPORTS_DEBUG_UTILS						1
+	#else
+		#define VULKAN_SUPPORTS_DEBUG_UTILS						0
+	#endif
+#endif
+
+#ifndef VULKAN_SUPPORTS_MEMORY_PRIORITY
+	#ifdef VK_EXT_memory_priority
+		#define VULKAN_SUPPORTS_MEMORY_PRIORITY					1
+	#else
+		#define VULKAN_SUPPORTS_MEMORY_PRIORITY					0
+	#endif
+#endif
+
+#ifndef VULKAN_SUPPORTS_PHYSICAL_DEVICE_PROPERTIES2
+	#ifdef VK_KHR_get_physical_device_properties2
+		#define VULKAN_SUPPORTS_PHYSICAL_DEVICE_PROPERTIES2		1
+	#else
+		#define VULKAN_SUPPORTS_PHYSICAL_DEVICE_PROPERTIES2		0
+	#endif
+#endif
+
+#ifndef VULKAN_SUPPORTS_EXTERNAL_MEMORY
+	#ifdef VK_KHR_external_memory_capabilities
+		#define VULKAN_SUPPORTS_EXTERNAL_MEMORY					(VULKAN_SUPPORTS_PHYSICAL_DEVICE_PROPERTIES2)	// Requirement
+	#else
+		#define VULKAN_SUPPORTS_EXTERNAL_MEMORY					0
+	#endif
+#endif
+
+#ifndef VULKAN_SUPPORTS_DRIVER_PROPERTIES
+	#ifdef VK_KHR_driver_properties
+		#define VULKAN_SUPPORTS_DRIVER_PROPERTIES				1
+	#else
+		#define VULKAN_SUPPORTS_DRIVER_PROPERTIES				0
+	#endif
+#endif
+
+#ifndef VULKAN_SUPPORTS_FULLSCREEN_EXCLUSIVE
+	#ifdef VK_EXT_full_screen_exclusive
+		#define VULKAN_SUPPORTS_FULLSCREEN_EXCLUSIVE			1
+	#else
+		#define VULKAN_SUPPORTS_FULLSCREEN_EXCLUSIVE			0
+	#endif
+#endif
 
 DECLARE_LOG_CATEGORY_EXTERN(LogVulkanRHI, Log, All);
 

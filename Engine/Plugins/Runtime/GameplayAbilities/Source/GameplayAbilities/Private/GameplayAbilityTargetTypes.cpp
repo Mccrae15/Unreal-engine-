@@ -1,9 +1,10 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "Abilities/GameplayAbilityTargetTypes.h"
 #include "GameplayEffect.h"
 #include "AbilitySystemComponent.h"
 #include "AbilitySystemBlueprintLibrary.h"
+#include "AbilitySystemGlobals.h"
 
 
 TArray<FActiveGameplayEffectHandle> FGameplayAbilityTargetData::ApplyGameplayEffect(const UGameplayEffect* GameplayEffect, const FGameplayEffectContextHandle& InEffectContext, float Level, FPredictionKey PredictionKey)
@@ -134,8 +135,27 @@ FGameplayAbilityTargetDataHandle FGameplayAbilityTargetingLocationInfo::MakeTarg
 	return ReturnDataHandle;
 }
 
+// If defined, we'll serialize target data in a safer way (untested/unproven still: goal should be to remove old code asap)
+#ifndef TARGETDATAHANDLE_SAFE_NET_SERIALIZE
+#define TARGETDATAHANDLE_SAFE_NET_SERIALIZE 1
+#endif
+
+struct FGameplayAbilityTargetDataDeleter
+{
+	FORCEINLINE void operator()(FGameplayAbilityTargetData* Object) const
+	{
+		check(Object);
+		UScriptStruct* ScriptStruct = Object->GetScriptStruct();
+		check(ScriptStruct);
+		ScriptStruct->DestroyStruct(Object);
+		FMemory::Free(Object);
+	}
+};
+
 bool FGameplayAbilityTargetDataHandle::NetSerialize(FArchive& Ar, class UPackageMap* Map, bool& bOutSuccess)
 {
+	Ar << UniqueId;
+
 	uint8 DataNum;
 	if (Ar.IsSaving())
 	{
@@ -156,7 +176,11 @@ bool FGameplayAbilityTargetDataHandle::NetSerialize(FArchive& Ar, class UPackage
 	{
 		TCheckedObjPtr<UScriptStruct> ScriptStruct = Data[i].IsValid() ? Data[i]->GetScriptStruct() : NULL;
 
+#if TARGETDATAHANDLE_SAFE_NET_SERIALIZE
+		UAbilitySystemGlobals::Get().TargetDataStructCache.NetSerialize(Ar, ScriptStruct.Get());
+#else
 		Ar << ScriptStruct;
+#endif
 
 		if (ScriptStruct.IsValid())
 		{
@@ -167,10 +191,10 @@ bool FGameplayAbilityTargetDataHandle::NetSerialize(FArchive& Ar, class UPackage
 				// only reallocating when necessary
 				check(!Data[i].IsValid());
 
-				FGameplayAbilityTargetData * NewData = (FGameplayAbilityTargetData*)FMemory::Malloc(ScriptStruct->GetCppStructOps()->GetSize());
+				FGameplayAbilityTargetData * NewData = (FGameplayAbilityTargetData*)FMemory::Malloc(ScriptStruct->GetStructureSize());
 				ScriptStruct->InitializeStruct(NewData);
 
-				Data[i] = TSharedPtr<FGameplayAbilityTargetData>(NewData);
+				Data[i] = TSharedPtr<FGameplayAbilityTargetData>(NewData, FGameplayAbilityTargetDataDeleter());
 			}
 
 			void* ContainerPtr = Data[i].Get();
@@ -181,13 +205,13 @@ bool FGameplayAbilityTargetDataHandle::NetSerialize(FArchive& Ar, class UPackage
 			}
 			else
 			{
-				// This won't work since UStructProperty::NetSerializeItem is deprecrated.
-				//	1) we have to manually crawl through the topmost struct's fields since we don't have a UStructProperty for it (just the UScriptProperty)
-				//	2) if there are any UStructProperties in the topmost struct's fields, we will assert in UStructProperty::NetSerializeItem.
+				// This won't work since FStructProperty::NetSerializeItem is deprecrated.
+				//	1) we have to manually crawl through the topmost struct's fields since we don't have a FStructProperty for it (just the UScriptProperty)
+				//	2) if there are any UStructProperties in the topmost struct's fields, we will assert in FStructProperty::NetSerializeItem.
 
 				ABILITY_LOG(Fatal, TEXT("FGameplayAbilityTargetDataHandle::NetSerialize called on data struct %s without a native NetSerialize"), *ScriptStruct->GetName());
 
-				for (TFieldIterator<UProperty> It(ScriptStruct.Get()); It; ++It)
+				for (TFieldIterator<FProperty> It(ScriptStruct.Get()); It; ++It)
 				{
 					if (It->PropertyFlags & CPF_RepSkip)
 					{

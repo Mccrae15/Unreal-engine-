@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 #include "IOculusInputModule.h"
@@ -94,6 +94,13 @@ private:
 
 	/** Are Remote keys mapped to gamepad or not. */
 	static bool bRemoteKeysMappedToGamepad;
+
+	/** Are Go keys mapped to Touch or not. */
+	static bool bGoKeysMappedToTouch;
+
+	/** Repeat key delays, loaded from config */
+	static float InitialButtonRepeatDelay;
+	static float ButtonRepeatDelay;
 
 	ovrpHapticsDesc OvrpHapticsDesc;
 };

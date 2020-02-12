@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 /*=============================================================================
 	VisualizeTexture.cpp: Post processing visualize texture.
@@ -52,6 +52,7 @@ enum class EVisualisePSType
 	Texture2DMSAA = 5,
 	Texture2DDepthStencilNoMSAA = 6,
 	Texture2DUINT8 = 7,
+	Texture2DUINT32 = 8,
 	MAX
 };
 
@@ -61,6 +62,12 @@ TGlobalResource<FVisualizeTexture> GVisualizeTexture;
 
 
 #if WITH_ENGINE
+
+static TAutoConsoleVariable<int32> CVarAllowBlinking(
+	TEXT("r.VisualizeTexture.AllowBlinking"), 1,
+	TEXT("Whether to allow blinking when visualizing NaN or inf that can become irritating over time.\n"),
+	ECVF_RenderThreadSafe);
+
 /** A pixel shader which filters a texture. */
 // @param TextureType 0:Cube, 1:1D(not yet supported), 2:2D no MSAA, 3:3D, 4:Cube[], 5:2D MSAA, 6:2D DepthStencil no MSAA (needed to avoid D3DDebug error)
 class FVisualizeTexturePS : public FGlobalShader
@@ -90,7 +97,7 @@ class FVisualizeTexturePS : public FGlobalShader
 		SHADER_PARAMETER_SAMPLER(SamplerState, VisualizeTextureCubeSampler)
 		SHADER_PARAMETER_RDG_TEXTURE(TextureCubeArray, VisualizeTextureCubeArray)
 		SHADER_PARAMETER_SAMPLER(SamplerState, VisualizeTextureCubeArraySampler)
-		SHADER_PARAMETER_SRV(Texture2D<uint4>, VisualizeDepthStencilTexture)
+		SHADER_PARAMETER_RDG_TEXTURE_SRV(Texture2D<uint4>, VisualizeDepthStencil)
 		SHADER_PARAMETER_RDG_TEXTURE(Texture2DMS<float4>, VisualizeTexture2DMS)
 		SHADER_PARAMETER_RDG_TEXTURE(Texture2D<uint>, VisualizeUINT8Texture2D)
 
@@ -122,6 +129,10 @@ static EVisualisePSType GetVisualizePSType(const FRDGTextureDesc& Desc)
 			{
 				return EVisualisePSType::Texture2DUINT8;
 			}
+			else if (Desc.Format == PF_R32_UINT)
+			{
+				return EVisualisePSType::Texture2DUINT32;
+			}
 			else
 			{
 				// non MSAA
@@ -150,11 +161,12 @@ static EVisualisePSType GetVisualizePSType(const FRDGTextureDesc& Desc)
 void FVisualizeTexture::ReleaseDynamicRHI()
 {
 	VisualizeTextureContent.SafeRelease();
-	StencilSRV.SafeRelease();
 }
 
-void FVisualizeTexture::CreateContentCapturePass(FRDGBuilder& GraphBuilder, const FRDGTextureRef SrcTexture)
+void FVisualizeTexture::CreateContentCapturePass(FRDGBuilder& GraphBuilder, const FRDGTextureRef SrcTexture, int32 CaptureId)
 {
+	check(CaptureId >= 0);
+
 #if !(UE_BUILD_SHIPPING || UE_BUILD_TEST)
 	if (!SrcTexture || !SrcTexture->Desc.IsValid())
 	{
@@ -172,7 +184,7 @@ void FVisualizeTexture::CreateContentCapturePass(FRDGBuilder& GraphBuilder, cons
 
 	FRDGTextureRef CopyTexture;
 	{
-		FIntPoint Size = SrcTexture->Desc.Extent;
+		FIntPoint Size = SrcDesc.Extent;
 
 		// clamp to reasonable value to prevent crash
 		Size.X = FMath::Max(Size.X, 1);
@@ -185,7 +197,7 @@ void FVisualizeTexture::CreateContentCapturePass(FRDGBuilder& GraphBuilder, cons
 		CopyTexture = GraphBuilder.CreateTexture(CopyDesc, TEXT("VisualizeTexture"));
 	}
 
-	FIntPoint RTExtent = SrcTexture->Desc.Extent;
+	FIntPoint RTExtent = SrcDesc.Extent;
 
 	uint32 LocalVisualizeTextureInputMapping = UVInputMapping;
 
@@ -200,6 +212,8 @@ void FVisualizeTexture::CreateContentCapturePass(FRDGBuilder& GraphBuilder, cons
 
 	bool bSaturateInsteadOfFrac = (Flags & 1) != 0;
 	int32 InputValueMapping = bShadowDepth ? 2 : (bDepthTexture ? 1 : 0);
+
+	EVisualisePSType VisualizeType = GetVisualizePSType(SrcDesc);
 
 	FVisualizeTexturePS::FParameters* PassParameters = GraphBuilder.AllocParameters<FVisualizeTexturePS::FParameters>();
 	{
@@ -218,11 +232,11 @@ void FVisualizeTexture::CreateContentCapturePass(FRDGBuilder& GraphBuilder, cons
 
 			// w * almost_1 to avoid frac(1) => 0
 			PassParameters->VisualizeParam[0] = FVector4(RGBMul, SingleChannelMul, Add, FracScale * 0.9999f);
-			PassParameters->VisualizeParam[1] = FVector4(BlinkState, bSaturateInsteadOfFrac ? 1.0f : 0.0f, ArrayIndex, CustomMip);
+			PassParameters->VisualizeParam[1] = FVector4(CVarAllowBlinking.GetValueOnRenderThread() ? BlinkState : 1.0f, bSaturateInsteadOfFrac ? 1.0f : 0.0f, ArrayIndex, CustomMip);
 			PassParameters->VisualizeParam[2] = FVector4(InputValueMapping, 0.0f, SingleChannel);
 		}
 
-		FSamplerStateRHIParamRef PointSampler = TStaticSamplerState<SF_Point, AM_Clamp, AM_Clamp, AM_Clamp>::GetRHI();
+		FRHISamplerState* PointSampler = TStaticSamplerState<SF_Point, AM_Clamp, AM_Clamp, AM_Clamp>::GetRHI();
 
 		PassParameters->VisualizeTexture2D = SrcTexture;
 		PassParameters->VisualizeTexture2DSampler = PointSampler;
@@ -233,79 +247,58 @@ void FVisualizeTexture::CreateContentCapturePass(FRDGBuilder& GraphBuilder, cons
 		PassParameters->VisualizeTextureCubeArray = SrcTexture;
 		PassParameters->VisualizeTextureCubeArraySampler = PointSampler;
 
-		PassParameters->VisualizeDepthStencilTexture = nullptr; // TODO: StencilSRV
+		if (VisualizeType == EVisualisePSType::Texture2DDepthStencilNoMSAA)
+		{
+			FRDGTextureSRVDesc SRVDesc = FRDGTextureSRVDesc::CreateWithPixelFormat(SrcTexture, PF_X24_G8);
+			PassParameters->VisualizeDepthStencil = GraphBuilder.CreateSRV(SRVDesc);
+		}
+
 		PassParameters->VisualizeTexture2DMS = SrcTexture;
 		PassParameters->VisualizeUINT8Texture2D = SrcTexture;
 
-		PassParameters->RenderTargets[0] = FRenderTargetBinding(CopyTexture, ERenderTargetLoadAction::EClear, ERenderTargetStoreAction::EStore);
+		PassParameters->RenderTargets[0] = FRenderTargetBinding(CopyTexture, ERenderTargetLoadAction::EClear);
 	}
 
 	auto ShaderMap = GetGlobalShaderMap(FeatureLevel);
 	FVisualizeTexturePS::FPermutationDomain PermutationVector;
-	PermutationVector.Set<FVisualizeTexturePS::FVisualisePSTypeDim>(GetVisualizePSType(SrcDesc));
+	PermutationVector.Set<FVisualizeTexturePS::FVisualisePSTypeDim>(VisualizeType);
 
 	TShaderMapRef<FVisualizeTexturePS> PixelShader(ShaderMap, PermutationVector);
 
-	GraphBuilder.AddPass(
-		RDG_EVENT_NAME("VisualizeTextureCapture(%s)", SrcTexture->Name),
-		PassParameters,
-		ERenderGraphPassFlags::None,
-		[this, PassParameters, ShaderMap, PixelShader, RTExtent](FRHICommandList& RHICmdList)
+	FString ExtendedDrawEvent;
+	if (GetEmitRDGEvents())
 	{
-		FVisualizeTexturePS::FParameters ShaderParameter = *PassParameters;
-
-		// TODO(RDG): technically could use FPixelShaderUtils::AddPass(), but there is lot of work to support creating arbitrary number of SRV for a FRDGTexture,
-		// so the VisualizeDepthStencilTexture has to be hacked in the lambda...
+		// If this is a 3D texture or texture array, precise.
+		if (SrcDesc.Depth > 0)
 		{
-			// Some RHI might be unhappy with RHICreateShaderResourceView() inside renderpass.
-			check(RHICmdList.IsInsideRenderPass());
-			RHICmdList.EndRenderPass();
-			check(RHICmdList.IsOutsideRenderPass());
-
-			const FRDGTextureDesc& SrcDesc = PassParameters->VisualizeTexture2D->Desc;
-			FSceneRenderTargetItem& RenderTargetItem = PassParameters->VisualizeTexture2D->GetPooledRenderTarget()->GetRenderTargetItem();
-
-			bool bIsDefault = this->StencilSRVSrc == GBlackTexture->TextureRHI;
-			bool bDepthStencil = SrcDesc.Is2DTexture() && SrcDesc.Format == PF_DepthStencil;
-
-			//clear if this is a new different Stencil buffer, or it's not a stencil buffer and we haven't switched to the default yet.
-			bool bNeedsClear = bDepthStencil && (this->StencilSRVSrc != RenderTargetItem.TargetableTexture);
-			bNeedsClear |= !bDepthStencil && !bIsDefault;
-			if (bNeedsClear)
+			if (SrcDesc.bIsArray)
 			{
-				this->StencilSRVSrc = nullptr;
-				this->StencilSRV.SafeRelease();
+				ExtendedDrawEvent += FString::Printf(TEXT(" ArraySize=%d CapturedSlice=%d"), SrcDesc.Depth, ArrayIndex);
 			}
-
-			//always set something into the StencilSRV slot for platforms that require a full resource binding, even if
-			//dynamic branching will cause them not to be used.	
-			if (bDepthStencil && !GVisualizeTexture.StencilSRVSrc)
+			else
 			{
-				this->StencilSRVSrc = RenderTargetItem.TargetableTexture;
-				this->StencilSRV = RHICreateShaderResourceView((FTexture2DRHIRef&)RenderTargetItem.TargetableTexture, 0, 1, PF_X24_G8);
+				ExtendedDrawEvent += FString::Printf(TEXT("x%d CapturedSlice=%d"), SrcDesc.Depth, ArrayIndex);
 			}
-			else if (!GVisualizeTexture.StencilSRVSrc)
-			{
-				this->StencilSRVSrc = GBlackTexture->TextureRHI;
-				this->StencilSRV = RHICreateShaderResourceView((FTexture2DRHIRef&)GBlackTexture->TextureRHI, 0, 1, PF_B8G8R8A8);
-			}
-
-			ShaderParameter.VisualizeDepthStencilTexture = this->StencilSRV;
-
-			// Rebind the render targets.
-			FRHIRenderPassInfo RPInfo;
-			RPInfo.ColorRenderTargets[0].RenderTarget = PassParameters->RenderTargets[0].GetTexture()->GetPooledRenderTarget()->GetRenderTargetItem().TargetableTexture;
-			RPInfo.ColorRenderTargets[0].ResolveTarget = nullptr;
-			RPInfo.ColorRenderTargets[0].ArraySlice = -1;
-			RPInfo.ColorRenderTargets[0].MipIndex = 0;
-			RPInfo.ColorRenderTargets[0].Action = MakeRenderTargetActions(ERenderTargetLoadAction::EClear, ERenderTargetStoreAction::EStore);
-
-			RHICmdList.BeginRenderPass(RPInfo, TEXT("VisualizeTextureCapture"));
-			check(RHICmdList.IsInsideRenderPass());
 		}
 
-		FPixelShaderUtils::DrawFullscreenPixelShader(RHICmdList, ShaderMap, *PixelShader, ShaderParameter, FIntRect(0, 0, RTExtent.X, RTExtent.Y));
-	});
+		// Precise the mip level being captured in the mip level when there is a mip chain.
+		if (SrcDesc.NumMips > 1)
+		{
+			ExtendedDrawEvent += FString::Printf(TEXT(" Mips=%d CapturedMip=%d"), SrcDesc.NumMips, CustomMip);
+		}
+	}
+
+	FPixelShaderUtils::AddFullscreenPass(
+		GraphBuilder,
+		ShaderMap,
+		RDG_EVENT_NAME("VisualizeTextureCapture(%s@%d %s %dx%d%s)",
+			SrcTexture->Name, CaptureId,
+			GPixelFormats[SrcDesc.Format].Name,
+			SrcDesc.Extent.X, SrcDesc.Extent.Y,
+			*ExtendedDrawEvent),
+		PixelShader,
+		PassParameters,
+		FIntRect(0, 0, RTExtent.X, RTExtent.Y));
 
 	// Save the copied texture and descriptor about original informations.
 	{
@@ -352,11 +345,11 @@ void FVisualizeTexture::CreateContentCapturePass(FRDGBuilder& GraphBuilder, cons
 			// Save the contents of the array to a bitmap file. (24bit only so alpha channel is dropped)
 			FFileHelper::CreateBitmap(*ScreenFileName, ExtendXWithMSAA, Extent.Y, Bitmap.GetData());
 
-			UE_LOG(LogConsoleResponse, Display, TEXT("Content was saved to \"%s\""), *FPaths::ScreenShotDir());
+			UE_LOG(LogRendererCore, Display, TEXT("Content was saved to \"%s\""), *FPaths::ScreenShotDir());
 		}
 		else
 		{
-			UE_LOG(LogConsoleResponse, Error, TEXT("Failed to save BMP for VisualizeTexture, format or texture type is not supported"));
+			UE_LOG(LogRendererCore, Error, TEXT("Failed to save BMP for VisualizeTexture, format or texture type is not supported"));
 		}
 	}
 #endif
@@ -365,10 +358,10 @@ void FVisualizeTexture::CreateContentCapturePass(FRDGBuilder& GraphBuilder, cons
 #endif // !(UE_BUILD_SHIPPING || UE_BUILD_TEST)
 }
 
-bool FVisualizeTexture::ShouldCapture(const TCHAR* DebugName)
+int32 FVisualizeTexture::ShouldCapture(const TCHAR* DebugName)
 {
 #if (UE_BUILD_SHIPPING || UE_BUILD_TEST)
-	return false;
+	return FVisualizeTexture::kInvalidCaptureId;
 #else
 	if (!bEnabled)
 	{
@@ -388,16 +381,18 @@ bool FVisualizeTexture::ShouldCapture(const TCHAR* DebugName)
 	// First check if we need to find anything to avoid string the comparison
 	if (!ObservedDebugName.IsEmpty() && ObservedDebugName == DebugName)
 	{
+		uint32 CaptureId = *UsageCountPtr;
+
 		// if multiple times reused during the frame, is that the one we want to look at?
-		if (*UsageCountPtr == ObservedDebugNameReusedGoal || ObservedDebugNameReusedGoal == 0xffffffff)
+		if (CaptureId == ObservedDebugNameReusedGoal || ObservedDebugNameReusedGoal == 0xffffffff)
 		{
-			*UsageCountPtr = *UsageCountPtr + 1;
-			return true;
+			*UsageCountPtr = CaptureId + 1;
+			return int32(CaptureId);
 		}
 	}
 	// only needed for VisualizeTexture (todo: optimize out when possible)
 	*UsageCountPtr = *UsageCountPtr + 1;
-	return false;
+	return FVisualizeTexture::kInvalidCaptureId;
 #endif
 }
 
@@ -413,7 +408,14 @@ void FVisualizeTexture::SetCheckPoint(FRHICommandList& RHICmdList, const IPooled
 
 	const TCHAR* DebugName = PooledRenderTarget->GetDesc().DebugName;
 
-	if (!ShouldCapture(DebugName))
+	if (!ensureMsgf(PooledRenderTarget->GetDesc().TargetableFlags & TexCreate_ShaderResource, TEXT("%s"), DebugName))
+	{
+		UE_LOG(LogRendererCore, Error, TEXT("\"%s\" not created with TexCreate_ShaderResource and will fail to visualize."), DebugName);
+		return;
+	}
+
+	int32 CaptureId = ShouldCapture(DebugName);
+	if (CaptureId == FVisualizeTexture::kInvalidCaptureId)
 	{
 		return;
 	}
@@ -421,12 +423,12 @@ void FVisualizeTexture::SetCheckPoint(FRHICommandList& RHICmdList, const IPooled
 	FRHICommandListImmediate& RHICmdListIm = FRHICommandListExecutor::GetImmediateCommandList();
 	if (RHICmdListIm.IsExecuting())
 	{
-		UE_LOG(LogConsoleResponse, Fatal, TEXT("We can't create a checkpoint because that requires the immediate commandlist, which is currently executing. You might try disabling parallel rendering."));
+		UE_LOG(LogRendererCore, Fatal, TEXT("We can't create a checkpoint because that requires the immediate commandlist, which is currently executing. You might try disabling parallel rendering."));
 	}
 
 	if (&RHICmdList != &RHICmdListIm)
 	{
-		UE_LOG(LogConsoleResponse, Warning, TEXT("Attempt to checkpoint a render target from a non-immediate command list. We will flush it and hope that works. If it doesn't you might try disabling parallel rendering."));
+		UE_LOG(LogRendererCore, Warning, TEXT("Attempt to checkpoint a render target from a non-immediate command list. We will flush it and hope that works. If it doesn't you might try disabling parallel rendering."));
 		RHICmdList.Flush();
 	}
 
@@ -437,7 +439,7 @@ void FVisualizeTexture::SetCheckPoint(FRHICommandList& RHICmdList, const IPooled
 	TRefCountPtr<IPooledRenderTarget> PooledRenderTargetRef(const_cast<IPooledRenderTarget*>(PooledRenderTarget));
 	FRDGTextureRef TextureToCapture = GraphBuilder.RegisterExternalTexture(PooledRenderTargetRef, DebugName);
 
-	CreateContentCapturePass(GraphBuilder, TextureToCapture);
+	CreateContentCapturePass(GraphBuilder, TextureToCapture, CaptureId);
 	GraphBuilder.Execute();
 
 	if (&RHICmdList != &RHICmdListIm)

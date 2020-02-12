@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -11,13 +11,14 @@
 
 class FSlateMaterialShaderVS : public FMaterialShader
 {
+	DECLARE_TYPE_LAYOUT(FSlateMaterialShaderVS, NonVirtual);
 public:
 	FSlateMaterialShaderVS() {}
 	FSlateMaterialShaderVS(const FMaterialShaderType::CompiledShaderInitializerType& Initializer);
 
-	static void ModifyCompilationEnvironment(EShaderPlatform Platform, const FMaterial* Material, FShaderCompilerEnvironment& OutEnvironment);
+	static void ModifyCompilationEnvironment(const FMaterialShaderPermutationParameters& Parameters, FShaderCompilerEnvironment& OutEnvironment);
 
-	static bool ShouldCompilePermutation(EShaderPlatform Platform, const FMaterial* Material);
+	static bool ShouldCompilePermutation(const FMaterialShaderPermutationParameters& Parameters);
 
 	/** 
 	 * Sets the view projection parameter
@@ -34,23 +35,26 @@ public:
 	void SetVerticalAxisMultiplier(FRHICommandList& RHICmdList, float InMultiplier);
 
 	/** Serializes the shader data */
-	virtual bool Serialize( FArchive& Ar ) override;
+	//virtual bool Serialize( FArchive& Ar ) override;
 private:
-	/** ViewProjection parameter used by the shader */
-	FShaderParameter ViewProjection;
-	/** Parameter used to determine if we need to swtich the vertical axis for opengl */
-	FShaderParameter SwitchVerticalAxisMultiplier;
+	
+		/** ViewProjection parameter used by the shader */
+		LAYOUT_FIELD(FShaderParameter, ViewProjection)
+		/** Parameter used to determine if we need to swtich the vertical axis for opengl */
+		LAYOUT_FIELD(FShaderParameter, SwitchVerticalAxisMultiplier)
+	
 };
 
 class FSlateMaterialShaderPS : public FMaterialShader
 {
+	DECLARE_TYPE_LAYOUT(FSlateMaterialShaderPS, NonVirtual);
 public:
 
 	/** Only compile shaders used with UI. */
-	static bool ShouldCompilePermutation(EShaderPlatform Platform, const FMaterial* Material);
+	static bool ShouldCompilePermutation(const FMaterialShaderPermutationParameters& Parameters);
 
 	/** Modifies the compilation of this shader. */
-	static void ModifyCompilationEnvironment(EShaderPlatform Platform, const FMaterial* Material, FShaderCompilerEnvironment& OutEnvironment);
+	static void ModifyCompilationEnvironment(const FMaterialShaderPermutationParameters& Parameters, FShaderCompilerEnvironment& OutEnvironment);
 
 	FSlateMaterialShaderPS() {}
 	FSlateMaterialShaderPS(const FMaterialShaderType::CompiledShaderInitializerType& Initializer);
@@ -59,18 +63,19 @@ public:
 
 	void SetParameters(FRHICommandList& RHICmdList, const FSceneView& View, const FMaterialRenderProxy* MaterialRenderProxy, const FMaterial* Material, const FVector4& InShaderParams);
 
-	void SetDisplayGamma(FRHICommandList& RHICmdList, float InDisplayGamma);
+	void SetDisplayGammaAndContrast(FRHICommandList& RHICmdList, float InDisplayGamma, float InContrast);
 
-	void SetAdditionalTexture( FRHICommandList& RHICmdList, const FTextureRHIParamRef InTexture, const FSamplerStateRHIRef SamplerState );
+	void SetAdditionalTexture( FRHICommandList& RHICmdList, FRHITexture* InTexture, const FSamplerStateRHIRef SamplerState );
 
-	virtual bool Serialize(FArchive& Ar) override;
+	void SetDrawFlags(FRHICommandList& RHICmdList, bool bDrawDisabledEffect);
 
 private:
-	FShaderParameter GammaAndAlphaValues;
-	FShaderParameter ShaderParams;
+	LAYOUT_FIELD(FShaderParameter, GammaAndAlphaValues);
+	LAYOUT_FIELD(FShaderParameter, DrawFlags);
+	LAYOUT_FIELD(FShaderParameter, ShaderParams);
 	/** Extra texture (like a font atlas) to be used in addition to any material textures */
-	FShaderResourceParameter TextureParameterSampler;
-	FShaderResourceParameter AdditionalTextureParameter;
+	LAYOUT_FIELD(FShaderResourceParameter, TextureParameterSampler);
+	LAYOUT_FIELD(FShaderResourceParameter, AdditionalTextureParameter);
 };
 
 template<bool bUseInstancing>
@@ -86,26 +91,21 @@ public:
 	{ }
 	
 	/** Only compile shaders used with UI. */
-	static bool ShouldCompilePermutation(EShaderPlatform Platform, const FMaterial* Material)
+	static bool ShouldCompilePermutation(const FMaterialShaderPermutationParameters& Parameters)
 	{
-		return FSlateMaterialShaderVS::ShouldCompilePermutation(Platform, Material);
+		return FSlateMaterialShaderVS::ShouldCompilePermutation(Parameters);
 	}
 
 	/** Modifies the compilation of this shader. */
-	static void ModifyCompilationEnvironment(EShaderPlatform Platform, const FMaterial* Material, FShaderCompilerEnvironment& OutEnvironment)
+	static void ModifyCompilationEnvironment(const FMaterialShaderPermutationParameters& Parameters, FShaderCompilerEnvironment& OutEnvironment)
 	{
-		FSlateMaterialShaderVS::ModifyCompilationEnvironment(Platform, Material, OutEnvironment);
+		FSlateMaterialShaderVS::ModifyCompilationEnvironment(Parameters, OutEnvironment);
 
 		OutEnvironment.SetDefine(TEXT("USE_SLATE_INSTANCING"), (uint32)( bUseInstancing ? 1 : 0 ));
 	}
-
-	virtual bool Serialize(FArchive& Ar) override
-	{
-		return FSlateMaterialShaderVS::Serialize( Ar );
-	}
 };
 
-template<ESlateShader::Type ShaderType,bool bDrawDisabledEffect> 
+template<ESlateShader ShaderType>
 class TSlateMaterialShaderPS : public FSlateMaterialShaderPS
 {
 public:
@@ -118,22 +118,16 @@ public:
 	{ }
 	
 	/** Only compile shaders used with UI. */
-	static bool ShouldCompilePermutation(EShaderPlatform Platform, const FMaterial* Material)
+	static bool ShouldCompilePermutation(const FMaterialShaderPermutationParameters& Parameters)
 	{
-		return FSlateMaterialShaderPS::ShouldCompilePermutation(Platform,Material);
+		return FSlateMaterialShaderPS::ShouldCompilePermutation(Parameters);
 	}
 
 	/** Modifies the compilation of this shader. */
-	static void ModifyCompilationEnvironment(EShaderPlatform Platform, const FMaterial* Material, FShaderCompilerEnvironment& OutEnvironment)
+	static void ModifyCompilationEnvironment(const FMaterialShaderPermutationParameters& Parameters, FShaderCompilerEnvironment& OutEnvironment)
 	{
-		FSlateMaterialShaderPS::ModifyCompilationEnvironment(Platform, Material,OutEnvironment);
+		FSlateMaterialShaderPS::ModifyCompilationEnvironment(Parameters,OutEnvironment);
 
 		OutEnvironment.SetDefine(TEXT("SHADER_TYPE"), (uint32)ShaderType);
-		OutEnvironment.SetDefine(TEXT("DRAW_DISABLED_EFFECT"), (uint32)(bDrawDisabledEffect ? 1 : 0));
-	}
-
-	virtual bool Serialize(FArchive& Ar) override
-	{
-		return FSlateMaterialShaderPS::Serialize( Ar );
 	}
 };

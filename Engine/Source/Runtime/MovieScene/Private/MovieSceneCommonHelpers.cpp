@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "MovieSceneCommonHelpers.h"
 #include "Components/SceneComponent.h"
@@ -13,6 +13,7 @@
 #include "Sound/SoundWave.h"
 #include "Sound/SoundCue.h"
 #include "Sound/SoundNodeWavePlayer.h"
+#include "MovieSceneTrack.h"
 
 UMovieSceneSection* MovieSceneHelpers::FindSectionAtTime( const TArray<UMovieSceneSection*>& Sections, FFrameNumber Time )
 {
@@ -29,7 +30,6 @@ UMovieSceneSection* MovieSceneHelpers::FindSectionAtTime( const TArray<UMovieSce
 
 	return nullptr;
 }
-
 
 UMovieSceneSection* MovieSceneHelpers::FindNearestSectionAtTime( const TArray<UMovieSceneSection*>& Sections, FFrameNumber Time )
 {
@@ -88,36 +88,85 @@ void MovieSceneHelpers::SortConsecutiveSections(TArray<UMovieSceneSection*>& Sec
 	);
 }
 
-void MovieSceneHelpers::FixupConsecutiveSections(TArray<UMovieSceneSection*>& Sections, UMovieSceneSection& Section, bool bDelete)
+void MovieSceneHelpers::FixupConsecutiveSections(TArray<UMovieSceneSection*>& Sections, UMovieSceneSection& Section, bool bDelete, bool bOnlyOnSameRow, bool bAllowOverlapBlending)
 {
-	// Find the previous section and extend it to take the place of the section being deleted
 	int32 SectionIndex = INDEX_NONE;
 
 	TRange<FFrameNumber> SectionRange = Section.GetRange();
 
 	if (Sections.Find(&Section, SectionIndex))
 	{
+		// Find the previous section and extend it to take the place of the section being deleted
 		int32 PrevSectionIndex = SectionIndex - 1;
-		if( Sections.IsValidIndex( PrevSectionIndex ) )
+		if (Sections.IsValidIndex(PrevSectionIndex))
 		{
-			// Extend the previous section
-			if (bDelete)
+			UMovieSceneSection* PrevSection = Sections[PrevSectionIndex];
+			if (!bOnlyOnSameRow || PrevSection->GetRowIndex() == Section.GetRowIndex())
 			{
-				Sections[PrevSectionIndex]->SetEndFrame(SectionRange.GetUpperBound());
-			}
-			else
-			{
-				Sections[PrevSectionIndex]->SetEndFrame(TRangeBound<FFrameNumber>::FlipInclusion(SectionRange.GetLowerBound()));
+				PrevSection->Modify();
+
+				if (bDelete)
+				{
+					// The current section was deleted... extend the previous section to fill the gap.
+					PrevSection->SetEndFrame(SectionRange.GetUpperBound());
+				}
+				else if (!bAllowOverlapBlending)
+				{
+					// Keep the previous section snug against the current section's start.
+					PrevSection->SetEndFrame(TRangeBound<FFrameNumber>::FlipInclusion(SectionRange.GetLowerBound()));
+				}
+				else
+				{
+					// If we made a gap: adjust the previous section's end time so that it ends wherever the current section's ease-in ends.
+					// If we created an overlap: adjust the current section's ease-in so it ends where the previous section ends.
+					const FFrameNumber GapOrOverlap = SectionRange.GetLowerBoundValue() - PrevSection->GetRange().GetUpperBoundValue();
+					if (GapOrOverlap > 0)
+					{
+						// It's a gap!
+						PrevSection->SetEndFrame(TRangeBound<FFrameNumber>::Exclusive(SectionRange.GetLowerBoundValue() + Section.Easing.GetEaseInDuration()));
+					}
+					else
+					{
+						// It's an overlap!
+						Section.Easing.AutoEaseInDuration = -GapOrOverlap.Value;
+					}
+				}
 			}
 		}
 
-		if( !bDelete )
+		// Find the next section and adjust its start time to match the moved/resized section's new end time.
+		if (!bDelete)
 		{
 			int32 NextSectionIndex = SectionIndex + 1;
-			if(Sections.IsValidIndex(NextSectionIndex))
+			if (Sections.IsValidIndex(NextSectionIndex))
 			{
-				// Shift the next CameraCut's start time so that it starts when the new CameraCut ends
-				Sections[NextSectionIndex]->SetStartFrame(TRangeBound<FFrameNumber>::FlipInclusion(SectionRange.GetUpperBound()));
+				UMovieSceneSection* NextSection = Sections[NextSectionIndex];
+				if (!bOnlyOnSameRow || NextSection->GetRowIndex() == Section.GetRowIndex())
+				{
+					NextSection->Modify();
+
+					if (!bAllowOverlapBlending)
+					{
+						// Keep the next section snug against the current section's end.
+						NextSection->SetStartFrame(TRangeBound<FFrameNumber>::FlipInclusion(SectionRange.GetUpperBound()));
+					}
+					else
+					{
+						// If we made a gap: adjust the next section's start time so that it lines up with the current section's end.
+						// If we created an overlap: adjust the next section's ease-in so it ends where the current section ends.
+						const FFrameNumber GapOrOverlap = NextSection->GetRange().GetLowerBoundValue() - SectionRange.GetUpperBoundValue();
+						if (GapOrOverlap > 0)
+						{
+							// It's a gap!
+							NextSection->SetStartFrame(TRangeBound<FFrameNumber>::Inclusive(SectionRange.GetUpperBoundValue() - NextSection->Easing.GetEaseInDuration()));
+						}
+						else
+						{
+							// It's an overlap!
+							NextSection->Easing.AutoEaseInDuration = -GapOrOverlap.Value;
+						}
+					}
+				}
 			}
 		}
 	}
@@ -177,7 +226,7 @@ UCameraComponent* MovieSceneHelpers::CameraComponentFromActor(const AActor* InAc
 	// If there's a camera component that's active, return that one
 	for (UCameraComponent* CameraComponent : CameraComponents)
 	{
-		if (CameraComponent->bIsActive)
+		if (CameraComponent->IsActive())
 		{
 			return CameraComponent;
 		}
@@ -258,8 +307,52 @@ float MovieSceneHelpers::GetSoundDuration(USoundBase* Sound)
 	return Duration == INDEFINITELY_LOOPING_DURATION ? SoundWave->Duration : Duration;
 }
 
+
+float MovieSceneHelpers::CalculateWeightForBlending(UMovieSceneSection* SectionToKey, FFrameNumber Time)
+{
+	float Weight = 1.0f;
+	UMovieSceneTrack* Track = SectionToKey->GetTypedOuter<UMovieSceneTrack>();
+	FOptionalMovieSceneBlendType BlendType = SectionToKey->GetBlendType();
+	if (Track && BlendType.IsValid() && (BlendType.Get() == EMovieSceneBlendType::Additive || BlendType.Get() == EMovieSceneBlendType::Absolute))
+	{
+		//if additive weight is just the inverse of any weight on it
+		if (BlendType.Get() == EMovieSceneBlendType::Additive)
+		{
+			float TotalWeightValue = SectionToKey->GetTotalWeightValue(Time);
+			Weight = !FMath::IsNearlyZero(TotalWeightValue) ? 1.0f / TotalWeightValue : 0.0f;
+		}
+		else
+		{
+
+			const TArray<UMovieSceneSection*>& Sections = Track->GetAllSections();
+			TArray<UMovieSceneSection*, TInlineAllocator<4>> OverlappingSections;
+			for (UMovieSceneSection* Section : Sections)
+			{
+				if (Section->GetRange().Contains(Time))
+				{
+					OverlappingSections.Add(Section);
+				}
+			}
+			//if absolute need to calculate weight based upon other sections weights (+ implicit absolute weights)
+			int TotalNumOfAbsoluteSections = 1;
+			for (UMovieSceneSection* Section : OverlappingSections)
+			{
+				FOptionalMovieSceneBlendType NewBlendType = Section->GetBlendType();
+
+				if (Section != SectionToKey && NewBlendType.IsValid() && NewBlendType.Get() == EMovieSceneBlendType::Absolute)
+				{
+					++TotalNumOfAbsoluteSections;
+				}
+			}
+			float TotalWeightValue = SectionToKey->GetTotalWeightValue(Time);
+			Weight = !FMath::IsNearlyZero(TotalWeightValue) ? float(TotalNumOfAbsoluteSections) / TotalWeightValue : 0.0f;
+		}
+	}
+	return Weight;
+}
+
 FTrackInstancePropertyBindings::FTrackInstancePropertyBindings( FName InPropertyName, const FString& InPropertyPath, const FName& InFunctionName, const FName& InNotifyFunctionName )
-    : PropertyPath( InPropertyPath )
+	: PropertyPath( InPropertyPath )
 	, NotifyFunctionName(InNotifyFunctionName)
 	, PropertyName( InPropertyName )
 {
@@ -281,7 +374,7 @@ struct FPropertyAndIndex
 {
 	FPropertyAndIndex() : Property(nullptr), ArrayIndex(INDEX_NONE) {}
 
-	UProperty* Property;
+	FProperty* Property;
 	int32 ArrayIndex;
 };
 
@@ -297,7 +390,7 @@ FPropertyAndIndex FindPropertyAndArrayIndex(UStruct* InStruct, const FString& Pr
 		if (PropertyName.FindLastChar('[', OpenIndex))
 		{
 			FString TruncatedPropertyName(OpenIndex, *PropertyName);
-			PropertyAndIndex.Property = FindField<UProperty>(InStruct, *TruncatedPropertyName);
+			PropertyAndIndex.Property = FindField<FProperty>(InStruct, *TruncatedPropertyName);
 
 			const int32 NumberLength = PropertyName.Len() - OpenIndex - 2;
 			if (NumberLength > 0 && NumberLength <= 10)
@@ -311,7 +404,7 @@ FPropertyAndIndex FindPropertyAndArrayIndex(UStruct* InStruct, const FString& Pr
 		}
 	}
 
-	PropertyAndIndex.Property = FindField<UProperty>(InStruct, *PropertyName);
+	PropertyAndIndex.Property = FindField<FProperty>(InStruct, *PropertyName);
 	return PropertyAndIndex;
 }
 
@@ -323,14 +416,14 @@ FTrackInstancePropertyBindings::FPropertyAddress FTrackInstancePropertyBindings:
 
 	if (PropertyAndIndex.ArrayIndex != INDEX_NONE)
 	{
-		if (PropertyAndIndex.Property->IsA(UArrayProperty::StaticClass()))
+		if (PropertyAndIndex.Property->IsA(FArrayProperty::StaticClass()))
 		{
-			UArrayProperty* ArrayProp = CastChecked<UArrayProperty>(PropertyAndIndex.Property);
+			FArrayProperty* ArrayProp = CastFieldChecked<FArrayProperty>(PropertyAndIndex.Property);
 
 			FScriptArrayHelper ArrayHelper(ArrayProp, ArrayProp->ContainerPtrToValuePtr<void>(BasePointer));
 			if (ArrayHelper.IsValidIndex(PropertyAndIndex.ArrayIndex))
 			{
-				UStructProperty* InnerStructProp = Cast<UStructProperty>(ArrayProp->Inner);
+				FStructProperty* InnerStructProp = CastField<FStructProperty>(ArrayProp->Inner);
 				if (InnerStructProp && InPropertyNames.IsValidIndex(Index + 1))
 				{
 					return FindPropertyRecursive(ArrayHelper.GetRawPtr(PropertyAndIndex.ArrayIndex), InnerStructProp->Struct, InPropertyNames, Index + 1);
@@ -344,10 +437,10 @@ FTrackInstancePropertyBindings::FPropertyAddress FTrackInstancePropertyBindings:
 		}
 		else
 		{
-			UE_LOG(LogMovieScene, Error, TEXT("Mismatch in property evaluation. %s is not of type: %s"), *PropertyAndIndex.Property->GetName(), *UArrayProperty::StaticClass()->GetName());
+			UE_LOG(LogMovieScene, Error, TEXT("Mismatch in property evaluation. %s is not of type: %s"), *PropertyAndIndex.Property->GetName(), *FArrayProperty::StaticClass()->GetName());
 		}
 	}
-	else if (UStructProperty* StructProp = Cast<UStructProperty>(PropertyAndIndex.Property))
+	else if (FStructProperty* StructProp = CastField<FStructProperty>(PropertyAndIndex.Property))
 	{
 		NewAddress.Property = StructProp;
 		NewAddress.Address = BasePointer;
@@ -379,7 +472,7 @@ FTrackInstancePropertyBindings::FPropertyAddress FTrackInstancePropertyBindings:
 
 	InPropertyPath.ParseIntoArray(PropertyNames, TEXT("."), true);
 
-	if( PropertyNames.Num() > 0 )
+	if(IsValid(&InObject) && PropertyNames.Num() > 0)
 	{
 		return FindPropertyRecursive( (void*)&InObject, InObject.GetClass(), PropertyNames, 0 );
 	}
@@ -392,25 +485,24 @@ FTrackInstancePropertyBindings::FPropertyAddress FTrackInstancePropertyBindings:
 void FTrackInstancePropertyBindings::CallFunctionForEnum( UObject& InRuntimeObject, int64 PropertyValue )
 {
 	FPropertyAndFunction PropAndFunction = FindOrAdd(InRuntimeObject);
-	if (UFunction* Setter = PropAndFunction.SetterFunction.Get())
+	if (UFunction* SetterFunction = PropAndFunction.SetterFunction.Get())
 	{
-		// ProcessEvent should really be taking const void*
-		InRuntimeObject.ProcessEvent(Setter, (void*)&PropertyValue);
+		InvokeSetterFunction(&InRuntimeObject, SetterFunction, PropertyValue);
 	}
-	else if (UProperty* Property = PropAndFunction.PropertyAddress.GetProperty())
+	else if (FProperty* Property = PropAndFunction.PropertyAddress.GetProperty())
 	{
-		if (Property->IsA(UEnumProperty::StaticClass()))
+		if (Property->IsA(FEnumProperty::StaticClass()))
 		{
-			if (UEnumProperty* EnumProperty = CastChecked<UEnumProperty>(Property))
+			if (FEnumProperty* EnumProperty = CastFieldChecked<FEnumProperty>(Property))
 			{
-				UNumericProperty* UnderlyingProperty = EnumProperty->GetUnderlyingProperty();
+				FNumericProperty* UnderlyingProperty = EnumProperty->GetUnderlyingProperty();
 				void* ValueAddr = EnumProperty->ContainerPtrToValuePtr<void>(PropAndFunction.PropertyAddress.Address);
 				UnderlyingProperty->SetIntPropertyValue(ValueAddr, PropertyValue);
 			}
 		}
 		else
 		{
-			UE_LOG(LogMovieScene, Error, TEXT("Mismatch in property evaluation. %s is not of type: %s"), *Property->GetName(), *UEnumProperty::StaticClass()->GetName());
+			UE_LOG(LogMovieScene, Error, TEXT("Mismatch in property evaluation. %s is not of type: %s"), *Property->GetName(), *FEnumProperty::StaticClass()->GetName());
 		}
 	}
 
@@ -424,21 +516,28 @@ void FTrackInstancePropertyBindings::CacheBinding(const UObject& Object)
 {
 	FPropertyAndFunction PropAndFunction;
 	{
-		PropAndFunction.SetterFunction = Object.FindFunction(FunctionName);
 		PropAndFunction.PropertyAddress = FindProperty(Object, PropertyPath);
-		if (NotifyFunctionName != NAME_None)
+
+		UFunction* SetterFunction = Object.FindFunction(FunctionName);
+		if (SetterFunction && SetterFunction->NumParms >= 1)
 		{
-			PropAndFunction.NotifyFunction = Object.FindFunction(NotifyFunctionName);
+			PropAndFunction.SetterFunction = SetterFunction;
+		}
+		
+		UFunction* NotifyFunction = NotifyFunctionName != NAME_None ? Object.FindFunction(NotifyFunctionName) : nullptr;
+		if (NotifyFunction && NotifyFunction->NumParms == 0 && NotifyFunction->ReturnValueOffset == MAX_uint16)
+		{
+			PropAndFunction.NotifyFunction = NotifyFunction;
 		}
 	}
 
 	RuntimeObjectToFunctionMap.Add(FObjectKey(&Object), PropAndFunction);
 }
 
-UProperty* FTrackInstancePropertyBindings::GetProperty(const UObject& Object) const
+FProperty* FTrackInstancePropertyBindings::GetProperty(const UObject& Object) const
 {
 	FPropertyAndFunction PropAndFunction = RuntimeObjectToFunctionMap.FindRef(&Object);
-	if (UProperty* Property = PropAndFunction.PropertyAddress.GetProperty())
+	if (FProperty* Property = PropAndFunction.PropertyAddress.GetProperty())
 	{
 		return Property;
 	}
@@ -450,13 +549,13 @@ int64 FTrackInstancePropertyBindings::GetCurrentValueForEnum(const UObject& Obje
 {
 	FPropertyAndFunction PropAndFunction = FindOrAdd(Object);
 
-	if (UProperty* Property = PropAndFunction.PropertyAddress.GetProperty())
+	if (FProperty* Property = PropAndFunction.PropertyAddress.GetProperty())
 	{
-		if (Property->IsA(UEnumProperty::StaticClass()))
+		if (Property->IsA(FEnumProperty::StaticClass()))
 		{
-			if (UEnumProperty* EnumProperty = CastChecked<UEnumProperty>(Property))
+			if (FEnumProperty* EnumProperty = CastFieldChecked<FEnumProperty>(Property))
 			{
-				UNumericProperty* UnderlyingProperty = EnumProperty->GetUnderlyingProperty();
+				FNumericProperty* UnderlyingProperty = EnumProperty->GetUnderlyingProperty();
 				void* ValueAddr = EnumProperty->ContainerPtrToValuePtr<void>(PropAndFunction.PropertyAddress.Address);
 				int64 Result = UnderlyingProperty->GetSignedIntPropertyValue(ValueAddr);
 				return Result;
@@ -464,7 +563,7 @@ int64 FTrackInstancePropertyBindings::GetCurrentValueForEnum(const UObject& Obje
 		}
 		else
 		{
-			UE_LOG(LogMovieScene, Error, TEXT("Mismatch in property evaluation. %s is not of type: %s"), *Property->GetName(), *UEnumProperty::StaticClass()->GetName());
+			UE_LOG(LogMovieScene, Error, TEXT("Mismatch in property evaluation. %s is not of type: %s"), *Property->GetName(), *FEnumProperty::StaticClass()->GetName());
 		}
 	}
 
@@ -476,14 +575,13 @@ template<> void FTrackInstancePropertyBindings::CallFunction<bool>(UObject& InRu
 	FPropertyAndFunction PropAndFunction = FindOrAdd(InRuntimeObject);
 	if (UFunction* SetterFunction = PropAndFunction.SetterFunction.Get())
 	{
-		// ProcessEvent should really be taking const void*
-		InRuntimeObject.ProcessEvent(SetterFunction, (void*)&PropertyValue);
+		InvokeSetterFunction(&InRuntimeObject, SetterFunction, PropertyValue);
 	}
-	else if (UProperty* Property = PropAndFunction.PropertyAddress.GetProperty())
+	else if (FProperty* Property = PropAndFunction.PropertyAddress.GetProperty())
 	{
-		if (Property->IsA(UBoolProperty::StaticClass()))
+		if (Property->IsA(FBoolProperty::StaticClass()))
 		{
-			if (UBoolProperty* BoolProperty = CastChecked<UBoolProperty>(Property))
+			if (FBoolProperty* BoolProperty = CastFieldChecked<FBoolProperty>(Property))
 			{
 				uint8* ValuePtr = BoolProperty->ContainerPtrToValuePtr<uint8>(PropAndFunction.PropertyAddress.Address);
 				BoolProperty->SetPropertyValue(ValuePtr, PropertyValue);
@@ -491,7 +589,7 @@ template<> void FTrackInstancePropertyBindings::CallFunction<bool>(UObject& InRu
 		}
 		else
 		{
-			UE_LOG(LogMovieScene, Error, TEXT("Mismatch in property evaluation. %s is not of type: %s"), *Property->GetName(), *UBoolProperty::StaticClass()->GetName());
+			UE_LOG(LogMovieScene, Error, TEXT("Mismatch in property evaluation. %s is not of type: %s"), *Property->GetName(), *FBoolProperty::StaticClass()->GetName());
 		}
 	}
 
@@ -504,11 +602,11 @@ template<> void FTrackInstancePropertyBindings::CallFunction<bool>(UObject& InRu
 template<> bool FTrackInstancePropertyBindings::GetCurrentValue<bool>(const UObject& Object)
 {
 	FPropertyAndFunction PropAndFunction = FindOrAdd(Object);
-	if (UProperty* Property = PropAndFunction.PropertyAddress.GetProperty())
+	if (FProperty* Property = PropAndFunction.PropertyAddress.GetProperty())
 	{
-		if (Property->IsA(UBoolProperty::StaticClass()))
+		if (Property->IsA(FBoolProperty::StaticClass()))
 		{
-			if (UBoolProperty* BoolProperty = CastChecked<UBoolProperty>(Property))
+			if (FBoolProperty* BoolProperty = CastFieldChecked<FBoolProperty>(Property))
 			{
 				const uint8* ValuePtr = BoolProperty->ContainerPtrToValuePtr<uint8>(PropAndFunction.PropertyAddress.Address);
 				return BoolProperty->GetPropertyValue(ValuePtr);
@@ -516,7 +614,7 @@ template<> bool FTrackInstancePropertyBindings::GetCurrentValue<bool>(const UObj
 		}
 		else
 		{
-			UE_LOG(LogMovieScene, Error, TEXT("Mismatch in property evaluation. %s is not of type: %s"), *Property->GetName(), *UBoolProperty::StaticClass()->GetName());
+			UE_LOG(LogMovieScene, Error, TEXT("Mismatch in property evaluation. %s is not of type: %s"), *Property->GetName(), *FBoolProperty::StaticClass()->GetName());
 		}
 	}
 
@@ -526,9 +624,9 @@ template<> bool FTrackInstancePropertyBindings::GetCurrentValue<bool>(const UObj
 template<> void FTrackInstancePropertyBindings::SetCurrentValue<bool>(UObject& Object, TCallTraits<bool>::ParamType InValue)
 {
 	FPropertyAndFunction PropAndFunction = FindOrAdd(Object);
-	if (UProperty* Property = PropAndFunction.PropertyAddress.GetProperty())
+	if (FProperty* Property = PropAndFunction.PropertyAddress.GetProperty())
 	{
-		if (UBoolProperty* BoolProperty = Cast<UBoolProperty>(Property))
+		if (FBoolProperty* BoolProperty = CastField<FBoolProperty>(Property))
 		{
 			uint8* ValuePtr = BoolProperty->ContainerPtrToValuePtr<uint8>(PropAndFunction.PropertyAddress.Address);
 			BoolProperty->SetPropertyValue(ValuePtr, InValue);
@@ -547,10 +645,9 @@ template<> void FTrackInstancePropertyBindings::CallFunction<UObject*>(UObject& 
 	FPropertyAndFunction PropAndFunction = FindOrAdd(InRuntimeObject);
 	if (UFunction* SetterFunction = PropAndFunction.SetterFunction.Get())
 	{
-		// ProcessEvent should really be taking const void*
-		InRuntimeObject.ProcessEvent(SetterFunction, (void*)&PropertyValue);
+		InvokeSetterFunction(&InRuntimeObject, SetterFunction, PropertyValue);
 	}
-	else if (UObjectPropertyBase* ObjectProperty = Cast<UObjectPropertyBase>(PropAndFunction.PropertyAddress.GetProperty()))
+	else if (FObjectPropertyBase* ObjectProperty = CastField<FObjectPropertyBase>(PropAndFunction.PropertyAddress.GetProperty()))
 	{
 		uint8* ValuePtr = ObjectProperty->ContainerPtrToValuePtr<uint8>(PropAndFunction.PropertyAddress.Address);
 		ObjectProperty->SetObjectPropertyValue(ValuePtr, PropertyValue);
@@ -565,7 +662,7 @@ template<> void FTrackInstancePropertyBindings::CallFunction<UObject*>(UObject& 
 template<> UObject* FTrackInstancePropertyBindings::GetCurrentValue<UObject*>(const UObject& InRuntimeObject)
 {
 	FPropertyAndFunction PropAndFunction = FindOrAdd(InRuntimeObject);
-	if (UObjectPropertyBase* ObjectProperty = Cast<UObjectPropertyBase>(PropAndFunction.PropertyAddress.GetProperty()))
+	if (FObjectPropertyBase* ObjectProperty = CastField<FObjectPropertyBase>(PropAndFunction.PropertyAddress.GetProperty()))
 	{
 		const uint8* ValuePtr = ObjectProperty->ContainerPtrToValuePtr<uint8>(PropAndFunction.PropertyAddress.Address);
 		return ObjectProperty->GetObjectPropertyValue(ValuePtr);
@@ -577,7 +674,7 @@ template<> UObject* FTrackInstancePropertyBindings::GetCurrentValue<UObject*>(co
 template<> void FTrackInstancePropertyBindings::SetCurrentValue<UObject*>(UObject& InRuntimeObject, UObject* InValue)
 {
 	FPropertyAndFunction PropAndFunction = FindOrAdd(InRuntimeObject);
-	if (UObjectPropertyBase* ObjectProperty = Cast<UObjectPropertyBase>(PropAndFunction.PropertyAddress.GetProperty()))
+	if (FObjectPropertyBase* ObjectProperty = CastField<FObjectPropertyBase>(PropAndFunction.PropertyAddress.GetProperty()))
 	{
 		uint8* ValuePtr = ObjectProperty->ContainerPtrToValuePtr<uint8>(PropAndFunction.PropertyAddress.Address);
 		ObjectProperty->SetObjectPropertyValue(ValuePtr, InValue);

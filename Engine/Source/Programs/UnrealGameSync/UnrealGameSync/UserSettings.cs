@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 using System;
 using System.Collections.Generic;
@@ -45,6 +45,63 @@ namespace UnrealGameSync
 		None,
 		Code,
 		Content
+	}
+
+	enum UserSettingsVersion
+	{
+		Initial = 0,
+		DefaultServerSettings = 1,
+		Latest = DefaultServerSettings
+	}
+
+	class ArchiveSettings
+	{
+		public bool bEnabled;
+		public string Type;
+		public List<string> Order;
+
+		public ArchiveSettings(bool bEnabled, string Type, IEnumerable<string> Order)
+		{
+			this.bEnabled = bEnabled;
+			this.Type = Type;
+			this.Order = new List<string>(Order);
+		}
+
+		public static bool TryParseConfigEntry(string Text, out ArchiveSettings Settings)
+		{
+			ConfigObject Object = new ConfigObject(Text);
+
+			string Type = Object.GetValue("Type", null);
+			if (Type == null)
+			{
+				Settings = null;
+				return false;
+			}
+			else
+			{
+				string[] Order = Object.GetValue("Order", "").Split(new char[] { ';' }, StringSplitOptions.RemoveEmptyEntries);
+				bool bEnabled = Object.GetValue("Enabled", 0) != 0;
+
+				Settings = new ArchiveSettings(bEnabled, Type, Order);
+				return true;
+			}
+		}
+
+		public string ToConfigEntry()
+		{
+			ConfigObject Object = new ConfigObject();
+
+			Object.SetValue("Enabled", bEnabled ? 1 : 0);
+			Object.SetValue("Type", Type);
+			Object.SetValue("Order", String.Join(";", Order));
+
+			return Object.ToString();
+		}
+
+		public override string ToString()
+		{
+			return ToConfigEntry();
+		}
 	}
 
 	class UserSelectedProjectSettings
@@ -190,9 +247,9 @@ namespace UnrealGameSync
 		ConfigFile ConfigFile = new ConfigFile();
 
 		// General settings
+		public UserSettingsVersion Version = UserSettingsVersion.Latest;
 		public bool bBuildAfterSync;
 		public bool bRunAfterSync;
-		public bool bSyncPrecompiledEditor;
 		public bool bOpenSolutionAfterSync;
 		public bool bShowLogWindow;
 		public bool bAutoResolveConflicts;
@@ -213,6 +270,9 @@ namespace UnrealGameSync
 		public BuildConfig CompiledEditorBuildConfig; // NB: This assumes not using precompiled editor. See CurrentBuildConfig.
 		public TabLabels TabLabels;
 
+		// Precompiled binaries
+		public List<ArchiveSettings> Archives = new List<ArchiveSettings>();
+
 		// Window settings
 		public bool bWindowVisible;
 		public FormWindowState WindowState;
@@ -228,6 +288,11 @@ namespace UnrealGameSync
 		// Run configuration
 		public List<Tuple<string, bool>> EditorArguments = new List<Tuple<string,bool>>();
 		public bool bEditorArgumentsPrompt;
+
+		// Notification settings
+		public int NotifyUnassignedMinutes;
+		public int NotifyUnacknowledgedMinutes;
+		public int NotifyUnresolvedMinutes;
 
 		// Project settings
 		Dictionary<string, UserWorkspaceSettings> WorkspaceKeyToSettings = new Dictionary<string,UserWorkspaceSettings>();
@@ -279,9 +344,10 @@ namespace UnrealGameSync
 			}
 
 			// General settings
+			Version = (UserSettingsVersion)ConfigFile.GetValue("General.Version", (int)UserSettingsVersion.Initial);
 			bBuildAfterSync = (ConfigFile.GetValue("General.BuildAfterSync", "1") != "0");
 			bRunAfterSync = (ConfigFile.GetValue("General.RunAfterSync", "1") != "0");
-			bSyncPrecompiledEditor = (ConfigFile.GetValue("General.SyncPrecompiledEditor", "0") != "0");
+			bool bSyncPrecompiledEditor = (ConfigFile.GetValue("General.SyncPrecompiledEditor", "0") != "0");
 			bOpenSolutionAfterSync = (ConfigFile.GetValue("General.OpenSolutionAfterSync", "0") != "0");
 			bShowLogWindow = (ConfigFile.GetValue("General.ShowLogWindow", false));
 			bAutoResolveConflicts = (ConfigFile.GetValue("General.AutoResolveConflicts", "1") != "0");
@@ -351,6 +417,22 @@ namespace UnrealGameSync
 			}
 			bEditorArgumentsPrompt = ConfigFile.GetValue("General.EditorArgumentsPrompt", false);
 
+			// Precompiled binaries
+			string[] ArchiveValues = ConfigFile.GetValues("PrecompiledBinaries.Archives", new string[0]);
+			foreach (string ArchiveValue in ArchiveValues)
+			{
+				ArchiveSettings Settings;
+				if (ArchiveSettings.TryParseConfigEntry(ArchiveValue, out Settings))
+				{
+					Archives.Add(Settings);
+				}
+			}
+
+			if (bSyncPrecompiledEditor)
+			{
+				Archives.Add(new ArchiveSettings(true, "Editor", new string[0]));
+			}
+
 			// Window settings
 			bWindowVisible = ConfigFile.GetValue("Window.Visible", true);
 			if(!Enum.TryParse(ConfigFile.GetValue("Window.State", ""), true, out WindowState))
@@ -371,6 +453,11 @@ namespace UnrealGameSync
 			}
 			ScheduleAnyOpenProject = ConfigFile.GetValue("Schedule.AnyOpenProject", true);
 			ScheduleProjects = ReadProjectList("Schedule.Projects", "Schedule.ProjectFileNames");
+
+			// Notification settings
+			NotifyUnassignedMinutes = ConfigFile.GetValue("Notifications.NotifyUnassignedMinutes", -1);
+			NotifyUnacknowledgedMinutes = ConfigFile.GetValue("Notifications.NotifyUnacknowledgedMinutes", -1);
+			NotifyUnresolvedMinutes = ConfigFile.GetValue("Notifications.NotifyUnresolvedMinutes", -1);
 
 			// Perforce settings
 			if(!int.TryParse(ConfigFile.GetValue("Perforce.NumRetries", "0"), out SyncOptions.NumRetries))
@@ -564,9 +651,9 @@ namespace UnrealGameSync
 			// General settings
 			ConfigSection GeneralSection = ConfigFile.FindOrAddSection("General");
 			GeneralSection.Clear();
+			GeneralSection.SetValue("Version", (int)Version);
 			GeneralSection.SetValue("BuildAfterSync", bBuildAfterSync);
 			GeneralSection.SetValue("RunAfterSync", bRunAfterSync);
-			GeneralSection.SetValue("SyncPrecompiledEditor", bSyncPrecompiledEditor);
 			GeneralSection.SetValue("OpenSolutionAfterSync", bOpenSolutionAfterSync);
 			GeneralSection.SetValue("ShowLogWindow", bShowLogWindow);
 			GeneralSection.SetValue("AutoResolveConflicts", bAutoResolveConflicts);
@@ -612,6 +699,10 @@ namespace UnrealGameSync
 			ScheduleSection.SetValue("AnyOpenProject", ScheduleAnyOpenProject);
 			ScheduleSection.SetValues("Projects", ScheduleProjects.Select(x => x.ToConfigEntry()).ToArray());
 
+			// Precompiled binaries
+			ConfigSection ArchivesSection = ConfigFile.FindOrAddSection("PrecompiledBinaries");
+			ArchivesSection.SetValues("Archives", Archives.Select(x => x.ToConfigEntry()).ToArray());
+
 			// Window settings
 			ConfigSection WindowSection = ConfigFile.FindOrAddSection("Window");
 			WindowSection.Clear();
@@ -620,6 +711,22 @@ namespace UnrealGameSync
 			if(WindowBounds != null)
 			{
 				WindowSection.SetValue("Bounds", FormatRectangleValue(WindowBounds.Value));
+			}
+
+			// Notification settings
+			ConfigSection NotificationSection = ConfigFile.FindOrAddSection("Notifications");
+			NotificationSection.Clear();
+			if (NotifyUnassignedMinutes != -1)
+			{
+				NotificationSection.SetValue("NotifyUnassignedMinutes", NotifyUnassignedMinutes);
+			}
+			if (NotifyUnacknowledgedMinutes != -1)
+			{
+				NotificationSection.SetValue("NotifyUnacknowledgedMinutes", NotifyUnacknowledgedMinutes);
+			}
+			if (NotifyUnresolvedMinutes != -1)
+			{
+				NotificationSection.SetValue("NotifyUnresolvedMinutes", NotifyUnresolvedMinutes);
 			}
 
 			// Current workspace settings

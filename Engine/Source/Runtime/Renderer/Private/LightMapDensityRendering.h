@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 /*=============================================================================
 	LightMapDensityRendering.h: Definitions for rendering lightmap density.
@@ -20,7 +20,7 @@
 #include "SceneRendering.h"
 #include "Engine/LightMapTexture2D.h"
 #include "Runtime/Engine/Classes/VT/VirtualTexture.h"
-#include "Runtime/Engine/Classes/VT/VirtualTextureSpace.h"
+#include "Runtime/Renderer/Private/VT/VirtualTextureSpace.h"
 
 BEGIN_GLOBAL_SHADER_PARAMETER_STRUCT(FLightmapDensityPassUniformParameters, )
 	SHADER_PARAMETER_STRUCT(FSceneTexturesUniformParameters, SceneTextures)
@@ -52,22 +52,22 @@ public:
 template<typename LightMapPolicyType>
 class TLightMapDensityVS : public FMeshMaterialShader, public LightMapPolicyType::VertexParametersType
 {
-	DECLARE_SHADER_TYPE(TLightMapDensityVS,MeshMaterial);
+	DECLARE_SHADER_TYPE_EXPLICIT_BASES(TLightMapDensityVS,MeshMaterial, FMeshMaterialShader, typename LightMapPolicyType::VertexParametersType);
 
 public:
 
-	static bool ShouldCompilePermutation(EShaderPlatform Platform,const FMaterial* Material,const FVertexFactoryType* VertexFactoryType)
+	static bool ShouldCompilePermutation(const FMeshMaterialShaderPermutationParameters& Parameters)
 	{
-		return  AllowDebugViewmodes(Platform) 
-				&& (Material->IsSpecialEngineMaterial() || Material->IsMasked() || Material->MaterialMayModifyMeshPosition())
-				&& LightMapPolicyType::ShouldCompilePermutation(Platform,Material,VertexFactoryType)
-				&& IsFeatureLevelSupported(Platform, ERHIFeatureLevel::SM4);
+		return  AllowDebugViewmodes(Parameters.Platform) 
+				&& (Parameters.MaterialParameters.bIsSpecialEngineMaterial || Parameters.MaterialParameters.bIsMasked || Parameters.MaterialParameters.bMaterialMayModifyMeshPosition)
+				&& LightMapPolicyType::ShouldCompilePermutation(Parameters)
+				&& IsFeatureLevelSupported(Parameters.Platform, ERHIFeatureLevel::SM5);
 	}
 
-	static void ModifyCompilationEnvironment(EShaderPlatform Platform, const FMaterial* Material, FShaderCompilerEnvironment& OutEnvironment)
+	static void ModifyCompilationEnvironment(const FMaterialShaderPermutationParameters& Parameters, FShaderCompilerEnvironment& OutEnvironment)
 	{
-		FMeshMaterialShader::ModifyCompilationEnvironment(Platform, Material, OutEnvironment);
-		LightMapPolicyType::ModifyCompilationEnvironment(Platform, Material, OutEnvironment);
+		FMeshMaterialShader::ModifyCompilationEnvironment(Parameters, OutEnvironment);
+		LightMapPolicyType::ModifyCompilationEnvironment(Parameters, OutEnvironment);
 	}
 
 	/** Initialization constructor. */
@@ -78,13 +78,6 @@ public:
 		PassUniformBuffer.Bind(Initializer.ParameterMap, FLightmapDensityPassUniformParameters::StaticStructMetadata.GetShaderVariableName());
 	}
 	TLightMapDensityVS() {}
-
-	virtual bool Serialize(FArchive& Ar) override
-	{
-		bool bShaderHasOutdatedParameters = FMeshMaterialShader::Serialize(Ar);
-		LightMapPolicyType::VertexParametersType::Serialize(Ar);
-		return bShaderHasOutdatedParameters;
-	}
 
 	void GetShaderBindings(
 		const FScene* Scene,
@@ -116,17 +109,17 @@ class TLightMapDensityHS : public FBaseHS
 
 public:
 
-	static bool ShouldCompilePermutation(EShaderPlatform Platform,const FMaterial* Material,const FVertexFactoryType* VertexFactoryType)
+	static bool ShouldCompilePermutation(const FMeshMaterialShaderPermutationParameters& Parameters)
 	{
-		return AllowDebugViewmodes(Platform) 
-			&& FBaseHS::ShouldCompilePermutation(Platform, Material, VertexFactoryType)
-			&& TLightMapDensityVS<LightMapPolicyType>::ShouldCompilePermutation(Platform, Material, VertexFactoryType);
+		return AllowDebugViewmodes(Parameters.Platform) 
+			&& FBaseHS::ShouldCompilePermutation(Parameters)
+			&& TLightMapDensityVS<LightMapPolicyType>::ShouldCompilePermutation(Parameters);
 	}
 
-	static void ModifyCompilationEnvironment(EShaderPlatform Platform, const FMaterial* Material, FShaderCompilerEnvironment& OutEnvironment)
+	static void ModifyCompilationEnvironment(const FMaterialShaderPermutationParameters& Parameters, FShaderCompilerEnvironment& OutEnvironment)
 	{
-		FMeshMaterialShader::ModifyCompilationEnvironment(Platform, Material, OutEnvironment);
-		LightMapPolicyType::ModifyCompilationEnvironment(Platform, Material, OutEnvironment);
+		FMeshMaterialShader::ModifyCompilationEnvironment(Parameters, OutEnvironment);
+		LightMapPolicyType::ModifyCompilationEnvironment(Parameters, OutEnvironment);
 	}
 
 	/** Initialization constructor. */
@@ -147,17 +140,17 @@ class TLightMapDensityDS : public FBaseDS
 
 public:
 
-	static bool ShouldCompilePermutation(EShaderPlatform Platform,const FMaterial* Material,const FVertexFactoryType* VertexFactoryType)
+	static bool ShouldCompilePermutation(const FMeshMaterialShaderPermutationParameters& Parameters)
 	{
-		return AllowDebugViewmodes(Platform) 
-			&& FBaseDS::ShouldCompilePermutation(Platform, Material, VertexFactoryType)
-			&& TLightMapDensityVS<LightMapPolicyType>::ShouldCompilePermutation(Platform, Material, VertexFactoryType);		
+		return AllowDebugViewmodes(Parameters.Platform) 
+			&& FBaseDS::ShouldCompilePermutation(Parameters)
+			&& TLightMapDensityVS<LightMapPolicyType>::ShouldCompilePermutation(Parameters);		
 	}
 
-	static void ModifyCompilationEnvironment(EShaderPlatform Platform, const FMaterial* Material, FShaderCompilerEnvironment& OutEnvironment)
+	static void ModifyCompilationEnvironment(const FMaterialShaderPermutationParameters& Parameters, FShaderCompilerEnvironment& OutEnvironment)
 	{
-		FMeshMaterialShader::ModifyCompilationEnvironment(Platform, Material, OutEnvironment);
-		LightMapPolicyType::ModifyCompilationEnvironment(Platform, Material, OutEnvironment);
+		FMeshMaterialShader::ModifyCompilationEnvironment(Parameters, OutEnvironment);
+		LightMapPolicyType::ModifyCompilationEnvironment(Parameters, OutEnvironment);
 	}
 
 	/** Initialization constructor. */
@@ -175,22 +168,22 @@ public:
 template<typename LightMapPolicyType>
 class TLightMapDensityPS : public FMeshMaterialShader, public LightMapPolicyType::PixelParametersType
 {
-	DECLARE_SHADER_TYPE(TLightMapDensityPS,MeshMaterial);
+	DECLARE_SHADER_TYPE_EXPLICIT_BASES(TLightMapDensityPS,MeshMaterial, FMeshMaterialShader, typename LightMapPolicyType::PixelParametersType);
 
 public:
 
-	static bool ShouldCompilePermutation(EShaderPlatform Platform,const FMaterial* Material,const FVertexFactoryType* VertexFactoryType)
+	static bool ShouldCompilePermutation(const FMeshMaterialShaderPermutationParameters& Parameters)
 	{
-		return	AllowDebugViewmodes(Platform) 
-				&& (Material->IsSpecialEngineMaterial() || Material->IsMasked() || Material->MaterialMayModifyMeshPosition())
-				&& LightMapPolicyType::ShouldCompilePermutation(Platform,Material,VertexFactoryType)
-				&& IsFeatureLevelSupported(Platform, ERHIFeatureLevel::SM4);
+		return	AllowDebugViewmodes(Parameters.Platform) 
+				&& (Parameters.MaterialParameters.bIsSpecialEngineMaterial || Parameters.MaterialParameters.bIsMasked || Parameters.MaterialParameters.bMaterialMayModifyMeshPosition)
+				&& LightMapPolicyType::ShouldCompilePermutation(Parameters)
+				&& IsFeatureLevelSupported(Parameters.Platform, ERHIFeatureLevel::SM5);
 	}
 
-	static void ModifyCompilationEnvironment(EShaderPlatform Platform, const FMaterial* Material, FShaderCompilerEnvironment& OutEnvironment)
+	static void ModifyCompilationEnvironment(const FMaterialShaderPermutationParameters& Parameters, FShaderCompilerEnvironment& OutEnvironment)
 	{
-		FMeshMaterialShader::ModifyCompilationEnvironment(Platform, Material, OutEnvironment);
-		LightMapPolicyType::ModifyCompilationEnvironment(Platform, Material, OutEnvironment);
+		FMeshMaterialShader::ModifyCompilationEnvironment(Parameters, OutEnvironment);
+		LightMapPolicyType::ModifyCompilationEnvironment(Parameters, OutEnvironment);
 	}
 
 	/** Initialization constructor. */
@@ -235,20 +228,10 @@ public:
 		ShaderBindings.Add(LightMapDensityDisplayOptions, OptionsParameter);
 	}
 
-	virtual bool Serialize(FArchive& Ar) override
-	{
-		bool bShaderHasOutdatedParameters = FMeshMaterialShader::Serialize(Ar);
-		LightMapPolicyType::PixelParametersType::Serialize(Ar);
-		Ar << BuiltLightingAndSelectedFlags;
-		Ar << LightMapResolutionScale;
-		Ar << LightMapDensityDisplayOptions;
-		return bShaderHasOutdatedParameters;
-	}
-
 private:
-	FShaderParameter BuiltLightingAndSelectedFlags;
-	FShaderParameter LightMapResolutionScale;
-	FShaderParameter LightMapDensityDisplayOptions;
+	LAYOUT_FIELD(FShaderParameter, BuiltLightingAndSelectedFlags);
+	LAYOUT_FIELD(FShaderParameter, LightMapResolutionScale);
+	LAYOUT_FIELD(FShaderParameter, LightMapDensityDisplayOptions);
 };
 
 

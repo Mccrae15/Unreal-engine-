@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -8,11 +8,12 @@
 #include "OculusAudioLegacy.h"
 #endif
 #include "OculusAudioSourceSettings.h"
+#include "OculusAmbisonicSpatializer.h"
 
 /************************************************************************/
-/* FOculusSpatializationPluginFactory                                   */
+/* FOculusSpatializationPluginFactory								   */
 /* Handles initialization of the required Oculus Audio Spatialization   */
-/* plugin.                                                              */
+/* plugin.															  */
 /************************************************************************/
 class FOculusSpatializationPluginFactory : public IAudioSpatializationFactory
 {
@@ -24,50 +25,34 @@ public:
 		return DisplayName;
 	}
 
-	virtual bool SupportsPlatform(EAudioPlatform Platform) override
+	virtual bool SupportsPlatform(const FString& PlatformName) override
 	{
-		if (Platform == EAudioPlatform::Windows || Platform == EAudioPlatform::Android)
-		{
-			return true;
-		}
-		else
-		{
-			return false;
-		}
+		return PlatformName == FString(TEXT("Windows")) || PlatformName == FString(TEXT("Android"));
 	}
 
-    virtual UClass* GetCustomSpatializationSettingsClass() const override { return UOculusAudioSourceSettings::StaticClass(); }
+	virtual UClass* GetCustomSpatializationSettingsClass() const override { return UOculusAudioSourceSettings::StaticClass(); }
 
 	virtual TAudioSpatializationPtr CreateNewSpatializationPlugin(FAudioDevice* OwningDevice) override;
 	//~ End IAudioSpatializationFactory
-
-	virtual TAmbisonicsMixerPtr CreateNewAmbisonicsMixer(FAudioDevice* OwningDevice) override;
 
 };
 
 class FOculusReverbPluginFactory : public IAudioReverbFactory
 {
 public:
-    //~ Begin IAudioReverbFactory
-    virtual FString GetDisplayName() override
-    {
-        static FString DisplayName = FString(TEXT("Oculus Audio"));
-        return DisplayName;
+	//~ Begin IAudioReverbFactory
+	virtual FString GetDisplayName() override
+	{
+		static FString DisplayName = FString(TEXT("Oculus Audio"));
+		return DisplayName;
+	}
+
+    virtual bool SupportsPlatform(const FString& PlatformName) override
+	{
+		return PlatformName == FString(TEXT("Windows"));
     }
 
-    virtual bool SupportsPlatform(EAudioPlatform Platform) override
-    {
-        if (Platform == EAudioPlatform::Windows)
-        {
-            return true;
-        }
-        else
-        {
-            return false;
-        }
-    }
-
-    virtual TAudioReverbPtr CreateNewReverbPlugin(FAudioDevice* OwningDevice) override;
-    //~ End IAudioReverbFactory
+	virtual TAudioReverbPtr CreateNewReverbPlugin(FAudioDevice* OwningDevice) override;
+	//~ End IAudioReverbFactory
 };
 

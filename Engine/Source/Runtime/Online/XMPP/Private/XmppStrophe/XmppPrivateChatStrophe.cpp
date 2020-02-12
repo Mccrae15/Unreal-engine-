@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "XmppStrophe/XmppPrivateChatStrophe.h"
 #include "XmppStrophe/XmppConnectionStrophe.h"
@@ -6,17 +6,32 @@
 #include "XmppStrophe/StropheStanza.h"
 #include "XmppStrophe/StropheStanzaConstants.h"
 #include "XmppLog.h"
+#include "Misc/EmbeddedCommunication.h"
+#include "Containers/BackgroundableTicker.h"
 
 #if WITH_XMPP_STROPHE
 
+#define TickRequesterId FName("StrophePrivateChat")
+
 FXmppPrivateChatStrophe::FXmppPrivateChatStrophe(FXmppConnectionStrophe& InConnectionManager)
-	: ConnectionManager(InConnectionManager)
+	: FTickerObjectBase(0.0f, FBackgroundableTicker::GetCoreTicker())
+	, ConnectionManager(InConnectionManager)
 {
+}
+
+FXmppPrivateChatStrophe::~FXmppPrivateChatStrophe()
+{
+	CleanupMessages();
 }
 
 void FXmppPrivateChatStrophe::OnDisconnect()
 {
-	IncomingChatMessages.Empty();
+	CleanupMessages();
+}
+
+void FXmppPrivateChatStrophe::OnReconnect()
+{
+
 }
 
 bool FXmppPrivateChatStrophe::ReceiveStanza(const FStropheStanza& IncomingStanza)
@@ -57,7 +72,7 @@ bool FXmppPrivateChatStrophe::ReceiveStanza(const FStropheStanza& IncomingStanza
 	ChatMessage.Body = MoveTemp(BodyText.GetValue());
 
 	// Parse Timezone
-	TOptional<const FStropheStanza> StanzaDelay = IncomingStanza.GetChild(Strophe::SN_DELAY);
+	TOptional<const FStropheStanza> StanzaDelay = IncomingStanza.GetChildStropheStanza(Strophe::SN_DELAY);
 	if (StanzaDelay.IsSet())
 	{
 		if (StanzaDelay->HasAttribute(Strophe::SA_STAMP))
@@ -72,6 +87,7 @@ bool FXmppPrivateChatStrophe::ReceiveStanza(const FStropheStanza& IncomingStanza
 		ChatMessage.Timestamp = FDateTime::UtcNow();
 	}
 
+	FEmbeddedCommunication::KeepAwake(TickRequesterId, false);
 	IncomingChatMessages.Enqueue(MakeUnique<FXmppChatMessage>(MoveTemp(ChatMessage)));
 	return true;
 }
@@ -106,6 +122,7 @@ bool FXmppPrivateChatStrophe::Tick(float DeltaTime)
 		TUniquePtr<FXmppChatMessage> ChatMessage;
 		if (IncomingChatMessages.Dequeue(ChatMessage))
 		{
+			FEmbeddedCommunication::AllowSleep(TickRequesterId);
 			check(ChatMessage);
 			OnChatReceived(MoveTemp(ChatMessage));
 		}
@@ -119,5 +136,17 @@ void FXmppPrivateChatStrophe::OnChatReceived(TUniquePtr<FXmppChatMessage>&& Chat
 	TSharedRef<FXmppChatMessage> ChatRef = MakeShareable(Chat.Release());
 	OnChatReceivedDelegate.Broadcast(ConnectionManager.AsShared(), ChatRef->FromJid, ChatRef);
 }
+
+void FXmppPrivateChatStrophe::CleanupMessages()
+{
+	while (!IncomingChatMessages.IsEmpty())
+	{
+		TUniquePtr<FXmppChatMessage> ChatMessage;
+		IncomingChatMessages.Dequeue(ChatMessage);
+		FEmbeddedCommunication::AllowSleep(TickRequesterId);
+	}
+}
+
+#undef TickRequesterId
 
 #endif

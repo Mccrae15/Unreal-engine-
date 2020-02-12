@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -9,6 +9,7 @@
 #include "Misc/SecureHash.h"
 #include "Factory.generated.h"
 
+class UAssetImportTask;
 struct FUntypedBulkData;
 
 /**
@@ -101,6 +102,12 @@ public:
 	virtual UObject* ImportObject(UClass* InClass, UObject* InOuter, FName InName, EObjectFlags Flags, const FString& Filename, const TCHAR* Parms, bool& OutCanceled);
 
 	/**
+	 * Returns an array of all the additional objects created during the last imports, as some factories may produce more than one object.
+	 * The internal array is cleared before each import and upon Cleanup().
+	 */
+	const TArray<UObject*>& GetAdditionalImportedObjects() const { return AdditionalImportedObjects; }
+
+	/**
 	 * Import object(s) using a task via script
 	 *
 	 * @param InTask
@@ -120,6 +127,9 @@ public:
 
 	/** When shown in menus, this is the category containing this factory. Return type is a BitFlag mask using EAssetTypeCategories. */
 	virtual uint32 GetMenuCategories() const;
+
+	/** Branch of sub-menus containing factory under each provided category. */
+	virtual const TArray<FText>& GetMenuCategorySubMenus() const;
 
 	/** Returns the tooltip text description of this factory */
 	virtual FText GetToolTip() const;
@@ -156,10 +166,10 @@ public:
 	virtual bool ImportUntypedBulkDataFromText(const TCHAR*& Buffer, FUntypedBulkData& BulkData);
 
 	/** Creates a list of file extensions supported by this factory */
-	void GetSupportedFileExtensions(TArray<FString>& OutExtensions) const;
+	virtual void GetSupportedFileExtensions(TArray<FString>& OutExtensions) const;
 
 	/** Do clean up after importing is done. Will be called once for multi batch import. */
-	virtual void CleanUp() {}
+	virtual void CleanUp() { AdditionalImportedObjects.Empty(); }
 	/**
 	 * Creates an asset if it doesn't exist. If it does exist then it overwrites it if possible. If it can not overwrite then it will delete and replace. If it can not delete, it will return nullptr.
 	 * 
@@ -391,5 +401,7 @@ protected:
 	*/
 	UPROPERTY()
 	int32 OverwriteYesOrNoToAllState;
+
+	TArray<UObject*> AdditionalImportedObjects;
 
 };

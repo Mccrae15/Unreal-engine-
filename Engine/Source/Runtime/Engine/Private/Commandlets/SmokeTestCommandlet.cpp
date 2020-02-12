@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 /*=============================================================================
 	SmokeTestCommandlet.cpp: Commandled used for smoke testing.
@@ -23,7 +23,7 @@ int32 USmokeTestCommandlet::Main( const FString& Params )
 {
 	const TCHAR* Parms = *Params;
 
-	GIsRequestingExit = true; // so CTRL-C will exit immediately
+	RequestEngineExit(TEXT("SmokeTestCommandlet Main")); // so CTRL-C will exit immediately
 	bool bAllSuccessful = FAutomationTestFramework::Get().RunSmokeTests();
 
 	return bAllSuccessful ? 0 : 1;

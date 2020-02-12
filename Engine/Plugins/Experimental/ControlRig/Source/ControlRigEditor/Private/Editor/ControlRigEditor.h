@@ -1,10 +1,23 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
 #include "IControlRigEditor.h"
 #include "ControlRigEditorEditMode.h"
 #include "AssetEditorModeManager.h"
+#include "DragAndDrop/GraphNodeDragDropOp.h"
+#include "ControlRigDefines.h"
+#include "Units/RigUnitContext.h"
+#include "ControlRigLog.h"
+#include "IPersonaViewport.h"
+#include "Framework/MultiBox/MultiBoxBuilder.h"
+#include "RigVMModel/RigVMGraph.h"
+#include "RigVMCore/RigVM.h"
+#include "Graph/SControlRigGraphPinNameListValueWidget.h"
+#include "Styling/SlateTypes.h"
+#include "AnimPreviewInstance.h"
+#include "ScopedTransaction.h"
+#include "Graph/ControlRigGraphNode.h"
 
 class UControlRigBlueprint;
 class IPersonaToolkit;
@@ -12,9 +25,6 @@ class SWidget;
 class SBorder;
 class USkeletalMesh;
 class FStructOnScope;
-
-/** Delegate fired when node selection has changed */
-DECLARE_MULTICAST_DELEGATE_OneParam(FOnGraphNodeSelectionChanged, const TSet<UObject*>& /*Selection*/);
 
 struct FControlRigEditorModes
 {
@@ -68,7 +78,31 @@ public:
 	{
 		return FString(TEXT("Engine/Animation/ControlRig"));
 	}
-	
+
+	// BlueprintEditor interface
+	virtual bool TransactionObjectAffectsBlueprint(UObject* InTransactedObject) override;
+	virtual bool CanAddNewLocalVariable() const override { return false; }
+	virtual void DeleteSelectedNodes() override;
+	virtual bool CanDeleteNodes() const override;
+
+	virtual void CopySelectedNodes() override;
+	virtual bool CanCopyNodes() const override;
+
+	virtual void PasteNodes() override;
+	virtual bool CanPasteNodes() const override;
+
+	// FEditorUndoClient Interface
+	virtual void PostUndo(bool bSuccess) override;
+	virtual void PostRedo(bool bSuccess) override;
+
+	void EnsureValidRigElementInDetailPanel();
+
+	virtual void OnStartWatchingPin();
+	virtual bool CanStartWatchingPin() const;
+
+	virtual void OnStopWatchingPin();
+	virtual bool CanStopWatchingPin() const;
+
 	// IToolkitHost Interface
 	virtual void OnToolkitHostingStarted(const TSharedRef<class IToolkit>& Toolkit) override;
 	virtual void OnToolkitHostingFinished(const TSharedRef<class IToolkit>& Toolkit) override;
@@ -84,11 +118,9 @@ public:
 
 	void SetDetailObject(UObject* Obj);
 
-	void SetDetailStruct(TSharedPtr<FStructOnScope> StructToDisplay);
+	void SetDetailStruct(const FRigElementKey& InElement);
 
 	void ClearDetailObject();
-
-	FOnGraphNodeSelectionChanged& OnGraphNodeSelectionChanged() { return OnGraphNodeSelectionChangedDelegate; }
 
 	/** Get the persona toolkit */
 	TSharedRef<IPersonaToolkit> GetPersonaToolkit() const { return PersonaToolkit.ToSharedRef(); }
@@ -97,36 +129,53 @@ public:
 	TSharedRef<SBorder> GetToolbox() { return Toolbox.ToSharedRef(); }
 
 	/** Get the edit mode */
-	FControlRigEditorEditMode& GetEditMode() { return *static_cast<FControlRigEditorEditMode*>(GetAssetEditorModeManager()->GetActiveMode(FControlRigEditorEditMode::ModeName)); }
+	FControlRigEditorEditMode* GetEditMode() const;
 
-	/** Try to set the selected nodes form some external source */
-	void SetSelectedNodes(const TArray<FString>& InSelectedPropertyPaths);
-	void SelectJoint(const FName& InJoint);
 	// this changes everytime you compile, so don't cache it expecting it will last. 
 	UControlRig* GetInstanceRig() const { return ControlRig;  }
-	// restart animation 
-	void OnHierarchyChanged();
+
+	void OnCurveContainerChanged();
+
+	void OnRigElementAdded(FRigHierarchyContainer* Container, const FRigElementKey& InKey);
+	void OnRigElementRemoved(FRigHierarchyContainer* Container, const FRigElementKey& InKey);
+	void OnRigElementRenamed(FRigHierarchyContainer* Container, ERigElementType ElementType, const FName& InOldName, const FName& InNewName);
+	void OnRigElementReparented(FRigHierarchyContainer* Container, const FRigElementKey& InKey, const FName& InOldParentName, const FName& InNewParentName);
+	void OnRigElementSelected(FRigHierarchyContainer* Container, const FRigElementKey& InKey, bool bSelected);
+	void OnControlUISettingChanged(FRigHierarchyContainer* Container, const FRigElementKey& InKey);
+
+	void OnGraphNodeDropToPerform(TSharedPtr<FGraphNodeDragDropOp> DragDropOp, UEdGraph* Graph, const FVector2D& NodePosition, const FVector2D& ScreenPosition);
+
+	FPersonaViewportKeyDownDelegate& GetKeyDownDelegate() { return OnKeyDownDelegate; }
+	FNewMenuDelegate& OnViewportContextMenu() { return OnViewportContextMenuDelegate; }
+	FNewMenuCommandsDelegate& OnViewportContextMenuCommands() { return OnViewportContextMenuCommandsDelegate; }
+
+	DECLARE_EVENT_OneParam(FControlRigEditor, FPreviewControlRigUpdated, FControlRigEditor*);
+	FPreviewControlRigUpdated& OnPreviewControlRigUpdated() { return PreviewControlRigUpdated;  }
+
 protected:
+
+	void OnHierarchyChanged();
+	void OnControlsSettingsChanged();
+
 	// FBlueprintEditor Interface
 	virtual void CreateDefaultCommands() override;
 	virtual void OnCreateGraphEditorCommands(TSharedPtr<FUICommandList> GraphEditorCommandsList);
 	virtual void Compile() override;
 	virtual bool IsInAScriptingMode() const override { return true; }
 	virtual void CreateDefaultTabContents(const TArray<UBlueprint*>& InBlueprints) override;
+	virtual bool IsSectionVisible(NodeSectionID::Type InSectionID) const override;
 	virtual FGraphAppearanceInfo GetGraphAppearance(class UEdGraph* InGraph) const override;
 	virtual bool IsEditable(UEdGraph* InGraph) const override;
+	virtual bool IsCompilingEnabled() const override;
 	virtual FText GetGraphDecorationString(UEdGraph* InGraph) const override;
 	virtual void OnActiveTabChanged( TSharedPtr<SDockTab> PreviouslyActive, TSharedPtr<SDockTab> NewlyActivated ) override;
 	virtual void OnSelectedNodesChangedImpl(const TSet<class UObject*>& NewSelection) override;
 	virtual void OnBlueprintChangedImpl(UBlueprint* InBlueprint, bool bIsJustBeingCompiled) override;
 	virtual void SetupGraphEditorEvents(UEdGraph* InGraph, SGraphEditor::FGraphEditorEvents& InEvents) override;
 
-	// FEditorUndoClient Interface
-	virtual void PostUndo(bool bSuccess) override;
-	virtual void PostRedo(bool bSuccess) override;
-
-	// FNotifyHook Interface
-	virtual void NotifyPostChange(const FPropertyChangedEvent& PropertyChangedEvent, UProperty* PropertyThatChanged) override;
+	void HandleModifiedEvent(ERigVMGraphNotifType InNotifType, URigVMGraph* InGraph, UObject* InSubject);
+	void HandleVMCompiledEvent(UBlueprint* InBlueprint, URigVM* InVM);
+	void HandleControlRigInitializedEvent(UControlRig* InControlRig, const EControlRigState InState);
 
 	// FGCObject Interface
 	virtual void AddReferencedObjects( FReferenceCollector& Collector ) override;
@@ -147,6 +196,14 @@ private:
 	/** Extend toolbar */
 	void ExtendToolbar();
 
+	/** Fill the toolbar with content */
+	void FillToolbar(FToolBarBuilder& ToolbarBuilder);
+
+	virtual void GetCustomDebugObjects(TArray<FCustomDebugObject>& DebugList) const override;
+	virtual bool OnlyShowCustomDebugObjects() const override { return true; }
+	virtual void HandleSetObjectBeingDebugged(UObject* InObject) override;
+	virtual FString GetCustomDebugObjectLabel(UObject* ObjectBeingDebugged) const override;
+
 	/** Handle hiding items in the graph */
 	void HandleHideItem();
 	bool CanHideItem() const;
@@ -154,21 +211,49 @@ private:
 	/** Handle preview scene setup */
 	void HandlePreviewSceneCreated(const TSharedRef<IPersonaPreviewScene>& InPersonaPreviewScene);
 	void HandleViewportCreated(const TSharedRef<class IPersonaViewport>& InViewport);
+	TOptional<float> GetToolbarAxesScale() const;
+	void OnToolbarAxesScaleChanged(float InValue);
 
-	/** Handle switching skeletal meshes */
+		/** Handle switching skeletal meshes */
 	void HandlePreviewMeshChanged(USkeletalMesh* InOldSkeletalMesh, USkeletalMesh* InNewSkeletalMesh);
 
 	/** Push a newly compiled/opened control rig to the edit mode */
 	void UpdateControlRig();
 
+	/** Update the name lists for use in name combo boxes */
+	void CacheNameLists();
+
 	/** Rebind our anim instance to the preview's skeletal mesh component */
 	void RebindToSkeletalMeshComponent();
 
+	/** Update stale watch pins */
+	void UpdateStaleWatchedPins();
+
 	/** Wraps the normal blueprint editor's action menu creation callback */
 	FActionMenuContent HandleCreateGraphActionMenu(UEdGraph* InGraph, const FVector2D& InNodePosition, const TArray<UEdGraphPin*>& InDraggedPins, bool bAutoExpand, SGraphEditor::FActionMenuClosed InOnMenuClosed);
+	void OnNodeTitleCommitted(const FText& NewText, ETextCommit::Type CommitInfo, UEdGraphNode* NodeBeingChanged);
 
 	void ToggleExecuteGraph();
 	bool IsExecuteGraphOn() const;
+	void ToggleAutoCompileGraph();
+	bool IsAutoCompileGraphOn() const;
+
+	enum ERigElementGetterSetterType
+	{
+		ERigElementGetterSetterType_Transform,
+		ERigElementGetterSetterType_Rotation,
+		ERigElementGetterSetterType_Translation,
+		ERigElementGetterSetterType_Initial,
+		ERigElementGetterSetterType_Relative,
+		ERigElementGetterSetterType_Offset,
+		ERigElementGetterSetterType_Name
+	};
+
+	 void HandleMakeElementGetterSetter(ERigElementGetterSetterType Type, bool bIsGetter, TArray<FRigElementKey> Keys, UEdGraph* Graph, FVector2D NodePosition);
+
+	 void HandleOnControlModified(IControlRigManipulatable* Subject, const FRigControl& Control, EControlRigSetKey InSetKey);
+
+	 void OnGraphNodeClicked(UControlRigGraphNode* InNode);
 
 protected:
 
@@ -187,26 +272,68 @@ protected:
 	/** Preview instance inspector widget */
 	TSharedPtr<SWidget> PreviewEditor;
 
-	FOnGraphNodeSelectionChanged OnGraphNodeSelectionChangedDelegate;
-
 	/** Our currently running control rig instance */
 	UControlRig* ControlRig;
 
 	/** preview scene */
 	TSharedPtr<IPersonaPreviewScene> PreviewScene;
 
-	/** Recursion guard for selection */
-	bool bSelecting;
+	/** preview animation instance */
+	UAnimPreviewInstance* PreviewInstance;
 
-	/** Joint Selection related */
-	FTransform GetJointTransform(const FName& InJoint, bool bLocal) const;
-	void SetJointTransform(const FName& InJoint, const FTransform& InTransform);
+	/** Delegate to deal with key down evens in the viewport / editor */
+	FPersonaViewportKeyDownDelegate OnKeyDownDelegate;
 
+	/** Delgate to build the context menu for the viewport */
+	FNewMenuDelegate OnViewportContextMenuDelegate;
+	void HandleOnViewportContextMenuDelegate(class FMenuBuilder& MenuBuilder);
+	FNewMenuCommandsDelegate OnViewportContextMenuCommandsDelegate;
+	TSharedPtr<FUICommandList> HandleOnViewportContextMenuCommandsDelegate();
+
+	/** Bone Selection related */
+	FTransform GetRigElementTransform(const FRigElementKey& InElement, bool bLocal, bool bOnDebugInstance) const;
+	void SetRigElementTransform(const FRigElementKey& InElement, const FTransform& InTransform, bool bLocal);
+	
+	// FNotifyHook Interface
+	virtual void NotifyPreChange(FProperty* PropertyAboutToChange) override;
+	virtual void NotifyPostChange(const FPropertyChangedEvent& PropertyChangedEvent, FProperty* PropertyThatChanged) override;
 	/** delegate for changing property */
-	void OnFinishedChangingProperties(const FPropertyChangedEvent& PropertyChangedEvent);
+	virtual void OnFinishedChangingProperties(const FPropertyChangedEvent& PropertyChangedEvent) override;
 
-	/** Selected Joint from hierarchy tree */
-	FName SelectedJoint;
+	bool bControlRigEditorInitialized;
+	bool bIsSettingObjectBeingDebugged;
+	FRigElementKey RigElementInDetailPanel;
+	TSharedPtr<FStructOnScope> StructToDisplay;
+
+	TArray<uint8, TAlignedHeapAllocator<16>> NodeDetailBuffer;
+	UScriptStruct* NodeDetailStruct;
+	FName NodeDetailName;
+
+	/** Currently executing ControlRig or not - later maybe this will change to enum for whatever different mode*/
+	bool bExecutionControlRig;
+
+	/** The log to use for errors resulting from the init phase of the units */
+	FControlRigLog ControlRigLog;
+	/** Once the log is collected update the graph */
+	void UpdateGraphCompilerErrors();
+
+	/** This can be used to enable dumping of a unit test */
+	void DumpUnitTestCode();
+
+	void OnAnimInitialized();
+
+	FPreviewControlRigUpdated PreviewControlRigUpdated;
+
+	TSharedPtr<SControlRigGraphPinNameListValueWidget> PinControlNameList;
+	bool IsPinControlNameListEnabled() const;
+	TSharedRef<SWidget> MakePinControlNameListItemWidget(TSharedPtr<FString> InItem);
+	FText GetPinControlNameListText() const;
+	TSharedPtr<FString> GetPinControlCurrentlySelectedItem(const TArray<TSharedPtr<FString>>* InNameList) const;
+	void SetPinControlNameListText(const FText& NewTypeInValue, ETextCommit::Type /*CommitInfo*/);
+	void OnPinControlNameListChanged(TSharedPtr<FString> NewSelection, ESelectInfo::Type SelectInfo);
+	void OnPinControlNameListComboBox(const TArray<TSharedPtr<FString>>* InNameList);
 
 	friend class FControlRigEditorMode;
+	friend class SControlRigStackView;
+	friend class SRigHierarchy;
 };

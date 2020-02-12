@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -106,6 +106,8 @@ public:
 		SLATE_ARGUMENT( bool, AllowSpin )
 		/** How many pixel the mouse must move to change the value of the delta step (only use if there is a spinbox allow) */
 		SLATE_ARGUMENT( int32, ShiftMouseMovePixelPerDelta )
+		/** If we're an unbounded spinbox, what value do we divide mouse movement by before multiplying by Delta. Requires Delta to be set. */
+		SLATE_ATTRIBUTE( int32, LinearDeltaSensitivity)
 		/** Tell us if we want to support dynamically changing of the max value using ctrl  (only use if there is a spinbox allow) */
 		SLATE_ATTRIBUTE(bool, SupportDynamicSliderMaxValue)
 		/** Tell us if we want to support dynamically changing of the min value using ctrl  (only use if there is a spinbox allow) */
@@ -132,11 +134,11 @@ public:
 		SLATE_ATTRIBUTE( float, MinDesiredValueWidth )
 		/** The text margin to use if overridden. */
 		SLATE_ATTRIBUTE( FMargin, OverrideTextMargin )
-		/** Called whenever the text is changed interactively by the user */
+		/** Called whenever the text is changed programmatically or interactively by the user */
 		SLATE_EVENT( FOnValueChanged, OnValueChanged )
 		/** Called whenever the text is committed.  This happens when the user presses enter or the text box loses focus. */
 		SLATE_EVENT( FOnValueCommitted, OnValueCommitted )
-		/** Called whenever the text is changed interactively by the user */
+		/** Called whenever the text is changed programmatically or interactively by the user */
 		SLATE_EVENT( FOnUndeterminedValueChanged, OnUndeterminedValueChanged )
 		/** Called whenever the text is committed.  This happens when the user presses enter or the text box loses focus. */
 		SLATE_EVENT( FOnUndeterminedValueCommitted, OnUndeterminedValueCommitted )
@@ -176,19 +178,20 @@ public:
 
 		if( bAllowSpin )
 		{
-			SAssignNew( SpinBox, SSpinBox<NumericType> )
-				.Style( InArgs._SpinBoxStyle )
-				.Font( InArgs._Font.IsSet() ? InArgs._Font : InArgs._EditableTextBoxStyle->Font )
-				.ContentPadding( TextMargin )
-				.Value( this, &SNumericEntryBox<NumericType>::OnGetValueForSpinBox )
-				.Delta( InArgs._Delta )
+			SAssignNew(SpinBox, SSpinBox<NumericType>)
+				.Style(InArgs._SpinBoxStyle)
+				.Font(InArgs._Font.IsSet() ? InArgs._Font : InArgs._EditableTextBoxStyle->Font)
+				.ContentPadding(TextMargin)
+				.Value(this, &SNumericEntryBox<NumericType>::OnGetValueForSpinBox)
+				.Delta(InArgs._Delta)
 				.ShiftMouseMovePixelPerDelta(InArgs._ShiftMouseMovePixelPerDelta)
+				.LinearDeltaSensitivity(InArgs._LinearDeltaSensitivity)
 				.SupportDynamicSliderMaxValue(InArgs._SupportDynamicSliderMaxValue)
 				.SupportDynamicSliderMinValue(InArgs._SupportDynamicSliderMinValue)
 				.OnDynamicSliderMaxValueChanged(InArgs._OnDynamicSliderMaxValueChanged)
 				.OnDynamicSliderMinValueChanged(InArgs._OnDynamicSliderMinValueChanged)
-				.OnValueChanged( OnValueChanged )
-				.OnValueCommitted( OnValueCommitted )
+				.OnValueChanged(OnValueChanged)
+				.OnValueCommitted(OnValueCommitted)
 				.MinSliderValue(InArgs._MinSliderValue)
 				.MaxSliderValue(InArgs._MaxSliderValue)
 				.MaxValue(InArgs._MaxValue)
@@ -198,21 +201,23 @@ public:
 				.OnBeginSliderMovement(InArgs._OnBeginSliderMovement)
 				.OnEndSliderMovement(InArgs._OnEndSliderMovement)
 				.MinDesiredWidth(InArgs._MinDesiredValueWidth)
-				.TypeInterface(Interface);
+				.TypeInterface(Interface)
+				.ToolTipText(this, &SNumericEntryBox<NumericType>::GetValueAsText);
 		}
 
 		// Always create an editable text box.  In the case of an undetermined value being passed in, we cant use the spinbox.
-		SAssignNew( EditableText, SEditableText )
-			.Text( this, &SNumericEntryBox<NumericType>::OnGetValueForTextBox )
-			.Visibility( bAllowSpin ? EVisibility::Collapsed : EVisibility::Visible )
-			.Font( InArgs._Font.IsSet() ? InArgs._Font : InArgs._EditableTextBoxStyle->Font )
-			.SelectAllTextWhenFocused( true )
-			.ClearKeyboardFocusOnCommit( false )
-			.OnTextChanged( this, &SNumericEntryBox<NumericType>::OnTextChanged  )
-			.OnTextCommitted( this, &SNumericEntryBox<NumericType>::OnTextCommitted )
-			.SelectAllTextOnCommit( true )
-			.ContextMenuExtender( InArgs._ContextMenuExtender )
-			.MinDesiredWidth(InArgs._MinDesiredValueWidth);
+		SAssignNew(EditableText, SEditableText)
+			.Text(this, &SNumericEntryBox<NumericType>::OnGetValueForTextBox)
+			.Visibility(bAllowSpin ? EVisibility::Collapsed : EVisibility::Visible)
+			.Font(InArgs._Font.IsSet() ? InArgs._Font : InArgs._EditableTextBoxStyle->Font)
+			.SelectAllTextWhenFocused(true)
+			.ClearKeyboardFocusOnCommit(false)
+			.OnTextChanged(this, &SNumericEntryBox<NumericType>::OnTextChanged)
+			.OnTextCommitted(this, &SNumericEntryBox<NumericType>::OnTextCommitted)
+			.SelectAllTextOnCommit(true)
+			.ContextMenuExtender(InArgs._ContextMenuExtender)
+			.MinDesiredWidth(InArgs._MinDesiredValueWidth)
+			.ToolTipText(this, &SNumericEntryBox<NumericType>::GetValueAsText);
 
 		TSharedRef<SHorizontalBox> HorizontalBox = SNew(SHorizontalBox);
 	
@@ -351,6 +356,17 @@ private:
 		}
 
 		return 0;
+	}
+
+	FText GetValueAsText() const
+	{
+		const TOptional<NumericType>& Value = ValueAttribute.Get();
+		if (Value.IsSet() == true)
+		{
+			return FText::FromString(Interface->ToString(Value.GetValue()));
+		}
+		
+		return FText::GetEmpty();
 	}
 
 	/**

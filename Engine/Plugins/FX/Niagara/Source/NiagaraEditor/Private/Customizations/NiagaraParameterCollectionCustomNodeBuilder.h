@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 #include "DetailLayoutBuilder.h"
@@ -9,7 +9,7 @@
 #include "NiagaraParameterCollectionViewModel.h"
 #include "NiagaraScriptInputCollectionViewModel.h"
 #include "NiagaraScriptOutputCollectionViewModel.h"
-#include "NiagaraScriptViewModel.h"
+#include "ViewModels/NiagaraScriptViewModel.h"
 #include "NiagaraParameterViewModel.h"
 #include "NiagaraEditorStyle.h"
 #include "IDetailChildrenBuilder.h"
@@ -87,7 +87,7 @@ public:
 
 			if (Parameter->GetDefaultValueType() == INiagaraParameterViewModel::EDefaultValueType::Struct)
 			{
-				Row = ChildrenBuilder.AddExternalStructureProperty(Parameter->GetDefaultValueStruct(), NAME_None, Parameter->GetName());
+				Row = ChildrenBuilder.AddExternalStructureProperty(Parameter->GetDefaultValueStruct(), NAME_None, FAddPropertyParams().UniqueId(Parameter->GetName()));
 
 			}
 			else if (Parameter->GetDefaultValueType() == INiagaraParameterViewModel::EDefaultValueType::Object)
@@ -97,10 +97,12 @@ public:
 				TArray<UObject*> Objects;
 				Objects.Add(DefaultValueObject);
 				
-				TOptional<bool> bAllowChildrenOverride(true);
-				TOptional<bool> bCreateCategoryNodesOverride(false);
+				FAddPropertyParams Params = FAddPropertyParams()
+					.UniqueId(Parameter->GetName())
+					.AllowChildren(true)
+					.CreateCategoryNodes(false);
 
-				Row = ChildrenBuilder.AddExternalObjectProperty(Objects, NAME_None, Parameter->GetName(), bAllowChildrenOverride, bCreateCategoryNodesOverride);
+				Row = ChildrenBuilder.AddExternalObjectProperty(Objects, NAME_None, Params);
 				CustomValueWidget =
 					SNew(STextBlock)
 					.TextStyle(FNiagaraEditorStyle::Get(), "NiagaraEditor.ParameterText")

@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 /*=============================================================================
 	EngineMinimal.h: Commonly used include for developing projects with UE4
@@ -19,8 +19,8 @@ MONOLITHIC_HEADER_BOILERPLATE()
 #include "EngineDefines.h"
 #include "TimerManager.h"
 #include "SceneTypes.h"
-#include "GenericOctreePublic.h"
-#include "GenericOctree.h"
+#include "Math/GenericOctreePublic.h"
+#include "Math/GenericOctree.h"
 #include "GameFramework/Actor.h"
 #include "GameFramework/Pawn.h"
 #include "PixelFormat.h"

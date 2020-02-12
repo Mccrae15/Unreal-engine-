@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -44,7 +44,7 @@ private:
 
 	/**
 	 * The media profile to use at startup.
-	 * @note The media profile can be overriden in the editor by user.
+	 * @note The media profile can be overridden in the editor by user.
 	 */
 	UPROPERTY(Config, EditAnywhere, Category="MediaProfile")
 	TSoftObjectPtr<UMediaProfile> StartupMediaProfile;
@@ -56,14 +56,14 @@ public:
 	 *
 	 * @return The an array of the media source proxy.
 	 */
-	TArray<UProxyMediaSource*> GetAllMediaSourceProxy() const;
+	TArray<UProxyMediaSource*> LoadMediaSourceProxies() const;
 
 	/**
 	 * Get all the media output proxy.
 	 *
 	 * @return The an array of the media output proxy.
 	 */
-	TArray<UProxyMediaOutput*> GetAllMediaOutputProxy() const;
+	TArray<UProxyMediaOutput*> LoadMediaOutputProxies() const;
 
 	/**
 	 * Get the media profile used by the engine.
@@ -71,7 +71,21 @@ public:
 	 * @return The media profile, or nullptr if not set.
 	 */
 	UMediaProfile* GetStartupMediaProfile() const;
+
+#if WITH_EDITOR
+	/** Set the media proxies used by the engine. */
+	void SetMediaSourceProxy(const TArray<UProxyMediaSource*>& Proxies);
+
+	/** Set the media proxies used by the engine. */
+	void SetMediaOutputProxy(const TArray<UProxyMediaOutput*>& Proxies);
+
+	virtual void PostEditChangeProperty(struct FPropertyChangedEvent& PropertyChangedEvent) override;
+
+	/** Called when a proxy changed. */
+	FSimpleMulticastDelegate OnMediaProxiesChanged;
+#endif
 };
+
 
 /**
  * Settings for the media profile in the editor or standalone.
@@ -87,11 +101,16 @@ class MEDIAFRAMEWORKUTILITIES_API UMediaProfileEditorSettings
 
 public:
 
+#if WITH_EDITORONLY_DATA
 	/**
 	 * Display the media profile icon in the editor toolbar.
 	 */
 	UPROPERTY(Config, EditAnywhere, Category = "MediaProfile", meta=(ConfigRestartRequired=true))
 	bool bDisplayInToolbar;
+
+	/** When enabled, the media profile name will be displayed in the main editor UI. */
+	UPROPERTY(config, EditAnywhere, Category = "MediaProfile")
+	bool bDisplayInMainEditor;
 
 private:
 
@@ -101,6 +120,7 @@ private:
 	 */
 	UPROPERTY(Config, EditAnywhere, Category="MediaProfile")
 	TSoftObjectPtr<UMediaProfile> UserMediaProfile;
+#endif
 
 public:
 

@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -51,6 +51,8 @@ public:
 	{
 		return Pins[1];
 	}
+
+	BLUEPRINTGRAPH_API UEdGraphNode* GetExecTerminal() const;
 
 private:
 	void PropagatePinType();

@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "Modules/ModuleManifest.h"
 #include "Misc/FileHelper.h"
@@ -13,7 +13,7 @@ FModuleManifest::FModuleManifest()
 FString FModuleManifest::GetFileName(const FString& DirectoryName, bool bIsGameFolder)
 {
 #if UE_BUILD_DEVELOPMENT
-	return DirectoryName / ((FApp::GetBuildConfiguration() == EBuildConfigurations::DebugGame && bIsGameFolder)? TEXT(UBT_MODULE_MANIFEST_DEBUGGAME) : TEXT(UBT_MODULE_MANIFEST));
+	return DirectoryName / ((FApp::GetBuildConfiguration() == EBuildConfiguration::DebugGame && bIsGameFolder)? TEXT(UBT_MODULE_MANIFEST_DEBUGGAME) : TEXT(UBT_MODULE_MANIFEST));
 #else
 	return DirectoryName / TEXT(UBT_MODULE_MANIFEST);
 #endif

@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -11,6 +11,7 @@
 #include "MeshBuild.h"
 
 #include "IMeshMergeUtilities.h"
+#include "Animation/SkinWeightProfile.h"
 
 class UMeshComponent;
 class USkeletalMesh;
@@ -199,6 +200,16 @@ public:
 		bool bGenerateAsIfTwoSided,
 		class FDistanceFieldVolumeData& OutData) = 0;
 
+	/** 
+	 * Down sample distance field volume. 
+	 * Method overwrites data of DistanceFieldData. 
+	 * If input is compressed, it will be decompressed, downsampled and recompressed
+	 */
+	virtual void DownSampleDistanceFieldVolumeData(
+		class FDistanceFieldVolumeData& DistanceFieldData,
+		float Divider) = 0;
+
+
 	/** Helper structure for skeletal mesh import options */
 	struct MeshBuildOptions
 	{
@@ -207,6 +218,7 @@ public:
 		, bComputeNormals(true)
 		, bComputeTangents(true)
 		, bUseMikkTSpace(false)
+		, bComputeWeightedNormals(false)
 		{
 		}
 
@@ -214,7 +226,21 @@ public:
 		bool bComputeNormals;
 		bool bComputeTangents;
 		bool bUseMikkTSpace;
+		bool bComputeWeightedNormals;
 		FOverlappingThresholds OverlappingThresholds;
+
+		void FillOptions(const FSkeletalMeshBuildSettings& SkeletalMeshBuildSettings)
+		{
+			OverlappingThresholds.ThresholdPosition = SkeletalMeshBuildSettings.ThresholdPosition;
+			OverlappingThresholds.ThresholdTangentNormal = SkeletalMeshBuildSettings.ThresholdTangentNormal;
+			OverlappingThresholds.ThresholdUV = SkeletalMeshBuildSettings.ThresholdUV;
+			OverlappingThresholds.MorphThresholdPosition = SkeletalMeshBuildSettings.MorphThresholdPosition;
+			bComputeNormals = SkeletalMeshBuildSettings.bRecomputeNormals;
+			bComputeTangents = SkeletalMeshBuildSettings.bRecomputeTangents;
+			bUseMikkTSpace = SkeletalMeshBuildSettings.bUseMikkTSpace;
+			bComputeWeightedNormals = SkeletalMeshBuildSettings.bComputeWeightedNormals;
+			bRemoveDegenerateTriangles = SkeletalMeshBuildSettings.bRemoveDegenerates;
+		}
 	};
 	
 	/**
@@ -335,4 +361,7 @@ public:
 	virtual void RecomputeTangentsAndNormalsForRawMesh(bool bRecomputeTangents, bool bRecomputeNormals, const FMeshBuildSettings& InBuildSettings, const FOverlappingCorners& InOverlappingCorners, FRawMesh &OutRawMesh) const = 0;
 
 	virtual void FindOverlappingCorners(FOverlappingCorners& OutOverlappingCorners, const TArray<FVector>& InVertices, const TArray<uint32>& InIndices, float ComparisonThreshold) const = 0;
+
+	/** Used to generate runtime skin weight data from Editor-only data */
+	virtual void GenerateRuntimeSkinWeightData(const FSkeletalMeshLODModel* ImportedModel, const TArray<FRawSkinWeight>& InRawSkinWeights, FRuntimeSkinWeightProfileData& InOutSkinWeightOverrideData) const = 0;
 };

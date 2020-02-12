@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 /*=============================================================================
 	VulkanCommon.h: Common definitions used for both runtime and compiling shaders.
@@ -9,7 +9,7 @@
 #include "RHIDefinitions.h"
 
 #ifndef VULKAN_SUPPORTS_GEOMETRY_SHADERS
-	#define VULKAN_SUPPORTS_GEOMETRY_SHADERS					(!(PLATFORM_ANDROID) || PLATFORM_LUMIN || PLATFORM_LUMINGL4)
+	#define VULKAN_SUPPORTS_GEOMETRY_SHADERS					(!PLATFORM_ANDROID || PLATFORM_LUMIN) && PLATFORM_SUPPORTS_GEOMETRY_SHADERS
 #endif
 
 // This defines controls shader generation (so will cause a format rebuild)
@@ -25,19 +25,19 @@ namespace ShaderStage
 		Vertex			= 0,
 		Pixel			= 1,
 
-#if PLATFORM_ANDROID && !PLATFORM_LUMIN && !PLATFORM_LUMINGL4
+#if VULKAN_SUPPORTS_GEOMETRY_SHADERS
+		Geometry		= 2,
+#if PLATFORM_SUPPORTS_TESSELLATION_SHADERS
+		Hull			= 3,
+		Domain			= 4,
+#endif
+		NumStages,
+
+		MaxNumSets		= 8,
+#else
 		NumStages		= 2,
 
 		MaxNumSets		= 4,
-#else
-		// We don't support tessellation on desktop currently
-		//Hull			= 3,
-		//Domain		= 4,
-		Geometry		= 2,
-
-		NumStages		= 3,
-
-		MaxNumSets		= 8,
 #endif
 
 		// Compute is its own pipeline, so it can all live as set 0
@@ -51,8 +51,10 @@ namespace ShaderStage
 		switch (Stage)
 		{
 		case SF_Vertex:		return Vertex;
-		//case SF_Hull:		return Hull;
-		//case SF_Domain:		return Domain;
+#if PLATFORM_SUPPORTS_TESSELLATION_SHADERS
+		case SF_Hull:		return Hull;
+		case SF_Domain:		return Domain;
+#endif
 		case SF_Pixel:		return Pixel;
 #if VULKAN_SUPPORTS_GEOMETRY_SHADERS
 		case SF_Geometry:	return Geometry;
@@ -71,8 +73,10 @@ namespace ShaderStage
 		switch (Stage)
 		{
 		case EStage::Vertex:	return SF_Vertex;
-		//case EStage::Hull:		return SF_Hull;
-		//case EStage::Domain:	return SF_Domain;
+#if PLATFORM_SUPPORTS_TESSELLATION_SHADERS
+		case EStage::Hull:		return SF_Hull;
+		case EStage::Domain:	return SF_Domain;
+#endif
 		case EStage::Pixel:		return SF_Pixel;
 #if VULKAN_SUPPORTS_GEOMETRY_SHADERS
 		case EStage::Geometry:	return SF_Geometry;
@@ -136,4 +140,17 @@ namespace EVulkanBindingType
 
 		return 0;
 	}
+}
+
+DECLARE_LOG_CATEGORY_EXTERN(LogVulkan, Display, All);
+
+template< class T >
+static FORCEINLINE void ZeroVulkanStruct(T& Struct, int32 VkStructureType)
+{
+	static_assert(!TIsPointer<T>::Value, "Don't use a pointer!");
+	static_assert(STRUCT_OFFSET(T, sType) == 0, "Assumes sType is the first member in the Vulkan type!");
+	static_assert(sizeof(T::sType) == sizeof(int32), "Assumed sType is compatible with int32!");
+	// Horrible way to coerce the compiler to not have to know what T::sType is so we can have this header not have to include vulkan.h
+	(int32&)Struct.sType = VkStructureType;
+	FMemory::Memzero(((uint8*)&Struct) + sizeof(VkStructureType), sizeof(T) - sizeof(VkStructureType));
 }

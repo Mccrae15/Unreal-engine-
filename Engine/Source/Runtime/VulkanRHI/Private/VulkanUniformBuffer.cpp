@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 /*=============================================================================
 	VulkanUniformBuffer.cpp: Vulkan Constant buffer implementation.
@@ -7,6 +7,16 @@
 #include "VulkanRHIPrivate.h"
 #include "VulkanContext.h"
 #include "VulkanLLM.h"
+
+static int32 GVulkanAllowUniformUpload = 0;
+static FAutoConsoleVariableRef CVarVulkanAllowUniformUpload(
+	TEXT("r.Vulkan.AllowUniformUpload"),
+	GVulkanAllowUniformUpload,
+	TEXT("Allow Uniform Buffer uploads outside of renderpasses\n")
+	TEXT(" 0: Disabled, buffers are always reallocated\n")
+	TEXT(" 1: Enabled, buffers are uploaded outside renderpasses"),
+	ECVF_Default
+);
 
 enum
 {
@@ -17,29 +27,22 @@ enum
 #endif
 };
 
-#if 0
-const int NUM_SAFE_FRAMES = 5;
-static TArray<TRefCountPtr<FVulkanBuffer>> GUBPool[NUM_SAFE_FRAMES];
-
-static TRefCountPtr<FVulkanBuffer> AllocateBufferFromPool(FVulkanDevice& Device, uint32 ConstantBufferSize, EUniformBufferUsage Usage)
-{
-	if (Usage == UniformBuffer_MultiFrame)
-	{
-		return new FVulkanBuffer(Device, ConstantBufferSize, VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT, false, __FILE__, __LINE__);
-	}
-
-	int32 BufferIndex = GFrameNumberRenderThread % NUM_SAFE_FRAMES;
-
-	GUBPool[BufferIndex].Add(new FVulkanBuffer(Device, ConstantBufferSize, VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT, false, __FILE__, __LINE__));
-	return GUBPool[BufferIndex].Last();
-}
-
-void CleanupUniformBufferPool()
-{
-	int32 BufferIndex = (GFrameNumberRenderThread  + 1) % NUM_SAFE_FRAMES;
-	GUBPool[BufferIndex].Reset(0);
-}
+#if UE_BUILD_DEBUG || UE_BUILD_DEVELOPMENT
+constexpr EUniformBufferValidation UniformBufferValidation = EUniformBufferValidation::ValidateResources;
+#else
+constexpr EUniformBufferValidation UniformBufferValidation = EUniformBufferValidation::None;
 #endif
+
+static void ValidateUniformBufferResource(const FRHIUniformBufferLayout& InLayout, int32 Index, FRHIResource* Resource, EUniformBufferValidation Validation)
+{
+	// Allow null SRV's in uniform buffers for feature levels that don't support SRV's in shaders
+	if (!(GMaxRHIFeatureLevel <= ERHIFeatureLevel::ES3_1
+		&& (InLayout.Resources[Index].MemberType == UBMT_SRV || InLayout.Resources[Index].MemberType == UBMT_RDG_TEXTURE_SRV || InLayout.Resources[Index].MemberType == UBMT_RDG_BUFFER_SRV))
+		&& Validation == EUniformBufferValidation::ValidateResources)
+	{
+		checkf(Resource, TEXT("Invalid resource entry creating uniform buffer, %s.Resources[%u], ResourceType 0x%x."), *InLayout.GetDebugName(), Index, (uint8)InLayout.Resources[Index].MemberType);
+	}
+}
 
 /*-----------------------------------------------------------------------------
 	Uniform buffer RHI object
@@ -63,7 +66,7 @@ static inline EBufferUsageFlags UniformBufferToBufferUsage(EUniformBufferUsage U
 	}
 }
 
-FVulkanUniformBuffer::FVulkanUniformBuffer(const FRHIUniformBufferLayout& InLayout, const void* Contents, EUniformBufferUsage InUsage, EUniformBufferValidation Validation, bool bCopyIntoConstantData)
+FVulkanUniformBuffer::FVulkanUniformBuffer(const FRHIUniformBufferLayout& InLayout, const void* Contents, EUniformBufferUsage InUsage, EUniformBufferValidation Validation)
 	: FRHIUniformBuffer(InLayout)
 {
 #if VULKAN_ENABLE_AGGRESSIVE_STATS
@@ -75,18 +78,7 @@ FVulkanUniformBuffer::FVulkanUniformBuffer(const FRHIUniformBufferLayout& InLayo
 	//	- Meaning, there is always a uniform buffer with a size specified larged than 0 bytes
 	check(InLayout.Resources.Num() > 0 || InLayout.ConstantBufferSize > 0);
 
-	// Contents might be null but size > 0 as the data doesn't need a CPU copy (it lives inside the 'real' VkBuffer)
-	if (bCopyIntoConstantData && InLayout.ConstantBufferSize)
-	{
-		// Create uniform buffer, which is stored on the CPU, the buffer is uploaded to a correct GPU buffer in UpdateDescriptorSets()
-		ConstantData.AddUninitialized(InLayout.ConstantBufferSize);
-		if (Contents)
-		{
-			FMemory::Memcpy(ConstantData.GetData(), Contents, InLayout.ConstantBufferSize);
-		}
-	}
-
-	// Parse Sampler and Texture resources, if necessary
+	// Setup resource table
 	const uint32 NumResources = InLayout.Resources.Num();
 	if (NumResources > 0)
 	{
@@ -96,12 +88,7 @@ FVulkanUniformBuffer::FVulkanUniformBuffer(const FRHIUniformBufferLayout& InLayo
 		for (uint32 Index = 0; Index < NumResources; Index++)
 		{
 			FRHIResource* Resource = *(FRHIResource**)((uint8*)Contents + InLayout.Resources[Index].MemberOffset);
-
-			// Allow null SRV's in uniform buffers for feature levels that don't support SRV's in shaders
-			if (!(GMaxRHIFeatureLevel <= ERHIFeatureLevel::ES3_1 && InLayout.Resources[Index].MemberType == UBMT_SRV) && Validation == EUniformBufferValidation::ValidateResources)
-			{
-				checkf(Resource, TEXT("Invalid resource entry creating uniform buffer, %s.Resources[%u], ResourceType 0x%x."), *InLayout.GetDebugName().ToString(), Index, (uint8)InLayout.Resources[Index].MemberType);
-			}
+			ValidateUniformBufferResource(InLayout, (int32)Index, Resource, Validation);
 			ResourceTable[Index] = Resource;
 		}
 	}
@@ -110,16 +97,10 @@ FVulkanUniformBuffer::FVulkanUniformBuffer(const FRHIUniformBufferLayout& InLayo
 void FVulkanUniformBuffer::UpdateResourceTable(const FRHIUniformBufferLayout& InLayout, const void* Contents, int32 ResourceNum)
 {
 	check(ResourceTable.Num() == ResourceNum);
-
 	for (int32 ResourceIndex = 0; ResourceIndex < ResourceNum; ++ResourceIndex)
 	{
 		FRHIResource* Resource = *(FRHIResource**)((uint8*)Contents + InLayout.Resources[ResourceIndex].MemberOffset);
-
-		checkf(Resource, TEXT("Invalid resource entry creating uniform buffer, %s.Resources[%u], ResourceType 0x%x."),
-			*InLayout.GetDebugName().ToString(),
-			ResourceIndex,
-			(uint8)InLayout.Resources[ResourceIndex].MemberType);
-
+		ValidateUniformBufferResource(InLayout, ResourceIndex, Resource, UniformBufferValidation);
 		ResourceTable[ResourceIndex] = Resource;
 	}
 }
@@ -134,43 +115,62 @@ void FVulkanUniformBuffer::UpdateResourceTable(FRHIResource** Resources, int32 R
 	}
 }
 
-void FVulkanUniformBuffer::Update(const void* Contents, int32 ContentsSize)
-{
-	check(ConstantData.Num() * sizeof(ConstantData[0]) == ContentsSize);
 
+FVulkanEmulatedUniformBuffer::FVulkanEmulatedUniformBuffer(const FRHIUniformBufferLayout& InLayout, const void* Contents, EUniformBufferUsage InUsage, EUniformBufferValidation Validation)
+	: FVulkanUniformBuffer(InLayout, Contents, InUsage, Validation)
+{
+#if VULKAN_ENABLE_AGGRESSIVE_STATS
+	SCOPE_CYCLE_COUNTER(STAT_VulkanUniformBufferCreateTime);
+#endif
+
+	// Contents might be null but size > 0 as the data doesn't need a CPU copy
+	if (InLayout.ConstantBufferSize)
+	{
+		// Create uniform buffer, which is stored on the CPU, the buffer is uploaded to a correct GPU buffer in UpdateDescriptorSets()
+		ConstantData.AddUninitialized(InLayout.ConstantBufferSize);
+		if (Contents)
+		{
+			FMemory::Memcpy(ConstantData.GetData(), Contents, InLayout.ConstantBufferSize);
+		}
+	}
+
+	// Ancestor's constructor will set up the Resource table, so nothing else to do here
+}
+
+void FVulkanEmulatedUniformBuffer::UpdateConstantData(const void* Contents, int32 ContentsSize)
+{
+	checkSlow(ConstantData.Num() * sizeof(ConstantData[0]) == ContentsSize);
 	if (ContentsSize > 0)
 	{
 		FMemory::Memcpy(ConstantData.GetData(), Contents, ContentsSize);
 	}
 }
 
-FVulkanRealUniformBuffer::FVulkanRealUniformBuffer(FVulkanDevice& Device, const FRHIUniformBufferLayout& InLayout, const void* Contents, EUniformBufferUsage Usage, EUniformBufferValidation Validation)
-	: FVulkanUniformBuffer(InLayout, Contents, Usage, Validation, false)
-	, FVulkanResourceMultiBuffer(&Device, VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT, InLayout.ConstantBufferSize, UniformBufferToBufferUsage(Usage), GEmptyCreateInfo)
+
+FVulkanRealUniformBuffer::FVulkanRealUniformBuffer(FVulkanDevice& Device, const FRHIUniformBufferLayout& InLayout, const void* Contents, EUniformBufferUsage InUsage, EUniformBufferValidation Validation)
+	: FVulkanUniformBuffer(InLayout, Contents, InUsage, Validation)
+	, Device(&Device)
 {
 #if VULKAN_ENABLE_AGGRESSIVE_STATS
 	SCOPE_CYCLE_COUNTER(STAT_VulkanUniformBufferCreateTime);
 #endif
 
-	if (InLayout.ConstantBufferSize)
+	if (InLayout.ConstantBufferSize > 0)
 	{
-		//#todo-rco: Optimize
-		const bool bRT = IsInRenderingThread();
-		void* Data = Lock(bRT, RLM_WriteOnly, InLayout.ConstantBufferSize, 0);
-		FMemory::Memcpy(Data, Contents, InLayout.ConstantBufferSize);
-		Unlock(bRT);
+		VulkanRHI::FResourceHeapManager& ResourceMgr = Device.GetResourceHeapManager();
+
+		// Set it directly as there is no previous one
+		UBAllocation = ResourceMgr.AllocUniformBuffer(InLayout.ConstantBufferSize, Contents);
 	}
+
+	// Ancestor's constructor will set up the Resource table, so nothing else to do here
 }
 
-void FVulkanRealUniformBuffer::Update(const void* Contents, int32 ContentsSize)
+FVulkanRealUniformBuffer::~FVulkanRealUniformBuffer()
 {
-	if (ContentsSize > 0)
+	if (UBAllocation)
 	{
-		FVulkanCmdBuffer* Cmd = Device->GetImmediateContext().GetCommandBufferManager()->GetActiveCmdBuffer();
-
-		const VkCommandBuffer CmdBuffer = Cmd->GetHandle();
-
-		VulkanRHI::vkCmdUpdateBuffer(CmdBuffer, GetHandle(), GetOffset(), ContentsSize, Contents);
+		Device->GetResourceHeapManager().ReleaseUniformBuffer(UBAllocation);
 	}
 }
 
@@ -187,31 +187,93 @@ FUniformBufferRHIRef FVulkanDynamicRHI::RHICreateUniformBuffer(const void* Conte
 	else
 	{
 		// Parts of the buffer are later on copied for each shader stage into the packed uniform buffer
-		return new FVulkanUniformBuffer(Layout, Contents, Usage, Validation, true);
+		return new FVulkanEmulatedUniformBuffer(Layout, Contents, Usage, Validation);
 	}
 }
 
-void FVulkanDynamicRHI::RHIUpdateUniformBuffer(FUniformBufferRHIParamRef UniformBufferRHI, const void* Contents)
+template <bool bRealUBs>
+inline void FVulkanDynamicRHI::UpdateUniformBuffer(FVulkanUniformBuffer* UniformBuffer, const void* Contents)
 {
-	FVulkanUniformBuffer* UniformBuffer = ResourceCast(UniformBufferRHI);
-
-	const FRHIUniformBufferLayout& Layout = UniformBufferRHI->GetLayout();
+	SCOPE_CYCLE_COUNTER(STAT_VulkanUpdateUniformBuffers);
+	const FRHIUniformBufferLayout& Layout = UniformBuffer->GetLayout();
 
 	const int32 ConstantBufferSize = Layout.ConstantBufferSize;
 	const int32 NumResources = Layout.Resources.Num();
 
 	FRHICommandListImmediate& RHICmdList = FRHICommandListExecutor::GetImmediateCommandList();
 
-	if (RHICmdList.Bypass())
+	FVulkanRealUniformBuffer* RealUniformBuffer = bRealUBs ? (FVulkanRealUniformBuffer*)UniformBuffer : nullptr;
+	FVulkanEmulatedUniformBuffer* EmulatedUniformBuffer = bRealUBs ? nullptr : (FVulkanEmulatedUniformBuffer*)UniformBuffer;
+
+	FBufferSuballocation* NewUBAlloc = nullptr;
+	bool bUseUpload = GVulkanAllowUniformUpload && !RHICmdList.IsInsideRenderPass(); //inside renderpasses, a rename is enforced.
+
+	if (bRealUBs && !bUseUpload)
 	{
-		UniformBuffer->Update(Contents, ConstantBufferSize);
+		NewUBAlloc = nullptr;
+		if (ConstantBufferSize > 0)
+		{
+			SCOPE_CYCLE_COUNTER(STAT_VulkanUpdateUniformBuffersRename);
+			NewUBAlloc = Device->GetResourceHeapManager().AllocUniformBuffer(ConstantBufferSize, Contents);
+		}
+	}
+
+	auto UpdateUniformBufferHelper = [](FVulkanCommandListContext& Context, FVulkanRealUniformBuffer* VulkanUniformBuffer, int32 DataSize, const void* Data)
+	{
+		FVulkanCmdBuffer* CmdBuffer = Context.GetCommandBufferManager()->GetActiveCmdBufferDirect();
+		ensure(CmdBuffer->IsOutsideRenderPass());
+		VulkanRHI::FTempFrameAllocationBuffer::FTempAllocInfo LockInfo;
+		Context.GetTempFrameAllocationBuffer().Alloc(DataSize, 16, LockInfo);
+		FMemory::Memcpy(LockInfo.Data, Data, DataSize);
+		VkBufferCopy Region;
+		Region.size = DataSize;
+		Region.srcOffset = LockInfo.GetBindOffset();
+		Region.dstOffset = VulkanUniformBuffer->GetOffset();
+		VkBuffer UBBuffer = VulkanUniformBuffer->GetBufferAllocation()->GetHandle();
+
+		bool bIsInRenderPass = CmdBuffer->IsInsideRenderPass();
+		bool bIsUniformBarrierAdded = CmdBuffer->IsUniformBufferBarrierAdded();
+		if(bIsInRenderPass || !bIsUniformBarrierAdded)
+		{
+			CmdBuffer->BeginUniformUpdateBarrier();
+		}
+
+		VulkanRHI::vkCmdCopyBuffer(CmdBuffer->GetHandle(), LockInfo.GetHandle(), UBBuffer, 1, &Region);
+
+		if(bIsInRenderPass) //when updating outside render passes, the EndUniformUpdateBarrier will be called from EndRenderPass
+		{
+			CmdBuffer->EndUniformUpdateBarrier();
+		}
+	};
+
+	bool bRHIBypass = RHICmdList.Bypass();
+	if (bRHIBypass)
+	{
+		if (bRealUBs)
+		{
+			if (ConstantBufferSize > 0)
+			{
+				if(bUseUpload)
+				{			
+					FVulkanCommandListContext& Context = (FVulkanCommandListContext&)*Device->ImmediateContext;
+					UpdateUniformBufferHelper(Context, RealUniformBuffer, ConstantBufferSize, Contents);
+				}
+				else
+				{
+					FBufferSuballocation* PrevAlloc = RealUniformBuffer->UpdateUBAllocation(NewUBAlloc);
+					Device->GetResourceHeapManager().ReleaseUniformBuffer(PrevAlloc);
+				}
+			}
+		}
+		else
+		{
+			EmulatedUniformBuffer->UpdateConstantData(Contents, ConstantBufferSize);
+		}
 		UniformBuffer->UpdateResourceTable(Layout, Contents, NumResources);
 	}
 	else
 	{
 		FRHIResource** CmdListResources = nullptr;
-		void* CmdListConstantBufferData = nullptr;
-
 		if (NumResources > 0)
 		{
 			CmdListResources = (FRHIResource**)RHICmdList.Alloc(sizeof(FRHIResource*) * NumResources, alignof(FRHIResource*));
@@ -219,29 +281,62 @@ void FVulkanDynamicRHI::RHIUpdateUniformBuffer(FUniformBufferRHIParamRef Uniform
 			for (int32 ResourceIndex = 0; ResourceIndex < NumResources; ++ResourceIndex)
 			{
 				FRHIResource* Resource = *(FRHIResource**)((uint8*)Contents + Layout.Resources[ResourceIndex].MemberOffset);
-
-				checkf(Resource, TEXT("Invalid resource entry creating uniform buffer, %s.Resources[%u], ResourceType 0x%x."),
-					*Layout.GetDebugName().ToString(),
-					ResourceIndex,
-					(uint8)Layout.Resources[ResourceIndex].MemberType);
-
+				ValidateUniformBufferResource(Layout, ResourceIndex, Resource, UniformBufferValidation);
 				CmdListResources[ResourceIndex] = Resource;
 			}
 		}
 
-		if (ConstantBufferSize > 0)
+		if (bRealUBs)
 		{
-			// Can be optimized creating a new Vulkan buffer here instead of extra memcpy, but would require refactoring entire Vulkan uniform buffer code.
-			CmdListConstantBufferData = (void*)RHICmdList.Alloc(ConstantBufferSize, 256);
-			FMemory::Memcpy(CmdListConstantBufferData, Contents, ConstantBufferSize);
-		}
+			if(bUseUpload)
+			{
+				void* CmdListConstantBufferData = RHICmdList.Alloc(ConstantBufferSize, 16);
+				FMemory::Memcpy(CmdListConstantBufferData, Contents, ConstantBufferSize);
 
-		RHICmdList.EnqueueLambda([UniformBuffer, CmdListResources, NumResources, CmdListConstantBufferData, ConstantBufferSize](FRHICommandList&)
+				RHICmdList.EnqueueLambda([UpdateUniformBufferHelper, RealUniformBuffer, CmdListResources, NumResources, ConstantBufferSize, CmdListConstantBufferData](FRHICommandList& CmdList)
+				{
+					FVulkanCommandListContext& Context = (FVulkanCommandListContext&)CmdList.GetContext();
+					UpdateUniformBufferHelper(Context, RealUniformBuffer, ConstantBufferSize, CmdListConstantBufferData);
+					RealUniformBuffer->UpdateResourceTable(CmdListResources, NumResources);
+				});
+			}
+			else
+			{
+				RHICmdList.EnqueueLambda([RealUniformBuffer, NewUBAlloc, CmdListResources, NumResources](FRHICommandList& CmdList)
+				{
+					FBufferSuballocation* PrevAlloc = RealUniformBuffer->UpdateUBAllocation(NewUBAlloc);
+					RealUniformBuffer->Device->GetResourceHeapManager().ReleaseUniformBuffer(PrevAlloc);
+					RealUniformBuffer->UpdateResourceTable(CmdListResources, NumResources);
+				});
+			}
+		}
+		else
 		{
-			UniformBuffer->Update(CmdListConstantBufferData, ConstantBufferSize);
-			UniformBuffer->UpdateResourceTable(CmdListResources, NumResources);
-		});
+			void* CmdListConstantBufferData = RHICmdList.Alloc(ConstantBufferSize, 16);
+			FMemory::Memcpy(CmdListConstantBufferData, Contents, ConstantBufferSize);
+			RHICmdList.EnqueueLambda([EmulatedUniformBuffer, CmdListResources, NumResources, CmdListConstantBufferData, ConstantBufferSize](FRHICommandList&)
+			{
+				EmulatedUniformBuffer->UpdateConstantData(CmdListConstantBufferData, ConstantBufferSize);
+				EmulatedUniformBuffer->UpdateResourceTable(CmdListResources, NumResources);
+			});
+		}
 		RHICmdList.RHIThreadFence(true);
+	}
+}
+
+
+void FVulkanDynamicRHI::RHIUpdateUniformBuffer(FRHIUniformBuffer* UniformBufferRHI, const void* Contents)
+{
+	static TConsoleVariableData<int32>* CVar = IConsoleManager::Get().FindTConsoleVariableDataInt(TEXT("r.Vulkan.UseRealUBs"));
+	const bool bHasRealUBs = FVulkanPlatform::UseRealUBsOptimization(CVar && CVar->GetValueOnAnyThread() > 0);
+	FVulkanUniformBuffer* UniformBuffer = ResourceCast(UniformBufferRHI);
+	if (bHasRealUBs)
+	{
+		UpdateUniformBuffer<true>(UniformBuffer, Contents);
+	}
+	else
+	{
+		UpdateUniformBuffer<false>(UniformBuffer, Contents);
 	}
 }
 
@@ -255,7 +350,7 @@ FVulkanUniformBufferUploader::FVulkanUniformBufferUploader(FVulkanDevice* InDevi
 	}
 	else
 	{
-		if (FVulkanPlatform::SupportsDeviceLocalHostVisibleWithNoPenalty() &&
+		if (FVulkanPlatform::SupportsDeviceLocalHostVisibleWithNoPenalty(InDevice->GetVendorId()) &&
 			InDevice->GetMemoryManager().SupportsMemoryType(VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT | VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT))
 		{
 			CPUBuffer = new FVulkanRingBuffer(InDevice, PackedUniformsRingBufferSize, VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT | VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
@@ -270,4 +365,92 @@ FVulkanUniformBufferUploader::FVulkanUniformBufferUploader(FVulkanDevice* InDevi
 FVulkanUniformBufferUploader::~FVulkanUniformBufferUploader()
 {
 	delete CPUBuffer;
+}
+
+
+namespace VulkanRHI
+{
+	VulkanRHI::FBufferSuballocation* FResourceHeapManager::AllocUniformBuffer(uint32 Size, const void* Contents)
+	{
+		VulkanRHI::FBufferSuballocation* OutAlloc = Device->GetResourceHeapManager().AllocateBuffer(Size, VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT, __FILE__, __LINE__);
+		FMemory::Memcpy(OutAlloc->GetMappedPointer(), Contents, Size);
+		OutAlloc->Flush();
+
+		return OutAlloc;
+	}
+
+	void FResourceHeapManager::ReleaseUniformBuffer(VulkanRHI::FBufferSuballocation* UBAlloc)
+	{
+		checkSlow(UBAlloc);
+
+		FScopeLock ScopeLock(&UBAllocations.CS);
+		ProcessPendingUBFreesNoLock(false);
+		FUBPendingFree Pending;
+		Pending.Frame = GFrameNumberRenderThread;
+		Pending.Allocation = UBAlloc;
+		UBAllocations.PendingFree.Add(Pending);
+
+		UBAllocations.Peak = FMath::Max(UBAllocations.Peak, (uint32)UBAllocations.PendingFree.Num());
+	}
+
+	void FResourceHeapManager::ProcessPendingUBFreesNoLock(bool bForce)
+	{
+		// this keeps an frame number of the first frame when we can expect to delete things, updated in the loop if any pending allocations are left
+		static uint32 GFrameNumberRenderThread_WhenWeCanDelete = 0;
+
+		if (UNLIKELY(bForce))
+		{
+			int32 NumAlloc = UBAllocations.PendingFree.Num();
+			for (int32 Index = 0; Index < NumAlloc; ++Index)
+			{
+				FUBPendingFree& Alloc = UBAllocations.PendingFree[Index];
+				delete Alloc.Allocation;
+			}
+			UBAllocations.PendingFree.Empty();
+
+			// invalidate the value
+			GFrameNumberRenderThread_WhenWeCanDelete = 0;
+		}
+		else
+		{
+			if (LIKELY(GFrameNumberRenderThread < GFrameNumberRenderThread_WhenWeCanDelete))
+			{
+				// too early
+				return;
+			}
+
+			// making use of the fact that we always add to the end of the array, so allocations are sorted by frame ascending
+			int32 OldestFrameToKeep = GFrameNumberRenderThread - VulkanRHI::NUM_FRAMES_TO_WAIT_BEFORE_RELEASING_TO_OS;
+			int32 NumAlloc = UBAllocations.PendingFree.Num();
+			int32 Index = 0;
+			for (; Index < NumAlloc; ++Index)
+			{
+				FUBPendingFree& Alloc = UBAllocations.PendingFree[Index];
+				if (LIKELY(Alloc.Frame < OldestFrameToKeep))
+				{
+					delete Alloc.Allocation;
+				}
+				else
+				{
+					// calculate when we will be able to delete the oldest allocation
+					GFrameNumberRenderThread_WhenWeCanDelete = Alloc.Frame + VulkanRHI::NUM_FRAMES_TO_WAIT_BEFORE_RELEASING_TO_OS + 1;
+					break;
+				}
+			}
+
+			int32 ElementsLeft = NumAlloc - Index;
+			if (ElementsLeft > 0 && ElementsLeft != NumAlloc)
+			{
+				// FUBPendingFree is POD because it is stored in a TArray
+				FMemory::Memmove(UBAllocations.PendingFree.GetData(), UBAllocations.PendingFree.GetData() + Index, ElementsLeft * sizeof(FUBPendingFree));
+			}
+			UBAllocations.PendingFree.SetNum(NumAlloc - Index, false);
+		}
+	}
+
+	void FResourceHeapManager::ProcessPendingUBFrees(bool bForce)
+	{
+		FScopeLock ScopeLock(&UBAllocations.CS);
+		ProcessPendingUBFreesNoLock(bForce);
+	}
 }

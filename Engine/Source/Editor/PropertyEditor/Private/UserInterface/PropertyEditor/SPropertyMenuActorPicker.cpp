@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "UserInterface/PropertyEditor/SPropertyMenuActorPicker.h"
 #include "Modules/ModuleManager.h"
@@ -95,11 +95,7 @@ void SPropertyMenuActorPicker::Construct( const FArguments& InArgs )
 			.WidthOverride(PropertyEditorAssetConstants::SceneOutlinerWindowSize.X)
 			.HeightOverride(PropertyEditorAssetConstants::SceneOutlinerWindowSize.Y)
 			[
-				SNew( SBorder )
-				.BorderImage( FEditorStyle::GetBrush("Menu.Background") )
-				[
-					SceneOutlinerModule.CreateSceneOutliner(InitOptions, FOnActorPicked::CreateSP(this, &SPropertyMenuActorPicker::OnActorSelected))
-				]
+				SceneOutlinerModule.CreateSceneOutliner(InitOptions, FOnActorPicked::CreateSP(this, &SPropertyMenuActorPicker::OnActorSelected))
 			];
 
 		MenuBuilder.AddWidget(MenuContent.ToSharedRef(), FText::GetEmpty(), true);
@@ -149,7 +145,7 @@ void SPropertyMenuActorPicker::OnPaste()
 	else
 	{
 		AActor* Actor = LoadObject<AActor>(NULL, *DestPath);
-		if(Actor && (ActorFilter.IsBound() || ActorFilter.Execute(Actor)))
+		if(Actor && (!ActorFilter.IsBound() || ActorFilter.Execute(Actor)))
 		{
 			SetValue(Actor);
 		}
@@ -164,10 +160,10 @@ bool SPropertyMenuActorPicker::CanPaste()
 
 	FString Class;
 	FString PossibleObjectPath = ClipboardText;
-	if( ClipboardText.Split( TEXT("'"), &Class, &PossibleObjectPath ) )
+	if( ClipboardText.Split( TEXT("'"), &Class, &PossibleObjectPath, ESearchCase::CaseSensitive) )
 	{
 		// Remove the last item
-		PossibleObjectPath = PossibleObjectPath.LeftChop( 1 );
+		PossibleObjectPath.LeftChopInline( 1, false );
 	}
 
 	bool bCanPaste = false;

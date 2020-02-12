@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -22,6 +22,8 @@ class IClassTypeActions;
 class UFactory;
 class UAssetImportTask;
 class UAdvancedCopyCustomization;
+class FBlacklistNames;
+class FBlacklistPaths;
 
 USTRUCT(BlueprintType)
 struct FAssetRenameData
@@ -163,10 +165,10 @@ public:
 	virtual void GetAssetTypeActionsList(TArray<TWeakPtr<IAssetTypeActions>>& OutAssetTypeActionsList) const = 0;
 
 	/** Gets the appropriate AssetTypeActions for the supplied class */
-	virtual TWeakPtr<IAssetTypeActions> GetAssetTypeActionsForClass(UClass* Class) const = 0;
+	virtual TWeakPtr<IAssetTypeActions> GetAssetTypeActionsForClass(const UClass* Class) const = 0;
 
 	/** Gets the list of appropriate AssetTypeActions for the supplied class */
-	virtual TArray<TWeakPtr<IAssetTypeActions>> GetAssetTypeActionsListForClass(UClass* Class) const = 0;
+	virtual TArray<TWeakPtr<IAssetTypeActions>> GetAssetTypeActionsListForClass(const UClass* Class) const = 0;
 
 	/**
 	* Allocates a Category bit for a user-defined Category, or EAssetTypeCategories::Misc if all available bits are allocated.
@@ -191,16 +193,6 @@ public:
 
 	/** Gets the appropriate ClassTypeActions for the supplied class */
 	virtual TWeakPtr<IClassTypeActions> GetClassTypeActionsForClass(UClass* Class) const = 0;
-
-	/**
-	 * Fills out a menubuilder with a list of commands that can be applied to the specified objects.
-	 *
-	 * @param InObjects the objects for which to generate type-specific menu options
-	 * @param MenuBuilder the menu in which to build options
-	 * @param bIncludeHeader if true, will include a heading in the menu if any options were found
-	 * @return true if any options were added to the MenuBuilder
-	 */
-	virtual bool GetAssetActions(const TArray<UObject*>& InObjects, class FMenuBuilder& MenuBuilder, bool bIncludeHeading = true) = 0;
 
 	/**
 	 * Creates an asset with the specified name, path, and factory
@@ -230,21 +222,31 @@ public:
 	UFUNCTION(BlueprintCallable, Category = "Editor Scripting | Asset Tools")
 	virtual UObject* DuplicateAssetWithDialog(const FString& AssetName, const FString& PackagePath, UObject* OriginalObject) = 0;
 
+	/** Opens an asset picker dialog and creates an asset with the specified name and path. 
+	 * Uses OriginalObject as the duplication source.
+	 * Uses DialogTitle as the dialog's title.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "Editor Scripting | Asset Tools")
+	virtual UObject* DuplicateAssetWithDialogAndTitle(const FString& AssetName, const FString& PackagePath, UObject* OriginalObject, FText DialogTitle) = 0;
+
 	/** Creates an asset with the specified name and path. Uses OriginalObject as the duplication source. */
 	UFUNCTION(BlueprintCallable, Category="Editor Scripting | Asset Tools")
 	virtual UObject* DuplicateAsset(const FString& AssetName, const FString& PackagePath, UObject* OriginalObject) = 0;
 
 	/** Renames assets using the specified names. */
 	UFUNCTION(BlueprintCallable, Category = "Editor Scripting | Asset Tools")
-	virtual bool RenameAssets(const TArray<FAssetRenameData>& AssetsAndNames) const = 0;
+	virtual bool RenameAssets(const TArray<FAssetRenameData>& AssetsAndNames) = 0;
 
 	/** Renames assets using the specified names. */
 	UFUNCTION(BlueprintCallable, Category = "Editor Scripting | Asset Tools")
-	virtual void RenameAssetsWithDialog(const TArray<FAssetRenameData>& AssetsAndNames, bool bAutoCheckout = false) const = 0;
+	virtual void RenameAssetsWithDialog(const TArray<FAssetRenameData>& AssetsAndNames, bool bAutoCheckout = false) = 0;
 
 	/** Returns list of objects that soft reference the given soft object path. This will load assets into memory to verify */
 	UFUNCTION(BlueprintCallable, Category = "Editor Scripting | Asset Tools")
-	virtual void FindSoftReferencesToObject(FSoftObjectPath TargetObject, TArray<UObject*>& ReferencingObjects) const = 0;
+	virtual void FindSoftReferencesToObject(FSoftObjectPath TargetObject, TArray<UObject*>& ReferencingObjects) = 0;
+
+	/** Returns list of objects that soft reference the given soft object paths. This will load assets into memory to verify */
+	virtual void FindSoftReferencesToObjects(const TArray<FSoftObjectPath>& TargetObjects, TMap<FSoftObjectPath, TArray<UObject*>>& ReferencingObjects) = 0;
 
 	/**
 	 * Function that renames all FSoftObjectPath object with the old asset path to the new one.
@@ -252,7 +254,8 @@ public:
 	 * @param PackagesToCheck Packages to check for referencing FSoftObjectPath.
 	 * @param AssetRedirectorMap Map from old asset path to new asset path
 	 */
-	virtual void RenameReferencingSoftObjectPaths(const TArray<UPackage *> PackagesToCheck, const TMap<FSoftObjectPath, FSoftObjectPath>& AssetRedirectorMap) const = 0;
+	UFUNCTION(BlueprintCallable, Category = "Editor Scripting | Asset Tools")
+	virtual void RenameReferencingSoftObjectPaths(const TArray<UPackage *> PackagesToCheck, const TMap<FSoftObjectPath, FSoftObjectPath>& AssetRedirectorMap) = 0;
 
 	/** Event issued at the end of the rename process */
 	virtual FAssetPostRenameEvent& OnAssetPostRename() = 0;
@@ -287,7 +290,7 @@ public:
 	 * @return list of successfully imported assets
 	 */
 	UFUNCTION(BlueprintCallable, Category = "Editor Scripting | Asset Tools")
-	virtual TArray<UObject*> ImportAssetsAutomated( const UAutomatedAssetImportData* ImportData) const = 0;
+	virtual TArray<UObject*> ImportAssetsAutomated( const UAutomatedAssetImportData* ImportData) = 0;
 
 	/**
 	* Imports assets using tasks specified.
@@ -295,7 +298,7 @@ public:
 	* @param ImportTasks	Tasks that specify how to import each file
 	*/
 	UFUNCTION(BlueprintCallable, Category = "Editor Scripting | Asset Tools")
-	virtual void ImportAssetTasks(const TArray<UAssetImportTask*>& ImportTasks) const = 0;
+	virtual void ImportAssetTasks(const TArray<UAssetImportTask*>& ImportTasks) = 0;
 
 	/**
 	 * Exports the specified objects to file.
@@ -304,7 +307,7 @@ public:
 	 * @param	ExportPath						The directory path to export to.
 	 */
 	UFUNCTION(BlueprintCallable, Category = "Editor Scripting | Asset Tools")
-	virtual void ExportAssets(const TArray<FString>& AssetsToExport, const FString& ExportPath) const = 0;
+	virtual void ExportAssets(const TArray<FString>& AssetsToExport, const FString& ExportPath) = 0;
 
 	/**
 	 * Exports the specified objects to file.
@@ -321,7 +324,7 @@ public:
 	 * @param	ExportPath						The directory path to export to.
 	 */
 	UFUNCTION(BlueprintCallable, Category = "Editor Scripting | Asset Tools")
-	virtual void ExportAssetsWithDialog(const TArray<FString>& AssetsToExport, bool bPromptForIndividualFilenames) const = 0;
+	virtual void ExportAssetsWithDialog(const TArray<FString>& AssetsToExport, bool bPromptForIndividualFilenames) = 0;
 	
 	/**
 	 * Exports the specified objects to file. First prompting the user to pick an export directory and optionally prompting the user to pick a unique directory per file
@@ -329,11 +332,11 @@ public:
 	 * @param	AssetsToExport					List of full asset names (e.g /Game/Path/Asset) to export
 	 * @param	ExportPath						The directory path to export to.
 	 */
-	virtual void ExportAssetsWithDialog(const TArray<UObject*>& AssetsToExport, bool bPromptForIndividualFilenames) const = 0;
+	virtual void ExportAssetsWithDialog(const TArray<UObject*>& AssetsToExport, bool bPromptForIndividualFilenames) = 0;
 
 	/** Creates a unique package and asset name taking the form InBasePackageName+InSuffix */
 	UFUNCTION(BlueprintCallable, Category = "Editor Scripting | Asset Tools")
-	virtual void CreateUniqueAssetName(const FString& InBasePackageName, const FString& InSuffix, FString& OutPackageName, FString& OutAssetName) const = 0;
+	virtual void CreateUniqueAssetName(const FString& InBasePackageName, const FString& InSuffix, FString& OutPackageName, FString& OutAssetName) = 0;
 
 	/** Returns true if the specified asset uses a stock thumbnail resource */
 	virtual bool AssetUsesGenericThumbnail(const FAssetData& AssetData) const = 0;
@@ -373,6 +376,9 @@ public:
 	/** Fix up references to the specified redirectors */
 	virtual void FixupReferencers(const TArray<UObjectRedirector*>& Objects) const = 0;
 
+	/** Returns whether redirectors are being fixed up. */
+	virtual bool IsFixupReferencersInProgress() const = 0;
+
 	/** Expands any folders found in the files list, and returns a flattened list of destination paths and files.  Mirrors directory structure. */
 	virtual void ExpandDirectories(const TArray<FString>& Files, const FString& DestinationPath, TArray<TPair<FString, FString>>& FilesAndDestinations) const = 0;
 
@@ -392,14 +398,42 @@ public:
 	virtual bool ValidateFlattenedAdvancedCopyDestinations(const TMap<FString, FString>& FlattenedPackagesAndDestinations) const = 0;
 
 	/* Find all the dependencies that also need to be copied in the advanced copy, mapping them to the file that depends on them and excluding any that don't pass the ARFilter stored on CopyParams */
-	virtual void GetAllAdvancedCopySources(FName SelectedPackage, FAdvancedCopyParams& CopyParams, TArray<FName>& OutPackageNamesToCopy, TMap<FName, FName>& DependencyMap) const = 0;
+	virtual void GetAllAdvancedCopySources(FName SelectedPackage, FAdvancedCopyParams& CopyParams, TArray<FName>& OutPackageNamesToCopy, TMap<FName, FName>& DependencyMap, const class UAdvancedCopyCustomization* CopyCustomization) const = 0;
 
 	/* Given a complete set of copy parameters, which includes the selected package set, start the advanced copy process */
 	virtual void InitAdvancedCopyFromCopyParams(FAdvancedCopyParams CopyParams) const = 0;
 
 	/** Opens editor for assets */
-	UFUNCTION(BlueprintCallable, Category = "Editor Scripting | Asset Tools")
-	virtual void OpenEditorForAssets(const TArray<UObject*>& Assets) const = 0;
+	UFUNCTION(BlueprintCallable, Category = "Editor Scripting | Asset Tools", meta = (DeprecatedFunction, DeprecationMessage = "Please use UAssetEditorSubsystem::OpenEditorForAssets instead."))
+	virtual void OpenEditorForAssets(const TArray<UObject*>& Assets) = 0;
+
+	/** Converts the given UTexture2D to virtual textures or converts virtual textures back to standard textures and updates the related UMaterials 
+	 * @param Textures					The given textures to convert.
+	 * @param bConvertBackToNonVirtual	If true, virtual textures will be converted back to standard textures.
+	 * @param RelatedMaterials			An optional array of materials to update after the conversion, this is useful during import when not all dependencies and caches are up to date.
+	 */
+	virtual void ConvertVirtualTextures(const TArray<UTexture2D*>& Textures, bool bConvertBackToNonVirtual, const TArray<UMaterial*>* RelatedMaterials = nullptr) const = 0;
+
+	/** Is the given asset class supported? */
+	virtual bool IsAssetClassSupported(const UClass* AssetClass) const = 0;
+
+	/** Find all supported asset factories. */
+	virtual TArray<UFactory*> GetNewAssetFactories() const = 0;
+
+	/** Get asset class blacklist for content browser and other systems */
+	virtual TSharedRef<FBlacklistNames>& GetAssetClassBlacklist() = 0;
+
+	/** Get folder blacklist for content browser and other systems */
+	virtual TSharedRef<FBlacklistPaths>& GetFolderBlacklist() = 0;
+
+	/** Get writable folder blacklist for content browser and other systems */
+	virtual TSharedRef<FBlacklistPaths>& GetWritableFolderBlacklist() = 0;
+
+	/** Returns true if all in list pass writable folder filter */
+	virtual bool AllPassWritableFolderFilter(const TArray<FString>& InPaths) const = 0;
+
+	/** Show notification that writable folder filter blocked an action */
+	virtual void NotifyBlockedByWritableFolderFilter() const = 0;
 };
 
 UCLASS(transient)

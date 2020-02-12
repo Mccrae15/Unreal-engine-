@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "Transport/UdpMessageProcessor.h"
 #include "UdpMessagingPrivate.h"
@@ -38,28 +38,12 @@ FUdpMessageProcessor::FUdpMessageProcessor(FSocket& InSocket, const FGuid& InNod
 	, Socket(&InSocket)
 	, SocketSender(nullptr)
 	, Stopping(false)
+	, MessageFormat(GetDefault<UUdpMessagingSettings>()->MessageFormat) // NOTE: When the message format changes (in the Udp Messaging settings panel), the service is restarted and the processor recreated.
 {
 	WorkEvent = MakeShareable(FPlatformProcess::GetSynchEventFromPool(), [](FEvent* EventToDelete)
 	{
 		FPlatformProcess::ReturnSynchEventToPool(EventToDelete);
 	});
-
-	const UUdpMessagingSettings& Settings = *GetDefault<UUdpMessagingSettings>();
-
-	for (auto& StaticEndpoint : Settings.StaticEndpoints)
-	{
-		FIPv4Endpoint Endpoint;
-
-		if (FIPv4Endpoint::Parse(StaticEndpoint, Endpoint))
-		{
-			FNodeInfo& NodeInfo = StaticNodes.FindOrAdd(Endpoint);
-			NodeInfo.Endpoint = Endpoint;
-		}
-		else
-		{
-			UE_LOG(LogUdpMessaging, Warning, TEXT("Invalid UDP Messaging Static Endpoint '%s'"), *StaticEndpoint);
-		}
-	}
 
 	Thread = FRunnableThread::Create(this, TEXT("FUdpMessageProcessor"), 128 * 1024, TPri_AboveNormal, FPlatformAffinity::GetPoolThreadMask());
 }
@@ -84,6 +68,23 @@ FUdpMessageProcessor::~FUdpMessageProcessor()
 	KnownNodes.Empty();
 }
 
+
+void FUdpMessageProcessor::AddStaticEndpoint(const FIPv4Endpoint& InEndpoint)
+{
+	if (Beacon)
+	{
+		Beacon->AddStaticEndpoint(InEndpoint);
+	}
+}
+
+
+void FUdpMessageProcessor::RemoveStaticEndpoint(const FIPv4Endpoint& InEndpoint)
+{
+	if (Beacon)
+	{
+		Beacon->RemoveStaticEndpoint(InEndpoint);
+	}
+}
 
 /* FUdpMessageProcessor interface
  *****************************************************************************/
@@ -120,6 +121,11 @@ TMap<uint8, TArray<FGuid>> FUdpMessageProcessor::GetRecipientsPerProtocolVersion
 
 bool FUdpMessageProcessor::EnqueueInboundSegment(const TSharedPtr<FArrayReader, ESPMode::ThreadSafe>& Data, const FIPv4Endpoint& InSender)
 {
+	if (Stopping)
+	{
+		return false;
+	}
+
 	if (!InboundSegments.Enqueue(FInboundSegment(Data, InSender)))
 	{
 		return false;
@@ -132,11 +138,16 @@ bool FUdpMessageProcessor::EnqueueInboundSegment(const TSharedPtr<FArrayReader, 
 
 bool FUdpMessageProcessor::EnqueueOutboundMessage(const TSharedRef<IMessageContext, ESPMode::ThreadSafe>& MessageContext, const TArray<FGuid>& Recipients)
 {
+	if (Stopping)
+	{
+		return false;
+	}
+	
 	TMap<uint8, TArray<FGuid>> RecipientPerVersions = GetRecipientsPerProtocolVersion(Recipients);
 	for (const auto& RecipientVersion : RecipientPerVersions)
 	{
 		// Create a message to serialize using that protocol version
-		TSharedRef<FUdpSerializedMessage, ESPMode::ThreadSafe> SerializedMessage = MakeShared<FUdpSerializedMessage, ESPMode::ThreadSafe>(RecipientVersion.Key, MessageContext->GetFlags());
+		TSharedRef<FUdpSerializedMessage, ESPMode::ThreadSafe> SerializedMessage = MakeShared<FUdpSerializedMessage, ESPMode::ThreadSafe>(MessageFormat, RecipientVersion.Key, MessageContext->GetFlags());
 
 		// Kick off the serialization task
 		TGraphTask<FUdpSerializeMessageTask>::CreateTask().ConstructAndDispatchWhenReady(MessageContext, SerializedMessage, WorkEvent);
@@ -162,15 +173,14 @@ FSingleThreadRunnable* FUdpMessageProcessor::GetSingleThreadInterface()
 
 bool FUdpMessageProcessor::Init()
 {
-	TArray<FIPv4Endpoint> StaticEndpoints;
-	StaticNodes.GenerateKeyArray(StaticEndpoints);
-
-	Beacon = new FUdpMessageBeacon(Socket, LocalNodeId, MulticastEndpoint, StaticEndpoints);
+	Beacon = new FUdpMessageBeacon(Socket, LocalNodeId, MulticastEndpoint);
 	SocketSender = new FUdpSocketSender(Socket, TEXT("FUdpMessageProcessor.Sender"));
 
-	// Current protocol version 12
+	// Current protocol version 14
 	SupportedProtocolVersions.Add(UDP_MESSAGING_TRANSPORT_PROTOCOL_VERSION);
-	// Support Protocol version 10-11
+	// Support Protocol version 10, 11, 12, 13
+	SupportedProtocolVersions.Add(13);
+	SupportedProtocolVersions.Add(12);
 	SupportedProtocolVersions.Add(11);
 	SupportedProtocolVersions.Add(10);
 
@@ -190,9 +200,8 @@ uint32 FUdpMessageProcessor::Run()
 			ConsumeOutboundMessages();
 		}
 		UpdateKnownNodes();
-		UpdateStaticNodes();
 	}
-	
+
 	delete Beacon;
 	Beacon = nullptr;
 
@@ -210,6 +219,42 @@ void FUdpMessageProcessor::Stop()
 }
 
 
+void FUdpMessageProcessor::WaitAsyncTaskCompletion()
+{
+	// Stop the processor thread
+	Stop();
+
+	// Make sure we stopped, so we can access KnownNodes safely
+	while (SocketSender != nullptr)
+	{
+		FPlatformProcess::Sleep(0); // Yield.
+	}
+
+	// Check if processor has in-flight serialization task(s).
+	auto HasIncompleteSerializationTasks = [this]()
+	{
+		for (const TPair<FGuid, FNodeInfo>& GuidNodeInfoPair : KnownNodes)
+		{
+			for (const TPair<int32, TSharedPtr<FUdpMessageSegmenter>>& SegmenterPair: GuidNodeInfoPair.Value.Segmenters)
+			{
+				if (!SegmenterPair.Value->IsMessageSerializationDone())
+				{
+					return true;
+				}
+			}
+		}
+
+		return false;
+	};
+
+	// Ensures the task graph doesn't contain any pending/running serialization tasks after the processor exit. If the engine is shutting down, the serialization (UStruct) might
+	// not be available anymore when the task is run (The task graph shuts down after the UStruct stuff).
+	while (HasIncompleteSerializationTasks())
+	{
+		FPlatformProcess::Sleep(0); // Yield.
+	}
+}
+
 /* FSingleThreadRunnable interface
 *****************************************************************************/
 
@@ -220,7 +265,6 @@ void FUdpMessageProcessor::Tick()
 	ConsumeInboundSegments();
 	ConsumeOutboundMessages();
 	UpdateKnownNodes();
-	UpdateStaticNodes();
 }
 
 /* FUdpMessageProcessor implementation
@@ -432,19 +476,64 @@ void FUdpMessageProcessor::ProcessDataSegment(FInboundSegment& Segment, FNodeInf
 	FUdpMessageSegment::FDataChunk DataChunk;
 	DataChunk.Serialize(*Segment.Data, NodeInfo.ProtocolVersion);
 	
+	if (Segment.Data->IsError())
+	{
+		UE_LOG(LogUdpMessaging, Warning, TEXT("FUdpMessageProcessor::ProcessDataSegment: Failed to serialize DataChunk. Sender=%s"),
+			*(Segment.Sender.ToString()));
+		return;
+	}
+
 	// Discard late segments for sequenced messages
 	if ((DataChunk.Sequence != 0) && (DataChunk.Sequence < NodeInfo.Resequencer.GetNextSequence()))
 	{
 		return;
 	}
-
 	TSharedPtr<FUdpReassembledMessage, ESPMode::ThreadSafe>& ReassembledMessage = NodeInfo.ReassembledMessages.FindOrAdd(DataChunk.MessageId);
 
 	// Reassemble message
 	if (!ReassembledMessage.IsValid())
 	{
 		ReassembledMessage = MakeShared<FUdpReassembledMessage, ESPMode::ThreadSafe>(NodeInfo.ProtocolVersion, DataChunk.MessageFlags, DataChunk.MessageSize, DataChunk.TotalSegments, DataChunk.Sequence, Segment.Sender);
+
+		if (ReassembledMessage->IsMalformed())
+		{
+			// Go ahead and throw away the message.
+			// The sender should see the NAK and resend, so we'll attempt to recreate it later.
+			UE_LOG(LogUdpMessaging, Warning, TEXT("FUdpMessageProcessor::ProcessDataSegment: Ignoring malformed Message %s"), *(ReassembledMessage->Describe()));
+			NodeInfo.ReassembledMessages.Remove(DataChunk.MessageId);
+			ReassembledMessage.Reset();
+			return;
+		}
 	}
+
+	/**
+	// TODO: In a future release uncomment these checks.
+	//		Don't do this for 4.23, because there could be existing third party tools / producers that
+	//		just send dummy data (they shouldn't!), and this could break them unexpectedly.
+	//		These should probably also be moved into a shared location (like into FUdpReassembledMessage).
+
+	if (ReassembledMessage->GetTotalSegmentsCount() != DataChunk.TotalSegments)
+	{
+		UE_LOG(LogUdpMessaging, Warning, TEXT("FUdpMessageProcessor::ProcessDataSegment: Ignoring segment with invalid TotalSegment count. Message=%s, ExpectedTotalSegments=%lu, InTotalSegments=%lu"),
+			*ReassembledMessage->Describe(), ReassembledMessage->GetTotalSegmentCount(), DataChunk.TotalSegments);
+		return;
+	}
+	if (ReassembledMessage->GetData().Num() != DataChunk.MessageSize)
+	{
+		UE_LOG(LogUdpMessaging, Warning, TEXT("FUdpMessageProcessor::ProcessDataSegment: Ignoring segment with invalid MessageSize. Message=%s, ExpectedMessageSize=%d, InMessageSize=%d"),
+			*ReassembledMessage->Describe(), ReassembledMessage->GetData().Num(), DataChunk.MessageSize);
+		return;
+	}
+	if (ReassembledMessage->GetSequence() != DataChunk.Sequence)
+	{
+		UE_LOG(LogUdpMessaging, Warning, TEXT("FUdpMessageProcessor::ProcessDataSegment: Ignoring segment with invalid Sequence. Message=%s, ExpectedSequence=%llu, InSequence=%llu"),
+			*ReassembledMessage->Describe(), ReassembledMessaged->GetSequence(), DataChunk.Sequence);
+		return;
+	}
+
+	// TODO: Check MessageFlags.
+	// TODO: Check Sender.
+	*/
 
 	ReassembledMessage->Reassemble(DataChunk.SegmentNumber, DataChunk.SegmentOffset, DataChunk.Data, CurrentTime);
 
@@ -607,6 +696,7 @@ void FUdpMessageProcessor::UpdateKnownNodes()
 	FTimespan DeadHelloTimespan = DeadHelloIntervals * Beacon->GetBeaconInterval();
 	TArray<FGuid> NodesToRemove;
 
+	bool bSuccess = true;
 	for (auto& KnownNodePair : KnownNodes)
 	{
 		FGuid& NodeId = KnownNodePair.Key;
@@ -618,8 +708,8 @@ void FUdpMessageProcessor::UpdateKnownNodes()
 		}
 		else
 		{
-			UpdateSegmenters(NodeInfo);
-			UpdateReassemblers(NodeInfo);
+			bSuccess &= UpdateSegmenters(NodeInfo);
+			bSuccess &= UpdateReassemblers(NodeInfo);
 		}
 	}
 
@@ -631,10 +721,16 @@ void FUdpMessageProcessor::UpdateKnownNodes()
 	UpdateNodesPerVersion();
 
 	Beacon->SetEndpointCount(KnownNodes.Num() + 1);
+
+	// if we had socket error, fire up the error delegate
+	if (!bSuccess || Beacon->HasSocketError())
+	{
+		ErrorDelegate.ExecuteIfBound();
+	}
 }
 
 
-void FUdpMessageProcessor::UpdateSegmenters(FNodeInfo& NodeInfo)
+bool FUdpMessageProcessor::UpdateSegmenters(FNodeInfo& NodeInfo)
 {
 	FUdpMessageSegment::FHeader Header
 	{
@@ -677,7 +773,7 @@ void FUdpMessageProcessor::UpdateSegmenters(FNodeInfo& NodeInfo)
 
 				if (!SocketSender->Send(Writer, NodeInfo.Endpoint))
 				{
-					return;
+					return false;
  				}
 			}
 
@@ -697,12 +793,13 @@ void FUdpMessageProcessor::UpdateSegmenters(FNodeInfo& NodeInfo)
 			It.RemoveCurrent();
 		}
 	}
+	return true;
 }
 
 
 const FTimespan FUdpMessageProcessor::StaleReassemblyInterval = FTimespan::FromSeconds(30);
 
-void FUdpMessageProcessor::UpdateReassemblers(FNodeInfo& NodeInfo)
+bool FUdpMessageProcessor::UpdateReassemblers(FNodeInfo& NodeInfo)
 {
 	FUdpMessageSegment::FHeader Header
 	{
@@ -728,7 +825,7 @@ void FUdpMessageProcessor::UpdateReassemblers(FNodeInfo& NodeInfo)
 
 			if (!SocketSender->Send(Writer, NodeInfo.Endpoint))
 			{
-				return;
+				return false;
 			}
 		}
 
@@ -745,16 +842,9 @@ void FUdpMessageProcessor::UpdateReassemblers(FNodeInfo& NodeInfo)
 			It.RemoveCurrent();
 		}
 	}
+	return true;
 }
 
-
-void FUdpMessageProcessor::UpdateStaticNodes()
-{
-	for (auto& StaticNodePair : StaticNodes)
-	{
-		UpdateSegmenters(StaticNodePair.Value);
-	}
-}
 
 void FUdpMessageProcessor::UpdateNodesPerVersion()
 {

@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -39,7 +39,7 @@ DECLARE_MULTICAST_DELEGATE(FOnMessageBusShutdown);
  *
  * Depending on their usage, messages are classified into a number of types, such as commands, events and documents. In Unreal Engine,
  * all these messages are modeled with regular built-in or user defined UStructs that may either be empty or contain data in the
- * form of UProperty fields[2]. Before being dispatched, messages are internally wrapped into so called Message Context objects
+ * form of FProperty fields[2]. Before being dispatched, messages are internally wrapped into so called Message Context objects
  * (IMessageContext) that contain additional information about a message, such as when it was sent and the sender and recipients.
  *
  * The sending and receiving of messages is not limited to message endpoints within the same thread or process, but may be extended
@@ -151,12 +151,13 @@ public:
 	 * @param Message The message to publish.
 	 * @param TypeInfo The message's type information.
 	 * @param Scope The message scope.
+	 * @param Annotations An optional message annotations header.
 	 * @param Delay The delay after which to send the message.
 	 * @param Expiration The time at which the message expires.
 	 * @param Publisher The message publisher.
 	 * @see Forward, Send
 	 */
-	virtual void Publish(void* Message, UScriptStruct* TypeInfo, EMessageScope Scope, const FTimespan& Delay, const FDateTime& Expiration, const TSharedRef<IMessageSender, ESPMode::ThreadSafe>& Publisher) = 0;
+	virtual void Publish(void* Message, UScriptStruct* TypeInfo, EMessageScope Scope, const TMap<FName, FString>& Annotations, const FTimespan& Delay, const FDateTime& Expiration, const TSharedRef<IMessageSender, ESPMode::ThreadSafe>& Publisher) = 0;
 
 	/**
 	 * Registers a message recipient with the message bus.
@@ -176,6 +177,7 @@ public:
 	 * @param Message The message to send.
 	 * @param TypeInfo The message's type information.
 	 * @param Flags The message flags.
+	 * @param Annotations An optional message annotations header.
 	 * @param Attachment The binary data to attach to the message.
 	 * @param Recipients The list of message recipients.
 	 * @param Delay The delay after which to send the message.
@@ -183,7 +185,7 @@ public:
 	 * @param Sender The message sender.
 	 * @see Forward, Publish
 	 */
-	virtual void Send(void* Message, UScriptStruct* TypeInfo, EMessageFlags Flags, const TSharedPtr<IMessageAttachment, ESPMode::ThreadSafe>& Attachment, const TArray<FMessageAddress>& Recipients, const FTimespan& Delay, const FDateTime& Expiration, const TSharedRef<IMessageSender, ESPMode::ThreadSafe>& Sender) = 0;
+	virtual void Send(void* Message, UScriptStruct* TypeInfo, EMessageFlags Flags, const TMap<FName, FString>& Annotations, const TSharedPtr<IMessageAttachment, ESPMode::ThreadSafe>& Attachment, const TArray<FMessageAddress>& Recipients, const FTimespan& Delay, const FDateTime& Expiration, const TSharedRef<IMessageSender, ESPMode::ThreadSafe>& Sender) = 0;
 
 	/**
 	 * Shuts down the message bus.
@@ -243,6 +245,11 @@ public:
 	 * @param Listener The listener to remove from the registration notifications
 	 */
 	virtual void RemoveNotificationListener(const TSharedRef<IBusListener, ESPMode::ThreadSafe>& Listener) = 0;
+
+	/**
+	 * @return The name of this message bus. 
+	 */
+	virtual const FString& GetName() const = 0;
 
 public:
 

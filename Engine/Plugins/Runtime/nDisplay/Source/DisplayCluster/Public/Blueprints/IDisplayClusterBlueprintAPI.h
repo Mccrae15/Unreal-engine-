@@ -1,15 +1,21 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
 #include "CoreMinimal.h"
 #include "UObject/Interface.h"
 
-#include "DisplayClusterOperationMode.h"
+#include "DisplayClusterEnums.h"
 #include "Cluster/DisplayClusterClusterEvent.h"
 #include "Cluster/IDisplayClusterClusterEventListener.h"
 
+#include "Config/DisplayClusterConfigTypes.h"
+#include "Engine/Scene.h"
+
 #include "IDisplayClusterBlueprintAPI.generated.h"
+
+class UDisplayClusterRootComponent;
+struct FPostProcessSettings;
 
 
 UINTERFACE(meta = (CannotImplementInterfaceInBlueprint))
@@ -75,29 +81,29 @@ public:
 	virtual void RemoveClusterEventListener(TScriptInterface<IDisplayClusterClusterEventListener> Listener) = 0;
 
 	/** Returns amount of nodes in cluster. */
-	UFUNCTION(BlueprintCallable, meta = (DisplayName = "Emits cluster event"), Category = "DisplayCluster|Cluster")
+	UFUNCTION(BlueprintCallable, meta = (DisplayName = "Emit cluster event"), Category = "DisplayCluster|Cluster")
 	virtual void EmitClusterEvent(const FDisplayClusterClusterEvent& Event, bool MasterOnly) = 0;
 
 public:
 	//////////////////////////////////////////////////////////////////////////////////////////////
 	// Config API
 	//////////////////////////////////////////////////////////////////////////////////////////////
-
+	UFUNCTION(BlueprintCallable, meta = (DisplayName = "Get local viewports"), Category = "DisplayCluster|Config")
+	virtual void GetLocalViewports(bool IsRTT, TArray<FString>& ViewportIDs, TArray<FString>& ViewportTypes, TArray<FIntPoint>& ViewportLocations, TArray<FIntPoint>& ViewportSizes) = 0;
 
 public:
 	//////////////////////////////////////////////////////////////////////////////////////////////
 	// Game API
 	//////////////////////////////////////////////////////////////////////////////////////////////
-	// Root
-	/** Returns Cluster Pawn. */
-	UFUNCTION(BlueprintCallable, meta = (DisplayName = "Get root"), Category = "DisplayCluster|Game")
-	virtual ADisplayClusterPawn* GetRoot() = 0;
+	/** Returns DisplayCluster root actor. */
+	UFUNCTION(BlueprintCallable, meta = (DisplayName = "Get root actor"), Category = "DisplayCluster|Game")
+	virtual ADisplayClusterRootActor* GetRootActor() = 0;
+
+	/** Returns DisplayCluster root component. */
+	UFUNCTION(BlueprintCallable, meta = (DisplayName = "Get root component"), Category = "DisplayCluster|Game")
+	virtual UDisplayClusterRootComponent* GetRootComponent() = 0;
 
 	// Screens
-	/** Returns screen reference used for computing frustum output. */
-	UFUNCTION(BlueprintCallable, meta = (DisplayName = "Get active screens"), Category = "DisplayCluster|Game")
-	virtual TArray<UDisplayClusterScreenComponent*> GetActiveScreens() = 0;
-
 	/** Returns screen reference by id name. */
 	UFUNCTION(BlueprintCallable, meta = (DisplayName = "Get screen by ID"), Category = "DisplayCluster|Game")
 	virtual UDisplayClusterScreenComponent* GetScreenById(const FString& id) = 0;
@@ -111,14 +117,25 @@ public:
 	virtual int32 GetScreensAmount() = 0;
 
 	// Cameras
-	/*
-	virtual UDisplayClusterCameraComponent*         GetActiveCamera() const = 0;
-	virtual UDisplayClusterCameraComponent*         GetCameraById(const FString& id) const = 0;
-	virtual TArray<UDisplayClusterCameraComponent*> GetAllCameras() const = 0;
-	virtual int32                        GetCamerasAmount() const = 0;
-	virtual void                         SetActiveCamera(int32 idx) = 0;
-	virtual void                         SetActiveCamera(const FString& id) = 0;
-	*/
+	/** Returns array of all available cameras. */
+	UFUNCTION(BlueprintCallable, meta = (DisplayName = "Get all cameras"), Category = "DisplayCluster|Game")
+	virtual TArray<UDisplayClusterCameraComponent*> GetAllCameras() = 0;
+
+	/** Returns camera component with specified ID. */
+	UFUNCTION(BlueprintCallable, meta = (DisplayName = "Get camera by ID"), Category = "DisplayCluster|Game")
+	virtual UDisplayClusterCameraComponent* GetCameraById(const FString& id) = 0;
+
+	/** Returns amount of cameras. */
+	UFUNCTION(BlueprintCallable, meta = (DisplayName = "Get cameras amount"), Category = "DisplayCluster|Game")
+	virtual int32 GetCamerasAmount() = 0;
+
+	/** Returns default camera component. */
+	UFUNCTION(BlueprintCallable, meta = (DisplayName = "Get default camera"), Category = "DisplayCluster|Game")
+	virtual UDisplayClusterCameraComponent* GetDefaultCamera() = 0;
+
+	/** Sets default camera component specified by ID. */
+	UFUNCTION(BlueprintCallable, meta = (DisplayName = "Set default camera by ID"), Category = "DisplayCluster|Game")
+	virtual void SetDefaultCameraById(const FString& id) = 0;
 
 	// Nodes
 	/** Returns node reference by its id name. */
@@ -128,31 +145,6 @@ public:
 	/** Returns array of all nodes references by its id name. */
 	UFUNCTION(BlueprintCallable, meta = (DisplayName = "Get all nodes"), Category = "DisplayCluster|Game")
 	virtual TArray<UDisplayClusterSceneComponent*> GetAllNodes() = 0;
-
-	// Navigation
-	/** Returns scene component used for default pawn navigation. */
-	UFUNCTION(BlueprintCallable, meta = (DisplayName = "Get translation direction component"), Category = "DisplayCluster|Game")
-	virtual USceneComponent* GetTranslationDirectionComponent() = 0;
-
-	/** Set scene component to be used for default pawn navigation. */
-	UFUNCTION(BlueprintCallable, meta = (DisplayName = "Set translation direction component"), Category = "DisplayCluster|Game")
-	virtual void SetTranslationDirectionComponent(USceneComponent* pComp) = 0;
-
-	/** Set scene component to be used for default pawn navigation by id name. */
-	UFUNCTION(BlueprintCallable, meta = (DisplayName = "Set translation direction component by ID"), Category = "DisplayCluster|Game")
-	virtual void SetTranslationDirectionComponentId(const FString& id) = 0;
-
-	/** Return scene component used as a pivot point for rotation of the scene node hierarchy. */
-	UFUNCTION(BlueprintCallable, meta = (DisplayName = "Get rotate around component"), Category = "DisplayCluster|Game")
-	virtual USceneComponent* GetRotateAroundComponent() = 0;
-
-	/** Set scene component used as a pivot point for rotation of the scene node hierarchy. */
-	UFUNCTION(BlueprintCallable, meta = (DisplayName = "Set rotate around component"), Category = "DisplayCluster|Game")
-	virtual void SetRotateAroundComponent(USceneComponent* pComp) = 0;
-
-	/** Set scene component used as a pivot point for rotation of the scene node hierarchy by id name. */
-	UFUNCTION(BlueprintCallable, meta = (DisplayName = "Set rotate around component by ID"), Category = "DisplayCluster|Game")
-	virtual void SetRotateAroundComponentId(const FString& id) = 0;
 
 public:
 	//////////////////////////////////////////////////////////////////////////////////////////////
@@ -214,7 +206,7 @@ public:
 	UFUNCTION(BlueprintCallable, meta = (DisplayName = "Get VRPN tracker location"), Category = "DisplayCluster|Input")
 	virtual void GetTrackerLocation(const FString& DeviceId, uint8 DeviceChannel, FVector& Location, bool& IsChannelAvailable) = 0;
 
-	/** Return tracker quanternion values at specified device and channel. */
+	/** Return tracker quaternion values at specified device and channel. */
 	UFUNCTION(BlueprintCallable, meta = (DisplayName = "Get VRPN tracker rotation (as quaternion)"), Category = "DisplayCluster|Input")
 	virtual void GetTrackerQuat(const FString& DeviceId, uint8 DeviceChannel, FQuat& Rotation, bool& IsChannelAvailable) = 0;
 
@@ -222,31 +214,48 @@ public:
 	//////////////////////////////////////////////////////////////////////////////////////////////
 	// Render API
 	//////////////////////////////////////////////////////////////////////////////////////////////
-	/** Set eye interpupillary distance (eye separation) for stereoscopic rendering. */
-	UFUNCTION(BlueprintCallable, meta = (DisplayName = "Set interpuppillary distance"), Category = "DisplayCluster|Render")
-	virtual void SetInterpupillaryDistance(float dist) = 0;
+	UFUNCTION(BlueprintCallable, meta = (DisplayName = "Set viewport camera"), Category = "DisplayCluster|Render")
+	virtual void SetViewportCamera(const FString& InCameraId, const FString& InViewportId) = 0;
 
+	UFUNCTION(BlueprintCallable, meta = (DisplayName = "Get viewport's buffer ratio"), Category = "DisplayCluster|Render")
+	virtual void GetBufferRatio(const FString& InViewportId, float& OutBufferRatio) = 0;
+	
+	UFUNCTION(BlueprintCallable, meta = (DisplayName = "Set viewport's buffer ratio"), Category = "DisplayCluster|Render")
+	virtual void SetBufferRatio(const FString& InViewportId, float InBufferRatio) = 0;
+
+	UFUNCTION(BlueprintCallable, meta = (DisplayName = "Set start post processing settings for viewport"), Category = "DisplayCluster|Render")
+	virtual void SetStartPostProcessingSettings(const FString& ViewportID, const FPostProcessSettings& StartPostProcessingSettings) = 0;
+	
+	UFUNCTION(BlueprintCallable, meta = (DisplayName = "Set override post processing settings for viewport"), Category = "DisplayCluster|Render")
+	virtual void SetOverridePostProcessingSettings(const FString& ViewportID, const FPostProcessSettings& OverridePostProcessingSettings, float BlendWeight = 1.0f) = 0;
+	
+	UFUNCTION(BlueprintCallable, meta = (DisplayName = "Set final post processing settings for viewport"), Category = "DisplayCluster|Render")
+	virtual void SetFinalPostProcessingSettings(const FString& ViewportID, const FPostProcessSettings& FinalPostProcessingSettings) = 0;
+
+	UFUNCTION(BlueprintCallable, meta = (DisplayName = "Get viewport rectangle"), Category = "DisplayCluster|Render")
+	virtual bool GetViewportRect(const FString& ViewportID, FIntPoint& ViewportLoc, FIntPoint& ViewportSize) = 0;
+
+public:
+	//////////////////////////////////////////////////////////////////////////////////////////////
+	// Render/Camera API
+	//////////////////////////////////////////////////////////////////////////////////////////////
 	/** Return eye interpupillary distance (eye separation) for stereoscopic rendering. */
-	UFUNCTION(BlueprintCallable, meta = (DisplayName = "Get interpuppillary distance"), Category = "DisplayCluster|Render")
-	virtual float GetInterpupillaryDistance() = 0;
+	UFUNCTION(BlueprintCallable, meta = (DisplayName = "Get interpuppillary distance"), Category = "DisplayCluster|Render|Camera")
+	virtual float GetInterpupillaryDistance(const FString& CameraId) = 0;
 
-	/** Swap eye rendering. */
-	UFUNCTION(BlueprintCallable, meta = (DisplayName = "Set eye swap"), Category = "DisplayCluster|Render")
-	virtual void SetEyesSwap(bool swap) = 0;
+	/** Set eye interpupillary distance (eye separation) for stereoscopic rendering. */
+	UFUNCTION(BlueprintCallable, meta = (DisplayName = "Set interpuppillary distance"), Category = "DisplayCluster|Render|Camera")
+	virtual void SetInterpupillaryDistance(const FString& CameraId, float EyeDistance) = 0;
 
 	/** Get Swap eye rendering state. */
-	UFUNCTION(BlueprintCallable, meta = (DisplayName = "Get eye swap"), Category = "DisplayCluster|Render")
-	virtual bool GetEyesSwap() = 0;
+	UFUNCTION(BlueprintCallable, meta = (DisplayName = "Get eye swap"), Category = "DisplayCluster|Render|Camera")
+	virtual bool GetEyesSwap(const FString& CameraId) = 0;
+
+	/** Swap eye rendering. */
+	UFUNCTION(BlueprintCallable, meta = (DisplayName = "Set eye swap"), Category = "DisplayCluster|Render|Camera")
+	virtual void SetEyesSwap(const FString& CameraId, bool EyeSwapped) = 0;
 
 	/** Toggle current eye swap state. */
-	UFUNCTION(BlueprintCallable, meta = (DisplayName = "Toggle eye swap"), Category = "DisplayCluster|Render")
-	virtual bool ToggleEyesSwap() = 0;
-
-	/** Return near and far plane clip plane distances. */
-	UFUNCTION(BlueprintCallable, meta = (DisplayName = "Get near and far clipping distance"), Category = "DisplayCluster|Render")
-	virtual void GetCullingDistance(float& NearClipPlane, float& FarClipPlane) = 0;
-
-	/** Set near and far plane clip plane distances. */
-	UFUNCTION(BlueprintCallable, meta = (DisplayName = "Set near and far clipping distance"), Category = "DisplayCluster|Render")
-	virtual void SetCullingDistance(float NearClipPlane, float FarClipPlane) = 0;
+	UFUNCTION(BlueprintCallable, meta = (DisplayName = "Toggle eye swap"), Category = "DisplayCluster|Render|Camera")
+	virtual bool ToggleEyesSwap(const FString& CameraId) = 0;
 };

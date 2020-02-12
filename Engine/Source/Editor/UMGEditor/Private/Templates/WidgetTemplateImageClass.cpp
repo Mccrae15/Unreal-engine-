@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "Templates/WidgetTemplateImageClass.h"
 #include "Components/Image.h"
@@ -6,8 +6,7 @@
 #include "Engine/Texture.h"
 
 FWidgetTemplateImageClass::FWidgetTemplateImageClass(const FAssetData& InAssetData)
-	: FWidgetTemplateClass(UImage::StaticClass())
-	, WidgetAssetData(InAssetData)
+	: FWidgetTemplateClass(InAssetData, UImage::StaticClass())
 {
 }
 
@@ -28,11 +27,6 @@ UWidget* FWidgetTemplateImageClass::Create(UWidgetTree* WidgetTree)
 	}
 
 	return Widget;
-}
-
-FAssetData FWidgetTemplateImageClass::GetWidgetAssetData()
-{
-	return WidgetAssetData;
 }
 
 bool FWidgetTemplateImageClass::Supports(UClass* InClass)

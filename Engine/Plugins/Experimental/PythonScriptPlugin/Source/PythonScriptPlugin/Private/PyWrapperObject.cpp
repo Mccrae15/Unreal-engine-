@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "PyWrapperObject.h"
 #include "PyWrapperOwnerContext.h"
@@ -16,7 +16,9 @@
 #include "UObject/StructOnScope.h"
 #include "UObject/PropertyPortFlags.h"
 #include "Engine/World.h"
+#include "Misc/ScopeExit.h"
 #include "Templates/Casts.h"
+#include "BlueprintActionDatabase.h"
 
 #if WITH_PYTHON
 
@@ -124,15 +126,15 @@ PyObject* FPyWrapperObject::GetPropertyValue(FPyWrapperObject* InSelf, const PyG
 	return PyGenUtil::GetPropertyValue(InSelf->ObjectInstance->GetClass(), InSelf->ObjectInstance, InPropDef, InPythonAttrName, (PyObject*)InSelf, *PyUtil::GetErrorContext(InSelf));
 }
 
-int FPyWrapperObject::SetPropertyValue(FPyWrapperObject* InSelf, PyObject* InValue, const PyGenUtil::FGeneratedWrappedProperty& InPropDef, const char* InPythonAttrName, const bool InNotifyChange, const uint64 InReadOnlyFlags)
+int FPyWrapperObject::SetPropertyValue(FPyWrapperObject* InSelf, PyObject* InValue, const PyGenUtil::FGeneratedWrappedProperty& InPropDef, const char* InPythonAttrName, const EPropertyAccessChangeNotifyMode InNotifyMode, const uint64 InReadOnlyFlags)
 {
 	if (!ValidateInternalState(InSelf))
 	{
 		return -1;
 	}
 
-	const FPyWrapperOwnerContext ChangeOwner = InNotifyChange ? FPyWrapperOwnerContext((PyObject*)InSelf, InPropDef.Prop) : FPyWrapperOwnerContext();
-	return PyGenUtil::SetPropertyValue(InSelf->ObjectInstance->GetClass(), InSelf->ObjectInstance, InValue, InPropDef, InPythonAttrName, ChangeOwner, InReadOnlyFlags, InSelf->ObjectInstance->IsTemplate() || InSelf->ObjectInstance->IsAsset(), *PyUtil::GetErrorContext(InSelf));
+	const TUniquePtr<FPropertyAccessChangeNotify> ChangeNotify = FPyWrapperOwnerContext((PyObject*)InSelf, InPropDef.Prop).BuildChangeNotify(InNotifyMode);
+	return PyGenUtil::SetPropertyValue(InSelf->ObjectInstance->GetClass(), InSelf->ObjectInstance, InValue, InPropDef, InPythonAttrName, ChangeNotify.Get(), InReadOnlyFlags, PropertyAccessUtil::IsObjectTemplate(InSelf->ObjectInstance), *PyUtil::GetErrorContext(InSelf));
 }
 
 PyObject* FPyWrapperObject::CallGetterFunction(FPyWrapperObject* InSelf, const PyGenUtil::FGeneratedWrappedFunction& InFuncDef)
@@ -237,7 +239,7 @@ PyObject* FPyWrapperObject::CallFunction_Impl(UObject* InObj, const PyGenUtil::F
 			}
 		}
 
-		if (InFuncDef.Func->Children == nullptr)
+		if (InFuncDef.Func->ChildProperties == nullptr)
 		{
 			// No return value
 			if (!PyUtil::InvokeFunctionCall(InObj, InFuncDef.Func, nullptr, InErrorCtxt))
@@ -355,10 +357,10 @@ PyObject* FPyWrapperObject::CallDynamicFunction_Impl(FPyWrapperObject* InSelf, P
 
 		FStructOnScope FuncParams(InFuncDef.Func);
 		PyGenUtil::ApplyParamDefaults(FuncParams.GetStructMemory(), InFuncDef.InputParams);
-		if (ensureAlways(Cast<UObjectPropertyBase>(InSelfParam.ParamProp)))
+		if (ensureAlways(CastField<FObjectPropertyBase>(InSelfParam.ParamProp)))
 		{
 			void* SelfArgInstance = InSelfParam.ParamProp->ContainerPtrToValuePtr<void>(FuncParams.GetStructMemory());
-			Cast<UObjectPropertyBase>(InSelfParam.ParamProp)->SetObjectPropertyValue(SelfArgInstance, InSelf->ObjectInstance);
+			CastField<FObjectPropertyBase>(InSelfParam.ParamProp)->SetObjectPropertyValue(SelfArgInstance, InSelf->ObjectInstance);
 		}
 		for (int32 ParamIndex = 0; ParamIndex < Params.Num(); ++ParamIndex)
 		{
@@ -729,7 +731,7 @@ PyTypeObject InitializePyWrapperObjectType()
 			FName NewName;
 			if (PyNameObj && PyNameObj != Py_None && !PyConversion::Nativize(PyNameObj, NewName))
 			{
-				PyUtil::SetPythonError(PyExc_TypeError, InSelf, *FString::Printf(TEXT("Failed to convert 'name' (%s) to 'Name'"), *PyUtil::GetFriendlyTypename(InSelf)));
+				PyUtil::SetPythonError(PyExc_TypeError, InSelf, *FString::Printf(TEXT("Failed to convert 'name' (%s) to 'Name'"), *PyUtil::GetFriendlyTypename(PyNameObj)));
 				return nullptr;
 			}
 
@@ -743,6 +745,42 @@ PyTypeObject InitializePyWrapperObjectType()
 			const bool bResult = InSelf->ObjectInstance->Rename(NewName.IsNone() ? nullptr : *NewName.ToString(), NewOuter);
 
 			return PyConversion::Pythonize(bResult);
+		}
+
+		static PyGenUtil::FGeneratedWrappedProperty FindEditorPropertyImpl(FPyWrapperObject* InSelf, const FName InPythonPropName)
+		{
+			PyGenUtil::FGeneratedWrappedProperty WrappedPropDef;
+
+			const UClass* Class = InSelf->ObjectInstance->GetClass();
+
+			const FName ResolvedName = FPyWrapperObjectMetaData::ResolvePropertyName(InSelf, InPythonPropName);
+			const FProperty* ResolvedProp = Class->FindPropertyByName(ResolvedName);
+			if (!ResolvedProp)
+			{
+				PyUtil::SetPythonError(PyExc_Exception, InSelf, *FString::Printf(TEXT("Failed to find property '%s' for attribute '%s' on '%s'"), *ResolvedName.ToString(), *InPythonPropName.ToString(), *Class->GetName()));
+				return WrappedPropDef;
+			}
+
+			TOptional<FString> PropDeprecationMessage;
+			{
+				FString PropDeprecationMessageStr;
+				if (FPyWrapperObjectMetaData::IsPropertyDeprecated(InSelf, InPythonPropName, &PropDeprecationMessageStr))
+				{
+					PropDeprecationMessage = MoveTemp(PropDeprecationMessageStr);
+				}
+			}
+			
+			if (PropDeprecationMessage.IsSet())
+			{
+				WrappedPropDef.SetProperty(ResolvedProp, PyGenUtil::FGeneratedWrappedProperty::SPF_None);
+				WrappedPropDef.DeprecationMessage = MoveTemp(PropDeprecationMessage);
+			}
+			else
+			{
+				WrappedPropDef.SetProperty(ResolvedProp);
+			}
+
+			return WrappedPropDef;
 		}
 
 		static PyObject* GetEditorProperty(FPyWrapperObject* InSelf, PyObject* InArgs, PyObject* InKwds)
@@ -763,38 +801,14 @@ PyTypeObject InitializePyWrapperObjectType()
 			FName Name;
 			if (!PyConversion::Nativize(PyNameObj, Name))
 			{
-				PyUtil::SetPythonError(PyExc_TypeError, InSelf, *FString::Printf(TEXT("Failed to convert 'name' (%s) to 'Name'"), *PyUtil::GetFriendlyTypename(InSelf)));
+				PyUtil::SetPythonError(PyExc_TypeError, InSelf, *FString::Printf(TEXT("Failed to convert 'name' (%s) to 'Name'"), *PyUtil::GetFriendlyTypename(PyNameObj)));
 				return nullptr;
 			}
 
-			const UClass* Class = InSelf->ObjectInstance->GetClass();
-
-			const FName ResolvedName = FPyWrapperObjectMetaData::ResolvePropertyName(InSelf, Name);
-			const UProperty* ResolvedProp = Class->FindPropertyByName(ResolvedName);
-			if (!ResolvedProp)
+			const PyGenUtil::FGeneratedWrappedProperty WrappedPropDef = FindEditorPropertyImpl(InSelf, Name);
+			if (!WrappedPropDef.Prop)
 			{
-				PyUtil::SetPythonError(PyExc_Exception, InSelf, *FString::Printf(TEXT("Failed to find property '%s' for attribute '%s' on '%s'"), *ResolvedName.ToString(), *Name.ToString(), *Class->GetName()));
 				return nullptr;
-			}
-
-			TOptional<FString> PropDeprecationMessage;
-			{
-				FString PropDeprecationMessageStr;
-				if (FPyWrapperObjectMetaData::IsPropertyDeprecated(InSelf, Name, &PropDeprecationMessageStr))
-				{
-					PropDeprecationMessage = MoveTemp(PropDeprecationMessageStr);
-				}
-			}
-
-			PyGenUtil::FGeneratedWrappedProperty WrappedPropDef;
-			if (PropDeprecationMessage.IsSet())
-			{
-				WrappedPropDef.SetProperty(ResolvedProp, PyGenUtil::FGeneratedWrappedProperty::SPF_None);
-				WrappedPropDef.DeprecationMessage = MoveTemp(PropDeprecationMessage);
-			}
-			else
-			{
-				WrappedPropDef.SetProperty(ResolvedProp);
 			}
 
 			return FPyWrapperObject::GetPropertyValue(InSelf, WrappedPropDef, TCHAR_TO_UTF8(*Name.ToString()));
@@ -809,9 +823,10 @@ PyTypeObject InitializePyWrapperObjectType()
 
 			PyObject* PyNameObj = nullptr;
 			PyObject* PyValueObj = nullptr;
+			PyObject* PyNotifyModeObj = nullptr;
 
-			static const char *ArgsKwdList[] = { "name", "value", nullptr };
-			if (!PyArg_ParseTupleAndKeywords(InArgs, InKwds, "OO:set_editor_property", (char**)ArgsKwdList, &PyNameObj, &PyValueObj))
+			static const char *ArgsKwdList[] = { "name", "value", "notify_mode", nullptr };
+			if (!PyArg_ParseTupleAndKeywords(InArgs, InKwds, "OO|O:set_editor_property", (char**)ArgsKwdList, &PyNameObj, &PyValueObj, &PyNotifyModeObj))
 			{
 				return nullptr;
 			}
@@ -819,44 +834,111 @@ PyTypeObject InitializePyWrapperObjectType()
 			FName Name;
 			if (!PyConversion::Nativize(PyNameObj, Name))
 			{
-				PyUtil::SetPythonError(PyExc_TypeError, InSelf, *FString::Printf(TEXT("Failed to convert 'name' (%s) to 'Name'"), *PyUtil::GetFriendlyTypename(InSelf)));
+				PyUtil::SetPythonError(PyExc_TypeError, InSelf, *FString::Printf(TEXT("Failed to convert 'name' (%s) to 'Name'"), *PyUtil::GetFriendlyTypename(PyNameObj)));
 				return nullptr;
 			}
 
-			const UClass* Class = InSelf->ObjectInstance->GetClass();
+			static const UEnum* PropertyAccessChangeNotifyModeEnum = FindObjectChecked<UEnum>(ANY_PACKAGE, TEXT("EPropertyAccessChangeNotifyMode"));
 
-			const FName ResolvedName = FPyWrapperObjectMetaData::ResolvePropertyName(InSelf, Name);
-			const UProperty* ResolvedProp = Class->FindPropertyByName(ResolvedName);
-			if (!ResolvedProp)
+			EPropertyAccessChangeNotifyMode NotifyMode = EPropertyAccessChangeNotifyMode::Default;
+			if (PyNotifyModeObj && !PyConversion::NativizeEnumEntry(PyNotifyModeObj, PropertyAccessChangeNotifyModeEnum, NotifyMode))
 			{
-				PyUtil::SetPythonError(PyExc_Exception, InSelf, *FString::Printf(TEXT("Failed to find property '%s' for attribute '%s' on '%s'"), *ResolvedName.ToString(), *Name.ToString(), *Class->GetName()));
+				PyUtil::SetPythonError(PyExc_TypeError, InSelf, *FString::Printf(TEXT("Failed to convert 'notify_mode' (%s) to 'PropertyAccessChangeNotifyMode'"), *PyUtil::GetFriendlyTypename(PyNotifyModeObj)));
 				return nullptr;
 			}
 
-			TOptional<FString> PropDeprecationMessage;
+			const PyGenUtil::FGeneratedWrappedProperty WrappedPropDef = FindEditorPropertyImpl(InSelf, Name);
+			if (!WrappedPropDef.Prop)
 			{
-				FString PropDeprecationMessageStr;
-				if (FPyWrapperObjectMetaData::IsPropertyDeprecated(InSelf, Name, &PropDeprecationMessageStr))
-				{
-					PropDeprecationMessage = MoveTemp(PropDeprecationMessageStr);
-				}
+				return nullptr;
 			}
 
-			PyGenUtil::FGeneratedWrappedProperty WrappedPropDef;
-			if (PropDeprecationMessage.IsSet())
-			{
-				WrappedPropDef.SetProperty(ResolvedProp, PyGenUtil::FGeneratedWrappedProperty::SPF_None);
-				WrappedPropDef.DeprecationMessage = MoveTemp(PropDeprecationMessage);
-			}
-			else
-			{
-				WrappedPropDef.SetProperty(ResolvedProp);
-			}
-
-			const int Result = FPyWrapperObject::SetPropertyValue(InSelf, PyValueObj, WrappedPropDef, TCHAR_TO_UTF8(*Name.ToString()), /*InNotifyChange*/true, CPF_EditConst);
+			const int Result = FPyWrapperObject::SetPropertyValue(InSelf, PyValueObj, WrappedPropDef, TCHAR_TO_UTF8(*Name.ToString()), NotifyMode, PropertyAccessUtil::EditorReadOnlyFlags);
 			if (Result != 0)
 			{
 				return nullptr;
+			}
+
+			Py_RETURN_NONE;
+		}
+
+		static PyObject* SetEditorProperties(FPyWrapperObject* InSelf, PyObject* InArgs, PyObject* InKwds)
+		{
+			if (!FPyWrapperObject::ValidateInternalState(InSelf))
+			{
+				return nullptr;
+			}
+
+			PyObject* PyPropertyInfoDict = nullptr;
+			if (!PyArg_ParseTuple(InArgs, "O:set_editor_properties", &PyPropertyInfoDict))
+			{
+				return nullptr;
+			}
+
+			if (!PyUtil::IsMappingType(PyPropertyInfoDict))
+			{
+				PyUtil::SetPythonError(PyExc_TypeError, InSelf, *FString::Printf(TEXT("'property_info' (%s) is expected to be a mapping type (eg, dict)"), *PyUtil::GetFriendlyTypename(PyPropertyInfoDict)));
+				return nullptr;
+			}
+
+			// Build up the list of properties and their new values
+			typedef TTuple<FName, PyGenUtil::FGeneratedWrappedProperty, FPyObjectPtr> FPropertyInfoPair;
+			TArray<FPropertyInfoPair> PropertyInfos;
+			{
+				FPyObjectPtr PyPropertyInfoDictIter = FPyObjectPtr::StealReference(PyObject_GetIter(PyPropertyInfoDict));
+				if (PyPropertyInfoDictIter)
+				{
+					FPyObjectPtr PyKeyItem;
+					while ((PyKeyItem = FPyObjectPtr::StealReference(PyIter_Next(PyPropertyInfoDictIter))))
+					{
+						FName Name;
+						if (!PyConversion::Nativize(PyKeyItem, Name))
+						{
+							PyUtil::SetPythonError(PyExc_TypeError, InSelf, *FString::Printf(TEXT("Failed to convert dict key (%s) to 'Name'"), *PyUtil::GetFriendlyTypename(PyKeyItem)));
+							return nullptr;
+						}
+
+						PyGenUtil::FGeneratedWrappedProperty WrappedPropDef = FindEditorPropertyImpl(InSelf, Name);
+						if (!WrappedPropDef.Prop)
+						{
+							return nullptr;
+						}
+
+						FPyObjectPtr PyValueItem = FPyObjectPtr::StealReference(PyObject_GetItem(PyPropertyInfoDict, PyKeyItem));
+						if (ensure(PyValueItem))
+						{
+							PropertyInfos.Add(MakeTuple(Name, MoveTemp(WrappedPropDef), MoveTemp(PyValueItem)));
+						}
+					}
+
+					// Iteration error?
+					if (PyErr_Occurred())
+					{
+						return nullptr;
+					}
+				}
+			}
+
+			// At this point we know that every property we were asked to set was found, but not that the values are going to be compatible
+			// Checking value coercion is tricky without actually doing the conversion, so we'll assume that this point that we need to do the change notifies
+			InSelf->ObjectInstance->PreEditChange(nullptr);
+			ON_SCOPE_EXIT
+			{
+				InSelf->ObjectInstance->PostEditChange();
+			};
+
+			// Try and set the value of each property
+			for (const FPropertyInfoPair& PropertyInfo : PropertyInfos)
+			{
+				const FName Name = PropertyInfo.Get<0>();
+				const PyGenUtil::FGeneratedWrappedProperty& WrappedPropDef = PropertyInfo.Get<1>();
+				PyObject* PyValueObj = PropertyInfo.Get<2>().GetPtr();
+
+				const int Result = FPyWrapperObject::SetPropertyValue(InSelf, PyValueObj, WrappedPropDef, TCHAR_TO_UTF8(*Name.ToString()), EPropertyAccessChangeNotifyMode::Never, PropertyAccessUtil::EditorReadOnlyFlags);
+				if (Result != 0)
+				{
+					return nullptr;
+				}
 			}
 
 			Py_RETURN_NONE;
@@ -880,7 +962,8 @@ PyTypeObject InitializePyWrapperObjectType()
 		{ "modify", PyCFunctionCast(&FMethods::Modify), METH_VARARGS, "x.modify(bool) -> bool -- inform that this instance is about to be modified (tracks changes for undo/redo if transactional)" },
 		{ "rename", PyCFunctionCast(&FMethods::Rename), METH_VARARGS | METH_KEYWORDS, "x.rename(name=None, outer=None) -> bool -- rename this instance" },
 		{ "get_editor_property", PyCFunctionCast(&FMethods::GetEditorProperty), METH_VARARGS | METH_KEYWORDS, "x.get_editor_property(name) -> object -- get the value of any property visible to the editor" },
-		{ "set_editor_property", PyCFunctionCast(&FMethods::SetEditorProperty), METH_VARARGS | METH_KEYWORDS, "x.set_editor_property(name, value) -> None -- set the value of any property visible to the editor, ensuring that the pre/post change notifications are called" },
+		{ "set_editor_property", PyCFunctionCast(&FMethods::SetEditorProperty), METH_VARARGS | METH_KEYWORDS, "x.set_editor_property(name, value, notify_mode=PropertyAccessChangeNotifyMode.DEFAULT) -> None -- set the value of any property visible to the editor, ensuring that the pre/post change notifications are called" },
+		{ "set_editor_properties", PyCFunctionCast(&FMethods::SetEditorProperties), METH_VARARGS, "x.set_editor_properties(property_info) -> None -- set the value of any properties visible to the editor (from a name->value dict), ensuring that the pre/post change notifications are called" },
 		{ nullptr, nullptr, 0, nullptr }
 	};
 
@@ -910,6 +993,8 @@ PyTypeObject PyWrapperObjectType = InitializePyWrapperObjectType();
 void FPyWrapperObjectMetaData::AddReferencedObjects(FPyWrapperBase* Instance, FReferenceCollector& Collector)
 {
 	FPyWrapperObject* Self = static_cast<FPyWrapperObject*>(Instance);
+
+	Collector.AddReferencedObject(Class);
 
 	UObject* OldInstance = Self->ObjectInstance;
 	Collector.AddReferencedObject(Self->ObjectInstance);
@@ -1102,8 +1187,23 @@ public:
 		// Create a new class with a temporary name; we will rename it as part of Finalize
 		const FString NewClassName = MakeUniqueObjectName(ClassOuter, UPythonGeneratedClass::StaticClass(), *FString::Printf(TEXT("%s_NEWINST"), *ClassName)).ToString();
 		NewClass = NewObject<UPythonGeneratedClass>(ClassOuter, *NewClassName, RF_Public | RF_Standalone | RF_Transient);
-		NewClass->SetMetaData(TEXT("BlueprintType"), TEXT("true"));
 		NewClass->SetSuperStruct(InSuperClass);
+		NewClass->ClassFlags |= CLASS_Native;
+	}
+
+	FPythonGeneratedClassBuilder(UPythonGeneratedClass* InOldClass, UClass* InSuperClass)
+		: ClassName(InOldClass->GetName())
+		, PyType(InOldClass->PyType)
+		, OldClass(InOldClass)
+		, NewClass(nullptr)
+	{
+		UObject* ClassOuter = GetPythonTypeContainer();
+
+		// Create a new class with a temporary name; we will rename it as part of Finalize
+		const FString NewClassName = MakeUniqueObjectName(ClassOuter, UPythonGeneratedClass::StaticClass(), *FString::Printf(TEXT("%s_NEWINST"), *ClassName)).ToString();
+		NewClass = NewObject<UPythonGeneratedClass>(ClassOuter, *NewClassName, RF_Public | RF_Standalone | RF_Transient);
+		NewClass->SetSuperStruct(InSuperClass);
+		NewClass->ClassFlags |= CLASS_Native;
 	}
 
 	~FPythonGeneratedClassBuilder()
@@ -1166,13 +1266,19 @@ public:
 			UPythonGeneratedClass::ReparentDerivedClasses(OldClass, NewClass);
 		}	
 
+		if (FBlueprintActionDatabase* ActionDB = FBlueprintActionDatabase::TryGet())
+		{
+			// Notify Blueprints that there is a new class to add to the action list
+			ActionDB->RefreshClassActions(NewClass);
+		}
+
 		// Null the NewClass pointer so the destructor doesn't kill it
 		UPythonGeneratedClass* FinalizedClass = NewClass;
 		NewClass = nullptr;
 		return FinalizedClass;
 	}
 
-	bool CreatePropertyFromDefinition(const FString& InFieldName, FPyUPropertyDef* InPyPropDef)
+	bool CreatePropertyFromDefinition(const FString& InFieldName, FPyFPropertyDef* InPyPropDef)
 	{
 		UClass* SuperClass = NewClass->GetSuperClass();
 
@@ -1185,14 +1291,14 @@ public:
 		}
 
 		// Create the property from its definition
-		UProperty* Prop = PyUtil::CreateProperty(InPyPropDef->PropType, 1, NewClass, PropName);
+		FProperty* Prop = PyUtil::CreateProperty(InPyPropDef->PropType, 1, NewClass, PropName);
 		if (!Prop)
 		{
 			PyUtil::SetPythonError(PyExc_Exception, PyType, *FString::Printf(TEXT("Failed to create property for '%s' (%s)"), *InFieldName, *PyUtil::GetFriendlyTypename(InPyPropDef->PropType)));
 			return false;
 		}
 		Prop->PropertyFlags |= (CPF_Edit | CPF_BlueprintVisible);
-		FPyUPropertyDef::ApplyMetaData(InPyPropDef, Prop);
+		FPyFPropertyDef::ApplyMetaData(InPyPropDef, Prop);
 		NewClass->AddCppProperty(Prop);
 
 		// Resolve any getter/setter function names
@@ -1318,6 +1424,9 @@ public:
 		if (!SuperFunc)
 		{
 			Func->FunctionFlags |= FUNC_Public;
+			// The function is not in the linked list of class fields, insert it so that field iterators & funcs work
+			Func->Next = NewClass->Children;
+			NewClass->Children = Func;
 		}
 		if (EnumHasAllFlags(InPyFuncDef->FuncFlags, EPyUFunctionDefFlags::Static))
 		{
@@ -1344,9 +1453,18 @@ public:
 		NewClass->AddFunctionToFunctionMap(Func, Func->GetFName());
 		if (!Func->HasAnyFunctionFlags(FUNC_Static))
 		{
+			// Check for a malformed function rather than assert in the remove
+			if (FuncArgNames.Num() > 0 && FuncArgDefaults.Num() > 0)
+			{
 			// Strip the zero'th 'self' argument when processing a non-static function
 			FuncArgNames.RemoveAt(0, 1, /*bAllowShrinking*/false);
 			FuncArgDefaults.RemoveAt(0, 1, /*bAllowShrinking*/false);
+		}
+			else
+			{
+				PyUtil::SetPythonError(PyExc_Exception, PyType, *FString::Printf(TEXT("Incorrect number of arguments specified for '%s' (missing self?)"), *InFieldName));
+				return false;
+			}
 		}
 		if (!SuperFunc)
 		{
@@ -1358,6 +1476,24 @@ public:
 				return false;
 			}
 
+			{			
+				// Adding properties to a function inserts them into a linked list, so we loop backwards to get the order right
+				int32 ArgIndex = FuncArgNames.Num() - 1;
+				while (ArgIndex >= 0)
+				{
+					PyObject* ArgTypeObj = PySequence_GetItem(InPyFuncDef->FuncParamTypes, ArgIndex);
+					FProperty* ArgProp = PyUtil::CreateProperty(ArgTypeObj, 1, Func, *FuncArgNames[ArgIndex]);
+					if (!ArgProp)
+					{
+						PyUtil::SetPythonError(PyExc_Exception, PyType, *FString::Printf(TEXT("Failed to create property (%s) for function '%s' argument '%s'"), *PyUtil::GetFriendlyTypename(ArgTypeObj), *InFieldName, *FuncArgNames[ArgIndex]));
+						return false;
+					}
+					ArgProp->PropertyFlags |= CPF_Parm;
+					Func->AddCppProperty(ArgProp);
+					ArgIndex--;
+				}
+			}
+
 			// Build the arguments struct if not overriding a function
 			if (InPyFuncDef->FuncRetType && InPyFuncDef->FuncRetType != Py_None)
 			{
@@ -1365,7 +1501,7 @@ public:
 				const bool bOptionalReturn = PyTuple_Check(InPyFuncDef->FuncRetType);
 
 				PyObject* RetType = bOptionalReturn ? (PyObject*)&PyBool_Type : InPyFuncDef->FuncRetType;
-				UProperty* RetProp = PyUtil::CreateProperty(RetType, 1, Func, TEXT("ReturnValue"));
+				FProperty* RetProp = PyUtil::CreateProperty(RetType, 1, Func, TEXT("ReturnValue"));
 				if (!RetProp)
 				{
 					PyUtil::SetPythonError(PyExc_Exception, PyType, *FString::Printf(TEXT("Failed to create return property (%s) for function '%s'"), *PyUtil::GetFriendlyTypename(RetType), *InFieldName));
@@ -1380,7 +1516,7 @@ public:
 					for (int32 ArgIndex = 0; ArgIndex < NumOutArgs; ++ArgIndex)
 					{
 						PyObject* ArgTypeObj = PySequence_GetItem(InPyFuncDef->FuncRetType, ArgIndex);
-						UProperty* ArgProp = PyUtil::CreateProperty(ArgTypeObj, 1, Func, *FString::Printf(TEXT("OutValue%d"), ArgIndex));
+						FProperty* ArgProp = PyUtil::CreateProperty(ArgTypeObj, 1, Func, *FString::Printf(TEXT("OutValue%d"), ArgIndex));
 						if (!ArgProp)
 						{
 							PyUtil::SetPythonError(PyExc_Exception, PyType, *FString::Printf(TEXT("Failed to create output property (%s) for function '%s' at index %d"), *PyUtil::GetFriendlyTypename(ArgTypeObj), *InFieldName, ArgIndex));
@@ -1392,18 +1528,6 @@ public:
 					}
 				}
 			}
-			for (int32 ArgIndex = 0; ArgIndex < FuncArgNames.Num(); ++ArgIndex)
-			{
-				PyObject* ArgTypeObj = PySequence_GetItem(InPyFuncDef->FuncParamTypes, ArgIndex);
-				UProperty* ArgProp = PyUtil::CreateProperty(ArgTypeObj, 1, Func, *FuncArgNames[ArgIndex]);
-				if (!ArgProp)
-				{
-					PyUtil::SetPythonError(PyExc_Exception, PyType, *FString::Printf(TEXT("Failed to create property (%s) for function '%s' argument '%s'"), *PyUtil::GetFriendlyTypename(ArgTypeObj), *InFieldName, *FuncArgNames[ArgIndex]));
-					return false;
-				}
-				ArgProp->PropertyFlags |= CPF_Parm;
-				Func->AddCppProperty(ArgProp);
-			}
 		}
 		// Apply the defaults to the function arguments and build the Python method params
 		PyGenUtil::FGeneratedWrappedFunction GeneratedWrappedFunction;
@@ -1412,7 +1536,7 @@ public:
 		for (int32 InputArgIndex = 0; InputArgIndex < GeneratedWrappedFunction.InputParams.Num(); ++InputArgIndex)
 		{
 			PyGenUtil::FGeneratedWrappedMethodParameter& GeneratedWrappedMethodParam = GeneratedWrappedFunction.InputParams[InputArgIndex];
-			const UProperty* Param = GeneratedWrappedMethodParam.ParamProp;
+			const FProperty* Param = GeneratedWrappedMethodParam.ParamProp;
 
 			const FName DefaultValueMetaDataKey = *FString::Printf(TEXT("CPP_Default_%s"), *Param->GetName());
 
@@ -1420,7 +1544,7 @@ public:
 			if (FuncArgDefaults.IsValidIndex(InputArgIndex) && FuncArgDefaults[InputArgIndex])
 			{
 				// Convert the default value to the given property...
-				PyUtil::FPropValueOnScope DefaultValue(Param);
+				PyUtil::FPropValueOnScope DefaultValue(PyUtil::FConstPropOnScope::ExternalReference(Param));
 				if (!DefaultValue.IsValid() || !DefaultValue.SetValue(FuncArgDefaults[InputArgIndex], *PyUtil::GetErrorContext(PyType)))
 				{
 					PyUtil::SetPythonError(PyExc_Exception, PyType, *FString::Printf(TEXT("Failed to convert default value for function '%s' argument '%s' (%s)"), *InFieldName, *FuncArgNames[InputArgIndex], *Param->GetClass()->GetName()));
@@ -1502,18 +1626,18 @@ public:
 		NewClass->PropertyDefs.Reserve(OldClass->PropertyDefs.Num());
 		for (const TSharedPtr<PyGenUtil::FPropertyDef>& OldPropDef : OldClass->PropertyDefs)
 		{
-			const UProperty* OldProp = OldPropDef->GeneratedWrappedGetSet.Prop.Prop;
+			const FProperty* OldProp = OldPropDef->GeneratedWrappedGetSet.Prop.Prop;
 			const UFunction* OldGetter = OldPropDef->GeneratedWrappedGetSet.GetFunc.Func;
 			const UFunction* OldSetter = OldPropDef->GeneratedWrappedGetSet.SetFunc.Func;
 
-			UProperty* Prop = DuplicateObject<UProperty>(OldProp, NewClass, OldProp->GetFName());
+			FProperty* Prop = CastFieldChecked<FProperty>(FField::Duplicate(OldProp, NewClass, OldProp->GetFName()));
 			if (!Prop)
 			{
 				PyUtil::SetPythonError(PyExc_Exception, PyType, *FString::Printf(TEXT("Failed to duplicate property for '%s'"), UTF8_TO_TCHAR(OldPropDef->PyGetSet.name)));
 				return false;
 			}
 
-			UMetaData::CopyMetadata((UProperty*)OldProp, Prop);
+			FField::CopyMetaData(OldProp, Prop);
 			NewClass->AddCppProperty(Prop);
 
 			PyGenUtil::FPropertyDef& PropDef = *NewClass->PropertyDefs.Add_GetRef(MakeShared<PyGenUtil::FPropertyDef>());
@@ -1687,6 +1811,22 @@ void UPythonGeneratedClass::PostInitInstance(UObject* InObj)
 	}
 }
 
+
+void UPythonGeneratedClass::ReleasePythonResources()
+{
+	PyType.Reset();
+	PyPostInitFunction.Reset();
+	PropertyDefs.Reset();
+	FunctionDefs.Reset();
+	PyMetaData = FPyWrapperObjectMetaData();
+}
+
+bool UPythonGeneratedClass::IsFunctionImplementedInScript(FName InFunctionName) const
+{
+	UFunction* Function = FindFunctionByName(InFunctionName);
+	return Function && Function->GetOuter() && Function->GetOuter()->IsA(UPythonGeneratedClass::StaticClass());
+}
+
 UPythonGeneratedClass* UPythonGeneratedClass::GenerateClass(PyTypeObject* InPyType)
 {
 	// Get the correct super class from the parent type in Python
@@ -1737,9 +1877,9 @@ UPythonGeneratedClass* UPythonGeneratedClass::GenerateClass(PyTypeObject* InPyTy
 		{
 			const FString FieldName = PyUtil::PyObjectToUEString(FieldKey);
 
-			if (PyObject_IsInstance(FieldValue, (PyObject*)&PyUPropertyDefType) == 1)
+			if (PyObject_IsInstance(FieldValue, (PyObject*)&PyFPropertyDefType) == 1)
 			{
-				FPyUPropertyDef* PyPropDef = (FPyUPropertyDef*)FieldValue;
+				FPyFPropertyDef* PyPropDef = (FPyFPropertyDef*)FieldValue;
 				if (!PythonClassBuilder.CreatePropertyFromDefinition(FieldName, PyPropDef))
 				{
 					return nullptr;
@@ -1761,7 +1901,7 @@ bool UPythonGeneratedClass::ReparentDerivedClasses(UPythonGeneratedClass* InOldP
 
 	for (UClass* DerivedClass : DerivedClasses)
 	{
-		if (DerivedClass->HasAnyClassFlags(CLASS_Native))
+		if (DerivedClass->HasAnyClassFlags(CLASS_Native | CLASS_NewerVersionExists))
 		{
 			continue;
 		}
@@ -1780,7 +1920,7 @@ bool UPythonGeneratedClass::ReparentDerivedClasses(UPythonGeneratedClass* InOldP
 UPythonGeneratedClass* UPythonGeneratedClass::ReparentClass(UPythonGeneratedClass* InOldClass, UPythonGeneratedClass* InNewParent)
 {
 	// Builder used to generate the class
-	FPythonGeneratedClassBuilder PythonClassBuilder(InOldClass->GetName(), InNewParent, InOldClass->PyType);
+	FPythonGeneratedClassBuilder PythonClassBuilder(InOldClass, InNewParent);
 
 	// Copy the data from the old class
 	if (!PythonClassBuilder.CopyFunctionsFromOldClass())
@@ -1803,114 +1943,46 @@ UPythonGeneratedClass* UPythonGeneratedClass::ReparentClass(UPythonGeneratedClas
 
 DEFINE_FUNCTION(UPythonGeneratedClass::CallPythonFunction)
 {
-	// Get the correct class from the UFunction so that we can perform static dispatch to the correct type
-	const UPythonGeneratedClass* This = CastChecked<UPythonGeneratedClass>(Stack.Node->GetOwnerClass());
+	// Note: This function *must not* return until InvokePythonCallableFromUnrealFunctionThunk has been called, as we need to step over the correct amount of data from the bytecode stack!
+
+	const UFunction* Func = Stack.CurrentNativeFunction;
 
 	// Find the Python function to call
 	TSharedPtr<PyGenUtil::FFunctionDef> FuncDef;
 	{
-		const TSharedPtr<PyGenUtil::FFunctionDef>* FuncDefPtr = This->FunctionDefs.FindByPredicate([&Stack](const TSharedPtr<PyGenUtil::FFunctionDef>& InFuncDef)
+		// Get the correct class from the UFunction so that we can perform static dispatch to the correct type
+		const UPythonGeneratedClass* This = CastChecked<UPythonGeneratedClass>(Func->GetOwnerClass());
+
+		const TSharedPtr<PyGenUtil::FFunctionDef>* FuncDefPtr = This->FunctionDefs.FindByPredicate([Func](const TSharedPtr<PyGenUtil::FFunctionDef>& InFuncDef)
 		{
-			return InFuncDef->GeneratedWrappedMethod.MethodFunc.Func == Stack.Node;
+			return InFuncDef->GeneratedWrappedMethod.MethodFunc.Func == Func;
 		});
 		FuncDef = FuncDefPtr ? *FuncDefPtr : nullptr;
-	}
-	if (!FuncDef.IsValid())
-	{
-		UE_LOG(LogPython, Error, TEXT("Failed to find Python function for '%s' on '%s'"), *Stack.Node->GetName(), *This->GetName());
+
+		if (!FuncDef.IsValid())
+		{
+			UE_LOG(LogPython, Error, TEXT("Failed to find Python function for '%s' on '%s'"), *Func->GetName(), *This->GetName());
+		}
 	}
 
 	// Find the Python object to call the function on
 	FPyObjectPtr PySelf;
-	if (!Stack.Node->HasAnyFunctionFlags(FUNC_Static))
+	bool bSelfError = false;
+	if (!Func->HasAnyFunctionFlags(FUNC_Static))
 	{
 		FPyScopedGIL GIL;
 		PySelf = FPyObjectPtr::StealReference((PyObject*)FPyWrapperObjectFactory::Get().CreateInstance(P_THIS_OBJECT));
 		if (!PySelf)
 		{
 			UE_LOG(LogPython, Error, TEXT("Failed to create a Python wrapper for '%s'"), *P_THIS_OBJECT->GetName());
-			return;
+			bSelfError = true;
 		}
 	}
-
-	auto DoCall = [&]() -> bool
-	{
-		if (Stack.Node->Children == nullptr)
-		{
-			// Simple case, no parameters or return value
-			FPyObjectPtr PyArgs;
-			if (PySelf)
-			{
-				PyArgs = FPyObjectPtr::StealReference(PyTuple_New(1));
-				PyTuple_SetItem(PyArgs, 0, PySelf.Release()); // SetItem steals the reference
-			}
-			FPyObjectPtr RetVals = FPyObjectPtr::StealReference(PyObject_CallObject(FuncDef->PyFunction, PyArgs));
-			if (!RetVals)
-			{
-				return false;
-			}
-		}
-		else
-		{
-			// Complex case, parameters or return value
-			TArray<FPyObjectPtr, TInlineAllocator<4>> PyParams;
-
-			// Get the value of the input params for the Python args
-			{
-				int32 ArgIndex = 0;
-				for (const PyGenUtil::FGeneratedWrappedMethodParameter& ParamDef : FuncDef->GeneratedWrappedMethod.MethodFunc.InputParams)
-				{
-					FPyObjectPtr& PyParam = PyParams.AddDefaulted_GetRef();
-					if (!PyConversion::PythonizeProperty_InContainer(ParamDef.ParamProp, Stack.Locals, 0, PyParam.Get()))
-					{
-						PyUtil::SetPythonError(PyExc_TypeError, FuncDef->PyFunction, *FString::Printf(TEXT("Failed to convert argument at pos '%d' when calling function '%s' on '%s'"), ArgIndex + 1, *Stack.Node->GetName(), *P_THIS_OBJECT->GetName()));
-						return false;
-					}
-					++ArgIndex;
-				}
-			}
-
-			const int32 PyParamOffset = (PySelf ? 1 : 0);
-			FPyObjectPtr PyArgs = FPyObjectPtr::StealReference(PyTuple_New(PyParams.Num() + PyParamOffset));
-			if (PySelf)
-			{
-				PyTuple_SetItem(PyArgs, 0, PySelf.Release()); // SetItem steals the reference
-			}
-			for (int32 PyParamIndex = 0; PyParamIndex < PyParams.Num(); ++PyParamIndex)
-			{
-				PyTuple_SetItem(PyArgs, PyParamIndex + PyParamOffset, PyParams[PyParamIndex].Release()); // SetItem steals the reference
-			}
-
-			FPyObjectPtr RetVals = FPyObjectPtr::StealReference(PyObject_CallObject(FuncDef->PyFunction, PyArgs));
-			if (!RetVals)
-			{
-				return false;
-			}
-
-			if (!PyGenUtil::UnpackReturnValues(RetVals, Stack.Locals, FuncDef->GeneratedWrappedMethod.MethodFunc.OutputParams, *PyUtil::GetErrorContext(FuncDef->PyFunction), *FString::Printf(TEXT("function '%s' on '%s'"), *Stack.Node->GetName(), *P_THIS_OBJECT->GetName())))
-			{
-				return false;
-			}
-
-			// Copy the data back out of the function call
-			if (const UProperty* ReturnProp = Stack.Node->GetReturnProperty())
-			{
-				ReturnProp->CopyCompleteValue(RESULT_PARAM, ReturnProp->ContainerPtrToValuePtr<void>(Stack.Locals));
-			}
-			for (FOutParmRec* OutParamRec = Stack.OutParms; OutParamRec; OutParamRec = OutParamRec->NextOutParm)
-			{
-				OutParamRec->Property->CopyCompleteValue(OutParamRec->PropAddr, OutParamRec->Property->ContainerPtrToValuePtr<void>(Stack.Locals));
-			}
-		}
-
-		return true;
-	};
 
 	// Execute Python code within this block
 	{
 		FPyScopedGIL GIL;
-
-		if (!DoCall())
+		if (!PyGenUtil::InvokePythonCallableFromUnrealFunctionThunk(PySelf, FuncDef ? FuncDef->PyFunction.GetPtr() : nullptr, Func, Context, Stack, RESULT_PARAM) || bSelfError)
 		{
 			PyUtil::ReThrowPythonError();
 		}

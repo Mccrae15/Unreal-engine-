@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 /*=============================================================================
 	FXSystem.h: Interface to the effects system.
@@ -16,6 +16,7 @@ class UVectorFieldComponent;
 struct FGPUSpriteEmitterInfo;
 struct FGPUSpriteResourceData;
 struct FParticleEmitterInstance;
+class FGPUSortManager;
 
 /*-----------------------------------------------------------------------------
 	Forward declarations.
@@ -106,12 +107,12 @@ inline bool RHISupportsGPUParticles()
 		&& GSupportsWideMRT
 		&& GPixelFormats[PF_G32R32F].Supported 
 		&& GSupportsTexture3D 
-		&& GSupportsResourceView 
-		&& GRHISupportsInstancing;
+		&& GSupportsResourceView;
 }
 
 class FFXSystemInterface;
-DECLARE_DELEGATE_RetVal_TwoParams(FFXSystemInterface*, FCreateCustomFXSystemDelegate, ERHIFeatureLevel::Type, EShaderPlatform);
+class FGPUSortManager;
+DECLARE_DELEGATE_RetVal_ThreeParams(FFXSystemInterface*, FCreateCustomFXSystemDelegate, ERHIFeatureLevel::Type, EShaderPlatform, FGPUSortManager*);
 
 /*-----------------------------------------------------------------------------
 	The interface to the FX system runtime.
@@ -120,7 +121,7 @@ DECLARE_DELEGATE_RetVal_TwoParams(FFXSystemInterface*, FCreateCustomFXSystemDele
 /**
  * The interface to an effects system.
  */
-class FFXSystemInterface
+class ENGINE_VTABLE FFXSystemInterface
 {
 public:
 
@@ -148,6 +149,12 @@ public:
 	 * Return the interface bound to the given name.
 	 */
 	virtual FFXSystemInterface* GetInterface(const FName& InName) { return nullptr; };
+
+	/**
+	 * Gamethread callback when destroy gets called, allows to clean up references.
+	 */
+	ENGINE_API virtual void OnDestroy() { bIsPendingKill = true; }
+
 
 	/**
 	 * Tick the effects system.
@@ -197,36 +204,47 @@ public:
 	 * Notification from the renderer that it is about to perform visibility
 	 * checks on FX belonging to this system.
 	 */
-	virtual void PreInitViews() = 0;
+	virtual void PreInitViews(FRHICommandListImmediate& RHICmdList, bool bAllowGPUParticleUpdate) = 0;
+
+	virtual void PostInitViews(FRHICommandListImmediate& RHICmdList, FRHIUniformBuffer* ViewUniformBuffer, bool bAllowGPUParticleUpdate) = 0;
 
 	virtual bool UsesGlobalDistanceField() const = 0;
+
+	virtual bool UsesDepthBuffer() const = 0;
+
+	virtual bool RequiresEarlyViewUniformBuffer() const = 0;
 
 	/**
 	 * Notification from the renderer that it is about to draw FX belonging to
 	 * this system.
 	 */
-	virtual void PreRender(FRHICommandListImmediate& RHICmdList, const class FGlobalDistanceFieldParameterData* GlobalDistanceFieldParameterData) = 0;
+	virtual void PreRender(FRHICommandListImmediate& RHICmdList, const class FGlobalDistanceFieldParameterData* GlobalDistanceFieldParameterData, bool bAllowGPUParticleSceneUpdate) = 0;
 
 	/**
 	 * Notification from the renderer that opaque primitives have rendered.
 	 */
 	virtual void PostRenderOpaque(
 		FRHICommandListImmediate& RHICmdList, 
-		const FUniformBufferRHIParamRef ViewUniformBuffer, 
+		FRHIUniformBuffer* ViewUniformBuffer,
 		const class FShaderParametersMetadata* SceneTexturesUniformBufferStruct,
-		FUniformBufferRHIParamRef SceneTexturesUniformBuffer) = 0;
+		FRHIUniformBuffer* SceneTexturesUniformBuffer,
+		bool bAllowGPUParticleUpdate) = 0;
 
-	/**
-	 * Helper in case the data necessary for collision is not available.
-	 */
-	void PostRenderOpaque(FRHICommandListImmediate& RHICmdList) { PostRenderOpaque(RHICmdList, nullptr, nullptr, FUniformBufferRHIParamRef()); }
+	bool IsPendingKill() const { return bIsPendingKill; }
+
+	/** Get the shared SortManager, used in the rendering loop to call FGPUSortManager::OnPreRender() and FGPUSortManager::OnPostRenderOpaque() */
+	virtual FGPUSortManager* GetGPUSortManager() const = 0;
 
 protected:
+	
+	friend class FFXSystemSet;
 
 	/** By making the destructor protected, an instance must be destroyed via FFXSystemInterface::Destroy. */
-	ENGINE_API virtual ~FFXSystemInterface();
+	ENGINE_API virtual ~FFXSystemInterface() {}
 
 private:
+
+	bool bIsPendingKill = false;
 
 	static TMap<FName, FCreateCustomFXSystemDelegate> CreateCustomFXDelegates;
 };

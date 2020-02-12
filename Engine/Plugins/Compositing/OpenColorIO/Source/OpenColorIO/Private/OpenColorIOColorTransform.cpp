@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "OpenColorIOColorTransform.h"
 
@@ -77,11 +77,6 @@ void UOpenColorIOColorTransform::ProcessSerializedShaderMaps(UOpenColorIOColorTr
 {
 	check(IsInGameThread());
 
-	for (FOpenColorIOTransformResource& Resource : LoadedResources)
-	{
-		Resource.RegisterShaderMap();
-	}
-
 	for (int32 ResourceIndex = 0; ResourceIndex < LoadedResources.Num(); ResourceIndex++)
 	{
 		FOpenColorIOTransformResource& LoadedResource = LoadedResources[ResourceIndex];
@@ -103,7 +98,14 @@ void UOpenColorIOColorTransform::ProcessSerializedShaderMaps(UOpenColorIOColorTr
 void UOpenColorIOColorTransform::GetOpenColorIOLUTKeyGuid(const FString& InLutIdentifier, FGuid& OutLutGuid)
 {
 #if WITH_EDITOR
-	const FString DDCKey = FDerivedDataCacheInterface::BuildCacheKey(TEXT("OCIOLUT"), OPENCOLORIO_DERIVEDDATA_VER, *InLutIdentifier);
+	FString DDCKey = FDerivedDataCacheInterface::BuildCacheKey(TEXT("OCIOLUT"), OPENCOLORIO_DERIVEDDATA_VER, *InLutIdentifier);
+
+#if WITH_OCIO
+	//Keep library version in the DDC key to invalidate it once we move to a new library
+	DDCKey += TEXT("OCIOVersion");
+	DDCKey += TEXT(OCIO_VERSION);
+#endif //WITH_OCIO
+
 	const uint32 KeyLength = DDCKey.Len() * sizeof(DDCKey[0]);
 	uint32 Hash[5];
 	FSHA1::HashBuffer(*DDCKey, KeyLength, reinterpret_cast<uint8*>(Hash));
@@ -239,11 +241,6 @@ void UOpenColorIOColorTransform::CacheResourceTextures()
 			UE_LOG(LogOpenColorIO, Error, TEXT("Failed to cache 3dLUT for color transform %s. Configuration file was invalid."), *GetTransformFriendlyName());
 		}
 #endif
-	}
-	else
-	{
-		//This is the path for cooked data where the 3dLut is serialized in the transform asset.
-		Lut3dTexture->UpdateResource();
 	}
 }
 
@@ -416,7 +413,11 @@ bool UOpenColorIOColorTransform::UpdateShaderInfo(FString& OutShaderCodeHash, FS
 
 	return false;
 #else
-	UE_LOG(LogOpenColorIO, Error, TEXT("Can't update shader, OCIO library isn't present."));
+	//Avoid triggering errors when building maps on build machine.
+	if (!GIsBuildMachine)
+	{
+		UE_LOG(LogOpenColorIO, Error, TEXT("Can't update shader, OCIO library isn't present."));
+	}
 	return false;
 #endif //WITH_OCIO
 #else

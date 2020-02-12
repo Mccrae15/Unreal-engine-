@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "MovieSceneNiagaraParameterSectionTemplate.h"
 #include "NiagaraComponent.h"
@@ -98,9 +98,7 @@ FMovieSceneNiagaraParameterSectionTemplate::FMovieSceneNiagaraParameterSectionTe
 
 FMovieSceneNiagaraParameterSectionTemplate::FMovieSceneNiagaraParameterSectionTemplate(FNiagaraVariable InParameter)
 	: Parameter(InParameter)
-{
-	EnableOverrides(RequiresInitializeFlag);
-}
+{}
 
 void FMovieSceneNiagaraParameterSectionTemplate::Initialize(const FMovieSceneEvaluationOperand& Operand, const FMovieSceneContext& Context, FPersistentEvaluationData& PersistentData, IMovieScenePlayer& Player) const
 {

@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 /*=============================================================================
 	WindowsD3D12Device.cpp: Windows D3D device RHI implementation.
@@ -7,13 +7,25 @@
 #include "D3D12RHIPrivate.h"
 #include "Modules/ModuleManager.h"
 #include "Windows/AllowWindowsPlatformTypes.h"
-	#include <delayimp.h>
+#include <delayimp.h>
+#if !PLATFORM_CPU_ARM_FAMILY
 	#include "amd_ags.h"
+#endif
+#if !PLATFORM_HOLOLENS && !PLATFORM_CPU_ARM_FAMILY
+	#define NV_API_ENABLE 1
+	#include "nvapi.h"
+	#include "nvShaderExtnEnums.h"
+#else
+	#define NV_API_ENABLE 0
+#endif
 #include "Windows/HideWindowsPlatformTypes.h"
 
 #include "HardwareInfo.h"
 #include "Runtime/HeadMountedDisplay/Public/IHeadMountedDisplayModule.h"
 #include "GenericPlatform/GenericPlatformDriver.h"			// FGPUDriverInfo
+#include "RHIValidation.h"
+
+#include "ShaderCompiler.h"
 
 #pragma comment(lib, "d3d12.lib")
 
@@ -24,15 +36,18 @@ extern bool D3D12RHI_ShouldCreateWithWarp();
 extern bool D3D12RHI_ShouldAllowAsyncResourceCreation();
 extern bool D3D12RHI_ShouldForceCompatibility();
 
-static TAutoConsoleVariable<int32> CVarGraphicsAdapter(
-	TEXT("D3D12.GraphicsAdapter"),
-	-1,
-	TEXT("User request to pick a specific graphics adapter (e.g. when using an integrated graphics card with a discrete one)\n")
-	TEXT(" -2: Take the first one that fulfills the criteria\n")
-	TEXT(" -1: Favor discrete because they are usually faster (default)\n")
-	TEXT("  0: Adapter #0\n")
-	TEXT("  1: Adapter #1, ..."),
-	ECVF_RenderThreadSafe);
+FD3D12DynamicRHI* GD3D12RHI = nullptr;
+
+#if NV_AFTERMATH
+// Disabled by default since introduces stalls between render and driver threads
+int32 GDX12NVAfterMathEnabled = 0;
+static FAutoConsoleVariableRef CVarDX12NVAfterMathBufferSize(
+	TEXT("r.DX12NVAfterMathEnabled"),
+	GDX12NVAfterMathEnabled,
+	TEXT("Use NV Aftermath for GPU crash analysis in D3D12"),
+	ECVF_ReadOnly
+);
+#endif
 
 static inline int D3D12RHI_PreferAdapterVendor()
 {
@@ -130,7 +145,7 @@ static bool SafeTestD3D12CreateDevice(IDXGIAdapter* Adapter, D3D_FEATURE_LEVEL M
 			D3D_FEATURE_LEVEL MaxFeatureLevel = MinFeatureLevel;
 			D3D12_FEATURE_DATA_FEATURE_LEVELS FeatureLevelCaps = {};
 			FeatureLevelCaps.pFeatureLevelsRequested = FeatureLevels;
-			FeatureLevelCaps.NumFeatureLevels = ARRAY_COUNT(FeatureLevels);	
+			FeatureLevelCaps.NumFeatureLevels = UE_ARRAY_COUNT(FeatureLevels);	
 			if (SUCCEEDED(pDevice->CheckFeatureSupport(D3D12_FEATURE_FEATURE_LEVELS, &FeatureLevelCaps, sizeof(FeatureLevelCaps))))
 			{
 				MaxFeatureLevel = FeatureLevelCaps.MaxSupportedFeatureLevel;
@@ -206,6 +221,11 @@ static bool SupportsHDROutput(FD3D12DynamicRHI* D3DRHI)
 
 bool FD3D12DynamicRHIModule::IsSupported()
 {
+	if (!FWindowsPlatformMisc::VerifyWindowsVersion(10, 0))
+	{
+		return false;
+	}
+
 	// If not computed yet
 	if (ChosenAdapters.Num() == 0)
 	{
@@ -276,7 +296,10 @@ void FD3D12DynamicRHIModule::FindAdapter()
 
 	// Allow HMD to override which graphics adapter is chosen, so we pick the adapter where the HMD is connected
 	uint64 HmdGraphicsAdapterLuid = IHeadMountedDisplayModule::IsAvailable() ? IHeadMountedDisplayModule::Get().GetGraphicsAdapterLuid() : 0;
-	int32 CVarExplicitAdapterValue = HmdGraphicsAdapterLuid == 0 ? CVarGraphicsAdapter.GetValueOnGameThread() : -2;
+	// Non-static as it is used only a few times
+	auto* CVarGraphicsAdapter = IConsoleManager::Get().FindTConsoleVariableDataInt(TEXT("r.GraphicsAdapter"));
+	int32 CVarExplicitAdapterValue = HmdGraphicsAdapterLuid == 0 ? (CVarGraphicsAdapter ? CVarGraphicsAdapter->GetValueOnGameThread() : -1) : -2;
+	FParse::Value(FCommandLine::Get(), TEXT("graphicsadapter="), CVarExplicitAdapterValue);
 
 	const bool bFavorNonIntegrated = CVarExplicitAdapterValue == -1;
 
@@ -377,6 +400,16 @@ void FD3D12DynamicRHIModule::FindAdapter()
 		}
 	}
 
+#if WITH_EDITOR
+	if (bIsAnyIntel || bIsAnyNVIDIA)
+	{
+		UE_LOG(LogD3D12RHI, Log, TEXT("Forcing D3D12.AsyncDeferredDeletion=0 as a workaround for a deadlock."));
+
+		extern D3D12RHI_API int32 GD3D12AsyncDeferredDeletion;
+		GD3D12AsyncDeferredDeletion = 0;
+	}
+#endif
+
 	TSharedPtr<FD3D12Adapter> NewAdapter;
 	if (bFavorNonIntegrated && (bIsAnyAMD || bIsAnyNVIDIA))
 	{
@@ -415,21 +448,12 @@ FDynamicRHI* FD3D12DynamicRHIModule::CreateRHI(ERHIFeatureLevel::Type RequestedF
 	{
 		check(PreviewFeatureLevel == ERHIFeatureLevel::ES2 || PreviewFeatureLevel == ERHIFeatureLevel::ES3_1);
 
-		// ES2/3.1 feature level emulation in D3D
+		// ES3.1 feature level emulation in D3D
 		GMaxRHIFeatureLevel = PreviewFeatureLevel;
-		if (GMaxRHIFeatureLevel == ERHIFeatureLevel::ES2)
-		{
-			GMaxRHIShaderPlatform = SP_PCD3D_ES2;
-		}
-		else if (GMaxRHIFeatureLevel == ERHIFeatureLevel::ES3_1)
+		if (GMaxRHIFeatureLevel == ERHIFeatureLevel::ES3_1)
 		{
 			GMaxRHIShaderPlatform = SP_PCD3D_ES3_1;
 		}
-	}
-	else if (RequestedFeatureLevel == ERHIFeatureLevel::SM4)
-	{
-		GMaxRHIFeatureLevel = ERHIFeatureLevel::SM4;
-		GMaxRHIShaderPlatform = SP_PCD3D_SM4;
 	}
 	else
 	{
@@ -437,19 +461,47 @@ FDynamicRHI* FD3D12DynamicRHIModule::CreateRHI(ERHIFeatureLevel::Type RequestedF
 		GMaxRHIShaderPlatform = SP_PCD3D_SM5;
 	}
 
-	TArray<FD3D12Adapter*> RawPointers;
-	for (int32 i = 0; i < ChosenAdapters.Num(); i++)
+	GD3D12RHI = new FD3D12DynamicRHI(ChosenAdapters);
+#if ENABLE_RHI_VALIDATION
+	if (FParse::Param(FCommandLine::Get(), TEXT("RHIValidation")))
 	{
-		RawPointers.Add(ChosenAdapters[i].Get());
+		GValidationRHI = new FValidationRHI(GD3D12RHI);
+	}
+	else
+	{
+		check(!GValidationRHI);
 	}
 
-	return new FD3D12DynamicRHI(RawPointers);
+	return GValidationRHI ? (FDynamicRHI*)GValidationRHI : (FDynamicRHI*)GD3D12RHI;
+#else
+	return GD3D12RHI;
+#endif
 }
 
 void FD3D12DynamicRHIModule::StartupModule()
 {
+#if NV_AFTERMATH
+	// Note - can't check device type here, we'll check for that before actually initializing Aftermath
+	FString AftermathBinariesRoot = FPaths::EngineDir() / TEXT("Binaries/ThirdParty/NVIDIA/NVaftermath/Win64/");
+	if (LoadLibraryW(*(AftermathBinariesRoot + "GFSDK_Aftermath_Lib.x64.dll")) == nullptr)
+	{
+		UE_LOG(LogD3D12RHI, Warning, TEXT("Failed to load GFSDK_Aftermath_Lib.x64.dll"));
+		GDX12NVAfterMathEnabled = 0;
+		return;
+	}
+	else
+	{
+		UE_LOG(LogD3D12RHI, Log, TEXT("Aftermath initialized"));
+		GDX12NVAfterMathEnabled = 1;
+	}
+#endif
+
 #if USE_PIX
+#if PLATFORM_CPU_ARM_FAMILY
+	static FString WindowsPixDllRelativePath = FPaths::Combine(*FPaths::EngineDir(), TEXT("Binaries/ThirdParty/Windows/DirectX/arm64"));
+#else
 	static FString WindowsPixDllRelativePath = FPaths::Combine(*FPaths::EngineDir(), TEXT("Binaries/ThirdParty/Windows/DirectX/x64"));
+#endif
 	static FString WindowsPixDll("WinPixEventRuntime.dll");
 	UE_LOG(LogD3D12RHI, Log, TEXT("Loading %s for PIX profiling (from %s)."), WindowsPixDll.GetCharArray().GetData(), WindowsPixDllRelativePath.GetCharArray().GetData());
 	WindowsPixDllHandle = FPlatformProcess::GetDllHandle(*FPaths::Combine(*WindowsPixDllRelativePath, *WindowsPixDll));
@@ -476,7 +528,7 @@ void FD3D12DynamicRHIModule::ShutdownModule()
 
 void FD3D12DynamicRHI::Init()
 {
-	for (FD3D12Adapter*& Adapter : ChosenAdapters)
+	for (TSharedPtr<FD3D12Adapter>& Adapter : ChosenAdapters)
 	{
 		Adapter->Initialize(this);
 	}
@@ -494,29 +546,27 @@ void FD3D12DynamicRHI::Init()
 	// Need to set GRHIVendorId before calling IsRHIDevice* functions
 	GRHIVendorId = AdapterDesc.VendorId;
 
+#if !PLATFORM_CPU_ARM_FAMILY
 	// Initialize the AMD AGS utility library, when running on an AMD device
-	if (IsRHIDeviceAMD())
+	if (IsRHIDeviceAMD() && bAllowVendorDevice)
 	{
 		check(AmdAgsContext == nullptr);
+		check(AmdSupportedExtensionFlags == 0);
+
 		// agsInit should be called before D3D device creation
 		agsInit(&AmdAgsContext, nullptr, nullptr);
 	}
+#endif
 
-	// Create a device chain for each of the adapters we have choosen. This could be a single discrete card,
+	// Create a device chain for each of the adapters we have chosen. This could be a single discrete card,
 	// a set discrete cards linked together (i.e. SLI/Crossfire) an Integrated device or any combination of the above
-	for (FD3D12Adapter*& Adapter : ChosenAdapters)
+	for (TSharedPtr<FD3D12Adapter>& Adapter : ChosenAdapters)
 	{
 		check(Adapter->GetDesc().IsValid());
 		Adapter->InitializeDevices();
 	}
 
-	uint32 AmdSupportedExtensionFlags = 0;
-	if (AmdAgsContext)
-	{
-		// Initialize AMD driver extensions
-		agsDriverExtensionsDX12_Init(AmdAgsContext, GetAdapter().GetD3DDevice(), &AmdSupportedExtensionFlags);
-	}
-
+#if !PLATFORM_CPU_ARM_FAMILY
 	// Warn if we are trying to use RGP frame markers but are either running on a non-AMD device
 	// or using an older AMD driver without RGP marker support
 	if (GEmitRgpFrameMarkers && !IsRHIDeviceAMD())
@@ -527,6 +577,33 @@ void FD3D12DynamicRHI::Init()
 	{
 		UE_LOG(LogD3D12RHI, Warning, TEXT("Attempting to use RGP frame markers without driver support. Update AMD driver."));
 	}
+
+	if (IsRHIDeviceAMD() && bAllowVendorDevice)
+	{
+		GRHISupportsAtomicUInt64 = (AmdSupportedExtensionFlags & AGS_DX12_EXTENSION_INTRINSIC_ATOMIC_U64) != 0;
+		GRHISupportsAtomicUInt64 = GRHISupportsAtomicUInt64 && (AmdSupportedExtensionFlags & AGS_DX12_EXTENSION_INTRINSIC_UAV_BIND_SLOT) != 0;
+	}
+#endif
+
+#if NV_API_ENABLE
+	if (IsRHIDeviceNVIDIA() && bAllowVendorDevice)
+	{
+		NvAPI_Status NvStatus;
+		NvStatus = NvAPI_Initialize();
+		if (NvStatus == NVAPI_OK)
+		{
+			NvStatus = NvAPI_D3D12_IsNvShaderExtnOpCodeSupported(GetAdapter().GetD3DDevice(), NV_EXTN_OP_UINT64_ATOMIC, &GRHISupportsAtomicUInt64);
+			if (NvStatus != NVAPI_OK)
+			{
+				UE_LOG(LogD3D12RHI, Warning, TEXT("Failed to query support for 64 bit atomics"));
+			}
+		}
+		else
+		{
+			UE_LOG(LogD3D12RHI, Warning, TEXT("Failed to initialize NVAPI"));
+		}
+	}
+#endif
 
 	GTexturePoolSize = 0;
 
@@ -608,28 +685,23 @@ void FD3D12DynamicRHI::Init()
 			D3D12RHI_ShouldAllowAsyncResourceCreation() ? TEXT("no driver support") : TEXT("disabled by user"));
 	}
 
-	GShaderPlatformForFeatureLevel[ERHIFeatureLevel::ES2] = SP_PCD3D_ES2;
+	if (GRHISupportsAtomicUInt64)
+	{
+		UE_LOG(LogD3D12RHI, Log, TEXT("RHI has support for 64 bit atomics"));
+	}
+	else
+	{
+		UE_LOG(LogD3D12RHI, Log, TEXT("RHI does not have support for 64 bit atomics"));
+	}
+
+	GShaderPlatformForFeatureLevel[ERHIFeatureLevel::ES2] = SP_NumPlatforms;
 	GShaderPlatformForFeatureLevel[ERHIFeatureLevel::ES3_1] = SP_PCD3D_ES3_1;
-	GShaderPlatformForFeatureLevel[ERHIFeatureLevel::SM4] = SP_PCD3D_SM4;
+	GShaderPlatformForFeatureLevel[ERHIFeatureLevel::SM4_REMOVED] = SP_NumPlatforms;
 	GShaderPlatformForFeatureLevel[ERHIFeatureLevel::SM5] = SP_PCD3D_SM5;
 
 	GSupportsEfficientAsyncCompute = GRHISupportsParallelRHIExecute && IsRHIDeviceAMD();
 
 	GSupportsDepthBoundsTest = SupportsDepthBoundsTest(this);
-
-	GRHICommandList.GetImmediateCommandList().SetContext(GDynamicRHI->RHIGetDefaultContext());
-	GRHICommandList.GetImmediateAsyncComputeCommandList().SetComputeContext(GDynamicRHI->RHIGetDefaultAsyncComputeContext());
-
-	// Notify all initialized FRenderResources that there's a valid RHI device to create their RHI resources for now.
-	for (TLinkedList<FRenderResource*>::TIterator ResourceIt(FRenderResource::GetResourceList()); ResourceIt; ResourceIt.Next())
-	{
-		ResourceIt->InitRHI();
-	}
-	// Dynamic resources can have dependencies on static resources (with uniform buffers) and must initialized last!
-	for (TLinkedList<FRenderResource*>::TIterator ResourceIt(FRenderResource::GetResourceList()); ResourceIt; ResourceIt.Next())
-	{
-		ResourceIt->InitDynamicRHI();
-	}
 
 	{
 		GRHISupportsHDROutput = SupportsHDROutput(this);
@@ -665,17 +737,31 @@ void FD3D12DynamicRHI::Init()
 
 #if D3D12_RHI_RAYTRACING
 	GRHISupportsRayTracing = GetAdapter().GetD3DRayTracingDevice() != nullptr;
+	GRHISupportsRayTracingMissShaderBindings = true;
 #endif
 
-	// Set the RHI initialized flag.
+	GRHICommandList.GetImmediateCommandList().SetContext(RHIGetDefaultContext());
+	GRHICommandList.GetImmediateAsyncComputeCommandList().SetComputeContext(RHIGetDefaultAsyncComputeContext());
+	FRenderResource::InitPreRHIResources();
 	GIsRHIInitialized = true;
 }
 
 void FD3D12DynamicRHI::PostInit()
 {
+	if (!FPlatformProperties::RequiresCookedData() && (GRHISupportsRayTracing || GRHISupportsRHIThread))
+	{
+		// Make sure all global shaders are complete at this point
+		extern RENDERCORE_API const int32 GlobalShaderMapId;
+
+		TArray<int32> ShaderMapIds;
+		ShaderMapIds.Add(GlobalShaderMapId);
+
+		GShaderCompilingManager->FinishCompilation(TEXT("Global"), ShaderMapIds);
+	}
+
 	if (GRHISupportsRayTracing)
 	{
-		for (FD3D12Adapter*& Adapter : ChosenAdapters)
+		for (TSharedPtr<FD3D12Adapter>& Adapter : ChosenAdapters)
 		{
 			Adapter->InitializeRayTracing();
 		}
@@ -704,7 +790,8 @@ void FD3D12Device::Initialize()
 #if ENABLE_RESIDENCY_MANAGEMENT
 	IDXGIAdapter3* DxgiAdapter3 = nullptr;
 	VERIFYD3D12RESULT(GetParentAdapter()->GetAdapter()->QueryInterface(IID_PPV_ARGS(&DxgiAdapter3)));
-	D3DX12Residency::InitializeResidencyManager(ResidencyManager, GetDevice(), GetGPUIndex(), DxgiAdapter3, RESIDENCY_PIPELINE_DEPTH);
+	const uint32 ResidencyMangerGPUIndex = GVirtualMGPU ? 0 : GetGPUIndex(); // GPU node index is used by residency manager to query budget
+	D3DX12Residency::InitializeResidencyManager(ResidencyManager, GetDevice(), ResidencyMangerGPUIndex, DxgiAdapter3, RESIDENCY_PIPELINE_DEPTH);
 #endif // ENABLE_RESIDENCY_MANAGEMENT
 
 	SetupAfterDeviceCreation();
@@ -801,8 +888,8 @@ bool FD3D12DynamicRHI::RHIGetAvailableResolutions(FScreenResolutionArray& Resolu
 		}
 		else if (HResult == DXGI_ERROR_NOT_CURRENTLY_AVAILABLE)
 		{
-			UE_LOG(LogD3D12RHI, Fatal,
-				TEXT("This application cannot be run over a remote desktop configuration")
+			UE_LOG(LogD3D12RHI, Warning,
+				TEXT("RHIGetAvailableResolutions() can not be used over a remote desktop configuration")
 				);
 			return false;
 		}

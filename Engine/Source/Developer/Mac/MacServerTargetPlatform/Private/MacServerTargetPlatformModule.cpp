@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 /*=============================================================================
 	MacServerTargetPlatformModule.cpp: Implements the FMacServerTargetPlatformModule class.
@@ -30,7 +30,7 @@ public:
 
 	virtual ITargetPlatform* GetTargetPlatform( ) override
 	{
-		if (Singleton == NULL)
+		if (Singleton == NULL&& TGenericMacTargetPlatform<false, true, false>::IsUsable())
 		{
 			Singleton = new TGenericMacTargetPlatform<false, true, false>();
 		}

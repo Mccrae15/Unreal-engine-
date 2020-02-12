@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 /*-----------------------------------------------------------------------------
 	Data structures only used for importing skeletal meshes and animations.
@@ -41,6 +41,7 @@ struct ExistingSkelMeshData
 	TArray<USkeletalMeshSocket*>			ExistingSockets;
 	TArray<FReductionBaseSkeletalMeshBulkData*> ExistingOriginalReductionSourceMeshData;
 	TIndirectArray<FSkeletalMeshLODModel>	ExistingLODModels;
+	FSkeletalMeshLODInfo					ExistingBaseLODInfo;
 	TArray<FSkeletalMeshLODInfo>			ExistingLODInfo;
 	FReferenceSkeleton						ExistingRefSkeleton;
 	TArray<FSkeletalMaterial>				ExistingMaterials;
@@ -82,6 +83,16 @@ struct ExistingSkelMeshData
 
 	FSkeletalMeshSamplingInfo				ExistingSamplingInfo;
 	FPerPlatformInt							MinLOD;
+	FPerPlatformBool						DisableBelowMinLodStripping;
+	FPerPlatformBool						bSupportLODStreaming;
+	FPerPlatformInt							MaxNumStreamedLODs;
+	FPerPlatformInt							MaxNumOptionalLODs;
+
+	TMap<UAssetUserData*, bool>				ExistingAssetUserData;
+
+	USkeletalMesh::FOnMeshChanged			ExistingOnMeshChanged;
+
+	TMap<FName, FString>* ExistingUMetaDataTagValues;
 };
 
 /** 

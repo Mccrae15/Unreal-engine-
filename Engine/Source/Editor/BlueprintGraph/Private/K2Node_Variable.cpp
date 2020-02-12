@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 
 #include "K2Node_Variable.h"
@@ -45,7 +45,7 @@ void UK2Node_Variable::Serialize(FArchive& Ar)
 			{
 				const bool bSelf = VariableReference.IsSelfContext();
 				UClass* MemberParentClass = VariableReference.GetMemberParentClass(nullptr);
-				if (UBlueprint::GetGuidFromClassByFieldName<UProperty>(bSelf? *GetBlueprint()->GeneratedClass : MemberParentClass, VariableReference.GetMemberName(), VarGuid))
+				if (UBlueprint::GetGuidFromClassByFieldName<FProperty>(bSelf? *GetBlueprint()->GeneratedClass : MemberParentClass, VariableReference.GetMemberName(), VarGuid))
 				{
 					VariableReference.SetDirect(VariableReference.GetMemberName(), VarGuid, bSelf ? nullptr : MemberParentClass, bSelf);
 				}
@@ -54,17 +54,17 @@ void UK2Node_Variable::Serialize(FArchive& Ar)
 	}
 }
 
-void UK2Node_Variable::SetFromProperty(const UProperty* Property, bool bSelfContext)
+void UK2Node_Variable::SetFromProperty(const FProperty* Property, bool bSelfContext, UClass* OwnerClass)
 {
 	SelfContextInfo = bSelfContext ? ESelfContextInfo::Unspecified : ESelfContextInfo::NotSelfContext;
-	VariableReference.SetFromField<UProperty>(Property, bSelfContext);
+	VariableReference.SetFromField<FProperty>(Property, bSelfContext, OwnerClass);
 }
 
 bool UK2Node_Variable::CreatePinForVariable(EEdGraphPinDirection Direction, FName InPinName/* = NAME_None */)
 {
 	const UEdGraphSchema_K2* K2Schema = GetDefault<UEdGraphSchema_K2>();
 
-	UProperty* VariableProperty = GetPropertyForVariable();
+	FProperty* VariableProperty = GetPropertyForVariable();
 	// favor the skeleton property if possible (in case the property type has 
 	// been changed, and not yet compiled).
 	if (!VariableReference.IsSelfContext())
@@ -79,7 +79,7 @@ bool UK2Node_Variable::CreatePinForVariable(EEdGraphPinDirection Direction, FNam
 			UBlueprint* VariableBlueprint = CastChecked<UBlueprint>(BpClassOwner->ClassGeneratedBy, ECastCheckedType::NullAllowed);
 			if (VariableBlueprint)
 			{
-				if (UProperty* SkelProperty = GetPropertyForVariableFromSkeleton())
+				if (FProperty* SkelProperty = GetPropertyForVariableFromSkeleton())
 				{
 					VariableProperty = SkelProperty;
 				}
@@ -110,21 +110,21 @@ void UK2Node_Variable::CreatePinForSelf()
 	// Create the self pin
 	if (!K2Schema->FindSelfPin(*this, EGPD_Input))
 	{
-		// Do not create a self pin for locally scoped variables
-		if( !VariableReference.IsLocalScope() )
+		// Do not create a self pin for locally scoped variables or sparse class data
+		if (!VariableReference.IsLocalScope())
 		{
 			bool bSelfTarget = VariableReference.IsSelfContext() && (ESelfContextInfo::NotSelfContext != SelfContextInfo);
 			UClass* MemberParentClass = VariableReference.GetMemberParentClass(GetBlueprintClassFromNode());
 			UClass* TargetClass = MemberParentClass;
 			
-			UProperty* VariableProperty = GetPropertyForVariable();
+			FProperty* VariableProperty = GetPropertyForVariable();
 
 			if (VariableProperty)
 			{
-				UClass* PropertyClass = CastChecked<UClass>(VariableProperty->GetOuter());
+				UClass* PropertyClass = Cast<UClass>(VariableProperty->GetOwner<UObject>());
 
 				// Fix up target class if it's not correct, this fixes cases where variables have moved within the hierarchy
-				if (PropertyClass != TargetClass)
+				if (PropertyClass && PropertyClass != TargetClass)
 				{
 					TargetClass = PropertyClass;
 				}
@@ -132,18 +132,22 @@ void UK2Node_Variable::CreatePinForSelf()
 
 			// Self Target pins should always make the class be the owning class of the property,
 			// so if the node is from a Macro Blueprint, it will hook up as self in any placed Blueprint
-			if(bSelfTarget)
+			if (bSelfTarget)
 			{
-				if(UProperty* Property = VariableReference.ResolveMember<UProperty>(GetBlueprintClassFromNode()))
+				if (FProperty* Property = VariableReference.ResolveMember<FProperty>(GetBlueprintClassFromNode()))
 				{
-					TargetClass = Property->GetOwnerClass()->GetAuthoritativeClass();
+					UClass* OwnerClass = Property->GetOwnerClass();
+					if (OwnerClass)
+					{
+						TargetClass = OwnerClass->GetAuthoritativeClass();
+					}
 				}
-				else if(GetBlueprint()->SkeletonGeneratedClass)
+				else if (GetBlueprint()->SkeletonGeneratedClass)
 				{
 					TargetClass = GetBlueprint()->SkeletonGeneratedClass->GetAuthoritativeClass();
 				}
 			}
-			else if(TargetClass && TargetClass->ClassGeneratedBy)
+			else if (TargetClass && TargetClass->ClassGeneratedBy)
 			{
 				TargetClass = TargetClass->GetAuthoritativeClass();
 			}
@@ -201,7 +205,7 @@ bool UK2Node_Variable::RecreatePinForVariable(EEdGraphPinDirection Direction, TA
 
 FLinearColor UK2Node_Variable::GetNodeTitleColor() const
 {
-	UProperty* VariableProperty = GetPropertyForVariable();
+	FProperty* VariableProperty = GetPropertyForVariable();
 	if (VariableProperty)
 	{
 		const UEdGraphSchema_K2* K2Schema = GetDefault<UEdGraphSchema_K2>();
@@ -224,7 +228,7 @@ FString UK2Node_Variable::GetFindReferenceSearchString() const
 	}
 	else
 	{
-		UProperty* VariableProperty = VariableReference.ResolveMember<UProperty>(GetBlueprintClassFromNode());
+		FProperty* VariableProperty = VariableReference.ResolveMember<FProperty>(GetBlueprintClassFromNode());
 		ResultSearchString = VariableReference.GetReferenceSearchString(VariableProperty->GetOwnerClass());
 	}
 	return ResultSearchString;
@@ -373,16 +377,29 @@ UClass* UK2Node_Variable::GetVariableSourceClass() const
 	return Result;
 }
 
-UProperty* UK2Node_Variable::GetPropertyForVariable_Internal(UClass* OwningClass) const
+FProperty* UK2Node_Variable::GetPropertyForVariable_Internal(UClass* OwningClass) const
 {
 	const FName VarName = GetVarName();
-	UEdGraphPin* VariablePin = FindPin(VarName);
 
-	UProperty* VariableProperty = VariableReference.ResolveMember<UProperty>(OwningClass);
+	// Look in the sparse class data first
+	FProperty* VariableProperty = nullptr;
+	// TODO: move some of this into MemberReference::ResolveMember if possible
+	UClass* Scope = VariableReference.GetScope(OwningClass);
+	UScriptStruct* SparseClassDataStruct = Scope ? Scope->GetSparseClassDataStruct() : nullptr;
+	if (SparseClassDataStruct)
+	{
+		VariableProperty = FindField<FProperty>(SparseClassDataStruct, VarName);
+	}
+	if (!VariableProperty)
+	{
+		VariableProperty = VariableReference.ResolveMember<FProperty>(OwningClass);
+	}
 
 	// if the variable has been deprecated, don't use it
 	if (VariableProperty != nullptr)
 	{
+		UEdGraphPin* VariablePin = FindPin(VarName);
+
 		// If the variable has been remapped update the pin
 		if (VariablePin && VarName != GetVarName())
 		{
@@ -393,12 +410,12 @@ UProperty* UK2Node_Variable::GetPropertyForVariable_Internal(UClass* OwningClass
 	return VariableProperty;
 }
 
-UProperty* UK2Node_Variable::GetPropertyForVariable() const
+FProperty* UK2Node_Variable::GetPropertyForVariable() const
 {
 	if (!FBlueprintCompilationManager::IsGeneratedClassLayoutReady())
 	{
 		// first look in the skeleton class:
-		if (UProperty* SkeletonProperty = GetPropertyForVariableFromSkeleton())
+		if (FProperty* SkeletonProperty = GetPropertyForVariableFromSkeleton())
 		{
 			return SkeletonProperty;
 		}
@@ -426,7 +443,7 @@ bool UK2Node_Variable::DoesRenamedVariableMatch(FName OldVariableName, FName New
 	// Also check native rename if we can find the struct
 	if (StructType)
 	{
-		FName RedirectedPinName = UProperty::FindRedirectedPropertyName(StructType, OldVariableName);
+		FName RedirectedPinName = FProperty::FindRedirectedPropertyName(StructType, OldVariableName);
 
 		if (NewVariableName == RedirectedPinName)
 		{
@@ -437,7 +454,7 @@ bool UK2Node_Variable::DoesRenamedVariableMatch(FName OldVariableName, FName New
 	return false;
 }
 
-UProperty* UK2Node_Variable::GetPropertyForVariableFromSkeleton() const
+FProperty* UK2Node_Variable::GetPropertyForVariableFromSkeleton() const
 {
 	if (UClass* SkeletonClass = FBlueprintEditorUtils::GetSkeletonClass(VariableReference.GetMemberParentClass(GetBlueprintClassFromNode())))
 	{
@@ -458,7 +475,7 @@ void UK2Node_Variable::ValidateNodeDuringCompilation(class FCompilerResultsLog& 
 {
 	Super::ValidateNodeDuringCompilation(MessageLog);
 
-	UProperty* VariableProperty = GetPropertyForVariable();
+	FProperty* VariableProperty = GetPropertyForVariable();
 
 	// Local variables do not exist until much later in the compilation than this function can provide
 	if (VariableProperty == NULL && !VariableReference.IsLocalScope())
@@ -541,7 +558,7 @@ FText UK2Node_Variable::GetToolTipHeading() const
 
 	// attempt to reflect the node's GetCornerIcon() with some tooltip documentation 
 	FText IconTag;
-	if ( UProperty const* VariableProperty = VariableReference.ResolveMember<UProperty>(GetBlueprintClassFromNode()) )
+	if ( FProperty const* VariableProperty = VariableReference.ResolveMember<FProperty>(GetBlueprintClassFromNode()) )
 	{
 		if (VariableProperty->HasAllPropertyFlags(CPF_Net | CPF_EditorOnly))
 		{
@@ -570,7 +587,7 @@ FText UK2Node_Variable::GetToolTipHeading() const
 
 void UK2Node_Variable::GetNodeAttributes( TArray<TKeyValuePair<FString, FString>>& OutNodeAttributes ) const
 {
-	UProperty* VariableProperty = GetPropertyForVariable();
+	FProperty* VariableProperty = GetPropertyForVariable();
 	const FString VariableName = VariableProperty ? VariableProperty->GetName() : TEXT( "InvalidVariable" );
 	OutNodeAttributes.Add( TKeyValuePair<FString, FString>( TEXT( "Type" ), TEXT( "Variable" ) ));
 	OutNodeAttributes.Add( TKeyValuePair<FString, FString>( TEXT( "Class" ), GetClass()->GetName() ));
@@ -621,7 +638,7 @@ FSlateIcon UK2Node_Variable::GetVariableIconAndColor(const UStruct* VarScope, FN
 {
 	if(VarScope != NULL)
 	{
-		UProperty* Property = FindField<UProperty>(VarScope, VarName);
+		FProperty* Property = FindField<FProperty>(VarScope, VarName);
 		if(Property != NULL)
 		{
 			const UEdGraphSchema_K2* K2Schema = GetDefault<UEdGraphSchema_K2>();
@@ -661,7 +678,7 @@ void UK2Node_Variable::ReconstructNode()
 		UClass* SearchClass = VarClass;
 		while (SearchClass != nullptr)
 		{
-			FName NewPropertyName = UProperty::FindRedirectedPropertyName(SearchClass, VariableReference.GetMemberName());
+			FName NewPropertyName = FProperty::FindRedirectedPropertyName(SearchClass, VariableReference.GetMemberName());
 
 			if (NewPropertyName != NAME_None)
 			{
@@ -693,7 +710,7 @@ void UK2Node_Variable::ReconstructNode()
 	const FGuid VarGuid = VariableReference.GetMemberGuid();
 	if (VarGuid.IsValid())
 	{
-		const FName VarName = UBlueprint::GetFieldNameFromClassByGuid<UProperty>(VarClass, VarGuid);
+		const FName VarName = UBlueprint::GetFieldNameFromClassByGuid<FProperty>(VarClass, VarGuid);
 		if (VarName != NAME_None && VarName != VariableReference.GetMemberName())
 		{
 			if (VariableReference.IsSelfContext())
@@ -764,7 +781,7 @@ bool UK2Node_Variable::RemapRestrictedLinkReference(FName OldVariableName, FName
 
 FName UK2Node_Variable::GetCornerIcon() const
 {
-	if (const UProperty* VariableProperty = VariableReference.ResolveMember<UProperty>(GetBlueprintClassFromNode()))
+	if (const FProperty* VariableProperty = VariableReference.ResolveMember<FProperty>(GetBlueprintClassFromNode()))
 	{
 		if (VariableProperty->HasAllPropertyFlags(CPF_Net))
 		{
@@ -794,7 +811,7 @@ bool UK2Node_Variable::HasExternalDependencies(TArray<class UStruct*>* OptionalO
 
 FString UK2Node_Variable::GetDocumentationLink() const
 {
-	if( UProperty* Property = GetPropertyForVariable() )
+	if( FProperty* Property = GetPropertyForVariable() )
 	{
 		// discover if the variable property is a non blueprint user variable
 		UClass* SourceClass = Property->GetOwnerClass();
@@ -829,7 +846,7 @@ void UK2Node_Variable::AutowireNewNode(UEdGraphPin* FromPin)
 			// If the source pin has a valid PinSubCategoryObject, we might be doing BP Comms, so check if it is a class
 			if(FromPin->PinType.PinSubCategoryObject.IsValid() && FromPin->PinType.PinSubCategoryObject->IsA(UClass::StaticClass()))
 			{
-				UProperty* VariableProperty = VariableReference.ResolveMember<UProperty>(GetBlueprintClassFromNode());
+				FProperty* VariableProperty = VariableReference.ResolveMember<FProperty>(GetBlueprintClassFromNode());
 				if(VariableProperty)
 				{
 					UClass* PropertyOwner = VariableProperty->GetOwnerClass();
@@ -851,7 +868,7 @@ void UK2Node_Variable::AutowireNewNode(UEdGraphPin* FromPin)
 								bConnected = true;
 
 								// Setup the VariableReference correctly since it may no longer be a self member
-								VariableReference.SetFromField<UProperty>(GetPropertyForVariable(), false);
+								VariableReference.SetFromField<FProperty>(GetPropertyForVariable(), false);
 								TargetPin->bHidden = false;
 								FromPin->GetOwningNode()->NodeConnectionListChanged();
 								this->NodeConnectionListChanged();
@@ -879,7 +896,7 @@ FBPVariableDescription const* UK2Node_Variable::GetBlueprintVarDescription() con
 	{
 		return FBlueprintEditorUtils::FindLocalVariable(GetBlueprint(), VariableScope, VarName);
 	}
-	else if (UProperty const* VarProperty = GetPropertyForVariable())
+	else if (FProperty const* VarProperty = GetPropertyForVariable())
 	{
 		UClass const* SourceClass = VarProperty->GetOwnerClass();
 		UBlueprint const* SourceBlueprint = (SourceClass != nullptr) ? Cast<UBlueprint>(SourceClass->ClassGeneratedBy) : nullptr;
@@ -899,7 +916,7 @@ bool UK2Node_Variable::CanPasteHere(const UEdGraph* TargetGraph) const
 	if ( FBlueprintEditorUtils::FindBlueprintForGraph(TargetGraph)->BlueprintType == BPTYPE_MacroLibrary && VariableReference.IsSelfContext() )
 	{
 		// Self variables must be from a parent class to the macro BP
-		if(UProperty* Property = VariableReference.ResolveMember<UProperty>(GetBlueprintClassFromNode()))
+		if(FProperty* Property = VariableReference.ResolveMember<FProperty>(GetBlueprintClassFromNode()))
 		{
 			const UClass* CurrentClass = GetBlueprint()->SkeletonGeneratedClass->GetAuthoritativeClass();
 			const UClass* PropertyClass = Property->GetOwnerClass()->GetAuthoritativeClass();
@@ -918,7 +935,7 @@ void UK2Node_Variable::PostPasteNode()
 	UBlueprint* Blueprint = GetBlueprint();
 	bool bInvalidateVariable = false;
 
-	if (VariableReference.ResolveMember<UProperty>(Blueprint) == nullptr)
+	if (VariableReference.ResolveMember<FProperty>(Blueprint) == nullptr)
 	{
 		bInvalidateVariable = true;
 	}
@@ -952,31 +969,40 @@ void UK2Node_Variable::PostPasteNode()
 	}
 }
 
-bool UK2Node_Variable::IsDeprecated() const
+bool UK2Node_Variable::HasDeprecatedReference() const
 {
-	if (Super::IsDeprecated() || VariableReference.IsDeprecated())
+	// Check if the referenced variable is deprecated.
+	if (VariableReference.IsDeprecated())
 	{
 		return true;
+	}
+	else if (FProperty* VariableProperty = VariableReference.ResolveMember<FProperty>(GetBlueprintClassFromNode()))
+	{
+		// Backcompat: Allow variables tagged only with 'DeprecationMessage' meta to be seen as deprecated if inherited from a native parent class.
+		const bool bHasDeprecationMessage = VariableProperty->HasMetaData(FBlueprintMetadata::MD_DeprecationMessage);
+		if (bHasDeprecationMessage && VariableProperty->GetOwnerUObject()->IsNative())
+		{
+			return true;
+		}
 	}
 
-	UProperty* VariableProperty = VariableReference.ResolveMember<UProperty>(GetBlueprintClassFromNode());
-	if (VariableProperty 
-		&& (VariableProperty->HasAllPropertyFlags(CPF_Deprecated) || VariableProperty->HasMetaData(FBlueprintMetadata::MD_DeprecationMessage)))
-	{
-		return true;
-	}
 	return false;
 }
 
-FString UK2Node_Variable::GetDeprecationMessage() const
+FEdGraphNodeDeprecationResponse UK2Node_Variable::GetDeprecationResponse(EEdGraphNodeDeprecationType DeprecationType) const
 {
-	UProperty* VariableProperty = VariableReference.ResolveMember<UProperty>(GetBlueprintClassFromNode());
-	if (VariableProperty && VariableProperty->HasMetaData(FBlueprintMetadata::MD_DeprecationMessage))
+	FEdGraphNodeDeprecationResponse Response = Super::GetDeprecationResponse(DeprecationType);
+	if (DeprecationType == EEdGraphNodeDeprecationType::NodeHasDeprecatedReference)
 	{
-		return FString::Printf(TEXT("%s %s"), *LOCTEXT("PropertyDeprecated_Warning", "@@ is deprecated;").ToString(), *VariableProperty->GetMetaData(FBlueprintMetadata::MD_DeprecationMessage));
+		if (FProperty* VariableProperty = VariableReference.ResolveMember<FProperty>(GetBlueprintClassFromNode()))
+		{
+			FText MemberName = FText::FromName(VariableReference.GetMemberName());
+			FText DetailedMessage = FText::FromString(VariableProperty->GetMetaData(FBlueprintMetadata::MD_DeprecationMessage));
+			Response.MessageText = FBlueprintEditorUtils::GetDeprecatedMemberUsageNodeWarning(MemberName, DetailedMessage);
+		}
 	}
 
-	return Super::GetDeprecationMessage();
+	return Response;
 }
 
 UObject* UK2Node_Variable::GetJumpTargetForDoubleClick() const
@@ -1001,7 +1027,7 @@ UObject* UK2Node_Variable::GetJumpTargetForDoubleClick() const
 
 bool UK2Node_Variable::CanJumpToDefinition() const
 {
-	const UProperty* VariableProperty = GetPropertyForVariable();
+	const FProperty* VariableProperty = GetPropertyForVariable();
 	const bool bNativeVariable = (VariableProperty != nullptr) && (VariableProperty->IsNative());
 	return bNativeVariable || (GetJumpTargetForDoubleClick() != nullptr);
 }
@@ -1009,7 +1035,7 @@ bool UK2Node_Variable::CanJumpToDefinition() const
 void UK2Node_Variable::JumpToDefinition() const
 {
 	// For native variables, try going to the variable definition in C++ if available
-	if (UProperty* VariableProperty = GetPropertyForVariable())
+	if (FProperty* VariableProperty = GetPropertyForVariable())
 	{
 		if (VariableProperty->IsNative())
 		{

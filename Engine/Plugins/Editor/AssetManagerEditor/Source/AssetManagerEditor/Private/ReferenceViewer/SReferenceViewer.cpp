@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "SReferenceViewer.h"
 #include "Widgets/SOverlay.h"
@@ -15,6 +15,7 @@
 #include "Widgets/Input/SEditableTextBox.h"
 #include "Widgets/Input/SButton.h"
 #include "Widgets/Input/SCheckBox.h"
+#include "Widgets/Input/SSearchBox.h"
 #include "Widgets/Input/SSpinBox.h"
 #include "EditorStyleSet.h"
 #include "Engine/Selection.h"
@@ -32,6 +33,7 @@
 #include "Widgets/Input/SComboBox.h"
 #include "HAL/PlatformApplicationMisc.h"
 #include "AssetManagerEditorModule.h"
+#include "Framework/Application/SlateApplication.h"
 
 #include "ObjectTools.h"
 
@@ -57,19 +59,6 @@ void SReferenceViewer::Construct(const FArguments& InArgs)
 	HistoryManager.SetOnApplyHistoryData(FOnApplyHistoryData::CreateSP(this, &SReferenceViewer::OnApplyHistoryData));
 	HistoryManager.SetOnUpdateHistoryData(FOnUpdateHistoryData::CreateSP(this, &SReferenceViewer::OnUpdateHistoryData));
 
-	// Fill out CollectionsComboList
-	{
-		TArray<FName> CollectionNames;
-		FCollectionManagerModule& CollectionManagerModule = FCollectionManagerModule::GetModule();
-		CollectionManagerModule.Get().GetCollectionNames(ECollectionShareType::CST_All, CollectionNames);
-		CollectionNames.Sort([](const FName& A, const FName& B) { return A.Compare(B) < 0; });
-		CollectionsComboList.Add(MakeShareable(new FName(NAME_None)));
-		for (FName CollectionName : CollectionNames)
-		{
-			CollectionsComboList.Add(MakeShareable(new FName(CollectionName)));
-		}
-	}
-
 	// Create the graph
 	GraphObj = NewObject<UEdGraph_ReferenceViewer>();
 	GraphObj->Schema = UReferenceViewerSchema::StaticClass();
@@ -92,6 +81,14 @@ void SReferenceViewer::Construct(const FArguments& InArgs)
 	TSharedRef<SWidget> AssetDiscoveryIndicator = EditorWidgetsModule.CreateAssetDiscoveryIndicator(EAssetDiscoveryIndicatorScaleMode::Scale_None, FMargin(16, 8), false);
 
 	static const FName DefaultForegroundName("DefaultForeground");
+
+	// Visual options visibility
+	FixAndHideSearchDepthLimit = 0;
+	FixAndHideSearchBreadthLimit = 0;
+	bShowCollectionFilter = true;
+	bShowShowReferencesOptions = true;
+	bShowShowSearchableNames = true;
+	bShowShowNativePackages = true;
 
 	ChildSlot
 	[
@@ -179,11 +176,24 @@ void SReferenceViewer::Construct(const FArguments& InArgs)
 				.BorderImage( FEditorStyle::GetBrush("ToolPanel.GroupBorder") )
 				[
 					SNew(SVerticalBox)
+					+SVerticalBox::Slot()
+					.HAlign(HAlign_Fill)
+					.VAlign(VAlign_Center)
+					.Padding(2.f)
+					.AutoHeight()
+					[
+						SAssignNew(SearchBox, SSearchBox)
+						.HintText(LOCTEXT("Search", "Search..."))
+						.ToolTipText(LOCTEXT("SearchTooltip", "Type here to search (pressing Enter zooms to the results)"))
+						.OnTextChanged(this, &SReferenceViewer::HandleOnSearchTextChanged)
+						.OnTextCommitted(this, &SReferenceViewer::HandleOnSearchTextCommitted)
+					]
 
 					+SVerticalBox::Slot()
 					.AutoHeight()
 					[
 						SNew(SHorizontalBox)
+						.Visibility_Lambda([this]() { return (FixAndHideSearchDepthLimit > 0 ? EVisibility::Collapsed : EVisibility::Visible); })
 
 						+SHorizontalBox::Slot()
 						.VAlign(VAlign_Center)
@@ -225,6 +235,7 @@ void SReferenceViewer::Construct(const FArguments& InArgs)
 					.AutoHeight()
 					[
 						SNew(SHorizontalBox)
+						.Visibility_Lambda([this]() { return (FixAndHideSearchBreadthLimit > 0 ? EVisibility::Collapsed : EVisibility::Visible); })
 
 						+SHorizontalBox::Slot()
 						.VAlign(VAlign_Center)
@@ -266,6 +277,7 @@ void SReferenceViewer::Construct(const FArguments& InArgs)
 					.AutoHeight()
 					[
 						SNew(SHorizontalBox)
+						.Visibility_Lambda([this]() { return (bShowCollectionFilter ? EVisibility::Visible : EVisibility::Collapsed); })
 
 						+SHorizontalBox::Slot()
 						.VAlign(VAlign_Center)
@@ -293,8 +305,9 @@ void SReferenceViewer::Construct(const FArguments& InArgs)
 							SNew(SBox)
 							.WidthOverride(100)
 							[
-								SNew(SComboBox<TSharedPtr<FName>>)
+								SAssignNew(CollectionsCombo, SComboBox<TSharedPtr<FName>>)
 								.OptionsSource(&CollectionsComboList)
+								.OnComboBoxOpening(this, &SReferenceViewer::UpdateCollectionsComboList)
 								.OnGenerateWidget(this, &SReferenceViewer::GenerateCollectionFilterItem)
 								.OnSelectionChanged(this, &SReferenceViewer::HandleCollectionFilterChanged)
 								.ToolTipText(this, &SReferenceViewer::GetCollectionFilterText)
@@ -310,6 +323,7 @@ void SReferenceViewer::Construct(const FArguments& InArgs)
 					.AutoHeight()
 					[
 						SNew(SHorizontalBox)
+						.Visibility_Lambda([this]() { return (bShowShowReferencesOptions ? EVisibility::Visible : EVisibility::Collapsed); })
 
 						+SHorizontalBox::Slot()
 						.VAlign(VAlign_Center)
@@ -335,6 +349,7 @@ void SReferenceViewer::Construct(const FArguments& InArgs)
 					.AutoHeight()
 					[
 						SNew(SHorizontalBox)
+						.Visibility_Lambda([this]() { return (bShowShowReferencesOptions ? EVisibility::Visible : EVisibility::Collapsed); })
 
 						+ SHorizontalBox::Slot()
 						.VAlign(VAlign_Center)
@@ -384,6 +399,7 @@ void SReferenceViewer::Construct(const FArguments& InArgs)
 					.AutoHeight()
 					[
 						SNew(SHorizontalBox)
+						.Visibility_Lambda([this]() { return (bShowShowSearchableNames ? EVisibility::Visible : EVisibility::Collapsed); })
 
 						+ SHorizontalBox::Slot()
 						.VAlign(VAlign_Center)
@@ -408,6 +424,7 @@ void SReferenceViewer::Construct(const FArguments& InArgs)
 					.AutoHeight()
 					[
 						SNew(SHorizontalBox)
+						.Visibility_Lambda([this]() { return (bShowShowNativePackages ? EVisibility::Visible : EVisibility::Collapsed); })
 
 						+ SHorizontalBox::Slot()
 						.VAlign(VAlign_Center)
@@ -439,12 +456,34 @@ void SReferenceViewer::Construct(const FArguments& InArgs)
 			]
 		]
 	];
+
+	UpdateCollectionsComboList();
 }
 
-void SReferenceViewer::SetGraphRootIdentifiers(const TArray<FAssetIdentifier>& NewGraphRootIdentifiers)
+void SReferenceViewer::SetGraphRootIdentifiers(const TArray<FAssetIdentifier>& NewGraphRootIdentifiers, const FReferenceViewerParams& ReferenceViewerParams)
 {
 	GraphObj->SetGraphRoot(NewGraphRootIdentifiers);
-	
+	// Set properties
+	GraphObj->SetShowReferencers(ReferenceViewerParams.bShowReferencers);
+	GraphObj->SetShowDependencies(ReferenceViewerParams.bShowDependencies);
+	// Set user-interactive properties
+	FixAndHideSearchDepthLimit = ReferenceViewerParams.FixAndHideSearchDepthLimit;
+	if (FixAndHideSearchDepthLimit > 0)
+	{
+		GraphObj->SetSearchDepthLimit(FixAndHideSearchDepthLimit);
+		GraphObj->SetSearchDepthLimitEnabled(true);
+	}
+	FixAndHideSearchBreadthLimit = ReferenceViewerParams.FixAndHideSearchBreadthLimit;
+	if (FixAndHideSearchBreadthLimit > 0)
+	{
+		GraphObj->SetSearchBreadthLimit(FixAndHideSearchBreadthLimit);
+		GraphObj->SetSearchBreadthLimitEnabled(true);
+	}
+	bShowCollectionFilter = ReferenceViewerParams.bShowCollectionFilter;
+	bShowShowReferencesOptions = ReferenceViewerParams.bShowShowReferencesOptions;
+	bShowShowSearchableNames = ReferenceViewerParams.bShowShowSearchableNames;
+	bShowShowNativePackages = ReferenceViewerParams.bShowShowNativePackages;
+
 	RebuildGraph();
 
 	// Zoom once this frame to make sure widgets are visible, then zoom again so size is correct
@@ -729,9 +768,60 @@ ECheckBoxState SReferenceViewer::IsEnableCollectionFilterChecked() const
 	}
 }
 
+void SReferenceViewer::UpdateCollectionsComboList()
+{
+	TArray<FName> CollectionNames;
+	{
+		FCollectionManagerModule& CollectionManagerModule = FCollectionManagerModule::GetModule();
+
+		TArray<FCollectionNameType> AllCollections;
+		CollectionManagerModule.Get().GetCollections(AllCollections);
+
+		for (const FCollectionNameType& Collection : AllCollections)
+		{
+			ECollectionStorageMode::Type StorageMode = ECollectionStorageMode::Static;
+			CollectionManagerModule.Get().GetCollectionStorageMode(Collection.Name, Collection.Type, StorageMode);
+
+			if (StorageMode == ECollectionStorageMode::Static)
+			{
+				CollectionNames.AddUnique(Collection.Name);
+			}
+		}
+	}
+	CollectionNames.Sort([](const FName& A, const FName& B) { return A.Compare(B) < 0; });
+
+	CollectionsComboList.Reset();
+	CollectionsComboList.Add(MakeShared<FName>(NAME_None));
+	for (FName CollectionName : CollectionNames)
+	{
+		CollectionsComboList.Add(MakeShared<FName>(CollectionName));
+	}
+
+	if (CollectionsCombo)
+	{
+		CollectionsCombo->ClearSelection();
+		CollectionsCombo->RefreshOptions();
+
+		if (GraphObj)
+		{
+			const FName CurrentFilter = GraphObj->GetCurrentCollectionFilter();
+
+			const int32 SelectedItemIndex = CollectionsComboList.IndexOfByPredicate([CurrentFilter](const TSharedPtr<FName>& InItem)
+			{
+				return CurrentFilter == *InItem;
+			});
+
+			if (SelectedItemIndex != INDEX_NONE)
+			{
+				CollectionsCombo->SetSelectedItem(CollectionsComboList[SelectedItemIndex]);
+			}
+		}
+	}
+}
+
 void SReferenceViewer::HandleCollectionFilterChanged(TSharedPtr<FName> Item, ESelectInfo::Type SelectInfo)
 {
-	if (GraphObj)
+	if (GraphObj && Item)
 	{
 		const FName NewFilter = *Item;
 		const FName CurrentFilter = GraphObj->GetCurrentCollectionFilter();
@@ -799,7 +889,7 @@ ECheckBoxState SReferenceViewer::IsShowHardReferencesChecked() const
 
 EVisibility SReferenceViewer::GetManagementReferencesVisibility() const
 {
-	if (UAssetManager::IsValid())
+	if (bShowShowReferencesOptions && UAssetManager::IsValid())
 	{
 		return EVisibility::SelfHitTestInvisible;
 	}
@@ -897,6 +987,15 @@ void SReferenceViewer::RegisterActions()
 {
 	ReferenceViewerActions = MakeShareable(new FUICommandList);
 	FAssetManagerEditorCommands::Register();
+
+	ReferenceViewerActions->MapAction(
+		FAssetManagerEditorCommands::Get().ZoomToFit,
+		FExecuteAction::CreateSP(this, &SReferenceViewer::ZoomToFit),
+		FCanExecuteAction::CreateSP(this, &SReferenceViewer::CanZoomToFit));
+
+	ReferenceViewerActions->MapAction(
+		FAssetManagerEditorCommands::Get().Find,
+		FExecuteAction::CreateSP(this, &SReferenceViewer::OnFind));
 
 	ReferenceViewerActions->MapAction(
 		FGlobalEditorCommonCommands::Get().FindInContentBrowser,
@@ -1425,6 +1524,97 @@ void SReferenceViewer::OnInitialAssetRegistrySearchComplete()
 	{
 		GraphObj->RebuildGraph();
 	}
+}
+
+void SReferenceViewer::ZoomToFit()
+{
+	if (GraphEditorPtr.IsValid())
+	{
+		GraphEditorPtr->ZoomToFit(true);
+	}
+}
+
+bool SReferenceViewer::CanZoomToFit() const
+{
+	if (GraphEditorPtr.IsValid())
+	{
+		return true;
+	}
+
+	return false;
+}
+
+void SReferenceViewer::OnFind()
+{
+	FSlateApplication::Get().SetKeyboardFocus(SearchBox, EFocusCause::SetDirectly);
+}
+
+void SReferenceViewer::HandleOnSearchTextChanged(const FText& SearchText)
+{
+	if (GraphObj == nullptr || !GraphEditorPtr.IsValid())
+	{
+		return;
+	}
+
+	GraphEditorPtr->ClearSelectionSet();
+
+	if (SearchText.IsEmpty())
+	{
+		return;
+	}
+
+	FString SearchString = SearchText.ToString();
+	TArray<FString> SearchWords;
+	SearchString.ParseIntoArrayWS( SearchWords );
+
+	TArray<UEdGraphNode_Reference*> AllNodes;
+	GraphObj->GetNodesOfClass<UEdGraphNode_Reference>( AllNodes );
+
+	TArray<FName> NodePackageNames;
+	for (UEdGraphNode_Reference* Node : AllNodes)
+	{
+		NodePackageNames.Empty();
+		Node->GetAllPackageNames(NodePackageNames);
+
+		for (const FName& PackageName : NodePackageNames)
+		{
+			// package name must match all words
+			bool bMatch = true;
+			for (const FString& Word : SearchWords)
+			{
+				if (!PackageName.ToString().Contains(Word))
+				{
+					bMatch = false;
+					break;
+				}
+			}
+
+			if (bMatch)
+			{
+				GraphEditorPtr->SetNodeSelection(Node, true);
+				break;
+			}
+		}
+	}
+}
+
+void SReferenceViewer::HandleOnSearchTextCommitted(const FText& SearchText, ETextCommit::Type CommitType)
+{
+	if (!GraphEditorPtr.IsValid())
+	{
+		return;
+	}
+
+	if (CommitType == ETextCommit::OnCleared)
+	{
+		GraphEditorPtr->ClearSelectionSet();
+	}
+	else if (CommitType == ETextCommit::OnEnter)
+	{
+		HandleOnSearchTextChanged(SearchBox->GetText());
+	}
+	
+	GraphEditorPtr->ZoomToFit(true);
 }
 
 #undef LOCTEXT_NAMESPACE

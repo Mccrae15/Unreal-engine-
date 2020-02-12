@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 using UnrealBuildTool;
 
@@ -43,6 +43,7 @@ public class AssetManagerEditor : ModuleRules
 				"SandboxFile",
 				"EditorWidgets",
 				"TreeMap",
+				"ToolMenus",
 			}
 		);
 	}

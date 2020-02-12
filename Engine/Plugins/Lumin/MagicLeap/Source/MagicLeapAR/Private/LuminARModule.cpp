@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "LuminARModule.h"
 #include "Modules/ModuleManager.h"
@@ -8,6 +8,7 @@
 #include "LuminARTrackingSystem.h"
 #include "LuminARDevice.h"
 #include "Templates/SharedPointer.h"
+#include "IMagicLeapPlugin.h"
 
 
 #define LOCTEXT_NAMESPACE "LuminAR"
@@ -49,9 +50,16 @@ void FLuminARModule::ShutdownModule()
 //create for mutual connection (regardless of construction order)
 TSharedPtr<IARSystemSupport, ESPMode::ThreadSafe> FLuminARModule::CreateARImplementation()
 {
-#if PLATFORM_LUMIN
-	LuminARImplementation = MakeShareable(new FLuminARImplementation());
-#endif
+#if WITH_MLSDK
+#if !PLATFORM_LUMIN
+	bool bIsVDZIEnabled = false;
+	GConfig->GetBool(TEXT("/Script/MagicLeap.MagicLeapSettings"), TEXT("bEnableZI"), bIsVDZIEnabled, GEngineIni);
+	if (bIsVDZIEnabled)
+#endif // !PLATFORM_LUMIN
+	{
+		LuminARImplementation = MakeShareable(new FLuminARImplementation());
+	}
+#endif //WITH_MLSDK
 	return LuminARImplementation;
 }
 

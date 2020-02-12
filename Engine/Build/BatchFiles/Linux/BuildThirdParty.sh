@@ -11,7 +11,7 @@ set -e
 
 MAKE_ARGS=-j4
 
-ARCHES=("amd64 x86_64-unknown-linux-gnu" "i386 i686-unknown-linux-gnu" "armhf arm-unknown-linux-gnueabihf" "arm64 aarch64-unknown-linux-gnueabi")
+ARCHES=("amd64 x86_64-unknown-linux-gnu" "arm64 aarch64-unknown-linux-gnueabi")
 
 ConvertArchFormat()
 {
@@ -456,6 +456,15 @@ FixICU()
   set +x
 }
 
+BuildStrophe()
+{
+  echo "building libstrophe"
+  set -x
+  cd Source/ThirdParty/libstrophe/libstrophe-0.9.1/BuildForUE/Linux
+  bash BuildForLinux.sh
+  set +x
+}
+
 Run()
 {
   cd ${TOP_DIR}
@@ -490,6 +499,7 @@ build_all() {
    Run BuildSDL2
    Run Buildcoremod
    Run FixICU
+   Run BuildStrophe
 }
 
 print_help() {
@@ -522,6 +532,7 @@ print_valid_build_opts() {
   echo "    Mono"
   echo "    GoogleTest"
   echo "    LLVMCompilerRt"
+  echo "    Strophe"
 }
 
 BuildList=()

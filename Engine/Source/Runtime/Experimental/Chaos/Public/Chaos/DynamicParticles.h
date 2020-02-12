@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 #pragma once
 
 #include "Chaos/ArrayCollectionArray.h"
@@ -27,7 +27,6 @@ class TDynamicParticles : public TParticles<T, d>
 		TArrayCollection::AddArray(&MM);
 		TArrayCollection::AddArray(&MInvM);
 	}
-	~TDynamicParticles() {}
 
 	const TVector<T, d>& V(const int32 Index) const { return MV[Index]; }
 	TVector<T, d>& V(const int32 Index) { return MV[Index]; }

@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "EditableSkeleton.h"
 #include "Editor.h"
@@ -298,8 +298,7 @@ void FEditableSkeleton::RenameSmartname(const FName InContainerName, SmartName::
 						{
 							SequencesToRecompress.Add(Seq);
 
-							Seq->CompressedCurveByteStream.Empty();
-							Seq->CurveCompressionCodec = nullptr;
+							Seq->ClearCompressedCurveData();
 						}
 					}
 				}
@@ -416,21 +415,18 @@ void FEditableSkeleton::RemoveSmartnamesAndFixupAnimations(const FName& InContai
 	TArray<FAssetData> AnimationAssets;
 	GetAssetsContainingCurves(InContainerName, InNames, AnimationAssets);
 
-	bool bRemoved = true;
-
 	// AnimationAssets now only contains assets that are using the selected curve(s)
 	if (AnimationAssets.Num() > 0)
 	{
-		bRemoved = false; //need to warn user now
 		FString AssetMessage = LOCTEXT("DeleteCurveMessage", "Deleting curves will:\n\nRemove the curves from Animations and PoseAssets\nRemove poses using that curve name from PoseAssets.\n\nThe following assets will be modified. Continue?\n\n").ToString();
 
 		AnimationAssets.Sort([&](const FAssetData& A, const FAssetData& B)
 		{ 
 			if (A.AssetClass == B.AssetClass)
 			{
-				return A.AssetName < B.AssetName;
+				return A.AssetName.LexicalLess(B.AssetName);
 			}
-			return A.AssetClass < B.AssetClass;
+			return A.AssetClass.LexicalLess(B.AssetClass);
 		});
 
 		for (FAssetData& Data : AnimationAssets)
@@ -443,7 +439,6 @@ void FEditableSkeleton::RemoveSmartnamesAndFixupAnimations(const FName& InContai
 
 		if (FMessageDialog::Open(EAppMsgType::YesNo, AssetMessageText, &AssetTitleText) == EAppReturnType::Yes)
 		{
-			bRemoved = true;
 			// Proceed to delete the curves
 			GWarn->BeginSlowTask(FText::Format(LOCTEXT("DeleteCurvesTaskDesc", "Deleting curve from skeleton {0}"), FText::FromString(Skeleton->GetName())), true);
 			FScopedTransaction Transaction(LOCTEXT("DeleteCurvesTransactionName", "Delete skeleton curve"));
@@ -486,13 +481,17 @@ void FEditableSkeleton::RemoveSmartnamesAndFixupAnimations(const FName& InContai
 				Seq->RequestSyncAnimRecompression();
 			}
 			GWarn->EndSlowTask();
+
+			// Remove names from skeleton
+			Skeleton->RemoveSmartnamesAndModify(InContainerName, InNames);
 		}
 	}
-
-	if (bRemoved && InNames.Num() > 0)
+	else if(InNames.Num() > 0)
 	{
+		FScopedTransaction Transaction(LOCTEXT("DeleteCurvesTransactionName", "Delete skeleton curve"));
+
 		// Remove names from skeleton
-		Skeleton->RemoveSmartnamesAndModify(InContainerName, InNames);
+		Skeleton->RemoveSmartnamesAndModify(InContainerName, InNames);	
 	}
 
 	OnSmartNameChanged.Broadcast(InContainerName);
@@ -1121,6 +1120,8 @@ void FEditableSkeleton::AddNotify(FName NewName)
 	const FScopedTransaction Transaction(LOCTEXT("AddNewNotifyToSkeleton", "Add New Anim Notify To Skeleton"));
 	Skeleton->Modify();
 	Skeleton->AddNewAnimationNotify(NewName);
+
+	FBlueprintActionDatabase::Get().RefreshAssetActions(Skeleton);
 	OnNotifiesChanged.Broadcast();
 }
 
@@ -1174,6 +1175,7 @@ int32 FEditableSkeleton::RenameNotify(const FName NewName, const FName OldName)
 		}
 	}
 
+	FBlueprintActionDatabase::Get().RefreshAssetActions(Skeleton);
 	OnNotifiesChanged.Broadcast();
 
 	return NumAnimationsModified;
@@ -1592,11 +1594,27 @@ void FEditableSkeleton::UpdateSkeletonReferencePose(USkeletalMesh* InSkeletalMes
 	Skeleton->UpdateReferencePoseFromMesh(InSkeletalMesh);
 }
 
+void FEditableSkeleton::RegisterSlotNode(const FName& InSlotName)
+{
+	if(!Skeleton->ContainsSlotName(InSlotName))
+	{
+		const FScopedTransaction Transaction(LOCTEXT("RegisterSlotNode", "Register Slot Node"));
+		Skeleton->Modify();
+
+		if(Skeleton->RegisterSlotNode(InSlotName))
+		{
+			OnSlotsChanged.Broadcast();
+		}
+	}
+}
+
 bool FEditableSkeleton::AddSlotGroupName(const FName& InSlotName)
 {
 	const FScopedTransaction Transaction(LOCTEXT("AddSlotGroupName", "Add Slot Group Name"));
 	Skeleton->Modify();
-	return Skeleton->AddSlotGroupName(InSlotName);
+	bool bResult = Skeleton->AddSlotGroupName(InSlotName);
+	OnSlotsChanged.Broadcast();
+	return bResult;
 }
 
 void FEditableSkeleton::SetSlotGroupName(const FName& InSlotName, const FName& InGroupName)
@@ -1604,6 +1622,8 @@ void FEditableSkeleton::SetSlotGroupName(const FName& InSlotName, const FName& I
 	const FScopedTransaction Transaction(LOCTEXT("SetSlotGroupName", "Set Slot Group Name"));
 	Skeleton->Modify();
 	Skeleton->SetSlotGroupName(InSlotName, InGroupName);
+
+	OnSlotsChanged.Broadcast();
 }
 
 void FEditableSkeleton::DeleteSlotName(const FName& InSlotName)
@@ -1611,6 +1631,8 @@ void FEditableSkeleton::DeleteSlotName(const FName& InSlotName)
 	const FScopedTransaction Transaction(LOCTEXT("DeleteSlotName", "Delete Slot Name"));
 	Skeleton->Modify();
 	Skeleton->RemoveSlotName(InSlotName);
+
+	OnSlotsChanged.Broadcast();
 }
 
 void FEditableSkeleton::DeleteSlotGroup(const FName& InGroupName)
@@ -1618,6 +1640,8 @@ void FEditableSkeleton::DeleteSlotGroup(const FName& InGroupName)
 	const FScopedTransaction Transaction(LOCTEXT("DeleteSlotGroup", "Delete Slot Group"));
 	Skeleton->Modify();
 	Skeleton->RemoveSlotGroup(InGroupName);
+
+	OnSlotsChanged.Broadcast();
 }
 
 void FEditableSkeleton::RenameSlotName(const FName InOldSlotName, const FName InNewSlotName)
@@ -1625,6 +1649,8 @@ void FEditableSkeleton::RenameSlotName(const FName InOldSlotName, const FName In
 	const FScopedTransaction Transaction(LOCTEXT("RenameSlotName", "Rename Slot Name"));
 	Skeleton->Modify();
 	Skeleton->RenameSlotName(InOldSlotName, InNewSlotName);
+
+	OnSlotsChanged.Broadcast();
 }
 
 FDelegateHandle FEditableSkeleton::RegisterOnSmartNameChanged(const FOnSmartNameChanged::FDelegate& InOnSmartNameChanged)
@@ -1635,6 +1661,16 @@ FDelegateHandle FEditableSkeleton::RegisterOnSmartNameChanged(const FOnSmartName
 void FEditableSkeleton::UnregisterOnSmartNameChanged(FDelegateHandle InHandle)
 {
 	OnSmartNameChanged.Remove(InHandle);
+}
+
+FDelegateHandle FEditableSkeleton::RegisterOnSlotsChanged(const FSimpleMulticastDelegate::FDelegate& InOnSlotsChanged)
+{
+	return OnSlotsChanged.Add(InOnSlotsChanged);
+}
+
+void FEditableSkeleton::UnregisterOnSlotsChanged(FDelegateHandle InHandle)
+{
+	OnSlotsChanged.Remove(InHandle);
 }
 
 #undef LOCTEXT_NAMESPACE

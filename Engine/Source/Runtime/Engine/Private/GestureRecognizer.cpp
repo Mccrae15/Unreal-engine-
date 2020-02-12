@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 /*=============================================================================
 	 GestureRecognizer - handles detecting when gestures happen
@@ -23,7 +23,7 @@ void FGestureRecognizer::DetectGestures(const FVector (&Touches)[EKeys::NUM_TOUC
 	if (PreviousTouchCount != 0 || TouchCount != 0)
 	{
 		// place new anchor points
-		for (int32 Index = 0; Index < ARRAY_COUNT(AnchorPoints); Index++)
+		for (int32 Index = 0; Index < UE_ARRAY_COUNT(AnchorPoints); Index++)
 		{
 			if (PreviousTouchCount < Index + 1 && TouchCount >= Index + 1)
 			{

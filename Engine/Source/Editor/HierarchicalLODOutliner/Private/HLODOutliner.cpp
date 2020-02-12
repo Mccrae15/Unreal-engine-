@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "HLODOutliner.h"
 #include "GameFramework/Actor.h"
@@ -12,6 +12,7 @@
 #include "SlateOptMacros.h"
 #include "Framework/MultiBox/MultiBoxExtender.h"
 #include "Framework/MultiBox/MultiBoxBuilder.h"
+#include "ToolMenus.h"
 #include "Widgets/Input/SButton.h"
 #include "Widgets/Images/SImage.h"
 #include "EditorStyleSet.h"
@@ -47,19 +48,24 @@
 #include "Widgets/Layout/SWrapBox.h"
 #include "Framework/Notifications/NotificationManager.h"
 #include "Widgets/Notifications/SNotificationList.h"
-#include "Toolkits/AssetEditorManager.h"
+
 #include "Engine/HLODProxy.h"
+#include "Misc/ScopedSlowTask.h"
+#include "Subsystems/AssetEditorSubsystem.h"
 
 #define LOCTEXT_NAMESPACE "HLODOutliner"
 
 namespace HLODOutliner
 {
+	const int32 LOD_AUTO = -1;
+	const int32 LOD_DISABLED = -2;
+
 	SHLODOutliner::SHLODOutliner()		
 	{
 		bNeedsRefresh = true;
 		CurrentWorld = nullptr;
 		CurrentWorldSettings = nullptr;
-		ForcedLODLevel = -1;
+		ForcedLODLevel = LOD_AUTO;
 		bArrangeHorizontally = false;
 
 		FHierarchicalLODUtilitiesModule& Module = FModuleManager::LoadModuleChecked<FHierarchicalLODUtilitiesModule>("HierarchicalLODUtilities");
@@ -68,7 +74,10 @@ namespace HLODOutliner
 
 	SHLODOutliner::~SHLODOutliner()
 	{
-		DeregisterDelegates();	
+		DeregisterDelegates();
+		FEditorDelegates::BeginPIE.RemoveAll(this);
+		FEditorDelegates::EndPIE.RemoveAll(this);
+
 		DestroySelectionActors();
 		CurrentWorld = nullptr;
 		HLODTreeRoot.Empty();
@@ -293,7 +302,13 @@ namespace HLODOutliner
 				]
 			];
 
-		RegisterDelegates();
+		if (!CurrentWorld.IsValid() || !CurrentWorld->IsPlayInEditor())
+		{
+			RegisterDelegates();
+		}
+
+		FEditorDelegates::BeginPIE.AddRaw(this, &SHLODOutliner::OnBeginPieEvent);
+		FEditorDelegates::EndPIE.AddRaw(this, &SHLODOutliner::OnEndPieEvent);
 	}
 
 	TSharedRef<SWidget> SHLODOutliner::CreateMainButtonWidgets()
@@ -871,18 +886,31 @@ namespace HLODOutliner
 
 	END_SLATE_FUNCTION_BUILD_OPTIMIZATION
 
+	void SHLODOutliner::OnBeginPieEvent(bool bIsSimulating)
+	{
+		DeregisterDelegates();
+		FullRefresh();
+	}
+
+	void SHLODOutliner::OnEndPieEvent(bool bIsSimulating)
+	{
+		RegisterDelegates();
+		FullRefresh();
+	}
+
 	void SHLODOutliner::RegisterDelegates()
 	{
 		FEditorDelegates::MapChange.AddSP(this, &SHLODOutliner::OnMapChange);
 		FEditorDelegates::NewCurrentLevel.AddSP(this, &SHLODOutliner::OnNewCurrentLevel);
 		FEditorDelegates::OnMapOpened.AddSP(this, &SHLODOutliner::OnMapLoaded);
+
 		FWorldDelegates::LevelAddedToWorld.AddSP(this, &SHLODOutliner::OnLevelAdded);
 		FWorldDelegates::LevelRemovedFromWorld.AddSP(this, &SHLODOutliner::OnLevelRemoved);
+
 		GEngine->OnLevelActorListChanged().AddSP(this, &SHLODOutliner::FullRefresh);
 		GEngine->OnLevelActorAdded().AddSP(this, &SHLODOutliner::OnLevelActorsAdded);
 		GEngine->OnLevelActorDeleted().AddSP(this, &SHLODOutliner::OnLevelActorsRemoved);
 		GEngine->OnActorMoved().AddSP(this, &SHLODOutliner::OnActorMovedEvent);
-
 
 		// Selection change
 		USelection::SelectionChangedEvent.AddRaw(this, &SHLODOutliner::OnLevelSelectionChanged);
@@ -898,7 +926,7 @@ namespace HLODOutliner
 		// Register to update when an undo/redo operation has been called to update our list of actors
 		GEditor->RegisterForUndo(this);
 
-		RegisterActiveTimer(0.1f, FWidgetActiveTimerDelegate::CreateSP(this, &SHLODOutliner::UpdateNeedsBuildFlagTimer));
+		ActiveTimerHandle = RegisterActiveTimer(0.1f, FWidgetActiveTimerDelegate::CreateSP(this, &SHLODOutliner::UpdateNeedsBuildFlagTimer));
 	}
 
 	void SHLODOutliner::DeregisterDelegates()
@@ -909,6 +937,7 @@ namespace HLODOutliner
 
 		FWorldDelegates::LevelAddedToWorld.RemoveAll(this);
 		FWorldDelegates::LevelRemovedFromWorld.RemoveAll(this);
+
 		USelection::SelectionChangedEvent.RemoveAll(this);
 		USelection::SelectObjectEvent.RemoveAll(this);
 
@@ -924,12 +953,15 @@ namespace HLODOutliner
 		{
 			GEditor->OnHLODActorMoved().RemoveAll(this);
 			GEditor->OnHLODActorAdded().RemoveAll(this);
+			GEditor->OnHLODTransitionScreenSizeChanged().RemoveAll(this);
 			GEditor->OnHLODLevelsArrayChanged().RemoveAll(this);
 			GEditor->OnHLODActorRemovedFromCluster().RemoveAll(this);
 
 			// Deregister for Undo callbacks
 			GEditor->UnregisterForUndo(this);
 		}
+
+		UnRegisterActiveTimer(ActiveTimerHandle.ToSharedRef());
 	}
 
 	void SHLODOutliner::ForceViewLODActor()
@@ -968,7 +1000,9 @@ namespace HLODOutliner
 
 	FText SHLODOutliner::HandleForceLevelText() const
 	{
-		return ForcedLODLevel == -1 ? LOCTEXT("AutoLOD", "LOD Auto") : FText::Format(LOCTEXT("LODLevelFormat", "LOD {0}"), FText::AsNumber(ForcedLODLevel));
+		return ForcedLODLevel == LOD_AUTO ? LOCTEXT("AutoLOD", "LOD Auto") : 
+			   ForcedLODLevel == LOD_DISABLED ? LOCTEXT("DisabledLOD", "LOD Disabled") : 
+			   FText::Format(LOCTEXT("LODLevelFormat", "LOD {0}"), FText::AsNumber(ForcedLODLevel));
 	}
 
 	TSharedRef<SWidget> SHLODOutliner::GetForceLevelMenuContent() const
@@ -981,9 +1015,21 @@ namespace HLODOutliner
 			LOCTEXT("AutoLODTooltip", "Determine LOD level automatically"),
 			FSlateIcon(),
 			FUIAction(
-				FExecuteAction::CreateSP(this, &SHLODOutliner::SetForcedLODLevel, -1), 
+				FExecuteAction::CreateSP(const_cast<SHLODOutliner*>(this), &SHLODOutliner::SetForcedLODLevel, LOD_AUTO), 
 				FCanExecuteAction(), 
-				FGetActionCheckState::CreateLambda([this](){ return ForcedLODLevel == -1 ? ECheckBoxState::Checked : ECheckBoxState::Unchecked; })),
+				FGetActionCheckState::CreateLambda([this](){ return ForcedLODLevel == LOD_AUTO ? ECheckBoxState::Checked : ECheckBoxState::Unchecked; })),
+			NAME_None,
+			EUserInterfaceActionType::RadioButton);
+
+		// Auto LOD
+		MenuBuilder.AddMenuEntry(
+			LOCTEXT("DisabledLOD", "LOD Disabled"),
+			LOCTEXT("DisabledLODTooltip", "Disable LOD and show original scene"),
+			FSlateIcon(),
+			FUIAction(
+				FExecuteAction::CreateSP(const_cast<SHLODOutliner*>(this), &SHLODOutliner::SetForcedLODLevel, LOD_DISABLED),
+				FCanExecuteAction(),
+				FGetActionCheckState::CreateLambda([this]() { return ForcedLODLevel == LOD_DISABLED ? ECheckBoxState::Checked : ECheckBoxState::Unchecked; })),
 			NAME_None,
 			EUserInterfaceActionType::RadioButton);
 
@@ -999,7 +1045,7 @@ namespace HLODOutliner
 						FText::Format(LOCTEXT("LODLevelTooltipFormat", "Force LOD to level {0}"), FText::AsNumber(LODIndex)),
 						FSlateIcon(),
 						FUIAction(
-							FExecuteAction::CreateSP(this, &SHLODOutliner::SetForcedLODLevel, LODIndex), 
+							FExecuteAction::CreateSP(const_cast<SHLODOutliner*>(this), &SHLODOutliner::SetForcedLODLevel, LODIndex), 
 							FCanExecuteAction(), 
 							FGetActionCheckState::CreateLambda([this, LODIndex](){ return ForcedLODLevel == LODIndex ? ECheckBoxState::Checked : ECheckBoxState::Unchecked; })),
 						NAME_None,
@@ -1014,7 +1060,7 @@ namespace HLODOutliner
 
 	void SHLODOutliner::RestoreForcedLODLevel(int32 LODLevel)
 	{
-		if (LODLevel == -1)
+		if (LODLevel == LOD_AUTO)
 		{
 			return;
 		}
@@ -1042,7 +1088,7 @@ namespace HLODOutliner
 	{
 		RestoreForcedLODLevel(ForcedLODLevel);
 
-		if (LODLevel == -1)
+		if (LODLevel == LOD_AUTO)
 		{
 			ForcedLODLevel = LODLevel;
 			return;
@@ -1072,7 +1118,7 @@ namespace HLODOutliner
 	void SHLODOutliner::ResetLODLevelForcing()
 	{
 		RestoreForcedLODLevel(ForcedLODLevel);
-		SetForcedLODLevel(-1);
+		SetForcedLODLevel(LOD_AUTO);
 	}
 
 	void SHLODOutliner::CreateHierarchicalVolumeForActor()
@@ -1098,6 +1144,9 @@ namespace HLODOutliner
 			// This call came from a context menu
 			auto SelectedItems = TreeView->GetSelectedItems();
 			
+			FScopedSlowTask SlowTask(SelectedItems.Num(), FText::Format(LOCTEXT("SHLODOutliner_BuildProxy", "Building Proxy {0}|plural(one=Mesh,other=Meshes)"), SelectedItems.Num()));
+			SlowTask.MakeDialog();
+
 			// Loop over all selected items (context menu can't be called with multiple items selected that aren't of the same types)
 			for (auto SelectedItem : SelectedItems )
 			{
@@ -1116,6 +1165,8 @@ namespace HLODOutliner
 						}
 					}
 				}
+
+				SlowTask.EnterProgressFrame();
 			}
 			
 			SetForcedLODLevel(ForcedLODLevel);
@@ -1135,6 +1186,9 @@ namespace HLODOutliner
 			// This call came from a context menu
 			auto SelectedItems = TreeView->GetSelectedItems();
 
+			FScopedSlowTask SlowTask(SelectedItems.Num(), FText::Format(LOCTEXT("SHLODOutliner_RebuildProxy", "Rebuild Proxy {0}|plural(one=Mesh,other=Meshes)"), SelectedItems.Num()));
+			SlowTask.MakeDialog();
+
 			// Loop over all selected items (context menu can't be called with multiple items selected that aren't of the same types)
 			for (auto SelectedItem : SelectedItems)
 			{
@@ -1150,6 +1204,8 @@ namespace HLODOutliner
 						CurrentWorld->HierarchicalLODBuilder->BuildMeshForLODActor(ActorItem->LODActor.Get(), LevelItem->LODLevelIndex);
 					}
 				}
+
+				SlowTask.EnterProgressFrame();
 			}
 
 			SetForcedLODLevel(ForcedLODLevel);
@@ -1457,12 +1513,6 @@ namespace HLODOutliner
 			return nullptr;
 		}
 
-		// Build up the menu for a selection
-		const bool bCloseAfterSelection = true;
-		TSharedPtr<FExtender> Extender = MakeShareable(new FExtender);
-
-		FMenuBuilder MenuBuilder(bCloseAfterSelection, TSharedPtr<FUICommandList>(), Extender);
-
 		// Multi-selection support, check if all selected items are of the same type, if so return the appropriate context menu
 		auto SelectedItems = TreeView->GetSelectedItems();
 		ITreeItem::TreeItemType Type = ITreeItem::Invalid;
@@ -1486,8 +1536,18 @@ namespace HLODOutliner
 
 		if (SelectedItems.Num() && bSameType)
 		{
-			TreeView->GetSelectedItems()[0]->GenerateContextMenu(MenuBuilder, *this);
-			return MenuBuilder.MakeWidget();
+			UToolMenus* ToolMenus = UToolMenus::Get();
+			static const FName MenuName = "HierarchicalLODOutliner.HLODOutlinerContextMenu";
+			if (!ToolMenus->IsMenuRegistered(MenuName))
+			{
+				ToolMenus->RegisterMenu(MenuName);
+			}
+
+			// Build up the menu for a selection
+			FToolMenuContext Context;
+			UToolMenu* Menu = ToolMenus->GenerateMenu(MenuName, Context);
+			TreeView->GetSelectedItems()[0]->GenerateContextMenu(Menu, *this);
+			return ToolMenus->GenerateWidget(Menu);
 		}
 
 		return TSharedPtr<SWidget>();
@@ -1649,15 +1709,14 @@ namespace HLODOutliner
 				for (TWeakObjectPtr<ALODActor> Actor : ActorArray)
 				{
 					// Check if actor is not null due to Destroy Actor
-					if (Actor.IsValid())
+					if (Actor.IsValid() && Actor != InActor)
 					{
 						Actor->CleanSubActorArray();
-						const bool bRemovedSubActor = Actor->RemoveSubActor(InActor);
+						Actor->RemoveSubActor(InActor);
 
-						if (bRemovedSubActor && Actor->SubActors.Num() == 0)
+						if (Actor->SubActors.Num() == 0)
 						{
 							HierarchicalLODUtilities->DestroyCluster(Actor.Get());
-							Actor->GetWorld()->DestroyActor(Actor.Get());
 						}
 					}
 				}
@@ -1849,7 +1908,7 @@ namespace HLODOutliner
 		checkf(bUpdatedWorld == true, TEXT("Could not find UWorld* instance in Engine world contexts"));
 
 		TArray<FTreeItemRef> LevelNodes;
-		if (CurrentWorldSettings)
+		if (OutlinerEnabled())
 		{
 			// Iterate over all LOD levels (Number retrieved from world settings) and add Treeview items for them
 			const TArray<struct FHierarchicalSimplification>& HierarchicalLODSetups = CurrentWorldSettings->GetHierarchicalLODSetup();
@@ -2083,18 +2142,21 @@ namespace HLODOutliner
 	{
 		bool bHLODEnabled = false;
 
-		if (!bNeedsRefresh)
+		if (CurrentWorldSettings != nullptr)
 		{
-			if (CurrentWorldSettings != nullptr)
-			{
-				bHLODEnabled = CurrentWorldSettings->bEnableHierarchicalLODSystem;
-			}
+			bHLODEnabled = CurrentWorldSettings->bEnableHierarchicalLODSystem;
+		}
 
-			if (bHLODEnabled && CurrentWorld.IsValid())
-			{
-				bHLODEnabled = !HierarchicalLODUtilities->IsWorldUsedForStreaming(CurrentWorld.Get());
-			}
-		}	
+		if (bHLODEnabled && CurrentWorld.IsValid())
+		{
+			bHLODEnabled = !HierarchicalLODUtilities->IsWorldUsedForStreaming(CurrentWorld.Get());
+		}
+
+		// Disable outliner in PIE
+		if (bHLODEnabled && CurrentWorld.IsValid())
+		{
+			bHLODEnabled = !CurrentWorld->IsPlayInEditor();
+		}
 
 		return bHLODEnabled;
 	}
@@ -2118,7 +2180,7 @@ namespace HLODOutliner
 								GetObjectsWithOuter(HLODPackage, Objects);
 								for(UObject* PackageObject : Objects)
 								{
-									FAssetEditorManager::Get().CloseAllEditorsForAsset(PackageObject);
+									GEditor->GetEditorSubsystem<UAssetEditorSubsystem>()->CloseAllEditorsForAsset(PackageObject);
 								}
 							}
 						}

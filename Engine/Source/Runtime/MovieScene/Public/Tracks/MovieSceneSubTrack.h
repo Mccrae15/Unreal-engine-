@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -51,9 +51,10 @@ public:
 	 *
 	 * @param Sequence The sequence to find.
 	 * @param Recursively Whether to search for the sequence in sub-sequences.
+	 * @param SectionToSkip Skip this section when searching the track (ie. the section is already set to this sequence). 
 	 * @return true if the sequence is in this track, false otherwise.
 	 */
-	bool ContainsSequence(const UMovieSceneSequence& Sequence, bool Recursively = false) const;
+	bool ContainsSequence(const UMovieSceneSequence& Sequence, bool Recursively = false, const UMovieSceneSection* SectionToSkip = nullptr) const;
 
 	/**
 	 * Add a new sequence to record
@@ -72,6 +73,7 @@ public:
 	virtual bool IsEmpty() const override;
 	virtual void RemoveAllAnimationData() override;
 	virtual void RemoveSection(UMovieSceneSection& Section) override;
+	virtual void RemoveSectionAt(int32 SectionIndex) override;
 	virtual bool SupportsMultipleRows() const override;
 
 #if WITH_EDITORONLY_DATA

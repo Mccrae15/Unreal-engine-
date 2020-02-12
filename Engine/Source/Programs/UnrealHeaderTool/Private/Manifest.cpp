@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "Manifest.h"
 #include "UnrealHeaderTool.h"
@@ -191,7 +191,7 @@ bool FManifestModule::NeedsRegeneration() const
 	}
 	FString Timestamp;
 	TCHAR TimestampText[] = TEXT("Timestamp");
-	Timestamp.Empty(GeneratedIncludeDirectory.Len() + ARRAY_COUNT(TimestampText));
+	Timestamp.Empty(GeneratedIncludeDirectory.Len() + UE_ARRAY_COUNT(TimestampText));
 	Timestamp += GeneratedIncludeDirectory;
 	Timestamp += TEXT("Timestamp");
 

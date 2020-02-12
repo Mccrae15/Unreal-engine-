@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "ClothPaintSettingsCustomization.h"
 #include "DetailCategoryBuilder.h"
@@ -6,7 +6,7 @@
 #include "Widgets/Text/STextBlock.h"
 #include "DetailLayoutBuilder.h"
 #include "ClothPaintSettings.h"
-#include "Assets/ClothingAsset.h"
+#include "ClothingAsset.h"
 #include "Widgets/Input/SComboBox.h"
 #include "ClothPainter.h"
 #include "ClothPaintToolBase.h"

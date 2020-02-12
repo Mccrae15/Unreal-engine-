@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "RangeStructCustomization.h"
 #include "Widgets/DeclarativeSyntaxSupport.h"
@@ -30,18 +30,18 @@ namespace
 	template <>
 	struct FGetMetaDataHelper<float>
 	{
-		static float GetMetaData(const UProperty* Property, const TCHAR* Key)
+		static float GetMetaData(const FProperty* Property, const TCHAR* Key)
 		{
-			return Property->GetFLOATMetaData(Key);
+			return Property->GetFloatMetaData(Key);
 		}
 	};
 
 	template <>
 	struct FGetMetaDataHelper<int32>
 	{
-		static int32 GetMetaData(const UProperty* Property, const TCHAR* Key)
+		static int32 GetMetaData(const FProperty* Property, const TCHAR* Key)
 		{
-			return Property->GetINTMetaData(Key);
+			return Property->GetIntMetaData(Key);
 		}
 	};
 }

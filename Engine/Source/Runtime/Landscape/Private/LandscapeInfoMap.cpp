@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "LandscapeInfoMap.h"
 #include "Engine/World.h"
@@ -29,7 +29,7 @@ void ULandscapeInfoMap::Serialize(FArchive& Ar)
 
 void ULandscapeInfoMap::BeginDestroy()
 {
-	if (World != nullptr)
+	if (World.IsValid())
 	{
 		World->PerModuleDataObjects.Remove(this);
 	}
@@ -43,8 +43,7 @@ void ULandscapeInfoMap::AddReferencedObjects(UObject* InThis, FReferenceCollecto
 	Collector.AddReferencedObjects(This->Map, This);
 }
 
-#if WITH_EDITORONLY_DATA
-ULandscapeInfoMap& ULandscapeInfoMap::GetLandscapeInfoMap(UWorld* World)
+ULandscapeInfoMap& ULandscapeInfoMap::GetLandscapeInfoMap(const UWorld* World)
 {
 	ULandscapeInfoMap *FoundObject = nullptr;
 	World->PerModuleDataObjects.FindItemByClass(&FoundObject);
@@ -53,4 +52,3 @@ ULandscapeInfoMap& ULandscapeInfoMap::GetLandscapeInfoMap(UWorld* World)
 
 	return *FoundObject;
 }
-#endif // WITH_EDITORONLY_DATA

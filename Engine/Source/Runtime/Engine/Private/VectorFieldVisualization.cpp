@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 /*==============================================================================
 	VectorFieldVisualization.cpp: Visualization of vector fields.
@@ -26,37 +26,31 @@ IMPLEMENT_GLOBAL_SHADER_PARAMETER_STRUCT(FVectorFieldVisualizationParameters,"Ve
  */
 class FVectorFieldVisualizationVertexFactoryShaderParameters : public FVertexFactoryShaderParameters
 {
+	DECLARE_INLINE_TYPE_LAYOUT(FVectorFieldVisualizationVertexFactoryShaderParameters, NonVirtual);
 public:
-	virtual void Bind( const FShaderParameterMap& ParameterMap ) override
+	void Bind( const FShaderParameterMap& ParameterMap )
 	{
 		VectorFieldTexture.Bind(ParameterMap, TEXT("VectorFieldTexture"));
 		VectorFieldTextureSampler.Bind(ParameterMap, TEXT("VectorFieldTextureSampler"));
 	}
 
-	virtual void Serialize(FArchive& Ar) override
-	{
-		Ar << VectorFieldTexture;
-		Ar << VectorFieldTextureSampler;
-	}
-
-	virtual void GetElementShaderBindings(
+	void GetElementShaderBindings(
 		const FSceneInterface* Scene,
 		const FSceneView* View,
 		const FMeshMaterialShader* Shader,
-		bool bShaderRequiresPositionOnlyStream,
+		const EVertexInputStreamType InputStreamType,
 		ERHIFeatureLevel::Type FeatureLevel,
 		const FVertexFactory* VertexFactory,
 		const FMeshBatchElement& BatchElement,
 		class FMeshDrawSingleShaderBindings& ShaderBindings,
-		FVertexInputStreamArray& VertexStreams) const override;
-
-	virtual uint32 GetSize() const override { return sizeof(*this); }
+		FVertexInputStreamArray& VertexStreams) const;
 
 private:
-
-	/** The vector field texture parameter. */
-	FShaderResourceParameter VectorFieldTexture;
-	FShaderResourceParameter VectorFieldTextureSampler;
+	
+		/** The vector field texture parameter. */
+		LAYOUT_FIELD(FShaderResourceParameter, VectorFieldTexture)
+		LAYOUT_FIELD(FShaderResourceParameter, VectorFieldTextureSampler)
+	
 };
 
 /**
@@ -72,7 +66,7 @@ public:
 	{
 		FVertexDeclarationElementList Elements;
 		Elements.Add(FVertexElement(0, 0, VET_Float4, 0, sizeof(FVector4)));
-		VertexDeclarationRHI = RHICreateVertexDeclaration(Elements);
+		VertexDeclarationRHI = PipelineStateCache::GetOrCreateVertexDeclaration(Elements);
 	}
 
 	virtual void ReleaseRHI() override
@@ -131,33 +125,27 @@ void FVectorFieldVisualizationVertexFactory::InitRHI()
 void FVectorFieldVisualizationVertexFactory::ReleaseRHI()
 {
 	UniformBuffer.SafeRelease();
-	VectorFieldTextureRHI = FTexture3DRHIParamRef();
+	VectorFieldTextureRHI = nullptr;
 	FVertexFactory::ReleaseRHI();
 }
 
 /**
  * Should we cache the material's shadertype on this platform with this vertex factory? 
  */
-bool FVectorFieldVisualizationVertexFactory::ShouldCompilePermutation(EShaderPlatform Platform, const class FMaterial* Material, const class FShaderType* ShaderType)
+bool FVectorFieldVisualizationVertexFactory::ShouldCompilePermutation(const FVertexFactoryShaderPermutationParameters& Parameters)
 {
 	// We support vector fields on mobile, but not the visualization, so we limit this VF to Feature Level Preview shader platforms
-	return Material->IsSpecialEngineMaterial() && SupportsGPUParticles(Platform) && (IsFeatureLevelSupported(Platform, ERHIFeatureLevel::SM4) || IsPCPlatform(Platform));
+	return Parameters.MaterialParameters.bIsSpecialEngineMaterial &&
+		SupportsGPUParticles(Parameters.Platform) &&
+		(IsFeatureLevelSupported(Parameters.Platform, ERHIFeatureLevel::SM5) || IsPCPlatform(Parameters.Platform));
 }
 
 /**
  * Can be overridden by FVertexFactory subclasses to modify their compile environment just before compilation occurs.
  */
-void FVectorFieldVisualizationVertexFactory::ModifyCompilationEnvironment(const FVertexFactoryType* Type, EShaderPlatform Platform, const FMaterial* Material, FShaderCompilerEnvironment& OutEnvironment)
+void FVectorFieldVisualizationVertexFactory::ModifyCompilationEnvironment(const FVertexFactoryShaderPermutationParameters& Parameters, FShaderCompilerEnvironment& OutEnvironment)
 {
-	FVertexFactory::ModifyCompilationEnvironment(Type, Platform, Material, OutEnvironment);
-}
-
-/**
- * Construct shader parameters for this type of vertex factory.
- */
-FVertexFactoryShaderParameters* FVectorFieldVisualizationVertexFactory::ConstructShaderParameters(EShaderFrequency ShaderFrequency)
-{
-	return ShaderFrequency == SF_Vertex ? new FVectorFieldVisualizationVertexFactoryShaderParameters() : NULL;
+	FVertexFactory::ModifyCompilationEnvironment(Parameters, OutEnvironment);
 }
 
 /**
@@ -165,7 +153,7 @@ FVertexFactoryShaderParameters* FVectorFieldVisualizationVertexFactory::Construc
  */
 void FVectorFieldVisualizationVertexFactory::SetParameters(
 	const FVectorFieldVisualizationParameters& InUniformParameters,
-	FTexture3DRHIParamRef InVectorFieldTextureRHI )
+	FRHITexture3D* InVectorFieldTextureRHI )
 {
 	UniformBuffer = FVectorFieldVisualizationBufferRef::CreateUniformBufferImmediate(InUniformParameters, UniformBuffer_SingleFrame);
 	VectorFieldTextureRHI = InVectorFieldTextureRHI;
@@ -175,7 +163,7 @@ void FVectorFieldVisualizationVertexFactoryShaderParameters::GetElementShaderBin
 	const FSceneInterface* Scene,
 	const FSceneView* View,
 	const FMeshMaterialShader* Shader,
-	bool bShaderRequiresPositionOnlyStream,
+	const EVertexInputStreamType InputStreamType,
 	ERHIFeatureLevel::Type FeatureLevel,
 	const FVertexFactory* InVertexFactory,
 	const FMeshBatchElement& BatchElement,
@@ -183,10 +171,12 @@ void FVectorFieldVisualizationVertexFactoryShaderParameters::GetElementShaderBin
 	FVertexInputStreamArray& VertexStreams) const
 {
 	FVectorFieldVisualizationVertexFactory* VertexFactory = (FVectorFieldVisualizationVertexFactory*)InVertexFactory;
-	FSamplerStateRHIParamRef SamplerStatePoint = TStaticSamplerState<SF_Point>::GetRHI();
+	FRHISamplerState* SamplerStatePoint = TStaticSamplerState<SF_Point>::GetRHI();
 	ShaderBindings.Add(Shader->GetUniformBufferParameter<FVectorFieldVisualizationParameters>(), VertexFactory->UniformBuffer);
 	ShaderBindings.AddTexture(VectorFieldTexture, VectorFieldTextureSampler, SamplerStatePoint, VertexFactory->VectorFieldTextureRHI);
 }
+
+IMPLEMENT_VERTEX_FACTORY_PARAMETER_TYPE(FVectorFieldVisualizationVertexFactory, SF_Vertex, FVectorFieldVisualizationVertexFactoryShaderParameters);
 
 IMPLEMENT_VERTEX_FACTORY_TYPE(FVectorFieldVisualizationVertexFactory,"/Engine/Private/VectorFieldVisualizationVertexFactory.ush",true,false,true,false,false);
 
@@ -244,7 +234,7 @@ void GetVectorFieldMesh(
 	int32 ViewIndex,
 	FMeshElementCollector& Collector)
 {
-	FVectorFieldResource* Resource = VectorFieldInstance->Resource;
+	FVectorFieldResource* Resource = VectorFieldInstance->Resource.GetReference();
 
 	if (Resource && IsValidRef(Resource->VolumeTextureRHI))
 	{

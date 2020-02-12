@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -33,7 +33,7 @@ enum class ENUTControlCommand : uint8
 };
 
 // Custom control channel message, used to communicate with the server NUTActor over the control channel
-DEFINE_CONTROL_CHANNEL_MESSAGE_TWOPARAM(NUTControl, 250, ENUTControlCommand, FString);
+DEFINE_CONTROL_CHANNEL_MESSAGE(NUTControl, 250, ENUTControlCommand, FString);
 
 
 /**

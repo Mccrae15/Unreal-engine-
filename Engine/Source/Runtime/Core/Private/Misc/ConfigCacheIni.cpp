@@ -1,6 +1,8 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "Misc/ConfigCacheIni.h"
+
+#include "Containers/StringView.h"
 #include "Misc/DateTime.h"
 #include "Misc/MessageDialog.h"
 #include "HAL/FileManager.h"
@@ -16,6 +18,9 @@
 #include "Misc/DefaultValueHelper.h"
 #include "Misc/ConfigManifest.h"
 #include "Misc/DataDrivenPlatformInfoRegistry.h"
+#include "Misc/StringBuilder.h"
+#include "Serialization/MemoryReader.h"
+#include "Serialization/MemoryWriter.h"
 
 #if WITH_EDITOR
 	#define INI_CACHE 1
@@ -26,6 +31,15 @@
 #ifndef DISABLE_GENERATED_INI_WHEN_COOKED
 #define DISABLE_GENERATED_INI_WHEN_COOKED 0
 #endif
+
+namespace
+{
+	static FName VersionName("Version");
+	static FName PreserveName("Preserve");
+	static FString LegacyIniVersionString = TEXT("IniVersion");
+	static FString LegacyEngineString = TEXT("Engine.Engine");
+	static FString CurrentIniVersionString = TEXT("CurrentIniVersion");
+}
 
 DEFINE_LOG_CATEGORY(LogConfig);
 namespace 
@@ -64,36 +78,131 @@ namespace
 FConfigValue
 -----------------------------------------------------------------------------*/
 
+struct FConfigExpansion
+{
+	template<int N>
+	FConfigExpansion(const TCHAR(&Var)[N], FString&& Val)
+		: Variable(Var)
+		, Value(Val)
+		, VariableLen(N - 1)
+	{}
+
+	const TCHAR* Variable;
+	FString Value;
+	int VariableLen;
+};
+
+static FString GetApplicationSettingsDirNormalized()
+{
+	FString Dir = FPlatformProcess::ApplicationSettingsDir();
+	FPaths::NormalizeFilename(Dir);
+	return Dir;
+}
+
+static const FConfigExpansion* MatchExpansions(const TCHAR* PotentialVariable)
+{
+	// Allocate replacement value strings once
+	static const FConfigExpansion Expansions[] =
+	{
+		FConfigExpansion(TEXT("%GAME%"), FString(FApp::GetProjectName())),
+		FConfigExpansion(TEXT("%GAMEDIR%"), FPaths::ProjectDir()),
+		FConfigExpansion(TEXT("%ENGINEDIR%"), FPaths::EngineDir()),
+		FConfigExpansion(TEXT("%ENGINEUSERDIR%"), FPaths::EngineUserDir()),
+		FConfigExpansion(TEXT("%ENGINEVERSIONAGNOSTICUSERDIR%"), FPaths::EngineVersionAgnosticUserDir()),
+		FConfigExpansion(TEXT("%APPSETTINGSDIR%"), GetApplicationSettingsDirNormalized()),
+	};
+
+	for (const FConfigExpansion& Expansion : Expansions)
+	{
+		if (FCString::Strncmp(Expansion.Variable, PotentialVariable, Expansion.VariableLen) == 0)
+		{
+			return &Expansion;
+		}
+	}
+
+	return nullptr;
+}
+
+static const FConfigExpansion* FindNextExpansion(const TCHAR* Str, const TCHAR*& OutMatch)
+{
+	for (const TCHAR* It = FCString::Strchr(Str, '%'); It; It = FCString::Strchr(It + 1, '%'))
+	{
+		if (const FConfigExpansion* Expansion = MatchExpansions(It))
+		{
+			OutMatch = It;
+			return Expansion;
+		}
+	}
+
+	return nullptr;
+}
+
 bool FConfigValue::ExpandValue(const FString& InCollapsedValue, FString& OutExpandedValue)
 {
-	int32 NumReplacements = 0;
-	OutExpandedValue = InCollapsedValue;
+	struct FSubstring
+	{
+		const TCHAR* Begin;
+		const TCHAR* End;
 
-	// Replace %GAME% with game name.
-	NumReplacements += OutExpandedValue.ReplaceInline(TEXT("%GAME%"), FApp::GetProjectName(), ESearchCase::CaseSensitive);
+		int32 Len() const { return UE_PTRDIFF_TO_INT32(End - Begin); }
+	};
 
-	// Replace %GAMEDIR% with the game directory.
-	NumReplacements += OutExpandedValue.ReplaceInline(TEXT("%GAMEDIR%"), *FPaths::ProjectDir(), ESearchCase::CaseSensitive);
+	// Find substrings of input and expansions to concatenate to final output string
+	TArray<FSubstring, TFixedAllocator<7>> Substrings;
+	const TCHAR* It = *InCollapsedValue;
+	while (true)
+	{
+		const TCHAR* Match;
+		if (const FConfigExpansion* Expansion = FindNextExpansion(It, Match))
+		{
+			Substrings.Add({ It, Match });
+			Substrings.Add({ *Expansion->Value, (*Expansion->Value) + Expansion->Value.Len() });
 
-	// Replace %ENGINEUSERDIR% with the user's engine directory.
-	NumReplacements += OutExpandedValue.ReplaceInline(TEXT("%ENGINEUSERDIR%"), *FPaths::EngineUserDir(), ESearchCase::CaseSensitive);
+			It = Match + Expansion->VariableLen;
+		}
+		else if (Substrings.Num() == 0)
+		{
+			// No expansions matched, skip concatenation and return input string
+			OutExpandedValue = InCollapsedValue;
+			return false;
+		}
+		else
+		{
+			Substrings.Add({ It, *InCollapsedValue + InCollapsedValue.Len() });
+			break;
+		}
+	}
 
-	// Replace %ENGINEVERSIONAGNOSTICUSERDIR% with the user's engine agnostic directory.
-	NumReplacements += OutExpandedValue.ReplaceInline(TEXT("%ENGINEVERSIONAGNOSTICUSERDIR%"), *FPaths::EngineVersionAgnosticUserDir(), ESearchCase::CaseSensitive);
+	// Concat
+	int32 OutLen = 0;
+	for (const FSubstring& Substring : Substrings)
+	{
+		OutLen += Substring.Len();
+	}
 
-	// Replace %APPSETTINGSDIR% with the application settings directory.
-	FString AppSettingsDir = FPlatformProcess::ApplicationSettingsDir();
-	FPaths::NormalizeFilename(AppSettingsDir);
-	NumReplacements += OutExpandedValue.ReplaceInline(TEXT("%APPSETTINGSDIR%"), *AppSettingsDir, ESearchCase::CaseSensitive);
+	OutExpandedValue.Reserve(OutLen);
+	for (const FSubstring& Substring : Substrings)
+	{
+		OutExpandedValue.AppendChars(Substring.Begin, Substring.Len());
+	}
 
-	return NumReplacements > 0;
+	return true;
 }
 
 FString FConfigValue::ExpandValue(const FString& InCollapsedValue)
 {
-	FString ExpandedValue;
-	ExpandValue(InCollapsedValue, ExpandedValue);
-	return ExpandedValue;
+	FString OutExpandedValue;
+	ExpandValue(InCollapsedValue, OutExpandedValue);
+	return OutExpandedValue;
+}
+
+void FConfigValue::ExpandValueInternal()
+{
+	const TCHAR* Dummy;
+	if (FindNextExpansion(*SavedValue, Dummy))
+	{
+		ExpandValue(SavedValue, /* out */ ExpandedValue);
+	}
 }
 
 bool FConfigValue::CollapseValue(const FString& InExpandedValue, FString& OutCollapsedValue)
@@ -221,10 +330,19 @@ bool FConfigSection::operator!=( const FConfigSection& Other ) const
 	return ! (FConfigSection::operator==(Other));
 }
 
+FArchive& operator<<(FArchive& Ar, FConfigSection& ConfigSection)
+{
+	Ar << static_cast<FConfigSection::Super&>(ConfigSection);
+	Ar << ConfigSection.ArrayOfStructKeys;
+	return Ar;
+}
+
 // Pull out a property from a Struct property, StructKeyMatch should be in the form "MyProp=". This reduces
 // memory allocations for each attempted match
-static FString ExtractPropertyValue(const FString& FullStructValue, const FString& StructKeyMatch)
+static void ExtractPropertyValue(const FString& FullStructValue, const FString& StructKeyMatch, FString& Out)
 {
+	Out.Reset();
+
 	int32 MatchLoc = FullStructValue.Find(StructKeyMatch);
 	// we only look for matching StructKeys if the incoming Value had a key
 	if (MatchLoc >= 0)
@@ -249,13 +367,26 @@ static FString ExtractPropertyValue(const FString& FullStructValue, const FStrin
 		}
 
 		// pull out the token
-		return FullStructValue.Mid(MatchLoc, Travel - Start);
+		Out.AppendChars(*FullStructValue + MatchLoc, UE_PTRDIFF_TO_INT32(Travel - Start));
 	}
-
-	return TEXT("");
 }
 
-void FConfigSection::HandleAddCommand(FName Key, const FString& Value, bool bAppendValueIfNotArrayOfStructsKeyUsed)
+void FConfigSection::HandleAddCommand(FName Key, FString&& Value, bool bAppendValueIfNotArrayOfStructsKeyUsed)
+{
+	if (!HandleArrayOfKeyedStructsCommand(Key, Forward<FString&&>(Value)))
+	{
+		if (bAppendValueIfNotArrayOfStructsKeyUsed)
+		{
+			Add(Key, MoveTemp(Value));
+		}
+		else
+		{
+			AddUnique(Key, MoveTemp(Value));
+		}
+	}
+}
+
+bool FConfigSection::HandleArrayOfKeyedStructsCommand(FName Key, FString&& Value)
 {
 	FString* StructKey = ArrayOfStructKeys.Find(Key);
 	bool bHandledWithKey = false;
@@ -265,10 +396,12 @@ void FConfigSection::HandleAddCommand(FName Key, const FString& Value, bool bApp
 		FString StructKeyMatch = *StructKey + "=";
 
 		// pull out the token that matches the StructKey (a property name) from the full struct property string
-		FString StructKeyValueToMatch = ExtractPropertyValue(Value, StructKeyMatch);
+		FString StructKeyValueToMatch;
+		ExtractPropertyValue(Value, StructKeyMatch, StructKeyValueToMatch);
 
 		if (StructKeyValueToMatch.Len() > 0)
 		{
+			FString ExistingStructValueKey;
 			// if we have a key for this array, then we look for it in the Value for each array entry
 			for (FConfigSection::TIterator It(*this); It; ++It)
 			{
@@ -276,7 +409,7 @@ void FConfigSection::HandleAddCommand(FName Key, const FString& Value, bool bApp
 				if (It.Key() == Key)
 				{
 					// now look for the matching ArrayOfStruct Key as the incoming KeyValue
-					FString ExistingStructValueKey = ExtractPropertyValue(It.Value().GetValue(), StructKeyMatch);
+					ExtractPropertyValue(It.Value().GetValue(), StructKeyMatch, ExistingStructValueKey);
 					if (ExistingStructValueKey == StructKeyValueToMatch)
 					{
 						// we matched ther key, so remove the existing line item (Value) and plop in the new one
@@ -292,17 +425,7 @@ void FConfigSection::HandleAddCommand(FName Key, const FString& Value, bool bApp
 		}
 	}
 
-	if (!bHandledWithKey)
-	{
-		if (bAppendValueIfNotArrayOfStructsKeyUsed)
-		{
-			Add(Key, Value);
-		}
-		else
-		{
-			AddUnique(Key, Value);
-		}
-	}
+	return bHandledWithKey;
 }
 
 // Look through the file's per object config ArrayOfStruct keys and see if this section matches
@@ -376,6 +499,134 @@ static bool SaveConfigFileWrapper(const TCHAR* IniFile, const FString& Contents)
 }
 
 
+enum class EConfigLayerFlags : int32
+{
+	Required					= (1 << 0),
+	AllowCommandLineOverride	= (1 << 1),
+	DedicatedServerOnly			= (1 << 2), // replaces Default, Base, and (NOT {PLATFORM} yet) with an empty string
+	GenerateCacheKey			= (1 << 3),
+};
+ENUM_CLASS_FLAGS(EConfigLayerFlags);
+
+/**
+ * Structure to define all the layers of the config system. Layers can be expanded by expansion files (NoRedist, etc), or by ini platform parents
+ * (coming soon from another branch)
+ */
+struct FConfigLayer
+{
+	// Used by the editor to display in the ini-editor
+	const TCHAR* EditorName;
+	// Path to the ini file (with variables)
+	const TCHAR* Path;
+	// Path to the platform extension version
+	const TCHAR* PlatformExtensionPath;
+	// Special flag
+	EConfigLayerFlags Flag;
+
+} GConfigLayers[] =
+{
+	/**************************************************
+	**** CRITICAL NOTES
+	**** If you change this array, you need to also change EnumerateConfigFileLocations() in ConfigHierarchy.cs!!!
+	**** And maybe UObject::GetDefaultConfigFilename(), UObject::GetGlobalUserConfigFilename()
+	**************************************************/
+
+	// Engine/Base.ini
+	{ TEXT("AbsoluteBase"),				TEXT("{ENGINE}Base.ini"), TEXT(""), EConfigLayerFlags::Required },
+	
+	// Engine/Base*.ini
+	{ TEXT("Base"),						TEXT("{ENGINE}{ED}{EF}Base{TYPE}.ini") },
+	// Engine/Platform/BasePlatform*.ini
+	{ TEXT("BasePlatform"),				TEXT("{ENGINE}{ED}{PLATFORM}/{EF}Base{PLATFORM}{TYPE}.ini"), TEXT("{EXTENGINE}/{ED}{EF}Base{PLATFORM}{TYPE}.ini"),  },
+	// Project/Default*.ini
+	{ TEXT("ProjectDefault"),			TEXT("{PROJECT}{ED}{EF}Default{TYPE}.ini"), TEXT(""), EConfigLayerFlags::AllowCommandLineOverride | EConfigLayerFlags::GenerateCacheKey },
+	// Engine/Platform/Platform*.ini
+	{ TEXT("EnginePlatform"),			TEXT("{ENGINE}{ED}{PLATFORM}/{EF}{PLATFORM}{TYPE}.ini"), TEXT("{EXTENGINE}/{ED}{EF}{PLATFORM}{TYPE}.ini") },
+	// Project/Platform/Platform*.ini
+	{ TEXT("ProjectPlatform"),			TEXT("{PROJECT}{ED}{PLATFORM}/{EF}{PLATFORM}{TYPE}.ini"), TEXT("{EXTPROJECT}/{ED}{EF}{PLATFORM}{TYPE}.ini") },
+	
+	// UserSettings/.../User*.ini
+	{ TEXT("UserSettingsDir"),			TEXT("{USERSETTINGS}Unreal Engine/Engine/Config/User{TYPE}.ini") },
+	// UserDir/.../User*.ini
+	{ TEXT("UserDir"),					TEXT("{USER}Unreal Engine/Engine/Config/User{TYPE}.ini") },
+	// Project/User*.ini
+	{ TEXT("GameDirUser"),				TEXT("{PROJECT}User{TYPE}.ini"), TEXT(""), EConfigLayerFlags::GenerateCacheKey },
+};
+
+
+/**
+ * This describes extra files per layer, most so that Epic needs to be able to ship a project, but still share the project 
+ * with licensees. These settings are the settings that should not be shared outside of Epic because they could cause 
+ * problems if a licensee blindly copy and pasted the settings (they can't copy what they don't have!)
+ */
+struct FConfigLayerExpansion
+{
+	// The subdirectory for this expansion (ie "NoRedist")
+	const TCHAR* DirectoryPrefix;
+	// The filename prefix for this expansion (ie "Shippable")
+	const TCHAR* FilePrefix;
+	// Optional flags 
+	EConfigLayerFlags Flag;
+} GConfigLayerExpansions[] = 
+{
+	/**************************************************
+	**** CRITICAL NOTES
+	**** If you change this array, you need to also change EnumerateConfigFileLocations() in ConfigHierarchy.cs!!!
+	**************************************************/
+	
+	// The base expansion (ie, no expansion)
+	{ TEXT(""), TEXT("") },
+
+	// When running a dedicated server - does not support {PLATFORM} layers, so those are skipped
+	{ TEXT(""), TEXT("DedicatedServer"),  EConfigLayerFlags::DedicatedServerOnly },
+	// This file is remapped in UAT from inside NFL or NoRedist, because those directories are stripped while packaging
+	{ TEXT(""), TEXT("Shippable") },
+	// Hidden directory from licensees
+	{ TEXT("NotForLicensees/"), TEXT("") },
+	// Settings that need to be hidden from licensees, but are needed for shipping
+	{ TEXT("NotForLicensees/"), TEXT("Shippable") },
+	// Hidden directory from non-Epic
+	{ TEXT("NoRedist/"), TEXT("") },
+	// Settings that need to be hidden from non-Epic, but are needed for shipping
+	{ TEXT("NoRedist/"), TEXT("Shippable") },
+};
+
+constexpr int32 MaxPlatformIndex = 99;
+
+constexpr int32 GetStaticKey(int32 LayerIndex, int32 LayerExpansionIndex, int32 PlatformIndex)
+{
+	return LayerIndex * 10000 + LayerExpansionIndex * 100 + PlatformIndex;
+}
+
+constexpr int32 MaxStaticHierarchyKey = GetStaticKey(UE_ARRAY_COUNT(GConfigLayers) - 1, UE_ARRAY_COUNT(GConfigLayerExpansions) - 1, MaxPlatformIndex);
+
+/*-----------------------------------------------------------------------------
+	FConfigFileHierarchy
+-----------------------------------------------------------------------------*/
+FConfigFileHierarchy::FConfigFileHierarchy() : KeyGen(MaxStaticHierarchyKey)
+{
+}
+
+
+int32 FConfigFileHierarchy::GenerateDynamicKey()
+{
+	return ++KeyGen;
+}
+
+int32 FConfigFileHierarchy::AddStaticLayer(FIniFilename Filename, int32 LayerIndex, int32 LayerExpansionIndex /*= 0*/, int32 PlatformIndex /*= 0*/)
+{
+	int32 Key = GetStaticKey(LayerIndex, LayerExpansionIndex, PlatformIndex);
+	Emplace(Key, MoveTemp(Filename));
+	return Key;
+}
+
+int32 FConfigFileHierarchy::AddDynamicLayer(FIniFilename Filename)
+{
+	int32 Key = GenerateDynamicKey();
+	Emplace(Key, MoveTemp(Filename));
+	return Key;
+}
+
 /*-----------------------------------------------------------------------------
 	FConfigFile
 -----------------------------------------------------------------------------*/
@@ -440,9 +691,11 @@ FConfigSection* FConfigFile::FindOrAddSection(const FString& SectionName)
 
 bool FConfigFile::Combine(const FString& Filename)
 {
-	FString Text;
+	FString FinalFileName = Filename;
+	OverrideFileFromCommandline(FinalFileName);
 
-	if (LoadConfigFileWrapper(*Filename, Text))
+	FString Text;
+	if (LoadConfigFileWrapper(*FinalFileName, Text))
 	{
 		if (Text.StartsWith("#!"))
 		{
@@ -472,6 +725,7 @@ void FConfigFile::CombineFromBuffer(const FString& Buffer)
 	const TCHAR* Ptr = *Buffer;
 	FConfigSection* CurrentSection = nullptr;
 	FString CurrentSectionName;
+	FString TheLine;
 	bool Done = false;
 	while( !Done )
 	{
@@ -482,9 +736,8 @@ void FConfigFile::CombineFromBuffer(const FString& Buffer)
 		}
 
 		// read the next line
-		FString TheLine;
 		int32 LinesConsumed = 0;
-		FParse::LineExtended(&Ptr, TheLine, LinesConsumed, false);
+		FParse::LineExtended(&Ptr, /* reset */ TheLine, LinesConsumed, false);
 		if (Ptr == nullptr || *Ptr == 0)
 		{
 			Done = true;
@@ -585,7 +838,7 @@ void FConfigFile::CombineFromBuffer(const FString& Buffer)
 				if (Cmd == '+')
 				{
 					// Add if not already present.
-					CurrentSection->HandleAddCommand( Start, ProcessedValue, false );
+					CurrentSection->HandleAddCommand( Start, MoveTemp(ProcessedValue), false );
 				}
 				else if( Cmd=='-' )	
 				{
@@ -595,7 +848,7 @@ void FConfigFile::CombineFromBuffer(const FString& Buffer)
 				}
 				else if ( Cmd=='.' )
 				{
-					CurrentSection->HandleAddCommand( Start, ProcessedValue, true );
+					CurrentSection->HandleAddCommand( Start, MoveTemp(ProcessedValue), true );
 				}
 				else if( Cmd=='!' )
 				{
@@ -604,25 +857,29 @@ void FConfigFile::CombineFromBuffer(const FString& Buffer)
 				else if (Cmd == '@')
 				{
 					// track a key to show uniqueness for arrays of structs
-					CurrentSection->ArrayOfStructKeys.Add(Start, ProcessedValue);
+					CurrentSection->ArrayOfStructKeys.Add(Start, MoveTemp(ProcessedValue));
 				}
 				else if (Cmd == '*')
 				{
 					// track a key to show uniqueness for arrays of structs
 					TMap<FName, FString>& POCKeys = PerObjectConfigArrayOfStructKeys.FindOrAdd(CurrentSectionName);
-					POCKeys.Add(Start, ProcessedValue);
+					POCKeys.Add(Start, MoveTemp(ProcessedValue));
 				}
 				else
 				{
-					// Add if not present and replace if present.
-					FConfigValue* ConfigValue = CurrentSection->Find( Start );
-					if( !ConfigValue )
+					// First see if this can be processed as an array of keyed structs command
+					if (!CurrentSection->HandleArrayOfKeyedStructsCommand(Start, MoveTemp(ProcessedValue)))
 					{
-						CurrentSection->Add( Start, ProcessedValue );
-					}
-					else
-					{
-						*ConfigValue = FConfigValue(ProcessedValue);
+						// Add if not present and replace if present.
+						FConfigValue* ConfigValue = CurrentSection->Find(Start);
+						if (!ConfigValue)
+						{
+							CurrentSection->Add(Start, MoveTemp(ProcessedValue));
+						}
+						else
+						{
+							*ConfigValue = FConfigValue(MoveTemp(ProcessedValue));
+						}
 					}
 				}
 
@@ -751,7 +1008,10 @@ void FConfigFile::Read( const FString& Filename )
 		Empty();
 		FString Text;
 
-		if (LoadConfigFileWrapper(*Filename, Text))
+		FString FinalFileName = Filename;
+		OverrideFileFromCommandline(FinalFileName);
+	
+		if (LoadConfigFileWrapper(*FinalFileName, Text))
 		{
 			// process the contents of the string
 			ProcessInputFileContents(Text);
@@ -839,14 +1099,50 @@ FString FConfigFile::GenerateExportedPropertyLine(const FString& PropertyName, c
 namespace CommandlineOverrideSpecifiers
 {
 	// -ini:IniName:[Section1]:Key1=Value1,[Section2]:Key2=Value2
-	FString	IniSwitchIdentifier		= TEXT("-ini:");
-	FString	IniNameEndIdentifier	= TEXT(":[");
-	FString	SectionStartIdentifier	= TEXT("[");
-	FString PropertyStartIdentifier	= TEXT("]:");
-	FString	PropertySeperator		= TEXT(",");
+	const TCHAR	IniFileOverrideIdentifier[] = TEXT("-iniFile=");
+	const TCHAR IniSwitchIdentifier[]     = TEXT("-ini:");
+	const TCHAR IniNameEndIdentifier[]    = TEXT(":[");
+	const TCHAR SectionStartIdentifier[]  = TEXT("[");
+	const TCHAR PropertyStartIdentifier[] = TEXT("]:");
+	const TCHAR PropertySeperator[]       = TEXT(",");
 }
 
 #endif
+void FConfigFile::OverrideFileFromCommandline(FString& Filename)
+{
+#if ALLOW_INI_OVERRIDE_FROM_COMMANDLINE
+	// look for this filename on the commandline in the format:
+	//		-iniFile=<hostPatFile1>,<hostPatFile2>,<hostPatFile3>
+	// for example:
+	//		-iniFile=/host/D:\FN-Main\FortniteGame\Config\PS4\PS4DeviceProfiles.ini
+	//       
+	//		Description: 
+	//          The FortniteGame\Config\PS4\PS4DeviceProfiles.ini contained in the pak file will
+	//          be replace with /host/D:\FN-Main\FortniteGame\Config\PS4\PS4DeviceProfiles.ini.
+
+	//			Note: You will need the same base file path for this to work. If you
+	//                want to override Engine/Config/BaseEngine.ini, you will need to place the override file 
+	//                under the same folder structure. 
+	//          Ex1: D:\<some_folder>\Engine\Config\BaseEngine.ini.
+	//			Ex2: D:\<some_folder>\FortniteGame\Config\PS4\PS4Engine.ini.ini.
+	FString StagedFilePaths;
+	if(FParse::Value(FCommandLine::Get(), CommandlineOverrideSpecifiers::IniFileOverrideIdentifier, StagedFilePaths, false))
+	{ 
+		FString BaseFileName = FPaths::GetBaseFilename(Filename);
+		TArray<FString> Files;
+		StagedFilePaths.ParseIntoArray(Files, TEXT(","), true);
+		for (int32 Index = 0; Index < Files.Num(); Index++)
+		{
+			if (Files[Index].Contains(BaseFileName))
+			{
+				Filename = Files[Index];
+				UE_LOG(LogConfig, Warning, TEXT("Loading override ini file: %s "), *Files[Index]);
+				break;
+			}
+		}
+	}
+#endif
+}
 /**
 * Looks for any overrides on the commandline for this file
 *
@@ -862,11 +1158,12 @@ void FConfigFile::OverrideFromCommandline(FConfigFile* File, const FString& File
 	// for example:
 	//		-ini:Engine:[/Script/Engine.Engine]:bSmoothFrameRate=False,[TextureStreaming]:PoolSize=100
 	//			(will update the cache after the final combined engine.ini)
-	if (FParse::Value(FCommandLine::Get(), *FString::Printf(TEXT("%s%s"), *CommandlineOverrideSpecifiers::IniSwitchIdentifier, *FPaths::GetBaseFilename(Filename)), Settings, false))
+	const TCHAR* CommandlineStream = FCommandLine::Get();
+	while(FParse::Value(CommandlineStream, *FString::Printf(TEXT("%s%s"), CommandlineOverrideSpecifiers::IniSwitchIdentifier, *FPaths::GetBaseFilename(Filename)), Settings, false))
 	{
 		// break apart on the commas
 		TArray<FString> SettingPairs;
-		Settings.ParseIntoArray(SettingPairs, *CommandlineOverrideSpecifiers::PropertySeperator, true);
+		Settings.ParseIntoArray(SettingPairs, CommandlineOverrideSpecifiers::PropertySeperator, true);
 		for (int32 Index = 0; Index < SettingPairs.Num(); Index++)
 		{
 			// set each one, by splitting on the =
@@ -887,21 +1184,49 @@ void FConfigFile::OverrideFromCommandline(FConfigFile* File, const FString& File
 				CommandlineOption.Section = SectionAndKey.Left(SectionNameEndIndex);
 				
 				// Remove commandline syntax from the section name.
-				CommandlineOption.Section = CommandlineOption.Section.Replace(*CommandlineOverrideSpecifiers::IniNameEndIdentifier, TEXT(""));
-				CommandlineOption.Section = CommandlineOption.Section.Replace(*CommandlineOverrideSpecifiers::PropertyStartIdentifier, TEXT(""));
-				CommandlineOption.Section = CommandlineOption.Section.Replace(*CommandlineOverrideSpecifiers::SectionStartIdentifier, TEXT(""));
+				CommandlineOption.Section = CommandlineOption.Section.Replace(CommandlineOverrideSpecifiers::IniNameEndIdentifier, TEXT(""));
+				CommandlineOption.Section = CommandlineOption.Section.Replace(CommandlineOverrideSpecifiers::PropertyStartIdentifier, TEXT(""));
+				CommandlineOption.Section = CommandlineOption.Section.Replace(CommandlineOverrideSpecifiers::SectionStartIdentifier, TEXT(""));
 
-				CommandlineOption.PropertyKey = SectionAndKey.Mid(SectionNameEndIndex + CommandlineOverrideSpecifiers::PropertyStartIdentifier.Len());
+				CommandlineOption.PropertyKey = SectionAndKey.Mid(SectionNameEndIndex + UE_ARRAY_COUNT(CommandlineOverrideSpecifiers::PropertyStartIdentifier) - 1);
 				CommandlineOption.PropertyValue = Value;
 
 				// now put it into this into the cache
 				File->SetString(*CommandlineOption.Section, *CommandlineOption.PropertyKey, *CommandlineOption.PropertyValue);
 			}
 		}
+
+		// Keep searching for more instances of -ini
+		CommandlineStream = FCString::Stristr(CommandlineStream, CommandlineOverrideSpecifiers::IniSwitchIdentifier);
+		check(CommandlineStream);
+		CommandlineStream++;
 	}
 #endif
 }
 
+
+void FConfigFile::AddDynamicLayerToHeirarchy(const FString& Filename)
+{
+	// Don't allow dynamic layers in editor
+	if (GIsEditor)
+		return;
+
+	FString ConfigContent;
+	if (!FFileHelper::LoadFileToString(ConfigContent, *Filename))
+		return;
+
+	if (SourceConfigFile)
+	{
+		SourceConfigFile->SourceIniHierarchy.AddDynamicLayer(FIniFilename(Filename));
+		SourceConfigFile->CombineFromBuffer(ConfigContent);
+	}
+
+	SourceIniHierarchy.AddDynamicLayer(FIniFilename(Filename));
+	CombineFromBuffer(ConfigContent);
+
+	// Disable saving since dynamic layers are only for runtime
+	NoSave = true;
+}
 
 /**
  * This will completely load .ini file hierarchy into the passed in FConfigFile. The passed in FConfigFile will then
@@ -922,24 +1247,25 @@ static bool LoadIniFileHierarchy(const FConfigFileHierarchy& HierarchyToLoad, FC
 	else
 	{
 		// If no inis exist or only engine (Base*.ini) inis exist, don't load anything
-		int32 NumExistingOptionalInis = 0;
-		for( const auto& HierarchyIt : HierarchyToLoad )
+		bool bOptionalIniFound = false;
+		for (const TPair<int32, FIniFilename>& Pair : HierarchyToLoad)
 		{
-			const FIniFilename& IniToLoad = HierarchyIt.Value;
+			const FIniFilename& IniToLoad = Pair.Value;
 			if (IniToLoad.bRequired == false &&
-				 (!IsUsingLocalIniFile(*IniToLoad.Filename, nullptr) || DoesConfigFileExistWrapper(*IniToLoad.Filename)))
+				(!IsUsingLocalIniFile(*IniToLoad.Filename, nullptr) || DoesConfigFileExistWrapper(*IniToLoad.Filename)))
 			{
-				NumExistingOptionalInis++;
+				bOptionalIniFound = true;
+				break;
 			}
 		}
-		if (NumExistingOptionalInis == 0)
+		if (!bOptionalIniFound)
 		{
 			// No point in generating ini
 			return true;
 		}
 	}
 
-	EConfigFileHierarchy FirstCacheIndex = EConfigFileHierarchy::AbsoluteBase;
+	int32 FirstCacheIndex = 0;
 #if INI_CACHE
 	if (bUseCache && HierarchyCache.Num() > 0)
 	{
@@ -955,9 +1281,12 @@ static bool LoadIniFileHierarchy(const FConfigFileHierarchy& HierarchyToLoad, FC
 #endif
 
 	TArray<FDateTime> TimestampsOfInis;
+	
+	// Making a copy of the HierarchyToLoad so we can loop and make changes to ConfigFile without breaking the iteration.
+	const FConfigFileHierarchy TempHierarchyToLoad = HierarchyToLoad;
 
 	// Traverse ini list back to front, merging along the way.
-	for (auto& HierarchyIt : HierarchyToLoad)
+	for (auto& HierarchyIt : TempHierarchyToLoad)
 	{
 		if (FirstCacheIndex <= HierarchyIt.Key)
 		{
@@ -1006,7 +1335,7 @@ static bool LoadIniFileHierarchy(const FConfigFileHierarchy& HierarchyToLoad, FC
 				}
 
 				bool bDoEmptyConfig = false;
-				bool bDoCombine = (HierarchyIt.Key != EConfigFileHierarchy::AbsoluteBase);
+				bool bDoCombine = (HierarchyIt.Key != 0);
 				//UE_LOG(LogConfig, Log,  TEXT( "Combining configFile: %s" ), *IniList(IniIndex) );
 				ProcessIniContents(*(HierarchyIt.Value.Filename), *IniFileName, &ConfigFile, bDoEmptyConfig, bDoCombine);
 #if INI_CACHE
@@ -1020,7 +1349,7 @@ static bool LoadIniFileHierarchy(const FConfigFileHierarchy& HierarchyToLoad, FC
 	}
 
 	// Set this configs files source ini hierarchy to show where it was loaded from.
-	ConfigFile.SourceIniHierarchy = HierarchyToLoad;
+	ConfigFile.SourceIniHierarchy = TempHierarchyToLoad;
 
 	return true;
 }
@@ -1134,26 +1463,39 @@ static void ClearHierarchyCache( const TCHAR* BaseIniName )
 #endif
 }
 
-bool FConfigFile::Write( const FString& Filename, bool bDoRemoteWrite/* = true*/, const FString& InitialText/*=FString()*/ )
+bool FConfigFile::Write(const FString& Filename, bool bDoRemoteWrite/* = true*/, const FString& PrefixText/*=FString()*/)
+{
+	TMap<FString, FString> SectionTexts;
+	TArray<FString> SectionOrder;
+	if (!PrefixText.IsEmpty())
+	{
+		SectionTexts.Add(FString(), PrefixText);
+	}
+	return Write(Filename, bDoRemoteWrite, SectionTexts, SectionOrder);
+}
+
+bool FConfigFile::Write(const FString& Filename, bool bDoRemoteWrite, TMap<FString, FString>& InOutSectionTexts, const TArray<FString>& InSectionOrder)
 {
 	if( !Dirty || NoSave || FParse::Param( FCommandLine::Get(), TEXT("nowrite")) || 
 		(FParse::Param( FCommandLine::Get(), TEXT("Multiprocess"))  && !FParse::Param( FCommandLine::Get(), TEXT("MultiprocessSaveConfig"))) // Is can be useful to save configs with multiprocess if they are given INI overrides
 		) 
 		return true;
 
-	FString Text = InitialText;
-
 	bool bAcquiredIniCombineThreshold = false;	// avoids extra work when writing multiple properties
-	EConfigFileHierarchy IniCombineThreshold = EConfigFileHierarchy::NumHierarchyFiles;
+	int32 IniCombineThreshold = -1;
+
+	TStringBuilder<128> Text;
+	FStringView BlankLine(LINE_TERMINATOR LINE_TERMINATOR);
+	TArray<FString> SectionOrder;
+	SectionOrder.Reserve(InSectionOrder.Num() + this->Num());
+	SectionOrder.Append(InSectionOrder);
 
 	for( TIterator SectionIterator(*this); SectionIterator; ++SectionIterator )
 	{
 		const FString& SectionName = SectionIterator.Key();
 		const FConfigSection& Section = SectionIterator.Value();
 
-		// Flag to check whether a property was written on this section, 
-		// if none we do not want to make any changes to the destination file on this round.
-		bool bWroteASectionProperty = false;
+		Text.Reset();
 
 		TSet< FName > PropertiesAddedLookup;
 
@@ -1194,20 +1536,22 @@ bool FConfigFile::Write( const FString& Filename, bool bDoRemoteWrite/* = true*/
 				const FString AbsoluteGameGeneratedConfigDir = FPaths::ConvertRelativePathToFull(FPaths::GeneratedConfigDir());
 				const FString AbsoluteGameAgnosticGeneratedConfigDir = FPaths::ConvertRelativePathToFull(FPaths::Combine(*FPaths::GameAgnosticSavedDir(), TEXT("Config")) + TEXT("/"));
 				const bool bIsADefaultIniWrite = !AbsoluteFilename.Contains(AbsoluteGameGeneratedConfigDir) && !AbsoluteFilename.Contains(AbsoluteGameAgnosticGeneratedConfigDir);
+				
+				// We ALWAYS want to write CurrentIniVersion.
+				const bool bIsCurrentIniVersion = (SectionName == CurrentIniVersionString);
 
 				// Check if the property matches the source configs. We do not wanna write it out if so.
-				if ((bIsADefaultIniWrite || bDifferentNumberOfElements || !DoesConfigPropertyValueMatch(SourceConfigFile, SectionName, PropertyName, PropertyValue)) && !bOptionIsFromCommandline)
+				if ((bIsADefaultIniWrite || bDifferentNumberOfElements || bIsCurrentIniVersion || !DoesConfigPropertyValueMatch(SourceConfigFile, SectionName, PropertyName, PropertyValue)) && !bOptionIsFromCommandline)
 				{
 					// If this is the first property we are writing of this section, then print the section name
-					if( !bWroteASectionProperty )
+					if( Text.Len() == 0 )
 					{
-						Text += FString::Printf( TEXT("[%s]") LINE_TERMINATOR, *SectionName);
-						bWroteASectionProperty = true;
+						Text.Append(FString::Printf( TEXT("[%s]") LINE_TERMINATOR, *SectionName));
 
-						// and if the sectrion has any array of struct uniqueness keys, add them here
+						// and if the section has any array of struct uniqueness keys, add them here
 						for (auto It = Section.ArrayOfStructKeys.CreateConstIterator(); It; ++It)
 						{
-							Text += FString::Printf(TEXT("@%s=%s") LINE_TERMINATOR, *It.Key().ToString(), *It.Value());
+							Text.Append(FString::Printf(TEXT("@%s=%s") LINE_TERMINATOR, *It.Key().ToString(), *It.Value()));
 						}
 					}
 
@@ -1238,7 +1582,7 @@ bool FConfigFile::Write( const FString& Filename, bool bDoRemoteWrite/* = true*/
 					{
 						for (const FConfigValue& ConfigValue : CompletePropertyToWrite)
 						{
-							Text += GenerateExportedPropertyLine(PropertyName.ToString(), ConfigValue.GetSavedValue());
+							Text.Append(GenerateExportedPropertyLine(PropertyName.ToString(), ConfigValue.GetSavedValue()));
 						}
 					}
 
@@ -1247,24 +1591,88 @@ bool FConfigFile::Write( const FString& Filename, bool bDoRemoteWrite/* = true*/
 			}
 		}
 
-		// If we wrote any part of the section, then add some whitespace after the section.
-		if( bWroteASectionProperty )
+		// If we didn't decide to write any properties on this section, then we don't add the section
+		// to the destination file
+		if (Text.Len() > 0)
 		{
-			Text += LINE_TERMINATOR;
-		}
+			InOutSectionTexts.FindOrAdd(SectionName) = FString(Text.ToString(), Text.Len());
 
+			// Add the Section to SectionOrder in case it's not already there
+			SectionOrder.Add(SectionName);
+		}
+		else
+		{
+			InOutSectionTexts.Remove(SectionName);
+		}
+	}
+
+	// Join all of the sections together
+	Text.Reset();
+	TSet<FString> SectionNamesLeftToWrite;
+	SectionNamesLeftToWrite.Reserve(InOutSectionTexts.Num());
+	for (TPair<FString,FString>& kvpair : InOutSectionTexts)
+	{
+		SectionNamesLeftToWrite.Add(kvpair.Key);
+	}
+
+	auto AddSectionToText = [&Text, &InOutSectionTexts, &SectionNamesLeftToWrite, &BlankLine](const FString& SectionName)
+	{
+		FString* SectionText = InOutSectionTexts.Find(SectionName);
+		if (!SectionText)
+		{
+			return;
+		}
+		if (SectionNamesLeftToWrite.Remove(SectionName) == 0)
+		{
+			// We already wrote this section
+			return;
+		}
+		Text.Append(*SectionText);
+		if (!FStringView(Text.ToString()).EndsWith(BlankLine))
+		{
+			Text.Append(LINE_TERMINATOR);
+		}
+	};
+
+	// First add the empty section
+	AddSectionToText(FString());
+
+	// Second add all the sections in SectionOrder; this includes any sections in *this that were not in InSectionOrder, because we added them during the loop
+	for (FString& SectionName : SectionOrder)
+	{
+		AddSectionToText(SectionName);
+	}
+
+	// Third add any remaining sections that were passed in in InOutSectionTexts but were not specified in InSectionOrder and were not in *this
+	if (SectionNamesLeftToWrite.Num() > 0)
+	{
+		TArray<FString> RemainingNames;
+		for (FString& SectionName : SectionNamesLeftToWrite)
+		{
+			RemainingNames.Add(SectionName);
+		}
+		RemainingNames.Sort();
+		for (FString& SectionName : RemainingNames)
+		{
+			AddSectionToText(SectionName);
+		}
 	}
 
 	// Ensure We have at least something to write
-	Text += LINE_TERMINATOR;
+	if (Text.Len() == 0)
+	{
+		Text.Append(LINE_TERMINATOR);
+	}
 
+
+	FString TextAsString(Text.ToString(), Text.Len());
 	if (bDoRemoteWrite)
 	{
 		// Write out the remote version (assuming it was loaded)
-		FRemoteConfig::Get()->Write(*Filename, Text);
+		FRemoteConfig::Get()->Write(*Filename, TextAsString);
 	}
 
-	bool bResult = SaveConfigFileWrapper(*Filename, Text);
+	bool bResult = SaveConfigFileWrapper(*Filename, TextAsString);
 
 #if INI_CACHE
 	// if we wrote the config successfully
@@ -1435,18 +1843,11 @@ bool FConfigFile::GetBool(const TCHAR* Section, const TCHAR* Key, bool& Value ) 
 
 int32 FConfigFile::GetArray(const TCHAR* Section, const TCHAR* Key, TArray<FString>& Value) const
 {
+	Value.Empty();
 	const FConfigSection* Sec = Find(Section);
 	if (Sec != nullptr)
 	{
-		TArray<FConfigValue> RemapArray;
-		Sec->MultiFind(Key, RemapArray);
-
-		// TMultiMap::MultiFind will return the results in reverse order
-		Value.AddZeroed(RemapArray.Num());
-		for (int32 RemapIndex = RemapArray.Num() - 1, Index = 0; RemapIndex >= 0; RemapIndex--, Index++)
-		{
-			Value[Index] = RemapArray[RemapIndex].GetValue();
-		}
+		Sec->MultiFind(Key, Value, true);
 	}
 #if !UE_BUILD_SHIPPING
 	else
@@ -1562,7 +1963,14 @@ void FConfigFile::ProcessSourceAndCheckAgainstBackup()
 	}
 }
 
-void FConfigFile::ProcessPropertyAndWriteForDefaults( EConfigFileHierarchy IniCombineThreshold, const TArray< FConfigValue >& InCompletePropertyToProcess, FString& OutText, const FString& SectionName, const FString& PropertyName )
+void FConfigFile::ProcessPropertyAndWriteForDefaults(int IniCombineThreshold, const TArray< FConfigValue >& InCompletePropertyToProcess, FString& OutText, const FString& SectionName, const FString& PropertyName)
+{
+	TStringBuilder<128> PropertyText;
+	ProcessPropertyAndWriteForDefaults(IniCombineThreshold, InCompletePropertyToProcess, PropertyText, SectionName, PropertyName);
+	OutText.Append(PropertyText.ToString(), PropertyText.Len());
+}
+
+void FConfigFile::ProcessPropertyAndWriteForDefaults( int IniCombineThreshold, const TArray< FConfigValue >& InCompletePropertyToProcess, FStringBuilderBase& OutText, const FString& SectionName, const FString& PropertyName )
 {
 	// Only process against a hierarchy if this config file has one.
 	if (SourceIniHierarchy.Num() > 0)
@@ -1573,10 +1981,10 @@ void FConfigFile::ProcessPropertyAndWriteForDefaults( EConfigFileHierarchy IniCo
 			// Build a config file out of this default configs hierarchy.
 			FConfigCacheIni Hierarchy(EConfigCacheType::Temporary);
 
-			EConfigFileHierarchy HighestFileIndex = EConfigFileHierarchy::AbsoluteBase;
-			TArray<EConfigFileHierarchy> ExistingEntries;
+			int32 HighestFileIndex = 0;
+			TArray<int32> ExistingEntries;
 			SourceIniHierarchy.GetKeys(ExistingEntries);
-			for (const EConfigFileHierarchy& NextEntry : ExistingEntries)
+			for (const int32& NextEntry : ExistingEntries)
 			{
 				HighestFileIndex = NextEntry > HighestFileIndex ? NextEntry : HighestFileIndex;
 			}
@@ -1604,7 +2012,7 @@ void FConfigFile::ProcessPropertyAndWriteForDefaults( EConfigFileHierarchy IniCo
 			for (const FString& NextElement : ArrayProperties)
 			{
 				FString PropertyNameWithRemoveOp = PropertyName.Replace(TEXT("+"), TEXT("-"));
-				OutText += GenerateExportedPropertyLine(PropertyNameWithRemoveOp, NextElement);
+				OutText.Append(GenerateExportedPropertyLine(PropertyNameWithRemoveOp, NextElement));
 			}
 		}
 	}
@@ -1612,7 +2020,7 @@ void FConfigFile::ProcessPropertyAndWriteForDefaults( EConfigFileHierarchy IniCo
 	// Write the properties out to a file.
 	for ( const FConfigValue& PropertyIt : InCompletePropertyToProcess)
 	{
-		OutText += GenerateExportedPropertyLine(PropertyName, PropertyIt.GetSavedValue());
+		OutText.Append(GenerateExportedPropertyLine(PropertyName, PropertyIt.GetSavedValue()));
 	}
 }
 
@@ -1934,6 +2342,9 @@ bool FConfigCacheIni::GetString( const TCHAR* Section, const TCHAR* Key, FString
 		return false;
 	}
 	Value = ConfigValue->GetValue();
+
+	FCoreDelegates::OnConfigValueRead.Broadcast(*Filename, Section, Key);
+
 	return true;
 }
 
@@ -1958,7 +2369,14 @@ bool FConfigCacheIni::GetText( const TCHAR* Section, const TCHAR* Key, FText& Va
 	{
 		return false;
 	}
-	return FTextStringHelper::ReadFromBuffer( *ConfigValue->GetValue(), Value, Section ) != nullptr;
+	if (FTextStringHelper::ReadFromBuffer(*ConfigValue->GetValue(), Value, Section) == nullptr)
+	{
+		return false;
+	}
+
+	FCoreDelegates::OnConfigValueRead.Broadcast(*Filename, Section, Key);
+
+	return true;
 }
 
 bool FConfigCacheIni::GetSection( const TCHAR* Section, TArray<FString>& Result, const FString& Filename )
@@ -1980,6 +2398,9 @@ bool FConfigCacheIni::GetSection( const TCHAR* Section, TArray<FString>& Result,
 	{
 		Result.Add(FString::Printf(TEXT("%s=%s"), *It.Key().ToString(), *It.Value().GetValue()));
 	}
+
+	FCoreDelegates::OnConfigSectionRead.Broadcast(*Filename, Section);
+
 	return true;
 }
 
@@ -2000,6 +2421,12 @@ FConfigSection* FConfigCacheIni::GetSectionPrivate( const TCHAR* Section, bool F
 	{
 		File->Dirty = true;
 	}
+
+	if (Sec)
+	{
+		FCoreDelegates::OnConfigSectionRead.Broadcast(*Filename, Section);
+	}
+
 	return Sec;
 }
 
@@ -2011,6 +2438,11 @@ bool FConfigCacheIni::DoesSectionExist(const TCHAR* Section, const FString& File
 	FConfigFile* File = Find(Filename, false);
 
 	bReturnVal = (File != nullptr && File->Find(Section) != nullptr);
+
+	if (bReturnVal)
+	{
+		FCoreDelegates::OnConfigSectionNameRead.Broadcast(*Filename, Section);
+	}
 
 	return bReturnVal;
 }
@@ -2168,8 +2600,9 @@ bool FConfigCacheIni::GetSectionNames( const FString& Filename, TArray<FString>&
 		out_SectionNames.Empty(Num());
 		for ( FConfigFile::TIterator It(*File); It; ++It )
 		{
-			// insert each item at the beginning of the array because TIterators return results in reverse order from which they were added
-			out_SectionNames.Insert(It.Key(),0);
+			out_SectionNames.Add(It.Key());
+
+			FCoreDelegates::OnConfigSectionNameRead.Broadcast(*Filename, *It.Key());
 		}
 		bResult = true;
 	}
@@ -2211,6 +2644,8 @@ bool FConfigCacheIni::GetPerObjectConfigSections( const FString& Filename, const
 					// found a PerObjectConfig section for the class specified - add it to the list
 					out_SectionNames.Insert(SectionName,0);
 					bResult = true;
+
+					FCoreDelegates::OnConfigSectionNameRead.Broadcast(*Filename, *SectionName);
 				}
 			}
 		}
@@ -2339,25 +2774,12 @@ int32 FConfigCacheIni::GetArray
 	FConfigFile* File = Find( Filename, 0 );
 	if ( File != nullptr )
 	{
-		FConfigSection* Sec = File->Find( Section );
-		if ( Sec != nullptr )
-		{
-			TArray<FConfigValue> RemapArray;
-			Sec->MultiFind(Key, RemapArray);
+		File->GetArray(Section, Key, out_Arr);
+	}
 
-			// TMultiMap::MultiFind will return the results in reverse order
-			out_Arr.AddZeroed(RemapArray.Num());
-			for ( int32 RemapIndex = RemapArray.Num() - 1, Index = 0; RemapIndex >= 0; RemapIndex--, Index++ )
-			{
-				out_Arr[Index] = RemapArray[RemapIndex].GetValue();
-			}
-		}
-#if !UE_BUILD_SHIPPING
-		else
-		{
-			CheckLongSectionNames( Section, File );
-		}
-#endif
+	if (out_Arr.Num())
+	{
+		FCoreDelegates::OnConfigValueRead.Broadcast(*Filename, Section, Key);
 	}
 
 	return out_Arr.Num();
@@ -2687,8 +3109,8 @@ struct FConfigMemoryData
 		SIZE_T MaxMem = MemAr.GetMax();
 
 		NameIndent = FMath::Max(NameIndent, ConfigFilename.Len());
-		SizeIndent = FMath::Max(SizeIndent, FString::FromInt(TotalMem).Len());
-		MaxSizeIndent = FMath::Max(MaxSizeIndent, FString::FromInt(MaxMem).Len());
+		SizeIndent = FMath::Max(SizeIndent, FString::FromInt((int32)TotalMem).Len());
+		MaxSizeIndent = FMath::Max(MaxSizeIndent, FString::FromInt((int32)MaxMem).Len());
 		
 		new(MemoryData) FConfigFileMemoryData( ConfigFilename, TotalMem, MaxMem );
 	}
@@ -2882,29 +3304,83 @@ static bool GenerateDestIniFile(FConfigFile& DestConfigFile, const FString& Dest
 	bool bForceRegenerate = false;
 	bool bShouldUpdate = FPlatformProperties::RequiresCookedData();
 
+	// New versioning
+	int32 SourceConfigVersionNum = -1;
+	int32 CurrentIniVersion = -1;
+	bool bVersionChanged = false;
+
+	// Lambda for functionality that we can do in more than one place.
+	auto RegenerateFileLambda = [](const FConfigFileHierarchy& InSourceIniHierarchy, FConfigFile& InDestConfigFile, const bool bInUseCache)
+	{
+		// Regenerate the file.
+		bool bReturnValue = LoadIniFileHierarchy(InSourceIniHierarchy, InDestConfigFile, bInUseCache);
+		if (InDestConfigFile.SourceConfigFile)
+		{
+			delete InDestConfigFile.SourceConfigFile;
+			InDestConfigFile.SourceConfigFile = nullptr;
+		}
+		InDestConfigFile.SourceConfigFile = new FConfigFile(InDestConfigFile);
+
+		// mark it as dirty (caller may want to save)
+		InDestConfigFile.Dirty = true;
+
+		return bReturnValue;
+	};
+
 	// Don't try to load any generated files from disk in cooked builds. We will always use the re-generated INIs.
 	if (!FPlatformProperties::RequiresCookedData() || bAllowGeneratedINIs)
 	{
 		// We need to check if the user is using the version of the config system which had the entire contents of the coalesced
 		// Source ini hierarchy output, if so we need to update, as it will cause issues with the new way we handle saved config files.
+		
+		// Legacy
 		bool bIsLegacyConfigSystem = false;
+
 		for ( TMap<FString,FConfigSection>::TConstIterator It(DestConfigFile); It; ++It )
 		{
 			FString SectionName = It.Key();
-			if( SectionName == TEXT("IniVersion") || SectionName == TEXT("Engine.Engine") )
+			if (SectionName == LegacyEngineString || SectionName == LegacyIniVersionString)
 			{
 				bIsLegacyConfigSystem = true;
 				UE_LOG( LogInit, Warning, TEXT( "%s is out of date. It will be regenerated." ), *FPaths::ConvertRelativePathToFull(DestIniFilename) );
 				break;
 			}
+			else if (SectionName == CurrentIniVersionString)
+			{
+				FConfigSection ConfigSectionIniVersion = It.Value();
+				if (const FConfigValue* ConfigValue = ConfigSectionIniVersion.Find(VersionName))
+				{
+					FString VersionString = ConfigValue->GetSavedValue();
+					CurrentIniVersion = FCString::Atoi(*VersionString);
+				}
+			}
+		}
+
+		// Test the version of the source config file to see if we should update.
+		if (FConfigSection* SourceConfigSectionIniVersion = DestConfigFile.SourceConfigFile->Find(CurrentIniVersionString))
+		{
+			if (const FConfigValue* ConfigValue = SourceConfigSectionIniVersion->Find(VersionName))
+			{
+				FString VersionString = ConfigValue->GetSavedValue();
+				SourceConfigVersionNum = FCString::Atoi(*VersionString);
+				if (SourceConfigVersionNum > CurrentIniVersion)
+				{
+					UE_LOG(LogInit, Log, TEXT("%s version has been updated. It will be regenerated."), *FPaths::ConvertRelativePathToFull(DestIniFilename));
+					bVersionChanged = true;
+				}
+				else if (SourceConfigVersionNum < CurrentIniVersion)
+				{
+					UE_LOG(LogInit, Warning, TEXT("%s version is later than the source. Since the versions are out of sync, nothing will be done."), *FPaths::ConvertRelativePathToFull(DestIniFilename));
+				}
+			}
 		}
 
 		// Regenerate the ini file?
-		if( bIsLegacyConfigSystem || FParse::Param(FCommandLine::Get(),TEXT("REGENERATEINIS")) == true )
+		if (bIsLegacyConfigSystem || FParse::Param(FCommandLine::Get(), TEXT("REGENERATEINIS")) == true)
 		{
 			bForceRegenerate = true;
 		}
-		else if( FParse::Param(FCommandLine::Get(),TEXT("NOAUTOINIUPDATE")) )
+		else if (FParse::Param(FCommandLine::Get(), TEXT("NOAUTOINIUPDATE")))
 		{
 			// Flag indicating whether the user has requested 'Yes/No To All'.
 			static int32 GIniYesNoToAll = -1;
@@ -2915,11 +3391,11 @@ static bool GenerateDestIniFile(FConfigFile& DestConfigFile, const FString& Dest
 			// The file exists but is different.
 			// Prompt the user if they haven't already responded with a 'Yes/No To All' answer.
 			uint32 YesNoToAll;
-			if( GIniYesNoToAll != EAppReturnType::YesAll && GIniYesNoToAll != EAppReturnType::NoAll )
+			if (GIniYesNoToAll != EAppReturnType::YesAll && GIniYesNoToAll != EAppReturnType::NoAll)
 			{
-				YesNoToAll = FMessageDialog::Open(EAppMsgType::YesNoYesAllNoAll, FText::Format( NSLOCTEXT("Core", "IniFileOutOfDate", "Your ini ({0}) file is outdated. Do you want to automatically update it saving the previous version? Not doing so might cause crashes!"), FText::FromString( DestIniFilename ) ) );
+				YesNoToAll = FMessageDialog::Open(EAppMsgType::YesNoYesAllNoAll, FText::Format(NSLOCTEXT("Core", "IniFileOutOfDate", "Your ini ({0}) file is outdated. Do you want to automatically update it saving the previous version? Not doing so might cause crashes!"), FText::FromString(DestIniFilename)));
 				// Record whether the user responded with a 'Yes/No To All' answer.
-				if ( YesNoToAll == EAppReturnType::YesAll || YesNoToAll == EAppReturnType::NoAll )
+				if (YesNoToAll == EAppReturnType::YesAll || YesNoToAll == EAppReturnType::NoAll)
 				{
 					GIniYesNoToAll = YesNoToAll;
 				}
@@ -2935,30 +3411,85 @@ static bool GenerateDestIniFile(FConfigFile& DestConfigFile, const FString& Dest
 		}
 		else
 		{
-			bShouldUpdate = true;
+			// If the version changes, we regenerate, so no need to do this.
+			if (!bVersionChanged)
+			{
+				bShouldUpdate = true;
+			}
 		}
 	}
 	
+	// Order is important, we want to let force regenerate happen before version change, in case we're trying to wipe everything.
+	//	Version tries to save some info.
 	if (DestConfigFile.Num() == 0 && DestConfigFile.SourceConfigFile->Num() == 0)
 	{
 		// If both are empty, don't save
 		return false;
 	}
-	else if( bForceRegenerate )
+	else if (bForceRegenerate)
 	{
-		// Regenerate the file.
-		bResult = LoadIniFileHierarchy(SourceIniHierarchy, DestConfigFile, bUseHierarchyCache);
-		if (DestConfigFile.SourceConfigFile)
-		{
-			delete DestConfigFile.SourceConfigFile;
-			DestConfigFile.SourceConfigFile = nullptr;
-		}
-		DestConfigFile.SourceConfigFile = new FConfigFile( DestConfigFile );
-
-		// mark it as dirty (caller may want to save)
-		DestConfigFile.Dirty = true;
+		bResult = RegenerateFileLambda(SourceIniHierarchy, DestConfigFile, bUseHierarchyCache);
 	}
-	else if( bShouldUpdate )
+	else if (bVersionChanged)
+	{
+		// Clear out everything but the preserved sections with the properties in that section, then update the version.
+		//	The ini syntax is Preserve=Section=<section name, like /Scipt/FortniteGame.FortConsole>.
+		//	Go through and save the preserved sections before we regenerate the file. We'll re-add those after.
+		FConfigSection PreservedConfigSectionData;
+		if (FConfigSection* SourceConfigSectionIniVersion = DestConfigFile.SourceConfigFile->Find(CurrentIniVersionString))
+		{
+			for (FConfigSectionMap::TConstIterator ItSourceConfigSectionIniVersion(*SourceConfigSectionIniVersion); ItSourceConfigSectionIniVersion; ++ItSourceConfigSectionIniVersion)
+			{
+				if (ItSourceConfigSectionIniVersion.Key() == PreserveName)
+				{
+					PreservedConfigSectionData.Add(ItSourceConfigSectionIniVersion.Key(), ItSourceConfigSectionIniVersion.Value());
+				}
+			}
+		}
+
+		FConfigFile PreservedConfigFileData;
+		for (FConfigSectionMap::TConstIterator ItPreservedConfigSectionData(PreservedConfigSectionData); ItPreservedConfigSectionData; ++ItPreservedConfigSectionData)
+		{
+			FString SectionString = ItPreservedConfigSectionData.Value().GetSavedValue();
+			if (FConfigSection* FoundSection = DestConfigFile.Find(SectionString))
+			{
+				for (FConfigSectionMap::TConstIterator ItFoundSection(*FoundSection); ItFoundSection; ++ItFoundSection)
+				{
+					if (FConfigSection* CreatedSection = PreservedConfigFileData.FindOrAddSection(SectionString))
+					{
+						CreatedSection->Add(ItFoundSection.Key(), ItFoundSection.Value());
+					}
+				}
+			}
+		}
+
+		// Remove everything before we regenerate.
+		DestConfigFile.Empty();
+
+		// Regnerate.
+		bResult = RegenerateFileLambda(SourceIniHierarchy, DestConfigFile, bUseHierarchyCache);
+
+		// Add back the CurrentIniVersion section.
+		if (FConfigSection* DestConfigSectionIniVersion = DestConfigFile.FindOrAddSection(CurrentIniVersionString))
+		{
+			// Update the version. If it's already there then good but if not, we add it.
+			DestConfigSectionIniVersion->FindOrAdd(VersionName, FConfigValue(FString::FromInt(SourceConfigVersionNum)));
+		}
+
+		// Add back any preserved sections.
+		for (TMap<FString, FConfigSection>::TConstIterator ItPreservedConfigFileData(PreservedConfigFileData); ItPreservedConfigFileData; ++ItPreservedConfigFileData)
+		{
+			if (FConfigSection* DestConfigSectionPreserved = DestConfigFile.FindOrAddSection(ItPreservedConfigFileData.Key()))
+			{
+				FConfigSection PreservedConfigFileSection = ItPreservedConfigFileData.Value();
+				for (FConfigSectionMap::TConstIterator ItPreservedConfigFileSection(PreservedConfigFileSection); ItPreservedConfigFileSection; ++ItPreservedConfigFileSection)
+				{
+					DestConfigSectionPreserved->Add(ItPreservedConfigFileSection.Key(), ItPreservedConfigFileSection.Value());
+				}
+			}
+		}
+	}
+	else if (bShouldUpdate)
 	{
 		// Merge the .ini files by copying over properties that exist in the default .ini but are
 		// missing from the generated .ini
@@ -2980,30 +3511,103 @@ static bool GenerateDestIniFile(FConfigFile& DestConfigFile, const FString& Dest
 }
 
 /**
- * Calculates the name of the source (default) .ini file for a given base (ie Engine, Game, etc)
- *
- * @param ConfigDir Path to ini file
- * @param Prefix Prefix for the ini filename (Default/Platform name), may include additional sub-directories
- * @param IniBaseName Base name of the .ini (Engine, Game)
- * 
- * @return Standardized .ini filename
+ * Allows overriding the (default) .ini file for a given base (ie Engine, Game, etc)
  */
-static FString GetSourceIniFilename(const TCHAR* ConfigDir, const TCHAR* Prefix, const TCHAR* BaseIniName)
+static void ConditionalOverrideIniFilename(FString& IniFilename, const TCHAR* BaseIniName)
 {
-	FString IniFilename;
-	
 #if !UE_BUILD_SHIPPING
 	// Figure out what to look for on the commandline for an override. Disabled in shipping builds for security reasons
 	const FString CommandLineSwitch = FString::Printf(TEXT("DEF%sINI="), BaseIniName);	
 	if (FParse::Value(FCommandLine::Get(), *CommandLineSwitch, IniFilename) == false)
-#endif
 	{
 		// if it's not found on the commandline, then generate it	
-		IniFilename = FString(ConfigDir) / FString::Printf(TEXT("%s%s.ini"), Prefix, BaseIniName);
+		FPaths::MakeStandardFilename(IniFilename);
+	}
+#endif
+}
+
+
+static FString GetLayerPath(const FConfigLayer& Layer, const FString& PlatformName, const TCHAR* EngineConfigDir, const TCHAR* SourceConfigDir, const TCHAR* BaseIniName, bool& bHasPlatformTag, bool& bHasProjectTag)
+{
+	static FString LastPlatform;
+	static FString PlatformExtensionEngineConfigDir;
+	static FString PlatformExtensionProjectConfigDir;
+	static bool bHasPlatformExtensionEngineConfigDir;
+	static bool bHasPlatformExtensionProjectConfigDir;
+
+	if (LastPlatform != PlatformName)
+	{
+		LastPlatform = PlatformName;
+		PlatformExtensionEngineConfigDir = FPaths::Combine(*FPaths::EnginePlatformExtensionsDir(), *PlatformName, TEXT("Config"));
+		PlatformExtensionProjectConfigDir = FPaths::Combine(*FPaths::ProjectPlatformExtensionsDir(), *PlatformName, TEXT("Config"));
+		bHasPlatformExtensionEngineConfigDir = FPaths::DirectoryExists(*PlatformExtensionEngineConfigDir);
+		bHasPlatformExtensionProjectConfigDir = FPaths::DirectoryExists(*PlatformExtensionProjectConfigDir);
 	}
 
-	FPaths::MakeStandardFilename(IniFilename);
-	return IniFilename;
+	// cache some searches
+	bHasPlatformTag = FCString::Strstr(Layer.Path, TEXT("{PLATFORM}")) != nullptr;
+	bHasProjectTag = FCString::Strstr(Layer.Path, TEXT("{PROJECT}")) != nullptr;
+
+	// you can only have PROJECT or ENGINE, not both
+	FString LayerPath;
+	if (bHasProjectTag)
+	{
+		if (bHasPlatformTag && bHasPlatformExtensionProjectConfigDir)
+		{
+			LayerPath = FString(Layer.PlatformExtensionPath).Replace(TEXT("{EXTPROJECT}"), *PlatformExtensionProjectConfigDir);
+		}
+		else
+		{
+			LayerPath = FString(Layer.Path).Replace(TEXT("{PROJECT}"), SourceConfigDir);
+		}
+	}
+	else
+	{
+		if (bHasPlatformTag && bHasPlatformExtensionEngineConfigDir)
+		{
+			LayerPath = FString(Layer.PlatformExtensionPath).Replace(TEXT("{EXTENGINE}"), *PlatformExtensionEngineConfigDir);
+		}
+		else
+		{
+			LayerPath = FString(Layer.Path).Replace(TEXT("{ENGINE}"), EngineConfigDir);
+		}
+	}
+
+	LayerPath = LayerPath.Replace(TEXT("{TYPE}"), BaseIniName, ESearchCase::CaseSensitive);
+	LayerPath = LayerPath.Replace(TEXT("{USERSETTINGS}"), FPlatformProcess::UserSettingsDir(), ESearchCase::CaseSensitive);
+	LayerPath = LayerPath.Replace(TEXT("{USER}"), FPlatformProcess::UserDir(), ESearchCase::CaseSensitive);
+
+	return LayerPath;
+}
+
+static FString GetExpansionPath(const FConfigLayerExpansion& Expansion, const FString& LayerPath, bool bHasPlatformTag)
+{
+	// replace the expansion tags
+	FString ExpansionPath = LayerPath.Replace(TEXT("{ED}"), Expansion.DirectoryPrefix, ESearchCase::CaseSensitive);
+	ExpansionPath = ExpansionPath.Replace(TEXT("{EF}"), Expansion.FilePrefix, ESearchCase::CaseSensitive);
+
+	// check for dedicated server expansion
+	if (EnumHasAnyFlags(Expansion.Flag, EConfigLayerFlags::DedicatedServerOnly))
+	{
+		// it's unclear how a platform DS ini would be named, so for now, not supported
+		if (bHasPlatformTag)
+		{
+			return TEXT("");
+		}
+		else if (IsRunningDedicatedServer())
+		{
+			ExpansionPath = ExpansionPath.Replace(TEXT("Base"), TEXT(""));
+			ExpansionPath = ExpansionPath.Replace(TEXT("Default"), TEXT(""));
+			// ExpansionPath = ExpansionPath.Replace(TEXT("{PLATFORM}"), TEXT(""));
+		}
+		else
+		{
+			// skip this expansion if not DS
+			return TEXT("");
+		}
+	}
+
+	return ExpansionPath;
 }
 
 /**
@@ -3013,128 +3617,121 @@ static FString GetSourceIniFilename(const TCHAR* ConfigDir, const TCHAR* Prefix,
  * @param InPlatformName Platform name, nullptr means to use the current platform
  * @param OutHierarchy An array which is to receive the generated hierachy of ini filenames.
  */
-static void GetSourceIniHierarchyFilenames(const TCHAR* InBaseIniName, const TCHAR* InPlatformName, const TCHAR* EngineConfigDir, const TCHAR* SourceConfigDir, FConfigFileHierarchy& OutHierarchy, bool bRequireDefaultIni)
+void FConfigFile::AddStaticLayersToHierarchy(const TCHAR* InBaseIniName, const TCHAR* InPlatformName, const TCHAR* EngineConfigDir, const TCHAR* SourceConfigDir)
 {
-	/**************************************************
-	 **** CRITICAL NOTES
-	 **** If you change this function, you need to also change EnumerateCrossPlatformIniFileNames() in EngineConfiguration.cs!!!
-	 **************************************************/
-	
+	SourceEngineConfigDir = EngineConfigDir;
+	SourceProjectConfigDir = SourceConfigDir;
+
+	// get the platform name
 	const FString PlatformName(InPlatformName ? InPlatformName : ANSI_TO_TCHAR(FPlatformProperties::IniPlatformName()));
-	// look up if there's a parent (for example, TVOS's IniParent is IOS)
-	const FString PlatformParentName = FDataDrivenPlatformInfoRegistry::GetPlatformInfo(PlatformName).IniParent;
 
-	// [[[[ ENGINE DEFAULTS ]]]]
-	// Engine/Config/Base.ini (included in every ini type, required)
-	// @todo: ChrisW - this is a temporary measure to allow standalone tools to work when engine config files are in a pak
+	// cache some platform extension information that can be used inside the loops
+
+	// go over all the config layers
+	for (int32 LayerIndex = 0; LayerIndex < UE_ARRAY_COUNT(GConfigLayers); LayerIndex++)
+	{
+		const FConfigLayer& Layer = GConfigLayers[LayerIndex];
+
+		// start replacing basic variables
+		bool bHasPlatformTag, bHasProjectTag;
+		FString LayerPath = GetLayerPath(Layer, PlatformName, EngineConfigDir, SourceConfigDir, InBaseIniName, bHasPlatformTag, bHasProjectTag);
+
+		// PROGRAMs don't require any ini files
 #if IS_PROGRAM
-	const bool BaseIniRequired = false;
+		const bool bIsRequired = false;
 #else
-	const bool BaseIniRequired = (EngineConfigDir == FPaths::EngineConfigDir());
+		const bool bIsRequired = EnumHasAnyFlags(Layer.Flag, EConfigLayerFlags::Required) && (EngineConfigDir == FPaths::EngineConfigDir());
 #endif
-	OutHierarchy.Add(EConfigFileHierarchy::AbsoluteBase, FIniFilename(FString::Printf(TEXT("%sBase.ini"), EngineConfigDir), BaseIniRequired));
-	// Engine/Config/Base* ini
-	OutHierarchy.Add(EConfigFileHierarchy::EngineDirBase, FIniFilename(FString::Printf(TEXT("%sBase%s.ini"), EngineConfigDir, InBaseIniName), false));
-	// Engine/Config/Platform/BasePlatform* ini // this is to workaround the issue where Engine -> Project -> EnginePlat -> ProjectPlat would make the project's settings get overwritten by EnginePlat settings
 
-	if (PlatformParentName.Len() > 0)
-	{
-		OutHierarchy.Add(EConfigFileHierarchy::EngineDir_BasePlatformParent, FIniFilename(FString::Printf(TEXT("%s%s/Base%s%s.ini"), EngineConfigDir, *PlatformParentName, *PlatformParentName, InBaseIniName), false));
-	}
-	if (PlatformName.Len() > 0)
-	{
-		OutHierarchy.Add(EConfigFileHierarchy::EngineDir_BasePlatform, FIniFilename(FString::Printf(TEXT("%s%s/Base%s%s.ini"), EngineConfigDir, *PlatformName, *PlatformName, InBaseIniName), false));
-	}
-	// Engine/Config/NotForLicensees/Base* ini
-	OutHierarchy.Add(EConfigFileHierarchy::EngineDirBase_NotForLicensees, FIniFilename(FString::Printf(TEXT("%sNotForLicensees/Base%s.ini"), EngineConfigDir, InBaseIniName), false));
-	// Engine/Config/NoRedist/Base* ini
-	/////
-	// NOTE: 4.7
-	// There was a bug that was causing this file to be written out for all users and for all projects, with bad values
-	// that would break all projects (external reference errors)
-	// Since this file has not been used yet, we will delete it if it exists, and then for 4.8, we will put this back
-	// into the hierarchy and remove the delete operation
-	// - Remember to fixup EngineConfiguration.cs
-	/////
-	if (IFileManager::Get().DirectoryExists(*FString::Printf(TEXT("%sNoRedist"), EngineConfigDir)))
-	{
-		IFileManager::Get().Delete(*FString::Printf(TEXT("%sNoRedist/Base%s.ini"), EngineConfigDir, InBaseIniName), false, true, true);
-		IFileManager::Get().DeleteDirectory(*FString::Printf(TEXT("%sNoRedist"), EngineConfigDir), false, false);
-	}
-	// OutHierarchy.Add( FIniFilename(FString::Printf(TEXT("%sNoRedist/Base%s.ini"), EngineConfigDir, InBaseIniName), false) );
+		// expand if it it has {ED} or {EF} expansion tags
+		if (FCString::Strstr(Layer.Path, TEXT("{ED}")) || FCString::Strstr(Layer.Path, TEXT("{EF}")))
+		{
+			// we assume none of the more special tags in expanded ones
+			checkfSlow(FCString::Strstr(Layer.Path, TEXT("{USERSETTINGS}")) == nullptr && FCString::Strstr(Layer.Path, TEXT("{USER}")) == nullptr, TEXT("Expanded config %s shouldn't have a {USER*} tags in it"), *Layer.Path);
+			// last layer is expected to not be expanded
+			checkfSlow(LayerIndex < UE_ARRAY_COUNT(GConfigLayers) - 1, TEXT("Final layer %s shouldn't be an expansion layer, as it needs to generate the  hierarchy cache key"), *Layer.Path);
 
-	// [[[[ PROJECT SETTINGS ]]]]
-	// Game/Config/Default* ini
-	OutHierarchy.Add(EConfigFileHierarchy::GameDirDefault, FIniFilename(GetSourceIniFilename(SourceConfigDir, TEXT("Default"), InBaseIniName), bRequireDefaultIni));
-	// Game/Config/DedicatedServer* ini (knowingly NOT in EngineConfiguration.cs because this is a runtime only check)
-	if (IsRunningDedicatedServer())
-	{
-		OutHierarchy.Add(EConfigFileHierarchy::GameDirDedicatedServer, FIniFilename(FString::Printf(TEXT("%s/DedicatedServer%s.ini"), SourceConfigDir, InBaseIniName), false));
-	}
-	// Game/Config/NotForLicensees/Default* ini
-	OutHierarchy.Add(EConfigFileHierarchy::GameDirDefault_NotForLicensees, FIniFilename(FString::Printf(TEXT("%sNotForLicensees/Default%s.ini"), SourceConfigDir, InBaseIniName), false));
-	// Game/Config/NoRedist/Default* ini (Checkpointed here before the platform ini divergence)
-	FString HierarchyCheckpointPath = FString::Printf(TEXT("%sNoRedist/Default%s.ini"), SourceConfigDir, InBaseIniName);
-	OutHierarchy.Add(EConfigFileHierarchy::GameDirDefault_NoRedist, FIniFilename(HierarchyCheckpointPath, false, GenerateHierarchyCacheKey(OutHierarchy, HierarchyCheckpointPath, InBaseIniName)));
-	
-	if (PlatformParentName.Len() > 0)
-	{
-		// [[[[ PLATFORM DEFAULTS AND PROJECT SETTINGS ]]]]
-		// Engine/Config/PlatformParent/PlatformParent* ini
-		OutHierarchy.Add(EConfigFileHierarchy::EngineDir_PlatformParent, FIniFilename(FString::Printf(TEXT("%s%s/%s%s.ini"), EngineConfigDir, *PlatformParentName, *PlatformParentName, InBaseIniName), false));
-		// Engine/Config/NotForLicensees/PlatformParent/PlatformParent* ini
-		OutHierarchy.Add(EConfigFileHierarchy::EngineDir_PlatformParent_NotForLicensees, FIniFilename(FString::Printf(TEXT("%sNotForLicensees/%s/%s%s.ini"), EngineConfigDir, *PlatformParentName, *PlatformParentName, InBaseIniName), false));
-		// Engine/Config/NoRedist/PlatformParent/PlatformParent* ini
-		OutHierarchy.Add(EConfigFileHierarchy::EngineDir_PlatformParent_NoRedist, FIniFilename(FString::Printf(TEXT("%sNoRedist/%s/%s%s.ini"), EngineConfigDir, *PlatformParentName, *PlatformParentName, InBaseIniName), false));
-		// Game/Config/PlatformParent/PlatformParent* ini
-		OutHierarchy.Add(EConfigFileHierarchy::GameDir_PlatformParent, FIniFilename(FString::Printf(TEXT("%s%s/%s%s.ini"), SourceConfigDir, *PlatformParentName, *PlatformParentName, InBaseIniName), false));
-		// Game/Config/NotForLicensee/PlatformParent/PlatformParent* ini
-		OutHierarchy.Add(EConfigFileHierarchy::GameDir_PlatformParent_NotForLicensees, FIniFilename(FString::Printf(TEXT("%sNotForLicensees/%s/%s%s.ini"), SourceConfigDir, *PlatformParentName, *PlatformParentName, InBaseIniName), false));
-		// Game/Config/NoRedist/PlatformParent/PlatformParent* ini
-		OutHierarchy.Add(EConfigFileHierarchy::GameDir_PlatformParent_NoRedist, FIniFilename(FString::Printf(TEXT("%sNoRedist/%s/%s%s.ini"), SourceConfigDir, *PlatformParentName, *PlatformParentName, InBaseIniName), false));
-	}
-	if (PlatformName.Len() > 0)
-	{
-		// [[[[ PLATFORM DEFAULTS AND PROJECT SETTINGS ]]]]
-		// Engine/Config/Platform/Platform* ini
-		OutHierarchy.Add(EConfigFileHierarchy::EngineDir_Platform, FIniFilename(FString::Printf(TEXT("%s%s/%s%s.ini"), EngineConfigDir, *PlatformName, *PlatformName, InBaseIniName), false));
-		// Engine/Config/NotForLicensees/Platform/Platform* ini
-		OutHierarchy.Add(EConfigFileHierarchy::EngineDir_Platform_NotForLicensees, FIniFilename(FString::Printf(TEXT("%sNotForLicensees/%s/%s%s.ini"), EngineConfigDir, *PlatformName, *PlatformName, InBaseIniName), false));
-		// Engine/Config/NoRedist/Platform/Platform* ini
-		OutHierarchy.Add(EConfigFileHierarchy::EngineDir_Platform_NoRedist, FIniFilename(FString::Printf(TEXT("%sNoRedist/%s/%s%s.ini"), EngineConfigDir, *PlatformName, *PlatformName, InBaseIniName), false));
-		// Game/Config/Platform/Platform* ini
-		OutHierarchy.Add(EConfigFileHierarchy::GameDir_Platform, FIniFilename(FString::Printf(TEXT("%s%s/%s%s.ini"), SourceConfigDir, *PlatformName, *PlatformName, InBaseIniName), false));
-		// Game/Config/NotForLicensee/Platform/Platform* ini
-		OutHierarchy.Add(EConfigFileHierarchy::GameDir_Platform_NotForLicensees, FIniFilename(FString::Printf(TEXT("%sNotForLicensees/%s/%s%s.ini"), SourceConfigDir, *PlatformName, *PlatformName, InBaseIniName), false));
-		// Game/Config/NoRedist/Platform/Platform* ini
-		OutHierarchy.Add(EConfigFileHierarchy::GameDir_Platform_NoRedist, FIniFilename(FString::Printf(TEXT("%sNoRedist/%s/%s%s.ini"), SourceConfigDir, *PlatformName, *PlatformName, InBaseIniName), false));
-	}
+			// loop over all the possible expansions
+			for (int32 ExpansionIndex = 0; ExpansionIndex < UE_ARRAY_COUNT(GConfigLayerExpansions); ExpansionIndex++)
+			{
+				const FConfigLayerExpansion& Expansion = GConfigLayerExpansions[ExpansionIndex];
 
-	// [[[[ GLOBAL USER OVERRIDES ]]]]
-	// <AppData>/UE4/EngineConfig/User* ini
-	OutHierarchy.Add(EConfigFileHierarchy::UserSettingsDir_EngineDir_User, FIniFilename(FPaths::Combine(FPlatformProcess::UserSettingsDir(), *FString::Printf(TEXT("Unreal Engine/Engine/Config/User%s.ini"), InBaseIniName)), false));
-	// <Documents>/UE4/EngineConfig/User* ini
-	OutHierarchy.Add(EConfigFileHierarchy::UserDir_User, FIniFilename(FPaths::Combine(FPlatformProcess::UserDir(), *FString::Printf(TEXT("Unreal Engine/Engine/Config/User%s.ini"), InBaseIniName)), false));
+				bool bSkipExpansion = false;
+				FString ExpansionPath = GetExpansionPath(Expansion, LayerPath, bHasPlatformTag);
 
-	// [[[[ PROJECT USER OVERRIDES ]]]]
-	// Game/Config/User* ini (Checkpointed here at the end)
-	HierarchyCheckpointPath = FString::Printf(TEXT("%sUser%s.ini"), SourceConfigDir, InBaseIniName);
-	OutHierarchy.Add(EConfigFileHierarchy::GameDir_User, FIniFilename(HierarchyCheckpointPath, false, GenerateHierarchyCacheKey(OutHierarchy, HierarchyCheckpointPath, InBaseIniName)));
+				// skip this expansion if we didn't want it
+				if (ExpansionPath.Len() == 0)
+				{
+					continue;
+				}
 
-	// Ensure the hierarchy is in the correct order.
-	OutHierarchy.KeySort([](const EConfigFileHierarchy& A, const EConfigFileHierarchy& B) { return (A < B); });
+				// allow for override, only on BASE EXPANSION!
+				if (EnumHasAnyFlags(Layer.Flag, EConfigLayerFlags::AllowCommandLineOverride) && ExpansionIndex == 0)
+				{
+					checkfSlow(!bHasPlatformTag, TEXT("EConfigLayerFlags::AllowCommandLineOverride config %s shouldn't have a PLATFORM in it"), *Layer.Path);
+
+					ConditionalOverrideIniFilename(ExpansionPath, InBaseIniName);
+				}
+
+				// check if we should be generating the cache key - only at the end of all expansions
+				bool bGenerateCacheKey = EnumHasAnyFlags(Layer.Flag, EConfigLayerFlags::GenerateCacheKey) && ExpansionIndex == UE_ARRAY_COUNT(GConfigLayerExpansions);
+				checkfSlow(!(bGenerateCacheKey && bHasPlatformTag), TEXT("EConfigLayerFlags::GenerateCacheKey shouldn't have a platform tag"));
+
+				const FDataDrivenPlatformInfoRegistry::FPlatformInfo& Info = FDataDrivenPlatformInfoRegistry::GetPlatformInfo(PlatformName);
+
+				// go over parents, and then this platform, unless there's no platform tag, then we simply want to run through the loop one time to add it to the
+				int NumPlatforms = bHasPlatformTag ? Info.IniParentChain.Num() + 1 : 1;
+				check(NumPlatforms < MaxPlatformIndex);
+				for (int PlatformIndex = 0; PlatformIndex < NumPlatforms; PlatformIndex++)
+				{
+					// the platform to work on (active platform is always last)
+					const FString& CurrentPlatform = (PlatformIndex == NumPlatforms - 1) ? PlatformName : Info.IniParentChain[PlatformIndex];
+					FString PlatformPath;
+
+					// ini parent may not be a PlatformExtension even if this was, so update based on the current platform after the first
+					if (PlatformIndex < NumPlatforms - 1)
+					{
+						// overriding the bHas*Tag fields is fine here since it will evaluate to the same
+						FString LocalLayerPath = GetLayerPath(Layer, CurrentPlatform, EngineConfigDir, SourceConfigDir, InBaseIniName, bHasPlatformTag, bHasProjectTag);
+
+						// re-expand the new path
+						FString LocalExpansionPath = GetExpansionPath(Expansion, LocalLayerPath, bHasPlatformTag);
+
+						// modify get the final platform path from the parent ini's location
+						PlatformPath = LocalExpansionPath.Replace(TEXT("{PLATFORM}"), *CurrentPlatform, ESearchCase::CaseSensitive);
+					}
+					else
+					{
+						// replace
+						PlatformPath = ExpansionPath.Replace(TEXT("{PLATFORM}"), *CurrentPlatform, ESearchCase::CaseSensitive);
+					}
+
+					// add this to the list!
+					SourceIniHierarchy.AddStaticLayer(
+						FIniFilename(PlatformPath, bIsRequired, bGenerateCacheKey ?
+							GenerateHierarchyCacheKey(SourceIniHierarchy, PlatformPath, InBaseIniName) :
+							FString(TEXT(""))),
+						LayerIndex, ExpansionIndex, PlatformIndex);
+				}
+			}
+		}
+		// if no expansion, just process the special tags (assume no PLATFORM tags)
+		else
+		{
+			checkfSlow(!bHasPlatformTag, TEXT("Non-expanded config %s shouldn't have a PLATFORM in it"), *Layer.Path);
+			checkfSlow(!EnumHasAnyFlags(Layer.Flag, EConfigLayerFlags::AllowCommandLineOverride), TEXT("Non-expanded config can't have a EConfigLayerFlags::AllowCommandLineOverride"));
+
+			// final layer needs to generate a hierarchy cache
+			SourceIniHierarchy.AddStaticLayer(
+				FIniFilename(LayerPath, bIsRequired, EnumHasAnyFlags(Layer.Flag, EConfigLayerFlags::GenerateCacheKey) ?
+					GenerateHierarchyCacheKey(SourceIniHierarchy, LayerPath, InBaseIniName) :
+					FString(TEXT(""))),
+				LayerIndex);
+		}
+	}
 }
 
-/**
- * Calculates the name of a dest (generated) .ini file for a given base (ie Engine, Game, etc)
- * 
- * @param IniBaseName Base name of the .ini (Engine, Game)
- * @param PlatformName Name of the platform to get the .ini path for (nullptr means to use the current platform)
- * @param GeneratedConfigDir The base folder that will contain the generated config files.
- * 
- * @return Standardized .ini filename
- */
-static FString GetDestIniFilename(const TCHAR* BaseIniName, const TCHAR* PlatformName, const TCHAR* GeneratedConfigDir)
+FString FConfigCacheIni::GetDestIniFilename(const TCHAR* BaseIniName, const TCHAR* PlatformName, const TCHAR* GeneratedConfigDir)
 {
 	// figure out what to look for on the commandline for an override
 	FString CommandLineSwitch = FString::Printf(TEXT("%sINI="), BaseIniName);
@@ -3145,14 +3742,13 @@ static FString GetDestIniFilename(const TCHAR* BaseIniName, const TCHAR* Platfor
 	{
 		FString Name(PlatformName ? PlatformName : ANSI_TO_TCHAR(FPlatformProperties::PlatformName()));
 
-		FString BaseIniNameString = BaseIniName;
-		if (BaseIniNameString.Contains(GeneratedConfigDir))
+		// if the BaseIniName doens't contain the config dir, put it all together
+		if (FCString::Stristr(BaseIniName, GeneratedConfigDir) != nullptr)
 		{
-			IniFilename = BaseIniNameString;
+			IniFilename = BaseIniName;
 		}
 		else
 		{
-			// put it all together
 			IniFilename = FString::Printf(TEXT("%s%s/%s.ini"), GeneratedConfigDir, *Name, BaseIniName);
 		}
 	}
@@ -3162,8 +3758,74 @@ static FString GetDestIniFilename(const TCHAR* BaseIniName, const TCHAR* Platfor
 	return IniFilename;
 }
 
+void FConfigCacheIni::SaveCurrentStateForBootstrap(const TCHAR* Filename)
+{
+	TArray<uint8> FileContent;
+	{
+		// Use FMemoryWriter because FileManager::CreateFileWriter doesn't serialize FName as string and is not overridable
+		FMemoryWriter MemoryWriter(FileContent, true);
+		SerializeStateForBootstrap_Impl(MemoryWriter);
+	}
+
+	FFileHelper::SaveArrayToFile(FileContent, Filename);
+}
+
+FArchive& operator<<(FArchive& Ar, FConfigCacheIni& ConfigCacheIni)
+{
+	Ar << static_cast<FConfigCacheIni::Super&>(ConfigCacheIni);
+	Ar << ConfigCacheIni.bAreFileOperationsDisabled;
+	Ar << ConfigCacheIni.bIsReadyForUse;
+	Ar << ConfigCacheIni.Type;
+	return Ar;
+}
+
+void FConfigCacheIni::SerializeStateForBootstrap_Impl(FArchive& Ar)
+{
+	// This implementation is meant to stay private and be used for 
+	// bootstrapping another processes' config cache with a serialized state.
+	// It doesn't include any versioning as it is used with the
+	// the same binary executable for both the parent and 
+	// children processes. It also takes care of saving/restoring
+	// global ini variables.
+	Ar << *this;
+	Ar << GEditorIni;
+	Ar << GEditorKeyBindingsIni;
+	Ar << GEditorLayoutIni;
+	Ar << GEditorSettingsIni;
+	Ar << GEditorPerProjectIni;
+	Ar << GCompatIni;
+	Ar << GLightmassIni;
+	Ar << GScalabilityIni;
+	Ar << GHardwareIni;
+	Ar << GInputIni;
+	Ar << GGameIni;
+	Ar << GGameUserSettingsIni;
+	Ar << GRuntimeOptionsIni;
+	Ar << GEngineIni;
+}
+
 void FConfigCacheIni::InitializeConfigSystem()
 {
+	// Bootstrap the Ini config cache
+	FString IniBootstrapFilename;
+	if (FParse::Value( FCommandLine::Get(), TEXT("IniBootstrap="), IniBootstrapFilename))
+	{
+		TArray<uint8> FileContent;
+		if (FFileHelper::LoadFileToArray(FileContent, *IniBootstrapFilename, FILEREAD_Silent))
+		{
+			FMemoryReader MemoryReader(FileContent, true);
+			GConfig = new FConfigCacheIni(EConfigCacheType::Temporary);
+			GConfig->SerializeStateForBootstrap_Impl(MemoryReader);
+			GConfig->bIsReadyForUse = true;
+			FCoreDelegates::ConfigReadyForUse.Broadcast();
+			return;
+		}
+		else
+		{
+			UE_LOG(LogInit, Display, TEXT("Unable to bootstrap from archive %s, will fallback on normal initialization"), *IniBootstrapFilename);
+		}
+	}
+
 	// Perform any upgrade we need before we load any configuration files
 	FConfigManifest::UpgradeFromPreviousVersions();
 
@@ -3208,10 +3870,10 @@ void FConfigCacheIni::InitializeConfigSystem()
 	FConfigCacheIni::LoadGlobalIniFile(GEditorPerProjectIni, TEXT("EditorPerProjectUserSettings"));
 
 	// Project agnostic editor ini files
-	static const FString EditorSettingsDir = FPaths::Combine(*FPaths::GameAgnosticSavedDir(), TEXT("Config")) + TEXT("/");
+	const FString EditorSettingsDir = FPaths::EngineEditorSettingsDir();
 	FConfigCacheIni::LoadGlobalIniFile(GEditorSettingsIni, TEXT("EditorSettings"), nullptr, false, false, true, *EditorSettingsDir);
-	FConfigCacheIni::LoadGlobalIniFile(GEditorLayoutIni, TEXT("EditorLayout"), nullptr, false, false, true, *EditorSettingsDir);
 	FConfigCacheIni::LoadGlobalIniFile(GEditorKeyBindingsIni, TEXT("EditorKeyBindings"), nullptr, false, false, true, *EditorSettingsDir);
+	FConfigCacheIni::LoadGlobalIniFile(GEditorLayoutIni, TEXT("EditorLayout"), nullptr, false, false, true, *EditorSettingsDir);
 
 #endif
 #if PLATFORM_DESKTOP
@@ -3231,8 +3893,14 @@ void FConfigCacheIni::InitializeConfigSystem()
 	// Load scalability settings.
 	FConfigCacheIni::LoadGlobalIniFile(GScalabilityIni, TEXT("Scalability"), ScalabilityPlatformOverride);
 	// Load driver blacklist
-	FConfigCacheIni::LoadGlobalIniFile(GHardwareIni, TEXT("Hardware"));
-	
+	FConfigCacheIni::LoadGlobalIniFile(GHardwareIni, TEXT("Hardware"));	
+	// Load runtime options
+	FConfigCacheIni::LoadGlobalIniFile(GRuntimeOptionsIni, TEXT("RuntimeOptions"));
+	// Load install bundle config
+	FConfigCacheIni::LoadGlobalIniFile(GInstallBundleIni, TEXT("InstallBundle"));
+	// Load device profiles for current platform
+	FConfigCacheIni::LoadGlobalIniFile(GDeviceProfilesIni, TEXT("DeviceProfiles"));
+
 	// Load user game settings .ini, allowing merging. This also updates the user .ini if necessary.
 #if PLATFORM_PS4
 	FConfigCacheIni::LoadGlobalIniFile(GGameUserSettingsIni, TEXT("GameUserSettings"), nullptr, false, false, true, *GetGameUserSettingsDir());
@@ -3271,10 +3939,41 @@ bool FConfigCacheIni::LoadGlobalIniFile(FString& FinalIniFilename, const TCHAR* 
 		return true;
 	}
 
+	FString EngineConfigDir = FPaths::EngineConfigDir();
+	FString SourceConfigDir = FPaths::SourceConfigDir();
+
+	if (bForceReload) // If reloading we should preserve the existing config dirs
+	{
+		// If base ini, try to use an existing GConfig file to set the config directories instead of assuming defaults
+		FConfigFile* BaseConfig = GConfig->FindConfigFileWithBaseName(BaseIniName);
+		if (BaseConfig)
+		{
+			if (BaseConfig->SourceEngineConfigDir.Len())
+			{
+				EngineConfigDir = BaseConfig->SourceEngineConfigDir;
+			}
+
+			if (BaseConfig->SourceProjectConfigDir.Len())
+			{
+				SourceConfigDir = BaseConfig->SourceProjectConfigDir;
+			}
+		}
+	}
+
 	// make a new entry in GConfig (overwriting what's already there)
 	FConfigFile& NewConfigFile = GConfig->Add(FinalIniFilename, FConfigFile());
 
-	return LoadExternalIniFile(NewConfigFile, BaseIniName, *FPaths::EngineConfigDir(), *FPaths::SourceConfigDir(), true, Platform, bForceReload, true, bAllowGeneratedIniWhenCooked, GeneratedConfigDir);
+	return LoadExternalIniFile(
+		NewConfigFile, 
+		BaseIniName, 
+		*EngineConfigDir, 
+		*SourceConfigDir, 
+		/*bIsBaseIniName*/ true,
+		Platform, 
+		bForceReload, 
+		/*bWriteDestIni*/ true,
+		bAllowGeneratedIniWhenCooked, 
+		GeneratedConfigDir);
 }
 
 bool FConfigCacheIni::LoadLocalIniFile(FConfigFile& ConfigFile, const TCHAR* IniName, bool bIsBaseIniName, const TCHAR* Platform, bool bForceReload )
@@ -3286,27 +3985,31 @@ bool FConfigCacheIni::LoadLocalIniFile(FConfigFile& ConfigFile, const TCHAR* Ini
 
 	if (bIsBaseIniName)
 	{
-		FConfigFile* BaseConfig = GConfig->FindConfigFileWithBaseName(IniName);
 		// If base ini, try to use an existing GConfig file to set the config directories instead of assuming defaults
-
+		FConfigFile* BaseConfig = GConfig ? GConfig->FindConfigFileWithBaseName(IniName) : nullptr;
 		if (BaseConfig)
 		{
-			FIniFilename* EngineFilename = BaseConfig->SourceIniHierarchy.Find(EConfigFileHierarchy::EngineDirBase);
-			if (EngineFilename)
+			if (BaseConfig->SourceEngineConfigDir.Len())
 			{
-				EngineConfigDir = FPaths::GetPath(EngineFilename->Filename) + TEXT("/");
+				EngineConfigDir = BaseConfig->SourceEngineConfigDir;
 			}
 
-			FIniFilename* GameFilename = BaseConfig->SourceIniHierarchy.Find(EConfigFileHierarchy::GameDirDefault);
-			if (GameFilename)
+			if (BaseConfig->SourceProjectConfigDir.Len())
 			{
-				SourceConfigDir = FPaths::GetPath(GameFilename->Filename) + TEXT("/");
+				SourceConfigDir = BaseConfig->SourceProjectConfigDir;
 			}
 		}
-
 	}
 
-	return LoadExternalIniFile(ConfigFile, IniName, *EngineConfigDir, *SourceConfigDir, bIsBaseIniName, Platform, bForceReload, false);
+	return LoadExternalIniFile(
+		ConfigFile, 
+		IniName, 
+		*EngineConfigDir, 
+		*SourceConfigDir, 
+		bIsBaseIniName, 
+		Platform, 
+		bForceReload, 
+		/*bWriteDestIni*/ false);
 }
 
 bool FConfigCacheIni::LoadExternalIniFile(FConfigFile& ConfigFile, const TCHAR* IniName, const TCHAR* EngineConfigDir, const TCHAR* SourceConfigDir, bool bIsBaseIniName, const TCHAR* Platform, bool bForceReload, bool bWriteDestIni, bool bAllowGeneratedIniWhenCooked, const TCHAR* GeneratedConfigDir)
@@ -3339,7 +4042,7 @@ bool FConfigCacheIni::LoadExternalIniFile(FConfigFile& ConfigFile, const TCHAR* 
 #endif
 		FString DestIniFilename = GetDestIniFilename(IniName, Platform, GeneratedConfigDir);
 
-		GetSourceIniHierarchyFilenames(IniName, Platform, EngineConfigDir, SourceConfigDir, ConfigFile.SourceIniHierarchy, false);
+		ConfigFile.AddStaticLayersToHierarchy( IniName, Platform, EngineConfigDir, SourceConfigDir );
 
 		if (bForceReload)
 		{
@@ -3355,7 +4058,6 @@ bool FConfigCacheIni::LoadExternalIniFile(FConfigFile& ConfigFile, const TCHAR* 
 		ConfigFile.SourceConfigFile = new FConfigFile();
 
 		// now generate and make sure it's up to date (using IniName as a Base for an ini filename)
-		const bool bAllowGeneratedINIs = true;
 		// @todo This bNeedsWrite afaict is always true even if it loaded a completely valid generated/final .ini, and the write below will
 		// just write out the exact same thing it read in!
 		bool bNeedsWrite = GenerateDestIniFile(ConfigFile, DestIniFilename, ConfigFile.SourceIniHierarchy, bAllowGeneratedIniWhenCooked, true);
@@ -3363,7 +4065,12 @@ bool FConfigCacheIni::LoadExternalIniFile(FConfigFile& ConfigFile, const TCHAR* 
 		ConfigFile.Name = IniName;
 
 		// don't write anything to disk in cooked builds - we will always use re-generated INI files anyway.
-		if (bWriteDestIni && (!FPlatformProperties::RequiresCookedData() || bAllowGeneratedIniWhenCooked)
+		// Note: Unfortunately bAllowGeneratedIniWhenCooked is often true even in shipping builds with cooked data
+		// due to default parameters. We don't dare change this now.
+		//
+		// Check GIsInitialLoad since no INI changes that should be persisted could have occurred this early.
+		// INI changes from code, environment variables, CLI parameters, etc should not be persisted. 
+		if (!GIsInitialLoad && bWriteDestIni && (!FPlatformProperties::RequiresCookedData() || bAllowGeneratedIniWhenCooked)
 			// We shouldn't save config files when in multiprocess mode,
 			// otherwise we get file contention in XGE shader builds.
 			&& !FParse::Param(FCommandLine::Get(), TEXT("Multiprocess")))
@@ -3416,12 +4123,82 @@ FString FConfigCacheIni::GetGameUserSettingsDir()
 	return ConfigDir;
 }
 
+FArchive& operator<<(FArchive& Ar, FConfigFile& ConfigFile)
+{
+	bool bHasSourceConfigFile = ConfigFile.SourceConfigFile != nullptr;
+
+	Ar << static_cast<FConfigFile::Super&>(ConfigFile);
+	Ar << ConfigFile.Dirty;
+	Ar << ConfigFile.NoSave;
+	Ar << ConfigFile.Name;
+	Ar << ConfigFile.SourceIniHierarchy;
+	Ar << ConfigFile.SourceEngineConfigDir;
+	Ar << bHasSourceConfigFile;
+	if (bHasSourceConfigFile)
+	{
+		// Handle missing instance for the loading case
+		if (ConfigFile.SourceConfigFile == nullptr)
+		{
+			ConfigFile.SourceConfigFile = new FConfigFile();
+		}
+
+		Ar << *ConfigFile.SourceConfigFile;
+	}
+	Ar << ConfigFile.SourceProjectConfigDir;
+	Ar << ConfigFile.CacheKey;
+	Ar << ConfigFile.PerObjectConfigArrayOfStructKeys;
+
+	return Ar;
+}
+
 void FConfigFile::UpdateSections(const TCHAR* DiskFilename, const TCHAR* IniRootName/*=nullptr*/, const TCHAR* OverridePlatform/*=nullptr*/)
 {
-	// since we don't want any modifications to other sections, we manually process the file, not read into sections, etc
+	// Since we don't want any modifications to other sections, we manually process the file, not read into sections, etc
+	// Keep track of existing SectionTexts and orders so that we can preserve the order of the sections in Write to reduce the diff we make to the file on disk
 	FString DiskFile;
 	FString NewFile;
-	bool bIsLastLineEmtpy = false;
+	TStringBuilder<128> SectionText;
+	TMap<FString, FString> SectionTexts;
+	TArray<FString> SectionOrder;
+	FString SectionName;
+
+	auto AddSectionText = [this, &SectionTexts, &SectionOrder, &SectionName, &SectionText]()
+	{
+		if (SectionText.Len() == 0)
+		{
+			// No text in the section, not even a section header, e.g. because this is the prefix section and there was no prefix.
+			// Skip the section - add it to SectionTexts or SectionOrder
+		}
+		else
+		{
+			if (Contains(SectionName))
+			{
+				// Do not add the section to SectionTexts, so that Write will skip writing it at all if it is empty
+				// But do add it to SectionOrder, so that Write will write it to the right location if it is non-empty
+			}
+			else
+			{
+				// Check for duplicate sections in the file-on-disk; handle these by combining them.  This will modify the file, but will guarantee that we don't lose data
+				FString* ExistingSectionText = SectionTexts.Find(SectionName);
+				if (ExistingSectionText)
+				{
+					ExistingSectionText->Append(SectionText.ToString(), SectionText.Len());
+				}
+				else
+				{
+					SectionTexts.Add(SectionName, FString(SectionText.ToString()));
+				}
+			}
+
+			SectionOrder.Add(SectionName);
+		}
+
+		// Clear the name and text for the next section
+		SectionName.Reset();
+		SectionText.Reset();
+	};
+
+	SectionName = FString(); // The lines we read before we encounter a section header should be preserved as prefix lines; we implement this by storing them in an empty SectionName
 	if (LoadConfigFileWrapper(DiskFilename, DiskFile))
 	{
 		// walk each line
@@ -3441,47 +4218,49 @@ void FConfigFile::UpdateSections(const TCHAR* DiskFilename, const TCHAR* IniRoot
 				// is this line a section? (must be at least [x])
 				if (TheLine.Len() > 3 && TheLine[0] == '[' && TheLine[TheLine.Len() - 1] == ']')
 				{
-					// look to see if this section is one we are going to update; if so, then skip lines until a new section
-					FString SectionName = TheLine.Mid(1, TheLine.Len() - 2);
-					bIsSkippingSection = Contains(SectionName);
+					// Add the old section we just finished reading
+					AddSectionText();
+
+					// Set SectionName to the name of new section we are about to read
+					SectionName = TheLine.Mid(1, TheLine.Len() - 2);
 				}
 
-				// if we aren't skipping, then write out the line
-				if (!bIsSkippingSection)
-				{
-					NewFile += TheLine + LINE_TERMINATOR;
-
-					// track if the last line written was empty
-					bIsLastLineEmtpy = TheLine.Len() == 0;
-				}
+				SectionText.Append(TheLine);
+				SectionText.Append(LINE_TERMINATOR);
 			}
 		}
 	}
+
+	// Add the last section we read
+	AddSectionText();
 
 	// load the hierarchy up to right before this file
 	if (IniRootName != nullptr)
 	{
 		// get the standard ini files
 		SourceIniHierarchy.Empty();
-		GetSourceIniHierarchyFilenames(IniRootName, OverridePlatform, *FPaths::EngineConfigDir(), *FPaths::SourceConfigDir(), SourceIniHierarchy, false);
+		AddStaticLayersToHierarchy(IniRootName, OverridePlatform, *FPaths::EngineConfigDir(), *FPaths::SourceConfigDir());
 
 		// now chop off this file and any after it
-		for (auto& HierarchyFileIt : SourceIniHierarchy)
+		TArray<int32> Keys;
+		SourceIniHierarchy.GetKeys(Keys);
+		bool bStartDeleting = false;
+		for (int32 Key : Keys)
 		{
-			if (HierarchyFileIt.Value.Filename == DiskFilename)
+			if (!bStartDeleting && SourceIniHierarchy.Find(Key)->Filename == DiskFilename)
 			{
-				for (uint32 FileIdx = (uint32)HierarchyFileIt.Key; FileIdx < (uint32)EConfigFileHierarchy::NumHierarchyFiles; FileIdx++)
-				{
-					SourceIniHierarchy.Remove((EConfigFileHierarchy)FileIdx);
+				bStartDeleting = true;
 				}
 
-				break;
+			if (bStartDeleting)
+			{
+				SourceIniHierarchy.Remove(Key);
 			}
 		}
 
 		ClearHierarchyCache(IniRootName);
 
-		// Get a collection of the source hierachy properties
+		// Get a collection of the source hierarchy properties
 		if (SourceConfigFile)
 		{
 			delete SourceConfigFile;
@@ -3490,16 +4269,9 @@ void FConfigFile::UpdateSections(const TCHAR* DiskFilename, const TCHAR* IniRoot
 
 		// now when Write it called below, it will diff against SourceIniHierarchy
 		LoadIniFileHierarchy(SourceIniHierarchy, *SourceConfigFile, true);
-
 	}
 
-	// take what we got above (which has the sections skipped), and then append the new sections
-	if (Num() > 0 && !bIsLastLineEmtpy)
-	{
-		// add a blank link between old sections and new (if there are any new sections)
-		NewFile += LINE_TERMINATOR;
-	}
-	Write(DiskFilename, true, NewFile);
+	Write(DiskFilename, true, SectionTexts, SectionOrder);
 }
 
 
@@ -3536,7 +4308,12 @@ public:
 	{
 		UpdatePropertyInSection();
 		// Rebuild the file with the updated section.
-		const FString NewFile = IniFileMakeup.BeforeSection + IniFileMakeup.Section + IniFileMakeup.AfterSection;
+
+		FString NewFile = IniFileMakeup.BeforeSection + IniFileMakeup.Section + IniFileMakeup.AfterSection;
+		if (!NewFile.EndsWith(LINE_TERMINATOR LINE_TERMINATOR))
+		{
+			NewFile.AppendChars(LINE_TERMINATOR, TCString<TCHAR>::Strlen(LINE_TERMINATOR));
+		}
 		return SaveConfigFileWrapper(*IniFilename, NewFile);
 	}
 
@@ -3549,9 +4326,9 @@ private:
 	void ClearTrailingWhitespace(FString& InStr)
 	{
 		const FString Endl(LINE_TERMINATOR);
-		while (InStr.EndsWith(LINE_TERMINATOR))
+		while (InStr.EndsWith(LINE_TERMINATOR, ESearchCase::CaseSensitive))
 		{
-			InStr = InStr.LeftChop(Endl.Len());
+			InStr.LeftChopInline(Endl.Len(), false);
 		}
 	}
 	
@@ -3739,7 +4516,7 @@ const TCHAR* ConvertValueFromHumanFriendlyValue( const TCHAR* Value )
 CORE_API void OnSetCVarFromIniEntry(const TCHAR *IniFile, const TCHAR *Key, const TCHAR* Value, uint32 SetBy, bool bAllowCheating)
 {
 	check(IniFile && Key && Value);
-	check((SetBy & ~ECVF_SetByMask) == 0);
+	check((SetBy & ECVF_FlagMask) == 0);
 
 
 	Value = ConvertValueFromHumanFriendlyValue(Value);
@@ -3809,6 +4586,25 @@ void ApplyCVarSettingsFromIni(const TCHAR* InSectionName, const TCHAR* InIniFile
 	}
 }
 
+void ForEachCVarInSectionFromIni(const TCHAR* InSectionName, const TCHAR* InIniFilename, TFunction<void(IConsoleVariable* CVar, const FString& KeyString, const FString& ValueString)> InEvaluationFunction)
+{
+	if (FConfigSection* Section = GConfig->GetSectionPrivate(InSectionName, false, true, InIniFilename))
+	{
+		for (FConfigSectionMap::TConstIterator It(*Section); It; ++It)
+		{
+			const FString& KeyString = It.Key().GetPlainNameString();
+			const FString& ValueString = ConvertValueFromHumanFriendlyValue(*It.Value().GetValue());
+
+			IConsoleVariable* CVar = IConsoleManager::Get().FindConsoleVariable(*KeyString);
+			if (CVar)
+			{
+				InEvaluationFunction(CVar, KeyString, ValueString);
+			}
+		}
+	}
+}
+
+
 void ApplyCVarSettingsGroupFromIni(const TCHAR* InSectionBaseName, int32 InGroupNumber, const TCHAR* InIniFilename, uint32 SetBy)
 {
 	// Lookup the config section for this section and group number
@@ -3857,7 +4653,6 @@ private:
 public:
 	FCVarIniHistoryHelper() : bRecurseCheck( false )
 	{
-		
 		FCoreDelegates::OnApplyCVarFromIni.AddRaw(this, &FCVarIniHistoryHelper::OnApplyCVarFromIniCallback);
 	}
 
@@ -3865,8 +4660,6 @@ public:
 	{
 		FCoreDelegates::OnApplyCVarFromIni.RemoveAll(this);
 	}
-
-
 
 	void ReapplyIniHistory()
 	{
@@ -3931,40 +4724,146 @@ public:
 		bRecurseCheck=false;
 	}
 };
+TUniquePtr<FCVarIniHistoryHelper> IniHistoryHelper;
 
-FCVarIniHistoryHelper *IniHistoryHelper = nullptr;
+#if !UE_BUILD_SHIPPING
+class FConfigHistoryHelper
+{
+private:
+	enum class HistoryType
+	{
+		Value,
+		Section,
+		SectionName,
+		Count
+	};
+	friend const TCHAR* LexToString(HistoryType Type)
+	{
+		static const TCHAR* Strings[] = {
+			TEXT("Value"),
+			TEXT("Section"),
+			TEXT("SectionName")
+		};
+		using UnderType = __underlying_type(HistoryType);
+		static_assert(static_cast<UnderType>(HistoryType::Count) == UE_ARRAY_COUNT(Strings), "");
+		return Strings[static_cast<UnderType>(Type)];
+	}
 
+	struct FConfigHistory
+	{
+		HistoryType Type = HistoryType::Value;
 
+		FString FileName;
+		FString SectionName;
+		FString Key;
+	};
+	friend uint32 GetTypeHash(const FConfigHistory& CH)
+	{
+		uint32 Hash = ::GetTypeHash(CH.Type);
+		Hash = HashCombine(Hash, ::GetTypeHash(CH.FileName));
+		Hash = HashCombine(Hash, ::GetTypeHash(CH.SectionName));
+		Hash = HashCombine(Hash, ::GetTypeHash(CH.Key));
+		return Hash;
+	}
+	friend bool operator==(const FConfigHistory& A, const FConfigHistory& B)
+	{
+		return
+			A.Type == B.Type &&
+			A.FileName == B.FileName &&
+			A.SectionName == B.SectionName &&
+			A.Key == B.Key;
+	}
+
+	TSet<FConfigHistory> History;
+
+	void OnConfigValueRead(const TCHAR* FileName, const TCHAR* SectionName, const TCHAR* Key)
+	{
+		History.Emplace(FConfigHistory{ HistoryType::Value, FileName, SectionName, Key });
+	}
+
+	void OnConfigSectionRead(const TCHAR* FileName, const TCHAR* SectionName)
+	{
+		History.Emplace(FConfigHistory{ HistoryType::Section, FileName, SectionName });
+	}
+
+	void OnConfigSectionNameRead(const TCHAR* FileName, const TCHAR* SectionName)
+	{
+		History.Emplace(FConfigHistory{ HistoryType::SectionName, FileName, SectionName });
+	}
+
+public:
+	FConfigHistoryHelper()
+	{
+		FCoreDelegates::OnConfigValueRead.AddRaw(this, &FConfigHistoryHelper::OnConfigValueRead);
+		FCoreDelegates::OnConfigSectionRead.AddRaw(this, &FConfigHistoryHelper::OnConfigSectionRead);
+		FCoreDelegates::OnConfigSectionNameRead.AddRaw(this, &FConfigHistoryHelper::OnConfigSectionNameRead);
+	}
+
+	~FConfigHistoryHelper()
+	{
+		FCoreDelegates::OnConfigValueRead.RemoveAll(this);
+		FCoreDelegates::OnConfigSectionRead.RemoveAll(this);
+		FCoreDelegates::OnConfigSectionNameRead.RemoveAll(this);
+	}
+
+	void DumpHistory()
+	{
+		const FString SavePath = FPaths::ProjectLogDir() / TEXT("ConfigHistory.csv");
+
+		FArchive* Writer = IFileManager::Get().CreateFileWriter(*SavePath, FILEWRITE_NoFail);
+
+		auto WriteLine = [Writer](FString&& Line)
+		{
+			UE_LOG(LogConfig, Display, TEXT("%s"), *Line);
+			FTCHARToUTF8 UTF8String(*(MoveTemp(Line) + LINE_TERMINATOR));
+			Writer->Serialize((UTF8CHAR*)UTF8String.Get(), UTF8String.Length());
+		};
+
+		UE_LOG(LogConfig, Display, TEXT("Dumping History of Config Reads to %s"), *SavePath);
+		UE_LOG(LogConfig, Display, TEXT("Begin History of Config Reads"));
+		UE_LOG(LogConfig, Display, TEXT("------------------------------------------------------"));
+		WriteLine(FString::Printf(TEXT("Type, File, Section, Key")));
+		for (const FConfigHistory& CH : History)
+		{
+			switch (CH.Type)
+			{
+			case HistoryType::Value:
+				WriteLine(FString::Printf(TEXT("%s, %s, %s, %s"), LexToString(CH.Type), *CH.FileName, *CH.SectionName, *CH.Key));
+				break;
+			case HistoryType::Section:
+			case HistoryType::SectionName:
+				WriteLine(FString::Printf(TEXT("%s, %s, %s, None"), LexToString(CH.Type), *CH.FileName, *CH.SectionName));
+				break;
+			}
+		}
+		UE_LOG(LogConfig, Display, TEXT("------------------------------------------------------"));
+		UE_LOG(LogConfig, Display, TEXT("End History of Config Reads"));
+
+		delete Writer;
+		Writer = nullptr;
+	}
+};
+TUniquePtr<FConfigHistoryHelper> ConfigHistoryHelper;
+#endif // !UE_BUILD_SHIPPING
 
 
 void RecordApplyCVarSettingsFromIni()
 {
-	IniHistoryHelper = new FCVarIniHistoryHelper();
+	check(IniHistoryHelper == nullptr);
+	IniHistoryHelper = MakeUnique<FCVarIniHistoryHelper>();
 }
 
 void ReapplyRecordedCVarSettingsFromIni()
 {
 	// first we need to reload the inis 
-	struct FIniToReload
+	for (TPair<FString, FConfigFile>& IniPair : *GConfig)
 	{
-		FIniToReload(const FString& InGlobalName, const FString& InIniBaseName) : IniBaseName(InIniBaseName), IniGlobalName(InGlobalName) { }
-		FString IniBaseName;
-		FString IniGlobalName;
-	};
-	TArray<FIniToReload> InisToReloadList;
-	InisToReloadList.Empty(GConfig->Num());
-	for (const auto& GlobalIni : *GConfig)
-	{
-		InisToReloadList.Add(FIniToReload(GlobalIni.Key, GlobalIni.Value.Name.ToString()));
-	}
-
-	for (const FIniToReload& IniToReload : InisToReloadList)
-	{
-		FString TempGlobalName = IniToReload.IniGlobalName;
-		GConfig->LoadGlobalIniFile(TempGlobalName, *IniToReload.IniBaseName, NULL, true);
-		if (TempGlobalName.Compare( IniToReload.IniGlobalName,  ESearchCase::IgnoreCase) != 0 )
+		FConfigFile& ConfigFile = IniPair.Value;
+		if (ConfigFile.Num() > 0)
 		{
-			UE_LOG(LogConfig, Warning, TEXT("Tried to reload ini %s final name was %s"), *IniToReload.IniGlobalName, *TempGlobalName );
+			FName BaseName = ConfigFile.Name;
+			// Must call LoadLocalIniFile (NOT LoadGlobalIniFile) to preserve original enginedir/sourcedir for plugins
+			verify(FConfigCacheIni::LoadLocalIniFile(ConfigFile, *BaseName.ToString(), true, nullptr, true));
 		}
 	}
 
@@ -3975,5 +4874,29 @@ void ReapplyRecordedCVarSettingsFromIni()
 void DeleteRecordedCVarSettingsFromIni()
 {
 	check(IniHistoryHelper != nullptr);
-	delete IniHistoryHelper;
+	IniHistoryHelper = nullptr;
+}
+
+void RecordConfigReadsFromIni()
+{
+#if !UE_BUILD_SHIPPING
+	check(ConfigHistoryHelper == nullptr);
+	ConfigHistoryHelper = MakeUnique<FConfigHistoryHelper>();
+#endif
+}
+
+void DumpRecordedConfigReadsFromIni()
+{
+#if !UE_BUILD_SHIPPING
+	check(ConfigHistoryHelper);
+	ConfigHistoryHelper->DumpHistory();
+#endif
+}
+
+void DeleteRecordedConfigReadsFromIni()
+{
+#if !UE_BUILD_SHIPPING
+	check(ConfigHistoryHelper);
+	ConfigHistoryHelper = nullptr;
+#endif
 }

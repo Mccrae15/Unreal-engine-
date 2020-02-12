@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -17,8 +17,8 @@ public:
 	FSlateD3D11RenderingPolicy( TSharedRef<FSlateFontServices> InSlateFontServices, TSharedRef<FSlateD3DTextureManager> InTextureManager );
 	~FSlateD3D11RenderingPolicy();
 
-	void UpdateVertexAndIndexBuffers( FSlateBatchData& InBatchData );
-	void DrawElements( const FMatrix& ViewProjectionMatrix, const TArray<FSlateRenderBatch>& RenderBatches );
+	void BuildRenderingBuffers( FSlateBatchData& InBatchData );
+	void DrawElements(const FMatrix& ViewProjectionMatrix, int32 FirstBatchIndex, const TArray<FSlateRenderBatch>& RenderBatches);
 
 	virtual TSharedRef<FSlateShaderResourceManager> GetResourceManager() const override;
 	virtual bool IsVertexColorInLinearSpace() const override { return false; }

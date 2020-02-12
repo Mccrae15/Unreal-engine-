@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 using UnrealBuildTool;
 
@@ -19,7 +19,8 @@ public class PaperSpriteSheetImporter : ModuleRules
 				"Paper2DEditor",
 				"AssetTools",
 				"ContentBrowser",
-                "EditorStyle"
+                "EditorStyle",
+				"ToolMenus",
 			});
 
 		PrivateIncludePathModuleNames.AddRange(

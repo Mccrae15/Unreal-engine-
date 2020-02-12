@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "SCSEditorViewportClient.h"
 #include "Components/StaticMeshComponent.h"
@@ -447,13 +447,13 @@ bool FSCSEditorViewportClient::InputWidgetDelta( FViewport* InViewport, EAxisLis
 						}
 						
 						USceneComponent* SceneComp = Cast<USceneComponent>(SelectedNodePtr->FindComponentInstanceInActor(PreviewActor));
-						USceneComponent* SelectedTemplate = Cast<USceneComponent>(SelectedNodePtr->GetEditableComponentTemplate(BlueprintEditor->GetBlueprintObj()));
+						USceneComponent* SelectedTemplate = Cast<USceneComponent>(SelectedNodePtr->GetOrCreateEditableComponentTemplate(BlueprintEditor->GetBlueprintObj()));
 						if(SceneComp != NULL && SelectedTemplate != NULL)
 						{
 							// Cache the current default values for propagation
-							FVector OldRelativeLocation = SelectedTemplate->RelativeLocation;
-							FRotator OldRelativeRotation = SelectedTemplate->RelativeRotation;
-							FVector OldRelativeScale3D = SelectedTemplate->RelativeScale3D;
+							FVector OldRelativeLocation = SelectedTemplate->GetRelativeLocation();
+							FRotator OldRelativeRotation = SelectedTemplate->GetRelativeRotation();
+							FVector OldRelativeScale3D = SelectedTemplate->GetRelativeScale3D();
 
 							// Adjust the deltas as necessary
 							FComponentEditorUtils::AdjustComponentDelta(SceneComp, Drag, Rot);
@@ -473,7 +473,7 @@ bool FSCSEditorViewportClient::InputWidgetDelta( FViewport* InViewport, EAxisLis
 										&Drag,
 										&Rot,
 										&ModifiedScale,
-										SelectedTemplate->RelativeLocation );
+										SelectedTemplate->GetRelativeLocation());
 							}
 
 							UBlueprint* PreviewBlueprint = UBlueprint::GetBlueprintFromClass(PreviewActor->GetClass());
@@ -505,9 +505,9 @@ bool FSCSEditorViewportClient::InputWidgetDelta( FViewport* InViewport, EAxisLis
 										SceneComp = Cast<USceneComponent>(ArchetypeInstances[InstanceIndex]);
 										if(SceneComp != nullptr)
 										{
-											FComponentEditorUtils::ApplyDefaultValueChange(SceneComp, SceneComp->RelativeLocation, OldRelativeLocation, SelectedTemplate->RelativeLocation);
-											FComponentEditorUtils::ApplyDefaultValueChange(SceneComp, SceneComp->RelativeRotation, OldRelativeRotation, SelectedTemplate->RelativeRotation);
-											FComponentEditorUtils::ApplyDefaultValueChange(SceneComp, SceneComp->RelativeScale3D,  OldRelativeScale3D,  SelectedTemplate->RelativeScale3D);
+											FComponentEditorUtils::ApplyDefaultValueChange(SceneComp, SceneComp->GetRelativeLocation_DirectMutable(), OldRelativeLocation, SelectedTemplate->GetRelativeLocation());
+											FComponentEditorUtils::ApplyDefaultValueChange(SceneComp, SceneComp->GetRelativeRotation_DirectMutable(), OldRelativeRotation, SelectedTemplate->GetRelativeRotation());
+											FComponentEditorUtils::ApplyDefaultValueChange(SceneComp, SceneComp->GetRelativeScale3D_DirectMutable(),  OldRelativeScale3D,  SelectedTemplate->GetRelativeScale3D());
 										}
 									}
 								}
@@ -519,9 +519,9 @@ bool FSCSEditorViewportClient::InputWidgetDelta( FViewport* InViewport, EAxisLis
 										SceneComp = static_cast<USceneComponent*>(FindObjectWithOuter(ArchetypeInstances[InstanceIndex], SelectedTemplate->GetClass(), SelectedTemplate->GetFName()));
 										if(SceneComp)
 										{
-											FComponentEditorUtils::ApplyDefaultValueChange(SceneComp, SceneComp->RelativeLocation, OldRelativeLocation, SelectedTemplate->RelativeLocation);
-											FComponentEditorUtils::ApplyDefaultValueChange(SceneComp, SceneComp->RelativeRotation, OldRelativeRotation, SelectedTemplate->RelativeRotation);
-											FComponentEditorUtils::ApplyDefaultValueChange(SceneComp, SceneComp->RelativeScale3D, OldRelativeScale3D, SelectedTemplate->RelativeScale3D);
+											FComponentEditorUtils::ApplyDefaultValueChange(SceneComp, SceneComp->GetRelativeLocation_DirectMutable(), OldRelativeLocation, SelectedTemplate->GetRelativeLocation());
+											FComponentEditorUtils::ApplyDefaultValueChange(SceneComp, SceneComp->GetRelativeRotation_DirectMutable(), OldRelativeRotation, SelectedTemplate->GetRelativeRotation());
+											FComponentEditorUtils::ApplyDefaultValueChange(SceneComp, SceneComp->GetRelativeScale3D_DirectMutable(), OldRelativeScale3D, SelectedTemplate->GetRelativeScale3D());
 										}
 									}
 								}
@@ -588,31 +588,34 @@ FWidget::EWidgetMode FSCSEditorViewportClient::GetWidgetMode() const
 		if ( BluePrintEditor.IsValid() )
 		{
 			TArray<FSCSEditorTreeNodePtrType> SelectedNodes = BluePrintEditor->GetSelectedSCSEditorTreeNodes();
-			const TArray<FSCSEditorTreeNodePtrType>& RootNodes = BluePrintEditor->GetSCSEditor()->GetRootComponentNodes();
+			if (BluePrintEditor->GetSCSEditor()->GetActorNode().IsValid())
+			{
+				const TArray<FSCSEditorTreeNodePtrType>& RootNodes = BluePrintEditor->GetSCSEditor()->GetActorNode()->GetComponentNodes();
 
-			if (GUnrealEd->ComponentVisManager.IsActive() &&
-				GUnrealEd->ComponentVisManager.IsVisualizingArchetype())
-			{
-				// Component visualizer is active and editing the archetype
-				ReturnWidgetMode = WidgetMode;
-			}
-			else
-			{
-				// if the selected nodes array is empty, or only contains entries from the
-				// root nodes array, or isn't visible in the preview actor, then don't display a transform widget
-				for (int32 CurrentNodeIndex = 0; CurrentNodeIndex < SelectedNodes.Num(); CurrentNodeIndex++)
+				if (GUnrealEd->ComponentVisManager.IsActive() &&
+					GUnrealEd->ComponentVisManager.IsVisualizingArchetype())
 				{
-					FSCSEditorTreeNodePtrType CurrentNodePtr = SelectedNodes[CurrentNodeIndex];
-					if ((CurrentNodePtr.IsValid() &&
-						 ((!RootNodes.Contains(CurrentNodePtr) && !CurrentNodePtr->IsRootComponent()) ||
-							(Cast<UInstancedStaticMeshComponent>(CurrentNodePtr->GetComponentTemplate()) && // show widget if we are editing individual instances even if it is the root component
-							 CastChecked<UInstancedStaticMeshComponent>(CurrentNodePtr->FindComponentInstanceInActor(GetPreviewActor()))->SelectedInstances.Contains(true))) &&
-						 CurrentNodePtr->CanEditDefaults() &&
-						 CurrentNodePtr->FindComponentInstanceInActor(PreviewActor)))
+					// Component visualizer is active and editing the archetype
+					ReturnWidgetMode = WidgetMode;
+				}
+				else
+				{
+					// if the selected nodes array is empty, or only contains entries from the
+					// root nodes array, or isn't visible in the preview actor, then don't display a transform widget
+					for (int32 CurrentNodeIndex = 0; CurrentNodeIndex < SelectedNodes.Num(); CurrentNodeIndex++)
 					{
-						// a non-NULL, non-root item is selected, draw the widget
-						ReturnWidgetMode = WidgetMode;
-						break;
+						FSCSEditorTreeNodePtrType CurrentNodePtr = SelectedNodes[CurrentNodeIndex];
+						if ((CurrentNodePtr.IsValid() &&
+							((!RootNodes.Contains(CurrentNodePtr) && !CurrentNodePtr->IsRootComponent()) ||
+							(Cast<UInstancedStaticMeshComponent>(CurrentNodePtr->GetComponentTemplate()) && // show widget if we are editing individual instances even if it is the root component
+								CastChecked<UInstancedStaticMeshComponent>(CurrentNodePtr->FindComponentInstanceInActor(GetPreviewActor()))->SelectedInstances.Contains(true))) &&
+							CurrentNodePtr->CanEditDefaults() &&
+							CurrentNodePtr->FindComponentInstanceInActor(PreviewActor)))
+						{
+							// a non-NULL, non-root item is selected, draw the widget
+							ReturnWidgetMode = WidgetMode;
+							break;
+						}
 					}
 				}
 			}
@@ -758,16 +761,16 @@ void FSCSEditorViewportClient::ResetCamera()
 
 	// For now, loosely base default camera positioning on thumbnail preview settings
 	USceneThumbnailInfo* ThumbnailInfo = Cast<USceneThumbnailInfo>(Blueprint->ThumbnailInfo);
-	if(ThumbnailInfo)
-	{
-		if(PreviewActorBounds.SphereRadius + ThumbnailInfo->OrbitZoom < 0)
-		{
-			ThumbnailInfo->OrbitZoom = -PreviewActorBounds.SphereRadius;
-		}
-	}
-	else
+	if(ThumbnailInfo == nullptr)
 	{
 		ThumbnailInfo = USceneThumbnailInfo::StaticClass()->GetDefaultObject<USceneThumbnailInfo>();
+	}
+
+	// Clamp zoom to the actor's bounding sphere radius
+	float OrbitZoom = ThumbnailInfo->OrbitZoom;
+	if (PreviewActorBounds.SphereRadius + OrbitZoom < 0)
+	{
+		OrbitZoom = -PreviewActorBounds.SphereRadius;
 	}
 
 	ToggleOrbitCamera(true);
@@ -781,9 +784,8 @@ void FSCSEditorViewportClient::ResetCamera()
 		FRotator ThumbnailAngle(ThumbnailInfo->OrbitPitch, ThumbnailInfo->OrbitYaw, 0.0f);
 
 		SetViewLocationForOrbiting(PreviewActorBounds.Origin);
-		SetViewLocation( GetViewLocation() + FVector(0.0f, TargetDistance * 1.5f + ThumbnailInfo->OrbitZoom - AutoViewportOrbitCameraTranslate, 0.0f) );
+		SetViewLocation( GetViewLocation() + FVector(0.0f, TargetDistance * 1.5f + OrbitZoom - AutoViewportOrbitCameraTranslate, 0.0f) );
 		SetViewRotation( ThumbnailAngle );
-	
 	}
 
 	Invalidate();
@@ -927,7 +929,7 @@ void FSCSEditorViewportClient::BeginTransaction(const FText& Description)
 					}
 
 					// Modify template, any instances will be reconstructed as part of PostUndo:
-					UActorComponent* ComponentTemplate = Node->GetEditableComponentTemplate(PreviewBlueprint);
+					UActorComponent* ComponentTemplate = Node->GetOrCreateEditableComponentTemplate(PreviewBlueprint);
 					if (ComponentTemplate != nullptr)
 					{
 						ComponentTemplate->SetFlags(RF_Transactional);

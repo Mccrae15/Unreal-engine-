@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "BlueprintAssetHandler.h"
 #include "Engine/World.h"
@@ -11,8 +11,8 @@ class FLevelBlueprintAssetHandler : public IBlueprintAssetHandler
 	{
 		UWorld* World = CastChecked<UWorld>(InObject);
 
-		const bool bCreateLevelScript = false;
-		return World->PersistentLevel ? World->PersistentLevel->GetLevelScriptBlueprint(bCreateLevelScript) : nullptr;
+		const bool bDontCreate = true;
+		return World->PersistentLevel ? World->PersistentLevel->GetLevelScriptBlueprint(bDontCreate) : nullptr;
 	}
 
 	virtual bool AssetContainsBlueprint(const FAssetData& InAssetData) const

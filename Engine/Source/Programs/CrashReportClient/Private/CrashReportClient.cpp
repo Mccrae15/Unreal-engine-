@@ -1,10 +1,10 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "CrashReportClient.h"
 #include "Misc/CommandLine.h"
 #include "Internationalization/Internationalization.h"
 #include "Containers/Ticker.h"
-#include "CrashReportClientConfig.h"
+#include "CrashReportCoreConfig.h"
 #include "Templates/UniquePtr.h"
 #include "Async/TaskGraphInterfaces.h"
 #include "ILauncherPlatform.h"
@@ -33,10 +33,12 @@ FCrashReportClient::FCrashReportClient(const FPlatformErrorReport& InErrorReport
 	: DiagnosticText( LOCTEXT("ProcessingReport", "Processing crash report ...") )
 	, DiagnoseReportTask(nullptr)
 	, ErrorReport( InErrorReport )
-	, ReceiverUploader(FCrashReportClientConfig::Get().GetReceiverAddress())
-	, DataRouterUploader(FCrashReportClientConfig::Get().GetDataRouterURL())
+	, ReceiverUploader(FCrashReportCoreConfig::Get().GetReceiverAddress())
+	, DataRouterUploader(FCrashReportCoreConfig::Get().GetDataRouterURL())
 	, bShouldWindowBeHidden(false)
 	, bSendData(false)
+	, bIsSuccesfullRestart(false)
+	, bIsUploadComplete(false)
 {
 	if (FPrimaryCrashProperties::Get()->IsValid())
 	{
@@ -87,7 +89,7 @@ void FCrashReportClient::StopBackgroundThread()
 
 FReply FCrashReportClient::CloseWithoutSending()
 {
-	GIsRequestingExit = true;
+	RequestEngineExit(TEXT("FCrashReportClient::CloseWithoutSending()"));
 	return FReply::Handled();
 }
 
@@ -138,6 +140,7 @@ FReply FCrashReportClient::SubmitAndRestart()
 				if (LauncherPlatform->OpenLauncher(OpenOptions))
 				{
 					bLauncherRestarted = true;
+					bIsSuccesfullRestart = true;
 				}
 			}
 		}
@@ -148,6 +151,7 @@ FReply FCrashReportClient::SubmitAndRestart()
 		// Launcher didn't restart the process so start it ourselves
 		const FString CommandLineArguments = FPrimaryCrashProperties::Get()->RestartCommandLine;
 		FPlatformProcess::CreateProc(*CrashedAppPath, *CommandLineArguments, true, false, false, NULL, 0, NULL, NULL);
+		bIsSuccesfullRestart = true;
 	}
 
 	return FReply::Handled();
@@ -197,7 +201,7 @@ EVisibility FCrashReportClient::IsThrobberVisible() const
 
 void FCrashReportClient::AllowToBeContacted_OnCheckStateChanged( ECheckBoxState NewRadioState )
 {
-	FCrashReportClientConfig::Get().SetAllowToBeContacted( NewRadioState == ECheckBoxState::Checked );
+	FCrashReportCoreConfig::Get().SetAllowToBeContacted( NewRadioState == ECheckBoxState::Checked );
 
 	// Refresh PII based on the bAllowToBeContacted flag.
 	FPrimaryCrashProperties::Get()->UpdateIDs();
@@ -211,7 +215,7 @@ void FCrashReportClient::AllowToBeContacted_OnCheckStateChanged( ECheckBoxState 
 
 void FCrashReportClient::SendLogFile_OnCheckStateChanged( ECheckBoxState NewRadioState )
 {
-	FCrashReportClientConfig::Get().SetSendLogFile( NewRadioState == ECheckBoxState::Checked );
+	FCrashReportCoreConfig::Get().SetSendLogFile( NewRadioState == ECheckBoxState::Checked );
 }
 
 void FCrashReportClient::StartTicker()
@@ -283,7 +287,7 @@ bool FCrashReportClient::Tick(float UnusedDeltaTime)
 		FCrashUploadBase::StaticShutdown();
 	}
 
-	FPlatformMisc::RequestExit(false);
+	bIsUploadComplete = true;
 	return false;
 }
 

@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "LODCluster.h"
 #include "Modules/ModuleManager.h"
@@ -47,7 +47,7 @@ const float CalculateOverlap(const FSphere& ASphere, const float AFillingFactor,
 	}
 
 	float Distance = (ASphere.Center-BSphere.Center).Size();
-	check (Distance > 0.f);
+	check(!FMath::IsNearlyZero(Distance));
 
 	float ARadius = ASphere.W;
 	float BRadius = BSphere.W;
@@ -64,16 +64,12 @@ const float CalculateOverlap(const FSphere& ASphere, const float AFillingFactor,
 
 	float OverlapRadius1 = ((ARadius + BRadius)*(ARadius + BRadius) - Distance*Distance) * (Distance*Distance - (ARadius - BRadius)*(ARadius - BRadius));
 	float OverlapRadius2 = 2 * Distance;
-	float OverlapRedius = FMath::Sqrt(OverlapRadius1) / OverlapRadius2;
-	float OverlapRediusSq = OverlapRedius*OverlapRedius;
-
-	check (OverlapRadius1 >= 0.f);
+	float OverlapRadius = FMath::Sqrt(OverlapRadius1) / OverlapRadius2;
+	float OverlapRadiusSq = FMath::Square(OverlapRadius);
 
 	float ConstPI = PI/6.0f;
-	float AVolume = ConstPI*(3*OverlapRediusSq + ACapHeight*ACapHeight) * ACapHeight;
-	float BVolume = ConstPI*(3*OverlapRediusSq + BCapHeight*BCapHeight) * BCapHeight;
-
-	check (AVolume > 0.f &&  BVolume > 0.f);
+	float AVolume = ConstPI*(3*OverlapRadiusSq + ACapHeight*ACapHeight) * ACapHeight;
+	float BVolume = ConstPI*(3*OverlapRadiusSq + BCapHeight*BCapHeight) * BCapHeight;
 
 	float TotalVolume = AFillingFactor*AVolume + BFillingFactor*BVolume;
 	return TotalVolume;
@@ -261,75 +257,6 @@ void FLODCluster::SubtractCluster(const FLODCluster& Other)
 		ClusterCost = ( Bound.W * Bound.W * Bound.W ) / FillingFactor;
 	}
 }
-
-
-ALODActor* FLODCluster::BuildActor(ULevel* InLevel, const int32 LODIdx, const bool bCreateMeshes)
-{
-	ALODActor* NewActor = nullptr;
-
-	if (InLevel && InLevel->GetWorld())
-	{
-		// create asset using Actors
-		const FHierarchicalSimplification& LODSetup = InLevel->GetWorldSettings()->GetHierarchicalLODSetup()[LODIdx];
-
-		// Retrieve draw distance for current and next LOD level
-		const int32 LODCount = InLevel->GetWorldSettings()->GetNumHierarchicalLODLevels();
-
-		// Where generated assets will be stored
-		FHierarchicalLODUtilitiesModule& Module = FModuleManager::LoadModuleChecked<FHierarchicalLODUtilitiesModule>("HierarchicalLODUtilities");
-		IHierarchicalLODUtilities* Utilities = Module.GetUtilities();
- 	
-		TArray<UStaticMeshComponent*> AllComponents;
-		for (auto& Actor : Actors)
-		{
-			TArray<UStaticMeshComponent*> Components;
-
-			if (Actor->IsA<ALODActor>())
-			{
-				Utilities->ExtractStaticMeshComponentsFromLODActor(Actor, Components);
-			}
-			else
-			{
-				Actor->GetComponents<UStaticMeshComponent>(Components);
-			}
-
-			AllComponents.Append(Components);
-		}
-
-		if (AllComponents.Num())
-		{
-			// Create LOD Actor
-			UWorld* LevelWorld = Cast<UWorld>(InLevel->GetOuter());
-			check(LevelWorld);
-
-			FTransform Transform;
-			NewActor = LevelWorld->SpawnActor<ALODActor>(ALODActor::StaticClass(), Transform);
-			NewActor->LODLevel = LODIdx + 1;
-			NewActor->CachedNumHLODLevels = InLevel->GetWorldSettings()->GetNumHierarchicalLODLevels();
-			NewActor->SetDrawDistance(0.0f);
-
-			// now set as parent
-			for (auto& Actor : Actors)
-			{
-				NewActor->AddSubActor(Actor);
-			}
-
-			if (bCreateMeshes)
-			{
-				UHLODProxy* Proxy = Utilities->CreateOrRetrieveLevelHLODProxy(InLevel, LODIdx);
-				UPackage* AssetsOuter = Proxy->GetOutermost();
-				checkf(AssetsOuter != nullptr, TEXT("Failed to created outer for generated HLOD assets"));
-				Utilities->BuildStaticMeshForLODActor(NewActor, AssetsOuter, LODSetup);
-			}
-			NewActor->PostEditChange();
-		}
-
-		
-	}
-
-	return NewActor;
-}
-
 
 bool FLODCluster::Contains(FLODCluster& Other) const
 {

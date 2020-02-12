@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 using System;
 using System.Collections.Concurrent;
@@ -487,7 +487,7 @@ namespace UnrealGameSync
 					if(Timer.Elapsed > TimeSpan.FromSeconds(RequestThrottle))
 					{
 						bUpdateThrottledRequests = true;
-						Timer.Reset();
+						Timer.Restart();
 					}
 
 					// Read all the new reviews, pass whether or not to fire the throttled requests

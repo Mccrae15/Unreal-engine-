@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 /*=============================================================================
 	DistanceFieldLightingPost.cpp
@@ -11,6 +11,9 @@
 #include "DistanceFieldAmbientOcclusion.h"
 #include "CompositionLighting/PostProcessAmbientOcclusion.h"
 #include "PipelineStateCache.h"
+
+IMPLEMENT_TYPE_LAYOUT(FSurfelBufferParameters);
+IMPLEMENT_TYPE_LAYOUT(FLightTileIntersectionParameters);
 
 int32 GAOUseHistory = 1;
 FAutoConsoleVariableRef CVarAOUseHistory(
@@ -68,6 +71,7 @@ bool UseAOHistoryStabilityPass()
 
 class FGeometryAwareUpsampleParameters
 {
+	DECLARE_INLINE_TYPE_LAYOUT(FGeometryAwareUpsampleParameters, NonVirtual);
 public:
 	void Bind(const FShaderParameterMap& ParameterMap)
 	{
@@ -83,7 +87,7 @@ public:
 		JitterOffset.Bind(ParameterMap, TEXT("JitterOffset"));
 	}
 
-	void Set(FRHICommandList& RHICmdList, const FPixelShaderRHIParamRef& ShaderRHI, const FViewInfo& View, FSceneRenderTargetItem& DistanceFieldNormal, FSceneRenderTargetItem& DistanceFieldAOBentNormal)
+	void Set(FRHICommandList& RHICmdList, FRHIPixelShader* ShaderRHI, const FViewInfo& View, FSceneRenderTargetItem& DistanceFieldNormal, FSceneRenderTargetItem& DistanceFieldAOBentNormal)
 	{
 		SetTextureParameter(
 			RHICmdList,
@@ -146,16 +150,18 @@ public:
 	}
 
 private:
-	FShaderResourceParameter DistanceFieldNormalTexture;
-	FShaderResourceParameter DistanceFieldNormalSampler;
-	FShaderResourceParameter BentNormalAOTexture;
-	FShaderResourceParameter BentNormalAOSampler;
-	FShaderParameter DistanceFieldGBufferTexelSize;
-	FShaderParameter DistanceFieldGBufferJitterOffset;
-	FShaderParameter BentNormalBufferAndTexelSize;
-	FShaderParameter MinDownsampleFactorToBaseLevel;
-	FShaderParameter DistanceFadeScale;
-	FShaderParameter JitterOffset;
+	
+		LAYOUT_FIELD(FShaderResourceParameter, DistanceFieldNormalTexture)
+		LAYOUT_FIELD(FShaderResourceParameter, DistanceFieldNormalSampler)
+		LAYOUT_FIELD(FShaderResourceParameter, BentNormalAOTexture)
+		LAYOUT_FIELD(FShaderResourceParameter, BentNormalAOSampler)
+		LAYOUT_FIELD(FShaderParameter, DistanceFieldGBufferTexelSize)
+		LAYOUT_FIELD(FShaderParameter, DistanceFieldGBufferJitterOffset)
+		LAYOUT_FIELD(FShaderParameter, BentNormalBufferAndTexelSize)
+		LAYOUT_FIELD(FShaderParameter, MinDownsampleFactorToBaseLevel)
+		LAYOUT_FIELD(FShaderParameter, DistanceFadeScale)
+		LAYOUT_FIELD(FShaderParameter, JitterOffset)
+	
 };
 
 class FUpdateHistoryDepthRejectionPS : public FGlobalShader
@@ -165,7 +171,7 @@ public:
 
 	static bool ShouldCompilePermutation(const FGlobalShaderPermutationParameters& Parameters)
 	{
-		return IsFeatureLevelSupported(Parameters.Platform, ERHIFeatureLevel::SM5) && DoesPlatformSupportDistanceFieldAO(Parameters.Platform);
+		return IsFeatureLevelSupported(Parameters.Platform, ERHIFeatureLevel::SM5) && DoesPlatformSupportDistanceFieldAO(Parameters.Platform) && IsUsingDistanceFields(Parameters.Platform);
 	}
 
 	static void ModifyCompilationEnvironment(const FGlobalShaderPermutationParameters& Parameters, FShaderCompilerEnvironment& OutEnvironment)
@@ -204,7 +210,7 @@ public:
 		IPooledRenderTarget* VelocityTextureValue,
 		const FDistanceFieldAOParameters& Parameters)
 	{
-		const FPixelShaderRHIParamRef ShaderRHI = GetPixelShader();
+		FRHIPixelShader* ShaderRHI = RHICmdList.GetBoundPixelShader();
 
 		FGlobalShader::SetParameters<FViewUniformShaderParameters>(RHICmdList, ShaderRHI, View.ViewUniformBuffer);
 		SceneTextureParameters.Set(RHICmdList, ShaderRHI, View.FeatureLevel, ESceneTextureSetupMode::All);
@@ -256,39 +262,20 @@ public:
 			SetShaderValue(RHICmdList, ShaderRHI, HistoryUVMinMax, HistoryUVMinMaxValue);
 		}
 	}
-	// FShader interface.
-	virtual bool Serialize(FArchive& Ar)
-	{
-		bool bShaderHasOutdatedParameters = FGlobalShader::Serialize(Ar);
-		Ar << SceneTextureParameters;
-		Ar << AOParameters;
-		Ar << GeometryAwareUpsampleParameters;
-		Ar << BentNormalHistoryTexture;
-		Ar << BentNormalHistorySampler;
-		Ar << HistoryWeight;
-		Ar << HistoryDistanceThreshold;
-		Ar << UseHistoryFilter;
-		Ar << VelocityTexture;
-		Ar << VelocityTextureSampler;
-		Ar << HistoryScreenPositionScaleBias;
-		Ar << HistoryUVMinMax;
-		return bShaderHasOutdatedParameters;
-	}
 
 private:
-
-	FSceneTextureShaderParameters SceneTextureParameters;
-	FAOParameters AOParameters;
-	FGeometryAwareUpsampleParameters GeometryAwareUpsampleParameters;
-	FShaderResourceParameter BentNormalHistoryTexture;
-	FShaderResourceParameter BentNormalHistorySampler;
-	FShaderParameter HistoryWeight;
-	FShaderParameter HistoryDistanceThreshold;
-	FShaderParameter UseHistoryFilter;
-	FShaderResourceParameter VelocityTexture;
-	FShaderResourceParameter VelocityTextureSampler;
-	FShaderParameter HistoryScreenPositionScaleBias;
-	FShaderParameter HistoryUVMinMax;
+	LAYOUT_FIELD(FSceneTextureShaderParameters, SceneTextureParameters);
+	LAYOUT_FIELD(FAOParameters, AOParameters);
+	LAYOUT_FIELD(FGeometryAwareUpsampleParameters, GeometryAwareUpsampleParameters);
+	LAYOUT_FIELD(FShaderResourceParameter, BentNormalHistoryTexture);
+	LAYOUT_FIELD(FShaderResourceParameter, BentNormalHistorySampler);
+	LAYOUT_FIELD(FShaderParameter, HistoryWeight);
+	LAYOUT_FIELD(FShaderParameter, HistoryDistanceThreshold);
+	LAYOUT_FIELD(FShaderParameter, UseHistoryFilter);
+	LAYOUT_FIELD(FShaderResourceParameter, VelocityTexture);
+	LAYOUT_FIELD(FShaderResourceParameter, VelocityTextureSampler);
+	LAYOUT_FIELD(FShaderParameter, HistoryScreenPositionScaleBias);
+	LAYOUT_FIELD(FShaderParameter, HistoryUVMinMax);
 };
 
 IMPLEMENT_SHADER_TYPE(, FUpdateHistoryDepthRejectionPS,TEXT("/Engine/Private/DistanceFieldLightingPost.usf"),TEXT("UpdateHistoryDepthRejectionPS"),SF_Pixel);
@@ -302,7 +289,7 @@ public:
 
 	static bool ShouldCompilePermutation(const FGlobalShaderPermutationParameters& Parameters)
 	{
-		return IsFeatureLevelSupported(Parameters.Platform, ERHIFeatureLevel::SM5) && DoesPlatformSupportDistanceFieldAO(Parameters.Platform);
+		return IsFeatureLevelSupported(Parameters.Platform, ERHIFeatureLevel::SM5) && DoesPlatformSupportDistanceFieldAO(Parameters.Platform) && IsUsingDistanceFields(Parameters.Platform);
 	}
 
 	static void ModifyCompilationEnvironment(const FGlobalShaderPermutationParameters& Parameters, FShaderCompilerEnvironment& OutEnvironment)
@@ -333,7 +320,7 @@ public:
 		FSceneRenderTargetItem& DistanceFieldNormal, 
 		FSceneRenderTargetItem& BentNormalHistoryTextureValue)
 	{
-		const FPixelShaderRHIParamRef ShaderRHI = GetPixelShader();
+		FRHIPixelShader* ShaderRHI = RHICmdList.GetBoundPixelShader();
 
 		FGlobalShader::SetParameters<FViewUniformShaderParameters>(RHICmdList, ShaderRHI, View.ViewUniformBuffer);
 
@@ -371,29 +358,15 @@ public:
 		}
 	}
 
-	// FShader interface.
-	virtual bool Serialize(FArchive& Ar)
-	{
-		bool bShaderHasOutdatedParameters = FGlobalShader::Serialize(Ar);
-		Ar << BentNormalAOTexture;
-		Ar << BentNormalAOSampler;
-		Ar << HistoryWeight;
-		Ar << BentNormalAOTexelSize;
-		Ar << MaxSampleBufferUV;
-		Ar << DistanceFieldNormalTexture;
-		Ar << DistanceFieldNormalSampler;
-		return bShaderHasOutdatedParameters;
-	}
-
 private:
 
-	FShaderResourceParameter BentNormalAOTexture;
-	FShaderResourceParameter BentNormalAOSampler;
-	FShaderParameter HistoryWeight;
-	FShaderParameter BentNormalAOTexelSize;
-	FShaderParameter MaxSampleBufferUV;
-	FShaderResourceParameter DistanceFieldNormalTexture;
-	FShaderResourceParameter DistanceFieldNormalSampler;
+	LAYOUT_FIELD(FShaderResourceParameter, BentNormalAOTexture);
+	LAYOUT_FIELD(FShaderResourceParameter, BentNormalAOSampler);
+	LAYOUT_FIELD(FShaderParameter, HistoryWeight);
+	LAYOUT_FIELD(FShaderParameter, BentNormalAOTexelSize);
+	LAYOUT_FIELD(FShaderParameter, MaxSampleBufferUV);
+	LAYOUT_FIELD(FShaderResourceParameter, DistanceFieldNormalTexture);
+	LAYOUT_FIELD(FShaderResourceParameter, DistanceFieldNormalSampler);
 };
 
 
@@ -413,7 +386,7 @@ public:
 
 	static bool ShouldCompilePermutation(const FGlobalShaderPermutationParameters& Parameters)
 	{
-		return IsFeatureLevelSupported(Parameters.Platform, ERHIFeatureLevel::SM5) && DoesPlatformSupportDistanceFieldAO(Parameters.Platform);
+		return IsFeatureLevelSupported(Parameters.Platform, ERHIFeatureLevel::SM5) && DoesPlatformSupportDistanceFieldAO(Parameters.Platform) && IsUsingDistanceFields(Parameters.Platform);
 	}
 
 	static void ModifyCompilationEnvironment(const FGlobalShaderPermutationParameters& Parameters, FShaderCompilerEnvironment& OutEnvironment)
@@ -439,7 +412,7 @@ public:
 		FSceneRenderTargetItem& DistanceFieldAOBentNormal,
 		const FDistanceFieldAOParameters& Parameters)
 	{
-		const FPixelShaderRHIParamRef ShaderRHI = GetPixelShader();
+		FRHIPixelShader* ShaderRHI = RHICmdList.GetBoundPixelShader();
 
 		FGlobalShader::SetParameters<FViewUniformShaderParameters>(RHICmdList, ShaderRHI, View.ViewUniformBuffer);
 
@@ -447,18 +420,9 @@ public:
 		GeometryAwareUpsampleParameters.Set(RHICmdList, ShaderRHI, View, DistanceFieldNormal, DistanceFieldAOBentNormal);
 	}
 
-	// FShader interface.
-	virtual bool Serialize(FArchive& Ar) override
-	{
-		bool bShaderHasOutdatedParameters = FGlobalShader::Serialize(Ar);
-		Ar << AOParameters;
-		Ar << GeometryAwareUpsampleParameters;
-		return bShaderHasOutdatedParameters;
-	}
-
 private:
-	FAOParameters AOParameters;
-	FGeometryAwareUpsampleParameters GeometryAwareUpsampleParameters;
+	LAYOUT_FIELD(FAOParameters, AOParameters);
+	LAYOUT_FIELD(FGeometryAwareUpsampleParameters, GeometryAwareUpsampleParameters);
 };
 
 IMPLEMENT_SHADER_TYPE(,FGeometryAwareUpsamplePS, TEXT("/Engine/Private/DistanceFieldLightingPost.usf"), TEXT("GeometryAwareUpsamplePS"), SF_Pixel);
@@ -469,7 +433,7 @@ void AllocateOrReuseAORenderTarget(FRHICommandList& RHICmdList, TRefCountPtr<IPo
 	{
 		FIntPoint BufferSize = GetBufferSizeForAO();
 
-		FPooledRenderTargetDesc Desc(FPooledRenderTargetDesc::Create2DDesc(BufferSize, Format, FClearValueBinding::None, Flags, TexCreate_RenderTargetable | TexCreate_UAV, false));
+		FPooledRenderTargetDesc Desc(FPooledRenderTargetDesc::Create2DDesc(BufferSize, Format, FClearValueBinding::None, Flags, TexCreate_ShaderResource | TexCreate_RenderTargetable | TexCreate_UAV, false));
 		Desc.AutoWritable = false;
 		GRenderTargetPool.FindFreeElement(RHICmdList, Desc, Target, Name, true, ERenderTargetTransience::NonTransient);
 	}
@@ -494,11 +458,11 @@ void GeometryAwareUpsample(FRHICommandList& RHICmdList, const FViewInfo& View, T
 
 		TShaderMapRef<FPostProcessVS> VertexShader(View.ShaderMap);
 		GraphicsPSOInit.BoundShaderState.VertexDeclarationRHI = GFilterVertexDeclaration.VertexDeclarationRHI;
-		GraphicsPSOInit.BoundShaderState.VertexShaderRHI = GETSAFERHISHADER_VERTEX(*VertexShader);
+		GraphicsPSOInit.BoundShaderState.VertexShaderRHI = VertexShader.GetVertexShader();
 		GraphicsPSOInit.PrimitiveType = PT_TriangleList;
 
 		TShaderMapRef<FGeometryAwareUpsamplePS> PixelShader(View.ShaderMap);
-		GraphicsPSOInit.BoundShaderState.PixelShaderRHI = GETSAFERHISHADER_PIXEL(*PixelShader);
+		GraphicsPSOInit.BoundShaderState.PixelShaderRHI = PixelShader.GetPixelShader();
 		SetGraphicsPipelineState(RHICmdList, GraphicsPSOInit);
 		PixelShader->SetParameters(RHICmdList, View, DistanceFieldNormal, BentNormalInterpolation, Parameters);
 
@@ -512,7 +476,7 @@ void GeometryAwareUpsample(FRHICommandList& RHICmdList, const FViewInfo& View, T
 			View.ViewRect.Width() / GAODownsampleFactor, View.ViewRect.Height() / GAODownsampleFactor,
 			FIntPoint(View.ViewRect.Width() / GAODownsampleFactor, View.ViewRect.Height() / GAODownsampleFactor),
 			SceneContext.GetBufferSizeXY() / FIntPoint(GAODownsampleFactor, GAODownsampleFactor),
-			*VertexShader);
+			VertexShader);
 	}
 	RHICmdList.EndRenderPass();
 	RHICmdList.CopyToResolveTarget(DistanceFieldAOBentNormal->GetRenderTargetItem().TargetableTexture, DistanceFieldAOBentNormal->GetRenderTargetItem().ShaderResourceTexture, FResolveParams());
@@ -538,6 +502,11 @@ void UpdateHistory(
 
 	if (BentNormalHistoryState && GAOUseHistory)
 	{
+#if WITH_MGPU
+		static const FName NameForTemporalEffect("DistanceFieldAOHistory");
+		RHICmdList.WaitForTemporalEffect(FName(NameForTemporalEffect, View.ViewState->UniqueID));
+#endif
+
 		FIntPoint BufferSize = GetBufferSizeForAO();
 
 		if (*BentNormalHistoryState 
@@ -568,12 +537,12 @@ void UpdateHistory(
 
 					TShaderMapRef<FPostProcessVS> VertexShader(View.ShaderMap);
 					GraphicsPSOInit.BoundShaderState.VertexDeclarationRHI = GFilterVertexDeclaration.VertexDeclarationRHI;
-					GraphicsPSOInit.BoundShaderState.VertexShaderRHI = GETSAFERHISHADER_VERTEX(*VertexShader);
+					GraphicsPSOInit.BoundShaderState.VertexShaderRHI = VertexShader.GetVertexShader();
 					GraphicsPSOInit.PrimitiveType = PT_TriangleList;
 
 					TShaderMapRef<FUpdateHistoryDepthRejectionPS> PixelShader(View.ShaderMap);
 
-					GraphicsPSOInit.BoundShaderState.PixelShaderRHI = GETSAFERHISHADER_PIXEL(*PixelShader);
+					GraphicsPSOInit.BoundShaderState.PixelShaderRHI = PixelShader.GetPixelShader();
 					SetGraphicsPipelineState(RHICmdList, GraphicsPSOInit);
 					PixelShader->SetParameters(RHICmdList, View, *DistanceFieldAOHistoryViewRect, DistanceFieldNormal, BentNormalInterpolation, (*BentNormalHistoryState)->GetRenderTargetItem(), VelocityTexture, Parameters);
 
@@ -587,7 +556,7 @@ void UpdateHistory(
 						View.ViewRect.Width() / GAODownsampleFactor, View.ViewRect.Height() / GAODownsampleFactor,
 						FIntPoint(View.ViewRect.Width() / GAODownsampleFactor, View.ViewRect.Height() / GAODownsampleFactor),
 						SceneContext.GetBufferSizeXY() / FIntPoint(GAODownsampleFactor, GAODownsampleFactor),
-						*VertexShader);
+						VertexShader);
 				}
 				RHICmdList.EndRenderPass();
 				RHICmdList.CopyToResolveTarget(NewBentNormalHistory->GetRenderTargetItem().TargetableTexture, NewBentNormalHistory->GetRenderTargetItem().ShaderResourceTexture, FResolveParams());
@@ -606,6 +575,8 @@ void UpdateHistory(
 					AllocateOrReuseAORenderTarget(RHICmdList, *BentNormalHistoryState, BentNormalHistoryRTName, PF_FloatRGBA);
 				}
 
+				RHICmdList.TransitionResource(EResourceTransitionAccess::EWritable, (*BentNormalHistoryState)->GetRenderTargetItem().TargetableTexture);
+
 				FRHIRenderPassInfo RPInfo((*BentNormalHistoryState)->GetRenderTargetItem().TargetableTexture, ERenderTargetActions::Load_Store);
 				RHICmdList.BeginRenderPass(RPInfo, TEXT("UpdateHistoryStability"));
 				{
@@ -619,14 +590,14 @@ void UpdateHistory(
 
 					TShaderMapRef<FPostProcessVS> VertexShader(View.ShaderMap);
 					GraphicsPSOInit.BoundShaderState.VertexDeclarationRHI = GFilterVertexDeclaration.VertexDeclarationRHI;
-					GraphicsPSOInit.BoundShaderState.VertexShaderRHI = GETSAFERHISHADER_VERTEX(*VertexShader);
+					GraphicsPSOInit.BoundShaderState.VertexShaderRHI = VertexShader.GetVertexShader();
 					GraphicsPSOInit.PrimitiveType = PT_TriangleList;
 
 					if (View.ViewRect.Min == FIntPoint::ZeroValue && View.ViewRect.Max == SceneContext.GetBufferSizeXY())
 					{
 						TShaderMapRef<TFilterHistoryPS<false> > PixelShader(View.ShaderMap);
 
-						GraphicsPSOInit.BoundShaderState.PixelShaderRHI = GETSAFERHISHADER_PIXEL(*PixelShader);
+						GraphicsPSOInit.BoundShaderState.PixelShaderRHI = PixelShader.GetPixelShader();
 						SetGraphicsPipelineState(RHICmdList, GraphicsPSOInit);
 						PixelShader->SetParameters(RHICmdList, View, DistanceFieldNormal, NewBentNormalHistory->GetRenderTargetItem());
 					}
@@ -634,7 +605,7 @@ void UpdateHistory(
 					{
 						TShaderMapRef<TFilterHistoryPS<true> > PixelShader(View.ShaderMap);
 
-						GraphicsPSOInit.BoundShaderState.PixelShaderRHI = GETSAFERHISHADER_PIXEL(*PixelShader);
+						GraphicsPSOInit.BoundShaderState.PixelShaderRHI = PixelShader.GetPixelShader();
 						SetGraphicsPipelineState(RHICmdList, GraphicsPSOInit);
 						PixelShader->SetParameters(RHICmdList, View, DistanceFieldNormal, NewBentNormalHistory->GetRenderTargetItem());
 					}
@@ -649,7 +620,7 @@ void UpdateHistory(
 						View.ViewRect.Width() / GAODownsampleFactor, View.ViewRect.Height() / GAODownsampleFactor,
 						FIntPoint(View.ViewRect.Width() / GAODownsampleFactor, View.ViewRect.Height() / GAODownsampleFactor),
 						SceneContext.GetBufferSizeXY() / FIntPoint(GAODownsampleFactor, GAODownsampleFactor),
-						*VertexShader);
+						VertexShader);
 				}
 				RHICmdList.EndRenderPass();
 				RHICmdList.CopyToResolveTarget((*BentNormalHistoryState)->GetRenderTargetItem().TargetableTexture, (*BentNormalHistoryState)->GetRenderTargetItem().ShaderResourceTexture, FResolveParams());
@@ -680,6 +651,11 @@ void UpdateHistory(
 		DistanceFieldAOHistoryViewRect->Min = FIntPoint::ZeroValue;
 		DistanceFieldAOHistoryViewRect->Max.X = View.ViewRect.Size().X / GAODownsampleFactor;
 		DistanceFieldAOHistoryViewRect->Max.Y = View.ViewRect.Size().Y / GAODownsampleFactor;
+
+#if WITH_MGPU
+		FRHITexture* TexturesToCopyForTemporalEffect[] = { BentNormalHistoryOutput->GetRenderTargetItem().ShaderResourceTexture.GetReference() };
+		RHICmdList.BroadcastTemporalEffect(FName(NameForTemporalEffect, View.ViewState->UniqueID), TexturesToCopyForTemporalEffect);
+#endif
 	}
 	else
 	{
@@ -703,7 +679,7 @@ public:
 
 	static bool ShouldCompilePermutation(const FGlobalShaderPermutationParameters& Parameters)
 	{
-		return IsFeatureLevelSupported(Parameters.Platform, ERHIFeatureLevel::SM5) && DoesPlatformSupportDistanceFieldAO(Parameters.Platform);
+		return IsFeatureLevelSupported(Parameters.Platform, ERHIFeatureLevel::SM5) && DoesPlatformSupportDistanceFieldAO(Parameters.Platform) && IsUsingDistanceFields(Parameters.Platform);
 	}
 
 	static void ModifyCompilationEnvironment(const FGlobalShaderPermutationParameters& Parameters, FShaderCompilerEnvironment& OutEnvironment)
@@ -725,7 +701,7 @@ public:
 
 	void SetParameters(FRHICommandList& RHICmdList, const FViewInfo& View, TRefCountPtr<IPooledRenderTarget>& DistanceFieldAOBentNormal)
 	{
-		const FPixelShaderRHIParamRef ShaderRHI = GetPixelShader();
+		FRHIPixelShader* ShaderRHI = RHICmdList.GetBoundPixelShader();
 
 		FGlobalShader::SetParameters<FViewUniformShaderParameters>(RHICmdList, ShaderRHI, View.ViewUniformBuffer);
 		SceneTextureParameters.Set(RHICmdList, ShaderRHI, View.FeatureLevel, ESceneTextureSetupMode::All);
@@ -735,21 +711,12 @@ public:
 		const float MinOcclusion = Scene->SkyLight ? Scene->SkyLight->MinOcclusion : 0;
 		SetShaderValue(RHICmdList, ShaderRHI, MinIndirectDiffuseOcclusion, MinOcclusion);
 	}
-	// FShader interface.
-	virtual bool Serialize(FArchive& Ar) override
-	{
-		bool bShaderHasOutdatedParameters = FGlobalShader::Serialize(Ar);
-		Ar << SceneTextureParameters;
-		Ar << DFAOUpsampleParameters;
-		Ar << MinIndirectDiffuseOcclusion;
-		return bShaderHasOutdatedParameters;
-	}
-
+	
 private:
 
-	FSceneTextureShaderParameters SceneTextureParameters;
-	FDFAOUpsampleParameters DFAOUpsampleParameters;
-	FShaderParameter MinIndirectDiffuseOcclusion;
+	LAYOUT_FIELD(FSceneTextureShaderParameters, SceneTextureParameters);
+	LAYOUT_FIELD(FDFAOUpsampleParameters, DFAOUpsampleParameters);
+	LAYOUT_FIELD(FShaderParameter, MinIndirectDiffuseOcclusion);
 };
 
 #define IMPLEMENT_UPSAMPLE_PS_TYPE(bModulateToSceneColor) \
@@ -772,6 +739,7 @@ void UpsampleBentNormalAO(
 	{
 		const FViewInfo& View = Views[ViewIndex];
 
+		SCOPED_GPU_MASK(RHICmdList, View.GPUMask);
 		SCOPED_DRAW_EVENT(RHICmdList, UpsampleAO);
 
 		RHICmdList.SetViewport(View.ViewRect.Min.X, View.ViewRect.Min.Y, 0.0f, View.ViewRect.Max.X, View.ViewRect.Max.Y, 1.0f);
@@ -794,8 +762,8 @@ void UpsampleBentNormalAO(
 		{
 			TShaderMapRef<TDistanceFieldAOUpsamplePS<true> > PixelShader(View.ShaderMap);
 			GraphicsPSOInit.BoundShaderState.VertexDeclarationRHI = GFilterVertexDeclaration.VertexDeclarationRHI;
-			GraphicsPSOInit.BoundShaderState.VertexShaderRHI = GETSAFERHISHADER_VERTEX(*VertexShader);
-			GraphicsPSOInit.BoundShaderState.PixelShaderRHI = GETSAFERHISHADER_PIXEL(*PixelShader);
+			GraphicsPSOInit.BoundShaderState.VertexShaderRHI = VertexShader.GetVertexShader();
+			GraphicsPSOInit.BoundShaderState.PixelShaderRHI = PixelShader.GetPixelShader();
 			SetGraphicsPipelineState(RHICmdList, GraphicsPSOInit);
 			PixelShader->SetParameters(RHICmdList, View, DistanceFieldAOBentNormal);
 		}
@@ -803,8 +771,8 @@ void UpsampleBentNormalAO(
 		{
 			TShaderMapRef<TDistanceFieldAOUpsamplePS<false> > PixelShader(View.ShaderMap);
 			GraphicsPSOInit.BoundShaderState.VertexDeclarationRHI = GFilterVertexDeclaration.VertexDeclarationRHI;
-			GraphicsPSOInit.BoundShaderState.VertexShaderRHI = GETSAFERHISHADER_VERTEX(*VertexShader);
-			GraphicsPSOInit.BoundShaderState.PixelShaderRHI = GETSAFERHISHADER_PIXEL(*PixelShader);
+			GraphicsPSOInit.BoundShaderState.VertexShaderRHI = VertexShader.GetVertexShader();
+			GraphicsPSOInit.BoundShaderState.PixelShaderRHI = PixelShader.GetPixelShader();
 			SetGraphicsPipelineState(RHICmdList, GraphicsPSOInit);
 			PixelShader->SetParameters(RHICmdList, View, DistanceFieldAOBentNormal);
 		}
@@ -817,6 +785,6 @@ void UpsampleBentNormalAO(
 			View.ViewRect.Width() / GAODownsampleFactor, View.ViewRect.Height() / GAODownsampleFactor,
 			FIntPoint(View.ViewRect.Width(), View.ViewRect.Height()),
 			GetBufferSizeForAO(),
-			*VertexShader);
+			VertexShader);
 	}
 }

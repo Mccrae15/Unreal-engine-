@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 /*=============================================================================
 ShaderComplexityRendering.h: Declarations used for the shader complexity viewmode.
@@ -12,6 +12,7 @@ ShaderComplexityRendering.h: Declarations used for the shader complexity viewmod
 #include "GlobalShader.h"
 #include "DebugViewModeRendering.h"
 #include "DebugViewModeInterface.h"
+#include "PostProcess/SceneRenderTargets.h"
 
 class FPrimitiveSceneProxy;
 struct FMeshBatchElement;
@@ -19,16 +20,40 @@ struct FMeshDrawingRenderState;
 
 #if !(UE_BUILD_SHIPPING || UE_BUILD_TEST)
 
+extern int32 GCacheShaderComplexityShaders;
+
+extern int32 GShaderComplexityBaselineForwardVS;
+extern int32 GShaderComplexityBaselineForwardPS;
+extern int32 GShaderComplexityBaselineForwardUnlitPS;
+extern int32 GShaderComplexityBaselineDeferredVS;
+extern int32 GShaderComplexityBaselineDeferredPS;
+extern int32 GShaderComplexityBaselineDeferredUnlitPS;
+
+
 template <bool bQuadComplexity>
 class TComplexityAccumulatePS : public FDebugViewModePS
 {
 	DECLARE_SHADER_TYPE(TComplexityAccumulatePS,MeshMaterial);
 public:
-
-	static bool ShouldCompilePermutation(EShaderPlatform Platform, const FMaterial* Material, const FVertexFactoryType* VertexFactoryType)
+	static bool ShouldCompilePermutation(const FMeshMaterialShaderPermutationParameters& Parameters)
 	{
 		// See FDebugViewModeMaterialProxy::GetFriendlyName()
-		return AllowDebugViewPS(bQuadComplexity ? DVSM_QuadComplexity : DVSM_ShaderComplexity, Platform) && Material->GetFriendlyName().Contains(TEXT("ComplexityAccumulate"));
+		if (AllowDebugViewShaderMode(bQuadComplexity ? DVSM_QuadComplexity : DVSM_ShaderComplexity, Parameters.Platform, Parameters.MaterialParameters.FeatureLevel))
+		{
+			// If it comes from FDebugViewModeMaterialProxy, compile it.
+			if (Parameters.MaterialParameters.bMaterialIsComplexityAccumulate)
+			{
+				return true;
+			}
+			// Otherwise we only cache it if this for the shader complexity.
+			else if (GCacheShaderComplexityShaders)
+			{
+				return !FDebugViewModeInterface::AllowFallbackToDefaultMaterial(Parameters.MaterialParameters.TessellationMode,
+					Parameters.MaterialParameters.bHasVertexPositionOffsetConnected,
+					Parameters.MaterialParameters.bHasPixelDepthOffsetConnected) || Parameters.MaterialParameters.bIsDefaultMaterial;
+			}
+		}
+		return false;
 	}
 
 	TComplexityAccumulatePS(const ShaderMetaType::CompiledShaderInitializerType& Initializer):
@@ -41,40 +66,17 @@ public:
 
 	TComplexityAccumulatePS() {}
 
-	virtual bool Serialize(FArchive& Ar) override
+	static void ModifyCompilationEnvironment(const FMaterialShaderPermutationParameters& Parameters, FShaderCompilerEnvironment& OutEnvironment)
 	{
-		bool bShaderHasOutdatedParameters = FMeshMaterialShader::Serialize(Ar);
-		Ar << NormalizedComplexity;
-		Ar << ShowQuadOverdraw;
-		Ar << QuadBufferUAV;
-		return bShaderHasOutdatedParameters;
+		OutEnvironment.SetDefine(TEXT("OUTPUT_QUAD_OVERDRAW"), AllowDebugViewShaderMode(DVSM_QuadComplexity, Parameters.Platform, Parameters.MaterialParameters.FeatureLevel));
+		TCHAR BufferRegister[] = { 'u', '0', 0 };
+		BufferRegister[1] += FSceneRenderTargets::GetQuadOverdrawUAVIndex(Parameters.Platform, Parameters.MaterialParameters.FeatureLevel);
+		OutEnvironment.SetDefine(TEXT("QUAD_BUFFER_REGISTER"), BufferRegister);
 	}
 
-	static void ModifyCompilationEnvironment(EShaderPlatform Platform, const FMaterial* Material, FShaderCompilerEnvironment& OutEnvironment)
-	{
-		OutEnvironment.SetDefine(TEXT("OUTPUT_QUAD_OVERDRAW"), AllowDebugViewPS(DVSM_QuadComplexity, Platform));
-	}
-
-	virtual void GetDebugViewModeShaderBindings(
-		const FPrimitiveSceneProxy* RESTRICT PrimitiveSceneProxy,
-		const FMaterialRenderProxy& RESTRICT MaterialRenderProxy,
-		const FMaterial& RESTRICT Material,
-		EDebugViewShaderMode DebugViewMode,
-		const FVector& ViewOrigin,
-		int32 VisualizeLODIndex,
-		int32 VisualizeElementIndex,
-		int32 NumVSInstructions,
-		int32 NumPSInstructions,
-		int32 ViewModeParam,
-		FName ViewModeParamName,
-		FMeshDrawSingleShaderBindings& ShaderBindings
-	) const override;
-
-private:
-
-	FShaderParameter NormalizedComplexity;
-	FShaderParameter ShowQuadOverdraw;
-	FShaderResourceParameter QuadBufferUAV;
+	LAYOUT_FIELD(FShaderParameter, NormalizedComplexity);
+	LAYOUT_FIELD(FShaderParameter, ShowQuadOverdraw);
+	LAYOUT_FIELD(FShaderResourceParameter, QuadBufferUAV);
 };
 
 class FComplexityAccumulateInterface : public FDebugViewModeInterface
@@ -90,8 +92,24 @@ public:
 		, bShowQuadComplexity(InShowQuadComplexity)
 	{}
 
-	virtual FDebugViewModePS* GetPixelShader(const FMaterial* InMaterial, FVertexFactoryType* VertexFactoryType) const override;
-	virtual void SetDrawRenderState(EBlendMode BlendMode, FRenderState& DrawRenderState) const;
+	virtual TShaderRef<FDebugViewModePS> GetPixelShader(const FMaterial* InMaterial, FVertexFactoryType* VertexFactoryType) const override;
+	virtual void SetDrawRenderState(EBlendMode BlendMode, FRenderState& DrawRenderState, bool bHasDepthPrepassForMaskedMaterial) const;
+
+	virtual void GetDebugViewModeShaderBindings(
+		const FDebugViewModePS& Shader,
+		const FPrimitiveSceneProxy* PrimitiveSceneProxy,
+		const FMaterialRenderProxy& MaterialRenderProxy,
+		const FMaterial& Material,
+		EDebugViewShaderMode DebugViewMode,
+		const FVector& ViewOrigin,
+		int32 VisualizeLODIndex,
+		int32 VisualizeElementIndex,
+		int32 NumVSInstructions,
+		int32 NumPSInstructions,
+		int32 ViewModeParam,
+		FName ViewModeParamName,
+		FMeshDrawSingleShaderBindings& ShaderBindings
+	) const override;
 };
 
 #endif //!(UE_BUILD_SHIPPING || UE_BUILD_TEST)

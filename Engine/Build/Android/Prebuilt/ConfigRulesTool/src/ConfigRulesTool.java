@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 import java.io.*;
 import java.util.*;
@@ -92,7 +92,8 @@ public class ConfigRulesTool
 			int version = -1;
 			try
 			{
-				String versionLine = new String(bytesToCompress, 0, 80, "UTF-8");
+				int versionBytes = sizeUncompressed < 80 ? sizeUncompressed : 80;
+				String versionLine = new String(bytesToCompress, 0, versionBytes, "UTF-8");
 				if (versionLine.startsWith("// version:"))
 				{
 					int eolIndex = versionLine.indexOf("\r");

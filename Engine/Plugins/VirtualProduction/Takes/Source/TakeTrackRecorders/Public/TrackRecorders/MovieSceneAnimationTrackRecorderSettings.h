@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -8,7 +8,7 @@
 #include "Curves/RichCurve.h"
 #include "MovieSceneAnimationTrackRecorderSettings.generated.h"
 
-UCLASS(Abstract, BlueprintType, config=EditorSettings, DisplayName="Animation Recorder Defaults")
+UCLASS(Abstract, BlueprintType, config=EditorSettings, DisplayName="Animation Recorder")
 class TAKETRACKRECORDERS_API UMovieSceneAnimationTrackRecorderEditorSettings : public UMovieSceneTrackRecorderSettings
 {
 	GENERATED_BODY()
@@ -16,8 +16,8 @@ public:
 	UMovieSceneAnimationTrackRecorderEditorSettings(const FObjectInitializer& ObjInit)
 		: Super(ObjInit)
 	, AnimationTrackName(NSLOCTEXT("UMovieSceneAnimationTrackRecorderSettings", "DefaultAnimationTrackName", "RecordedAnimation"))
+	, AnimationAssetName(TEXT("{actor}_{slate}_{take}"))
 	, AnimationSubDirectory(TEXT("Animation"))
-	, SampleRate(30, 1)
 	, bRemoveRootAnimation(true)
 	{
 	}
@@ -26,13 +26,13 @@ public:
 	UPROPERTY(config, EditAnywhere, BlueprintReadWrite, Category = "Animation Recorder Settings")
 	FText AnimationTrackName;
 
+	/** The name of the animation asset. */
+	UPROPERTY(config, EditAnywhere, BlueprintReadWrite, Category = "Animation Recorder Settings")
+	FString AnimationAssetName;
+
 	/** The name of the subdirectory animations will be placed in. Leave this empty to place into the same directory as the sequence base path. */
 	UPROPERTY(config, EditAnywhere, BlueprintReadWrite, Category = "Animation Recorder Settings")
 	FString AnimationSubDirectory;
-	
-	/** Maximum sample rate of the recorded animation */
-	UPROPERTY(EditAnywhere, Category = "Animation Recorder Settings")
-	FFrameRate SampleRate;
 	
 	/** Interpolation mode for the recorded keys. */
 	UPROPERTY(EditAnywhere, Category = "Animation Recorder Settings", DisplayName = "Interpolation Mode")

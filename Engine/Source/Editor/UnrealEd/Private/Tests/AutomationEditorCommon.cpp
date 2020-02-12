@@ -1,4 +1,4 @@
-﻿// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "Tests/AutomationEditorCommon.h"
 #include "UObject/UnrealType.h"
@@ -25,7 +25,7 @@
 #include "ARFilter.h"
 #include "AssetRegistryModule.h"
 #include "Tests/AutomationCommon.h"
-#include "Toolkits/AssetEditorManager.h"
+
 #include "LevelEditor.h"
 #include "Interfaces/IMainFrameModule.h"
 #include "ShaderCompiler.h"
@@ -35,6 +35,7 @@
 #include "ILauncherWorker.h"
 #include "CookOnTheSide/CookOnTheFlyServer.h"
 #include "LightingBuildOptions.h"
+#include "Subsystems/AssetEditorSubsystem.h"
 
 
 #define COOK_TIMEOUT 3600
@@ -135,7 +136,7 @@ void FAutomationEditorCommonUtils::NullReferencesToObject(UObject* InObject)
 	ReplacementMap.GenerateKeyArray(ReplaceableObjects);
 
 	// Find all the properties (and their corresponding objects) that refer to any of the objects to be replaced
-	TMap< UObject*, TArray<UProperty*> > ReferencingPropertiesMap;
+	TMap< UObject*, TArray<FProperty*> > ReferencingPropertiesMap;
 	for (FObjectIterator ObjIter; ObjIter; ++ObjIter)
 	{
 		UObject* CurObject = *ObjIter;
@@ -147,13 +148,13 @@ void FAutomationEditorCommonUtils::NullReferencesToObject(UObject* InObject)
 		// changed, and store both the object doing the referencing as well as the properties that were changed in a map (so that
 		// we can correctly call PostEditChange later)
 		TMap<UObject*, int32> CurNumReferencesMap;
-		TMultiMap<UObject*, UProperty*> CurReferencingPropertiesMMap;
+		TMultiMap<UObject*, FProperty*> CurReferencingPropertiesMMap;
 		if (FindRefsArchive.GetReferenceCounts(CurNumReferencesMap, CurReferencingPropertiesMMap) > 0)
 		{
-			TArray<UProperty*> CurReferencedProperties;
+			TArray<FProperty*> CurReferencedProperties;
 			CurReferencingPropertiesMMap.GenerateValueArray(CurReferencedProperties);
 			ReferencingPropertiesMap.Add(CurObject, CurReferencedProperties);
-			for (TArray<UProperty*>::TConstIterator RefPropIter(CurReferencedProperties); RefPropIter; ++RefPropIter)
+			for (TArray<FProperty*>::TConstIterator RefPropIter(CurReferencedProperties); RefPropIter; ++RefPropIter)
 			{
 				CurObject->PreEditChange(*RefPropIter);
 			}
@@ -164,16 +165,16 @@ void FAutomationEditorCommonUtils::NullReferencesToObject(UObject* InObject)
 	// Iterate over the map of referencing objects/changed properties, forcefully replacing the references and then
 	// alerting the referencing objects the change has completed via PostEditChange
 	int32 NumObjsReplaced = 0;
-	for (TMap< UObject*, TArray<UProperty*> >::TConstIterator MapIter(ReferencingPropertiesMap); MapIter; ++MapIter)
+	for (TMap< UObject*, TArray<FProperty*> >::TConstIterator MapIter(ReferencingPropertiesMap); MapIter; ++MapIter)
 	{
 		++NumObjsReplaced;
 
 		UObject* CurReplaceObj = MapIter.Key();
-		const TArray<UProperty*>& RefPropArray = MapIter.Value();
+		const TArray<FProperty*>& RefPropArray = MapIter.Value();
 
 		FArchiveReplaceObjectRef<UObject> ReplaceAr(CurReplaceObj, ReplacementMap, false, true, false);
 
-		for (TArray<UProperty*>::TConstIterator RefPropIter(RefPropArray); RefPropIter; ++RefPropIter)
+		for (TArray<FProperty*>::TConstIterator RefPropIter(RefPropArray); RefPropIter; ++RefPropIter)
 		{
 			FPropertyChangedEvent PropertyEvent(*RefPropIter);
 			CurReplaceObj->PostEditChangeProperty(PropertyEvent);
@@ -223,7 +224,7 @@ UClass* FAutomationEditorCommonUtils::GetFactoryClassForType(const FString& Asse
 * Applies settings to an object by finding UProperties by name and calling ImportText
 *
 * @param InObject - The object to search for matching properties
-* @param PropertyChain - The list UProperty names recursively to search through
+* @param PropertyChain - The list FProperty names recursively to search through
 * @param Value - The value to import on the found property
 */
 void FAutomationEditorCommonUtils::ApplyCustomFactorySetting(UObject* InObject, TArray<FString>& PropertyChain, const FString& Value)
@@ -231,7 +232,7 @@ void FAutomationEditorCommonUtils::ApplyCustomFactorySetting(UObject* InObject, 
 	const FString PropertyName = PropertyChain[0];
 	PropertyChain.RemoveAt(0);
 
-	UProperty* TargetProperty = FindField<UProperty>(InObject->GetClass(), *PropertyName);
+	FProperty* TargetProperty = FindField<FProperty>(InObject->GetClass(), *PropertyName);
 	if (TargetProperty)
 	{
 		if (PropertyChain.Num() == 0)
@@ -240,8 +241,8 @@ void FAutomationEditorCommonUtils::ApplyCustomFactorySetting(UObject* InObject, 
 		}
 		else
 		{
-			UStructProperty* StructProperty = Cast<UStructProperty>(TargetProperty);
-			UObjectProperty* ObjectProperty = Cast<UObjectProperty>(TargetProperty);
+			FStructProperty* StructProperty = CastField<FStructProperty>(TargetProperty);
+			FObjectProperty* ObjectProperty = CastField<FObjectProperty>(TargetProperty);
 
 			UObject* SubObject = NULL;
 			bool bValidPropertyType = true;
@@ -731,9 +732,9 @@ bool FOpenEditorForAssetCommand::Update()
 	UObject* Object = StaticLoadObject(UObject::StaticClass(), NULL, *AssetName);
 	if ( Object )
 	{
-		FAssetEditorManager::Get().OpenEditorForAsset(Object);
+		GEditor->GetEditorSubsystem<UAssetEditorSubsystem>()->OpenEditorForAsset(Object);
 		//This checks to see if the asset sub editor is loaded.
-		if ( FAssetEditorManager::Get().FindEditorForAsset(Object, true) != NULL )
+		if ( GEditor->GetEditorSubsystem<UAssetEditorSubsystem>()->FindEditorForAsset(Object, true) != NULL )
 		{
 			UE_LOG(LogEditorAutomationTests, Log, TEXT("Verified asset editor for: %s."), *AssetName);
 			UE_LOG(LogEditorAutomationTests, Display, TEXT("The editor successfully loaded for: %s."), *AssetName);
@@ -752,10 +753,10 @@ bool FOpenEditorForAssetCommand::Update()
 */
 bool FCloseAllAssetEditorsCommand::Update()
 {
-	FAssetEditorManager::Get().CloseAllAssetEditors();
+	GEditor->GetEditorSubsystem<UAssetEditorSubsystem>()->CloseAllAssetEditors();
 
 	//Get all assets currently being tracked with open editors and make sure they are not still opened.
-	if ( FAssetEditorManager::Get().GetAllEditedAssets().Num() >= 1 )
+	if ( GEditor->GetEditorSubsystem<UAssetEditorSubsystem>()->GetAllEditedAssets().Num() >= 1 )
 	{
 		UE_LOG(LogEditorAutomationTests, Warning, TEXT("Not all of the editors were closed."));
 		return true;
@@ -772,9 +773,15 @@ bool FCloseAllAssetEditorsCommand::Update()
 bool FStartPIECommand::Update()
 {
 	FLevelEditorModule& LevelEditorModule = FModuleManager::Get().GetModuleChecked<FLevelEditorModule>(TEXT("LevelEditor"));
-	TSharedPtr<class ILevelViewport> ActiveLevelViewport = LevelEditorModule.GetFirstActiveViewport();
 
-	GUnrealEd->RequestPlaySession(false, ActiveLevelViewport, bSimulateInEditor, NULL, NULL, -1, false);
+	FRequestPlaySessionParams Params;
+	Params.DestinationSlateViewport = LevelEditorModule.GetFirstActiveViewport();
+	if (bSimulateInEditor)
+	{
+		Params.WorldType = EPlaySessionWorldType::SimulateInEditor;
+	}
+
+	GUnrealEd->RequestPlaySession(Params);
 	return true;
 }
 
@@ -932,7 +939,18 @@ bool FSaveLevelCommand::Update()
 
 bool FLaunchOnCommand::Update()
 {
-	GUnrealEd->AutomationPlayUsingLauncher(InLauncherDeviceID);
+	FRequestPlaySessionParams::FLauncherDeviceInfo LaunchedDeviceInfo;
+	LaunchedDeviceInfo.DeviceId = InLauncherDeviceID;
+	LaunchedDeviceInfo.DeviceName = InLauncherDeviceID.Right(InLauncherDeviceID.Find(TEXT("@")));
+
+	FRequestPlaySessionParams Params;
+	Params.LauncherTargetDevice = LaunchedDeviceInfo;
+
+	GUnrealEd->RequestPlaySession(Params);
+
+	// Immediately start our requested play session
+	GUnrealEd->StartQueuedPlaySessionRequest();
+
 	return true;
 }
 

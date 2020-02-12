@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "LuminTargetPlatform.h"
 #include "CoreTypes.h"
@@ -47,7 +47,7 @@ bool FLuminTargetPlatform::IsSdkInstalled(bool bProjectHasCode, FString& OutDocu
 	return true;
 }
 
-int32 FLuminTargetPlatform::CheckRequirements(const FString& ProjectPath, bool bProjectHasCode, FString& OutTutorialPath, FString& OutDocumentationPath, FText& CustomizedLogMessage) const
+int32 FLuminTargetPlatform::CheckRequirements(bool bProjectHasCode, EBuildConfiguration Configuration, bool bRequiresAssetNativization, FString& OutTutorialPath, FString& OutDocumentationPath, FText& CustomizedLogMessage) const
 {
 	OutDocumentationPath = TEXT("Platforms/Android/GettingStarted");
 
@@ -103,9 +103,11 @@ void FLuminTargetPlatform::RefreshSettings()
 
 	// If we are targeting ES 2.0/3.1, we also must cook encoded HDR reflection captures
 	static FName NAME_VULKAN_ES31(TEXT("SF_VULKAN_ES31_LUMIN"));
+	static FName NAME_VULKAN_ES31_NOUB(TEXT("SF_VULKAN_ES31_LUMIN_NOUB"));
 	static FName NAME_GLSL_ES2(TEXT("GLSL_ES2"));
 	static FName NAME_GLSL_SM5(TEXT("GLSL_430"));
 	bRequiresEncodedHDRReflectionCaptures = TargetedShaderFormats.Contains(NAME_VULKAN_ES31)
+		|| TargetedShaderFormats.Contains(NAME_VULKAN_ES31_NOUB)
 		|| TargetedShaderFormats.Contains(NAME_GLSL_ES2)
 		|| TargetedShaderFormats.Contains(NAME_GLSL_SM5);
 
@@ -177,16 +179,20 @@ void FLuminTargetPlatform::GetAllPossibleShaderFormats( TArray<FName>& OutFormat
 	// @todo Lumin: re-use Android version? Make sure Android has VULKAN_SM5
 	static FName NAME_GLSL_ES2(TEXT("GLSL_ES2"));
 //	static FName NAME_GLSL_310_ES_EXT(TEXT("GLSL_310_ES_EXT"));
-//	static FName NAME_GLSL_SM4(TEXT("GLSL_150"));
 	static FName NAME_GLSL_SM5(TEXT("GLSL_430"));
 	static FName NAME_VULKAN_SM5_LUMIN(TEXT("SF_VULKAN_SM5_LUMIN"));
+	static FName NAME_VULKAN_SM5_LUMIN_NOUB(TEXT("SF_VULKAN_SM5_LUMIN_NOUB"));
 	static FName NAME_VULKAN_ES31_LUMIN(TEXT("SF_VULKAN_ES31_LUMIN"));
+	static FName NAME_VULKAN_ES31_LUMIN_NOUB(TEXT("SF_VULKAN_ES31_LUMIN_NOUB"));
+
+	static auto* CVar = IConsoleManager::Get().FindTConsoleVariableDataInt(TEXT("r.Vulkan.UseRealUBs"));
+	const bool bUseNOUB = (CVar && CVar->GetValueOnAnyThread() == 0);
 
 	if (SupportsMobileRendering())
 	{
 		if (LuminSupportsVulkan(LuminEngineSettings))
 		{
-			OutFormats.AddUnique(NAME_VULKAN_ES31_LUMIN);
+			OutFormats.AddUnique(bUseNOUB ? NAME_VULKAN_ES31_LUMIN_NOUB : NAME_VULKAN_ES31_LUMIN);
 		}
 		else
 		{
@@ -198,7 +204,7 @@ void FLuminTargetPlatform::GetAllPossibleShaderFormats( TArray<FName>& OutFormat
 	{
 		if (LuminSupportsVulkan(LuminEngineSettings))
 		{
-			OutFormats.AddUnique(NAME_VULKAN_SM5_LUMIN);
+			OutFormats.AddUnique(bUseNOUB ? NAME_VULKAN_SM5_LUMIN_NOUB : NAME_VULKAN_SM5_LUMIN);
 		}
 		else
 		{
@@ -221,40 +227,30 @@ static FName FormatRemap[][2] =
 };
 
 
-void FLuminTargetPlatform::GetTextureFormats(const UTexture* InTexture, TArray<FName>& OutFormats) const
+void FLuminTargetPlatform::GetTextureFormats(const UTexture* InTexture, TArray< TArray<FName> >& OutFormats) const
 {
 	check(InTexture);
 
-	FName TextureFormatName = NAME_None;
-
-	// forward rendering only needs one channel for shadow maps
-	if (InTexture->LODGroup == TEXTUREGROUP_Shadowmap)
+	GetDefaultTextureFormatNamePerLayer(OutFormats.AddDefaulted_GetRef(), this, InTexture, LuminEngineSettings, false);
+	for (FName& TextureFormatName : OutFormats.Last())
 	{
-		TextureFormatName = FName(TEXT("G8"));
-	}
-
-	// if we didn't assign anything specially, then use the defaults
-	if (TextureFormatName == NAME_None)
-	{
-		TextureFormatName = GetDefaultTextureFormatName(this, InTexture, LuminEngineSettings, false);
-	}
-
-	// perform any remapping away from defaults
-	bool bFoundRemap = false;
-	for (int32 RemapIndex = 0; RemapIndex < ARRAY_COUNT(FormatRemap); ++RemapIndex)
-	{
-		if (TextureFormatName == FormatRemap[RemapIndex][0])
+		// forward rendering only needs one channel for shadow maps
+		if (InTexture->LODGroup == TEXTUREGROUP_Shadowmap)
 		{
-			// we found a remapping
-			bFoundRemap = true;
-			OutFormats.AddUnique(FormatRemap[RemapIndex][1]);
+			TextureFormatName = FName(TEXT("G8"));
 		}
-	}
-
-	// if we didn't already remap above, add it now
-	if (!bFoundRemap)
-	{
-		OutFormats.Add(TextureFormatName);
+		else
+		{
+			for (int32 RemapIndex = 0; RemapIndex < UE_ARRAY_COUNT(FormatRemap); ++RemapIndex)
+			{
+				if (TextureFormatName == FormatRemap[RemapIndex][0])
+				{
+					// we found a remapping
+					TextureFormatName = FormatRemap[RemapIndex][1];
+					break;
+				}
+			}
+		}
 	}
 }
 
@@ -262,13 +258,13 @@ void FLuminTargetPlatform::GetAllTextureFormats(TArray<FName>& OutFormats) const
 {
 	GetAllDefaultTextureFormats(this, OutFormats, false);
 
-	for (int32 RemapIndex = 0; RemapIndex < ARRAY_COUNT(FormatRemap); RemapIndex++)
+	for (int32 RemapIndex = 0; RemapIndex < UE_ARRAY_COUNT(FormatRemap); RemapIndex++)
 	{
 		OutFormats.Remove(FormatRemap[RemapIndex][0]);
 	}
 
 	// include the formats we want
-	for (int32 RemapIndex = 0; RemapIndex < ARRAY_COUNT(FormatRemap); RemapIndex++)
+	for (int32 RemapIndex = 0; RemapIndex < UE_ARRAY_COUNT(FormatRemap); RemapIndex++)
 	{
 		OutFormats.AddUnique(FormatRemap[RemapIndex][1]);
 	}

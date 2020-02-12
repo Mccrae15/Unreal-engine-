@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -13,32 +13,42 @@
  * @note This can't go inside the WITH_PYTHON block due to UHT parsing limitations (it doesn't understand that macro)
  */
 UCLASS()
-class UPythonCallableForDelegate : public UObject
+class UPythonCallableForDelegate : public UObject, public IPythonResourceOwner
 {
 	GENERATED_BODY()
 
 public:
-	//~ UObject interface
-	virtual void BeginDestroy() override;
+	/** Name given to the generated function that we should bind to the Unreal delegate */
+	static const FName GeneratedFuncName;
 
 	/** Native function implementation used by the signature correct Unreal functions added to the derived classes (the ones that are bound to the delegate itself) */
 	DECLARE_FUNCTION(CallPythonNative);
 
 #if WITH_PYTHON
+
+public:
+	//~ UObject interface
+	virtual void BeginDestroy() override;
+
+	//~ IPythonResourceOwner interface
+	virtual void ReleasePythonResources() override;
+
 	/** Get the Python callable object on this instance (borrowed reference) */
 	PyObject* GetCallable() const;
 
 	/** Set the Python callable object on this instance */
 	void SetCallable(PyObject* InCallable);
-#endif	// WITH_PYTHON
-
-	/** Name given to the generated function that we should bind to the Unreal delegate */
-	static const FName GeneratedFuncName;
 
 private:
-#if WITH_PYTHON
 	/** The callable Python callable object this object wraps (if any) */
 	FPyObjectPtr PyCallable;
+
+#else	// WITH_PYTHON
+
+public:
+	//~ IPythonResourceOwner interface
+	virtual void ReleasePythonResources() override {}
+
 #endif	// WITH_PYTHON
 };
 
@@ -108,6 +118,7 @@ struct TPyWrapperDelegateMetaData : public FPyWrapperBaseMetaData
 	/** Add object references from the given Python object to the given collector */
 	virtual void AddReferencedObjects(FPyWrapperBase* Instance, FReferenceCollector& Collector) override
 	{
+		Collector.AddReferencedObject(DelegateSignature.Func);
 		Collector.AddReferencedObject(PythonCallableForDelegateClass);
 	}
 

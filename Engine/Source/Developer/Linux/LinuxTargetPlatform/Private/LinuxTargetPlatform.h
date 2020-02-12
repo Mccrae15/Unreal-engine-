@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 /*=============================================================================
 	LinuxTargetPlatform.h: Declares the FLinuxTargetPlatform class.
@@ -36,7 +36,7 @@ class TLinuxTargetPlatform
 	: public TTargetPlatformBase<TProperties>
 {
 public:
-	
+
 	typedef TTargetPlatformBase<TProperties> TSuper;
 
 	/**
@@ -46,12 +46,15 @@ public:
 #if WITH_ENGINE
 		: bChangingDeviceConfig(false)
 #endif // WITH_ENGINE
-	{		
+	{
 #if PLATFORM_LINUX
-		// only add local device if actually running on Linux
-		LocalDevice = MakeShareable(new FLinuxTargetDevice(*this, FPlatformProcess::ComputerName(), nullptr));
+		if (!TProperties::IsAArch64())
+		{
+			// only add local device if actually running on Linux
+			LocalDevice = MakeShareable(new FLinuxTargetDevice(*this, FPlatformProcess::ComputerName(), nullptr));
+		}
 #endif
-	
+
 #if WITH_ENGINE
 		FConfigCacheIni::LoadLocalIniFile(EngineSettings, TEXT("Engine"), true, *this->PlatformName());
 		TextureLODSettings = nullptr;
@@ -65,10 +68,8 @@ public:
 
 		// If we are targeting ES 2.0/3.1, we also must cook encoded HDR reflection captures
 		static FName NAME_SF_VULKAN_ES31(TEXT("SF_VULKAN_ES31"));
-		static FName NAME_OPENGL_150_ES2(TEXT("GLSL_150_ES2"));
 		static FName NAME_OPENGL_150_ES3_1(TEXT("GLSL_150_ES31"));
 		bRequiresEncodedHDRReflectionCaptures = TargetedShaderFormats.Contains(NAME_SF_VULKAN_ES31)
-			|| TargetedShaderFormats.Contains(NAME_OPENGL_150_ES2)
 			|| TargetedShaderFormats.Contains(NAME_OPENGL_150_ES3_1);
 #endif // WITH_ENGINE
 	}
@@ -90,14 +91,13 @@ public:
 			return false;
 		}
 
-		FTargetDeviceId UATFriendlyId(TEXT("Linux"), DeviceName);
-		Device = MakeShareable(new FLinuxTargetDevice(*this, DeviceName, 
+		Device = MakeShareable(new FLinuxTargetDevice(*this, DeviceName,
 #if WITH_ENGINE
 			[&]() { SaveDevicesToConfig(); }));
 		SaveDevicesToConfig();	// this will do the right thing even if AddDevice() was called from InitDevicesFromConfig
 #else
 			nullptr));
-#endif // WITH_ENGINE	
+#endif // WITH_ENGINE
 
 		DeviceDiscoveredEvent.Broadcast(Device.ToSharedRef());
 		return true;
@@ -118,7 +118,7 @@ public:
 		}
 	}
 
-	virtual bool GenerateStreamingInstallManifest(const TMultiMap<FString, int32>& ChunkMap, const TSet<int32>& ChunkIDsInUse) const override
+	virtual bool GenerateStreamingInstallManifest(const TMultiMap<FString, int32>& PakchunkMap, const TSet<int32>& PakchunkIndicesInUse) const override
 	{
 		return true;
 	}
@@ -179,7 +179,7 @@ public:
 			{
 				return true;
 			}
-			
+
 			// else check for legacy LINUX_ROOT
 			FString ToolchainCompiler = FPlatformMisc::GetEnvironmentVariable(TEXT("LINUX_ROOT"));
 			if (PLATFORM_WINDOWS)
@@ -202,9 +202,9 @@ public:
 		return true;
 	}
 
-	virtual int32 CheckRequirements(const FString& ProjectPath, bool bProjectHasCode, FString& OutTutorialPath, FString& OutDocumentationPath, FText& CustomizedLogMessage) const override
+	virtual int32 CheckRequirements(bool bProjectHasCode, EBuildConfiguration Configuration, bool bRequiresAssetNativization, FString& OutTutorialPath, FString& OutDocumentationPath, FText& CustomizedLogMessage) const override
 	{
-		int32 ReadyToBuild = TSuper::CheckRequirements(ProjectPath, bProjectHasCode, OutTutorialPath, OutDocumentationPath, CustomizedLogMessage);
+		int32 ReadyToBuild = TSuper::CheckRequirements(bProjectHasCode, Configuration, bRequiresAssetNativization, OutTutorialPath, OutDocumentationPath, CustomizedLogMessage);
 
 		// do not support code/plugins in Installed builds if the required libs aren't bundled (on Windows/Mac)
 		if (!PLATFORM_LINUX && !FInstalledPlatformInfo::Get().IsValidPlatform(TSuper::GetPlatformInfo().BinaryFolderName, EProjectType::Code))
@@ -214,7 +214,8 @@ public:
 				ReadyToBuild |= ETargetPlatformReadyStatus::CodeUnsupported;
 			}
 
-			if (!IProjectManager::Get().HasDefaultPluginSettings())
+			FText Reason;
+			if (this->RequiresTempTarget(bProjectHasCode, Configuration, bRequiresAssetNativization, Reason))
 			{
 				ReadyToBuild |= ETargetPlatformReadyStatus::PluginsUnsupported;
 			}
@@ -280,13 +281,12 @@ public:
 	}
 
 
-	virtual void GetTextureFormats( const UTexture* InTexture, TArray<FName>& OutFormats ) const override
+	virtual void GetTextureFormats( const UTexture* InTexture, TArray< TArray<FName> >& OutFormats) const override
 	{
 		if (!TProperties::IsServerOnly())
 		{
 			// just use the standard texture format name for this texture
-			FName TextureFormatName = GetDefaultTextureFormatName(this, InTexture, EngineSettings, false);
-			OutFormats.Add(TextureFormatName);
+			GetDefaultTextureFormatNamePerLayer(OutFormats.AddDefaulted_GetRef(), this, InTexture, EngineSettings, false);
 		}
 	}
 
@@ -312,10 +312,16 @@ public:
 
 	virtual FName GetWaveFormat( const class USoundWave* Wave ) const override
 	{
-		static FName NAME_OGG(TEXT("OGG"));
-		static FName NAME_OPUS(TEXT("OPUS"));
+		static const FName NAME_ADPCM(TEXT("ADPCM"));
+		static const FName NAME_OGG(TEXT("OGG"));
+		static const FName NAME_OPUS(TEXT("OPUS"));
 
-		if (Wave->IsStreaming())
+		if (Wave->IsSeekableStreaming())
+		{
+			return NAME_ADPCM;
+		}
+
+		if (Wave->IsStreaming(*this->IniPlatformName()))
 		{
 			return NAME_OPUS;
 		}
@@ -325,15 +331,13 @@ public:
 
 	virtual void GetAllWaveFormats(TArray<FName>& OutFormats) const override
 	{
-		static FName NAME_OGG(TEXT("OGG"));
-		static FName NAME_OPUS(TEXT("OPUS"));
+		static const FName NAME_ADPCM(TEXT("ADPCM"));
+		static const FName NAME_OGG(TEXT("OGG"));
+		static const FName NAME_OPUS(TEXT("OPUS"));
+
+		OutFormats.Add(NAME_ADPCM);
 		OutFormats.Add(NAME_OGG);
 		OutFormats.Add(NAME_OPUS);
-	}
-
-	virtual FPlatformAudioCookOverrides* GetAudioCompressionSettings() const override
-	{
-		return nullptr;
 	}
 
 #endif //WITH_ENGINE
@@ -378,7 +382,7 @@ public:
 	{
 		return DeviceDiscoveredEvent;
 	}
-	
+
 	DECLARE_DERIVED_EVENT(TLinuxTargetPlatform, ITargetPlatform::FOnTargetDeviceLost, FOnTargetDeviceLost);
 	virtual FOnTargetDeviceLost& OnDeviceLost( ) override
 	{
@@ -401,7 +405,7 @@ protected:
 		}
 		bChangingDeviceConfig = true;
 
-		int NumDevices = 0;	
+		int NumDevices = 0;
 		for (;; ++NumDevices)
 		{
 			FString DeviceName, DeviceUser, DevicePass;
@@ -437,7 +441,7 @@ protected:
 				}
 			}
 		}
-		
+
 		bChangingDeviceConfig = false;
 	}
 

@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -12,6 +12,20 @@
 
 class FTabManager;
 class SWindow;
+struct FToolMenuContext;
+
+/**
+ * Data needed to display a Developer tools in the status bar.
+ */
+struct FMainFrameDeveloperTool
+{
+	/* Visiblility of the developer tool. */
+	TAttribute<EVisibility> Visibility;
+	/* Label of the developer tool. */
+	TAttribute<FText> Label;
+	/* Value of the developer tool. */
+	TAttribute<FText> Value;
+};
 
 /**
  * Interface for main frame modules.
@@ -30,6 +44,15 @@ public:
 	virtual void CreateDefaultMainFrame( const bool bStartImmersive, const bool bStartPIE ) = 0;
 
 	/**
+	 * Recreates the default editor main frame.
+	 * I.e., if CreateDefaultMainFrame or RecreateDefaultMainFrame were already called, it would clean the previous default main frame and create it again.
+	 *
+	 * @param bStartImmersive True to force a main frame viewport into immersive mode
+	 * @param bStartPIE True to start a PIE session right away
+	 */
+	virtual void RecreateDefaultMainFrame(const bool bStartImmersive, const bool bStartPIE) = 0;
+
+	/**
 	 * Generates a menu that includes application global commands, such as "Save All", "Exit", etc.  If you're building
 	 * a menu for your tab, you should call this function to create your menu, passing in an extender object to add your
 	 * tab-specific menu items!
@@ -39,7 +62,7 @@ public:
 	 *
 	 * @return	The newly-created menu widget
 	 */
-	virtual TSharedRef<SWidget> MakeMainMenu( const TSharedPtr<FTabManager>& TabManager, const TSharedRef< FExtender > Extender ) const = 0;
+	virtual TSharedRef<SWidget> MakeMainMenu( const TSharedPtr<FTabManager>& TabManager, const FName MenuName, FToolMenuContext& ToolMenuContext ) const = 0;
 
 	/**
 	 * Generates a menu that's just like the "main menu" widget above, except it also includes some infrequently used commands
@@ -50,12 +73,16 @@ public:
 	 *
 	 * @return	The newly-created menu widget
 	 */
-	virtual TSharedRef<SWidget> MakeMainTabMenu( const TSharedPtr<FTabManager>& TabManager, const TSharedRef< FExtender > Extender ) const = 0;
+	virtual TSharedRef<SWidget> MakeMainTabMenu( const TSharedPtr<FTabManager>& TabManager, const FName MenuName, FToolMenuContext& ToolMenuContext ) const = 0;
 
 	/**
-	 * @todo Editor: add documentation for MakeDeveloperTools
+	 * Generates a menu for status and developer
+	 *
+	 * @param	AdditionalTools	Additional developer tools that would be added to the main frame menu
+	 *
+	 * @return	The newly-created menu widget
 	 */
-	virtual TSharedRef<SWidget> MakeDeveloperTools( ) const = 0;
+	virtual TSharedRef<SWidget> MakeDeveloperTools( const TArray<FMainFrameDeveloperTool>& AdditionalTools ) const = 0;
 
 	/**
 	 * Checks to see if the main frame window is currently initialized
@@ -100,6 +127,13 @@ public:
 	 * @param InLevelFileName  Full level filename from which the base name will be stripped and used to make the window title
 	 */
 	virtual void SetLevelNameForWindowTitle(const FString& InLevelFileName) = 0;
+
+	/**
+	 * Overrides the title of the application that's displayed in the title bar area and other locations
+	 *
+	 * @param	NewOverriddenApplicationTitle	The text to be displayed in the window title, or empty to use the application's default text
+	 */
+	virtual void SetApplicationTitleOverride(const FText& NewOverriddenApplicationTitle) = 0;
 
 	/**
 	 * Returns a friendly string name for the currently loaded persistent level.

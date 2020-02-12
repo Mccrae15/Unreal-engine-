@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 /*=============================================================================
 	DynamicPrimitiveDrawing.inl: Dynamic primitive drawing implementation.
@@ -55,12 +55,12 @@ inline void FViewElementPDI::RegisterDynamicResource(FDynamicPrimitiveResource* 
 	if (IsInGameThread())
 	{
 		// Render thread might be reading the array while we are adding in the game thread
-		ENQUEUE_UNIQUE_RENDER_COMMAND_TWOPARAMETER(AddViewInfoDynamicResource,
-			FViewInfo*, InViewInfo, ViewInfo,
-			FDynamicPrimitiveResource*, InDynamicResource, DynamicResource,
+		FViewInfo* InViewInfo = ViewInfo;
+		ENQUEUE_RENDER_COMMAND(AddViewInfoDynamicResource)(
+			[InViewInfo, DynamicResource](FRHICommandListImmediate& RHICmdList)
 			{
-				InViewInfo->DynamicResources.Add(InDynamicResource);
-				InDynamicResource->InitPrimitiveResource();
+				InViewInfo->DynamicResources.Add(DynamicResource);
+				DynamicResource->InitPrimitiveResource();
 			});
 	}
 	else
@@ -199,7 +199,7 @@ inline int32 FViewElementPDI::DrawMesh(const FMeshBatch& Mesh)
 			ENQUEUE_RENDER_COMMAND(FCopyDynamicPrimitiveShaderData)(
 				[NewMesh, DynamicPrimitiveShaderDataForRT, FeatureLevel](FRHICommandListImmediate& RHICmdList)
 				{
-					const bool bPrimitiveShaderDataComesFromSceneBuffer = NewMesh->VertexFactory->GetPrimitiveIdStreamIndex(false) >= 0;
+					const bool bPrimitiveShaderDataComesFromSceneBuffer = NewMesh->VertexFactory->GetPrimitiveIdStreamIndex(EVertexInputStreamType::Default) >= 0;
 
 					for (int32 ElementIndex = 0; ElementIndex < NewMesh->Elements.Num(); ElementIndex++)
 					{

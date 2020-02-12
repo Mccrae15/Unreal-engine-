@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 /**
  * Blend Space Base. Contains base functionality shared across all blend space objects
@@ -101,6 +101,10 @@ struct FBlendSample
 
 	UPROPERTY(transient)
 	uint8 bIsValid : 1;
+
+	// Cache the samples marker data counter so that we can track if it changes and revalidate the blendspace
+	int32 CachedMarkerDataUpdateCounter;
+
 #endif // WITH_EDITORONLY_DATA
 
 	FBlendSample()
@@ -110,6 +114,7 @@ struct FBlendSample
 #if WITH_EDITORONLY_DATA
 		, bSnapToGrid(true)
 		, bIsValid(false)
+		, CachedMarkerDataUpdateCounter(INDEX_NONE)
 #endif // WITH_EDITORONLY_DATA
 	{		
 	}
@@ -121,6 +126,7 @@ struct FBlendSample
 #if WITH_EDITORONLY_DATA
 		, bSnapToGrid(bInIsSnapped)
 		, bIsValid(bInIsValid)
+		, CachedMarkerDataUpdateCounter(INDEX_NONE)
 #endif // WITH_EDITORONLY_DATA
 	{		
 	}
@@ -228,7 +234,7 @@ class UBlendSpaceBase : public UAnimationAsset, public IInterpolationIndexProvid
 	virtual void PostLoad() override;
 	virtual void Serialize(FArchive& Ar) override;
 #if WITH_EDITOR
-	virtual void PreEditChange(UProperty* PropertyAboutToChange) override;
+	virtual void PreEditChange(FProperty* PropertyAboutToChange) override;
 	virtual void PostEditChangeProperty( struct FPropertyChangedEvent& PropertyChangedEvent) override;
 #endif // WITH_EDITOR
 	//~ End UObject Interface
@@ -245,6 +251,7 @@ class UBlendSpaceBase : public UAnimationAsset, public IInterpolationIndexProvid
 	virtual bool GetAllAnimationSequencesReferred(TArray<UAnimationAsset*>& AnimationAssets, bool bRecursive = true) override;
 	virtual void ReplaceReferredAnimations(const TMap<UAnimationAsset*, UAnimationAsset*>& ReplacementMap) override;
 	virtual int32 GetMarkerUpdateCounter() const;
+	void    RuntimeValidateMarkerData();
 #endif
 	//~ End UAnimationAsset Interface
 	
@@ -467,6 +474,9 @@ protected:
 	/** Blend Parameters for each axis. **/
 	UPROPERTY(EditAnywhere, Category = BlendParametersTest)
 	struct FBlendParameter BlendParameters[3];
+
+	/** Reset to reference pose. It does apply different refpose based on additive or not*/
+	void ResetToRefPose(FCompactPose& OutPose);
 
 #if WITH_EDITOR
 private:

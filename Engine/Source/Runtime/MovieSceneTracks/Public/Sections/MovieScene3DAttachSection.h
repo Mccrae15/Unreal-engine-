@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -31,27 +31,38 @@ public:
 
 public:
 
-	UPROPERTY(EditAnywhere, Category="Attach")
+	UPROPERTY(BlueprintReadWrite, EditAnywhere, Category="Attach")
 	FName AttachSocketName;
 
-	UPROPERTY(EditAnywhere, Category="Attach")
+	UPROPERTY(BlueprintReadWrite, EditAnywhere, Category="Attach")
 	FName AttachComponentName;
 
-	UPROPERTY(EditAnywhere, Category="Attach")
+
+#if WITH_EDITORONLY_DATA
+
+	UPROPERTY(BlueprintReadWrite, EditAnywhere, Category="Attach")
+	bool bFullRevertOnDetach;
+
+	UPROPERTY(BlueprintReadWrite, EditAnywhere, Category="Attach")
+	TSoftObjectPtr<AActor> ReAttachOnDetach;
+
+#endif
+
+	UPROPERTY(BlueprintReadWrite, EditAnywhere, Category="Attach")
 	EAttachmentRule AttachmentLocationRule;
 
-	UPROPERTY(EditAnywhere, Category="Attach")
+	UPROPERTY(BlueprintReadWrite, EditAnywhere, Category="Attach")
 	EAttachmentRule AttachmentRotationRule;
 
-	UPROPERTY(EditAnywhere, Category="Attach")
+	UPROPERTY(BlueprintReadWrite, EditAnywhere, Category="Attach")
 	EAttachmentRule AttachmentScaleRule;
 
-	UPROPERTY(EditAnywhere, Category="Attach")
+	UPROPERTY(BlueprintReadWrite, EditAnywhere, Category="Attach")
 	EDetachmentRule DetachmentLocationRule;
 
-	UPROPERTY(EditAnywhere, Category="Attach")
+	UPROPERTY(BlueprintReadWrite, EditAnywhere, Category="Attach")
 	EDetachmentRule DetachmentRotationRule;
 
-	UPROPERTY(EditAnywhere, Category="Attach")
+	UPROPERTY(BlueprintReadWrite, EditAnywhere, Category="Attach")
 	EDetachmentRule DetachmentScaleRule;
 };

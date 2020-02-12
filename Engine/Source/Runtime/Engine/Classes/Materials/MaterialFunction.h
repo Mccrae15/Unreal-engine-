@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -14,6 +14,7 @@
 class UMaterial;
 class UTexture;
 struct FPropertyChangedEvent;
+class UMaterialExpression;
 
 /**
  * A Material Function is a collection of material expressions that can be reused in different materials
@@ -33,13 +34,19 @@ class UMaterialFunction : public UMaterialFunctionInterface
 	UPROPERTY(EditAnywhere, Category=MaterialFunction, AssetRegistrySearchable)
 	FString Description;
 
+#if WITH_EDITORONLY_DATA
+	/** Array of material expressions, excluding Comments.  Used by the material editor. */
+	UPROPERTY()
+	TArray<UMaterialExpression*> FunctionExpressions;
+#endif // WITH_EDITORONLY_DATA
+
 	/** Whether to list this function in the material function library, which is a window in the material editor that lists categorized functions. */
 	UPROPERTY(EditAnywhere, Category=MaterialFunction, AssetRegistrySearchable)
-	uint32 bExposeToLibrary:1;
+	uint8 bExposeToLibrary:1;
 	
 	/** If true, parameters in this function will have a prefix added to their group name. */
 	UPROPERTY(EditAnywhere, Category=MaterialFunction)
-	uint32 bPrefixParameterNames:1;
+	uint8 bPrefixParameterNames:1;
 
 #if WITH_EDITORONLY_DATA
 	/** 
@@ -56,9 +63,6 @@ class UMaterialFunction : public UMaterialFunctionInterface
 	UPROPERTY(EditAnywhere, Category=MaterialFunction, AssetRegistrySearchable)
 	TArray<FText> LibraryCategoriesText;
 #endif
-	/** Array of material expressions, excluding Comments.  Used by the material editor. */
-	UPROPERTY()
-	TArray<class UMaterialExpression*> FunctionExpressions;
 
 #if WITH_EDITORONLY_DATA
 	/** Array of comments associated with this material; viewed in the material editor. */
@@ -67,12 +71,15 @@ class UMaterialFunction : public UMaterialFunctionInterface
 
 	UPROPERTY(transient)
 	UMaterial* PreviewMaterial;
+
+	UPROPERTY()
+	TArray<class UMaterialExpressionMaterialFunctionCall*> DependentFunctionExpressionCandidates;
 #endif // WITH_EDITORONLY_DATA
 
 private:
 	/** Transient flag used to track re-entrance in recursive functions like IsDependent. */
 	UPROPERTY(transient)
-	uint32 bReentrantFlag:1;
+	uint8 bReentrantFlag:1;
 
 public:
 	//~ Begin UObject Interface.
@@ -107,19 +114,29 @@ public:
 	virtual void UnlinkFromCaller() override;
 #endif
 
+#if WITH_EDITORONLY_DATA
 	/** @return true if this function is dependent on the passed in function, directly or indirectly. */
 	virtual bool IsDependent(UMaterialFunctionInterface* OtherFunction) override;
 
+	/**
+	 * Iterates all functions that this function is dependent on, directly or indrectly.
+	 *
+	 * @param Predicate a visitor predicate returning true to continue iteration, false to break
+	 *
+	 * @return true if all dependent functions were visited, false if the Predicate did break iteration
+	 */
+	ENGINE_API virtual bool IterateDependentFunctions(TFunctionRef<bool(UMaterialFunctionInterface*)> Predicate) const override;
+
 	/** Returns an array of the functions that this function is dependent on, directly or indirectly. */
 	ENGINE_API virtual void GetDependentFunctions(TArray<UMaterialFunctionInterface*>& DependentFunctions) const override;
-
-	/** Appends textures referenced by the expressions in this function. */
-	virtual void AppendReferencedTextures(TArray<UTexture*>& InOutTextures) const override;
+#endif // WITH_EDITORONLY_DATA
 
 #if WITH_EDITOR
 	virtual UMaterialInterface* GetPreviewMaterial() override;
 
 	virtual void UpdateInputOutputTypes() override;
+
+	virtual void UpdateDependentFunctionCandidates();
 
 	/**
 	 * Checks whether a Material Function is arranged in the old style, with inputs flowing from right to left
@@ -129,7 +146,9 @@ public:
 
 	virtual UMaterialFunctionInterface* GetBaseFunction() override { return this; }
 	virtual const UMaterialFunctionInterface* GetBaseFunction() const override { return this; }
+#if WITH_EDITORONLY_DATA
 	virtual const TArray<UMaterialExpression*>* GetFunctionExpressions() const override { return &FunctionExpressions; }
+#endif
 	virtual const FString* GetDescription() const override { return &Description; }
 
 	virtual bool GetReentrantFlag() const override { return bReentrantFlag; }
@@ -141,6 +160,7 @@ public:
 	ENGINE_API bool SetVectorParameterValueEditorOnly(FName ParameterName, FLinearColor InValue);
 	ENGINE_API bool SetScalarParameterValueEditorOnly(FName ParameterName, float InValue);
 	ENGINE_API bool SetTextureParameterValueEditorOnly(FName ParameterName, class UTexture* InValue);
+	ENGINE_API bool SetRuntimeVirtualTextureParameterValueEditorOnly(FName ParameterName, class URuntimeVirtualTexture* InValue);
 	ENGINE_API bool SetFontParameterValueEditorOnly(FName ParameterName, class UFont* InFontValue, int32 InFontPage);
 	ENGINE_API bool SetStaticComponentMaskParameterValueEditorOnly(FName ParameterName, bool R, bool G, bool B, bool A, FGuid OutExpressionGuid);
 	ENGINE_API bool SetStaticSwitchParameterValueEditorOnly(FName ParameterName, bool OutValue, FGuid OutExpressionGuid);

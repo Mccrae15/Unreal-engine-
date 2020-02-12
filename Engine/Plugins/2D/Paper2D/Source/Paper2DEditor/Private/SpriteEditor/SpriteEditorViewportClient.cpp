@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "SpriteEditor/SpriteEditorViewportClient.h"
 #include "Modules/ModuleManager.h"
@@ -118,7 +118,7 @@ FSpriteEditorViewportClient::FSpriteEditorViewportClient(TWeakPtr<FSpriteEditor>
 
 		// Nudge the source texture view back a bit so it doesn't occlude sprites
 		const FTransform Transform(-1.0f * PaperAxisZ);
-		SourceTextureViewComponent->bVisible = false;
+		SourceTextureViewComponent->SetVisibleFlag(false);
 		PreviewScene->AddComponent(SourceTextureViewComponent, Transform);
 	}
 }
@@ -150,7 +150,7 @@ void FSpriteEditorViewportClient::UpdateSourceTextureSpriteFromSprite(UPaperSpri
 
 			FSpriteAssetInitParameters SpriteReinitParams;
 
-			SpriteReinitParams.SetTextureAndFill(SourceSprite->SourceTexture);
+			SpriteReinitParams.SetTextureAndFill(SourceSprite->GetSourceTexture());
 			SpriteReinitParams.DefaultMaterialOverride = SourceSprite->DefaultMaterial;
 			SpriteReinitParams.AlternateMaterialOverride = SourceSprite->AlternateMaterial;
 			SpriteReinitParams.SetPixelsPerUnrealUnit(SourceSprite->PixelsPerUnrealUnit);
@@ -365,6 +365,7 @@ void FSpriteEditorViewportClient::AnalyzeSpriteMaterialType(UPaperSprite* Sprite
 				case EBlendMode::BLEND_Additive:
 				case EBlendMode::BLEND_Modulate:
 				case EBlendMode::BLEND_AlphaComposite:
+				case EBlendMode::BLEND_AlphaHoldout:
 					NumTranslucentTriangles += NumTriangles;
 					break;
 				case EBlendMode::BLEND_Masked:
@@ -692,7 +693,7 @@ void FSpriteEditorViewportClient::UpdateRelatedSpritesList()
 	{
 		FARFilter Filter;
 		Filter.ClassNames.Add(UPaperSprite::StaticClass()->GetFName());
-		const FString TextureString = FAssetData(Texture).GetExportTextName();
+		const FString TextureString = TSoftObjectPtr<UTexture2D>(Texture).ToString();
 		const FName SourceTexturePropName(TEXT("SourceTexture"));
 		Filter.TagsAndValues.Add(SourceTexturePropName, TextureString);
 		FAssetRegistryModule& AssetRegistryModule = FModuleManager::LoadModuleChecked<FAssetRegistryModule>("AssetRegistry");
@@ -808,7 +809,7 @@ UPaperSprite* FSpriteEditorViewportClient::CreateNewSprite(const FIntPoint& TopL
 
 	// Create the factory used to generate the sprite
 	UPaperSpriteFactory* SpriteFactory = NewObject<UPaperSpriteFactory>();
-	SpriteFactory->InitialTexture = CurrentSprite->SourceTexture;
+	SpriteFactory->InitialTexture = CurrentSprite->GetSourceTexture();
 	SpriteFactory->bUseSourceRegion = true;
 	SpriteFactory->InitialSourceUV = TopLeft;
 	SpriteFactory->InitialSourceDimension = Dimensions;

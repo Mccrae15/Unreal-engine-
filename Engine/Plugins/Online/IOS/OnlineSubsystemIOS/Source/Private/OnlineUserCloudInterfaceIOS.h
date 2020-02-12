@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -54,7 +54,7 @@ public:
 	virtual void EnumerateUserFiles(const FUniqueNetId& UserId) override;
 	virtual void GetUserFileList(const FUniqueNetId& UserId, TArray<FCloudFileHeader>& UserFiles) override;
 	virtual bool ReadUserFile(const FUniqueNetId& UserId, const FString& FileName) override;
-	virtual bool WriteUserFile(const FUniqueNetId& UserId, const FString& FileName, TArray<uint8>& FileContents) override;
+	virtual bool WriteUserFile(const FUniqueNetId& UserId, const FString& FileName, TArray<uint8>& FileContents, bool bCompressBeforeUpload = false) override;
 	virtual void CancelWriteUserFile(const FUniqueNetId& UserId, const FString& FileName) override;
 	virtual bool DeleteUserFile(const FUniqueNetId& UserId, const FString& FileName, bool bShouldCloudDelete, bool bShouldLocallyDelete) override;
 	virtual bool RequestUsageInfo(const FUniqueNetId& UserId) override;

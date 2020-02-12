@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -9,6 +9,9 @@
 #include "Math/Vector4.h"
 #include "Templates/SharedPointer.h"
 #include "Delegates/Delegate.h"
+#if WITH_ACCESSIBILITY
+#include "GenericPlatform/Accessibility/GenericAccessibleInterfaces.h"
+#endif
 #include "GenericPlatform/GenericApplicationMessageHandler.h"
 #include "GenericPlatform/GenericWindowDefinition.h"
 #include "GenericPlatform/GenericWindow.h"
@@ -364,6 +367,11 @@ struct FDisplayMetrics
 	/** Virtual display coordinate range (includes all active displays) */
 	FPlatformRect VirtualDisplayRect;
 
+#if PLATFORM_IOS
+	/** Area of the UIWindow on IOS devices */
+	FPlatformRect IosUiWindowAreaRect;
+#endif
+
 	/**
 	 * The safe area for all content on TVs (see http://en.wikipedia.org/wiki/Safe_area_%28television%29) - content will be inset 
 	 * Left - X
@@ -428,15 +436,22 @@ public:
 	GenericApplication( const TSharedPtr< ICursor >& InCursor )
 		: Cursor( InCursor )
 		, MessageHandler( MakeShareable( new FGenericApplicationMessageHandler() ) )
+#if WITH_ACCESSIBILITY
+		, AccessibleMessageHandler(MakeShareable(new FGenericAccessibleMessageHandler()))
+#endif
 	{
 
 	}
-
 	virtual ~GenericApplication() {}
 
 	virtual void SetMessageHandler( const TSharedRef< FGenericApplicationMessageHandler >& InMessageHandler ) { MessageHandler = InMessageHandler; }
 
 	TSharedRef< FGenericApplicationMessageHandler > GetMessageHandler() { return MessageHandler; }
+
+#if WITH_ACCESSIBILITY
+	virtual void SetAccessibleMessageHandler(const TSharedRef<FGenericAccessibleMessageHandler>& InAccessibleMessageHandler) { AccessibleMessageHandler = InAccessibleMessageHandler; }
+	TSharedRef<FGenericAccessibleMessageHandler> GetAccessibleMessageHandler() const { return AccessibleMessageHandler; }
+#endif
 
 	virtual void PollGameDeviceState( const float TimeDelta ) { }
 
@@ -461,6 +476,8 @@ public:
 
 	/** @return Native window under the mouse cursor. */
 	virtual TSharedPtr< FGenericWindow > GetWindowUnderCursor() { return TSharedPtr< FGenericWindow >( nullptr ); }
+
+	virtual bool IsMinimized() const { return false; }
 
 	virtual void SetHighPrecisionMouseMode( const bool Enable, const TSharedPtr< FGenericWindow >& InWindow ) { };
 
@@ -541,6 +558,12 @@ public:
 protected:
 
 	TSharedRef< class FGenericApplicationMessageHandler > MessageHandler;
+
+#if WITH_ACCESSIBILITY
+	TSharedRef<FGenericAccessibleMessageHandler> AccessibleMessageHandler;
+	
+#endif
+
 	
 	/** Trigger the OnDisplayMetricsChanged event with the argument 'InMetrics' */
 	void BroadcastDisplayMetricsChanged( const FDisplayMetrics& InMetrics ){ OnDisplayMetricsChangedEvent.Broadcast( InMetrics ); }

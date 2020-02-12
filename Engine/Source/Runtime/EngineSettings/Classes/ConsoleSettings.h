@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -85,6 +85,10 @@ class ENGINESETTINGS_API UConsoleSettings
 	/** Whether we legacy bottom-to-top ordering or regular top-to-bottom ordering */
 	UPROPERTY(config, EditAnywhere, Category = AutoComplete)
 	bool bOrderTopToBottom;
+
+	/** Display the first line of any available help text in the auto-complete window, if a description isn't available */
+	UPROPERTY(config, EditAnywhere, Category = AutoComplete)
+	bool bDisplayHelpInAutoComplete = true;
 
 	/** The color used for text input. */
 	UPROPERTY(config, EditAnywhere, Category=Colors)

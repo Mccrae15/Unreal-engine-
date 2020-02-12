@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 using System;
 using System.Collections.Generic;
@@ -38,6 +38,12 @@ namespace UnrealBuildTool
 			}
 		}
 
+		bool HostSupportsVSAndroid()
+		{
+			// Only supported on Windows (VS Mac is a thing..)
+			return BuildHostPlatform.Current.Platform.IsInGroup(UnrealPlatformGroup.Microsoft);
+		}
+
 		bool IsVSAndroidSupportInstalled()
 		{
 			if (VSSupportChecked)
@@ -45,6 +51,12 @@ namespace UnrealBuildTool
 				return VSDebuggingEnabled;
 			}
 			VSSupportChecked = true;
+
+
+			if (!HostSupportsVSAndroid())
+			{
+				return false;
+			}
 
 			//check to make sure Cross Platform Tools are installed for MS
 
@@ -86,6 +98,12 @@ namespace UnrealBuildTool
 			}
 
 			CheckedForNsight = true;
+
+			if (!HostSupportsVSAndroid())
+			{
+				NsightInstalled = false;
+				return false;
+			}
 
 			// NOTE: there is now a registry key that we can use instead at:
 			//			HKEY_LOCAL_MACHINE\SOFTWARE\Wow6432Node\NVIDIA Corporation\Nsight Tegra\Version
@@ -404,7 +422,6 @@ namespace UnrealBuildTool
 								"	<PropertyGroup Label=\"UserMacros\">" + ProjectFileGenerator.NewLine +
 								"		<ANDROID_HOME>" + vsAndroidSDKPath + "</ANDROID_HOME>" + ProjectFileGenerator.NewLine +
 								"		<JAVA_HOME>$(VS_JavaHome)</JAVA_HOME>" + ProjectFileGenerator.NewLine +
-								"		<ANT_HOME>$(VS_AntHome)</ANT_HOME>" + ProjectFileGenerator.NewLine +
 								"		<NDKROOT>$(VS_NdkRoot)</NDKROOT>" + ProjectFileGenerator.NewLine +
 								"	</PropertyGroup>" + ProjectFileGenerator.NewLine +
 								"	<PropertyGroup />" + ProjectFileGenerator.NewLine +
@@ -416,10 +433,6 @@ namespace UnrealBuildTool
 								"		</BuildMacro>" + ProjectFileGenerator.NewLine +
 								"		<BuildMacro Include=\"JAVA_HOME\">" + ProjectFileGenerator.NewLine +
 								"			<Value>$(JAVA_HOME)</Value>" + ProjectFileGenerator.NewLine +
-								"			<EnvironmentVariable>true</EnvironmentVariable>" + ProjectFileGenerator.NewLine +
-								"		</BuildMacro>" + ProjectFileGenerator.NewLine +
-								"		<BuildMacro Include=\"ANT_HOME\">" + ProjectFileGenerator.NewLine +
-								"			<Value>$(ANT_HOME)</Value>" + ProjectFileGenerator.NewLine +
 								"			<EnvironmentVariable>true</EnvironmentVariable>" + ProjectFileGenerator.NewLine +
 								"		</BuildMacro>" + ProjectFileGenerator.NewLine +
 								"		<BuildMacro Include=\"NDKROOT\">" + ProjectFileGenerator.NewLine +

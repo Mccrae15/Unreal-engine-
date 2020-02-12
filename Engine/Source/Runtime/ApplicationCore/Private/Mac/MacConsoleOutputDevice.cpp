@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "Mac/MacConsoleOutputDevice.h"
 #include "Misc/App.h"
@@ -115,20 +115,25 @@ void FMacConsoleOutputDevice::DestroyConsole()
 {
 	if (ConsoleHandle)
 	{
-		do
-		{
-			FMacPlatformApplicationMisc::PumpMessages( true );
-		} while(OutstandingTasks);
-
 		SaveToINI();
-		
+
+		FMacConsoleWindow* ConsoleWindow = ConsoleHandle;
+		ConsoleHandle = nullptr; // Stop further serialization as soon as possible
+
+		if ([NSThread isGameThread])
+		{
+			do
+			{
+				FMacPlatformApplicationMisc::PumpMessages( true );
+			} while(OutstandingTasks);
+		}
+
 		MainThreadCall(^{
 			SCOPED_AUTORELEASE_POOL;
 			if( TextViewTextColor )
 				[TextViewTextColor release];
 			
-			[ConsoleHandle close];
-			ConsoleHandle = NULL;
+			[ConsoleWindow close];
 			TextViewTextColor = NULL;
 		}, UE4NilEventMode, true);
 	}
@@ -178,8 +183,8 @@ void FMacConsoleOutputDevice::Serialize( const TCHAR* Data, ELogVerbosity::Type 
 					
 					// turn the string into a bunch of 0's and 1's
 					TCHAR String[9];
-					FMemory::Memset(String, 0, sizeof(TCHAR) * ARRAY_COUNT(String));
-					FCString::Strncpy(String, Data, ARRAY_COUNT(String));
+					FMemory::Memset(String, 0, sizeof(TCHAR) * UE_ARRAY_COUNT(String));
+					FCString::Strncpy(String, Data, UE_ARRAY_COUNT(String));
 					for (TCHAR* S = String; *S; S++)
 					{
 						*S -= '0';

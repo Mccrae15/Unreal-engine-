@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -22,7 +22,7 @@ public:
 	static CORE_API FTlsAutoCleanup* Get( TFunctionRef<FTlsAutoCleanup*()> CreateInstance, uint32& TlsSlot );
 
 	/**
-	 * @return True if an instance of the singleton exists on the current thread.
+	 * @return an instance of the singleton if it exists on the current thread.
 	 */
 	static CORE_API FTlsAutoCleanup* TryGet(uint32& TlsSlot);
 };
@@ -35,6 +35,16 @@ public:
 template < class T >
 class TThreadSingleton : public FTlsAutoCleanup
 {
+#if PLATFORM_UNIX || PLATFORM_APPLE
+	/**
+	 * @return TLS slot that holds a TThreadSingleton.
+	 */
+	CORE_API static uint32& GetTlsSlot()
+	{
+		static uint32 TlsSlot = 0xFFFFFFFF;
+		return TlsSlot;
+	}
+#else
 	/**
 	 * @return TLS slot that holds a TThreadSingleton.
 	 */
@@ -43,6 +53,7 @@ class TThreadSingleton : public FTlsAutoCleanup
 		static uint32 TlsSlot = 0xFFFFFFFF;
 		return TlsSlot;
 	}
+#endif
 
 protected:
 
@@ -73,6 +84,15 @@ public:
 	}
 
 	/**
+	 *	@param CreateInstance Function to call when a new instance must be created.
+	 *	@return an instance of a singleton for the current thread.
+	 */
+	FORCEINLINE static T& Get(TFunctionRef<FTlsAutoCleanup*()> CreateInstance)
+	{
+		return *(T*)FThreadSingletonInitializer::Get(CreateInstance, T::GetTlsSlot()); //-V572
+	}
+
+	/**
 	 *	@return pointer to an instance of a singleton for the current thread. May be nullptr, prefer to use access by reference
 	 */
 	FORCEINLINE static T* TryGet()
@@ -80,4 +100,3 @@ public:
 		return (T*)FThreadSingletonInitializer::TryGet( T::GetTlsSlot() );
 	}
 };
-

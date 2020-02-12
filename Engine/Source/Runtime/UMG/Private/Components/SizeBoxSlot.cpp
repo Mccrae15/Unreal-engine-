@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "Components/SizeBoxSlot.h"
 #include "Widgets/SNullWidget.h"
@@ -15,8 +15,6 @@ USizeBoxSlot::USizeBoxSlot(const FObjectInitializer& ObjectInitializer)
 
 	HorizontalAlignment = HAlign_Fill;
 	VerticalAlignment = VAlign_Fill;
-
-	SBox::FArguments SizeBoxDefaults;
 }
 
 void USizeBoxSlot::ReleaseSlateResources(bool bReleaseChildren)

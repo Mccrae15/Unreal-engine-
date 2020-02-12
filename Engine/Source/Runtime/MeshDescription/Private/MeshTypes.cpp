@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "MeshTypes.h"
 
@@ -9,6 +9,7 @@ const FElementID FElementID::Invalid( TNumericLimits<uint32>::Max() );
 const FVertexID FVertexID::Invalid( TNumericLimits<uint32>::Max() );
 const FVertexInstanceID FVertexInstanceID::Invalid( TNumericLimits<uint32>::Max() );
 const FEdgeID FEdgeID::Invalid( TNumericLimits<uint32>::Max() );
+const FTriangleID FTriangleID::Invalid(TNumericLimits<uint32>::Max());
 const FPolygonGroupID FPolygonGroupID::Invalid( TNumericLimits<uint32>::Max() );
 const FPolygonID FPolygonID::Invalid( TNumericLimits<uint32>::Max() );
 

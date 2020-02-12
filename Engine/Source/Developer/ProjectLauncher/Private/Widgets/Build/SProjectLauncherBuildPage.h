@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -73,7 +73,7 @@ private:
 	EVisibility ShowBuildConfiguration() const;
 
 	/** Callback for selecting a build configuration. */
-	void HandleBuildConfigurationSelectorConfigurationSelected(EBuildConfigurations::Type Configuration);
+	void HandleBuildConfigurationSelectorConfigurationSelected(EBuildConfiguration Configuration);
 
 	/** Callback for getting the content text of the build configuration selector. */
 	FText HandleBuildConfigurationSelectorText() const;

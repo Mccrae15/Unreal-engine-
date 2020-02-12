@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "FrameNumberDetailsCustomization.h"
 #include "IDetailPropertyRow.h"
@@ -50,15 +50,17 @@ void FFrameNumberDetailsCustomization::CustomizeChildren(TSharedRef<IPropertyHan
 		[
 			SNew(STextBlock)
 			.Text(PropertyHandle->GetPropertyDisplayName())
-			.ToolTipText(LOCTEXT("TimeLabelTooltip", "Time field which takes timecode, frames and seconds formats."))
+			.ToolTipText(PropertyHandle->GetToolTipText())
 			.Font(CustomizationUtils.GetRegularFont())
 		]
 		.ValueContent()
 		[
 			SNew(SEditableTextBox)
 			.Text(this, &FFrameNumberDetailsCustomization::OnGetTimeText)
+			.ToolTipText(LOCTEXT("TimeLabelTooltip", "Time field which takes timecode, frames and seconds formats."))
 			.OnTextCommitted(this, &FFrameNumberDetailsCustomization::OnTimeTextCommitted)
 			.SelectAllTextWhenFocused(true)
+			.ClearKeyboardFocusOnCommit(false)
 			.RevertTextOnEscape(true)
 			.Font(IDetailLayoutBuilder::GetDetailFont())
 		];
@@ -67,21 +69,31 @@ void FFrameNumberDetailsCustomization::CustomizeChildren(TSharedRef<IPropertyHan
 FText FFrameNumberDetailsCustomization::OnGetTimeText() const
 {
 	int32 CurrentValue = 0.0;
-	FrameNumberProperty->GetValue(CurrentValue);
+	FPropertyAccess::Result Result = FrameNumberProperty->GetValue(CurrentValue);
 
+	if (Result == FPropertyAccess::MultipleValues)
+	{
+		return LOCTEXT("MultipleValues", "Multiple Values");
+	}
 	return FText::FromString(NumericTypeInterface->ToString(CurrentValue));
 }
 
 void FFrameNumberDetailsCustomization::OnTimeTextCommitted(const FText& InText, ETextCommit::Type CommitInfo)
 {
-	int32 ExistingValue = 0.0;
-	FrameNumberProperty->GetValue(ExistingValue);
-	TOptional<double> TickResolution = NumericTypeInterface->FromString(InText.ToString(), ExistingValue);
-	if (TickResolution.IsSet())
+	TArray<FString> PerObjectValueStrs;
+	FrameNumberProperty->GetPerObjectValues(PerObjectValueStrs);
+
+	for (FString& ValueStr : PerObjectValueStrs)
 	{
-		double ClampedValue = FMath::Clamp(TickResolution.GetValue(), (double)UIClampMin, (double)UIClampMax);
-		FrameNumberProperty->SetValue((int32)ClampedValue);
+		int32 ExistingValue = FCString::Atoi(*ValueStr);
+		TOptional<double> TickResolution = NumericTypeInterface->FromString(InText.ToString(), ExistingValue);
+		if (TickResolution.IsSet())
+		{
+			double ClampedValue = FMath::Clamp(TickResolution.GetValue(), (double)UIClampMin, (double)UIClampMax);
+			ValueStr = FString::FromInt((int32)ClampedValue);
+		}
 	}
+	FrameNumberProperty->SetPerObjectValues(PerObjectValueStrs);
 }
 
 #undef LOCTEXT_NAMESPACE

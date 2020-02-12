@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 // Copyright (C) Microsoft. All rights reserved.
 
 /*=============================================================================
@@ -49,9 +49,10 @@ class FSkeletalMeshVertexClothBuffer;
 struct FClothSimulData;
 struct FSkelMeshRenderSection;
 struct FVertexBufferAndSRV;
+struct FRayTracingGeometrySegment;
 
 // Can the skin cache be used (ie shaders added, etc)
-extern ENGINE_API bool IsGPUSkinCacheAvailable();
+extern ENGINE_API bool IsGPUSkinCacheAvailable(EShaderPlatform Platform);
 
 // Is it actually enabled?
 extern ENGINE_API int32 GEnableGPUSkinCache;
@@ -103,13 +104,15 @@ public:
 	ENGINE_API FGPUSkinCache(bool bInRequiresMemoryLimit);
 	ENGINE_API ~FGPUSkinCache();
 
+	struct FCachedGeometrySection GetCachedGeometry(FGPUSkinCacheEntry* InOutEntry, uint32 SectionId);
+
 	void ProcessEntry(FRHICommandListImmediate& RHICmdList, FGPUBaseSkinVertexFactory* VertexFactory,
 		FGPUSkinPassthroughVertexFactory* TargetVertexFactory, const FSkelMeshRenderSection& BatchElement, FSkeletalMeshObjectGPUSkin* Skin,
 		const FMorphVertexBuffer* MorphVertexBuffer, const FSkeletalMeshVertexClothBuffer* ClothVertexBuffer, const FClothSimulData* SimData,
 		const FMatrix& ClothLocalToWorld, float ClothBlendWeight, uint32 RevisionNumber, int32 Section, FGPUSkinCacheEntry*& InOutEntry);
 
 	static void SetVertexStreams(FGPUSkinCacheEntry* Entry, int32 Section, FRHICommandList& RHICmdList,
-		class FShader* Shader, const FGPUSkinPassthroughVertexFactory* VertexFactory,
+		class FRHIVertexShader* ShaderRHI, const FGPUSkinPassthroughVertexFactory* VertexFactory,
 		uint32 BaseVertexIndex, FShaderResourceParameter PreviousStreamBuffer);
 
 	static void GetShaderBindings(
@@ -118,6 +121,7 @@ public:
 		const FShader* Shader,
 		const FGPUSkinPassthroughVertexFactory* VertexFactory,
 		uint32 BaseVertexIndex,
+		FShaderResourceParameter GPUSkinCachePositionBuffer,
 		FShaderResourceParameter GPUSkinCachePreviousPositionBuffer,
 		class FMeshDrawSingleShaderBindings& ShaderBindings,
 		FVertexInputStreamArray& VertexStreams);
@@ -133,9 +137,13 @@ public:
 		return nullptr;
 	}
 
-	static FRWBuffer* GetUnderlyingPositionBuffer(FGPUSkinCacheEntry* Entry);
+#if RHI_RAYTRACING
+	static void GetRayTracingSegmentVertexBuffers(const FGPUSkinCacheEntry& SkinCacheEntry, TArrayView<FRayTracingGeometrySegment> OutSegments);
+#endif // RHI_RAYTRACING
 
 	static bool IsEntryValid(FGPUSkinCacheEntry* SkinCacheEntry, int32 Section);
+
+	static bool UseIntermediateTangents();
 
 	inline uint64 GetExtraRequiredMemoryAndReset()
 	{
@@ -158,11 +166,15 @@ public:
 		{
 			for (int32 Index = 0; Index < NUM_BUFFERS; ++Index)
 			{
-				RWBuffers[Index].Initialize(4, NumVertices * 3, PF_R32_FLOAT, BUF_Static);
+				RWBuffers[Index].Initialize(4, NumVertices * 3, PF_R32_FLOAT, BUF_Static, TEXT("SkinCacheVertices"));
 			}
 			if (WithTangents)
 			{
-				Tangents.Initialize(8, NumVertices * 2, PF_R16G16B16A16_SNORM, BUF_Static);
+				Tangents.Initialize(8, NumVertices * 2, PF_R16G16B16A16_SNORM, BUF_Static, TEXT("SkinCacheTangents"));
+				if (FGPUSkinCache::UseIntermediateTangents())
+				{
+					IntermediateTangents.Initialize(8, NumVertices * 2, PF_R16G16B16A16_SNORM, BUF_Static, TEXT("SkinCacheIntermediateTangents"));
+				}
 			}
 		}
 
@@ -175,6 +187,7 @@ public:
 			if (WithTangents)
 			{
 				Tangents.Release();
+				IntermediateTangents.Release();
 			}
 		}
 
@@ -182,7 +195,12 @@ public:
 		{
 			uint64 PositionBufferSize = 4 * 3 * NumVertices * NUM_BUFFERS;
 			uint64 TangentBufferSize = WithTangents ? 2 * 4 * NumVertices : 0;
-			return TangentBufferSize + PositionBufferSize;
+			uint64 IntermediateTangentBufferSize = 0;
+			if (FGPUSkinCache::UseIntermediateTangents())
+			{
+				IntermediateTangentBufferSize = WithTangents ? 2 * 4 * NumVertices : 0;
+			}
+			return TangentBufferSize + IntermediateTangentBufferSize + PositionBufferSize;
 		}
 
 		uint64 GetNumBytes() const
@@ -195,13 +213,19 @@ public:
 			return WithTangents ? &Tangents : nullptr;
 		}
 
-		void RemoveAllFromTransitionArray(TArray<FUnorderedAccessViewRHIParamRef>& BuffersToTransition);
+		FRWBuffer* GetIntermediateTangentBuffer()
+		{
+			return WithTangents ? &IntermediateTangents : nullptr;
+		}
+
+		void RemoveAllFromTransitionArray(TArray<FRHIUnorderedAccessView*>& BuffersToTransition);
 
 	private:
 		// Output of the GPU skinning (ie Pos, Normals)
 		FRWBuffer RWBuffers[NUM_BUFFERS];
 
 		FRWBuffer Tangents;
+		FRWBuffer IntermediateTangents;
 		const uint32 NumVertices;
 		const bool WithTangents;
 	};
@@ -248,6 +272,11 @@ public:
 			return Allocation->GetTangentBuffer();
 		}
 
+		FRWBuffer* GetIntermediateTangentBuffer()
+		{
+			return Allocation->GetIntermediateTangentBuffer();
+		}
+
 		void Advance(const FVertexBufferAndSRV& BoneBuffer1, uint32 Revision1, const FVertexBufferAndSRV& BoneBuffer2, uint32 Revision2)
 		{
 			const FVertexBufferAndSRV* InBoneBuffers[2] = { &BoneBuffer1 , &BoneBuffer2 };
@@ -283,19 +312,23 @@ public:
 #if RHI_RAYTRACING
 	void AddRayTracingGeometryToUpdate(FRayTracingGeometry* RayTracingGeometry)
 	{
-		FAccelerationStructureUpdateParams Params;
-		Params.Geometry     = RayTracingGeometry->RayTracingGeometryRHI;
-		Params.VertexBuffer = RayTracingGeometry->Initializer.PositionVertexBuffer;
-
-		RayTracingGeometriesToUpdate.Add(Params);
+		RayTracingGeometriesToUpdate.Add(RayTracingGeometry);
 	}
 
 	void CommitRayTracingGeometryUpdates(FRHICommandList& RHICmdList);
+
+	void RemoveRayTracingGeometryUpdate(FRayTracingGeometry* RayTracingGeometry)
+	{
+		if (RayTracingGeometriesToUpdate.Find(RayTracingGeometry) != nullptr)
+			RayTracingGeometriesToUpdate.Remove(RayTracingGeometry);
+	}
 #endif // RHI_RAYTRACING
 
 protected:
-	TArray<FUnorderedAccessViewRHIParamRef> BuffersToTransition;
-	TArray<FAccelerationStructureUpdateParams> RayTracingGeometriesToUpdate;
+	TArray<FRHIUnorderedAccessView*> BuffersToTransition;
+#if RHI_RAYTRACING
+	TSet<FRayTracingGeometry*> RayTracingGeometriesToUpdate;
+#endif // RHI_RAYTRACING
 
 	TArray<FRWBuffersAllocation*> Allocations;
 	TArray<FGPUSkinCacheEntry*> Entries;
@@ -305,7 +338,6 @@ protected:
 	void DispatchUpdateSkinning(FRHICommandListImmediate& RHICmdList, FGPUSkinCacheEntry* Entry, int32 Section, uint32 RevisionNumber);
 
 	void Cleanup();
-
 	static void ReleaseSkinCacheEntry(FGPUSkinCacheEntry* SkinCacheEntry);
 	static FGPUSkinBatchElementUserData* InternalGetFactoryUserData(FGPUSkinCacheEntry* Entry, int32 Section);
 	void InvalidateAllEntries();

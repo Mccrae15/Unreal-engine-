@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "TileMapEditing/PaperTileMapDetailsCustomization.h"
 #include "Layout/Margin.h"
@@ -19,7 +19,7 @@
 #include "DetailCategoryBuilder.h"
 #include "PaperTileSet.h"
 #include "TileMapEditing/EdModeTileMap.h"
-#include "Toolkits/AssetEditorManager.h"
+
 #include "IDetailsView.h"
 #include "IAssetTools.h"
 #include "AssetToolsModule.h"
@@ -29,6 +29,7 @@
 #include "TileMapEditing/STileLayerList.h"
 #include "ScopedTransaction.h"
 #include "IPropertyUtilities.h"
+#include "Subsystems/AssetEditorSubsystem.h"
 
 #define LOCTEXT_NAMESPACE "Paper2D"
 
@@ -266,7 +267,7 @@ void FPaperTileMapDetailsCustomization::CustomizeDetails(IDetailLayoutBuilder& D
 			TArray<UObject*> ListOfSelectedLayers;
 			ListOfSelectedLayers.Add(SelectedLayer);
 
-			for (const UProperty* TestProperty : TFieldRange<UProperty>(SelectedLayer->GetClass()))
+			for (const FProperty* TestProperty : TFieldRange<FProperty>(SelectedLayer->GetClass()))
 			{
 				if (TestProperty->HasAnyPropertyFlags(CPF_Edit))
 				{
@@ -288,7 +289,7 @@ void FPaperTileMapDetailsCustomization::CustomizeDetails(IDetailLayoutBuilder& D
 		TArray<UObject*> ListOfTileMaps;
 		ListOfTileMaps.Add(TileMap);
 
-		for (const UProperty* TestProperty : TFieldRange<UProperty>(TileMap->GetClass()))
+		for (const FProperty* TestProperty : TFieldRange<FProperty>(TileMap->GetClass()))
 		{
 			if (TestProperty->HasAnyPropertyFlags(CPF_Edit))
 			{
@@ -319,7 +320,7 @@ FReply FPaperTileMapDetailsCustomization::EnterTileMapEditingMode()
 		}
 		else
 		{
-			FAssetEditorManager::Get().OpenEditorForAsset(TileMapComponent->TileMap);
+			GEditor->GetEditorSubsystem<UAssetEditorSubsystem>()->OpenEditorForAsset(TileMapComponent->TileMap);
 		}
 	}
 	return FReply::Handled();

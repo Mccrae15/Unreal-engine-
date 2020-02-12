@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -10,6 +10,7 @@
 #include "Logging/LogMacros.h"
 #include "Math/Vector2D.h"
 #include "Math/Vector.h"
+#include "Serialization/MemoryLayout.h"
 
 /**
  * A 4D homogeneous vector, 4x1 FLOATs, 16-byte aligned.
@@ -64,6 +65,13 @@ public:
 	 * @param InZW A 2D vector holding the Z- and W-components.
 	 */
 	explicit FVector4(FVector2D InXY, FVector2D InZW);
+
+	/**
+	 * Creates and initializes a new vector from an int vector value.
+	 *
+	 * @param InVector IntVector used to set vector.
+	 */
+	FVector4(const FIntVector4& InVector);
 
 	/**
 	 * Creates and initializes a new vector to zero.
@@ -426,6 +434,8 @@ public:
 
 } GCC_ALIGN(16);
 
+DECLARE_INTRINSIC_TYPE_LAYOUT(FVector4);
+
 
 /**
  * Creates a hash value from a FVector4.
@@ -493,6 +503,13 @@ FORCEINLINE FVector4::FVector4(FVector2D InXY, FVector2D InZW)
 	DiagnosticCheckNaN();
 }
 
+FORCEINLINE FVector4::FVector4(const FIntVector4& InVector)
+	: X((float)InVector.X)
+	, Y((float)InVector.Y)
+	, Z((float)InVector.Z)
+	, W((float)InVector.W)
+{
+}
 
 FORCEINLINE float& FVector4::operator[](int32 ComponentIndex)
 {
@@ -755,4 +772,12 @@ FORCEINLINE FVector::FVector( const FVector4& V )
 	: X(V.X), Y(V.Y), Z(V.Z)
 {
 	DiagnosticCheckNaN();
+}
+
+/* FVector2D inline functions
+ *****************************************************************************/
+
+FORCEINLINE FVector2D::FVector2D(const FVector4& V)
+	: X(V.X), Y(V.Y)
+{
 }

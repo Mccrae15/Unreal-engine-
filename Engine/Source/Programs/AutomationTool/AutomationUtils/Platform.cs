@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 using System;
 using System.Collections.Generic;
@@ -41,8 +41,6 @@ namespace AutomationTool
 	/// </summary>
 	public class Platform : CommandUtils
 	{
-		#region Intialization
-
 		private static Dictionary<TargetPlatformDescriptor, Platform> AllPlatforms = new Dictionary<TargetPlatformDescriptor, Platform>();
 		internal static void InitializePlatforms(Assembly[] AssembliesWithPlatforms = null)
 		{
@@ -54,9 +52,9 @@ namespace AutomationTool
 				CreatePlatformsFromAssembly(ScriptAssembly);
 			}
 			// Create dummy platforms for platforms we don't support
-			foreach (var PlatformType in Enum.GetValues(typeof(UnrealTargetPlatform)))
+			foreach (UnrealTargetPlatform PlatformType in UnrealTargetPlatform.GetValidPlatforms())
 			{
-				var TargetDesc = new TargetPlatformDescriptor((UnrealTargetPlatform)PlatformType);
+				var TargetDesc = new TargetPlatformDescriptor(PlatformType);
 				Platform ExistingInstance;
 				if (AllPlatforms.TryGetValue(TargetDesc, out ExistingInstance) == false)
 				{
@@ -111,16 +109,17 @@ namespace AutomationTool
 					}
 					else
 					{
-						LogWarning("Platform {0} already exists", PotentialPlatformType.Name);
+						if (ExistingInstance.GetType() != PlatformInstance.GetType())
+						{
+							LogWarning("Platform {0} already exists", PotentialPlatformType.Name);
+						}
 					}
 				}
 			}
 		}
 
-		#endregion
-
-		protected UnrealTargetPlatform TargetPlatformType = UnrealTargetPlatform.Unknown;
-		protected UnrealTargetPlatform TargetIniPlatformType = UnrealTargetPlatform.Unknown;
+		protected UnrealTargetPlatform TargetPlatformType;
+		protected UnrealTargetPlatform TargetIniPlatformType;
 
 		public Platform(UnrealTargetPlatform PlatformType)
 		{
@@ -182,15 +181,15 @@ namespace AutomationTool
 			LogWarning("{0} does not implement GetConnectedDevices", PlatformType);
 		}
 
-        /// <summary>
-        /// Allow platform specific work prior to touching the staging directory
-        /// </summary>
-        /// <param name="Params"></param>
-        /// <param name="SC"></param>
-        public virtual void PreStage(ProjectParams Params, DeploymentContext SC)
-        {
-            // do nothing on most platforms
-        }
+		/// <summary>
+		/// Allow platform specific work prior to touching the staging directory
+		/// </summary>
+		/// <param name="Params"></param>
+		/// <param name="SC"></param>
+		public virtual void PreStage(ProjectParams Params, DeploymentContext SC)
+		{
+			// do nothing on most platforms
+		}
 
 
 		/// <summary>
@@ -378,14 +377,14 @@ namespace AutomationTool
 		{
 			return LocalPath;
 		}
-        /// <summary>
-        /// Returns a list of the compiler produced debug file extensions
-        /// </summary>
-        /// <returns>a list of the compiler produced debug file extensions</returns>
-        public virtual List<string> GetDebugFileExtensions()
-        {
-            return new List<string>();
-        }
+		/// <summary>
+		/// Returns a list of the compiler produced debug file extensions
+		/// </summary>
+		/// <returns>a list of the compiler produced debug file extensions</returns>
+		public virtual List<string> GetDebugFileExtensions()
+		{
+			return new List<string>();
+		}
 
 		/// <summary>
 		/// UnrealTargetPlatform type for this platform.
@@ -425,6 +424,16 @@ namespace AutomationTool
 		public virtual bool LaunchViaUFE
 		{
 			get { return false; }
+		}
+
+		/// <summary>
+		/// Gets extra launch commandline arguments for this platform.
+		/// </summary>
+		/// <param name="Params"> ProjectParams </param>
+		/// <returns>Launch platform string.</returns>
+		public virtual string GetLaunchExtraCommandLine(ProjectParams Params)
+		{
+			return "";
 		}
 
 		/// <summary>
@@ -546,9 +555,7 @@ namespace AutomationTool
 			get { return true; }
 		}
 
-		#region Hooks
-
-		public virtual void PreBuildAgenda(UE4Build Build, UE4Build.BuildAgenda Agenda)
+		public virtual void PreBuildAgenda(UE4Build Build, UE4Build.BuildAgenda Agenda, ProjectParams Params)
 		{
 
 		}
@@ -604,10 +611,6 @@ namespace AutomationTool
 			return new UnrealTargetPlatform[] { PlatformType };
 		}
 
-		#endregion
-
-		#region Utilities
-
 		// let the platform set the exe extension if it chooses (otherwise, use
 		// the switch statement in GetExeExtension below)
 		protected virtual string GetPlatformExeExtension()
@@ -624,22 +627,25 @@ namespace AutomationTool
 				return PlatformExeExtension;
 			}
 
-			switch (Target)
+			if (Target == UnrealTargetPlatform.Win32 || Target == UnrealTargetPlatform.Win64 || Target == UnrealTargetPlatform.XboxOne|| Target == UnrealTargetPlatform.HoloLens)
 			{
-				case UnrealTargetPlatform.Win32:
-				case UnrealTargetPlatform.Win64:
-				case UnrealTargetPlatform.XboxOne:
-					return ".exe";
-				case UnrealTargetPlatform.PS4:
-					return ".self";
-				case UnrealTargetPlatform.IOS:
-					return ".stub";
-				case UnrealTargetPlatform.Linux:
-					return "";
-				case UnrealTargetPlatform.HTML5:
-					return ".js";
-				case UnrealTargetPlatform.Mac:
-					return ".app";
+				return ".exe";
+			}
+			if (Target == UnrealTargetPlatform.PS4)
+			{
+				return ".self";
+			}
+			if (Target == UnrealTargetPlatform.IOS)
+			{
+				return ".stub";
+			}
+			if (Target == UnrealTargetPlatform.Linux || Target == UnrealTargetPlatform.LinuxAArch64)
+			{
+				return "";
+			}
+			if (Target == UnrealTargetPlatform.Mac)
+			{
+				return ".app";
 			}
 
 			return String.Empty;
@@ -694,7 +700,5 @@ namespace AutomationTool
 
 			return ValidPlatforms;
 		}
-
-		#endregion
 	}
 }

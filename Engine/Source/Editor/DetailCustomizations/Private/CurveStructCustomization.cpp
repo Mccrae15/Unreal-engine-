@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "CurveStructCustomization.h"
 #include "Curves/CurveFloat.h"
@@ -12,13 +12,14 @@
 #include "Widgets/Images/SImage.h"
 #include "Widgets/Input/SButton.h"
 #include "Dialogs/Dialogs.h"
-#include "Toolkits/AssetEditorManager.h"
+
 #include "Dialogs/DlgPickAssetPath.h"
 #include "PackageTools.h"
 #include "MiniCurveEditor.h"
 #include "AssetRegistryModule.h"
 #include "SCurveEditor.h"
 #include "Engine/Selection.h"
+#include "Subsystems/AssetEditorSubsystem.h"
 
 #define LOCTEXT_NAMESPACE "CurveStructCustomization"
 
@@ -108,7 +109,7 @@ void FCurveStructCustomization::CustomizeHeader( TSharedRef<IPropertyHandle> InS
 		}
 		else
 		{
-			CurveWidget->SetCurveOwner(this);
+			CurveWidget->SetCurveOwner(this, InStructPropertyHandle->IsEditable());
 		}
 	}
 	else
@@ -276,7 +277,7 @@ void FCurveStructCustomization::OnExternalCurveChanged(TSharedRef<IPropertyHandl
 		}
 		else
 		{
-			CurveWidget->SetCurveOwner(this);
+			CurveWidget->SetCurveOwner(this, CurvePropertyHandle->IsEditable());
 		}
 
 		CurvePropertyHandle->NotifyPostChange();
@@ -380,7 +381,7 @@ FReply FCurveStructCustomization::OnCurvePreviewDoubleClick( const FGeometry& In
 	{
 		if (RuntimeCurve->ExternalCurve)
 		{
-			FAssetEditorManager::Get().OpenEditorForAsset(RuntimeCurve->ExternalCurve);
+			GEditor->GetEditorSubsystem<UAssetEditorSubsystem>()->OpenEditorForAsset(RuntimeCurve->ExternalCurve);
 		}
 		else
 		{

@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "RuntimeAssetCacheBuilders.h"
 #include "Serialization/LargeMemoryWriter.h"
@@ -125,7 +125,7 @@ void UExampleTextureCacheBuilder::SerializeAsset(FArchive& Ar)
 
 		Ar << PlatformData->SizeX;
 		Ar << PlatformData->SizeY;
-		Ar << PlatformData->NumSlices;
+		Ar << PlatformData->PackedData;
 		if (Ar.IsLoading())
 		{
 			FString PixelFormatString;
@@ -136,6 +136,11 @@ void UExampleTextureCacheBuilder::SerializeAsset(FArchive& Ar)
 		{
 			FString PixelFormatString = PixelFormatEnum->GetNameByValue(PlatformData->PixelFormat).GetPlainNameString();
 			Ar << PixelFormatString;
+		}
+
+		if (PlatformData->GetHasOptData())
+		{
+			Ar << PlatformData->OptData;
 		}
 
 		int32 NumMips = PlatformData->Mips.Num();
@@ -183,7 +188,7 @@ void UExampleTextureCacheBuilder::SerializeAsset(FArchive& Ar)
 			}
 		}
 
-		uint32 LockFlags = Ar.IsSaving() ? LOCK_READ_ONLY : LOCK_READ_WRITE;
+		EBulkDataLockFlags LockFlags = Ar.IsSaving() ? LOCK_READ_ONLY : LOCK_READ_WRITE;
 		for (int32 MipIndex = FirstMip; MipIndex < LastMip; ++MipIndex)
 		{
 			FTexture2DMipMap& Mip = PlatformData->Mips[MipIndex];

@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "Net/UnitTestActorChannel.h"
 #include "Engine/Engine.h"
@@ -73,7 +73,7 @@ void UUnitTestActorChannel::NotifyActorChannelOpen(AActor* InActor, FInBunch& In
 		if (NetPlayerIndex == 0 && Connection->Driver != nullptr && Connection == Connection->Driver->ServerConnection)
 		{
 			// Implement only essential parts of the original function, as we want to block most of it (triggers level change code)
-			PC->Role = ROLE_AutonomousProxy;
+			PC->SetRole(ROLE_AutonomousProxy);
 			PC->NetConnection = Connection;
 
 			Connection->PlayerController = PC;

@@ -1,10 +1,11 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
 #include "CoreMinimal.h"
 #include "AudioMixerBuffer.h"
 #include "AudioMixerSourceManager.h"
+#include "Sound/SoundWave.h"
 
 namespace Audio
 {
@@ -42,15 +43,26 @@ namespace Audio
 		AsynchronousSkipFirstFrame
 	};
 
+	using FMixerSourceBufferPtr = TSharedPtr<class FMixerSourceBuffer>;
+
 	/** Class which handles decoding audio for a particular source buffer. */
-	class FMixerSourceBuffer
+	class FMixerSourceBuffer : public ISoundWaveClient
 	{
-	public:
-		FMixerSourceBuffer();
+	public:		
+		static FMixerSourceBufferPtr Create(FMixerBuffer& InBuffer, USoundWave& InWave, ELoopingMode InLoopingMode, bool bInIsSeeking, bool bInForceSyncDecode = false);
+
 		~FMixerSourceBuffer();
 
-		bool PreInit(FMixerBuffer* InBuffer, USoundWave* InWave, ELoopingMode InLoopingMode, bool bInIsSeeking);
 		bool Init();
+
+		// Sets the decoder to use for realtime async decoding
+		void SetDecoder(ICompressedAudioInfo* InCompressedAudioInfo);
+
+		// Sets the raw PCM data buffer to use for the source buffer
+		void SetPCMData(const FRawPCMDataBuffer& InPCMDataBuffer);
+
+		// Sets the precached buffers
+		void SetCachedRealtimeFirstBuffers(TArray<uint8>&& InPrecachedBuffer);
 
 		// Called by source manager when needing more buffers
 		void OnBufferEnd();
@@ -68,7 +80,7 @@ namespace Audio
 		bool DidBufferFinish() const { return bBufferFinished; }
 
 		// Called to start an async task to read more data
-		bool ReadMoreRealtimeData(const int32 BufferIndex, EBufferReadMode BufferReadMode);
+		bool ReadMoreRealtimeData(ICompressedAudioInfo* InDecoder, int32 BufferIndex, EBufferReadMode BufferReadMode);
 
 		// Returns true if async task is in progress
 		bool IsAsyncTaskInProgress() const;
@@ -79,17 +91,12 @@ namespace Audio
 		// Ensures the async task finishes
 		void EnsureAsyncTaskFinishes();
 
-		// Checks if sound wave is flagged begin destroy
-		bool IsBeginDestroy();
-
-		// Clear the sound wave reference
-		void ClearSoundWave();
-
 		// Begin and end generation on the audio render thread (audio mixer only)
 		void OnBeginGenerate();
 		void OnEndGenerate();
-
+		void ClearWave() { SoundWave = nullptr; }
 	private:
+		FMixerSourceBuffer(FMixerBuffer& InBuffer, USoundWave& InWave, ELoopingMode InLoopingMode, bool bInIsSeeking, bool bInForceSyncDecode = false);
 
 		void SubmitInitialPCMBuffers();
 		void SubmitInitialRealtimeBuffers();
@@ -104,15 +111,29 @@ namespace Audio
 		TArray<TSharedPtr<FMixerSourceVoiceBuffer>> SourceVoiceBuffers;
 		TQueue<TSharedPtr<FMixerSourceVoiceBuffer>> BufferQueue;
 		int32 CurrentBuffer;
-		FMixerBuffer* MixerBuffer;
+		// SoundWaves are only set for procedural sound waves
 		USoundWave* SoundWave;
 		IAudioTask* AsyncRealtimeAudioTask;
+		ICompressedAudioInfo* DecompressionState;
 		ELoopingMode LoopingMode;
-		bool bInitialized;
-		bool bBufferFinished;
-		bool bPlayedCachedBuffer;
-		bool bIsSeeking;
-		bool bLoopCallback;
+		int32 NumChannels;
+		Audio::EBufferType::Type BufferType;
+		int32 NumPrecacheFrames;
+		TArray<uint8> CachedRealtimeFirstBuffer;
 
+		FCriticalSection DtorCritSec;
+
+		uint32 bInitialized : 1;
+		uint32 bBufferFinished : 1;
+		uint32 bPlayedCachedBuffer : 1;
+		uint32 bIsSeeking : 1;
+		uint32 bLoopCallback : 1;
+		uint32 bProcedural : 1;
+		uint32 bIsBus : 1;
+		uint32 bForceSyncDecode : 1;
+	
+		virtual bool OnBeginDestroy(class USoundWave* Wave) override;
+		virtual bool OnIsReadyForFinishDestroy(class USoundWave* Wave) const override;
+		virtual void OnFinishDestroy(class USoundWave* Wave) override;
 	};
 }

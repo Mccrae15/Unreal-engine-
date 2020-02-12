@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -7,11 +7,11 @@
 #include "EngineDefines.h"
 #include "PhysXIncludes.h"
 #include "Stats/Stats.h"
-#include "Physics/PhysDerivedDataPublic.h"
+#include "PhysDerivedDataPublic.h"
 
 #if WITH_PHYSX && WITH_EDITOR
 #include "DerivedDataPluginInterface.h"
-#include "Physics/IPhysXCooking.h"
+#include "IPhysXCooking.h"
 
 class UBodySetup;
 struct FBodyInstance;

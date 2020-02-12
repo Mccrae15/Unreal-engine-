@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 #pragma once
 
 #include "CoreMinimal.h"
@@ -7,7 +7,6 @@
 #include "EngineDefines.h"
 #include "PhysxUserData.h"
 #include "ApexDestructionCustomPayload.h"
-#include "PhysicsEngine/BodyInstance.h"
 #include "Components/SkinnedMeshComponent.h"
 #include "DestructibleInterface.h"
 #include "DestructibleComponent.generated.h"
@@ -15,6 +14,7 @@
 class AController;
 class UDestructibleComponent;
 class USkeletalMesh;
+struct FBodyInstance;
 struct FCollisionShape;
 struct FNavigableGeometryExport;
 
@@ -154,7 +154,7 @@ public:
 
 	virtual void SetMaterial(int32 ElementIndex, UMaterialInterface* Material) override;
 	virtual void SetCollisionEnabled(ECollisionEnabled::Type NewType) override;
-    virtual void SetCollisionProfileName(FName InCollisionProfileName) override;
+    virtual void SetCollisionProfileName(FName InCollisionProfileName, bool bUpdateOverlaps=true) override;
 	virtual void OnActorEnableCollisionChanged() override;
 
 	virtual void SetCollisionResponseToChannel(ECollisionChannel Channel, ECollisionResponse NewResponse) override;

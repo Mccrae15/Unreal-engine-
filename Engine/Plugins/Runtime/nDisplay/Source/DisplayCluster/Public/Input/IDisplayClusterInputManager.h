@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -24,7 +24,7 @@ enum EDisplayClusterInputDeviceType
 class IDisplayClusterInputManager
 {
 public:
-	virtual ~IDisplayClusterInputManager()
+	virtual ~IDisplayClusterInputManager() = 0
 	{ }
 
 	//////////////////////////////////////////////////////////////////////////

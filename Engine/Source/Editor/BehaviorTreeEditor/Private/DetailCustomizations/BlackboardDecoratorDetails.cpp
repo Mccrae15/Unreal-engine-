@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "DetailCustomizations/BlackboardDecoratorDetails.h"
 #include "Misc/Attribute.h"
@@ -189,7 +189,7 @@ TSharedRef<SWidget> FBlackboardDecoratorDetails::OnGetEnumValueContent() const
 
 	for (int32 i = 0; i < EnumPropValues.Num(); i++)
 	{
-		FUIAction ItemAction( FExecuteAction::CreateSP( this, &FBlackboardDecoratorDetails::OnEnumValueComboChange, i ) );
+		FUIAction ItemAction( FExecuteAction::CreateSP( const_cast<FBlackboardDecoratorDetails*>(this), &FBlackboardDecoratorDetails::OnEnumValueComboChange, i ) );
 		MenuBuilder.AddMenuEntry( FText::FromString( EnumPropValues[i] ), TAttribute<FText>(), FSlateIcon(), ItemAction);
 	}
 

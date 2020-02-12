@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "MaterialInstanceEditor.h"
 #include "Widgets/Text/STextBlock.h"
@@ -11,6 +11,7 @@
 #include "EditorStyleSet.h"
 #include "Styling/CoreStyle.h"
 #include "MaterialEditor/DEditorTextureParameterValue.h"
+#include "MaterialEditor/DEditorRuntimeVirtualTextureParameterValue.h"
 #include "Materials/Material.h"
 #include "MaterialEditor/MaterialEditorInstanceConstant.h"
 #include "ThumbnailRendering/SceneThumbnailInfoWithPrimitive.h"
@@ -19,9 +20,12 @@
 #include "Materials/MaterialFunctionInstance.h"
 #include "Materials/MaterialExpressionFunctionOutput.h"
 #include "MaterialEditorModule.h"
+#include "ToolMenus.h"
+#include "Toolkits/AssetEditorToolkitMenuContext.h"
 
 #include "Materials/MaterialExpressionTextureBase.h"
 #include "Materials/MaterialExpressionTextureSampleParameter.h"
+#include "Materials/MaterialExpressionRuntimeVirtualTextureSampleParameter.h"
 
 #include "MaterialEditor.h"
 #include "MaterialEditorActions.h"
@@ -41,6 +45,12 @@
 #include "Framework/Commands/UICommandInfo.h"
 #include "EditorStyleSet.h"
 #include "MaterialStats.h"
+#include "MaterialEditingLibrary.h"
+#include "Widgets/Layout/SScrollBox.h"
+#include "DebugViewModeHelpers.h"
+#include "VT/RuntimeVirtualTexture.h"
+#include "Widgets/Input/SButton.h"
+#include "Subsystems/AssetEditorSubsystem.h"
 
 #define LOCTEXT_NAMESPACE "MaterialInstanceEditor"
 
@@ -485,6 +495,7 @@ void FMaterialInstanceEditor::ReInitMaterialFunctionProxies()
 		TArray<FScalarParameterValue> ScalarParameterValues = FunctionInstanceProxy->ScalarParameterValues;
 		TArray<FVectorParameterValue> VectorParameterValues = FunctionInstanceProxy->VectorParameterValues;
 		TArray<FTextureParameterValue> TextureParameterValues = FunctionInstanceProxy->TextureParameterValues;
+		TArray<FRuntimeVirtualTextureParameterValue> RuntimeVirtualTextureParameterValues = FunctionInstanceProxy->RuntimeVirtualTextureParameterValues;
 		TArray<FFontParameterValue> FontParameterValues = FunctionInstanceProxy->FontParameterValues;
 
 		const FStaticParameterSet& OldStaticParameters = FunctionInstanceProxy->GetStaticParameters();
@@ -533,6 +544,18 @@ void FMaterialInstanceEditor::ReInitMaterialFunctionProxies()
 			{
 				FunctionInstanceProxy->TextureParameterValues.Add(TextureParameter);
 				FunctionInstanceProxy->TextureParameterValues.Last().ParameterInfo = OutParameterInfo[Index];
+			}
+		}
+
+		FunctionInstanceProxy->GetAllRuntimeVirtualTextureParameterInfo(OutParameterInfo, Guids);
+		FunctionInstanceProxy->RuntimeVirtualTextureParameterValues.Empty();
+		for (FRuntimeVirtualTextureParameterValue& RuntimeVirtualTextureParameter : RuntimeVirtualTextureParameterValues)
+		{
+			int32 Index = Guids.Find(RuntimeVirtualTextureParameter.ExpressionGUID);
+			if (Index != INDEX_NONE)
+			{
+				FunctionInstanceProxy->RuntimeVirtualTextureParameterValues.Add(RuntimeVirtualTextureParameter);
+				FunctionInstanceProxy->RuntimeVirtualTextureParameterValues.Last().ParameterInfo = OutParameterInfo[Index];
 			}
 		}
 
@@ -612,12 +635,15 @@ FMaterialInstanceEditor::~FMaterialInstanceEditor()
 		UPackage* Package = MaterialEditorInstance->SourceInstance->GetOutermost();
 		if (Package && Package->IsDirty() && Package != GetTransientPackage())
 		{
+			ClearDebugViewMaterials(MaterialEditorInstance->SourceInstance);
 			FMaterialEditorUtilities::BuildTextureStreamingData(MaterialEditorInstance->SourceInstance);
 		}
 	}
 
 	if (MaterialEditorInstance)
 	{
+		MaterialEditorInstance->SourceInstance = nullptr;
+		MaterialEditorInstance->SourceFunction = nullptr;
 		MaterialEditorInstance->MarkPendingKill();
 		MaterialEditorInstance = nullptr;
 	}
@@ -634,13 +660,6 @@ void FMaterialInstanceEditor::AddReferencedObjects(FReferenceCollector& Collecto
 {
 	// Serialize our custom object instance
 	Collector.AddReferencedObject(MaterialEditorInstance);
-
-	// Serialize all parent material instances that are stored in the list.
-	for (int32 Index = 0; Index < MaterialParentList.Num(); Index++)
-	{
-		UMaterialInterface* Parent = MaterialParentList[Index].Get();
-		Collector.AddReferencedObject(Parent);
-	}
 }
 
 void FMaterialInstanceEditor::BindCommands()
@@ -728,30 +747,6 @@ bool FMaterialInstanceEditor::IsShowAllMaterialParametersChecked() const
 	return bShowAllMaterialParameters;
 }
 
-void FMaterialInstanceEditor::OnOpenMaterial(TWeakObjectPtr<UMaterialInterface> InMaterial)
-{
-	OpenSelectedParentEditor(InMaterial.Get());
-}
-
-void FMaterialInstanceEditor::OnOpenFunction(TWeakObjectPtr<UMaterialFunctionInterface> InFunction)
-{
-	OpenSelectedParentEditor(InFunction.Get());
-}
-
-void FMaterialInstanceEditor::OnShowMaterialInContentBrowser(TWeakObjectPtr<UMaterialInterface> InMaterial)
-{
-	TArray<UObject*> SyncedObject;
-	SyncedObject.Add(InMaterial.Get());
-	GEditor->SyncBrowserToObjects(SyncedObject);
-}
-
-void FMaterialInstanceEditor::OnShowFunctionInContentBrowser(TWeakObjectPtr<UMaterialFunctionInterface> InFunction)
-{
-	TArray<UObject*> SyncedObject;
-	SyncedObject.Add(InFunction.Get());
-	GEditor->SyncBrowserToObjects(SyncedObject);
-}
-
 void FMaterialInstanceEditor::CreateInternalWidgets()
 {
 	PreviewVC = SNew(SMaterialEditor3DPreviewViewport)
@@ -800,47 +795,42 @@ void FMaterialInstanceEditor::UpdatePreviewViewportsVisibility()
 	}
 }
 
-void FMaterialInstanceEditor::FillToolbar(FToolBarBuilder& ToolbarBuilder)
+void FMaterialInstanceEditor::RegisterToolBar()
 {
-	ToolbarBuilder.BeginSection("Apply");
-	{
-		ToolbarBuilder.AddToolBarButton(FMaterialEditorCommands::Get().Apply);
-	}
-	ToolbarBuilder.EndSection();
+	UToolMenus* ToolMenus = UToolMenus::Get();
+	UToolMenu* ToolBar = ToolMenus->ExtendMenu(GetToolMenuToolbarName());
 
-	ToolbarBuilder.BeginSection("Command");
+	FToolMenuInsert InsertAfterAssetSection("Asset", EToolMenuInsertType::After);
 	{
-		ToolbarBuilder.AddToolBarButton(FMaterialEditorCommands::Get().ShowAllMaterialParameters);
-		// TODO: support in material instance editor.
-		ToolbarBuilder.AddToolBarButton(FMaterialEditorCommands::Get().TogglePlatformStats);
+		FToolMenuSection& Section = ToolBar->AddSection("Apply", TAttribute<FText>(), InsertAfterAssetSection);
+		Section.AddEntry(FToolMenuEntry::InitToolBarButton(FMaterialEditorCommands::Get().Apply));
 	}
-	ToolbarBuilder.EndSection();
-	ToolbarBuilder.BeginSection("Parent");
+
 	{
-		ToolbarBuilder.AddComboButton(
-			FUIAction(),
-			FOnGetContent::CreateSP(this, &FMaterialInstanceEditor::GenerateInheritanceMenu),
+		FToolMenuSection& Section = ToolBar->AddSection("Command", TAttribute<FText>(), InsertAfterAssetSection);
+		Section.AddEntry(FToolMenuEntry::InitToolBarButton(FMaterialEditorCommands::Get().ShowAllMaterialParameters));
+		// TODO: support in material instance editor.
+		Section.AddEntry(FToolMenuEntry::InitToolBarButton(FMaterialEditorCommands::Get().TogglePlatformStats));
+	}
+	
+	{
+		FToolMenuSection& Section = ToolBar->AddSection("Parent", TAttribute<FText>(), InsertAfterAssetSection);
+		Section.AddEntry(FToolMenuEntry::InitComboButton(
+			"Hierarchy",
+			FToolUIActionChoice(),
+			FNewToolMenuDelegate::CreateSP(this, &FMaterialInstanceEditor::GenerateInheritanceMenu),
 			LOCTEXT("Hierarchy", "Hierarchy"),
 			FText::GetEmpty(),
-			FSlateIcon(FSlateIcon(FEditorStyle::GetStyleSetName(), "BTEditor.SwitchToBehaviorTreeMode")),
+			FSlateIcon(FEditorStyle::GetStyleSetName(), "BTEditor.SwitchToBehaviorTreeMode"),
 			false
-		);
+		));
 	}
-	ToolbarBuilder.EndSection();
+
 }
 
 void FMaterialInstanceEditor::ExtendToolbar()
 {
-
-	TSharedPtr<FExtender> ToolbarExtender = MakeShareable(new FExtender);
-	ToolbarExtender->AddToolBarExtension(
-		"Asset",
-		EExtensionHook::After,
-		GetToolkitCommands(),
-		FToolBarExtensionDelegate::CreateSP(this, &FMaterialInstanceEditor::FillToolbar)
-		);
-
-	AddToolbarExtender(ToolbarExtender);
+	RegisterToolBar();
 
 	AddToolbarExtender(GetToolBarExtensibilityManager()->GetAllExtenders(GetToolkitCommands(), GetEditingObjects()));
 
@@ -848,78 +838,144 @@ void FMaterialInstanceEditor::ExtendToolbar()
 	AddToolbarExtender(MaterialEditorModule->GetToolBarExtensibilityManager()->GetAllExtenders(GetToolkitCommands(), GetEditingObjects()));
 }
 
-
-TSharedRef< SWidget > FMaterialInstanceEditor::GenerateInheritanceMenu()
+void FMaterialInstanceEditor::GenerateInheritanceMenu(UToolMenu* Menu)
 {
 	struct Local
 	{
-		static void MakeFunctionSubmenu(FMenuBuilder& MenuBuilder, FMaterialInstanceEditor* InEditor, TWeakObjectPtr<UMaterialFunctionInterface> InFunction)
+		static void AddMenuEntry(FToolMenuSection& Section, FAssetData AssetData, bool bIsFunctionPreviewMaterial)
 		{
-			MenuBuilder.AddMenuEntry(LOCTEXT("OpenInEditor", "Open In Editor"),
-				FText::GetEmpty(),
-				FSlateIcon(FEditorStyle::GetStyleSetName(), "ContentBrowser.AssetActions.OpenInExternalEditor"),
-				FUIAction(FExecuteAction::CreateSP(InEditor, &FMaterialInstanceEditor::OnOpenFunction, InFunction)));
-			
-			MenuBuilder.AddMenuEntry(LOCTEXT("FindInContentBrowser", "Find In Content Browser"),
-				FText::GetEmpty(),
-				FSlateIcon(FEditorStyle::GetStyleSetName(), "SystemWideCommands.FindInContentBrowser"),
-				FUIAction(FExecuteAction::CreateSP(InEditor, &FMaterialInstanceEditor::OnShowFunctionInContentBrowser, InFunction)));
-		}
+			FExecuteAction OpenAction;
+			FExecuteAction FindInContentBrowserAction;
+			if (bIsFunctionPreviewMaterial)
+			{
+				OpenAction.BindStatic(&FMaterialEditorUtilities::OnOpenFunction, AssetData);
+				FindInContentBrowserAction.BindStatic(&FMaterialEditorUtilities::OnShowFunctionInContentBrowser, AssetData);
+			}
+			else
+			{
+				OpenAction.BindStatic(&FMaterialEditorUtilities::OnOpenMaterial, AssetData);
+				FindInContentBrowserAction.BindStatic(&FMaterialEditorUtilities::OnShowMaterialInContentBrowser, AssetData);
+			}
 
-		static void MakeMaterialSubmenu(FMenuBuilder& MenuBuilder, FMaterialInstanceEditor* InEditor, TWeakObjectPtr<UMaterialInterface> InMaterial)
-		{
-			MenuBuilder.AddMenuEntry(LOCTEXT("OpenInEditor", "Open In Editor"),
-				FText::GetEmpty(),
-				FSlateIcon(FEditorStyle::GetStyleSetName(), "ContentBrowser.AssetActions.OpenInExternalEditor"),
-				FUIAction(FExecuteAction::CreateSP(InEditor, &FMaterialInstanceEditor::OnOpenMaterial, InMaterial)));
-			
-			MenuBuilder.AddMenuEntry(LOCTEXT("FindInContentBrowser", "Find In Content Browser"),
-				FText::GetEmpty(),
-				FSlateIcon(FEditorStyle::GetStyleSetName(), "SystemWideCommands.FindInContentBrowser"),
-				FUIAction(FExecuteAction::CreateSP(InEditor, &FMaterialInstanceEditor::OnShowMaterialInContentBrowser, InMaterial)));
+			FFormatNamedArguments Args;
+			Args.Add(TEXT("ParentName"), FText::FromName(AssetData.AssetName));
+			FText Label = FText::Format(LOCTEXT("InstanceParentName", "{ParentName}"), Args);
+
+			FSlateIcon OpenIcon(FEditorStyle::GetStyleSetName(), "ContentBrowser.AssetActions.OpenInExternalEditor");
+			FSlateIcon FindInContentBrowserIcon(FEditorStyle::GetStyleSetName(), "SystemWideCommands.FindInContentBrowser");
+
+			TSharedRef<SWidget> EntryWidget =
+				SNew(SHorizontalBox)
+				.ToolTipText(LOCTEXT("OpenInEditor", "Open In Editor"))
+
+				+ SHorizontalBox::Slot()
+				.AutoWidth()
+				.Padding(FMargin(2, 0, 2, 0))
+				[
+					SNew( SBox )
+					.WidthOverride( MultiBoxConstants::MenuIconSize + 2 )
+					.HeightOverride( MultiBoxConstants::MenuIconSize )
+					.HAlign(HAlign_Center)
+					.VAlign(VAlign_Center)
+					[
+						SNew( SBox )
+						.WidthOverride( MultiBoxConstants::MenuIconSize )
+						.HeightOverride( MultiBoxConstants::MenuIconSize )
+						[
+							SNew(SImage)
+							.Image(OpenIcon.GetIcon())
+						]
+					]
+				]
+
+				+ SHorizontalBox::Slot()
+				.FillWidth( 1.0f )
+				.Padding(FMargin(2, 0, 6, 0))
+				.VAlign( VAlign_Center )
+				[
+					SNew(STextBlock)
+					.Text(Label)
+				]
+
+				+ SHorizontalBox::Slot()
+				.AutoWidth()
+				.VAlign( VAlign_Center )
+				.HAlign( HAlign_Right )
+				[
+					SNew(SButton)
+					.ButtonStyle(FEditorStyle::Get(), "HoverHintOnly")
+					.ToolTipText(LOCTEXT("FindInContentBrowser", "Find In Content Browser"))
+					.OnClicked_Lambda([FindInContentBrowserAction]() { FindInContentBrowserAction.ExecuteIfBound(); return FReply::Handled(); })
+					[
+						SNew( SBox )
+						.WidthOverride( MultiBoxConstants::MenuIconSize + 2 )
+						.HeightOverride( MultiBoxConstants::MenuIconSize )
+						.HAlign(HAlign_Center)
+						.VAlign(VAlign_Center)
+						[
+							SNew( SBox )
+							.WidthOverride( MultiBoxConstants::MenuIconSize )
+							.HeightOverride( MultiBoxConstants::MenuIconSize )
+							[
+								SNew(SImage)
+								.Image(FindInContentBrowserIcon.GetIcon())
+							]
+						]
+					]
+				];
+
+			Section.AddEntry(FToolMenuEntry::InitMenuEntry(
+				NAME_None,
+				FUIAction(OpenAction),
+				EntryWidget
+			));
 		}
 	};
 
 	RebuildInheritanceList();
-	TSharedPtr<FExtender> ToolbarExtender = MakeShareable(new FExtender);
-	const bool bShouldCloseWindowAfterMenuSelection = true;
-	TSharedPtr<FUICommandList> InCommandList = MakeShareable(new FUICommandList);
-	FMenuBuilder MenuBuilder(bShouldCloseWindowAfterMenuSelection, InCommandList, ToolbarExtender);
-
+	Menu->bShouldCloseWindowAfterMenuSelection = true;
+	Menu->bSearchable = true;
+	Menu->SetMaxHeight(500);
+	const FName ParentName = TEXT("ParentChain");
+	FToolMenuSection& Section = Menu->AddSection(ParentName, LOCTEXT("ParentChain", "Parent Chain"));
 	if (bIsFunctionPreviewMaterial)
 	{
-		for (TWeakObjectPtr<UMaterialFunctionInterface> FunctionParent : FunctionParentList)
+		if (FunctionParentList.Num() == 0)
 		{
-			if (FunctionParent.IsValid())
-			{
-				FFormatNamedArguments Args;
-				Args.Add(TEXT("ParentName"), FText::FromString(FunctionParent->GetName()));
-				MenuBuilder.AddSubMenu(FText::Format(LOCTEXT("InstanceParentName", "{ParentName}"), Args),
-					FText::GetEmpty(),
-					FNewMenuDelegate::CreateStatic(&Local::MakeFunctionSubmenu, this, FunctionParent),
-					false,
-					FSlateIcon());
-			}
+			const FText NoParentText = LOCTEXT("NoParentFound", "No Parent Found");
+			TSharedRef<SWidget> NoParentWidget = SNew(STextBlock)
+				.Text(NoParentText);
+			Section.AddEntry(FToolMenuEntry::InitWidget("NoParentEntry", NoParentWidget, FText::GetEmpty()));
+		}
+		for (FAssetData FunctionParent : FunctionParentList)
+		{
+			Local::AddMenuEntry(Section, FunctionParent, bIsFunctionPreviewMaterial);
 		}
 	}
 	else
 	{
-		for (TWeakObjectPtr<UMaterialInterface> MaterialParent : MaterialParentList)
+		if (MaterialParentList.Num() == 0)
 		{
-			if (MaterialParent.IsValid())
-			{
-				FFormatNamedArguments Args;
-				Args.Add(TEXT("ParentName"), FText::FromString(MaterialParent->GetName()));
-				MenuBuilder.AddSubMenu(FText::Format(LOCTEXT("InstanceParentName", "{ParentName}"), Args),
-					FText::GetEmpty(),
-					FNewMenuDelegate::CreateStatic(&Local::MakeMaterialSubmenu, this, MaterialParent),
-					false,
-					FSlateIcon());
-			}
+			const FText NoParentText = LOCTEXT("NoParentFound", "No Parent Found");
+			TSharedRef<SWidget> NoParentWidget = SNew(STextBlock)
+				.Text(NoParentText);
+			Section.AddEntry(FToolMenuEntry::InitWidget("NoParentEntry", NoParentWidget, FText::GetEmpty()));
+		}
+		for (FAssetData MaterialParent : MaterialParentList)
+		{
+			Local::AddMenuEntry(Section, MaterialParent, bIsFunctionPreviewMaterial);
 		}
 	}
 
-	return MenuBuilder.MakeWidget();
+	if (!bIsFunctionPreviewMaterial)
+	{
+		const FName MaterialInstances = TEXT("MaterialInstances");
+		FToolMenuSection& MaterialInstancesSection = Menu->AddSection(MaterialInstances, LOCTEXT("MaterialInstances", "Material Instances"));
+		for (FAssetData MaterialChild : MaterialChildList)
+		{
+			Local::AddMenuEntry(MaterialInstancesSection, MaterialChild, bIsFunctionPreviewMaterial);
+		}
+	}
 }
 
 
@@ -1051,11 +1107,11 @@ UMaterialInterface* FMaterialInstanceEditor::GetMaterialInterface() const
 	return MaterialEditorInstance->SourceInstance;
 }
 
-void FMaterialInstanceEditor::NotifyPreChange(UProperty* PropertyThatChanged)
+void FMaterialInstanceEditor::NotifyPreChange(FProperty* PropertyThatChanged)
 {
 }
 
-void FMaterialInstanceEditor::NotifyPostChange( const FPropertyChangedEvent& PropertyChangedEvent, UProperty* PropertyThatChanged)
+void FMaterialInstanceEditor::NotifyPostChange( const FPropertyChangedEvent& PropertyChangedEvent, FProperty* PropertyThatChanged)
 {
 	// If they changed the parent, regenerate the parent list.
 	if(PropertyThatChanged->GetName()==TEXT("Parent"))
@@ -1092,7 +1148,7 @@ void FMaterialInstanceEditor::NotifyPostChange( const FPropertyChangedEvent& Pro
 
 	// Rebuild the property window to account for the possibility that  
 	// the item changed was a static switch or function call parameter
-	UObject* PropertyClass = PropertyThatChanged->GetOuter();
+	UObject* PropertyClass = PropertyThatChanged->GetOwner<UObject>();
 	if(PropertyClass && (PropertyClass->GetName() == TEXT("DEditorStaticSwitchParameterValue") || PropertyClass->GetName() == TEXT("EditorParameterGroup"))//DEditorMaterialLayerParameters"))
 		&& MaterialEditorInstance->Parent && MaterialEditorInstance->SourceInstance )
 	{
@@ -1149,8 +1205,6 @@ void FMaterialInstanceEditor::RebuildInheritanceList()
 	if (bIsFunctionPreviewMaterial)
 	{
 		FunctionParentList.Empty();
-		
-		FunctionParentList.Add(MaterialFunctionOriginal);
 
 		// Append function instance parent chain
 		UMaterialFunctionInstance* Current = MaterialFunctionOriginal;
@@ -1165,6 +1219,7 @@ void FMaterialInstanceEditor::RebuildInheritanceList()
 	}
 	else
 	{
+		MaterialChildList.Empty();
 		MaterialParentList.Empty();
 
 		// Travel up the parent chain for this material instance until we reach the root material.
@@ -1172,7 +1227,7 @@ void FMaterialInstanceEditor::RebuildInheritanceList()
 
 		if(InstanceConstant)
 		{
-			MaterialParentList.Add(InstanceConstant);
+			UMaterialEditingLibrary::GetChildInstances(InstanceConstant, MaterialChildList);
 
 			// Add all parents
 			UMaterialInterface* Parent = InstanceConstant->Parent;
@@ -1244,6 +1299,8 @@ void FMaterialInstanceEditor::DrawSamplerWarningStrings(FCanvas* Canvas, int32& 
 			const int32 SpacingBetweenLines = 13;
 			UEnum* SamplerTypeEnum = StaticEnum<EMaterialSamplerType>();
 			check( SamplerTypeEnum );
+			UEnum* MaterialTypeEnum = StaticEnum<ERuntimeVirtualTextureMaterialType>();
+			check(MaterialTypeEnum);
 
 			const int32 GroupCount = MaterialEditorInstance->ParameterGroups.Num();
 			for ( int32 GroupIndex = 0; GroupIndex < GroupCount; ++GroupIndex )
@@ -1262,34 +1319,93 @@ void FMaterialInstanceEditor::DrawSamplerWarningStrings(FCanvas* Canvas, int32& 
 							EMaterialSamplerType SamplerType = UMaterialExpressionTextureBase::GetSamplerTypeForTexture( Texture );
 							UMaterialExpressionTextureSampleParameter* Expression = BaseMaterial->FindExpressionByGUID<UMaterialExpressionTextureSampleParameter>( TextureParameterValue->ExpressionId );
 
-							if ( Expression && Expression->SamplerType != SamplerType )
+							FString ErrorMessage;
+							if (Expression && !Expression->TextureIsValid(Texture, ErrorMessage))
 							{
-								FString SamplerTypeDisplayName = SamplerTypeEnum->GetDisplayNameTextByValue(Expression->SamplerType).ToString();
-
 								Canvas->DrawShadowedString(
 									5,
 									DrawPositionY,
-									*FString::Printf( TEXT("Warning: %s samples %s as %s."),
-									*TextureParameterValue->ParameterInfo.Name.ToString(),
-									*Texture->GetPathName(),
-									*SamplerTypeDisplayName ),
+									*FString::Printf(TEXT("Error: %s has invalid texture %s: %s."),
+										*TextureParameterValue->ParameterInfo.Name.ToString(),
+										*Texture->GetPathName(),
+										*ErrorMessage),
 									FontToUse,
-									FLinearColor(1,1,0) );
+									FLinearColor(1, 0, 0));
 								DrawPositionY += SpacingBetweenLines;
 							}
-							if( Expression && ((Expression->SamplerType == (EMaterialSamplerType)TC_Normalmap || Expression->SamplerType ==  (EMaterialSamplerType)TC_Masks) && Texture->SRGB))
+							else
 							{
-								FString SamplerTypeDisplayName = SamplerTypeEnum->GetDisplayNameTextByValue(Expression->SamplerType).ToString();
-								
+								if (Expression && Expression->SamplerType != SamplerType)
+								{
+									FString SamplerTypeDisplayName = SamplerTypeEnum->GetDisplayNameTextByValue(Expression->SamplerType).ToString();
+
+									Canvas->DrawShadowedString(
+										5,
+										DrawPositionY,
+										*FString::Printf(TEXT("Warning: %s samples %s as %s."),
+											*TextureParameterValue->ParameterInfo.Name.ToString(),
+											*Texture->GetPathName(),
+											*SamplerTypeDisplayName),
+										FontToUse,
+										FLinearColor(1, 1, 0));
+									DrawPositionY += SpacingBetweenLines;
+								}
+								if (Expression && ((Expression->SamplerType == (EMaterialSamplerType)TC_Normalmap || Expression->SamplerType == (EMaterialSamplerType)TC_Masks) && Texture->SRGB))
+								{
+									FString SamplerTypeDisplayName = SamplerTypeEnum->GetDisplayNameTextByValue(Expression->SamplerType).ToString();
+
+									Canvas->DrawShadowedString(
+										5,
+										DrawPositionY,
+										*FString::Printf(TEXT("Warning: %s samples texture as '%s'. SRGB should be disabled for '%s'."),
+											*TextureParameterValue->ParameterInfo.Name.ToString(),
+											*SamplerTypeDisplayName,
+											*Texture->GetPathName()),
+										FontToUse,
+										FLinearColor(1, 1, 0));
+									DrawPositionY += SpacingBetweenLines;
+								}
+							}
+						}
+					}
+
+					UDEditorRuntimeVirtualTextureParameterValue* RuntimeVirtualTextureParameterValue = Cast<UDEditorRuntimeVirtualTextureParameterValue>(Group.Parameters[ParameterIndex]);
+					if (RuntimeVirtualTextureParameterValue && RuntimeVirtualTextureParameterValue->ExpressionId.IsValid())
+					{
+						URuntimeVirtualTexture* RuntimeVirtualTexture = NULL;
+						MaterialEditorInstance->SourceInstance->GetRuntimeVirtualTextureParameterValue(RuntimeVirtualTextureParameterValue->ParameterInfo, RuntimeVirtualTexture);
+						if (RuntimeVirtualTexture)
+						{
+							UMaterialExpressionRuntimeVirtualTextureSampleParameter* Expression = BaseMaterial->FindExpressionByGUID<UMaterialExpressionRuntimeVirtualTextureSampleParameter>(RuntimeVirtualTextureParameterValue->ExpressionId);
+							if (Expression->MaterialType != RuntimeVirtualTexture->GetMaterialType())
+							{
+								FString BaseMaterialTypeDisplayName = MaterialTypeEnum->GetDisplayNameTextByValue((int64)(Expression->MaterialType)).ToString();
+								FString OverrideMaterialTypeDisplayName = MaterialTypeEnum->GetDisplayNameTextByValue((int64)(RuntimeVirtualTexture->GetMaterialType())).ToString();
+
 								Canvas->DrawShadowedString(
-									5,
-									DrawPositionY,
-									*FString::Printf( TEXT("Warning: %s samples texture as '%s'. SRGB should be disabled for '%s'."),
-									*TextureParameterValue->ParameterInfo.Name.ToString(),
-									*SamplerTypeDisplayName,
-									*Texture->GetPathName()),
+									5, DrawPositionY,
+									*FString::Printf(TEXT("Warning: '%s' interprets the virtual texture as '%s' not '%s'"),
+										*RuntimeVirtualTextureParameterValue->ParameterInfo.Name.ToString(),
+										*BaseMaterialTypeDisplayName,
+										*OverrideMaterialTypeDisplayName,
+										*RuntimeVirtualTexture->GetPathName()),
 									FontToUse,
-									FLinearColor(1,1,0) );
+									FLinearColor(1, 1, 0));
+
+								DrawPositionY += SpacingBetweenLines;
+							}
+							if (Expression->bSinglePhysicalSpace != RuntimeVirtualTexture->GetSinglePhysicalSpace())
+							{
+								Canvas->DrawShadowedString(
+									5, DrawPositionY,
+									*FString::Printf(TEXT("Warning: '%s' interprets the virtual texture page table packing as '%d' not '%d'"),
+										*RuntimeVirtualTextureParameterValue->ParameterInfo.Name.ToString(),
+										RuntimeVirtualTexture->GetSinglePhysicalSpace() ? 1 : 0,
+										Expression->bSinglePhysicalSpace ? 1 : 0,
+										*RuntimeVirtualTexture->GetPathName()),
+									FontToUse,
+									FLinearColor(1, 1, 0));
+
 								DrawPositionY += SpacingBetweenLines;
 							}
 						}
@@ -1406,13 +1522,13 @@ void FMaterialInstanceEditor::OpenSelectedParentEditor(UMaterialInterface* InMat
 		{
 			// Show material editor
 			UMaterial* Material = Cast<UMaterial>(InMaterialInterface);
-			FAssetEditorManager::Get().OpenEditorForAsset(Material);
+			GEditor->GetEditorSubsystem<UAssetEditorSubsystem>()->OpenEditorForAsset(Material);
 		}
 		else if(InMaterialInterface->IsA(UMaterialInstance::StaticClass()))
 		{
 			// Show material instance editor
 			UMaterialInstance* MaterialInstance = Cast<UMaterialInstance>(InMaterialInterface);
-			FAssetEditorManager::Get().OpenEditorForAsset(MaterialInstance);
+			GEditor->GetEditorSubsystem<UAssetEditorSubsystem>()->OpenEditorForAsset(MaterialInstance);
 		}
 	}
 }
@@ -1428,12 +1544,12 @@ void FMaterialInstanceEditor::OpenSelectedParentEditor(UMaterialFunctionInterfac
 		{
 			// Show function instance editor
 			UMaterialFunctionInstance* FunctionInstance = Cast<UMaterialFunctionInstance>(InMaterialFunction);
-			FAssetEditorManager::Get().OpenEditorForAsset(FunctionInstance);
+			GEditor->GetEditorSubsystem<UAssetEditorSubsystem>()->OpenEditorForAsset(FunctionInstance);
 		}
 		else
 		{
 			// Show function editor
-			FAssetEditorManager::Get().OpenEditorForAsset(InMaterialFunction);
+			GEditor->GetEditorSubsystem<UAssetEditorSubsystem>()->OpenEditorForAsset(InMaterialFunction);
 		}
 	}
 }

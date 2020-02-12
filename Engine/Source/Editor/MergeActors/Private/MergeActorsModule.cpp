@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "CoreMinimal.h"
 #include "Modules/ModuleManager.h"
@@ -134,8 +134,10 @@ void FMergeActorsModule::ShutdownModule()
 {
 	if (FSlateApplication::IsInitialized())
 	{
-		FGlobalTabmanager::Get()->UnregisterNomadTabSpawner(MergeActorsTabName);
+		FGlobalTabmanager::Get()->UnregisterNomadTabSpawner(MergeActorsTabName);		
 	}
+
+	MergeActorsTools.Empty();
 }
 
 

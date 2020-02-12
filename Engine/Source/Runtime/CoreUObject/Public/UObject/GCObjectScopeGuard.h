@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -28,6 +28,11 @@ public:
 	virtual void AddReferencedObjects(FReferenceCollector& Collector) override
 	{
 		Collector.AddReferencedObject(Object);
+	}
+
+	virtual FString GetReferencerName() const override
+	{
+		return TEXT("FGCObjectScopeGuard");
 	}
 
 private:
@@ -60,6 +65,11 @@ public:
 	virtual void AddReferencedObjects(FReferenceCollector& Collector) override
 	{
 		Collector.AddReferencedObjects(Objects);
+	}
+
+	virtual FString GetReferencerName() const override
+	{
+		return TEXT("TGCObjectsScopeGuard");
 	}
 
 private:

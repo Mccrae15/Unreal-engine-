@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 /*=============================================================================
 	Interaction.cpp: See .UC for for info
@@ -29,6 +29,9 @@
 #include "Stats/StatsData.h"
 #include "Misc/TextFilter.h"
 #include "HAL/PlatformApplicationMisc.h"
+#include "ProfilingDebugging/CsvProfiler.h"
+#include "Engine/AssetManager.h"
+#include "IO/IoDispatcher.h"
 
 static const uint32 MAX_AUTOCOMPLETION_LINES = 20;
 
@@ -37,33 +40,53 @@ static const FName NAME_Open = FName(TEXT("Open"));
 
 UConsole::FRegisterConsoleAutoCompleteEntries UConsole::RegisterConsoleAutoCompleteEntries;
 UConsole::FOnConsoleActivationStateChanged UConsole::OnConsoleActivationStateChanged;
+
+static TAutoConsoleVariable<int32> CVarCustomConsolePosEnabled(
+	TEXT("console.position.enable"),
+	0,
+	TEXT("Enable custom console positioning \n"),
+	ECVF_Default);
+
+static TAutoConsoleVariable<int32> CVarConsoleXPos(
+	TEXT("console.position.x"),
+	0,
+	TEXT("Console X offset from left border \n"),
+	ECVF_Default);
+
+static TAutoConsoleVariable<int32> CVarConsoleYPos(
+	TEXT("console.position.y"),
+	0,
+	TEXT("Console Y offset from bottom border \n"),
+	ECVF_Default);
+
+
 namespace ConsoleDefs
 {
 	/** Colors */
-	static const FColor BorderColor( 140, 140, 140 );
-	static const FColor CursorColor( 255, 255, 255 );
-	static const FColor AutocompleteBackgroundColor( 0, 0, 0 );
-	static const FColor CursorLineColor( 0, 50, 0 );
+	static const FColor BorderColor(140, 140, 140);
+	static const FColor CursorColor(255, 255, 255);
+	static const FColor AutocompleteBackgroundColor(0, 0, 0);
+	static const FColor CursorLineColor(0, 50, 0);
 	static const int32 AutocompleteGap = 6;
 
 	/** Text that appears before the user's typed input string that acts as a visual cue for the editable area */
 	static const FString LeadingInputText(TEXT(" > "));
 }
 
-class FConsoleVariableAutoCompleteVisitor 
+class FConsoleVariableAutoCompleteVisitor
 {
 public:
 	// @param Name must not be 0
 	// @param CVar must not be 0
-	static void OnConsoleVariable(const TCHAR *Name, IConsoleObject* CVar,TArray<struct FAutoCompleteCommand>& Sink)
+	static void OnConsoleVariable(const TCHAR* Name, IConsoleObject* CVar, TArray<struct FAutoCompleteCommand>& Sink)
 	{
 #if DISABLE_CHEAT_CVARS
-		if(CVar->TestFlags(ECVF_Cheat))
+		if (CVar->TestFlags(ECVF_Cheat))
 		{
 			return;
 		}
 #endif // DISABLE_CHEAT_CVARS
-		if(CVar->TestFlags(ECVF_Unregistered))
+		if (CVar->TestFlags(ECVF_Unregistered))
 		{
 			return;
 		}
@@ -74,6 +97,16 @@ public:
 		int32 NewIdx = Sink.AddDefaulted();
 		FAutoCompleteCommand& Cmd = Sink[NewIdx];
 		Cmd.Command = Name;
+
+		if (ConsoleSettings->bDisplayHelpInAutoComplete)
+		{
+			TArray<FString> Lines;
+			FString(CVar->GetHelp()).ParseIntoArrayLines(Lines, true);
+			if (Lines.Num())
+			{
+				Cmd.Desc = Lines[0];
+			}
+		}
 
 		IConsoleVariable* CVariable = CVar->AsVariable();
 		if (CVariable)
@@ -118,7 +151,7 @@ UConsole::UConsole(const FObjectInitializer& ObjectInitializer)
 UConsole::~UConsole()
 {
 	// At shutdown, GLog may already be null
-	if( GLog != nullptr )
+	if (GLog != nullptr)
 	{
 		GLog->RemoveOutputDevice(this);
 	}
@@ -152,7 +185,7 @@ void UConsole::BuildRuntimeAutoCompleteList(bool bForce)
 	//@todo - probably only need to rebuild the tree + partial command list on level load
 	for (int32 Idx = 0; Idx < AutoCompleteTree.ChildNodes.Num(); Idx++)
 	{
-		FAutoCompleteNode *Node = AutoCompleteTree.ChildNodes[Idx];
+		FAutoCompleteNode* Node = AutoCompleteTree.ChildNodes[Idx];
 		delete Node;
 	}
 
@@ -175,32 +208,32 @@ void UConsole::BuildRuntimeAutoCompleteList(bool bForce)
 		IConsoleManager::Get().ForEachConsoleObjectThatStartsWith(
 			FConsoleObjectVisitor::CreateStatic< TArray<struct FAutoCompleteCommand>& >(
 				&FConsoleVariableAutoCompleteVisitor::OnConsoleVariable,
-				AutoCompleteList ) );
+				AutoCompleteList));
 	}
 
 	// iterate through script exec functions and append to the list
 	for (TObjectIterator<UFunction> It; It; ++It)
 	{
-		UFunction *Func = *It;
+		UFunction* Func = *It;
 
 		// Determine whether or not this is a level script event that we can call (must be defined in the level script actor and not in parent, and has no return value)
 		const UClass* FuncOuter = Cast<UClass>(Func->GetOuter());
-		const bool bIsLevelScriptFunction = FuncOuter 
+		const bool bIsLevelScriptFunction = FuncOuter
 			&& (FuncOuter->IsChildOf(ALevelScriptActor::StaticClass()))
 			&& (FuncOuter != ALevelScriptActor::StaticClass())
-			&& (Func->ReturnValueOffset == MAX_uint16) 
+			&& (Func->ReturnValueOffset == MAX_uint16)
 			&& (Func->GetSuperFunction() == nullptr);
 
 		// exec functions that either have no parent, level script events, or are in the global state (filtering some unnecessary dupes)
-		if ( (Func->HasAnyFunctionFlags(FUNC_Exec) && (Func->GetSuperFunction() == nullptr || FuncOuter))
+		if ((Func->HasAnyFunctionFlags(FUNC_Exec) && (Func->GetSuperFunction() == nullptr || FuncOuter))
 			|| bIsLevelScriptFunction)
 		{
 			FString FuncName = Func->GetName();
-			if(FDefaultValueHelper::HasWhitespaces(FuncName))
+			if (FDefaultValueHelper::HasWhitespaces(FuncName))
 			{
 				FuncName = FString::Printf(TEXT("\"%s\""), *FuncName);
 			}
-			if( bIsLevelScriptFunction )
+			if (bIsLevelScriptFunction)
 			{
 				FuncName = FString(TEXT("ce ")) + FuncName;
 			}
@@ -222,10 +255,10 @@ void UConsole::BuildRuntimeAutoCompleteList(bool bForce)
 
 			// build a help string
 			// append each property (and it's type) to the help string
-			for (TFieldIterator<UProperty> PropIt(Func); PropIt && (PropIt->PropertyFlags & CPF_Parm); ++PropIt)
+			for (TFieldIterator<FProperty> PropIt(Func); PropIt && (PropIt->PropertyFlags & CPF_Parm); ++PropIt)
 			{
-				UProperty *Prop = *PropIt;
-				Desc += FString::Printf(TEXT("%s[%s] "),*Prop->GetName(),*Prop->GetCPPType());
+				FProperty* Prop = *PropIt;
+				Desc += FString::Printf(TEXT("%s[%s] "), *Prop->GetName(), *Prop->GetCPPType());
 			}
 			AutoCompleteList[NewIdx].Desc = Desc + AutoCompleteList[NewIdx].Desc;
 		}
@@ -233,47 +266,74 @@ void UConsole::BuildRuntimeAutoCompleteList(bool bForce)
 
 	// enumerate maps
 	{
-		TArray<FString> Packages;
-		for (int32 PathIdx = 0; PathIdx < ConsoleSettings->AutoCompleteMapPaths.Num(); ++PathIdx)
+		auto FindPackagesInDirectory = [](TArray<FString>& OutPackages, const FString& InPath)
 		{
-			FPackageName::FindPackagesInDirectory(Packages, FString::Printf(TEXT("%s%s"), *FPaths::ProjectDir(), *ConsoleSettings->AutoCompleteMapPaths[PathIdx]));
-		}
-	
-		// also include maps in this user's developer dir
-		FPackageName::FindPackagesInDirectory(Packages, FPaths::GameUserDeveloperDir());
-
-		for (int32 PackageIndex = 0; PackageIndex < Packages.Num(); PackageIndex++)
-		{
-			FString Pkg = MoveTemp(Packages[PackageIndex]);
-			const int32 ExtIdx = Pkg.Find(*FPackageName::GetMapPackageExtension(), ESearchCase::IgnoreCase, ESearchDir::FromEnd);
-
-			FString MapName;
-			if (ExtIdx != INDEX_NONE && Pkg.Split(TEXT("/"), nullptr, &MapName, ESearchCase::CaseSensitive, ESearchDir::FromEnd))
+			// Can't search packages using the filesystem when I/O dispatcher is enabled
+			if (FIoDispatcher::IsInitialized())
 			{
-				// try to peel off the extension
-				FString TrimmedMapName;
-				if (!MapName.Split(TEXT("."), &TrimmedMapName, nullptr, ESearchCase::CaseSensitive, ESearchDir::FromEnd))
+				FString PackagePath;
+				if (FPackageName::TryConvertFilenameToLongPackageName(InPath, PackagePath))
 				{
-					TrimmedMapName = MapName;
+					if (FAssetRegistryModule* AssetRegistryModule = FModuleManager::LoadModulePtr<FAssetRegistryModule>(TEXT("AssetRegistry")))
+					{
+						TArray<FAssetData> Assets;
+						AssetRegistryModule->Get().GetAssetsByPath(FName(*PackagePath), Assets, true);
+
+						for (const FAssetData& Asset : Assets)
+						{
+							if (!!(Asset.PackageFlags & PKG_ContainsMap))
+							{
+								OutPackages.Emplace(Asset.AssetName.ToString());
+							}
+						}
+					}
 				}
-				int32 NewIdx;
-				// put _P maps at the front so that they match early, since those are generally the maps we want to actually open
-				if (TrimmedMapName.EndsWith(TEXT("_P")))
-				{
-					NewIdx = 0;
-					AutoCompleteList.InsertDefaulted(0, 3);
-				}
-				else
-				{
-					NewIdx = AutoCompleteList.AddDefaulted(3);
-				}
-				AutoCompleteList[NewIdx].Command = FString::Printf(TEXT("open %s"), *TrimmedMapName);
-				AutoCompleteList[NewIdx].Color = ConsoleSettings->AutoCompleteCommandColor;
-				AutoCompleteList[NewIdx + 1].Command = FString::Printf(TEXT("travel %s"), *TrimmedMapName);
-				AutoCompleteList[NewIdx + 1].Color = ConsoleSettings->AutoCompleteCommandColor;
-				AutoCompleteList[NewIdx + 2].Command = FString::Printf(TEXT("servertravel %s"), *TrimmedMapName);
-				AutoCompleteList[NewIdx + 2].Color = ConsoleSettings->AutoCompleteCommandColor;
 			}
+			else
+			{
+				TArray<FString> Filenames;
+				FPackageName::FindPackagesInDirectory(Filenames, InPath);
+
+				for (const FString& Filename : Filenames)
+				{
+					const int32 NameStartIdx = Filename.Find(TEXT("/"), ESearchCase::IgnoreCase, ESearchDir::FromEnd);
+					const int32 ExtIdx = Filename.Find(*FPackageName::GetMapPackageExtension(), ESearchCase::IgnoreCase, ESearchDir::FromEnd);
+
+					if (NameStartIdx != INDEX_NONE && ExtIdx != INDEX_NONE)
+					{
+						OutPackages.Emplace(Filename.Mid(NameStartIdx + 1, ExtIdx - NameStartIdx - 1));
+					}
+				}
+			}
+		};
+
+		TArray<FString> Packages;
+		for (const FString& MapPath : ConsoleSettings->AutoCompleteMapPaths)
+		{
+			FindPackagesInDirectory(Packages, FString::Printf(TEXT("%s%s"), *FPaths::ProjectDir(), *MapPath));
+		}
+
+		FindPackagesInDirectory(Packages, FPaths::GameUserDeveloperDir());
+
+		for (const FString& MapName : Packages)
+		{
+			int32 NewIdx = 0;
+			// put _P maps at the front so that they match early, since those are generally the maps we want to actually open
+			if (MapName.EndsWith(TEXT("_P")))
+			{
+				AutoCompleteList.InsertDefaulted(0, 3);
+			}
+			else
+			{
+				NewIdx = AutoCompleteList.AddDefaulted(3);
+			}
+
+			AutoCompleteList[NewIdx].Command = FString::Printf(TEXT("open %s"), *MapName);
+			AutoCompleteList[NewIdx].Color = ConsoleSettings->AutoCompleteCommandColor;
+			AutoCompleteList[NewIdx + 1].Command = FString::Printf(TEXT("travel %s"), *MapName);
+			AutoCompleteList[NewIdx + 1].Color = ConsoleSettings->AutoCompleteCommandColor;
+			AutoCompleteList[NewIdx + 2].Command = FString::Printf(TEXT("servertravel %s"), *MapName);
+			AutoCompleteList[NewIdx + 2].Color = ConsoleSettings->AutoCompleteCommandColor;
 		}
 	}
 
@@ -319,24 +379,24 @@ void UConsole::BuildRuntimeAutoCompleteList(bool bForce)
 				: AutoCompleteList(InAutoCompleteList)
 			{
 			}
-			
+
 			bool OnEngineShowFlag(uint32 InIndex, const FString& InName)
 			{
 				// Get localized name.
 				FText LocName;
 				FEngineShowFlags::FindShowFlagDisplayName(InName, LocName);
-				
+
 				int32 NewIdx = AutoCompleteList.AddDefaulted();
 				AutoCompleteList[NewIdx].Command = TEXT("show ") + InName;
-				AutoCompleteList[NewIdx].Desc = FString::Printf(TEXT("(toggles the %s showflag)"),*LocName.ToString());
+				AutoCompleteList[NewIdx].Desc = FString::Printf(TEXT("(toggles the %s showflag)"), *LocName.ToString());
 				AutoCompleteList[NewIdx].Color = GetDefault<UConsoleSettings>()->AutoCompleteCommandColor;
-				
+
 				return true;
 			}
-			
+
 			TArray<FAutoCompleteCommand>& AutoCompleteList;
 		};
-		
+
 		FIterSink Sink(AutoCompleteList);
 		FEngineShowFlags::IterateAllFlags(Sink);
 	}
@@ -350,12 +410,12 @@ void UConsole::BuildRuntimeAutoCompleteList(bool bForce)
 	for (int32 ListIdx = 0; ListIdx < AutoCompleteList.Num(); ListIdx++)
 	{
 		FString Command = AutoCompleteList[ListIdx].Command.ToLower();
-		FAutoCompleteNode *Node = &AutoCompleteTree;
+		FAutoCompleteNode* Node = &AutoCompleteTree;
 		for (int32 Depth = 0; Depth < Command.Len(); Depth++)
 		{
 			int32 Char = Command[Depth];
 			int32 FoundNodeIdx = INDEX_NONE;
-			TArray<FAutoCompleteNode*> &NodeList = Node->ChildNodes;
+			TArray<FAutoCompleteNode*>& NodeList = Node->ChildNodes;
 			for (int32 NodeIdx = 0; NodeIdx < NodeList.Num(); NodeIdx++)
 			{
 				if (NodeList[NodeIdx]->IndexChar == Char)
@@ -368,7 +428,7 @@ void UConsole::BuildRuntimeAutoCompleteList(bool bForce)
 			}
 			if (FoundNodeIdx == INDEX_NONE)
 			{
-				FAutoCompleteNode *NewNode = new FAutoCompleteNode(Char);
+				FAutoCompleteNode* NewNode = new FAutoCompleteNode(Char);
 				NewNode->AutoCompleteListIndices.Add(ListIdx);
 				Node->ChildNodes.Add(NewNode);
 				Node = NewNode;
@@ -427,7 +487,7 @@ void UConsole::UpdateCompleteIndices()
 	AutoCompleteIndex = 0;
 	AutoCompleteCursor = 0;
 	AutoComplete.Empty();
-	FAutoCompleteNode *Node = &AutoCompleteTree;
+	FAutoCompleteNode* Node = &AutoCompleteTree;
 	FString LowerTypedStr = TypedStr.ToLower();
 	int32 EndIdx = -1;
 	for (int32 Idx = 0; Idx < TypedStr.Len(); Idx++)
@@ -454,7 +514,7 @@ void UConsole::UpdateCompleteIndices()
 			}
 			else
 			{
-				if(Idx < TypedStr.Len())
+				if (Idx < TypedStr.Len())
 				{
 					// if the first non-matching character is a space we might be adding parameters, stay on the last node we found so users can see the parameter info
 					if (TypedStr[Idx] == TCHAR(' '))
@@ -476,7 +536,7 @@ void UConsole::UpdateCompleteIndices()
 	{
 		const TArray<int32>& Leaf = Node->AutoCompleteListIndices;
 
-		for(uint32 i = 0, Num = (uint32)Leaf.Num(); i < Num; ++i)
+		for (uint32 i = 0, Num = (uint32)Leaf.Num(); i < Num; ++i)
 		{
 			// if we're adding parameters we want to make sure that we only display exact matches
 			// ie Typing "Foo 5" should still show info for "Foo" but not for "FooBar"
@@ -495,11 +555,11 @@ void UConsole::SetAutoCompleteFromHistory()
 	AutoCompleteCursor = 0;
 	AutoComplete.Empty();
 
-	for(int32 i = HistoryBuffer.Num() - 1; i >= 0 ; --i)
+	for (int32 i = HistoryBuffer.Num() - 1; i >= 0; --i)
 	{
 		FAutoCompleteCommand Cmd;
 
-		Cmd.Command = HistoryBuffer[i]; 
+		Cmd.Command = HistoryBuffer[i];
 		Cmd.Color = ConsoleSettings->HistoryColor;
 		Cmd.SetHistory();
 
@@ -507,18 +567,19 @@ void UConsole::SetAutoCompleteFromHistory()
 	}
 }
 
-void UConsole::SetInputText( const FString& Text )
+void UConsole::SetInputText(const FString& Text)
 {
 	TypedStr = Text;
 }
 
-void UConsole::SetCursorPos( int32 Position )
+void UConsole::SetCursorPos(int32 Position)
 {
 	TypedStrPos = Position;
 }
 
 void UConsole::ConsoleCommand(const FString& Command)
 {
+	CSV_EVENT_GLOBAL(TEXT("Cmd: %s"), *Command);
 	// insert into history buffer
 	{
 		HistoryBuffer.Remove(Command);
@@ -533,12 +594,12 @@ void UConsole::ConsoleCommand(const FString& Command)
 	OutputText(FString::Printf(TEXT("\n>>> %s <<<"), *Command));
 
 	UGameInstance* GameInstance = GetOuterUGameViewportClient()->GetGameInstance();
-	if(ConsoleTargetPlayer != nullptr)
+	if (ConsoleTargetPlayer != nullptr)
 	{
 		// If there is a console target player, execute the command in the player's context.
 		ConsoleTargetPlayer->PlayerController->ConsoleCommand(Command);
 	}
-	else if(GameInstance && GameInstance->GetFirstLocalPlayerController())
+	else if (GameInstance && GameInstance->GetFirstLocalPlayerController())
 	{
 		// If there are any players, execute the command in the first local player's context.
 		APlayerController* PC = GameInstance->GetFirstLocalPlayerController();
@@ -581,11 +642,11 @@ void UConsole::OutputText(const FString& Text)
 {
 	FString RemainingText = Text;
 	int32 StringLength = Text.Len();
-	while(StringLength > 0)
+	while (StringLength > 0)
 	{
 		// Find the number of characters in the next line of text.
 		int32 LineLength = RemainingText.Find(TEXT("\n"), ESearchCase::CaseSensitive);
-		if(LineLength == -1)
+		if (LineLength == -1)
 		{
 			// There aren't any more newlines in the string, assume there's a newline at the end of the string.
 			LineLength = StringLength;
@@ -620,7 +681,7 @@ void UConsole::FlushPlayerInput()
 	else
 	{
 		UWorld* World = GetOuterUGameViewportClient()->GetWorld();
-		if (ULocalPlayer* LocalPlayer = GEngine->GetFirstGamePlayer(World))
+		if (ULocalPlayer * LocalPlayer = GEngine->GetFirstGamePlayer(World))
 		{
 			PC = LocalPlayer->PlayerController;
 		}
@@ -633,7 +694,7 @@ void UConsole::FlushPlayerInput()
 }
 
 bool UConsole::ProcessControlKey(FKey Key, EInputEvent Event)
-{	
+{
 #if PLATFORM_MAC
 	if (Key == EKeys::LeftCommand || Key == EKeys::RightCommand)
 #else
@@ -709,7 +770,7 @@ void UConsole::AppendInputText(const FString& Text)
 	while (TextMod.Len() > 0)
 	{
 		int32 Character = **TextMod.Left(1);
-		TextMod = TextMod.Mid(1);
+		TextMod.MidInline(1, MAX_int32, false);
 
 		if (Character >= 0x20 && Character < 0x100)
 		{
@@ -724,9 +785,9 @@ void UConsole::AppendInputText(const FString& Text)
 	UpdatePrecompletedInputLine();
 }
 
-bool UConsole::InputChar_Typing( int32 ControllerId, const FString& Unicode )
+bool UConsole::InputChar_Typing(int32 ControllerId, const FString& Unicode)
 {
-	if ( bCaptureKeyInput )
+	if (bCaptureKeyInput)
 	{
 		return true;
 	}
@@ -736,9 +797,9 @@ bool UConsole::InputChar_Typing( int32 ControllerId, const FString& Unicode )
 	return true;
 }
 
-bool UConsole::InputKey_InputLine( int32 ControllerId, FKey Key, EInputEvent Event, float AmountDepressed, bool bGamepad)
+bool UConsole::InputKey_InputLine(int32 ControllerId, FKey Key, EInputEvent Event, float AmountDepressed, bool bGamepad)
 {
-	if ( Event == IE_Pressed )
+	if (Event == IE_Pressed)
 	{
 		bCaptureKeyInput = false;
 	}
@@ -747,7 +808,7 @@ bool UConsole::InputKey_InputLine( int32 ControllerId, FKey Key, EInputEvent Eve
 	bool bModifierDown = bCtrl;
 	FModifierKeysState KeyState = FSlateApplication::Get().GetModifierKeys();
 	bModifierDown |= KeyState.IsAltDown() || KeyState.IsCommandDown() || KeyState.IsShiftDown() || KeyState.IsControlDown();
-	if ( GetDefault<UInputSettings>()->ConsoleKeys.Contains(Key) && Event == IE_Pressed && !bModifierDown )
+	if (GetDefault<UInputSettings>()->ConsoleKeys.Contains(Key) && Event == IE_Pressed && !bModifierDown)
 	{
 		if (ConsoleState == NAME_Typing)
 		{
@@ -826,7 +887,7 @@ bool UConsole::InputKey_InputLine( int32 ControllerId, FKey Key, EInputEvent Eve
 	};
 
 	// if user input is open
-	if(ConsoleState != NAME_None)
+	if (ConsoleState != NAME_None)
 	{
 		if (ProcessControlKey(Key, Event))
 		{
@@ -836,13 +897,13 @@ bool UConsole::InputKey_InputLine( int32 ControllerId, FKey Key, EInputEvent Eve
 		{
 			return true;
 		}
-		else if( bGamepad )
+		else if (bGamepad)
 		{
 			return false;
 		}
-		else if( Key == EKeys::Escape && Event == IE_Released )
+		else if (Key == EKeys::Escape && Event == IE_Released)
 		{
-			if( !TypedStr.IsEmpty() )
+			if (!TypedStr.IsEmpty())
 			{
 				SetInputText("");
 				SetCursorPos(0);
@@ -858,17 +919,17 @@ bool UConsole::InputKey_InputLine( int32 ControllerId, FKey Key, EInputEvent Eve
 			}
 			else
 			{
-				FakeGotoState( NAME_None );
+				FakeGotoState(NAME_None);
 			}
 
 			return true;
 		}
-		else if( Key == EKeys::Enter && Event == IE_Released )
+		else if (Key == EKeys::Enter && Event == IE_Released)
 		{
-			if( !TypedStr.IsEmpty() )
+			if (!TypedStr.IsEmpty())
 			{
 				// Make a local copy of the string.
-				FString Temp=TypedStr;
+				FString Temp = TypedStr;
 
 				SetInputText(TEXT(""));
 				SetCursorPos(0);
@@ -877,9 +938,9 @@ bool UConsole::InputKey_InputLine( int32 ControllerId, FKey Key, EInputEvent Eve
 
 				//OutputText( Localize("Errors","Exec","Core") );
 
-				OutputText( TEXT("") );
+				OutputText(TEXT(""));
 
-				if(ConsoleState == NAME_Typing)
+				if (ConsoleState == NAME_Typing)
 				{
 					// close after each command when in typing mode (single line)
 					FakeGotoState(NAME_None);
@@ -898,9 +959,9 @@ bool UConsole::InputKey_InputLine( int32 ControllerId, FKey Key, EInputEvent Eve
 
 			return true;
 		}
-		else if( Event != IE_Pressed && Event != IE_Repeat )
+		else if (Event != IE_Pressed && Event != IE_Repeat)
 		{
-			if( !bGamepad )
+			if (!bGamepad)
 			{
 				return	Key != EKeys::LeftMouseButton
 					&&	Key != EKeys::MiddleMouseButton
@@ -908,11 +969,11 @@ bool UConsole::InputKey_InputLine( int32 ControllerId, FKey Key, EInputEvent Eve
 			}
 			return false;
 		}
-		else if( Key == EKeys::Up || (Key == EKeys::Tab && bShift))
+		else if (Key == EKeys::Up || (Key == EKeys::Tab && bShift))
 		{
 			if (!bCtrl)
 			{
-				if(AutoComplete.Num())
+				if (AutoComplete.Num())
 				{
 
 					if (Key == EKeys::Tab)
@@ -936,7 +997,7 @@ bool UConsole::InputKey_InputLine( int32 ControllerId, FKey Key, EInputEvent Eve
 				SetInputLineFromAutoComplete();
 			}
 		}
-		else if( Key == EKeys::Down || (Key == EKeys::Tab && !bShift) )
+		else if (Key == EKeys::Down || (Key == EKeys::Tab && !bShift))
 		{
 			if (!bCtrl)
 			{
@@ -973,33 +1034,33 @@ bool UConsole::InputKey_InputLine( int32 ControllerId, FKey Key, EInputEvent Eve
 			}
 			return true;
 		}
-		else if( Key==EKeys::BackSpace )
+		else if (Key == EKeys::BackSpace)
 		{
-			if( TypedStrPos>0 )
+			if (TypedStrPos > 0)
 			{
-				SetInputText(FString::Printf(TEXT("%s%s"), *TypedStr.Left(TypedStrPos-1), *TypedStr.Right( TypedStr.Len() - TypedStrPos)));
-				SetCursorPos(TypedStrPos-1);
+				SetInputText(FString::Printf(TEXT("%s%s"), *TypedStr.Left(TypedStrPos - 1), *TypedStr.Right(TypedStr.Len() - TypedStrPos)));
+				SetCursorPos(TypedStrPos - 1);
 				// unlock auto-complete (@todo - track the lock position so we don't bother unlocking under bogus cases)
 				bAutoCompleteLocked = false;
 			}
 
 			return true;
 		}
-		else if ( Key== EKeys::Delete )
+		else if (Key == EKeys::Delete)
 		{
-			if ( TypedStrPos < TypedStr.Len() )
+			if (TypedStrPos < TypedStr.Len())
 			{
-				SetInputText(FString::Printf(TEXT("%s%s"), *TypedStr.Left(TypedStrPos), *TypedStr.Right( TypedStr.Len() - TypedStrPos - 1)));
+				SetInputText(FString::Printf(TEXT("%s%s"), *TypedStr.Left(TypedStrPos), *TypedStr.Right(TypedStr.Len() - TypedStrPos - 1)));
 			}
 			return true;
 		}
-		else if ( Key==EKeys::Left )
+		else if (Key == EKeys::Left)
 		{
 			if (bCtrl)
 			{
 				// find the nearest '.' or ' '
-				int32 NewPos = FMath::Max(TypedStr.Find(TEXT("."), ESearchCase::CaseSensitive, ESearchDir::FromEnd, TypedStrPos),TypedStr.Find(TEXT(" "),ESearchCase::CaseSensitive, ESearchDir::FromEnd,TypedStrPos));
-				SetCursorPos(FMath::Max(0,NewPos));
+				int32 NewPos = FMath::Max(TypedStr.Find(TEXT("."), ESearchCase::CaseSensitive, ESearchDir::FromEnd, TypedStrPos), TypedStr.Find(TEXT(" "), ESearchCase::CaseSensitive, ESearchDir::FromEnd, TypedStrPos));
+				SetCursorPos(FMath::Max(0, NewPos));
 			}
 			else
 			{
@@ -1007,7 +1068,7 @@ bool UConsole::InputKey_InputLine( int32 ControllerId, FKey Key, EInputEvent Eve
 			}
 			return true;
 		}
-		else if ( Key==EKeys::Right )
+		else if (Key == EKeys::Right)
 		{
 			if (bCtrl)
 			{
@@ -1015,13 +1076,13 @@ bool UConsole::InputKey_InputLine( int32 ControllerId, FKey Key, EInputEvent Eve
 				int32 SpacePos = TypedStr.Find(TEXT(" "));
 				int32 PeriodPos = TypedStr.Find(TEXT("."));
 				// pick the closest valid index
-				int32 NewPos = SpacePos < 0 ? PeriodPos : (PeriodPos < 0 ? SpacePos : FMath::Min(SpacePos,PeriodPos));
+				int32 NewPos = SpacePos < 0 ? PeriodPos : (PeriodPos < 0 ? SpacePos : FMath::Min(SpacePos, PeriodPos));
 				// jump to end if nothing in between
 				if (NewPos == INDEX_NONE)
 				{
 					NewPos = TypedStr.Len();
 				}
-				SetCursorPos(FMath::Min(TypedStr.Len(),FMath::Max(TypedStrPos,NewPos)));
+				SetCursorPos(FMath::Min(TypedStr.Len(), FMath::Max(TypedStrPos, NewPos)));
 			}
 			else
 			{
@@ -1029,12 +1090,12 @@ bool UConsole::InputKey_InputLine( int32 ControllerId, FKey Key, EInputEvent Eve
 			}
 			return true;
 		}
-		else if ( Key==EKeys::Home )
+		else if (Key == EKeys::Home)
 		{
 			SetCursorPos(0);
 			return true;
 		}
-		else if ( Key==EKeys::End )
+		else if (Key == EKeys::End)
 		{
 			SetCursorPos(TypedStr.Len());
 			return true;
@@ -1095,18 +1156,11 @@ void UConsole::PostRender_Console_Typing(UCanvas* Canvas)
 	float ClipY = Canvas->ClipY;
 	float LeftPos = 0;
 
-	if (GEngine->IsConsoleBuild())
+	if (CVarCustomConsolePosEnabled.GetValueOnAnyThread())
 	{
-		ClipX	-= 64;
-		ClipY	-= 32;
-		LeftPos	 = 32;
-	}
-
-	if (GEngine->IsStereoscopic3D())
-	{
-		LeftPos = ClipX / 3;
-		ClipX -= LeftPos;
-		ClipY = ClipY * 0.60;
+		LeftPos = (float)CVarConsoleXPos.GetValueOnAnyThread();
+		float BottomOffset = (float)CVarConsoleYPos.GetValueOnAnyThread();
+		ClipY = ClipY - BottomOffset;
 	}
 
 	PostRender_InputLine(Canvas, FIntPoint(LeftPos, ClipY));
@@ -1114,22 +1168,22 @@ void UConsole::PostRender_Console_Typing(UCanvas* Canvas)
 
 void UConsole::BeginState_Typing(FName PreviousStateName)
 {
-	if ( PreviousStateName == NAME_None )
+	if (PreviousStateName == NAME_None)
 	{
 		FlushPlayerInput();
 	}
 	bCaptureKeyInput = true;
 }
 
-void UConsole::EndState_Typing( FName NextStateName )
+void UConsole::EndState_Typing(FName NextStateName)
 {
 	bAutoCompleteLocked = false;
 }
 
 
-bool UConsole::InputChar_Open( int32 ControllerId, const FString& Unicode )
+bool UConsole::InputChar_Open(int32 ControllerId, const FString& Unicode)
 {
-	if ( bCaptureKeyInput )
+	if (bCaptureKeyInput)
 	{
 		return true;
 	}
@@ -1140,33 +1194,33 @@ bool UConsole::InputChar_Open( int32 ControllerId, const FString& Unicode )
 }
 
 
-bool UConsole::InputKey_Open( int32 ControllerId, FKey Key, EInputEvent Event, float AmountDepressed, bool bGamepad)
+bool UConsole::InputKey_Open(int32 ControllerId, FKey Key, EInputEvent Event, float AmountDepressed, bool bGamepad)
 {
-	if ( Key==EKeys::PageUp || Key == EKeys::MouseScrollUp )
+	if (Key == EKeys::PageUp || Key == EKeys::MouseScrollUp)
 	{
-		if (SBPos<Scrollback.Num()-1)
+		if (SBPos < Scrollback.Num() - 1)
 		{
 			if (bCtrl)
-				SBPos+=5;
+				SBPos += 5;
 			else
 				SBPos++;
 
-			if (SBPos>=Scrollback.Num())
-				SBPos = Scrollback.Num()-1;
+			if (SBPos >= Scrollback.Num())
+				SBPos = Scrollback.Num() - 1;
 		}
 
 		return true;
 	}
-	else if ( Key==EKeys::PageDown || Key==EKeys::MouseScrollDown )
+	else if (Key == EKeys::PageDown || Key == EKeys::MouseScrollDown)
 	{
-		if (SBPos>0)
+		if (SBPos > 0)
 		{
 			if (bCtrl)
-				SBPos-=5;
+				SBPos -= 5;
 			else
 				SBPos--;
 
-			if (SBPos<0)
+			if (SBPos < 0)
 				SBPos = 0;
 		}
 
@@ -1186,71 +1240,72 @@ void UConsole::PostRender_Console_Open(UCanvas* Canvas)
 	float TopPos = 0;
 	float LeftPos = 0;
 
-	if (GEngine->IsConsoleBuild())
+	if (CVarCustomConsolePosEnabled.GetValueOnAnyThread())
 	{
-		ClipX	-= 80;
-		TopPos	 = 30;
-		LeftPos	 = 40;
-	}
-	if (GEngine->IsStereoscopic3D())
-	{
-		LeftPos = ClipX / 3;
-		ClipX -= LeftPos;
-		Height = Canvas->ClipY * 0.60;
+		LeftPos = (float)CVarConsoleXPos.GetValueOnAnyThread();
+		float BottomOffset = (float)CVarConsoleYPos.GetValueOnAnyThread();
+		Height = Canvas->ClipY - BottomOffset;
 	}
 
 	UFont* Font = GEngine->GetSmallFont();
 
+	const float DPIScale = Canvas->GetDPIScale();
+	const bool bDPIAwareStringMeasurement = true;
+
 	// determine the height of the text
 	float xl, yl;
-	Canvas->StrLen(Font, TEXT("M"),xl,yl);
+	Canvas->StrLen(Font, TEXT("M"),xl,yl, bDPIAwareStringMeasurement);
+	xl /= DPIScale;
+	yl /= DPIScale;
 	// Background
 	FLinearColor BackgroundColor = ConsoleDefs::AutocompleteBackgroundColor.ReinterpretAsLinear();
 	BackgroundColor.A = ConsoleSettings->BackgroundOpacityPercentage / 100.0f;
-	FCanvasTileItem ConsoleTile( FVector2D( LeftPos, 0.0f ), DefaultTexture_Black->Resource, FVector2D( ClipX, Height + TopPos - yl), FVector2D( 0.0f, 0.0f), FVector2D( 1.0f, 1.0f ), BackgroundColor );
+	FCanvasTileItem ConsoleTile(FVector2D(LeftPos, 0.0f), DefaultTexture_Black->Resource, FVector2D(ClipX, Height + TopPos - yl), FVector2D(0.0f, 0.0f), FVector2D(1.0f, 1.0f), BackgroundColor);
 
 	// Preserve alpha to allow single-pass composite
 	ConsoleTile.BlendMode = SE_BLEND_AlphaBlend;
 
-	Canvas->DrawItem( ConsoleTile );
+	Canvas->DrawItem(ConsoleTile);
 
 	// figure out which element of the scrollback buffer to should appear first (at the top of the screen)
 	int32 idx = SBHead - SBPos;
-	
+
 	float y = Height - yl;
 
-	if(Scrollback.Num())
+	if (Scrollback.Num())
 	{
-		FCanvasTextItem ConsoleText( FVector2D( LeftPos,TopPos+Height-5-yl ), FText::FromString(TEXT("")), GEngine->GetLargeFont(), ConsoleSettings->InputColor );
+		FCanvasTextItem ConsoleText(FVector2D(LeftPos, TopPos + Height - 5 - yl), FText::FromString(TEXT("")), GEngine->GetLargeFont(), ConsoleSettings->InputColor);
 		// change the text color to white
-		ConsoleText.SetColor( FLinearColor::White );
+		ConsoleText.SetColor(FLinearColor::White);
 
 		// while we have enough room to draw another line and there are more lines to draw
-		while (y > -yl && idx>=0)
+		while (y > -yl && idx >= 0)
 		{
 			float PenX;
 			float PenY;
 			float PenZ = 0.1f;
 			PenX = LeftPos;
-			PenY = TopPos+y;
+			PenY = TopPos + y;
 
 			// adjust the location for any word wrapping due to long text lines
 			if (idx < Scrollback.Num())
 			{
 				float ScrollLineXL, ScrollLineYL;
-				Canvas->StrLen(Font, Scrollback[idx], ScrollLineXL, ScrollLineYL);
+				Canvas->StrLen(Font, Scrollback[idx], ScrollLineXL, ScrollLineYL, bDPIAwareStringMeasurement);
+				ScrollLineXL /= DPIScale;
+				ScrollLineYL /= DPIScale;
 				if (ScrollLineYL > yl)
 				{
 					y -= (ScrollLineYL - yl);
 					PenX = LeftPos;
-					PenY = TopPos+y;				
+					PenY = TopPos + y;
 				}
 
-				ConsoleText.Text = FText::FromString( Scrollback[idx] );
-				Canvas->DrawItem( ConsoleText, PenX, PenY );
+				ConsoleText.Text = FText::FromString(Scrollback[idx]);
+				Canvas->DrawItem(ConsoleText, PenX, PenY);
 			}
 			idx--;
-			y-=yl;
+			y -= yl;
 		}
 	}
 
@@ -1260,13 +1315,13 @@ void UConsole::PostRender_Console_Open(UCanvas* Canvas)
 void UConsole::BeginState_Open(FName PreviousStateName)
 {
 	bCaptureKeyInput = true;
-//	HistoryCur = HistoryTop;
+	//	HistoryCur = HistoryTop;
 
 	SBPos = 0;
 	bCtrl = false;
 	bShift = false;
 
-	if ( PreviousStateName == NAME_None )
+	if (PreviousStateName == NAME_None)
 	{
 		FlushPlayerInput();
 	}
@@ -1277,24 +1332,24 @@ void UConsole::EndState_Open(FName NextStateName)
 {
 }
 
-bool UConsole::InputChar( int32 ControllerId, const FString& Unicode )
+bool UConsole::InputChar(int32 ControllerId, const FString& Unicode)
 {
 	if (ConsoleState == NAME_Typing)
 	{
-		return InputChar_Typing(ControllerId,Unicode);
+		return InputChar_Typing(ControllerId, Unicode);
 	}
 	if (ConsoleState == NAME_Open)
 	{
-		return InputChar_Open(ControllerId,Unicode);
+		return InputChar_Open(ControllerId, Unicode);
 	}
 	return bCaptureKeyInput;
 }
 
-bool UConsole::InputKey( int32 ControllerId, FKey Key, EInputEvent Event, float AmountDepressed, bool bGamepad)
+bool UConsole::InputKey(int32 ControllerId, FKey Key, EInputEvent Event, float AmountDepressed, bool bGamepad)
 {
-	bool bWasConsumed = InputKey_InputLine(ControllerId,Key,Event,AmountDepressed,bGamepad);
+	bool bWasConsumed = InputKey_InputLine(ControllerId, Key, Event, AmountDepressed, bGamepad);
 
-	if(!bWasConsumed)
+	if (!bWasConsumed)
 	{
 		if (ConsoleState == NAME_Typing)
 		{
@@ -1303,7 +1358,7 @@ bool UConsole::InputKey( int32 ControllerId, FKey Key, EInputEvent Event, float 
 		}
 		if (ConsoleState == NAME_Open)
 		{
-			bWasConsumed = InputKey_Open(ControllerId,Key,Event,AmountDepressed,bGamepad);
+			bWasConsumed = InputKey_Open(ControllerId, Key, Event, AmountDepressed, bGamepad);
 			// if the console is open we don't want any other one to consume the input
 			return true;
 		}
@@ -1315,6 +1370,10 @@ bool UConsole::InputKey( int32 ControllerId, FKey Key, EInputEvent Event, float 
 
 void UConsole::PostRender_Console(UCanvas* Canvas)
 {
+	if (ConsoleState != NAME_None)
+	{
+		Canvas->ApplySafeZoneTransform();
+
 	if (ConsoleState == NAME_Typing)
 	{
 		PostRender_Console_Typing(Canvas);
@@ -1322,6 +1381,9 @@ void UConsole::PostRender_Console(UCanvas* Canvas)
 	else if (ConsoleState == NAME_Open)
 	{
 		PostRender_Console_Open(Canvas);
+	}
+
+		Canvas->PopSafeZoneTransform();
 	}
 }
 
@@ -1332,47 +1394,40 @@ void UConsole::PostRender_InputLine(UCanvas* Canvas, FIntPoint UserInputLinePos)
 	const FString TypedInputText = FString::Printf(TEXT("%s%s"), *ConsoleDefs::LeadingInputText, *TypedStr);
 	const FString PrecompletedInputText = !PrecompletedInputLine.IsEmpty() ? PrecompletedInputLine.RightChop(TypedStr.Len()) : FString();
 
+	const float DPIScale = Canvas->GetDPIScale();
+	const bool bDPIAwareStringMeasurement = true;
+
 	// use the smallest font
 	UFont* Font = GEngine->GetSmallFont();
 	// determine the size of the input line
-	Canvas->StrLen(Font, TypedInputText, xl, yl);
+	Canvas->StrLen(Font, TypedInputText, xl, yl, bDPIAwareStringMeasurement);
+	xl /= DPIScale;
+	yl /= DPIScale;
 
 	float ClipX = Canvas->ClipX;
 	float ClipY = Canvas->ClipY;
 
-	if (GEngine->IsConsoleBuild())
-	{
-		ClipX	-= 64;
-		ClipY	-= 32;
-	}
-
-	if (GEngine->IsStereoscopic3D())
-	{
-		ClipX = Canvas->ClipX - UserInputLinePos.X;
-		ClipY = ClipY * 0.60;
-	}
-
 	// Background
 	FLinearColor BackgroundColor = ConsoleDefs::AutocompleteBackgroundColor.ReinterpretAsLinear();
 	BackgroundColor.A = ConsoleSettings->BackgroundOpacityPercentage / 100.0f;
-	FCanvasTileItem ConsoleTile( FVector2D( UserInputLinePos.X,UserInputLinePos.Y-6-yl ), DefaultTexture_Black->Resource, FVector2D( ClipX, yl+6 ), FVector2D( 0.0f, 0.0f), FVector2D( 1.0f, 1.0f ), BackgroundColor );
-	
+	FCanvasTileItem ConsoleTile(FVector2D(UserInputLinePos.X, UserInputLinePos.Y - 6 - yl), DefaultTexture_Black->Resource, FVector2D(ClipX, yl + 6), FVector2D(0.0f, 0.0f), FVector2D(1.0f, 1.0f), BackgroundColor);
+
 	// Preserve alpha to allow single-pass composite
 	ConsoleTile.BlendMode = SE_BLEND_AlphaBlend;
 
-	Canvas->DrawItem( ConsoleTile );
+	Canvas->DrawItem(ConsoleTile);
 
 	// Separator line
-	ConsoleTile.SetColor( ConsoleDefs::BorderColor );
+	ConsoleTile.SetColor(ConsoleDefs::BorderColor);
 	ConsoleTile.Texture = DefaultTexture_White->Resource;
-	ConsoleTile.Size = FVector2D( ClipX, 2.0f );
-	Canvas->DrawItem( ConsoleTile );
+	ConsoleTile.Size = FVector2D(ClipX, 2.0f);
+	Canvas->DrawItem(ConsoleTile);
 
 	// Currently typed string
-	FText Str = FText::FromString( TypedInputText );
-	FCanvasTextItem ConsoleText( FVector2D( UserInputLinePos.X,UserInputLinePos.Y-3-yl ), Str , GEngine->GetLargeFont(), ConsoleSettings->InputColor );
+	FText Str = FText::FromString(TypedInputText);
+	FCanvasTextItem ConsoleText(FVector2D(UserInputLinePos.X, UserInputLinePos.Y - 3 - yl), Str, GEngine->GetLargeFont(), ConsoleSettings->InputColor);
 	ConsoleText.EnableShadow(FLinearColor::Black);
-	Canvas->DrawItem( ConsoleText );
+	Canvas->DrawItem(ConsoleText);
 
 	// Precompleted remainder of the typed string (faded out)
 	if (!PrecompletedInputText.IsEmpty())
@@ -1391,13 +1446,16 @@ void UConsole::PostRender_InputLine(UCanvas* Canvas, FIntPoint UserInputLinePos)
 			StartIdx = FMath::Max(0, AutoComplete.Num() + StartIdx);
 		}
 
-		Canvas->StrLen(Font, *ConsoleDefs::LeadingInputText, xl, yl);
+		Canvas->StrLen(Font, *ConsoleDefs::LeadingInputText, xl, yl, bDPIAwareStringMeasurement);
+		xl /= DPIScale;
+		yl /= DPIScale;
+
 		float y = UserInputLinePos.Y - 6.0f - (yl * 2.0f);
 
 		// Set the background color/texture of the auto-complete section
 		FLinearColor AutoCompleteBackgroundColor = ConsoleDefs::AutocompleteBackgroundColor;
 		AutoCompleteBackgroundColor.A = ConsoleSettings->BackgroundOpacityPercentage / 100.0f;
-		ConsoleTile.SetColor( AutoCompleteBackgroundColor );
+		ConsoleTile.SetColor(AutoCompleteBackgroundColor);
 		ConsoleTile.Texture = DefaultTexture_White->Resource;
 
 		// wasteful memory allocations but when typing in a console command this is fine
@@ -1409,17 +1467,21 @@ void UConsole::PostRender_InputLine(UCanvas* Canvas, FIntPoint UserInputLinePos)
 		float MaxRightWidth = 0;
 		for (int32 MatchIdx = 0; MatchIdx < MAX_AUTOCOMPLETION_LINES && MatchIdx < AutoComplete.Num(); MatchIdx++)
 		{
-			const FAutoCompleteCommand &Cmd = AutoComplete[StartIdx + MatchIdx];
+			const FAutoCompleteCommand& Cmd = AutoComplete[StartIdx + MatchIdx];
 			AutoCompleteElements.Add(&Cmd);
 
 			// Find the longest command and the longest description for left-justification of the descriptions
 			float CmdLenX, CmdLenY;
-			Canvas->StrLen(Font, Cmd.GetLeft(), CmdLenX, CmdLenY);
+			Canvas->StrLen(Font, Cmd.GetLeft(), CmdLenX, CmdLenY, bDPIAwareStringMeasurement);
+			CmdLenX /= DPIScale;
+			CmdLenY /= DPIScale;
 			MaxLeftWidth = FMath::Max(MaxLeftWidth, CmdLenX);
 			if (!Cmd.Desc.IsEmpty())
 			{
 				float DescLenX, DescLenY;
-				Canvas->StrLen(Font, Cmd.GetRight(), DescLenX, DescLenY);
+				Canvas->StrLen(Font, Cmd.GetRight(), DescLenX, DescLenY, bDPIAwareStringMeasurement);
+				DescLenX /= DPIScale;
+				DescLenY /= DPIScale;
 				MaxRightWidth = FMath::Max(MaxRightWidth, ConsoleDefs::AutocompleteGap + DescLenX);
 			}
 		}
@@ -1440,13 +1502,13 @@ void UConsole::PostRender_InputLine(UCanvas* Canvas, FIntPoint UserInputLinePos)
 		int32 Border = 4;
 
 		// dark inner part
-		ConsoleTile.Size = FVector2D( MaxWidth + 2 * Border, Height + 2 * Border );
-		ConsoleTile.SetColor( AutoCompleteBackgroundColor );
+		ConsoleTile.Size = FVector2D(MaxWidth + 2 * Border, Height + 2 * Border);
+		ConsoleTile.SetColor(AutoCompleteBackgroundColor);
 
 		// Preserve alpha to allow single-pass composite
 		ConsoleTile.BlendMode = SE_BLEND_AlphaBlend;
 
-		Canvas->DrawItem( ConsoleTile, UserInputLinePos.X + xl - Border, y + yl - Height - Border );
+		Canvas->DrawItem(ConsoleTile, UserInputLinePos.X + xl - Border, y + yl - Height - Border);
 
 		// white border
 		FCanvasBoxItem ConsoleOutline(ConsoleTile.Position, FVector2D(MaxWidth + 2 * Border, Height + 2 * Border));
@@ -1461,11 +1523,11 @@ void UConsole::PostRender_InputLine(UCanvas* Canvas, FIntPoint UserInputLinePos)
 			const bool bMoreMatches = (Num > MAX_AUTOCOMPLETION_LINES && i == Num - 1);
 			const bool bHistory = AutoCompleteElement.IsHistory();
 			int CmdXOffset = 0;
-		
+
 			FColor LeftC = AutoCompleteElement.Color;
 			FColor RightC = ConsoleSettings->AutoCompleteFadedColor;
 
-			if(bCursorLineColor)
+			if (bCursorLineColor)
 			{
 				ConsoleTile.Size = FVector2D(MaxWidth, yl);
 				ConsoleTile.SetColor(ConsoleDefs::CursorLineColor);
@@ -1474,14 +1536,16 @@ void UConsole::PostRender_InputLine(UCanvas* Canvas, FIntPoint UserInputLinePos)
 				LeftC = ConsoleDefs::CursorColor;
 			}
 
-			if(bHistory)
+			if (bHistory)
 			{
 				// > HistoryElement has the strings swapped so we need to swap the colors
 				Swap(LeftC, RightC);
 			}
 
 			float CommandWidth, CommandHeight;
-			Canvas->StrLen(Font, AutoCompleteElement.Command, CommandWidth, CommandHeight);
+			Canvas->StrLen(Font, AutoCompleteElement.Command, CommandWidth, CommandHeight, bDPIAwareStringMeasurement);
+			CommandWidth /= DPIScale;
+			CommandHeight /= DPIScale;
 
 			if (bMoreMatches)
 			{
@@ -1491,10 +1555,13 @@ void UConsole::PostRender_InputLine(UCanvas* Canvas, FIntPoint UserInputLinePos)
 
 			ConsoleText.SetColor(LeftC);
 			ConsoleText.Text = FText::FromString(AutoCompleteElement.GetLeft());
-			Canvas->DrawItem( ConsoleText, UserInputLinePos.X + CmdXOffset + xl, y );
+			Canvas->DrawItem(ConsoleText, UserInputLinePos.X + CmdXOffset + xl, y);
 
 			float DescriptionWidth, DescriptionHeight;
-			Canvas->StrLen(Font, AutoCompleteElement.GetRight(), DescriptionWidth, DescriptionHeight);
+			Canvas->StrLen(Font, AutoCompleteElement.GetRight(), DescriptionWidth, DescriptionHeight, bDPIAwareStringMeasurement);
+			DescriptionWidth /= DPIScale;
+			DescriptionHeight /= DPIScale;
+			
 			float DescriptionX = UserInputLinePos.X + xl + ConsoleDefs::AutocompleteGap;
 			float DescriptionOverflow = DescriptionX + MaxLeftWidth + DescriptionWidth - Canvas->SizeX;
 
@@ -1510,7 +1577,7 @@ void UConsole::PostRender_InputLine(UCanvas* Canvas, FIntPoint UserInputLinePos)
 
 			ConsoleText.SetColor(RightC);
 			ConsoleText.Text = FText::FromString(AutoCompleteElement.GetRight());
-			Canvas->DrawItem( ConsoleText, DescriptionX, y );
+			Canvas->DrawItem(ConsoleText, DescriptionX, y);
 			y -= yl;
 		};
 
@@ -1530,15 +1597,15 @@ void UConsole::PostRender_InputLine(UCanvas* Canvas, FIntPoint UserInputLinePos)
 		}
 	}
 
-	const float DPIScale = Canvas->GetDPIScale();
-	const bool bDPIAwareStringMeasurement = true;
 	// determine the cursor position
 	const FString TypedInputTextUpToCursor = FString::Printf(TEXT("%s%s"), *ConsoleDefs::LeadingInputText, *TypedStr.Left(TypedStrPos));
 	Canvas->StrLen(Font, TypedInputTextUpToCursor, xl, yl, bDPIAwareStringMeasurement);
+	xl /= DPIScale;
+	yl /= DPIScale;
 	// draw the cursor
 	ConsoleText.SetColor(ConsoleDefs::CursorColor);
 	ConsoleText.Text = FText::FromString(FString(TEXT("_")));
-	Canvas->DrawItem(ConsoleText, UserInputLinePos.X + xl / DPIScale, UserInputLinePos.Y - 1.0f - yl / DPIScale);
+	Canvas->DrawItem(ConsoleText, UserInputLinePos.X + xl, UserInputLinePos.Y - 1.0f - yl);
 
 }
 
@@ -1578,7 +1645,7 @@ void UConsole::FakeGotoState(FName NextStateName)
 		// Console has opened
 		OnConsoleActivationStateChanged.Broadcast(true);
 	}
-	else if( NextStateName == NAME_None )
+	else if (NextStateName == NAME_None)
 	{
 		// We need to force the console state name change now otherwise inside the call 
 		// to SetKeyboardFocus the console is still considered active
@@ -1611,7 +1678,7 @@ void UConsole::FakeGotoState(FName NextStateName)
 	ConsoleState = NextStateName;
 }
 
-void UConsole::Serialize( const TCHAR* V, ELogVerbosity::Type Verbosity, const class FName& Category )
+void UConsole::Serialize(const TCHAR* V, ELogVerbosity::Type Verbosity, const class FName& Category)
 {
 	// e.g. UE_LOG(LogConsoleResponse, Display, TEXT("Test"));
 	static const FName ConsoleResponseLog = FName("LogConsoleResponse");
@@ -1625,11 +1692,11 @@ void UConsole::Serialize( const TCHAR* V, ELogVerbosity::Type Verbosity, const c
 	{
 		static const TConsoleVariableData<int32>* CVar = IConsoleManager::Get().FindTConsoleVariableDataInt(TEXT("con.MinLogVerbosity"));
 
-		if(CVar)
+		if (CVar)
 		{
 			int MinVerbosity = CVar->GetValueOnAnyThread();
 
-			if((int)Verbosity <= MinVerbosity)
+			if ((int)Verbosity <= MinVerbosity)
 			{
 				// log all that is >= the specified verbosity
 				OutputText(V);

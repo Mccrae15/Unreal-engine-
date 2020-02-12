@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "LandscapeComponent.h"
 #include "LandscapeLayerInfoObject.h"
@@ -13,6 +13,14 @@ FName FWeightmapLayerAllocationInfo::GetLayerName() const
 		return LayerInfo->LayerName;
 	}
 	return NAME_None;
+}
+
+uint32 FWeightmapLayerAllocationInfo::GetHash() const
+{
+	uint32 Hash = PointerHash(LayerInfo);
+	Hash = HashCombine(GetTypeHash(WeightmapTextureIndex), Hash);
+	Hash = HashCombine(GetTypeHash(WeightmapTextureChannel), Hash);
+	return Hash;
 }
 
 #if WITH_EDITOR

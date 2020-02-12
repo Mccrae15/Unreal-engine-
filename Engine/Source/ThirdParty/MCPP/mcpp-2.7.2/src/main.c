@@ -110,7 +110,7 @@
     const char **   inc_dirp;       /* Directory of #includer       */
     const char *    cur_fname;      /* Current source file name     */
                 /* cur_fname is not rewritten by #line directive    */
-    char *      cur_fullname;
+    const char *    cur_fullname;
         /* Full path of current source file (i.e. infile->full_fname)       */
     int         no_source_line;     /* Do not output line in diag.  */
     char        identifier[ IDMAX + IDMAX/8];       /* Current identifier   */
@@ -458,7 +458,8 @@ fatal_error_exit:
 
 #define MAX_OPTIONS 128
 int mcpp_run(
-	const char* in_options,
+	const char** in_options,
+	int num_options,
 	const char* filename,
 	char** outfile,
 	char** outerrors,
@@ -467,43 +468,24 @@ int mcpp_run(
 {
 	int ret = 0;
 	int argc = 0;
-	char* argv[MAX_OPTIONS];
-	char* options = 0;
-	char* p = 0;
+	int i;
+	char* local_argv[MAX_OPTIONS];
+	char** argv = local_argv;
 
-	argv[argc++] = "mcpp";
-	argv[argc++] = filename;
-
-	p = options = xstrdup(in_options);
-	if (p)
+	if (num_options + 2 > MAX_OPTIONS)
 	{
-		while (*p && argc < MAX_OPTIONS)
-		{
-			// Skip whitespace.
-			while (*p && (*p == ' ' || *p == '\t')) { p++; }
+		/*
+		 * Allocate dynamic array if the number of options exceed the limit for the stack-local array
+		 */
+		argv = (char**)xmalloc((num_options + 2) * sizeof(char*));
+	}
 
-			int bFoundQuote = 0;
-			if (*p == '\"')
-			{
-				bFoundQuote = 1;
-				++p;
-			}
+	argv[argc++] = xstrdup("mcpp");
+	argv[argc++] = xstrdup(filename);
 
-			// Store pointer to argument.
-			argv[argc++] = p;
-
-			// Skip argument.
-			if (bFoundQuote)
-			{
-				while (*p && *p != '\"') { ++p; }
-			}
-			else
-			{
-				while (*p && *p != ' ' && *p != '\t') { p++; }
-			}
-			// Add null terminator for argument if needed.
-			if (*p) { *p++ = 0; }
-		}
+	for (i = 0; i < num_options; ++i)
+	{
+		argv[argc++] = xstrdup(in_options[i]);
 	}
 
 	mcpp_use_mem_buffers(1);
@@ -517,7 +499,14 @@ int mcpp_run(
 	{
 		*outerrors = mcpp_get_mem_buffer(ERR);
 	}
-	xfree(options);
+	for (i = 0; i < argc; ++i)
+	{
+		xfree(argv[i]);
+	}
+	if (argv != local_argv)
+	{
+		xfree(argv);
+	}
 
 	return ret;
 }
@@ -525,7 +514,7 @@ int mcpp_run(
 /*
  * This is the table used to predefine target machine, operating system and
  * compiler designators.  It may need hacking for specific circumstances.
- * The -N option supresses these definitions.
+ * The -N option suppresses these definitions.
  */
 typedef struct pre_set {
     const char *    name;
@@ -793,7 +782,7 @@ static void mcpp_main( void)
                 }
                 if (keep_spaces && wrong_line && infile
                         && *(infile->bptr) != '\n' && *(infile->bptr) != EOS) {
-                    src_col = infile->bptr - infile->buffer;
+                    src_col = (int)(infile->bptr - infile->buffer);
                     /* Remember the current colums  */
                     break;                  /* Do sharp() now       */
                 }

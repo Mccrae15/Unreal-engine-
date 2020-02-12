@@ -1,13 +1,15 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
 #include "SNiagaraStackEntryWidget.h"
 #include "Styling/SlateTypes.h"
 #include "Layout/Visibility.h"
+#include "Types/SlateEnums.h"
 
 class UNiagaraStackModuleItem;
 class UNiagaraStackViewModel;
+class SNiagaraStackDisplayName;
 
 class SNiagaraStackModuleItem : public SNiagaraStackEntryWidget
 {
@@ -32,7 +34,13 @@ private:
 
 	void OnCheckStateChanged(ECheckBoxState InCheckState);
 
-	EVisibility GetEditButtonVisibility() const;
+	bool GetButtonsEnabled() const;
+
+	FText GetDeleteButtonToolTipText() const;
+
+	bool GetDeleteButtonEnabled() const;
+
+	bool GetEnabledCheckBoxEnabled() const;
 
 	EVisibility GetRaiseActionMenuVisibility() const;
 
@@ -46,22 +54,15 @@ private:
 
 	FReply RefreshClicked();
 
-	void InsertModuleAbove();
-
-	void InsertModuleBelow();
-
-	void ShowInsertModuleMenu(int32 InsertIndex);
-
 	FReply OnModuleItemDrop(TSharedPtr<class FDragDropOperation> DragDropOperation);
 
 	bool OnModuleItemAllowDrop(TSharedPtr<class FDragDropOperation> DragDropOperation);
 
-	EVisibility GetStackIssuesWarningVisibility() const;
-
-	FText GetErrorButtonTooltipText() const;
-
 	void ShowReassignModuleScriptMenu();
+
+	void OnRenameCommitted(const FText& NewName, ETextCommit::Type CommitType);
 
 private:
 	UNiagaraStackModuleItem* ModuleItem;
+	TSharedPtr<SNiagaraStackDisplayName> DisplayNameWidget;
 };

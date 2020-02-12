@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "IntroTutorials.h"
 #include "Templates/SubclassOf.h"
@@ -37,7 +37,7 @@
 #include "AssetToolsModule.h"
 #include "IClassTypeActions.h"
 #include "ClassTypeActions_EditorTutorial.h"
-
+#include "ToolMenus.h"
 
 #define LOCTEXT_NAMESPACE "IntroTutorials"
 
@@ -78,7 +78,7 @@ TSharedRef<FExtender> FIntroTutorials::AddSummonBlueprintTutorialsMenuExtender(c
 		"HelpBrowse",
 		EExtensionHook::After,
 		CommandList,
-		FMenuExtensionDelegate::CreateRaw(this, &FIntroTutorials::AddSummonBlueprintTutorialsMenuExtension, PrimaryObject));
+		FMenuExtensionDelegate::CreateRaw(const_cast<FIntroTutorials*>(this), &FIntroTutorials::AddSummonBlueprintTutorialsMenuExtension, PrimaryObject));
 
 	return Extender;
 }
@@ -86,7 +86,11 @@ TSharedRef<FExtender> FIntroTutorials::AddSummonBlueprintTutorialsMenuExtender(c
 void FIntroTutorials::StartupModule()
 {
 	// This code can run with content commandlets. Slate is not initialized with commandlets and the below code will fail.
-	if (!bDisableTutorials && !IsRunningCommandlet())
+	const bool bCommandlet = IsRunningCommandlet();
+	const bool bUnattended = FApp::IsUnattended();
+	const bool bCanEverRender = FApp::CanEverRender();
+
+	if (!bDisableTutorials && !bCommandlet && !bUnattended && bCanEverRender)
 	{
 		// Add tutorial for main frame opening
 		IMainFrameModule& MainFrameModule = FModuleManager::LoadModuleChecked<IMainFrameModule>(TEXT("MainFrame"));
@@ -94,10 +98,7 @@ void FIntroTutorials::StartupModule()
 		MainFrameModule.OnMainFrameSDKNotInstalled().AddRaw(this, &FIntroTutorials::HandleSDKNotInstalled);
 		
 		// Add menu option for level editor tutorial
-		MainMenuExtender = MakeShareable(new FExtender);
-		MainMenuExtender->AddMenuExtension("HelpBrowse", EExtensionHook::After, NULL, FMenuExtensionDelegate::CreateRaw(this, &FIntroTutorials::AddSummonTutorialsMenuExtension));
-		FLevelEditorModule& LevelEditorModule = FModuleManager::LoadModuleChecked<FLevelEditorModule>( "LevelEditor" );
-		LevelEditorModule.GetMenuExtensibilityManager()->AddExtender(MainMenuExtender);
+		RegisterSummonTutorialsMenuEntries();
 
 		// Add menu option to blueprint editor as well
 		FBlueprintEditorModule& BPEditorModule = FModuleManager::LoadModuleChecked<FBlueprintEditorModule>( "Kismet" );
@@ -163,6 +164,8 @@ void FIntroTutorials::StartupModule()
 
 void FIntroTutorials::ShutdownModule()
 {
+	UToolMenus::UnregisterOwner(this);
+
 	if (!bDisableTutorials && !IsRunningCommandlet())
 	{
 		FSourceCodeNavigation::AccessOnCompilerNotFound().RemoveAll( this );
@@ -218,15 +221,18 @@ void FIntroTutorials::ShutdownModule()
 	FGlobalTabmanager::Get()->UnregisterNomadTabSpawner(TEXT("TutorialsBrowser"));
 }
 
-void FIntroTutorials::AddSummonTutorialsMenuExtension(FMenuBuilder& MenuBuilder)
+void FIntroTutorials::RegisterSummonTutorialsMenuEntries()
 {
-	MenuBuilder.BeginSection("Tutorials", LOCTEXT("TutorialsLabel", "Tutorials"));
-	MenuBuilder.AddMenuEntry(
+	FToolMenuOwnerScoped OwnerScoped(this);
+	UToolMenu* HelpMenu = UToolMenus::Get()->ExtendMenu("LevelEditor.MainMenu.Help");
+	FToolMenuSection& Section = HelpMenu->AddSection("Tutorials", LOCTEXT("TutorialsLabel", "Tutorials"), FToolMenuInsert("HelpBrowse", EToolMenuInsertType::After));
+	Section.AddEntry(FToolMenuEntry::InitMenuEntry(
+		"Tutorials",
 		LOCTEXT("TutorialsMenuEntryTitle", "Tutorials"),
 		LOCTEXT("TutorialsMenuEntryToolTip", "Opens up introductory tutorials covering the basics of using the Unreal Engine 4 Editor."),
 		FSlateIcon(FEditorStyle::GetStyleSetName(), "LevelEditor.Tutorials"),
-		FUIAction(FExecuteAction::CreateRaw(this, &FIntroTutorials::SummonTutorialHome)));
-	MenuBuilder.EndSection();
+		FUIAction(FExecuteAction::CreateRaw(this, &FIntroTutorials::SummonTutorialHome))
+	));
 }
 
 void FIntroTutorials::AddSummonBlueprintTutorialsMenuExtension(FMenuBuilder& MenuBuilder, UObject* PrimaryObject)
@@ -371,10 +377,13 @@ void FIntroTutorials::HandleCompilerNotFound()
 
 void FIntroTutorials::HandleSDKNotInstalled(const FString& PlatformName, const FString& InTutorialAsset)
 {
-	UBlueprint* Blueprint = LoadObject<UBlueprint>(nullptr, *InTutorialAsset);
-	if(Blueprint)
+	if (FPackageName::IsValidLongPackageName(InTutorialAsset, true))
 	{
-		LaunchTutorialByName( InTutorialAsset );
+		UBlueprint* Blueprint = LoadObject<UBlueprint>(nullptr, *InTutorialAsset);
+		if (Blueprint)
+		{
+			LaunchTutorialByName(InTutorialAsset);
+		}
 	}
 	else
 	{
@@ -523,11 +532,19 @@ TSharedRef<SDockTab> FIntroTutorials::SpawnTutorialsBrowserTab(const FSpawnTabAr
 		.ToolTip(IDocumentation::Get()->CreateToolTip(Label, nullptr, "Shared/TutorialsBrowser", "Tab"));	
 
 	TSharedRef<STutorialsBrowser> TutorialsBrowser = SNew(STutorialsBrowser)
+		.ExternalCategories(ExternalCategories)
 		.OnLaunchTutorial(FOnLaunchTutorial::CreateRaw(this, &FIntroTutorials::LaunchTutorial));
 
 	NewTab->SetContent(TutorialsBrowser);
 
 	return NewTab;
 }
+
+void FIntroTutorials::RegisterCategory(FTutorialCategory NewCategory)
+{
+	ExternalCategories.Add(NewCategory);
+}
+
+
 
 #undef LOCTEXT_NAMESPACE

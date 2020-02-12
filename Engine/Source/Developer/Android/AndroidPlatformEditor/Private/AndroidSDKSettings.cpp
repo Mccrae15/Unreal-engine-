@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "AndroidSDKSettings.h"
 #include "Misc/Paths.h"
@@ -51,13 +51,6 @@ void UAndroidSDKSettings::UpdateTargetModulePaths()
 		Values.Add(NDKPath.Path);
 	}
 	
-	if (!ANTPath.Path.IsEmpty())
-	{
-		FPaths::NormalizeFilename(ANTPath.Path);
-		Keys.Add(TEXT("ANT_HOME"));
-		Values.Add(ANTPath.Path);
-	}
-
 	if (!JavaPath.Path.IsEmpty())
 	{
 		FPaths::NormalizeFilename(JavaPath.Path);

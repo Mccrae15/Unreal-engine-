@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "SequencerKeyCollection.h"
 #include "MovieSceneSection.h"
@@ -161,7 +161,10 @@ bool FSequencerKeyCollection::Update(const FSequencerKeyCollectionSignature& InS
 	// Get all the key times for the key areas
 	for (auto& Pair : InSignature.GetKeyAreas())
 	{
-		Pair.Key->GetKeyTimes(AllTimes, Pair.Key->GetOwningSection()->GetRange());
+		if (Pair.Key->GetOwningSection())
+		{
+			Pair.Key->GetKeyTimes(AllTimes, Pair.Key->GetOwningSection()->GetRange());
+		}
 	}
 
 	AllTimes.Sort();

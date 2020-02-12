@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -18,6 +18,7 @@
 class UEdGraph;
 struct FNotificationInfo;
 struct Rect;
+class FMenuBuilder;
 
 DECLARE_DELEGATE_ThreeParams( FOnNodeTextCommitted, const FText&, ETextCommit::Type, UEdGraphNode* );
 DECLARE_DELEGATE_RetVal_ThreeParams( bool, FOnNodeVerifyTextCommit, const FText&, UEdGraphNode*, FText& );
@@ -86,6 +87,8 @@ public:
 
 	DECLARE_DELEGATE_RetVal_FiveParams( FActionMenuContent, FOnCreateActionMenu, UEdGraph*, const FVector2D&, const TArray<UEdGraphPin*>&, bool, FActionMenuClosed );
 
+	DECLARE_DELEGATE_RetVal_FiveParams( FActionMenuContent, FOnCreateNodeOrPinMenu, UEdGraph*, const UEdGraphNode*, const UEdGraphPin*, FMenuBuilder*, bool);
+
 	DECLARE_DELEGATE_RetVal_TwoParams( FReply, FOnSpawnNodeByShortcut, FInputChord, const FVector2D& );
 
 	DECLARE_DELEGATE( FOnNodeSpawnedByKeymap );
@@ -109,8 +112,10 @@ public:
 		FOnNodeVerifyTextCommit OnVerifyTextCommit;
 		/** Called when text is committed on the graph */
 		FOnNodeTextCommitted OnTextCommitted;
-		/** Called to create context menu */
+		/** Called to create context menu for right clicking in empty area */
 		FOnCreateActionMenu OnCreateActionMenu;
+		/** Called to create context menu for right clicking a node or pin, same parameters as GetContextMenuActions on schema */
+		FOnCreateNodeOrPinMenu OnCreateNodeOrPinMenu;
 		/** Called to spawn a node in the graph using a shortcut */
 		FOnSpawnNodeByShortcut OnSpawnNodeByShortcut;
 		/** Called when a keymap spawns a node */
@@ -285,9 +290,9 @@ public:
 	}
 
 	/** @return a reference to the list of selected graph nodes */
-	virtual const TSet<class UObject*>& GetSelectedNodes() const
+	virtual const FGraphPanelSelectionSet& GetSelectedNodes() const
 	{
-		static TSet<class UObject*> NoSelection;
+		static FGraphPanelSelectionSet NoSelection;
 
 		if (Implementation.IsValid())
 		{
@@ -457,6 +462,11 @@ public:
 			Implementation->SetNodeFactory(NewNodeFactory);
 		}
 	}
+	
+	/** Common methods for MaterialEditor and BlueprintEditor's focusing related nodes feature */
+	UNREALED_API void ResetAllNodesUnrelatedStates();
+
+	UNREALED_API void FocusCommentNodes(TArray<UEdGraphNode*> &CommentNodes, TArray<UEdGraphNode*> &RelatedNodes);
 
 	virtual void OnAlignTop()
 	{
@@ -537,7 +547,7 @@ public:
 	{
 		if (Implementation.IsValid())
 		{
-			Implementation->GetNumberOfSelectedNodes();
+			return Implementation->GetNumberOfSelectedNodes();
 		}
 		return 0;
 	}
@@ -553,6 +563,8 @@ public:
 		return nullptr;
 	}
 
+	// Returns the first graph editor that is viewing the specified graph
+	UNREALED_API static TSharedPtr<SGraphEditor> FindGraphEditorForGraph(const UEdGraph* Graph);
 
 protected:
 	/** Invoked when the underlying Graph is being changed. */

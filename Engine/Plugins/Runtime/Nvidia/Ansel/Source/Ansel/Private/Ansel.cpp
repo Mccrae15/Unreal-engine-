@@ -1,6 +1,7 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "CoreMinimal.h"
+#include "Containers/Map.h"
 #include "Containers/StaticBitArray.h"
 #include "IAnselPlugin.h"
 #include "Camera/CameraTypes.h"
@@ -16,12 +17,36 @@
 #include "Kismet/GameplayStatics.h"
 #include "Widgets/SWindow.h"
 #include "Application/SlateApplicationBase.h"
+#include "RenderResource.h"
+
+#include <functional>
+
 #include "AnselFunctionLibrary.h"
 #include <AnselSDK.h>
 
 DEFINE_LOG_CATEGORY_STATIC(LogAnsel, Log, All);
 
 #define LOCTEXT_NAMESPACE "Photography"
+
+static TAutoConsoleVariable<int32> CVarAllowHighQuality(
+	TEXT("r.Photography.AllowHighQuality"),
+	1,
+	TEXT("Whether to permit Ansel RT (high-quality mode).\n"),
+	ECVF_RenderThreadSafe);
+
+// intentionally undocumented until tested further
+static TAutoConsoleVariable<int32> CVarExtreme(
+	TEXT("r.Photography.Extreme"),
+	0,
+	TEXT("Whether to allow 'extreme' quality for Ansel RT (EXPERIMENTAL).\n"),
+	ECVF_RenderThreadSafe);
+
+// intentionally undocumented - debug flag
+static TAutoConsoleVariable<int32> CVarDebug0(
+	TEXT("r.Photography.Debug0"),
+	0,
+	TEXT("Debug - kill RT when in high-quality(!) mode\n"),
+	ECVF_RenderThreadSafe);
 
 /////////////////////////////////////////////////
 // All the NVIDIA Ansel-specific details
@@ -42,12 +67,14 @@ public:
 
 	enum econtrols {
 		control_dofscale,
+		control_dofsensorwidth,
 		control_doffocalregion,
 		control_doffocaldistance,
+		control_dofdepthbluramount,
+		control_dofdepthblurradius,
 		control_bloomintensity,
 		control_bloomscale,
 		control_scenefringeintensity,
-		control_motionbluramount,
 		control_COUNT
 	};
 	typedef union {
@@ -63,6 +90,7 @@ private:
 	static void AnselStopSessionCallback(void* userPointer);
 	static void AnselStartCaptureCallback(const ansel::CaptureConfiguration& CaptureInfo, void* userPointer);
 	static void AnselStopCaptureCallback(void* userPointer);
+	static void AnselChangeQualityCallback(bool isHighQuality, void* userPointer);
 
 	static bool AnselCamerasMatch(ansel::Camera& a, ansel::Camera& b);
 
@@ -71,10 +99,15 @@ private:
 
 	bool BlueprintModifyCamera(ansel::Camera& InOutAnselCam, APlayerCameraManager* PCMgr); // returns whether modified cam is in original (session-start) position
 
-	void SanitizePostprocessingForCapture(FPostProcessSettings& InOutPostProcessSettings);
+	void ConfigureRenderingSettingsForPhotography(FPostProcessSettings& InOutPostProcessSettings);
+	void SetUpSessionCVars();
 	void DoCustomUIControls(FPostProcessSettings& InOutPPSettings, bool bRebuildControls);
 	void DeclareSlider(int id, FText LocTextLabel, float LowerBound, float UpperBound, float Val);
 	bool ProcessUISlider(int id, float& InOutVal);
+
+	bool CaptureCVar(FString CVarName);
+	void SetCapturedCVarPredicated(const char* CVarName, float valueIfNotReset, std::function<bool(const float, const float)> comparison, bool wantReset, bool useExistingPriority);
+	void SetCapturedCVar(const char* CVarName, float valueIfNotReset, bool wantReset = false, bool useExistingPriority = false);
 
 	ansel::Configuration* AnselConfig;
 	ansel::Camera AnselCamera;
@@ -102,9 +135,20 @@ private:
 	bool bWasShowingHUDBeforeSession;
 	bool bWereSubtitlesEnabledBeforeSession;
 	bool bWasFadingEnabledBeforeSession;
+	bool bWasScreenMessagesEnabledBeforeSession = false;
+	float fTimeDilationBeforeSession;
+
+	bool bCameraIsInOriginalState = true;
 
 	bool bAutoPostprocess;
 	bool bAutoPause;
+	bool bRayTracingEnabled = false;
+	bool bPausedInternally = false;
+
+	bool bHighQualityModeDesired = false;
+	bool bHighQualityModeIsSetup = false;
+
+	uint32_t NumFramesSinceSessionStart;
 
 	// members relating to the 'Game Settings' controls in the Ansel overlay UI
 	TStaticBitArray<256> bEffectUIAllowed;
@@ -118,12 +162,31 @@ private:
 	/** Console variable delegate for checking when the console variables have changed */
 	FConsoleCommandDelegate CVarDelegate;
 	FConsoleVariableSinkHandle CVarDelegateHandle;
+
+	struct CVarInfo {
+		IConsoleVariable* cvar;
+		float fInitialVal;
+	};
+	TMap<FString, CVarInfo> InitialCVarMap;
 };
 
 FNVAnselCameraPhotographyPrivate::ansel_control_val FNVAnselCameraPhotographyPrivate::UIControlValues[control_COUNT];
 
 static void* AnselSDKDLLHandle = 0;
 static bool bAnselDLLLoaded = false;
+
+bool FNVAnselCameraPhotographyPrivate::CaptureCVar(FString CVarName)
+{
+	IConsoleVariable* cvar = IConsoleManager::Get().FindConsoleVariable(CVarName.GetCharArray().GetData());
+	if (!cvar) return false;
+
+	CVarInfo info;
+	info.cvar = cvar;
+	info.fInitialVal = cvar->GetFloat();
+
+	InitialCVarMap.Add(CVarName, info);
+	return true;
+}
 
 FNVAnselCameraPhotographyPrivate::FNVAnselCameraPhotographyPrivate()
 	: ICameraPhotography()
@@ -135,7 +198,6 @@ FNVAnselCameraPhotographyPrivate::FNVAnselCameraPhotographyPrivate()
 	, bAnselCaptureNewlyFinished(false)
 	, bForceDisallow(false)
 	, bIsOrthoProjection(false)
-	, bUIControlsNeedRebuild(false)
 {
 	for (int i = 0; i < bEffectUIAllowed.Num(); ++i)
 	{
@@ -184,6 +246,7 @@ FNVAnselCameraPhotographyPrivate::~FNVAnselCameraPhotographyPrivate()
 		delete AnselConfig;
 	}
 }
+
 
 bool FNVAnselCameraPhotographyPrivate::IsSupported()
 {
@@ -299,30 +362,40 @@ void FNVAnselCameraPhotographyPrivate::DoCustomUIControls(FPostProcessSettings& 
 
 		// add all relevant controls
 		PRAGMA_DISABLE_DEPRECATION_WARNINGS
-		if (bEffectUIAllowed[DepthOfField] && (InOutPPSettings.DepthOfFieldMethod == DOFM_Gaussian || InOutPPSettings.DepthOfFieldScale > 0.f)) // 'Is DoF used?'
+		if (bEffectUIAllowed[DepthOfField])
 		{
-			if (InOutPPSettings.DepthOfFieldMethod != DOFM_Gaussian) // scale irrelevant for gaussian
+			const bool bAnyDofVisible = InOutPPSettings.DepthOfFieldFstop > 0 && InOutPPSettings.DepthOfFieldFocalDistance > 0;
+
+			if (bAnyDofVisible)
 			{
 				DeclareSlider(
-					control_dofscale,
-					LOCTEXT("control_dofscale", "Focus Scale"),
-					0.f, 2.f,
-					InOutPPSettings.DepthOfFieldScale
+					control_dofsensorwidth,
+					LOCTEXT("control_dofsensorwidth", "Focus Sensor"), // n.b. similar effect to focus scale
+					0.1f, 1000.f,
+					InOutPPSettings.DepthOfFieldSensorWidth
+				);
+
+				DeclareSlider(
+					control_doffocaldistance,
+					LOCTEXT("control_doffocaldistance", "Focus Distance"),
+					0.f, 1000.f, // UU - doc'd to 10000U but that's too coarse for a narrow UI control
+					InOutPPSettings.DepthOfFieldFocalDistance
+				);
+
+				DeclareSlider(
+					control_dofdepthbluramount,
+					LOCTEXT("control_dofbluramount", "Blur Distance km"),
+					0.000001f, 1.f, // km; doc'd as up to 100km but that's too coarse for a narrow UI control
+					InOutPPSettings.DepthOfFieldDepthBlurAmount
+				);
+
+				DeclareSlider(
+					control_dofdepthblurradius,
+					LOCTEXT("control_dofblurradius", "Blur Radius"),
+					0.f, 4.f,
+					InOutPPSettings.DepthOfFieldDepthBlurRadius
 				);
 			}
-
-			DeclareSlider(
-				control_doffocalregion,
-				LOCTEXT("control_doffocalregion", "Focus Region"),
-				0.f, 10000.f,
-				InOutPPSettings.DepthOfFieldFocalRegion
-			);
-			DeclareSlider(
-				control_doffocaldistance,
-				LOCTEXT("control_doffocaldistance", "Focus Distance"),
-				0.f, 10000.f,
-				InOutPPSettings.DepthOfFieldFocalDistance
-			);
 		}
 		PRAGMA_ENABLE_DEPRECATION_WARNINGS
 
@@ -349,30 +422,18 @@ void FNVAnselCameraPhotographyPrivate::DoCustomUIControls(FPostProcessSettings& 
 			DeclareSlider(
 				control_scenefringeintensity,
 				LOCTEXT("control_chromaticaberration", "Chromatic Aberration"),
-				0.f, 15.f, // note: FPostProcesssSettings metadata says range is 0./5. but larger values are possible in the wild 
+				0.f, 15.f, // note: FPostProcesssSettings metadata says range is 0./5. but larger values have been seen in the wild 
 				InOutPPSettings.SceneFringeIntensity
 			);
 		}
 
-		if (bEffectUIAllowed[MotionBlur] &&
-			InOutPPSettings.MotionBlurAmount > 0.f)
-		{
-			// Kludge: Character-based motion blur now works with a free camera and during multi-part captures but when the session starts the effect seems to be overly intense.  This dampens it.
-			float MotionBlurAmount = FMath::Min(InOutPPSettings.MotionBlurAmount, 0.1f);
-
-			DeclareSlider(
-				control_motionbluramount,
-				LOCTEXT("control_motionbluramount", "Motion Blur"),
-				0.f, 1.f,
-				MotionBlurAmount
-			);
-		}
+		bUIControlsNeedRebuild = false;
 	}
 
 	// postprocessing is based upon postprocessing settings at session start time (avoids set of
-	// UI tweakables changing due to the camera wandering between postprocessing-volumes, also
+	// UI tweakables changing due to the camera wandering between postprocessing volumes, also
 	// avoids most discontinuities where stereo and panoramic captures can also wander between
-	//  postprocessing-volumes)
+	// postprocessing volumes during the capture process)
 	InOutPPSettings = UEPostProcessingOriginal;
 
 	// update values where corresponding controls are in use
@@ -384,9 +445,21 @@ void FNVAnselCameraPhotographyPrivate::DoCustomUIControls(FPostProcessSettings& 
 	{
 		InOutPPSettings.bOverride_DepthOfFieldFocalRegion = 1;
 	}
+	if (ProcessUISlider(control_dofsensorwidth, InOutPPSettings.DepthOfFieldSensorWidth))
+	{
+		InOutPPSettings.bOverride_DepthOfFieldSensorWidth = 1;
+	}
 	if (ProcessUISlider(control_doffocaldistance, InOutPPSettings.DepthOfFieldFocalDistance))
 	{
 		InOutPPSettings.bOverride_DepthOfFieldFocalDistance = 1;
+	}
+	if (ProcessUISlider(control_dofdepthbluramount, InOutPPSettings.DepthOfFieldDepthBlurAmount))
+	{
+		InOutPPSettings.bOverride_DepthOfFieldDepthBlurAmount = 1;
+	}
+	if (ProcessUISlider(control_dofdepthblurradius, InOutPPSettings.DepthOfFieldDepthBlurRadius))
+	{
+		InOutPPSettings.bOverride_DepthOfFieldDepthBlurRadius = 1;
 	}
 	if (ProcessUISlider(control_bloomintensity, InOutPPSettings.BloomIntensity))
 	{
@@ -399,10 +472,6 @@ void FNVAnselCameraPhotographyPrivate::DoCustomUIControls(FPostProcessSettings& 
 	if (ProcessUISlider(control_scenefringeintensity, InOutPPSettings.SceneFringeIntensity))
 	{
 		InOutPPSettings.bOverride_SceneFringeIntensity = 1;
-	}
-	if (ProcessUISlider(control_motionbluramount, InOutPPSettings.MotionBlurAmount))
-	{
-		InOutPPSettings.bOverride_MotionBlurAmount = 1;
 	}
 }
 
@@ -431,17 +500,13 @@ bool FNVAnselCameraPhotographyPrivate::UpdateCamera(FMinimalViewInfo& InOutPOV, 
 		APlayerController* PCOwner = PCMgr->GetOwningPlayerController();
 		check(PCOwner != nullptr);
 
+		++NumFramesSinceSessionStart;
+
 		if (bAnselCaptureNewlyActive)
 		{
 			PCMgr->OnPhotographyMultiPartCaptureStart();
 			bGameCameraCutThisFrame = true;
 			bAnselCaptureNewlyActive = false;
-
-			// check for Panini projection & disable it?
-
-			// force sync texture loading and/or boost LODs?
-			// -> r.Streaming.FullyLoadUsedTextures for 4.13
-			// -> r.Streaming.?? for 4.12
 		}
 
 		if (bAnselCaptureNewlyFinished)
@@ -462,7 +527,7 @@ bool FNVAnselCameraPhotographyPrivate::UpdateCamera(FMinimalViewInfo& InOutPOV, 
 			{
 				if (bWasShowingHUDBeforeSession)
 				{
-					PCOwner->MyHUD->ShowHUD(); // toggle on
+					PCOwner->MyHUD->ShowHUD(); // toggle off
 				}
 				if (bWereSubtitlesEnabledBeforeSession)
 				{
@@ -474,9 +539,13 @@ bool FNVAnselCameraPhotographyPrivate::UpdateCamera(FMinimalViewInfo& InOutPOV, 
 				}
 			}
 
+			GAreScreenMessagesEnabled = bWasScreenMessagesEnabledBeforeSession;
+
 			if (bAutoPause && !bWasPausedBeforeSession)
 			{
+				PCOwner->GetWorldSettings()->SetTimeDilation(fTimeDilationBeforeSession);
 				PCOwner->SetPause(false);
+				bPausedInternally = false;
 			}
 
 			PCMgr->GetWorld()->bIsCameraMoveableWhenPaused = bWasMovableCameraBeforeSession;
@@ -487,35 +556,56 @@ bool FNVAnselCameraPhotographyPrivate::UpdateCamera(FMinimalViewInfo& InOutPOV, 
 			TSharedPtr<GenericApplication> PlatformApplication = FSlateApplicationBase::Get().GetPlatformApplication();
 			if (PlatformApplication.IsValid() && PlatformApplication->Cursor.IsValid())
 			{
+				//PlatformApplication->Cursor->Show(true); // If we don't show it now, it never seems to come back when PCOwner does actually want it...?  Perhaps an Ansel DX12 bug? -> nerf this kludge until proven to still affect DX12 w/4.22 + latest driver
 				PlatformApplication->Cursor->Show(PCOwner->ShouldShowMouseCursor());
 			}
 
+			for (auto &foo : InitialCVarMap)
+			{
+				// RESTORE CVARS FROM SESSION START
+				if (foo.Value.cvar)
+					foo.Value.cvar->SetWithCurrentPriority(foo.Value.fInitialVal);
+			}
+			InitialCVarMap.Empty(); // clear saved cvar values
+
+			bHighQualityModeIsSetup = false;
 			PCMgr->OnPhotographySessionEnd(); // after unpausing
 
-											  // no need to restore original camera params; re-clobbered every frame
+			// no need to restore original camera params; re-clobbered every frame
 		}
 		else
 		{
-			bool bIsCameraInOriginalState = false;
+			bCameraIsInOriginalState = false;
 
 			if (bAnselSessionNewlyActive)
 			{
-				PCMgr->OnPhotographySessionStart(); // before pausing
-													// copy these values to avoid mixup if the CVars are changed during capture callbacks
+				NumFramesSinceSessionStart = 0;
 
+				PCMgr->OnPhotographySessionStart(); // before pausing
+
+				// copy these values to avoid mixup if the CVars are changed during capture callbacks
 				static IConsoleVariable* CVarAutoPause = IConsoleManager::Get().FindConsoleVariable(TEXT("r.Photography.AutoPause"));
 				static IConsoleVariable* CVarAutoPostProcess = IConsoleManager::Get().FindConsoleVariable(TEXT("r.Photography.AutoPostprocess"));
 
 				bAutoPause = !!CVarAutoPause->GetInt();
 				bAutoPostprocess = !!CVarAutoPostProcess->GetInt();
-
+				bRayTracingEnabled = IsRayTracingEnabled();
+				
 				// attempt to pause game
 				bWasPausedBeforeSession = PCOwner->IsPaused();
 				bWasMovableCameraBeforeSession = PCMgr->GetWorld()->bIsCameraMoveableWhenPaused;
+				PCMgr->GetWorld()->bIsCameraMoveableWhenPaused = true;
 				if (bAutoPause && !bWasPausedBeforeSession)
 				{
-					PCOwner->SetPause(true); // should we bother to set delegate to enforce pausedness until session end?  probably over-engineering.
+					fTimeDilationBeforeSession = PCOwner->GetWorldSettings()->TimeDilation;
+					PCOwner->GetWorldSettings()->SetTimeDilation(0.f); // kill character motion-blur, this looks better than setting the motion-blur level to 0 (which flickers) - kinda heavy-handed but the only way I've found to kill motion-blur while also preventing flicker
+					// we pause in a *future* frame so Slomo can kick-in properly
 				}
+
+				SetUpSessionCVars();
+
+				bWasScreenMessagesEnabledBeforeSession = GAreScreenMessagesEnabled;
+				GAreScreenMessagesEnabled = false;
 
 				bWasFadingEnabledBeforeSession = PCMgr->bEnableFading;
 				bWasShowingHUDBeforeSession = PCOwner->MyHUD &&
@@ -543,7 +633,7 @@ bool FNVAnselCameraPhotographyPrivate::UpdateCamera(FMinimalViewInfo& InOutPOV, 
 				AnselCameraOriginal = AnselCamera;
 				AnselCameraPrevious = AnselCamera;
 
-				bIsCameraInOriginalState = true;
+				bCameraIsInOriginalState = true;
 
 				bAnselSessionNewlyActive = false;
 			}
@@ -554,17 +644,22 @@ bool FNVAnselCameraPhotographyPrivate::UpdateCamera(FMinimalViewInfo& InOutPOV, 
 				// active session; give Blueprints opportunity to modify camera, unless a capture is in progress
 				if (!bAnselCaptureActive)
 				{
-					bIsCameraInOriginalState = BlueprintModifyCamera(AnselCamera, PCMgr);
+					bCameraIsInOriginalState = BlueprintModifyCamera(AnselCamera, PCMgr);
+				}
+			}
+
+			// ensure 2 frames have passed before pausing so that 0-timedilation can kick-in and kill the motion-blur!
+			// why 2 frames rather than 1 (or even 0)?  dunno!  probably 1 frame for the new time dilation to go into effect and 1 more frame for the motion vectors to update.
+			if (NumFramesSinceSessionStart == 2)
+			{
+				if (bAutoPause && !bWasPausedBeforeSession)
+				{
+					PCOwner->SetPause(true);
+					bPausedInternally = true;
 				}
 			}
 
 			AnselCameraToFMinimalView(InOutPOV, AnselCamera);
-
-			if (!bIsCameraInOriginalState)
-			{
-				// resume updating sceneview upon first camera move.  we wait for a move so motion blur doesn't reset as soon as we start a session.
-				PCMgr->GetWorld()->bIsCameraMoveableWhenPaused = true;
-			}
 
 			AnselCameraPrevious = AnselCamera;
 		}
@@ -579,14 +674,255 @@ bool FNVAnselCameraPhotographyPrivate::UpdateCamera(FMinimalViewInfo& InOutPOV, 
 	return bGameCameraCutThisFrame;
 }
 
-void FNVAnselCameraPhotographyPrivate::SanitizePostprocessingForCapture(FPostProcessSettings& InOutPostProcessingSettings)
+void FNVAnselCameraPhotographyPrivate::SetCapturedCVarPredicated(const char* CVarName, float valueIfNotReset, std::function<bool(const float, const float)> comparison, bool wantReset, bool useExistingPriority)
 {
+	CVarInfo* info = nullptr;
+	if (InitialCVarMap.Contains(CVarName) || CaptureCVar(CVarName))
+	{
+		info = &InitialCVarMap[CVarName];
+		if (info->cvar && comparison(valueIfNotReset, info->fInitialVal))
+		{
+			if (useExistingPriority)
+				info->cvar->SetWithCurrentPriority(wantReset ? info->fInitialVal : valueIfNotReset);
+			else
+				info->cvar->Set(wantReset ? info->fInitialVal : valueIfNotReset);
+		}
+	}
+	if (!(info && info->cvar)) UE_LOG(LogAnsel, Log, TEXT("CVar used by Ansel not found: %s"), CVarName);
+}
+
+void FNVAnselCameraPhotographyPrivate::SetCapturedCVar(const char* CVarName, float valueIfNotReset, bool wantReset, bool useExistingPriority)
+{
+	SetCapturedCVarPredicated(CVarName, valueIfNotReset,
+		[](float, float) { return true; },
+		wantReset, useExistingPriority);
+}
+
+void FNVAnselCameraPhotographyPrivate::ConfigureRenderingSettingsForPhotography(FPostProcessSettings& InOutPostProcessingSettings)
+{
+#define QUALITY_CVAR(NAME,BOOSTVAL) SetCapturedCVar(NAME, BOOSTVAL, !bHighQualityModeDesired, true)
+#define QUALITY_CVAR_AT_LEAST(NAME,BOOSTVAL) SetCapturedCVarPredicated(NAME, BOOSTVAL, std::greater<float>(), !bHighQualityModeDesired, true)
+#define QUALITY_CVAR_AT_MOST(NAME,BOOSTVAL) SetCapturedCVarPredicated(NAME, BOOSTVAL, std::less<float>(), !bHighQualityModeDesired, true)
+#define QUALITY_CVAR_LOWPRIORITY_AT_LEAST(NAME,BOOSTVAL) SetCapturedCVarPredicated(NAME, BOOSTVAL, std::greater<float>(), !bHighQualityModeDesired, false)
+
+	if (CVarDebug0->GetInt()
+		&& CVarAllowHighQuality.GetValueOnAnyThread()
+		&& bHighQualityModeIsSetup != bHighQualityModeDesired)
+	{
+		// Debug - makes HQ mode actually try to kill RT features
+		QUALITY_CVAR("r.RayTracing.GlobalIllumination", 0);
+		QUALITY_CVAR("r.RayTracing.Reflections", 0);
+		QUALITY_CVAR("r.RayTracing.Shadows", 0);
+		QUALITY_CVAR("r.RayTracing.Translucency", 0);
+		QUALITY_CVAR("r.RayTracing.AmbientOcclusion", 0);
+		UE_LOG(LogAnsel, Log, TEXT("Photography Debug0 mode actualized (enabled=%d)"), (int)bHighQualityModeDesired);
+		bHighQualityModeIsSetup = bHighQualityModeDesired;
+	}
+	else if (CVarAllowHighQuality.GetValueOnAnyThread()
+		&& bHighQualityModeIsSetup != bHighQualityModeDesired
+		&& (bPausedInternally || !bAutoPause) // <- don't start overriding vars until truly paused
+		&& (!CVarDebug0->GetInt()))
+	{
+		// Pump up (or reset) the quality. 
+
+		// bring rendering up to (at least) 100% resolution, but won't override manually set value on console
+		QUALITY_CVAR_LOWPRIORITY_AT_LEAST("r.ScreenPercentage", 100);
+
+		// most of these similar to typical cinematic sg.* scalability settings, toned down a little for performance
+
+		// can be a mild help with reflections
+		QUALITY_CVAR("r.gbufferformat", 5); // 5 = highest precision
+
+		// bias various geometry LODs
+		QUALITY_CVAR_AT_MOST("r.staticmeshloddistancescale", 0.25f); // large quality bias
+		QUALITY_CVAR_AT_MOST("r.landscapelodbias", -2);
+		QUALITY_CVAR_AT_MOST("r.skeletalmeshlodbias", -2);
+
+		// ~sg.AntiAliasingQuality @ cine
+		QUALITY_CVAR("r.postprocessaaquality", 6); // 6 == max
+		QUALITY_CVAR("r.defaultfeature.antialiasing", 2); // TAA
+
+		// ~sg.EffectsQuality @ cinematic
+		QUALITY_CVAR_AT_LEAST("r.TranslucencyLightingVolumeDim", 64);
+		QUALITY_CVAR("r.RefractionQuality", 2);
+		QUALITY_CVAR("r.SSR.Quality", 4);
+		// QUALITY_CVAR("r.SceneColorFormat", 4); // don't really want to mess with this
+		QUALITY_CVAR("r.TranslucencyVolumeBlur", 1);
+		QUALITY_CVAR("r.MaterialQualityLevel", 1); // 1==high, 2==medium!
+		QUALITY_CVAR("r.SSS.Scale", 1);
+		QUALITY_CVAR("r.SSS.SampleSet", 2);
+		QUALITY_CVAR("r.SSS.Quality", 1);
+		QUALITY_CVAR("r.SSS.HalfRes", 0);
+		QUALITY_CVAR_AT_LEAST("r.EmitterSpawnRateScale", 1.f); // not sure this has a point when game is paused though
+		QUALITY_CVAR("r.ParticleLightQuality", 2);
+		QUALITY_CVAR("r.DetailMode", 2);
+
+		// ~sg.PostProcessQuality @ cinematic
+		QUALITY_CVAR("r.AmbientOcclusionMipLevelFactor", 0.4f);
+		QUALITY_CVAR("r.AmbientOcclusionMaxQuality", 100);
+		QUALITY_CVAR("r.AmbientOcclusionLevels", -1);
+		QUALITY_CVAR("r.AmbientOcclusionRadiusScale", 1.f);
+		QUALITY_CVAR("r.DepthOfFieldQuality", 4);
+		QUALITY_CVAR_AT_LEAST("r.RenderTargetPoolMin", 500); // ?
+		QUALITY_CVAR("r.LensFlareQuality", 3);
+		QUALITY_CVAR("r.SceneColorFringeQuality", 1);
+		QUALITY_CVAR("r.BloomQuality", 5);
+		QUALITY_CVAR("r.FastBlurThreshold", 100);
+		QUALITY_CVAR("r.Upscale.Quality", 3);
+		QUALITY_CVAR("r.Tonemapper.GrainQuantization", 1);
+		QUALITY_CVAR("r.LightShaftQuality", 1);
+		QUALITY_CVAR("r.Filter.SizeScale", 1);
+		QUALITY_CVAR("r.Tonemapper.Quality", 5);
+		QUALITY_CVAR("r.DOF.Gather.AccumulatorQuality", 1);
+		QUALITY_CVAR("r.DOF.Gather.PostfilterMethod", 1);
+		QUALITY_CVAR("r.DOF.Gather.EnableBokehSettings", 1);
+		QUALITY_CVAR_AT_LEAST("r.DOF.Gather.RingCount", 5);
+		QUALITY_CVAR("r.DOF.Scatter.ForegroundCompositing", 1);
+		QUALITY_CVAR("r.DOF.Scatter.BackgroundCompositing", 2);
+		QUALITY_CVAR("r.DOF.Scatter.EnableBokehSettings", 1);
+		QUALITY_CVAR("r.DOF.Scatter.MaxSpriteRatio", 0.1f);
+		QUALITY_CVAR("r.DOF.Recombine.Quality", 2);
+		QUALITY_CVAR("r.DOF.Recombine.EnableBokehSettings", 1);
+		QUALITY_CVAR("r.DOF.TemporalAAQuality", 1);
+		QUALITY_CVAR("r.DOF.Kernel.MaxForegroundRadius", 0.025f);
+		QUALITY_CVAR("r.DOF.Kernel.MaxBackgroundRadius", 0.025f);
+
+		// ~sg.TextureQuality @ cinematic
+		QUALITY_CVAR("r.Streaming.MipBias", 0);
+		QUALITY_CVAR_AT_LEAST("r.MaxAnisotropy", 16);
+		QUALITY_CVAR("r.Streaming.MaxEffectiveScreenSize", 0);
+		// intentionally don't mess with streaming pool size, see 'CVarExtreme' section below
+
+		// ~sg.FoliageQuality @ cinematic
+		QUALITY_CVAR_AT_LEAST("foliage.DensityScale", 1.f);
+		QUALITY_CVAR_AT_LEAST("grass.DensityScale", 1.f);
+
+		// ~sg.ViewDistanceQuality @ cine but only mild draw distance boost
+		QUALITY_CVAR_AT_LEAST("r.viewdistancescale", 2.0f); // or even more...?
+
+		// ~sg.ShadowQuality @ cinematic
+		QUALITY_CVAR_AT_LEAST("r.LightFunctionQuality", 2);
+		QUALITY_CVAR("r.ShadowQuality", 5);
+		QUALITY_CVAR_AT_LEAST("r.Shadow.CSM.MaxCascades", 10);
+		QUALITY_CVAR_AT_LEAST("r.Shadow.MaxResolution", 4096);
+		QUALITY_CVAR_AT_LEAST("r.Shadow.MaxCSMResolution", 4096);
+		QUALITY_CVAR_AT_MOST("r.Shadow.RadiusThreshold", 0.f);
+		QUALITY_CVAR("r.Shadow.DistanceScale", 1.f);
+		QUALITY_CVAR("r.Shadow.CSM.TransitionScale", 1.f);
+		QUALITY_CVAR("r.Shadow.PreShadowResolutionFactor", 1.f);
+		QUALITY_CVAR("r.AOQuality", 2);
+		QUALITY_CVAR("r.VolumetricFog", 1);
+		QUALITY_CVAR("r.VolumetricFog.GridPixelSize", 4);
+		QUALITY_CVAR("r.VolumetricFog.GridSizeZ", 128);
+		QUALITY_CVAR_AT_LEAST("r.VolumetricFog.HistoryMissSupersampleCount", 16);
+		QUALITY_CVAR_AT_LEAST("r.LightMaxDrawDistanceScale", 2.f);
+		QUALITY_CVAR("r.CapsuleShadows", 1);
+
+		// pump up the quality of raytracing features, though we won't necessarily turn them on if the game doesn't already have them enabled
+		if (bRayTracingEnabled)
+		{
+			/*** HIGH-QUALITY MODE DOES *NOT* FORCE GI ON ***/
+			QUALITY_CVAR_AT_MOST("r.RayTracing.GlobalIllumination.DiffuseThreshold", 0); // artifact avoidance
+			//QUALITY_CVAR_AT_LEAST("r.RayTracing.GlobalIllumination.MaxBounces", 1); // 1~=IQ cost:benefit sweet-spot
+
+			/*** HIGH-QUALITY MODE DOES *NOT* FORCE RT AO ON ***/
+			QUALITY_CVAR_AT_LEAST("r.RayTracing.AmbientOcclusion.SamplesPerPixel", 1); // haven't seen benefit from larger values
+
+			/*** HIGH-QUALITY MODE FORCES RT REFLECTIONS ON ***/
+			QUALITY_CVAR_AT_LEAST("r.RayTracing.Reflections.MaxBounces", 2); // sweet-spot
+			QUALITY_CVAR_AT_LEAST("r.RayTracing.Reflections.MaxRoughness", 0.9f); // speed hit
+			QUALITY_CVAR("r.RayTracing.Reflections.SortMaterials", 1); // usually some kind of perf win, especially w/above reflection quality
+			QUALITY_CVAR("r.RayTracing.Reflections.DirectLighting", 1);
+			//QUALITY_CVAR("r.RayTracing.Reflections.EmissiveAndIndirectLighting", 1);// curiously problematic, leave alone
+			QUALITY_CVAR_AT_LEAST("r.RayTracing.Reflections.Shadows", 1); // -1==auto, 0==off, 1==hard, 2==soft/area(requires high spp)
+			QUALITY_CVAR("r.RayTracing.Reflections.HeightFog", 1);
+			//QUALITY_CVAR_AT_LEAST("r.RayTracing.Reflections.SamplesPerPixel", 2); // -1==use pp vol // NOPE, don't touch spp right now: 1 is ok, ~10 is good, anywhere in-between is noisy
+			QUALITY_CVAR_AT_LEAST("r.RayTracing.Reflections.ScreenPercentage", 100);
+			QUALITY_CVAR("r.RayTracing.Reflections", 1); // FORCE ON: ignore postproc volume flag
+
+			/*** HIGH-QUALITY MODE DOES *NOT* FORCE RT TRANSLUCENCY ON ***/
+			QUALITY_CVAR_AT_LEAST("r.RayTracing.Translucency.MaxRoughness", 0.9f);
+			//QUALITY_CVAR_AT_LEAST("r.RayTracing.Translucency.MaxRefractionRays", 11); // buggy with grass, leave alone for now
+			QUALITY_CVAR_AT_LEAST("r.RayTracing.Translucency.Shadows", 1); // turn on at least
+			//QUALITY_CVAR("r.RayTracing.Translucency", -1); // 1==enabled always, ignore postproc volume flags -- NOPE, DON'T FORCE-ENABLE TRANSLUCENCY, IT MAKES EVERY SINGLE TRANSLUCENCY REFRACT or just plain disappear, too weird for random content (i.e. Infiltrator). -1 == explicitly marked-up volumes use RT
+
+			/*** HIGH-QUALITY MODE FORCES RT SHADOWS ON ***/
+			//QUALITY_CVAR_AT_LEAST("r.RayTracing.Shadow.SamplesPerPixel", 1); // 5==reduces stippling artifacts // >1 seems to do nothing extra now?
+			////QUALITY_CVAR("r.Shadow.Denoiser", 2); // "GScreenSpaceDenoiser witch may be overriden by a third party plugin"
+			QUALITY_CVAR_AT_LEAST("r.RayTracing.Shadows", 1); // 1==enableRT (default)
+		}
+
+		 // these are some extreme settings whose quality:risk ratio may be debatable or unproven
+		if (CVarExtreme->GetInt())
+		{
+			// great idea but not until I've proven that this isn't deadly or extremely slow on lower-spec machines:
+
+			QUALITY_CVAR("r.Streaming.LimitPoolSizeToVRAM", 0); // 0 is aggressive but is it safe? seems safe.
+			QUALITY_CVAR_AT_LEAST("r.Streaming.PoolSize", 3000); // cine - perhaps redundant when r.streaming.fullyloadusedtextures
+
+			QUALITY_CVAR("r.streaming.hlodstrategy", 2); // probably use 0 if using r.streaming.fullyloadusedtextures, else 2
+			//QUALITY_CVAR("r.streaming.fullyloadusedtextures", 1); // no - LODs oscillate when overcommitted
+			QUALITY_CVAR_AT_LEAST("r.viewdistancescale", 10.f); // cinematic - extreme
+
+			if (bRayTracingEnabled)
+			{
+				// higher-IQ thresholds
+				QUALITY_CVAR_AT_LEAST("r.RayTracing.Translucency.MaxRoughness", 1.f); // speed hit
+				QUALITY_CVAR_AT_LEAST("r.RayTracing.Reflections.MaxRoughness", 1.f); // speed hit
+
+				//QUALITY_CVAR("r.ambientocclusionstaticfraction", 0.f); // trust RT AO/GI...? - needs more testing, doesn't seem a big win
+
+				/*** EXTREME-QUALITY MODE FORCES GI ON ***/
+				// first, some IQ:speed tweaks to make GI speed practical
+				//
+				QUALITY_CVAR("r.RayTracing.GlobalIllumination.ScreenPercentage", 50); // 50% = this is actually a quality DROP by default but it makes the GI speed practical -- requires >>>=2spp though
+				QUALITY_CVAR_AT_MOST("r.RayTracing.GlobalIllumination.MaxRayDistance", 7500); // ditto; most of the IQ benefit, but often faster than default huge ray distance
+				QUALITY_CVAR_AT_LEAST("r.RayTracing.GlobalIllumination.SamplesPerPixel", 4); // at LEAST 2spp needed to reduce significant noise in some scenes, even up to 8+ helps
+				QUALITY_CVAR_AT_LEAST("r.RayTracing.GlobalIllumination.NextEventEstimationSamples", 16); // 2==default; 16 necessary for low-light conditions when using only 4spp, else get blotches.  raising estimation samples cheaper than raising spp.
+				QUALITY_CVAR_AT_LEAST("r.GlobalIllumination.Denoiser.ReconstructionSamples", 56/*=max*/); // better if only using 4spp @ quarter rez.  default is 16.
+				//QUALITY_CVAR_AT_LEAST("r.RayTracing.GlobalIllumination.MaxBounces", 3); // 2+ is sometimes slightly noticable, sloww
+				////QUALITY_CVAR("r.RayTracing.GlobalIllumination.EvalSkyLight", 1); // EXPERIMENTAL
+				QUALITY_CVAR("r.RayTracing.GlobalIllumination", 1); // FORCE ON: should be fast enough to not TDR(!) with screenpercentage=50... usually a fair IQ win with random content... hidden behind 'EXTREME' mode until I've exercised it more.
+
+				// just not hugely tested:
+				QUALITY_CVAR_AT_LEAST("r.RayTracing.StochasticRectLight.SamplesPerPixel", 4);
+				//QUALITY_CVAR("r.RayTracing.StochasticRectLight", 1); // 1==suspicious, probably broken
+				QUALITY_CVAR_AT_LEAST("r.RayTracing.SkyLight.SamplesPerPixel", 4); // default==-1 UNPROVEN TRY ME
+			}
+
+			// just not hugely tested:
+			QUALITY_CVAR("r.particlelodbias", -2);
+
+			// unproven or possibly buggy
+			//QUALITY_CVAR("r.streaming.useallmips", 1); // removes relative prioritization spec'd by app... unproven that this is a good idea
+			//QUALITY_CVAR_AT_LEAST("r.streaming.boost", 9999); // 0 = supposedly use all available vram, but it looks like 0 = buggy
+		}
+
+#undef QUALITY_CVAR
+#undef QUALITY_CVAR_AT_LEAST
+#undef QUALITY_CVAR_AT_MOST
+#undef QUALITY_CVAR_LOWPRIORITY_AT_LEAST
+
+		UE_LOG(LogAnsel, Log, TEXT("Photography HQ mode actualized (enabled=%d)"), (int)bHighQualityModeDesired);
+		bHighQualityModeIsSetup = bHighQualityModeDesired;
+	}
+
 	if (bAnselCaptureActive)
 	{
+		// camera doesn't linger in one place very long so maximize streaming rate
+		SetCapturedCVar("r.disablelodfade", 1);
+		SetCapturedCVar("r.streaming.framesforfullupdate", 1); // recalc required LODs ASAP
+		SetCapturedCVar("r.Streaming.MaxNumTexturesToStreamPerFrame", 0); // no limit
+		SetCapturedCVar("r.streaming.numstaticcomponentsprocessedperframe", 0); // 0 = load all pending static geom now
+
 		if (bAutoPostprocess)
 		{
 			// force-disable the standard postprocessing effects which are known to
 			// be problematic in multi-part shots
+
+			// nerf remaining motion blur
+			InOutPostProcessingSettings.bOverride_MotionBlurAmount = 1;
+			InOutPostProcessingSettings.MotionBlurAmount = 0.f;
 
 			// these effects tile poorly
 			InOutPostProcessingSettings.bOverride_BloomDirtMaskIntensity = 1;
@@ -640,14 +976,28 @@ void FNVAnselCameraPhotographyPrivate::SanitizePostprocessingForCapture(FPostPro
 	}
 }
 
+void FNVAnselCameraPhotographyPrivate::SetUpSessionCVars()
+{
+	// This set of CVar tweaks are good - or necessary - for photographic sessions
+	{
+		SetCapturedCVar("r.oneframethreadlag", 1); // ansel needs frame latency to be predictable
+
+		// these are okay tweaks to streaming heuristics to reduce latency of full texture loads or minimize VRAM waste
+		SetCapturedCVar("r.streaming.minmipforsplitrequest", 1); // strictly prioritize what's visible right now
+		SetCapturedCVar("r.streaming.hiddenprimitivescale", 0.001f); // hint to engine to deprioritize obscured textures...?
+		SetCapturedCVar("r.Streaming.Boost", 1);
+
+		SetCapturedCVar("r.motionblurquality", 0); // this nerfs motion blur for non-characters
+	}
+}
+
 void FNVAnselCameraPhotographyPrivate::UpdatePostProcessing(FPostProcessSettings& InOutPostProcessingSettings)
 {
 	if (bAnselSessionActive)
 	{
 		DoCustomUIControls(InOutPostProcessingSettings, bUIControlsNeedRebuild);
-		bUIControlsNeedRebuild = false;
 
-		SanitizePostprocessingForCapture(InOutPostProcessingSettings);
+		ConfigureRenderingSettingsForPhotography(InOutPostProcessingSettings);
 	}
 }
 
@@ -700,6 +1050,7 @@ ansel::StartSessionStatus FNVAnselCameraPhotographyPrivate::AnselStartSessionCal
 
 		PrivateImpl->bAnselSessionActive = true;
 		PrivateImpl->bAnselSessionNewlyActive = true;
+		PrivateImpl->bHighQualityModeDesired = false;
 
 		AnselSessionStatus = ansel::kAllowed;
 	}
@@ -747,6 +1098,15 @@ void FNVAnselCameraPhotographyPrivate::AnselStopCaptureCallback(void* userPointe
 	UE_LOG(LogAnsel, Log, TEXT("Photography camera multi-part capture end"));
 }
 
+void FNVAnselCameraPhotographyPrivate::AnselChangeQualityCallback(bool isHighQuality, void* ACPPuserPointer)
+{
+	FNVAnselCameraPhotographyPrivate* PrivateImpl = static_cast<FNVAnselCameraPhotographyPrivate*>(ACPPuserPointer);
+	check(PrivateImpl != nullptr);
+	PrivateImpl->bHighQualityModeDesired = isHighQuality;
+
+	UE_LOG(LogAnsel, Log, TEXT("Photography HQ mode toggle (%d)"), (int)isHighQuality);
+}
+
 void FNVAnselCameraPhotographyPrivate::ReconfigureAnsel()
 {
 	check(AnselConfig != nullptr);
@@ -755,7 +1115,8 @@ void FNVAnselCameraPhotographyPrivate::ReconfigureAnsel()
 	AnselConfig->stopSessionCallback = AnselStopSessionCallback;
 	AnselConfig->startCaptureCallback = AnselStartCaptureCallback;
 	AnselConfig->stopCaptureCallback = AnselStopCaptureCallback;
-
+	AnselConfig->changeQualityCallback = AnselChangeQualityCallback;
+	
 	if (GEngine->GameViewport && GEngine->GameViewport->GetWindow().IsValid() && GEngine->GameViewport->GetWindow()->GetNativeWindow().IsValid())
 	{
 		AnselConfig->gameWindowHandle = GEngine->GameViewport->GetWindow()->GetNativeWindow()->GetOSWindowHandle();

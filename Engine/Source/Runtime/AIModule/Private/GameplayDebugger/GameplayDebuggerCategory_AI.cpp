@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "GameplayDebugger/GameplayDebuggerCategory_AI.h"
 
@@ -23,7 +23,7 @@
 #include "GameFramework/Character.h"
 #include "GameFramework/CharacterMovementComponent.h"
 #include "DrawDebugHelpers.h"
-
+#include "EngineUtils.h"
 
 namespace FGameplayDebuggerCategoryTweakables
 {
@@ -193,7 +193,9 @@ void FGameplayDebuggerCategory_AI::CollectData(APlayerController* OwnerPC, AActo
 		DataPack.MontageInfo = MyChar ? GetNameSafe(MyChar->GetCurrentMontage()) : FString();
 
 		UNavigationSystemV1* NavSys = FNavigationSystem::GetCurrent<UNavigationSystemV1>(MyPawn->GetWorld());
-		const ANavigationData* NavData = MyController && NavSys ? NavSys->GetNavDataForProps(MyController->GetNavAgentPropertiesRef()) : nullptr;
+		const ANavigationData* NavData = MyController && NavSys 
+			? NavSys->GetNavDataForProps(MyController->GetNavAgentPropertiesRef(), MyController->GetNavAgentLocation()) 
+			: nullptr;
 		DataPack.NavDataInfo = NavData ? NavData->GetConfig().Name.ToString() : FString();
 
 		CollectPathData(MyController);
@@ -372,7 +374,7 @@ FDebugRenderSceneProxy* FGameplayDebuggerCategory_AI::CreateDebugSceneProxy(cons
 			const bool bCanShow = View->Family->EngineShowFlags.GetSingleFlag(ViewFlagIndex);
 
 			FPrimitiveViewRelevance Result;
-			Result.bDrawRelevance = Result.bSeparateTranslucencyRelevance = Result.bNormalTranslucencyRelevance = bCanShow;
+			Result.bDrawRelevance = Result.bSeparateTranslucency = Result.bNormalTranslucency = bCanShow;
 			Result.bDynamicRelevance = true;
 			return Result;
 		}
@@ -480,10 +482,9 @@ void FGameplayDebuggerCategory_AI::DrawOverheadInfo(AActor& DebugActor, FGamepla
 void FGameplayDebuggerCategory_AI::DrawPawnIcons(UWorld* World, AActor* DebugActor, APawn* SkipPawn, FGameplayDebuggerCanvasContext& CanvasContext)
 {
 	FString FailsafeIcon = TEXT("/Engine/EngineResources/AICON-Green.AICON-Green");
-	for (FConstPawnIterator It = World->GetPawnIterator(); It; ++It)
+	for (const APawn* ItPawn : TActorRange<APawn>(World))
 	{
-		const APawn* ItPawn = It->Get();
-		if (IsValid(ItPawn) && SkipPawn != ItPawn)
+		if (SkipPawn != ItPawn)
 		{
 			const FVector IconLocation = ItPawn->GetActorLocation() + FVector(0, 0, ItPawn->GetSimpleCollisionHalfHeight());
 			const AAIController* ItAI = Cast<const AAIController>(ItPawn->GetController());

@@ -1,6 +1,7 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "ControlRigVariableNodeSpawner.h"
+#include "Graph/ControlRigGraph.h"
 #include "Graph/ControlRigGraphNode.h"
 #include "EdGraphSchema_K2.h"
 #include "Kismet2/BlueprintEditorUtils.h"
@@ -10,32 +11,31 @@
 #include "EditorCategoryUtils.h"
 #include "K2Node_Variable.h"
 #include "BlueprintNodeTemplateCache.h"
+#include "RigVMModel/RigVMController.h"
+#include "ControlRigBlueprint.h"
 #include "ControlRigBlueprintUtils.h"
+#include "RigVMModel/Nodes/RigVMVariableNode.h"
+
+#if WITH_EDITOR
+#include "Editor.h"
+#endif
 
 #define LOCTEXT_NAMESPACE "ControlRigVariableNodeSpawner"
 
-UControlRigVariableNodeSpawner* UControlRigVariableNodeSpawner::CreateFromPinType(const FEdGraphPinType& InPinType, const FText& InMenuDesc, const FText& InCategory, const FText& InTooltip)
+UControlRigVariableNodeSpawner* UControlRigVariableNodeSpawner::CreateFromPinType(const FEdGraphPinType& InPinType, bool bInIsGetter, const FText& InMenuDesc, const FText& InCategory, const FText& InTooltip)
 {
 	UControlRigVariableNodeSpawner* NodeSpawner = NewObject<UControlRigVariableNodeSpawner>(GetTransientPackage());
 	NodeSpawner->EdGraphPinType = InPinType;
+	NodeSpawner->bIsGetter = bInIsGetter;
 	NodeSpawner->NodeClass = UControlRigGraphNode::StaticClass();
 
 	FBlueprintActionUiSpec& MenuSignature = NodeSpawner->DefaultMenuSignature;
 	
-	MenuSignature.MenuName = InMenuDesc;
+	MenuSignature.MenuName = FText::FromString(FString::Printf(TEXT("%s %s"), bInIsGetter ? TEXT("Get") : TEXT("Set"), *InMenuDesc.ToString()));
 	MenuSignature.Tooltip  = InTooltip;
 	MenuSignature.Category = InCategory;
-
-	// add at least one character, so that PrimeDefaultUiSpec() doesn't 
-	// attempt to query the template node
-	//
-	// @TODO: maybe UPROPERTY() fields should have keyword metadata like functions
-	if (MenuSignature.Keywords.IsEmpty())
-	{
-		// want to set it to something so we won't end up back in this condition
-		MenuSignature.Keywords = FText::FromString(TEXT(" "));
-	}
-	MenuSignature.Icon = UK2Node_Variable::GetVarIconFromPinType(NodeSpawner->GetVarType(), MenuSignature.IconTint);
+	MenuSignature.Keywords = FText::FromString(TEXT("Variable"));
+	MenuSignature.Icon = UK2Node_Variable::GetVarIconFromPinType(InPinType, MenuSignature.IconTint);
 
 	return NodeSpawner;
 }
@@ -64,33 +64,105 @@ UEdGraphNode* UControlRigVariableNodeSpawner::Invoke(UEdGraph* ParentGraph, FBin
 {
 	UControlRigGraphNode* NewNode = nullptr;
 
-//	const FScopedTransaction Transaction(LOCTEXT("AddRigPropertyNode", "Add Rig Property Node"));
-
 	bool const bIsTemplateNode = FBlueprintNodeTemplateCache::IsTemplateOuter(ParentGraph);
 
 	// First create a backing member for our node
-	UBlueprint* Blueprint = CastChecked<UBlueprint>(ParentGraph->GetOuter());
+	UControlRigGraph* RigGraph = Cast<UControlRigGraph>(ParentGraph);
+	check(RigGraph);
+	UControlRigBlueprint* RigBlueprint = Cast<UControlRigBlueprint>(ParentGraph->GetOuter());
+	check(RigBlueprint);
+
 	FName MemberName = NAME_None;
-	if(!bIsTemplateNode)
+
+#if WITH_EDITOR
+	if (GEditor && !bIsTemplateNode)
 	{
-		MemberName = FControlRigBlueprintUtils::AddPropertyMember(Blueprint, EdGraphPinType, DefaultMenuSignature.MenuName.ToString());
+		GEditor->CancelTransaction(0);
+	}
+#endif
+
+	URigVMController* Controller = bIsTemplateNode ? RigGraph->GetTemplateController() : RigBlueprint->Controller;
+
+	FName DataType = EdGraphPinType.PinCategory;
+	if (DataType == UEdGraphSchema_K2::PC_Int)
+	{
+		DataType = TEXT("int32");
+	}
+	else if (DataType == UEdGraphSchema_K2::PC_Name)
+	{
+		DataType = TEXT("FName");
+	}
+	else if (DataType == UEdGraphSchema_K2::PC_String)
+	{
+		DataType = TEXT("FString");
+	}
+	else if (UStruct* Struct = Cast<UStruct>(EdGraphPinType.PinSubCategoryObject))
+	{
+		DataType = *FString::Printf(TEXT("F%s"), *Struct->GetFName().ToString());
+	}
+	else if (UEnum* Enum = Cast<UEnum>(EdGraphPinType.PinSubCategoryObject))
+	{
+		DataType = *FString::Printf(TEXT("E%s"), *Enum->GetName());
+	}
+
+	FString DataTypeForVariableName = DataType.ToString();
+	if (DataTypeForVariableName.StartsWith(TEXT("F"), ESearchCase::CaseSensitive) || DataTypeForVariableName.StartsWith(TEXT("E"), ESearchCase::CaseSensitive))
+	{
+		DataTypeForVariableName = DataTypeForVariableName.RightChop(1);
+	}
+	DataTypeForVariableName = DataTypeForVariableName.Left(1).ToUpper() + DataTypeForVariableName.RightChop(1);
+	FString VariableNamePrefix = FString::Printf(TEXT("%sVar"), *DataTypeForVariableName);
+
+	TMap<FName, int32> NameToIndex;
+	TArray<FRigVMGraphVariableDescription> ExistingVariables = Controller->GetGraph()->GetVariableDescriptions();
+	for (int32 VariableIndex = 0; VariableIndex < ExistingVariables.Num(); VariableIndex++)
+	{
+		NameToIndex.Add(ExistingVariables[VariableIndex].Name, VariableIndex);
+	}
+
+	FName VariableName = URigVMController::GetUniqueName(*VariableNamePrefix, [NameToIndex](const FName& InName) {
+		return !NameToIndex.Contains(InName);
+	});
+
+	if (!bIsTemplateNode)
+	{
+		Controller->OpenUndoBracket(FString::Printf(TEXT("Add '%s' Variable"), *DataType.ToString()));
+	}
+
+	if (URigVMNode* ModelNode = Controller->AddVariableNodeFromObjectPath(VariableName, DataType.ToString(), FString(), bIsGetter, FString(), Location, FString(), !bIsTemplateNode))
+	{
+		for (UEdGraphNode* Node : ParentGraph->Nodes)
+		{
+			if (UControlRigGraphNode* RigNode = Cast<UControlRigGraphNode>(Node))
+			{
+				if (RigNode->GetModelNodeName() == ModelNode->GetFName())
+				{
+					NewNode = RigNode;
+					break;
+				}
+			}
+		}
+
+		if (!bIsTemplateNode)
+		{
+			if (NewNode)
+			{
+				Controller->ClearNodeSelection(true);
+				Controller->SelectNode(ModelNode, true, true);
+			}
+			Controller->CloseUndoBracket();
+		}
 	}
 	else
 	{
-		MemberName = FControlRigBlueprintUtils::GetNewPropertyMemberName(Blueprint, DefaultMenuSignature.MenuName.ToString());
+		if (!bIsTemplateNode)
+		{
+			Controller->CancelUndoBracket();
+		}
 	}
 
-	if(MemberName != NAME_None)
-	{
-		NewNode = FControlRigBlueprintUtils::InstantiateGraphNodeForProperty(ParentGraph, MemberName, Location);
-	}
 
 	return NewNode;
-}
-
-FEdGraphPinType UControlRigVariableNodeSpawner::GetVarType() const
-{
-	return EdGraphPinType;
 }
 
 #undef LOCTEXT_NAMESPACE

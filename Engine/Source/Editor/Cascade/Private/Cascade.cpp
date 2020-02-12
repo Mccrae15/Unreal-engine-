@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "Cascade.h"
 #include "Widgets/Text/STextBlock.h"
@@ -71,6 +71,8 @@ static const FName Cascade_PropertiesTab("Cascade_Properties");
 static const FName Cascade_CurveEditorTab("Cascade_CurveEditor");
 
 DEFINE_LOG_CATEGORY(LogCascade);
+
+FRandomStream FCascade::RandomStream(FPlatformTime::Cycles());
 
 FCascade::FCascade()
 	: ParticleSystem(nullptr)
@@ -168,9 +170,9 @@ FCascade::~FCascade()
 		UStaticMeshComponent* FloorComponent = PreviewViewport->GetViewportClient()->GetFloorComponent();
 		if (FloorComponent)
 		{
-			EditorOptions->FloorPosition = FloorComponent->RelativeLocation;
-			EditorOptions->FloorRotation = FloorComponent->RelativeRotation;
-			EditorOptions->FloorScale3D = FloorComponent->RelativeScale3D;
+			EditorOptions->FloorPosition = FloorComponent->GetRelativeLocation();
+			EditorOptions->FloorRotation = FloorComponent->GetRelativeRotation();
+			EditorOptions->FloorScale3D = FloorComponent->GetRelativeScale3D();
 
 			if (FloorComponent->GetStaticMesh())
 			{
@@ -1530,6 +1532,11 @@ void FCascade::AddReferencedObjects(FReferenceCollector& Collector)
 	}
 }
 
+FString FCascade::GetReferencerName() const
+{
+	return TEXT("FCascade");
+}
+
 void FCascade::Tick(float DeltaTime)
 {
 	// This is a bit of a hack. In order to not tick all open Cascade editors (which tick through engine tick) even when not visible,
@@ -1628,17 +1635,17 @@ void FCascade::Tick(float DeltaTime)
 	{
 		UParticleModuleVectorFieldLocal* VectorFieldModule = (UParticleModuleVectorFieldLocal*)SelectedModule;
 		LocalVectorFieldPreviewComponent->VectorField = VectorFieldModule->VectorField;
-		LocalVectorFieldPreviewComponent->RelativeLocation = VectorFieldModule->RelativeTranslation;
-		LocalVectorFieldPreviewComponent->RelativeRotation = VectorFieldModule->RelativeRotation;
-		LocalVectorFieldPreviewComponent->RelativeScale3D = VectorFieldModule->RelativeScale3D;
+		LocalVectorFieldPreviewComponent->SetRelativeLocation_Direct(VectorFieldModule->RelativeTranslation);
+		LocalVectorFieldPreviewComponent->SetRelativeRotation_Direct(VectorFieldModule->RelativeRotation);
+		LocalVectorFieldPreviewComponent->SetRelativeScale3D_Direct(VectorFieldModule->RelativeScale3D);
 		LocalVectorFieldPreviewComponent->Intensity = VectorFieldModule->Intensity;
-		LocalVectorFieldPreviewComponent->bVisible = true;
+		LocalVectorFieldPreviewComponent->SetVisibleFlag(true);
 		LocalVectorFieldPreviewComponent->bHiddenInGame = false;
 		LocalVectorFieldPreviewComponent->ReregisterComponent();
 	}
-	else if(LocalVectorFieldPreviewComponent->bVisible)
+	else if(LocalVectorFieldPreviewComponent->GetVisibleFlag())
 	{
-		LocalVectorFieldPreviewComponent->bVisible = false;
+		LocalVectorFieldPreviewComponent->SetVisibleFlag(false);
 		LocalVectorFieldPreviewComponent->ReregisterComponent();
 	}
 
@@ -1665,14 +1672,6 @@ void FCascade::Tick(float DeltaTime)
 				bIsPendingReset = true;
 				ResetTime = TotalTime + ResetInterval;
 			}
-		}
-	}
-
-	if (CurveEditor.IsValid())
-	{
-		if (CurveEditor->GetNeedsRedraw())
-		{
-			CurveEditor->DrawViewport();
 		}
 	}
 
@@ -1711,7 +1710,7 @@ TSharedRef<SWidget> FCascade::GenerateAnimSpeedMenuContent(TSharedRef<FUICommand
 	return MenuBuilder.MakeWidget();
 }
 
-void FCascade::NotifyPostChange( const FPropertyChangedEvent& PropertyChangedEvent, UProperty* PropertyThatChanged)
+void FCascade::NotifyPostChange( const FPropertyChangedEvent& PropertyChangedEvent, FProperty* PropertyThatChanged)
 {
 	FPropertyChangedEvent Event = PropertyChangedEvent;
 	if (SelectedModule)
@@ -1741,7 +1740,7 @@ void FCascade::NotifyPreChange(FEditPropertyChain* PropertyChain)
 	CurveToReplace = NULL;
 
 	// get the property that is being edited
-	UObjectPropertyBase* ObjProp = Cast<UObjectPropertyBase>(PropertyChain->GetActiveNode()->GetValue());
+	FObjectPropertyBase* ObjProp = CastField<FObjectPropertyBase>(PropertyChain->GetActiveNode()->GetValue());
 	if (ObjProp && 
 		(ObjProp->PropertyClass->IsChildOf(UDistributionFloat::StaticClass()) || 
 		ObjProp->PropertyClass->IsChildOf(UDistributionVector::StaticClass()))
@@ -1778,7 +1777,7 @@ void FCascade::NotifyPreChange(FEditPropertyChain* PropertyChain)
 				BaseObject = It->ContainerPtrToValuePtr<void>(BaseObject);
 
 				// If it is an object property, then reset our base pointer/offset
-				UObjectPropertyBase* ObjectPropertyBase = Cast<UObjectPropertyBase>(*It);
+				FObjectPropertyBase* ObjectPropertyBase = CastField<FObjectPropertyBase>(*It);
 				if (ObjectPropertyBase)
 				{
 					BaseObject = ObjectPropertyBase->GetObjectPropertyValue(BaseObject);
@@ -1833,7 +1832,7 @@ void FCascade::NotifyPostChange(const FPropertyChangedEvent& PropertyChangedEven
 	if (CurveToReplace)
 	{
 		// This should be the same property we just got in NotifyPreChange!
-		UObjectPropertyBase* ObjProp = Cast<UObjectPropertyBase>(PropertyChain->GetActiveNode()->GetValue());
+		FObjectPropertyBase* ObjProp = CastField<FObjectPropertyBase>(PropertyChain->GetActiveNode()->GetValue());
 		check(ObjProp);
 		check(ObjProp->PropertyClass->IsChildOf(UDistributionFloat::StaticClass()) || ObjProp->PropertyClass->IsChildOf(UDistributionVector::StaticClass()));
 
@@ -1860,7 +1859,7 @@ void FCascade::NotifyPostChange(const FPropertyChangedEvent& PropertyChangedEven
 			BaseObject = It->ContainerPtrToValuePtr<void>(BaseObject);
 
 			// If it is an object property, then reset our base pointer/offset
-			UObjectPropertyBase* ObjectPropertyBase = Cast<UObjectPropertyBase>(*It);
+			FObjectPropertyBase* ObjectPropertyBase = CastField<FObjectPropertyBase>(*It);
 			if (ObjectPropertyBase)
 			{
 				BaseObject = ObjectPropertyBase->GetObjectPropertyValue(BaseObject);
@@ -3328,7 +3327,7 @@ void FCascade::ExportSelectedEmitter()
 					{
 						// Force a recache of the view relevance
 						PSysComp->bIsViewRelevanceDirty = true;
-						bool bIsActive = PSysComp->bIsActive;
+						bool bIsActive = PSysComp->IsActive();
 						PSysComp->DeactivateSystem();
 						PSysComp->ResetParticles();
 						if (bIsActive)
@@ -4756,7 +4755,7 @@ void FCascade::OnSetRandomSeed()
 		ParticleSystem->PreEditChange(NULL);
 		ParticleSystemComponent->PreEditChange(NULL);
 
-		int32 RandomSeed = FMath::RoundToInt(RAND_MAX * FMath::SRand());
+		int32 RandomSeed = FMath::RoundToInt(RAND_MAX * RandomStream.FRand());
 		if (SelectedModule->SetRandomSeedEntry(0, RandomSeed) == false)
 		{
 			UE_LOG(LogCascade, Warning, TEXT("Failed to set random seed entry on module %s"), *(SelectedModule->GetClass()->GetName()));
@@ -4898,7 +4897,7 @@ bool FCascade::ConvertModuleToSeeded(UParticleSystem* ParticleSystem, UParticleE
 			if (RandSeedInfo != NULL)
 			{
 				RandSeedInfo->bResetSeedOnEmitterLooping = true;
-				RandSeedInfo->RandomSeeds.Add(FMath::TruncToInt(FMath::Rand() * UINT_MAX));
+				RandSeedInfo->RandomSeeds.Add(FMath::TruncToInt(RandomStream.FRand() * UINT_MAX));
 			}
 		}
 

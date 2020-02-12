@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 
 #include "ContentBrowserModule.h"
@@ -36,6 +36,17 @@ IContentBrowserSingleton& FContentBrowserModule::Get() const
 {
 	check(ContentBrowserSingleton);
 	return *ContentBrowserSingleton;
+}
+
+FDelegateHandle FContentBrowserModule::AddAssetViewExtraStateGenerator(const FAssetViewExtraStateGenerator& Generator)
+{
+	AssetViewExtraStateGenerators.Add(Generator);
+	return Generator.Handle;
+}
+
+void FContentBrowserModule::RemoveAssetViewExtraStateGenerator(const FDelegateHandle& GeneratorHandle)
+{
+	AssetViewExtraStateGenerators.RemoveAll([&GeneratorHandle](const FAssetViewExtraStateGenerator& Generator) { return Generator.Handle == GeneratorHandle; });
 }
 
 void FContentBrowserModule::ResizeRecentAssetList(FName InName)

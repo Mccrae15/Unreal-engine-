@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 
 /*=============================================================================================
@@ -24,7 +24,8 @@ enum EAsyncIOPriorityAndFlags
 	AIOP_PRIORITY_MASK = 0x000000ff,
 
 	// Flags - combine with priorities if needed
-	AIOP_FLAG_PRECACHE = 0x00000100,
+	AIOP_FLAG_PRECACHE	=	0x00000100,
+	AIOP_FLAG_DONTCACHE	=	0x00000200,
 
 	// Priorities
 	AIOP_MIN = 0,
@@ -232,6 +233,11 @@ public:
 	 * Performs initialization of the platform file after it has become the active (FPlatformFileManager.GetPlatformFile() will return this
 	 */
 	virtual void		InitializeAfterSetActive() { }
+
+	/**
+	 * Build an in memory unique pak file from a subset of files in this pak file
+	 */
+	virtual void		MakeUniquePakFilesForTheseFiles(TArray<TArray<FString>> InFiles) { }
 
 	/**
 	* Performs initialization of the platform file after the new async IO has been enabled

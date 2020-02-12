@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -116,6 +116,8 @@ enum ETextureSourceFormat
 	//@todo: Deprecated!
 	TSF_RGBE8,
 
+	TSF_G16,
+
 	TSF_MAX
 };
 
@@ -131,6 +133,44 @@ enum ETextureCompressionQuality
 	TCQ_MAX,
 };
 
+UENUM()
+enum ETextureLossyCompressionAmount
+{
+	TLCA_Default		UMETA(DisplayName = "Default"),
+	TLCA_None			UMETA(DisplayName = "No lossy compression"),
+	TLCA_Lowest			UMETA(DisplayName = "Lowest (Best image quality, largest filesize)"),
+	TLCA_Low			UMETA(DisplayName = "Low"),
+	TLCA_Medium			UMETA(DisplayName = "Medium"),
+	TLCA_High			UMETA(DisplayName = "High"),
+	TLCA_Highest		UMETA(DisplayName = "Highest (Worst image quality, smallest filesize)"),
+};
+
+USTRUCT()
+struct FTextureSourceBlock
+{
+	GENERATED_USTRUCT_BODY()
+
+	ENGINE_API FTextureSourceBlock();
+
+	UPROPERTY(VisibleAnywhere, Category = TextureSource)
+	int32 BlockX;
+
+	UPROPERTY(VisibleAnywhere, Category = TextureSource)
+	int32 BlockY;
+
+	UPROPERTY(VisibleAnywhere, Category = TextureSource)
+	int32 SizeX;
+
+	UPROPERTY(VisibleAnywhere, Category = TextureSource)
+	int32 SizeY;
+
+	UPROPERTY(VisibleAnywhere, Category = TextureSource)
+	int32 NumSlices;
+
+	UPROPERTY(VisibleAnywhere, Category = TextureSource)
+	int32 NumMips;
+};
+
 /**
  * Texture source data management.
  */
@@ -143,6 +183,26 @@ struct FTextureSource
 	ENGINE_API FTextureSource();
 
 #if WITH_EDITOR
+
+	ENGINE_API static int32 GetBytesPerPixel(ETextureSourceFormat Format);
+	FORCEINLINE static bool IsHDR(ETextureSourceFormat Format) { return (Format == TSF_BGRE8 || Format == TSF_RGBA16F); }
+
+	ENGINE_API void InitBlocked(const ETextureSourceFormat* InLayerFormats,
+		const FTextureSourceBlock* InBlocks,
+		int32 InNumLayers,
+		int32 InNumBlocks,
+		const uint8** InDataPerBlock);
+
+	ENGINE_API void InitLayered(
+		int32 NewSizeX,
+		int32 NewSizeY,
+		int32 NewNumSlices,
+		int32 NewNumLayers,
+		int32 NewNumMips,
+		const ETextureSourceFormat* NewLayerFormat,
+		const uint8* NewData = NULL
+		);
+
 	/**
 	 * Initialize the source data with the given size, number of mips, and format.
 	 * @param NewSizeX - Width of the texture source data.
@@ -173,6 +233,13 @@ struct FTextureSource
 		ETextureSourceFormat NewFormat
 		);
 
+	ENGINE_API void InitLayered2DWithMipChain(
+		int32 NewSizeX,
+		int32 NewSizeY,
+		int32 NewNumLayers,
+		const ETextureSourceFormat* NewFormat
+	);
+
 	/**
 	 * Initializes the source data for a cubemap with a full mip chain.
 	 * @param NewSizeX - Width of each cube map face.
@@ -192,44 +259,66 @@ struct FTextureSource
 	void ForceGenerateGuid();
 
 	/** Lock a mip for editing. */
-	ENGINE_API uint8* LockMip(int32 MipIndex);
+	ENGINE_API uint8* LockMip(int32 BlockIndex, int32 LayerIndex, int32 MipIndex);
 
 	/** Unlock a mip. */
-	ENGINE_API void UnlockMip(int32 MipIndex);
+	ENGINE_API void UnlockMip(int32 BlockIndex, int32 LayerIndex, int32 MipIndex);
 
 	/** Retrieve a copy of the data for a particular mip. */
-	ENGINE_API bool GetMipData(TArray<uint8>& OutMipData, int32 MipIndex, class IImageWrapperModule* ImageWrapperModule = nullptr);
+	ENGINE_API bool GetMipData(TArray64<uint8>& OutMipData, int32 BlockIndex, int32 LayerIndex, int32 MipIndex, class IImageWrapperModule* ImageWrapperModule = nullptr);
 
 	/** Computes the size of a single mip. */
-	ENGINE_API int32 CalcMipSize(int32 MipIndex) const;
+	ENGINE_API int64 CalcMipSize(int32 BlockIndex, int32 LayerIndex, int32 MipIndex) const;
 
 	/** Computes the number of bytes per-pixel. */
-	ENGINE_API int32 GetBytesPerPixel() const;
+	ENGINE_API int32 GetBytesPerPixel(int32 LayerIndex = 0) const;
 
 	/** Return true if the source data is power-of-2. */
-	ENGINE_API bool IsPowerOfTwo() const;
+	ENGINE_API bool IsPowerOfTwo(int32 BlockIndex = 0) const;
 
 	/** Returns true if source art is available. */
 	ENGINE_API bool IsValid() const;
 
+	/** Access the given block */
+	ENGINE_API void GetBlock(int32 Index, FTextureSourceBlock& OutBlock) const;
+
+	/** Logical size of the texture includes all blocks */
+	ENGINE_API FIntPoint GetLogicalSize() const;
+
+	/** Size of texture in blocks */
+	ENGINE_API FIntPoint GetSizeInBlocks() const;
+
 	/** Returns the unique ID string for this source art. */
 	FString GetIdString() const;
 
-	/** Trivial accessors. */
+	/** Trivial accessors. These will only give values for Block0 so may not be correct for UDIM/multi-block textures, use GetBlock() for this case. */
 	FORCEINLINE FGuid GetId() const { return Id; }
 	FORCEINLINE int32 GetSizeX() const { return SizeX; }
 	FORCEINLINE int32 GetSizeY() const { return SizeY; }
 	FORCEINLINE int32 GetNumSlices() const { return NumSlices; }
 	FORCEINLINE int32 GetNumMips() const { return NumMips; }
-	FORCEINLINE ETextureSourceFormat GetFormat() const { return Format; }
+	FORCEINLINE int32 GetNumLayers() const { return NumLayers; }
+	FORCEINLINE int32 GetNumBlocks() const { return Blocks.Num() + 1; }
+	FORCEINLINE ETextureSourceFormat GetFormat(int32 LayerIndex = 0) const { return (LayerIndex == 0) ? Format : LayerFormat[LayerIndex]; }
 	FORCEINLINE bool IsPNGCompressed() const { return bPNGCompressed; }
-	FORCEINLINE int32 GetSizeOnDisk() const { return BulkData.GetBulkDataSize(); }
+	FORCEINLINE int64 GetSizeOnDisk() const { return BulkData.GetBulkDataSize(); }
 	FORCEINLINE bool IsBulkDataLoaded() const { return BulkData.IsBulkDataLoaded(); }
 	FORCEINLINE bool LoadBulkDataWithFileReader() { return BulkData.LoadBulkDataWithFileReader(); }
 	FORCEINLINE void RemoveBulkData() { BulkData.RemoveBulkData(); }
 	
 	/** Sets the GUID to use, and whether that GUID is actually a hash of some data. */
 	ENGINE_API void SetId(const FGuid& InId, bool bInGuidIsHash);
+
+	/** Legacy API that defaults to LayerIndex 0 */
+	FORCEINLINE bool GetMipData(TArray64<uint8>& OutMipData, int32 MipIndex, class IImageWrapperModule* ImageWrapperModule = nullptr)
+	{
+		return GetMipData(OutMipData, 0, 0, MipIndex, ImageWrapperModule);
+	}
+
+	FORCEINLINE int64 CalcMipSize(int32 MipIndex) const { return CalcMipSize(0, 0, MipIndex); }
+	FORCEINLINE uint8* LockMip(int32 MipIndex) { return LockMip(0, 0, MipIndex); }
+	FORCEINLINE void UnlockMip(int32 MipIndex) { UnlockMip(0, 0, MipIndex); }
+
 #endif
 
 private:
@@ -238,24 +327,30 @@ private:
 	friend class UTexture2D;
 	friend class UTextureCube;
 	friend class UVolumeTexture;
+	friend class UTexture2DArray;
 
 	/** The bulk source data. */
 	FByteBulkData BulkData;
 	/** Pointer to locked mip data, if any. */
 	uint8* LockedMipData;
-	/** Which mips are locked, if any. */
-	uint32 LockedMips;
+	/** Number of mips that are locked. */
+	uint32 NumLockedMips;
 #if WITH_EDITOR
+
 	/** Return true if the source art is not png compressed but could be. */
 	bool CanPNGCompress() const;
 	/** Removes source data. */
 	void RemoveSourceData();
 	/** Retrieve the size and offset for a source mip. The size includes all slices. */
-	int32 CalcMipOffset(int32 MipIndex) const;
+	int64 CalcMipOffset(int32 BlockIndex, int32 LayerIndex, int32 MipIndex) const;
 
-	/** Uses a hash as the GUID, useful to prevent creating new GUIDs on load for legacy assets. */
-	void UseHashAsGuid();
+	int64 CalcBlockSize(int32 BlockIndex) const;
+	int64 CalcLayerSize(int32 BlockIndex, int32 LayerIndex) const;
+
 public:
+	/** Uses a hash as the GUID, useful to prevent creating new GUIDs on load for legacy assets. */
+	ENGINE_API void UseHashAsGuid();
+
 	void ReleaseSourceMemory(); // release the memory from the mips (does almost the same as remove source data except doesn't rebuild the guid)
 	FORCEINLINE bool HasHadBulkDataCleared() const { return bHasHadBulkDataCleared; }
 private:
@@ -267,6 +362,13 @@ private:
 	/** GUID used to track changes to the source data. */
 	UPROPERTY(VisibleAnywhere, Category=TextureSource)
 	FGuid Id;
+
+	/** Position of texture block0, only relevant if source has multiple blocks */
+	UPROPERTY(VisibleAnywhere, Category = TextureSource)
+	int32 BaseBlockX;
+
+	UPROPERTY(VisibleAnywhere, Category = TextureSource)
+	int32 BaseBlockY;
 
 	/** Width of the texture. */
 	UPROPERTY(VisibleAnywhere, Category=TextureSource)
@@ -284,11 +386,15 @@ private:
 	UPROPERTY(VisibleAnywhere, Category=TextureSource)
 	int32 NumMips;
 
+	/** Number of layers (for multi-layered virtual textures) provided as source data for the texture. */
+	UPROPERTY(VisibleAnywhere, Category = TextureSource)
+	int32 NumLayers;
+
 	/** RGBA8 source data is optionally compressed as PNG. */
 	UPROPERTY(VisibleAnywhere, Category=TextureSource)
 	bool bPNGCompressed;
 
-	/** Legacy textures use a hash instead of a GUID. */
+	/** Uses hash instead of guid to identify content to improve DDC cache hit. */
 	UPROPERTY(VisibleAnywhere, Category=TextureSource)
 	bool bGuidIsHash;
 
@@ -296,8 +402,53 @@ private:
 	UPROPERTY(VisibleAnywhere, Category=TextureSource)
 	TEnumAsByte<enum ETextureSourceFormat> Format;
 
+	/** For multi-layered sources, each layer may have a different format (in this case LayerFormat[0] == Format) . */
+	UPROPERTY(VisibleAnywhere, Category = TextureSource)
+	TArray< TEnumAsByte<enum ETextureSourceFormat> > LayerFormat;
+
+	/**
+	 * All sources have 1 implicit block defined by BaseBlockXY/SizeXY members.  Textures imported as UDIM may have additional blocks defined here.
+	 * These are stored sequentially in the source's bulk data.
+	 */
+	UPROPERTY(VisibleAnywhere, Category = TextureSource)
+	TArray<FTextureSourceBlock> Blocks;
 
 #endif // WITH_EDITORONLY_DATA
+};
+
+/**
+ * Optional extra fields for texture platform data required by some platforms.
+ * Data in this struct is only serialized if the struct's value is non-default.
+ */
+struct FOptTexturePlatformData
+{
+	/** Arbitrary extra data that the runtime may need. */
+	uint32 ExtData;
+	/** Number of mips making up the mip tail, which must always be resident */
+	uint32 NumMipsInTail;
+
+	FOptTexturePlatformData()
+		: ExtData(0)
+		, NumMipsInTail(0)
+	{}
+
+	inline bool operator == (FOptTexturePlatformData const& RHS) const 
+	{
+		return ExtData == RHS.ExtData
+			&& NumMipsInTail == RHS.NumMipsInTail;
+	}
+
+	inline bool operator != (FOptTexturePlatformData const& RHS) const
+	{
+		return !(*this == RHS);
+	}
+
+	friend inline FArchive& operator << (FArchive& Ar, FOptTexturePlatformData& Data)
+	{
+		Ar << Data.ExtData;
+		Ar << Data.NumMipsInTail;
+		return Ar;
+	}
 };
 
 /**
@@ -312,12 +463,20 @@ struct FTexturePlatformData
 	int32 SizeX;
 	/** Height of the texture. */
 	int32 SizeY;
-	/** Number of texture slices. */
-	int32 NumSlices;
+	/** Packed bits [b31: CubeMap], [b30: HasOptData], [b29-0: NumSlices]. See bit masks below. */
+	uint32 PackedData;
 	/** Format in which mip data is stored. */
 	EPixelFormat PixelFormat;
-	/** Mip data. */
+	/** Additional data required by some platforms.*/
+	FOptTexturePlatformData OptData;
+	/** Mip data or VT data. one or the other. */
 	TIndirectArray<struct FTexture2DMipMap> Mips;
+	struct FVirtualTextureBuiltData* VTData;
+
+#if TEXTURE2DMIPMAP_USE_COMPACT_BULKDATA
+	/** Cached UPackage file name where the owning texture is loaded from */
+	FString CachedPackageFileName;
+#endif
 
 #if WITH_EDITORONLY_DATA
 	/** The key associated with this derived data. */
@@ -332,15 +491,25 @@ struct FTexturePlatformData
 	/** Destructor. */
 	ENGINE_API ~FTexturePlatformData();
 
+private:
+	static constexpr uint32 BitMask_CubeMap    = 1u << 31u;
+	static constexpr uint32 BitMask_HasOptData = 1u << 30u;
+	static constexpr uint32 BitMask_NumSlices  = BitMask_HasOptData - 1u;
+
+public:
+	/** Return whether TryLoadMips() would stall because async loaded mips are not yet available. */
+	bool IsReadyForAsyncPostLoad() const;
+
 	/**
 	 * Try to load mips from the derived data cache.
 	 * @param FirstMipToLoad - The first mip index to load.
 	 * @param OutMipData -	Must point to an array of pointers with at least
 	 *						Texture.Mips.Num() - FirstMipToLoad + 1 entries. Upon
 	 *						return those pointers will contain mip data.
+	 * @param Texture - The texture to load mips for.
 	 * @returns true if all requested mips have been loaded.
 	 */
-	bool TryLoadMips(int32 FirstMipToLoad, void** OutMipData);
+	bool TryLoadMips(int32 FirstMipToLoad, void** OutMipData, UTexture* Texture);
 
 	/** Serialization. */
 	void Serialize(FArchive& Ar, class UTexture* Owner);
@@ -353,23 +522,104 @@ struct FTexturePlatformData
 	 * @param bStreamable Store some mips inline, only used during cooking
 	 */
 	void SerializeCooked(FArchive& Ar, class UTexture* Owner, bool bStreamable);
+	
+	inline bool GetHasOptData() const
+	{
+		return (PackedData & BitMask_HasOptData) == BitMask_HasOptData;
+	}
+
+	inline void SetOptData(FOptTexturePlatformData Data)
+	{
+		// Set the opt data flag to true if the specified data is non-default.
+		bool bHasOptData = Data != FOptTexturePlatformData();
+		PackedData = (bHasOptData ? BitMask_HasOptData : 0) | (PackedData & (~BitMask_HasOptData));
+
+		OptData = Data;
+	}
+
+	inline bool IsCubemap() const
+	{
+		return (PackedData & BitMask_CubeMap) == BitMask_CubeMap; 
+	}
+
+	inline void SetIsCubemap(bool bCubemap)
+	{
+		PackedData = (bCubemap ? BitMask_CubeMap : 0) | (PackedData & (~BitMask_CubeMap));
+	}
+	
+	inline int32 GetNumSlices() const 
+	{
+		return (int32)(PackedData & BitMask_NumSlices);
+	}
+
+	inline void SetNumSlices(int32 NumSlices)
+	{
+		PackedData = (NumSlices & BitMask_NumSlices) | (PackedData & (~BitMask_NumSlices));
+	}
+
+	inline int32 GetNumMipsInTail() const
+	{
+		return OptData.NumMipsInTail;
+	}
+
+	inline int32 GetExtData() const
+	{
+		return OptData.ExtData;
+	}
 
 #if WITH_EDITOR
 	void Cache(
 		class UTexture& InTexture,
-		const struct FTextureBuildSettings& InSettings,
+		const struct FTextureBuildSettings* InSettingsPerLayer,
 		uint32 InFlags,
 		class ITextureCompressorModule* Compressor);
 	void FinishCache();
-	ENGINE_API bool TryInlineMipData(int32 FirstMipToLoad = 0);
+	ENGINE_API bool TryInlineMipData(int32 FirstMipToLoad = 0, UTexture* Texture = nullptr);
 	bool AreDerivedMipsAvailable() const;
+	bool AreDerivedVTChunksAvailable() const;
 #endif
 
 	int32 GetNumNonStreamingMips() const;
+
+	// Only because we don't want to expose FVirtualTextureBuiltData
+	ENGINE_API int32 GetNumVTMips() const;
+	ENGINE_API EPixelFormat GetLayerPixelFormat(uint32 LayerIndex) const;
+};
+
+/**
+ * Collection of values that contribute to pixel format chosen for texture
+ */
+USTRUCT()
+struct FTextureFormatSettings
+{
+	GENERATED_USTRUCT_BODY()
+
+	FTextureFormatSettings()
+		: CompressionSettings(TC_Default)
+		, CompressionNoAlpha(false)
+		, CompressionNone(false)
+		, CompressionYCoCg(false)
+		, SRGB(false)
+	{}
+
+	UPROPERTY()
+	TEnumAsByte<enum TextureCompressionSettings> CompressionSettings;
+
+	UPROPERTY()
+	uint8 CompressionNoAlpha : 1;
+
+	UPROPERTY()
+	uint8 CompressionNone : 1;
+
+	UPROPERTY()
+	uint8 CompressionYCoCg : 1;
+
+	UPROPERTY()
+	uint8 SRGB : 1;
 };
 
 UCLASS(abstract, MinimalAPI, BlueprintType)
-class UTexture : public UStreamableRenderAsset, public IInterface_AssetUserData
+class ENGINE_VTABLE UTexture : public UStreamableRenderAsset, public IInterface_AssetUserData
 {
 	GENERATED_UCLASS_BODY()
 
@@ -437,8 +687,12 @@ public:
 	uint32 CompressionNone:1;
 
 	/** If enabled, defer compression of the texture until save. */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category=Compression)
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category=Compression, meta=(NoResetToDefault))
 	uint32 DeferCompression:1;
+
+	/** How aggressively should any relevant lossy compression be applied. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = Compression, AdvancedDisplay)
+	TEnumAsByte<ETextureLossyCompressionAmount> LossyCompressionAmount;
 
 	/** The maximum resolution for generated textures. A value of 0 means the maximum size for the format on each platform, except HDR long/lat cubemaps, which default to a resolution of 512. */ 
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category=Compression, meta=(DisplayName="Maximum Texture Size", ClampMin = "0.0"), AdvancedDisplay)
@@ -465,7 +719,7 @@ public:
 	uint32 bFlipGreenChannel:1;
 
 	/** For DXT1 textures, setting this will cause the texture to be twice the size, but better looking, on iPhone */
-	UPROPERTY()
+	UPROPERTY(EditAnywhere, Category = Texture, AdvancedDisplay)
 	uint32 bForcePVRTC4:1;
 
 	/** How to pad the texture to a power of 2 size (if necessary) */
@@ -511,6 +765,13 @@ public:
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category=Compositing, AdvancedDisplay)
 	float CompositePower;
 
+	/**
+	 * Array of settings used to control the format of given layer
+	 * If this array doesn't include an entry for a given layer, values from UTexture will be used
+	 */
+	UPROPERTY()
+	TArray<FTextureFormatSettings> LayerFormatSettings;
+
 #endif // WITH_EDITORONLY_DATA
 
 	/*--------------------------------------------------------------------------
@@ -528,6 +789,10 @@ public:
 	/** The texture filtering mode to use when sampling this texture. */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category=Texture, AssetRegistrySearchable, AdvancedDisplay)
 	TEnumAsByte<enum TextureFilter> Filter;
+
+	/** The texture mip load options. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = Texture, AssetRegistrySearchable, AdvancedDisplay)
+	ETextureMipLoadOptions MipLoadOptions;
 
 	/** Texture group this texture belongs to */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category=LevelOfDetail, meta=(DisplayName="Texture Group"), AssetRegistrySearchable)
@@ -548,6 +813,14 @@ public:
 	/** If true, the RHI texture will be created using TexCreate_NoTiling */
 	UPROPERTY()
 	uint8 bNoTiling:1;
+
+	/** Is this texture streamed in using VT								*/
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = Texture, AssetRegistrySearchable, AdvancedDisplay)
+	uint8 VirtualTextureStreaming : 1;
+
+	/** If true the texture stores YCoCg. Blue channel will be filled with a precision scale during compression. */
+	UPROPERTY()
+	uint8 CompressionYCoCg : 1;
 
 private:
 	/** Whether the async resource release process has already been kicked off or not */
@@ -603,6 +876,25 @@ public:
 	virtual void WaitForStreaming()
 	{
 	}
+
+	virtual bool HasPendingUpdate() const override 
+	{ 
+		return false; // Overriden in UTexture2D
+	}
+
+	/**
+	 * Returns if the texture is actually being rendered using virtual texturing right now.
+	 * Unlike the 'VirtualTextureStreaming' property which reflects the user's desired state
+	 * this reflects the actual current state on the renderer depending on the platform, VT
+	 * data being built, project settings, ....
+	 */
+	virtual bool IsCurrentlyVirtualTextured() const
+	{
+		return false;
+	}
+
+	/** Returns the virtual texture build settings. */
+	ENGINE_API virtual void GetVirtualTextureBuildSettings(struct FVirtualTextureBuildSettings& OutSettings) const;
 
 	/**
 	 * Textures that use the derived data cache must override this function and
@@ -693,6 +985,14 @@ public:
 	* Return maximum dimension for this texture type.
 	*/
 	ENGINE_API virtual uint32 GetMaximumDimension() const;
+
+	/**
+	 * Gets settings used to choose format for the given layer
+	 */
+	ENGINE_API void GetLayerFormatSettings(int32 LayerIndex, FTextureFormatSettings& OutSettings) const;
+	ENGINE_API void SetLayerFormatSettings(int32 LayerIndex, const FTextureFormatSettings& InSettings);
+
+	ENGINE_API void GetDefaultFormatSettings(FTextureFormatSettings& OutSettings) const;
 #endif
 
 	/** @return the width of the surface represented by the texture. */
@@ -712,7 +1012,7 @@ public:
 	//~ Begin UObject Interface.
 #if WITH_EDITOR
 	ENGINE_API virtual void PostEditChangeProperty(FPropertyChangedEvent& PropertyChangedEvent) override;
-	ENGINE_API virtual bool CanEditChange(const UProperty* InProperty) const override;
+	ENGINE_API virtual bool CanEditChange(const FProperty* InProperty) const override;
 #endif // WITH_EDITOR
 	ENGINE_API virtual void Serialize(FArchive& Ar) override;
 	ENGINE_API virtual void PostInitProperties() override;
@@ -763,10 +1063,10 @@ public:
 	 *
 	 * @return true if the texture has an HDR source, false otherwise.
 	 */
-	bool HasHDRSource() const
+	bool HasHDRSource(int32 LayerIndex = 0) const
 	{
 #if WITH_EDITOR
-		return ((Source.GetFormat() == TSF_BGRE8) || (Source.GetFormat() == TSF_RGBA16F));
+		return FTextureSource::IsHDR(Source.GetFormat(LayerIndex));
 #else
 		return false;
 #endif // WITH_EDITOR
@@ -808,6 +1108,11 @@ public:
 #else
 		LightingGuid = FGuid(0, 0, 0, 0);
 #endif // WITH_EDITORONLY_DATA
+	}
+
+	void SetLightingGuid(const FGuid& Guid)
+	{
+		LightingGuid = Guid;
 	}
 
 	/**

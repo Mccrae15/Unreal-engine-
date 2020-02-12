@@ -1,17 +1,18 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "LevelSequenceActorDetails.h"
 #include "Widgets/DeclarativeSyntaxSupport.h"
 #include "Widgets/SBoxPanel.h"
 #include "Widgets/Input/SButton.h"
 #include "Editor.h"
-#include "Toolkits/AssetEditorManager.h"
+
 #include "DetailLayoutBuilder.h"
 #include "DetailWidgetRow.h"
 #include "DetailCategoryBuilder.h"
 #include "IDetailsView.h"
 #include "LevelSequenceActor.h"
 #include "Algo/Transform.h"
+#include "Subsystems/AssetEditorSubsystem.h"
 
 #define LOCTEXT_NAMESPACE "LevelSequenceActorDetails"
 
@@ -29,7 +30,7 @@ void AddAllSubObjectProperties(TArray<UObject*>& SubObjects, IDetailCategoryBuil
 		return;
 	}
 
-	for (const UProperty* TestProperty : TFieldRange<UProperty>(SubObjects[0]->GetClass()))
+	for (const FProperty* TestProperty : TFieldRange<FProperty>(SubObjects[0]->GetClass()))
 	{
 		if (TestProperty->HasAnyPropertyFlags(CPF_Edit))
 		{
@@ -152,7 +153,7 @@ FReply FLevelSequenceActorDetails::OnOpenLevelSequenceForActor()
 		UObject* LoadedObject = LevelSequenceActor.Get()->LevelSequence.TryLoad();
 		if (LoadedObject != nullptr)
 		{
-			FAssetEditorManager::Get().OpenEditorForAsset(LoadedObject);
+			GEditor->GetEditorSubsystem<UAssetEditorSubsystem>()->OpenEditorForAsset(LoadedObject);
 		}
 	}
 

@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "SpeedTreeImportFactory.h"
 #include "Misc/FileHelper.h"
@@ -57,9 +57,7 @@
 #include "AssetRegistryModule.h"
 #include "UnrealEd/Private/GeomFitUtils.h"
 #include "SpeedTreeWind.h"
-#include "MeshDescription.h"
-#include "MeshAttributes.h"
-#include "MeshAttributeArray.h"
+#include "StaticMeshAttributes.h"
 #include "ComponentReregisterContext.h"
 
 #if WITH_SPEEDTREE
@@ -1356,7 +1354,7 @@ FVertexInstanceID ProcessTriangleCorner(
 	const SpeedTree::SDrawCall* DrawCall,
 	const SpeedTree::st_uint32* Indices32,
 	const SpeedTree::st_uint16* Indices16,
-	FMeshDescription* MeshDescription,
+	FMeshDescription& MeshDescription,
 	const int32 IndexOffset,
 	const int32 NumUVs,
 	const SpeedTree::SRenderState* RenderState,
@@ -1376,7 +1374,7 @@ FVertexInstanceID ProcessTriangleCorner(
 
 	int32 VertexIndex = DrawCall->m_b32BitIndices ? Indices32[ Index ] : Indices16[ Index ];
 	FVertexID VertexID(IndexOffset + VertexIndex);
-	const FVertexInstanceID& VertexInstanceID = MeshDescription->CreateVertexInstance(VertexID);
+	const FVertexInstanceID& VertexInstanceID = MeshDescription.CreateVertexInstance(VertexID);
 
 	// tangents
 	DrawCall->GetProperty( SpeedTree::VERTEX_PROPERTY_NORMAL, VertexIndex, Data );
@@ -1578,8 +1576,8 @@ UObject* USpeedTreeImportFactory::FactoryCreateBinary7(UClass* InClass, UObject*
 				
 				// clear out any old data
 				StaticMesh->SetNumSourceModels(0);
-				StaticMesh->SectionInfoMap.Clear();
-				StaticMesh->OriginalSectionInfoMap.Clear();
+				StaticMesh->GetSectionInfoMap().Clear();
+				StaticMesh->GetOriginalSectionInfoMap().Clear();
 				StaticMesh->StaticMaterials.Empty();
 
 				// Lightmap data
@@ -1650,22 +1648,22 @@ UObject* USpeedTreeImportFactory::FactoryCreateBinary7(UClass* InClass, UObject*
 						const SpeedTree::SLod* TreeLOD = &SpeedTreeGeometry->m_pLods[LODIndex];
 						FStaticMeshSourceModel& LODModel = StaticMesh->AddSourceModel();
 						FMeshDescription* MeshDescription = StaticMesh->CreateMeshDescription(LODIndex);
-						StaticMesh->RegisterMeshAttributes(*MeshDescription);
+						FStaticMeshAttributes Attributes(*MeshDescription);
 						
-						TVertexAttributesRef<FVector> VertexPositions = MeshDescription->VertexAttributes().GetAttributesRef<FVector>(MeshAttribute::Vertex::Position);
-						TEdgeAttributesRef<bool> EdgeHardnesses = MeshDescription->EdgeAttributes().GetAttributesRef<bool>(MeshAttribute::Edge::IsHard);
-						TEdgeAttributesRef<float> EdgeCreaseSharpnesses = MeshDescription->EdgeAttributes().GetAttributesRef<float>(MeshAttribute::Edge::CreaseSharpness);
-						TPolygonGroupAttributesRef<FName> PolygonGroupImportedMaterialSlotNames = MeshDescription->PolygonGroupAttributes().GetAttributesRef<FName>(MeshAttribute::PolygonGroup::ImportedMaterialSlotName);
-						TVertexInstanceAttributesRef<FVector> VertexInstanceNormals = MeshDescription->VertexInstanceAttributes().GetAttributesRef<FVector>(MeshAttribute::VertexInstance::Normal);
-						TVertexInstanceAttributesRef<FVector> VertexInstanceTangents = MeshDescription->VertexInstanceAttributes().GetAttributesRef<FVector>(MeshAttribute::VertexInstance::Tangent);
-						TVertexInstanceAttributesRef<float> VertexInstanceBinormalSigns = MeshDescription->VertexInstanceAttributes().GetAttributesRef<float>(MeshAttribute::VertexInstance::BinormalSign);
-						TVertexInstanceAttributesRef<FVector4> VertexInstanceColors = MeshDescription->VertexInstanceAttributes().GetAttributesRef<FVector4>(MeshAttribute::VertexInstance::Color);
-						TVertexInstanceAttributesRef<FVector2D> VertexInstanceUVs = MeshDescription->VertexInstanceAttributes().GetAttributesRef<FVector2D>(MeshAttribute::VertexInstance::TextureCoordinate);
+						TVertexAttributesRef<FVector> VertexPositions = Attributes.GetVertexPositions();
+						TEdgeAttributesRef<bool> EdgeHardnesses = Attributes.GetEdgeHardnesses();
+						TEdgeAttributesRef<float> EdgeCreaseSharpnesses = Attributes.GetEdgeCreaseSharpnesses();
+						TPolygonGroupAttributesRef<FName> PolygonGroupImportedMaterialSlotNames = Attributes.GetPolygonGroupMaterialSlotNames();
+						TVertexInstanceAttributesRef<FVector> VertexInstanceNormals = Attributes.GetVertexInstanceNormals();
+						TVertexInstanceAttributesRef<FVector> VertexInstanceTangents = Attributes.GetVertexInstanceTangents();
+						TVertexInstanceAttributesRef<float> VertexInstanceBinormalSigns = Attributes.GetVertexInstanceBinormalSigns();
+						TVertexInstanceAttributesRef<FVector4> VertexInstanceColors = Attributes.GetVertexInstanceColors();
+						TVertexInstanceAttributesRef<FVector2D> VertexInstanceUVs = Attributes.GetVertexInstanceUVs();
 
 						TMap<int32, FPolygonGroupID> MaterialToPolygonGroup;
 						for (int32 MatIndex = 0; MatIndex < StaticMesh->StaticMaterials.Num(); ++MatIndex)
 						{
-							const FPolygonGroupID& PolygonGroupID = MeshDescription->CreatePolygonGroup();
+							const FPolygonGroupID PolygonGroupID = MeshDescription->CreatePolygonGroup();
 							PolygonGroupImportedMaterialSlotNames[PolygonGroupID] = StaticMesh->StaticMaterials[MatIndex].ImportedMaterialSlotName;
 							MaterialToPolygonGroup.Add(MatIndex, PolygonGroupID);
 						}
@@ -1743,7 +1741,7 @@ UObject* USpeedTreeImportFactory::FactoryCreateBinary7(UClass* InClass, UObject*
 								
 								RenderStateIndexToStaticMeshIndex.Add(DrawCall->m_nRenderStateIndex, StaticMesh->StaticMaterials.Num());
 								MaterialIndex = StaticMesh->StaticMaterials.Add(FStaticMaterial(Material, FName(*MaterialName), FName(*MaterialName)));
-								const FPolygonGroupID& PolygonGroupID = MeshDescription->CreatePolygonGroup();
+								const FPolygonGroupID PolygonGroupID = MeshDescription->CreatePolygonGroup();
 								PolygonGroupImportedMaterialSlotNames[PolygonGroupID] = StaticMesh->StaticMaterials[MaterialIndex].ImportedMaterialSlotName;
 								MaterialToPolygonGroup.Add(MaterialIndex, PolygonGroupID);
 							}
@@ -1789,17 +1787,14 @@ UObject* USpeedTreeImportFactory::FactoryCreateBinary7(UClass* InClass, UObject*
 								for (int32 Corner = 0; Corner < 3; ++Corner)
 								{
 									//Create the vertex instances
-									CornerVertexInstanceIDs[Corner] = ProcessTriangleCorner( SpeedTree, TriangleIndex, Corner, DrawCall, Indices32, Indices16, MeshDescription, IndexOffset, NumUVs, RenderState,
+									CornerVertexInstanceIDs[Corner] = ProcessTriangleCorner( SpeedTree, TriangleIndex, Corner, DrawCall, Indices32, Indices16, *MeshDescription, IndexOffset, NumUVs, RenderState,
 										VertexInstanceNormals, VertexInstanceTangents, VertexInstanceBinormalSigns, VertexInstanceColors, VertexInstanceUVs);
 
 									CornerVertexIDs[Corner] = MeshDescription->GetVertexInstanceVertex(CornerVertexInstanceIDs[Corner]);
 								}
 
 								// Insert a polygon into the mesh
-								const FPolygonID NewPolygonID = MeshDescription->CreatePolygon(CurrentPolygonGroupID, CornerVertexInstanceIDs);
-								//Triangulate the polygon
-								FMeshPolygon& Polygon = MeshDescription->GetPolygon(NewPolygonID);
-								MeshDescription->ComputePolygonTriangulation(NewPolygonID, Polygon.Triangles);
+								MeshDescription->CreatePolygon(CurrentPolygonGroupID, CornerVertexInstanceIDs);
 							}
 						}
 
@@ -1809,16 +1804,16 @@ UObject* USpeedTreeImportFactory::FactoryCreateBinary7(UClass* InClass, UObject*
 						LODModel.BuildSettings.bUseHighPrecisionTangentBasis = false;
 						LODModel.BuildSettings.bUseFullPrecisionUVs = false;
 						LODModel.BuildSettings.bGenerateLightmapUVs = false;
-						LODModel.ScreenSize.Default = 0.1f / FMath::Pow(2.0f, StaticMesh->SourceModels.Num() - 1);
+						LODModel.ScreenSize.Default = 0.1f / FMath::Pow(2.0f, StaticMesh->GetNumSourceModels() - 1);
 						StaticMesh->CommitMeshDescription(LODIndex);
 
 						for (int32 MaterialIndex = 0; MaterialIndex < StaticMesh->StaticMaterials.Num(); ++MaterialIndex)
 						{
-							FMeshSectionInfo Info = StaticMesh->SectionInfoMap.Get(LODIndex, MaterialIndex);
+							FMeshSectionInfo Info = StaticMesh->GetSectionInfoMap().Get(LODIndex, MaterialIndex);
 							Info.MaterialIndex = MaterialIndex;
-							StaticMesh->SectionInfoMap.Set(LODIndex, MaterialIndex, Info);
+							StaticMesh->GetSectionInfoMap().Set(LODIndex, MaterialIndex, Info);
 						}
-						StaticMesh->OriginalSectionInfoMap.CopyFrom(StaticMesh->SectionInfoMap);
+						StaticMesh->GetOriginalSectionInfoMap().CopyFrom(StaticMesh->GetSectionInfoMap());
 					}
 				}
 
@@ -1826,26 +1821,26 @@ UObject* USpeedTreeImportFactory::FactoryCreateBinary7(UClass* InClass, UObject*
 				if (Options->SpeedTreeImportData->ImportGeometryType != EImportGeometryType::IGT_3D && SpeedTreeGeometry->m_sVertBBs.m_nNumBillboards > 0)
 				{
 					FStaticMeshSourceModel& LODModel = StaticMesh->AddSourceModel();
-					const int32 LODIndex = StaticMesh->SourceModels.Num() - 1;
+					const int32 LODIndex = StaticMesh->GetNumSourceModels() - 1;
 					FMeshDescription* MeshDescription = StaticMesh->CreateMeshDescription(LODIndex);
-					StaticMesh->RegisterMeshAttributes(*MeshDescription);
+					FStaticMeshAttributes Attributes(*MeshDescription);
 
-					TVertexAttributesRef<FVector> VertexPositions = MeshDescription->VertexAttributes().GetAttributesRef<FVector>(MeshAttribute::Vertex::Position);
-					TEdgeAttributesRef<bool> EdgeHardnesses = MeshDescription->EdgeAttributes().GetAttributesRef<bool>(MeshAttribute::Edge::IsHard);
-					TEdgeAttributesRef<float> EdgeCreaseSharpnesses = MeshDescription->EdgeAttributes().GetAttributesRef<float>(MeshAttribute::Edge::CreaseSharpness);
-					TPolygonGroupAttributesRef<FName> PolygonGroupImportedMaterialSlotNames = MeshDescription->PolygonGroupAttributes().GetAttributesRef<FName>(MeshAttribute::PolygonGroup::ImportedMaterialSlotName);
-					TVertexInstanceAttributesRef<FVector> VertexInstanceNormals = MeshDescription->VertexInstanceAttributes().GetAttributesRef<FVector>(MeshAttribute::VertexInstance::Normal);
-					TVertexInstanceAttributesRef<FVector> VertexInstanceTangents = MeshDescription->VertexInstanceAttributes().GetAttributesRef<FVector>(MeshAttribute::VertexInstance::Tangent);
-					TVertexInstanceAttributesRef<float> VertexInstanceBinormalSigns = MeshDescription->VertexInstanceAttributes().GetAttributesRef<float>(MeshAttribute::VertexInstance::BinormalSign);
-					TVertexInstanceAttributesRef<FVector4> VertexInstanceColors = MeshDescription->VertexInstanceAttributes().GetAttributesRef<FVector4>(MeshAttribute::VertexInstance::Color);
-					TVertexInstanceAttributesRef<FVector2D> VertexInstanceUVs = MeshDescription->VertexInstanceAttributes().GetAttributesRef<FVector2D>(MeshAttribute::VertexInstance::TextureCoordinate);
+					TVertexAttributesRef<FVector> VertexPositions = Attributes.GetVertexPositions();
+					TEdgeAttributesRef<bool> EdgeHardnesses = Attributes.GetEdgeHardnesses();
+					TEdgeAttributesRef<float> EdgeCreaseSharpnesses = Attributes.GetEdgeCreaseSharpnesses();
+					TPolygonGroupAttributesRef<FName> PolygonGroupImportedMaterialSlotNames = Attributes.GetPolygonGroupMaterialSlotNames();
+					TVertexInstanceAttributesRef<FVector> VertexInstanceNormals = Attributes.GetVertexInstanceNormals();
+					TVertexInstanceAttributesRef<FVector> VertexInstanceTangents = Attributes.GetVertexInstanceTangents();
+					TVertexInstanceAttributesRef<float> VertexInstanceBinormalSigns = Attributes.GetVertexInstanceBinormalSigns();
+					TVertexInstanceAttributesRef<FVector4> VertexInstanceColors = Attributes.GetVertexInstanceColors();
+					TVertexInstanceAttributesRef<FVector2D> VertexInstanceUVs = Attributes.GetVertexInstanceUVs();
 
 					//Speedtree use UVs to store is data
 					VertexInstanceUVs.SetNumIndices(2);
 
 					for (int32 MatIndex = 0; MatIndex < StaticMesh->StaticMaterials.Num(); ++MatIndex)
 					{
-						const FPolygonGroupID& PolygonGroupID = MeshDescription->CreatePolygonGroup();
+						const FPolygonGroupID PolygonGroupID = MeshDescription->CreatePolygonGroup();
 						PolygonGroupImportedMaterialSlotNames[PolygonGroupID] = StaticMesh->StaticMaterials[MatIndex].ImportedMaterialSlotName;
 					}
 
@@ -1853,7 +1848,7 @@ UObject* USpeedTreeImportFactory::FactoryCreateBinary7(UClass* InClass, UObject*
 					UMaterialInterface* Material = CreateSpeedTreeMaterial7(InParent, MaterialName, &SpeedTreeGeometry->m_aBillboardRenderStates[SpeedTree::RENDER_PASS_MAIN], Options, WindType, SpeedTreeGeometry->m_sVertBBs.m_nNumBillboards, LoadedPackages);
 					int32 MaterialIndex = StaticMesh->StaticMaterials.Add(FStaticMaterial(Material, FName(*MaterialName), FName(*MaterialName)));
 
-					const FPolygonGroupID& CurrentPolygonGroupID = MeshDescription->CreatePolygonGroup();
+					const FPolygonGroupID CurrentPolygonGroupID = MeshDescription->CreatePolygonGroup();
 					PolygonGroupImportedMaterialSlotNames[CurrentPolygonGroupID] = StaticMesh->StaticMaterials[MaterialIndex].ImportedMaterialSlotName;
 					
 					// fill out triangles
@@ -1945,10 +1940,7 @@ UObject* USpeedTreeImportFactory::FactoryCreateBinary7(UClass* InClass, UObject*
 							}
 
 							// Insert a polygon into the mesh
-							const FPolygonID NewPolygonID = MeshDescription->CreatePolygon(CurrentPolygonGroupID, CornerVertexInstanceIDs);
-							//Triangulate the polygon
-							FMeshPolygon& Polygon = MeshDescription->GetPolygon(NewPolygonID);
-							MeshDescription->ComputePolygonTriangulation(NewPolygonID, Polygon.Triangles);
+							MeshDescription->CreatePolygon(CurrentPolygonGroupID, CornerVertexInstanceIDs);
 						}
 					}
 
@@ -1958,13 +1950,13 @@ UObject* USpeedTreeImportFactory::FactoryCreateBinary7(UClass* InClass, UObject*
 					LODModel.BuildSettings.bUseHighPrecisionTangentBasis = false;
 					LODModel.BuildSettings.bUseFullPrecisionUVs = false;
 					LODModel.BuildSettings.bGenerateLightmapUVs = false;
-					LODModel.ScreenSize.Default = 0.1f / FMath::Pow(2.0f, StaticMesh->SourceModels.Num() - 1);
+					LODModel.ScreenSize.Default = 0.1f / FMath::Pow(2.0f, StaticMesh->GetNumSourceModels() - 1);
 					StaticMesh->CommitMeshDescription(LODIndex);
 					// Add mesh section info entry for billboard LOD (only one section/material index)
-					FMeshSectionInfo Info = StaticMesh->SectionInfoMap.Get(LODIndex, 0);
+					FMeshSectionInfo Info = StaticMesh->GetSectionInfoMap().Get(LODIndex, 0);
 					Info.MaterialIndex = MaterialIndex;
-					StaticMesh->SectionInfoMap.Set(LODIndex, 0, Info);
-					StaticMesh->OriginalSectionInfoMap.Set(LODIndex, MaterialIndex, Info);
+					StaticMesh->GetSectionInfoMap().Set(LODIndex, 0, Info);
+					StaticMesh->GetOriginalSectionInfoMap().Set(LODIndex, MaterialIndex, Info);
 				}
 
 				if (OldMaterials.Num() == StaticMesh->StaticMaterials.Num())
@@ -2093,9 +2085,9 @@ UObject* USpeedTreeImportFactory::FactoryCreateBinary8(UClass* InClass, UObject*
 		Cast<USpeedTreeImportData>(StaticMesh->AssetImportData)->CopyFrom(Options->SpeedTreeImportData);
 
 		// clear out any old data
-		StaticMesh->SectionInfoMap.Clear();
+		StaticMesh->GetSectionInfoMap().Clear();
 		StaticMesh->StaticMaterials.Empty();
-		if (StaticMesh->SourceModels.Num() != SpeedTree.Lods().Count())
+		if (StaticMesh->GetNumSourceModels() != SpeedTree.Lods().Count())
 		{
 			StaticMesh->SetNumSourceModels(0);
 			float Denominator = 1.0f / FMath::Max(1.0f, SpeedTree.Lods().Count() - 1.0f);
@@ -2160,17 +2152,17 @@ UObject* USpeedTreeImportFactory::FactoryCreateBinary8(UClass* InClass, UObject*
 			SpeedTree8::CLod LOD = SpeedTree.Lods()[LODIndex];
 			
 			FMeshDescription* MeshDescription = StaticMesh->CreateMeshDescription(LODIndex);
-			StaticMesh->RegisterMeshAttributes(*MeshDescription);
+			FStaticMeshAttributes Attributes(*MeshDescription);
 
-			TVertexAttributesRef<FVector> VertexPositions = MeshDescription->VertexAttributes().GetAttributesRef<FVector>(MeshAttribute::Vertex::Position);
-			TEdgeAttributesRef<bool> EdgeHardnesses = MeshDescription->EdgeAttributes().GetAttributesRef<bool>(MeshAttribute::Edge::IsHard);
-			TEdgeAttributesRef<float> EdgeCreaseSharpnesses = MeshDescription->EdgeAttributes().GetAttributesRef<float>(MeshAttribute::Edge::CreaseSharpness);
-			TPolygonGroupAttributesRef<FName> PolygonGroupImportedMaterialSlotNames = MeshDescription->PolygonGroupAttributes().GetAttributesRef<FName>(MeshAttribute::PolygonGroup::ImportedMaterialSlotName);
-			TVertexInstanceAttributesRef<FVector> VertexInstanceNormals = MeshDescription->VertexInstanceAttributes().GetAttributesRef<FVector>(MeshAttribute::VertexInstance::Normal);
-			TVertexInstanceAttributesRef<FVector> VertexInstanceTangents = MeshDescription->VertexInstanceAttributes().GetAttributesRef<FVector>(MeshAttribute::VertexInstance::Tangent);
-			TVertexInstanceAttributesRef<float> VertexInstanceBinormalSigns = MeshDescription->VertexInstanceAttributes().GetAttributesRef<float>(MeshAttribute::VertexInstance::BinormalSign);
-			TVertexInstanceAttributesRef<FVector4> VertexInstanceColors = MeshDescription->VertexInstanceAttributes().GetAttributesRef<FVector4>(MeshAttribute::VertexInstance::Color);
-			TVertexInstanceAttributesRef<FVector2D> VertexInstanceUVs = MeshDescription->VertexInstanceAttributes().GetAttributesRef<FVector2D>(MeshAttribute::VertexInstance::TextureCoordinate);
+			TVertexAttributesRef<FVector> VertexPositions = Attributes.GetVertexPositions();
+			TEdgeAttributesRef<bool> EdgeHardnesses = Attributes.GetEdgeHardnesses();
+			TEdgeAttributesRef<float> EdgeCreaseSharpnesses = Attributes.GetEdgeCreaseSharpnesses();
+			TPolygonGroupAttributesRef<FName> PolygonGroupImportedMaterialSlotNames = Attributes.GetPolygonGroupMaterialSlotNames();
+			TVertexInstanceAttributesRef<FVector> VertexInstanceNormals = Attributes.GetVertexInstanceNormals();
+			TVertexInstanceAttributesRef<FVector> VertexInstanceTangents = Attributes.GetVertexInstanceTangents();
+			TVertexInstanceAttributesRef<float> VertexInstanceBinormalSigns = Attributes.GetVertexInstanceBinormalSigns();
+			TVertexInstanceAttributesRef<FVector4> VertexInstanceColors = Attributes.GetVertexInstanceColors();
+			TVertexInstanceAttributesRef<FVector2D> VertexInstanceUVs = Attributes.GetVertexInstanceUVs();
 
 			//Speedtree use 8 UVs to store is data
 			VertexInstanceUVs.SetNumIndices(8);
@@ -2222,9 +2214,9 @@ UObject* USpeedTreeImportFactory::FactoryCreateBinary8(UClass* InClass, UObject*
 				const int32 MaterialIndex = MaterialMap[MaterialKey];
 				const FPolygonGroupID CurrentPolygonGroupID(MaterialIndex);
 
-				FMeshSectionInfo Info = StaticMesh->SectionInfoMap.Get(LODIndex, DrawCallIndex);
+				FMeshSectionInfo Info = StaticMesh->GetSectionInfoMap().Get(LODIndex, DrawCallIndex);
 				Info.MaterialIndex = MaterialIndex;
-				StaticMesh->SectionInfoMap.Set(LODIndex, DrawCallIndex, Info);
+				StaticMesh->GetSectionInfoMap().Set(LODIndex, DrawCallIndex, Info);
 
 				int32 TriangleCount = DrawCall.m_uiIndexCount / 3;
 				for (int32 TriangleIndex = 0; TriangleIndex < TriangleCount; ++TriangleIndex)
@@ -2329,10 +2321,7 @@ UObject* USpeedTreeImportFactory::FactoryCreateBinary8(UClass* InClass, UObject*
 					}
 
 					// Insert a polygon into the mesh
-					const FPolygonID NewPolygonID = MeshDescription->CreatePolygon(CurrentPolygonGroupID, CornerVertexInstanceIDs);
-					//Triangulate the polygon
-					FMeshPolygon& Polygon = MeshDescription->GetPolygon(NewPolygonID);
-					MeshDescription->ComputePolygonTriangulation(NewPolygonID, Polygon.Triangles);
+					MeshDescription->CreatePolygon(CurrentPolygonGroupID, CornerVertexInstanceIDs);
 				}
 			}
 

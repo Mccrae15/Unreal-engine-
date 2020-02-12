@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "Collection.h"
 #include "HAL/PlatformTime.h"
@@ -122,13 +122,13 @@ bool FCollection::Load(FText& OutError)
 	if (StorageMode == ECollectionStorageMode::Static)
 	{
 		// Static collection, a flat list of asset paths
-		for (FString Line : FileContents)
+		for (FString& Line : FileContents)
 		{
 			Line.TrimStartAndEndInline();
 
-			if ( Line.Len() )
+			if ( int32 Len = Line.Len() )
 			{
-				AddObjectToCollection(FName(*Line));
+				AddObjectToCollection(FName(Len, *Line));
 			}
 		}
 	}
@@ -194,7 +194,7 @@ bool FCollection::Save(const TArray<FText>& AdditionalChangelistText, FText& Out
 	{
 		// Write out the set as a sorted array to keep things in a known order for diffing
 		TArray<FName> ObjectList = ObjectSet.Array();
-		ObjectList.Sort();
+		ObjectList.Sort(FNameLexicalLess());
 
 		// Static collection. Save a flat list of all objects in the collection.
 		for (const FName& ObjectName : ObjectList)
@@ -398,10 +398,16 @@ void FCollection::Empty()
 
 bool FCollection::AddObjectToCollection(FName ObjectPath)
 {
-	if (StorageMode == ECollectionStorageMode::Static && !ObjectSet.Contains(ObjectPath))
+	if (ObjectPath.IsNone())
 	{
-		ObjectSet.Add(ObjectPath);
-		return true;
+		return false;
+	}
+
+	if (StorageMode == ECollectionStorageMode::Static)
+	{
+		bool bAlreadyInSet = false;
+		ObjectSet.Add(ObjectPath, &bAlreadyInSet);
+		return !bAlreadyInSet;
 	}
 
 	return false;
@@ -409,6 +415,11 @@ bool FCollection::AddObjectToCollection(FName ObjectPath)
 
 bool FCollection::RemoveObjectFromCollection(FName ObjectPath)
 {
+	if (ObjectPath.IsNone())
+	{
+		return false;
+	}
+
 	if (StorageMode == ECollectionStorageMode::Static)
 	{
 		return ObjectSet.Remove(ObjectPath) > 0;
@@ -541,6 +552,11 @@ bool FCollection::IsDirty() const
 		return true;
 	}
 	
+	if (CollectionColor != DiskSnapshot.CollectionColor)
+	{
+		return true;
+	}
+
 	bool bHasChanges = false;
 
 	if (StorageMode == ECollectionStorageMode::Static)
@@ -580,7 +596,7 @@ void FCollection::PrintCollection() const
 
 		// Print the set as a sorted array to keep things in a sane order
 		TArray<FName> ObjectList = ObjectSet.Array();
-		ObjectList.Sort();
+		ObjectList.Sort(FNameLexicalLess());
 
 		for (const FName& ObjectName : ObjectList)
 		{
@@ -602,6 +618,10 @@ void FCollection::SaveHeaderPairs(TMap<FString,FString>& OutHeaderPairs) const
 	OutHeaderPairs.Add(TEXT("Type"), ECollectionStorageMode::ToString(StorageMode));
 	OutHeaderPairs.Add(TEXT("Guid"), CollectionGuid.ToString(EGuidFormats::DigitsWithHyphens));
 	OutHeaderPairs.Add(TEXT("ParentGuid"), ParentCollectionGuid.ToString(EGuidFormats::DigitsWithHyphens));
+	if (CollectionColor)
+	{
+		OutHeaderPairs.Add(TEXT("Color"), CollectionColor->ToString());
+	}
 }
 
 bool FCollection::LoadHeaderPairs(const TMap<FString,FString>& InHeaderPairs)
@@ -639,6 +659,17 @@ bool FCollection::LoadHeaderPairs(const TMap<FString,FString>& InHeaderPairs)
 		if ( !ParentGuidStr || !FGuid::Parse(*ParentGuidStr, ParentCollectionGuid) )
 		{
 			ParentCollectionGuid = FGuid();
+		}
+	}
+
+	// Load the optional color
+	CollectionColor.Reset();
+	if (const FString* ColorStr = InHeaderPairs.Find(TEXT("Color")))
+	{
+		FLinearColor NewColor;
+		if (NewColor.InitFromString(*ColorStr))
+		{
+			CollectionColor = MoveTemp(NewColor);
 		}
 	}
 
@@ -902,8 +933,8 @@ bool FCollection::CheckinCollection(const TArray<FText>& AdditionalChangelistTex
 			TArray<FName> ObjectsRemoved;
 			GetObjectDifferencesFromDisk(ObjectsAdded, ObjectsRemoved);
 
-			ObjectsAdded.Sort();
-			ObjectsRemoved.Sort();
+			ObjectsAdded.Sort(FNameLexicalLess());
+			ObjectsRemoved.Sort(FNameLexicalLess());
 
 			// Report added files
 			FFormatNamedArguments Args;
@@ -957,6 +988,12 @@ bool FCollection::CheckinCollection(const TArray<FText>& AdditionalChangelistTex
 		if (DiskSnapshot.ParentCollectionGuid != ParentCollectionGuid)
 		{
 			ChangelistDescBuilder.AppendLineFormat(LOCTEXT("CollectionChangedParentDesc", "Changed the parent of collection '{0}'"), CollectionNameText);
+		}
+
+		// Color change?
+		if (DiskSnapshot.CollectionColor != CollectionColor)
+		{
+			ChangelistDescBuilder.AppendLineFormat(LOCTEXT("CollectionChangedColorDesc", "Changed the color of collection '{0}'"), CollectionNameText);
 		}
 
 		// Version bump?

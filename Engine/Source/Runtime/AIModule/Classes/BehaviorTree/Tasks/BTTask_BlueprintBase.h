@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -49,11 +49,21 @@ protected:
 	UPROPERTY(Transient)
 	AActor* ActorOwner;
 
+	/** If any of the Tick functions is implemented, how ofter should they be ticked.
+	 *	Values < 0 mean 'every tick'. */
+	UPROPERTY(EditAnywhere, Category = Task)
+	FIntervalCountdown TickInterval;
+	
 	/** temporary variable for ReceiveExecute(Abort)-FinishExecute(Abort) chain */
 	mutable TEnumAsByte<EBTNodeResult::Type> CurrentCallResult;
 
 	/** properties that should be copied */
-	TArray<UProperty*> PropertyData;
+	TArray<FProperty*> PropertyData;
+
+#if WITH_EDITORONLY_DATA
+	UPROPERTY(EditDefaultsOnly, BlueprintReadWrite, Category = Description)
+	FString CustomDescription;
+#endif // WITH_EDITORONLY_DATA
 
 	/** show detailed information about properties */
 	UPROPERTY(EditInstanceOnly, Category=Description)

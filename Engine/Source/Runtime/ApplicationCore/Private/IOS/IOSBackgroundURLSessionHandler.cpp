@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "IOS/IOSBackgroundURLSessionHandler.h"
 #include "Misc/ConfigCacheIni.h"
@@ -13,12 +13,16 @@ FIOSBackgroundDownloadCoreDelegates::FIOSBackgroundDownload_DidFinishDownloading
 FIOSBackgroundDownloadCoreDelegates::FIOSBackgroundDownload_DidWriteData FIOSBackgroundDownloadCoreDelegates::OnIOSBackgroundDownload_DidWriteData;
 FIOSBackgroundDownloadCoreDelegates::FIOSBackgroundDownload_DidCompleteWithError FIOSBackgroundDownloadCoreDelegates::OnIOSBackgroundDownload_DidCompleteWithError;
 FIOSBackgroundDownloadCoreDelegates::FIOSBackgroundDownload_SessionDidFinishAllEvents FIOSBackgroundDownloadCoreDelegates::OnIOSBackgroundDownload_SessionDidFinishAllEvents;
+FIOSBackgroundDownloadCoreDelegates::FIOSBackgroundDownload_DelayedBackgroundURLSessionCompleteHandler FIOSBackgroundDownloadCoreDelegates::OnDelayedBackgroundURLSessionCompleteHandler;
 
 NSURLSession* FBackgroundURLSessionHandler::BackgroundSession = nil;
 FString FBackgroundURLSessionHandler::CachedIdentifierName = FString();
+volatile int32 FBackgroundURLSessionHandler::DelayedBackgroundURLSessionCompleteCount = 0;
 
 bool FBackgroundURLSessionHandler::InitBackgroundSession(const FString& SessionIdentifier)
 {
+	FIOSBackgroundDownloadCoreDelegates::OnDelayedBackgroundURLSessionCompleteHandler.BindStatic(&FBackgroundURLSessionHandler::OnDelayedBackgroundURLSessionCompleteHandlerCalled);
+	
 	bool bHasSessionWithIdentifier = false;
 
 	if (!SessionIdentifier.IsEmpty())
@@ -102,9 +106,9 @@ NSURLSession* FBackgroundURLSessionHandler::GetBackgroundSession()
 
 void FBackgroundURLSessionHandler::CreateBackgroundSessionWorkingDirectory()
 {
-	const FString DirectoryPath = GetBackgroundSessionWorkingDirectoryPath();
+	const FString& DirectoryPath = GetBackgroundSessionWorkingDirectoryPath();
     
-	if (!DirectoryPath.IsEmpty())
+	if (ensureAlwaysMsgf(!DirectoryPath.IsEmpty(), TEXT("Invalid empty BackgroundSessionWorkingDirectoryPath!")))
 	{
         IPlatformFile& PlatformFile = FPlatformFileManager::Get().GetPlatformFile();
         PlatformFile.CreateDirectory(*DirectoryPath);
@@ -113,22 +117,72 @@ void FBackgroundURLSessionHandler::CreateBackgroundSessionWorkingDirectory()
         {
             NSString* PathAsNSString = DirectoryPath.GetNSString();
             //May not yet have UE_Log
-            NSLog(@"Warning: Error in CreateBackgroundSessionWorkingDirectory: %s", [PathAsNSString UTF8String]);
+            ensureAlwaysMsgf(false, TEXT("Warning: Error in CreateBackgroundSessionWorkingDirectory: %s"), [PathAsNSString UTF8String]);
         }
 	}
 }
 
-FString FBackgroundURLSessionHandler::GetBackgroundSessionWorkingDirectoryPath()
+const FString& FBackgroundURLSessionHandler::GetBackgroundSessionWorkingDirectoryPath()
 {
-	return FPaths::Combine(FPlatformMisc::GamePersistentDownloadDir(), TEXT("BackgroundHttp"));
+    static FString BackgroundHttpDir = FPaths::Combine(FPlatformMisc::GamePersistentDownloadDir(), TEXT("BackgroundHttp"));
+	return BackgroundHttpDir;
 }
 
 const FString FBackgroundURLSessionHandler::GetTemporaryFilePathFromURL(const FString& URL)
 {
-	static FString BackgroundHttpDir = GetBackgroundSessionWorkingDirectoryPath();
+	const FString& BackgroundHttpDir = GetBackgroundSessionWorkingDirectoryPath();
 	const FString FileName = FPaths::MakeValidFileName(URL);
 
 	return FPaths::Combine(BackgroundHttpDir, FileName);
+}
+
+void FBackgroundURLSessionHandler::CallBackgroundURLSessionCompleteHandler()
+{
+	NSLog(@"OnIOSBackgroundDownload_SessionDidFinishAllEvents Delegates ALL Finshed. Attempting to callback into iOS to inform session work is finished.");
+	
+	IOSAppDelegate* AppDelegate = [IOSAppDelegate GetDelegate];
+	
+	if ((nullptr != AppDelegate) && (nil != AppDelegate.BackgroundSessionEventCompleteDelegate))
+	{
+		//make a local copy of the completion handler to capture with the block
+		void(^completionHandler)() = AppDelegate.BackgroundSessionEventCompleteDelegate;
+		[completionHandler retain];
+		
+		//set the completion handler to nil to protect from anything else trying to use it
+		AppDelegate.BackgroundSessionEventCompleteDelegate = nil;
+		
+	   //Need to issue our stored completion callback on main thread as its a UI callback
+		[[NSOperationQueue mainQueue] addOperationWithBlock:^{
+	
+			//call the copied completion handler
+			 NSLog(@"OnIOSBackgroundDownload_SessionDidFinishAllEvents Calling iOS Completion handler.");
+			 completionHandler();
+			
+			//Release local copy so we don't leak the completion handler
+			[completionHandler release];
+		}];
+	}
+	else
+	{
+		NSLog(@"Error: OnIOSBackgroundDownload_SessionDidFinishAllEvents Can not call iOS Completion Handler as it has not been set correctly! AppDelegate:");
+		ensureAlwaysMsgf(false, TEXT("Error! CallBackgroundURLSessionCompleteHandler can not call into our iOS completionHandler from handleEventsForBackgroundURLSession. Likely stored incorrectly!"));
+	}
+}
+
+void FBackgroundURLSessionHandler::AddDelayedBackgroundURLSessionComplete()
+{
+	FPlatformAtomics::InterlockedIncrement(&DelayedBackgroundURLSessionCompleteCount);
+}
+
+void FBackgroundURLSessionHandler::OnDelayedBackgroundURLSessionCompleteHandlerCalled()
+{
+	int NewDecrementedCount = FPlatformAtomics::InterlockedDecrement(&DelayedBackgroundURLSessionCompleteCount);
+	NSLog(@"OnIOSBackgroundDownload_SessionDidFinishAllEvents Delegate Finshed. Still pending: %d", NewDecrementedCount);
+	
+	if (NewDecrementedCount == 0)
+	{
+		CallBackgroundURLSessionCompleteHandler();
+	}
 }
 
 @implementation BackgroundDownloadDelegate
@@ -152,7 +206,8 @@ const FString FBackgroundURLSessionHandler::GetTemporaryFilePathFromURL(const FS
         FString ConvertedPath = PlatformFile.ConvertToAbsolutePathForExternalAppForWrite(*DestinationPath);
         
 		destinationURL = [NSURL fileURLWithPath:ConvertedPath.GetNSString()];
-
+        NSLog(@"Attempting to move iOS temp file to BackgroundHttp temp folder | iOSLocation:%s | DestinationLocation:%s", [[location path] UTF8String], [DestinationPath.GetNSString() UTF8String]);
+        
 		[[NSFileManager defaultManager] moveItemAtURL:location toURL:destinationURL error:&downloadError];
 	}
     
@@ -174,29 +229,42 @@ const FString FBackgroundURLSessionHandler::GetTemporaryFilePathFromURL(const FS
 
 -(void)URLSessionDidFinishEventsForBackgroundURLSession:(NSURLSession *)session;
 {
-	//First process other systems doing things for all events processing on URL Session
-	FIOSBackgroundDownloadCoreDelegates::OnIOSBackgroundDownload_SessionDidFinishAllEvents.Broadcast(session);
-
-    IOSAppDelegate* AppDelegate = [IOSAppDelegate GetDelegate];
-    
-    if ((nullptr != AppDelegate) && (nil != AppDelegate.BackgroundSessionEventCompleteDelegate))
-    {
-        //make a local copy of the completion handler to capture with the block
-        void(^completionHandler)() = AppDelegate.BackgroundSessionEventCompleteDelegate;
-        [completionHandler retain];
-        
-        //set the completion handler to nil to protect from anything else trying to use it
-        AppDelegate.BackgroundSessionEventCompleteDelegate = nil;
-        
-       //Need to issue our stored completion callback on main thread as its a UI callback
-        [[NSOperationQueue mainQueue] addOperationWithBlock:^{
-            //call the copied completion handler
-            completionHandler();
-            
-            //Release local copy so we don't leak the completion handler
-            [completionHandler release];
-        }];
-    }
+	//Check if we have this delegate setup. If not our app may have not been loaded or we were evicted.
+	const bool bHasURLSessionDelegateBeenSetup = FIOSBackgroundDownloadCoreDelegates::OnIOSBackgroundDownload_SessionDidFinishAllEvents.IsBound();
+	
+	if (bHasURLSessionDelegateBeenSetup)
+	{
+		NSLog(@"Calling into OnIOSBackgroundDownload_SessionDidFinishAllEvents Waiting for Delegates to complete.");
+		
+		//We call this here and then the completion handler ourselves below this. That way we delay the complete until all systems responding to this delegate have received the broadcast.
+		FBackgroundURLSessionHandler::AddDelayedBackgroundURLSessionComplete();
+		
+		//First process other systems doing things for all events processing on URL Session
+		FIOSBackgroundDownloadCoreDelegates::OnIOSBackgroundDownload_SessionDidFinishAllEvents.Broadcast(session, FIOSBackgroundDownloadCoreDelegates::OnDelayedBackgroundURLSessionCompleteHandler);
+		
+		//Now call the completion handler to erase the delay we had above
+		FBackgroundURLSessionHandler::OnDelayedBackgroundURLSessionCompleteHandlerCalled();
+	}
+	//Handle restarting any suspended tasks. These can exist because we didn't resume these before our app was evicted.
+	else
+	{
+		NSLog(@"Resuming all tasks regardless of request state as we have no registered handler of OnIOSBackgroundDownload_SessionDidFinishAllEvents");
+		
+		[session getTasksWithCompletionHandler : ^ (NSArray<__kindof NSURLSessionDataTask*>* DataTasks, NSArray<__kindof NSURLSessionUploadTask*>* UploadTasks, NSArray<__kindof NSURLSessionDownloadTask*>* DownloadTasks)
+		{
+			for (NSURLSessionDownloadTask* DownloadTask : DownloadTasks)
+			{
+				if ([DownloadTask state] == NSURLSessionTaskStateSuspended)
+				{
+					NSLog(@"Resuming Task for URL:%s", [[[[DownloadTask currentRequest] URL] absoluteString] UTF8String]);
+					[DownloadTask resume];
+				}
+			}
+			
+			//Go ahead and call the completion handler now that we have resumed everything.
+			FBackgroundURLSessionHandler::OnDelayedBackgroundURLSessionCompleteHandlerCalled();
+		}];
+	}
 }
 
 @end

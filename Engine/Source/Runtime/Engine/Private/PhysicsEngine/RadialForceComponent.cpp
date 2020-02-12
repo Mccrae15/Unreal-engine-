@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "PhysicsEngine/RadialForceComponent.h"
 #include "UObject/ConstructorHelpers.h"
@@ -37,7 +37,7 @@ void URadialForceComponent::TickComponent(float DeltaTime, enum ELevelTick TickT
 {
 	Super::TickComponent(DeltaTime, TickType, ThisTickFunction);
 
-	if(bIsActive)
+	if(IsActive())
 	{
 		const FVector Origin = GetComponentLocation();
 
@@ -244,9 +244,7 @@ ARadialForceActor::ARadialForceActor(const FObjectInitializer& ObjectInitializer
 #endif // WITH_EDITORONLY_DATA
 		}
 
-		SpriteComponent->RelativeScale3D.X = 0.5f;
-		SpriteComponent->RelativeScale3D.Y = 0.5f;
-		SpriteComponent->RelativeScale3D.Z = 0.5f;
+		SpriteComponent->SetRelativeScale3D(FVector(0.5f, 0.5f, 0.5f));
 		SpriteComponent->SetupAttachment(ForceComponent);
 		SpriteComponent->bIsScreenSizeScaled = true;
 	}

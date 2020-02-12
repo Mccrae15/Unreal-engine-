@@ -1,4 +1,4 @@
-﻿// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+﻿// Copyright Epic Games, Inc. All Rights Reserved.
 
 
 using System;
@@ -22,7 +22,7 @@ namespace nDisplayLauncher.Cluster
 	{
 		// Current configuration version (config file format)
 		// NOTE: Don't forget to update this value with newer version.
-		public const ConfigurationVersion CurrentVersion = ConfigurationVersion.Ver22;
+		public const ConfigurationVersion CurrentVersion = ConfigurationVersion.Ver23;
 
 		// net
 		public static int DefaultListenerPort = 41000;
@@ -40,6 +40,7 @@ namespace nDisplayLauncher.Cluster
 
 		private const string ArgConfig = "dc_cfg";
 		private const string ArgNode   = "dc_node";
+		private const string ArgGpu    = "dc_gpu";
 
 		// switches
 		private const string ArgFullscreen           = "-fullscreen";
@@ -58,7 +59,6 @@ namespace nDisplayLauncher.Cluster
 		#region Launcher_Params
 		private Dictionary<string, string> _RenderApiParams = new Dictionary<string, string>
 		{
-			{"OpenGL4",    "-opengl4" },
 			{"DirectX 11", "-dx11" },
 			{"DirectX 12", "-dx12" }
 		};
@@ -68,7 +68,7 @@ namespace nDisplayLauncher.Cluster
 			set { Set(ref _RenderApiParams, value, "RenderApiParams"); }
 		}
 
-		// Selected OpenGL parameter
+		// Selected RHI parameter
 		private KeyValuePair<string, string> _SelectedRenderApiParam;
 		public KeyValuePair<string, string> SelectedRenderApiParam
 		{
@@ -582,9 +582,8 @@ namespace nDisplayLauncher.Cluster
 			return ResponseCode;
 		}
 
-		private int SendClusterCommand(string nodeAddress, int port, string cmd, bool bQuiet = false)
+		private void SendClusterCommand(string nodeAddress, int port, string cmd, bool bQuiet = false)
 		{
-			int ResponseCode = 1;
 			TcpClient nodeClient = new TcpClient();
 
 			if (!bQuiet)
@@ -599,23 +598,11 @@ namespace nDisplayLauncher.Cluster
 				NetworkStream networkStream = nodeClient.GetStream();
 
 				byte[] OutData = ASCIIEncoding.ASCII.GetBytes(cmd);
-				byte[] OutSize = BitConverter.GetBytes((short)OutData.Length);
+				byte[] OutSize = BitConverter.GetBytes((Int32)OutData.Length);
 
 				networkStream.Write(OutSize, 0, OutSize.Length);
 				networkStream.Write(OutData, 0, OutData.Length);
 				AppLogger.Log("Event sent");
-
-				byte[] InLength = new byte[2];
-				int InBytesCount = networkStream.Read(InLength, 0, 2);
-				AppLogger.Log("Received " + InBytesCount + " bytes");
-
-				int MessageSize = InLength[0] + ((UInt16)InLength[1] << 8);
-				byte[] InData = new byte[MessageSize];
-				InBytesCount = networkStream.Read(InData, 0, MessageSize);
-				AppLogger.Log("Received " + InBytesCount + " bytes");
-
-				string Response = ASCIIEncoding.ASCII.GetString(InData, 0, InBytesCount);
-				AppLogger.Log("Response " + Response);
 			}
 			catch (Exception ex)
 			{
@@ -628,8 +615,6 @@ namespace nDisplayLauncher.Cluster
 			{
 				nodeClient.Close();
 			}
-
-			return ResponseCode;
 		}
 
 		public void AddApplication(string appPath)

@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 using System;
 using System.Collections.Generic;
 using System.IO;
@@ -37,8 +37,6 @@ public enum ProjectBuildTargets
 /// </remarks>
 public partial class Project : CommandUtils
 {
-	#region Build Command
-
 	/// <summary>
 	/// PlatformSupportsCrashReporter
 	/// </summary>
@@ -54,25 +52,6 @@ public partial class Project : CommandUtils
 			);
 	}
 
-	static Mutex DSBlockMutex = null;
-
-	static void CreateDeploymentServerMutex()
-	{
-		bool bCreatedMutex = false;
-		String MutexName = "Global\\DeploymentServer_Mutex_RestartNotAllowed";
-		DSBlockMutex = new Mutex(true, MutexName, out bCreatedMutex); // we don'e really care if ia already created here, we just want it to be active when we're building
-	}
-
-	static void CloseDeploymentServerMutex()
-	{
-		// Release the mutex to avoid the abandoned mutex timeout.
-		if (DSBlockMutex != null)
-		{
-			DSBlockMutex.ReleaseMutex();
-			DSBlockMutex.Dispose();
-			DSBlockMutex = null;
-		}
-	}
 
 	public static void Build(BuildCommand Command, ProjectParams Params, int WorkingCL = -1, ProjectBuildTargets TargetMask = ProjectBuildTargets.All)
 	{
@@ -108,6 +87,7 @@ public partial class Project : CommandUtils
 				if (Params.EditorTargets.Contains("UnrealHeaderTool") == false)
 				{
 					Agenda.AddTargets(new string[] { "UnrealHeaderTool" }, EditorPlatform, EditorConfiguration);
+					Agenda.AddTargets(new string[] { "UnrealHeaderTool" }, EditorPlatform, EditorConfiguration, Params.CodeBasedUprojectPath);
 				}
 				if (Params.EditorTargets.Contains("ShaderCompileWorker") == false)
 				{
@@ -126,7 +106,7 @@ public partial class Project : CommandUtils
 		UniquePlatforms.UnionWith(Params.ServerTargetPlatforms.Select(x => x.Type));
 		foreach (UnrealTargetPlatform TargetPlatform in UniquePlatforms)
 		{
-			Platform.GetPlatform(TargetPlatform).PreBuildAgenda(UE4Build, Agenda);
+			Platform.GetPlatform(TargetPlatform).PreBuildAgenda(UE4Build, Agenda, Params);
 		}
 
 		// Build any tools we need to stage
@@ -143,7 +123,10 @@ public partial class Project : CommandUtils
 
 		if (string.IsNullOrEmpty(Params.UbtArgs) == false)
 		{
-			AdditionalArgs += " " + Params.UbtArgs;
+			string Arg = Params.UbtArgs;
+			Arg = Arg.TrimStart(new char[] { '\"' });
+			Arg = Arg.TrimEnd(new char[] { '\"' });
+			AdditionalArgs += " " + Arg;
 		}
 
 		if (Params.MapFile)
@@ -154,6 +137,11 @@ public partial class Project : CommandUtils
 		if (Params.Deploy || Params.Package)
 		{
 			AdditionalArgs += " -skipdeploy"; // skip deploy step in UBT if we going to do it later anyway
+		}
+
+		if (Params.Distribution)
+		{
+			AdditionalArgs += " -distribution";
 		}
 
 		// Config overrides (-ini)
@@ -223,9 +211,7 @@ public partial class Project : CommandUtils
 				}
 			}
 		}
-		CreateDeploymentServerMutex();
 		UE4Build.Build(Agenda, InDeleteBuildProducts: Params.Clean, InUpdateVersionFiles: WorkingCL > 0);
-		CloseDeploymentServerMutex();
 
 		if (WorkingCL > 0) // only move UAT files if we intend to check in some build products
 		{
@@ -244,6 +230,4 @@ public partial class Project : CommandUtils
 
 		LogInformation("********** BUILD COMMAND COMPLETED **********");
 	}
-
-	#endregion
 }

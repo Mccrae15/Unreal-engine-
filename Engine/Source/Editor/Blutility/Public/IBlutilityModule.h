@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -15,8 +15,8 @@ class IBlutilityModule : public IModuleInterface
 {
 public:
 
-	/** Returns if the blueprint is blutility based */
-	virtual bool IsBlutility( const UBlueprint* Blueprint ) const = 0;
+	/** Returns if the blueprint is an editor utility blueprint or widget */
+	virtual bool IsEditorUtilityBlueprint( const UBlueprint* Blueprint ) const = 0;
 
 	/** Global Find Results workspace menu item */
 	virtual TSharedPtr<class FWorkspaceItem> GetMenuGroup() const = 0;

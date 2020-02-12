@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 // Copyright 2016 Magic Leap, Inc. All Rights Reserved.
 
 /*=============================================================================================
@@ -7,6 +7,16 @@ Lumin platform File functions
 
 #pragma once
 #include "GenericPlatform/GenericPlatformFile.h"
+
+struct CORE_API FLuminFileInfo
+{
+public:
+	FLuminFileInfo();
+
+	FString MimeType;
+	FString FileName;
+	IFileHandle* FileHandle;
+};
 
 /**
  * File I/O implementation
@@ -70,16 +80,33 @@ public:
 
 	FString ConvertToLuminPath(const FString& Filename, bool bForWrite) const;
 
+	/**
+		Return a IFileHandle pointer to read the user shared file (file descriptor recieved from ml_sharedfile api).
+		@param FileName Name of the shared file to read.
+		@return IFileHandle pointer to read the file. If the application does not have user permission to access the file, nullptr will be returned.
+	*/
+	IFileHandle* SharedFileOpenRead(const TCHAR* Filename);
+
+	/**
+		Return a IFileHandle pointer to write the user shared file (file descriptor recieved from ml_sharedfile api)..
+		@param FileName Name of the shared file to write to. Needs to just be a file name, cannot be a path.
+		@return IFileHandle pointer to read the file. If the application does not have user permission to access the file, nullptr will be returned.
+	*/
+	IFileHandle* SharedFileOpenWrite(const TCHAR* Filename);
+
+	IFileHandle* GetFileHandleForMLFileInfo(const void* FileInfo);
+	bool SetMLFileInfoFD(const IFileHandle* FileHandle, void* FileInfo);
+
 protected:
 	bool IterateDirectoryCommon(const TCHAR* Directory, const TFunctionRef<bool(struct dirent*)>& Visitor);
 	bool bIsSandboxEnabled = true;
 
 private:
-	bool FileExistsCaseInsensitive(const FString& NormalizedFilename) const;
-	int64 FileSizeCaseInsensitive(const FString& NormalizedFilename) const;
-	bool IsReadOnlyCaseInsensitive(const FString& NormalizedFilename) const;
-	FDateTime GetTimeStampCaseInsensitive(const FString& NormalizedFilename) const;
-	FDateTime GetAccessTimeStampCaseInsensitive(const FString& NormalizedFilename) const;
-	FFileStatData GetStatDataCaseInsensitive(const FString& NormalizedFilename, bool& bFound) const;
-	bool DirectoryExistsCaseInsensitive(const FString& NormalizedFilename) const;
+	bool FileExistsInternal(const FString& NormalizedFilename) const;
+	int64 FileSizeInterenal(const FString& NormalizedFilename) const;
+	bool IsReadOnlyInternal(const FString& NormalizedFilename) const;
+	FDateTime GetTimeStampInternal(const FString& NormalizedFilename) const;
+	FDateTime GetAccessTimeStampInternal(const FString& NormalizedFilename) const;
+	FFileStatData GetStatDataInternal(const FString& NormalizedFilename, bool& bFound) const;
+	bool DirectoryExistsInternal(const FString& NormalizedFilename) const;
 };

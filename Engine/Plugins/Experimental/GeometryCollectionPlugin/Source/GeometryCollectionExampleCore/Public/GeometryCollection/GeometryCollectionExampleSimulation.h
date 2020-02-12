@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 #pragma once
 
 #include "GeometryCollection/GeometryCollectionExample.h"
@@ -8,33 +8,28 @@ namespace GeometryCollectionExample
 {	
 	
 	template<class T>
-	bool RigidBodiesFallingUnderGravity(ExampleResponse&& R);
+	void RigidBodiesFallingUnderGravity();
 
 	template<class T>
-	bool RigidBodiesCollidingWithSolverFloor(ExampleResponse&& R);
+	void RigidBodiesCollidingWithSolverFloor();
 
 	template<class T>
-	bool RigidBodiesSingleSphereCollidingWithSolverFloor(ExampleResponse&& R);
+	void RigidBodiesSingleSphereCollidingWithSolverFloor();
 
 	template<class T>
-	bool RigidBodiesSingleSphereIntersectingWithSolverFloor(ExampleResponse&& R);
+	void RigidBodiesSingleSphereIntersectingWithSolverFloor();
 
 	template<class T>
-	bool RigidBodiesKinematic(ExampleResponse&& R);
+	void RigidBodiesKinematic();
 
 	template<class T>
-	bool RigidBodiesKinematicFieldActivation(ExampleResponse&& R);
+	void RigidBodiesSleepingActivation();
 
 	template<class T>
-	bool RigidBodiesSleepingActivation(ExampleResponse&& R);
+	void RigidBodies_CollisionGroup();
 
 	template<class T>
-	bool RigidBodiesInitialLinearVelocity(ExampleResponse&& R);
+	void RigidBodies_Initialize_ParticleImplicitCollisionGeometry();
 
-	template<class T>
-	bool RigidBodies_Field_StayDynamic(ExampleResponse&& R);
-
-	template<class T>
-	bool RigidBodies_Field_LinearForce(ExampleResponse&& R);
 	
 }

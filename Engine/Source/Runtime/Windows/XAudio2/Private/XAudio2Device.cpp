@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 /*=============================================================================
 	XeAudioDevice.cpp: Unreal XAudio2 Audio interface object.
@@ -13,11 +13,14 @@
 
 #include "XAudio2Device.h"
 #include "AudioEffect.h"
+#include "AudioPluginUtilities.h"
 #include "OpusAudioInfo.h"
 #include "VorbisAudioInfo.h"
+#include "ADPCMAudioInfo.h"
 #include "XAudio2Effects.h"
 #include "Interfaces/IAudioFormat.h"
 #include "HAL/PlatformAffinity.h"
+#if PLATFORM_WINDOWS || PLATFORM_HOLOLENS || PLATFORM_XBOXONE
 #include "Windows/WindowsHWrapper.h"
 #include "Windows/AllowWindowsPlatformTypes.h"
 #include "Windows/AllowWindowsPlatformAtomics.h"
@@ -28,6 +31,7 @@ THIRD_PARTY_INCLUDES_START
 THIRD_PARTY_INCLUDES_END
 #include "Windows/HideWindowsPlatformAtomics.h"
 #include "Windows/HideWindowsPlatformTypes.h"
+#endif
 #include "XAudio2Support.h"
 #include "Runtime/HeadMountedDisplay/Public/IHeadMountedDisplayModule.h"
 
@@ -106,9 +110,9 @@ bool FXAudio2Device::InitializeHardware()
 
 	SampleRate = UE4_XAUDIO2_SAMPLERATE;
 
-#if PLATFORM_WINDOWS
-	bComInitialized = FWindowsPlatformMisc::CoInitialize();
-#if PLATFORM_64BITS
+#if PLATFORM_WINDOWS || PLATFORM_HOLOLENS
+	bComInitialized = FPlatformMisc::CoInitialize();
+#if PLATFORM_64BITS && !PLATFORM_HOLOLENS
 	// Work around the fact the x64 version of XAudio2_7.dll does not properly ref count
 	// by forcing it to be always loaded
 
@@ -132,8 +136,8 @@ bool FXAudio2Device::InitializeHardware()
 			return false;
 		}
 	}
-#endif	//PLATFORM_64BITS
-#endif	//PLATFORM_WINDOWS
+#endif	//PLATFORM_64BITS && !PLATFORM_HOLOLENS
+#endif	//PLATFORM_WINDOWS || PLATFORM_HOLOLENS
 
 #if DEBUG_XAUDIO2
 	uint32 Flags = XAUDIO2_DEBUG_ENGINE;
@@ -264,21 +268,8 @@ bool FXAudio2Device::InitializeHardware()
 	// Set that we initialized our hardware audio device ok so we should use real voices.
 	bIsAudioDeviceHardwareInitialized = true;
 
-	// Initialize permanent memory stack for initial & always loaded sound allocations.
-	if( CommonAudioPoolSize )
-	{
-		UE_LOG(LogAudio, Log, TEXT( "Allocating %g MByte for always resident audio data" ), CommonAudioPoolSize / ( 1024.0f * 1024.0f ) );
-		CommonAudioPoolFreeBytes = CommonAudioPoolSize;
-		CommonAudioPool = ( uint8* )FMemory::Malloc( CommonAudioPoolSize );
-	}
-	else
-	{
-		UE_LOG(LogAudio, Log, TEXT( "CommonAudioPoolSize is set to 0 - disabling persistent pool for audio data" ) );
-		CommonAudioPoolFreeBytes = 0;
-	}
-
 #if WITH_XMA2
-	FXMAAudioInfo::Initialize();
+	XMA2_INFO_CALL(FXMAAudioInfo::Initialize());
 #endif
 
 	return true;
@@ -293,21 +284,26 @@ void FXAudio2Device::TeardownHardware()
 	}
 
 #if WITH_XMA2
-	FXMAAudioInfo::Shutdown();
+	XMA2_INFO_CALL(FXMAAudioInfo::Shutdown());
 #endif
 
 #if PLATFORM_WINDOWS
 	if (bComInitialized)
 	{
-		FWindowsPlatformMisc::CoUninitialize();
+		FPlatformMisc::CoUninitialize();
+		bComInitialized = false;
 	}
 #endif
 }
 
 void FXAudio2Device::UpdateHardware()
 {
+#if WITH_XMA2
+		XMA2_INFO_CALL(FXMAAudioInfo::Tick());
+#endif //WITH_XMA2
+
 	// If the audio device changed, we need to tear down and restart the audio engine state
-	if (DeviceProperties->DidAudioDeviceChange())
+	if (DeviceProperties && DeviceProperties->DidAudioDeviceChange())
 	{
 		//Cache the current audio clock.
 		CachedAudioClockStartTime = GetAudioClock();
@@ -364,21 +360,27 @@ class ICompressedAudioInfo* FXAudio2Device::CreateCompressedAudioInfo(USoundWave
 {
 	check(SoundWave);
 
-#if WITH_XMA2 && USE_XMA2_FOR_STREAMING
-	if (SoundWave->IsStreaming() && SoundWave->NumChannels <= 2 )
+	if (SoundWave->IsStreaming(nullptr))
 	{
-		ICompressedAudioInfo* CompressedInfo = new FXMAAudioInfo();
-		if (!CompressedInfo)
+		if (SoundWave->IsSeekableStreaming())
 		{
-			UE_LOG(LogAudio, Error, TEXT("Failed to create new FXMAAudioInfo for streaming SoundWave %s: out of memory."), *SoundWave->GetName());
-			return nullptr;
+			return new FADPCMAudioInfo();
 		}
-		return CompressedInfo;
-	}
+
+#if WITH_XMA2 && USE_XMA2_FOR_STREAMING
+		if (SoundWave->NumChannels <= 2 )
+		{
+			ICompressedAudioInfo* CompressedInfo = XMA2_INFO_NEW();
+		
+			if (!CompressedInfo)
+			{
+				UE_LOG(LogAudio, Error, TEXT("Failed to create new FXMAAudioInfo for streaming SoundWave %s: out of memory."), *SoundWave->GetName());
+				return nullptr;
+			}
+			return CompressedInfo;
+		}
 #endif
 
-	if (SoundWave->IsStreaming())
-	{
 #if USE_VORBIS_FOR_STREAMING
 		return new FVorbisAudioInfo();
 #else
@@ -404,7 +406,7 @@ class ICompressedAudioInfo* FXAudio2Device::CreateCompressedAudioInfo(USoundWave
 	static const FName NAME_XMA(TEXT("XMA"));
 	if (FPlatformProperties::RequiresCookedData() ? SoundWave->HasCompressedData(NAME_XMA) : (SoundWave->GetCompressedData(NAME_XMA) != nullptr))
 	{
-		ICompressedAudioInfo* CompressedInfo = new FXMAAudioInfo();
+		ICompressedAudioInfo* CompressedInfo = XMA2_INFO_NEW();			
 		if (!CompressedInfo)
 		{
 			UE_LOG(LogAudio, Error, TEXT("Failed to create new FXMAAudioInfo for SoundWave %s: out of memory."), *SoundWave->GetName());
@@ -698,37 +700,7 @@ bool FXAudio2Device::Exec( UWorld* InWorld, const TCHAR* Cmd, FOutputDevice& Ar 
 	return( false );
 }
 
-/**
- * Allocates memory from permanent pool. This memory will NEVER be freed.
- *
- * @param	Size	Size of allocation.
- *
- * @return pointer to a chunk of memory with size Size
- */
-void* FXAudio2Device::AllocatePermanentMemory( int32 Size, bool& AllocatedInPool )
+FAudioPlatformSettings FXAudio2Device::GetPlatformSettings() const
 {
-	void* Allocation = NULL;
-	
-	// Fall back to using regular allocator if there is not enough space in permanent memory pool.
-	if( Size > CommonAudioPoolFreeBytes )
-	{
-		Allocation = FMemory::Malloc( Size );
-		check( Allocation );
-
-		AllocatedInPool = false;
-	}
-	// Allocate memory from pool.
-	else
-	{
-		uint8* CommonAudioPoolAddress = ( uint8* )CommonAudioPool;
-		Allocation = CommonAudioPoolAddress + ( CommonAudioPoolSize - CommonAudioPoolFreeBytes );
-
-		AllocatedInPool = true;
-	}
-
-	// Decrement available size regardless of whether we allocated from pool or used regular allocator
-	// to allow us to log suggested size at the end of initial loading.
-	CommonAudioPoolFreeBytes -= Size;
-	
-	return( Allocation );
+	return FAudioPlatformSettings::GetPlatformSettings(FPlatformProperties::GetRuntimeSettingsClassName());
 }

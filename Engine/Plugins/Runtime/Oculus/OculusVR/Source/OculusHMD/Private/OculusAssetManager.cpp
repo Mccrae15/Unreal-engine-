@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "OculusAssetManager.h"
 #include "OculusHMDPrivate.h"
@@ -55,7 +55,7 @@ public:
 void FOculusAssetDirectory::LoadForCook()
 {
 	FOculusAssetRepo& AssetRepro = FOculusAssetRepo::Get();
-	for (int32 AssetIndex = 0; AssetIndex < ARRAY_COUNT(FOculusAssetDirectory::AssetListing); ++AssetIndex)
+	for (int32 AssetIndex = 0; AssetIndex < UE_ARRAY_COUNT(FOculusAssetDirectory::AssetListing); ++AssetIndex)
 	{
 		AssetRepro.LoadAndAdd(FOculusAssetDirectory::AssetListing[AssetIndex]);
 	}

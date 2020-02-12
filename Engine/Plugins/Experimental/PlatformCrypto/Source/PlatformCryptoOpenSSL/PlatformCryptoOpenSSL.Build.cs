@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 namespace UnrealBuildTool.Rules
 {
@@ -6,23 +6,11 @@ namespace UnrealBuildTool.Rules
 	{
 		public PlatformCryptoOpenSSL(ReadOnlyTargetRules Target) : base(Target)
 		{
-			PrivateIncludePaths.AddRange(
-				new string[] {
-					"PlatformCryptoOpenSSL/Private",
-				}
-				);
-
 			PublicDependencyModuleNames.AddRange(
 				new string[]
 				{
 					"Core",
-				}
-				);
-
-			PublicIncludePathModuleNames.AddRange(
-				new string[]
-				{
-					"PlatformCrypto"
+					"PlatformCryptoTypes",
 				}
 				);
 

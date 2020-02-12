@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 using System;
 using System.Collections.Generic;
@@ -30,7 +30,7 @@ namespace AutomationTool.Tasks
 	}
 
 	/// <summary>
-	/// Task which tags build products and/or runtime dependencies by reading from *.target files.
+	/// Task that tags build products and/or runtime dependencies by reading from *.target files.
 	/// </summary>
 	[TaskElement("SanitizeReceipt", typeof(SanitizeReceiptTaskParameters))]
 	class SanitizeReceiptTask : CustomTask

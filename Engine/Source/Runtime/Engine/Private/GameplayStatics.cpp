@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "Kismet/GameplayStatics.h"
 #include "Serialization/MemoryWriter.h"
@@ -41,6 +41,11 @@
 #include "PhysicsEngine/BodySetup.h"
 #include "Misc/EngineVersion.h"
 #include "ContentStreaming.h"
+#include "Async/Async.h"
+#include "Engine/SceneCapture2D.h"
+#include "Components/SceneCaptureComponent2D.h"
+#include "Sound/SoundCue.h"
+#include "Sound/SoundWave.h"
 
 #define LOCTEXT_NAMESPACE "GameplayStatics"
 
@@ -100,7 +105,7 @@ FSaveGameHeader::FSaveGameHeader(TSubclassOf<USaveGame> ObjectType)
 	, PackageFileUE4Version(GPackageFileUE4Version)
 	, SavedEngineVersion(FEngineVersion::Current())
 	, CustomVersionFormat(static_cast<int32>(ECustomVersionSerializationFormat::Latest))
-	, CustomVersions(FCustomVersionContainer::GetRegistered())
+	, CustomVersions(FCurrentCustomVersions::GetAll())
 	, SaveGameClassName(ObjectType->GetPathName())
 {}
 
@@ -212,6 +217,23 @@ class APlayerController* UGameplayStatics::GetPlayerController(const UObject* Wo
 				return PlayerController;
 			}
 			Index++;
+		}
+	}
+	return nullptr;
+}
+
+class APlayerController* UGameplayStatics::GetPlayerControllerFromID(const UObject* WorldContextObject, int32 ControllerID)
+{
+	if (UWorld* World = GEngine->GetWorldFromContextObject(WorldContextObject, EGetWorldErrorMode::LogAndReturnNull))
+	{
+		for (FConstPlayerControllerIterator Iterator = World->GetPlayerControllerIterator(); Iterator; ++Iterator)
+		{
+			APlayerController* PlayerController = Iterator->Get();
+			int32 PlayerControllerID = GetPlayerControllerID(PlayerController);
+			if (PlayerControllerID != INDEX_NONE && PlayerControllerID == ControllerID)
+			{
+				return PlayerController;
+			}
 		}
 	}
 	return nullptr;
@@ -345,6 +367,33 @@ bool UGameplayStatics::IsGamePaused(const UObject* WorldContextObject)
 	return World ? World->IsPaused() : false;
 }
 
+void UGameplayStatics::SetForceDisableSplitscreen(const UObject* WorldContextObject, bool bDisable)
+{
+	UWorld* World = GEngine->GetWorldFromContextObject(WorldContextObject, EGetWorldErrorMode::LogAndReturnNull);
+	if (World)
+	{
+		UGameViewportClient* GameViewportClient = World->GetGameViewport();
+		if (GameViewportClient)
+		{
+			GameViewportClient->SetForceDisableSplitscreen(bDisable);
+		}
+	}
+}
+
+bool UGameplayStatics::IsSplitscreenForceDisabled(const UObject* WorldContextObject)
+{
+	UWorld* const World = GEngine->GetWorldFromContextObject(WorldContextObject, EGetWorldErrorMode::LogAndReturnNull);
+	if (World)
+	{
+		UGameViewportClient* GameViewportClient = World->GetGameViewport();
+		if (GameViewportClient)
+		{
+			return GameViewportClient->IsSplitscreenForceDisabled();
+		}
+	}
+	return false;
+}
+
 void UGameplayStatics::SetEnableWorldRendering(const UObject* WorldContextObject, bool bEnable)
 {
 	UWorld* World = GEngine->GetWorldFromContextObject(WorldContextObject, EGetWorldErrorMode::LogAndReturnNull);
@@ -373,6 +422,34 @@ bool UGameplayStatics::GetEnableWorldRendering(const UObject* WorldContextObject
 	return false;
 }
 
+EMouseCaptureMode UGameplayStatics::GetViewportMouseCaptureMode(const UObject* WorldContextObject)
+{
+	UWorld* const World = GEngine->GetWorldFromContextObject(WorldContextObject, EGetWorldErrorMode::LogAndReturnNull);
+	if (World)
+	{
+		UGameViewportClient* const GameViewportClient = World->GetGameViewport();
+		if (GameViewportClient)
+		{
+			return GameViewportClient->CaptureMouseOnClick();
+		}
+	}
+
+	return EMouseCaptureMode::NoCapture;
+}
+
+void UGameplayStatics::SetViewportMouseCaptureMode(const UObject* WorldContextObject, const EMouseCaptureMode MouseCaptureMode)
+{
+	UWorld* const World = GEngine->GetWorldFromContextObject(WorldContextObject, EGetWorldErrorMode::LogAndReturnNull);
+	if (World)
+	{
+		UGameViewportClient* const GameViewportClient = World->GetGameViewport();
+		if (GameViewportClient)
+		{
+			GameViewportClient->SetCaptureMouseOnClick(MouseCaptureMode);
+		}
+	}
+}
+
 /** @RETURN True if weapon trace from Origin hits component VictimComp.  OutHitResult will contain properties of the hit. */
 static bool ComponentIsDamageableFrom(UPrimitiveComponent* VictimComp, FVector const& Origin, AActor const* IgnoredActor, const TArray<AActor*>& IgnoreActors, ECollisionChannel TraceChannel, FHitResult& OutHitResult)
 {
@@ -390,25 +467,34 @@ static bool ComponentIsDamageableFrom(UPrimitiveComponent* VictimComp, FVector c
 		// tiny nudge so LineTraceSingle doesn't early out with no hits
 		TraceStart.Z += 0.01f;
 	}
-	bool const bHadBlockingHit = World->LineTraceSingleByChannel(OutHitResult, TraceStart, TraceEnd, TraceChannel, LineParams);
-	//::DrawDebugLine(World, TraceStart, TraceEnd, FLinearColor::Red, true);
 
-	// If there was a blocking hit, it will be the last one
-	if (bHadBlockingHit)
+	// Only do a line trace if there is a valid channel, if it is invalid then result will have no fall off
+	if (TraceChannel != ECollisionChannel::ECC_MAX)
 	{
-		if (OutHitResult.Component == VictimComp)
+		bool const bHadBlockingHit = World->LineTraceSingleByChannel(OutHitResult, TraceStart, TraceEnd, TraceChannel, LineParams);
+		//::DrawDebugLine(World, TraceStart, TraceEnd, FLinearColor::Red, true);
+
+		// If there was a blocking hit, it will be the last one
+		if (bHadBlockingHit)
 		{
-			// if blocking hit was the victim component, it is visible
-			return true;
-		}
-		else
-		{
-			// if we hit something else blocking, it's not
-			UE_LOG(LogDamage, Log, TEXT("Radial Damage to %s blocked by %s (%s)"), *GetNameSafe(VictimComp), *GetNameSafe(OutHitResult.GetActor()), *GetNameSafe(OutHitResult.Component.Get()) );
-			return false;
+			if (OutHitResult.Component == VictimComp)
+			{
+				// if blocking hit was the victim component, it is visible
+				return true;
+			}
+			else
+			{
+				// if we hit something else blocking, it's not
+				UE_LOG(LogDamage, Log, TEXT("Radial Damage to %s blocked by %s (%s)"), *GetNameSafe(VictimComp), *GetNameSafe(OutHitResult.GetActor()), *GetNameSafe(OutHitResult.Component.Get()));
+				return false;
+			}
 		}
 	}
-		
+	else
+	{
+		UE_LOG(LogDamage, Warning, TEXT("ECollisionChannel::ECC_MAX is not valid! No falloff is added to damage"));
+	}
+
 	// didn't hit anything, assume nothing blocking the damage and victim is consequently visible
 	// but since we don't have a hit result to pass back, construct a simple one, modeling the damage as having hit a point at the component's center.
 	FVector const FakeHitLoc = VictimComp->GetComponentLocation();
@@ -433,23 +519,23 @@ bool UGameplayStatics::ApplyRadialDamageWithFalloff(const UObject* WorldContextO
 	TArray<FOverlapResult> Overlaps;
 	if (UWorld* World = GEngine->GetWorldFromContextObject(WorldContextObject, EGetWorldErrorMode::LogAndReturnNull))
 	{
-	World->OverlapMultiByObjectType(Overlaps, Origin, FQuat::Identity, FCollisionObjectQueryParams(FCollisionObjectQueryParams::InitType::AllDynamicObjects), FCollisionShape::MakeSphere(DamageOuterRadius), SphereParams);
+		World->OverlapMultiByObjectType(Overlaps, Origin, FQuat::Identity, FCollisionObjectQueryParams(FCollisionObjectQueryParams::InitType::AllDynamicObjects), FCollisionShape::MakeSphere(DamageOuterRadius), SphereParams);
 	}
 
 	// collate into per-actor list of hit components
 	TMap<AActor*, TArray<FHitResult> > OverlapComponentMap;
-	for (int32 Idx=0; Idx<Overlaps.Num(); ++Idx)
+	for (int32 Idx = 0; Idx < Overlaps.Num(); ++Idx)
 	{
 		FOverlapResult const& Overlap = Overlaps[Idx];
 		AActor* const OverlapActor = Overlap.GetActor();
 
-		if ( OverlapActor && 
-			OverlapActor->bCanBeDamaged && 
+		if (OverlapActor &&
+			OverlapActor->CanBeDamaged() &&
 			OverlapActor != DamageCauser &&
-			Overlap.Component.IsValid() )
+			Overlap.Component.IsValid())
 		{
 			FHitResult Hit;
-			if (DamagePreventionChannel == ECC_MAX || ComponentIsDamageableFrom(Overlap.Component.Get(), Origin, DamageCauser, IgnoreActors, DamagePreventionChannel, Hit))
+			if (ComponentIsDamageableFrom(Overlap.Component.Get(), Origin, DamageCauser, IgnoreActors, DamagePreventionChannel, Hit))
 			{
 				TArray<FHitResult>& HitList = OverlapComponentMap.FindOrAdd(OverlapActor);
 				HitList.Add(Hit);
@@ -461,25 +547,25 @@ bool UGameplayStatics::ApplyRadialDamageWithFalloff(const UObject* WorldContextO
 
 	if (OverlapComponentMap.Num() > 0)
 	{
-	// make sure we have a good damage type
-	TSubclassOf<UDamageType> const ValidDamageTypeClass = DamageTypeClass ? DamageTypeClass : TSubclassOf<UDamageType>(UDamageType::StaticClass());
+		// make sure we have a good damage type
+		TSubclassOf<UDamageType> const ValidDamageTypeClass = DamageTypeClass ? DamageTypeClass : TSubclassOf<UDamageType>(UDamageType::StaticClass());
 
 		FRadialDamageEvent DmgEvent;
 		DmgEvent.DamageTypeClass = ValidDamageTypeClass;
 		DmgEvent.Origin = Origin;
 		DmgEvent.Params = FRadialDamageParams(BaseDamage, MinimumDamage, DamageInnerRadius, DamageOuterRadius, DamageFalloff);
 
-	// call damage function on each affected actors
-	for (TMap<AActor*, TArray<FHitResult> >::TIterator It(OverlapComponentMap); It; ++It)
-	{
-		AActor* const Victim = It.Key();
-		TArray<FHitResult> const& ComponentHits = It.Value();
-		DmgEvent.ComponentHits = ComponentHits;
+		// call damage function on each affected actors
+		for (TMap<AActor*, TArray<FHitResult> >::TIterator It(OverlapComponentMap); It; ++It)
+		{
+			AActor* const Victim = It.Key();
+			TArray<FHitResult> const& ComponentHits = It.Value();
+			DmgEvent.ComponentHits = ComponentHits;
 
-		Victim->TakeDamage(BaseDamage, DmgEvent, InstigatedByController, DamageCauser);
+			Victim->TakeDamage(BaseDamage, DmgEvent, InstigatedByController, DamageCauser);
 
-		bAppliedDamage = true;
-	}
+			bAppliedDamage = true;
+		}
 	}
 
 	return bAppliedDamage;
@@ -574,7 +660,7 @@ class AActor* UGameplayStatics::BeginDeferredActorSpawnFromClass(const UObject* 
 		{
 			if (AActor* ContextActor = Cast<AActor>(MutableWorldContextObject))
 			{
-				AutoInstigator = ContextActor->Instigator;
+				AutoInstigator = ContextActor->GetInstigator();
 			}
 		}
 
@@ -763,7 +849,91 @@ void UGameplayStatics::GetActorArrayBounds(const TArray<AActor*>& Actors, bool b
 	}
 }
 
+AActor* UGameplayStatics::GetActorOfClass(const UObject* WorldContextObject, TSubclassOf<AActor> ActorClass)
+{
+	QUICK_SCOPE_CYCLE_COUNTER(UGameplayStatics_GetActorOfClass);
+
+	// We do nothing if no is class provided
+	if (ActorClass)
+	{
+		if (UWorld* World = GEngine->GetWorldFromContextObject(WorldContextObject, EGetWorldErrorMode::LogAndReturnNull))
+		{
+			for (TActorIterator<AActor> It(World, ActorClass); It; ++It)
+			{
+				AActor* Actor = *It;
+				return Actor;
+			}
+		}
+	}
+
+	return nullptr;
+}
+
 void UGameplayStatics::GetAllActorsOfClass(const UObject* WorldContextObject, TSubclassOf<AActor> ActorClass, TArray<AActor*>& OutActors)
+{
+	QUICK_SCOPE_CYCLE_COUNTER(UGameplayStatics_GetAllActorsOfClass);
+	OutActors.Reset();
+
+	// We do nothing if no is class provided, rather than giving ALL actors!
+	if (ActorClass)
+	{
+		if (UWorld* World = GEngine->GetWorldFromContextObject(WorldContextObject, EGetWorldErrorMode::LogAndReturnNull))
+	{
+		for(TActorIterator<AActor> It(World, ActorClass); It; ++It)
+		{
+			AActor* Actor = *It;
+				OutActors.Add(Actor);
+			}
+		}
+	}
+}
+
+void UGameplayStatics::GetAllActorsWithInterface(const UObject* WorldContextObject, TSubclassOf<UInterface> Interface, TArray<AActor*>& OutActors)
+{
+	QUICK_SCOPE_CYCLE_COUNTER(UGameplayStatics_GetAllActorsWithInterface);
+	OutActors.Reset();
+
+	// We do nothing if no interface provided, rather than giving ALL actors!
+	if (Interface)
+	{
+		if (UWorld* World = GEngine->GetWorldFromContextObject(WorldContextObject, EGetWorldErrorMode::LogAndReturnNull))
+	{
+		for(FActorIterator It(World); It; ++It)
+		{
+			AActor* Actor = *It;
+				if (Actor->GetClass()->ImplementsInterface(Interface))
+			{
+				OutActors.Add(Actor);
+			}
+		}
+	}
+}
+}
+
+void UGameplayStatics::GetAllActorsWithTag(const UObject* WorldContextObject, FName Tag, TArray<AActor*>& OutActors)
+{
+	QUICK_SCOPE_CYCLE_COUNTER(UGameplayStatics_GetAllActorsWithTag);
+	OutActors.Reset();
+
+	// We do nothing if no tag is provided, rather than giving ALL actors!
+	if (!Tag.IsNone())
+	{
+		if (UWorld* World = GEngine->GetWorldFromContextObject(WorldContextObject, EGetWorldErrorMode::LogAndReturnNull))
+		{
+			for (FActorIterator It(World); It; ++It)
+			{
+				AActor* Actor = *It;
+				if (Actor->ActorHasTag(Tag))
+				{
+					OutActors.Add(Actor);
+				}
+			}
+		}
+	}
+}
+
+
+void UGameplayStatics::GetAllActorsOfClassWithTag(const UObject* WorldContextObject, TSubclassOf<AActor> ActorClass, FName Tag, TArray<AActor*>& OutActors)
 {
 	QUICK_SCOPE_CYCLE_COUNTER(UGameplayStatics_GetAllActorsOfClass);
 	OutActors.Reset();
@@ -773,48 +943,7 @@ void UGameplayStatics::GetAllActorsOfClass(const UObject* WorldContextObject, TS
 	// We do nothing if no is class provided, rather than giving ALL actors!
 	if (ActorClass && World)
 	{
-		for(TActorIterator<AActor> It(World, ActorClass); It; ++It)
-		{
-			AActor* Actor = *It;
-			if(!Actor->IsPendingKill())
-			{
-				OutActors.Add(Actor);
-			}
-		}
-	}
-}
-
-void UGameplayStatics::GetAllActorsWithInterface(const UObject* WorldContextObject, TSubclassOf<UInterface> Interface, TArray<AActor*>& OutActors)
-{
-	QUICK_SCOPE_CYCLE_COUNTER(UGameplayStatics_GetAllActorsWithTag);
-	OutActors.Empty();
-
-	UWorld* World = GEngine->GetWorldFromContextObject(WorldContextObject, EGetWorldErrorMode::LogAndReturnNull);
-	// We do nothing if not class provided, rather than giving ALL actors!
-	if (Interface && World)
-	{
-		for(FActorIterator It(World); It; ++It)
-		{
-			AActor* Actor = *It;
-			if (Actor && !Actor->IsPendingKill() && Actor->GetClass()->ImplementsInterface(Interface))
-			{
-				OutActors.Add(Actor);
-			}
-		}
-	}
-}
-
-void UGameplayStatics::GetAllActorsWithTag(const UObject* WorldContextObject, FName Tag, TArray<AActor*>& OutActors)
-{
-	QUICK_SCOPE_CYCLE_COUNTER(UGameplayStatics_GetAllActorsWithTag);
-	OutActors.Empty();
-
-	UWorld* World = GEngine->GetWorldFromContextObject(WorldContextObject, EGetWorldErrorMode::LogAndReturnNull);
-
-	// We do nothing if no tag is provided, rather than giving ALL actors!
-	if (!Tag.IsNone() && World)
-	{
-		for (FActorIterator It(World); It; ++It)
+		for (TActorIterator<AActor> It(World, ActorClass); It; ++It)
 		{
 			AActor* Actor = *It;
 			if (Actor && !Actor->IsPendingKill() && Actor->ActorHasTag(Tag))
@@ -858,26 +987,31 @@ UParticleSystemComponent* CreateParticleSystem(UParticleSystem* EmitterTemplate,
 	return PSC;
 }
 
-UParticleSystemComponent* UGameplayStatics::SpawnEmitterAtLocation(const UObject* WorldContextObject, UParticleSystem* EmitterTemplate, FVector SpawnLocation, FRotator SpawnRotation, bool bAutoDestroy, EPSCPoolMethod PoolingMethod)
+UParticleSystemComponent* UGameplayStatics::SpawnEmitterAtLocation(const UObject* WorldContextObject, UParticleSystem* EmitterTemplate, FVector SpawnLocation, FRotator SpawnRotation, bool bAutoDestroy, EPSCPoolMethod PoolingMethod, bool bAutoActivateSystem)
 {
-	return SpawnEmitterAtLocation(WorldContextObject, EmitterTemplate, SpawnLocation, SpawnRotation, FVector(1.f), bAutoDestroy, PoolingMethod);
+	return SpawnEmitterAtLocation(WorldContextObject, EmitterTemplate, SpawnLocation, SpawnRotation, FVector(1.f), bAutoDestroy, PoolingMethod, bAutoActivateSystem);
 }
 
-UParticleSystemComponent* UGameplayStatics::InternalSpawnEmitterAtLocation(UWorld* World, UParticleSystem* EmitterTemplate, FVector SpawnLocation, FRotator SpawnRotation, FVector SpawnScale, bool bAutoDestroy, EPSCPoolMethod PoolingMethod)
+UParticleSystemComponent* UGameplayStatics::InternalSpawnEmitterAtLocation(UWorld* World, UParticleSystem* EmitterTemplate, FVector SpawnLocation, FRotator SpawnRotation, FVector SpawnScale, bool bAutoDestroy, EPSCPoolMethod PoolingMethod, bool bAutoActivateSystem)
 {
 	check(World && EmitterTemplate);
 
 	if (UParticleSystemComponent* PSC = CreateParticleSystem(EmitterTemplate, World, World->GetWorldSettings(), bAutoDestroy, PoolingMethod))
 	{
-		PSC->bAbsoluteLocation = true;
-		PSC->bAbsoluteRotation = true;
-		PSC->bAbsoluteScale = true;
-		PSC->RelativeLocation = SpawnLocation;
-		PSC->RelativeRotation = SpawnRotation;
-		PSC->RelativeScale3D = SpawnScale;
+
+		PSC->SetUsingAbsoluteLocation(true);
+		PSC->SetUsingAbsoluteRotation(true);
+		PSC->SetUsingAbsoluteScale(true);
+		PSC->SetRelativeLocation_Direct(SpawnLocation);
+		PSC->SetRelativeRotation_Direct(SpawnRotation);
+		PSC->SetRelativeScale3D_Direct(SpawnScale);
 
 		PSC->RegisterComponentWithWorld(World);
-		PSC->ActivateSystem(true);
+		if (bAutoActivateSystem)
+		{
+			PSC->ActivateSystem(true);
+		}
+	
 
 		// Notify the texture streamer so that PSC gets managed as a dynamic component.
 		IStreamingManager::Get().NotifyPrimitiveUpdated(PSC);
@@ -897,35 +1031,35 @@ UParticleSystemComponent* UGameplayStatics::InternalSpawnEmitterAtLocation(UWorl
 	return nullptr;
 }
 
-UParticleSystemComponent* UGameplayStatics::SpawnEmitterAtLocation(const UObject* WorldContextObject, UParticleSystem* EmitterTemplate, FVector SpawnLocation, FRotator SpawnRotation, FVector SpawnScale, bool bAutoDestroy, EPSCPoolMethod PoolingMethod)
+UParticleSystemComponent* UGameplayStatics::SpawnEmitterAtLocation(const UObject* WorldContextObject, UParticleSystem* EmitterTemplate, FVector SpawnLocation, FRotator SpawnRotation, FVector SpawnScale, bool bAutoDestroy, EPSCPoolMethod PoolingMethod, bool bAutoActivateSystem)
 {
 	UParticleSystemComponent* PSC = nullptr;
 	if (EmitterTemplate)
 	{
 		if (UWorld* World = GEngine->GetWorldFromContextObject(WorldContextObject, EGetWorldErrorMode::LogAndReturnNull))
 		{
-			PSC = InternalSpawnEmitterAtLocation(World, EmitterTemplate, SpawnLocation, SpawnRotation, SpawnScale, bAutoDestroy, PoolingMethod);
+			PSC = InternalSpawnEmitterAtLocation(World, EmitterTemplate, SpawnLocation, SpawnRotation, SpawnScale, bAutoDestroy, PoolingMethod, bAutoActivateSystem);
 		}
 	}
 	return PSC;
 }
 
-UParticleSystemComponent* UGameplayStatics::SpawnEmitterAtLocation(UWorld* World, UParticleSystem* EmitterTemplate, const FTransform& SpawnTransform, bool bAutoDestroy, EPSCPoolMethod PoolingMethod)
+UParticleSystemComponent* UGameplayStatics::SpawnEmitterAtLocation(UWorld* World, UParticleSystem* EmitterTemplate, const FTransform& SpawnTransform, bool bAutoDestroy, EPSCPoolMethod PoolingMethod, bool bAutoActivateSystem)
 {
 	UParticleSystemComponent* PSC = nullptr;
 	if (World && EmitterTemplate)
 	{
-		PSC = InternalSpawnEmitterAtLocation(World, EmitterTemplate, SpawnTransform.GetLocation(), SpawnTransform.GetRotation().Rotator(), SpawnTransform.GetScale3D(), bAutoDestroy, PoolingMethod);
+		PSC = InternalSpawnEmitterAtLocation(World, EmitterTemplate, SpawnTransform.GetLocation(), SpawnTransform.GetRotation().Rotator(), SpawnTransform.GetScale3D(), bAutoDestroy, PoolingMethod, bAutoActivateSystem);
 	}
 	return PSC;
 }
 
-UParticleSystemComponent* UGameplayStatics::SpawnEmitterAttached(UParticleSystem* EmitterTemplate, USceneComponent* AttachToComponent, FName AttachPointName, FVector Location, FRotator Rotation, EAttachLocation::Type LocationType, bool bAutoDestroy, EPSCPoolMethod PoolingMethod)
+UParticleSystemComponent* UGameplayStatics::SpawnEmitterAttached(UParticleSystem* EmitterTemplate, USceneComponent* AttachToComponent, FName AttachPointName, FVector Location, FRotator Rotation, EAttachLocation::Type LocationType, bool bAutoDestroy, EPSCPoolMethod PoolingMethod, bool bAutoActivateSystem)
 {
-	return SpawnEmitterAttached(EmitterTemplate, AttachToComponent, AttachPointName, Location, Rotation, FVector(1.f), LocationType, bAutoDestroy, PoolingMethod);
+	return SpawnEmitterAttached(EmitterTemplate, AttachToComponent, AttachPointName, Location, Rotation, FVector(1.f), LocationType, bAutoDestroy, PoolingMethod, bAutoActivateSystem);
 }
 
-UParticleSystemComponent* UGameplayStatics::SpawnEmitterAttached(UParticleSystem* EmitterTemplate, USceneComponent* AttachToComponent, FName AttachPointName, FVector Location, FRotator Rotation, FVector Scale, EAttachLocation::Type LocationType, bool bAutoDestroy, EPSCPoolMethod PoolingMethod)
+UParticleSystemComponent* UGameplayStatics::SpawnEmitterAttached(UParticleSystem* EmitterTemplate, USceneComponent* AttachToComponent, FName AttachPointName, FVector Location, FRotator Rotation, FVector Scale, EAttachLocation::Type LocationType, bool bAutoDestroy, EPSCPoolMethod PoolingMethod, bool bAutoActivateSystem)
 {
 	UParticleSystemComponent* PSC = nullptr;
 	if (EmitterTemplate)
@@ -950,30 +1084,33 @@ UParticleSystemComponent* UGameplayStatics::SpawnEmitterAttached(UParticleSystem
 						const FTransform ParentToWorld = AttachToComponent->GetSocketTransform(AttachPointName);
 						const FTransform ComponentToWorld(Rotation, Location, Scale);
 						const FTransform RelativeTM = ComponentToWorld.GetRelativeTransform(ParentToWorld);
-						PSC->RelativeLocation = RelativeTM.GetLocation();
-						PSC->RelativeRotation = RelativeTM.GetRotation().Rotator();
-						PSC->RelativeScale3D = RelativeTM.GetScale3D();
+						PSC->SetRelativeLocation_Direct(RelativeTM.GetLocation());
+						PSC->SetRelativeRotation_Direct(RelativeTM.GetRotation().Rotator());
+						PSC->SetRelativeScale3D_Direct(RelativeTM.GetScale3D());
 					}
 					else
 					{
-						PSC->RelativeLocation = Location;
-						PSC->RelativeRotation = Rotation;
+						PSC->SetRelativeLocation_Direct(Location);
+						PSC->SetRelativeRotation_Direct(Rotation);
 
 						if (LocationType == EAttachLocation::SnapToTarget)
 						{
 							// SnapToTarget indicates we "keep world scale", this indicates we we want the inverse of the parent-to-world scale 
 							// to calculate world scale at Scale 1, and then apply the passed in Scale
 							const FTransform ParentToWorld = AttachToComponent->GetSocketTransform(AttachPointName);
-							PSC->RelativeScale3D = Scale * ParentToWorld.GetSafeScaleReciprocal(ParentToWorld.GetScale3D());
+							PSC->SetRelativeScale3D_Direct(Scale * ParentToWorld.GetSafeScaleReciprocal(ParentToWorld.GetScale3D()));
 						}
 						else
 						{
-							PSC->RelativeScale3D = Scale;
+							PSC->SetRelativeScale3D_Direct(Scale);
 						}
 					}
 
 					PSC->RegisterComponentWithWorld(World);
-					PSC->ActivateSystem(true);
+					if(bAutoActivateSystem)
+					{
+						PSC->ActivateSystem(true);
+					}
 
 					// Notify the texture streamer so that PSC gets managed as a dynamic component.
 					IStreamingManager::Get().NotifyPrimitiveUpdated(PSC);
@@ -1071,7 +1208,7 @@ bool UGameplayStatics::FindCollisionUV(const struct FHitResult& Hit, int32 UVCha
 	return bSuccess;
 }
 
-bool UGameplayStatics::AreAnyListenersWithinRange(const UObject* WorldContextObject, FVector Location, float MaximumRange)
+bool UGameplayStatics::AreAnyListenersWithinRange(const UObject* WorldContextObject, const FVector& Location, float MaximumRange)
 {
 	if (!GEngine || !GEngine->UseSound())
 	{
@@ -1085,12 +1222,42 @@ bool UGameplayStatics::AreAnyListenersWithinRange(const UObject* WorldContextObj
 	}
 	
 	// If there is no valid world from the world context object then there certainly are no listeners
-	if (FAudioDevice* AudioDevice = ThisWorld->GetAudioDevice())
+	if (FAudioDeviceHandle AudioDevice = ThisWorld->GetAudioDevice())
 	{
 		return AudioDevice->LocationIsAudible(Location, MaximumRange);
 	}	
 
 	return false;
+}
+
+bool UGameplayStatics::GetClosestListenerLocation(const UObject* WorldContextObject, const FVector& Location, float MaximumRange, const bool bAllowAttenuationOverride, FVector& ListenerPosition)
+{
+	if (!GEngine || !GEngine->UseSound())
+	{
+		return false;
+	}
+
+	UWorld* ThisWorld = GEngine->GetWorldFromContextObject(WorldContextObject, EGetWorldErrorMode::LogAndReturnNull);
+	if (!ThisWorld)
+	{
+		return false;
+	}
+
+	// If there is no valid world from the world context object then there certainly are no listeners
+	FAudioDeviceHandle AudioDevice = ThisWorld->GetAudioDevice();
+	if (!AudioDevice)
+	{
+		return false;
+	}
+
+	float OutDistSq;
+	const int32 ClosestListenerIndex = AudioDevice->FindClosestListenerIndex(Location, OutDistSq, bAllowAttenuationOverride);
+	if (ClosestListenerIndex == INDEX_NONE || ((MaximumRange * MaximumRange) < OutDistSq))
+	{
+		return false;
+	}
+
+	return AudioDevice->GetListenerPosition(ClosestListenerIndex, ListenerPosition, bAllowAttenuationOverride);
 }
 
 void UGameplayStatics::SetGlobalPitchModulation(const UObject* WorldContextObject, float PitchModulation, float TimeSec)
@@ -1106,9 +1273,28 @@ void UGameplayStatics::SetGlobalPitchModulation(const UObject* WorldContextObjec
 		return;
 	}
 
-	if (FAudioDevice* AudioDevice = ThisWorld->GetAudioDevice())
+	if (FAudioDeviceHandle AudioDevice = ThisWorld->GetAudioDevice())
 	{
 		AudioDevice->SetGlobalPitchModulation(PitchModulation, TimeSec);
+	}
+}
+
+void UGameplayStatics::SetSoundClassDistanceScale(const UObject* WorldContextObject, USoundClass* SoundClass, float DistanceAttenuationScale, float TimeSec)
+{
+	if (!GEngine || !GEngine->UseSound())
+	{
+		return;
+	}
+
+	UWorld* ThisWorld = GEngine->GetWorldFromContextObject(WorldContextObject, EGetWorldErrorMode::LogAndReturnNull);
+	if (!ThisWorld || !ThisWorld->bAllowAudioPlayback || ThisWorld->IsNetMode(NM_DedicatedServer))
+	{
+		return;
+	}
+
+	if (FAudioDeviceHandle AudioDevice = ThisWorld->GetAudioDevice())
+	{
+		AudioDevice->SetSoundClassDistanceScale(SoundClass, DistanceAttenuationScale, TimeSec);
 	}
 }
 
@@ -1125,7 +1311,7 @@ void UGameplayStatics::SetGlobalListenerFocusParameters(const UObject* WorldCont
 		return;
 	}
 
-	if (FAudioDevice* AudioDevice = ThisWorld->GetAudioDevice())
+	if (FAudioDeviceHandle AudioDevice = ThisWorld->GetAudioDevice())
 	{
 		FGlobalFocusSettings NewFocusSettings;
 		NewFocusSettings.FocusAzimuthScale = FMath::Max(FocusAzimuthScale, 0.0f);
@@ -1141,7 +1327,7 @@ void UGameplayStatics::SetGlobalListenerFocusParameters(const UObject* WorldCont
 	}
 }
 
-void UGameplayStatics::PlaySound2D(const UObject* WorldContextObject, class USoundBase* Sound, float VolumeMultiplier, float PitchMultiplier, float StartTime, class USoundConcurrency* ConcurrencySettings, AActor* OwningActor)
+void UGameplayStatics::PlaySound2D(const UObject* WorldContextObject, USoundBase* Sound, float VolumeMultiplier, float PitchMultiplier, float StartTime, USoundConcurrency* ConcurrencySettings, AActor* OwningActor)
 {
 	if (!Sound || !GEngine || !GEngine->UseSound())
 	{
@@ -1154,20 +1340,25 @@ void UGameplayStatics::PlaySound2D(const UObject* WorldContextObject, class USou
 		return;
 	}
 
-	if (FAudioDevice* AudioDevice = ThisWorld->GetAudioDevice())
+	if (FAudioDeviceHandle AudioDevice = ThisWorld->GetAudioDevice())
 	{
 		FActiveSound NewActiveSound;
 		NewActiveSound.SetSound(Sound);
 		NewActiveSound.SetWorld(ThisWorld);
 
-		NewActiveSound.VolumeMultiplier = VolumeMultiplier;
-		NewActiveSound.PitchMultiplier = PitchMultiplier;
+		NewActiveSound.SetPitch(PitchMultiplier);
+		NewActiveSound.SetVolume(VolumeMultiplier);
 
 		NewActiveSound.RequestedStartTime = FMath::Max(0.f, StartTime);
 
 		NewActiveSound.bIsUISound = true;
 		NewActiveSound.bAllowSpatialization = false;
-		NewActiveSound.ConcurrencySet.Add(ConcurrencySettings);
+
+		if (ConcurrencySettings)
+		{
+			NewActiveSound.ConcurrencySet.Add(ConcurrencySettings);
+		}
+
 		NewActiveSound.Priority = Sound->Priority;
 		NewActiveSound.SubtitlePriority = Sound->GetSubtitlePriority();
 
@@ -1190,10 +1381,8 @@ UAudioComponent* UGameplayStatics::CreateSound2D(const UObject* WorldContextObje
 		return nullptr;
 	}
 
-	UAudioComponent* AudioComponent;
-
 	FAudioDevice::FCreateComponentParams Params = bPersistAcrossLevelTransition
-		? FAudioDevice::FCreateComponentParams(ThisWorld->GetAudioDevice())
+		? FAudioDevice::FCreateComponentParams(ThisWorld->GetAudioDeviceRaw())
 		: FAudioDevice::FCreateComponentParams(ThisWorld);
 
 	if (ConcurrencySettings)
@@ -1201,7 +1390,7 @@ UAudioComponent* UGameplayStatics::CreateSound2D(const UObject* WorldContextObje
 		Params.ConcurrencySet.Add(ConcurrencySettings);
 	}
 
-	AudioComponent = FAudioDevice::CreateComponent(Sound, Params);
+	UAudioComponent* AudioComponent = FAudioDevice::CreateComponent(Sound, Params);
 	if (AudioComponent)
 	{
 		AudioComponent->SetVolumeMultiplier(VolumeMultiplier);
@@ -1238,7 +1427,7 @@ void UGameplayStatics::PlaySoundAtLocation(const UObject* WorldContextObject, cl
 		return;
 	}
 
-	if (FAudioDevice* AudioDevice = ThisWorld->GetAudioDevice())
+	if (FAudioDeviceHandle AudioDevice = ThisWorld->GetAudioDevice())
 	{
 		AudioDevice->PlaySoundAtLocation(Sound, ThisWorld, VolumeMultiplier, PitchMultiplier, StartTime, Location, Rotation, AttenuationSettings, ConcurrencySettings, nullptr, OwningActor);
 	}
@@ -1328,7 +1517,11 @@ UAudioComponent* UGameplayStatics::SpawnSoundAttached(USoundBase* Sound, USceneC
 	Params.SetLocation(TestLocation);
 	Params.bStopWhenOwnerDestroyed = bStopWhenAttachedToDestroyed;
 	Params.AttenuationSettings = AttenuationSettings;
-	Params.ConcurrencySet.Add(ConcurrencySettings);
+
+	if (ConcurrencySettings)
+	{
+		Params.ConcurrencySet.Add(ConcurrencySettings);
+	}
 
 	UAudioComponent* AudioComponent = FAudioDevice::CreateComponent(Sound, Params);
 	if (AudioComponent)
@@ -1440,7 +1633,7 @@ void UGameplayStatics::SetBaseSoundMix(const UObject* WorldContextObject, USound
 		return;
 	}
 
-	if (FAudioDevice* AudioDevice = ThisWorld->GetAudioDevice())
+	if (FAudioDeviceHandle AudioDevice = ThisWorld->GetAudioDevice())
 	{
 		AudioDevice->SetBaseSoundMix(InSoundMix);
 	}
@@ -1459,9 +1652,29 @@ void UGameplayStatics::PushSoundMixModifier(const UObject* WorldContextObject, U
 		return;
 	}
 
-	if (FAudioDevice* AudioDevice = ThisWorld->GetAudioDevice())
+	if (FAudioDeviceHandle AudioDevice = ThisWorld->GetAudioDevice())
 	{
 		AudioDevice->PushSoundMixModifier(InSoundMixModifier);
+	}
+}
+
+void UGameplayStatics::PrimeSound(USoundBase* InSound)
+{
+	if (!InSound || !GEngine || !GEngine->UseSound())
+	{
+		return;
+	}
+
+	if (USoundCue* InSoundCue = Cast<USoundCue>(InSound))
+	{
+		InSoundCue->PrimeSoundCue();
+	}
+	else if (USoundWave* InSoundWave = Cast<USoundWave>(InSound))
+	{
+		if (InSoundWave->GetNumChunks() > 1)
+		{
+			IStreamingManager::Get().GetAudioStreamingManager().RequestChunk(InSoundWave, 1, TFunction<void(EAudioChunkLoadResult)>());
+		}
 	}
 }
 
@@ -1478,7 +1691,7 @@ void UGameplayStatics::SetSoundMixClassOverride(const UObject* WorldContextObjec
 		return;
 	}
 
-	if (FAudioDevice* AudioDevice = ThisWorld->GetAudioDevice())
+	if (FAudioDeviceHandle AudioDevice = ThisWorld->GetAudioDevice())
 	{
 		AudioDevice->SetSoundMixClassOverride(InSoundMixModifier, InSoundClass, Volume, Pitch, FadeInTime, bApplyToChildren);
 	}
@@ -1497,7 +1710,7 @@ void UGameplayStatics::ClearSoundMixClassOverride(const UObject* WorldContextObj
 		return;
 	}
 
-	if (FAudioDevice* AudioDevice = ThisWorld->GetAudioDevice())
+	if (FAudioDeviceHandle AudioDevice = ThisWorld->GetAudioDevice())
 	{
 		AudioDevice->ClearSoundMixClassOverride(InSoundMixModifier, InSoundClass, FadeOutTime);
 	}
@@ -1516,7 +1729,7 @@ void UGameplayStatics::PopSoundMixModifier(const UObject* WorldContextObject, US
 		return;
 	}
 
-	if (FAudioDevice* AudioDevice = ThisWorld->GetAudioDevice())
+	if (FAudioDeviceHandle AudioDevice = ThisWorld->GetAudioDevice())
 	{
 		AudioDevice->PopSoundMixModifier(InSoundMixModifier);
 	}
@@ -1535,7 +1748,7 @@ void UGameplayStatics::ClearSoundMixModifiers(const UObject* WorldContextObject)
 		return;
 	}
 
-	if (FAudioDevice* AudioDevice = ThisWorld->GetAudioDevice())
+	if (FAudioDeviceHandle AudioDevice = ThisWorld->GetAudioDevice())
 	{
 		AudioDevice->ClearSoundMixModifiers();
 	}
@@ -1554,7 +1767,7 @@ void UGameplayStatics::ActivateReverbEffect(const UObject* WorldContextObject, c
 		return;
 	}
 
-	if (FAudioDevice* AudioDevice = ThisWorld->GetAudioDevice())
+	if (FAudioDeviceHandle AudioDevice = ThisWorld->GetAudioDevice())
 	{
 		AudioDevice->ActivateReverbEffect(ReverbEffect, TagName, Priority, Volume, FadeTime);
 	}
@@ -1573,7 +1786,7 @@ void UGameplayStatics::DeactivateReverbEffect(const UObject* WorldContextObject,
 		return;
 	}
 
-	if (FAudioDevice* AudioDevice = ThisWorld->GetAudioDevice())
+	if (FAudioDeviceHandle AudioDevice = ThisWorld->GetAudioDevice())
 	{
 		AudioDevice->DeactivateReverbEffect(TagName);
 	}
@@ -1592,7 +1805,7 @@ class UReverbEffect* UGameplayStatics::GetCurrentReverbEffect(const UObject* Wor
 		return nullptr;
 	}
 
-	if (FAudioDevice* AudioDevice = ThisWorld->GetAudioDevice())
+	if (FAudioDeviceHandle AudioDevice = ThisWorld->GetAudioDevice())
 	{
 		return AudioDevice->GetCurrentReverbEffect();
 	}
@@ -1612,7 +1825,7 @@ void UGameplayStatics::SetMaxAudioChannelsScaled(const UObject* WorldContextObje
 		return;
 	}
 
-	if (FAudioDevice* AudioDevice = ThisWorld->GetAudioDevice())
+	if (FAudioDeviceHandle AudioDevice = ThisWorld->GetAudioDevice())
 	{
 		AudioDevice->SetMaxChannelsScaled(MaxChannelCountScale);
 	}
@@ -1632,7 +1845,7 @@ int32 UGameplayStatics::GetMaxAudioChannelCount(const UObject* WorldContextObjec
 		return 0;
 	}
 
-	if (FAudioDevice* AudioDevice = ThisWorld->GetAudioDevice())
+	if (FAudioDeviceHandle AudioDevice = ThisWorld->GetAudioDevice())
 	{
 		return AudioDevice->GetMaxChannels();
 	}
@@ -1647,7 +1860,7 @@ UDecalComponent* CreateDecalComponent(class UMaterialInterface* DecalMaterial, F
 	DecalComp->bAllowAnyoneToDestroyMe = true;
 	DecalComp->SetDecalMaterial(DecalMaterial);
 	DecalComp->DecalSize = DecalSize;
-	DecalComp->bAbsoluteScale = true;
+	DecalComp->SetUsingAbsoluteScale(true);
 	DecalComp->RegisterComponentWithWorld(World);
 
 	if (LifeSpan > 0.f)
@@ -1772,27 +1985,23 @@ USaveGame* UGameplayStatics::CreateSaveGameObject(TSubclassOf<USaveGame> SaveGam
 	return nullptr;
 }
 
-USaveGame* UGameplayStatics::CreateSaveGameObjectFromBlueprint(UBlueprint* SaveGameBlueprint)
-{
-	if (SaveGameBlueprint && SaveGameBlueprint->GeneratedClass && SaveGameBlueprint->GeneratedClass->IsChildOf(USaveGame::StaticClass()))
-	{
-		return NewObject<USaveGame>(GetTransientPackage(), SaveGameBlueprint->GeneratedClass);
-	}
-	return nullptr;
-}
-
 bool UGameplayStatics::SaveGameToMemory(USaveGame* SaveGameObject, TArray<uint8>& OutSaveData )
 {
-	FMemoryWriter MemoryWriter(OutSaveData, true);
+	if (SaveGameObject)
+	{
+		FMemoryWriter MemoryWriter(OutSaveData, true);
 
-	FSaveGameHeader SaveHeader(SaveGameObject->GetClass());
-	SaveHeader.Write(MemoryWriter);
+		FSaveGameHeader SaveHeader(SaveGameObject->GetClass());
+		SaveHeader.Write(MemoryWriter);
 
-	// Then save the object state, replacing object refs and names with strings
-	FObjectAndNameAsStringProxyArchive Ar(MemoryWriter, false);
-	SaveGameObject->Serialize(Ar);
+		// Then save the object state, replacing object refs and names with strings
+		FObjectAndNameAsStringProxyArchive Ar(MemoryWriter, false);
+		SaveGameObject->Serialize(Ar);
 
-	return true; // Not sure if there's a failure case here.
+		return true; // Not sure if there's a failure case here.
+	}
+
+	return false;
 }
 
 bool UGameplayStatics::SaveDataToSlot(const TArray<uint8>& InSaveData, const FString& SlotName, const int32 UserIndex)
@@ -1808,24 +2017,38 @@ bool UGameplayStatics::SaveDataToSlot(const TArray<uint8>& InSaveData, const FSt
 	return false;
 }
 
+void UGameplayStatics::AsyncSaveGameToSlot(USaveGame* SaveGameObject, const FString& SlotName, const int32 UserIndex, FAsyncSaveGameToSlotDelegate SavedDelegate)
+{
+	TArray<uint8> ObjectBytes;
+	if (SaveGameToMemory(SaveGameObject, ObjectBytes))
+	{
+		AsyncTask(ENamedThreads::AnyHiPriThreadNormalTask, [SlotName, UserIndex, SavedDelegate, ObjectBytes]()
+		{
+			bool bSuccess = SaveDataToSlot(ObjectBytes, SlotName, UserIndex);
+
+			// Now schedule the callback on the game thread, but only if it was bound to anything
+			if (SavedDelegate.IsBound())
+			{
+				AsyncTask(ENamedThreads::GameThread, [SlotName, UserIndex, SavedDelegate, bSuccess]()
+				{
+					SavedDelegate.ExecuteIfBound(SlotName, UserIndex, bSuccess);
+				});
+			}
+		});
+	}
+	else if (SavedDelegate.IsBound())
+	{
+		SavedDelegate.ExecuteIfBound(SlotName, UserIndex, false);
+	}
+}
+
 bool UGameplayStatics::SaveGameToSlot(USaveGame* SaveGameObject, const FString& SlotName, const int32 UserIndex)
 {
-	ISaveGameSystem* SaveSystem = IPlatformFeaturesModule::Get().GetSaveGameSystem();
-	// If we have a system and an object to save and a save name...
-	if(SaveSystem && SaveGameObject && (SlotName.Len() > 0))
+	// This is a wrapper around the functions reading to/from a byte array
+	TArray<uint8> ObjectBytes;
+	if (SaveGameToMemory(SaveGameObject, ObjectBytes))
 	{
-		TArray<uint8> ObjectBytes;
-		FMemoryWriter MemoryWriter(ObjectBytes, true);
-
-		FSaveGameHeader SaveHeader(SaveGameObject->GetClass());
-		SaveHeader.Write(MemoryWriter);
-
-		// Then save the object state, replacing object refs and names with strings
-		FObjectAndNameAsStringProxyArchive Ar(MemoryWriter, false);
-		SaveGameObject->Serialize(Ar);
-
-		// Stuff that data into the save system with the desired file name
-		return SaveSystem->SaveGame(false, *SlotName, UserIndex, ObjectBytes);
+		return SaveDataToSlot(ObjectBytes, SlotName, UserIndex);
 	}
 	return false;
 }
@@ -1848,26 +2071,14 @@ bool UGameplayStatics::DeleteGameInSlot(const FString& SlotName, const int32 Use
 	return false;
 }
 
-USaveGame* UGameplayStatics::LoadGameFromSlot(const FString& SlotName, const int32 UserIndex)
-{
-	ISaveGameSystem* SaveSystem = IPlatformFeaturesModule::Get().GetSaveGameSystem();
-	// If we have a save system and a valid name..
-	if (SaveSystem && (SlotName.Len() > 0))
+USaveGame* UGameplayStatics::LoadGameFromMemory(const TArray<uint8>& InSaveData)
 	{
-		// Load raw data from slot
-		TArray<uint8> ObjectBytes;
-		bool bSuccess = SaveSystem->LoadGame(false, *SlotName, UserIndex, ObjectBytes);
-		if (bSuccess)
+	if (InSaveData.Num() == 0)
 		{
-			return LoadGameFromMemory(ObjectBytes);
-		}
-	}
-
+		// Empty buffer, return instead of causing a bad serialize that could crash
 	return nullptr;
 }
 
-USaveGame* UGameplayStatics::LoadGameFromMemory(const TArray<uint8>& InSaveData)
-{
 	USaveGame* OutSaveGameObject = nullptr;
 
 	FMemoryReader MemoryReader(InSaveData, true);
@@ -1892,6 +2103,57 @@ USaveGame* UGameplayStatics::LoadGameFromMemory(const TArray<uint8>& InSaveData)
 	}
 
 	return OutSaveGameObject;
+}
+
+bool UGameplayStatics::LoadDataFromSlot(TArray<uint8>& OutSaveData, const FString& SlotName, const int32 UserIndex)
+{
+	ISaveGameSystem* SaveSystem = IPlatformFeaturesModule::Get().GetSaveGameSystem();
+	// If we have a save system and a valid name..
+	if (SaveSystem && (SlotName.Len() > 0))
+	{
+		if (SaveSystem->LoadGame(false, *SlotName, UserIndex, OutSaveData))
+		{
+			return true;
+		}
+	}
+
+	// Clear buffer on a failed read
+	OutSaveData.Reset();
+	return false;
+}
+
+void UGameplayStatics::AsyncLoadGameFromSlot(const FString& SlotName, const int32 UserIndex, FAsyncLoadGameFromSlotDelegate LoadedDelegate)
+{
+	AsyncTask(ENamedThreads::AnyHiPriThreadNormalTask, [SlotName, UserIndex, LoadedDelegate]()
+	{
+		// Do the actual I/O on the background thread
+		TArray<uint8> ObjectBytes;
+		LoadDataFromSlot(ObjectBytes, SlotName, UserIndex);
+
+		// Now schedule the serialize and callback on the game thread
+		AsyncTask(ENamedThreads::GameThread, [SlotName, UserIndex, LoadedDelegate, ObjectBytes]()
+		{
+			USaveGame* LoadedGame = nullptr;
+			if (ObjectBytes.Num() > 0)
+			{
+				LoadedGame = LoadGameFromMemory(ObjectBytes);
+			}
+
+			LoadedDelegate.ExecuteIfBound(SlotName, UserIndex, LoadedGame);
+		});
+	});
+}
+
+USaveGame* UGameplayStatics::LoadGameFromSlot(const FString& SlotName, const int32 UserIndex)
+{
+	// This is a wrapper around the functions reading to/from a byte array
+	TArray<uint8> ObjectBytes;
+	if (LoadDataFromSlot(ObjectBytes, SlotName, UserIndex))
+	{
+		return LoadGameFromMemory(ObjectBytes);
+	}
+
+	return nullptr;
 }
 
 FMemoryReader UGameplayStatics::StripSaveGameHeader(const TArray<uint8>& SaveData)
@@ -2525,6 +2787,61 @@ bool UGameplayStatics::ProjectWorldToScreen(APlayerController const* Player, con
 	return false;
 }
 
+void UGameplayStatics::CalculateViewProjectionMatricesFromViewTarget(AActor* InViewTarget, FMatrix& OutViewMatrix, FMatrix& OutProjectionMatrix, FMatrix& OutViewProjectionMatrix)
+{
+	if (InViewTarget)
+	{
+		FMinimalViewInfo MinimalViewInfo;
+		InViewTarget->CalcCamera(0.f, MinimalViewInfo);
+
+		// This is kinda weird odd one-off, can this be integrated into the MinimalViewInfo?
+		TOptional<FMatrix> CustomProjectionMatrix;
+		if (ASceneCapture2D* SceneCapture2D = Cast<ASceneCapture2D>(InViewTarget))
+		{
+			if (USceneCaptureComponent2D* SceneCaptureComponent2D = SceneCapture2D->GetCaptureComponent2D())
+			{
+				if (SceneCaptureComponent2D && SceneCaptureComponent2D->bUseCustomProjectionMatrix)
+				{
+					CustomProjectionMatrix = SceneCaptureComponent2D->CustomProjectionMatrix;
+				}
+			}
+		}
+
+		CalculateViewProjectionMatricesFromMinimalView(MinimalViewInfo, CustomProjectionMatrix, OutViewMatrix, OutProjectionMatrix, OutViewProjectionMatrix);
+	}
+}
+
+void UGameplayStatics::CalculateViewProjectionMatricesFromMinimalView(const FMinimalViewInfo& MinimalViewInfo, const TOptional<FMatrix>& CustomProjectionMatrix, FMatrix& OutViewMatrix, FMatrix& OutProjectionMatrix, FMatrix& OutViewProjectionMatrix)
+{
+	if (CustomProjectionMatrix.IsSet())
+	{
+		OutProjectionMatrix = AdjustProjectionMatrixForRHI(CustomProjectionMatrix.GetValue());
+	}
+	else
+	{
+		OutProjectionMatrix = AdjustProjectionMatrixForRHI(MinimalViewInfo.CalculateProjectionMatrix());
+	}
+
+	FMatrix ViewRotationMatrix = FInverseRotationMatrix(MinimalViewInfo.Rotation) * FMatrix(
+		FPlane(0, 0, 1, 0),
+		FPlane(1, 0, 0, 0),
+		FPlane(0, 1, 0, 0),
+		FPlane(0, 0, 0, 1));
+
+	OutViewMatrix = FTranslationMatrix(-MinimalViewInfo.Location) * ViewRotationMatrix;
+	//OutInvProjectionMatrix = OutProjectionMatrix.Inverse();
+	//OutInvViewMatrix = ViewRotationMatrix.GetTransposed() * FTranslationMatrix(MinimalViewInfo.Location);
+
+	OutViewProjectionMatrix = OutViewMatrix * OutProjectionMatrix;
+	//OutInvViewProjectionMatrix = OutInvProjectionMatrix * OutInvViewMatrix;
+}
+
+void UGameplayStatics::GetViewProjectionMatrix(FMinimalViewInfo DesiredView, FMatrix &ViewMatrix, FMatrix &ProjectionMatrix, FMatrix &ViewProjectionMatrix)
+{
+	TOptional<FMatrix> CustomMatrix;
+	CalculateViewProjectionMatricesFromMinimalView(DesiredView, CustomMatrix, ViewMatrix, ProjectionMatrix, ViewProjectionMatrix);
+}
+
 bool UGameplayStatics::GrabOption( FString& Options, FString& Result )
 {
 	FString QuestionMark(TEXT("?"));
@@ -2533,16 +2850,17 @@ bool UGameplayStatics::GrabOption( FString& Options, FString& Result )
 	{
 		// Get result.
 		Result = Options.Mid(1, MAX_int32);
-		if (Result.Contains(QuestionMark, ESearchCase::CaseSensitive))
+		const int32 QMIdx = Result.Find(QuestionMark, ESearchCase::CaseSensitive);
+		if (QMIdx != INDEX_NONE)
 		{
-			Result = Result.Left(Result.Find(QuestionMark, ESearchCase::CaseSensitive));
+			Result.LeftInline(QMIdx, false);
 		}
 
 		// Update options.
-		Options = Options.Mid(1, MAX_int32);
+		Options.MidInline(1, MAX_int32, false);
 		if (Options.Contains(QuestionMark, ESearchCase::CaseSensitive))
 		{
-			Options = Options.Mid(Options.Find(QuestionMark, ESearchCase::CaseSensitive), MAX_int32);
+			Options.MidInline(Options.Find(QuestionMark, ESearchCase::CaseSensitive), MAX_int32, false);
 		}
 		else
 		{
@@ -2614,5 +2932,10 @@ bool UGameplayStatics::HasLaunchOption(const FString& OptionToCheck)
 {
 	return FParse::Param(FCommandLine::Get(), *OptionToCheck);
 }
+
+/**
+ * Calculate projection matrices from a specified view target
+ */
+static void GetProjectionMatricesFromViewTarget(AActor* InViewTarget, FMatrix& OutViewProjectionMatrix, FMatrix& OutInvViewProjectionMatrix);
 
 #undef LOCTEXT_NAMESPACE

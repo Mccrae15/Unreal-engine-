@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "Tracks/MovieScene3DConstraintTrack.h"
 #include "Sections/MovieScene3DConstraintSection.h"
@@ -44,6 +44,12 @@ void UMovieScene3DConstraintTrack::AddSection(UMovieSceneSection& Section)
 void UMovieScene3DConstraintTrack::RemoveSection(UMovieSceneSection& Section)
 {
 	ConstraintSections.Remove(&Section);
+}
+
+
+void UMovieScene3DConstraintTrack::RemoveSectionAt(int32 SectionIndex)
+{
+	ConstraintSections.RemoveAt(SectionIndex);
 }
 
 

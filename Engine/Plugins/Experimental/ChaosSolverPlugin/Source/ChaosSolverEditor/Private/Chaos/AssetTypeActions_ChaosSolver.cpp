@@ -1,16 +1,16 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "Chaos/AssetTypeActions_ChaosSolver.h"
 
 #include "ThumbnailRendering/SceneThumbnailInfo.h"
 #include "Chaos/ChaosSolver.h"
+#include "ToolMenus.h"
 
 #define LOCTEXT_NAMESPACE "AssetTypeActions"
 
 UClass* FAssetTypeActions_ChaosSolver::GetSupportedClass() const
 {
-	return 
-		UChaosSolver::StaticClass();
+	return UChaosSolver::StaticClass();
 }
 
 UThumbnailInfo* FAssetTypeActions_ChaosSolver::GetThumbnailInfo(UObject* Asset) const
@@ -19,9 +19,9 @@ UThumbnailInfo* FAssetTypeActions_ChaosSolver::GetThumbnailInfo(UObject* Asset) 
 	return NewObject<USceneThumbnailInfo>(ChaosSolver, NAME_None, RF_Transactional);
 }
 
-void FAssetTypeActions_ChaosSolver::GetActions(const TArray<UObject*>& InObjects, FMenuBuilder& MenuBuilder)
+void FAssetTypeActions_ChaosSolver::GetActions(const TArray<UObject*>& InObjects, FToolMenuSection& Section)
 {
-	FAssetTypeActions_Base::GetActions(InObjects, MenuBuilder);
+	FAssetTypeActions_Base::GetActions(InObjects, Section);
 }
 
 void FAssetTypeActions_ChaosSolver::OpenAssetEditor(const TArray<UObject*>& InObjects, TSharedPtr<IToolkitHost> EditWithinLevelEditor)

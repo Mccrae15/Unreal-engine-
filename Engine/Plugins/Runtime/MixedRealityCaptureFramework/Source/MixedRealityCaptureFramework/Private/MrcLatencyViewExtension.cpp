@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "MrcLatencyViewExtension.h"
 #include "MotionDelayBuffer.h"
@@ -147,5 +147,5 @@ void FMrcLatencyViewExtension::BeginRenderViewFamily(FSceneViewFamily& ViewFamil
 //------------------------------------------------------------------------------
 bool FMrcLatencyViewExtension::IsActiveThisFrame(class FViewport* InViewport) const
 {
-	return Owner.IsValid() && Owner->bIsActive && FMotionDelayClient::IsActiveThisFrame(InViewport);
+	return Owner.IsValid() && Owner->IsActive() && FMotionDelayClient::IsActiveThisFrame(InViewport);
 }

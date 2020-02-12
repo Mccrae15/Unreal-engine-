@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "MagicLeapVREyeTracker.h"
 #include "IEyeTrackerModule.h"
@@ -11,19 +11,11 @@
 #include "Engine/LocalPlayer.h"
 #include "SceneView.h"
 #include "IMagicLeapPlugin.h"
-#include "AppFramework.h"
-#include "MagicLeapHMD.h"
 #include "UnrealEngine.h"
-#include "MagicLeapSDKDetection.h"
 #include "HeadMountedDisplayFunctionLibrary.h"
-#include "MagicLeapPluginUtil.h" // for ML_INCLUDES_START/END
 #include "IMagicLeapPlugin.h"
-
-#if WITH_MLSDK
-ML_INCLUDES_START
-#include <ml_eye_tracking.h>
-ML_INCLUDES_END
-#endif //WITH_MLSDK
+#include "Lumin/CAPIShims/LuminAPIEyeTracking.h"
+#include "MagicLeapCFUID.h"
 
 #if WITH_MLSDK
 EMagicLeapEyeTrackingCalibrationStatus MLToUnrealEyeCalibrationStatus(MLEyeTrackingCalibrationStatus InStatus)
@@ -49,10 +41,17 @@ FMagicLeapVREyeTracker::FMagicLeapVREyeTracker()
 , EyeTrackingHandle(ML_INVALID_HANDLE)
 #endif //WITH_MLSDK
 {
+	IMagicLeapPlugin::Get().RegisterMagicLeapTrackerEntity(this);
 	SetDefaultDataValues();
 }
 
 FMagicLeapVREyeTracker::~FMagicLeapVREyeTracker()
+{
+	DestroyEntityTracker();
+	IMagicLeapPlugin::Get().UnregisterMagicLeapTrackerEntity(this);
+}
+
+void FMagicLeapVREyeTracker::DestroyEntityTracker()
 {
 #if WITH_MLSDK
 	if (EyeTrackingHandle != ML_INVALID_HANDLE)
@@ -64,8 +63,8 @@ FMagicLeapVREyeTracker::~FMagicLeapVREyeTracker()
 		EyeTrackingHandle = ML_INVALID_HANDLE;
 	}
 #endif //WITH_MLSDK
+	bInitialized = false;
 }
-
 
 void FMagicLeapVREyeTracker::SetDefaultDataValues()
 {
@@ -112,38 +111,34 @@ bool FMagicLeapVREyeTracker::Tick(float DeltaTime)
 			FDateTime Now = FDateTime::UtcNow();
 			UnfilteredEyeTrackingData.TimeStamp = Now;
 
-			const FAppFramework& AppFramework = static_cast<FMagicLeapHMD*>(GEngine->XRSystem->GetHMDDevice())->GetAppFramework();
-			if (AppFramework.IsInitialized())
+			IMagicLeapPlugin& MLPlugin = IMagicLeapPlugin::Get();
+			if (MLPlugin.IsPerceptionEnabled())
 			{
-				FTransform PoseTransform = UHeadMountedDisplayFunctionLibrary::GetTrackingToWorldTransform(GWorld);
+				const FTransform TrackingToWorld = UHeadMountedDisplayFunctionLibrary::GetTrackingToWorldTransform(nullptr);
 
 				//harvest the 3 transforms
-				EFailReason FailReason;
+				EMagicLeapTransformFailReason FailReason;
 				FTransform FixationTransform;
-				if (AppFramework.GetTransform(EyeTrackingStaticData.fixation, FixationTransform, FailReason))
+				if (MLPlugin.GetTransform(EyeTrackingStaticData.fixation, FixationTransform, FailReason))
 				{
-					FixationTransform.AddToTranslation(PoseTransform.GetLocation());
-					FixationTransform.ConcatenateRotation(PoseTransform.Rotator().Quaternion());
-
+					FixationTransform = FixationTransform * TrackingToWorld;
 					//get focal point
 					UnfilteredEyeTrackingData.WorldAverageGazeConvergencePoint = FixationTransform.GetTranslation();
 				}
 
 				bool bLeftTransformValid = false;
 				FTransform LeftCenterTransform;
-				if (AppFramework.GetTransform(EyeTrackingStaticData.left_center, LeftCenterTransform, FailReason))
+				if (MLPlugin.GetTransform(EyeTrackingStaticData.left_center, LeftCenterTransform, FailReason))
 				{
-					LeftCenterTransform.AddToTranslation(PoseTransform.GetLocation());
-					LeftCenterTransform.ConcatenateRotation(PoseTransform.Rotator().Quaternion());
+					LeftCenterTransform = LeftCenterTransform * TrackingToWorld;
 					bLeftTransformValid = true;
 				}
 
 				bool bRightTransformValid = false;
 				FTransform RightCenterTransform;
-				if (AppFramework.GetTransform(EyeTrackingStaticData.right_center, RightCenterTransform, FailReason))
+				if (MLPlugin.GetTransform(EyeTrackingStaticData.right_center, RightCenterTransform, FailReason))
 				{
-					RightCenterTransform.AddToTranslation(PoseTransform.GetLocation());
-					RightCenterTransform.ConcatenateRotation(PoseTransform.Rotator().Quaternion());
+					RightCenterTransform = RightCenterTransform * TrackingToWorld;
 					bRightTransformValid = true;
 				}
 
@@ -183,12 +178,11 @@ bool FMagicLeapVREyeTracker::Tick(float DeltaTime)
 	{
 		if (!bInitialized && IMagicLeapPlugin::Get().IsMagicLeapHMDValid())
 		{
-#if !PLATFORM_MAC
-			if (static_cast<FMagicLeapHMD*>(GEngine->XRSystem->GetHMDDevice())->IsPerceptionEnabled())
+			if (IMagicLeapPlugin::Get().IsPerceptionEnabled())
 			{
 				//keep trying until we are successful in creating one
 				MLResult CreateResult = MLResult_UnspecifiedFailure;
-				ML_FUNCTION_WRAPPER(CreateResult = MLEyeTrackingCreate(&EyeTrackingHandle));
+				CreateResult = MLEyeTrackingCreate(&EyeTrackingHandle);
 				bInitialized = CreateResult == MLResult_Ok && MLHandleIsValid(EyeTrackingHandle);
 				if (bInitialized)
 				{
@@ -200,7 +194,6 @@ bool FMagicLeapVREyeTracker::Tick(float DeltaTime)
 					}
 				}
 			}
-#endif //!PLATFORM_MAC
 		}
 	}
 #endif //WITH_MLSDK
@@ -222,11 +215,6 @@ EMagicLeapEyeTrackingStatus FMagicLeapVREyeTracker::GetEyeTrackingStatus()
 {
 	bReadyToInit = true;
 	return EyeTrackingStatus;
-}
-
-bool FMagicLeapVREyeTracker::IsEyeTrackerCalibrated() const
-{
-	return GetCalibrationStatus() == EMagicLeapEyeTrackingCalibrationStatus::None ? false : true;
 }
 
 EMagicLeapEyeTrackingCalibrationStatus FMagicLeapVREyeTracker::GetCalibrationStatus() const

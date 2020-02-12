@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 /*=============================================================================
 	TimerManager.h: Global gameplay timer facility
@@ -12,8 +12,13 @@
 #include "Engine/EngineTypes.h"
 
 class UGameInstance;
+struct FTimerSourceList;
 
 DECLARE_DELEGATE(FTimerDelegate);
+
+#ifndef UE_ENABLE_TRACKING_TIMER_SOURCES
+#define UE_ENABLE_TRACKING_TIMER_SOURCES !UE_BUILD_SHIPPING
+#endif
 
 /** Simple interface to wrap a timer delegate that can be either native or dynamic. */
 struct FTimerUnifiedDelegate
@@ -163,7 +168,7 @@ public:
 	// ----------------------------------
 	// Timer API
 
-	FTimerManager();
+	explicit FTimerManager(UGameInstance* GameInstance = nullptr);
 	virtual ~FTimerManager();
 
 	/**
@@ -178,9 +183,9 @@ public:
 	 * @param InOutHandle			If the passed-in handle refers to an existing timer, it will be cleared before the new timer is added. A new handle to the new timer is returned in either case.
 	 * @param InObj					Object to call the timer function on.
 	 * @param InTimerMethod			Method to call when timer fires.
-	 * @param InRate				The amount of time between set and firing.  If <= 0.f, clears existing timers.
+	 * @param InRate				The amount of time (in seconds) between set and firing.  If <= 0.f, clears existing timers.
 	 * @param InbLoop				true to keep firing at Rate intervals, false to fire only once.
-	 * @param InFirstDelay			The time for the first iteration of a looping timer. If < 0.f inRate will be used.
+	 * @param InFirstDelay			The time (in seconds) for the first iteration of a looping timer. If < 0.f InRate will be used.
 	 */
 	template< class UserClass >
 	FORCEINLINE void SetTimer(FTimerHandle& InOutHandle, UserClass* InObj, typename FTimerDelegate::TUObjectMethodDelegate< UserClass >::FMethodPtr InTimerMethod, float InRate, bool InbLoop = false, float InFirstDelay = -1.f)
@@ -258,8 +263,8 @@ public:
 		if (const FTimerData* TimerData = FindTimer(InHandle))
 		{
 			InternalClearTimer(InHandle);
-			InHandle.Invalidate();
 		}
+		InHandle.Invalidate();
 	}
 
 	/** Clears all timers that are bound to functions on the given object. */
@@ -315,7 +320,7 @@ public:
 	* @param InHandle The handle of the timer to check for being paused.
 	* @return true if the timer exists and is paused, false otherwise.
 	*/
-	FORCEINLINE bool IsTimerPaused(FTimerHandle InHandle)
+	FORCEINLINE bool IsTimerPaused(FTimerHandle InHandle) const
 	{
 		FTimerData const* const TimerData = FindTimer(InHandle);
 		return TimerData && TimerData->Status == ETimerStatus::Paused;
@@ -327,7 +332,7 @@ public:
 	* @param InHandle The handle of the timer to check for being pending.
 	* @return true if the timer exists and is pending, false otherwise.
 	*/
-	FORCEINLINE bool IsTimerPending(FTimerHandle InHandle)
+	FORCEINLINE bool IsTimerPending(FTimerHandle InHandle) const
 	{
 		FTimerData const* const TimerData = FindTimer(InHandle);
 		return TimerData && TimerData->Status == ETimerStatus::Pending;
@@ -339,7 +344,7 @@ public:
 	* @param InHandle The handle of the timer to check for existence.
 	* @return true if the timer exists, false otherwise.
 	*/
-	FORCEINLINE bool TimerExists(FTimerHandle InHandle)
+	FORCEINLINE bool TimerExists(FTimerHandle InHandle) const
 	{
 		return FindTimer(InHandle) != nullptr;
 	}
@@ -386,8 +391,8 @@ public:
 	/** Debug command to output info on all timers currently set to the log. */
 	void ListTimers() const;
 
-	/** Used by the UGameInstance constructor to set this manager's owning game instance. */
-	void SetGameInstance(UGameInstance* InGameInstance) { OwningGameInstance = InGameInstance; }
+private:
+	void SetGameInstance(UGameInstance* InGameInstance);
 
 // This should be private, but needs to be public for testing.
 public:
@@ -406,7 +411,7 @@ protected:
 private:
 	void InternalSetTimer( FTimerHandle& InOutHandle, FTimerUnifiedDelegate&& InDelegate, float InRate, bool InbLoop, float InFirstDelay );
 	FTimerHandle InternalSetTimerForNextTick( FTimerUnifiedDelegate&& InDelegate );
-	void InternalClearTimer( FTimerHandle const& InDelegate );
+	void InternalClearTimer( FTimerHandle InDelegate );
 	void InternalClearAllTimers( void const* Object );
 	float InternalGetTimerRate( FTimerData const* const TimerData ) const;
 	float InternalGetTimerElapsed( FTimerData const* const TimerData ) const;
@@ -423,6 +428,7 @@ private:
 	FTimerHandle AddTimer(FTimerData&& TimerData);
 	/** Removes a timer from the Timers list at the given index, also cleaning up the TimerIndicesByObject map */
 	void RemoveTimer(FTimerHandle Handle);
+	bool WillRemoveTimerAssert(FTimerHandle Handle) const;
 
 	/** The array of timers - all other arrays will index into this */
 	TSparseArray<FTimerData> Timers;
@@ -449,5 +455,10 @@ private:
 
 	/** The game instance that created this timer manager. May be null if this timer manager wasn't created by a game instance. */
 	UGameInstance* OwningGameInstance;
+
+#if UE_ENABLE_TRACKING_TIMER_SOURCES
+	/** Debugging/tracking information used when TimerManager.BuildTimerSourceList is set */
+	TUniquePtr<FTimerSourceList> TimerSourceList;
+#endif
 };
 

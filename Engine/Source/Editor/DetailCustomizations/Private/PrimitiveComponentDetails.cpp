@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "PrimitiveComponentDetails.h"
 #include "Components/SceneComponent.h"
@@ -87,7 +87,8 @@ void FPrimitiveComponentDetails::CustomizeDetails( IDetailLayoutBuilder& DetailB
 	}
 
 	AddAdvancedSubCategory( DetailBuilder, "Rendering", "TextureStreaming" );
-	AddAdvancedSubCategory( DetailBuilder, "Rendering", "LOD");
+	AddAdvancedSubCategory( DetailBuilder, "Rendering", "RayTracing");
+	AddAdvancedSubCategory(DetailBuilder, "Rendering", "LOD");
 }
 
 void FPrimitiveComponentDetails::AddMaterialCategory( IDetailLayoutBuilder& DetailBuilder )

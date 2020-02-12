@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "Factories/ReimportSoundFactory.h"
 #include "Sound/SoundWave.h"
@@ -12,7 +12,6 @@
 UReimportSoundFactory::UReimportSoundFactory(const FObjectInitializer& ObjectInitializer)
 	: Super(ObjectInitializer)
 {
-
 	SupportedClass = USoundWave::StaticClass();
 	Formats.Add(TEXT("wav;Wave audio file"));
 
@@ -34,8 +33,7 @@ UReimportSoundFactory::UReimportSoundFactory(const FObjectInitializer& ObjectIni
 
 bool UReimportSoundFactory::CanReimport(UObject* Obj, TArray<FString>& OutFilenames)
 {
-	USoundWave* SoundWave = Cast<USoundWave>(Obj);
-	if (SoundWave && SoundWave->NumChannels < 3)
+	if (USoundWave* SoundWave = Cast<USoundWave>(Obj))
 	{
 		SoundWave->AssetImportData->ExtractFilenames(OutFilenames);
 
@@ -114,8 +112,8 @@ EReimportResult::Type UReimportSoundFactory::Reimport(UObject* Obj)
 		return EReimportResult::Failed;
 	}
 
-	// Suppress the import overwrite dialog, we want to keep existing settings when re-importing
-	USoundFactory::SuppressImportOverwriteDialog();
+	// Always suppress dialogs on re-import
+	SuppressImportDialogs();
 
 	bool OutCanceled = false;
 	if (!ImportObject(SoundWave->GetClass(), SoundWave->GetOuter(), *SoundWave->GetName(), RF_Public | RF_Standalone, Filename, nullptr, OutCanceled))

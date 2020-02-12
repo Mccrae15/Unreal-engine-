@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 /*=============================================================================================
 	AndroidPlatformRunnableThread.h: Android platform threading functions
@@ -7,7 +7,7 @@
 #pragma once
 
 #include "Runtime/Core/Private/HAL/PThreadRunnableThread.h"
-#include "Android/AndroidMisc.h"
+#include "Android/AndroidPlatformMisc.h"
 
 /**
 * Android implementation of the pthread functions
@@ -52,7 +52,7 @@ private:
 
 				// cut out the middle and replace with a substitute
 				const TCHAR Dash[] = TEXT("-");
-				const int32 DashLen = ARRAY_COUNT(Dash) - 1;
+				const int32 DashLen = UE_ARRAY_COUNT(Dash) - 1;
 				int NumToLeave = (AndroidThreadNameLimit - DashLen) / 2;
 
 				SizeLimitedThreadName = Temp.Left(AndroidThreadNameLimit - (NumToLeave + DashLen));

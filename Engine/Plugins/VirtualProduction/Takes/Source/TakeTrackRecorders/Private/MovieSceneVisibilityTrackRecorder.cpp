@@ -1,7 +1,7 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "TrackRecorders/MovieSceneVisibilityTrackRecorder.h"
-#include "TakesCoreFwd.h"
+#include "TakesCoreLog.h"
 #include "Components/SceneComponent.h"
 #include "GameFramework/Actor.h"
 #include "KeyParams.h"
@@ -19,7 +19,7 @@ bool FMovieSceneVisibilityTrackRecorderFactory::CanRecordObject(UObject* InObjec
 	return InObjectToRecord->IsA<AActor>() || InObjectToRecord->IsA<USceneComponent>();
 }
 
-bool FMovieSceneVisibilityTrackRecorderFactory::CanRecordProperty(UObject* InObjectToRecord, class UProperty* InPropertyToRecord) const
+bool FMovieSceneVisibilityTrackRecorderFactory::CanRecordProperty(UObject* InObjectToRecord, class FProperty* InPropertyToRecord) const
 {
 	// This returns true for the visibility properties so that the generic bool recorder does not record them
 	if (InPropertyToRecord->GetFName() == ActorVisibilityTrackName || InPropertyToRecord->GetFName() == ComponentVisibilityTrackName)
@@ -71,7 +71,7 @@ void UMovieSceneVisibilityTrackRecorder::CreateTrackImpl()
 		}
 		else if (AActor* Actor = Cast<AActor>(ObjectToRecord.Get()))
 		{
-			bWasVisible = !Actor->bHidden;
+			bWasVisible = !Actor->IsHidden();
 		}
 
 		FMovieSceneBoolChannel* Channel = MovieSceneSection->GetChannelProxy().GetChannel<FMovieSceneBoolChannel>(0);
@@ -184,7 +184,7 @@ void UMovieSceneVisibilityTrackRecorder::RemoveRedundantTracks()
 		else if (AActor* Actor = Cast<AActor>(ObjectToRecord.Get()))
 		{
 			AActor* DefaultActor = CastChecked<AActor>(Actor->GetClass()->GetDefaultObject());
-			if (!DefaultActor->bHidden == bDefaultValue)
+			if (!DefaultActor->IsHidden() == bDefaultValue)
 			{
 				bRemoveSection = true;
 			}
@@ -212,7 +212,7 @@ bool UMovieSceneVisibilityTrackRecorder::IsObjectVisible() const
 	}
 	else if (AActor* Actor = Cast<AActor>(ObjectToRecord.Get()))
 	{
-		bVisible = !Actor->bHidden;
+		bVisible = !Actor->IsHidden();
 	}
 	
 	return bVisible;

@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -81,6 +81,13 @@ public:
 	static void KeepAwake(FName Requester, bool bNeedsRendering);
 	static void AllowSleep(FName Requester);
 	
+	static void UELogFatal(const TCHAR* String);
+	static void UELogError(const TCHAR* String);
+	static void UELogWarning(const TCHAR* String);
+	static void UELogDisplay(const TCHAR* String);
+	static void UELogLog(const TCHAR* String);
+	static void UELogVerbose(const TCHAR* String);
+
 	static bool IsAwakeForTicking();
 	static bool IsAwakeForRendering();
 	
@@ -169,6 +176,9 @@ public:
 		Other.bIsValid = false;
 		return *this;
 	}
+
+	bool GetNeedsRendering() const { return bNeedsRendering; }
+	FName GetRequester() const { return Requester;  }
 
 private:
 	FName Requester;

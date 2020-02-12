@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -22,6 +22,9 @@ struct FPropertyChangedEvent;
 struct FSlateIcon;
 struct FDiffResults;
 struct FDiffSingleResult;
+
+class FPropertyLocalizationDataGatherer;
+enum class EPropertyLocalizationGathererTextFlags : uint8;
 
 /**
   * Struct used to define information for terminal types, e.g. types that can be contained
@@ -77,6 +80,22 @@ enum EEdGraphPinDirection
 	EGPD_Output,
 	EGPD_MAX,
 };
+
+inline const TCHAR* const LexToString(const EEdGraphPinDirection State)
+{
+	switch (State)
+	{
+	case EEdGraphPinDirection::EGPD_Input:
+		return TEXT("Input");
+	case EEdGraphPinDirection::EGPD_Output:
+		return TEXT("Output");
+	default:
+		break;
+	}
+
+	checkf(false, TEXT("Missing EEdGraphPinDirection Type: %d"), static_cast<const int32>(State));
+	return TEXT("");
+}
 
 /** Enum used to define what container type a pin represents. */
 UENUM()
@@ -134,6 +153,24 @@ enum class ENodeEnabledState : uint8
 	DevelopmentOnly
 };
 
+inline const TCHAR* const LexToString(const ENodeEnabledState State)
+{
+	switch (State)
+	{
+	case ENodeEnabledState::Enabled:
+		return TEXT("Enabled");
+	case ENodeEnabledState::Disabled:
+		return TEXT("Disabled");
+	case ENodeEnabledState::DevelopmentOnly:
+		return TEXT("DevelopmentOnly");
+	default:
+		break;
+	}
+
+	checkf(false, TEXT("Missing ENodeEnabledState Type: %d"), static_cast<const int32>(State));
+	return TEXT("");
+}
+
 /** Enum that defines what kind of orphaned pins should be retained. */
 enum class ESaveOrphanPinMode : uint8
 {
@@ -151,23 +188,66 @@ private:
 	FNodeMetadata() {}
 };
 
-/** This is the context for a GetContextMenuActions call into a specific node. */
-struct FGraphNodeContextMenuBuilder
+/** This is the context for GetContextMenuActions and GetNodeContextMenuActions calls. */
+UCLASS()
+class ENGINE_API UGraphNodeContextMenuContext : public UObject
 {
+	GENERATED_BODY()
+
+public:
+
+	UGraphNodeContextMenuContext();
+
+	void Init(const UEdGraph* InGraph, const UEdGraphNode* InNode, const UEdGraphPin* InPin, bool bInDebuggingMode);
+
 	/** The blueprint associated with this context; may be NULL for non-Kismet related graphs. */
+	UPROPERTY()
 	const UBlueprint* Blueprint;
+
 	/** The graph associated with this context. */
+	UPROPERTY()
 	const UEdGraph* Graph;
+
 	/** The node associated with this context. */
+	UPROPERTY()
 	const UEdGraphNode* Node;
+
 	/** The pin associated with this context; may be NULL when over a node. */
 	const UEdGraphPin* Pin;
-	/** The menu builder to append actions to. */
-	class FMenuBuilder* MenuBuilder;
-	/** Whether the graph editor is currently part of a debugging session (any non-debugging commands should be disabled). */
-	bool bIsDebugging;
 
-	FGraphNodeContextMenuBuilder(const UEdGraph* InGraph, const UEdGraphNode* InNode, const UEdGraphPin* InPin, class FMenuBuilder* InMenuBuilder, bool bInDebuggingMode);
+	/** Whether the graph editor is currently part of a debugging session (any non-debugging commands should be disabled). */
+	UPROPERTY()
+	bool bIsDebugging;
+};
+
+/** Deprecation types for node response. */
+enum class EEdGraphNodeDeprecationType
+{
+	/** The node type is deprecated. */
+	NodeTypeIsDeprecated,
+	/** The node references a deprecated member or type (e.g. variable or function). */
+	NodeHasDeprecatedReference
+};
+
+/** Deprecation response message types. */
+enum class EEdGraphNodeDeprecationMessageType
+{
+	/** No message. The Blueprint will compile successfully. */
+	None,
+	/** Emit the message as a note at compile time. This will appear as a note on the node and in the compiler log. */
+	Note,
+	/** Emit the message as a Blueprint compiler warning. This will appear as a warning on the node and in the compiler log. */
+	Warning
+};
+
+/** Deprecation response data. */
+struct FEdGraphNodeDeprecationResponse
+{
+	/** Message type. */
+	EEdGraphNodeDeprecationMessageType MessageType = EEdGraphNodeDeprecationMessageType::None;
+
+	/** Message text to display on the node and/or emit to the compile log. */
+	FText MessageText;
 };
 
 UCLASS()
@@ -245,24 +325,33 @@ private:
 	/** Whether the node was created as part of an expansion step */
 	uint8 bIsIntermediateNode : 1;
 
+#if WITH_EDITORONLY_DATA
+	/** Whether this node is unrelated to the selected nodes or not */
+	uint8 bUnrelated : 1;
+
+#endif
+
 public:
+
 	/** Flag to check for compile error/warning */
 	UPROPERTY()
 	uint8 bHasCompilerMessage:1;
 
 	/** Comment bubble pinned state */
+
+
+#if WITH_EDITORONLY_DATA
 	UPROPERTY()
-	uint8 bCommentBubblePinned:1;
+	uint8 bCommentBubblePinned : 1;
 
 	/** Comment bubble visibility */
 	UPROPERTY()
-	uint8 bCommentBubbleVisible:1;
+	uint8 bCommentBubbleVisible : 1;
 
 	/** Make comment bubble visible */
 	UPROPERTY(Transient)
-	uint8 bCommentBubbleMakeVisible:1;
+	uint8 bCommentBubbleMakeVisible : 1;
 
-#if WITH_EDITORONLY_DATA
 	/** If true, this node can be renamed in the editor */
 	UPROPERTY()
 	uint8 bCanRenameNode:1;
@@ -295,6 +384,9 @@ public:
 		return (EnabledState == ENodeEnabledState::Enabled)	|| ((EnabledState == ENodeEnabledState::DevelopmentOnly) && IsInDevelopmentMode());
 	}
 
+	/** If true, this node can be renamed in the editor */
+	virtual bool GetCanRenameNode() const;
+
 	/** Returns the specific sort of enable state this node wants */
 	ENodeEnabledState GetDesiredEnabledState() const
 	{
@@ -324,6 +416,20 @@ public:
 	{
 		return bUserSetEnabledState;
 	}
+
+#if WITH_EDITOR
+	/** Set this node unrelated or not. */
+	FORCEINLINE void SetNodeUnrelated(bool bNodeUnrelated)
+	{
+		bUnrelated = bNodeUnrelated;
+	}
+
+	/** Determines whether this node is unrelated to the selected nodes or not. */
+	FORCEINLINE bool IsNodeUnrelated() const
+	{
+		return bUnrelated;
+	}
+#endif
 
 	/** Determines whether or not the node will compile in development mode. */
 	virtual bool IsInDevelopmentMode() const;
@@ -359,7 +465,7 @@ public:
 	TWeakPtr<SGraphNode> DEPRECATED_NodeWidget;
 
 	/** Get all pins this node owns */
-	TArray<UEdGraphPin*> GetAllPins() { return Pins; }
+	const TArray<UEdGraphPin*>& GetAllPins() const { return Pins; }
 
 	struct FNameParameterHelper
 	{
@@ -637,6 +743,11 @@ public:
 	virtual FLinearColor GetNodeCommentColor() const;
 
 	/**
+	 * Gets the draw color of a node's body tine
+	 */
+	virtual FLinearColor GetNodeBodyTintColor() const;
+
+	/**
 	 * Gets the tooltip to display when over the node
 	 */
 	virtual FText GetTooltipText() const;
@@ -718,10 +829,18 @@ public:
 	// Returns true if this node is deprecated
 	virtual bool IsDeprecated() const;
 
+	// Returns true if this node references a deprecated type or member
+	virtual bool HasDeprecatedReference() const { return false; }
+
+	// Returns the response to use when reporting a deprecation
+	virtual FEdGraphNodeDeprecationResponse GetDeprecationResponse(EEdGraphNodeDeprecationType DeprecationType) const;
+
 	// Returns true if this node should produce a compiler warning on deprecation
-	virtual bool ShouldWarnOnDeprecation() const { return true; }
+	UE_DEPRECATED(4.23, "Use GetDeprecationResponse instead.")
+	virtual bool ShouldWarnOnDeprecation() const;
 
 	// Returns the string to use when reporting the deprecation
+	UE_DEPRECATED(4.23, "Use GetDeprecationResponse instead.")
 	virtual FString GetDeprecationMessage() const;
 
 	// Returns the object that should be focused when double-clicking on this node
@@ -738,7 +857,10 @@ public:
 	void CreateNewGuid();
 
 	/** Gets a list of actions that can be done to this particular node */
-	virtual void GetContextMenuActions(const FGraphNodeContextMenuBuilder& Context) const {}
+	virtual void GetNodeContextMenuActions(class UToolMenu* Menu, class UGraphNodeContextMenuContext* Context) const {}
+
+	/** Does the node context menu inherit parent class's menu */
+	virtual bool IncludeParentNodeContextMenu() const { return false; }
 
 	// Gives each visual node a chance to do final validation before it's node is harvested for use at runtime
 	virtual void ValidateNodeDuringCompilation(class FCompilerResultsLog& MessageLog) const {}
@@ -757,6 +879,9 @@ public:
 
 	// called to replace this nodes comment text
 	virtual void OnUpdateCommentText( const FString& NewComment );
+
+	// returns true if this node supports comment bubbles
+	virtual bool SupportsCommentBubble() const { return true; }
 
 	// called when the node's comment bubble is toggled
 	virtual void OnCommentBubbleToggled( bool bInCommentBubbleVisible ) {}
@@ -778,6 +903,14 @@ public:
 	 * @param OutTaggedMetaData		Built array of tagged meta data for the node
 	 */
 	virtual void AddSearchMetaDataInfo(TArray<struct FSearchTagDataPair>& OutTaggedMetaData) const;
+
+	/**
+	 * Adds node pin data to the search metadata, override to collect more data that may be desirable to search for
+	 *
+	 * @param Pin					The pin for which to gather search meta data
+	 * @param OutTaggedMetaData		Built array of tagged meta data for the given pin
+	 */
+	virtual void AddPinSearchMetaDataInfo(const UEdGraphPin* Pin, TArray<struct FSearchTagDataPair>& OutTaggedMetaData) const;
 
 	/** Return the requested metadata for the pin if there is any */
 	virtual FString GetPinMetaData(FName InPinName, FName InKey) { return FString(); }
@@ -829,8 +962,14 @@ public:
 	void ForEachNodeDirectlyConnectedToOutputs(TFunctionRef<void(UEdGraphNode*)> Func);
 	
 protected:
+#if WITH_EDITORONLY_DATA
+	/** Internal function used to gather pins from a graph node for localization */
+	friend void GatherGraphNodeForLocalization(const UObject* const Object, FPropertyLocalizationDataGatherer& PropertyLocalizationDataGatherer, const EPropertyLocalizationGathererTextFlags GatherTextFlags);
+	virtual void GatherForLocalization(FPropertyLocalizationDataGatherer& PropertyLocalizationDataGatherer, const EPropertyLocalizationGathererTextFlags GatherTextFlags) const;
+#endif
+
 	/**
-	 * Finds the difference in properties of node instance
+	 * Finds the difference in properties of node instance, for subobjects
 	 *
 	 * @param StructA The struct of the class we are looking at LHS
 	 * @param StructB The struct of the class we are looking at RHS
@@ -841,8 +980,20 @@ protected:
 	 */
 	virtual void DiffProperties(UClass* StructA, UClass* StructB, UObject* DataA, UObject* DataB, FDiffResults& Results, FDiffSingleResult& Diff) const;
 
+	/**
+	 * Finds the difference in properties of node instance, for arbitrary UStructs
+	 *
+	 * @param StructA The struct we are looking at LHS
+	 * @param StructB The struct we are looking at RHS
+	 * @param DataA The raw data we are comparing LHS
+	 * @param DataB The raw data we are comparing RHS
+	 * @param Results The Results where differences are stored
+	 * @param Diff The single result with default parameters setup
+	 */
+	virtual void DiffProperties(UStruct* StructA, UStruct* StructB, uint8* DataA, uint8* DataB, FDiffResults& Results, FDiffSingleResult& Diff) const;
+
 	// Returns a human-friendly description of the property in the form "PropertyName: Value"
-	virtual FString GetPropertyNameAndValueForDiff(const UProperty* Prop, const uint8* PropertyAddr) const;
+	virtual FString GetPropertyNameAndValueForDiff(const FProperty* Prop, const uint8* PropertyAddr) const;
 
 #endif // WITH_EDITOR
 

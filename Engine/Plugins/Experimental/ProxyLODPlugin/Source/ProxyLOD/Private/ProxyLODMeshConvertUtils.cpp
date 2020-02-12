@@ -1,13 +1,25 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "ProxyLODMeshConvertUtils.h" 
 #include "ProxyLODMeshUtilities.h"
 
-#include "MeshDescriptionOperations.h"
+#include "StaticMeshOperations.h"
+
+
+static void ResetStaticMeshDescription(FMeshDescription& MeshDecription)
+{
+	MeshDecription.Empty();
+	FStaticMeshAttributes Attributes(MeshDecription);
+	Attributes.Register();
+}
 
 // Convert QuadMesh to Triangles by splitting
 void ProxyLOD::MixedPolyMeshToRawMesh(const FMixedPolyMesh& SimpleMesh, FMeshDescription& DstRawMesh)
 {
+	TRACE_CPUPROFILER_EVENT_SCOPE(ProxyLOD::MixedPolyMeshToRawMesh)
+
+	ResetStaticMeshDescription(DstRawMesh);
+
 	TVertexAttributesRef<FVector> VertexPositions = DstRawMesh.VertexAttributes().GetAttributesRef<FVector>(MeshAttribute::Vertex::Position);
 	TEdgeAttributesRef<bool> EdgeHardnesses = DstRawMesh.EdgeAttributes().GetAttributesRef<bool>(MeshAttribute::Edge::IsHard);
 	TEdgeAttributesRef<float> EdgeCreaseSharpnesses = DstRawMesh.EdgeAttributes().GetAttributesRef<float>(MeshAttribute::Edge::CreaseSharpness);
@@ -76,10 +88,7 @@ void ProxyLOD::MixedPolyMeshToRawMesh(const FMixedPolyMesh& SimpleMesh, FMeshDes
 		}
 
 		// Insert a polygon into the mesh
-		const FPolygonID NewPolygonID = DstRawMesh.CreatePolygon(PolygonGroupID, VertexInstanceIDs);
-		//Triangulate the polygon
-		FMeshPolygon& Polygon = DstRawMesh.GetPolygon(NewPolygonID);
-		DstRawMesh.ComputePolygonTriangulation(NewPolygonID, Polygon.Triangles);
+		DstRawMesh.CreatePolygon(PolygonGroupID, VertexInstanceIDs);
 	};
 
 	{
@@ -123,6 +132,9 @@ void ProxyLOD::MixedPolyMeshToRawMesh(const FMixedPolyMesh& SimpleMesh, FMeshDes
 
 void ProxyLOD::AOSMeshToRawMesh(const FAOSMesh& AOSMesh, FMeshDescription& OutRawMesh)
 {
+
+	ResetStaticMeshDescription(OutRawMesh);
+
 	TVertexAttributesRef<FVector> VertexPositions = OutRawMesh.VertexAttributes().GetAttributesRef<FVector>(MeshAttribute::Vertex::Position);
 	TEdgeAttributesRef<bool> EdgeHardnesses = OutRawMesh.EdgeAttributes().GetAttributesRef<bool>(MeshAttribute::Edge::IsHard);
 	TEdgeAttributesRef<float> EdgeCreaseSharpnesses = OutRawMesh.EdgeAttributes().GetAttributesRef<float>(MeshAttribute::Edge::CreaseSharpness);
@@ -189,10 +201,7 @@ void ProxyLOD::AOSMeshToRawMesh(const FAOSMesh& AOSMesh, FMeshDescription& OutRa
 		}
 
 		// Insert a polygon into the mesh
-		const FPolygonID NewPolygonID = OutRawMesh.CreatePolygon(PolygonGroupID, VertexInstanceIDs);
-		//Triangulate the polygon
-		FMeshPolygon& Polygon = OutRawMesh.GetPolygon(NewPolygonID);
-		OutRawMesh.ComputePolygonTriangulation(NewPolygonID, Polygon.Triangles);
+		OutRawMesh.CreatePolygon(PolygonGroupID, VertexInstanceIDs);
 	};
 
 	{
@@ -215,6 +224,8 @@ void ProxyLOD::AOSMeshToRawMesh(const FAOSMesh& AOSMesh, FMeshDescription& OutRa
 
 void ProxyLOD::VertexDataMeshToRawMesh(const FVertexDataMesh& SrcVertexDataMesh, FMeshDescription& OutRawMesh)
 {
+	ResetStaticMeshDescription(OutRawMesh);
+
 	TVertexAttributesRef<FVector> VertexPositions = OutRawMesh.VertexAttributes().GetAttributesRef<FVector>(MeshAttribute::Vertex::Position);
 	TEdgeAttributesRef<bool> EdgeHardnesses = OutRawMesh.EdgeAttributes().GetAttributesRef<bool>(MeshAttribute::Edge::IsHard);
 	TEdgeAttributesRef<float> EdgeCreaseSharpnesses = OutRawMesh.EdgeAttributes().GetAttributesRef<float>(MeshAttribute::Edge::CreaseSharpness);
@@ -326,10 +337,7 @@ void ProxyLOD::VertexDataMeshToRawMesh(const FVertexDataMesh& SrcVertexDataMesh,
 		}
 
 		// Insert a polygon into the mesh
-		const FPolygonID NewPolygonID = OutRawMesh.CreatePolygon(PolygonGroupID, VertexInstanceIDs);
-		//Triangulate the polygon
-		FMeshPolygon& Polygon = OutRawMesh.GetPolygon(NewPolygonID);
-		OutRawMesh.ComputePolygonTriangulation(NewPolygonID, Polygon.Triangles);
+		OutRawMesh.CreatePolygon(PolygonGroupID, VertexInstanceIDs);
 	};
 
 	{
@@ -359,7 +367,7 @@ void ProxyLOD::VertexDataMeshToRawMesh(const FVertexDataMesh& SrcVertexDataMesh,
 		}
 	}
 
-	FMeshDescriptionOperations::ConvertSmoothGroupToHardEdges(FaceSmoothingMasks, OutRawMesh);
+	FStaticMeshOperations::ConvertSmoothGroupToHardEdges(FaceSmoothingMasks, OutRawMesh);
 }
 
 
@@ -378,12 +386,7 @@ void ProxyLOD::RawMeshToVertexDataMesh(const FMeshDescription& SrcRawMesh, FVert
 
 	const uint32 DstNumPositions = SrcRawMesh.Vertices().Num();
 
-	uint32 DstNumIndexes = 0;
-	for (const FPolygonID& PolygonID : SrcRawMesh.Polygons().GetElementIDs())
-	{
-		const FMeshPolygon& Polygon = SrcRawMesh.GetPolygon(PolygonID);
-		DstNumIndexes += Polygon.Triangles.Num() * 3;
-	}
+	uint32 DstNumIndexes = SrcRawMesh.Triangles().Num() * 3;
 
 	// Copy the vertices over
 	TMap<FVertexID, uint32> VertexIDToDstVertexIndex;
@@ -418,14 +421,13 @@ void ProxyLOD::RawMeshToVertexDataMesh(const FMeshDescription& SrcRawMesh, FVert
 	ResizeArray(DstUVs, DstNumPositions);
 
 	//Iterate all triangle and add the indices
-	for (const FPolygonID& PolygonID : SrcRawMesh.Polygons().GetElementIDs())
+	for (const FPolygonID PolygonID : SrcRawMesh.Polygons().GetElementIDs())
 	{
-		const FMeshPolygon& Polygon = SrcRawMesh.GetPolygon(PolygonID);
-		for (const FMeshTriangle& Triangle : Polygon.Triangles)
+		for (const FTriangleID TriangleID : SrcRawMesh.GetPolygonTriangleIDs(PolygonID))
 		{
 			for (int32 Corner = 0; Corner < 3; ++Corner)
 			{
-				const FVertexInstanceID& VertexInstanceID = Triangle.GetVertexInstanceID(Corner);
+				const FVertexInstanceID& VertexInstanceID = SrcRawMesh.GetTriangleVertexInstance(TriangleID, Corner);
 				DstIndices[VertexInstanceCount] = VertexIDToDstVertexIndex[SrcRawMesh.GetVertexInstanceVertex(VertexInstanceID)];
 
 				// Copy the tangent space:
@@ -456,7 +458,7 @@ void ProxyLOD::RawMeshToVertexDataMesh(const FMeshDescription& SrcRawMesh, FVert
 	TArray<uint32> FaceSmoothingMasks;
 	FaceSmoothingMasks.AddZeroed(NumTriangles);
 
-	FMeshDescriptionOperations::ConvertHardEdgesToSmoothGroup(SrcRawMesh, FaceSmoothingMasks);
+	FStaticMeshOperations::ConvertHardEdgesToSmoothGroup(SrcRawMesh, FaceSmoothingMasks);
 
 	TArray<uint32>& DstFacePartition = DstVertexDataMesh.FacePartition;
 	ResizeArray(DstFacePartition, NumTriangles);
@@ -558,6 +560,7 @@ static void CopyNormals(const TAOSMesh<AOSVertexType>& AOSMesh, FVertexDataMesh&
 template <typename  AOSVertexType>
 static void AOSMeshToVertexDataMesh(const TAOSMesh<AOSVertexType>& AOSMesh, FVertexDataMesh& VertexDataMesh)
 {
+	TRACE_CPUPROFILER_EVENT_SCOPE(AOSMeshToVertexDataMesh)
 
 	// Copy the topology and geometry of the mesh
 

@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -9,10 +9,12 @@
 #include "Delegates/IDelegateInstance.h"
 #include "Delegates/DelegateBase.h"
 
-#if USE_SMALL_MULTICAST_DELEGATES
+#if !defined(NUM_MULTICAST_DELEGATE_INLINE_ENTRIES) || NUM_MULTICAST_DELEGATE_INLINE_ENTRIES == 0
 	typedef FHeapAllocator FMulticastInvocationListAllocatorType;
+#elif NUM_MULTICAST_DELEGATE_INLINE_ENTRIES < 0
+	#error NUM_MULTICAST_DELEGATE_INLINE_ENTRIES must be positive
 #else
-	typedef TInlineAllocator<1> FMulticastInvocationListAllocatorType;
+	typedef TInlineAllocator<NUM_MULTICAST_DELEGATE_INLINE_ENTRIES> FMulticastInvocationListAllocatorType;
 #endif
 
 typedef TArray<FDelegateBase, FMulticastInvocationListAllocatorType> TInvocationList;
@@ -81,12 +83,13 @@ public:
 	 * Note that the order of the delegates may not be preserved!
 	 *
 	 * @param InUserObject The object to remove all delegates for.
+	 * @return  The number of delegates successfully removed.
 	 */
-	void RemoveAll( const void* InUserObject )
+	int32 RemoveAll( const void* InUserObject )
 	{
+		int32 Result = 0;
 		if (InvocationListLockCount > 0)
 		{
-			bool NeedsCompacted = false;
 			for (FDelegateBase& DelegateBaseRef : InvocationList)
 			{
 				IDelegateInstance* DelegateInstance = DelegateBaseRef.GetDelegateInstanceProtected();
@@ -94,12 +97,12 @@ public:
 				{
 					// Manually unbind the delegate here so the compaction will find and remove it.
 					DelegateBaseRef.Unbind();
-					NeedsCompacted = true;
+					++Result;
 				}
 			}
 
 			// can't compact at the moment, but set out threshold to zero so the next add will do it
-			if (NeedsCompacted)
+			if (Result > 0)
 			{
 				CompactionThreshold = 0;
 			}
@@ -117,6 +120,7 @@ public:
 					|| DelegateInstance->IsCompactable())
 				{
 					InvocationList.RemoveAtSwap(InvocationListIndex, 1, false);
+					++Result;
 				}
 				else
 				{
@@ -128,6 +132,8 @@ public:
 
 			InvocationList.Shrink();
 		}
+
+		return Result;
 	}
 
 protected:

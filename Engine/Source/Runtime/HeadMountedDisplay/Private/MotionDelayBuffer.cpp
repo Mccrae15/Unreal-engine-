@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "MotionDelayBuffer.h"
 #include "HAL/PlatformTime.h" // for FPlatformTime::Seconds()
@@ -496,11 +496,6 @@ void FMotionDelayClient::PostRenderViewFamily_RenderThread(FRHICommandListImmedi
 {
 	if (MotionDelayService_Impl::PostRenderCleanupId_RenderThread != ViewFamily.FrameNumber)
 	{
-		for (const FTargetTransform& Transform : TargetTransforms_RenderThread)
-		{
-			Transform.DelayTarget->LateUpdate.PostRender_RenderThread();
-		}
-
 		MotionDelayService_Impl::PostRenderCleanupId_RenderThread = ViewFamily.FrameNumber;
 	}
 }

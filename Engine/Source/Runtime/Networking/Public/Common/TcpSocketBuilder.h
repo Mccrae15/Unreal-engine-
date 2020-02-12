@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -8,6 +8,7 @@
 #include "Interfaces/IPv4/IPv4Address.h"
 #include "Interfaces/IPv4/IPv4Endpoint.h"
 #include "Sockets.h"
+#include "SocketTypes.h"
 
 class Error;
 
@@ -216,7 +217,7 @@ public:
 		if (SocketSubsystem != nullptr)
 		{
 			TSharedRef<FInternetAddr> BoundEndpointAddr = BoundEndpoint.ToInternetAddr();
-			Socket = SocketSubsystem->CreateSocket(NAME_Stream, *Description);
+			Socket = SocketSubsystem->CreateSocket(NAME_Stream, *Description, BoundEndpointAddr->GetProtocolType());
 
 			if (Socket != nullptr)
 			{

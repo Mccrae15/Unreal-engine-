@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 /*=============================================================================
 	CubemapUnwapUtils.h: Pixel and Vertex shader to render a cube map as 2D texture
@@ -26,7 +26,7 @@ namespace CubemapHelpers
 	* @param	FormatOUT	Filled with the pixel format of the output bitmap.
 	* @return	true on success.
 	*/
-	ENGINE_API bool GenerateLongLatUnwrap(const UTextureCube* CubeTexture, TArray<uint8>& BitsOUT, FIntPoint& SizeOUT, EPixelFormat& FormatOUT);
+	ENGINE_API bool GenerateLongLatUnwrap(const UTextureCube* CubeTexture, TArray64<uint8>& BitsOUT, FIntPoint& SizeOUT, EPixelFormat& FormatOUT);
 
 	/**
 	* Creates an unwrapped 2D image of the cube map ( longitude/latitude )
@@ -37,7 +37,7 @@ namespace CubemapHelpers
 	* @param	FormatOUT	Filled with the pixel format of the output bitmap.
 	* @return	true on success.
 	*/
-	ENGINE_API bool GenerateLongLatUnwrap(const UTextureRenderTargetCube* CubeTarget, TArray<uint8>& BitsOUT, FIntPoint& SizeOUT, EPixelFormat& FormatOUT);
+	ENGINE_API bool GenerateLongLatUnwrap(const UTextureRenderTargetCube* CubeTarget, TArray64<uint8>& BitsOUT, FIntPoint& SizeOUT, EPixelFormat& FormatOUT);
 }
 
 /**
@@ -59,16 +59,8 @@ public:
 
 	void SetParameters(FRHICommandList& RHICmdList, const FMatrix& TransformValue);
 
-	virtual bool Serialize(FArchive& Ar) override
-	{
-		bool bShaderHasOutdatedParameters = FGlobalShader::Serialize(Ar);
-		Ar << Transform;
-
-		return bShaderHasOutdatedParameters;
-	}
-
 private:
-	FShaderParameter Transform;
+	LAYOUT_FIELD(FShaderParameter, Transform);
 };
 
 /**
@@ -95,24 +87,17 @@ public:
 
 	void SetParameters(FRHICommandList& RHICmdList, const FTexture* Texture, const FMatrix& ColorWeightsValue, float MipLevel, float GammaValue);
 
-	virtual bool Serialize(FArchive& Ar) override
-	{
-		bool bShaderHasOutdatedParameters = FGlobalShader::Serialize(Ar);
-		Ar << CubeTexture << CubeTextureSampler << PackedProperties0 << ColorWeights << Gamma;
-		return bShaderHasOutdatedParameters;
-	}
-
 	static void ModifyCompilationEnvironment(const FGlobalShaderPermutationParameters& Parameters, FShaderCompilerEnvironment& OutEnvironment)
 	{
 		FGlobalShader::ModifyCompilationEnvironment(Parameters, OutEnvironment);
 		OutEnvironment.SetDefine(TEXT("HDR_OUTPUT"), bHDROutput ? TEXT("1") : TEXT("0"));
 	}
 private:
-	FShaderResourceParameter CubeTexture;
-	FShaderResourceParameter CubeTextureSampler;
-	FShaderParameter PackedProperties0;
-	FShaderParameter ColorWeights;
-	FShaderParameter Gamma;
+	LAYOUT_FIELD(FShaderResourceParameter, CubeTexture);
+	LAYOUT_FIELD(FShaderResourceParameter, CubeTextureSampler);
+	LAYOUT_FIELD(FShaderParameter, PackedProperties0);
+	LAYOUT_FIELD(FShaderParameter, ColorWeights);
+	LAYOUT_FIELD(FShaderParameter, Gamma);
 };
 
 
@@ -147,7 +132,7 @@ public:
 
 	static bool ShouldCompilePermutation(const FGlobalShaderPermutationParameters& Parameters)
 	{
-		return IsFeatureLevelSupported(Parameters.Platform, ERHIFeatureLevel::SM4) && !IsConsolePlatform(Parameters.Platform);
+		return IsFeatureLevelSupported(Parameters.Platform, ERHIFeatureLevel::SM5) && !IsConsolePlatform(Parameters.Platform);
 	}
 
 	FIESLightProfilePS() {}
@@ -162,20 +147,11 @@ public:
 
 	void SetParameters(FRHICommandList& RHICmdList, const FTexture* Texture, float InBrightnessInLumens);
 
-	virtual bool Serialize(FArchive& Ar) override
-	{
-		bool bShaderHasOutdatedParameters = FGlobalShader::Serialize(Ar);
-		Ar << IESTexture;
-		Ar << IESTextureSampler;
-		Ar << BrightnessInLumens;
-		return bShaderHasOutdatedParameters;
-	}
-
 private:
 	/** The texture to sample. */
-	FShaderResourceParameter IESTexture;
-	FShaderResourceParameter IESTextureSampler;
-	FShaderParameter BrightnessInLumens;
+	LAYOUT_FIELD(FShaderResourceParameter, IESTexture);
+	LAYOUT_FIELD(FShaderResourceParameter, IESTextureSampler);
+	LAYOUT_FIELD(FShaderParameter, BrightnessInLumens);
 };
 
 class ENGINE_API FIESLightProfileBatchedElementParameters : public FBatchedElementParameters

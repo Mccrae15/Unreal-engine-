@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -45,6 +45,12 @@ public:
 
 	/** Step backward */
 	TSharedPtr< FUICommandInfo > StepBackward;
+
+	/** Step forward */
+	TSharedPtr< FUICommandInfo > StepForward2;
+
+	/** Step backward */
+	TSharedPtr< FUICommandInfo > StepBackward2;
 
 	/** Step to next key */
 	TSharedPtr< FUICommandInfo > StepToNextKey;
@@ -136,6 +142,9 @@ public:
 	/** Select all keys and sections that fall into the selection range*/
 	TSharedPtr< FUICommandInfo > SelectAllInSelectionRange;
 
+	/** Add selected actors to sequencer */
+	TSharedPtr< FUICommandInfo > AddActorsToSequencer;
+
 	/** Sets a key at the current time for the selected actor */
 	TSharedPtr< FUICommandInfo > SetKey;
 
@@ -223,6 +232,18 @@ public:
 	/** Toggle the visibility of the transform box. */
 	TSharedPtr< FUICommandInfo > ToggleShowTransformBox;
 
+	/** Toggle the visibility of the stretch box. */
+	TSharedPtr< FUICommandInfo > ToggleShowStretchBox;
+
+	/** Opens the director blueprint for a sequence. */
+	TSharedPtr< FUICommandInfo > OpenDirectorBlueprint;
+
+	/** Opens the tagged binding manager. */
+	TSharedPtr< FUICommandInfo > OpenTaggedBindingManager;
+	
+	/** Sets the tree search widget as the focused widget in Slate for easy typing. */
+	TSharedPtr< FUICommandInfo > QuickTreeSearch;
+
 	/** Bake transform. */
 	TSharedPtr< FUICommandInfo > BakeTransform;
 
@@ -246,6 +267,9 @@ public:
 
 	/** Toggles whether or not sections should snap to other sections. */
 	TSharedPtr< FUICommandInfo > ToggleSnapSectionTimesToSections;
+
+	/** Toggle constraining keys and sections in the play range */
+	TSharedPtr< FUICommandInfo > ToggleSnapKeysAndSectionsToPlayRange;
 
 	/** Toggles whether or not snap to key times while scrubbing. */
 	TSharedPtr< FUICommandInfo > ToggleSnapPlayTimeToKeys;
@@ -316,9 +340,6 @@ public:
 	/** Restores all animated state for the current sequence. */
 	TSharedPtr< FUICommandInfo > RestoreAnimatedState;
 
-	/** Discard all changes to the current movie scene. */
-	TSharedPtr< FUICommandInfo > DiscardChanges;
-
 	/** Attempts to fix broken actor references. */
 	TSharedPtr< FUICommandInfo > FixActorReferences;
 
@@ -340,9 +361,19 @@ public:
 	/** Toggle whether we should evaluate sub sequences in isolation */
 	TSharedPtr< FUICommandInfo > ToggleEvaluateSubSequencesInIsolation;
 
-	TSharedPtr<FUICommandInfo> SetAllCurveVisibility;
-	TSharedPtr<FUICommandInfo> SetSelectedCurveVisibility;
-	TSharedPtr<FUICommandInfo> SetAnimatedCurveVisibility;
+	/** Sets a transform key at the current time for the selected actor */
+	TSharedPtr< FUICommandInfo > AddTransformKey;
+
+	/** Sets a translation key at the current time for the selected actor */
+	TSharedPtr< FUICommandInfo > AddTranslationKey;
+
+	/** Sets a rotation key at the current time for the selected actor */
+	TSharedPtr< FUICommandInfo > AddRotationKey;
+
+	/** Sets a scale key at the current time for the selected actor */
+	TSharedPtr< FUICommandInfo > AddScaleKey;
+
+
 
 	/**
 	 * Initialize commands

@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -15,7 +15,7 @@ struct FPropertyTag;
 
 GAMEPLAYTAGS_API DECLARE_LOG_CATEGORY_EXTERN(LogGameplayTags, Log, All);
 
-DECLARE_STATS_GROUP(TEXT("Gameplay Tags"), STATGROUP_GameplayTags, STATCAT_Advanced);
+DECLARE_STATS_GROUP_VERBOSE(TEXT("Gameplay Tags"), STATGROUP_GameplayTags, STATCAT_Advanced);
 
 DECLARE_CYCLE_STAT_EXTERN(TEXT("FGameplayTagContainer::HasTag"), STAT_FGameplayTagContainer_HasTag, STATGROUP_GameplayTags, GAMEPLAYTAGS_API);
 DECLARE_CYCLE_STAT_EXTERN(TEXT("FGameplayTagContainer::DoesTagContainerMatch"), STAT_FGameplayTagContainer_DoesTagContainerMatch, STATGROUP_GameplayTags, GAMEPLAYTAGS_API);
@@ -44,7 +44,10 @@ enum class EGameplayContainerMatchType : uint8
 typedef uint16 FGameplayTagNetIndex;
 #define INVALID_TAGNETINDEX MAX_uint16
 
-/** A single gameplay tag, which represents a hierarchical name of the form x.y that is registered in the GameplayTagsManager */
+/**
+ * A single gameplay tag, which represents a hierarchical name of the form x.y that is registered in the GameplayTagsManager
+ * You can filter the gameplay tags displayed in the editor using, meta = (Categories = "Tag1.Tag2.Tag3"))
+ */
 USTRUCT(BlueprintType, meta = (HasNativeMake = "GameplayTags.BlueprintGameplayTagLibrary.MakeLiteralGameplayTag", HasNativeBreak = "GameplayTags.BlueprintGameplayTagLibrary.GetTagName"))
 struct GAMEPLAYTAGS_API FGameplayTag
 {
@@ -62,7 +65,7 @@ struct GAMEPLAYTAGS_API FGameplayTag
 	 * @param ErrorIfNotfound: ensure() that tag exists.
 	 * @return Will return the corresponding FGameplayTag or an empty one if not found.
 	 */
-	static FGameplayTag RequestGameplayTag(FName TagName, bool ErrorIfNotFound=true);
+	static FGameplayTag RequestGameplayTag(const FName& TagName, bool ErrorIfNotFound=true);
 
 	/** 
 	 * Returns true if this is a valid gameplay tag string (foo.bar.baz). If false, it will fill 
@@ -86,7 +89,7 @@ struct GAMEPLAYTAGS_API FGameplayTag
 
 	FORCEINLINE bool operator<(FGameplayTag const& Other) const
 	{
-		return TagName < Other.TagName;
+		return TagName.LexicalLess(Other.TagName);
 	}
 
 	/**
@@ -175,10 +178,9 @@ struct GAMEPLAYTAGS_API FGameplayTag
 		return TagName;
 	}
 
-	friend FArchive& operator<<(FArchive& Ar, FGameplayTag& GameplayTag)
+	friend void operator<<(FStructuredArchive::FSlot Slot, FGameplayTag& GameplayTag)
 	{
-		Ar << GameplayTag.TagName;
-		return Ar;
+		Slot << GameplayTag.TagName;
 	}
 
 	/** Overridden for fast serialize */
@@ -244,7 +246,7 @@ PRAGMA_ENABLE_DEPRECATION_WARNINGS
 protected:
 
 	/** Intentionally private so only the tag manager can use */
-	explicit FGameplayTag(FName InTagName);
+	explicit FGameplayTag(const FName& InTagName);
 
 	/** This Tags Name */
 	UPROPERTY(VisibleAnywhere, Category = GameplayTags, SaveGame)
@@ -542,22 +544,23 @@ struct GAMEPLAYTAGS_API FGameplayTagContainer
 	/**
 	 * Tag to remove from the container
 	 * 
-	 * @param TagToRemove	Tag to remove from the container
+	 * @param TagToRemove		Tag to remove from the container
+	 * @param bDeferParentTags	Skip calling FillParentTags for performance (must be handled by calling code)
 	 */
-	bool RemoveTag(FGameplayTag TagToRemove);
+	bool RemoveTag(const FGameplayTag& TagToRemove, bool bDeferParentTags=false);
 
 	/**
 	 * Removes all tags in TagsToRemove from this container
 	 *
 	 * @param TagsToRemove	Tags to remove from the container
 	 */
-	void RemoveTags(FGameplayTagContainer TagsToRemove);
+	void RemoveTags(const FGameplayTagContainer& TagsToRemove);
 
 	/** Remove all tags from the container. Will maintain slack by default */
 	void Reset(int32 Slack = 0);
 	
 	/** Serialize the tag container */
-	bool Serialize(FArchive& Ar);
+	bool Serialize(FStructuredArchive::FSlot Slot);
 
 	/** Efficient network serialize, takes advantage of the dictionary */
 	bool NetSerialize(FArchive& Ar, class UPackageMap* Map, bool& bOutSuccess);
@@ -572,7 +575,7 @@ struct GAMEPLAYTAGS_API FGameplayTagContainer
 	FString ToString() const;
 
 	/** Sets from a ImportText string, used in asset registry */
-	void FromExportString(FString ExportString);
+	void FromExportString(const FString& ExportString);
 
 	/** Returns abbreviated human readable Tag list without parens or property names. If bQuoted is true it will quote each tag */
 	FString ToStringSimple(bool bQuoted = false) const;
@@ -615,6 +618,9 @@ struct GAMEPLAYTAGS_API FGameplayTagContainer
 	{
 		return GameplayTags.Num() > 0 ? GameplayTags.Last() : FGameplayTag();
 	}
+
+	/** Fills in ParentTags from GameplayTags */
+	void FillParentTags();
 
 	/** An empty Gameplay Tag Container */
 	static const FGameplayTagContainer EmptyContainer;
@@ -824,9 +830,6 @@ protected:
 	/** Adds parent tags for a single tag */
 	void AddParentsForTag(const FGameplayTag& Tag);
 
-	/** Fills in ParentTags from GameplayTags */
-	void FillParentTags();
-
 	/** Array of gameplay tags */
 	UPROPERTY(BlueprintReadWrite, Category=GameplayTags, SaveGame) // Change to VisibleAnywhere after fixing up games
 	TArray<FGameplayTag> GameplayTags;
@@ -866,7 +869,7 @@ struct TStructOpsTypeTraits<FGameplayTagContainer> : public TStructOpsTypeTraits
 {
 	enum
 	{
-		WithSerializer = true,
+		WithStructuredSerializer = true,
 		WithIdenticalViaEquality = true,
 		WithNetSerializer = true,
 		WithNetSharedSerialization = true,
@@ -981,24 +984,26 @@ public:
 	FGameplayTagQuery& operator=(FGameplayTagQuery&& Other);
 
 private:
+	// Note: Properties need to be editable to allow FComponentPropertyWriter to serialize them, but are hidden in the editor by the customizations mentioned above.
+
 	/** Versioning for future token stream protocol changes. See EGameplayTagQueryStreamVersion. */
-	UPROPERTY()
+	UPROPERTY(EditAnywhere, Category = Hidden)
 	int32 TokenStreamVersion;
 
 	/** List of tags referenced by this entire query. Token stream stored indices into this list. */
-	UPROPERTY()
+	UPROPERTY(EditAnywhere, Category = Hidden)
 	TArray<FGameplayTag> TagDictionary;
 
 	/** Stream representation of the actual hierarchical query */
-	UPROPERTY()
+	UPROPERTY(EditAnywhere, Category = Hidden)
 	TArray<uint8> QueryTokenStream;
 
 	/** User-provided string describing the query */
-	UPROPERTY()
+	UPROPERTY(EditAnywhere, Category = Hidden)
 	FString UserDescription;
 
 	/** Auto-generated string describing the query */
-	UPROPERTY()
+	UPROPERTY(EditAnywhere, Category = Hidden)
 	FString AutoDescription;
 
 	/** Returns a gameplay tag from the tag dictionary */

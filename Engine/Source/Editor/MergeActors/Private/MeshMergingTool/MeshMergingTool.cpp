@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "MeshMergingTool/MeshMergingTool.h"
 #include "Misc/Paths.h"
@@ -12,7 +12,7 @@
 #include "Engine/StaticMeshActor.h"
 #include "Engine/Selection.h"
 #include "Editor.h"
-#include "Dialogs/Dialogs.h"
+#include "Misc/MessageDialog.h"
 #include "MeshUtilities.h"
 #include "MeshMergingTool/SMeshMergingDialog.h"
 #include "IContentBrowserSingleton.h"
@@ -24,10 +24,19 @@
 
 #define LOCTEXT_NAMESPACE "MeshMergingTool"
 
+UMeshMergingSettingsObject* UMeshMergingSettingsObject::DefaultSettings = nullptr;
+bool UMeshMergingSettingsObject::bInitialized = false;
+
 FMeshMergingTool::FMeshMergingTool()
 	: bReplaceSourceActors(false)
 {
 	SettingsObject = UMeshMergingSettingsObject::Get();
+}
+
+FMeshMergingTool::~FMeshMergingTool()
+{
+	UMeshMergingSettingsObject::Destroy();
+	SettingsObject = nullptr;
 }
 
 TSharedRef<SWidget> FMeshMergingTool::GetWidget()
@@ -87,7 +96,8 @@ bool FMeshMergingTool::RunMerge(const FString& PackageName)
 	if (UniqueLevels.Num() > 1 && bReplaceSourceActors)
 	{
 		FText Message = NSLOCTEXT("UnrealEd", "FailedToMergeActorsSublevels_Msg", "The selected actors should be in the same level");
-		OpenMsgDlgInt(EAppMsgType::Ok, Message, NSLOCTEXT("UnrealEd", "FailedToMergeActors_Title", "Unable to merge actors"));
+		const FText Title = NSLOCTEXT("UnrealEd", "FailedToMergeActors_Title", "Unable to merge actors");
+		FMessageDialog::Open(EAppMsgType::Ok, Message, &Title);
 		return false;
 	}
 
@@ -150,7 +160,7 @@ bool FMeshMergingTool::RunMerge(const FString& PackageName)
 								
 				AStaticMeshActor* MergedActor = World->SpawnActor<AStaticMeshActor>(MergedActorLocation, MergedActorRotation, Params);
 				MergedActor->GetStaticMeshComponent()->SetStaticMesh(MergedMesh);
-				MergedActor->SetActorLabel(AssetsToSync[0]->GetName());
+				MergedActor->SetActorLabel(MergedMesh->GetName());
 				World->UpdateCullDistanceVolumes(MergedActor, MergedActor->GetStaticMeshComponent());
 				// Remove source actors
 				for (AActor* Actor : Actors)
@@ -172,3 +182,6 @@ bool FMeshMergingTool::CanMerge() const
 }
 
 #undef LOCTEXT_NAMESPACE
+
+
+

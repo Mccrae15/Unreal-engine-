@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 /*=============================================================================
 	SceneManagement.h: Scene manager definitions.
@@ -27,10 +27,8 @@
 #include "SceneUtils.h"
 #include "LightmapUniformShaderParameters.h"
 #include "DynamicBufferAllocator.h"
-
-#ifndef ENVIRONMENT_TEXTURE_ARRAY_WORKAROUND // RHI_RAYTRACING
-#define ENVIRONMENT_TEXTURE_ARRAY_WORKAROUND	1
-#endif
+#include "Rendering/SkyAtmosphereCommonData.h"
+#include "Rendering/SkyLightImportanceSampling.h"
 
 class FCanvas;
 class FLightMap;
@@ -48,9 +46,11 @@ class ULightMapTexture2D;
 class UMaterialInstanceDynamic;
 class UMaterialInterface;
 class UShadowMapTexture2D;
+class USkyAtmosphereComponent;
+class FSkyAtmosphereRenderSceneInfo;
 class USkyLightComponent;
 struct FDynamicMeshVertex;
-class ULightMapVirtualTexture;
+class ULightMapVirtualTexture2D;
 
 DECLARE_LOG_CATEGORY_EXTERN(LogBufferVisualization, Log, All);
 
@@ -89,6 +89,13 @@ struct ENGINE_API FTemporalLODState
 	}
 
 	void UpdateTemporalLODTransition(const class FViewInfo& View, float LastRenderTime);
+};
+
+enum ESequencerState
+{
+	ESS_None,
+	ESS_Paused,
+	ESS_Playing,
 };
 
 /**
@@ -168,6 +175,11 @@ public:
 	 */
 	virtual UMaterialInstanceDynamic* GetReusableMID(class UMaterialInterface* InSource) = 0;
 
+	/**
+	 * Clears the pool of mids being referenced by this view state 
+	 */
+	virtual void ClearMIDPool() = 0;
+
 #if !(UE_BUILD_SHIPPING || UE_BUILD_TEST)
 	/** If frozen view matrices are available, set those as active on the SceneView */
 	virtual void ActivateFrozenViewMatrices(FSceneView& SceneView) = 0;
@@ -195,9 +207,11 @@ public:
 	//
 	virtual uint32 GetCurrentTemporalAASampleIndex() const = 0;
 
-	virtual void SetSequencerState(const bool bIsPaused) = 0;
+	virtual uint32 GetCurrentUnclampedTemporalAASampleIndex() const = 0;
 
-	virtual bool GetSequencerState() = 0;
+	virtual void SetSequencerState(ESequencerState InSequencerState) = 0;
+
+	virtual ESequencerState GetSequencerState() = 0;
 
 	/** Returns the current PreExposure value. PreExposure is a custom scale applied to the scene color to prevent buffer overflow. */
 	virtual float GetPreExposure() const = 0;
@@ -303,7 +317,9 @@ static const int32 LQ_LIGHTMAP_COEF_INDEX = 2;
 
 /** Compile out low quality lightmaps to save memory */
 // @todo-mobile: Need to fix this!
-#define ALLOW_LQ_LIGHTMAPS (PLATFORM_DESKTOP || PLATFORM_IOS || PLATFORM_ANDROID || PLATFORM_HTML5 || PLATFORM_SWITCH || PLATFORM_LUMIN)
+#ifndef ALLOW_LQ_LIGHTMAPS
+#define ALLOW_LQ_LIGHTMAPS (PLATFORM_DESKTOP || PLATFORM_IOS || PLATFORM_ANDROID || PLATFORM_SWITCH || PLATFORM_LUMIN || PLATFORM_HOLOLENS)
+#endif
 
 /** Compile out high quality lightmaps to save memory */
 #define ALLOW_HQ_LIGHTMAPS 1
@@ -346,7 +362,7 @@ public:
 		bool bAllowHighQualityLightMaps);
 
 	static FLightMapInteraction InitVirtualTexture(
-		const ULightMapVirtualTexture* VirtualTexture,
+		const ULightMapVirtualTexture2D* VirtualTexture,
 		const FVector4* InCoefficientScales,
 		const FVector4* InCoefficientAdds,
 		const FVector2D& InCoordinateScale,
@@ -402,7 +418,7 @@ public:
 #endif
 	}
 
-	const ULightMapVirtualTexture* GetVirtualTexture() const
+	const ULightMapVirtualTexture2D* GetVirtualTexture() const
 	{
 		check(Type == LMIT_Texture);
 #if ALLOW_HQ_LIGHTMAPS
@@ -513,7 +529,7 @@ private:
 	const class ULightMapTexture2D* HighQualityTexture;
 	const ULightMapTexture2D* SkyOcclusionTexture;
 	const ULightMapTexture2D* AOMaterialMaskTexture;
-	const ULightMapVirtualTexture* VirtualTexture;
+	const ULightMapVirtualTexture2D* VirtualTexture;
 #endif
 
 #if ALLOW_LQ_LIGHTMAPS
@@ -575,13 +591,35 @@ public:
 		return Result;
 	}
 
+	static FShadowMapInteraction InitVirtualTexture(
+		class ULightMapVirtualTexture2D* InTexture,
+		const FVector2D& InCoordinateScale,
+		const FVector2D& InCoordinateBias,
+		const bool* InChannelValid,
+		const FVector4& InInvUniformPenumbraSize)
+	{
+		FShadowMapInteraction Result;
+		Result.Type = SMIT_Texture;
+		Result.VirtualTexture = InTexture;
+		Result.CoordinateScale = InCoordinateScale;
+		Result.CoordinateBias = InCoordinateBias;
+		Result.InvUniformPenumbraSize = InInvUniformPenumbraSize;
+		for (int Channel = 0; Channel < 4; Channel++)
+		{
+			Result.bChannelValid[Channel] = InChannelValid[Channel];
+		}
+
+		return Result;
+	}
+
 	/** Default constructor. */
 	FShadowMapInteraction() :
 		ShadowTexture(nullptr),
+		VirtualTexture(nullptr),
 		InvUniformPenumbraSize(FVector4(0, 0, 0, 0)),
 		Type(SMIT_None)
 	{
-		for (int Channel = 0; Channel < ARRAY_COUNT(bChannelValid); Channel++)
+		for (int Channel = 0; Channel < UE_ARRAY_COUNT(bChannelValid); Channel++)
 		{
 			bChannelValid[Channel] = false;
 		}
@@ -594,6 +632,12 @@ public:
 	{
 		checkSlow(Type == SMIT_Texture);
 		return ShadowTexture;
+	}
+
+	const ULightMapVirtualTexture2D* GetVirtualTexture() const
+	{
+		checkSlow(Type == SMIT_Texture);
+		return VirtualTexture;
 	}
 
 	const FVector2D& GetCoordinateScale() const
@@ -621,6 +665,7 @@ public:
 
 private:
 	UShadowMapTexture2D* ShadowTexture;
+	const ULightMapVirtualTexture2D* VirtualTexture;
 	FVector2D CoordinateScale;
 	FVector2D CoordinateBias;
 	bool bChannelValid[4];
@@ -631,21 +676,18 @@ private:
 class FLightMap;
 class FShadowMap;
 
-// When using virtual textures for the 2D lightmaps, use the 16bbp (1) or 32bbp (0) page table
-// 16bbp is limited to 64*64 pools
-#define LIGHTMAP_VT_16BIT 1
-
-
-
 BEGIN_GLOBAL_SHADER_PARAMETER_STRUCT(FLightmapResourceClusterShaderParameters,ENGINE_API)
-	SHADER_PARAMETER_TEXTURE(Texture2D, LightMapTexture) 
+	SHADER_PARAMETER_TEXTURE(Texture2D, LightMapTexture)
+	SHADER_PARAMETER_TEXTURE(Texture2D, LightMapTexture_1) // VT
 	SHADER_PARAMETER_TEXTURE(Texture2D, SkyOcclusionTexture) 
 	SHADER_PARAMETER_TEXTURE(Texture2D, AOMaterialMaskTexture) 
-	SHADER_PARAMETER_TEXTURE(Texture2D, StaticShadowTexture) 
+	SHADER_PARAMETER_TEXTURE(Texture2D, StaticShadowTexture)
 	SHADER_PARAMETER_SAMPLER(SamplerState, LightMapSampler) 
 	SHADER_PARAMETER_SAMPLER(SamplerState, SkyOcclusionSampler) 
 	SHADER_PARAMETER_SAMPLER(SamplerState, AOMaterialMaskSampler) 
 	SHADER_PARAMETER_SAMPLER(SamplerState, StaticShadowTextureSampler)
+	SHADER_PARAMETER_TEXTURE(Texture2D<uint4>, LightmapVirtualTexturePageTable0) // VT
+	SHADER_PARAMETER_TEXTURE(Texture2D<uint4>, LightmapVirtualTexturePageTable1) // VT
 END_GLOBAL_SHADER_PARAMETER_STRUCT()
 
 class FLightmapClusterResourceInput
@@ -658,19 +700,24 @@ public:
 		LightMapTextures[1] = nullptr;
 		SkyOcclusionTexture = nullptr;
 		AOMaterialMaskTexture = nullptr;
+		LightMapVirtualTexture = nullptr;
 		ShadowMapTexture = nullptr;
 	}
 
 	const UTexture2D* LightMapTextures[2];
 	const UTexture2D* SkyOcclusionTexture;
 	const UTexture2D* AOMaterialMaskTexture;
+	const ULightMapVirtualTexture2D* LightMapVirtualTexture;
 	const UTexture2D* ShadowMapTexture;
 
 	friend uint32 GetTypeHash(const FLightmapClusterResourceInput& Cluster)
 	{
-		return PointerHash(Cluster.LightMapTextures[0], 
+		// TODO - LightMapVirtualTexture needed here? What about Sky/AO textures?  Or is it enough to just check LightMapTexture[n]?
+		return
+			PointerHash(Cluster.LightMapTextures[0],
 			PointerHash(Cluster.LightMapTextures[1],
-				PointerHash(Cluster.ShadowMapTexture)));
+			PointerHash(Cluster.LightMapVirtualTexture,
+			PointerHash(Cluster.ShadowMapTexture))));
 	}
 
 	bool operator==(const FLightmapClusterResourceInput& Rhs) const
@@ -679,6 +726,7 @@ public:
 			&& LightMapTextures[1] == Rhs.LightMapTextures[1]
 			&& SkyOcclusionTexture == Rhs.SkyOcclusionTexture
 			&& AOMaterialMaskTexture == Rhs.AOMaterialMaskTexture
+			&& LightMapVirtualTexture == Rhs.LightMapVirtualTexture
 			&& ShadowMapTexture == Rhs.ShadowMapTexture;
 	}
 };
@@ -686,6 +734,7 @@ public:
 ENGINE_API void GetLightmapClusterResourceParameters(
 	ERHIFeatureLevel::Type FeatureLevel, 
 	const FLightmapClusterResourceInput& Input,
+	IAllocatedVirtualTexture* AllocatedVT,
 	FLightmapResourceClusterShaderParameters& Parameters);
 
 class FDefaultLightmapResourceClusterUniformBuffer : public TUniformBuffer< FLightmapResourceClusterShaderParameters >
@@ -723,6 +772,8 @@ public:
 	ENGINE_API ELightInteractionType GetStaticInteraction(const FLightSceneProxy* LightSceneProxy, const TArray<FGuid>& IrrelevantLights) const;
 	
 	ENGINE_API void CreatePrecomputedLightingUniformBuffer_RenderingThread(ERHIFeatureLevel::Type FeatureLevel);
+
+	ENGINE_API bool GetVirtualTextureLightmapProducer(ERHIFeatureLevel::Type FeatureLevel, FVirtualTextureProducerHandle& OutProducerHandle);
 
 	// @param InLightMap may be 0
 	void SetLightMap(const FLightMap* InLightMap)
@@ -764,19 +815,19 @@ public:
 		bGlobalVolumeLightmap = bInGlobalVolumeLightmap;
 	}
 
-	FUniformBufferRHIParamRef GetPrecomputedLightingBuffer() const
+	FRHIUniformBuffer* GetPrecomputedLightingBuffer() const
 	{
 		return PrecomputedLightingUniformBuffer;
 	}
 
-	void SetPrecomputedLightingBuffer(FUniformBufferRHIParamRef InPrecomputedLightingUniformBuffer)
+	void SetPrecomputedLightingBuffer(FRHIUniformBuffer* InPrecomputedLightingUniformBuffer)
 	{
 		PrecomputedLightingUniformBuffer = InPrecomputedLightingUniformBuffer;
 	}
 
 	ENGINE_API FLightMapInteraction GetLightMapInteraction(ERHIFeatureLevel::Type InFeatureLevel) const;
 
-	ENGINE_API FShadowMapInteraction GetShadowMapInteraction() const;
+	ENGINE_API FShadowMapInteraction GetShadowMapInteraction(ERHIFeatureLevel::Type InFeatureLevel) const;
 
 private:
 
@@ -868,6 +919,9 @@ public:
 	 * Or index of the direction if this is a whole scene shadow from a point light, otherwise INDEX_NONE. 
 	 */
 	int32 ShadowSplitIndex;
+
+	/** Strength of depth bias across cascades. */
+	float CascadeBiasDistribution;
 	
 	FShadowCascadeSettings()
 		: SplitNear(0.0f)
@@ -878,6 +932,7 @@ public:
 		, FadePlaneLength(SplitFar - FadePlaneOffset)
 		, bFarShadowCascade(false)
 		, ShadowSplitIndex(INDEX_NONE)
+		, CascadeBiasDistribution(1)
 	{
 	}
 };
@@ -947,14 +1002,47 @@ public:
 	}
 };
 
-inline bool DoesPlatformSupportDistanceFieldShadowing(EShaderPlatform Platform)
+inline bool DoesPlatformSupportDistanceFields(const FStaticShaderPlatform Platform)
 {
-	// Hasn't been tested elsewhere yet
-	return Platform == SP_PCD3D_SM5 || Platform == SP_PS4
+	return Platform == SP_PCD3D_SM5
+		|| Platform == SP_PS4
 		|| IsMetalSM5Platform(Platform)
 		|| Platform == SP_XBOXONE_D3D12
-		|| IsVulkanSM5Platform(Platform);
+		|| IsVulkanSM5Platform(Platform)
+		|| Platform == SP_SWITCH
+		|| Platform == SP_SWITCH_FORWARD
+		|| FDataDrivenShaderPlatformInfo::GetSupportsDistanceFields(Platform);
 }
+
+inline bool DoesPlatformSupportDistanceFieldShadowing(EShaderPlatform Platform)
+{
+	return DoesPlatformSupportDistanceFields(Platform);
+}
+
+inline bool DoesPlatformSupportDistanceFieldAO(EShaderPlatform Platform)
+{
+	return DoesPlatformSupportDistanceFields(Platform);
+}
+
+inline bool DoesPlatformSupportDistanceFieldGI(EShaderPlatform Platform)
+{
+	return (Platform == SP_PCD3D_SM5) && DoesPlatformSupportDistanceFields(Platform);
+}
+
+BEGIN_GLOBAL_SHADER_PARAMETER_STRUCT(FMobileReflectionCaptureShaderParameters,ENGINE_API)
+	SHADER_PARAMETER(FVector4, Params) // x - inv average brightness, y - sky cubemap max mip, zw - unused
+	SHADER_PARAMETER_TEXTURE(TextureCube, Texture)
+	SHADER_PARAMETER_SAMPLER(SamplerState, TextureSampler)
+END_GLOBAL_SHADER_PARAMETER_STRUCT()
+
+class FDefaultMobileReflectionCaptureUniformBuffer : public TUniformBuffer<FMobileReflectionCaptureShaderParameters>
+{
+	typedef TUniformBuffer<FMobileReflectionCaptureShaderParameters> Super;
+public:
+	virtual void InitDynamicRHI() override;
+};
+
+ENGINE_API extern TGlobalResource<FDefaultMobileReflectionCaptureUniformBuffer> GDefaultMobileReflectionCaptureUniformBuffer;
 
 /** Represents a USkyLightComponent to the rendering thread. */
 class ENGINE_API FSkyLightSceneProxy
@@ -980,8 +1068,10 @@ public:
 	uint8 bWantsStaticShadowing:1;
 	uint8 bHasStaticLighting:1;
 	uint8 bCastVolumetricShadow:1;
+	uint8 bCastRayTracedShadow:1;
+	uint8 bAffectReflection:1;
+	uint8 bAffectGlobalIllumination:1;
 	TEnumAsByte<EOcclusionCombineMode> OcclusionCombineMode;
-	FLinearColor LightColor;
 	float AverageBrightness;
 	float IndirectLightingIntensity;
 	float VolumetricScatteringIntensity;
@@ -991,33 +1081,57 @@ public:
 	float OcclusionExponent;
 	float MinOcclusion;
 	FLinearColor OcclusionTint;
-
+	int32 SamplesPerPixel;
 #if RHI_RAYTRACING
-	bool IsDirtyImportanceSamplingData;
-	bool ShouldRebuildCdf() const;
-
-	FRWBuffer RowCdf;
-	FRWBuffer ColumnCdf;
-	FRWBuffer CubeFaceCdf;
-
-	FRWBuffer SkyLightMipTreePosX;
-	FRWBuffer SkyLightMipTreeNegX;
-	FRWBuffer SkyLightMipTreePosY;
-	FRWBuffer SkyLightMipTreeNegY;
-	FRWBuffer SkyLightMipTreePosZ;
-	FRWBuffer SkyLightMipTreeNegZ;
-	FIntVector SkyLightMipDimensions;
-
-	FRWBuffer SkyLightMipTreePdfPosX;
-	FRWBuffer SkyLightMipTreePdfNegX;
-	FRWBuffer SkyLightMipTreePdfPosY;
-	FRWBuffer SkyLightMipTreePdfNegY;
-	FRWBuffer SkyLightMipTreePdfPosZ;
-	FRWBuffer SkyLightMipTreePdfNegZ;
-	FRWBuffer SolidAnglePdf;
+	FSkyLightImportanceSamplingData* ImportanceSamplingData;
 #endif
+
+	bool IsMovable() { return bMovable; }
+
+	void SetLightColor(const FLinearColor& InColor)
+	{
+		LightColor = InColor;
+	}
+	FLinearColor GetEffectiveLightColor() const;
+
+private:
+	FLinearColor LightColor;
+	const uint8 bMovable : 1;
 };
 
+/** Represents a USkyAtmosphereComponent to the rendering thread. */
+class ENGINE_API FSkyAtmosphereSceneProxy
+{
+public:
+
+	// Initialization constructor.
+	FSkyAtmosphereSceneProxy(const USkyAtmosphereComponent* InComponent);
+	~FSkyAtmosphereSceneProxy();
+
+	bool IsMultiScatteringEnabled() const { return AtmosphereSetup.MultiScatteringFactor > 0.0f; }
+	FLinearColor GetSkyLuminanceFactor() const { return SkyLuminanceFactor; }
+	FLinearColor GetTransmittanceAtZenith() const { return TransmittanceAtZenith; };
+	float GetAerialPespectiveViewDistanceScale() const { return AerialPespectiveViewDistanceScale; }
+	float GetHeightFogContribution() const { return HeightFogContribution; }
+
+	const FAtmosphereSetup& GetAtmosphereSetup() const { return AtmosphereSetup; }
+
+	FVector GetAtmosphereLightDirection(int32 AtmosphereLightIndex, const FVector& DefaultDirection) const;
+
+	bool bStaticLightingBuilt;
+	FSkyAtmosphereRenderSceneInfo* RenderSceneInfo;
+private:
+
+	FAtmosphereSetup AtmosphereSetup;
+
+	FLinearColor TransmittanceAtZenith;
+	FLinearColor SkyLuminanceFactor;
+	float AerialPespectiveViewDistanceScale;
+	float HeightFogContribution;
+
+	bool OverrideAtmosphericLight[NUM_ATMOSPHERE_LIGHTS];
+	FVector OverrideAtmosphericLightDirection[NUM_ATMOSPHERE_LIGHTS];
+};
 
 /** Shader paraneter structure for rendering lights. */
 BEGIN_SHADER_PARAMETER_STRUCT(FLightShaderParameters, ENGINE_API)
@@ -1054,6 +1168,12 @@ BEGIN_SHADER_PARAMETER_STRUCT(FLightShaderParameters, ENGINE_API)
 
 	// Other dimensions of the light source for rect light specifically.
 	SHADER_PARAMETER(float, SourceLength)
+
+	// Barn door angle for rect light
+	SHADER_PARAMETER(float, RectLightBarnCosAngle)
+
+	// Barn door length for rect light
+	SHADER_PARAMETER(float, RectLightBarnLength)
 
 	// Texture of the rect light.
 	SHADER_PARAMETER_TEXTURE(Texture2D, SourceTexture)
@@ -1194,14 +1314,18 @@ public:
 		return false;
 	}
 
-	virtual void SetScissorRect(FRHICommandList& RHICmdList, const FSceneView& View, const FIntRect& ViewRect) const
+	// @param OutScissorRect the scissor rect used if one is set
+	// @return whether a scissor rect is set
+	virtual bool SetScissorRect(FRHICommandList& RHICmdList, const FSceneView& View, const FIntRect& ViewRect, FIntRect* OutScissorRect = nullptr) const
 	{
+		return false;
 	}
 
 	virtual bool ShouldCreateRayTracedCascade(ERHIFeatureLevel::Type Type, bool bPrecomputedLightingIsValid, int32 MaxNearCascades) const { return false; }
 
 	// Accessors.
 	float GetUserShadowBias() const { return ShadowBias; }
+	float GetUserShadowSlopeBias() const { return ShadowSlopeBias; }
 
 	/** 
 	 * Note: The Rendering thread must not dereference UObjects!  
@@ -1238,9 +1362,14 @@ public:
 	inline bool CastsStaticShadow() const { return bCastStaticShadow; }
 	inline bool CastsTranslucentShadows() const { return bCastTranslucentShadows; }
 	inline bool CastsVolumetricShadow() const { return bCastVolumetricShadow; }
+	inline bool CastsHairStrandsDeepShadow() const { return bCastHairStrandsDeepShadow; }
+	inline bool CastsRaytracedShadow() const { return bCastRaytracedShadow; }
+	inline bool AffectReflection() const { return bAffectReflection; }
+	inline bool AffectGlobalIllumination() const { return bAffectGlobalIllumination; }
 	inline bool CastsShadowsFromCinematicObjectsOnly() const { return bCastShadowsFromCinematicObjectsOnly; }
 	inline bool CastsModulatedShadows() const { return bCastModulatedShadows; }
 	inline const FLinearColor& GetModulatedShadowColor() const { return ModulatedShadowColor; }
+	inline const float GetShadowAmount() const { return ShadowAmount; }
 	inline bool AffectsTranslucentLighting() const { return bAffectTranslucentLighting; }
 	inline bool Transmission() const { return bTransmission; }
 	inline bool UseRayTracedDistanceFieldShadows() const { return bUseRayTracedDistanceFieldShadows; }
@@ -1255,7 +1384,6 @@ public:
 		return StatId; 
 	}	
 	inline int32 GetShadowMapChannel() const { return ShadowMapChannel; }
-	inline bool IsUsedAsAtmosphereSunLight() const { return bUsedAsAtmosphereSunLight; }
 	inline int32 GetPreviewShadowMapChannel() const { return PreviewShadowMapChannel; }
 
 	inline bool HasReflectiveShadowMap() const { return bHasReflectiveShadowMap; }
@@ -1263,6 +1391,8 @@ public:
 	inline const class FStaticShadowDepthMap* GetStaticShadowDepthMap() const { return StaticShadowDepthMap; }
 
 	inline bool GetForceCachedShadowsForMovablePrimitives() const { return bForceCachedShadowsForMovablePrimitives; }
+
+	inline uint32 GetSamplesPerPixel() const { return SamplesPerPixel; }
 
 	/**
 	 * Shifts light position and all relevant data by an arbitrary delta.
@@ -1273,6 +1403,23 @@ public:
 
 	virtual float GetMaxDrawDistance() const { return 0.0f; }
 	virtual float GetFadeRange() const { return 0.0f; }
+
+	// Atmosphere / Fog related functions.
+
+	inline bool IsUsedAsAtmosphereSunLight() const { return bUsedAsAtmosphereSunLight; }
+	inline uint8 GetAtmosphereSunLightIndex() const { return AtmosphereSunLightIndex; }
+	virtual void SetAtmosphereRelatedProperties(FLinearColor TransmittanceFactor, FLinearColor SunOuterSpaceLuminance) {}
+	virtual FLinearColor GetOuterSpaceLuminance() const { return FLinearColor::White; }
+	virtual FLinearColor GetTransmittanceFactor() const { return FLinearColor::White; }
+	static float GetSunOnEarthHalfApexAngleRadian() 
+	{ 
+		const float SunOnEarthApexAngleDegree = 0.545f;	// Apex angle == angular diameter
+		return 0.5f * SunOnEarthApexAngleDegree * PI / 180.0f;
+	}
+	/**
+	 * @return the light half apex angle (half angular diameter) in radian.
+	 */
+	virtual float GetSunLightHalfApexAngleRadian() const { return GetSunOnEarthHalfApexAngleRadian() ; }
 
 protected:
 
@@ -1309,6 +1456,9 @@ protected:
 
 	/** User setting from light component, 0:no bias, 0.5:reasonable, larger object might appear to float */
 	float ShadowBias;
+
+	/** User setting from light component, 0:no bias, 0.5:reasonable, larger object might appear to float */
+	float ShadowSlopeBias;
 
 	/** Sharpen shadow filtering */
 	float ShadowSharpen;
@@ -1379,10 +1529,19 @@ protected:
 	const uint8 bTransmission : 1;
 
 	const uint8 bCastVolumetricShadow : 1;
-
+	const uint8 bCastHairStrandsDeepShadow : 1;
 	const uint8 bCastShadowsFromCinematicObjectsOnly : 1;
 
 	const uint8 bForceCachedShadowsForMovablePrimitives : 1;
+
+	/** Whether the light shadows are computed with shadow-mapping or ray-tracing (when available). */
+	const uint8 bCastRaytracedShadow : 1;
+
+	/** Whether the light affects objects in reflections, when ray-traced reflection is enabled. */
+	const uint8 bAffectReflection : 1;
+
+	/** Whether the light affects global illumination, when ray-traced global illumination is enabled. */
+	const uint8 bAffectGlobalIllumination : 1;
 
 	/** Whether the light affects translucency or not.  Disabling this can save GPU time when there are many small lights. */
 	const uint8 bAffectTranslucentLighting : 1;
@@ -1406,6 +1565,9 @@ protected:
 	/** Whether the light supports rendering in tiled deferred pass */
 	uint8 bTiledDeferredLightingSupported : 1;
 
+	/** The index of the atmospheric light. Multiple lights can be considered when computing the sky/atmospheric scattering. */
+	const uint8 AtmosphereSunLightIndex;
+
 	/** The light type (ELightComponentType) */
 	const uint8 LightType;
 
@@ -1428,6 +1590,12 @@ protected:
 	
 	/** Modulated shadow color. */
 	FLinearColor ModulatedShadowColor;
+
+	/** Control the amount of shadow occlusion. */
+	float ShadowAmount;
+
+	/** Samples per pixel for ray tracing */
+	uint32 SamplesPerPixel;
 
 	/**
 	 * Updates the light proxy's cached transforms.
@@ -1518,7 +1686,8 @@ public:
 
 	int32 PackedIndex;
 
-	/** Used in Feature level ES2 */
+	/** Used with mobile renderer */
+	TUniformBufferRef<FMobileReflectionCaptureShaderParameters> MobileUniformBuffer;
 	FTexture* EncodedHDRCubemap;
 	float EncodedHDRAverageBrightness;
 
@@ -1546,6 +1715,7 @@ public:
 	FReflectionCaptureProxy(const class UReflectionCaptureComponent* InComponent);
 
 	void SetTransform(const FMatrix& InTransform);
+	void UpdateMobileUniformBuffer();
 };
 
 /** Calculated wind data with support for accumulating other weighted wind data */
@@ -1987,7 +2157,7 @@ public:
 		return FeatureLevel;
 	}
 
-private:
+protected:
 
 	ENGINE_API FMeshElementCollector(ERHIFeatureLevel::Type InFeatureLevel);
 
@@ -2111,9 +2281,70 @@ private:
 	friend class FUniformMeshConverter;
 };
 
+#if RHI_RAYTRACING
+/**
+ * Collector used to gather resources for the material mesh batches.
+ * It is also the actual owner of the temporary, per-frame resources created for each mesh batch.
+ * Mesh batches shall only weak-reference the resources located in the collector.
+ */
+class FRayTracingMeshResourceCollector : public FMeshElementCollector
+{
+public:
+	// No MeshBatch should be allocated from an FRayTracingMeshResourceCollector.
+	inline FMeshBatch& AllocateMesh() = delete;
+	void AddMesh(int32 ViewIndex, FMeshBatch& MeshBatch) = delete;
+	void RegisterOneFrameMaterialProxy(FMaterialRenderProxy* Proxy) = delete;
+
+	FRayTracingMeshResourceCollector(
+		ERHIFeatureLevel::Type InFeatureLevel,
+		FGlobalDynamicIndexBuffer* InDynamicIndexBuffer,
+		FGlobalDynamicVertexBuffer* InDynamicVertexBuffer,
+		FGlobalDynamicReadBuffer* InDynamicReadBuffer)
+		: FMeshElementCollector(InFeatureLevel)
+	{
+		DynamicIndexBuffer = InDynamicIndexBuffer;
+		DynamicVertexBuffer = InDynamicVertexBuffer;
+		DynamicReadBuffer = InDynamicReadBuffer;
+	}
+
+	~FRayTracingMeshResourceCollector()
+	{
+		FMeshElementCollector::~FMeshElementCollector();
+	}
+};
+
+struct FRayTracingDynamicGeometryUpdateParams
+{
+	TArray<FMeshBatch> MeshBatches;
+
+	bool bUsingIndirectDraw;
+	// When bUsingIndirectDraw == false, NumVertices == the actual number of vertices to process
+	// When bUsingIndirectDraw == true, it is the maximum possible vertices that GPU can emit
+	uint32 NumVertices;
+	uint32 VertexBufferSize;
+	uint32 NumTriangles;
+
+	FRayTracingGeometry* Geometry;
+	FRWBuffer* Buffer;
+};
+
+struct FRayTracingMaterialGatheringContext
+{
+	const class FScene* Scene;
+	const FSceneView* ReferenceView;
+	const FSceneViewFamily& ReferenceViewFamily;
+
+	FRayTracingMeshResourceCollector& RayTracingMeshResourceCollector;
+	TArray<FRayTracingDynamicGeometryUpdateParams> DynamicRayTracingGeometriesToUpdate;
+};
+#endif
+
 class FDynamicPrimitiveUniformBuffer : public FOneFrameResource
 {
 public:
+	FDynamicPrimitiveUniformBuffer() = default;
+	// FDynamicPrimitiveUniformBuffer is non-copyable
+	FDynamicPrimitiveUniformBuffer(const FDynamicPrimitiveUniformBuffer&) = delete;
 
 	virtual ~FDynamicPrimitiveUniformBuffer()
 	{
@@ -2127,9 +2358,22 @@ public:
 		const FMatrix& PreviousLocalToWorld,
 		const FBoxSphereBounds& WorldBounds,
 		const FBoxSphereBounds& LocalBounds,
+		const FBoxSphereBounds& PreSkinnedLocalBounds,
 		bool bReceivesDecals,
 		bool bHasPrecomputedVolumetricLightmap,
-		bool bUseEditorDepthTest);
+		bool bDrawsVelocity,
+		bool bOutputVelocity);
+
+	/** Pass-through implementation which calls the overloaded Set function with LocalBounds for PreSkinnedLocalBounds. */
+	ENGINE_API void Set(
+		const FMatrix& LocalToWorld,
+		const FMatrix& PreviousLocalToWorld,
+		const FBoxSphereBounds& WorldBounds,
+		const FBoxSphereBounds& LocalBounds,
+		bool bReceivesDecals,
+		bool bHasPrecomputedVolumetricLightmap,
+		bool bDrawsVelocity,
+		bool bOutputVelocity);
 };
 
 //
@@ -2458,7 +2702,30 @@ extern ENGINE_API void DrawDashedLine(class FPrimitiveDrawInterface* PDI, const 
  */
 extern ENGINE_API void DrawWireDiamond(class FPrimitiveDrawInterface* PDI, const FMatrix& DiamondMatrix, float Size, const FLinearColor& InColor, uint8 DepthPriority, float Thickness = 0.0f);
 
+/**
+ * Draws a coordinate system (Red for X axis, Green for Y axis, Blue for Z axis).
+ *
+ * @param	PDI				Draw interface.
+ * @param	AxisLoc			Location of the coordinate system.
+ * @param	AxisRot			Location of the coordinate system.
+ * @param	Scale			Scale for the axis lines.
+ * @param	DepthPriority	Depth priority coordinate system.
+ * @param	Thickness		How thick to draw the axis lines
+ */
 extern ENGINE_API void DrawCoordinateSystem(FPrimitiveDrawInterface* PDI, FVector const& AxisLoc, FRotator const& AxisRot, float Scale, uint8 DepthPriority, float Thickness = 0.0f);
+
+/**
+ * Draws a coordinate system with a fixed color.
+ *
+ * @param	PDI				Draw interface.
+ * @param	AxisLoc			Location of the coordinate system.
+ * @param	AxisRot			Location of the coordinate system.
+ * @param	Scale			Scale for the axis lines.
+ * @param	InColor			Color of the axis lines.
+ * @param	DepthPriority	Depth priority coordinate system.
+ * @param	Thickness		How thick to draw the axis lines
+ */
+extern ENGINE_API void DrawCoordinateSystem(FPrimitiveDrawInterface* PDI, FVector const& AxisLoc, FRotator const& AxisRot, float Scale, const FLinearColor& InColor, uint8 DepthPriority, float Thickness = 0.0f);
 
 /**
  * Draws a wireframe of the bounds of a frustum as defined by a transform from clip-space into world-space.
@@ -2531,10 +2798,10 @@ extern ENGINE_API bool IsRichView(const FSceneViewFamily& ViewFamily);
 	 * true if we debug material names with SCOPED_DRAW_EVENT.
 	 * Toggle with "r.ShowMaterialDrawEvents" cvar.
 	 */
-	extern ENGINE_API void BeginMeshDrawEvent_Inner(FRHICommandList& RHICmdList, const class FPrimitiveSceneProxy* PrimitiveSceneProxy, const struct FMeshBatch& Mesh, struct TDrawEvent<FRHICommandList>& DrawEvent);
+	extern ENGINE_API void BeginMeshDrawEvent_Inner(FRHICommandList& RHICmdList, const class FPrimitiveSceneProxy* PrimitiveSceneProxy, const struct FMeshBatch& Mesh, struct FDrawEvent& DrawEvent);
 #endif
 
-FORCEINLINE void BeginMeshDrawEvent(FRHICommandList& RHICmdList, const class FPrimitiveSceneProxy* PrimitiveSceneProxy, const struct FMeshBatch& Mesh, struct TDrawEvent<FRHICommandList>& DrawEvent, bool ShowMaterialDrawEvent)
+FORCEINLINE void BeginMeshDrawEvent(FRHICommandList& RHICmdList, const class FPrimitiveSceneProxy* PrimitiveSceneProxy, const struct FMeshBatch& Mesh, struct FDrawEvent& DrawEvent, bool ShowMaterialDrawEvent)
 {
 #if WANTS_DRAW_MESH_EVENTS
 	if (ShowMaterialDrawEvent)
@@ -2586,12 +2853,24 @@ float ENGINE_API ComputeBoundsScreenSize(const FVector4& BoundsOrigin, const flo
 /**
  * Computes the screen radius squared of a given sphere bounds in the given view. This is used at
  * runtime instead of ComputeBoundsScreenSize to avoid a square root.
+ * It is a wrapper for the version below that does not take a FSceneView reference but parameters directly
  * @param Origin - Origin of the bounds in world space
  * @param SphereRadius - Radius of the sphere to use to calculate screen coverage
  * @param View - The view to calculate the display factor for
  * @return float - The screen size calculated
  */
 float ENGINE_API ComputeBoundsScreenRadiusSquared(const FVector4& Origin, const float SphereRadius, const FSceneView& View);
+
+/**
+ * Computes the screen radius squared of a given sphere bounds in the given view. This is used at
+ * runtime instead of ComputeBoundsScreenSize to avoid a square root.
+ * @param Origin - Origin of the bounds in world space
+ * @param SphereRadius - Radius of the sphere to use to calculate screen coverage
+ * @param ViewOrigin - The view origin involved in the calculation
+ * @param ProjMatrix - The projection matrix of the view involved in the calculation
+ * @return float - The screen size calculated
+ */
+float ENGINE_API ComputeBoundsScreenRadiusSquared(const FVector4& BoundsOrigin, const float SphereRadius, const FVector4& ViewOrigin, const FMatrix& ProjMatrix);
 
 /**
  * Computes the draw distance of a given sphere bounds in the given view with the specified screen size.
@@ -2659,8 +2938,8 @@ struct FLODMask
 		return DitheredLODIndices[0] == LODIndex || DitheredLODIndices[1] == LODIndex;
 	}
 
-	//#dxr_todo  We should probably add both LoDs but mask them based on their 
-	//LodFace value within the BVH based on the LodFadeMask in the GBuffer
+	//#dxr_todo UE-72106: We should probably add both LoDs but mask them based on their 
+	//LodFade value within the BVH based on the LodFadeMask in the GBuffer
 	bool ContainsRayTracedLOD(int32 LODIndex) const
 	{
 		return DitheredLODIndices[0] == LODIndex;
@@ -2718,6 +2997,7 @@ struct FReadOnlyCVARCache
 	bool bEnableAtmosphericFog;
 	bool bEnableLowQualityLightmaps;
 	bool bAllowStaticLighting;
+	bool bSupportSkyAtmosphere;
 
 	// Mobile specific
 	bool bMobileAllowMovableDirectionalLights;

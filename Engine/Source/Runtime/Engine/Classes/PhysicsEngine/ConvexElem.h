@@ -1,10 +1,16 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
 #include "CoreMinimal.h"
 #include "UObject/ObjectMacros.h"
 #include "PhysicsEngine/ShapeElem.h"
+#include "Chaos/Convex.h"
+
+#if WITH_CHAOS
+#include "Chaos/Serializable.h"
+#endif
+
 #include "ConvexElem.generated.h"
 
 struct FDynamicMeshVertex;
@@ -13,6 +19,14 @@ struct FKBoxElem;
 namespace physx
 {
 	class PxConvexMesh;
+}
+
+namespace Chaos
+{
+	class FImplicitObject;
+
+	template <typename T, int d>
+	class TConvex;
 }
 
 /** One convex hull, used for simplified collision. */
@@ -24,6 +38,9 @@ struct FKConvexElem : public FKShapeElem
 	/** Array of indices that make up the convex hull. */
 	UPROPERTY()
 	TArray<FVector> VertexData;
+
+	UPROPERTY()
+	TArray<int32> IndexData;
 
 	/** Bounding box of this convex hull. */
 	UPROPERTY()
@@ -40,33 +57,17 @@ private:
 	/** Convex mesh for this body, flipped across X, created from cooked data in CreatePhysicsMeshes */
 	physx::PxConvexMesh*   ConvexMeshNegX;
 
+#if WITH_CHAOS
+	TSharedPtr<Chaos::FConvex, ESPMode::ThreadSafe> ChaosConvex;
+#endif
+
 public:
 
+	ENGINE_API FKConvexElem();
+	ENGINE_API FKConvexElem(const FKConvexElem& Other);
+	ENGINE_API ~FKConvexElem();
 
-	FKConvexElem()
-		: FKShapeElem(EAggCollisionShape::Convex)
-		, ElemBox(ForceInit)
-		, Transform(FTransform::Identity)
-		, ConvexMesh(NULL)
-		, ConvexMeshNegX(NULL)
-	{}
-
-	FKConvexElem(const FKConvexElem& Other)
-		: ConvexMesh(nullptr)
-		, ConvexMeshNegX(nullptr)
-	{
-		CloneElem(Other);
-	}
-
-	const FKConvexElem& operator=(const FKConvexElem& Other)
-	{
-		ensureMsgf(ConvexMesh == nullptr, TEXT("We are leaking memory. Why are we calling the assignment operator on an element that has already allocated resources?"));
-		ensureMsgf(ConvexMeshNegX == nullptr, TEXT("We are leaking memory. Why are we calling the assignment operator on an element that has already allocated resources?"));
-		ConvexMesh = nullptr;
-		ConvexMeshNegX = nullptr;
-		CloneElem(Other);
-		return *this;
-	}
+	ENGINE_API const FKConvexElem& operator=(const FKConvexElem& Other);
 
 	ENGINE_API void	DrawElemWire(class FPrimitiveDrawInterface* PDI, const FTransform& ElemTM, const float Scale, const FColor Color) const;
 
@@ -108,6 +109,19 @@ public:
 	/** Set the PhysX convex mesh to use for this element */
 	ENGINE_API void SetMirroredConvexMesh(physx::PxConvexMesh* InMesh);
 
+#if WITH_CHAOS
+	ENGINE_API const auto& GetChaosConvexMesh() const
+	{
+		return ChaosConvex;
+	}
+
+	ENGINE_API void SetChaosConvexMesh(TSharedPtr<Chaos::FConvex, ESPMode::ThreadSafe>&& InChaosConvex);
+
+	ENGINE_API void ResetChaosConvexMesh();
+
+	ENGINE_API void ComputeChaosConvexIndices();
+#endif
+
 	/** Get current transform applied to convex mesh vertices */
 	FTransform GetTransform() const
 	{
@@ -132,11 +146,5 @@ public:
 
 private:
 	/** Helper function to safely copy instances of this shape*/
-	void CloneElem(const FKConvexElem& Other)
-	{
-		Super::CloneElem(Other);
-		VertexData = Other.VertexData;
-		ElemBox = Other.ElemBox;
-		Transform = Other.Transform;
-	}
+	void CloneElem(const FKConvexElem& Other);
 };

@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -162,19 +162,51 @@ struct ENGINE_API FUpdateLevelStreamingLevelStatus
 	uint32 bNewShouldBlockOnLoad : 1;
 };
 
-/** This structure is used to pass arguments to ServerUpdateMultipleLevelsVisibility() server RPC function */
+/** This structure is used to pass arguments to ServerUpdateLevelVisibilty() and ServerUpdateMultipleLevelsVisibility() server RPC functions */
 USTRUCT()
 struct ENGINE_API FUpdateLevelVisibilityLevelInfo
 {
 	GENERATED_BODY();
 
-	/** The name of the package for the level whose status changed */
+	FUpdateLevelVisibilityLevelInfo()
+		: PackageName(NAME_None)
+		, FileName(NAME_None)
+		, bIsVisible(false)
+		, bSkipCloseOnError(false)
+	{
+	}
+
+	/**
+	 * @param Level			Level to pull PackageName and FileName from.
+	 * @param bInIsVisible	Default value for bIsVisible.
+	 */
+	FUpdateLevelVisibilityLevelInfo(const class ULevel* const Level, const bool bInIsVisible);
+
+	/** The name of the package for the level whose status changed. */
 	UPROPERTY()
 	FName PackageName;
 
-	/** The new visibility state for this level */
+	/** The name / path of the asset file for the level whose status changed. */
+	UPROPERTY()
+	FName FileName;
+
+	/** The new visibility state for this level. */
 	UPROPERTY()
 	uint32 bIsVisible : 1;
+
+	/** Skip connection close if level can't be found (not net serialized) */
+	uint32 bSkipCloseOnError : 1;
+
+	bool NetSerialize(FArchive& Ar, UPackageMap* PackageMap, bool& bOutSuccess);
+};
+
+template<>
+struct TStructOpsTypeTraits<FUpdateLevelVisibilityLevelInfo> : public TStructOpsTypeTraitsBase2<FUpdateLevelVisibilityLevelInfo>
+{
+	enum
+	{
+		WithNetSerializer = true
+	};
 };
 
 /** Data structure used to setup an input mode that allows the UI to respond to user input, and if the UI doesn't handle it player input / player controller gets a chance. */
@@ -533,6 +565,14 @@ public:
 	/** Causes the client to travel to the given URL */
 	UFUNCTION(exec)
 	virtual void LocalTravel(const FString& URL);
+
+	/** RPC used by ServerExec. Not intended to be called directly */
+	UFUNCTION(Reliable, Server, WithValidation)
+	void ServerExecRPC(const FString& Msg);
+
+	/** Executes command on server (non shipping builds only) */
+	UFUNCTION(exec)
+	void ServerExec(const FString& Msg);
 
 	/** Return the client to the main menu gracefully */
 	UE_DEPRECATED(4.19, "As an FString, the ReturnReason parameter is not easily localized. Please use ClientReturnToMainMenuWithTextReason instead.")
@@ -896,6 +936,14 @@ public:
 	UFUNCTION(unreliable, client, BlueprintCallable, Category="Game|Feedback")
 	void ClientPlayCameraShake(TSubclassOf<class UCameraShake> Shake, float Scale = 1.f, ECameraAnimPlaySpace::Type PlaySpace = ECameraAnimPlaySpace::CameraLocal, FRotator UserPlaySpaceRot = FRotator::ZeroRotator);
 
+	/** 
+	 * Play Camera Shake localized to a given source
+	 * @param Shake - Camera shake animation to play
+	 * @param SourceComponent - The source from which the camera shakes originates
+	 */
+	UFUNCTION(BlueprintCallable, Category="Game|Feedback")
+	void ClientPlayCameraShakeFromSource(TSubclassOf<class UCameraShake> Shake, class UCameraShakeSourceComponent* SourceComponent);
+
 	/**
 	 * Play sound client-side (so only the client will hear it)
 	 * @param Sound	- Sound to play
@@ -995,6 +1043,13 @@ public:
 	UFUNCTION(BlueprintCallable, Category="HUD")
 	AHUD* GetHUD() const;
 
+	/** Templated version of GetHUD, will return nullptr if cast fails */
+	template<class T>
+	T* GetHUD() const
+	{
+		return Cast<T>(MyHUD);
+	}
+
 	/**
 	 * Sets the Widget for the Mouse Cursor to display 
 	 * @param Cursor - the cursor to set the widget for
@@ -1025,6 +1080,10 @@ public:
 	/** Stop camera shake on client.  */
 	UFUNCTION(reliable, client, BlueprintCallable, Category="Game|Feedback")
 	void ClientStopCameraShake(TSubclassOf<class UCameraShake> Shake, bool bImmediately = true);
+
+	/** Stop camera shake on client.  */
+	UFUNCTION(BlueprintCallable, Category="Game|Feedback")
+	void ClientStopCameraShakesFromSource(class UCameraShakeSourceComponent* SourceComponent, bool bImmediately = true);
 
 	/** 
 	 * Play a force feedback pattern on the player's controller
@@ -1086,6 +1145,11 @@ private:
 	 */
 	UFUNCTION(BlueprintCallable, meta=(Latent, LatentInfo="LatentInfo", ExpandEnumAsExecs="Action", Duration="-1", bAffectsLeftLarge="true", bAffectsLeftSmall="true", bAffectsRightLarge="true", bAffectsRightSmall="true", AdvancedDisplay="bAffectsLeftLarge,bAffectsLeftSmall,bAffectsRightLarge,bAffectsRightSmall"), Category="Game|Feedback")
 	void PlayDynamicForceFeedback(float Intensity, float Duration, bool bAffectsLeftLarge, bool bAffectsLeftSmall, bool bAffectsRightLarge, bool bAffectsRightSmall, TEnumAsByte<EDynamicForceFeedbackAction::Type> Action, FLatentActionInfo LatentInfo);
+
+	//~ This method is purely for debugging purposes.
+	//~ It will trigger a ServerUpdateLevelVisibilityCall with the provided package name.
+	UFUNCTION(Exec)
+	void TestServerLevelVisibilityChange(const FName PackageName, const FName FileName);
 
 public:
 	/** 
@@ -1277,13 +1341,25 @@ public:
 	void ServerUpdateCamera(FVector_NetQuantize CamLoc, int32 CamPitchAndYaw);
 
 	/** 
-	 * Called when the client adds/removes a streamed level
-	 * the server will only replicate references to Actors in visible levels so that it's impossible to send references to
-	 * Actors the client has not initialized
-	 * @param PackageName the name of the package for the level whose status changed
+	 * Called when the client adds/removes a streamed level.
+	 * The server will only replicate references to Actors in visible levels so that it's impossible to send references to
+	 * Actors the client has not initialized.
+	 *
+	 * @param LevelVisibility	Visibility state for the level whose state changed.
 	 */
 	UFUNCTION(reliable, server, WithValidation, SealedEvent)
-	void ServerUpdateLevelVisibility(FName PackageName, bool bIsVisible);
+	void ServerUpdateLevelVisibility(const FUpdateLevelVisibilityLevelInfo& LevelVisibility);
+
+	UE_DEPRECATED(4.24, "Use ServerUpdateLevelVisibility that accepts a LevelVisibility struct.")
+	void ServerUpdateLevelVisibility(FName PackageName, bool bIsVisible)
+	{
+		FUpdateLevelVisibilityLevelInfo LevelVisibility;
+		LevelVisibility.PackageName = PackageName;
+		LevelVisibility.FileName = PackageName;
+		LevelVisibility.bIsVisible = bIsVisible;
+
+		ServerUpdateLevelVisibility(LevelVisibility);
+	}
 
 	/** 
 	 * Called when the client adds/removes a streamed level.  This version of the function allows you to pass the state of 
@@ -1605,10 +1681,10 @@ public:
 	virtual void SpawnPlayerCameraManager();
 
 	/** get audio listener position and orientation */
-	virtual void GetAudioListenerPosition(FVector& OutLocation, FVector& OutFrontDir, FVector& OutRightDir);
+	virtual void GetAudioListenerPosition(FVector& OutLocation, FVector& OutFrontDir, FVector& OutRightDir) const;
 
 	/** Gets the attenuation position override. */
-	virtual bool GetAudioListenerAttenuationOverridePosition(FVector& OutLocation);
+	virtual bool GetAudioListenerAttenuationOverridePosition(FVector& OutLocation) const;
 
 	/**
 	 * Used to override the default positioning of the audio listener
@@ -1864,6 +1940,9 @@ protected:
 	/** Destroys the SpectatorPawn and sets it to nullptr. */
 	virtual void DestroySpectatorPawn();
 
+	/** Useful to spectate other pawn without un-possessing the current pawn */
+	virtual bool ShouldKeepCurrentPawnUponSpectating() const { return false; }
+
 private:
 	/** The pawn used when spectating (nullptr if not spectating). */
 	UPROPERTY()
@@ -1883,6 +1962,12 @@ protected:
 
 	/** Set the SpawnLocation for use when changing states or when there is no pawn or spectator. */
 	virtual void SetSpawnLocation(const FVector& NewLocation);
+
+	/** Last real time (undilated) recorded in TickActor() when checking for forced client movement updates. */
+	float LastMovementUpdateTime;
+
+	/** Last real time (undilated) a hitch was detected in TickActor() when checking for forced client movement updates. */
+	float LastMovementHitch;
 
 public:
 	/** Get the location used when initially created, or when changing states when there is no pawn or spectator. */

@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "MIDIDeviceInputController.h"
 #include "MIDIDeviceLog.h"
@@ -143,9 +143,9 @@ void UMIDIDeviceInputController::ProcessIncomingMIDIEvents()
 
 					case EMIDIEventType::PitchBend:
 					{
-						int32 pitchBend = (PMMessageData1 & 0x7F) << 7;
+						int32 pitchBend = (PMMessageData2 & 0x7F) << 7;
 
-						pitchBend |= static_cast<unsigned short>(PMMessageData2);
+						pitchBend |= (PMMessageData1 & 0x7F);
 
 						this->OnMIDIPitchBend.Broadcast(this, Timestamp, Channel, pitchBend);
 

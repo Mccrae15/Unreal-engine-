@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "PixelInspector.h"
 #include "Modules/ModuleManager.h"
@@ -660,7 +660,7 @@ namespace PixelInspector
 
 	void SPixelInspector::ReadBackRequestData()
 	{
-		for (int RequestIndex = 0; RequestIndex < ARRAY_COUNT(Requests); ++RequestIndex)
+		for (int RequestIndex = 0; RequestIndex < UE_ARRAY_COUNT(Requests); ++RequestIndex)
 		{
 			FPixelInspectorRequest& Request = Requests[RequestIndex];
 			if (Request.RequestComplete == false && Request.RenderingCommandSend == true)

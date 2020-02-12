@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -65,6 +65,9 @@ private:
 
 	/** Prevent copying */
 	FSlowTask(const FSlowTask&);
+
+	/** Whenever we encounter edge condition requiring to force a UI refresh */
+	static void ForceRefresh(FFeedbackContext& Context);
 
 public:
 

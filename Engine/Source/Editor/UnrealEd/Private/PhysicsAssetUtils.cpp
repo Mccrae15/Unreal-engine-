@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "PhysicsAssetUtils.h"
 #include "Modules/ModuleManager.h"
@@ -345,6 +345,7 @@ bool CreateFromSkeletalMesh(UPhysicsAsset* PhysicsAsset, USkeletalMesh* SkelMesh
 	PhysicsAsset->PreviewSkeletalMesh = SkelMesh;
 
 	check(SkelMesh);
+	check(SkelMesh->GetResourceForRendering());
 
 	FSkinnedBoneTriangleCache TriangleCache(*SkelMesh, Params);
 

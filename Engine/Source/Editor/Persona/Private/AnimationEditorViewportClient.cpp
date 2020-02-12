@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "AnimationEditorViewportClient.h"
 #include "Modules/ModuleManager.h"
@@ -44,10 +44,6 @@ namespace {
 	// follow camera feature
 	static const float FollowCamera_InterpSpeed = 4.f;
 	static const float FollowCamera_InterpSpeed_Z = 1.f;
-
-	// @todo double define - fix it
-	const float FOVMin = 5.f;
-	const float FOVMax = 170.f;
 }
 
 namespace EAnimationPlaybackSpeeds
@@ -120,6 +116,10 @@ FAnimationViewportClient::FAnimationViewportClient(const TSharedRef<IPersonaPrev
 		SetRealtime(false,true); // We are PIE, don't start in realtime mode
 	}
 
+	// @todo double define - fix it
+	const float FOVMin = 5.f;
+	const float FOVMax = 170.f;
+
 	ViewFOV = FMath::Clamp<float>(ConfigOption->GetAssetEditorOptions(InAssetEditorToolkit->GetEditorName()).ViewportConfigs[ViewportIndex].ViewFOV, FOVMin, FOVMax);
 
 	EngineShowFlags.SetSeparateTranslucency(true);
@@ -138,7 +138,7 @@ FAnimationViewportClient::FAnimationViewportClient(const TSharedRef<IPersonaPrev
 	{
 		World->bAllowAudioPlayback = !ConfigOption->bMuteAudio;
 
-		if(FAudioDevice* AudioDevice = World->GetAudioDevice())
+		if(FAudioDevice* AudioDevice = World->GetAudioDeviceRaw())
 		{
 			AudioDevice->SetUseAttenuationForNonGameWorlds(ConfigOption->bUseAudioAttenuation);
 		}
@@ -222,7 +222,7 @@ void FAnimationViewportClient::OnToggleUseAudioAttenuation()
 	UWorld* World = PreviewScene->GetWorld();
 	if(World)
 	{
-		if(FAudioDevice* AudioDevice = GetWorld()->GetAudioDevice())
+		if(FAudioDevice* AudioDevice = GetWorld()->GetAudioDeviceRaw())
 		{
 			AudioDevice->SetUseAttenuationForNonGameWorlds(ConfigOption->bUseAudioAttenuation);
 		}
@@ -379,10 +379,12 @@ void FAnimationViewportClient::HandleSkeletalMeshChanged(USkeletalMesh* OldSkele
 		PhysAsset->InvalidateAllPhysicsMeshes();
 		PreviewMeshComponent->TermArticulated();
 		PreviewMeshComponent->InitArticulated(GetWorld()->GetPhysicsScene());
-
-		// Set to PhysicsActor to enable tracing regardless of project overrides
-		static FName CollisionProfileName(TEXT("PhysicsActor"));
-		PreviewMeshComponent->SetCollisionProfileName(CollisionProfileName);
+		if (PreviewMeshComponent->CanOverrideCollisionProfile())
+		{
+			// Set to PhysicsActor to enable tracing regardless of project overrides
+			static FName CollisionProfileName(TEXT("PhysicsActor"));
+			PreviewMeshComponent->SetCollisionProfileName(CollisionProfileName);
+		}
 	}
 
 	Invalidate();
@@ -487,7 +489,7 @@ void FAnimationViewportClient::DrawUVsForMesh(FViewport* InViewport, FCanvas* In
 	UDebugSkelMeshComponent* PreviewMeshComponent = GetAnimPreviewScene()->GetPreviewMeshComponent();
 
 	//use the overridden LOD level
-	const uint32 LODLevel = FMath::Clamp(PreviewMeshComponent->ForcedLodModel - 1, 0, PreviewMeshComponent->SkeletalMesh->GetLODNum() - 1);
+	const uint32 LODLevel = FMath::Clamp(PreviewMeshComponent->GetForcedLOD() - 1, 0, PreviewMeshComponent->SkeletalMesh->GetLODNum() - 1);
 
 	TArray<FVector2D> SelectedEdgeTexCoords; //No functionality in Persona for this (yet?)
 
@@ -597,8 +599,15 @@ void FAnimationViewportClient::ShowBoneNames( FCanvas* Canvas, FSceneView* View 
 	const int32 LODIndex = FMath::Clamp(PreviewMeshComponent->PredictedLODLevel, 0, SkelMeshRenderData->LODRenderData.Num()-1);
 	FSkeletalMeshLODRenderData& LODData = SkelMeshRenderData->LODRenderData[ LODIndex ];
 
-	const int32 HalfX = Viewport->GetSizeXY().X/2;
-	const int32 HalfY = Viewport->GetSizeXY().Y/2;
+	// Check if our reference skeleton is out of synch with the one on the loddata
+	const FReferenceSkeleton& ReferenceSkeleton = PreviewMeshComponent->GetReferenceSkeleton();
+	if (ReferenceSkeleton.GetNum() < LODData.RequiredBones.Num())
+	{
+		return;
+	}
+
+	const int32 HalfX = Viewport->GetSizeXY().X/2 / GetDPIScale();
+	const int32 HalfY = Viewport->GetSizeXY().Y/2 / GetDPIScale();
 
 	for (int32 i=0; i< LODData.RequiredBones.Num(); i++)
 	{
@@ -649,7 +658,7 @@ void FAnimationViewportClient::ShowBoneNames( FCanvas* Canvas, FSceneView* View 
 				const int32 XPos = HalfX + ( HalfX * proj.X );
 				const int32 YPos = HalfY + ( HalfY * (proj.Y * -1) );
 
-				const FName BoneName = PreviewMeshComponent->GetReferenceSkeleton().GetBoneName(BoneIndex);
+				const FName BoneName = ReferenceSkeleton.GetBoneName(BoneIndex);
 				const FString BoneString = FString::Printf( TEXT("%d: %s"), BoneIndex, *BoneName.ToString() );
 				FCanvasTextItem TextItem( FVector2D( XPos, YPos), FText::FromString( BoneString ), GEngine->GetSmallFont(), BoneColor );
 				TextItem.EnableShadow(FLinearColor::Black);
@@ -862,18 +871,32 @@ FText FAnimationViewportClient::GetDisplayInfo(bool bDisplayAllInfo) const
 				NumSectionsInUse
 				));
 
+			TArray<FTransform> LocalBoneTransforms = PreviewMeshComponent->GetBoneSpaceTransforms();
 			if (PreviewMeshComponent->BonesOfInterest.Num() > 0)
 			{
 				int32 BoneIndex = PreviewMeshComponent->BonesOfInterest[0];
 				FTransform ReferenceTransform = PreviewMeshComponent->GetReferenceSkeleton().GetRefBonePose()[BoneIndex];
-				FTransform LocalTransform = PreviewMeshComponent->BoneSpaceTransforms[BoneIndex];
+				FTransform LocalTransform = LocalBoneTransforms[BoneIndex];
 				FTransform ComponentTransform = PreviewMeshComponent->GetDrawTransform(BoneIndex);
 
-				TextValue = ConcatenateLine(TextValue, FText::Format(LOCTEXT("LocalTransform", "Local: {0}"), FText::FromString(LocalTransform.ToHumanReadableString())));
+				auto GetDisplayTransform = [](const FTransform& InTransform) -> FText
+				{
+					FRotator R(InTransform.GetRotation());
+					FVector T(InTransform.GetTranslation());
+					FVector S(InTransform.GetScale3D());
 
-				TextValue = ConcatenateLine(TextValue, FText::Format(LOCTEXT("ComponentTransform", "Component: {0}"), FText::FromString(ComponentTransform.ToHumanReadableString())));
+					FString Output = FString::Printf(TEXT("Rotation: X(Roll) %f Y(Pitch)  %f Z(Yaw) %f\r\n"), R.Roll, R.Pitch, R.Yaw);
+					Output += FString::Printf(TEXT("Translation: %f %f %f\r\n"), T.X, T.Y, T.Z);
+					Output += FString::Printf(TEXT("Scale3D: %f %f %f\r\n"), S.X, S.Y, S.Z);
 
-				TextValue = ConcatenateLine(TextValue, FText::Format(LOCTEXT("ReferenceTransform", "Reference: {0}"), FText::FromString(ReferenceTransform.ToHumanReadableString())));
+					return FText::FromString(Output);
+				};
+
+				TextValue = ConcatenateLine(TextValue, FText::Format(LOCTEXT("LocalTransform", "Local: {0}"), GetDisplayTransform(LocalTransform)));
+
+				TextValue = ConcatenateLine(TextValue, FText::Format(LOCTEXT("ComponentTransform", "Component: {0}"), GetDisplayTransform(ComponentTransform)));
+
+				TextValue = ConcatenateLine(TextValue, FText::Format(LOCTEXT("ReferenceTransform", "Reference: {0}"), GetDisplayTransform(ReferenceTransform)));
 			}
 
 			TextValue = ConcatenateLine(TextValue, FText::Format(LOCTEXT("ApproximateSize", "Approximate Size: {0}x{1}x{2}"),
@@ -925,6 +948,20 @@ FText FAnimationViewportClient::GetDisplayInfo(bool bDisplayAllInfo) const
 				FText::AsNumber(FMath::RoundToInt(PreviewMeshComponent->Bounds.BoxExtent.X * 2.0f)),
 				FText::AsNumber(FMath::RoundToInt(PreviewMeshComponent->Bounds.BoxExtent.Y * 2.0f)),
 				FText::AsNumber(FMath::RoundToInt(PreviewMeshComponent->Bounds.BoxExtent.Z * 2.0f))));
+		}
+
+		// In case a skin weight profile is currently being previewed show the number of override skin weights it stores
+		if (PreviewMeshComponent->IsUsingSkinWeightProfile())
+		{
+			const FSkeletalMeshRenderData* SkelMeshResource = PreviewMeshComponent->GetSkeletalMeshRenderData();
+			check(SkelMeshResource);
+			
+			const int32 LODIndex = FMath::Clamp(PreviewMeshComponent->PredictedLODLevel, 0, SkelMeshResource->LODRenderData.Num() - 1);
+			const FSkeletalMeshLODRenderData& LODData = SkelMeshResource->LODRenderData[LODIndex];
+			
+			const FName ProfileName = PreviewMeshComponent->GetCurrentSkinWeightProfileName();
+			const FRuntimeSkinWeightProfileData* OverrideData = LODData.SkinWeightProfilesData.GetOverrideData(ProfileName);
+			TextValue = ConcatenateLine(TextValue, FText::Format(LOCTEXT("NumSkinWeightOverrides", "Skin Weight Profile Weights: {0}"),	OverrideData ? FText::AsNumber(OverrideData->OverridesInfo.Num()) : LOCTEXT("NoSkinWeightsOverridesForLOD", "no data for LOD")));
 		}
 	}
 
@@ -1224,7 +1261,7 @@ void FAnimationViewportClient::DrawMeshBonesBakedAnimation(UDebugSkelMeshCompone
 
 void FAnimationViewportClient::DrawMeshBones(UDebugSkelMeshComponent * MeshComponent, FPrimitiveDrawInterface* PDI) const
 {
-	if ( MeshComponent && MeshComponent->SkeletalMesh )
+	if ( MeshComponent && MeshComponent->SkeletalMesh && MeshComponent->GetNumDrawTransform() > 0)
 	{
 		TArray<FTransform> WorldTransforms;
 		WorldTransforms.AddUninitialized(MeshComponent->GetNumDrawTransform());
@@ -1457,16 +1494,6 @@ void FAnimationViewportClient::DrawSockets(const UDebugSkelMeshComponent* InPrev
 
 FSphere FAnimationViewportClient::GetCameraTarget()
 {
-	const FSphere DefaultSphere(FVector(0,0,0), 100.0f);
-
-	UDebugSkelMeshComponent* PreviewMeshComponent = GetAnimPreviewScene()->GetPreviewMeshComponent();
-	if( !PreviewMeshComponent )
-	{
-		return DefaultSphere;
-	}
-
-	PreviewMeshComponent->CalcBounds(PreviewMeshComponent->GetComponentTransform());
-
 	// give the editor mode a chance to give us a camera target
 	if (GetPersonaModeManager())
 	{
@@ -1476,6 +1503,16 @@ FSphere FAnimationViewportClient::GetCameraTarget()
 			return Target;
 		}
 	}
+
+	const FSphere DefaultSphere(FVector(0,0,0), 100.0f);
+
+	UDebugSkelMeshComponent* PreviewMeshComponent = GetAnimPreviewScene()->GetPreviewMeshComponent();
+	if( !PreviewMeshComponent )
+	{
+		return DefaultSphere;
+	}
+
+	PreviewMeshComponent->CalcBounds(PreviewMeshComponent->GetComponentTransform());
 
 	FBoxSphereBounds Bounds = PreviewMeshComponent->CalcBounds(FTransform::Identity);
 	return Bounds.GetSphere();
@@ -1605,41 +1642,35 @@ void FAnimationViewportClient::FocusViewportOnPreviewMesh(bool bUseCustomCamera)
 		return;
 	}
 
-	UDebugSkelMeshComponent* const PreviewMeshComponent = GetAnimPreviewScene()->GetPreviewMeshComponent();
-	if ( !PreviewMeshComponent )
+	if (UDebugSkelMeshComponent* const PreviewMeshComponent = GetAnimPreviewScene()->GetPreviewMeshComponent())
 	{
-		return;
-	}
-
-	USkeletalMesh* const SkelMesh = PreviewMeshComponent->SkeletalMesh;
-	if (!SkelMesh)
-	{
-		return;
-	}
-
-	if (bUseCustomCamera && SkelMesh->bHasCustomDefaultEditorCamera)
-	{
-		FViewportCameraTransform& ViewTransform = GetViewTransform();
-
-		ViewTransform.SetLocation(SkelMesh->DefaultEditorCameraLocation);
-		ViewTransform.SetRotation(SkelMesh->DefaultEditorCameraRotation);
-		ViewTransform.SetLookAt(SkelMesh->DefaultEditorCameraLookAt);
-		ViewTransform.SetOrthoZoom(SkelMesh->DefaultEditorCameraOrthoZoom);
-
-		Invalidate();
-		return;
-	}
-
-	if (PreviewMeshComponent->GetSelectedEditorSection() != INDEX_NONE )
-	{
-		const FBox SelectedSectionBounds = ComputeBoundingBoxForSelectedEditorSection();
-		
-		if ( SelectedSectionBounds.IsValid )
+		if (USkeletalMesh* const SkelMesh = PreviewMeshComponent->SkeletalMesh)
 		{
-			FocusViewportOnBox(SelectedSectionBounds);
-		}
+			if (bUseCustomCamera && SkelMesh->bHasCustomDefaultEditorCamera)
+			{
+				FViewportCameraTransform& ViewTransform = GetViewTransform();
 
-		return;
+				ViewTransform.SetLocation(SkelMesh->DefaultEditorCameraLocation);
+				ViewTransform.SetRotation(SkelMesh->DefaultEditorCameraRotation);
+				ViewTransform.SetLookAt(SkelMesh->DefaultEditorCameraLookAt);
+				ViewTransform.SetOrthoZoom(SkelMesh->DefaultEditorCameraOrthoZoom);
+
+				Invalidate();
+				return;
+			}
+
+			if (PreviewMeshComponent->GetSelectedEditorSection() != INDEX_NONE)
+			{
+				const FBox SelectedSectionBounds = ComputeBoundingBoxForSelectedEditorSection();
+
+				if (SelectedSectionBounds.IsValid)
+				{
+					FocusViewportOnBox(SelectedSectionBounds);
+				}
+
+				return;
+			}
+		}
 	}
 
 	FSphere Sphere = GetCameraTarget();
@@ -1678,8 +1709,8 @@ void FAnimationViewportClient::ToggleCPUSkinning()
 	UDebugSkelMeshComponent* PreviewMeshComponent = GetAnimPreviewScene()->GetPreviewMeshComponent();
 	if (PreviewMeshComponent != nullptr)
 	{
-		PreviewMeshComponent->bCPUSkinning = !PreviewMeshComponent->bCPUSkinning;
-		PreviewMeshComponent->MarkRenderStateDirty();
+		const bool bCurVal = PreviewMeshComponent->GetCPUSkinningEnabled();
+		PreviewMeshComponent->SetCPUSkinningEnabled(!bCurVal);
 		Invalidate();
 	}
 }
@@ -1689,7 +1720,7 @@ bool FAnimationViewportClient::IsSetCPUSkinningChecked() const
 	UDebugSkelMeshComponent* PreviewMeshComponent = GetAnimPreviewScene()->GetPreviewMeshComponent();
 	if (PreviewMeshComponent != nullptr)
 	{
-		return PreviewMeshComponent->bCPUSkinning;
+		return PreviewMeshComponent->GetCPUSkinningEnabled();
 	}
 	return false;
 }
@@ -1867,7 +1898,7 @@ void FAnimationViewportClient::UpdateAudioListener(const FSceneView& View)
 
 	if (ViewportWorld)
 	{
-		if (FAudioDevice* AudioDevice = ViewportWorld->GetAudioDevice())
+		if (FAudioDevice* AudioDevice = ViewportWorld->GetAudioDeviceRaw())
 		{
 			const FVector& ViewLocation = GetViewLocation();
 			const FRotator& ViewRotation = GetViewRotation();

@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -11,13 +11,14 @@
 
 struct FWeakObjectPtr;
 
-#if !defined(_WIN32) || defined(_WIN64)
-	// Let delegates store up to 32 bytes which are 16-byte aligned before we heap allocate
+#if !defined(_WIN32) || defined(_WIN64) || (defined(ALLOW_DELEGATE_INLINE_ALLOCATORS_ON_WIN32) && ALLOW_DELEGATE_INLINE_ALLOCATORS_ON_WIN32)
 	typedef TAlignedBytes<16, 16> FAlignedInlineDelegateType;
-	#if USE_SMALL_DELEGATES
+	#if !defined(NUM_DELEGATE_INLINE_BYTES) || NUM_DELEGATE_INLINE_BYTES == 0
 		typedef FHeapAllocator FDelegateAllocatorType;
+	#elif NUM_DELEGATE_INLINE_BYTES < 0 || (NUM_DELEGATE_INLINE_BYTES % 16) != 0
+		#error NUM_DELEGATE_INLINE_BYTES must be a multiple of 16
 	#else
-		typedef TInlineAllocator<2> FDelegateAllocatorType;
+		typedef TInlineAllocator<(NUM_DELEGATE_INLINE_BYTES / 16)> FDelegateAllocatorType;
 	#endif
 #else
 	// ... except on Win32, because we can't pass 16-byte aligned types by value, as some delegates are
@@ -31,6 +32,8 @@ struct FWeakObjectPtr;
 
 template <typename ObjectPtrType>
 class FMulticastDelegateBase;
+
+ALIAS_TEMPLATE_TYPE_LAYOUT(template<typename ElementType>, FDelegateAllocatorType::ForElementType<ElementType>, void*);
 
 /**
  * Base class for unicast delegates.
@@ -140,6 +143,24 @@ public:
 		return Result;
 	}
 
+	/**
+	 * Returns the address of the method pointer which can be used to learn the address of the function that will be executed.
+	 * Returns nullptr if this delegate type does not directly invoke a function pointer.
+	 *
+	 * Note: Only intended to be used to aid debugging of delegates.
+	 *
+	 * @return The address of the function pointer that would be executed by this delegate
+	 */
+	uint64 GetBoundProgramCounterForTimerManager() const
+	{
+		if (IDelegateInstance* Ptr = GetDelegateInstanceProtected())
+		{
+			return Ptr->GetBoundProgramCounterForTimerManager();
+		}
+
+		return 0;
+	}
+
 	/** 
 	 * Checks to see if this delegate is bound to the given user object.
 	 *
@@ -237,5 +258,5 @@ private:
 
 inline void* operator new(size_t Size, FDelegateBase& Base)
 {
-	return Base.Allocate(Size);
+	return Base.Allocate((int32)Size);
 }

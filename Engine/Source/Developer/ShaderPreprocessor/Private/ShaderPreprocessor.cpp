@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "ShaderPreprocessor.h"
 #include "Misc/FileHelper.h"
@@ -11,14 +11,16 @@ IMPLEMENT_MODULE(FDefaultModuleImpl, ShaderPreprocessor);
 
 /**
  * Append defines to an MCPP command line.
- * @param OutOptions - Upon return contains MCPP command line parameters as a string appended to the current string.
+ * @param OutOptions - Upon return contains MCPP command line parameters as an array of strings.
  * @param Definitions - Definitions to add.
  */
-static void AddMcppDefines(FString& OutOptions, const TMap<FString,FString>& Definitions)
+static void AddMcppDefines(TArray<TArray<ANSICHAR>>& OutOptions, const TMap<FString, FString>& Definitions)
 {
-	for (TMap<FString,FString>::TConstIterator It(Definitions); It; ++It)
+	for (TMap<FString, FString>::TConstIterator It(Definitions); It; ++It)
 	{
-		OutOptions += FString::Printf(TEXT(" \"-D%s=%s\""), *(It.Key()), *(It.Value()));
+		FString Argument(FString::Printf(TEXT("-D%s=%s"), *(It.Key()), *(It.Value())));
+		FTCHARToUTF8 Converter(Argument.GetCharArray().GetData());
+		OutOptions.Emplace(Converter.Get(), Converter.Length() + 1);
 	}
 }
 
@@ -34,7 +36,7 @@ public:
 		, ShaderOutput(InShaderOutput)
 	{
 		FString InputShaderSource;
-		if (LoadShaderSourceFile(*InShaderInput.VirtualSourceFilePath, InputShaderSource, nullptr))
+		if (LoadShaderSourceFile(*InShaderInput.VirtualSourceFilePath, InShaderInput.Target.GetPlatform(),  &InputShaderSource, nullptr))
 		{
 			InputShaderSource = FString::Printf(TEXT("%s\n#line 1\n%s"), *ShaderInput.SourceFilePrefix, *InputShaderSource);
 			CachedFileContents.Add(InShaderInput.VirtualSourceFilePath, StringToArray<ANSICHAR>(*InputShaderSource, InputShaderSource.Len() + 1));
@@ -50,17 +52,26 @@ public:
 		return Loader;
 	}
 
+	bool HasIncludedMendatoryHeaders() const
+	{
+		return CachedFileContents.Contains(TEXT("/Engine/Public/Platform.ush"));
+	}
+
 private:
 	/** Holder for shader contents (string + size). */
 	typedef TArray<ANSICHAR> FShaderContents;
-
+	
 	/** MCPP callback for retrieving file contents. */
 	static int GetFileContents(void* InUserData, const ANSICHAR* InVirtualFilePath, const ANSICHAR** OutContents, size_t* OutContentSize)
 	{
 		FMcppFileLoader* This = (FMcppFileLoader*)InUserData;
 
-		FString VirtualFilePath = (ANSI_TO_TCHAR(InVirtualFilePath));
-		
+		FUTF8ToTCHAR UTF8Converter(InVirtualFilePath);
+		FString VirtualFilePath = UTF8Converter.Get();
+
+		// Substitute virtual platform path here to make sure that #line directives refer to the platform-specific file.
+		ReplaceVirtualFilePathForShaderPlatform(VirtualFilePath, This->ShaderInput.Target.GetPlatform());
+
 		// Collapse any relative directories to allow #include "../MyFile.ush"
 		FPaths::CollapseRelativeDirectories(VirtualFilePath);
 
@@ -81,7 +92,7 @@ private:
 			{
 				CheckShaderHashCacheInclude(VirtualFilePath, This->ShaderInput.Target.GetPlatform());
 
-				LoadShaderSourceFile(*VirtualFilePath, FileContents, &This->ShaderOutput.Errors);
+				LoadShaderSourceFile(*VirtualFilePath, This->ShaderInput.Target.GetPlatform(), &FileContents, &This->ShaderOutput.Errors);
 			}
 
 			if (FileContents.Len() > 0)
@@ -178,6 +189,20 @@ FMcppAllocator GMcppAlloc;
 
 #endif
 
+static void DumpShaderDefinesAsCommentedCode(const FShaderCompilerInput& ShaderInput, FString* OutDefines)
+{
+	const TMap<FString, FString>& Definitions = ShaderInput.Environment.GetDefinitions();
+
+	TArray<FString> Keys;
+	Definitions.GetKeys(/* out */ Keys);
+	Keys.Sort();
+
+	for (const FString& Key : Keys)
+	{
+		*OutDefines += FString::Printf(TEXT("// #define %s %s\n"), *Key, *Definitions[Key]);
+	}
+}
+
 //////////////////////////////////////////////////////////////////////////
 
 /**
@@ -186,13 +211,15 @@ FMcppAllocator GMcppAlloc;
  * @param ShaderOutput - ShaderOutput to which errors can be added.
  * @param ShaderInput - The shader compiler input.
  * @param AdditionalDefines - Additional defines with which to preprocess the shader.
+ * @param bShaderDumpDefinesAsCommentedCode - Whether to add shader definitions as comments.
  * @returns true if the shader is preprocessed without error.
  */
 bool PreprocessShader(
 	FString& OutPreprocessedShader,
 	FShaderCompilerOutput& ShaderOutput,
 	const FShaderCompilerInput& ShaderInput,
-	const FShaderCompilerDefinitions& AdditionalDefines
+	const FShaderCompilerDefinitions& AdditionalDefines,
+	EDumpShaderDefines DefinesPolicy
 	)
 {
 	// Skip the cache system and directly load the file path (used for debugging)
@@ -205,17 +232,18 @@ bool PreprocessShader(
 		check(CheckVirtualShaderFilePath(ShaderInput.VirtualSourceFilePath));
 	}
 
+	int32 McppResult = 0;
 	FString McppOutput, McppErrors;
 
 	static FCriticalSection McppCriticalSection;
 
+	bool bHasIncludedMendatoryHeaders;
 	{
 		FMcppFileLoader FileLoader(ShaderInput, ShaderOutput);
 
-		FString McppOptions;
+		TArray<TArray<ANSICHAR>> McppOptions;
 		AddMcppDefines(McppOptions, ShaderInput.Environment.GetDefinitions());
 		AddMcppDefines(McppOptions, AdditionalDefines.GetDefinitionMap());
-		McppOptions += TEXT(" -V199901L");
 
 		// MCPP is not threadsafe.
 
@@ -229,11 +257,22 @@ bool PreprocessShader(
 		mcpp_setmalloc(spp_malloc, spp_realloc, spp_free);
 #endif
 
+		// Convert MCPP options to array of ANSI-C strings
+		TArray<const ANSICHAR*> McppOptionsANSI;
+		for (const TArray<ANSICHAR>& Option : McppOptions)
+		{
+			McppOptionsANSI.Add(Option.GetData());
+		}
+
+		// Append additional options as C-string literal
+		McppOptionsANSI.Add("-V199901L");
+
 		ANSICHAR* McppOutAnsi = NULL;
 		ANSICHAR* McppErrAnsi = NULL;
 
-		int32 Result = mcpp_run(
-			TCHAR_TO_ANSI(*McppOptions),
+		McppResult = mcpp_run(
+			McppOptionsANSI.GetData(),
+			McppOptionsANSI.Num(),
 			TCHAR_TO_ANSI(*ShaderInput.VirtualSourceFilePath),
 			&McppOutAnsi,
 			&McppErrAnsi,
@@ -242,6 +281,8 @@ bool PreprocessShader(
 
 		McppOutput = McppOutAnsi;
 		McppErrors = McppErrAnsi;
+
+		bHasIncludedMendatoryHeaders = FileLoader.HasIncludedMendatoryHeaders();
 	}
 
 	if (!ParseMcppErrors(ShaderOutput.Errors, ShaderOutput.PragmaDirectives, McppErrors))
@@ -249,7 +290,34 @@ bool PreprocessShader(
 		return false;
 	}
 
-	OutPreprocessedShader = MoveTemp(McppOutput);
+	// Report unhandled mcpp failure that didn't generate any errors
+	if (McppResult != 0)
+	{
+		FShaderCompilerError* CompilerError = new(ShaderOutput.Errors) FShaderCompilerError;
+		CompilerError->ErrorVirtualFilePath = ShaderInput.VirtualSourceFilePath;
+		CompilerError->ErrorLineString = TEXT("0");
+		CompilerError->StrippedErrorMessage = FString::Printf(TEXT("PreprocessShader mcpp_run failed with error code %d"), McppResult);
+		return false;
+	}
+
+	if (!bHasIncludedMendatoryHeaders)
+	{
+		FShaderCompilerError Error;
+		Error.ErrorVirtualFilePath = ShaderInput.VirtualSourceFilePath;
+		Error.ErrorLineString = TEXT("1");
+		Error.StrippedErrorMessage = TEXT("Error: Shader is required to include /Engine/Public/Platform.ush");
+
+		ShaderOutput.Errors.Add(Error);
+		return false;
+	}
+
+	// List the defines used for compilation in the preprocessed shaders, especially to know witch permutation vector this shader is.
+	if (DefinesPolicy == EDumpShaderDefines::AlwaysIncludeDefines || (DefinesPolicy == EDumpShaderDefines::DontCare && ShaderInput.DumpDebugInfoPath.Len() > 0))
+	{
+		DumpShaderDefinesAsCommentedCode(ShaderInput, &OutPreprocessedShader);
+	}
+
+	OutPreprocessedShader += McppOutput;
 
 	return true;
 }

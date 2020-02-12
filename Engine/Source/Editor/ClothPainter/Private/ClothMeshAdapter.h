@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -7,11 +7,11 @@
 #include "BaseMeshPaintGeometryAdapter.h"
 #include "IMeshPaintGeometryAdapterFactory.h"
 
-struct FClothParameterMask_PhysMesh;
+struct FPointWeightMap;
 class FReferenceCollector;
 class UMeshComponent;
 class UClothingAssetBase;
-class UClothingAsset;
+class UClothingAssetCommon;
 class USkeletalMeshComponent;
 class USkeletalMesh;
 
@@ -33,10 +33,12 @@ protected:
 		TArray<TArray<int32>> NeighborMap;
 
 		/** The actual clothing asset relating to this data */
-		UClothingAsset* Asset;
+		UClothingAssetCommon* Asset;
 	};
 public:
 	static void InitializeAdapterGlobals() {}
+	static void AddReferencedObjectsGlobals(FReferenceCollector& Collector) {}
+	static void CleanupGlobals() {}
 
 	virtual bool Construct(UMeshComponent* InComponent, int32 InPaintingMeshLODIndex) override;
 	virtual bool Initialize() override;
@@ -62,21 +64,6 @@ public:
 
 	virtual TArray<FVector> SphereIntersectVertices(const float ComponentSpaceSquaredBrushRadius, const FVector& ComponentSpaceBrushPosition, const FVector& ComponentSpaceCameraPosition, const bool bOnlyFrontFacing) const;
 
-	/** Retrieves the backstop distance value for the given vertex index from the simulation data */
-	virtual float GetBackstopDistanceValue(int32 VertexIndex) const;
-	/** Sets the backstop distance value for the given vertex index to Value */
-	virtual void SetBackstopDistanceValue(int32 VertexIndex, float Value);
-
-	/** Retrieves the backstop radius value for the given vertex index from the simulation data */
-	virtual float GetBackstopRadiusValue(int32 VertexIndex) const;
-	/** Sets the backstop radius value for the given vertex index to Value */
-	virtual void SetBackstopRadiusValue(int32 VertexIndex, float Value);
-
-	/** Retrieves the max distance value for the given vertex index from the simulation data */
-	virtual float GetMaxDistanceValue(int32 VertexIndex) const;
-	/** Sets the max distance value for the given vertex index to Value */
-	virtual void SetMaxDistanceValue(int32 VertexIndex, float Value);
-
 	/** Sets the represented clothing asset to the UClothingAssetBase retrieved from the AssetGUID */
 	virtual void SetSelectedClothingAsset(const FGuid& InAssetGuid, int32 InAssetLod, int32 InMaskIndex);
 
@@ -84,7 +71,7 @@ public:
 	const TArray<int32>* GetVertexNeighbors(int32 InVertexIndex) const;
 
 	/** Get the current mask we're editing */
-	FClothParameterMask_PhysMesh* GetCurrentMask() const;
+	FPointWeightMap* GetCurrentMask() const;
 
 protected:
 
@@ -123,4 +110,6 @@ class FClothMeshPaintAdapterFactory : public IMeshPaintGeometryAdapterFactory
 public:
 	virtual TSharedPtr<IMeshPaintGeometryAdapter> Construct(UMeshComponent* InComponent, int32 InPaintingMeshLODIndex) const override;
 	virtual void InitializeAdapterGlobals() override { FClothMeshPaintAdapter::InitializeAdapterGlobals(); }
+	virtual void AddReferencedObjectsGlobals(FReferenceCollector& Collector) override { FClothMeshPaintAdapter::AddReferencedObjectsGlobals(Collector); }
+	virtual void CleanupGlobals() override { FClothMeshPaintAdapter::CleanupGlobals(); }
 };

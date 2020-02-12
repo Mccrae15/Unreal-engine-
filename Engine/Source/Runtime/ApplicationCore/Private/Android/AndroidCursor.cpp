@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "Android/AndroidCursor.h"
 #include "Android/AndroidApplication.h"
@@ -17,7 +17,7 @@ void FAndroidCursor::ComputeUIScaleFactor()
 {
 	FPlatformRect ScreenRect = FAndroidWindow::GetScreenRect();
 	int32_t ScreenWidth, ScreenHeight;
-	FAndroidWindow::CalculateSurfaceSize(FAndroidWindow::GetHardwareWindow(), ScreenWidth, ScreenHeight);
+	FAndroidWindow::CalculateSurfaceSize(ScreenWidth, ScreenHeight);
 
 	if (ScreenWidth > ScreenHeight)
 	{

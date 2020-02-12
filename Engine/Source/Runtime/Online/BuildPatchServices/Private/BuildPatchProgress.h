@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 /*=============================================================================
 	BuildPatchProgress.h: Declares classes involved with tracking the patch
@@ -31,11 +31,6 @@ namespace BuildPatchServices
 		virtual void SetPaused(bool bIsPaused) override;
 		virtual void Abort() override;
 		// IControllable interface end.
-
-		/**
-		 * Resets internal variables to start over
-		 */
-		virtual void Reset();
 
 		/**
 		 * Sets the progress value for a particular state
@@ -106,6 +101,11 @@ namespace BuildPatchServices
 		 * @param bIsDownloading	Whether the system is currently downloading data.
 		 */
 		virtual void SetIsDownloading(bool bIsDownloading);
+
+		/**
+		 * Resets an abort state, for the next installer iteration.
+		 */
+		virtual void CancelAbort();
 
 	private:
 

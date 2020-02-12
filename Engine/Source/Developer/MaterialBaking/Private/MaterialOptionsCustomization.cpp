@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "MaterialOptionsCustomization.h"
 #include "MaterialOptions.h"
@@ -37,8 +37,10 @@ void FPropertyEntryCustomization::CustomizeHeader(TSharedRef<IPropertyHandle> Pr
 	];
 
 	const TArray<TWeakObjectPtr<UObject>>& SelectedObjects = CustomizationUtils.GetPropertyUtilities()->GetSelectedObjects();
+
 	// Try and find material options instance in currently edited objects
-	CurrentOptions = Cast<UMaterialOptions>((SelectedObjects.FindByPredicate([](TWeakObjectPtr<UObject> Object) { return Cast<UMaterialOptions>(Object.Get()); }))->Get());
+	const TWeakObjectPtr<UObject>* MaterialOptionsPtr = SelectedObjects.FindByPredicate([](TWeakObjectPtr<UObject> Object) { return Cast<UMaterialOptions>(Object.Get()); });
+	CurrentOptions = MaterialOptionsPtr ? Cast<UMaterialOptions>((MaterialOptionsPtr)->Get()) : nullptr;
 	
 	const int32 Index = PropertyHandle->GetIndexInArray();
 
@@ -200,14 +202,14 @@ void AddTextureSizeClamping(TSharedPtr<IPropertyHandle> TextureSizeProperty)
 	const FString MaxTextureResolutionString = FString::FromInt(GetMax2DTextureDimension());
 	TextureSizeProperty->GetProperty()->SetMetaData(TEXT("ClampMax"), *MaxTextureResolutionString);
 	TextureSizeProperty->GetProperty()->SetMetaData(TEXT("UIMax"), *MaxTextureResolutionString);
-	PropertyX->GetProperty()->SetMetaData(TEXT("ClampMax"), *MaxTextureResolutionString);
-	PropertyX->GetProperty()->SetMetaData(TEXT("UIMax"), *MaxTextureResolutionString);
-	PropertyY->GetProperty()->SetMetaData(TEXT("ClampMax"), *MaxTextureResolutionString);
-	PropertyY->GetProperty()->SetMetaData(TEXT("UIMax"), *MaxTextureResolutionString);
+	PropertyX->SetInstanceMetaData(TEXT("ClampMax"), *MaxTextureResolutionString);
+	PropertyX->SetInstanceMetaData(TEXT("UIMax"), *MaxTextureResolutionString);
+	PropertyY->SetInstanceMetaData(TEXT("ClampMax"), *MaxTextureResolutionString);
+	PropertyY->SetInstanceMetaData(TEXT("UIMax"), *MaxTextureResolutionString);
 
 	const FString MinTextureResolutionString("1");
-	PropertyX->GetProperty()->SetMetaData(TEXT("ClampMin"), *MinTextureResolutionString);
-	PropertyX->GetProperty()->SetMetaData(TEXT("UIMin"), *MinTextureResolutionString);
-	PropertyY->GetProperty()->SetMetaData(TEXT("ClampMin"), *MinTextureResolutionString);
-	PropertyY->GetProperty()->SetMetaData(TEXT("UIMin"), *MinTextureResolutionString);
+	PropertyX->SetInstanceMetaData(TEXT("ClampMin"), *MinTextureResolutionString);
+	PropertyX->SetInstanceMetaData(TEXT("UIMin"), *MinTextureResolutionString);
+	PropertyY->SetInstanceMetaData(TEXT("ClampMin"), *MinTextureResolutionString);
+	PropertyY->SetInstanceMetaData(TEXT("UIMin"), *MinTextureResolutionString);
 }

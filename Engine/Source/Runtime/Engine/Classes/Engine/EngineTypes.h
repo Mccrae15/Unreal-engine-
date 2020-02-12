@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -18,6 +18,7 @@
 class AActor;
 class UDecalComponent;
 class UPhysicalMaterial;
+class UPhysicalMaterialMask;
 class UPrimitiveComponent;
 class USceneComponent;
 
@@ -243,7 +244,8 @@ enum EBlendMode
 	BLEND_Translucent UMETA(DisplayName="Translucent"),
 	BLEND_Additive UMETA(DisplayName="Additive"),
 	BLEND_Modulate UMETA(DisplayName="Modulate"),
-	BLEND_AlphaComposite UMETA(DisplayName ="AlphaComposite (Premultiplied Alpha)"),
+	BLEND_AlphaComposite UMETA(DisplayName = "AlphaComposite (Premultiplied Alpha)"),
+	BLEND_AlphaHoldout UMETA(DisplayName = "AlphaHoldout"),
 	BLEND_MAX,
 };
 
@@ -354,7 +356,9 @@ enum ESceneCaptureSource
 	SCS_SceneDepth UMETA(DisplayName="SceneDepth in R"),
 	SCS_DeviceDepth UMETA(DisplayName = "DeviceDepth in RGB"),
 	SCS_Normal UMETA(DisplayName="Normal in RGB (Deferred Renderer only)"),
-	SCS_BaseColor UMETA(DisplayName="BaseColor in RGB (Deferred Renderer only)")
+	SCS_BaseColor UMETA(DisplayName = "BaseColor in RGB (Deferred Renderer only)"),
+	SCS_FinalColorHDR UMETA(DisplayName = "Final Color (HDR) in Linear sRGB gamut"),
+	SCS_FinalToneCurveHDR UMETA(DisplayName = "Final Color (with tone curve) in Linear sRGB gamut")
 };
 
 /** Specifies how scene captures are composited into render buffers */
@@ -460,17 +464,69 @@ namespace EParticleCollisionMode
 UENUM()
 enum EMaterialShadingModel
 {
-	MSM_Unlit				UMETA(DisplayName="Unlit"),
-	MSM_DefaultLit			UMETA(DisplayName="Default Lit"),
-	MSM_Subsurface			UMETA(DisplayName="Subsurface"),
-	MSM_PreintegratedSkin	UMETA(DisplayName="Preintegrated Skin"),
-	MSM_ClearCoat			UMETA(DisplayName="Clear Coat"),
-	MSM_SubsurfaceProfile	UMETA(DisplayName="Subsurface Profile"),
-	MSM_TwoSidedFoliage		UMETA(DisplayName="Two Sided Foliage"),
-	MSM_Hair				UMETA(DisplayName="Hair"),
-	MSM_Cloth				UMETA(DisplayName="Cloth"),
-	MSM_Eye					UMETA(DisplayName="Eye"),
-	MSM_MAX,
+	MSM_Unlit					UMETA(DisplayName="Unlit"),
+	MSM_DefaultLit				UMETA(DisplayName="Default Lit"),
+	MSM_Subsurface				UMETA(DisplayName="Subsurface"),
+	MSM_PreintegratedSkin		UMETA(DisplayName="Preintegrated Skin"),
+	MSM_ClearCoat				UMETA(DisplayName="Clear Coat"),
+	MSM_SubsurfaceProfile		UMETA(DisplayName="Subsurface Profile"),
+	MSM_TwoSidedFoliage			UMETA(DisplayName="Two Sided Foliage"),
+	MSM_Hair					UMETA(DisplayName="Hair"),
+	MSM_Cloth					UMETA(DisplayName="Cloth"),
+	MSM_Eye						UMETA(DisplayName="Eye"),
+	MSM_SingleLayerWater		UMETA(DisplayName="SingleLayerWater"),
+	/** Number of unique shading models. */
+	MSM_NUM						UMETA(Hidden),
+	/** Shading model will be determined by the Material Expression Graph,
+		by utilizing the 'Shading Model' MaterialAttribute output pin. */
+	MSM_FromMaterialExpression	UMETA(DisplayName="From Material Expression"),
+	MSM_MAX
+};
+
+static_assert(MSM_NUM <= 16, "Do not exceed 16 shading models without expanding FMaterialShadingModelField to support uint32 instead of uint16!");
+
+/** Wrapper for a bitfield of shading models. A material contains one of these to describe what possible shading models can be used by that material. */
+USTRUCT()
+struct ENGINE_API FMaterialShadingModelField
+{
+	GENERATED_USTRUCT_BODY()
+
+public:
+	FMaterialShadingModelField() {}
+	FMaterialShadingModelField(EMaterialShadingModel InShadingModel)		{ AddShadingModel(InShadingModel); }
+
+	void AddShadingModel(EMaterialShadingModel InShadingModel)				{ check(InShadingModel < MSM_NUM); ShadingModelField |= (1 << (uint16)InShadingModel); }
+	void RemoveShadingModel(EMaterialShadingModel InShadingModel)			{ ShadingModelField &= ~(1 << (uint16)InShadingModel); }
+	void ClearShadingModels()												{ ShadingModelField = 0; }
+
+	// Check if any of the given shading models are present
+	bool HasAnyShadingModel(const TArray<EMaterialShadingModel>& InShadingModels) const	
+	{ 
+		for (EMaterialShadingModel ShadingModel : InShadingModels)
+		{
+			if (HasShadingModel(ShadingModel))
+			{
+				return true;
+			}
+		}
+		return false; 
+	}
+
+	bool HasShadingModel(EMaterialShadingModel InShadingModel) const		{ return (ShadingModelField & (1 << (uint16)InShadingModel)) != 0; }
+	bool HasOnlyShadingModel(EMaterialShadingModel InShadingModel) const	{ return ShadingModelField == (1 << (uint16)InShadingModel); }
+	bool IsUnlit() const													{ return HasShadingModel(MSM_Unlit); }
+	bool IsLit() const														{ return !IsUnlit(); }
+	bool IsValid() const													{ return (ShadingModelField > 0) && (ShadingModelField < (1 << MSM_NUM)); }
+	uint16 GetShadingModelField() const										{ return ShadingModelField; }
+	int32 CountShadingModels() const										{ return FMath::CountBits(ShadingModelField); }
+	EMaterialShadingModel GetFirstShadingModel() const						{ check(IsValid()); return (EMaterialShadingModel)FMath::CountTrailingZeros(ShadingModelField); }
+
+	bool operator==(const FMaterialShadingModelField& Other) const			{ return ShadingModelField == Other.GetShadingModelField(); }
+	bool operator!=(const FMaterialShadingModelField& Other) const			{ return ShadingModelField != Other.GetShadingModelField(); }
+
+private:
+	UPROPERTY()
+	uint16 ShadingModelField = 0;
 };
 
 /** This is used by the drawing passes to determine tessellation policy, so changes here need to be supported in native code. */
@@ -498,8 +554,38 @@ enum EMaterialSamplerType
 	SAMPLERTYPE_DistanceFieldFont UMETA(DisplayName="Distance Field Font"),
 	SAMPLERTYPE_LinearColor UMETA(DisplayName = "Linear Color"),
 	SAMPLERTYPE_LinearGrayscale UMETA(DisplayName = "Linear Grayscale"),
+	SAMPLERTYPE_Data UMETA(DisplayName = "Data"),
 	SAMPLERTYPE_External UMETA(DisplayName = "External"),
+
+	SAMPLERTYPE_VirtualColor UMETA(DisplayName = "Virtual Color"),
+	SAMPLERTYPE_VirtualGrayscale UMETA(DisplayName = "Virtual Grayscale"),
+	SAMPLERTYPE_VirtualAlpha UMETA(DisplayName = "Virtual Alpha"),
+	SAMPLERTYPE_VirtualNormal UMETA(DisplayName = "Virtual Normal"),
+	SAMPLERTYPE_VirtualMasks UMETA(DisplayName = "Virtual Mask"),
+	/*No DistanceFiledFont Virtual*/
+	SAMPLERTYPE_VirtualLinearColor UMETA(DisplayName = "Virtual Linear Color"),
+	SAMPLERTYPE_VirtualLinearGrayscale UMETA(DisplayName = "Virtual Linear Grayscale"),
+	/*No External Virtual*/
+
 	SAMPLERTYPE_MAX,
+};
+
+inline bool IsVirtualSamplerType(EMaterialSamplerType Value)
+{
+	return ((int32)Value >= (int32)SAMPLERTYPE_VirtualColor && (int32)Value <= (int32)SAMPLERTYPE_VirtualLinearGrayscale);
+}
+UENUM()
+enum EMaterialStencilCompare
+{
+	MSC_Less			UMETA(DisplayName = "Less Than"),
+	MSC_LessEqual		UMETA(DisplayName = "Less Than or Equal"),
+	MSC_Greater			UMETA(DisplayName = "Greater Than"),
+	MSC_GreaterEqual	UMETA(DisplayName = "Greater Than or Equal"),
+	MSC_Equal			UMETA(DisplayName = "Equal"),
+	MSC_NotEqual		UMETA(DisplayName = "Not Equal"),
+	MSC_Never			UMETA(DisplayName = "Never"),
+	MSC_Always			UMETA(DisplayName = "Always"),
+	MSC_Count			UMETA(Hidden),
 };
 
 /**	Lighting build quality enumeration */
@@ -1029,13 +1115,13 @@ struct ENGINE_API FCollisionResponseContainer
 	FCollisionResponseContainer(ECollisionResponse DefaultResponse);
 
 	/** Set the response of a particular channel in the structure. */
-	void SetResponse(ECollisionChannel Channel, ECollisionResponse NewResponse);
+	bool SetResponse(ECollisionChannel Channel, ECollisionResponse NewResponse);
 
 	/** Set all channels to the specified response */
-	void SetAllChannels(ECollisionResponse NewResponse);
+	bool SetAllChannels(ECollisionResponse NewResponse);
 
 	/** Replace the channels matching the old response with the new response */
-	void ReplaceChannels(ECollisionResponse OldResponse, ECollisionResponse NewResponse);
+	bool ReplaceChannels(ECollisionResponse OldResponse, ECollisionResponse NewResponse);
 
 	/** Returns the response set on the specified channel */
 	FORCEINLINE_DEBUGGABLE ECollisionResponse GetResponse(ECollisionChannel Channel) const { return (ECollisionResponse)EnumArray[Channel]; }
@@ -1049,6 +1135,15 @@ struct ENGINE_API FCollisionResponseContainer
 
 	/** Returns the game-wide default collision response */
 	static const struct FCollisionResponseContainer& GetDefaultResponseContainer() { return DefaultResponseContainer; }
+
+	bool operator==(const FCollisionResponseContainer& Other) const
+	{
+		return FMemory::Memcmp(EnumArray, Other.EnumArray, sizeof(Other.EnumArray)) == 0;
+	}
+	bool operator!=(const FCollisionResponseContainer& Other) const
+	{
+		return FMemory::Memcmp(EnumArray, Other.EnumArray, sizeof(Other.EnumArray)) != 0;
+	}
 
 private:
 
@@ -1259,7 +1354,7 @@ struct FRigidBodyErrorCorrection
  * Information about one contact between a pair of rigid bodies.
  */
 USTRUCT()
-struct FRigidBodyContactInfo
+struct ENGINE_API FRigidBodyContactInfo
 {
 	GENERATED_BODY()
 
@@ -1313,7 +1408,7 @@ struct FRigidBodyContactInfo
  * Information about an overall collision, including contacts.
  */
 USTRUCT()
-struct FCollisionImpactData
+struct ENGINE_API FCollisionImpactData
 {
 	GENERATED_BODY()
 
@@ -1444,7 +1539,7 @@ struct ENGINE_API FRotationConversionCache
 		{
 			return CachedRotator;
 		}
-		return InQuat.Rotator();
+		return InQuat.GetNormalized().Rotator();
 	}
 
 	/** Version of QuatToRotator when the Quat is known to already be normalized. */
@@ -1888,7 +1983,7 @@ struct ENGINE_API FHitResult
 
 	/**
 	 * Normal of the hit in world space, for the object that was hit by the sweep, if any.
-	 * For example if a box hits a flat plane, this is a normalized vector pointing out from the plane.
+	 * For example if a sphere hits a flat plane, this is a normalized vector pointing out from the plane.
 	 * In the case of impact with a corner or edge of a surface, usually the "most opposing" normal (opposed to the query direction) is chosen.
 	 */
 	UPROPERTY()
@@ -2463,6 +2558,10 @@ struct FMeshBuildSettings
 	UPROPERTY(EditAnywhere, Category=BuildSettings)
 	uint8 bRecomputeTangents:1;
 
+	/** If true, we will use the surface area and the corner angle of the triangle as a ratio when computing the normals. */
+	UPROPERTY(EditAnywhere, Category = BuildSettings)
+	uint8 bComputeWeightedNormals : 1;
+
 	/** If true, degenerate triangles will be removed. */
 	UPROPERTY(EditAnywhere, Category=BuildSettings)
 	uint8 bRemoveDegenerates:1;
@@ -2492,6 +2591,9 @@ struct FMeshBuildSettings
 	 */
 	UPROPERTY(EditAnywhere, Category=BuildSettings, meta=(DisplayName="Two-Sided Distance Field Generation"))
 	uint8 bGenerateDistanceFieldAsIfTwoSided:1;
+
+	UPROPERTY(EditAnywhere, Category=BuildSettings, meta=(DisplayName="Enable Physical Material Mask"))
+	uint8 bSupportFaceRemap : 1;
 
 	UPROPERTY(EditAnywhere, Category=BuildSettings)
 	int32 MinLightmapResolution;
@@ -2529,6 +2631,7 @@ struct FMeshBuildSettings
 		: bUseMikkTSpace(true)
 		, bRecomputeNormals(true)
 		, bRecomputeTangents(true)
+		, bComputeWeightedNormals(false)
 		, bRemoveDegenerates(true)
 		, bBuildAdjacencyBuffer(true)
 		, bBuildReversedIndexBuffer(true)
@@ -2536,6 +2639,7 @@ struct FMeshBuildSettings
 		, bUseFullPrecisionUVs(false)
 		, bGenerateLightmapUVs(true)
 		, bGenerateDistanceFieldAsIfTwoSided(false)
+		, bSupportFaceRemap(false)
 		, MinLightmapResolution(64)
 		, SrcLightmapIndex(0)
 		, DstLightmapIndex(1)
@@ -2553,6 +2657,7 @@ struct FMeshBuildSettings
 	{
 		return bRecomputeNormals == Other.bRecomputeNormals
 			&& bRecomputeTangents == Other.bRecomputeTangents
+			&& bComputeWeightedNormals == Other.bComputeWeightedNormals
 			&& bUseMikkTSpace == Other.bUseMikkTSpace
 			&& bRemoveDegenerates == Other.bRemoveDegenerates
 			&& bBuildAdjacencyBuffer == Other.bBuildAdjacencyBuffer
@@ -2571,6 +2676,102 @@ struct FMeshBuildSettings
 
 	/** Inequality. */
 	bool operator!=(const FMeshBuildSettings& Other) const
+	{
+		return !(*this == Other);
+	}
+};
+
+/**
+ * Settings applied when building a mesh.
+ */
+USTRUCT()
+struct FSkeletalMeshBuildSettings
+{
+	GENERATED_BODY()
+
+	/** If true, normals in the raw mesh are ignored and recomputed. */
+	UPROPERTY(EditAnywhere, Category=BuildSettings)
+	uint8 bRecomputeNormals:1;
+
+	/** If true, tangents in the raw mesh are ignored and recomputed. */
+	UPROPERTY(EditAnywhere, Category=BuildSettings)
+	uint8 bRecomputeTangents:1;
+	
+	/** If true, degenerate triangles will be removed. */
+	UPROPERTY(EditAnywhere, Category=BuildSettings)
+	uint8 bUseMikkTSpace:1;
+	
+	/** If true, we will use the surface area and the corner angle of the triangle as a ratio when computing the normals. */
+	UPROPERTY(EditAnywhere, Category = BuildSettings)
+	uint8 bComputeWeightedNormals : 1;
+
+	/** If true, degenerate triangles will be removed. */
+	UPROPERTY(EditAnywhere, Category=BuildSettings)
+	uint8 bRemoveDegenerates:1;
+	
+	/** If true, Tangents will be stored at 16 bit vs 8 bit precision. */
+	UPROPERTY(EditAnywhere, Category = BuildSettings)
+	uint8 bUseHighPrecisionTangentBasis:1;
+
+	/** If true, UVs will be stored at full floating point precision. */
+	UPROPERTY(EditAnywhere, Category=BuildSettings)
+	uint8 bUseFullPrecisionUVs:1;
+	
+	/** Required for PNT tessellation but can be slow. Recommend disabling for larger meshes. */
+	UPROPERTY(EditAnywhere, Category=BuildSettings)
+	uint8 bBuildAdjacencyBuffer:1;
+
+	/** Threshold use to decide if two vertex position are equal. */
+	UPROPERTY(EditAnywhere, Category = BuildSettings)
+	float ThresholdPosition;
+
+	/** Threshold use to decide if two normal, tangents or bi-normals are equal. */
+	UPROPERTY(EditAnywhere, Category = BuildSettings)
+	float ThresholdTangentNormal;
+
+	/** Threshold use to decide if two UVs are equal. */
+	UPROPERTY(EditAnywhere, Category = BuildSettings)
+	float ThresholdUV;
+
+	/** Threshold to compare vertex position equality when computing morph target deltas. */
+	UPROPERTY(EditAnywhere, Category = BuildSettings)
+	float MorphThresholdPosition;
+
+	/** Default settings. */
+	FSkeletalMeshBuildSettings()
+		: bRecomputeNormals(true)
+		, bRecomputeTangents(true)
+		, bUseMikkTSpace(true)
+		, bComputeWeightedNormals(false)
+		, bRemoveDegenerates(true)
+		, bUseHighPrecisionTangentBasis(false)
+		, bUseFullPrecisionUVs(false)
+		, bBuildAdjacencyBuffer(true)
+		, ThresholdPosition(0.00002)
+		, ThresholdTangentNormal(0.00002)
+		, ThresholdUV(0.0009765625)
+		, MorphThresholdPosition(0.015f)
+	{}
+
+	/** Equality operator. */
+	bool operator==(const FSkeletalMeshBuildSettings& Other) const
+	{
+		return bRecomputeNormals == Other.bRecomputeNormals
+			&& bRecomputeTangents == Other.bRecomputeTangents
+			&& bUseMikkTSpace == Other.bUseMikkTSpace
+			&& bComputeWeightedNormals == Other.bComputeWeightedNormals
+			&& bRemoveDegenerates == Other.bRemoveDegenerates
+			&& bUseHighPrecisionTangentBasis == Other.bUseHighPrecisionTangentBasis
+			&& bUseFullPrecisionUVs == Other.bUseFullPrecisionUVs
+			&& bBuildAdjacencyBuffer == Other.bBuildAdjacencyBuffer
+			&& ThresholdPosition == Other.ThresholdPosition
+			&& ThresholdTangentNormal == Other.ThresholdTangentNormal
+			&& ThresholdUV == Other.ThresholdUV
+			&& MorphThresholdPosition == Other.MorphThresholdPosition;
+	}
+
+	/** Inequality. */
+	bool operator!=(const FSkeletalMeshBuildSettings& Other) const
 	{
 		return !(*this == Other);
 	}
@@ -3028,7 +3229,7 @@ struct ENGINE_API FRepMovement
 		bRepPhysics = true;
 	}
 
-	void CopyTo(struct FRigidBodyState& RBState, const AActor* const Actor = nullptr)
+	void CopyTo(struct FRigidBodyState& RBState, const AActor* const Actor = nullptr) const
 	{
 		RBState.Position = RebaseOntoLocalOrigin(Location, Actor);
 		RBState.Quaternion = Rotation.Quaternion();
@@ -3323,6 +3524,8 @@ struct FReplicationFlags
 			uint32 bIgnoreRPCs:1;
 			/** True if we should not swap the role and remote role of this actor when receiving properties. */
 			uint32 bSkipRoleSwap:1;
+			/** True if we should only compare role properties in CompareProperties */
+			uint32 bRolesOnly:1;
 		};
 
 		uint32	Value;
@@ -3355,19 +3558,30 @@ struct ENGINE_API FComponentReference
 {
 	GENERATED_BODY()
 
+	FComponentReference() : OtherActor(nullptr) {}
+
 	/** Pointer to a different Actor that owns the Component.  */
 	UPROPERTY(EditInstanceOnly, Category=Component)
 	AActor* OtherActor;
 
 	/** Name of component property to use */
 	UPROPERTY(EditAnywhere, Category=Component)
-	FName	ComponentProperty;
+	FName ComponentProperty;
+
+	/** Path to the component from its owner actor */
+	UPROPERTY()
+	FString PathToComponent;
 
 	/** Allows direct setting of first component to constraint. */
-	TWeakObjectPtr<class USceneComponent> OverrideComponent;
+	TWeakObjectPtr<class UActorComponent> OverrideComponent;
 
 	/** Get the actual component pointer from this reference */
-	class USceneComponent* GetComponent(AActor* OwningActor) const;
+	class UActorComponent* GetComponent(AActor* OwningActor) const;
+
+	bool operator== (const FComponentReference& Other) const
+	{
+		return OtherActor == Other.OtherActor && ComponentProperty == Other.ComponentProperty && PathToComponent == Other.PathToComponent && OverrideComponent == Other.OverrideComponent;
+	}
 };
 
 /** Types of surfaces in the game, used by Physical Materials */
@@ -3439,6 +3653,24 @@ enum EPhysicalSurface
 	SurfaceType62 UMETA(Hidden),
 	SurfaceType_Max UMETA(Hidden)
 };
+
+/** Types of valid physical material mask colors which may be associated with a physical material */
+UENUM(BlueprintType)
+namespace EPhysicalMaterialMaskColor
+{
+	enum Type
+	{
+		Red,
+		Green,
+		Blue,
+		Cyan,
+		Magenta,
+		Yellow,
+		White,
+		Black,
+		MAX
+	};
+}
 
 /** Describes how often this component is allowed to move. */
 UENUM(BlueprintType)

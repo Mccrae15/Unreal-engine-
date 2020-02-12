@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -21,6 +21,7 @@ enum class EAlembicImportType : uint8
 UENUM(BlueprintType)
 enum class EBaseCalculationType : uint8
 {
+	None = 0 UMETA(Hidden),
 	/** Determines the number of bases that should be used with the given percentage*/
 	PercentageBased = 1,
 	/** Set a fixed number of bases to import*/

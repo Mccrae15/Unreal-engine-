@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 /*=============================================================================
 MobileDistortionPass.cpp - Mobile specific rendering of primtives with refraction
@@ -62,7 +62,7 @@ FPooledRenderTargetDesc FRCDistortionAccumulatePassES2::ComputeOutputDesc(EPassO
 	Ret.ArraySize = 1;
 	Ret.bIsArray = false;
 	Ret.NumMips = 1;
-	Ret.TargetableFlags = TexCreate_RenderTargetable;
+	Ret.TargetableFlags = TexCreate_RenderTargetable | TexCreate_ShaderResource;
 	Ret.bForceSeparateTargetAndShaderResource = false;
 	Ret.Format = PF_B8G8R8A8;
 	Ret.NumSamples = 1;
@@ -85,7 +85,7 @@ class FDistortionMergePS_ES2 : public FGlobalShader
 	FDistortionMergePS_ES2() {}
 
 public:
-	FPostProcessPassParameters PostprocessParameter;
+	LAYOUT_FIELD(FPostProcessPassParameters, PostprocessParameter)
 
 	/** Initialization constructor. */
 	FDistortionMergePS_ES2(const ShaderMetaType::CompiledShaderInitializerType& Initializer)
@@ -96,16 +96,9 @@ public:
 
 	void SetParameters(const FRenderingCompositePassContext& Context)
 	{
-		const FPixelShaderRHIParamRef ShaderRHI = GetPixelShader();
+		FRHIPixelShader* ShaderRHI = Context.RHICmdList.GetBoundPixelShader();
 		FGlobalShader::SetParameters<FViewUniformShaderParameters>(Context.RHICmdList, ShaderRHI, Context.View.ViewUniformBuffer);
 		PostprocessParameter.SetPS(Context.RHICmdList, ShaderRHI, Context, TStaticSamplerState<SF_Bilinear, AM_Clamp, AM_Clamp, AM_Clamp>::GetRHI());
-	}
-
-	virtual bool Serialize(FArchive& Ar) override
-	{
-		bool bShaderHasOutdatedParameters = FGlobalShader::Serialize(Ar);
-		Ar << PostprocessParameter;
-		return bShaderHasOutdatedParameters;
 	}
 };
 
@@ -140,8 +133,8 @@ void FRCDistortionMergePassES2::Process(FRenderingCompositePassContext& Context)
 		TShaderMapRef<FDistortionMergePS_ES2> PixelShader(View.ShaderMap);
 
 		GraphicsPSOInit.BoundShaderState.VertexDeclarationRHI = GFilterVertexDeclaration.VertexDeclarationRHI;
-		GraphicsPSOInit.BoundShaderState.VertexShaderRHI = GETSAFERHISHADER_VERTEX(*VertexShader);
-		GraphicsPSOInit.BoundShaderState.PixelShaderRHI = GETSAFERHISHADER_PIXEL(*PixelShader);
+		GraphicsPSOInit.BoundShaderState.VertexShaderRHI = VertexShader.GetVertexShader();
+		GraphicsPSOInit.BoundShaderState.PixelShaderRHI = PixelShader.GetPixelShader();
 		GraphicsPSOInit.PrimitiveType = PT_TriangleList;
 
 		SetGraphicsPipelineState(Context.RHICmdList, GraphicsPSOInit);
@@ -157,7 +150,7 @@ void FRCDistortionMergePassES2::Process(FRenderingCompositePassContext& Context)
 			SrcRect.Width(), SrcRect.Height(),
 			DstSize,
 			SrcSize,
-			*VertexShader,
+			VertexShader,
 			EDRF_UseTriangleOptimization);
 	}
 	Context.RHICmdList.EndRenderPass();
@@ -171,7 +164,7 @@ FPooledRenderTargetDesc FRCDistortionMergePassES2::ComputeOutputDesc(EPassOutput
 	Ret.ArraySize = 1;
 	Ret.bIsArray = false;
 	Ret.NumMips = 1;
-	Ret.TargetableFlags = TexCreate_RenderTargetable;
+	Ret.TargetableFlags = TexCreate_RenderTargetable | TexCreate_ShaderResource;
 	Ret.bForceSeparateTargetAndShaderResource = false;
 	Ret.Format = PF_FloatRGBA;
 	Ret.NumSamples = 1;

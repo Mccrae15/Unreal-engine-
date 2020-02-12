@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 
 #include "Sound/SoundNodeModulator.h"
@@ -24,8 +24,8 @@ void USoundNodeModulator::ParseNodes( FAudioDevice* AudioDevice, const UPTRINT N
 
 	if( *RequiresInitialization )
 	{
-		UsedVolumeModulation = VolumeMax + ( ( VolumeMin - VolumeMax ) * FMath::SRand() );
-		UsedPitchModulation = PitchMax + ( ( PitchMin - PitchMax ) * FMath::SRand() );
+		UsedVolumeModulation = VolumeMax + ( ( VolumeMin - VolumeMax ) * RandomStream.FRand() );
+		UsedPitchModulation = PitchMax + ( ( PitchMin - PitchMax ) * RandomStream.FRand() );
 
 		*RequiresInitialization = 0;
 	}

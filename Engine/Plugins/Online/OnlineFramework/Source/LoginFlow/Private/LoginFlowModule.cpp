@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "ILoginFlowModule.h"
 #include "LoginFlowViewModel.h"
@@ -27,7 +27,8 @@ public:
 			Settings.BrowserContextSettings,
 			Settings.CloseCallback, 
 			Settings.ErrorCallback,
-			Settings.RedirectCallback);
+			Settings.RedirectCallback, 
+			Settings.bConsumeInput);
 
 		TSharedPtr<SWidget> LoginFlowWidget = nullptr;
 		if (Settings.StyleSet)

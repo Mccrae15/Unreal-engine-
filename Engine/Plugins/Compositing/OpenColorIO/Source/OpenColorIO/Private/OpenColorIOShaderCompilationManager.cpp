@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "OpenColorIOShaderCompilationManager.h"
 
@@ -35,22 +35,27 @@ void FOpenColorIOShaderCompilationManager::Tick(float DeltaSeconds)
 
 FOpenColorIOShaderCompilationManager::FOpenColorIOShaderCompilationManager()
 {
-	// Ew. Should we just use FShaderCompilingManager's workers instead? Is that safe?
-	const int32 NumVirtualCores = FPlatformMisc::NumberOfCoresIncludingHyperthreads();
-	const uint32 NumOpenColorIOShaderCompilingThreads = FMath::Min(NumVirtualCores-1, 4);		
-
-	for (uint32 WorkerIndex = 0; WorkerIndex < NumOpenColorIOShaderCompilingThreads; WorkerIndex++)
-	{
-		WorkerInfos.Add(new FOpenColorIOShaderCompileWorkerInfo());
-	}
+	
 }
 
+FOpenColorIOShaderCompilationManager::~FOpenColorIOShaderCompilationManager()
+{
+	for (FOpenColorIOShaderCompileWorkerInfo* Info : WorkerInfos)
+	{
+		delete Info;
+	}
+
+	WorkerInfos.Empty();
+}
 
 void FOpenColorIOShaderCompilationManager::RunCompileJobs()
 {
 #if WITH_EDITOR
 	// If we aren't compiling through workers, so we can just track the serial time here.
 //	COOK_STAT(FScopedDurationTimer CompileTimer(OpenColorIOShaderCookStats::AsyncCompileTimeSec));
+
+	InitWorkerInfo();
+
 	int32 NumActiveThreads = 0;
 
 	for (int32 WorkerIndex = 0; WorkerIndex < WorkerInfos.Num(); WorkerIndex++)
@@ -92,7 +97,7 @@ void FOpenColorIOShaderCompilationManager::RunCompileJobs()
 		{
 			for (int32 JobIndex = 0; JobIndex < CurrentWorkerInfo.QueuedJobs.Num(); JobIndex++)
 			{
-				FShaderCompileJob& CurrentJob = *((FShaderCompileJob*)(CurrentWorkerInfo.QueuedJobs[JobIndex]));
+				FShaderCompileJob& CurrentJob = StaticCastSharedRef<FShaderCompileJob>(CurrentWorkerInfo.QueuedJobs[JobIndex]).Get();
 
 				check(!CurrentJob.bFinalized);
 				CurrentJob.bFinalized = true;
@@ -166,12 +171,25 @@ void FOpenColorIOShaderCompilationManager::RunCompileJobs()
 #endif
 }
 
+void FOpenColorIOShaderCompilationManager::InitWorkerInfo()
+{
+	if (WorkerInfos.Num() == 0) // Check to see if it has been initialized or not
+	{
+		// Ew. Should we just use FShaderCompilingManager's workers instead? Is that safe?
+		const int32 NumVirtualCores = FPlatformMisc::NumberOfCoresIncludingHyperthreads();
+		const uint32 NumOpenColorIOShaderCompilingThreads = FMath::Min(NumVirtualCores - 1, 4);
 
+		for (uint32 WorkerIndex = 0; WorkerIndex < NumOpenColorIOShaderCompilingThreads; WorkerIndex++)
+		{
+			WorkerInfos.Add(new FOpenColorIOShaderCompileWorkerInfo());
+		}
+	}	
+}
 
-OPENCOLORIO_API void FOpenColorIOShaderCompilationManager::AddJobs(TArray<FShaderCommonCompileJob*> InNewJobs)
+OPENCOLORIO_API void FOpenColorIOShaderCompilationManager::AddJobs(TArray<TSharedRef<FShaderCommonCompileJob, ESPMode::ThreadSafe>> InNewJobs)
 {
 #if WITH_EDITOR
-	for (FShaderCommonCompileJob *Job : InNewJobs)
+	for (TSharedRef<FShaderCommonCompileJob, ESPMode::ThreadSafe>& Job : InNewJobs)
 	{
 		FOpenColorIOShaderMapCompileResults& ShaderMapInfo = OpenColorIOShaderMapJobs.FindOrAdd(Job->Id);
 		//@todo : Apply shader map isn't used for now with this compile manager. Should be merged to have a generic shader compiler
@@ -247,7 +265,7 @@ void FOpenColorIOShaderCompilationManager::ProcessCompiledOpenColorIOShaderMaps(
 		{
 			TArray<FString> Errors;
 			FOpenColorIOShaderMapFinalizeResults& CompileResults = ProcessIt.Value();
-			const TArray<FShaderCommonCompileJob*>& ResultArray = CompileResults.FinishedJobs;
+			TArray<TSharedRef<FShaderCommonCompileJob, ESPMode::ThreadSafe>>& ResultArray = CompileResults.FinishedJobs;
 
 			// Make a copy of the array as this entry of FOpenColorIOShaderMap::ShaderMapsBeingCompiled will be removed below
 			TArray<FOpenColorIOTransformResource*> ColorTransformArray = *ColorTransforms;
@@ -255,7 +273,7 @@ void FOpenColorIOShaderCompilationManager::ProcessCompiledOpenColorIOShaderMaps(
 
 			for (int32 JobIndex = 0; JobIndex < ResultArray.Num(); JobIndex++)
 			{
-				FShaderCompileJob& CurrentJob = *((FShaderCompileJob*)(ResultArray[JobIndex]));
+				FShaderCompileJob& CurrentJob = StaticCastSharedRef<FShaderCompileJob>(ResultArray[JobIndex]).Get();
 				bSuccess = bSuccess && CurrentJob.bSucceeded;
 
 				if (bSuccess)
@@ -372,11 +390,7 @@ void FOpenColorIOShaderCompilationManager::ProcessCompiledOpenColorIOShaderMaps(
 				}
 
 				// Cleanup shader jobs and compile tracking structures
-				for (int32 JobIndex = 0; JobIndex < ResultArray.Num(); JobIndex++)
-				{
-					delete ResultArray[JobIndex];
-				}
-
+				ResultArray.Empty();
 				CompiledShaderMaps.Remove(ShaderMap->GetCompilingId());
 			}
 
@@ -396,12 +410,10 @@ void FOpenColorIOShaderCompilationManager::ProcessCompiledOpenColorIOShaderMaps(
 
 			ColorTransform->SetGameThreadShaderMap(It.Value());
 
-			ENQUEUE_UNIQUE_RENDER_COMMAND_TWOPARAMETER(
-				FSetShaderMapOnColorTransformResources,
-				FOpenColorIOTransformResource*, ColorTransform, ColorTransform,
-				FOpenColorIOShaderMap*, CompiledShaderMap, ShaderMap,
+			ENQUEUE_RENDER_COMMAND(FSetShaderMapOnColorTransformResources)(
+				[ColorTransform, ShaderMap](FRHICommandListImmediate& RHICmdList)
 				{
-					ColorTransform->SetRenderingThreadShaderMap(CompiledShaderMap);
+					ColorTransform->SetRenderingThreadShaderMap(ShaderMap);
 				});
 
 

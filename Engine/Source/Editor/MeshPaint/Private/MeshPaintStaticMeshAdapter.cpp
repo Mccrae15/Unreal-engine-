@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "MeshPaintStaticMeshAdapter.h"
 #include "StaticMeshResources.h"
@@ -108,14 +108,23 @@ void FMeshPaintGeometryAdapterForStaticMeshes::PostEdit()
 	const bool bUnbuildLighting = false;
 
 	// Recreate all component states using the referenced static mesh
-	TUniquePtr<FStaticMeshComponentRecreateRenderStateContext> RecreateRenderStateContext = MakeUnique<FStaticMeshComponentRecreateRenderStateContext>(ReferencedStaticMesh, bUnbuildLighting);
-	const bool bUsingInstancedVertexColors = true;
-
+	FStaticMeshComponentRecreateRenderStateContext RecreateRenderStateContext(ReferencedStaticMesh, bUnbuildLighting);
+	
+	const bool bUsingInstancedVertexColors = true; // Currently we are only painting to instances 
 	// Update gpu resource data 
 	if (bUsingInstancedVertexColors)
 	{
-		FStaticMeshComponentLODInfo* InstanceMeshLODInfo = &StaticMeshComponent->LODData[MeshLODIndex];
-		BeginInitResource(InstanceMeshLODInfo->OverrideVertexColors);
+		// We're only changing instanced vertices on this specific mesh component, so we
+		// only need to detach our mesh component
+		FComponentReregisterContext ComponentReregisterContext(StaticMeshComponent);
+
+		// If LOD is 0, post-edit all LODs. There's currently no way to tell from here
+		// if VertexPaintSettings.bPaintOnSpecificLOD is set to true or not.
+		const int32 MaxLOD = (MeshLODIndex == 0) ? StaticMeshComponent->LODData.Num() : (MeshLODIndex + 1);
+		for (int32 Index = MeshLODIndex; Index < MaxLOD; ++Index)
+		{
+			BeginInitResource(StaticMeshComponent->LODData[Index].OverrideVertexColors);
+		}
 	}
 	else
 	{
@@ -132,6 +141,19 @@ void FMeshPaintGeometryAdapterForStaticMeshes::InitializeAdapterGlobals()
 		bInitialized = true;
 		MeshToComponentMap.Empty();
 	}
+}
+
+void FMeshPaintGeometryAdapterForStaticMeshes::CleanupGlobals()
+{
+	for (TPair<UStaticMesh*, FStaticMeshReferencers>& Pair : MeshToComponentMap)
+	{
+		if (Pair.Key && Pair.Value.RestoreBodySetup)
+		{
+			Pair.Key->BodySetup = Pair.Value.RestoreBodySetup;
+		}
+	}
+
+	MeshToComponentMap.Empty();
 }
 
 void FMeshPaintGeometryAdapterForStaticMeshes::OnAdded()
@@ -196,11 +218,9 @@ void FMeshPaintGeometryAdapterForStaticMeshes::OnAdded()
 
 void FMeshPaintGeometryAdapterForStaticMeshes::OnRemoved()
 {
-	check(StaticMeshComponent);
-	
 	// If the referenced static mesh has been destroyed (and nulled by GC), don't try to do anything more.
 	// It should be in the process of removing all global geometry adapters if it gets here in this situation.
-	if (!ReferencedStaticMesh)
+	if (!ReferencedStaticMesh || !StaticMeshComponent)
 	{
 		return;
 	}
@@ -224,13 +244,6 @@ void FMeshPaintGeometryAdapterForStaticMeshes::OnRemoved()
 			StaticMeshComponent->RecreatePhysicsState();
 
 			StaticMeshReferencers->Referencers.RemoveAtSwap(Index);
-
-			// If the last reference was removed, restore the body setup for the static mesh
-			if (StaticMeshReferencers->Referencers.Num() == 0)
-			{
-				ReferencedStaticMesh->BodySetup = StaticMeshReferencers->RestoreBodySetup;
-				verify(MeshToComponentMap.Remove(ReferencedStaticMesh) == 1);
-			}
 		}
 		else
 		{
@@ -239,6 +252,13 @@ void FMeshPaintGeometryAdapterForStaticMeshes::OnRemoved()
 			{
 				return Info.StaticMeshComponent == nullptr;
 			});
+		}
+
+		// If the last reference was removed, restore the body setup for the static mesh
+		if (StaticMeshReferencers->Referencers.Num() == 0)
+		{
+			ReferencedStaticMesh->BodySetup = StaticMeshReferencers->RestoreBodySetup;
+			verify(MeshToComponentMap.Remove(ReferencedStaticMesh) == 1);
 		}
 	}
 }
@@ -259,21 +279,23 @@ void FMeshPaintGeometryAdapterForStaticMeshes::ApplyOrRemoveTextureOverride(UTex
 	DefaultApplyOrRemoveTextureOverride(StaticMeshComponent, SourceTexture, OverrideTexture);
 }
 
+void FMeshPaintGeometryAdapterForStaticMeshes::AddReferencedObjectsGlobals(FReferenceCollector& Collector)
+{
+	for (TPair<UStaticMesh*, FStaticMeshReferencers>& Pair : MeshToComponentMap)
+	{
+		Collector.AddReferencedObject(Pair.Key);
+		Collector.AddReferencedObject(Pair.Value.RestoreBodySetup);
+		for (FStaticMeshReferencers::FReferencersInfo& ReferencerInfo : Pair.Value.Referencers)
+		{
+			Collector.AddReferencedObject(ReferencerInfo.StaticMeshComponent);
+		}
+	}
+}
+
 void FMeshPaintGeometryAdapterForStaticMeshes::AddReferencedObjects(FReferenceCollector& Collector)
 {
-	if (!ReferencedStaticMesh)
-	{
-		return;
-	}
-
-	FStaticMeshReferencers* StaticMeshReferencers = MeshToComponentMap.Find(ReferencedStaticMesh);
-	check(StaticMeshReferencers);
-	Collector.AddReferencedObject(StaticMeshReferencers->RestoreBodySetup);
-
-	for (auto& Info : StaticMeshReferencers->Referencers)
-	{
-		Collector.AddReferencedObject(Info.StaticMeshComponent);
-	}
+	Collector.AddReferencedObject(ReferencedStaticMesh);
+	Collector.AddReferencedObject(StaticMeshComponent);
 }
 
 void FMeshPaintGeometryAdapterForStaticMeshes::GetVertexColor(int32 VertexIndex, FColor& OutColor, bool bInstance /*= true*/) const
@@ -360,59 +382,57 @@ void FMeshPaintGeometryAdapterForStaticMeshes::PreEdit()
 {
 	const bool bUsingInstancedVertexColors = true; // Currently we are only painting to instances 
 	UStaticMesh* StaticMesh = ReferencedStaticMesh;
-	FStaticMeshComponentLODInfo* InstanceMeshLODInfo = NULL;
-	TUniquePtr< FStaticMeshComponentRecreateRenderStateContext > RecreateRenderStateContext;
-	TUniquePtr< FComponentReregisterContext > ComponentReregisterContext;
 	if (bUsingInstancedVertexColors)
 	{
-		// We're only changing instanced vertices on this specific mesh component, so we
-		// only need to detach our mesh component
-		ComponentReregisterContext = MakeUnique<FComponentReregisterContext>(StaticMeshComponent);
-
 		// Mark the mesh component as modified
 		StaticMeshComponent->SetFlags(RF_Transactional);
 		StaticMeshComponent->Modify();
 		StaticMeshComponent->bCustomOverrideVertexColorPerLOD = (MeshLODIndex > 0);
-
+				
+		const int32 NumLODs = StaticMesh->GetNumLODs();
+		const int32 MaxIndex = (MeshLODIndex == 0) ? NumLODs : (MeshLODIndex + 1);
 		// Ensure LODData has enough entries in it, free not required.
-		StaticMeshComponent->SetLODDataCount(MeshLODIndex + 1, StaticMeshComponent->LODData.Num());
 
-		InstanceMeshLODInfo = &StaticMeshComponent->LODData[MeshLODIndex];
+		StaticMeshComponent->SetLODDataCount(NumLODs, NumLODs);
 
-		// Destroy the instance vertex  color array if it doesn't fit
-		if (InstanceMeshLODInfo->OverrideVertexColors
-			&& InstanceMeshLODInfo->OverrideVertexColors->GetNumVertices() != LODModel->GetNumVertices())
+		// If LOD is 0, pre-edit all LODs. There's currently no way to tell from here
+		// if VertexPaintSettings.bPaintOnSpecificLOD is set to true or not.
+		for (int32 Index = MeshLODIndex; Index < MaxIndex; ++Index)
 		{
-			InstanceMeshLODInfo->ReleaseOverrideVertexColorsAndBlock();
-		}
+			FStaticMeshComponentLODInfo& InstanceMeshLODInfo = StaticMeshComponent->LODData[Index];
+			FStaticMeshLODResources& LODResource = StaticMesh->RenderData->LODResources[Index];
 
-		// Destroy the cached paint data every paint. Painting redefines the source data.
-		if (InstanceMeshLODInfo->OverrideVertexColors)
-		{
-			InstanceMeshLODInfo->PaintedVertices.Empty();
-		}
-
-		if (InstanceMeshLODInfo->OverrideVertexColors)
-		{
-			InstanceMeshLODInfo->BeginReleaseOverrideVertexColors();
-			FlushRenderingCommands();
-		}
-		else
-		{
-			// Setup the instance vertex color array if we don't have one yet
-			InstanceMeshLODInfo->OverrideVertexColors = new FColorVertexBuffer;
-
-			if ((int32)LODModel->VertexBuffers.ColorVertexBuffer.GetNumVertices() >= LODModel->GetNumVertices())
+			// Destroy the instance vertex  color array if it doesn't fit
+			if (InstanceMeshLODInfo.OverrideVertexColors
+				&& InstanceMeshLODInfo.OverrideVertexColors->GetNumVertices() != LODResource.GetNumVertices())
 			{
-				// copy mesh vertex colors to the instance ones
-				InstanceMeshLODInfo->OverrideVertexColors->InitFromColorArray(&LODModel->VertexBuffers.ColorVertexBuffer.VertexColor(0), LODModel->GetNumVertices());
+				InstanceMeshLODInfo.ReleaseOverrideVertexColorsAndBlock();
+			}
+
+			if (InstanceMeshLODInfo.OverrideVertexColors)
+			{
+				// Destroy the cached paint data every paint. Painting redefines the source data.
+				InstanceMeshLODInfo.PaintedVertices.Empty();
+				InstanceMeshLODInfo.BeginReleaseOverrideVertexColors();
+				FlushRenderingCommands();
 			}
 			else
 			{
-				// Original mesh didn't have any colors, so just use a default color
-				InstanceMeshLODInfo->OverrideVertexColors->InitFromSingleColor(FColor::White, LODModel->GetNumVertices());
-			}
+				// Setup the instance vertex color array if we don't have one yet
+				InstanceMeshLODInfo.OverrideVertexColors = new FColorVertexBuffer;
 
+				if ((int32)LODResource.VertexBuffers.ColorVertexBuffer.GetNumVertices() >= LODResource.GetNumVertices())
+				{
+					// copy mesh vertex colors to the instance ones
+					InstanceMeshLODInfo.OverrideVertexColors->InitFromColorArray(&LODResource.VertexBuffers.ColorVertexBuffer.VertexColor(0), LODResource.GetNumVertices());
+				}
+				else
+				{
+					// Original mesh didn't have any colors, so just use a default color
+					InstanceMeshLODInfo.OverrideVertexColors->InitFromSingleColor(FColor::White, LODResource.GetNumVertices());
+				}
+
+			}
 		}
 		// See if the component has to cache its mesh vertex positions associated with override colors
 		StaticMeshComponent->CachePaintedDataIfNecessary();
@@ -420,10 +440,6 @@ void FMeshPaintGeometryAdapterForStaticMeshes::PreEdit()
 	}
 	else
 	{
-		// We're changing the mesh itself, so ALL static mesh components in the scene will need
-		// to be unregistered for this (and reregistered afterwards.)
-		RecreateRenderStateContext = MakeUnique<FStaticMeshComponentRecreateRenderStateContext>(StaticMesh);
-
 		// Dirty the mesh
 		StaticMesh->SetFlags(RF_Transactional);
 		StaticMesh->Modify();

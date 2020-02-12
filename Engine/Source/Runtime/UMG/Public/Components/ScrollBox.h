@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -48,9 +48,13 @@ public:
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Scroll")
 	EConsumeMouseWheel ConsumeMouseWheel;
 
-	/**  */
+	/** The thickness of the scrollbar thumb */
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category="Scroll")
 	FVector2D ScrollbarThickness;
+
+	/** The margin around the scrollbar */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Scroll")
+	FMargin ScrollbarPadding;
 
 	/**  */
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category="Scroll")
@@ -63,8 +67,12 @@ public:
 	/**  Disable to stop scrollbars from activating inertial overscrolling */
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Scroll")
 	bool AllowOverscroll;
+	
+	/** True to lerp smoothly when wheel scrolling along the scroll box */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Scroll")
+	bool bAnimateWheelScrolling = false;
 
-	/**  */
+	/** Sets where to scroll a widget to when using explicit navigation or if ScrollWhenFocusChanges is enabled */
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category="Scroll")
 	EDescendantScrollDestination NavigationDestination;
 
@@ -74,10 +82,18 @@ public:
 	 */
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category="Scroll")
 	float NavigationScrollPadding;
+
+	/** Scroll behavior when user focus is given to a child widget */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category="Scroll", meta=(DisplayName="Scroll When Focus Changes"))
+	EScrollWhenFocusChanges ScrollWhenFocusChanges;
 	
 	/** Option to disable right-click-drag scrolling */
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Scroll")
 	bool bAllowRightClickDragScrolling;
+
+	/** The multiplier to apply when wheel scrolling */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Scroll")
+	float WheelScrollMultiplier = 1.f;
 
 
 	UFUNCTION(BlueprintCallable, Category = "Scroll")
@@ -93,10 +109,24 @@ public:
 	void SetScrollbarThickness(const FVector2D& NewScrollbarThickness);
 
 	UFUNCTION(BlueprintCallable, Category = "Scroll")
+	void SetScrollbarPadding(const FMargin& NewScrollbarPadding);
+
+	UFUNCTION(BlueprintCallable, Category = "Scroll")
 	void SetAlwaysShowScrollbar(bool NewAlwaysShowScrollbar);
 	
 	UFUNCTION(BlueprintCallable, Category = "Scroll")
 	void SetAllowOverscroll(bool NewAllowOverscroll);
+
+	UFUNCTION(BlueprintCallable, Category = "Scroll")
+	void SetAnimateWheelScrolling(bool bShouldAnimateWheelScrolling);
+
+	UFUNCTION(BlueprintCallable, Category = "Scroll")
+	void SetWheelScrollMultiplier(float NewWheelScrollMultiplier);
+
+	/** Instantly stops any inertial scrolling that is currently in progress */
+	UFUNCTION(BlueprintCallable, Category = "Scroll")
+	void EndInertialScrolling();
+
 public:
 
 	/** Called when the scroll has changed */
@@ -116,6 +146,10 @@ public:
 	UFUNCTION(BlueprintCallable, Category="Widget")
 	float GetScrollOffset() const;
 
+	/** Gets the scroll offset of the bottom of the ScrollBox in Slate Units. */
+	UFUNCTION(BlueprintCallable, Category = "Widget")
+	float GetScrollOffsetOfEnd() const;
+
 	UFUNCTION(BlueprintCallable, Category="Widget")
 	float GetViewOffsetFraction() const;
 
@@ -129,7 +163,7 @@ public:
 
 	/** Scrolls the ScrollBox to the widget during the next layout pass. */
 	UFUNCTION(BlueprintCallable, Category="Widget")
-	void ScrollWidgetIntoView(UWidget* WidgetToFind, bool AnimateScroll = true, EDescendantScrollDestination ScrollDestination = EDescendantScrollDestination::IntoView );
+	void ScrollWidgetIntoView(UWidget* WidgetToFind, bool AnimateScroll = true, EDescendantScrollDestination ScrollDestination = EDescendantScrollDestination::IntoView, float Padding = 0);
 
 	//~ Begin UWidget Interface
 	virtual void SynchronizeProperties() override;
@@ -140,7 +174,10 @@ public:
 	//~ End UVisual Interface
 
 	//~ Begin UObject Interface
+#if WITH_EDITORONLY_DATA
+	virtual void Serialize(FArchive& Ar) override;
 	virtual void PostLoad() override;
+#endif // if WITH_EDITORONLY_DATA
 	//~ End UObject Interface
 
 #if WITH_EDITOR

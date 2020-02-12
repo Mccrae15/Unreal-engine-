@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 /*=============================================================================
 Texture2DStreamIn.h: Stream in helper for 2D textures using texture streaming files.
@@ -8,6 +8,8 @@ Texture2DStreamIn.h: Stream in helper for 2D textures using texture streaming fi
 
 #include "CoreMinimal.h"
 #include "Texture2DStreamIn.h"
+
+class IBulkDataIORequest;
 
 // Base StreamIn framework exposing MipData
 class FTexture2DStreamIn_IO : public FTexture2DStreamIn
@@ -30,7 +32,7 @@ protected:
 	// Cancel / destroy each requests created in SetIORequests()
 	void ClearIORequests(const FContext& Context);
 	// Set the IO callback used for streaming the mips.
-	void SetAsyncFileCallback(const FContext& Context);
+	void SetAsyncFileCallback();
 
 	// Cancel all IO requests.
 	void CancelIORequests();
@@ -39,6 +41,9 @@ protected:
 	void Abort() override;
 
 private:
+
+	// Poll if any of the mips currently have an active IO request
+	bool HasPendingIORequests();
 
 	class FCancelIORequestsTask : public FNonAbandonableTask
 	{
@@ -50,7 +55,7 @@ private:
 			RETURN_QUICK_DECLARE_CYCLE_STAT(FCancelIORequestsTask_Texture, STATGROUP_ThreadPoolAsyncTasks);
 		}
 	protected:
-		FTexture2DStreamIn_IO* PendingUpdate;
+		TRefCountPtr<FTexture2DStreamIn_IO> PendingUpdate;
 	};
 
 	typedef FAutoDeleteAsyncTask<FCancelIORequestsTask> FAsyncCancelIORequestsTask;
@@ -58,17 +63,15 @@ private:
 
 
 	// Request for loading into each mip.
-	IAsyncReadRequest* IORequests[MAX_TEXTURE_MIP_COUNT];
+	TArray<IBulkDataIORequest*, TInlineAllocator<MAX_TEXTURE_MIP_COUNT> > IORequests;
 
 	bool bPrioritizedIORequest;
 
 	// Async handle.
+#if TEXTURE2DMIPMAP_USE_COMPACT_BULKDATA
 	FString IOFilename;
-	int64 IOFileOffset;
+#endif
 
-	IAsyncReadFileHandle* IOFileHandle;
-	FAsyncFileCallBack AsyncFileCallBack;
-
-
+	FBulkDataIORequestCallBack AsyncFileCallBack;
 };
 

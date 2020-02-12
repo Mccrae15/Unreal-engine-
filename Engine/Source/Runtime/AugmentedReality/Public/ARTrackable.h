@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -7,6 +7,7 @@
 
 class FARSupportInterface ;
 class UAREnvironmentCaptureProbeTexture;
+class UMRMeshComponent;
 
 UCLASS(BlueprintType)
 class AUGMENTEDREALITY_API UARTrackedGeometry : public UObject
@@ -25,7 +26,7 @@ public:
 	void UpdateTrackingState( EARTrackingState NewTrackingState );
 	
 	void UpdateAlignmentTransform( const FTransform& NewAlignmentTransform );
-	
+
 	void SetDebugName( FName InDebugName );
 
 	IARRef* GetNativeResource();
@@ -53,7 +54,19 @@ public:
 	
 	UFUNCTION(BlueprintPure, Category="AR AugmentedReality|Tracked Geometry")
 	float GetLastUpdateTimestamp() const;
-	
+	inline void SetLastUpdateTimestamp(double InTimestamp) { LastUpdateTimestamp = InTimestamp; }
+
+	UFUNCTION(BlueprintPure, Category="AR AugmentedReality|Tracked Geometry")
+	UMRMeshComponent* GetUnderlyingMesh();
+	void SetUnderlyingMesh(UMRMeshComponent* InMRMeshComponent);
+
+	UPROPERTY(BlueprintReadOnly, Category="AR AugmentedReality|Tracked Geometry")
+	FGuid UniqueId;
+
+	UFUNCTION(BlueprintPure, Category = "AR AugmentedReality|Scene Understanding")
+	EARObjectClassification GetObjectClassification() const { return ObjectClassification; }
+	void SetObjectClassification(EARObjectClassification InClassification) { ObjectClassification = InClassification; }
+
 protected:
 	TSharedPtr<FARSupportInterface , ESPMode::ThreadSafe> GetARSystem() const;
 	
@@ -69,16 +82,26 @@ protected:
 	/** A pointer to the native resource in the native AR system */
 	TUniquePtr<IARRef> NativeResource;
 	
+	/** For AR systems that support arbitrary mesh geometry associated with a tracked point */
+	UPROPERTY()
+	UMRMeshComponent* UnderlyingMesh;
+
+	/** What the scene understanding system thinks this object is */
+	UPROPERTY()
+	EARObjectClassification ObjectClassification;
+
 private:
 	TWeakPtr<FARSupportInterface , ESPMode::ThreadSafe> ARSystem;
 	
 	/** The frame number this tracked geometry was last updated on */
-	uint32 LastUpdateFrameNumber;
+	UPROPERTY()
+	int32 LastUpdateFrameNumber;
 	
 	/** The time reported by the AR system that this object was last updated */
 	double LastUpdateTimestamp;
 	
 	/** A unique name that can be used to identify the anchor for debug purposes */
+	UPROPERTY()
 	FName DebugName;
 };
 
@@ -108,7 +131,14 @@ public:
 	UFUNCTION(BlueprintPure, Category = "AR AugmentedReality|Plane Geometry")
 	UARPlaneGeometry* GetSubsumedBy() const { return SubsumedBy; };
 
+	UFUNCTION(BlueprintPure, Category="AR AugmentedReality|Plane Geometry")
+	EARPlaneOrientation GetOrientation() const { return Orientation; }
+	void SetOrientation(EARPlaneOrientation InOrientation) { Orientation = InOrientation; }
+
 private:
+	UPROPERTY()
+	EARPlaneOrientation Orientation;
+
 	UPROPERTY()
 	FVector Center;
 	
@@ -159,11 +189,6 @@ public:
 	UFUNCTION(BlueprintPure, Category = "AR AugmentedReality|Image Detection")
 	FVector2D GetEstimateSize();
 
-	UE_DEPRECATED(4.21, "This property is now deprecated, please use GetTrackingState() and check for EARTrackingState::Tracking or IsTracked() instead.")
-	/** Whether the image is currently being tracked by the AR system */
-	UPROPERTY(BlueprintReadOnly, Category="AR AugmentedReality|Face Geometry")
-	bool bIsTracked;
-
 protected:
 	/** The candidate image that was detected in the scene */
 	UPROPERTY()
@@ -172,6 +197,24 @@ protected:
 	/** The estimated image size that was detected in the scene */
 	UPROPERTY()
 	FVector2D EstimatedSize;
+};
+
+UCLASS(BlueprintType)
+class AUGMENTEDREALITY_API UARTrackedQRCode :
+	public UARTrackedImage
+{
+	GENERATED_BODY()
+
+public:
+	void UpdateTrackedGeometry(const TSharedRef<FARSupportInterface, ESPMode::ThreadSafe>& InTrackingSystem, uint32 FrameNumber, double Timestamp, const FTransform& InLocalToTrackingTransform, const FTransform& InAlignmentTransform, FVector2D InEstimatedSize, const FString& CodeData, int32 InVersion);
+
+	/** The encoded information in the qr code */
+	UPROPERTY(BlueprintReadOnly, Category="QR Code")
+	FString QRCode;
+
+	/** The version of the qr code */
+	UPROPERTY(BlueprintReadOnly, Category="QR Code")
+	int32 Version;
 };
 
 UENUM(BlueprintType, Category="AR AugmentedReality", meta=(Experimental))
@@ -274,7 +317,7 @@ class AUGMENTEDREALITY_API UARFaceGeometry : public UARTrackedGeometry
 	GENERATED_BODY()
 	
 public:
-	void UpdateFaceGeometry(const TSharedRef<FARSupportInterface , ESPMode::ThreadSafe>& InTrackingSystem, uint32 FrameNumber, double Timestamp, const FTransform& InTransform, const FTransform& InAlignmentTransform, FARBlendShapeMap& InBlendShapes, TArray<FVector>& InVertices, const TArray<int32>& Indices, const FTransform& InLeftEyeTransform, const FTransform& InRightEyeTransform, const FVector& InLookAtTarget);
+	void UpdateFaceGeometry(const TSharedRef<FARSupportInterface , ESPMode::ThreadSafe>& InTrackingSystem, uint32 FrameNumber, double Timestamp, const FTransform& InTransform, const FTransform& InAlignmentTransform, FARBlendShapeMap& InBlendShapes, TArray<FVector>& InVertices, const TArray<int32>& Indices, TArray<FVector2D>& InUVs, const FTransform& InLeftEyeTransform, const FTransform& InRightEyeTransform, const FVector& InLookAtTarget);
 	
 	virtual void DebugDraw( UWorld* World, const FLinearColor& OutlineColor, float OutlineThickness, float PersistForSeconds = 0.0f) const override;
 	
@@ -303,7 +346,7 @@ public:
 
 	UE_DEPRECATED(4.21, "This property is now deprecated, please use GetTrackingState() and check for EARTrackingState::Tracking or IsTracked() instead.")
 	/** Whether the face is currently being tracked by the AR system */
-	UPROPERTY(BlueprintReadOnly, Category="AR AugmentedReality|Face Geometry")
+	UPROPERTY(BlueprintReadOnly, Category="AR AugmentedReality|Face Geometry", meta=(Deprecated, DeprecationMessage = "This property is now deprecated, please use GetTrackingState() and check for EARTrackingState::Tracking or IsTracked() instead."))
 	bool bIsTracked;
 
 private:
@@ -371,4 +414,22 @@ private:
 	/** The candidate object that was detected in the scene */
 	UPROPERTY()
 	UARCandidateObject* DetectedObject;
+};
+
+UCLASS(BlueprintType)
+class AUGMENTEDREALITY_API UARTrackedPose : public UARTrackedGeometry
+{
+	GENERATED_BODY()
+	
+public:
+	virtual void DebugDraw(UWorld* World, const FLinearColor& OutlineColor, float OutlineThickness, float PersistForSeconds = 0.0f) const override;
+	
+	void UpdateTrackedPose(const TSharedRef<FARSupportInterface , ESPMode::ThreadSafe>& InTrackingSystem, uint32 FrameNumber, double Timestamp, const FTransform& InLocalToTrackingTransform, const FTransform& InAlignmentTransform, const FARPose3D& InTrackedPose);
+	
+	UFUNCTION(BlueprintPure, Category = "AR AugmentedReality|Pose Tracking")
+	const FARPose3D& GetTrackedPoseData() const { return TrackedPose; };
+	
+private:
+	/** The detailed info of the tracked pose */
+	FARPose3D TrackedPose;
 };

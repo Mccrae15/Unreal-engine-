@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 
 #include "EditorShowFlags.h"
@@ -66,7 +66,7 @@ TArray<FShowFlagData>& GetShowFlagMenuItems()
 				bool OnEngineShowFlag(uint32 InIndex, const FString& InName)
 				{
 					EShowFlagGroup Group = FEngineShowFlags::FindShowFlagGroup(*InName);
-					if( Group != SFG_Hidden  )
+					if( Group != SFG_Hidden && Group != SFG_Transient )
 					{
 						FText FlagDisplayName;
 						FEngineShowFlags::FindShowFlagDisplayName(InName, FlagDisplayName);

@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -196,7 +196,6 @@ private:
 	bool bIsFocusable;
 
 private:
-	TSharedPtr<SSynthTooltip> SynthTooltip;
 
 	TArray<FSlateBrush*> KnobImages;
 

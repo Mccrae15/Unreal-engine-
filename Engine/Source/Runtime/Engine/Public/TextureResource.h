@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -11,7 +11,6 @@
 #include "Containers/IndirectArray.h"
 #include "Stats/Stats.h"
 #include "Containers/List.h"
-#include "Templates/ScopedPointer.h"
 #include "Async/AsyncWork.h"
 #include "Async/AsyncFileHandle.h"
 #include "RHI.h"
@@ -20,18 +19,98 @@
 #include "Engine/TextureDefines.h"
 #include "UnrealClient.h"
 #include "Templates/UniquePtr.h"
+#include "VirtualTexturing.h"
 
 class FTexture2DResourceMem;
 class UTexture2D;
+class UTexture2DArray;
+class IVirtualTexture;
 
 /** Maximum number of slices in texture source art. */
 #define MAX_TEXTURE_SOURCE_SLICES 6
+
+#ifndef FORCE_ENABLE_TEXTURE_STREAMING
+	#define FORCE_ENABLE_TEXTURE_STREAMING 0
+#endif
+
+#define TEXTURE2DMIPMAP_USE_COMPACT_BULKDATA (!(WITH_EDITORONLY_DATA) && !(UE_SERVER) && FORCE_ENABLE_TEXTURE_STREAMING && PLATFORM_SUPPORTS_TEXTURE_STREAMING && !USE_NEW_BULKDATA)
+
+#if TEXTURE2DMIPMAP_USE_COMPACT_BULKDATA
+	#define TEXTURE2DMIPMAP_PARAM(param) param,
+#else
+	#define TEXTURE2DMIPMAP_PARAM(param) 
+#endif
 
 /**
  * A 2D texture mip-map.
  */
 struct FTexture2DMipMap
 {
+#if TEXTURE2DMIPMAP_USE_COMPACT_BULKDATA
+	class FCompactByteBulkData
+	{
+	public:
+		FCompactByteBulkData();
+
+		~FCompactByteBulkData();
+
+		FCompactByteBulkData(const FCompactByteBulkData&);
+		FCompactByteBulkData(FCompactByteBulkData&&);
+
+		FCompactByteBulkData& operator=(const FCompactByteBulkData& Other);
+		FCompactByteBulkData& operator=(FCompactByteBulkData&& Other);
+
+		void Serialize(FArchive& Ar, UObject* Owner, int32 MipIdx, bool bAttemptFileMapping);
+
+		uint32 GetBulkDataOffsetInFile() const { return OffsetInFile; }
+		uint32 GetBulkDataSize() const { return BulkDataSize; }
+		uint32 GetBulkDataFlags() const { return BulkDataFlags; }
+		uint32 GetElementCount() const { return BulkDataSize; }
+		uint32 GetElementSize() const { return sizeof(uint8); }
+		void SetBulkDataFlags(uint32 Flags) { BulkDataFlags |= Flags; }
+		void ResetBulkDataFlags(uint32 Flags) { BulkDataFlags = Flags; }
+		void ClearBulkDataFlags(uint32 FlagsToClear) { BulkDataFlags &= ~FlagsToClear; }
+		bool CanLoadFromDisk() const { return !IsInlined(); }
+		bool IsAvailableForUse() const { return !(BulkDataFlags & BULKDATA_Unused); }
+		bool IsOptional() const { return (BulkDataFlags & BULKDATA_OptionalPayload) != 0; }
+		bool IsInlined() const { return (GetBulkDataFlags() & BULKDATA_PayloadInSeperateFile) == 0 && (GetBulkDataFlags() & BULKDATA_PayloadAtEndOfFile) == 0; }
+		UE_DEPRECATED(4.25, "Use ::IsInSeperateFile() instead")
+		FORCEINLINE bool InSeperateFile() const { return IsInSeperateFile(); }
+		bool IsInSeperateFile() const { return (GetBulkDataFlags() & BULKDATA_PayloadInSeperateFile) != 0; }
+		bool IsBulkDataLoaded() const { return IsInlined(); }
+		bool IsAsyncLoadingComplete() const { return true; }
+		bool IsStoredCompressedOnDisk() const { return !!(BulkDataFlags & BULKDATA_SerializeCompressed); }
+		const void* LockReadOnly() const;
+		void* Lock(uint32 LockFlags);
+		void Unlock() const;
+		void* Realloc(int32 NumBytes);
+		void GetCopy(void** Dest, bool bDiscardInternalCopy = true);
+
+		IBulkDataIORequest* CreateStreamingRequest(FString Filename, int64 OffsetInBulkData, int64 BytesToRead, EAsyncIOPriorityAndFlags Priority, FAsyncFileCallBack* CompleteCallback, uint8* UserSuppliedMemory) const;
+
+		/**
+		 * FCompactByteBulkData doesn't support GetFilename. Use FTexturePlatformData::CachedPackageFileName
+		 * or UTexture2D::GetMipDataFilename instead
+		 */
+		const FString& GetFilename() const = delete;
+
+	private:
+		/** Byte offset of bulk data in file. */
+		uint32 OffsetInFile;
+		/** Size of bulk data in bytes. */
+		uint32 BulkDataSize;
+		/** Bulk data flags serialized. */
+		uint32 BulkDataFlags;
+		/** Address to texel data for inlined mips or nullptr otherwise. */
+		uint8* TexelData;
+
+		void Reset();
+		
+	};
+#else
+	struct FCompactByteBulkData {};
+#endif
+
 	/** Width of the mip-map. */
 	int32 SizeX;
 	/** Height of the mip-map. */
@@ -39,7 +118,8 @@ struct FTexture2DMipMap
 	/** Depth of the mip-map. */
 	int32 SizeZ;
 	/** Bulk data if stored in the package. */
-	FByteBulkData BulkData;
+
+	typename TChooseClass<TEXTURE2DMIPMAP_USE_COMPACT_BULKDATA, FCompactByteBulkData, FByteBulkData>::Result BulkData;
 
 	/** Default constructor. */
 	FTexture2DMipMap()
@@ -60,7 +140,7 @@ struct FTexture2DMipMap
 	 * Place mip-map data in the derived data cache associated with the provided
 	 * key.
 	 */
-	uint32 StoreInDerivedDataCache(const FString& InDerivedDataKey);
+	uint32 StoreInDerivedDataCache(const FString& InDerivedDataKey, const FStringView& TextureName);
 #endif // #if WITH_EDITORONLY_DATA
 };
 
@@ -74,6 +154,10 @@ public:
 	FTextureResource()
 	{}
 	virtual ~FTextureResource() {}
+
+	// releases and recreates any sampler state objects.
+	// used when updating mip map bias offset
+	virtual void RefreshSamplerStates() {}
 
 #if STATS
 	/* The Stat_ FName corresponding to each TEXTUREGROUP */
@@ -91,7 +175,7 @@ public:
 	 * Minimal initialization constructor.
 	 *
 	 * @param InOwner			UTexture2D which this FTexture2DResource represents.
-	 * @param InitialMipCount	Initial number of miplevels to upload to card
+	 * @param InitialMipCount	Initial number of mip levels to upload to card
 	 * @param InFilename		Filename to read data from
  	 */
 	FTexture2DResource( UTexture2D* InOwner, int32 InitialMipCount );
@@ -102,8 +186,9 @@ public:
 	 */
 	virtual ~FTexture2DResource();
 
-	// FRenderResource interface.
+	virtual void RefreshSamplerStates() override;
 
+	// FRenderResource interface.
 	/**
 	 * Called when the resource is initialized. This is only called by the rendering thread.
 	 */
@@ -160,7 +245,7 @@ private:
 	int32 CurrentFirstMip;
 	
 	/** Local copy/ cache of mip data between creation and first call to InitRHI.							*/
-	void*				MipData[MAX_TEXTURE_MIP_COUNT];
+	TArray<void*, TInlineAllocator<MAX_TEXTURE_MIP_COUNT> > MipData;
 
 	/** 2D texture version of TextureRHI which is used to lock the 2D texture during mip transitions.		*/
 	FTexture2DRHIRef	Texture2DRHI;
@@ -187,10 +272,58 @@ private:
 
 	/** Returns the default mip map bias for this texture. */
 	int32 GetDefaultMipMapBias() const;
+};
 
-	// releases and recreates sampler state objects.
-	// used when updating mip map bias offset
-	void RefreshSamplerStates();
+class FVirtualTexture2DResource : public FTextureResource
+{
+public:
+	FVirtualTexture2DResource(const UTexture2D* InOwner, struct FVirtualTextureBuiltData* InVTData, int32 FirstMipToUse);
+	virtual ~FVirtualTexture2DResource();
+
+	virtual void InitRHI() override;
+	virtual void ReleaseRHI() override;
+
+#if WITH_EDITOR
+	void InitializeEditorResources(class IVirtualTexture* InVirtualTexture);
+#endif
+
+	virtual void RefreshSamplerStates() override;
+
+	virtual uint32 GetSizeX() const override;
+	virtual uint32 GetSizeY() const override;
+
+	const FVirtualTextureProducerHandle& GetProducerHandle() const { return ProducerHandle; }
+
+	/**
+	 * FVirtualTexture2DResource may have an AllocatedVT, which represents a page table allocation for the virtual texture.
+	 * VTs used by materials generally don't need their own allocation, since the material has its own page table allocation for each VT stack.
+	 * VTs used as lightmaps need their own allocation.  Also VTs open in texture editor will have a temporary allocation.
+	 * GetAllocatedVT() will return the current allocation if one exists.
+	 * AcquireAllocatedVT() will make a new allocation if needed, and return it.
+	 * ReleaseAllocatedVT() will free any current allocation.
+	 */
+	class IAllocatedVirtualTexture* GetAllocatedVT() const { return AllocatedVT; }
+	ENGINE_API class IAllocatedVirtualTexture* AcquireAllocatedVT();
+	ENGINE_API void ReleaseAllocatedVT();
+
+	ENGINE_API EPixelFormat GetFormat(uint32 LayerIndex) const;
+	ENGINE_API FIntPoint GetSizeInBlocks() const;
+	ENGINE_API uint32 GetNumTilesX() const;
+	ENGINE_API uint32 GetNumTilesY() const;
+	ENGINE_API uint32 GetNumMips() const;
+	ENGINE_API uint32 GetNumLayers() const;
+	ENGINE_API uint32 GetTileSize() const; //no borders
+	ENGINE_API uint32 GetBorderSize() const;
+	uint32 GetAllocatedvAddress() const;
+
+	ENGINE_API FIntPoint GetPhysicalTextureSize(uint32 LayerIndex) const;
+
+private:
+	class IAllocatedVirtualTexture* AllocatedVT;
+	struct FVirtualTextureBuiltData* VTData;
+	const UTexture2D* TextureOwner;
+	FVirtualTextureProducerHandle ProducerHandle;
+	int32 FirstMipToUse;
 };
 
 /** A dynamic 2D texture resource. */
@@ -279,6 +412,8 @@ public:
 		bPreventingReallocation(false)
 	{}
 
+	FTexture2DArrayResource(UTexture2DArray* InOwner);
+
 	// Rendering thread functions
 
 	/** 
@@ -317,6 +452,13 @@ public:
 		return SizeY;
 	}
 
+	/** Returns the number of slices(textures) in this array. */
+	uint32 GetNumSlices() const
+	{
+		return NumSlices;
+	}
+
+
 	/** Prevents reallocation from removals of the texture array until EndPreventReallocation is called. */
 	void BeginPreventReallocation();
 
@@ -327,12 +469,20 @@ private:
 
 	/** Texture data, has to persist past the first InitRHI call, because more textures may be added later. */
 	TMap<const UTexture2D*, FTextureArrayDataEntry> CachedData;
+	TArray<FTextureArrayDataEntry>					CachedInitialData;
+	FName LODGroupStatName;
+	UTexture2DArray* Owner;
+
 	uint32 SizeX;
 	uint32 SizeY;
 	uint32 NumMips;
+	uint32 NumSlices;
 	TextureGroup LODGroup;
 	EPixelFormat Format;
 	ESamplerFilter Filter;
+	ESamplerAddressMode SamplerXAddress;
+	ESamplerAddressMode SamplerYAddress;
+	ESamplerAddressMode SamplerZAddress;
 
 	bool bSRGB;
 	bool bDirty;
@@ -365,6 +515,11 @@ public:
 	 * be updated and call UpdateResource on each one.
 	 */
 	ENGINE_API static void UpdateResources( FRHICommandListImmediate& RHICmdList );
+
+	/**
+	 * Performs a deferred resource update on this resource if it exists in the UpdateList.
+	 */
+	ENGINE_API void FlushDeferredResourceUpdate( FRHICommandListImmediate& RHICmdList );
 
 	/** 
 	 * This is reset after all viewports have been rendered
@@ -550,6 +705,8 @@ private:
 	FLinearColor ClearColor;
 	EPixelFormat Format;
 	int32 TargetSizeX,TargetSizeY;
+	/** cached params etc. for use with mip generator */
+	TSharedPtr<FGenerateMipsStruct> CachedMipsGenParams;
 };
 
 /**
@@ -662,6 +819,11 @@ private:
 	ECubeFace CurrentTargetFace;
 };
 
-ENGINE_API FName GetDefaultTextureFormatName( const class ITargetPlatform* TargetPlatform, const class UTexture* Texture, const class FConfigFile& EngineSettings, bool bSupportDX11TextureFormats, bool bSupportCompressedVolumeTexture = false, int32 BlockSize = 4);
+/** Gets the name of a format for the given LayerIndex */
+ENGINE_API FName GetDefaultTextureFormatName( const class ITargetPlatform* TargetPlatform, const class UTexture* Texture, int32 LayerIndex, const class FConfigFile& EngineSettings, bool bSupportDX11TextureFormats, bool bSupportCompressedVolumeTexture = false, int32 BlockSize = 4);
+
+/** Gets an array of format names for each layer in the texture */
+ENGINE_API void GetDefaultTextureFormatNamePerLayer(TArray<FName>& OutFormatNames, const class ITargetPlatform* TargetPlatform, const class UTexture* Texture, const class FConfigFile& EngineSettings, bool bSupportDX11TextureFormats, bool bSupportCompressedVolumeTexture = false, int32 BlockSize = 4);
+
 // returns all the texture formats which can be returned by GetDefaultTextureFormatName
 ENGINE_API void GetAllDefaultTextureFormats( const class ITargetPlatform* TargetPlatform, TArray<FName>& OutFormats, bool bSupportDX11TextureFormats);

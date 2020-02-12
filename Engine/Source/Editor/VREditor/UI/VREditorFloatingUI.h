@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -6,12 +6,65 @@
 #include "UObject/ObjectMacros.h"
 #include "Widgets/SWidget.h"
 #include "VREditorBaseActor.h"
+#include "Blueprint/UserWidget.h"
 #include "VREditorFloatingUI.generated.h"
 
 class UVREditorBaseUserWidget;
 class UVREditorUISystem;
 
 typedef FName VREditorPanelID;
+
+/**
+ * Creation parameters for AVREditorFloatingUI
+ */
+USTRUCT(BlueprintType)
+struct FVREditorFloatingUICreationContext
+{
+	GENERATED_BODY()
+
+public:	
+	
+	/** Widget to open in the VR window. null to close an open window (if if matches the PanelID) */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "VR Mode UI")
+	TSubclassOf<UUserWidget> WidgetClass;
+
+	// @todo: As we make this user-definable, we allow possible name collisions - how to deal with that? MakeUniqueName won't work because the name will be different on repeat calls. 
+	/** ID that the UI system will use to identify the panel. MUST BE UNIQUE! */ 
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "VR Mode UI")
+	FName PanelID;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Virtual Production UI")
+	AActor* ParentActor;
+
+	/** Optional offset from HMD where the window opens. Pass FTransform::Identity for default logic - window will open at controller location. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "VR Mode UI")
+	FTransform PanelSpawnOffset;
+
+	/** Panel size. Should match the size of the UMG passed in. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "VR Mode UI")
+	FVector2D PanelSize;
+
+	/** Optional custom mesh to use for the VR window. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "VR Mode UI")
+	UStaticMesh* PanelMesh = nullptr;
+
+	/** Optional override for "VREd.EditorUISize". Leave at 0 for default. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "VR Mode UI")
+	float EditorUISize;
+
+	/** Turn off handles under window? (X-To-Close, movement bar...) */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "VR Mode UI")
+	bool bHideWindowHandles;
+
+	/** Turn off the widget's background to create a see-through look. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Virtual Production UI")
+	bool bMaskOutWidgetBackground;
+
+	/** If bHideWindowHandles is false, this window doesn't have a close button. (*/
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Virtual Production UI")
+	bool bNoCloseButton;
+};
+
 
 /**
  * Represents an interactive floating UI panel in the VR Editor
@@ -24,7 +77,7 @@ class AVREditorFloatingUI : public AVREditorBaseActor
 public:
 
 	/** Default constructor which sets up safe defaults */
-	AVREditorFloatingUI();
+	AVREditorFloatingUI(const FObjectInitializer& ObjectInitializer);
 
 	/** Creates a FVREditorFloatingUI using a Slate widget, and sets up safe defaults */
 	void SetSlateWidget( class UVREditorUISystem& InitOwner, const VREditorPanelID& InID, const TSharedRef<SWidget>& InitSlateWidget, const FIntPoint InitResolution, const float InitScale, const EDockedTo InitDockedTo );
@@ -42,7 +95,7 @@ public:
 	}
 
 	/** Shows or hides the UI (also enables collision, and performs a transition effect) */
-	void ShowUI( const bool bShow, const bool bAllowFading = true, const float InitFadeDelay = 0.0f, const bool bInClearWidgetOnHide = false );
+	void VREDITOR_API ShowUI( const bool bShow, const bool bAllowFading = true, const float InitFadeDelay = 0.0f, const bool bInClearWidgetOnHide = false );
 
 	/** Sets the resolution of this floating UI panel and resets the window mesh accordingly. */
 	void SetResolution(const FIntPoint& InResolution);
@@ -108,7 +161,7 @@ public:
 	}
 
 	/** Gets the current user widget of this floating UI, return nullptr if using slate widget */
-	UUserWidget* GetUserWidget();
+	VREDITOR_API UUserWidget* GetUserWidget();
 
 	/** Gets the initial size of this UI */
 	float GetInitialScale() const;
@@ -124,6 +177,10 @@ public:
 
 	/** Set mesh on window mesh component. */
 	void SetWindowMesh(class UStaticMesh* InWindowMesh);
+
+	/** All params used to create this panel if this panel has a UMG widget and was created via BP. Invalid otherwise. */
+	UPROPERTY()
+	FVREditorFloatingUICreationContext CreationContext;	
 
 protected:
 

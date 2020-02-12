@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 using UnrealBuildTool;
 
@@ -13,6 +13,7 @@ public class FunctionalTesting : ModuleRules
                 "Engine",
                 "RenderCore",
                 "Slate",
+				"SlateCore",
                 "MessageLog",
                 "NavigationSystem",
                 "AIModule",
@@ -26,7 +27,13 @@ public class FunctionalTesting : ModuleRules
 
         if (Target.bBuildEditor == true)
 		{
-			PrivateDependencyModuleNames.Add("UnrealEd");
+			PrivateDependencyModuleNames.AddRange(
+				new string[] {
+					"SourceControl",
+					"UnrealEd",
+					"LevelEditor"
+				}
+			);
 		}
 
         PrivateIncludePaths.AddRange(
@@ -35,15 +42,6 @@ public class FunctionalTesting : ModuleRules
                 "Developer/FunctionalTesting/Private",
             }
         );
-
-        if (Target.bBuildEditor == true)
-        {
-            PrivateDependencyModuleNames.AddRange(
-                new string[] {
-                    "SourceControl"
-                }
-            );
-        }
 
 		//make sure this is compiled for binary builds
 		if (Target.Configuration != UnrealTargetConfiguration.Shipping)

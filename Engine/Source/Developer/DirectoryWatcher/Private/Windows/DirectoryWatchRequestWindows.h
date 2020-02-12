@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -42,8 +42,8 @@ private:
 	bool bWatchSubtree;
 	uint32 NotifyFilter;
 	uint32 BufferLength;
-	uint8* Buffer;
-	uint8* BackBuffer;
+	void* Buffer;
+	void* BackBuffer;
 	OVERLAPPED Overlapped;
 
 	bool bPendingDelete;

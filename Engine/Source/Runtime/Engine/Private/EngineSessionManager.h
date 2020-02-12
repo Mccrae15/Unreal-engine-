@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -35,6 +35,7 @@ public:
 		CurrentSession.bIsDeactivated = false;
 		CurrentSession.bIsInBackground = false;
 		CurrentSession.bIsVanilla = false;
+		CurrentSession.bIsTerminating = false;
 	}
 
 	void Initialize();
@@ -67,6 +68,7 @@ private:
 	bool BeginReadWriteRecords();
 	void EndReadWriteRecords();
 	void DeleteStoredRecord(const FSessionRecord& Record);
+	void DeleteStoredRecordValues(const FString& SectionName) const;
 	void SendAbnormalShutdownReport(const FSessionRecord& Record);
 	void CreateAndWriteRecordForSession();
 	void OnCrashing();

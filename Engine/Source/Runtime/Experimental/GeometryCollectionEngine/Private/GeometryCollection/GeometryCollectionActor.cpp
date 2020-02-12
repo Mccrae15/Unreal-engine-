@@ -1,10 +1,8 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 /*=============================================================================
 GeometryCollectionActor.cpp: AGeometryCollectionActor methods.
 =============================================================================*/
-
-#if INCLUDE_CHAOS
 
 #include "GeometryCollection/GeometryCollectionActor.h"
 
@@ -18,9 +16,9 @@ GeometryCollectionActor.cpp: AGeometryCollectionActor methods.
 #include "GeometryCollection/GeometryCollectionAlgo.h"
 #include "GeometryCollection/GeometryCollectionComponent.h"
 #include "GeometryCollection/GeometryCollectionUtility.h"
-#include "GeometryCollection/GeometryCollectionBoneNode.h"
 #include "Math/Box.h"
 #include "Physics/PhysicsInterfaceCore.h"
+#include "PhysicsSolver.h"
 
 
 DEFINE_LOG_CATEGORY_STATIC(AGeometryCollectionActorLogging, Log, All);
@@ -55,9 +53,13 @@ void AGeometryCollectionActor::Tick(float DeltaTime)
 }
 
 
-const Chaos::PBDRigidsSolver* GetSolver(const AGeometryCollectionActor& GeomCollectionActor)
+const Chaos::FPhysicsSolver* GetSolver(const AGeometryCollectionActor& GeomCollectionActor)
 {
-	return GeomCollectionActor.GetGeometryCollectionComponent()->ChaosSolverActor != nullptr ? GeomCollectionActor.GetGeometryCollectionComponent()->ChaosSolverActor->GetSolver() : FPhysScene_Chaos::GetInstance()->GetSolver();
+#if INCLUDE_CHAOS
+	return GeomCollectionActor.GetGeometryCollectionComponent()->ChaosSolverActor != nullptr ? GeomCollectionActor.GetGeometryCollectionComponent()->ChaosSolverActor->GetSolver() : GeomCollectionActor.GetWorld()->PhysicsScene_Chaos->GetSolver();
+#else
+	return nullptr;
+#endif
 }
 
 
@@ -65,41 +67,49 @@ bool LowLevelRaycastImp(const Chaos::TVector<float, 3>& Start, const Chaos::TVec
 {
 	using namespace Chaos;
 	//todo(ocohen): need to add thread safety / lock semantics
-	const TManagedArray<int32>& RigidBodyIdArray = GeomCollectionActor.GetGeometryCollectionComponent()->GetRigidBodyIdArray();
-	const TSharedPtr<FPhysScene_Chaos> Scene = GeomCollectionActor.GetGeometryCollectionComponent()->GetPhysicsScene();
+	//const TManagedArray<int32>& RigidBodyIdArray = GeomCollectionActor.GetGeometryCollectionComponent()->GetRigidBodyIdArray();
+	const TManagedArray<FGuid>& RigidBodyIdArray = GeomCollectionActor.GetGeometryCollectionComponent()->GetRigidBodyGuidArray();
+	FPhysScene_Chaos* Scene = GeomCollectionActor.GetGeometryCollectionComponent()->GetPhysicsScene();
 	ensure(Scene);
 
-	const Chaos::PBDRigidsSolver* Solver = GetSolver(GeomCollectionActor);
-	ensure(Solver);
-
-	const TPBDRigidParticles<float, 3>& Particles = Solver->GetRigidParticles();	//todo(ocohen): should these just get passed in instead of hopping through scene?
-
-	for (int32 Idx = 0; Idx < RigidBodyIdArray.Num(); ++Idx)
+	const Chaos::FPhysicsSolver* Solver = GetSolver(GeomCollectionActor);
+	if(ensure(Solver))
 	{
-		const int32 RigidBodyIdx = RigidBodyIdArray[Idx];
-		const TRigidTransform<float, 3> TM(Particles.X(RigidBodyIdx), Particles.R(RigidBodyIdx));
-		const TVector<float, 3> StartLocal = TM.InverseTransformPositionNoScale(Start);
-		const TVector<float, 3> DirLocal = TM.InverseTransformVectorNoScale(Dir);
-		const TVector<float, 3> EndLocal = StartLocal + DirLocal * DeltaMag;	//todo(ocohen): apeiron just undoes this later, we should fix the API
+#if TODO_REIMPLEMENT_GET_RIGID_PARTICLES
+		const TPBDRigidParticles<float, 3>& Particles = Solver->GetRigidParticles();	//todo(ocohen): should these just get passed in instead of hopping through scene?
+		TAABB<float, 3> RayBox(Start, Start);
+		RayBox.Thicken(Dir * DeltaMag);
+		const auto& PotentialIntersections = Solver->GetSpatialAcceleration()->FindAllIntersections(RayBox);
+		Solver->ReleaseSpatialAcceleration();
 
-		const TImplicitObject<float, 3>* Object = Particles.Geometry(RigidBodyIdx);	//todo(ocohen): can this ever be null?
-		Pair<TVector<float, 3>, bool> Result = Object->FindClosestIntersection(StartLocal, EndLocal, /*Thickness=*/0.f);
-		if (Result.Second)	//todo(ocohen): once we do more than just a bool we need to get the closest point
+		for(const auto RigidBodyIdx : PotentialIntersections)
 		{
-			const float Distance = (Result.First - StartLocal).Size();
-			OutHit.Actor = const_cast<AGeometryCollectionActor*>(&GeomCollectionActor);
-			OutHit.Component = GeomCollectionActor.GetGeometryCollectionComponent();
-			OutHit.bBlockingHit = true;
-			OutHit.Distance = Distance;
-			OutHit.Time = Distance / (EndLocal - StartLocal).Size();
-			OutHit.Location = TM.TransformPositionNoScale(Result.First);
-			OutHit.ImpactPoint = OutHit.Location;
-			const TVector<float, 3> LocalNormal = Object->Normal(Result.First);
-			OutHit.ImpactNormal = TM.TransformVectorNoScale(LocalNormal);
-			OutHit.Normal = OutHit.ImpactNormal;
+			const TRigidTransform<float, 3> TM(Particles.X(RigidBodyIdx), Particles.R(RigidBodyIdx));
+			const TVector<float, 3> StartLocal = TM.InverseTransformPositionNoScale(Start);
+			const TVector<float, 3> DirLocal = TM.InverseTransformVectorNoScale(Dir);
+			const TVector<float, 3> EndLocal = StartLocal + DirLocal * DeltaMag;	//todo(ocohen): apeiron just undoes this later, we should fix the API
 
-			return true;
+			const FImplicitObject* Object = Particles.Geometry(RigidBodyIdx).Get();	//todo(ocohen): can this ever be null?
+			Pair<TVector<float, 3>, bool> Result = Object->FindClosestIntersection(StartLocal, EndLocal, /*Thickness=*/0.f);
+			if(Result.Second)	//todo(ocohen): once we do more than just a bool we need to get the closest point
+			{
+				const float Distance = (Result.First - StartLocal).Size();
+				OutHit.Actor = const_cast<AGeometryCollectionActor*>(&GeomCollectionActor);
+				OutHit.Component = GeomCollectionActor.GetGeometryCollectionComponent();
+				OutHit.bBlockingHit = true;
+				OutHit.Distance = Distance;
+				OutHit.Time = Distance / (EndLocal - StartLocal).Size();
+				OutHit.Location = TM.TransformPositionNoScale(Result.First);
+				OutHit.ImpactPoint = OutHit.Location;
+				const TVector<float, 3> LocalNormal = Object->Normal(Result.First);
+				OutHit.ImpactNormal = TM.TransformVectorNoScale(LocalNormal);
+				OutHit.Normal = OutHit.ImpactNormal;
+				OutHit.Item = RigidBodyIdx;
+
+				return true;
+			}
 		}
+#endif
 	}
 
 	return false;
@@ -123,4 +133,19 @@ bool AGeometryCollectionActor::RaycastSingle(FVector Start, FVector End, FHitRes
 	return false;
 }
 
+#if WITH_EDITOR
+bool AGeometryCollectionActor::GetReferencedContentObjects(TArray<UObject*>& Objects) const
+{
+	Super::GetReferencedContentObjects(Objects);
+
+	if (GeometryCollectionComponent)
+	{
+		FGeometryCollectionEdit GeometryCollectionEdit = GeometryCollectionComponent->EditRestCollection(GeometryCollection::EEditUpdate::None);
+		if (UGeometryCollection* GeometryCollection = GeometryCollectionEdit.GetRestCollection())
+		{
+			Objects.Add(GeometryCollection);
+		}
+	}
+	return true;
+}
 #endif

@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -58,6 +58,15 @@ public:
 	 * @param InProxy The proxy to use.
 	 */
 	void SetDynamicMediaSource(UMediaSource* InProxy);
+
+#if WITH_EDITOR
+	/**
+	 * Set the media source proxy.
+	 *
+	 * @param InProxy The proxy to set.
+	 */
+	void SetMediaSource(UMediaSource* InProxy);
+#endif
 
 public:
 

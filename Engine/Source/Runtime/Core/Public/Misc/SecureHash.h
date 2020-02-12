@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -7,10 +7,17 @@
 #include "Containers/UnrealString.h"
 #include "Containers/Map.h"
 #include "Containers/StringConv.h"
+#include "Containers/StringView.h"
 #include "Stats/Stats.h"
 #include "Async/AsyncWork.h"
 #include "Serialization/BufferReader.h"
+#include "String/BytesToHex.h"
+#include "String/HexToBytes.h"
+#include "Serialization/MemoryLayout.h"
 
+class FAnsiStringBuilderBase;
+class FStringBuilderBase;
+class FStringView;
 struct FMD5Hash;
 
 /*-----------------------------------------------------------------------------
@@ -75,7 +82,7 @@ public:
 	 *
 	 * @param String	hex representation of the hash (32 lower-case hex digits)
 	 **/
-	static FString HashBytes(const uint8* input, int32 inputLen)
+	static FString HashBytes(const uint8* input, uint64 inputLen)
 	{
 		uint8 Digest[16];
 
@@ -193,7 +200,7 @@ typedef union
 class CORE_API FSHAHash
 {
 public:
-	uint8 Hash[20];
+	alignas(uint32) uint8 Hash[20];
 
 	FSHAHash()
 	{
@@ -204,10 +211,11 @@ public:
 	{
 		return BytesToHex((const uint8*)Hash, sizeof(Hash));
 	}
-	void FromString(const FString& Src)
+
+	inline void FromString(const FStringView& Src)
 	{
 		check(Src.Len() == 40);
-		HexToBytes(Src, Hash);
+		UE::String::HexToBytes(Src, Hash);
 	}
 
 	friend bool operator==(const FSHAHash& X, const FSHAHash& Y)
@@ -220,10 +228,25 @@ public:
 		return FMemory::Memcmp(&X.Hash, &Y.Hash, sizeof(X.Hash)) != 0;
 	}
 
+	friend bool operator<(const FSHAHash& X, const FSHAHash& Y)
+	{
+		return FMemory::Memcmp(&X.Hash, &Y.Hash, sizeof(X.Hash)) < 0;
+	}
+
 	friend CORE_API FArchive& operator<<( FArchive& Ar, FSHAHash& G );
 	
-	friend CORE_API uint32 GetTypeHash(FSHAHash const& InKey);
+	friend uint32 GetTypeHash(const FSHAHash& InKey)
+	{
+		return *reinterpret_cast<const uint32*>(InKey.Hash);
+	}
+
+	friend CORE_API FString LexToString(const FSHAHash&);
+	friend CORE_API void LexFromString(FSHAHash& Hash, const TCHAR*);
 };
+DECLARE_INTRINSIC_TYPE_LAYOUT(FSHAHash);
+
+inline FStringBuilderBase& operator<<(FStringBuilderBase& Builder, const FSHAHash& Hash) { UE::String::BytesToHex(Hash.Hash, Builder); return Builder; }
+inline FAnsiStringBuilderBase& operator<<(FAnsiStringBuilderBase& Builder, const FSHAHash& Hash) { UE::String::BytesToHex(Hash.Hash, Builder); return Builder; }
 
 class CORE_API FSHA1
 {
@@ -284,7 +307,7 @@ public:
 	 * @param BufferSize Size of Buffer
 	 * @param bDuplicateKeyMemory If Buffer is not always loaded, pass true so that the 20 byte hashes are duplicated 
 	 */
-	static void InitializeFileHashesFromBuffer(uint8* Buffer, int32 BufferSize, bool bDuplicateKeyMemory=false);
+	static void InitializeFileHashesFromBuffer(uint8* Buffer, uint64 BufferSize, bool bDuplicateKeyMemory=false);
 
 	/**
 	 * Gets the stored SHA hash from the platform, if it exists. This function
@@ -324,7 +347,7 @@ protected:
 	void* Buffer;
 
 	/** Size of Buffer */
-	int32 BufferSize;
+	uint64 BufferSize;
 
 	/** Hash to compare against */
 	uint8 Hash[20];
@@ -352,7 +375,7 @@ public:
 	 */
 	FAsyncSHAVerify(
 		void* InBuffer, 
-		int32 InBufferSize, 
+		uint64 InBufferSize, 
 		bool bInShouldDeleteBuffer, 
 		const TCHAR* InPathname, 
 		bool bInIsUnfoundHashAnError)
@@ -425,7 +448,7 @@ public:
 	 */
 	FBufferReaderWithSHA( 
 		void* Data, 
-		int32 Size, 
+		int64 Size, 
 		bool bInFreeOnClose, 
 		const TCHAR* SHASourcePathname, 
 		bool bIsPersistent=false, 

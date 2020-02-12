@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -15,7 +15,7 @@ class FExtender;
 class FMenuBuilder;
 class FSequencer;
 class FUICommandList;
-class ILevelViewport;
+class IAssetViewport;
 class ISequencer;
 class ULevel;
 struct FPropertyAndParent;
@@ -26,11 +26,13 @@ struct FLevelEditorSequencerIntegrationOptions
 	FLevelEditorSequencerIntegrationOptions()
 		: bRequiresLevelEvents(true)
 		, bRequiresActorEvents(false)
+		, bForceRefreshDetails(true)
 		, bCanRecord(false)
 	{}
 
 	bool bRequiresLevelEvents : 1;
 	bool bRequiresActorEvents : 1;
+	bool bForceRefreshDetails : 1;
 	bool bCanRecord : 1;
 };
 
@@ -73,7 +75,7 @@ public:
 
 	static FLevelEditorSequencerIntegration& Get();
 
-	void Initialize();
+	void Initialize(const FLevelEditorSequencerIntegrationOptions& Options);
 
 	void AddSequencer(TSharedRef<ISequencer> InSequencer, const FLevelEditorSequencerIntegrationOptions& Options);
 
@@ -157,13 +159,16 @@ private:
 
 	void RecordSelectedActors();
 
+	void MakeBrowseToSelectedActorSubMenu(FMenuBuilder& MenuBuilder, AActor* Actor, const TArray<TPair<FMovieSceneSequenceID, FSequencer*> > FoundInSequences);
+	void BrowseToSelectedActor(AActor* Actor, FSequencer* Sequencer, FMovieSceneSequenceID SequenceId);
+
 	bool IsPropertyReadOnly(const FPropertyAndParent& InPropertyAndParent);
 
 private:
 
 	void ActivateSequencerEditorMode();
 	void AddLevelViewportMenuExtender();
-	void ActivateDetailHandler();
+	void ActivateDetailHandler(const FLevelEditorSequencerIntegrationOptions& Options);
 	void AttachOutlinerColumn();
 	void DetachOutlinerColumn();
 	void ActivateRealtimeViewports();

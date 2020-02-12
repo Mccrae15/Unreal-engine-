@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 /*=============================================================================
 	FogRendering.h: 
@@ -28,5 +28,6 @@ BEGIN_GLOBAL_SHADER_PARAMETER_STRUCT(FFogUniformParameters,)
 END_GLOBAL_SHADER_PARAMETER_STRUCT()
 
 extern void SetupFogUniformParameters(const class FViewInfo& View, FFogUniformParameters& OutParameters);
+TUniformBufferRef<FFogUniformParameters> CreateFogUniformBuffer(const class FViewInfo& View, EUniformBufferUsage Usage);
 
 extern bool ShouldRenderFog(const FSceneViewFamily& Family);

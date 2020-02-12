@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 /*=============================================================================
 	VulkanCommandBuffer.cpp: Vulkan device RHI implementation.
@@ -39,6 +39,7 @@ FVulkanCmdBuffer::FVulkanCmdBuffer(FVulkanDevice* InDevice, FVulkanCommandBuffer
 	, bHasScissor(0)
 	, bHasStencilRef(0)
 	, bIsUploadOnly(bInIsUploadOnly ? 1 : 0)
+	, bIsUniformBufferBarrierAdded(0)
 	, Device(InDevice)
 	, CommandBufferHandle(VK_NULL_HANDLE)
 	, Fence(nullptr)
@@ -122,8 +123,44 @@ void FVulkanCmdBuffer::FreeMemory()
 	State = EState::NotAllocated;
 }
 
+void FVulkanCmdBuffer::BeginUniformUpdateBarrier()
+{
+	if(!bIsUniformBufferBarrierAdded)
+	{
+		VkMemoryBarrier Barrier;
+		ZeroVulkanStruct(Barrier, VK_STRUCTURE_TYPE_MEMORY_BARRIER);
+		Barrier.srcAccessMask = VK_ACCESS_UNIFORM_READ_BIT;
+		Barrier.dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+		VulkanRHI::vkCmdPipelineBarrier(GetHandle(), VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, 0, 1, &Barrier, 0, nullptr, 0, nullptr);
+		bIsUniformBufferBarrierAdded = true;
+	}
+}
+
+void FVulkanCmdBuffer::EndUniformUpdateBarrier()
+{
+	if(bIsUniformBufferBarrierAdded)
+	{
+		VkMemoryBarrier Barrier;
+		ZeroVulkanStruct(Barrier, VK_STRUCTURE_TYPE_MEMORY_BARRIER);
+		Barrier.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+		Barrier.dstAccessMask = VK_ACCESS_UNIFORM_READ_BIT;
+		VulkanRHI::vkCmdPipelineBarrier(GetHandle(), VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, 0, 1, &Barrier, 0, nullptr, 0, nullptr);
+		bIsUniformBufferBarrierAdded = false;
+	}
+}
+void FVulkanCmdBuffer::EndRenderPass()
+{
+	checkf(IsInsideRenderPass(), TEXT("Can't EndRP as we're NOT inside one! CmdBuffer 0x%p State=%d"), CommandBufferHandle, (int32)State);
+	VulkanRHI::vkCmdEndRenderPass(CommandBufferHandle);
+	State = EState::IsInsideBegin;
+}
+
 void FVulkanCmdBuffer::BeginRenderPass(const FVulkanRenderTargetLayout& Layout, FVulkanRenderPass* RenderPass, FVulkanFramebuffer* Framebuffer, const VkClearValue* AttachmentClearValues)
 {
+	if(bIsUniformBufferBarrierAdded)
+	{
+		EndUniformUpdateBarrier();
+	}
 	checkf(IsOutsideRenderPass(), TEXT("Can't BeginRP as already inside one! CmdBuffer 0x%p State=%d"), CommandBufferHandle, (int32)State);
 
 	VkRenderPassBeginInfo Info;
@@ -148,9 +185,33 @@ void FVulkanCmdBuffer::BeginRenderPass(const FVulkanRenderTargetLayout& Layout, 
 	}
 }
 
+
+void FVulkanCmdBuffer::AddPendingTimestampQuery(uint64 Index, uint64 Count, VkQueryPool PoolHandle, VkBuffer BufferHandle)
+{
+	PendingQuery PQ;
+	PQ.Index = Index;
+	PQ.Count = Count;
+	PQ.PoolHandle = PoolHandle;
+	PQ.BufferHandle = BufferHandle;
+	PendingQueries.Add(PQ);
+}
+
+
 void FVulkanCmdBuffer::End()
 {
 	checkf(IsOutsideRenderPass(), TEXT("Can't End as we're inside a render pass! CmdBuffer 0x%p State=%d"), CommandBufferHandle, (int32)State);
+
+
+	for (PendingQuery& Query : PendingQueries)
+	{
+		uint64 Index = Query.Index;
+		VkBuffer BufferHandle = Query.BufferHandle;
+		VkQueryPool PoolHandle = Query.PoolHandle;
+		VulkanRHI::vkCmdCopyQueryPoolResults(GetHandle(), PoolHandle, Index, Query.Count, BufferHandle, sizeof(uint64) * Index, sizeof(uint64), VK_QUERY_RESULT_64_BIT|VK_QUERY_RESULT_WAIT_BIT);
+		VulkanRHI::vkCmdResetQueryPool(GetHandle(), PoolHandle, Index, Query.Count);
+	}
+
+	PendingQueries.Reset();
 
 	if (GVulkanProfileCmdBuffers)
 	{
@@ -365,6 +426,48 @@ void FVulkanCommandBufferManager::WaitForCmdBuffer(FVulkanCmdBuffer* CmdBuffer, 
 	CmdBuffer->RefreshFenceStatus();
 }
 
+void FVulkanCommandBufferManager::AddQueryPoolForReset(VkQueryPool QueryPool, uint32 Size)
+{
+	FScopeLock ScopeLock(&Pool.CS);
+	FQueryPoolReset QPR = { QueryPool, Size};
+	PoolResets.Add(QPR);
+}
+void FVulkanCommandBufferManager::FlushResetQueryPools()
+{
+	FScopeLock ScopeLock(&Pool.CS);
+	if(PoolResets.Num())
+	{
+		FVulkanCmdBuffer* PoolResetCommandBuffer = nullptr;
+		for (int32 Index = 0; Index < Pool.CmdBuffers.Num(); ++Index)
+		{
+			FVulkanCmdBuffer* CmdBuffer = Pool.CmdBuffers[Index];
+			CmdBuffer->RefreshFenceStatus();
+	#if VULKAN_USE_DIFFERENT_POOL_CMDBUFFERS
+			if (!CmdBuffer->bIsUploadOnly)
+	#endif
+			{
+				if (CmdBuffer->State == FVulkanCmdBuffer::EState::ReadyForBegin)
+				{
+					PoolResetCommandBuffer = CmdBuffer;
+				}
+			}
+		}
+		if (!PoolResetCommandBuffer)
+		{
+			PoolResetCommandBuffer = Pool.Create(false);
+		}
+		PoolResetCommandBuffer->Begin();
+
+		VkCommandBuffer CommandBuffer = PoolResetCommandBuffer->GetHandle();
+		for (FQueryPoolReset& QPR : PoolResets)
+		{
+			VulkanRHI::vkCmdResetQueryPool(CommandBuffer, QPR.Pool, 0, QPR.Size);
+		}
+		PoolResetCommandBuffer->End();
+		Queue->Submit(PoolResetCommandBuffer);
+		PoolResets.Empty();
+	}
+}
 
 void FVulkanCommandBufferManager::SubmitUploadCmdBuffer(uint32 NumSignalSemaphores, VkSemaphore* SignalSemaphores)
 {
@@ -388,6 +491,7 @@ void FVulkanCommandBufferManager::SubmitUploadCmdBuffer(uint32 NumSignalSemaphor
 void FVulkanCommandBufferManager::SubmitActiveCmdBuffer(VulkanRHI::FSemaphore* SignalSemaphore)
 {
 	FScopeLock ScopeLock(&Pool.CS);
+	FlushResetQueryPools();
 	check(!UploadCmdBuffer);
 	check(ActiveCmdBuffer);
 	if (!ActiveCmdBuffer->IsSubmitted() && ActiveCmdBuffer->HasBegun())

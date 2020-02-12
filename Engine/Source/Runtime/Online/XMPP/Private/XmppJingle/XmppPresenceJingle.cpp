@@ -1,10 +1,11 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "XmppJingle/XmppPresenceJingle.h"
 #include "Misc/ScopeLock.h"
 #include "XmppLog.h"
 #include "XmppJingle/XmppConnectionJingle.h"
 #include "XmppMultiUserChat.h"
+#include "Containers/BackgroundableTicker.h"
 
 #if WITH_XMPP_JINGLE
 
@@ -356,7 +357,8 @@ private:
 };
 
 FXmppPresenceJingle::FXmppPresenceJingle(class FXmppConnectionJingle& InConnection)
-	: PresenceSendTask(NULL)
+	: FTickerObjectBase(0.0f, FBackgroundableTicker::GetCoreTicker())
+	, PresenceSendTask(NULL)
 	, PresenceRcvTask(NULL)
 	, NumPresenceIn(0)
 	, NumPresenceOut(0)

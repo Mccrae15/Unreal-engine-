@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -11,7 +11,7 @@
 
 class USkeletalMeshComponent;
 
-UENUM()
+UENUM(BlueprintType)
 enum EBoneModificationMode
 {
 	/** The modifier ignores this channel (keeps the existing bone translation, rotation, or scale). */

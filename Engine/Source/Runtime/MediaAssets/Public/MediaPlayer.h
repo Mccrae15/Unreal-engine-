@@ -1,10 +1,11 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
 #include "CoreTypes.h"
 #include "Containers/UnrealString.h"
 #include "Delegates/Delegate.h"
+#include "IMediaOptions.h"
 #include "Math/Quat.h"
 #include "Math/Rotator.h"
 #include "Templates/SharedPointer.h"
@@ -493,6 +494,14 @@ public:
 	bool IsPreparing() const;
 
 	/**
+	 * Whether media is currently closed.
+	 *
+	 * @return true if media is closed, false otherwise.
+	 */
+	UFUNCTION(BlueprintCallable, Category="Media|MediaPlayer")
+	bool IsClosed() const;
+
+	/**
 	 * Check whether media is ready for playback.
 	 *
 	 * A player is ready for playback if it has a media source opened that
@@ -589,11 +598,11 @@ public:
 	/**
 	 * Open the specified media source with options using a latent action.
 	 *
-	 * A result of true indicates that the player opened the media source successfully.
+	 * A result of true indicates that the player successfully completed all requested operations.
 	 *
 	 * @param MediaSource The media source to open.
 	 * @param Options The media player options to apply.
-	 * @param bSuccess  Player opened the media.
+	 * @param bSuccess  All requested operations have completed successfully.
 	 * @see Close, OpenFile, OpenPlaylist, OpenPlaylistIndex, OpenUrl, Reopen
 	 */
 	UFUNCTION(BlueprintCallable, Category = "Media|MediaPlayer", meta = (Latent, LatentInfo = "LatentInfo", WorldContext = "WorldContextObject"))
@@ -635,6 +644,12 @@ public:
 	 */
 	UFUNCTION(BlueprintCallable, Category="Media|MediaPlayer")
 	bool Play();
+
+	/**
+	 * Starts playback from the media opened event, but can be used elsewhere.
+	 */
+	UFUNCTION(BlueprintCallable, Category="Media|MediaPlayer")
+	void PlayAndSeek();
 
 	/**
 	 * Open the previous item in the current play list.
@@ -722,6 +737,14 @@ public:
 	 */
 	UFUNCTION(BlueprintCallable, Category="Media|MediaPlayer")
 	bool SetLooping(bool Looping);
+
+	/**
+	 * Sets the media options used by the player.
+	 *
+	 * @param Options Options to pass to the player.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "Media|MediaPlayer")
+	void SetMediaOptions(const UMediaSource* Options);
 
 	/**
 	 * Changes the media's playback rate.
@@ -841,11 +864,11 @@ public:
 public:
 
 	/** A delegate that is invoked when playback has reached the end of the media. */
-	UPROPERTY(BlueprintAssignable, Category="Media|MediaPlayer")
+	UPROPERTY(BlueprintAssignable, Category="Media|MediaPlayer", meta = (HideInDetailPanel))
 	FOnMediaPlayerMediaEvent OnEndReached;
 
 	/** A delegate that is invoked when a media source has been closed. */
-	UPROPERTY(BlueprintAssignable, Category="Media|MediaPlayer")
+	UPROPERTY(BlueprintAssignable, Category="Media|MediaPlayer", meta = (HideInDetailPanel))
 	FOnMediaPlayerMediaEvent OnMediaClosed;
 
 	/**
@@ -857,7 +880,7 @@ public:
 	 *
 	 * @see OnMediaOpenFailed, OnTracksChanged
 	 */
-	UPROPERTY(BlueprintAssignable, Category="Media|MediaPlayer")
+	UPROPERTY(BlueprintAssignable, Category="Media|MediaPlayer", meta = (HideInDetailPanel))
 	FOnMediaPlayerMediaOpened OnMediaOpened;
 
 	/**
@@ -869,7 +892,7 @@ public:
 	 *
 	 * @see OnMediaOpened
 	 */
-	UPROPERTY(BlueprintAssignable, Category="Media|MediaPlayer")
+	UPROPERTY(BlueprintAssignable, Category="Media|MediaPlayer", meta = (HideInDetailPanel))
 	FOnMediaPlayerMediaOpenFailed OnMediaOpenFailed;
 
 	/**
@@ -877,7 +900,7 @@ public:
 	 *
 	 * @see OnPlaybackSuspended
 	 */
-	UPROPERTY(BlueprintAssignable, Category="Media|MediaPlayer")
+	UPROPERTY(BlueprintAssignable, Category="Media|MediaPlayer", meta = (HideInDetailPanel))
 	FOnMediaPlayerMediaEvent OnPlaybackResumed;
 
 	/**
@@ -885,7 +908,7 @@ public:
 	 *
 	 * @see OnPlaybackResumed
 	 */
-	UPROPERTY(BlueprintAssignable, Category="Media|MediaPlayer")
+	UPROPERTY(BlueprintAssignable, Category="Media|MediaPlayer", meta = (HideInDetailPanel))
 	FOnMediaPlayerMediaEvent OnPlaybackSuspended;
 
 	/**
@@ -895,7 +918,7 @@ public:
 	 * synchronously or asynchronously, this event may be executed before or
 	 * after the call to Seek returns.
 	 */
-	UPROPERTY(BlueprintAssignable, Category="Media|MediaPlayer")
+	UPROPERTY(BlueprintAssignable, Category="Media|MediaPlayer", meta = (HideInDetailPanel))
 	FOnMediaPlayerMediaEvent OnSeekCompleted;
 
 	/**
@@ -903,7 +926,7 @@ public:
 	 *
 	 * @see OnMediaOpened
 	 */
-	UPROPERTY(BlueprintAssignable, Category="Media|MediaPlayer")
+	UPROPERTY(BlueprintAssignable, Category="Media|MediaPlayer", meta = (HideInDetailPanel))
 	FOnMediaPlayerMediaEvent OnTracksChanged;
 
 public:

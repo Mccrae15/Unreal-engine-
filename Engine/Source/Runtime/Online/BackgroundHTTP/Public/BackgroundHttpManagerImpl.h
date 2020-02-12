@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -28,6 +28,9 @@ public:
 
 	virtual void CleanUpTemporaryFiles() override;
 
+	virtual int GetMaxActiveDownloads() const override;
+	virtual void SetMaxActiveDownloads(int MaxActiveDownloads) override;
+
 	//FTickerObjectBase implementation
 	virtual bool Tick(float DeltaTime) override;
 
@@ -37,6 +40,7 @@ protected:
 	virtual bool CheckForExistingCompletedDownload(const FBackgroundHttpRequestPtr Request, FString& ExistingFilePathOut, int64& ExistingFileSizeOut);
 	virtual void ActivatePendingRequests();
 
+	virtual void ClearAnyTempFilesFromTimeOut();
 protected:
 
 	/** List of Background Http requests that we have called AddRequest on, but have not yet started due to platform active download limits **/
@@ -49,4 +53,5 @@ protected:
 
 	/** Count of how many requests we have active **/
 	volatile int NumCurrentlyActiveRequests;
+	TAtomic<int> MaxActiveDownloads;
 };

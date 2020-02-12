@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -23,7 +23,7 @@
 class FLevelEditorViewportClient;
 class FSceneViewport;
 struct FSlateBrush;
-class ILevelViewport;
+class IAssetViewport;
 class SViewport;
 class SMediaFrameworkCapture;
 
@@ -47,7 +47,6 @@ public:
 	SLATE_END_ARGS()
 
 	void Construct(const FArguments& InArgs);
-	virtual ~SMediaFrameworkCaptureOutputWidget();
 
 	virtual void StopOutput();
 
@@ -90,6 +89,7 @@ public:
 	~SMediaFrameworkCaptureCameraViewportWidget();
 
 	void StartOutput();
+	virtual void StopOutput() override;
 
 	virtual void OnPostPIEStarted() override;
 	virtual void OnPrePIEEnded() override;
@@ -125,6 +125,7 @@ public:
 	SLATE_END_ARGS()
 
 	void Construct(const FArguments& InArgs);
+	~SMediaFrameworkCaptureRenderTargetWidget();
 
 	void StartOutput();
 
@@ -153,7 +154,8 @@ public:
 	SLATE_END_ARGS()
 
 	void Construct(const FArguments& InArgs);
-	virtual ~SMediaFrameworkCaptureCurrentViewportWidget();
+	~SMediaFrameworkCaptureCurrentViewportWidget();
+	virtual void StopOutput() override;
 
 	void StartOutput();
 
@@ -176,10 +178,11 @@ public:
 private:
 	void ShutdownViewport();
 	void OnLevelViewportClientListChanged();
+	void OnMediaCaptureStateChanged();
 
 private:
 	TWeakPtr<FSceneViewport> EditorSceneViewport;
-	TWeakPtr<ILevelViewport> LevelViewport;
+	TWeakPtr<IAssetViewport> LevelViewport;
 	FPreviousViewportClientFlags ViewportClientFlags;
 
 	EViewModeIndex ViewMode;

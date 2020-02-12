@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "ControlRigSequenceFactory.h"
 #include "Sequencer/ControlRigSequence.h"
@@ -31,7 +31,7 @@ UObject* UControlRigSequenceFactory::FactoryCreateNew(UClass* Class, UObject* In
 
 bool UControlRigSequenceFactory::ShouldShowInNewMenu() const
 {
-	return true;
+	return false;
 }
 
 #undef LOCTEXT_NAMESPACE

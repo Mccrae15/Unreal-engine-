@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "DisplayClusterSceneComponentSyncThis.h"
 
@@ -8,7 +8,7 @@
 UDisplayClusterSceneComponentSyncThis::UDisplayClusterSceneComponentSyncThis(const FObjectInitializer& ObjectInitializer) :
 	UDisplayClusterSceneComponentSync(ObjectInitializer)
 {
-	PrimaryComponentTick.bCanEverTick = false;
+	PrimaryComponentTick.bCanEverTick = true;
 }
 
 void UDisplayClusterSceneComponentSyncThis::BeginPlay()
@@ -26,36 +26,31 @@ void UDisplayClusterSceneComponentSyncThis::TickComponent( float DeltaTime, ELev
 	// ...
 }
 
-void UDisplayClusterSceneComponentSyncThis::DestroyComponent(bool bPromoteChildren)
-{
-	Super::DestroyComponent(bPromoteChildren);
-}
-
 
 //////////////////////////////////////////////////////////////////////////////////////////////
 // IDisplayClusterClusterSyncObject
 //////////////////////////////////////////////////////////////////////////////////////////////
-FString UDisplayClusterSceneComponentSyncThis::GetSyncId() const
-{
-	return FString::Printf(TEXT("ST_%s"), *GetOwner()->GetName());
-}
-
 bool UDisplayClusterSceneComponentSyncThis::IsDirty() const
 {
-	return (LastSyncLoc != RelativeLocation || LastSyncRot != RelativeRotation || LastSyncScale != RelativeScale3D);
+	return (LastSyncLoc != GetRelativeLocation() || LastSyncRot != GetRelativeRotation() || LastSyncScale != GetRelativeScale3D());
 }
 
 void UDisplayClusterSceneComponentSyncThis::ClearDirty()
 {
-	LastSyncLoc = RelativeLocation;
-	LastSyncRot = RelativeRotation;
-	LastSyncScale = RelativeScale3D;
+	LastSyncLoc = GetRelativeLocation();
+	LastSyncRot = GetRelativeRotation();
+	LastSyncScale = GetRelativeScale3D();
 }
 
 
 //////////////////////////////////////////////////////////////////////////////////////////////
 // UDisplayClusterSceneComponentSync
 //////////////////////////////////////////////////////////////////////////////////////////////
+FString UDisplayClusterSceneComponentSyncThis::GenerateSyncId()
+{
+	return FString::Printf(TEXT("ST_%s"), *GetOwner()->GetName());
+}
+
 FTransform UDisplayClusterSceneComponentSyncThis::GetSyncTransform() const
 {
 	return GetRelativeTransform();

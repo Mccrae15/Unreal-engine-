@@ -1,4 +1,4 @@
-﻿// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 using System;
 using System.Collections.Generic;
@@ -138,6 +138,14 @@ namespace UnrealBuildTool
 		Dictionary<string, ConfigFileSection> Sections = new Dictionary<string, ConfigFileSection>(StringComparer.InvariantCultureIgnoreCase);
 
 		/// <summary>
+		/// Constructs a new, empty config file
+		/// </summary>
+		/// <param name="DefaultAction">The default action to take when encountering arrays without a '+' prefix</param>
+		public ConfigFile(ConfigLineAction DefaultAction = ConfigLineAction.Set)
+		{
+		}
+
+		/// <summary>
 		/// Reads config data from the given file.
 		/// </summary>
 		/// <param name="Location">File to read from</param>
@@ -157,7 +165,7 @@ namespace UnrealBuildTool
 						{
 							// Find the last non-whitespace character. If it's an escaped newline, merge the following line with it.
 							int EndIdx = Line.Length;
-							for(; EndIdx > StartIdx; EndIdx--)
+							while (EndIdx > StartIdx)
 							{
 								if(Line[EndIdx - 1] == '\\')
 								{
@@ -168,11 +176,14 @@ namespace UnrealBuildTool
 									}
 									Line += NextLine;
 									EndIdx = Line.Length;
+									continue;
 								}
 								if(Line[EndIdx - 1] != ' ' && Line[EndIdx - 1] != '\t')
 								{
 									break;
 								}
+
+								EndIdx--;
 							}
 
 							// Break out if we've got a comment
@@ -341,6 +352,22 @@ namespace UnrealBuildTool
 		public IEnumerable<string> SectionNames
 		{
 			get { return Sections.Keys; }
+		}
+
+		/// <summary>
+		/// Tries to get a config section by name, or creates one if it doesn't exist
+		/// </summary>
+		/// <param name="SectionName">Name of the section to look for</param>
+		/// <returns>The config section</returns>
+		public ConfigFileSection FindOrAddSection(string SectionName)
+		{
+			ConfigFileSection Section;
+			if(!Sections.TryGetValue(SectionName, out Section))
+			{
+				Section = new ConfigFileSection(SectionName);
+				Sections.Add(SectionName, Section);
+			}
+			return Section;
 		}
 
 		/// <summary>

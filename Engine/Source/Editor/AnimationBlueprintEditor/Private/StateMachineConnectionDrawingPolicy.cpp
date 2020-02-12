@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "StateMachineConnectionDrawingPolicy.h"
 #include "Rendering/DrawElements.h"
@@ -75,9 +75,9 @@ void FStateMachineConnectionDrawingPolicy::DetermineLinkGeometry(
 	{
 		StartWidgetGeometry = PinGeometries->Find(OutputPinWidget);
 
-		if (TSharedRef<SGraphPin>* pTargetWidget = PinToPinWidgetMap.Find(InputPin))
+		if (TSharedPtr<SGraphPin>* pTargetWidget = PinToPinWidgetMap.Find(InputPin))
 		{
-			TSharedRef<SGraphPin> InputWidget = *pTargetWidget;
+			TSharedRef<SGraphPin> InputWidget = (*pTargetWidget).ToSharedRef();
 			EndWidgetGeometry = PinGeometries->Find(InputWidget);
 		}
 	}

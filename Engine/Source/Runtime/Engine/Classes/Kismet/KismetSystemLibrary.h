@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -12,6 +12,7 @@
 #include "UObject/Interface.h"
 #include "UObject/TextProperty.h"
 #include "UObject/SoftObjectPtr.h"
+#include "UObject/PropertyAccessUtil.h"
 #include "Engine/LatentActionManager.h"
 #include "Kismet/BlueprintFunctionLibrary.h"
 #include "Engine/CollisionProfile.h"
@@ -172,6 +173,10 @@ class ENGINE_API UKismetSystemLibrary : public UBlueprintFunctionLibrary
 	UFUNCTION(BlueprintPure, Category="Utilities|Time", meta=(WorldContext="WorldContextObject") )
 	static float GetGameTimeInSeconds(UObject* WorldContextObject);
 
+	/** Returns the value of GFrameCounter, a running count of the number of frames that have occurred. */
+	UFUNCTION(BlueprintPure, Category = "Utilities")
+	static int64 GetFrameCount();
+
 	/** Returns whether the world this object is in is the host or not */
 	UFUNCTION(BlueprintPure, Category="Networking", meta=(WorldContext="WorldContextObject") )
 	static bool IsServer(UObject* WorldContextObject);
@@ -184,6 +189,10 @@ class ENGINE_API UKismetSystemLibrary : public UBlueprintFunctionLibrary
 	UFUNCTION(BlueprintPure, Category="Networking", meta=(WorldContext="WorldContextObject"))
 	static bool IsStandalone(UObject* WorldContextObject);
 	
+	/** Returns whether we're currently running in split screen (more than one local player). */
+	UFUNCTION(BlueprintPure, Category = "Utilities", meta = (WorldContext = "WorldContextObject"))
+	static bool IsSplitScreen(UObject* WorldContextObject);
+
 	/** Returns whether this is a build that is packaged for distribution */
 	UFUNCTION(BlueprintPure, Category="Development", meta=(BlueprintThreadSafe))
 	static bool IsPackagedForDistribution();
@@ -208,6 +217,7 @@ class ENGINE_API UKismetSystemLibrary : public UBlueprintFunctionLibrary
 	UFUNCTION(BlueprintPure, Category = "SoftObjectPath", meta = (NativeBreakFunc, BlueprintThreadSafe))
 	static void BreakSoftObjectPath(FSoftObjectPath InSoftObjectPath, FString& PathString);
 
+	/** Converts a Soft Object Path into a base Soft Object Reference, this is not guaranteed to be resolvable */
 	UFUNCTION(BlueprintPure, meta = (DisplayName = "ToSoftObjectReference (SoftObjectPath)", CompactNodeTitle = "->"), Category = "Utilities")
 	static TSoftObjectPtr<UObject> Conv_SoftObjPathToSoftObjRef(const FSoftObjectPath& SoftObjectPath);
 
@@ -218,6 +228,10 @@ class ENGINE_API UKismetSystemLibrary : public UBlueprintFunctionLibrary
 	/** Gets the path string out of a Soft Class Path */
 	UFUNCTION(BlueprintPure, Category = "SoftClassPath", meta = (NativeBreakFunc, BlueprintThreadSafe))
 	static void BreakSoftClassPath(FSoftClassPath InSoftClassPath, FString& PathString);
+
+	/** Converts a Soft Class Path into a base Soft Class Reference, this is not guaranteed to be resolvable */
+	UFUNCTION(BlueprintPure, meta = (DisplayName = "ToSoftClassReference (SoftClassPath)", CompactNodeTitle = "->"), Category = "Utilities")
+	static TSoftClassPtr<UObject> Conv_SoftClassPathToSoftClassRef(const FSoftClassPath& SoftClassPath);
 
 	/** Returns true if the Soft Object Reference is not null */
 	UFUNCTION(BlueprintPure, Category = "Utilities", meta = (BlueprintThreadSafe))
@@ -235,6 +249,10 @@ class ENGINE_API UKismetSystemLibrary : public UBlueprintFunctionLibrary
 	UFUNCTION(BlueprintPure, meta = (DisplayName = "NotEqual (SoftObjectReference)", CompactNodeTitle = "!=", BlueprintThreadSafe), Category = "Utilities")
 	static bool NotEqual_SoftObjectReference(const TSoftObjectPtr<UObject>& A, const TSoftObjectPtr<UObject>& B);
 
+	/** Resolves or loads a Soft Object Reference immediately, this will cause hitches and Async Load Asset should be used if possible */
+	UFUNCTION(BlueprintCallable, Category = "Utilities", meta = (DeterminesOutputType = "Asset"))
+	static UObject* LoadAsset_Blocking(TSoftObjectPtr<UObject> Asset);
+
 	/** Returns true if the Soft Class Reference is not null */
 	UFUNCTION(BlueprintPure, Category = "Utilities", meta = (BlueprintThreadSafe))
 	static bool IsValidSoftClassReference(const TSoftClassPtr<UObject>& SoftClassReference);
@@ -250,6 +268,12 @@ class ENGINE_API UKismetSystemLibrary : public UBlueprintFunctionLibrary
 	/** Returns true if the values are not equal (A != B) */
 	UFUNCTION(BlueprintPure, meta = (DisplayName = "NotEqual (SoftClassReference)", CompactNodeTitle = "!=", BlueprintThreadSafe), Category = "Utilities")
 	static bool NotEqual_SoftClassReference(const TSoftClassPtr<UObject>& A, const TSoftClassPtr<UObject>& B);
+
+	/** Resolves or loads a Soft Class Reference immediately, this will cause hitches and Async Load Class Asset should be used if possible */
+	UFUNCTION(BlueprintCallable, Category = "Utilities", meta = (DeterminesOutputType = "AssetClass"))
+	static UClass* LoadClassAsset_Blocking(TSoftClassPtr<UObject> AssetClass);
+
+	// Internal functions used by K2Node_LoadAsset and K2Node_ConvertAsset
 
 	UFUNCTION(BlueprintPure, meta = (BlueprintInternalUseOnly = "true"), Category = "Utilities")
 	static UObject* Conv_SoftObjectReferenceToObject(const TSoftObjectPtr<UObject>& SoftObject);
@@ -267,9 +291,6 @@ class ENGINE_API UKismetSystemLibrary : public UBlueprintFunctionLibrary
 
 	UFUNCTION(BlueprintCallable, meta = (Latent, LatentInfo = "LatentInfo", WorldContext = "WorldContextObject", BlueprintInternalUseOnly = "true"), Category = "Utilities")
 	static void LoadAsset(UObject* WorldContextObject, TSoftObjectPtr<UObject> Asset, FOnAssetLoaded OnLoaded, FLatentActionInfo LatentInfo);
-
-	UFUNCTION(BlueprintCallable, Category="Utilities", meta=(DeterminesOutputType = "Asset"))
-	static UObject* LoadAsset_Blocking(TSoftObjectPtr<UObject> Asset);
 
 	DECLARE_DYNAMIC_DELEGATE_OneParam(FOnAssetClassLoaded, TSubclassOf<UObject>, Loaded);
 
@@ -418,6 +439,14 @@ class ENGINE_API UKismetSystemLibrary : public UBlueprintFunctionLibrary
 	 */
 	UFUNCTION(BlueprintCallable, Category="Game",meta=(WorldContext="WorldContextObject"))
 	static void QuitGame(UObject* WorldContextObject, class APlayerController* SpecificPlayer, TEnumAsByte<EQuitPreference::Type> QuitPreference, bool bIgnorePlatformRestrictions);
+	
+#if WITH_EDITOR
+	/**
+	 *	Exit the editor
+	 */
+	UFUNCTION(BlueprintCallable, Category="Development")
+	static void QuitEditor();
+#endif	// WITH_EDITOR
 
 	//=============================================================================
 	// Latent Actions
@@ -461,13 +490,15 @@ class ENGINE_API UKismetSystemLibrary : public UBlueprintFunctionLibrary
 
 	/**
 	 * Set a timer to execute delegate. Setting an existing timer will reset that timer with updated parameters.
-	 * @param Event			Event. Can be a K2 function or a Custom Event.
-	 * @param Time			How long to wait before executing the delegate, in seconds. Setting a timer to <= 0 seconds will clear it if it is set.
-	 * @param bLooping		True to keep executing the delegate every Time seconds, false to execute delegate only once.
-	 * @return				The timer handle to pass to other timer functions to manipulate this timer.
+	 * @param Event						Event. Can be a K2 function or a Custom Event.
+	 * @param Time						How long to wait before executing the delegate, in seconds. Setting a timer to <= 0 seconds will clear it if it is set.
+	 * @param bLooping					True to keep executing the delegate every Time seconds, false to execute delegate only once.
+	 * @param InitialStartDelay			Initial delay passed to the timer manager, in seconds.
+	 * @param InitialStartDelayVariance	Use this to add some variance to when the timer starts in lieu of doing a random range on the InitialStartDelay input, in seconds. 
+	 * @return							The timer handle to pass to other timer functions to manipulate this timer.
 	 */
-	UFUNCTION(BlueprintCallable, meta=(DisplayName = "Set Timer by Event", ScriptName = "SetTimerDelegate"), Category="Utilities|Time")
-	static FTimerHandle K2_SetTimerDelegate(UPARAM(DisplayName="Event") FTimerDynamicDelegate Delegate, float Time, bool bLooping);
+	UFUNCTION(BlueprintCallable, meta=(DisplayName = "Set Timer by Event", ScriptName = "SetTimerDelegate", AdvancedDisplay="InitialStartDelay, InitialStartDelayVariance"), Category="Utilities|Time")
+	static FTimerHandle K2_SetTimerDelegate(UPARAM(DisplayName="Event") FTimerDynamicDelegate Delegate, float Time, bool bLooping, float InitialStartDelay = 0.f, float InitialStartDelayVariance = 0.f);
 
 	/**
 	 * Clears a set timer.
@@ -620,14 +651,16 @@ class ENGINE_API UKismetSystemLibrary : public UBlueprintFunctionLibrary
 
 	/**
 	 * Set a timer to execute delegate. Setting an existing timer will reset that timer with updated parameters.
-	 * @param Object		Object that implements the delegate function. Defaults to self (this blueprint)
-	 * @param FunctionName	Delegate function name. Can be a K2 function or a Custom Event.
-	 * @param Time			How long to wait before executing the delegate, in seconds. Setting a timer to <= 0 seconds will clear it if it is set.
-	 * @param bLooping		true to keep executing the delegate every Time seconds, false to execute delegate only once.
-	 * @return				The timer handle to pass to other timer functions to manipulate this timer.
+	 * @param Object					Object that implements the delegate function. Defaults to self (this blueprint)
+	 * @param FunctionName				Delegate function name. Can be a K2 function or a Custom Event.
+	 * @param Time						How long to wait before executing the delegate, in seconds. Setting a timer to <= 0 seconds will clear it if it is set.
+	 * @param bLooping					true to keep executing the delegate every Time seconds, false to execute delegate only once.
+	 * @param InitialStartDelay			Initial delay passed to the timer manager to allow some variance in when the timer starts, in seconds.
+	 * @param InitialStartDelayVariance	Use this to add some variance to when the timer starts in lieu of doing a random range on the InitialStartDelay input, in seconds.
+	 * @return							The timer handle to pass to other timer functions to manipulate this timer.
 	 */
-	UFUNCTION(BlueprintCallable, meta=(DisplayName = "Set Timer by Function Name", ScriptName = "SetTimer", DefaultToSelf = "Object"), Category="Utilities|Time")
-	static FTimerHandle K2_SetTimer(UObject* Object, FString FunctionName, float Time, bool bLooping);
+	UFUNCTION(BlueprintCallable, meta=(DisplayName = "Set Timer by Function Name", ScriptName = "SetTimer", DefaultToSelf = "Object", AdvancedDisplay="InitialStartDelay, InitialStartDelayVariance"), Category="Utilities|Time")
+	static FTimerHandle K2_SetTimer(UObject* Object, FString FunctionName, float Time, bool bLooping, float InitialStartDelay = 0.f, float InitialStartDelayVariance = 0.f);
 
 	/**
 	 * Clears a set timer.
@@ -773,12 +806,16 @@ class ENGINE_API UKismetSystemLibrary : public UBlueprintFunctionLibrary
 	UFUNCTION(BlueprintCallable, CustomThunk, meta = (BlueprintInternalUseOnly = "true", AutoCreateRefTerm = "Value"))
 	static void SetCollisionProfileNameProperty(UObject* Object, FName PropertyName, const FCollisionProfileName& Value);
 
+	/** Set a SOFTOBJECT property by name */
+	UFUNCTION(BlueprintCallable, meta = (BlueprintInternalUseOnly = "true", AutoCreateRefTerm = "Value"))
+	static void SetFieldPathPropertyByName(UObject* Object, FName PropertyName, const TFieldPath<FField>& Value);
+
 	DECLARE_FUNCTION(execSetCollisionProfileNameProperty)
 	{
 		P_GET_OBJECT(UObject, OwnerObject);
-		P_GET_PROPERTY(UNameProperty, StructPropertyName);
+		P_GET_PROPERTY(FNameProperty, StructPropertyName);
 
-		Stack.StepCompiledIn<UStructProperty>(NULL);
+		Stack.StepCompiledIn<FStructProperty>(NULL);
 		void* SrcStructAddr = Stack.MostRecentPropertyAddress;
 
 		P_FINISH;
@@ -797,9 +834,9 @@ class ENGINE_API UKismetSystemLibrary : public UBlueprintFunctionLibrary
 	DECLARE_FUNCTION(execSetStructurePropertyByName)
 	{
 		P_GET_OBJECT(UObject, OwnerObject);
-		P_GET_PROPERTY(UNameProperty, StructPropertyName);
+		P_GET_PROPERTY(FNameProperty, StructPropertyName);
 
-		Stack.StepCompiledIn<UStructProperty>(NULL);
+		Stack.StepCompiledIn<FStructProperty>(NULL);
 		void* SrcStructAddr = Stack.MostRecentPropertyAddress;
 
 		P_FINISH;
@@ -1595,6 +1632,12 @@ class ENGINE_API UKismetSystemLibrary : public UBlueprintFunctionLibrary
 	static bool GetVolumeButtonsHandledBySystem();
 
 	/**
+	 * Sets whether attached gamepads will block feedback from the device itself (Mobile only).
+	 */
+	UFUNCTION(BlueprintCallable, Category = "Utilities|Platform")
+	static void SetGamepadsBlockDeviceFeedback(bool bBlock);
+
+	/**
 	 * Resets the gamepad to player controller id assignments (Android and iOS only)
 	 */
 	UFUNCTION(BlueprintCallable, Category = "Utilities|Platform")
@@ -1705,6 +1748,39 @@ class ENGINE_API UKismetSystemLibrary : public UBlueprintFunctionLibrary
 	UFUNCTION(BlueprintPure, Category = "Utilities")
 	static bool IsUnattended();
 
+	// --- Property Access ---------------------------
+
+#if WITH_EDITOR
+	/**
+	 * Attempts to retrieve the value of a named property from the given object.
+	 *
+	 * @param Object The object you want to retrieve a property value from.
+	 * @param PropertyName The name of the object property to retrieve the value from.
+	 * @param PropertyValue The retrieved property value, if found.
+	 *
+	 * @return Whether the property value was found and correctly retrieved.
+	 */
+    UFUNCTION(BlueprintCallable, CustomThunk, Category = "Utilities", meta=(CustomStructureParam="PropertyValue", BlueprintInternalUseOnly="true"))
+    static bool GetEditorProperty(UObject* Object, const FName PropertyName, int32& PropertyValue);
+	static bool Generic_GetEditorProperty(const UObject* Object, const FProperty* ObjectProp, void* ValuePtr, const FProperty* ValueProp);
+	DECLARE_FUNCTION(execGetEditorProperty);
+
+	/**
+	 * Attempts to set the value of a named property on the given object.
+	 *
+	 * @param Object The object you want to set a property value on.
+	 * @param PropertyName The name of the object property to set the value of.
+	 * @param PropertyValue The property value to set.
+	 * @param ChangeNotifyMode When to emit property change notifications.
+	 *
+	 * @return Whether the property value was found and correctly set.
+	 */
+    UFUNCTION(BlueprintCallable, CustomThunk, Category = "Utilities", meta=(CustomStructureParam="PropertyValue", AdvancedDisplay="ChangeNotifyMode", BlueprintInternalUseOnly="true"))
+    static bool SetEditorProperty(UObject* Object, const FName PropertyName, const int32& PropertyValue, const EPropertyAccessChangeNotifyMode ChangeNotifyMode);
+	static bool Generic_SetEditorProperty(UObject* Object, const FProperty* ObjectProp, const void* ValuePtr, const FProperty* ValueProp, const EPropertyAccessChangeNotifyMode ChangeNotifyMode);
+	DECLARE_FUNCTION(execSetEditorProperty);
+#endif
+
 	// --- Transactions ------------------------------
 
 	/**
@@ -1749,6 +1825,16 @@ class ENGINE_API UKismetSystemLibrary : public UBlueprintFunctionLibrary
 	 */
 	UFUNCTION(BlueprintCallable, Category = "Transactions")
 	static void TransactObject(UObject* Object);
+
+	/**
+	 * Notify the current transaction (if any) that this object is about to be modified and should be snapshot for intermediate update.
+	 * @note Internally this calls SnapshotTransactionBuffer on the given object.
+	 * @note Only available in the editor.
+	 *
+	 * @param	Object		The object that is about to be modified.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "Transactions")
+	static void SnapshotObject(UObject* Object);
 
 	// --- Asset Manager ------------------------------
 

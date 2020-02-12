@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 using UnrealBuildTool;
 
@@ -15,7 +15,9 @@ public class AudioEditor : ModuleRules
 
 		PrivateDependencyModuleNames.AddRange(
 			new string[] {
-				"AudioMixer"
+				"AudioMixer",
+				"ToolMenus",
+				"AudioExtensions"
 			});
 
 		PublicDependencyModuleNames.AddRange(
@@ -24,21 +26,23 @@ public class AudioEditor : ModuleRules
 				"Core",
 				"CoreUObject",
 				"ApplicationCore",
-				"InputCore",
-				"Engine",
-				"UnrealEd",
-				"Slate",
-				"SlateCore",
-				"EditorStyle",
-				"RenderCore",
-				"LevelEditor",
-				"Landscape",
-				"PropertyEditor",
-				"DetailCustomizations",
-				"ClassViewer",
-				"GraphEditor",
-				"ContentBrowser",
-			});
+				"AudioMixer",
+                "InputCore",
+                "Engine",
+                "UnrealEd",
+                "Slate",
+                "SlateCore",
+                "EditorStyle",
+                "RenderCore",
+                "LevelEditor",
+                "Landscape",
+                "PropertyEditor",
+                "DetailCustomizations",
+                "ClassViewer",
+                "GraphEditor",
+                "ContentBrowser",
+            }
+        );
 
 		PrivateIncludePathModuleNames.AddRange(
 			new string[] {

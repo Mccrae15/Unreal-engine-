@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -30,6 +30,8 @@ public:
 
 	/** Get the desired physical vertical position of this track lane */
 	float GetPhysicalPosition() const;
+
+	bool IsPinned() const { return DisplayNode->IsPinned(); }
 
 protected:
 	virtual FVector2D ComputeDesiredSize(float LayoutScale) const override;

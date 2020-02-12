@@ -1,18 +1,17 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "ProxyLODkDOPInterface.h"
 
 #include "ProxyLODMeshTypes.h"
 #include "ProxyLODThreadedWrappers.h"
 
-#include "MeshAttributes.h"
-#include "MeshAttributeArray.h"
-#include "MeshDescription.h"
+#include "StaticMeshAttributes.h"
 
 // Utils for building a kdop tree from different mesh types.
 
 void ProxyLOD::BuildkDOPTree(const FMeshDescriptionArrayAdapter& SrcGeometry, ProxyLOD::FkDOPTree& kDOPTree)
 {
+	TRACE_CPUPROFILER_EVENT_SCOPE(ProxyLOD::BuildkDOPTree)
 
 	const auto NumSrcPoly = SrcGeometry.polygonCount();
 
@@ -35,18 +34,15 @@ void ProxyLOD::BuildkDOPTree(const FMeshDescriptionArrayAdapter& SrcGeometry, Pr
 
 	// Add everything to the tree.
 	kDOPTree.Build(BuildTriangleArray);
-
 }
 
 void ProxyLOD::BuildkDOPTree(const FMeshDescription& MeshDescription, FkDOPTree& kDOPTree)
 {
+	TRACE_CPUPROFILER_EVENT_SCOPE(ProxyLOD::BuildkDOPTree)
+
 	TVertexAttributesConstRef<FVector> VertexPositions = MeshDescription.VertexAttributes().GetAttributesRef<FVector>(MeshAttribute::Vertex::Position);
 
-	uint32 NumSrcPoly = 0;
-	for (const FPolygonID& PolygonID : MeshDescription.Polygons().GetElementIDs())
-	{
-		NumSrcPoly += MeshDescription.GetPolygonTriangles(PolygonID).Num();
-	}
+	uint32 NumSrcPoly = MeshDescription.Triangles().Num();
 
 	TArray<FkDOPBuildTriangle> BuildTriangleArray;
 
@@ -71,11 +67,11 @@ void ProxyLOD::BuildkDOPTree(const FMeshDescription& MeshDescription, FkDOPTree&
 
 	// Add everything to the tree.
 	kDOPTree.Build(BuildTriangleArray);
-
 }
 
 void ProxyLOD::BuildkDOPTree(const FVertexDataMesh& SrcVertexDataMesh, ProxyLOD::FkDOPTree& kDOPTree)
 {
+	TRACE_CPUPROFILER_EVENT_SCOPE(ProxyLOD::BuildkDOPTree)
 
 	const auto NumSrcPoly = SrcVertexDataMesh.Indices.Num() / 3;
 
@@ -101,5 +97,4 @@ void ProxyLOD::BuildkDOPTree(const FVertexDataMesh& SrcVertexDataMesh, ProxyLOD:
 
 	// Add everything to the tree.
 	kDOPTree.Build(BuildTriangleArray);
-
 }

@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "Framework/Application/NavigationConfig.h"
 #include "Types/SlateEnums.h"
@@ -9,7 +9,7 @@ FNavigationConfig::FNavigationConfig()
 	: bTabNavigation(true)
 	, bKeyNavigation(true)
 	, bAnalogNavigation(true)
-	, AnalogNavigationHorizontalThreshold(0.40f)
+	, AnalogNavigationHorizontalThreshold(0.50f)
 	, AnalogNavigationVerticalThreshold(0.50f)
 {
 	AnalogHorizontalKey = EKeys::Gamepad_LeftX;
@@ -145,4 +145,28 @@ float FNavigationConfig::GetRepeatRateForPressure(float InPressure, int32 InRepe
 	}
 
 	return RepeatRate;
+}
+
+EUINavigationAction FNavigationConfig::GetNavigationActionFromKey(const FKeyEvent& InKeyEvent) const
+{
+PRAGMA_DISABLE_DEPRECATION_WARNINGS
+	// Call raw key version for back compatibility, subclasses should override this function
+	return GetNavigationActionForKey(InKeyEvent.GetKey());
+PRAGMA_ENABLE_DEPRECATION_WARNINGS
+}
+
+EUINavigationAction FNavigationConfig::GetNavigationActionForKey(const FKey& InKey) const
+{
+	if (InKey == EKeys::Enter || InKey == EKeys::SpaceBar || InKey == EKeys::Virtual_Accept)
+	{
+		// By default, enter, space, and gamepad accept are all counted as accept
+		return EUINavigationAction::Accept;
+	}
+	else if (InKey == EKeys::Escape || InKey == EKeys::Virtual_Back)
+	{
+		// By default, escape and gamepad back count as leaving current scope
+		return EUINavigationAction::Back;
+	}
+
+	return EUINavigationAction::Invalid;
 }

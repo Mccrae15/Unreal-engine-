@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -118,6 +118,11 @@ public:
 
 	/** Get Animation bindings of the animation */
 	const TArray<FWidgetAnimationBinding>& GetBindings() const { return AnimationBindings; }
+
+	/** Remove Animation Binding */
+	UMG_API void RemoveBinding(const UObject& PossessedObject);
+	UMG_API void RemoveBinding(const FWidgetAnimationBinding& Binding);
+	
 
 	/** Whether to finish evaluation on stop */
 	bool GetLegacyFinishOnStop() const { return bLegacyFinishOnStop; }

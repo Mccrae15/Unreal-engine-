@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 using UnrealBuildTool;
 using System;
@@ -13,6 +13,9 @@ public class Core : ModuleRules
 		SharedPCHHeaderFile = "Public/CoreSharedPCH.h";
 
 		PrivateDependencyModuleNames.Add("BuildSettings");
+
+		PublicDependencyModuleNames.Add("TraceLog");
+		PublicIncludePaths.Add("Runtime/TraceLog/Public");
 
 		PrivateIncludePaths.AddRange(
 			new string[] {
@@ -54,6 +57,31 @@ public class Core : ModuleRules
 				"IntelTBB",
 				"IntelVTune"
 				);
+
+			AddEngineThirdPartyPrivateStaticDependencies(Target,
+				"mimalloc");
+
+			if(Target.Platform == UnrealTargetPlatform.Win64 && Target.WindowsPlatform.bUseBundledDbgHelp)
+			{
+				PublicDelayLoadDLLs.Add("DBGHELP.DLL");
+				PrivateDefinitions.Add("USE_BUNDLED_DBGHELP=1");
+				RuntimeDependencies.Add("$(EngineDir)/Binaries/ThirdParty/DbgHelp/dbghelp.dll");
+			}
+			else
+			{
+				PrivateDefinitions.Add("USE_BUNDLED_DBGHELP=0");
+			}
+		}
+		else if ((Target.Platform == UnrealTargetPlatform.HoloLens))
+		{
+			PublicIncludePaths.Add("Runtime/Core/Public/HoloLens");
+			AddEngineThirdPartyPrivateStaticDependencies(Target,
+				"zlib");
+
+			AddEngineThirdPartyPrivateStaticDependencies(Target,
+				"IntelTBB",
+				"XInput"
+				);
 		}
 		else if (Target.Platform == UnrealTargetPlatform.Mac)
 		{
@@ -91,33 +119,27 @@ public class Core : ModuleRules
 			{
 				PublicFrameworks.AddRange(new string[] { "iAD" });
 			}
+
+			// export Core symbols for embedded Dlls
+			ModuleSymbolVisibility = ModuleRules.SymbolVisibility.VisibileForDll;
 		}
 		else if (Target.IsInPlatformGroup(UnrealPlatformGroup.Android))
 		{
 			AddEngineThirdPartyPrivateStaticDependencies(Target,
 				"cxademangle",
-				"zlib"
+				"zlib",
+				"libunwind"
 				);
 		}
 		else if (Target.IsInPlatformGroup(UnrealPlatformGroup.Unix))
         {
-			PublicIncludePaths.Add(string.Format("Runtime/Core/Public/{0}", Target.Platform.ToString()));
 			AddEngineThirdPartyPrivateStaticDependencies(Target,
 				"zlib",
 				"jemalloc"
                 );
 
 			// Core uses dlopen()
-			PublicAdditionalLibraries.Add("dl");
-        }
-		else if (Target.Platform == UnrealTargetPlatform.HTML5)
-		{
-            PrivateDependencyModuleNames.Add("HTML5JS");
-            PrivateDependencyModuleNames.Add("MapPakDownloader");
-        }
-        else if (Target.Platform == UnrealTargetPlatform.PS4)
-        {
-            PublicAdditionalLibraries.Add("SceRtc_stub_weak"); //ORBIS SDK rtc.h, used in PS4Time.cpp
+			PublicSystemLibraries.Add("dl");
         }
 
 		if ( Target.bCompileICU == true )
@@ -155,44 +177,48 @@ public class Core : ModuleRules
 			}
 		}
 
+		if( Target.Platform == UnrealTargetPlatform.HoloLens)
+		{
+			PublicDefinitions.Add("WITH_VS_PERF_PROFILER=0");
+		}
+
 		WhitelistRestrictedFolders.Add("Private/NoRedist");
 
-        if (Target.Platform == UnrealTargetPlatform.XboxOne)
+        if (Target.Platform == UnrealTargetPlatform.XboxOne ||
+            (Target.bWithDirectXMath && (Target.Platform == UnrealTargetPlatform.Win64 || Target.Platform == UnrealTargetPlatform.Win32)))
         {
             PublicDefinitions.Add("WITH_DIRECTXMATH=1");
-        }
-        else if ((Target.Platform == UnrealTargetPlatform.Win64) ||
-                (Target.Platform == UnrealTargetPlatform.Win32))
-        {
-			// To enable this requires Win8 SDK
-            PublicDefinitions.Add("WITH_DIRECTXMATH=0");  // Enable to test on Win64/32.
-
-            //PublicDependencyModuleNames.AddRange(  // Enable to test on Win64/32.
-			//    new string[] {
-			//    "DirectXMath"
-            //});
         }
         else
         {
             PublicDefinitions.Add("WITH_DIRECTXMATH=0");
         }
 
-        // Decide if validating memory allocator (aka MallocStomp) can be used on the current platform.
-        // Run-time validation must be enabled through '-stompmalloc' command line argument.
+		// Set a macro to allow FApp::GetBuildTargetType() to detect client targts
+		if(Target.Type == TargetRules.TargetType.Client)
+		{
+			PrivateDefinitions.Add("IS_CLIENT_TARGET=1");
+		}
+		else
+		{
+			PrivateDefinitions.Add("IS_CLIENT_TARGET=0");
+		}
 
-        bool bWithMallocStomp = false;
+		// Decide if validating memory allocator (aka MallocStomp) can be used on the current platform.
+		// Run-time validation must be enabled through '-stompmalloc' command line argument.
+
+		bool bWithMallocStomp = false;
         if (Target.Configuration != UnrealTargetConfiguration.Shipping)
         {
-            switch (Target.Platform)
-            {
-                case UnrealTargetPlatform.Mac:
-                case UnrealTargetPlatform.Linux:
-                //case UnrealTargetPlatform.Win32: // 32-bit windows can technically be supported, but will likely run out of virtual memory space quickly
-                //case UnrealTargetPlatform.XboxOne: // XboxOne could be supported, as it's similar enough to Win64
-                case UnrealTargetPlatform.Win64:
-                    bWithMallocStomp = true;
-                break;
-            }
+			if (Target.Platform == UnrealTargetPlatform.Mac ||
+				Target.Platform == UnrealTargetPlatform.Linux ||
+				Target.Platform == UnrealTargetPlatform.LinuxAArch64 ||
+				Target.Platform == UnrealTargetPlatform.Win64)
+			// Target.Platform == UnrealTargetPlatform.Win32: // 32-bit windows can technically be supported, but will likely run out of virtual memory space quickly
+			// Target.Platform == UnrealTargetPlatform.XboxOne: // XboxOne could be supported, as it's similar enough to Win64
+			{
+				bWithMallocStomp = true;
+			}
         }
 
         PublicDefinitions.Add("WITH_MALLOC_STOMP=" + (bWithMallocStomp ? "1" : "0"));
@@ -200,5 +226,7 @@ public class Core : ModuleRules
 		PrivateDefinitions.Add("PLATFORM_COMPILER_OPTIMIZATION_LTCG=" + (Target.bAllowLTCG ? "1" : "0"));
 		PrivateDefinitions.Add("PLATFORM_COMPILER_OPTIMIZATION_PG=" + (Target.bPGOOptimize ? "1" : "0"));
 		PrivateDefinitions.Add("PLATFORM_COMPILER_OPTIMIZATION_PG_PROFILING=" + (Target.bPGOProfile ? "1" : "0"));
-    }
+
+		UnsafeTypeCastWarningLevel = WarningLevel.Warning;
+	}
 }

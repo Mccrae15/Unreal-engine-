@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 /*=============================================================================
 	D3D12RHI.cpp: Unreal D3D RHI library implementation.
@@ -23,7 +23,7 @@ DEFINE_LOG_CATEGORY(LogD3D12RHI);
 
 static TAutoConsoleVariable<int32> CVarD3D12UseD24(
 	TEXT("r.D3D12.Depth24Bit"),
-	1,
+	0,
 	TEXT("0: Use 32-bit float depth buffer\n1: Use 24-bit fixed point depth buffer(default)\n"),
 	ECVF_ReadOnly
 );
@@ -36,27 +36,20 @@ TAutoConsoleVariable<int32> CVarD3D12ZeroBufferSizeInMB(
 	ECVF_ReadOnly
 	);
 
-/// @cond DOXYGEN_WARNINGS
-
-__declspec(thread) FD3D12FastAllocator* FD3D12DynamicRHI::HelperThreadDynamicHeapAllocator = nullptr;
-
-/// @endcond
-
 FD3D12DynamicRHI* FD3D12DynamicRHI::SingleD3DRHI = nullptr;
 
 using namespace D3D12RHI;
 
-FD3D12DynamicRHI::FD3D12DynamicRHI(TArray<FD3D12Adapter*>& ChosenAdaptersIn) :
-	NumThreadDynamicHeapAllocators(0),
+FD3D12DynamicRHI::FD3D12DynamicRHI(const TArray<TSharedPtr<FD3D12Adapter>>& ChosenAdaptersIn) :
 	ChosenAdapters(ChosenAdaptersIn),
 	AmdAgsContext(nullptr),
-	FlipEvent(INVALID_HANDLE_VALUE)
+	AmdSupportedExtensionFlags(0),
+	FlipEvent(INVALID_HANDLE_VALUE),
+	bAllowVendorDevice(!FParse::Param(FCommandLine::Get(), TEXT("novendordevice")))
 {
 	// The FD3D12DynamicRHI must be a singleton
 	check(SingleD3DRHI == nullptr);
 	SingleD3DRHI = this;
-
-	ThreadDynamicHeapAllocatorArray.AddZeroed(FPlatformMisc::NumberOfCoresIncludingHyperthreads());
 
 	// This should be called once at the start 
 	check(IsInGameThread());
@@ -66,7 +59,7 @@ FD3D12DynamicRHI::FD3D12DynamicRHI(TArray<FD3D12Adapter*>& ChosenAdaptersIn) :
 	FeatureLevel = GetAdapter().GetFeatureLevel();
 	check(FeatureLevel >= D3D_FEATURE_LEVEL_11_0);
 
-#if PLATFORM_WINDOWS
+#if PLATFORM_WINDOWS || PLATFORM_HOLOLENS
 	// Allocate a buffer of zeroes. This is used when we need to pass D3D memory
 	// that we don't care about and will overwrite with valid data in the future.
 	ZeroBufferSize = FMath::Max(CVarD3D12ZeroBufferSizeInMB.GetValueOnAnyThread(), 0) * (1 << 20);
@@ -76,6 +69,8 @@ FD3D12DynamicRHI::FD3D12DynamicRHI(TArray<FD3D12Adapter*>& ChosenAdaptersIn) :
 	ZeroBufferSize = 0;
 	ZeroBuffer = nullptr;
 #endif // PLATFORM_WINDOWS
+
+	GRHISupportsMultithreading = true;
 
 	GPoolSizeVRAMPercentage = 0;
 	GTexturePoolSize = 0;
@@ -150,6 +145,7 @@ FD3D12DynamicRHI::FD3D12DynamicRHI(TArray<FD3D12Adapter*>& ChosenAdaptersIn) :
 	GPixelFormats[PF_R8G8			].PlatformFormat = DXGI_FORMAT_R8G8_UNORM;
 	GPixelFormats[PF_R32G32B32A32_UINT].PlatformFormat = DXGI_FORMAT_R32G32B32A32_UINT;
 	GPixelFormats[PF_R16G16_UINT	].PlatformFormat = DXGI_FORMAT_R16G16_UINT;
+	GPixelFormats[PF_R32G32_UINT	].PlatformFormat = DXGI_FORMAT_R32G32_UINT;
 
 	GPixelFormats[PF_BC6H			].PlatformFormat = DXGI_FORMAT_BC6H_UF16;
 	GPixelFormats[PF_BC7			].PlatformFormat = DXGI_FORMAT_BC7_TYPELESS;
@@ -171,15 +167,13 @@ FD3D12DynamicRHI::FD3D12DynamicRHI(TArray<FD3D12Adapter*>& ChosenAdaptersIn) :
 	GMaxShadowDepthBufferSizeX = GMaxTextureDimensions;
 	GMaxShadowDepthBufferSizeY = GMaxTextureDimensions;
 	GRHISupportsResolveCubemapFaces = true;
+	GRHISupportsCopyToTextureMultipleMips = true;
 
-	// Enable multithreading if not in the editor (editor crashes with multithreading enabled).
-	if (!GIsEditor)
-	{
-		GRHISupportsRHIThread = true;
+	GRHISupportsRHIThread = true;
 #if PLATFORM_XBOXONE
-		GRHISupportsRHIOnTaskThread = true;
+	GRHISupportsRHIOnTaskThread = true;
 #endif
-	}
+
 	GRHISupportsParallelRHIExecute = D3D12_SUPPORTS_PARALLEL_RHI_EXECUTE;
 
 	GSupportsTimestampRenderQueries = true;
@@ -197,6 +191,9 @@ FD3D12DynamicRHI::FD3D12DynamicRHI(TArray<FD3D12Adapter*>& ChosenAdaptersIn) :
 
 	// Enable async compute by default
 	GEnableAsyncCompute = true;
+
+	// Manually enable Async BVH build for D3D12 RHI
+	GRHISupportsRayTracingAsyncBuildAccelerationStructure = true;
 }
 
 FD3D12DynamicRHI::~FD3D12DynamicRHI()
@@ -214,7 +211,6 @@ void FD3D12DynamicRHI::Shutdown()
 	if (AmdAgsContext)
 	{
 		// Clean up the AMD extensions and shut down the AMD AGS utility library
-		agsDriverExtensionsDX12_DeInit(AmdAgsContext);
 		agsDeInit(AmdAgsContext);
 		AmdAgsContext = nullptr;
 	}
@@ -223,7 +219,7 @@ void FD3D12DynamicRHI::Shutdown()
 	RHIShutdownFlipTracking();
 
 	// Cleanup All of the Adapters
-	for (FD3D12Adapter*& Adapter : ChosenAdapters)
+	for (TSharedPtr<FD3D12Adapter>& Adapter : ChosenAdapters)
 	{
 		// Take a reference on the ID3D12Device so that we can delete the FD3D12Device
 		// and have it's children correctly release ID3D12* objects via RAII
@@ -288,22 +284,6 @@ IRHICommandContext* FD3D12DynamicRHI::RHIGetDefaultContext()
 	return DefaultCommandContext;
 }
 
-#if WITH_MGPU
-IRHICommandContext* FD3D12DynamicRHI::RHIGetDefaultContext(FRHIGPUMask GPUMask)
-{
-	FD3D12Adapter& Adapter = GetAdapter();
-
-	if (GNumExplicitGPUsForRendering > 1 && GPUMask == FRHIGPUMask::All())
-	{
-		return static_cast<IRHICommandContext*>(&Adapter.GetDefaultContextRedirector());
-	}
-	else // The next code assumes a single index.
-	{
-		return static_cast<IRHICommandContext*>(&Adapter.GetDevice(GPUMask.ToIndex())->GetDefaultCommandContext());
-	}
-}
-#endif // WITH_MGPU
-
 IRHIComputeContext* FD3D12DynamicRHI::RHIGetDefaultAsyncComputeContext()
 {
 	FD3D12Adapter& Adapter = GetAdapter();
@@ -327,28 +307,6 @@ IRHIComputeContext* FD3D12DynamicRHI::RHIGetDefaultAsyncComputeContext()
 	return DefaultAsyncComputeContext;
 }
 
-#if WITH_MGPU
-IRHIComputeContext* FD3D12DynamicRHI::RHIGetDefaultAsyncComputeContext(FRHIGPUMask GPUMask)
-{
-	if (GEnableAsyncCompute)
-	{
-		FD3D12Adapter& Adapter = GetAdapter();
-		if (GNumExplicitGPUsForRendering > 1 && GPUMask == FRHIGPUMask::All())
-		{
-			return static_cast<IRHIComputeContext*>(&Adapter.GetDefaultAsyncComputeContextRedirector());
-		}
-		else // Single GPU path.
-		{
-			return static_cast<IRHIComputeContext*>(&Adapter.GetDevice(GPUMask.ToIndex())->GetDefaultAsyncComputeContext());
-		}
-	}
-	else 
-	{
-		return static_cast<IRHIComputeContext*>(RHIGetDefaultContext(GPUMask));
-	}
-}
-#endif // WITH_MGPU
-
 void FD3D12DynamicRHI::UpdateBuffer(FD3D12Resource* Dest, uint32 DestOffset, FD3D12Resource* Source, uint32 SourceOffset, uint32 NumBytes)
 {
 	FD3D12Device* Device = Dest->GetParentDevice();
@@ -356,7 +314,7 @@ void FD3D12DynamicRHI::UpdateBuffer(FD3D12Resource* Dest, uint32 DestOffset, FD3
 	FD3D12CommandContext& DefaultContext = Device->GetDefaultCommandContext();
 	FD3D12CommandListHandle& hCommandList = DefaultContext.CommandListHandle;
 
-	FScopeResourceBarrier ScopeResourceBarrierDest(hCommandList, Dest, Dest->GetDefaultResourceState(), D3D12_RESOURCE_STATE_COPY_DEST, 0);
+	FConditionalScopeResourceBarrier ScopeResourceBarrierDest(hCommandList, Dest, D3D12_RESOURCE_STATE_COPY_DEST, 0);
 	// Don't need to transition upload heaps
 
 	DefaultContext.numCopies++;
@@ -386,6 +344,12 @@ void* FD3D12DynamicRHI::RHIGetNativeDevice()
 {
 	return (void*)GetAdapter().GetD3DDevice();
 }
+
+void* FD3D12DynamicRHI::RHIGetNativeInstance()
+{
+	return nullptr;
+}
+
 
 /**
 * Returns a supported screen resolution that most closely matches the input.
@@ -478,14 +442,6 @@ void FD3D12DynamicRHI::RHIGetSupportedResolution(uint32& Width, uint32& Height)
 
 void FD3D12DynamicRHI::GetBestSupportedMSAASetting(DXGI_FORMAT PlatformFormat, uint32 MSAACount, uint32& OutBestMSAACount, uint32& OutMSAAQualityLevels)
 {
-	//  We disable MSAA for Feature level 10
-	if (GMaxRHIFeatureLevel == ERHIFeatureLevel::SM4)
-	{
-		OutBestMSAACount = 1;
-		OutMSAAQualityLevels = 0;
-		return;
-	}
-
 	// start counting down from current setting (indicated the current "best" count) and move down looking for support
 	for (uint32 SampleCount = MSAACount; SampleCount > 0; SampleCount--)
 	{
@@ -507,4 +463,9 @@ void FD3D12DynamicRHI::GetBestSupportedMSAASetting(DXGI_FORMAT PlatformFormat, u
 uint32 FD3D12DynamicRHI::GetDebugFlags()
 {
 	return GetAdapter().GetDebugFlags();
+}
+
+bool FD3D12DynamicRHI::CheckGpuHeartbeat() const
+{
+	return ChosenAdapters[0]->GetGPUProfiler().CheckGpuHeartbeat();
 }

@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "Stats/StatsData.h"
 #include "Templates/Greater.h"
@@ -313,7 +313,7 @@ void FRawStatStackNode::AddSelf()
 			{
 				Self.GetValue_int64() = ToPackedCallCountDuration(
 					FromPackedCallCountDuration_CallCount(Self.GetValue_int64()),
-					MyTime);
+					(uint32)MyTime);
 				Self.NameAndInfo.SetRawName(NAME_Self);
 				Children.Add(NAME_Self, new FRawStatStackNode(Self));
 			}
@@ -1686,26 +1686,26 @@ void FStatsThreadState::Condense(int64 TargetFrame, TArray<FStatMessage>& OutSta
 
 void FStatsThreadState::FindOrAddMetaData(FStatMessage const& Item)
 {
-	const FName LongName = Item.NameAndInfo.GetRawName();
 	const FName ShortName = Item.NameAndInfo.GetShortName();
+	const FName GroupName = Item.NameAndInfo.GetGroupName();
+
+	// Whether to add to the threads group.
+	const bool bIsThread = FStatConstants::NAME_ThreadGroup == GroupName;
+	if (bIsThread)
+	{
+		// The description of a thread group contains the thread id
+		const FString Desc = Item.NameAndInfo.GetDescription();
+		Threads.Add(FStatsUtils::ParseThreadID(Desc), ShortName);
+	}
 
 	FStatMessage* Result = ShortNameToLongName.Find(ShortName);
 	if (!Result)
 	{
+		const FName LongName = Item.NameAndInfo.GetRawName();
+
 		check(ShortName != LongName);
 		FStatMessage AsSet(Item);
 		AsSet.Clear();
-
-		const FName GroupName = Item.NameAndInfo.GetGroupName();
-
-		// Whether to add to the threads group.
-		const bool bIsThread = FStatConstants::NAME_ThreadGroup == GroupName;
-		if( bIsThread )
-		{
-			// The description of a thread group contains the thread id
-			const FString Desc = Item.NameAndInfo.GetDescription();
-			Threads.Add( FStatsUtils::ParseThreadID( Desc ), ShortName );
-		}
 
 		ShortNameToLongName.Add(ShortName, AsSet); // we want this to be a clear, but it should be a SetLongName
 		AsSet.NameAndInfo.SetField<EStatOperation>(EStatOperation::Set);
@@ -1839,7 +1839,7 @@ FString FStatsUtils::DebugPrint(FStatMessage const& Item)
 		}
 		else if (Item.NameAndInfo.GetFlag(EStatMetaFlags::IsCycle))
 		{
-			Result = FString::Printf(TEXT("%.3fms"), FPlatformTime::ToMilliseconds(Item.GetValue_int64()));
+			Result = FString::Printf(TEXT("%.3fms"), FPlatformTime::ToMilliseconds64(Item.GetValue_int64()));
 		}
 		else
 		{
@@ -2057,7 +2057,7 @@ FString FStatsUtils::FromEscapedFString(const TCHAR* Escaped)
 				break;
 			}
 			Result += Input.Left(Index);
-			Input = Input.RightChop(Index + 1);
+			Input.RightChopInline(Index + 1, false);
 
 		}
 		{
@@ -2069,7 +2069,7 @@ FString FStatsUtils::FromEscapedFString(const TCHAR* Escaped)
 				break;
 			}
 			FString Number = Input.Left(IndexEnd);
-			Input = Input.RightChop(IndexEnd + 1);
+			Input.RightChopInline(IndexEnd + 1, false);
 			Result.AppendChar(TCHAR(uint32(FCString::Atoi64(*Number))));
 		}
 	}

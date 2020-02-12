@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 /*=============================================================================
 	MaterialTexCoordScalesPixelShader.usf: Pixel shader to analyse coordinate scale per texture
@@ -11,6 +11,9 @@
 // to avoid crashes in command let mode.
 #undef SCENE_TEXTURES_DISABLED
 #define SCENE_TEXTURES_DISABLED 1
+
+#undef EYE_ADAPTATION_DISABLED
+#define EYE_ADAPTATION_DISABLED 1
 
 #include "Common.ush"
 #include "SHCommon.ush"

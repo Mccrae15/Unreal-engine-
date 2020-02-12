@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -8,7 +8,7 @@
 struct FLinuxPlatformInstallation : FGenericPlatformInstallation
 {
 	// Launches the editor application
-	static bool LaunchEditor(const FString &RootDirName, const FString &Arguments);
+	static bool LaunchEditor(const FString &RootDirName, const FString& ExplicitFileName, const FString &Arguments);
 
 	// Select an engine installation
 	static bool SelectEngineInstallation(FString &Identifier);

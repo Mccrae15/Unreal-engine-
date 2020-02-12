@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -8,6 +8,7 @@
 #include "UObject/StructOnScope.h"
 #include "PropertyHandle.h"
 #include "IDetailCustomNodeBuilder.h"
+#include "DetailBuilderTypes.h"
 
 class FDetailWidgetRow;
 class IDetailGroup;
@@ -61,7 +62,7 @@ public:
 	 *
 	 * @param Path						The path to the property.  Can be just a name of the property or a path in the format outer.outer.value[optional_index_for_static_arrays]
 	 * @param ClassOutermost			Optional outer class if accessing a property outside of the current class being customized
-	 * @param InstanceName				Optional instance name if multiple UProperty's of the same type exist. such as two identical structs, the instance name is one of the struct variable names)
+	 * @param InstanceName				Optional instance name if multiple FProperty's of the same type exist. such as two identical structs, the instance name is one of the struct variable names)
 	 * @param Location				The location within the category where the property is shown
 	 * See IDetailCategoryBuilder::GetProperty for clarification of parameters
 	 */
@@ -82,7 +83,7 @@ public:
 	 * @param Location		The location within the category where the property is shown
 	 * @return A property row for customizing the property or NULL if the property could not be found
 	 */
-	virtual IDetailPropertyRow* AddExternalObjects(const TArray<UObject*>& Objects, EPropertyLocation::Type Location = EPropertyLocation::Default) = 0;
+	virtual IDetailPropertyRow* AddExternalObjects(const TArray<UObject*>& Objects, EPropertyLocation::Type Location = EPropertyLocation::Default, const FAddPropertyParams& Params = FAddPropertyParams()) = 0;
 
 	/**
 	 * Adds an external object property that is not a property on the object(s) being customized
@@ -92,7 +93,7 @@ public:
 	 * @param Location		The location within the category where the property is shown
 	 * @return A property row for customizing the property or NULL if the property could not be found
 	 */
-	virtual IDetailPropertyRow* AddExternalObjectProperty(const TArray<UObject*>& Objects, FName PropertyName, EPropertyLocation::Type Location = EPropertyLocation::Default) = 0;
+	virtual IDetailPropertyRow* AddExternalObjectProperty(const TArray<UObject*>& Objects, FName PropertyName, EPropertyLocation::Type Location = EPropertyLocation::Default, const FAddPropertyParams& Params = FAddPropertyParams()) = 0;
 
 	/**
 	 * Adds an external standalone structure to this details panel
@@ -111,7 +112,7 @@ public:
 	 * @param Location			The location within the category where the property is shown
 	 * @return A property row for customizing the property or NULL if the property could not be found
 	 */
-	virtual IDetailPropertyRow* AddExternalStructureProperty(TSharedPtr<FStructOnScope> StructData, FName PropertyName, EPropertyLocation::Type Location = EPropertyLocation::Default) = 0;
+	virtual IDetailPropertyRow* AddExternalStructureProperty(TSharedPtr<FStructOnScope> StructData, FName PropertyName, EPropertyLocation::Type Location = EPropertyLocation::Default, const FAddPropertyParams& Params = FAddPropertyParams()) = 0;
 
 	/**
 	 * Adds all properties for the specified external structure to this category

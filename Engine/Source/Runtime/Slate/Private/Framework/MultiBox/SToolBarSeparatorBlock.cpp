@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "Framework/MultiBox/SToolBarSeparatorBlock.h"
 #include "Widgets/SBoxPanel.h"
@@ -45,7 +45,6 @@ void SToolBarSeparatorBlock::Construct( const FArguments& InArgs )
 }
 
 
-
 /**
  * Builds this MultiBlock widget up from the MultiBlock associated with it
  */
@@ -56,10 +55,11 @@ void SToolBarSeparatorBlock::BuildMultiBlockWidget(const ISlateStyle* StyleSet, 
 		SNew( SHorizontalBox )
 		+SHorizontalBox::Slot()
 		.AutoWidth()
-		.Padding( 0.0f, 0.0f, 0.0f, 0.0f )
+		.Padding( StyleSet->GetMargin( ISlateStyle::Join( StyleName, ".Separator.Padding" ) ) )
 		[
 			SNew(SSeparator)
 				.Orientation(Orient_Vertical)
+				.Thickness(2.0f)
 				.SeparatorImage( StyleSet->GetBrush( ISlateStyle::Join( StyleName, ".Separator" ) ) )
 		]
 	];

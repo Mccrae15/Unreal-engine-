@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "Modules/ModuleManager.h"
 #include "ITakeRecorderModule.h"
@@ -8,7 +8,7 @@
 #include "Recorder/TakeRecorder.h"
 #include "Recorder/TakeRecorderParameters.h"
 #include "TakesCoreBlueprintLibrary.h"
-#include "TakesCoreFwd.h"
+#include "TakesCoreLog.h"
 #include "TakeMetaData.h"
 #include "TakeRecorderActorSource.h"
 #include "TakeRecorderSources.h"
@@ -31,6 +31,7 @@
 #include "Editor.h"
 #include "SceneOutlinerModule.h"
 #include "SceneOutlinerPublicTypes.h"
+#include "Toolkits/AssetEditorManager.h"
 
 #include "TakeRecorderMicrophoneAudioSource.h"
 #include "TakeRecorderWorldSource.h"
@@ -153,7 +154,7 @@ namespace
 			{
 				for (AActor* Actor : Level->Actors)
 				{
-					if (Actor && Actor->IsA(Class) && !Actor->IsA(ALevelScriptActor::StaticClass()))
+					if (Actor && Actor->IsA(Class) && !Actor->IsA(ALevelScriptActor::StaticClass()) && !Actor->IsA(ALevelSequenceActor::StaticClass()))
 					{
 						OutActors.AddUnique(Actor);
 					}
@@ -448,7 +449,7 @@ public:
 		const TCHAR* Str = InStr;
 		EFilterType FilterType = EFilterType::None;
 		TCHAR Filter[128];
-		if (FParse::Token(Str, Filter, ARRAY_COUNT(Filter), 0))
+		if (FParse::Token(Str, Filter, UE_ARRAY_COUNT(Filter), 0))
 		{
 			FString const FilterStr = Filter;
 			if (FilterStr == TEXT("all"))
@@ -474,7 +475,7 @@ public:
 		if (FilterType == EFilterType::Actor || FilterType == EFilterType::Class)
 		{
 			TCHAR Specifier[128];
-			if (FParse::Token(Str, Specifier, ARRAY_COUNT(Specifier), 0))
+			if (FParse::Token(Str, Specifier, UE_ARRAY_COUNT(Specifier), 0))
 			{
 				FString const SpecifierStr = FString(Specifier).TrimStart();
 
@@ -558,6 +559,12 @@ public:
 #if WITH_EDITOR
 		if (UTakeRecorder* ActiveRecorder = UTakeRecorder::GetActiveRecorder())
 		{
+			ULevelSequence* ActiveSequence = ActiveRecorder->GetSequence();
+			if (ActiveSequence)
+			{
+				GEditor->GetEditorSubsystem<UAssetEditorSubsystem>()->CloseAllEditorsForAsset(ActiveSequence);
+			}
+
 			ActiveRecorder->Stop();
 		}
 		return true;

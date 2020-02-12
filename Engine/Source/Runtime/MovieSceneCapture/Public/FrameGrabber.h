@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -32,10 +32,10 @@ struct MOVIESCENECAPTURE_API FViewportSurfaceReader
 	/**
 	 * Resolve the specified viewport RHI, calling the specified callback with the result.
 	 *
-	 * @param	ViewportRHI		The viewport to resolve
+	 * @param	BackBuffer		The backbuffer to resolve
 	 * @param	Callback 		Callback to call with the locked texture data. This will be called on an undefined thread.
 	 */
-	void ResolveRenderTarget(FViewportSurfaceReader* RenderToReadback, const FViewportRHIRef& ViewportRHI, TFunction<void(FColor*, int32, int32)> Callback);
+	void ResolveRenderTarget(FViewportSurfaceReader* RenderToReadback, const FTexture2DRHIRef& BackBuffer, TFunction<void(FColor*, int32, int32)> Callback);
 
 	/** Get the current size of the texture */
 	FIntPoint GetCurrentSize() const;
@@ -164,8 +164,8 @@ public:
 
 protected:
 	
-	/** Callback for when slate has rendered a window (called on game thread) */
-	void OnSlateWindowRendered( SWindow& SlateWindow, void* ViewportRHIPtr );
+	/** Callback for when a backbuffer is ready for reading (called on render thread) */
+	void OnBackBufferReadyToPresentCallback(SWindow& SlateWindow, const FTexture2DRHIRef& BackBuffer);
 
 	/** Called when the specified surface index has been locked for reading with the render target data (called on render thread)  */
 	void OnFrameReady(int32 SurfaceIndex, FColor* ColorBuffer, int32 Width, int32 Height);
@@ -176,11 +176,15 @@ private:
 	FFrameGrabber(const FFrameGrabber&);
 	FFrameGrabber& operator=(const FFrameGrabber&);
 
-	/** The window we'll capture, and the capture rectangle */
-	TWeakPtr<SWindow> CaptureWindow;
+	/**
+	 * Pointer to the window we want to capture.
+	 * Only held for comparison inside OnBackBufferReadyToPresentCallback - never to be dereferenced or cast to an SWindow.
+	 * Held as a raw pointer to ensure that no referenc counting occurs from the background thread in OnBackBufferReadyToPresentCallback.
+	 */
+	void* TargetWindowPtr;
 
-	/** Delegate handle for the OnSlateOnWindowRendered event */
-	FDelegateHandle OnWindowRendered;
+	/** Delegate handle for the OnBackBufferReadyToPresent event */
+	FDelegateHandle OnBackBufferReadyToPresent;
 
 	/** Array of captured frames */
 	TArray<FCapturedFrameData> CapturedFrames;
@@ -207,9 +211,8 @@ private:
 	/** The total number of frames we are currently waiting on */
 	FThreadSafeCounter OutstandingFrameCount;
 
-	/** Pending frame payloads to be passed with frames captured from slate  */
-	FCriticalSection PendingFramePayloadsMutex;
-	TArray<FFramePayloadPtr> PendingFramePayloads;
+	/** Only to be accessed from the render thread - array of frame payloads to be captured from the rendered slate window sorted first to last. */
+	TArray<FFramePayloadPtr> RenderThread_PendingFramePayloads;
 
 	int32 FrameGrabLatency;
 

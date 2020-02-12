@@ -1,11 +1,10 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 #pragma once
 
 #include "CoreMinimal.h"
 #include "UObject/ObjectMacros.h"
 #include "Misc/Attribute.h"
 #include "Layout/Margin.h"
-#include "Framework/Text/TextRange.h"
 #include "Framework/Text/TextRunRenderer.h"
 #include "Framework/Text/TextLineHighlight.h"
 #include "Framework/Text/IRun.h"
@@ -529,6 +528,8 @@ public:
 	void GetTextOffsetLocations(FTextOffsetLocations& OutTextOffsetLocations) const;
 
 	void GetSelectionAsText(FString& DisplayText, const FTextSelection& Selection) const;
+
+	FTextSelection GetGraphemeAt(const FTextLocation& Location) const;
 
 	FTextSelection GetWordAt(const FTextLocation& Location) const;
 

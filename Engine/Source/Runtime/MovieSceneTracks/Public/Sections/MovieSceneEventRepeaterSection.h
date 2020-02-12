@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -18,7 +18,7 @@ public:
 	GENERATED_BODY()
 
 #if WITH_EDITORONLY_DATA
-	virtual void OnBlueprintRecompiled(UBlueprint*) override;
+	virtual TArrayView<FMovieSceneEvent> GetAllEntryPoints() override { return MakeArrayView(&Event, 1); }
 #endif
 
 	/** The event that should be triggered each time this section is evaluated */

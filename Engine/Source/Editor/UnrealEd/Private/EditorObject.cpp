@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 /*=============================================================================
 	EditorObject.cpp: Unreal Editor object manipulation code.
@@ -114,9 +114,9 @@ void UEditorEngine::RenameObject(UObject* Object,UObject* NewOuter,const TCHAR* 
 }
 
 
-static void RemapProperty(UProperty* Property, int32 Index, const TMap<AActor*, AActor*>& ActorRemapper, uint8* DestData)
+static void RemapProperty(FProperty* Property, int32 Index, const TMap<AActor*, AActor*>& ActorRemapper, uint8* DestData)
 {
-	if (UObjectProperty* ObjectProperty = Cast<UObjectProperty>(Property))
+	if (FObjectProperty* ObjectProperty = CastField<FObjectProperty>(Property))
 	{
 		// If there's a concrete index, use that, otherwise iterate all array members (for the case that this property is inside a struct, or there is exactly one element)
 		const int32 Num = (Index == INDEX_NONE) ? ObjectProperty->ArrayDim : 1;
@@ -136,7 +136,7 @@ static void RemapProperty(UProperty* Property, int32 Index, const TMap<AActor*, 
 
 		}
 	}
-	else if (UArrayProperty* ArrayProperty = Cast<UArrayProperty>(Property))
+	else if (FArrayProperty* ArrayProperty = CastField<FArrayProperty>(Property))
 	{
 		FScriptArrayHelper ArrayHelper(ArrayProperty, ArrayProperty->ContainerPtrToValuePtr<void>(DestData));
 		if (Index != INDEX_NONE)
@@ -151,12 +151,12 @@ static void RemapProperty(UProperty* Property, int32 Index, const TMap<AActor*, 
 			}
 		}
 	}
-	else if (UStructProperty* StructProperty = Cast<UStructProperty>(Property))
+	else if (FStructProperty* StructProperty = CastField<FStructProperty>(Property))
 	{
 		if (Index != INDEX_NONE)
 		{
 			// If a concrete index was given, remap just that
-			for (TFieldIterator<UProperty> It(StructProperty->Struct); It; ++It)
+			for (TFieldIterator<FProperty> It(StructProperty->Struct); It; ++It)
 			{
 				RemapProperty(*It, INDEX_NONE, ActorRemapper, StructProperty->ContainerPtrToValuePtr<uint8>(DestData, Index));
 			}
@@ -167,7 +167,7 @@ static void RemapProperty(UProperty* Property, int32 Index, const TMap<AActor*, 
 			// a deeper structure (an array or another struct) and we cannot know which element was changed, so iterate through all elements.
 			for (int32 Count = 0; Count < StructProperty->ArrayDim; Count++)
 			{
-				for (TFieldIterator<UProperty> It(StructProperty->Struct); It; ++It)
+				for (TFieldIterator<FProperty> It(StructProperty->Struct); It; ++It)
 				{
 					RemapProperty(*It, INDEX_NONE, ActorRemapper, StructProperty->ContainerPtrToValuePtr<uint8>(DestData, Count));
 				}
@@ -267,7 +267,7 @@ static const TCHAR* ImportProperties(
 			}
 			if (Length != StrLine.Len())
 			{
-				StrLine = StrLine.Left(Length);
+				StrLine.LeftInline(Length, false);
 			}
 		}
 
@@ -334,7 +334,7 @@ static const TCHAR* ImportProperties(
 				{
 					AInstancedFoliageActor* IFA = AInstancedFoliageActor::GetInstancedFoliageActorForLevel(ActorComponent->GetComponentLevel(), true);
 
-					FFoliageMeshInfo* MeshInfo = nullptr;
+					FFoliageInfo* MeshInfo = nullptr;
 					UFoliageType* FoliageType = IFA->AddFoliageType(SourceFoliageType, &MeshInfo);
 
 					const TCHAR* StrPtr;
@@ -369,7 +369,12 @@ static const TCHAR* ImportProperties(
 						FParse::Value(StrPtr, TEXT("Flags="), Instance.Flags);
 
 						// Add the instance
-						MeshInfo->AddInstance(IFA, FoliageType, Instance, ActorComponent, true);
+						MeshInfo->AddInstance(IFA, FoliageType, Instance, ActorComponent);
+					}
+
+					if (MeshInfo)
+					{
+						MeshInfo->Refresh(IFA, true, true);
 					}
 				}
 			}
@@ -468,8 +473,12 @@ static const TCHAR* ImportProperties(
 							UClass* ArchetypeClass = (UClass*)StaticFindObject(UClass::StaticClass(), ANY_PACKAGE, *ObjectClass);
 							if (ArchetypeClass)
 							{
+								ObjectPath = ObjectPath.TrimQuotes();
+
+								UPackage* FindInPackage = (FPackageName::IsShortPackageName(ObjectPath) ? ANY_PACKAGE : nullptr);
+
 								// if we had the class, find the archetype
-								Archetype = StaticFindObject(ArchetypeClass, ANY_PACKAGE, *ObjectPath);
+								Archetype = StaticFindObject(ArchetypeClass, FindInPackage, *ObjectPath);
 							}
 						}
 					}
@@ -534,7 +543,7 @@ static const TCHAR* ImportProperties(
 					if (!bIsOkToReuse)
 					{
 						UE_LOG(LogEditorObject, Log, TEXT("Could not reuse component instance %s, name clash?"), *ComponentTemplate->GetFullName());
-						ComponentTemplate->Rename(); // just abandon the existing component, we are going to create
+						ComponentTemplate->Rename(nullptr, nullptr, REN_DontCreateRedirectors); // just abandon the existing component, we are going to create
 						OldComponent = ComponentTemplate;
 						ComponentTemplate = NULL;
 					}
@@ -618,7 +627,7 @@ static const TCHAR* ImportProperties(
 		else
 		{
 			// Property.
-			UProperty::ImportSingleProperty(Str, DestData, ObjectStruct, SubobjectOuter, PortFlags, Warn, DefinedProperties);
+			FProperty::ImportSingleProperty(Str, DestData, ObjectStruct, SubobjectOuter, PortFlags, Warn, DefinedProperties);
 		}
 	}
 

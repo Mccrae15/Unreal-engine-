@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "LandscapeGrassTypeFactory.h"
 #include "AssetTypeCategories.h"
@@ -17,9 +17,4 @@ UObject* ULandscapeGrassTypeFactory::FactoryCreateNew(UClass* Class, UObject* In
 	auto NewGrassType = NewObject<ULandscapeGrassType>(InParent, Class, Name, Flags | RF_Transactional);
 
 	return NewGrassType;
-}
-
-uint32 ULandscapeGrassTypeFactory::GetMenuCategories() const
-{
-	return EAssetTypeCategories::Misc;
 }

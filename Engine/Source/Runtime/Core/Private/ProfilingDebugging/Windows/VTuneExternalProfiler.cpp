@@ -1,10 +1,9 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "CoreTypes.h"
 #include "HAL/PlatformProcess.h"
 #include "Misc/AssertionMacros.h"
 #include "ProfilingDebugging/ExternalProfiler.h"
-#include "Templates/ScopedPointer.h"
 #include "Features/IModularFeatures.h"
 #include "Templates/UniquePtr.h"
 #include "Containers/Map.h"

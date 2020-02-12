@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -9,7 +9,7 @@
 /**
  * Data table composed of a stack of other data tables.
  */
-UCLASS(MinimalAPI, BlueprintType)
+UCLASS(MinimalAPI, BlueprintType, hideCategories=(ImportOptions,ImportSource))
 class UCompositeDataTable
 	: public UDataTable
 {
@@ -31,11 +31,6 @@ class UCompositeDataTable
 		Invalid,
 	};
 
-	// Parent tables
-	// Tables with higher indices override data in tables with lower indices
-	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category=Tables)
-	TArray<UDataTable*> ParentTables;
-
 	//~ Begin UObject Interface.
 	ENGINE_API virtual void GetPreloadDependencies(TArray<UObject*>& OutDeps) override;
 	ENGINE_API virtual void Serialize(FArchive& Ar) override;
@@ -55,7 +50,12 @@ class UCompositeDataTable
 	ENGINE_API virtual void RestoreAfterStructChange() override;
 
 	virtual void PostEditChangeProperty(FPropertyChangedEvent& PropertyChangedEvent) override;
+	virtual void PostEditUndo() override;
 #endif // WITH_EDITOR
+
+	// Support for runtime modification of parent tables
+	// Be aware this can be slow and can cause hitches during gameplay
+	ENGINE_API void AppendParentTables(const TArray<UDataTable*>& NewTables);
 
 protected:
 
@@ -67,20 +67,29 @@ protected:
 	// if bClearParentTables is false then the row map will be cleared but the parent table array won't be changed
 	void EmptyCompositeTable(bool bClearParentTables);
 
-	void UpdateCachedRowMap();
+	void UpdateCachedRowMap(bool bWarnOnInvalidChildren = true);
 
-	void OnParentTablesUpdated();
+	void OnParentTablesUpdated(EPropertyChangeType::Type ChangeType = EPropertyChangeType::Unspecified);
 
-	// true if this asset is currently being loaded; false otherwise
-	uint8 bIsLoading : 1;
-
-	// if this is true then the parent table array will not be cleared when EmptyTable is called
-	uint8 bShouldNotClearParentTablesOnEmpty : 1;
+	// Parent tables
+	// Tables with higher indices override data in tables with lower indices
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = Tables)
+	TArray<UDataTable*> ParentTables;
 
 	// temporary copy used to detect changes so we can update delegates correctly on removal
 	UPROPERTY(transient)
 	TArray<UDataTable*> OldParentTables;
+
 #if WITH_EDITORONLY_DATA
 	TMap<FName, ERowState> RowSourceMap;
 #endif // WITH_EDITORONLY_DATA
+
+	// true if this asset is currently being loaded; false otherwise
+	uint8 bIsLoading : 1;
+
+	// true if we're already in the middle of updating parent tables for this asset
+	uint8 bUpdatingParentTables : 1;
+
+	// if this is true then the parent table array will not be cleared when EmptyTable is called
+	uint8 bShouldNotClearParentTablesOnEmpty : 1;
 };

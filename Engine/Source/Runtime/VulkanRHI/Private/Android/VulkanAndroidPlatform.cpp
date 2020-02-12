@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #ifndef PLATFORM_LUMIN
 	#define	PLATFORM_LUMIN	0
@@ -9,7 +9,7 @@
 #endif
 
 //#todo-Lumin: Remove this define when it becomes untangled from Android
-#if (!defined(PLATFORM_LUMIN) && !defined(PLATFORM_LUMINGL4)) || (!PLATFORM_LUMIN && !PLATFORM_LUMINGL4)
+#if (!defined(PLATFORM_LUMIN) || (!PLATFORM_LUMIN))
 #include "VulkanAndroidPlatform.h"
 #include "../VulkanRHIPrivate.h"
 #include <dlfcn.h>
@@ -73,6 +73,9 @@ bool FVulkanAndroidPlatform::LoadVulkanInstanceFunctions(VkInstance inInstance)
 	ENUM_VK_ENTRYPOINTS_INSTANCE(GETINSTANCE_VK_ENTRYPOINTS);
 	ENUM_VK_ENTRYPOINTS_INSTANCE(CHECK_VK_ENTRYPOINTS);
 
+	ENUM_VK_ENTRYPOINTS_SURFACE_INSTANCE(GETINSTANCE_VK_ENTRYPOINTS);
+	ENUM_VK_ENTRYPOINTS_SURFACE_INSTANCE(CHECK_VK_ENTRYPOINTS);
+
 	ENUM_VK_ENTRYPOINTS_PLATFORM_INSTANCE(GETINSTANCE_VK_ENTRYPOINTS);
 	ENUM_VK_ENTRYPOINTS_PLATFORM_INSTANCE(CHECK_VK_ENTRYPOINTS);
 
@@ -111,16 +114,19 @@ void FVulkanAndroidPlatform::FreeVulkanLibrary()
 void FVulkanAndroidPlatform::CreateSurface(void* WindowHandle, VkInstance Instance, VkSurfaceKHR* OutSurface)
 {
 	// don't use cached window handle coming from VulkanViewport, as it could be gone by now
-	WindowHandle = FAndroidWindow::GetHardwareWindow();
+	WindowHandle = FAndroidWindow::GetHardwareWindow_EventThread();
 	if (WindowHandle == NULL)
 	{
+
 		// Sleep if the hardware window isn't currently available.
 		// The Window may not exist if the activity is pausing/resuming, in which case we make this thread wait
 		FPlatformMisc::LowLevelOutputDebugString(TEXT("Waiting for Native window in FVulkanAndroidPlatform::CreateSurface"));
-		while (WindowHandle == NULL)
+		WindowHandle = FAndroidWindow::WaitForHardwareWindow();
+
+		if (WindowHandle == NULL)
 		{
-			FPlatformProcess::Sleep(0.001f);
-			WindowHandle = FAndroidWindow::GetHardwareWindow();
+			FPlatformMisc::LowLevelOutputDebugString(TEXT("Aborting FVulkanAndroidPlatform::CreateSurface, FAndroidWindow::WaitForHardwareWindow() returned null"));
+			return;
 		}
 	}
 
@@ -140,11 +146,12 @@ void FVulkanAndroidPlatform::GetInstanceExtensions(TArray<const ANSICHAR*>& OutE
 	OutExtensions.Add(VK_GOOGLE_DISPLAY_TIMING_EXTENSION_NAME);
 }
 
-void FVulkanAndroidPlatform::GetDeviceExtensions(TArray<const ANSICHAR*>& OutExtensions)
+void FVulkanAndroidPlatform::GetDeviceExtensions(EGpuVendorId VendorId, TArray<const ANSICHAR*>& OutExtensions)
 {
 	OutExtensions.Add(VK_KHR_SURFACE_EXTENSION_NAME);
 	OutExtensions.Add(VK_KHR_ANDROID_SURFACE_EXTENSION_NAME);
 	OutExtensions.Add(VK_GOOGLE_DISPLAY_TIMING_EXTENSION_NAME);
+	OutExtensions.Add(VK_EXT_FRAGMENT_DENSITY_MAP_EXTENSION_NAME);
 }
 
 bool FVulkanAndroidPlatform::SupportsStandardSwapchain()
@@ -171,36 +178,25 @@ EPixelFormat FVulkanAndroidPlatform::GetPixelFormatForNonDefaultSwapchain()
 	}
 }
 
+bool FVulkanAndroidPlatform::SupportsTimestampRenderQueries()
+{
+	// standalone devices have newer drivers where timestamp render queries work.
+	return FPlatformMisc::IsStandaloneStereoOnlyDevice();
+}
+
 void FVulkanAndroidPlatform::OverridePlatformHandlers(bool bInit)
 {
 	if (bInit)
 	{
-		// Want to see the actual crash report on Android so unregister signal handlers
-		FPlatformMisc::SetCrashHandler((void(*)(const FGenericCrashContext& Context)) -1);
 		FPlatformMisc::SetOnReInitWindowCallback(FVulkanDynamicRHI::RecreateSwapChain);
+		FPlatformMisc::SetOnReleaseWindowCallback(FVulkanDynamicRHI::DestroySwapChain);
 		FPlatformMisc::SetOnPauseCallback(FVulkanDynamicRHI::SavePipelineCache);
 	}
 	else
 	{
-		FPlatformMisc::SetCrashHandler(nullptr);
 		FPlatformMisc::SetOnReInitWindowCallback(nullptr);
+		FPlatformMisc::SetOnReleaseWindowCallback(nullptr);
 		FPlatformMisc::SetOnPauseCallback(nullptr);
-	}
-}
-
-void FVulkanAndroidPlatform::BlockUntilWindowIsAwailable()
-{
-	void* WindowHandle = FAndroidWindow::GetHardwareWindow();
-	if (WindowHandle == nullptr)
-	{
-		// Sleep if the hardware window isn't currently available.
-		// The Window may not exist if the activity is pausing/resuming, in which case we make this thread wait
-		FPlatformMisc::LowLevelOutputDebugString(TEXT("Waiting for Native window in FVulkanAndroidPlatform::BlockUntilWindowIsAwailable"));
-		while (WindowHandle == nullptr)
-		{
-			FPlatformProcess::Sleep(0.001f);
-			WindowHandle = FAndroidWindow::GetHardwareWindow();
-		}
 	}
 }
 

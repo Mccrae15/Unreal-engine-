@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "Engine/SCS_Node.h"
 #include "UObject/LinkerLoad.h"
@@ -88,7 +88,7 @@ UActorComponent* USCS_Node::ExecuteNodeOnActor(AActor* Actor, USceneComponent* P
 	UActorComponent* NewActorComp = nullptr;
 	UBlueprintGeneratedClass* ActualBPGC = CastChecked<UBlueprintGeneratedClass>(Actor->GetClass());
 	const FBlueprintCookedComponentInstancingData* ActualComponentTemplateData = ActualBPGC->UseFastPathComponentInstancing() ? GetActualComponentTemplateData(ActualBPGC) : nullptr;
-	if (ActualComponentTemplateData && ActualComponentTemplateData->bIsValid
+	if (ActualComponentTemplateData && ActualComponentTemplateData->bHasValidCookedData
 		&& ensureMsgf(ActualComponentTemplateData->ComponentTemplateClass != nullptr, TEXT("SCS fast path (%s.%s): Cooked data is valid, but runtime support data is not initialized. Using the slow path instead."), *ActualBPGC->GetName(), *InternalVariableName.ToString()))
 	{
 		// Use cooked instancing data if valid (fast path).
@@ -128,7 +128,7 @@ UActorComponent* USCS_Node::ExecuteNodeOnActor(AActor* Actor, USceneComponent* P
 					// does NOT occur when this component is instanced as part of dynamically spawning a Blueprint class in a cooked build (i.e.
 					// 'bIsDefaultTransform' will be 'false' in that situation). In order to maintain the same behavior between a nativized and
 					// non-nativized cooked build, if this ever changes, we would also need to update the code in AActor::PostSpawnInitialize().
-					WorldTransform.SetScale3D(NewSceneComp->RelativeScale3D);
+					WorldTransform.SetScale3D(NewSceneComp->GetRelativeScale3D());
 				}
 
 				if (RootRelativeRotationCache)
@@ -161,7 +161,7 @@ UActorComponent* USCS_Node::ExecuteNodeOnActor(AActor* Actor, USceneComponent* P
 		if (VarName != NAME_None)
 		{
 			UClass* ActorClass = Actor->GetClass();
-			if (UObjectPropertyBase* Prop = FindField<UObjectPropertyBase>(ActorClass, VarName))
+			if (FObjectPropertyBase* Prop = FindField<FObjectPropertyBase>(ActorClass, VarName))
 			{
 				// If it is null we don't really know what's going on, but make it behave as it did before the bug fix
 				if (Prop->PropertyClass == nullptr || NewActorComp->IsA(Prop->PropertyClass))
@@ -600,4 +600,29 @@ void USCS_Node::ValidateGuid()
 	}
 }
 
-#endif
+EDataValidationResult USCS_Node::IsDataValid(TArray<FText>& ValidationErrors)
+{
+	EDataValidationResult Result = Super::IsDataValid(ValidationErrors);
+	Result = (Result == EDataValidationResult::NotValidated) ? EDataValidationResult::Valid : Result;
+
+	// check the component that this node represents
+	if (ComponentTemplate)
+	{
+		EDataValidationResult ComponentResult = ComponentTemplate->IsDataValid(ValidationErrors);
+		Result = CombineDataValidationResults(Result, ComponentResult);
+	}
+
+	// check children
+	for (USCS_Node* Child : ChildNodes)
+	{
+		if (Child)
+		{
+			EDataValidationResult ChildResult = Child->IsDataValid(ValidationErrors);
+			Result = CombineDataValidationResults(Result, ChildResult);
+		}
+	}
+
+	return Result;
+}
+
+#endif // WITH_EDITOR

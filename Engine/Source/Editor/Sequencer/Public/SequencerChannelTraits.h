@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -183,6 +183,7 @@ namespace Sequencer
 	 * Add or update a key for this channel's current value
 	 *
 	 * @param InChannel          The channel to create a key for
+	 * @param InSectionToKey     The Section to key
 	 * @param InTime             The time at which to add a key
 	 * @param InSequencer        The currently active sequencer
 	 * @param InObjectBindingID  The object binding ID that this section's track is bound to
@@ -192,6 +193,7 @@ namespace Sequencer
 	template<typename ChannelType>
 	FKeyHandle AddOrUpdateKey(
 		ChannelType*                    InChannel,
+		UMovieSceneSection*             InSectionToKey,
 		FFrameNumber                    InTime,
 		ISequencer&                     InSequencer,
 		const FGuid&                    InObjectBindingID,
@@ -206,6 +208,7 @@ namespace Sequencer
 	 * Add or update a key for this channel's current value, using an external value if possible
 	 *
 	 * @param InChannel          The channel to create a key for
+	 * @param InSectionToKey     The Section to key
 	 * @param InExternalValue    The external value definition
 	 * @param InTime             The time at which to add a key
 	 * @param InSequencer        The currently active sequencer
@@ -216,6 +219,7 @@ namespace Sequencer
 	template<typename ChannelType, typename ValueType>
 	FKeyHandle AddOrUpdateKey(
 		ChannelType*                               InChannel,
+		UMovieSceneSection*             SectionToKey,
 		const TMovieSceneExternalValue<ValueType>& InExternalValue,
 		FFrameNumber                               InTime,
 		ISequencer&                                InSequencer,
@@ -242,9 +246,10 @@ namespace Sequencer
 	 *
 	 * @param InChannel          The channel to duplicate keys in
 	 * @param InHandles          Array of key handles that should be deleted
+	 * @param InOwner            The owning movie scene section for this channel
 	 * @param OutKeyDrawParams   Array to receive key draw information. Must be exactly the size of InHandles.
 	 */
-	SEQUENCER_API void DrawKeys(FMovieSceneChannel* Channel, TArrayView<const FKeyHandle> InHandles, TArrayView<FKeyDrawParams> OutKeyDrawParams);
+	SEQUENCER_API void DrawKeys(FMovieSceneChannel* Channel, TArrayView<const FKeyHandle> InHandles, const UMovieSceneSection* InOwner, TArrayView<FKeyDrawParams> OutKeyDrawParams);
 
 
 	/**
@@ -331,7 +336,10 @@ namespace Sequencer
 		Section->SetRange(NewRange);
 	}
 
-
+	/**
+	 * Whether the specified channel handle supports curve models or not
+	 */
+	SEQUENCER_API bool SupportsCurveEditorModels(const FMovieSceneChannelHandle& ChannelHandle);
 
 	/**
 	 * Create a new model for the specified channel that can be used on the curve editor interface

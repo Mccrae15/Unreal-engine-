@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -13,7 +13,7 @@ class UTexture;
 class UTakeRecorderActorSource;
 
 /** A recording source that records world state */
-UCLASS(Abstract, config = EditorSettings, DisplayName = "World Recorder Defaults")
+UCLASS(Abstract, config = EditorSettings, DisplayName = "World Recorder")
 class UTakeRecorderWorldSourceSettings : public UTakeRecorderSource
 {
 public:
@@ -34,7 +34,7 @@ public:
 
 
 /** A recording source that records world state */
-UCLASS(DisplayName="World", Category="Actors")
+UCLASS(Category="Actors", meta = (TakeRecorderDisplayName = "World"))
 class UTakeRecorderWorldSource : public UTakeRecorderWorldSourceSettings
 {
 public:

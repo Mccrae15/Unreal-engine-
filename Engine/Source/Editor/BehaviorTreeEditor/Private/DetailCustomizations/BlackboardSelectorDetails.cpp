@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "DetailCustomizations/BlackboardSelectorDetails.h"
 #include "Widgets/DeclarativeSyntaxSupport.h"
@@ -8,13 +8,14 @@
 #include "Widgets/Text/STextBlock.h"
 #include "Framework/MultiBox/MultiBoxBuilder.h"
 #include "Widgets/Input/SComboButton.h"
-#include "BehaviorTree/BTNode.h"
+#include "BehaviorTree/BlackboardAssetProvider.h"
 #include "BehaviorTreeDebugger.h"
 #include "DetailWidgetRow.h"
 #include "DetailLayoutBuilder.h"
 #include "BehaviorTree/Blackboard/BlackboardKeyType.h"
 #include "BehaviorTree/BlackboardData.h"
 #include "IPropertyUtilities.h"
+#include "Editor/EditorPerProjectUserSettings.h"
 
 #define LOCTEXT_NAMESPACE "BlackboardSelectorDetails"
 
@@ -56,18 +57,25 @@ void FBlackboardSelectorDetails::CustomizeChildren( TSharedRef<class IPropertyHa
 {
 }
 
-const UBlackboardData* FBlackboardSelectorDetails::FindBlackboardAsset(UObject* InObj)
+void FBlackboardSelectorDetails::FindBlackboardAsset(const UObject* InObj, const UObject*& OutBlackboardOwner, UBlackboardData*& OutBlackboardAsset) const
 {
-	for (UObject* TestOb = InObj; TestOb; TestOb = TestOb->GetOuter())
+	OutBlackboardOwner = nullptr;
+	OutBlackboardAsset = nullptr;
+
+	// Find first blackboard provider and return its' data.
+	// The data might be null if no blackboard is set up yet by the provider.
+	// It is important to always return the same provider so that the invalidate check
+	// in OnBlackboardOwnerChanged works consistently.
+	for (const UObject* TestOb = InObj; TestOb; TestOb = TestOb->GetOuter())
 	{
-		UBTNode* NodeOb = Cast<UBTNode>(TestOb);
-		if (NodeOb)
+		const IBlackboardAssetProvider* Provider = Cast<IBlackboardAssetProvider>(TestOb);
+		if (Provider)
 		{
-			return NodeOb->GetBlackboardAsset();
+			OutBlackboardOwner = TestOb;
+			OutBlackboardAsset = Provider->GetBlackboardAsset();
+			break;
 		}
 	}
-
-	return NULL;
 }
 
 void FBlackboardSelectorDetails::CacheBlackboardData()
@@ -107,9 +115,13 @@ void FBlackboardSelectorDetails::CacheBlackboardData()
 	MyStructProperty->GetOuterObjects(MyObjects);
 	for (int32 ObjectIdx = 0; ObjectIdx < MyObjects.Num(); ObjectIdx++)
 	{
-		UBlackboardData* BlackboardAsset = const_cast<UBlackboardData*>(FindBlackboardAsset(MyObjects[ObjectIdx]));
+		const UObject* BlackboardOwner = nullptr;
+		UBlackboardData* BlackboardAsset = nullptr;
+		FindBlackboardAsset(MyObjects[ObjectIdx], BlackboardOwner, BlackboardAsset);
+
 		if (BlackboardAsset)
 		{
+			CachedBlackboardAssetOwner = BlackboardOwner;
 			CachedBlackboardAsset = BlackboardAsset;
 
 			TArray<FName> ProcessedNames;
@@ -148,6 +160,41 @@ void FBlackboardSelectorDetails::CacheBlackboardData()
 			break;
 		}
 	}
+
+	if (GetDefault<UEditorPerProjectUserSettings>()->bDisplayBlackboardKeysInAlphabeticalOrder)
+	{
+		KeyValues.Sort([](const FName& a, const FName& b) { return a.LexicalLess(b); });
+	}
+
+	if (!OnBlackboardDataChangedHandle.IsValid())
+	{
+		UBlackboardData::OnBlackboardDataChanged.AddSP(this, &FBlackboardSelectorDetails::OnBlackboardDataChanged);
+	}
+	if (!OnBlackboardOwnerChangedHandle.IsValid())
+	{
+		IBlackboardAssetProvider::OnBlackboardOwnerChanged.AddSP(this, &FBlackboardSelectorDetails::OnBlackboardOwnerChanged);
+	}
+
+}
+
+void FBlackboardSelectorDetails::OnBlackboardDataChanged(UBlackboardData* Asset)
+{
+	UBlackboardData* CachedAsset = CachedBlackboardAsset.Get();
+	if (CachedAsset == nullptr || CachedAsset == Asset)
+	{
+		CacheBlackboardData();
+		InitKeyFromProperty();
+	}
+}
+
+void FBlackboardSelectorDetails::OnBlackboardOwnerChanged(UObject* Owner, UBlackboardData* Asset)
+{
+	const UObject* CachedAssetOwner = CachedBlackboardAssetOwner.Get();
+	if (CachedAssetOwner == nullptr || CachedAssetOwner == Owner)
+	{
+		CacheBlackboardData();
+		InitKeyFromProperty();
+	}
 }
 
 void FBlackboardSelectorDetails::InitKeyFromProperty()
@@ -182,7 +229,7 @@ TSharedRef<SWidget> FBlackboardSelectorDetails::OnGetKeyContent() const
 
 	for (int32 Idx = 0; Idx < KeyValues.Num(); Idx++)
 	{
-		FUIAction ItemAction( FExecuteAction::CreateSP( this, &FBlackboardSelectorDetails::OnKeyComboChange, Idx) );
+		FUIAction ItemAction( FExecuteAction::CreateSP( const_cast<FBlackboardSelectorDetails*>(this), &FBlackboardSelectorDetails::OnKeyComboChange, Idx) );
 		MenuBuilder.AddMenuEntry( FText::FromName( KeyValues[Idx] ), TAttribute<FText>(), FSlateIcon(), ItemAction);
 	}
 

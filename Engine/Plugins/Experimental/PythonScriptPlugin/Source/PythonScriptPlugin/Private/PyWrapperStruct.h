@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -7,6 +7,7 @@
 #include "PyUtil.h"
 #include "PyConversion.h"
 #include "UObject/Class.h"
+#include "UObject/PropertyAccessUtil.h"
 #include "Templates/TypeCompatibleBytes.h"
 #include "PyWrapperStruct.generated.h"
 
@@ -64,7 +65,7 @@ struct FPyWrapperStruct : public FPyWrapperBase
 	static PyObject* GetPropertyValue(FPyWrapperStruct* InSelf, const PyGenUtil::FGeneratedWrappedProperty& InPropDef, const char* InPythonAttrName);
 
 	/** Set a property value on this instance (called via generated code) */
-	static int SetPropertyValue(FPyWrapperStruct* InSelf, PyObject* InValue, const PyGenUtil::FGeneratedWrappedProperty& InPropDef, const char* InPythonAttrName, const bool InNotifyChange = false, const uint64 InReadOnlyFlags = CPF_EditConst | CPF_BlueprintReadOnly);
+	static int SetPropertyValue(FPyWrapperStruct* InSelf, PyObject* InValue, const PyGenUtil::FGeneratedWrappedProperty& InPropDef, const char* InPythonAttrName, const EPropertyAccessChangeNotifyMode InNotifyMode = EPropertyAccessChangeNotifyMode::Never, const uint64 InReadOnlyFlags = PropertyAccessUtil::RuntimeReadOnlyFlags);
 
 	/** Call a make function on this instance (MakeStruct internal use only) */
 	static int CallMakeFunction_Impl(FPyWrapperStruct* InSelf, PyObject* InArgs, PyObject* InKwds, const PyGenUtil::FGeneratedWrappedFunction& InFuncDef);
@@ -368,7 +369,7 @@ typedef TPyPtr<FPyWrapperStruct> FPyWrapperStructPtr;
 
 /** An Unreal struct that was generated from a Python type */
 UCLASS()
-class UPythonGeneratedStruct : public UScriptStruct
+class UPythonGeneratedStruct : public UScriptStruct, public IPythonResourceOwner
 {
 	GENERATED_BODY()
 
@@ -380,6 +381,9 @@ public:
 
 	//~ UStruct interface
 	virtual void InitializeStruct(void* Dest, int32 ArrayDim = 1) const override;
+
+	//~ IPythonResourceOwner interface
+	virtual void ReleasePythonResources() override;
 
 	/** Generate an Unreal struct from the given Python type */
 	static UPythonGeneratedStruct* GenerateStruct(PyTypeObject* InPyType);
@@ -398,6 +402,12 @@ private:
 	FPyWrapperStructMetaData PyMetaData;
 
 	friend class FPythonGeneratedStructBuilder;
+
+#else	// WITH_PYTHON
+
+public:
+	//~ IPythonResourceOwner interface
+	virtual void ReleasePythonResources() override {}
 
 #endif	// WITH_PYTHON
 };

@@ -1,19 +1,22 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
-#pragma once
-
+#pragma once 
 #include "CoreMinimal.h"
 #include "Layout/Visibility.h"
 #include "Input/Reply.h"
 #include "Widgets/DeclarativeSyntaxSupport.h"
 #include "Widgets/SWidget.h"
 #include "Widgets/SCompoundWidget.h"
+#include "Framework/MultiBox/MultiBoxBuilder.h"
 
 class FEdModeFoliage;
 class SFoliagePalette;
 class UFoliageType;
 struct FFoliageMeshUIInfo;
 enum class ECheckBoxState : uint8;
+namespace EFoliageSingleInstantiationPlacementMode {
+	enum class Type;
+};
 
 typedef TSharedPtr<FFoliageMeshUIInfo> FFoliageMeshUIInfoPtr; //should match typedef in FoliageEdMode.h
 
@@ -42,6 +45,12 @@ public:
 	/** Get the error message for this editing mode */
 	FText GetFoliageEditorErrorText() const;
 
+	/** Modes Panel Header Information **/
+	void CustomizeToolBarPalette(FToolBarBuilder& ToolBarBuilder);
+	FText GetActiveToolName() const;
+	FText GetActiveToolMessage() const;
+
+
 private:
 	/** Creates the toolbar. */
 	TSharedRef<SWidget> BuildToolBar();
@@ -60,13 +69,19 @@ private:
 	/** Checks if the tool mode is Paint Bucket. */
 	bool IsPaintFillTool() const;
 
-	FText GetActiveToolName() const;
+	/** Checks if the tool mode is Erase */
+	bool IsEraseTool() const;
 
-private:	// BRUSH SETTINGS
+	/** Checks if the tool mode is Place Single Instance */
+	bool IsPlaceTool() const;
+
+
+public:	// BRUSH SETTINGS
 	/** Sets the brush Radius for the brush. */
 	void SetRadius(float InRadius);
 
 	/** Retrieves the brush Radius for the brush. */
+	// TOptional<float> GetRadius() const;
 	TOptional<float> GetRadius() const;
 
 	/** Checks if the brush size should appear. Dependant on the current tool being used. */
@@ -93,6 +108,12 @@ private:	// BRUSH SETTINGS
 	/** Retrieves the text for the filters option */
 	FText GetFilterText() const;
 
+	/** Create a menu for the filter options */
+	TSharedRef<SWidget> MakeFilterMenu();
+
+	/** Create a menu for the settings option */
+	TSharedRef<SWidget> MakeSettingsMenu();
+
 	/** Sets the filter settings for if painting will occur on Landscapes. */
 	void OnCheckStateChanged_Landscape(ECheckBoxState InState);
 
@@ -100,10 +121,10 @@ private:	// BRUSH SETTINGS
 	ECheckBoxState GetCheckState_Landscape() const;
 
 	/** Sets the instantiation mode settings */
-	void OnCheckStateChanged_SingleInstantiationMode(ECheckBoxState InState);
+	void OnCheckStateChanged_SingleInstantiationMode(bool InState);
 
 	/** Retrieves the instantiation mode settings */
-	ECheckBoxState GetCheckState_SingleInstantiationMode() const;
+	bool GetCheckState_SingleInstantiationMode() const;
 
 	/** Sets the instantiation mode settings */
 	void OnCheckStateChanged_SpawnInCurrentLevelMode(ECheckBoxState InState);
@@ -180,19 +201,40 @@ private:	// BRUSH SETTINGS
 	/** Checks if the SingleInstantiationMode checkbox should appear. Dependant on the current tool being used. */
 	EVisibility GetVisibility_SingleInstantiationMode() const;	
 
+	/** Checks if the SingleInstantiationPlacement mode combobutton should appear. Dependant on the current tool being used. */
+	EVisibility GetVisibility_SingleInstantiationPlacementMode() const;
+
+	/** Checks if the SingleInstantiationPlacement mode combobutton should be enabled. Dependant on if single instantiation mode is enabled. */
+	bool GetIsEnabled_SingleInstantiationPlacementMode() const;
+
 	/** Checks if the SpawnInCurrentLevelMode checkbox should appear. Dependant on the current tool being used. */
 	EVisibility GetVisibility_SpawnInCurrentLevelMode() const;
+		
+	/** Sets the single instantiation placement mode */
+	void OnSingleInstantiationPlacementModeChanged(int32 InMode);
 
-private:	// SELECTION
+	/** @return display text for the placement type */
+	FText GetSingleInstantiationPlacementModeText(EFoliageSingleInstantiationPlacementMode::Type InMode) const;
+
+	/** @return menu of all single instantiation modes */
+	TSharedRef<SWidget> GetSingleInstantiationModeMenuContent();
+
+	/** @return display text for current placement type */
+	FText GetCurrentSingleInstantiationPlacementModeText() const;
+
+public:	// SELECTION
 
 	/** Handler for 'Select All' command  */
-	FReply OnSelectAllInstances();
+	void OnSelectAllInstances();
 
 	/** Handler for 'Select Invalid Instances' command  */
-	FReply OnSelectInvalidInstances();
+	void OnSelectInvalidInstances();
 
 	/** Handler for 'Deselect All' command  */
-	FReply OnDeselectAllInstances();
+	void OnDeselectAllInstances();
+
+	/** Handler for 'Move to Current Level' command*/
+	void OnMoveSelectedInstancesToCurrentLevel();
 
 	/** Tooltip text for 'Instance Count" column */
 	FText GetTotalInstanceCountTooltipText() const;
@@ -200,14 +242,15 @@ private:	// SELECTION
 	/** Handler to trigger a refresh of the details view when the active tool changes */
 	void HandleOnToolChanged();
 
-	
+	void ExecuteOnAllCurrentLevelFoliageTypes(TFunctionRef<void(const TArray<const UFoliageType*>&)> ExecuteFunc);
+
 private:
 	/** Palette of available foliage types */
 	TSharedPtr<class SFoliagePalette> FoliagePalette;
 	
 	/** Current error message */	
 	TSharedPtr<class SErrorText> ErrorText;
-
+		
 	/** Pointer to the foliage edit mode. */
 	FEdModeFoliage*					FoliageEditMode;
 };

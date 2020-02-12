@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 /*=============================================================================
  	IOSLocalNotification.cpp: Unreal IOSLocalNotification service interface object.
@@ -16,9 +16,7 @@
 #include "Modules/ModuleManager.h"
 #include "Logging/LogMacros.h"
 
-#if __IPHONE_OS_VERSION_MIN_REQUIRED >= __IPHONE_10_0
 #import <UserNotifications/UserNotifications.h>
-#endif
 
 DEFINE_LOG_CATEGORY(LogIOSLocalNotification);
 
@@ -40,7 +38,6 @@ public:
 	}
 
 #if !PLATFORM_TVOS
-#if __IPHONE_OS_VERSION_MIN_REQUIRED >= __IPHONE_10_0
 	static UNMutableNotificationContent* CreateNotificationContent(const FText& Title, const FText& Body, const FText& Action, const FString& ActivationEvent, uint32 BadgeNumber)
 	{
 		UNMutableNotificationContent* Content = [UNMutableNotificationContent new];
@@ -85,7 +82,7 @@ public:
 		
 		return Content;
 	}
-	static UNCalendarNotificationTrigger* CreateCalendarNotificationTrigger(const FDateTime& FireDateTime)
+	static UNCalendarNotificationTrigger* CreateCalendarNotificationTrigger(const FDateTime& FireDateTime, bool LocalTime)
 	{
 		NSCalendar *calendar = [NSCalendar autoupdatingCurrentCalendar];
 		NSDateComponents *dateComps = [[NSDateComponents alloc] init];
@@ -95,52 +92,29 @@ public:
 		[dateComps setHour : FireDateTime.GetHour()];
 		[dateComps setMinute : FireDateTime.GetMinute()];
 		[dateComps setSecond : FireDateTime.GetSecond()];
+		if (!LocalTime)
+		{
+			// if not local time, convert from UTC to local time, UNCalendarNotificationTrigger misbehaves
+			// if the components have anything more than previously set (can't specify timeZone)
+            NSCalendar *utcCalendar = [NSCalendar calendarWithIdentifier:NSCalendarIdentifierISO8601];
+            utcCalendar.timeZone = [NSTimeZone timeZoneForSecondsFromGMT:0];
+            NSDate *utcDate = [utcCalendar dateFromComponents:dateComps];
+            NSDateComponents *utcDateComps = [utcCalendar componentsInTimeZone:calendar.timeZone fromDate:utcDate];
+
+			// now copy components back because utcDateComps has too many fields set for
+			// UNCalendarNotificationTrigger and will now work properly on all devices
+            dateComps.day = utcDateComps.day;
+            dateComps.month = utcDateComps.month;
+            dateComps.year = utcDateComps.year;
+            dateComps.hour = utcDateComps.hour;
+            dateComps.minute = utcDateComps.minute;
+            dateComps.second = utcDateComps.second;
+		}
 		
 		UNCalendarNotificationTrigger *trigger = [UNCalendarNotificationTrigger triggerWithDateMatchingComponents:dateComps repeats:NO];
 		
 		return trigger;
 	}
-#else
-	static UILocalNotification* CreateLocalNotification(const FDateTime& FireDateTime, bool bLocalTime, const FString& ActivationEvent)
-	{
-		UIApplication* application = [UIApplication sharedApplication];
-
-		NSCalendar *calendar = [NSCalendar autoupdatingCurrentCalendar];
-		NSDateComponents *dateComps = [[NSDateComponents alloc] init];
-		[dateComps setDay : FireDateTime.GetDay()];
-		[dateComps setMonth : FireDateTime.GetMonth()];
-		[dateComps setYear : FireDateTime.GetYear()];
-		[dateComps setHour : FireDateTime.GetHour()];
-		[dateComps setMinute : FireDateTime.GetMinute()];
-		[dateComps setSecond : FireDateTime.GetSecond()];
-		NSDate *itemDate = [calendar dateFromComponents : dateComps];
-
-		UILocalNotification *localNotif = [[UILocalNotification alloc] init];
-		if (localNotif != nil)
-		{
-			localNotif.fireDate = itemDate;
-			if (bLocalTime)
-			{
-				localNotif.timeZone = [NSTimeZone defaultTimeZone];
-			}
-			else
-			{
-				localNotif.timeZone = nil;
-			}
-
-			NSString* activateEventNSString = [NSString stringWithFString:ActivationEvent];
-			if (activateEventNSString != nil)
-			{
-				NSDictionary* infoDict = [NSDictionary dictionaryWithObject:activateEventNSString forKey:@"ActivationEvent"];
-				if (infoDict != nil)
-				{
-					localNotif.userInfo = infoDict;
-				}
-			}
-		}
-		return localNotif;
-	}
-#endif
 #endif
 };
 
@@ -158,131 +132,95 @@ FIOSLocalNotificationService::FIOSLocalNotificationService()
 void FIOSLocalNotificationService::ClearAllLocalNotifications()
 {
 #if !PLATFORM_TVOS
-#if __IPHONE_OS_VERSION_MIN_REQUIRED >= __IPHONE_10_0
 	UNUserNotificationCenter *Center = [UNUserNotificationCenter currentNotificationCenter];
 	
 	[Center removeAllPendingNotificationRequests];
-#else
-	UIApplication* application = [UIApplication sharedApplication];
-	
-	[application cancelAllLocalNotifications];
-#endif
 #endif
 }
 
-static uint32 NotificationNumber = 0;
-void FIOSLocalNotificationService::ScheduleLocalNotificationAtTime(const FDateTime& FireDateTime, bool LocalTime, const FText& Title, const FText& Body, const FText& Action, const FString& ActivationEvent)
+static int32 NotificationNumber = 0;
+int32 FIOSLocalNotificationService::ScheduleLocalNotificationAtTime(const FDateTime& FireDateTime, bool LocalTime, const FText& Title, const FText& Body, const FText& Action, const FString& ActivationEvent)
 {
 #if !PLATFORM_TVOS
-#if __IPHONE_OS_VERSION_MIN_REQUIRED >= __IPHONE_10_0
-    
+	if (FireDateTime < (LocalTime ? FDateTime::Now() : FDateTime::UtcNow()))
+	{
+		return -1;
+	}
+
     //Create local copies of these for the block to capture
     FDateTime FireDateTimeCopy = FireDateTime;
     FText TitleCopy = Title;
     FText BodyCopy = Body;
     FText ActionCopy = Action;
     FString ActivationEventCopy = ActivationEvent;
-    
+	int32 CurrentNotificationId = NotificationNumber++;
+	
 	//have to schedule notification on main thread queue
 	dispatch_async(dispatch_get_main_queue(), ^{
         UNMutableNotificationContent* Content = FIOSLocalNotificationModule::CreateNotificationContent(TitleCopy, BodyCopy, ActionCopy, ActivationEventCopy, 1);
-        UNCalendarNotificationTrigger* Trigger = FIOSLocalNotificationModule::CreateCalendarNotificationTrigger(FireDateTimeCopy);
+        UNCalendarNotificationTrigger* Trigger = FIOSLocalNotificationModule::CreateCalendarNotificationTrigger(FireDateTimeCopy, LocalTime);
         
-        UNUserNotificationCenter *Center = [UNUserNotificationCenter currentNotificationCenter];
-        
-        FString NotId = TitleCopy.ToString() + FString::FromInt(NotificationNumber);
-        NSString* NotificationIdentifier = [NSString stringWithFString : NotId];
-        
-        UNNotificationRequest *Request = [UNNotificationRequest requestWithIdentifier:NotificationIdentifier content:Content trigger:Trigger];
-        
+        UNNotificationRequest *Request = [UNNotificationRequest requestWithIdentifier:@(CurrentNotificationId).stringValue content:Content trigger:Trigger];
+
+		UNUserNotificationCenter *Center = [UNUserNotificationCenter currentNotificationCenter];
         [Center addNotificationRequest : Request withCompletionHandler : ^ (NSError * _Nullable error) {
             if (error != nil) {
-                UE_LOG(LogIOSLocalNotification, Warning, TEXT("Error scheduling notification: %s"), *NotId);
+                UE_LOG(LogIOSLocalNotification, Warning, TEXT("Error scheduling notification: %d"), CurrentNotificationId);
             }
         }];
     });
+	return CurrentNotificationId;
 #else
-    
-    //Create local copies of these for the block to capture
-    FDateTime FireDateTimeCopy = FireDateTime;
-    FText TitleCopy = Title;
-    FText BodyCopy = Body;
-    FText ActionCopy = Action;
-    FString ActivationEventCopy = ActivationEvent;
-    
-	//have to schedule notification on main thread queue
-	dispatch_async(dispatch_get_main_queue(), ^{
-		UILocalNotification *localNotif = FIOSLocalNotificationModule::CreateLocalNotification(FireDateTimeCopy, LocalTime, ActivationEventCopy);
-		if (localNotif == nil)
-			return;
-
-		NSString*	alertBody = [NSString stringWithFString : BodyCopy.ToString()];
-		if (alertBody != nil)
-		{
-			localNotif.alertBody = alertBody;
-		}
-
-		NSString*	alertAction = [NSString stringWithFString : ActionCopy.ToString()];
-		if (alertAction != nil)
-		{
-			localNotif.alertAction = alertAction;
-		}
-
-		if ([IOSAppDelegate GetDelegate].OSVersion >= 8.2f)
-		{
-			NSString*	alertTitle = [NSString stringWithFString : TitleCopy.ToString()];
-			if (alertTitle != nil)
-			{
-				localNotif.alertTitle = alertTitle;
-			}
-		}
-
-		localNotif.soundName = UILocalNotificationDefaultSoundName;
-		localNotif.applicationIconBadgeNumber = 1;
-
-		[[UIApplication sharedApplication] scheduleLocalNotification:localNotif];
-    });
-#endif
+	return -1;
 #endif
 }
 
-void FIOSLocalNotificationService::ScheduleLocalNotificationBadgeAtTime(const FDateTime& FireDateTime, bool LocalTime, const FString& ActivationEvent)
+int32 FIOSLocalNotificationService::ScheduleLocalNotificationBadgeAtTime(const FDateTime& FireDateTime, bool LocalTime, const FString& ActivationEvent)
 {
 #if !PLATFORM_TVOS
-#if __IPHONE_OS_VERSION_MIN_REQUIRED >= __IPHONE_10_0
-	UNMutableNotificationContent* Content = FIOSLocalNotificationModule::CreateNotificationContent(FText(), FText(), FText(), ActivationEvent, 1);
-	UNCalendarNotificationTrigger* Trigger = FIOSLocalNotificationModule::CreateCalendarNotificationTrigger(FireDateTime);
+	if (FireDateTime < (LocalTime ? FDateTime::Now() : FDateTime::UtcNow()))
+	{
+		return -1;
+	}
+
+	FDateTime FireDateTimeCopy = FireDateTime;
+	FString ActivationEventCopy = ActivationEvent;
+	int32 CurrentNotificationId = NotificationNumber++;
 	
-	UNUserNotificationCenter *Center = [UNUserNotificationCenter currentNotificationCenter];
+	//have to schedule notification on main thread queue
+	dispatch_async(dispatch_get_main_queue(), ^{
+		UNMutableNotificationContent* Content = FIOSLocalNotificationModule::CreateNotificationContent(FText(), FText(), FText(), ActivationEventCopy, 1);
+		UNCalendarNotificationTrigger* Trigger = FIOSLocalNotificationModule::CreateCalendarNotificationTrigger(FireDateTime, LocalTime);
+		
+		UNNotificationRequest *Request = [UNNotificationRequest requestWithIdentifier:@(CurrentNotificationId).stringValue content:Content trigger:Trigger];
+
+		UNUserNotificationCenter *Center = [UNUserNotificationCenter currentNotificationCenter];
+		[Center addNotificationRequest:Request withCompletionHandler:^(NSError * _Nullable error) {
+			if (error != nil) {
+				UE_LOG(LogIOSLocalNotification, Warning, TEXT("Error scheduling notification: %d"), CurrentNotificationId);
+			}
+		}];
+	});
 	
-	FString NotId = FString(TEXT("Badge")) + FString::FromInt(NotificationNumber);
-	NSString* NotificationIdentifier = [NSString stringWithFString:NotId];
-	
-	UNNotificationRequest *Request = [UNNotificationRequest requestWithIdentifier:NotificationIdentifier content:Content trigger:Trigger];
-	
-	[Center addNotificationRequest:Request withCompletionHandler:^(NSError * _Nullable error) {
-		if (error != nil) {
-			UE_LOG(LogIOSLocalNotification, Warning, TEXT("Error scheduling notification: %s"), *NotId);
-		}
-	}];
+	return CurrentNotificationId;
 #else
-	UILocalNotification *localNotif = FIOSLocalNotificationModule::CreateLocalNotification(FireDateTime, LocalTime, ActivationEvent);
-	if (localNotif == nil)
-		return;
-
-	// As per Apple documentation, a nil 'alertBody' results in 'no alert'
-	// https://developer.apple.com/reference/uikit/uilocalnotification/1616646-alertbody?language=objc
-	localNotif.alertBody = nil;
-	localNotif.applicationIconBadgeNumber = 1;
-
-	[[UIApplication sharedApplication] scheduleLocalNotification:localNotif];
-#endif
+	return -1;
 #endif
 }
 
 void FIOSLocalNotificationService::CancelLocalNotification(const FString& ActivationEvent)
 {
 	// TODO
+}
+
+void FIOSLocalNotificationService::CancelLocalNotification(int32 NotificationId)
+{
+#if !PLATFORM_TVOS
+	UNUserNotificationCenter *Center = [UNUserNotificationCenter currentNotificationCenter];
+	NSArray<NSString*> *Identifiers = @[@(NotificationId).stringValue];
+	[Center removePendingNotificationRequestsWithIdentifiers: Identifiers];
+	[Center removeDeliveredNotificationsWithIdentifiers: Identifiers];
+#endif
 }
 
 void FIOSLocalNotificationService::GetLaunchNotification(bool& NotificationLaunchedApp, FString& ActivationEvent, int32& FireDate)
@@ -303,16 +241,15 @@ void FIOSLocalNotificationService::SetLaunchNotification(FString const& Activati
 static FIOSLocalNotificationService::FAllowedNotifications NotificationsAllowedDelegate;
 void FIOSLocalNotificationService::CheckAllowedNotifications(const FAllowedNotifications& AllowedNotificationsDelegate)
 {
-#if __IPHONE_OS_VERSION_MIN_REQUIRED >= __IPHONE_10_0
 	NotificationsAllowedDelegate = AllowedNotificationsDelegate;
 	
+#if !PLATFORM_TVOS
 	UNUserNotificationCenter *Center = [UNUserNotificationCenter currentNotificationCenter];
 	[Center getNotificationSettingsWithCompletionHandler:^(UNNotificationSettings * _Nonnull settings) {
 		bool NotificationsAllowed = settings.authorizationStatus == UNAuthorizationStatusAuthorized;
 		NotificationsAllowedDelegate.ExecuteIfBound(NotificationsAllowed);
 	}];
-	
 #else
-	checkf(false, TEXT("For min iOS version < 10 use FIOSPlatformMisc::IsAllowedRemoteNotifications()."));
+	NotificationsAllowedDelegate.ExecuteIfBound(false);
 #endif
 }

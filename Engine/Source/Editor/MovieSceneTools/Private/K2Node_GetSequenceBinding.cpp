@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "K2Node_GetSequenceBinding.h"
 #include "Kismet2/BlueprintEditorUtils.h"
@@ -9,7 +9,7 @@
 #include "Framework/Application/SlateApplication.h"
 #include "PropertyCustomizationHelpers.h"
 #include "MovieSceneSequence.h"
-#include "Framework/MultiBox/MultiBoxBuilder.h"
+#include "ToolMenus.h"
 #include "MovieSceneObjectBindingIDPicker.h"
 #include "SGraphNode.h"
 #include "ContentBrowserModule.h"
@@ -22,6 +22,7 @@
 #include "Widgets/Input/SComboBox.h"
 #include "Editor.h"
 #include "Compilation/MovieSceneCompiler.h"
+#include "ScopedTransaction.h"
 
 static const FName OutputPinName(TEXT("Output"));
 static const FName SequencePinName(TEXT("Sequence"));
@@ -233,24 +234,33 @@ FText UK2Node_GetSequenceBinding::GetTooltipText() const
 	return LOCTEXT("NodeTooltip", "Access an identifier for any object binding within a sequence");
 }
 
+FText UK2Node_GetSequenceBinding::GetMenuCategory() const
+{
+	return LOCTEXT("NodeCategory", "Sequence");
+}
+
 FSlateIcon UK2Node_GetSequenceBinding::GetIconAndTint(FLinearColor& OutColor) const
 {
 	static FSlateIcon Icon("EditorStyle", "GraphEditor.GetSequenceBinding");
 	return Icon;
 }
 
-void UK2Node_GetSequenceBinding::GetContextMenuActions(const FGraphNodeContextMenuBuilder& Context) const
+void UK2Node_GetSequenceBinding::GetNodeContextMenuActions(UToolMenu* Menu, UGraphNodeContextMenuContext* Context) const
 {
-	Super::GetContextMenuActions(Context);
+	Super::GetNodeContextMenuActions(Menu, Context);
 
-	if (!Context.bIsDebugging)
+	if (!Context->bIsDebugging)
 	{
-		Context.MenuBuilder->BeginSection("K2NodeGetSequenceBinding", LOCTEXT("ThisNodeHeader", "This Node"));
-		if (!Context.Pin)
+		FToolMenuSection& Section = Menu->AddSection("K2NodeGetSequenceBinding", LOCTEXT("ThisNodeHeader", "This Node"));
+		if (!Context->Pin)
 		{
 			UMovieSceneSequence* Sequence = GetSequence();
 
-			auto SubMenu = [=](FMenuBuilder& SubMenuBuilder)
+			Section.AddSubMenu(
+				"SetSequence",
+				LOCTEXT("SetSequence_Text", "Sequence"),
+				LOCTEXT("SetSequence_ToolTip", "Sets the sequence to get a binding from"),
+				FNewToolMenuDelegate::CreateLambda([=](UToolMenu* SubMenu)
 				{
 					TArray<const UClass*> AllowedClasses({ UMovieSceneSequence::StaticClass() });
 
@@ -260,26 +270,22 @@ void UK2Node_GetSequenceBinding::GetContextMenuActions(const FGraphNodeContextMe
 						AllowedClasses,
 						PropertyCustomizationHelpers::GetNewAssetFactoriesForClasses(AllowedClasses),
 						FOnShouldFilterAsset(),
-						FOnAssetSelected::CreateUObject(this, &UK2Node_GetSequenceBinding::SetSequence),
+						FOnAssetSelected::CreateUObject(const_cast<UK2Node_GetSequenceBinding*>(this), &UK2Node_GetSequenceBinding::SetSequence),
 						FSimpleDelegate());
 					
-					SubMenuBuilder.AddWidget(MenuContent, FText::GetEmpty(), false);
-				};
-
-			Context.MenuBuilder->AddSubMenu(
-				LOCTEXT("SetSequence_Text", "Sequence"),
-				LOCTEXT("SetSequence_ToolTip", "Sets the sequence to get a binding from"),
-				FNewMenuDelegate::CreateLambda(SubMenu)
-				);
+					SubMenu->AddMenuEntry("Section", FToolMenuEntry::InitWidget("Widget", MenuContent, FText::GetEmpty(), false));
+				}));
 		}
-
-		Context.MenuBuilder->EndSection();
 	}
 }
 
 void UK2Node_GetSequenceBinding::SetSequence(const FAssetData& InAssetData)
 {
 	FSlateApplication::Get().DismissAllMenus();
+
+	const FScopedTransaction Transaction(LOCTEXT("SetSequence", "Set Sequence"));
+	Modify();
+
 	SourceSequence = Cast<UMovieSceneSequence>(InAssetData.GetAsset());
 }
 
@@ -508,6 +514,9 @@ TSharedPtr<SGraphNode> UK2Node_GetSequenceBinding::CreateVisualWidget()
 
 		virtual void SetCurrentValue(const FMovieSceneObjectBindingID& InBindingId) override
 		{
+			const FScopedTransaction Transaction(LOCTEXT("SetBindng", "Set Binding"));
+			GraphNode->Modify();
+
 			CastChecked<UK2Node_GetSequenceBinding>(GraphNode)->Binding = InBindingId;
 			bNeedsUpdate = true;
 		}

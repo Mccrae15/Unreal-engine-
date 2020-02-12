@@ -1,10 +1,13 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "ConcertSyncArchives.h"
 #include "ConcertSyncSettings.h"
+#include "ConcertVersion.h"
 
 #include "Misc/Paths.h"
 #include "Misc/PackageName.h"
+#include "Misc/EngineVersion.h"
+#include "Serialization/CustomVersion.h"
 #include "UObject/Object.h"
 #include "UObject/Package.h"
 #include "UObject/LinkerLoad.h"
@@ -21,14 +24,14 @@ static const FName SkipAssetsMarker = TEXT("SKIPASSETS");
 
 namespace ConcertSyncUtil
 {
-	bool ShouldSkipTransientProperty(const UProperty* Property)
+	bool ShouldSkipTransientProperty(const FProperty* Property)
 	{
 		if (Property->HasAnyPropertyFlags(CPF_Transient))
 		{
 			const UConcertSyncConfig* SyncConfig = GetDefault<UConcertSyncConfig>();
-			for (const FSoftObjectPath& TransactionProperty : SyncConfig->AllowedTransientProperties)
+			for (const TFieldPath<FProperty>& TransactionProperty : SyncConfig->AllowedTransientProperties)
 			{
-				UProperty* FilterProperty = Cast<UProperty>(TransactionProperty.TryLoad());
+				FProperty* FilterProperty = TransactionProperty.Get();
 				if (Property == FilterProperty)
 				{
 					// Allowed transient property, do not skip
@@ -83,7 +86,7 @@ void FConcertSyncObjectWriter::SerializeObject(UObject* InObject, const TArray<F
 {
 	if (InPropertyNamesToWrite)
 	{
-		ShouldSkipPropertyFunc = [InObject, InPropertyNamesToWrite](const UProperty* InProperty) -> bool
+		ShouldSkipPropertyFunc = [InObject, InPropertyNamesToWrite](const FProperty* InProperty) -> bool
 		{
 			return InProperty->GetOwnerStruct() == InObject->GetClass() && !InPropertyNamesToWrite->Contains(InProperty->GetFName());
 		};
@@ -98,7 +101,7 @@ void FConcertSyncObjectWriter::SerializeObject(UObject* InObject, const TArray<F
 	}
 }
 
-void FConcertSyncObjectWriter::SerializeProperty(UProperty* InProp, UObject* InObject)
+void FConcertSyncObjectWriter::SerializeProperty(FProperty* InProp, UObject* InObject)
 {
 	for (int32 Idx = 0; Idx < InProp->ArrayDim; ++Idx)
 	{
@@ -121,7 +124,10 @@ FArchive& FConcertSyncObjectWriter::operator<<(UObject*& Obj)
 FArchive& FConcertSyncObjectWriter::operator<<(FLazyObjectPtr& LazyObjectPtr)
 {
 	UObject* Obj = LazyObjectPtr.Get();
+	FUniqueObjectGuid ObjectGuid = LazyObjectPtr.GetUniqueID();
+	// Serialize both the object path and the object guid
 	*this << Obj;
+	*this << ObjectGuid;
 	return *this;
 }
 
@@ -151,13 +157,13 @@ FString FConcertSyncObjectWriter::GetArchiveName() const
 	return TEXT("FConcertSyncObjectWriter");
 }
 
-bool FConcertSyncObjectWriter::ShouldSkipProperty(const UProperty* InProperty) const
+bool FConcertSyncObjectWriter::ShouldSkipProperty(const FProperty* InProperty) const
 {
 	return (ShouldSkipPropertyFunc && ShouldSkipPropertyFunc(InProperty)) || 
 		ConcertSyncUtil::ShouldSkipTransientProperty(InProperty);
 }
 
-FConcertSyncObjectReader::FConcertSyncObjectReader(const FConcertLocalIdentifierTable* InLocalIdentifierTable, FConcertSyncWorldRemapper InWorldRemapper, UObject* InObj, const TArray<uint8>& InBytes)
+FConcertSyncObjectReader::FConcertSyncObjectReader(const FConcertLocalIdentifierTable* InLocalIdentifierTable, FConcertSyncWorldRemapper InWorldRemapper, const FConcertSessionVersionInfo* InVersionInfo, UObject* InObj, const TArray<uint8>& InBytes)
 	: FConcertIdentifierReader(InLocalIdentifierTable, InBytes, /*bIsPersistent*/false)
 	, WorldRemapper(MoveTemp(InWorldRemapper))
 {
@@ -165,6 +171,20 @@ FConcertSyncObjectReader::FConcertSyncObjectReader(const FConcertLocalIdentifier
 	ArIgnoreArchetypeRef = false;
 	ArNoDelta = true;
 	//SetWantBinaryPropertySerialization(true);
+
+	if (InVersionInfo)
+	{
+		SetUE4Ver(InVersionInfo->FileVersion.FileVersionUE4);
+		SetLicenseeUE4Ver(InVersionInfo->FileVersion.FileVersionLicenseeUE4);
+		SetEngineVer(FEngineVersionBase(InVersionInfo->EngineVersion.Major, InVersionInfo->EngineVersion.Minor, InVersionInfo->EngineVersion.Patch, InVersionInfo->EngineVersion.Changelist));
+
+		FCustomVersionContainer EngineCustomVersions;
+		for (const FConcertCustomVersionInfo& CustomVersion : InVersionInfo->CustomVersions)
+		{
+			EngineCustomVersions.SetVersion(CustomVersion.Key, CustomVersion.Version, CustomVersion.FriendlyName);
+		}
+		SetCustomVersions(EngineCustomVersions);
+	}
 
 	SetIsTransacting(true);
 	SetFilterEditorOnly(!WITH_EDITORONLY_DATA);
@@ -182,7 +202,7 @@ void FConcertSyncObjectReader::SerializeObject(UObject* InObject)
 	InObject->Serialize(*this);
 }
 
-void FConcertSyncObjectReader::SerializeProperty(UProperty* InProp, UObject* InObject)
+void FConcertSyncObjectReader::SerializeProperty(FProperty* InProp, UObject* InObject)
 {
 	for (int32 Idx = 0; Idx < InProp->ArrayDim; ++Idx)
 	{
@@ -230,8 +250,17 @@ FArchive& FConcertSyncObjectReader::operator<<(UObject*& Obj)
 FArchive& FConcertSyncObjectReader::operator<<(FLazyObjectPtr& LazyObjectPtr)
 {
 	UObject* Obj = nullptr;
+	FUniqueObjectGuid SavedObjectGuid;
 	*this << Obj;
-	LazyObjectPtr = Obj;
+	*this << SavedObjectGuid;
+
+	// if the resolved object already has an associated Guid, use that instead of the saved one
+	// otherwise used the saved guid since it should refer to the Obj path once its state get applied.
+	FUniqueObjectGuid ObjectGuid = Obj != nullptr ? FUniqueObjectGuid(Obj) : FUniqueObjectGuid();
+	LazyObjectPtr = ObjectGuid.IsValid() ? ObjectGuid : SavedObjectGuid;
+	// technically the saved object guid should be the same as the resolved object guid if any.
+	ensure(!ObjectGuid.IsValid() || ObjectGuid == SavedObjectGuid);
+
 	return *this;
 }
 

@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 /*=============================================================================
 GameplayDebuggerSettings.h: Declares the UGameplayDebuggerSettings class.
@@ -149,6 +149,10 @@ public:
 	/** Whether to extreme values on graph (data has to be provided for extreme values) */
 	UPROPERTY(EditAnywhere, config, Category = "VisualLogger")
 	bool bDrawExtremesOnGraphs;
+
+	/** Graphs will be scaled around local Min/Max values (values being displayed) rather than all historic data */
+	UPROPERTY(EditAnywhere, config, Category = "VisualLogger")
+	bool bConstrainGraphToLocalMinMax;
 
 	/** Whether to use PlayersOnly during Pause or not */
 	UPROPERTY(EditAnywhere, config, Category = "VisualLogger")

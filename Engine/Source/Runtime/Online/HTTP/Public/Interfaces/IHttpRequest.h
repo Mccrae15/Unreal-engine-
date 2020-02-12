@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -62,8 +62,14 @@ namespace EHttpRequestStatus
 	}
 }
 
-typedef TSharedPtr<class IHttpRequest> FHttpRequestPtr;
-typedef TSharedPtr<class IHttpResponse,ESPMode::ThreadSafe> FHttpResponsePtr;
+class IHttpRequest;
+class IHttpResponse;
+
+typedef TSharedPtr<IHttpRequest> FHttpRequestPtr;
+typedef TSharedPtr<IHttpResponse, ESPMode::ThreadSafe> FHttpResponsePtr;
+
+typedef TSharedRef<IHttpRequest> FHttpRequestRef;
+typedef TSharedRef<IHttpResponse, ESPMode::ThreadSafe> FHttpResponseRef;
 
 /**
  * Delegate called when an Http request completes
@@ -91,6 +97,15 @@ DECLARE_DELEGATE_ThreeParams(FHttpRequestHeaderReceivedDelegate, FHttpRequestPtr
  * @param BytesReceived the number of bytes received / downloaded in the response so far.
  */
 DECLARE_DELEGATE_ThreeParams(FHttpRequestProgressDelegate, FHttpRequestPtr /*Request*/, int32 /*BytesSent*/, int32 /*BytesReceived*/);
+
+/**
+ * Delegate called when an Http request will be retried in the future
+ *
+ * @param Request - original Http request that started things
+ * @param Response - response received from the server if a successful connection was established
+ * @param SecondsToRetry - seconds in the future when the response will be retried
+ */
+DECLARE_DELEGATE_ThreeParams(FHttpRequestWillRetryDelegate, FHttpRequestPtr /*Request*/, FHttpResponsePtr /*Response*/, float /*SecondsToRetry*/);
 
 /**
  * Interface for Http requests (created using FHttpFactory)
@@ -201,6 +216,11 @@ public:
 	 * Delegate called to update the request/response progress. See FHttpRequestProgressDelegate
 	 */
 	virtual FHttpRequestProgressDelegate& OnRequestProgress() = 0;
+	
+	/**
+	* Delegate called when the request will be retried
+	*/
+	virtual FHttpRequestWillRetryDelegate& OnRequestWillRetry() = 0;
 
 	/** 
 	 * Delegate called to signal the receipt of a header.  See FHttpRequestHeaderReceivedDelegate

@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "Evaluation/MovieScene3DTransformTemplate.h"
 #include "Tracks/MovieScene3DTransformTrack.h"
@@ -12,9 +12,17 @@
 #include "Evaluation/Blending/MovieSceneBlendingActuatorID.h"
 #include "IMovieScenePlaybackClient.h"
 #include "Tracks/IMovieSceneTransformOrigin.h"
+#include "Evaluation/IMovieSceneMotionVectorSimulation.h"
+
 
 DECLARE_CYCLE_STAT(TEXT("Transform Track Evaluate"), MovieSceneEval_TransformTrack_Evaluate, STATGROUP_MovieSceneEval);
 DECLARE_CYCLE_STAT(TEXT("Transform Track Token Execute"), MovieSceneEval_TransformTrack_TokenExecute, STATGROUP_MovieSceneEval);
+
+FSharedPersistentDataKey FGlobalTransformPersistentData::GetDataKey()
+{
+	static FSharedPersistentDataKey Key(FMovieSceneSharedDataId::Allocate(), FMovieSceneEvaluationOperand());
+	return Key;
+}
 
 namespace MovieScene
 {
@@ -66,7 +74,7 @@ struct FComponentTransformActuator : TMovieSceneBlendingActuator<F3DTransformTra
 	{
 		if (USceneComponent* SceneComponent = MovieSceneHelpers::SceneComponentFromRuntimeObject(InObject))
 		{
-			return F3DTransformTrackToken(SceneComponent->RelativeLocation, SceneComponent->RelativeRotation, SceneComponent->RelativeScale3D);
+			return F3DTransformTrackToken(SceneComponent->GetRelativeLocation(), SceneComponent->GetRelativeRotation(), SceneComponent->GetRelativeScale3D());
 		}
 
 		return F3DTransformTrackToken();
@@ -86,58 +94,77 @@ struct FComponentTransformActuator : TMovieSceneBlendingActuator<F3DTransformTra
 
 			SceneComponent->SetMobility(EComponentMobility::Movable);
 
-			InFinalValue.Apply(*SceneComponent, Context.GetDelta() / Context.GetFrameRate());
+			InFinalValue.Apply(*SceneComponent);
 		}
 	}
 
 	virtual void Actuate(FMovieSceneInterrogationData& InterrogationData, const F3DTransformTrackToken& InValue, const TBlendableTokenStack<F3DTransformTrackToken>& OriginalStack, const FMovieSceneContext& Context) const override
 	{
-		InterrogationData.Add(FTransform(InValue.Rotation.Quaternion(), InValue.Translation, InValue.Scale), UMovieScene3DTransformTrack::GetInterrogationKey());
+		FTransformData Data;
+		Data.Translation = InValue.Translation;
+		Data.Rotation = InValue.Rotation;
+		Data.Scale = InValue.Scale;
+		InterrogationData.Add(FTransformData(Data), UMovieScene3DTransformSection::GetInterrogationKey());
 	}
 };
+
+
+
+/** Actuator that knows how to apply transform track tokens to an object */
+struct FSimulatedComponentTransformActuator : TMovieSceneBlendingActuator<F3DTransformTrackToken>
+{
+	FSimulatedComponentTransformActuator()
+		: TMovieSceneBlendingActuator<F3DTransformTrackToken>(GetActuatorTypeID())
+	{}
+
+	/** Access a unique identifier for this actuator type */
+	static FMovieSceneBlendingActuatorID GetActuatorTypeID()
+	{
+		static FMovieSceneAnimTypeID TypeID = TMovieSceneAnimTypeID<FSimulatedComponentTransformActuator>();
+		return FMovieSceneBlendingActuatorID(TypeID);
+	}
+
+	/** Get an object's current transform */
+	virtual F3DTransformTrackToken RetrieveCurrentValue(UObject* InObject, IMovieScenePlayer* Player) const
+	{
+		if (USceneComponent* SceneComponent = MovieSceneHelpers::SceneComponentFromRuntimeObject(InObject))
+		{
+			return F3DTransformTrackToken(SceneComponent->GetRelativeLocation(), SceneComponent->GetRelativeRotation(), SceneComponent->GetRelativeScale3D());
+		}
+
+		return F3DTransformTrackToken();
+	}
+
+	/** Set an object's transform */
+	virtual void Actuate(UObject* InObject, const F3DTransformTrackToken& InFinalValue, const TBlendableTokenStack<F3DTransformTrackToken>& OriginalStack, const FMovieSceneContext& Context, FPersistentEvaluationData& PersistentData, IMovieScenePlayer& Player) override
+	{
+		ensureMsgf(InObject, TEXT("Attempting to evaluate a Transform track with a null object."));
+
+		USceneComponent* SceneComponent = MovieSceneHelpers::SceneComponentFromRuntimeObject(InObject);
+		if (SceneComponent && Player.MotionVectorSimulation.IsValid())
+		{
+			Player.MotionVectorSimulation->Add(SceneComponent, FTransform(InFinalValue.Rotation, InFinalValue.Translation, InFinalValue.Scale), NAME_None);
+		}
+	}
+};
+
+
 
 FMovieSceneComponentTransformSectionTemplate::FMovieSceneComponentTransformSectionTemplate(const UMovieScene3DTransformSection& Section)
 	: TemplateData(Section)
 {
 }
 
-struct FComponentTransformPersistentData : IPersistentEvaluationData
+MovieScene::TMultiChannelValue<float, 9> FMovieSceneComponentTransformSectionTemplate::EvaluateTransform(FFrameTime Time, const FGlobalTransformPersistentData* GlobalTransformData) const
 {
-	FTransform Origin;
-};
-
-void FMovieSceneComponentTransformSectionTemplate::Initialize(const FMovieSceneEvaluationOperand& Operand, const FMovieSceneContext& Context, FPersistentEvaluationData& PersistentData, IMovieScenePlayer& Player) const
-{
-	// If the global instance data implements a transform origin interface, use its transform as an origin for this transform
-	IMovieScenePlaybackClient*        PlaybackClient = Player.GetPlaybackClient();
-	UObject*                          InstanceData   = PlaybackClient ? PlaybackClient->GetInstanceData() : nullptr;
-	const IMovieSceneTransformOrigin* RawInterface   = Cast<IMovieSceneTransformOrigin>(InstanceData);
-
-	const bool bHasInterface = RawInterface || (InstanceData && InstanceData->GetClass()->ImplementsInterface(UMovieSceneTransformOrigin::StaticClass()));
-
-	if (bHasInterface && TemplateData.BlendType == EMovieSceneBlendType::Absolute)
-	{
-		// Retrieve the current origin
-		FTransform TransformOrigin = RawInterface ? RawInterface->GetTransformOrigin() : IMovieSceneTransformOrigin::Execute_BP_GetTransformOrigin(InstanceData);
-
-		// Assign the transform origin to the peristent data so it can be queried in Evaluate
-		PersistentData.GetOrAddSectionData<FComponentTransformPersistentData>().Origin = TransformOrigin;
-	}
-}
-
-void FMovieSceneComponentTransformSectionTemplate::Evaluate(const FMovieSceneEvaluationOperand& Operand, const FMovieSceneContext& Context, const FPersistentEvaluationData& PersistentData, FMovieSceneExecutionTokens& ExecutionTokens) const
-{
-	using namespace MovieScene;
-
-	TMultiChannelValue<float, 9> TransformValue = TemplateData.Evaluate(Context.GetTime());
+	MovieScene::TMultiChannelValue<float, 9> TransformValue = TemplateData.Evaluate(Time);
 	if (TransformValue.IsEmpty())
 	{
-		return;
+		return TransformValue;
 	}
 
 	// Apply origin transformation if necessary 
-	const FComponentTransformPersistentData* Data = PersistentData.FindSectionData<FComponentTransformPersistentData>();
-	if (TemplateData.BlendType == EMovieSceneBlendType::Absolute && Data)
+	if (TemplateData.BlendType == EMovieSceneBlendType::Absolute && GlobalTransformData)
 	{
 		float Components[6] = {
 			TransformValue.Get(0, 0.f), TransformValue.Get(1, 0.f), TransformValue.Get(2, 0.f),
@@ -145,7 +172,7 @@ void FMovieSceneComponentTransformSectionTemplate::Evaluate(const FMovieSceneEva
 		};
 
 		FTransform AnimatedTransform(FRotator(Components[4], Components[5], Components[3]), FVector(Components[0], Components[1], Components[2]));
-		AnimatedTransform = AnimatedTransform * Data->Origin;
+		AnimatedTransform = AnimatedTransform * GlobalTransformData->Origin;
 
 		FVector Location = AnimatedTransform.GetTranslation();
 		Components[0] = Location.X;
@@ -157,7 +184,7 @@ void FMovieSceneComponentTransformSectionTemplate::Evaluate(const FMovieSceneEva
 		Components[4] = Rotation.Y;
 		Components[5] = Rotation.Z;
 
-		for (int32 Index = 0; Index < ARRAY_COUNT(Components); ++Index)
+		for (int32 Index = 0; Index < UE_ARRAY_COUNT(Components); ++Index)
 		{
 			if (TransformValue.IsSet(Index))
 			{
@@ -166,23 +193,73 @@ void FMovieSceneComponentTransformSectionTemplate::Evaluate(const FMovieSceneEva
 		}
 	}
 
-	// Ensure the accumulator knows how to actually apply component transforms
-	FMovieSceneBlendingActuatorID ActuatorTypeID = FComponentTransformActuator::GetActuatorTypeID();
-	if (!ExecutionTokens.GetBlendingAccumulator().FindActuator<F3DTransformTrackToken>(ActuatorTypeID))
+	return TransformValue;
+}
+
+void FMovieSceneComponentTransformSectionTemplate::Evaluate(const FMovieSceneEvaluationOperand& Operand, const FMovieSceneContext& Context, const FPersistentEvaluationData& PersistentData, FMovieSceneExecutionTokens& ExecutionTokens) const
+{
+	using namespace MovieScene;
+
+	static FSharedPersistentDataKey GlobalTransformDataKey = FGlobalTransformPersistentData::GetDataKey();
+	const FGlobalTransformPersistentData* GlobalTransformData = PersistentData.Find<FGlobalTransformPersistentData>(GlobalTransformDataKey);
+
+	TMultiChannelValue<float, 9> TransformValue = EvaluateTransform(Context.GetTime(), GlobalTransformData);
+	if (!TransformValue.IsEmpty())
 	{
-		ExecutionTokens.GetBlendingAccumulator().DefineActuator(ActuatorTypeID, MakeShared<FComponentTransformActuator>());
+		// Ensure the accumulator knows how to actually apply component transforms
+		FMovieSceneBlendingActuatorID ActuatorTypeID = FComponentTransformActuator::GetActuatorTypeID();
+		if (!ExecutionTokens.GetBlendingAccumulator().FindActuator<F3DTransformTrackToken>(ActuatorTypeID))
+		{
+			ExecutionTokens.GetBlendingAccumulator().DefineActuator(ActuatorTypeID, MakeShared<FComponentTransformActuator>());
+		}
+
+		// Add the blendable to the accumulator
+		float Weight = EvaluateEasing(Context.GetTime());
+		if (EnumHasAllFlags(TemplateData.Mask.GetChannels(), EMovieSceneTransformChannel::Weight))
+		{
+			float ManualWeight = 1.f;
+			TemplateData.ManualWeight.Evaluate(Context.GetTime(), ManualWeight);
+			Weight *= ManualWeight;
+		}
+
+		ExecutionTokens.BlendToken(ActuatorTypeID, TBlendableToken<F3DTransformTrackToken>(TransformValue, TemplateData.BlendType, Weight));
 	}
 
-	// Add the blendable to the accumulator
-	float Weight = EvaluateEasing(Context.GetTime());
-	if (EnumHasAllFlags(TemplateData.Mask.GetChannels(), EMovieSceneTransformChannel::Weight))
+	if (IMovieSceneMotionVectorSimulation::IsEnabled(PersistentData, Context))
 	{
-		float ManualWeight = 1.f;
-		TemplateData.ManualWeight.Evaluate(Context.GetTime(), ManualWeight);
-		Weight *= ManualWeight;
-	}
+		FFrameTime SimulationTime = IMovieSceneMotionVectorSimulation::GetSimulationTime(Context);
+		TMultiChannelValue<float, 9> SimulatedValue = EvaluateTransform(SimulationTime, GlobalTransformData);
 
-	ExecutionTokens.BlendToken(ActuatorTypeID, TBlendableToken<F3DTransformTrackToken>(TransformValue, TemplateData.BlendType, Weight));
+		if (!SimulatedValue.IsEmpty())
+		{
+			// Ensure the accumulator knows how to actually apply component transforms
+			FMovieSceneBlendingActuatorID SimulationActuatorTypeID = FSimulatedComponentTransformActuator::GetActuatorTypeID();
+			if (!ExecutionTokens.GetBlendingAccumulator().FindActuator<F3DTransformTrackToken>(SimulationActuatorTypeID))
+			{
+				ExecutionTokens.GetBlendingAccumulator().DefineActuator(SimulationActuatorTypeID, MakeShared<FSimulatedComponentTransformActuator>());
+			}
+
+			// Add the blendable to the accumulator
+			float Weight = EvaluateEasing(SimulationTime);
+			if (EnumHasAllFlags(TemplateData.Mask.GetChannels(), EMovieSceneTransformChannel::Weight))
+			{
+				float ManualWeight = 1.f;
+				TemplateData.ManualWeight.Evaluate(Context.GetTime(), ManualWeight);
+				Weight *= ManualWeight;
+			}
+
+			// Reproject backwards
+			for (int32 Index = 0; Index < 9; ++Index)
+			{
+				if (SimulatedValue.IsSet(Index) && TransformValue.IsSet(Index))
+				{
+					SimulatedValue.Set(Index, 2.f*TransformValue[Index] - SimulatedValue[Index]);
+				}
+			}
+
+			ExecutionTokens.BlendToken(SimulationActuatorTypeID, TBlendableToken<F3DTransformTrackToken>(SimulatedValue, TemplateData.BlendType, Weight));
+		}
+	}
 }
 
 void FMovieSceneComponentTransformSectionTemplate::Interrogate(const FMovieSceneContext& Context, FMovieSceneInterrogationData& Container, UObject* BindingOverride) const

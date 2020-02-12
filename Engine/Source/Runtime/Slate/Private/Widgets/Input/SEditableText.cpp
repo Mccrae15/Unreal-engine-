@@ -1,13 +1,20 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "Widgets/Input/SEditableText.h"
 #include "Framework/Text/TextEditHelper.h"
 #include "Framework/Text/PlainTextLayoutMarshaller.h"
 #include "Widgets/Text/SlateEditableTextLayout.h"
 #include "Types/ReflectionMetadata.h"
+#if WITH_ACCESSIBILITY
+#include "Widgets/Accessibility/SlateAccessibleWidgets.h"
+#endif
 
 SEditableText::SEditableText()
 {
+#if WITH_ACCESSIBILITY
+	AccessibleBehavior = EAccessibleBehavior::Auto;
+	bCanChildrenBeAccessible = false;
+#endif
 }
 
 SEditableText::~SEditableText()
@@ -381,12 +388,17 @@ void SEditableText::GoTo(const FTextLocation& NewLocation)
 	EditableTextLayout->GoTo(NewLocation);
 }
 
-void SEditableText::GoTo(ETextLocation GoToLocation)
+void SEditableText::GoTo(const ETextLocation NewLocation)
 {
-	EditableTextLayout->GoTo(GoToLocation);
+	EditableTextLayout->GoTo(NewLocation);
 }
 
 void SEditableText::ScrollTo(const FTextLocation& NewLocation)
+{
+	EditableTextLayout->ScrollTo(NewLocation);
+}
+
+void SEditableText::ScrollTo(const ETextLocation NewLocation)
 {
 	EditableTextLayout->ScrollTo(NewLocation);
 }
@@ -587,6 +599,7 @@ void SEditableText::OnTextCommitted(const FText& InText, const ETextCommit::Type
 
 void SEditableText::OnCursorMoved(const FTextLocation& InLocation)
 {
+	Invalidate(EInvalidateWidgetReason::Layout);
 }
 
 float SEditableText::UpdateAndClampHorizontalScrollBar(const float InViewOffset, const float InViewFraction, const EVisibility InVisiblityOverride)
@@ -598,3 +611,15 @@ float SEditableText::UpdateAndClampVerticalScrollBar(const float InViewOffset, c
 {
 	return 0.0f;
 }
+
+#if WITH_ACCESSIBILITY
+TSharedRef<FSlateAccessibleWidget> SEditableText::CreateAccessibleWidget()
+{
+	return MakeShareable<FSlateAccessibleWidget>(new FSlateAccessibleEditableText(SharedThis(this)));
+}
+
+TOptional<FText> SEditableText::GetDefaultAccessibleText(EAccessibleType AccessibleType) const
+{
+	return GetHintText();
+}
+#endif

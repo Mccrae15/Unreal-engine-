@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 
 #include "BlueprintEditorModule.h"
@@ -29,6 +29,7 @@
 #include "BlueprintGraphPanelPinFactory.h"
 #include "WatchPointViewer.h"
 #include "KismetCompiler.h"
+#include "KismetWidgets.h"
 
 #define LOCTEXT_NAMESPACE "BlueprintEditor"
 
@@ -129,7 +130,10 @@ void FixSubObjectReferencesPostUndoRedo(const FTransaction* Transaction)
 
 			if (Blueprint != nullptr)
 			{
-				ModifiedBlueprints.AddUnique(Blueprint);
+				if (Blueprint->ShouldBeMarkedDirtyUponTransaction())
+				{
+					ModifiedBlueprints.AddUnique(Blueprint);
+				}
 			}
 		}
 	}
@@ -139,7 +143,14 @@ void FixSubObjectReferencesPostUndoRedo(const FTransaction* Transaction)
 	{
 		FixSubObjectReferencesPostUndoRedo(Blueprint->GeneratedClass->GetDefaultObject());
 		// Will cause a call to RefreshEditors()
-		FBlueprintEditorUtils::MarkBlueprintAsStructurallyModified(Blueprint);
+		if (Blueprint->ShouldBeMarkedDirtyUponTransaction())
+		{
+			FBlueprintEditorUtils::MarkBlueprintAsStructurallyModified(Blueprint);
+		}
+		else
+		{
+			Blueprint->MarkPackageDirty();
+		}
 	}
 }
 
@@ -181,6 +192,8 @@ void FBlueprintEditorModule::StartupModule()
 		auto& MenuExtenders = LevelEditorModule.GetAllLevelViewportContextMenuExtenders();
 		MenuExtenders.Add(LevelViewportContextMenuBlueprintExtender);
 		LevelViewportContextMenuBlueprintExtenderDelegateHandle = MenuExtenders.Last().GetHandle();
+
+		FModuleManager::Get().LoadModuleChecked<FKismetWidgetsModule>("KismetWidgets");
 	}
 
 	FMessageLogModule& MessageLogModule = FModuleManager::LoadModuleChecked<FMessageLogModule>("MessageLog");
@@ -316,34 +329,78 @@ void FBlueprintEditorModule::UnregisterSCSEditorCustomization(const FName& InCom
 	SCSEditorCustomizations.Remove(InComponentName);
 }
 
-void FBlueprintEditorModule::RegisterVariableCustomization(UStruct* InStruct, FOnGetVariableCustomizationInstance InOnGetVariableCustomization)
+void FBlueprintEditorModule::RegisterVariableCustomization(FFieldClass* InFieldClass, FOnGetVariableCustomizationInstance InOnGetVariableCustomization)
 {
-	VariableCustomizations.Add(InStruct, InOnGetVariableCustomization);
+	VariableCustomizations.Add(InFieldClass, InOnGetVariableCustomization);
 }
 
-void FBlueprintEditorModule::UnregisterVariableCustomization(UStruct* InStruct)
+void FBlueprintEditorModule::UnregisterVariableCustomization(FFieldClass* InFieldClass)
 {
-	VariableCustomizations.Remove(InStruct);
+	VariableCustomizations.Remove(InFieldClass);
 }
 
-TArray<TSharedPtr<IDetailCustomization>> FBlueprintEditorModule::CustomizeVariable(UStruct* InStruct, TSharedPtr<IBlueprintEditor> InBlueprintEditor)
+void FBlueprintEditorModule::RegisterGraphCustomization(const UEdGraphSchema* InGraphSchema, FOnGetGraphCustomizationInstance InOnGetGraphCustomization)
+{
+	GraphCustomizations.Add(InGraphSchema, InOnGetGraphCustomization);
+}
+
+void FBlueprintEditorModule::UnregisterGraphCustomization(const UEdGraphSchema* InGraphSchema)
+{
+	GraphCustomizations.Remove(InGraphSchema);
+}
+
+TArray<TSharedPtr<IDetailCustomization>> FBlueprintEditorModule::CustomizeVariable(FFieldClass* InFieldClass, TSharedPtr<IBlueprintEditor> InBlueprintEditor)
 {
 	TArray<TSharedPtr<IDetailCustomization>> DetailsCustomizations;
-	TArray<UStruct*> ParentStructsToQuery;
-	if (InStruct)
+	TArray<FFieldClass*> ParentClassesToQuery;
+	if (InFieldClass)
 	{
-		ParentStructsToQuery.Add(InStruct);
+		ParentClassesToQuery.Add(InFieldClass);
 
-		UStruct* ParentStruct = InStruct->GetSuperStruct();
-		while (ParentStruct && ParentStruct->IsA(UClass::StaticClass()))
+		FFieldClass* ParentClass = InFieldClass->GetSuperClass();
+		while (ParentClass)
 		{
-			ParentStructsToQuery.Add(ParentStruct);
-			ParentStruct = ParentStruct->GetSuperStruct();
+			ParentClassesToQuery.Add(ParentClass);
+			ParentClass = ParentClass->GetSuperClass();
 		}
 
-		for (UStruct* StructToQuery : ParentStructsToQuery)
+		for (FFieldClass* ClassToQuery : ParentClassesToQuery)
 		{
-			FOnGetVariableCustomizationInstance* CustomizationDelegate = VariableCustomizations.Find(StructToQuery);
+			FOnGetVariableCustomizationInstance* CustomizationDelegate = VariableCustomizations.Find(ClassToQuery);
+			if (CustomizationDelegate && CustomizationDelegate->IsBound())
+			{
+				TSharedPtr<IDetailCustomization> Customization = CustomizationDelegate->Execute(InBlueprintEditor);
+				if(Customization.IsValid())
+				{ 
+					DetailsCustomizations.Add(Customization);
+				}
+			}
+		}
+	}
+
+	return DetailsCustomizations;
+}
+
+TArray<TSharedPtr<IDetailCustomization>> FBlueprintEditorModule::CustomizeGraph(const UEdGraphSchema* InGraphSchema, TSharedPtr<IBlueprintEditor> InBlueprintEditor)
+{
+	TArray<TSharedPtr<IDetailCustomization>> DetailsCustomizations;
+	TArray<UClass*> ParentSchemaClassesToQuery;
+	if (InGraphSchema)
+	{
+		UClass* GraphSchemaClass = InGraphSchema->GetClass();
+		ParentSchemaClassesToQuery.Add(InGraphSchema->GetClass());
+
+		UClass* ParentSchemaClass = GraphSchemaClass->GetSuperClass();
+		while (ParentSchemaClass && ParentSchemaClass->IsChildOf(UEdGraphSchema::StaticClass()))
+		{
+			ParentSchemaClassesToQuery.Add(ParentSchemaClass);
+			ParentSchemaClass = ParentSchemaClass->GetSuperClass();
+		}
+
+		for (UClass* ClassToQuery : ParentSchemaClassesToQuery)
+		{
+			UEdGraphSchema* SchemaToQuery = CastChecked<UEdGraphSchema>(ClassToQuery->GetDefaultObject());
+			FOnGetGraphCustomizationInstance* CustomizationDelegate = GraphCustomizations.Find(SchemaToQuery);
 			if (CustomizationDelegate && CustomizationDelegate->IsBound())
 			{
 				TSharedPtr<IDetailCustomization> Customization = CustomizationDelegate->Execute(InBlueprintEditor);

@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 using System;
 using System.Collections.Generic;
@@ -24,7 +24,12 @@ namespace AutomationTool
 		{
 			// Parse all the arguments
 			string TargetName = ParseRequiredStringParam("Name");
-			UnrealTargetPlatform Platform = ParseOptionalEnumParam<UnrealTargetPlatform>("Platform") ?? HostPlatform.Current.HostEditorPlatform;
+			string PlatformName = ParseOptionalStringParam("Platform");
+			UnrealTargetPlatform Platform;
+			if (UnrealTargetPlatform.TryParse(PlatformName, out Platform))
+			{
+				Platform = HostPlatform.Current.HostEditorPlatform;
+			}
 			UnrealTargetConfiguration Configuration = ParseOptionalEnumParam<UnrealTargetConfiguration>("Configuration") ?? UnrealTargetConfiguration.Development;
 			string Architecture = ParseOptionalStringParam("Architecture");
 			FileReference ProjectFile = ParseOptionalFileReferenceParam("Project");

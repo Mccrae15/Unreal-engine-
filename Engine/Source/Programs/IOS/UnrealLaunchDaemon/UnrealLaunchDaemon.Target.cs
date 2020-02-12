@@ -1,9 +1,9 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 using UnrealBuildTool;
 using System.Collections.Generic;
 
-[SupportedPlatforms(UnrealTargetPlatform.IOS)]
+[SupportedPlatforms("IOS")]
 public class UnrealLaunchDaemonTarget : TargetRules
 {
 	public UnrealLaunchDaemonTarget(TargetInfo Target) : base(Target)

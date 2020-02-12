@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -20,16 +20,16 @@ class FXmppMessagesStrophe
 public:
 	// FXmppMessagesStrophe
 	FXmppMessagesStrophe(FXmppConnectionStrophe& InConnectionManager);
-	~FXmppMessagesStrophe() = default;
+	~FXmppMessagesStrophe();
 
 	// XMPP Thread
-	void OnDisconnect();
 	bool ReceiveStanza(const FStropheStanza& IncomingStanza);
-
 	bool HandleMessageStanza(const FStropheStanza& IncomingStanza);
 	bool HandleMessageErrorStanza(const FStropheStanza& ErrorStanza);
 
 	// Game Thread
+	void OnDisconnect();
+	void OnReconnect();
 
 	// IXmppMessages
 	virtual bool SendMessage(const FXmppUserJid& RecipientId, const FString& Type, const FString& Payload, bool bPayloadIsSerializedJson = false) override;
@@ -41,6 +41,9 @@ public:
 
 protected:
 	void OnMessageReceived(TUniquePtr<FXmppMessage>&& Message);
+
+	/** Remove pending messages and engine KeepAwake calls */
+	void CleanupMessages();
 
 protected:
 	/** Connection manager controls sending data to XMPP thread */

@@ -3,9 +3,9 @@
 //
 
 #pragma once
-
-#include "ResonanceAudioCommon.h"
+#include "ResonanceAudioEnums.h"
 #include "ResonanceAudioSettings.generated.h"
+
 
 UCLASS(config = Engine, defaultconfig)
 class RESONANCEAUDIO_API UResonanceAudioSettings : public UObject
@@ -16,6 +16,10 @@ public:
 
 	UResonanceAudioSettings();
 
+	// Reference to submix where reverb plugin audio is routed.
+	UPROPERTY(GlobalConfig, EditAnywhere, Category = "Reverb", meta = (AllowedClasses = "SoundSubmix"))
+	FSoftObjectPath OutputSubmix;
+
 	// Global Quality mode to use for directional sound sources.
 	UPROPERTY(GlobalConfig, EditAnywhere, Category = General)
 	ERaQualityMode QualityMode;
@@ -23,4 +27,8 @@ public:
 	// Default settings for global reverb: This is overridden when a player enters Audio Volumes.
 	UPROPERTY(GlobalConfig, EditAnywhere, Category = General, meta = (AllowedClasses = "ResonanceAudioReverbPluginPreset"))
 	FSoftObjectPath GlobalReverbPreset;
+
+	// Default settings for global source settings
+	UPROPERTY(GlobalConfig, EditAnywhere, Category = General, meta = (AllowedClasses = "ResonanceAudioSpatializationSourceSettings"))
+	FSoftObjectPath GlobalSourcePreset;
 };

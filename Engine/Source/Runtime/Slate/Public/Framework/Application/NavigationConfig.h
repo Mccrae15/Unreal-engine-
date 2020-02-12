@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -54,6 +54,15 @@ public:
 	virtual void OnUnregister();
 	/** Notified when users are removed from the system, good chance to clean up any user specific state. */
 	virtual void OnUserRemoved(int32 UserIndex);
+
+	/** Notified when navigation has caused a widget change to occur */
+	virtual void OnNavigationChangedFocus(TSharedPtr<SWidget> OldWidget, TSharedPtr<SWidget> NewWidget, FFocusEvent FocusEvent) {}
+
+	/** Returns the navigation action corresponding to a key event. This version will handle multiple users correctly */
+	virtual EUINavigationAction GetNavigationActionFromKey(const FKeyEvent& InKeyEvent) const;
+
+	UE_DEPRECATED(4.24, "GetNavigationActionForKey doesn't handle multiple users properly, use GetNavigationActionFromKey instead")
+	virtual EUINavigationAction GetNavigationActionForKey(const FKey& InKey) const;
 
 public:
 	/** Should the Tab key perform next and previous style navigation. */

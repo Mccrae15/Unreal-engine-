@@ -1,20 +1,20 @@
 #if defined _WIN32 || defined _WIN64
     #include <Windows.h>
 
-    #define DLLEXPORT __declspec(dllexport)
+    #define EXAMPLELIBRARY_EXPORT __declspec(dllexport)
 #else
     #include <stdio.h>
 #endif
 
-#ifndef DLLEXPORT
-    #define DLLEXPORT
+#ifndef EXAMPLELIBRARY_EXPORT
+    #define EXAMPLELIBRARY_EXPORT
 #endif
 
-DLLEXPORT void ExampleLibraryFunction()
+EXAMPLELIBRARY_EXPORT void ExampleLibraryFunction()
 {
 #if defined _WIN32 || defined _WIN64
-	MessageBox(NULL, TEXT("Hello world!"), NULL, MB_OK);
+	MessageBox(NULL, TEXT("Loaded ExampleLibrary.dll from Third Party Plugin sample."), TEXT("Third Party Plugin"), MB_OK);
 #else
-    printf("Hello World");
+    printf("Loaded ExampleLibrary from Third Party Plugin sample");
 #endif
 }

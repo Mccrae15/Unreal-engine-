@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "SessionInstanceInfo.h"
 
@@ -60,7 +60,6 @@ void FSessionInstanceInfo::UpdateFromMessage(const FSessionServicePong& Message,
 	BuildDate = Message.BuildDate;
 	DeviceName = Message.DeviceName;
 	InstanceName = Message.InstanceName;
-	IsConsoleBuild = Message.IsConsoleBuild;
 	PlatformName = Message.PlatformName;
 
 	LastUpdateTime = FDateTime::UtcNow();

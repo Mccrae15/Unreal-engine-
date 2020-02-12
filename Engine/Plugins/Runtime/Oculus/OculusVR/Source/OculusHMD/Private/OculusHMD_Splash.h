@@ -1,7 +1,8 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 #include "OculusHMDPrivate.h"
+#include "IXRLoadingScreen.h"
 
 #if OCULUS_HMD_SUPPORTED_PLATFORMS
 #include "OculusHMD_GameFrame.h"
@@ -33,7 +34,7 @@ public:
 // FSplash
 //-------------------------------------------------------------------------------------------------
 
-class FSplash : public TSharedFromThis<FSplash>
+class FSplash : public IXRLoadingScreen, public TSharedFromThis<FSplash>
 {
 protected:
 	class FTicker : public FTickableObjectRenderThread, public TSharedFromThis<FTicker>
@@ -43,7 +44,8 @@ protected:
 
 		virtual void Tick(float DeltaTime) override { pSplash->Tick_RenderThread(DeltaTime); }
 		virtual TStatId GetStatId() const override  { RETURN_QUICK_DECLARE_CYCLE_STAT(FSplash, STATGROUP_Tickables); }
-		virtual bool IsTickable() const override	{ return pSplash->IsTickable(); }
+		virtual bool IsTickable() const override { return true; }
+	
 	protected:
 		FSplash* pSplash;
 	};
@@ -53,8 +55,6 @@ public:
 	virtual ~FSplash();
 
 	void Tick_RenderThread(float DeltaTime);
-	bool IsTickable() const { return bTickable; }
-	bool IsShown() const { return bIsShown; }
 
 	void Startup();
 	void LoadSettings();
@@ -62,15 +62,27 @@ public:
 	void PreShutdown();
 	void Shutdown();
 
+	void OnPreLoadMap(const FString&);
+
+	// Called from FOculusHMD
+	void UpdateLoadingScreen_GameThread();
+
+	// Internal extended API
 	int AddSplash(const FOculusSplashDesc&);
-	void ClearSplashes();
 	bool GetSplash(unsigned index, FOculusSplashDesc& OutDesc);
 	void StopTicker();
+	void StartTicker();
 
-	void Show();
-	void Hide();
+	// The standard IXRLoadingScreen interface
+	virtual void ShowLoadingScreen() override;
+	virtual void HideLoadingScreen() override;
+	virtual void ClearSplashes() override;
+	virtual void AddSplash(const FSplashDesc& Splash) override;
+	virtual bool IsShown() const override { return bIsShown; }
 
 protected:
+	void DoShow();
+	void DoHide();
 	void UnloadTextures();
 	void LoadTexture(FSplashLayer& InSplashLayer);
 	void UnloadTexture(FSplashLayer& InSplashLayer);
@@ -90,17 +102,20 @@ protected:
 	uint32 NextLayerId;
 	FLayerPtr BlackLayer;
 	FLayerPtr UELayer;
+	TArray<TTuple<FLayerPtr, FQuat>> Layers_RenderThread_DeltaRotation;
 	TArray<FLayerPtr> Layers_RenderThread_Input;
 	TArray<FLayerPtr> Layers_RenderThread;
 	TArray<FLayerPtr> Layers_RHIThread;
 
 	// All these flags are only modified from the Game thread
 	bool bInitialized;
-	bool bTickable;
 	bool bIsShown;
+	bool bNeedSplashUpdate;
+	bool bShouldShowSplash;
 
 	float SystemDisplayInterval;
 	double LastTimeInSeconds;
+	FDelegateHandle LoadLevelDelegate;
 };
 
 typedef TSharedPtr<FSplash> FSplashPtr;

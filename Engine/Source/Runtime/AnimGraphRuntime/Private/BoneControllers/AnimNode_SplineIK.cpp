@@ -1,10 +1,11 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "BoneControllers/AnimNode_SplineIK.h"
 #include "Animation/AnimTypes.h"
 #include "AnimationRuntime.h"
 #include "Animation/AnimInstanceProxy.h"
 #include "SplineIK.h"
+#include "Animation/AnimTrace.h"
 
 FAnimNode_SplineIK::FAnimNode_SplineIK() 
 	: BoneAxis(ESplineBoneAxis::X)
@@ -21,6 +22,7 @@ FAnimNode_SplineIK::FAnimNode_SplineIK()
 
 void FAnimNode_SplineIK::GatherDebugData(FNodeDebugData& DebugData)
 {
+	DECLARE_SCOPE_HIERARCHICAL_COUNTER_ANIMNODE(GatherDebugData)
 	FString DebugLine = DebugData.GetNodeName(this);
 
 	DebugLine += "(";
@@ -48,6 +50,7 @@ struct FSplineIKScratchArea : public TThreadSingleton<FSplineIKScratchArea>
 
 void FAnimNode_SplineIK::EvaluateSkeletalControl_AnyThread(FComponentSpacePoseContext& Output, TArray<FBoneTransform>& OutBoneTransforms)
 {
+	DECLARE_SCOPE_HIERARCHICAL_COUNTER_ANIMNODE(EvaluateSkeletalControl_AnyThread)
 	if (CachedBoneReferences.Num() > 0)
 	{
 		const FBoneContainer& BoneContainer = Output.Pose.GetPose().GetBoneContainer();
@@ -89,6 +92,9 @@ void FAnimNode_SplineIK::EvaluateSkeletalControl_AnyThread(FComponentSpacePoseCo
 			OutBoneTransforms.Emplace(CompactPoseBoneIndices[OutBoneIndex], OutTransforms[OutBoneIndex]);
 		}
 	}
+
+	TRACE_ANIM_NODE_VALUE(Output, TEXT("Start Bone"), StartBone.BoneName);
+	TRACE_ANIM_NODE_VALUE(Output, TEXT("End Bone"), EndBone.BoneName);
 }
 
 bool FAnimNode_SplineIK::IsValidToEvaluate(const USkeleton* Skeleton, const FBoneContainer& RequiredBones) 
@@ -110,6 +116,7 @@ bool FAnimNode_SplineIK::IsValidToEvaluate(const USkeleton* Skeleton, const FBon
 
 void FAnimNode_SplineIK::InitializeBoneReferences(const FBoneContainer& RequiredBones) 
 {
+	DECLARE_SCOPE_HIERARCHICAL_COUNTER_ANIMNODE(InitializeBoneReferences)
 	StartBone.Initialize(RequiredBones);
 	EndBone.Initialize(RequiredBones);
 

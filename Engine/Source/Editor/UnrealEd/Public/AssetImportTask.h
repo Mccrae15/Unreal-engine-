@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -27,7 +27,7 @@ public:
 	UPROPERTY(BlueprintReadWrite, Category = "Asset Import Task")
 	FString Filename;
 
-	/** Content path in the projects content directory where asset will be imported */
+	/** Path where asset will be imported to */
 	UPROPERTY(BlueprintReadWrite, Category = "Asset Import Task")
 	FString DestinationPath;
 
@@ -38,6 +38,10 @@ public:
 	/** Overwrite existing assets */
 	UPROPERTY(BlueprintReadWrite, Category = "Asset Import Task")
 	bool bReplaceExisting;
+
+	/** Replace existing settings when overwriting existing assets  */
+	UPROPERTY(BlueprintReadWrite, Category = "Asset Import Task")
+	bool bReplaceExistingSettings;
 
 	/** Avoid dialogs */
 	UPROPERTY(BlueprintReadWrite, Category = "Asset Import Task")
@@ -59,8 +63,8 @@ public:
 	UPROPERTY(BlueprintReadWrite, Category = "Asset Import Task")
 	TArray<FString> ImportedObjectPaths;
 
-	/** Imported object */
+	/** Imported objects */
 	UPROPERTY(BlueprintReadWrite, Category = "Asset Import Task")
-	UObject* Result;
+	TArray<UObject*> Result;
 };
 

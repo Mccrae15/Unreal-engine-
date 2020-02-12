@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -104,9 +104,11 @@ private:
 	/** the title bar, needed to obtain it's height */
 	TSharedPtr<SBorder> TitleBar;
 
+protected:
 	/** cached comment title */
 	FString CachedCommentTitle; 
 
+private:
 	/** cached comment title */
 	int32 CachedWidth;
 

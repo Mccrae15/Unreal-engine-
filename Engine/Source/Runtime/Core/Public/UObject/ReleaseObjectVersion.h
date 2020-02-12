@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 #pragma once
 
 #include "CoreTypes.h"
@@ -26,7 +26,7 @@ struct CORE_API FReleaseObjectVersion
 		// Add Component node templates now use their own unique naming scheme to ensure more reliable archetype lookups.
 		AddComponentNodeTemplateUniqueNames,
 
-		// Fix a serialization issue with static mesh FMeshSectionInfoMap UProperty
+		// Fix a serialization issue with static mesh FMeshSectionInfoMap FProperty
 		UPropertryForMeshSectionSerialize,
 
 		// Existing HLOD settings screen size to screen area conversion
@@ -73,6 +73,28 @@ struct CORE_API FReleaseObjectVersion
 
 		// Change trail anim node variable deprecation
 		TrailNodeBlendVariableNameChange,
+
+		// Make sure the Blueprint Replicated Property Conditions are actually serialized properly.
+		PropertiesSerializeRepCondition,
+
+		// DepthOfFieldFocalDistance at 0 now disables DOF instead of DepthOfFieldFstop at 0.
+		FocalDistanceDisablesDOF,
+
+		// Removed versioning, but version entry must still exist to keep assets saved with this version loadable
+		Unused_SoundClass2DReverbSend,
+
+		// Groom asset version
+		GroomAssetVersion1,
+		GroomAssetVersion2,
+
+		// Store applied version of Animation Modifier to use when reverting
+		SerializeAnimModifierState,
+
+		// Groom asset version
+		GroomAssetVersion3,
+
+		// Upgrade filmback
+		DeprecateFilmbackSettings,
 
 		// -----<new versions can be added above this line>-------------------------------------------------
 		VersionPlusOne,

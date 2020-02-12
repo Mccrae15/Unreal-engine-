@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "MrcGarbageMatteCaptureComponent.h"
 
@@ -24,7 +24,7 @@ UMrcGarbageMatteCaptureComponent::UMrcGarbageMatteCaptureComponent(const FObject
 	PrimitiveRenderMode = ESceneCapturePrimitiveRenderMode::PRM_UseShowOnlyList;
 	CaptureSource = ESceneCaptureSource::SCS_SceneColorHDR;
 	PostProcessBlendWeight = 0.0f;
-	ShowFlags.SetAtmosphericFog(false);
+	ShowFlags.SetAtmosphere(false);
 	ShowFlags.SetFog(false);
 
 	const UMrcFrameworkSettings* MrcSettings = GetDefault<UMrcFrameworkSettings>();

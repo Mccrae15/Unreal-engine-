@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 /*=============================================================================
 	Brush.cpp: Brush Actor implementation
@@ -42,9 +42,9 @@ ABrush::ABrush(const FObjectInitializer& ObjectInitializer)
 
 	RootComponent = BrushComponent;
 	
-	bHidden = true;
+	SetHidden(true);
 	bNotForClientOrServer = false;
-	bCanBeDamaged = false;
+	SetCanBeDamaged(false);
 	bCollideWhenPlacing = true;
 	SpawnCollisionHandlingMethod = ESpawnActorCollisionHandlingMethod::AdjustIfPossibleButDontSpawnIfColliding;
 }
@@ -157,8 +157,8 @@ void ABrush::SetIsTemporarilyHiddenInEditor( bool bIsHidden )
 	{
 		Super::SetIsTemporarilyHiddenInEditor(bIsHidden);
 		
-		auto* Level = GetLevel();
-		auto* Model = Level ? Level->Model : nullptr;
+		ULevel* Level = GetLevel();
+		UModel* Model = Level ? Level->Model : nullptr;
 
 		if (Level && Model)
 		{
@@ -310,6 +310,7 @@ bool ABrush::IsStaticBrush() const
 	return BrushComponent && (BrushComponent->Mobility == EComponentMobility::Static);
 }
 
+#if WITH_EDITOR
 bool ABrush::Modify(bool bAlwaysMarkDirty)
 {
 	bool bSavedToTransactionBuffer = Super::Modify(bAlwaysMarkDirty);
@@ -320,4 +321,4 @@ bool ABrush::Modify(bool bAlwaysMarkDirty)
 	}
 	return bSavedToTransactionBuffer;
 }
-
+#endif

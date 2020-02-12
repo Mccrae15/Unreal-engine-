@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 /*=============================================================================
 	ExceptionHandling.cpp: Exception handling for functions that want to create crash dumps.
@@ -28,18 +28,7 @@ CORE_API bool GIgnoreDebugger = false;
 CORE_API TCHAR MiniDumpFilenameW[1024] = TEXT("");
 
 
-volatile int32 GCrashType = 0;
 bool GEnsureShowsCRC = false;
-
-void SetCrashType(ECrashType InCrashType)
-{
-	GCrashType = (int32)InCrashType;
-}
-
-int32 GetCrashType()
-{
-	return GCrashType;
-}
 
 void ReportInteractiveEnsure(const TCHAR* InMessage)
 {

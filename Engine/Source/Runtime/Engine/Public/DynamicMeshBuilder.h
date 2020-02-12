@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 /*=============================================================================
 	DynamicMeshBuilder.h: Dynamic mesh builder definitions.
@@ -101,7 +101,7 @@ struct FDynamicMeshVertex
 	FColor Color;
 };
 
-class FMeshBuilderOneFrameResources : public FOneFrameResource
+class ENGINE_VTABLE FMeshBuilderOneFrameResources : public FOneFrameResource
 {
 public:
 	class FPooledDynamicMeshVertexBuffer* VertexBuffer = nullptr;
@@ -136,6 +136,23 @@ struct FDynamicMeshBuilderSettings
 };
 
 /**
+ * This class provides the vertex/index allocator interface used by FDynamicMeshBuilder which is
+ * already implemented internally with caching in mind but can be customized if needed.
+ */
+class ENGINE_API FDynamicMeshBufferAllocator
+{
+public:
+	int32 GetIndexBufferSize(uint32 NumElements) const;
+	int32 GetVertexBufferSize(uint32 Stride, uint32 NumElements) const;
+	virtual ~FDynamicMeshBufferAllocator();
+
+	virtual FIndexBufferRHIRef AllocIndexBuffer(uint32 NumElements);
+	virtual void ReleaseIndexBuffer(FIndexBufferRHIRef& IndexBufferRHI);
+	virtual FVertexBufferRHIRef AllocVertexBuffer(uint32 Stride, uint32 NumElements);
+	virtual void ReleaseVertexBuffer(FVertexBufferRHIRef& VertexBufferRHI);
+};
+
+/**
  * A utility used to construct dynamically generated meshes, and render them to a FPrimitiveDrawInterface.
  * Note: This is meant to be easy to use, not fast.  It moves the data around more than necessary, and requires dynamically allocating RHI
  * resources.  Exercise caution.
@@ -145,7 +162,7 @@ class FDynamicMeshBuilder
 public:
 
 	/** Initialization constructor. */
-	ENGINE_API FDynamicMeshBuilder(ERHIFeatureLevel::Type InFeatureLevel, uint32 InNumTexCoords = 1, uint32 InLightmapCoordinateIndex = 0, bool InUse16bitTexCoord = false);
+	ENGINE_API FDynamicMeshBuilder(ERHIFeatureLevel::Type InFeatureLevel, uint32 InNumTexCoords = 1, uint32 InLightmapCoordinateIndex = 0, bool InUse16bitTexCoord = false, FDynamicMeshBufferAllocator* InDynamicMeshBufferAllocator = nullptr);
 
 	/** Destructor. */
 	ENGINE_API ~FDynamicMeshBuilder();
@@ -172,6 +189,12 @@ public:
 	/** Add many indices to the mesh. */
 	ENGINE_API void AddTriangles(const TArray<uint32> &InIndices);
 
+	/** Pre-allocate space for the given number of vertices. */
+	ENGINE_API void ReserveVertices(int32 InNumVertices);
+
+	/** Pre-allocate space for the given number of triangles. */
+	ENGINE_API void ReserveTriangles(int32 InNumTriangles);
+
 	/** Adds a mesh of what's been built so far to the collector. */
 	ENGINE_API void GetMesh(const FMatrix& LocalToWorld, const FMaterialRenderProxy* MaterialRenderProxy, uint8 DepthPriorityGroup, bool bDisableBackfaceCulling, bool bReceivesDecals, int32 ViewIndex, FMeshElementCollector& Collector);
 	ENGINE_API void GetMesh(const FMatrix& LocalToWorld, const FMaterialRenderProxy* MaterialRenderProxy, uint8 DepthPriorityGroup, bool bDisableBackfaceCulling, bool bReceivesDecals, bool bUseSelectionOutline, int32 ViewIndex, 
@@ -180,6 +203,8 @@ public:
 							FMeshElementCollector& Collector, const FHitProxyId HitProxyId = FHitProxyId());
 	ENGINE_API void GetMesh(const FMatrix& LocalToWorld, const FMaterialRenderProxy* MaterialRenderProxy, uint8 DepthPriorityGroup, const FDynamicMeshBuilderSettings& Settings, FDynamicMeshDrawOffset const * const DrawOffset, int32 ViewIndex,
 		FMeshElementCollector& Collector, const FHitProxyId HitProxyId = FHitProxyId());
+	ENGINE_API void GetMesh(const FMatrix& LocalToWorld, const FMatrix& PrevLocalToWorld, const FMaterialRenderProxy* MaterialRenderProxy, uint8 DepthPriorityGroup, const FDynamicMeshBuilderSettings& Settings,
+		FDynamicMeshDrawOffset const * const DrawOffset, int32 ViewIndex, FMeshElementCollector& Collector, const FHitProxyId HitProxyId = FHitProxyId());
 
 	ENGINE_API void GetMeshElement(const FMatrix& LocalToWorld, const FMaterialRenderProxy* MaterialRenderProxy, uint8 DepthPriorityGroup, bool bDisableBackfaceCulling, bool bReceivesDecals, int32 ViewIndex, FMeshBuilderOneFrameResources& OneFrameResource, FMeshBatch& Mesh);
 
@@ -198,6 +223,7 @@ private:
 	class FPooledDynamicMeshIndexBuffer* IndexBuffer = nullptr;
 	class FPooledDynamicMeshVertexBuffer* VertexBuffer = nullptr;
 	ERHIFeatureLevel::Type FeatureLevel;
+	FDynamicMeshBufferAllocator* DynamicMeshBufferAllocator;
 };
 
 /** Index Buffer */

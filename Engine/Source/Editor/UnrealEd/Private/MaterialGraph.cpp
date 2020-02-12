@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 /////////////////////////////////////////////////////
 // UMaterialGraph
@@ -32,31 +32,35 @@ void UMaterialGraph::RebuildGraph()
 
 	if (!MaterialFunction)
 	{
-		// Initialize the material input list.
-		MaterialInputs.Add( FMaterialInputInfo( GetBaseColorPinName(), MP_BaseColor, LOCTEXT( "BaseColorToolTip", "Defines the overall color of the Material. Each channel is automatically clamped between 0 and 1" ) ) );
-		MaterialInputs.Add( FMaterialInputInfo( GetMetallicPinName(), MP_Metallic, LOCTEXT( "MetallicToolTip", "Controls how \"metal-like\" your surface looks like") ) );
-		MaterialInputs.Add( FMaterialInputInfo( LOCTEXT("Specular", "Specular"), MP_Specular, LOCTEXT("SpecularToolTip", "Used to scale the current amount of specularity on non-metallic surfaces and is a value between 0 and 1, default at 0.5") ) );
-		MaterialInputs.Add( FMaterialInputInfo( LOCTEXT( "Roughness", "Roughness" ), MP_Roughness, LOCTEXT( "RoughnessToolTip", "Controls how rough the Material is. Roughness of 0 (smooth) is a mirror reflection and 1 (rough) is completely matte or diffuse" ) ) );
-		MaterialInputs.Add( FMaterialInputInfo( GetEmissivePinName(), MP_EmissiveColor, LOCTEXT( "EmissiveToolTip", "Controls which parts of your Material will appear to glow" ) ) );
-		MaterialInputs.Add( FMaterialInputInfo( GetOpacityPinName(), MP_Opacity, LOCTEXT( "OpacityToolTip", "Controls the transluecency of the Material" ) ) );
-		MaterialInputs.Add( FMaterialInputInfo( LOCTEXT("OpacityMask", "Opacity Mask"), MP_OpacityMask, LOCTEXT( "OpacityMaskToolTip", "When in Masked mode, a Material is either completely visible or completely invisible" ) ) );
-		MaterialInputs.Add( FMaterialInputInfo( GetNormalPinName(), MP_Normal, LOCTEXT( "NormalToolTip", "Takes the input of a normal map" ) ) );
-		MaterialInputs.Add( FMaterialInputInfo( GetWorldPositionOffsetPinName(), MP_WorldPositionOffset, LOCTEXT( "WorldPositionOffsetToolTip", "Allows for the vertices of a mesh to be manipulated in world space by the Material" ) ) );
-		MaterialInputs.Add( FMaterialInputInfo( LOCTEXT( "WorldDisplacement", "World Displacement" ), MP_WorldDisplacement, LOCTEXT( "WorldDisplacementToolTip", "Allows for the tessellation vertices to be manipulated in world space by the Material" ) ) );
-		MaterialInputs.Add( FMaterialInputInfo( LOCTEXT("TessellationMultiplier", "Tessellation Multiplier"), MP_TessellationMultiplier, LOCTEXT( "TessllationMultiplierToolTip", "Controls the amount tessellation along the surface" ) ) );
-		MaterialInputs.Add( FMaterialInputInfo( GetSubsurfacePinName(), MP_SubsurfaceColor, LOCTEXT( "SubsurfaceToolTip", "Allows you to add a color to your Material to simulate shifts in color when light passes through the surface" ) ) );
-		MaterialInputs.Add( FMaterialInputInfo( GetCustomDataPinName(0), MP_CustomData0, GetCustomDataPinName( 0 ) ) );
-		MaterialInputs.Add( FMaterialInputInfo( GetCustomDataPinName(1), MP_CustomData1, GetCustomDataPinName( 1 ) ) );
-		MaterialInputs.Add( FMaterialInputInfo( LOCTEXT("AmbientOcclusion", "Ambient Occlusion"), MP_AmbientOcclusion, LOCTEXT( "AmbientOcclusionToolTip", "Simulate the self-shadowing that happens within crevices of a surface" ) ) );
-		MaterialInputs.Add( FMaterialInputInfo( LOCTEXT("Refraction", "Refraction"), MP_Refraction, LOCTEXT( "RefractionToolTip", "Takes in a texture or value that simulates the index of refraction of the surface" ) ) );
+		// This needs to be done before building the new material inputs to guarantee that the shading model field is up to date
+		Material->RebuildShadingModelField();
 
-		for (int32 UVIndex = 0; UVIndex < ARRAY_COUNT(Material->CustomizedUVs); UVIndex++)
+		// Initialize the material input list.
+		MaterialInputs.Add( FMaterialInputInfo(FMaterialAttributeDefinitionMap::GetDisplayNameForMaterial(MP_BaseColor, Material), MP_BaseColor, LOCTEXT( "BaseColorToolTip", "Defines the overall color of the Material. Each channel is automatically clamped between 0 and 1" ) ) );
+		MaterialInputs.Add( FMaterialInputInfo(FMaterialAttributeDefinitionMap::GetDisplayNameForMaterial(MP_Metallic, Material), MP_Metallic, LOCTEXT( "MetallicToolTip", "Controls how \"metal-like\" your surface looks like") ) );
+		MaterialInputs.Add( FMaterialInputInfo(FMaterialAttributeDefinitionMap::GetDisplayNameForMaterial(MP_Specular, Material), MP_Specular, LOCTEXT("SpecularToolTip", "Used to scale the current amount of specularity on non-metallic surfaces and is a value between 0 and 1, default at 0.5") ) );
+		MaterialInputs.Add( FMaterialInputInfo(FMaterialAttributeDefinitionMap::GetDisplayNameForMaterial(MP_Roughness, Material), MP_Roughness, LOCTEXT( "RoughnessToolTip", "Controls how rough the Material is. Roughness of 0 (smooth) is a mirror reflection and 1 (rough) is completely matte or diffuse" ) ) );
+		MaterialInputs.Add( FMaterialInputInfo(FMaterialAttributeDefinitionMap::GetDisplayNameForMaterial(MP_EmissiveColor, Material), MP_EmissiveColor, LOCTEXT( "EmissiveToolTip", "Controls which parts of your Material will appear to glow" ) ) );
+		MaterialInputs.Add( FMaterialInputInfo(FMaterialAttributeDefinitionMap::GetDisplayNameForMaterial(MP_Opacity, Material), MP_Opacity, LOCTEXT( "OpacityToolTip", "Controls the translucency of the Material" ) ) );
+		MaterialInputs.Add( FMaterialInputInfo(FMaterialAttributeDefinitionMap::GetDisplayNameForMaterial(MP_OpacityMask, Material), MP_OpacityMask, LOCTEXT( "OpacityMaskToolTip", "When in Masked mode, a Material is either completely visible or completely invisible" ) ) );
+		MaterialInputs.Add( FMaterialInputInfo(FMaterialAttributeDefinitionMap::GetDisplayNameForMaterial(MP_Normal, Material), MP_Normal, LOCTEXT( "NormalToolTip", "Takes the input of a normal map" ) ) );
+		MaterialInputs.Add( FMaterialInputInfo(FMaterialAttributeDefinitionMap::GetDisplayNameForMaterial(MP_WorldPositionOffset, Material), MP_WorldPositionOffset, LOCTEXT( "WorldPositionOffsetToolTip", "Allows for the vertices of a mesh to be manipulated in world space by the Material" ) ) );
+		MaterialInputs.Add( FMaterialInputInfo(FMaterialAttributeDefinitionMap::GetDisplayNameForMaterial(MP_WorldDisplacement, Material), MP_WorldDisplacement, LOCTEXT( "WorldDisplacementToolTip", "Allows for the tessellation vertices to be manipulated in world space by the Material" ) ) );
+		MaterialInputs.Add( FMaterialInputInfo(FMaterialAttributeDefinitionMap::GetDisplayNameForMaterial(MP_TessellationMultiplier, Material), MP_TessellationMultiplier, LOCTEXT( "TessllationMultiplierToolTip", "Controls the amount tessellation along the surface" ) ) );
+		MaterialInputs.Add( FMaterialInputInfo(FMaterialAttributeDefinitionMap::GetDisplayNameForMaterial(MP_SubsurfaceColor, Material), MP_SubsurfaceColor, LOCTEXT( "SubsurfaceToolTip", "Allows you to add a color to your Material to simulate shifts in color when light passes through the surface" ) ) );
+		MaterialInputs.Add( FMaterialInputInfo(FMaterialAttributeDefinitionMap::GetDisplayNameForMaterial(MP_CustomData0, Material), MP_CustomData0, FMaterialAttributeDefinitionMap::GetDisplayNameForMaterial(MP_CustomData0, Material)));
+		MaterialInputs.Add( FMaterialInputInfo(FMaterialAttributeDefinitionMap::GetDisplayNameForMaterial(MP_CustomData1, Material), MP_CustomData1, FMaterialAttributeDefinitionMap::GetDisplayNameForMaterial(MP_CustomData1, Material)));
+		MaterialInputs.Add( FMaterialInputInfo(FMaterialAttributeDefinitionMap::GetDisplayNameForMaterial(MP_AmbientOcclusion, Material), MP_AmbientOcclusion, LOCTEXT( "AmbientOcclusionToolTip", "Simulate the self-shadowing that happens within crevices of a surface" ) ) );
+		MaterialInputs.Add( FMaterialInputInfo(FMaterialAttributeDefinitionMap::GetDisplayNameForMaterial(MP_Refraction, Material), MP_Refraction, LOCTEXT( "RefractionToolTip", "Takes in a texture or value that simulates the index of refraction of the surface" ) ) );
+
+		for (int32 UVIndex = 0; UVIndex < UE_ARRAY_COUNT(Material->CustomizedUVs); UVIndex++)
 		{
 			//@todo - localize
 			MaterialInputs.Add( FMaterialInputInfo( FText::FromString(FString::Printf(TEXT("Customized UV%u"), UVIndex)), (EMaterialProperty)(MP_CustomizedUVs0 + UVIndex), FText::FromString(FString::Printf( TEXT( "CustomizedUV%uToolTip" ), UVIndex ) ) ) );
 		}
 
-		MaterialInputs.Add(FMaterialInputInfo(LOCTEXT("PixelDepthOffset", "Pixel Depth Offset"), MP_PixelDepthOffset, LOCTEXT( "PixelDepthOffsetToolTip", "Pixel Depth Offset" ) ));
+		MaterialInputs.Add(FMaterialInputInfo(FMaterialAttributeDefinitionMap::GetDisplayNameForMaterial(MP_PixelDepthOffset, Material), MP_PixelDepthOffset, LOCTEXT("PixelDepthOffsetToolTip", "Pixel Depth Offset")));
+		MaterialInputs.Add(FMaterialInputInfo(FMaterialAttributeDefinitionMap::GetDisplayNameForMaterial(MP_ShadingModel, Material), MP_ShadingModel, LOCTEXT("ShadingModelToolTip", "Selects which shading model should be used per pixel")));
 
 		//^^^ New material properties go above here. ^^^^
 		MaterialInputs.Add(FMaterialInputInfo(LOCTEXT("MaterialAttributes", "Material Attributes"), MP_MaterialAttributes, LOCTEXT( "MaterialAttributesToolTip", "Material Attributes" ) ));
@@ -176,7 +180,9 @@ void UMaterialGraph::LinkGraphNodesFromMaterial()
 				UEdGraphPin* InputPin = CastChecked<UMaterialGraphNode>(Expression->GraphNode)->GetInputPin(InputIndex);
 
 				// InputPin can be null during a PostEditChange when there is a circular dependency between nodes, and nodes have pins that are dynamically created
-				if (InputPin != nullptr && ExpressionInputs[InputIndex]->Expression)
+				if (InputPin != nullptr && ExpressionInputs[InputIndex]->Expression
+					// Unclear why this is null sometimes, but this is safer than crashing
+					&& ExpressionInputs[InputIndex]->Expression->GraphNode)
 				{
 					UMaterialGraphNode* GraphNode = CastChecked<UMaterialGraphNode>(ExpressionInputs[InputIndex]->Expression->GraphNode);
 					InputPin->MakeLinkTo(GraphNode->GetOutputPin(GetValidOutputIndex(ExpressionInputs[InputIndex])));
@@ -241,59 +247,61 @@ void UMaterialGraph::LinkMaterialExpressionsFromGraph() const
 				// triggers a rebuild of its preview when it is called
 				UMaterialExpression* Expression = GraphNode->MaterialExpression;
 				bool bModifiedExpression = false;
-
-				if (Expression->MaterialExpressionEditorX != GraphNode->NodePosX
-					|| Expression->MaterialExpressionEditorY != GraphNode->NodePosY
-					|| Expression->Desc != GraphNode->NodeComment)
+				if (Expression)
 				{
-					bModifiedExpression = true;
-
-					Expression->Modify();
-
-					// Update positions and comments
-					Expression->MaterialExpressionEditorX = GraphNode->NodePosX;
-					Expression->MaterialExpressionEditorY = GraphNode->NodePosY;
-					Expression->Desc = GraphNode->NodeComment;
-				}
-
-				GraphNode->GetInputPins(InputPins);
-				const TArray<FExpressionInput*> ExpressionInputs = Expression->GetInputs();
-				checkf(InputPins.Num() == ExpressionInputs.Num(), TEXT("Mismatched inputs for '%s'"), *Expression->GetFullName());
-				for (int32 PinIndex = 0; PinIndex < InputPins.Num() && PinIndex < ExpressionInputs.Num(); ++PinIndex)
-				{
-					FExpressionInput* ExpressionInput = ExpressionInputs[PinIndex];
-					if (InputPins[PinIndex]->LinkedTo.Num() > 0)
+					if (Expression->MaterialExpressionEditorX != GraphNode->NodePosX
+						|| Expression->MaterialExpressionEditorY != GraphNode->NodePosY
+						|| Expression->Desc != GraphNode->NodeComment)
 					{
-						UMaterialGraphNode* ConnectedNode = CastChecked<UMaterialGraphNode>(InputPins[PinIndex]->LinkedTo[0]->GetOwningNode());
-						ConnectedNode->GetOutputPins(OutputPins);
+						bModifiedExpression = true;
 
-						// Work out the index of the connected pin
-						for (int32 OutPinIndex = 0; OutPinIndex < OutputPins.Num(); ++OutPinIndex)
+						Expression->Modify();
+
+						// Update positions and comments
+						Expression->MaterialExpressionEditorX = GraphNode->NodePosX;
+						Expression->MaterialExpressionEditorY = GraphNode->NodePosY;
+						Expression->Desc = GraphNode->NodeComment;
+					}
+
+					GraphNode->GetInputPins(InputPins);
+					const TArray<FExpressionInput*> ExpressionInputs = Expression->GetInputs();
+					checkf(InputPins.Num() == ExpressionInputs.Num(), TEXT("Mismatched inputs for '%s'"), *Expression->GetFullName());
+					for (int32 PinIndex = 0; PinIndex < InputPins.Num() && PinIndex < ExpressionInputs.Num(); ++PinIndex)
+					{
+						FExpressionInput* ExpressionInput = ExpressionInputs[PinIndex];
+						if (InputPins[PinIndex]->LinkedTo.Num() > 0)
 						{
-							if (OutputPins[OutPinIndex] == InputPins[PinIndex]->LinkedTo[0])
+							UMaterialGraphNode* ConnectedNode = CastChecked<UMaterialGraphNode>(InputPins[PinIndex]->LinkedTo[0]->GetOwningNode());
+							ConnectedNode->GetOutputPins(OutputPins);
+
+							// Work out the index of the connected pin
+							for (int32 OutPinIndex = 0; OutPinIndex < OutputPins.Num(); ++OutPinIndex)
 							{
-								if (ExpressionInput->OutputIndex != OutPinIndex || ExpressionInput->Expression != ConnectedNode->MaterialExpression)
+								if (OutputPins[OutPinIndex] == InputPins[PinIndex]->LinkedTo[0])
 								{
-									if (!bModifiedExpression)
+									if (ExpressionInput && (ExpressionInput->OutputIndex != OutPinIndex || ExpressionInput->Expression != ConnectedNode->MaterialExpression))
 									{
-										bModifiedExpression = true;
-										Expression->Modify();
+										if (!bModifiedExpression)
+										{
+											bModifiedExpression = true;
+											Expression->Modify();
+										}
+										ConnectedNode->MaterialExpression->Modify();
+										ExpressionInput->Connect(OutPinIndex, ConnectedNode->MaterialExpression);
 									}
-									ConnectedNode->MaterialExpression->Modify();
-									ExpressionInput->Connect(OutPinIndex, ConnectedNode->MaterialExpression);
+									break;
 								}
-								break;
 							}
 						}
-					}
-					else if (ExpressionInput->Expression)
-					{
-						if (!bModifiedExpression)
+						else if (ExpressionInput && ExpressionInput->Expression)
 						{
-							bModifiedExpression = true;
-							Expression->Modify();
+							if (!bModifiedExpression)
+							{
+								bModifiedExpression = true;
+								Expression->Modify();
+							}
+							ExpressionInput->Expression = NULL;
 						}
-						ExpressionInput->Expression = NULL;
 					}
 				}
 			}
@@ -483,81 +491,6 @@ int32 UMaterialGraph::GetValidOutputIndex(FExpressionInput* Input) const
 	}
 
 	return OutputIndex;
-}
-
-FText UMaterialGraph::GetEmissivePinName() const
-{
-	return Material->IsUIMaterial() ? LOCTEXT("UIOutputColor", "Final Color") : LOCTEXT("EmissiveColor", "Emissive Color");
-}
-
-FText UMaterialGraph::GetBaseColorPinName() const
-{
-	return Material->MaterialDomain == MD_Volume ? LOCTEXT("Albedo", "Albedo") : LOCTEXT("BaseColor", "Base Color");
-}
-
-FText UMaterialGraph::GetOpacityPinName() const
-{
-	return Material->MaterialDomain == MD_Volume ? LOCTEXT("Extinction", "Extinction") : LOCTEXT("Opacity", "Opacity");
-}
-
-FText UMaterialGraph::GetMetallicPinName() const
-{
-	return Material->GetShadingModel() == MSM_Hair ? LOCTEXT("Scatter", "Scatter") : LOCTEXT("Metallic", "Metallic");
-}
-
-FText UMaterialGraph::GetNormalPinName() const
-{
-	return Material->GetShadingModel() == MSM_Hair ? LOCTEXT("Tangent", "Tangent") : LOCTEXT("Normal", "Normal");
-}
-
-FText UMaterialGraph::GetWorldPositionOffsetPinName() const
-{
-	return Material->IsUIMaterial() ? LOCTEXT("ScreenPosition", "Screen Position") : LOCTEXT("WorldPositionOffset", "World Position Offset");
-}
-
-FText UMaterialGraph::GetSubsurfacePinName() const
-{
-	switch (Material->GetShadingModel())
-	{
-	case MSM_Cloth:
-		return LOCTEXT("FuzzColor", "Fuzz Color");
-	default:
-		return LOCTEXT("SubsurfaceColor", "Subsurface Color");
-	}
-}
-
-FText UMaterialGraph::GetCustomDataPinName( uint32 Index ) const
-{
-	if( Index == 0 )
-	{
-		switch( Material->GetShadingModel() )
-		{
-		case MSM_ClearCoat:
-			return LOCTEXT("ClearCoat", "Clear Coat");
-		case MSM_Hair:
-			return LOCTEXT("Backlit", "Backlit");
-		case MSM_Cloth:
-			return LOCTEXT("Cloth", "Cloth");
-		case MSM_Eye:
-			return LOCTEXT("IrisMask", "Iris Mask");
-		default:
-			return LOCTEXT("CustomData0", "Custom Data 0");
-		}
-	}
-	else if( Index == 1 )
-	{
-		switch( Material->GetShadingModel() )
-		{
-		case MSM_ClearCoat:
-			return LOCTEXT("ClearCoatRoughness", "Clear Coat Roughness");
-		case MSM_Eye:
-			return LOCTEXT("IrisDistance", "Iris Distance");
-		default:
-			return LOCTEXT("CustomData1", "Custom Data 1");
-		}
-	}
-
-	return LOCTEXT("CustomData", "Custom Data");	
 }
 
 #undef LOCTEXT_NAMESPACE

@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "Components/SynthComponent.h"
 #include "AudioDevice.h"
@@ -12,8 +12,10 @@ USynthSound::USynthSound(const FObjectInitializer& ObjectInitializer)
 
 void USynthSound::Init(USynthComponent* InSynthComponent, const int32 InNumChannels, const int32 InSampleRate, const int32 InCallbackSize)
 {
+	check(InSynthComponent);
+
 	OwningSynthComponent = InSynthComponent;
-	bVirtualizeWhenSilent = true;
+	VirtualizationMode = EVirtualizationMode::PlayWhenSilent;
 	NumChannels = InNumChannels;
 	NumSamplesToGeneratePerCallback = InCallbackSize;
 	// Turn off async generation in old audio engine on mac.
@@ -42,8 +44,10 @@ void USynthSound::StartOnAudioDevice(FAudioDevice* InAudioDevice)
 
 void USynthSound::OnBeginGenerate()
 {
-	check(OwningSynthComponent);
-	OwningSynthComponent->OnBeginGenerate();
+	if (ensure(OwningSynthComponent))
+	{
+		OwningSynthComponent->OnBeginGenerate();
+	}
 }
 
 int32 USynthSound::OnGeneratePCMAudio(TArray<uint8>& OutAudio, int32 NumSamples)
@@ -54,6 +58,13 @@ int32 USynthSound::OnGeneratePCMAudio(TArray<uint8>& OutAudio, int32 NumSamples)
 	{
 		// If running with audio mixer, the output audio buffer will be in floats already
 		OutAudio.AddZeroed(NumSamples * sizeof(float));
+
+		// Mark pending kill can null this out on the game thread in rare cases.
+		if (!OwningSynthComponent)
+		{
+			return 0;
+		}
+
 		return OwningSynthComponent->OnGeneratePCMAudio((float*)OutAudio.GetData(), NumSamples);
 	}
 	else
@@ -61,7 +72,13 @@ int32 USynthSound::OnGeneratePCMAudio(TArray<uint8>& OutAudio, int32 NumSamples)
 		// Use the float scratch buffer instead of the out buffer directly
 		FloatBuffer.Reset();
 		FloatBuffer.AddZeroed(NumSamples * sizeof(float));
-		
+
+		// Mark pending kill can null this out on the game thread in rare cases.
+		if (!OwningSynthComponent)
+		{
+			return 0;
+		}
+
 		float* FloatBufferDataPtr = FloatBuffer.GetData();
 		int32 NumSamplesGenerated = OwningSynthComponent->OnGeneratePCMAudio(FloatBufferDataPtr, NumSamples);
 
@@ -80,12 +97,15 @@ int32 USynthSound::OnGeneratePCMAudio(TArray<uint8>& OutAudio, int32 NumSamples)
 
 void USynthSound::OnEndGenerate()
 {
-	check(OwningSynthComponent);
-	OwningSynthComponent->OnEndGenerate();
+	// Mark pending kill can null this out on the game thread in rare cases.
+	if(OwningSynthComponent)
+	{
+		OwningSynthComponent->OnEndGenerate();
+	}
 }
 
-Audio::EAudioMixerStreamDataFormat::Type USynthSound::GetGeneratedPCMDataFormat() const 
-{ 
+Audio::EAudioMixerStreamDataFormat::Type USynthSound::GetGeneratedPCMDataFormat() const
+{
 	// Only audio mixer supports return float buffers
 	return bAudioMixer ? Audio::EAudioMixerStreamDataFormat::Float : Audio::EAudioMixerStreamDataFormat::Int16;
 }
@@ -103,7 +123,7 @@ USynthComponent::USynthComponent(const FObjectInitializer& ObjectInitializer)
 	bIsSynthPlaying = false;
 	bIsInitialized = false;
 	bIsUISound = false;
-
+	bAlwaysPlay = true;
 	Synth = nullptr;
 
 	// Set the default sound class
@@ -130,12 +150,18 @@ void USynthComponent::OnAudioComponentEnvelopeValue(const UAudioComponent* InAud
 	}
 }
 
+void USynthComponent::BeginDestroy()
+{
+	Super::BeginDestroy();
+	Stop();
+}
+
 void USynthComponent::Activate(bool bReset)
 {
 	if (bReset || ShouldActivate())
 	{
 		Start();
-		if (bIsActive)
+		if (IsActive())
 		{
 			OnComponentActivated.Broadcast(this, bReset);
 		}
@@ -148,7 +174,7 @@ void USynthComponent::Deactivate()
 	{
 		Stop();
 
-		if (!bIsActive)
+		if (!IsActive())
 		{
 			OnComponentDeactivated.Broadcast(this);
 		}
@@ -179,7 +205,7 @@ void USynthComponent::Initialize(int32 SampleRateOverride)
 		NumChannels = 2;
 		TestSineLeft.Init(SampleRate, 440.0f, 0.5f);
 		TestSineRight.Init(SampleRate, 220.0f, 0.5f);
-#else	
+#else
 		// Initialize the synth component
 		Init(SampleRate);
 
@@ -206,7 +232,8 @@ void USynthComponent::Initialize(int32 SampleRateOverride)
 
 		Synth->Init(this, NumChannels, SampleRate, PreferredBufferLength);
 
-		if (FAudioDevice* AudioDevice = AudioComponent->GetAudioDevice())
+		// Retrieve the synth component's audio device vs the audio component's
+		if (FAudioDevice* AudioDevice = GetAudioDevice())
 		{
 			Synth->StartOnAudioDevice(AudioDevice);
 		}
@@ -225,6 +252,33 @@ void USynthComponent::CreateAudioComponent()
 		// Create the audio component which will be used to play the procedural sound wave
 		AudioComponent = NewObject<UAudioComponent>(this);
 
+		AudioComponent->OnAudioSingleEnvelopeValueNative.AddUObject(this, &USynthComponent::OnAudioComponentEnvelopeValue);
+
+		if (!AudioComponent->GetAttachParent() && !AudioComponent->IsAttachedTo(this))
+		{
+			AActor* Owner = GetOwner();
+
+			// If the media component has no owner or the owner doesn't have a world
+			if (!Owner || !Owner->GetWorld())
+			{
+				// Attempt to retrieve the synth component's world and register the audio component with it
+				// This ensures that the synth component plays on the correct world in cases where there isn't an owner
+				if (UWorld* World = GetWorld())
+				{
+					AudioComponent->RegisterComponentWithWorld(World);
+					AudioComponent->AttachToComponent(this, FAttachmentTransformRules::KeepRelativeTransform);
+				}
+				else
+				{
+					AudioComponent->SetupAttachment(this);
+				}
+			}
+			else
+			{
+				AudioComponent->AttachToComponent(this, FAttachmentTransformRules::KeepRelativeTransform);
+				AudioComponent->RegisterComponent();
+			}
+		}
 	}
 
 	if (AudioComponent)
@@ -233,28 +287,16 @@ void USynthComponent::CreateAudioComponent()
 		AudioComponent->bStopWhenOwnerDestroyed = true;
 		AudioComponent->bShouldRemainActiveIfDropped = true;
 		AudioComponent->Mobility = EComponentMobility::Movable;
+		AudioComponent->Modulation = Modulation;
 
 #if WITH_EDITORONLY_DATA
 		AudioComponent->bVisualizeComponent = false;
 #endif
-		if (!AudioComponent->GetAttachParent() && !AudioComponent->IsAttachedTo(this))
-		{
-			if (!GetOwner() || !GetOwner()->GetWorld())
-			{
-				AudioComponent->SetupAttachment(this);
-			}
-			else
-			{
-				AudioComponent->AttachToComponent(this, FAttachmentTransformRules::KeepRelativeTransform);
-				AudioComponent->RegisterComponent();
-			}
-		}
-
-		AudioComponent->OnAudioSingleEnvelopeValueNative.AddUObject(this, &USynthComponent::OnAudioComponentEnvelopeValue);
 
 		// Set defaults to be the same as audio component defaults
 		AudioComponent->EnvelopeFollowerAttackTime = EnvelopeFollowerAttackTime;
 		AudioComponent->EnvelopeFollowerReleaseTime = EnvelopeFollowerReleaseTime;
+		AudioComponent->bAlwaysPlay = bAlwaysPlay;
 	}
 }
 
@@ -280,7 +322,7 @@ void USynthComponent::OnUnregister()
 	}
 
 	// Make sure the audio component is destroyed during unregister
-	if (AudioComponent)
+	if (AudioComponent && !AudioComponent->IsBeingDestroyed())
 	{
 		if (Owner && Owner->GetWorld())
 		{
@@ -295,14 +337,14 @@ void USynthComponent::OnUnregister()
 bool USynthComponent::IsReadyForOwnerToAutoDestroy() const
 {
 	const bool bIsAudioComponentReadyForDestroy = !AudioComponent || (AudioComponent && !AudioComponent->IsPlaying());
-	const bool bIsSynthSoundReadyForDestroy = !Synth || !Synth->IsGenerating();
+	const bool bIsSynthSoundReadyForDestroy = !Synth || !Synth->IsGeneratingAudio();
 	return bIsAudioComponentReadyForDestroy && bIsSynthSoundReadyForDestroy;
 }
 
 #if WITH_EDITOR
 void USynthComponent::PostEditChangeProperty(FPropertyChangedEvent& PropertyChangedEvent)
 {
-	if (bIsActive)
+	if (IsActive())
 	{
 		// If this is an auto destroy component we need to prevent it from being auto-destroyed since we're really just restarting it
 		const bool bWasAutoDestroy = bAutoDestroy;
@@ -361,6 +403,24 @@ void USynthComponent::PumpPendingMessages()
 	}
 }
 
+FAudioDevice* USynthComponent::GetAudioDevice()
+{
+	// If the synth component has a world, that means it was already registed with that world
+	if (UWorld* World = GetWorld())
+	{
+		return World->AudioDeviceHandle.GetAudioDevice();
+	}
+
+	// Otherwise, retrieve the audio component's audio device (probably from it's owner)
+	if (AudioComponent)
+	{
+		return AudioComponent->GetAudioDevice();
+	}
+	
+	// No audio device
+	return nullptr;
+}
+
 int32 USynthComponent::OnGeneratePCMAudio(float* GeneratedPCMData, int32 NumSamples)
 {
 	PumpPendingMessages();
@@ -378,7 +438,7 @@ int32 USynthComponent::OnGeneratePCMAudio(float* GeneratedPCMData, int32 NumSamp
 void USynthComponent::Start()
 {
 	// Only need to start if we're not already active
-	if (bIsActive)
+	if (IsActive())
 	{
 		return;
 	}
@@ -386,7 +446,7 @@ void USynthComponent::Start()
 	// We will also ensure that this synth was initialized before attempting to play.
 	Initialize();
 
-	// If there is no Synth USoundBase, we can't start. This can happen if start is called in a cook, a server, or 
+	// If there is no Synth USoundBase, we can't start. This can happen if start is called in a cook, a server, or
 	// if the audio engine is set to "noaudio".
 	// TODO: investigate if this should be handled elsewhere before this point
 	if (!Synth)
@@ -418,14 +478,9 @@ void USynthComponent::Start()
 		AudioComponent->SetSound(Synth);
 		AudioComponent->Play(0);
 
-		// Copy sound base data to the sound
-		Synth->SourceEffectChain = SourceEffectChain;
-		Synth->SoundSubmixObject = SoundSubmix;
-		Synth->SoundSubmixSends = SoundSubmixSends;
+		SetActiveFlag(AudioComponent->IsActive());
 
-		bIsActive = AudioComponent->IsActive();
-
-		if (bIsActive)
+		if (IsActive())
 		{
 			PendingSynthEvents.Enqueue(ESynthEvent::Start);
 		}
@@ -434,7 +489,7 @@ void USynthComponent::Start()
 
 void USynthComponent::Stop()
 {
-	if (bIsActive)
+	if (IsActive())
 	{
 		PendingSynthEvents.Enqueue(ESynthEvent::Stop);
 
@@ -443,7 +498,7 @@ void USynthComponent::Stop()
 			AudioComponent->Stop();
 		}
 
-		bIsActive = false;
+		SetActiveFlag(false);
 	}
 }
 
@@ -460,7 +515,7 @@ void USynthComponent::SetVolumeMultiplier(float VolumeMultiplier)
 	}
 }
 
-void USynthComponent::SetSubmixSend(USoundSubmix* Submix, float SendLevel)
+void USynthComponent::SetSubmixSend(USoundSubmixBase* Submix, float SendLevel)
 {
 	if (AudioComponent)
 	{

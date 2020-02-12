@@ -1,12 +1,12 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
 #include "CoreTypes.h"
 #include "IMessageContext.h"
 #include "MessageEndpoint.h"
-
 #include "ITargetDeviceProxy.h"
+#include "Misc/Optional.h"
 
 class FTargetDeviceProxy;
 class IMessageContext;
@@ -51,17 +51,26 @@ public:
 public:
 
 	/**
-	 * Gets the time at which the proxy was last updated.
-	 *
-	 * @return Date and time of the last update.
+	 * Add a time by which a ping response should arrive
 	 */
-	const FDateTime& GetLastUpdateTime() const
+	void AddTimeout(const FDateTime& NewTimeout)
 	{
-		return LastUpdateTime;
+		if (!PingTimeout || NewTimeout < PingTimeout.GetValue())
+		{
+			PingTimeout = NewTimeout;
+		}
 	}
 
 	/**
-	 * Updates the proxy's information from the given device service response.
+	 * Check if ping response arrived on time
+	 */
+	bool HasTimedOut(const FDateTime& Now) const
+	{
+		return PingTimeout && Now > PingTimeout.GetValue();
+	}
+
+	/**
+	 * Updates the proxy's information from the given device service response and clear timeout expectations
 	 *
 	 * @param Message The message containing the response.
 	 * @param Context The message context.
@@ -167,7 +176,7 @@ public:
 	}
 
 	virtual bool DeployApp(FName InVariant, const TMap<FString, FString>& Files, const FGuid& TransactionId) override;
-	virtual bool LaunchApp(FName InVariant, const FString& AppId, EBuildConfigurations::Type BuildConfiguration, const FString& Params) override;
+	virtual bool LaunchApp(FName InVariant, const FString& AppId, EBuildConfiguration BuildConfiguration, const FString& Params) override;
 	
 	virtual bool TerminateLaunchedProcess(FName InVariant, const FString& ProcessIdentifier) override;
 
@@ -224,8 +233,8 @@ private:
 	/** Holds the name of the user that owns the device. */
 	FString HostUser;
 
-	/** Holds the time at which the last ping reply was received. */
-	FDateTime LastUpdateTime;
+	/** The time by which the lack of any ping response is considered a timeout. */
+	TOptional<FDateTime> PingTimeout;
 
 	/** Holds the device make. */
 	FString Make;

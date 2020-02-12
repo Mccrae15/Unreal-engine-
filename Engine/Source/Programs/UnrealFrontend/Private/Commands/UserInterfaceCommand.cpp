@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "UserInterfaceCommand.h"
 #include "IAutomationControllerModule.h"
@@ -33,6 +33,11 @@ namespace UserInterfaceCommand
 void FUserInterfaceCommand::Run(  )
 {
 	FString UnrealFrontendLayoutIni = FPaths::GetPath(GEngineIni) + "/Layout.ini";
+
+	// ensure target platform manager is referenced early as it must be created on the main thread
+	FModuleManager::Get().LoadModuleChecked("DesktopPlatform");
+	FConfigCacheIni::InitializeConfigSystem();
+	GetTargetPlatformManager();
 
 	FCoreStyle::ResetToDefault();
 
@@ -75,7 +80,7 @@ void FUserInterfaceCommand::Run(  )
 	double LastTime = FPlatformTime::Seconds();
 	const float IdealFrameTime = 1.0f / IDEAL_FRAMERATE;
 
-	while (!GIsRequestingExit)
+	while (!IsEngineExitRequested())
 	{
 		//Save the state of the tabs here rather than after close of application (the tabs are undesirably saved out with ClosedTab state on application close)
 		//UserInterfaceCommand::UserConfiguredNewLayout = FGlobalTabmanager::Get()->PersistLayout();

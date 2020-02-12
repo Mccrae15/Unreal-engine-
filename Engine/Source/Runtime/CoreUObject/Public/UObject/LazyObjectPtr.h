@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 /*=============================================================================
 	LazyObjectPtr.h: Lazy, guid-based weak pointer to a UObject, mostly useful for actors
@@ -67,7 +67,7 @@ struct COREUOBJECT_API FUniqueObjectGuid
 	}
 
 	/** Returns true is this is the default value */
-	FORCEINLINE bool IsDefault()
+	FORCEINLINE bool IsDefault() const
 	{
 		// A default GUID is 0,0,0,0 and this is "invalid"
 		return !IsValid(); 
@@ -132,12 +132,6 @@ public:
 	{
 	}
 
-	/** Construct from another lazy pointer */
-	FORCEINLINE FLazyObjectPtr(const FLazyObjectPtr& Other)
-	{
-		(*this)=Other;
-	}
-
 	/** Construct from object already in memory */
 	explicit FORCEINLINE FLazyObjectPtr(const UObject* Object)
 	{
@@ -148,12 +142,6 @@ public:
 	FORCEINLINE void operator=(const UObject *Object)
 	{
 		TPersistentObjectPtr<FUniqueObjectGuid>::operator=(Object);
-	}
-
-	/** Copy from a lazy pointer */
-	FORCEINLINE void operator=(const FLazyObjectPtr& Other)
-	{
-		TPersistentObjectPtr<FUniqueObjectGuid>::operator=(Other);
 	}
 
 	/** Copy from a unique object identifier */
@@ -171,7 +159,6 @@ public:
 
 template <> struct TIsPODType<FLazyObjectPtr> { enum { Value = TIsPODType<TPersistentObjectPtr<FUniqueObjectGuid> >::Value }; };
 template <> struct TIsWeakPointerType<FLazyObjectPtr> { enum { Value = TIsWeakPointerType<TPersistentObjectPtr<FUniqueObjectGuid> >::Value }; };
-template <> struct THasGetTypeHash<FLazyObjectPtr> { enum { Value = THasGetTypeHash<TPersistentObjectPtr<FUniqueObjectGuid> >::Value }; };
 
 /**
  * TLazyObjectPtr is templatized version of the generic FLazyObjectPtr
@@ -188,16 +175,15 @@ public:
 	TLazyObjectPtr<T>& operator=(const TLazyObjectPtr<T>&) = default;
 
 	/** Construct from another lazy pointer with implicit upcasting allowed */
-	template<typename U, typename = typename TEnableIf<TPointerIsConvertibleFromTo<U, T>::Value>::Type>
+	template<typename U, typename = decltype(ImplicitConv<T*>((U*)nullptr))>
 	FORCEINLINE TLazyObjectPtr(const TLazyObjectPtr<U>& Other) :
 		FLazyObjectPtr((const FLazyObjectPtr&)Other)
 	{
 	}
 	
 	/** Assign from another lazy pointer with implicit upcasting allowed */
-	template<typename U>
-	FORCEINLINE typename TEnableIf<TPointerIsConvertibleFromTo<U, T>::Value, TLazyObjectPtr<T>&>::Type
-		operator=(const TLazyObjectPtr<U>& Other)
+	template<typename U, typename = decltype(ImplicitConv<T*>((U*)nullptr))>
+	FORCEINLINE TLazyObjectPtr<T>& operator=(const TLazyObjectPtr<U>& Other)
 	{
 		FLazyObjectPtr::operator=((const FLazyObjectPtr&)Other);
 		return *this;
@@ -326,30 +312,26 @@ public:
 // The reason these aren't inside the class (above) is because Visual Studio 2012-2013 crashes when compiling them :D
 
 /** Compare with another TLazyObjectPtr of related type */
-template<typename T, typename U>
+template<typename T, typename U, typename = decltype((T*)nullptr == (U*)nullptr)>
 FORCEINLINE bool operator==(const TLazyObjectPtr<T>& Lhs, const TLazyObjectPtr<U>& Rhs)
 {
-	static_assert(TPointerIsConvertibleFromTo<U, T>::Value || TPointerIsConvertibleFromTo<T, U>::Value, "Unable to compare TLazyObjectPtr - types are incompatible");
 	return (const FLazyObjectPtr&)Lhs == (const FLazyObjectPtr&)Rhs;
 }
-template<typename T, typename U>
+template<typename T, typename U, typename = decltype((T*)nullptr != (U*)nullptr)>
 FORCEINLINE bool operator!=(const TLazyObjectPtr<T>& Lhs, const TLazyObjectPtr<U>& Rhs)
 {
-	static_assert(TPointerIsConvertibleFromTo<U, T>::Value || TPointerIsConvertibleFromTo<T, U>::Value, "Unable to compare TLazyObjectPtr - types are incompatible");
 	return (const FLazyObjectPtr&)Lhs != (const FLazyObjectPtr&)Rhs;
 }
 
 /** Compare for equality with a raw pointer **/
-template<typename T, typename U>
+template<typename T, typename U, typename = decltype((T*)nullptr == (U*)nullptr)>
 FORCEINLINE bool operator==(const TLazyObjectPtr<T>& Lhs, const U* Rhs)
 {
-	static_assert(TPointerIsConvertibleFromTo<U, T>::Value || TPointerIsConvertibleFromTo<T, U>::Value, "Unable to compare TLazyObjectPtr with raw pointer - types are incompatible");
 	return Lhs.Get() == Rhs;
 }
-template<typename T, typename U>
+template<typename T, typename U, typename = decltype((T*)nullptr == (U*)nullptr)>
 FORCEINLINE bool operator==(const U* Lhs, const TLazyObjectPtr<T>& Rhs)
 {
-	static_assert(TPointerIsConvertibleFromTo<U, T>::Value || TPointerIsConvertibleFromTo<T, U>::Value, "Unable to compare TLazyObjectPtr with raw pointer - types are incompatible");
 	return Lhs == Rhs.Get();
 }
 
@@ -366,16 +348,14 @@ FORCEINLINE bool operator==(TYPE_OF_NULLPTR, const TLazyObjectPtr<T>& Rhs)
 }
 
 /** Compare for inequality with a raw pointer	**/
-template<typename T, typename U>
+template<typename T, typename U, typename = decltype((T*)nullptr != (U*)nullptr)>
 FORCEINLINE bool operator!=(const TLazyObjectPtr<T>& Lhs, const U* Rhs)
 {
-	static_assert(TPointerIsConvertibleFromTo<U, T>::Value || TPointerIsConvertibleFromTo<T, U>::Value, "Unable to compare TLazyObjectPtr - types are incompatible");
 	return Lhs.Get() != Rhs;
 }
-template<typename T, typename U>
+template<typename T, typename U, typename = decltype((T*)nullptr != (U*)nullptr)>
 FORCEINLINE bool operator!=(const U* Lhs, const TLazyObjectPtr<T>& Rhs)
 {
-	static_assert(TPointerIsConvertibleFromTo<U, T>::Value || TPointerIsConvertibleFromTo<T, U>::Value, "Unable to compare TLazyObjectPtr - types are incompatible");
 	return Lhs != Rhs.Get();
 }
 

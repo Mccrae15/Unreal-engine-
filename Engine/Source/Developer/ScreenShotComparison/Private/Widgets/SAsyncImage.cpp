@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "Widgets/SAsyncImage.h"
 
@@ -40,7 +40,7 @@ void SAsyncImage::Construct(const FArguments& InArgs)
 	// Enqueue the request to load the screenshot on the thread pool.
 	FString ImagePath = InArgs._ImageFilePath;
 	TWeakPtr<SAsyncImage> TempWeakThis = SharedThis(this);
-	TextureFuture = Async<FSlateTextureDataPtr>(EAsyncExecution::ThreadPool, [TempWeakThis, ImagePath] () {
+	TextureFuture = Async(EAsyncExecution::ThreadPool, [TempWeakThis, ImagePath] () {
 
 		if ( TempWeakThis.IsValid() )
 		{
@@ -100,10 +100,10 @@ FSlateTextureDataPtr SAsyncImage::LoadScreenshot(FString ImagePath)
 		{
 			if ( ImageWrapper.IsValid() && ImageWrapper->SetCompressed(RawFileData.GetData(), RawFileData.Num()) )
 			{
-				const TArray<uint8>* RawData = nullptr;
+				TArray<uint8> RawData;
 				if ( ImageWrapper->GetRaw(ERGBFormat::BGRA, 8, RawData) )
 				{
-					return MakeShareable(new FSlateTextureData(ImageWrapper->GetWidth(), ImageWrapper->GetHeight(), 4, *RawData));
+					return MakeShareable(new FSlateTextureData(ImageWrapper->GetWidth(), ImageWrapper->GetHeight(), 4, RawData));
 				}
 			}
 		}

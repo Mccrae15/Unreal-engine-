@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -16,6 +16,7 @@
 
 class UBodySetup;
 class UPhysicalMaterial;
+class UPhysicalMaterialMask;
 class UPrimitiveComponent;
 struct FBodyInstance;
 struct FCollisionNotifyInfo;
@@ -51,8 +52,130 @@ namespace EDOFMode
 	};
 }
 
-struct FCollisionNotifyInfo;
-template <bool bCompileStatic> struct FInitBodiesHelper;
+struct FBodyInstnace;
+
+#define USE_BODYINSTANCE_DEBUG_NAMES ((WITH_EDITORONLY_DATA || UE_BUILD_DEBUG || LOOKING_FOR_PERF_ISSUES) && !(UE_BUILD_SHIPPING || UE_BUILD_TEST) && !NO_LOGGING)
+
+/** Helper struct to specify spawn behavior */
+struct FInitBodySpawnParams
+{
+	ENGINE_API FInitBodySpawnParams(const UPrimitiveComponent* PrimComp);
+
+	/** Whether the created physics actor will be static */
+	bool bStaticPhysics;
+
+	/** Whether to use the BodySetup's PhysicsType to override if the instance simulates*/
+	bool bPhysicsTypeDeterminesSimulation;
+
+	/** An aggregate to place the body into */
+	FPhysicsAggregateHandle Aggregate;
+};
+
+struct FInitBodiesHelperBase
+{
+	ENGINE_API FInitBodiesHelperBase(TArray<FBodyInstance*>& InBodies, TArray<FTransform>& InTransforms, class UBodySetup* InBodySetup, class UPrimitiveComponent* InPrimitiveComp, FPhysScene* InRBScene, const FInitBodySpawnParams& InSpawnParams, FPhysicsAggregateHandle InAggregate);
+
+	FInitBodiesHelperBase(const FInitBodiesHelperBase& InHelper) = delete;
+	FInitBodiesHelperBase(FInitBodiesHelperBase&& InHelper) = delete;
+	FInitBodiesHelperBase& operator=(const FInitBodiesHelperBase& InHelper) = delete;
+	FInitBodiesHelperBase& operator=(FInitBodiesHelperBase&& InHelper) = delete;
+
+	FORCEINLINE bool IsStatic() const { return bStatic; }
+
+	//The arguments passed into InitBodies
+	TArray<FBodyInstance*>& Bodies;   
+	TArray<FTransform>& Transforms;
+	class UBodySetup* BodySetup;
+	class UPrimitiveComponent* PrimitiveComp;
+	FPhysScene* PhysScene;
+	FPhysicsAggregateHandle Aggregate;
+
+#if USE_BODYINSTANCE_DEBUG_NAMES
+	FString DebugName;
+	TSharedPtr<TArray<ANSICHAR>> PhysXName; // Get rid of ANSICHAR in physics
+#endif
+
+	//The constants shared between PhysX and Box2D
+	bool bStatic;
+	bool bInstanceSimulatePhysics;
+	float InstanceBlendWeight;
+
+	const USkeletalMeshComponent* SkelMeshComp;
+
+	const FInitBodySpawnParams& SpawnParams;
+
+	bool DisableQueryOnlyActors;
+
+	// Return to actor ref
+	void CreateActor_AssumesLocked(FBodyInstance* Instance, const FTransform& Transform) const;
+	bool CreateShapes_AssumesLocked(FBodyInstance* Instance) const;
+
+	// Takes actor ref arrays.
+	// #PHYS2 this used to return arrays of low-level physics bodies, which would be added to scene in InitBodies. Should it still do that, rather then later iterate over BodyInstances to get phys actor refs?
+	bool CreateShapesAndActors();
+	void InitBodies();
+
+protected:
+	void UpdateSimulatingAndBlendWeight();
+
+};
+
+template <bool bCompileStatic>
+struct FInitBodiesHelper : public FInitBodiesHelperBase
+{
+	FInitBodiesHelper(TArray<FBodyInstance*>& InBodies, TArray<FTransform>& InTransforms, class UBodySetup* InBodySetup, class UPrimitiveComponent* InPrimitiveComp, FPhysScene* InRBScene, const FInitBodySpawnParams& InSpawnParams, FPhysicsAggregateHandle InAggregate)
+	: FInitBodiesHelperBase(InBodies, InTransforms, InBodySetup, InPrimitiveComp, InRBScene, InSpawnParams, InAggregate)
+	{
+		//Compute all the needed constants
+		bStatic = bCompileStatic || SpawnParams.bStaticPhysics;
+		SkelMeshComp = bCompileStatic ? nullptr : Cast<USkeletalMeshComponent>(PrimitiveComp);
+		if(SpawnParams.bPhysicsTypeDeterminesSimulation)
+		{
+			this->UpdateSimulatingAndBlendWeight();
+		}
+	}
+};
+
+template <bool bCompileStatic>
+struct FInitBodiesHelperWithData : public FInitBodiesHelperBase
+{
+	FInitBodiesHelperWithData() { check(false); }
+	FInitBodiesHelperWithData(TArray<FBodyInstance*>&& InBodies, TArray<FTransform>&& InTransforms, class UBodySetup* InBodySetup, class UPrimitiveComponent* InPrimitiveComp, FPhysScene* InRBScene, const FInitBodySpawnParams& InSpawnParams, FPhysicsAggregateHandle InAggregate)
+	: FInitBodiesHelperBase(OwnedBodies, OwnedTransforms, InBodySetup, InPrimitiveComp, InRBScene, InSpawnParams, InAggregate), OwnedBodies(MoveTemp(InBodies)), OwnedTransforms(MoveTemp(InTransforms))
+	{
+		//Compute all the needed constants
+		bStatic = bCompileStatic || SpawnParams.bStaticPhysics;
+		SkelMeshComp = bCompileStatic ? nullptr : Cast<USkeletalMeshComponent>(PrimitiveComp);
+		if(SpawnParams.bPhysicsTypeDeterminesSimulation)
+		{
+			this->UpdateSimulatingAndBlendWeight();
+		}
+	}
+
+	FInitBodiesHelperWithData(const FInitBodiesHelperWithData& InHelper)
+	: FInitBodiesHelperBase(OwnedBodies, OwnedTransforms, InHelper.BodySetup, InHelper.PrimitiveComp, InHelper.PhysScene, InHelper.SpawnParams, InHelper.Aggregate), OwnedBodies(InHelper.OwnedBodies), OwnedTransforms(InHelper.OwnedTransforms)
+	{
+		ensure(false);
+	}
+
+	FInitBodiesHelperWithData(FInitBodiesHelperWithData&& InHelper)
+	: FInitBodiesHelperBase(OwnedBodies, OwnedTransforms, InHelper.BodySetup, InHelper.PrimitiveComp, InHelper.PhysScene, InHelper.SpawnParams, InHelper.Aggregate), OwnedBodies(MoveTemp(InHelper.OwnedBodies)), OwnedTransforms(MoveTemp(InHelper.OwnedTransforms))
+	{
+		//Compute all the needed constants
+		bStatic = bCompileStatic || SpawnParams.bStaticPhysics;
+		SkelMeshComp = bCompileStatic ? nullptr : Cast<USkeletalMeshComponent>(PrimitiveComp);
+		if(SpawnParams.bPhysicsTypeDeterminesSimulation)
+		{
+			this->UpdateSimulatingAndBlendWeight();
+		}
+	}
+
+	FInitBodiesHelperWithData& operator=(const FInitBodiesHelperWithData& InHelper) = delete;
+	FInitBodiesHelperWithData& operator=(FInitBodiesHelperWithData&& InHelper) = delete;
+
+	TArray<FBodyInstance*> OwnedBodies;
+	TArray<FTransform> OwnedTransforms;
+};
 
 USTRUCT()
 struct ENGINE_API FCollisionResponse
@@ -63,20 +186,20 @@ struct ENGINE_API FCollisionResponse
 	FCollisionResponse(ECollisionResponse DefaultResponse);
 
 	/** Set the response of a particular channel in the structure. */
-	void SetResponse(ECollisionChannel Channel, ECollisionResponse NewResponse);
+	bool SetResponse(ECollisionChannel Channel, ECollisionResponse NewResponse);
 
 	/** Set all channels to the specified response */
-	void SetAllChannels(ECollisionResponse NewResponse);
+	bool SetAllChannels(ECollisionResponse NewResponse);
 
 	/** Replace the channels matching the old response with the new response */
-	void ReplaceChannels(ECollisionResponse OldResponse, ECollisionResponse NewResponse);
+	bool ReplaceChannels(ECollisionResponse OldResponse, ECollisionResponse NewResponse);
 
 	/** Returns the response set on the specified channel */
 	FORCEINLINE_DEBUGGABLE ECollisionResponse GetResponse(ECollisionChannel Channel) const { return ResponseToChannels.GetResponse(Channel); }
 	const FCollisionResponseContainer& GetResponseContainer() const { return ResponseToChannels; }
 
 	/** Set all channels from ChannelResponse Array **/
-	void SetCollisionResponseContainer(const FCollisionResponseContainer& InResponseToChannels);
+	bool SetCollisionResponseContainer(const FCollisionResponseContainer& InResponseToChannels);
 	void SetResponsesArray(const TArray<FResponseChannel>& InChannelResponses);
 	void UpdateResponseContainerFromArray();
 
@@ -119,8 +242,6 @@ enum class BodyInstanceSceneState : uint8
 	AwaitingRemove,
 	Removed
 };
-
-#define USE_BODYINSTANCE_DEBUG_NAMES ((WITH_EDITORONLY_DATA || UE_BUILD_DEBUG || LOOKING_FOR_PERF_ISSUES) && !(UE_BUILD_SHIPPING || UE_BUILD_TEST) && !NO_LOGGING)
 
 /** Container for a physics representation of an object */
 USTRUCT(BlueprintType)
@@ -425,7 +546,13 @@ public:
 	UPROPERTY()
 	float PhysicsBlendWeight;
 
+private:
+	TArray<FInitBodiesHelperWithData<true>> InitBodiesDeferredListStatic;
+	TArray<FInitBodiesHelperWithData<false>> InitBodiesDeferredListDynamic;
+
 public:
+
+	void InitAllBodies(FPhysScene* PhysScene);
 
 	FPhysicsActorHandle& GetPhysicsActorHandle();
 	const FPhysicsActorHandle& GetPhysicsActorHandle() const;
@@ -455,21 +582,6 @@ public:
 	 * 
 	 **/
 	void LoadProfileData(bool bVerifyProfile);
-
-	/** Helper struct to specify spawn behavior */
-	struct FInitBodySpawnParams
-	{
-		ENGINE_API FInitBodySpawnParams(const UPrimitiveComponent* PrimComp);
-
-		/** Whether the created physics actor will be static */
-		bool bStaticPhysics;
-
-		/** Whether to use the BodySetup's PhysicsType to override if the instance simulates*/
-		bool bPhysicsTypeDeterminesSimulation;
-
-		/** An aggregate to place the body into */
-		FPhysicsAggregateHandle Aggregate;
-	};
 
 	void InitBody(UBodySetup* Setup, const FTransform& Transform, UPrimitiveComponent* PrimComp, FPhysScene* InRBScene)
 	{
@@ -505,7 +617,8 @@ public:
 
 
 	/** Get the scene that owns this body. */
-	FPhysScene* GetPhysicsScene() const;
+	FPhysScene* GetPhysicsScene();
+	const FPhysScene* GetPhysicsScene() const;
 
 	/** Initialise dynamic properties for this instance when using physics - this must be done after scene addition.
 	 *  Note: This function is not thread safe. Make sure to obtain the appropriate physics scene locks before calling this function
@@ -565,6 +678,8 @@ public:
 
 	/** Returns the mass coordinate system to world space transform (position is world center of mass, rotation is world inertia orientation) */
 	FTransform GetMassSpaceToWorldSpace() const;
+
+	/** Returns the mass coordinate system to local space transform (position is local center of mass, rotation should be identity) */
 	FTransform GetMassSpaceLocal() const;
 
 	/** TODO: this only works at runtime when the physics state has been created. Any changes that result in recomputing mass properties will not properly remember this */
@@ -585,20 +700,29 @@ public:
 	/** Find the correct PhysicalMaterial for simple geometry on a given body and owner. This is really for internal use during serialization */
 	static UPhysicalMaterial* GetSimplePhysicalMaterial(const FBodyInstance* BodyInstance, TWeakObjectPtr<UPrimitiveComponent> Owner, TWeakObjectPtr<UBodySetup> BodySetupPtr);
 
-	/** Get the complex PhysicalMaterial array for this body */
+	/** Get the complex PhysicalMaterials array for this body */
 	TArray<UPhysicalMaterial*> GetComplexPhysicalMaterials() const;
 
-	/** Find the correct PhysicalMaterial for simple geometry on a given body and owner. This is really for internal use during serialization */
-	static void GetComplexPhysicalMaterials(const FBodyInstance* BodyInstance, TWeakObjectPtr<UPrimitiveComponent> Owner, TArray<UPhysicalMaterial*>& OutPhysicalMaterials);
+	/** Get the complex PhysicalMaterials and PhysicalMaterialMasks array for this body */
+	TArray<UPhysicalMaterial*> GetComplexPhysicalMaterials(TArray<FPhysicalMaterialMaskParams>& OutPhysMaterialMasks) const;
 
 	/** Get the complex PhysicalMaterials for this body */
-	void GetComplexPhysicalMaterials(TArray<UPhysicalMaterial*> &PhysMaterials) const;
+	void GetComplexPhysicalMaterials(TArray<UPhysicalMaterial*> &OutPhysMaterials) const;
+
+	/** Get the complex PhysicalMaterials and PhysicalMaterialMasks for this body */
+	void GetComplexPhysicalMaterials(TArray<UPhysicalMaterial*> &OutPhysMaterials, TArray<FPhysicalMaterialMaskParams>& OutPhysMaterialMasks) const;
+
+	/** Find the correct PhysicalMaterial and PhysicalMaterialMasks for complex geometry on a given body and owner. This is really for internal use during serialization */
+	static void GetComplexPhysicalMaterials(const FBodyInstance* BodyInstance, TWeakObjectPtr<UPrimitiveComponent> Owner, TArray<UPhysicalMaterial*>& OutPhysMaterials, TArray<FPhysicalMaterialMaskParams>* OutPhysMaterialMasks = nullptr);
 
 	/** Returns the slope override struct for this instance. If we don't have our own custom setting, it will return the setting from the body setup. */
 	const struct FWalkableSlopeOverride& GetWalkableSlopeOverride() const;
 
 	/** Sets a custom slope override struct for this instance. Implicitly sets bOverrideWalkableSlopeOnInstance to true. */
-	void SetWalkableSlopeOverride(const FWalkableSlopeOverride& NewOverride);
+	void SetWalkableSlopeOverride(const FWalkableSlopeOverride& NewOverride, bool bNewOverideSetting = true);
+
+	/** Gets bOverrideWalkableSlopeOnInstance */
+	bool GetOverrideWalkableSlopeOnInstance() const;
 
 	/** Returns true if the body is not static */
 	bool IsDynamic() const;
@@ -772,19 +896,19 @@ public:
 	void SetContactReportForceThreshold(float Threshold);
 
 	/** Set the collision response of this body to a particular channel */
-	void SetResponseToChannel(ECollisionChannel Channel, ECollisionResponse NewResponse);
+	bool SetResponseToChannel(ECollisionChannel Channel, ECollisionResponse NewResponse);
 
 	/** Get the collision response of this body to a particular channel */
 	FORCEINLINE_DEBUGGABLE ECollisionResponse GetResponseToChannel(ECollisionChannel Channel) const { return CollisionResponses.GetResponse(Channel); }
 
 	/** Set the response of this body to all channels */
-	void SetResponseToAllChannels(ECollisionResponse NewResponse);
+	bool SetResponseToAllChannels(ECollisionResponse NewResponse);
 
 	/** Replace the channels on this body matching the old response with the new response */
-	void ReplaceResponseToChannels(ECollisionResponse OldResponse, ECollisionResponse NewResponse);
+	bool ReplaceResponseToChannels(ECollisionResponse OldResponse, ECollisionResponse NewResponse);
 
 	/** Set the response of this body to the supplied settings */
-	void SetResponseToChannels(const FCollisionResponseContainer& NewReponses);
+	bool SetResponseToChannels(const FCollisionResponseContainer& NewReponses);
 
 	/** Get Collision ResponseToChannels container for this component **/
 	FORCEINLINE_DEBUGGABLE const FCollisionResponseContainer& GetResponseToChannels() const { return CollisionResponses.GetResponseContainer(); }
@@ -856,10 +980,10 @@ public:
 	 *  @param  SimplePhysMat			The material to use if a simple shape is provided (or complex materials are empty)
 	 *  @param  ComplexPhysMats			The array of materials to apply if a complex shape is provided
 	 */
-	static void ApplyMaterialToShape_AssumesLocked(const FPhysicsShapeHandle& InShape, UPhysicalMaterial* SimplePhysMat, const TArrayView<UPhysicalMaterial*>& ComplexPhysMats);
+	static void ApplyMaterialToShape_AssumesLocked(const FPhysicsShapeHandle& InShape, UPhysicalMaterial* SimplePhysMat, const TArrayView<UPhysicalMaterial*>& ComplexPhysMats, const TArrayView<FPhysicalMaterialMaskParams>* ComplexPhysMatMasks = nullptr);
 
 	/** Note: This function is not thread safe. Make sure you obtain the appropriate physics scene lock before calling it*/
-	void ApplyMaterialToInstanceShapes_AssumesLocked(UPhysicalMaterial* SimplePhysMat, TArray<UPhysicalMaterial*>& ComplexPhysMats);
+	void ApplyMaterialToInstanceShapes_AssumesLocked(UPhysicalMaterial* SimplePhysMat, TArray<UPhysicalMaterial*>& ComplexPhysMats, const TArrayView<FPhysicalMaterialMaskParams>& ComplexPhysMatMasks);
 
 	/** Update the instances collision filtering data */ 
 	void UpdatePhysicsFilterData();
@@ -1003,7 +1127,7 @@ public:
 
 public:
 	// #PHYS2 Rename, not just for physx now.
-	FPhysxUserData PhysxUserData;
+	FPhysicsUserData PhysicsUserData;
 
 	struct FWeldInfo
 	{
@@ -1044,8 +1168,7 @@ private:
 	friend struct FUpdateCollisionResponseHelper;
 	friend class FBodySetupDetails;
 	
-	friend struct FInitBodiesHelper<true>;
-	friend struct FInitBodiesHelper<false>;
+	friend struct FInitBodiesHelperBase;
 	friend class FBodyInstanceCustomizationHelper;
 	friend class FFoliageTypeCustomizationHelpers;
 

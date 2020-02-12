@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "MacTargetSettingsDetails.h"
 #include "Misc/Paths.h"
@@ -259,7 +259,7 @@ void FMacTargetSettingsDetails::CustomizeDetails( IDetailLayoutBuilder& DetailBu
 		]
 	];
 
-	AudioPluginWidgetManager.BuildAudioCategory(DetailBuilder, EAudioPlatform::Mac);
+	AudioPluginWidgetManager.BuildAudioCategory(DetailBuilder, FString(TEXT("Mac")));
 }
 
 

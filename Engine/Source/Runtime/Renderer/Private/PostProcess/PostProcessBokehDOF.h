@@ -1,87 +1,20 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
-
-/*=============================================================================
-	PostProcessBokehDOF.h: Post processing lens blur implementation.
-=============================================================================*/
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
-#include "CoreMinimal.h"
-#include "RendererInterface.h"
-#include "PostProcess/RenderingCompositionGraph.h"
+#include "ScreenPass.h"
+#include "OverridePassSequence.h"
 
-struct FDepthOfFieldStats
+struct FVisualizeDOFInputs
 {
-	FDepthOfFieldStats()
-		: bNear(true)
-		, bFar(true)
-	{
-	}
+	// [Optional] Render to the specified output. If invalid, a new texture is created and returned.
+	FScreenPassRenderTarget OverrideOutput;
 
-	bool bNear;
-	bool bFar;
+	// [Required] The scene color to composite with DOF visualization.
+	FScreenPassTexture SceneColor;
+
+	// [Required] The scene depth to derive depth of field parameters.
+	FScreenPassTexture SceneDepth;
 };
 
-
-// derives from TRenderingCompositePassBase<InputCount, OutputCount> 
-// ePId_Input0: Color input
-class FRCPassPostProcessVisualizeDOF : public TRenderingCompositePassBase<1, 1>
-{
-public:
-	// constructor
-	FRCPassPostProcessVisualizeDOF(const FDepthOfFieldStats& InDepthOfFieldStats)
-		: DepthOfFieldStats(InDepthOfFieldStats)
-	{}
-
-	// interface FRenderingCompositePass ---------
-	virtual void Process(FRenderingCompositePassContext& Context) override;
-	virtual void Release() override { delete this; }
-	virtual FPooledRenderTargetDesc ComputeOutputDesc(EPassOutputId InPassOutputId) const override;
-
-	FDepthOfFieldStats DepthOfFieldStats;
-};
-
-// derives from TRenderingCompositePassBase<InputCount, OutputCount> 
-// ePId_Input0: Color input
-// ePId_Input1: Depth input
-class FRCPassPostProcessBokehDOFSetup : public TRenderingCompositePassBase<2, 1>
-{
-public:
-	FRCPassPostProcessBokehDOFSetup(bool bInIsComputePass)
-	{
-		bIsComputePass = bInIsComputePass;
-	}
-
-	// interface FRenderingCompositePass ---------
-	virtual void Process(FRenderingCompositePassContext& Context) override;
-	virtual void Release() override { delete this; }
-	virtual FPooledRenderTargetDesc ComputeOutputDesc(EPassOutputId InPassOutputId) const override;
-
-private:
-	template <typename TRHICmdList>
-	void DispatchCS(TRHICmdList& RHICmdList, FRenderingCompositePassContext& Context, const FIntRect& DestRect, FUnorderedAccessViewRHIParamRef DestUAV);
-};
-
-// derives from TRenderingCompositePassBase<InputCount, OutputCount> 
-// ePId_Input0: Half res scene with depth in alpha
-// ePId_Input1: SceneColor for high quality input (experimental)
-// ePId_Input2: SceneDepth for high quality input (experimental)
-class FRCPassPostProcessBokehDOF : public TRenderingCompositePassBase<3, 1>
-{
-public:
-	// interface FRenderingCompositePass ---------
-
-	virtual void Process(FRenderingCompositePassContext& Context) override;
-	virtual void Release() override { delete this; }
-	virtual FPooledRenderTargetDesc ComputeOutputDesc(EPassOutputId InPassOutputId) const override;
-
-	static void ComputeDepthOfFieldParams(const FRenderingCompositePassContext& Context, FVector4 Out[2]);
-
-private:
-
-	template <uint32 HighQuality>
-	void SetShaderTempl(const FRenderingCompositePassContext& Context, FIntPoint LeftTop, FIntPoint TileCount, uint32 TileSize, float PixelKernelSize);
-
-	// border between front and back layer as we don't use viewports (only possible with GS)
-	const static uint32 SafetyBorder = 40;
-};
+FScreenPassTexture AddVisualizeDOFPass(FRDGBuilder& GraphBuilder, const FViewInfo& View, const FVisualizeDOFInputs& Inputs);

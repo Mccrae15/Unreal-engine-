@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "OnlineIdentityInterfaceSteam.h"
 #include "OnlineSubsystemSteam.h"
@@ -185,7 +185,7 @@ FString FOnlineIdentitySteam::GetAuthToken(int32 LocalUserNum) const
 		{
 			uint8 AuthToken[1024];
 			uint32 AuthTokenSize = 0;
-			if (SteamUserPtr->GetAuthSessionTicket(AuthToken, ARRAY_COUNT(AuthToken), &AuthTokenSize) != k_HAuthTicketInvalid &&
+			if (SteamUserPtr->GetAuthSessionTicket(AuthToken, UE_ARRAY_COUNT(AuthToken), &AuthTokenSize) != k_HAuthTicketInvalid &&
 				AuthTokenSize > 0)
 			{
 				ResultToken = BytesToHex(AuthToken, AuthTokenSize);

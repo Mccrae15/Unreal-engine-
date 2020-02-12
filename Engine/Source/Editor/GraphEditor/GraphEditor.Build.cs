@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 using UnrealBuildTool;
 
@@ -19,7 +19,9 @@ public class GraphEditor : ModuleRules
         PublicIncludePathModuleNames.AddRange(
             new string[] {                
                 "IntroTutorials",
-            }
+				"ClassViewer",
+				"StructViewer",
+			}
         );
          
 //         PublicDependencyModuleNames.AddRange(
@@ -41,19 +43,21 @@ public class GraphEditor : ModuleRules
 				"EditorWidgets",
 				"UnrealEd",
 				"AssetRegistry",
-				"ClassViewer",
-                "Kismet",
+				"Kismet",
 				"KismetWidgets",
 				"BlueprintGraph",
 				"Documentation",
 				"RenderCore",
 				"RHI",
+				"ToolMenus",
 			}
 		);
 
 		DynamicallyLoadedModuleNames.AddRange(
 			new string[] {
 				"ContentBrowser",
+				"ClassViewer",
+				"StructViewer",
 			}
 		);
 	}

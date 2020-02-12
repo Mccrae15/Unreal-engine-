@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 namespace UnrealBuildTool.Rules
 {
@@ -41,7 +41,8 @@ namespace UnrealBuildTool.Rules
                     "EditorStyle",
                     "RenderCore",
                     "RHI",
-                    "QuadricMeshReduction"
+                    "QuadricMeshReduction",
+					"SkeletalMeshUtilitiesCommon"
 					// ... add other public dependencies that you statically link with here ...
 				}
                 );
@@ -55,7 +56,8 @@ namespace UnrealBuildTool.Rules
                     "UnrealEd",
                     "AnimationModifiers",
                     "MeshBoneReduction",
-                    "QuadricMeshReduction"
+                    "QuadricMeshReduction",
+                    "ClothingSystemRuntimeCommon"
 					// ... add private dependencies that you statically link with here ...
                     // QuadricMeshReduction is only for testing
 				}

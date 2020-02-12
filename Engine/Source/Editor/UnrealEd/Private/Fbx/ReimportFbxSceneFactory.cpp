@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "Factories/ReimportFbxSceneFactory.h"
 #include "Misc/Paths.h"
@@ -48,13 +48,15 @@
 #include "Kismet2/BlueprintEditorUtils.h"
 #include "EngineGlobals.h"
 #include "Engine/Engine.h"
-#include "Toolkits/AssetEditorManager.h"
+
 #include "IContentBrowserSingleton.h"
 #include "ContentBrowserModule.h"
 
 #include "ObjectTools.h"
 
 #include "AI/Navigation/NavCollisionBase.h"
+#include "Subsystems/AssetEditorSubsystem.h"
+#include "Editor.h"
 
 #define LOCTEXT_NAMESPACE "FBXSceneReImportFactory"
 
@@ -607,11 +609,11 @@ EReimportResult::Type UReimportFbxSceneFactory::Reimport(UObject* Obj)
 	SFbxSceneOptionWindow::CopyFbxOptionsToFbxOptions(GlobalImportSettingsReference, GlobalImportSettings);
 	SFbxSceneOptionWindow::CopyFbxOptionsToStaticMeshOptions(GlobalImportSettingsReference, SceneImportOptionsStaticMesh);
 	SceneImportOptionsStaticMesh->FillStaticMeshInmportData(StaticMeshImportData, SceneImportOptions);
-	StaticMeshImportData->SaveConfig();
+	SceneImportOptionsStaticMesh->SaveConfig();
 
 	SFbxSceneOptionWindow::CopyFbxOptionsToSkeletalMeshOptions(GlobalImportSettingsReference, SceneImportOptionsSkeletalMesh);
 	SceneImportOptionsSkeletalMesh->FillSkeletalMeshInmportData(SkeletalMeshImportData, AnimSequenceImportData, SceneImportOptions);
-	SkeletalMeshImportData->SaveConfig();
+	SceneImportOptionsSkeletalMesh->SaveConfig();
 
 	//Update the blueprint
 	UBlueprint *ReimportBlueprint = nullptr;
@@ -785,7 +787,7 @@ void UReimportFbxSceneFactory::RecursivelySetComponentProperties(USCS_Node* Curr
 	FString ReduceNodeName = NodeName;
 	if (NameContainTemplateSuffixe)
 	{
-		ReduceNodeName = ReduceNodeName.Left(IndexTemplateSuffixe);
+		ReduceNodeName.LeftInline(IndexTemplateSuffixe, false);
 	}
 
 	USceneComponent *CurrentNodeSceneComponent = Cast<USceneComponent>(CurrentNodeActorComponent);
@@ -925,7 +927,7 @@ UBlueprint *UReimportFbxSceneFactory::UpdateOriginalBluePrint(FString &BluePrint
 		return nullptr;
 	}
 	//Close all editor that edit this blueprint
-	FAssetEditorManager::Get().CloseAllEditorsForAsset(BluePrint);
+	GEditor->GetEditorSubsystem<UAssetEditorSubsystem>()->CloseAllEditorsForAsset(BluePrint);
 	//Set the import status for the next reimport
 	for (TSharedPtr<FFbxNodeInfo> NodeInfo : SceneInfoPtr->HierarchyInfo)
 	{
@@ -1226,6 +1228,25 @@ EReimportResult::Type UReimportFbxSceneFactory::ReimportSkeletalMesh(void* VoidF
 		return EReimportResult::Failed;
 	}
 
+	const TArray<UAssetUserData*>* UserData = Mesh->GetAssetUserDataArray();
+	TMap<UAssetUserData*, bool> UserDataCopy;
+	if (UserData)
+	{
+		for (int32 Idx = 0; Idx < UserData->Num(); Idx++)
+		{
+			if ((*UserData)[Idx] != nullptr)
+			{
+				UAssetUserData* DupObject = (UAssetUserData*)StaticDuplicateObject((*UserData)[Idx], GetTransientPackage());
+				bool bAddDupToRoot = !(DupObject->IsRooted());
+				if (bAddDupToRoot)
+				{
+					DupObject->AddToRoot();
+				}
+				UserDataCopy.Add(DupObject, bAddDupToRoot);
+			}
+		}
+	}
+
 	ApplyMeshInfoFbxOptions(MeshInfo);
 	//TODO support bBakePivotInVertex
 	bool Old_bBakePivotInVertex = GlobalImportSettings->bBakePivotInVertex;
@@ -1240,6 +1261,19 @@ EReimportResult::Type UReimportFbxSceneFactory::ReimportSkeletalMesh(void* VoidF
 	if (FbxImporter->ReimportSkeletalMesh(Mesh, SkeletalMeshImportData, MeshInfo->UniqueId, &OutSkeletalMeshArray))
 	{
 		Mesh->AssetImportData->Update(FbxImportFileName);
+
+		// Copy user data to newly created mesh
+		for (auto Kvp : UserDataCopy)
+		{
+			UAssetUserData* UserDataObject = Kvp.Key;
+			if (Kvp.Value)
+			{
+				//if the duplicated temporary UObject was add to root, we must remove it from the root
+				UserDataObject->RemoveFromRoot();
+			}
+			UserDataObject->Rename(nullptr, Mesh, REN_DontCreateRedirectors | REN_DoNotDirty);
+			Mesh->AddAssetUserData(UserDataObject);
+		}
 
 		// Try to find the outer package so we can dirty it up
 		if (Mesh->GetOuter())
@@ -1432,14 +1466,20 @@ EReimportResult::Type UReimportFbxSceneFactory::ReimportStaticMesh(void* VoidFbx
 
 	FbxImporter->ApplyTransformSettingsToFbxNode(FbxImporter->Scene->GetRootNode(), StaticMeshImportData);
 	const TArray<UAssetUserData*>* UserData = Mesh->GetAssetUserDataArray();
-	TArray<UAssetUserData*> UserDataCopy;
+	TMap<UAssetUserData*, bool> UserDataCopy;
 	if (UserData)
 	{
 		for (int32 Idx = 0; Idx < UserData->Num(); Idx++)
 		{
 			if ((*UserData)[Idx] != nullptr)
 			{
-				UserDataCopy.Add((UAssetUserData*)StaticDuplicateObject((*UserData)[Idx], GetTransientPackage()));
+				UAssetUserData* DupObject = (UAssetUserData*)StaticDuplicateObject((*UserData)[Idx], GetTransientPackage());
+				bool bAddDupToRoot = !(DupObject->IsRooted());
+				if (bAddDupToRoot)
+				{
+					DupObject->AddToRoot();
+				}
+				UserDataCopy.Add(DupObject, bAddDupToRoot);
 			}
 		}
 	}
@@ -1466,10 +1506,16 @@ EReimportResult::Type UReimportFbxSceneFactory::ReimportStaticMesh(void* VoidFbx
 		Mesh->AssetImportData = StaticMeshImportData;
 
 		// Copy user data to newly created mesh
-		for (int32 Idx = 0; Idx < UserDataCopy.Num(); Idx++)
+		for (auto Kvp : UserDataCopy)
 		{
-			UserDataCopy[Idx]->Rename(nullptr, Mesh, REN_DontCreateRedirectors | REN_DoNotDirty);
-			Mesh->AddAssetUserData(UserDataCopy[Idx]);
+			UAssetUserData* UserDataObject = Kvp.Key;
+			if (Kvp.Value)
+			{
+				//if the duplicated temporary UObject was add to root, we must remove it from the root
+				UserDataObject->RemoveFromRoot();
+			}
+			UserDataObject->Rename(nullptr, Mesh, REN_DontCreateRedirectors | REN_DoNotDirty);
+			Mesh->AddAssetUserData(UserDataObject);
 		}
 
 		if (NavCollision)

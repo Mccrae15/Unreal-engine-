@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -134,7 +134,7 @@ public:
 	/**
 	 * Check to see whether the specified section is highlighted
 	 */
-	static bool IsSectionHighlighted(FSectionHandle InSectionHandle, const ISequencerHotspot* Hotspot);
+	static bool IsSectionHighlighted(UMovieSceneSection* InSection, const ISequencerHotspot* Hotspot);
 
 private:
 	/** Interface to section data */

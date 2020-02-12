@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -72,7 +72,7 @@ protected:
 	virtual void CopyTermDefaultsToDefaultObject(UObject* DefaultObject);
 	virtual void FinishCompilingClass(UClass* Class) override;
 	virtual bool ValidateGeneratedClass(UBlueprintGeneratedClass* Class) override;
-	virtual void PostCompile() override;
+	virtual void OnPostCDOCompiled() override;
 	// End FKismetCompilerContext
 
 	void SanitizeBindings(UBlueprintGeneratedClass* Class);
@@ -87,10 +87,10 @@ protected:
 	class UWidgetGraphSchema* WidgetSchema;
 
 	// Map of properties created for widgets; to aid in debug data generation
-	TMap<class UWidget*, class UProperty*> WidgetToMemberVariableMap;
+	TMap<class UWidget*, class FProperty*> WidgetToMemberVariableMap;
 
 	// Map of properties created for widget animations; to aid in debug data generation
-	TMap<class UWidgetAnimation*, class UProperty*> WidgetAnimToMemberVariableMap;
+	TMap<class UWidgetAnimation*, class FProperty*> WidgetAnimToMemberVariableMap;
 
 	///----------------------------------------------------------------
 };

@@ -1,7 +1,8 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "Perception/AIPerceptionSystem.h"
 #include "EngineGlobals.h"
+#include "EngineUtils.h"
 #include "TimerManager.h"
 #include "Engine/Engine.h"
 #include "AISystem.h"
@@ -32,10 +33,15 @@ UAIPerceptionSystem::UAIPerceptionSystem(const FObjectInitializer& ObjectInitial
 	: Super(ObjectInitializer)
 	, PerceptionAgingRate(0.3f)
 	, bSomeListenersNeedUpdateDueToStimuliAging(false)
-	, bStimuliSourcesRefreshRequired(false)
 	, bHandlePawnNotification(false)
 	, CurrentTime(0.f)
 {
+PRAGMA_DISABLE_DEPRECATION_WARNINGS
+#if WITH_EDITORONLY_DATA
+	bStimuliSourcesRefreshRequired = false;
+#endif
+PRAGMA_ENABLE_DEPRECATION_WARNINGS
+
 	StimuliSourceEndPlayDelegate.BindDynamic(this, &UAIPerceptionSystem::OnPerceptionStimuliSourceEndPlay);
 }
 
@@ -164,42 +170,13 @@ void UAIPerceptionSystem::Tick(float DeltaSeconds)
 	{
 		// cache it
 		CurrentTime = World->GetTimeSeconds();
-
-		bool bNeedsUpdate = false;
-
-		if (bStimuliSourcesRefreshRequired == true)
-		{
-			// this is a bit naive, but we don't get notifications from the engine which Actor ended play, 
-			// we just know one did. Let's just refresh the map removing all no-longer-valid instances
-			// @todo: we should be just calling senses directly here to unregister specific source
-			// but at this point source actor is invalid already so we can't really pin and use it
-			// this will go away once OnEndPlay broadcast passes in its instigator
-			FPerceptionChannelWhitelist SensesToUpdate;
-			for (auto It = RegisteredStimuliSources.CreateIterator(); It; ++It)
-			{
-				if (It->Value.SourceActor.IsValid() == false)
-				{
-					SensesToUpdate.MergeFilterIn(It->Value.RelevantSenses);
-					It.RemoveCurrent();
-				}
-			}
-
-			for (FPerceptionChannelWhitelist::FConstIterator It(SensesToUpdate); It && Senses.IsValidIndex(*It); ++It)
-			{
-				if (Senses[*It] != nullptr)
-				{
-					Senses[*It]->CleanseInvalidSources();
-				}
-			}
-
-			bStimuliSourcesRefreshRequired = false;
-		}
 		
 		if (SourcesToRegister.Num() > 0)
 		{
 			PerformSourceRegistration();
 		}
 
+		bool bNeedsUpdate = false;
 		for (UAISense* const SenseInstance : Senses)
 		{
 			bNeedsUpdate |= SenseInstance != nullptr && SenseInstance->ProgressTime(DeltaSeconds);
@@ -330,6 +307,29 @@ void UAIPerceptionSystem::UpdateListener(UAIPerceptionComponent& Listener)
 	}
 }
 
+void UAIPerceptionSystem::OnListenerConfigUpdated(FAISenseID SenseID, const UAIPerceptionComponent& Listener)
+{
+	SCOPE_CYCLE_COUNTER(STAT_AI_PerceptionSys);
+
+	if (!IsSenseInstantiated(SenseID))
+	{
+		UE_LOG(LogAIPerception, Warning, TEXT("Sense must exist to update its sense config"));
+		return;
+	}
+
+	const FPerceptionListenerID ListenerId = Listener.GetListenerId();
+	if (ListenerId == FPerceptionListenerID::InvalidID() || !ListenerContainer.Contains(ListenerId))
+	{
+		UE_LOG(LogAIPerception, Warning, TEXT("Listener must have a valid id to update its sense config"));
+		return;
+	}
+
+	FPerceptionListener& ListenerEntry = ListenerContainer[ListenerId];
+	check(ListenerEntry.Listener.IsValid() && ListenerEntry.Listener.Get() == &Listener);
+
+	Senses[SenseID]->OnListenerConfigUpdated(ListenerEntry);
+}
+
 void UAIPerceptionSystem::UnregisterListener(UAIPerceptionComponent& Listener)
 {
 	SCOPE_CYCLE_COUNTER(STAT_AI_PerceptionSys);
@@ -386,6 +386,15 @@ void UAIPerceptionSystem::UnregisterSource(AActor& SourceActor, const TSubclassO
 	else
 	{
 		UE_VLOG(this, LogAIPerception, Log, TEXT("UnregisterSource called for %s but it doesn't seem to be registered as a source"), *SourceActor.GetName());
+	}
+	// Remove this from any pending adds (add/remove same frame)
+	for (int32 RemoveIndex = SourcesToRegister.Num() - 1; RemoveIndex >= 0; RemoveIndex--)
+	{
+		if (SourcesToRegister[RemoveIndex].Source == &SourceActor &&
+			SourcesToRegister[RemoveIndex].SenseID == UAISense::GetSenseID(Sense))
+		{
+			SourcesToRegister.RemoveAt(RemoveIndex, 1, false);
+		}
 	}
 }
 
@@ -572,12 +581,9 @@ void UAIPerceptionSystem::StartPlay()
 void UAIPerceptionSystem::RegisterAllPawnsAsSourcesForSense(FAISenseID SenseID)
 {
 	UWorld* World = GetWorld();
-	for (auto PawnIt = World->GetPawnIterator(); PawnIt; ++PawnIt)
+	for (TActorIterator<APawn> PawnIt(World); PawnIt; ++PawnIt)
 	{
-		if (PawnIt->Get())
-		{
-			RegisterSource(SenseID, **PawnIt);
-		}
+		RegisterSource(SenseID, **PawnIt);
 	}
 }
 
@@ -618,10 +624,7 @@ void UAIPerceptionSystem::RegisterSourceForSenseClass(TSubclassOf<UAISense> Sens
 
 void UAIPerceptionSystem::OnPerceptionStimuliSourceEndPlay(AActor* Actor, EEndPlayReason::Type EndPlayReason)
 {
-	// this tells us just that _a_ source has been removed. We need to parse through all sources and find which one was it
-	// this is a fall-back behavior, if source gets unregistered manually this function won't get called 
-	// note, the actual work will be done on system's tick
-	bStimuliSourcesRefreshRequired = true;
+	UnregisterSource(*Actor);
 }
 
 TSubclassOf<UAISense> UAIPerceptionSystem::GetSenseClassForStimulus(UObject* WorldContextObject, const FAIStimulus& Stimulus)

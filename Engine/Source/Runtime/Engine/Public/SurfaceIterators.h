@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 /*=============================================================================
 	SurfaceIterators.h: Model surface iterators.
@@ -70,7 +70,7 @@ public:
 		check( CurrentSurface );
 		return CurrentSurface;
 	}
-	FORCEINLINE operator bool()
+	FORCEINLINE explicit operator bool() const
 	{
 		return !bReachedEnd;
 	}

@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -15,7 +15,7 @@ class UNiagaraNodeOutput : public UNiagaraNode
 {
 	GENERATED_UCLASS_BODY()
 
-	UPROPERTY(VisibleAnywhere, Category = Output)
+	UPROPERTY(VisibleAnywhere, Category = Output, meta = (SkipForCompileHash = "true"))
 	TArray<FNiagaraVariable> Outputs;
 
 	UPROPERTY()
@@ -41,7 +41,8 @@ public:
 	virtual bool CanDuplicateNode() const override;
 	virtual FText GetNodeTitle(ENodeTitleType::Type TitleType) const override;
 	virtual FLinearColor GetNodeTitleColor() const override;
-	virtual void GetContextMenuActions(const FGraphNodeContextMenuBuilder& Context) const override;
+	virtual void GetNodeContextMenuActions(class UToolMenu* Menu, class UGraphNodeContextMenuContext* Context) const override;
+	virtual bool IncludeParentNodeContextMenu() const { return true; }
 	//~ End EdGraphNode Interface
 
 	/** Notifies the node that it's output variables have been modified externally. */
@@ -68,6 +69,8 @@ private:
 
 	/** Gets the display text for a pin. */
 	FText GetPinNameText(UEdGraphPin* Pin) const;
+
+	bool VerifyPinNameTextChanged(const FText& InText, FText& OutErrorMessage, UEdGraphPin* Pin) const;
 
 	/** Called when a pin's name text is committed. */
 	void PinNameTextCommitted(const FText& Text, ETextCommit::Type CommitType, UEdGraphPin* Pin);

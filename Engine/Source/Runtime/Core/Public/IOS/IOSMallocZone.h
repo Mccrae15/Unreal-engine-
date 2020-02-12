@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -46,6 +46,8 @@ public:
 	virtual ~FIOSMallocCrashHandler();
 	
 	void Enable( FIOSCrashContext* Context, uint32 CrashedThreadId );
+	
+	void SetContext( FIOSCrashContext* Context );
 	
 	// FMalloc interface.
 	virtual void* Malloc( SIZE_T Size, uint32 Alignment ) override;

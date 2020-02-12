@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -71,16 +71,8 @@ public:
 	 * @param InStrikeBrush The new brush to use to strike through text
 	 */
 	UFUNCTION(BlueprintCallable, Category = "Appearance")
-	void SetStrikeBrush(FSlateBrush& InStrikeBrush);
+	void SetStrikeBrush(FSlateBrush InStrikeBrush);
 
-	/**
-	 *  Set the text justification for this text block
-	 *
-	 *  @param InJustification new justification
-	 */
-	UFUNCTION(BlueprintCallable, Category = "Appearance")
-	void SetJustification(ETextJustify::Type InJustification);
-	
 	/**
 	 *  Set the minimum desired width for this text block
 	 *
@@ -169,6 +161,10 @@ public:
 	UFUNCTION(BlueprintCallable, Category="Widget", meta=(DisplayName="SetText (Text)"))
 	virtual void SetText(FText InText);
 
+	//~ Begin UTextLayoutWidget Interface
+	virtual void SetJustification(ETextJustify::Type InJustification) override;
+	//~ End UTextLayoutWidget Interface
+
 	//~ Begin UWidget Interface
 	virtual void SynchronizeProperties() override;
 	//~ End UWidget Interface
@@ -181,7 +177,7 @@ public:
 	//~ Begin UWidget Interface
 	virtual const FText GetPaletteCategory() override;
 	virtual void OnCreationFromPalette() override;
-	virtual bool CanEditChange(const UProperty* InProperty) const override;
+	virtual bool CanEditChange(const FProperty* InProperty) const override;
 	//~ End UWidget Interface
 
 	virtual FString GetLabelMetadata() const override;
@@ -211,6 +207,10 @@ protected:
 	virtual TAttribute<FText> GetDisplayText();
 
 	EVisibility GetTextWarningImageVisibility() const;
+
+#if WITH_ACCESSIBILITY
+	virtual TSharedPtr<SWidget> GetAccessibleWidget() const override;
+#endif
 
 protected:
 

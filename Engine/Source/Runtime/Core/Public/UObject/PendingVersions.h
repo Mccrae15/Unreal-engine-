@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 /*=============================================================================
 	PendingVersions.h: A list of engine versions which are awaiting insertion
@@ -19,3 +19,5 @@
 
 // Example:
 // enum { VER_UE4_SOMETHING_ADDED = 0xFFFFFFFF };
+
+// [[ IncludeTool: Inline ]] // Markup to tell IncludeTool that this file is state changing and should be excluded from optimization.

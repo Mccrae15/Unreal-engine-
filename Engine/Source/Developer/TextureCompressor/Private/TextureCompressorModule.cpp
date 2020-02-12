@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "TextureCompressorModule.h"
 #include "Math/RandomStream.h"
@@ -422,7 +422,8 @@ static void GenerateSharpenedMipB8G8R8A8Templ(
 	FVector4 AlphaThresholds,
 	const FImageKernel2D& Kernel,
 	uint32 ScaleFactor,
-	bool bSharpenWithoutColorShift )
+	bool bSharpenWithoutColorShift,
+	bool bUnfiltered)
 {
 	check( SourceImageData.SizeX == ScaleFactor * DestImageData.SizeX || DestImageData.SizeX == 1 );
 	check( SourceImageData.SizeY == ScaleFactor * DestImageData.SizeY || DestImageData.SizeY == 1 );
@@ -448,7 +449,11 @@ static void GenerateSharpenedMipB8G8R8A8Templ(
 
 			FLinearColor FilteredColor(0, 0, 0, 0);
 
-			if ( bSharpenWithoutColorShift )
+			if ( bUnfiltered )
+			{
+				FilteredColor = LookupSourceMip<AddressMode>(SourceImageData, SourceX + 0, SourceY + 0);
+			}
+			else if ( bSharpenWithoutColorShift )
 			{
 				FLinearColor SharpenedColor(0, 0, 0, 0);
 
@@ -537,26 +542,27 @@ static void GenerateSharpenedMipB8G8R8A8(
 	FVector4 AlphaThresholds,
 	const FImageKernel2D &Kernel,
 	uint32 ScaleFactor,
-	bool bSharpenWithoutColorShift
+	bool bSharpenWithoutColorShift,
+	bool bUnfiltered
 	)
 {
 	switch(AddressMode)
 	{
 	case MGTAM_Wrap:
-		GenerateSharpenedMipB8G8R8A8Templ<MGTAM_Wrap>(SourceImageData, DestImageData, bDitherMipMapAlpha, AlphaCoverages, AlphaThresholds, Kernel, ScaleFactor, bSharpenWithoutColorShift);
+		GenerateSharpenedMipB8G8R8A8Templ<MGTAM_Wrap>(SourceImageData, DestImageData, bDitherMipMapAlpha, AlphaCoverages, AlphaThresholds, Kernel, ScaleFactor, bSharpenWithoutColorShift, bUnfiltered);
 		break;
 	case MGTAM_Clamp:
-		GenerateSharpenedMipB8G8R8A8Templ<MGTAM_Clamp>(SourceImageData, DestImageData, bDitherMipMapAlpha, AlphaCoverages, AlphaThresholds, Kernel, ScaleFactor, bSharpenWithoutColorShift);
+		GenerateSharpenedMipB8G8R8A8Templ<MGTAM_Clamp>(SourceImageData, DestImageData, bDitherMipMapAlpha, AlphaCoverages, AlphaThresholds, Kernel, ScaleFactor, bSharpenWithoutColorShift, bUnfiltered);
 		break;
 	case MGTAM_BorderBlack:
-		GenerateSharpenedMipB8G8R8A8Templ<MGTAM_BorderBlack>(SourceImageData, DestImageData, bDitherMipMapAlpha, AlphaCoverages, AlphaThresholds, Kernel, ScaleFactor, bSharpenWithoutColorShift);
+		GenerateSharpenedMipB8G8R8A8Templ<MGTAM_BorderBlack>(SourceImageData, DestImageData, bDitherMipMapAlpha, AlphaCoverages, AlphaThresholds, Kernel, ScaleFactor, bSharpenWithoutColorShift, bUnfiltered);
 		break;
 	default:
 		check(0);
 	}
 
 	// For volume texture, do the average between the 2.
-	if (SourceImageData2.IsValid())
+	if (SourceImageData2.IsValid() && !bUnfiltered)
 	{
 		FImage Temp(DestImageData.SizeX, DestImageData.SizeY, 1, ERawImageFormat::RGBA32F);
 		FImageView2D TempImageData (Temp, 0);
@@ -564,13 +570,13 @@ static void GenerateSharpenedMipB8G8R8A8(
 		switch(AddressMode)
 		{
 		case MGTAM_Wrap:
-			GenerateSharpenedMipB8G8R8A8Templ<MGTAM_Wrap>(SourceImageData2, TempImageData, bDitherMipMapAlpha, AlphaCoverages, AlphaThresholds, Kernel, ScaleFactor, bSharpenWithoutColorShift);
+			GenerateSharpenedMipB8G8R8A8Templ<MGTAM_Wrap>(SourceImageData2, TempImageData, bDitherMipMapAlpha, AlphaCoverages, AlphaThresholds, Kernel, ScaleFactor, bSharpenWithoutColorShift, bUnfiltered);
 			break;
 		case MGTAM_Clamp:
-			GenerateSharpenedMipB8G8R8A8Templ<MGTAM_Clamp>(SourceImageData2, TempImageData, bDitherMipMapAlpha, AlphaCoverages, AlphaThresholds, Kernel, ScaleFactor, bSharpenWithoutColorShift);
+			GenerateSharpenedMipB8G8R8A8Templ<MGTAM_Clamp>(SourceImageData2, TempImageData, bDitherMipMapAlpha, AlphaCoverages, AlphaThresholds, Kernel, ScaleFactor, bSharpenWithoutColorShift, bUnfiltered);
 			break;
 		case MGTAM_BorderBlack:
-			GenerateSharpenedMipB8G8R8A8Templ<MGTAM_BorderBlack>(SourceImageData2, TempImageData, bDitherMipMapAlpha, AlphaCoverages, AlphaThresholds, Kernel, ScaleFactor, bSharpenWithoutColorShift);
+			GenerateSharpenedMipB8G8R8A8Templ<MGTAM_BorderBlack>(SourceImageData2, TempImageData, bDitherMipMapAlpha, AlphaCoverages, AlphaThresholds, Kernel, ScaleFactor, bSharpenWithoutColorShift, bUnfiltered);
 			break;
 		default:
 			check(0);
@@ -681,23 +687,16 @@ static void GenerateTopMip(const FImage& SrcImage, FImage& DestImage, const FTex
 			FVector4(0, 0, 0, 0),
 			KernelDownsample,
 			1,
-			Settings.bSharpenWithoutColorShift
-			);
+			Settings.bSharpenWithoutColorShift,
+			Settings.MipGenSettings == TMGS_Unfiltered);
 	}
 }
 
-/**
- * Generate a full mip chain. The input mip chain must have one or more mips.
- * @param Settings - Preprocess settings.
- * @param BaseImage - An image that will serve as the source for the generation of the mip chain.
- * @param OutMipChain - An array that will contain the resultant mip images. Generated mip levels are appended to the array.
- * @param MipChainDepth - number of mip images to produce. Mips chain is finished when either a 1x1 mip is produced or 'MipChainDepth' images have been produced.
- */
-static void GenerateMipChain(
+void ITextureCompressorModule::GenerateMipChain(
 	const FTextureBuildSettings& Settings,
 	const FImage& BaseImage,
 	TArray<FImage> &OutMipChain,
-	uint32 MipChainDepth = MAX_uint32
+	uint32 MipChainDepth 
 	)
 {
 	check(BaseImage.Format == ERawImageFormat::RGBA32F);
@@ -775,8 +774,8 @@ static void GenerateMipChain(
 				Settings.AlphaCoverageThresholds,
 				KernelDownsample,
 				2,
-				Settings.bSharpenWithoutColorShift
-				);
+				Settings.bSharpenWithoutColorShift,
+				Settings.MipGenSettings == TMGS_Unfiltered);
 
 			// generate IntermediateDstImage:
 			if ( Settings.bDownsampleWithAverage )
@@ -792,8 +791,8 @@ static void GenerateMipChain(
 					Settings.AlphaCoverageThresholds,
 					KernelSimpleAverage,
 					2,
-					Settings.bSharpenWithoutColorShift
-					);
+					Settings.bSharpenWithoutColorShift,
+					Settings.MipGenSettings == TMGS_Unfiltered);
 			}
 		}
 
@@ -986,12 +985,7 @@ static int32 ComputeLongLatCubemapExtents(const FImage& SrcImage, const int32 Ma
 	return FMath::Clamp(1 << FMath::FloorLog2(SrcImage.SizeX / 2), 32, MaxCubemapTextureResolution);
 }
 
-/**
- * Generates the base cubemap mip from a longitude-latitude 2D image.
- * @param OutMip - The output mip.
- * @param SrcImage - The source longlat image.
- */
-static void GenerateBaseCubeMipFromLongitudeLatitude2D(FImage* OutMip, const FImage& SrcImage, const int32 MaxCubemapTextureResolution)
+void ITextureCompressorModule::GenerateBaseCubeMipFromLongitudeLatitude2D(FImage* OutMip, const FImage& SrcImage, const int32 MaxCubemapTextureResolution)
 {
 	FImage LongLatImage;
 	SrcImage.CopyTo(LongLatImage, ERawImageFormat::RGBA32F, EGammaSpace::Linear);
@@ -1290,13 +1284,7 @@ static void GenerateAngularFilteredMip(FImage* DestMip, FImage& SrcMip, float Co
 	}
 }
 
-/**
- * Generates angularly filtered mips.
- * @param InOutMipChain - The mip chain to angularly filter.
- * @param NumMips - The number of mips the chain should have.
- * @param DiffuseConvolveMipLevel - The mip level that contains the diffuse convolution.
- */
-static void GenerateAngularFilteredMips(TArray<FImage>& InOutMipChain, int32 NumMips, uint32 DiffuseConvolveMipLevel)
+void ITextureCompressorModule::GenerateAngularFilteredMips(TArray<FImage>& InOutMipChain, int32 NumMips, uint32 DiffuseConvolveMipLevel)
 {
 	TArray<FImage> SrcMipChain;
 	Exchange(SrcMipChain, InOutMipChain);
@@ -1374,17 +1362,7 @@ static void GenerateAngularFilteredMips(TArray<FImage>& InOutMipChain, int32 Num
 	}
 }
 
-/*------------------------------------------------------------------------------
-	Image Processing.
-------------------------------------------------------------------------------*/
-
-/**
- * Adjusts the colors of the image using the specified settings
- *
- * @param	Image			Image to adjust
- * @param	InBuildSettings	Image build settings
- */
-static void AdjustImageColors( FImage& Image, const FTextureBuildSettings& InBuildSettings )
+void ITextureCompressorModule::AdjustImageColors(FImage& Image, const FTextureBuildSettings& InBuildSettings)
 {
 	const FColorAdjustmentParameters& InParams = InBuildSettings.ColorAdjustment;
 	check( Image.SizeX > 0 && Image.SizeY > 0 );
@@ -1636,6 +1614,63 @@ static bool DetectAlphaChannel(const FImage& InImage)
 	return false;
 }
 
+/** Calculate a scale per 4x4 block of each image, and apply it to the red/green channels. Store scale in the blue channel. */
+static void ApplyYCoCgBlockScale(TArray<FImage>& InOutMipChain)
+{
+	const uint32 MipCount = InOutMipChain.Num();
+	for (uint32 MipIndex = 0; MipIndex < MipCount; ++MipIndex)
+	{
+		FImage& SrcMip = InOutMipChain[MipIndex];
+		FLinearColor* FirstColor = SrcMip.AsRGBA32F();
+
+		int32 BlockWidthX = SrcMip.SizeX / 4;
+		int32 BlockWidthY = SrcMip.SizeY / 4;
+
+		for (int32 Slice = 0; Slice < SrcMip.NumSlices; ++Slice)
+		{
+			FLinearColor* SliceFirstColor = FirstColor + (SrcMip.SizeX * SrcMip.SizeY * Slice);
+
+			for (int32 Y = 0; Y < BlockWidthY; ++Y)
+			{
+				FLinearColor* RowFirstColor = SliceFirstColor + (Y * 4 * SrcMip.SizeY);
+
+				for (int32 X = 0; X < BlockWidthX; ++X)
+				{
+					FLinearColor* BlockFirstColor = RowFirstColor + (X * 4);
+
+					// Iterate block to find MaxComponent
+					float MaxComponent = 0.f;
+					for (int32 BlockY = 0; BlockY < 4; ++BlockY)
+					{
+						FLinearColor* Color = BlockFirstColor + (BlockY * SrcMip.SizeY);
+						for (int32 BlockX = 0; BlockX < 4; ++BlockX, ++Color)
+						{
+							MaxComponent = FMath::Max(FMath::Abs(Color->R - 128.f / 255.f), MaxComponent);
+							MaxComponent = FMath::Max(FMath::Abs(Color->G - 128.f / 255.f), MaxComponent);
+						}
+					}
+
+					const float Scale = (MaxComponent < 32.f / 255.f) ? 4.f : (MaxComponent < 64.f / 255.f) ? 2.f : 1.f;
+					const float OutB = (Scale - 1.f) * 8.f / 255.f;
+
+					// Iterate block to modify for scale
+					for (int32 BlockY = 0; BlockY < 4; ++BlockY)
+					{
+						FLinearColor* Color = BlockFirstColor + (BlockY * SrcMip.SizeY);
+						for (int32 BlockX = 0; BlockX < 4; ++BlockX, ++Color)
+						{
+							const float OutR = (Color->R - 128.f / 255.f) * Scale + 128.f / 255.f;
+							const float OutG = (Color->G - 128.f / 255.f) * Scale + 128.f / 255.f;
+
+							*Color = FLinearColor(OutR, OutG, OutB, Color->A);
+						}
+					}
+				}
+			}
+		}
+	}
+}
+
 float RoughnessToSpecularPower(float Roughness)
 {
 	float Div = FMath::Pow(Roughness, 4);
@@ -1729,11 +1764,13 @@ public:
 	/**
 	 * Initializes the data and creates the async compression task.
 	 */
-	FAsyncCompressionWorker(const ITextureFormat* InTextureFormat, const FImage* InImage, const FTextureBuildSettings& InBuildSettings, bool bInImageHasAlphaChannel)
+	FAsyncCompressionWorker(const ITextureFormat* InTextureFormat, const FImage* InImages, uint32 InNumImages, const FTextureBuildSettings& InBuildSettings, bool bInImageHasAlphaChannel, uint32 InExtData)
 		: TextureFormat(*InTextureFormat)
-		, SourceImage(*InImage)
+		, SourceImages(InImages)
 		, BuildSettings(InBuildSettings)
 		, bImageHasAlphaChannel(bInImageHasAlphaChannel)
+		, ExtData(InExtData)
+		, NumImages(InNumImages)
 		, bCompressionResults(false)
 	{
 	}
@@ -1743,10 +1780,14 @@ public:
 	 */
 	void DoWork()
 	{
-		bCompressionResults = TextureFormat.CompressImage(
-			SourceImage,
+		TRACE_CPUPROFILER_EVENT_SCOPE(CompressImage);
+
+		bCompressionResults = TextureFormat.CompressImageEx(
+			SourceImages,
+			NumImages,
 			BuildSettings,
 			bImageHasAlphaChannel,
+			ExtData,
 			CompressedImage
 			);
 	}
@@ -1766,125 +1807,127 @@ private:
 
 	/** Texture format interface with which to compress. */
 	const ITextureFormat& TextureFormat;
-	/** The image to compress. */
-	const FImage& SourceImage;
+	/** The image(s) to compress. */
+	const FImage* SourceImages;
 	/** The resulting compressed image. */
 	FCompressedImage2D CompressedImage;
 	/** Build settings. */
 	FTextureBuildSettings BuildSettings;
 	/** true if the image has a non-white alpha channel. */
 	bool bImageHasAlphaChannel;
+	/** Extra data that the format may want to pass to each Compress call */
+	uint32 ExtData;
+	/** For miptails with multiple images going in to one, this is the number of them */
+	uint32 NumImages;
 	/** true if compression was successful. */
 	bool bCompressionResults;
 };
 typedef FAsyncTask<FAsyncCompressionWorker> FAsyncCompressionTask;
 
-FTextureFormatCompressorCaps GetTextureFormatCaps(const FTextureBuildSettings& Settings)
-{
-	ITargetPlatformManagerModule* TPM = GetTargetPlatformManager();
-	if (TPM)
-	{
-		const ITextureFormat* TextureFormat = TPM->FindTextureFormat(Settings.TextureFormatName);
-		if (TextureFormat != nullptr)
-		{
-			return TextureFormat->GetFormatCapabilities();
-		}
-	}
-	
-	return FTextureFormatCompressorCaps();
-}
-
 // compress mip-maps in InMipChain and add mips to Texture, might alter the source content
 static bool CompressMipChain(
+	const ITextureFormat* TextureFormat,
 	const TArray<FImage>& MipChain,
 	const FTextureBuildSettings& Settings,
-	TArray<FCompressedImage2D>& OutMips
-	)
+	TArray<FCompressedImage2D>& OutMips,
+	uint32& OutNumMipsInTail,
+	uint32& OutExtData)
 {
-	ITargetPlatformManagerModule* TPM = GetTargetPlatformManager();
-	if (TPM)
+	TRACE_CPUPROFILER_EVENT_SCOPE(CompressMipChain)
+
+	// now call the Ex version now that we have the proper MipChain
+	const FTextureFormatCompressorCaps CompressorCaps = TextureFormat->GetFormatCapabilitiesEx(Settings, MipChain.Num(), MipChain[0]);
+	OutNumMipsInTail = CompressorCaps.NumMipsInTail;
+	OutExtData = CompressorCaps.ExtData;
+
+	TIndirectArray<FAsyncCompressionTask> AsyncCompressionTasks;
+	int32 MipCount = MipChain.Num();
+	check(MipCount >= (int32)CompressorCaps.NumMipsInTail);
+	const bool bImageHasAlphaChannel = DetectAlphaChannel(MipChain[0]);
+	const int32 MinAsyncCompressionSize = 128;
+	const bool bAllowParallelBuild = TextureFormat->AllowParallelBuild();
+	bool bCompressionSucceeded = true;
+	int32 FirstMipTailIndex = MipCount;
+	uint32 StartCycles = FPlatformTime::Cycles();
+
+	// check if we need to merge mips together into tail
+	if (CompressorCaps.NumMipsInTail > 1)
 	{
-		const ITextureFormat* TextureFormat = TPM->FindTextureFormat(Settings.TextureFormatName);
+		FirstMipTailIndex = MipCount - CompressorCaps.NumMipsInTail;
+	}
 
-		if (TextureFormat)
+	OutMips.Empty(MipCount);
+	for (int32 MipIndex = 0; MipIndex < MipCount; ++MipIndex)
+	{
+		const FImage& SrcMip = MipChain[MipIndex];
+		FCompressedImage2D& DestMip = *new(OutMips) FCompressedImage2D;
+		if (MipIndex > FirstMipTailIndex)
 		{
-			TIndirectArray<FAsyncCompressionTask> AsyncCompressionTasks;
-			const int32 MipCount = MipChain.Num();
-			const bool bImageHasAlphaChannel = DetectAlphaChannel(MipChain[0]);
-			const int32 MinAsyncCompressionSize = 128;
-			const bool bAllowParallelBuild = TextureFormat->AllowParallelBuild();
-			bool bCompressionSucceeded = true;
-			uint32 StartCycles = FPlatformTime::Cycles();
-
-			OutMips.Empty(MipCount);
-			for (int32 MipIndex = 0; MipIndex < MipCount; ++MipIndex)
-			{
-				const FImage& SrcMip = MipChain[MipIndex];
-				FCompressedImage2D& DestMip = *new(OutMips) FCompressedImage2D;
-				if (bAllowParallelBuild && FMath::Min(SrcMip.SizeX, SrcMip.SizeY) >= MinAsyncCompressionSize)
-				{
-					FAsyncCompressionTask* AsyncTask = new FAsyncCompressionTask(
-						TextureFormat,
-						&SrcMip,
-						Settings,
-						bImageHasAlphaChannel
-						);
-					AsyncCompressionTasks.Add(AsyncTask);
-#if WITH_EDITOR
-					AsyncTask->StartBackgroundTask(GLargeThreadPool);
-#else
-					AsyncTask->StartBackgroundTask();
-#endif
-				}
-				else
-				{
-					bCompressionSucceeded = bCompressionSucceeded && TextureFormat->CompressImage(
-						SrcMip,
-						Settings,
-						bImageHasAlphaChannel,
-						DestMip
-						);
-				}
-			}
-
-			for (int32 TaskIndex = 0; TaskIndex < AsyncCompressionTasks.Num(); ++TaskIndex)
-			{
-				FAsyncCompressionTask& AsynTask = AsyncCompressionTasks[TaskIndex];
-				AsynTask.EnsureCompletion();
-				FCompressedImage2D& DestMip = OutMips[TaskIndex];
-				bCompressionSucceeded = bCompressionSucceeded && AsynTask.GetTask().GetCompressionResults(DestMip);
-			}
-
-			if (!bCompressionSucceeded)
-			{
-				OutMips.Empty();
-			}
-
-			uint32 EndCycles = FPlatformTime::Cycles();
-			UE_LOG(LogTextureCompressor,Verbose,TEXT("Compressed %dx%dx%d %s in %fms"),
-				MipChain[0].SizeX,
-				MipChain[0].SizeY,
-				MipChain[0].NumSlices,
-				*Settings.TextureFormatName.ToString(),
-				FPlatformTime::ToMilliseconds( EndCycles-StartCycles )
+			continue;
+		}
+		else if (bAllowParallelBuild && FMath::Min(SrcMip.SizeX, SrcMip.SizeY) >= MinAsyncCompressionSize)
+		{
+			FAsyncCompressionTask* AsyncTask = new FAsyncCompressionTask(
+				TextureFormat,
+				&SrcMip,
+				MipIndex == FirstMipTailIndex ? CompressorCaps.NumMipsInTail : 1, // number of mips pointed to by SrcMip
+				Settings,
+				bImageHasAlphaChannel,
+				CompressorCaps.ExtData
 				);
-
-			return bCompressionSucceeded;
+			AsyncCompressionTasks.Add(AsyncTask);
+#if WITH_EDITOR
+			AsyncTask->StartBackgroundTask(GLargeThreadPool);
+#else
+			AsyncTask->StartBackgroundTask();
+#endif
 		}
 		else
 		{
-			UE_LOG(LogTextureCompressor, Warning,
-				TEXT("Failed to find compressor for texture format '%s'."),
-				*Settings.TextureFormatName.ToString()
+			bCompressionSucceeded = bCompressionSucceeded && TextureFormat->CompressImageEx(
+				&SrcMip,
+				MipIndex == FirstMipTailIndex ? CompressorCaps.NumMipsInTail : 1, // number of mips pointed to by SrcMip
+				Settings,
+				bImageHasAlphaChannel,
+				CompressorCaps.ExtData,
+				DestMip
 				);
-			return false;
 		}
 	}
 
-	UE_LOG(LogTextureCompressor, Warning,
-		TEXT("Failed to load target platform manager module. Unable to compress textures.")
+	for (int32 TaskIndex = 0; TaskIndex < AsyncCompressionTasks.Num(); ++TaskIndex)
+	{
+		FAsyncCompressionTask& AsynTask = AsyncCompressionTasks[TaskIndex];
+		AsynTask.EnsureCompletion();
+		FCompressedImage2D& DestMip = OutMips[TaskIndex];
+		bCompressionSucceeded = bCompressionSucceeded && AsynTask.GetTask().GetCompressionResults(DestMip);
+	}
+
+	for (int32 MipIndex = FirstMipTailIndex + 1; MipIndex < MipCount; ++MipIndex)
+	{
+		FCompressedImage2D& PrevMip = OutMips[MipIndex - 1];
+		FCompressedImage2D& DestMip = OutMips[MipIndex];
+		DestMip.SizeX = FMath::Max(1, PrevMip.SizeX >> 1);
+		DestMip.SizeY = FMath::Max(1, PrevMip.SizeY >> 1);
+		DestMip.SizeZ = FMath::Max(1, PrevMip.SizeZ >> 1);
+		DestMip.PixelFormat = PrevMip.PixelFormat;
+	}
+
+	if (!bCompressionSucceeded)
+	{
+		OutMips.Empty();
+	}
+
+	uint32 EndCycles = FPlatformTime::Cycles();
+	UE_LOG(LogTextureCompressor,Verbose,TEXT("Compressed %dx%dx%d %s in %fms"),
+		MipChain[0].SizeX,
+		MipChain[0].SizeY,
+		MipChain[0].NumSlices,
+		*Settings.TextureFormatName.ToString(),
+		FPlatformTime::ToMilliseconds( EndCycles-StartCycles )
 		);
-	return false;
+
+	return bCompressionSucceeded;
 }
 
 // only useful for normal maps, fixed bad input (denormalized normals) and improved quality (quantization artifacts)
@@ -1921,12 +1964,33 @@ public:
 		const TArray<FImage>& SourceMips,
 		const TArray<FImage>& AssociatedNormalSourceMips,
 		const FTextureBuildSettings& BuildSettings,
-		TArray<FCompressedImage2D>& OutTextureMips
+		TArray<FCompressedImage2D>& OutTextureMips,
+		uint32& OutNumMipsInTail,
+		uint32& OutExtData
 		)
 	{
+		const ITextureFormat* TextureFormat = nullptr;
+		ITargetPlatformManagerModule* TPM = GetTargetPlatformManager();
+		if (TPM)
+		{
+			TextureFormat = TPM->FindTextureFormat(BuildSettings.TextureFormatName);
+		}
+		if (TextureFormat == nullptr)
+		{
+			UE_LOG(LogTextureCompressor, Warning,
+				TEXT("Failed to find compressor for texture format '%s'."),
+				*BuildSettings.TextureFormatName.ToString()
+			);
+
+			return false;
+		}
+
 		TArray<FImage> IntermediateMipChain;
 
-		if(!BuildTextureMips(SourceMips, BuildSettings, IntermediateMipChain))
+		// we can't use the Ex version here because it needs an FImage, which needs BuildTextureMips to be called
+		const FTextureFormatCompressorCaps CompressorCaps = TextureFormat->GetFormatCapabilities();
+
+		if(!BuildTextureMips(SourceMips, BuildSettings, CompressorCaps, IntermediateMipChain))
 		{
 			return false;
 		}
@@ -1947,7 +2011,7 @@ public:
 			// important to make accurate computation with normal length
 			DefaultSettings.bRenormalizeTopMip = true;
 
-			if(!BuildTextureMips(AssociatedNormalSourceMips, DefaultSettings, IntermediateAssociatedNormalSourceMipChain))
+			if(!BuildTextureMips(AssociatedNormalSourceMips, DefaultSettings, CompressorCaps, IntermediateAssociatedNormalSourceMipChain))
 			{
 				UE_LOG(LogTexture, Warning, TEXT("Failed to generate texture mips for composite texture"));
 			}
@@ -1963,8 +2027,9 @@ public:
 		BuildSettings.TopMipSize.X = IntermediateMipChain[0].SizeX;
 		BuildSettings.TopMipSize.Y = IntermediateMipChain[0].SizeY;
 		BuildSettings.VolumeSizeZ = BuildSettings.bVolume ? IntermediateMipChain[0].NumSlices : 1;
-
-		return CompressMipChain(IntermediateMipChain, BuildSettings, OutTextureMips);
+		BuildSettings.ArraySlices = BuildSettings.bTextureArray ? IntermediateMipChain[0].NumSlices : 1;
+		
+		return CompressMipChain(TextureFormat, IntermediateMipChain, BuildSettings, OutTextureMips, OutNumMipsInTail, OutExtData);
 	}
 
 	// IModuleInterface implementation.
@@ -1996,11 +2061,11 @@ private:
 	bool BuildTextureMips(
 		const TArray<FImage>& InSourceMips,
 		const FTextureBuildSettings& BuildSettings,
+		const FTextureFormatCompressorCaps& CompressorCaps,
 		TArray<FImage>& OutMipChain)
 	{
 		check(InSourceMips.Num());
 		check(InSourceMips[0].SizeX > 0 && InSourceMips[0].SizeY > 0 && InSourceMips[0].NumSlices > 0);
-		const FTextureFormatCompressorCaps CompressorCaps = GetTextureFormatCaps(BuildSettings);
 
 		// Identify long-lat cubemaps.
 		bool bLongLatCubemap = BuildSettings.bCubemap && InSourceMips[0].NumSlices == 1;
@@ -2018,9 +2083,29 @@ private:
 
 		// Determine the number of mips required by BuildSettings.
 		int32 NumOutputMips = (BuildSettings.MipGenSettings == TMGS_NoMipmaps) ? 1 : MaxSourceMipCount;
-		NumOutputMips = FMath::Min(NumOutputMips, MaxDestMipCount);
 
 		int32 NumSourceMips = InSourceMips.Num();
+
+		// See if the smallest provided mip image is still too large for the current compressor.
+		int32 LevelsToUsableSource = FMath::Max(0, MaxSourceMipCount - MaxDestMipCount);
+		int32 StartMip = FMath::Max(0, LevelsToUsableSource);
+
+		if (BuildSettings.MipGenSettings == TMGS_LeaveExistingMips)
+		{
+			NumOutputMips = InSourceMips.Num() - StartMip;
+			if (NumOutputMips <= 0)
+			{
+				// We can't generate 0 mip maps
+				UE_LOG(LogTextureCompressor, Warning,
+					TEXT("The source image has %d mips while the first mip would be %d. Please verify the maximun texture size or change the mips gen settings."),
+					NumSourceMips,
+					StartMip);
+				return false;
+			}
+		}
+
+		NumOutputMips = FMath::Min(NumOutputMips, MaxDestMipCount);
+
 
 		if (BuildSettings.MipGenSettings != TMGS_LeaveExistingMips || bLongLatCubemap)
 		{
@@ -2120,9 +2205,6 @@ private:
 
 		const TArray<FImage>& PostOptionalUpscaleSourceMips = (PaddedSourceMips.Num() > 0) ? PaddedSourceMips : InSourceMips;
 
-		// See if the smallest provided mip image is still too large for the current compressor.
-		int32 LevelsToUsableSource = FMath::Max(0, MaxSourceMipCount - MaxDestMipCount);
-		int32 StartMip = FMath::Max(0, LevelsToUsableSource);
 		bool bBuildSourceImage = StartMip > (NumSourceMips - 1);
 
 		TArray<FImage> GeneratedSourceMips;
@@ -2248,6 +2330,10 @@ private:
 		{
 			ReplicateAlphaChannel(OutMipChain);
 		}
+		if (BuildSettings.bApplyYCoCgBlockScale)
+		{
+			ApplyYCoCgBlockScale(OutMipChain);
+		}
 
 		return true;
 	}
@@ -2261,7 +2347,14 @@ private:
 		if( RoughnessSourceMips[RoughnessSourceMips.Num() - MinLevel].SizeX != NormalSourceMips[NormalSourceMips.Num() - MinLevel].SizeX || 
 			RoughnessSourceMips[RoughnessSourceMips.Num() - MinLevel].SizeY != NormalSourceMips[NormalSourceMips.Num() - MinLevel].SizeY )
 		{
-			//incomplete mip chain or mismatched dimensions so bail
+			UE_LOG(LogTextureCompressor, Warning, TEXT("Couldn't apply composite texture as RoughnessSourceMips (mip %d, %d x %d) doesn't match NormalSourceMips (mip %d, %d x %d); mipchain might be mismatched/incomplete"),
+				RoughnessSourceMips.Num() - MinLevel,
+				RoughnessSourceMips[RoughnessSourceMips.Num() - MinLevel].SizeX,
+				RoughnessSourceMips[RoughnessSourceMips.Num() - MinLevel].SizeY,
+				NormalSourceMips.Num() - MinLevel,
+				NormalSourceMips[NormalSourceMips.Num() - MinLevel].SizeX,
+				NormalSourceMips[NormalSourceMips.Num() - MinLevel].SizeY
+				);
 			return false;
 		}
 

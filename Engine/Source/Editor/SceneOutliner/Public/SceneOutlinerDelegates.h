@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -25,6 +25,13 @@ namespace SceneOutliner
 		/** Broadcasts whenever a SubComponentTreeItem selection changes */
 		DECLARE_MULTICAST_DELEGATE_OneParam(FOnSubComponentSelectionChanged, TArray<FSubComponentTreeItem*>&);
 		FOnSubComponentSelectionChanged OnSubComponentSelectionChanged;
+
+		/** Broadcasts whenever a Component Selection Changes */
+		DECLARE_MULTICAST_DELEGATE_OneParam(FOnComponentSelectionChanged, class UActorComponent*);
+		FOnComponentSelectionChanged OnComponentSelectionChanged;
+
+		/** Broadcasts whenever a Component has been modified */
+		FSimpleMulticastDelegate OnComponentsUpdated;
 
 	};
 

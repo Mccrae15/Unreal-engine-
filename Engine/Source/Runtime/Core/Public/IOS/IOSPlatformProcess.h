@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 /*=============================================================================================
 	IOSPlatformProcess.h: iOS platform Process functions
@@ -39,7 +39,7 @@ struct CORE_API FIOSPlatformProcess : public FGenericPlatformProcess
 	static void SetupRenderThread();
 	static void SetThreadAffinityMask(uint64 AffinityMask);
 	static const TCHAR* ExecutableName(bool bRemoveExtension = true);
-    static FString GenerateApplicationPath( const FString& AppName, EBuildConfigurations::Type BuildConfiguration);
+    static FString GenerateApplicationPath( const FString& AppName, EBuildConfiguration BuildConfiguration);
 
 private:
 	static void SetupThread(int Priority);

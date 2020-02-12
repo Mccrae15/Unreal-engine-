@@ -1,9 +1,10 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 
 #include "Slate/SlateTextures.h"
 #include "RenderUtils.h"
 #include "ClearQuad.h"
+#include "ProfilingDebugging/LoadTimeTracker.h"
 
 FSlateTexture2DRHIRef::FSlateTexture2DRHIRef( FTexture2DRHIRef InRef, uint32 InWidth, uint32 InHeight )
 	: TSlateTexture( InRef )
@@ -39,6 +40,8 @@ void FSlateTexture2DRHIRef::Cleanup()
 
 void FSlateTexture2DRHIRef::InitDynamicRHI()
 {
+	SCOPED_LOADTIMER(FSlateTexture2DRHIRef_InitDynamicRHI);
+
 	check( IsInRenderingThread() );
 
 	if( Width > 0 && Height > 0 )
@@ -150,12 +153,12 @@ void FSlateTexture2DRHIRef::ResizeTexture(uint32 InWidth, uint32 InHeight)
 		else
 		{
 			FIntPoint Dimensions(InWidth, InHeight);
-			ENQUEUE_UNIQUE_RENDER_COMMAND_TWOPARAMETER(ResizeSlateTexture,
-			FSlateTexture2DRHIRef*, TextureRHIRef, this,
-			FIntPoint, InDimensions, Dimensions,
-			{
-				TextureRHIRef->Resize(InDimensions.X, InDimensions.Y);
-			});
+			FSlateTexture2DRHIRef* TextureRHIRef = this;
+			ENQUEUE_RENDER_COMMAND(ResizeSlateTexture)(
+				[TextureRHIRef, Dimensions](FRHICommandListImmediate& RHICmdList)
+				{
+					TextureRHIRef->Resize(Dimensions.X, Dimensions.Y);
+				});
 		}
 	}
 }
@@ -196,12 +199,12 @@ void FSlateTexture2DRHIRef::UpdateTexture(const TArray<uint8>& Bytes)
 	}
 	else
 	{
-		ENQUEUE_UNIQUE_RENDER_COMMAND_TWOPARAMETER(UpdateSlateTexture,
-		FSlateTexture2DRHIRef*, TextureRHIRef, this,
-		const TArray<uint8>&, TextureData, Bytes,
-		{
-			TextureRHIRef->SetTextureData(TextureData);
-		});
+		FSlateTexture2DRHIRef* TextureRHIRef = this;
+		ENQUEUE_RENDER_COMMAND(UpdateSlateTexture)(
+			[TextureRHIRef, Bytes](FRHICommandListImmediate& RHICmdList)
+			{
+				TextureRHIRef->SetTextureData(Bytes);
+			});
 	}
 }
 
@@ -213,10 +216,9 @@ void FSlateTexture2DRHIRef::UpdateTextureThreadSafe(const TArray<uint8>& Bytes)
 		FSlateTextureData* BulkData = new FSlateTextureData( Bytes.Num(), 0, 1, Bytes );
 
 		// Update the texture RHI
-		ENQUEUE_UNIQUE_RENDER_COMMAND_TWOPARAMETER(
-			FSlateTexture2DRHIRef_UpdateTextureThreadSafe,
-			FSlateTexture2DRHIRef*, ThisTexture, this,
-			FSlateTextureData*, BulkData, BulkData,
+		FSlateTexture2DRHIRef* ThisTexture = this;
+		ENQUEUE_RENDER_COMMAND(FSlateTexture2DRHIRef_UpdateTextureThreadSafe)(
+			[ThisTexture, BulkData](FRHICommandListImmediate& RHICmdList)
 			{
 				ThisTexture->UpdateTexture( BulkData->GetRawBytes() );
 				delete BulkData;
@@ -238,10 +240,9 @@ void FSlateTexture2DRHIRef::UpdateTextureThreadSafeWithTextureData(FSlateTexture
 {
 	check(IsInGameThread());
 	// Update the texture RHI
-	ENQUEUE_UNIQUE_RENDER_COMMAND_TWOPARAMETER(
-		FSlateTexture2DRHIRef_UpdateTextureThreadSafeWithTextureData,
-		FSlateTexture2DRHIRef*, ThisTexture, this,
-		FSlateTextureData*, BulkData, BulkData,
+	FSlateTexture2DRHIRef* ThisTexture = this;
+	ENQUEUE_RENDER_COMMAND(FSlateTexture2DRHIRef_UpdateTextureThreadSafeWithTextureData)(
+		[ThisTexture, BulkData](FRHICommandListImmediate& RHICmdList)
 		{
 			if (ThisTexture->GetWidth() != BulkData->GetWidth() || ThisTexture->GetHeight() != BulkData->GetHeight())
 			{
@@ -307,6 +308,8 @@ void FSlateTextureRenderTarget2DResource::ClampSize(int32 MaxSizeX,int32 MaxSize
 
 void FSlateTextureRenderTarget2DResource::InitDynamicRHI()
 {
+	SCOPED_LOADTIMER(FSlateTextureRenderTarget2DResource_InitDynamicRHI);
+
 	check(IsInRenderingThread());
 
 	if( TargetSizeX > 0 && TargetSizeY > 0 )

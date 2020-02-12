@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -17,7 +17,7 @@ class UHorizontalBoxSlot;
  * * Many Children
  * * Flow Horizontal
  */
-UCLASS()
+UCLASS(meta = (ShortTooltip = "A layout panel for automatically laying child widgets out horizontally"))
 class UMG_API UHorizontalBox : public UPanelWidget
 {
 	GENERATED_UCLASS_BODY()

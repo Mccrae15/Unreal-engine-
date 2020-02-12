@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -61,6 +61,11 @@ public:
 	FORCEINLINE const FTransform& operator[] (const BoneIndexType& BoneIndex) const
 	{
 		return Bones[BoneIndex.GetInt()];
+	}
+
+	FORCEINLINE TArrayView<FTransform> GetMutableBones()
+	{
+		return TArrayView<FTransform>(Bones);
 	}
 
 	//Bone Index Iteration
@@ -360,10 +365,20 @@ protected:
 
 struct ENGINE_API FCompactPose : public FBaseCompactPose<FAnimStackAllocator>
 {
+	// Sets every bone transform to Identity
+	void ResetToAdditiveIdentity();
+
+	// Normalizes all rotations in this pose
+	void NormalizeRotations();
 };
 
 struct ENGINE_API FCompactHeapPose : public FBaseCompactPose<FDefaultAllocator>
 {
+	// Sets every bone transform to Identity
+	void ResetToAdditiveIdentity();
+
+	// Normalizes all rotations in this pose
+	void NormalizeRotations();
 };
 
 struct FMeshPose : public FBasePose<FMeshPoseBoneIndex, FDefaultAllocator>
@@ -883,3 +898,6 @@ void FCSPose<PoseType>::ConvertComponentPosesToLocalPoses(FCSPose<PoseType>&& In
 		}
 	}
 }
+
+// Populate InOutPose based on raw animation data. 
+extern void BuildPoseFromRawData(const TArray<FRawAnimSequenceTrack>& InAnimationData, const TArray<struct FTrackToSkeletonMap>& TrackToSkeletonMapTable, FCompactPose& InOutPose, float InTime, EAnimInterpolationType Interpolation, int32 NumFrames, float SequenceLength, FName RetargetSource);

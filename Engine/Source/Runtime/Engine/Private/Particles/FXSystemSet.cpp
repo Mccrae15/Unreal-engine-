@@ -1,20 +1,26 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 /*=============================================================================
 	FXSystemSet.cpp: Internal redirector to several fx systems.
 =============================================================================*/
 
 #include "FXSystemSet.h"
+#include "GPUSortManager.h"
+
+FFXSystemSet::FFXSystemSet(FGPUSortManager* InGPUSortManager)
+	: GPUSortManager(InGPUSortManager)
+{
+}
 
 FFXSystemInterface* FFXSystemSet::GetInterface(const FName& InName)
 {
 	for (FFXSystemInterface* FXSystem : FXSystems)
 	{
 		check(FXSystem);
-		FFXSystemInterface* Res = FXSystem->GetInterface(InName);
-		if (Res)
+		FXSystem = FXSystem->GetInterface(InName);
+		if (FXSystem)
 		{
-			return Res;
+			return FXSystem;
 		}
 	}
 	return nullptr;
@@ -87,12 +93,21 @@ void FFXSystemSet::UpdateVectorField(UVectorFieldComponent* VectorFieldComponent
 	}
 }
 
-void FFXSystemSet::PreInitViews()
+void FFXSystemSet::PreInitViews(FRHICommandListImmediate& RHICmdList, bool bAllowGPUParticleUpdate)
 {
 	for (FFXSystemInterface* FXSystem : FXSystems)
 	{
 		check(FXSystem);
-		FXSystem->PreInitViews();
+		FXSystem->PreInitViews(RHICmdList, bAllowGPUParticleUpdate);
+	}
+}
+
+void FFXSystemSet::PostInitViews(FRHICommandListImmediate& RHICmdList, FRHIUniformBuffer* ViewUniformBuffer, bool bAllowGPUParticleUpdate)
+{
+	for (FFXSystemInterface* FXSystem : FXSystems)
+	{
+		check(FXSystem);
+		FXSystem->PostInitViews(RHICmdList, ViewUniformBuffer, bAllowGPUParticleUpdate);
 	}
 }
 
@@ -109,20 +124,47 @@ bool FFXSystemSet::UsesGlobalDistanceField() const
 	return false;
 }
 
-void FFXSystemSet::PreRender(FRHICommandListImmediate& RHICmdList, const class FGlobalDistanceFieldParameterData* GlobalDistanceFieldParameterData)
+bool FFXSystemSet::UsesDepthBuffer() const
 {
 	for (FFXSystemInterface* FXSystem : FXSystems)
 	{
 		check(FXSystem);
-		FXSystem->PreRender(RHICmdList, GlobalDistanceFieldParameterData);
+		if (FXSystem->UsesDepthBuffer())
+		{
+			return true;
+		}
+	}
+	return false;
+}
+
+bool FFXSystemSet::RequiresEarlyViewUniformBuffer() const
+{
+	for (FFXSystemInterface* FXSystem : FXSystems)
+	{
+		check(FXSystem);
+		if (FXSystem->RequiresEarlyViewUniformBuffer())
+		{
+			return true;
+		}
+	}
+	return false;
+}
+
+void FFXSystemSet::PreRender(FRHICommandListImmediate& RHICmdList, const class FGlobalDistanceFieldParameterData* GlobalDistanceFieldParameterData, bool bAllowGPUParticleSceneUpdate)
+{
+	for (FFXSystemInterface* FXSystem : FXSystems)
+	{
+		check(FXSystem);
+		FXSystem->PreRender(RHICmdList, GlobalDistanceFieldParameterData, bAllowGPUParticleSceneUpdate);
 	}
 }
 
 void FFXSystemSet::PostRenderOpaque(
 	FRHICommandListImmediate& RHICmdList,
-	const FUniformBufferRHIParamRef ViewUniformBuffer,
+	FRHIUniformBuffer* ViewUniformBuffer,
 	const class FShaderParametersMetadata* SceneTexturesUniformBufferStruct,
-	FUniformBufferRHIParamRef SceneTexturesUniformBuffer)
+	FRHIUniformBuffer* SceneTexturesUniformBuffer,
+	bool bAllowGPUParticleUpdate)
 {
 	for (FFXSystemInterface* FXSystem : FXSystems)
 	{
@@ -131,9 +173,21 @@ void FFXSystemSet::PostRenderOpaque(
 			RHICmdList,
 			ViewUniformBuffer,
 			SceneTexturesUniformBufferStruct,
-			SceneTexturesUniformBuffer
+			SceneTexturesUniformBuffer,
+			bAllowGPUParticleUpdate
 		);
 	}
+}
+
+void FFXSystemSet::OnDestroy()
+{
+	for (FFXSystemInterface*& FXSystem : FXSystems)
+	{
+		check(FXSystem);
+		FXSystem->OnDestroy();
+	}
+
+	FFXSystemInterface::OnDestroy();
 }
 
 FFXSystemSet::~FFXSystemSet()
@@ -141,7 +195,11 @@ FFXSystemSet::~FFXSystemSet()
 	for (FFXSystemInterface* FXSystem : FXSystems)
 	{
 		check(FXSystem);
-		FFXSystemInterface::Destroy(FXSystem);
+		delete FXSystem;
 	}
-	FXSystems.Empty();
+}
+
+FGPUSortManager* FFXSystemSet::GetGPUSortManager() const
+{
+	return GPUSortManager;
 }

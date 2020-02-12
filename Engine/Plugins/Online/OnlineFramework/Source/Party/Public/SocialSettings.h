@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -21,8 +21,13 @@ public:
 	USocialSettings();
 
 	static FString GetUniqueIdEnvironmentPrefix(ESocialSubsystem SubsystemType);
-	static bool ShouldPreferPlatformInvites();
 	static int32 GetDefaultMaxPartySize();
+	static bool ShouldPreferPlatformInvites();
+	static bool MustSendPrimaryInvites();
+	static bool ShouldLeavePartyOnDisconnect();
+	static float GetUserListAutoUpdateRate();
+	static int32 GetMinNicknameLength();
+	static int32 GetMaxNicknameLength();
 
 private:
 	/**
@@ -40,4 +45,20 @@ private:
 
 	UPROPERTY(config)
 	bool bPreferPlatformInvites = true;
+
+	UPROPERTY(config)
+	bool bMustSendPrimaryInvites = false;
+
+	/** Should we leave a party when it enters the disconnected state? */
+	UPROPERTY(config)
+	bool bLeavePartyOnDisconnect = true;
+
+	UPROPERTY(config)
+	float UserListAutoUpdateRate = 0.5f;
+
+	UPROPERTY(Config)
+	int32 MinNicknameLength = 3;
+
+	UPROPERTY(Config)
+	int32 MaxNicknameLength = 16;
 };

@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "Misc/BufferedOutputDevice.h"
 #include "Misc/ScopeLock.h"
@@ -12,13 +12,8 @@ void FBufferedOutputDevice::Serialize(const TCHAR* InData, ELogVerbosity::Type V
 	new(BufferedLines)FBufferedLine(InData, Category, Verbosity);
 }
 
-void FBufferedOutputDevice::GetContents(TArray<FBufferedLine>& DestBuffer, bool ClearDevice/*=true*/)
+void FBufferedOutputDevice::GetContents(TArray<FBufferedLine>& DestBuffer)
 {
 	FScopeLock ScopeLock(&SynchronizationObject);
-	DestBuffer = BufferedLines;
-
-	if (ClearDevice)
-	{
-		BufferedLines.Empty();
-	}
+	DestBuffer = MoveTemp(BufferedLines);
 }

@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -24,6 +24,9 @@ public:
 
 	/** Returns a rect describing the main screen */
 	static FPlatformRect GetScreenRect();
+
+	/** Returns a rect describing the main screen */
+	static FPlatformRect GetUIWindowRect();
 
 	/** Returns a void pointer to the hWnd (for other apis)*/
 	virtual void* GetOSWindowHandle() const override { return Window; }

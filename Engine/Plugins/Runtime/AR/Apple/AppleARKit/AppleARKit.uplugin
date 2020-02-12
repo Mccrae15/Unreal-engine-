@@ -13,18 +13,33 @@
 	"CanContainContent": true,
 	"IsBetaVersion": false,
 	"EnabledByDefault": false,
+	"SupportedTargetPlatforms" : [
+		"IOS"
+	],
 	"Modules": [
 		{
 			"Name": "AppleARKit",
 			"Type": "Runtime",
 			"LoadingPhase": "PostConfigInit",
 			"WhitelistPlatforms" : [ "Mac", "iOS", "Win64" ]
+		},
+		{
+			"Name": "AppleARKitPoseTrackingLiveLink",
+			"Type": "Runtime",
+			"LoadingPhase": "PostConfigInit",
+			"WhitelistPlatforms" : [ "Mac", "iOS", "Win64" ]
+
 		}
 	],
     "Plugins": [
         {
             "Name": "AppleImageUtils",
             "Enabled": true
+		},
+		{
+            "Name": "LiveLink",
+            "Enabled": true
         }
+
     ]
 }

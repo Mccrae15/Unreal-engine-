@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 /*=============================================================================
 	ShaderBaseClasses.h: Shader base classes
@@ -36,23 +36,23 @@ typedef TUniformBufferRef< FDitherUniformShaderParameters > FDitherUniformBuffer
 /** Base Hull shader for drawing policy rendering */
 class FBaseHS : public FMeshMaterialShader
 {
-	DECLARE_SHADER_TYPE(FBaseHS,MeshMaterial);
+	DECLARE_TYPE_LAYOUT(FBaseHS, NonVirtual);
 public:
 
-	static bool ShouldCompilePermutation(EShaderPlatform Platform,const FMaterial* Material,const FVertexFactoryType* VertexFactoryType)
+	static bool ShouldCompilePermutation(const FMeshMaterialShaderPermutationParameters& Parameters)
 	{
-		if (!RHISupportsTessellation(Platform))
+		if (!RHISupportsTessellation(Parameters.Platform))
 		{
 			return false;
 		}
 
-		if (VertexFactoryType && !VertexFactoryType->SupportsTessellationShaders())
+		if (Parameters.VertexFactoryType && !Parameters.VertexFactoryType->SupportsTessellationShaders())
 		{
 			// VF can opt out of tessellation
 			return false;	
 		}
 
-		if (!Material || Material->GetTessellationMode() == MTM_NoTessellation) 
+		if (Parameters.MaterialParameters.TessellationMode == MTM_NoTessellation)
 		{
 			// Material controls use of tessellation
 			return false;	
@@ -71,28 +71,31 @@ public:
 	}
 
 	FBaseHS() {}
+
+	
+	
 };
 
 /** Base Domain shader for drawing policy rendering */
 class FBaseDS : public FMeshMaterialShader
 {
-	DECLARE_SHADER_TYPE(FBaseDS,MeshMaterial);
+	DECLARE_TYPE_LAYOUT(FBaseDS, NonVirtual);
 public:
 
-	static bool ShouldCompilePermutation(EShaderPlatform Platform,const FMaterial* Material,const FVertexFactoryType* VertexFactoryType)
+	static bool ShouldCompilePermutation(const FMeshMaterialShaderPermutationParameters& Parameters)
 	{
-		if (!RHISupportsTessellation(Platform))
+		if (!RHISupportsTessellation(Parameters.Platform))
 		{
 			return false;
 		}
 
-		if (VertexFactoryType && !VertexFactoryType->SupportsTessellationShaders())
+		if (Parameters.VertexFactoryType && !Parameters.VertexFactoryType->SupportsTessellationShaders())
 		{
 			// VF can opt out of tessellation
 			return false;	
 		}
 
-		if (!Material || Material->GetTessellationMode() == MTM_NoTessellation) 
+		if (Parameters.MaterialParameters.TessellationMode == MTM_NoTessellation)
 		{
 			// Material controls use of tessellation
 			return false;	
@@ -111,5 +114,8 @@ public:
 	}
 
 	FBaseDS() {}
+
+	
+	
 };
 

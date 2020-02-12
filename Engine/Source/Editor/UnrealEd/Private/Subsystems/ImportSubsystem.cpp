@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "Subsystems/ImportSubsystem.h"
 
@@ -7,7 +7,7 @@
 #include "ObjectTools.h"
 #include "FileHelpers.h"
 #include "EditorReimportHandler.h"
-
+#include "Misc/BlacklistNames.h"
 
 class FImportFilesByPath : public IImportSubsystemTask
 {
@@ -120,6 +120,13 @@ void UImportSubsystem::Deinitialize()
 
 void UImportSubsystem::ImportNextTick(const TArray<FString>& Files, const FString& DestinationPath)
 {
+	FAssetToolsModule& AssetToolsModule = FModuleManager::LoadModuleChecked<FAssetToolsModule>("AssetTools");
+	if (!AssetToolsModule.Get().GetWritableFolderBlacklist()->PassesStartsWithFilter(DestinationPath))
+	{
+		AssetToolsModule.Get().NotifyBlockedByWritableFolderFilter();
+		return;
+	}
+
 	PendingTasks.Enqueue(MakeShared<FImportFilesByPath>(Files, DestinationPath));
 	GEditor->GetTimerManager()->SetTimerForNextTick(this, &UImportSubsystem::HandleNextTick);
 }
@@ -160,5 +167,11 @@ void UImportSubsystem::BroadcastAssetReimport(UObject* InCreatedObject)
 	FEditorDelegates::OnAssetReimport.Broadcast(InCreatedObject);
 	OnAssetReimport.Broadcast(InCreatedObject);
 	OnAssetReimport_BP.Broadcast(InCreatedObject);
+}
+
+void UImportSubsystem::BroadcastAssetPostLODImport(UObject* InObject, int32 inLODIndex)
+{
+	OnAssetPostLODImport.Broadcast(InObject, inLODIndex);
+	OnAssetPostLODImport_BP.Broadcast(InObject, inLODIndex);
 }
 PRAGMA_ENABLE_DEPRECATION_WARNINGS

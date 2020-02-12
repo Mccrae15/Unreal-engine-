@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 #pragma once
 
 #include "Chaos/Vector.h"
@@ -31,10 +31,13 @@ class CHAOS_API TUniformGridBase
 			MCells += TVector<T, d>(2 * GhostCells);
 		}
 
-		const TVector<T, d> MinToDXRatio = MMinCorner / MDx;
-		for (int32 Axis = 0; Axis < d; ++Axis)
+		if (MDx >= TVector<T, d>(SMALL_NUMBER))
 		{
-			check(MinToDXRatio[Axis] < 1e7);	//make sure we have the precision we need
+			const TVector<T, d> MinToDXRatio = MMinCorner / MDx;
+			for (int32 Axis = 0; Axis < d; ++Axis)
+			{
+				ensure(FMath::Abs(MinToDXRatio[Axis]) < 1e7); //make sure we have the precision we need
+			}
 		}
 	}
 	TUniformGridBase(std::istream& Stream)
@@ -52,6 +55,14 @@ class CHAOS_API TUniformGridBase
 		MMaxCorner.Write(Stream);
 		MCells.Write(Stream);
 	}
+	void Serialize(FArchive& Ar)
+	{
+		Ar << MMinCorner;
+		Ar << MMaxCorner;
+		Ar << MCells;
+		Ar << MDx;
+	}
+
 	TVector<T, d> Location(const TVector<int32, d>& Cell) const
 	{
 		return MDx * Cell + MMinCorner + (MDx / 2);
@@ -60,9 +71,26 @@ class CHAOS_API TUniformGridBase
 	{
 		return MDx * Face.Second + MMinCorner + (TVector<T, d>(1) - TVector<T, d>::AxisVector(Face.First)) * (MDx / 2);
 	}
+
+#ifdef PLATFORM_COMPILER_CLANG
+	// Disable optimization (-ffast-math) since its currently causing regressions.
+	//		freciprocal-math:
+	//		x / y = x * rccps(y) 
+	//		rcpps is faster but less accurate (12 bits of precision), this can causes incorrect CellIdx
+	DISABLE_FUNCTION_OPTIMIZATION 
+#endif
 	TVector<int32, d> Cell(const TVector<T, d>& X) const
 	{
-		return (X - MMinCorner) / MDx;
+		const TVector<T, d> Delta = X - MMinCorner;
+		TVector<int32, d> Result = Delta / MDx;
+		for (int Axis = 0; Axis < d; ++Axis)
+		{
+			if (Delta[Axis] < 0)
+			{
+				Result[Axis] -= 1;	//negative snaps to the right which is wrong. Consider -50 x for DX of 100: -50 / 100 = 0 but we actually want -1
+			}
+		}
+		return Result;
 	}
 	TVector<int32, d> Face(const TVector<T, d>& X, const int32 Component) const
 	{
@@ -104,6 +132,7 @@ class CHAOS_API TUniformGrid : public TUniformGridBase<T, d>
   public:
 	using TUniformGridBase<T, d>::Location;
 
+	TUniformGrid() {}
 	TUniformGrid(const TVector<T, d>& MinCorner, const TVector<T, d>& MaxCorner, const TVector<int32, d>& Cells, const uint32 GhostCells = 0)
 	    : TUniformGridBase<T, d>(MinCorner, MaxCorner, Cells, GhostCells) {}
 	TUniformGrid(std::istream& Stream)
@@ -114,9 +143,28 @@ class CHAOS_API TUniformGrid : public TUniformGridBase<T, d>
 	{
 		return TUniformGridBase<T, d>::Location(GetIndex(Index));
 	}
-	TVector<int32, d> ClampIndex(const TVector<int32, d>& Index) const;
+	TVector<int32, d> ClampIndex(const TVector<int32, d>& Index) const
+	{
+		TVector<int32, d> Result;
+		for (int32 i = 0; i < d; ++i)
+		{
+			if (Index[i] >= MCells[i])
+				Result[i] = MCells[i] - 1;
+			else if (Index[i] < 0)
+				Result[i] = 0;
+			else
+				Result[i] = Index[i];
+		}
+		return Result;
+	}
+
 	TVector<T, d> Clamp(const TVector<T, d>& X) const;
 	TVector<T, d> ClampMinusHalf(const TVector<T, d>& X) const;
+	
+	bool IsValid(const TVector<int32, d>& X) const
+	{
+		return X == ClampIndex(X);
+	}
 };
 
 template<class T>
@@ -150,5 +198,14 @@ class CHAOS_API TUniformGrid<T, 3> : public TUniformGridBase<T, 3>
 	TVector<int32, 3> ClampIndex(const TVector<int32, 3>& Index) const;
 	TVector<T, 3> Clamp(const TVector<T, 3>& X) const;
 	TVector<T, 3> ClampMinusHalf(const TVector<T, 3>& X) const;
+	bool IsValid(const TVector<int32, 3>& X) const;
 };
+
+template <typename T, int d>
+FArchive& operator<<(FArchive& Ar, TUniformGridBase<T, d>& Value)
+{
+	Value.Serialize(Ar);
+	return Ar;
+}
+
 }

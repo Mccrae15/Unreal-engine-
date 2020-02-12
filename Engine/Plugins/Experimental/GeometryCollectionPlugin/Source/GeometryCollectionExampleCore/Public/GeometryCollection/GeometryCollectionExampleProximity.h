@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 #pragma once
 
 #include "GeometryCollection/GeometryCollectionExample.h"
@@ -7,30 +7,33 @@ namespace GeometryCollectionExample
 {	
 	
 	template<class T>
-	bool GEOMETRYCOLLECTIONEXAMPLECORE_API BuildProximity(ExampleResponse&& R);
+	void GEOMETRYCOLLECTIONEXAMPLECORE_API BuildProximity();
 	
 	template<class T>
-	bool GEOMETRYCOLLECTIONEXAMPLECORE_API GeometryDeleteFromStart(ExampleResponse&& R);
+	void GEOMETRYCOLLECTIONEXAMPLECORE_API GeometryDeleteFromStart();
 
 	template<class T>
-	bool GEOMETRYCOLLECTIONEXAMPLECORE_API GeometryDeleteFromEnd(ExampleResponse&& R);
+	void GEOMETRYCOLLECTIONEXAMPLECORE_API GeometryDeleteFromEnd();
 
 	template<class T>
-	bool GEOMETRYCOLLECTIONEXAMPLECORE_API GeometryDeleteFromMiddle(ExampleResponse&& R);
+	void GEOMETRYCOLLECTIONEXAMPLECORE_API GeometryDeleteFromMiddle();
 
 	template<class T>
-	bool GEOMETRYCOLLECTIONEXAMPLECORE_API GeometryDeleteMultipleFromMiddle(ExampleResponse&& R);
+	void GEOMETRYCOLLECTIONEXAMPLECORE_API GeometryDeleteMultipleFromMiddle();
 
 	template<class T>
-	bool GEOMETRYCOLLECTIONEXAMPLECORE_API GeometryDeleteRandom(ExampleResponse&& R);
+	void GEOMETRYCOLLECTIONEXAMPLECORE_API GeometryDeleteRandom();
 
 	template<class T>
-	bool GEOMETRYCOLLECTIONEXAMPLECORE_API GeometryDeleteRandom2(ExampleResponse&& R);
+	void GEOMETRYCOLLECTIONEXAMPLECORE_API GeometryDeleteRandom2();
 
 	template<class T>
-	bool GEOMETRYCOLLECTIONEXAMPLECORE_API GeometryDeleteAll(ExampleResponse&& R);
+	void GEOMETRYCOLLECTIONEXAMPLECORE_API GeometryDeleteAll();
 
 	template<class T>
-	bool GEOMETRYCOLLECTIONEXAMPLECORE_API TestFracturedGeometry(ExampleResponse&& R);
+	void GEOMETRYCOLLECTIONEXAMPLECORE_API GeometrySwapFlat();
+
+	template<class T>
+	void GEOMETRYCOLLECTIONEXAMPLECORE_API TestFracturedGeometry();
 	
 }

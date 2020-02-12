@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "PhysicsEngine/PhysicsHandleComponent.h"
 #include "EngineDefines.h"
@@ -80,7 +80,7 @@ void UPhysicsHandleComponent::GrabComponent(class UPrimitiveComponent* InCompone
 	FRotator GrabbedRotation = FRotator::ZeroRotator;
 
 #if WITH_PHYSX
-	if(BodyInstance->ActorHandle.IsValid())
+	if(FPhysicsInterface::IsValid(BodyInstance->ActorHandle))
 	{
 		FPhysicsCommand::ExecuteRead(BodyInstance->ActorHandle, [&](const FPhysicsActorHandle& Actor)
 		{
@@ -226,9 +226,9 @@ void UPhysicsHandleComponent::UpdateDriveSettings()
 
 void UPhysicsHandleComponent::ReleaseComponent()
 {
-#if WITH_PHYSX
 	if(GrabbedComponent)
 	{
+#if WITH_PHYSX
 		if(HandleData)
 		{
 			check(KinActorData);
@@ -252,11 +252,11 @@ void UPhysicsHandleComponent::ReleaseComponent()
 		bRotationConstrained = false;
 
 		GrabbedComponent->WakeRigidBody(GrabbedBoneName);
+#endif // WITH_PHYSX
 
 		GrabbedComponent = NULL;
 		GrabbedBoneName = NAME_None;
 	}
-#endif // WITH_PHYSX
 }
 
 UPrimitiveComponent* UPhysicsHandleComponent::GetGrabbedComponent() const

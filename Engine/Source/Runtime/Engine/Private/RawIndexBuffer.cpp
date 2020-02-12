@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 /*=============================================================================
 	RawIndexBuffer.cpp: Raw index buffer implementation.
@@ -71,7 +71,7 @@ void FRawIndexBuffer16or32::CacheOptimize()
 
 void FRawIndexBuffer16or32::ComputeIndexWidth()
 {
-	if (GetFeatureLevel() < ERHIFeatureLevel::SM4)
+	if (GetFeatureLevel() < ERHIFeatureLevel::SM5)
 	{
 		const int32 NumIndices = Indices.Num();
 		bool bShouldUse32Bit = false;
@@ -142,7 +142,6 @@ FRawStaticIndexBuffer::FRawStaticIndexBuffer(bool InNeedsCPUAccess)
 	: IndexStorage(InNeedsCPUAccess)
 	, CachedNumIndices(-1)
 	, b32Bit(false)
-	, bStreamed(false)
 {
 }
 
@@ -288,17 +287,24 @@ FIndexBufferRHIRef FRawStaticIndexBuffer::CreateRHIBuffer_Internal()
 	const uint32 IndexStride = b32Bit ? sizeof(uint32) : sizeof(uint16);
 	const uint32 SizeInBytes = IndexStorage.Num();
 
-	if (SizeInBytes > 0)
+	if (GetNumIndices() > 0)
 	{
+		// When bAllowCPUAccess is true, the meshes is likely going to be used for Niagara to spawn particles on mesh surface.
+		// And it can be the case for CPU *and* GPU access: no differenciation today. That is why we create a SRV in this case.
+		// This also avoid setting lots of states on all the members of all the different buffers used by meshes. Follow up: https://jira.it.epicgames.net/browse/UE-69376.
+		bool bSRV = IndexStorage.GetAllowCPUAccess();
+		uint32 BufferFlags = BUF_Static | (bSRV ? BUF_ShaderResource : BUF_None);
+
 		// Create the index buffer.
 		FRHIResourceCreateInfo CreateInfo(&IndexStorage);
+		CreateInfo.bWithoutNativeResource = !SizeInBytes;
 		if (bRenderThread)
 		{
-			return RHICreateIndexBuffer(IndexStride, SizeInBytes, BUF_Static, CreateInfo);
+			return RHICreateIndexBuffer(IndexStride, SizeInBytes, BufferFlags, CreateInfo);
 		}
 		else
 		{
-			return RHIAsyncCreateIndexBuffer(IndexStride, SizeInBytes, BUF_Static, CreateInfo);
+			return RHIAsyncCreateIndexBuffer(IndexStride, SizeInBytes, BufferFlags, CreateInfo);
 		}
 	}
 	return nullptr;
@@ -314,18 +320,9 @@ FIndexBufferRHIRef FRawStaticIndexBuffer::CreateRHIBuffer_Async()
 	return CreateRHIBuffer_Internal<false>();
 }
 
-void FRawStaticIndexBuffer::InitRHIForStreaming(FIndexBufferRHIParamRef IntermediateBuffer)
-{
-	check(!IndexBufferRHI);
-	IndexBufferRHI = IntermediateBuffer;
-}
-
 void FRawStaticIndexBuffer::InitRHI()
 {
-	if (!bStreamed)
-	{
-		IndexBufferRHI = CreateRHIBuffer_RenderThread();
-	}
+	IndexBufferRHI = CreateRHIBuffer_RenderThread();
 }
 
 void FRawStaticIndexBuffer::Serialize(FArchive& Ar, bool bNeedsCPUAccess)
@@ -376,6 +373,7 @@ void FRawStaticIndexBuffer16or32<INDEX_TYPE>::CacheOptimize()
 {
 #if WITH_EDITOR
 	CacheOptimizeIndexBuffer(Indices);
+	CachedNumIndices = Indices.Num();
 #endif
 }
 

@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 
 #include "Sound/SoundEffectPreset.h"
@@ -10,15 +10,11 @@ USoundEffectPreset::USoundEffectPreset(const FObjectInitializer& ObjectInitializ
 	: Super(ObjectInitializer)
 	, bInitialized(false)
 {
-	
+
 }
 
 USoundEffectPreset::~USoundEffectPreset()
 {
-	for (int32 i = 0; i < Instances.Num(); ++i)
-	{
-		Instances[i]->ClearPreset();
-	}
 }
 
 
@@ -26,15 +22,25 @@ void USoundEffectPreset::EffectCommand(TFunction<void()> Command)
 {
 	for (int32 i = 0; i < Instances.Num(); ++i)
 	{
-		Instances[i]->EffectCommand(Command);
+		if (Instances[i])
+		{
+			Instances[i]->EffectCommand(Command);
+		}
 	}
 }
 
 void USoundEffectPreset::Update()
 {
-	for (int32 i = 0; i < Instances.Num(); ++i)
+	for (int32 i = Instances.Num() - 1; i >= 0; --i)
 	{
-		Instances[i]->SetPreset(this);
+		if (!Instances[i] || Instances[i]->GetPreset() == nullptr)
+		{
+			Instances.RemoveAtSwap(i, 1, false /* bAllowShrinking */);
+		}
+		else
+		{
+			Instances[i]->SetPreset(this);
+		}
 	}
 }
 
@@ -52,12 +58,35 @@ void USoundEffectPreset::AddEffectInstance(FSoundEffectBase* InSource)
 	Instances.AddUnique(InSource);
 }
 
+void USoundEffectPreset::AddReferencedEffects(FReferenceCollector& Collector)
+{
+	for (FSoundEffectBase* Effect : Instances)
+	{
+		if (Effect)
+		{
+			const USoundEffectPreset* EffectPreset = Effect->GetPreset();
+			Collector.AddReferencedObject(EffectPreset);
+		}
+	}
+}
+
+void USoundEffectPreset::BeginDestroy()
+{
+	for (int32 i = 0; i < Instances.Num(); ++i)
+	{
+		if (Instances[i])
+		{
+			Instances[i]->ClearPreset(false /* bRemoveFromPreset */);
+		}
+	}
+	Instances.Reset();
+
+	Super::BeginDestroy();
+}
+
 void USoundEffectPreset::RemoveEffectInstance(FSoundEffectBase* InSource)
 {
-	if (Instances.Contains(InSource))
-	{
-		Instances.Remove(InSource);
-	}
+	Instances.RemoveSwap(InSource);
 }
 
 #if WITH_EDITORONLY_DATA
@@ -67,9 +96,7 @@ void USoundEffectPreset::PostEditChangeProperty(FPropertyChangedEvent& PropertyC
 	Init();
 	Update();
 }
-#endif
 
-#if WITH_EDITORONLY_DATA
 void USoundEffectSourcePresetChain::PostEditChangeProperty(FPropertyChangedEvent& PropertyChangedEvent)
 {
 	if (GEngine)
@@ -78,5 +105,15 @@ void USoundEffectSourcePresetChain::PostEditChangeProperty(FPropertyChangedEvent
 		AudioDeviceManager->UpdateSourceEffectChain(GetUniqueID(), Chain, bPlayEffectChainTails);
 	}
 }
-#endif
+#endif // WITH_EDITORONLY_DATA
 
+void USoundEffectSourcePresetChain::AddReferencedEffects(FReferenceCollector& Collector)
+{
+	for (FSourceEffectChainEntry& SourceEffect : Chain)
+	{
+		if (SourceEffect.Preset)
+		{
+			SourceEffect.Preset->AddReferencedEffects(Collector);
+		}
+	}
+}

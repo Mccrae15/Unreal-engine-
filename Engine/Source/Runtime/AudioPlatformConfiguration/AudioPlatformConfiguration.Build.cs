@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 namespace UnrealBuildTool.Rules
 {
@@ -16,12 +16,7 @@ namespace UnrealBuildTool.Rules
 
             PrivateIncludePathModuleNames.Add("Engine");
 
-            if (Target.Type == TargetType.Editor && Target.Platform != UnrealTargetPlatform.Linux)
-            {
-                AddEngineThirdPartyPrivateStaticDependencies(Target,
-                    "UELibSampleRate"
-                    );
-            }
+            AddEngineThirdPartyPrivateStaticDependencies(Target, "UELibSampleRate");
         }
 	}
 }

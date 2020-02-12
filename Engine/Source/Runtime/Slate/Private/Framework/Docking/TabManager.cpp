@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "Framework/Docking/TabManager.h"
 #include "Dom/JsonValue.h"
@@ -18,6 +18,7 @@
 #include "Framework/Docking/SDockingTabStack.h"
 #include "Framework/Docking/SDockingTabWell.h"
 #include "Framework/Docking/LayoutExtender.h"
+#include "Misc/BlacklistNames.h"
 #include "HAL/PlatformApplicationMisc.h"
 #if PLATFORM_MAC
 #include "../MultiBox/Mac/MacMenu.h"
@@ -77,6 +78,10 @@ TSharedPtr<SDockTab> FTabManager::FLastMajorOrNomadTab::Search(const FTabManager
 	return FoundTab;
 }
 
+static const FString UE4_TABMANAGER_OPENED_TAB_STRING = TEXT("OpenedTab");
+static const FString UE4_TABMANAGER_CLOSED_TAB_STRING = TEXT("ClosedTab");
+static const FString UE4_TABMANAGER_INVALID_TAB_STRING = TEXT("InvalidTab");
+
 TSharedRef<FTabManager::FLayoutNode> FTabManager::FLayout::NewFromString_Helper( TSharedPtr<FJsonObject> JsonObject )
 {
 	struct local
@@ -129,16 +134,17 @@ TSharedRef<FTabManager::FLayoutNode> FTabManager::FLayout::NewFromString_Helper(
 
 		static ETabState::Type TabStateFromString( const FString& AsString )
 		{
-			static const FString OpenedTab_Str = TEXT("OpenedTab");
-			static const FString ClosedTab_Str = TEXT("ClosedTab");
-
-			if (AsString == OpenedTab_Str)
+			if (AsString == UE4_TABMANAGER_OPENED_TAB_STRING)
 			{
 				return ETabState::OpenedTab;
 			}
-			else if(AsString == ClosedTab_Str)
+			else if(AsString == UE4_TABMANAGER_CLOSED_TAB_STRING)
 			{
 				return ETabState::ClosedTab;
+			}
+			else if (AsString == UE4_TABMANAGER_INVALID_TAB_STRING)
+			{
+				return ETabState::InvalidTab;
 			}
 			else
 			{
@@ -376,8 +382,8 @@ TSharedRef<FJsonObject> FTabManager::FLayout::PersistToString_Helper(const TShar
 			TSharedRef<FJsonObject> TabAsJson = MakeShareable( new FJsonObject() );
 			TabAsJson->SetStringField( TEXT("TabId"), NodeAsStack->Tabs[TabIndex].TabId.ToString() );
 			TabAsJson->SetStringField( TEXT("TabState"), (NodeAsStack->Tabs[TabIndex].TabState == ETabState::OpenedTab)
-				? TEXT("OpenedTab")
-				: TEXT("ClosedTab") );
+				? UE4_TABMANAGER_OPENED_TAB_STRING : NodeAsStack->Tabs[TabIndex].TabState == ETabState::ClosedTab
+				? UE4_TABMANAGER_CLOSED_TAB_STRING : UE4_TABMANAGER_INVALID_TAB_STRING);
 			TabsAsJson.Add( MakeShareable( new FJsonValueObject(TabAsJson) ) );
 		}
 		JsonObj->SetArrayField( TEXT("Tabs"), TabsAsJson );
@@ -415,6 +421,8 @@ void FTabManager::FLayout::ProcessExtensions(const FLayoutExtender& Extender)
 				TSharedPtr<FTabManager::FStack> Stack = Child->AsStack();
 				if (Stack.IsValid())
 				{
+					StackToParentSplitterMap.Add(Stack.Get(), &Splitter);
+
 					AllStacks.Add(Stack.Get());
 
 					for (FTabManager::FTab& Tab : Stack->Tabs)
@@ -446,6 +454,7 @@ void FTabManager::FLayout::ProcessExtensions(const FLayoutExtender& Extender)
 			return AllDefinedTabs.Contains(TabId);
 		}
 
+		TMap<FTabManager::FStack*, FTabManager::FSplitter*> StackToParentSplitterMap;
 		TArray<FTabManager::FStack*> AllStacks;
 		TSet<FTabId> AllDefinedTabs;
 	};
@@ -455,11 +464,12 @@ void FTabManager::FLayout::ProcessExtensions(const FLayoutExtender& Extender)
 
 	for (FTabManager::FStack* Stack : AllTabs.AllStacks)
 	{
+		FSplitter* ParentSplitter = AllTabs.StackToParentSplitterMap.FindRef(Stack);
 		for (int32 TabIndex = 0; TabIndex < Stack->Tabs.Num();)
 		{
 			FTabId TabId = Stack->Tabs[TabIndex].TabId;
 
-			Extender.FindExtensions(TabId, ELayoutExtensionPosition::Before, ExtendedTabs);
+			Extender.FindTabExtensions(TabId, ELayoutExtensionPosition::Before, ExtendedTabs);
 			for (FTab& NewTab : ExtendedTabs)
 			{
 				if (!AllTabs.Contains(NewTab.TabId))
@@ -470,12 +480,48 @@ void FTabManager::FLayout::ProcessExtensions(const FLayoutExtender& Extender)
 
 			++TabIndex;
 
-			Extender.FindExtensions(TabId, ELayoutExtensionPosition::After, ExtendedTabs);
+			Extender.FindTabExtensions(TabId, ELayoutExtensionPosition::After, ExtendedTabs);
 			for (FTab& NewTab : ExtendedTabs)
 			{
 				if (!AllTabs.Contains(NewTab.TabId))
 				{
 					Stack->Tabs.Insert(NewTab, TabIndex++);
+				}
+			}
+
+	
+			if (ParentSplitter)
+			{
+				Extender.FindTabExtensions(TabId, ELayoutExtensionPosition::Below, ExtendedTabs);
+				if (ExtendedTabs.Num())
+				{
+					for (FTab& NewTab : ExtendedTabs)
+					{
+						if (!AllTabs.Contains(NewTab.TabId))
+						{
+							ParentSplitter->InsertAfter(Stack->AsShared(),
+								FTabManager::NewStack()
+								->SetHideTabWell(true)
+								->AddTab(NewTab)
+							);
+						}
+					}
+				}
+
+				Extender.FindTabExtensions(TabId, ELayoutExtensionPosition::Above, ExtendedTabs);
+				if (ExtendedTabs.Num())
+				{
+					for (FTab& NewTab : ExtendedTabs)
+					{
+						if (!AllTabs.Contains(NewTab.TabId))
+						{
+							ParentSplitter->InsertBefore(Stack->AsShared(),
+								FTabManager::NewStack()
+								->SetHideTabWell(true)
+								->AddTab(NewTab)
+							);
+						}
+					}
 				}
 			}
 		}
@@ -718,6 +764,7 @@ void FTabManager::CloseAllAreas()
 	DockAreas.Empty();
 
 	CollapsedDockAreas.Empty();
+	InvalidDockAreas.Empty();
 }
 
 
@@ -757,22 +804,28 @@ TSharedRef<FTabManager::FLayout> FTabManager::PersistLayout() const
 		PersistentLayout->AddArea( CollapsedDockAreas[CollapsedAreaIndex] );
 	}
 
+	// Gather existing persistent layouts for InvalidAreas
+	for (int32 InvalidAreaIndex = 0; InvalidAreaIndex < InvalidDockAreas.Num(); ++InvalidAreaIndex)
+	{
+		PersistentLayout->AddArea(InvalidDockAreas[InvalidAreaIndex]);
+	}
+
 	return PersistentLayout;
 }
 
 void FTabManager::SavePersistentLayout()
 {
-	const TSharedRef<FLayout> MyLayout = this->PersistLayout();
-	OnPersistLayout_Handler.ExecuteIfBound( MyLayout );
+	const TSharedRef<FLayout> LayoutState = this->PersistLayout();
+	OnPersistLayout_Handler.ExecuteIfBound( LayoutState );
 }
 
-FTabSpawnerEntry& FTabManager::RegisterTabSpawner( const FName TabId, const FOnSpawnTab& OnSpawnTab )
+FTabSpawnerEntry& FTabManager::RegisterTabSpawner(const FName TabId, const FOnSpawnTab& OnSpawnTab, const FCanSpawnTab& CanSpawnTab)
 {
-	ensure( !TabSpawner.Contains(TabId) );
-	ensure( !FGlobalTabmanager::Get()->IsLegacyTabType(TabId) );
+	ensure(!TabSpawner.Contains(TabId));
+	ensure(!FGlobalTabmanager::Get()->IsLegacyTabType(TabId));
 
-	TSharedRef<FTabSpawnerEntry> NewSpawnerEntry = MakeShareable( new FTabSpawnerEntry( TabId, OnSpawnTab ) );
-	TabSpawner.Add( TabId, NewSpawnerEntry );
+	TSharedRef<FTabSpawnerEntry> NewSpawnerEntry = MakeShareable(new FTabSpawnerEntry(TabId, OnSpawnTab, CanSpawnTab));
+	TabSpawner.Add(TabId, NewSpawnerEntry);
 	return NewSpawnerEntry.Get();
 }
 
@@ -786,7 +839,7 @@ void FTabManager::UnregisterAllTabSpawners()
 	TabSpawner.Empty();
 }
 
-TSharedPtr<SWidget> FTabManager::RestoreFrom( const TSharedRef<FLayout>& Layout, const TSharedPtr<SWindow>& ParentWindow, const bool bEmbedTitleAreaContent )
+TSharedPtr<SWidget> FTabManager::RestoreFrom(const TSharedRef<FLayout>& Layout, const TSharedPtr<SWindow>& ParentWindow, const bool bEmbedTitleAreaContent, const EOutputCanBeNullptr RestoreAreaOutputCanBeNullptr)
 {
 	ActiveLayoutName = Layout->LayoutName;
 
@@ -794,7 +847,8 @@ TSharedPtr<SWidget> FTabManager::RestoreFrom( const TSharedRef<FLayout>& Layout,
 	for (int32 AreaIndex=0; AreaIndex < Layout->Areas.Num(); ++AreaIndex )
 	{
 		const TSharedRef<FArea>& ThisArea = Layout->Areas[AreaIndex];
-
+		// Set all InvalidTab tabs to OpenedTab so the Editor tries to load them. All non-recognized tabs will be set to InvalidTab later.
+		SetTabsTo(ThisArea, ETabState::OpenedTab, ETabState::InvalidTab);
 		const bool bIsPrimaryArea = ThisArea->WindowPlacement == FArea::Placement_NoWindow;
 		const bool bShouldCreate = bIsPrimaryArea || HasValidTabs(ThisArea);
 
@@ -805,7 +859,13 @@ TSharedPtr<SWidget> FTabManager::RestoreFrom( const TSharedRef<FLayout>& Layout,
 
 			if ( bHasOpenTabs )
 			{
-				RestoredDockArea = RestoreArea(ThisArea, ParentWindow, bEmbedTitleAreaContent);
+				RestoredDockArea = RestoreArea(ThisArea, ParentWindow, bEmbedTitleAreaContent, RestoreAreaOutputCanBeNullptr);
+				// Invalidate all tabs in ThisArea because they were not recognized
+				if (!RestoredDockArea)
+				{
+					SetTabsTo(ThisArea, ETabState::InvalidTab, ETabState::OpenedTab);
+					InvalidDockAreas.Add(ThisArea);
+				}
 			}
 			else
 			{
@@ -912,23 +972,29 @@ void FTabManager::PopulateTabSpawnerMenu_Helper( FMenuBuilder& PopulateMe, FPopu
 	}
 }
 
-void FTabManager::MakeSpawnerMenuEntry( FMenuBuilder &PopulateMe, const TSharedPtr<FTabSpawnerEntry> &SpawnerNode ) 
+void FTabManager::MakeSpawnerMenuEntry( FMenuBuilder &PopulateMe, const TSharedPtr<FTabSpawnerEntry> &InSpawnerNode ) 
 {
-	auto CanExecuteMenuEntry = [](TAttribute<ETabSpawnerMenuType::Type> InMenuType) -> bool
+	auto CanExecuteMenuEntry = [](TWeakPtr<FTabSpawnerEntry> SpawnerNode) -> bool
 	{
-		return InMenuType.Get() == ETabSpawnerMenuType::Enabled;
+		TSharedPtr<FTabSpawnerEntry> SpawnerNodePinned = SpawnerNode.Pin();
+		if (SpawnerNodePinned.IsValid() && SpawnerNodePinned->MenuType.Get() == ETabSpawnerMenuType::Enabled)
+		{
+			return SpawnerNodePinned->CanSpawnTab.IsBound() ? SpawnerNodePinned->CanSpawnTab.Execute(FSpawnTabArgs(TSharedPtr<SWindow>(), SpawnerNodePinned->TabType)) : true;
+		}
+
+		return false;
 	};
 
-	if ( SpawnerNode->MenuType.Get() != ETabSpawnerMenuType::Hidden )
+	if (InSpawnerNode->MenuType.Get() != ETabSpawnerMenuType::Hidden )
 	{
 		PopulateMe.AddMenuEntry(
-			SpawnerNode->GetDisplayName().IsEmpty() ? FText::FromName( SpawnerNode->TabType ) : SpawnerNode->GetDisplayName(),
-			SpawnerNode->GetTooltipText(),
-			SpawnerNode->GetIcon(),
+			InSpawnerNode->GetDisplayName().IsEmpty() ? FText::FromName(InSpawnerNode->TabType ) : InSpawnerNode->GetDisplayName(),
+			InSpawnerNode->GetTooltipText(),
+			InSpawnerNode->GetIcon(),
 			FUIAction(
-			FExecuteAction::CreateSP(SharedThis(this), &FTabManager::InvokeTabForMenu, SpawnerNode->TabType),
-			FCanExecuteAction::CreateStatic(CanExecuteMenuEntry, SpawnerNode->MenuType),
-			FIsActionChecked::CreateSP(SpawnerNode.ToSharedRef(), &FTabSpawnerEntry::IsSoleTabInstanceSpawned)
+			FExecuteAction::CreateSP(SharedThis(this), &FTabManager::InvokeTabForMenu, InSpawnerNode->TabType),
+			FCanExecuteAction::CreateStatic(CanExecuteMenuEntry, TWeakPtr<FTabSpawnerEntry>(InSpawnerNode)),
+			FIsActionChecked::CreateSP(InSpawnerNode.ToSharedRef(), &FTabSpawnerEntry::IsSoleTabInstanceSpawned)
 			),
 			NAME_None,
 			EUserInterfaceActionType::Check
@@ -956,7 +1022,10 @@ void FTabManager::PopulateTabSpawnerMenu( FMenuBuilder& PopulateMe, TSharedRef<F
 		const TSharedRef<FTabSpawnerEntry>& SpawnerEntry = SpawnerIterator.Value();
 		if ( SpawnerEntry->bAutoGenerateMenuEntry )
 		{
-			AllSpawners->AddUnique(SpawnerEntry);
+			if (SpawnerEntry->TabType == NAME_None || TabBlacklist->PassesFilter(SpawnerEntry->TabType))
+			{
+				AllSpawners->AddUnique(SpawnerEntry);
+			}
 		}
 	}
 
@@ -966,7 +1035,10 @@ void FTabManager::PopulateTabSpawnerMenu( FMenuBuilder& PopulateMe, TSharedRef<F
 		const TSharedRef<FTabSpawnerEntry>& SpawnerEntry = SpawnerIterator.Value();
 		if ( SpawnerEntry->bAutoGenerateMenuEntry )
 		{
-			AllSpawners->AddUnique(SpawnerEntry);
+			if (SpawnerEntry->TabType == NAME_None || TabBlacklist->PassesFilter(SpawnerEntry->TabType))
+			{
+				AllSpawners->AddUnique(SpawnerEntry);
+			}
 		}
 	}
 
@@ -1077,7 +1149,8 @@ void FTabManager::RestoreDocumentTab( FName PlaceholderId, ESearchPreference::Ty
 
 TSharedRef<SDockTab> FTabManager::InvokeTab( const FTabId& TabId )
 {
-	TSharedRef<SDockTab> NewTab = InvokeTab_Internal( TabId );
+	TSharedPtr<SDockTab> NewTab = InvokeTab_Internal( TabId );
+	check(NewTab.IsValid());
 	TSharedPtr<SWindow> ParentWindowPtr = NewTab->GetParentWindow();
 	if ((NewTab->GetTabRole() == ETabRole::MajorTab || NewTab->GetTabRole() == ETabRole::NomadTab) && ParentWindowPtr.IsValid() && ParentWindowPtr != FGlobalTabmanager::Get()->GetRootWindow())
 	{
@@ -1086,10 +1159,11 @@ TSharedRef<SDockTab> FTabManager::InvokeTab( const FTabId& TabId )
 #if PLATFORM_MAC
 	FPlatformApplicationMisc::bChachedMacMenuStateNeedsUpdate = true;
 #endif
-	return NewTab;
+	// Note: we expect tabs that are manually invoked to always succeed
+	return NewTab.ToSharedRef();
 }
 
-TSharedRef<SDockTab> FTabManager::InvokeTab_Internal( const FTabId& TabId )
+TSharedPtr<SDockTab> FTabManager::InvokeTab_Internal( const FTabId& TabId )
 {
 	// Tab Spawning Rules:
 	// 
@@ -1136,10 +1210,14 @@ TSharedRef<SDockTab> FTabManager::InvokeTab_Internal( const FTabId& TabId )
 
 	if (StackToSpawnIn.IsValid())
 	{
-		const TSharedRef<SDockTab> NewTab = SpawnTab( TabId, TSharedPtr<SWindow>() );
+		const TSharedPtr<SDockTab> NewTab = SpawnTab( TabId, TSharedPtr<SWindow>() );
 
-		StackToSpawnIn->OpenTab( NewTab );
-		NewTab->PlaySpawnAnim();
+		if (NewTab.IsValid())
+		{
+			StackToSpawnIn->OpenTab(NewTab.ToSharedRef());
+			NewTab->PlaySpawnAnim();
+		}
+
 		return NewTab;
 	}
 	else if ( FGlobalTabmanager::Get() != SharedThis(this) && NomadTabSpawner->Contains(TabId.TabType) )
@@ -1157,10 +1235,17 @@ TSharedRef<SDockTab> FTabManager::InvokeTab_Internal( const FTabId& TabId )
 			->AddTab( TabId, ETabState::OpenedTab )
 		);
 
-		TSharedRef<SDockingArea> DockingArea = RestoreArea(NewAreaForTab, GetPrivateApi().GetParentWindow());
-		const TSharedPtr<SDockTab> NewlyOpenedTab = DockingArea->GetAllChildTabs()[0];
-		check(NewlyOpenedTab.IsValid());
-		return NewlyOpenedTab.ToSharedRef();	
+		TSharedPtr<SDockingArea> DockingArea = RestoreArea(NewAreaForTab, GetPrivateApi().GetParentWindow());
+		if (DockingArea && DockingArea->GetAllChildTabs().Num() > 0)
+		{
+			const TSharedPtr<SDockTab> NewlyOpenedTab = DockingArea->GetAllChildTabs()[0];
+			check(NewlyOpenedTab.IsValid());
+			return NewlyOpenedTab.ToSharedRef();
+		}
+		else
+		{
+			return nullptr;
+		}
 	}
 }
 
@@ -1174,10 +1259,14 @@ TSharedPtr<SDockingTabStack> FTabManager::FindPotentiallyClosedTab( const FTabId
 	const int32 CollapsedAreaWithMatchingTab = FindTabInCollapsedAreas( TabMatcher );
 	if ( CollapsedAreaWithMatchingTab != INDEX_NONE )
 	{
-		TSharedRef<SDockingArea> RestoredArea = RestoreArea( CollapsedDockAreas[CollapsedAreaWithMatchingTab], GetPrivateApi().GetParentWindow() );
+		TSharedPtr<SDockingArea> RestoredArea = RestoreArea(CollapsedDockAreas[CollapsedAreaWithMatchingTab], GetPrivateApi().GetParentWindow());
+		check(RestoredArea.IsValid());
 		// We have just un-collapsed this dock area
 		CollapsedDockAreas.RemoveAt(CollapsedAreaWithMatchingTab);
-		StackWithClosedTab = FindTabInLiveArea(TabMatcher, RestoredArea);
+		if (RestoredArea.IsValid())
+		{
+			StackWithClosedTab = FindTabInLiveArea(TabMatcher, StaticCastSharedRef<SDockingArea>(RestoredArea->AsShared()));
+		}
 	}
 
 	if ( !StackWithClosedTab.IsValid() )
@@ -1196,6 +1285,7 @@ void FTabManager::InvokeTabForMenu( FName TabId )
 
 void FTabManager::InsertDocumentTab(FName PlaceholderId, const FSearchPreference& SearchPreference, const TSharedRef<SDockTab>& UnmanagedTab, bool bPlaySpawnAnim)
 {
+	bool bWasUnmanagedTabOpened = true;
 	const bool bTabNotManaged = ensure( ! FindTabInLiveAreas( FTabMatcher(UnmanagedTab->GetLayoutIdentifier()) ).IsValid() );
 	UnmanagedTab->SetLayoutIdentifier( FTabId(PlaceholderId, LastDocumentUID++) );
 	
@@ -1222,15 +1312,19 @@ void FTabManager::OpenUnmanagedTab(FName PlaceholderId, const FSearchPreference&
 	else
 	{
 		TSharedPtr<SDockingTabStack> StackToSpawnIn = FindPotentiallyClosedTab( PlaceholderId );
-		if( StackToSpawnIn.IsValid() == false )
+		if (StackToSpawnIn.IsValid())
 		{
-			UE_LOG(LogTabManager, Warning, TEXT("Unable to insert tab '%s'."), *(PlaceholderId.ToString()));
-			LiveTab = InvokeTab_Internal( FTabId( PlaceholderId ) );
-			LiveTab->GetParent()->GetParentDockTabStack()->OpenTab( UnmanagedTab );
+			StackToSpawnIn->OpenTab(UnmanagedTab);
 		}
 		else
 		{
-			StackToSpawnIn->OpenTab( UnmanagedTab );
+			UE_LOG(LogTabManager, Warning, TEXT("Unable to insert tab '%s'."), *(PlaceholderId.ToString()));
+			LiveTab = InvokeTab_Internal( FTabId( PlaceholderId ) );
+			check(LiveTab.IsValid());
+			if (LiveTab)
+			{
+				LiveTab->GetParent()->GetParentDockTabStack()->OpenTab( UnmanagedTab );
+			}
 		}
 	}
 }
@@ -1242,57 +1336,108 @@ FTabManager::FTabManager( const TSharedPtr<SDockTab>& InOwnerTab, const TSharedR
 , LastDocumentUID( 0 )
 , bIsSavingVisualState( false )
 , bCanDoDragOperation( true )
+, TabBlacklist( MakeShareable(new FBlacklistNames()) )
 {
 	LocalWorkspaceMenuRoot = FWorkspaceItem::NewGroup(LOCTEXT("LocalWorkspaceRoot", "Local Workspace Root"));
 }
 
-TSharedRef<SDockingArea> FTabManager::RestoreArea( const TSharedRef<FArea>& AreaToRestore, const TSharedPtr<SWindow>& InParentWindow, const bool bEmbedTitleAreaContent  )
+TSharedPtr<SDockingArea> FTabManager::RestoreArea(
+	const TSharedRef<FArea>& AreaToRestore, const TSharedPtr<SWindow>& InParentWindow, const bool bEmbedTitleAreaContent, const EOutputCanBeNullptr OutputCanBeNullptr)
 {
-	TSharedRef<SDockingNode> RestoredNode = RestoreArea_Helper( AreaToRestore, InParentWindow, bEmbedTitleAreaContent );	
-	TSharedRef<SDockingArea> RestoredArea = StaticCastSharedRef<SDockingArea>( RestoredNode );	
-	RestoredArea->CleanUp(SDockingNode::TabRemoval_None);
-	return RestoredArea;
+	if (TSharedPtr<SDockingNode> RestoredNode = RestoreArea_Helper(AreaToRestore, InParentWindow, bEmbedTitleAreaContent, OutputCanBeNullptr))
+	{
+		TSharedRef<SDockingArea> RestoredArea = StaticCastSharedRef<SDockingArea>(RestoredNode->AsShared());
+		RestoredArea->CleanUp(SDockingNode::TabRemoval_None);
+		return RestoredArea;
+	}
+	else
+	{
+		check(OutputCanBeNullptr != EOutputCanBeNullptr::Never);
+		return nullptr;
+	}
 }
 
-TSharedRef<SDockingNode> FTabManager::RestoreArea_Helper( const TSharedRef<FLayoutNode>& LayoutNode, const TSharedPtr<SWindow>& ParentWindow, const bool bEmbedTitleAreaContent )
+TSharedPtr<SDockingNode> FTabManager::RestoreArea_Helper(
+	const TSharedRef<FLayoutNode>& LayoutNode, const TSharedPtr<SWindow>& ParentWindow, const bool bEmbedTitleAreaContent, const EOutputCanBeNullptr OutputCanBeNullptr)
 {
 	TSharedPtr<FTabManager::FStack> NodeAsStack = LayoutNode->AsStack();
 	TSharedPtr<FTabManager::FSplitter> NodeAsSplitter = LayoutNode->AsSplitter();
 	TSharedPtr<FTabManager::FArea> NodeAsArea = LayoutNode->AsArea();
+	const bool bCanOutputBeNullptr = (OutputCanBeNullptr != EOutputCanBeNullptr::Never);
 
 	if (NodeAsStack.IsValid())
 	{
 		TSharedPtr<SDockTab> WidgetToActivate;
 
-		TSharedRef<SDockingTabStack> NewStackWidget = SNew(SDockingTabStack, NodeAsStack.ToSharedRef());
-		NewStackWidget->SetSizeCoefficient(LayoutNode->GetSizeCoefficient());
-		for (int32 TabIndex=0; TabIndex < NodeAsStack->Tabs.Num(); ++TabIndex )
+		TSharedPtr<SDockingTabStack> NewStackWidget;
+		// Should we init NewStackWidget before the for loop? It depends on OutputCanBeNullptr
+		bool bIsNewStackWidgetInit = false;
+		// 1. If EOutputCanBeNullptr::Never, function cannot return nullptr
+		if (OutputCanBeNullptr == EOutputCanBeNullptr::Never)
 		{
-			const FTab& SomeTab = NodeAsStack->Tabs[ TabIndex ];
-
-			if (SomeTab.TabState == ETabState::OpenedTab && IsValidTabForSpawning(SomeTab))
+			bIsNewStackWidgetInit = true;
+		}
+		// 2. If EOutputCanBeNullptr::IfNoTabValid, we must init the SWidget as soon as any tab is valid for spawning
+		else if (OutputCanBeNullptr == EOutputCanBeNullptr::IfNoTabValid)
+		{
+			// Note: IsValidTabForSpawning does not check whether SpawnTab() will return nullptr
+			for (const FTab& SomeTab : NodeAsStack->Tabs)
 			{
-				const TSharedRef<SDockTab> NewTabWidget = SpawnTab( SomeTab.TabId, ParentWindow );
-
-				if(SomeTab.TabId == NodeAsStack->ForegroundTabId)
+				if (IsValidTabForSpawning(SomeTab))
 				{
-					WidgetToActivate = NewTabWidget;
+					bIsNewStackWidgetInit = true;
+					break;
 				}
-
-				NewStackWidget->AddTabWidget( NewTabWidget );
 			}
 		}
-		
+		// 3. If EOutputCanBeNullptr::IfNoOpenTabValid, we must init the SWidget as soon as any open tab is valid for spawning. For efficiency, done in the for loop
+		// 4. Else, case not handled --> error
+		else if (OutputCanBeNullptr != EOutputCanBeNullptr::IfNoOpenTabValid)
+		{
+			check(false);
+		}
+		// Initialize the SWidget already?
+		if (bIsNewStackWidgetInit)
+		{
+			NewStackWidget = SNew(SDockingTabStack, NodeAsStack.ToSharedRef());
+			NewStackWidget->SetSizeCoefficient(LayoutNode->GetSizeCoefficient());
+		}
+		// Open Tabs
+		for (const FTab& SomeTab : NodeAsStack->Tabs)
+		{
+			if (SomeTab.TabState == ETabState::OpenedTab && IsValidTabForSpawning(SomeTab))
+			{
+				const TSharedPtr<SDockTab> NewTabWidget = SpawnTab(SomeTab.TabId, ParentWindow, bCanOutputBeNullptr);
+
+				if (NewTabWidget.IsValid())
+				{
+					if (SomeTab.TabId == NodeAsStack->ForegroundTabId)
+					{
+						WidgetToActivate = NewTabWidget;
+					}
+
+					// First time initialization: Only if at least a valid NewTabWidget
+					if (!NewStackWidget)
+					{
+						NewStackWidget = SNew(SDockingTabStack, NodeAsStack.ToSharedRef());
+						NewStackWidget->SetSizeCoefficient(LayoutNode->GetSizeCoefficient());
+					}
+					NewStackWidget->AddTabWidget(NewTabWidget.ToSharedRef());
+				}
+			}
+		}
+
 		if(WidgetToActivate.IsValid())
 		{
 			WidgetToActivate->ActivateInParent(ETabActivationCause::SetDirectly);
 
-			if ((WidgetToActivate->GetTabRole() == ETabRole::MajorTab || WidgetToActivate->GetTabRole() == ETabRole::NomadTab) && ParentWindow.IsValid() && ParentWindow != FGlobalTabmanager::Get()->GetRootWindow())
+			if ((WidgetToActivate->GetTabRole() == ETabRole::MajorTab || WidgetToActivate->GetTabRole() == ETabRole::NomadTab)
+				&& ParentWindow.IsValid() && ParentWindow != FGlobalTabmanager::Get()->GetRootWindow())
 			{
 				ParentWindow->SetTitle(WidgetToActivate->GetTabLabel());
 			}
 		}
-		
+
 		return NewStackWidget;
 
 	}
@@ -1324,62 +1469,129 @@ TSharedRef<SDockingNode> FTabManager::RestoreArea_Helper( const TSharedRef<FLayo
 					.CreateTitleBar( false )
 					.IsInitiallyMaximized( NodeAsArea->bIsMaximized );
 
-			// Any windows that were "pulled out" of a dock area should be children of the window in which the parent dock area resides.
-			if (bIsChildWindow)
-			{
-				FSlateApplication::Get().AddWindowAsNativeChild( NewWindow, ParentWindow.ToSharedRef() )->SetContent(
-					SAssignNew( NewDockAreaWidget, SDockingArea, SharedThis(this), NodeAsArea.ToSharedRef() ) .ParentWindow( NewWindow )
-				);
-			}
-			else
-			{
-				FSlateApplication::Get().AddWindow( NewWindow )->SetContent(
-					SAssignNew( NewDockAreaWidget, SDockingArea, SharedThis(this), NodeAsArea.ToSharedRef() ) .ParentWindow( NewWindow )
-				);
-			}
-
 			// Set a default title; restoring the splitter content may override this if it activates a tab
-			NewWindow->SetTitle( FGlobalTabmanager::Get()->GetApplicationTitle() );
+			NewWindow->SetTitle(FGlobalTabmanager::Get()->GetApplicationTitle());
 
-			RestoreSplitterContent( NodeAsArea.ToSharedRef(), NewDockAreaWidget.ToSharedRef(), NewWindow );
+			TArray<TSharedRef<SDockingNode>> DockingNodes;
+			if (CanRestoreSplitterContent(DockingNodes, NodeAsArea.ToSharedRef(), NewWindow, OutputCanBeNullptr))
+			{
+				// Create SplitterWidget only if it will be filled with at least 1 DockingNodes
+				// Any windows that were "pulled out" of a dock area should be children of the window in which the parent dock area resides.
+				if (bIsChildWindow)
+				{
+					FSlateApplication::Get().AddWindowAsNativeChild(NewWindow, ParentWindow.ToSharedRef())->SetContent(
+						SAssignNew(NewDockAreaWidget, SDockingArea, SharedThis(this), NodeAsArea.ToSharedRef()).ParentWindow(NewWindow)
+					);
+				}
+				else
+				{
+					FSlateApplication::Get().AddWindow(NewWindow)->SetContent(
+						SAssignNew(NewDockAreaWidget, SDockingArea, SharedThis(this), NodeAsArea.ToSharedRef()).ParentWindow(NewWindow)
+					);
+				}
+				// Restore content
+				if (!bCanOutputBeNullptr)
+				{
+					RestoreSplitterContent(NodeAsArea.ToSharedRef(), NewDockAreaWidget.ToSharedRef(), NewWindow);
+				}
+				else
+				{
+					RestoreSplitterContent(DockingNodes, NewDockAreaWidget.ToSharedRef());
+				}
+			}
 		}
 		else
 		{
-			SAssignNew( NewDockAreaWidget, SDockingArea, SharedThis(this), NodeAsArea.ToSharedRef() )
+			TArray<TSharedRef<SDockingNode>> DockingNodes;
+			if (CanRestoreSplitterContent(DockingNodes, NodeAsArea.ToSharedRef(), ParentWindow, OutputCanBeNullptr))
+			{
+				SAssignNew(NewDockAreaWidget, SDockingArea, SharedThis(this), NodeAsArea.ToSharedRef())
+					// We only want to set a parent window on this dock area, if we need to have title area content
+					// embedded within it.  SDockingArea assumes that if it has a parent window set, then it needs to have
+					// title area content 
+					.ParentWindow(bEmbedTitleAreaContent ? ParentWindow : TSharedPtr<SWindow>())
+					// Never manage these windows, even if a parent window is set.  The owner will take care of
+					// destroying these windows.
+					.ShouldManageParentWindow(false);
 
-				// We only want to set a parent window on this dock area, if we need to have title area content
-				// embedded within it.  SDockingArea assumes that if it has a parent window set, then it needs to have
-				// title area content 
-				.ParentWindow( bEmbedTitleAreaContent ? ParentWindow : TSharedPtr<SWindow>() )
-
-				// Never manage these windows, even if a parent window is set.  The owner will take care of
-				// destroying these windows.
-				.ShouldManageParentWindow( false );
-
-			RestoreSplitterContent( NodeAsArea.ToSharedRef(), NewDockAreaWidget.ToSharedRef(), ParentWindow );
+				// Restore content
+				if (!bCanOutputBeNullptr)
+				{
+					RestoreSplitterContent(NodeAsArea.ToSharedRef(), NewDockAreaWidget.ToSharedRef(), ParentWindow);
+				}
+				else
+				{
+					RestoreSplitterContent(DockingNodes, NewDockAreaWidget.ToSharedRef());
+				}
+			}
 		}
 		
-		return NewDockAreaWidget.ToSharedRef();
+		return NewDockAreaWidget;
 	}
 	else if ( NodeAsSplitter.IsValid() ) 
 	{
-		TSharedRef<SDockingSplitter> NewSplitterWidget = SNew( SDockingSplitter, NodeAsSplitter.ToSharedRef() );
-		NewSplitterWidget->SetSizeCoefficient(LayoutNode->GetSizeCoefficient());
-		RestoreSplitterContent( NodeAsSplitter.ToSharedRef(), NewSplitterWidget, ParentWindow );
-
-		return NewSplitterWidget;
+		TArray<TSharedRef<SDockingNode>> DockingNodes;
+		if (CanRestoreSplitterContent(DockingNodes, NodeAsSplitter.ToSharedRef(), ParentWindow, OutputCanBeNullptr))
+		{
+			TSharedRef<SDockingSplitter> NewSplitterWidget = SNew( SDockingSplitter, NodeAsSplitter.ToSharedRef() );
+			NewSplitterWidget->SetSizeCoefficient(LayoutNode->GetSizeCoefficient());
+			// Restore content
+			if (!bCanOutputBeNullptr)
+			{
+				RestoreSplitterContent(NodeAsSplitter.ToSharedRef(), NewSplitterWidget, ParentWindow);
+			}
+			else
+			{
+				RestoreSplitterContent(DockingNodes, NewSplitterWidget);
+			}
+			return NewSplitterWidget;
+		}
+		else
+		{
+			return nullptr;
+		}
 	}
 	else
 	{
 		ensureMsgf( false, TEXT("Unexpected node type") );
-
 		TSharedRef<SDockingTabStack> NewStackWidget = SNew(SDockingTabStack, FTabManager::NewStack());
-		NewStackWidget->OpenTab( SpawnTab( FName(NAME_None), ParentWindow ) );
+		NewStackWidget->OpenTab(SpawnTab(FName(NAME_None), ParentWindow, bCanOutputBeNullptr).ToSharedRef());
 		return NewStackWidget;
 	}
 }
 
-void FTabManager::RestoreSplitterContent( const TSharedRef<FSplitter>& SplitterNode, const TSharedRef<SDockingSplitter>& SplitterWidget, const TSharedPtr<SWindow>& ParentWindow )
+bool FTabManager::CanRestoreSplitterContent(TArray<TSharedRef<SDockingNode>>& DockingNodes, const TSharedRef<FSplitter>& SplitterNode, const TSharedPtr<SWindow>& ParentWindow, const EOutputCanBeNullptr OutputCanBeNullptr)
+{
+	if (OutputCanBeNullptr == EOutputCanBeNullptr::Never)
+	{
+		return true;
+	}
+	DockingNodes.Empty();
+	// Restore the contents of this splitter.
+	for ( int32 ChildNodeIndex = 0; ChildNodeIndex < SplitterNode->ChildNodes.Num(); ++ChildNodeIndex )
+	{
+		const TSharedRef<FLayoutNode> ThisChildNode = SplitterNode->ChildNodes[ChildNodeIndex];
+
+		const bool bEmbedTitleAreaContent = false;
+		const TSharedPtr<SDockingNode> ThisChildNodeWidget = RestoreArea_Helper(ThisChildNode, ParentWindow, bEmbedTitleAreaContent, OutputCanBeNullptr);
+		if (ThisChildNodeWidget)
+		{
+			const TSharedRef<SDockingNode> ThisChildNodeWidgetRef = StaticCastSharedRef<SDockingNode>(ThisChildNodeWidget->AsShared());
+			DockingNodes.Add(ThisChildNodeWidgetRef);
+		}
+	}
+	return (DockingNodes.Num() > 0);
+}
+
+void FTabManager::RestoreSplitterContent( const TArray<TSharedRef<SDockingNode>>& DockingNodes, const TSharedRef<SDockingSplitter>& SplitterWidget )
+{
+	for (const TSharedRef<SDockingNode>& DockingNode : DockingNodes)
+	{
+		SplitterWidget->AddChildNode(DockingNode, INDEX_NONE);
+	}
+}
+
+void FTabManager::RestoreSplitterContent(const TSharedRef<FSplitter>& SplitterNode, const TSharedRef<SDockingSplitter>& SplitterWidget, const TSharedPtr<SWindow>& ParentWindow)
 {
 	// Restore the contents of this splitter.
 	for ( int32 ChildNodeIndex = 0; ChildNodeIndex < SplitterNode->ChildNodes.Num(); ++ChildNodeIndex )
@@ -1387,65 +1599,131 @@ void FTabManager::RestoreSplitterContent( const TSharedRef<FSplitter>& SplitterN
 		TSharedRef<FLayoutNode> ThisChildNode = SplitterNode->ChildNodes[ChildNodeIndex];
 
 		const bool bEmbedTitleAreaContent = false;
-		TSharedRef<SDockingNode> ThisChildNodeWidget = RestoreArea_Helper( ThisChildNode, ParentWindow, bEmbedTitleAreaContent );
-		SplitterWidget->AddChildNode( ThisChildNodeWidget, INDEX_NONE );
+		TSharedPtr<SDockingNode> ThisChildNodeWidget = RestoreArea_Helper(ThisChildNode, ParentWindow, bEmbedTitleAreaContent);
+		check(ThisChildNodeWidget.IsValid());
+		if (ThisChildNodeWidget)
+		{
+			const TSharedRef<SDockingNode> ThisChildNodeWidgetRef = StaticCastSharedRef<SDockingNode>(ThisChildNodeWidget->AsShared());
+			SplitterWidget->AddChildNode( ThisChildNodeWidgetRef, INDEX_NONE );
+		}
 	}
 }
 
-bool FTabManager::CanSpawnTab(FName TabId)
+bool FTabManager::CanSpawnTab(FName TabId) const
 {
-	TSharedPtr<FTabSpawnerEntry> Spawner = FindTabSpawnerFor(TabId);
-	return Spawner.IsValid();
+	return HasTabSpawner(TabId);
+}
+
+bool FTabManager::HasTabSpawner(FName TabId) const
+{
+	// Look for a spawner in this tab manager.
+	const TSharedRef<FTabSpawnerEntry>* Spawner = TabSpawner.Find(TabId);
+	if (Spawner == nullptr)
+	{
+		Spawner = NomadTabSpawner->Find(TabId);
+	}
+
+	return Spawner != nullptr;
+}
+
+TSharedRef<FBlacklistNames>& FTabManager::GetTabBlacklist()
+{
+	return TabBlacklist;
 }
 
 bool FTabManager::IsValidTabForSpawning( const FTab& SomeTab ) const
 {
+	if (SomeTab.TabId.TabType != NAME_None && !TabBlacklist->PassesFilter(SomeTab.TabId.TabType))
+	{
+		return false;
+	}
+
 	// Nomad tabs being restored from layouts should not be spawned if the nomad tab is already spawned.
 	TSharedRef<FTabSpawnerEntry>* NomadSpawner = NomadTabSpawner->Find( SomeTab.TabId.TabType );
 	return ( !NomadSpawner || !NomadSpawner->Get().IsSoleTabInstanceSpawned() );
 }
 
-TSharedRef<SDockTab> FTabManager::SpawnTab( const FTabId& TabId, const TSharedPtr<SWindow>& ParentWindow )
+TSharedPtr<SDockTab> FTabManager::SpawnTab(const FTabId& TabId, const TSharedPtr<SWindow>& ParentWindow, const bool bCanOutputBeNullptr)
 {
 	TSharedPtr<SDockTab> NewTabWidget;
 
+	// Whether or not the spawner overrode the ability for the tab to even spawn.  This is not a failure case.
+	bool bSpawningAllowedBySpawner = true;
 	// Do we know how to spawn such a tab?
 	TSharedPtr<FTabSpawnerEntry> Spawner = FindTabSpawnerFor(TabId.TabType);
 	if ( Spawner.IsValid() )
 	{
-		NewTabWidget = Spawner->OnSpawnTab.Execute( FSpawnTabArgs( ParentWindow, TabId ) );
-		NewTabWidget->SetLayoutIdentifier( TabId );
-		NewTabWidget->ProvideDefaultLabel( Spawner->GetDisplayName().IsEmpty() ? FText::FromName( Spawner->TabType ) : Spawner->GetDisplayName() );
-		NewTabWidget->ProvideDefaultIcon( Spawner->GetIcon().GetIcon() );
-	
-		// The spawner tracks that last tab it spawned
-		Spawner->SpawnedTabPtr = NewTabWidget;
+		if (Spawner->CanSpawnTab.IsBound())
+		{
+			bSpawningAllowedBySpawner = Spawner->CanSpawnTab.Execute(FSpawnTabArgs(ParentWindow, TabId));
+		}
+
+		if (bSpawningAllowedBySpawner && !Spawner->SpawnedTabPtr.IsValid())
+		{
+			NewTabWidget = Spawner->OnSpawnTab.Execute(FSpawnTabArgs(ParentWindow, TabId));
+			NewTabWidget->SetLayoutIdentifier(TabId);
+			NewTabWidget->ProvideDefaultLabel(Spawner->GetDisplayName().IsEmpty() ? FText::FromName(Spawner->TabType) : Spawner->GetDisplayName());
+			NewTabWidget->ProvideDefaultIcon(Spawner->GetIcon().GetIcon());
+
+			// The spawner tracks that last tab it spawned
+			Spawner->SpawnedTabPtr = NewTabWidget;
+		} 
+		else
+		{
+			// If we got here, somehow there is two entries spawning the same tab.  This is now allowed so just ignore it.
+			bSpawningAllowedBySpawner = false;
+		}
 	}
 
-	if ( !NewTabWidget.IsValid() )
+	// The tab was allowed to be spawned but failed for some reason
+	if (bSpawningAllowedBySpawner && !NewTabWidget.IsValid())
 	{
-		// We don't know how to spawn this tab.
-		// Make a dummy tab so that things aren't entirely broken.
+		// We don't know how to spawn this tab. 2 alternatives:
+		// 1) Make a dummy tab so that things aren't entirely broken (previous versions of UE did this in all cases).
+		// 2) Do not open the widget and return nullptr, but keep the unknown widget saved in the layout. E.g., applied when calling RestoreFrom() from MainFrameModule.
 
-		NewTabWidget = SNew(SDockTab)
-			.Label( TabId.ToText() )
-			.ShouldAutosize( false )
-			[
-				SNew(SBox)
-				.HAlign(HAlign_Center)
-				.VAlign(VAlign_Center)
+		FString StringToDisplay = (Spawner.IsValid() && !Spawner->GetDisplayName().IsEmpty() ? Spawner->GetDisplayName().ToString() : TabId.TabType.ToString());
+		if (StringToDisplay.IsEmpty())
+		{
+			StringToDisplay = FString("Unknown");
+		}
+		// If an output must be generated, create an "unrecognized tab" and log it
+		if (!bCanOutputBeNullptr)
+		{
+			UE_LOG(LogSlate, Log,
+				TEXT("The tab \"%s\" attempted to spawn but failed for some reason. An \"unrecognized tab\" will be returned instead."), *StringToDisplay
+			);
+
+			NewTabWidget = SNew(SDockTab)
+				.Label( TabId.ToText() )
+				.ShouldAutosize( false )
 				[
-					SNew(STextBlock)
-					.Text( NSLOCTEXT("TabManagement", "Unrecognized", "unrecognized tab") )
-				]
-			];
+					SNew(SBox)
+					.HAlign(HAlign_Center)
+					.VAlign(VAlign_Center)
+					[
+						SNew(STextBlock)
+						.Text( NSLOCTEXT("TabManagement", "Unrecognized", "unrecognized tab") )
+					]
+				];
 
-		NewTabWidget->SetLayoutIdentifier(TabId);
+			NewTabWidget->SetLayoutIdentifier(TabId);
+		}
+		// If we can return nullptr, log it
+		else
+		{
+			UE_LOG(LogSlate, Log,
+				TEXT("The tab \"%s\" attempted to spawn but failed for some reason. It will not be displayed but it will still be saved in the layout settings file."), *StringToDisplay
+			);
+		}
 	}
 
-	NewTabWidget->SetTabManager( SharedThis(this) );
+	if (NewTabWidget.IsValid())
+	{
+		NewTabWidget->SetTabManager(SharedThis(this));
+	}
 
-	return NewTabWidget.ToSharedRef();
+	return NewTabWidget;
 }
 
 TSharedPtr<SDockTab> FTabManager::FindExistingLiveTab( const FTabId& TabId ) const
@@ -1601,6 +1879,33 @@ bool FTabManager::HasValidTabs( const TSharedRef<FTabManager::FLayoutNode>& Some
 	return HasAnyMatchingTabs(SomeNode, FindValidTab);
 }
 
+void FTabManager::SetTabsTo(const TSharedRef<FTabManager::FLayoutNode>& SomeNode, const ETabState::Type NewTabState, const ETabState::Type OriginalTabState) const
+{
+	// Set particular tab to desired NewTabState
+	TSharedPtr<FTabManager::FStack> AsStack = SomeNode->AsStack();
+	if (AsStack.IsValid())
+	{
+		TArray<FTab>& Tabs = AsStack->Tabs;
+		for (int32 TabIndex = 0; TabIndex < Tabs.Num(); ++TabIndex)
+		{
+			if (Tabs[TabIndex].TabState == OriginalTabState)
+			{
+				Tabs[TabIndex].TabState = NewTabState;
+			}
+		}
+	}
+	// Recursively set all tabs to desired NewTabState
+	else
+	{
+		TSharedPtr<FTabManager::FSplitter> AsSplitter = SomeNode->AsSplitter();
+		ensure(AsSplitter.IsValid());
+		for (int32 ChildIndex = 0; ChildIndex < AsSplitter->ChildNodes.Num(); ++ChildIndex)
+		{
+			SetTabsTo(AsSplitter->ChildNodes[ChildIndex], NewTabState, OriginalTabState);
+		}
+	}
+}
+
 void FTabManager::OnTabForegrounded( const TSharedPtr<SDockTab>& NewForegroundTab, const TSharedPtr<SDockTab>& BackgroundedTab )
 {
 	// Do nothing.
@@ -1634,11 +1939,8 @@ void FTabManager::OnTabManagerClosing()
 {
 	CleanupPointerArray(DockAreas);
 
-	{
-		// Gather the persistent layout and allow a custom handler to persist it
-		const TSharedRef<FLayout> LayoutState = this->PersistLayout();
-		OnPersistLayout_Handler.ExecuteIfBound( LayoutState );
-	}
+	// Gather the persistent layout and allow a custom handler to persist it
+	SavePersistentLayout();
 
 	for (int32 DockAreaIndex=0; DockAreaIndex < DockAreas.Num(); ++DockAreaIndex)
 	{
@@ -1717,17 +2019,16 @@ TSharedPtr<FTabManager::FStack> FTabManager::FindTabUnderNode( const FTabMatcher
 TSharedPtr<FTabSpawnerEntry> FTabManager::FindTabSpawnerFor(FName TabId)
 {
 	// Look for a spawner in this tab manager.
-	TSharedRef<FTabSpawnerEntry>* Spawner = TabSpawner.Find( TabId );
-	if (Spawner == NULL)
+	TSharedRef<FTabSpawnerEntry>* Spawner = TabSpawner.Find(TabId);
+	if (Spawner == nullptr)
 	{
-		Spawner = NomadTabSpawner->Find( TabId );
+		Spawner = NomadTabSpawner->Find(TabId);
 	}
 
-	return (Spawner != NULL)
+	return (Spawner != nullptr)
 		? TSharedPtr<FTabSpawnerEntry>(*Spawner)
 		: TSharedPtr<FTabSpawnerEntry>();
 }
-
 
 int32 FTabManager::FindTabInCollapsedAreas( const FTabMatcher& Matcher )
 {
@@ -1855,13 +2156,18 @@ void FGlobalTabmanager::SetActiveTab( const TSharedPtr<class SDockTab>& NewActiv
 	}	
 }
 
-FTabSpawnerEntry& FGlobalTabmanager::RegisterNomadTabSpawner( const FName TabId, const FOnSpawnTab& OnSpawnTab )
+FTabSpawnerEntry& FGlobalTabmanager::RegisterNomadTabSpawner(const FName TabId, const FOnSpawnTab& OnSpawnTab, const FCanSpawnTab& CanSpawnTab)
 {
-	ensure( !NomadTabSpawner->Contains(TabId) );
-	ensure( !IsLegacyTabType(TabId) );
-
-	TSharedRef<FTabSpawnerEntry> NewSpawnerEntry = MakeShareable( new FTabSpawnerEntry( TabId, OnSpawnTab ) );
-	NomadTabSpawner->Add( TabId, NewSpawnerEntry );
+	// Sanity check
+	ensure(!IsLegacyTabType(TabId));
+	// Remove TabId if it was previously loaded. This allows re-loading the Editor UI layout without restarting the whole Editor (Window->Load Layout)
+	if (NomadTabSpawner->Contains(TabId))
+	{
+		UnregisterNomadTabSpawner(TabId);
+	}
+	// (Re)create and return NewSpawnerEntry
+	TSharedRef<FTabSpawnerEntry> NewSpawnerEntry = MakeShareable(new FTabSpawnerEntry(TabId, OnSpawnTab, CanSpawnTab));
+	NomadTabSpawner->Add(TabId, NewSpawnerEntry);
 	return NewSpawnerEntry.Get();
 }
 
@@ -2061,7 +2367,7 @@ void FGlobalTabmanager::OnTabRelocated( const TSharedRef<SDockTab>& RelocatedTab
 			for (int32 DockAreaIndex=0; DockAreaIndex < LiveDockAreas.Num(); ++DockAreaIndex)
 			{
 				const TSharedRef<SDockingArea>& ChildDockArea = LiveDockAreas[ DockAreaIndex ].Pin().ToSharedRef();
-				const TSharedPtr<SWindow>& OldChildWindow = ChildDockArea->GetParentWindow();
+				const TSharedPtr<SWindow> OldChildWindow = ChildDockArea->GetParentWindow();
 				if ( OldChildWindow.IsValid() )
 				{
 					TSharedRef<SWindow> NewChildWindow = SNew(SWindow)
@@ -2071,6 +2377,7 @@ void FGlobalTabmanager::OnTabRelocated( const TSharedRef<SDockTab>& RelocatedTab
 					.SupportsMinimize(false)
 					.SupportsMaximize(false)
 					.CreateTitleBar(false)
+					.AdjustInitialSizeAndPositionForDPIScale(false)
 					[
 						ChildDockArea
 					];
@@ -2173,7 +2480,7 @@ bool FProxyTabmanager::IsTabSupported( const FTabId TabId ) const
 void FProxyTabmanager::OpenUnmanagedTab(FName PlaceholderId, const FSearchPreference& SearchPreference, const TSharedRef<SDockTab>& UnmanagedTab)
 {
 	TSharedPtr<SWindow> ParentWindowPtr = ParentWindow.Pin();
-	if( ensure( ParentWindowPtr.IsValid() ) )
+	if (ensure(ParentWindowPtr.IsValid()))
 	{
 		// No layout info about this tab found; start 
 		TSharedRef<FArea> NewAreaForTab = FTabManager::NewPrimaryArea()
@@ -2183,18 +2490,22 @@ void FProxyTabmanager::OpenUnmanagedTab(FName PlaceholderId, const FSearchPrefer
 				->AddTab( UnmanagedTab->GetLayoutIdentifier(), ETabState::OpenedTab )
 			);
 
-		TSharedRef<SDockingArea> DockingArea = RestoreArea(NewAreaForTab, ParentWindowPtr, false);
-		ParentWindowPtr->SetContent(DockingArea);
+		if (TSharedPtr<SDockingArea> DockingArea = RestoreArea(NewAreaForTab, ParentWindowPtr))
+		{
+			ParentWindowPtr->SetContent(StaticCastSharedRef<SDockingArea>(DockingArea->AsShared()));
+			if (DockingArea->GetAllChildTabs().Num() > 0)
+			{
+				const TSharedPtr<SDockTab> NewlyOpenedTab = DockingArea->GetAllChildTabs()[0];
+				check(NewlyOpenedTab.IsValid());
 
-		const TSharedPtr<SDockTab> NewlyOpenedTab = DockingArea->GetAllChildTabs()[0];
-		check(NewlyOpenedTab.IsValid());
-		
-		NewlyOpenedTab->GetParent()->GetParentDockTabStack()->OpenTab(UnmanagedTab);
-		NewlyOpenedTab->RequestCloseTab();
+				NewlyOpenedTab->GetParent()->GetParentDockTabStack()->OpenTab(UnmanagedTab);
+				NewlyOpenedTab->RequestCloseTab();
 
-		MainNonCloseableTab = UnmanagedTab;
+				MainNonCloseableTab = UnmanagedTab;
 
-		OnTabOpened.Broadcast(UnmanagedTab);
+				OnTabOpened.Broadcast(UnmanagedTab);
+			}
+		}
 	}
 }
 

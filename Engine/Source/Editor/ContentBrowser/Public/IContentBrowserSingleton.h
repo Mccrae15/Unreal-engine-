@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -86,12 +86,6 @@ struct FContentBrowserConfig
 	/** Whether the sources view should initially be expanded or not */
 	bool bExpandSourcesView;
 
-	/** Whether asset paths are shown in the Content Browser.  Only useful if you only want to show collections */
-	bool bShowAssetPathTree;
-
-	/** Forces collections to be initially visible, regardless of defaults */
-	bool bAlwaysShowCollections;
-
 	/** Collection to view initially */
 	FCollectionNameType SelectedCollectionName;
 
@@ -127,8 +121,6 @@ struct FContentBrowserConfig
 		, bCanShowClasses(true)
 		, bUseSourcesView(true)
 		, bExpandSourcesView(true)
-		, bShowAssetPathTree(true)
-		, bAlwaysShowCollections(false)
 		, SelectedCollectionName( NAME_None, ECollectionShareType::CST_Local )
 		, bUsePathPicker(true)
 		, bCanShowFilters(true)
@@ -183,6 +175,12 @@ struct FAssetPickerConfig
 
 	/** The asset that should be initially selected */
 	FAssetData InitialAssetSelection;
+
+	/** The handle to the property that opened this picker. Needed for contextual filtering. */
+	TSharedPtr<class IPropertyHandle> PropertyHandle;
+
+	/** The passed in property handle will be used to gather referencing assets. If additional referencing assets should be reported, supply them here. */
+	TArray<FAssetData> AdditionalReferencingAssets;
 
 	/** The delegate that fires when an asset was selected */
 	FOnAssetSelected OnAssetSelected;
@@ -263,6 +261,9 @@ struct FAssetPickerConfig
 	/** Indicates if the 'Show Developers' option should be enabled or disabled */
 	bool bCanShowDevelopersFolder;
 
+	/** Indicates if engine content should always be shown */
+	bool bForceShowEngineContent;
+
 	/** Indicates if the context menu is going to load the assets, and if so to preload before the context menu is shown, and warn about the pending load. */
 	bool bPreloadAssetsForContextMenu;
 
@@ -293,6 +294,7 @@ struct FAssetPickerConfig
 		, bCanShowFolders(false)
 		, bCanShowRealTimeThumbnails(false)
 		, bCanShowDevelopersFolder(true)
+		, bForceShowEngineContent(false)
 		, bPreloadAssetsForContextMenu(true)
 		, bAddFilterUI(false)
 		, bShowPathInColumnView(false)
@@ -375,6 +377,7 @@ struct FSharedAssetDialogConfig
 	FString DefaultPath;
 	TArray<FName> AssetClassNames;
 	FVector2D WindowSizeOverride;
+	FOnPathSelected OnPathSelected;
 
 	virtual EAssetDialogType::Type GetDialogType() const = 0;
 
@@ -563,6 +566,9 @@ public:
 
 	/** Returns the folders that are selected in the path view */
 	virtual void GetSelectedPathViewFolders(TArray<FString>& SelectedFolders) = 0;
+
+	/** Gets the current path if one exists, otherwise returns empty string. */
+	virtual FString GetCurrentPath() = 0;
 
 	/**
 	 * Capture active viewport to thumbnail and assigns that thumbnail to incoming assets

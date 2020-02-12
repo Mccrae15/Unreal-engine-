@@ -1,11 +1,10 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "SGameplayTagGraphPin.h"
 #include "Widgets/Input/SComboButton.h"
-#include "K2Node_CallFunction.h"
 #include "GameplayTagsModule.h"
 #include "Widgets/Layout/SScaleBox.h"
-#include "K2Node_VariableSet.h"
+#include "GameplayTagPinUtilities.h"
 
 #define LOCTEXT_NAMESPACE "GameplayTagGraphPin"
 
@@ -46,36 +45,17 @@ void SGameplayTagGraphPin::ParseDefaultValueData()
 {
 	FString TagString = GraphPinObj->GetDefaultAsString();
 
-	FilterString.Empty();
-	if (UScriptStruct* PinStructType = Cast<UScriptStruct>(GraphPinObj->PinType.PinSubCategoryObject.Get()))
-	{
-		FilterString = UGameplayTagsManager::Get().GetCategoriesMetaFromField(PinStructType);
-	}
+	FilterString = GameplayTagPinUtilities::ExtractTagFilterStringFromGraphPin(GraphPinObj);
 
-	if (FilterString.IsEmpty())
+	if (TagString.StartsWith(TEXT("("), ESearchCase::CaseSensitive) && TagString.EndsWith(TEXT(")"), ESearchCase::CaseSensitive))
 	{
-		if (UK2Node_CallFunction* CallFuncNode = Cast<UK2Node_CallFunction>(GraphPinObj->GetOwningNode()))
+		TagString.LeftChopInline(1, false);
+		TagString.RightChopInline(1, false);
+		TagString.Split(TEXT("="), nullptr, &TagString, ESearchCase::CaseSensitive);
+		if (TagString.StartsWith(TEXT("\""), ESearchCase::CaseSensitive) && TagString.EndsWith(TEXT("\""), ESearchCase::CaseSensitive))
 		{
-			if (UFunction* ThisFunction = CallFuncNode->GetTargetFunction())
-			{
-				FilterString = UGameplayTagsManager::Get().GetCategoriesMetaFromFunction(ThisFunction);
-			}
-		}
-		else if (UK2Node_VariableSet* ThisVariable = Cast<UK2Node_VariableSet>(GraphPinObj->GetOwningNode()))
-		{
-			FilterString = UGameplayTagsManager::Get().GetCategoriesMetaFromField(ThisVariable->GetPropertyForVariable());
-		}
-	}
-
-	if (TagString.StartsWith(TEXT("(")) && TagString.EndsWith(TEXT(")")))
-	{
-		TagString = TagString.LeftChop(1);
-		TagString = TagString.RightChop(1);
-		TagString.Split("=", NULL, &TagString);
-		if (TagString.StartsWith(TEXT("\"")) && TagString.EndsWith(TEXT("\"")))
-		{
-			TagString = TagString.LeftChop(1);
-			TagString = TagString.RightChop(1);
+			TagString.LeftChopInline(1, false);
+			TagString.RightChopInline(1, false);
 		}
 	}
 

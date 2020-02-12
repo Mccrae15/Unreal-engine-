@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -13,7 +13,7 @@ class CORE_API FEngineVersion : public FEngineVersionBase
 public:
 
 	/** Empty constructor. Initializes the version to 0.0.0-0. */
-	FEngineVersion();
+	FEngineVersion() = default;
 
 	/** Constructs a version from the given components. */
 	FEngineVersion(uint16 InMajor, uint16 InMinor, uint16 InPatch, uint32 InChangelist, const FString &InBranch);
@@ -39,6 +39,9 @@ public:
 	/** Gets the earliest version which this engine maintains strict API and package compatibility with */
 	static const FEngineVersion& CompatibleWith();
 
+	/** Clears the current and compatible-with engine versions */
+	static void TearDown();
+
 	/** Serialization functions */
 	friend CORE_API void operator<<(class FArchive &Ar, FEngineVersion &Version);
 	friend CORE_API void operator<<(FStructuredArchive::FSlot Slot, FEngineVersion &Version);
@@ -56,11 +59,5 @@ private:
 
 	/** Branch name. */
 	FString Branch;
-
-	/** Global instance of the current engine version. */
-	static FEngineVersion CurrentVersion;
-
-	/** Earliest version which this engine maintains strict API and package compatibility with */
-	static FEngineVersion CompatibleWithVersion;
 };
 

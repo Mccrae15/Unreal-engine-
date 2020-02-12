@@ -1,9 +1,5 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
-/*=============================================================================
-	BuildPatchFileConstructor.h: Declares the BuildPatchFileConstructor class
-	that handles creating files in a manifest from the chunks that make it.
-=============================================================================*/
 #pragma once
 
 #include "CoreMinimal.h"
@@ -17,6 +13,8 @@
 
 // Forward declarations
 class FBuildPatchAppManifest;
+enum class EConstructionError : uint8;
+
 namespace BuildPatchServices
 {
 	struct FChunkPart;
@@ -26,23 +24,24 @@ namespace BuildPatchServices
 	class IInstallerError;
 	class IInstallerAnalytics;
 	class IFileConstructorStat;
+	class IBuildManifestSet;
 
 	/**
 	 * A struct containing the configuration values for a file constructor.
 	 */
 	struct FFileConstructorConfig
 	{
-		// The Manifest for the build we are installing.
-		FBuildPatchAppManifestRef BuildManifest;
+		// The manifest set class for details on the installation files.
+		IBuildManifestSet* ManifestSet;
 
-		// The Manifest for the build we currently installed, if applicable.
-		FBuildPatchAppManifestPtr CurrentManifest;
-
-		// The root location where the installation is going.
+		// The location for the installation.
 		FString InstallDirectory;
 
-		// The location where we will store temporary files.
+		// The location where new installation files will be constructed.
 		FString StagingDirectory;
+
+		// The location where temporary files for tracking can be stored.
+		FString MetaDirectory;
 
 		// The list of files to be constructed, filename paths should match those contained in manifest.
 		TArray<FString> ConstructList;
@@ -79,7 +78,6 @@ namespace BuildPatchServices
 		~FBuildPatchFileConstructor();
 
 		// FRunnable interface begin.
-		virtual bool Init() override;
 		virtual uint32 Run() override;
 		// FRunnable interface end.
 
@@ -105,6 +103,18 @@ namespace BuildPatchServices
 		 * @return	true if the thread completed
 		 */
 		bool IsComplete();
+
+		/**
+		 * Get the disk space that was required to perform the installation
+		 * @return	the disk space required to perform the installation in bytes
+		 */
+		uint64 GetRequiredDiskSpace();
+
+		/**
+		 * Get the disk space that was available at the time of checking for the required disk space
+		 * @return	the disk space that was available in bytes
+		 */
+		uint64 GetAvailableDiskSpace();
 
 		/**
 		 * Broadcasts with full filepath to file that the constructor is about to delete in order to free up space.
@@ -153,29 +163,30 @@ namespace BuildPatchServices
 
 		/**
 		 * Calculates the minimum required disk space for the remaining work to be completed, based on a current file, and the list of files left in ConstructionStack.
-		 * @param InProgressFile		The filename for the file currently being constructed.
-		 * @param InProgressFileSize	The remaining size required for the file currently being constructed.
+		 * @param InProgressFileManifest	The manifest for the file currently being constructed.
+		 * @param InProgressFileSize		The remaining size required for the file currently being constructed.
 		 * @return the number of bytes required on disk to complete the installation.
 		 */
-		int64 CalculateRequiredDiskSpace(const FString& InProgressFile, int64 InProgressFileSize);
+		uint64 CalculateRequiredDiskSpace(const FFileManifest& InProgressFileManifest, uint64 InProgressFileSize);
 
 		/**
 		 * Constructs a particular file referenced by the given BuildManifest. The function takes an interface to a class that can provide availability information of chunks so that this
 		 * file construction process can be ran alongside chunk acquisition threads. It will Sleep while waiting for chunks that it needs.
-		 * @param Filename			The Filename for the file to construct, that matches an entry in the BuildManifest.
+		 * @param FileManifest		The FFileManifest for the file to construct.
 		 * @param bResumeExisting	Whether we should resume from an existing file
 		 * @return	true if no file errors occurred
 		 */
-		bool ConstructFileFromChunks(const FString& Filename, bool bResumeExisting);
+		bool ConstructFileFromChunks(const FFileManifest& FileManifest, bool bResumeExisting);
 
 		/**
 		 * Inserts the data data from a chunk into the destination file according to the chunk part info
-		 * @param ChunkPart			The chunk part details.
-		 * @param DestinationFile	The Filename for the file being constructed.
-		 * @param HashState			An FSHA1 hash state to update with the data going into the destination file.
+		 * @param ChunkPart          The chunk part details.
+		 * @param DestinationFile    The Filename for the file being constructed.
+		 * @param HashState          An FSHA1 hash state to update with the data going into the destination file.
+		 * @param ConstructionError  Will be set to the error type that ocurred or EConstructionError::None.
 		 * @return true if no errors were detected
 		 */
-		bool InsertChunkData(const FChunkPart& ChunkPart, FArchive& DestinationFile, FSHA1& HashState);
+		bool InsertChunkData(const FChunkPart& ChunkPart, FArchive& DestinationFile, FSHA1& HashState, EConstructionError& ConstructionError);
 
 		/**
 		 * Delete all contents of a directory
@@ -240,6 +251,12 @@ namespace BuildPatchServices
 
 		// Byte processed so far for tracking progress.
 		int64 ByteProcessed;
+
+		// The amount of disk space requirement that was calculated when beginning the process. 0 if the install process was not started, or no additional space was needed.
+		uint64 RequiredDiskSpace;
+
+		// The amount of disk space available when beginning the process. 0 if the install process was not started.
+		uint64 AvailableDiskSpace;
 
 		// Event executed before deleting an old installation file.
 		FOnBeforeDeleteFile BeforeDeleteFileEvent;
@@ -341,5 +358,12 @@ namespace BuildPatchServices
 		 */
 		virtual void OnAfterWrite(const ISpeedRecorder::FRecord& Record) = 0;
 	};
+}
 
+/**
+ * Helpers for calculations that are useful for other classes or operations.
+ */
+namespace FileConstructorHelpers
+{
+	uint64 CalculateRequiredDiskSpace(const FBuildPatchAppManifestPtr& CurrentManifest, const FBuildPatchAppManifestRef& BuildManifest, const BuildPatchServices::EInstallMode& InstallMode, const TSet<FString>& InstallTags);
 }

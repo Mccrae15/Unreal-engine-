@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 using UnrealBuildTool;
 
@@ -15,8 +15,9 @@ public class LevelEditor : ModuleRules
 				"SlateReflector",
                 "IntroTutorials",
                 "AppFramework",
-                "PortalServices"
-			}
+                "PortalServices",
+                "Persona",
+            }
 		);
 
 		PublicIncludePathModuleNames.AddRange(
@@ -57,7 +58,6 @@ public class LevelEditor : ModuleRules
 				"TargetPlatform",
 				"EngineSettings",
 				"PropertyEditor",
-				"Persona",
 				"Kismet",
 				"KismetWidgets",
 				"Sequencer",
@@ -66,7 +66,8 @@ public class LevelEditor : ModuleRules
 				"HierarchicalLODUtilities",
 				"MaterialShaderQualitySettings",
 				"PixelInspectorModule",
-				"CommonMenuExtensions"
+				"CommonMenuExtensions",
+				"ToolMenus",
 			}
 		);
 
@@ -89,8 +90,14 @@ public class LevelEditor : ModuleRules
                 "PlacementMode",
                 "IntroTutorials",
 				"HeadMountedDisplay",
-				"VREditor"
-			}
+				"VREditor",
+                "Persona",
+            }
 		);
+
+		if(Target.bWithLiveCoding)
+		{
+			PrivateIncludePathModuleNames.Add("LiveCoding");
+		}
 	}
 }

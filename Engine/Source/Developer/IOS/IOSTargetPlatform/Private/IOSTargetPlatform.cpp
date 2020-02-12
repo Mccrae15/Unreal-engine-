@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 /*=============================================================================
 	IOSTargetPlatform.cpp: Implements the FIOSTargetPlatform class.
@@ -209,7 +209,7 @@ bool FIOSTargetPlatform::IsSdkInstalled(bool bProjectHasCode, FString& OutTutori
 	return biOSSDKInstalled;
 }
 
-int32 FIOSTargetPlatform::CheckRequirements(const FString& ProjectPath, bool bProjectHasCode, FString& OutTutorialPath, FString& OutDocumentationPath, FText& CustomizedLogMessage) const
+int32 FIOSTargetPlatform::CheckRequirements(bool bProjectHasCode, EBuildConfiguration Configuration, bool bRequiresAssetNativization, FString& OutTutorialPath, FString& OutDocumentationPath, FText& CustomizedLogMessage) const
 {
 	OutDocumentationPath = TEXT("Platforms/iOS/QuickStart/6");
 
@@ -229,7 +229,9 @@ int32 FIOSTargetPlatform::CheckRequirements(const FString& ProjectPath, bool bPr
 			OutTutorialPath = FString("/Engine/Tutorial/Mobile/iOSonPCRestrictions.iOSonPCRestrictions");
 			bReadyToBuild |= ETargetPlatformReadyStatus::CodeUnsupported;
 		}
-		if (!IProjectManager::Get().HasDefaultPluginSettings())
+
+		FText Reason;
+		if (RequiresTempTarget(bProjectHasCode, Configuration, bRequiresAssetNativization, Reason))
 		{
 			OutTutorialPath = FString("/Engine/Tutorial/Mobile/iOSonPCValidPlugins.iOSonPCValidPlugins");
 			bReadyToBuild |= ETargetPlatformReadyStatus::PluginsUnsupported;
@@ -253,6 +255,7 @@ int32 FIOSTargetPlatform::CheckRequirements(const FString& ProjectPath, bool bPr
 	FString TeamID;
 	GConfig->GetString(TEXT("/Script/IOSRuntimeSettings.IOSRuntimeSettings"), TEXT("IOSTeamID"), TeamID, GEngineIni);
 
+	FString ProjectPath = FPaths::ConvertRelativePathToFull(FPaths::GetProjectFilePath());
 #if PLATFORM_MAC
     FString CmdExe = TEXT("/bin/sh");
     FString ScriptPath = FPaths::ConvertRelativePathToFull(FPaths::EngineDir() / TEXT("Build/BatchFiles/Mac/RunMono.sh"));
@@ -262,8 +265,10 @@ int32 FIOSTargetPlatform::CheckRequirements(const FString& ProjectPath, bool bPr
 	FString CmdExe = FPaths::ConvertRelativePathToFull(FPaths::EngineDir() / TEXT("Binaries/DotNET/IOS/IPhonePackager.exe"));
 	FString CommandLine = FString::Printf(TEXT("Validate Engine -project \"%s\" -bundlename \"%s\" %s"), *ProjectPath, *(BundleIdentifier), (bForDistribtion ? TEXT("-distribution") : TEXT("")) );
 	FString RemoteServerName;
+	FString RSyncUsername;
 	GConfig->GetString(TEXT("/Script/IOSRuntimeSettings.IOSRuntimeSettings"), TEXT("RemoteServerName"), RemoteServerName, GEngineIni);
-	if (RemoteServerName.Len() == 0)
+	GConfig->GetString(TEXT("/Script/IOSRuntimeSettings.IOSRuntimeSettings"), TEXT("RSyncUsername"), RSyncUsername, GEngineIni);
+	if (RemoteServerName.Len() == 0 || RSyncUsername.Len() == 0)
 	{
 		bReadyToBuild |= ETargetPlatformReadyStatus::RemoveServerNameEmpty;
 	}
@@ -442,13 +447,10 @@ bool FIOSTargetPlatform::HandleTicker(float DeltaTime)
 
 /* ITargetPlatform interface
  *****************************************************************************/
-
-static bool SupportsES2()
+static bool UsesVirtualTextures()
 {
-	// default to supporting ES2
-	bool bSupportsOpenGLES2 = true;
-	GConfig->GetBool(TEXT("/Script/IOSRuntimeSettings.IOSRuntimeSettings"), TEXT("bSupportsOpenGLES2"), bSupportsOpenGLES2, GEngineIni);
-	return bSupportsOpenGLES2;
+	static auto* CVarMobileVirtualTextures = IConsoleManager::Get().FindTConsoleVariableDataInt(TEXT("r.Mobile.VirtualTextures"));
+	return CVarMobileVirtualTextures->GetValueOnAnyThread() != 0;
 }
 
 static bool SupportsMetal()
@@ -491,9 +493,10 @@ static bool SupportsSoftwareOcclusion()
 
 bool FIOSTargetPlatform::CanSupportXGEShaderCompile() const
 {
+	// for 4.22 we are disabling support for XGE Shader compile on IOS
 	bool bRemoteCompilingEnabled = false;
 	GConfig->GetBool(TEXT("/Script/IOSRuntimeSettings.IOSRuntimeSettings"), TEXT("EnableRemoteShaderCompile"), bRemoteCompilingEnabled, GEngineIni);
-	return !bRemoteCompilingEnabled;
+	return false; // !bRemoteCompilingEnabled;
 }
 
 bool FIOSTargetPlatform::SupportsFeature( ETargetPlatformFeatures Feature ) const
@@ -506,7 +509,7 @@ bool FIOSTargetPlatform::SupportsFeature( ETargetPlatformFeatures Feature ) cons
 
 		case ETargetPlatformFeatures::MobileRendering:
 		case ETargetPlatformFeatures::LowQualityLightmaps:
-			return SupportsES2() || SupportsMetal();
+			return SupportsMetal();
 			
 		case ETargetPlatformFeatures::DeferredRendering:
 		case ETargetPlatformFeatures::HighQualityLightmaps:
@@ -514,6 +517,9 @@ bool FIOSTargetPlatform::SupportsFeature( ETargetPlatformFeatures Feature ) cons
 
 		case ETargetPlatformFeatures::SoftwareOcclusion:
 			return SupportsSoftwareOcclusion();
+
+		case ETargetPlatformFeatures::VirtualTextureStreaming:
+			return UsesVirtualTextures();
 
 		default:
 			break;
@@ -528,7 +534,6 @@ bool FIOSTargetPlatform::SupportsFeature( ETargetPlatformFeatures Feature ) cons
 
 void FIOSTargetPlatform::GetAllPossibleShaderFormats( TArray<FName>& OutFormats ) const
 {
-	static FName NAME_GLSL_ES2_IOS(TEXT("GLSL_ES2_IOS"));
 	static FName NAME_SF_METAL(TEXT("SF_METAL"));
 	static FName NAME_SF_METAL_MRT(TEXT("SF_METAL_MRT"));
 	static FName NAME_SF_METAL_TVOS(TEXT("SF_METAL_TVOS"));
@@ -550,11 +555,6 @@ void FIOSTargetPlatform::GetAllPossibleShaderFormats( TArray<FName>& OutFormats 
 	}
 	else
 	{
-		if (SupportsES2())
-		{
-			OutFormats.AddUnique(NAME_GLSL_ES2_IOS);
-		}
-
 		if (SupportsMetal())
 		{
 			OutFormats.AddUnique(NAME_SF_METAL);
@@ -586,76 +586,91 @@ static FName FormatRemap[] =
 static FName NameBGRA8(TEXT("BGRA8"));
 static FName NameG8 = FName(TEXT("G8"));
 
-void FIOSTargetPlatform::GetTextureFormats( const UTexture* Texture, TArray<FName>& OutFormats ) const
+void FIOSTargetPlatform::GetTextureFormats( const UTexture* Texture, TArray< TArray<FName> >& OutFormats) const
 {
 	check(Texture);
 
 	static FName NamePOTERROR(TEXT("POTERROR"));
 
-	FName TextureFormatName = NAME_None;
+	const int32 NumLayers = Texture->Source.GetNumLayers();
+
+	if (Texture->bForcePVRTC4 && CookPVRTC())
+	{
+		TArray<FName> NamesPVRTC4;
+		TArray<FName> NamesPVRTCN;
+		NamesPVRTC4.Init(FName(TEXT("PVRTC4")), NumLayers);
+		NamesPVRTCN.Init(FName(TEXT("PVRTCN")), NumLayers);
+
+		OutFormats.AddUnique(NamesPVRTC4);
+		OutFormats.AddUnique(NamesPVRTCN);
+		return;
+	}
+
+	TArray<FName> TextureFormatNames;
 
 	// forward rendering only needs one channel for shadow maps
 	if (Texture->LODGroup == TEXTUREGROUP_Shadowmap && !SupportsMetalMRT())
 	{
-		TextureFormatName = NameG8;
+		TextureFormatNames.Init(NameG8, NumLayers);
 	}
 
 	// if we didn't assign anything specially, then use the defaults
     bool bIncludePVRTC = !bIsTVOS && CookPVRTC();
     bool bIncludeASTC = bIsTVOS || CookASTC();
-	if (TextureFormatName == NAME_None)
+	if (TextureFormatNames.Num() == 0)
 	{
         int32 BlockSize = 4;
         if (!Texture->bForcePVRTC4 && !bIncludePVRTC && bIncludeASTC)
         {
             BlockSize = 1;
         }
-		TextureFormatName = GetDefaultTextureFormatName(this, Texture, EngineSettings, false, false, BlockSize);
+		GetDefaultTextureFormatNamePerLayer(TextureFormatNames, this, Texture, EngineSettings, false, false, BlockSize);
 	}
 
-	// perform any remapping away from defaults
-	bool bFoundRemap = false;
-
-	if (Texture->bForcePVRTC4 && CookPVRTC())
+	// include the formats we want (use ASTC first so that it is preferred at runtime if they both exist and it's supported)
+	if (bIncludeASTC)
 	{
-		OutFormats.AddUnique(FName(TEXT("PVRTC4")));
-		OutFormats.AddUnique(FName(TEXT("PVRTCN")));
-		return;
-	}
-
-	for (int32 RemapIndex = 0; RemapIndex < ARRAY_COUNT(FormatRemap); RemapIndex += 3)
-	{
-		if (TextureFormatName == FormatRemap[RemapIndex])
+		TArray<FName> TextureFormatNamesASTC(TextureFormatNames);
+		for (FName& TextureFormatName : TextureFormatNamesASTC)
 		{
-			// we found a remapping
-			bFoundRemap = true;
-			// include the formats we want (use ASTC first so that it is preferred at runtime if they both exist and it's supported)
-			if (bIncludeASTC)
+			for (int32 RemapIndex = 0; RemapIndex < UE_ARRAY_COUNT(FormatRemap); RemapIndex += 3)
 			{
-				OutFormats.AddUnique(FormatRemap[RemapIndex + 2]);
-			}
-			if (bIncludePVRTC)
-			{
-				// handle non-power of 2 textures
-				if (!Texture->Source.IsPowerOfTwo() && Texture->PowerOfTwoMode == ETexturePowerOfTwoSetting::None)
+				if (TextureFormatName == FormatRemap[RemapIndex])
 				{
-					// option 1: Uncompress, but users will get very large textures unknowningly
-					// OutFormats.AddUnique(NameBGRA8);
-					// option 2: Use an "error message" texture so they see it in game
-					OutFormats.AddUnique(NamePOTERROR);
-				}
-				else
-				{
-					OutFormats.AddUnique(FormatRemap[RemapIndex + 1]);
+					TextureFormatName = FormatRemap[RemapIndex + 2];
+					break;
 				}
 			}
 		}
+		OutFormats.AddUnique(TextureFormatNamesASTC);
 	}
 
-	// if we didn't already remap above, add it now
-	if (!bFoundRemap)
+	if (bIncludePVRTC)
 	{
-		OutFormats.Add(TextureFormatName);
+		TArray<FName> TextureFormatNamesPVRTC(TextureFormatNames);
+		for (FName& TextureFormatName : TextureFormatNamesPVRTC)
+		{
+			for (int32 RemapIndex = 0; RemapIndex < UE_ARRAY_COUNT(FormatRemap); RemapIndex += 3)
+			{
+				if (TextureFormatName == FormatRemap[RemapIndex])
+				{
+					// handle non-power of 2 textures
+					if (!Texture->Source.IsPowerOfTwo() && Texture->PowerOfTwoMode == ETexturePowerOfTwoSetting::None)
+					{
+						// option 1: Uncompress, but users will get very large textures unknowingly
+						// TextureFormatName = NameBGRA8;
+						// option 2: Use an "error message" texture so they see it in game
+						TextureFormatName = NamePOTERROR;
+					}
+					else
+					{
+						TextureFormatName = FormatRemap[RemapIndex + 1];
+					}
+					break;
+				}
+			}
+		}
+		OutFormats.AddUnique(TextureFormatNamesPVRTC);
 	}
 }
 
@@ -667,7 +682,7 @@ void FIOSTargetPlatform::GetAllTextureFormats(TArray<FName>& OutFormats) const
 
 	GetAllDefaultTextureFormats(this, OutFormats, false);
 
-	for (int32 RemapIndex = 0; RemapIndex < ARRAY_COUNT(FormatRemap); RemapIndex += 3)
+	for (int32 RemapIndex = 0; RemapIndex < UE_ARRAY_COUNT(FormatRemap); RemapIndex += 3)
 	{
 		OutFormats.Remove(FormatRemap[RemapIndex+0]);
 	}
@@ -675,14 +690,14 @@ void FIOSTargetPlatform::GetAllTextureFormats(TArray<FName>& OutFormats) const
 	// include the formats we want (use ASTC first so that it is preferred at runtime if they both exist and it's supported)
 	if (bIncludeASTC)
 	{
-		for (int32 RemapIndex = 0; RemapIndex < ARRAY_COUNT(FormatRemap); RemapIndex += 3)
+		for (int32 RemapIndex = 0; RemapIndex < UE_ARRAY_COUNT(FormatRemap); RemapIndex += 3)
 		{
 			OutFormats.AddUnique(FormatRemap[RemapIndex + 2]);
 		}
 	}
 	if (bIncludePVRTC)
 	{
-		for (int32 RemapIndex = 0; RemapIndex < ARRAY_COUNT(FormatRemap); RemapIndex += 3)
+		for (int32 RemapIndex = 0; RemapIndex < UE_ARRAY_COUNT(FormatRemap); RemapIndex += 3)
 		{
 			OutFormats.AddUnique(FormatRemap[RemapIndex + 1]);
 		}
@@ -707,67 +722,6 @@ void FIOSTargetPlatform::GetAllWaveFormats(TArray<FName>& OutFormat) const
 {
 	static FName NAME_ADPCM(TEXT("ADPCM"));
 	OutFormat.Add(NAME_ADPCM);
-}
-
-namespace
-{
-	void CachePlatformAudioCookOverrides(FPlatformAudioCookOverrides& OutOverrides)
-	{
-		const TCHAR* CategoryName = TEXT("/Script/IOSRuntimeSettings.IOSRuntimeSettings");
-
-		GConfig->GetBool(CategoryName, TEXT("bResampleForDevice"), OutOverrides.bResampleForDevice, GEngineIni);
-
-		GConfig->GetFloat(CategoryName, TEXT("CompressionQualityModifier"), OutOverrides.CompressionQualityModifier, GEngineIni);
-
-		GConfig->GetFloat(CategoryName, TEXT("AutoStreamingThreshold"), OutOverrides.AutoStreamingThreshold, GEngineIni);
-
-		//Cache sample rate map.
-		OutOverrides.PlatformSampleRates.Reset();
-
-		float RetrievedSampleRate = -1.0f;
-
-		GConfig->GetFloat(CategoryName, TEXT("MaxSampleRate"), RetrievedSampleRate, GEngineIni);
-		OutOverrides.PlatformSampleRates.Add(ESoundwaveSampleRateSettings::Max, RetrievedSampleRate);
-
-		RetrievedSampleRate = -1.0f;
-
-		GConfig->GetFloat(CategoryName, TEXT("HighSampleRate"), RetrievedSampleRate, GEngineIni);
-		OutOverrides.PlatformSampleRates.Add(ESoundwaveSampleRateSettings::High, RetrievedSampleRate);
-
-		RetrievedSampleRate = -1.0f;
-
-		GConfig->GetFloat(CategoryName, TEXT("MedSampleRate"), RetrievedSampleRate, GEngineIni);
-		OutOverrides.PlatformSampleRates.Add(ESoundwaveSampleRateSettings::Medium, RetrievedSampleRate);
-
-		RetrievedSampleRate = -1.0f;
-
-		GConfig->GetFloat(CategoryName, TEXT("LowSampleRate"), RetrievedSampleRate, GEngineIni);
-		OutOverrides.PlatformSampleRates.Add(ESoundwaveSampleRateSettings::Low, RetrievedSampleRate);
-
-		RetrievedSampleRate = -1.0f;
-
-		GConfig->GetFloat(CategoryName, TEXT("MinSampleRate"), RetrievedSampleRate, GEngineIni);
-		OutOverrides.PlatformSampleRates.Add(ESoundwaveSampleRateSettings::Min, RetrievedSampleRate);
-	}
-}
-
-FPlatformAudioCookOverrides* FIOSTargetPlatform::GetAudioCompressionSettings() const
-{
-	static FPlatformAudioCookOverrides Settings;
-
-#if !WITH_EDITOR
-	static bool bCachedPlatformSettings = false;
-
-	if (!bCachedPlatformSettings)
-	{
-		CachePlatformAudioCookOverrides(Settings);
-		bCachedPlatformSettings = true;
-	}
-#else
-	CachePlatformAudioCookOverrides(Settings);
-#endif
-
-	return &Settings;
 }
 
 #endif // WITH_ENGINE

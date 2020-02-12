@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 // djh using System.IO;
 using UnrealBuildTool;
@@ -65,9 +65,7 @@ public class DirectXMesh : ModuleRules
                     throw new BuildException(Err);
                 }
             }
-            PublicLibraryPaths.Add(LibDirName);
-            PublicAdditionalLibraries.Add("DirectXMesh.lib");
-
+            PublicAdditionalLibraries.Add(LibDirName + "DirectXMesh.lib");
         }
         else
         {

@@ -1,10 +1,11 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "GameplayCueInterface.h"
 #include "AbilitySystemStats.h"
 #include "GameplayTagsModule.h"
 #include "AbilitySystemComponent.h"
 #include "GameplayCueSet.h"
+#include "Engine/PackageMapClient.h"
 
 
 namespace GameplayCueInterfacePrivate
@@ -24,13 +25,13 @@ UGameplayCueInterface::UGameplayCueInterface(const FObjectInitializer& ObjectIni
 {
 }
 
-void IGameplayCueInterface::DispatchBlueprintCustomHandler(AActor* Actor, UFunction* Func, EGameplayCueEvent::Type EventType, FGameplayCueParameters Parameters)
+void IGameplayCueInterface::DispatchBlueprintCustomHandler(UObject* Object, UFunction* Func, EGameplayCueEvent::Type EventType, FGameplayCueParameters Parameters)
 {
-	GameplayCueInterface_eventBlueprintCustomHandler_Parms Parms;
-	Parms.EventType = EventType;
-	Parms.Parameters = Parameters;
+	GameplayCueInterface_eventBlueprintCustomHandler_Parms Params;
+	Params.EventType = EventType;
+	Params.Parameters = Parameters;
 
-	Actor->ProcessEvent(Func, &Parms);
+	Object->ProcessEvent(Func, &Params);
 }
 
 void IGameplayCueInterface::ClearTagToFunctionMap()
@@ -40,20 +41,40 @@ void IGameplayCueInterface::ClearTagToFunctionMap()
 
 void IGameplayCueInterface::HandleGameplayCues(AActor *Self, const FGameplayTagContainer& GameplayCueTags, EGameplayCueEvent::Type EventType, FGameplayCueParameters Parameters)
 {
-	for (auto TagIt = GameplayCueTags.CreateConstIterator(); TagIt; ++TagIt)
+	HandleGameplayCues((UObject*)Self, GameplayCueTags, EventType, Parameters);
+}
+
+void IGameplayCueInterface::HandleGameplayCues(UObject* Self, const FGameplayTagContainer& GameplayCueTags, EGameplayCueEvent::Type EventType, FGameplayCueParameters Parameters)
+{
+	for (FGameplayTag CueTag : GameplayCueTags)
 	{
-		HandleGameplayCue(Self, *TagIt, EventType, Parameters);
+		HandleGameplayCue(Self, CueTag, EventType, Parameters);
 	}
 }
 
 bool IGameplayCueInterface::ShouldAcceptGameplayCue(AActor *Self, FGameplayTag GameplayCueTag, EGameplayCueEvent::Type EventType, FGameplayCueParameters Parameters)
+{
+	return ShouldAcceptGameplayCue((UObject*)Self, GameplayCueTag, EventType, Parameters);
+}
+
+bool IGameplayCueInterface::ShouldAcceptGameplayCue(UObject* Self, FGameplayTag GameplayCueTag, EGameplayCueEvent::Type EventType, FGameplayCueParameters Parameters)
 {
 	return true;
 }
 
 void IGameplayCueInterface::HandleGameplayCue(AActor *Self, FGameplayTag GameplayCueTag, EGameplayCueEvent::Type EventType, FGameplayCueParameters Parameters)
 {
+	HandleGameplayCue((UObject*)Self, GameplayCueTag, EventType, Parameters);
+}
+
+void IGameplayCueInterface::HandleGameplayCue(UObject* Self, FGameplayTag GameplayCueTag, EGameplayCueEvent::Type EventType, FGameplayCueParameters Parameters)
+{
 	SCOPE_CYCLE_COUNTER(STAT_GameplayCueInterface_HandleGameplayCue);
+
+	if (!Self)
+	{
+		return;
+	}
 
 	// Look up a custom function for this gameplay tag. 
 	UClass* Class = Self->GetClass();
@@ -122,14 +143,17 @@ void IGameplayCueInterface::HandleGameplayCue(AActor *Self, FGameplayTag Gamepla
 
 	if (bShouldContinue)
 	{
-		TArray<UGameplayCueSet*> Sets;
-		GetGameplayCueSets(Sets);
-		for (UGameplayCueSet* Set : Sets)
+		if (AActor* SelfActor = Cast<AActor>(Self))
 		{
-			bShouldContinue = Set->HandleGameplayCue(Self, GameplayCueTag, EventType, Parameters);
-			if (!bShouldContinue)
+			TArray<UGameplayCueSet*> Sets;
+			GetGameplayCueSets(Sets);
+			for (UGameplayCueSet* Set : Sets)
 			{
-				break;
+				bShouldContinue = Set->HandleGameplayCue(SelfActor, GameplayCueTag, EventType, Parameters);
+				if (!bShouldContinue)
+				{
+					break;
+				}
 			}
 		}
 	}
@@ -391,6 +415,24 @@ bool FMinimalGameplayCueReplicationProxy::NetSerialize(FArchive& Ar, class UPack
 	}
 	else
 	{
+		// Only actually update the owner's tag map if we not the 
+		bool UpdateOwnerTagMap = Owner != nullptr;
+		if (bRequireNonOwningNetConnection && Owner)
+		{
+			if (AActor* OwningActor = Owner->GetOwner())
+			{
+				// Note we deliberately only want to do this if the NetConnection is not null
+				if (UNetConnection* OwnerNetConnection = OwningActor->GetNetConnection()) 
+				{
+					if (OwnerNetConnection == CastChecked<UPackageMapClient>(Map)->GetConnection())
+					{
+						UpdateOwnerTagMap = false;
+					}
+				}
+			}
+		}
+
+
 		NumElements = 0;
 		Ar.SerializeBits(&NumElements, NumBits);
 
@@ -415,16 +457,18 @@ bool FMinimalGameplayCueReplicationProxy::NetSerialize(FArchive& Ar, class UPack
 				// This tag already existed and is accounted for
 				LocalBitMask[LocalIdx] = false;
 			}
-			else if (Owner)
+			else if (UpdateOwnerTagMap)
 			{
+				bCachedModifiedOwnerTags = true;
 				// This is a new tag, we need to invoke the WhileActive gameplaycue event
 				Owner->SetTagMapCount(ReplicatedTag, 1);
 				Owner->InvokeGameplayCueEvent(ReplicatedTag, EGameplayCueEvent::WhileActive, Parameters);
 			}
 		}
 
-		if (Owner)
+		if (UpdateOwnerTagMap)
 		{
+			bCachedModifiedOwnerTags = true;
 			for (TConstSetBitIterator<TInlineAllocator<NumInlineTags>> It(LocalBitMask); It; ++It)
 			{
 				FGameplayTag& RemovedTag = LocalTags[It.GetIndex()];
@@ -441,7 +485,7 @@ bool FMinimalGameplayCueReplicationProxy::NetSerialize(FArchive& Ar, class UPack
 
 void FMinimalGameplayCueReplicationProxy::RemoveAllCues()
 {
-	if (!Owner)
+	if (!Owner || !bCachedModifiedOwnerTags)
 	{
 		return;
 	}

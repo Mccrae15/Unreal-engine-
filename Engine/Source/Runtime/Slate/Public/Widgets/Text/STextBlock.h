@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
  
 #pragma once
 
@@ -164,13 +164,17 @@ public:
 		return BoundText.Get();
 	}
 	
+public:
+	UE_DEPRECATED(4.24, "SetText taking FString is deprecated. Use the FText version instead")
+	void SetText( const TAttribute< FString >& InText );
+	UE_DEPRECATED(4.24, "SetText taking FString is deprecated. Use the FText version instead")
+	void SetText( const FString& InText );
+
 	/**
 	 * Sets the text for this text block
 	 *
 	 * @param	InText	The new text to display
 	 */
-	void SetText( const TAttribute< FString >& InText );
-	void SetText( const FString& InText );
 	void SetText( const TAttribute< FText >& InText );
 	void SetText( const FText& InText );
 
@@ -233,6 +237,10 @@ public:
 	// SWidget interface
 	virtual int32 OnPaint( const FPaintArgs& Args, const FGeometry& AllottedGeometry, const FSlateRect& MyCullingRect, FSlateWindowElementList& OutDrawElements, int32 LayerId, const FWidgetStyle& InWidgetStyle, bool bParentEnabled ) const override;
 	virtual FVector2D ComputeDesiredSize(float) const override;
+#if WITH_ACCESSIBILITY
+	virtual TSharedRef<FSlateAccessibleWidget> CreateAccessibleWidget() override;
+	virtual TOptional<FText> GetDefaultAccessibleText(EAccessibleType AccessibleType = EAccessibleType::Main) const override;
+#endif
 	// End of SWidget interface
 
 protected:

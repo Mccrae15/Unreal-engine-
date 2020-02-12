@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 /*=============================================================================
 	UObjectBase.cpp: Unreal UObject base class
@@ -20,19 +20,30 @@
 #include "UObject/GCObject.h"
 #include "UObject/LinkerLoad.h"
 #include "Misc/CommandLine.h"
+#include "Interfaces/IPluginManager.h"
+#include "Serialization/LoadTimeTrace.h"
 
 DEFINE_LOG_CATEGORY_STATIC(LogUObjectBase, Log, All);
 DEFINE_STAT(STAT_UObjectsStatGroupTester);
 
 DECLARE_CYCLE_STAT(TEXT("CreateStatID"), STAT_CreateStatID, STATGROUP_StatSystem);
 
+DEFINE_LOG_CATEGORY_STATIC(LogUObjectBootstrap, Display, Display);
+
 
 /** Whether uobject system is initialized.												*/
 namespace Internal
 {
-	bool GObjInitialized = false;
+	static bool& GetUObjectSubsystemInitialised()
+	{
+		static bool ObjInitialized = false;
+		return ObjInitialized;
+	}
 };
-
+bool UObjectInitialized()
+{
+	return Internal::GetUObjectSubsystemInitialised();
+}
 
 /** Objects to automatically register once the object system is ready.					*/
 struct FPendingRegistrantInfo
@@ -51,7 +62,6 @@ struct FPendingRegistrantInfo
 };
 
 
-
 /** Objects to automatically register once the object system is ready.					*/
 struct FPendingRegistrant
 {
@@ -65,6 +75,16 @@ struct FPendingRegistrant
 static FPendingRegistrant* GFirstPendingRegistrant = NULL;
 static FPendingRegistrant* GLastPendingRegistrant = NULL;
 
+#if USE_PER_MODULE_UOBJECT_BOOTSTRAP
+static TMap<FName, TArray<FPendingRegistrant*>>& GetPerModuleBootstrapMap()
+{
+	static TMap<FName, TArray<FPendingRegistrant*>> PendingRegistrantInfo;
+	return PendingRegistrantInfo;
+}
+
+#endif
+
+
 /**
  * Constructor used for bootstrapping
  * @param	InClass			possibly NULL, this gives the class of the new object, if known at this time
@@ -75,9 +95,6 @@ UObjectBase::UObjectBase( EObjectFlags InFlags )
 ,	InternalIndex		(INDEX_NONE)
 ,	ClassPrivate		(nullptr)
 ,	OuterPrivate		(nullptr)
-#if ENABLE_STATNAMEDEVENTS_UOBJECT
-, StatIDStringStorage(nullptr)
-#endif
 {}
 
 /**
@@ -93,9 +110,6 @@ UObjectBase::UObjectBase(UClass* InClass, EObjectFlags InFlags, EInternalObjectF
 ,	InternalIndex		(INDEX_NONE)
 ,	ClassPrivate		(InClass)
 ,	OuterPrivate		(InOuter)
-#if ENABLE_STATNAMEDEVENTS_UOBJECT
-, StatIDStringStorage(nullptr)
-#endif
 {
 	check(ClassPrivate);
 	// Add to global table.
@@ -113,79 +127,12 @@ UObjectBase::~UObjectBase()
 	{
 		// Validate it.
 		check(IsValidLowLevel());
-		LowLevelRename(NAME_None);
+		check(GetFName() == NAME_None);
 		GUObjectArray.FreeUObjectIndex(this);
 	}
-
-#if ENABLE_STATNAMEDEVENTS_UOBJECT
-	delete[] StatIDStringStorage;
-	StatIDStringStorage = nullptr;
-#endif
 }
 
-#if STATS || ENABLE_STATNAMEDEVENTS_UOBJECT
 
-void UObjectBase::CreateStatID() const
-{
-	SCOPE_CYCLE_COUNTER(STAT_CreateStatID);
-
-	FString LongName;
-	LongName.Reserve(255);
-	TArray<UObjectBase const*, TInlineAllocator<24>> ClassChain;
-	
-	// Build class hierarchy
-	UObjectBase const* Target = this;
-	do
-	{
-		ClassChain.Add(Target);
-		Target = Target->GetOuter();
-	} while(Target);
-
-	// Start with class name
-	if (GetClass())
-	{
-		GetClass()->GetFName().GetDisplayNameEntry()->AppendNameToString(LongName);
-	}
-
-	// Now process from parent -> child so we can append strings more efficiently.
-	bool bFirstEntry = true;
-	for (int32 i = ClassChain.Num()-1; i >= 0; i--)
-	{
-		Target = ClassChain[i];
-		const FNameEntry* NameEntry = Target->GetFName().GetDisplayNameEntry();
-		if (bFirstEntry)
-		{
-			NameEntry->AppendNameToPathString(LongName);
-		}
-		else
-		{
-			if (!LongName.IsEmpty())
-			{
-				LongName += TEXT(".");
-			}
-			NameEntry->AppendNameToString(LongName);
-		}			
-		bFirstEntry = false;
-	}
-
-#if STATS
-	StatID = FDynamicStats::CreateStatId<FStatGroup_STATGROUP_UObjects>( LongName );
-#else // ENABLE_STATNAMEDEVENTS
-	const auto& ConversionData = StringCast<PROFILER_CHAR>(*LongName);
-	const int32 NumStorageChars = (ConversionData.Length() + 1);	//length doesn't include null terminator
-
-	PROFILER_CHAR* StoragePtr = new PROFILER_CHAR[NumStorageChars];
-	FMemory::Memcpy(StoragePtr, ConversionData.Get(), NumStorageChars * sizeof(PROFILER_CHAR));
-	
-	if (FPlatformAtomics::InterlockedCompareExchangePointer((void**)&StatIDStringStorage, StoragePtr, nullptr) != nullptr)
-	{
-		delete[] StoragePtr;
-	}
-	
-	StatID = TStatId(StatIDStringStorage);
-#endif
-}
-#endif
 
 
 /**
@@ -195,7 +142,7 @@ void UObjectBase::CreateStatID() const
  */
 void UObjectBase::DeferredRegister(UClass *UClassStaticClass,const TCHAR* PackageName,const TCHAR* InName)
 {
-	check(Internal::GObjInitialized);
+	check(UObjectInitialized());
 	// Set object properties.
 	UPackage* Package = CreatePackage(nullptr, PackageName);
 	check(Package);
@@ -211,6 +158,8 @@ void UObjectBase::DeferredRegister(UClass *UClassStaticClass,const TCHAR* Packag
 
 	// Make sure that objects disregarded for GC are part of root set.
 	check(!GUObjectArray.IsDisregardForGC(this) || GUObjectArray.IndexToObject(InternalIndex)->IsRootSet());
+
+	UE_LOG(LogUObjectBootstrap, Verbose, TEXT("UObjectBase::DeferredRegister %s %s"), PackageName, InName);
 }
 
 /**
@@ -255,7 +204,7 @@ void UObjectBase::AddObject(FName InName, EInternalObjectFlags InSetInternalFlag
  */
 void UObjectBase::LowLevelRename(FName NewName,UObject *NewOuter)
 {
-	STAT(StatID = TStatId();) // reset the stat id since this thing now has a different name
+	STAT(((UObject*)this)->ResetStatID()); // reset the stat id since this thing now has a different name
 	UnhashObject(this);
 	check(InternalIndex >= 0);
 	NamePrivate = NewName;
@@ -268,7 +217,7 @@ void UObjectBase::LowLevelRename(FName NewName,UObject *NewOuter)
 
 void UObjectBase::SetClass(UClass* NewClass)
 {
-	STAT(StatID = TStatId();) // reset the stat id since this thing now has a different name
+	STAT(((UObject*)this)->ResetStatID()); // reset the stat id since this thing now has a different name
 
 	UnhashObject(this);
 #if USE_UBER_GRAPH_PERSISTENT_FRAME
@@ -356,9 +305,87 @@ void UObjectBase::EmitBaseReferences(UClass *RootClass)
 {
 	static const FName ClassPropertyName(TEXT("Class"));
 	static const FName OuterPropertyName(TEXT("Outer"));
-	RootClass->EmitObjectReference(STRUCT_OFFSET(UObjectBase, ClassPrivate), ClassPropertyName);
+
+	RootClass->EmitObjectReference(STRUCT_OFFSET(UObjectBase, ClassPrivate), ClassPropertyName, GCRT_Class);
 	RootClass->EmitObjectReference(STRUCT_OFFSET(UObjectBase, OuterPrivate), OuterPropertyName, GCRT_PersistentObject);
 }
+
+#if USE_PER_MODULE_UOBJECT_BOOTSTRAP
+static void UObjectReleaseModuleRegistrants(FName Module)
+{
+	TMap<FName, TArray<FPendingRegistrant*>>& PerModuleMap = GetPerModuleBootstrapMap();
+
+	FName Package = IPluginManager::Get().PackageNameFromModuleName(Module);
+
+	FName ScriptName = *(FString(TEXT("/Script/")) + Package.ToString());
+
+	TArray<FPendingRegistrant*>* Array = PerModuleMap.Find(ScriptName);
+	if (Array)
+	{
+		SCOPED_BOOT_TIMING("UObjectReleaseModuleRegistrants");
+		for (FPendingRegistrant* PendingRegistration : *Array)
+		{
+			if (GLastPendingRegistrant)
+			{
+				GLastPendingRegistrant->NextAutoRegister = PendingRegistration;
+			}
+			else
+			{
+				check(!GFirstPendingRegistrant);
+				GFirstPendingRegistrant = PendingRegistration;
+			}
+			GLastPendingRegistrant = PendingRegistration;
+		}
+		UE_LOG(LogUObjectBootstrap, Verbose, TEXT("UObjectReleaseModuleRegistrants %d items in %s"), Array->Num(), *ScriptName.ToString());
+		PerModuleMap.Remove(ScriptName);
+	}
+	else
+	{
+		UE_LOG(LogUObjectBootstrap, Verbose, TEXT("UObjectReleaseModuleRegistrants no items in %s"), *ScriptName.ToString());
+	}
+}
+
+void UObjectReleaseAllModuleRegistrants()
+{
+	SCOPED_BOOT_TIMING("UObjectReleaseAllModuleRegistrants");
+	TMap<FName, TArray<FPendingRegistrant*>>& PerModuleMap = GetPerModuleBootstrapMap();
+	for (auto& Pair : PerModuleMap)
+	{
+		for (FPendingRegistrant* PendingRegistration : Pair.Value)
+		{
+			if (GLastPendingRegistrant)
+			{
+				GLastPendingRegistrant->NextAutoRegister = PendingRegistration;
+			}
+			else
+			{
+				check(!GFirstPendingRegistrant);
+				GFirstPendingRegistrant = PendingRegistration;
+			}
+			GLastPendingRegistrant = PendingRegistration;
+		}
+		UE_LOG(LogUObjectBootstrap, Verbose, TEXT("UObjectReleaseAllModuleRegistrants %d items in %s"), Pair.Value.Num(), *Pair.Key.ToString());
+	}
+	PerModuleMap.Empty();
+	ProcessNewlyLoadedUObjects();
+}
+
+static void DumpPendingUObjectModules(const TArray<FString>& Args)
+{
+	TMap<FName, TArray<FPendingRegistrant*>>& PerModuleMap = GetPerModuleBootstrapMap();
+	for (auto& Pair : PerModuleMap)
+	{
+		UE_LOG(LogUObjectBootstrap, Display, TEXT("Not yet loaded: %d items in %s"), Pair.Value.Num(), *Pair.Key.ToString());
+	}
+}
+
+static FAutoConsoleCommand DumpPendingUObjectModulesCmd(
+	TEXT("DumpPendingUObjectModules"),
+	TEXT("When doing per-module UObject bootstrapping, show the modules that are not yet loaded."),
+	FConsoleCommandWithArgsDelegate::CreateStatic(&DumpPendingUObjectModules)
+);
+
+#endif
 
 /** Enqueue the registration for this object. */
 void UObjectBase::Register(const TCHAR* PackageName,const TCHAR* InName)
@@ -367,16 +394,28 @@ void UObjectBase::Register(const TCHAR* PackageName,const TCHAR* InName)
 
 	FPendingRegistrant* PendingRegistration = new FPendingRegistrant(this);
 	PendingRegistrants.Add(this, FPendingRegistrantInfo(InName, PackageName));
-	if(GLastPendingRegistrant)
+
+#if USE_PER_MODULE_UOBJECT_BOOTSTRAP
+	if (FName(PackageName) != FName("/Script/CoreUObject"))
 	{
-		GLastPendingRegistrant->NextAutoRegister = PendingRegistration;
+		TMap<FName, TArray<FPendingRegistrant*>>& PerModuleMap = GetPerModuleBootstrapMap();
+
+		PerModuleMap.FindOrAdd(FName(PackageName)).Add(PendingRegistration);
 	}
 	else
+#endif
 	{
-		check(!GFirstPendingRegistrant);
-		GFirstPendingRegistrant = PendingRegistration;
+		if (GLastPendingRegistrant)
+		{
+			GLastPendingRegistrant->NextAutoRegister = PendingRegistration;
+		}
+		else
+		{
+			check(!GFirstPendingRegistrant);
+			GFirstPendingRegistrant = PendingRegistration;
+		}
+		GLastPendingRegistrant = PendingRegistration;
 	}
-	GLastPendingRegistrant = PendingRegistration;
 }
 
 
@@ -405,6 +444,8 @@ static void DequeuePendingAutoRegistrants(TArray<FPendingRegistrant>& OutPending
  */
 static void UObjectProcessRegistrants()
 {
+	SCOPED_BOOT_TIMING("UObjectProcessRegistrants");
+
 	check(UObjectInitialized());
 	// Make list of all objects to be registered.
 	TArray<FPendingRegistrant> PendingRegistrants;
@@ -414,7 +455,7 @@ static void UObjectProcessRegistrants()
 	{
 		const FPendingRegistrant& PendingRegistrant = PendingRegistrants[RegistrantIndex];
 
-		UObjectForceRegistration(PendingRegistrant.Object);
+		UObjectForceRegistration(PendingRegistrant.Object, false);
 
 		check(PendingRegistrant.Object->GetClass()); // should have been set by DeferredRegister
 
@@ -423,7 +464,7 @@ static void UObjectProcessRegistrants()
 	}
 }
 
-void UObjectForceRegistration(UObjectBase* Object)
+void UObjectForceRegistration(UObjectBase* Object, bool bCheckForModuleRelease)
 {
 	TMap<UObjectBase*, FPendingRegistrantInfo>& PendingRegistrants = FPendingRegistrantInfo::GetMap();
 
@@ -431,6 +472,12 @@ void UObjectForceRegistration(UObjectBase* Object)
 	if (Info)
 	{
 		const TCHAR* PackageName = Info->PackageName;
+#if USE_PER_MODULE_UOBJECT_BOOTSTRAP
+		if (bCheckForModuleRelease)
+		{
+			UObjectReleaseModuleRegistrants(FName(PackageName));
+		}
+#endif
 		const TCHAR* Name = Info->Name;
 		PendingRegistrants.Remove(Object);  // delete this first so that it doesn't try to do it twice
 		Object->DeferredRegister(UClass::StaticClass(),PackageName,Name);
@@ -585,10 +632,10 @@ FString RemoveClassPrefix(const TCHAR* ClassName)
 {
 	const TCHAR* DeprecatedPrefix = TEXT("DEPRECATED_");
 	FString NameWithoutPrefix(ClassName);
-	NameWithoutPrefix = NameWithoutPrefix.Mid(1);
+	NameWithoutPrefix.MidInline(1, MAX_int32, false);
 	if (NameWithoutPrefix.StartsWith(DeprecatedPrefix))
 	{
-		NameWithoutPrefix = NameWithoutPrefix.Mid(FCString::Strlen(DeprecatedPrefix));
+		NameWithoutPrefix.MidInline(FCString::Strlen(DeprecatedPrefix), MAX_int32, false);
 	}
 	return NameWithoutPrefix;
 }
@@ -700,6 +747,7 @@ void UClassRegisterAllCompiledInClasses()
 #if WITH_HOT_RELOAD
 	TArray<UClass*> AddedClasses;
 #endif
+	SCOPED_BOOT_TIMING("UClassRegisterAllCompiledInClasses");
 
 	TArray<FFieldCompiledInInfo*>& DeferredClassRegistration = GetDeferredClassRegistration();
 	for (const FFieldCompiledInInfo* Class : DeferredClassRegistration)
@@ -740,7 +788,7 @@ void UClassReplaceHotReloadClasses()
 				RegisteredClass = Class->Register();
 			}
 
-			FCoreUObjectDelegates::RegisterClassForHotReloadReinstancingDelegate.Broadcast(Class->OldClass, RegisteredClass);
+			FCoreUObjectDelegates::RegisterClassForHotReloadReinstancingDelegate.Broadcast(Class->OldClass, RegisteredClass, Class->bHasChanged ? EHotReloadedClassFlags::Changed : EHotReloadedClassFlags::None);
 		}
 	}
 
@@ -755,6 +803,8 @@ void UClassReplaceHotReloadClasses()
  */
 static void UObjectLoadAllCompiledInDefaultProperties()
 {
+	TRACE_LOADTIME_REQUEST_GROUP_SCOPE(TEXT("UObjectLoadAllCompiledInDefaultProperties"));
+
 	static FName LongEnginePackageName(TEXT("/Script/Engine"));
 
 	TArray<UClass *(*)()>& DeferredCompiledInRegistration = GetDeferredCompiledInRegistration();
@@ -762,6 +812,7 @@ static void UObjectLoadAllCompiledInDefaultProperties()
 	const bool bHaveRegistrants = DeferredCompiledInRegistration.Num() != 0;
 	if( bHaveRegistrants )
 	{
+		SCOPED_BOOT_TIMING("UObjectLoadAllCompiledInDefaultProperties");
 		TArray<UClass*> NewClasses;
 		TArray<UClass*> NewClassesInCoreUObject;
 		TArray<UClass*> NewClassesInEngine;
@@ -769,6 +820,7 @@ static void UObjectLoadAllCompiledInDefaultProperties()
 		for (UClass* (*Registrant)() : PendingRegistrants)
 		{
 			UClass* Class = Registrant();
+			UE_LOG(LogUObjectBootstrap, Verbose, TEXT("UObjectLoadAllCompiledInDefaultProperties After Registrant %s %s"), *Class->GetOutermost()->GetName(), *Class->GetName());
 			if (Class->GetOutermost()->GetFName() == GLongCoreUObjectPackageName)
 			{
 				NewClassesInCoreUObject.Add(Class);
@@ -782,19 +834,33 @@ static void UObjectLoadAllCompiledInDefaultProperties()
 				NewClasses.Add(Class);
 			}
 		}
-		for (UClass* Class : NewClassesInCoreUObject) // we do these first because we assume these never trigger loads
 		{
-			Class->GetDefaultObject();
+			SCOPED_BOOT_TIMING("CoreUObject Classes");
+			for (UClass* Class : NewClassesInCoreUObject) // we do these first because we assume these never trigger loads
+			{
+				UE_LOG(LogUObjectBootstrap, Verbose, TEXT("GetDefaultObject Begin %s %s"), *Class->GetOutermost()->GetName(), *Class->GetName());
+				Class->GetDefaultObject();
+				UE_LOG(LogUObjectBootstrap, Verbose, TEXT("GetDefaultObject End %s %s"), *Class->GetOutermost()->GetName(), *Class->GetName());
+			}
 		}
-		for (UClass* Class : NewClassesInEngine) // we do these second because we want to bring the engine up before the game
 		{
-			Class->GetDefaultObject();
+			SCOPED_BOOT_TIMING("Engine Classes");
+			for (UClass* Class : NewClassesInEngine) // we do these second because we want to bring the engine up before the game
+			{
+				UE_LOG(LogUObjectBootstrap, Verbose, TEXT("GetDefaultObject Begin %s %s"), *Class->GetOutermost()->GetName(), *Class->GetName());
+				Class->GetDefaultObject();
+				UE_LOG(LogUObjectBootstrap, Verbose, TEXT("GetDefaultObject End %s %s"), *Class->GetOutermost()->GetName(), *Class->GetName());
+			}
 		}
-		for (UClass* Class : NewClasses)
 		{
-			Class->GetDefaultObject();
+			SCOPED_BOOT_TIMING("Other Classes");
+			for (UClass* Class : NewClasses)
+			{
+				UE_LOG(LogUObjectBootstrap, Verbose, TEXT("GetDefaultObject Begin %s %s"), *Class->GetOutermost()->GetName(), *Class->GetName());
+				Class->GetDefaultObject();
+				UE_LOG(LogUObjectBootstrap, Verbose, TEXT("GetDefaultObject End %s %s"), *Class->GetOutermost()->GetName(), *Class->GetName());
+			}
 		}
-
 		FFeedbackContext& ErrorsFC = UClass::GetDefaultPropertiesFeedbackContext();
 		if (ErrorsFC.GetNumErrors() || ErrorsFC.GetNumWarnings())
 		{
@@ -819,20 +885,24 @@ static void UObjectLoadAllCompiledInDefaultProperties()
  */
 static void UObjectLoadAllCompiledInStructs()
 {
+	SCOPED_BOOT_TIMING("UObjectLoadAllCompiledInStructs");
 
-	// Load Enums first
 	TArray<FPendingEnumRegistrant> PendingEnumRegistrants = MoveTemp(GetDeferredCompiledInEnumRegistration());
-	for (const FPendingEnumRegistrant& EnumRegistrant : PendingEnumRegistrants)
-	{
-		// Make sure the package exists in case it does not contain any UObjects
-		CreatePackage(nullptr, EnumRegistrant.PackageName);
-	}
-
 	TArray<FPendingStructRegistrant> PendingStructRegistrants = MoveTemp(GetDeferredCompiledInStructRegistration());
-	for (const FPendingStructRegistrant& StructRegistrant : PendingStructRegistrants)
+
 	{
-		// Make sure the package exists in case it does not contain any UObjects or UEnums
-		CreatePackage(nullptr, StructRegistrant.PackageName);
+		SCOPED_BOOT_TIMING("UObjectLoadAllCompiledInStructs -  CreatePackages (could be optimized!)");
+		// Load Enums first
+		for (const FPendingEnumRegistrant& EnumRegistrant : PendingEnumRegistrants)
+		{
+			// Make sure the package exists in case it does not contain any UObjects
+			CreatePackage(nullptr, EnumRegistrant.PackageName);
+		}
+		for (const FPendingStructRegistrant& StructRegistrant : PendingStructRegistrants)
+		{
+			// Make sure the package exists in case it does not contain any UObjects or UEnums
+			CreatePackage(nullptr, StructRegistrant.PackageName);
+		}
 	}
 
 	// Load Structs
@@ -848,8 +918,19 @@ static void UObjectLoadAllCompiledInStructs()
 	}
 }
 
-void ProcessNewlyLoadedUObjects()
+void ProcessNewlyLoadedUObjects(FName Package, bool bCanProcessNewlyLoadedObjects)
 {
+	SCOPED_BOOT_TIMING("ProcessNewlyLoadedUObjects");
+#if USE_PER_MODULE_UOBJECT_BOOTSTRAP
+	if (Package != NAME_None)
+	{
+		UObjectReleaseModuleRegistrants(Package);
+	}
+#endif
+	if (!bCanProcessNewlyLoadedObjects)
+	{
+		return;
+	}
 	LLM_SCOPE(ELLMTag::UObject);
 	DECLARE_SCOPE_CYCLE_COUNTER(TEXT("ProcessNewlyLoadedUObjects"), STAT_ProcessNewlyLoadedUObjects, STATGROUP_ObjectVerbose);
 
@@ -860,7 +941,7 @@ void ProcessNewlyLoadedUObjects()
 	const TArray<FPendingEnumRegistrant>& DeferredCompiledInEnumRegistration = GetDeferredCompiledInEnumRegistration();
 
 	bool bNewUObjects = false;
-	while( GFirstPendingRegistrant || DeferredCompiledInRegistration.Num() || DeferredCompiledInStructRegistration.Num() || DeferredCompiledInEnumRegistration.Num() )
+	while (GFirstPendingRegistrant || DeferredCompiledInRegistration.Num() || DeferredCompiledInStructRegistration.Num() || DeferredCompiledInEnumRegistration.Num())
 	{
 		bNewUObjects = true;
 		UObjectProcessRegistrants();
@@ -915,6 +996,8 @@ static FAutoConsoleVariableRef CMaxObjectsInGame(
  */
 void UObjectBaseInit()
 {
+	SCOPED_BOOT_TIMING("UObjectBaseInit");
+
 	// Zero initialize and later on get value from .ini so it is overridable per game/ platform...
 	int32 MaxObjectsNotConsideredByGC = 0;
 	int32 SizeOfPermanentObjectPool = 0;
@@ -932,7 +1015,6 @@ void UObjectBaseInit()
 		bool bIsCookOnTheFly = FParse::Value(FCommandLine::Get(), TEXT("-filehostip="), Value);
 		if (bIsCookOnTheFly)
 		{
-			extern int32 GCreateGCClusters;
 			GCreateGCClusters = false;
 		}
 		else
@@ -974,7 +1056,7 @@ void UObjectBaseInit()
 	InitAsyncThread();
 
 	// Note initialized.
-	Internal::GObjInitialized = true;
+	Internal::GetUObjectSubsystemInitialised() = true;
 
 	UObjectProcessRegistrants();
 }
@@ -984,8 +1066,11 @@ void UObjectBaseInit()
  */
 void UObjectBaseShutdown()
 {
+	void ShutdownAsyncThread();
+	ShutdownAsyncThread();
+
 	GUObjectArray.ShutdownUObjectArray();
-	Internal::GObjInitialized = false;
+	Internal::GetUObjectSubsystemInitialised() = false;
 }
 
 /**

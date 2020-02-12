@@ -79,7 +79,7 @@ static NSString *PLCRASH_QUEUED_DIR = @"queued_reports";
  * @internal
  * Fatal signals to be monitored.
  */
-static int monitored_signals[] = {
+static int fatal_monitored_signals[] = {
     SIGABRT,
     SIGBUS,
     SIGFPE,
@@ -88,9 +88,17 @@ static int monitored_signals[] = {
     SIGTRAP
 };
 
+/* EG BEGIN */
+static int non_fatal_monitored_signals[] = {
+    SIGUSR2
+};
+
 /** @internal
  * number of signals in the fatal signals list */
-static int monitored_signals_count = (sizeof(monitored_signals) / sizeof(monitored_signals[0]));
+static int fatal_monitored_signals_count = (sizeof(fatal_monitored_signals) / sizeof(fatal_monitored_signals[0]));
+
+static int non_fatal_monitored_signals_count = (sizeof(non_fatal_monitored_signals) / sizeof(non_fatal_monitored_signals[0]));
+/* EG END */
 
 /**
  * @internal
@@ -196,36 +204,51 @@ static plcrash_error_t plcrash_write_report (plcrashreporter_handler_ctx_t *sigc
     return err;
 }
 
+static volatile sig_atomic_t handling_fatal_signal = 0;
+
+static void spin_wait_for_max_seconds_then_exit(float seconds_to_wait)
+{
+    float current = 0.0f;
+    /* We are never coming out of this loop, wait until max time then exit */
+    while (1) {
+        if (current > seconds_to_wait) {
+            exit(0);
+        }
+
+        usleep(1000);
+        current += 0.001f;
+    }
+}
+
 /**
  * @internal
  *
  * Signal handler callback.
  */
+/* EG BEGIN */
 static bool signal_handler_callback (int signal, siginfo_t *info, pl_ucontext_t *uap, void *context, PLCrashSignalHandlerCallback *next) {
+
+    bool fatal_signal = true;
+
+    for (int i = 0; i < non_fatal_monitored_signals_count; i++) {
+        if (info->si_signo == non_fatal_monitored_signals[i]) {
+            fatal_signal = false;
+            break;
+        }
+    }
+
+    /* If we are a fatal signal, we *can* only handle one at a time. So avoid allow multiple fatal signals going through */
+    if (fatal_signal) {
+        /* Returns true if set to 1, otherwise we failed to meaning more then one thread has been past here already */
+        if (!__sync_bool_compare_and_swap(&handling_fatal_signal, 0, 1)) {
+            spin_wait_for_max_seconds_then_exit(60);
+        }
+    }
+
     plcrashreporter_handler_ctx_t *sigctx = context;
     plcrash_async_thread_state_t thread_state;
     plcrash_log_signal_info_t signal_info;
     plcrash_log_bsd_signal_info_t bsd_signal_info;
-    
-    /* Remove all signal handlers -- if the crash reporting code fails, the default terminate
-     * action will occur.
-     *
-     * NOTE: SA_RESETHAND breaks SA_SIGINFO on ARM, so we reset the handlers manually.
-     * http://openradar.appspot.com/11839803
-     *
-     * TODO: When forwarding signals (eg, to Mono's runtime), resetting the signal handlers
-     * could result in incorrect runtime behavior; we should revisit resetting the
-     * signal handlers once we address double-fault handling.
-     */
-    for (int i = 0; i < monitored_signals_count; i++) {
-        struct sigaction sa;
-        
-        memset(&sa, 0, sizeof(sa));
-        sa.sa_handler = SIG_DFL;
-        sigemptyset(&sa.sa_mask);
-        
-        sigaction(monitored_signals[i], &sa, NULL);
-    }
 
     /* Extract the thread state */
     // XXX_ARM64 rdar://14970271 -- In the Xcode 5 GM SDK, _STRUCT_MCONTEXT is not correctly
@@ -248,9 +271,37 @@ static bool signal_handler_callback (int signal, siginfo_t *info, pl_ucontext_t 
     /* Call any post-crash callback */
     if (crashCallbacks.handleSignal != NULL)
         crashCallbacks.handleSignal(info, uap, crashCallbacks.context);
+
+    // This was moved to the last statement, which may not work how it was original an issue as mentioned in the comment
+    /* Remove all signal handlers -- if the crash reporting code fails, the default terminate
+     * action will occur.
+     *
+     * NOTE: SA_RESETHAND breaks SA_SIGINFO on ARM, so we reset the handlers manually.
+     * http://openradar.appspot.com/11839803
+     *
+     * TODO: When forwarding signals (eg, to Mono's runtime), resetting the signal handlers
+     * could result in incorrect runtime behavior; we should revisit resetting the
+     * signal handlers once we address double-fault handling.
+     */
+
+    /* If we are fatal set all signals to DFL */
+    if (fatal_signal) {
+        for (int i = 0; i < fatal_monitored_signals_count; i++) {
+            struct sigaction sa;
+
+            memset(&sa, 0, sizeof(sa));
+            sa.sa_handler = SIG_DFL;
+            sigemptyset(&sa.sa_mask);
+
+            sigaction(fatal_monitored_signals[i], &sa, NULL);
+        }
+    }
     
-    return false;
+    // When we hit a non fatal signal we return true for handling the signal
+    // Otherwise we will continue to re-raise the siganl
+    return !fatal_signal;
 }
+/* EG END */
 
 #if PLCRASH_FEATURE_MACH_EXCEPTIONS
 /* State and callback used to generate thread state for the calling mach thread. */
@@ -593,10 +644,16 @@ static PLCrashReporter *sharedReporter = nil;
     /* Enable the signal handler */
     switch (_config.signalHandlerType) {
         case PLCrashReporterSignalHandlerTypeBSD:
-            for (size_t i = 0; i < monitored_signals_count; i++) {
-                if (![[PLCrashSignalHandler sharedHandler] registerHandlerForSignal: monitored_signals[i] callback: &signal_handler_callback context: &signal_handler_context error: outError])
+            for (size_t i = 0; i < fatal_monitored_signals_count; i++) {
+                if (![[PLCrashSignalHandler sharedHandler] registerHandlerForSignal: fatal_monitored_signals[i] callback: &signal_handler_callback context: &signal_handler_context error: outError])
                     return NO;
             }
+            /* EG BEGIN */
+            for (size_t i = 0; i < non_fatal_monitored_signals_count; i++) {
+                if (![[PLCrashSignalHandler sharedHandler] registerHandlerForSignal: non_fatal_monitored_signals[i] callback: &signal_handler_callback context: &signal_handler_context error: outError])
+                    return NO;
+            }
+            /* EG END */
             break;
 
 #if PLCRASH_FEATURE_MACH_EXCEPTIONS
@@ -1082,7 +1139,7 @@ cleanup:
 PLCR_EXPORT int plcrashreporter_backtrace(void** Backtrace, int Depth)
 {
     plframe_cursor_t FrameCursor;
-    uint32 Frame = 0;
+    unsigned Frame = 0;
     plframe_error_t Err = plframe_cursor_init(&FrameCursor, mach_task_self(), &signal_crashed_thread_state, &shared_image_list);
     if (Err == PLFRAME_ESUCCESS)
     {

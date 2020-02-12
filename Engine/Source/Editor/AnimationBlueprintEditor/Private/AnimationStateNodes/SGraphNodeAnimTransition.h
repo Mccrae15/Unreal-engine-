@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -47,6 +47,7 @@ private:
 private:
 	FText GetPreviewCornerText(bool reverse) const;
 	FSlateColor GetTransitionColor() const;
+	const FSlateBrush* GetTransitionIconImage() const;
 
 	TSharedRef<SWidget> GenerateInlineDisplayOrEditingWidget(bool bShowGraphPreview);
 	TSharedRef<SWidget> GenerateRichTooltip();

@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "Internationalization/StringTable.h"
 #include "Internationalization/StringTableCore.h"
@@ -124,6 +124,11 @@ private:
 	}
 
 	//~ IStringTableEngineBridge interface
+	virtual bool CanFindOrLoadStringTableAssetImpl() override
+	{
+		return IsInGameThread() && !IsGarbageCollecting() && !GIsSavingPackage;
+	}
+
 	virtual int32 LoadStringTableAssetImpl(const FName InTableId, FLoadStringTableAssetCallback InLoadedCallback) override
 	{
 		const FSoftObjectPath StringTableAssetReference = GetAssetReference(InTableId);
@@ -240,12 +245,31 @@ private:
 		}
 	}
 
-	virtual void CollectStringTableAssetReferencesImpl(const FName InTableId, FStructuredArchive::FSlot Slot) override
+	virtual void CollectStringTableAssetReferencesImpl(FName& InOutTableId, FStructuredArchive::FSlot Slot) override
 	{
 		check(Slot.GetUnderlyingArchive().IsObjectReferenceCollector());
 
-		UObject* StringTableAsset = FStringTableRegistry::Get().FindStringTableAsset(InTableId);
-		Slot << StringTableAsset;
+		UObject* StringTableAsset = FStringTableRegistry::Get().FindStringTableAsset(InOutTableId);
+
+		FSoftObjectPath StringTableAssetReference = GetAssetReference(InOutTableId);
+		if (StringTableAssetReference.IsValid())
+		{
+			FStructuredArchiveRecord Record = Slot.EnterRecord();
+
+			// Save a hard-reference so that dependent tables are loaded correctly
+			Record << SA_VALUE(TEXT("Ptr"), StringTableAsset);
+
+			// Save a weak-reference so that redirector fix-up during rename works
+			Record << SA_VALUE(TEXT("Ref"), StringTableAssetReference);
+
+			// This may have redirected our weak-reference
+			InOutTableId = *StringTableAssetReference.ToString();
+		}
+		else
+		{
+			// We have to write something to the slot...
+			Slot << StringTableAsset;
+		}
 	}
 
 	virtual bool IsStringTableFromAssetImpl(const FName InTableId) override
@@ -268,7 +292,7 @@ private:
 			int32 DotIndex = INDEX_NONE;
 			if (StringTablePackageName.FindChar(TEXT('.'), DotIndex))
 			{
-				StringTablePackageName = StringTablePackageName.Left(DotIndex);
+				StringTablePackageName.LeftInline(DotIndex, false);
 			}
 		}
 
@@ -286,6 +310,11 @@ private:
 	{
 		FScopeLock KeepAliveStringTablesLock(&KeepAliveStringTablesCS);
 		Collector.AddReferencedObjects(KeepAliveStringTables);
+	}
+
+	virtual FString GetReferencerName() const override
+	{
+		return TEXT("FStringTableEngineBridge");
 	}
 
 private:
@@ -360,7 +389,7 @@ void UStringTable::PostLoad()
 	if (FSlateApplicationBase::IsInitialized())
 	{
 		// Ensure all invalidation panels are updated now that the string data is loaded
-		FSlateApplicationBase::Get().InvalidateAllWidgets();
+		FSlateApplicationBase::Get().InvalidateAllWidgets(false);
 	}
 }
 

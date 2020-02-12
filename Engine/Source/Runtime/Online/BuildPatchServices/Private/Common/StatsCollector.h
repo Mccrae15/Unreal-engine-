@@ -1,11 +1,11 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 #pragma once
 
 #include "CoreMinimal.h"
 
 namespace BuildPatchServices
 {
-	enum EStatFormat
+	enum class EStatFormat : uint8
 	{
 		// Using the AccumulateTimeBegin and End functions, measured in cycles
 		Timer,

@@ -1,10 +1,12 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
 #include "AnimSequencerInstanceProxy.h"
 #include "AnimNode_ControlRig_ExternalSource.h"
 #include "AnimNodes/AnimNode_LayeredBoneBlend.h"
+#include "AnimNodes/AnimNode_BlendListByBool.h"
+#include "Animation/AnimNode_SequencePlayer.h"
 #include "ControlRigSequencerAnimInstanceProxy.generated.h"
 
 struct FInputBlendPose;
@@ -39,14 +41,15 @@ public:
 	}
 
 	// FAnimInstanceProxy interface
-	virtual void CacheBones() override;
 	virtual void Initialize(UAnimInstance* InAnimInstance) override;
 	virtual void Update(float DeltaSeconds) override;
+	virtual FAnimNode_Base* GetCustomRootNode() override;
 
 	// FAnimSequencerInstanceProxy interface
 	virtual void ResetNodes() override;
 
-	bool UpdateControlRig(UControlRig* InControlRig, uint32 SequenceId, bool bAdditive, bool bApplyBoneFilter, const FInputBlendPose& BoneFilter, float Weight);
+	bool UpdateControlRig(UControlRig* InControlRig, uint32 SequenceId, bool bAdditive, bool bApplyBoneFilter, const FInputBlendPose& BoneFilter, float Weight, const FControlRigIOSettings& InputSettings, bool bExecute);
+	bool SetAnimationAsset(class UAnimationAsset* NewAsset);
 
 private:
 	void InitControlRigTrack(UControlRig* InControlRig, bool bAdditive, bool bApplyBoneFilter, const FInputBlendPose& BoneFilter, uint32 SequenceId);
@@ -55,6 +58,8 @@ private:
 
 	FAnimNode_LayeredBoneBlend LayeredBoneBlendNode;
 	FAnimNode_LayeredBoneBlend AdditiveLayeredBoneBlendNode;
+	FAnimNode_BlendListByBool BoolBlendNode;
+	FAnimNode_SequencePlayer PreviewPlayerNode;
 
 	bool bLayeredBlendChanged;
 	bool bAdditiveLayeredBlendChanged;

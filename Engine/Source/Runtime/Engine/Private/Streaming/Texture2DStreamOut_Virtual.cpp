@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 /*=============================================================================
 Texture2DStreamOut_Virtual.cpp: Definitions of classes used for texture.
@@ -27,7 +27,7 @@ void FTexture2DStreamOut_Virtual::Finalize(const FContext& Context)
 	static auto CVarVirtualTextureReducedMemoryEnabled = IConsoleManager::Get().FindTConsoleVariableDataInt(TEXT("r.VirtualTextureReducedMemory"));
 	check(CVarVirtualTextureReducedMemoryEnabled);
 
-	if (CVarVirtualTextureReducedMemoryEnabled->GetValueOnRenderThread() == 0 || RequestedMips > UTexture2D::GetMinTextureResidentMipCount())
+	if (CVarVirtualTextureReducedMemoryEnabled->GetValueOnRenderThread() == 0 || RequestedMips > Context.Texture->GetMinTextureResidentMipCount())
 	{
 		IntermediateTextureRHI = Context.Resource->GetTexture2DRHI();
 		RHIVirtualTextureSetFirstMipVisible(IntermediateTextureRHI, PendingFirstMip);

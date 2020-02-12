@@ -1,13 +1,13 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "DisplayClusterClusterSyncClient.h"
 #include "DisplayClusterClusterSyncMsg.h"
 
-#include "Misc/DisplayClusterLog.h"
 #include "Misc/ScopeLock.h"
 #include "Misc/FrameRate.h"
 #include "Misc/Timecode.h"
 
+#include "DisplayClusterLog.h"
 
 
 FDisplayClusterClusterSyncClient::FDisplayClusterClusterSyncClient() :
@@ -48,7 +48,7 @@ void FDisplayClusterClusterSyncClient::WaitForTickEnd()
 	TSharedPtr<FDisplayClusterMessage> Response = SendRecvMsg(Request);
 }
 
-void FDisplayClusterClusterSyncClient::GetDeltaTime(float& DeltaTime)
+void FDisplayClusterClusterSyncClient::GetDeltaTime(float& DeltaSeconds)
 {
 	static const TSharedPtr<FDisplayClusterMessage> Request(new FDisplayClusterMessage(FDisplayClusterClusterSyncMsg::GetDeltaTime::name, FDisplayClusterClusterSyncMsg::TypeRequest, FDisplayClusterClusterSyncMsg::ProtocolName));
 	TSharedPtr<FDisplayClusterMessage> Response = SendRecvMsg(Request);
@@ -59,16 +59,18 @@ void FDisplayClusterClusterSyncClient::GetDeltaTime(float& DeltaTime)
 	}
 
 	// Extract sync data from response message
-	if (Response->GetArg(FDisplayClusterClusterSyncMsg::GetDeltaTime::argDeltaTime, DeltaTime) == false)
+	if (Response->GetArg(FDisplayClusterClusterSyncMsg::GetDeltaTime::argDeltaSeconds, DeltaSeconds) == false)
 	{
-		UE_LOG(LogDisplayClusterNetworkMsg, Error, TEXT("Couldn't extract an argument: %s"), FDisplayClusterClusterSyncMsg::GetDeltaTime::argDeltaTime);
+		UE_LOG(LogDisplayClusterNetworkMsg, Error, TEXT("Couldn't extract an argument: %s"), FDisplayClusterClusterSyncMsg::GetDeltaTime::argDeltaSeconds);
 	}
 }
 
-void FDisplayClusterClusterSyncClient::GetTimecode(FTimecode& Timecode, FFrameRate& FrameRate)
+void FDisplayClusterClusterSyncClient::GetFrameTime(TOptional<FQualifiedFrameTime>& FrameTime)
 {
-	static const TSharedPtr<FDisplayClusterMessage> Request(new FDisplayClusterMessage(FDisplayClusterClusterSyncMsg::GetTimecode::name, FDisplayClusterClusterSyncMsg::TypeRequest, FDisplayClusterClusterSyncMsg::ProtocolName));
+	static const TSharedPtr<FDisplayClusterMessage> Request(new FDisplayClusterMessage(FDisplayClusterClusterSyncMsg::GetFrameTime::name, FDisplayClusterClusterSyncMsg::TypeRequest, FDisplayClusterClusterSyncMsg::ProtocolName));
 	TSharedPtr<FDisplayClusterMessage> Response = SendRecvMsg(Request);
+
+	FrameTime.Reset();
 
 	if (!Response.IsValid())
 	{
@@ -76,19 +78,30 @@ void FDisplayClusterClusterSyncClient::GetTimecode(FTimecode& Timecode, FFrameRa
 	}
 
 	// Extract sync data from response message
-	if (Response->GetArg(FDisplayClusterClusterSyncMsg::GetTimecode::argTimecode, Timecode) == false)
+	bool bIsValid = false;
+	if (Response->GetArg(FDisplayClusterClusterSyncMsg::GetFrameTime::argIsValid, bIsValid) == false)
 	{
-		UE_LOG(LogDisplayClusterNetworkMsg, Error, TEXT("Couldn't extract an argument: %s"), FDisplayClusterClusterSyncMsg::GetTimecode::argTimecode);
+		UE_LOG(LogDisplayClusterNetworkMsg, Error, TEXT("Couldn't extract an argument: %s"), FDisplayClusterClusterSyncMsg::GetFrameTime::argIsValid);
 	}
-	if (Response->GetArg(FDisplayClusterClusterSyncMsg::GetTimecode::argFrameRate, FrameRate) == false)
+
+	if (bIsValid)
 	{
-		UE_LOG(LogDisplayClusterNetworkMsg, Error, TEXT("Couldn't extract an argument: %s"), FDisplayClusterClusterSyncMsg::GetTimecode::argTimecode);
+		FQualifiedFrameTime NewFrameTime;
+		if (Response->GetArg(FDisplayClusterClusterSyncMsg::GetFrameTime::argFrameTime, NewFrameTime) == false)
+		{
+			UE_LOG(LogDisplayClusterNetworkMsg, Error, TEXT("Couldn't extract an argument: %s"), FDisplayClusterClusterSyncMsg::GetFrameTime::argFrameTime);
+		}
+
+		FrameTime = NewFrameTime;
 	}
 }
 
-void FDisplayClusterClusterSyncClient::GetSyncData(FDisplayClusterMessage::DataType& Data)
+void FDisplayClusterClusterSyncClient::GetSyncData(FDisplayClusterMessage::DataType& SyncData, EDisplayClusterSyncGroup SyncGroup)
 {
-	static const TSharedPtr<FDisplayClusterMessage> Request(new FDisplayClusterMessage(FDisplayClusterClusterSyncMsg::GetSyncData::name, FDisplayClusterClusterSyncMsg::TypeRequest, FDisplayClusterClusterSyncMsg::ProtocolName));
+	static TSharedPtr<FDisplayClusterMessage> Request(new FDisplayClusterMessage(FDisplayClusterClusterSyncMsg::GetSyncData::name, FDisplayClusterClusterSyncMsg::TypeRequest, FDisplayClusterClusterSyncMsg::ProtocolName));
+	
+	Request->SetArg(FDisplayClusterClusterSyncMsg::GetSyncData::argSyncGroup, (int)SyncGroup);
+	
 	TSharedPtr<FDisplayClusterMessage> Response = SendRecvMsg(Request);
 
 	if (!Response.IsValid())
@@ -96,11 +109,11 @@ void FDisplayClusterClusterSyncClient::GetSyncData(FDisplayClusterMessage::DataT
 		return;
 	}
 
-	// Extract sync data from response message
-	Data = Response->GetArgs();
+	// Extract data from response message
+	SyncData = Response->GetArgs();
 }
 
-void FDisplayClusterClusterSyncClient::GetInputData(FDisplayClusterMessage::DataType& Data)
+void FDisplayClusterClusterSyncClient::GetInputData(FDisplayClusterMessage::DataType& InputData)
 {
 	static const TSharedPtr<FDisplayClusterMessage> Request(new FDisplayClusterMessage(FDisplayClusterClusterSyncMsg::GetInputData::name, FDisplayClusterClusterSyncMsg::TypeRequest, FDisplayClusterClusterSyncMsg::ProtocolName));
 	TSharedPtr<FDisplayClusterMessage> Response = SendRecvMsg(Request);
@@ -110,11 +123,11 @@ void FDisplayClusterClusterSyncClient::GetInputData(FDisplayClusterMessage::Data
 		return;
 	}
 
-	// Extract sync data from response message
-	Data = Response->GetArgs();
+	// Extract data from response message
+	InputData = Response->GetArgs();
 }
 
-void FDisplayClusterClusterSyncClient::GetEventsData(FDisplayClusterMessage::DataType& Data)
+void FDisplayClusterClusterSyncClient::GetEventsData(FDisplayClusterMessage::DataType& EventsData)
 {
 	static const TSharedPtr<FDisplayClusterMessage> Request(new FDisplayClusterMessage(FDisplayClusterClusterSyncMsg::GetEventsData::name, FDisplayClusterClusterSyncMsg::TypeRequest, FDisplayClusterClusterSyncMsg::ProtocolName));
 	TSharedPtr<FDisplayClusterMessage> Response = SendRecvMsg(Request);
@@ -124,6 +137,20 @@ void FDisplayClusterClusterSyncClient::GetEventsData(FDisplayClusterMessage::Dat
 		return;
 	}
 
-	// Extract sync data from response message
-	Data = Response->GetArgs();
+	// Extract data from response message
+	EventsData = Response->GetArgs();
+}
+
+void FDisplayClusterClusterSyncClient::GetNativeInputData(FDisplayClusterMessage::DataType& NativeInputData)
+{
+	static const TSharedPtr<FDisplayClusterMessage> Request(new FDisplayClusterMessage(FDisplayClusterClusterSyncMsg::GetNativeInputData::name, FDisplayClusterClusterSyncMsg::TypeRequest, FDisplayClusterClusterSyncMsg::ProtocolName));
+	TSharedPtr<FDisplayClusterMessage> Response = SendRecvMsg(Request);
+
+	if (!Response.IsValid())
+	{
+		return;
+	}
+
+	// Extract data from response message
+	NativeInputData = Response->GetArgs();
 }

@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -13,8 +13,9 @@
 #include "Components/PrimitiveComponent.h"
 #include "MeshBatch.h"
 #include "LocalVertexFactory.h"
-#include "GenericOctree.h"
+#include "Math/GenericOctree.h"
 #include "StaticMeshResources.h"
+#include "NavigationSystemTypes.h"
 #include "NavMeshRenderingComponent.generated.h"
 
 class APlayerController;
@@ -41,6 +42,7 @@ enum class ENavMeshDetailFlags : uint8
 	Clusters,
 	NavOctree,
 	NavOctreeDetails,
+	MarkForbiddenPolys,
 };
 
 // exported to API for GameplayDebugger module
@@ -59,6 +61,8 @@ struct NAVIGATIONSYSTEM_API FNavMeshSceneProxyData : public TSharedFromThis<FNav
 	TArray<FDebugRenderSceneProxy::FDebugLine> NavMeshEdgeLines;
 	TArray<FDebugRenderSceneProxy::FDebugLine> NavLinkLines;
 	TArray<FDebugRenderSceneProxy::FDebugLine> ClusterLinkLines;
+	TArray<FDebugRenderSceneProxy::FDebugBox> AuxBoxes;
+	TArray<FDebugRenderSceneProxy::FMesh> Meshes;
 
 	struct FDebugText
 	{
@@ -88,6 +92,11 @@ struct NAVIGATIONSYSTEM_API FNavMeshSceneProxyData : public TSharedFromThis<FNav
 #if WITH_RECAST
 	int32 GetDetailFlags(const ARecastNavMesh* NavMesh) const;
 	void GatherData(const ARecastNavMesh* NavMesh, int32 InNavDetailFlags, const TArray<int32>& TileSet);
+
+#if RECAST_INTERNAL_DEBUG_DATA
+	void AddMeshForInternalData(const struct FRecastInternalDebugData& InInternalData);
+#endif //RECAST_INTERNAL_DEBUG_DATA
+
 #endif
 };
 
@@ -96,7 +105,7 @@ class NAVIGATIONSYSTEM_API FNavMeshSceneProxy final : public FDebugRenderScenePr
 {
 	friend class FNavMeshDebugDrawDelegateHelper;
 public:
-	SIZE_T GetTypeHash() const override;
+	virtual SIZE_T GetTypeHash() const override;
 
 	FNavMeshSceneProxy(const UPrimitiveComponent* InComponent, FNavMeshSceneProxyData* InProxyData, bool ForceToRender = false);
 	virtual ~FNavMeshSceneProxy();
@@ -130,7 +139,7 @@ private:
 };
 
 #if WITH_RECAST && !UE_BUILD_SHIPPING && !UE_BUILD_TEST
-class FNavMeshDebugDrawDelegateHelper : public FDebugDrawDelegateHelper
+class NAVIGATIONSYSTEM_VTABLE FNavMeshDebugDrawDelegateHelper : public FDebugDrawDelegateHelper
 {
 	typedef FDebugDrawDelegateHelper Super;
 
@@ -183,7 +192,7 @@ public:
 	//~ End UPrimitiveComponent Interface
 
 	//~ Begin UActorComponent Interface
-	virtual void CreateRenderState_Concurrent() override;
+	virtual void CreateRenderState_Concurrent(FRegisterComponentContext* Context) override;
 	virtual void DestroyRenderState_Concurrent() override;
 	//~ End UActorComponent Interface
 
@@ -197,6 +206,10 @@ public:
 	static bool IsNavigationShowFlagSet(const UWorld* World);
 
 protected:
+	/** Gathers drawable information from NavMesh and puts it in OutProxyData. 
+	 *	Override to add additional information to OutProxyData.*/
+	virtual void GatherData(const ARecastNavMesh& NavMesh, FNavMeshSceneProxyData& OutProxyData) const;
+
 	void TimerFunction();
 
 protected:
@@ -214,5 +227,5 @@ namespace FNavMeshRenderingHelpers
 {
 	NAVIGATIONSYSTEM_API void AddVertex(FNavMeshSceneProxyData::FDebugMeshData& MeshData, const FVector& Pos, const FColor Color = FColor::White);
 
-	NAVIGATIONSYSTEM_API void AddTriangle(FNavMeshSceneProxyData::FDebugMeshData& MeshData, int32 V0, int32 V1, int32 V2);
+	NAVIGATIONSYSTEM_API void AddTriangleIndices(FNavMeshSceneProxyData::FDebugMeshData& MeshData, int32 V0, int32 V1, int32 V2);
 }

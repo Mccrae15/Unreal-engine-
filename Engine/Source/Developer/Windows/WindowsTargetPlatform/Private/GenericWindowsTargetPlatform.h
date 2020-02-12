@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -6,6 +6,7 @@
 #include "Common/TargetPlatformBase.h"
 #include "Misc/ConfigCacheIni.h"
 #include "LocalPcTargetDevice.h"
+#include "Serialization/MemoryLayout.h"
 
 #if WITH_ENGINE
 	#include "Sound/SoundWave.h"
@@ -13,9 +14,12 @@
 	#include "Engine/VolumeTexture.h"
 	#include "StaticMeshResources.h"
 	#include "RHI.h"
+	#include "AudioCompressionSettings.h"
 #endif // WITH_ENGINE
 
+
 #define LOCTEXT_NAMESPACE "TGenericWindowsTargetPlatform"
+
 
 /**
  * Template for Windows target platforms
@@ -37,7 +41,7 @@ public:
 		// only add local device if actually running on Windows
 		LocalDevice = MakeShareable(new TLocalPcTargetDevice<PLATFORM_64BITS>(*this));
 #endif
-		
+
 	#if WITH_ENGINE
 		FConfigCacheIni::LoadLocalIniFile(EngineSettings, TEXT("Engine"), true, *this->PlatformName());
 		TextureLODSettings = nullptr; // These are registered by the device profile system.
@@ -49,7 +53,6 @@ public:
 		GetAllTargetedShaderFormats(TargetedShaderFormats);
 
 		static FName NAME_PCD3D_SM5(TEXT("PCD3D_SM5"));
-		static FName NAME_PCD3D_SM4(TEXT("PCD3D_SM4"));
 		static FName NAME_VULKAN_SM5(TEXT("SF_VULKAN_SM5"));
 
 		bSupportDX11TextureFormats = true;
@@ -63,10 +66,6 @@ public:
 				if (TargetedShaderFormat == NAME_PCD3D_SM5)
 				{
 					ShaderPlatform = SP_PCD3D_SM5;
-				}
-				else if (TargetedShaderFormat == NAME_PCD3D_SM4)
-				{
-					ShaderPlatform = SP_PCD3D_SM4;
 				}
 				else if (TargetedShaderFormat == NAME_VULKAN_SM5)
 				{
@@ -87,10 +86,8 @@ public:
 
 		// If we are targeting ES 2.0/3.1, we also must cook encoded HDR reflection captures
 		static FName NAME_SF_VULKAN_ES31(TEXT("SF_VULKAN_ES31"));
-		static FName NAME_OPENGL_150_ES2(TEXT("GLSL_150_ES2"));
 		static FName NAME_OPENGL_150_ES3_1(TEXT("GLSL_150_ES31"));
-		bRequiresEncodedHDRReflectionCaptures =	TargetedShaderFormats.Contains(NAME_SF_VULKAN_ES31) 
-												 || TargetedShaderFormats.Contains(NAME_OPENGL_150_ES2) 
+		bRequiresEncodedHDRReflectionCaptures =	TargetedShaderFormats.Contains(NAME_SF_VULKAN_ES31)
 												 || TargetedShaderFormats.Contains(NAME_OPENGL_150_ES3_1);
 	#endif
 	}
@@ -110,7 +107,7 @@ public:
 		}
 	}
 
-	virtual bool GenerateStreamingInstallManifest(const TMultiMap<FString, int32>& ChunkMap, const TSet<int32>& ChunkIDsInUse) const override
+	virtual bool GenerateStreamingInstallManifest(const TMultiMap<FString, int32>& PakchunkMap, const TSet<int32>& PakchunkIndicesInUse) const override
 	{
 		return true;
 	}
@@ -205,26 +202,18 @@ public:
 		if (!IS_DEDICATED_SERVER)
 		{
 			static FName NAME_PCD3D_SM5(TEXT("PCD3D_SM5"));
-			static FName NAME_PCD3D_SM4(TEXT("PCD3D_SM4"));
-			static FName NAME_GLSL_150(TEXT("GLSL_150"));
 			static FName NAME_GLSL_430(TEXT("GLSL_430"));
 			static FName NAME_VULKAN_ES31(TEXT("SF_VULKAN_ES31"));
-			static FName NAME_OPENGL_150_ES2(TEXT("GLSL_150_ES2"));
 			static FName NAME_OPENGL_150_ES3_1(TEXT("GLSL_150_ES31"));
 			static FName NAME_VULKAN_SM5(TEXT("SF_VULKAN_SM5"));
 			static FName NAME_PCD3D_ES3_1(TEXT("PCD3D_ES31"));
-			static FName NAME_PCD3D_ES2(TEXT("PCD3D_ES2"));
 
 			OutFormats.AddUnique(NAME_PCD3D_SM5);
-			OutFormats.AddUnique(NAME_PCD3D_SM4);
-			OutFormats.AddUnique(NAME_GLSL_150);
 			OutFormats.AddUnique(NAME_GLSL_430);
 			OutFormats.AddUnique(NAME_VULKAN_ES31);
-			OutFormats.AddUnique(NAME_OPENGL_150_ES2);
 			OutFormats.AddUnique(NAME_OPENGL_150_ES3_1);
 			OutFormats.AddUnique(NAME_VULKAN_SM5);
 			OutFormats.AddUnique(NAME_PCD3D_ES3_1);
-			OutFormats.AddUnique(NAME_PCD3D_ES2);
 		}
 	}
 
@@ -237,7 +226,7 @@ public:
 		// Gather the list of Target RHIs and filter out any that may be invalid.
 		TArray<FName> PossibleShaderFormats;
 		GetAllPossibleShaderFormats(PossibleShaderFormats);
-		
+
 		for (int32 ShaderFormatIdx = TargetedShaderFormats.Num() - 1; ShaderFormatIdx >= 0; ShaderFormatIdx--)
 		{
 			FString ShaderFormat = TargetedShaderFormats[ShaderFormatIdx];
@@ -257,12 +246,11 @@ public:
 		return StaticMeshLODSettings;
 	}
 
-	virtual void GetTextureFormats( const UTexture* InTexture, TArray<FName>& OutFormats ) const override
+	virtual void GetTextureFormats( const UTexture* InTexture, TArray< TArray<FName> >& OutFormats) const override
 	{
 		if (!IS_DEDICATED_SERVER)
 		{
-			FName TextureFormatName = GetDefaultTextureFormatName(this, InTexture, EngineSettings, bSupportDX11TextureFormats, bSupportCompressedVolumeTexture);
-			OutFormats.Add(TextureFormatName);
+			GetDefaultTextureFormatNamePerLayer(OutFormats.AddDefaulted_GetRef(), this, InTexture, EngineSettings, bSupportDX11TextureFormats, bSupportCompressedVolumeTexture);
 		}
 	}
 
@@ -288,6 +276,7 @@ public:
 		static FName NameBGRA8(TEXT("BGRA8"));
 		static FName NameXGXR8(TEXT("XGXR8"));
 		static FName NameG8(TEXT("G8"));
+		static FName NameG16(TEXT("G16"));
 		static FName NameVU8(TEXT("VU8"));
 		static FName NameRGBA16F(TEXT("RGBA16F"));
 		static FName NameBC6H(TEXT("BC6H"));
@@ -310,6 +299,10 @@ public:
 			if (SourceFormat == TSF_RGBA16F)
 			{
 				TextureFormatName = NameRGBA16F;
+			}
+			else if (SourceFormat == TSF_G16)
+			{
+				TextureFormatName = NameG16;
 			}
 			else if (SourceFormat == TSF_G8 || Settings == TC_Grayscale)
 			{
@@ -406,9 +399,16 @@ public:
 
 	virtual FName GetWaveFormat( const class USoundWave* Wave ) const override
 	{
-		static FName NAME_OGG(TEXT("OGG"));
-		static FName NAME_OPUS(TEXT("OPUS"));
-		
+		static const FName NAME_ADPCM(TEXT("ADPCM"));
+		static const FName NAME_OGG(TEXT("OGG"));
+		static const FName NAME_OPUS(TEXT("OPUS"));
+
+		// Seekable streams need to pick a codec which allows fixed-sized frames so we can compute stream chunk index to load
+		if (Wave->IsSeekableStreaming())
+		{
+			return NAME_ADPCM;
+		}
+
 #if !USE_VORBIS_FOR_STREAMING
 		if (Wave->IsStreaming())
 		{
@@ -421,15 +421,13 @@ public:
 
 	virtual void GetAllWaveFormats(TArray<FName>& OutFormats) const override
 	{
+		static const FName NAME_ADPCM(TEXT("ADPCM"));
 		static FName NAME_OGG(TEXT("OGG"));
 		static FName NAME_OPUS(TEXT("OPUS"));
+
+		OutFormats.Add(NAME_ADPCM);
 		OutFormats.Add(NAME_OGG);
 		OutFormats.Add(NAME_OPUS);
-	}
-
-	virtual FPlatformAudioCookOverrides* GetAudioCompressionSettings() const override
-	{
-		return nullptr;
 	}
 
 #endif //WITH_ENGINE

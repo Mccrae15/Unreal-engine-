@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -39,10 +39,10 @@ protected:
 
 	/* Creates and adds (or reuses a ExportMaterialProxy from the pool if MaterialBaking.UseMaterialProxyCaching is set to 1) */
 	FExportMaterialProxy* CreateMaterialProxy(UMaterialInterface* Material, const EMaterialProperty Property );
-	
-	/** Helper function to read pixel data from the given render target to Output */
-	void ReadTextureOutput(FTextureRenderTargetResource* RenderTargetResource, EMaterialProperty Property, FBakeOutput& Output);	
-	
+
+	/** Helper for emissive color conversion to Output */
+	static void ProcessEmissiveOutput(const FFloat16Color* Color16, const FIntPoint& OutputSize, TArray<FColor>& Output, float& EmissiveScale);
+
 	/** Cleans up all cached material proxies in MaterialProxyPool */
 	void CleanupMaterialProxies();
 
@@ -53,7 +53,10 @@ private:
 	TArray<UTextureRenderTarget2D*> RenderTargetPool;
 
 	/** Pool of cached material proxies to optimize material baking workflow, stays resident when MaterialBaking.UseMaterialProxyCaching is set to 1 */
-	TMap<TPair<UMaterialInterface*, EMaterialProperty>, FExportMaterialProxy*> MaterialProxyPool;
+	typedef TWeakObjectPtr<UMaterialInterface>				FMaterialPoolKey;
+	typedef TPair<EMaterialProperty, FExportMaterialProxy*> FMaterialPoolValue;
+	typedef TMultiMap<FMaterialPoolKey, FMaterialPoolValue, FDefaultSetAllocator, TWeakObjectPtrMapKeyFuncs<FMaterialPoolKey, FMaterialPoolValue, true /*bInAllowDuplicateKeys*/>> FMaterialPoolMap;
+	FMaterialPoolMap MaterialProxyPool;
 
 	/** Pixel formats to use for baking out specific material properties */
 	EPixelFormat PerPropertyFormat[MP_MAX];

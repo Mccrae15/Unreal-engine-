@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -10,7 +10,7 @@
 class UTakeRecorderActorSource;
 
 /** A recording source that records the current player */
-UCLASS(DisplayName="Player", Category="Actors")
+UCLASS(Category="Actors", meta = (TakeRecorderDisplayName = "Player"))
 class UTakeRecorderPlayerSource : public UTakeRecorderSource
 {
 public:

@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 /*=============================================================================
 	Prefix.usf: USF file automatically included by shader preprocessor.
@@ -8,32 +8,37 @@
 
 #include "FP16Math.ush"
 
+// Values of FEATURE_LEVEL.
+#define FEATURE_LEVEL_ES2	1
+#define FEATURE_LEVEL_ES3_1	2
+#define FEATURE_LEVEL_SM3	3
+#define FEATURE_LEVEL_SM4	4
+#define FEATURE_LEVEL_SM5	5
+#define FEATURE_LEVEL_MAX	6
+
 // ---------------------------------------------------- Profile or compiler specific includes
 // TODO: Have shader compiler including these platform specific USF files, that needs to work
 // with ShaderCore.cpp's GetShaderIncludes().
 
-#if PS4_PROFILE  
+#ifdef PLATFORM_COMMON_USH
+	#include PLATFORM_COMMON_USH
+#elif PS4_PROFILE  
 	// always #include PS4Common.usf so it can #define override anything in any other included file.
 	#include "Platform/PS4/PS4Common.ush"
-#endif
- 
-#if XBOXONE_PROFILE
+#elif XBOXONE_PROFILE
 	#include "Platform/XboxOne/XboxOneCommon.ush"
-#endif
-
-#if SWITCH_PROFILE || SWITCH_PROFILE_FORWARD
+#elif SWITCH_PROFILE || SWITCH_PROFILE_FORWARD
 	#include "Platform/Switch/SwitchCommon.ush"
-#endif
-
-#if COMPILER_METAL
+#elif COMPILER_METAL
 	// Helps with iteration when changing Metal shader code generation backend.
 	#include "Platform/Metal/MetalCommon.ush"
-#endif
-
-#if COMPILER_VULKAN
+#elif COMPILER_VULKAN
 	// Helps with iteration when changing Vulkan shader code generation backend.
 	#include "Platform/Vulkan/VulkanCommon.ush"
+#elif SM5_PROFILE || SM4_PROFILE
+	#include "Platform/D3D/D3DCommon.ush"
 #endif
+// @todo platplug: Inject a platform's XXXCommon.ush externally, somehow
 
 
 // ---------------------------------------------------- DDC invalidation
@@ -73,6 +78,10 @@
 
 #ifndef COMPILER_SUPPORTS_ATTRIBUTES
 #define COMPILER_SUPPORTS_ATTRIBUTES 0
+#endif
+
+#ifndef COMPILER_SUPPORTS_QUAD_PASS
+#define COMPILER_SUPPORTS_QUAD_PASS 0
 #endif
 
 #ifndef PLATFORM_SUPPORTS_SRV_UB
@@ -123,10 +132,6 @@
 #define	VULKAN_PROFILE 0
 #endif
 
-#ifndef VULKAN_PROFILE_SM4
-#define	VULKAN_PROFILE_SM4 0
-#endif
-
 #ifndef VULKAN_PROFILE_SM5
 #define	VULKAN_PROFILE_SM5 0
 #endif
@@ -137,6 +142,10 @@
 
 #ifndef MAC
 #define MAC 0
+#endif
+
+#ifndef VECTORVM_PROFILE
+#define VECTORVM_PROFILE 0
 #endif
 
 // 'static' asserts
@@ -151,6 +160,20 @@
 #define PLATFORM_SUPPORTS_SRV_UB_MACRO(...) __VA_ARGS__
 #else
 #define PLATFORM_SUPPORTS_SRV_UB_MACRO(...)
+#endif
+
+// Whether the platforms support official SM6 wave intrinsics
+// https://github.com/Microsoft/DirectXShaderCompiler/wiki/Wave-Intrinsics
+#ifndef PLATFORM_SUPPORTS_SM6_0_WAVE_OPERATIONS
+#define PLATFORM_SUPPORTS_SM6_0_WAVE_OPERATIONS 0
+#endif
+
+#ifndef COMPILER_SUPPORTS_BITFIELD_INTRINSICS
+#define COMPILER_SUPPORTS_BITFIELD_INTRINSICS 0
+#endif
+
+#ifndef COMPILER_SUPPORTS_PACK_INTRINSICS
+#define COMPILER_SUPPORTS_PACK_INTRINSICS 0
 #endif
 
 // ---------------------------------------------------- Alternative floating point types
@@ -182,13 +205,6 @@
 
 // ---------------------------------------------------- Profile config
 
-// Values of FEATURE_LEVEL.
-#define FEATURE_LEVEL_ES2	1
-#define FEATURE_LEVEL_ES3_1	2
-#define FEATURE_LEVEL_SM3	3
-#define FEATURE_LEVEL_SM4	4
-#define FEATURE_LEVEL_SM5	5
-#define FEATURE_LEVEL_MAX	6
 
 #if PS4_PROFILE
 	#define FEATURE_LEVEL FEATURE_LEVEL_SM5
@@ -213,47 +229,28 @@
 
 #elif VULKAN_PROFILE
 	#define FEATURE_LEVEL FEATURE_LEVEL_ES3_1
-
-#elif VULKAN_PROFILE_SM4
-	#define FEATURE_LEVEL FEATURE_LEVEL_SM4
+	// @todo: replace usage of ES3_1_PROFILE with FEATURE_LEVEL where appropriate
+	#undef ES3_1_PROFILE
+	#define ES3_1_PROFILE 1 
 
 #elif VULKAN_PROFILE_SM5
 	#define FEATURE_LEVEL FEATURE_LEVEL_SM5
 	#define STENCIL_COMPONENT_SWIZZLE .x
 
-#elif GL3_PROFILE || GL4_PROFILE
-	#if GL3_PROFILE
-		#define FEATURE_LEVEL FEATURE_LEVEL_SM4
-	#elif GL4_PROFILE
-		#define FEATURE_LEVEL FEATURE_LEVEL_SM5
-	#endif
+#elif GL4_PROFILE
+	#define FEATURE_LEVEL FEATURE_LEVEL_SM5
 
 	// A8 textures when sampled have their component in R.
 	#define A8_SAMPLE_MASK .r
 
 	// hacks until the shader compiler supports those
-	#if GL4_PROFILE
-		#define class struct
-	#endif
+	#define class struct
 
 #elif METAL_PROFILE
 	#define FEATURE_LEVEL  FEATURE_LEVEL_ES3_1
 	// @todo metal: remove this and make sure all uses handle METAL_PROFILE
 	#undef ES3_1_PROFILE
 	#define ES3_1_PROFILE 1
-#if MAX_SHADER_LANGUAGE_VERSION >= 3
-	#define FCOLOR_COMPONENT_SWIZZLE .rgba
-#else
-	#define FCOLOR_COMPONENT_SWIZZLE .bgra
-#endif
-	#define FMANUALFETCH_COLOR_COMPONENT_SWIZZLE .bgra
-	#define STENCIL_COMPONENT_SWIZZLE .x
-
-#elif METAL_ES2_PROFILE
-	#define FEATURE_LEVEL  FEATURE_LEVEL_ES2
-	// @todo metal: remove this and make sure all uses handle METAL_ES2_PROFILE
-	#undef ES2_PROFILE
-	#define ES2_PROFILE 1
 #if MAX_SHADER_LANGUAGE_VERSION >= 3
 	#define FCOLOR_COMPONENT_SWIZZLE .rgba
 #else
@@ -304,13 +301,21 @@
 			#define A8_SAMPLE_MASK .r
 		#endif
 	#endif
+#elif VECTORVM_PROFILE
+	#define FEATURE_LEVEL FEATURE_LEVEL_SM5
+#endif
 
-#else
-
-	#error Add your platform here
+#ifndef FEATURE_LEVEL
+	#error FEATURE_LEVEL has not been defined for this platform. Add it to Platform.ush or in the Common.ush file for this platform
 
 	#define FEATURE_LEVEL FEATURE_LEVEL_MAX
 
+#endif
+
+#if COMPILER_METAL
+	// Metal does not allow writes to A8 textures so we are faking it by making them all R8.
+	// WARNING: If this changes or the type in MetalRHI changes both must be updated!
+	#define A8_SAMPLE_MASK .r
 #endif
 
 
@@ -349,19 +354,23 @@
 // Ideally this would just be enabled for all SM4 and above feature level platforms
 // @todo metal mrt: No reason this can't work with Metal, once cross compiler is fixed
 #ifndef SUPPORTS_INDEPENDENT_SAMPLERS
-#define SUPPORTS_INDEPENDENT_SAMPLERS (PS4_PROFILE || SM5_PROFILE || SM4_PROFILE || METAL_MRT_PROFILE || METAL_SM5_NOTESS_PROFILE || METAL_SM5_PROFILE || VULKAN_PROFILE_SM5 || VULKAN_PROFILE_SM4 || VULKAN_PROFILE)
+#define SUPPORTS_INDEPENDENT_SAMPLERS (PS4_PROFILE || SM5_PROFILE || SM4_PROFILE || METAL_MRT_PROFILE || METAL_SM5_NOTESS_PROFILE || METAL_SM5_PROFILE || VULKAN_PROFILE_SM5 || VULKAN_PROFILE)
 #endif
 
 // Whether the platform supports a global clip plane through SV_ClipDistance
 // Ideally this would just be enabled for all SM4 and above feature level platforms, but not tested everywhere yet
-#define PLATFORM_SUPPORTS_GLOBAL_CLIP_PLANE (PS4_PROFILE || SM5_PROFILE || SM4_PROFILE || METAL_PROFILE || METAL_MRT_PROFILE || METAL_SM5_NOTESS_PROFILE || METAL_SM5_PROFILE || GL4_PROFILE || GL3_PROFILE || VULKAN_PROFILE_SM4 || VULKAN_PROFILE_SM5)
+#ifndef PLATFORM_SUPPORTS_GLOBAL_CLIP_PLANE
+#define PLATFORM_SUPPORTS_GLOBAL_CLIP_PLANE (PS4_PROFILE || SM5_PROFILE || SM4_PROFILE || METAL_PROFILE || METAL_MRT_PROFILE || METAL_SM5_NOTESS_PROFILE || METAL_SM5_PROFILE || GL4_PROFILE || VULKAN_PROFILE_SM5)
+#endif
 
 // Whether the platform support pixel coverage on MSAA targets (SV_Coverage).
 #define SUPPORTS_PIXEL_COVERAGE (FEATURE_LEVEL >= FEATURE_LEVEL_SM5 && !COMPILER_GLSL && !MOBILE_EMULATION)
 
 // Must match C++ RHISupports4ComponentUAVReadWrite
 // D3D11 does not support multi-component loads from a UAV: "error X3676: typed UAV loads are only allowed for single-component 32-bit element types"
+#ifndef PLATFORM_SUPPORTS_4COMPONENT_UAV_READ_WRITE
 #define PLATFORM_SUPPORTS_4COMPONENT_UAV_READ_WRITE (PS4_PROFILE || XBOXONE_PROFILE || COMPILER_METAL)
+#endif
 
 
 // ---------------------------------------------------- Compiler specific defaults and fallbacks
@@ -421,6 +430,15 @@
 #define PLATFORM_SUPPORTS_RECT_LIST 0
 #endif
 
+// Mirrors GRHISupportsAtomicUInt64.
+#ifndef PLATFORM_SUPPORTS_ATOMIC_UINT64
+#define PLATFORM_SUPPORTS_ATOMIC_UINT64 0
+#endif
+
+// Support for depth test running both before and after pixel shader
+#ifndef COMPILER_SUPPORTS_DEPTHSTENCIL_EARLYTEST_LATEWRITE
+#define COMPILER_SUPPORTS_DEPTHSTENCIL_EARLYTEST_LATEWRITE 0
+#endif
 
 // ---------------------------------------------------- Compiler attributes
 
@@ -428,6 +446,7 @@
 
 /** Avoids flow control constructs. */
 #define UNROLL [unroll]
+#define UNROLL_N(N) [unroll(N)]
 
 /** Gives preference to flow control constructs. */
 #define LOOP [loop]
@@ -443,15 +462,18 @@
 
 #endif // SM5_PROFILE || COMPILER_SUPPORTS_ATTRIBUTES
 
-#if SM5_PROFILE || METAL_MRT_PROFILE || METAL_SM5_PROFILE || METAL_SM5_NOTESS_PROFILE
+#if SM5_PROFILE || METAL_MRT_PROFILE || METAL_SM5_PROFILE || METAL_SM5_NOTESS_PROFILE || ES3_1_PROFILE
 #define EARLYDEPTHSTENCIL [earlydepthstencil]
 #endif
-
 
 // ---------------------------------------------------- Compiler attribute fallbacks
 
 #ifndef UNROLL
 #define UNROLL
+#endif
+
+#ifndef UNROLL_N
+#define UNROLL_N(N)
 #endif
 
 #ifndef LOOP
@@ -482,6 +504,10 @@
 #define EARLYDEPTHSTENCIL
 #endif
 
+#ifndef DEPTHSTENCIL_EARLYTEST_LATEWRITE
+#define DEPTHSTENCIL_EARLYTEST_LATEWRITE
+#endif
+
 #ifndef STRONG_TYPE
 #define STRONG_TYPE
 #endif
@@ -489,6 +515,11 @@
 #ifndef StrongTypedBuffer
 #define StrongTypedBuffer Buffer
 #endif
+
+#ifndef ISOLATE
+#define ISOLATE
+#endif
+
 
 // ---------------------------------------------------- Interpolator attribute fallbacks
 
@@ -629,11 +660,27 @@ float4 max3( float4 a, float4 b, float4 c )
 
 #endif
 
+#if !defined(COMPILER_SUPPORTS_UNPACKBYTEN)
+float UnpackByte0(uint v) { return float(v & 0xff); }
+float UnpackByte1(uint v) { return float((v >> 8) & 0xff); }
+float UnpackByte2(uint v) { return float((v >> 16) & 0xff); }
+float UnpackByte3(uint v) { return float(v >> 24); }
+#endif // !COMPILER_SUPPORTS_UNPACKBYTEN
 
 #if COMPILER_HLSLCC
 #define ddx_fine(x) ddx(x)
 #define ddy_fine(y) ddy(y)
 #endif
+
+#if PLATFORM_SUPPORTS_SM6_0_WAVE_OPERATIONS
+#ifdef COMPILER_SUPPORTS_TO_SCALAR_MEMORY
+#error Conflict of the ToScalarMemory definition.
+#endif
+
+#define COMPILER_SUPPORTS_TO_SCALAR_MEMORY 1
+#define ToScalarMemory(x) WaveReadLaneFirst(x)
+
+#endif // PLATFORM_SUPPORTS_SM6_0_WAVE_OPERATIONS
 
 // Give hint to compiler to move one value to scalar unit.
 #if !defined(ToScalarMemory) && !defined(COMPILER_SUPPORTS_TO_SCALAR_MEMORY)
@@ -645,10 +692,20 @@ float4 max3( float4 a, float4 b, float4 c )
 	#define uint4	int4
 #endif
 
+#ifndef SNORM
 #if COMPILER_HLSLCC || PS4_PROFILE
 	#define SNORM 
 	#define UNORM
 #else
 	#define SNORM snorm
 	#define UNORM unorm
+#endif
+#endif
+
+#ifndef INFINITE_FLOAT
+	#if COMPILER_HLSLCC
+		#define INFINITE_FLOAT 3.402823e+38
+	#else
+		#define INFINITE_FLOAT 1.#INF
+	#endif
 #endif

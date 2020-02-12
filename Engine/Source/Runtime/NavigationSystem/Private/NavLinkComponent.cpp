@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "NavLinkComponent.h"
 #include "NavLinkRenderingProxy.h"
@@ -67,10 +67,7 @@ void UNavLinkComponent::PostEditChangeProperty(FPropertyChangedEvent& PropertyCh
 
 	if (PropertyChangedEvent.MemberProperty && PropertyChangedEvent.MemberProperty->GetFName() == GET_MEMBER_NAME_CHECKED(UNavLinkComponent, Links))
 	{
-		for (FNavigationLink& Link : Links)
-		{
-			Link.InitializeAreaClass(/*bForceRefresh=*/true);
-		}
+		InitializeLinksAreaClasses();
 	}
 }
 
@@ -78,23 +75,33 @@ void UNavLinkComponent::PostEditUndo()
 {
 	Super::PostEditUndo();
 
-	for (FNavigationLink& Link : Links)
-	{
-		Link.InitializeAreaClass(/*bForceRefresh=*/true);
-	}
+	InitializeLinksAreaClasses();
 }
 
 void UNavLinkComponent::PostEditImport()
 {
 	Super::PostEditImport();
 
-	for (FNavigationLink& Link : Links)
-	{
-		Link.InitializeAreaClass(/*bForceRefresh=*/true);
-	}
+	InitializeLinksAreaClasses();
 }
 
 #endif // WITH_EDITOR
+
+void UNavLinkComponent::OnRegister()
+{
+	Super::OnRegister();
+
+	InitializeLinksAreaClasses();
+}
+
+void UNavLinkComponent::InitializeLinksAreaClasses()
+{
+	for (FNavigationLink& Link : Links)
+	{
+		Link.InitializeAreaClass();
+	}
+}
+
 //----------------------------------------------------------------------//
 // UNavLinkTrivial
 //----------------------------------------------------------------------//

@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -11,10 +11,13 @@
  */
 class CORE_API FThreadManager
 {
-	/** List of thread objects to be ticked. */
-	TMap<uint32, class FRunnableThread*> Threads;
 	/** Critical section for ThreadList */
 	FCriticalSection ThreadsCritical;
+	/** Set if thread manager is initialized. */
+	static bool bIsInitialized;
+
+	/** List of thread objects to be ticked. */
+	TMap<uint32, class FRunnableThread*, TInlineSetAllocator<256>> Threads;
 
 public:
 
@@ -40,7 +43,13 @@ public:
 	/** Returns the name of a thread given its TLS id */
 	const FString& GetThreadName(uint32 ThreadId);
 
-#if PLATFORM_WINDOWS
+	/** Checks if thread manager has been initialized. Avoids creating the manager trough lazy initialization */
+	FORCEINLINE static bool IsInitialized() 
+	{
+		return bIsInitialized;
+	}
+
+#if PLATFORM_WINDOWS || PLATFORM_MAC
 	struct FThreadStackBackTrace
 	{
 		uint32 ThreadId;
@@ -50,6 +59,12 @@ public:
 
 	void GetAllThreadStackBackTraces(TArray<FThreadStackBackTrace>& StackTraces);
 #endif
+
+	/**
+	 * Enumerate each thread.
+	 *
+	 */
+	void ForEachThread(TFunction<void(uint32, class FRunnableThread*)> Func);
 
 	/**
 	 * Access to the singleton object.

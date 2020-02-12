@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 using System.IO;
 using UnrealBuildTool;
 
@@ -65,7 +65,6 @@ namespace UnrealBuildTool.Rules
 				PrivateIncludePaths.Add(IncludePath);
 
 				// Lib file
-				PublicLibraryPaths.Add(LuaLibDirectory);
 				PublicAdditionalLibraries.Add(LuaLibPath);
 
 //				Log.TraceVerbose("LUA Integration enabled: {0}", IncludePath);

@@ -1,4 +1,4 @@
-﻿// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+﻿// Copyright Epic Games, Inc. All Rights Reserved.
 
 using System;
 
@@ -29,7 +29,7 @@ namespace nDisplayLauncher.Cluster.Config.Entity
 
 		public override void InitializeFromText(string text)
 		{
-			string StrVersion = Parser.GetStringValue("version", text);
+			string StrVersion = Parser.GetStringValue(text, "version");
 			Version = ConfigurationVersionHelpers.FromString(StrVersion);
 		}
 	}

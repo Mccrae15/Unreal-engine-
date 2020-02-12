@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 
 #pragma once
@@ -56,7 +56,7 @@ enum class ESceneCapturePrimitiveRenderMode : uint8
 };
 
 	// -> will be exported to EngineDecalClasses.h
-UCLASS(hidecategories=(abstract, Collision, Object, Physics, SceneComponent, Mobility))
+UCLASS(abstract, hidecategories=(Collision, Object, Physics, SceneComponent, Mobility))
 class ENGINE_API USceneCaptureComponent : public USceneComponent
 {
 	GENERATED_UCLASS_BODY()
@@ -64,6 +64,21 @@ class ENGINE_API USceneCaptureComponent : public USceneComponent
 	/** Controls what primitives get rendered into the scene capture. */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category=SceneCapture)
 	ESceneCapturePrimitiveRenderMode PrimitiveRenderMode;
+
+	UPROPERTY(interp, Category = SceneCapture, meta = (DisplayName = "Capture Source"))
+	TEnumAsByte<enum ESceneCaptureSource> CaptureSource;
+
+	/** Whether to update the capture's contents every frame.  If disabled, the component will render once on load and then only when moved. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = SceneCapture)
+	uint8 bCaptureEveryFrame : 1;
+
+	/** Whether to update the capture's contents on movement.  Disable if you are going to capture manually from blueprint. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = SceneCapture)
+	uint8 bCaptureOnMovement : 1;
+
+	/** Whether to persist the rendering state even if bCaptureEveryFrame==false.  This allows velocities for Motion Blur and Temporal AA to be computed. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = SceneCapture, meta = (editcondition = "!bCaptureEveryFrame"))
+	bool bAlwaysPersistRenderingState;
 
 	/** The components won't rendered by current component.*/
  	UPROPERTY()
@@ -80,18 +95,6 @@ class ENGINE_API USceneCaptureComponent : public USceneComponent
 	/** The only actors to be rendered by this scene capture, if PrimitiveRenderMode is set to UseShowOnlyList.*/
 	UPROPERTY(EditInstanceOnly, BlueprintReadWrite, Category=SceneCapture)
 	TArray<AActor*> ShowOnlyActors;
-
-	/** Whether to update the capture's contents every frame.  If disabled, the component will render once on load and then only when moved. */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category=SceneCapture)
-	bool bCaptureEveryFrame;
-
-	/** Whether to update the capture's contents on movement.  Disable if you are going to capture manually from blueprint. */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category=SceneCapture)
-	bool bCaptureOnMovement;
-	
-	/** Whether to persist the rendering state even if bCaptureEveryFrame==false.  This allows velocities for Motion Blur and Temporal AA to be computed. */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = SceneCapture, meta = (editcondition = "!bCaptureEveryFrame"))
-	bool bAlwaysPersistRenderingState;
 
 	/** Scales the distance used by LOD. Set to values greater than 1 to cause the scene capture to use lower LODs than the main view to speed up the scene capture pass. */
 	UPROPERTY(EditAnywhere, Category=PlanarReflection, meta=(UIMin = ".1", UIMax = "10"), AdvancedDisplay)
@@ -130,25 +133,34 @@ public:
 	UFUNCTION(BlueprintCallable, Category = "Rendering|SceneCapture")
 	void HideComponent(UPrimitiveComponent* InComponent);
 
-	/** Adds all primitive components in the actor to our list of hidden components. */
+	/**
+	 * Adds all primitive components in the actor to our list of hidden components.
+	 * @param bIncludeFromChildActors Whether to include the components from child actors
+	 */
 	UFUNCTION(BlueprintCallable, Category = "Rendering|SceneCapture")
-	void HideActorComponents(AActor* InActor);
+	void HideActorComponents(AActor* InActor, const bool bIncludeFromChildActors = false);
 
 	/** Adds the component to our list of show-only components. */
 	UFUNCTION(BlueprintCallable, Category = "Rendering|SceneCapture")
 	void ShowOnlyComponent(UPrimitiveComponent* InComponent);
 
-	/** Adds all primitive components in the actor to our list of show-only components. */
+	/**
+	 * Adds all primitive components in the actor to our list of show-only components.
+	 * @param bIncludeFromChildActors Whether to include the components from child actors
+	 */
 	UFUNCTION(BlueprintCallable, Category = "Rendering|SceneCapture")
-	void ShowOnlyActorComponents(AActor* InActor);
+	void ShowOnlyActorComponents(AActor* InActor, const bool bIncludeFromChildActors = false);
 
 	/** Removes a component from the Show Only list. */
 	UFUNCTION(BlueprintCallable, Category = "Rendering|SceneCapture")
 	void RemoveShowOnlyComponent(UPrimitiveComponent* InComponent);
 
-	/** Removes a actor's components from the Show Only list. */
+	/**
+	 * Removes an actor's components from the Show Only list.
+	 * @param bIncludeFromChildActors Whether to remove the components from child actors
+	 */
 	UFUNCTION(BlueprintCallable, Category = "Rendering|SceneCapture")
-	void RemoveShowOnlyActorComponents(AActor* InActor);
+	void RemoveShowOnlyActorComponents(AActor* InActor, const bool bIncludeFromChildActors = false);
 
 	/** Clears the Show Only list. */
 	UFUNCTION(BlueprintCallable, Category = "Rendering|SceneCapture")
@@ -166,7 +178,7 @@ public:
 	FSceneViewStateInterface* GetViewState(int32 ViewIndex);
 
 #if WITH_EDITOR
-	virtual bool CanEditChange(const UProperty* InProperty) const override;
+	virtual bool CanEditChange(const FProperty* InProperty) const override;
 	virtual void PostEditChangeProperty(struct FPropertyChangedEvent& PropertyChangedEvent) override;
 #endif	
 
@@ -182,7 +194,7 @@ public:
 	static void UpdateDeferredCaptures(FSceneInterface* Scene);
 
 protected:
-	/** Update the show flags from our show flags settings (ideally, you'd be able to set this more directly, but currently unable to make FEngineShowFlags a UStruct to use it as a UProperty...) */
+	/** Update the show flags from our show flags settings (ideally, you'd be able to set this more directly, but currently unable to make FEngineShowFlags a UStruct to use it as a FProperty...) */
 	void UpdateShowFlags();
 
 	virtual void UpdateSceneCaptureContents(FSceneInterface* Scene) {};

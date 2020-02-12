@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -91,6 +91,7 @@ struct AIMODULE_API FActorPerceptionInfo
 		return false;
 	}
 
+	/** Indicates currently live (visible) stimulus from any sense */
 	bool HasAnyCurrentStimulus() const
 	{
 		for (const FAIStimulus& Stimulus : LastSensedStimuli)
@@ -105,27 +106,47 @@ struct AIMODULE_API FActorPerceptionInfo
 		return false;
 	}
 
-	/** @note will return FAISystem::InvalidLocation if given sense has never registered related Target actor */
+	/** Retrieves location of the last sensed stimuli for a given sense
+	* @param Sense	The AISenseID of the sense
+	*
+	* @return Location of the last sensed stimuli or FAISystem::InvalidLocation if given sense has never registered related Target actor or if last stimuli has expired.
+	*/
 	FORCEINLINE FVector GetStimulusLocation(FAISenseID Sense) const
 	{
-		return LastSensedStimuli.IsValidIndex(Sense) && LastSensedStimuli[Sense].GetAge() < FAIStimulus::NeverHappenedAge ? LastSensedStimuli[Sense].StimulusLocation : FAISystem::InvalidLocation;
+		return LastSensedStimuli.IsValidIndex(Sense) && (LastSensedStimuli[Sense].IsValid() && (LastSensedStimuli[Sense].IsExpired() == false)) ? LastSensedStimuli[Sense].StimulusLocation : FAISystem::InvalidLocation;
 	}
 
+	/** Retrieves receiver location of the last sense stimuli for a given sense
+	* @param Sense	The AISenseID of the sense
+	*
+	* @return Location of the receiver for the last sensed stimuli or FAISystem::InvalidLocation if given sense has never registered related Target actor or last stimuli has expired.
+	*/
 	FORCEINLINE FVector GetReceiverLocation(FAISenseID Sense) const
 	{
-		return LastSensedStimuli.IsValidIndex(Sense) && LastSensedStimuli[Sense].GetAge() < FAIStimulus::NeverHappenedAge ? LastSensedStimuli[Sense].ReceiverLocation : FAISystem::InvalidLocation;
+		return LastSensedStimuli.IsValidIndex(Sense) && (LastSensedStimuli[Sense].IsValid() && (LastSensedStimuli[Sense].IsExpired() == false)) ? LastSensedStimuli[Sense].ReceiverLocation : FAISystem::InvalidLocation;
 	}
 
+	UE_DEPRECATED(4.23, "This method is identical to IsSenseActive and will be removed in future versions. Please use IsSenseActive to check for a currently active stimuli or HasKnownStimulusOfSense for an active or remembered stimuli.")
 	FORCEINLINE bool IsSenseRegistered(FAISenseID Sense) const
 	{
-		return LastSensedStimuli.IsValidIndex(Sense) && LastSensedStimuli[Sense].WasSuccessfullySensed() && (LastSensedStimuli[Sense].GetAge() < FAIStimulus::NeverHappenedAge);
+		return LastSensedStimuli.IsValidIndex(Sense) && LastSensedStimuli[Sense].IsActive();
 	}
 
+	/** Indicates a currently active or "remembered" stimuli for a given sense
+	* @param Sense	The AISenseID of the sense
+	*
+	* @return True if a target has been registered (even if not currently sensed) for the given sense and the stimuli is not expired.
+	*/
 	FORCEINLINE bool HasKnownStimulusOfSense(FAISenseID Sense) const
 	{
-		return LastSensedStimuli.IsValidIndex(Sense) && (LastSensedStimuli[Sense].GetAge() < FAIStimulus::NeverHappenedAge);
+		return LastSensedStimuli.IsValidIndex(Sense) && (LastSensedStimuli[Sense].IsValid() && (LastSensedStimuli[Sense].IsExpired() == false));
 	}
 
+	/** Indicates a currently active stimuli for a given sense
+	* @param Sense	The AISenseID of the sense
+	*
+	* @return True if a target is still sensed for the given sense and the stimuli is not expired.
+	*/
 	FORCEINLINE bool IsSenseActive(FAISenseID Sense) const
 	{
 		return LastSensedStimuli.IsValidIndex(Sense) && LastSensedStimuli[Sense].IsActive();
@@ -217,6 +238,11 @@ protected:
 	TArray<float> MaxActiveAge;
 
 private:
+
+	/** Determines whether all knowledge of previously sensed actors will be removed or not when they become stale.
+		That is, when they are no longer perceived and have exceeded the max age of the sense. */
+	uint32 bForgetStaleActors : 1;
+
 	uint32 bCleanedUp : 1;
 
 public:
@@ -255,6 +281,9 @@ public:
 	const UAISenseConfig* GetSenseConfig(const FAISenseID& SenseID) const;
 	void ConfigureSense(UAISenseConfig& SenseConfig);
 
+	typedef TArray<UAISenseConfig*>::TConstIterator TAISenseConfigConstIterator;
+	TAISenseConfigConstIterator GetSensesConfigIterator() const;
+
 	/** Notifies AIPerceptionSystem to update properties for this "stimuli listener" */
 	UFUNCTION(BlueprintCallable, Category="AI|Perception")
 	void RequestStimuliListenerUpdate();
@@ -269,6 +298,7 @@ public:
 	void ForgetActor(AActor* ActorToForget);
 
 	/** basically cleans up PerceptualData, resulting in loss of all previous perception */
+	UFUNCTION(BlueprintCallable, Category = "AI|Perception")
 	void ForgetAll();
 
 	float GetYoungestStimulusAge(const AActor& Source) const;
@@ -341,7 +371,8 @@ protected:
 private:
 	friend UAIPerceptionSystem;
 
+	void RegisterSenseConfig(UAISenseConfig& SenseConfig, UAIPerceptionSystem& AIPerceptionSys);
 	void StoreListenerId(FPerceptionListenerID InListenerId) { PerceptionListenerId = InListenerId; }
-	void SetMaxStimulusAge(int32 ConfigIndex, float MaxAge);
+	void SetMaxStimulusAge(FAISenseID SenseId, float MaxAge);
 };
 

@@ -1,8 +1,8 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 // Copyright 2016 Magic Leap, Inc. All Rights Reserved.
 
 #include "Lumin/LuminPlatformFile.h"
-#include "Android/AndroidMisc.h"
+#include "Android/AndroidPlatformMisc.h"
 #include "Lumin/LuminLifecycle.h"
 #include "HAL/PlatformProcess.h"
 #include "Misc/Parse.h"
@@ -10,11 +10,44 @@
 #include "Misc/Paths.h"
 #include <sys/stat.h>   // mkdirp()
 #include <dirent.h>
+#include "Lumin/CAPIShims/LuminAPISharedFile.h"
 
 DEFINE_LOG_CATEGORY_STATIC(LogLuminPlatformFile, Log, All);
 
+FLuminFileInfo::FLuminFileInfo()
+: FileHandle(nullptr)
+{}
+
 // make an FTimeSpan object that represents the "epoch" for time_t (from a stat struct)
 const FDateTime UnixEpoch(1970, 1, 1);
+
+FString AndroidRelativeToAbsolutePath(bool bUseInternalBasePath, FString RelPath)
+{
+	FString Result = MoveTemp(RelPath);
+
+	if (Result.StartsWith(TEXT("../"), ESearchCase::CaseSensitive))
+	{
+		do 
+		{
+			Result.RightChopInline(3, false);
+		} while (Result.StartsWith(TEXT("../"), ESearchCase::CaseSensitive));
+	}
+
+	// Remove the base app path if present, we will prepend it the correct base path as needed.
+	Result.ReplaceInline(*FLuminPlatformMisc::GetApplicationPackageDirectoryPath(), TEXT(""));
+	// Remove the writable path if present, we will prepend it the correct base path as needed.
+	Result.ReplaceInline(*FLuminPlatformMisc::GetApplicationWritableDirectoryPath(), TEXT(""));
+
+	// Then add it to the app writable directory path.
+	FString lhs = FLuminPlatformMisc::GetApplicationWritableDirectoryPath();
+	FString rhs = MoveTemp(Result);
+	lhs.RemoveFromEnd(TEXT("/"), ESearchCase::CaseSensitive);
+	rhs.RemoveFromStart(TEXT("/"), ESearchCase::CaseSensitive);
+	Result = lhs / rhs;
+
+	// always use lower case ... always
+	return Result.ToLower();
+}
 
 namespace
 {
@@ -34,7 +67,7 @@ namespace
 			UnixEpoch + FTimespan(0, 0, FileInfo.st_mtime), 
 			FileSize,
 			bIsDirectory,
-			!!(FileInfo.st_mode & S_IWUSR)
+			!(FileInfo.st_mode & S_IWUSR)
 			);
 	}
 }
@@ -46,6 +79,7 @@ namespace
 * files which are opened READ_ONLY.
 */
 // @todo lumin - Consider if we need managed handles or not.
+// TODO - handle shared files properly when using managed file handles.
 #define MANAGE_FILE_HANDLES 0
 
 /**
@@ -69,6 +103,9 @@ public:
 		, FileOffset(0)
 		, FileSize(0)
 #endif // MANAGE_FILE_HANDLES
+		, SharedFileList(nullptr)
+		, Fileinfo(nullptr)
+		, bReleaseFileInfo(false)
 	{
 		check(FileHandle > -1);
 #if MANAGE_FILE_HANDLES
@@ -88,6 +125,26 @@ public:
 #endif // MANAGE_FILE_HANDLES
 	}
 
+	FFileHandleLumin(int32 InFileHandle, MLSharedFileList* InSharedFileList)
+		: FileHandle(InFileHandle)
+		, SharedFileList(InSharedFileList)
+		, Fileinfo(nullptr)
+		, bReleaseFileInfo(false)
+	{
+		check(FileHandle > -1);
+		check(SharedFileList != nullptr)
+	}
+
+	FFileHandleLumin(int32 InFileHandle, const MLFileInfo* InFileInfo)
+		: FileHandle(InFileHandle)
+		, SharedFileList(nullptr)
+		, Fileinfo(InFileInfo)
+		, bReleaseFileInfo(false)
+	{
+		check(FileHandle > -1);
+		check(Fileinfo != nullptr)
+	}
+
 	virtual ~FFileHandleLumin()
 	{
 #if MANAGE_FILE_HANDLES
@@ -102,9 +159,28 @@ public:
 		else
 #endif // MANAGE_FILE_HANDLES
 		{
-			close(FileHandle);
+			if (SharedFileList != nullptr)
+			{
+				MLResult Result = MLSharedFileListRelease(&SharedFileList);
+				UE_CLOG(MLResult_Ok != Result, LogLuminPlatformFile, Error, TEXT("Error %s releasing shared file list for fd %d"), UTF8_TO_TCHAR(MLSharedFileGetResultString(Result)), FileHandle);
+			}
+			// Close if it's a normal unreal file. MLFileInfo fds are closed via MLLifecycleFreeInitArgList()
+			else if (Fileinfo == nullptr)
+			{
+				close(FileHandle);
+			}
 		}
+
 		FileHandle = -1;
+		SharedFileList = nullptr;
+		Fileinfo = nullptr;
+	}
+
+	bool SetMLFileInfoFD(MLFileInfo* InFileInfo) const
+	{
+		MLResult Result = MLFileInfoSetFD(InFileInfo, FileHandle);
+		UE_CLOG(MLResult_Ok != Result, LogLuminPlatformFile, Error, TEXT("Error setting MLFileInfo FD : %s"), UTF8_TO_TCHAR(MLGetResultString(Result)));
+		return MLResult_Ok == Result;
 	}
 
 	virtual int64 Tell() override
@@ -348,6 +424,10 @@ private:
 	static __thread FFileHandleLumin* ActiveHandles[ACTIVE_HANDLE_COUNT];
 	static __thread double AccessTimes[ACTIVE_HANDLE_COUNT];
 #endif // MANAGE_FILE_HANDLES
+
+	MLSharedFileList* SharedFileList;
+	const MLFileInfo* Fileinfo;
+	bool bReleaseFileInfo;
 };
 
 #if MANAGE_FILE_HANDLES
@@ -356,7 +436,7 @@ __thread double FFileHandleLumin::AccessTimes[FFileHandleLumin::ACTIVE_HANDLE_CO
 #endif // MANAGE_FILE_HANDLES
 
 /**
- * A class to handle case insensitive file opening. This is a band-aid, non-performant approach,
+ * A class to handle file mapping. This is a band-aid, non-performant approach,
  * without any caching.
  */
 class FLuminFileMapper
@@ -426,7 +506,7 @@ public:
 	}
 
 	/**
-	 * Tries to recursively find (using case-insensitive comparison) and open the file.
+	 * Tries to recursively find and open the file.
 	 * The first file found will be opened.
 	 * 
 	 * @param Filename Original file path as requested (absolute)
@@ -507,12 +587,12 @@ public:
 	}
 
 	/**
-	 * Tries to map a filename (one with a possibly wrong case) to one that exists.
+	 * Tries to map a filename to one that exists.
 	 * 
-	 * @param PossiblyWrongFilename absolute filename (that has possibly a wrong case)
+	 * @param PossiblyWrongFilename absolute filename 
 	 * @param ExistingFilename filename that exists (only valid to use if the function returned success).
 	 */
-	bool MapCaseInsensitiveFile(const FString & PossiblyWrongFilename, FString & ExistingFilename)
+	bool MapFile(const FString & PossiblyWrongFilename, FString & ExistingFilename)
 	{
 		ExistingFilename = PossiblyWrongFilename;
 		return true;
@@ -536,7 +616,7 @@ public:
 		}
 		else
 		{
-			// perform a case-insensitive search from /
+			// perform a search from /
 
 			int MaxPathComponents = CountPathComponents(PossiblyWrongFilename);
 			if (MaxPathComponents > 0)
@@ -554,12 +634,12 @@ public:
 	}
 
 	/**
-	 * Opens a file for reading, disregarding the case.
+	 * Opens a file for reading
 	 * 
 	 * @param Filename absolute filename
 	 * @param MappedToFilename absolute filename that we mapped the Filename to (always filled out on success, even if the same as Filename)
 	 */
-	int32 OpenCaseInsensitiveRead(const FString & Filename, FString & MappedToFilename)
+	int32 OpenReadInternal(const FString & Filename, FString & MappedToFilename)
 	{
 		// We can get some "absolute" filenames like "D:/Blah/" here (e.g. non-Lumin paths to source files embedded in assets).
 		// In that case, fail silently.
@@ -584,9 +664,9 @@ public:
 			}
 			else
 			{
-				// perform a case-insensitive search
+				// perform a search
 				// make sure we get the absolute filename
-				checkf(Filename[0] == TEXT('/'), TEXT("Filename '%s' given to OpenCaseInsensitiveRead is not absolute!"), *Filename);
+				checkf(Filename[0] == TEXT('/'), TEXT("Filename '%s' given to OpenReadInternal is not absolute!"), *Filename);
 				
 				int MaxPathComponents = CountPathComponents(Filename);
 				if (MaxPathComponents > 0)
@@ -611,7 +691,7 @@ public:
 	}
 };
 
-FLuminFileMapper GCaseInsensMapper;
+FLuminFileMapper GLuminFileMapper;
 
 /**
 * Lumin File I/O implementation
@@ -645,7 +725,7 @@ bool FLuminPlatformFile::FileExists(const TCHAR* Filename)
 	FString NormalizedFilename = NormalizeFilename(Filename);
 
 	// Check the read path first, if it doesnt exist, check for the write path instead.
-	return (FileExistsCaseInsensitive(ConvertToLuminPath(NormalizedFilename, false))) ? true : FileExistsCaseInsensitive(ConvertToLuminPath(NormalizedFilename, true));
+	return (FileExistsInternal(ConvertToLuminPath(NormalizedFilename, false))) ? true : FileExistsInternal(ConvertToLuminPath(NormalizedFilename, true));
 }
 
 bool FLuminPlatformFile::FileExists(const TCHAR* Filename, FString& OutLuminPath)
@@ -654,7 +734,7 @@ bool FLuminPlatformFile::FileExists(const TCHAR* Filename, FString& OutLuminPath
 	FString NormalizedFilename = NormalizeFilename(Filename);
 	FString ReadFilePath = ConvertToLuminPath(NormalizedFilename, false);
 	
-	if (FileExistsCaseInsensitive(ReadFilePath))
+	if (FileExistsInternal(ReadFilePath))
 	{
 		OutLuminPath = ReadFilePath;
 		bExists = true;
@@ -662,7 +742,7 @@ bool FLuminPlatformFile::FileExists(const TCHAR* Filename, FString& OutLuminPath
 	else
 	{
 		FString WriteFilePath = ConvertToLuminPath(NormalizedFilename, true);
-		if (FileExistsCaseInsensitive(WriteFilePath))
+		if (FileExistsInternal(WriteFilePath))
 		{
 			OutLuminPath = WriteFilePath;
 			bExists = true;
@@ -679,28 +759,28 @@ int64 FLuminPlatformFile::FileSize(const TCHAR* Filename)
 	FString LuminPath;
 	if (FileExists(Filename, LuminPath))
 	{
-		return FileSizeCaseInsensitive(LuminPath);
+		return FileSizeInterenal(LuminPath);
 	}
 	return -1;
 }
 
 bool FLuminPlatformFile::DeleteFile(const TCHAR* Filename)
 {
-	FString CaseSensitiveFilename;
+	FString MappedFilename;
 	// Only delete from write path
 	FString IntendedFilename(ConvertToLuminPath(NormalizeFilename(Filename), true));
-	if (!GCaseInsensMapper.MapCaseInsensitiveFile(IntendedFilename, CaseSensitiveFilename))
+	if (!GLuminFileMapper.MapFile(IntendedFilename, MappedFilename))
 	{
 		// could not find the file
 		return false;
 	}
 
 	// removing mapped file is too dangerous
-	if (IntendedFilename != CaseSensitiveFilename)
+	if (IntendedFilename != MappedFilename)
 	{
-		UE_LOG(LogLuminPlatformFile, Warning, TEXT("Could not find file '%s', deleting file '%s' instead (for consistency with the rest of file ops)"), *IntendedFilename, *CaseSensitiveFilename);
+		UE_LOG(LogLuminPlatformFile, Warning, TEXT("Could not find file '%s', deleting file '%s' instead (for consistency with the rest of file ops)"), *IntendedFilename, *MappedFilename);
 	}
-	return unlink(TCHAR_TO_UTF8(*CaseSensitiveFilename)) == 0;
+	return unlink(TCHAR_TO_UTF8(*MappedFilename)) == 0;
 }
 
 bool FLuminPlatformFile::IsReadOnly(const TCHAR* Filename)
@@ -710,7 +790,7 @@ bool FLuminPlatformFile::IsReadOnly(const TCHAR* Filename)
 	FString LuminPath;
 	if (FileExists(Filename, LuminPath))
 	{
-		return IsReadOnlyCaseInsensitive(LuminPath);
+		return IsReadOnlyInternal(LuminPath);
 	}
 	return false;
 }
@@ -720,28 +800,28 @@ bool FLuminPlatformFile::MoveFile(const TCHAR* To, const TCHAR* From)
 	// Move to write path only.
 	FString ToLuminFilename = ConvertToLuminPath(NormalizeFilename(To), true);
 	FString FromLuminFilename = ConvertToLuminPath(NormalizeFilename(From), true);
-	FString CaseSensitiveFilename;
-	if (!GCaseInsensMapper.MapCaseInsensitiveFile(FromLuminFilename, CaseSensitiveFilename))
+	FString MappedFilename;
+	if (!GLuminFileMapper.MapFile(FromLuminFilename, MappedFilename))
 	{
 		// could not find the file
 		return false;
 	}
 
-	return rename(TCHAR_TO_UTF8(*CaseSensitiveFilename), TCHAR_TO_UTF8(*ToLuminFilename)) == 0;
+	return rename(TCHAR_TO_UTF8(*MappedFilename), TCHAR_TO_UTF8(*ToLuminFilename)) == 0;
 }
 
 bool FLuminPlatformFile::SetReadOnly(const TCHAR* Filename, bool bNewReadOnlyValue)
 {
 	FString LuminFilename = ConvertToLuminPath(NormalizeFilename(Filename), false);
-	FString CaseSensitiveFilename;
-	if (!GCaseInsensMapper.MapCaseInsensitiveFile(LuminFilename, CaseSensitiveFilename))
+	FString MappedFilename;
+	if (!GLuminFileMapper.MapFile(LuminFilename, MappedFilename))
 	{
 		// could not find the file
 		return false;
 	}
 
 	struct stat FileInfo;
-	if (stat(TCHAR_TO_UTF8(*CaseSensitiveFilename), &FileInfo) == 0)
+	if (stat(TCHAR_TO_UTF8(*MappedFilename), &FileInfo) == 0)
 	{
 		if (bNewReadOnlyValue)
 		{
@@ -751,7 +831,7 @@ bool FLuminPlatformFile::SetReadOnly(const TCHAR* Filename, bool bNewReadOnlyVal
 		{
 			FileInfo.st_mode |= S_IWUSR;
 		}
-		return chmod(TCHAR_TO_UTF8(*CaseSensitiveFilename), FileInfo.st_mode) == 0;
+		return chmod(TCHAR_TO_UTF8(*MappedFilename), FileInfo.st_mode) == 0;
 	}
 	return false;
 }
@@ -763,16 +843,16 @@ FDateTime FLuminPlatformFile::GetTimeStamp(const TCHAR* Filename)
 	FString LuminPath;
 	if (FileExists(Filename, LuminPath))
 	{
-		return GetTimeStampCaseInsensitive(LuminPath);
+		return GetTimeStampInternal(LuminPath);
 	}
 	return FDateTime::MinValue();
 }
 
 void FLuminPlatformFile::SetTimeStamp(const TCHAR* Filename, const FDateTime DateTime)
 {
-	FString CaseSensitiveFilename;
+	FString MappedFilename;
 	// Update timestamp on a file in the write path only.
-	if (!GCaseInsensMapper.MapCaseInsensitiveFile(ConvertToLuminPath(NormalizeFilename(Filename), true), CaseSensitiveFilename))
+	if (!GLuminFileMapper.MapFile(ConvertToLuminPath(NormalizeFilename(Filename), true), MappedFilename))
 	{
 		// could not find the file
 		return;
@@ -780,7 +860,7 @@ void FLuminPlatformFile::SetTimeStamp(const TCHAR* Filename, const FDateTime Dat
 
 	// get file times
 	struct stat FileInfo;
-	if(stat(TCHAR_TO_UTF8(*CaseSensitiveFilename), &FileInfo) != 0)
+	if(stat(TCHAR_TO_UTF8(*MappedFilename), &FileInfo) != 0)
 	{
 		return;
 	}
@@ -789,7 +869,7 @@ void FLuminPlatformFile::SetTimeStamp(const TCHAR* Filename, const FDateTime Dat
 	struct utimbuf Times;
 	Times.actime = FileInfo.st_atime;
 	Times.modtime = (DateTime - UnixEpoch).GetTotalSeconds();
-	utime(TCHAR_TO_UTF8(*CaseSensitiveFilename), &Times);
+	utime(TCHAR_TO_UTF8(*MappedFilename), &Times);
 }
 
 FDateTime FLuminPlatformFile::GetAccessTimeStamp(const TCHAR* Filename)
@@ -799,7 +879,7 @@ FDateTime FLuminPlatformFile::GetAccessTimeStamp(const TCHAR* Filename)
 	FString LuminPath;
 	if (FileExists(Filename, LuminPath))
 	{
-		return GetAccessTimeStampCaseInsensitive(LuminPath);
+		return GetAccessTimeStampInternal(LuminPath);
 	}
 	return FDateTime::MinValue();
 }
@@ -807,15 +887,6 @@ FDateTime FLuminPlatformFile::GetAccessTimeStamp(const TCHAR* Filename)
 FString FLuminPlatformFile::GetFilenameOnDisk(const TCHAR* Filename)
 {
 	return Filename;
-/*
-	FString CaseSensitiveFilename;
-	if (!GCaseInsensMapper.MapCaseInsensitiveFile(NormalizeFilename(Filename), CaseSensitiveFilename))
-	{
-		return Filename;
-	}
-
-	return CaseSensitiveFilename;
-*/
 }
 
 IFileHandle* FLuminPlatformFile::OpenRead(const TCHAR* Filename, bool bAllowWrite)
@@ -823,11 +894,11 @@ IFileHandle* FLuminPlatformFile::OpenRead(const TCHAR* Filename, bool bAllowWrit
 	FString NormalizedFilename = NormalizeFilename(Filename);
 	FString MappedToName;
 	// Check the read path.
-	int32 Handle = GCaseInsensMapper.OpenCaseInsensitiveRead(ConvertToLuminPath(NormalizedFilename, false), MappedToName);
+	int32 Handle = GLuminFileMapper.OpenReadInternal(ConvertToLuminPath(NormalizedFilename, false), MappedToName);
 	if (Handle == -1)
 	{
 		// If not in the read path, check the write path.
-		Handle = GCaseInsensMapper.OpenCaseInsensitiveRead(ConvertToLuminPath(NormalizedFilename, true), MappedToName);
+		Handle = GLuminFileMapper.OpenReadInternal(ConvertToLuminPath(NormalizedFilename, true), MappedToName);
 		if (Handle == -1)
 		{
 			return nullptr;
@@ -896,7 +967,7 @@ bool FLuminPlatformFile::DirectoryExists(const TCHAR* Directory)
 {
 	FString NormalizedFilename = NormalizeFilename(Directory);
 	// Check the read path first, if it doesnt exist, check for the write path instead.
-	return (DirectoryExistsCaseInsensitive(ConvertToLuminPath(NormalizedFilename, false))) ? true : DirectoryExistsCaseInsensitive(ConvertToLuminPath(NormalizedFilename, true));
+	return (DirectoryExistsInternal(ConvertToLuminPath(NormalizedFilename, false))) ? true : DirectoryExistsInternal(ConvertToLuminPath(NormalizedFilename, true));
 }
 
 bool FLuminPlatformFile::CreateDirectory(const TCHAR* Directory)
@@ -909,21 +980,21 @@ bool FLuminPlatformFile::CreateDirectory(const TCHAR* Directory)
 
 bool FLuminPlatformFile::DeleteDirectory(const TCHAR* Directory)
 {
-	FString CaseSensitiveFilename;
+	FString MappedFilename;
 	// Delete directory from write path only.
 	FString IntendedFilename(ConvertToLuminPath(NormalizeFilename(Directory), true));
-	if (!GCaseInsensMapper.MapCaseInsensitiveFile(IntendedFilename, CaseSensitiveFilename))
+	if (!GLuminFileMapper.MapFile(IntendedFilename, MappedFilename))
 	{
 		// could not find the directory
 		return false;
 	}
 
 	// removing mapped directory is too dangerous
-	if (IntendedFilename != CaseSensitiveFilename)
+	if (IntendedFilename != MappedFilename)
 	{
-		UE_LOG(LogLuminPlatformFile, Warning, TEXT("Could not find directory '%s', deleting '%s' instead (for consistency with the rest of file ops)"), *IntendedFilename, *CaseSensitiveFilename);
+		UE_LOG(LogLuminPlatformFile, Warning, TEXT("Could not find directory '%s', deleting '%s' instead (for consistency with the rest of file ops)"), *IntendedFilename, *MappedFilename);
 	}
-	return rmdir(TCHAR_TO_UTF8(*CaseSensitiveFilename)) == 0;
+	return rmdir(TCHAR_TO_UTF8(*MappedFilename)) == 0;
 }
 
 void FLuminPlatformFile::SetSandboxEnabled(bool bInEnabled)
@@ -953,8 +1024,8 @@ FFileStatData FLuminPlatformFile::GetStatData(const TCHAR* FilenameOrDirectory)
 	bool found = false;
 
 	// Check the read path first, if it doesnt exist, check for the write path instead.
-	FFileStatData result = GetStatDataCaseInsensitive(ConvertToLuminPath(NormalizedFilename, false), found);
-	return (found) ? result : GetStatDataCaseInsensitive(ConvertToLuminPath(NormalizedFilename, true), found);
+	FFileStatData result = GetStatDataInternal(ConvertToLuminPath(NormalizedFilename, false), found);
+	return (found) ? result : GetStatDataInternal(ConvertToLuminPath(NormalizedFilename, true), found);
 }
 
 bool FLuminPlatformFile::IterateDirectory(const TCHAR* Directory, FDirectoryVisitor& Visitor)
@@ -1106,14 +1177,12 @@ FString FLuminPlatformFile::ConvertToLuminPath(const FString& Filename, bool bFo
 	// Remove the writable path if present, we will prepend it the correct base path as needed.
 	Result.ReplaceInline(*FLuminPlatformMisc::GetApplicationWritableDirectoryPath(), TEXT(""));
 
+	FString lhs;
+
 	// If the file is for writing, then add it to the app writable directory path.
 	if (bForWrite)
 	{
-		FString lhs = FLuminPlatformMisc::GetApplicationWritableDirectoryPath();
-		FString rhs = Result;
-		lhs.RemoveFromEnd(TEXT("/"));
-		rhs.RemoveFromStart(TEXT("/"));
-		Result = lhs / rhs;
+		lhs = FLuminPlatformMisc::GetApplicationWritableDirectoryPath();
 	}
 	else
 	{
@@ -1121,35 +1190,19 @@ FString FLuminPlatformFile::ConvertToLuminPath(const FString& Filename, bool bFo
 		FString Value;
 		// Cache this value as the command line doesn't change.
 		static bool bHasHostIP = FParse::Value(FCommandLine::Get(), TEXT("filehostip"), Value) || FParse::Value(FCommandLine::Get(), TEXT("streaminghostip"), Value);
-		// @todo Lumin support iterative deployment!! See LuminPlatform.Automation.cs
 		static bool bIsIterative = FParse::Value(FCommandLine::Get(), TEXT("iterative"), Value);
 
 		if (bHasHostIP)
 		{
-			FString lhs = FLuminPlatformMisc::GetApplicationWritableDirectoryPath();
-			FString rhs = Result;
-			lhs.RemoveFromEnd(TEXT("/"));
-			rhs.RemoveFromStart(TEXT("/"));
-			Result = lhs / rhs;
+			lhs = FLuminPlatformMisc::GetApplicationWritableDirectoryPath();
 		}
 		else if (bIsIterative)
 		{
-			FString lhs = FLuminPlatformMisc::GetApplicationWritableDirectoryPath();
-			FString rhs = Result;
-			lhs.RemoveFromEnd(TEXT("/"));
-			rhs.RemoveFromStart(TEXT("/"));
-			Result = lhs / rhs;
+			lhs = FLuminPlatformMisc::GetApplicationWritableDirectoryPath();
 		}
 		else
 		{
-//			Result = Filename;
-			// @todo Lumin: Don't know why the Lumin code didn't have this
-			FString lhs = FLuminPlatformMisc::GetApplicationPackageDirectoryPath();
-			FString rhs = Result;
-			lhs.RemoveFromEnd(TEXT("/"));
-			rhs.RemoveFromStart(TEXT("/"));
-			Result = lhs / rhs;
-
+			lhs = FLuminPlatformMisc::GetApplicationPackageDirectoryPath();
 		}
 	}
 
@@ -1157,21 +1210,97 @@ FString FLuminPlatformFile::ConvertToLuminPath(const FString& Filename, bool bFo
 	FPlatformMisc::LowLevelOutputDebugStringf(TEXT("LOG_LUMIN_PATH Write = %d Input = %s Output = %s"), bForWrite, *Filename, *Result.ToLower());
 #endif
 
-	// always use lower case ... always
-	return Result.ToLower();
+	// Lower only unreal path.
+	FString rhs = Result.ToLower();
+	rhs.RemoveFromStart(TEXT("/"));
+	lhs.RemoveFromEnd(TEXT("/"));
+
+	Result = lhs / rhs;
+
+	return Result;
 }
 
-bool FLuminPlatformFile::FileExistsCaseInsensitive(const FString& NormalizedFilename) const
+
+IFileHandle* GetHandleForSharedFile(const TCHAR* Filename, bool bForWrite)
 {
-	FString CaseSensitiveFilename;
-	if (!GCaseInsensMapper.MapCaseInsensitiveFile(NormalizedFilename, CaseSensitiveFilename))
+	const char* Filename_UTF8 = TCHAR_TO_UTF8(Filename);
+	MLSharedFileList* SharedFileList = nullptr;
+	MLResult Result;
+	if (bForWrite)
+	{
+		Result = MLSharedFileWrite(&Filename_UTF8, 1, &SharedFileList);
+	}
+	else
+	{
+		Result = MLSharedFileRead(&Filename_UTF8, 1, &SharedFileList);
+	}
+
+	if (Result == MLResult_Ok && SharedFileList != nullptr)
+	{
+		MLHandle ListLength = 0;
+		Result = MLSharedFileGetListLength(SharedFileList, &ListLength);
+		if (Result == MLResult_Ok && ListLength > 0)
+		{
+			MLFileInfo* FileInfo = nullptr;
+			Result = MLSharedFileGetMLFileInfoByIndex(SharedFileList, 0, &FileInfo);
+			if (Result == MLResult_Ok && FileInfo != nullptr)
+			{
+				MLFileDescriptor FileHandle = -1;
+				Result = MLFileInfoGetFD(FileInfo, &FileHandle);
+				if (Result == MLResult_Ok && FileHandle > -1)
+				{
+					return new FFileHandleLumin(FileHandle, SharedFileList);
+				}
+			}
+		}
+	}
+
+	UE_LOG(LogLuminPlatformFile, Error, TEXT("Error %s opening shared file %s for read."), UTF8_TO_TCHAR(MLSharedFileGetResultString(Result)), Filename);
+	return nullptr;
+}
+
+IFileHandle* FLuminPlatformFile::SharedFileOpenRead(const TCHAR* Filename)
+{
+	return GetHandleForSharedFile(Filename, false);
+}
+
+IFileHandle* FLuminPlatformFile::SharedFileOpenWrite(const TCHAR* Filename)
+{
+	return GetHandleForSharedFile(Filename, true);
+}
+
+IFileHandle* FLuminPlatformFile::GetFileHandleForMLFileInfo(const void* InFileInfo)
+{
+	const MLFileInfo* Fileinfo = static_cast<const MLFileInfo*>(InFileInfo);
+	MLFileDescriptor FileHandle = -1;
+	MLResult Result = MLFileInfoGetFD(Fileinfo, &FileHandle);
+	if (Result == MLResult_Ok && FileHandle > -1)
+	{
+		return new FFileHandleLumin(FileHandle, Fileinfo);
+	}
+
+	return nullptr;
+}
+
+bool FLuminPlatformFile::SetMLFileInfoFD(const IFileHandle* FileHandle, void* InFileInfo)
+{
+	check(FileHandle);
+	check(InFileInfo);
+	const FFileHandleLumin* LuminFileHandle = static_cast<const FFileHandleLumin*>(FileHandle);
+	return LuminFileHandle->SetMLFileInfoFD(static_cast<MLFileInfo*>(InFileInfo));
+}
+
+bool FLuminPlatformFile::FileExistsInternal(const FString& NormalizedFilename) const
+{
+	FString MappedFilename;
+	if (!GLuminFileMapper.MapFile(NormalizedFilename, MappedFilename))
 	{
 		// could not find the file
 		return false;
 	}
 
 	struct stat FileInfo;
-	if (stat(TCHAR_TO_UTF8(*CaseSensitiveFilename), &FileInfo) != -1)
+	if (stat(TCHAR_TO_UTF8(*MappedFilename), &FileInfo) != -1)
 	{
 		return S_ISREG(FileInfo.st_mode);
 	}
@@ -1179,10 +1308,10 @@ bool FLuminPlatformFile::FileExistsCaseInsensitive(const FString& NormalizedFile
 	return false;
 }
 
-int64 FLuminPlatformFile::FileSizeCaseInsensitive(const FString& NormalizedFilename) const
+int64 FLuminPlatformFile::FileSizeInterenal(const FString& NormalizedFilename) const
 {
-	FString CaseSensitiveFilename;
-	if (!GCaseInsensMapper.MapCaseInsensitiveFile(NormalizedFilename, CaseSensitiveFilename))
+	FString MappedFilename;
+	if (!GLuminFileMapper.MapFile(NormalizedFilename, MappedFilename))
 	{
 		// could not find the file
 		return -1;
@@ -1190,7 +1319,7 @@ int64 FLuminPlatformFile::FileSizeCaseInsensitive(const FString& NormalizedFilen
 
 	struct stat FileInfo;
 	FileInfo.st_size = -1;
-	if (stat(TCHAR_TO_UTF8(*CaseSensitiveFilename), &FileInfo) != -1)
+	if (stat(TCHAR_TO_UTF8(*MappedFilename), &FileInfo) != -1)
 	{
 		// make sure to return -1 for directories
 		if (S_ISDIR(FileInfo.st_mode))
@@ -1201,28 +1330,28 @@ int64 FLuminPlatformFile::FileSizeCaseInsensitive(const FString& NormalizedFilen
 	return FileInfo.st_size;
 }
 
-bool FLuminPlatformFile::IsReadOnlyCaseInsensitive(const FString& NormalizedFilename) const
+bool FLuminPlatformFile::IsReadOnlyInternal(const FString& NormalizedFilename) const
 {
-	FString CaseSensitiveFilename;
-	if (!GCaseInsensMapper.MapCaseInsensitiveFile(NormalizedFilename, CaseSensitiveFilename))
+	FString MappedFilename;
+	if (!GLuminFileMapper.MapFile(NormalizedFilename, MappedFilename))
 	{
 		// could not find the file
 		return false;
 	}
 
-	// skipping checking F_OK since this is already taken care of by case mapper
+	// skipping checking F_OK since this is already taken care of by file mapper
 
-	if (access(TCHAR_TO_UTF8(*CaseSensitiveFilename), W_OK) == -1)
+	if (access(TCHAR_TO_UTF8(*MappedFilename), W_OK) == -1)
 	{
 		return errno == EACCES;
 	}
 	return false;
 }
 
-FDateTime FLuminPlatformFile::GetTimeStampCaseInsensitive(const FString& NormalizedFilename) const
+FDateTime FLuminPlatformFile::GetTimeStampInternal(const FString& NormalizedFilename) const
 {
-	FString CaseSensitiveFilename;
-	if (!GCaseInsensMapper.MapCaseInsensitiveFile(NormalizedFilename, CaseSensitiveFilename))
+	FString MappedFilename;
+	if (!GLuminFileMapper.MapFile(NormalizedFilename, MappedFilename))
 	{
 		// could not find the file
 		return FDateTime::MinValue();
@@ -1230,7 +1359,7 @@ FDateTime FLuminPlatformFile::GetTimeStampCaseInsensitive(const FString& Normali
 
 	// get file times
 	struct stat FileInfo;
-	if (stat(TCHAR_TO_UTF8(*CaseSensitiveFilename), &FileInfo) == -1)
+	if (stat(TCHAR_TO_UTF8(*MappedFilename), &FileInfo) == -1)
 	{
 		if (errno == EOVERFLOW)
 		{
@@ -1248,10 +1377,10 @@ FDateTime FLuminPlatformFile::GetTimeStampCaseInsensitive(const FString& Normali
 	return UnixEpoch + TimeSinceEpoch;
 }
 
-FDateTime FLuminPlatformFile::GetAccessTimeStampCaseInsensitive(const FString& NormalizedFilename) const
+FDateTime FLuminPlatformFile::GetAccessTimeStampInternal(const FString& NormalizedFilename) const
 {
-	FString CaseSensitiveFilename;
-	if (!GCaseInsensMapper.MapCaseInsensitiveFile(NormalizedFilename, CaseSensitiveFilename))
+	FString MappedFilename;
+	if (!GLuminFileMapper.MapFile(NormalizedFilename, MappedFilename))
 	{
 		// could not find the file
 		return FDateTime::MinValue();
@@ -1259,7 +1388,7 @@ FDateTime FLuminPlatformFile::GetAccessTimeStampCaseInsensitive(const FString& N
 
 	// get file times
 	struct stat FileInfo;
-	if (stat(TCHAR_TO_UTF8(*CaseSensitiveFilename), &FileInfo) == -1)
+	if (stat(TCHAR_TO_UTF8(*MappedFilename), &FileInfo) == -1)
 	{
 		return FDateTime::MinValue();
 	}
@@ -1269,10 +1398,10 @@ FDateTime FLuminPlatformFile::GetAccessTimeStampCaseInsensitive(const FString& N
 	return UnixEpoch + TimeSinceEpoch;
 }
 
-FFileStatData FLuminPlatformFile::GetStatDataCaseInsensitive(const FString& NormalizedFilename, bool& bFound) const
+FFileStatData FLuminPlatformFile::GetStatDataInternal(const FString& NormalizedFilename, bool& bFound) const
 {
-	FString CaseSensitiveFilename;
-	if (!GCaseInsensMapper.MapCaseInsensitiveFile(NormalizedFilename, CaseSensitiveFilename))
+	FString MappedFilename;
+	if (!GLuminFileMapper.MapFile(NormalizedFilename, MappedFilename))
 	{
 		// could not find the file
 		bFound = false;
@@ -1280,7 +1409,7 @@ FFileStatData FLuminPlatformFile::GetStatDataCaseInsensitive(const FString& Norm
 	}
 
 	struct stat FileInfo;
-	if (stat(TCHAR_TO_UTF8(*CaseSensitiveFilename), &FileInfo) == -1)
+	if (stat(TCHAR_TO_UTF8(*MappedFilename), &FileInfo) == -1)
 	{
 		bFound = false;
 		return FFileStatData();
@@ -1290,17 +1419,17 @@ FFileStatData FLuminPlatformFile::GetStatDataCaseInsensitive(const FString& Norm
 	return UnixStatToUEFileData(FileInfo);
 }
 
-bool FLuminPlatformFile::DirectoryExistsCaseInsensitive(const FString& NormalizedFilename) const
+bool FLuminPlatformFile::DirectoryExistsInternal(const FString& NormalizedFilename) const
 {
-	FString CaseSensitiveFilename;
-	if (!GCaseInsensMapper.MapCaseInsensitiveFile(NormalizedFilename, CaseSensitiveFilename))
+	FString MappedFilename;
+	if (!GLuminFileMapper.MapFile(NormalizedFilename, MappedFilename))
 	{
 		// could not find the file
 		return false;
 	}
 
 	struct stat FileInfo;
-	if (stat(TCHAR_TO_UTF8(*CaseSensitiveFilename), &FileInfo) != -1)
+	if (stat(TCHAR_TO_UTF8(*MappedFilename), &FileInfo) != -1)
 	{
 		return S_ISDIR(FileInfo.st_mode);
 	}

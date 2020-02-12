@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -8,7 +8,8 @@
 #include "DerivedDataPluginInterface.h"
 #endif
 
-class UAnimSequence;
+#include "Animation/AnimCompressionTypes.h"
+
 struct FAnimCompressContext;
 
 #if WITH_EDITOR
@@ -18,55 +19,59 @@ struct FAnimCompressContext;
 class FDerivedDataAnimationCompression : public FDerivedDataPluginInterface
 {
 private:
-	// Anim sequence we are providing DDC data for
-	UAnimSequence* OriginalAnimSequence;
+	// The anim data to compress
+	FCompressibleAnimPtr DataToCompressPtr;
 
-	// Possible duplicate animation for doing actual build work on
-	UAnimSequence* DuplicateSequence;
+	// The Type of anim data to compress (makes up part of DDC key)
+	const TCHAR* TypeName;
+
+	// Bulk of asset DDC key
+	const FString AssetDDCKey;
 
 	// FAnimCompressContext to use during compression if we don't pull from the DDC
 	TSharedPtr<FAnimCompressContext> CompressContext;
 
-	// Whether to do compression work on original animation or duplicate it first.
-	bool bDoCompressionInPlace;
-
-	// Whether we should frame strip (remove every other frame from even frames animations)
-	bool bPerformStripping;
-
-	// Track if it is an even framed animation (when stripping odd framed animations will need to be resampled)
-	bool bIsEvenFramed;
-
 public:
-	FDerivedDataAnimationCompression(UAnimSequence* InAnimSequence, TSharedPtr<FAnimCompressContext> InCompressContext, bool bInDoCompressionInPlace, bool bInTryFrameStripping, bool bTryStrippingOnOddFramedAnims);
+	FDerivedDataAnimationCompression(const TCHAR* InTypeName, const FString& InAssetDDCKey, TSharedPtr<FAnimCompressContext> InCompressContext);
 	virtual ~FDerivedDataAnimationCompression();
+
+	void SetCompressibleData(FCompressibleAnimRef InCompressibleAnimData)
+	{
+		DataToCompressPtr = InCompressibleAnimData;
+		check(DataToCompressPtr->Skeleton != nullptr);
+	}
+
+	FCompressibleAnimPtr GetCompressibleData() const { return DataToCompressPtr; }
+
+	uint64 GetMemoryUsage() const
+	{
+		return DataToCompressPtr.IsValid() ? DataToCompressPtr->GetApproxRawSize() : 0;
+	}
 
 	virtual const TCHAR* GetPluginName() const override
 	{
-		return TEXT("AnimSeq");
+		return TypeName;
 	}
 
-	virtual const TCHAR* GetVersionString() const override
+	virtual const TCHAR* GetVersionString() const override;
+
+	virtual FString GetPluginSpecificCacheKeySuffix() const override
 	{
-		// This is a version string that mimics the old versioning scheme. If you
-		// want to bump this version, generate a new guid using VS->Tools->Create GUID and
-		// return it here. Ex.
-		return TEXT("A74732B14AD94950856C6A09F708445C");
+		return AssetDDCKey;
 	}
-
-	virtual FString GetPluginSpecificCacheKeySuffix() const override;
 
 
 	virtual bool IsBuildThreadsafe() const override
 	{
-		return false;
+		return true;
 	}
 
-	virtual bool Build( TArray<uint8>& OutData ) override;
+	virtual bool Build( TArray<uint8>& OutDataArray) override;
 
 	/** Return true if we can build **/
 	bool CanBuild()
 	{
-		return !!OriginalAnimSequence;
+		return DataToCompressPtr.IsValid();
 	}
 };
 

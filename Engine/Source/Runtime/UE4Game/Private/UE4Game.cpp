@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "CoreTypes.h"
 #include "Modules/Boilerplate/ModuleBoilerplate.h"
@@ -13,4 +13,6 @@ PER_MODULE_BOILERPLATE
 bool GIsGameAgnosticExe = true;
 TCHAR GInternalProjectName[64] = TEXT("");
 IMPLEMENT_FOREIGN_ENGINE_DIR()
+IMPLEMENT_LIVE_CODING_ENGINE_DIR()
+IMPLEMENT_LIVE_CODING_PROJECT()
 #endif

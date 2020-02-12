@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 /*=============================================================================
 	RayGenShaderUtils.h: Utilities for ray generation shaders shaders.
@@ -19,7 +19,7 @@ struct RENDERCORE_API FRayGenShaderUtils
 	static inline void AddRayTraceDispatchPass(
 		FRDGBuilder& GraphBuilder,
 		FRDGEventName&& PassName,
-		const TShaderClass* RayGenerationShader,
+		const TShaderRef<TShaderClass>& RayGenerationShader,
 		typename TShaderClass::FParameters* Parameters,
 		FIntPoint Resolution)
 	{
@@ -28,17 +28,18 @@ struct RENDERCORE_API FRayGenShaderUtils
 		GraphBuilder.AddPass(
 			Forward<FRDGEventName>(PassName),
 			Parameters,
-			ERenderGraphPassFlags::Compute,
+			ERDGPassFlags::Compute,
 			[RayGenerationShader, Parameters, Resolution](FRHICommandList& RHICmdList)
 		{
 			FRayTracingShaderBindingsWriter GlobalResources;
 			SetShaderParameters(GlobalResources, RayGenerationShader, *Parameters);
 
 			FRayTracingPipelineStateInitializer Initializer;
-			Initializer.RayGenShaderRHI = RayGenerationShader->GetRayTracingShader();
+			FRHIRayTracingShader* RayGenShaderTable[] = { RayGenerationShader.GetRayTracingShader() };
+			Initializer.SetRayGenShaderTable(RayGenShaderTable);
 
-			FRHIRayTracingPipelineState* Pipeline = PipelineStateCache::GetAndOrCreateRayTracingPipelineState(Initializer);
-			RHICmdList.RayTraceDispatch(Pipeline, GlobalResources, Resolution.X, Resolution.Y);
+			FRayTracingPipelineState* Pipeline = PipelineStateCache::GetAndOrCreateRayTracingPipelineState(RHICmdList, Initializer);
+			RHICmdList.RayTraceDispatch(Pipeline, RayGenerationShader.GetRayTracingShader(), GlobalResources, Resolution.X, Resolution.Y);
 		});
 	}
 };

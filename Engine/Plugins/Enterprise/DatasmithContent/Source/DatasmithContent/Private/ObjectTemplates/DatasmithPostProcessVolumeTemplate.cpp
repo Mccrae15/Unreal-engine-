@@ -1,35 +1,36 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "ObjectTemplates/DatasmithPostProcessVolumeTemplate.h"
 
+#include "ObjectTemplates/DatasmithActorTemplate.h"
+
 #include "Engine/PostProcessVolume.h"
 
-void UDatasmithPostProcessVolumeTemplate::Apply( UObject* Destination, bool bForce )
+UObject* UDatasmithPostProcessVolumeTemplate::UpdateObject( UObject* Destination, bool bForce )
 {
-#if WITH_EDITORONLY_DATA
-	APostProcessVolume* PostProcessVolume = Cast< APostProcessVolume >( Destination );
+	APostProcessVolume* PostProcessVolume = UDatasmithActorTemplate::GetActor< APostProcessVolume >( Destination );
 
 	if ( !PostProcessVolume )
 	{
-		return;
+		return nullptr;
 	}
 
+#if WITH_EDITORONLY_DATA
 	UDatasmithPostProcessVolumeTemplate* PreviousTemplate = !bForce ? FDatasmithObjectTemplateUtils::GetObjectTemplate< UDatasmithPostProcessVolumeTemplate >( Destination ) : nullptr;
 
 	DATASMITHOBJECTTEMPLATE_CONDITIONALSET( bEnabled, PostProcessVolume, PreviousTemplate );
 	DATASMITHOBJECTTEMPLATE_CONDITIONALSET( bUnbound, PostProcessVolume, PreviousTemplate );
 
 	Settings.Apply( &PostProcessVolume->Settings, PreviousTemplate ? &PreviousTemplate->Settings : nullptr );
-
-	FDatasmithObjectTemplateUtils::SetObjectTemplate( PostProcessVolume->GetRootComponent(), this );
 #endif // #if WITH_EDITORONLY_DATA
+
+	return PostProcessVolume->GetRootComponent();
 }
 
 void UDatasmithPostProcessVolumeTemplate::Load( const UObject* Source )
 {
 #if WITH_EDITORONLY_DATA
-	const APostProcessVolume* PostProcessVolume = Cast< APostProcessVolume >( Source );
-
+	const APostProcessVolume* PostProcessVolume = UDatasmithActorTemplate::GetActor< const APostProcessVolume >( Source );
 	if ( !PostProcessVolume )
 	{
 		return;

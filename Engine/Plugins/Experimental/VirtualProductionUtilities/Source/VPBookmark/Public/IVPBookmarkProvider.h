@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -27,4 +27,13 @@ public:
 
 	UFUNCTION(BlueprintNativeEvent, CallInEditor, Category = "Bookmarks")
 	void OnBookmarkChanged(UVPBookmark* Bookmark);
+
+	UFUNCTION(BlueprintNativeEvent, BlueprintCallable, CallInEditor, Category = "Bookmarks")
+	void UpdateBookmarkSplineMeshIndicator();
+
+	UFUNCTION(BlueprintNativeEvent, BlueprintCallable, CallInEditor, Category = "Bookmarks")
+	void HideBookmarkSplineMeshIndicator();
+
+	UFUNCTION(BlueprintNativeEvent, BlueprintCallable, CallInEditor, Category = "Bookmarks")
+	void GenerateBookmarkName();
 };

@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -22,7 +22,8 @@
 
 #include "ClothingSystemRuntimeTypes.h"
 #include "ClothingSimulationInterface.h"
-#include "ClothingSimulationFactoryInterface.h"
+#include "ClothingSimulationFactory.h"
+#include "ClothCollisionPrim.h"
 #include "PhysicsEngine/PhysicsAsset.h"
 
 #include "SkeletalMeshComponent.generated.h"
@@ -62,6 +63,17 @@ enum class EAnimCurveType : uint8
 	MorphTargetCurve, 
 	// make sure to update MaxCurve 
 	MaxAnimCurveType UMETA(Hidden)
+};
+
+ENUM_RANGE_BY_COUNT(EAnimCurveType, EAnimCurveType::MaxAnimCurveType);
+
+UENUM()
+enum class EClothMassMode : uint8
+{
+	UniformMass,
+	TotalMass,
+	Density,
+	MaxClothMassMode UMETA(Hidden)
 };
 
 struct FAnimationEvaluationContext
@@ -275,14 +287,19 @@ struct ENGINE_API FClosestPointOnPhysicsAsset
  * @see https://docs.unrealengine.com/latest/INT/Engine/Content/Types/SkeletalMeshes/
  * @see USkeletalMesh
  */
-UCLASS(ClassGroup=(Rendering, Common), hidecategories=Object, config=Engine, editinlinenew, meta=(BlueprintSpawnableComponent))
+UCLASS(Blueprintable, ClassGroup=(Rendering, Common), hidecategories=Object, config=Engine, editinlinenew, meta=(BlueprintSpawnableComponent))
 class ENGINE_API USkeletalMeshComponent : public USkinnedMeshComponent, public IInterface_CollisionDataProvider
 {
 	GENERATED_UCLASS_BODY()
 
 	friend class FSkinnedMeshComponentRecreateRenderStateContext;
 	friend class FParallelAnimationCompletionTask;
-	
+	friend class USkeletalMesh; 
+	friend class UAnimInstance;
+	friend struct FAnimNode_LinkedAnimGraph;
+	friend struct FAnimNode_LinkedAnimLayer;
+	friend struct FLinkedInstancesAdapter;
+
 	/**
 	 * Animation 
 	 */
@@ -310,9 +327,12 @@ public:
 	UPROPERTY(transient, NonTransactional)
 	UAnimInstance* AnimScriptInstance;
 
-	/** Any running sub anim instances that need to be updates on the game thread */
+#if WITH_EDITORONLY_DATA
+	/** Any running linked anim instances */
+	UE_DEPRECATED(4.24, "Direct access to this property is deprecated and the array is no longer used. Storage is now in LinkedInstances. Please use GetLinkedAnimInstances() instead.")
 	UPROPERTY(transient)
 	TArray<UAnimInstance*> SubInstances;
+#endif
 
 	/** An instance created from the PostPhysicsBlueprint property of the skeletal mesh we're using,
 	 *  Runs after physics has been blended
@@ -339,9 +359,18 @@ public:
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category=Animation, meta=(ShowOnlyInnerProperties))
 	struct FSingleAnimationPlayData AnimationData;
 
-	/** Temporary array of local-space (relative to parent bone) rotation/translation for each bone. */
+	// this is explicit copy because this buffer is reused during evaluation
+	// we want to have reference and emptied during evaluation
+	TArray<FTransform> GetBoneSpaceTransforms();
+
+	/** 
+	 * Temporary array of local-space (relative to parent bone) rotation/translation for each bone. 
+	 * This property is not safe to access during evaluation, so we created wrapper.
+	 */
+	UE_DEPRECATED(4.23, "Direct access to this property is deprecated, please use GetBoneSpaceTransforms instead. We will move to private in the future.")
 	TArray<FTransform> BoneSpaceTransforms;
-	
+
+public:
 	/** Offset of the root bone from the reference pose. Used to offset bounding box. */
 	UPROPERTY(transient)
 	FVector RootBoneTranslation;
@@ -357,6 +386,10 @@ public:
 	const TArray<FTransform>& GetCachedComponentSpaceTransforms() const;
 
 private:
+	/** Any running linked anim instances */
+	UPROPERTY(transient)
+	TArray<UAnimInstance*> LinkedInstances;
+
 	// Update Rate
 
 	/** Cached BoneSpaceTransforms for Update Rate optimization. */
@@ -390,7 +423,7 @@ protected:
 	/** Whether to use Animation Blueprint or play Single Animation Asset. */
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category=Animation)
 	TEnumAsByte<EAnimationMode::Type>	AnimationMode;
-
+	
 private:
 	/** Teleport type to use on the next update */
 	ETeleportType PendingTeleportType;
@@ -402,7 +435,6 @@ private:
 	uint8 bDisablePostProcessBlueprint:1;
 
 public:
-
 	/** Indicates that simulation (if it's enabled) is entirely responsible for children transforms. This is only ok if you are not animating attachment points relative to the simulation */
 	uint8 bSimulationUpdatesChildTransforms:1;
 
@@ -444,6 +476,10 @@ public:
 	uint8 bDisableClothSimulation:1;
 
 private:
+	/** Disable rigid body animation nodes and play original animation without simulation */
+	UPROPERTY(EditAnywhere, Category=Clothing)
+	uint8 bDisableRigidBodyAnimNode:1;
+
 	/** Disable animation curves for this component. If this is set true, no curves will be processed */
 	UPROPERTY(EditAnywhere, AdvancedDisplay, Category = SkeletalMesh)
 	uint8 bAllowAnimCurveEvaluation : 1;
@@ -554,20 +590,20 @@ public:
 	UPROPERTY()
 	uint8 bEnableLineCheckWithBounds:1;
 
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = Clothing)
-    uint8 bUseBendingElements:1;
+	UPROPERTY(meta = (DeprecatedProperty, DeprecationMessage = "This property is deprecated, please set it on the Clothing Asset / ClothConfig instead."))
+	uint8 bUseBendingElements_DEPRECATED :1;
 	
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = Clothing)
-    uint8 bUseTetrahedralConstraints:1;
+	UPROPERTY(meta = (DeprecatedProperty, DeprecationMessage = "This property is deprecated, please set it on the Clothing Asset / ClothConfig instead."))
+	uint8 bUseTetrahedralConstraints_DEPRECATED :1;
 	
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = Clothing)
-    uint8 bUseThinShellVolumeConstraints:1;
+	UPROPERTY(meta = (DeprecatedProperty, DeprecationMessage = "This property is deprecated, please set it on the Clothing Asset / ClothConfig instead."))
+	uint8 bUseThinShellVolumeConstraints_DEPRECATED :1;
 	
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = Clothing)
-    uint8 bUseSelfCollisions:1;
+	UPROPERTY(meta = (DeprecatedProperty, DeprecationMessage = "This property is deprecated, please set it on the Clothing Asset / ClothConfig instead."))
+	uint8 bUseSelfCollisions_DEPRECATED :1;
 	
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = Clothing)
-    uint8 bUseContinuousCollisionDetection:1;
+	UPROPERTY(meta = (DeprecatedProperty, DeprecationMessage = "This property is deprecated, please set it on the Clothing Asset / ClothConfig instead."))
+	uint8 bUseContinuousCollisionDetection_DEPRECATED :1;
 
 	/** If true, propagates calls to ApplyAnimationCurvesToComponent for slave components, only needed if slave components do not tick themselves */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = MasterPoseComponent)
@@ -605,6 +641,28 @@ public:
 	UPROPERTY(transient)
 	uint16 CachedAnimCurveUidVersion;
 
+	UPROPERTY(meta = (DeprecatedProperty, DeprecationMessage = "This property is deprecated, please set it on the Clothing Asset / ClothConfig instead."))
+	EClothMassMode MassMode_DEPRECATED;
+
+	UPROPERTY(meta = (DeprecatedProperty, DeprecationMessage = "This property is deprecated, please set it on the Clothing Asset / ClothConfig instead."))
+	float UniformMass_DEPRECATED;
+
+	UPROPERTY(meta = (DeprecatedProperty, DeprecationMessage = "This property is deprecated, please set it on the Clothing Asset / ClothConfig instead."))
+	float TotalMass_DEPRECATED;
+	
+	/**
+	 * Water: 1.0
+	 * Cotton: 0.155
+	 * Wool: 0.13
+	 * Silk: 0.133
+	 */
+	UPROPERTY(meta = (DeprecatedProperty, DeprecationMessage = "This property is deprecated, please set it on the Clothing Asset / ClothConfig instead."))
+	float Density_DEPRECATED;
+
+	UPROPERTY(meta = (DeprecatedProperty, DeprecationMessage = "This property is deprecated, please set it on the Clothing Asset / ClothConfig instead."))
+	float MinPerParticleMass_DEPRECATED;
+
+
 	/**
 	 * weight to blend between simulated results and key-framed positions
 	 * if weight is 1.0, shows only cloth simulation results and 0.0 will show only skinned results
@@ -612,23 +670,23 @@ public:
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = Clothing)
 	float ClothBlendWeight;
 
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = Clothing)
-    float EdgeStiffness;
-    
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = Clothing)
-	float BendingStiffness;
+	UPROPERTY(meta = (DeprecatedProperty, DeprecationMessage = "This property is deprecated, please set it on the Clothing Asset / ClothConfig instead."))
+	float EdgeStiffness_DEPRECATED;
 	
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = Clothing)
-    float AreaStiffness;
+	UPROPERTY(meta = (DeprecatedProperty, DeprecationMessage = "This property is deprecated, please set it on the Clothing Asset / ClothConfig instead."))
+	float BendingStiffness_DEPRECATED;
 	
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = Clothing)
-    float VolumeStiffness;
+	UPROPERTY(meta = (DeprecatedProperty, DeprecationMessage = "This property is deprecated, please set it on the Clothing Asset / ClothConfig instead."))
+	float AreaStiffness_DEPRECATED;
 	
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = Clothing)
-    float StrainLimitingStiffness;
+	UPROPERTY(meta = (DeprecatedProperty, DeprecationMessage = "This property is deprecated, please set it on the Clothing Asset / ClothConfig instead."))
+	float VolumeStiffness_DEPRECATED;
 	
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = Clothing)
-    float ShapeTargetStiffness;
+	UPROPERTY(meta = (DeprecatedProperty, DeprecationMessage = "This property is deprecated, please set it on the Clothing Asset / ClothConfig instead."))
+	float StrainLimitingStiffness_DEPRECATED;
+	
+	UPROPERTY(meta = (DeprecatedProperty, DeprecationMessage = "This property is deprecated, please set it on the Clothing Asset / ClothConfig instead."))
+	float ShapeTargetStiffness_DEPRECATED;
 
 private:
 
@@ -701,9 +759,16 @@ public:
 	/** Array of physical interactions for the frame. This is a temporary solution for a more permanent force system and should not be used directly*/
 	TArray<FPendingRadialForces> PendingRadialForces;
 
-	/** Set the anim instance class. Clears and re-initializes the anim instance with the new class and sets animation mode to 'AnimationBlueprint' */
-	UFUNCTION(BlueprintCallable, Category="Components|SkeletalMesh", meta=(Keywords = "AnimBlueprint", DisplayName = "Set Anim Instance Class"))
+	UE_DEPRECATED(4.23, "This function is deprecated. Please use SetAnimClass instead. ")
 	virtual void K2_SetAnimInstanceClass(class UClass* NewClass);
+
+	/** Set the anim instance class. Clears and re-initializes the anim instance with the new class and sets animation mode to 'AnimationBlueprint' */
+	UFUNCTION(BlueprintCallable, Category = "Components|SkeletalMesh", meta = (Keywords = "AnimBlueprint", DisplayName = "Set Anim Instance Class"))
+	virtual void SetAnimClass(class UClass* NewClass);
+
+	/** Get the anim instance class via getter callable by sequencer.  */
+	UFUNCTION(BlueprintInternalUseOnly)
+	class UClass*  GetAnimClass();
 
 	/** Set the anim instance class. Clears and re-initializes the anim instance with the new class and sets animation mode to 'AnimationBlueprint' */
 	void SetAnimInstanceClass(class UClass* NewClass);
@@ -715,7 +780,7 @@ public:
 	 */
 	UFUNCTION(BlueprintCallable, Category="Components|SkeletalMesh", meta=(Keywords = "AnimBlueprint", UnsafeDuringActorConstruction = "true"))
 	class UAnimInstance * GetAnimInstance() const;
-
+	
 	/**
 	 * Returns the active post process instance is one is available. This is set on the mesh that this
 	 * component is using, and is evaluated immediately after the main instance.
@@ -723,22 +788,98 @@ public:
 	UFUNCTION(BlueprintCallable, Category = "Components|SkeletalMesh", meta = (Keywords = "AnimBlueprint"))
 	UAnimInstance* GetPostProcessInstance() const;
 
+	/** Get the anim instances linked to the main AnimScriptInstance */
+PRAGMA_DISABLE_DEPRECATION_WARNINGS
+	const TArray<UAnimInstance*>& GetLinkedAnimInstances() const { return LinkedInstances; }
+PRAGMA_ENABLE_DEPRECATION_WARNINGS
+
+private:
+PRAGMA_DISABLE_DEPRECATION_WARNINGS
+	TArray<UAnimInstance*>& GetLinkedAnimInstances() { return LinkedInstances; }
+PRAGMA_ENABLE_DEPRECATION_WARNINGS
+
+	/** Clear the linked anim instances and mark them pending kill */
+	void ResetLinkedAnimInstances();
+
+public:
+	UE_DEPRECATED(4.23, "This function is deprecated. Please use GetLinkedAnimGraphInstanceByTag")
+	UAnimInstance* GetSubInstanceByName(FName InTag) const { return GetLinkedAnimGraphInstanceByTag(InTag); }
+
+	UE_DEPRECATED(4.24, "This function is deprecated. Please use GetLinkedAnimGraphInstanceByTag")
+	UAnimInstance* GetSubInstanceByTag(FName InTag) const { return GetLinkedAnimGraphInstanceByTag(InTag); }
+
 	/**
-	 * Returns the a tagged sub-instance node. If non sub instances are found or none are tagged with the
+	 * Returns the a tagged linked instance node. If no linked instances are found or none are tagged with the
 	 * supplied name, this will return NULL.
 	 */
-	UFUNCTION(BlueprintCallable, Category = "Components|SkeletalMesh", meta = (Keywords = "AnimBlueprint"))
-	UAnimInstance* GetSubInstanceByName(FName InName) const;
+	UFUNCTION(BlueprintPure, Category = "Components|SkeletalMesh|Animation Blueprint Linking", meta = (Keywords = "AnimBlueprint"))
+	UAnimInstance* GetLinkedAnimGraphInstanceByTag(FName InTag) const;
+
+	UE_DEPRECATED(4.24, "Function renamed, please use GetLinkedAnimGraphInstancesByTag")
+	void GetSubInstancesByTag(FName InTag, TArray<UAnimInstance*>& OutSubInstances) const { GetLinkedAnimGraphInstancesByTag(InTag, OutSubInstances); }
+
+	/**
+	 * Returns all tagged linked instance nodes that match the tag.
+	 */
+	UFUNCTION(BlueprintPure, Category = "Components|SkeletalMesh|Animation Blueprint Linking", meta = (Keywords = "AnimBlueprint"))
+	void GetLinkedAnimGraphInstancesByTag(FName InTag, TArray<UAnimInstance*>& OutLinkedInstances) const;
+
+	UE_DEPRECATED(4.24, "Function renamed, please use LinkAnimGraphByTag")
+	void SetSubInstanceClassByTag(FName InTag, TSubclassOf<UAnimInstance> InClass) { LinkAnimGraphByTag(InTag, InClass); }
+
+	/** Runs through all nodes, attempting to find linked instance by name/tag, then sets the class of each node if the tag matches */
+	UFUNCTION(BlueprintCallable, Category = "Components|SkeletalMesh|Animation Blueprint Linking", meta = (Keywords = "AnimBlueprint"))
+	void LinkAnimGraphByTag(FName InTag, TSubclassOf<UAnimInstance> InClass);
+
+	UE_DEPRECATED(4.24, "Function renamed, please use LinkAnimClassLayers")
+	void SetLayerOverlay(TSubclassOf<UAnimInstance> InClass) { LinkAnimClassLayers(InClass); }
+
+	/** 
+	 * Runs through all layer nodes, attempting to find layer nodes that are implemented by the specified class, then sets up a linked instance of the class for each.
+	 * Allocates one linked instance to run each of the groups specified in the class, so state is shared. If a layer is not grouped (ie. NAME_None), then state is not shared
+	 * and a separate linked instance is allocated for each layer node.
+	 * If InClass is null, then all layers are reset to their defaults.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "Components|SkeletalMesh|Animation Blueprint Linking")
+	void LinkAnimClassLayers(TSubclassOf<UAnimInstance> InClass);
+
+	UE_DEPRECATED(4.24, "Function renamed, please use UnlinkAnimClassLayers")
+	void ClearLayerOverlay(TSubclassOf<UAnimInstance> InClass) { UnlinkAnimClassLayers(InClass); }
+
+	/** 
+	 * Runs through all layer nodes, attempting to find layer nodes that are currently running the specified class, then resets each to its default value.
+	 * State sharing rules are as with SetLayerOverlay.
+	 * If InClass is null, does nothing.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "Components|SkeletalMesh|Animation Blueprint Linking")
+	void UnlinkAnimClassLayers(TSubclassOf<UAnimInstance> InClass);
+
+	UE_DEPRECATED(4.24, "Function renamed, please use GetLinkedLayerInstanceByGroup")
+	UAnimInstance* GetLayerSubInstanceByGroup(FName InGroup) const { return GetLinkedAnimLayerInstanceByGroup(InGroup); }
+
+	/** Gets the layer linked instance corresponding to the specified group */
+	UFUNCTION(BlueprintPure, Category = "Components|SkeletalMesh|Animation Blueprint Linking")
+	UAnimInstance* GetLinkedAnimLayerInstanceByGroup(FName InGroup) const;
+
+	UE_DEPRECATED(4.24, "Function renamed, please use GetLinkedAnimLayerInstanceByClass")
+	UAnimInstance* GetLayerSubInstanceByClass(TSubclassOf<UAnimInstance> InClass) const { return GetLinkedAnimLayerInstanceByClass(InClass);  }
+
+	/** Gets the first layer linked instance corresponding to the specified class */
+	UFUNCTION(BlueprintPure, Category = "Components|SkeletalMesh|Animation Blueprint Linking")
+	UAnimInstance* GetLinkedAnimLayerInstanceByClass(TSubclassOf<UAnimInstance> InClass) const;
+
+	/** Calls a function on each of the anim instances that this mesh component hosts, including linked and post-process instances */
+	void ForEachAnimInstance(TFunctionRef<void(UAnimInstance*)> InFunction);
 
 	/** 
 	 * Returns whether there are any valid instances to run, currently this means whether we have
 	 * have an animation instance or a post process instance available to process.
 	 */
-	UFUNCTION(BlueprintCallable, Category = "Components|SkeletalMesh", meta = (Keywords = "AnimBlueprint"))
+	UFUNCTION(BlueprintPure, Category = "Components|SkeletalMesh", meta = (Keywords = "AnimBlueprint"))
 	bool HasValidAnimationInstance() const;
 
 	/**
-	 * Informs any active anim instances (main instance, sub instances, post instance) that a dynamics reset is required
+	 * Informs any active anim instances (main instance, linked instances, post instance) that a dynamics reset is required
 	 * for example if a teleport occurs.
 	 */
 	UFUNCTION(BlueprintCallable, Category = "Components|SkeletalMesh", meta = (Keywords = "Dynamics,Physics", UnsafeDuringActorConstruction = "true"))
@@ -748,7 +889,7 @@ public:
 	UFUNCTION(BlueprintCallable, Category = "Components|Animation", meta = (Keywords = "Animation"))
 	void SetAnimationMode(EAnimationMode::Type InAnimationMode);
 	
-	UFUNCTION(BlueprintCallable, Category = "Components|Animation", meta = (Keywords = "Animation"))
+	UFUNCTION(BlueprintPure, Category = "Components|Animation", meta = (Keywords = "Animation"))
 	EAnimationMode::Type GetAnimationMode() const;
 
 	/* Animation play functions
@@ -873,7 +1014,7 @@ public:
 	 * Get/Set the max distance scale of clothing mesh vertices
 	 */
 	UFUNCTION(BlueprintCallable, Category="Components|SkeletalMesh")
-	float GetClothMaxDistanceScale();
+	float GetClothMaxDistanceScale() const;
 	UFUNCTION(BlueprintCallable, Category="Components|SkeletalMesh")
 	void SetClothMaxDistanceScale(float Scale);
 
@@ -928,6 +1069,15 @@ public:
 	void UnbindClothFromMasterPoseComponent(bool bRestoreSimulationSpace = true);
 
 	/**
+	 * Sets whether or not to allow rigid body animation nodes for this component
+	 */
+	UFUNCTION(BlueprintCallable, Category = "Components|SkeletalMesh")
+	void SetAllowRigidBodyAnimNode(bool bInAllow, bool bReinitAnim = true);
+
+	UFUNCTION(BlueprintCallable, Category = "Components|SkeletalMesh")
+	bool GetAllowRigidBodyAnimNode() const { return !bDisableRigidBodyAnimNode; }
+
+	/**
 	* Sets whether or not to force tick component in order to update animation and refresh transform for this component
 	* This is supported only in the editor
 	*/
@@ -979,7 +1129,7 @@ public:
 	virtual void SkelMeshCompOnParticleSystemFinished( class UParticleSystemComponent* PSC );
 
 	class UAnimSingleNodeInstance * GetSingleNodeInstance() const;
-	bool InitializeAnimScriptInstance(bool bForceReinit=true);
+	bool InitializeAnimScriptInstance(bool bForceReinit = true, bool bInDeferRootNodeInitialization = false);
 
 	/** @return true if wind is enabled */
 	virtual bool IsWindEnabled() const;
@@ -1214,6 +1364,11 @@ private:
 	 **/
 	TMap<FName, float>	MorphTargetCurves;
 
+	/** 
+	 * Temporary storage for Curve UIDList of evaluating Animation 
+	 */
+	TArray<uint16> CachedCurveUIDList;
+
 public:
 	const TMap<FName, float>& GetMorphTargetCurves() const { return MorphTargetCurves;  }
 	// 
@@ -1343,7 +1498,7 @@ public:
 	virtual FBoxSphereBounds CalcBounds(const FTransform& LocalToWorld) const override;
 	virtual bool IsAnySimulatingPhysics() const override;
 	virtual void OnUpdateTransform(EUpdateTransformFlags UpdateTransformFlags, ETeleportType Teleport = ETeleportType::None) override;
-	virtual bool UpdateOverlapsImpl(TArray<FOverlapInfo> const* PendingOverlaps=NULL, bool bDoNotifies=true, const TArray<FOverlapInfo>* OverlapsAtEndLocation=NULL) override;
+	virtual bool UpdateOverlapsImpl(const TOverlapArrayView* PendingOverlaps=NULL, bool bDoNotifies=true, const TOverlapArrayView* OverlapsAtEndLocation=NULL) override;
 	//~ End USceneComponent Interface.
 
 	//~ Begin UPrimitiveComponent Interface.
@@ -1379,7 +1534,7 @@ public:
 	virtual bool IsAnyRigidBodyAwake() override;
 	virtual void SetEnableGravity(bool bGravityEnabled);
 	virtual bool IsGravityEnabled() const override;
-	virtual void OnComponentCollisionSettingsChanged() override;
+	virtual void OnComponentCollisionSettingsChanged(bool bUpdateOverlaps=true) override;
 	virtual void SetPhysMaterialOverride(UPhysicalMaterial* NewPhysMaterial) override;
 	virtual bool GetSquaredDistanceToCollision(const FVector& Point, float& OutSquaredDistance, FVector& OutClosestPointOnCollision) const override;
 
@@ -1436,7 +1591,19 @@ public:
 	bool K2_GetClosestPointOnPhysicsAsset(const FVector& WorldPosition, FVector& ClosestWorldPosition, FVector& Normal, FName& BoneName, float& Distance) const;
 
 	virtual bool LineTraceComponent( FHitResult& OutHit, const FVector Start, const FVector End, const FCollisionQueryParams& Params ) override;
-    virtual bool SweepComponent( FHitResult& OutHit, const FVector Start, const FVector End, const FQuat& ShapRotation, const FCollisionShape& CollisionShape, bool bTraceComplex=false) override;
+	
+	/** 
+	 *  Trace a shape against just this component. Will trace against each body, returning as soon as any collision is found. Note that this collision may not be the closest.
+	 *  @param  OutHit          	Information about hit against this component, if true is returned
+	 *  @param  Start           	Start location of the trace
+	 *  @param  End             	End location of the trace
+	 *  @param  ShapeWorldRotation  The rotation applied to the collision shape in world space
+	 *  @param  CollisionShape  	Collision Shape
+	 *	@param	bTraceComplex	Whether or not to trace complex
+	 *  @return true if a hit is found
+	 */
+	 virtual bool SweepComponent( FHitResult& OutHit, const FVector Start, const FVector End, const FQuat& ShapRotation, const FCollisionShape& CollisionShape, bool bTraceComplex=false) override;
+	
 	virtual bool OverlapComponent(const FVector& Pos, const FQuat& Rot, const FCollisionShape& CollisionShape) override;
 	virtual void SetSimulatePhysics(bool bEnabled) override;
 	virtual void AddRadialImpulse(FVector Origin, float Radius, float Strength, ERadialImpulseFalloff Falloff, bool bVelChange=false) override;
@@ -1531,7 +1698,7 @@ public:
 
 	FOnBoneTransformsFinalized OnBoneTransformsFinalized;
 
-	void GetCurrentRefToLocalMatrices(TArray<FMatrix>& OutRefToLocals, int32 InLodIdx);
+	void GetCurrentRefToLocalMatrices(TArray<FMatrix>& OutRefToLocals, int32 InLodIdx) const;
 
 	// Conditions used to gate when post process events happen
 	bool ShouldUpdatePostProcessInstance() const;
@@ -1593,7 +1760,7 @@ public:
 	void InstantiatePhysicsAsset(const UPhysicsAsset& PhysAsset, const FVector& Scale3D, TArray<FBodyInstance*>& OutBodies, TArray<FConstraintInstance*>& OutConstraints, FPhysScene* PhysScene = nullptr, USkeletalMeshComponent* OwningComponent = nullptr, int32 UseRootBodyIndex = INDEX_NONE, const FPhysicsAggregateHandle& UseAggregate = FPhysicsAggregateHandle()) const;
 
 	/** Instantiates bodies given a physics asset like InstantiatePhysicsAsset but instead of reading the current component state, this reads the ref-pose from the reference skeleton of the mesh. Useful if trying to create bodies to be used during any evaluation work */
-	void InstantiatePhysicsAssetRefPose(const UPhysicsAsset& PhysAsset, const FVector& Scale3D, TArray<FBodyInstance*>& OutBodies, TArray<FConstraintInstance*>& OutConstraints, FPhysScene* PhysScene = nullptr, USkeletalMeshComponent* OwningComponent = nullptr, int32 UseRootBodyIndex = INDEX_NONE, const FPhysicsAggregateHandle& UseAggregate = FPhysicsAggregateHandle()) const;
+	void InstantiatePhysicsAssetRefPose(const UPhysicsAsset& PhysAsset, const FVector& Scale3D, TArray<FBodyInstance*>& OutBodies, TArray<FConstraintInstance*>& OutConstraints, FPhysScene* PhysScene = nullptr, USkeletalMeshComponent* OwningComponent = nullptr, int32 UseRootBodyIndex = INDEX_NONE, const FPhysicsAggregateHandle& UseAggregate = FPhysicsAggregateHandle(), bool bCreateBodiesInRefPose = false) const;
 
 	/** Turn off all physics and remove the instance. */
 	void TermArticulated();
@@ -1856,6 +2023,9 @@ public:
 	bool IsAnimBlueprintInstanced() const;
 	void ClearAnimScriptInstance();
 
+	/** Clear cached animation data generated for URO during evaluation */
+	void ClearCachedAnimProperties();
+
 protected:
 	bool NeedToSpawnAnimScriptInstance() const;
 	bool NeedToSpawnPostPhysicsInstance(bool bForceReinit) const;
@@ -1978,7 +2148,7 @@ private:
 	/** See UpdateClothTransform for documentation. */
 	void UpdateClothTransformImp();
 
-	friend class FClothingSimulationBase;
+	friend class FClothingSimulationContextCommon;
 
 	friend class FTickClothingTask;
 
@@ -2014,6 +2184,7 @@ private:
 	 * Update MorphTargetCurves from mesh - these are not animation curves, but SetMorphTarget and similar functions that can set to this mesh component
 	 */
 	void UpdateMorphTargetOverrideCurves();
+
 	/*
 	 * Reset MorphTarget Curves - Reset all morphtarget curves
 	 */
@@ -2083,4 +2254,31 @@ public:
 
 	// Are we currently within PostAnimEvaluation
 	bool IsPostEvaluatingAnimation() const { return bPostEvaluatingAnimation; }
+};
+
+struct FLinkedInstancesAdapter
+{
+	static void AddLinkedInstance(USkeletalMeshComponent* InComponent, UAnimInstance* InAnimInstance)
+	{
+		if (InComponent && InAnimInstance)
+		{
+			InComponent->LinkedInstances.Add(InAnimInstance);
+		}
+	}
+
+	static void RemoveLinkedInstance(USkeletalMeshComponent* InComponent, UAnimInstance* InAnimInstance)
+	{
+		if (InComponent && InAnimInstance)
+		{
+			InComponent->LinkedInstances.Remove(InAnimInstance);
+		}
+	}
+
+	static void ResetLinkedInstance(USkeletalMeshComponent* InComponent)
+	{
+		if (InComponent)
+		{
+			InComponent->LinkedInstances.Reset();
+		}
+	}
 };

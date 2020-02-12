@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "XGEControllerInterface.h"
 #include "Containers/Queue.h"
@@ -295,7 +295,7 @@ bool FXGEControllerModule::IsSupported()
 			}
 			else if (Version < 1002867)
 			{
-				UE_LOG(LogXGEController, Error, TEXT("XGE version 8.01 (build 1867) or higher is required for XGE shader compilation with the interception interface."));
+				UE_LOG(LogXGEController, Warning, TEXT("XGE version 8.01 (build 1867) or higher is required for XGE shader compilation with the interception interface."));
 				XGEControllerVariables::Enabled = 0;
 			}
 		}
@@ -331,7 +331,7 @@ void FXGEControllerModule::StartupModule()
 	bShutdown = false;
 	if (IsSupported())
 	{
-		WriteOutThreadFuture = Async<void>(EAsyncExecution::Thread, [this]() { WriteOutThreadProc(); });
+		WriteOutThreadFuture = Async(EAsyncExecution::Thread, [this]() { WriteOutThreadProc(); });
 	}
 
 	bInitialized = true;
@@ -446,7 +446,7 @@ void FXGEControllerModule::WriteOutThreadProc()
 		LastEventTime = FPlatformTime::Cycles();
 
 		// Launch the output thread
-		ReadBackThreadFuture = Async<void>(EAsyncExecution::Thread, [this]() { ReadBackThreadProc(); });
+		ReadBackThreadFuture = Async(EAsyncExecution::Thread, [this]() { ReadBackThreadProc(); });
 
 		// Main Tasks Loop
 		TArray<uint8> WriteBuffer;

@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 #pragma once
 
 #include "Installer/MessagePump.h"
@@ -20,6 +20,10 @@ namespace BuildPatchServices
 		}
 
 		virtual void PumpMessages(const TArray<FMessageHandler*>& Handlers) override
+		{
+		}
+
+		virtual void SendRequest(FChunkUriRequest Request, TFunction<void(FChunkUriResponse)> OnResponse) override
 		{
 		}
 	};

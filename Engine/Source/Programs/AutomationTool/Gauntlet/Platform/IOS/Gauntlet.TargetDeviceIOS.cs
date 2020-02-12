@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 using System;
 using System.Collections.Generic;
@@ -159,7 +159,7 @@ namespace Gauntlet
 
 	public class IOSDeviceFactory : IDeviceFactory
 	{
-		public bool CanSupportPlatform(UnrealTargetPlatform Platform)
+		public bool CanSupportPlatform(UnrealTargetPlatform? Platform)
 		{
 			return Platform == UnrealTargetPlatform.IOS;
 		}
@@ -289,7 +289,7 @@ namespace Gauntlet
 			if (Directory.Exists(DSymDir))
 			{
 				DSymBundle = Directory.GetDirectories(DSymDir).Where(D => Path.GetExtension(D).ToLower() == ".dsym").FirstOrDefault();
-				DSymBundle = string.IsNullOrEmpty(DSymBundle) ? "" : DSymBundle = " -s \"" + DSymBundle + "\"";
+				DSymBundle = string.IsNullOrEmpty(DSymBundle) ? "" : DSymBundle = " -S \"" + DSymBundle + "\"";
 			}
 
 			string CL = "--noinstall -I" + DSymBundle + " -b \"" + LocalAppBundle + "\" --args '" + CommandLine.Trim() + "'";
@@ -326,7 +326,7 @@ namespace Gauntlet
 			{
 				Log.Verbose("Cleaning device artifacts");
 
-				string CleanCommand = String.Format("--bundle_id {0} --rm_r {1}", Build.PackageName, DeviceArtifactPath);
+				string CleanCommand = String.Format("--bundle_id {0} --rmtree {1}", Build.PackageName, DeviceArtifactPath);
 				IProcessResult Result = ExecuteIOSDeployCommand(CleanCommand, 120);
 
 				if (Result.ExitCode != 0)
@@ -591,9 +591,10 @@ namespace Gauntlet
 		}
 
 		public void PopulateDirectoryMappings(string ProjectDir)
-        {
-            LocalDirectoryMappings.Add(EIntendedBaseCopyDirectory.Binaries, Path.Combine(ProjectDir, "Binaries"));
-            LocalDirectoryMappings.Add(EIntendedBaseCopyDirectory.Config, Path.Combine(ProjectDir, "Config"));
+		{
+			LocalDirectoryMappings.Add(EIntendedBaseCopyDirectory.Build, Path.Combine(ProjectDir, "Build"));
+			LocalDirectoryMappings.Add(EIntendedBaseCopyDirectory.Binaries, Path.Combine(ProjectDir, "Binaries"));
+			LocalDirectoryMappings.Add(EIntendedBaseCopyDirectory.Config, Path.Combine(ProjectDir, "Config"));
             LocalDirectoryMappings.Add(EIntendedBaseCopyDirectory.Content, Path.Combine(ProjectDir, "Content"));
             LocalDirectoryMappings.Add(EIntendedBaseCopyDirectory.Demos, Path.Combine(ProjectDir, "Demos"));
             LocalDirectoryMappings.Add(EIntendedBaseCopyDirectory.Profiling, Path.Combine(ProjectDir, "Profiling"));
@@ -601,7 +602,7 @@ namespace Gauntlet
         }
 
 
-		public UnrealTargetPlatform Platform { get { return UnrealTargetPlatform.IOS; } }
+		public UnrealTargetPlatform? Platform { get { return UnrealTargetPlatform.IOS; } }
 
 		/// <summary>
 		/// Temp path we use to push/pull things from the device
@@ -625,7 +626,50 @@ namespace Gauntlet
 		public bool IsOn { get { return true; } }
 		public bool PowerOn() { return true; }
 		public bool PowerOff() { return true; }
-		public bool Reboot() { return true; }
+		
+		public bool Reboot() 
+		{ 
+			const string Cmd = "/usr/local/bin/idevicediagnostics";
+			if (!File.Exists(Cmd))
+			{
+				Log.Verbose("Rebooting iOS device requires idevicediagnostics binary");
+				return true;
+			}
+
+			var Result = IOSBuild.ExecuteCommand(Cmd, string.Format("restart -u {0}", DeviceName));
+			if (Result.ExitCode != 0)
+			{
+				Log.Warning(string.Format("Failed to reboot iOS device {0}, restart command failed", DeviceName));
+				return true;
+			}
+
+			// initial wait 20 seconds
+			Thread.Sleep(20 * 1000);
+
+			const int WaitPeriod = 10;
+			int WaitTime = 120;
+			bool rebooted = false;
+			do
+			{
+				Result = IOSBuild.ExecuteCommand(Cmd, string.Format("diagnostics WiFi -u {0}", DeviceName));
+				if (Result.ExitCode == 0)
+				{
+					rebooted = true;
+					break;
+				}
+				
+				Thread.Sleep(WaitPeriod * 1000);
+				WaitTime -= WaitPeriod;
+
+			} while (WaitTime > 0);
+
+			if (!rebooted) 
+			{
+				Log.Warning("Failed to reboot iOS device {0}, device didn't come back after restart", DeviceName);
+			}
+
+			return true; 
+		}
 
 		static Dictionary<string, bool> ConnectedDevices = new Dictionary<string, bool>();
 		bool Connected = false;
@@ -696,7 +740,7 @@ namespace Gauntlet
 				return new List<string>();
 			}
 
-			MatchCollection DeviceMatches = Regex.Matches(Result.Output, @"(.?)Found\ ([a-z0-9]{40})");
+			MatchCollection DeviceMatches = Regex.Matches(Result.Output, @"(.?)Found\ ([a-z0-9]{40}|[A-Z0-9]{8}-[A-Z0-9]{16})");
 
 			return DeviceMatches.Cast<Match>().Select<Match, string>(
 				M => M.Groups[2].ToString()
@@ -709,7 +753,7 @@ namespace Gauntlet
 		void KillZombies()
 		{
 
-			if (ZombiesKilled)
+			if (Globals.IsWorker || ZombiesKilled)
 			{
 				return;
 			}
@@ -723,7 +767,13 @@ namespace Gauntlet
 		}
 		
 		// Gauntlet cache folder for tracking device/ipa state
-		string GauntletAppCache { get { return Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.Personal), ".gauntletappcache");} }
+		string GauntletAppCache
+		{
+			get
+			{	
+				return Path.Combine(Globals.TempDir, string.Format("IOSAppCache{0}", Globals.WorkerID == -1 ? "" : Globals.WorkerID.ToString()));
+			}
+		}
 
 		// path to locally extracted (and possibly resigned) app bundle
 		// Note: ios-deploy works with app bundles, which requires the IPA be unzipped for deployment (this will allow us to resign in the future as well)
@@ -786,9 +836,9 @@ namespace Gauntlet
 					}
 
 					Log.Verbose("Unzipping IPA {0} to cache at: {1}", Build.SourceIPAPath, GauntletAppCache);
-					
-					IProcessResult Result = IOSBuild.ExecuteCommand("unzip", String.Format("{0} -d {1}", Build.SourceIPAPath, GauntletAppCache));
-					if (Result.ExitCode != 0 || !Directory.Exists(PayloadDir))
+
+					string Output;
+					if (!IOSBuild.ExecuteIPAZipCommand(String.Format("{0} -d {1}", Build.SourceIPAPath, GauntletAppCache), out Output, PayloadDir))
 					{
 						throw new Exception(String.Format("Unable to extract IPA {0}", Build.SourceIPAPath));
 					}
@@ -802,8 +852,7 @@ namespace Gauntlet
 					{						
 						Log.Verbose("Unzipping Symbols {0} to cache at: {1}", SymbolsZipFile, SymbolsDir);
 
-						Result = IOSBuild.ExecuteCommand("unzip", String.Format("{0} -d {1}", SymbolsZipFile, SymbolsDir));
-						if (Result.ExitCode != 0 || !Directory.Exists(SymbolsDir))
+						if (!IOSBuild.ExecuteIPAZipCommand(String.Format("{0} -d {1}", SymbolsZipFile, SymbolsDir), out Output, SymbolsDir))
 						{
 							throw new Exception(String.Format("Unable to extract build symbols {0} -> {1}", SymbolsZipFile, SymbolsDir));
 						}
@@ -916,7 +965,7 @@ namespace Gauntlet
 		class FrameInfo
 		{
 			public string Module;
-			public string Symbol;
+			public string Symbol = String.Empty;
 			public string Address;
 			public string Offset;
 			public string Source;
@@ -955,20 +1004,29 @@ namespace Gauntlet
 		/// </summary>		
 		public static string GenerateCrashLog(string LogOutput)
 		{
-			DateTime TimeStamp;
-			int Frame;
-			ThreadInfo Thread = ParseCallstack(LogOutput, out TimeStamp, out Frame);
-			if (Thread == null)
+			try
 			{
-				return null;
+				DateTime TimeStamp;
+				int Frame;
+				ThreadInfo Thread = ParseCallstack(LogOutput, out TimeStamp, out Frame);
+				if (Thread == null)
+				{
+					return null;
+				}
+
+				StringBuilder CrashLog = new StringBuilder();
+				CrashLog.Append(string.Format("[{0}:000][{1}]LogCore: === Fatal Error: ===\n", TimeStamp.ToString("yyyy.mm.dd - H.mm.ss"), Frame));
+				CrashLog.Append(string.Format("Error: Thread #{0} {1}\n", Thread.Num, Thread.Status));
+				CrashLog.Append(string.Join("\n", Thread.Frames));
+
+				return CrashLog.ToString();
+			} 
+			catch (Exception Ex)
+			{
+				Log.Warning("Exception parsing LLDB callstack {0}", Ex.Message);
 			}
 
-			StringBuilder CrashLog = new StringBuilder();
-			CrashLog.Append(string.Format("[{0}:000][{1}]LogCore: === Fatal Error: ===\n", TimeStamp.ToString("yyyy.mm.dd - H.mm.ss"), Frame));
-			CrashLog.Append(string.Format("Error: Thread #{0} {1}\n", Thread.Num, Thread.Status));
-			CrashLog.Append(string.Join("\n", Thread.Frames));
-
-			return CrashLog.ToString();
+			return null;
 
 		}
 
@@ -980,16 +1038,15 @@ namespace Gauntlet
 			Regex LogLineRegex = new Regex(@"(?<timestamp>\s\[\d.+\]\[\s*\d+\])(?<log>.*)");
 			Regex TimeRegex = new Regex(@"\[(?<year>\d+)\.(?<month>\d+)\.(?<day>\d+)-(?<hour>\d+)\.(?<minute>\d+)\.(?<second>\d+):(?<millisecond>\d+)\]\[(?<frame>\s*\d+)\]", RegexOptions.IgnoreCase);
 			Regex ThreadRegex = new Regex(@"(thread\s#)(?<threadnum>\d+),?(?<status>.+)");
-			Regex SymbolicatedFrameRegex = new Regex(@"\s#(?<framenum>\d+):\s0x(?<address>[\da-f]+)\s(?<module>.+)\`(?<symbol>.+)(\sat\s)(?<source>.+)\s\[opt\]");
-			Regex UnsymbolicatedFrameRegex = new Regex(@"frame\s#(?<framenum>\d+):\s0x(?<address>[\da-f]+)\s(?<module>.+)\`(?<symbol>.+)\s\+\s(?<offset>\d+)");
+			Regex SymbolicatedFrameRegex = new Regex(@"\*?\s#(?<framenum>\d+):\s0x(?<address>[\da-f]+)\s(?<module>.+)\`(?<symbol>.+)(\sat\s)(?<source>.+)\s\[opt\]");
+			Regex UnsymbolicatedFrameRegex = new Regex(@"\*?frame\s#(?<framenum>\d+):\s0x(?<address>[\da-f]+)\s(?<module>.+)\`(?<symbol>.+)(\s\+\s(?<offset>\d+))?");
 
 			LinkedList<string> CrashLog = new LinkedList<string>(Regex.Split(LogOutput, "\r\n|\r|\n"));
-						
+
 			List<ThreadInfo> Threads = new List<ThreadInfo>();
 			ThreadInfo Thread = null;
-			ThreadInfo CrashThread = null;
 
-			var LineNode = CrashLog.First;			
+			var LineNode = CrashLog.First;
 			while (LineNode != null)
 			{
 				string Line = LineNode.Value.Trim();
@@ -1065,7 +1122,7 @@ namespace Gauntlet
 						Thread.Frames.Add(Frame);
 					}
 					else
-					{						
+					{
 						Thread = null;
 					}
 
@@ -1074,42 +1131,51 @@ namespace Gauntlet
 				// Parse thread
 				if (ThreadRegex.IsMatch(Line))
 				{
+
 					GroupCollection ThreadGroups = ThreadRegex.Match(Line).Groups;
-					Thread = new ThreadInfo()
-					{
-						Num = int.Parse(ThreadGroups["threadnum"].Value),
-						Status = ThreadGroups["status"].Value.Trim()
-					};
+					int Num = int.Parse(ThreadGroups["threadnum"].Value);
+					string Status = ThreadGroups["status"].Value.Trim();
 
-					if (Line.StartsWith("*"))
-					{
-						Thread.Current = true;
-					}
+					Thread = Threads.SingleOrDefault(T => T.Num == Num);
 
-					if (CrashThread == null)
+					if (Thread == null)
 					{
-						CrashThread = Thread;
-					}
-					else
-					{
+						Thread = new ThreadInfo()
+						{
+							Num = Num,
+							Status = Status
+						};
+
+						if (Line.Trim().StartsWith("*"))
+						{
+							Thread.Current = true;
+						}
+
 						Threads.Add(Thread);
+
 					}
 				}
 
 				LineNode = LineNode.Next;
 			}
 
-			if (CrashThread == null)
+			if (Threads.Count(T => T.Current == true) > 1)
 			{
-				return null;
+				Log.Warning("LLDB debug parsed more than one current thread");
 			}
 
-			Thread = Threads.Single(T => T.Num == CrashThread.Num);
+			Thread = Threads.FirstOrDefault(T => T.Current == true);
 
-			if (Thread == null)
+			if (Threads.Count > 0 && Thread == null)
 			{
 				Log.Warning("Unable to parse full crash callstack");
-				Thread = CrashThread;
+			}
+
+
+			// Do not want to surface crashes which happen as a result of requesting exit
+			if (Thread != null && Thread.Frames.FirstOrDefault(F => F.Symbol.Contains("::RequestExit")) != null)
+			{
+				Thread = null;
 			}
 
 			return Thread;

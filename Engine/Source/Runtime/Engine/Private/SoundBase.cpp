@@ -1,16 +1,19 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
-
+// Copyright Epic Games, Inc. All Rights Reserved.
 #include "Sound/SoundBase.h"
-#include "Sound/SoundSubmix.h"
-#include "Sound/AudioSettings.h"
+
 #include "EngineDefines.h"
+#include "IAudioExtensionPlugin.h"
+#include "Sound/AudioSettings.h"
+#include "Sound/SoundClass.h"
+#include "Sound/SoundSubmix.h"
+
 
 USoundClass* USoundBase::DefaultSoundClassObject = nullptr;
 USoundConcurrency* USoundBase::DefaultSoundConcurrencyObject = nullptr;
 
 USoundBase::USoundBase(const FObjectInitializer& ObjectInitializer)
 	: Super(ObjectInitializer)
-	, bIgnoreFocus_DEPRECATED(false)
+	, VirtualizationMode(EVirtualizationMode::Restart)
 	, Priority(1.0f)
 {
 #if WITH_EDITORONLY_DATA
@@ -27,6 +30,7 @@ void USoundBase::PostInitProperties()
 		const FSoftObjectPath DefaultSoundClassName = GetDefault<UAudioSettings>()->DefaultSoundClassName;
 		if (DefaultSoundClassName.IsValid())
 		{
+			SCOPED_BOOT_TIMING("USoundBase::LoadSoundClass");
 			USoundBase::DefaultSoundClassObject = LoadObject<USoundClass>(nullptr, *DefaultSoundClassName.ToString());
 		}
 	}
@@ -37,6 +41,7 @@ void USoundBase::PostInitProperties()
 		const FSoftObjectPath DefaultSoundConcurrencyName = GetDefault<UAudioSettings>()->DefaultSoundConcurrencyName;
 		if (DefaultSoundConcurrencyName.IsValid())
 		{
+			SCOPED_BOOT_TIMING("USoundBase::LoadSoundConcurrency");
 			USoundBase::DefaultSoundConcurrencyObject = LoadObject<USoundConcurrency>(nullptr, *DefaultSoundConcurrencyName.ToString());
 		}
 	}
@@ -52,9 +57,9 @@ bool USoundBase::IsPlayable() const
 	return false;
 }
 
-bool USoundBase::IsAllowedVirtual() const
-{ 
-	return false; 
+bool USoundBase::SupportsSubtitles() const
+{
+	return false;
 }
 
 bool USoundBase::HasAttenuationNode() const
@@ -73,7 +78,16 @@ const FSoundAttenuationSettings* USoundBase::GetAttenuationSettingsToApply() con
 
 float USoundBase::GetMaxDistance() const
 {
-	return (AttenuationSettings ? AttenuationSettings->Attenuation.GetMaxDimension() : WORLD_MAX);
+	if (AttenuationSettings)
+	{
+		FSoundAttenuationSettings& Settings = AttenuationSettings->Attenuation;
+		if (Settings.bAttenuate)
+		{
+			return Settings.GetMaxDimension();
+		}
+	}
+
+	return WORLD_MAX;
 }
 
 float USoundBase::GetDuration()
@@ -91,9 +105,9 @@ bool USoundBase::HasConcatenatorNode() const
 	return bHasConcatenatorNode;
 }
 
-bool USoundBase::IsVirtualizeWhenSilent() const
+bool USoundBase::IsPlayWhenSilent() const
 {
-	return bHasVirtualizeWhenSilent;
+	return VirtualizationMode == EVirtualizationMode::PlayWhenSilent;
 }
 
 float USoundBase::GetVolumeMultiplier()
@@ -107,8 +121,8 @@ float USoundBase::GetPitchMultiplier()
 }
 
 bool USoundBase::IsLooping()
-{ 
-	return (GetDuration() >= INDEFINITELY_LOOPING_DURATION); 
+{
+	return (GetDuration() >= INDEFINITELY_LOOPING_DURATION);
 }
 
 bool USoundBase::ShouldApplyInteriorVolumes()
@@ -121,7 +135,7 @@ USoundClass* USoundBase::GetSoundClass() const
 	return SoundClassObject;
 }
 
-USoundSubmix* USoundBase::GetSoundSubmix() const
+USoundSubmixBase* USoundBase::GetSoundSubmix() const
 {
 	return SoundSubmixObject;
 }
@@ -172,11 +186,11 @@ bool USoundBase::GetSoundWavesWithCookedAnalysisData(TArray<USoundWave*>& OutSou
 	return false;
 }
 
+#if WITH_EDITORONLY_DATA
 void USoundBase::PostLoad()
 {
 	Super::PostLoad();
 
-#if WITH_EDITORONLY_DATA
 	const int32 LinkerUE4Version = GetLinkerUE4Version();
 
 	if (LinkerUE4Version < VER_UE4_SOUND_CONCURRENCY_PACKAGE)
@@ -185,10 +199,9 @@ void USoundBase::PostLoad()
 		ConcurrencyOverrides.bLimitToOwner = false;
 		ConcurrencyOverrides.MaxCount = FMath::Max(MaxConcurrentPlayCount_DEPRECATED, 1);
 		ConcurrencyOverrides.ResolutionRule = MaxConcurrentResolutionRule_DEPRECATED;
-		ConcurrencyOverrides.VolumeScale = 1.0f;
 	}
-#endif
 }
+#endif
 
 bool USoundBase::CanBeClusterRoot() const
 {
@@ -205,7 +218,7 @@ void USoundBase::Serialize(FArchive& Ar)
 	Super::Serialize(Ar);
 
 #if WITH_EDITORONLY_DATA
-	if (Ar.IsLoading())
+	if (Ar.IsLoading() || Ar.IsSaving())
 	{
 		if (SoundConcurrencySettings_DEPRECATED != nullptr)
 		{

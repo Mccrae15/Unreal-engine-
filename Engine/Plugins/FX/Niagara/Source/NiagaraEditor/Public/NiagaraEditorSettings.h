@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -49,6 +49,10 @@ public:
 	UPROPERTY(config, EditAnywhere, Category = Niagara)
 	FSoftObjectPath DefaultModuleScript;
 
+	/** Niagara script which is required in the system update script to control system state. */
+	UPROPERTY(config, EditAnywhere, Category = Niagara)
+	FSoftObjectPath RequiredSystemUpdateScript;
+
 	/** Shortcut key bindings that if held down while doing a mouse click, will spawn the specified type of Niagara node.*/
 	UPROPERTY(config, EditAnywhere, Category = Niagara)
 	TArray<FNiagaraSpawnShortcut> GraphCreationShortcuts;
@@ -76,6 +80,12 @@ public:
 
 	/** Sets whether or not to rerun the simulation to the current time when making modifications while paused. */
 	void SetResimulateOnChangeWhilePaused(bool bInResimulateOnChangeWhilePaused);
+
+	/** Gets whether or not to reset all components that include the system that is currently being reset */
+	bool GetResetDependentSystemsWhenEditingEmitters() const;
+
+	/** Sets whether or not to reset all components that include the system that is currently being reset */
+	void SetResetDependentSystemsWhenEditingEmitters(bool bInResetDependentSystemsWhenEditingEmitters);
 
 	FNiagaraNewAssetDialogConfig GetNewAssetDailogConfig(FName InDialogConfigKey) const;
 
@@ -113,6 +123,10 @@ private:
 	/** Whether or not to rerun the simulation to the current time when making modifications while paused. */
 	UPROPERTY(config, EditAnywhere, Category = SimulationOptions)
 	bool bResimulateOnChangeWhilePaused;
+
+	/** Whether or not to reset all components that include the system currently being reset. */
+	UPROPERTY(config, EditAnywhere, Category = SimulationOptions)
+		bool bResetDependentSystemsWhenEditingEmitters;
 
 	UPROPERTY(config)
 	TMap<FName, FNiagaraNewAssetDialogConfig> NewAssetDialogConfigMap;

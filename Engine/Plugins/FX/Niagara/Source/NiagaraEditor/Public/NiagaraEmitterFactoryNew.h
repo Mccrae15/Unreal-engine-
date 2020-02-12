@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 #include "NiagaraSettings.h"
@@ -14,6 +14,7 @@ class UNiagaraEmitterFactoryNew : public UFactory
 	GENERATED_UCLASS_BODY()
 
 	UNiagaraEmitter* EmitterToCopy;
+	bool bUseInheritance;
 	bool bAddDefaultModulesAndRenderersToEmptyEmitter;
 
 	//~ Begin UFactory Interface

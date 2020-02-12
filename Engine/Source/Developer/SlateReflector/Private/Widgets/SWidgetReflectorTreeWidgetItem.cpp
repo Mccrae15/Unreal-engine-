@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "Widgets/SWidgetReflectorTreeWidgetItem.h"
 #include "SlateOptMacros.h"
@@ -33,6 +33,11 @@ void SReflectorTreeWidgetItem::Construct(const FArguments& InArgs, const TShared
 	CachedWidgetVisibility = WidgetInfo->GetWidgetVisibilityText();
 	CachedWidgetClipping = WidgetInfo->GetWidgetClippingText();
 	bCachedWidgetFocusable = WidgetInfo->GetWidgetFocusable();
+	bCachedWidgetVisible = WidgetInfo->GetWidgetVisible();
+	bCachedWidgetNeedsTick = WidgetInfo->GetWidgetNeedsTick();
+	bCachedWidgetIsVolatile = WidgetInfo->GetWidgetIsVolatile();
+	bCachedWidgetIsVolatileIndirectly = WidgetInfo->GetWidgetIsVolatileIndirectly();
+	bCachedWidgetHasActiveTimers = WidgetInfo->GetWidgetHasActiveTimers();
 	CachedReadableLocation = WidgetInfo->GetWidgetReadableLocation();
 	CachedWidgetFile = WidgetInfo->GetWidgetFile();
 	CachedWidgetLineNumber = WidgetInfo->GetWidgetLineNumber();

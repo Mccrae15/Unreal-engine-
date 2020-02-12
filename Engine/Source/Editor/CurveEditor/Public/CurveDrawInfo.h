@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -56,6 +56,8 @@ struct FCurvePointInfo
 	ECurvePointType Type;
 	/** A layer bias to draw the point with (higher integers draw on top) */
 	int32 LayerBias;
+	/** DrawInfo to use when rendering this point. Allows customization of points on a per-point basis instead of per-curve. */
+	FKeyDrawInfo DrawInfo;
 };
 
 
@@ -73,20 +75,21 @@ struct FCurveDrawParams
 	/** An array of distinct curve points for the visible range. */
 	TArray<FCurvePointInfo> Points;
 
-	/** Value defining how to draw keys of type ECurvePointType::Key. */
-	FKeyDrawInfo KeyDrawInfo;
-
 	/** Value defining how to draw keys of type ECurvePointType::ArriveTangent. */
 	FKeyDrawInfo ArriveTangentDrawInfo;
 
 	/** Value defining how to draw keys of type ECurvePointType::LeaveTangent. */
 	FKeyDrawInfo LeaveTangentDrawInfo;
 
+	/** Whether or not to draw keys on the curve. */
+	uint8 bKeyDrawEnabled : 1;
+
 	/**
 	 * Construct new draw parameters for the specified curve ID
 	 */
 	FCurveDrawParams(FCurveModelID InID)
 		: Color(FLinearColor::White)
+		, bKeyDrawEnabled(1)
 		, ID(InID)
 	{}
 
@@ -101,18 +104,22 @@ struct FCurveDrawParams
 	/**
 	 * Retrieve the draw information for drawing the specified type of curve point
 	 */
-	const FKeyDrawInfo& GetKeyDrawInfo(ECurvePointType Type) const
+	const FKeyDrawInfo& GetKeyDrawInfo(ECurvePointType Type, const int32 InPointIndex) const
 	{
 		switch (Type)
 		{
 		case ECurvePointType::ArriveTangent: return ArriveTangentDrawInfo;
 		case ECurvePointType::LeaveTangent:  return LeaveTangentDrawInfo;
-		default:                             return KeyDrawInfo;
+		case ECurvePointType::Key:			 return Points[InPointIndex].DrawInfo;
 		}
+		return InvalidDrawInfo;
 	}
 
 private:
 
 	/** Immutable curve ID */
 	FCurveModelID ID;
+
+	/** Immutable dummy key draw info to return */
+	FKeyDrawInfo InvalidDrawInfo;
 };

@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "Recorder/TakeRecorderPanel.h"
 #include "Widgets/STakeRecorderTabContent.h"
@@ -100,6 +100,31 @@ UTakeMetaData* UTakeRecorderPanel::GetTakeMetaData() const
 	}
 
 	return WeakTabContent.Pin()->GetTakeMetaData();
+}
+
+FFrameRate UTakeRecorderPanel::GetFrameRate() const
+{
+	if (!ValidateTabContent())
+	{
+		return FFrameRate();
+	}
+	return WeakTabContent.Pin()->GetFrameRate();
+}
+
+void UTakeRecorderPanel::SetFrameRate(FFrameRate InFrameRate)
+{
+	if (ValidateTabContent())
+	{
+		WeakTabContent.Pin()->SetFrameRate(InFrameRate);
+	}
+}
+
+void UTakeRecorderPanel::SetFrameRateFromTimecode(bool bInFromTimecode)
+{
+	if (!ValidateTabContent())
+	{
+		WeakTabContent.Pin()->SetFrameRateFromTimecode(bInFromTimecode);
+	}
 }
 
 UTakeRecorderSources* UTakeRecorderPanel::GetSources() const

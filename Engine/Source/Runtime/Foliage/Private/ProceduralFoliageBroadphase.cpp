@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "ProceduralFoliageBroadphase.h"
 #include "FoliageType_InstancedStaticMesh.h"
@@ -38,7 +38,7 @@ bool FProceduralFoliageBroadphase::TestAgainstAABB(FProceduralFoliageInstance* I
 void FProceduralFoliageBroadphase::Insert(FProceduralFoliageInstance* Instance)
 {
 	const FBox2D MaxAABB = GetMaxAABB(Instance);
-	QuadTree.Insert(Instance, MaxAABB, Instance->Type ? *Instance->Type->GetName() : nullptr);
+	QuadTree.Insert(Instance, MaxAABB);
 }
 
 bool CircleOverlap(const FVector& ALocation, float ARadius, const FVector& BLocation, float BRadius)

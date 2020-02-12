@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "ScreenshotFunctionalTest.h"
 
@@ -47,7 +47,7 @@ void AScreenshotFunctionalTest::PrepareTest()
 
 		if (PlayerController && PlayerController->PlayerCameraManager)
 		{
-			PlayerController->PlayerCameraManager->bGameCameraCutThisFrame = true;
+			PlayerController->PlayerCameraManager->SetGameCameraCutThisFrame();
 			if (ScreenshotCamera)
 			{
 				ScreenshotCamera->NotifyCameraCut();

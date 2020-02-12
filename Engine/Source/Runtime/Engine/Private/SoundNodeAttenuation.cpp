@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 
 #include "Sound/SoundNodeAttenuation.h"
@@ -51,22 +51,22 @@ const FSoundAttenuationSettings* USoundNodeAttenuation::GetAttenuationSettingsTo
 	return Settings;
 }
 
-void USoundNodeAttenuation::ParseNodes( FAudioDevice* AudioDevice, const UPTRINT NodeWaveInstanceHash, FActiveSound& ActiveSound, const FSoundParseParameters& ParseParams, TArray<FWaveInstance*>& WaveInstances )
+void USoundNodeAttenuation::ParseNodes(FAudioDevice* AudioDevice, const UPTRINT NodeWaveInstanceHash, FActiveSound& ActiveSound, const FSoundParseParameters& ParseParams, TArray<FWaveInstance*>& WaveInstances)
 {
-	const FSoundAttenuationSettings* Settings = (ActiveSound.bAllowSpatialization ? GetAttenuationSettingsToApply() : NULL);
-
 	FSoundParseParameters UpdatedParseParams = ParseParams;
+
+	const FSoundAttenuationSettings* Settings = (ActiveSound.bAllowSpatialization ? GetAttenuationSettingsToApply() : nullptr);
 	if (Settings)
 	{
-		const FListener& Listener = AudioDevice->GetListeners()[0];
-
 		// Update this node's attenuation settings overrides
-		ActiveSound.ApplyAttenuation(UpdatedParseParams, Listener, Settings);
+		check(AudioDevice);
+		const int32 ClosestListenerIndex = AudioDevice->FindClosestListenerIndex(UpdatedParseParams.Transform);
+		ActiveSound.ParseAttenuation(UpdatedParseParams, ClosestListenerIndex, *Settings);
 	}
 	else
 	{
 		UpdatedParseParams.bUseSpatialization = false;
 	}
 
-	Super::ParseNodes( AudioDevice, NodeWaveInstanceHash, ActiveSound, UpdatedParseParams, WaveInstances );
+	Super::ParseNodes(AudioDevice, NodeWaveInstanceHash, ActiveSound, UpdatedParseParams, WaveInstances);
 }

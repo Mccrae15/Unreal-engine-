@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 /*=============================================================================
 ConsoleManager.cpp: console command handling
@@ -156,6 +156,9 @@ public:
 
 	void OnChanged(EConsoleVariableFlags SetBy)
 	{
+		// SetBy can include set flags. Discard them here
+		SetBy = EConsoleVariableFlags(SetBy & ~ECVF_SetFlagMask);
+
 		// you have to specify a SetBy e.g. ECVF_SetByCommandline
 		check(((uint32)SetBy & ECVF_SetByMask) || SetBy == ECVF_Default);
 
@@ -164,7 +167,7 @@ public:
 
 		// only change on main thread
 
-		Flags = (EConsoleVariableFlags)(((uint32)Flags & ~ECVF_SetByMask) | SetBy);
+		Flags = (EConsoleVariableFlags)(((uint32)Flags & ECVF_FlagMask) | SetBy);
 
 		OnChangedCallback.ExecuteIfBound(this);
 	}
@@ -261,7 +264,7 @@ private: // -----------------------------------------
 };
 
 template <class T>
-void OnCVarChange(T& Dst, const T& Src, EConsoleVariableFlags Flags)
+void OnCVarChange(T& Dst, const T& Src, EConsoleVariableFlags Flags, EConsoleVariableFlags SetBy)
 {
 	FConsoleManager& ConsoleManager = (FConsoleManager&)IConsoleManager::Get();
 
@@ -284,10 +287,13 @@ void OnCVarChange(T& Dst, const T& Src, EConsoleVariableFlags Flags)
 		check(0);
 	}
 
-	ConsoleManager.OnCVarChanged();
+	if ((SetBy & ECVF_Set_NoSinkCall_Unsafe)== 0)
+	{
+		ConsoleManager.OnCVarChanged();
+	}
 }
 
-// T: int32, float, FString
+// T: bool, int32, float, FString
 template <class T>
 class FConsoleVariable : public FConsoleVariableBase
 {
@@ -297,28 +303,36 @@ public:
 	{
 	}
 
-	// interface IConsoleVariable -----------------------------------
+	// interface IConsoleVariable ----------------------------------- 
 
 	virtual void Release()
 	{
 		delete this; 
-	} 
+	}
+
 	virtual void Set(const TCHAR* InValue, EConsoleVariableFlags SetBy)
 	{
-		if(CanChange(SetBy))
+		if (CanChange(SetBy))
 		{
 			TTypeFromString<T>::FromString(Data.ShadowedValue[0], InValue);
 			OnChanged(SetBy);
 		}
 	}
 
-	virtual int32 GetInt() const;
-	virtual float GetFloat() const;
-	virtual FString GetString() const;
-	virtual bool IsVariableInt() const { return false; }
-	virtual class TConsoleVariableData<int32>* AsVariableInt() { return 0; }
-	virtual class TConsoleVariableData<float>* AsVariableFloat() { return 0; }
-	virtual class TConsoleVariableData<FString>* AsVariableString() { return 0; }
+	virtual bool GetBool() const override;
+	virtual int32 GetInt() const override;
+	virtual float GetFloat() const override;
+	virtual FString GetString() const override;
+
+virtual bool IsVariableBool() const override { return false; }
+	virtual bool IsVariableInt() const override { return false; }
+	virtual bool IsVariableFloat() const override { return false; }
+	virtual bool IsVariableString() const override { return false; }
+
+	virtual class TConsoleVariableData<bool>* AsVariableBool() override { return nullptr; }
+	virtual class TConsoleVariableData<int32>* AsVariableInt() override { return nullptr; }
+	virtual class TConsoleVariableData<float>* AsVariableFloat() override { return nullptr; }
+	virtual class TConsoleVariableData<FString>* AsVariableString() override { return nullptr; }
 
 private: // ----------------------------------------------------
 
@@ -334,14 +348,60 @@ private: // ----------------------------------------------------
 	void OnChanged(EConsoleVariableFlags SetBy)
 	{
 		// propagate from main thread to render thread
-		OnCVarChange(Data.ShadowedValue[1], Data.ShadowedValue[0], Flags);
+		OnCVarChange(Data.ShadowedValue[1], Data.ShadowedValue[0], Flags, SetBy);
 		FConsoleVariableBase::OnChanged(SetBy);
 	}
 };
 
+// specialization for all
+
+template<> bool FConsoleVariable<bool>::IsVariableBool() const
+{
+	return true;
+}
+template<> bool FConsoleVariable<int32>::IsVariableInt() const
+{
+	return true;
+}
+template<> bool FConsoleVariable<float>::IsVariableFloat() const
+{
+	return true;
+}
+template<> bool FConsoleVariable<FString>::IsVariableString() const
+{
+	return true;
+}
+
+
+// specialization for bool
+
+template<> bool FConsoleVariable<bool>::GetBool() const
+{
+	return Value();
+}
+template<> int32 FConsoleVariable<bool>::GetInt() const
+{
+	return Value() ? 1 : 0;
+}
+template<> float FConsoleVariable<bool>::GetFloat() const
+{
+	return Value() ? 1.0f : 0.0f;
+}
+template<> FString FConsoleVariable<bool>::GetString() const
+{
+	return Value() ? TEXT("true") : TEXT("false");
+}
+template<> TConsoleVariableData<bool>* FConsoleVariable<bool>::AsVariableBool()
+{
+	return &Data;
+}
 
 // specialization for int32
 
+template<> bool FConsoleVariable<int32>::GetBool() const
+{
+	return Value() != 0;
+}
 template<> int32 FConsoleVariable<int32>::GetInt() const
 {
 	return Value();
@@ -355,11 +415,6 @@ template<> FString FConsoleVariable<int32>::GetString() const
 	return FString::Printf(TEXT("%d"), Value());
 }
 
-template<> bool FConsoleVariable<int32>::IsVariableInt() const
-{
-	return true; 
-}
-
 template<> TConsoleVariableData<int32>* FConsoleVariable<int32>::AsVariableInt()
 {
 	return &Data; 
@@ -367,6 +422,10 @@ template<> TConsoleVariableData<int32>* FConsoleVariable<int32>::AsVariableInt()
 
 // specialization for float
 
+template<> bool FConsoleVariable<float>::GetBool() const
+{
+	return Value() != 0;
+}
 template<> int32 FConsoleVariable<float>::GetInt() const
 {
 	return (int32)Value();
@@ -381,7 +440,7 @@ template<> FString FConsoleVariable<float>::GetString() const
 }
 template<> TConsoleVariableData<float>* FConsoleVariable<float>::AsVariableFloat()
 {
-	return &Data; 
+	return &Data;
 }
 
 // specialization for FString
@@ -394,19 +453,28 @@ template<> void FConsoleVariable<FString>::Set(const TCHAR* InValue, EConsoleVar
 		OnChanged(SetBy);
 	}
 }
+template<> bool FConsoleVariable<FString>::GetBool() const
+{
+	bool OutValue = false;
+	TTypeFromString<bool>::FromString(OutValue, *Value());
+	return OutValue;
+}
 template<> int32 FConsoleVariable<FString>::GetInt() const
 {
-	return FCString::Atoi(*Value());
+	int32 OutValue = 0;
+	TTypeFromString<int32>::FromString(OutValue, *Value());
+	return OutValue;
 }
 template<> float FConsoleVariable<FString>::GetFloat() const
 {
-	return FCString::Atof(*Value());
+	float OutValue = 0.0f;
+	TTypeFromString<float>::FromString(OutValue, *Value());
+	return OutValue;
 }
 template<> FString FConsoleVariable<FString>::GetString() const
 {
 	return Value();
 }
-
 template<> TConsoleVariableData<FString>* FConsoleVariable<FString>::AsVariableString()
 {
 	return &Data;
@@ -414,7 +482,7 @@ template<> TConsoleVariableData<FString>* FConsoleVariable<FString>::AsVariableS
 
 // ----
 
-// T: int32, float
+// T: int32, float, bool
 template <class T>
 class FConsoleVariableRef : public FConsoleVariableBase
 {
@@ -429,7 +497,8 @@ public:
 	virtual void Release()
 	{
 		delete this; 
-	} 
+	}
+
 	virtual void Set(const TCHAR* InValue, EConsoleVariableFlags SetBy)
 	{
 		if(CanChange(SetBy))
@@ -437,6 +506,16 @@ public:
 			TTypeFromString<T>::FromString(MainValue, InValue);
 			OnChanged(SetBy);
 		}
+	}
+
+	virtual bool IsVariableBool() const override { return false; }
+	virtual bool IsVariableInt() const override { return false; }
+	virtual bool IsVariableFloat() const override { return false; }
+	virtual bool IsVariableString() const override { return false; }
+
+	virtual bool GetBool() const
+	{
+		return (bool)MainValue;
 	}
 	virtual int32 GetInt() const
 	{
@@ -470,11 +549,29 @@ private: // ----------------------------------------------------
 		if(CanChange(SetBy))
 		{
 			// propagate from main thread to render thread or to reference
-			OnCVarChange(RefValue, MainValue, Flags);
+			OnCVarChange(RefValue, MainValue, Flags, SetBy);
 			FConsoleVariableBase::OnChanged(SetBy);
 		}
 	}
 };
+
+template <>
+bool FConsoleVariableRef<bool>::IsVariableBool() const
+{
+	return true;
+}
+
+template <>
+bool FConsoleVariableRef<int32>::IsVariableInt() const
+{
+	return true;
+}
+
+template <>
+bool FConsoleVariableRef<float>::IsVariableFloat() const
+{
+	return true;
+}
 
 // specialization for float
 
@@ -485,7 +582,83 @@ FString FConsoleVariableRef<float>::GetString() const
 	return FString::SanitizeFloat(RefValue);
 }
 
-// ----
+// string version
+
+class FConsoleVariableStringRef : public FConsoleVariableBase
+{
+public:
+	FConsoleVariableStringRef(FString& InRefValue, const TCHAR* Help, EConsoleVariableFlags Flags)
+		: FConsoleVariableBase(Help, Flags)
+		, RefValue(InRefValue)
+		, MainValue(InRefValue)
+	{
+	}
+
+	// interface IConsoleVariable -----------------------------------
+
+	virtual void Release()
+	{
+		delete this;
+	}
+	virtual void Set(const TCHAR* InValue, EConsoleVariableFlags SetBy)
+	{
+		if (CanChange(SetBy))
+		{
+			MainValue = InValue;
+			OnChanged(SetBy);
+		}
+	}
+	virtual bool GetBool() const
+	{
+		bool Result = false;
+		TTypeFromString<bool>::FromString(Result, *MainValue);
+		return Result;
+	}
+	virtual int32 GetInt() const
+	{
+		int32 Result = 0;
+		TTypeFromString<int32>::FromString(Result, *MainValue);
+		return Result;
+	}
+	virtual float GetFloat() const
+	{
+		float Result = 0.0f;
+		TTypeFromString<float>::FromString(Result, *MainValue);
+		return Result;
+	}
+	virtual FString GetString() const
+	{
+		return MainValue;
+	}
+	virtual bool IsVariableString() const override
+	{
+		return true;
+	}
+
+private: // ----------------------------------------------------
+
+	// reference the the value (should not be changed from outside), if ECVF_RenderThreadSafe this is the render thread version, otherwise same as MainValue
+	FString& RefValue;
+	// main thread version 
+	FString MainValue;
+
+	const FString& Value() const
+	{
+		uint32 Index = GetShadowIndex();
+		checkSlow(Index < 2);
+		return (Index == 0) ? MainValue : RefValue;
+	}
+
+	void OnChanged(EConsoleVariableFlags SetBy)
+	{
+		if (CanChange(SetBy))
+		{
+			// propagate from main thread to render thread or to reference
+			OnCVarChange(RefValue, MainValue, Flags, SetBy);
+			FConsoleVariableBase::OnChanged(SetBy);
+		}
+	}
+};
 
 class FConsoleVariableBitRef : public FConsoleVariableBase
 {
@@ -514,6 +687,10 @@ public:
 
 			OnChanged(SetBy);
 		}
+	}
+	virtual bool GetBool() const
+	{
+		return GetInt() != 0;
 	}
 	virtual int32 GetInt() const
 	{
@@ -826,6 +1003,11 @@ public:
 	}
 };
 
+IConsoleVariable* FConsoleManager::RegisterConsoleVariable(const TCHAR* Name, bool DefaultValue, const TCHAR* Help, uint32 Flags)
+{
+	return AddConsoleObject(Name, new FConsoleVariable<bool>(DefaultValue, Help, (EConsoleVariableFlags)Flags))->AsVariable();
+}
+
 IConsoleVariable* FConsoleManager::RegisterConsoleVariable(const TCHAR* Name, int32 DefaultValue, const TCHAR* Help, uint32 Flags)
 {
 	return AddConsoleObject(Name, new FConsoleVariable<int32>(DefaultValue, Help, (EConsoleVariableFlags)Flags))->AsVariable();
@@ -836,11 +1018,21 @@ IConsoleVariable* FConsoleManager::RegisterConsoleVariable(const TCHAR* Name, fl
 	return AddConsoleObject(Name, new FConsoleVariable<float>(DefaultValue, Help, (EConsoleVariableFlags)Flags))->AsVariable();
 }
 
+IConsoleVariable* FConsoleManager::RegisterConsoleVariable(const TCHAR* Name, const TCHAR* DefaultValue, const TCHAR* Help, uint32 Flags)
+{
+	return RegisterConsoleVariable(Name, FString(DefaultValue), Help, Flags);
+}
+
 IConsoleVariable* FConsoleManager::RegisterConsoleVariable(const TCHAR* Name, const FString& DefaultValue, const TCHAR* Help, uint32 Flags)
 {
 	// not supported
 	check((Flags & (uint32)ECVF_RenderThreadSafe) == 0);
 	return AddConsoleObject(Name, new FConsoleVariable<FString>(DefaultValue, Help, (EConsoleVariableFlags)Flags))->AsVariable();
+}
+
+IConsoleVariable* FConsoleManager::RegisterConsoleVariableRef(const TCHAR* Name, bool& RefValue, const TCHAR* Help, uint32 Flags)
+{
+	return AddConsoleObject(Name, new FConsoleVariableRef<bool>(RefValue, Help, (EConsoleVariableFlags)Flags))->AsVariable();
 }
 
 IConsoleVariable* FConsoleManager::RegisterConsoleVariableRef(const TCHAR* Name, int32& RefValue, const TCHAR* Help, uint32 Flags)
@@ -853,9 +1045,9 @@ IConsoleVariable* FConsoleManager::RegisterConsoleVariableRef(const TCHAR* Name,
 	return AddConsoleObject(Name, new FConsoleVariableRef<float>(RefValue, Help, (EConsoleVariableFlags)Flags))->AsVariable();
 }
 
-IConsoleVariable* FConsoleManager::RegisterConsoleVariableRef(const TCHAR* Name, bool& RefValue, const TCHAR* Help, uint32 Flags)
+IConsoleVariable* FConsoleManager::RegisterConsoleVariableRef(const TCHAR* Name, FString& RefValue, const TCHAR* Help, uint32 Flags)
 {
-	return AddConsoleObject(Name, new FConsoleVariableRef<bool>(RefValue, Help, (EConsoleVariableFlags)Flags))->AsVariable();
+	return AddConsoleObject(Name, new FConsoleVariableStringRef(RefValue, Help, (EConsoleVariableFlags)Flags))->AsVariable();
 }
 
 IConsoleCommand* FConsoleManager::RegisterConsoleCommand(const TCHAR* Name, const TCHAR* Help, const FConsoleCommandDelegate& Command, uint32 Flags)
@@ -894,9 +1086,9 @@ IConsoleCommand* FConsoleManager::RegisterConsoleCommand(const TCHAR* Name, cons
 }
 
 
-IConsoleVariable* FConsoleManager::FindConsoleVariable(const TCHAR* Name) const
+IConsoleVariable* FConsoleManager::FindConsoleVariable(const TCHAR* Name, bool bTrackFrequentCalls) const
 {
-	IConsoleObject* Obj = FindConsoleObject(Name);
+	IConsoleObject* Obj = FindConsoleObject(Name, bTrackFrequentCalls);
 
 	if(Obj)
 	{
@@ -911,11 +1103,12 @@ IConsoleVariable* FConsoleManager::FindConsoleVariable(const TCHAR* Name) const
 	return 0;
 }
 
-IConsoleObject* FConsoleManager::FindConsoleObject(const TCHAR* Name) const
+IConsoleObject* FConsoleManager::FindConsoleObject(const TCHAR* Name, bool bTrackFrequentCalls) const
 {
 	IConsoleObject* CVar = FindConsoleObjectUnfiltered(Name);
 
 #if TRACK_CONSOLE_FIND_COUNT
+	if (bTrackFrequentCalls)
 	{
 		const bool bEarlyAppPhase = GFrameCounter < 1000;
 		if(CVar)
@@ -1142,7 +1335,7 @@ bool FConsoleManager::ProcessUserConsoleInput(const TCHAR* InInput, FOutputDevic
 	const bool bCommandEndedInQuestion = Param1.EndsWith(TEXT("?"), ESearchCase::CaseSensitive);
 	if (bCommandEndedInQuestion)
 	{
-		Param1 = Param1.Mid(0, Param1.Len() - 1);
+		Param1.MidInline(0, Param1.Len() - 1, false);
 	}
 
 	IConsoleObject* CObj = FindConsoleObject(*Param1);
@@ -1209,13 +1402,13 @@ bool FConsoleManager::ProcessUserConsoleInput(const TCHAR* InInput, FOutputDevic
 			{
 				if(Param2[0] == (TCHAR)'\"' && Param2[Param2.Len() - 1] == (TCHAR)'\"')
 				{
-					Param2 = Param2.Mid(1, Param2.Len() - 2);
+					Param2.MidInline(1, Param2.Len() - 2, false);
 				}
 				// this is assumed to be unintended e.g. copy and paste accident from ini file
 				if(Param2.Len() > 0 && Param2[0] == (TCHAR)'=')
 				{
 					Ar.Logf(TEXT("Warning: Processing the console input parameters the leading '=' is ignored (only needed for ini files)."));
-					Param2 = Param2.Mid(1, Param2.Len() - 1);
+					Param2.MidInline(1, Param2.Len() - 1, false);
 				}
 			}
 
@@ -1335,6 +1528,33 @@ IConsoleObject* FConsoleManager::AddConsoleObject(const TCHAR* Name, IConsoleObj
 				ConsoleObjects.Add(Name, Var);
 				return Var;
 			}
+#if WITH_HOT_RELOAD
+			else if (GIsHotReload)
+			{
+				// Variable is being replaced due to a hot reload - copy state across to new variable, but only if the type hasn't changed
+				{
+					if (ExistingVar->IsVariableFloat())
+					{
+						Var->Set(ExistingVar->GetFloat());
+					}
+				}
+				{
+					if (ExistingVar->IsVariableInt())
+					{
+						Var->Set(ExistingVar->GetInt());
+					}
+				}
+				{
+					if (ExistingVar->IsVariableString())
+					{
+						Var->Set(*ExistingVar->GetString());
+					}
+				}
+				ExistingVar->Release();
+				ConsoleObjects.Add(Name, Var);
+				return Var;
+			}
+#endif
 			else
 			{
 				// Copy data over from the new variable,
@@ -1733,6 +1953,8 @@ void FConsoleManager::Test()
 // These don't belong here, but they belong here more than they belong in launch engine loop.
 void CreateConsoleVariables()
 {
+#if !NO_CVARS
+
 	// this registeres to a reference, so we cannot use TAutoConsoleVariable
 	IConsoleManager::Get().RegisterConsoleVariableRef(TEXT("r.DumpingMovie"),
 		GIsDumpingMovie,
@@ -1764,6 +1986,7 @@ void CreateConsoleVariables()
 
 		ConsoleManager.Test();
 	}
+#endif
 }
 
 // Naming conventions:
@@ -1823,7 +2046,7 @@ static TAutoConsoleVariable<int32> CVarLimitRenderingFeatures(
 static TAutoConsoleVariable<int32> CVarUniformBufferPooling(
 	TEXT("r.UniformBufferPooling"),
 	1,
-	TEXT("If we pool object in RHICreateUniformBuffer to have less real API calls to creat buffers\n")
+	TEXT("If we pool object in RHICreateUniformBuffer to have less real API calls to create buffers\n")
 	TEXT(" 0: off (for debugging)\n")
 	TEXT(" 1: on (optimization)"),
 	ECVF_RenderThreadSafe);
@@ -1847,7 +2070,7 @@ static TAutoConsoleVariable<int32> CVarMobileNumDynamicPointLights(
 	TEXT("r.MobileNumDynamicPointLights"),
 	4,
 	TEXT("The number of dynamic point lights to support on mobile devices. Setting this to 0 for games which do not require dynamic point lights will reduce the number of shaders generated."), 
-	ECVF_RenderThreadSafe);
+	ECVF_RenderThreadSafe | ECVF_ReadOnly);
 
 static TAutoConsoleVariable<int32> CVarMobileDynamicPointLightsUseStaticBranch(
 	TEXT("r.MobileDynamicPointLightsUseStaticBranch"),
@@ -1921,6 +2144,27 @@ static TAutoConsoleVariable<int32> CVarMobileAllowDitheredLODTransition(
 	ECVF_ReadOnly | ECVF_RenderThreadSafe
 );
 
+static TAutoConsoleVariable<int32> CVarMobileAllowPixelDepthOffset(
+	TEXT("r.Mobile.AllowPixelDepthOffset"),
+	1,
+	TEXT("Whether to allow 'Pixel Depth Offset' in materials for ES3.1 feature level. Depth modification in pixel shaders may reduce GPU performance"),
+	ECVF_ReadOnly | ECVF_RenderThreadSafe
+);
+
+static TAutoConsoleVariable<int32> CVarMobileSupportGPUScene(
+	TEXT("r.Mobile.SupportGPUScene"),
+	0,
+	TEXT("Whether to support GPU scene, required for auto-instancing (only ES3.1 feature level)"),
+	ECVF_ReadOnly | ECVF_RenderThreadSafe
+);
+
+static TAutoConsoleVariable<int32> CVarMobileGPUSceneUseTexture2D(
+	TEXT("r.Mobile.UseGPUSceneTexture"),
+	0,
+	TEXT("Use a Texture2D instead of TextureBuffer for GPUScene.\n"),
+	ECVF_RenderThreadSafe
+);
+
 static TAutoConsoleVariable<int32> CVarSetClearSceneMethod(
 	TEXT("r.ClearSceneMethod"),
 	1,
@@ -1929,15 +2173,6 @@ static TAutoConsoleVariable<int32> CVarSetClearSceneMethod(
 	TEXT(" 1: RHIClear (default)\n")
 	TEXT(" 2: Quad at max z"),
 	ECVF_RenderThreadSafe);
-
-static TAutoConsoleVariable<int32> CVarLensFlareQuality(
-	TEXT("r.LensFlareQuality"),
-	2,
-	TEXT(" 0: off but best for performance\n")
-	TEXT(" 1: low quality with good performance\n")
-	TEXT(" 2: good quality (default)\n")
-	TEXT(" 3: very good quality but bad performance"),
-	ECVF_Scalability | ECVF_RenderThreadSafe);
 
 static TAutoConsoleVariable<int32> CVarBloomQuality(
 	TEXT("r.BloomQuality"),
@@ -2522,12 +2757,6 @@ static TAutoConsoleVariable<int32> CVarLuminOverrideExternalTextureSupport(
 	TEXT("  3 = force ImageExternal300 (version #300 with GL_OES_EGL_image_external)\n")
 	TEXT("  4 = force ImageExternalESSL300 (version #300 with GL_OES_EGL_image_external_essl3)"),
 	ECVF_ReadOnly);
-
-static TAutoConsoleVariable<int32> GLSLCvar(
-	TEXT("r.Vulkan.UseGLSL"),
-	0,
-	TEXT("2 to use ES GLSL\n1 to use GLSL\n0 to use SPIRV")
-);
 
 static TAutoConsoleVariable<FString> CVarCustomUnsafeZones(
 	TEXT("r.CustomUnsafeZones"),

@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -28,6 +28,8 @@ class SToolTip;
 class UCurveEditorSettings;
 class UCurveFactory;
 enum class ECheckBoxState : uint8;
+
+UNREALED_API DECLARE_LOG_CATEGORY_EXTERN(LogCurveEditor, Log, All);
 
 //////////////////////////////////////////////////////////////////////////
 // FTrackScaleInfo
@@ -67,7 +69,7 @@ struct FTrackScaleInfo
 	/** Local Widget Space -> Curve Input domain. */
 	float LocalXToInput(float ScreenX) const
 	{
-		return (ScreenX/PixelsPerInput) + ViewMinInput;
+		return PixelsPerInput != 0.0f ? (ScreenX/PixelsPerInput) + ViewMinInput : 0.0f;
 	}
 
 	/** Curve Input domain -> local Widget Space */
@@ -79,7 +81,7 @@ struct FTrackScaleInfo
 	/** Local Widget Space -> Curve Output domain. */
 	float LocalYToOutput(float ScreenY) const
 	{
-		return (ViewOutputRange + ViewMinOutput) - (ScreenY/PixelsPerOutput);
+		return PixelsPerOutput != 0.0f ? (ViewOutputRange + ViewMinOutput) - (ScreenY/PixelsPerOutput) : 0.0f;
 	}
 
 	/** Curve Output domain -> local Widget Space */
@@ -128,7 +130,7 @@ DECLARE_DELEGATE_TwoParams( FOnSetInputViewRange, float, float )
 DECLARE_DELEGATE_TwoParams( FOnSetOutputViewRange, float, float )
 DECLARE_DELEGATE_OneParam( FOnSetAreCurvesVisible, bool )
 
-class SCurveEditor : 
+class UNREALED_VTABLE SCurveEditor : 
 	public SCompoundWidget,
 	public FGCObject,
 	public FEditorUndoClient

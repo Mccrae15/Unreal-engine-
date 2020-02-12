@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -15,13 +15,13 @@ class ULevel;
 class ULevelStreaming;
 
 // Stream Level Action
-class FStreamLevelAction : public FPendingLatentAction
+class ENGINE_API FStreamLevelAction : public FPendingLatentAction
 {
 public:
 	bool			bLoading;
 	bool			bMakeVisibleAfterLoad;
 	bool			bShouldBlock;
-	ULevelStreaming* Level;
+	TWeakObjectPtr<ULevelStreaming> Level;
 	FName			LevelName;
 
 	FLatentActionInfo LatentInfo;
@@ -94,6 +94,8 @@ class ENGINE_API ULevelStreaming : public UObject
 		MakingInvisible
 	};
 
+	static const TCHAR* EnumToString(ECurrentState InCurrentState);
+
 private:
 	enum class ETargetState : uint8
 	{
@@ -102,6 +104,8 @@ private:
 		LoadedNotVisible,
 		LoadedVisible,
 	};
+
+	static const TCHAR* EnumToString(ETargetState InTargetState);
 
 public:
 
@@ -150,10 +154,13 @@ private:
 	ETargetState TargetState;
 
 	/** Whether this level streaming object's level should be unloaded and the object be removed from the level list.			*/
-	uint8 bIsRequestingUnloadAndRemoval : 1;
+	uint8 bIsRequestingUnloadAndRemoval:1;
 
 	/* Whether CachedWorldAssetPackageFName is valid */
 	mutable uint8 bHasCachedWorldAssetPackageFName:1;
+
+	/* Whether CachedLoadedLevelPackageName is valid */
+	mutable uint8 bHasCachedLoadedLevelPackageName:1;
 
 #if WITH_EDITORONLY_DATA
 	/** Whether this level should be visible in the Editor																		*/
@@ -367,7 +374,6 @@ public:
 	
 #if WITH_EDITOR
 	/** Override Pre/PostEditUndo functions to handle editor transform */
-	virtual void PreEditUndo() override;
 	virtual void PostEditUndo() override;
 #endif
 	
@@ -477,6 +483,9 @@ private:
 	/** @return Name of the LOD package on disk to load to the new package named PackageName, Name_None otherwise					*/
 	FName GetLODPackageNameToLoad() const;
 
+	/** @return Name of the level package that is currently loaded.																	*/
+	FName GetLoadedLevelPackageName() const;
+
 	/** 
 	 * Try to find loaded level in memory, issue a loading request otherwise
 	 *
@@ -518,7 +527,8 @@ private:
 	/** The cached package name of the world asset that is loaded by the levelstreaming */
 	mutable FName CachedWorldAssetPackageFName;
 
-	FName CachedLoadedLevelPackageName;
+	/** The cached package name of the currently loaded level. */
+	mutable FName CachedLoadedLevelPackageName;
 
 	friend struct FStreamingLevelPrivateAccessor;
 };

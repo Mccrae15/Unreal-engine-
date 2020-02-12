@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "StaticMeshComponentAdapter.h"
 #include "MaterialBakingStructures.h"
@@ -34,7 +34,7 @@ void FStaticMeshComponentAdapter::RetrieveMeshSections(int32 LODIndex, TArray<FS
 
 int32 FStaticMeshComponentAdapter::GetMaterialIndex(int32 LODIndex, int32 SectionIndex) const
 {
-	return StaticMesh->SectionInfoMap.Get(LODIndex, SectionIndex).MaterialIndex;
+	return StaticMesh->GetSectionInfoMap().Get(LODIndex, SectionIndex).MaterialIndex;
 }
 
 void FStaticMeshComponentAdapter::ApplySettings(int32 LODIndex, FMeshData& InOutMeshData) const

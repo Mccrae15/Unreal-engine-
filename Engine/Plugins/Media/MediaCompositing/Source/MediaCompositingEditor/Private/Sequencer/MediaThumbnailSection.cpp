@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "MediaThumbnailSection.h"
 
@@ -61,20 +61,6 @@ void FMediaThumbnailSection::AddReferencedObjects(FReferenceCollector& Collector
 
 /* FThumbnailSection interface
  *****************************************************************************/
-
-TSharedRef<SWidget> FMediaThumbnailSection::GenerateSectionWidget()
-{
-	return SNew(SBox)
-		.HAlign(HAlign_Left)
-		.VAlign(VAlign_Top)
-		.Padding(GetContentPadding())
-		[
-			SNew(STextBlock)
-				.Text(this, &FMediaThumbnailSection::GetSectionTitle)
-				.ShadowOffset(FVector2D(1.0f, 1.0f))
-		];
-}
-
 
 FMargin FMediaThumbnailSection::GetContentPadding() const
 {

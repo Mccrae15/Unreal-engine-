@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -47,6 +47,7 @@ MONOLITHIC_HEADER_BOILERPLATE()
 #include "UObject/UnrealType.h"
 #include "UObject/EnumProperty.h"
 #include "UObject/TextProperty.h"
+#include "UObject/FieldPathProperty.h"
 #include "UObject/Stack.h"
 #include "UObject/ObjectRedirector.h"
 #include "UObject/UObjectAnnotation.h"
@@ -62,9 +63,6 @@ MONOLITHIC_HEADER_BOILERPLATE()
 #include "Serialization/FindReferencersArchive.h"
 #include "Serialization/FindObjectReferencers.h"
 #include "Serialization/ArchiveFindCulprit.h"
-#include "Serialization/ArchiveObjectGraph.h"
-#include "Serialization/TraceReferences.h"
-#include "Serialization/ArchiveTraceRoute.h"
 #include "Serialization/DuplicatedObject.h"
 #include "Serialization/DuplicatedDataReader.h"
 #include "Serialization/DuplicatedDataWriter.h"

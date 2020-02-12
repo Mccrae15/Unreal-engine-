@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "WorldSettingsDetails.h"
 #include "Framework/Commands/UIAction.h"
@@ -12,12 +12,18 @@
 #include "GameFramework/Actor.h"
 #include "Editor.h"
 #include "Engine/Texture2D.h"
-#include "Toolkits/AssetEditorManager.h"
+
 #include "DetailLayoutBuilder.h"
 #include "GameModeInfoCustomizer.h"
+#include "Settings/EditorExperimentalSettings.h"
+#include "GameFramework/WorldSettings.h"
 
 #define LOCTEXT_NAMESPACE "WorldSettingsDetails"
 
+
+FWorldSettingsDetails::~FWorldSettingsDetails()
+{
+}
 
 /* IDetailCustomization overrides
  *****************************************************************************/
@@ -29,7 +35,7 @@ void FWorldSettingsDetails::CustomizeDetails( IDetailLayoutBuilder& DetailBuilde
 
 	AddLightmapCustomization(DetailBuilder);
 
-	DetailBuilder.HideProperty(GET_MEMBER_NAME_CHECKED(AActor, bHidden), AActor::StaticClass());
+	DetailBuilder.HideProperty(AActor::GetHiddenPropertyName(), AActor::StaticClass());
 }
 
 
@@ -277,7 +283,7 @@ void FLightmapCustomNodeBuilder::ExecuteViewLightmap(FString SelectedLightmapPat
 	UObject* LightMapObject = FindObject<UObject>(NULL, *SelectedLightmapPath);
 	if ( LightMapObject )
 	{
-		FAssetEditorManager::Get().OpenEditorForAsset(LightMapObject);
+		GEditor->GetEditorSubsystem<UAssetEditorSubsystem>()->OpenEditorForAsset(LightMapObject);
 	}
 }
 

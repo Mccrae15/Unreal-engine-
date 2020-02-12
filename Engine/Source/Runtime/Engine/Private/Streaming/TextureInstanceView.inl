@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 /*=============================================================================
 TextureInstanceView.h: Definitions of classes used for texture streaming.
@@ -60,6 +60,12 @@ void FRenderAssetInstanceView::FBounds4::UpdateLastRenderTime(int32 Index, float
 	check(Index >= 0 && Index < 4);
 
 	LastRenderTime.Component(Index) = InLastRenderTime;
+}
+
+void FRenderAssetInstanceView::FBounds4::UpdateMaxDrawDistanceSquared(int32 Index, float InMaxRangeSq)
+{
+	check(Index >= 0 && Index < 4);
+	MaxRangeSq.Component(Index) = InMaxRangeSq;
 }
 
 FRenderAssetInstanceView::FElement::FElement()

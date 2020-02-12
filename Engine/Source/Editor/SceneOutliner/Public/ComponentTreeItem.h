@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -86,6 +86,8 @@ namespace SceneOutliner
 		/** true if this item exists in both the current world and PIE. */
 		bool bExistsInCurrentWorldAndPIE;
 
+		/** Cache the string displayed */
+		FString CachedDisplayString;
 	};
 
 } // namespace SceneOutliner

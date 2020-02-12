@@ -1,6 +1,7 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "SControlRigEditModeTools.h"
+#include "ControlRigControlsProxy.h"
 #include "PropertyEditorModule.h"
 #include "IDetailsView.h"
 #include "ISequencer.h"
@@ -15,11 +16,10 @@
 #include "Widgets/Layout/SScrollBox.h"
 #include "MovieSceneSequence.h"
 #include "MovieScene.h"
-
+#include "SControlHierarchy.h"
 #include "SControlPicker.h"
 
 #define LOCTEXT_NAMESPACE "ControlRigRootCustomization"
-
 
 class FControlRigRootCustomization : public IDetailRootObjectCustomization
 {
@@ -35,13 +35,18 @@ public:
 		return true;
 	}
 
-	virtual bool ShouldDisplayHeader(const UObject* InRootObject) const override
+	virtual bool ShouldDisplayHeader(const UObject* InRootObAject) const override
 	{
 		return false;
 	}
 };
 
-void SControlRigEditModeTools::Construct(const FArguments& InArgs, UWorld* InWorld)
+void SControlRigEditModeTools::SetControlRig(UControlRig* ControlRig)
+{
+	ControlHierarchy->SetControlRig(ControlRig);
+}
+
+void SControlRigEditModeTools::Construct(const FArguments& InArgs, FControlRigEditMode& InEditMode,UWorld* InWorld)
 {
 	// initialize settings view
 	FDetailsViewArgs DetailsViewArgs;
@@ -73,7 +78,7 @@ void SControlRigEditModeTools::Construct(const FArguments& InArgs, UWorld* InWor
 		+ SScrollBox::Slot()
 		[
 			SNew(SVerticalBox)
-
+			/* We don't do the picker nor the float controls but leeaving this here inc case we 
 			+ SVerticalBox::Slot()
 			.AutoHeight()
 			[
@@ -87,7 +92,36 @@ void SControlRigEditModeTools::Construct(const FArguments& InArgs, UWorld* InWor
 					SAssignNew(ControlPicker, SControlPicker, InWorld)
 				]
 			]
+			
 
+			+SVerticalBox::Slot()
+			.AutoHeight()
+			[
+				SAssignNew(PickerExpander, SExpandableArea)
+				.InitiallyCollapsed(true)
+				.AreaTitle(LOCTEXT("CurveControl_Header", "Curve Controls"))
+				.AreaTitleFont(FEditorStyle::GetFontStyle("DetailsView.CategoryFontStyle"))
+				.BorderBackgroundColor(FLinearColor(.6f, .6f, .6f))
+				.BodyContent()
+				[
+					SAssignNew(CurveControlContainer, SCurveControlContainer, InEditMode.GetControlRig())
+				]
+			]
+			*/
+
+			+SVerticalBox::Slot()
+			.AutoHeight()
+			[
+				SAssignNew(PickerExpander, SExpandableArea)
+				.InitiallyCollapsed(true)
+				.AreaTitle(LOCTEXT("Picker_Header", "Controls"))
+				.AreaTitleFont(FEditorStyle::GetFontStyle("DetailsView.CategoryFontStyle"))
+				.BorderBackgroundColor(FLinearColor(.6f, .6f, .6f))
+				.BodyContent()
+				[
+					SAssignNew(ControlHierarchy, SControlHierarchy, InEditMode.GetControlRig())
+				]
+			]
 			+SVerticalBox::Slot()
 			.AutoHeight()
 			[
@@ -100,7 +134,7 @@ void SControlRigEditModeTools::Construct(const FArguments& InArgs, UWorld* InWor
 	FControlRigEditMode* ControlRigEditMode = static_cast<FControlRigEditMode*>(GLevelEditorModeTools().GetActiveMode(FControlRigEditMode::ModeName));
 	if (ControlRigEditMode)
 	{
-		ControlRigEditMode->OnControlsSelected().AddSP(this, &SControlRigEditModeTools::OnSelectionSetChanged);
+		ControlRigEditMode->ModifiedEvent.AddSP(this, &SControlRigEditModeTools::HandleModifiedEvent);
 	}	
 }
 
@@ -119,21 +153,23 @@ void SControlRigEditModeTools::SetDetailsObjects(const TArray<TWeakObjectPtr<>>&
 		}
 	}
 
-	ControlPicker->SetControlRig(Rig);
+	//ControlPicker->SetControlRig(Rig);
 
-	// Expand when you have a rig, collapse when set to null
-	PickerExpander->SetExpanded(Rig != nullptr);
 }
 
-void SControlRigEditModeTools::SetSequencer(TSharedPtr<ISequencer> InSequencer)
+void SControlRigEditModeTools::SetSequencer(TWeakPtr<ISequencer> InSequencer)
 {
-	WeakSequencer = InSequencer;
+	WeakSequencer = InSequencer.Pin();
 }
 
 bool SControlRigEditModeTools::IsPropertyKeyable(UClass* InObjectClass, const IPropertyHandle& InPropertyHandle) const
 {
+	if (InObjectClass && InObjectClass->IsChildOf(UControlRigTransformNoScaleControlProxy::StaticClass()) && InPropertyHandle.GetProperty() 
+		&& InPropertyHandle.GetProperty()->GetFName() == GET_MEMBER_NAME_CHECKED(UControlRigTransformControlProxy, Transform)) 
+	{
+		return true;
+	}
 	FCanKeyPropertyParams CanKeyPropertyParams(InObjectClass, InPropertyHandle);
-
 	TSharedPtr<ISequencer> Sequencer = WeakSequencer.Pin();
 	if (Sequencer.IsValid() && Sequencer->CanKeyProperty(CanKeyPropertyParams))
 	{
@@ -163,7 +199,7 @@ bool SControlRigEditModeTools::IsPropertyAnimated(const IPropertyHandle& Propert
 		if (ObjectHandle.IsValid()) 
 		{
 			UMovieScene* MovieScene = Sequencer->GetFocusedMovieSceneSequence()->GetMovieScene();
-			UProperty* Property = PropertyHandle.GetProperty();
+			FProperty* Property = PropertyHandle.GetProperty();
 			TSharedRef<FPropertyPath> PropertyPath = FPropertyPath::CreateEmpty();
 			PropertyPath->AddProperty(FPropertyInfo(Property));
 			FName PropertyName(*PropertyPath->ToString(TEXT(".")));
@@ -176,20 +212,26 @@ bool SControlRigEditModeTools::IsPropertyAnimated(const IPropertyHandle& Propert
 
 void SControlRigEditModeTools::OnKeyPropertyClicked(const IPropertyHandle& KeyedPropertyHandle)
 {
+	if (WeakSequencer.IsValid() && !WeakSequencer.Pin()->IsAllowedToChange())
+	{
+		return;
+	}
+
 	TArray<UObject*> Objects;
 	KeyedPropertyHandle.GetOuterObjects(Objects);
-	FKeyPropertyParams KeyPropertyParams(Objects, KeyedPropertyHandle, ESequencerKeyMode::ManualKeyForced);
-
-	TSharedPtr<ISequencer> Sequencer = WeakSequencer.Pin();
-	if (Sequencer.IsValid())
+	for (UObject *Object : Objects)
 	{
-		Sequencer->KeyProperty(KeyPropertyParams);
+		UControlRigControlsProxy* Proxy = Cast< UControlRigControlsProxy>(Object);
+		if (Proxy)
+	{
+			Proxy->SetKey(KeyedPropertyHandle);
+		}
 	}
 }
 
 bool SControlRigEditModeTools::ShouldShowPropertyOnDetailCustomization(const FPropertyAndParent& InPropertyAndParent) const
 {
-	auto ShouldPropertyBeVisible = [](const UProperty& InProperty)
+	auto ShouldPropertyBeVisible = [](const FProperty& InProperty)
 	{
 		bool bShow = InProperty.HasAnyPropertyFlags(CPF_Interp) || InProperty.HasMetaData(UControlRig::InputMetaName) || InProperty.HasMetaData(UControlRig::OutputMetaName);
 
@@ -199,16 +241,23 @@ bool SControlRigEditModeTools::ShouldShowPropertyOnDetailCustomization(const FPr
 */
 
 		// Always show settings properties
-		bShow |= Cast<UClass>(InProperty.GetOuter()) == UControlRigEditModeSettings::StaticClass();
+		const UClass* OwnerClass = InProperty.GetOwner<UClass>();
+		bShow |= OwnerClass == UControlRigEditModeSettings::StaticClass();
+		bShow |= OwnerClass == UControlRigTransformControlProxy::StaticClass();		
+		bShow |= OwnerClass == UControlRigTransformNoScaleControlProxy::StaticClass();
+		bShow |= OwnerClass == UControlRigFloatControlProxy::StaticClass();
+		bShow |= OwnerClass == UControlRigVectorControlProxy::StaticClass();
+		bShow |= OwnerClass == UControlRigVector2DControlProxy::StaticClass();
+		bShow |= OwnerClass == UControlRigBoolControlProxy::StaticClass();
 
 		return bShow;
 	};
 
 	bool bContainsVisibleProperty = false;
-	if (InPropertyAndParent.Property.IsA<UStructProperty>())
+	if (InPropertyAndParent.Property.IsA<FStructProperty>())
 	{
-		const UStructProperty* StructProperty = Cast<UStructProperty>(&InPropertyAndParent.Property);
-		for (TFieldIterator<UProperty> PropertyIt(StructProperty->Struct); PropertyIt; ++PropertyIt)
+		const FStructProperty* StructProperty = CastField<FStructProperty>(&InPropertyAndParent.Property);
+		for (TFieldIterator<FProperty> PropertyIt(StructProperty->Struct); PropertyIt; ++PropertyIt)
 		{
 			if (ShouldPropertyBeVisible(**PropertyIt))
 			{
@@ -217,26 +266,34 @@ bool SControlRigEditModeTools::ShouldShowPropertyOnDetailCustomization(const FPr
 		}
 	}
 
-	return ShouldPropertyBeVisible(InPropertyAndParent.Property) || (InPropertyAndParent.ParentProperty && ShouldPropertyBeVisible(*InPropertyAndParent.ParentProperty));
+	return ShouldPropertyBeVisible(InPropertyAndParent.Property) || 
+		(InPropertyAndParent.ParentProperties.Num() > 0 && ShouldPropertyBeVisible(*InPropertyAndParent.ParentProperties[0]));
 }
 
 bool SControlRigEditModeTools::IsReadOnlyPropertyOnDetailCustomization(const FPropertyAndParent& InPropertyAndParent) const
 {
-	auto ShouldPropertyBeEnabled = [](const UProperty& InProperty)
+	auto ShouldPropertyBeEnabled = [](const FProperty& InProperty)
 	{
 		bool bShow = InProperty.HasAnyPropertyFlags(CPF_Interp) || InProperty.HasMetaData(UControlRig::InputMetaName);
 
 		// Always show settings properties
-		bShow |= Cast<UClass>(InProperty.GetOuter()) == UControlRigEditModeSettings::StaticClass();
+		const UClass* OwnerClass = InProperty.GetOwner<UClass>();
+		bShow |= OwnerClass == UControlRigEditModeSettings::StaticClass();
+		bShow |= OwnerClass == UControlRigTransformControlProxy::StaticClass();
+		bShow |= OwnerClass == UControlRigTransformNoScaleControlProxy::StaticClass();
+		bShow |= OwnerClass == UControlRigFloatControlProxy::StaticClass();
+		bShow |= OwnerClass == UControlRigVectorControlProxy::StaticClass();
+		bShow |= OwnerClass == UControlRigVector2DControlProxy::StaticClass();
+		bShow |= OwnerClass == UControlRigBoolControlProxy::StaticClass();
 
 		return bShow;
 	};
 
 	bool bContainsVisibleProperty = false;
-	if (InPropertyAndParent.Property.IsA<UStructProperty>())
+	if (InPropertyAndParent.Property.IsA<FStructProperty>())
 	{
-		const UStructProperty* StructProperty = Cast<UStructProperty>(&InPropertyAndParent.Property);
-		for (TFieldIterator<UProperty> PropertyIt(StructProperty->Struct); PropertyIt; ++PropertyIt)
+		const FStructProperty* StructProperty = CastField<FStructProperty>(&InPropertyAndParent.Property);
+		for (TFieldIterator<FProperty> PropertyIt(StructProperty->Struct); PropertyIt; ++PropertyIt)
 		{
 			if (ShouldPropertyBeEnabled(**PropertyIt))
 			{
@@ -245,32 +302,52 @@ bool SControlRigEditModeTools::IsReadOnlyPropertyOnDetailCustomization(const FPr
 		}
 	}
 
-	return !(ShouldPropertyBeEnabled(InPropertyAndParent.Property) || (InPropertyAndParent.ParentProperty && ShouldPropertyBeEnabled(*InPropertyAndParent.ParentProperty)));
+	return !(ShouldPropertyBeEnabled(InPropertyAndParent.Property) || 
+		(InPropertyAndParent.ParentProperties.Num() > 0 && ShouldPropertyBeEnabled(*InPropertyAndParent.ParentProperties[0])));
 }
 
 static bool bPickerChangingSelection = false;
 
-void SControlRigEditModeTools::OnManipulatorsPicked(const TArray<FString>& Manipulators)
+void SControlRigEditModeTools::OnManipulatorsPicked(const TArray<FName>& Manipulators)
 {
 	FControlRigEditMode* ControlRigEditMode = static_cast<FControlRigEditMode*>(GLevelEditorModeTools().GetActiveMode(FControlRigEditMode::ModeName));
 	if (ControlRigEditMode)
 	{
-		bPickerChangingSelection = true;
-		ControlRigEditMode->ClearControlSelection();
-		ControlRigEditMode->SetControlSelection(Manipulators, true);
-		bPickerChangingSelection = false;
+		if (!bPickerChangingSelection)
+		{
+			TGuardValue<bool> SelectGuard(bPickerChangingSelection, true);
+			ControlRigEditMode->ClearRigElementSelection((uint32)ERigElementType::Control);
+			ControlRigEditMode->SetRigElementSelection(ERigElementType::Control, Manipulators, true);
+		}
 	}
 }
 
-void SControlRigEditModeTools::OnSelectionSetChanged(const TArray<FString>& SelectedManipulators)
+void SControlRigEditModeTools::HandleModifiedEvent(ERigVMGraphNotifType InNotifType, URigVMGraph* InGraph, UObject* InSubject)
 {
-/*
-	// Don't want to udpate picker selection set if its the picker causing the change
-	if (!bPickerChangingSelection)
+	if (bPickerChangingSelection)
 	{
-		ControlPicker->SetSelectedManipulators(SelectedManipulators);
+		return;
 	}
-*/
+
+	TGuardValue<bool> SelectGuard(bPickerChangingSelection, true);
+	switch (InNotifType)
+	{
+		case ERigVMGraphNotifType::NodeSelected:
+		case ERigVMGraphNotifType::NodeDeselected:
+		{
+			URigVMNode* Node = Cast<URigVMNode>(InSubject);
+			if (Node)
+			{
+				// those are not yet implemented yet
+				// ControlPicker->SelectManipulator(Node->Name, InType == EControlRigModelNotifType::NodeSelected);
+			}
+			break;
+		}
+		default:
+		{
+			break;
+		}
+	}
 }
 
 #undef LOCTEXT_NAMESPACE

@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "SPaintModeWidget.h"
 
@@ -18,6 +18,11 @@
 
 #include "Modules/ModuleManager.h"
 #include "PaintModeCommands.h"
+#include "DetailLayoutBuilder.h"
+
+#include "EditorModeManager.h"
+#include "EditorModes.h"
+#include "MeshPaintEdMode.h"
 
 #define LOCTEXT_NAMESPACE "PaintModePainter"
 
@@ -34,10 +39,16 @@ void SPaintModeWidget::Construct(const FArguments& InArgs, FPaintModePainter* In
 	[
 		SNew(SScrollBox)
 		+ SScrollBox::Slot()
+		.Padding(0, 0, 0, 5)
+		[
+			SAssignNew(ErrorTextWidget, SErrorText)
+		]
+		+ SScrollBox::Slot()
 		.Padding(0.0f)
 		[
 			SNew(SVerticalBox)
 			/** Toolbar containing buttons to switch between different paint modes */
+			.IsEnabled(this, &SPaintModeWidget::GetMeshPaintEditorIsEnabled)
 			+ SVerticalBox::Slot()
 			.AutoHeight()
 			[
@@ -62,13 +73,33 @@ void SPaintModeWidget::Construct(const FArguments& InArgs, FPaintModePainter* In
 			[
 				CreateTexturePaintWidget()->AsShared()
 			]
-
+			+ SVerticalBox::Slot()
+			.Padding(2.0f, 4.0f)
+			.HAlign(HAlign_Right)
+			.AutoHeight()
+			[
+				SNew(STextBlock)
+				.Font(IDetailLayoutBuilder::GetDetailFont())
+				.Visibility_Lambda([this]() -> EVisibility
+				{
+					return PaintModeSettings->PaintMode == EPaintMode::Vertices ? EVisibility::Visible : EVisibility::Collapsed;
+				})
+				.Text_Lambda([this]() -> FText
+				{
+					if (MeshPainter)
+					{
+						return FText::Format(FTextFormat::FromString(TEXT("Instance Color Size: {0} KB")), MeshPainter->GetVertexPaintColorBufferSize() / 1024.f);
+					}
+					return FText::GetEmpty();
+				})
+			]
 			/** DetailsView containing brush and paint settings */
 			+ SVerticalBox::Slot()
 			.AutoHeight()				
 			[
 				SettingsDetailsView->AsShared()
 			]
+
 		]
 	];
 }
@@ -83,7 +114,7 @@ void SPaintModeWidget::CreateDetailsView()
 		/*bAllowSearch=*/ false,
 		FDetailsViewArgs::HideNameArea,
 		/*bHideSelectionTip=*/ true,
-		/*InNotifyHook=*/ nullptr,
+		/*InNotifyHook=*/ this,
 		/*InSearchInitialKeyFocus=*/ false,
 		/*InViewIdentifier=*/ NAME_None);
 	DetailsViewArgs.DefaultsOnlyVisibility = EEditDefaultsOnlyNodeVisibility::Automatic;
@@ -103,9 +134,6 @@ TSharedPtr<SWidget> SPaintModeWidget::CreateVertexPaintWidget()
 	TSharedPtr<SHorizontalBox> VertexColorActionBox;
 	TSharedPtr<SHorizontalBox> InstanceColorActionBox;
 
-	static const FText SkelMeshNotificationText = LOCTEXT("SkelMeshAssetPaintInfo", "Paint is directly propagated to Skeletal Mesh Asset(s)");
-	static const FText StaticMeshNotificationText = LOCTEXT("StaticMeshAssetPaintInfo", "Paint is directly applied to all LODs");	
-		
 	SAssignNew(VertexColorWidget, SVerticalBox)
 	.Visibility(this, &SPaintModeWidget::IsVertexPaintModeVisible)
 	+ SVerticalBox::Slot()
@@ -116,58 +144,14 @@ TSharedPtr<SWidget> SPaintModeWidget::CreateVertexPaintWidget()
 		SAssignNew(VertexColorActionBox, SHorizontalBox)
 	]
 	
-	+SVerticalBox::Slot()
+	+ SVerticalBox::Slot()
 	.AutoHeight()
-	.Padding(StandardPadding)	
+	.Padding(StandardPadding)
 	.HAlign(HAlign_Center)
 	[
 		SAssignNew(InstanceColorActionBox, SHorizontalBox)
-	]
-
-	+SVerticalBox::Slot()
-	.AutoHeight()
-	.Padding(StandardPadding)
-	.VAlign(VAlign_Center)
-	.HAlign(HAlign_Center)
-	[
-		SNew(SBorder)
-		.BorderImage(FEditorStyle::GetBrush("SettingsEditor.CheckoutWarningBorder"))
-		.BorderBackgroundColor(FColor(166,137,0))				
-		[
-			SNew(SHorizontalBox)
-			.Visibility_Lambda([this]() -> EVisibility 
-			{
-				bool bVisible = MeshPainter && MeshPainter->GetSelectedComponents<USkeletalMeshComponent>().Num();
-				bVisible |= ((PaintModeSettings->PaintMode == EPaintMode::Vertices) && !PaintModeSettings->VertexPaintSettings.bPaintOnSpecificLOD);
-				return bVisible ? EVisibility::Visible : EVisibility::Collapsed;
-			})
-		
-			+ SHorizontalBox::Slot()
-			.VAlign(VAlign_Center)
-			.AutoWidth()
-			.Padding(6.0f, 0.0f)
-			[
-				SNew(SImage)
-				.Image(FEditorStyle::GetBrush("ClassIcon.SkeletalMeshComponent"))
-			]
-		
-			+SHorizontalBox::Slot()
-			.VAlign(VAlign_Center)
-			.FillWidth(.8f)
-			.Padding(StandardPadding)
-			[
-				SNew(STextBlock)
-				.AutoWrapText(true)
-				.Text_Lambda([this]() -> FText
-				{
-					const bool bSkelMeshText = MeshPainter && MeshPainter->GetSelectedComponents<USkeletalMeshComponent>().Num();
-					const bool bLODPaintText = (PaintModeSettings->PaintMode == EPaintMode::Vertices) && !PaintModeSettings->VertexPaintSettings.bPaintOnSpecificLOD;
-					return FText::Format(FTextFormat::FromString(TEXT("{0}{1}{2}")), bSkelMeshText ? SkelMeshNotificationText : FText::GetEmpty(), bSkelMeshText && bLODPaintText ? FText::FromString(TEXT("\n")) : FText::GetEmpty(), bLODPaintText ? StaticMeshNotificationText : FText::GetEmpty());
-				})
-			]
-		]
 	];
-	
+
 	FToolBarBuilder ColorToolbarBuilder(MeshPainter->GetUICommandList(), FMultiBoxCustomization::None);
 	ColorToolbarBuilder.SetLabelVisibility(EVisibility::Collapsed);
 	ColorToolbarBuilder.AddToolBarButton(FPaintModeCommands::Get().Fill, NAME_None, FText::GetEmpty(), TAttribute<FText>(), FSlateIcon(FEditorStyle::GetStyleSetName(), "MeshPaint.Fill"));
@@ -269,6 +253,30 @@ EVisibility SPaintModeWidget::IsTexturePaintModeVisible() const
 {
 	UPaintModeSettings* MeshPaintSettings = (UPaintModeSettings*)MeshPainter->GetPainterSettings();
 	return (MeshPaintSettings->PaintMode == EPaintMode::Textures) ? EVisibility::Visible : EVisibility::Collapsed;
+}
+
+void SPaintModeWidget::NotifyPostChange(const FPropertyChangedEvent& PropertyChangedEvent, FProperty* PropertyThatChanged)
+{
+	if (PropertyChangedEvent.ChangeType != EPropertyChangeType::Interactive)
+	{
+		for (UObject* Settings : SettingsObjects)
+		{
+			Settings->SaveConfig();
+		}
+	}
+}
+
+bool SPaintModeWidget::GetMeshPaintEditorIsEnabled() const
+{
+	FEdModeMeshPaint* MeshPaintMode = (FEdModeMeshPaint*)GLevelEditorModeTools().GetActiveMode(FBuiltinEditorModes::EM_MeshPaint);
+	if (MeshPaintMode)
+	{
+		bool bEnabled = MeshPaintMode->IsEditingEnabled();
+		FText ErrorText = bEnabled ? FText::GetEmpty() : LOCTEXT("MeshPaintSM5Only", "Mesh Paint mode can only be used in SM5.");
+		ErrorTextWidget->SetError(ErrorText);
+		return bEnabled;
+	}
+	return false;
 }
 
 #undef LOCTEXT_NAMESPACE // "PaintModePainter"

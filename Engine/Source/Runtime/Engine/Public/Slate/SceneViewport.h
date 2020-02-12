@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 
 #pragma once
@@ -25,6 +25,8 @@ class SWindow;
 DECLARE_DELEGATE_OneParam( FOnSceneViewportResize, FVector2D );
 
 class SViewport;
+
+extern const FName NAME_SceneViewport;
 
 /**
  * A viewport for use with Slate SViewport widgets.
@@ -249,6 +251,10 @@ public:
 	
 	void SetViewportSize(uint32 NewSizeX,uint32 NewSizeY);
 	void SetFixedViewportSize(uint32 NewSizeX, uint32 NewSizeY);
+
+	/** Does the viewport has a fixed size */
+	bool HasFixedSize() const;
+
 	TSharedPtr<SWindow> FindWindow();
 
 	/** Should return true, if stereo rendering is allowed in this viewport */
@@ -344,7 +350,7 @@ private:
 	void ApplyModifierKeys( const FModifierKeysState& InKeysState );
 
 	/** Utility function to create an FReply that properly gets Focus and capture based on the settings*/
-	FReply AcquireFocusAndCapture(FIntPoint MousePosition);
+	FReply AcquireFocusAndCapture(FIntPoint MousePosition, EFocusCause FocusCause = EFocusCause::SetDirectly);
 
 	/** Utility function to figure out if we are currently a game viewport */
 	bool IsCurrentlyGameViewport();
@@ -374,6 +380,10 @@ private:
 	 */
 	void OnPostResizeWindowBackbuffer(void* Backbuffer);
 
+
+	/** @return Returns true if the viewport needs permanent capture. */
+	bool IsInPermanentCapture();
+
 private:
 	/** An intermediate reply state that is reset whenever an input event is generated */
 	FReply CurrentReplyState;
@@ -399,6 +409,8 @@ private:
 	int32 NumMouseSamplesX;
 	/** The number of input samples in Y since input was was last processed */
 	int32 NumMouseSamplesY;
+	/** User index supplied by mouse events accumulated into NumMouseSamplesX and NumMouseSamplesY */
+	int32 MouseDeltaUserIndex;
 	/** The current mouse delta */
 	FIntPoint MouseDelta;
 	/** true if the cursor is currently visible */

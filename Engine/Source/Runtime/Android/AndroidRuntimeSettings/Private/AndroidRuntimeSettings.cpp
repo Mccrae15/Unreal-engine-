@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "AndroidRuntimeSettings.h"
 #include "Modules/ModuleManager.h"
@@ -20,7 +20,7 @@ UAndroidRuntimeSettings::UAndroidRuntimeSettings(const FObjectInitializer& Objec
 	, Orientation(EAndroidScreenOrientation::Landscape)
 	, MaxAspectRatio(2.1f)
 	, bAndroidVoiceEnabled(false)
-	, GoogleVRCaps({EGoogleVRCaps::Cardboard, EGoogleVRCaps::Daydream33})
+	, GoogleVRCaps({EGoogleVRCaps::Daydream33})
 	, bEnableGooglePlaySupport(false)
 	, bUseGetAccounts(false)
 	, bSupportAdMob(true)
@@ -46,7 +46,7 @@ UAndroidRuntimeSettings::UAndroidRuntimeSettings(const FObjectInitializer& Objec
 	bBuildForES2 = !bBuildForES2 && !bBuildForES31 && !bSupportsVulkan;
 }
 
-void UAndroidRuntimeSettings::PostReloadConfig(UProperty* PropertyThatWasLoaded)
+void UAndroidRuntimeSettings::PostReloadConfig(FProperty* PropertyThatWasLoaded)
 {
 	Super::PostReloadConfig(PropertyThatWasLoaded);
 
@@ -61,7 +61,7 @@ void UAndroidRuntimeSettings::PostReloadConfig(UProperty* PropertyThatWasLoaded)
 
 void UAndroidRuntimeSettings::HandlesRGBHWSupport()
 {
-	const bool SupportssRGB = bBuildForES31 && bPackageForGearVR;
+	const bool SupportssRGB = !bBuildForES2 && PackageForOculusMobile.Num() > 0;
 	URendererSettings* const Settings = GetMutableDefault<URendererSettings>();
 	static auto* MobileUseHWsRGBEncodingCVAR = IConsoleManager::Get().FindConsoleVariable(TEXT("r.Mobile.UseHWsRGBEncoding"));
 
@@ -108,6 +108,8 @@ void UAndroidRuntimeSettings::PostEditChangeProperty(struct FPropertyChangedEven
 		{
 			// Supported shader formats changed so invalidate cache
 			InvalidateAllAndroidPlatforms();
+
+			OnPropertyChanged.Broadcast(PropertyChangedEvent);
 		}
 	}
 
@@ -141,6 +143,27 @@ void UAndroidRuntimeSettings::PostEditChangeProperty(struct FPropertyChangedEven
 		if (Module)
 		{
 			Module->NotifyMultiSelectedFormatsChanged();
+		}
+	}
+
+	if (PropertyChangedEvent.Property != nullptr && PropertyChangedEvent.Property->GetName().StartsWith(TEXT("PackageForOculusMobile")))
+	{
+		if (PropertyChangedEvent.ChangeType == EPropertyChangeType::ArrayAdd)
+		{
+			// Get a list of all available devices
+			TArray<EOculusMobileDevice::Type> deviceList;
+#define OCULUS_DEVICE_LOOP(device) deviceList.Add(device);
+			FOREACH_ENUM_EOCULUSMOBILEDEVICE(OCULUS_DEVICE_LOOP);
+#undef OCULUS_DEVICE_LOOP
+			// Add last device that isn't already in the list
+			for (int i = deviceList.Num() - 1; i >= 0; --i)
+			{
+				if (!PackageForOculusMobile.Contains(deviceList[i]))
+				{
+					PackageForOculusMobile.Last() = deviceList[i];
+					break;
+				}
+			}
 		}
 	}
 
@@ -187,6 +210,17 @@ void UAndroidRuntimeSettings::PostInitProperties()
 		UpdateDefaultConfigFile();
 	}
 
+	// Upgrade old Oculus packaging settings as necessary.
+	const TCHAR* AndroidSettings = TEXT("/Script/AndroidRuntimeSettings.AndroidRuntimeSettings");
+	bool bPackageForGearVR = false;
+	GConfig->GetBool(AndroidSettings, TEXT("bPackageForGearVR"), bPackageForGearVR, GEngineIni);
+	if (bPackageForGearVR)
+	{
+		// Update default config
+		PackageForOculusMobile.Add(EOculusMobileDevice::GearGo);
+		UpdateDefaultConfigFile();
+	}
+
 	// Enable ES2 if no GPU arch is selected. (as can be the case with the removal of ESDeferred) 
 	EnsureValidGPUArch();
 	HandlesRGBHWSupport();
@@ -197,8 +231,8 @@ void UAndroidRuntimeSettings::EnsureValidGPUArch()
 	// Ensure that at least one GPU architecture is supported
 	if (!bBuildForES2 && !bSupportsVulkan && !bBuildForES31)
 	{
-		bBuildForES2 = true;
-		UpdateSinglePropertyInConfigFile(GetClass()->FindPropertyByName(GET_MEMBER_NAME_CHECKED(UAndroidRuntimeSettings, bBuildForES2)), GetDefaultConfigFilename());
+		bBuildForES31 = true;
+		UpdateSinglePropertyInConfigFile(GetClass()->FindPropertyByName(GET_MEMBER_NAME_CHECKED(UAndroidRuntimeSettings, bBuildForES31)), GetDefaultConfigFilename());
 
 		// Supported shader formats changed so invalidate cache
 		InvalidateAllAndroidPlatforms();

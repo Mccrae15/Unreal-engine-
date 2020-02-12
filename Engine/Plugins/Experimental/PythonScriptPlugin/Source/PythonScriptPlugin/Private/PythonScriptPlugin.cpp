@@ -1,7 +1,8 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "PythonScriptPlugin.h"
 #include "PythonScriptPluginSettings.h"
+#include "PythonScriptRemoteExecution.h"
 #include "PyGIL.h"
 #include "PyCore.h"
 #include "PySlate.h"
@@ -14,6 +15,9 @@
 #include "PyWrapperTypeRegistry.h"
 #include "EngineAnalytics.h"
 #include "Interfaces/IAnalyticsProvider.h"
+#include "AssetRegistryModule.h"
+#include "Modules/ModuleManager.h"
+#include "UObject/PackageReload.h"
 #include "Misc/App.h"
 #include "Misc/CoreDelegates.h"
 #include "Misc/Paths.h"
@@ -31,10 +35,16 @@
 #include "Engine/Engine.h"
 #include "Framework/Application/SlateApplication.h"
 #include "Framework/MultiBox/MultiBoxBuilder.h"
-#include "LevelEditor.h"
+#include "ToolMenus.h"
 #include "Misc/ConfigCacheIni.h"
 #include "Misc/MessageDialog.h"
 #endif	// WITH_EDITOR
+
+#if PLATFORM_WINDOWS
+	#include <stdio.h>
+	#include <fcntl.h>
+	#include <io.h>
+#endif	// PLATFORM_WINDOWS
 
 #define LOCTEXT_NAMESPACE "PythonScriptPlugin"
 
@@ -74,7 +84,7 @@ struct FPythonScopedArgv
 	TArray<PyUtil::FPyApiChar*> PyCommandLineArgPtrs;
 };
 
-FPythonCommandExecutor::FPythonCommandExecutor(FPythonScriptPlugin* InPythonScriptPlugin)
+FPythonCommandExecutor::FPythonCommandExecutor(IPythonScriptPlugin* InPythonScriptPlugin)
 	: PythonScriptPlugin(InPythonScriptPlugin)
 {
 }
@@ -97,12 +107,12 @@ FText FPythonCommandExecutor::GetDisplayName() const
 
 FText FPythonCommandExecutor::GetDescription() const
 {
-	return LOCTEXT("PythonCommandExecutorDescription", "Execute Python Scripts");
+	return LOCTEXT("PythonCommandExecutorDescription", "Execute Python scripts (including files)");
 }
 
 FText FPythonCommandExecutor::GetHintText() const
 {
-	return LOCTEXT("PythonCommandExecutorHintText", "Enter Python Script");
+	return LOCTEXT("PythonCommandExecutorHintText", "Enter Python script or a filename to execute");
 }
 
 void FPythonCommandExecutor::GetAutoCompleteSuggestions(const TCHAR* Input, TArray<FString>& Out)
@@ -119,7 +129,8 @@ bool FPythonCommandExecutor::Exec(const TCHAR* Input)
 	IConsoleManager::Get().AddConsoleHistoryEntry(TEXT("Python"), Input);
 
 	UE_LOG(LogPython, Log, TEXT("%s"), Input);
-	PythonScriptPlugin->HandlePythonExecCommand(Input);
+
+	PythonScriptPlugin->ExecPythonCommand(Input);
 
 	return true;
 }
@@ -130,6 +141,70 @@ bool FPythonCommandExecutor::AllowHotKeyClose() const
 }
 
 bool FPythonCommandExecutor::AllowMultiLine() const
+{
+	return true;
+}
+
+FPythonREPLCommandExecutor::FPythonREPLCommandExecutor(IPythonScriptPlugin* InPythonScriptPlugin)
+	: PythonScriptPlugin(InPythonScriptPlugin)
+{
+}
+
+FName FPythonREPLCommandExecutor::StaticName()
+{
+	static const FName CmdExecName = TEXT("PythonREPL");
+	return CmdExecName;
+}
+
+FName FPythonREPLCommandExecutor::GetName() const
+{
+	return StaticName();
+}
+
+FText FPythonREPLCommandExecutor::GetDisplayName() const
+{
+	return LOCTEXT("PythonREPLCommandExecutorDisplayName", "Python (REPL)");
+}
+
+FText FPythonREPLCommandExecutor::GetDescription() const
+{
+	return LOCTEXT("PythonREPLCommandExecutorDescription", "Execute a single Python statement and show its result");
+}
+
+FText FPythonREPLCommandExecutor::GetHintText() const
+{
+	return LOCTEXT("PythonREPLCommandExecutorHintText", "Enter a single Python statement");
+}
+
+void FPythonREPLCommandExecutor::GetAutoCompleteSuggestions(const TCHAR* Input, TArray<FString>& Out)
+{
+}
+
+void FPythonREPLCommandExecutor::GetExecHistory(TArray<FString>& Out)
+{
+	IConsoleManager::Get().GetConsoleHistory(TEXT("PythonREPL"), Out);
+}
+
+bool FPythonREPLCommandExecutor::Exec(const TCHAR* Input)
+{
+	IConsoleManager::Get().AddConsoleHistoryEntry(TEXT("PythonREPL"), Input);
+
+	UE_LOG(LogPython, Log, TEXT("%s"), Input);
+
+	FPythonCommandEx PythonCommand;
+	PythonCommand.ExecutionMode = EPythonCommandExecutionMode::ExecuteStatement;
+	PythonCommand.Command = Input;
+	PythonScriptPlugin->ExecPythonCommandEx(PythonCommand);
+
+	return true;
+}
+
+bool FPythonREPLCommandExecutor::AllowHotKeyClose() const
+{
+	return false;
+}
+
+bool FPythonREPLCommandExecutor::AllowMultiLine() const
 {
 	return true;
 }
@@ -147,20 +222,12 @@ public:
 	{
 		LoadConfig();
 
-		// Create & Add menu extension
-		MenuExtender = MakeShareable(new FExtender);
-		MenuExtender->AddMenuExtension("FileLoadAndSave", EExtensionHook::After, nullptr, FMenuExtensionDelegate::CreateRaw(this, &FPythonCommandMenuImpl::CreateMenu));
-
-		FLevelEditorModule& LevelEditorModule = FModuleManager::LoadModuleChecked<FLevelEditorModule>("LevelEditor");
-		LevelEditorModule.GetMenuExtensibilityManager()->AddExtender(MenuExtender);
+		RegisterMenus();
 	}
 
 	virtual void OnShutdownMenu() override
 	{
-		// Remove menu extension
-		FLevelEditorModule& LevelEditorModule = FModuleManager::LoadModuleChecked<FLevelEditorModule>("LevelEditor");
-		LevelEditorModule.GetMenuExtensibilityManager()->RemoveExtender(MenuExtender);
-		MenuExtender = nullptr;
+		UToolMenus::UnregisterOwner(this);
 
 		// Write to file
 		if (bRecentsFilesDirty)
@@ -249,37 +316,51 @@ private:
 		GConfig->Flush(false);
 	}
 
-	void MakeRecentPythonScriptMenu(FMenuBuilder& InMenuBuilder)
+	void MakeRecentPythonScriptMenu(UToolMenu* InMenu)
 	{
+		FToolMenuOwnerScoped OwnerScoped(this);
+		FToolMenuSection& Section = InMenu->AddSection("Files");
 		for (int32 Index = RecentsFiles.Num() - 1; Index >= 0; --Index)
 		{
-			InMenuBuilder.AddMenuEntry(
+			Section.AddMenuEntry(
+				NAME_None,
 				FText::FromString(RecentsFiles[Index]),
 				FText::GetEmpty(),
 				FSlateIcon(),
 				FUIAction(FExecuteAction::CreateRaw(this, &FPythonCommandMenuImpl::Menu_ExecutePythonRecent, Index))
 			);
 		}
-		int32 Variable1 = 1;
+
+		FToolMenuSection& ClearSection = InMenu->AddSection("Clear");
+		Section.AddMenuEntry(
+			"ClearRecentPython",
+			LOCTEXT("ClearRecentPython", "Clear Recent Python Scripts"),
+			FText::GetEmpty(),
+			FSlateIcon(),
+			FUIAction(FExecuteAction::CreateRaw(this, &FPythonCommandMenuImpl::Menu_ClearRecentPython))
+		);
 	}
 
-	void CreateMenu(FMenuBuilder& MenuBuilder)
+	void RegisterMenus()
 	{
-		MenuBuilder.BeginSection("Python", LOCTEXT("Python", "Python"));
-		MenuBuilder.AddMenuEntry(
-			LOCTEXT("OpenPython", "Execute Python Script"),
+		FToolMenuOwnerScoped OwnerScoped(this);
+		UToolMenu* Menu = UToolMenus::Get()->ExtendMenu("LevelEditor.MainMenu.File");
+		FToolMenuSection& Section = Menu->AddSection("Python", LOCTEXT("Python", "Python"), FToolMenuInsert("FileLoadAndSave", EToolMenuInsertType::After));
+		Section.AddMenuEntry(
+			"OpenPython",
+			LOCTEXT("OpenPython", "Execute Python Script..."),
 			LOCTEXT("OpenPythonTooltip", "Open a Python Script file and Execute it."),
 			FSlateIcon(),
 			FUIAction(FExecuteAction::CreateRaw(this, &FPythonCommandMenuImpl::Menu_ExecutePython))
 		);
-		MenuBuilder.AddSubMenu(
+		Section.AddSubMenu(
+			"RecentPythonsSubMenu",
 			LOCTEXT("RecentPythonsSubMenu", "Recent Python Scripts"),
 			LOCTEXT("RecentPythonsSubMenu_ToolTip", "Select a recent Python Script file and Execute it."),
-			FNewMenuDelegate::CreateRaw(this, &FPythonCommandMenuImpl::MakeRecentPythonScriptMenu),
+			FNewToolMenuDelegate::CreateRaw(this, &FPythonCommandMenuImpl::MakeRecentPythonScriptMenu),
 			false,
 			FSlateIcon(FEditorStyle::GetStyleSetName(), "MainFrame.RecentLevels")
 		);
-		MenuBuilder.EndSection();
 	}
 
 	void Menu_ExecutePythonRecent(int32 Index)
@@ -288,6 +369,15 @@ private:
 		{
 			FString PyCopied = RecentsFiles[Index];
 			GEngine->Exec(NULL, *FString::Printf(TEXT("py \"%s\""), *PyCopied));
+		}
+	}
+
+	void Menu_ClearRecentPython()
+	{
+		if (RecentsFiles.Num() > 0)
+		{
+			RecentsFiles.Reset();
+			bRecentsFilesDirty = true;
 		}
 	}
 
@@ -301,7 +391,7 @@ private:
 		{
 			bool bOpened = DesktopPlatform->OpenFileDialog(
 				FSlateApplication::Get().FindBestParentWindowHandleForDialogs(nullptr),
-				LOCTEXT("OpenPython", "Execute Python Script").ToString(),
+				LOCTEXT("ExecutePython", "Execute Python Script").ToString(),
 				DefaultDirectory,
 				TEXT(""),
 				TEXT("Python files|*.py|"),
@@ -323,7 +413,6 @@ private:
 	}
 
 private:
-	TSharedPtr<FExtender> MenuExtender;
 
 	TArray<FString> RecentsFiles;
 	FString LastDirectory;
@@ -337,6 +426,7 @@ private:
 FPythonScriptPlugin::FPythonScriptPlugin()
 #if WITH_PYTHON
 	: CmdExec(this)
+	, CmdREPLExec(this)
 	, CmdMenu(nullptr)
 	, bInitialized(false)
 	, bHasTicked(false)
@@ -351,10 +441,41 @@ bool FPythonScriptPlugin::IsPythonAvailable() const
 
 bool FPythonScriptPlugin::ExecPythonCommand(const TCHAR* InPythonCommand)
 {
+	FPythonCommandEx PythonCommand;
+	PythonCommand.Command = InPythonCommand;
+	return ExecPythonCommandEx(PythonCommand);
+}
+
+bool FPythonScriptPlugin::ExecPythonCommandEx(FPythonCommandEx& InOutPythonCommand)
+{
 #if WITH_PYTHON
-	return HandlePythonExecCommand(InPythonCommand);
+	if (InOutPythonCommand.ExecutionMode == EPythonCommandExecutionMode::ExecuteFile)
+	{
+		// We may have been passed literal code or a file
+		// To work out which, extract the first token and see if it's a .py file
+		// If it is, treat the remaining text as arguments to the file
+		// Otherwise, treat it as literal code
+		FString ExtractedFilename;
+		{
+			const TCHAR* Tmp = *InOutPythonCommand.Command;
+			ExtractedFilename = FParse::Token(Tmp, false);
+		}
+		if (FPaths::GetExtension(ExtractedFilename) == TEXT("py"))
+		{
+			return RunFile(*ExtractedFilename, *InOutPythonCommand.Command, InOutPythonCommand);
+		}
+		else
+		{
+			return RunString(InOutPythonCommand);
+		}
+	}
+	else
+	{
+		return RunString(InOutPythonCommand);
+	}
 #else	// WITH_PYTHON
-	ensureAlwaysMsgf(false, TEXT("Python is not available!"));
+	InOutPythonCommand.CommandResult = TEXT("Python is not available!");
+	ensureAlwaysMsgf(false, TEXT("%s"), *InOutPythonCommand.CommandResult);
 	return false;
 #endif	// WITH_PYTHON
 }
@@ -374,30 +495,63 @@ void FPythonScriptPlugin::StartupModule()
 #if WITH_PYTHON
 	InitializePython();
 	IModularFeatures::Get().RegisterModularFeature(IConsoleCommandExecutor::ModularFeatureName(), &CmdExec);
+	IModularFeatures::Get().RegisterModularFeature(IConsoleCommandExecutor::ModularFeatureName(), &CmdREPLExec);
+
+	check(!RemoteExecution);
+	RemoteExecution = MakeUnique<FPythonScriptRemoteExecution>(this);
 
 #if WITH_EDITOR
-		check(CmdMenu == nullptr);
-		CmdMenu = new FPythonCommandMenuImpl();
-		CmdMenu->OnStartupMenu();
+	FCoreDelegates::OnPostEngineInit.AddRaw(this, &FPythonScriptPlugin::OnPostEngineInit);
 #endif // WITH_EDITOR
 
 	FCoreDelegates::OnPreExit.AddRaw(this, &FPythonScriptPlugin::ShutdownPython);
 #endif	// WITH_PYTHON
 }
 
+#if WITH_PYTHON
+#if WITH_EDITOR
+void FPythonScriptPlugin::OnPostEngineInit()
+{
+	if (UToolMenus::IsToolMenuUIEnabled())
+	{
+		check(CmdMenu == nullptr);
+		CmdMenu = new FPythonCommandMenuImpl();
+		CmdMenu->OnStartupMenu();
+
+		UToolMenus::Get()->RegisterStringCommandHandler("Python", FToolMenuExecuteString::CreateLambda([this](const FString& InString, const FToolMenuContext& InContext) {
+			ExecPythonCommand(*InString);
+		}));
+	}
+}
+
+#endif // WITH_EDITOR
+#endif // WITH_PYTHON
+
 void FPythonScriptPlugin::ShutdownModule()
 {
 #if WITH_PYTHON
 	FCoreDelegates::OnPreExit.RemoveAll(this);
 
+	RemoteExecution.Reset();
+
 #if WITH_EDITOR
-	check(CmdMenu);
-	CmdMenu->OnShutdownMenu();
-	delete CmdMenu;
-	CmdMenu = nullptr;
+	FCoreDelegates::OnPostEngineInit.RemoveAll(this);
+
+	if (CmdMenu)
+	{
+		CmdMenu->OnShutdownMenu();
+		delete CmdMenu;
+		CmdMenu = nullptr;
+	}
+
+	if (UToolMenus* ToolMenus = UToolMenus::TryGet())
+	{
+		ToolMenus->UnregisterStringCommandHandler("Python");
+	}
 #endif // WITH_EDITOR
 
 	IModularFeatures::Get().UnregisterModularFeature(IConsoleCommandExecutor::ModularFeatureName(), &CmdExec);
+	IModularFeatures::Get().UnregisterModularFeature(IConsoleCommandExecutor::ModularFeatureName(), &CmdREPLExec);
 	ShutdownPython();
 #endif	// WITH_PYTHON
 }
@@ -407,11 +561,20 @@ bool FPythonScriptPlugin::Exec(UWorld* InWorld, const TCHAR* Cmd, FOutputDevice&
 #if WITH_PYTHON
 	if (FParse::Command(&Cmd, TEXT("PY")))
 	{
-		HandlePythonExecCommand(Cmd);
+		ExecPythonCommand(Cmd);
 		return true;
 	}
 #endif	// WITH_PYTHON
 	return false;
+}
+
+void FPythonScriptPlugin::PreChange(const UUserDefinedEnum* Enum, FEnumEditorUtils::EEnumEditorChangeInfo Info)
+{
+}
+
+void FPythonScriptPlugin::PostChange(const UUserDefinedEnum* Enum, FEnumEditorUtils::EEnumEditorChangeInfo Info)
+{
+	OnAssetUpdated(Enum);
 }
 
 #if WITH_PYTHON
@@ -439,12 +602,54 @@ void FPythonScriptPlugin::InitializePython()
 
 	// Initialize the Python interpreter
 	{
+		UE_LOG(LogPython, Log, TEXT("Using Python %d.%d.%d"), PY_MAJOR_VERSION, PY_MINOR_VERSION, PY_MICRO_VERSION);
+
+		// Python 3 changes the console mode from O_TEXT to O_BINARY which affects other UE4 uses of the console
+		// So change the console mode back to its current setting after Py_Initialize has been called
+#if PLATFORM_WINDOWS && PY_MAJOR_VERSION >= 3
+		// We call _setmode here to cache the current state
+		CA_SUPPRESS(6031)
+		fflush(stdin);
+		const int StdInMode  = _setmode(_fileno(stdin), _O_TEXT);
+		CA_SUPPRESS(6031)
+		fflush(stdout);
+		const int StdOutMode = _setmode(_fileno(stdout), _O_TEXT);
+		CA_SUPPRESS(6031)
+		fflush(stderr);
+		const int StdErrMode = _setmode(_fileno(stderr), _O_TEXT);
+#endif	// PLATFORM_WINDOWS && PY_MAJOR_VERSION >= 3
+
 #if PY_MAJOR_VERSION >= 3 && PY_MINOR_VERSION >= 4
 		Py_SetStandardStreamEncoding("utf-8", nullptr);
 #endif	// PY_MAJOR_VERSION >= 3 && PY_MINOR_VERSION >= 4
 		Py_SetProgramName(PyProgramName.GetData());
 		Py_SetPythonHome(PyHomePath.GetData());
-		Py_Initialize();
+		Py_InitializeEx(0); // 0 so Python doesn't override any UE4 signal handling
+
+#if PLATFORM_WINDOWS && PY_MAJOR_VERSION >= 3
+		// We call _setmode here to restore the previous state
+		if (StdInMode != -1)
+		{
+			CA_SUPPRESS(6031)
+			fflush(stdin);
+			CA_SUPPRESS(6031)
+			_setmode(_fileno(stdin), StdInMode);
+		}
+		if (StdOutMode != -1)
+		{
+			CA_SUPPRESS(6031)
+			fflush(stdout);
+			CA_SUPPRESS(6031)
+			_setmode(_fileno(stdout), StdOutMode);
+		}
+		if (StdErrMode != -1)
+		{
+			CA_SUPPRESS(6031)
+			fflush(stderr);
+			CA_SUPPRESS(6031)
+			_setmode(_fileno(stderr), StdErrMode);
+		}
+#endif	// PLATFORM_WINDOWS && PY_MAJOR_VERSION >= 3
 
 		PySys_SetArgvEx(1, NullPyArgPtrs, 0);
 
@@ -491,6 +696,11 @@ void FPythonScriptPlugin::InitializePython()
 
 		FPackageName::OnContentPathMounted().AddRaw(this, &FPythonScriptPlugin::OnContentPathMounted);
 		FPackageName::OnContentPathDismounted().AddRaw(this, &FPythonScriptPlugin::OnContentPathDismounted);
+		FCoreUObjectDelegates::OnPackageReloaded.AddRaw(this, &FPythonScriptPlugin::OnAssetReload);
+
+		FAssetRegistryModule& AssetRegistryModule = FModuleManager::LoadModuleChecked<FAssetRegistryModule>("AssetRegistry");
+		AssetRegistryModule.Get().OnAssetRenamed().AddRaw(this, &FPythonScriptPlugin::OnAssetRenamed);
+		AssetRegistryModule.Get().OnAssetRemoved().AddRaw(this, &FPythonScriptPlugin::OnAssetRemoved);
 	}
 
 	// Initialize the Unreal Python module
@@ -532,9 +742,6 @@ void FPythonScriptPlugin::InitializePython()
 			return true;
 		}));
 	}
-
-	// Notify any external listeners
-	OnPythonInitializedDelegate.Broadcast();
 }
 
 void FPythonScriptPlugin::ShutdownPython()
@@ -558,10 +765,26 @@ void FPythonScriptPlugin::ShutdownPython()
 
 	FPackageName::OnContentPathMounted().RemoveAll(this);
 	FPackageName::OnContentPathDismounted().RemoveAll(this);
+	FCoreUObjectDelegates::OnPackageReloaded.RemoveAll(this);
+
+	if (FAssetRegistryModule* AssetRegistryModule = FModuleManager::GetModulePtr<FAssetRegistryModule>("AssetRegistry"))
+	{
+		AssetRegistryModule->Get().OnAssetRenamed().RemoveAll(this);
+		AssetRegistryModule->Get().OnAssetRemoved().RemoveAll(this);
+	}
 
 #if WITH_EDITOR
 	FEditorSupportDelegates::PrepareToCleanseEditorObject.RemoveAll(this);
 #endif	// WITH_EDITOR
+
+	FPyReferenceCollector::Get().PurgeUnrealGeneratedTypes();
+
+#if WITH_EDITOR
+	PyEditor::ShutdownModule();
+#endif	// WITH_EDITOR
+	PyEngine::ShutdownModule();
+	PySlate::ShutdownModule();
+	PyCore::ShutdownModule();
 
 	PyUnrealModule.Reset();
 	PyDefaultGlobalDict.Reset();
@@ -638,13 +861,20 @@ void FPythonScriptPlugin::Tick(const float InDeltaTime)
 			const FString PotentialFilePath = PySysPath / TEXT("init_unreal.py");
 			if (FPaths::FileExists(PotentialFilePath))
 			{
-				RunFile(*PotentialFilePath, nullptr);
+				// Execute these files in the "public" scope, as if their contents had been run directly in the console
+				// This allows them to be used to set-up an editor environment for the console
+				FPythonCommandEx InitUnrealPythonCommand;
+				InitUnrealPythonCommand.FileExecutionScope = EPythonFileExecutionScope::Public;
+				RunFile(*PotentialFilePath, *InitUnrealPythonCommand.Command, InitUnrealPythonCommand);
 			}
 		}
 		for (const FString& StartupScript : GetDefault<UPythonScriptPluginSettings>()->StartupScripts)
 		{
-			HandlePythonExecCommand(*StartupScript);
+			ExecPythonCommand(*StartupScript);
 		}
+
+		// Notify any external listeners
+		OnPythonInitializedDelegate.Broadcast();
 
 #if WITH_EDITOR
 		// Register to generate stub code after a short delay
@@ -652,7 +882,14 @@ void FPythonScriptPlugin::Tick(const float InDeltaTime)
 #endif	// WITH_EDITOR
 	}
 
+	RemoteExecution->Tick(InDeltaTime);
+
 	FPyWrapperTypeReinstancer::Get().ProcessPending();
+}
+
+void FPythonScriptPlugin::SyncRemoteExecutionToSettings()
+{
+	RemoteExecution->SyncToSettings();
 }
 
 void FPythonScriptPlugin::ImportUnrealModule(const TCHAR* InModuleName)
@@ -718,27 +955,6 @@ void FPythonScriptPlugin::ImportUnrealModule(const TCHAR* InModuleName)
 	}
 }
 
-bool FPythonScriptPlugin::HandlePythonExecCommand(const TCHAR* InPythonCommand)
-{
-	// We may have been passed literal code or a file
-	// To work out which, extract the first token and see if it's a .py file
-	// If it is, treat the remaining text as arguments to the file
-	// Otherwise, treat it as literal code
-	FString ExtractedFilename;
-	{
-		const TCHAR* Tmp = InPythonCommand;
-		ExtractedFilename = FParse::Token(Tmp, false);
-	}
-	if (FPaths::GetExtension(ExtractedFilename) == TEXT("py"))
-	{
-		return RunFile(*ExtractedFilename, InPythonCommand);
-	}
-	else
-	{
-		return RunString(InPythonCommand);
-	}
-}
-
 PyObject* FPythonScriptPlugin::EvalString(const TCHAR* InStr, const TCHAR* InContext, const int InMode)
 {
 	return EvalString(InStr, InContext, InMode, PyConsoleGlobalDict, PyConsoleLocalDict);
@@ -771,16 +987,41 @@ PyObject* FPythonScriptPlugin::EvalString(const TCHAR* InStr, const TCHAR* InCon
 	return PyEval_EvalCode((PyUtil::FPyCodeObjectType*)PyCodeObj.Get(), InGlobalDict, InLocalDict);
 }
 
-bool FPythonScriptPlugin::RunString(const TCHAR* InStr)
+bool FPythonScriptPlugin::RunString(FPythonCommandEx& InOutPythonCommand)
 {
 	// Execute Python code within this block
 	{
 		FPyScopedGIL GIL;
+		TGuardValue<bool> UnattendedScriptGuard(GIsRunningUnattendedScript, GIsRunningUnattendedScript || EnumHasAnyFlags(InOutPythonCommand.Flags, EPythonCommandFlags::Unattended));
 
-		FPyObjectPtr PyResult = FPyObjectPtr::StealReference(EvalString(InStr, TEXT("<string>"), Py_file_input));
-		if (!PyResult)
+		int PyExecMode = 0;
+		switch (InOutPythonCommand.ExecutionMode)
 		{
-			PyUtil::LogPythonError();
+		case EPythonCommandExecutionMode::ExecuteFile:
+			PyExecMode = Py_file_input;
+			break;
+		case EPythonCommandExecutionMode::ExecuteStatement:
+			PyExecMode = Py_single_input;
+			break;
+		case EPythonCommandExecutionMode::EvaluateStatement:
+			PyExecMode = Py_eval_input;
+			break;
+		default:
+			checkf(false, TEXT("Invalid EPythonCommandExecutionMode!"));
+			break;
+		}
+
+		FDelegateHandle LogCaptureHandle = PyCore::GetPythonLogCapture().AddLambda([&InOutPythonCommand](EPythonLogOutputType InLogType, const TCHAR* InLogString) { InOutPythonCommand.LogOutput.Add(FPythonLogOutputEntry{ InLogType, InLogString }); });
+		FPyObjectPtr PyResult = FPyObjectPtr::StealReference(EvalString(*InOutPythonCommand.Command, TEXT("<string>"), PyExecMode));
+		PyCore::GetPythonLogCapture().Remove(LogCaptureHandle);
+		
+		if (PyResult)
+		{
+			InOutPythonCommand.CommandResult = PyUtil::PyObjectToUEStringRepr(PyResult);
+		}
+		else
+		{
+			InOutPythonCommand.CommandResult = PyUtil::LogPythonError();
 			return false;
 		}
 	}
@@ -789,7 +1030,7 @@ bool FPythonScriptPlugin::RunString(const TCHAR* InStr)
 	return true;
 }
 
-bool FPythonScriptPlugin::RunFile(const TCHAR* InFile, const TCHAR* InArgs)
+bool FPythonScriptPlugin::RunFile(const TCHAR* InFile, const TCHAR* InArgs, FPythonCommandEx& InOutPythonCommand)
 {
 	auto ResolveFilePath = [InFile]() -> FString
 	{
@@ -832,7 +1073,8 @@ bool FPythonScriptPlugin::RunFile(const TCHAR* InFile, const TCHAR* InArgs)
 
 	if (!bLoaded)
 	{
-		UE_LOG(LogPython, Error, TEXT("Could not load Python file '%s' (resolved from '%s')"), *ResolvedFilePath, InFile);
+		InOutPythonCommand.CommandResult = FString::Printf(TEXT("Could not load Python file '%s' (resolved from '%s')"), *ResolvedFilePath, InFile);
+		UE_LOG(LogPython, Error, TEXT("%s"), *InOutPythonCommand.CommandResult);
 		return false;
 	}
 
@@ -840,9 +1082,15 @@ bool FPythonScriptPlugin::RunFile(const TCHAR* InFile, const TCHAR* InArgs)
 	double ElapsedSeconds = 0.0;
 	{
 		FPyScopedGIL GIL;
+		TGuardValue<bool> UnattendedScriptGuard(GIsRunningUnattendedScript, GIsRunningUnattendedScript || EnumHasAnyFlags(InOutPythonCommand.Flags, EPythonCommandFlags::Unattended));
 
-		FPyObjectPtr PyFileGlobalDict = FPyObjectPtr::StealReference(PyDict_Copy(PyDefaultGlobalDict));
-		FPyObjectPtr PyFileLocalDict = PyFileGlobalDict;
+		FPyObjectPtr PyFileGlobalDict = PyConsoleGlobalDict;
+		FPyObjectPtr PyFileLocalDict = PyConsoleLocalDict;
+		if (InOutPythonCommand.FileExecutionScope == EPythonFileExecutionScope::Private)
+		{
+			PyFileGlobalDict = FPyObjectPtr::StealReference(PyDict_Copy(PyDefaultGlobalDict));
+			PyFileLocalDict = PyFileGlobalDict;
+		}
 		{
 			FPyObjectPtr PyResolvedFilePath;
 			if (PyConversion::Pythonize(ResolvedFilePath, PyResolvedFilePath.Get(), PyConversion::ESetErrorState::No))
@@ -856,13 +1104,20 @@ bool FPythonScriptPlugin::RunFile(const TCHAR* InFile, const TCHAR* InArgs)
 			FScopedDurationTimer Timer(ElapsedSeconds);
 			FPythonScopedArgv ScopedArgv(InArgs);
 
-			// We can't just use PyRun_File here as Python isn't always built against the same version of the CRT as UE4, so we get a crash at the CRT layer
-			PyResult = FPyObjectPtr::StealReference(EvalString(*FileStr, *ResolvedFilePath, Py_file_input, PyFileGlobalDict, PyFileLocalDict));
+			FDelegateHandle LogCaptureHandle = PyCore::GetPythonLogCapture().AddLambda([&InOutPythonCommand](EPythonLogOutputType InLogType, const TCHAR* InLogString) { InOutPythonCommand.LogOutput.Add(FPythonLogOutputEntry{ InLogType, InLogString }); });
+			PyResult = FPyObjectPtr::StealReference(EvalString(*FileStr, *ResolvedFilePath, Py_file_input, PyFileGlobalDict, PyFileLocalDict)); // We can't just use PyRun_File here as Python isn't always built against the same version of the CRT as UE4, so we get a crash at the CRT layer
+			PyCore::GetPythonLogCapture().Remove(LogCaptureHandle);
 		}
 
-		if (!PyResult)
+		PyDict_DelItemString(PyFileGlobalDict, "__file__");
+
+		if (PyResult)
 		{
-			PyUtil::LogPythonError();
+			InOutPythonCommand.CommandResult = PyUtil::PyObjectToUEStringRepr(PyResult);
+		}
+		else
+		{
+			InOutPythonCommand.CommandResult = PyUtil::LogPythonError();
 			return false;
 		}
 	}
@@ -919,6 +1174,68 @@ void FPythonScriptPlugin::OnContentPathDismounted(const FString& InAssetPath, co
 {
 	FPyScopedGIL GIL;
 	PyUtil::RemoveSystemPath(FPaths::ConvertRelativePathToFull(InFilesystemPath / TEXT("Python")));
+}
+
+void FPythonScriptPlugin::OnAssetRenamed(const FAssetData& Data, const FString& OldName)
+{
+	const FName OldPackageName = *FPackageName::ObjectPathToPackageName(OldName);
+	const UObject* AssetPtr = PyGenUtil::GetTypeRegistryType(Data.GetAsset());
+	if (AssetPtr)
+	{
+		// If this asset has an associated Python type, then we need to rename it
+		FPyWrapperTypeRegistry& PyWrapperTypeRegistry = FPyWrapperTypeRegistry::Get();
+		if (PyWrapperTypeRegistry.HasWrappedTypeForObjectName(OldPackageName))
+		{
+			PyWrapperTypeRegistry.UpdateGenerateWrappedTypeForRename(OldPackageName, AssetPtr);
+			OnAssetUpdated(AssetPtr);
+		}
+	}
+}
+
+void FPythonScriptPlugin::OnAssetRemoved(const FAssetData& Data)
+{
+	const UObject* AssetPtr = PyGenUtil::GetTypeRegistryType(Data.GetAsset());
+	if (AssetPtr)
+	{
+		// If this asset has an associated Python type, then we need to remove it
+		FPyWrapperTypeRegistry& PyWrapperTypeRegistry = FPyWrapperTypeRegistry::Get();
+		if (PyWrapperTypeRegistry.HasWrappedTypeForObject(AssetPtr))
+		{
+			PyWrapperTypeRegistry.RemoveGenerateWrappedTypeForDelete(AssetPtr);
+		}
+	}
+}
+
+void FPythonScriptPlugin::OnAssetReload(const EPackageReloadPhase InPackageReloadPhase, FPackageReloadedEvent* InPackageReloadedEvent)
+{
+	if (InPackageReloadPhase == EPackageReloadPhase::PostPackageFixup)
+	{
+		// Get the primary asset in this package
+		// Use the new package as it has the correct name
+		const UPackage* NewPackage = InPackageReloadedEvent->GetNewPackage();
+		const UObject* NewAsset = StaticFindObject(UObject::StaticClass(), (UPackage*)NewPackage, *FPackageName::GetLongPackageAssetName(NewPackage->GetName()));
+		OnAssetUpdated(NewAsset);
+	}
+}
+
+void FPythonScriptPlugin::OnAssetUpdated(const UObject* InObj)
+{
+	const UObject* AssetPtr = PyGenUtil::GetTypeRegistryType(InObj);
+	if (AssetPtr)
+	{
+		// If this asset has an associated Python type, then we need to re-generate it
+		FPyWrapperTypeRegistry& PyWrapperTypeRegistry = FPyWrapperTypeRegistry::Get();
+		if (PyWrapperTypeRegistry.HasWrappedTypeForObject(AssetPtr))
+		{
+			FPyWrapperTypeRegistry::FGeneratedWrappedTypeReferences GeneratedWrappedTypeReferences;
+			TSet<FName> DirtyModules;
+
+			PyWrapperTypeRegistry.GenerateWrappedTypeForObject(AssetPtr, GeneratedWrappedTypeReferences, DirtyModules, EPyTypeGenerationFlags::IncludeBlueprintGeneratedTypes | EPyTypeGenerationFlags::OverwriteExisting);
+
+			PyWrapperTypeRegistry.GenerateWrappedTypesForReferences(GeneratedWrappedTypeReferences, DirtyModules);
+			PyWrapperTypeRegistry.NotifyModulesDirtied(DirtyModules);
+		}
+	}
 }
 
 #if WITH_EDITOR

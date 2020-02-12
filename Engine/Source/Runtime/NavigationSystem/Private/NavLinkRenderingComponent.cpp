@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "NavLinkRenderingComponent.h"
 #include "EngineGlobals.h"
@@ -106,7 +106,12 @@ FNavLinkRenderingProxy::FNavLinkRenderingProxy(const UPrimitiveComponent* InComp
 	: FPrimitiveSceneProxy(InComponent)
 {
 	LinkOwnerActor = InComponent->GetOwner();
-	LinkOwnerHost = Cast<INavLinkHostInterface>(InComponent->GetOwner());
+	LinkOwnerHost = Cast<INavLinkHostInterface>((UPrimitiveComponent*)InComponent);
+
+	if (LinkOwnerHost == nullptr)
+	{
+		LinkOwnerHost = Cast<INavLinkHostInterface>(LinkOwnerActor);
+	}
 
 	if (LinkOwnerActor != NULL && LinkOwnerHost != NULL)
 	{
@@ -437,7 +442,7 @@ FPrimitiveViewRelevance FNavLinkRenderingProxy::GetViewRelevance(const FSceneVie
 	Result.bDrawRelevance = IsShown(View) && IsSelected() && (View && View->Family && View->Family->EngineShowFlags.Navigation);
 	Result.bDynamicRelevance = true;
 	// ideally the TranslucencyRelevance should be filled out by the material, here we do it conservative
-	Result.bSeparateTranslucencyRelevance = Result.bNormalTranslucencyRelevance = IsShown(View);
+	Result.bSeparateTranslucency = Result.bNormalTranslucency = IsShown(View);
 	Result.bShadowRelevance = IsShadowCast(View);
 	Result.bEditorPrimitiveRelevance = UseEditorCompositing(View);
 	return Result;

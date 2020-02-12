@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "Serialization/ObjectReader.h"
 #include "UObject/LazyObjectPtr.h"
@@ -9,8 +9,8 @@
 
 FArchive& FObjectReader::operator<<(FName& N)
 {
-	NAME_INDEX ComparisonIndex;
-	NAME_INDEX DisplayIndex;
+	FNameEntryId ComparisonIndex;
+	FNameEntryId DisplayIndex;
 	int32 Number;
 	ByteOrderSerialize(&ComparisonIndex, sizeof(ComparisonIndex));
 	ByteOrderSerialize(&DisplayIndex, sizeof(DisplayIndex));

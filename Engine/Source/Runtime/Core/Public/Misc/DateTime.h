@@ -1,10 +1,11 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
 #include "CoreTypes.h"
 #include "Containers/UnrealString.h"
 #include "Misc/Timespan.h"
+#include "Serialization/StructuredArchive.h"
 #include "Templates/TypeHash.h"
 
 class FArchive;
@@ -120,6 +121,19 @@ public:
 	FDateTime& operator+=(const FTimespan& Other)
 	{
 		Ticks += Other.GetTicks();
+
+		return *this;
+	}
+
+	/**
+	 * Adds the time from the given date to this date.
+	 *
+	 * @return This date.
+	 * @see FDateTime
+	 */
+	FDateTime& operator+(const FDateTime& Other)
+	{
+		Ticks += Other.Ticks;
 
 		return *this;
 	}

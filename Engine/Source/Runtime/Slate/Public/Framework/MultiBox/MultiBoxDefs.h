@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -6,6 +6,7 @@
 #include "Misc/Attribute.h"
 #include "Styling/ISlateStyle.h"
 #include "Framework/Commands/UICommandInfo.h"
+#include "MultiBoxDefs.generated.h"
 
 class SToolTip;
 class SWidget;
@@ -13,49 +14,50 @@ class SWidget;
 /**
  * Types of MultiBoxes
  */
-namespace EMultiBoxType
+UENUM(BlueprintType)
+enum class EMultiBoxType : uint8
 {
-	enum Type
-	{
-		/** Horizontal menu bar */
-		MenuBar,
+	/** Horizontal menu bar */
+	MenuBar,
 
-		/** Horizontal tool bar */
-		ToolBar,
+	/** Horizontal tool bar */
+	ToolBar,
 
-		/** Vertical tool bar */
-		VerticalToolBar,
+	/** Vertical tool bar */
+	VerticalToolBar,
 
-		/** Vertical menu (pull-down menu, or context menu) */
-		Menu,
+	/** A toolbar that tries to arrange all toolbar items uniformly (supports only horizontal toolbars for now) */
+	UniformToolBar,
 
-		/** Buttons arranged in rows, with a maximum number of buttons per row, like a toolbar but can have multiple rows*/
-		ButtonRow,
+	/** Vertical menu (pull-down menu, or context menu) */
+	Menu,
 
-		/** Horizontal menu bar used as a tool bar */
-		ToolMenuBar
-	};
-}
+	/** Buttons arranged in rows, with a maximum number of buttons per row, like a toolbar but can have multiple rows*/
+	ButtonRow,
+
+	/** Horizontal menu bar used as a tool bar */
+	ToolMenuBar
+};
+
 
 /**
  * Types of MultiBlocks
  */
-namespace EMultiBlockType
+UENUM(BlueprintType)
+enum class EMultiBlockType : uint8
 {
-	enum Type
-	{
-		None = 0,
-		ButtonRow,
-		EditableText,
-		Heading,
-		MenuEntry,
-		MenuSeparator,
-		ToolBarButton,
-		ToolBarComboButton,
-		ToolBarSeparator,
-		Widget,
-	};
-}
+	None = 0,
+	ButtonRow,
+	EditableText,
+	Heading,
+	MenuEntry,
+	MenuSeparator,
+	ToolBarButton,
+	ToolBarComboButton,
+	ToolBarSeparator,
+	Widget,
+};
+
 
 class SLATE_API FMultiBoxSettings
 {
@@ -70,18 +72,9 @@ public:
 
 	FMultiBoxSettings();
 
-	/** Enables or disables toolbar editing */
-	static void ToggleToolbarEditing();
-
-	/** @return True if in toolbar edit mode */
-	static bool IsInToolbarEditMode() { return bInToolbarEditMode; }
-
 	static TSharedRef< SToolTip > ConstructDefaultToolTip( const TAttribute<FText>& ToolTipText, const TSharedPtr<SWidget>& OverrideContent, const TSharedPtr<const FUICommandInfo>& Action );
 
 	static void ResetToolTipConstructor();
-
-private:
-	static bool bInToolbarEditMode;
 };
 
 struct SLATE_API FMultiBoxCustomization

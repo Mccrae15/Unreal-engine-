@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "Blueprint/SlateBlueprintLibrary.h"
 #include "EngineGlobals.h"
@@ -12,6 +12,7 @@
 #include "Slate/SceneViewport.h"
 #include "Blueprint/WidgetLayoutLibrary.h"
 #include "Slate/SGameLayerManager.h"
+#include "Widgets/SWindow.h"
 
 #define LOCTEXT_NAMESPACE "UMG"
 
@@ -36,6 +37,12 @@ FVector2D USlateBlueprintLibrary::AbsoluteToLocal(const FGeometry& Geometry, FVe
 FVector2D USlateBlueprintLibrary::LocalToAbsolute(const FGeometry& Geometry, FVector2D LocalCoordinate)
 {
 	return Geometry.LocalToAbsolute(LocalCoordinate);
+}
+
+FVector2D USlateBlueprintLibrary::GetLocalTopLeft(const FGeometry& Geometry)
+{
+	const FVector2D TopLeft(0.0f, 0.0f);
+	return Geometry.GetLocalPositionAtCoordinates(TopLeft);
 }
 
 FVector2D USlateBlueprintLibrary::GetLocalSize(const FGeometry& Geometry)
@@ -86,15 +93,15 @@ void USlateBlueprintLibrary::AbsoluteToViewport(UObject* WorldContextObject, FVe
 	ViewportPosition = FVector2D(0, 0);
 }
 
-void USlateBlueprintLibrary::ScreenToWidgetLocal(UObject* WorldContextObject, const FGeometry& Geometry, FVector2D ScreenPosition, FVector2D& LocalCoordinate)
+void USlateBlueprintLibrary::ScreenToWidgetLocal(UObject* WorldContextObject, const FGeometry& Geometry, FVector2D ScreenPosition, FVector2D& LocalCoordinate, bool bIncludeWindowPosition /*= false*/)
 {
 	FVector2D AbsoluteCoordinate;
-	ScreenToWidgetAbsolute(WorldContextObject, ScreenPosition, AbsoluteCoordinate);
+	ScreenToWidgetAbsolute(WorldContextObject, ScreenPosition, AbsoluteCoordinate, bIncludeWindowPosition);
 
 	LocalCoordinate = Geometry.AbsoluteToLocal(AbsoluteCoordinate);
 }
 
-void USlateBlueprintLibrary::ScreenToWidgetAbsolute(UObject* WorldContextObject, FVector2D ScreenPosition, FVector2D& AbsoluteCoordinate)
+void USlateBlueprintLibrary::ScreenToWidgetAbsolute(UObject* WorldContextObject, FVector2D ScreenPosition, FVector2D& AbsoluteCoordinate, bool bIncludeWindowPosition /*= false*/)
 {
 	UWorld* World = GEngine->GetWorldFromContextObject(WorldContextObject, EGetWorldErrorMode::LogAndReturnNull);
 	if ( World && World->IsGameWorld() )
@@ -111,6 +118,13 @@ void USlateBlueprintLibrary::ScreenToWidgetAbsolute(UObject* WorldContextObject,
 				const FVector2D ViewportPosition = ViewportGeometry.GetLocalSize() * (ScreenPosition / ViewportSize);
 
 				AbsoluteCoordinate = ViewportGeometry.LocalToAbsolute(ViewportPosition);
+				if (bIncludeWindowPosition)
+				{
+					if (SWindow* Window = ViewportClient->GetWindow().Get())
+					{
+						AbsoluteCoordinate -= Window->GetPositionInScreen();
+					}
+				}
 				return;
 			}
 		}

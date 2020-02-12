@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -7,6 +7,7 @@
 #include "UnrealWidget.h"
 #include "EditorViewportClient.h"
 #include "Components.h"
+#include "Interfaces/Interface_CollisionDataProvider.h"
 
 class FAdvancedPreviewScene;
 class FCanvas;
@@ -40,7 +41,7 @@ public:
 	virtual bool CanCycleWidgetMode() const override;
 	virtual FVector GetWidgetLocation() const override;
 	virtual FMatrix GetWidgetCoordSystem() const override;
-	virtual ECoordSystem GetWidgetCoordSystemSpace() const override { return COORD_Local; }
+	virtual ECoordSystem GetWidgetCoordSystemSpace() const override;
 	virtual bool ShouldOrbitCamera() const override;
 
 	/** 
@@ -79,6 +80,37 @@ public:
 
 	/** Callback for checking the UV overlay show flag. */
 	bool IsDrawUVOverlayChecked() const;
+
+
+	/** Set the normals show flag. */
+	void SetShowNormals(bool bShowOn);
+
+	/** Set the tangents show flag. */
+	void SetShowTangents(bool bShowOn);
+
+	/** Set the binormals show flag. */
+	void SetShowBinormals(bool bShowOn);
+
+	/** Set the simple collisions show flag. */
+	void SetShowSimpleCollisions(bool bShowOn);
+
+	/** Set the complex collisions show flag. */
+	void SetShowComplexCollisions(bool bShowOn);
+
+	/** Set the pivots show flag. */
+	void SetShowPivots(bool bShowOn);
+
+	/** Set the grids show flag. */
+	void SetShowGrids(bool bShowOn);
+
+	/** Set the vertices show flag. */
+	void SetShowVertices(bool bShowOn);
+
+	/** Set the wireframes show flag. */
+	void SetShowWireframes(bool bShowOn);
+
+	/** Set the vertex colors show flag. */
+	void SetShowVertexColors(bool bShowOn);
 
 	/** Callback for toggling the normals show flag. */
 	void ToggleShowNormals();
@@ -145,6 +177,8 @@ protected:
 	/** Used to (re)-set the viewport show flags related to post processing*/
 	void SetAdvancedShowFlagsForScene(const bool bAdvancedShowFlags);
 private:
+	bool IsCustomModeUsingWidget() const;
+
 	/** The Simplygon logo to be drawn when Simplygon has been used on the static mesh. */
 	UTexture2D* SimplygonLogo;
 
@@ -153,6 +187,8 @@ private:
 
 	/** The static mesh being used in the editor. */
 	UStaticMesh* StaticMesh;
+
+	FTriMeshCollisionData CollisionMeshData;
 
 	/** Pointer back to the StaticMesh editor tool that owns us */
 	TWeakPtr<IStaticMeshEditor> StaticMeshEditorPtr;

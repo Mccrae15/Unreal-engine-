@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 /*=============================================================================
 	TextureStreamingManager.cpp: Implementation of content streaming classes.
@@ -9,6 +9,7 @@
 #include "Engine/World.h"
 #include "Engine/TextureStreamingTypes.h"
 #include "Engine/StaticMesh.h"
+#include "Engine/SkeletalMesh.h"
 #include "Materials/MaterialInterface.h"
 #include "Misc/CommandLine.h"
 #include "Misc/ConfigCacheIni.h"
@@ -25,6 +26,22 @@
 #include "Interfaces/ITargetPlatform.h"
 
 CSV_DECLARE_CATEGORY_MODULE_EXTERN(CORE_API, Basic);
+
+CSV_DEFINE_CATEGORY(TextureStreaming, true);
+
+static TAutoConsoleVariable<int32> CVarStreamingOverlapAssetAndLevelTicks(
+	TEXT("r.Streaming.OverlapAssetAndLevelTicks"),
+	!WITH_EDITOR && (PLATFORM_PS4 || PLATFORM_XBOXONE),
+	TEXT("Ticks render asset streaming info on a high priority task thread while ticking levels on GT"),
+	ECVF_Default);
+
+static TAutoConsoleVariable<int32> CVarStreamingAllowFastForceResident(
+	TEXT("r.Streaming.AllowFastForceResident"),
+	0,
+	TEXT("Whether it is allowed to load in missing mips for fast-force-resident assets ASAP. ")
+	TEXT("Useful to accelerate force-resident process but risks disturbing streaming metric calculation. ")
+	TEXT("Fast-force-resident mips can't be sacrificed even when overbudget so use with caution."),
+	ECVF_Default);
 
 bool TrackRenderAsset( const FString& AssetName );
 bool UntrackRenderAsset( const FString& AssetName );
@@ -60,6 +77,7 @@ FRenderAssetStreamingManager::FRenderAssetStreamingManager()
 ,	MaxEverRequired(0)
 ,	bPauseRenderAssetStreaming(false)
 ,	LastWorldUpdateTime(GIsEditor ? -FLT_MAX : 0) // In editor, visibility is not taken into consideration.
+,	LastWorldUpdateTime_MipCalcTask(LastWorldUpdateTime)
 {
 	// Read settings from ini file.
 	int32 TempInt;
@@ -93,14 +111,6 @@ FRenderAssetStreamingManager::FRenderAssetStreamingManager()
 	// Convert from MByte to byte.
 	MemoryMargin *= 1024 * 1024;
 
-#if STATS_FAST
-	MaxStreamingTexturesSize = 0;
-	MaxOptimalTextureSize = 0;
-	MaxStreamingOverBudget = MIN_int64;
-	MaxTexturePoolAllocatedSize = 0;
-	MaxNumWantingTextures = 0;
-#endif
-
 	for ( int32 LODGroup=0; LODGroup < TEXTUREGROUP_MAX; ++LODGroup )
 	{
 		const FTextureLODGroup& TexGroup = UDeviceProfileManager::Get().GetActiveProfile()->GetTextureLODSettings()->GetTextureLODGroup(TextureGroup(LODGroup));
@@ -110,6 +120,8 @@ FRenderAssetStreamingManager::FRenderAssetStreamingManager()
 	// TODO: NumStreamedMips_StaticMesh, NumStreamedMips_SkeletalMesh
 	NumStreamedMips_StaticMesh.Empty(1);
 	NumStreamedMips_StaticMesh.Add(INT32_MAX);
+	NumStreamedMips_SkeletalMesh.Empty(1);
+	NumStreamedMips_SkeletalMesh.Add(INT32_MAX);
 
 	// setup the streaming resource flush function pointer
 	GFlushStreamingFunc = &FlushResourceStreaming;
@@ -122,7 +134,7 @@ FRenderAssetStreamingManager::FRenderAssetStreamingManager()
 
 	FCoreUObjectDelegates::GetPreGarbageCollectDelegate().AddRaw(this, &FRenderAssetStreamingManager::OnPreGarbageCollect);
 
-	FCoreDelegates::PakFileMountedCallback.AddRaw(this, &FRenderAssetStreamingManager::OnPakFileMounted);
+	FCoreDelegates::OnPakFileMounted.AddRaw(this, &FRenderAssetStreamingManager::OnPakFileMounted);
 }
 
 FRenderAssetStreamingManager::~FRenderAssetStreamingManager()
@@ -141,7 +153,14 @@ FRenderAssetStreamingManager::~FRenderAssetStreamingManager()
 
 void FRenderAssetStreamingManager::OnPreGarbageCollect()
 {
+#if WITH_EDITORONLY_DATA
+	void PurgeAbandonedDDCHandles();
+	PurgeAbandonedDDCHandles();
+#endif
+
 	FScopeLock ScopeLock(&CriticalSection);
+	QUICK_SCOPE_CYCLE_COUNTER(STAT_FRenderAssetStreamingManager_OnPreGarbageCollect);
+
 	FRemovedRenderAssetArray RemovedRenderAssets;
 
 	// Check all levels for pending kills.
@@ -170,7 +189,7 @@ void FRenderAssetStreamingManager::OnPreGarbageCollect()
 
 
 
-void FRenderAssetStreamingManager::OnPakFileMounted(const TCHAR* PakFilename)
+void FRenderAssetStreamingManager::OnPakFileMounted(const TCHAR* PakFilename, const int32 ChunkId)
 {
 	// clear the cached file exists checks which failed as they may now be loaded
 	bNewFilesLoaded = true;
@@ -231,7 +250,7 @@ bool FRenderAssetStreamingManager::StreamOutRenderAssetData( int64 RequiredMemor
 {
 	FScopeLock ScopeLock(&CriticalSection);
 
-	const int64 MaxTempMemoryAllowed = Settings.MaxTempMemoryAllowed * 1024 * 1024;
+	const int64 MaxTempMemoryAllowed = static_cast<int64>(Settings.MaxTempMemoryAllowed) * 1024 * 1024;
 	const bool CachedPauseTextureStreaming = bPauseRenderAssetStreaming;
 
 	// Pause texture streaming to prevent sending load requests.
@@ -322,6 +341,62 @@ void FRenderAssetStreamingManager::IncrementalUpdate(float Percentage, bool bUpd
 	SetRenderAssetsRemovedTimestamp(RemovedRenderAssets);
 }
 
+void FRenderAssetStreamingManager::TickFastResponseAssets()
+{
+	if (!CVarStreamingAllowFastForceResident.GetValueOnGameThread())
+	{
+		return;
+	}
+
+	for (TSet<UStreamableRenderAsset*>::TIterator It(FastResponseRenderAssets); It; ++It)
+	{
+		UStreamableRenderAsset* RenderAsset = *It;
+		
+		if (!RenderAsset
+			|| !RenderAsset->bIgnoreStreamingMipBias
+			|| (!RenderAsset->bForceMiplevelsToBeResident && RenderAsset->ForceMipLevelsToBeResidentTimestamp < FApp::GetCurrentTime()))
+		{
+			// No longer qualified for fast response
+			It.RemoveCurrent();
+			continue;
+		}
+
+		if (RenderAsset->GetLastRenderTimeForStreaming() < LastWorldUpdateTime_MipCalcTask)
+		{
+			// Not visible
+			continue;
+		}
+
+		const int32 StreamingIdx = RenderAsset->StreamingIndex;
+		FStreamingRenderAsset& Asset = StreamingRenderAssets[StreamingIdx];
+
+		check(RenderAsset == Asset.RenderAsset);
+
+		Asset.UpdateStreamingStatus(false);
+
+		if (!Asset.bInFlight && Asset.ResidentMips < Asset.NumNonOptionalMips)
+		{
+			RenderAsset->StreamIn(Asset.NumNonOptionalMips, true);
+			RenderAsset->bHasStreamingUpdatePending = true;
+			Asset.bHasUpdatePending = true;
+			VisibleFastResponseRenderAssetIndices.Add(StreamingIdx);
+
+			for (int32 Idx = 0; Idx < PendingMipCopyRequests.Num(); ++Idx)
+			{
+				FPendingMipCopyRequest& PendingRequest = PendingMipCopyRequests[Idx];
+
+				if (PendingRequest.RenderAsset == RenderAsset)
+				{
+					PendingRequest.RenderAsset = nullptr;
+				}
+			}
+
+			Asset.UpdateStreamingStatus(false);
+			TrackRenderAssetEvent(&Asset, RenderAsset, true, this);
+		}
+	}
+}
+
 void FRenderAssetStreamingManager::ProcessRemovedRenderAssets()
 {
 	for (int32 AssetIndex : RemovedRenderAssetIndices)
@@ -336,7 +411,14 @@ void FRenderAssetStreamingManager::ProcessRemovedRenderAssets()
 		if (StreamingRenderAssets.IsValidIndex(AssetIndex))
 		{
 			// Update the texture with its new index.
-			StreamingRenderAssets[AssetIndex].RenderAsset->StreamingIndex = AssetIndex;
+			int32& StreamingIdx = StreamingRenderAssets[AssetIndex].RenderAsset->StreamingIndex;
+
+			if (VisibleFastResponseRenderAssetIndices.Remove(StreamingIdx))
+			{
+				VisibleFastResponseRenderAssetIndices.Add(AssetIndex);
+			}
+
+			StreamingIdx = AssetIndex;
 		}
 	}
 	RemovedRenderAssetIndices.Empty();
@@ -528,7 +610,7 @@ void FRenderAssetStreamingManager::PrepareAsyncTask(bool bProcessEverything)
 	// Same when forcing stream-in, for which we want all used textures to be fully loaded 
 	if (Stats.IsUsingLimitedPoolSize() && !bProcessEverything && !Settings.bFullyLoadUsedTextures)
 	{
-		const int64 TempMemoryBudget = Settings.MaxTempMemoryAllowed * 1024 * 1024;
+		const int64 TempMemoryBudget = static_cast<int64>(Settings.MaxTempMemoryAllowed) * 1024 * 1024;
 		AsyncTask.Reset(Stats.TotalGraphicsMemory, Stats.AllocatedMemorySize, Stats.TexturePoolSize, TempMemoryBudget, MemoryMargin);
 	}
 	else
@@ -537,6 +619,8 @@ void FRenderAssetStreamingManager::PrepareAsyncTask(bool bProcessEverything)
 		AsyncTask.Reset(0, Stats.AllocatedMemorySize, MAX_int64, MAX_int64 / 2, 0);
 	}
 	AsyncTask.StreamingData.Init(CurrentViewInfos, LastWorldUpdateTime, LevelRenderAssetManagers, DynamicComponentManager);
+
+	LastWorldUpdateTime_MipCalcTask = LastWorldUpdateTime;
 }
 
 /**
@@ -691,8 +775,7 @@ void FRenderAssetStreamingManager::AddStreamingRenderAsset(UStaticMesh* StaticMe
 
 void FRenderAssetStreamingManager::AddStreamingRenderAsset(USkeletalMesh* SkeletalMesh)
 {
-	// TODO
-	LowLevelFatalError(TEXT("FRenderAssetStreamingManager::AddStreamingRenderAsset(USkeletalMesh* SkeletalMesh) is not implemented"));
+	AddStreamingRenderAsset_Internal(SkeletalMesh, FStreamingRenderAsset::AT_SkeletalMesh);
 }
 
 /**
@@ -715,6 +798,9 @@ void FRenderAssetStreamingManager::RemoveStreamingRenderAsset( UStreamableRender
 	{
 		StreamingRenderAssets[Idx].RenderAsset = nullptr;
 		RemovedRenderAssetIndices.Add(Idx);
+
+		FastResponseRenderAssets.Remove(RenderAsset);
+		VisibleFastResponseRenderAssetIndices.Remove(Idx);
 	}
 
 	RenderAsset->StreamingIndex = INDEX_NONE;
@@ -1002,6 +1088,31 @@ void FRenderAssetStreamingManager::UpdateIndividualRenderAsset( UStreamableRende
 	StreamingRenderAsset->StreamWantedMips(*this);
 }
 
+void FRenderAssetStreamingManager::FastForceFullyResident(UStreamableRenderAsset* RenderAsset)
+{
+	check(IsInGameThread());
+
+	if (CVarStreamingAllowFastForceResident.GetValueOnGameThread()
+		&& IStreamingManager::Get().IsStreamingEnabled()
+		&& !bPauseRenderAssetStreaming
+		&& RenderAsset
+		&& RenderAsset->bIgnoreStreamingMipBias
+		&& (RenderAsset->bForceMiplevelsToBeResident || RenderAsset->ForceMipLevelsToBeResidentTimestamp >= FApp::GetCurrentTime())
+		&& StreamingRenderAssets.IsValidIndex(RenderAsset->StreamingIndex)
+		&& StreamingRenderAssets[RenderAsset->StreamingIndex].RenderAsset == RenderAsset)
+	{
+		const int32 StreamingIdx = RenderAsset->StreamingIndex;
+		FStreamingRenderAsset& Asset = StreamingRenderAssets[StreamingIdx];
+
+		Asset.UpdateStreamingStatus(false);
+
+		if (Asset.ResidentMips < Asset.NumNonOptionalMips)
+		{
+			FastResponseRenderAssets.Add(Asset.RenderAsset);
+		}
+	}
+}
+
 /**
  * Not thread-safe: Updates a portion (as indicated by 'StageIndex') of all streaming textures,
  * allowing their streaming state to progress.
@@ -1086,7 +1197,7 @@ void FRenderAssetStreamingManager::StreamRenderAssets( bool bProcessEverything )
 	{
 		for (int32 AssetIndex : AsyncTask.GetCancelationRequests())
 		{
-			if (StreamingRenderAssets.IsValidIndex(AssetIndex))
+			if (StreamingRenderAssets.IsValidIndex(AssetIndex) && !VisibleFastResponseRenderAssetIndices.Contains(AssetIndex))
 			{
 				StreamingRenderAssets[AssetIndex].CancelPendingMipChangeRequest();
 			}
@@ -1102,7 +1213,8 @@ void FRenderAssetStreamingManager::StreamRenderAssets( bool bProcessEverything )
 			for (int32 AssetIndex : AsyncTask.GetLoadRequests())
 			{
 				if (StreamingRenderAssets.IsValidIndex(AssetIndex)
-					&& StreamingRenderAssets[AssetIndex].RenderAsset)
+					&& StreamingRenderAssets[AssetIndex].RenderAsset
+					&& !VisibleFastResponseRenderAssetIndices.Contains(AssetIndex))
 				{
 					FStreamingRenderAsset& StreamingRenderAsset = StreamingRenderAssets[AssetIndex];
 					StreamingRenderAsset.CacheStreamingMetaData();
@@ -1114,7 +1226,7 @@ void FRenderAssetStreamingManager::StreamRenderAssets( bool bProcessEverything )
 		{
 			for (int32 AssetIndex : AsyncTask.GetLoadRequests())
 			{
-				if (StreamingRenderAssets.IsValidIndex(AssetIndex))
+				if (StreamingRenderAssets.IsValidIndex(AssetIndex) && !VisibleFastResponseRenderAssetIndices.Contains(AssetIndex))
 				{
 					StreamingRenderAssets[AssetIndex].StreamWantedMips(*this);
 				}
@@ -1124,7 +1236,7 @@ void FRenderAssetStreamingManager::StreamRenderAssets( bool bProcessEverything )
 	
 	for (int32 AssetIndex : AsyncTask.GetPendingUpdateDirties())
 	{
-		if (StreamingRenderAssets.IsValidIndex(AssetIndex))
+		if (StreamingRenderAssets.IsValidIndex(AssetIndex) && !VisibleFastResponseRenderAssetIndices.Contains(AssetIndex))
 		{
 			FStreamingRenderAsset& StreamingRenderAsset = StreamingRenderAssets[AssetIndex];
 			const bool bNewState = StreamingRenderAsset.HasUpdatePending(bPauseRenderAssetStreaming, AsyncTask.HasAnyView());
@@ -1137,6 +1249,23 @@ void FRenderAssetStreamingManager::StreamRenderAssets( bool bProcessEverything )
 			}
 		}
 	}
+
+	// Reset BudgetMipBias and MaxAllowedMips before we forget. Otherwise, new requests may stream out forced mips
+	for (TSet<int32>::TConstIterator It(VisibleFastResponseRenderAssetIndices); It; ++It)
+	{
+		const int32 Idx = *It;
+
+		if (StreamingRenderAssets.IsValidIndex(Idx))
+		{
+			FStreamingRenderAsset& Asset = StreamingRenderAssets[Idx];
+
+			Asset.BudgetMipBias = 0;
+			// If optional mips is available but not counted, they will be counted later in UpdateDynamicData
+			Asset.MaxAllowedMips = FMath::Max(Asset.MaxAllowedMips, Asset.NumNonOptionalMips);
+		}
+	}
+
+	VisibleFastResponseRenderAssetIndices.Empty();
 }
 
 void FRenderAssetStreamingManager::ProcessPendingMipCopyRequests()
@@ -1251,6 +1380,11 @@ void FRenderAssetStreamingManager::UpdateStats()
 	MaxEverRequired = FMath::Max<int64>(MaxEverRequired, DisplayedStats.RequiredPool);
 }
 
+void FRenderAssetStreamingManager::UpdateCSVOnlyStats()
+{
+	DisplayedStats = GatheredStats;
+}
+
 void FRenderAssetStreamingManager::LogViewLocationChange()
 {
 #if STREAMING_LOG_VIEWCHANGES
@@ -1332,11 +1466,18 @@ void FRenderAssetStreamingManager::UpdateResourceStreaming( float DeltaTime, boo
 
 	SCOPE_CYCLE_COUNTER(STAT_RenderAssetStreaming_GameThreadUpdateTime);
 	CSV_SCOPED_TIMING_STAT_EXCLUSIVE(RenderAssetStreaming);
+	CSV_SCOPED_SET_WAIT_STAT(RenderAssetStreaming);
 
 	const bool bUseThreadingForPerf = FApp::ShouldUseThreadingForPerformance();
 
 	LogViewLocationChange();
 	STAT(DisplayedStats.Apply();)
+
+	CSV_CUSTOM_STAT(TextureStreaming, StreamingPool, ((float)(DisplayedStats.RequiredPool + (GPoolSizeVRAMPercentage > 0 ? 0 : DisplayedStats.NonStreamingMips))) / (1024.0f * 1024.0f), ECsvCustomStatOp::Set);
+	CSV_CUSTOM_STAT(TextureStreaming, SafetyPool, ((float)DisplayedStats.SafetyPool) / (1024.0f * 1024.0f), ECsvCustomStatOp::Set);
+	CSV_CUSTOM_STAT(TextureStreaming, TemporaryPool, ((float)DisplayedStats.TemporaryPool) / (1024.0f * 1024.0f), ECsvCustomStatOp::Set);
+	CSV_CUSTOM_STAT(TextureStreaming, CachedMips, ((float)DisplayedStats.CachedMips) / (1024.0f * 1024.0f), ECsvCustomStatOp::Set);
+	CSV_CUSTOM_STAT(TextureStreaming, WantedMips, ((float)DisplayedStats.WantedMips) / (1024.0f * 1024.0f), ECsvCustomStatOp::Set);
 
 	RenderAssetInstanceAsyncWork->EnsureCompletion();
 
@@ -1358,13 +1499,19 @@ void FRenderAssetStreamingManager::UpdateResourceStreaming( float DeltaTime, boo
 		PrepareAsyncTask(bProcessEverything || Settings.bStressTest);
 		AsyncWork->StartSynchronousTask();
 
+		TickFastResponseAssets();
+
 		StreamRenderAssets(bProcessEverything);
 
 		STAT(GatheredStats.SetupAsyncTaskCycles = 0);
 		STAT(GatheredStats.UpdateStreamingDataCycles = 0);
-		STAT(GatheredStats.StreamTexturesCycles = 0);
+		STAT(GatheredStats.StreamRenderAssetsCycles = 0);
 		STAT(GatheredStats.CallbacksCycles = 0);
-		STAT(UpdateStats();)
+#if STATS
+		UpdateStats();
+#elif UE_BUILD_TEST
+		UpdateCSVOnlyStats();
+#endif // STATS
 	}
 	else if (ProcessingStage == 0)
 	{
@@ -1381,6 +1528,7 @@ void FRenderAssetStreamingManager::UpdateResourceStreaming( float DeltaTime, boo
 		UpdatePendingStates(false);
 		PrepareAsyncTask(bProcessEverything || Settings.bStressTest);
 		AsyncWork->StartBackgroundTask(CVarUseBackgroundThreadPool.GetValueOnGameThread() ? GBackgroundPriorityThreadPool : GThreadPool);
+		TickFastResponseAssets();
 		++ProcessingStage;
 
 		STAT(GatheredStats.SetupAsyncTaskCycles += FPlatformTime::Cycles();)
@@ -1394,12 +1542,15 @@ void FRenderAssetStreamingManager::UpdateResourceStreaming( float DeltaTime, boo
 			SetLastUpdateTime();
 		}
 
-		FEvent* SyncEvent;
+		TickFastResponseAssets();
+
+		FEvent* SyncEvent = nullptr;
 		// Optimization: overlapping UpdateStreamingRenderAssets() and IncrementalUpdate();
 		// Restrict this optimization to platforms tested to have a win;
 		// Platforms tested and results (ave exec time of UpdateResourceStreaming):
 		//   PS4 Pro - from ~0.55 ms/frame to ~0.15 ms/frame
-		const bool bOverlappedExecution = !!(PLATFORM_PS4) && !(WITH_EDITOR) && bUseThreadingForPerf;
+		//   XB1 X - from ~0.45 ms/frame to ~0.17 ms/frame
+		const bool bOverlappedExecution = bUseThreadingForPerf && CVarStreamingOverlapAssetAndLevelTicks.GetValueOnGameThread();
 		if (bOverlappedExecution)
 		{
 			SyncEvent = FPlatformProcess::GetSynchEventFromPool(false);
@@ -1424,13 +1575,15 @@ void FRenderAssetStreamingManager::UpdateResourceStreaming( float DeltaTime, boo
 	}
 	else if (AsyncWork->IsDone())
 	{
-		STAT(GatheredStats.StreamTexturesCycles = -(int32)FPlatformTime::Cycles();)
+		STAT(GatheredStats.StreamRenderAssetsCycles = -(int32)FPlatformTime::Cycles();)
 
 		// Since this step is lightweight, tick each texture inflight here, to accelerate the state changes.
 		for (int32 TextureIndex : InflightRenderAssets)
 		{
 			StreamingRenderAssets[TextureIndex].UpdateStreamingStatus(DeltaTime > 0);
 		}
+
+		TickFastResponseAssets();
 
 		StreamRenderAssets(bProcessEverything);
 		// Release the old view now as the destructors can be expensive. Now only the dynamic manager holds a ref.
@@ -1440,8 +1593,12 @@ void FRenderAssetStreamingManager::UpdateResourceStreaming( float DeltaTime, boo
 
 		ProcessingStage = 0;
 
-		STAT(GatheredStats.StreamTexturesCycles += FPlatformTime::Cycles();)
-		STAT(UpdateStats();)
+		STAT(GatheredStats.StreamRenderAssetsCycles += FPlatformTime::Cycles();)
+#if STATS
+			UpdateStats();
+#elif UE_BUILD_TEST
+			UpdateCSVOnlyStats();
+#endif // STATS
 	}
 
 	if (!bProcessEverything)
@@ -1469,10 +1626,11 @@ void FRenderAssetStreamingManager::UpdateResourceStreaming( float DeltaTime, boo
 int32 FRenderAssetStreamingManager::BlockTillAllRequestsFinished( float TimeLimit /*= 0.0f*/, bool bLogResults /*= false*/ )
 {
 	FScopeLock ScopeLock(&CriticalSection);
+	QUICK_SCOPE_CYCLE_COUNTER(STAT_FRenderAssetStreamingManager_BlockTillAllRequestsFinished);
 
 	double StartTime = FPlatformTime::Seconds();
 
-	while (true) 
+	while (ensure(!IsAssetStreamingSuspended()))
 	{
 		int32 NumOfInFlights = 0;
 
@@ -1488,23 +1646,25 @@ int32 FRenderAssetStreamingManager::BlockTillAllRequestsFinished( float TimeLimi
 		if (NumOfInFlights && (TimeLimit == 0 || (float)(FPlatformTime::Seconds() - StartTime) < TimeLimit))
 		{
 			FlushRenderingCommands();
-			FPlatformProcess::Sleep( 0.010f );
+			FPlatformProcess::Sleep(RENDER_ASSET_STREAMING_SLEEP_DT);
 		}
 		else
 		{
 			if (bLogResults)
 			{
-				UE_LOG(LogContentStreaming, Log, TEXT("Blocking on texture streaming: %.1f ms (%d still in flight)"), (float)(FPlatformTime::Seconds() - StartTime) * 1000, NumOfInFlights );
+				UE_LOG(LogContentStreaming, Log, TEXT("Blocking on texture streaming: %.1f ms (%d still in flight)"), (float)(FPlatformTime::Seconds() - StartTime) * 1000, NumOfInFlights);
 
 			}
 			return NumOfInFlights;
 		}
 	}
+	return 0;
 }
 
 void FRenderAssetStreamingManager::GetObjectReferenceBounds(const UObject* RefObject, TArray<FBox>& AssetBoxes)
 {
 	FScopeLock ScopeLock(&CriticalSection);
+	QUICK_SCOPE_CYCLE_COUNTER(STAT_FRenderAssetStreamingManager_GetObjectReferenceBounds);
 
 	const UStreamableRenderAsset* RenderAsset = Cast<const UStreamableRenderAsset>(RefObject);
 	if (RenderAsset)
@@ -1537,9 +1697,65 @@ void FRenderAssetStreamingManager::GetObjectReferenceBounds(const UObject* RefOb
 	}
 }
 
+static bool IsLevelManagerValid(const FLevelRenderAssetManager* LevelManager)
+{
+	return LevelManager && LevelManager->IsInitialized() && LevelManager->HasRenderAssetReferences() && LevelManager->GetLevel()->bIsVisible;
+}
+
+static void GatherComponentsFromView(
+	const UStreamableRenderAsset* RenderAsset,
+	const FRenderAssetInstanceView* View,
+	const TFunction<bool(const UPrimitiveComponent*)>& ShouldChoose,
+	TArray<const UPrimitiveComponent*>& OutComps)
+{
+	if (View)
+	{
+		for (FRenderAssetInstanceView::FRenderAssetLinkConstIterator It = View->GetElementIterator(RenderAsset); It; ++It)
+		{
+			const UPrimitiveComponent* Comp = It.GetComponent();
+			if (Comp && ShouldChoose(Comp))
+			{
+				OutComps.Add(Comp);
+			}
+		}
+	}
+}
+
+void FRenderAssetStreamingManager::GetAssetComponents(const UStreamableRenderAsset* RenderAsset, TArray<const UPrimitiveComponent*>& OutComps, TFunction<bool(const UPrimitiveComponent*)> ShouldChoose)
+{
+	checkSlow(IsInGameThread());
+
+	if (RenderAsset && RenderAsset->StreamingIndex >= 0)
+	{
+		FScopeLock Lock(&CriticalSection);
+		QUICK_SCOPE_CYCLE_COUNTER(STAT_FRenderAssetStreamingManager_GetAssetComponents);
+
+		const int32 Idx = RenderAsset->StreamingIndex;
+		check(StreamingRenderAssets.IsValidIndex(Idx) && StreamingRenderAssets[Idx].RenderAsset == RenderAsset);
+		const FStreamingRenderAsset& StreamingRenderAsset = StreamingRenderAssets[Idx];
+
+		for (TConstSetBitIterator<> It(StreamingRenderAsset.LevelIndexUsage); It; ++It)
+		{
+			const int32 LevelIdx = It.GetIndex();
+			check(LevelRenderAssetManagers.IsValidIndex(LevelIdx));
+			FLevelRenderAssetManager* LevelManager = LevelRenderAssetManagers[LevelIdx];
+
+			if (IsLevelManagerValid(LevelManager))
+			{
+				const FRenderAssetInstanceView* StaticInstancesView = LevelManager->GetRawAsyncView();
+				GatherComponentsFromView(RenderAsset, StaticInstancesView, ShouldChoose, OutComps);
+			}
+		}
+
+		const FRenderAssetInstanceView* DynamicInstancesView = DynamicComponentManager.GetAsyncView(false);
+		GatherComponentsFromView(RenderAsset, DynamicInstancesView, ShouldChoose, OutComps);
+	}
+}
+
 void FRenderAssetStreamingManager::PropagateLightingScenarioChange()
 {
 	FScopeLock ScopeLock(&CriticalSection);
+	QUICK_SCOPE_CYCLE_COUNTER(STAT_FRenderAssetStreamingManager_PropagateLightingScenarioChange);
 
 	// Note that dynamic components don't need to be handled because their renderstates are updated, which triggers and update.
 	
@@ -1561,27 +1777,35 @@ void FRenderAssetStreamingManager::PropagateLightingScenarioChange()
 	}
 }
 
-#if STATS_FAST
+#if !UE_BUILD_SHIPPING
+
 bool FRenderAssetStreamingManager::HandleDumpTextureStreamingStatsCommand( const TCHAR* Cmd, FOutputDevice& Ar )
 {
 	FScopeLock ScopeLock(&CriticalSection);
 
-	Ar.Logf( TEXT("Current Texture Streaming Stats") );
-	Ar.Logf( TEXT("  Textures In Memory, Current (KB) = %f"), MaxStreamingTexturesSize / 1024.0f);
-	Ar.Logf( TEXT("  Textures In Memory, Target (KB) =  %f"), MaxOptimalTextureSize / 1024.0f );
-	Ar.Logf( TEXT("  Over Budget (KB) =                 %f"), MaxStreamingOverBudget / 1024.0f );
-	Ar.Logf( TEXT("  Pool Memory Used (KB) =            %f"), MaxTexturePoolAllocatedSize / 1024.0f );
-	Ar.Logf( TEXT("  Num Wanting Textures =             %d"), MaxNumWantingTextures );
-	MaxStreamingTexturesSize = 0;
-	MaxOptimalTextureSize = 0;
-	MaxStreamingOverBudget = MIN_int64;
-	MaxTexturePoolAllocatedSize = 0;
-	MaxNumWantingTextures = 0;
+	float CurrentOccupancyPct = 0.f;
+	float TargetOccupancyPct = 0.f;
+	if (DisplayedStats.StreamingPool > 0)
+	{
+		CurrentOccupancyPct = 100.f * (DisplayedStats.WantedMips / (float)DisplayedStats.StreamingPool);
+		TargetOccupancyPct = 100.f * (DisplayedStats.RequiredPool / (float)DisplayedStats.StreamingPool);
+	}
+
+	float StreamingPoolMB = DisplayedStats.StreamingPool / 1024.f / 1024.f;
+
+	// uses csv stats for access in test builds
+	Ar.Logf(TEXT("--------------------------------------------------------"));
+	Ar.Logf(TEXT("Texture Streaming Stats:") );
+	Ar.Logf(TEXT("Total Pool Size (aka RenderAssetPool) = %.2f MB"), DisplayedStats.RenderAssetPool / 1024.f / 1024.f);
+	Ar.Logf(TEXT("Non-Streaming Mips = %.2f MB"), DisplayedStats.NonStreamingMips / 1024.f / 1024.f);
+	Ar.Logf(TEXT("Remaining Streaming Pool Size = %.2f MB"), StreamingPoolMB);
+	Ar.Logf(TEXT("Streaming Assets, Current/Pool = %.2f / %.2f MB (%d%%)"), DisplayedStats.WantedMips / 1024.f / 1024.f, StreamingPoolMB, FMath::RoundToInt(CurrentOccupancyPct));
+	Ar.Logf(TEXT("Streaming Assets, Target/Pool =  %.2f / %.2f MB (%d%%)"), DisplayedStats.RequiredPool / 1024.f / 1024.f, StreamingPoolMB, FMath::RoundToInt(TargetOccupancyPct));
+	Ar.Logf(TEXT("--------------------------------------------------------"));
+
 	return true;
 }
-#endif // STATS_FAST
 
-#if STATS
 bool FRenderAssetStreamingManager::HandleListStreamingRenderAssetsCommand( const TCHAR* Cmd, FOutputDevice& Ar )
 {
 	FScopeLock ScopeLock(&CriticalSection);
@@ -1589,6 +1813,25 @@ bool FRenderAssetStreamingManager::HandleListStreamingRenderAssetsCommand( const
 	SyncStates(true);
 
 	const bool bShouldOnlyListUnkownRef = FParse::Command(&Cmd, TEXT("UNKOWNREF"));
+	FStreamingRenderAsset::EAssetType ListAssetType = FStreamingRenderAsset::AT_Num;
+	{
+		FString AssetTypeStr;
+		if (FParse::Value(Cmd, TEXT("AssetType="), AssetTypeStr))
+		{
+			if (AssetTypeStr == TEXT("Texture"))
+			{
+				ListAssetType = FStreamingRenderAsset::AT_Texture;
+			}
+			else if (AssetTypeStr == TEXT("StaticMesh"))
+			{
+				ListAssetType = FStreamingRenderAsset::AT_StaticMesh;
+			}
+			else if (AssetTypeStr == TEXT("SkeletalMesh"))
+			{
+				ListAssetType = FStreamingRenderAsset::AT_SkeletalMesh;
+			}
+		}
+	}
 
 	// Sort texture/mesh by names so that the state can be compared between runs.
 	TMap<FString, int32> SortedRenderAssets;
@@ -1609,14 +1852,19 @@ bool FRenderAssetStreamingManager::HandleListStreamingRenderAssetsCommand( const
 		const UStreamableRenderAsset* RenderAsset = StreamingRenderAsset.RenderAsset;
 		const typename FStreamingRenderAsset::EAssetType AssetType = StreamingRenderAsset.RenderAssetType;
 		
+		if (ListAssetType != FStreamingRenderAsset::AT_Num && ListAssetType != AssetType)
+		{
+			continue;
+		}
+
 		UE_LOG(LogContentStreaming, Log,  TEXT("%s [%d] : %s"),
 			FStreamingRenderAsset::GetStreamingAssetTypeStr(AssetType),
 			It.Value(),
 			*RenderAsset->GetFullName() );
 
-		int32 CurrentMipIndex = FMath::Max(RenderAsset->GetNumMipsForStreaming() - StreamingRenderAsset.ResidentMips, 0);
-		int32 WantedMipIndex = FMath::Max(RenderAsset->GetNumMipsForStreaming() - StreamingRenderAsset.GetPerfectWantedMips(), 0);
-		int32 MaxAllowedMipIndex = FMath::Max(RenderAsset->GetNumMipsForStreaming() - StreamingRenderAsset.MaxAllowedMips, 0);
+		const int32 CurrentMipIndex = FMath::Max(RenderAsset->GetNumMipsForStreaming() - StreamingRenderAsset.ResidentMips, 0);
+		const int32 WantedMipIndex = FMath::Max(RenderAsset->GetNumMipsForStreaming() - StreamingRenderAsset.GetPerfectWantedMips(), 0);
+		const int32 MaxAllowedMipIndex = FMath::Max(RenderAsset->GetNumMipsForStreaming() - StreamingRenderAsset.MaxAllowedMips, 0);
 
 		if (AssetType == FStreamingRenderAsset::AT_Texture)
 		{
@@ -1654,10 +1902,12 @@ bool FRenderAssetStreamingManager::HandleListStreamingRenderAssetsCommand( const
 				LODGroupName = StaticMesh->LODGroup.ToString();
 			}
 #endif
-			UE_LOG(LogContentStreaming, Log, TEXT("    CurrentLOD=%d WantedLOD=%d MaxAllowedLOD=%d LastRenderTime=%s BudgetBias=%d Group=%s"),
+			UE_LOG(LogContentStreaming, Log, TEXT("    CurrentLOD=%d WantedLOD=%d MaxAllowedLOD=%d NumLODs=%d NumForcedLODs=%d LastRenderTime=%s BudgetBias=%d Group=%s"),
 				CurrentMipIndex,
 				WantedMipIndex,
 				MaxAllowedMipIndex,
+				StreamingRenderAsset.MipCount,
+				StreamingRenderAsset.NumForcedMips,
 				LastRenderTime == MAX_FLT ? TEXT("NotTracked") : *FString::Printf(TEXT("%.3f"), LastRenderTime),
 				StreamingRenderAsset.BudgetMipBias,
 				*LODGroupName);
@@ -1665,9 +1915,6 @@ bool FRenderAssetStreamingManager::HandleListStreamingRenderAssetsCommand( const
 	}
 	return true;
 }
-#endif // STATS
-
-#if !UE_BUILD_SHIPPING
 
 bool FRenderAssetStreamingManager::HandleResetMaxEverRequiredRenderAssetMemoryCommand(const TCHAR* Cmd, FOutputDevice& Ar)
 {
@@ -1698,7 +1945,7 @@ bool FRenderAssetStreamingManager::HandleCancelRenderAssetStreamingCommand( cons
 
 	UTexture2D::CancelPendingTextureStreaming();
 	UStaticMesh::CancelAllPendingStreamingActions();
-	// TODO: USkeletalMesh
+	USkeletalMesh::CancelAllPendingStreamingActions();
 	return true;
 }
 
@@ -1996,7 +2243,16 @@ bool FRenderAssetStreamingManager::HandleInvestigateRenderAssetCommand(const TCH
 					LODGroupName = StaticMesh->LODGroup.ToString();
 				}
 #endif
-				UE_LOG(LogContentStreaming, Log, TEXT("  LOD group:   %s"), *LODGroupName);
+				// put this up in some shared code somewhere in FGenericPlatformMemory
+				const TCHAR* BucketNames[] = { TEXT("Largest"), TEXT("Larger"), TEXT("Default"), TEXT("Smaller"), TEXT("Smallest"), TEXT("Tiniest") };
+				if ((int32)FPlatformMemory::GetMemorySizeBucket() < UE_ARRAY_COUNT(BucketNames))
+				{
+					UE_LOG(LogContentStreaming, Log, TEXT("  LOD group:   %s [Bucket=%s]"), *LODGroupName, BucketNames[(int32)FPlatformMemory::GetMemorySizeBucket()]);
+				}
+				else
+				{
+					UE_LOG(LogContentStreaming, Log, TEXT("  LOD group:   %s [Unkown Bucket]"), *LODGroupName);
+				}
 
 				if (RenderAsset->bGlobalForceMipLevelsToBeResident)
 				{
@@ -2030,11 +2286,105 @@ bool FRenderAssetStreamingManager::HandleInvestigateRenderAssetCommand(const TCH
 					UE_LOG(LogContentStreaming, Log, TEXT("  Current LOD index: %d"), CurrentMipIndex);
 					UE_LOG(LogContentStreaming, Log, TEXT("  Wanted LOD index: %d"), WantedMipIndex);
 				}
-				UE_LOG(LogContentStreaming, Log, TEXT("  Allowed mips:        %d-%d"), StreamingRenderAsset.MinAllowedMips, StreamingRenderAsset.MaxAllowedMips);
+				UE_LOG(LogContentStreaming, Log, TEXT("  Allowed mips:        %d-%d [%d]"), StreamingRenderAsset.MinAllowedMips, StreamingRenderAsset.MaxAllowedMips, StreamingRenderAsset.MipCount);
 				UE_LOG(LogContentStreaming, Log, TEXT("  LoadOrder Priority:  %d"), StreamingRenderAsset.LoadOrderPriority);
 				UE_LOG(LogContentStreaming, Log, TEXT("  Retention Priority:  %d"), StreamingRenderAsset.RetentionPriority);
 				UE_LOG(LogContentStreaming, Log, TEXT("  Boost factor:        %.1f"), StreamingRenderAsset.BoostFactor);
-				UE_LOG(LogContentStreaming, Log, TEXT("  Mip bias [Budget]:   %d [%d]"), StreamingRenderAsset.MipCount - StreamingRenderAsset.MaxAllowedMips, StreamingRenderAsset.BudgetMipBias + (Settings.bUsePerTextureBias ? 0 : Settings.GlobalMipBias));
+
+				FString BiasDesc;
+				{
+					int32 CumuBias = 0;
+					if (!Settings.bUseAllMips)
+					{
+						// UI specific Bias : see UTextureLODSettings::CalculateLODBias(), included in CachedCombinedLODBias.
+						extern int32 GUITextureLODBias;
+						if (StreamingRenderAsset.LODGroup == TEXTUREGROUP_UI && GUITextureLODBias)
+						{
+							BiasDesc += FString::Printf(TEXT(" [UI:%d]"), GUITextureLODBias);
+							CumuBias += GUITextureLODBias;
+						}
+
+						// LOD group Bias : see UTextureLODSettings::CalculateLODBias(), included in CachedCombinedLODBias
+						const FTextureLODGroup& LODGroupInfo = UDeviceProfileManager::Get().GetActiveProfile()->GetTextureLODSettings()->TextureLODGroups[StreamingRenderAsset.LODGroup];
+						if (LODGroupInfo.LODBias)
+						{
+							if (FPlatformProperties::RequiresCookedData())
+							{
+								BiasDesc += FString::Printf(TEXT(" [LODGroup.Bias:0(%d)]"), LODGroupInfo.LODBias);
+							}
+							else
+							{
+								BiasDesc += FString::Printf(TEXT(" [LODGroup.Bias:%d]"), LODGroupInfo.LODBias);
+								CumuBias += LODGroupInfo.LODBias;
+							}
+						}
+
+						// LOD group MaxResolution clamp : see UTextureLODSettings::CalculateLODBias(), included in CachedCombinedLODBias
+						const int32 MipCountBeforeMaxRes = StreamingRenderAsset.MipCount - Texture2D->NumCinematicMipLevels -
+							(StreamingRenderAsset.LODGroup == TEXTUREGROUP_UI ? GUITextureLODBias : 0) - 
+							(FPlatformProperties::RequiresCookedData() ? 0 : (LODGroupInfo.LODBias + Texture2D->LODBias));
+						const int32 MaxResBias = MipCountBeforeMaxRes - (LODGroupInfo.MaxLODMipCount + 1);
+						if (MaxResBias > 0)
+						{
+							BiasDesc += FString::Printf(TEXT(" [LODGroup.MaxRes:%d]"), MaxResBias);
+							CumuBias += MaxResBias;
+						}
+
+						// Asset LODBias : see UTextureLODSettings::CalculateLODBias(), included in CachedCombinedLODBias
+						if (Texture2D->LODBias)
+						{
+							if (FPlatformProperties::RequiresCookedData())
+							{
+								BiasDesc += FString::Printf(TEXT(" [Asset.Bias:0(%d)]"), Texture2D->LODBias);
+							}
+							else
+							{
+								BiasDesc += FString::Printf(TEXT(" [Asset.Bias:%d]"), Texture2D->LODBias);
+								CumuBias += Texture2D->LODBias;
+							}
+						}
+
+						// Asset cinematic mips : see UTextureLODSettings::CalculateLODBias() and FStreamingRenderAsset::UpdateDynamicData(), included in CachedCombinedLODBias
+						if (Texture2D->NumCinematicMipLevels && !(StreamingRenderAsset.bForceFullyLoad && Texture2D->bUseCinematicMipLevels))
+						{
+							BiasDesc += FString::Printf(TEXT(" [Asset.Cine:%d]"), Texture2D->NumCinematicMipLevels);
+							CumuBias += Texture2D->NumCinematicMipLevels;
+						}
+					}
+
+					// RHI max resolution and optional mips : see FStreamingRenderAsset::UpdateDynamicData().
+					{
+						const int32 OptMipBias = StreamingRenderAsset.MipCount - CumuBias - StreamingRenderAsset.NumNonOptionalMips;
+						if (StreamingRenderAsset.OptionalMipsState != FStreamingRenderAsset::EOptionalMipsState::OMS_HasOptionalMips && OptMipBias > 0)
+						{
+							BiasDesc += FString::Printf(TEXT(" [Asset.Opt:%d]"), OptMipBias);
+							CumuBias += OptMipBias;
+						}
+
+						const int32 RHIMaxResBias = StreamingRenderAsset.MipCount - CumuBias - GMaxTextureMipCount;
+						if (RHIMaxResBias > 0)
+						{
+							BiasDesc += FString::Printf(TEXT(" [RHI.MaxRes:%d]"), RHIMaxResBias);
+							CumuBias += RHIMaxResBias;
+						}
+					}
+
+					// Memory budget bias
+					// Global Bias : see FStreamingRenderAsset::UpdateDynamicData().
+					if (StreamingRenderAsset.IsMaxResolutionAffectedByGlobalBias() && !Settings.bUsePerTextureBias && Settings.GlobalMipBias)
+					{
+						BiasDesc += FString::Printf(TEXT(" [Global:%d]"), Settings.GlobalMipBias);
+						CumuBias += Settings.GlobalMipBias;
+					}
+					
+					if (StreamingRenderAsset.BudgetMipBias)
+					{
+						BiasDesc += FString::Printf(TEXT(" [Budget:%d]"), StreamingRenderAsset.BudgetMipBias);
+						CumuBias += StreamingRenderAsset.BudgetMipBias;
+					}
+				}
+
+				UE_LOG(LogContentStreaming, Log, TEXT("  Mip bias:			  %d %s"), StreamingRenderAsset.MipCount - StreamingRenderAsset.MaxAllowedMips, !BiasDesc.IsEmpty() ? *BiasDesc : TEXT("") );
 
 				if (InWorld && !GIsEditor)
 				{
@@ -2068,21 +2418,17 @@ bool FRenderAssetStreamingManager::HandleInvestigateRenderAssetCommand(const TCH
  */
 bool FRenderAssetStreamingManager::Exec( UWorld* InWorld, const TCHAR* Cmd, FOutputDevice& Ar )
 {
-#if STATS_FAST
+#if !UE_BUILD_SHIPPING
 	if (FParse::Command(&Cmd,TEXT("DumpTextureStreamingStats"))
 		|| FParse::Command(&Cmd, TEXT("DumpRenderAssetStreamingStats")))
 	{
 		return HandleDumpTextureStreamingStatsCommand( Cmd, Ar );
 	}
-#endif
-#if STATS
 	if (FParse::Command(&Cmd,TEXT("ListStreamingTextures"))
 		|| FParse::Command(&Cmd, TEXT("ListStreamingRenderAssets")))
 	{
 		return HandleListStreamingRenderAssetsCommand( Cmd, Ar );
 	}
-#endif
-#if !UE_BUILD_SHIPPING
 	if (FParse::Command(&Cmd, TEXT("ResetMaxEverRequiredTextures"))
 		|| FParse::Command(&Cmd, TEXT("ResetMaxEverRequiredRenderAssetMemory")))
 	{
@@ -2220,6 +2566,7 @@ void FRenderAssetStreamingManager::DumpTextureGroupStats( bool bDetailedStats )
 		FTextureGroupStats& Waste = TextureGroupWaste[Texture->LODGroup];
 		FStreamingRenderAsset* StreamingTexture = GetStreamingRenderAsset(Texture2D);
 		uint32 TextureAlign = 0;
+		FRHIResourceCreateInfo CreateInfo(Texture2D ? Texture2D->GetExtData() : 0);
 		if ( StreamingTexture )
 		{
 			Stat.NumTextures++;
@@ -2227,11 +2574,11 @@ void FRenderAssetStreamingManager::DumpTextureGroupStats( bool bDetailedStats )
 			Stat.WantedTextureSize += StreamingTexture->GetSize( StreamingTexture->WantedMips );
 			Stat.MaxTextureSize += StreamingTexture->GetSize( StreamingTexture->MaxAllowedMips );
 			
-			int64 WasteCurrent = StreamingTexture->GetSize( StreamingTexture->ResidentMips ) - RHICalcTexture2DPlatformSize(Texture2D->GetSizeX(), Texture2D->GetSizeY(), Texture2D->GetPixelFormat(), StreamingTexture->ResidentMips, 1, 0, TextureAlign);			
+			int64 WasteCurrent = StreamingTexture->GetSize( StreamingTexture->ResidentMips ) - RHICalcTexture2DPlatformSize(Texture2D->GetSizeX(), Texture2D->GetSizeY(), Texture2D->GetPixelFormat(), StreamingTexture->ResidentMips, 1, 0, CreateInfo, TextureAlign);
 
-			int64 WasteWanted = StreamingTexture->GetSize( StreamingTexture->WantedMips ) - RHICalcTexture2DPlatformSize(Texture2D->GetSizeX(), Texture2D->GetSizeY(), Texture2D->GetPixelFormat(), StreamingTexture->WantedMips, 1, 0, TextureAlign);			
+			int64 WasteWanted = StreamingTexture->GetSize( StreamingTexture->WantedMips ) - RHICalcTexture2DPlatformSize(Texture2D->GetSizeX(), Texture2D->GetSizeY(), Texture2D->GetPixelFormat(), StreamingTexture->WantedMips, 1, 0, CreateInfo, TextureAlign);
 
-			int64 WasteMaxSize = StreamingTexture->GetSize( StreamingTexture->MaxAllowedMips ) - RHICalcTexture2DPlatformSize(Texture2D->GetSizeX(), Texture2D->GetSizeY(), Texture2D->GetPixelFormat(), StreamingTexture->MaxAllowedMips, 1, 0, TextureAlign);			
+			int64 WasteMaxSize = StreamingTexture->GetSize( StreamingTexture->MaxAllowedMips ) - RHICalcTexture2DPlatformSize(Texture2D->GetSizeX(), Texture2D->GetSizeY(), Texture2D->GetPixelFormat(), StreamingTexture->MaxAllowedMips, 1, 0, CreateInfo, TextureAlign);
 
 			Waste.NumTextures++;
 			Waste.CurrentTextureSize += FMath::Max<int64>(WasteCurrent,0);
@@ -2247,7 +2594,7 @@ void FRenderAssetStreamingManager::DumpTextureGroupStats( bool bDetailedStats )
 			Stat.NonStreamingSize += TextureSize;
 			if ( Texture2D && Texture2D->Resource )
 			{				
-				int64 WastedSize = TextureSize - RHICalcTexture2DPlatformSize(Texture2D->GetSizeX(), Texture2D->GetSizeY(), Texture2D->GetPixelFormat(), Texture2D->GetNumMips(), 1, 0, TextureAlign);				
+				int64 WastedSize = TextureSize - RHICalcTexture2DPlatformSize(Texture2D->GetSizeX(), Texture2D->GetSizeY(), Texture2D->GetPixelFormat(), Texture2D->GetNumMips(), 1, 0, CreateInfo, TextureAlign);
 
 				Waste.NumNonStreamingTextures++;
 				Waste.NonStreamingSize += FMath::Max<int64>(WastedSize, 0);

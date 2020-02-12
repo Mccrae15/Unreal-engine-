@@ -1,10 +1,10 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
 #include "CoreMinimal.h"
 #include "UObject/ObjectMacros.h"
-#include "AnimNode_Root.h"
+#include "Animation/AnimNode_Root.h"
 #include "AnimNode_StateResult.generated.h"
 
 // Root node of an state machine state (sink node).

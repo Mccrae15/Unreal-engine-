@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 #pragma once
 
 #include "CoreMinimal.h"
@@ -32,7 +32,7 @@ public:
 	virtual void BeginDestroy() override;
 	virtual bool IsReadyForFinishDestroy() override;
 #if WITH_EDITOR
-	virtual void PreEditChange(UProperty* PropertyAboutToChange) override;
+	virtual void PreEditChange(FProperty* PropertyAboutToChange) override;
 #endif // WITH_EDITOR
 	//~ End UObject Interface.
 
@@ -71,6 +71,13 @@ public:
 
 	/** Get the end frame */
 	int32 GetEndFrame() const;
+	
+	/** Calculate it's duration */
+	float CalculateDuration() const;
+
+	/** Get the Frame at the Specified Time*/
+	int32  GetFrameAtTime(const float Time) const;
+
 private:
 	/** A fence which is used to keep track of the rendering thread releasing the geometry cache resources. */
 	FRenderCommandFence ReleaseResourcesFence;

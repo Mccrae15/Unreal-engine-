@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -10,7 +10,7 @@ class Error;
 
 typedef FName FStompCommand;
 
-#define DECLARE_COMMAND(Name) extern const FStompCommand Name ## Command
+#define DECLARE_COMMAND(Name) extern const FLazyName Name ## Command
 
 DECLARE_COMMAND(Heartbeat);
 DECLARE_COMMAND(Connect);

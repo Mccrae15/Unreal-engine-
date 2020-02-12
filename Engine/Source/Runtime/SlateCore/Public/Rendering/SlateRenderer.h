@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -7,11 +7,13 @@
 #include "Brushes/SlateDynamicImageBrush.h"
 #include "Rendering/DrawElements.h"
 #include "Templates/RefCounting.h"
+#include "Fonts/FontTypes.h"
 
 class FRHITexture2D;
+class FRenderTarget;
 class FSlateDrawBuffer;
 class FSlateUpdatableTexture;
-class ILayoutCache;
+class ISlate3DRenderer;
 class ISlateAtlasProvider;
 class ISlateStyle;
 class SWindow;
@@ -19,7 +21,6 @@ struct Rect;
 class FSceneInterface;
 struct FSlateBrush;
 
-typedef FRHITexture2D* FTexture2DRHIParamRef;
 typedef TRefCountPtr<FRHITexture2D> FTexture2DRHIRef;
 
 /**
@@ -31,8 +32,8 @@ struct FRenderThreadUpdateContext
 	float WorldTimeSeconds;
 	float DeltaTimeSeconds;
 	float RealTimeSeconds;
-	void* RenderTargetResource;
-	void* Renderer;
+	FRenderTarget* RenderTarget;
+	ISlate3DRenderer* Renderer;
 	bool bClearTarget;
 };
 
@@ -47,6 +48,11 @@ public:
 	 * These pointers may be the same if your renderer doesn't need a separate render thread font cache
 	 */
 	FSlateFontServices(TSharedRef<class FSlateFontCache> InGameThreadFontCache, TSharedRef<class FSlateFontCache> InRenderThreadFontCache);
+
+	/**
+	 * Destruct the font services
+	 */
+	~FSlateFontServices();
 
 	/**
 	 * Get the font cache to use for the current thread
@@ -110,12 +116,21 @@ public:
 	 */
 	void ReleaseResources();
 
+	/**
+	 * Delegate called after releasing the rendering resources used by this font service
+	 */
+	FOnReleaseFontResources& OnReleaseResources();
+
 private:
+	void HandleFontCacheReleaseResources(const class FSlateFontCache& InFontCache);
+
 	TSharedRef<class FSlateFontCache> GameThreadFontCache;
 	TSharedRef<class FSlateFontCache> RenderThreadFontCache;
 
 	TSharedRef<class FSlateFontMeasure> GameThreadFontMeasure;
 	TSharedRef<class FSlateFontMeasure> RenderThreadFontMeasure;
+
+	FOnReleaseFontResources OnReleaseResourcesDelegate;
 };
 
 
@@ -153,15 +168,10 @@ class SLATECORE_API FSlateRenderer
 public:
 
 	/** Constructor. */
-	explicit FSlateRenderer(const TSharedRef<FSlateFontServices>& InSlateFontServices)
-		: SlateFontServices(InSlateFontServices)
-	{
-	}
+	explicit FSlateRenderer(const TSharedRef<FSlateFontServices>& InSlateFontServices);
 
 	/** Virtual destructor. */
-	virtual ~FSlateRenderer()
-	{
-	}
+	virtual ~FSlateRenderer();
 
 public:
 
@@ -248,7 +258,7 @@ public:
 	FOnPostResizeWindowBackbuffer& OnPostResizeWindowBackBuffer() { return PostResizeBackBufferDelegate; }
 
 	/** Callback on the render thread after slate rendering finishes and right before present is called */
-	DECLARE_DELEGATE_OneParam(FOnBackBufferReadyToPresent, const FTexture2DRHIRef&);
+	DECLARE_MULTICAST_DELEGATE_TwoParams(FOnBackBufferReadyToPresent, SWindow&, const FTexture2DRHIRef&);
 	FOnBackBufferReadyToPresent& OnBackBufferReadyToPresent() { return OnBackBufferReadyToPresentDelegate; }
 
 	/** 
@@ -308,6 +318,9 @@ public:
 	/** Called when a window is destroyed to give the renderer a chance to free resources */
 	virtual void OnWindowDestroyed( const TSharedRef<SWindow>& InWindow ) = 0;
 	
+	/** Called when a window is finished being reshaped */
+	virtual void OnWindowFinishReshaped(const TSharedPtr<SWindow>& InWindow) {};
+
 	/**
 	 * Returns the viewport rendering resource (backbuffer) for the provided window
 	 *
@@ -444,19 +457,6 @@ public:
 	virtual ISlateAtlasProvider* GetFontAtlasProvider();
 
 	/**
-	 * Converts and caches the elements list data as the final rendered vertex and index buffer data,
-	 * returning a handle to it to allow issuing future draw commands using it.
-	 */
-	virtual TSharedRef<FSlateRenderDataHandle, ESPMode::ThreadSafe> CacheElementRenderData(const ILayoutCache* Cacher, FSlateWindowElementList& ElementList);
-
-	/**
-	 * Releases the caching resources used on the render thread for the provided ILayoutCache.  This is
-	 * should be the kind of operation you perform when the ILayoutCache is being destroyed and will no longer
-	 * be needing to draw anything again.
-	 */
-	virtual void ReleaseCachingResourcesFor(const ILayoutCache* Cacher);
-
-	/**
 	 * Copies all slate windows out to a buffer at half resolution with debug information
 	 * like the mouse cursor and any keypresses.
 	 */
@@ -481,6 +481,9 @@ public:
 	/** Reset the internal Scene tracking.*/
 	virtual void ClearScenes() = 0;
 
+	virtual void DestroyCachedFastPathRenderingData(struct FSlateCachedFastPathRenderingData* VertexData);
+	virtual void DestroyCachedFastPathElementData(struct FSlateCachedElementData* ElementData);
+
 	virtual bool HasLostDevice() const { return false; }
 
 	/**
@@ -497,6 +500,8 @@ private:
 	// Non-copyable
 	FSlateRenderer(const FSlateRenderer&);
 	FSlateRenderer& operator=(const FSlateRenderer&);
+
+	void HandleFontCacheReleaseResources(const class FSlateFontCache& InFontCache);
 
 protected:
 

@@ -1,11 +1,10 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "LMCore.h"
 #include "Misc/Guid.h"
 #include "HAL/PlatformProcess.h"
 #include "HAL/FileManager.h"
 #include "HAL/PlatformTime.h"
-#include "Templates/ScopedPointer.h"
 #include "UnrealLightmass.h"
 #include "Misc/Paths.h"
 #include "Templates/UniquePtr.h"

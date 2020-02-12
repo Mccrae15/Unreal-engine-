@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 using UnrealBuildTool;
 
@@ -18,7 +18,8 @@ public class GeometryCacheEd : ModuleRules
                 "RHI",		
                 "UnrealEd",
 				"AssetTools",
-                "GeometryCache"
+                "GeometryCache",
+				"ToolMenus",
 			}
 		);
 	}

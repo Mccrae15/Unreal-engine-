@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -61,6 +61,15 @@ struct FGameplayDebuggerDebugActor
 	int32 SyncCounter;
 };
 
+USTRUCT()
+struct FGameplayDebuggerVisLogSync
+{
+	GENERATED_USTRUCT_BODY()
+
+	UPROPERTY()
+	FString DeviceIDs;
+};
+
 DECLARE_MULTICAST_DELEGATE_TwoParams(FNotifyGameplayDebuggerOwnerChange, AGameplayDebuggerCategoryReplicator*, APlayerController* /** Old Owner */);
 
 UCLASS(NotBlueprintable, NotBlueprintType, notplaceable, noteditinlinenew, hidedropdown, Transient)
@@ -90,7 +99,7 @@ public:
 	void SetCategoryEnabled(int32 CategoryId, bool bEnable);
 
 	/** [ALL] set actor for debugging */
-	void SetDebugActor(AActor* Actor);
+	void SetDebugActor(AActor* Actor, bool bSelectInEditor = false);
 
 	/** [ALL] send input event to category */
 	void SendCategoryInputEvent(int32 CategoryId, int32 HandlerId);
@@ -109,6 +118,8 @@ public:
 
 	/** get sync counter, increased with every change of DebugActor */
 	int16 GetDebugActorCounter() const { return DebugActor.SyncCounter; }
+
+	const FGameplayDebuggerVisLogSync& GetVisLogSyncData() const { return VisLogSync; }
 
 	/** get player controller owning this replicator */
 	APlayerController* GetReplicationOwner() const { return OwnerPC; }
@@ -153,6 +164,9 @@ protected:
 	UPROPERTY(Replicated)
 	FGameplayDebuggerDebugActor	DebugActor;
 
+	UPROPERTY(Replicated)
+	FGameplayDebuggerVisLogSync	VisLogSync;
+
 	/** rendering component needs to attached to some actor, and this is as good as any */
 	UPROPERTY()
 	UGameplayDebuggerRenderingComponent* RenderingComp;
@@ -183,7 +197,7 @@ protected:
 	void ServerSetEnabled(bool bEnable);
 
 	UFUNCTION(Server, Reliable, WithValidation, meta = (CallInEditor = "true"))
-	void ServerSetDebugActor(AActor* Actor);
+	void ServerSetDebugActor(AActor* Actor, bool bSelectInEditor);
 
 	UFUNCTION(Server, Reliable, WithValidation, meta = (CallInEditor = "true"))
 	void ServerSetCategoryEnabled(int32 CategoryId, bool bEnable);

@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -7,17 +7,25 @@
 #include "Misc/MemStack.h"
 //#include "Animation/AnimationAsset.h"
 #include "Animation/AnimLinkableElement.h"
+#include "Animation/AnimEnums.h"
+#include "Misc/SecureHash.h"
 #include "AnimTypes.generated.h"
 
 struct FMarkerPair;
 struct FMarkerSyncAnimPosition;
 struct FPassedMarker;
 
+class FMemoryReader;
+class FMemoryWriter;
+
 // Disable debugging information for shipping and test builds.
 #define ENABLE_ANIM_DEBUG (1 && !(UE_BUILD_SHIPPING || UE_BUILD_TEST))
 
 #define DEFAULT_SAMPLERATE			30.f
 #define MINIMUM_ANIMATION_LENGTH	(1/DEFAULT_SAMPLERATE)
+
+// Enable this if you want to locally measure detailed anim perf.  Disabled by default as it is introduces a lot of additional profile markers and associated overhead.
+#define ENABLE_VERBOSE_ANIM_PERF_TRACKING 0
 
 namespace EAnimEventTriggerOffsets
 {
@@ -42,7 +50,7 @@ enum EBoneAxis
 
 
 /** Enum for controlling which reference frame a controller is applied in. */
-UENUM()
+UENUM(BlueprintType)
 enum EBoneControlSpace
 {
 	/** Set absolute position of bone in world space. */
@@ -177,6 +185,12 @@ public:
 		SkipFrames = InMaxSkippedFrames;
 	}
 
+	/** Gets the number of expected frames to be skipped by URO */
+	int16 GetMaxSkippedFrames() const
+	{
+		return SkipFrames;
+	}
+
 	/** Clear the internal counters and frame skip */
 	void Reset()
 	{
@@ -266,7 +280,7 @@ public:
  * which has its Notify method called and passed to the animation.
  */
 USTRUCT(BlueprintType)
-struct FAnimNotifyEvent : public FAnimLinkableElement
+struct ENGINE_VTABLE FAnimNotifyEvent : public FAnimLinkableElement
 {
 	GENERATED_USTRUCT_BODY()
 
@@ -332,6 +346,10 @@ struct FAnimNotifyEvent : public FAnimLinkableElement
 	/** Color of Notify in editor */
 	UPROPERTY()
 	FColor NotifyColor;
+
+	/** Guid for tracking notifies in editor */
+	UPROPERTY()
+	FGuid Guid;
 #endif // WITH_EDITORONLY_DATA
 
 	/** 'Track' that the notify exists on, used for visual placement in editor and sorting priority in runtime */
@@ -374,6 +392,11 @@ public:
 	virtual ~FAnimNotifyEvent()
 	{
 	}
+
+#if WITH_EDITORONLY_DATA
+	ENGINE_API bool Serialize(FArchive& Ar);
+	ENGINE_API void PostSerialize(const FArchive& Ar);
+#endif
 
 	/** Updates trigger offset based on a combination of predicted offset and current offset */
 	ENGINE_API void RefreshTriggerOffset(EAnimEventTriggerOffsets::Type PredictedOffsetType);
@@ -418,6 +441,17 @@ public:
 	ENGINE_API FName GetNotifyEventName() const;
 };
 
+#if WITH_EDITORONLY_DATA
+template<> struct TStructOpsTypeTraits<FAnimNotifyEvent> : public TStructOpsTypeTraitsBase2<FAnimNotifyEvent>
+{
+	enum 
+	{ 
+		WithSerializer = true,
+		WithPostSerialize = true
+	};
+};
+#endif
+
 // Used by UAnimSequenceBase::SortNotifies() to sort its Notifies array
 FORCEINLINE bool FAnimNotifyEvent::operator<(const FAnimNotifyEvent& Other) const
 {
@@ -441,7 +475,15 @@ FORCEINLINE bool FAnimNotifyEvent::operator<(const FAnimNotifyEvent& Other) cons
 USTRUCT(BlueprintType)
 struct FAnimSyncMarker
 {
-	GENERATED_USTRUCT_BODY()
+	GENERATED_BODY()
+
+	FAnimSyncMarker()
+		: MarkerName(NAME_None)
+		, Time(0.0f)
+#if WITH_EDITORONLY_DATA
+		, TrackIndex(0)
+#endif
+	{}
 
 	// The name of this marker
 	UPROPERTY(BlueprintReadOnly, Category=Animation)
@@ -455,11 +497,28 @@ struct FAnimSyncMarker
 	// The editor track this marker sits on
 	UPROPERTY()
 	int32 TrackIndex;
+
+	UPROPERTY()
+	FGuid Guid;
+#endif
+	
+#if WITH_EDITORONLY_DATA
+	ENGINE_API bool Serialize(FArchive& Ar);
 #endif
 
 	/** This can be used with the Sort() function on a TArray of FAnimSyncMarker to sort the notifies array by time, earliest first. */
 	ENGINE_API bool operator <(const FAnimSyncMarker& Other) const { return Time < Other.Time; }
 };
+
+#if WITH_EDITORONLY_DATA
+template<> struct TStructOpsTypeTraits<FAnimSyncMarker> : public TStructOpsTypeTraitsBase2<FAnimSyncMarker>
+{
+	enum 
+	{ 
+		WithSerializer = true
+	};
+};
+#endif
 
 /**
  * Keyframe position data for one track.  Pos(i) occurs at Time(i).  Pos.Num() always equals Time.Num().
@@ -512,12 +571,21 @@ namespace ECurveBlendOption
 {
 	enum Type
 	{
-		/** Find Max Weight of curve and use that weight. */
-		MaxWeight,
+		/* Last pose that contains valid curve value override it. 
+		 * Unfortunately this has been default behavior for a long time, so we still keep it. */
+		Override, // redirect from MaxWeight old legacy behavior
+		/** Only set the value if the previous pose doesn't have the curve value. */
+		DoNotOverride, 
 		/** Normalize By Sum of Weight and use it to blend. */
 		NormalizeByWeight,
 		/** Blend By Weight without normalizing*/
-		BlendByWeight
+		BlendByWeight, 
+		/** Use Base Pose for all curve values. Do not blend */
+		UseBasePose,
+		/** Find the highest curve value from multiple poses and use that. */
+		UseMaxValue,
+		/** Find the lowest curve value from multiple poses and use that. */
+		UseMinValue,
 	};
 }
 
@@ -729,3 +797,135 @@ namespace EComponentType
 		ScaleZ
 	};
 }
+
+// @note We have a plan to support skeletal hierarchy. When that happens, we'd like to keep skeleton indexing.
+USTRUCT()
+struct ENGINE_API FTrackToSkeletonMap
+{
+	GENERATED_USTRUCT_BODY()
+
+	// Index of Skeleton.BoneTree this Track belongs to.
+	UPROPERTY()
+	int32 BoneTreeIndex;
+
+
+	FTrackToSkeletonMap()
+		: BoneTreeIndex(0)
+	{
+	}
+
+	FTrackToSkeletonMap(int32 InBoneTreeIndex)
+		: BoneTreeIndex(InBoneTreeIndex)
+	{
+	}
+
+	friend FArchive& operator<<(FArchive& Ar, FTrackToSkeletonMap &Item)
+	{
+		return Ar << Item.BoneTreeIndex;
+	}
+};
+
+/**
+* Raw keyframe data for one track.Each array will contain either NumFrames elements or 1 element.
+* One element is used as a simple compression scheme where if all keys are the same, they'll be
+* reduced to 1 key that is constant over the entire sequence.
+*/
+USTRUCT()
+struct ENGINE_API FRawAnimSequenceTrack
+{
+	GENERATED_USTRUCT_BODY()
+
+	/** Position keys. */
+	UPROPERTY()
+	TArray<FVector> PosKeys;
+
+	/** Rotation keys. */
+	UPROPERTY()
+	TArray<FQuat> RotKeys;
+
+	/** Scale keys. */
+	UPROPERTY()
+	TArray<FVector> ScaleKeys;
+
+	// Serializer.
+	friend FArchive& operator<<(FArchive& Ar, FRawAnimSequenceTrack& T)
+	{
+		T.PosKeys.BulkSerialize(Ar);
+		T.RotKeys.BulkSerialize(Ar);
+
+		if (Ar.UE4Ver() >= VER_UE4_ANIM_SUPPORT_NONUNIFORM_SCALE_ANIMATION)
+		{
+			T.ScaleKeys.BulkSerialize(Ar);
+		}
+
+		return Ar;
+	}
+};
+
+
+/**
+ * Encapsulates commonly useful data about bones.
+ */
+class FBoneData
+{
+public:
+	FQuat		Orientation;
+	FVector		Position;
+	/** Bone name. */
+	FName		Name;
+	/** Direct descendants.  Empty for end effectors. */
+	TArray<int32> Children;
+	/** List of bone indices from parent up to root. */
+	TArray<int32>	BonesToRoot;
+	/** List of end effectors for which this bone is an ancestor.  End effectors have only one element in this list, themselves. */
+	TArray<int32>	EndEffectors;
+	/** If a Socket is attached to that bone */
+	bool		bHasSocket;
+	/** If matched as a Key end effector */
+	bool		bKeyEndEffector;
+
+	/**	@return		Index of parent bone; -1 for the root. */
+	int32 GetParent() const
+	{
+		return GetDepth() ? BonesToRoot[0] : -1;
+	}
+	/**	@return		Distance to root; 0 for the root. */
+	int32 GetDepth() const
+	{
+		return BonesToRoot.Num();
+	}
+	/** @return		true if this bone is an end effector (has no children). */
+	bool IsEndEffector() const
+	{
+		return Children.Num() == 0;
+	}
+};
+
+#if 0
+template <typename ArrayType>
+FGuid GetArrayGuid(const TArray<ArrayType>& Array)
+{
+	FSHA1 Sha;
+	Sha.Update((uint8*)Array.GetData(), Array.Num() * Array.GetTypeSize());
+
+	Sha.Final();
+
+	uint32 Hash[5];
+	Sha.GetHash((uint8*)Hash);
+	FGuid Guid(Hash[0] ^ Hash[4], Hash[1], Hash[2], Hash[3]);
+	return Guid;
+}
+
+template <typename ArrayType>
+void DebugLogArray(const TArray<ArrayType>& Array)
+{
+	FPlatformMisc::LowLevelOutputDebugStringf(TEXT("Array: %i %s\n"), Array.Num(), *GetArrayGuid(Array).ToString());
+	for (int32 i = 0; i < Array.Num(); ++i)
+	{
+		FPlatformMisc::LowLevelOutputDebugStringf(TEXT("\t%i %s\n"), i, *Array[i].ToString());
+	}
+}
+
+template <>
+void DebugLogArray(const TArray<FRawAnimSequenceTrack>& RawData);
+#endif

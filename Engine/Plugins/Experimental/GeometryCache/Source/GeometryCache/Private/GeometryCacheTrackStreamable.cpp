@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "GeometryCacheTrackStreamable.h"
 #include "GeometryCacheStreamingManager.h"
@@ -11,6 +11,7 @@
 DECLARE_CYCLE_STAT(TEXT("Decode Mesh Frame"), STAT_UpdateMeshData, STATGROUP_GeometryCache);
 DECLARE_CYCLE_STAT(TEXT("Encode Mesh Frame"), STAT_AddMeshSample, STATGROUP_GeometryCache);
 
+#if WITH_EDITOR
 /**
  * Creates a totally invalid UGeometryCacheTrackStreamable instance specially set up to be very large
  * and then tries to serialize it to smoke-test the serialization of large assets and bulk data.
@@ -59,7 +60,7 @@ FAutoConsoleCommand TriggerSerializationCrashCommand(
 	TEXT("Test a crash searializing large bulk data object"),
 	FConsoleCommandDelegate::CreateStatic(UGeometryCacheTrackStreamable::TriggerSerializationCrash)
 );
-
+#endif
 
 /*-----------------------------------------------------------------------------
 UCompressedGeometryCacheTrack
@@ -204,9 +205,8 @@ void UGeometryCacheTrackStreamable::EndCoding()
 			else if (bVisible != VisibilitySample.Value)
 			{				
 				TRange<float> VisibilityRange(RangeStart, ImportVisibilitySamples[SampleIndex].Key);
-				FVisibilitySample Sample;
+				FVisibilitySample Sample(bVisible);
 				Sample.Range = VisibilityRange;
-				Sample.bVisibilityState = bVisible;
 				VisibilitySamples.Add(Sample);
 				
 				bVisible = ImportVisibilitySamples[SampleIndex].Value;
@@ -215,9 +215,8 @@ void UGeometryCacheTrackStreamable::EndCoding()
 			else if (SampleIndex == ImportVisibilitySamples.Num() - 1)
 			{
 				TRange<float> VisibilityRange(RangeStart, ImportVisibilitySamples[SampleIndex].Key);
-				FVisibilitySample Sample;
+				FVisibilitySample Sample(ImportVisibilitySamples[SampleIndex].Value);
 				Sample.Range = VisibilityRange;
-				Sample.bVisibilityState = ImportVisibilitySamples[SampleIndex].Value;
 				VisibilitySamples.Add(Sample);
 			}
 		}
@@ -225,9 +224,8 @@ void UGeometryCacheTrackStreamable::EndCoding()
 	else
 	{
 		TRange<float> VisibilityRange(StartSampleTime, Samples.Last().SampleTime);
-		FVisibilitySample Sample;
+		FVisibilitySample Sample(true);
 		Sample.Range = VisibilityRange;
-		Sample.bVisibilityState = true;
 
 		VisibilitySamples.Add(Sample);
 	}
@@ -487,7 +485,7 @@ const FGeometryCacheTrackStreamableSampleInfo& UGeometryCacheTrackStreamable::Ge
 	return Samples[SampleID];
 }
 
-const FGeometryCacheTrackStreamableSampleInfo& UGeometryCacheTrackStreamable::GetSampleInfo(float Time, bool bLooping) const
+const FGeometryCacheTrackSampleInfo& UGeometryCacheTrackStreamable::GetSampleInfo(float Time, bool bLooping)
 {
 	return GetSampleInfo(FindSampleIndexFromTime(Time, bLooping));
 }
@@ -507,6 +505,7 @@ const FVisibilitySample& UGeometryCacheTrackStreamable::GetVisibilitySample(floa
 			return Sample;
 		}
 	}
+	ensure(VisibilitySamples.Num());
 	return VisibilitySamples.Last();
 }
 

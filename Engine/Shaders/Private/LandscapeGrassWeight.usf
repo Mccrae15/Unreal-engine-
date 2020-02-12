@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 /*=============================================================================
 	LandscapeGrassWeightVertexShader.usf: Vertex shader to dump the weight map for Landscape Grass
@@ -55,13 +55,14 @@ int OutputPass;
 
 // Pixel Shader
 void PSMain( 
-	FLandscapeGrassWeightInterpolantsVSToPS Interpolants,
-	in float4 SvPosition : SV_Position
+	FLandscapeGrassWeightInterpolantsVSToPS Interpolants
 	OPTIONAL_IsFrontFace,
 	out half4 OutColor	: SV_Target0
 	)
 {
 	ResolvedView = ResolveView();
+
+	float4 SvPosition = Interpolants.Position;
 
 	FMaterialPixelParameters MaterialParameters = GetMaterialPixelParameters(Interpolants.FactoryInterpolants, SvPosition);
 	FPixelMaterialInputs PixelMaterialInputs;
@@ -128,6 +129,46 @@ void PSMain(
 		#endif
 		break;
 #endif // NUM_MATERIAL_OUTPUTS_GETGRASSWEIGHT > 6
+#if NUM_MATERIAL_OUTPUTS_GETGRASSWEIGHT > 10
+	case 3:
+		OutColor.x = GetGrassWeight10(MaterialParameters);
+		#if NUM_MATERIAL_OUTPUTS_GETGRASSWEIGHT > 11
+			OutColor.y = GetGrassWeight11(MaterialParameters);
+		#else
+			OutColor.y = 0;
+		#endif
+		#if NUM_MATERIAL_OUTPUTS_GETGRASSWEIGHT > 12
+			OutColor.z = GetGrassWeight12(MaterialParameters);
+		#else
+			OutColor.z = 0;
+		#endif
+		#if NUM_MATERIAL_OUTPUTS_GETGRASSWEIGHT > 13
+			OutColor.w = GetGrassWeight13(MaterialParameters);
+		#else
+			OutColor.w = 0;
+		#endif
+		break;
+#endif // NUM_MATERIAL_OUTPUTS_GETGRASSWEIGHT > 10
+#if NUM_MATERIAL_OUTPUTS_GETGRASSWEIGHT > 14
+	case 4:
+		OutColor.x = GetGrassWeight14(MaterialParameters);
+		#if NUM_MATERIAL_OUTPUTS_GETGRASSWEIGHT > 15
+			OutColor.y = GetGrassWeight15(MaterialParameters);
+		#else
+			OutColor.y = 0;
+		#endif
+		#if NUM_MATERIAL_OUTPUTS_GETGRASSWEIGHT > 16
+			OutColor.z = GetGrassWeight16(MaterialParameters);
+		#else
+			OutColor.z = 0;
+		#endif
+		#if NUM_MATERIAL_OUTPUTS_GETGRASSWEIGHT > 17
+			OutColor.w = GetGrassWeight17(MaterialParameters);
+		#else
+			OutColor.w = 0;
+		#endif
+		break;
+#endif // NUM_MATERIAL_OUTPUTS_GETGRASSWEIGHT > 14
 	default:
 		OutColor = float4(0,0,0,0);
 		break;

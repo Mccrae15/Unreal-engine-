@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -29,12 +29,14 @@ public:
 	virtual void SetConstraintId(const FGuid& InConstraintId, const FMovieSceneSequenceID& SequenceID);
 
 	/** Gets the constraint binding for this Constraint section */
+	UFUNCTION(BlueprintCallable, Category = "Movie Scene Section")
 	const FMovieSceneObjectBindingID& GetConstraintBindingID() const
 	{
 		return ConstraintBindingID;
 	}
 
 	/** Sets the constraint binding for this Constraint section */
+	UFUNCTION(BlueprintPure, Category = "Movie Scene Section")
 	void SetConstraintBindingID(const FMovieSceneObjectBindingID& InConstraintBindingID)
 	{
 		ConstraintBindingID = InConstraintBindingID;

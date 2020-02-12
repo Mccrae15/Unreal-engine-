@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 /*=============================================================================================
 BuildMipTreeCS.usf: Build MipTree PDF structure
@@ -24,12 +24,11 @@ float CalcSkyLightPdf(uint2 Pixel)
 	uint2 MipPixel = 0;
 	float MipPdf = 1.0;
 	uint StopLevel = MipLevel;
-	uint MipCount = Log2(Dimensions.x);
+	uint MipCount = log2(Dimensions.x);
 	for (uint Index = 0; Index < MipCount - StopLevel; ++Index)
 	{
 		uint MipIndex = MipCount - Index - 1;
 
-		// #dxr_todo: Use float4?
 		float Cdf[4];
 		Cdf[0] = SampleMipTree(MipPixel, MipIndex);
 		Cdf[1] = Cdf[0] + SampleMipTree(MipPixel + uint2(1, 0), MipIndex);

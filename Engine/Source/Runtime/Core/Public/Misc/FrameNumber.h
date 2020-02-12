@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -40,6 +40,7 @@ struct FFrameNumber
 
 	FFrameNumber& operator+=(FFrameNumber RHS)                    { Value += RHS.Value; return *this; }
 	FFrameNumber& operator-=(FFrameNumber RHS)                    { Value -= RHS.Value; return *this; }
+	FFrameNumber& operator%=(FFrameNumber RHS)                    { Value %= RHS.Value; return *this; }
 
 	FFrameNumber& operator++()                                    { ++Value; return *this; }
 	FFrameNumber& operator--()                                    { --Value; return *this; }
@@ -57,6 +58,7 @@ struct FFrameNumber
 
 	friend FFrameNumber operator+(FFrameNumber A, FFrameNumber B) { return FFrameNumber(A.Value + B.Value); }
 	friend FFrameNumber operator-(FFrameNumber A, FFrameNumber B) { return FFrameNumber(A.Value - B.Value); }
+	friend FFrameNumber operator%(FFrameNumber A, FFrameNumber B) { return FFrameNumber(A.Value % B.Value); }
 
 	friend FFrameNumber operator-(FFrameNumber A)                 { return FFrameNumber(-A.Value); }
 

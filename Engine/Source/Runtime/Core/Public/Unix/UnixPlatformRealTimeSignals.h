@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -10,3 +10,8 @@
 
 // Used in UnixSignalGameHitchHeartBeat.cpp for a hitch signal handler
 #define HEART_BEAT_SIGNAL SIGRTMIN + 3
+
+// Skip SIGRTMIN + 4 default signal used in VTune
+
+// Using in UnixPlatformCrashContext.cpp/UnixPlatformStackWalk.cpp for gathering current callstack from a thread
+#define THREAD_CALLSTACK_GENERATOR SIGRTMIN + 5

@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -28,7 +28,7 @@ namespace Audio
 		bool GetNumOutputDevices(uint32& OutNumOutputDevices) override;
 		bool GetOutputDeviceInfo(const uint32 InDeviceIndex, FAudioPlatformDeviceInfo& OutInfo) override;
 		bool GetDefaultOutputDeviceIndex(uint32& OutDefaultDeviceIndex) const override;
-		bool OpenAudioStream(const FAudioMixerOpenStreamParams& Params) override;
+		virtual bool OpenAudioStream(const FAudioMixerOpenStreamParams& Params) override;
 		bool CloseAudioStream() override;
 		bool StartAudioStream() override;
 		bool StopAudioStream() override;
@@ -44,6 +44,14 @@ namespace Audio
 		//~ End IAudioMixerPlatformInterface Interface
 
 		void HandleOnBufferEnd(uint8* InOutputBuffer, int32 InOutputBufferLength);
+
+		SDL_AudioFormat GetPlatformAudioFormat() { return AUDIO_F32; }
+		Uint8 GetPlatformChannels() { return 6; }
+		EAudioMixerStreamDataFormat::Type GetAudioStreamFormat() { return EAudioMixerStreamDataFormat::Float; }
+		int32 GetAudioStreamChannelSize() { return sizeof(float); }
+
+	protected:
+		FCriticalSection OutputBufferMutex;
 
 	private:
 

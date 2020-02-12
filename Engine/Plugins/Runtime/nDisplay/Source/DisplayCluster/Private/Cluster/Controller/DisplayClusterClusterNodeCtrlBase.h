@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -24,9 +24,6 @@ public:
 	{ return false; }
 
 protected:
-	//////////////////////////////////////////////////////////////////////////////////////////////
-	// FDisplayClusterNodeCtrlBase
-	//////////////////////////////////////////////////////////////////////////////////////////////
-	virtual bool InitializeStereo() override;
+	virtual void OverrideMasterAddr(FString& Addr)
+	{ }
 };
-

@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 using System;
 using System.Collections.Concurrent;
@@ -58,6 +58,14 @@ namespace UnrealBuildTool
 		public string Name
 		{
 			get { return Info.Name; }
+		}
+
+		/// <summary>
+		/// The full name of this directory
+		/// </summary>
+		public string FullName
+		{
+			get { return Location.FullName; }
 		}
 
 		/// <summary>
@@ -280,7 +288,9 @@ namespace UnrealBuildTool
 				{
 					foreach(FileInfo FileInfo in Info.EnumerateFiles())
 					{
-						NewFiles[FileInfo.Name] = FileItem.GetItemByFileInfo(FileInfo);
+						FileItem FileItem = FileItem.GetItemByFileInfo(FileInfo);
+						FileItem.UpdateCachedDirectory(this);
+						NewFiles[FileInfo.Name] = FileItem;
 					}
 				}
 				Files = NewFiles;
@@ -298,8 +308,8 @@ namespace UnrealBuildTool
 		}
 
 		/// <summary>
-		/// Attempts to get a file from this directory by name. Unlike creating a file item and checking whether it exists, this does not
-		/// cause any I/O to check whether it exists, nor does it create a permanent FileItem object.
+		/// Attempts to get a file from this directory by name. Unlike creating a file item and checking whether it exists, this will
+		/// not create a permanent FileItem object if it does not exist.
 		/// </summary>
 		/// <param name="Name">Name of the file</param>
 		/// <param name="OutFile">If successful receives the matching file item with this name</param>

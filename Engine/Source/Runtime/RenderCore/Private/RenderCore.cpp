@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 /*=============================================================================
 	RenderCore.h: Render core module implementation.
@@ -56,12 +56,12 @@ DEFINE_STAT(STAT_DynamicPrimitiveDrawTime);
 DEFINE_STAT(STAT_StaticDrawListDrawTime);
 DEFINE_STAT(STAT_BasePassDrawTime);
 DEFINE_STAT(STAT_DepthDrawTime);
+DEFINE_STAT(STAT_WaterPassDrawTime);
 DEFINE_STAT(STAT_DynamicShadowSetupTime);
 DEFINE_STAT(STAT_RenderQueryResultTime);
 // Use 'stat initviews' to get more detail
 DEFINE_STAT(STAT_InitViewsTime);
-DEFINE_STAT(STAT_RayTracedMeshCommands);
-DEFINE_STAT(STAT_RayTracedBvhBuilding);
+DEFINE_STAT(STAT_GatherRayTracingWorldInstances);
 DEFINE_STAT(STAT_InitViewsPossiblyAfterPrepass);
 // Measures the time spent in RenderViewFamily_RenderThread
 // Note that this is not the total rendering thread time, any other rendering commands will not be counted here
@@ -147,6 +147,7 @@ DEFINE_STAT(STAT_PerObjectShadows);
 DEFINE_STAT(STAT_PreShadows);
 DEFINE_STAT(STAT_CachedPreShadows);
 DEFINE_STAT(STAT_ShadowDynamicPathDrawCalls);
+DEFINE_STAT(STAT_AddSubjectPrimitive);
 
 DEFINE_STAT(STAT_TranslucentInjectTime);
 DEFINE_STAT(STAT_DirectLightRenderingTime);
@@ -173,11 +174,14 @@ DEFINE_STAT(STAT_AddSceneLightTime);
 
 DEFINE_STAT(STAT_RemoveScenePrimitiveTime);
 DEFINE_STAT(STAT_AddScenePrimitiveRenderThreadTime);
+DEFINE_STAT(STAT_UpdateScenePrimitiveRenderThreadTime);
 DEFINE_STAT(STAT_UpdatePrimitiveTransformRenderThreadTime);
+DEFINE_STAT(STAT_FlushAsyncLPICreation);
 
 DEFINE_STAT(STAT_RemoveScenePrimitiveGT);
 DEFINE_STAT(STAT_AddScenePrimitiveGT);
 DEFINE_STAT(STAT_UpdatePrimitiveTransformGT);
+DEFINE_STAT(STAT_UpdateCustomPrimitiveDataGT);
 
 DEFINE_STAT(STAT_Scene_SetShaderMapsOnMaterialResources_RT);
 DEFINE_STAT(STAT_Scene_UpdateStaticDrawLists_RT);
@@ -310,3 +314,5 @@ RENDERCORE_API bool IsHDRAllowed()
 
 	return false;
 }
+
+FMatrix FVirtualTextureUniformData::Invalid = FMatrix::Identity;

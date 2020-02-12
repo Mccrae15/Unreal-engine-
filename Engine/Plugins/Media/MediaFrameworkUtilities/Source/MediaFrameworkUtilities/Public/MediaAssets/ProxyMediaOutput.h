@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -59,13 +59,23 @@ public:
 	 */
 	void SetDynamicMediaOutput(UMediaOutput* InProxy);
 
+
+#if WITH_EDITOR
+	/**
+	 * Set the media output proxy.
+	 *
+	 * @param InProxy The proxy to use.
+	 */
+	void SetMediaOutput(UMediaOutput* InProxy);
+#endif
+
 public:
 
 	//~ UMediaOutput interface
 	virtual bool Validate(FString& OutFailureReason) const override;
 	virtual FIntPoint GetRequestedSize() const override;
 	virtual EPixelFormat GetRequestedPixelFormat() const override;
-	virtual EMediaCaptureConversionOperation GetConversionOperation() const override;
+	virtual EMediaCaptureConversionOperation GetConversionOperation(EMediaCaptureSourceType InSourceType) const override;
 
 protected:
 

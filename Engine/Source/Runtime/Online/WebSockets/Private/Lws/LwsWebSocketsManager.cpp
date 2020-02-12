@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "LwsWebSocketsManager.h"
 
@@ -9,13 +9,15 @@
 #if WITH_SSL
 #include "Ssl.h"
 #endif
+#include "HttpModule.h"
 #include "WebSocketsLog.h"
+#include "Containers/BackgroundableTicker.h"
 #include "HAL/PlatformTime.h"
 #include "HAL/PlatformProcess.h"
 #include "HAL/LowLevelMemTracker.h"
 #include "Misc/ConfigCacheIni.h"
+#include "Misc/CoreDelegates.h"
 #include "Stats/Stats.h"
-#include "HttpModule.h"
 
 namespace {
 	static const struct lws_extension LwsExtensions[] = {
@@ -97,6 +99,12 @@ void FLwsWebSocketsManager::InitWebSockets(TArrayView<const FString> Protocols)
 	ContextInfo.uid = -1;
 	ContextInfo.gid = -1;
 	ContextInfo.options |= LWS_SERVER_OPTION_PEER_CERT_NOT_REQUIRED | LWS_SERVER_OPTION_DISABLE_OS_CA_CERTS | LWS_SERVER_OPTION_DO_SSL_GLOBAL_INIT;
+	ContextInfo.max_http_header_data = 0;
+
+	int32 MaxHttpHeaderData = 1024 * 32;
+	GConfig->GetInt(TEXT("WebSockets.LibWebSockets"), TEXT("MaxHttpHeaderData"), MaxHttpHeaderData, GEngineIni);
+	ContextInfo.max_http_header_data2 = MaxHttpHeaderData;
+	ContextInfo.pt_serv_buf_size = MaxHttpHeaderData;
 	
 	// HTTP proxy
 	const FString& ProxyAddress = FHttpModule::Get().GetProxyAddress();
@@ -152,13 +160,18 @@ void FLwsWebSocketsManager::InitWebSockets(TArrayView<const FString> Protocols)
 	}
 
 	// Setup our game thread tick
-	FTicker& Ticker = FTicker::GetCoreTicker();
 	FTickerDelegate TickDelegate = FTickerDelegate::CreateRaw(this, &FLwsWebSocketsManager::GameThreadTick);
-	TickHandle = Ticker.AddTicker(TickDelegate, 0.0f);
+	TickHandle = FBackgroundableTicker::GetCoreTicker().AddTicker(TickDelegate, 0.0f);
 }
 
 void FLwsWebSocketsManager::ShutdownWebSockets()
 {
+	if (TickHandle.IsValid())
+	{
+		FBackgroundableTicker::GetCoreTicker().RemoveTicker(TickHandle);
+		TickHandle.Reset();
+	}
+
 	if (Thread)
 	{
 		Thread->Kill(true);
@@ -349,7 +362,11 @@ void FLwsWebSocketsManager::Tick()
 			}
 			else
 			{
-				SocketsToStop.Enqueue(SocketToStart);
+				// avoid destroying it twice
+				if (!SocketsDestroyedDuringService.Contains(SocketToStart))
+				{
+					SocketsToStop.Enqueue(SocketToStart);
+				}
 			}
 		}
 	}

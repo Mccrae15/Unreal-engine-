@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "Evaluation/MovieSceneEvaluationField.h"
 #include "Evaluation/MovieSceneEvaluationTemplateInstance.h"
@@ -311,8 +311,7 @@ void FMovieSceneEvaluationMetaData::DiffEntities(const FMovieSceneEvaluationMeta
 			++LastFrameKeys;
 		}
 
-		// Expired keys are torn down in reverse
-		Algo::SortBy(*ExpiredKeys, [](const FMovieSceneOrderedEvaluationKey& In){ return uint32(-1) - In.EvaluationIndex; });
+		Algo::SortBy(*ExpiredKeys, &FMovieSceneOrderedEvaluationKey::TearDownIndex);
 	}
 
 	// Add any remaining new entities
@@ -324,7 +323,7 @@ void FMovieSceneEvaluationMetaData::DiffEntities(const FMovieSceneEvaluationMeta
 			++ThisFrameKeys;
 		}
 
-		Algo::SortBy(*NewKeys, &FMovieSceneOrderedEvaluationKey::EvaluationIndex);
+		Algo::SortBy(*NewKeys, &FMovieSceneOrderedEvaluationKey::SetupIndex);
 	}
 }
 
@@ -357,8 +356,25 @@ bool FMovieSceneEvaluationMetaData::IsDirty(const FMovieSceneSequenceHierarchy& 
 
 			if (OutSubRangeToInvalidate)
 			{
-				TRange<FFrameNumber> DirtyRange = SubData ? TRange<FFrameNumber>::Hull(TRange<FFrameNumber>::Hull(SubData->PreRollRange.Value, SubData->PlayRange.Value), SubData->PostRollRange.Value) * SubData->RootToSequenceTransform.Inverse() : TRange<FFrameNumber>::All();
-				*OutSubRangeToInvalidate = TRange<FFrameNumber>::Hull(*OutSubRangeToInvalidate, DirtyRange);
+				if (SubData)
+				{
+					if (!SubData->RootToSequenceTransform.IsWarping())
+					{
+						TRange<FFrameNumber> FullSubPlayRange = TRange<FFrameNumber>::Hull(TRange<FFrameNumber>::Hull(SubData->PreRollRange.Value, SubData->PlayRange.Value), SubData->PostRollRange.Value);
+						TRange<FFrameNumber> DirtyRange = FullSubPlayRange * SubData->RootToSequenceTransform.InverseLinearOnly();
+						*OutSubRangeToInvalidate = TRange<FFrameNumber>::Hull(*OutSubRangeToInvalidate, DirtyRange);
+					}
+					else
+					{
+						TRange<FFrameNumber> DirtyRange = TRange<FFrameNumber>::All();
+						*OutSubRangeToInvalidate = TRange<FFrameNumber>::Hull(*OutSubRangeToInvalidate, DirtyRange);
+					}
+				}
+				else
+				{
+					TRange<FFrameNumber> DirtyRange = TRange<FFrameNumber>::All();
+					*OutSubRangeToInvalidate = TRange<FFrameNumber>::Hull(*OutSubRangeToInvalidate, DirtyRange);
+				}
 			}
 		}
 	}

@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -8,6 +8,10 @@
 
 class FDependsNode;
 struct FARFilter;
+
+#ifndef ASSET_REGISTRY_STATE_DUMPING_ENABLED
+	#define ASSET_REGISTRY_STATE_DUMPING_ENABLED !(UE_BUILD_SHIPPING || UE_BUILD_TEST)
+#endif
 
 /** Load/Save options used to modify how the cache is serialized. These are read out of the AssetRegistry section of Engine.ini and can be changed per platform. */
 struct FAssetRegistrySerializationOptions
@@ -91,7 +95,7 @@ public:
 	 * Does the given path contain assets?
 	 * @note This function doesn't recurse into sub-paths.
 	 */
-	 bool HasAssets(const FName PackagePath) const;
+	bool HasAssets(const FName PackagePath) const;
 
 	/**
 	 * Gets asset data for all assets that match the filter.
@@ -105,12 +109,31 @@ public:
 	bool GetAssets(const FARFilter& Filter, const TSet<FName>& PackageNamesToSkip, TArray<FAssetData>& OutAssetData) const;
 
 	/**
+	 * Enumerate asset data for all assets that match the filter.
+	 * Assets returned must satisfy every filter component if there is at least one element in the component's array.
+	 * Assets will satisfy a component if they match any of the elements in it.
+	 *
+	 * @param Filter filter to apply to the assets in the AssetRegistry
+	 * @param PackageNamesToSkip explicit list of packages to skip, because they were already added
+	 * @param Callback function to call for each asset data enumerated
+	 */
+	bool EnumerateAssets(const FARFilter& Filter, const TSet<FName>& PackageNamesToSkip, TFunctionRef<bool(const FAssetData&)> Callback) const;
+
+	/**
 	 * Gets asset data for all assets in the registry state.
 	 *
 	 * @param PackageNamesToSkip explicit list of packages to skip, because they were already added
 	 * @param OutAssetData the list of assets
 	 */
 	bool GetAllAssets(const TSet<FName>& PackageNamesToSkip, TArray<FAssetData>& OutAssetData) const;
+
+	/**
+	 * Enumerates asset data for all assets in the registry state.
+	 *
+	 * @param PackageNamesToSkip explicit list of packages to skip, because they were already added
+	 * @param Callback function to call for each asset data enumerated
+	 */
+	bool EnumerateAllAssets(const TSet<FName>& PackageNamesToSkip, TFunctionRef<bool(const FAssetData&)> Callback) const;
 
 	/**
 	 * Gets a list of packages and searchable names that are referenced by the supplied package or name. (On disk references ONLY)
@@ -186,7 +209,7 @@ public:
 	/**
 	 * Gets the asset data for the specified asset tag
 	 *
-	 * @param TagName the tag name to search for 
+	 * @param TagName the tag name to search for
 	 * @return An array of AssetData*, empty if nothing found
 	 */
 	const TArray<const FAssetData*>& GetAssetsByTagName(const FName TagName) const
@@ -205,6 +228,12 @@ public:
 	const TMap<FName, const FAssetData*>& GetObjectPathToAssetDataMap() const
 	{
 		return reinterpret_cast<const TMap<FName, const FAssetData*>&>(CachedAssetsByObjectPath);
+	}
+
+	/** Returns const version of internal Tag->AssetDatas map for fast iteration */
+	const TMap<FName, const TArray<const FAssetData*>> GetTagToAssetDatasMap() const
+	{
+		return reinterpret_cast<const TMap<FName, const TArray<const FAssetData*>>&>(CachedAssetsByTag);
 	}
 
 	/** Returns const version of internal PackageName->PackageData map for fast iteration */
@@ -236,6 +265,9 @@ public:
 	/** Adds the asset data to the lookup maps */
 	void AddAssetData(FAssetData* AssetData);
 
+	/** Finds an existing asset data based on object path and updates it with the new value and updates lookup maps */
+	void UpdateAssetData(const FAssetData& NewAssetData);
+
 	/** Updates an existing asset data with the new value and updates lookup maps */
 	void UpdateAssetData(FAssetData* AssetData, const FAssetData& NewAssetData);
 
@@ -262,6 +294,18 @@ public:
 	void PruneAssetData(const TSet<FName>& RequiredPackages, const TSet<FName>& RemovePackages, const TSet<int32> ChunksToKeep, const FAssetRegistrySerializationOptions& Options);
 	void PruneAssetData(const TSet<FName>& RequiredPackages, const TSet<FName>& RemovePackages, const FAssetRegistrySerializationOptions& Options);
 
+	
+	/**
+	 * Initializes a cache from an existing using a set of filters. This is more efficient than calling InitalizeFromExisting and then PruneAssetData.
+	 * @param ExistingState State to use initialize from
+	 * @param RequiredPackages If set, only these packages will be maintained. If empty it will keep all unless filtered by other parameters
+	 * @param RemovePackages These packages will be removed from the current set
+	 * @param ChunksToKeep The list of chunks that are allowed to remain. Any assets in other chunks are pruned. If empty, all assets are kept regardless of chunk
+	 * @param Options Serialization options to read filter info from
+	 */
+	void InitializeFromExistingAndPrune(const FAssetRegistryState& ExistingState, const TSet<FName>& RequiredPackages, const TSet<FName>& RemovePackages, const TSet<int32> ChunksToKeep, const FAssetRegistrySerializationOptions& Options);
+
+
 	/** Serialize the registry to/from a file, skipping editor only data */
 	bool Serialize(FArchive& Ar, const FAssetRegistrySerializationOptions& Options);
 
@@ -273,6 +317,15 @@ public:
 
 	/** Returns the number of assets in this state */
 	int32 GetNumAssets() const { return NumAssets; }
+
+#if ASSET_REGISTRY_STATE_DUMPING_ENABLED
+	/**
+	 * Writes out the state in textual form. Use arguments to control which segments to emit.
+	 * @param Arguments List of segments to emit. Possible values: 'ObjectPath', 'PackageName', 'Path', 'Class', 'Tag', 'Dependencies' and 'PackageData'
+	 * @param OutLines Textual representation will be written to this array.
+	 */
+	void Dump(const TArray<FString>& Arguments, TArray<FString>& OutLines) const;
+#endif
 
 private:
 	/** Find the first non-redirector dependency node starting from InDependency. */
@@ -289,6 +342,9 @@ private:
 
 	/** Shrink all contained data structures. */
 	void Shrink();
+
+	/** Filter a set of tags and output a copy of the filtered set. */
+	static void FilterTags(const FAssetDataTagMapSharedView& InTagsAndValues, FAssetDataTagMap& OutTagsAndValues, const TSet<FName>* ClassSpecificFilterlist, const FAssetRegistrySerializationOptions & Options);
 
 	/** Set up the data structures for USE_COMPACT_ASSET_REGISTRY, doesn't really belong here */
 	static void IngestIniSettingsForCompact(TArray<FString>& AsFName, TArray<FString>& AsPathName, TArray<FString>& AsLocText);

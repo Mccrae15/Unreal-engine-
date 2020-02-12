@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -59,6 +59,9 @@ public:
 
 	/** Get the size of this title the last time it was drawn */
 	FVector2D GetTitleSize() const;
+
+	/** Mark the cached title dirty */
+	void MarkDirty();
 
 protected:
 	TWeakObjectPtr<UEdGraphNode> GraphNode;
@@ -137,6 +140,9 @@ public:
 
 	/** @return the tint for the node's main body */
 	FSlateColor GetNodeBodyColor() const;
+
+	/** @return the image brush to use for the node */
+	virtual const FSlateBrush * GetNodeBodyBrush() const;
 
 	/** @return the tint for the node's title icon */
 	FSlateColor GetNodeTitleIconColor() const;
@@ -233,7 +239,7 @@ public:
 	EGraphRenderingLOD::Type GetCurrentLOD() const;
 
 	/** Called when GraphNode changes its error information, may be called when no change has actually occurred: */
-	void RefreshErrorInfo();
+	virtual void RefreshErrorInfo();
 	
 	/** Called when ed graph data is cleared, indicating this widget can no longer safely access GraphNode - forwards call to owned pins: */
 	void InvalidateGraphData();
@@ -293,7 +299,7 @@ protected:
 	FString GetErrorMessage() const {return ErrorMsg;}
 
 	/** Called to set error text on the node */
-	void UpdateErrorInfo();
+	virtual void UpdateErrorInfo();
 
 	/** Set-up the error reporting widget for the node */
 	void SetupErrorReporting();
@@ -327,6 +333,9 @@ protected:
 	virtual void SetDefaultTitleAreaWidget(TSharedRef<SOverlay> DefaultTitleAreaWidget) {}
 	virtual TSharedRef<SWidget> CreateTitleWidget(TSharedPtr<SNodeTitle> NodeTitle);
 	
+	/** Optionally create a widget to dock to the right in the title bar of the node. */
+	virtual TSharedRef<SWidget> CreateTitleRightWidget();
+	
 	/** Create the inner node content area, including the left/right pin boxes */
 	virtual TSharedRef<SWidget> CreateNodeContentArea();
 
@@ -352,6 +361,9 @@ protected:
 
 	/** Returns TRUE if the input pin should be hidden from view */
 	bool ShouldPinBeHidden(const UEdGraphPin* InPin) const;
+
+	/** Returns the widget to use for the enabled state of the node */
+	TSharedPtr<SWidget> GetEnabledStateWidget();
 
 protected:
 	/** Input pin widgets on this node */

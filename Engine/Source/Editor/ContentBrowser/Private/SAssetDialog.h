@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -208,4 +208,7 @@ private:
 
 	/** Utility member to know if the context menu was opened on the asset view or the path view */
 	EOpenedContextMenuWidget OpenedContextMenuWidget;
+
+	/** Callback for refreshing content */
+	FOnPathSelected OnPathSelected;
 };

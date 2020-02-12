@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 #include "Misc/DateTime.h"
 #include "CoreGlobals.h"
 #include "HAL/PlatformTime.h"
@@ -75,7 +75,7 @@ void FDateTime::GetDate(int32& OutYear, int32& OutMonth, int32& OutDay) const
 
 	int32 i, j, k, l, n;
 
-	l = FMath::FloorToInt(GetJulianDay() + 0.5) + 68569;
+	l = FMath::FloorToInt((float)(GetJulianDay() + 0.5)) + 68569;
 	n = 4 * l / 146097;
 	l = l - (146097 * n + 3) / 4;
 	i = 4000 * (l + 1) / 1461001;
@@ -664,7 +664,7 @@ bool FDateTime::ParseHttpDate(const FString& HttpDate, FDateTime& OutDateTime)
 bool FDateTime::ParseIso8601(const TCHAR* DateTimeString, FDateTime& OutDateTime)
 {
 	// DateOnly: YYYY-MM-DD
-	// DateTime: YYYY-mm-ddTHH:MM:SS(.ssss)(Z|+th:tm|-th:tm)
+	// DateTime: YYYY-mm-ddTHH:MM:SS(.sss)(Z|+hh:mm|+hhmm|-hh:mm|-hhmm)
 
 	const TCHAR* Ptr = DateTimeString;
 	TCHAR* Next = nullptr;
@@ -738,7 +738,7 @@ bool FDateTime::ParseIso8601(const TCHAR* DateTimeString, FDateTime& OutDateTime
 				return false;
 			}
 
-			for (int32 Digits = Next - Ptr; Digits < 3; ++Digits)
+			for (int32 Digits = UE_PTRDIFF_TO_INT32(Next - Ptr); Digits < 3; ++Digits)
 			{
 				Millisecond *= 10;
 			}
@@ -753,15 +753,24 @@ bool FDateTime::ParseIso8601(const TCHAR* DateTimeString, FDateTime& OutDateTime
 			// parse the timezone offset
 			TzHour = FCString::Strtoi(Ptr, &Next, 10);
 
-			if ((Next <= Ptr) || (*Next == TCHAR('\0')))
+			if (Next - Ptr == 3) // for "+/-hh:mm" and "+/-hh" cases
 			{
-				return false;
+				if (*Next != TCHAR('\0')) // "+/-hh:mm"
+				{
+					if (*Next != TCHAR(':'))
+					{
+						return false;
+					}
+					Ptr = Next + 1; // skip colon
+					TzMinute = FCString::Strtoi(Ptr, &Next, 10);
+				}
 			}
-
-			Ptr = Next + 1; // skip separator
-			TzMinute = FCString::Strtoi(Ptr, &Next, 10);
-
-			if (Next <= Ptr)
+			else if (Next - Ptr == 5) // for "+/-hhmm" case
+			{
+				TzMinute = TzHour % 100;
+				TzHour /= 100;
+			}
+			else
 			{
 				return false;
 			}

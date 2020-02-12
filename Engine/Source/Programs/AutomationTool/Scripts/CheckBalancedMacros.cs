@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 using System;
 using System.Collections.Generic;
@@ -39,6 +39,10 @@ namespace AutomationTool
 				"PRAGMA_ENABLE_SHADOW_VARIABLE_WARNINGS"
 			},
 			{
+				"PRAGMA_DISABLE_UNSAFE_TYPECAST_WARNINGS",
+				"PRAGMA_ENABLE_UNSAFE_TYPECAST_WARNINGS"
+			},
+			{
 				"PRAGMA_DISABLE_UNDEFINED_IDENTIFIER_WARNINGS",
 				"PRAGMA_ENABLE_UNDEFINED_IDENTIFIER_WARNINGS"
 			},
@@ -67,6 +71,8 @@ namespace AutomationTool
 		{
 			"PreWindowsApi.h",
 			"PostWindowsApi.h",
+			"USDIncludesStart.h",
+			"USDIncludesEnd.h",
 		};
 
 		/// <summary>

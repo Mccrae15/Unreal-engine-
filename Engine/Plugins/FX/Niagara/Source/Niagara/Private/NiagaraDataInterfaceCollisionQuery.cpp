@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "NiagaraDataInterfaceCollisionQuery.h"
 #include "NiagaraTypes.h"
@@ -6,6 +6,7 @@
 #include "NiagaraWorldManager.h"
 #include "ShaderParameterUtils.h"
 #include "GlobalDistanceFieldParameters.h"
+#include "NiagaraEmitterInstanceBatcher.h"
 #include "Shader.h"
 
 //////////////////////////////////////////////////////////////////////////
@@ -16,7 +17,9 @@ FCriticalSection UNiagaraDataInterfaceCollisionQuery::CriticalSection;
 UNiagaraDataInterfaceCollisionQuery::UNiagaraDataInterfaceCollisionQuery(FObjectInitializer const& ObjectInitializer)
 	: Super(ObjectInitializer)
 {
-	TraceChannelEnum = FindObject<UEnum>(ANY_PACKAGE, TEXT("ECollisionChannel"), true);
+	TraceChannelEnum = StaticEnum<ECollisionChannel>();
+
+    Proxy.Reset(new FNiagaraDataIntefaceProxyCollisionQuery());
 }
 
 bool UNiagaraDataInterfaceCollisionQuery::InitPerInstanceData(void* PerInstanceData, FNiagaraSystemInstance* InSystemInstance)
@@ -25,11 +28,16 @@ bool UNiagaraDataInterfaceCollisionQuery::InitPerInstanceData(void* PerInstanceD
 	PIData->SystemInstance = InSystemInstance;
 	if (InSystemInstance)
 	{
-		PIData->CollisionBatch.Init(InSystemInstance->GetIDName(), InSystemInstance->GetComponent()->GetWorld());
+		PIData->CollisionBatch.Init(InSystemInstance->GetId(), InSystemInstance->GetComponent()->GetWorld());
 	}
 	return true;
 }
 
+void UNiagaraDataInterfaceCollisionQuery::DestroyPerInstanceData(void* PerInstanceData, FNiagaraSystemInstance* InSystemInstance)
+{
+	CQDIPerInstanceData* InstData = (CQDIPerInstanceData*)PerInstanceData;
+	InstData->~CQDIPerInstanceData();
+}
 
 void UNiagaraDataInterfaceCollisionQuery::PostInitProperties()
 {
@@ -76,6 +84,7 @@ void UNiagaraDataInterfaceCollisionQuery::GetFunctions(TArray<FNiagaraFunctionSi
 	Sig.Name = TEXT("SubmitQuery");
 	Sig.bMemberFunction = true;
 	Sig.bRequiresContext = false;
+	Sig.bSupportsGPU = false;
 	Sig.Inputs.Add(FNiagaraVariable(FNiagaraTypeDefinition(GetClass()), TEXT("CollisionQuery")));
 	Sig.Inputs.Add(FNiagaraVariable(FNiagaraTypeDefinition::GetVec3Def(), TEXT("ParticlePosition")));
 	Sig.Inputs.Add(FNiagaraVariable(FNiagaraTypeDefinition::GetVec3Def(), TEXT("ParticleVelocity")));
@@ -87,6 +96,7 @@ void UNiagaraDataInterfaceCollisionQuery::GetFunctions(TArray<FNiagaraFunctionSi
 	Sig2.Name = TEXT("ReadQuery");
 	Sig2.bMemberFunction = true;
 	Sig2.bRequiresContext = false;
+	Sig2.bSupportsGPU = false;
 	Sig2.Inputs.Add(FNiagaraVariable(FNiagaraTypeDefinition(GetClass()), TEXT("CollisionQuery")));
 	Sig2.Inputs.Add(FNiagaraVariable(FNiagaraTypeDefinition::GetIntDef(), TEXT("CollisionID")));
 	Sig2.Outputs.Add(FNiagaraVariable(FNiagaraTypeDefinition::GetBoolDef(), TEXT("CollisionValid")));
@@ -99,6 +109,7 @@ void UNiagaraDataInterfaceCollisionQuery::GetFunctions(TArray<FNiagaraFunctionSi
 	SigGpu.Name = TEXT("PerformCollisionQueryGPUShader");
 	SigGpu.bMemberFunction = true;
 	SigGpu.bRequiresContext = false;
+	SigGpu.bSupportsCPU = false;
 	SigGpu.Inputs.Add(FNiagaraVariable(FNiagaraTypeDefinition(GetClass()), TEXT("CollisionQuery")));
 	SigGpu.Inputs.Add(FNiagaraVariable(FNiagaraTypeDefinition::GetVec3Def(), TEXT("DepthSamplePosWorld")));
 	SigGpu.Inputs.Add(FNiagaraVariable(FNiagaraTypeDefinition::GetVec3Def(), TEXT("TraceEndWorld")));
@@ -114,6 +125,7 @@ void UNiagaraDataInterfaceCollisionQuery::GetFunctions(TArray<FNiagaraFunctionSi
 	SigDepth.Name = TEXT("QuerySceneDepthGPU");
 	SigDepth.bMemberFunction = true;
 	SigDepth.bRequiresContext = false;
+	SigDepth.bSupportsCPU = false;
 	SigDepth.Inputs.Add(FNiagaraVariable(FNiagaraTypeDefinition(GetClass()), TEXT("CollisionQuery")));
 	SigDepth.Inputs.Add(FNiagaraVariable(FNiagaraTypeDefinition::GetVec3Def(), TEXT("DepthSamplePosWorld")));
 	SigDepth.Outputs.Add(FNiagaraVariable(FNiagaraTypeDefinition::GetFloatDef(), TEXT("SceneDepth")));
@@ -127,6 +139,7 @@ void UNiagaraDataInterfaceCollisionQuery::GetFunctions(TArray<FNiagaraFunctionSi
 	SigMeshField.Name = TEXT("QueryMeshDistanceFieldGPU");
 	SigMeshField.bMemberFunction = true;
 	SigMeshField.bRequiresContext = false;
+	SigMeshField.bSupportsCPU = false;
 	SigMeshField.Inputs.Add(FNiagaraVariable(FNiagaraTypeDefinition(GetClass()), TEXT("CollisionQuery")));
 	SigMeshField.Inputs.Add(FNiagaraVariable(FNiagaraTypeDefinition::GetVec3Def(), TEXT("FieldSamplePosWorld")));
 	SigMeshField.Outputs.Add(FNiagaraVariable(FNiagaraTypeDefinition::GetFloatDef(), TEXT("DistanceToNearestSurface")));
@@ -137,6 +150,7 @@ void UNiagaraDataInterfaceCollisionQuery::GetFunctions(TArray<FNiagaraFunctionSi
 	SigCpuSync.Name = TEXT("PerformCollisionQuerySyncCPU");
 	SigCpuSync.bMemberFunction = true;
 	SigCpuSync.bRequiresContext = false;
+	SigCpuSync.bSupportsGPU = false;
 	SigCpuSync.Inputs.Add(FNiagaraVariable(FNiagaraTypeDefinition(GetClass()), TEXT("CollisionQuery")));
 	SigCpuSync.Inputs.Add(FNiagaraVariable(FNiagaraTypeDefinition::GetVec3Def(), TEXT("TraceStartWorld")));
 	SigCpuSync.Inputs.Add(FNiagaraVariable(FNiagaraTypeDefinition::GetVec3Def(), TEXT("TraceEndWorld")));
@@ -153,6 +167,7 @@ void UNiagaraDataInterfaceCollisionQuery::GetFunctions(TArray<FNiagaraFunctionSi
 	SigCpuAsync.Name = TEXT("PerformCollisionQueryAsyncCPU");
 	SigCpuAsync.bMemberFunction = true;
 	SigCpuAsync.bRequiresContext = false;
+	SigCpuAsync.bSupportsGPU = false;
 	SigCpuAsync.Inputs.Add(FNiagaraVariable(FNiagaraTypeDefinition(GetClass()), TEXT("CollisionQuery")));
 	SigCpuAsync.Inputs.Add(FNiagaraVariable(FNiagaraTypeDefinition::GetIntDef(), TEXT("PreviousFrameQueryID")));
 	SigCpuAsync.Inputs.Add(FNiagaraVariable(FNiagaraTypeDefinition::GetVec3Def(), TEXT("TraceStartWorld")));
@@ -173,13 +188,13 @@ void UNiagaraDataInterfaceCollisionQuery::GetFunctions(TArray<FNiagaraFunctionSi
 // TODO: need a way to identify each specific function here
 
 // 
-bool UNiagaraDataInterfaceCollisionQuery::GetFunctionHLSL(const FName& DefinitionFunctionName, FString InstanceFunctionName, FNiagaraDataInterfaceGPUParamInfo& ParamInfo, FString& OutHLSL)
+bool UNiagaraDataInterfaceCollisionQuery::GetFunctionHLSL(const FNiagaraDataInterfaceGPUParamInfo& ParamInfo, const FNiagaraDataInterfaceGeneratedFunction& FunctionInfo, int FunctionInstanceIndex, FString& OutHLSL)
 {
 	// a little tricky, since we've got two functions for submitting and retrieving a query; we store submitted queries per thread group,
 	// assuming it'll usually be the same thread trying to call ReadQuery for a particular QueryID, that submitted it in the first place.
-	if (DefinitionFunctionName == TEXT("PerformCollisionQuery"))
+	if (FunctionInfo.DefinitionName == TEXT("PerformCollisionQuery"))
 	{
-		OutHLSL += TEXT("void ") + InstanceFunctionName + TEXT("(in int InQueryID, in float3 In_ParticlePos, in float3 In_ParticleVel, in float In_DeltaSeconds, float CollisionRadius, in float CollisionDepthBounds, \
+		OutHLSL += TEXT("void ") + FunctionInfo.InstanceName + TEXT("(in int InQueryID, in float3 In_ParticlePos, in float3 In_ParticleVel, in float In_DeltaSeconds, float CollisionRadius, in float CollisionDepthBounds, \
 			out int Out_QueryID, out bool OutCollisionValid, out float3 Out_CollisionPos, out float3 Out_CollisionNormal, out float Out_Friction, out float Out_Restitution) \n{\n");
 		// get the screen position
 		OutHLSL += TEXT("\
@@ -229,11 +244,12 @@ bool UNiagaraDataInterfaceCollisionQuery::GetFunctionHLSL(const FName& Definitio
 				}\n\
 			}\n\
 		}\n}\n\n");
+		return true;
 	}
-	else if (DefinitionFunctionName == TEXT("PerformCollisionQueryGPUShader"))
+	else if (FunctionInfo.DefinitionName == TEXT("PerformCollisionQueryGPUShader"))
 	{
-		FString SceneDepthFunction = InstanceFunctionName + TEXT("_SceneDepthCollision");
-		FString DistanceFieldFunction = InstanceFunctionName + TEXT("_DistanceFieldCollision");
+		FString SceneDepthFunction = FunctionInfo.InstanceName + TEXT("_SceneDepthCollision");
+		FString DistanceFieldFunction = FunctionInfo.InstanceName + TEXT("_DistanceFieldCollision");
 
 		OutHLSL += TEXT("void ") + SceneDepthFunction + TEXT("(in float3 In_SamplePos, in float3 In_TraceEndPos, in float CollisionDepthBounds, in float ParticleRadius, out bool OutCollisionValid, out float3 Out_CollisionPos, out float3 Out_CollisionNormal) \n{\n\
 		OutCollisionValid = false;\n\
@@ -283,7 +299,7 @@ bool UNiagaraDataInterfaceCollisionQuery::GetFunctionHLSL(const FName& Definitio
 			Out_CollisionNormal = float3(0.0, 0.0, 1.0);\n\
 			Out_CollisionPos = InPosition;\n\
 		}\n}\n\n");
-		OutHLSL += TEXT("void ") + InstanceFunctionName + TEXT("(in float3 In_SamplePos, in float3 In_TraceEndPos, in float CollisionDepthBounds, ") +
+		OutHLSL += TEXT("void ") + FunctionInfo.InstanceName + TEXT("(in float3 In_SamplePos, in float3 In_TraceEndPos, in float CollisionDepthBounds, ") +
 			TEXT("in float ParticleRadius, in bool UseMeshDistanceField, out bool OutCollisionValid, out float3 Out_CollisionPos, out float3 Out_CollisionNormal) \n{\n");
 		OutHLSL += TEXT("\
 			if (UseMeshDistanceField)\n\
@@ -294,10 +310,11 @@ bool UNiagaraDataInterfaceCollisionQuery::GetFunctionHLSL(const FName& Definitio
 			{\n\
 				") + SceneDepthFunction + TEXT("(In_SamplePos, In_TraceEndPos, CollisionDepthBounds, ParticleRadius, OutCollisionValid, Out_CollisionPos, Out_CollisionNormal);\n\
 			}\n}\n\n");
+		return true;
 	}
-	else if (DefinitionFunctionName == TEXT("QuerySceneDepthGPU"))
+	else if (FunctionInfo.DefinitionName == TEXT("QuerySceneDepthGPU"))
 	{
-		OutHLSL += TEXT("void ") + InstanceFunctionName + TEXT("(in float3 In_SamplePos, out float Out_SceneDepth, out float3 Out_CameraPosWorld, out bool Out_IsInsideView, out float3 Out_WorldPos, out float3 Out_WorldNormal) \n{\n");
+		OutHLSL += TEXT("void ") + FunctionInfo.InstanceName + TEXT("(in float3 In_SamplePos, out float Out_SceneDepth, out float3 Out_CameraPosWorld, out bool Out_IsInsideView, out float3 Out_WorldPos, out float3 Out_WorldNormal) \n{\n");
 		OutHLSL += TEXT("\
 			Out_SceneDepth = -1;\n\
 			Out_WorldPos = float3(0.0, 0.0, 0.0);\n\
@@ -323,20 +340,22 @@ bool UNiagaraDataInterfaceCollisionQuery::GetFunctionHLSL(const FName& Definitio
 			{\n\
 				Out_IsInsideView = false;\n\
 			}\n}\n\n");
+		return true;
 	}
-	else if (DefinitionFunctionName == TEXT("QueryMeshDistanceFieldGPU"))
+	else if (FunctionInfo.DefinitionName == TEXT("QueryMeshDistanceFieldGPU"))
 	{
-		OutHLSL += TEXT("void ") + InstanceFunctionName + TEXT("(in float3 In_SamplePos, out float Out_DistanceToNearestSurface, out float3 Out_FieldGradient) \n{\n");
+		OutHLSL += TEXT("void ") + FunctionInfo.InstanceName + TEXT("(in float3 In_SamplePos, out float Out_DistanceToNearestSurface, out float3 Out_FieldGradient) \n{\n");
 		OutHLSL += TEXT("\
 			Out_DistanceToNearestSurface = GetDistanceToNearestSurfaceGlobal(In_SamplePos);\n\
 			Out_FieldGradient = GetDistanceFieldGradientGlobal(In_SamplePos);\
 			\n}\n\n");
+		return true;
 	}
 
-	return true;
+	return false;
 }
 
-void UNiagaraDataInterfaceCollisionQuery::GetParameterDefinitionHLSL(FNiagaraDataInterfaceGPUParamInfo& ParamInfo, FString& OutHLSL)
+void UNiagaraDataInterfaceCollisionQuery::GetParameterDefinitionHLSL(const FNiagaraDataInterfaceGPUParamInfo& ParamInfo, FString& OutHLSL)
 {
 	// we don't need to add these to hlsl, as they're already in common.ush
 }
@@ -586,10 +605,11 @@ void UNiagaraDataInterfaceCollisionQuery::PerformQueryAsyncCPU(FVectorVMContext 
 	for (int32 i = 0; i < Context.NumInstances; ++i)
 	{
 		FVector Pos(StartPosParamX.GetAndAdvance(), StartPosParamY.GetAndAdvance(), StartPosParamZ.GetAndAdvance());
-		FVector Dir(EndPosParamX.GetAndAdvance(), EndPosParamY.GetAndAdvance(), EndPosParamZ.GetAndAdvance());
+		FVector End(EndPosParamX.GetAndAdvance(), EndPosParamY.GetAndAdvance(), EndPosParamZ.GetAndAdvance());
 		ECollisionChannel TraceChannel = TraceChannelParam.GetAndAdvance();
 		ensure(!Pos.ContainsNaN());
-		*OutQueryID.GetDestAndAdvance() = InstanceData->CollisionBatch.SubmitQuery(Pos, Dir, TraceChannel);
+
+		*OutQueryID.GetDestAndAdvance() = InstanceData->CollisionBatch.SubmitQuery(Pos, End, TraceChannel);
 
 		// try to retrieve a query with the supplied query ID
 		FNiagaraDICollsionQueryResult Res;
@@ -819,13 +839,16 @@ void UNiagaraDataInterfaceCollisionQuery::ReadQuery(FVectorVMContext& Context)
 
 bool UNiagaraDataInterfaceCollisionQuery::PerInstanceTick(void* PerInstanceData, FNiagaraSystemInstance* InSystemInstance, float DeltaSeconds)
 {
+	CQDIPerInstanceData* PIData = static_cast<CQDIPerInstanceData*>(PerInstanceData);
+	PIData->CollisionBatch.CollectResults();
+
 	return false;
 }
 
 bool UNiagaraDataInterfaceCollisionQuery::PerInstanceTickPostSimulate(void* PerInstanceData, FNiagaraSystemInstance* InSystemInstance, float DeltaSeconds)
 {
-	CQDIPerInstanceData *PIData = static_cast<CQDIPerInstanceData*>(PerInstanceData);
-	PIData->CollisionBatch.Tick(ENiagaraSimTarget::CPUSim);
+	CQDIPerInstanceData* PIData = static_cast<CQDIPerInstanceData*>(PerInstanceData);
+	PIData->CollisionBatch.DispatchQueries();
 	PIData->CollisionBatch.ClearWrite();
 	return false;
 }
@@ -834,47 +857,35 @@ bool UNiagaraDataInterfaceCollisionQuery::PerInstanceTickPostSimulate(void* PerI
 
 struct FNiagaraDataInterfaceParametersCS_CollisionQuery : public FNiagaraDataInterfaceParametersCS
 {
-	virtual void Bind(const FNiagaraDataInterfaceParamRef& ParamRef, const class FShaderParameterMap& ParameterMap) override
+	DECLARE_TYPE_LAYOUT(FNiagaraDataInterfaceParametersCS_CollisionQuery, NonVirtual);
+public:
+	void Bind(const FNiagaraDataInterfaceGPUParamInfo& ParameterInfo, const class FShaderParameterMap& ParameterMap)
 	{
 		PassUniformBuffer.Bind(ParameterMap, FSceneTexturesUniformParameters::StaticStructMetadata.GetShaderVariableName());
-		
 		GlobalDistanceFieldParameters.Bind(ParameterMap);
-		if (GlobalDistanceFieldParameters.IsBound())
-		{
-			GNiagaraViewDataManager.SetGlobalDistanceFieldUsage();
-		}
 	}
 
-	virtual void Serialize(FArchive& Ar) override
-	{
-		Ar << PassUniformBuffer;
-		Ar << GlobalDistanceFieldParameters;
-	}
-
-	virtual void Set(FRHICommandList& RHICmdList, FNiagaraShader* Shader, class UNiagaraDataInterface* DataInterface, void* PerInstanceData) const override
+	void Set(FRHICommandList& RHICmdList, const FNiagaraDataInterfaceSetArgs& Context) const
 	{
 		check(IsInRenderingThread());
 
-		const FComputeShaderRHIParamRef ComputeShaderRHI = Shader->GetComputeShader();
+		FRHIComputeShader* ComputeShaderRHI = Context.Shader.GetComputeShader();
 		
 		TUniformBufferRef<FSceneTexturesUniformParameters> SceneTextureUniformParams = GNiagaraViewDataManager.GetSceneTextureUniformParameters();
 		SetUniformBufferParameter(RHICmdList, ComputeShaderRHI, PassUniformBuffer/*Shader->GetUniformBufferParameter(SceneTexturesUniformBufferStruct)*/, SceneTextureUniformParams);
-		if (GlobalDistanceFieldParameters.IsBound())
+		if (GlobalDistanceFieldParameters.IsBound() && Context.Batcher)
 		{
-			GNiagaraViewDataManager.SetGlobalDistanceFieldUsage();
-			GlobalDistanceFieldParameters.Set(RHICmdList, ComputeShaderRHI, *GNiagaraViewDataManager.GetGlobalDistanceFieldParameters());
+			GlobalDistanceFieldParameters.Set(RHICmdList, ComputeShaderRHI, Context.Batcher->GetGlobalDistanceFieldParameters());
 		}		
 	}
 
 private:
-
 	/** The SceneDepthTexture parameter for depth buffer collision. */
-	FShaderUniformBufferParameter PassUniformBuffer;
+	LAYOUT_FIELD(FShaderUniformBufferParameter, PassUniformBuffer);
 
-	FGlobalDistanceFieldParameters GlobalDistanceFieldParameters;
+	LAYOUT_FIELD(FGlobalDistanceFieldParameters, GlobalDistanceFieldParameters);
 };
 
-FNiagaraDataInterfaceParametersCS* UNiagaraDataInterfaceCollisionQuery::ConstructComputeParameters() const
-{
-	return new FNiagaraDataInterfaceParametersCS_CollisionQuery();
-}
+IMPLEMENT_TYPE_LAYOUT(FNiagaraDataInterfaceParametersCS_CollisionQuery);
+
+IMPLEMENT_NIAGARA_DI_PARAMETER(UNiagaraDataInterfaceCollisionQuery, FNiagaraDataInterfaceParametersCS_CollisionQuery);

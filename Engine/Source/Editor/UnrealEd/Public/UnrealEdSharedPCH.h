@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -199,7 +199,6 @@
 #include "Templates/RefCounting.h"
 #include "Async/TaskGraphInterfaces.h"
 #include "Misc/Paths.h"
-#include "Templates/ScopedPointer.h"
 #include "Serialization/CustomVersion.h"
 #include "Misc/OutputDeviceError.h"
 #include "Misc/ObjectThumbnail.h"
@@ -382,7 +381,6 @@
 #include "Framework/Commands/UICommandList.h"
 #include "Framework/MultiBox/MultiBoxExtender.h"
 #include "Framework/Text/TextLayout.h"
-#include "Framework/Text/TextRange.h"
 #include "Framework/Text/TextRunRenderer.h"
 #include "Framework/Text/TextLineHighlight.h"
 #include "Framework/Text/IRun.h"
@@ -577,7 +575,6 @@
 #include "Materials/MaterialExpressionMaterialFunctionCall.h"
 #include "Materials/MaterialFunction.h"
 #include "PhysicsEngine/PhysicsSettingsEnums.h"
-#include "Sound/SoundClass.h"
 #include "Sound/SoundAttenuation.h"
 #include "Engine/CurveTable.h"
 #include "Audio.h"
@@ -611,7 +608,7 @@
 #include "Settings/LevelEditorViewportSettings.h"
 #include "Settings/LevelEditorPlaySettings.h"
 #include "Editor/EditorEngine.h"
-#include "Toolkits/AssetEditorManager.h"
+
 #include "AssetThumbnail.h"
 #include "Toolkits/BaseToolkit.h"
 #include "Toolkits/AssetEditorToolkit.h"

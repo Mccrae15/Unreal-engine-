@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -14,6 +14,10 @@
 #include "Subsystems/GameInstanceSubsystem.h"
 #include "Subsystems/SubsystemCollection.h"
 
+#if WITH_EDITOR
+#include "Settings/LevelEditorPlaySettings.h"
+#endif 
+
 #include "GameInstance.generated.h"
 
 class AGameModeBase;
@@ -24,6 +28,7 @@ class FUniqueNetId;
 class ULocalPlayer;
 class UOnlineSession;
 struct FLatentActionManager;
+class ULevelEditorPlaySettings;
 
 // 
 // 	EWelcomeScreen, 	//initial screen.  Used for platforms where we may not have a signed in user yet.
@@ -90,6 +95,16 @@ private:
 //@TODO: Some of these are really mutually exclusive and should be refactored (put into a struct to make this easier in the future)
 struct FGameInstancePIEParameters
 {
+	FGameInstancePIEParameters()
+		: bSimulateInEditor(false)
+		, bAnyBlueprintErrors(false)
+		, bStartInSpectatorMode(false)
+		, bRunAsDedicated(false)
+		, WorldFeatureLevel(ERHIFeatureLevel::Num)
+		, EditorPlaySettings(nullptr)
+		, NetMode(EPlayNetMode::PIE_Standalone)
+	{}
+
 	// Are we doing SIE instead of PIE?
 	bool bSimulateInEditor;
 
@@ -102,11 +117,25 @@ struct FGameInstancePIEParameters
 	// Is this a dedicated server instance for PIE?
 	bool bRunAsDedicated;
 
+	// What time did we start PIE in the editor?
+	double PIEStartTime = 0;
+
 	// The feature level that PIE world should use
-	ERHIFeatureLevel::Type WorldFeatureLevel = ERHIFeatureLevel::Num;
+	ERHIFeatureLevel::Type WorldFeatureLevel;
+
+	// Kept alive externally.
+	ULevelEditorPlaySettings* EditorPlaySettings;
+
+	// Which net mode should this PIE instance start in? Affects which maps are loaded.
+	EPlayNetMode NetMode;
+
+	// The map we should force the game to load instead of the one currently running in the editor. Blank for no override
+	FString OverrideMapURL;
 };
 
 #endif
+
+DECLARE_EVENT_OneParam(UGameInstance, FOnLocalPlayerEvent, ULocalPlayer*);
 
 /**
  * GameInstance: high-level manager object for an instance of the running game.
@@ -157,6 +186,9 @@ protected:
 public:
 
 	FString PIEMapName;
+#if WITH_EDITOR
+	double PIEStartTime = 0;
+#endif
 
 	//~ Begin FExec Interface
 	virtual bool Exec(UWorld* InWorld, const TCHAR* Cmd, FOutputDevice& Out = *GLog) override;
@@ -190,7 +222,7 @@ public:
 	void HandleTravelError(ETravelFailure::Type FailureType);
 
 	/* Called to initialize the game instance for standalone instances of the game */
-	void InitializeStandalone();
+	void InitializeStandalone(const FName InWorldName = NAME_None, UPackage* InWorldPackage = nullptr);
 
 	/* Called to initialize the game instance with a minimal world suitable for basic network RPC */
 	void InitializeForMinimalNetRPC(const FName InPackageName);
@@ -220,6 +252,9 @@ public:
 	struct FWorldContext* GetWorldContext() const { return WorldContext; };
 	class UGameViewportClient* GetGameViewportClient() const;
 
+	/** Callback from the world context when the world changes */
+	virtual void OnWorldChanged(UWorld* OldWorld, UWorld* NewWorld) {}
+
 	/** Starts the GameInstance state machine running */
 	virtual void StartGameInstance();
 	virtual bool JoinSession(ULocalPlayer* LocalPlayer, int32 SessionIndexInSearchResults) { return false; }
@@ -228,6 +263,9 @@ public:
 	virtual void LoadComplete(const float LoadTime, const FString& MapName) {}
 
 	/** Local player access */
+
+	FOnLocalPlayerEvent OnLocalPlayerAddedEvent;
+	FOnLocalPlayerEvent OnLocalPlayerRemovedEvent;
 
 	/**
 	 * Debug console command to create a player.
@@ -260,19 +298,18 @@ public:
 	 * @param	NewPlayer	the player to add
 	 * @param	ControllerId id of the controller associated with the player
 	 */
-	int32					AddLocalPlayer(ULocalPlayer * NewPlayer, int32 ControllerId);
-
+	virtual int32			AddLocalPlayer(ULocalPlayer* NewPlayer, int32 ControllerId);
 
 	/**
 	 * Removes a player.
 	 * @param Player - The player to remove.
 	 * @return whether the player was successfully removed. Removal is not allowed while connected to a server.
 	 */
-	bool					RemoveLocalPlayer(ULocalPlayer * ExistingPlayer);
+	virtual bool			RemoveLocalPlayer(ULocalPlayer * ExistingPlayer);
 
 	int32					GetNumLocalPlayers() const;
 	ULocalPlayer*			GetLocalPlayerByIndex(const int32 Index) const;
-	APlayerController*		GetFirstLocalPlayerController(UWorld* World = nullptr) const;
+	APlayerController*		GetFirstLocalPlayerController(const UWorld* World = nullptr) const;
 	ULocalPlayer*			FindLocalPlayerFromControllerId(const int32 ControllerId) const;
 	ULocalPlayer*			FindLocalPlayerFromUniqueNetId(TSharedPtr<const FUniqueNetId> UniqueNetId) const;
 	ULocalPlayer*			FindLocalPlayerFromUniqueNetId(const FUniqueNetId& UniqueNetId) const;
@@ -361,10 +398,28 @@ public:
 	/** Stop recording a replay if one is currently in progress */
 	virtual void StopRecordingReplay();
 
-	/** Start playing back a previously recorded replay.
-	 *	Return false if it fails to play.
-	*/
+	/**
+	 * Start playing back a previously recorded replay.
+	 *
+	 * @param InName				Name of the replay file.
+	 * @param WorldOverride			World in which the replay will be played. Passing null will cause the current world to be used.
+	 * @param AdditionalOptions		Additional options that can be read by derived game instances, or the Demo Net Driver.
+	 *
+	 * @return True if the replay began successfully.
+	 */
 	virtual bool PlayReplay(const FString& InName, UWorld* WorldOverride = nullptr, const TArray<FString>& AdditionalOptions = TArray<FString>());
+
+	/**
+	 * Start playing back a playlist of previously recorded replays.
+	 *
+	 * Using "ExitAfterReplay" on the command line will cause the system to exit *after* the last
+	 * replay has been played.
+	 *
+	 * Using the "Demo.Loop" CVar will cause the entire replay playlist to loop.
+	 *
+	 * @return True if the first replay began successfully.
+	 */
+	bool PlayReplayPlaylist(const struct FReplayPlaylistParams& PlaylistParams);
 
 	/**
 	 * Adds a join-in-progress user to the set of users associated with the currently recording replay (if any)
@@ -390,7 +445,7 @@ public:
 	virtual void PreloadContentForURL(FURL InURL);
 
 	/** Call to create the game mode for a given map URL */
-	virtual class AGameModeBase* CreateGameModeForURL(FURL InURL);
+	virtual class AGameModeBase* CreateGameModeForURL(FURL InURL, UWorld* InWorld);
 
 	/** Return the game mode subclass to use for a given map, options, and portal. By default return passed in one */
 	virtual TSubclassOf<AGameModeBase> OverrideGameModeClass(TSubclassOf<AGameModeBase> GameModeClass, const FString& MapName, const FString& Options, const FString& Portal) const;

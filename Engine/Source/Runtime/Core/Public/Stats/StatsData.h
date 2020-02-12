@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -76,7 +76,7 @@ template <typename T>
 void ParseTypedValue( const TCHAR* Stream, const TCHAR* Match, T& Out )
 {
 	TCHAR Temp[64] = TEXT( "" );
-	if( FParse::Value( Stream, Match, Temp, ARRAY_COUNT( Temp ) ) )
+	if( FParse::Value( Stream, Match, Temp, UE_ARRAY_COUNT( Temp ) ) )
 	{
 		LexFromString( Out, Temp );
 	}

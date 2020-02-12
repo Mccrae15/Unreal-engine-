@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "SteamVRSplash.h"
 #include "SteamVRPrivate.h"
@@ -25,8 +25,9 @@ void FSteamSplashTicker::UnregisterForMapLoad()
 
 void FSteamSplashTicker::OnPreLoadMap(const FString&)
 {
-	ENQUEUE_UNIQUE_RENDER_COMMAND_ONEPARAMETER(RegisterAsyncTick,
-		FTickableObjectRenderThread*, Ticker, this,
+	FTickableObjectRenderThread* Ticker = this;
+	ENQUEUE_RENDER_COMMAND(RegisterAsyncTick)(
+		[Ticker](FRHICommandListImmediate& RHICmdList)
 		{
 			Ticker->Register();
 		});
@@ -34,8 +35,9 @@ void FSteamSplashTicker::OnPreLoadMap(const FString&)
 
 void FSteamSplashTicker::OnPostLoadMap(UWorld*)
 {
-	ENQUEUE_UNIQUE_RENDER_COMMAND_ONEPARAMETER(UnregisterAsyncTick, 
-		FTickableObjectRenderThread*, Ticker, this,
+	FTickableObjectRenderThread* Ticker = this;
+	ENQUEUE_RENDER_COMMAND(UnregisterAsyncTick)(
+		[Ticker](FRHICommandListImmediate& RHICmdList)
 		{
 			Ticker->Unregister();
 		});
@@ -49,7 +51,7 @@ void FSteamSplashTicker::Tick(float DeltaTime)
 	// even though when used by the renderer as an indication whether normal present is needed.
 	if (SteamVRHMD->bSplashIsShown && SteamVRHMD->pBridge && SteamVRHMD->pBridge->Present(Dummy))
 	{
-		check(!SteamVRHMD->VRCompositor);
+		check(SteamVRHMD->VRCompositor);
 		SteamVRHMD->VRCompositor->PostPresentHandoff();
 	}
 }

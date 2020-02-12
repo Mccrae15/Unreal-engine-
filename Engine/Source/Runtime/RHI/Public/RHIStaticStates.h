@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 /*=============================================================================
 	RHIStaticStates.h: RHI static state template definition.
@@ -57,49 +57,13 @@ template<typename InitializerType,typename RHIRefType,typename RHIParamRefType>
 class TStaticStateRHI
 {
 public:
-
-	static void GetRHI_WithNoReturnValue()
-	{
-		GetRHI();
-	}
 	static RHIParamRefType GetRHI()
 	{
-		// This is super-duper nasty. We rely upon the fact that all compilers will assign uninitialized static, POD data (like StaticResource) to a zero seg and not do any construction on it whatsoever.
-		static FStaticStateResource* StaticResource; // Must be left uninitialized!
-
-		if (!StaticResource)
-		{
-			if (GIsRHIInitialized && GRHISupportsRHIThread)
-			{
-				FStaticStateResource* NewStaticResource = new FStaticStateResource();
-				FStaticStateResource* ValueWas = (FStaticStateResource*)FPlatformAtomics::InterlockedCompareExchangePointer((void**)&StaticResource, NewStaticResource, nullptr);
-				if (ValueWas)
-				{
-					// we made a redundant one...leak it
-				}
-			}
-			else
-			{
-				if (!IsInRenderingThread())
-				{
-					check(IsInParallelRenderingThread());
-					{
-						FScopedEvent Event;
-						TGraphTask<FInitStaticResourceRenderThreadTask>::CreateTask().ConstructAndDispatchWhenReady(&GetRHI_WithNoReturnValue, Event);
-					}
-				}
-				else
-				{
-					StaticResource = new FStaticStateResource();
-				}
-			}
-			CA_ASSUME(StaticResource);
-		}
-		return StaticResource->StateRHI;
+		checkSlow(StaticResource.StateRHI);
+		return StaticResource.StateRHI;
 	};
 
 private:
-
 	/** A resource which manages the RHI resource. */
 	class FStaticStateResource : public FRenderResource
 	{
@@ -113,8 +77,7 @@ private:
 			}
 			else
 			{
-				InitResource();
-
+				BeginInitResource(this);
 			}
 		}
 
@@ -136,7 +99,12 @@ private:
 			ReleaseResource();
 		}
 	};
+
+	static FStaticStateResource StaticResource;
 };
+
+template<typename InitializerType, typename RHIRefType, typename RHIParamRefType>
+typename TStaticStateRHI<InitializerType, RHIRefType, RHIParamRefType>::FStaticStateResource TStaticStateRHI<InitializerType, RHIRefType, RHIParamRefType>::StaticResource = TStaticStateRHI<InitializerType, RHIRefType, RHIParamRefType>::FStaticStateResource();
 
 /**
  * A static RHI sampler state resource.
@@ -154,7 +122,7 @@ template<ESamplerFilter Filter=SF_Point,
 	uint32 BorderColor = 0,
 	/** Only supported in D3D11 */
 	ESamplerCompareFunction SamplerComparisonFunction=SCF_Never>
-class TStaticSamplerState : public TStaticStateRHI<TStaticSamplerState<Filter,AddressU,AddressV,AddressW,MipBias,MaxAnisotropy,BorderColor,SamplerComparisonFunction>,FSamplerStateRHIRef,FSamplerStateRHIParamRef>
+class TStaticSamplerState : public TStaticStateRHI<TStaticSamplerState<Filter,AddressU,AddressV,AddressW,MipBias,MaxAnisotropy,BorderColor,SamplerComparisonFunction>,FSamplerStateRHIRef, FRHISamplerState*>
 {
 public:
 	static FSamplerStateRHIRef CreateRHI()
@@ -171,7 +139,7 @@ public:
  * Should only be used from the rendering thread.
  */
 template<ERasterizerFillMode FillMode=FM_Solid,ERasterizerCullMode CullMode=CM_None,bool bEnableLineAA=false,bool bEnableMSAA=true>
-class TStaticRasterizerState : public TStaticStateRHI<TStaticRasterizerState<FillMode,CullMode,bEnableLineAA>,FRasterizerStateRHIRef,FRasterizerStateRHIParamRef>
+class TStaticRasterizerState : public TStaticStateRHI<TStaticRasterizerState<FillMode,CullMode,bEnableLineAA>,FRasterizerStateRHIRef, FRHIRasterizerState*>
 {
 public:
 	FORCEINLINE_DEBUGGABLE static FRasterizerStateRHIRef CreateRHI()
@@ -183,7 +151,7 @@ public:
 
 /** Given a fill and cull mode, returns a static rasterizer state. */
 template<bool bEnableMSAA>
-FORCEINLINE_DEBUGGABLE FRasterizerStateRHIParamRef GetStaticRasterizerState(ERasterizerFillMode FillMode,ERasterizerCullMode CullMode)
+FORCEINLINE_DEBUGGABLE FRHIRasterizerState* GetStaticRasterizerState(ERasterizerFillMode FillMode,ERasterizerCullMode CullMode)
 {
 	switch(FillMode)
 	{
@@ -258,7 +226,7 @@ class TStaticDepthStencilState : public TStaticStateRHI<
 		StencilWriteMask
 		>,
 	FDepthStencilStateRHIRef,
-	FDepthStencilStateRHIParamRef
+	FRHIDepthStencilState*
 	>
 {
 public:
@@ -296,6 +264,8 @@ public:
  * else
  *		Alpha blended the same way as rgb
  * 
+ * Where source is the color coming from the pixel shader, and target is the color in the render target.
+ *
  * So for example, TStaticBlendState<BO_Add,BF_SourceAlpha,BF_InverseSourceAlpha,BO_Add,BF_Zero,BF_One> produces:
  * FinalColor.rgb = SourceColor * SourceAlpha + DestColor * (1 - SourceAlpha);
  * FinalColor.a = SourceAlpha * 0 + DestAlpha * 1;
@@ -370,7 +340,7 @@ class TStaticBlendState : public TStaticStateRHI<
 		RT7ColorWriteMask,RT7ColorBlendOp,RT7ColorSrcBlend,RT7ColorDestBlend,RT7AlphaBlendOp,RT7AlphaSrcBlend,RT7AlphaDestBlend
 		>,
 	FBlendStateRHIRef,
-	FBlendStateRHIParamRef
+	FRHIBlendState*
 	>
 {
 public:

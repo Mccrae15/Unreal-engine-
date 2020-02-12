@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 namespace UnrealBuildTool.Rules
 {
@@ -10,7 +10,7 @@ namespace UnrealBuildTool.Rules
 				new string[]
 				{
 					"Core",
-					"CoreUObject",
+					"CoreUObject"
 				}
 			); 
 			
@@ -26,7 +26,7 @@ namespace UnrealBuildTool.Rules
 					"ScreenShotComparisonTools",
 					"HTTP",
                     "AssetRegistry"
-                }
+				}
 			);
 
             if (Target.bBuildEditor)

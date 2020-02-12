@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -12,6 +12,7 @@
 #include "IDetailCustomization.h"
 #include "Widgets/Views/STableViewBase.h"
 #include "Widgets/Views/STableRow.h"
+#include "IDetailPropertyExtensionHandler.h"
 
 struct FAssetData;
 class FBlueprintEditor;
@@ -22,6 +23,18 @@ class UEditorParentPlayerListObj;
 class USkeleton;
 class IEditableSkeleton;
 struct FAnimParentNodeAssetOverride;
+
+class FAnimGraphNodeShowAsPinExtension : public IDetailPropertyExtensionHandler
+{
+public:
+	// IDetailPropertyExtensionHandler interface
+	virtual bool IsPropertyExtendable(const UClass* InObjectClass, const IPropertyHandle& PropertyHandle) const override;
+	virtual TSharedRef<SWidget> GenerateExtensionWidget(const IDetailLayoutBuilder& InDetailBuilder, const UClass* InObjectClass, TSharedPtr<IPropertyHandle> PropertyHandle) override;
+
+private:
+	// Helper function
+	void GetOptionalPinData(const IPropertyHandle& PropertyHandle, int32& OutOptionalPinIndex, UAnimGraphNode_Base*& OutAnimGraphNode) const;
+};
 
 /////////////////////////////////////////////////////
 // FAnimGraphNodeDetails 
@@ -37,7 +50,7 @@ public:
 
 protected:
 	// Creates a widget for the supplied property
-	TSharedRef<SWidget> CreatePropertyWidget(UProperty* TargetProperty, TSharedRef<IPropertyHandle> TargetPropertyHandle, UClass* NodeClass);
+	TSharedRef<SWidget> CreatePropertyWidget(FProperty* TargetProperty, TSharedRef<IPropertyHandle> TargetPropertyHandle, UClass* NodeClass);
 
 	// Creates the 'as pin' toggle widget for a property
 	TSharedRef<SWidget> CreateAsPinWidget(TSharedRef<IPropertyHandle> InPropertyHandle);

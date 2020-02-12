@@ -1,8 +1,9 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
 #include "CoreMinimal.h"
+#include "AssetData.h"
 #include "UObject/ObjectMacros.h"
 #include "UObject/Object.h"
 #include "UObject/ScriptMacros.h"
@@ -28,6 +29,14 @@ public:
 	// Gets the set of currently selected assets
 	UFUNCTION(BlueprintCallable, Category = "Development|Editor")
 	static TArray<UObject*> GetSelectedAssets();
+
+	// Gets the set of currently selected classes
+	UFUNCTION(BlueprintCallable, Category = "Development|Editor")
+	static TArray<UClass*> GetSelectedBlueprintClasses();
+
+	// Gets the set of currently selected asset data
+	UFUNCTION(BlueprintCallable, Category = "Development|Editor")
+	static TArray<FAssetData> GetSelectedAssetData();
 
 	// Renames an asset (cannot move folders)
 	UFUNCTION(BlueprintCallable, Category = "Development|Editor")

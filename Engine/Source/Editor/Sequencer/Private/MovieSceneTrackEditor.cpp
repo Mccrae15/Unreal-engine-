@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "MovieSceneTrackEditor.h"
 #include "CoreMinimal.h"
@@ -162,13 +162,13 @@ void FMovieSceneTrackEditor::BuildObjectBindingEditButtons(TSharedPtr<SHorizonta
 { 
 }
 
-void FMovieSceneTrackEditor::BuildObjectBindingTrackMenu(FMenuBuilder& MenuBuilder, const FGuid& ObjectBinding, const UClass* ObjectClass) 
-{ 
+void FMovieSceneTrackEditor::BuildObjectBindingTrackMenu(FMenuBuilder& MenuBuilder, const TArray<FGuid>& ObjectBindings, const UClass* ObjectClass)
+{
 }
 
-TSharedPtr<SWidget> FMovieSceneTrackEditor::BuildOutlinerEditWidget(const FGuid& ObjectBinding, UMovieSceneTrack* Track, const FBuildEditWidgetParams& Params) 
+TSharedPtr<SWidget> FMovieSceneTrackEditor::BuildOutlinerEditWidget(const FGuid& ObjectBinding, UMovieSceneTrack* Track, const FBuildEditWidgetParams& Params)
 {
-	if (Track->GetSupportedBlendTypes().Num() > 0)
+	if (Track && Track->GetSupportedBlendTypes().Num() > 0)
 	{
 		TWeakPtr<ISequencer> WeakSequencer = GetSequencer();
 

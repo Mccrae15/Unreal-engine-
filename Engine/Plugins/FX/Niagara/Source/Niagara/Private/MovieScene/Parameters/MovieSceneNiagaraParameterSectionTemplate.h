@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -15,6 +15,11 @@ public:
 	FMovieSceneNiagaraParameterSectionTemplate();
 
 	FMovieSceneNiagaraParameterSectionTemplate(FNiagaraVariable InParameter);
+
+	virtual void SetupOverrides() override
+	{
+		EnableOverrides(RequiresInitializeFlag);
+	}
 
 private:
 	virtual UScriptStruct& GetScriptStructImpl() const override { return *StaticStruct(); }

@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "GenericPlatformInstallation.h"
 #include "../PlatformInstallation.h"
@@ -37,7 +37,7 @@ bool FGenericPlatformInstallation::NormalizeEngineRootDir(FString &RootDir)
 	return false;
 }
 
-bool FGenericPlatformInstallation::LaunchEditor(const FString &RootDirName, const FString &Arguments)
+bool FGenericPlatformInstallation::LaunchEditor(const FString& RootDirName, const FString &FileName, const FString &Arguments)
 {
 	// No default implementation
 	return false;

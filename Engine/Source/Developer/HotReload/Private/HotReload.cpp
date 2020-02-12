@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "CoreMinimal.h"
 #include "HAL/PlatformProcess.h"
@@ -41,6 +41,10 @@
 #endif
 #include "Misc/ScopeExit.h"
 #include "Algo/Transform.h"
+
+#if WITH_LIVE_CODING
+#include "ILiveCodingModule.h"
+#endif
 
 #if WITH_EDITOR
 #include "Editor.h"
@@ -104,7 +108,7 @@ public:
 
 	/** IHotReloadInterface implementation */
 	virtual void SaveConfig() override;
-	virtual bool RecompileModule(const FName InModuleName, const bool bReloadAfterRecompile, FOutputDevice &Ar, bool bFailIfGeneratedCodeChanges = true, bool bForceCodeProject = false) override;
+	virtual bool RecompileModule(const FName InModuleName, FOutputDevice &Ar, ERecompileModuleFlags Flags) override;
 	virtual bool IsCurrentlyCompiling() const override { return ModuleCompileProcessHandle.IsValid(); }
 	virtual void RequestStopCompilation() override { bRequestCancelCompilation = true; }
 	virtual void AddHotReloadFunctionRemap(FNativeFuncPtr NewFunctionPointer, FNativeFuncPtr OldFunctionPointer) override;	
@@ -200,7 +204,7 @@ private:
 	void ReplaceReferencesToReconstructedCDOs();
 
 #if WITH_ENGINE
-	void RegisterForReinstancing(UClass* OldClass, UClass* NewClass);
+	void RegisterForReinstancing(UClass* OldClass, UClass* NewClass, EHotReloadedClassFlags Flags);
 	void ReinstanceClasses();
 
 	/**
@@ -251,14 +255,13 @@ private:
 	 *	@param ModuleNames The list of modules to compile.
 	 *	@param InRecompileModulesCallback Callback function to make when module recompiles.
 	 *	@param Ar
-	 *	@param bInFailIfGeneratedCodeChanges If true, fail the compilation if generated headers change.
 	 *	@param InAdditionalCmdLineArgs Additional arguments to pass to UBT.
-	 *  @param bForceCodeProject Compile as code-based project even if there's no game modules loaded
+	 *  @param Flags Compilation flags
 	 *	@return true if successful, false otherwise.
 	 */
-	bool StartCompilingModuleDLLs(const TArray< FModuleToRecompile >& ModuleNames, 
-		FRecompileModulesCallback&& InRecompileModulesCallback, FOutputDevice& Ar, bool bInFailIfGeneratedCodeChanges, 
-		const FString& InAdditionalCmdLineArgs, bool bForceCodeProject);
+	bool StartCompilingModuleDLLs(const TArray< FModuleToRecompile >& ModuleNames,
+		FRecompileModulesCallback&& InRecompileModulesCallback, FOutputDevice& Ar,
+		const FString& InAdditionalCmdLineArgs, ERecompileModuleFlags Flags);
 #endif
 
 	/** Launches UnrealBuildTool with the specified command line parameters */
@@ -553,10 +556,7 @@ bool FHotReloadModule::Exec( UWorld* Inworld, const TCHAR* Cmd, FOutputDevice& A
 			if( !ModuleNameStr.IsEmpty() )
 			{
 				const FName ModuleName( *ModuleNameStr );
-				const bool bReloadAfterRecompile = true;
-				const bool bForceCodeProject = false;
-				const bool bFailIfGeneratedCodeChanges = true;
-				RecompileModule( ModuleName, bReloadAfterRecompile, Ar, bFailIfGeneratedCodeChanges, bForceCodeProject);
+				RecompileModule(ModuleName, Ar, ERecompileModuleFlags::ReloadAfterRecompile | ERecompileModuleFlags::FailIfGeneratedCodeChanges);
 			}
 
 			return true;
@@ -598,9 +598,19 @@ FString FHotReloadModule::GetModuleCompileMethod(FName InModuleName)
 	}
 }
 
-bool FHotReloadModule::RecompileModule(const FName InModuleName, const bool bReloadAfterRecompile, FOutputDevice &Ar, bool bFailIfGeneratedCodeChanges, bool bForceCodeProject)
+bool FHotReloadModule::RecompileModule(const FName InModuleName, FOutputDevice &Ar, ERecompileModuleFlags Flags)
 {
 #if WITH_HOT_RELOAD
+
+#if WITH_LIVE_CODING
+	ILiveCodingModule* LiveCoding = FModuleManager::GetModulePtr<ILiveCodingModule>(LIVE_CODING_MODULE_NAME);
+	if (LiveCoding != nullptr && LiveCoding->IsEnabledForSession())
+	{
+		UE_LOG(LogHotReload, Error, TEXT("Unable to hot-reload modules while Live Coding is enabled."));
+		return false;
+	}
+#endif
+
 	UE_LOG(LogHotReload, Log, TEXT("Recompiling module %s..."), *InModuleName.ToString());
 
 	// This is an internal request for hot-reload (not from IDE)
@@ -639,11 +649,11 @@ bool FHotReloadModule::RecompileModule(const FName InModuleName, const bool bRel
 	 * @param Ar Output device for logging compilation status.
 	 * @param bForceCodeProject Even if it's a non-code project, treat it as code-based project
 	 */
-	auto RecompileModuleDLLs = [this, &Ar, bFailIfGeneratedCodeChanges, bForceCodeProject](const TArray< FModuleToRecompile >& ModuleNames)
+	auto RecompileModuleDLLs = [this, &Ar, Flags](const TArray< FModuleToRecompile >& ModuleNames)
 	{
 		bool bCompileSucceeded = false;
 		const FString AdditionalArguments = MakeUBTArgumentsForModuleCompiling();
-		if (StartCompilingModuleDLLs(ModuleNames, nullptr, Ar, bFailIfGeneratedCodeChanges, AdditionalArguments, bForceCodeProject))
+		if (StartCompilingModuleDLLs(ModuleNames, nullptr, Ar, AdditionalArguments, Flags))
 		{
 			bool bCompileStillInProgress = false;
 			CheckForFinishedModuleDLLCompile( EHotReloadFlags::WaitForCompletion, bCompileStillInProgress, bCompileSucceeded, Ar );
@@ -682,7 +692,7 @@ bool FHotReloadModule::RecompileModule(const FName InModuleName, const bool bRel
 	}
 
 	// Reload the module if it was loaded before we recompiled
-	if ((bWasModuleLoaded || bForceCodeProject) && bReloadAfterRecompile)
+	if ((bWasModuleLoaded || !!(Flags & ERecompileModuleFlags::ForceCodeProject)) && !!(Flags & ERecompileModuleFlags::ReloadAfterRecompile))
 	{
 		TGuardValue<bool> GuardIsHotReload(GIsHotReload, true);
 		Ar.Logf( TEXT( "Reloading module %s after successful compile." ), *InModuleName.ToString() );
@@ -694,7 +704,7 @@ bool FHotReloadModule::RecompileModule(const FName InModuleName, const bool bRel
 		CollectGarbage(GARBAGE_COLLECTION_KEEPFLAGS);
 	}
 
-	if (bForceCodeProject)
+	if (!!(Flags & ERecompileModuleFlags::ForceCodeProject))
 	{
 		HotReloadEvent.Broadcast( false );
 	}
@@ -1151,9 +1161,8 @@ ECompilationResult::Type FHotReloadModule::RebindPackagesInternal(const TArray<U
 			DoHotReloadInternal(ChangedModules, InPackages, DependentModules, Ar);
 		},
 		Ar,
-		false, /* bFailIfGeneratedCodeChanges */
 		AdditionalArguments,
-		false /* bForceCodeProject */
+		ERecompileModuleFlags::None
 	);
 
 	if (!bCompileStarted)
@@ -1205,15 +1214,23 @@ namespace {
 	}
 }
 
-void FHotReloadModule::RegisterForReinstancing(UClass* OldClass, UClass* NewClass)
+void FHotReloadModule::RegisterForReinstancing(UClass* OldClass, UClass* NewClass, EHotReloadedClassFlags Flags)
 {
 	TPair<UClass*, UClass*> Pair;
 	
 	Pair.Key = OldClass;
 	Pair.Value = NewClass;
 
-	TArray<TPair<UClass*, UClass*> >& ClassesToReinstance = GetClassesToReinstance();
-	ClassesToReinstance.Add(MoveTemp(Pair));
+	// Don't allow reinstancing of UEngine classes
+	if (!OldClass->IsChildOf(UEngine::StaticClass()))
+	{
+		TArray<TPair<UClass*, UClass*> >& ClassesToReinstance = GetClassesToReinstance();
+		ClassesToReinstance.Add(MoveTemp(Pair));
+	}
+	else if (EnumHasAnyFlags(Flags, EHotReloadedClassFlags::Changed))
+	{
+		UE_LOG(LogHotReload, Warning, TEXT("Engine class '%s' has changed but will be ignored for hot reload"), *NewClass->GetName());
+	}
 }
 
 void FHotReloadModule::ReinstanceClasses()
@@ -1230,13 +1247,6 @@ void FHotReloadModule::ReinstanceClasses()
 	TMap<UClass*, UClass*> OldToNewClassesMap;
 	for (const TPair<UClass*, UClass*>& Pair : ClassesToReinstance)
 	{
-		// Don't allow reinstancing of UEngine classes
-		if (Pair.Key->IsChildOf(UEngine::StaticClass()))
-		{
-			UE_LOG(LogHotReload, Warning, TEXT("Engine class '%s' has changed but will be ignored for hot reload"), *Pair.Key->GetName());
-			continue;
-		}
-
 		if (Pair.Value != nullptr)
 		{
 			OldToNewClassesMap.Add(Pair.Key, Pair.Value);
@@ -1245,11 +1255,7 @@ void FHotReloadModule::ReinstanceClasses()
 
 	for (const TPair<UClass*, UClass*>& Pair : ClassesToReinstance)
 	{
-		// Don't allow reinstancing of UEngine classes
-		if (!Pair.Key->IsChildOf(UEngine::StaticClass()))
-		{
-			ReinstanceClass(Pair.Key, Pair.Value, OldToNewClassesMap);
-		}
+		ReinstanceClass(Pair.Key, Pair.Value, OldToNewClassesMap);
 	}
 
 	ClassesToReinstance.Empty();
@@ -1340,14 +1346,14 @@ void FHotReloadModule::StripModuleSuffixFromFilename(FString& InOutModuleFilenam
 		int32 SecondHyphenIndex = FirstHyphenIndex;
 		do
 		{
-			SecondHyphenIndex = InOutModuleFilename.Find(TEXT("-"), ESearchCase::IgnoreCase, ESearchDir::FromStart, SecondHyphenIndex + 1);
+			SecondHyphenIndex = InOutModuleFilename.Find(TEXT("-"), ESearchCase::CaseSensitive, ESearchDir::FromStart, SecondHyphenIndex + 1);
 			if (SecondHyphenIndex != INDEX_NONE)
 			{
 				// Make sure that the section between hyphens is the expected module name. This guards against cases where module name has a hyphen inside.
 				FString HotReloadedModuleName = InOutModuleFilename.Mid(FirstHyphenIndex + 1, SecondHyphenIndex - FirstHyphenIndex - 1);
 				if (HotReloadedModuleName == ModuleName)
 				{
-					InOutModuleFilename = InOutModuleFilename.Mid(0, SecondHyphenIndex);
+					InOutModuleFilename.MidInline(0, SecondHyphenIndex, false);
 					SecondHyphenIndex = INDEX_NONE;
 				}
 			}
@@ -1423,11 +1429,20 @@ bool FHotReloadModule::Tick(float DeltaTime)
 		return true;
 	}
 
+	// Early out if live coding is enabled
+#if WITH_LIVE_CODING
+	ILiveCodingModule* LiveCoding = FModuleManager::GetModulePtr<ILiveCodingModule>(LIVE_CODING_MODULE_NAME);
+	if (LiveCoding != nullptr && LiveCoding->IsEnabledForSession())
+	{
+        return false;
+	}
+#endif
+
 #if WITH_EDITOR
 	if (GEditor)
 	{
 		// Don't try to do an IDE reload yet if we're PIE - wait until we leave
-		if (GEditor->bIsPlayWorldQueued || GEditor->PlayWorld)
+		if (GEditor->IsPlaySessionInProgress())
 		{
 			return true;
 		}
@@ -1582,9 +1597,9 @@ FString FHotReloadModule::MakeUBTArgumentsForModuleCompiling()
 }
 
 #if WITH_HOT_RELOAD
-bool FHotReloadModule::StartCompilingModuleDLLs(const TArray< FModuleToRecompile >& ModuleNames, 
-	FRecompileModulesCallback&& InRecompileModulesCallback, FOutputDevice& Ar, bool bInFailIfGeneratedCodeChanges, 
-	const FString& InAdditionalCmdLineArgs, bool bForceCodeProject)
+bool FHotReloadModule::StartCompilingModuleDLLs(const TArray< FModuleToRecompile >& ModuleNames,
+	FRecompileModulesCallback&& InRecompileModulesCallback, FOutputDevice& Ar,
+	const FString& InAdditionalCmdLineArgs, ERecompileModuleFlags Flags)
 {
 	// Keep track of what we're compiling
 	ModulesBeingCompiled.Empty(ModuleNames.Num());
@@ -1593,6 +1608,7 @@ bool FHotReloadModule::StartCompilingModuleDLLs(const TArray< FModuleToRecompile
 
 	const TCHAR* BuildPlatformName = FPlatformMisc::GetUBTPlatform();
 	const TCHAR* BuildConfigurationName = FModuleManager::GetUBTConfiguration();
+	const TCHAR* BuildTargetName = FPlatformMisc::GetUBTTargetName();
 
 	RecompileModulesCallback = MoveTemp(InRecompileModulesCallback);
 
@@ -1621,25 +1637,21 @@ bool FHotReloadModule::StartCompilingModuleDLLs(const TArray< FModuleToRecompile
 	}
 
 	FString ExtraArg;
-#if UE_EDITOR
-	// When recompiling from the editor, we don't know the editor target name. Pass -TargetType=Editor to UBT to have it figure it out.
-	ExtraArg = TEXT( "-TargetType=Editor " );
-#endif
 
 	if (FPaths::IsProjectFilePathSet())
 	{
 		ExtraArg += FString::Printf(TEXT("-Project=\"%s\" "), *FPaths::ConvertRelativePathToFull(FPaths::GetProjectFilePath()));
 	}
 
-	if (bInFailIfGeneratedCodeChanges)
+	if (!!(Flags & ERecompileModuleFlags::FailIfGeneratedCodeChanges))
 	{
 		// Additional argument to let UHT know that we can only compile the module if the generated code didn't change
 		ExtraArg += TEXT( "-FailIfGeneratedCodeChanges " );
 	}
 
-	FString CmdLineParams = FString::Printf( TEXT( "%s %s %s %s%s -IgnoreJunk" ), 
+	FString CmdLineParams = FString::Printf( TEXT( "%s %s %s %s %s%s -IgnoreJunk" ), 
 		*ModuleArg, 
-		BuildPlatformName, BuildConfigurationName, 
+		BuildTargetName, BuildPlatformName, BuildConfigurationName,
 		*ExtraArg, *InAdditionalCmdLineArgs );
 
 	const bool bInvocationSuccessful = InvokeUnrealBuildToolForCompile(CmdLineParams, Ar);

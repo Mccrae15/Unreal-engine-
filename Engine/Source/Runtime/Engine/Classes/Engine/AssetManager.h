@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -19,8 +19,12 @@ struct FPrimaryAssetTypeData;
 struct FPrimaryAssetData;
 struct FPrimaryAssetRulesCustomOverride;
 
+/** Delegate called when acquiring resources/chunks for assets, first parameter will be true if all resources were acquired, false if any failed.
+	Second parameter will contain a list of chunks not yet downloaded */
+DECLARE_DELEGATE_TwoParams(FAssetManagerAcquireResourceDelegateEx, bool /* bSuccess */, const TArray<int32>& /* MissingChunks */);
+
 /** Delegate called when acquiring resources/chunks for assets, parameter will be true if all resources were acquired, false if any failed */
-DECLARE_DELEGATE_OneParam(FAssetManagerAcquireResourceDelegate, bool);
+DECLARE_DELEGATE_OneParam(FAssetManagerAcquireResourceDelegate, bool /* bSuccess */);
 
 /** 
  * A singleton UObject that is responsible for loading and unloading PrimaryAssets, and maintaining game-specific asset references
@@ -298,6 +302,7 @@ public:
 	 * @param CompleteDelegate		Delegate called when chunks have been acquired or failed. If any chunks fail the entire operation is considered a failure
 	 * @param Priority				Priority to use when acquiring chunks
 	 */
+	virtual void AcquireResourcesForAssetList(const TArray<FSoftObjectPath>& AssetList, FAssetManagerAcquireResourceDelegateEx CompleteDelegate, EChunkPriority::Type Priority = EChunkPriority::Immediate);
 	virtual void AcquireResourcesForAssetList(const TArray<FSoftObjectPath>& AssetList, FAssetManagerAcquireResourceDelegate CompleteDelegate, EChunkPriority::Type Priority = EChunkPriority::Immediate);
 
 	/** 
@@ -319,6 +324,7 @@ public:
 
 	/** Changes the management rules for a specific asset, this overrides the type rules. If passed in Rules is default, delete override */
 	virtual void SetPrimaryAssetRules(FPrimaryAssetId PrimaryAssetId, const FPrimaryAssetRules& Rules);
+	virtual void SetPrimaryAssetRulesExplicitly(FPrimaryAssetId PrimaryAssetId, const FPrimaryAssetRulesExplicitOverride& ExplicitRules);
 
 	/** Gets the management rules for a specific asset, this will merge the type and individual values */
 	virtual FPrimaryAssetRules GetPrimaryAssetRules(FPrimaryAssetId PrimaryAssetId) const;
@@ -366,6 +372,9 @@ public:
 	/** Dumps out list of loaded asset bundles to log */
 	static void DumpLoadedAssetState();
 
+	/** Shows a list of all bundles for the specified primary asset by primary asset id (i.e. Map:Entry) */
+	static void DumpBundlesForAsset(const TArray<FString>& Args);
+
 	/** Dumps information about the Asset Registry to log */
 	static void DumpAssetRegistryInfo();
 
@@ -392,6 +401,9 @@ public:
 
 	/** Get the encryption key guid attached to this primary asset. Can be invalid if the asset is not encrypted */
 	virtual void GetCachedPrimaryAssetEncryptionKeyGuid(FPrimaryAssetId InPrimaryAssetId, FGuid& OutGuid);
+
+	/** Loads the redirector maps */
+	virtual void LoadRedirectorMaps();
 
 #if WITH_EDITOR
 	// EDITOR ONLY FUNCTIONALITY
@@ -508,14 +520,11 @@ protected:
 	FPrimaryAssetData* GetNameData(const FPrimaryAssetId& PrimaryAssetId, bool bCheckRedirector = true);
 	const FPrimaryAssetData* GetNameData(const FPrimaryAssetId& PrimaryAssetId, bool bCheckRedirector = true) const;
 
-	/** Loads the redirector maps */
-	virtual void LoadRedirectorMaps();
-
 	/** Rebuilds the ObjectReferenceList, needed after global object state has changed */
 	virtual void RebuildObjectReferenceList();
 
 	/** Called when an internal load handle finishes, handles setting to pending state */
-	virtual void OnAssetStateChangeCompleted(FPrimaryAssetId PrimaryAssetId, TSharedPtr<FStreamableHandle> BoundHandle, FStreamableDelegate WrappedDelegate);
+	virtual void OnAssetStateChangeCompleted(TArray<FPrimaryAssetId> PrimaryAssetId, TSharedPtr<FStreamableHandle> BoundHandle, FStreamableDelegate WrappedDelegate);
 
 	/** Helper function to write out asset reports */
 	virtual bool WriteCustomReport(FString FileName, TArray<FString>& FileLines) const;
@@ -600,7 +609,7 @@ protected:
 	TMap<FName, FPrimaryAssetId> AssetPathMap;
 
 	/** Overridden asset management data for specific types */
-	TMap<FPrimaryAssetId, FPrimaryAssetRules> AssetRuleOverrides;
+	TMap<FPrimaryAssetId, FPrimaryAssetRulesExplicitOverride> AssetRuleOverrides;
 
 	/** Map from PrimaryAssetId to list of PrimaryAssetIds that are the parent of this one, for determining chunking/cooking */
 	TMap<FPrimaryAssetId, TArray<FPrimaryAssetId>> ManagementParentMap;
@@ -697,6 +706,12 @@ protected:
 	FDelegateHandle ChunkInstallDelegateHandle;
 
 private:
+
+#if WITH_EDITOR
+	/** Recursive handler for InitializeAssetBundlesFromMetadata */
+	virtual void InitializeAssetBundlesFromMetadata_Recursive(const UStruct* Struct, const void* StructValue, FAssetBundleData& AssetBundle, FName DebugName, TSet<const void*>& AllVisitedStructValues) const;
+#endif
+
 	/** Per-type asset information, cannot be accessed by children as it is defined in CPP file */
 	TMap<FName, TSharedRef<FPrimaryAssetTypeData>> AssetTypeMap;
 

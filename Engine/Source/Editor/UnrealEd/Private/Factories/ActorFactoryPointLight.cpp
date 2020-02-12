@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 /*=============================================================================
 	AnimCompositeFactory.cpp: Factory for AnimComposite
@@ -7,6 +7,7 @@
 #include "ActorFactories/ActorFactoryPointLight.h"
 #include "GameFramework/Actor.h"
 #include "Components/PointLightComponent.h"
+#include "Components/RectLightComponent.h"
 
 void UActorFactoryPointLight::PostSpawnActor(UObject* Asset, AActor* NewActor)
 {

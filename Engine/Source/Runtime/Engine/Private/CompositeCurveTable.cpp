@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "Engine/CompositeCurveTable.h"
 #include "Misc/MessageDialog.h"
@@ -46,7 +46,14 @@ void UCompositeCurveTable::Serialize(FArchive& Ar)
 
 	Super::Serialize(Ar);
 
-	if (Ar.IsLoading())
+#if WITH_EDITORONLY_DATA
+	if (Ar.IsLoading() && GIsTransacting)
+	{
+		bIsLoading = false;
+	}
+#endif
+
+	if (bIsLoading)
 	{
 		for (UCurveTable* ParentTable : ParentTables)
 		{
@@ -64,30 +71,39 @@ void UCompositeCurveTable::Serialize(FArchive& Ar)
 	}
 }
 
-void UCompositeCurveTable::UpdateCachedRowMap()
+void UCompositeCurveTable::UpdateCachedRowMap(bool bWarnOnInvalidChildren)
 {
-#if WITH_EDITOR
-	FCurveTableEditorUtils::BroadcastPreChange(this, FCurveTableEditorUtils::ECurveTableChangeInfo::RowList);
-#endif
-	UCurveTable::EmptyTable();
-
 	bool bLeaveEmpty = false;
 	// Throw up an error message and stop if any loops are found
 	if (const UCompositeCurveTable* LoopTable = FindLoops(TArray<const UCompositeCurveTable*>()))
 	{
-		const FText ErrorMsg = FText::Format(LOCTEXT("FoundLoopError", "Cyclic dependency found. Table {0} depends on itself. Please fix your data"), FText::FromString(LoopTable->GetPathName()));
+		if (bWarnOnInvalidChildren)
+		{
+			const FText ErrorMsg = FText::Format(LOCTEXT("FoundLoopError", "Cyclic dependency found. Table {0} depends on itself. Please fix your data"), FText::FromString(LoopTable->GetPathName()));
 #if WITH_EDITOR
-		if (!bIsLoading)
-		{
-			FMessageDialog::Open(EAppMsgType::Ok, ErrorMsg);
-		}
-		else
+			if (!bIsLoading)
+			{
+				FMessageDialog::Open(EAppMsgType::Ok, ErrorMsg);
+			}
+			else
 #endif
-		{
-			UE_LOG(LogCurveTable, Warning, TEXT("%s"), *ErrorMsg.ToString());
+			{
+				UE_LOG(LogCurveTable, Warning, TEXT("%s"), *ErrorMsg.ToString());
+			}
 		}
 		bLeaveEmpty = true;
+
+		// if the rowmap is empty, stop. We don't need to do the pre and post change since no changes will actually be done
+		if (RowMap.Num() == 0)
+		{
+			return;
+		}
 	}
+
+#if WITH_EDITOR
+	FCurveTableEditorUtils::BroadcastPreChange(this, FCurveTableEditorUtils::ECurveTableChangeInfo::RowList);
+#endif
+	UCurveTable::EmptyTable();
 
 	if (!bLeaveEmpty)
 	{
@@ -177,12 +193,12 @@ void UCompositeCurveTable::PostEditChangeProperty(FPropertyChangedEvent& Propert
 {
 	static FName Name_ParentTables = GET_MEMBER_NAME_CHECKED(UCompositeCurveTable, ParentTables);
 
-	UProperty* PropertyThatChanged = PropertyChangedEvent.Property;
+	FProperty* PropertyThatChanged = PropertyChangedEvent.Property;
 	const FName PropertyName = PropertyThatChanged != nullptr ? PropertyThatChanged->GetFName() : NAME_None;
 
 	if (PropertyName == Name_ParentTables)
 	{
-		OnParentTablesUpdated();
+		OnParentTablesUpdated(PropertyChangedEvent.ChangeType);
 	}
 
 	Super::PostEditChangeProperty(PropertyChangedEvent);
@@ -190,15 +206,20 @@ void UCompositeCurveTable::PostEditChangeProperty(FPropertyChangedEvent& Propert
 
 void UCompositeCurveTable::PostEditUndo()
 {
-	Super::PostEditUndo();
-
 	OnParentTablesUpdated();
+
+	Super::PostEditUndo();
 }
 #endif // WITH_EDITOR
 
-void UCompositeCurveTable::OnParentTablesUpdated()
+void UCompositeCurveTable::OnParentTablesUpdated(EPropertyChangeType::Type ChangeType)
 {
-	UpdateCachedRowMap();
+	// Prevent recursion when there was a cycle in the parent hierarchy (or during the undo of the action that created the cycle; in that case PostEditUndo will recall OnParentTablesUpdated when the dust has settled)
+	if (bUpdatingParentTables)
+	{
+		return;
+	}
+	bUpdatingParentTables = true;
 
 	for (UCurveTable* Table : OldParentTables)
 	{
@@ -208,15 +229,19 @@ void UCompositeCurveTable::OnParentTablesUpdated()
 		}
 	}
 
+	UpdateCachedRowMap(ChangeType == EPropertyChangeType::ValueSet || ChangeType == EPropertyChangeType::Duplicate);
+
 	for (UCurveTable* Table : ParentTables)
 	{
-		if (Table && OldParentTables.Find(Table) == INDEX_NONE)
+		if ((Table != nullptr) && (Table != this) && (OldParentTables.Find(Table) == INDEX_NONE))
 		{
-			Table->OnCurveTableChanged().AddUObject(this, &UCompositeCurveTable::UpdateCachedRowMap);
+			Table->OnCurveTableChanged().AddUObject(this, &UCompositeCurveTable::OnParentTablesUpdated, EPropertyChangeType::Unspecified);
 		}
 	}
 
 	OldParentTables = ParentTables;
+
+	bUpdatingParentTables = false;
 }
 
 void UCompositeCurveTable::EmptyTable()
@@ -225,6 +250,12 @@ void UCompositeCurveTable::EmptyTable()
 	ParentTables.Empty();
 
 	Super::EmptyTable();
+}
+
+void UCompositeCurveTable::AppendParentTables(const TArray<UCurveTable*>& NewTables)
+{
+	ParentTables.Append(NewTables);
+	OnParentTablesUpdated();
 }
 
 const UCompositeCurveTable* UCompositeCurveTable::FindLoops(TArray<const UCompositeCurveTable*> AlreadySeenTables) const

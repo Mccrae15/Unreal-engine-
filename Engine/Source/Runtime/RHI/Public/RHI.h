@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 /*=============================================================================
 	RHI.h: Render Hardware Interface definitions.
@@ -15,9 +15,11 @@
 #define RHI_COMMAND_LIST_DEBUG_TRACES 0
 #endif
 
+template <typename T> class TArrayView;
+
 class FResourceArrayInterface;
 class FResourceBulkDataInterface;
-
+class FStringView;
 
 /** Alignment of the shader parameters struct is required to be 16-byte boundaries. */
 #define SHADER_PARAMETER_STRUCT_ALIGNMENT 16
@@ -71,9 +73,6 @@ extern RHI_API bool GSupportsQuadBufferStereo;
 /** true if the RHI supports textures that may be bound as both a render target and a shader resource. */
 extern RHI_API bool GSupportsRenderDepthTargetableShaderResources;
 
-/** true if the RHI supports binding depth as a texture when testing against depth */
-extern RHI_API bool GSupportsDepthFetchDuringDepthTest;
-
 // The maximum feature level and shader platform available on this system
 // GRHIFeatureLevel and GRHIShaderPlatform have been deprecated. There is no longer a current featurelevel/shaderplatform that
 // should be used for all rendering, rather a specific set for each view.
@@ -82,6 +81,9 @@ extern RHI_API EShaderPlatform GMaxRHIShaderPlatform;
 
 /** true if the RHI supports SRVs */
 extern RHI_API bool GSupportsResourceView;
+
+/** Whether the RHI can send commands to the device context from multiple threads. Used in the GPU readback to avoid stalling the RHI threads. */
+extern RHI_API bool GRHISupportsMultithreading;
 
 /** 
  * only set if RHI has the information (after init of the RHI and only if RHI has that information, never changes after that)
@@ -109,74 +111,88 @@ RHI_API bool IsRHIDeviceNVIDIA();
 // helper to convert GRHIVendorId into a printable string, or "Unknown" if unknown.
 RHI_API const TCHAR* RHIVendorIdToString();
 
+// helper to convert VendorId into a printable string, or "Unknown" if unknown.
+RHI_API const TCHAR* RHIVendorIdToString(EGpuVendorId VendorId);
+
 // helper to return the shader language version for the given shader platform.
-RHI_API uint32 RHIGetShaderLanguageVersion(const EShaderPlatform Platform);
+RHI_API uint32 RHIGetShaderLanguageVersion(const FStaticShaderPlatform Platform);
 
 // helper to check that the shader platform supports tessellation.
-RHI_API bool RHISupportsTessellation(const EShaderPlatform Platform);
+RHI_API bool RHISupportsTessellation(const FStaticShaderPlatform Platform);
 
 // helper to check that the shader platform supports writing to UAVs from pixel shaders.
-RHI_API bool RHISupportsPixelShaderUAVs(const EShaderPlatform Platform);
+RHI_API bool RHISupportsPixelShaderUAVs(const FStaticShaderPlatform Platform);
 
 // helper to check that the shader platform supports creating a UAV off an index buffer.
-RHI_API bool RHISupportsIndexBufferUAVs(const EShaderPlatform Platform);
+RHI_API bool RHISupportsIndexBufferUAVs(const FStaticShaderPlatform Platform);
 
 // helper to check if a preview feature level has been requested.
 RHI_API bool RHIGetPreviewFeatureLevel(ERHIFeatureLevel::Type& PreviewFeatureLevelOUT);
 
-inline bool RHISupportsInstancedStereo(const EShaderPlatform Platform)
+// helper to check if preferred EPixelFormat is supported, return one if it is not
+RHI_API EPixelFormat RHIPreferredPixelFormatHint(EPixelFormat PreferredPixelFormat);
+
+inline bool RHISupportsInstancedStereo(const FStaticShaderPlatform Platform)
 {
 	// Only D3D SM5, PS4 and Metal SM5 supports Instanced Stereo
-	return (Platform == EShaderPlatform::SP_PCD3D_SM5 || Platform == EShaderPlatform::SP_PS4 || Platform == EShaderPlatform::SP_METAL_SM5 || Platform == EShaderPlatform::SP_METAL_SM5_NOTESS);
+	return Platform == EShaderPlatform::SP_PCD3D_SM5 || Platform == EShaderPlatform::SP_PS4 || Platform == EShaderPlatform::SP_METAL_SM5 || Platform == EShaderPlatform::SP_METAL_SM5_NOTESS
+		|| FDataDrivenShaderPlatformInfo::GetSupportsInstancedStereo(Platform);
 }
 
-inline bool RHISupportsMultiView(const EShaderPlatform Platform)
+inline bool RHISupportsMultiView(const FStaticShaderPlatform Platform)
 {
 	// Only PS4 and Metal SM5 from 10.13 onward supports Multi-View
-	return (Platform == EShaderPlatform::SP_PS4) || ((Platform == EShaderPlatform::SP_METAL_SM5 || Platform == SP_METAL_SM5_NOTESS));
+	return (Platform == EShaderPlatform::SP_PS4) || ((Platform == EShaderPlatform::SP_METAL_SM5 || Platform == SP_METAL_SM5_NOTESS))
+		|| FDataDrivenShaderPlatformInfo::GetSupportsMultiView(Platform);
 }
 
-inline bool RHISupportsMSAA(EShaderPlatform Platform)
+inline bool RHISupportsMSAA(const FStaticShaderPlatform Platform)
 {
 	return 
-		//@todo-rco: Fix when iOS OpenGL supports MSAA
-		Platform != SP_OPENGL_ES2_IOS
-		// @todo marksatt Metal on macOS 10.12 and earlier (or Intel on any macOS < 10.13.2) don't reliably support our MSAA usage & custom resolve.
-#if PLATFORM_MAC
-		&& IsMetalPlatform(Platform) && (FPlatformMisc::MacOSXVersionCompare(10, 13, 0) >= 0) && (!IsRHIDeviceIntel() || FPlatformMisc::MacOSXVersionCompare(10, 13, 2) >= 0)
-#endif
-		// @todo marksatt iOS Desktop Forward needs more work internally
-		&& Platform != SP_METAL_MRT
+		(
 		// @todo optimise MSAA for XboxOne, currently uses significant eRAM.
-		&& Platform != SP_XBOXONE_D3D12;
+		Platform != SP_XBOXONE_D3D12)
+		// @todo platplug: Maybe this should become bDisallowMSAA to default of 0 is a better default (since now MSAA is opt-out more than opt-in) 
+		|| FDataDrivenShaderPlatformInfo::GetSupportsMSAA(Platform);
 }
 
-inline bool RHISupportsBufferLoadTypeConversion(EShaderPlatform Platform)
+inline bool RHISupportsBufferLoadTypeConversion(const FStaticShaderPlatform Platform)
 {
-	return true;
+	return !IsMetalPlatform(Platform);
 }
 
 /** Whether the platform supports reading from volume textures (does not cover rendering to volume textures). */
-inline bool RHISupportsVolumeTextures(ERHIFeatureLevel::Type FeatureLevel)
+inline bool RHISupportsVolumeTextures(const FStaticFeatureLevel FeatureLevel)
 {
-	return FeatureLevel >= ERHIFeatureLevel::SM4;
+	return FeatureLevel >= ERHIFeatureLevel::SM5;
 }
 
-inline bool RHISupportsVertexShaderLayer(const EShaderPlatform Platform)
+inline bool RHISupportsVertexShaderLayer(const FStaticShaderPlatform Platform)
 {
-	return IsFeatureLevelSupported(Platform, ERHIFeatureLevel::SM4) && IsMetalPlatform(Platform) && (IsPCPlatform(Platform) || (Platform == SP_METAL_MRT && RHIGetShaderLanguageVersion(Platform) >= 4));
+	return IsFeatureLevelSupported(Platform, ERHIFeatureLevel::SM5) && IsMetalPlatform(Platform) && IsPCPlatform(Platform);
 }
 
-inline bool RHISupports4ComponentUAVReadWrite(EShaderPlatform Platform)
+/** Return true if and only if the GPU support rendering to volume textures (2D Array, 3D) is guaranteed supported for a target platform.
+	if PipelineVolumeTextureLUTSupportGuaranteedAtRuntime is true then it is guaranteed that GSupportsVolumeTextureRendering is true at runtime.
+*/
+inline bool RHIVolumeTextureRenderingSupportGuaranteed(const FStaticShaderPlatform Platform)
+{
+	return IsFeatureLevelSupported(Platform, ERHIFeatureLevel::SM5)
+		&& (!IsMetalPlatform(Platform) || RHISupportsVertexShaderLayer(Platform)) // For Metal only shader platforms & versions that support vertex-shader-layer can render to volume textures - this is a compile/cook time check.
+		&& !IsOpenGLPlatform(Platform);		// Apparently, some OpenGL 3.3 cards support SM4 but can't render to volume textures
+}
+
+inline bool RHISupports4ComponentUAVReadWrite(const FStaticShaderPlatform Platform)
 {
 	// Must match usf PLATFORM_SUPPORTS_4COMPONENT_UAV_READ_WRITE
 	// D3D11 does not support multi-component loads from a UAV: "error X3676: typed UAV loads are only allowed for single-component 32-bit element types"
-	return Platform == SP_XBOXONE_D3D12 || Platform == SP_PS4 || IsMetalPlatform(Platform);
+	return Platform == SP_XBOXONE_D3D12 || Platform == SP_PS4 || IsMetalPlatform(Platform) 
+		|| FDataDrivenShaderPlatformInfo::GetSupports4ComponentUAVReadWrite(Platform);
 }
 
 /** Whether Manual Vertex Fetch is supported for the specified shader platform.
 	Shader Platform must not use the mobile renderer, and for Metal, the shader language must be at least 2. */
-inline bool RHISupportsManualVertexFetch(EShaderPlatform InShaderPlatform)
+inline bool RHISupportsManualVertexFetch(const FStaticShaderPlatform InShaderPlatform)
 {
 	return (!IsOpenGLPlatform(InShaderPlatform) || IsSwitchPlatform(InShaderPlatform)) && !IsMobilePlatform(InShaderPlatform);
 }
@@ -184,7 +200,7 @@ inline bool RHISupportsManualVertexFetch(EShaderPlatform InShaderPlatform)
 /** 
  * Returns true if SV_VertexID contains BaseVertexIndex passed to the draw call, false if shaders must manually construct an absolute VertexID.
  */
-inline bool RHISupportsAbsoluteVertexID(EShaderPlatform InShaderPlatform)
+inline bool RHISupportsAbsoluteVertexID(const EShaderPlatform InShaderPlatform)
 {
 	return IsVulkanPlatform(InShaderPlatform) || IsVulkanMobilePlatform(InShaderPlatform);
 }
@@ -192,20 +208,28 @@ inline bool RHISupportsAbsoluteVertexID(EShaderPlatform InShaderPlatform)
 /** Can this platform compile ray tracing shaders (regardless of project settings).
  *  To use at runtime, also check GRHISupportsRayTracing and r.RayTracing CVar (see IsRayTracingEnabled() helper).
  **/
-inline RHI_API bool RHISupportsRayTracingShaders(EShaderPlatform Platform)
+inline RHI_API bool RHISupportsRayTracingShaders(const FStaticShaderPlatform Platform)
 {
-	return Platform == SP_PCD3D_SM5;
+	return FDataDrivenShaderPlatformInfo::GetSupportsRayTracing(Platform);
 }
 
 /** Can this platform compile shaders that use shader model 6.0 wave intrinsics.
  *  To use such shaders at runtime, also check GRHISupportsWaveOperations.
  **/
-inline RHI_API bool RHISupportsWaveOperations(EShaderPlatform Platform)
+inline RHI_API bool RHISupportsWaveOperations(const FStaticShaderPlatform Platform)
 {
 	// Currently SM6 shaders are treated as an extension of SM5.
 	return Platform == SP_PCD3D_SM5;
 }
 
+/** True if the given shader platform supports a render target write mask */
+inline bool RHISupportsRenderTargetWriteMask(const FStaticShaderPlatform Platform)
+{
+	return
+		Platform == SP_PS4 ||
+		Platform == SP_XBOXONE_D3D12 ||
+		FDataDrivenShaderPlatformInfo::GetSupportsRenderTargetWriteMask(Platform);
+}
 
 // Wrapper for GRHI## global variables, allows values to be overridden for mobile preview modes.
 template <typename TValueType>
@@ -293,6 +317,9 @@ extern RHI_API bool GRHISupportsQuadTopology;
 /** true if the RHI supports rectangular topology (PT_RectList). */
 extern RHI_API bool GRHISupportsRectTopology;
 
+/** true if the RHI supports 64 bit uint atomics. */
+extern RHI_API bool GRHISupportsAtomicUInt64;
+
 /** Temporary. When OpenGL is running in a separate thread, it cannot yet do things like initialize shaders that are first discovered in a rendering task. It is doable, it just isn't done. */
 extern RHI_API bool GSupportsParallelRenderingTasksWithSeparateRHIThread;
 
@@ -335,8 +362,14 @@ extern RHI_API bool GSupportsWideMRT;
 /** True if the RHI and current hardware supports supports depth bounds testing */
 extern RHI_API bool GSupportsDepthBoundsTest;
 
-/** True if the RHI and current hardware support a render target write mask */
-extern RHI_API bool GSupportsRenderTargetWriteMask;
+/** True if the RHI supports explicit access to depth target HTile meta data. */
+extern RHI_API bool GRHISupportsExplicitHTile;
+
+/** True if the RHI supports resummarizing depth target HTile meta data. */
+extern RHI_API bool GRHISupportsResummarizeHTile;
+
+/** True if the RHI supports depth target unordered access views. */
+extern RHI_API bool GRHISupportsDepthUAV;
 
 /** True if the RHI and current hardware supports efficient AsyncCompute (by default we assume false and later we can enable this for more hardware) */
 extern RHI_API bool GSupportsEfficientAsyncCompute;
@@ -344,7 +377,7 @@ extern RHI_API bool GSupportsEfficientAsyncCompute;
 /** True if the RHI supports 'GetHDR32bppEncodeModeES2' shader intrinsic. */
 extern RHI_API bool GSupportsHDR32bppEncodeModeIntrinsic;
 
-/** True if the RHI supports getting the result of occlusion queries when on a thread other than the renderthread */
+/** True if the RHI supports getting the result of occlusion queries when on a thread other than the render thread */
 extern RHI_API bool GSupportsParallelOcclusionQueries;
 
 /** true if the RHI supports aliasing of transient resources */
@@ -352,6 +385,12 @@ extern RHI_API bool GSupportsTransientResourceAliasing;
 
 /** true if the RHI requires a valid RT bound during UAV scatter operation inside the pixel shader */
 extern RHI_API bool GRHIRequiresRenderTargetForPixelShaderUAVs;
+
+/** true if the RHI supports unordered access view format aliasing */
+extern RHI_API bool GRHISupportsUAVFormatAliasing;
+
+/** true if the pointer returned by Lock is a persistent direct pointer to gpu memory */
+extern RHI_API bool GRHISupportsDirectGPUMemoryLock;
 
 /** The minimum Z value in clip space for the RHI. */
 extern RHI_API float GMinClipZ;
@@ -381,6 +420,10 @@ extern RHI_API TRHIGlobal<int32> GMaxShadowDepthBufferSizeY;
 
 /** The maximum size allowed for 2D textures in both dimensions. */
 extern RHI_API TRHIGlobal<int32> GMaxTextureDimensions;
+
+/** The maximum size allowed for 3D textures in all three dimensions. */
+extern RHI_API TRHIGlobal<int32> GMaxVolumeTextureDimensions;
+
 
 FORCEINLINE uint32 GetMax2DTextureDimension()
 {
@@ -443,6 +486,8 @@ extern RHI_API volatile int32 GCurrentTextureMemorySize;
 extern RHI_API volatile int32 GCurrentRendertargetMemorySize;
 /** Current texture streaming pool size, in bytes. 0 means unlimited. */
 extern RHI_API int64 GTexturePoolSize;
+/** Maximum texture buffer size. Relevant for OpenGL. 0 means we do not take it into account*/
+extern RHI_API int64 GMaxTextureBufferSize;
 /** In percent. If non-zero, the texture pool size is a percentage of GTotalGraphicsMemory. */
 extern RHI_API int32 GPoolSizeVRAMPercentage;
 
@@ -459,9 +504,6 @@ extern RHI_API int32 GCurrentNumPrimitivesDrawnRHI;
 /** Whether or not the RHI can handle a non-zero BaseVertexIndex - extra SetStreamSource calls will be needed if this is false */
 extern RHI_API bool GRHISupportsBaseVertexIndex;
 
-/** True if the RHI supports hardware instancing */
-extern RHI_API TRHIGlobal<bool> GRHISupportsInstancing;
-
 /** True if the RHI supports copying cubemap faces using CopyToResolveTarget */
 extern RHI_API bool GRHISupportsResolveCubemapFaces;
 
@@ -473,6 +515,12 @@ extern RHI_API bool GRHISupportsDynamicResolution;
 
 /** Whether or not the RHI supports ray tracing on current hardware (acceleration structure building and new ray tracing-specific shader types). */
 extern RHI_API bool GRHISupportsRayTracing;
+
+/** Whether or not the RHI supports binding multiple miss shaders with local resources via RHISetRayTracingMissShader(). */
+extern RHI_API bool GRHISupportsRayTracingMissShaderBindings;
+
+/** Whether or not the RHI supports async building ray tracing acceleration structures. */
+extern RHI_API bool GRHISupportsRayTracingAsyncBuildAccelerationStructure;
 
 /** Whether or not the RHI supports shader wave operations (shader model 6.0). */
 extern RHI_API bool GRHISupportsWaveOperations;
@@ -498,6 +546,9 @@ extern RHI_API bool GRHISupportsParallelRHIExecute;
 
 /** Whether or not the RHI can perform MSAA sample load. */
 extern RHI_API bool GRHISupportsMSAADepthSampleAccess;
+
+/** Whether or not the RHI can render to the backbuffer with a custom depth/stencil surface bound. */
+extern RHI_API bool GRHISupportsBackBufferWithCustomDepthStencil;
 
 /** Whether or not HDR is currently enabled */
 extern RHI_API bool GRHIIsHDREnabled;
@@ -552,7 +603,7 @@ extern RHI_API void GetFeatureLevelName(ERHIFeatureLevel::Type InFeatureLevel, F
 extern RHI_API EShaderPlatform GShaderPlatformForFeatureLevel[ERHIFeatureLevel::Num];
 
 /** Get the shader platform associated with the supplied feature level on this machine */
-inline EShaderPlatform GetFeatureLevelShaderPlatform(ERHIFeatureLevel::Type InFeatureLevel)
+inline EShaderPlatform GetFeatureLevelShaderPlatform(const FStaticFeatureLevel InFeatureLevel)
 {
 	return GShaderPlatformForFeatureLevel[InFeatureLevel];
 }
@@ -718,11 +769,13 @@ struct FVertexElement
 	}
 	RHI_API FString ToString() const;
 	RHI_API void FromString(const FString& Src);
+	RHI_API void FromString(const FStringView& Src);
 };
 
 typedef TArray<FVertexElement,TFixedAllocator<MaxVertexElementCount> > FVertexDeclarationElementList;
 
 /** RHI representation of a single stream out element. */
+//#todo-RemoveStreamOut
 struct FStreamOutElement
 {
 	/** Index of the output stream from the geometry shader. */
@@ -754,6 +807,7 @@ struct FStreamOutElement
 	{}
 };
 
+//#todo-RemoveStreamOut
 typedef TArray<FStreamOutElement,TFixedAllocator<MaxVertexElementCount> > FStreamOutElementList;
 
 struct FSamplerStateInitializerRHI
@@ -904,8 +958,7 @@ struct FDepthStencilStateInitializerRHI
 	}
 	RHI_API FString ToString() const;
 	RHI_API void FromString(const FString& Src);
-
-
+	RHI_API void FromString(const FStringView& Src);
 };
 
 class FBlendStateInitializerRHI
@@ -957,8 +1010,7 @@ public:
 		}
 		RHI_API FString ToString() const;
 		RHI_API void FromString(const TArray<FString>& Parts, int32 Index);
-
-
+		RHI_API void FromString(TArrayView<const FStringView> Parts);
 	};
 
 	FBlendStateInitializerRHI() {}
@@ -992,8 +1044,7 @@ public:
 	}
 	RHI_API FString ToString() const;
 	RHI_API void FromString(const FString& Src);
-
-
+	RHI_API void FromString(const FStringView& Src);
 };
 
 /**
@@ -1068,6 +1119,33 @@ enum class EClearBinding
 	EColorBound, //target has a clear color bound.  Clears will use the bound color, and do hardware clears.
 	EDepthStencilBound, //target has a depthstencil value bound.  Clears will use the bound values and do hardware clears.
 };
+
+
+enum class EColorSpaceAndEOTF
+{
+	EUnknown = 0,
+
+	EColorSpace_Rec709  = 1,		// Color Space Uses Rec 709  Primaries
+	EColorSpace_Rec2020 = 2,		// Color Space Uses Rec 2020 Primaries
+	EColorSpace_DCIP3   = 3,		// Color Space Uses DCI-P3   Primaries
+	EEColorSpace_MASK   = 0xf,
+
+	EEOTF_Linear		= 1 << 4,   // Transfer Function Uses Linear Encoding
+	EEOTF_sRGB			= 2 << 4,	// Transfer Function Uses sRGB Encoding
+	EEOTF_PQ			= 3 << 4,	// Transfer Function Uses PQ Encoding
+	EEOTF_MASK			= 0xf << 4,
+
+	ERec709_sRGB		= EColorSpace_Rec709  | EEOTF_sRGB,
+	ERec709_Linear		= EColorSpace_Rec709  | EEOTF_Linear,
+	
+	ERec2020_PQ			= EColorSpace_Rec2020 | EEOTF_PQ,
+	ERec2020_Linear		= EColorSpace_Rec2020 | EEOTF_Linear,
+	
+	EDCIP3_PQ			= EColorSpace_DCIP3 | EEOTF_PQ,
+	EDCIP3_Linear		= EColorSpace_DCIP3 | EEOTF_Linear,
+	
+};
+
 
 struct FClearValueBinding
 {
@@ -1156,6 +1234,7 @@ struct FClearValueBinding
 	// common clear values
 	static RHI_API const FClearValueBinding None;
 	static RHI_API const FClearValueBinding Black;
+	static RHI_API const FClearValueBinding BlackMaxAlpha;
 	static RHI_API const FClearValueBinding White;
 	static RHI_API const FClearValueBinding Transparent;
 	static RHI_API const FClearValueBinding DepthOne;
@@ -1172,31 +1251,42 @@ struct FRHIResourceCreateInfo
 		: BulkData(nullptr)
 		, ResourceArray(nullptr)
 		, ClearValueBinding(FLinearColor::Transparent)
-		, DebugName(NULL)
+		, GPUMask(FRHIGPUMask::All())
+		, bWithoutNativeResource(false)
+		, DebugName(nullptr)
+		, ExtData(0)
 	{}
 
 	// for CreateTexture calls
 	FRHIResourceCreateInfo(FResourceBulkDataInterface* InBulkData)
-		: BulkData(InBulkData)
-		, ResourceArray(nullptr)
-		, ClearValueBinding(FLinearColor::Transparent)
-		, DebugName(NULL)
-	{}
+		: FRHIResourceCreateInfo()
+	{
+		BulkData = InBulkData;
+	}
 
 	// for CreateVertexBuffer/CreateStructuredBuffer calls
 	FRHIResourceCreateInfo(FResourceArrayInterface* InResourceArray)
-		: BulkData(nullptr)
-		, ResourceArray(InResourceArray)
-		, ClearValueBinding(FLinearColor::Transparent)
-		, DebugName(NULL)
-	{}
+		: FRHIResourceCreateInfo()
+	{
+		ResourceArray = InResourceArray;
+	}
 
 	FRHIResourceCreateInfo(const FClearValueBinding& InClearValueBinding)
-		: BulkData(nullptr)
-		, ResourceArray(nullptr)
-		, ClearValueBinding(InClearValueBinding)
-		, DebugName(NULL)
+		: FRHIResourceCreateInfo()
 	{
+		ClearValueBinding = InClearValueBinding;
+	}
+
+	FRHIResourceCreateInfo(const TCHAR* InDebugName)
+		: FRHIResourceCreateInfo()
+	{
+		DebugName = InDebugName;
+	}
+
+	FRHIResourceCreateInfo(uint32 InExtData)
+		: FRHIResourceCreateInfo()
+	{
+		ExtData = InExtData;
 	}
 
 	// for CreateTexture calls
@@ -1204,10 +1294,88 @@ struct FRHIResourceCreateInfo
 	// for CreateVertexBuffer/CreateStructuredBuffer calls
 	FResourceArrayInterface* ResourceArray;
 
-	// for binding clear colors to rendertargets.
+	// for binding clear colors to render targets.
 	FClearValueBinding ClearValueBinding;
+
+	// set of GPUs on which to create the resource
+	FRHIGPUMask GPUMask;
+
+	// whether to create an RHI object with no underlying resource
+	bool bWithoutNativeResource;
 	const TCHAR* DebugName;
+
+	// optional data that would have come from an offline cooker or whatever - general purpose
+	uint32 ExtData;
 };
+
+enum ERHITextureSRVOverrideSRGBType
+{
+	SRGBO_Default,
+	SRGBO_ForceDisable,
+	SRGBO_ForceEnable,
+};
+
+struct FRHITextureSRVCreateInfo
+{
+	explicit FRHITextureSRVCreateInfo(uint8 InMipLevel = 0u, uint8 InNumMipLevels = 1u, uint8 InFormat = PF_Unknown)
+		: Format(InFormat)
+		, MipLevel(InMipLevel)
+		, NumMipLevels(InNumMipLevels)
+		, SRGBOverride(SRGBO_Default)
+		, FirstArraySlice(0)
+		, NumArraySlices(0)
+	{}
+
+	explicit FRHITextureSRVCreateInfo(uint8 InMipLevel, uint8 InNumMipLevels, uint32 InFirstArraySlice, uint32 InNumArraySlices, uint8 InFormat = PF_Unknown)
+		: Format(InFormat)
+		, MipLevel(InMipLevel)
+		, NumMipLevels(InNumMipLevels)
+		, SRGBOverride(SRGBO_Default)
+		, FirstArraySlice(InFirstArraySlice)
+		, NumArraySlices(InNumArraySlices)
+	{}
+
+	/** View the texture with a different format. Leave as PF_Unknown to use original format. Useful when sampling stencil */
+	uint8 Format;
+
+	/** Specify the mip level to use. Useful when rendering to one mip while sampling from another */
+	uint8 MipLevel;
+
+	/** Create a view to a single, or multiple mip levels */
+	uint8 NumMipLevels;
+
+	/** Potentially override the texture's sRGB flag */
+	ERHITextureSRVOverrideSRGBType SRGBOverride;
+
+	/** Specify first array slice index. By default 0. */
+	uint32 FirstArraySlice;
+
+	/** Specify number of array slices. If FirstArraySlice and NumArraySlices are both zero, the SRV is created for all array slices. By default 0. */
+	uint32 NumArraySlices;
+
+	FORCEINLINE bool operator==(const FRHITextureSRVCreateInfo& Other)const
+	{
+		return (
+			Format == Other.Format &&
+			MipLevel == Other.MipLevel &&
+			NumMipLevels == Other.NumMipLevels &&
+			SRGBOverride == Other.SRGBOverride &&
+			FirstArraySlice == Other.FirstArraySlice &&
+			NumArraySlices == Other.NumArraySlices);
+	}
+
+	FORCEINLINE bool operator!=(const FRHITextureSRVCreateInfo& Other)const
+	{
+		return !(*this == Other);
+	}
+};
+
+FORCEINLINE uint32 GetTypeHash(const FRHITextureSRVCreateInfo& Var)
+{
+	uint32 Hash0 = uint32(Var.Format) | uint32(Var.MipLevel) << 8 | uint32(Var.NumMipLevels) << 16 | uint32(Var.SRGBOverride) << 24;
+	return HashCombine(HashCombine(GetTypeHash(Hash0), GetTypeHash(Var.FirstArraySlice)), GetTypeHash(Var.NumArraySlices));
+}
+
 
 // Forward-declaration.
 struct FResolveParams;
@@ -1318,12 +1486,6 @@ enum class EResourceTransitionAccess
 	ERWSubResBarrier, //For special cases where read/write happens to different subresources of the same resource in the same call.  Inserts a barrier, but read validation will pass.  Temporary until we pass full subresource info to all transition calls.
 	EMetaData,		  // For transitioning texture meta data, for example for making readable in shaders
 	EMaxAccess,
-};
-
-enum class EResourceAliasability
-{
-	EAliasable, // Make the resource aliasable with other resources
-	EUnaliasable, // Make the resource unaliasable with any other resources
 };
 
 class RHI_API FResourceTransitionUtility
@@ -1501,11 +1663,8 @@ struct FTextureMemoryStats
 
 	bool AreHardwareStatsValid() const
 	{
-#if !PLATFORM_HTML5 // TODO: should this be tested with GRHISupportsRHIThread instead? -- seems this would be better done in SynthBenchmarkPrivate.cpp
-		return (DedicatedVideoMemory >= 0 && DedicatedSystemMemory >= 0 && SharedSystemMemory >= 0);
-#else
-		return false;
-#endif
+		// pardon the redundancy, have a broken compiler (__EMSCRIPTEN__) that needs these types spelled out...
+		return ((int64)DedicatedVideoMemory >= 0 && (int64)DedicatedSystemMemory >= 0 && (int64)SharedSystemMemory >= 0);
 	}
 
 	bool IsUsingLimitedPoolSize() const
@@ -1570,16 +1729,6 @@ extern RHI_API void RHIPostInit(const TArray<uint32>& InPixelFormatByteWidth);
 
 /** Shuts down the RHI. */
 extern RHI_API void RHIExit();
-
-
-// the following helper macros allow to safely convert shader types without much code clutter
-#define GETSAFERHISHADER_PIXEL(Shader) ((Shader) ? (Shader)->GetPixelShader() : (FPixelShaderRHIParamRef)FPixelShaderRHIRef())
-#define GETSAFERHISHADER_VERTEX(Shader) ((Shader) ? (Shader)->GetVertexShader() : (FVertexShaderRHIParamRef)FVertexShaderRHIRef())
-#define GETSAFERHISHADER_HULL(Shader) ((Shader) ? (Shader)->GetHullShader() : (FHullShaderRHIParamRef)FHullShaderRHIRef())
-#define GETSAFERHISHADER_DOMAIN(Shader) ((Shader) ? (Shader)->GetDomainShader() : (FDomainShaderRHIParamRef)FDomainShaderRHIRef())
-#define GETSAFERHISHADER_GEOMETRY(Shader) ((Shader) ? (Shader)->GetGeometryShader() : (FGeometryShaderRHIParamRef)FGeometryShaderRHIRef())
-#define GETSAFERHISHADER_COMPUTE(Shader) ((Shader) ? (Shader)->GetComputeShader() : (FComputeShaderRHIParamRef)FComputeShaderRHIRef())
-#define GETSAFERHISHADER_RAYTRACING(Shader) ((Shader) ? (Shader)->GetRayTracingShader() : (FRayTracingShaderRHIParamRef)FRayTracingShaderRHIRef())
 
 
 // Panic delegate is called when when a fatal condition is encountered within RHI function.

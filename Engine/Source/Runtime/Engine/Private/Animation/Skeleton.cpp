@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 /*=============================================================================
 	Skeleton.cpp: Skeleton features
@@ -7,6 +7,8 @@
 #include "Animation/Skeleton.h"
 #include "UObject/UObjectHash.h"
 #include "UObject/UObjectIterator.h"
+#include "UObject/UObjectGlobals.h"
+#include "UObject/PackageReload.h"
 #include "Misc/MessageDialog.h"
 #include "Modules/ModuleManager.h"
 #include "Components/SkinnedMeshComponent.h"
@@ -50,7 +52,7 @@ const FName USkeleton::AnimTrackCurveMappingName = FName(TEXT("AnimationTrackCur
 const FName FAnimSlotGroup::DefaultGroupName = FName(TEXT("DefaultGroup"));
 const FName FAnimSlotGroup::DefaultSlotName = FName(TEXT("DefaultSlot"));
 
-FArchive& operator<<(FArchive& Ar, FReferencePose & P)
+void SerializeReferencePose(FArchive& Ar, FReferencePose& P, UObject* Outer)
 {
 	Ar.UsingCustomVersion(FAnimPhysObjectVersion::GUID);
 
@@ -58,7 +60,7 @@ FArchive& operator<<(FArchive& Ar, FReferencePose & P)
 	Ar << P.ReferencePose;
 #if WITH_EDITORONLY_DATA
 	//TODO: we should use strip flags but we need to rev the serialization version
-	if (!Ar.IsCooking())
+	if (!Ar.IsCooking() && (!Ar.IsLoading() || !Outer->GetOutermost()->bIsCookedForEditor))
 	{
 		if (Ar.IsLoading() && Ar.CustomVer(FAnimPhysObjectVersion::GUID) < FAnimPhysObjectVersion::ChangeRetargetSourceReferenceToSoftObjectPtr)
 		{
@@ -80,7 +82,6 @@ FArchive& operator<<(FArchive& Ar, FReferencePose & P)
 		}
 	}
 #endif
-	return Ar;
 }
 
 const TCHAR* SkipPrefix(const FString& InName)
@@ -90,23 +91,42 @@ const TCHAR* SkipPrefix(const FString& InName)
 	return &InName[PrefixLength];
 }
 
-FString VirtualBoneNameHelpers::AddVirtualBonePrefix(const FString& InName)
+namespace VirtualBoneNameHelpers
 {
-	return VirtualBoneNameHelpers::VirtualBonePrefix + InName;
-}
+	const FString VirtualBonePrefix(TEXT("VB "));
 
-FName VirtualBoneNameHelpers::RemoveVirtualBonePrefix(const FString& InName)
-{
-	return FName(SkipPrefix(InName));
+	FString AddVirtualBonePrefix(const FString& InName)
+	{
+		return VirtualBonePrefix + InName;
+	}
+
+	FName RemoveVirtualBonePrefix(const FString& InName)
+	{
+		return FName(SkipPrefix(InName));
+	}
 }
 
 USkeleton::USkeleton(const FObjectInitializer& ObjectInitializer)
 	: Super(ObjectInitializer)
 {
 	// Make sure we have somewhere for curve names.
-	SmartNames.AddContainer(AnimCurveMappingName);
+	AnimCurveMapping = SmartNames.AddContainer(AnimCurveMappingName);
 
 	AnimCurveUidVersion = 0;
+
+	if (HasAnyFlags(RF_ClassDefaultObject))
+	{
+		FCoreUObjectDelegates::OnPackageReloaded.AddStatic(&USkeleton::HandlePackageReloaded);
+	}
+}
+
+void USkeleton::BeginDestroy()
+{
+	Super::BeginDestroy();
+	if (HasAnyFlags(RF_ClassDefaultObject))
+	{
+		FCoreUObjectDelegates::OnPackageReloaded.RemoveAll(this);
+	}
 }
 
 void USkeleton::PostInitProperties()
@@ -188,7 +208,7 @@ void USkeleton::Serialize( FArchive& Ar )
 			for (int32 Index=0; Index<NumOfRetargetSources; ++Index)
 			{
 				Ar << RetargetSourceName;
-				Ar << RetargetSource;
+				SerializeReferencePose(Ar, RetargetSource, this);
 
 				AnimRetargetSources.Add(RetargetSourceName, RetargetSource);
 			}
@@ -201,7 +221,7 @@ void USkeleton::Serialize( FArchive& Ar )
 			for (auto Iter = AnimRetargetSources.CreateIterator(); Iter; ++Iter)
 			{
 				Ar << Iter.Key();
-				Ar << Iter.Value();
+				SerializeReferencePose(Ar, Iter.Value(), this);
 			}
 		}
 	}
@@ -211,7 +231,7 @@ void USkeleton::Serialize( FArchive& Ar )
 		for (auto Iter = AnimRetargetSources.CreateIterator(); Iter; ++Iter)
 		{
 			Ar << Iter.Key();
-			Ar << Iter.Value();
+			SerializeReferencePose(Ar, Iter.Value(), this);
 		}
 	}
 
@@ -229,6 +249,8 @@ void USkeleton::Serialize( FArchive& Ar )
 	if(Ar.UE4Ver() >= VER_UE4_SKELETON_ADD_SMARTNAMES)
 	{
 		SmartNames.Serialize(Ar);
+
+		AnimCurveMapping = SmartNames.GetContainerInternal(USkeleton::AnimCurveMappingName);
 	}
 
 	// Build look up table between Slot nodes and their Group.
@@ -513,6 +535,10 @@ int32 USkeleton::BuildLinkup(const USkeletalMesh* InSkelMesh)
 			// Fix missing bone.
 			SkeletonBoneIndex = SkeletonRefSkel.FindBoneIndex(MeshBoneName);
 		}
+#else
+		// If we're not in editor, we still want to know which skeleton is missing a bone.
+		ensureMsgf(SkeletonBoneIndex != INDEX_NONE, TEXT("USkeleton::BuildLinkup: The Skeleton %s, is missing bones that SkeletalMesh %s needs. MeshBoneName %s"),
+				*GetNameSafe(this), *GetNameSafe(InSkelMesh), *MeshBoneName.ToString());
 #endif
 
 		NewMeshLinkup.MeshToSkeletonTable[MeshBoneIndex] = SkeletonBoneIndex;
@@ -744,19 +770,14 @@ FName USkeleton::GetRetargetSourceForMesh(USkeletalMesh* InMesh) const
 
 #endif
 
-int32 USkeleton::GetAnimationTrackIndex(const int32 InSkeletonBoneIndex, const UAnimSequence* InAnimSeq, const bool bUseRawData)
+int32 USkeleton::GetRawAnimationTrackIndex(const int32 InSkeletonBoneIndex, const UAnimSequence* InAnimSeq)
 {
-	const TArray<FTrackToSkeletonMap>& TrackToSkelMap = bUseRawData ? InAnimSeq->GetRawTrackToSkeletonMapTable() : InAnimSeq->GetCompressedTrackToSkeletonMapTable();
 	if( InSkeletonBoneIndex != INDEX_NONE )
 	{
-		for (int32 TrackIndex = 0; TrackIndex<TrackToSkelMap.Num(); ++TrackIndex)
+		return InAnimSeq->GetRawTrackToSkeletonMapTable().IndexOfByPredicate([&](const FTrackToSkeletonMap& TrackToSkel)
 		{
-			const FTrackToSkeletonMap& TrackToSkeleton = TrackToSkelMap[TrackIndex];
-			if( TrackToSkeleton.BoneTreeIndex == InSkeletonBoneIndex )
-			{
-				return TrackIndex;
-			}
-		}
+			return TrackToSkel.BoneTreeIndex == InSkeletonBoneIndex;
+		});
 	}
 
 	return INDEX_NONE;
@@ -882,7 +903,20 @@ int32 USkeleton::GetChildBones(int32 ParentBoneIndex, TArray<int32> & Children) 
 
 void USkeleton::CollectAnimationNotifies()
 {
-	// need to verify if these pose is used by anybody else
+	CollectAnimationNotifies(AnimationNotifies);
+}
+
+void USkeleton::CollectAnimationNotifies(TArray<FName>& OutNotifies) const
+{
+	// first merge in AnimationNotifies
+	if(&AnimationNotifies != &OutNotifies)
+	{
+		for(const FName& NotifyName : AnimationNotifies)
+		{
+			OutNotifies.AddUnique(NotifyName);
+		}
+	}
+
 	FAssetRegistryModule& AssetRegistryModule = FModuleManager::LoadModuleChecked<FAssetRegistryModule>(TEXT("AssetRegistry"));
 
 	// @Todo : remove it when we know the asset registry is updated
@@ -890,7 +924,7 @@ void USkeleton::CollectAnimationNotifies()
 	//AnimationNotifies.Empty();
 	TArray<FAssetData> AssetList;
 	AssetRegistryModule.Get().GetAssetsByClass(UAnimSequenceBase::StaticClass()->GetFName(), AssetList, true);
-#if WITH_EDITOR
+
 	// do not clear AnimationNotifies. We can't remove old ones yet. 
 	FString CurrentSkeletonName = FAssetData(this).GetExportTextName();
 	for (auto Iter = AssetList.CreateConstIterator(); Iter; ++Iter)
@@ -907,12 +941,11 @@ void USkeleton::CollectAnimationNotifies()
 				for (auto NotifyIter = NotifyList.CreateConstIterator(); NotifyIter; ++NotifyIter)
 				{
 					FString NotifyName = *NotifyIter;
-					AddNewAnimationNotify(FName(*NotifyName));
+					OutNotifies.AddUnique(FName(*NotifyName));
 				}
 			}
 		}
 	}
-#endif
 }
 
 void USkeleton::AddNewAnimationNotify(FName NewAnimNotifyName)
@@ -1019,6 +1052,17 @@ void USkeleton::HandleSkeletonHierarchyChange()
 	// Clear exiting MeshLinkUp tables.
 	ClearCacheData();
 
+	for (int i = VirtualBones.Num() - 1; i >= 0; --i)
+	{
+		FVirtualBone& VB = VirtualBones[i];
+		if (ReferenceSkeleton.FindRawBoneIndex(VB.SourceBoneName) == INDEX_NONE ||
+			ReferenceSkeleton.FindRawBoneIndex(VB.TargetBoneName) == INDEX_NONE)
+		{
+			//Virtual Bone no longer valid
+			VirtualBones.RemoveAtSwap(i, 1, false);
+		}
+	}
+
 	// Fix up loaded animations (any animations that aren't loaded will be fixed on load)
 	int32 NumLoadedAssets = 0;
 	for (TObjectIterator<UAnimationAsset> It; It; ++It)
@@ -1047,6 +1091,13 @@ void USkeleton::HandleSkeletonHierarchyChange()
 #if WITH_EDITORONLY_DATA
 	RefreshAllRetargetSources();
 #endif
+
+	// refresh curve meta data that contains joint info
+	FSmartNameMapping* CurveMappingTable = SmartNames.GetContainerInternal(USkeleton::AnimCurveMappingName);
+	if (CurveMappingTable)
+	{
+		CurveMappingTable->InitializeCurveMetaData(this);
+	}
 
 	OnSkeletonHierarchyChanged.Broadcast();
 }
@@ -1122,13 +1173,16 @@ bool USkeleton::ContainsSlotName(const FName& InSlotName) const
 	return SlotToGroupNameMap.Contains(InSlotName);
 }
 
-void USkeleton::RegisterSlotNode(const FName& InSlotName)
+bool USkeleton::RegisterSlotNode(const FName& InSlotName)
 {
 	// verify the slot name exists, if not create it in the default group.
 	if (!ContainsSlotName(InSlotName))
 	{
 		SetSlotGroupName(InSlotName, FAnimSlotGroup::DefaultGroupName);
+		return true;
 	}
+
+	return false;
 }
 
 void USkeleton::SetSlotGroupName(const FName& InSlotName, const FName& InGroupName)
@@ -1410,6 +1464,7 @@ FSmartNameMapping* USkeleton::GetOrAddSmartNameContainer(const FName& ContainerN
 		Modify();
 		IncreaseAnimCurveUidVersion();
 		SmartNames.AddContainer(ContainerName);
+		AnimCurveMapping = SmartNames.GetContainerInternal(USkeleton::AnimCurveMappingName);
 		Mapping = SmartNames.GetContainerInternal(ContainerName);		
 	}
 
@@ -1439,8 +1494,8 @@ void USkeleton::IncreaseAnimCurveUidVersion()
 	++AnimCurveUidVersion;
 
 	// update default uid list
-	const FSmartNameMapping* Mapping = GetSmartNameContainer(USkeleton::AnimCurveMappingName);
-	if (Mapping != nullptr)
+	const FSmartNameMapping* Mapping = AnimCurveMapping;
+	if (ensureAlways(Mapping))
 	{
 		DefaultCurveUIDList.Reset();
 		// this should exactly work with what current index is
@@ -1450,7 +1505,7 @@ void USkeleton::IncreaseAnimCurveUidVersion()
 
 FCurveMetaData* USkeleton::GetCurveMetaData(const FName& CurveName)
 {
-	FSmartNameMapping* Mapping = SmartNames.GetContainerInternal(USkeleton::AnimCurveMappingName);
+	FSmartNameMapping* Mapping = AnimCurveMapping;
 	if (ensureAlways(Mapping))
 	{
 		return Mapping->GetCurveMetaData(CurveName);
@@ -1461,7 +1516,7 @@ FCurveMetaData* USkeleton::GetCurveMetaData(const FName& CurveName)
 
 const FCurveMetaData* USkeleton::GetCurveMetaData(const FName& CurveName) const
 {
-	const FSmartNameMapping* Mapping = SmartNames.GetContainerInternal(USkeleton::AnimCurveMappingName);
+	const FSmartNameMapping* Mapping = AnimCurveMapping;
 	if (ensureAlways(Mapping))
 	{
 		return Mapping->GetCurveMetaData(CurveName);
@@ -1472,14 +1527,18 @@ const FCurveMetaData* USkeleton::GetCurveMetaData(const FName& CurveName) const
 
 const FCurveMetaData* USkeleton::GetCurveMetaData(const SmartName::UID_Type CurveUID) const
 {
-	const FSmartNameMapping* Mapping = SmartNames.GetContainerInternal(USkeleton::AnimCurveMappingName);
+	const FSmartNameMapping* Mapping = AnimCurveMapping;
 	if (ensureAlways(Mapping))
 	{
+#if WITH_EDITOR
 		FSmartName SmartName;
 		if (Mapping->FindSmartNameByUID(CurveUID, SmartName))
 		{
 			return Mapping->GetCurveMetaData(SmartName.DisplayName);
 		}
+#else
+		return &Mapping->GetCurveMetaData(CurveUID);
+#endif
 	}
 
 	return nullptr;
@@ -1487,7 +1546,7 @@ const FCurveMetaData* USkeleton::GetCurveMetaData(const SmartName::UID_Type Curv
 
 FCurveMetaData* USkeleton::GetCurveMetaData(const FSmartName& CurveName)
 {
-	FSmartNameMapping* Mapping = SmartNames.GetContainerInternal(USkeleton::AnimCurveMappingName);
+	FSmartNameMapping* Mapping = AnimCurveMapping;
 	if (ensureAlways(Mapping))
 	{
 		// the name might have changed, make sure it's up-to-date
@@ -1501,7 +1560,7 @@ FCurveMetaData* USkeleton::GetCurveMetaData(const FSmartName& CurveName)
 
 const FCurveMetaData* USkeleton::GetCurveMetaData(const FSmartName& CurveName) const
 {
-	const FSmartNameMapping* Mapping = SmartNames.GetContainerInternal(USkeleton::AnimCurveMappingName);
+	const FSmartNameMapping* Mapping = AnimCurveMapping;
 	if (ensureAlways(Mapping))
 	{
 		// the name might have changed, make sure it's up-to-date
@@ -1518,17 +1577,24 @@ void USkeleton::AccumulateCurveMetaData(FName CurveName, bool bMaterialSet, bool
 {
 	if (bMaterialSet || bMorphtargetSet)
 	{
-		const FSmartNameMapping* Mapping = SmartNames.GetContainerInternal(USkeleton::AnimCurveMappingName);
+		const FSmartNameMapping* Mapping = AnimCurveMapping;
 		if (ensureAlways(Mapping))
 		{
 			// if we don't have name, add one
 			if (Mapping->Exists(CurveName))
 			{
 				FCurveMetaData* CurveMetaData = GetCurveMetaData(CurveName);
+				bool bOldMaterial = CurveMetaData->Type.bMaterial;
+				bool bOldMorphtarget = CurveMetaData->Type.bMorphtarget;
 				// we don't want to undo previous flags, if it was true, we just alolw more to it. 
 				CurveMetaData->Type.bMaterial |= bMaterialSet;
 				CurveMetaData->Type.bMorphtarget |= bMorphtargetSet;
-				MarkPackageDirty();
+
+				if (bOldMaterial != CurveMetaData->Type.bMaterial 
+					|| bOldMorphtarget != CurveMetaData->Type.bMorphtarget)
+				{
+					MarkPackageDirty();
+				}
 			}
 		}
 	}
@@ -1642,9 +1708,21 @@ void USkeleton::HandleVirtualBoneChanges()
 		USkeletalMesh* SkelMesh = *ItMesh;
 		if (SkelMesh->Skeleton == this)
 		{
+			// also have to update retarget base pose
 			SkelMesh->RefSkeleton.RebuildRefSkeleton(this, bRebuildNameMap);
 			RebuildLinkup(SkelMesh);
+#if WITH_EDITOR
+			// whole bone count has changed, so it has to recalculate retarget base pose
+			SkelMesh->ReallocateRetargetBasePose();
+#endif // #if WITH_EDITOR
 		}
+	}
+
+	// refresh curve meta data that contains joint info
+	FSmartNameMapping* CurveMappingTable = SmartNames.GetContainerInternal(USkeleton::AnimCurveMappingName);
+	if (CurveMappingTable)
+	{
+		CurveMappingTable->InitializeCurveMetaData(this);
 	}
 
 	for (TObjectIterator<USkinnedMeshComponent> It; It; ++It)
@@ -1916,6 +1994,20 @@ void USkeleton::RemoveUserDataOfClass(TSubclassOf<UAssetUserData> InUserDataClas
 const TArray<UAssetUserData*>* USkeleton::GetAssetUserDataArray() const
 {
 	return &AssetUserData;
+}
+
+void USkeleton::HandlePackageReloaded(const EPackageReloadPhase InPackageReloadPhase, FPackageReloadedEvent* InPackageReloadedEvent)
+{
+	if (InPackageReloadPhase == EPackageReloadPhase::PostPackageFixup)
+	{
+		for (const auto& RepointedObjectPair : InPackageReloadedEvent->GetRepointedObjects())
+		{
+			if (USkeleton* NewObject = Cast<USkeleton>(RepointedObjectPair.Value))
+			{
+				NewObject->HandleVirtualBoneChanges(); // Reloading Skeletons can invalidate virtual bones so refresh
+			}
+		}
+	}
 }
 
 #undef LOCTEXT_NAMESPACE 

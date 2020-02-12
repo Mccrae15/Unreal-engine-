@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 namespace UnrealBuildTool.Rules
 {
@@ -6,11 +6,23 @@ namespace UnrealBuildTool.Rules
     {
         public ControlRigEditor(ReadOnlyTargetRules Target) : base(Target)
         {
-            PrivateIncludePaths.Add("ControlRigEditor/Private");
-            PrivateIncludePaths.Add("ControlRigEditor/Private/Sequencer");
-            PrivateIncludePaths.Add("ControlRigEditor/Private/EditMode");
-            PrivateIncludePaths.Add("ControlRigEditor/Private/Graph");
-            PrivateIncludePaths.Add("ControlRigEditor/Private/Editor");
+            PrivateIncludePaths.AddRange(
+                new string[] {
+                    "ControlRigEditor/Private",
+                    "ControlRigEditor/Private/Sequencer",
+                    "ControlRigEditor/Private/EditMode",
+                    "ControlRigEditor/Private/Graph",
+                    "ControlRigEditor/Private/Editor",
+                    "../../../../Source/Editor/UnrealEd/Private" //compatibility for FBX importer
+				}
+            );
+
+            PublicDependencyModuleNames.AddRange(
+				new string[]
+				{
+					"CurveEditor",
+				}
+	        );
 
             PrivateDependencyModuleNames.AddRange(
                 new string[]
@@ -28,6 +40,7 @@ namespace UnrealBuildTool.Rules
                     "ControlRigDeveloper",
                     "Kismet",
                     "EditorStyle",
+                    "ApplicationCore",
                     "AnimationCore",
                     "PropertyEditor",
                     "AnimGraph",
@@ -36,6 +49,7 @@ namespace UnrealBuildTool.Rules
                     "MovieSceneTracks",
                     "MovieSceneTools",
                     "Sequencer",
+					"LevelSequenceEditor",
                     "ClassViewer",
                     "AssetTools",
                     "ContentBrowser",
@@ -47,8 +61,18 @@ namespace UnrealBuildTool.Rules
                     "Persona",
                     "UMG",
 					"TimeManagement",
+                    "PropertyPath",
+					"WorkspaceMenuStructure",
+					"Json",
+					"DesktopPlatform",
+					"ToolMenus",
+					"ControlRigManipulation",
+                    "RigVM",
+                    "RigVMDeveloper"
                 }
             );
+
+            AddEngineThirdPartyPrivateStaticDependencies(Target, "FBX");
         }
     }
 }

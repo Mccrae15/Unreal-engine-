@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -295,6 +295,14 @@ public:
 	 */
 	virtual const FMessageAddress& GetSender() const = 0;
 
+	/**
+	 * Gets the forwarder's address.
+	 * @note Identical to GetSender if the message wasn't forwarded.
+	 * @return Forwarder address.
+	 * @see GetSender, GetRecipients, GetSenderThread
+	 */
+	virtual const FMessageAddress& GetForwarder() const = 0;
+	
 	/**
 	 * Gets the name of the thread from which the message was sent.
 	 *

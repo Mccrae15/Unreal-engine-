@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 /*=============================================================================
 	ShowFlags.h: Show Flag Definitions.
@@ -22,6 +22,7 @@ enum EShowFlagGroup
 	SFG_LightingComponents,
 	SFG_LightingFeatures,
 	SFG_Hidden,
+	SFG_Transient, // Hidden, and don't serialize it
 	SFG_Max
 };
 
@@ -53,10 +54,11 @@ struct FEngineShowFlags
 	// Define the showflags.
 	// A show flag is either an uint32:1 or static const bool (if optimized out according to UE_BUILD_OPTIMIZED_SHOWFLAGS)
 
-#if PLATFORM_HTML5 // TODO: EMSCRITPEN_TOOLCHAIN_UPGRADE_CHECK - broken fit field compiler
-	#define SHOWFLAG_ALWAYS_ACCESSIBLE(a,...) bool a; void Set##a(bool bVal){ a = bVal;}
-#else
+#if PLATFORM_USE_SHOWFLAGS_ALWAYS_BITFIELD
 	#define SHOWFLAG_ALWAYS_ACCESSIBLE(a,...) uint32 a : 1; void Set##a(bool bVal){ a = bVal?1:0;}
+#else
+	// broken bit field compilers will render the background black
+	#define SHOWFLAG_ALWAYS_ACCESSIBLE(a,...) bool a; void Set##a(bool bVal){ a = bVal;}
 #endif
 
 	#if UE_BUILD_OPTIMIZED_SHOWFLAGS 
@@ -301,16 +303,17 @@ private:
 		}
 
 		// Most flags are on by default. With the following line we only need disable flags.
-#if PLATFORM_HTML5 // TODO: EMSCRITPEN_TOOLCHAIN_UPGRADE_CHECK - broken fit field compiler
-		FMemory::Memset(this, uint8(true), sizeof(*this));
-#else
+#if PLATFORM_USE_SHOWFLAGS_ALWAYS_BITFIELD
 		FMemory::Memset(this, 0xff, sizeof(*this));
+#else
+		FMemory::Memset(this, uint8(true), sizeof(*this));
 #endif
 
 		// The following code sets what should be off by default.
 		SetVisualizeHDR(false);
 		SetVisualizeShadingModels(false);
 		SetOverrideDiffuseAndSpecular(false);
+		SetLightingOnlyOverride(false);
 		SetReflectionOverride(false);
 		SetVisualizeBuffer(false);
 		SetVectorFields(false);
@@ -318,8 +321,8 @@ private:
 		SetCompositeEditorPrimitives(InitMode == ESFIM_Editor || InitMode == ESFIM_VREditing);
 		SetTestImage(false);
 		SetVisualizeDOF(false);
-		SetVisualizeAdaptiveDOF(false);
 		SetVertexColors(false);
+		SetPhysicalMaterialMasks(false);
 		SetVisualizeMotionBlur(false);
 		SetSelectionOutline(false);
 		SetDebugAI(false);
@@ -383,7 +386,6 @@ private:
 		SetVisualizeDistanceFieldGI(false);
 		SetVisualizeSSR(false);
 		SetVisualizeSSS(false);
-		SetVisualizeBloom(false);
 		SetPrimitiveDistanceAccuracy(false);
 		SetMeshUVDensityAccuracy(false);
 		SetMaterialTextureScaleAccuracy(false);
@@ -396,6 +398,7 @@ private:
 		SetOcclusionMeshes(false);
 		SetPathTracing(false);
 		SetRayTracingDebug(false);
+		SetVisualizeSkyAtmosphere(false);
 	}
 
 

@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -6,7 +6,7 @@
 #include "Modules/ModuleManager.h"
 #include "IInputDeviceModule.h"
 
-#define WITH_STEAM_CONTROLLER		((PLATFORM_LINUX || PLATFORM_WINDOWS) && STEAMSDK_FOUND)
+#define WITH_STEAM_CONTROLLER		((PLATFORM_LINUX || PLATFORM_WINDOWS))
 
 /**
  * The public interface to this module.  In most cases, this interface is only public to sibling modules 

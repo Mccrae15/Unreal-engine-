@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -166,10 +166,10 @@ struct FTargetDeviceServiceLaunchApp
 	FTargetDeviceServiceLaunchApp() : BuildConfiguration(0) { }
 
 	/** Creates and initializes a new instance. */
-	FTargetDeviceServiceLaunchApp(FName InVariant, const FString& InAppId, uint8 InBuildConfiguration, const FString& InParams)
+	FTargetDeviceServiceLaunchApp(FName InVariant, const FString& InAppId, EBuildConfiguration InBuildConfiguration, const FString& InParams)
 		: Variant(InVariant)
 		, AppID(InAppId)
-		, BuildConfiguration(InBuildConfiguration)
+		, BuildConfiguration((uint8)InBuildConfiguration)
 		, Params(InParams)
 	{ }
 };

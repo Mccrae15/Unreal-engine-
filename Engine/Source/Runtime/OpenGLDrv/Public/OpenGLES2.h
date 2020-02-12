@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 /*=============================================================================
 	OpenGLES2.h: Public OpenGL ES 2.0 definitions for non-common functionality
@@ -99,7 +99,6 @@ struct FOpenGLES2 : public FOpenGLBase
 	static FORCEINLINE bool SupportsTextureCompare()					{ return false; }
 	static FORCEINLINE bool SupportsTextureBaseLevel()					{ return false; }
 	static FORCEINLINE bool SupportsTextureMaxLevel()					{ return false; }
-	static FORCEINLINE bool SupportsInstancing()						{ return false; }
 	static FORCEINLINE bool SupportsVertexAttribInteger()				{ return false; }
 	static FORCEINLINE bool SupportsVertexAttribShort()					{ return false; }
 	static FORCEINLINE bool SupportsVertexAttribByte()					{ return false; }
@@ -115,6 +114,7 @@ struct FOpenGLES2 : public FOpenGLBase
 	static FORCEINLINE bool SupportsColorBufferFloat()					{ return bSupportsColorBufferFloat; }
 	static FORCEINLINE bool SupportsColorBufferHalfFloat()				{ return bSupportsColorBufferHalfFloat; }
 	static FORCEINLINE bool	SupportsRG16UI()							{ return false; }
+	static FORCEINLINE bool	SupportsRG32UI()							{ return false; }
 	static FORCEINLINE bool SupportsR11G11B10F()						{ return false; }
 	static FORCEINLINE bool SupportsShaderFramebufferFetch()			{ return bSupportsShaderFramebufferFetch; }
 	static FORCEINLINE bool SupportsShaderDepthStencilFetch()			{ return bSupportsShaderDepthStencilFetch; }
@@ -244,9 +244,9 @@ struct FOpenGLES2 : public FOpenGLBase
 #if OPENGL_ES2_BRING_UP
 		// Non-written areas retain prior values.
 		// Lack of unsynchronized in glMapBufferOES() is a perf bug which needs to be fixed later.
-		checkf(LockMode == RLM_WriteOnly || LockMode == RLM_WriteOnlyUnsynchronized, TEXT("OpenGL ES 2.0 only supports write-only buffer locks"));
+		checkf(LockMode == EResourceLockMode::RLM_WriteOnly || LockMode == EResourceLockMode::RLM_WriteOnlyUnsynchronized, TEXT("OpenGL ES 2.0 only supports write-only buffer locks"));
 #else
-		checkf(LockMode == RLM_WriteOnly, TEXT("OpenGL ES 2.0 only supports write-only buffer locks"));
+		checkf(LockMode == EResourceLockMode::RLM_WriteOnly, TEXT("OpenGL ES 2.0 only supports write-only buffer locks"));
 #endif
 		check(Type == GL_ARRAY_BUFFER || Type == GL_ELEMENT_ARRAY_BUFFER);
 
@@ -925,15 +925,13 @@ public:
 #define GL_UNPACK_IMAGE_HEIGHT 0x806E
 #define GL_NUM_EXTENSIONS 0x821D
 
-#if PLATFORM_HTML5
+#ifdef __EMSCRIPTEN__
 // Browser supports either GLES2.0 or GLES3.0 at runtime, so needs to read these
 #define GL_MAX_3D_TEXTURE_SIZE 0x8073
 #define GL_MAX_COLOR_ATTACHMENTS 0x8CDF
 #define GL_MAX_SAMPLES 0x8D57
 #else
 // In native OpenGL ES 2.0, define to zero things that are not available.
-// In HTML5 however, always query from the browser what the supported
-// values are.
 #define GL_MAX_3D_TEXTURE_SIZE 0	//0x8073
 #define GL_MAX_COLOR_ATTACHMENTS 0	//0x8CDF
 #define GL_MAX_SAMPLES 0	//0x8D57

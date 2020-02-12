@@ -1,7 +1,8 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "Animation/AnimNode_TransitionPoseEvaluator.h"
 #include "Animation/AnimInstanceProxy.h"
+#include "Animation/AnimTrace.h"
 
 /////////////////////////////////////////////////////
 // FAnimNode_TransitionPoseEvaluator
@@ -40,6 +41,8 @@ void FAnimNode_TransitionPoseEvaluator::CacheBones_AnyThread(const FAnimationCac
 void FAnimNode_TransitionPoseEvaluator::Update_AnyThread(const FAnimationUpdateContext& Context)
 {
 	// updating is all handled in state machine
+
+	TRACE_ANIM_NODE_VALUE(Context, TEXT("Cached Frames Remaining"), CacheFramesRemaining);
 }
 
 void FAnimNode_TransitionPoseEvaluator::Evaluate_AnyThread(FPoseContext& Output)
@@ -77,5 +80,6 @@ bool FAnimNode_TransitionPoseEvaluator::InputNodeNeedsEvaluate() const
 void FAnimNode_TransitionPoseEvaluator::CachePose(const FPoseContext& PoseToCache)
 {
 	CachedPose.CopyBonesFrom(PoseToCache.Pose);
+	CachedPose.NormalizeRotations();
 	CachedCurve.CopyFrom(PoseToCache.Curve);
 }

@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -18,7 +18,6 @@ class ICurveEditorDragOperation
 public:
 
 	ICurveEditorDragOperation()
-		: MouseLockVector(FVector2D::UnitVector)
 	{}
 
 	virtual ~ICurveEditorDragOperation() {}
@@ -34,14 +33,19 @@ public:
 	void Drag(FVector2D InitialPosition, FVector2D CurrentPosition, const FPointerEvent& MouseEvent);
 
 	/**
+	 * Potentially Evaluate a MouseWheel event which occcured during this drag operation
+	 */
+	FReply MouseWheel(FVector2D InitialPosition, FVector2D CurrentPosition, const FPointerEvent& MouseEvent);
+
+	/**
 	 * Finish this drag operation with the specified initial and current positions
 	 */
 	void EndDrag(FVector2D InitialPosition, FVector2D CurrentPosition, const FPointerEvent& MouseEvent);
 
 	/**
-	 * Paint this drag operation
+	 * Paint this drag operation onto the specified layer
 	 */
-	int32 Paint(const FGeometry& AllottedGeometry, FSlateWindowElementList& OutDrawElements, int32 LayerId);
+	void Paint(const FGeometry& AllottedGeometry, FSlateWindowElementList& OutDrawElements, int32 PaintOnLayerId);
 
 	/**
 	 * Cancel this drag operation
@@ -58,29 +62,24 @@ protected:
 	virtual void OnDrag(FVector2D InitialPosition, FVector2D CurrentPosition, const FPointerEvent& MouseEvent)
 	{}
 
+	/** Implementation method for derived types to evaluate a mousewheel event */
+	virtual FReply OnMouseWheel(FVector2D InitialPosition, FVector2D CurrentPosition, const FPointerEvent& MouseEvent)
+	{
+		return FReply::Unhandled();
+	}
+
 	/** Implementation method for derived types to finish a drag */
 	virtual void OnEndDrag(FVector2D InitialPosition, FVector2D CurrentPosition, const FPointerEvent& MouseEvent)
 	{}
 
 	/** Implementation method for derived types to paint this drag */
-	virtual int32 OnPaint(const FGeometry& AllottedGeometry, FSlateWindowElementList& OutDrawElements, int32 LayerId)
-	{
-		return LayerId;
-	}
+	virtual void OnPaint(const FGeometry& AllottedGeometry, FSlateWindowElementList& OutDrawElements, int32 PaintOnLayerId)
+	{}
 
 	/** Implementation method for derived types to cancel a drag */
 	virtual void OnCancelDrag()
 	{}
-
-	/**
-	 * Determine the effective mouse position for a drag vector, potentially locked to an axis based on the current pointer event
-	 */
-	FVector2D GetLockedMousePosition(FVector2D InitialPosition, FVector2D CurrentPosition, const FPointerEvent& MouseEvent);
-
 protected:
-
-	/** The vector we're currently locked to, or (1.f, 1.f) if we're not locked */
-	FVector2D MouseLockVector;
 };
 
 /**
@@ -89,9 +88,6 @@ protected:
 class ICurveEditorKeyDragOperation : public ICurveEditorDragOperation
 {
 public:
-
-	/** Cached (and potentially manipulated) snap metrics to be used for this drag */
-	FCurveEditorSnapMetrics SnapMetrics;
 
 	/**
 	 * Initialize this drag operation using the specified curve editor pointer and an optional cardinal point
@@ -134,5 +130,7 @@ struct FCurveEditorDelayedDrag : FDelayedDrag
 	 */
 	FCurveEditorDelayedDrag(FVector2D InInitialPosition, FKey InEffectiveKey)
 		: FDelayedDrag(InInitialPosition, InEffectiveKey)
-	{}
+	{
+		SetTriggerScaleFactor(0.1f);
+	}
 };

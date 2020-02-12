@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 /*=============================================================================
 	ShowFlags.cpp: Show Flag Definitions.
@@ -40,15 +40,19 @@ FString FEngineShowFlags::ToString() const
 
 		bool OnEngineShowFlag(uint32 InIndex, const FString& InName)
 		{
-			if(!ret.IsEmpty())
+			EShowFlagGroup Group = FEngineShowFlags::FindShowFlagGroup(*InName);
+			if (Group != SFG_Transient)
 			{
-				ret += (TCHAR)',';
+				if (!ret.IsEmpty())
+				{
+					ret += (TCHAR)',';
+				}
+
+				AddNameByIndex(InIndex, ret);
+
+				ret += (TCHAR)'=';
+				ret += EngineShowFlags.GetSingleFlag(InIndex) ? (TCHAR)'1' : (TCHAR)'0';
 			}
-
-			AddNameByIndex(InIndex, ret);
-
-			ret += (TCHAR)'=';
-			ret += EngineShowFlags.GetSingleFlag(InIndex) ? (TCHAR)'1' : (TCHAR)'0';
 			return true;
 		}
 
@@ -285,6 +289,12 @@ void ApplyViewMode(EViewModeIndex ViewModeIndex, bool bPerspective, FEngineShowF
 		case VMI_HLODColoration:
 			bPostProcessing = true;
 			break;
+		case VMI_RayTracingDebug:
+			bPostProcessing = true;
+			break;
+		case VMI_PathTracing:
+			bPostProcessing = true;
+			break;
 	}
 
 	if(!bPerspective)
@@ -298,6 +308,7 @@ void ApplyViewMode(EViewModeIndex ViewModeIndex, bool bPerspective, FEngineShowF
 	// This is affecting the state of showflags - if the state can be changed by the user as well it should better be done in EngineShowFlagOverride
 
 	EngineShowFlags.SetOverrideDiffuseAndSpecular(ViewModeIndex == VMI_Lit_DetailLighting);
+	EngineShowFlags.SetLightingOnlyOverride(ViewModeIndex == VMI_LightingOnly);
 	EngineShowFlags.SetReflectionOverride(ViewModeIndex == VMI_ReflectionOverride);
 	EngineShowFlags.SetVisualizeBuffer(ViewModeIndex == VMI_VisualizeBuffer);
 	EngineShowFlags.SetVisualizeLightCulling(ViewModeIndex == VMI_LightComplexity);
@@ -318,6 +329,8 @@ void ApplyViewMode(EViewModeIndex ViewModeIndex, bool bPerspective, FEngineShowF
 	EngineShowFlags.SetCollisionVisibility(ViewModeIndex == VMI_CollisionVisibility);
 	EngineShowFlags.SetLODColoration(ViewModeIndex == VMI_LODColoration);
 	EngineShowFlags.SetHLODColoration(ViewModeIndex == VMI_HLODColoration);
+	EngineShowFlags.SetRayTracingDebug(ViewModeIndex == VMI_RayTracingDebug);
+	EngineShowFlags.SetPathTracing(ViewModeIndex == VMI_PathTracing);
 }
 
 void EngineShowFlagOverride(EShowFlagInitMode ShowFlagInitMode, EViewModeIndex ViewModeIndex, FEngineShowFlags& EngineShowFlags, bool bCanDisableTonemapper)
@@ -409,9 +422,14 @@ void EngineShowFlagOverride(EShowFlagInitMode ShowFlagInitMode, EViewModeIndex V
 			EngineShowFlags.SetBrushes(true);
 		}
 
+		if (ViewModeIndex == VMI_Unlit)
+		{
+			EngineShowFlags.SetLighting(false);
+			EngineShowFlags.Atmosphere = 0;
+		}
+
 		if( ViewModeIndex == VMI_Wireframe ||
 			ViewModeIndex == VMI_BrushWireframe ||
-			ViewModeIndex == VMI_Unlit ||
 			ViewModeIndex == VMI_StationaryLightOverlap ||
 			ViewModeIndex == VMI_ShaderComplexity ||
 			ViewModeIndex == VMI_QuadOverdraw ||
@@ -423,7 +441,8 @@ void EngineShowFlagOverride(EShowFlagInitMode ShowFlagInitMode, EViewModeIndex V
 			ViewModeIndex == VMI_LightmapDensity)
 		{
 			EngineShowFlags.SetLighting(false);
-			EngineShowFlags.AtmosphericFog = 0;
+			EngineShowFlags.Atmosphere = 0;
+			EngineShowFlags.Fog = 0;
 		}
 
 		if( ViewModeIndex == VMI_Lit ||
@@ -444,14 +463,14 @@ void EngineShowFlagOverride(EShowFlagInitMode ShowFlagInitMode, EViewModeIndex V
 		{
 			EngineShowFlags.Translucency = 0;
 			EngineShowFlags.Fog = 0;
-			EngineShowFlags.AtmosphericFog = 0;
+			EngineShowFlags.Atmosphere = 0;
 		}
 
 		if (ViewModeIndex == VMI_LODColoration || ViewModeIndex == VMI_HLODColoration)
 		{
 			EngineShowFlags.SetLighting(true);	// Best currently otherwise the image becomes hard to read.
 			EngineShowFlags.Fog = 0;			// Removed fog to improve color readability.
-			EngineShowFlags.AtmosphericFog = 0;
+			EngineShowFlags.Atmosphere = 0;
 			EngineShowFlags.Translucency = 0;	// Translucent are off because there are no color override shader currently for translucency.
 		}
 
@@ -473,11 +492,20 @@ void EngineShowFlagOverride(EShowFlagInitMode ShowFlagInitMode, EViewModeIndex V
 		if (ViewModeIndex == VMI_RayTracingDebug)
 		{
 			EngineShowFlags.SetRayTracingDebug(true);
+			EngineShowFlags.SetVisualizeHDR(false);
+			EngineShowFlags.SetVisualizeMotionBlur(false);
+			EngineShowFlags.SetDepthOfField(false);
+			EngineShowFlags.SetPostProcessMaterial(false);
+
+			if (bCanDisableTonemapper)
+			{
+				EngineShowFlags.SetTonemapper(false);
+			}
 		}
 	}
 
 	// disable AA in full screen GBuffer visualization
-	if (bCanDisableTonemapper && (EngineShowFlags.VisualizeBuffer || ViewModeIndex == VMI_RayTracingDebug ))
+	if (bCanDisableTonemapper && EngineShowFlags.VisualizeBuffer)
 	{
 		EngineShowFlags.SetTonemapper(false);
 	}
@@ -614,6 +642,10 @@ EViewModeIndex FindViewMode(const FEngineShowFlags& EngineShowFlags)
 	{
 		return VMI_Lit_DetailLighting;
 	}
+	else if (EngineShowFlags.LightingOnlyOverride)
+	{
+		return VMI_LightingOnly;
+	}
 	else if (EngineShowFlags.ReflectionOverride)
 	{
 		return VMI_ReflectionOverride;
@@ -685,6 +717,8 @@ const TCHAR* GetViewModeName(EViewModeIndex ViewModeIndex)
 		case VMI_LitLightmapDensity:		return TEXT("LitLightmapDensity");
 		case VMI_ReflectionOverride:		return TEXT("ReflectionOverride");
 		case VMI_VisualizeBuffer:			return TEXT("VisualizeBuffer");
+		case VMI_RayTracingDebug:			return TEXT("RayTracingDebug");
+		case VMI_PathTracing:				return TEXT("PathTracing");
 		case VMI_CollisionPawn:				return TEXT("CollisionPawn");
 		case VMI_CollisionVisibility:		return TEXT("CollisionVis");
 		case VMI_LODColoration:				return TEXT("LODColoration");

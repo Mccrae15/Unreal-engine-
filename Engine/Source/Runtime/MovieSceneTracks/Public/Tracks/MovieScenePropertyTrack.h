@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -24,6 +24,7 @@ public:
 	virtual bool HasSection(const UMovieSceneSection& Section) const override;
 	virtual void AddSection(UMovieSceneSection& Section) override;
 	virtual void RemoveSection(UMovieSceneSection& Section) override;
+	virtual void RemoveSectionAt(int32 SectionIndex) override;
 	virtual bool IsEmpty() const override;
 	virtual const TArray<UMovieSceneSection*>& GetAllSections() const override;
 
@@ -89,13 +90,13 @@ public:
 	 *
 	 * @param Section The section that changes.
 	 */
-	void SetSectionToKey(UMovieSceneSection* Section);
+	virtual void SetSectionToKey(UMovieSceneSection* Section) override;
 
 	/**
 	 * Finds a section we want to key and recieve globally changed values.
 	 * @return The Section that changes.
 	 */
-	class UMovieSceneSection* GetSectionToKey();
+	virtual UMovieSceneSection* GetSectionToKey() const override;
 #if WITH_EDITORONLY_DATA
 public:
 	/** Unique name for this track to afford multiple tracks on a given object (i.e. for array properties) */

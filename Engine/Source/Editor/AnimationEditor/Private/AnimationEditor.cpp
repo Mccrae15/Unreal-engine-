@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "AnimationEditor.h"
 #include "Misc/MessageDialog.h"
@@ -49,6 +49,7 @@
 #include "ISkeletonTreeItem.h"
 #include "Algo/Transform.h"
 #include "ISequenceRecorder.h"
+#include "IAnimSequenceCurveEditor.h"
 
 const FName AnimationEditorAppIdentifier = FName(TEXT("AnimationEditorApp"));
 
@@ -59,10 +60,12 @@ const FName AnimationEditorTabs::SkeletonTreeTab(TEXT("SkeletonTreeView"));
 const FName AnimationEditorTabs::ViewportTab(TEXT("Viewport"));
 const FName AnimationEditorTabs::AdvancedPreviewTab(TEXT("AdvancedPreviewTab"));
 const FName AnimationEditorTabs::DocumentTab(TEXT("Document"));
+const FName AnimationEditorTabs::CurveEditorTab(TEXT("CurveEditor"));
 const FName AnimationEditorTabs::AssetBrowserTab(TEXT("SequenceBrowser"));
 const FName AnimationEditorTabs::AssetDetailsTab(TEXT("AnimAssetPropertiesTab"));
 const FName AnimationEditorTabs::CurveNamesTab(TEXT("AnimCurveViewerTab"));
 const FName AnimationEditorTabs::SlotNamesTab(TEXT("SkeletonSlotNames"));
+const FName AnimationEditorTabs::AnimMontageSectionsTab(TEXT("AnimMontageSections"));
 
 DEFINE_LOG_CATEGORY(LogAnimationEditor);
 
@@ -402,6 +405,14 @@ TSharedPtr<SDockTab> FAnimationEditor::OpenNewAnimationDocumentTab(UAnimationAss
 		GetPersonaToolkit()->GetPreviewScene()->SetPreviewAnimationAsset(InAnimAsset);
 		GetPersonaToolkit()->SetAnimationAsset(InAnimAsset);
 
+		// Close existing opened curve tab
+		if(AnimCurveDocumentTab.IsValid())
+		{
+			AnimCurveDocumentTab.Pin()->RequestCloseTab();
+		}
+
+		AnimCurveDocumentTab.Reset();
+
 		struct Local
 		{
 			static FText GetObjectName(UObject* Object)
@@ -437,6 +448,22 @@ TSharedPtr<SDockTab> FAnimationEditor::OpenNewAnimationDocumentTab(UAnimationAss
 			SharedAnimDocumentTab = OpenedTab;
 		}
 
+		// Invoke the preview tab if this is a montage
+		if(InAnimAsset->IsA<UAnimMontage>())
+		{
+			TabManager->InvokeTab(AnimationEditorTabs::AnimMontageSectionsTab);
+			OnSectionsChanged.Broadcast();
+		}
+		else
+		{
+			// Close existing opened montage sections tab
+			TSharedPtr<SDockTab> OpenMontageSectionsTab = TabManager->FindExistingLiveTab(AnimationEditorTabs::AnimMontageSectionsTab);
+			if(OpenMontageSectionsTab.IsValid())
+			{
+				OpenMontageSectionsTab->RequestCloseTab();
+			}	
+		}
+
 		if (SequenceBrowser.IsValid())
 		{
 			SequenceBrowser.Pin()->SelectAsset(InAnimAsset);
@@ -450,6 +477,55 @@ TSharedPtr<SDockTab> FAnimationEditor::OpenNewAnimationDocumentTab(UAnimationAss
 	return OpenedTab;
 }
 
+void FAnimationEditor::EditCurves(UAnimSequenceBase* InAnimSequence, const TArray<FCurveEditInfo>& InCurveInfo, const TSharedPtr<ITimeSliderController>& InExternalTimeSliderController)
+{
+	FPersonaModule& PersonaModule = FModuleManager::GetModuleChecked<FPersonaModule>("Persona");
+
+	if(!AnimCurveDocumentTab.IsValid())
+	{
+		TSharedRef<IAnimSequenceCurveEditor> NewCurveEditor = PersonaModule.CreateCurveWidgetForAnimDocument(SharedThis(this), GetPersonaToolkit()->GetPreviewScene(), InAnimSequence, InExternalTimeSliderController, TabManager);
+		CurveEditor = NewCurveEditor;
+
+		TSharedPtr<SDockTab> CurveTab = SNew(SDockTab)
+			.Label(LOCTEXT("CurveEditorTabTitle", "Curve Editor"))
+			.TabRole(ETabRole::DocumentTab)
+			.TabColorScale(GetTabColorScale())
+			[
+				NewCurveEditor
+			];
+
+		AnimCurveDocumentTab = CurveTab;
+
+		TabManager->InsertNewDocumentTab(AnimationEditorTabs::CurveEditorTab, FTabManager::ESearchPreference::RequireClosedTab, CurveTab.ToSharedRef());
+	}
+	else
+	{
+		TabManager->DrawAttention(AnimCurveDocumentTab.Pin().ToSharedRef());
+	}
+
+	check(CurveEditor.IsValid());
+
+	CurveEditor.Pin()->ResetCurves();
+
+	for(const FCurveEditInfo& CurveInfo : InCurveInfo)
+	{
+		CurveEditor.Pin()->AddCurve(CurveInfo.CurveDisplayName, CurveInfo.CurveColor, CurveInfo.Name, CurveInfo.Type, CurveInfo.CurveIndex, CurveInfo.OnCurveModified);
+	}
+
+	CurveEditor.Pin()->ZoomToFit();
+}
+
+void FAnimationEditor::StopEditingCurves(const TArray<FCurveEditInfo>& InCurveInfo)
+{
+	if(CurveEditor.IsValid())
+	{
+		for(const FCurveEditInfo& CurveInfo : InCurveInfo)
+		{
+			CurveEditor.Pin()->RemoveCurve(CurveInfo.Name, CurveInfo.Type, CurveInfo.CurveIndex);
+		}
+	}
+}
+
 void FAnimationEditor::HandleSectionsChanged()
 {
 	OnSectionsChanged.Broadcast();
@@ -458,6 +534,11 @@ void FAnimationEditor::HandleSectionsChanged()
 void FAnimationEditor::SetAnimationAsset(UAnimationAsset* AnimAsset)
 {
 	HandleOpenNewAsset(AnimAsset);
+}
+
+IAnimationSequenceBrowser* FAnimationEditor::GetAssetBrowser() const
+{
+	return SequenceBrowser.Pin().Get();
 }
 
 void FAnimationEditor::HandleOpenNewAsset(UObject* InNewAsset)
@@ -542,7 +623,7 @@ void FAnimationEditor::OnApplyCompression()
 		TArray<TWeakObjectPtr<UAnimSequence>> AnimSequences;
 		AnimSequences.Add(AnimSequence);
 		FPersonaModule& PersonaModule = FModuleManager::GetModuleChecked<FPersonaModule>("Persona");
-		PersonaModule.ApplyCompression(AnimSequences);
+		PersonaModule.ApplyCompression(AnimSequences, false);
 	}
 }
 
@@ -730,7 +811,7 @@ void FAnimationEditor::ConditionalRefreshEditor(UObject* InObject)
 {
 	bool bInterestingAsset = true;
 
-	if (InObject != GetPersonaToolkit()->GetSkeleton() && InObject != GetPersonaToolkit()->GetSkeleton()->GetPreviewMesh() && Cast<UAnimationAsset>(InObject) != AnimationAsset)
+	if (InObject != GetPersonaToolkit()->GetSkeleton() && (GetPersonaToolkit()->GetSkeleton() && InObject != GetPersonaToolkit()->GetSkeleton()->GetPreviewMesh()) && Cast<UAnimationAsset>(InObject) != AnimationAsset)
 	{
 		bInterestingAsset = false;
 	}
@@ -754,6 +835,11 @@ void FAnimationEditor::ConditionalRefreshEditor(UObject* InObject)
 				}
 			}
 		}
+	}
+
+	if (GetPersonaToolkit()->GetSkeleton() == nullptr)
+	{
+		bInterestingAsset = false;
 	}
 
 	if (bInterestingAsset)

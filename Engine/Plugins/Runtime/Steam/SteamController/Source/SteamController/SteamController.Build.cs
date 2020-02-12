@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 using UnrealBuildTool;
 using System.IO;
@@ -7,22 +7,22 @@ public class SteamController : ModuleRules
 {
     public SteamController(ReadOnlyTargetRules Target) : base(Target)
     {
-        string SteamVersion = "Steamv139";
-        bool bSteamSDKFound = Directory.Exists(Target.UEThirdPartySourceDirectory + "Steamworks/" + SteamVersion) == true;
-
-        PublicDefinitions.Add("STEAMSDK_FOUND=" + (bSteamSDKFound ? "1" : "0"));
-
         PrivateIncludePathModuleNames.Add("TargetPlatform");
+
+        PublicDependencyModuleNames.AddRange(new string[] 
+		{
+			"InputDevice",
+            "InputCore"
+		});
 
         PrivateDependencyModuleNames.AddRange(new string[]
         {
 			"Core",
 			"CoreUObject",
+			"ApplicationCore",
 			"Engine",
+			"SteamShared"
 		});
-
-        PublicDependencyModuleNames.Add("InputDevice");
-        PublicDependencyModuleNames.Add("InputCore");
 
         AddEngineThirdPartyPrivateStaticDependencies(Target,
             "Steamworks"

@@ -1,21 +1,24 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
 #include "CoreTypes.h"
 #include "HAL/UnrealMemory.h"
 
-#if defined(_MSC_VER) || PLATFORM_MAC || PLATFORM_IOS
+#if PLATFORM_MAC || PLATFORM_IOS
 	#define USE_ALIGNED_MALLOC 1
 #else
 	#define USE_ALIGNED_MALLOC 0
 #endif
 
+CORE_API void* AnsiMalloc(SIZE_T Size, uint32 Alignment);
+CORE_API void* AnsiRealloc(void* Ptr, SIZE_T NewSize, uint32 Alignment);
+CORE_API void AnsiFree(void* Ptr);
 
 //
 // ANSI C memory allocator.
 //
-class FMallocAnsi
+class FMallocAnsi final
 	: public FMalloc
 {
 	
@@ -28,7 +31,11 @@ public:
 	// FMalloc interface.
 	virtual void* Malloc( SIZE_T Size, uint32 Alignment ) override;
 
+	virtual void* TryMalloc(SIZE_T Size, uint32 Alignment) override;
+
 	virtual void* Realloc( void* Ptr, SIZE_T NewSize, uint32 Alignment ) override;
+
+	virtual void* TryRealloc(void* Ptr, SIZE_T NewSize, uint32 Alignment) override;
 
 	virtual void Free( void* Ptr ) override;
 

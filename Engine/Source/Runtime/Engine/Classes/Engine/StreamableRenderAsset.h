@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -55,6 +55,12 @@ public:
 		return false;
 	}
 
+	virtual bool DoesMipDataExist(const int32 MipIndex) const
+	{
+		STREAMABLERENDERASSET_NODEFAULT(DoesMipDataExist);
+		return false;
+	}
+
 	virtual bool IsReadyForStreaming() const
 	{
 		STREAMABLERENDERASSET_NODEFAULT(IsReadyForStreaming);
@@ -90,6 +96,12 @@ public:
 	virtual bool HasPendingUpdate() const
 	{
 		STREAMABLERENDERASSET_NODEFAULT(HasPendingUpdate);
+		return false;
+	}
+
+	virtual bool IsPendingUpdateLocked() const 
+	{ 
+		STREAMABLERENDERASSET_NODEFAULT(IsPendingUpdateLocked);
 		return false;
 	}
 
@@ -188,7 +200,6 @@ public:
 #if WITH_EDITOR
 		return GetNumResidentMips();
 #else
-		check(CachedNumResidentLODs == GetNumResidentMips());
 		return CachedNumResidentLODs;
 #endif
 	}
@@ -198,7 +209,6 @@ public:
 #if WITH_EDITOR
 		return IsReadyForStreaming();
 #else
-		check(bCachedReadyForStreaming == IsReadyForStreaming());
 		return bCachedReadyForStreaming;
 #endif
 	}
@@ -250,7 +260,7 @@ public:
 	UPROPERTY(transient)
 	uint8 bForceMiplevelsToBeResident : 1;
 
-	/** Ignores the streaming mip bias used to accommodate memory constraints. */
+	/** When forced fully resident, ignores the streaming mip bias used to accommodate memory constraints. */
 	UPROPERTY(transient)
 	uint8 bIgnoreStreamingMipBias : 1;
 

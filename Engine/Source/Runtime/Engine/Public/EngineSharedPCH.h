@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -210,7 +210,6 @@
 #include "Serialization/BufferReader.h"
 #include "Containers/StaticArray.h"
 #include "Misc/SecureHash.h"
-#include "Templates/ScopedPointer.h"
 #include "Misc/Paths.h"
 #include "Modules/ModuleManager.h"
 #include "Modules/Boilerplate/ModuleBoilerplate.h"
@@ -398,7 +397,6 @@
 #include "Widgets/Input/IVirtualKeyboardEntry.h"
 #include "Widgets/Layout/SBorder.h"
 #include "Framework/Text/TextLayout.h"
-#include "Framework/Text/TextRange.h"
 #include "Framework/Text/TextRunRenderer.h"
 #include "Framework/Text/TextLineHighlight.h"
 #include "Framework/Text/IRun.h"
@@ -559,10 +557,9 @@
 #include "BonePose.h"
 #include "CustomBoneIndexArray.h"
 #include "Animation/AnimStats.h"
-#include "GenericOctreePublic.h"
+#include "Math/GenericOctreePublic.h"
 #include "GameFramework/OnlineReplStructs.h"
 #include "Audio.h"
-#include "Sound/SoundClass.h"
 #include "Sound/SoundAttenuation.h"
 #include "IAudioExtensionPlugin.h"
 #include "Tickable.h"
@@ -604,7 +601,7 @@
 #include "Animation/AnimNodeBase.h"
 #include "Kismet/BlueprintFunctionLibrary.h"
 #include "EngineStats.h"
-#include "GenericOctree.h"
+#include "Math/GenericOctree.h"
 #include "Components/SkinnedMeshComponent.h"
 #include "Engine/NetDriver.h"
 #include "Components/StaticMeshComponent.h"

@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -9,7 +9,7 @@
 /**
  * Base class for target platforms.
  */
-class FTargetPlatformBase
+class TARGETPLATFORM_VTABLE FTargetPlatformBase
 	: public ITargetPlatform
 {
 public:
@@ -34,6 +34,14 @@ public:
 	TARGETPLATFORM_API virtual bool UsesForwardShading() const override;
 
 	TARGETPLATFORM_API virtual bool UsesDBuffer() const override;
+
+	TARGETPLATFORM_API virtual bool UsesBasePassVelocity() const override;
+
+	TARGETPLATFORM_API virtual bool UsesSelectiveBasePassOutputs() const override;
+	
+	TARGETPLATFORM_API virtual bool UsesDistanceFields() const override;
+
+	TARGETPLATFORM_API virtual float GetDownSampleMeshDistanceFieldDivider() const override;
 
 #if WITH_ENGINE
 	virtual void GetReflectionCaptureFormats( TArray<FName>& OutFormats ) const override
@@ -65,7 +73,7 @@ public:
 		return true;
 	}
 
-	virtual int32 CheckRequirements(const FString& ProjectPath, bool bProjectHasCode, FString& OutTutorialPath, FString& OutDocumentationPath, FText& CustomizedLogMessage) const override
+	virtual int32 CheckRequirements(bool bProjectHasCode, EBuildConfiguration Configuration, bool bRequiresAssetNativization, FString& OutTutorialPath, FString& OutDocumentationPath, FText& CustomizedLogMessage) const override
 	{
 		int32 bReadyToBuild = ETargetPlatformReadyStatus::Ready; // @todo How do we check that the iOS SDK is installed when building from Windows? Is that even possible?
 		if (!IsSdkInstalled(bProjectHasCode, OutTutorialPath))
@@ -73,6 +81,22 @@ public:
 			bReadyToBuild |= ETargetPlatformReadyStatus::SDKNotFound;
 		}
 		return bReadyToBuild;
+	}
+
+	TARGETPLATFORM_API virtual bool RequiresTempTarget(bool bProjectHasCode, EBuildConfiguration Configuration, bool bRequiresAssetNativization, FText& OutReason) const override;
+
+	virtual bool SupportsValueForType(FName SupportedType, FName RequiredSupportedValue) const override
+	{
+#if WITH_ENGINE
+		// check if the given shader format is returned by this TargetPlatform
+		if (SupportedType == TEXT("ShaderFormat"))
+		{
+			TArray<FName> AllPossibleShaderFormats;
+			GetAllPossibleShaderFormats(AllPossibleShaderFormats);
+			return AllPossibleShaderFormats.Contains(RequiredSupportedValue);
+		}
+#endif
+		return false;
 	}
 
 	virtual bool SupportsVariants() const override
@@ -121,7 +145,7 @@ protected:
 	FTargetPlatformBase(const PlatformInfo::FPlatformInfo *const InPlatformInfo)
 		: PlatformInfo(InPlatformInfo)
 	{
-		check(PlatformInfo);
+		checkf(PlatformInfo, TEXT("Null PlatformInfo was passed to FTargetPlatformBase. Check the static IsUsable function before creating this object. See FWindowsTargetPlatformModule::GetTargetPlatform()"));
 
 		PlatformOrdinal = AssignPlatformOrdinal(*this);
 	}
@@ -129,6 +153,10 @@ protected:
 	/** Information about this platform */
 	const PlatformInfo::FPlatformInfo *PlatformInfo;
 	int32 PlatformOrdinal;
+
+private:
+	bool HasDefaultBuildSettings() const;
+	static bool DoProjectSettingsMatchDefault(const FString& InPlatformName, const FString& InSection, const TArray<FString>* InBoolKeys, const TArray<FString>* InIntKeys, const TArray<FString>* InStringKeys);
 };
 
 
@@ -143,6 +171,15 @@ class TTargetPlatformBase
 {
 public:
 
+	/**
+	 * Returns true if the target platform will be able to be  initialized with an FPlatformInfo. Because FPlatformInfo now comes from a .ini file,
+	 * it's possible that the .dll exists, but the .ini does not (should be uncommon, but is necessary to be handled)
+	 */
+	static bool IsUsable()
+	{
+		return PlatformInfo::FindPlatformInfo(TPlatformProperties::PlatformName()) != nullptr;
+	}
+	
 	/** Default constructor. */
 	TTargetPlatformBase()
 		: FTargetPlatformBase( PlatformInfo::FindPlatformInfo(TPlatformProperties::PlatformName()) )
@@ -200,9 +237,9 @@ public:
 		return TPlatformProperties::RequiresUserCredentials();
 	}
 
-	virtual bool SupportsBuildTarget( EBuildTargets::Type BuildTarget ) const override
+	virtual bool SupportsBuildTarget( EBuildTargetType TargetType ) const override
 	{
-		return TPlatformProperties::SupportsBuildTarget(BuildTarget);
+		return TPlatformProperties::SupportsBuildTarget(TargetType);
 	}
 
 	virtual bool SupportsAutoSDK() const override
@@ -251,6 +288,11 @@ public:
 
 		case ETargetPlatformFeatures::MemoryMappedAudio:
 			return TPlatformProperties::SupportsMemoryMappedAudio();
+		case ETargetPlatformFeatures::MemoryMappedAnimation:
+			return TPlatformProperties::SupportsMemoryMappedAnimation();
+
+		case ETargetPlatformFeatures::VirtualTextureStreaming:
+			return TPlatformProperties::SupportsVirtualTextureStreaming();
 
 		case ETargetPlatformFeatures::SdkConnectDisconnect:
 		case ETargetPlatformFeatures::UserCredentials:

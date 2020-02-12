@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "Windows/WindowsPlatformSplash.h"
 #include "HAL/PlatformMemory.h"
@@ -658,7 +658,7 @@ void FWindowsPlatformSplash::Show()
 
 				// Display copyright information in editor splash screen
 				{
-					const FString CopyrightInfo = NSLOCTEXT( "UnrealEd", "SplashScreen_CopyrightInfo", "Copyright \x00a9 1998-2019   Epic Games, Inc.   All rights reserved." ).ToString();
+					const FString CopyrightInfo = NSLOCTEXT( "UnrealEd", "SplashScreen_CopyrightInfo", "Copyright \x00a9   Epic Games, Inc.   All rights reserved." ).ToString();
 					StartSetSplashText( SplashTextType::CopyrightInfo, *CopyrightInfo );
 				}
 			}
@@ -700,7 +700,7 @@ void FWindowsPlatformSplash::Hide()
 		if(GSplashScreenWnd)
 		{
 			// Send message to splash screen window to destroy itself
-			PostMessage(GSplashScreenWnd, WM_DESTROY, 0, 0);
+			PostMessageW(GSplashScreenWnd, WM_DESTROY, 0, 0);
 		}
 
 		// Wait for splash screen thread to finish
@@ -714,7 +714,7 @@ void FWindowsPlatformSplash::Hide()
 		// Close the Z-Order guard window
 		if ( GSplashScreenGuard )
 		{
-			PostMessage(GSplashScreenGuard, WM_DESTROY, 0, 0);
+			PostMessageW(GSplashScreenGuard, WM_DESTROY, 0, 0);
 			GSplashScreenGuard = NULL;
 		}
 	}

@@ -1,10 +1,11 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
 #include "CoreMinimal.h"
 #include "Components/SynthComponent.h"
 #include "DSP/Granulator.h"
+#include "Sound/SampleBufferIO.h"
 #include "Sound/SoundWave.h"
 #include "SynthComponentGranulator.generated.h"
 

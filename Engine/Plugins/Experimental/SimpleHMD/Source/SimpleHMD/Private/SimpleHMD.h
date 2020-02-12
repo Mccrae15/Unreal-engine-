@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -42,7 +42,7 @@ public:
 	virtual FQuat GetBaseOrientation() const override;
 
 	virtual class IHeadMountedDisplay* GetHMDDevice() override
-	{ 
+	{
 		return this;
 	}
 
@@ -50,6 +50,7 @@ public:
 	{
 		return SharedThis(this);
 	}
+
 protected:
 	/** FXRTrackingSystemBase protected interface */
 	virtual float GetWorldToMetersScale() const override;
@@ -68,8 +69,8 @@ public:
 	virtual bool IsStereoEnabled() const override;
 	virtual bool EnableStereo(bool stereo = true) override;
 	virtual void AdjustViewRect(EStereoscopicPass StereoPass, int32& X, int32& Y, uint32& SizeX, uint32& SizeY) const override;
-	virtual void CalculateStereoViewOffset(const EStereoscopicPass StereoPassType, FRotator& ViewRotation,
-		const float MetersToWorld, FVector& ViewLocation) override;
+	virtual void CalculateStereoViewOffset(const enum EStereoscopicPass StereoPassType, FRotator& ViewRotation,
+		const float InWorldToMeters, FVector& ViewLocation) override;
 	virtual FMatrix GetStereoProjectionMatrix(const enum EStereoscopicPass StereoPassType) const override;
 	virtual void GetEyeRenderParams_RenderThread(const struct FRenderingCompositePassContext& Context, FVector2D& EyeToSrcUVScaleValue, FVector2D& EyeToSrcUVOffsetValue) const override;
 
@@ -100,6 +101,7 @@ private:
 	FQuat					DeltaControlOrientation; // same as DeltaControlRotation but as quat
 
 	double					LastSensorTime;
+	float					WorldToMeters;
 
 	void GetHMDOrientation(FQuat& CurrentOrientation);
 };

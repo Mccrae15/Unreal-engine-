@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "Recorder/TakeRecorderBlueprintLibrary.h"
 #include "Recorder/TakeRecorder.h"
@@ -14,6 +14,13 @@
 namespace
 {
 	static UTakeRecorderPanel* CurrentTakeRecorderPanel;
+	static UTakeRecorderBlueprintLibrary::FOnTakeRecorderPanelChanged TakeRecorderPanelChanged;
+	static UTakeRecorderBlueprintLibrary::FOnTakeRecorderPreInitialize TakeRecorderPreInitialize;
+	static UTakeRecorderBlueprintLibrary::FOnTakeRecorderStarted TakeRecorderStarted;
+	static UTakeRecorderBlueprintLibrary::FOnTakeRecorderStopped TakeRecorderStopped;
+	static UTakeRecorderBlueprintLibrary::FOnTakeRecorderFinished TakeRecorderFinished;
+	static UTakeRecorderBlueprintLibrary::FOnTakeRecorderCancelled TakeRecorderCancelled;
+	static UTakeRecorderBlueprintLibrary::FOnTakeRecorderMarkedFrameAdded TakeRecorderMarkedFrameAdded;
 }
 
 
@@ -120,20 +127,90 @@ UTakeRecorderPanel* UTakeRecorderBlueprintLibrary::GetTakeRecorderPanel()
 	return CurrentTakeRecorderPanel && CurrentTakeRecorderPanel->IsPanelOpen() ? CurrentTakeRecorderPanel : nullptr;
 }
 
+void UTakeRecorderBlueprintLibrary::SetOnTakeRecorderPanelChanged(FOnTakeRecorderPanelChanged OnTakeRecorderPanelChanged)
+{
+	TakeRecorderPanelChanged = OnTakeRecorderPanelChanged;
+};
+
+void UTakeRecorderBlueprintLibrary::SetOnTakeRecorderPreInitialize(FOnTakeRecorderPreInitialize OnTakeRecorderPreInitialize)
+{
+	TakeRecorderPreInitialize = OnTakeRecorderPreInitialize;
+};
+
+void UTakeRecorderBlueprintLibrary::SetOnTakeRecorderStarted(FOnTakeRecorderStarted OnTakeRecorderStarted)
+{
+	TakeRecorderStarted = OnTakeRecorderStarted;
+};
+
+void UTakeRecorderBlueprintLibrary::SetOnTakeRecorderStopped(FOnTakeRecorderStopped OnTakeRecorderStopped)
+{
+	TakeRecorderStopped = OnTakeRecorderStopped;
+};
+
+void UTakeRecorderBlueprintLibrary::SetOnTakeRecorderFinished(FOnTakeRecorderFinished OnTakeRecorderFinished)
+{
+	TakeRecorderFinished = OnTakeRecorderFinished;
+};
+
+void UTakeRecorderBlueprintLibrary::SetOnTakeRecorderCancelled(FOnTakeRecorderCancelled OnTakeRecorderCancelled)
+{
+	TakeRecorderCancelled = OnTakeRecorderCancelled;
+};
+
+void UTakeRecorderBlueprintLibrary::SetOnTakeRecorderMarkedFrameAdded(FOnTakeRecorderMarkedFrameAdded OnTakeRecorderMarkedFrameAdded)
+{
+	TakeRecorderMarkedFrameAdded = OnTakeRecorderMarkedFrameAdded;
+};
+
+void UTakeRecorderBlueprintLibrary::OnTakeRecorderPreInitialize()
+{
+	TakeRecorderPreInitialize.ExecuteIfBound();
+}
+
+void UTakeRecorderBlueprintLibrary::OnTakeRecorderStarted()
+{
+	TakeRecorderStarted.ExecuteIfBound();
+}
+
+void UTakeRecorderBlueprintLibrary::OnTakeRecorderStopped()
+{
+	TakeRecorderStopped.ExecuteIfBound();
+}
+
+void UTakeRecorderBlueprintLibrary::OnTakeRecorderFinished(ULevelSequence* InSequenceAsset)
+{
+	TakeRecorderFinished.ExecuteIfBound(InSequenceAsset);
+}
+
+void UTakeRecorderBlueprintLibrary::OnTakeRecorderCancelled()
+{
+	TakeRecorderCancelled.ExecuteIfBound();
+}
+
+void UTakeRecorderBlueprintLibrary::OnTakeRecorderMarkedFrameAdded(const FMovieSceneMarkedFrame& InMarkedFrame)
+{
+	TakeRecorderMarkedFrameAdded.ExecuteIfBound(InMarkedFrame);
+}
+
 void UTakeRecorderBlueprintLibrary::SetTakeRecorderPanel(UTakeRecorderPanel* InNewPanel)
 {
-	if (CurrentTakeRecorderPanel)
+	if (CurrentTakeRecorderPanel != InNewPanel)
 	{
-		// Old panel is no longer valid
-		CurrentTakeRecorderPanel->ClosePanel();
+		if (CurrentTakeRecorderPanel)
+		{
+			// Old panel is no longer valid
+			CurrentTakeRecorderPanel->ClosePanel();
 
-		CurrentTakeRecorderPanel->RemoveFromRoot();
-		CurrentTakeRecorderPanel = nullptr;
-	}
+			CurrentTakeRecorderPanel->RemoveFromRoot();
+			CurrentTakeRecorderPanel = nullptr;
+		}
 
-	if (InNewPanel && InNewPanel->IsPanelOpen())
-	{
-		InNewPanel->AddToRoot();
-		CurrentTakeRecorderPanel = InNewPanel;
+		if (InNewPanel && InNewPanel->IsPanelOpen())
+		{
+			InNewPanel->AddToRoot();
+			CurrentTakeRecorderPanel = InNewPanel;
+		}
+
+		TakeRecorderPanelChanged.ExecuteIfBound();
 	}
 }

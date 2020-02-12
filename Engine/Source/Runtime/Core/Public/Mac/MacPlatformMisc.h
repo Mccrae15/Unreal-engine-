@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 /*=============================================================================================
 	MacPlatformMisc.h: Mac platform misc functions
@@ -53,7 +53,7 @@ struct CORE_API FMacPlatformMisc : public FApplePlatformMisc
 	 */
 	FORCEINLINE static const TCHAR* GetNullRHIShaderFormat() 
 	{ 
-		return TEXT("GLSL_150"); 
+		return TEXT("SF_METAL"); 
 	}
 
 	/**
@@ -62,6 +62,13 @@ struct CORE_API FMacPlatformMisc : public FApplePlatformMisc
 	 * @return	CPU vendor name
 	 */
 	static FString GetCPUVendor();
+
+	/**
+	 * Uses cpuid instruction to get the CPU brand string
+	 *
+	 * @return    CPU brand string
+	 */
+	static FString GetCPUBrand();
 
 	/**
 	 * Uses cpuid instruction to get the vendor string
@@ -166,6 +173,13 @@ struct CORE_API FMacPlatformMisc : public FApplePlatformMisc
 	static void PostInitMacAppInfoUpdate();
 
 	static CGDisplayModeRef GetSupportedDisplayMode(CGDirectDisplayID DisplayID, uint32 Width, uint32 Height);
+
+	FORCEINLINE static void ChooseHDRDeviceAndColorGamut(uint32 DeviceId, uint32 DisplayNitLevel, int32& OutputDevice, int32& ColorGamut)
+	{
+		// ScRGB, 1000 or 2000 nits, DCI-P3
+		OutputDevice = DisplayNitLevel == 1000 ? 5 : 6;
+		ColorGamut = 1;
+	}
 };
 
 typedef FMacPlatformMisc FPlatformMisc;

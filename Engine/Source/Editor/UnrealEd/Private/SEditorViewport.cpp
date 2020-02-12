@@ -1,9 +1,8 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "SEditorViewport.h"
 #include "Misc/Paths.h"
 #include "Framework/Commands/UICommandList.h"
-#include "Widgets/SViewport.h"
 #include "Misc/App.h"
 #include "Widgets/Layout/SBorder.h"
 #include "Settings/LevelEditorViewportSettings.h"
@@ -48,8 +47,6 @@ SEditorViewport::~SEditorViewport()
 
 void SEditorViewport::Construct( const FArguments& InArgs )
 {
-	
-
 	ChildSlot
 	[
 		SNew(SGlobalPlayWorldActions)
@@ -58,16 +55,17 @@ void SEditorViewport::Construct( const FArguments& InArgs )
 			.ShowEffectWhenDisabled(false)
 			.EnableGammaCorrection(false) // Scene rendering handles this
 			.AddMetaData(InArgs.MetaData.Num() > 0 ? InArgs.MetaData[0] : MakeShareable(new FTagMetaData(TEXT("LevelEditorViewport"))))
+			.ViewportSize(InArgs._ViewportSize)
 			[
 				SAssignNew(ViewportOverlay, SOverlay)
 				+ SOverlay::Slot()
 				[
-				SNew(SBorder)
-				.BorderImage(this, &SEditorViewport::OnGetViewportBorderBrush)
-				.BorderBackgroundColor(this, &SEditorViewport::OnGetViewportBorderColorAndOpacity)
-				.Visibility(this, &SEditorViewport::OnGetViewportContentVisibility)
-				.Padding(0.0f)
-				.ShowEffectWhenDisabled(false)
+					SNew(SBorder)
+					.BorderImage(this, &SEditorViewport::OnGetViewportBorderBrush)
+					.BorderBackgroundColor(this, &SEditorViewport::OnGetViewportBorderColorAndOpacity)
+					.Visibility(this, &SEditorViewport::OnGetViewportContentVisibility)
+					.Padding(0.0f)
+					.ShowEffectWhenDisabled(false)
 				]
 			]
 		]
@@ -571,7 +569,7 @@ TSharedRef<SWidget> SEditorViewport::BuildFixedEV100Menu()  const
 				.MinValue(EV100Min)
 				.MaxValue(EV100Max)
 				.Value( this, &SEditorViewport::OnGetFixedEV100Value )
-				.OnValueChanged( this, &SEditorViewport::OnFixedEV100ValueChanged )
+				.OnValueChanged( const_cast<SEditorViewport*>(this), &SEditorViewport::OnFixedEV100ValueChanged )
 				.ToolTipText(LOCTEXT( "EV100ToolTip", "Sets the exposure value of the camera using the specified EV100. Exposure = 1 / (1.2 * 2^EV100)"))
 				.IsEnabled( this, &SEditorViewport::IsFixedEV100Enabled )
 			]
@@ -631,6 +629,12 @@ bool SEditorViewport::IsCoordSystemActive(ECoordSystem CoordSystem) const
 void SEditorViewport::OnCycleWidgetMode()
 {
 	FWidget::EWidgetMode WidgetMode = Client->GetWidgetMode();
+
+	// Can't cycle the widget mode if we don't currently have a widget
+	if (WidgetMode == FWidget::WM_None)
+	{
+		return;
+	}
 
 	int32 WidgetModeAsInt = WidgetMode;
 

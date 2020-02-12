@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 #pragma once
 
 #include "CoreMinimal.h"
@@ -113,6 +113,36 @@ class UDiffAssetRegistriesCommandlet : public UCommandlet
 		}
 	};
 
+	struct FDeterminismInfo
+	{
+		int64 DirectSize;
+		int64 DirectCount;
+		int64 IndirectSize;
+		int64 IndirectCount;
+
+		TArray<int64> Direct;
+		TArray<int64> Indirect;
+		
+		void AddDirect(const FChangeInfo& Rhs)
+		{
+			DirectSize += Rhs.GetTotalChangeSize();
+			DirectCount += Rhs.GetTotalChangeCount();
+		}
+
+		void AddIndirect(const FChangeInfo& Rhs)
+		{
+			IndirectSize += Rhs.GetTotalChangeSize();
+			IndirectCount += Rhs.GetTotalChangeCount();
+		}
+	};
+
+	struct FChunkChangeInfo
+	{
+		TSet<FName> IncludedAssets;
+		TMap<FName, FChangeInfo> ChangesByClass;
+		TMap<FName, FDeterminismInfo> Determinism;
+	};
+
 	GENERATED_UCLASS_BODY()
 
 public:
@@ -138,9 +168,12 @@ private:
 
 	FName	GetClassName(FAssetRegistryState& InRegistryState, FName InAssetPath);
 
+	TArray<int32> GetAssetChunks(FAssetRegistryState& InRegistryState, FName InAssetPath);
+
 	bool	IsInRelevantChunk(FAssetRegistryState& InRegistryState, FName InAssetPath);
 
 	void	LogChangedFiles(FArchive *CSVFile, const FString &OldPath, const FString &NewPath);
+	void	LogClassSummary(FArchive *CSVFile, const FString& HeaderPrefix, const TMap<FName, FChangeInfo>& InChangeInfoByAsset, bool bDoWarnings, TMap<FName, FDeterminismInfo> DeterminismInfo = TMap<FName, FDeterminismInfo>());
 	void	SummarizeDeterminism();
 
 	void	PopulateChangelistMap(const FString &Branch, const FString &CL, bool bEnginePackages);
@@ -152,6 +185,8 @@ private:
 	bool				bSaveCSV;
 
 	bool				bMatchChangelists;
+
+	bool				bGroupByChunk;
 
 	FString				CSVFilename;
 
@@ -179,16 +214,33 @@ private:
 
 	SortOrder			ReportedFileOrder;
 
-	FChangeInfo					ChangeSummary;
-	FChangeInfo					NondeterministicSummary;
-	FChangeInfo					IndirectNondeterministicSummary;
-	TMap<FName, FChangeInfo>	ChangeSummaryByClass;
-	TMap<FName, FChangeInfo>	ChangeInfoByAsset;
-	TMap<int32, FChangeInfo>	ChangeSummaryByChangelist;
-	TMap<FName, FName>			AssetPathToClassName;
-	TMap<FString, int32>		AssetPathToChangelist;
-	TMap<FName, int32>			AssetPathFlags;
+	FChangeInfo						ChangeSummary;
+	FChangeInfo						NondeterministicSummary;
+	FChangeInfo						IndirectNondeterministicSummary;
+	TMap<FName, FChangeInfo>		ChangeSummaryByClass;
+	TMap<FName, FDeterminismInfo>   DeterminismByClass;
+	TMap<FName, FChangeInfo>		ChangeInfoByAsset;
+	TMap<int32, FChangeInfo>		ChangeSummaryByChangelist;
+	TMap<FName, FName>				AssetPathToClassName;
+	TMap<FString, int32>			AssetPathToChangelist;
+	TMap<FName, int32>				AssetPathFlags;
+	TMap<int32, FChunkChangeInfo>	ChangesByChunk;
+	TMultiMap<FName, int32>			ChunkIdByAssetPath;
 
 	UPROPERTY(config)
 	TArray<FString> AssetRegistrySearchPath;
+
+	UPROPERTY(config)
+	FString P4Repository;
+	UPROPERTY(config)
+	FString P4EngineBasePath;
+	UPROPERTY(config)
+	FString P4EngineAssetPath;
+
+	UPROPERTY(config)
+	FString P4GameBasePath;
+	UPROPERTY(config)
+	FString P4GameAssetPath;
+	UPROPERTY(config)
+	FString RegexBranchCL;
 };

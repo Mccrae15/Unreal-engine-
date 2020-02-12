@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -9,9 +9,10 @@
 #include "Curves/KeyHandle.h"
 #include "MovieSceneSequenceID.h"
 #include "MovieSceneSection.h"
+#include "Evaluation/MovieSceneEvaluationOperand.h"
 #include "Evaluation/MovieSceneSectionParameters.h"
 #include "Evaluation/MovieSceneSequenceHierarchy.h"
-#include "Evaluation/MovieSceneEvaluationOperand.h"
+#include "Evaluation/MovieSceneSequenceTransform.h"
 #include "MovieSceneSubSection.generated.h"
 
 class UMovieSceneSequence;
@@ -32,7 +33,7 @@ struct FSubSequenceInstanceDataParams
 /**
  * Implements a section in sub-sequence tracks.
  */
-UCLASS()
+UCLASS(BlueprintType)
 class MOVIESCENE_API UMovieSceneSubSection
 	: public UMovieSceneSection
 {
@@ -68,9 +69,21 @@ public:
 public:
 
 	/**
-	 * Get the transform that converts time from this section's time-base to its inner sequence's
+	 * Gets the transform that converts time from this section's time-base to its inner sequence's
 	 */
 	FMovieSceneSequenceTransform OuterToInnerTransform() const;
+
+	/**
+	 * Gets the playrange of the inner sequence, in the inner sequence's time space, trimmed with any start/end offsets,
+	 * and validated to make sure we get at least a 1-frame long playback range (e.g. in the case where excessive
+	 * trimming results in an invalid range).
+	 */
+	bool GetValidatedInnerPlaybackRange(TRange<FFrameNumber>& OutInnerPlaybackRange) const;
+
+	/**
+	 * Helper function used by the above method, but accessible for other uses like track editors.
+	 */
+	static TRange<FFrameNumber> GetValidatedInnerPlaybackRange(const FMovieSceneSectionParameters& SubSectionParameters, const UMovieScene& InnerMovieScene);
 
 	/**
 	 * Sets the sequence played by this section.
@@ -96,6 +109,7 @@ public:
 	virtual void PostLoad() override;
 
 #if WITH_EDITOR
+	virtual void PreEditChange(FProperty* PropertyAboutToChange) override;
 	virtual void PostEditChangeProperty(FPropertyChangedEvent& PropertyChangedEvent) override;
 
 	/** Delegate to fire when our sequence is changed in the property editor */
@@ -132,17 +146,19 @@ public:
 		ActorToRecord = InActorToRecord;
 	}
 
+	FFrameNumber MapTimeToSectionFrame(FFrameTime InPosition) const;
+
 public:
 
 	//~ UMovieSceneSection interface
 	virtual TOptional<TRange<FFrameNumber> > GetAutoSizeRange() const override;
-	virtual UMovieSceneSection* SplitSection( FQualifiedFrameTime SplitTime ) override;
-	virtual void TrimSection( FQualifiedFrameTime TrimTime, bool bTrimLeft ) override;
+	virtual UMovieSceneSection* SplitSection( FQualifiedFrameTime SplitTime, bool bDeleteKeys ) override;
+	virtual void TrimSection( FQualifiedFrameTime TrimTime, bool bTrimLeft, bool bDeleteKeys) override;
 	virtual TOptional<FFrameTime> GetOffsetTime() const override { return TOptional<FFrameTime>(FFrameTime(Parameters.StartFrameOffset)); }
 
 public:
 
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="General", meta=(ShowOnlyInnerProperties))
+	UPROPERTY(BlueprintReadWrite, EditAnywhere, Category="General", meta=(ShowOnlyInnerProperties))
 	FMovieSceneSectionParameters Parameters;
 
 private:
@@ -184,5 +200,8 @@ protected:
 #if WITH_EDITOR
 	/** Delegate to fire when our sequence is changed in the property editor */
 	FOnSequenceChanged OnSequenceChangedDelegate;
+
+	/* Previous sub sequence, restored if changed sub sequence is invalid*/
+	UMovieSceneSequence* PreviousSubSequence;
 #endif
 };

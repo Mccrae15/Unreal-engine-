@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 
 #pragma once
@@ -169,25 +169,25 @@ public:
 	// @todo document
 	float GetWidth() const
 	{
-		return Width * GetRootComponent()->RelativeScale3D.X;
+		return Width * GetRootComponent()->GetRelativeScale3D().X;
 	}
 
 	// @todo document
 	float GetHeight() const
 	{
-		return Height * GetRootComponent()->RelativeScale3D.Y;
+		return Height * GetRootComponent()->GetRelativeScale3D().Y;
 	}
 
 	// @todo document
 	float GetLength() const
 	{
-		return LengthZ * GetRootComponent()->RelativeScale3D.Z;
+		return LengthZ * GetRootComponent()->GetRelativeScale3D().Z;
 	}
 
 	// @todo document
 	void SetLength(float WorldLength)
 	{
-		LengthZ = WorldLength / GetRootComponent()->RelativeScale3D.Z;
+		LengthZ = WorldLength / GetRootComponent()->GetRelativeScale3D().Z;
 	}
 
 	static const int32 DataTexSize = 128;

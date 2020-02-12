@@ -1,60 +1,32 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 /*=============================================================================
-	PlayerInput.cpp: Unreal input system.
+	AudioSettings.cpp: Unreal audio settings
 =============================================================================*/
 
 #include "Sound/AudioSettings.h"
 #include "Misc/ConfigCacheIni.h"
+#include "Misc/Paths.h"
 #include "Sound/SoundSubmix.h"
 #include "Sound/SoundBase.h"
 #include "Sound/SoundNodeQualityLevel.h"
 #include "UObject/UObjectHash.h"
 #include "UObject/UObjectIterator.h"
 
+#if WITH_EDITOR
+#include "Framework/Notifications/NotificationManager.h"
+#include "Widgets/Notifications/SNotificationList.h"
+#endif // WITH_EDITOR
+
 #define LOCTEXT_NAMESPACE "AudioSettings"
 
-FAudioPlatformSettings FAudioPlatformSettings::GetPlatformSettings(const TCHAR* PlatformSettingsConfigFile)
-{
-	FAudioPlatformSettings Settings;
-
-	FString TempString;
-
-	if (GConfig->GetString(PlatformSettingsConfigFile, TEXT("AudioSampleRate"), TempString, GEngineIni))
-	{
-		Settings.SampleRate = FMath::Max(FCString::Atoi(*TempString), 8000);
-	}
-
-	if (GConfig->GetString(PlatformSettingsConfigFile, TEXT("AudioCallbackBufferFrameSize"), TempString, GEngineIni))
-	{
-		Settings.CallbackBufferFrameSize = FMath::Max(FCString::Atoi(*TempString), 256);
-	}
-
-	if (GConfig->GetString(PlatformSettingsConfigFile, TEXT("AudioNumBuffersToEnqueue"), TempString, GEngineIni))
-	{
-		Settings.NumBuffers = FMath::Max(FCString::Atoi(*TempString), 1);
-	}
-
-	if (GConfig->GetString(PlatformSettingsConfigFile, TEXT("AudioMaxChannels"), TempString, GEngineIni))
-	{
-		Settings.MaxChannels = FMath::Max(FCString::Atoi(*TempString), 0);
-	}
-
-	if (GConfig->GetString(PlatformSettingsConfigFile, TEXT("AudioNumSourceWorkers"), TempString, GEngineIni))
-	{
-		Settings.NumSourceWorkers = FMath::Max(FCString::Atoi(*TempString), 0);
-	}
-
-	return Settings;
-}
-
 UAudioSettings::UAudioSettings(const FObjectInitializer& ObjectInitializer)
-: Super(ObjectInitializer)
+	: Super(ObjectInitializer)
 {
 	SectionName = TEXT("Audio");
 	AddDefaultSettings();
 
-	bAllowVirtualizedSounds = true;
+	bAllowPlayWhenSilent = true;
 	bIsAudioMixerEnabled = false;
 
 	GlobalMinPitchScale = 0.4F;
@@ -65,19 +37,19 @@ void UAudioSettings::AddDefaultSettings()
 {
 	FAudioQualitySettings DefaultSettings;
 	DefaultSettings.DisplayName = LOCTEXT("DefaultSettingsName", "Default");
-	GConfig->GetInt(TEXT("Audio"), TEXT("MaxChannels"), DefaultSettings.MaxChannels, GEngineIni); // for backwards compatibility
 	QualityLevels.Add(DefaultSettings);
-	bAllowVirtualizedSounds = true;
-	DefaultReverbSendLevel = 0.2f;
+	bAllowPlayWhenSilent = true;
+	DefaultReverbSendLevel_DEPRECATED = 0.0f;
 	VoiPSampleRate = EVoiceSampleRate::Low16000Hz;
-	VoipBufferingDelay = 0.2f;
-	MaxWaveInstances = 100;
 	NumStoppingSources = 8;
 }
 
 #if WITH_EDITOR
-void UAudioSettings::PreEditChange(UProperty* PropertyAboutToChange)
+void UAudioSettings::PreEditChange(FProperty* PropertyAboutToChange)
 {
+	// Cache master submix in case user tries to set to submix that isn't a top-level submix
+	CachedMasterSubmix = MasterSubmix;
+
 	// Cache at least the first entry in case someone tries to clear the array
 	CachedQualityLevels = QualityLevels;
 }
@@ -86,9 +58,36 @@ void UAudioSettings::PostEditChangeChainProperty(FPropertyChangedChainEvent& Pro
 {
 	if (PropertyChangedEvent.Property)
 	{
-		bool bReconcileNodes = false;
+		bool bReconcileQualityNodes = false;
+		bool bPromptRestartRequired = false;
+		FName PropertyName = PropertyChangedEvent.Property->GetFName();
+		if (PropertyName == GET_MEMBER_NAME_CHECKED(UAudioSettings, MasterSubmix))
+		{
+			if (USoundSubmix* NewSubmix = Cast<USoundSubmix>(MasterSubmix.TryLoad()))
+			{
+				if (NewSubmix->ParentSubmix)
+				{
+					FNotificationInfo Info(LOCTEXT("AudioSettings_InvalidMasterSubmix",
+						"'Master Submix' cannot be set to submix with parent."));
+					Info.bFireAndForget = true;
+					Info.ExpireDuration = 2.0f;
+					Info.bUseThrobber = true;
+					FSlateNotificationManager::Get().AddNotification(Info);
 
-		if (PropertyChangedEvent.Property->GetFName() == GET_MEMBER_NAME_CHECKED(UAudioSettings, QualityLevels))
+					MasterSubmix = CachedMasterSubmix;
+				}
+			}
+			else
+			{
+				bPromptRestartRequired = true;
+			}
+		}
+		else if(PropertyName == GET_MEMBER_NAME_CHECKED(UAudioSettings, EQSubmix)
+			|| PropertyName == GET_MEMBER_NAME_CHECKED(UAudioSettings, ReverbSubmix))
+		{
+			bPromptRestartRequired = true;
+		}
+		else if (PropertyName == GET_MEMBER_NAME_CHECKED(UAudioSettings, QualityLevels))
 		{
 			if (QualityLevels.Num() == 0)
 			{
@@ -103,7 +102,7 @@ void UAudioSettings::PostEditChangeChainProperty(FPropertyChangedChainEvent& Pro
 						bool bFoundDuplicate;
 						int32 NewQualityLevelIndex = 0;
 						FText NewLevelName;
-						do 
+						do
 						{
 							bFoundDuplicate = false;
 							NewLevelName = FText::Format(LOCTEXT("NewQualityLevelName","New Level{0}"), (NewQualityLevelIndex > 0 ? FText::FromString(FString::Printf(TEXT(" %d"),NewQualityLevelIndex)) : FText::GetEmpty()));
@@ -122,29 +121,47 @@ void UAudioSettings::PostEditChangeChainProperty(FPropertyChangedChainEvent& Pro
 				}
 			}
 
-			bReconcileNodes = true;
+			bReconcileQualityNodes = true;
 		}
-		else if (PropertyChangedEvent.Property->GetFName() == GET_MEMBER_NAME_CHECKED(FAudioQualitySettings, DisplayName))
+		else if (PropertyName == GET_MEMBER_NAME_CHECKED(FAudioQualitySettings, DisplayName))
 		{
-			bReconcileNodes = true;
+			bReconcileQualityNodes = true;
 		}
 
-		if (bReconcileNodes)
+		if (bReconcileQualityNodes)
 		{
 			for (TObjectIterator<USoundNodeQualityLevel> It; It; ++It)
 			{
 				It->ReconcileNode(true);
 			}
 		}
+
+		if (bPromptRestartRequired)
+		{
+			FNotificationInfo Info(LOCTEXT("AudioSettings_ChangeRequiresEditorRestart",
+				"Change to Audio Settings requires editor restart in order for changes to take effect."));
+			Info.bFireAndForget = true;
+			Info.ExpireDuration = 2.0f;
+			Info.bUseThrobber = true;
+			FSlateNotificationManager::Get().AddNotification(Info);
+		}
+
+		AudioSettingsChanged.Broadcast();
 	}
 }
-#endif
+#endif // WITH_EDITOR
 
 const FAudioQualitySettings& UAudioSettings::GetQualityLevelSettings(int32 QualityLevel) const
 {
 	check(QualityLevels.Num() > 0);
 	return QualityLevels[FMath::Clamp(QualityLevel, 0, QualityLevels.Num() - 1)];
 }
+
+int32 UAudioSettings::GetQualityLevelSettingsNum() const
+{
+	return QualityLevels.Num();
+}
+
 
 void UAudioSettings::SetAudioMixerEnabled(const bool bInAudioMixerEnabled)
 {
@@ -159,7 +176,7 @@ const bool UAudioSettings::IsAudioMixerEnabled() const
 int32 UAudioSettings::GetHighestMaxChannels() const
 {
 	check(QualityLevels.Num() > 0);
-	
+
 	int32 HighestMaxChannels = -1;
 	for (const FAudioQualitySettings& Settings : QualityLevels)
 	{
@@ -170,6 +187,13 @@ int32 UAudioSettings::GetHighestMaxChannels() const
 	}
 
 	return HighestMaxChannels;
+}
+
+FString UAudioSettings::FindQualityNameByIndex(int32 Index) const
+{
+	return QualityLevels.IsValidIndex(Index) ?
+		   QualityLevels[Index].DisplayName.ToString() :
+		   TEXT("");
 }
 
 #undef LOCTEXT_NAMESPACE

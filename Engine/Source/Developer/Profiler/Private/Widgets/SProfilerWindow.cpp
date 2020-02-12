@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "Widgets/SProfilerWindow.h"
 #include "Widgets/SBoxPanel.h"
@@ -519,8 +519,9 @@ void SProfilerWindow::SendingServiceSideCapture_Load( const FString Filename )
 		ActiveNotifications.Remove( Filename );
 
 		// TODO: Move to a better place.
-		const FString PathName = FPaths::ProfilingDir() + TEXT("UnrealStats/Received/");
-		const FString StatFilepath = PathName + Filename;
+		const FString PathName = FPaths::ProfilingDir() / TEXT("UnrealStats/Received/");
+		const FString StatFile = FPaths::GetCleanFilename(Filename);
+		const FString StatFilepath = PathName / StatFile;
 		FProfilerManager::Get()->LoadProfilerCapture( StatFilepath );
 	}
 }

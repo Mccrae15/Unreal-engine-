@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved..
+// Copyright Epic Games, Inc. All Rights Reserved..
 
 /*=============================================================================
 	VulkanCommandBuffer.h: Private Vulkan RHI definitions.
@@ -15,6 +15,7 @@ class FVulkanCommandBufferManager;
 class FVulkanRenderTargetLayout;
 class FVulkanQueue;
 class FVulkanDescriptorPoolSetContainer;
+class FVulkanGPUTiming;
 
 namespace VulkanRHI
 {
@@ -36,6 +37,11 @@ public:
 	FVulkanCommandBufferPool* GetOwner()
 	{
 		return CommandBufferPool;
+	}
+
+	bool IsUniformBufferBarrierAdded() const
+	{
+		return bIsUniformBufferBarrierAdded;
 	}
 
 	inline bool IsInsideRenderPass() const
@@ -61,6 +67,11 @@ public:
 	inline bool IsSubmitted() const
 	{
 		return State == EState::Submitted;
+	}
+
+	inline bool IsAllocated() const
+	{
+		return State != EState::NotAllocated;
 	}
 
 	inline VkCommandBuffer GetHandle()
@@ -148,41 +159,45 @@ public:
 	VkRect2D CurrentScissor;
 	uint32 CurrentStencilRef;
 	EState State;
-	uint8 bNeedsDynamicStateSet	: 1;
-	uint8 bHasPipeline			: 1;
-	uint8 bHasViewport			: 1;
-	uint8 bHasScissor			: 1;
-	uint8 bHasStencilRef		: 1;
-	uint8 bIsUploadOnly			: 1;
+	uint8 bNeedsDynamicStateSet			: 1;
+	uint8 bHasPipeline					: 1;
+	uint8 bHasViewport					: 1;
+	uint8 bHasScissor					: 1;
+	uint8 bHasStencilRef				: 1;
+	uint8 bIsUploadOnly					: 1;
+	uint8 bIsUniformBufferBarrierAdded	: 1;
 
 	// You never want to call Begin/EndRenderPass directly as it will mess up with the FTransitionAndLayoutManager
 	void BeginRenderPass(const FVulkanRenderTargetLayout& Layout, class FVulkanRenderPass* RenderPass, class FVulkanFramebuffer* Framebuffer, const VkClearValue* AttachmentClearValues);
-	void EndRenderPass()
-	{
-		checkf(IsInsideRenderPass(), TEXT("Can't EndRP as we're NOT inside one! CmdBuffer 0x%p State=%d"), CommandBufferHandle, (int32)State);
-		VulkanRHI::vkCmdEndRenderPass(CommandBufferHandle);
-		State = EState::IsInsideBegin;
-	}
+	void EndRenderPass();
 
+
+	void BeginUniformUpdateBarrier();
+	void EndUniformUpdateBarrier();
 	//#todo-rco: Hide this
 	FVulkanDescriptorPoolSetContainer* CurrentDescriptorPoolSetContainer = nullptr;
 
 	bool AcquirePoolSetAndDescriptorsIfNeeded(const class FVulkanDescriptorSetsLayout& Layout, bool bNeedDescriptors, VkDescriptorSet* OutDescriptors);
 
-	/*TRefCountPtr<*/FVulkanTimestampQueryPool* /*>*/ PrepareTimestampQueryPool()
+
+	struct PendingQuery
 	{
-		return TimestampQueryPool;
-	}
+		uint64 Index;
+		uint64 Count;
+		VkBuffer BufferHandle;
+		VkQueryPool PoolHandle;
+	};
+	void AddPendingTimestampQuery(uint64 Index, uint64 Count, VkQueryPool PoolHandle, VkBuffer BufferHandle);
 
 private:
 	FVulkanDevice* Device;
-	/*TRefCountPtr<*/FVulkanTimestampQueryPool* /*>*/ TimestampQueryPool = nullptr;
 	VkCommandBuffer CommandBufferHandle;
 	double SubmittedTime = 0.0f;
 
 	TArray<VkPipelineStageFlags> WaitFlags;
 	TArray<VulkanRHI::FSemaphore*> WaitSemaphores;
 	TArray<VulkanRHI::FSemaphore*> SubmittedWaitSemaphores;
+	TArray<PendingQuery> PendingQueries;
 
 	void MarkSemaphoresAsSubmitted()
 	{
@@ -280,6 +295,12 @@ public:
 		return ActiveCmdBuffer;
 	}
 
+	inline FVulkanCmdBuffer* GetActiveCmdBufferDirect()
+	{
+		return ActiveCmdBuffer;
+	}
+
+
 	inline bool HasPendingUploadCmdBuffer() const
 	{
 		return UploadCmdBuffer != nullptr;
@@ -296,7 +317,11 @@ public:
 
 	void SubmitActiveCmdBuffer(VulkanRHI::FSemaphore* SignalSemaphore = nullptr);
 
-	void WaitForCmdBuffer(FVulkanCmdBuffer* CmdBuffer, float TimeInSecondsToWait = 1.0f);
+	void WaitForCmdBuffer(FVulkanCmdBuffer* CmdBuffer, float TimeInSecondsToWait = 10.0f);
+
+
+	void AddQueryPoolForReset(VkQueryPool Pool, uint32 Size);
+	void FlushResetQueryPools();
 
 	// Update the fences of all cmd buffers except SkipCmdBuffer
 	void RefreshFenceStatus(FVulkanCmdBuffer* SkipCmdBuffer = nullptr)
@@ -316,9 +341,16 @@ public:
 	void FreeUnusedCmdBuffers();
 
 private:
+	struct FQueryPoolReset
+	{
+		VkQueryPool Pool; 
+		uint32 Size;
+	};
+	
 	FVulkanDevice* Device;
 	FVulkanCommandBufferPool Pool;
 	FVulkanQueue* Queue;
 	FVulkanCmdBuffer* ActiveCmdBuffer;
 	FVulkanCmdBuffer* UploadCmdBuffer;
+	TArray<FQueryPoolReset> PoolResets;
 };

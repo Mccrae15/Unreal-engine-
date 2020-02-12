@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "NiagaraCompiler.h"
 #include "NiagaraHlslTranslator.h"
@@ -13,6 +13,7 @@
 #include "NiagaraSystem.h"
 #include "NiagaraNodeEmitter.h"
 #include "NiagaraNodeInput.h"
+#include "NiagaraFunctionLibrary.h"
 #include "NiagaraScriptSource.h"
 #include "NiagaraDataInterface.h"
 #include "NiagaraDataInterfaceStaticMesh.h"
@@ -29,6 +30,9 @@
 #include "Misc/FileHelper.h"
 #include "ShaderCompiler.h"
 #include "NiagaraShader.h"
+#include "NiagaraScript.h"
+#include "Serialization/MemoryReader.h"
+#include "HAL/ThreadSafeBool.h"
 
 #define LOCTEXT_NAMESPACE "NiagaraCompiler"
 
@@ -49,10 +53,32 @@ static FAutoConsoleVariableRef CVarForceNiagaraTranslatorSingleThreaded(
 	ECVF_Default
 );
 
+// Enable this to log out generated HLSL for debugging purposes.
+static int32 GbForceNiagaraTranslatorDump = 0;
+static FAutoConsoleVariableRef CVarForceNiagaraTranslatorDump(
+	TEXT("fx.ForceNiagaraTranslatorDump"),
+	GbForceNiagaraTranslatorDump,
+	TEXT("If > 0 all translation generated HLSL will be dumped \n"),
+	ECVF_Default
+);
+
+static int32 GbForceNiagaraVMBinaryDump = 0;
+static FAutoConsoleVariableRef CVarForceNiagaraVMBinaryDump(
+	TEXT("fx.ForceNiagaraVMBinaryDump"),
+	GbForceNiagaraVMBinaryDump,
+	TEXT("If > 0 all translation generated binary text will be dumped \n"),
+	ECVF_Default
+);
 
 static FCriticalSection TranslationCritSec;
 
-void FNiagaraCompileRequestData::VisitReferencedGraphs(UNiagaraGraph* InSrcGraph, UNiagaraGraph* InDupeGraph, ENiagaraScriptUsage InUsage)
+void DumpHLSLText(const FString& SourceCode, const FString& DebugName)
+{
+	FScopeLock Lock(&TranslationCritSec);
+	FNiagaraUtilities::DumpHLSLText(SourceCode, DebugName);
+}
+
+void FNiagaraCompileRequestData::VisitReferencedGraphs(UNiagaraGraph* InSrcGraph, UNiagaraGraph* InDupeGraph, ENiagaraScriptUsage InUsage, FCompileConstantResolver ConstantResolver)
 {
 	if (!InDupeGraph && !InSrcGraph)
 	{
@@ -78,10 +104,10 @@ void FNiagaraCompileRequestData::VisitReferencedGraphs(UNiagaraGraph* InSrcGraph
 	FNiagaraEditorUtilities::ResolveNumerics(InDupeGraph, bStandaloneScript, ChangedFromNumericVars);
 	ClonedGraphs.AddUnique(InDupeGraph);
 
-	VisitReferencedGraphsRecursive(InDupeGraph);
+	VisitReferencedGraphsRecursive(InDupeGraph, ConstantResolver);
 }
 
-void FNiagaraCompileRequestData::VisitReferencedGraphsRecursive(UNiagaraGraph* InGraph)
+void FNiagaraCompileRequestData::VisitReferencedGraphsRecursive(UNiagaraGraph* InGraph, const FCompileConstantResolver& ConstantResolver)
 {
 	if (!InGraph)
 	{
@@ -150,7 +176,7 @@ void FNiagaraCompileRequestData::VisitReferencedGraphsRecursive(UNiagaraGraph* I
 							}
 						}
 
-						/*UE_LOG(LogNiagaraEditor, Log, TEXT("FunctionGraph = %p SrcScriptName = %s DiffPackage? %s Numerics? %s NumericInputs? %s"), FunctionGraph, *FunctionGraph->GetPathName(),
+						/*UE_LOG(LogNiagaraEditor, Display, TEXT("FunctionGraph = %p SrcScriptName = %s DiffPackage? %s Numerics? %s NumericInputs? %s"), FunctionGraph, *FunctionGraph->GetPathName(),
 							bFromDifferentPackage ? TEXT("yes") : TEXT("no"), bHasNumericParams ? TEXT("yes") : TEXT("no"), bHasNumericInputs ? TEXT("yes") : TEXT("no"));*/
 
 						UNiagaraGraph* ProcessedGraph = nullptr;
@@ -167,14 +193,14 @@ void FNiagaraCompileRequestData::VisitReferencedGraphsRecursive(UNiagaraGraph* I
 							else
 							{
 								DupeScript = DuplicateObject<UNiagaraScript>(FunctionScript, InNode, FunctionScript->GetFName());
+								if (DupeScript->GetSource()->GetOuter() != DupeScript)
+								{
+									DupeScript->SetSource(DuplicateObject<UNiagaraScriptSource>(CastChecked<UNiagaraScriptSource>(DupeScript->GetSource()), DupeScript, DupeScript->GetSource()->GetFName()));
+								}
 								ProcessedGraph = Cast<UNiagaraScriptSource>(DupeScript->GetSource())->NodeGraph;
 								FEdGraphUtilities::MergeChildrenGraphsIn(ProcessedGraph, ProcessedGraph, /*bRequireSchemaMatch=*/ true);
-								FNiagaraEditorUtilities::PreprocessFunctionGraph(Schema, ProcessedGraph, CallInputs, CallOutputs, ScriptUsage);
+								FNiagaraEditorUtilities::PreprocessFunctionGraph(Schema, ProcessedGraph, CallInputs, CallOutputs, ScriptUsage, ConstantResolver);
 								FunctionCallNode->FunctionScript = DupeScript;
-
-								/*UE_LOG(LogNiagaraEditor, Log, TEXT("Duplicating script %s OriginalGraph %p NewGraph %p"), *FunctionScript->GetFName().ToString(),
-									Cast<UNiagaraScriptSource>(FunctionScript->GetSource())->NodeGraph,
-									Cast<UNiagaraScriptSource>(DupeScript->GetSource())->NodeGraph);*/
 							}
 
 							FunctionData Data;
@@ -187,7 +213,7 @@ void FNiagaraCompileRequestData::VisitReferencedGraphsRecursive(UNiagaraGraph* I
 							TArray<FunctionData> MadeArray;
 							MadeArray.Add(Data);
 							PreprocessedFunctions.Add(FunctionGraph, MadeArray);
-							VisitReferencedGraphsRecursive(ProcessedGraph);		
+							VisitReferencedGraphsRecursive(ProcessedGraph, ConstantResolver);		
 							ClonedGraphs.AddUnique(ProcessedGraph);
 
 						}
@@ -196,12 +222,8 @@ void FNiagaraCompileRequestData::VisitReferencedGraphsRecursive(UNiagaraGraph* I
 							UNiagaraScript* DupeScript = DuplicateObject<UNiagaraScript>(FunctionScript, InNode, FunctionScript->GetFName());
 							ProcessedGraph = Cast<UNiagaraScriptSource>(DupeScript->GetSource())->NodeGraph;
 							FEdGraphUtilities::MergeChildrenGraphsIn(ProcessedGraph, ProcessedGraph, /*bRequireSchemaMatch=*/ true);
-							FNiagaraEditorUtilities::PreprocessFunctionGraph(Schema, ProcessedGraph, CallInputs, CallOutputs, ScriptUsage);
+							FNiagaraEditorUtilities::PreprocessFunctionGraph(Schema, ProcessedGraph, CallInputs, CallOutputs, ScriptUsage, ConstantResolver);
 							FunctionCallNode->FunctionScript = DupeScript;
-
-							/*UE_LOG(LogNiagaraEditor, Log, TEXT("Duplicating script %s OriginalGraph %p NewGraph %p"), *FunctionScript->GetFName().ToString(),
-								Cast<UNiagaraScriptSource>(FunctionScript->GetSource())->NodeGraph,
-								Cast<UNiagaraScriptSource>(DupeScript->GetSource())->NodeGraph);*/
 
 							TArray<FunctionData>* FoundArray = PreprocessedFunctions.Find(FunctionGraph);
 							ClonedGraphs.AddUnique(ProcessedGraph);
@@ -215,7 +237,7 @@ void FNiagaraCompileRequestData::VisitReferencedGraphsRecursive(UNiagaraGraph* I
 							Data.bHasNumericInputs = bHasNumericInputs;
 
 							FoundArray->Add(Data);
-							VisitReferencedGraphsRecursive(ProcessedGraph);
+							VisitReferencedGraphsRecursive(ProcessedGraph, ConstantResolver);
 						}
 						else if (bFromDifferentPackage)
 						{
@@ -234,6 +256,7 @@ void FNiagaraCompileRequestData::VisitReferencedGraphsRecursive(UNiagaraGraph* I
 				{
 					if (Ptr->EmitterUniqueName == EmitterNode->GetEmitterUniqueName())
 					{
+						EmitterNode->SyncEnabledState(); // Just to be safe, sync here while we likely still have the handle source.
 						EmitterNode->SetOwnerSystem(nullptr);
 						EmitterNode->SetCachedVariablesForCompilation(*Ptr->EmitterUniqueName, Ptr->NodeGraphDeepCopy, Ptr->Source);
 					}
@@ -331,18 +354,76 @@ bool FNiagaraCompileRequestData::GatherPreCompiledVariables(const FString& InNam
 	return true;
 }
 
-void FNiagaraCompileRequestData::DeepCopyGraphs(UNiagaraScriptSource* ScriptSource, ENiagaraScriptUsage InUsage)
+void FNiagaraCompileRequestData::DeepCopyGraphs(UNiagaraScriptSource* ScriptSource, ENiagaraScriptUsage InUsage, FCompileConstantResolver ConstantResolver)
 {
 	// Clone the source graph so we can modify it as needed; merging in the child graphs
 	//NodeGraphDeepCopy = CastChecked<UNiagaraGraph>(FEdGraphUtilities::CloneGraph(ScriptSource->NodeGraph, GetTransientPackage(), 0));
 	Source = DuplicateObject<UNiagaraScriptSource>(ScriptSource, GetTransientPackage());
 	NodeGraphDeepCopy = Source->NodeGraph;
 	FEdGraphUtilities::MergeChildrenGraphsIn(NodeGraphDeepCopy, NodeGraphDeepCopy, /*bRequireSchemaMatch=*/ true);
-	VisitReferencedGraphs(ScriptSource->NodeGraph, NodeGraphDeepCopy, InUsage /*InEmitter ? ENiagaraScriptUsage::EmitterSpawnScript : ENiagaraScriptUsage::SystemSpawnScript*/);
+	VisitReferencedGraphs(ScriptSource->NodeGraph, NodeGraphDeepCopy, InUsage, ConstantResolver);
 }
 
 
-void FNiagaraCompileRequestData::FinishPrecompile(UNiagaraScriptSource* ScriptSource, const TArray<FNiagaraVariable>& EncounterableVariables, ENiagaraScriptUsage InUsage)
+void FNiagaraCompileRequestData::AddRapidIterationParameters(const FNiagaraParameterStore& InParamStore, FCompileConstantResolver InResolver)
+{
+	TArray<FNiagaraVariable> StoreParams;
+	InParamStore.GetParameters(StoreParams);
+
+	for (int32 i = 0; i < StoreParams.Num(); i++)
+	{
+		// Only support POD data...
+		if (StoreParams[i].IsDataInterface() || StoreParams[i].IsUObject())
+		{
+			continue;
+		}
+
+		if (InResolver.ResolveConstant(StoreParams[i]))
+		{
+			continue;
+		}
+
+		// Check to see if we already have this RI var...
+		int32 OurFoundIdx = INDEX_NONE;
+		for (int32 OurIdx = 0; OurIdx < RapidIterationParams.Num(); OurIdx++)
+		{
+			if (RapidIterationParams[OurIdx].GetType() == StoreParams[i].GetType() && RapidIterationParams[OurIdx].GetName() == StoreParams[i].GetName())
+			{
+				OurFoundIdx = OurIdx;
+				break;
+			}
+		}
+
+		// If we don't already have it, add it with the up-to-date value.
+		if (OurFoundIdx == INDEX_NONE)
+		{
+			// In parameter stores, the data isn't always up-to-date in the variable, so make sure to get the most up-to-date data before passing in.
+			const int32* Index = InParamStore.FindParameterOffset(StoreParams[i]);
+			if (Index != nullptr)
+			{
+				StoreParams[i].SetData(InParamStore.GetParameterData(*Index)); // This will memcopy the data in.
+				RapidIterationParams.Add(StoreParams[i]);
+			}
+		}
+		else
+		{
+			FNiagaraVariable ExistingVar = RapidIterationParams[OurFoundIdx];
+
+			const int32* Index = InParamStore.FindParameterOffset(StoreParams[i]);
+			if (Index != nullptr)
+			{
+				StoreParams[i].SetData(InParamStore.GetParameterData(*Index)); // This will memcopy the data in.
+
+				if (StoreParams[i] != ExistingVar)
+				{
+					UE_LOG(LogNiagaraEditor, Display, TEXT("Mismatch in values for Rapid iteration param: %s vs %s"), *StoreParams[i].ToString(), *ExistingVar.ToString());
+				}
+			}
+		}
+	}
+}
+
+void FNiagaraCompileRequestData::FinishPrecompile(UNiagaraScriptSource* ScriptSource, const TArray<FNiagaraVariable>& EncounterableVariables, ENiagaraScriptUsage InUsage, FCompileConstantResolver ConstantResolver)
 {
 	{
 		ENiagaraScriptCompileStatusEnum = StaticEnum<ENiagaraScriptCompileStatus>();
@@ -358,12 +439,14 @@ void FNiagaraCompileRequestData::FinishPrecompile(UNiagaraScriptSource* ScriptSo
 		{
 			// Map all for this output node
 			FNiagaraParameterMapHistoryBuilder Builder;
+			Builder.ConstantResolver = ConstantResolver;
 			Builder.RegisterEncounterableVariables(EncounterableVariables);
 
 			FString TranslationName = TEXT("Emitter");
 			Builder.BeginTranslation(TranslationName);
 			Builder.EnableScriptWhitelist(true, FoundOutputNode->GetUsage());
 			Builder.BuildParameterMaps(FoundOutputNode, true);
+			
 			TArray<FNiagaraParameterMapHistory> Histories = Builder.Histories;
 			ensure(Histories.Num() <= 1);
 
@@ -378,6 +461,7 @@ void FNiagaraCompileRequestData::FinishPrecompile(UNiagaraScriptSource* ScriptSo
 			PrecompiledHistories.Append(Histories);
 			Builder.EndTranslation(TranslationName);
 		}
+
 
 		// Generate CDO's for any referenced data interfaces...
 		for (int32 i = 0; i < PrecompiledHistories.Num(); i++)
@@ -437,18 +521,21 @@ TSharedPtr<FNiagaraCompileRequestDataBase, ESPMode::ThreadSafe> FNiagaraEditorMo
 
 	TSharedPtr<FNiagaraCompileRequestData, ESPMode::ThreadSafe> BasePtr = MakeShared<FNiagaraCompileRequestData, ESPMode::ThreadSafe>();
 	TArray<TSharedPtr<FNiagaraCompileRequestData, ESPMode::ThreadSafe>> DependentRequests;
+	FCompileConstantResolver EmptyResolver;
 
 	BasePtr->SourceName = InObj->GetName();
 
 	if (Script)
 	{
 		UNiagaraScriptSource* Source = Cast<UNiagaraScriptSource>(Script->GetSource());
-		BasePtr->DeepCopyGraphs(Source, Script->GetUsage());
+		BasePtr->DeepCopyGraphs(Source, Script->GetUsage(), EmptyResolver);
 		const TArray<FNiagaraVariable> EncounterableVariables;
-		BasePtr->FinishPrecompile(Source, EncounterableVariables, Script->GetUsage());
+		BasePtr->FinishPrecompile(Source, EncounterableVariables, Script->GetUsage(), EmptyResolver);
 	}
 	else if (System)
 	{
+		BasePtr->bUseRapidIterationParams = !System->bBakeOutRapidIteration;
+
 		// Store off the current variables in the exposed parameters list.
 		TArray<FNiagaraVariable> OriginalExposedParams;
 		System->GetExposedParameters().GetParameters(OriginalExposedParams);
@@ -465,17 +552,24 @@ TSharedPtr<FNiagaraCompileRequestDataBase, ESPMode::ThreadSafe> FNiagaraEditorMo
 		for (int32 i = 0; i < System->GetEmitterHandles().Num(); i++)
 		{
 			const FNiagaraEmitterHandle& Handle = System->GetEmitterHandle(i);
+			FCompileConstantResolver ConstantResolver(Handle.GetInstance());
 			TSharedPtr<FNiagaraCompileRequestData, ESPMode::ThreadSafe> EmitterPtr = MakeShared<FNiagaraCompileRequestData, ESPMode::ThreadSafe>();
-			EmitterPtr->DeepCopyGraphs(Cast<UNiagaraScriptSource>(Handle.GetInstance()->GraphSource), ENiagaraScriptUsage::EmitterSpawnScript);
+			if (Handle.GetIsEnabled()) // Don't need to copy the graph if we aren't going to use it.
+			{
+				EmitterPtr->DeepCopyGraphs(Cast<UNiagaraScriptSource>(Handle.GetInstance()->GraphSource), ENiagaraScriptUsage::EmitterSpawnScript, ConstantResolver);
+			}
 			EmitterPtr->EmitterUniqueName = Handle.GetInstance()->GetUniqueEmitterName();
 			EmitterPtr->SourceName = BasePtr->SourceName;
+			EmitterPtr->bUseRapidIterationParams = BasePtr->bUseRapidIterationParams || (!Handle.GetInstance()->bBakeOutRapidIteration);
 			BasePtr->EmitterData.Add(EmitterPtr);
 		}
 
 		// Now deep copy the system graphs, skipping traversal into any emitter references.
 		UNiagaraScriptSource* Source = Cast<UNiagaraScriptSource>(System->GetSystemSpawnScript()->GetSource());
-		BasePtr->DeepCopyGraphs(Source, ENiagaraScriptUsage::SystemSpawnScript);
-		BasePtr->FinishPrecompile(Source, EncounterableVars, ENiagaraScriptUsage::SystemSpawnScript);
+		BasePtr->DeepCopyGraphs(Source, ENiagaraScriptUsage::SystemSpawnScript, FCompileConstantResolver());
+		BasePtr->AddRapidIterationParameters(System->GetSystemSpawnScript()->RapidIterationParameters, FCompileConstantResolver());
+		BasePtr->AddRapidIterationParameters(System->GetSystemUpdateScript()->RapidIterationParameters, FCompileConstantResolver());
+		BasePtr->FinishPrecompile(Source, EncounterableVars, ENiagaraScriptUsage::SystemSpawnScript, EmptyResolver);
 
 		// Add the User and System variables that we did encounter to the list that emitters might also encounter.
 		BasePtr->GatherPreCompiledVariables(TEXT("User"), EncounterableVars);
@@ -485,19 +579,33 @@ TSharedPtr<FNiagaraCompileRequestDataBase, ESPMode::ThreadSafe> FNiagaraEditorMo
 		for (int32 i = 0; i < System->GetEmitterHandles().Num(); i++)
 		{
 			const FNiagaraEmitterHandle& Handle = System->GetEmitterHandle(i);
-			BasePtr->EmitterData[i]->FinishPrecompile(Cast<UNiagaraScriptSource>(Handle.GetInstance()->GraphSource), EncounterableVars, ENiagaraScriptUsage::EmitterSpawnScript);
-			BasePtr->MergeInEmitterPrecompiledData(BasePtr->EmitterData[i].Get());
+			FCompileConstantResolver ConstantResolver(Handle.GetInstance());
+			if (Handle.GetIsEnabled()) // Don't pull in the emitter if it isn't going to be used.
+			{
+               TArray<UNiagaraScript*> EmitterScripts;
+				Handle.GetInstance()->GetScripts(EmitterScripts, false);
+
+				for (int32 ScriptIdx = 0; ScriptIdx < EmitterScripts.Num(); ScriptIdx++)
+				{
+					if (EmitterScripts[ScriptIdx])
+					{
+						BasePtr->EmitterData[i]->AddRapidIterationParameters(EmitterScripts[ScriptIdx]->RapidIterationParameters, ConstantResolver);
+					}
+				}
+				BasePtr->EmitterData[i]->FinishPrecompile(Cast<UNiagaraScriptSource>(Handle.GetInstance()->GraphSource), EncounterableVars, ENiagaraScriptUsage::EmitterSpawnScript, ConstantResolver);
+				BasePtr->MergeInEmitterPrecompiledData(BasePtr->EmitterData[i].Get());
+			}
 		}
 
 	}
 
-	UE_LOG(LogNiagaraEditor, Log, TEXT("'%s' Precompile took %f sec."), *InObj->GetOutermost()->GetName(),
+	UE_LOG(LogNiagaraEditor, Verbose, TEXT("'%s' Precompile took %f sec."), *InObj->GetOutermost()->GetName(),
 		(float)(FPlatformTime::Seconds() - StartTime));
 
 	return BasePtr;
 }
 
-TSharedPtr<FNiagaraVMExecutableData> FNiagaraEditorModule::CompileScript(const FNiagaraCompileRequestDataBase* InCompileRequest, const FNiagaraCompileOptions& InCompileOptions)
+int32 FNiagaraEditorModule::CompileScript(const FNiagaraCompileRequestDataBase* InCompileRequest, const FNiagaraCompileOptions& InCompileOptions)
 {
 	SCOPE_CYCLE_COUNTER(STAT_NiagaraEditor_Module_CompileScript);
 
@@ -505,74 +613,77 @@ TSharedPtr<FNiagaraVMExecutableData> FNiagaraEditorModule::CompileScript(const F
 
 	check(InCompileRequest != NULL);
 	const FNiagaraCompileRequestData* CompileRequest = (const FNiagaraCompileRequestData*)InCompileRequest;
+	TArray<FNiagaraVariable> CookedRapidIterationParams = CompileRequest->GetUseRapidIterationParams() ? TArray<FNiagaraVariable>() : CompileRequest->RapidIterationParams;
 
-	UE_LOG(LogNiagaraEditor, Log, TEXT("Compiling System %s ..................................................................."), *InCompileOptions.FullName);
+	UE_LOG(LogNiagaraEditor, Verbose, TEXT("Compiling System %s ..................................................................."), *InCompileOptions.FullName);
 
 	FNiagaraCompileResults Results;
-	FHlslNiagaraCompiler Compiler;
+	TSharedPtr<FHlslNiagaraCompiler> Compiler = MakeShared<FHlslNiagaraCompiler>();
 	FNiagaraTranslateResults TranslateResults;
 	FHlslNiagaraTranslator Translator;
 
-	float TranslationTime = 0.0f;
-	float VMCompilationTime = 0.0f;
-	{
-		FHlslNiagaraTranslatorOptions TranslateOptions;
+	FHlslNiagaraTranslatorOptions TranslateOptions;
 
-		if (InCompileOptions.TargetUsage == ENiagaraScriptUsage::ParticleGPUComputeScript)
-		{
-			TranslateOptions.SimTarget = ENiagaraSimTarget::GPUComputeSim;
-		}
-		else
-		{
-			TranslateOptions.SimTarget = ENiagaraSimTarget::CPUSim;
-		}
-
-		double TranslationStartTime = FPlatformTime::Seconds();
-		if (GbForceNiagaraTranslatorSingleThreaded > 0)
-		{
-			FScopeLock Lock(&TranslationCritSec);
-			TranslateResults = Translator.Translate(CompileRequest, InCompileOptions, TranslateOptions);
-		}
-		else
-		{
-			TranslateResults = Translator.Translate(CompileRequest, InCompileOptions, TranslateOptions);
-		}
-		TranslationTime = (float)(FPlatformTime::Seconds() - TranslationStartTime);
-
-		Results = Compiler.CompileScript(CompileRequest, InCompileOptions, &Translator.GetTranslateOutput(), Translator.GetTranslatedHLSL());
-		VMCompilationTime = Results.CompileTime;
-	}
-	
-	TArray<FNiagaraCompileEvent> Messages;
-	if (TranslateResults.CompileEvents.Num() > 0)
+	if (InCompileOptions.TargetUsage == ENiagaraScriptUsage::ParticleGPUComputeScript)
 	{
-		Messages.Append(TranslateResults.CompileEvents);
+		TranslateOptions.SimTarget = ENiagaraSimTarget::GPUComputeSim;
 	}
-	if (Results.CompileEvents.Num() > 0)
+	else
 	{
-		Messages.Append(Results.CompileEvents);
+		TranslateOptions.SimTarget = ENiagaraSimTarget::CPUSim;
 	}
+	TranslateOptions.OverrideModuleConstants = CookedRapidIterationParams;
+	TranslateOptions.bParameterRapidIteration = InCompileRequest->GetUseRapidIterationParams();
+
+
+	double TranslationStartTime = FPlatformTime::Seconds();
+	if (GbForceNiagaraTranslatorSingleThreaded > 0)
+	{
+		FScopeLock Lock(&TranslationCritSec);
+		TranslateResults = Translator.Translate(CompileRequest, InCompileOptions, TranslateOptions);
+	}
+	else
+	{
+		TranslateResults = Translator.Translate(CompileRequest, InCompileOptions, TranslateOptions);
+	}
+	UE_LOG(LogNiagaraEditor, Verbose, TEXT("Translating System %s took %f sec."), *InCompileOptions.FullName, (float)(FPlatformTime::Seconds() - TranslationStartTime));
+
+	if (GbForceNiagaraTranslatorDump != 0)
+	{
+		DumpHLSLText(Translator.GetTranslatedHLSL(), InCompileOptions.FullName);
+		if (GbForceNiagaraVMBinaryDump != 0 && Results.Data.IsValid())
+		{
+			DumpHLSLText(Results.Data->LastAssemblyTranslation, InCompileOptions.FullName);
+		}
+	}
+
+	int32 JobID = Compiler->CompileScript(CompileRequest, InCompileOptions, &Translator.GetTranslateOutput(), Translator.GetTranslatedHLSL());
+	ActiveCompilations.Add(JobID, Compiler);
+	return JobID;
+}
+
+TSharedPtr<FNiagaraVMExecutableData> FNiagaraEditorModule::GetCompilationResult(int32 JobID, bool bWait)
+{
+	TSharedPtr<FHlslNiagaraCompiler>* MapEntry = ActiveCompilations.Find(JobID);
+	check(MapEntry && *MapEntry);
+
+	TSharedPtr<FHlslNiagaraCompiler> Compiler = *MapEntry;
+	TOptional<FNiagaraCompileResults> CompileResult = Compiler->GetCompileResult(JobID, bWait);
+	if (!CompileResult)
+	{
+		return TSharedPtr<FNiagaraVMExecutableData>();
+	}
+	ActiveCompilations.Remove(JobID);
+	FNiagaraCompileResults& Results = CompileResult.GetValue();
 
 	FString OutGraphLevelErrorMessages;
-	for (const FNiagaraCompileEvent& Message : Messages)
+	for (const FNiagaraCompileEvent& Message : Results.CompileEvents)
 	{
-		if (Message.Type == FNiagaraCompileEventType::Log)
-		{
 		#if defined(NIAGARA_SCRIPT_COMPILE_LOGGING_MEDIUM)
 			UE_LOG(LogNiagaraCompiler, Log, TEXT("%s"), *Message.Message);
 		#endif
-		}
-		else if (Message.Type == FNiagaraCompileEventType::Warning )
+		if (Message.Severity == FNiagaraCompileEventSeverity::Error)
 		{
-		#if defined(NIAGARA_SCRIPT_COMPILE_LOGGING_MEDIUM)
-			UE_LOG(LogNiagaraCompiler, Warning, TEXT("%s"), *Message.Message);
-		#endif
-		}
-		else if (Message.Type == FNiagaraCompileEventType::Error)
-		{
-		#if defined(NIAGARA_SCRIPT_COMPILE_LOGGING_MEDIUM)
-			UE_LOG(LogNiagaraCompiler, Error, TEXT("%s"), *Message.Message);
-		#endif
 			// Write the error messages to the string as well so that they can be echoed up the chain.
 			if (OutGraphLevelErrorMessages.Len() > 0)
 			{
@@ -584,20 +695,8 @@ TSharedPtr<FNiagaraVMExecutableData> FNiagaraEditorModule::CompileScript(const F
 	
 	Results.Data->ErrorMsg = OutGraphLevelErrorMessages;
 	Results.Data->LastCompileStatus = (FNiagaraCompileResults::CompileResultsToSummary(&Results));
-	
-	UEnum* FoundEnum = CompileRequest->ENiagaraScriptCompileStatusEnum;
-	FString ResultsEnum = TEXT("??");
-	if (FoundEnum)
-	{
-		ResultsEnum = FoundEnum->GetNameStringByValue((int64)Results.Data->LastCompileStatus);
-	}
-	Results.Data->CompileTime = (float)(FPlatformTime::Seconds() - StartTime);
-
-	UE_LOG(LogNiagaraEditor, Log, TEXT("Compiling System %s took %f sec (%f/%f)... Status %s"), *InCompileOptions.FullName, Results.Data->CompileTime,
-		TranslationTime, VMCompilationTime, *ResultsEnum);
-	return Results.Data;
+	return CompileResult->Data;
 }
-
 
 void FNiagaraEditorModule::TestCompileScriptFromConsole(const TArray<FString>& Arguments)
 {
@@ -609,7 +708,8 @@ void FNiagaraEditorModule::TestCompileScriptFromConsole(const TArray<FString>& A
 		{
 			SCOPE_CYCLE_COUNTER(STAT_NiagaraEditor_HlslCompiler_TestCompileShader_VectorVM);
 			FShaderCompilerInput Input;
-			Input.VirtualSourceFilePath = TEXT("/Engine/Private/NiagaraEmitterInstanceShader.usf");
+			Input.Target = FShaderTarget(SF_Compute, SP_PCD3D_SM5);
+			Input.VirtualSourceFilePath = TEXT("/Plugin/FX/Niagara/Private/NiagaraEmitterInstanceShader.usf");
 			Input.EntryPointName = TEXT("SimulateMain");
 			Input.Environment.SetDefine(TEXT("VM_SIMULATION"), 1);
 			Input.Environment.IncludeVirtualPathToContentsMap.Add(TEXT("/Engine/Generated/NiagaraEmitterInstance.ush"), TranslatedHLSL);
@@ -617,7 +717,7 @@ void FNiagaraEditorModule::TestCompileScriptFromConsole(const TArray<FString>& A
 			FShaderCompilerOutput Output;
 			FVectorVMCompilationOutput CompilationOutput;
 			double StartTime = FPlatformTime::Seconds();
-			bool bSucceeded = CompileShader_VectorVM(Input, Output, FString(FPlatformProcess::ShaderDir()), 0, CompilationOutput, GNiagaraSkipVectorVMBackendOptimizations);
+			bool bSucceeded = CompileShader_VectorVM(Input, Output, FString(FPlatformProcess::ShaderDir()), 0, CompilationOutput, GNiagaraSkipVectorVMBackendOptimizations != 0);
 			float DeltaTime = (float)(FPlatformTime::Seconds() - StartTime);
 
 			if (bSucceeded)
@@ -680,7 +780,7 @@ ENiagaraScriptCompileStatus FNiagaraCompileResults::CompileResultsToSummary(cons
 	return SummaryStatus;
 }
 
-FNiagaraCompileResults FHlslNiagaraCompiler::CompileScript(const FNiagaraCompileRequestData* InCompileRequest, const FNiagaraCompileOptions& InOptions, FNiagaraTranslatorOutput *TranslatorOutput, FString &TranslatedHLSL)
+int32 FHlslNiagaraCompiler::CompileScript(const FNiagaraCompileRequestData* InCompileRequest, const FNiagaraCompileOptions& InOptions, FNiagaraTranslatorOutput *TranslatorOutput, FString &TranslatedHLSL)
 {
 	SCOPE_CYCLE_COUNTER(STAT_NiagaraEditor_HlslCompiler_CompileScript);
 
@@ -693,7 +793,8 @@ FNiagaraCompileResults FHlslNiagaraCompiler::CompileScript(const FNiagaraCompile
 	CompileResults.Data->LastHlslTranslation = TEXT("");
 
 	FShaderCompilerInput Input;
-	Input.VirtualSourceFilePath = TEXT("/Engine/Private/NiagaraEmitterInstanceShader.usf");
+	Input.Target = FShaderTarget(SF_Compute, SP_PCD3D_SM5);
+	Input.VirtualSourceFilePath = TEXT("/Plugin/FX/Niagara/Private/NiagaraEmitterInstanceShader.usf");
 	Input.EntryPointName = TEXT("SimulateMain");
 	Input.Environment.SetDefine(TEXT("VM_SIMULATION"), 1);
 	Input.Environment.IncludeVirtualPathToContentsMap.Add(TEXT("/Engine/Generated/NiagaraEmitterInstance.ush"), TranslatedHLSL);
@@ -720,11 +821,15 @@ FNiagaraCompileResults FHlslNiagaraCompiler::CompileScript(const FNiagaraCompile
 			verifyf(IFileManager::Get().MakeDirectory(*Input.DumpDebugInfoPath, true), TEXT("Failed to create directory for shader debug info '%s'"), *Input.DumpDebugInfoPath);
 		}
 	}
+	CompileResults.DumpDebugInfoPath = Input.DumpDebugInfoPath;
 
-	bool bGPUScript = false;
-	if (InOptions.TargetUsage == ENiagaraScriptUsage::ParticleGPUComputeScript)
+	int32 JobID = FShaderCommonCompileJob::GetNextJobId();
+	CompilationJob = MakeUnique<FNiagaraCompilerJob>();
+	CompilationJob->TranslatorOutput = TranslatorOutput ? *TranslatorOutput : FNiagaraTranslatorOutput();
+
+	bool bGPUScript = InOptions.TargetUsage == ENiagaraScriptUsage::ParticleGPUComputeScript;
+	if (bGPUScript)
 	{
-		bGPUScript = true;
 		CompileResults.bComputeSucceeded = false;
 		if (TranslatorOutput != nullptr && TranslatorOutput->Errors.Len() > 0)
 		{
@@ -733,142 +838,83 @@ FNiagaraCompileResults FHlslNiagaraCompiler::CompileScript(const FNiagaraCompile
 		}
 		else if (TranslatedHLSL.Len() == 0)
 		{
-			Error(LOCTEXT("HlslTranslateErrorMessageFailed", "The HLSL Translator failed to generate HLSL!"));
+			CompileResults.NumErrors++;
 			CompileResults.bVMSucceeded = false;
 		}
 		else
 		{
-			*(CompileResults.Data) = TranslatorOutput->ScriptData;
+			*(CompileResults.Data) = CompilationJob->TranslatorOutput.ScriptData;
 			CompileResults.Data->ByteCode.Empty();
 			CompileResults.bComputeSucceeded = true;
 		}
 		CompileResults.Data->LastHlslTranslationGPU = TranslatedHLSL;
+		DumpDebugInfo(CompileResults, true);
+		CompilationJob->CompileResults = CompileResults;
+		return JobID;
+	}
+	CompilationJob->TranslatorOutput.ScriptData.LastHlslTranslation = TranslatedHLSL;
+
+	bool bJobScheduled = false;
+	if (TranslatorOutput != nullptr && TranslatorOutput->Errors.Len() > 0)
+	{
+		//TODO: Map Lines of HLSL to their source Nodes and flag those nodes with errors associated with their lines.
+		Error(FText::Format(LOCTEXT("HlslTranslateErrorMessageFormat", "The HLSL Translator failed.  Errors:\n{0}"), FText::FromString(TranslatorOutput->Errors)));
+		CompileResults.bVMSucceeded = false;
+	}
+	else if (TranslatedHLSL.Len() == 0)
+	{
+		CompileResults.NumErrors++;
+		CompileResults.bVMSucceeded = false;
 	}
 	else
 	{
-		FShaderCompilerOutput Output;
+		SCOPE_CYCLE_COUNTER(STAT_NiagaraEditor_HlslCompiler_CompileShader_VectorVM);
+		CompilationJob->StartTime = FPlatformTime::Seconds();
 
-		FVectorVMCompilationOutput CompilationOutput;
-
-		if (TranslatorOutput != nullptr && TranslatorOutput->Errors.Len() > 0)
+		FShaderType* NiagaraShaderType = nullptr;
+		for (TLinkedList<FShaderType*>::TIterator ShaderTypeIt(FShaderType::GetTypeList()); ShaderTypeIt; ShaderTypeIt.Next())
 		{
-			//TODO: Map Lines of HLSL to their source Nodes and flag those nodes with errors associated with their lines.
-			Error(FText::Format(LOCTEXT("HlslTranslateErrorMessageFormat", "The HLSL Translator failed.  Errors:\n{0}"), FText::FromString(TranslatorOutput->Errors)));
-			CompileResults.bVMSucceeded = false;
-		}
-		else if (TranslatedHLSL.Len() == 0)
-		{
-			Error(LOCTEXT("HlslTranslateErrorMessageFailed", "The HLSL Translator failed to generate HLSL!"));
-			CompileResults.bVMSucceeded = false;
-		}
-		else
-		{
-			SCOPE_CYCLE_COUNTER(STAT_NiagaraEditor_HlslCompiler_CompileShader_VectorVM);
-			static FCriticalSection CritSec;
-			
-			CritSec.Lock();
-			double StartTime = FPlatformTime::Seconds();
-			CompileResults.bVMSucceeded = CompileShader_VectorVM(Input, Output, FString(FPlatformProcess::ShaderDir()), 0, CompilationOutput, GNiagaraSkipVectorVMBackendOptimizations);
-			CompileResults.CompileTime = (float)(FPlatformTime::Seconds() - StartTime);
-			CritSec.Unlock();
-		}
-
-		if (CompilationOutput.Errors.Len() > 0)
-		{
-			//TODO: Map Lines of HLSL to their source Nodes and flag those nodes with errors associated with their lines.
-			Error(FText::Format(LOCTEXT("VectorVMCompileErrorMessageFormat", "The Vector VM compile failed.  Errors:\n{0}"), FText::FromString(CompilationOutput.Errors)));
-			CompileResults.bVMSucceeded = false;
-		}
-
-		//For now we just copy the shader code over into the script. 
-		//Eventually Niagara will have all the shader plumbing and do things like materials.
-		if (CompileResults.bVMSucceeded)
-		{
-			SCOPE_CYCLE_COUNTER(STAT_NiagaraEditor_HlslCompiler_CompileShader_VectorVMSucceeded);
-			check(TranslatorOutput);
-			*CompileResults.Data.Get() = TranslatorOutput->ScriptData;
-			CompileResults.Data->ByteCode = CompilationOutput.ByteCode;
-			CompileResults.Data->LastAssemblyTranslation = CompilationOutput.AssemblyAsString;
-			CompileResults.Data->LastOpCount = CompilationOutput.NumOps;
-			//Build internal parameters
-			CompileResults.Data->InternalParameters.Empty();
-			for (int32 i = 0; i < CompilationOutput.InternalConstantOffsets.Num(); ++i)
+			if (FNiagaraShaderType* ShaderType = ShaderTypeIt->GetNiagaraShaderType())
 			{
-				EVectorVMBaseTypes Type = CompilationOutput.InternalConstantTypes[i];
-				int32 Offset = CompilationOutput.InternalConstantOffsets[i];
-				switch (Type)
-				{
-				case EVectorVMBaseTypes::Float:
-				{
-					float Val = *(float*)(CompilationOutput.InternalConstantData.GetData() + Offset);
-					CompileResults.Data->InternalParameters.SetOrAdd(FNiagaraVariable(FNiagaraTypeDefinition::GetFloatDef(), *LexToString(Val)))->SetValue(Val);
-				}
+				NiagaraShaderType = ShaderType;
 				break;
-				case EVectorVMBaseTypes::Int:
-				{
-					int32 Val = *(int32*)(CompilationOutput.InternalConstantData.GetData() + Offset);
-					CompileResults.Data->InternalParameters.SetOrAdd(FNiagaraVariable(FNiagaraTypeDefinition::GetIntDef(), *LexToString(Val)))->SetValue(Val);
-				}
-				break;
-				case EVectorVMBaseTypes::Bool:
-				{
-					int32 Val = *(int32*)(CompilationOutput.InternalConstantData.GetData() + Offset);
-					CompileResults.Data->InternalParameters.SetOrAdd(FNiagaraVariable(FNiagaraTypeDefinition::GetIntDef(), Val == 0 ? TEXT("FALSE") : TEXT("TRUE")))->SetValue(Val);
-				}
-				break;
-				}
-			}
-
-			//Extract the external function call table binding info.
-			CompileResults.Data->CalledVMExternalFunctions.Empty(CompilationOutput.CalledVMFunctionTable.Num());
-			for (FVectorVMCompilationOutput::FCalledVMFunction& FuncInfo : CompilationOutput.CalledVMFunctionTable)
-			{
-				//Find the interface corresponding to this call.
-				const FNiagaraFunctionSignature* Sig = nullptr;
-				for (FNiagaraScriptDataInterfaceCompileInfo& NDIInfo : TranslatorOutput->ScriptData.DataInterfaceInfo)
-				{
-					Sig = NDIInfo.RegisteredFunctions.FindByPredicate([&](const FNiagaraFunctionSignature& CheckSig)
-					{
-						FString SigSymbol = FHlslNiagaraTranslator::GetFunctionSignatureSymbol(CheckSig);
-						return SigSymbol == FuncInfo.Name;
-					});
-					if (Sig)
-					{
-						break;
-					}
-				}
-
-				if (Sig)
-				{
-					int32 NewBindingIdx = CompileResults.Data->CalledVMExternalFunctions.AddDefaulted();
-					CompileResults.Data->CalledVMExternalFunctions[NewBindingIdx].Name = *Sig->GetName();
-					CompileResults.Data->CalledVMExternalFunctions[NewBindingIdx].OwnerName = Sig->OwnerName;
-
-					CompileResults.Data->CalledVMExternalFunctions[NewBindingIdx].InputParamLocations = FuncInfo.InputParamLocations;
-					CompileResults.Data->CalledVMExternalFunctions[NewBindingIdx].NumOutputs = FuncInfo.NumOutputs;
-				}
-				else
-				{
-					Error(FText::Format(LOCTEXT("VectorVMExternalFunctionBindingError", "Failed to bind the exernal function call:  {0}"), FText::FromString(FuncInfo.Name)));
-					CompileResults.bVMSucceeded = false;
-				}
 			}
 		}
-
-		CompileResults.Data->LastHlslTranslation = TranslatedHLSL;
-
-		if (CompileResults.bVMSucceeded == false)
+		if (NiagaraShaderType)
 		{
-			//Some error. Clear script and exit.
-			CompileResults.Data->ByteCode.Empty();
-			CompileResults.Data->Attributes.Empty();
-			CompileResults.Data->Parameters.Empty();
-			CompileResults.Data->InternalParameters.Empty();
-			CompileResults.Data->DataInterfaceInfo.Empty();
-			//		Script->NumUserPtrs = 0;
+			TArray<TSharedRef<FShaderCommonCompileJob, ESPMode::ThreadSafe>> NewJobs;
+			CompilationJob->ShaderCompileJob = MakeShared<FShaderCompileJob, ESPMode::ThreadSafe>(JobID, nullptr, NiagaraShaderType, 0);
+			Input.ShaderFormat = FName(TEXT("VVM_1_0"));
+			if (GNiagaraSkipVectorVMBackendOptimizations != 0)
+			{
+				Input.Environment.CompilerFlags.Add(CFLAG_SkipOptimizations);
+			}
+			CompilationJob->ShaderCompileJob->Input = Input;
+			NewJobs.Add(StaticCastSharedPtr<FShaderCommonCompileJob>(CompilationJob->ShaderCompileJob).ToSharedRef());
+
+			GShaderCompilingManager->AddJobs(NewJobs, true, false, FString(), FString(), true);
+			bJobScheduled = true;
 		}
 	}
+	CompileResults.Data->LastHlslTranslation = TranslatedHLSL;
 
+	if (!bJobScheduled)
+	{
+		//Some error. Clear script and exit.
+		CompileResults.Data->ByteCode.Empty();
+		CompileResults.Data->Attributes.Empty();
+		CompileResults.Data->Parameters.Empty();
+		CompileResults.Data->InternalParameters.Empty();
+		CompileResults.Data->DataInterfaceInfo.Empty();
+		//Script->NumUserPtrs = 0;
+	}
+	CompilationJob->CompileResults = CompileResults;
+
+	return JobID;
+}
+
+void FHlslNiagaraCompiler::DumpDebugInfo(FNiagaraCompileResults& CompileResult, bool bGPUScript)
+{
 	if (GShaderCompilingManager->GetDumpShaderDebugInfo() && CompileResults.Data.IsValid())
 	{
 		FString ExportText = CompileResults.Data->LastHlslTranslation;
@@ -884,14 +930,177 @@ FNiagaraCompileResults FHlslNiagaraCompiler::CompileScript(const FNiagaraCompile
 			ExportTextParams += Var.ToString();
 			ExportTextParams += "\n";
 		}
-		
-		FNiagaraEditorUtilities::WriteTextFileToDisk(Input.DumpDebugInfoPath, TEXT("NiagaraEmitterInstance.ush"), ExportText, true);
-		FNiagaraEditorUtilities::WriteTextFileToDisk(Input.DumpDebugInfoPath, TEXT("NiagaraEmitterInstance.asm"), ExportTextAsm, true);
-		FNiagaraEditorUtilities::WriteTextFileToDisk(Input.DumpDebugInfoPath, TEXT("NiagaraEmitterInstance.params"), ExportTextParams, true);
+
+		FNiagaraEditorUtilities::WriteTextFileToDisk(CompileResult.DumpDebugInfoPath, TEXT("NiagaraEmitterInstance.ush"), ExportText, true);
+		FNiagaraEditorUtilities::WriteTextFileToDisk(CompileResult.DumpDebugInfoPath, TEXT("NiagaraEmitterInstance.asm"), ExportTextAsm, true);
+		FNiagaraEditorUtilities::WriteTextFileToDisk(CompileResult.DumpDebugInfoPath, TEXT("NiagaraEmitterInstance.params"), ExportTextParams, true);
 	}
-	return CompileResults;
 }
 
+TOptional<FNiagaraCompileResults> FHlslNiagaraCompiler::GetCompileResult(int32 JobID, bool bWait /*= false*/)
+{
+	check(IsInGameThread());
+
+	if (!CompilationJob)
+	{
+		return TOptional<FNiagaraCompileResults>();
+	}
+	if (!CompilationJob->ShaderCompileJob)
+	{
+		// In case we did not schedule any compile jobs but have a static result (e.g. in case of previous translator errors)
+		FNiagaraCompileResults Results = CompilationJob->CompileResults;
+		CompilationJob.Reset();
+		return Results;
+	}
+
+	TArray<int32> ShaderMapIDs;
+	ShaderMapIDs.Add(JobID);
+	if (bWait && !CompilationJob->ShaderCompileJob->bFinalized)
+	{
+		GShaderCompilingManager->FinishCompilation(NULL, ShaderMapIDs);
+		check(CompilationJob->ShaderCompileJob->bFinalized);
+	}
+
+	if (!CompilationJob->ShaderCompileJob->bFinalized)
+	{
+		return TOptional<FNiagaraCompileResults>();
+	}
+	else
+	{
+		// We do this because otherwise the shader compiling manager might still reference the deleted job at the end of this method.
+		// The finalization flag is set by another thread, so the manager might not have had a change to process the result.
+		GShaderCompilingManager->FinishCompilation(NULL, ShaderMapIDs);
+	}
+
+	FNiagaraCompileResults Results = CompilationJob->CompileResults;
+	Results.bVMSucceeded = false;
+	FVectorVMCompilationOutput CompilationOutput;
+	if (CompilationJob->ShaderCompileJob->bSucceeded)
+	{
+		const TArray<uint8>& Code = CompilationJob->ShaderCompileJob->Output.ShaderCode.GetReadAccess();
+		FShaderCodeReader ShaderCode(Code);
+		FMemoryReader Ar(Code, true);
+		Ar.SetLimitSize(ShaderCode.GetActualShaderCodeSize());
+		Ar << CompilationOutput;
+
+		Results.bVMSucceeded = true;
+	}
+	else if (CompilationJob->ShaderCompileJob->Output.Errors.Num() > 0)
+	{
+		FString Errors;
+		for (FShaderCompilerError ShaderError : CompilationJob->ShaderCompileJob->Output.Errors)
+		{
+			Errors += ShaderError.StrippedErrorMessage + "\n";
+		}
+		Error(FText::Format(LOCTEXT("VectorVMCompileErrorMessageFormat", "The Vector VM compile failed.  Errors:\n{0}"), FText::FromString(Errors)));
+	}
+
+	if (!Results.bVMSucceeded)
+	{
+		//Some error. Clear script and exit.
+		Results.Data->ByteCode.Empty();
+		Results.Data->Attributes.Empty();
+		Results.Data->Parameters.Empty();
+		Results.Data->InternalParameters.Empty();
+		Results.Data->DataInterfaceInfo.Empty();
+		//		Script->NumUserPtrs = 0;
+	}
+	else
+	{
+		// Copy the shader code over into the script.
+		SCOPE_CYCLE_COUNTER(STAT_NiagaraEditor_HlslCompiler_CompileShader_VectorVMSucceeded);
+		*Results.Data = CompilationJob->TranslatorOutput.ScriptData;
+		Results.Data->ByteCode = CompilationOutput.ByteCode;
+		Results.Data->NumTempRegisters = CompilationOutput.MaxTempRegistersUsed + 1;
+		Results.Data->LastAssemblyTranslation = CompilationOutput.AssemblyAsString;
+		Results.Data->LastOpCount = CompilationOutput.NumOps;
+		//Build internal parameters
+		Results.Data->InternalParameters.Empty();
+		for (int32 i = 0; i < CompilationOutput.InternalConstantOffsets.Num(); ++i)
+		{
+			EVectorVMBaseTypes Type = CompilationOutput.InternalConstantTypes[i];
+			int32 Offset = CompilationOutput.InternalConstantOffsets[i];
+			switch (Type)
+			{
+			case EVectorVMBaseTypes::Float:
+			{
+				float Val = *(float*)(CompilationOutput.InternalConstantData.GetData() + Offset);
+				Results.Data->InternalParameters.SetOrAdd(FNiagaraVariable(FNiagaraTypeDefinition::GetFloatDef(), *LexToString(Val)))->SetValue(Val);
+			}
+			break;
+			case EVectorVMBaseTypes::Int:
+			{
+				int32 Val = *(int32*)(CompilationOutput.InternalConstantData.GetData() + Offset);
+				Results.Data->InternalParameters.SetOrAdd(FNiagaraVariable(FNiagaraTypeDefinition::GetIntDef(), *LexToString(Val)))->SetValue(Val);
+			}
+			break;
+			case EVectorVMBaseTypes::Bool:
+			{
+				int32 Val = *(int32*)(CompilationOutput.InternalConstantData.GetData() + Offset);
+				Results.Data->InternalParameters.SetOrAdd(FNiagaraVariable(FNiagaraTypeDefinition::GetIntDef(), Val == 0 ? TEXT("FALSE") : TEXT("TRUE")))->SetValue(Val);
+			}
+			break;
+			}
+		}
+		Results.CompileTime = (float)(FPlatformTime::Seconds() - CompilationJob->StartTime);
+		Results.Data->CompileTime = Results.CompileTime;
+
+		//Extract the external function call table binding info.
+		Results.Data->CalledVMExternalFunctions.Empty(CompilationOutput.CalledVMFunctionTable.Num());
+		for (FCalledVMFunction& FuncInfo : CompilationOutput.CalledVMFunctionTable)
+		{
+			//Find the interface corresponding to this call.
+			const FNiagaraFunctionSignature* Sig = nullptr;
+			for (FNiagaraScriptDataInterfaceCompileInfo& NDIInfo : CompilationJob->TranslatorOutput.ScriptData.DataInterfaceInfo)
+			{
+				Sig = NDIInfo.RegisteredFunctions.FindByPredicate([&](const FNiagaraFunctionSignature& CheckSig)
+				{
+					FString SigSymbol = FHlslNiagaraTranslator::GetFunctionSignatureSymbol(CheckSig);
+					return SigSymbol == FuncInfo.Name;
+				});
+				if (Sig)
+				{
+					break;
+				}
+			}
+
+			// Look in function library
+			if (Sig == nullptr)
+			{
+				Sig = UNiagaraFunctionLibrary::GetVectorVMFastPathOps(true).FindByPredicate(
+					[&](const FNiagaraFunctionSignature& CheckSig)
+				{
+					FString SigSymbol = FHlslNiagaraTranslator::GetFunctionSignatureSymbol(CheckSig);
+					return SigSymbol == FuncInfo.Name;
+				}
+				);
+			}
+
+			if (Sig)
+			{
+				int32 NewBindingIdx = Results.Data->CalledVMExternalFunctions.AddDefaulted();
+				Results.Data->CalledVMExternalFunctions[NewBindingIdx].Name = *Sig->GetName();
+				Results.Data->CalledVMExternalFunctions[NewBindingIdx].OwnerName = Sig->OwnerName;
+				Results.Data->CalledVMExternalFunctions[NewBindingIdx].InputParamLocations = FuncInfo.InputParamLocations;
+				Results.Data->CalledVMExternalFunctions[NewBindingIdx].NumOutputs = FuncInfo.NumOutputs;
+				for (auto it = Sig->FunctionSpecifiers.CreateConstIterator(); it; ++it)
+				{
+					// we convert the map into an array here to save runtime memory
+					Results.Data->CalledVMExternalFunctions[NewBindingIdx].FunctionSpecifiers.Emplace(it->Key, it->Value);
+				}
+			}
+			else
+			{
+				Error(FText::Format(LOCTEXT("VectorVMExternalFunctionBindingError", "Failed to bind the external function call:  {0}"), FText::FromString(FuncInfo.Name)));
+				Results.bVMSucceeded = false;
+			}
+		}
+	}
+	DumpDebugInfo(CompileResults, false);
+
+	CompilationJob.Reset();
+	return Results;
+}
 
 FHlslNiagaraCompiler::FHlslNiagaraCompiler()
 	: CompileResults()
@@ -903,14 +1112,16 @@ FHlslNiagaraCompiler::FHlslNiagaraCompiler()
 void FHlslNiagaraCompiler::Error(FText ErrorText)
 {
 	FString ErrorString = FString::Printf(TEXT("%s"), *ErrorText.ToString());
-	CompileResults.CompileEvents.Add(FNiagaraCompileEvent(FNiagaraCompileEventType::Error, ErrorString));
+	CompileResults.Data->LastCompileEvents.Add(FNiagaraCompileEvent(FNiagaraCompileEventSeverity::Error, ErrorString));
+	CompileResults.CompileEvents.Add(FNiagaraCompileEvent(FNiagaraCompileEventSeverity::Error, ErrorString));
 	CompileResults.NumErrors++;
 }
 
 void FHlslNiagaraCompiler::Warning(FText WarningText)
 {
 	FString WarnString = FString::Printf(TEXT("%s"), *WarningText.ToString());
-	CompileResults.CompileEvents.Add(FNiagaraCompileEvent(FNiagaraCompileEventType::Warning, WarnString));
+	CompileResults.Data->LastCompileEvents.Add(FNiagaraCompileEvent(FNiagaraCompileEventSeverity::Warning, WarnString));
+	CompileResults.CompileEvents.Add(FNiagaraCompileEvent(FNiagaraCompileEventSeverity::Warning, WarnString));
 	CompileResults.NumWarnings++;
 }
 

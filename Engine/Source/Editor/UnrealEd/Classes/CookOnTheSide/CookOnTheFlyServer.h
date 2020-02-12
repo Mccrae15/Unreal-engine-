@@ -1,14 +1,17 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
 #include "CoreMinimal.h"
+
+#include "Containers/ArrayView.h"
 #include "Misc/EnumClassFlags.h"
 #include "UObject/ObjectMacros.h"
 #include "UObject/UObjectGlobals.h"
 #include "UObject/Object.h"
 #include "UObject/WeakObjectPtr.h"
 #include "UObject/Package.h"
+#include "Templates/UniquePtr.h"
 #include "TickableEditorObject.h"
 #include "IPlatformFileSandboxWrapper.h"
 #include "INetworkFileSystemModule.h"
@@ -16,6 +19,7 @@
 
 
 class FAssetRegistryGenerator;
+class FAsyncIODelete;
 class ITargetPlatform;
 struct FPropertyChangedEvent;
 class IPlugin;
@@ -23,6 +27,7 @@ class IAssetRegistry;
 
 struct FPackageNameCache;
 struct FPackageTracker;
+class FSavePackageContext;
 
 enum class ECookInitializationFlags
 {
@@ -65,6 +70,7 @@ enum class ECookByTheBookOptions
 	NoInputPackages =					0x00000800, // don't include slate content (this cook will probably be missing content unless you know what you are doing)
 	DisableUnsolicitedPackages =		0x00001000, // don't cook any packages which aren't in the files to cook list (this is really dangerious as if you request a file it will not cook all it's dependencies automatically)
 	FullLoadAndSave =					0x00002000, // Load all packages into memory and save them all at once in one tick for speed reasons. This requires a lot of RAM for large games.
+	PackageStore =						0x00004000, // Cook package header information into a global package store
 };
 ENUM_CLASS_FLAGS(ECookByTheBookOptions);
 
@@ -94,12 +100,20 @@ enum class ECookTickFlags : uint8
 };
 ENUM_CLASS_FLAGS(ECookTickFlags);
 
+DECLARE_LOG_CATEGORY_EXTERN(LogCook, Log, All);
+
 UCLASS()
 class UNREALED_API UCookOnTheFlyServer : public UObject, public FTickableEditorObject, public FExec
 {
 	GENERATED_BODY()
 
 		UCookOnTheFlyServer(const FObjectInitializer& ObjectInitializer = FObjectInitializer::Get());
+		UCookOnTheFlyServer(FVTableHelper& Helper); // Declare the FVTableHelper constructor manually so that we can forward-declare-only TUniquePtrs in the header without getting compile error in generated cpp
+
+public:
+	struct FCookByTheBookOptions;
+	struct FPlatformData;
+	struct FPlatformManager;
 
 private:
 	/** Current cook mode the cook on the fly server is running in */
@@ -107,9 +121,9 @@ private:
 	/** Directory to output to instead of the default should be empty in the case of DLC cooking */ 
 	FString OutputDirectoryOverride;
 
-	struct FCookByTheBookOptions;
-
 	FCookByTheBookOptions* CookByTheBookOptions = nullptr;
+	TUniquePtr<FPlatformManager> PlatformManager;
+	FCriticalSection RequestLock;
 
 	//////////////////////////////////////////////////////////////////////////
 	// Cook on the fly options
@@ -140,6 +154,7 @@ private:
 
 	ECookInitializationFlags CookFlags = ECookInitializationFlags::None;
 	TUniquePtr<class FSandboxPlatformFile> SandboxFile;
+	TUniquePtr<FAsyncIODelete> AsyncIODelete; // Helper for deleting the old cook directory asynchronously
 	bool bIsInitializingSandbox = false; // stop recursion into callbacks when we are initializing sandbox
 	mutable bool bIgnoreMarkupPackageAlreadyLoaded = false; // avoid marking up packages as already loaded (want to put this around some functionality as we want to load packages fully some times)
 	bool bIsSavingPackage = false; // used to stop recursive mark package dirty functions
@@ -197,7 +212,10 @@ private:
 	int32 LastCookedPackagesCount = 0;
 	double LastProgressDisplayTime = 0;
 
-	FString ConvertCookedPathToUncookedPath(const FString& CookedPackageName) const;
+	FName ConvertCookedPathToUncookedPath(
+		const FString& SandboxRootDir, const FString& RelativeRootDir,
+		const FString& SandboxProjectDir, const FString& RelativeProjectDir,
+		const FString& CookedPath, FString& OutUncookedPath) const;
 
 	/** Get dependencies for package */
 	const TArray<FName>& GetFullPackageDependencies(const FName& PackageName) const;
@@ -205,9 +223,6 @@ private:
 
 	/** Cached copy of asset registry */
 	IAssetRegistry* AssetRegistry = nullptr;
-
-	/** Map of platform name to asset registry generators, which hold the state of asset registry data for a platform */
-	TMap<FName, FAssetRegistryGenerator*> RegistryGenerators;
 
 	/** Map of platform name to scl.csv files we saved out. */
 	TMap<FName, TArray<FString>> OutSCLCSVPaths;
@@ -222,6 +237,7 @@ private:
 	// tmap of the Config name, Section name, Key name, to the value
 	typedef TMap<FName, TMap<FName, TMap<FName, TArray<FString>>>> FIniSettingContainer;
 
+	mutable FCriticalSection ConfigFileCS;
 	mutable bool IniSettingRecurse = false;
 	mutable FIniSettingContainer AccessedIniStrings;
 	TArray<const FConfigFile*> OpenConfigFiles;
@@ -238,17 +254,18 @@ private:
 	*/
 	void OnTargetPlatformChangedSupportedFormats(const ITargetPlatform* TargetPlatform);
 
-	/**
-	 * Returns the current set of cooking targetplatforms
-	 *  mostly used for cook on the fly or in situations where the cooker can't figure out what the target platform is
-	 * 
-	 * @return Array of target platforms which are can be used
-	 */
-	const TArray<ITargetPlatform*>& GetCookingTargetPlatforms() const;
+	/* In CookOnTheFly, requests can add a new platform; this function conditionally initializes the requested platform.  Returns false if the given TargetPlatform is not available, else true */
+	bool AddCookOnTheFlyPlatform(ITargetPlatform* TargetPlatform);
+	/* Version of AddCookOnTheFlyPlatform that takes the Platform name instead of an ITargetPlatform*.  Returns the Platform if found */
+	ITargetPlatform* AddCookOnTheFlyPlatform(const FString& PlatformName);
+	/* Internal helper for AddCookOnTheFlyPlatform.  Initializing Platforms must be done on the tickloop thread; Platform data is read only on other threads */
+	void AddCookOnTheFlyPlatformFromGameThread(ITargetPlatform* TargetPlatform);
 
-	/** Cached cooking target platforms from the targetmanager, these are used when we don't know what platforms we should be targeting */
-	mutable TArray<ITargetPlatform*> CookingTargetPlatforms;
+	/* Constructs the PackageNameCache and PackageTracker */
+	void ConstructPackageTracker();
 
+	/* Update polled fields used by CookOnTheFly's network request handlers */
+	void TickNetwork();
 public:
 
 	enum ECookOnTheSideResult
@@ -279,6 +296,11 @@ public:
 	virtual bool Exec(class UWorld* InWorld, const TCHAR* Cmd, FOutputDevice& Ar) override;
 
 	/**
+	  * UObject interface
+	  */
+	virtual bool IsDestructionThreadSafe() const override { return false; }
+
+	/**
 	 * Dumps cooking stats to the log
 	 *  run from the exec command "Cook stats"
 	 */
@@ -292,11 +314,12 @@ public:
 	/**
 	* Cook on the side, cooks while also running the editor...
 	*
-	* @param  BindAnyPort					Whether to bind on any port or the default port.
+	* @param BindAnyPort					Whether to bind on any port or the default port.
+	* @param TargetPlatforms				If nonempty, cooking will be prepared (generate AssetRegistry, etc) for each platform in the array
 	*
 	* @return true on success, false otherwise.
 	*/
-	bool StartNetworkFileServer( bool BindAnyPort );
+	bool StartNetworkFileServer( bool BindAnyPort, const TArray<ITargetPlatform*>& TargetPlatforms = TArray<ITargetPlatform*>() );
 
 	/**
 	* Broadcast our the fileserver presence on the network
@@ -349,6 +372,9 @@ public:
 	/**
 	* Get any packages which are in memory, these were probably required to be loaded because of the current package we are cooking, so we should probably cook them also
 	*/
+	TArray<UPackage*> GetUnsolicitedPackages(const TArray<const ITargetPlatform*>& TargetPlatforms) const;
+
+	UE_DEPRECATED(4.25, "Use the version that takes TArray<const ITargetPlatform*> instead")
 	TArray<UPackage*> GetUnsolicitedPackages(const TArray<FName>& TargetPlatformNames) const;
 
 	/**
@@ -374,18 +400,24 @@ public:
 
 	/**
 	* Clear any cached cooked platform data for a platform
-	*  call ClearCachedCookedPlatformData on all Uobjects
-	* @param PlatformName platform to clear all the cached data for
+	*  call ClearCachedCookedPlatformData on all UObjects
+	* @param TargetPlatform platform to clear all the cached data for
 	*/
-	void ClearCachedCookedPlatformDataForPlatform( const FName& PlatformName );
+	void ClearCachedCookedPlatformDataForPlatform(const ITargetPlatform* TargetPlatform);
+
+	UE_DEPRECATED(4.25, "Use version that takes const ITargetPlatform* instead")
+	void ClearCachedCookedPlatformDataForPlatform(const FName& PlatformName);
 
 
 	/**
 	* Clear all the previously cooked data for the platform passed in 
 	* 
-	* @param name of the platform to clear the cooked packages for
+	* @param TargetPlatform the platform to clear the cooked packages for
 	*/
-	void ClearPlatformCookedData( const FName& PlatformName );
+	void ClearPlatformCookedData(const ITargetPlatform* TargetPlatform);
+
+	UE_DEPRECATED(4.25, "Use version that takes const ITargetPlatform* instead")
+	void ClearPlatformCookedData(const FString& PlatformName);
 
 
 	/**
@@ -394,7 +426,10 @@ public:
 	* 
 	* @return return true if shaders were recompiled
 	*/
-	bool RecompileChangedShaders(const TArray<FName>& TargetPlatforms);
+	bool RecompileChangedShaders(const TArray<const ITargetPlatform*>& TargetPlatforms);
+
+	UE_DEPRECATED(4.25, "Use version that takes const ITargetPlatform* instead")
+	bool RecompileChangedShaders(const TArray<FName>& TargetPlatformNames);
 
 
 	/**
@@ -436,6 +471,10 @@ public:
 	*/
 	bool IsCookByTheBookMode() const;
 
+	bool IsUsingShaderCodeLibrary() const;
+
+	bool IsUsingPackageStore() const;
+
 	/**
 	* Helper function returns if we are in any cook on the fly mode
 	*
@@ -467,10 +506,13 @@ public:
 	* RequestPackage to be cooked
 	*
 	* @param StandardPackageFName name of the package in standard format as returned by FPaths::MakeStandardFilename
-	* @param TargetPlatforms name of the targetplatforms we want this package cooked for
+	* @param TargetPlatforms The TargetPlatforms we want this package cooked for
 	* @param bForceFrontOfQueue should we put this package in the front of the cook queue (next to be processed) or at the end
 	*/
-	bool RequestPackage(const FName& StandardPackageFName, const TArray<FName>& TargetPlatforms, const bool bForceFrontOfQueue);
+	bool RequestPackage(const FName& StandardPackageFName, const TArray<const ITargetPlatform*>& TargetPlatforms, const bool bForceFrontOfQueue);
+
+	UE_DEPRECATED(4.25, "Use Version that takes TArray<const ITargetPlatform*> instead")
+	bool RequestPackage(const FName& StandardPackageFName, const TArray<FName>& TargetPlatformNames, const bool bForceFrontOfQueue);
 
 	/**
 	* RequestPackage to be cooked
@@ -520,17 +562,18 @@ private:
 	*/
 	void CollectFilesToCook(TArray<FName>& FilesInPath, 
 		const TArray<FString>& CookMaps, const TArray<FString>& CookDirectories, 
-		const TArray<FString>& IniMapSections, ECookByTheBookOptions FilesToCookFlags);
+		const TArray<FString>& IniMapSections, ECookByTheBookOptions FilesToCookFlags,
+		const TArrayView<const ITargetPlatform* const>& TargetPlatforms);
 
 	/**
 	* AddFileToCook add file to cook list 
 	*/
 	void AddFileToCook( TArray<FName>& InOutFilesToCook, const FString &InFilename ) const;
 
-    /**
-     * Invokes the necessary FShaderCodeLibrary functions to start cooking the shader code library.
-     */
-    void InitShaderCodeLibrary(void);
+	/**
+	* Invokes the necessary FShaderCodeLibrary functions to start cooking the shader code library.
+	*/
+	void InitShaderCodeLibrary(void);
     
 	/**
 	* Invokes the necessary FShaderCodeLibrary functions to open a named code library.
@@ -547,10 +590,10 @@ private:
 	*/
 	void ProcessShaderCodeLibraries(const FString& LibraryName);
 
-    /**
-     * Invokes the necessary FShaderCodeLibrary functions to clean out all the temporary files.
-     */
-    void CleanShaderCodeLibraries();
+	/**
+	* Invokes the necessary FShaderCodeLibrary functions to clean out all the temporary files.
+	*/
+	void CleanShaderCodeLibraries();
 
 	/**
 	* Call back from the TickCookOnTheSide when a cook by the book finishes (when started form StartCookByTheBook)
@@ -570,17 +613,17 @@ private:
 	* BuildMapDependencyGraph
 	* builds a map of dependencies from maps
 	* 
-	* @param PlatformName name of the platform we want to build a map for
+	* @param TargetPlatform the platform we want to build a map for
 	*/
-	void BuildMapDependencyGraph(const FName& PlatformName);
+	void BuildMapDependencyGraph(const ITargetPlatform* TargetPlatform);
 
 	/**
 	* WriteMapDependencyGraph
 	* write a previously built map dependency graph out to the sandbox directory for a platform
 	*
-	* @param PlatformName name of the platform we want to save out the dependency graph for
+	* @param TargetPlatform the platform we want to save out the dependency graph for
 	*/
-	void WriteMapDependencyGraph(const FName& PlatformName);
+	void WriteMapDependencyGraph(const ITargetPlatform* TargetPlatform);
 
 	//////////////////////////////////////////////////////////////////////////
 	// cook on the fly specific functions
@@ -593,7 +636,7 @@ private:
 	 */
 	bool HandleNetworkFileServerNewConnection( const FString& VersionInfo, const FString& PlatformName );
 
-	void GetCookOnTheFlyUnsolicitedFiles(const FName& PlatformName, TArray<FString>& UnsolicitedFiles, const FString& Filename);
+	void GetCookOnTheFlyUnsolicitedFiles(const ITargetPlatform* TargetPlatform, TArray<FString>& UnsolicitedFiles, const FString& Filename);
 
 	/**
 	* Cook requests for a package from network
@@ -618,8 +661,6 @@ private:
 	 */
 	FString HandleNetworkGetSandboxPath();
 
-	void GetCookOnTheFlyUnsolicitedFiles( const FName& PlatformName, TArray<FString>& UnsolicitedFiles );
-
 	/**
 	 * HandleNetworkGetPrecookedList 
 	 * this is used specifically for cook on the fly with shared cooked builds
@@ -638,14 +679,22 @@ private:
 	 *  internal function should not be used externally Call Tick / RequestPackage to initiate
 	 * 
 	 * @param PackageToSave main cooked package to save
-	 * @param TargetPlatformNames list of target platforms names that we want to save this package for
-	 * @param TargetPlatformsToCache list of target platforms that we want to cache uobjects for, might not be the same as the list of packages to save
+	 * @param InTargetPlatforms list of target platforms names that we want to save this package for and cache UObjects for
 	 * @param Timer FCookerTimer struct which defines the timeslicing behavior 
 	 * @param FirstUnsolicitedPackage first package which was not actually requested, unsolicited packages are prioritized differently, they are saved the same way
 	 * @param Result (in+out) used to modify the result of the operation and add any relevant flags
 	 * @return returns true if we saved all the packages false if we bailed early for any reason
 	 */
-	void SaveCookedPackages(UPackage* PackageToSave, const TArray<FName>& TargetPlatformNames, const TArray<const ITargetPlatform*>& TargetPlatformsToCache, struct FCookerTimer& Timer, uint32& CookedPackageCount, uint32& Result);
+	void SaveCookedPackages(UPackage* PackageToSave, const TArray<const ITargetPlatform*>& InTargetPlatforms, struct FCookerTimer& Timer, uint32& CookedPackageCount, uint32& Result);
+
+	/**
+	 * Attempts to update the metadata for a package in an asset registry generator
+	 *
+	 * @param Generator The asset registry generator to update
+	 * @param PackageName The name of the package to update info on
+	 * @param SavePackageResult The metadata to associate with the given package name
+	 */
+	void UpdateAssetRegistryPackageData(FAssetRegistryGenerator* Generator, const FName& PackageName, FSavePackageResultStruct& SavePackageResult);
 
 	/** Perform any special processing for freshly loaded packages 
 	 */
@@ -656,9 +705,10 @@ private:
 	 *  this is the same as a normal load but also ensures that the sublevels are loaded if they are streaming sublevels
 	 *
 	 * @param BuildFilename long package name of the package to load 
-	 * @return UPackage of the package loaded, null if the file didn't exist or other failure
+	 * @param OutPackage UPackage of the package loaded, non-null on success, may be non-null on failure if the UPackage existed but had another failure
+	 * @return Whether LoadPackage was completely successful and the package can be cooked
 	 */
-	UPackage* LoadPackageForCooking(const FString& BuildFilename);
+	bool LoadPackageForCooking(const FString& BuildFilename, UPackage*& OutPackage);
 
 	/**
 	* Makes sure a package is fully loaded before we save it out
@@ -667,14 +717,36 @@ private:
 	bool MakePackageFullyLoaded(UPackage* Package) const;
 
 	/**
-	* Initialize the sandbox 
+	* Initialize the sandbox for @param TargetPlatforms
 	*/
-	void InitializeSandbox();
+	void InitializeSandbox(const TArrayView<const ITargetPlatform* const>& TargetPlatforms);
 
 	/**
-	* Initialize all target platforms
+	* Initialize the package store
 	*/
-	void InitializeTargetPlatforms();
+	void InitializePackageStore(const TArrayView<const ITargetPlatform* const>& TargetPlatforms);
+
+	/**
+	* Finalize the package store
+	*/
+	void FinalizePackageStore();
+
+	/**
+	* Empties SavePackageContexts and deletes the contents
+	*/
+	void ClearPackageStoreContexts();
+
+	/**
+	* Initialize platforms in @param NewTargetPlatforms
+	*/
+	void InitializeTargetPlatforms(const TArrayView<ITargetPlatform* const>& NewTargetPlatforms);
+
+	/**
+	* Some content plugins does not support all target platforms.
+	* Build up a map of unsupported packages per platform that can be checked before saving.
+	*/
+	void DiscoverPlatformSpecificNeverCookPackages(
+		const TArrayView<const ITargetPlatform* const>& TargetPlatforms, const TArray<FString>& UBTPlatformStrings);
 
 	/**
 	* Clean up the sandbox
@@ -734,7 +806,7 @@ private:
 	 * @param TargetPlatforms target platforms to cache for
 	 * @return false if time slice was reached, true if all objects have had BeginCacheForCookedPlatformData called
 	 */
-	bool BeginPackageCacheForCookedPlatformData(UPackage* Package, const TArray<const ITargetPlatform*>& TargetPlatforms, struct FCookerTimer& Timer) const;
+	bool BeginPackageCacheForCookedPlatformData(UPackage* Package, const TArrayView<const ITargetPlatform* const>& TargetPlatforms, struct FCookerTimer& Timer) const;
 	
 	/**
 	 * Returns true when all objects in package have all their cooked platform data loaded
@@ -744,7 +816,7 @@ private:
 	 * @param TargetPlatforms target platforms to cache for
 	 * @return false if time slice was reached, true if all return true for IsCachedCookedPlatformDataLoaded 
 	 */
-	bool FinishPackageCacheForCookedPlatformData(UPackage* Package, const TArray<const ITargetPlatform*>& TargetPlatforms, struct FCookerTimer& Timer) const;
+	bool FinishPackageCacheForCookedPlatformData(UPackage* Package, const TArrayView<const ITargetPlatform* const>& TargetPlatforms, struct FCookerTimer& Timer) const;
 
 	/**
 	* GetCurrentIniVersionStrings gets the current ini version strings for compare against previous cook
@@ -786,6 +858,15 @@ private:
 	* This should be used instead of calling the Sandbox function
 	*/
 	FString GetSandboxDirectory( const FString& PlatformName ) const;
+
+	/* Delete the sandbox directory (asynchronously) for the given platform in preparation for a clean cook */
+	void DeleteSandboxDirectory(const FString& PlatformName);
+
+	/* Create the delete-old-cooked-directory helper. PlatformName tells it where to create its temp directory. AsyncDeleteDirectory is DeleteSandboxDirectory internal use only and should otherwise be set to nullptr. */
+	FAsyncIODelete& GetAsyncIODelete(const FString& PlatformName, const FString* AsyncDeleteDirectory = nullptr);
+
+	/** Get the directory that should be used for AsyncDeletes based on the given platform. SandboxDirectory is DeleteSandboxDirectory internal use only and should otherwise be set to nullptr. */
+	FString GetAsyncDeleteDirectory(const FString& PlatformName, const FString* SandboxDirectory = nullptr) const;
 
 	bool IsCookingDLC() const;
 
@@ -835,31 +916,17 @@ private:
 		return (CookFlags & InCookFlags) != ECookInitializationFlags::None;
 	}
 
-	/** If true, the maximum file length of a package being saved will be reduced by 32 to compensate for compressed package intermediate files */
-	bool ShouldConsiderCompressedPackageFileLengthRequirements() const;
-
 	/**
 	*	Cook (save) the given package
 	*
 	*	@param	Package				The package to cook/save
 	*	@param	SaveFlags			The flags to pass to the SavePackage function
 	*	@param	bOutWasUpToDate		Upon return, if true then the cooked package was cached (up to date)
+	*	@param  TargetPlatforms		Only cook for target platforms which are included in this array
 	*
 	*	@return	ESavePackageResult::Success if packages was cooked
 	*/
-	void SaveCookedPackage(UPackage* Package, uint32 SaveFlags, TArray<FSavePackageResultStruct>& SavePackageResults);
-	/**
-	*	Cook (save) the given package
-	*
-	*	@param	Package				The package to cook/save
-	*	@param	SaveFlags			The flags to pass to the SavePackage function
-	*	@param	bOutWasUpToDate		Upon return, if true then the cooked package was cached (up to date)
-	*	@param  TargetPlatformNames Only cook for target platforms which are included in this array (if empty cook for all target platforms specified on commandline options)
-	*									TargetPlatformNames is in and out value returns the platforms which the SaveCookedPackage function saved for
-	*
-	*	@return	ESavePackageResult::Success if packages was cooked
-	*/
-	void SaveCookedPackage(UPackage* Package, uint32 SaveFlags, TArray<FName> &TargetPlatformNames, TArray<FSavePackageResultStruct>& SavePackageResults);
+	void SaveCookedPackage(UPackage* Package, uint32 SaveFlags, const TArrayView<const ITargetPlatform* const>& TargetPlatforms, TArray<FSavePackageResultStruct>& SavePackageResults);
 
 
 	/**
@@ -867,7 +934,7 @@ private:
 	*  
 	*  @param	Platforms		List of platforms to make global shader maps for
 	*/
-	void SaveGlobalShaderMapFiles(const TArray<ITargetPlatform*>& Platforms);
+	void SaveGlobalShaderMapFiles(const TArrayView<const ITargetPlatform* const>& Platforms);
 
 
 	/** Create sandbox file in directory using current settings supplied */
@@ -875,28 +942,28 @@ private:
 	/** Gets the output directory respecting any command line overrides */
 	FString GetOutputDirectoryOverride() const;
 
-	/** Cleans sandbox folders for all target platforms */
-	void CleanSandbox( const bool bIterative );
-
 	/**
 	* Populate the cooked packages list from the on disk content using time stamps and dependencies to figure out if they are ok
 	* delete any local content which is out of date
 	* 
 	* @param Platforms to process
 	*/
-	void PopulateCookedPackagesFromDisk( const TArray<ITargetPlatform*>& Platforms );
+	void PopulateCookedPackagesFromDisk(const TArrayView<const ITargetPlatform* const>& Platforms);
 
 	/**
 	* Searches the disk for all the cooked files in the sandbox path provided
 	* Returns a map of the uncooked file path matches to the cooked file path for each package which exists
 	*
 	* @param UncookedpathToCookedPath out Map of the uncooked path matched with the cooked package which exists
-	* @param SandboxPath path to search for cooked packages in
+	* @param SandboxRootDir root dir to search for cooked packages in
 	*/
-	void GetAllCookedFiles(TMap<FName, FName>& UncookedPathToCookedPath, const FString& SandboxPath);
+	void GetAllCookedFiles(TMap<FName, FName>& UncookedPathToCookedPath, const FString& SandboxRootDir);
 
-	/** Generates asset registry */
+	/** Loads the platform-independent asset registry for use by the cooker */
 	void GenerateAssetRegistry();
+
+	/** Construct or refresh-for-filechanges the platform-specific asset registry for the given platforms */
+	void RefreshPlatformAssetRegistries(const TArrayView<const ITargetPlatform* const>& TargetPlatforms);
 
 	/** Generates long package names for all files to be cooked */
 	void GenerateLongPackageNames(TArray<FName>& FilesInPath);
@@ -911,6 +978,8 @@ private:
 
 	FPackageTracker*	PackageTracker;
 	FPackageNameCache*	PackageNameCache;
+
+	TArray<FSavePackageContext*> SavePackageContexts;
 
 	// temporary -- should eliminate the need for this. Only required right now because FullLoadAndSave 
 	// accesses maps directly

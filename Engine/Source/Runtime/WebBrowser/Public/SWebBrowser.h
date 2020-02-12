@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -33,9 +33,10 @@ public:
 		, _ShowAddressBar(false)
 		, _ShowErrorMessage(true)
 		, _SupportsTransparency(false)
-		, _SupportsThumbMouseButtonNavigation(false)
+		, _SupportsThumbMouseButtonNavigation(true)
 		, _ShowInitialThrobber(true)
 		, _BackgroundColor(255,255,255,255)
+		, _BrowserFrameRate(24)
 		, _PopupMenuMethod(TOptional<EPopupMethod>())
 		, _ViewportSize(FVector2D::ZeroVector)
 	{ }
@@ -69,6 +70,9 @@ public:
 
 		/** Opaque background color used before a document is loaded and when no document color is specified. */
 		SLATE_ARGUMENT(FColor, BackgroundColor)
+
+		/** The frames per second rate that the browser will attempt to use. */
+		SLATE_ARGUMENT(int , BrowserFrameRate)
 
 		/** Override the popup menu method used for popup menus. If not set, parent widgets will be queried instead. */
 		SLATE_ARGUMENT(TOptional<EPopupMethod>, PopupMenuMethod)

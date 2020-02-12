@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 /*=============================================================================
 	GenericPlatformFile.cpp: Generic implementations of platform file I/O functions
@@ -8,7 +8,6 @@
 #include "Misc/AssertionMacros.h"
 #include "GenericPlatform/GenericPlatformFile.h"
 #include "Modules/ModuleManager.h"
-#include "Templates/ScopedPointer.h"
 #include "HAL/IPlatformFileLogWrapper.h"
 #include "HAL/IPlatformFileProfilerWrapper.h"
 #include "HAL/IPlatformFileCachedWrapper.h"

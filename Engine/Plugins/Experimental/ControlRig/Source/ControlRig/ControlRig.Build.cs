@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 namespace UnrealBuildTool.Rules
 {
@@ -9,6 +9,7 @@ namespace UnrealBuildTool.Rules
             PrivateIncludePaths.Add("ControlRig/Private");
             PrivateIncludePaths.Add("ControlRig/Private/Sequencer");
             PrivateIncludePaths.Add("ControlRig/Private/Units");
+            PrivateIncludePaths.Add("ControlRig/ThirdParty/AHEasing");
 
             PrivateDependencyModuleNames.AddRange(
                 new string[]
@@ -20,7 +21,7 @@ namespace UnrealBuildTool.Rules
                     "MovieScene",
                     "MovieSceneTracks",
                     "PropertyPath",
-					"TimeManagement"
+					"TimeManagement",
                 }
             );
 
@@ -29,17 +30,27 @@ namespace UnrealBuildTool.Rules
                 {
                     "AnimationCore",
                     "LevelSequence",
+                    "RigVM",
                 }
             );
 
             if (Target.bBuildEditor == true)
             {
+                PublicDependencyModuleNames.AddRange(
+				    new string[]
+					{
+						"RigVMDeveloper",
+                        "AnimGraph",
+                    }
+                );
+
                 PrivateDependencyModuleNames.AddRange(
                     new string[]
                     {
                         "UnrealEd",
                         "BlueprintGraph",
                         "PropertyEditor",
+                        "RigVMDeveloper",
                     }
                 );
 

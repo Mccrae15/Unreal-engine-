@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -248,7 +248,7 @@ public:
 	 *
 	 * @return					true if the map was saved successfully.
 	 */
-	static bool SaveMap(UWorld* World, const FString& Filename );
+	static UNREALED_API bool SaveMap(UWorld* World, const FString& Filename );
 
 	/**
 	 * Saves the specified level.  SaveAs is performed as necessary.

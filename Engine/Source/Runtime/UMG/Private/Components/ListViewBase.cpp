@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "Components/ListViewBase.h"
 #include "UMGPrivate.h"
@@ -14,6 +14,7 @@ UListViewBase::UListViewBase(const FObjectInitializer& ObjectInitializer)
 	, EntryWidgetPool(*this)
 {
 	bIsVariable = true;
+	Clipping = EWidgetClipping::ClipToBounds;
 }
 
 #if WITH_EDITOR
@@ -27,6 +28,10 @@ void UListViewBase::ValidateCompiledDefaults(IWidgetCompilerLog& CompileLog) con
 	if (!EntryWidgetClass)
 	{
 		CompileLog.Error(FText::Format(LOCTEXT("Error_ListViewBase_MissingEntryClass", "{0} has no EntryWidgetClass specified - required for any UListViewBase to function."), FText::FromString(GetName())));
+	}
+	else if (!EntryWidgetClass->ImplementsInterface(UUserListEntry::StaticClass()))
+	{
+		CompileLog.Error(FText::Format(LOCTEXT("Error_ListViewBase_EntryClassNotImplementingInterface", "'{0}' has EntryWidgetClass property set to'{1}' and that Class doesn't implement User List Entry Interface - required for any UListViewBase to function."), FText::FromString(GetName()), FText::FromString(EntryWidgetClass->GetName())));
 	}
 }
 #endif
@@ -55,6 +60,23 @@ void UListViewBase::ScrollToBottom()
 	if (MyTableViewBase.IsValid())
 	{
 		MyTableViewBase->ScrollToBottom();
+	}
+}
+
+void UListViewBase::SetScrollOffset(const float InScrollOffset)
+{
+	if (MyTableViewBase.IsValid())
+	{
+		MyTableViewBase->SetScrollOffset(InScrollOffset);
+	}
+}
+
+void UListViewBase::SetWheelScrollMultiplier(float NewWheelScrollMultiplier)
+{
+	WheelScrollMultiplier = NewWheelScrollMultiplier;
+	if (MyTableViewBase)
+	{
+		MyTableViewBase->SetWheelScrollMultiplier(GetGlobalScrollAmount() * NewWheelScrollMultiplier);
 	}
 }
 
@@ -100,6 +122,10 @@ TSharedRef<SWidget> UListViewBase::RebuildWidget()
 	}
 
 	MyTableViewBase = RebuildListWidget();
+	MyTableViewBase->SetIsScrollAnimationEnabled(bEnableScrollAnimation);
+	MyTableViewBase->SetFixedLineScrollOffset(bEnableFixedLineOffset ? TOptional<double>(FixedLineScrollOffset) : TOptional<double>());
+	MyTableViewBase->SetWheelScrollMultiplier(GetGlobalScrollAmount() * WheelScrollMultiplier);
+
 	return MyTableViewBase.ToSharedRef();
 }
 
@@ -115,6 +141,13 @@ void UListViewBase::ReleaseSlateResources(bool bReleaseChildren)
 void UListViewBase::SynchronizeProperties()
 {
 	Super::SynchronizeProperties();
+
+	if (MyTableViewBase)
+	{
+		MyTableViewBase->SetIsScrollAnimationEnabled(bEnableScrollAnimation);
+		MyTableViewBase->SetFixedLineScrollOffset(bEnableFixedLineOffset ? TOptional<double>(FixedLineScrollOffset) : TOptional<double>());
+		MyTableViewBase->SetWheelScrollMultiplier(GetGlobalScrollAmount() * WheelScrollMultiplier);
+	}
 
 #if WITH_EDITORONLY_DATA
 	if (IsDesignTime() && MyTableViewBase.IsValid())

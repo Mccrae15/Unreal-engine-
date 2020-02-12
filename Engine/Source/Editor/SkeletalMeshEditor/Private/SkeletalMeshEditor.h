@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -21,6 +21,8 @@ class ISkeletonTreeItem;
 struct HActor;
 struct FViewportClick;
 struct FSkeletalMeshClothBuildParams;
+struct FToolMenuContext;
+class UToolMenu;
 
 namespace SkeletalMeshEditorModes
 {
@@ -61,6 +63,11 @@ public:
 	virtual FText GetBaseToolkitName() const override;
 	virtual FString GetWorldCentricTabPrefix() const override;
 	virtual FLinearColor GetWorldCentricTabColorScale() const override;
+	virtual void InitToolMenuContext(FToolMenuContext& MenuContext) override;
+
+	//~ Begin FAssetEditorToolkit Interface.
+	virtual bool OnRequestClose() override;
+	//~ End FAssetEditorToolkit Interface.
 
 	/** FEditorUndoClient interface */
 	virtual void PostUndo(bool bSuccess) override;
@@ -133,9 +140,14 @@ private:
 	void OnRemoveSectionFromLodAndBelowMenuItemClicked(int32 LodIndex, int32 SectionIndex);
 	//////////////////////////////////////////////////////////////////////////
 
+	void RegisterReimportContextMenu(const FName InBaseMenuName);
+
+	static TSharedPtr<FSkeletalMeshEditor> GetSkeletalMeshEditor(const FToolMenuContext& InMenuContext);
+
 private:
 	void ExtendMenu();
 
+	void RegisterToolbar();
 	void ExtendToolbar();
 
 	void BindCommands();

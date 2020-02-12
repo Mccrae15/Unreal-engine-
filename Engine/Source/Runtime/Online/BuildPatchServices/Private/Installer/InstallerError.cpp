@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "Installer/InstallerError.h"
 #include "Misc/ScopeLock.h"
@@ -120,11 +120,8 @@ namespace BuildPatchServices
 	bool FInstallerError::CanRetry() const
 	{
 		FScopeLock ScopeLock(&ThreadLockCs);
-		return ErrorType != EBuildPatchInstallError::DownloadError
-			&& ErrorType != EBuildPatchInstallError::MoveFileToInstall
-			&& ErrorType != EBuildPatchInstallError::InitializationError
-			&& ErrorType != EBuildPatchInstallError::PathLengthExceeded
-			&& ErrorType != EBuildPatchInstallError::OutOfDiskSpace;
+		return ErrorType == EBuildPatchInstallError::FileConstructionFail
+			|| ErrorType == EBuildPatchInstallError::BuildVerifyFail;
 	}
 
 	EBuildPatchInstallError FInstallerError::GetErrorType() const

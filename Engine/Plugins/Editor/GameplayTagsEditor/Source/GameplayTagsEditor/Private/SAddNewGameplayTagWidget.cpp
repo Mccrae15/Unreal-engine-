@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "SAddNewGameplayTagWidget.h"
 #include "DetailLayoutBuilder.h"
@@ -6,6 +6,7 @@
 #include "GameplayTagsEditorModule.h"
 #include "GameplayTagsModule.h"
 #include "Widgets/Input/SButton.h"
+#include "Misc/MessageDialog.h"
 
 #define LOCTEXT_NAMESPACE "AddNewGameplayTagWidget"
 
@@ -32,6 +33,7 @@ void SAddNewGameplayTagWidget::Construct(const FArguments& InArgs)
 	bShouldGetKeyboardFocus = false;
 
 	OnGameplayTagAdded = InArgs._OnGameplayTagAdded;
+	IsValidTag = InArgs._IsValidTag;
 	PopulateTagSources();
 
 	IGameplayTagsModule::OnTagSettingsChanged.AddRaw(this, &SAddNewGameplayTagWidget::PopulateTagSources);
@@ -142,7 +144,7 @@ void SAddNewGameplayTagWidget::Construct(const FArguments& InArgs)
 		]
 	];
 
-	Reset();
+	Reset(EResetType::ResetAll);
 }
 
 void SAddNewGameplayTagWidget::Tick( const FGeometry& AllottedGeometry, const double InCurrentTime, const float InDeltaTime )
@@ -176,10 +178,13 @@ void SAddNewGameplayTagWidget::PopulateTagSources()
 	}
 }
 
-void SAddNewGameplayTagWidget::Reset()
+void SAddNewGameplayTagWidget::Reset(EResetType ResetType)
 {
 	SetTagName();
-	SelectTagSource();
+	if (ResetType != EResetType::DoNotResetSource)
+	{
+		SelectTagSource();
+	}
 	TagCommentTextBox->SetText(FText());
 }
 
@@ -244,12 +249,25 @@ void SAddNewGameplayTagWidget::CreateNewGameplayTag()
 		return;
 	}
 
-	FString TagName = TagNameTextBox->GetText().ToString();
+	FText TagNameAsText = TagNameTextBox->GetText();
+	FString TagName = TagNameAsText.ToString();
 	FString TagComment = TagCommentTextBox->GetText().ToString();
 	FName TagSource = *TagSourcesComboBox->GetSelectedItem().Get();
 
 	if (TagName.IsEmpty())
 	{
+		return;
+	}
+
+	// check to see if this is a valid tag
+	// first check the base rules for all tags then look for any additional rules in the delegate
+	FText ErrorMsg;
+	if (!UGameplayTagsManager::Get().IsValidGameplayTagString(TagName, &ErrorMsg) || 
+		(IsValidTag.IsBound() && !IsValidTag.Execute(TagName, &ErrorMsg))
+		)
+	{
+		FText MessageTitle(LOCTEXT("InvalidTag", "Invalid Tag"));
+		FMessageDialog::Open(EAppMsgType::Ok, ErrorMsg, &MessageTitle);
 		return;
 	}
 
@@ -260,7 +278,7 @@ void SAddNewGameplayTagWidget::CreateNewGameplayTag()
 
 	OnGameplayTagAdded.ExecuteIfBound(TagName, TagComment, TagSource);
 
-	Reset();
+	Reset(EResetType::DoNotResetSource);
 }
 
 TSharedRef<SWidget> SAddNewGameplayTagWidget::OnGenerateTagSourcesComboBox(TSharedPtr<FName> InItem)

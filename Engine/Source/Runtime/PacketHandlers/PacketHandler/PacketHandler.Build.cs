@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 using UnrealBuildTool;
 using System.IO;
@@ -9,12 +9,14 @@ public class PacketHandler : ModuleRules
     {
         PublicDependencyModuleNames.AddRange
 		(
-            new string[]
+			new string[]
 			{
 				"Core",
 				"CoreUObject",
-                "ReliabilityHandlerComponent",
-            }
+				"NetCore",
+				"ReliabilityHandlerComponent",
+				"Sockets",
+			}
         );
 
         CircularlyReferencedDependentModules.Add("ReliabilityHandlerComponent");

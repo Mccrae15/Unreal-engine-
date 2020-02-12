@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -37,6 +37,7 @@ public:
 		, _MenuContent( SNew(STextBlock) .Text( NSLOCTEXT("SMenuAnchor", "NoMenuContent", "No Menu Content Assigned; use .MenuContent") ) )
 		, _OnGetMenuContent()
 		, _Placement( MenuPlacement_BelowAnchor )
+		, _FitInWindow( true )
 		, _Method()
 		, _ShouldDeferPaintingAfterWindowContent(true)
 		, _UseApplicationMenuStack(true)
@@ -55,6 +56,8 @@ public:
 		SLATE_EVENT( FOnIsOpenChanged, OnMenuOpenChanged )
 
 		SLATE_ATTRIBUTE( EMenuPlacement, Placement )
+
+		SLATE_ARGUMENT(bool, FitInWindow)
 
 		SLATE_ARGUMENT(TOptional<EPopupMethod>, Method)
 
@@ -105,6 +108,10 @@ public:
 	/** @return The current menu position */
 	FVector2D GetMenuPosition() const;
 
+	void SetMenuPlacement(TAttribute<EMenuPlacement> InMenuPlacement);
+
+	void SetFitInWindow(bool bFit);
+
 	/** @return Whether this menu has open submenus */
 	bool HasOpenSubMenus() const;
 
@@ -134,6 +141,9 @@ protected:
 
 	/** Handler/callback called by menus created by this anchor, when they are dismissed */
 	void OnMenuClosed(TSharedRef<IMenu> InMenu);
+
+	/** Reset the popup state to prepopup. */
+	void ResetPopupMenuContent();
 
 	/** Computes the placement geometry for menus displayed in a separately created window */
 	FGeometry ComputeNewWindowMenuPlacement(const FGeometry& AllottedGeometry, const FVector2D& PopupDesiredSize, EMenuPlacement PlacementMode) const;
@@ -184,6 +194,9 @@ protected:
 
 	/** How should the popup be placed relative to the anchor. */
 	TAttribute<EMenuPlacement> Placement;
+
+	/** Should the menu anchor fit inside the window? */
+	bool bFitInWindow;
 
 	/** Was the menu just dismissed this tick? */
 	bool bDismissedThisTick;

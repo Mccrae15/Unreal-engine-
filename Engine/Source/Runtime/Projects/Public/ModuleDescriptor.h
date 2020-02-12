@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -20,6 +20,9 @@ namespace ELoadingPhase
 
 		/** Loaded before the engine is fully initialized, immediately after the config system has been initialized.  Necessary only for very low-level hooks */
 		PostConfigInit,
+
+		/** The first screen to be rendered after system splash screen */
+		PostSplashScreen,
 
 		/** Loaded before coreUObject for setting up manual loading screens, used for our chunk patching system */
 		PreEarlyLoadingScreen,
@@ -70,18 +73,51 @@ namespace EHostType
 {
 	enum Type
 	{
+		// Loads on all targets, except programs.
 		Runtime,
+		
+		// Loads on all targets, except programs and the editor running commandlets.
 		RuntimeNoCommandlet,
+		
+		// Loads on all targets, including supported programs.
 		RuntimeAndProgram,
+		
+		// Loads only in cooked games.
 		CookedOnly,
-		Developer,
-		Editor,
-		EditorNoCommandlet,
-		Program,		//!< Program-only plugin type
-		ServerOnly,
-		ClientOnly,
-		// NOTE: If you add a new value, make sure to update the ToString() method below!
 
+		// Only loads in uncooked games.
+		UncookedOnly,
+
+		// Deprecated due to ambiguities. Only loads in editor and program targets, but loads in any editor mode (eg. -game, -server).
+		// Use UncookedOnly for the same behavior (eg. for editor blueprint nodes needed in uncooked games), or DeveloperTool for modules
+		// that can also be loaded in cooked games but should not be shipped (eg. debugging utilities).
+		Developer,
+
+		// Loads on any targets where bBuildDeveloperTools is enabled.
+		DeveloperTool,
+
+		// Loads only when the editor is starting up.
+		Editor,
+		
+		// Loads only when the editor is starting up, but not in commandlet mode.
+		EditorNoCommandlet,
+
+		// Loads only on editor and program targets
+		EditorAndProgram,
+
+		// Only loads on program targets.
+		Program,
+		
+		// Loads on all targets except dedicated clients.
+		ServerOnly,
+		
+		// Loads on all targets except dedicated servers.
+		ClientOnly,
+
+		// Loads in editor and client but not in commandlets.
+		ClientOnlyNoCommandlet,
+		
+		//~ NOTE: If you add a new value, make sure to update the ToString() method below!
 		Max
 	};
 
@@ -123,16 +159,16 @@ struct PROJECTS_API FModuleDescriptor
 	TArray<FString> BlacklistPlatforms;
 
 	/** List of allowed targets */
-	TArray<FString> WhitelistTargets;
+	TArray<EBuildTargetType> WhitelistTargets;
 
 	/** List of disallowed targets */
-	TArray<FString> BlacklistTargets;
+	TArray<EBuildTargetType> BlacklistTargets;
 
 	/** List of allowed target configurations */
-	TArray<FString> WhitelistTargetConfigurations;
+	TArray<EBuildConfiguration> WhitelistTargetConfigurations;
 
 	/** List of disallowed target configurations */
-	TArray<FString> BlacklistTargetConfigurations;
+	TArray<EBuildConfiguration> BlacklistTargetConfigurations;
 
 	/** List of allowed programs */
 	TArray<FString> WhitelistPrograms;
@@ -157,6 +193,9 @@ struct PROJECTS_API FModuleDescriptor
 
 	/** Writes an array of modules to JSON */
 	static void WriteArray(TJsonWriter<>& Writer, const TCHAR* Name, const TArray<FModuleDescriptor>& Modules);
+
+	/** Tests whether the module should be built for the given target */
+	bool IsCompiledInConfiguration(const FString& Platform, EBuildConfiguration Configuration, const FString& TargetName, EBuildTargetType TargetType, bool bBuildDeveloperTools, bool bBuildRequiresCookedData) const;
 
 	/** Tests whether the module should be built for the current engine configuration */
 	bool IsCompiledInCurrentConfiguration() const;

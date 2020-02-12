@@ -1,9 +1,10 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "PyCore.h"
 #include "PyGenUtil.h"
 #include "PyReferenceCollector.h"
 #include "PyWrapperTypeRegistry.h"
+#include "IPythonScriptPlugin.h"
 
 #include "PyWrapperBase.h"
 #include "PyWrapperObject.h"
@@ -79,17 +80,15 @@ void ApplyMetaData(PyObject* InMetaData, const TFunctionRef<void(const FString&,
 
 } // namespace PyCoreUtil
 
-TStrongObjectPtr<UStruct> GPythonPropertyContainer;
-TStrongObjectPtr<UPackage> GPythonTypeContainer;
-
-UObject* GetPythonPropertyContainer()
+TStrongObjectPtr<UPackage>& GetPythonTypeContainerSingleton()
 {
-	return GPythonPropertyContainer.Get();
+	static TStrongObjectPtr<UPackage> PythonTypeContainer;
+	return PythonTypeContainer;
 }
 
 UObject* GetPythonTypeContainer()
 {
-	return GPythonTypeContainer.Get();
+	return GetPythonTypeContainerSingleton().Get();
 }
 
 
@@ -317,9 +316,9 @@ void FPyUValueDef::ApplyMetaData(FPyUValueDef* InSelf, const TFunctionRef<void(c
 }
 
 
-FPyUPropertyDef* FPyUPropertyDef::New(PyTypeObject* InType)
+FPyFPropertyDef* FPyFPropertyDef::New(PyTypeObject* InType)
 {
-	FPyUPropertyDef* Self = (FPyUPropertyDef*)InType->tp_alloc(InType, 0);
+	FPyFPropertyDef* Self = (FPyFPropertyDef*)InType->tp_alloc(InType, 0);
 	if (Self)
 	{
 		Self->PropType = nullptr;
@@ -330,7 +329,7 @@ FPyUPropertyDef* FPyUPropertyDef::New(PyTypeObject* InType)
 	return Self;
 }
 
-void FPyUPropertyDef::Free(FPyUPropertyDef* InSelf)
+void FPyFPropertyDef::Free(FPyFPropertyDef* InSelf)
 {
 	Deinit(InSelf);
 
@@ -339,7 +338,7 @@ void FPyUPropertyDef::Free(FPyUPropertyDef* InSelf)
 	Py_TYPE(InSelf)->tp_free((PyObject*)InSelf);
 }
 
-int FPyUPropertyDef::Init(FPyUPropertyDef* InSelf, PyObject* InPropType, PyObject* InMetaData, FString InGetterFuncName, FString InSetterFuncName)
+int FPyFPropertyDef::Init(FPyFPropertyDef* InSelf, PyObject* InPropType, PyObject* InMetaData, FString InGetterFuncName, FString InSetterFuncName)
 {
 	Deinit(InSelf);
 
@@ -355,7 +354,7 @@ int FPyUPropertyDef::Init(FPyUPropertyDef* InSelf, PyObject* InPropType, PyObjec
 	return 0;
 }
 
-void FPyUPropertyDef::Deinit(FPyUPropertyDef* InSelf)
+void FPyFPropertyDef::Deinit(FPyFPropertyDef* InSelf)
 {
 	Py_XDECREF(InSelf->PropType);
 	InSelf->PropType = nullptr;
@@ -367,7 +366,7 @@ void FPyUPropertyDef::Deinit(FPyUPropertyDef* InSelf)
 	InSelf->SetterFuncName.Reset();
 }
 
-void FPyUPropertyDef::ApplyMetaData(FPyUPropertyDef* InSelf, UProperty* InProp)
+void FPyFPropertyDef::ApplyMetaData(FPyFPropertyDef* InSelf, FProperty* InProp)
 {
 	PyCoreUtil::ApplyMetaData(InSelf->MetaData, [InProp](const FString& InMetaDataKey, const FString& InMetaDataValue)
 	{
@@ -856,21 +855,21 @@ PyTypeObject InitializePyUValueDefType()
 }
 
 
-PyTypeObject InitializePyUPropertyDefType()
+PyTypeObject InitializePyFPropertyDefType()
 {
 	struct FFuncs
 	{
 		static PyObject* New(PyTypeObject* InType, PyObject* InArgs, PyObject* InKwds)
 		{
-			return (PyObject*)FPyUPropertyDef::New(InType);
+			return (PyObject*)FPyFPropertyDef::New(InType);
 		}
 
-		static void Dealloc(FPyUPropertyDef* InSelf)
+		static void Dealloc(FPyFPropertyDef* InSelf)
 		{
-			FPyUPropertyDef::Free(InSelf);
+			FPyFPropertyDef::Free(InSelf);
 		}
 
-		static int Init(FPyUPropertyDef* InSelf, PyObject* InArgs, PyObject* InKwds)
+		static int Init(FPyFPropertyDef* InSelf, PyObject* InArgs, PyObject* InKwds)
 		{
 			PyObject* PyPropTypeObj = nullptr;
 			PyObject* PyMetaObj = nullptr;
@@ -897,14 +896,14 @@ PyTypeObject InitializePyUPropertyDefType()
 				return -1;
 			}
 
-			return FPyUPropertyDef::Init(InSelf, PyPropTypeObj, PyMetaObj, MoveTemp(PropGetter), MoveTemp(PropSetter));
+			return FPyFPropertyDef::Init(InSelf, PyPropTypeObj, PyMetaObj, MoveTemp(PropGetter), MoveTemp(PropSetter));
 		}
 	};
 
 	PyTypeObject PyType = {
 		PyVarObject_HEAD_INIT(nullptr, 0)
 		"PropertyDef", /* tp_name */
-		sizeof(FPyUPropertyDef), /* tp_basicsize */
+		sizeof(FPyFPropertyDef), /* tp_basicsize */
 	};
 
 	PyType.tp_new = (newfunc)&FFuncs::New;
@@ -912,7 +911,7 @@ PyTypeObject InitializePyUPropertyDefType()
 	PyType.tp_init = (initproc)&FFuncs::Init;
 
 	PyType.tp_flags = Py_TPFLAGS_DEFAULT;
-	PyType.tp_doc = "Type used to define UProperty fields from Python";
+	PyType.tp_doc = "Type used to define FProperty fields from Python";
 
 	return PyType;
 }
@@ -1002,12 +1001,30 @@ PyTypeObject PyClassIteratorType = InitializePyTypeIteratorType<UClass, FPyClass
 PyTypeObject PyStructIteratorType = InitializePyTypeIteratorType<UScriptStruct, FPyStructIterator>("StructIterator", "Type for iterating Unreal struct types");
 PyTypeObject PyTypeIteratorType = InitializePyTypeIteratorType<UStruct, FPyTypeIterator>("TypeIterator", "Type for iterating Python types");
 PyTypeObject PyUValueDefType = InitializePyUValueDefType();
-PyTypeObject PyUPropertyDefType = InitializePyUPropertyDefType();
+PyTypeObject PyFPropertyDefType = InitializePyFPropertyDefType();
 PyTypeObject PyUFunctionDefType = InitializePyUFunctionDefType();
 
 
 namespace PyCore
 {
+
+bool ShouldLog(const FString& InLogMessage)
+{
+	if (InLogMessage.IsEmpty())
+	{
+		return false;
+	}
+
+	for (const TCHAR LogChar : InLogMessage)
+	{
+		if (!FChar::IsWhitespace(LogChar))
+		{
+			return true;
+		}
+	}
+
+	return false;
+}
 
 PyObject* Log(PyObject* InSelf, PyObject* InArgs)
 {
@@ -1015,7 +1032,11 @@ PyObject* Log(PyObject* InSelf, PyObject* InArgs)
 	if (PyArg_ParseTuple(InArgs, "O:log", &PyObj))
 	{
 		const FString LogMessage = PyUtil::PyObjectToUEString(PyObj);
-		UE_LOG(LogPython, Log, TEXT("%s"), *LogMessage);
+		if (ShouldLog(LogMessage))
+		{
+			UE_LOG(LogPython, Log, TEXT("%s"), *LogMessage);
+			GetPythonLogCapture().Broadcast(EPythonLogOutputType::Info, *LogMessage);
+		}
 
 		Py_RETURN_NONE;
 	}
@@ -1026,10 +1047,14 @@ PyObject* Log(PyObject* InSelf, PyObject* InArgs)
 PyObject* LogWarning(PyObject* InSelf, PyObject* InArgs)
 {
 	PyObject* PyObj = nullptr;
-	if (PyArg_ParseTuple(InArgs, "O:log", &PyObj))
+	if (PyArg_ParseTuple(InArgs, "O:log_warning", &PyObj))
 	{
 		const FString LogMessage = PyUtil::PyObjectToUEString(PyObj);
-		UE_LOG(LogPython, Warning, TEXT("%s"), *LogMessage);
+		if (ShouldLog(LogMessage))
+		{
+			UE_LOG(LogPython, Warning, TEXT("%s"), *LogMessage);
+			GetPythonLogCapture().Broadcast(EPythonLogOutputType::Warning, *LogMessage);
+		}
 
 		Py_RETURN_NONE;
 	}
@@ -1040,10 +1065,14 @@ PyObject* LogWarning(PyObject* InSelf, PyObject* InArgs)
 PyObject* LogError(PyObject* InSelf, PyObject* InArgs)
 {
 	PyObject* PyObj = nullptr;
-	if (PyArg_ParseTuple(InArgs, "O:log", &PyObj))
+	if (PyArg_ParseTuple(InArgs, "O:log_error", &PyObj))
 	{
 		const FString LogMessage = PyUtil::PyObjectToUEString(PyObj);
-		UE_LOG(LogPython, Error, TEXT("%s"), *LogMessage);
+		if (ShouldLog(LogMessage))
+		{
+			UE_LOG(LogPython, Error, TEXT("%s"), *LogMessage);
+			GetPythonLogCapture().Broadcast(EPythonLogOutputType::Error, *LogMessage);
+		}
 
 		Py_RETURN_NONE;
 	}
@@ -1497,6 +1526,13 @@ PyObject* GenerateEnum(PyObject* InSelf, PyObject* InArgs)
 	Py_RETURN_NONE;
 }
 
+PyObject* FlushGeneratedTypeReinstancing(PyObject* InSelf)
+{
+	FPyWrapperTypeReinstancer::Get().ProcessPending();
+
+	Py_RETURN_NONE;
+}
+
 PyObject* GetTypeFromClass(PyObject* InSelf, PyObject* InArgs)
 {
 	PyObject* PyObj = nullptr;
@@ -1615,6 +1651,52 @@ PyObject* CreateLocalizedTextFromStringTable(PyObject* InSelf, PyObject* InArgs)
 	return PyConversion::Pythonize(FText::FromStringTable(Id, Key));
 }
 
+PyObject* RegisterPythonShutdownCallback(PyObject* InSelf, PyObject* InArgs)
+{
+	PyObject* PyObj = nullptr;
+	if (!PyArg_ParseTuple(InArgs, "O:register_python_shutdown_callback", &PyObj))
+	{
+		return nullptr;
+	}
+	check(PyObj);
+
+	FPyObjectPtr PyCallable = FPyObjectPtr::NewReference(PyObj);
+	FDelegateHandle PythonShutdownDelegateHandle = FPythonScriptPlugin::Get()->OnPythonShutdown().AddLambda([PyCallable]() mutable
+	{
+		FPyObjectPtr Result = FPyObjectPtr::StealReference(PyObject_CallObject(PyCallable.GetPtr(), nullptr));
+		if (!Result)
+		{
+			PyUtil::LogPythonError();
+		}
+	});
+
+	return (PyObject*)FPyDelegateHandle::CreateInstance(PythonShutdownDelegateHandle);
+}
+
+PyObject* UnregisterPythonShutdownCallback(PyObject* InSelf, PyObject* InArgs)
+{
+	PyObject* PyObj = nullptr;
+	if (!PyArg_ParseTuple(InArgs, "O:unregister_python_shutdown_callback", &PyObj))
+	{
+		return nullptr;
+	}
+	check(PyObj);
+
+	FPyDelegateHandlePtr PythonEventDelegateHandle = FPyDelegateHandlePtr::StealReference(FPyDelegateHandle::CastPyObject(PyObj));
+	if (!PythonEventDelegateHandle)
+	{
+		PyUtil::SetPythonError(PyExc_TypeError, TEXT("unregister_python_shutdown_callback"), *FString::Printf(TEXT("Failed to convert argument '%s' to '_DelegateHandle'"), *PyUtil::GetFriendlyTypename(PyObj)));
+		return nullptr;
+	}
+
+	if (PythonEventDelegateHandle->Value.IsValid())
+	{
+		FPythonScriptPlugin::Get()->OnPythonShutdown().Remove(PythonEventDelegateHandle->Value);
+	}
+
+	Py_RETURN_NONE;
+}
+
 PyMethodDef PyCoreMethods[] = {
 	{ "log", PyCFunctionCast(&Log), METH_VARARGS, "x.log(str) -> None -- log the given argument as information in the LogPython category" },
 	{ "log_warning", PyCFunctionCast(&LogWarning), METH_VARARGS, "x.log_warning(str) -> None -- log the given argument as a warning in the LogPython category" },
@@ -1634,9 +1716,12 @@ PyMethodDef PyCoreMethods[] = {
 	{ "generate_class", PyCFunctionCast(&GenerateClass), METH_VARARGS, "x.generate_class(type) -> None -- generate an Unreal class for the given Python type" },
 	{ "generate_struct", PyCFunctionCast(&GenerateStruct), METH_VARARGS, "x.generate_struct(type) -> None -- generate an Unreal struct for the given Python type" },
 	{ "generate_enum", PyCFunctionCast(&GenerateEnum), METH_VARARGS, "x.generate_enum(type) -> None -- generate an Unreal enum for the given Python type" },
+	{ "flush_generated_type_reinstancing", PyCFunctionCast(&FlushGeneratedTypeReinstancing), METH_NOARGS, "x.flush_generated_type_reinstancing() -> None -- flush any pending reinstancing requests for Python generated types" },
 	{ "get_type_from_class", PyCFunctionCast(&GetTypeFromClass), METH_VARARGS, "x.get_type_from_class(class) -> type -- get the best matching Python type for the given Unreal class" },
 	{ "get_type_from_struct", PyCFunctionCast(&GetTypeFromStruct), METH_VARARGS, "x.get_type_from_struct(struct) -> type -- get the best matching Python type for the given Unreal struct" },
 	{ "get_type_from_enum", PyCFunctionCast(&GetTypeFromEnum), METH_VARARGS, "x.get_type_from_enum(enum) -> type -- get the best matching Python type for the given Unreal enum" },
+	{ "register_python_shutdown_callback", PyCFunctionCast(&RegisterPythonShutdownCallback), METH_VARARGS, "x.register_python_shutdown_callback(callable) -> _DelegateHandle -- register the given callable (with no input arguments) as a callback to execute immediately before Python shutdown"},
+	{ "unregister_python_shutdown_callback", PyCFunctionCast(&UnregisterPythonShutdownCallback), METH_VARARGS, "x.unregister_python_shutdown_callback(handle) -> None -- unregister the given handle from a previous call to register_python_shutdown_callback"},
 	{ "NSLOCTEXT", PyCFunctionCast(&CreateLocalizedText), METH_VARARGS, "x.NSLOCTEXT(ns, key, source) -> Text -- create a localized Text from the given namespace, key, and source string" },
 	{ "LOCTABLE", PyCFunctionCast(&CreateLocalizedTextFromStringTable), METH_VARARGS, "x.LOCTABLE(id, key) -> Text -- get a localized Text from the given string table id and key" },
 	{ nullptr, nullptr, 0, nullptr }
@@ -1644,10 +1729,8 @@ PyMethodDef PyCoreMethods[] = {
 
 void InitializeModule()
 {
-	GPythonPropertyContainer.Reset(NewObject<UStruct>(GetTransientPackage(), TEXT("PythonProperties"), RF_Transient));
-
-	GPythonTypeContainer.Reset(NewObject<UPackage>(nullptr, TEXT("/Engine/PythonTypes"), RF_Public | RF_Transient));
-	GPythonTypeContainer->SetPackageFlags(PKG_ContainsScript);
+	GetPythonTypeContainerSingleton().Reset(NewObject<UPackage>(nullptr, TEXT("/Engine/PythonTypes"), RF_Public | RF_Transient));
+	GetPythonTypeContainerSingleton()->SetPackageFlags(PKG_ContainsScript);
 
 	PyGenUtil::FNativePythonModule NativePythonModule;
 	NativePythonModule.PyModuleMethods = PyCoreMethods;
@@ -1691,9 +1774,9 @@ void InitializeModule()
 		NativePythonModule.AddType(&PyUValueDefType);
 	}
 
-	if (PyType_Ready(&PyUPropertyDefType) == 0)
+	if (PyType_Ready(&PyFPropertyDefType) == 0)
 	{
-		NativePythonModule.AddType(&PyUPropertyDefType);
+		NativePythonModule.AddType(&PyFPropertyDefType);
 	}
 
 	if (PyType_Ready(&PyUFunctionDefType) == 0)
@@ -1715,6 +1798,16 @@ void InitializeModule()
 	InitializePyWrapperMath(NativePythonModule);
 
 	FPyWrapperTypeRegistry::Get().RegisterNativePythonModule(MoveTemp(NativePythonModule));
+}
+
+void ShutdownModule()
+{
+}
+
+FPythonLogCapture& GetPythonLogCapture()
+{
+	static FPythonLogCapture PythonLogCapture;
+	return PythonLogCapture;
 }
 
 }

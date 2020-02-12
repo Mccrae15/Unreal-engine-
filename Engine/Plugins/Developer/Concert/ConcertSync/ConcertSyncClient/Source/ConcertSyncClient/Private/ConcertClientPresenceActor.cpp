@@ -1,8 +1,11 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "ConcertClientPresenceActor.h"
 #include "UObject/ConstructorHelpers.h"
 #include "EngineGlobals.h"
+#include "UObject/StructOnScope.h"
+#include "Engine/Scene.h"
+#include "ConcertPresenceEvents.h"
 #include "Components/StaticMeshComponent.h"
 #include "Components/TextRenderComponent.h"
 #include "ConcertAssetContainer.h"
@@ -11,8 +14,12 @@
 #include "ConcertClientPresenceManager.h"
 #include "ConcertClientMovement.h"
 #include "ConcertLogGlobal.h"
+#include "HAL/IConsoleManager.h"
 
 #define LOCTEXT_NAMESPACE "ConcertClientPresenceActor"
+
+static TAutoConsoleVariable<int32> CVarEnablePresenceInGame(TEXT("Concert.EnablePresenceInGame"), 0, TEXT("Enable Concert Presence in Game"));
+
 
 //////////////////////////////////////////////////////////////////////////
 // AConcertClientPresenceActor
@@ -20,6 +27,9 @@
 AConcertClientPresenceActor::AConcertClientPresenceActor(const FObjectInitializer& ObjectInitializer)
 	: Super(ObjectInitializer)
 {
+	// Initialize if this actor will be editor only based the `EnablePresenceInGame` console variable.
+	bIsEditorOnlyActor = CVarEnablePresenceInGame.GetValueOnAnyThread() == 0;
+
 	// Set root component 
 	{
 		USceneComponent* SceneRootComponent = CreateDefaultSubobject<USceneComponent>(TEXT("Root"));
@@ -49,6 +59,11 @@ AConcertClientPresenceActor::AConcertClientPresenceActor(const FObjectInitialize
 bool AConcertClientPresenceActor::ShouldTickIfViewportsOnly() const
 {
 	return true;
+}
+
+bool AConcertClientPresenceActor::IsEditorOnly() const
+{
+	return bIsEditorOnlyActor;
 }
 
 void AConcertClientPresenceActor::SetPresenceName(const FString& InName)
@@ -116,8 +131,9 @@ void AConcertClientPresenceActor::Tick(float DeltaSeconds)
 	}
 }
 
-void AConcertClientPresenceActor::InitPresence(const UConcertAssetContainer& InAssetContainer)
+void AConcertClientPresenceActor::InitPresence(const UConcertAssetContainer& InAssetContainer, FName DeviceType)
 {
+	PresenceDeviceType = DeviceType;
 	UStaticMesh* PresenceMesh = InAssetContainer.GenericDesktopMesh;
 
 	if (PresenceMeshComponent->GetStaticMesh() == nullptr)

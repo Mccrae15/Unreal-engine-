@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "Tests/AutomationCommon.h"
 #include "Misc/Paths.h"
@@ -73,7 +73,7 @@ namespace AutomationCommon
 		if ( HardwareDetailsString.Len() > 0 )
 		{
 			//Get rid of the leading "_"
-			HardwareDetailsString = HardwareDetailsString.RightChop(1);
+			HardwareDetailsString.RightChopInline(1, false);
 		}
 
 		return HardwareDetailsString;
@@ -87,7 +87,7 @@ namespace AutomationCommon
 		FString PathName = FPaths::AutomationDir() + TestName / FPlatformProperties::IniPlatformName();
 		PathName = PathName + TEXT("/") + GetRenderDetailsString();
 
-		FPaths::MakePathRelativeTo(PathName, *FPaths::RootDir());
+		FPaths::MakePathRelativeTo(PathName, *FPaths::ProjectDir());
 
 		OutScreenshotName = FString::Printf(TEXT("%s/%s.png"), *PathName, *FPlatformMisc::GetDeviceId());
 	}
@@ -123,6 +123,7 @@ namespace AutomationCommon
 		Data.TextureQuality = QualityLevels.TextureQuality;
 		Data.EffectsQuality = QualityLevels.EffectsQuality;
 		Data.FoliageQuality = QualityLevels.FoliageQuality;
+		Data.ShadingQuality = QualityLevels.ShadingQuality;
 		
 		//GRHIDeviceId
 

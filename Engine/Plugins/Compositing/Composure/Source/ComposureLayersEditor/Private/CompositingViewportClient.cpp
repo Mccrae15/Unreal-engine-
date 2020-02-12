@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "CompositingViewportClient.h"
 #include "AssetEditorModeManager.h"
@@ -129,9 +129,10 @@ void FCompositingViewportClient::DrawCanvas(FViewport& /*InViewport*/, FSceneVie
 	// DO NOTHING
 }
 
-void FCompositingViewportClient::ProcessScreenShots(FViewport* /*InViewport*/)
+bool FCompositingViewportClient::ProcessScreenShots(FViewport* /*InViewport*/)
 {
 	// DO NOTHING
+	return false;
 }
 
 bool FCompositingViewportClient::WantsDrawWhenAppIsHidden() const

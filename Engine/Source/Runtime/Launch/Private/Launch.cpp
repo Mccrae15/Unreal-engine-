@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "CoreMinimal.h"
 #include "Misc/CommandLine.h"
@@ -68,7 +68,7 @@ void EngineTick( void )
 void EngineExit( void )
 {
 	// Make sure this is set
-	GIsRequestingExit = true;
+	RequestEngineExit(TEXT("EngineExit() was called"));
 
 	GEngineLoop.Exit();
 }
@@ -104,6 +104,8 @@ int32 GuardedMain( const TCHAR* CmdLine )
 	}
 #endif
 
+	BootTimingPoint("DefaultMain");
+
 	// Super early init code. DO NOT MOVE THIS ANYWHERE ELSE!
 	FCoreDelegates::GetPreMainInitDelegate().Broadcast();
 
@@ -129,7 +131,7 @@ int32 GuardedMain( const TCHAR* CmdLine )
 	int32 ErrorLevel = EnginePreInit( CmdLine );
 
 	// exit if PreInit failed.
-	if ( ErrorLevel != 0 || GIsRequestingExit )
+	if ( ErrorLevel != 0 || IsEngineExitRequested() )
 	{
 		return ErrorLevel;
 	}
@@ -165,10 +167,15 @@ int32 GuardedMain( const TCHAR* CmdLine )
 
 	ACCUM_LOADTIME(TEXT("EngineInitialization"), EngineInitializationTime);
 
-	while( !GIsRequestingExit )
+	BootTimingPoint("Tick loop starting");
+	DumpBootTiming();
+
+	while( !IsEngineExitRequested() )
 	{
 		EngineTick();
 	}
+
+	TRACE_BOOKMARK(TEXT("Tick loop end"));
 
 #if WITH_EDITOR
 	if( GIsEditor )

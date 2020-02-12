@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "VREditorModeManager.h"
 #include "InputCoreTypes.h"
@@ -146,11 +146,21 @@ bool FVREditorModeManager::IsVREditorActive() const
 	return CurrentVREditorMode != nullptr && CurrentVREditorMode->IsActive();
 }
 
-
+const static FName WMRSytemName = FName(TEXT("WindowsMixedRealityHMD"));
+const static FName OXRSytemName = FName(TEXT("OpenXR"));
 bool FVREditorModeManager::IsVREditorAvailable() const
 {
-	const bool bHasHMDDevice = GEngine->XRSystem.IsValid() && GEngine->XRSystem->GetHMDDevice() && GEngine->XRSystem->GetHMDDevice()->IsHMDEnabled();
-	return bHasHMDDevice && !GEditor->bIsSimulatingInEditor;
+	if (GEngine->XRSystem.IsValid() && GEngine->XRSystem->GetHMDDevice() && GEngine->XRSystem->GetHMDDevice()->IsHMDEnabled())
+	{
+		// TODO: UE-71871/UE-73237 Work around for avoiding starting VRMode when using WMR
+		FName SystemName = GEngine->XRSystem->GetSystemName();
+		const bool bIsWMR = SystemName == WMRSytemName || SystemName == OXRSytemName;
+		return !bIsWMR && !GEditor->bIsSimulatingInEditor;
+	}
+	else
+	{
+		return false;
+	}
 }
 
 bool FVREditorModeManager::IsVREditorButtonActive() const
@@ -172,7 +182,7 @@ void FVREditorModeManager::AddReferencedObjects( FReferenceCollector& Collector 
 
 void FVREditorModeManager::StartVREditorMode( const bool bForceWithoutHMD )
 {
-	if (!GIsRequestingExit)
+	if (!IsEngineExitRequested())
 	{
 		UVREditorMode* VRMode = nullptr;
 		{

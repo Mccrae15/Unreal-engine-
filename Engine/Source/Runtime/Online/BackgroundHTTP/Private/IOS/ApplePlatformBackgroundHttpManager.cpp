@@ -1,6 +1,7 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "IOS/ApplePlatformBackgroundHttpManager.h"
+#include "IOS/ApplePlatformBackgroundHttp.h"
 #include "IOS/ApplePlatformBackgroundHttpRequest.h"
 #include "IOS/ApplePlatformBackgroundHttpResponse.h"
 
@@ -13,35 +14,54 @@
 
 #include "IOS/IOSBackgroundURLSessionHandler.h"
 
+#include "PlatformBackgroundHttp.h"
+
 FApplePlatformBackgroundHttpManager::~FApplePlatformBackgroundHttpManager()
 {
-    [UnAssociatedTasks release];
-    UnAssociatedTasks = nullptr;
-    
+	bWasAppleBGHTTPInitialized = false;
+	
+	{
+		FRWScopeLock ScopeLock(UnAssociatedTasksLock, SLT_Write);
+		[UnAssociatedTasks release];
+		UnAssociatedTasks = nullptr;
+	}
+	
     CleanUpNSURLSessionResponseDelegates();
 }
 
 FString FApplePlatformBackgroundHttpManager::BackgroundSessionIdentifier = FString("");
 float FApplePlatformBackgroundHttpManager::ActiveTimeOutSetting = 30.0f;
 int FApplePlatformBackgroundHttpManager::RetryResumeDataLimitSetting = -1.f;
+volatile bool FApplePlatformBackgroundHttpManager::bWasAppleBGHTTPInitialized = false;
 
 FApplePlatformBackgroundHttpManager::FApplePlatformBackgroundHttpManager()
 	: bHasFinishedPopulatingUnassociatedTasks(false)
     , bIsInBackground(false)
     , bIsIteratingThroughSessionTasks(false)
     , RequestsPendingRemove()
+    , NumCurrentlyActiveTasks(0)
+	, MaxNumActualTasks(MaxActiveDownloads)
 {
 }
 
 void FApplePlatformBackgroundHttpManager::Initialize()
 {
-	UnAssociatedTasks = [[NSMutableDictionary alloc] init];
+	//Initialize UnAssociatedTasks
+	{
+		FRWScopeLock ScopeLock(UnAssociatedTasksLock, SLT_Write);
+		UnAssociatedTasks = [[NSMutableDictionary alloc] init];
+	}
+	//This has its own lock when needed, so not included above
 	PopulateUnAssociatedTasks();
-
+	
     GConfig->GetFloat(TEXT("BackgroundHttp.iOSSettings"), TEXT("BackgroundHttp.ActiveReceiveTimeout"), ActiveTimeOutSetting, GEngineIni);
 	GConfig->GetInt(TEXT("BackgroundHttp.iOSSettings"), TEXT("BackgroundHttp.RetryResumeDataLimit"), RetryResumeDataLimitSetting, GEngineIni);
 
 	SetupNSURLSessionResponseDelegates();
+
+	FBackgroundHttpManagerImpl::Initialize();
+	
+	bWasAppleBGHTTPInitialized = true;
 }
 
 void FApplePlatformBackgroundHttpManager::PopulateUnAssociatedTasks()
@@ -53,10 +73,20 @@ void FApplePlatformBackgroundHttpManager::PopulateUnAssociatedTasks()
 		{
 			[BackgroundDownloadSession getAllTasksWithCompletionHandler : ^ (NSArray<__kindof NSURLSessionTask*> *tasks)
 			{
+				FRWScopeLock ScopeLock(UnAssociatedTasksLock, SLT_Write);
+				
 				//Store all existing tasks by their URL
 				for (id task in tasks)
 				{
-					[UnAssociatedTasks setObject:task forKey:[[[task currentRequest] URL] absoluteString]];
+					//Make sure we have a valid absolute string version of the URL to use for our task's key. Otherwise, we just disregard this task.
+					if (	(task != nullptr)
+						&&	([task currentRequest] != nullptr)
+						&&  ([[task currentRequest] URL] != nullptr)
+						&&	([[[task currentRequest] URL] absoluteString] != nullptr)
+						&&	([[[[task currentRequest] URL] absoluteString] length] != 0))
+					{
+						[UnAssociatedTasks setObject : task forKey : [[[task currentRequest] URL] absoluteString]];
+					}
 				}
 
 				bHasFinishedPopulatingUnassociatedTasks = true;
@@ -67,6 +97,8 @@ void FApplePlatformBackgroundHttpManager::PopulateUnAssociatedTasks()
 
 void FApplePlatformBackgroundHttpManager::PauseAllUnassociatedTasks()
 {
+	FRWScopeLock ScopeLock(UnAssociatedTasksLock, SLT_ReadOnly);
+	
     for (id Key in UnAssociatedTasks)
     {
         NSURLSessionDownloadTask* Task = (NSURLSessionDownloadTask*)([UnAssociatedTasks objectForKey:Key]);
@@ -82,6 +114,8 @@ void FApplePlatformBackgroundHttpManager::PauseAllUnassociatedTasks()
 
 void FApplePlatformBackgroundHttpManager::UnpauseAllUnassociatedTasks()
 {
+	FRWScopeLock ScopeLock(UnAssociatedTasksLock, SLT_ReadOnly);
+	
     for (id Key in UnAssociatedTasks)
     {
         NSURLSessionDownloadTask* Task = (NSURLSessionDownloadTask*)([UnAssociatedTasks objectForKey:Key]);
@@ -97,8 +131,11 @@ void FApplePlatformBackgroundHttpManager::UnpauseAllUnassociatedTasks()
 
 void FApplePlatformBackgroundHttpManager::Shutdown()
 {
-	[UnAssociatedTasks release];
-	UnAssociatedTasks = nullptr;
+	{
+		FRWScopeLock ScopeLock(UnAssociatedTasksLock, SLT_Write);
+		[UnAssociatedTasks release];
+		UnAssociatedTasks = nullptr;
+	}
 
 	CleanUpNSURLSessionResponseDelegates();
     FBackgroundURLSessionHandler::ShutdownBackgroundSession();
@@ -110,43 +147,62 @@ void FApplePlatformBackgroundHttpManager::AddRequest(const FBackgroundHttpReques
     
     //See if our request is an AppleBackgroundHttpRequest so we can do more detailed checks on it.
     FAppleBackgroundHttpRequestPtr AppleRequest = StaticCastSharedPtr<FApplePlatformBackgroundHttpRequest>(Request);
-    if (ensureAlwaysMsgf(AppleRequest.IsValid(), TEXT("Adding a non-Apple background request to our Apple Background Http Manager!")))
-    {
-        GenerateURLMapEntriesForRequest(AppleRequest);
-    }
-    
-	if (!AssociateWithAnyExistingRequest(Request))
+	if (ensureAlwaysMsgf(AppleRequest.IsValid(), TEXT("Adding a non-Apple background request to our Apple Background Http Manager! This is not supported or expected!")))
 	{
-        //ensures above if this is false, but need to re-check it before adding tasks
-        if (AppleRequest.IsValid())
-        {
-            StartRequest(AppleRequest);
-        }
-        
-		//Just always add un-associated requests to ActiveRequests in the Apple implementation.
-		FRWScopeLock ScopeLock(ActiveRequestLock, SLT_Write);
-		ActiveRequests.Add(Request);
+		//If we fail to generate URLMapEntries or AssociateWithAnyExistingRequest, then we will have already sent a completion handler immediately, so only start work and monitor
+		//these requests if those didn't already complete this Request
+		if (GenerateURLMapEntriesForRequest(AppleRequest) && !AssociateWithAnyExistingRequest(Request))
+		{
+			if (!AssociateWithAnyExistingUnAssociatedTasks(Request))
+			{
+				StartRequest(AppleRequest);
+			}
+
+			FRWScopeLock ScopeLock(ActiveRequestLock, SLT_Write);
+			ActiveRequests.Add(Request);
+
+			//Increment our underlying FBackgroundHttpManagerImpl tracker for active requests as we
+			//don't implement the method it uses to increase this number.
+			// NOTE: We don't make use of this number in Apple Platform functions as all requests are "Active" but their
+			// underlying Task might not be, see NumCurrentlyActiveTasks instead to track how many current Tasks are downloading data.
+			++NumCurrentlyActiveRequests;
+		}
 	}
 }
 
-void FApplePlatformBackgroundHttpManager::GenerateURLMapEntriesForRequest( FAppleBackgroundHttpRequestPtr Request)
+bool FApplePlatformBackgroundHttpManager::GenerateURLMapEntriesForRequest( FAppleBackgroundHttpRequestPtr Request)
 {
-    FRWScopeLock ScopeLock(URLToRequestMapLock, SLT_Write);
-    for (const FString& URL : Request->GetURLList())
-    {
-        FBackgroundHttpURLMappedRequestPtr& FoundRequest = URLToRequestMap.FindOrAdd(URL);
-        
-        const bool bRequestAlreadyExistsForURL = ((FoundRequest.IsValid()) && (Request != FoundRequest));
-        if (ensureAlwaysMsgf(!bRequestAlreadyExistsForURL, TEXT("URL is represented by 2 different Requests! Immediately completing new request with error.")))
-        {
-            FoundRequest = Request;
-        }
-        else
-        {
-            FBackgroundHttpResponsePtr NewResponse = FPlatformBackgroundHttp::ConstructBackgroundResponse(EHttpResponseCodes::Unknown, FString());
-            Request->CompleteWithExistingResponseData(NewResponse);
-        }
-    }
+	bool bWasGenerateSuccess = true;
+
+	//Attempt to add entries for all URLs
+	{
+		FRWScopeLock ScopeLock(URLToRequestMapLock, SLT_Write);
+		for (const FString& URL : Request->GetURLList())
+		{
+			FBackgroundHttpURLMappedRequestPtr& FoundRequest = URLToRequestMap.FindOrAdd(URL);
+
+			const bool bRequestAlreadyExistsForURL = ((FoundRequest.IsValid()) && (Request != FoundRequest));
+			if (ensureAlwaysMsgf(!bRequestAlreadyExistsForURL, TEXT("URL is represented by 2 different Requests! Immediately completing new request with error.")))
+			{
+				FoundRequest = Request;
+			}
+			else
+			{
+				bWasGenerateSuccess = false;
+
+				FBackgroundHttpResponsePtr NewResponse = FPlatformBackgroundHttp::ConstructBackgroundResponse(EHttpResponseCodes::Unknown, FString());
+				Request->CompleteWithExistingResponseData(NewResponse);
+			}
+		}
+	}
+
+	//if we didn't succeed, make sure we don't have any stale partial URL Map entries for this request
+	if (!bWasGenerateSuccess)
+	{
+		RemoveURLMapEntriesForRequest(Request);
+	}
+
+	return bWasGenerateSuccess;
 }
 
 void FApplePlatformBackgroundHttpManager::RemoveURLMapEntriesForRequest(FAppleBackgroundHttpRequestPtr Request)
@@ -158,7 +214,7 @@ void FApplePlatformBackgroundHttpManager::RemoveURLMapEntriesForRequest(FAppleBa
         
         if (FoundRequest == Request)
         {
-            UE_LOG(LogBackgroundHttpManager, Display, TEXT("Removing URL Entry -- RequestID:%s | URL:%s"), *Request->GetRequestID(), *URL);
+            UE_LOG(LogBackgroundHttpManager, Verbose, TEXT("Removing URL Entry -- RequestDebugID:%s | URL:%s"), *Request->GetRequestDebugID(), *URL);
             URLToRequestMap.Remove(URL);
         }
     }
@@ -167,7 +223,7 @@ void FApplePlatformBackgroundHttpManager::RemoveURLMapEntriesForRequest(FAppleBa
 void FApplePlatformBackgroundHttpManager::StartRequest(FAppleBackgroundHttpRequestPtr Request)
 {
     //Just count it as a retry that won't increment the retry counter before giving us the URL as our RetryCount 0 should start this up.
-    RetryRequest(Request,false, false, nullptr);
+    RetryRequest(Request,false, nullptr);
 }
 
 void FApplePlatformBackgroundHttpManager::RemoveRequest(const FBackgroundHttpRequestPtr Request)
@@ -183,6 +239,9 @@ void FApplePlatformBackgroundHttpManager::RemoveRequest(const FBackgroundHttpReq
 
 void FApplePlatformBackgroundHttpManager::DeletePendingRemoveRequests()
 {
+    //Don't want to do this when background tasks might be using our request
+    ensureAlwaysMsgf(IsInGameThread(), TEXT("Called from un-expected thread! Potential error in an implementation of background downloads!"));
+    
     for (const FBackgroundHttpRequestPtr& Request : RequestsPendingRemove)
     {
         FBackgroundHttpManagerImpl::RemoveRequest(Request);
@@ -200,55 +259,96 @@ void FApplePlatformBackgroundHttpManager::RemoveSessionTasksForRequest(FAppleBac
     Request->CancelActiveTask();
 }
 
-bool FApplePlatformBackgroundHttpManager::AssociateWithAnyExistingRequest(const FBackgroundHttpRequestPtr Request)
+void FApplePlatformBackgroundHttpManager::SetMaxActiveDownloads(int InMaxActiveDownloads)
 {
-	if (!bHasFinishedPopulatingUnassociatedTasks)
-	{
-		//@TODO: TRoss, might want to look at trying to associate these after bHasFinishedPopulatingUnassociatedTasks. At this point I don't think its really worth it as it SHOULD be done before we get here, however
-		//the PopulateUnAssociatedTasks() function has an asynch component so it could technically be unfinished with some tight timing.
-		UE_LOG(LogBackgroundHttpManager, Warning, TEXT("Call to AssociateWithAnyExistingRequest before we have finished populating unassociated tasks! Might have an unassociated task for this request that we won't associate with."));
-	}
-	
-	//First check if we Associate using the base implementation.
-	bool bDidAssociateWithExistingRequest = FBackgroundHttpManagerImpl::AssociateWithAnyExistingRequest(Request);
+	FBackgroundHttpManagerImpl::SetMaxActiveDownloads(InMaxActiveDownloads);
 
-	//Didn't associate, so lets check more Apple specific stuff
-	if (!bDidAssociateWithExistingRequest)
-	{
-		//See if our request is an AppleBackgroundHttpRequest so we can do more detailed checks on it.
-		FAppleBackgroundHttpRequestPtr AppleRequest = StaticCastSharedPtr<FApplePlatformBackgroundHttpRequest>(Request);
-		if (AppleRequest.IsValid())
-		{
-			bDidAssociateWithExistingRequest = CheckForExistingUnAssociatedTask(AppleRequest);
-		}
-	}
+	// It's possible we have more than the new maximum active right now, so we gracefully reduce MaxNumActualTasks down to MaxActiveDownloads as the extra tasks finish.
+	MaxNumActualTasks = FMath::Max(MaxActiveDownloads.Load(), FPlatformAtomics::AtomicRead(&NumCurrentlyActiveTasks));
+}
 
-	return bDidAssociateWithExistingRequest;
+bool FApplePlatformBackgroundHttpManager::AssociateWithAnyExistingUnAssociatedTasks(const FBackgroundHttpRequestPtr Request)
+{
+    bool bDidAssociateWithUnAssociatedTask = false;
+    
+    if (!bHasFinishedPopulatingUnassociatedTasks)
+    {
+        //@TODO: TRoss, might want to look at trying to associate these after bHasFinishedPopulatingUnassociatedTasks. At this point I don't think its really worth it as it SHOULD be done before we get here, however
+        //the PopulateUnAssociatedTasks() function has an asynch component so it could technically be unfinished with some tight timing.
+        UE_LOG(LogBackgroundHttpManager, Warning, TEXT("Call to AssociateWithAnyExistingRequest before we have finished populating unassociated tasks! Might have an unassociated task for this request that we won't associate with."));
+    }
+        
+    //See if our request is an AppleBackgroundHttpRequest so we can do more detailed checks on it.
+    FAppleBackgroundHttpRequestPtr AppleRequest = StaticCastSharedPtr<FApplePlatformBackgroundHttpRequest>(Request);
+    if (AppleRequest.IsValid())
+    {
+        bDidAssociateWithUnAssociatedTask = CheckForExistingUnAssociatedTask(AppleRequest);
+    }
+    
+    return bDidAssociateWithUnAssociatedTask;
 }
 
 bool FApplePlatformBackgroundHttpManager::CheckForExistingUnAssociatedTask(const FAppleBackgroundHttpRequestPtr Request)
 {
     bool bDidFindExistingTask = false;
     
-	if (ensureAlwaysMsgf(Request.IsValid(), TEXT("CheckForExistingUnAssociatedTask called with invalid Request!")))
+	TArray<FString> URLsToRemove;
+	
+	//Go through and read the UnAssociatedTasksLock and save off which URLs we need to remove as we associate with those tasks.
 	{
-		const TArray<FString>& URLList = Request->GetURLList();
-		for (const FString& URL : URLList)
+		FRWScopeLock ScopeLock(UnAssociatedTasksLock, SLT_ReadOnly);
+		
+		if (ensureAlwaysMsgf(Request.IsValid(), TEXT("CheckForExistingUnAssociatedTask called with invalid Request!")))
 		{
-			NSURLSessionTask* FoundTask = [UnAssociatedTasks valueForKey:URL.GetNSString()];
-			if (nullptr != FoundTask)
+			const TArray<FString>& URLList = Request->GetURLList();
+			for (const FString& URL : URLList)
 			{
-                if ([FoundTask state] != NSURLSessionTaskStateCanceling)
-                {
-                    UE_LOG(LogBackgroundHttpManager, Display, TEXT("Existing UnAssociateTask found for Request! Attempting to Associate! RequestId:%s"), *(Request->GetRequestID()));
-                    Request->AssociateWithTask(FoundTask);
-                    
-                    bDidFindExistingTask = true;
-                }
+				NSURLSessionTask* FoundTask = [UnAssociatedTasks valueForKey:URL.GetNSString()];
+				if (nullptr != FoundTask)
+				{
+					if ([FoundTask state] != NSURLSessionTaskStateCompleted && [FoundTask state] != NSURLSessionTaskStateCanceling)
+					{
+						UE_LOG(LogBackgroundHttpManager, Display, TEXT("Existing UnAssociateTask found for Request! Attempting to Associate! RequestDebugID:%s"), *(Request->GetRequestDebugID()));
+						
+						//Associate with task so that our Request takes over ownership of this task so we can remove it from our UnAssociated Tasks list without it getting GC'd
+						if (Request->AssociateWithTask(FoundTask))
+						{
+							//Always set our bWasTaskStartedInBG flag on our Request as true in the UnAssociated case as we don't know when it was really started
+							FPlatformAtomics::InterlockedExchange(&(Request->bWasTaskStartedInBG), true);
+
+							//Suspend task in case it was running so that we can adhere to our desired platform max tasks
+							[FoundTask suspend];
+
+							bDidFindExistingTask = true;
+							break;
+						}
+						else
+						{
+							UE_LOG(LogBackgroundHttpManager, Display, TEXT("UnAssociatedTask for request found, but failed to Associate with Task! -- RequestDebugID:%s | URL:%s"), *(Request->GetRequestDebugID()), *URL);
+						}
+					}
+					else
+					{
+						UE_LOG(LogBackgroundHttpManager, Display, TEXT("UnAssociatedTask for request found, BUT NOT USING as it was cancelling or completed already! -- RequestDebugID:%s | URL:%s"), *(Request->GetRequestDebugID()), *URL);
+					}
+					
+					//Still want to remove UnAssociatedTask even though we didn't use it as something else can now be downloading this data and we do not want duplicates
+					URLsToRemove.Add(URL);
+				}
 			}
 		}
 	}
-    
+	
+	//Remove all URLs from UnAssociatedTasks
+	{
+		FRWScopeLock ScopeLock(UnAssociatedTasksLock, SLT_Write);
+		
+		for (const FString& URL : URLsToRemove)
+		{
+			[UnAssociatedTasks removeObjectForKey : URL.GetNSString()];
+		}
+	}
+	    
     return bDidFindExistingTask;
 }
 
@@ -274,14 +374,14 @@ void FApplePlatformBackgroundHttpManager::CleanUpNSURLSessionResponseDelegates()
 
 void FApplePlatformBackgroundHttpManager::OnApp_EnteringForeground()
 {
-    FPlatformAtomics::InterlockedExchange(&bIsInBackground,false);
 	PauseAllActiveTasks();
+    FPlatformAtomics::InterlockedExchange(&bIsInBackground,false);
 }
 
 void FApplePlatformBackgroundHttpManager::OnApp_EnteringBackground()
 {
 	FPlatformAtomics::InterlockedExchange(&bIsInBackground,true);
-	ResumeAllTasks();
+	ResumeTasksForBackgrounding();
 }
 
 void FApplePlatformBackgroundHttpManager::PauseAllActiveTasks()
@@ -298,69 +398,154 @@ void FApplePlatformBackgroundHttpManager::PauseAllActiveTasks()
 				if ([DownloadTask state] == NSURLSessionTaskStateRunning)
 				{
                     FString TaskURL = [[[DownloadTask currentRequest] URL] absoluteString];
-                    UE_LOG(LogBackgroundHttpManager, Display, TEXT("Pausing Task for URL:%s"), *TaskURL);
+                    int TaskIdentifier = (int)[DownloadTask taskIdentifier];
+                    
+                    UE_LOG(LogBackgroundHttpManager, Display, TEXT("Pausing Task for URL:%s | TaskIdentifier:%d"), *TaskURL, TaskIdentifier);
                     
 					[DownloadTask suspend];
 				}
 			}
-            
-            //Reset our active requests to 0 now that we are pausing everything
-            FPlatformAtomics::InterlockedExchange(&NumCurrentlyActiveRequests, 0);
 		}];
 	}
 }
 
-void FApplePlatformBackgroundHttpManager::ResumeAllTasks()
+void FApplePlatformBackgroundHttpManager::ResumeTasksForBackgrounding(FIOSBackgroundHttpPostSessionWorkCallback Callback)
 {
-    UE_LOG(LogBackgroundHttpManager, Display, TEXT("Attempting to Resume All Active Tasks"));
+    UE_LOG(LogBackgroundHttpManager, Display, TEXT("Attempting to resume all active tasks that don't have a corresponding request that has paused them in priority order"));
     
 	NSURLSession* BackgroundDownloadSession = FBackgroundURLSessionHandler::GetBackgroundSession();
 	if (nullptr != BackgroundDownloadSession)
 	{
 		[BackgroundDownloadSession getTasksWithCompletionHandler : ^ (NSArray<__kindof NSURLSessionDataTask*>* DataTasks, NSArray<__kindof NSURLSessionUploadTask*>* UploadTasks, NSArray<__kindof NSURLSessionDownloadTask*>* DownloadTasks)
 		{
-			for (NSURLSessionDownloadTask* DownloadTask : DownloadTasks)
+			FRWScopeLock ScopeLock(URLToRequestMapLock, SLT_ReadOnly);
+		 
+			//We only want to automatically re-queue the highest priority things, so go through all tasks by priority order and stop once we have requeued something
+			bool bDidResumeATask = false;
+			for (uint8 PriorityAsInt = (uint8)EBackgroundHTTPPriority::High; (!bDidResumeATask && (PriorityAsInt < (uint8)EBackgroundHTTPPriority::Num)); ++PriorityAsInt)
 			{
-				if ([DownloadTask state] == NSURLSessionTaskStateSuspended)
+				for (NSURLSessionDownloadTask* DownloadTask : DownloadTasks)
 				{
-                    FString TaskURL = [[[DownloadTask currentRequest] URL] absoluteString];
-                    UE_LOG(LogBackgroundHttpManager, Display, TEXT("Resuming Task for URL:%s"), *TaskURL);
-                    
-					[DownloadTask resume];
+					FString TaskURL = [[[DownloadTask currentRequest] URL] absoluteString];
+					int TaskIdentifier = (int)[DownloadTask taskIdentifier];
+		 
+					FBackgroundHttpURLMappedRequestPtr* WeakRequestInMap = URLToRequestMap.Find(TaskURL);
+					FAppleBackgroundHttpRequestPtr FoundRequest = ((nullptr != WeakRequestInMap) && (WeakRequestInMap->IsValid())) ? WeakRequestInMap->Pin() : nullptr;
+		 
+					if (FoundRequest.IsValid())
+					{
+						bDidResumeATask = ResumeDownloadTaskForBackgroundingIfAppropriate(DownloadTask, FoundRequest, EBackgroundHTTPPriority(PriorityAsInt)) || bDidResumeATask;
+					}
+					else
+					{
+						UE_LOG(LogBackgroundHttpManager, Verbose, TEXT("Skipped Resuming Task as there is no corresponding request! URL:%s | TaskIdentifier:%d"), *TaskURL, TaskIdentifier);
+					}
+				}
+				
+				if (bDidResumeATask)
+				{
+					UE_LOG(LogBackgroundHttpManager, Display, TEXT("Tasks of Priority: %s Found. Not Resuming Any Lower Priority Tasks."), LexToString((EBackgroundHTTPPriority)PriorityAsInt));
+				}
+				else
+				{
+					UE_LOG(LogBackgroundHttpManager, Display, TEXT("No tasks found of priority %s."), LexToString((EBackgroundHTTPPriority)PriorityAsInt));
 				}
 			}
+			
+			Callback.ExecuteIfBound();
 		}];
 	}
+}
+
+bool FApplePlatformBackgroundHttpManager::ResumeDownloadTaskForBackgroundingIfAppropriate(NSURLSessionDownloadTask* DownloadTask, const FAppleBackgroundHttpRequestPtr Request, EBackgroundHTTPPriority LowestPriorityToQueue)
+{
+	if ((nullptr == DownloadTask) || (nullptr == [DownloadTask currentRequest]) || (!Request.IsValid()))
+	{
+		return false;
+	}
+
+	bool bDidResumeTask = false;
+	bool bDidFindActiveTaskOfPriority = false;
+	
+	FString TaskURL = [[[DownloadTask currentRequest] URL] absoluteString];
+	int TaskIdentifier = (int)[DownloadTask taskIdentifier];
+
+	EBackgroundHTTPPriority FoundRequestPriority = Request->GetRequestPriority();
+	if (FoundRequestPriority <= LowestPriorityToQueue)
+	{
+		const bool bIsRequestPaused = Request->bIsTaskPaused;
+		if (!bIsRequestPaused)
+		{
+			UE_LOG(LogBackgroundHttpManager, Display, TEXT("Resuming Found Task for URL:%s | TaskIdentifier:%d | TaskPriority:%s"), *TaskURL, TaskIdentifier, LexToString(FoundRequestPriority));
+			
+			const bool bIsTaskActive = Request->IsUnderlyingTaskActive();
+			
+			//We only want to resume Suspended tasks
+			if ([DownloadTask state] == NSURLSessionTaskStateSuspended)
+			{
+				[DownloadTask resume];
+				bDidResumeTask = true;
+			}
+			else if (bIsTaskActive)
+			{
+				bDidFindActiveTaskOfPriority = true;
+			}
+		}
+		else
+		{
+			UE_LOG(LogBackgroundHttpManager, Verbose, TEXT("NOT Resuming Task for URL as associated request was paused! URL:%s | TaskIdentifier:%d"), *TaskURL, TaskIdentifier);
+		}
+	}
+	else
+	{
+		UE_LOG(LogBackgroundHttpManager, Verbose, TEXT("NOT RESUMING Task for URL because its a lower priority:%s | TaskIdentifier:%d | TaskPriority:%s | LowestPriorityToQueue:%s"), *TaskURL, TaskIdentifier, LexToString(FoundRequestPriority), LexToString(LowestPriorityToQueue));
+	}
+	
+	return (bDidResumeTask || bDidFindActiveTaskOfPriority);
 }
 
 void FApplePlatformBackgroundHttpManager::OnTask_DidFinishDownloadingToURL(NSURLSessionDownloadTask* Task, NSError* Error, const FString& TempFilePath)
 {
 	FString TaskURL = [[[Task currentRequest] URL] absoluteString];
+    int TaskIdentifier = (int)[Task taskIdentifier];
+    
     const int ErrorCode = [Error code];
     const FString ErrorDescription = [Error localizedDescription];
     
     IPlatformFile& PlatformFile = FPlatformFileManager::Get().GetPlatformFile();
 	const bool bFileExists = PlatformFile.FileExists(*TempFilePath);
 	
-    UE_LOG(LogBackgroundHttpManager, Display, TEXT("Recieved Background Session Callback for URL:%s | bFileExists:%d | ErrorCode:%d | ErrorDescription:%s | Location:%s"), *TaskURL, (int)(bFileExists), ErrorCode, *ErrorDescription, *TempFilePath);
+    UE_LOG(LogBackgroundHttpManager, Display, TEXT("Recieved Background Session Callback for URL:%s | TaskIdentifier:%d | bFileExists:%d | ErrorCode:%d | ErrorDescription:%s | Location:%s"), *TaskURL, TaskIdentifier, (int)(bFileExists), ErrorCode, *ErrorDescription, *TempFilePath);
 
-	//Find request for this task and mark it complete
-	{
-        FRWScopeLock ScopeLock(URLToRequestMapLock, SLT_ReadOnly);
-        FBackgroundHttpURLMappedRequestPtr* WeakRequestInMap = URLToRequestMap.Find(TaskURL);
-        FAppleBackgroundHttpRequestPtr FoundRequest = (nullptr != WeakRequestInMap) ? WeakRequestInMap->Pin() : nullptr;
-        
-        if (FoundRequest.IsValid())
-		{
-			FoundRequest->SetRequestAsSuccess(TempFilePath);
-		}
-        
-		UE_LOG(LogBackgroundHttpManager, Display, TEXT("Attempt To Mark Task Complete -- URL:%s | bDidFindTask:%d"), *TaskURL, (int)(FoundRequest.IsValid()));
-	}
+    if (bFileExists)
+    {
+        //Find request for this task and mark it complete
+        {
+            FRWScopeLock ScopeLock(URLToRequestMapLock, SLT_ReadOnly);
+            FBackgroundHttpURLMappedRequestPtr* WeakRequestInMap = URLToRequestMap.Find(TaskURL);
+            FAppleBackgroundHttpRequestPtr FoundRequest = ((nullptr != WeakRequestInMap) && (WeakRequestInMap->IsValid())) ? WeakRequestInMap->Pin() : nullptr;
+            
+            if (FoundRequest.IsValid())
+            {
+                FoundRequest->SetRequestAsSuccess(TempFilePath);
+            }
+            
+            UE_LOG(LogBackgroundHttpManager, Display, TEXT("Attempt To Mark Task Complete -- URL:%s | TaskIdentifier:%d |bDidFindTask:%d"), *TaskURL, TaskIdentifier, (int)(FoundRequest.IsValid()));
+        }
+    }
+    else
+    {
+        //Forward to the OnCompleteWithError as we don't have our finished file!
+        UE_LOG(LogBackgroundHttpManager, Display, TEXT("File Not Found For DidFinishDownloadingToURL. Transitioning to DidCompleteWithError -- TaskURL:%s | TaskIdentifier:%d| ErrorCode:%d | ErrorDescription:%s | Location:%s"), *TaskURL, TaskIdentifier, ErrorCode, *ErrorDescription, *TempFilePath);
+        OnTask_DidCompleteWithError(Task, Error);
+    }
 }
 
 void FApplePlatformBackgroundHttpManager::FinishRequest(FAppleBackgroundHttpRequestPtr Request)
 {
+    //We should only come into here from the GameThread so that if we send out a complete event our delegate subscribers don't have to worry about being thread-safe unnessecarily
+    ensureAlwaysMsgf(IsInGameThread(), TEXT("Called from un-expected thread! Potential error in an implementation of background downloads!"));
+    
     //Make sure we another thread hasn't already finished this request
     bool bHasAlreadyFinishedRequest = FPlatformAtomics::InterlockedExchange(&(Request->bHasAlreadyFinishedRequest), true);
     if (!bHasAlreadyFinishedRequest)
@@ -378,7 +563,7 @@ void FApplePlatformBackgroundHttpManager::FinishRequest(FAppleBackgroundHttpRequ
 
             if (bFileExists)
             {
-                UE_LOG(LogBackgroundHttpManager,Display, TEXT("Task Completed Successfully. RequestID:%s TempFileLocation:%s"), *(Request->GetRequestID()), *TempFilePath);
+                UE_LOG(LogBackgroundHttpManager,Display, TEXT("Task Completed Successfully. RequestDebugID:%s TempFileLocation:%s"), *(Request->GetRequestDebugID()), *TempFilePath);
                 FBackgroundHttpResponsePtr NewResponse = FPlatformBackgroundHttp::ConstructBackgroundResponse(ResponseCode, *TempFilePath);
                 Request->CompleteWithExistingResponseData(NewResponse);
             }
@@ -387,10 +572,10 @@ void FApplePlatformBackgroundHttpManager::FinishRequest(FAppleBackgroundHttpRequ
                 volatile bool bDidFail = FPlatformAtomics::AtomicRead(&(Request->bIsFailed));
                 
                 //Unexpected case where we didn't find a valid download, but we thought this completed
-                //successfully. Handle this unexpected failure
+                //successfully. Handle this unexpected failure by trying to retry the task.
                 if (!bDidFail)
                 {
-                    UE_LOG(LogBackgroundHttpManager,Warning, TEXT("Task finished downloading, but finished temp file was not found! -- RequestId:%s | TempFileLocation:%s"), *(Request->GetRequestID()), *TempFilePath);
+                    UE_LOG(LogBackgroundHttpManager,Error, TEXT("Task finished downloading, but finished temp file was not found! -- RequestDebugID:%s | TempFileLocation:%s"), *(Request->GetRequestDebugID()), *TempFilePath);
                     
                     //Mark our download as not completed as we hit an error so that we don't just keep trying to call FinishRequest
                     FPlatformAtomics::InterlockedExchange(&(Request->bIsCompleted), false);
@@ -404,42 +589,48 @@ void FApplePlatformBackgroundHttpManager::FinishRequest(FAppleBackgroundHttpRequ
                 //Expected case where we failed, but expected to fail
                 else
                 {
-                    UE_LOG(LogBackgroundHttpManager, Display, TEXT("Task failed due to being out of retries. -- RequestID:%s"), *(Request->GetRequestID()));
+                    UE_LOG(LogBackgroundHttpManager, Display, TEXT("Task failed completely -- RequestDebugID:%s"), *(Request->GetRequestDebugID()));
                     
                     FBackgroundHttpResponsePtr NewResponse = FPlatformBackgroundHttp::ConstructBackgroundResponse(ResponseCode, TEXT(""));
                     Request->CompleteWithExistingResponseData(NewResponse);
                 }
             }
             
-            //If we are actually finishing this request, lets decrement our NumCurrentlyActiveRequests counter
+            //If we are actually finishing this request, lets decrement our NumCurrentlyActiveTasks counter
             if (bIsRequestActuallyFinished)
             {
-                //See if we are in the BG or FG. In the BG, we don't want to decrement NumCurrentlyActiveRequests
-                const bool bWasFinishedInBG = FPlatformAtomics::AtomicRead(&bIsInBackground);
-                if (!bWasFinishedInBG)
+				//only decrement NumCurrentlyActiveTasks if this was an actual active task,
+				//can still be completed in the BG or from existing completed data without being active
+                const bool bIsTaskActive = Request->IsUnderlyingTaskActive();
+                if (bIsTaskActive)
                 {
-                    int NumActualRequests = FPlatformAtomics::InterlockedDecrement(&NumCurrentlyActiveRequests);
+                    int NumActualTasks = FPlatformAtomics::InterlockedDecrement(&NumCurrentlyActiveTasks);
+
+					// Handle the case that SetMaxActiveDownloads reduced the MaxActiveDownloads while we had more than the new maximum in progress.
+					MaxNumActualTasks = FMath::Max(MaxNumActualTasks - 1, MaxActiveDownloads.Load());
 
                     //Sanity check that our data is valid. Shouldn't ever trip if everything is working as intended.
-                    const bool bNumActualRequestsValid = ((NumActualRequests > 0) && (NumActualRequests <= FPlatformBackgroundHttp::GetPlatformMaxActiveDownloads()));
-                    ensureMsgf(bNumActualRequestsValid, TEXT("Number of Requests we think are active is invalid! -- NumCurrentlyActiveRequests:%d"), NumActualRequests);
+                    const bool bNumActualTasksIsValid = ((NumActualTasks >= 0) && (NumActualTasks <= MaxNumActualTasks));
+                    
+                    UE_LOG(LogBackgroundHttpManager,Display, TEXT("Finishing Request lowering Task Count: %d"), NumActualTasks);
+                    
+                    ensureMsgf(bNumActualTasksIsValid, TEXT("Number of Requests we think are active is invalid! -- NumCurrentlyActiveTasks:%d"), NumActualTasks);
                 }
             }
         }
     }
     else
     {
-        UE_LOG(LogBackgroundHttpManager,Display, TEXT("Not finishing Request as its already sending a finish notification -- RequestID:%s"), *(Request->GetRequestID()));
+        UE_LOG(LogBackgroundHttpManager,Display, TEXT("Not finishing Request as its already sending a finish notification -- RequestDebugID:%s"), *(Request->GetRequestDebugID()));
     }
 }
 
-void FApplePlatformBackgroundHttpManager::RetryRequest(FAppleBackgroundHttpRequestPtr Request, bool bShouldIncreaseRetryCount, bool bShouldStartImmediately, NSData* RetryData)
+void FApplePlatformBackgroundHttpManager::RetryRequest(FAppleBackgroundHttpRequestPtr Request, bool bShouldIncreaseRetryCount, NSData* RetryData)
 {
 	NSURLSessionDownloadTask* NewTask = nullptr;
 
 	if (ensureAlwaysMsgf(Request.IsValid(), TEXT("Call to RetryRequest with an invalid request!")))
 	{
-
 		NSURLSession* BackgroundDownloadSession = FBackgroundURLSessionHandler::GetBackgroundSession();
 		if (ensureAlwaysMsgf((nullptr != BackgroundDownloadSession), TEXT("Invalid Background Download NSURLSession during RetryRequest! Should have already Initialized the NSURLSession by this point!")))
 		{
@@ -447,12 +638,12 @@ void FApplePlatformBackgroundHttpManager::RetryRequest(FAppleBackgroundHttpReque
 			const bool bShouldUseRetryData = ShouldUseRequestRetryData(Request, RetryData);
 			if (bShouldUseRetryData)
 			{
-				UE_LOG(LogBackgroundHttpManager, Display, TEXT("Resuming Task With Resume Data -- RequestID:%s | RetryData Length:%d"), *(Request->GetRequestID()), [RetryData length]);
+				UE_LOG(LogBackgroundHttpManager, Display, TEXT("Resuming Task With Resume Data -- RequestDebugID:%s | RetryData Length:%d"), *(Request->GetRequestDebugID()), [RetryData length]);
 				NewTask = [BackgroundDownloadSession downloadTaskWithResumeData:RetryData];
 			}
 
 			//If not retry data, lets try and just retry on the next CDN
-			else
+			if (nullptr == NewTask)
 			{
                 //Since we created a new task instead of using retry data, reset resume data's retry count on the request
                 Request->ResumeDataRetryCount.Reset();
@@ -470,21 +661,25 @@ void FApplePlatformBackgroundHttpManager::RetryRequest(FAppleBackgroundHttpReque
 			{
 				Request->AssociateWithTask(NewTask);
 
-				//If we are in BG or flagged this as an immediate start, resume right now without waiting for the FG tick
+				//If we are in BG activate right now without waiting for the FG tick
 				volatile bool bCopyOfBGState = FPlatformAtomics::AtomicRead(&bIsInBackground);
-				if (bCopyOfBGState || bShouldStartImmediately)
+				
+				//We also want to re-activate any already activated tasks
+				const bool bIsTaskActive = Request->IsUnderlyingTaskActive();
+				
+				if (!Request->bIsTaskPaused && (bCopyOfBGState || bIsTaskActive))
 				{
 					Request->ActivateUnderlyingTask();
 				}
 
-				UE_LOG(LogBackgroundHttpManager, Display, TEXT("Created Task for Request -- RequestID:%s | bStartImmediately:%d | bIsAppInBG:%d"), *(Request->GetRequestID()), (int)bShouldStartImmediately, (int)bCopyOfBGState);
+                UE_LOG(LogBackgroundHttpManager, Display, TEXT("Created Task for Request -- RequestDebugID:%s | bIsAppInBG:%d | bIsPaused:%d"), *(Request->GetRequestDebugID()), (int)bCopyOfBGState, (int)Request->bIsTaskPaused);
 
 				//Always set our bWasTaskStartedInBG flag on our Request so we will know if we need to restart this task next FG Tick.
 				FPlatformAtomics::InterlockedExchange(&(Request->bWasTaskStartedInBG), bCopyOfBGState);
 			}
 			else
 			{
-				UE_LOG(LogBackgroundHttpManager, Display, TEXT("Marking Request Failed. Out of Retries -- RequestID:%s | bShouldUseRetryData:%d"), *(Request->GetRequestID()), (int)bShouldUseRetryData);
+				UE_LOG(LogBackgroundHttpManager, Display, TEXT("Marking Request Failed. Out of Retries -- RequestDebugID:%s | bShouldUseRetryData:%d"), *(Request->GetRequestDebugID()), (int)bShouldUseRetryData);
 				Request->SetRequestAsFailed();
 			}
 		}
@@ -512,7 +707,7 @@ bool FApplePlatformBackgroundHttpManager::ShouldUseRequestRetryData(FAppleBackgr
 
 bool FApplePlatformBackgroundHttpManager::IsRetryDataValid(NSData* RetryData) const
 {
-	return ((nullptr != RetryData) && ([RetryData length] > 0));
+    return ((nullptr != RetryData) && ([RetryData length] > 0));
 }
 
 void FApplePlatformBackgroundHttpManager::OnTask_DidWriteData(NSURLSessionDownloadTask* Task, int64_t BytesWrittenSinceLastCall, int64_t TotalBytesWritten, int64_t TotalBytesExpectedToWrite)
@@ -520,23 +715,24 @@ void FApplePlatformBackgroundHttpManager::OnTask_DidWriteData(NSURLSessionDownlo
     if (ensureAlwaysMsgf((nullptr != Task), TEXT("Call to DidWriteData with invalid Task!")))
     {
         FString TaskURL = [[[Task currentRequest] URL] absoluteString];
+        int TaskIdentifier = (int)[Task taskIdentifier];
         
         //Find task and update it's download progress
         {
             FRWScopeLock ScopeLock(URLToRequestMapLock, SLT_ReadOnly);
             FBackgroundHttpURLMappedRequestPtr* WeakRequestInMap = URLToRequestMap.Find(TaskURL);
-            FAppleBackgroundHttpRequestPtr FoundRequest = (nullptr != WeakRequestInMap) ? WeakRequestInMap->Pin() : nullptr;
+            FAppleBackgroundHttpRequestPtr FoundRequest = ((nullptr != WeakRequestInMap) && (WeakRequestInMap->IsValid())) ? WeakRequestInMap->Pin() : nullptr;
             
             if (FoundRequest.IsValid())
             {
                 if (FoundRequest->DownloadProgress < TotalBytesWritten)
                 {
                     int64 DownloadProgress = FPlatformAtomics::AtomicRead(&(FoundRequest->DownloadProgress));
-                    UE_LOG(LogBackgroundHttpManager, Verbose, TEXT("Updating Task Progress! -- RequestID:%s | Current Progress:%lld | New Progress:%lld"), *(FoundRequest->GetRequestID()), DownloadProgress, TotalBytesWritten);
+                    UE_LOG(LogBackgroundHttpManager, Verbose, TEXT("Updating Task Progress! -- RequestDebugID:%s | TaskIdentifier:%d | Current Progress:%lld | New Progress:%lld"), *(FoundRequest->GetRequestDebugID()), TaskIdentifier, DownloadProgress, TotalBytesWritten);
                 }
                 else
                 {
-                    UE_LOG(LogBackgroundHttpManager, Warning, TEXT("Download Progress tried to go down not up unexpectidly! This could mean a task was unknowingly duplicated! -- RequestID:%s | Current Progress:%lld | New Progress:%lld"), *(FoundRequest->GetRequestID()),FoundRequest->DownloadProgress, TotalBytesWritten);
+                    ensureAlwaysMsgf(false, TEXT("Download Progress tried to go down not up unexpectidly! This could mean a task was unknowingly duplicated! -- RequestDebugID:%s | TaskIdentifier:%d | Current Progress:%lld | New Progress:%lld"), *(FoundRequest->GetRequestDebugID()), TaskIdentifier, FoundRequest->DownloadProgress, TotalBytesWritten);
                 }
 
                 FoundRequest->UpdateDownloadProgress(TotalBytesWritten, BytesWrittenSinceLastCall);
@@ -550,6 +746,8 @@ void FApplePlatformBackgroundHttpManager::OnTask_DidCompleteWithError(NSURLSessi
 	if (ensureAlwaysMsgf((nullptr != Task), TEXT("Call to OnTask_DidCompleteWithError delegate with an invalid task!")))
 	{
 		FString TaskURL = [[[Task currentRequest] URL] absoluteString];
+        int TaskIdentifier = (int)[Task taskIdentifier];
+        
 		const bool bDidCompleteWithError = (nullptr != Error);
 		const int ErrorCode = [Error code];
         const FString ErrorDescription = [Error localizedDescription];
@@ -562,11 +760,12 @@ void FApplePlatformBackgroundHttpManager::OnTask_DidCompleteWithError(NSURLSessi
 
 		FString DebugRetryOverrideReason;
 
+		//We still come into the function when tasks complete successfully. Only handle actual errors
 		if (bDidCompleteWithError)
 		{
             FRWScopeLock ScopeLock(URLToRequestMapLock, SLT_ReadOnly);
             FBackgroundHttpURLMappedRequestPtr* WeakRequestInMap = URLToRequestMap.Find(TaskURL);
-            FAppleBackgroundHttpRequestPtr FoundRequest = (nullptr != WeakRequestInMap) ? WeakRequestInMap->Pin() : nullptr;
+            FAppleBackgroundHttpRequestPtr FoundRequest = ((nullptr != WeakRequestInMap) && (WeakRequestInMap->IsValid())) ? WeakRequestInMap->Pin() : nullptr;
             const bool bDidFindValidRequest = FoundRequest.IsValid();
          
             //by default increase error count. Special cases below will overwrite this
@@ -579,31 +778,51 @@ void FApplePlatformBackgroundHttpManager::OnTask_DidCompleteWithError(NSURLSessi
                 DebugRetryOverrideReason = TEXT("Not Connected To Internet");
             }
             
-            UE_LOG(LogBackgroundHttpManager, Display, TEXT("DidCompleteWithError for Task. -- URL:%s | bDidFindVaildRequest:%d | bDidCompleteWithError:%d | ErrorCode:%d | bHasResumeData:%d | CancelledReasonKey:%d | RetryOverrideReason:%s | bShouldRetryIncreaseRetryCount:%d | ErrorDescription:%s"), *TaskURL, (int)bDidFindValidRequest, (int)bDidCompleteWithError, ErrorCode, (int)bHasResumeData, CancelledReasonInt, *DebugRetryOverrideReason, (int)bShouldRetryIncreaseRetryCount, *ErrorDescription);
+            UE_LOG(LogBackgroundHttpManager, Display, TEXT("DidCompleteWithError for Task. -- URL:%s | TaskIdentifier:%d | bDidFindVaildRequest:%d | bDidCompleteWithError:%d | ErrorCode:%d | bHasResumeData:%d | CancelledReasonKey:%d | RetryOverrideReason:%s | bShouldRetryIncreaseRetryCount:%d | ErrorDescription:%s"), *TaskURL, TaskIdentifier, (int)bDidFindValidRequest, (int)bDidCompleteWithError, ErrorCode, (int)bHasResumeData, CancelledReasonInt, *DebugRetryOverrideReason, (int)bShouldRetryIncreaseRetryCount, *ErrorDescription);
             
 			if (bDidFindValidRequest)
 			{
-                RetryRequest(FoundRequest, bShouldRetryIncreaseRetryCount, true, ResumeData);
+				RetryRequest(FoundRequest, bShouldRetryIncreaseRetryCount, ResumeData);
 			}
 			else
 			{
-				//This can legitimately happen in the case of UnAssociatedTasks completing, so don't error
-				UE_LOG(LogBackgroundHttpManager, Display, TEXT("No Request Found for Errored Task -- TaskURL:%s"), *TaskURL);
+                //This can be a valid case because of UnAssociatedTasks, so don't error here
+                UE_LOG(LogBackgroundHttpManager, Display, TEXT("No request for completing task! -- TaskURL:%s | TaskIdentifier:%d"), *TaskURL, TaskIdentifier);
 			}
 		}
 	}
 }
 
-void FApplePlatformBackgroundHttpManager::OnSession_SessionDidFinishAllEvents(NSURLSession* Session)
+void FApplePlatformBackgroundHttpManager::OnSession_SessionDidFinishAllEvents(NSURLSession* Session, FIOSBackgroundDownloadCoreDelegates::FIOSBackgroundDownload_DelayedBackgroundURLSessionCompleteHandler Callback)
 {
-	//@TODO: TRoss, For now not using this. Will be using this to track how long we take in BG Handling BG Downloads in analytics
-    UE_LOG(LogBackgroundHttpManager, Verbose, TEXT("NSURLSession done sending background events"));
+	//Let BackgroundURLSessionHandler know that it should wait until we call the callback
+	FBackgroundURLSessionHandler::AddDelayedBackgroundURLSessionComplete();
+	
+	const bool bCopyIsBG = FPlatformAtomics::AtomicRead(&bIsInBackground);
+	
+	UE_LOG(LogBackgroundHttpManager, Display, TEXT("NSURLSession done sending background events for all already queued tasks. bWasAppleBGHTTPInitialized:%d | bIsBG:%d"), bWasAppleBGHTTPInitialized, bCopyIsBG);
+	
+	//If we are in the BG, or if we have not yet been initialized, lets go ahead and just immediately send the callback
+	if (bWasAppleBGHTTPInitialized && bCopyIsBG)
+	{
+		//Now that we have finished all queued background tasks, lets resume tasks for any lower priorities that weren't started
+		ResumeTasksForBackgrounding(FIOSBackgroundDownloadCoreDelegates::FIOSBackgroundDownload_DelayedBackgroundURLSessionCompleteHandler::CreateLambda(
+		[=]()
+		{
+			Callback.ExecuteIfBound();
+		}));
+	}
+	else
+	{
+		Callback.ExecuteIfBound();
+	}
 }
 
 bool FApplePlatformBackgroundHttpManager::Tick(float DeltaTime)
 {
+    ensureAlwaysMsgf(IsInGameThread(), TEXT("Called from un-expected thread! Potential error in an implementation of background downloads!"));
+    
     TickRequests(DeltaTime);
-    TickTasks(DeltaTime);
     TickUnassociatedTasks(DeltaTime);
     
     //Always keep ticking
@@ -612,9 +831,16 @@ bool FApplePlatformBackgroundHttpManager::Tick(float DeltaTime)
 
 void FApplePlatformBackgroundHttpManager::TickRequests(float DeltaTime)
 {
+    ensureAlwaysMsgf(IsInGameThread(), TEXT("Called from un-expected thread! Potential error in an implementation of background downloads!"));
+    
     //First lets go through all our Requests to see if we need to complete or recreate any requests
     {
-        FRWScopeLock ScopeLock(ActiveRequestLock, SLT_Write);
+		//Check to make sure we have room for more tasks to be active first
+		int CurrentCount = FPlatformAtomics::AtomicRead(&NumCurrentlyActiveTasks);
+		bool bNeedsMoreTasks = (CurrentCount < MaxActiveDownloads);
+		FAppleBackgroundHttpRequestPtr FoundRequestToStart = nullptr;
+		
+        FRWScopeLock ScopeLock(ActiveRequestLock, SLT_ReadOnly);
         for (FBackgroundHttpRequestPtr& Request : ActiveRequests)
         {
             FAppleBackgroundHttpRequestPtr AppleRequest = StaticCastSharedPtr<FApplePlatformBackgroundHttpRequest>(Request);
@@ -624,124 +850,87 @@ void FApplePlatformBackgroundHttpManager::TickRequests(float DeltaTime)
                 const bool bIsTaskPaused = AppleRequest->IsUnderlyingTaskPaused();
                 const bool bIsTaskComplete = AppleRequest->IsTaskComplete();
                 const bool bWasStartedInBG = FPlatformAtomics::AtomicRead(&(AppleRequest->bWasTaskStartedInBG));
+                const bool bIsPendingCancel = FPlatformAtomics::AtomicRead(&(AppleRequest->bIsPendingCancel));
                 
-                UE_LOG(LogBackgroundHttpManager, VeryVerbose, TEXT("Checking Status of Request on Tick -- RequestID::%s | bIsTaskComplete:%d | bWasStartedInBG:%d"), *(AppleRequest->GetRequestID()), (int)bIsTaskComplete, (int)bWasStartedInBG);
+                UE_LOG(LogBackgroundHttpManager, VeryVerbose, TEXT("Checking Status of Request on Tick -- RequestDebugID::%s | bIsTaskComplete:%d | bWasStartedInBG:%d"), *(AppleRequest->GetRequestDebugID()), (int)bIsTaskComplete, (int)bWasStartedInBG);
                 
                 if (bIsTaskComplete)
                 {
-                    UE_LOG(LogBackgroundHttpManager, Display, TEXT("Calling FinishRequest On -- RequestID::%s | bIsTaskComplete:%d | bWasStartedInBG:%d"), *(AppleRequest->GetRequestID()), (int)bIsTaskComplete, (int)bWasStartedInBG);
+                    UE_LOG(LogBackgroundHttpManager, Display, TEXT("Calling FinishRequest On -- RequestDebugID::%s | bIsTaskComplete:%d | bWasStartedInBG:%d"), *(AppleRequest->GetRequestDebugID()), (int)bIsTaskComplete, (int)bWasStartedInBG);
                     FinishRequest(AppleRequest);
                 }
-                else if (bWasStartedInBG)
+                else if (bWasStartedInBG && !bIsPendingCancel)
                 {
-                    UE_LOG(LogBackgroundHttpManager, Display, TEXT("Cancelling Request Created In BG To Re-Create In FG -- RequestID:%s"), *(AppleRequest->GetRequestID()));
+                    UE_LOG(LogBackgroundHttpManager, Display, TEXT("Cancelling Request Created In BG To Re-Create In FG -- RequestDebugID:%s"), *(AppleRequest->GetRequestDebugID()));
+                    
+                    //reset to false so we don't run this twice while waiting on recreation
+                    FPlatformAtomics::InterlockedExchange(&(AppleRequest->bWasTaskStartedInBG), false);
                     
                     //Just cancel the task. This will lead to it getting a callback to OnTask_DidCompleteWithError where we will re-create it
                     //We want to recreate any task spun up in the background as it will not respect our session settings if created in BG.
                     AppleRequest->CancelActiveTask();
                 }
-                else if (bIsTaskActive && !bIsTaskPaused)
+                else if (bIsTaskActive && !bIsTaskPaused && !bIsPendingCancel)
                 {
                     const bool bShouldTimeOut = AppleRequest->TickTimeOutTimer(DeltaTime);
                     if (bShouldTimeOut)
                     {
-                        UE_LOG(LogBackgroundHttpManager, Display, TEXT("Timing out Request Due To Lack of Server Response -- RequestID:%s"), *(AppleRequest->GetRequestID()));
+                        UE_LOG(LogBackgroundHttpManager, Display, TEXT("Timing out Request Due To Lack of Server Response -- RequestDebugID:%s"), *(AppleRequest->GetRequestDebugID()));
                         
                         //Just cancel the task and let the OnTask_DidCompleteWithError callback handle retrying it if appropriate.
                         AppleRequest->CancelActiveTask();
                     }
                 }
+				else if (bNeedsMoreTasks && !bIsTaskActive && !bIsTaskPaused && !bIsPendingCancel)
+				{
+					//This task is a possible to start, so lets see if its the highest priority task we have found yet.
+					
+					if (!FoundRequestToStart.IsValid())
+					{
+						FoundRequestToStart = AppleRequest;
+					}
+					else
+					{
+						if (AppleRequest->GetRequestPriority() < FoundRequestToStart->GetRequestPriority())
+						{
+							FoundRequestToStart = AppleRequest;
+						}
+					}
+				}
+				
+				AppleRequest->SendDownloadProgressUpdate();
             }
         }
+		
+		if (FoundRequestToStart.IsValid())
+		{
+			const int32 OldTotal = FPlatformAtomics::InterlockedIncrement(&NumCurrentlyActiveTasks);
+			
+			if (OldTotal <= MaxActiveDownloads)
+			{
+				UE_LOG(LogBackgroundHttpManager, Display, TEXT("Starting Task for Request -- RequestDebugID:%s | CurrentlyActiveRequests:%d"), *(FoundRequestToStart->GetRequestDebugID()), OldTotal);
+				FoundRequestToStart->ActivateUnderlyingTask();
+			}
+			else
+			{
+				UE_LOG(LogBackgroundHttpManager, Log, TEXT("Request failed to activate as we passed the platform max from another requeset before we could resume. RequestDebugID:%s | CurrentlyActiveRequests:%d"), *(FoundRequestToStart->GetRequestDebugID()), OldTotal);
+				
+				//Don't activate and remove our increment from above because something put us over the limit before we resumed
+				FPlatformAtomics::InterlockedDecrement(&NumCurrentlyActiveTasks);
+			}
+		}
     }
     
     //Now that we have gone through and finished all the requests, go ahead and delete any pending removes
     DeletePendingRemoveRequests();
 }
 
-void FApplePlatformBackgroundHttpManager::TickTasks(float DeltaTime)
-{
-    //Go through all our session's tasks and unpause as many tasks as our platform's limit allows
-    
-    NSURLSession* BackgroundDownloadSession = FBackgroundURLSessionHandler::GetBackgroundSession();
-    if (nullptr != BackgroundDownloadSession)
-    {
-        //Make sure we only queue up 1 tick's worth of task parsing at a time as this is an async callback
-        const bool IsIterateAlreadyQueued = FPlatformAtomics::InterlockedExchange(&bIsIteratingThroughSessionTasks, true);
-        if (!IsIterateAlreadyQueued)
-        {
-            [BackgroundDownloadSession getAllTasksWithCompletionHandler:^(NSArray<__kindof NSURLSessionTask*> *tasks)
-             {
-                 //Check to make sure we have room for more tasks to be active first
-                 int CurrentCount = FPlatformAtomics::AtomicRead(&NumCurrentlyActiveRequests);
-                 if (CurrentCount < FPlatformBackgroundHttp::GetPlatformMaxActiveDownloads())
-                 {
-                     //Go through our tasks and try and activate as many as possible
-                     for (NSURLSessionTask* task in tasks)
-                     {
-                         //Only resume state if the task is suspended, not intersted in already active, canceling, or completed tasks here
-                         if ([task state] == NSURLSessionTaskStateSuspended)
-                         {
-                             //Check to make sure we didn't have another task increment our count over the limit since we checked above
-                             int NewRequestCount = FPlatformAtomics::InterlockedIncrement(&NumCurrentlyActiveRequests);
-                             if (NewRequestCount <= FPlatformBackgroundHttp::GetPlatformMaxActiveDownloads())
-                             {
-                                 FString TaskURL = [[[task currentRequest] URL] absoluteString];
-                                 
-                                 //Try and find Request in map that matches this Task
-                                 {
-                                     FRWScopeLock ScopeLock(URLToRequestMapLock, SLT_ReadOnly);
-                                     FBackgroundHttpURLMappedRequestPtr* WeakRequestInMap = URLToRequestMap.Find(TaskURL);
-                                     FAppleBackgroundHttpRequestPtr FoundRequest = (nullptr != WeakRequestInMap) ? WeakRequestInMap->Pin() : nullptr;
-                                     
-                                     const bool bIsPaused = FoundRequest.IsValid() ? FoundRequest->IsUnderlyingTaskPaused() : false;
-                                     
-                                     if (FoundRequest.IsValid())
-                                     {
-                                         UE_LOG(LogBackgroundHttpManager, Display, TEXT("Activating Task For Requets -- RequestID:%s | TaskURL:%s | CurrentlyActiveRequests:%d"), *(FoundRequest->GetRequestID()), *TaskURL, NewRequestCount);
-                                         FoundRequest->ActivateUnderlyingTask();
-                                     }
-                                     else
-                                     {
-                                         UE_LOG(LogBackgroundHttpManager, Display, TEXT("Skipping Activating Task as there is no associated Request or Request is paused. Once a Request associates with this task, it can then be activated. -- TaskURL:%s | bIsPaused:%d"), *TaskURL, (int)bIsPaused);
-                                         
-                                         //Don't activate and remove our increment from above because something put us over the limit before we resumed
-                                         FPlatformAtomics::InterlockedDecrement(&NumCurrentlyActiveRequests);
-                                     }
-                                 }
-                             }
-                             else
-                             {
-                                 FString TaskURL = [[[task currentRequest] URL] absoluteString];
-                                 UE_LOG(LogBackgroundHttpManager, Log, TEXT("Task failed to activate as we passed the platform max from another task before we could resume. Task -- TaskURL:%s | CurrentlyActiveRequests:%d"), *TaskURL, NewRequestCount);
-                                 
-                                 //Don't activate and remove our increment from above because something put us over the limit before we resumed
-                                 FPlatformAtomics::InterlockedDecrement(&NumCurrentlyActiveRequests);
-                                 break;
-                             }
-                             
-                             //We now have enough requests queued up that we can stop looking for more
-                             if (NewRequestCount >= FPlatformBackgroundHttp::GetPlatformMaxActiveDownloads())
-                             {
-                                 break;
-                             }
-                         }
-                     }
-                 }
-                 
-                 //If this wasn't true when we exited this async callback, we have a logic error somewhere and have queued this async callback twice. Should always be true as this async callback ends
-                 //Also setting this to false so that future ticks will call this callback again
-                 const bool bWasLogicError = FPlatformAtomics::InterlockedExchange(&bIsIteratingThroughSessionTasks, false);
-                 ensureAlwaysMsgf(bWasLogicError, TEXT("Leaving Tick's getAllTasksWithCompletionHandler and bIsIteratingThroughSessionTasks was false before we finished. Something else has set bIsIteratingThroughSessionTasks during our callback!"));
-             }];
-        }
-    }
-}
-
 void FApplePlatformBackgroundHttpManager::TickUnassociatedTasks(float DeltaTime)
 {
+    ensureAlwaysMsgf(IsInGameThread(), TEXT("Called from un-expected thread! Potential error in an implementation of background downloads!"));
+    
     //If we don't have anything queued, lets resume any un-associated tasks
-    int CurrentCount = FPlatformAtomics::AtomicRead(&NumCurrentlyActiveRequests);
+    int CurrentCount = FPlatformAtomics::AtomicRead(&NumCurrentlyActiveTasks);
     if (CurrentCount == 0)
     {
         UnpauseAllUnassociatedTasks();

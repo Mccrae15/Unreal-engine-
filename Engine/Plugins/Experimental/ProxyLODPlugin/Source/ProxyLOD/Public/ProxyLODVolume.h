@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -55,4 +55,53 @@ public:
 	 * Note: Returned value is clamped between -'dimension of interior narrow band' and +'dimension of exterior narrow band'
 	*/
 	virtual float QueryDistance(const FVector& Point) const = 0;
+};
+
+
+
+
+class PROXYLODMESHREDUCTION_API IVoxelBasedCSG
+{
+public :
+	static TUniquePtr<IVoxelBasedCSG> CreateCSGTool(float VoxelSize);
+
+	virtual ~IVoxelBasedCSG() {}
+
+	class FPlacedMesh
+	{
+	public:
+		FPlacedMesh()
+			: Mesh(nullptr)
+		{}
+
+		explicit FPlacedMesh(const FMeshDescription* MeshIn, const FTransform& TransformIn = FTransform::Identity)
+			: Mesh(MeshIn), Transform(TransformIn)
+		{}
+
+		FPlacedMesh(const FPlacedMesh& other)
+			: Mesh(other.Mesh)
+			, Transform(other.Transform)
+		{}
+
+		FPlacedMesh& operator=(const FPlacedMesh& other)
+		{
+			Mesh = other.Mesh;
+			Transform = other.Transform;
+			return *this;
+		}
+
+		const FMeshDescription* Mesh;
+		FTransform       Transform;
+	};
+
+	virtual double GetVoxelSize() const = 0;
+	virtual void SetVoxelSize(double VolexSize) = 0;
+
+	// Will destroy UVs and other attributes  Returns the average location of the input meshes 
+	virtual FVector ComputeUnion(const TArray<IVoxelBasedCSG::FPlacedMesh>& MeshArray, FMeshDescription& ResultMesh, double Adaptivity = 0.1, double IsoSurfcae = 0.) const = 0;
+	
+	// We could make this keep the UVs and other attributes from the AMesh..
+	virtual FVector ComputeDifference(const FPlacedMesh& PlacedMeshA, const FPlacedMesh& PlacedMeshB, FMeshDescription& ResultMesh, double Adaptivity, double IsoSurface) const = 0;
+	virtual FVector ComputeIntersection(const FPlacedMesh& PlacedMeshA, const FPlacedMesh& PlacedMeshB, FMeshDescription& ResultMesh, double Adaptivity, double IsoSurface) const = 0;
+	virtual FVector ComputeUnion(const FPlacedMesh& PlacedMeshA, const FPlacedMesh& PlacedMeshB, FMeshDescription& ResultMesh, double Adaptivity, double IsoSurface) const = 0;
 };

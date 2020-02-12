@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "D3D12RHIPrivate.h"
 #include "Windows.h"
@@ -28,6 +28,12 @@ bool FD3D12GPUFence::Poll() const
 	return !Value || (Fence && Fence->PeekLastCompletedFence() >= Value);
 }
 
+bool FD3D12GPUFence::Poll(FRHIGPUMask GPUMask) const
+{
+	// @todo-mattc Value of 0 means signaled? Revisit this...
+	return !Value || (Fence && Fence->PeekLastCompletedFence(GPUMask) >= Value);
+}
+
 void FD3D12GPUFence::Clear()
 {
 	Value = MAX_uint64;
@@ -44,7 +50,7 @@ FStagingBufferRHIRef FD3D12DynamicRHI::RHICreateStagingBuffer()
 	return new FD3D12StagingBuffer();
 }
 
-void* FD3D12DynamicRHI::RHILockStagingBuffer(FStagingBufferRHIParamRef StagingBufferRHI, uint32 Offset, uint32 SizeRHI)
+void* FD3D12DynamicRHI::RHILockStagingBuffer(FRHIStagingBuffer* StagingBufferRHI, FRHIGPUFence* Fence, uint32 Offset, uint32 SizeRHI)
 {
 	FD3D12StagingBuffer* StagingBuffer = FD3D12DynamicRHI::ResourceCast(StagingBufferRHI);
 	check(StagingBuffer);
@@ -52,7 +58,7 @@ void* FD3D12DynamicRHI::RHILockStagingBuffer(FStagingBufferRHIParamRef StagingBu
 	return StagingBuffer->Lock(Offset, SizeRHI);
 }
 
-void FD3D12DynamicRHI::RHIUnlockStagingBuffer(FStagingBufferRHIParamRef StagingBufferRHI)
+void FD3D12DynamicRHI::RHIUnlockStagingBuffer(FRHIStagingBuffer* StagingBufferRHI)
 {
 	FD3D12StagingBuffer* StagingBuffer = FD3D12DynamicRHI::ResourceCast(StagingBufferRHI);
 	check(StagingBuffer);
@@ -222,14 +228,19 @@ bool FD3D12Fence::IsFenceComplete(uint64 FenceValue)
 
 uint64 FD3D12Fence::PeekLastCompletedFence() const
 {
+	return PeekLastCompletedFence(GetGPUMask());
+}
+
+uint64 FD3D12Fence::PeekLastCompletedFence(FRHIGPUMask InGPUMask) const
+{
 	uint64 CompletedFence = MAXUINT64;
-	for (uint32 GPUIndex : GetGPUMask())
+	check(GetGPUMask().ContainsAll(InGPUMask));
+	for (uint32 GPUIndex : InGPUMask)
 	{
 		CompletedFence = FMath::Min<uint64>(FenceCores[GPUIndex]->GetFence()->GetCompletedValue(), CompletedFence);
 	}
 	return CompletedFence;
 }
-
 
 uint64 FD3D12Fence::UpdateLastCompletedFence()
 {
@@ -309,6 +320,9 @@ FD3D12CommandListManager::FD3D12CommandListManager(FD3D12Device* InParent, D3D12
 	, CommandListFence(nullptr)
 	, CommandListType(InCommandListType)
 	, QueueType(InQueueType)
+#if WITH_PROFILEGPU
+	, bShouldTrackCmdListTime(false)
+#endif
 {
 }
 
@@ -351,7 +365,7 @@ void FD3D12CommandListManager::Create(const TCHAR* Name, uint32 NumCommandLists,
 
 	D3D12_COMMAND_QUEUE_DESC CommandQueueDesc = {};
 	CommandQueueDesc.Flags = D3D12_COMMAND_QUEUE_FLAG_NONE;
-	CommandQueueDesc.NodeMask = (uint32)GetGPUMask();
+	CommandQueueDesc.NodeMask = GetGPUMask().GetNative();
 	CommandQueueDesc.Priority = Priority;
 	CommandQueueDesc.Type = CommandListType;
 	D3DCommandQueue = Adapter->GetOwningRHI()->CreateCommandQueue(Device, CommandQueueDesc);
@@ -400,7 +414,7 @@ FD3D12CommandListHandle FD3D12CommandListManager::ObtainCommandList(FD3D12Comman
 	}
 
 	check(List.GetCommandListType() == CommandListType);
-	List.Reset(CommandAllocator);
+	List.Reset(CommandAllocator, ShouldTrackCommandListTime());
 	return List;
 }
 
@@ -626,6 +640,63 @@ void FD3D12CommandListManager::ReleaseResourceBarrierCommandListAllocator()
 	}
 }
 
+void FD3D12CommandListManager::StartTrackingCommandListTime()
+{
+#if WITH_PROFILEGPU
+	check(QueueType == ED3D12CommandQueueType::Default && !bShouldTrackCmdListTime);
+	PendingTimingPairs.Reset();
+	ResolvedTimingPairs.Reset();
+	bShouldTrackCmdListTime = true;
+#endif
+}
+
+void FD3D12CommandListManager::EndTrackingCommandListTime()
+{
+#if WITH_PROFILEGPU
+	check(QueueType == ED3D12CommandQueueType::Default && bShouldTrackCmdListTime);
+	bShouldTrackCmdListTime = false;
+#endif
+}
+
+void FD3D12CommandListManager::GetCommandListTimingResults(TArray<FResolvedCmdListExecTime>& OutTimingPairs)
+{
+#if WITH_PROFILEGPU
+	check(!bShouldTrackCmdListTime && QueueType == ED3D12CommandQueueType::Default);
+	FlushPendingTimingPairs();
+	OutTimingPairs = MoveTemp(ResolvedTimingPairs);
+#endif
+}
+
+void FD3D12CommandListManager::AddCommandListTimingPair(int32 StartTimeQueryIdx, int32 EndTimeQueryIdx)
+{
+#if WITH_PROFILEGPU
+	check(StartTimeQueryIdx >= 0 && EndTimeQueryIdx >= 0);
+	FScopeLock Lock(&CmdListTimingCS);
+	new (PendingTimingPairs) FCmdListExecTime(StartTimeQueryIdx, EndTimeQueryIdx);
+#endif
+}
+
+void FD3D12CommandListManager::FlushPendingTimingPairs()
+{
+#if WITH_PROFILEGPU
+	check(!ResolvedTimingPairs.Num() && !bShouldTrackCmdListTime);
+
+	TArray<uint64> AllTimestamps;
+	GetParentDevice()->GetCmdListExecTimeQueryHeap()->FlushAndGetResults(AllTimestamps);
+
+	const int32 NumPending = PendingTimingPairs.Num();
+	ResolvedTimingPairs.Empty(NumPending);
+	for (int32 Idx = 0; Idx < NumPending; ++Idx)
+	{
+		const FCmdListExecTime& QueryIdxPair = PendingTimingPairs[Idx];
+		const uint64 StartStamp = AllTimestamps[QueryIdxPair.StartTimeQueryIdx];
+		const uint64 EndStamp = AllTimestamps[QueryIdxPair.EndTimeQueryIdx];
+		new (ResolvedTimingPairs) FResolvedCmdListExecTime(StartStamp, EndStamp);
+	}
+	PendingTimingPairs.Reset();
+#endif
+}
+
 uint32 FD3D12CommandListManager::GetResourceBarrierCommandList(FD3D12CommandListHandle& hList, FD3D12CommandListHandle& hResourceBarrierList)
 {
 	TArray<FD3D12PendingResourceBarrier>& PendingResourceBarriers = hList.PendingResourceBarriers();
@@ -748,6 +819,15 @@ FD3D12CommandListHandle FD3D12CommandListManager::CreateCommandListHandle(FD3D12
 	FD3D12CommandListHandle List;
 	List.Create(GetParentDevice(), CommandListType, CommandAllocator, this);
 	return List;
+}
+
+bool FD3D12CommandListManager::ShouldTrackCommandListTime() const
+{
+#if WITH_PROFILEGPU
+	return bShouldTrackCmdListTime;
+#else
+	return false;
+#endif
 }
 
 FD3D12FenceCore* FD3D12FenceCorePool::ObtainFenceCore(uint32 GPUIndex)

@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "SPlacementModeTools.h"
 #include "Application/SlateApplicationBase.h"
@@ -298,7 +298,10 @@ void SPlacementModeTools::Construct( const FArguments& InArgs )
 	bNeedsUpdate = true;
 
 	FPlacementMode* PlacementEditMode = (FPlacementMode*)GLevelEditorModeTools().GetActiveMode( FBuiltinEditorModes::EM_Placement );
-	PlacementEditMode->AddValidFocusTargetForPlacement( SharedThis( this ) );
+	if (PlacementEditMode)
+	{
+		PlacementEditMode->AddValidFocusTargetForPlacement(SharedThis(this));
+	}
 
 	SearchTextFilter = MakeShareable(new FPlacementAssetEntryTextFilter(
 		FPlacementAssetEntryTextFilter::FItemToStringArray::CreateStatic(&PlacementViewFilter::GetBasicStrings)
@@ -321,7 +324,7 @@ void SPlacementModeTools::Construct( const FArguments& InArgs )
 	}
 
 	TSharedRef<SScrollBar> ScrollBar = SNew(SScrollBar)
-		.Thickness(FVector2D(5, 5));
+		.Thickness(FVector2D(9.0f, 9.0f));
 
 	ChildSlot
 	[

@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 using UnrealBuildTool;
 
@@ -22,7 +22,6 @@ public class SkeletalMeshEditor : ModuleRules
 				"SlateCore",
                 "EditorStyle",
                 "UnrealEd",
-                
                 "SkeletonEditor",
                 "Kismet",
                 "KismetWidgets",
@@ -32,9 +31,11 @@ public class SkeletalMeshEditor : ModuleRules
                 "DesktopPlatform",
                 "PropertyEditor",
                 "RHI",
-                "ClothingSystemRuntime",
+                "ClothingSystemRuntimeCommon",
                 "ClothingSystemEditorInterface",
-				"ClothingSystemRuntimeInterface"
+				"ClothingSystemRuntimeInterface",
+				"SkeletalMeshUtilitiesCommon",
+				"ToolMenus",
             }
 		);
 

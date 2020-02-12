@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -7,6 +7,7 @@
 #include "Framework/Docking/TabManager.h"
 
 class FEdMode;
+class UEdMode;
 class IToolkitHost;
 class SDockableTab;
 
@@ -125,6 +126,15 @@ public:
 	/** @returns the editor mode this toolkit is used for, or null if not relevant. */
 	virtual FEdMode* GetEditorMode() const = 0;
 
+	/** @returns the scriptable editor mode this toolkit is used for, or null if not relevant. */
+	virtual UEdMode* GetScriptableEditorMode() const = 0;
+
+	/** @return the editor mode display name if there is an editor mode associated with this toolkit.  An empty FText is returned otherwise */
+	virtual FText GetEditorModeDisplayName() const = 0;
+
+	/** @return the editor mode icon if there is an editor mode associated with this toolkit.  An empty icon is returned otherwise */
+	virtual FSlateIcon GetEditorModeIcon() const = 0;
+
 	/** @returns the inline content that this toolkit returns if it is an editor mode */
 	virtual TSharedPtr<SWidget> GetInlineContent() const = 0;
 
@@ -133,5 +143,9 @@ public:
 
 	/* Called when a toolkit has been brought to the 'front' */
 	virtual void ToolkitBroughtToFront() {};
+
+	/* Returns true if this is the default generic asset editor used by multiple classes */
+	virtual bool IsSimpleAssetEditor() const { return false; }
 };
+
 

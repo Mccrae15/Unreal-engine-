@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -9,30 +9,40 @@
 #include "Layout/Visibility.h"
 
 class UNiagaraSystem;
+class FNiagaraSystemViewModel;
 struct FNiagaraEmitterHandle;
-struct FNiagaraEmitterInstance;
+class FNiagaraEmitterInstance;
 class FNiagaraEmitterViewModel;
+class UNiagaraStackViewModel;
+class UNiagaraStackEntry;
+enum class ENiagaraSystemViewModelEditMode;
 
 /** The view model for the FNiagaraEmitterEditorWidget. */
-class FNiagaraEmitterHandleViewModel : public TSharedFromThis<FNiagaraEmitterHandleViewModel>
+class FNiagaraEmitterHandleViewModel : public TSharedFromThis<FNiagaraEmitterHandleViewModel>, public FGCObject
 {
 public:
 	DECLARE_MULTICAST_DELEGATE(FOnPropertyChanged);
 	DECLARE_MULTICAST_DELEGATE(FOnNameChanged);
 public:
-	/** Creates a new emitter editor view model with the supplied emitter handle and simulation. */
-	FNiagaraEmitterHandleViewModel(FNiagaraEmitterHandle* InEmitterHandle, TWeakPtr<FNiagaraEmitterInstance> InSimulation, UNiagaraSystem& InOwningSystem);
+	/** Creates a new emitter editor view model.  This must be initialized before it can be used. */
+	FNiagaraEmitterHandleViewModel();
 	
 	~FNiagaraEmitterHandleViewModel();
 
-	/** Reuses a the emitter editor view model with the supplied emitter handle and simulation.*/
-	bool Set(FNiagaraEmitterHandle* InEmitterHandle, TWeakPtr<FNiagaraEmitterInstance> InSimulation, UNiagaraSystem& InOwningSystem);
+	/** Initializes the emitter editor view model with the supplied emitter handle and simulation.*/
+	void Initialize(TSharedRef<FNiagaraSystemViewModel> InOwningSystemViewModel, FNiagaraEmitterHandle* InEmitterHandle, TWeakPtr<FNiagaraEmitterInstance, ESPMode::ThreadSafe> InSimulation);
 
-	/** Sets the emitter handle.*/
-	void SetEmitterHandle(FNiagaraEmitterHandle* InEmitterHandle);
+	/** Returns whether or not this view model represents a valid emitter handle. */
+	bool IsValid() const;
+
+	/** Resets the data in the view model. */
+	void Reset();
+
+	//~ FGCObject interface
+	virtual void AddReferencedObjects(FReferenceCollector& Collector) override;
 
 	/** Sets the simulation for the emitter this handle references. */
-	void SetSimulation(TWeakPtr<FNiagaraEmitterInstance> InSimulation);
+	void SetSimulation(TWeakPtr<FNiagaraEmitterInstance, ESPMode::ThreadSafe> InSimulation);
 
 	/** Gets the id of the emitter handle. */
 	FGuid GetId() const;
@@ -47,11 +57,8 @@ public:
 	/** Gets the text representation of the emitter handle name. */
 	NIAGARAEDITOR_API FText GetNameText() const;
 
-	/** Gets the text representation of the source emitter handle name. */
-	NIAGARAEDITOR_API FText GetSourceNameText() const;
-
-	/** Gets the text representation of the emitter handle name. */
-	NIAGARAEDITOR_API FText GetSourcePathNameText() const;
+	/** Gets whether or not this emitter can be renamed. */
+	NIAGARAEDITOR_API bool CanRenameEmitter() const;
 
 	/** Called when the contents of the name text control is committed. */
 	NIAGARAEDITOR_API void OnNameTextComitted(const FText& InText, ETextCommit::Type CommitInfo);
@@ -73,6 +80,12 @@ public:
 	/** Sets whether or not this emitter handle is enabled. */
 	NIAGARAEDITOR_API void SetIsEnabled(bool bInIsEnabled);
 
+	/** Gets whether or not the emitter for this handle has been isolated in the UI. */
+	NIAGARAEDITOR_API bool GetIsIsolated() const;
+
+	/** Sets whether or not this emitter is isolated. May affect other emitters in the system. */
+	NIAGARAEDITOR_API void SetIsIsolated(bool InIsIsolated);
+
 	/** Gets the check state for the is enabled check box. */
 	NIAGARAEDITOR_API ECheckBoxState GetIsEnabledCheckState() const;
 
@@ -83,11 +96,19 @@ public:
 	NIAGARAEDITOR_API FNiagaraEmitterHandle* GetEmitterHandle();
 
 	/** Gets the view model for the emitter this handle references. */
-	NIAGARAEDITOR_API TSharedPtr<FNiagaraEmitterViewModel> GetEmitterViewModel();
+	NIAGARAEDITOR_API TSharedRef<FNiagaraEmitterViewModel> GetEmitterViewModel();
 
+	/** Gets the stack view model which represents the emitter pointed to by this handle. */
+	NIAGARAEDITOR_API UNiagaraStackViewModel* GetEmitterStackViewModel();
 
-	/** Opens the source emitter in a stand alone asset editor. */
-	void OpenSourceEmitter();
+	/** Gets the current edit mode of the emitter's owning system. */
+	NIAGARAEDITOR_API ENiagaraSystemViewModelEditMode GetOwningSystemEditMode() const;
+
+	/** Gets whether or not this emitter handle has a rename pending. */
+	NIAGARAEDITOR_API bool GetIsRenamePending() const;
+
+	/** Sets whether or not this emitter handle has a rename pending. */
+	NIAGARAEDITOR_API void SetIsRenamePending(bool bInIsRenamePending);
 
 	/** Gets a multicast delegate which is called any time a property on the handle changes. */
 	FOnPropertyChanged& OnPropertyChanged();
@@ -96,20 +117,28 @@ public:
 	FOnNameChanged& OnNameChanged();
 
 	void Cleanup();
+	NIAGARAEDITOR_API void GetRendererEntries(TArray<UNiagaraStackEntry*>& InRenderingEntries);
+	NIAGARAEDITOR_API TSharedRef<FNiagaraSystemViewModel> GetOwningSystemViewModel() const;
 
 private:
+	/** The system view model which owns this emitter handle view model. */
+	TWeakPtr<FNiagaraSystemViewModel> OwningSystemViewModelWeak;
+
 	/** The emitter handle being displayed and edited by this view model. */
 	FNiagaraEmitterHandle* EmitterHandle;
 
-	/** The System which owns the handled being displayed and edited by this view model. */
-	UNiagaraSystem& OwningSystem;
-
 	/** The view model for emitter this handle references. */
-	TSharedPtr<FNiagaraEmitterViewModel> EmitterViewModel;
+	TSharedRef<FNiagaraEmitterViewModel> EmitterViewModel;
+
+	/** The stack view model which represents the emitter pointed to by this handle. */
+	UNiagaraStackViewModel* EmitterStackViewModel;
 
 	/** A multicast delegate which is called any time a property on the handle changes. */
 	FOnPropertyChanged OnPropertyChangedDelegate;
 
 	/** A multicast delegate which is called any time this emitter handle is renamed. */
 	FOnNameChanged OnNameChangedDelegate;
+
+	/** Gets whether or not this emitter has a pending rename. */
+	bool bIsRenamePending;
 };

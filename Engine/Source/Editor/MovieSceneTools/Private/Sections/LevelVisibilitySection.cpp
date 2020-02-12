@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "Sections/LevelVisibilitySection.h"
 #include "Sections/MovieSceneLevelVisibilitySection.h"
@@ -11,6 +11,11 @@
 #include "SDropTarget.h"
 #include "DragAndDrop/LevelDragDropOp.h"
 #include "ScopedTransaction.h"
+
+namespace LevelVisibilitySection
+{
+	constexpr int32 MaxNumLevelsToShow = 3;
+}
 
 FLevelVisibilitySection::FLevelVisibilitySection( UMovieSceneLevelVisibilitySection& InSectionObject )
 	: SectionObject( InSectionObject )
@@ -60,14 +65,37 @@ FSlateColor FLevelVisibilitySection::GetBackgroundColor() const
 
 FText FLevelVisibilitySection::GetVisibilityText() const
 {
-	FText VisibilityText = SectionObject.GetVisibility() == ELevelVisibility::Visible ? VisibleText : HiddenText;
-	return FText::Format( NSLOCTEXT( "LevelVisibilitySection", "SectionTextFormat", "{0} ({1})" ), VisibilityText, FText::AsNumber( SectionObject.GetLevelNames()->Num() ) );
+	TArray<FString> LevelNameStrings;
+	LevelNameStrings.Reserve(LevelVisibilitySection::MaxNumLevelsToShow);
+	
+	int32 Count = 0;
+	for ( ; Count < LevelVisibilitySection::MaxNumLevelsToShow && Count < SectionObject.GetLevelNames().Num(); Count++ )
+	{
+		LevelNameStrings.Add( SectionObject.GetLevelNames()[Count].ToString() );
+	}
+
+	int32 NumRemaining = SectionObject.GetLevelNames().Num() - Count;
+	FString LevelsText = FString::Join( LevelNameStrings, TEXT( ", " ) );
+
+	if (SectionObject.GetLevelNames().Num() > LevelVisibilitySection::MaxNumLevelsToShow )
+	{
+		LevelsText.Append( FString::Format(TEXT(" (+{0} more)"), { FString::FormatAsNumber(NumRemaining) } ) );
+	}
+
+	if (LevelsText.IsEmpty())
+	{
+		FText VisibilityText = SectionObject.GetVisibility() == ELevelVisibility::Visible ? VisibleText : HiddenText;
+
+		return VisibilityText;
+	}
+
+	return FText::Format( NSLOCTEXT( "LevelVisibilitySection", "SectionTextFormat", "{0}" ), FText::FromString( LevelsText ) );
 }
 
 FText FLevelVisibilitySection::GetVisibilityToolTip() const
 {
 	TArray<FString> LevelNameStrings;
-	for ( const FName& LevelName : *SectionObject.GetLevelNames() )
+	for ( const FName& LevelName : SectionObject.GetLevelNames() )
 	{
 		LevelNameStrings.Add( LevelName.ToString() );
 	}
@@ -93,14 +121,18 @@ FReply FLevelVisibilitySection::OnDrop( TSharedPtr<FDragDropOperation> DragDropO
 			FScopedTransaction Transaction(NSLOCTEXT("LevelVisibilitySection", "TransactionText", "Add Level(s) to Level Visibility Section"));
 			SectionObject.Modify();
 
+			TArray<FName> LevelNames = SectionObject.GetLevelNames();
 			for ( TWeakObjectPtr<ULevelStreaming> Level : LevelDragDropOperation->StreamingLevelsToDrop )
 			{
 				if ( Level.IsValid() )
 				{
 					FName ShortLevelName = FPackageName::GetShortFName( Level->GetWorldAssetPackageFName() );
-					SectionObject.GetLevelNames()->AddUnique( ShortLevelName );
+					LevelNames.AddUnique( ShortLevelName );
 				}
 			}
+
+			SectionObject.SetLevelNames(LevelNames);
+
 			return FReply::Handled();
 		}
 	}

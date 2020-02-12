@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 #pragma once
 
 #include "CoreTypes.h"
@@ -168,7 +168,7 @@ public:
 	TMap< FString, TSharedPtr<FLocMetadataValue> > Values;
 
 	/** Special reserved character.  When encountered as a prefix metadata name(the key in the Values map), it will adjust the way comparisons are done. */
-	static const FString COMPARISON_MODIFIER_PREFIX;
+	static const TCHAR* COMPARISON_MODIFIER_PREFIX;
 };
 
 CORE_API FArchive& operator<<(FArchive& Archive, FLocMetadataObject& Object);

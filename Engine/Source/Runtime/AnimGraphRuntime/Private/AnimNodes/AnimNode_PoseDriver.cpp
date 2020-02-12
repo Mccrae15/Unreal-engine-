@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "AnimNodes/AnimNode_PoseDriver.h"
 #include "AnimationRuntime.h"
@@ -23,6 +23,7 @@ FAnimNode_PoseDriver::FAnimNode_PoseDriver()
 
 void FAnimNode_PoseDriver::Initialize_AnyThread(const FAnimationInitializeContext& Context)
 {
+	DECLARE_SCOPE_HIERARCHICAL_COUNTER_ANIMNODE(Initialize_AnyThread)
 	FAnimNode_PoseHandler::Initialize_AnyThread(Context);
 
 	SourcePose.Initialize(Context);
@@ -71,6 +72,7 @@ void FAnimNode_PoseDriver::RebuildPoseList(const FBoneContainer& InBoneContainer
 
 void FAnimNode_PoseDriver::CacheBones_AnyThread(const FAnimationCacheBonesContext& Context)
 {
+	DECLARE_SCOPE_HIERARCHICAL_COUNTER_ANIMNODE(CacheBones_AnyThread)
 	FAnimNode_PoseHandler::CacheBones_AnyThread(Context);
 	// Init pose input
 	SourcePose.CacheBones(Context);
@@ -124,6 +126,12 @@ void FAnimNode_PoseDriver::CacheBones_AnyThread(const FAnimationCacheBonesContex
 			}
 		}
 	}
+
+	PoseExtractContext.BonesRequired.SetNumZeroed(BoneBlendWeights.Num());
+	for (int32 BoneIndex = 0; BoneIndex < BoneBlendWeights.Num(); BoneIndex++)
+	{
+		PoseExtractContext.BonesRequired[BoneIndex] = BoneBlendWeights[BoneIndex] > SMALL_NUMBER;
+	}
 }
 
 void FAnimNode_PoseDriver::UpdateAssetPlayer(const FAnimationUpdateContext& Context)
@@ -134,8 +142,14 @@ void FAnimNode_PoseDriver::UpdateAssetPlayer(const FAnimationUpdateContext& Cont
 
 void FAnimNode_PoseDriver::GatherDebugData(FNodeDebugData& DebugData)
 {
+	DECLARE_SCOPE_HIERARCHICAL_COUNTER_ANIMNODE(GatherDebugData)
 	FAnimNode_PoseHandler::GatherDebugData(DebugData);
 	SourcePose.GatherDebugData(DebugData.BranchFlow(1.f));
+}
+
+float FAnimNode_PoseDriver::GetRadiusForTarget(const FRBFTarget& Target) const
+{
+	return FRBFSolver::GetRadiusForTarget(Target, RBFParams);
 }
 
 bool FAnimNode_PoseDriver::IsBoneDriven(FName BoneName) const
@@ -196,12 +210,15 @@ void FAnimNode_PoseDriver::GetRBFTargets(TArray<FRBFTarget>& OutTargets) const
 		RBFTarget.ScaleFactor = PoseTarget.TargetScale;
 		RBFTarget.bApplyCustomCurve = PoseTarget.bApplyCustomCurve;
 		RBFTarget.CustomCurve = PoseTarget.CustomCurve;
+		RBFTarget.DistanceMethod = PoseTarget.DistanceMethod;
+		RBFTarget.FunctionType = PoseTarget.FunctionType;
 	}
 }
 
 
 void FAnimNode_PoseDriver::Evaluate_AnyThread(FPoseContext& Output)
 {
+	DECLARE_SCOPE_HIERARCHICAL_COUNTER_ANIMNODE(Evaluate_AnyThread)
 	QUICK_SCOPE_CYCLE_COUNTER(STAT_PoseDriver_Eval);
 
 	// Udpate DrivenIDs if needed
@@ -295,6 +312,12 @@ void FAnimNode_PoseDriver::Evaluate_AnyThread(FPoseContext& Output)
 			Output.AnimInstanceProxy->IsSkeletonCompatible(CurrentPoseAsset->GetSkeleton()) )
 		{
 			FPoseContext CurrentPose(Output);
+
+			// clear the value before setting it. 
+			for (int32 PoseIndex = 0; PoseIndex < PoseExtractContext.PoseCurves.Num(); ++PoseIndex)
+			{
+				PoseExtractContext.PoseCurves[PoseIndex].Value = 0.f;
+			}
 
 			// Then fill in weight for any driven poses
 			for (const FRBFOutputWeight& Weight : OutputWeights)

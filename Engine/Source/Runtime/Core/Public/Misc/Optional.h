@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -7,7 +7,6 @@
 #include "Templates/TypeCompatibleBytes.h"
 #include "Templates/UnrealTemplate.h"
 #include "Serialization/Archive.h"
-
 
 /**
  * When we have an optional value IsSet() returns true, and GetValue() is meaningful.
@@ -26,6 +25,12 @@ public:
 	TOptional(OptionalType&& InValue)
 	{
 		new(&Value) OptionalType(MoveTempIfPossible(InValue));
+		bIsSet = true;
+	}
+	template <typename... ArgTypes>
+	explicit TOptional(EInPlace, ArgTypes&&... Args)
+	{
+		new(&Value) OptionalType(Forward<ArgTypes>(Args)...);
 		bIsSet = true;
 	}
 
@@ -121,11 +126,12 @@ public:
 	}
 
 	template <typename... ArgsType>
-	void Emplace(ArgsType&&... Args)
+	OptionalType& Emplace(ArgsType&&... Args)
 	{
 		Reset();
-		new(&Value) OptionalType(Forward<ArgsType>(Args)...);
+		OptionalType* Result = new(&Value) OptionalType(Forward<ArgsType>(Args)...);
 		bIsSet = true;
+		return *Result;
 	}
 
 	friend bool operator==(const TOptional& lhs, const TOptional& rhs)
@@ -181,10 +187,13 @@ public:
 
 	/** @return The optional value; undefined when IsSet() returns false. */
 	const OptionalType& GetValue() const { checkf(IsSet(), TEXT("It is an error to call GetValue() on an unset TOptional. Please either check IsSet() or use Get(DefaultValue) instead.")); return *(OptionalType*)&Value; }
-	      OptionalType& GetValue()       { checkf(IsSet(), TEXT("It is an error to call GetValue() on an unset TOptional. Please either check IsSet() or use Get(DefaultValue) instead.")); return *(OptionalType*)&Value; }
+		  OptionalType& GetValue()		 { checkf(IsSet(), TEXT("It is an error to call GetValue() on an unset TOptional. Please either check IsSet() or use Get(DefaultValue) instead.")); return *(OptionalType*)&Value; }
 
 	const OptionalType* operator->() const { return &GetValue(); }
-	      OptionalType* operator->()       { return &GetValue(); }
+		  OptionalType* operator->()	   { return &GetValue(); }
+
+	const OptionalType& operator*() const { return GetValue(); }
+		  OptionalType& operator*()		  { return GetValue(); }
 
 	/** @return The optional value when set; DefaultValue otherwise. */
 	const OptionalType& Get(const OptionalType& DefaultValue) const { return IsSet() ? *(OptionalType*)&Value : DefaultValue; }

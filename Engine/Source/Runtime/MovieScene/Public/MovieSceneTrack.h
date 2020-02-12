@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -107,11 +107,35 @@ struct FMovieSceneTrackDisplayOptions
 	uint32 bShowVerticalFrames : 1;
 };
 
+/** Returns what kind of section easing we support in the editor */
+enum class EMovieSceneTrackEasingSupportFlags
+{
+	None = 0,
+	AutomaticEaseIn = 1 << 0,
+	AutomaticEaseOut = 1 << 1,
+	ManualEaseIn = 1 << 2,
+	ManualEaseOut = 1 << 3,
+	AutomaticEasing = AutomaticEaseIn | AutomaticEaseOut,
+	ManualEasing = ManualEaseIn | ManualEaseOut,
+	All = AutomaticEasing | ManualEasing
+};
+ENUM_CLASS_FLAGS(EMovieSceneTrackEasingSupportFlags)
+
+/** Parameters for the `SupportsEasing` method */
+struct FMovieSceneSupportsEasingParams
+{
+	// Non-null if we are asking for a specific section.
+	const UMovieSceneSection* ForSection;
+
+	FMovieSceneSupportsEasingParams() : ForSection(nullptr) {}
+	FMovieSceneSupportsEasingParams(const UMovieSceneSection* InSection) : ForSection(InSection) {}
+};
+
 /**
  * Base class for a track in a Movie Scene
  */
 UCLASS(abstract, DefaultToInstanced, MinimalAPI, BlueprintType)
-class UMovieSceneTrack
+class MOVIESCENE_VTABLE UMovieSceneTrack
 	: public UMovieSceneSignedObject
 {
 	GENERATED_BODY()
@@ -221,6 +245,10 @@ protected:
 	/** Intentionally not a UPROPERTY so this isn't serialized */
 	FMovieSceneBlendTypeField SupportedBlendTypes;
 
+	/** Whether evaluation of this track has been disabled via mute/solo */
+	UPROPERTY()
+	bool bIsEvalDisabled;
+
 public:
 
 	/**
@@ -246,6 +274,21 @@ public:
 		return SupportedBlendTypes.Num() != 0;
 	}
 
+	virtual EMovieSceneTrackEasingSupportFlags SupportsEasing(FMovieSceneSupportsEasingParams& Params) const
+	{
+		return SupportedBlendTypes.Num() > 0 ? EMovieSceneTrackEasingSupportFlags::All : EMovieSceneTrackEasingSupportFlags::None;
+	}
+
+	/** Set This Section as the one to key. If track doesn't support layered blends then don't implement
+	* @param InSection		Section that we want to key
+	*/
+	 virtual void SetSectionToKey(UMovieSceneSection* InSection) {};
+
+	/** Get the section we want to key. If track doesn't support layered blends it will return nulltpr.
+	* @return The section to key if one exists
+	*/
+	 virtual UMovieSceneSection* GetSectionToKey() const { return nullptr; }
+
 	/** Gets the greatest row index of all the sections owned by this track. */
 	MOVIESCENE_API int32 GetMaxRowIndex() const;
 
@@ -254,6 +297,16 @@ public:
 	 * @return Whether or not fixes were made. 
 	 */
 	MOVIESCENE_API bool FixRowIndices();
+
+	/**
+	* @return Whether evaluation of this track should be disabled due to mute/solo settings
+	*/
+	MOVIESCENE_API bool IsEvalDisabled() const { return bIsEvalDisabled; };
+
+	/**
+	* Called by Sequencer to set whether evaluation of this track should be disabled due to mute/solo settings
+	*/
+	MOVIESCENE_API void SetEvalDisabled(bool bEvalDisabled) { bIsEvalDisabled = bEvalDisabled; }
 
 public:
 
@@ -299,7 +352,14 @@ public:
 	 *
 	 * @param Section The section to remove.
 	 */
-	virtual void RemoveSection(UMovieSceneSection& Section) PURE_VIRTUAL(UMovieSceneSection::RemoveSection,);
+	virtual void RemoveSection(UMovieSceneSection& Section) PURE_VIRTUAL(UMovieSceneSection::RemoveSection, );
+
+	/**
+	 * Removes a section from this track at a particular index
+	 *
+	 * @param SectionIndex The section index to remove.
+	 */
+	virtual void RemoveSectionAt(int32 SectionIndex) PURE_VIRTUAL(UMovieSceneSection::RemoveSectionAt, );
 
 #if WITH_EDITOR
 
@@ -390,5 +450,6 @@ public:
 	 * @param Section The section that moved.
 	 */
 	virtual void OnSectionMoved(UMovieSceneSection& Section) { }
+
 #endif
 };

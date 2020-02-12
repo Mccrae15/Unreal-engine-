@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "CaptureTab/SMediaFrameworkCaptureOutputWidget.h"
 
@@ -25,8 +25,9 @@
 #include "Widgets/SViewport.h"
 #include "Widgets/Text/STextBlock.h"
 
+#include "Modules/ModuleManager.h"
 #include "Editor.h"
-#include "ILevelViewport.h"
+#include "IAssetViewport.h"
 #include "LevelEditor.h"
 #include "Materials/Material.h"
 #include "Materials/MaterialExpressionTextureSample.h"
@@ -142,11 +143,6 @@ void SMediaFrameworkCaptureOutputWidget::Construct(const FArguments& InArgs)
 	CaptureOptions = InArgs._CaptureOptions;
 }
 END_SLATE_FUNCTION_BUILD_OPTIMIZATION
-
-SMediaFrameworkCaptureOutputWidget::~SMediaFrameworkCaptureOutputWidget()
-{
-	StopOutput();
-}
 
 void SMediaFrameworkCaptureOutputWidget::StopOutput()
 {
@@ -378,10 +374,7 @@ END_SLATE_FUNCTION_BUILD_OPTIMIZATION
 
 SMediaFrameworkCaptureCameraViewportWidget::~SMediaFrameworkCaptureCameraViewportWidget()
 {
-	if (LevelViewportClient.IsValid())
-	{
-		LevelViewportClient->Viewport = nullptr;
-	}
+	StopOutput();
 }
 
 void SMediaFrameworkCaptureCameraViewportWidget::StartOutput()
@@ -396,6 +389,19 @@ void SMediaFrameworkCaptureCameraViewportWidget::StartOutput()
 			SceneViewport->SetFixedViewportSize(TargetSize.X, TargetSize.Y);
 			MediaCapture->CaptureSceneViewport(SceneViewport, CaptureOptions);
 		}
+	}
+}
+
+void SMediaFrameworkCaptureCameraViewportWidget::StopOutput()
+{
+	Super::StopOutput();
+
+	if (LevelViewportClient.IsValid())
+	{
+		LevelViewportClient->Viewport = nullptr;
+		LevelViewportClient.Reset();
+		ViewportWidget.Reset();
+		SceneViewport.Reset();
 	}
 }
 
@@ -501,6 +507,11 @@ void SMediaFrameworkCaptureRenderTargetWidget::Construct(const FArguments& InArg
 }
 END_SLATE_FUNCTION_BUILD_OPTIMIZATION
 
+SMediaFrameworkCaptureRenderTargetWidget::~SMediaFrameworkCaptureRenderTargetWidget()
+{
+	StopOutput();
+}
+
 void SMediaFrameworkCaptureRenderTargetWidget::StartOutput()
 {
 	UMediaOutput* MediaOutputPtr = MediaOutput.Get();
@@ -564,7 +575,7 @@ END_SLATE_FUNCTION_BUILD_OPTIMIZATION
 
 SMediaFrameworkCaptureCurrentViewportWidget::~SMediaFrameworkCaptureCurrentViewportWidget()
 {
-	ShutdownViewport();
+	StopOutput();
 }
 
 void SMediaFrameworkCaptureCurrentViewportWidget::StartOutput()
@@ -597,13 +608,13 @@ void SMediaFrameworkCaptureCurrentViewportWidget::StartOutput()
 			{
 				// Find a editor viewport
 				FLevelEditorModule& LevelEditorModule = FModuleManager::Get().GetModuleChecked<FLevelEditorModule>(TEXT("LevelEditor"));
-				TSharedPtr<ILevelViewport> LevelViewportInterface = LevelEditorModule.GetFirstActiveViewport();
-				if (LevelViewportInterface.IsValid())
+				TSharedPtr<IAssetViewport> ViewportInterface = LevelEditorModule.GetFirstActiveViewport();
+				if (ViewportInterface.IsValid())
 				{
-					LevelViewport = LevelViewportInterface;
-					SceneViewport = LevelViewportInterface->GetSharedActiveViewport();
+					LevelViewport = ViewportInterface;
+					SceneViewport = ViewportInterface->GetSharedActiveViewport();
 
-					FLevelEditorViewportClient& ViewportClient = LevelViewportInterface->GetLevelViewportClient();
+					FEditorViewportClient& ViewportClient = ViewportInterface->GetAssetViewportClient();
 
 					// Save settings
 					ViewportClientFlags.bRealTime = ViewportClient.IsRealtime();
@@ -625,14 +636,26 @@ void SMediaFrameworkCaptureCurrentViewportWidget::StartOutput()
 
 			if (SceneViewport.IsValid())
 			{
-				GEditor->OnLevelViewportClientListChanged().AddRaw(this, &SMediaFrameworkCaptureCurrentViewportWidget::OnLevelViewportClientListChanged);
+				GEditor->OnLevelViewportClientListChanged().AddSP(this, &SMediaFrameworkCaptureCurrentViewportWidget::OnLevelViewportClientListChanged);
 				EditorSceneViewport = SceneViewport;
-				FIntPoint TargetSize = MediaOutputPtr->GetRequestedSize();
-				SceneViewport->SetFixedViewportSize(TargetSize.X, TargetSize.Y);
-				MediaCapture->CaptureSceneViewport(SceneViewport, CaptureOptions);
+				MediaCapture->OnStateChangedNative.AddSP(this, &SMediaFrameworkCaptureCurrentViewportWidget::OnMediaCaptureStateChanged);
+
+				if (!MediaCapture->CaptureSceneViewport(SceneViewport, CaptureOptions))
+				{
+					ShutdownViewport();
+				}
 			}
 		}
 	}
+}
+
+void SMediaFrameworkCaptureCurrentViewportWidget::StopOutput()
+{
+	if (MediaCapture.IsValid())
+	{
+		MediaCapture->StopCapture(false);
+	}
+	ShutdownViewport();
 }
 
 void SMediaFrameworkCaptureCurrentViewportWidget::OnLevelViewportClientListChanged()
@@ -657,38 +680,37 @@ void SMediaFrameworkCaptureCurrentViewportWidget::OnLevelViewportClientListChang
 	}
 }
 
-void SMediaFrameworkCaptureCurrentViewportWidget::OnPrePIE()
+void SMediaFrameworkCaptureCurrentViewportWidget::OnMediaCaptureStateChanged()
 {
 	if (MediaCapture.IsValid())
 	{
-		MediaCapture->StopCapture(false);
+		EMediaCaptureState State = MediaCapture->GetState();
+		if (State != EMediaCaptureState::Capturing && State != EMediaCaptureState::Preparing)
+		{
+			ShutdownViewport();
+		}
 	}
-	ShutdownViewport();
+}
+
+void SMediaFrameworkCaptureCurrentViewportWidget::OnPrePIE()
+{
+	StopOutput();
 }
 
 void SMediaFrameworkCaptureCurrentViewportWidget::OnPrePIEEnded()
 {
-	if (MediaCapture.IsValid())
-	{
-		MediaCapture->StopCapture(false);
-	}
-	ShutdownViewport();
+	StopOutput();
 }
 
 void SMediaFrameworkCaptureCurrentViewportWidget::ShutdownViewport()
 {
-	TSharedPtr<FSceneViewport> EditorSceneViewportPin = EditorSceneViewport.Pin();
-	if (EditorSceneViewportPin.IsValid())
-	{
-		EditorSceneViewportPin->SetFixedViewportSize(0, 0);
-	}
-
 	GEditor->OnLevelViewportClientListChanged().RemoveAll(this);
 
-	TSharedPtr<ILevelViewport> LevelViewportPin = LevelViewport.Pin();
+	TSharedPtr<FSceneViewport> EditorSceneViewportPin = EditorSceneViewport.Pin();
+	TSharedPtr<IAssetViewport> LevelViewportPin = LevelViewport.Pin();
 	if (LevelViewportPin.IsValid() && LevelViewportPin->GetSharedActiveViewport() == EditorSceneViewportPin)
 	{
-		FLevelEditorViewportClient& ViewportClient = LevelViewportPin->GetLevelViewportClient();
+		FEditorViewportClient& ViewportClient = LevelViewportPin->GetAssetViewportClient();
 
 		// Reset settings
 		ViewportClient.SetRealtime(ViewportClientFlags.bRealTime);
@@ -701,6 +723,7 @@ void SMediaFrameworkCaptureCurrentViewportWidget::ShutdownViewport()
 
 	LevelViewport.Reset();
 	EditorSceneViewport.Reset();
+	MediaCapture.Reset();
 }
 
 #undef LOCTEXT_NAMESPACE

@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -35,6 +35,8 @@ public:
 	virtual void RegisterCommands() override;
 
 	void BindCommands(FUICommandList& CommandList, const TSharedPtr<FEditorViewportClient>& Client) const;
+
+	static bool DebugModeShouldBeTonemapped(const FName& RayTracingDebugModeName);
 
 private:
 	void BuildCommandMap();

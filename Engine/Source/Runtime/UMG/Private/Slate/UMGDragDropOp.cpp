@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "Slate/UMGDragDropOp.h"
 #include "Application/SlateApplicationBase.h"
@@ -25,6 +25,11 @@ void FUMGDragDropOp::AddReferencedObjects(FReferenceCollector& Collector)
 {
 	Collector.AddReferencedObject(DragOperation);
 	Collector.AddReferencedObject(GameViewport);
+}
+
+FString FUMGDragDropOp::GetReferencerName() const
+{
+	return TEXT("FUMGDragDropOp");
 }
 
 void FUMGDragDropOp::Construct()

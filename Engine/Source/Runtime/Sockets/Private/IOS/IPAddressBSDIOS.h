@@ -1,8 +1,9 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
 #include "CoreMinimal.h"
+#include "SocketSubsystemIOS.h"
 #include "BSDSockets/SocketSubsystemBSDPrivate.h"
 #include "BSDSockets/IPAddressBSD.h"
 
@@ -10,28 +11,49 @@
 
 class FInternetAddrBSDIOS : public FInternetAddrBSD
 {
-
 public:
 
-	FInternetAddrBSDIOS(FSocketSubsystemBSD* InSocketSubsystem) : FInternetAddrBSD(InSocketSubsystem) {}
+	FInternetAddrBSDIOS(FSocketSubsystemBSD* InSocketSubsystem, FName RequestedProtocol = NAME_None) : 
+		FInternetAddrBSD(InSocketSubsystem, RequestedProtocol)
+	{
+	}
 
 	/** Sets the address to broadcast */
 	virtual void SetIPv6BroadcastAddress() override
 	{
-		FSocketSubsystemBSD* SocketSubsystem = static_cast<FSocketSubsystemBSD*>(ISocketSubsystem::Get(PLATFORM_SOCKETSUBSYSTEM));
-		if (SocketSubsystem)
+		FSocketSubsystemIOS* SocketSubsystemIOS = static_cast<FSocketSubsystemIOS*>(SocketSubsystem);
+		if (SocketSubsystemIOS)
 		{
-			// Do a query to get the scope id of the address.
-			if (SocketSubsystem->CreateAddressFromIP("ff02::01", *this) != SE_NO_ERROR)
+			TSharedPtr<FInternetAddrBSDIOS> MultiCastAddr = StaticCastSharedPtr<FInternetAddrBSDIOS>(SocketSubsystemIOS->GetAddressFromString(TEXT("ff02::1")));
+			if (!MultiCastAddr.IsValid())
 			{
 				UE_LOG(LogSockets, Warning, TEXT("Could not resolve the broadcast address for iOS, this address will just be blank"));
 			}
 			else
 			{
-				bool bUnusedBool;
-				TSharedRef<FInternetAddrBSDIOS> ScopeAddr = 
-					StaticCastSharedRef<FInternetAddrBSDIOS>(SocketSubsystem->GetLocalHostAddr(*GLog, bUnusedBool));
-				SetScopeId(ScopeAddr->GetScopeId());
+				// Set the address from the query
+				SetRawIp(MultiCastAddr->GetRawIp());
+
+				// Grab the scope id to set the broadcast address to
+				// We could potentially do this with less loops but it's best to make sure that we set an IPv6 scope
+				// And iOS could return an IPv4 address if we just called GetLocalHostAddr
+				TArray<TSharedRef<FInternetAddr>> BindingAddresses = SocketSubsystemIOS->GetLocalBindAddresses();
+				if (BindingAddresses.Num() > 0)
+				{
+					for (const auto& BindAddress : BindingAddresses)
+					{
+						if (BindAddress->GetProtocolType() == FNetworkProtocolTypes::IPv6)
+						{
+							uint32 ScopeId = StaticCastSharedRef<FInternetAddrBSDIOS>(BindAddress)->GetScopeId();
+							SetScopeId(ScopeId);
+							break;
+						}
+					}
+				}
+				else
+				{
+					UE_LOG(LogSockets, Warning, TEXT("Could not get binding addresses to set the internal scope id for the broadcast address"));
+				}
 			}
 		}
 		else

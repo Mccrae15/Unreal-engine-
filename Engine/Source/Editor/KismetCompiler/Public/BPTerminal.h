@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -30,8 +30,8 @@ struct FBPTerminal
 	// Context->
 	FBPTerminal* Context;
 
-	// For non-literal terms, this is the UProperty being referenced (in the stack if bIsLocal set, or on the context otherwise)
-	UProperty* AssociatedVarProperty;
+	// For non-literal terms, this is the FProperty being referenced (in the stack if bIsLocal set, or on the context otherwise)
+	FProperty* AssociatedVarProperty;
 
 	/** Pointer to an object literal */
 	UObject* ObjectLiteral;
@@ -77,6 +77,16 @@ struct FBPTerminal
 	void SetVarTypeLocal(bool bIsLocal = true)
 	{
 		VarType = bIsLocal ? EVarType_Local : EVarType_Instanced;
+	}
+
+	bool IsSparseClassDataVarTerm() const
+	{
+		return !bIsLiteral && VarType == EVarType_SparseClassData;
+	}
+
+	void SetVarTypeSparseClassData()
+	{
+		VarType = EVarType_SparseClassData;
 	}
 
 	bool IsDefaultVarTerm() const
@@ -125,7 +135,8 @@ private:
 	{
 		EVarType_Local,
 		EVarType_Default,
-		EVarType_Instanced
+		EVarType_Instanced,
+		EVarType_SparseClassData,
 	};
 
 	// For non-literal terms, this is set to the type of variable reference

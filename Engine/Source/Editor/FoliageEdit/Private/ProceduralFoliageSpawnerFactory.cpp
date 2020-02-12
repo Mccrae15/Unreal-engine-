@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "ProceduralFoliageSpawnerFactory.h"
 #include "Settings/EditorExperimentalSettings.h"
@@ -18,11 +18,6 @@ UObject* UProceduralFoliageSpawnerFactory::FactoryCreateNew(UClass* Class, UObje
 	auto NewProceduralFoliage = NewObject<UProceduralFoliageSpawner>(InParent, Class, Name, Flags | RF_Transactional);
 
 	return NewProceduralFoliage;
-}
-
-uint32 UProceduralFoliageSpawnerFactory::GetMenuCategories() const
-{
-	return EAssetTypeCategories::Misc;
 }
 
 bool UProceduralFoliageSpawnerFactory::ShouldShowInNewMenu() const

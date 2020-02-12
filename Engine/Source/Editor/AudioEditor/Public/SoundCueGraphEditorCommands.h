@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -42,6 +42,12 @@ public:
 
 	/** Removes an input from the node */
 	TSharedPtr<FUICommandInfo> DeleteInput;
+
+	/** Plays the SoundCue or stops the currently playing cue/node */
+	TSharedPtr<FUICommandInfo> ToggleSolo;
+
+	/** Plays the SoundCue or stops the currently playing cue/node */
+	TSharedPtr<FUICommandInfo> ToggleMute;
 
 	/** Initialize commands */
 	virtual void RegisterCommands() override;

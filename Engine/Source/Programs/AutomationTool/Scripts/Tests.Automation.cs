@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 using System;
 using System.Collections.Generic;
 using System.Text;
@@ -852,7 +852,6 @@ class TestGamePerf : BuildCommand
 
 		string LevelParam = ParseParamValue("level", "");
 
-		#region Arguments
 		switch (LevelParam)
 		{
 			case "PerfShooterGame_Santuary":
@@ -1012,7 +1011,6 @@ class TestGamePerf : BuildCommand
 			default:
 				break;
 		}
-		#endregion
 
 		try
 		{
@@ -1172,7 +1170,6 @@ class TestOSSCommands : BuildCommand
 
 		StreamWriter WriteErrors = new StreamWriter(new FileStream(ClientLogFile, FileMode.Append, FileAccess.Write, FileShare.ReadWrite));
 
-		# region Error List
 		/* 
          * online sub=amazon test friends - Warning: Failed to get friends interface for amazon
          * online sub=amazon test identity - Error: RegisterUser() : OnlineSubsystemAmazon is improperly configured in DefaultEngine.ini
@@ -1184,7 +1181,6 @@ class TestOSSCommands : BuildCommand
          * Code 401 - online sub=mcp test time - Failed to query server time
          * Error code 500 - online sub=mcp test entitlements - profile template not found
         */
-		#endregion
 
 		using (WriteErrors)
 		{
@@ -1240,10 +1236,8 @@ public class UBT : BuildCommand
 		foreach (var ObjParam in Params)
 		{
 			var Param = (string)ObjParam;
-			UnrealBuildTool.UnrealTargetPlatform ParsePlatform;
-			if (Enum.TryParse<UnrealBuildTool.UnrealTargetPlatform>(Param, true, out ParsePlatform))
+			if (!UnrealTargetPlatform.TryParse(Param, out Platform))
 			{
-				Platform = ParsePlatform;
 				continue;
 			}
 			UnrealBuildTool.UnrealTargetConfiguration ParseConfiguration;

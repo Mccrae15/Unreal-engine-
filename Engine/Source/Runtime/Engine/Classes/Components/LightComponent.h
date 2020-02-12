@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -93,6 +93,16 @@ class ENGINE_API ULightComponent : public ULightComponentBase
 	 */
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category=Light, AdvancedDisplay, meta=(UIMin = "0", UIMax = "1"))
 	float ShadowBias;
+
+	/**
+	 * Controls how accurate self shadowing of whole scene shadows from this light are. This works in addition to shadow bias, by increasing the 
+	 * amount of bias depending on the slope of a surface.
+	 * At 0, shadows will start at the their caster surface, but there will be many self shadowing artifacts.
+	 * larger values, shadows will start further from their caster, and there won't be self shadowing artifacts but object might appear to fly.
+	 * around 0.5 seems to be a good tradeoff. This also affects the soft transition of shadows
+	 */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = Light, AdvancedDisplay, meta = (UIMin = "0", UIMax = "1"))
+	float ShadowSlopeBias;
 
 	/** Amount to sharpen shadow filtering */
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category=Light, AdvancedDisplay, meta=(UIMin = "0.0", UIMax = "1.0", DisplayName = "Shadow Filter Sharpen"))
@@ -193,6 +203,10 @@ class ENGINE_API ULightComponent : public ULightComponentBase
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category=LightShafts, meta=(UIMin = "0", UIMax = "4"))
 	float BloomThreshold;
 
+	/** After exposure is applied, scene color brightness larger than BloomMaxBrightness will be rescaled down to BloomMaxBrightness. */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category=LightShafts, meta=(UIMin = "0", UIMax = "100", SliderExponent = 20.0))
+	float BloomMaxBrightness;
+
 	/** Multiplies against scene color to create the bloom color. */
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category=LightShafts)
 	FColor BloomTint;
@@ -203,7 +217,7 @@ class ENGINE_API ULightComponent : public ULightComponentBase
 	 * They have less aliasing artifacts than standard shadowmaps, but inherit all the limitations of distance field representations (only uniform scale, no deformation).
 	 * These shadows have a low per-object cost (and don't depend on triangle count) so they are effective for distant shadows from a dynamic sun.
 	 */
-	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category=DistanceFieldShadows, meta=(DisplayName = "RayTraced DistanceField Shadows"))
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category=DistanceFieldShadows, meta=(DisplayName = "Distance Field Shadows"))
 	bool bUseRayTracedDistanceFieldShadows;
 
 	/** 
@@ -262,6 +276,9 @@ public:
 	void SetBloomThreshold(float NewValue);
 
 	UFUNCTION(BlueprintCallable, Category="Rendering|Components|Light")
+	void SetBloomMaxBrightness(float NewValue);
+
+	UFUNCTION(BlueprintCallable, Category="Rendering|Components|Light")
 	void SetBloomTint(FColor NewValue);
 
 	UFUNCTION(BlueprintCallable, Category="Rendering|Components|Light", meta=(DisplayName = "Set IES Texture"))
@@ -275,12 +292,18 @@ public:
 
 	UFUNCTION(BlueprintCallable, Category="Rendering|Components|Light")
 	void SetShadowBias(float NewValue);
+	
+	UFUNCTION(BlueprintCallable, Category = "Rendering|Components|Light")
+	void SetShadowSlopeBias(float NewValue);
 
 	UFUNCTION(BlueprintCallable, Category = "Rendering|Components|Light")
 	void SetSpecularScale(float NewValue);
 
 	UFUNCTION(BlueprintCallable, Category = "Rendering|Components|Light")
 	void SetForceCachedShadowsForMovablePrimitives(bool bNewValue);
+
+	UFUNCTION(BlueprintCallable, Category = "Rendering|Components|Light")
+	void SetLightingChannels(bool bChannel0, bool bChannel1, bool bChannel2);
 
 public:
 	/** The light's scene info. */
@@ -347,6 +370,10 @@ public:
 	{
 		return false;
 	}
+	virtual uint8 GetAtmosphereSunLightIndex() const
+	{
+		return 0;
+	}
 
 	/** Compute current light brightness based on whether there is a valid IES profile texture attached, and whether IES brightness is enabled */
 	virtual float ComputeLightBrightness() const;
@@ -359,7 +386,8 @@ public:
 	virtual void Serialize(FArchive& Ar) override;
 	virtual void PostLoad() override;
 #if WITH_EDITOR
-	virtual bool CanEditChange(const UProperty* InProperty) const override;
+	virtual void PreSave(const class ITargetPlatform* TargetPlatform) override;
+	virtual bool CanEditChange(const FProperty* InProperty) const override;
 	virtual void PostEditChangeProperty(FPropertyChangedEvent& PropertyChangedEvent) override;
 	virtual void UpdateLightSpriteTexture() override;
 #endif // WITH_EDITOR
@@ -389,7 +417,7 @@ public:
 protected:
 	//~ Begin UActorComponent Interface
 	virtual void OnRegister() override;
-	virtual void CreateRenderState_Concurrent() override;
+	virtual void CreateRenderState_Concurrent(FRegisterComponentContext* Context) override;
 	virtual void SendRenderTransform_Concurrent() override;
 	virtual void DestroyRenderState_Concurrent() override;
 	//~ Begin UActorComponent Interface
@@ -410,12 +438,14 @@ public:
 
 	void InitializeStaticShadowDepthMap();
 
+	FLinearColor GetColoredLightBrightness() const;
+
 	/** 
 	 * Called when property is modified by InterpPropertyTracks
 	 *
 	 * @param PropertyThatChanged	Property that changed
 	 */
-	virtual void PostInterpChange(UProperty* PropertyThatChanged) override;
+	virtual void PostInterpChange(FProperty* PropertyThatChanged) override;
 
 	/** 
 	 * Iterates over ALL stationary light components in the target world and assigns their preview shadowmap channel, and updates light icons accordingly.
@@ -423,6 +453,10 @@ public:
 	 */
 	static void ReassignStationaryLightChannels(UWorld* TargetWorld, bool bAssignForLightingBuild, ULevel* LightingScenario);
 
+	DECLARE_MULTICAST_DELEGATE_OneParam(FOnUpdateColorAndBrightness, ULightComponent&);
+
+	/** Called When light color or brightness needs update */
+	static FOnUpdateColorAndBrightness UpdateColorAndBrightnessEvent;
 };
 
 

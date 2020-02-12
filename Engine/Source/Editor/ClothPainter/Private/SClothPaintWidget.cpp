@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "SClothPaintWidget.h"
 
@@ -12,7 +12,7 @@
 #include "MeshPaintSettings.h"
 #include "ClothPainter.h"
 #include "ClothPaintSettings.h"
-#include "Assets/ClothingAsset.h"
+#include "ClothingAsset.h"
 #include "Widgets/Layout/SUniformGridPanel.h"
 #include "Widgets/Text/SInlineEditableTextBlock.h"
 #include "Framework/MultiBox/MultiBoxBuilder.h"

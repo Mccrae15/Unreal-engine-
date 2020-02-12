@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "XmppStrophe/XmppMessagesStrophe.h"
 #include "XmppStrophe/XmppConnectionStrophe.h"
@@ -14,17 +14,32 @@
 #include "Serialization/JsonSerializer.h"
 #include "Policies/CondensedJsonPrintPolicy.h"
 #include "Misc/Guid.h"
+#include "Misc/EmbeddedCommunication.h"
+#include "Containers/BackgroundableTicker.h"
 
 #if WITH_XMPP_STROPHE
 
+#define TickRequesterId FName("StropheMessages")
+
 FXmppMessagesStrophe::FXmppMessagesStrophe(FXmppConnectionStrophe& InConnectionManager)
-	: ConnectionManager(InConnectionManager)
+	: FTickerObjectBase(0.0f, FBackgroundableTicker::GetCoreTicker())
+	, ConnectionManager(InConnectionManager)
 {
+}
+
+FXmppMessagesStrophe::~FXmppMessagesStrophe()
+{
+	CleanupMessages();
 }
 
 void FXmppMessagesStrophe::OnDisconnect()
 {
-	IncomingMessages.Empty();
+	CleanupMessages();
+}
+
+void FXmppMessagesStrophe::OnReconnect()
+{
+
 }
 
 bool FXmppMessagesStrophe::ReceiveStanza(const FStropheStanza& IncomingStanza)
@@ -36,7 +51,7 @@ bool FXmppMessagesStrophe::ReceiveStanza(const FStropheStanza& IncomingStanza)
 		return false;
 	}
 
-	const TOptional<const FStropheStanza> ErrorStanza = IncomingStanza.GetChild(Strophe::SN_ERROR);
+	const TOptional<const FStropheStanza> ErrorStanza = IncomingStanza.GetChildStropheStanza(Strophe::SN_ERROR);
 	if (ErrorStanza.IsSet())
 	{
 		return HandleMessageErrorStanza(ErrorStanza.GetValue());
@@ -64,7 +79,7 @@ bool FXmppMessagesStrophe::HandleMessageStanza(const FStropheStanza& IncomingSta
 	{
 		JsonBody->TryGetStringField(TEXT("type"), Message.Type);
 		const TSharedPtr<FJsonObject>* JsonPayload = NULL;
-			if (JsonBody->TryGetObjectField(TEXT("payload"), JsonPayload) &&
+		if (JsonBody->TryGetObjectField(TEXT("payload"), JsonPayload) &&
 			JsonPayload != NULL &&
 			(*JsonPayload).IsValid())
 		{
@@ -72,9 +87,14 @@ bool FXmppMessagesStrophe::HandleMessageStanza(const FStropheStanza& IncomingSta
 			FJsonSerializer::Serialize((*JsonPayload).ToSharedRef(), JsonWriter);
 			JsonWriter->Close();
 		}
+		else if (JsonBody->TryGetStringField(TEXT("payload"), Message.Payload))
+		{
+			// Payload is now in Message.Payload
+		}
 		else
 		{
-			JsonBody->TryGetStringField(TEXT("payload"), Message.Payload);
+			// Treat the entire body as the payload
+			Message.Payload = IncomingStanza.GetBodyText().GetValue();
 		}
 		FString TimestampStr;
 		if (JsonBody->TryGetStringField(TEXT("timestamp"), TimestampStr))
@@ -82,7 +102,12 @@ bool FXmppMessagesStrophe::HandleMessageStanza(const FStropheStanza& IncomingSta
 			FDateTime::ParseIso8601(*TimestampStr, Message.Timestamp);
 		}
 	}
+	else
+	{
+		UE_LOG(LogXmpp, Warning, TEXT("Message: Failed to Deserialize JsonBody %s"), *IncomingStanza.GetBodyText().GetValue());
+	}
 
+	FEmbeddedCommunication::KeepAwake(TickRequesterId, false);
 	IncomingMessages.Enqueue(MakeUnique<FXmppMessage>(MoveTemp(Message)));
 	return true;
 }
@@ -174,6 +199,7 @@ bool FXmppMessagesStrophe::Tick(float DeltaTime)
 		TUniquePtr<FXmppMessage> Message;
 		if (IncomingMessages.Dequeue(Message))
 		{
+			FEmbeddedCommunication::AllowSleep(TickRequesterId);
 			OnMessageReceived(MoveTemp(Message));
 		}
 	}
@@ -186,5 +212,17 @@ void FXmppMessagesStrophe::OnMessageReceived(TUniquePtr<FXmppMessage>&& Message)
 	const TSharedRef<FXmppMessage> MessageRef = MakeShareable(Message.Release());
 	OnMessageReceivedDelegate.Broadcast(ConnectionManager.AsShared(), MessageRef->FromJid, MessageRef);
 }
+
+void FXmppMessagesStrophe::CleanupMessages()
+{
+	while (!IncomingMessages.IsEmpty())
+	{
+		TUniquePtr<FXmppMessage> Message;
+		IncomingMessages.Dequeue(Message);
+		FEmbeddedCommunication::AllowSleep(TickRequesterId);
+	}
+}
+
+#undef TickRequesterId
 
 #endif

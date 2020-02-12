@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "UATHelperModule.h"
 #include "CoreTypes.h"
@@ -20,6 +20,9 @@
 #include "EditorAnalytics.h"
 #include "IUATHelperModule.h"
 #include "AssetRegistryModule.h"
+
+#include "Editor/MainFrame/Public/Interfaces/IMainFrameModule.h"
+#include "Editor/EditorPerProjectUserSettings.h"
 
 #include "Framework/Notifications/NotificationManager.h"
 #include "Widgets/Notifications/SNotificationList.h"
@@ -125,6 +128,21 @@ public:
 				// Handling the notification expiration in callback
 				ExpireNotificationItemPtr = NotificationItem;
 				NotificationItem->SetCompletionState(CompletionState);
+			}
+
+			// Since the task was probably fairly long, we should try and grab the users attention if they have the option enabled.
+			const UEditorPerProjectUserSettings* SettingsPtr = GetDefault<UEditorPerProjectUserSettings>();
+			if (SettingsPtr->bGetAttentionOnUATCompletion)
+			{
+				IMainFrameModule* MainFrame = FModuleManager::LoadModulePtr<IMainFrameModule>("MainFrame");
+				if (MainFrame != nullptr)
+				{
+					TSharedPtr<SWindow> ParentWindow = MainFrame->GetParentWindow();
+					if (ParentWindow != nullptr)
+					{
+						ParentWindow->DrawAttention(FWindowDrawAttentionParameters(EWindowDrawAttentionRequestType::UntilActivated));
+					}
+				}
 			}
 		}
 	}
@@ -449,6 +467,10 @@ public:
 		);
 
 		TSharedPtr<SNotificationItem> NotificationItem = FSlateNotificationManager::Get().AddNotification(Info);
+		if(NotificationItemPtr.IsValid())
+		{
+			NotificationItemPtr.Pin().Get()->Fadeout();
+		}
 
 		if (!NotificationItem.IsValid())
 		{
@@ -461,7 +483,7 @@ public:
 		NotificationItem->SetCompletionState(SNotificationItem::CS_Pending);
 
 		// launch the packager
-		TWeakPtr<SNotificationItem> NotificationItemPtr(NotificationItem);
+		NotificationItemPtr = NotificationItem;
 
 		EventData Data;
 		Data.StartTime = FPlatformTime::Seconds();
@@ -647,6 +669,10 @@ public:
 
 		}
 	}
+
+private:
+	TWeakPtr<SNotificationItem> NotificationItemPtr;
+
 };
 
 IMPLEMENT_MODULE(FUATHelperModule, UATHelper)

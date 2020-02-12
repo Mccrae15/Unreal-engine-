@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 /*=============================================================================
 	TextAssetCommandlet.cpp: Commandlet for batch conversion and testing of
@@ -20,6 +20,7 @@
 #include "Serialization/Formatters/JsonArchiveOutputFormatter.h"
 #include "Serialization/MemoryWriter.h"
 #include "Serialization/ArchiveUObjectFromStructuredArchive.h"
+#include "ProfilingDebugging/CpuProfilerTrace.h"
 
 DEFINE_LOG_CATEGORY(LogTextAsset);
 
@@ -49,67 +50,121 @@ void FindMismatchedSerializers()
 	}
 }
 
-int32 UTextAssetCommandlet::Main(const FString& CmdLineParams)
+namespace 
 {
-	TArray<FString> Blacklist;
+	static const FString BackupExtension = TEXT("textassetbackup");
+	static const FString BackupRoundtripExtension = TEXT("textassetbackup_roundtrip");
+	static const FString BackupExtension_WithDot = TEXT(".") + BackupExtension;
+	static const FString BackupRoundtripExtension_WithDot = TEXT(".") + BackupRoundtripExtension;
+}
+
+static void RepairDamagedFiles()
+{
+	// Repair any damage caused by a failed run of this commandlet
+	struct FVisitor : public IPlatformFile::FDirectoryVisitor
+	{
+		virtual bool Visit(const TCHAR* FilenameOrDirectory, bool bIsDirectory) override
+		{
+			FString Extension = FPaths::GetExtension(FilenameOrDirectory);
+			if (!bIsDirectory && (Extension == BackupExtension))
+			{
+				UE_LOG(LogTextAsset, Display, TEXT("Cleaning up old intermediate file %s"), FilenameOrDirectory);
+
+				FString BinaryFilename = FPaths::GetPath(FilenameOrDirectory) / FPaths::GetBaseFilename(FilenameOrDirectory);
+				FString TextFilename = FPaths::ChangeExtension(BinaryFilename, FPackageName::GetTextAssetPackageExtension());
+				FString RoundtripBackup = BinaryFilename + BackupRoundtripExtension_WithDot;
+
+				IFileManager::Get().Delete(*BinaryFilename);
+				IFileManager::Get().Delete(*TextFilename);
+				IFileManager::Get().Delete(*RoundtripBackup);
+
+				IFileManager::Get().Move(*BinaryFilename, FilenameOrDirectory);
+			}
+			return true;
+		}
+	} RepairVisitor;
+
+	IFileManager::Get().IterateDirectoryRecursively(*FPaths::ProjectContentDir(), RepairVisitor);
+	IFileManager::Get().IterateDirectoryRecursively(*FPaths::EngineContentDir(), RepairVisitor);
+}
+
+bool UTextAssetCommandlet::DoTextAssetProcessing(const FString& InCommandLine)
+{
+	FProcessingArgs Args;
 
 	FString ModeString = TEXT("ResaveText");
 	FString IterationsString = TEXT("1");
-	FString FilenameFilterString, OutputPathString;
 
-	FParse::Value(*CmdLineParams, TEXT("mode="), ModeString);
-	FParse::Value(*CmdLineParams, TEXT("filter="), FilenameFilterString);
-	FParse::Value(*CmdLineParams, TEXT("outputpath="), OutputPathString);
-	bool bVerifyJson = !FParse::Param(*CmdLineParams, TEXT("noverifyjson"));
+	FString Filename, FilenameFilter;
 
-	enum class EMode
+	FParse::Value(*InCommandLine, TEXT("mode="), ModeString);
+	FParse::Value(*InCommandLine, TEXT("filename="), Filename);
+	FParse::Value(*InCommandLine, TEXT("filter="), FilenameFilter);
+	FParse::Value(*InCommandLine, TEXT("csv="), Args.CSVFilename);
+	FParse::Value(*InCommandLine, TEXT("outputpath="), Args.OutputPath);
+
+	if (Filename.Len() > 0 && FilenameFilter.Len() > 0)
 	{
-		ResaveText,
-		ResaveBinary,
-		RoundTrip,
-		LoadText,
-		FindMismatchedSerializers
-	};
-
-	TMap<FString, EMode> Modes;
-	Modes.Add(TEXT("ResaveText"), EMode::ResaveText);
-	Modes.Add(TEXT("ResaveBinary"), EMode::ResaveBinary);
-	Modes.Add(TEXT("RoundTrip"), EMode::RoundTrip);
-	Modes.Add(TEXT("LoadText"), EMode::LoadText);
-	Modes.Add(TEXT("FindMismatchedSerializers"), EMode::FindMismatchedSerializers);
-
-	check(Modes.Contains(ModeString));
-	EMode Mode = Modes[ModeString];
-
-	if (Mode == EMode::FindMismatchedSerializers)
-	{
-		FindMismatchedSerializers();
-		return 0;
+		UE_LOG(LogTextAsset, Error, TEXT("Cannot specify a filename and a filter at the same time when processing text assets"));
+		return false;
 	}
 
-	TArray<UObject*> Objects;	
+	if (Filename.Len() > 0)
+	{
+		Args.Filename = Filename;
+		Args.bFilenameIsFilter = false;
+	}
+	else if (FilenameFilter.Len() > 0)
+	{
+		Args.Filename = FilenameFilter;
+		Args.bFilenameIsFilter = true;
+	}
+	else
+	{
+		Args.bFilenameIsFilter = true;	// do everything
+	}
 
-	int32 NumSaveIterations = 1;
-	FParse::Value(*CmdLineParams, TEXT("iterations="), NumSaveIterations);
+	Args.bVerifyJson = !FParse::Param(*InCommandLine, TEXT("noverifyjson"));
+	Args.ProcessingMode = (ETextAssetCommandletMode)StaticEnum<ETextAssetCommandletMode>()->GetValueByNameString(ModeString);
 
-	bool bIncludeEngineContent = FParse::Param(*CmdLineParams, TEXT("includeenginecontent"));
+	FParse::Value(*InCommandLine, TEXT("iterations="), Args.NumSaveIterations);
 
+	Args.bIncludeEngineContent = FParse::Param(*InCommandLine, TEXT("includeenginecontent"));
+
+	return DoTextAssetProcessing(Args);
+}
+
+bool UTextAssetCommandlet::DoTextAssetProcessing(const FProcessingArgs& InArgs)
+{
+	TRACE_CPUPROFILER_EVENT_SCOPE(UTextAssetCommandlet::Main);
+
+	RepairDamagedFiles();
+
+	TArray<FString> Blacklist;
+
+	if (InArgs.ProcessingMode == ETextAssetCommandletMode::FindMismatchedSerializers)
+	{
+		FindMismatchedSerializers();
+		return true;
+	}
+
+	TArray<UObject*> Objects;		
 	TArray<FString> InputAssetFilenames;
 
 	FString ProjectContentDir = *FPaths::ProjectContentDir();
 	FString EngineContentDir = *FPaths::EngineContentDir();
 	const FString Wildcard = TEXT("*");
 
-	switch (Mode)
+	switch (InArgs.ProcessingMode)
 	{
-	case EMode::ResaveBinary:
-	case EMode::ResaveText:
-	case EMode::RoundTrip:
+	case ETextAssetCommandletMode::ResaveBinary:
+	case ETextAssetCommandletMode::ResaveText:
+	case ETextAssetCommandletMode::RoundTrip:
 	{
 		IFileManager::Get().FindFilesRecursive(InputAssetFilenames, *ProjectContentDir, *(Wildcard + FPackageName::GetAssetPackageExtension()), true, false, true);
 		IFileManager::Get().FindFilesRecursive(InputAssetFilenames, *ProjectContentDir, *(Wildcard + FPackageName::GetMapPackageExtension()), true, false, false);
 
-		if (bIncludeEngineContent)
+		if (InArgs.bIncludeEngineContent)
 		{
 			IFileManager::Get().FindFilesRecursive(InputAssetFilenames, *EngineContentDir, *(Wildcard + FPackageName::GetAssetPackageExtension()), true, false, false);
 			IFileManager::Get().FindFilesRecursive(InputAssetFilenames, *EngineContentDir, *(Wildcard + FPackageName::GetMapPackageExtension()), true, false, false);
@@ -118,12 +173,39 @@ int32 UTextAssetCommandlet::Main(const FString& CmdLineParams)
 		break;
 	}
 
-	case EMode::LoadText:
+	case ETextAssetCommandletMode::LoadText:
 	{
 		IFileManager::Get().FindFilesRecursive(InputAssetFilenames, *ProjectContentDir, *(Wildcard + FPackageName::GetTextAssetPackageExtension()), true, false, true);
 		//IFileManager::Get().FindFilesRecursive(InputAssetFilenames, *BasePath, *(Wildcard + FPackageName::GetTextMapPackageExtension()), true, false, false);
 		break;
 	}
+
+	case ETextAssetCommandletMode::LoadBinary:
+	{
+		IFileManager::Get().FindFilesRecursive(InputAssetFilenames, *ProjectContentDir, *(Wildcard + FPackageName::GetAssetPackageExtension()), true, false, true);
+		//IFileManager::Get().FindFilesRecursive(InputAssetFilenames, *BasePath, *(Wildcard + FPackageName::GetTextMapPackageExtension()), true, false, false);
+		break;
+	}
+	}
+
+	FString FilenameFilter = InArgs.Filename;
+	if (!InArgs.bFilenameIsFilter)
+	{
+		FString PotentialFilenames[] = {
+			InArgs.Filename + FPackageName::GetAssetPackageExtension(),
+			InArgs.Filename + FPackageName::GetMapPackageExtension(),
+			InArgs.Filename + FPackageName::GetTextAssetPackageExtension(),
+			InArgs.Filename + FPackageName::GetTextMapPackageExtension()
+		};
+
+		for (const FString& Filename : PotentialFilenames)
+		{
+			if (FPaths::FileExists(Filename))
+			{
+				FilenameFilter = Filename;
+				break;
+			}
+		}
 	}
 
 	TArray<TTuple<FString, FString>> FilesToProcess;
@@ -132,7 +214,7 @@ int32 UTextAssetCommandlet::Main(const FString& CmdLineParams)
 	{
 		bool bIgnore = false;
 
-		if (FilenameFilterString.Len() > 0 && !InputAssetFilename.Contains(FilenameFilterString))
+		if (FilenameFilter.Len() > 0 && !InputAssetFilename.Contains(FilenameFilter))
 		{
 			bIgnore = true;
 		}
@@ -156,15 +238,15 @@ int32 UTextAssetCommandlet::Main(const FString& CmdLineParams)
 		bool bShouldProcess = true;
 		FString DestinationFilename = InputAssetFilename;
 
-		switch (Mode)
+		switch (InArgs.ProcessingMode)
 		{
-		case EMode::ResaveBinary:
+		case ETextAssetCommandletMode::ResaveBinary:
 		{
 			DestinationFilename = InputAssetFilename + TEXT(".tmp");
 			break;
 		}
 
-		case EMode::ResaveText:
+		case ETextAssetCommandletMode::ResaveText:
 		{
 			if (InputAssetFilename.EndsWith(FPackageName::GetAssetPackageExtension())) DestinationFilename = FPaths::ChangeExtension(InputAssetFilename, FPackageName::GetTextAssetPackageExtension());;
 			if (InputAssetFilename.EndsWith(FPackageName::GetMapPackageExtension())) DestinationFilename = FPaths::ChangeExtension(InputAssetFilename, FPackageName::GetTextMapPackageExtension());;
@@ -172,7 +254,8 @@ int32 UTextAssetCommandlet::Main(const FString& CmdLineParams)
 			break;
 		}
 
-		case EMode::LoadText:
+		case ETextAssetCommandletMode::LoadText:
+		case ETextAssetCommandletMode::LoadBinary:
 		{
 			break;
 		}
@@ -184,39 +267,30 @@ int32 UTextAssetCommandlet::Main(const FString& CmdLineParams)
 		}
 	}
 
-	TArray<FString> IntermediateFilenames;
-	struct FVisitor : public IPlatformFile::FDirectoryVisitor
-	{
-		virtual bool Visit(const TCHAR* FilenameOrDirectory, bool bIsDirectory) override
-		{
-			if (!bIsDirectory && FString(FilenameOrDirectory).Contains(TEXT(".txtassettemp")))
-			{
-				UE_LOG(LogTextAsset, Display, TEXT("Cleaning up old intermediate file %s"), FilenameOrDirectory);
-				IFileManager::Get().Delete(FilenameOrDirectory);
-			}
-			return true;
-		}
-	} Visitor;
-
-	IFileManager::Get().IterateDirectoryRecursively(*FPaths::ProjectContentDir(), Visitor);
-	IFileManager::Get().IterateDirectoryRecursively(*FPaths::EngineContentDir(), Visitor);
-
+	const FString TempFailedDiffsPath = FPaths::ProjectSavedDir() / TEXT(".roundtrip");
 	const FString FailedDiffsPath = FPaths::ProjectSavedDir() / TEXT("FailedDiffs");
-	static const bool bKeepFailedDiffs = FParse::Param(FCommandLine::Get(), TEXT("keepfaileddiffs"));
-	if (bKeepFailedDiffs)
-	{
-		IFileManager::Get().DeleteDirectory(*FailedDiffsPath, false, true);
-	}
+	IFileManager::Get().DeleteDirectory(*FailedDiffsPath, false, true);
 
 	float TotalPackageLoadTime = 0.0;
 	float TotalPackageSaveTime = 0.0;
 
-	for (int32 Iteration = 0; Iteration < NumSaveIterations; ++Iteration)
+	FArchive* CSVWriter = nullptr;
+	if (InArgs.CSVFilename.Len() > 0)
 	{
-		if (NumSaveIterations > 1)
+		CSVWriter = IFileManager::Get().CreateFileWriter(*InArgs.CSVFilename);
+		if (CSVWriter != nullptr)
+		{
+			FString CSVLine = FString::Printf(TEXT("Total Time,Num Files,AvgFileTime,MinFileTime,MaxFileTime,TotalLoadTime\n"));
+			CSVWriter->Serialize(TCHAR_TO_ANSI(*CSVLine), CSVLine.Len());
+		}
+	}
+
+	for (int32 Iteration = 0; Iteration < InArgs.NumSaveIterations; ++Iteration)
+	{
+		if (InArgs.NumSaveIterations > 1)
 		{
 			UE_LOG(LogTextAsset, Display, TEXT("-----------------------------------------------------"));
-			UE_LOG(LogTextAsset, Display, TEXT("Iteration %i/%i"), Iteration + 1, NumSaveIterations);
+			UE_LOG(LogTextAsset, Display, TEXT("Iteration %i/%i"), Iteration + 1, InArgs.NumSaveIterations);
 		}
 
 		double MaxTime = FLT_MIN;
@@ -227,10 +301,12 @@ int32 UTextAssetCommandlet::Main(const FString& CmdLineParams)
 		FString MinTimePackage;
 		float IterationPackageLoadTime = 0.0;
 		float IterationPackageSaveTime = 0.0;
+		double ThisPackageLoadTime = 0.0;
 
 		TArray<FString> PhaseSuccess;
 		TArray<TArray<FString>> PhaseFails;
 		PhaseFails.AddDefaulted(3);
+		TArray<FString> IntermediateFilenames;
 
 		for (const TTuple<FString, FString>& FileToProcess : FilesToProcess)
 		{
@@ -238,20 +314,25 @@ int32 UTextAssetCommandlet::Main(const FString& CmdLineParams)
 			FString SourceLongPackageName = FPackageName::FilenameToLongPackageName(SourceFilename);
 			FString DestinationFilename = FileToProcess.Get<1>();
 
+			TRACE_CPUPROFILER_EVENT_SCOPE_TEXT(*SourceFilename);
+
 			IntermediateFilenames.Empty();
 
 			double StartTime = FPlatformTime::Seconds();
 
-			switch (Mode)
+			switch (InArgs.ProcessingMode)
 			{
-			case EMode::RoundTrip:
+			case ETextAssetCommandletMode::RoundTrip:
 			{
+				UE_LOG(LogTextAsset, Display, TEXT("Starting roundtrip test for '%s' [%d/%d]"), *SourceLongPackageName, NumFiles + 1, FilesToProcess.Num());
+				UE_LOG(LogTextAsset, Display, TEXT("-----------------------------------------------------------------------------------------"));
+
 				const FString WorkingFilenames[2] = { SourceFilename, FPaths::ChangeExtension(SourceFilename, FPackageName::GetTextAssetPackageExtension()) };
 				
 
 				IFileManager::Get().Delete(*WorkingFilenames[1], false, false, true);
 
-				FString SourceBackupFilename = SourceFilename + TEXT(".bak");
+				FString SourceBackupFilename = SourceFilename + BackupExtension_WithDot;
 				if (IFileManager::Get().FileExists(*SourceBackupFilename))
 				{
 					IFileManager::Get().Delete(*SourceFilename, false, false, true);
@@ -266,7 +347,7 @@ int32 UTextAssetCommandlet::Main(const FString& CmdLineParams)
 				CollectGarbage(RF_NoFlags, true);
 
 				// Make a copy of the resaved source package which we can use as the base revision for each test
-				FString BaseBinaryPackageBackup = SourceFilename + TEXT(".bak2");
+				FString BaseBinaryPackageBackup = SourceFilename + BackupRoundtripExtension_WithDot;
 				IFileManager::Get().Copy(*BaseBinaryPackageBackup, *SourceFilename, true);
 
 				FSHAHash SourceHash;
@@ -275,18 +356,31 @@ int32 UTextAssetCommandlet::Main(const FString& CmdLineParams)
 				static const int32 NumPhases = 3;
 				static const int32 NumTests = 3;
 
-				static const TCHAR* PhaseNames[NumPhases] = { TEXT("Binary Only"), TEXT("Text Only"), TEXT("Alternating Binary/Text") };
+				static const TCHAR* PhaseNames[] = { TEXT("Binary Only"), TEXT("Text Only"), TEXT("Alternating Binary/Text") };
 
+				#if CPUPROFILERTRACE_ENABLED
+				static const TCHAR* PhaseEventTypes[3] = {
+						TEXT("BinaryOnly"),
+						TEXT("TextOnly"),
+						TEXT("Alternating"),
+				};
+
+				static const TCHAR* TestEventTypes[6] = {
+						TEXT("Test1"),
+						TEXT("Test2"),
+						TEXT("Test3"),
+						TEXT("Test4"),
+						TEXT("Test5"),
+						TEXT("Test6"),
+				};
+				#endif // CPUPROFILERTRACE_ENABLED
 
 				TArray<TArray<FSHAHash>> Hashes;
 
 				CollectGarbage(RF_NoFlags, true);
 
-				UE_LOG(LogTextAsset, Display, TEXT("Starting roundtrip test for '%s' [%d/%d]"), *SourceLongPackageName, NumFiles + 1, FilesToProcess.Num());
-				UE_LOG(LogTextAsset, Display, TEXT("-----------------------------------------------------------------------------------------"));
-
 				bool bPhasesMatched[NumPhases] = { true, true, true };
-				TArray<FString> DiffFilenames;
+				TArray<TPair<FString,FString>> DiffFilenames;
 
 				for (int32 Phase = 0; Phase < NumPhases; ++Phase)
 				{
@@ -294,10 +388,18 @@ int32 UTextAssetCommandlet::Main(const FString& CmdLineParams)
 					IFileManager::Get().Copy(*SourceFilename, *BaseBinaryPackageBackup, true);
 
 					TArray<FSHAHash> PhaseHashes = Hashes[Hashes.AddDefaulted()];
+					
+					#if CPUPROFILERTRACE_ENABLED
+					TRACE_CPUPROFILER_EVENT_SCOPE_TEXT(PhaseEventTypes[Phase]);
+					#endif
 
 					for (int32 i = 0; i < ((Phase == 2) ? NumTests * 2 : NumTests); ++i)
 					{
 						int32 Bucket;
+
+						#if CPUPROFILERTRACE_ENABLED
+						TRACE_CPUPROFILER_EVENT_SCOPE_TEXT(TestEventTypes[i]);
+						#endif
 
 						switch (Phase)
 						{
@@ -310,12 +412,25 @@ int32 UTextAssetCommandlet::Main(const FString& CmdLineParams)
 						case 1: // text only
 						{
 							Bucket = 1;
+
+							if (i > 0)
+							{
+								IFileManager::Get().Delete(*WorkingFilenames[0]);
+							}
+
 							break;
 						}
 
 						case 2: // alternate
 						{
 							Bucket = i % 2;
+
+							if ((i > 0) && Bucket == 0)
+							{
+								// We're doing alternating text/binary saves, so we need to delete the text version as we have no way of forcing the load to choose between text and binary
+								IFileManager::Get().Delete(*WorkingFilenames[0]);
+							}
+
 							break;
 						}
 
@@ -326,30 +441,43 @@ int32 UTextAssetCommandlet::Main(const FString& CmdLineParams)
 						}
 						};
 
-						if (Phase == 2 && Bucket == 1)
+						UPackage* Package = nullptr;
+						
 						{
-							// We're doing alternating text/binary saves, so we need to delete the text version as we have no way of forcing the load to choose between text and binary
-							IFileManager::Get().Delete(*WorkingFilenames[1]);
+							TRACE_CPUPROFILER_EVENT_SCOPE_TEXT(TEXT("LoadPackage"));
+							Package = LoadPackage(nullptr, *SourceLongPackageName, LOAD_None);
+						}
+						
+						{
+							TRACE_CPUPROFILER_EVENT_SCOPE_TEXT(TEXT("SavePackage")); 
+							SavePackageHelper(Package, *WorkingFilenames[Bucket], RF_Standalone, GWarn, nullptr, SAVE_KeepGUID);
+						}
+						
+						{
+							TRACE_CPUPROFILER_EVENT_SCOPE_TEXT(TEXT("ResetLoaders")); 
+							ResetLoaders(Package);
 						}
 
-						UPackage* Package = LoadPackage(nullptr, *SourceLongPackageName, LOAD_None);
-						SavePackageHelper(Package, *WorkingFilenames[Bucket], RF_Standalone, GWarn, nullptr, SAVE_KeepGUID);
-						ResetLoaders(Package);
-						CollectGarbage(RF_NoFlags, true);
+						{
+							TRACE_CPUPROFILER_EVENT_SCOPE_TEXT(TEXT("CollectGarbage"));
+							CollectGarbage(RF_NoFlags, true);
+						}
 
-						FSHAHash& Hash = PhaseHashes[PhaseHashes.AddDefaulted()];
-						HashFile(*WorkingFilenames[Bucket], Hash);
+						{
+							TRACE_CPUPROFILER_EVENT_SCOPE_TEXT(TEXT("RoundtripTestCleanup"));
+							FSHAHash& Hash = PhaseHashes[PhaseHashes.AddDefaulted()];
+							HashFile(*WorkingFilenames[Bucket], Hash);
 
-						if (bKeepFailedDiffs)
-						{ 
 							FString TargetPath = WorkingFilenames[Bucket];
 							FPaths::MakePathRelativeTo(TargetPath, *FPaths::ProjectContentDir());
-							TargetPath = FailedDiffsPath / TargetPath;
+							FString IntermediateTargetPath = TempFailedDiffsPath / TargetPath;
+							FString FinalTargetPath = FailedDiffsPath / TargetPath;
 
-							FString IntermediateFilename = FString::Printf(TEXT("%s_Phase%i_%03i%s"), *FPaths::ChangeExtension(TargetPath, TEXT("")), Phase, i + 1, *FPaths::GetExtension(WorkingFilenames[Bucket], true));
+							FString IntermediateFilename = FString::Printf(TEXT("%s_Phase%i_%03i%s"), *FPaths::ChangeExtension(IntermediateTargetPath, TEXT("")), Phase, i + 1, *FPaths::GetExtension(WorkingFilenames[Bucket], true));
+							FString FinalFilename = FString::Printf(TEXT("%s_Phase%i_%03i%s"), *FPaths::ChangeExtension(FinalTargetPath, TEXT("")), Phase, i + 1, *FPaths::GetExtension(WorkingFilenames[Bucket], true));
 							IFileManager::Get().Copy(*IntermediateFilename, *WorkingFilenames[Bucket]);
 
-							DiffFilenames.Add(IntermediateFilename);
+							DiffFilenames.Add(TPair<FString, FString>(IntermediateFilename, FinalFilename));
 						}
 					}
 
@@ -368,7 +496,8 @@ int32 UTextAssetCommandlet::Main(const FString& CmdLineParams)
 							bPhasesMatched[Phase] = bPhasesMatched[Phase] && Hash == Refs[0];
 						}
 
-						UE_LOG(LogTextAsset, Display, TEXT("\tPass %i [%s] %s"), Pass++, *Hash.ToString(), bPhasesMatched[Phase] ? TEXT("OK") : TEXT("FAILED"));
+						UE_LOG(LogTextAsset, Display, TEXT("\tPass %i [%s] %s"), Pass, *Hash.ToString(), bPhasesMatched[Phase] ? TEXT("OK") : TEXT("FAILED"));
+						Pass++;
 					}
 
 					if (!bPhasesMatched[Phase])
@@ -382,13 +511,17 @@ int32 UTextAssetCommandlet::Main(const FString& CmdLineParams)
 						IFileManager::Get().Delete(*WorkingFilenames[1], false, false, true);
 					}
 
-					if (bTotalSuccess)
+					if (!bTotalSuccess)
 					{
-						for (const FString& DiffFilename : DiffFilenames)
+						for (const TPair<FString, FString>& DiffPair : DiffFilenames)
 						{
-							IFileManager::Get().Delete(*DiffFilename, false, false, true);
+							IFileManager::Get().MakeDirectory(*FPaths::GetPath(DiffPair.Value));
+							IFileManager::Get().Move(*DiffPair.Value, *DiffPair.Key);
 						}
 					}
+
+					DiffFilenames.Empty();
+					IFileManager::Get().DeleteDirectory(*TempFailedDiffsPath, false, true);
 				}
 
 				static const bool bDisableCleanup = FParse::Param(FCommandLine::Get(), TEXT("disablecleanup"));
@@ -417,7 +550,7 @@ int32 UTextAssetCommandlet::Main(const FString& CmdLineParams)
 					UE_LOG(LogTextAsset, Error, TEXT("Binary determinism tests succeeded, but text and/or alternating tests failed for asset '%s'"), *SourceLongPackageName);
 				}
 
-				bool bSuccess = true;
+					bool bSuccess = true;
 				for (int32 PhaseIndex = 0; PhaseIndex < NumPhases; ++PhaseIndex)
 				{
 					if (!bPhasesMatched[PhaseIndex])
@@ -439,69 +572,98 @@ int32 UTextAssetCommandlet::Main(const FString& CmdLineParams)
 				break;
 			}
 
-			case EMode::ResaveBinary:
-			case EMode::ResaveText:
+			case ETextAssetCommandletMode::ResaveBinary:
+			case ETextAssetCommandletMode::ResaveText:
 			{
 				UPackage* Package = nullptr;
 
 				UE_LOG(LogTextAsset, Display, TEXT("Resaving asset %s"), *SourceFilename);
+				TRACE_CPUPROFILER_EVENT_SCOPE_TEXT(TEXT("UTextAssetCommandlet::Resave"));
 
 				double Timer = 0.0;
 				{
 					SCOPE_SECONDS_COUNTER(Timer);
+					TRACE_CPUPROFILER_EVENT_SCOPE_TEXT(TEXT("UTextAssetCommandlet::LoadPackage"));
 					Package = LoadPackage(nullptr, *SourceFilename, 0);
 				}
 				IterationPackageLoadTime += Timer;
 				TotalPackageLoadTime += Timer;
+
+				bool bSaveSuccessful = false;
 
 				if (Package)
 				{
 					{
 						SCOPE_SECONDS_COUNTER(Timer);
-
+						TRACE_CPUPROFILER_EVENT_SCOPE_TEXT(TEXT("UTextAssetCommandlet::SavePackage"));
 						IFileManager::Get().Delete(*DestinationFilename, false, true, true);
-						SavePackageHelper(Package, *DestinationFilename, RF_Standalone, GWarn, nullptr, SAVE_KeepGUID);
+						bSaveSuccessful = SavePackageHelper(Package, *DestinationFilename, RF_Standalone, GWarn, nullptr, SAVE_KeepGUID);
 					}
 					TotalPackageSaveTime += Timer;
 					IterationPackageSaveTime += Timer;
 				}
 
-				if (bVerifyJson)
+				if (bSaveSuccessful)
 				{
-					FArchive* File = IFileManager::Get().CreateFileReader(*DestinationFilename);
-					TSharedPtr< FJsonObject > RootObject;
-					TSharedRef< TJsonReader<char> > Reader = TJsonReaderFactory<char>::Create(File);
-					ensure(FJsonSerializer::Deserialize(Reader, RootObject));
-					delete File;
-				}
+					if (InArgs.bVerifyJson && InArgs.ProcessingMode == ETextAssetCommandletMode::ResaveText)
+					{
+						TRACE_CPUPROFILER_EVENT_SCOPE_TEXT(TEXT("UTextAssetCommandlet::VerifyJson"));
+						FArchive* File = IFileManager::Get().CreateFileReader(*DestinationFilename);
+						TSharedPtr< FJsonObject > RootObject;
+						TSharedRef< TJsonReader<char> > Reader = TJsonReaderFactory<char>::Create(File);
+						ensure(FJsonSerializer::Deserialize(Reader, RootObject));
+						delete File;
+					}
 
-				if (OutputPathString.Len() > 0)
-				{
-					FString CopyFilename = DestinationFilename;
-					FPaths::MakePathRelativeTo(CopyFilename, *FPaths::RootDir());
-					CopyFilename = OutputPathString / CopyFilename;
-					CopyFilename.RemoveFromEnd(TEXT(".tmp"));
-					IFileManager::Get().MakeDirectory(*FPaths::GetPath(CopyFilename));
-					IFileManager::Get().Move(*CopyFilename, *DestinationFilename);
+					if (InArgs.OutputPath.Len() > 0)
+					{
+						TRACE_CPUPROFILER_EVENT_SCOPE_TEXT(TEXT("UTextAssetCommandlet::CopyToExternalOutput"));
+						FString CopyFilename = DestinationFilename;
+						FPaths::MakePathRelativeTo(CopyFilename, *FPaths::RootDir());
+						CopyFilename = InArgs.OutputPath / CopyFilename;
+						CopyFilename.RemoveFromEnd(TEXT(".tmp"));
+						IFileManager::Get().MakeDirectory(*FPaths::GetPath(CopyFilename));
+						IFileManager::Get().Move(*CopyFilename, *DestinationFilename);
+					}
 				}
 
 				break;
 			}
 
-			case EMode::LoadText:
+			case ETextAssetCommandletMode::LoadText:
 			{
 				UPackage* Package = nullptr;
+				UE_LOG(LogTextAsset, Display, TEXT("Loading Text Asset '%s'"), *SourceFilename);
 
 				CollectGarbage(RF_NoFlags, true);
-				double Timer = 0.0;
+				ThisPackageLoadTime = 0.0;
 				{
-					SCOPE_SECONDS_COUNTER(Timer);
-					UE_LOG(LogTextAsset, Display, TEXT("Loading Text Asset '%s'"), *SourceFilename);
+					SCOPE_SECONDS_COUNTER(ThisPackageLoadTime);
 					Package = LoadPackage(nullptr, *SourceFilename, 0);
 				}
 				CollectGarbage(RF_NoFlags, true);
-				IterationPackageLoadTime += Timer;
-				TotalPackageLoadTime += Timer;
+				IterationPackageLoadTime += ThisPackageLoadTime;
+				TotalPackageLoadTime += ThisPackageLoadTime;
+
+				Package = nullptr;
+
+				break;
+			}
+
+			case ETextAssetCommandletMode::LoadBinary:
+			{
+				UPackage* Package = nullptr;
+				UE_LOG(LogTextAsset, Display, TEXT("Loading Binary Asset '%s'"), *SourceFilename);
+				CollectGarbage(RF_NoFlags, true);
+
+				ThisPackageLoadTime = 0.0;
+				{
+					SCOPE_SECONDS_COUNTER(ThisPackageLoadTime);
+					Package = LoadPackage(nullptr, *SourceFilename, 0);
+				}
+				CollectGarbage(RF_NoFlags, true);
+				IterationPackageLoadTime += ThisPackageLoadTime;
+				TotalPackageLoadTime += ThisPackageLoadTime;
 
 				Package = nullptr;
 
@@ -512,23 +674,40 @@ int32 UTextAssetCommandlet::Main(const FString& CmdLineParams)
 			double EndTime = FPlatformTime::Seconds();
 			double Time = EndTime - StartTime;
 
-			if (Time > MaxTime)
+			if (InArgs.ProcessingMode == ETextAssetCommandletMode::LoadBinary || InArgs.ProcessingMode == ETextAssetCommandletMode::LoadText)
 			{
-				MaxTime = Time;
-				MaxTimePackage = SourceFilename;
-			}
+				if (ThisPackageLoadTime > MaxTime)
+				{
+					MaxTime = ThisPackageLoadTime;
+					MaxTimePackage = SourceFilename;
+				}
 
-			if (Time < MinTime)
+				if (ThisPackageLoadTime < MinTime)
+				{
+					MinTime = ThisPackageLoadTime;
+					MinTimePackage = SourceFilename;
+				}
+			}
+			else
 			{
-				MinTime = Time;
-				MinTimePackage = SourceFilename;
+				if (Time > MaxTime)
+				{
+					MaxTime = Time;
+					MaxTimePackage = SourceFilename;
+				}
+
+				if (Time < MinTime)
+				{
+					MinTime = Time;
+					MinTimePackage = SourceFilename;
+				}
 			}
 
 			TotalTime += Time;
 			NumFiles++;
 		}
 
-		if (Mode == EMode::RoundTrip)
+		if (InArgs.ProcessingMode == ETextAssetCommandletMode::RoundTrip)
 		{
 			UE_LOG(LogTextAsset, Display, TEXT("\t-----------------------------------------------------"));
 			UE_LOG(LogTextAsset, Display, TEXT("\tRoundTrip Results"));
@@ -539,27 +718,52 @@ int32 UTextAssetCommandlet::Main(const FString& CmdLineParams)
 			UE_LOG(LogTextAsset, Display, TEXT("\tPhase 2 Fails: %i (Mixed Package Determinism Fails)"), PhaseFails[2].Num());
 			UE_LOG(LogTextAsset, Display, TEXT("\t-----------------------------------------------------"));
 
-			for (int32 PhaseIndex = 0; PhaseIndex < PhaseFails.Num(); ++PhaseIndex)
+			for (int32 PhaseIndex = 1; PhaseIndex < PhaseFails.Num(); ++PhaseIndex)
 			{
 				if (PhaseFails[PhaseIndex].Num() > 0)
 				{
 					UE_LOG(LogTextAsset, Display, TEXT("\tPhase %i Fails:"), PhaseIndex);
 					for (const FString& PhaseFail : PhaseFails[PhaseIndex])
 					{
-						UE_LOG(LogTextAsset, Display, TEXT("\t\t%s"), *PhaseFail);
+						if (!PhaseFails[0].Contains(PhaseFail))
+						{
+							UE_LOG(LogTextAsset, Display, TEXT("\t\t%s"), *PhaseFail);
+						}
 					}
 					UE_LOG(LogTextAsset, Display, TEXT("\t-----------------------------------------------------"));
 				}
 			}
 		}
 
+		double AvgFileTime, MinFileTime, MaxFileTime;
+
+		if (InArgs.ProcessingMode == ETextAssetCommandletMode::LoadBinary || InArgs.ProcessingMode == ETextAssetCommandletMode::LoadText)
+		{
+			AvgFileTime = IterationPackageLoadTime;
+		}
+		else
+		{
+			AvgFileTime = TotalTime;
+		}
+
+		AvgFileTime /= (double)NumFiles;
+		MinFileTime = MinTime;
+		MaxFileTime = MaxTime;
+
 		UE_LOG(LogTextAsset, Display, TEXT("\tTotal Time:\t%.2fs"), TotalTime);
-		UE_LOG(LogTextAsset, Display, TEXT("\tAvg File Time:  \t%.2fms"), (TotalTime * 1000.0) / (double)NumFiles);
-		UE_LOG(LogTextAsset, Display, TEXT("\tMin File Time:  \t%.2fms (%s)"), MinTime * 1000.0, *MinTimePackage);
-		UE_LOG(LogTextAsset, Display, TEXT("\tMax File Time:  \t%.2fms (%s)"), MaxTime * 1000.0, *MaxTimePackage);
+		UE_LOG(LogTextAsset, Display, TEXT("\tTotal Files:\t%i"), NumFiles);
+		UE_LOG(LogTextAsset, Display, TEXT("\tAvg File Time:  \t%.2fms"), AvgFileTime * 1000.0);
+		UE_LOG(LogTextAsset, Display, TEXT("\tMin File Time:  \t%.2fms (%s)"), MinFileTime * 1000.0, *MinTimePackage);
+		UE_LOG(LogTextAsset, Display, TEXT("\tMax File Time:  \t%.2fms (%s)"), MaxFileTime * 1000.0, *MaxTimePackage);
 		UE_LOG(LogTextAsset, Display, TEXT("\tTotal Package Load Time:  \t%.2fs"), IterationPackageLoadTime);
 
-		if (Mode != EMode::LoadText)
+		if (CSVWriter != nullptr)
+		{
+			FString CSVLine = FString::Printf(TEXT("%f,%i,%f,%f,%f,%f\n"), TotalTime, NumFiles, AvgFileTime, MinFileTime, MaxFileTime, IterationPackageLoadTime);
+			CSVWriter->Serialize(TCHAR_TO_ANSI(*CSVLine), CSVLine.Len());
+		}
+
+		if (InArgs.ProcessingMode != ETextAssetCommandletMode::LoadText && InArgs.ProcessingMode != ETextAssetCommandletMode::ResaveText)
 		{
 			UE_LOG(LogTextAsset, Display, TEXT("\tTotal Package Save Time:  \t%.2fs"), IterationPackageSaveTime);
 		}
@@ -570,14 +774,40 @@ int32 UTextAssetCommandlet::Main(const FString& CmdLineParams)
 	UE_LOG(LogTextAsset, Display, TEXT("-----------------------------------------------------"));
 	UE_LOG(LogTextAsset, Display, TEXT("Text Asset Commandlet Completed!"));
 	UE_LOG(LogTextAsset, Display, TEXT("\tTotal Files Processed:  \t%i"), FilesToProcess.Num());
-	UE_LOG(LogTextAsset, Display, TEXT("\tAvg Iteration Package Load Time:  \t%.2fs"), TotalPackageLoadTime / (float)NumSaveIterations);
+	UE_LOG(LogTextAsset, Display, TEXT("\tAvg Iteration Package Load Time:  \t%.2fs"), TotalPackageLoadTime / (float)InArgs.NumSaveIterations);
 
-	if (Mode != EMode::LoadText)
+	if (CSVWriter != nullptr)
 	{
-		UE_LOG(LogTextAsset, Display, TEXT("\tAvg Iteration Save Time:  \t%.2fs"), TotalPackageSaveTime / (float)NumSaveIterations);
+		delete CSVWriter;
+	}
+
+	if (InArgs.ProcessingMode != ETextAssetCommandletMode::LoadText)
+	{
+		UE_LOG(LogTextAsset, Display, TEXT("\tAvg Iteration Save Time:  \t%.2fs"), TotalPackageSaveTime / (float)InArgs.NumSaveIterations);
 	}
 	
 	UE_LOG(LogTextAsset, Display, TEXT("-----------------------------------------------------"));
 	
-	return 0;
+	return true;
 }
+
+int32 UTextAssetCommandlet::Main(const FString& CmdLineParams)
+{
+	return DoTextAssetProcessing(CmdLineParams) ? 0 : 1;
+}
+
+static void TextAssetToolCVarCommand(const TArray<FString>& Args)
+{
+	FString JoinedArgs;
+	for (const FString& Arg : Args) 
+	{
+		JoinedArgs += Arg;
+		JoinedArgs += TEXT(" ");
+	}
+	UTextAssetCommandlet::DoTextAssetProcessing(JoinedArgs);
+}
+
+static FAutoConsoleCommand CVar_TextAssetTool(
+	TEXT("TextAssetTool"),
+	TEXT("--"),
+	FConsoleCommandWithArgsDelegate::CreateStatic(TextAssetToolCVarCommand));

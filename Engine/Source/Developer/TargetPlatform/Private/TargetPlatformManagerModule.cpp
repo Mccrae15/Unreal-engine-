@@ -1,11 +1,10 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "CoreMinimal.h"
 #include "HAL/FileManager.h"
 #include "Misc/CommandLine.h"
 #include "Misc/Paths.h"
 #include "Misc/OutputDeviceRedirector.h"
-#include "Templates/ScopedPointer.h"
 #include "Stats/Stats.h"
 #include "Misc/ScopedSlowTask.h"
 #include "Misc/MonitoredProcess.h"
@@ -23,8 +22,8 @@
 #include "DesktopPlatformModule.h"
 
 #if WITH_PHYSX
-#include "Physics/IPhysXCooking.h"
-#include "Physics/IPhysXCookingModule.h"
+#include "IPhysXCooking.h"
+#include "IPhysXCookingModule.h"
 #endif // WITH_PHYSX
 
 DEFINE_LOG_CATEGORY_STATIC(LogTargetPlatformManager, Log, All);
@@ -80,6 +79,7 @@ public:
 	FTargetPlatformManagerModule()
 		: bRestrictFormatsToRuntimeOnly(false)
 		, bForceCacheUpdate(true)
+		, bHasInitErrors(false)
 		, bIgnoreFirstDelegateCall(true)
 	{
 #if AUTOSDKS_ENABLED		
@@ -103,11 +103,8 @@ public:
 
 			// we have to setup our local environment according to AutoSDKs or the ITargetPlatform's IsSDkInstalled calls may fail
 			// before we get a change to setup for a given platform.  Use the platforminfo list to avoid any kind of interdependency.
-			int32 NumPlatforms;
-			const PlatformInfo::FPlatformInfo* PlatformInfoArray = PlatformInfo::GetPlatformInfoArray(NumPlatforms);
-			for (int32 i = 0; i < NumPlatforms; ++i)
+			for (const PlatformInfo::FPlatformInfo& PlatformInfo : PlatformInfo::GetPlatformInfoArray())
 			{
-				const PlatformInfo::FPlatformInfo& PlatformInfo = PlatformInfoArray[i];
 				if (PlatformInfo.AutoSDKPath.Len() > 0)
 				{
 					SetupAndValidateAutoSDK(PlatformInfo.AutoSDKPath);
@@ -115,15 +112,9 @@ public:
 			}
 		}
 #endif
-
-		SetupSDKStatus();
-		//GetTargetPlatforms(); redudant with next call
-		GetActiveTargetPlatforms();
-		GetAudioFormats();
-		GetTextureFormats();
-		GetShaderFormats();
-
-		bForceCacheUpdate = false;
+		// Calling a virtual function from a constructor, but with no expectation that a derived implementation of this
+		// method would be called.  This is solely to avoid duplicating code in this implementation, not for polymorphism.
+		FTargetPlatformManagerModule::Invalidate();
 
 		FModuleManager::Get().OnModulesChanged().AddRaw(this, &FTargetPlatformManagerModule::ModulesChangesCallback);
 	}
@@ -138,6 +129,15 @@ public:
 
 	// ITargetPlatformManagerModule interface
 
+	virtual bool HasInitErrors(FString* OutErrorMessages) const
+	{
+		if (OutErrorMessages)
+		{
+			*OutErrorMessages = InitErrorMessages;
+		}
+		return bHasInitErrors;
+	}
+
 	virtual void Invalidate() override
 	{
 		bForceCacheUpdate = true;
@@ -145,9 +145,14 @@ public:
 		SetupSDKStatus();
 		//GetTargetPlatforms(); redudant with next call
 		GetActiveTargetPlatforms();
-		GetAudioFormats();
-		GetTextureFormats();
-		GetShaderFormats();
+
+		// If we've had an error due to an invalid target platform, don't do additional work
+		if (!bHasInitErrors)
+		{
+			GetAudioFormats();
+			GetTextureFormats();
+			GetShaderFormats();
+		}
 
 		bForceCacheUpdate = false;
 	}
@@ -174,13 +179,25 @@ public:
 		return nullptr;
 	}
 
-	virtual ITargetPlatform* FindTargetPlatform(const FString& Name) override
+	virtual ITargetPlatform* FindTargetPlatform(const FStringView& Name) override
 	{
-		const TArray<ITargetPlatform*>& TargetPlatforms = GetTargetPlatforms();	
-		
+		GetTargetPlatforms(); // Populates PlatformsByName
+
+		if (ITargetPlatform** Platform = PlatformsByName.Find(FName(Name)))
+		{
+			return *Platform;
+		}
+
+		return nullptr;
+	}
+
+	virtual ITargetPlatform* FindTargetPlatformWithSupport(FName SupportType, FName RequiredSupportedValue)
+	{
+		const TArray<ITargetPlatform*>& TargetPlatforms = GetTargetPlatforms();
+
 		for (int32 Index = 0; Index < TargetPlatforms.Num(); Index++)
 		{
-			if (TargetPlatforms[Index]->PlatformName() == Name)
+			if (TargetPlatforms[Index]->SupportsValueForType(SupportType, RequiredSupportedValue))
 			{
 				return TargetPlatforms[Index];
 			}
@@ -223,6 +240,8 @@ public:
 		if (!bInitialized || bForceCacheUpdate)
 		{
 			bInitialized = true;
+			bHasInitErrors = false; // If we had errors before, reset the flag and see later in this function if there are errors.
+			InitErrorMessages.Empty();
 
 			Results.Empty(Results.Num());
 
@@ -265,9 +284,11 @@ public:
 					if (Results.Num() == 0)
 					{
 						// An invalid platform was specified...
-						// Inform the user and exit.
+						// Inform the user.
+						bHasInitErrors = true;
+						InitErrorMessages.Appendf(TEXT("Invalid target platform specified (%s). Available = { %s } "), *PlatformStr, *AvailablePlatforms);
 						UE_LOG(LogTargetPlatformManager, Error, TEXT("Invalid target platform specified (%s). Available = { %s } "), *PlatformStr, *AvailablePlatforms);
-						UE_LOG(LogTargetPlatformManager, Fatal, TEXT("Invalid target platform specified (%s). Available = { %s } "), *PlatformStr, *AvailablePlatforms);
+						return Results;
 					}
 				}
 			}
@@ -616,28 +637,15 @@ protected:
 	/** Discovers the available target platforms. */
 	void DiscoverAvailablePlatforms()
 	{
-		DECLARE_SCOPE_CYCLE_COUNTER( TEXT( "FTargetPlatformManagerModule::DiscoverAvailablePlatforms" ), STAT_FTargetPlatformManagerModule_DiscoverAvailablePlatforms, STATGROUP_TargetPlatform );
+		DECLARE_SCOPE_CYCLE_COUNTER(TEXT("FTargetPlatformManagerModule::DiscoverAvailablePlatforms"), STAT_FTargetPlatformManagerModule_DiscoverAvailablePlatforms, STATGROUP_TargetPlatform);
 
 		Platforms.Empty(Platforms.Num());
-
-		TArray<FName> Modules;
-
-		FString ModuleWildCard = TEXT("*TargetPlatform");
-
-#if WITH_EDITOR
-		// if we have the editor and we are using -game
-		// only need to instantiate the current platform 
-#if PLATFORM_WINDOWS
-		if (IsRunningGame())
-		{
-			ModuleWildCard = TEXT("Windows*TargetPlatform");
-		}
-#endif
-#endif
-		FModuleManager::Get().FindModules(*ModuleWildCard, Modules);
+		PlatformsByName.Empty(PlatformsByName.Num());
 
 #if !IS_MONOLITHIC
 		// Find all module subdirectories and add them so we can load dependent modules for target platform modules
+		// We may not be able to restrict this to subdirectories found in FPlatformInfo because we could have a subdirectory
+		// that is not one of these platforms. Imagine a "Sega" shared directory for the "Genesis" and "Dreamcast" platforms
 		TArray<FString> ModuleSubdirs;
 		IFileManager::Get().FindFilesRecursive(ModuleSubdirs, *FPlatformProcess::GetModulesDirectory(), TEXT("*"), false, true);
 		for (const FString& ModuleSubdir : ModuleSubdirs)
@@ -646,49 +654,104 @@ protected:
 		}
 #endif
 
-		// remove this module from the list
-		Modules.Remove(FName(TEXT("TargetPlatform")));
+		// find a set of valid target platform names (the platform DataDrivenPlatformInfo.ini file was found indicates support for the platform 
+		// exists on disk, so the TP is expected to work)
+		const TArray<PlatformInfo::FPlatformInfo>& PlatformInfos = PlatformInfo::GetPlatformInfoArray();
 
-		if (!Modules.Num())
-		{
-			UE_LOG(LogTargetPlatformManager, Error, TEXT("No target platforms found!"));
-		}
-
-		FScopedSlowTask SlowTask(Modules.Num());
-		for (int32 Index = 0; Index < Modules.Num(); Index++)
+		TSet<ITargetPlatformModule*> ProcessedModules;
+		FScopedSlowTask SlowTask(PlatformInfos.Num());
+		for (const PlatformInfo::FPlatformInfo& PlatInfo : PlatformInfos)
 		{
 			SlowTask.EnterProgressFrame(1);
-			ITargetPlatformModule* Module = FModuleManager::LoadModulePtr<ITargetPlatformModule>(Modules[Index]);
-			if (Module)
+
+			// by defaulty load all PIs we can have
+			bool bLoadTargetPlatform = true;
+
+			// disabled?
+			if (PlatInfo.bEnabledForUse == false)
 			{
-				TArray<ITargetPlatform*> TargetPlatforms = Module->GetTargetPlatforms();
-				for (ITargetPlatform* Platform : TargetPlatforms) 
+				bLoadTargetPlatform = false;
+			}
+
+#if WITH_EDITOR
+			// if we have the editor and we are using -game
+			// only need to instantiate the current platform 
+			if (IsRunningGame())
+			{
+				if (PlatInfo.IniPlatformName != FPlatformProperties::IniPlatformName())
 				{
-					// would like to move this check to GetActiveTargetPlatforms, but too many things cache this result
-					// this setup will become faster after TTP 341897 is complete.
-RETRY_SETUPANDVALIDATE:
-					if (SetupAndValidateAutoSDK(Platform->GetPlatformInfo().AutoSDKPath))
+					bLoadTargetPlatform = false;
+				}
+			}
+#endif
+
+			// now load the TP module
+			if (bLoadTargetPlatform)
+			{
+				// there are two ways targetplatform modules are setup: a single DLL per TargetPlatform, or a DLL for the platform
+				// that returns multiple TargetPlatforms. we try single first, then full platform
+				FName FullPlatformModuleName = *(PlatInfo.IniPlatformName + TEXT("TargetPlatform"));
+				FName SingleTargetPlatformModuleName = *(PlatInfo.TargetPlatformName.ToString() + TEXT("TargetPlatform"));
+				bool bFullPlatformModuleNameIsValid = !PlatInfo.IniPlatformName.IsEmpty();
+
+				ITargetPlatformModule* Module = nullptr;
+				
+				if (FModuleManager::Get().ModuleExists(*SingleTargetPlatformModuleName.ToString()))
+				{
+					Module = FModuleManager::LoadModulePtr<ITargetPlatformModule>(SingleTargetPlatformModuleName);
+				}
+				else if (bFullPlatformModuleNameIsValid && FModuleManager::Get().ModuleExists(*FullPlatformModuleName.ToString()))
+				{
+					Module = FModuleManager::LoadModulePtr<ITargetPlatformModule>(FullPlatformModuleName);
+				}
+
+				// if we have already processed this module, we can skip it!
+				if (ProcessedModules.Contains(Module))
+				{
+					continue;
+				}
+
+				// original logic for module loading here
+				if (Module)
+				{
+					ProcessedModules.Add(Module);
+
+					TArray<ITargetPlatform*> TargetPlatforms = Module->GetTargetPlatforms();
+					for (ITargetPlatform* Platform : TargetPlatforms)
 					{
-						UE_LOG(LogTemp, Display, TEXT("Module '%s' loaded TargetPlatform '%s'"), *Modules[Index].ToString(), *Platform->PlatformName());
-						Platforms.Add(Platform);
-					}
-					else
-					{
-						// this hack is here because if you try and setup and validate autosdk some times it will fail because shared files are in use by another child cooker
-						static bool bIsChildCooker = FParse::Param(FCommandLine::Get(), TEXT("cookchild"));
-						if (bIsChildCooker)
+						// would like to move this check to GetActiveTargetPlatforms, but too many things cache this result
+						// this setup will become faster after TTP 341897 is complete.
+					RETRY_SETUPANDVALIDATE:
+						if (SetupAndValidateAutoSDK(Platform->GetPlatformInfo().AutoSDKPath))
 						{
-							static int Counter = 0;
-							++Counter;
-							if (Counter < 10)
-							{
-								goto RETRY_SETUPANDVALIDATE;
-							}
+							const FString& PlatformName = Platform->PlatformName();
+							UE_LOG(LogTargetPlatformManager, Display, TEXT("Loaded TargetPlatform '%s'"), *PlatformName);
+							Platforms.Add(Platform);
+							PlatformsByName.Add(FName(PlatformName), Platform);
 						}
-						UE_LOG(LogTemp, Display, TEXT("Module '%s' failed to SetupAndValidateAutoSDK for platform '%s'"), *Modules[Index].ToString(), *Platform->PlatformName());
+						else
+						{
+							// this hack is here because if you try and setup and validate autosdk some times it will fail because shared files are in use by another child cooker
+							static bool bIsChildCooker = FParse::Param(FCommandLine::Get(), TEXT("cookchild"));
+							if (bIsChildCooker)
+							{
+								static int Counter = 0;
+								++Counter;
+								if (Counter < 10)
+								{
+									goto RETRY_SETUPANDVALIDATE;
+								}
+							}
+							UE_LOG(LogTargetPlatformManager, Display, TEXT("Failed to SetupAndValidateAutoSDK for platform '%s'"), *Platform->PlatformName());
+						}
 					}
 				}
 			}
+		}
+
+		if (!Platforms.Num())
+		{
+			UE_LOG(LogTargetPlatformManager, Error, TEXT("No target platforms found!"));
 		}
 	}
 
@@ -1003,10 +1066,25 @@ RETRY_SETUPANDVALIDATE:
 					PlatformName = TEXT("LinuxServer");
 					PlatformInfo::UpdatePlatformSDKStatus(PlatformName, Status);
 				}
+				else if (PlatformName == TEXT("LinuxAArch64"))
+				{
+					PlatformInfo::UpdatePlatformSDKStatus(PlatformName, Status);
+					PlatformName = TEXT("LinuxAArch64NoEditor");
+					PlatformInfo::UpdatePlatformSDKStatus(PlatformName, Status);
+					PlatformName = TEXT("LinuxAArch64Client");
+					PlatformInfo::UpdatePlatformSDKStatus(PlatformName, Status);
+					PlatformName = TEXT("LinuxAArch64Server");
+					PlatformInfo::UpdatePlatformSDKStatus(PlatformName, Status);
+				}
 				else if (PlatformName == TEXT("Desktop"))
 				{
 					// since Desktop is just packaging, we don't need an SDK, and UBT will return INVALID, since it doesn't build for it
 					PlatformInfo::UpdatePlatformSDKStatus(PlatformName, PlatformInfo::EPlatformSDKStatus::Installed);
+				}
+				else if (PlatformName == TEXT("HoloLens"))
+				{
+					PlatformName = TEXT("HoloLens");
+					PlatformInfo::UpdatePlatformSDKStatus(PlatformName, Status);
 				}
 				else
 				{
@@ -1045,6 +1123,8 @@ private:
 		SDKStatusMessage += Message;
 	}
 
+	FString InitErrorMessages;
+
 	// If true we should build formats that are actually required for use by the runtime. 
 	// This happens for an ordinary editor run and more specifically whenever there is no
 	// TargetPlatform= on the command line.
@@ -1054,11 +1134,17 @@ private:
 	// in case of a module reload of a TargetPlatform-Module.
 	bool bForceCacheUpdate;
 
+	// Flag to indicate that there were errors during initialization
+	bool bHasInitErrors;
+
 	// Flag to avoid redunant reloads
 	bool bIgnoreFirstDelegateCall;
 
 	// Holds the list of discovered platforms.
 	TArray<ITargetPlatform*> Platforms;
+
+	// Map for fast lookup of platforms by name.
+	TMap<FName, ITargetPlatform*> PlatformsByName;
 
 #if AUTOSDKS_ENABLED
 	// holds the list of Platforms that have attempted setup.

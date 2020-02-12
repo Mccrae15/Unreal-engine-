@@ -1,14 +1,16 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
 #include "User/ISocialUserList.h"
 #include "UObject/GCObject.h"
 
+enum class EMemberExitedReason : uint8;
+
 class FSocialUserList : public ISocialUserList, public FGCObject, public TSharedFromThis<FSocialUserList>
 {
 public:
-	static TSharedRef<FSocialUserList> CreateUserList(USocialToolkit& InOwnerToolkit, const FSocialUserListConfig& Config);
+	static TSharedRef<FSocialUserList> CreateUserList(const USocialToolkit& InOwnerToolkit, const FSocialUserListConfig& Config);
 
 	virtual void AddReferencedObjects(FReferenceCollector& Collector) override;
 
@@ -16,11 +18,17 @@ public:
 	FOnUserRemoved& OnUserRemoved() const override { return OnUserRemovedEvent; }
 	FOnUpdateComplete& OnUpdateComplete() const override { return OnUpdateCompleteEvent; }
 
+	virtual FString GetListName() const override { return ListConfig.Name; }
+
 	void UpdateNow();
-	void SetAutoUpdatePeriod(float InAutoUpdatePeriod);
+	void SetAllowAutoUpdate(bool bIsEnabled);
+	void SetAllowSortDuringUpdate(bool bIsEnabled);
 	const TArray<USocialUser*>& GetUsers() const { return Users; }
 
 	bool HasPresenceFilters() const;
+
+PARTY_SCOPE:
+	const FSocialUserListConfig& GetListConfig() const { return ListConfig; }
 
 private:
 	void HandleOwnerToolkitReset();
@@ -41,6 +49,9 @@ private:
 	void HandleRecentPlayerRemoved(USocialUser& RemovedUser, ESocialSubsystem SubsystemType);
 	
 	void HandleUserPresenceChanged(ESocialSubsystem SubsystemType, USocialUser* User);
+	void HandleUserGameSpecificStatusChanged(USocialUser* User);
+
+	void MarkUserAsDirty(USocialUser& User);
 
 	void TryAddUser(USocialUser& User);
 	void TryAddUserFast(USocialUser& User);
@@ -52,12 +63,17 @@ private:
 	bool EvaluatePresenceFlag(bool bPresenceValue, ESocialUserStateFlags Flag) const;
 
 	bool HandleAutoUpdateList(float);
+	void UpdateListInternal();
+
+	void HandlePartyJoined(USocialParty& Party);
+	void HandlePartyMemberCreated(UPartyMember& Member);
+	void HandlePartyMemberLeft(EMemberExitedReason Reason, UPartyMember* Member);
 
 private:
-	FSocialUserList(USocialToolkit& InOwnerToolkit, const FSocialUserListConfig& Config);
+	FSocialUserList(const USocialToolkit& InOwnerToolkit, const FSocialUserListConfig& Config);
 	void InitializeList();
 
-	TWeakObjectPtr<USocialToolkit> OwnerToolkit;
+	TWeakObjectPtr<const USocialToolkit> OwnerToolkit;
 
 	UPROPERTY()
 	TArray<USocialUser*> Users;
@@ -71,7 +87,8 @@ private:
 	FSocialUserListConfig ListConfig;
 
 	bool bNeedsSort = false;
-	float AutoUpdatePeriod = 5.f;
+	int32 AutoUpdateRequests = 0;
+	float AutoUpdatePeriod = .5f;
 	FDelegateHandle UpdateTickerHandle;
 
 	mutable FOnUserAdded OnUserAddedEvent;

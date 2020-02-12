@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 #include "OculusHMDPrivate.h"
@@ -6,7 +6,7 @@
 
 #if OCULUS_HMD_SUPPORTED_PLATFORMS
 #include "OculusHMD_CustomPresent.h"
-#include "OculusHMD_TextureSetProxy.h"
+#include "XRSwapChain.h"
 
 namespace OculusHMD
 {
@@ -43,9 +43,10 @@ public:
 	void SetDesc(const IStereoLayers::FLayerDesc& InDesc);
 	const IStereoLayers::FLayerDesc& GetDesc() const { return Desc; }
 	void SetEyeLayerDesc(const ovrpLayerDesc_EyeFov& InEyeLayerDesc, const ovrpRecti InViewportRect[ovrpEye_Count]);
-	const FTextureSetProxyPtr& GetTextureSetProxy() const { return TextureSetProxy; }
-	const FTextureSetProxyPtr& GetRightTextureSetProxy() const { return RightTextureSetProxy; }
-	const FTextureSetProxyPtr& GetDepthTextureSetProxy() const { return DepthTextureSetProxy; }
+	const FXRSwapChainPtr& GetSwapChain() const { return SwapChain; }
+	const FXRSwapChainPtr& GetRightSwapChain() const { return RightSwapChain; }
+	const FXRSwapChainPtr& GetDepthSwapChain() const { return DepthSwapChain; }
+	const FXRSwapChainPtr& GetFoveationSwapChain() const { return FoveationSwapChain; }
 	void MarkTextureForUpdate() { bUpdateTexture = true; }
 #if PLATFORM_ANDROID
 	bool NeedsPokeAHole() { return (Desc.Flags & IStereoLayers::LAYER_FLAG_SUPPORT_DEPTH) != 0; }
@@ -76,10 +77,11 @@ protected:
 	ovrpLayerDescUnion OvrpLayerDesc;
 	ovrpLayerSubmitUnion OvrpLayerSubmit;
 	FOvrpLayerPtr OvrpLayer;
-	FTextureSetProxyPtr TextureSetProxy;
-	FTextureSetProxyPtr DepthTextureSetProxy;
-	FTextureSetProxyPtr RightTextureSetProxy;
-	FTextureSetProxyPtr RightDepthTextureSetProxy;
+	FXRSwapChainPtr SwapChain;
+	FXRSwapChainPtr DepthSwapChain;
+	FXRSwapChainPtr FoveationSwapChain;
+	FXRSwapChainPtr RightSwapChain;
+	FXRSwapChainPtr RightDepthSwapChain;
 	bool bUpdateTexture;
 	bool bInvertY;
 	bool bHasDepth;

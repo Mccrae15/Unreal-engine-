@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "Engine/InputDelegateBinding.h"
 #include "UObject/Class.h"
@@ -31,11 +31,11 @@ void UInputDelegateBinding::BindInputDelegates(const UClass* InClass, UInputComp
 												UInputVectorAxisDelegateBinding::StaticClass(),
 										   };
 
-	if (InClass)
+	if (SupportsInputDelegate(InClass))
 	{
 		BindInputDelegates(InClass->GetSuperClass(), InputComponent);
 
-		for (int32 Index = 0; Index < ARRAY_COUNT(InputBindingClasses); ++Index)
+		for (int32 Index = 0; Index < UE_ARRAY_COUNT(InputBindingClasses); ++Index)
 		{
 			UInputDelegateBinding* BindingObject = CastChecked<UInputDelegateBinding>(
 				UBlueprintGeneratedClass::GetDynamicBindingObject(InClass, InputBindingClasses[Index])

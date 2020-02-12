@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "UserDefinedStructureEditor.h"
 #include "Widgets/Text/STextBlock.h"
@@ -81,7 +81,7 @@ void FDefaultValueDetails::CustomizeDetails(class IDetailLayoutBuilder& DetailLa
 
 		IDetailCategoryBuilder& StructureCategory = DetailLayout.EditCategory("DefaultValues", LOCTEXT("DefaultValues", "Default Values"));
 
-		for (TFieldIterator<UProperty> PropertyIter(UserDefinedStruct.Get()); PropertyIter; ++PropertyIter)
+		for (TFieldIterator<FProperty> PropertyIter(UserDefinedStruct.Get()); PropertyIter; ++PropertyIter)
 		{
 			StructureCategory.AddExternalStructureProperty(StructData, (*PropertyIter)->GetFName());
 		}
@@ -161,12 +161,12 @@ public:
 	}
 
 	// FNotifyHook interface
-	virtual void NotifyPreChange( UProperty* PropertyAboutToChange ) override
+	virtual void NotifyPreChange( FProperty* PropertyAboutToChange ) override
 	{
 		++PropertyChangeRecursionGuard;
 	}
 
-	virtual void NotifyPostChange( const FPropertyChangedEvent& PropertyChangedEvent, UProperty* PropertyThatChanged) override
+	virtual void NotifyPostChange( const FPropertyChangedEvent& PropertyChangedEvent, FProperty* PropertyThatChanged) override
 	{
 		--PropertyChangeRecursionGuard;
 	}
@@ -202,10 +202,10 @@ void FDefaultValueDetails::OnFinishedChangingProperties(const FPropertyChangedEv
 
 		if ( ensure(OwnerStruct == UserDefinedStruct.Get()) )
 		{
-			const UProperty* DirectProperty = PropertyChangedEvent.MemberProperty;
-			while (DirectProperty && !Cast<const UUserDefinedStruct>(DirectProperty->GetOuter()))
+			const FProperty* DirectProperty = PropertyChangedEvent.MemberProperty;
+			while (DirectProperty && !DirectProperty->GetOwner<const UUserDefinedStruct>())
 			{
-				DirectProperty = Cast<const UProperty>(DirectProperty->GetOuter());
+				DirectProperty = DirectProperty->GetOwner<const FProperty>();
 			}
 			ensure(nullptr != DirectProperty);
 
@@ -216,7 +216,7 @@ void FDefaultValueDetails::OnFinishedChangingProperties(const FPropertyChangedEv
 				{
 					if (StructData.IsValid() && StructData->IsValid())
 					{
-						bDefaultValueSet = FBlueprintEditorUtils::PropertyValueToString(DirectProperty, StructData->GetStructMemory(), DefaultValueString);
+						bDefaultValueSet = FBlueprintEditorUtils::PropertyValueToString(DirectProperty, StructData->GetStructMemory(), DefaultValueString, OwnerStruct);
 					}
 				}
 
@@ -383,9 +383,10 @@ TSharedRef<SDockTab> FUserDefinedStructureEditor::SpawnStructureTab(const FSpawn
 
 	TSharedRef<SSplitter> Splitter = SNew(SSplitter)
 		.Orientation(Orient_Vertical)
-		.PhysicalSplitterHandleSize(10.0f)
-		.ResizeMode(ESplitterResizeMode::FixedPosition);
-
+		.PhysicalSplitterHandleSize(2.0f)
+		.HitDetectionSplitterHandleSize(8.f)
+		.ResizeMode(ESplitterResizeMode::FixedPosition)
+		.Style(FEditorStyle::Get(), "ContentBrowser.Splitter");
 	{
 		// Create a property view
 		FPropertyEditorModule& EditModule = FModuleManager::Get().GetModuleChecked<FPropertyEditorModule>("PropertyEditor");
@@ -398,7 +399,11 @@ TSharedRef<SDockTab> FUserDefinedStructureEditor::SpawnStructureTab(const FSpawn
 		Splitter->AddSlot()
 		.Value(0.25f)
 		[
-			PropertyView.ToSharedRef()
+			SNew(SBox)
+			.Padding(FMargin(0.0f, 0.0f, 0.0f, 3.0f))
+			[
+				PropertyView.ToSharedRef()
+			]
 		];
 	}
 
@@ -414,7 +419,11 @@ TSharedRef<SDockTab> FUserDefinedStructureEditor::SpawnStructureTab(const FSpawn
 		{
 			Splitter->AddSlot()
 			[
-				DefaultValueWidget.ToSharedRef()
+				SNew(SBox)
+				.Padding(FMargin(0.0f, 3.0f, 0.0f, 0.0f))
+				[
+					DefaultValueWidget.ToSharedRef()
+				]
 			];
 		}
 	}
@@ -588,7 +597,7 @@ public:
 		auto StructureDetailsSP = StructureDetails.Pin();
 		if(StructureDetailsSP.IsValid())
 		{
-			return FText::FromString(FStructureEditorUtils::GetVariableDisplayName(StructureDetailsSP->GetUserDefinedStruct(), FieldGuid));
+			return FText::FromString(FStructureEditorUtils::GetVariableFriendlyName(StructureDetailsSP->GetUserDefinedStruct(), FieldGuid));
 		}
 		return FText::GetEmpty();
 	}
@@ -686,7 +695,7 @@ public:
 		{
 			if (const FStructVariableDescription* FieldDesc = StructureDetailsSP->FindStructureFieldByGuid(FieldGuid))
 			{
-				return !FieldDesc->bDontEditoOnInstance ? ECheckBoxState::Checked : ECheckBoxState::Unchecked;
+				return !FieldDesc->bDontEditOnInstance ? ECheckBoxState::Checked : ECheckBoxState::Unchecked;
 			}
 		}
 		return ECheckBoxState::Undetermined;
@@ -698,6 +707,28 @@ public:
 		if (StructureDetailsSP.IsValid())
 		{
 			FStructureEditorUtils::ChangeEditableOnBPInstance(StructureDetailsSP->GetUserDefinedStruct(), FieldGuid, ECheckBoxState::Unchecked != InNewState);
+		}
+	}
+
+	ECheckBoxState OnGetSaveGameState() const
+	{
+		auto StructureDetailsSP = StructureDetails.Pin();
+		if (StructureDetailsSP.IsValid())
+		{
+			if (const FStructVariableDescription* FieldDesc = StructureDetailsSP->FindStructureFieldByGuid(FieldGuid))
+			{
+				return FieldDesc->bEnableSaveGame ? ECheckBoxState::Checked : ECheckBoxState::Unchecked;
+			}
+		}
+		return ECheckBoxState::Undetermined;
+	}
+
+	void OnSaveGameCommitted(ECheckBoxState InNewState)
+	{
+		auto StructureDetailsSP = StructureDetails.Pin();
+		if (StructureDetailsSP.IsValid() && (ECheckBoxState::Undetermined != InNewState))
+		{
+			FStructureEditorUtils::ChangeSaveGameEnabled(StructureDetailsSP->GetUserDefinedStruct(), FieldGuid, InNewState == ECheckBoxState::Checked);
 		}
 	}
 
@@ -969,6 +1000,21 @@ public:
 			.ToolTipText(LOCTEXT("EditableOnBPInstance", "Variable can be edited on an instance of a Blueprint."))
 			.OnCheckStateChanged(this, &FUserDefinedStructureFieldLayout::OnEditableOnBPInstanceCommitted)
 			.IsChecked(this, &FUserDefinedStructureFieldLayout::OnGetEditableOnBPInstanceState)
+		];
+
+		ChildrenBuilder.AddCustomRow(LOCTEXT("SaveGame", "Save Game"))
+		.NameContent()
+		[
+			SNew(STextBlock)
+			.Text(LOCTEXT("SaveGameText", "Save Game"))
+			.Font(IDetailLayoutBuilder::GetDetailFont())
+		]
+		.ValueContent()
+		[
+			SNew(SCheckBox)
+			.ToolTipText(LOCTEXT("SaveGame_Tooltip", "Should variable be serialized for saved games"))
+			.OnCheckStateChanged(this, &FUserDefinedStructureFieldLayout::OnSaveGameCommitted)
+			.IsChecked(this, &FUserDefinedStructureFieldLayout::OnGetSaveGameState)
 		];
 
 		ChildrenBuilder.AddCustomRow(LOCTEXT("MultiLineText", "Multi-line Text"))

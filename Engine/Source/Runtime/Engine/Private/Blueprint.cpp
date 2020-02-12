@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "Engine/Blueprint.h"
 #include "Misc/CoreMisc.h"
@@ -17,13 +17,16 @@
 #include "Engine/Breakpoint.h"
 #include "Components/TimelineComponent.h"
 #include "Modules/ModuleManager.h"
+#include "UObject/TextProperty.h"
 
 #if WITH_EDITOR
 #include "BlueprintCompilationManager.h"
 #include "Editor/UnrealEd/Classes/Settings/ProjectPackagingSettings.h"
+#include "Editor/UnrealEd/Classes/Settings/EditorExperimentalSettings.h"
 #include "Engine/SimpleConstructionScript.h"
 #include "Engine/SCS_Node.h"
 #include "Kismet2/BlueprintEditorUtils.h"
+#include "Kismet2/ComponentEditorUtils.h"
 #include "Kismet2/KismetEditorUtilities.h"
 #include "Kismet2/CompilerResultsLog.h"
 #include "Kismet2/StructureEditorUtils.h"
@@ -38,6 +41,8 @@
 #include "Interfaces/ITargetPlatform.h"
 #include "UObject/MetaData.h"
 #include "BlueprintAssetHandler.h"
+#include "Blueprint/BlueprintExtension.h"
+#include "UObject/TextProperty.h"
 #endif
 #include "Engine/InheritableComponentHandler.h"
 
@@ -70,50 +75,21 @@ static void ConformNativeComponents(UBlueprint* Blueprint)
 			// native super-class)
 			TInlineComponentArray<UActorComponent*> NewNativeComponents;
 			NativeCDO->GetComponents(NewNativeComponents);
-
-			// utility lambda for finding named components in a supplied list
-			auto FindNamedComponentLambda = [](FName const ComponentName, TInlineComponentArray<UActorComponent*> const& ComponentList)->UActorComponent*
-			{
-				UActorComponent* FoundComponent = nullptr;
-				for (UActorComponent* Component : ComponentList)
-				{
-					if (Component->GetFName() == ComponentName)
-					{
-						FoundComponent = Component;
-						break;
-					}
-				}
-				return FoundComponent;
-			};
-
-			// utility lambda for finding matching components in the NewNativeComponents list
-			auto FindNativeComponentLambda = [&NewNativeComponents, &FindNamedComponentLambda](UActorComponent* BlueprintComponent)->UActorComponent*
-			{
-				UActorComponent* MatchingComponent = nullptr;
-				if (BlueprintComponent != nullptr)
-				{
-					FName const ComponentName = BlueprintComponent->GetFName();
-					MatchingComponent = FindNamedComponentLambda(ComponentName, NewNativeComponents);
-				}
-				return MatchingComponent;
-			};
-
+														   			
 			// loop through all components that this blueprint thinks come from its
 			// native super-class (last time it was saved)
 			for (UActorComponent* Component : OldNativeComponents)
 			{
-				// if we found this component also listed for the native class
-				if (UActorComponent* NativeComponent = FindNativeComponentLambda(Component))
+				if (UActorComponent* NativeComponent = FComponentEditorUtils::FindMatchingComponent(Component, NewNativeComponents))
 				{
-					USceneComponent* BlueprintSceneComponent = Cast<USceneComponent>(Component);
-					if (BlueprintSceneComponent == nullptr)
+					USceneComponent* SceneComponent = Cast<USceneComponent>(Component);
+					if (SceneComponent == nullptr)
 					{
 						// if this isn't a scene-component, then we don't care
 						// (we're looking to fixup scene-component parents)
 						continue;
 					}
-					UActorComponent* OldNativeParent = FindNativeComponentLambda(BlueprintSceneComponent->GetAttachParent());
-
+					USceneComponent* OldNativeParent = Cast<USceneComponent>(FComponentEditorUtils::FindMatchingComponent(SceneComponent->GetAttachParent(), NewNativeComponents));
 					USceneComponent* NativeSceneComponent = CastChecked<USceneComponent>(NativeComponent);
 					// if this native component has since been reparented, we need
 					// to make sure that this blueprint reflects that change
@@ -122,20 +98,21 @@ static void ConformNativeComponents(UBlueprint* Blueprint)
 						USceneComponent* NewParent = nullptr;
 						if (NativeSceneComponent->GetAttachParent() != nullptr)
 						{
-							NewParent = CastChecked<USceneComponent>(FindNamedComponentLambda(NativeSceneComponent->GetAttachParent()->GetFName(), OldNativeComponents));
+							NewParent = CastChecked<USceneComponent>(FComponentEditorUtils::FindMatchingComponent(NativeSceneComponent->GetAttachParent(), OldNativeComponents));
 						}
-						BlueprintSceneComponent->SetupAttachment(NewParent, BlueprintSceneComponent->GetAttachSocketName());
+						SceneComponent->SetupAttachment(NewParent, SceneComponent->GetAttachSocketName());
 					}
 				}
-				else // the component has been removed from the native class
+				else
 				{
-					// @TODO: I think we already handle removed native components elsewhere, so maybe we should error here?
-// 				BlueprintCDO->RemoveOwnedComponent(Component);
-// 
-// 				USimpleConstructionScript* BlueprintSCS = Blueprint->SimpleConstructionScript;
-// 				USCS_Node* ComponentNode = BlueprintSCS->CreateNode(Component, Component->GetFName());
-// 
-// 				BlueprintSCS->AddNode(ComponentNode);
+					// the component has been removed from the native class
+						// @TODO: I think we already handle removed native components elsewhere, so maybe we should error here?
+	// 				BlueprintCDO->RemoveOwnedComponent(Component);
+	// 
+	// 				USimpleConstructionScript* BlueprintSCS = Blueprint->SimpleConstructionScript;
+	// 				USCS_Node* ComponentNode = BlueprintSCS->CreateNode(Component, Component->GetFName());
+	// 
+	// 				BlueprintSCS->AddNode(ComponentNode);
 				}
 			}
 		}
@@ -226,16 +203,16 @@ namespace
 						UStruct* TypeToCheck = TypesToCheck.Pop(/*bAllowShrinking*/false);
 						TypesChecked.Add(TypeToCheck);
 
-						for (TFieldIterator<const UProperty> PropIt(TypeToCheck, EFieldIteratorFlags::IncludeSuper, EFieldIteratorFlags::ExcludeDeprecated, EFieldIteratorFlags::IncludeInterfaces); !bForceHasScript && PropIt; ++PropIt)
+						for (TFieldIterator<const FProperty> PropIt(TypeToCheck, EFieldIteratorFlags::IncludeSuper, EFieldIteratorFlags::ExcludeDeprecated, EFieldIteratorFlags::IncludeInterfaces); !bForceHasScript && PropIt; ++PropIt)
 						{
-							auto ProcessInnerProperty = [&bForceHasScript, &TypesToCheck, &TypesChecked](const UProperty* InProp) -> bool
+							auto ProcessInnerProperty = [&bForceHasScript, &TypesToCheck, &TypesChecked](const FProperty* InProp) -> bool
 							{
-								if (const UTextProperty* TextProp = Cast<const UTextProperty>(InProp))
+								if (const FTextProperty* TextProp = CastField<const FTextProperty>(InProp))
 								{
 									bForceHasScript = true;
 									return true;
 								}
-								if (const UStructProperty* StructProp = Cast<const UStructProperty>(InProp))
+								if (const FStructProperty* StructProp = CastField<const FStructProperty>(InProp))
 								{
 									if (!TypesChecked.Contains(StructProp->Struct))
 									{
@@ -248,16 +225,16 @@ namespace
 
 							if (!ProcessInnerProperty(*PropIt))
 							{
-								if (const UArrayProperty* ArrayProp = Cast<const UArrayProperty>(*PropIt))
+								if (const FArrayProperty* ArrayProp = CastField<const FArrayProperty>(*PropIt))
 								{
 									ProcessInnerProperty(ArrayProp->Inner);
 								}
-								if (const UMapProperty* MapProp = Cast<const UMapProperty>(*PropIt))
+								if (const FMapProperty* MapProp = CastField<const FMapProperty>(*PropIt))
 								{
 									ProcessInnerProperty(MapProp->KeyProp);
 									ProcessInnerProperty(MapProp->ValueProp);
 								}
-								if (const USetProperty* SetProp = Cast<const USetProperty>(*PropIt))
+								if (const FSetProperty* SetProp = CastField<const FSetProperty>(*PropIt))
 								{
 									ProcessInnerProperty(SetProp->ElementProp);
 								}
@@ -376,6 +353,18 @@ UBlueprint::UBlueprint(const FObjectInitializer& ObjectInitializer)
 }
 
 #if WITH_EDITORONLY_DATA
+static TAutoConsoleVariable<bool> CVarBPDisableSearchDataUpdateOnSave(
+	TEXT("bp.DisableSearchDataUpdateOnSave"),
+	false,
+	TEXT("Don't update Blueprint search metadata on save (for QA/testing purposes only). On an editor relaunch, it should include the BP in the unindexed count after the first search."),
+	ECVF_Cheat);
+
+static TAutoConsoleVariable<bool> CVarBPForceOldSearchDataFormatVersionOnSave(
+	TEXT("bp.ForceOldSearchDataFormatVersionOnSave"),
+	false,
+	TEXT("Force Blueprint search metadata to use an old format version on save (for QA/testing purposes only). On an editor relaunch, it should include the BP in the out-of-date count after the first search."),
+	ECVF_Cheat);
+
 void UBlueprint::PreSave(const class ITargetPlatform* TargetPlatform)
 {
 	Super::PreSave(TargetPlatform);
@@ -385,8 +374,26 @@ void UBlueprint::PreSave(const class ITargetPlatform* TargetPlatform)
 
 	if (!TargetPlatform || TargetPlatform->HasEditorOnlyData())
 	{
+		// This will force an immediate (synchronous) update of this Blueprint's index tag value.
+		EAddOrUpdateBlueprintSearchMetadataFlags Flags = EAddOrUpdateBlueprintSearchMetadataFlags::ForceRecache;
+
+		// For regression testing, we exclude the registry tag on save by clearing the cached value.
+		// Expected result: On an editor relaunch it should cause this BP to be reported as "unindexed," until the asset is loaded.
+		if (CVarBPDisableSearchDataUpdateOnSave.GetValueOnGameThread())
+		{
+			Flags |= EAddOrUpdateBlueprintSearchMetadataFlags::ClearCachedValue;
+		}
+
+		// For regression testing, we allow an old format version to be used as an override on save.
+		// Expected result: On an editor relaunch it should cause this BP to be reported as "out-of-date," until the asset is loaded.
+		EFiBVersion OverrideVersion = EFiBVersion::FIB_VER_NONE;
+		if (CVarBPForceOldSearchDataFormatVersionOnSave.GetValueOnGameThread())
+		{
+			OverrideVersion = EFiBVersion::FIB_VER_BASE;
+		}
+
 		// Cache the BP for use (immediate, since we're about to save)
-		FFindInBlueprintSearchManager::Get().AddOrUpdateBlueprintSearchMetadata(this, true);
+		FFindInBlueprintSearchManager::Get().AddOrUpdateBlueprintSearchMetadata(this, Flags, OverrideVersion);
 	}
 }
 #endif // WITH_EDITORONLY_DATA
@@ -489,6 +496,7 @@ void UBlueprint::Serialize(FArchive& Ar)
 
 		if (Ar.IsLoading())
 		{
+#if WITH_EDITORONLY_DATA
 			if (bNativize_DEPRECATED)
 			{
 				// Migrate to the new transient flag.
@@ -499,6 +507,7 @@ void UBlueprint::Serialize(FArchive& Ar)
 				bSettingsChanged |= PackagingSettings->AddBlueprintAssetToNativizationList(this);
 			}
 			else
+#endif
 			{
 				// Cache whether or not this Blueprint asset was selected for exclusive nativization in the Project Settings.
 				for (int AssetIndex = 0; AssetIndex < PackagingSettings->NativizeBlueprintAssets.Num(); ++AssetIndex)
@@ -534,12 +543,28 @@ bool UBlueprint::RenameGeneratedClasses( const TCHAR* InName, UObject* NewOuter,
 
 	if(bRenameGeneratedClasses)
 	{
+		const auto TryFreeCDOName = [](UClass* ForClass, UObject* ToOuter, ERenameFlags InFlags)
+		{
+			if(ForClass->ClassDefaultObject)
+			{
+				FName CDOName = ForClass->GetDefaultObjectName();
+				
+				if(UObject* Obj = StaticFindObjectFast(UObject::StaticClass(), ToOuter, CDOName))
+				{
+					FName NewName = MakeUniqueObjectName(ToOuter, Obj->GetClass(), CDOName);
+					Obj->Rename(*(NewName.ToString()), ToOuter, InFlags|REN_ForceNoResetLoaders|REN_DontCreateRedirectors);
+				}
+			}
+		};
+
 		FName SkelClassName, GenClassName;
 		GetBlueprintClassNames(GenClassName, SkelClassName, FName(InName));
 
 		UPackage* NewTopLevelObjectOuter = NewOuter ? NewOuter->GetOutermost() : NULL;
 		if (GeneratedClass != NULL)
 		{
+			// check for collision of CDO name, move aside if necessary:
+			TryFreeCDOName(GeneratedClass, NewTopLevelObjectOuter, Flags);
 			bool bMovedOK = GeneratedClass->Rename(*GenClassName.ToString(), NewTopLevelObjectOuter, Flags);
 			if (!bMovedOK)
 			{
@@ -550,6 +575,7 @@ bool UBlueprint::RenameGeneratedClasses( const TCHAR* InName, UObject* NewOuter,
 		// Also move skeleton class, if different from generated class, to new package (again, to create redirector)
 		if (SkeletonGeneratedClass != NULL && SkeletonGeneratedClass != GeneratedClass)
 		{
+			TryFreeCDOName(SkeletonGeneratedClass, NewTopLevelObjectOuter, Flags);
 			bool bMovedOK = SkeletonGeneratedClass->Rename(*SkelClassName.ToString(), NewTopLevelObjectOuter, Flags);
 			if (!bMovedOK)
 			{
@@ -577,7 +603,7 @@ bool UBlueprint::Rename( const TCHAR* InName, UObject* NewOuter, ERenameFlags Fl
 	{
 		// Gather all blueprints that currently depend on this one.
 		TArray<UBlueprint*> Dependents;
-		FBlueprintEditorUtils::GetDependentBlueprints(this, Dependents);
+		FBlueprintEditorUtils::FindDependentBlueprints(this, Dependents);
 
 		FKismetEditorUtilities::CompileBlueprint(this);
 
@@ -598,70 +624,87 @@ void UBlueprint::PostDuplicate(bool bDuplicateForPIE)
 	{
 		FBlueprintEditorUtils::PostDuplicateBlueprint(this, bDuplicateForPIE);
 	}
-}
 
-extern COREUOBJECT_API bool GBlueprintUseCompilationManager;
+	if (GeneratedClass)
+	{
+		GeneratedClass->GetDefaultObject()->PostDuplicate(bDuplicateForPIE);
+	}
+}
 
 UClass* UBlueprint::RegenerateClass(UClass* ClassToRegenerate, UObject* PreviousCDO)
 {
 	LoadModulesRequiredForCompilation();
 
-	if(GBlueprintUseCompilationManager)
+	// ensure that we have UProperties for any properties declared in the blueprint:
+	if(!GeneratedClass || !HasAnyFlags(RF_BeingRegenerated) || bIsRegeneratingOnLoad || bHasBeenRegenerated)
 	{
-		// ensure that we have UProperties for any properties declared in the blueprint:
-		if(!GeneratedClass || !HasAnyFlags(RF_BeingRegenerated) || bIsRegeneratingOnLoad || bHasBeenRegenerated)
-		{
-			return GeneratedClass;
-		}
-		
-		// tag ourself as bIsRegeneratingOnLoad so that any reentrance via ForceLoad calls doesn't recurse:
-		bIsRegeneratingOnLoad = true;
-		
-		UPackage* Package = GetOutermost();
-		bool bIsPackageDirty = Package ? Package->IsDirty() : false;
-
-		UClass* GeneratedClassResolved = GeneratedClass;
-
-		UBlueprint::ForceLoadMetaData(this);
-		if (ensure(GeneratedClassResolved->ClassDefaultObject ))
-		{
-			UBlueprint::ForceLoadMembers(GeneratedClassResolved);
-			UBlueprint::ForceLoadMembers(GeneratedClassResolved->ClassDefaultObject);
-		}
-		UBlueprint::ForceLoadMembers(this);
-		
-		FBlueprintEditorUtils::PreloadConstructionScript( this );
-
-		FBlueprintEditorUtils::LinkExternalDependencies( this );
-
-		FBlueprintEditorUtils::RefreshVariables(this);
-		
-		// Preload Overridden Components
-		if (InheritableComponentHandler)
-		{
-			InheritableComponentHandler->PreloadAll();
-		}
-
-		FBlueprintCompilationManager::NotifyBlueprintLoaded( this ); 
-		
-		FBlueprintEditorUtils::PreloadBlueprintSpecificData( this );
-
-		FBlueprintEditorUtils::UpdateOutOfDateAnimBlueprints(this);
-
-		// clear this now that we're not in a re-entrrant context - bHasBeenRegenerated will guard against 'real' 
-		// double regeneration calls:
-		bIsRegeneratingOnLoad = false;
-
-		if( Package )
-		{
-			Package->SetDirtyFlag(bIsPackageDirty);
-		}
-
-		return GeneratedClassResolved;
+		return GeneratedClass;
 	}
-	else
+		
+	// tag ourself as bIsRegeneratingOnLoad so that any reentrance via ForceLoad calls doesn't recurse:
+	bIsRegeneratingOnLoad = true;
+		
+	UPackage* Package = GetOutermost();
+	bool bIsPackageDirty = Package ? Package->IsDirty() : false;
+
+	UClass* GeneratedClassResolved = GeneratedClass;
+
+	UBlueprint::ForceLoadMetaData(this);
+	if (ensure(GeneratedClassResolved->ClassDefaultObject ))
 	{
-		return FBlueprintEditorUtils::RegenerateBlueprintClass(this, ClassToRegenerate, PreviousCDO);
+		UBlueprint::ForceLoadMembers(GeneratedClassResolved);
+		UBlueprint::ForceLoadMembers(GeneratedClassResolved->ClassDefaultObject);
+	}
+	UBlueprint::ForceLoadMembers(this);
+
+	for (UBlueprintExtension* Extension : Extensions)
+	{
+		ForceLoad(Extension);
+		Extension->PreloadObjectsForCompilation(this);
+	}
+
+	FBlueprintEditorUtils::PreloadConstructionScript( this );
+
+	FBlueprintEditorUtils::LinkExternalDependencies( this );
+
+	FBlueprintEditorUtils::RefreshVariables(this);
+		
+	// Preload Overridden Components
+	if (InheritableComponentHandler)
+	{
+		InheritableComponentHandler->PreloadAll();
+	}
+
+	FBlueprintCompilationManager::NotifyBlueprintLoaded( this ); 
+		
+	FBlueprintEditorUtils::PreloadBlueprintSpecificData( this );
+
+	FBlueprintEditorUtils::UpdateOutOfDateAnimBlueprints(this);
+
+	// clear this now that we're not in a re-entrrant context - bHasBeenRegenerated will guard against 'real' 
+	// double regeneration calls:
+	bIsRegeneratingOnLoad = false;
+
+	if( Package )
+	{
+		Package->SetDirtyFlag(bIsPackageDirty);
+	}
+
+	return GeneratedClassResolved;
+}
+
+void UBlueprint::RemoveChildRedirectors()
+{
+	TArray<UObject*> ChildObjects;
+	GetObjectsWithOuter(this, ChildObjects);
+	for (UObject* ChildObject : ChildObjects)
+	{
+		if (ChildObject->IsA<UObjectRedirector>())
+		{
+			ChildObject->ClearFlags(RF_Public|RF_Standalone);
+			ChildObject->SetFlags(RF_Transient);
+			ChildObject->RemoveFromRoot();
+		}
 	}
 }
 
@@ -763,7 +806,7 @@ void UBlueprint::PostLoad()
 	FBlueprintEditorUtils::ConformImplementedInterfaces(this);
 
 	// Make sure that there are no function graphs that are marked as bAllowDeletion=false 
-	// (possible if a blueprint was reparented prior to 4.11):
+	// (possible if a blueprint was reparented prior to 4.11).
 	if (GetLinkerCustomVersion(FBlueprintsObjectVersion::GUID) < FBlueprintsObjectVersion::AllowDeletionConformed)
 	{
 		FBlueprintEditorUtils::ConformAllowDeletionFlag(this);
@@ -857,8 +900,8 @@ bool UBlueprint::SupportsNativization(FText* OutReason) const
 
 void UBlueprint::SetObjectBeingDebugged(UObject* NewObject)
 {
-	// Unregister the old object
-	if (UObject* OldObject = CurrentObjectBeingDebugged.Get())
+	// Unregister the old object (even if PendingKill)
+	if (UObject* OldObject = CurrentObjectBeingDebugged.Get(true))
 	{
 		if (OldObject == NewObject)
 		{
@@ -903,34 +946,9 @@ void UBlueprint::GetReparentingRules(TSet< const UClass* >& AllowedChildrenOfCla
 
 }
 
-UObject* UBlueprint::GetObjectBeingDebugged()
+bool UBlueprint::CanRecompileWhilePlayingInEditor() const
 {
-	UObject* DebugObj = CurrentObjectBeingDebugged.Get();
-	if(DebugObj)
-	{
-		//Check whether the object has been deleted.
-		if(DebugObj->IsPendingKill())
-		{
-			SetObjectBeingDebugged(NULL);
-			DebugObj = NULL;
-		}
-	}
-	return DebugObj;
-}
-
-UWorld* UBlueprint::GetWorldBeingDebugged()
-{
-	UWorld* DebugWorld = CurrentWorldBeingDebugged.Get();
-	if (DebugWorld)
-	{
-		if(DebugWorld->IsPendingKill())
-		{
-			SetWorldBeingDebugged(NULL);
-			DebugWorld = NULL;
-		}
-	}
-
-	return DebugWorld;
+	return GetDefault<UEditorExperimentalSettings>()->IsClassAllowedToRecompileDuringPIE(ParentClass);
 }
 
 void UBlueprint::GetAssetRegistryTags(TArray<FAssetRegistryTag>& OutTags) const
@@ -1008,9 +1026,17 @@ void UBlueprint::GetAssetRegistryTags(TArray<FAssetRegistryTag>& OutTags) const
 			FAssetRegistryTag::TT_Alphabetical ) );
 
 	// Only add the FiB tags in the editor, this now gets run for standalone uncooked games
-	if ( ParentClass && GIsEditor)
+	if ( ParentClass && GIsEditor && !GetOutermost()->HasAnyPackageFlags(PKG_ForDiffing))
 	{
-		OutTags.Add( FAssetRegistryTag(FBlueprintTags::FindInBlueprintsData, FFindInBlueprintSearchManager::Get().QuerySingleBlueprint((UBlueprint*)this, false), FAssetRegistryTag::TT_Hidden) );
+		FString Value;
+		const bool bRebuildSearchData = false;
+		FSearchData SearchData = FFindInBlueprintSearchManager::Get().QuerySingleBlueprint((UBlueprint*)this, bRebuildSearchData);
+		if (SearchData.IsValid())
+		{
+			Value = SearchData.Value;
+		}
+		
+		OutTags.Add( FAssetRegistryTag(FBlueprintTags::FindInBlueprintsData, Value, FAssetRegistryTag::TT_Hidden) );
 	}
 
 	// Only show for strict blueprints (not animation or widget blueprints)
@@ -1418,7 +1444,7 @@ void UBlueprint::BeginCacheForCookedPlatformData(const ITargetPlatform *TargetPl
 					for (auto RecordIt = TargetInheritableComponentHandler->CreateRecordIterator(); RecordIt; ++RecordIt)
 					{
 						// Only generate cooked data if the target platform supports the template class type. Cooked data may already have been generated if the component was inherited from a nativized parent class.
-						if (!RecordIt->CookedComponentInstancingData.bIsValid && ShouldCookBlueprintComponentTemplate(RecordIt->ComponentTemplate))
+						if (!RecordIt->CookedComponentInstancingData.bHasValidCookedData && ShouldCookBlueprintComponentTemplate(RecordIt->ComponentTemplate))
 						{
 							// Note: This will currently block until finished.
 							// @TODO - Make this an async task so we can potentially cook instancing data for multiple components in parallel.
@@ -1591,7 +1617,7 @@ ETimelineSigType UBlueprint::GetTimelineSignatureForFunctionByName(const FName& 
 	// If an object property was specified, find the class of that property instead
 	if(ObjectPropertyName != NAME_None)
 	{
-		UObjectPropertyBase* ObjProperty = FindField<UObjectPropertyBase>(SkeletonGeneratedClass, ObjectPropertyName);
+		FObjectPropertyBase* ObjProperty = FindField<FObjectPropertyBase>(SkeletonGeneratedClass, ObjectPropertyName);
 		if(ObjProperty == NULL)
 		{
 			UE_LOG(LogBlueprint, Log, TEXT("GetTimelineSignatureForFunction: Object Property '%s' not found."), *ObjectPropertyName.ToString());
@@ -1910,11 +1936,13 @@ void UBlueprint::PostLoadSubobjects(FObjectInstancingGraph* OuterInstanceGraph)
 	ConformNativeComponents(this);
 }
 
+#if WITH_EDITOR
 bool UBlueprint::Modify(bool bAlwaysMarkDirty)
 {
 	bCachedDependenciesUpToDate = false;
 	return Super::Modify(bAlwaysMarkDirty);
 }
+#endif
 
 void UBlueprint::GatherDependencies(TSet<TWeakObjectPtr<UBlueprint>>& InDependencies) const
 {
@@ -1959,7 +1987,39 @@ UInheritableComponentHandler* UBlueprint::GetInheritableComponentHandler(bool bC
 
 EDataValidationResult UBlueprint::IsDataValid(TArray<FText>& ValidationErrors)
 {
-	return GeneratedClass ? GeneratedClass->GetDefaultObject()->IsDataValid(ValidationErrors) : EDataValidationResult::Invalid;
+	EDataValidationResult IsValid = GeneratedClass ? GeneratedClass->GetDefaultObject()->IsDataValid(ValidationErrors) : EDataValidationResult::Invalid;
+	IsValid = (IsValid == EDataValidationResult::NotValidated) ? EDataValidationResult::Valid : IsValid;
+
+	if (SimpleConstructionScript)
+	{
+		EDataValidationResult IsSCSValid = SimpleConstructionScript->IsDataValid(ValidationErrors);
+		IsValid = CombineDataValidationResults(IsValid, IsSCSValid);
+	}
+
+	for (UActorComponent* Component : ComponentTemplates)
+	{
+		if (Component)
+		{
+			EDataValidationResult IsComponentValid = Component->IsDataValid(ValidationErrors);
+			IsValid = CombineDataValidationResults(IsValid, IsComponentValid);
+		}
+	}
+
+	for (UTimelineTemplate* Timeline : Timelines)
+	{
+		if (Timeline)
+		{
+			EDataValidationResult IsTimelineValid = Timeline->IsDataValid(ValidationErrors);
+			IsValid = CombineDataValidationResults(IsValid, IsTimelineValid);
+		}
+	}
+
+	return IsValid;
+}
+
+bool UBlueprint::FindDiffs(const UBlueprint* OtherBlueprint, FDiffResults& Results) const
+{
+	return false;
 }
 
 FName UBlueprint::GetFunctionNameFromClassByGuid(const UClass* InClass, const FGuid FunctionGuid)
@@ -2004,8 +2064,12 @@ UEdGraph* UBlueprint::GetLastEditedUberGraph() const
 #if WITH_EDITORONLY_DATA
 void UBlueprint::LoadModulesRequiredForCompilation()
 {
-	static const FName ModuleName(TEXT("KismetCompiler"));
-	FModuleManager::Get().LoadModule(ModuleName);
+	static const FName KismetCompilerModuleName("KismetCompiler");
+	static const FName MovieSceneToolsModuleName("MovieSceneTools");
+
+	FModuleManager::Get().LoadModule(KismetCompilerModuleName);
+	FModuleManager::Get().LoadModule(MovieSceneToolsModuleName);
 }
 #endif //WITH_EDITORONLY_DATA
+
 

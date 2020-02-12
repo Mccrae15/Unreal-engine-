@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 #pragma once
 
 #include "CoreMinimal.h"
@@ -218,6 +218,12 @@ public:
 	virtual const TArray< FActorPlacementInfo >& GetRecentlyPlaced() const = 0;
 
 	/**
+	 * @return the event that is broadcast whenever a placement mode category is refreshed
+	 */
+	DECLARE_EVENT_OneParam( IPlacementMode, FOnPlacementModeCategoryRefreshed, FName /*CategoryName*/ );
+	virtual FOnPlacementModeCategoryRefreshed& OnPlacementModeCategoryRefreshed() = 0;
+
+	/**
 	 * @return the event that is broadcast whenever the list of recently placed assets changes
 	 */
 	DECLARE_EVENT_OneParam( IPlacementMode, FOnRecentlyPlacedChanged, const TArray< FActorPlacementInfo >& /*NewRecentlyPlaced*/ );
@@ -243,6 +249,10 @@ public:
 	virtual FOnStoppedPlacingEvent& OnStoppedPlacing() = 0;
 	virtual void BroadcastStoppedPlacing( bool bWasSuccessfullyPlaced ) = 0;
 
+	/**
+	 * Creates the placement browser widget
+	 */
+	virtual TSharedRef<SWidget> CreatePlacementModeBrowser() = 0;
 public:
 
 	/**
@@ -315,4 +325,3 @@ public:
 	 */
 	virtual void RegenerateItemsForCategory(FName Category) = 0;
 };
-

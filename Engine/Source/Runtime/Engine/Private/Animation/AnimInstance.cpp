@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 /*=============================================================================
 	AnimInstance.cpp: Anim Instance implementation
@@ -25,6 +25,10 @@
 #include "SkeletalRenderPublic.h"
 #include "Rendering/SkeletalMeshRenderData.h"
 #include "Kismet/KismetSystemLibrary.h"
+#include "HAL/LowLevelMemTracker.h"
+#include "Animation/AnimNode_LinkedAnimGraph.h"
+#include "Animation/AnimNode_LinkedInputPose.h"
+#include "Animation/AnimNode_LinkedAnimLayer.h"
 
 /** Anim stats */
 
@@ -70,6 +74,8 @@ DEFINE_STAT(STAT_AnimGameThreadTime);
 DEFINE_STAT(STAT_TickAssetPlayerInstances);
 DEFINE_STAT(STAT_TickAssetPlayerInstance);
 
+CSV_DEFINE_CATEGORY_MODULE(ENGINE_API, Animation, false);
+
 // Define AnimNotify
 DEFINE_LOG_CATEGORY(LogAnimNotify);
 
@@ -101,8 +107,11 @@ UAnimInstance::UAnimInstance(const FObjectInitializer& ObjectInitializer)
 
 	// Default to using threaded animation update.
 	bUseMultiThreadedAnimationUpdate = true;
-
+	bCreatedByLinkedAnimGraph = false;
 	PendingDynamicResetTeleportType = ETeleportType::None;
+
+	bReceiveNotifiesFromLinkedInstances = false;
+	bPropagateNotifiesToLinkedInstances = false;
 }
 
 // this is only used by montage marker based sync
@@ -164,10 +173,13 @@ UWorld* UAnimInstance::GetWorld() const
 	return (HasAnyFlags(RF_ClassDefaultObject) ? nullptr : GetSkelMeshComponent()->GetWorld());
 }
 
-void UAnimInstance::InitializeAnimation()
+void UAnimInstance::InitializeAnimation(bool bInDeferRootNodeInitialization)
 {
+	TRACE_OBJECT_EVENT(this, InitializeAnimation);
+
 	FScopeCycleCounterUObject ContextScope(this);
 	SCOPE_CYCLE_COUNTER(STAT_AnimInitTime);
+	LLM_SCOPE(ELLMTag::Animation);
 
 	UninitializeAnimation();
 
@@ -189,12 +201,12 @@ void UAnimInstance::InitializeAnimation()
 		LifeTimer = 0.0;
 		CurrentLifeTimerScrubPosition = 0.0;
 
-		if (UAnimBlueprint* Blueprint = Cast<UAnimBlueprint>(CastChecked<UAnimBlueprintGeneratedClass>(AnimBlueprintClass)->ClassGeneratedBy))
+		if (UAnimBlueprint* Blueprint = Cast<UAnimBlueprint>(Cast<UAnimBlueprintGeneratedClass>(AnimBlueprintClass)->ClassGeneratedBy))
 		{
 			if (Blueprint->GetObjectBeingDebugged() == this)
 			{
 				// Reset the snapshot buffer
-				CastChecked<UAnimBlueprintGeneratedClass>(AnimBlueprintClass)->GetAnimBlueprintDebugData().ResetSnapshotBuffer();
+				Cast<UAnimBlueprintGeneratedClass>(AnimBlueprintClass)->GetAnimBlueprintDebugData().ResetSnapshotBuffer();
 			}
 		}
 #endif
@@ -208,14 +220,20 @@ void UAnimInstance::InitializeAnimation()
 	NativeInitializeAnimation();
 	BlueprintInitializeAnimation();
 
-	GetProxyOnGameThread<FAnimInstanceProxy>().InitializeRootNode();
+	GetProxyOnGameThread<FAnimInstanceProxy>().InitializeRootNode(bInDeferRootNodeInitialization);
 
 	// we can bind rules & events now the graph has been initialized
 	GetProxyOnGameThread<FAnimInstanceProxy>().BindNativeDelegates();
+
+	InitializeGroupedLayers(bInDeferRootNodeInitialization);
+
+	BlueprintLinkedAnimationLayersInitialized();
 }
 
 void UAnimInstance::UninitializeAnimation()
 {
+	TRACE_OBJECT_EVENT(this, UninitializeAnimation);
+
 	NativeUninitializeAnimation();
 
 	GetProxyOnGameThread<FAnimInstanceProxy>().Uninitialize(this);
@@ -247,7 +265,11 @@ void UAnimInstance::UninitializeAnimation()
 		for(int32 Index=0; Index<ActiveAnimNotifyState.Num(); Index++)
 		{
 			const FAnimNotifyEvent& AnimNotifyEvent = ActiveAnimNotifyState[Index];
-			AnimNotifyEvent.NotifyStateClass->NotifyEnd(SkelMeshComp, Cast<UAnimSequenceBase>(AnimNotifyEvent.NotifyStateClass->GetOuter()));
+			if (ShouldTriggerAnimNotifyState(AnimNotifyEvent.NotifyStateClass))
+			{
+				TRACE_ANIM_NOTIFY(this, AnimNotifyEvent, End);
+				AnimNotifyEvent.NotifyStateClass->NotifyEnd(SkelMeshComp, Cast<UAnimSequenceBase>(AnimNotifyEvent.NotifyStateClass->GetOuter()));
+			}
 		}
 	}
 
@@ -290,6 +312,13 @@ void UAnimInstance::UpdateMontage(float DeltaSeconds)
 	// if we do multi threading, make sure this stays in game thread. 
 	// This is because branch points need to execute arbitrary code inside this call.
 	Montage_Advance(DeltaSeconds);
+
+#if ANIM_TRACE_ENABLED
+	for (FAnimMontageInstance* MontageInstance : MontageInstances)
+	{
+		TRACE_ANIM_MONTAGE(this, *MontageInstance);
+	}
+#endif
 }
 
 void UAnimInstance::UpdateMontageSyncGroup()
@@ -317,6 +346,11 @@ void UAnimInstance::UpdateMontageSyncGroup()
 					// the max count should be 2 as you had older one and you have newer one. After TestMontageTickRecordForLeadership, it should set to be 1
 					SyncGroup->TestMontageTickRecordForLeadership();
 				}
+
+#if ANIM_TRACE_ENABLED
+				FAnimationUpdateContext UpdateContext(&GetProxyOnGameThread<FAnimInstanceProxy>());
+				TRACE_ANIM_TICK_RECORD(UpdateContext, TickRecord);
+#endif
 			}
 			MontageInstance->bDidUseMarkerSyncThisTick = false;
 		}
@@ -327,8 +361,10 @@ void UAnimInstance::UpdateMontageSyncGroup()
 	}
 }
 
-void UAnimInstance::UpdateAnimation(float DeltaSeconds, bool bNeedsValidRootMotion)
+void UAnimInstance::UpdateAnimation(float DeltaSeconds, bool bNeedsValidRootMotion, EUpdateAnimationFlag UpdateFlag)
 {
+	LLM_SCOPE(ELLMTag::Animation);
+
 #if DO_CHECK
 	checkf(!bUpdatingAnimation, TEXT("UpdateAnimation already in progress, circular detected for SkeletalMeshComponent [%s], AnimInstance [%s]"), *GetNameSafe(GetOwningComponent()),  *GetName());
 	TGuardValue<bool> CircularGuard(bUpdatingAnimation, true);
@@ -448,11 +484,25 @@ PRAGMA_ENABLE_DEPRECATION_WARNINGS
 		SCOPE_CYCLE_COUNTER(STAT_BlueprintUpdateAnimation);
 		BlueprintUpdateAnimation(DeltaSeconds);
 	}
+	
+	// Determine whether or not the animation should be immediately updated according to current state
+	const bool bWantsImmediateUpdate = bNeedsValidRootMotion || NeedsImmediateUpdate(DeltaSeconds);
 
-	if(bNeedsValidRootMotion || NeedsImmediateUpdate(DeltaSeconds))
+	// Determine whether or not we can or should actually immediately update the animation state
+	bool bShouldImmediateUpdate = bWantsImmediateUpdate;
+	switch (UpdateFlag)
 	{
-		// cant use parallel update, so just do the work here
-		Proxy.UpdateAnimation();
+		case EUpdateAnimationFlag::ForceParallelUpdate:
+		{
+			bShouldImmediateUpdate = false;
+			break;
+		}
+	}
+
+	if(bShouldImmediateUpdate)
+	{
+		// cant use parallel update, so just do the work here (we call this function here to do the work on the game thread)
+		ParallelUpdateAnimation();
 		PostUpdateAnimation();
 	}
 }
@@ -568,6 +618,17 @@ void UAnimInstance::DispatchQueuedAnimEvents()
 void UAnimInstance::ParallelUpdateAnimation()
 {
 	GetProxyOnAnyThread<FAnimInstanceProxy>().UpdateAnimation();
+
+	if(GetSkelMeshComponent()->GetAnimInstance() == this)
+	{
+		// If this is the main instance,  Tick asset players for this and any linked instances we have
+		for(UAnimInstance* LinkedInstance : GetSkelMeshComponent()->GetLinkedAnimInstances())
+		{
+			LinkedInstance->GetProxyOnAnyThread<FAnimInstanceProxy>().TickAssetPlayerInstances();
+		}
+	}
+
+	GetProxyOnAnyThread<FAnimInstanceProxy>().TickAssetPlayerInstances();
 }
 
 bool UAnimInstance::NeedsImmediateUpdate(float DeltaSeconds) const
@@ -701,7 +762,7 @@ void OutputCurveMap(TMap<FName, float>& CurveMap, UCanvas* Canvas, FDisplayDebug
 {
 	TArray<FName> Names;
 	CurveMap.GetKeys(Names);
-	Names.Sort();
+	Names.Sort(FNameLexicalLess());
 	for (FName CurveName : Names)
 	{
 		FString CurveEntry = FString::Printf(TEXT("%s: %.3f"), *CurveName.ToString(), CurveMap[CurveName]);
@@ -1173,6 +1234,9 @@ void UAnimInstance::UpdateCurvesToComponents(USkeletalMeshComponent* Component /
 	// update curves to component
 	if (Component)
 	{
+		// this is only any thread because EndOfFrameUpdate update can restart render state
+		// and this needs to restart from worker thread
+		// EndOfFrameUpdate is done after all tick is updated, so in theory you shouldn't have 
 		FAnimInstanceProxy& Proxy = GetProxyOnGameThread<FAnimInstanceProxy>();
 		Component->ApplyAnimationCurvesToComponent(&Proxy.GetAnimationCurves(EAnimCurveType::MaterialCurve), &Proxy.GetAnimationCurves(EAnimCurveType::MorphTargetCurve));
 	}
@@ -1268,15 +1332,32 @@ void UAnimInstance::TriggerAnimNotifies(float DeltaSeconds)
 	}
 
 	// Send end notification to AnimNotifyState not active anymore.
-	for(const FAnimNotifyEvent& AnimNotifyEvent : ActiveAnimNotifyState)
+	for (int32 Index = 0; Index < ActiveAnimNotifyState.Num(); ++Index)
 	{
-		AnimNotifyEvent.NotifyStateClass->NotifyEnd(SkelMeshComp, Cast<UAnimSequenceBase>(AnimNotifyEvent.NotifyStateClass->GetOuter()));
+		const FAnimNotifyEvent& AnimNotifyEvent = ActiveAnimNotifyState[Index];
+		if (AnimNotifyEvent.NotifyStateClass && ShouldTriggerAnimNotifyState(AnimNotifyEvent.NotifyStateClass))
+		{
+			TRACE_ANIM_NOTIFY(this, AnimNotifyEvent, End);
+			AnimNotifyEvent.NotifyStateClass->NotifyEnd(SkelMeshComp, Cast<UAnimSequenceBase>(AnimNotifyEvent.NotifyStateClass->GetOuter()));
+		}
+		// The NotifyEnd callback above may have triggered actor destruction and the tear down
+		// of this instance via UninitializeAnimation which empties ActiveAnimNotifyState.
+		// If that happened, we should stop iterating the ActiveAnimNotifyState array
+		if (ActiveAnimNotifyState.IsValidIndex(Index) == false)
+		{
+			ensureMsgf(false, TEXT("UAnimInstance::ActiveAnimNotifyState has been invalidated by NotifyEnd. AnimInstance: %s, Owning Component: %s, Owning Actor: %s "), *GetNameSafe(this), *GetNameSafe(GetOwningComponent()), *GetNameSafe(GetOwningActor()));
+			return;
+		}
 	}
 
 	// Call 'NotifyBegin' event on freshly added AnimNotifyState.
 	for (const FAnimNotifyEvent* AnimNotifyEvent : NotifyStateBeginEvent)
 	{
-		AnimNotifyEvent->NotifyStateClass->NotifyBegin(SkelMeshComp, Cast<UAnimSequenceBase>(AnimNotifyEvent->NotifyStateClass->GetOuter()), AnimNotifyEvent->GetDuration());
+		if (ShouldTriggerAnimNotifyState(AnimNotifyEvent->NotifyStateClass))
+		{
+			TRACE_ANIM_NOTIFY(this, *AnimNotifyEvent, Begin);
+			AnimNotifyEvent->NotifyStateClass->NotifyBegin(SkelMeshComp, Cast<UAnimSequenceBase>(AnimNotifyEvent->NotifyStateClass->GetOuter()), AnimNotifyEvent->GetDuration());
+		}
 	}
 
 	// Switch our arrays.
@@ -1285,7 +1366,11 @@ void UAnimInstance::TriggerAnimNotifies(float DeltaSeconds)
 	// Tick currently active AnimNotifyState
 	for(const FAnimNotifyEvent& AnimNotifyEvent : ActiveAnimNotifyState)
 	{
-		AnimNotifyEvent.NotifyStateClass->NotifyTick(SkelMeshComp, Cast<UAnimSequenceBase>(AnimNotifyEvent.NotifyStateClass->GetOuter()), DeltaSeconds);
+		if (ShouldTriggerAnimNotifyState(AnimNotifyEvent.NotifyStateClass))
+		{
+			TRACE_ANIM_NOTIFY(this, AnimNotifyEvent, Tick);
+			AnimNotifyEvent.NotifyStateClass->NotifyTick(SkelMeshComp, Cast<UAnimSequenceBase>(AnimNotifyEvent.NotifyStateClass->GetOuter()), DeltaSeconds);
+		}
 	}
 }
 
@@ -1302,36 +1387,57 @@ void UAnimInstance::TriggerSingleAnimNotify(const FAnimNotifyEvent* AnimNotifyEv
 		if (AnimNotifyEvent->Notify != nullptr)
 		{	
 			// Implemented notify: just call Notify. UAnimNotify will forward this to the event which will do the work.
+			TRACE_ANIM_NOTIFY(this, *AnimNotifyEvent, Event);
 			AnimNotifyEvent->Notify->Notify(GetSkelMeshComponent(), Cast<UAnimSequenceBase>(AnimNotifyEvent->Notify->GetOuter()));
 		}
 		else if (AnimNotifyEvent->NotifyName != NAME_None)
 		{
 			// Custom Event based notifies. These will call a AnimNotify_* function on the AnimInstance.
 			const FName FuncName = AnimNotifyEvent->GetNotifyEventName();
-			UFunction* Function = FindFunction(FuncName);
-			if (Function)
-			{
-				// if parameter is none, add event
-				if (Function->NumParms == 0)
-				{
-					ProcessEvent(Function, NULL);
-				}
-				else if ((Function->NumParms == 1) && (Cast<UObjectProperty>(Function->PropertyLink) != NULL))
-				{
-					struct FAnimNotifierHandler_Parms
-					{
-						UAnimNotify* Notify;
-					};
 
-					FAnimNotifierHandler_Parms Parms;
-					Parms.Notify = AnimNotifyEvent->Notify;
-					ProcessEvent(Function, &Parms);
-				}
-				else
+			auto NotifyAnimInstance = [this, AnimNotifyEvent, FuncName](UAnimInstance* InAnimInstance)
+			{
+				check(InAnimInstance);
+
+				if (InAnimInstance == this || InAnimInstance->bReceiveNotifiesFromLinkedInstances)
 				{
-					// Actor has event, but with different parameters. Print warning
-					UE_LOG(LogAnimNotify, Warning, TEXT("Anim notifier named %s, but the parameter number does not match or not of the correct type"), *FuncName.ToString());
+					UFunction* Function = InAnimInstance->FindFunction(FuncName);
+					if (Function)
+					{
+						// if parameter is none, add event
+						if (Function->NumParms == 0)
+						{
+							TRACE_ANIM_NOTIFY(this, *AnimNotifyEvent, Event);
+							InAnimInstance->ProcessEvent(Function, nullptr);
+						}
+						else if ((Function->NumParms == 1) && (CastField<FObjectProperty>(Function->PropertyLink) != nullptr))
+						{
+							struct FAnimNotifierHandler_Parms
+							{
+								UAnimNotify* Notify;
+							};
+
+							FAnimNotifierHandler_Parms Parms;
+							Parms.Notify = AnimNotifyEvent->Notify;
+							TRACE_ANIM_NOTIFY(this, *AnimNotifyEvent, Event);
+							InAnimInstance->ProcessEvent(Function, &Parms);
+						}
+						else
+						{
+							// Actor has event, but with different parameters. Print warning
+							UE_LOG(LogAnimNotify, Warning, TEXT("Anim notifier named %s, but the parameter number does not match or not of the correct type"), *FuncName.ToString());
+						}
+					}
 				}
+			};
+			
+			if(bPropagateNotifiesToLinkedInstances)
+			{
+				GetSkelMeshComponent()->ForEachAnimInstance(NotifyAnimInstance);
+			}
+			else
+			{
+				NotifyAnimInstance(this);
 			}
 		}
 	}
@@ -1345,6 +1451,7 @@ void UAnimInstance::EndNotifyStates()
 	{
 		if (UAnimNotifyState* NotifyState = Event.NotifyStateClass)
 		{
+			TRACE_ANIM_NOTIFY(this, Event, End);
 			NotifyState->NotifyEnd(SkelMeshComp, Cast<UAnimSequenceBase>(NotifyState->GetOuter()));
 		}
 	}
@@ -1428,12 +1535,12 @@ FName UAnimInstance::GetCurrentStateName(int32 MachineIndex)
 {
 	if (IAnimClassInterface* AnimBlueprintClass = IAnimClassInterface::GetFromClass(GetClass()))
 	{
-		const TArray<UStructProperty*>& AnimNodeProperties = AnimBlueprintClass->GetAnimNodeProperties();
+		const TArray<FStructPropertyPath>& AnimNodeProperties = AnimBlueprintClass->GetAnimNodeProperties();
 		if ((MachineIndex >= 0) && (MachineIndex < AnimNodeProperties.Num()))
 		{
 			const int32 InstancePropertyIndex = AnimNodeProperties.Num() - 1 - MachineIndex; //@TODO: ANIMREFACTOR: Reverse indexing
 
-			UStructProperty* MachineInstanceProperty = AnimNodeProperties[InstancePropertyIndex];
+			FStructProperty* MachineInstanceProperty = AnimNodeProperties[InstancePropertyIndex].Get();
 			checkSlow(MachineInstanceProperty->Struct->IsChildOf(FAnimNode_StateMachine::StaticStruct()));
 
 			FAnimNode_StateMachine* MachineInstance = MachineInstanceProperty->ContainerPtrToValuePtr<FAnimNode_StateMachine>(this);
@@ -1546,15 +1653,31 @@ void UAnimInstance::TriggerMontageEndedEvent(const FQueuedMontageEndedEvent& Mon
 
 	if (SkelMeshComp != nullptr)
 	{
-		for (int32 Index = ActiveAnimNotifyState.Num() - 1; Index >= 0; --Index)
+		for (int32 Index = ActiveAnimNotifyState.Num() - 1; ActiveAnimNotifyState.IsValidIndex(Index); --Index)
 		{
 			const FAnimNotifyEvent& AnimNotifyEvent = ActiveAnimNotifyState[Index];
 			UAnimMontage* NotifyMontage = Cast<UAnimMontage>(AnimNotifyEvent.NotifyStateClass->GetOuter());
 
 			if (NotifyMontage && (NotifyMontage == MontageEndedEvent.Montage))
 			{
-				AnimNotifyEvent.NotifyStateClass->NotifyEnd(SkelMeshComp, NotifyMontage);
-				ActiveAnimNotifyState.RemoveAtSwap(Index);
+				if (ShouldTriggerAnimNotifyState(AnimNotifyEvent.NotifyStateClass))
+				{
+					TRACE_ANIM_NOTIFY(this, AnimNotifyEvent, End);
+					AnimNotifyEvent.NotifyStateClass->NotifyEnd(SkelMeshComp, NotifyMontage);
+				}
+
+				if (ActiveAnimNotifyState.IsValidIndex(Index))
+				{
+					ActiveAnimNotifyState.RemoveAtSwap(Index);
+				}
+				else
+				{
+					// The NotifyEnd callback above may have triggered actor destruction and the tear down
+					// of this instance via UninitializeAnimation which empties ActiveAnimNotifyState.
+					// If that happened, we should stop iterating the ActiveAnimNotifyState array and bail 
+					// without attempting to send MontageEnded events.
+					return;
+				}
 			}
 		}
 	}
@@ -1738,6 +1861,8 @@ bool UAnimInstance::IsPlayingSlotAnimation(const UAnimSequenceBase* Asset, FName
 /** Play a Montage. Returns Length of Montage in seconds. Returns 0.f if failed to play. */
 float UAnimInstance::Montage_Play(UAnimMontage* MontageToPlay, float InPlayRate/*= 1.f*/, EMontagePlayReturnType ReturnValueType, float InTimeToStartMontageAt, bool bStopAllMontages /*= true*/)
 {
+	LLM_SCOPE(ELLMTag::Animation);
+
 	if (MontageToPlay && (MontageToPlay->SequenceLength > 0.f) && MontageToPlay->HasValidSlotSetup())
 	{
 		if (CurrentSkeleton && CurrentSkeleton->IsCompatible(MontageToPlay->GetSkeleton()))
@@ -1813,6 +1938,18 @@ void UAnimInstance::Montage_Stop(float InBlendOutTime, const UAnimMontage* Monta
 			{
 				MontageInstance->Stop(FAlphaBlend(MontageInstance->Montage->BlendOut, InBlendOutTime));
 			}
+		}
+	}
+}
+
+void UAnimInstance::Montage_StopGroupByName(float InBlendOutTime, FName GroupName)
+{
+	for (int32 InstanceIndex = 0; InstanceIndex < MontageInstances.Num(); InstanceIndex++)
+	{
+		FAnimMontageInstance* MontageInstance = MontageInstances[InstanceIndex];
+		if (MontageInstance && MontageInstance->Montage && MontageInstance->IsActive() && (MontageInstance->Montage->GetGroupName() == GroupName))
+		{
+			MontageInstances[InstanceIndex]->Stop(FAlphaBlend(MontageInstance->Montage->BlendOut, InBlendOutTime));
 		}
 	}
 }
@@ -2357,10 +2494,406 @@ void UAnimInstance::ClearMontageInstanceReferences(FAnimMontageInstance& InMonta
 	InMontageInstance.MontageSync_StopLeading();
 }
 
-FAnimNode_SubInput* UAnimInstance::GetSubInputNode() const
+FAnimNode_LinkedInputPose* UAnimInstance::GetLinkedInputPoseNode(FName InLinkedInputName, FName InGraph)
 {
 	const FAnimInstanceProxy& Proxy = GetProxyOnAnyThread<FAnimInstanceProxy>();
-	return Proxy.SubInstanceInputNode;
+	if(InLinkedInputName == NAME_None && InGraph == NAME_None)
+	{
+		return Proxy.DefaultLinkedInstanceInputNode;
+	}
+	else if (IAnimClassInterface* AnimBlueprintClass = IAnimClassInterface::GetFromClass(GetClass()))
+	{
+		if(InLinkedInputName == NAME_None)
+		{
+			InLinkedInputName = FAnimNode_LinkedInputPose::DefaultInputPoseName;
+		}
+		if(InGraph == NAME_None)
+		{
+			InGraph = NAME_AnimGraph;
+		}
+		for(const FAnimBlueprintFunction& AnimBlueprintFunction : AnimBlueprintClass->GetAnimBlueprintFunctions())
+		{
+			if(AnimBlueprintFunction.Name == InGraph)
+			{
+				check(AnimBlueprintFunction.InputPoseNames.Num() == AnimBlueprintFunction.InputPoseNodeProperties.Num());
+				for(int32 InputIndex = 0; InputIndex < AnimBlueprintFunction.InputPoseNames.Num(); ++InputIndex)
+				{
+					if(AnimBlueprintFunction.InputPoseNames[InputIndex] == InLinkedInputName && AnimBlueprintFunction.InputPoseNodeProperties[InputIndex] != nullptr)
+					{
+						FAnimNode_LinkedInputPose* LinkedInput = AnimBlueprintFunction.InputPoseNodeProperties[InputIndex]->ContainerPtrToValuePtr<FAnimNode_LinkedInputPose>(this);
+						check(LinkedInput->Name == InLinkedInputName);
+						return LinkedInput;
+					}
+				}
+			}
+		}
+	}
+
+	return nullptr;
+}
+
+UAnimInstance* UAnimInstance::GetLinkedAnimGraphInstanceByTag(FName InTag) const
+{
+	if (IAnimClassInterface* AnimBlueprintClass = IAnimClassInterface::GetFromClass(GetClass()))
+	{
+		const TArray<FStructPropertyPath>& LinkedAnimGraphNodeProperties = AnimBlueprintClass->GetLinkedAnimGraphNodeProperties();
+		for(const FStructPropertyPath& LinkedAnimGraphNodeProperty : LinkedAnimGraphNodeProperties)
+		{
+			const FAnimNode_LinkedAnimGraph* LinkedAnimGraph = LinkedAnimGraphNodeProperty->ContainerPtrToValuePtr<FAnimNode_LinkedAnimGraph>(this);
+			if(LinkedAnimGraph && LinkedAnimGraph->Tag == InTag)
+			{
+				return LinkedAnimGraph->GetTargetInstance<UAnimInstance>();
+			}
+		}
+	}
+
+	return nullptr;
+}
+
+void UAnimInstance::GetLinkedAnimGraphInstancesByTag(FName InTag, TArray<UAnimInstance*>& OutLinkedInstances) const
+{
+	if (IAnimClassInterface* AnimBlueprintClass = IAnimClassInterface::GetFromClass(GetClass()))
+	{
+		const TArray<FStructPropertyPath>& LinkedAnimGraphNodeProperties = AnimBlueprintClass->GetLinkedAnimGraphNodeProperties();
+		for (const FStructPropertyPath& LinkedAnimGraphNodeProperty : LinkedAnimGraphNodeProperties)
+		{
+			const FAnimNode_LinkedAnimGraph* LinkedAnimGraph = LinkedAnimGraphNodeProperty->ContainerPtrToValuePtr<FAnimNode_LinkedAnimGraph>(this);
+			if(LinkedAnimGraph && LinkedAnimGraph->Tag == InTag)
+			{
+				OutLinkedInstances.Add(LinkedAnimGraph->GetTargetInstance<UAnimInstance>());
+			}
+		}
+	}
+}
+
+void UAnimInstance::LinkAnimGraphByTag(FName InTag, TSubclassOf<UAnimInstance> InClass)
+{
+	if (IAnimClassInterface* AnimBlueprintClass = IAnimClassInterface::GetFromClass(GetClass()))
+	{
+		const TArray<FStructPropertyPath>& LinkedAnimGraphNodeProperties = AnimBlueprintClass->GetLinkedAnimGraphNodeProperties();
+		for (const FStructPropertyPath& LinkedAnimGraphNodeProperty : LinkedAnimGraphNodeProperties)
+		{
+			FAnimNode_LinkedAnimGraph* LinkedAnimGraph = LinkedAnimGraphNodeProperty->ContainerPtrToValuePtr<FAnimNode_LinkedAnimGraph>(this);
+			if(LinkedAnimGraph && LinkedAnimGraph->Tag == InTag)
+			{
+				LinkedAnimGraph->SetAnimClass(InClass, this);
+			}
+		}
+	}
+}
+
+void UAnimInstance::PerformLinkedLayerOverlayOperation(TSubclassOf<UAnimInstance> InClass, TFunctionRef<UClass*(UClass* InClass, FAnimNode_LinkedAnimLayer*)> InClassSelectorFunction, bool bInDeferSubGraphInitialization)
+{
+	if (IAnimClassInterface* AnimBlueprintClass = IAnimClassInterface::GetFromClass(GetClass()))
+	{
+		UClass* NewClass = InClass.Get();
+		if(NewClass)
+		{
+			// Verify target skeleton matches at runtime
+			IAnimClassInterface* LinkedAnimBlueprintClass = IAnimClassInterface::GetFromClass(NewClass);
+			USkeleton* LinkedSkeleton = LinkedAnimBlueprintClass->GetTargetSkeleton();
+			USkeleton* OuterSkeleton = AnimBlueprintClass->GetTargetSkeleton();
+			if(LinkedSkeleton != OuterSkeleton)
+			{
+				UE_LOG(LogAnimation, Warning, TEXT("Linking layer: Linked instance class has a mismatched target skeleton. Expected %s, found %s."), OuterSkeleton ? *OuterSkeleton->GetName() : TEXT("null"), LinkedSkeleton ? *LinkedSkeleton->GetName() : TEXT("null"));
+				return;
+			}
+		}
+
+		// Make sure we have valid objects as initialization can route back out of linked instances into this outer graph
+		GetProxyOnAnyThread<FAnimInstanceProxy>().InitializeObjects(this);
+
+		// Map of group name->nodes to run under that group instance
+		TMap<FName, TArray<FAnimNode_LinkedAnimLayer*, TInlineAllocator<4>>, TInlineSetAllocator<4>> LayerNodesToSet;
+
+		for(const FStructPropertyPath& LayerNodeProperty : AnimBlueprintClass->GetLinkedAnimLayerNodeProperties())
+		{
+			FAnimNode_LinkedAnimLayer* Layer = LayerNodeProperty->ContainerPtrToValuePtr<FAnimNode_LinkedAnimLayer>(this);
+
+			// If the class is null, then reset to default (which can be null)
+			UClass* ClassToSet = NewClass != nullptr ? NewClass : Layer->InstanceClass.Get();
+
+			if(ClassToSet != nullptr)
+			{
+				// Now check whether the layer is implemented by the class
+				IAnimClassInterface* NewAnimClassInterface = IAnimClassInterface::GetFromClass(ClassToSet);
+				if(const FAnimBlueprintFunction* FoundFunction = IAnimClassInterface::FindAnimBlueprintFunction(NewAnimClassInterface, Layer->Layer))
+				{
+					if(FoundFunction->bImplemented)
+					{
+						TArray<FAnimNode_LinkedAnimLayer*, TInlineAllocator<4>>& LayerNodes = LayerNodesToSet.FindOrAdd(FoundFunction->Group);
+						LayerNodes.Add(Layer);
+					}
+				}
+			}
+			else
+			{
+				// Add null classes so we clear the node's instance below
+				TArray<FAnimNode_LinkedAnimLayer*, TInlineAllocator<4>>& LayerNodes = LayerNodesToSet.FindOrAdd(NAME_None);
+				LayerNodes.Add(Layer);
+			}
+		}
+
+		USkeletalMeshComponent* MeshComp = GetSkelMeshComponent();
+
+		auto UnlinkLayerNodesInInstance = [](UAnimInstance* InAnimInstance)
+		{
+			const IAnimClassInterface* NewLinkedInstanceClass = IAnimClassInterface::GetFromClass(InAnimInstance->GetClass());
+			for(const FStructPropertyPath& LayerNodeProperty : NewLinkedInstanceClass->GetLinkedAnimLayerNodeProperties())
+			{
+				FAnimNode_LinkedAnimLayer* LinkedAnimLayerNode = LayerNodeProperty->ContainerPtrToValuePtr<FAnimNode_LinkedAnimLayer>(InAnimInstance);
+				LinkedAnimLayerNode->DynamicUnlink(InAnimInstance);
+			}
+		};
+
+		auto InitializeAndCacheBonesForLinkedRoot = [](FAnimNode_LinkedAnimLayer* InLayerNode, FAnimInstanceProxy& InThisProxy, UAnimInstance* InLinkedInstance, FAnimInstanceProxy& InLinkedProxy)
+		{
+			InLinkedProxy.InitializeObjects(InLinkedInstance);
+			FAnimationInitializeContext InitContext(&InThisProxy);
+			InLayerNode->InitializeSubGraph_AnyThread(InitContext);
+			FAnimationCacheBonesContext CacheBonesContext(&InThisProxy);
+			InLayerNode->CacheBonesSubGraph_AnyThread(CacheBonesContext);
+			InLinkedProxy.ClearObjects();
+		};
+
+		for(TPair<FName, TArray<FAnimNode_LinkedAnimLayer*, TInlineAllocator<4>>> LayerPair : LayerNodesToSet)
+		{
+			if (LayerPair.Key == NAME_None)
+			{
+				// Ungrouped path - each layer gets a separate instance
+				for(FAnimNode_LinkedAnimLayer* LayerNode : LayerPair.Value)
+				{
+					UClass* ClassToSet = InClassSelectorFunction(NewClass, LayerNode);
+
+					// Disallow setting the same class as this instance, which would create infinite recursion
+					if (ClassToSet != nullptr && ClassToSet != GetClass())
+					{
+						UAnimInstance* TargetInstance = LayerNode->GetTargetInstance<UAnimInstance>();
+
+						// Skip setting if the class is the same
+						if (TargetInstance == nullptr || ClassToSet != TargetInstance->GetClass())
+						{
+							UAnimInstance* NewLinkedInstance = NewObject<UAnimInstance>(MeshComp, ClassToSet);
+							NewLinkedInstance->bCreatedByLinkedAnimGraph = true;
+							NewLinkedInstance->bPropagateNotifiesToLinkedInstances = LayerNode->bPropagateNotifiesToLinkedInstances;
+							NewLinkedInstance->bReceiveNotifiesFromLinkedInstances = LayerNode->bReceiveNotifiesFromLinkedInstances;
+							NewLinkedInstance->InitializeAnimation();
+
+							// Unlink any layer nodes in the new linked instance, as they may have been hooked up to self in InitializeAnimation above.
+							UnlinkLayerNodesInInstance(NewLinkedInstance);
+
+							LayerNode->SetLinkedLayerInstance(this, NewLinkedInstance);
+
+							if(!bInDeferSubGraphInitialization)
+							{
+								// Initialize the correct parts of the linked instance
+								if(LayerNode->LinkedRoot)
+								{
+									FAnimInstanceProxy& ThisProxy = GetProxyOnAnyThread<FAnimInstanceProxy>();
+									FAnimInstanceProxy& LinkedProxy = NewLinkedInstance->GetProxyOnAnyThread<FAnimInstanceProxy>();
+									InitializeAndCacheBonesForLinkedRoot(LayerNode, ThisProxy, NewLinkedInstance, LinkedProxy);
+								}
+							}
+
+							MeshComp->GetLinkedAnimInstances().Add(NewLinkedInstance);
+						}
+					}
+					else
+					{
+						LayerNode->SetLinkedLayerInstance(this, nullptr);
+
+						if(!bInDeferSubGraphInitialization)
+						{
+							UAnimInstance* LinkedInstance = LayerNode->GetTargetInstance<UAnimInstance>();
+							if(LayerNode->LinkedRoot && LinkedInstance)
+							{
+								FAnimInstanceProxy& ThisProxy = GetProxyOnAnyThread<FAnimInstanceProxy>();
+								FAnimInstanceProxy& LinkedProxy = LinkedInstance->GetProxyOnAnyThread<FAnimInstanceProxy>();
+								InitializeAndCacheBonesForLinkedRoot(LayerNode, ThisProxy, LinkedInstance, LinkedProxy);
+							}
+						}
+					}
+				}
+			}
+			else
+			{		
+				// Grouped path - each group gets an instance
+				// If the class is null, then reset to default (which can be null)
+				FAnimNode_LinkedAnimLayer* FirstLayerNode = LayerPair.Value[0];
+				UClass* ClassToSet = InClassSelectorFunction(NewClass, FirstLayerNode);
+
+				// Disallow setting the same class as this instance, which would create infinite recursion
+				if(ClassToSet != nullptr && ClassToSet != GetClass())
+				{
+					UAnimInstance* TargetInstance = FirstLayerNode->GetTargetInstance<UAnimInstance>();
+
+					// Skip setting if the class is the same
+					if (TargetInstance == nullptr || ClassToSet != TargetInstance->GetClass())
+					{
+						// Create and add one linked instance for this group
+						UAnimInstance* NewLinkedInstance = NewObject<UAnimInstance>(MeshComp, ClassToSet);
+						NewLinkedInstance->bCreatedByLinkedAnimGraph = true;
+						NewLinkedInstance->InitializeAnimation();
+
+						// Unlink any layer nodes in the new linked instance, as they may have been hooked up to self in InitializeAnimation above.
+						UnlinkLayerNodesInInstance(NewLinkedInstance);
+
+						for(FAnimNode_LinkedAnimLayer* LayerNode : LayerPair.Value)
+						{
+							LayerNode->SetLinkedLayerInstance(this, NewLinkedInstance);
+
+							// Propagate notify flags. If any nodes have this set then we need to propagate to the group.
+							NewLinkedInstance->bPropagateNotifiesToLinkedInstances |= LayerNode->bPropagateNotifiesToLinkedInstances;
+							NewLinkedInstance->bReceiveNotifiesFromLinkedInstances |= LayerNode->bReceiveNotifiesFromLinkedInstances;
+						}
+
+						if(!bInDeferSubGraphInitialization)
+						{
+							FAnimInstanceProxy& ThisProxy = GetProxyOnAnyThread<FAnimInstanceProxy>();
+							FAnimInstanceProxy& LinkedProxy = NewLinkedInstance->GetProxyOnAnyThread<FAnimInstanceProxy>();
+
+							// Initialize the correct parts of the linked instance
+							for(FAnimNode_LinkedAnimLayer* LayerNode : LayerPair.Value)
+							{
+								if(LayerNode->LinkedRoot)
+								{
+									InitializeAndCacheBonesForLinkedRoot(LayerNode, ThisProxy, NewLinkedInstance, LinkedProxy);
+								}
+							}
+						}
+
+						MeshComp->GetLinkedAnimInstances().Add(NewLinkedInstance);
+					}
+				}
+				else
+				{
+					// Clear the node's instance - we didnt find a class to use
+					for(FAnimNode_LinkedAnimLayer* LayerNode : LayerPair.Value)
+					{
+						LayerNode->SetLinkedLayerInstance(this, nullptr);
+
+						if(!bInDeferSubGraphInitialization)
+					{
+							UAnimInstance* LinkedInstance = LayerNode->GetTargetInstance<UAnimInstance>();
+							if(LayerNode->LinkedRoot && LinkedInstance)
+							{
+								FAnimInstanceProxy& ThisProxy = GetProxyOnAnyThread<FAnimInstanceProxy>();
+								FAnimInstanceProxy& LinkedProxy = LinkedInstance->GetProxyOnAnyThread<FAnimInstanceProxy>();
+								InitializeAndCacheBonesForLinkedRoot(LayerNode, ThisProxy, LinkedInstance, LinkedProxy);
+							}
+						}
+					}
+				}
+			}
+		}
+	}
+}
+
+void UAnimInstance::LinkAnimClassLayers(TSubclassOf<UAnimInstance> InClass)
+{
+	auto SelectResolvedClassIfValid = [](UClass* InResolvedClass, FAnimNode_LinkedAnimLayer* InLayerNode)
+	{
+		if(InResolvedClass != nullptr)
+		{
+			// If we have a valid resolved class, use that as an overlay
+			return InResolvedClass;
+		}
+		else
+		{
+			// Otherwise use the default (which can be null)
+			return InLayerNode->InstanceClass.Get();
+		}
+	};
+
+	PerformLinkedLayerOverlayOperation(InClass, SelectResolvedClassIfValid);
+}
+
+void UAnimInstance::UnlinkAnimClassLayers(TSubclassOf<UAnimInstance> InClass)
+{
+	auto ConditionallySelectDefaultClass = [](UClass* InResolvedClass, FAnimNode_LinkedAnimLayer* InLayerNode)
+	{
+		if (InResolvedClass != nullptr && InLayerNode->GetTargetInstance<UAnimInstance>()->GetClass() == InResolvedClass)
+		{
+			// Reset to default if the classes match
+			return InLayerNode->InstanceClass.Get();
+		}
+		else
+		{
+			// No change
+			return InLayerNode->GetTargetInstance<UAnimInstance>()->GetClass();
+		}
+	};
+
+	PerformLinkedLayerOverlayOperation(InClass, ConditionallySelectDefaultClass);
+}
+
+void UAnimInstance::InitializeGroupedLayers(bool bInDeferSubGraphInitialization)
+{
+	auto SelectResolvedClassIfValid = [](UClass* InResolvedClass, FAnimNode_LinkedAnimLayer* InLayerNode)
+	{
+		if(InResolvedClass != nullptr)
+		{
+			// If we have a valid resolved class, use that as an overlay
+			return InResolvedClass;
+		}
+		else
+		{
+			// Otherwise use the default (which can be null)
+			return InLayerNode->InstanceClass.Get();
+		}
+	};
+
+	PerformLinkedLayerOverlayOperation(nullptr, SelectResolvedClassIfValid, bInDeferSubGraphInitialization);
+}
+
+UAnimInstance* UAnimInstance::GetLinkedAnimLayerInstanceByGroup(FName InGroup) const
+{
+	if (IAnimClassInterface* AnimBlueprintClass = IAnimClassInterface::GetFromClass(GetClass()))
+	{
+		for(const FStructPropertyPath& LayerNodeProperty : AnimBlueprintClass->GetLinkedAnimLayerNodeProperties())
+		{
+			const FAnimNode_LinkedAnimLayer* Layer = LayerNodeProperty->ContainerPtrToValuePtr<FAnimNode_LinkedAnimLayer>(this);
+
+			UClass* ClassForGroups;
+			if(UClass* InterfaceClass = Layer->Interface.Get())
+			{
+				ClassForGroups = InterfaceClass;
+			}
+			else
+			{
+				ClassForGroups = GetClass();
+			}
+
+			IAnimClassInterface* AnimClassInterfaceForGroups = IAnimClassInterface::GetFromClass(ClassForGroups);
+			if(const FAnimBlueprintFunction* FoundFunction = IAnimClassInterface::FindAnimBlueprintFunction(AnimClassInterfaceForGroups, Layer->Layer))
+			{
+				if(InGroup == FoundFunction->Group)
+				{
+					return Layer->GetTargetInstance<UAnimInstance>();
+				}
+			}
+		}
+	}
+
+	return nullptr;
+}
+
+UAnimInstance* UAnimInstance::GetLinkedAnimLayerInstanceByClass(TSubclassOf<UAnimInstance> InClass) const
+{
+	if (IAnimClassInterface* AnimBlueprintClass = IAnimClassInterface::GetFromClass(GetClass()))
+	{
+		for(const FStructPropertyPath& LayerNodeProperty : AnimBlueprintClass->GetLinkedAnimLayerNodeProperties())
+		{
+			const FAnimNode_LinkedAnimLayer* Layer = LayerNodeProperty->ContainerPtrToValuePtr<FAnimNode_LinkedAnimLayer>(this);
+			UAnimInstance* TargetInstance = Layer->GetTargetInstance<UAnimInstance>();
+			if (TargetInstance && TargetInstance->GetClass() == InClass.Get())
+			{
+				return TargetInstance;
+			}
+		}
+	}
+
+	return nullptr;
 }
 
 FAnimMontageInstance* UAnimInstance::GetActiveInstanceForMontage(UAnimMontage const& Montage) const
@@ -2654,6 +3187,11 @@ int32 UAnimInstance::GetInstanceAssetPlayerIndex(FName MachineName, FName StateN
 	return GetProxyOnGameThread<FAnimInstanceProxy>().GetInstanceAssetPlayerIndex(MachineName, StateName, AssetName);
 }
 
+TArray<FAnimNode_AssetPlayerBase*> UAnimInstance::GetInstanceAssetPlayers(const FName& GraphName)
+{
+	return GetProxyOnAnyThread<FAnimInstanceProxy>().GetInstanceAssetPlayers(GraphName);
+}
+
 FAnimNode_AssetPlayerBase* UAnimInstance::GetRelevantAssetPlayerFromState(int32 MachineIndex, int32 StateIndex)
 {
 	return GetProxyOnGameThread<FAnimInstanceProxy>().GetRelevantAssetPlayerFromState(MachineIndex, StateIndex);
@@ -2689,14 +3227,23 @@ void UAnimInstance::DestroyAnimInstanceProxy(FAnimInstanceProxy* InProxy)
 	delete InProxy;
 }
 
+bool UAnimInstance::ShouldTriggerAnimNotifyState(const UAnimNotifyState* AnimNotifyState) const
+{
+	if (ensureMsgf(AnimNotifyState != nullptr, TEXT("UAnimInstance::ShouldTriggerAnimNotifyState: AnimNotifyState is null on AnimInstance %s. ActiveAnimNotifyState array size is: %d"), *GetNameSafe(this), ActiveAnimNotifyState.Num()))
+	{
+		return true;
+	}
+	return false;
+}
+
 void UAnimInstance::RecordMachineWeight(const int32 InMachineClassIndex, const float InMachineWeight)
 {
 	GetProxyOnAnyThread<FAnimInstanceProxy>().RecordMachineWeight(InMachineClassIndex, InMachineWeight);
 }
 
-void UAnimInstance::RecordStateWeight(const int32 InMachineClassIndex, const int32 InStateIndex, const float InStateWeight)
+void UAnimInstance::RecordStateWeight(const int32 InMachineClassIndex, const int32 InStateIndex, const float InStateWeight, const float InElapsedTime)
 {
-	GetProxyOnAnyThread<FAnimInstanceProxy>().RecordStateWeight(InMachineClassIndex, InStateIndex, InStateWeight);
+	GetProxyOnAnyThread<FAnimInstanceProxy>().RecordStateWeight(InMachineClassIndex, InStateIndex, InStateWeight, InElapsedTime);
 }
 
 const FGraphTraversalCounter& UAnimInstance::GetUpdateCounter() const

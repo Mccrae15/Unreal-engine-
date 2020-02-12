@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "CoreMinimal.h"
 #include "Misc/AutomationTest.h"
@@ -55,6 +55,7 @@ namespace FViewportTestHelper
 				GroupName = TEXT("Light Features");
 				break;
 			case SFG_Hidden:
+			case SFG_Transient:
 				GroupName = TEXT("Hidden");
 				break;
 			case SFG_Max:

@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 /**
  * MaterialParameterCollection.h - defines an asset that has a list of parameters, which can be referenced by any material and updated efficiently at runtime
@@ -10,9 +10,9 @@
 #include "UObject/ObjectMacros.h"
 #include "UObject/Object.h"
 #include "Misc/Guid.h"
-#include "Templates/ScopedPointer.h"
 #include "UniformBuffer.h"
 #include "Templates/UniquePtr.h"
+#include "RenderCommandFence.h"
 #include "MaterialParameterCollection.generated.h"
 
 struct FPropertyChangedEvent;
@@ -82,16 +82,16 @@ class UMaterialParameterCollection : public UObject
 	UPROPERTY(duplicatetransient)
 	FGuid StateId;
 
-	UPROPERTY(EditAnywhere, Category=Material)
+	UPROPERTY(EditAnywhere, Category=Material, Meta = (TitleProperty = "ParameterName"))
 	TArray<FCollectionScalarParameter> ScalarParameters;
 
-	UPROPERTY(EditAnywhere, Category=Material)
+	UPROPERTY(EditAnywhere, Category=Material, Meta = (TitleProperty = "ParameterName"))
 	TArray<FCollectionVectorParameter> VectorParameters;
 
 	//~ Begin UObject Interface.
 #if WITH_EDITOR
 	using Super::PreEditChange;
-	virtual void PreEditChange(UProperty* PropertyThatWillChange) override;
+	virtual void PreEditChange(FProperty* PropertyThatWillChange) override;
 	virtual void PostEditChangeProperty(FPropertyChangedEvent& PropertyChangedEvent) override;
 #endif // WITH_EDITOR
 	virtual void PostInitProperties() override;
@@ -126,7 +126,12 @@ class UMaterialParameterCollection : public UObject
 	}
 
 private:
-	
+	virtual ENGINE_API void FinishDestroy() override;
+	virtual ENGINE_API bool IsReadyForFinishDestroy() override;
+
+	/** Fence used to guarantee that the RT is finished using various resources in this UMaterial before cleanup. */
+	FRenderCommandFence ReleaseFence;
+
 	/** Default resource used when no instance is available. */
 	class FMaterialParameterCollectionInstanceResource* DefaultResource;
 
@@ -137,7 +142,7 @@ private:
 	/** Gets default values into data to be set on the uniform buffer. */
 	void GetDefaultParameterData(TArray<FVector4>& ParameterData) const;
 
-	void UpdateDefaultResource();
+	void UpdateDefaultResource(bool bRecreateUniformBuffer);
 };
 
 

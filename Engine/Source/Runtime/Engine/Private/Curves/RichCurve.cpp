@@ -1,10 +1,12 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "Curves/RichCurve.h"
 #include "Templates/Function.h"
 
 DECLARE_CYCLE_STAT(TEXT("RichCurve Eval"), STAT_RichCurve_Eval, STATGROUP_Engine);
 
+// Broken - do not turn on! 
+#define MIXEDKEY_STRIPS_TANGENTS 0
 
 /* FRichCurveKey interface
  *****************************************************************************/
@@ -95,7 +97,7 @@ bool FRichCurveKey::Serialize(FArchive& Ar)
 		return false;
 	}
 
-	// Serialization is handled manually to avoid the extra size overhead of UProperty tagging.
+	// Serialization is handled manually to avoid the extra size overhead of FProperty tagging.
 	// Otherwise with many keys in a rich curve the size can become quite large.
 	Ar << InterpMode;
 	Ar << TangentMode;
@@ -159,6 +161,11 @@ FRichCurveKey FRichCurve::GetKey(FKeyHandle KeyHandle) const
 	return Keys[GetIndex(KeyHandle)];
 }
 
+const FRichCurveKey& FRichCurve::GetKeyRef(FKeyHandle KeyHandle) const
+{
+	EnsureAllIndicesHaveHandles();
+	return Keys[GetIndex(KeyHandle)];
+}
 
 FRichCurveKey FRichCurve::GetFirstKey() const
 {
@@ -385,17 +392,25 @@ TPair<float, float> FRichCurve::GetKeyTimeValuePair(FKeyHandle KeyHandle) const
 
 void FRichCurve::SetKeyInterpMode(FKeyHandle KeyHandle, ERichCurveInterpMode NewInterpMode)
 {
+	SetKeyInterpMode(KeyHandle, NewInterpMode, true);
+}
+
+void FRichCurve::SetKeyInterpMode(FKeyHandle KeyHandle, ERichCurveInterpMode NewInterpMode, bool bAutoSetTangents)
+{
 	if (!IsKeyHandleValid(KeyHandle))
 	{
 		return;
 	}
 
 	GetKey(KeyHandle).InterpMode = NewInterpMode;
-	AutoSetTangents();
+	if (bAutoSetTangents)
+	{
+		AutoSetTangents();
+	}
 }
 
 
-void FRichCurve::SetKeyTangentMode(FKeyHandle KeyHandle, ERichCurveTangentMode NewTangentMode)
+void FRichCurve::SetKeyTangentMode(FKeyHandle KeyHandle, ERichCurveTangentMode NewTangentMode, bool bAutoSetTangents /*= true*/)
 {
 	if (!IsKeyHandleValid(KeyHandle))
 	{
@@ -403,11 +418,14 @@ void FRichCurve::SetKeyTangentMode(FKeyHandle KeyHandle, ERichCurveTangentMode N
 	}
 
 	GetKey(KeyHandle).TangentMode = NewTangentMode;
-	AutoSetTangents();
+	if (bAutoSetTangents)
+	{
+		AutoSetTangents();
+	}
 }
 
 
-void FRichCurve::SetKeyTangentWeightMode(FKeyHandle KeyHandle, ERichCurveTangentWeightMode NewTangentWeightMode)
+void FRichCurve::SetKeyTangentWeightMode(FKeyHandle KeyHandle, ERichCurveTangentWeightMode NewTangentWeightMode, bool bAutoSetTangents /*= true*/)
 {
 	if (!IsKeyHandleValid(KeyHandle))
 	{
@@ -415,7 +433,10 @@ void FRichCurve::SetKeyTangentWeightMode(FKeyHandle KeyHandle, ERichCurveTangent
 	}
 
 	GetKey(KeyHandle).TangentWeightMode = NewTangentWeightMode;
-	AutoSetTangents();
+	if (bAutoSetTangents)
+	{
+		AutoSetTangents();
+	}
 }
 
 
@@ -1128,6 +1149,7 @@ static ERichCurveCompressionFormat FindRichCurveCompressionFormat(const FRichCur
 	switch (RefKey.InterpMode)
 	{
 	case RCIM_Constant:
+		return RCCF_Mixed;
 	case RCIM_None:
 	default:
 		return RCCF_Constant;
@@ -1328,6 +1350,7 @@ void FRichCurve::CompressCurve(FCompressedRichCurve& OutCurve, float ErrorThresh
 		}
 		else if (CompressionFormat == RCCF_Mixed)
 		{
+#if MIXEDKEY_STRIPS_TANGENTS
 			for (const FRichCurveKey& Key : Keys)
 			{
 				if (Key.InterpMode == RCIM_Cubic)
@@ -1335,6 +1358,9 @@ void FRichCurve::CompressCurve(FCompressedRichCurve& OutCurve, float ErrorThresh
 					PackedDataSize += 2 * sizeof(float);
 				}
 			}
+#else
+			PackedDataSize += Keys.Num() * 2 * sizeof(float); // Always have tangents
+#endif
 		}
 
 		OutCurve.CompressedKeys.Empty(PackedDataSize);
@@ -1416,7 +1442,11 @@ void FRichCurve::CompressCurve(FCompressedRichCurve& OutCurve, float ErrorThresh
 		{
 			*KeyData++ = Key.Value;
 
+#if MIXEDKEY_STRIPS_TANGENTS
 			if (Key.InterpMode == RCIM_Cubic)
+#else
+			if (CompressionFormat == RCCF_Mixed || Key.InterpMode == RCIM_Cubic)
+#endif
 			{
 				check(CompressionFormat == RCCF_Cubic || CompressionFormat == RCCF_Mixed);
 				*KeyData++ = Key.ArriveTangent;
@@ -1534,6 +1564,7 @@ struct MixedKeyDataAdapter
 
 	KeyDataHandle GetKeyDataHandle(int32 KeyIndexToQuery) const
 	{
+#if MIXEDKEY_STRIPS_TANGENTS
 		int32 Offset = 0;
 		for (int32 KeyIndex = 0; KeyIndex < KeyIndexToQuery; ++KeyIndex)
 		{
@@ -1541,6 +1572,9 @@ struct MixedKeyDataAdapter
 		}
 
 		return Offset;
+#else
+		return KeyIndexToQuery * 3;
+#endif
 	};
 
 	constexpr float GetKeyValue(KeyDataHandle Handle) const

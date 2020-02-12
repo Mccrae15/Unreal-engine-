@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "ExternalTexture.h"
 
@@ -62,6 +62,11 @@ bool FExternalTextureRegistry::GetExternalTexture(const FMaterialRenderProxy* Ma
 	FPlatformMisc::LowLevelOutputDebugStringf(TEXT("GetExternalTexture: Guid = %s"), *InGuid.ToString());
 #endif
 	FScopeLock Lock(&CriticalSection);
+
+	if ((MaterialRenderProxy != nullptr) && MaterialRenderProxy->IsMarkedForGarbageCollection())
+	{
+		UE_LOG(LogMaterial, Fatal, TEXT("FMaterialRenderProxy was already marked for garbage collection"));
+	}
 
 	// register material proxy if already initialized
 	if ((MaterialRenderProxy != nullptr) && MaterialRenderProxy->IsInitialized())

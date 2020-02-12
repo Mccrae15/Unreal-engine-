@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 #pragma once
 #include "Modules/ModuleManager.h"
 #include "ILoginFlowManager.h"
@@ -89,9 +89,12 @@ public:
 		FOnLoginFlowError ErrorCallback;
 		/** Delegate to fire for every URL redirect */
 		FOnLoginFlowRedirectURL RedirectCallback;
+		/** Whether or not the widget should consume input not handled by the browser */
+		bool bConsumeInput;
 
 		FCreateSettings()
 			: StyleSet(nullptr)
+			, bConsumeInput(false)
 		{}
 	};
 

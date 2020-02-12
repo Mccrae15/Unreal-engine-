@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "NiagaraDataInterfaceSkeletalMeshDetails.h"
 #include "NiagaraDetailSourcedArrayBuilder.h"
@@ -31,7 +31,8 @@ void FNiagaraDataInterfaceSkeletalMeshDetails::CustomizeDetails(IDetailLayoutBui
 
 	 TWeakObjectPtr<USceneComponent> SceneComponent;
 	 USkeletalMeshComponent* FoundSkelComp = nullptr;
-	 MeshObject = UNiagaraDataInterfaceSkeletalMesh::GetSkeletalMeshHelper(MeshInterface.Get(), Cast<UNiagaraComponent>(MeshInterface->GetOuter()), SceneComponent, FoundSkelComp);
+	 UNiagaraDataInterfaceSkeletalMesh* Interface = MeshInterface.Get();
+	 MeshObject = Interface->GetSkeletalMesh(Cast<UNiagaraComponent>(MeshInterface->GetOuter()), SceneComponent, FoundSkelComp);
 	 if (MeshObject.IsValid())
 	 {
 		 MeshObject->GetOnMeshChanged().RemoveAll(this);
@@ -47,7 +48,7 @@ void FNiagaraDataInterfaceSkeletalMeshDetails::CustomizeDetails(IDetailLayoutBui
 		
 		 for (TSharedPtr<IPropertyHandle> Property : MeshProperties)
 		 {
-			 UProperty* PropertyPtr = Property->GetProperty();
+			 FProperty* PropertyPtr = Property->GetProperty();
 			 TArray<TSharedPtr<FName>> PossibleNames;
 			 if (PropertyPtr == RegionsProperty->GetProperty())
 			 {
@@ -72,7 +73,7 @@ void FNiagaraDataInterfaceSkeletalMeshDetails::CustomizeDetails(IDetailLayoutBui
 
 		 for (TSharedPtr<IPropertyHandle> Property : SkelProperties)
 		 {
-			 UProperty* PropertyPtr = Property->GetProperty();
+			 FProperty* PropertyPtr = Property->GetProperty();
 			 TArray<TSharedPtr<FName>> PossibleNames;
 
 			if (PropertyPtr == BonesProperty->GetProperty())
@@ -109,7 +110,8 @@ void FNiagaraDataInterfaceSkeletalMeshDetails::CustomizeDetails(IDetailLayoutBui
 	 {
 		 MeshObject->GetOnMeshChanged().RemoveAll(this);
 	 }
-	 MeshObject = UNiagaraDataInterfaceSkeletalMesh::GetSkeletalMeshHelper(MeshInterface.Get(), Cast<UNiagaraComponent>(MeshInterface->GetOuter()), SceneComponent, FoundSkelComp);
+	 UNiagaraDataInterfaceSkeletalMesh* Interface = MeshInterface.Get();
+	 MeshObject = Interface->GetSkeletalMesh(Cast<UNiagaraComponent>(MeshInterface->GetOuter()), SceneComponent, FoundSkelComp);
 	 if (MeshObject.IsValid())
 	 {
 		 MeshObject->GetOnMeshChanged().AddSP(this, &FNiagaraDataInterfaceSkeletalMeshDetails::OnDataChanged);
@@ -119,15 +121,26 @@ void FNiagaraDataInterfaceSkeletalMeshDetails::CustomizeDetails(IDetailLayoutBui
 
  void FNiagaraDataInterfaceSkeletalMeshDetails::OnDataChanged()
  {
-	TArray<TSharedPtr<FName>> PossibleNames;
-	GenerateRegionsArray(PossibleNames);
-	RegionsBuilder->SetSourceArray(PossibleNames);
+	if (RegionsBuilder)
+	{
+		TArray<TSharedPtr<FName>> PossibleNames;
+		GenerateRegionsArray(PossibleNames);
+		RegionsBuilder->SetSourceArray(PossibleNames);
+	}
 
-	GenerateBonesArray(PossibleNames);
-	BonesBuilder->SetSourceArray(PossibleNames);
+	if (BonesBuilder)
+	{
+		TArray<TSharedPtr<FName>> PossibleNames;
+		GenerateBonesArray(PossibleNames);
+		BonesBuilder->SetSourceArray(PossibleNames);
+	}
 
-	GenerateSocketsArray(PossibleNames);
-	SocketsBuilder->SetSourceArray(PossibleNames);
+	if (SocketsBuilder)
+	{
+		TArray<TSharedPtr<FName>> PossibleNames;
+		GenerateSocketsArray(PossibleNames);
+		SocketsBuilder->SetSourceArray(PossibleNames);
+	}
  }
 
 void FNiagaraDataInterfaceSkeletalMeshDetails::GenerateRegionsArray(TArray<TSharedPtr<FName>>& SourceArray)
@@ -137,7 +150,8 @@ void FNiagaraDataInterfaceSkeletalMeshDetails::GenerateRegionsArray(TArray<TShar
 	 {
 		 TWeakObjectPtr<USceneComponent> SceneComponent;
 		 USkeletalMeshComponent* FoundSkelComp = nullptr;
-		 USkeletalMesh* Mesh = UNiagaraDataInterfaceSkeletalMesh::GetSkeletalMeshHelper(MeshInterface.Get(), Cast<UNiagaraComponent>(MeshInterface->GetOuter()), SceneComponent, FoundSkelComp);
+		 UNiagaraDataInterfaceSkeletalMesh* Interface = MeshInterface.Get();
+		 USkeletalMesh* Mesh = Interface->GetSkeletalMesh(Cast<UNiagaraComponent>(MeshInterface->GetOuter()), SceneComponent, FoundSkelComp);
 
 		 if (Mesh != nullptr)
 		 {
@@ -156,7 +170,8 @@ void FNiagaraDataInterfaceSkeletalMeshDetails::GenerateRegionsArray(TArray<TShar
 	 {
 		 TWeakObjectPtr<USceneComponent> SceneComponent;
 		 USkeletalMeshComponent* FoundSkelComp = nullptr;
-		 USkeletalMesh* Mesh = UNiagaraDataInterfaceSkeletalMesh::GetSkeletalMeshHelper(MeshInterface.Get(), Cast<UNiagaraComponent>(MeshInterface->GetOuter()), SceneComponent, FoundSkelComp);
+		 UNiagaraDataInterfaceSkeletalMesh* Interface = MeshInterface.Get();
+		 USkeletalMesh* Mesh = Interface->GetSkeletalMesh(Cast<UNiagaraComponent>(MeshInterface->GetOuter()), SceneComponent, FoundSkelComp);
 
 		 if (Mesh != nullptr)
 		 {
@@ -175,7 +190,8 @@ void FNiagaraDataInterfaceSkeletalMeshDetails::GenerateSocketsArray(TArray<TShar
 	 {
 		 TWeakObjectPtr<USceneComponent> SceneComponent;
 		 USkeletalMeshComponent* FoundSkelComp = nullptr;
-		 USkeletalMesh* Mesh = UNiagaraDataInterfaceSkeletalMesh::GetSkeletalMeshHelper(MeshInterface.Get(), Cast<UNiagaraComponent>(MeshInterface->GetOuter()), SceneComponent, FoundSkelComp);
+		 UNiagaraDataInterfaceSkeletalMesh* Interface = MeshInterface.Get();
+		 USkeletalMesh* Mesh = Interface->GetSkeletalMesh(Cast<UNiagaraComponent>(MeshInterface->GetOuter()), SceneComponent, FoundSkelComp);
 
 		 if (Mesh != nullptr)
 		 {

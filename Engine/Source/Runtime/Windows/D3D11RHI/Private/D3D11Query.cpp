@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 /*=============================================================================
 	D3D11Query.cpp: D3D query RHI implementation.
@@ -6,17 +6,178 @@
 
 #include "D3D11RHIPrivate.h"
 
+class FD3D11RenderQueryBatcher final
+{
+public:
+	static FD3D11RenderQueryBatcher& Get()
+	{
+		static FD3D11RenderQueryBatcher Singleton;
+		return Singleton;
+	}
+
+	inline void StartNewBatch()
+	{
+		FRenderQueryBatch& NewBatch = ActiveBatches[ActiveBatches.AddDefaulted()];
+		NewBatch.Id = CurrentId;
+	}
+
+	void PerFrameFlush()
+	{
+		for (int32 BatchIdx = 0; BatchIdx < ActiveBatches.Num(); ++BatchIdx)
+		{
+			FRenderQueryBatch& Batch = ActiveBatches[BatchIdx];
+
+			// This is correct even if CurrentId overflowed
+			if (CurrentId - Batch.Id >= NumBufferedFrames)
+			{
+				TArray<FRenderQueryRHIRef>& Queries = ActiveBatches[BatchIdx].Queries;
+				for (int32 QueryIdx = 0; QueryIdx < Queries.Num(); ++QueryIdx)
+				{
+					FD3D11RenderQuery* Query = FD3D11DynamicRHI::ResourceCast(Queries[QueryIdx].GetReference());
+
+					if (Query->bResultIsCached || Query->GetRefCount() == 1)
+					{
+						continue;
+					}
+
+					if (Query->QueryType == ERenderQueryType::RQT_AbsoluteTime)
+					{
+						check(GD3D11RHI->GetQueryData(Query->Resource, &Query->Result, sizeof(Query->Result), Query->QueryType, true, false));
+						Query->bResultIsCached = true;
+					}
+				}
+				ActiveBatches.RemoveAtSwap(BatchIdx--);
+			}
+		}
+
+		++CurrentId;
+	}
+
+	inline void Release()
+	{
+		ActiveBatches.Empty();
+	}
+
+	inline void Add(FRenderQueryRHIRef NewQuery)
+	{
+		if(!ActiveBatches.Num())
+		{
+			StartNewBatch();
+		}
+		FRenderQueryBatch& CurrentBatch = ActiveBatches.Last();
+		CurrentBatch.Queries.Add(NewQuery);
+	}
+
+	void PollQueryResults()
+	{
+		QUICK_SCOPE_CYCLE_COUNTER(STAT_PollQueryResults);
+		for (int32 BatchIdx = 0; BatchIdx < ActiveBatches.Num(); ++BatchIdx)
+		{
+			TArray<FRenderQueryRHIRef>& Queries = ActiveBatches[BatchIdx].Queries;
+
+			for (int32 QueryIdx = 0; QueryIdx < Queries.Num(); ++QueryIdx)
+			{
+				FD3D11RenderQuery* Query = FD3D11DynamicRHI::ResourceCast(Queries[QueryIdx].GetReference());
+
+				if (Query->bResultIsCached || Query->GetRefCount() == 1)
+				{
+					Queries.RemoveAtSwap(QueryIdx--);
+				}
+				else if (GD3D11RHI->GetQueryData(Query->Resource, &Query->Result, sizeof(Query->Result), Query->QueryType, false, false))
+				{
+					Query->bResultIsCached = true;
+					Queries.RemoveAtSwap(QueryIdx--);
+				}
+			}
+
+			if (!Queries.Num())
+			{
+				ActiveBatches.RemoveAtSwap(BatchIdx--);
+			}
+		}
+	}
+
+	void PollQueryResults_RenderThread()
+	{
+		QUICK_SCOPE_CYCLE_COUNTER(STAT_PollQueryResults_RenderThread);
+		FScopedRHIThreadStaller RHITStaller(FRHICommandListExecutor::GetImmediateCommandList());
+		PollQueryResults();
+	}
+
+	inline uint32 GetCurrentId() const
+	{
+		return CurrentId;
+	}
+
+	FD3D11RenderQueryBatcher(const FD3D11RenderQueryBatcher&) = delete;
+	FD3D11RenderQueryBatcher(FD3D11RenderQueryBatcher&&) = delete;
+	FD3D11RenderQueryBatcher& operator=(const FD3D11RenderQueryBatcher&) = delete;
+	FD3D11RenderQueryBatcher& operator=(FD3D11RenderQueryBatcher&&) = delete;
+
+private:
+	struct FRenderQueryBatch
+	{
+		uint32 Id;
+		TArray<FRenderQueryRHIRef> Queries;
+	};
+
+	static const int32 NumBufferedFrames = 5;
+
+	uint32 CurrentId;
+	TArray<FRenderQueryBatch> ActiveBatches;
+
+	FD3D11RenderQueryBatcher()
+		: CurrentId(0)
+	{}
+
+	virtual ~FD3D11RenderQueryBatcher() = default;
+};
+
+void D3D11RHIQueryBatcherPerFrameCleanup()
+{
+	FD3D11RenderQueryBatcher::Get().PerFrameFlush();
+}
+
+void FD3D11DynamicRHI::ReleaseCachedQueries()
+{
+	FD3D11RenderQueryBatcher::Get().Release();
+}
+
+void FD3D11DynamicRHI::RHIPollRenderQueryResults()
+{
+	if (ShouldNotEnqueueRHICommand())
+	{
+		FD3D11RenderQueryBatcher::Get().PollQueryResults();
+	}
+	else
+	{
+		RunOnRHIThread(
+			[]()
+		{
+			FD3D11RenderQueryBatcher::Get().PollQueryResults();
+		});
+	}
+}
+
 void FD3D11DynamicRHI::RHIBeginOcclusionQueryBatch(uint32 NumQueriesInBatch)
 {
 	check(RequestedOcclusionQueriesInBatch == 0);
 	ActualOcclusionQueriesInBatch = 0;
 	RequestedOcclusionQueriesInBatch = NumQueriesInBatch;
+	FD3D11RenderQueryBatcher::Get().StartNewBatch();
 }
 
 void FD3D11DynamicRHI::RHIEndOcclusionQueryBatch()
 {
 	checkf(ActualOcclusionQueriesInBatch <= RequestedOcclusionQueriesInBatch, TEXT("Expected %d total occlusion queries per RHIBeginOcclusionQueryBatch(); got %d total; this will break newer APIs"), RequestedOcclusionQueriesInBatch, ActualOcclusionQueriesInBatch);
 	RequestedOcclusionQueriesInBatch = 0;
+}
+
+FRenderQueryRHIRef FD3D11DynamicRHI::RHICreateRenderQuery_RenderThread(
+	class FRHICommandListImmediate& RHICmdList,
+	ERenderQueryType QueryType)
+{
+	return RHICreateRenderQuery(QueryType);
 }
 
 FRenderQueryRHIRef FD3D11DynamicRHI::RHICreateRenderQuery(ERenderQueryType QueryType)
@@ -42,17 +203,34 @@ FRenderQueryRHIRef FD3D11DynamicRHI::RHICreateRenderQuery(ERenderQueryType Query
 	return new FD3D11RenderQuery(Query, QueryType);
 }
 
-bool FD3D11DynamicRHI::RHIGetRenderQueryResult(FRenderQueryRHIParamRef QueryRHI,uint64& OutResult,bool bWait)
+bool FD3D11DynamicRHI::RHIGetRenderQueryResult(FRHIRenderQuery* QueryRHI, uint64& OutResult, bool bWait, uint32 GPUIndex)
 {
 	check(IsInRenderingThread());
 	FD3D11RenderQuery* Query = ResourceCast(QueryRHI);
-
 	bool bSuccess = true;
-	if(!Query->bResultIsCached)
+	if(Query->QueryType == RQT_AbsoluteTime && !bWait)
 	{
-		bSuccess = GetQueryData(Query->Resource,&Query->Result,sizeof(Query->Result),bWait, Query->QueryType);
+		if(!Query->bResultIsCached)
+		{
+			return false;
+		}
+	}
+	else
+	{
+		static uint32 LastQueryBatchId = 0xffffffff;
+		uint32 CurrentQueryBatchId = FD3D11RenderQueryBatcher::Get().GetCurrentId();
+		if (LastQueryBatchId != CurrentQueryBatchId && Query->QueryType == RQT_Occlusion)
+		{
+			LastQueryBatchId = CurrentQueryBatchId;
+			FD3D11RenderQueryBatcher::Get().PollQueryResults_RenderThread();
+		}
 
-		Query->bResultIsCached = bSuccess;
+		if(!Query->bResultIsCached)
+		{
+			bSuccess = GetQueryData(Query->Resource,&Query->Result,sizeof(Query->Result),Query->QueryType,bWait,true);
+
+			Query->bResultIsCached = bSuccess;
+		}
 	}
 
 	if(Query->QueryType == RQT_AbsoluteTime)
@@ -72,7 +250,7 @@ bool FD3D11DynamicRHI::RHIGetRenderQueryResult(FRenderQueryRHIParamRef QueryRHI,
 
 
 // Occlusion/Timer queries.
-void FD3D11DynamicRHI::RHIBeginRenderQuery(FRenderQueryRHIParamRef QueryRHI)
+void FD3D11DynamicRHI::RHIBeginRenderQuery(FRHIRenderQuery* QueryRHI)
 {
 	FD3D11RenderQuery* Query = ResourceCast(QueryRHI);
 
@@ -81,6 +259,7 @@ void FD3D11DynamicRHI::RHIBeginRenderQuery(FRenderQueryRHIParamRef QueryRHI)
 		++ActualOcclusionQueriesInBatch;
 		Query->bResultIsCached = false;
 		Direct3DDeviceIMContext->Begin(Query->Resource);
+		FD3D11RenderQueryBatcher::Get().Add(QueryRHI);
 	}
 	else
 	{
@@ -89,19 +268,29 @@ void FD3D11DynamicRHI::RHIBeginRenderQuery(FRenderQueryRHIParamRef QueryRHI)
 	}
 }
 
-void FD3D11DynamicRHI::RHIEndRenderQuery(FRenderQueryRHIParamRef QueryRHI)
+void FD3D11DynamicRHI::RHIEndRenderQuery(FRHIRenderQuery* QueryRHI)
 {
 	FD3D11RenderQuery* Query = ResourceCast(QueryRHI);
 	Query->bResultIsCached = false; // for occlusion queries, this is redundant with the one in begin
+	if(Query->QueryType == RQT_AbsoluteTime)
+	{
+		FD3D11RenderQueryBatcher::Get().Add(QueryRHI);
+	}
 	Direct3DDeviceIMContext->End(Query->Resource);
 
 	//@todo - d3d debug spews warnings about OQ's that are being issued but not polled, need to investigate
 }
 
-bool FD3D11DynamicRHI::GetQueryData(ID3D11Query* Query,void* Data,SIZE_T DataSize,bool bWait, ERenderQueryType QueryType)
+bool FD3D11DynamicRHI::GetQueryData(ID3D11Query* Query, void* Data, SIZE_T DataSize, ERenderQueryType QueryType, bool bWait, bool bStallRHIThread)
 {
+#define SAFE_GET_QUERY_DATA \
+	if (bStallRHIThread) D3D11StallRHIThread(); \
+	Result = Direct3DDeviceIMContext->GetData(Query, Data, DataSize, 0); \
+	if (bStallRHIThread) D3D11UnstallRHIThread();
+
 	// Request the data from the query.
-	HRESULT Result = Direct3DDeviceIMContext->GetData(Query,Data,DataSize,0);
+	HRESULT Result;
+	SAFE_GET_QUERY_DATA
 
 	// Isn't the query finished yet, and can we wait for it?
 	if ( Result == S_FALSE && bWait )
@@ -109,16 +298,35 @@ bool FD3D11DynamicRHI::GetQueryData(ID3D11Query* Query,void* Data,SIZE_T DataSiz
 		SCOPE_CYCLE_COUNTER( STAT_RenderQueryResultTime );
 		uint32 IdleStart = FPlatformTime::Cycles();
 		double StartTime = FPlatformTime::Seconds();
-		do 
+		double TimeoutWarningLimit = 5.0;
+		// timer queries are used for Benchmarks which can stall a bit more
+		double TimeoutValue = (QueryType == RQT_AbsoluteTime) ? 30.0 : 0.5;
+
+		do
 		{
-			Result = Direct3DDeviceIMContext->GetData(Query,Data,DataSize,0);
+			SAFE_GET_QUERY_DATA
 
-			// timer queries are used for Benchmarks which can stall a bit more
-			double TimeoutValue = (QueryType == RQT_AbsoluteTime) ? 2.0 : 0.5;
-
-			if((FPlatformTime::Seconds() - StartTime) > TimeoutValue)
+			if(Result == S_OK)
 			{
-				UE_LOG(LogD3D11RHI, Log, TEXT("Timed out while waiting for GPU to catch up. (%.1f s)"), TimeoutValue);
+				return true;
+			}
+
+
+
+			float DeltaTime = FPlatformTime::Seconds() - StartTime;
+			if(DeltaTime > TimeoutWarningLimit)
+			{
+				TimeoutWarningLimit += 5.0;
+				UE_LOG(LogD3D11RHI, Log, TEXT("GetQueryData is taking a very long time (%.1f s)"), DeltaTime);
+			}
+
+			if(DeltaTime > TimeoutValue)
+			{
+				UE_LOG(LogD3D11RHI, Log, TEXT("Timed out while waiting for GPU to catch up. (%.1f s) (ErrorCode %08x)"), TimeoutValue, (uint32)Result);
+				if(FAILED(Result))
+				{
+					VERIFYD3D11RESULT_EX(Result, Direct3DDevice);
+				}
 				return false;
 			}
 		} while ( Result == S_FALSE );
@@ -140,18 +348,30 @@ bool FD3D11DynamicRHI::GetQueryData(ID3D11Query* Query,void* Data,SIZE_T DataSiz
 		VERIFYD3D11RESULT_EX(Result, Direct3DDevice);
 		return false;
 	}
+#undef SAFE_GET_QUERY_DATA
 }
 
 void FD3D11EventQuery::IssueEvent()
 {
-	D3DRHI->GetDeviceContext()->End(Query);
+	if (ShouldNotEnqueueRHICommand())
+	{
+		D3DRHI->GetDeviceContext()->End(Query);
+	}
+	else
+	{
+		RunOnRHIThread(
+			[InQuery = Query]()
+		{
+			D3D11RHI_IMMEDIATE_CONTEXT->End(InQuery);
+		});
+	}
 }
 
 void FD3D11EventQuery::WaitForCompletion()
 {
 	BOOL bRenderingIsFinished = false;
 	while(
-		D3DRHI->GetQueryData(Query,&bRenderingIsFinished,sizeof(bRenderingIsFinished),true,RQT_Undefined) &&
+		D3DRHI->GetQueryData(Query,&bRenderingIsFinished,sizeof(bRenderingIsFinished),RQT_Undefined,true,true) &&
 		!bRenderingIsFinished
 		)
 	{};
@@ -226,13 +446,19 @@ void FD3D11BufferedGPUTiming::PlatformStaticInitialize(void* UserData)
 
 			D3D11_QUERY_DATA_TIMESTAMP_DISJOINT FreqQueryData;
 
+			D3D11StallRHIThread();
 			D3DResult = D3D11DeviceContext->GetData(FreqQuery, &FreqQueryData, sizeof(D3D11_QUERY_DATA_TIMESTAMP_DISJOINT), 0);
+			D3D11UnstallRHIThread();
+
 			double StartTime = FPlatformTime::Seconds();
 			while (D3DResult == S_FALSE && (FPlatformTime::Seconds() - StartTime) < 0.5f)
 			{
 				++DebugCounter;
 				FPlatformProcess::Sleep(0.005f);
+
+				D3D11StallRHIThread();
 				D3DResult = D3D11DeviceContext->GetData(FreqQuery, &FreqQueryData, sizeof(D3D11_QUERY_DATA_TIMESTAMP_DISJOINT), 0);
+				D3D11UnstallRHIThread();
 			}
 
 			if (D3DResult == S_OK)
@@ -390,8 +616,10 @@ void FD3D11BufferedGPUTiming::InitDynamicRHI()
 			QueryDesc.Query = D3D11_QUERY_TIMESTAMP;
 			QueryDesc.MiscFlags = 0;
 
+			CA_SUPPRESS(6385);	// Doesn't like COM
 			D3DResult = D3DRHI->GetDevice()->CreateQuery(&QueryDesc,StartTimestamps[TimestampIndex].GetInitReference());
 			GIsSupported = GIsSupported && (D3DResult == S_OK);
+			CA_SUPPRESS(6385);	// Doesn't like COM
 			D3DResult = D3DRHI->GetDevice()->CreateQuery(&QueryDesc,EndTimestamps[TimestampIndex].GetInitReference());
 			GIsSupported = GIsSupported && (D3DResult == S_OK);
 		}

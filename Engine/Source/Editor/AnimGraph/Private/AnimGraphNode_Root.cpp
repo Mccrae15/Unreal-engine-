@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "AnimGraphNode_Root.h"
 #include "GraphEditorSettings.h"
@@ -15,7 +15,7 @@ void FPoseLinkMappingRecord::PatchLinkIndex(uint8* DestinationPtr, int32 LinkID,
 	
 	if (ChildPropertyIndex != INDEX_NONE)
 	{
-		UArrayProperty* ArrayProperty = CastChecked<UArrayProperty>(ChildProperty);
+		FArrayProperty* ArrayProperty = CastFieldChecked<FArrayProperty>(ChildProperty);
 
 		FScriptArrayHelper ArrayHelper(ArrayProperty, DestinationPtr);
 		check(ArrayHelper.IsValidIndex(ChildPropertyIndex));
@@ -49,12 +49,25 @@ FLinearColor UAnimGraphNode_Root::GetNodeTitleColor() const
 
 FText UAnimGraphNode_Root::GetNodeTitle(ENodeTitleType::Type TitleType) const
 {
-	return LOCTEXT("AnimGraphNodeRoot_Title", "Final Animation Pose");
+	FText DefaultTitle = LOCTEXT("AnimGraphNodeRoot_Title", "Output Pose");
+
+	if(TitleType != ENodeTitleType::FullTitle)
+	{
+		return DefaultTitle;
+	}
+	else
+	{
+		FFormatNamedArguments Args;
+		Args.Add(TEXT("NodeTitle"), DefaultTitle);
+		Args.Add(TEXT("Name"), FText::FromString(GetOuter()->GetName()));
+
+		return FText::Format(LOCTEXT("AnimGraphNodeRoot_TitleNamed", "{NodeTitle}\n{Name}"), Args);
+	}
 }
 
 FText UAnimGraphNode_Root::GetTooltipText() const
 {
-	return LOCTEXT("AnimGraphNodeRoot_Tooltip", "Wire the final animation pose into this node");
+	return LOCTEXT("AnimGraphNodeRoot_Tooltip", "Wire the final animation pose for this graph into this node");
 }
 
 bool UAnimGraphNode_Root::IsSinkNode() const

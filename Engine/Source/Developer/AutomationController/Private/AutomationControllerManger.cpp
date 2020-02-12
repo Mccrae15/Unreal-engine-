@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "CoreMinimal.h"
 #include "HAL/FileManager.h"
@@ -16,6 +16,7 @@
 #include "AssetEditorMessages.h"
 #include "ImageComparer.h"
 #include "AutomationControllerManager.h"
+#include "AutomationControllerSettings.h"
 #include "Interfaces/IScreenShotToolsModule.h"
 #include "Serialization/JsonSerializer.h"
 #include "JsonObjectConverter.h"
@@ -26,11 +27,35 @@
 #if WITH_EDITOR
 #include "Logging/MessageLog.h"
 #endif
+#include "Async/ParallelFor.h"
 
-DEFINE_LOG_CATEGORY_STATIC(AutomationControllerLog, Log, All)
+// these strings are parsed by Gauntlet (AutomationLogParser) so make sure changes are replicated there!
+#define AutomationTestStarting		TEXT("Test Started. Name={%s}")
+#define AutomationSuccessFormat		TEXT("Test Completed. Result={Passed} Name={%s} Path={%s}")
+#define AutomationFailureFormat		TEXT("Test Completed. Result={Failed} Name={%s} Path={%s}")
+
+#define BeginEventsFormat			TEXT("BeginEvents: %s")
+#define EndEventsFormat				TEXT("EndEvents: %s")
+
+DEFINE_LOG_CATEGORY_STATIC(LogAutomationController, Log, All)
+
+#define LOCTEXT_NAMESPACE "AutomationTesting"
 
 FAutomationControllerManager::FAutomationControllerManager()
 {
+
+	UAutomationControllerSettings* Settings = UAutomationControllerSettings::StaticClass()->GetDefaultObject<UAutomationControllerSettings>();
+
+	if (Settings->CheckTestIntervalSeconds > 0.0f)
+	{
+		CheckTestIntervalSeconds = Settings->CheckTestIntervalSeconds;
+	}
+	
+	if (Settings->GameInstanceLostTimerSeconds > 0.0f)
+	{
+		GameInstanceLostTimerSeconds = Settings->GameInstanceLostTimerSeconds;
+	}
+	
 	CheckpointFile = nullptr;
 
 	if ( !FParse::Value(FCommandLine::Get(), TEXT("ReportOutputPath="), ReportOutputPath, false) )
@@ -116,12 +141,12 @@ void FAutomationControllerManager::RunTests(const bool bInIsLocalSession)
 	CheckTestTimer = 0.f;
 
 #if WITH_EDITOR
-	FMessageLog AutomationTestingLog("AutomationTestingLog");
+	FMessageLog AutomationEditorLog("AutomationTestingLog");
 	FString NewPageName = FString::Printf(TEXT("-----Test Run %d----"), ExecutionCount);
 	FText NewPageNameText = FText::FromString(*NewPageName);
-	AutomationTestingLog.Open();
-	AutomationTestingLog.NewPage(NewPageNameText);
-	AutomationTestingLog.Info(NewPageNameText);
+	AutomationEditorLog.Open();
+	AutomationEditorLog.NewPage(NewPageNameText);
+	AutomationEditorLog.Info(NewPageNameText);
 #endif
 	//reset all tests
 	ReportManager.ResetForExecution(NumTestPasses);
@@ -256,7 +281,7 @@ void FAutomationControllerManager::ProcessComparisonQueue()
 			}
 			else
 			{
-				UE_LOG(AutomationControllerLog, Error, TEXT("Cannot generate screenshot report for screenshot %s as report is missing"), *Result.IncomingFile);
+				UE_LOG(LogAutomationController, Error, TEXT("Cannot generate screenshot report for screenshot %s as report is missing"), *Result.IncomingFile);
 			}
 		}
 	}
@@ -303,10 +328,10 @@ void FAutomationControllerManager::ProcessAvailableTasks()
 
 void FAutomationControllerManager::ReportTestResults()
 {
-	GLog->Logf(TEXT("Test Pass Results:"));
+	UE_LOG(LogAutomationController, Log, TEXT("Test Pass Results:"));
 	for ( int32 i = 0; i < OurPassResults.Tests.Num(); i++ )
 	{
-		GLog->Logf(TEXT("%s: %s"), *OurPassResults.Tests[i].TestDisplayName, ToString(OurPassResults.Tests[i].State));
+		UE_LOG(LogAutomationController, Log, TEXT("%s: %s"), *OurPassResults.Tests[i].TestDisplayName, ToString(OurPassResults.Tests[i].State));
 	}
 }
 
@@ -351,7 +376,7 @@ void FAutomationControllerManager::CollectTestResults(TSharedPtr<IAutomationRepo
 
 bool FAutomationControllerManager::GenerateJsonTestPassSummary(const FAutomatedTestPassResults& SerializedPassResults, FDateTime Timestamp)
 {
-	UE_LOG(AutomationControllerLog, Display, TEXT("Converting results to json object..."));
+	UE_LOG(LogAutomationController, Display, TEXT("Converting results to json object..."));
 
 	FString Json;
 	if (FJsonObjectConverter::UStructToJsonObjectString(SerializedPassResults, Json))
@@ -364,18 +389,18 @@ bool FAutomationControllerManager::GenerateJsonTestPassSummary(const FAutomatedT
 		{
 			if (FFileHelper::SaveStringToFile(Json, *ReportFileName, FFileHelper::EEncodingOptions::ForceUTF8))
 			{
-				UE_LOG(AutomationControllerLog, Display, TEXT("Successfully wrote json results file!"));
+				UE_LOG(LogAutomationController, Display, TEXT("Successfully wrote json results file!"));
 				return true;
 			}
 
 			FPlatformProcess::Sleep(SleepBetweenAttempts);
 		}
 
-		UE_LOG(AutomationControllerLog, Warning, TEXT("Failed to write test report json to '%s' after 3 attempts - No report will be generated."), *ReportFileName);
+		UE_LOG(LogAutomationController, Warning, TEXT("Failed to write test report json to '%s' after 3 attempts - No report will be generated."), *ReportFileName);
 	}
 	else
 	{
-		UE_LOG(AutomationControllerLog, Error, TEXT("Failed to convert test results to json object - No report will be generated."));
+		UE_LOG(LogAutomationController, Error, TEXT("Failed to convert test results to json object - No report will be generated."));
 	}
 		
 	return false;
@@ -383,7 +408,7 @@ bool FAutomationControllerManager::GenerateJsonTestPassSummary(const FAutomatedT
 
 bool FAutomationControllerManager::GenerateHtmlTestPassSummary(const FAutomatedTestPassResults& SerializedPassResults, FDateTime Timestamp)
 {
-	UE_LOG(AutomationControllerLog, Display, TEXT("Loading results html template..."));
+	UE_LOG(LogAutomationController, Display, TEXT("Loading results html template..."));
 
 	FString ReportTemplate;
 	if (FFileHelper::LoadFileToString(ReportTemplate, *(FPaths::EngineContentDir() / TEXT("Automation/Report-Template.html"))))
@@ -396,18 +421,18 @@ bool FAutomationControllerManager::GenerateHtmlTestPassSummary(const FAutomatedT
 		{
 			if (FFileHelper::SaveStringToFile(ReportTemplate, *ReportFileName, FFileHelper::EEncodingOptions::ForceUTF8))
 			{
-				UE_LOG(AutomationControllerLog, Display, TEXT("Successfully wrote html results file!"));
+				UE_LOG(LogAutomationController, Display, TEXT("Successfully wrote html results file!"));
 				return true;
 			}
 
 			FPlatformProcess::Sleep(SleepBetweenAttempts);
 		}
 
-		UE_LOG(AutomationControllerLog, Warning, TEXT("Failed to write test report html to '%s' after 3 attempts - No report will be generated."), *ReportFileName);
+		UE_LOG(LogAutomationController, Warning, TEXT("Failed to write test report html to '%s' after 3 attempts - No report will be generated."), *ReportFileName);
 	}
 	else
 	{
-		UE_LOG(AutomationControllerLog, Error, TEXT("Failed to load test report html template - No report will be generated."));
+		UE_LOG(LogAutomationController, Error, TEXT("Failed to load test report html template - No report will be generated."));
 	}
 	
 	return false;
@@ -420,7 +445,7 @@ FString FAutomationControllerManager::SlugString(const FString& DisplayString) c
 	// Convert the display label, which may consist of just about any possible character, into a
 	// suitable name for a UObject (remove whitespace, certain symbols, etc.)
 	{
-		for ( int32 BadCharacterIndex = 0; BadCharacterIndex < ARRAY_COUNT(INVALID_OBJECTNAME_CHARACTERS) - 1; ++BadCharacterIndex )
+		for ( int32 BadCharacterIndex = 0; BadCharacterIndex < UE_ARRAY_COUNT(INVALID_OBJECTNAME_CHARACTERS) - 1; ++BadCharacterIndex )
 		{
 			const TCHAR TestChar[2] = { INVALID_OBJECTNAME_CHARACTERS[BadCharacterIndex], 0 };
 			const int32 NumReplacedChars = GeneratedName.ReplaceInline(TestChar, TEXT(""));
@@ -485,7 +510,7 @@ void FAutomationControllerManager::ExecuteNextTask( int32 ClusterIndex, OUT bool
 						{
 							FAutomationTestResults TestResults;
 
-							GLog->Logf(ELogVerbosity::Display, TEXT("Running Automation: '%s' (Class Name: '%s')"), *TestsRunThisPass[AddressIndex]->GetFullTestPath(), *TestsRunThisPass[AddressIndex]->GetCommand());
+							UE_LOG(LogAutomationController, Display, AutomationTestStarting, *TestsRunThisPass[AddressIndex]->GetDisplayName(), *TestsRunThisPass[AddressIndex]->GetCommand());
 							TestResults.State = EAutomationState::InProcess;
 
 							if (CheckpointFile)
@@ -652,13 +677,15 @@ void FAutomationControllerManager::ProcessResults()
 
 	if ( !ReportOutputPath.IsEmpty() )
 	{
-		FDateTime Timestamp = FDateTime::Now();
+		FDateTime StartTime = FDateTime::Now();
 
-		UE_LOG(AutomationControllerLog, Display, TEXT("Generating Automation Report @ %s."), *ReportOutputPath);
+		UE_LOG(LogAutomationController, Display, TEXT("Generating Automation Report @ %s."), *ReportOutputPath);
 
 		if ( IFileManager::Get().DirectoryExists(*ReportOutputPath) )
 		{
-			UE_LOG(AutomationControllerLog, Display, TEXT("Existing report directory found, deleting %s."), *ReportOutputPath);
+			FDateTime StepTime = FDateTime::Now();
+
+			UE_LOG(LogAutomationController, Display, TEXT("Existing report directory found, deleting %s."), *ReportOutputPath);
 
 			// Clear the old report folder.  Why move it first?  Because RemoveDirectory
 			// is actually an async call that is not immediately carried out by the Windows OS; Moving a directory on the other hand, is sync.
@@ -666,46 +693,63 @@ void FAutomationControllerManager::ProcessResults()
 			FString TempDirectory = FPaths::GetPath(ReportOutputPath) + TEXT("\\") + FGuid::NewGuid().ToString(EGuidFormats::DigitsWithHyphens);
 			IFileManager::Get().Move(*TempDirectory, *ReportOutputPath);
 			IFileManager::Get().DeleteDirectory(*TempDirectory, false, true);
+
+			UE_LOG(LogAutomationController, Display, TEXT("Deleted directory in %.02f Seconds"), (FDateTime::Now() - StepTime).GetTotalSeconds());
 		}
-				
-		FScreenshotExportResults ExportResults = ScreenshotManager->ExportComparisonResultsAsync(ReportOutputPath).Get();
 
-		FAutomatedTestPassResults SerializedPassResults = OurPassResults;
+		FAutomatedTestPassResults SerializedPassResults;
 
-		SerializedPassResults.ComparisonExported = ExportResults.Success;
-		SerializedPassResults.ComparisonExportDirectory = ExportResults.ExportPath;
-		SerializedPassResults.ReportCreatedOn = Timestamp;
-		if (DisplayReportOutputPath.IsEmpty())
 		{
+			FDateTime StepTime = FDateTime::Now();
+
+			UE_LOG(LogAutomationController, Display, TEXT("Exporting comparison results to %s..."), *ReportOutputPath);
+
+			FScreenshotExportResults ExportResults = ScreenshotManager->ExportComparisonResultsAsync(ReportOutputPath).Get();
+
+			SerializedPassResults = OurPassResults;
+
+			SerializedPassResults.ComparisonExported = ExportResults.Success;
 			SerializedPassResults.ComparisonExportDirectory = ExportResults.ExportPath;
-		}
-		else
-		{
-			SerializedPassResults.ComparisonExportDirectory = DisplayReportOutputPath / FString::FromInt(FEngineVersion::Current().GetChangelist());
+			SerializedPassResults.ReportCreatedOn = StartTime;
+			if (DisplayReportOutputPath.IsEmpty())
+			{
+				SerializedPassResults.ComparisonExportDirectory = ExportResults.ExportPath;
+			}
+			else
+			{
+				SerializedPassResults.ComparisonExportDirectory = DisplayReportOutputPath / FString::FromInt(FEngineVersion::Current().GetChangelist());
+			}
+
+			UE_LOG(LogAutomationController, Display, TEXT("Exported results in %.02f Seconds"), (FDateTime::Now() - StepTime).GetTotalSeconds());
 		}
 
+
 		{
-			SerializedPassResults.Tests.StableSort([] (const FAutomatedTestResult& A, const FAutomatedTestResult& B) {
-				if ( A.GetErrorTotal() > 0 )
+			FDateTime StepTime = FDateTime::Now();
+
+			UE_LOG(LogAutomationController, Display, TEXT("Copying artifacts to %s..."), *ReportOutputPath);
+
+			SerializedPassResults.Tests.StableSort([](const FAutomatedTestResult& A, const FAutomatedTestResult& B) {
+				if (A.GetErrorTotal() > 0)
 				{
-					if ( B.GetErrorTotal() > 0 )
-						return ( A.FullTestPath < B.FullTestPath );
+					if (B.GetErrorTotal() > 0)
+						return (A.FullTestPath < B.FullTestPath);
 					else
 						return true;
 				}
-				else if ( B.GetErrorTotal() > 0 )
+				else if (B.GetErrorTotal() > 0)
 				{
 					return false;
 				}
 
-				if ( A.GetWarningTotal() > 0 )
+				if (A.GetWarningTotal() > 0)
 				{
-					if ( B.GetWarningTotal() > 0 )
-						return ( A.FullTestPath < B.FullTestPath );
+					if (B.GetWarningTotal() > 0)
+						return (A.FullTestPath < B.FullTestPath);
 					else
 						return true;
 				}
-				else if ( B.GetWarningTotal() > 0 )
+				else if (B.GetWarningTotal() > 0)
 				{
 					return false;
 				}
@@ -713,34 +757,79 @@ void FAutomationControllerManager::ProcessResults()
 				return A.FullTestPath < B.FullTestPath;
 			});
 
-			for ( FAutomatedTestResult& Test : SerializedPassResults.Tests )
+			// used for reporting and sync during copies
+			FCriticalSection CS;
+			int TotalFileArtifacts = 0;
+			int CopiedFileArtifacts = 0;
+
+			// Get a total for reporting
+			for (FAutomatedTestResult& Test : SerializedPassResults.Tests)
 			{
-				for (FAutomationArtifact& Artifact : Test.GetArtifacts() )
+				for (FAutomationArtifact& Artifact : Test.GetArtifacts())
 				{
-					for ( const auto& Entry : Artifact.LocalFiles )
-					{
-						Artifact.Files.Add(Entry.Key, CopyArtifact(ReportOutputPath, Entry.Value));
-					}
+					TotalFileArtifacts += Artifact.LocalFiles.Num();
 				}
 			}
+
+
+			// most tests have a single set of artifacts with three or more files, so we could optimize this further by gathering them all first...
+			for (FAutomatedTestResult& Test : SerializedPassResults.Tests)
+			{
+				int TestArtifactCount = 0;
+
+				for (FAutomationArtifact& Artifact : Test.GetArtifacts())
+				{
+					TArray<FString> Keys;
+					Artifact.LocalFiles.GetKeys(Keys);
+
+					ParallelFor(Keys.Num(), [&](int32 Index)
+					{
+						const FString& Key = Keys[Index];
+
+						FString Path = CopyArtifact(ReportOutputPath, Artifact.LocalFiles[Key]);
+						{
+							FScopeLock Lock(&CS);
+							Artifact.Files.Add(Key, MoveTemp(Path));
+							CopiedFileArtifacts++;
+							TestArtifactCount++;
+
+							// Show occasional progress for larger result sets
+							if ((CopiedFileArtifacts % 50) == 0)
+							{
+								UE_LOG(LogAutomationController, Display, TEXT("Copied %d of %d files in %.02f Seconds"), CopiedFileArtifacts, TotalFileArtifacts, (FDateTime::Now() - StepTime).GetTotalSeconds());
+							}
+						}
+					});
+
+					//UE_LOG(LogAutomationController, Verbose, TEXT("Copied %d files from artifact %s"), Keys.Num(), *Artifact.Name);
+				}
+
+				//UE_LOG(LogAutomationController, Verbose, TEXT("Copied %d files from test %s"), TestArtifactCount, *Test.TestDisplayName);
+			}
+
+			UE_LOG(LogAutomationController, Display, TEXT("Copied %d files in %.02f Seconds"), TotalFileArtifacts, (FDateTime::Now() - StepTime).GetTotalSeconds());
 		}
 
-		UE_LOG(AutomationControllerLog, Display, TEXT("Writing reports... %s."), *ReportOutputPath);
-
-		// Generate Json
-		GenerateJsonTestPassSummary(SerializedPassResults, Timestamp);
-
-		// Generate Html
-		GenerateHtmlTestPassSummary(SerializedPassResults, Timestamp);
-
-		if ( !DeveloperReportUrl.IsEmpty() )
 		{
-			UE_LOG(AutomationControllerLog, Display, TEXT("Launching Report URL %s."), *DeveloperReportUrl);
+			FDateTime StepTime = FDateTime::Now();
+			UE_LOG(LogAutomationController, Display, TEXT("Writing reports to %s..."), *ReportOutputPath);
 
-			FPlatformProcess::LaunchURL(*DeveloperReportUrl, nullptr, nullptr);
+			// Generate Json
+			GenerateJsonTestPassSummary(SerializedPassResults, StartTime);
+
+			// Generate Html
+			GenerateHtmlTestPassSummary(SerializedPassResults, StartTime);
+
+			if (!DeveloperReportUrl.IsEmpty())
+			{
+				UE_LOG(LogAutomationController, Display, TEXT("Launching Report URL %s."), *DeveloperReportUrl);
+
+				FPlatformProcess::LaunchURL(*DeveloperReportUrl, nullptr, nullptr);
+			}
+			UE_LOG(LogAutomationController, Display, TEXT("Wrote reports in %.02f Seconds"), (FDateTime::Now() - StepTime).GetTotalSeconds());
 		}
 
-		UE_LOG(AutomationControllerLog, Display, TEXT("Done writing reports... %s."), *ReportOutputPath);
+		UE_LOG(LogAutomationController, Display, TEXT("Completed exporting all results in %.02f Seconds"), (FDateTime::Now() - StartTime).GetTotalSeconds());
 	}
 
 	// Then clean our array for the next pass.
@@ -819,18 +908,15 @@ void FAutomationControllerManager::AddPingResult(const FMessageAddress& Responde
 
 void FAutomationControllerManager::UpdateTests()
 {
-	static const float CheckTestInterval = 1.0f;
-	static const float GameInstanceLostTimer = 300.0f;
-
 	CheckTestTimer += FPlatformTime::Seconds() - LastTimeUpdateTicked;
 	LastTimeUpdateTicked = FPlatformTime::Seconds();
-	if ( CheckTestTimer > CheckTestInterval )
+	if (CheckTestTimer > CheckTestIntervalSeconds)
 	{
 		for ( int32 Index = 0; Index < TestRunningArray.Num(); Index++ )
 		{
 			TestRunningArray[Index].LastPingTime += CheckTestTimer;
 
-			if ( TestRunningArray[Index].LastPingTime > GameInstanceLostTimer )
+			if (TestRunningArray[Index].LastPingTime > GameInstanceLostTimerSeconds)
 			{
 				// Find the game session instance info
 				int32 ClusterIndex;
@@ -845,7 +931,7 @@ void FAutomationControllerManager::UpdateTests()
 				TArray<FString> ErrorStringArray;
 				ErrorStringArray.Add(FString(TEXT("Failed")));
 				bHasErrors = true;
-				GLog->Logf(ELogVerbosity::Display, TEXT("Timeout hit. Nooooooo."));
+				UE_LOG(LogAutomationController, Display, TEXT("Timeout hit. Nooooooo."));
 
 				FAutomationTestResults TestResults;
 				TestResults.State = EAutomationState::Fail;
@@ -873,13 +959,13 @@ void FAutomationControllerManager::UpdateTests()
 					// Process results first to write out the report
 					ProcessResults();
 
-					GLog->Logf(ELogVerbosity::Display, TEXT("Module disabled"));
+					UE_LOG(LogAutomationController, Display, TEXT("Module disabled"));
 					SetControllerStatus(EAutomationControllerModuleState::Disabled);
 					ClusterDistributionMask = 0;
 				}
 				else
 				{
-					GLog->Logf(ELogVerbosity::Display, TEXT("Module not disabled. Keep looking."));
+					UE_LOG(LogAutomationController, Display, TEXT("Module not disabled. Keep looking."));
 					// Remove the cluster from the mask if there are no active devices left
 					if ( DeviceClusterManager.GetNumActiveDevicesInCluster(ClusterIndex) == 0 )
 					{
@@ -1078,6 +1164,86 @@ void FAutomationControllerManager::HandleRequestTestsReplyCompleteMessage(const 
 	SetTestNames(Context->GetSender(), TestInfo);
 }
 
+
+void FAutomationControllerManager::ReportAutomationResult(const TSharedPtr<IAutomationReport> InReport, int32 ClusterIndex, int32 PassIndex)
+{
+
+	FName CategoryName = "LogAutomationController";
+#if WITH_EDITOR
+	FMessageLog AutomationEditorLog("AutomationTestingLog");
+	// we log these messages ourselves for non-editor platforms so suppress this.
+	AutomationEditorLog.SuppressLoggingToOutputLog(true);
+	AutomationEditorLog.Open();
+#endif
+
+	const FAutomationTestResults& Results = InReport->GetResults(ClusterIndex, PassIndex);
+
+	// write results to editor panel
+#if WITH_EDITOR
+	FFormatNamedArguments Arguments;
+	Arguments.Add(TEXT("TestName"), FText::FromString(InReport->GetFullTestPath()));
+	Arguments.Add(TEXT("Result"), Results.State != EAutomationState::Success ? LOCTEXT("Failed", "Failed") : LOCTEXT("Passed", "Passed"));
+	TSharedRef<FTextToken> Token = FTextToken::Create(FText::Format(LOCTEXT("TestSuccessOrFailure", "Test '{TestName}' completed with result '{Result}'"), Arguments));
+	
+	if (Results.State == EAutomationState::Success)
+	{
+		AutomationEditorLog.Info()->AddToken(Token);
+	}
+	else
+	{
+		AutomationEditorLog.Error()->AddToken(Token);
+	}
+#endif
+
+	// Now log
+	if (Results.State == EAutomationState::Success)
+	{
+		FString SuccessString = FString::Printf(AutomationSuccessFormat, *InReport->GetDisplayName(), *InReport->GetFullTestPath());
+		UE_LOG(LogAutomationController, Display, TEXT("%s"), *SuccessString);
+	}
+	else
+	{
+		FString FailureString = FString::Printf(AutomationFailureFormat, *InReport->GetDisplayName(), *InReport->GetFullTestPath());
+		UE_LOG(LogAutomationController, Error, TEXT("%s"), *FailureString);
+	}
+
+	// bracket these for easy parsing
+	UE_LOG(LogAutomationController, Log, BeginEventsFormat, *InReport->GetFullTestPath());
+
+	for (const FAutomationExecutionEntry& Entry : Results.GetEntries())
+	{
+		switch (Entry.Event.Type)
+		{
+		case EAutomationEventType::Info:
+			UE_LOG(LogAutomationController, Log, TEXT("%s"), *Entry.ToString());
+#if WITH_EDITOR
+			AutomationEditorLog.Info(FText::FromString(Entry.ToString()));
+#endif
+			break;
+		case EAutomationEventType::Warning:
+			UE_LOG(LogAutomationController, Warning, TEXT("%s"), *Entry.ToString());
+#if WITH_EDITOR
+			AutomationEditorLog.Warning(FText::FromString(Entry.ToString()));
+#endif
+			break;
+		case EAutomationEventType::Error:
+			UE_LOG(LogAutomationController, Error, TEXT("%s"), *Entry.ToString());
+#if WITH_EDITOR
+			AutomationEditorLog.Error(FText::FromString(Entry.ToString()));
+#endif
+			break;
+		}
+	}
+
+	UE_LOG(LogAutomationController, Log, EndEventsFormat, *InReport->GetFullTestPath());
+
+	#undef AutomationSuccessFormat
+	#undef AutomationFailureFormat
+	#undef BeginEventsFormat
+	#undef EndEventsFormat
+}
+
+
 void FAutomationControllerManager::HandleRunTestsReplyMessage(const FAutomationWorkerRunTestsReply& Message, const TSharedRef<IMessageContext, ESPMode::ThreadSafe>& Context)
 {
 	// If we should commit these results
@@ -1108,52 +1274,7 @@ void FAutomationControllerManager::HandleRunTestsReplyMessage(const FAutomationW
 			// Gather all of the data relevant to this test for our json reporting.
 			CollectTestResults(Report, FinalResults);
 
-#if WITH_EDITOR
-			FMessageLog AutomationTestingLog("AutomationTestingLog");
-			AutomationTestingLog.Open();
-#endif
-
-			for (const FAutomationExecutionEntry& Entry : TestResults.GetEntries())
-			{
-				switch (Entry.Event.Type)
-				{
-				case EAutomationEventType::Info:
-					GLog->Logf(ELogVerbosity::Log, TEXT("%s"), *Entry.ToString());
-#if WITH_EDITOR
-					AutomationTestingLog.Info(FText::FromString(Entry.ToString()));
-#endif
-					break;
-				case EAutomationEventType::Warning:
-					GLog->Logf(ELogVerbosity::Warning, TEXT("%s"), *Entry.ToString());
-#if WITH_EDITOR
-					AutomationTestingLog.Warning(FText::FromString(Entry.ToString()));
-#endif
-					break;
-				case EAutomationEventType::Error:
-					GLog->Logf(ELogVerbosity::Error, TEXT("%s"), *Entry.ToString());
-#if WITH_EDITOR
-					AutomationTestingLog.Error(FText::FromString(Entry.ToString()));
-#endif
-					break;
-				}
-			}
-
-			if (TestResults.State == EAutomationState::Success)
-			{
-				FString SuccessString = FString::Printf(TEXT("...Automation Test Succeeded (%s)"), *Report->GetDisplayName());
-				GLog->Logf(ELogVerbosity::Log, TEXT("%s"), *SuccessString);
-#if WITH_EDITOR
-				AutomationTestingLog.Info(FText::FromString(*SuccessString));
-#endif
-			}
-			else
-			{
-				FString FailureString = FString::Printf(TEXT("...Automation Test Failed (%s)"), *Report->GetDisplayName());
-				GLog->Logf(ELogVerbosity::Log, TEXT("%s"), *FailureString);
-#if WITH_EDITOR
-				AutomationTestingLog.Error(FText::FromString(*FailureString));
-#endif
-			}
+			ReportAutomationResult(Report, ClusterIndex, CurrentTestPass);
 		}
 
 		// Device is now good to go
@@ -1202,7 +1323,7 @@ TArray<FString> FAutomationControllerManager::GetCheckpointFileContents()
 		FileData.ParseIntoArrayLines(TestsRun);
 		for (int i = 0; i < TestsRun.Num(); i++)
 		{
-			GLog->Log(TEXT("AutomationCheckpoint"), ELogVerbosity::Log, *TestsRun[i]);
+			UE_LOG(LogAutomationController, Log, TEXT("AutomationCheckpoint %s"), *TestsRun[i]);
 		}
 	}
 	return TestsRun;
@@ -1262,3 +1383,5 @@ void FAutomationControllerManager::ResetAutomationTestTimeout(const TCHAR* Reaso
 	//GLog->Logf(ELogVerbosity::Display, TEXT("Resetting automation test timeout: %s"), Reason);
 	LastTimeUpdateTicked = FPlatformTime::Seconds();
 }
+
+#undef LOCTEXT_NAMESPACE

@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -190,10 +190,14 @@ public:
 	virtual void OpenAssetAuditUI(TArray<FName> SelectedPackages) = 0;
 
 	/** Spawns reference viewer, showing selected packages or identifiers */
-	virtual void OpenReferenceViewerUI(TArray<FAssetIdentifier> SelectedIdentifiers) = 0;
-	virtual void OpenReferenceViewerUI(TArray<FName> SelectedPackages) = 0;
+	virtual void OpenReferenceViewerUI(const TArray<FAssetIdentifier> SelectedIdentifiers, const FReferenceViewerParams ReferenceViewerParams = FReferenceViewerParams()) = 0;
+	virtual void OpenReferenceViewerUI(const TArray<FName> SelectedPackages, const FReferenceViewerParams ReferenceViewerParams = FReferenceViewerParams()) = 0;
 
 	/** Spawns size map with selected packages */
 	virtual void OpenSizeMapUI(TArray<FAssetIdentifier> SelectedIdentifiers) = 0;
 	virtual void OpenSizeMapUI(TArray<FName> SelectedPackages) = 0;
+
+
+	/** Open the Shader cook stats */
+	virtual void OpenShaderCookStatistics(TArray<FName> SelectedIdentifiers) = 0;
 };

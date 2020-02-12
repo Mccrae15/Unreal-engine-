@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "Stack/SNiagaraStackFunctionInputName.h"
 #include "NiagaraEditorWidgetsStyle.h"
@@ -14,10 +14,13 @@ void SNiagaraStackFunctionInputName::Construct(const FArguments& InArgs, UNiagar
 	FunctionInput = InFunctionInput;
 	StackViewModel = InStackViewModel;
 	StackEntryItem = InFunctionInput;
+	IsSelected = InArgs._IsSelected;
 
 	ChildSlot
 	[
 		SNew(SHorizontalBox)
+		.IsEnabled_UObject(FunctionInput, &UNiagaraStackEntry::GetOwnerIsEnabled)
+
 		// Edit condition checkbox
 		+ SHorizontalBox::Slot()
 		.AutoWidth()
@@ -28,6 +31,7 @@ void SNiagaraStackFunctionInputName::Construct(const FArguments& InArgs, UNiagar
 			.IsChecked(this, &SNiagaraStackFunctionInputName::GetEditConditionCheckState)
 			.OnCheckStateChanged(this, &SNiagaraStackFunctionInputName::OnEditConditionCheckStateChanged)
 		]
+
 		// Name Label
 		+ SHorizontalBox::Slot()
 		.VAlign(VAlign_Center)
@@ -40,8 +44,7 @@ void SNiagaraStackFunctionInputName::Construct(const FArguments& InArgs, UNiagar
 			.IsSelected(this, &SNiagaraStackFunctionInputName::GetIsNameWidgetSelected)
 			.OnTextCommitted(this, &SNiagaraStackFunctionInputName::OnNameTextCommitted)
 			.HighlightText_UObject(InStackViewModel, &UNiagaraStackViewModel::GetCurrentSearchText)
-			.ColorAndOpacity(this, &SNiagaraStackFunctionInputName::GetTextColorForSearch)
-			.ToolTipText_UObject(FunctionInput, &UNiagaraStackFunctionInput::GetTooltipText, UNiagaraStackFunctionInput::EValueMode::Local)
+			.ToolTipText(this, &SNiagaraStackFunctionInputName::GetToolTipText)
 		]
 	];
 }
@@ -73,20 +76,31 @@ void SNiagaraStackFunctionInputName::OnEditConditionCheckStateChanged(ECheckBoxS
 
 bool SNiagaraStackFunctionInputName::GetIsNameReadOnly() const
 {
-	return FunctionInput->CanRenameInput() == false;
+	return FunctionInput->SupportsRename() == false;
 }
 
 bool SNiagaraStackFunctionInputName::GetIsNameWidgetSelected() const
 {
-	return true;
+	return IsSelected.Get();
 }
 
 bool SNiagaraStackFunctionInputName::GetIsEnabled() const
 {
-	return FunctionInput->GetHasEditCondition() == false || FunctionInput->GetEditConditionEnabled();
+	return FunctionInput->GetOwnerIsEnabled() && (FunctionInput->GetHasEditCondition() == false || FunctionInput->GetEditConditionEnabled());
+}
+
+FText SNiagaraStackFunctionInputName::GetToolTipText() const
+{
+	// The engine ticks tooltips before widgets so it's possible for the footer to be finalized when
+	// the widgets haven't been recreated.
+	if (FunctionInput->IsFinalized())
+	{
+		return FText();
+	}
+	return FunctionInput->GetTooltipText();
 }
 
 void SNiagaraStackFunctionInputName::OnNameTextCommitted(const FText& InText, ETextCommit::Type InCommitType)
 {
-	FunctionInput->RenameInput(*InText.ToString());
+	FunctionInput->OnRenamed(InText);
 }

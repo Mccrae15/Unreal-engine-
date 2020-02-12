@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -7,6 +7,7 @@
 #include "UObject/Object.h"
 #include "Misc/Guid.h"
 #include "MaterialShared.h"
+#include "MaterialCachedData.h"
 #include "MaterialExpressionIO.h"
 
 #include "MaterialExpression.generated.h"
@@ -150,7 +151,7 @@ class ENGINE_API UMaterialExpression : public UObject
 
 	/** Indicates that this is a 'parameter' type of expression and should always be loaded (ie not cooked away) because we might want the default parameter. */
 	UPROPERTY()
-	uint32 bIsParameterExpression:1;
+	uint8 bIsParameterExpression : 1;
 
 #if WITH_EDITORONLY_DATA
 	/** If true, the comment bubble will be visible in the graph editor */
@@ -201,7 +202,7 @@ class ENGINE_API UMaterialExpression : public UObject
 #if WITH_EDITOR
 	virtual void PostEditChangeProperty(FPropertyChangedEvent& PropertyChangedEvent) override;
 	virtual void PostEditImport() override;
-	virtual bool CanEditChange( const UProperty* InProperty ) const override;
+	virtual bool CanEditChange( const FProperty* InProperty ) const override;
 	
 	virtual bool Modify( bool bAlwaysMarkDirty=true ) override;
 #endif // WITH_EDITOR
@@ -234,11 +235,8 @@ class ENGINE_API UMaterialExpression : public UObject
 	 * This is used to link the compiled uniform expressions with their default texture values. 
 	 * Any UMaterialExpression whose compilation creates a texture uniform expression (eg Compiler->Texture, Compiler->TextureParameter) must implement this.
 	 */
-	virtual UTexture* GetReferencedTexture() 
-	{
-		return NULL;
-	}
-
+	virtual UObject* GetReferencedTexture() const { return nullptr; }
+	/** Returns true if GetReferencedTexture() can ever return a valid pointer. */
 	virtual bool CanReferenceTexture() const { return false; }
 
 #if WITH_EDITOR
@@ -300,6 +298,11 @@ class ENGINE_API UMaterialExpression : public UObject
 	 */
 #if WITH_EDITOR
 	virtual bool NeedsRealtimePreview() { return false; }
+
+	/**
+	 * @return text overlaid over the preview in the material editor
+	 */
+	virtual FText GetPreviewOverlayText() const { return FText(); }
 
 	/**
 	 * MatchesSearchQuery: Check this expression to see if it matches the search query
@@ -416,6 +419,8 @@ class ENGINE_API UMaterialExpression : public UObject
 	virtual FName GetParameterName() const { return NAME_None; }
 	virtual void SetParameterName(const FName& Name) {}
 
+	virtual bool HasConnectedOutputs() const;
+
 #endif // WITH_EDITOR
 
 	/** Checks whether any inputs to this expression create a loop */
@@ -431,6 +436,5 @@ protected:
 	 */
 	bool ContainsInputLoopInternal(TArray<class FMaterialExpressionKey>& ExpressionStack, TSet<class FMaterialExpressionKey>& VisitedExpressions, const bool bStopOnFunctionCall);
 };
-
 
 

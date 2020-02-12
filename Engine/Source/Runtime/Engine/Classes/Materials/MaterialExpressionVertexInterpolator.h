@@ -1,11 +1,11 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
 #include "Materials/MaterialExpressionCustomOutput.h"
 #include "MaterialExpressionVertexInterpolator.generated.h"
 
-UCLASS()
+UCLASS(MinimalAPI)
 class UMaterialExpressionVertexInterpolator : public UMaterialExpressionCustomOutput
 {
 	GENERATED_UCLASS_BODY()
@@ -15,7 +15,7 @@ class UMaterialExpressionVertexInterpolator : public UMaterialExpressionCustomOu
 
 #if WITH_EDITOR
 	virtual int32 Compile(class FMaterialCompiler* Compiler, int32 OutputIndex) override;
-	int32 CompileInput(class FMaterialCompiler* Compiler, int32 AssignedInterpolatorIndex);
+	ENGINE_API int32 CompileInput(class FMaterialCompiler* Compiler, int32 AssignedInterpolatorIndex);
 	virtual void GetCaption(TArray<FString>& OutCaptions) const override;
 	virtual uint32 GetInputType(int32 InputIndex) override { return MCT_Float4; }
 	virtual bool HasCustomSourceOutput() override { return true; }

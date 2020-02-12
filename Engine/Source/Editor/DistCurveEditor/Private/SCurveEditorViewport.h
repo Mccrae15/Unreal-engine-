@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -35,9 +35,6 @@ public:
 	/** SCompoundWidget interface */
 	void Construct(const FArguments& InArgs);
 	
-	/** Draws the viewport */
-	void DrawViewport();
-
 	/** Refreshes the viewport */
 	void RefreshViewport();
 

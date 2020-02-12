@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -60,6 +60,12 @@ struct FKismetUserDeclaredFunctionMetadata
 	FLinearColor InstanceTitleColor;
 
 	UPROPERTY()
+	FString DeprecationMessage;
+
+	UPROPERTY()
+	bool bIsDeprecated;
+
+	UPROPERTY()
 	bool bCallInEditor;
 
 	/** Cached value for whether or not the graph has latent functions, positive for TRUE, zero for FALSE, and INDEX_None for undetermined */
@@ -69,6 +75,7 @@ struct FKismetUserDeclaredFunctionMetadata
 public:
 	FKismetUserDeclaredFunctionMetadata()
 		: InstanceTitleColor(FLinearColor::White)
+		, bIsDeprecated(false)
 		, bCallInEditor(false)
 		, HasLatentFunctions(INDEX_NONE)
 	{
@@ -76,7 +83,7 @@ public:
 };
 
 UCLASS(abstract, MinimalAPI)
-class UK2Node_EditablePinBase : public UK2Node
+class BLUEPRINTGRAPH_VTABLE UK2Node_EditablePinBase : public UK2Node
 {
 	GENERATED_UCLASS_BODY()
 
@@ -138,6 +145,14 @@ class UK2Node_EditablePinBase : public UK2Node
 	BLUEPRINTGRAPH_API void RemoveUserDefinedPinByName(const FName PinName);
 
 	/**
+	* Check if a pin with this name exists in the user defined pin set
+	* 
+	* @param	PinName name of pin check existence of
+	* @return	True if a user defined pin with this name exists
+	*/
+	bool UserDefinedPinExists(const FName PinName) const;
+
+	/**
 	 * Creates a new pin on the node from the specified user pin info.
 	 * Must be overridden so each type of node can ensure that the pin is created in the proper direction, etc
 	 * 
@@ -145,7 +160,7 @@ class UK2Node_EditablePinBase : public UK2Node
 	 */
 	virtual UEdGraphPin* CreatePinFromUserDefinition(const TSharedPtr<FUserPinInfo> NewPinInfo) { return nullptr; }
 
-	// Modifies the default value of an existing pin on the node.
+	/** Modifies the default value of an existing pin on the node, this will update both the UserPinInfo and the linked editor pin */
 	BLUEPRINTGRAPH_API virtual bool ModifyUserDefinedPinDefaultValue(TSharedPtr<FUserPinInfo> PinInfo, const FString& NewDefaultValue);
 
 	/**
@@ -167,5 +182,9 @@ class UK2Node_EditablePinBase : public UK2Node
 	 * Should this node require 'const' for pass-by-reference parameters?
 	 */
 	virtual bool ShouldUseConstRefParams() const { return false;  }
+
+private:
+	/** Internal function that just updates the UEdGraphPin, separate to avoid recursive update calls */
+	bool UpdateEdGraphPinDefaultValue(TSharedPtr<FUserPinInfo> PinInfo, FString& NewDefaultValue);
 };
 

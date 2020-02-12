@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 
 #include "SEditorViewportToolBarButton.h"
@@ -18,7 +18,7 @@ void SEditorViewportToolBarButton::Construct( const FArguments& Declaration )
 
 	bool bContentOverride = ContentSlotWidget != SNullWidget::NullWidget;
 
-	EUserInterfaceActionType::Type ButtonType = Declaration._ButtonType;
+	EUserInterfaceActionType ButtonType = Declaration._ButtonType;
 	
 	// The style of the image to show in the button
 	const FName ImageStyleName = Declaration._Image.Get();

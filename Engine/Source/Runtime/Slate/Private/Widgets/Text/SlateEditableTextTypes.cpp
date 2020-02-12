@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "Widgets/Text/SlateEditableTextTypes.h"
 #include "Rendering/SlateLayoutTransform.h"
@@ -10,6 +10,11 @@
 
 namespace SlateEditableTextTypes
 {
+
+void FCursorInfo::UpdateLastCursorInteractionTime()
+{
+	LastCursorInteractionTime = FSlateApplication::Get().GetCurrentTime();
+}
 
 void FCursorInfo::SetCursorLocationAndCalculateAlignment(const FTextLayout& InTextLayout, const FTextLocation& InCursorPosition)
 {
@@ -65,7 +70,7 @@ void FCursorInfo::SetCursorLocationAndAlignment(const FTextLayout& InTextLayout,
 		}
 	}
 
-	LastCursorInteractionTime = FSlateApplication::Get().GetCurrentTime();
+	UpdateLastCursorInteractionTime();
 }
 
 FCursorInfo FCursorInfo::CreateUndo() const
@@ -82,7 +87,8 @@ void FCursorInfo::RestoreFromUndo(const FCursorInfo& UndoData)
 	CursorPosition = UndoData.CursorPosition;
 	CursorAlignment = UndoData.CursorAlignment;
 	CursorTextDirection = UndoData.CursorTextDirection;
-	LastCursorInteractionTime = FSlateApplication::Get().GetCurrentTime();
+
+	UpdateLastCursorInteractionTime();
 }
 
 FCursorLineHighlighter::FCursorLineHighlighter(const FCursorInfo* InCursorInfo)

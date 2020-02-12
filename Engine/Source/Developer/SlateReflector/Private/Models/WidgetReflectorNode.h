@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -78,6 +78,14 @@ public:
 	* @return The bool indicating whether or not the widget we were initialized from reports as Focusable
 	*/
 	virtual bool GetWidgetFocusable() const = 0;
+
+	/** Is the widget visible? */
+	virtual bool GetWidgetVisible() const = 0;
+
+	virtual bool GetWidgetNeedsTick() const = 0;
+	virtual bool GetWidgetIsVolatile() const = 0;
+	virtual bool GetWidgetIsVolatileIndirectly() const = 0;
+	virtual bool GetWidgetHasActiveTimers() const = 0;
 
 	/**
 	 * The human readable location for widgets that are defined in C++ is the file and line number
@@ -218,8 +226,13 @@ public:
 	virtual FText GetWidgetType() const override;
 	virtual FText GetWidgetTypeAndShortName() const override;
 	virtual FText GetWidgetVisibilityText() const override;
+	virtual bool GetWidgetVisible() const override;
 	virtual FText GetWidgetClippingText() const override;
 	virtual bool GetWidgetFocusable() const override;
+	virtual bool GetWidgetNeedsTick() const override;
+	virtual bool GetWidgetIsVolatile() const override;
+	virtual bool GetWidgetIsVolatileIndirectly() const override;
+	virtual bool GetWidgetHasActiveTimers() const override;
 	virtual FText GetWidgetReadableLocation() const override;
 	virtual FString GetWidgetFile() const override;
 	virtual int32 GetWidgetLineNumber() const override;
@@ -269,7 +282,12 @@ public:
 	virtual FText GetWidgetTypeAndShortName() const override;
 	virtual FText GetWidgetVisibilityText() const override;
 	virtual FText GetWidgetClippingText() const override;
+	virtual bool GetWidgetVisible() const override;
 	virtual bool GetWidgetFocusable() const override;
+	virtual bool GetWidgetNeedsTick() const override;
+	virtual bool GetWidgetIsVolatile() const override;
+	virtual bool GetWidgetIsVolatileIndirectly() const override;
+	virtual bool GetWidgetHasActiveTimers() const override;
 	virtual FText GetWidgetReadableLocation() const override;
 	virtual FString GetWidgetFile() const override;
 	virtual int32 GetWidgetLineNumber() const override;
@@ -307,10 +325,18 @@ private:
 	/** The visibility string of the widget at the point it was passed to Initialize */
 	FText CachedWidgetVisibilityText;
 
+	/** Is the widget visible? */
+	bool bCachedWidgetVisible;
+
 	/** The focusability of the widget at the point it was passed to Initialize */
 	bool bCachedWidgetFocusable;
+
+	bool CachedWidgetNeedsTick;
+	bool CachedWidgetIsVolatile;
+	bool CachedWidgetIsVolatileIndirectly;
+	bool CachedWidgetHasActiveTimers;
 	
-		/** The clipping string of the widget at the point it was passed to Initialize */
+	/** The clipping string of the widget at the point it was passed to Initialize */
 	FText CachedWidgetClippingText;
 
 	/** The human readable location (source file for C++ widgets, asset name for UMG widgets) of the widget at the point it was passed to Initialize */
@@ -422,7 +448,10 @@ public:
 	 */
 	static FText GetWidgetVisibilityText(const TSharedPtr<SWidget>& InWidget);
 
-/**
+	/** Is the widget visible? */
+	static bool GetWidgetVisibility(const TSharedPtr<SWidget>& InWidget);
+
+	/**
 	 * @return The current clipping string for the given widget
 	 */
 	static FText GetWidgetClippingText(const TSharedPtr<SWidget>& InWidget);
@@ -432,6 +461,10 @@ public:
 	*/
 	static bool GetWidgetFocusable(const TSharedPtr<SWidget>& InWidget);
 
+	static bool GetWidgetNeedsTick(const TSharedPtr<SWidget>& InWidget);
+	static bool GetWidgetIsVolatile(const TSharedPtr<SWidget>& InWidget);
+	static bool GetWidgetIsVolatileIndirectly(const TSharedPtr<SWidget>& InWidget);
+	static bool GetWidgetHasActiveTimers(const TSharedPtr<SWidget>& InWidget);
 	
 	/**
 	 * The human readable location for widgets that are defined in C++ is the file and line number

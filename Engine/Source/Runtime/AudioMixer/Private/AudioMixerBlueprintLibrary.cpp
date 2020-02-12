@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "AudioMixerBlueprintLibrary.h"
 #include "Engine/World.h"
@@ -6,7 +6,9 @@
 #include "AudioMixerDevice.h"
 #include "CoreMinimal.h"
 #include "DSP/SpectrumAnalyzer.h"
-
+#include "ContentStreaming.h"
+#include "AudioCompressionSettingsUtils.h"
+#include "Async/Async.h"
 
 // This is our global recording task:
 static TUniquePtr<Audio::FAudioRecordingData> RecordingData;
@@ -20,7 +22,7 @@ static FAudioDevice* GetAudioDeviceFromWorldContext(const UObject* WorldContextO
 		return nullptr;
 	}
 
-	return ThisWorld->GetAudioDevice();
+	return ThisWorld->GetAudioDevice().GetAudioDevice();
 }
 
 static Audio::FMixerDevice* GetAudioMixerDeviceFromWorldContext(const UObject* WorldContextObject)
@@ -50,13 +52,12 @@ void UAudioMixerBlueprintLibrary::AddMasterSubmixEffect(const UObject* WorldCont
 	if (Audio::FMixerDevice* MixerDevice = GetAudioMixerDeviceFromWorldContext(WorldContextObject))
 	{
 		// Immediately create a new sound effect base here before the object becomes potentially invalidated
-		FSoundEffectBase* SoundEffectBase = SubmixEffectPreset->CreateNewEffect();
-
-		// Cast it to a sound effect submix type
-		FSoundEffectSubmix* SoundEffectSubmix = static_cast<FSoundEffectSubmix*>(SoundEffectBase);
+		FSoundEffectSubmixPtr SoundEffectSubmix = MakeShareable(static_cast<FSoundEffectSubmix*>(SubmixEffectPreset->CreateNewEffect()));
 
 		FSoundEffectSubmixInitData InitData;
 		InitData.SampleRate = MixerDevice->GetSampleRate();
+		InitData.DeviceID = MixerDevice->DeviceID;
+		InitData.PresetSettings = nullptr;
 
 		// Initialize and set the preset immediately
 		SoundEffectSubmix->Init(InitData);
@@ -345,6 +346,51 @@ int32 UAudioMixerBlueprintLibrary::GetNumberOfEntriesInSourceEffectChain(const U
 	}
 
 	return 0;
+}
+
+void UAudioMixerBlueprintLibrary::PrimeSoundForPlayback(USoundWave* SoundWave, const FOnSoundLoadComplete OnLoadCompletion)
+{
+	if (!SoundWave)
+	{
+		UE_LOG(LogAudioMixer, Warning, TEXT("Prime Sound For Playback called with a null SoundWave pointer."));
+	}
+	else if (!FPlatformCompressionUtilities::IsCurrentPlatformUsingStreamCaching())
+	{
+		UE_LOG(LogAudioMixer, Warning, TEXT("Prime Sound For Playback doesn't do anything unless Audio Load On Demand is enabled."));
+		
+		OnLoadCompletion.ExecuteIfBound(SoundWave, false);
+	}
+	else
+	{
+		IStreamingManager::Get().GetAudioStreamingManager().RequestChunk(SoundWave, 1, [OnLoadCompletion, SoundWave](EAudioChunkLoadResult InResult) 
+		{
+			AsyncTask(ENamedThreads::GameThread, [OnLoadCompletion, SoundWave, InResult]() {
+				if (InResult == EAudioChunkLoadResult::Completed || InResult == EAudioChunkLoadResult::AlreadyLoaded)
+				{
+					OnLoadCompletion.ExecuteIfBound(SoundWave, false);
+				}
+				else
+				{
+					OnLoadCompletion.ExecuteIfBound(SoundWave, true);
+				}
+			});
+		});
+	}
+}
+
+void UAudioMixerBlueprintLibrary::PrimeSoundCueForPlayback(USoundCue* SoundCue)
+{
+	if (SoundCue)
+	{
+		SoundCue->PrimeSoundCue();
+	}
+}
+
+float UAudioMixerBlueprintLibrary::TrimAudioCache(float InMegabytesToFree)
+{
+	uint64 NumBytesToFree = (uint64) (((double)InMegabytesToFree) * 1024.0 * 1024.0);
+	uint64 NumBytesFreed = IStreamingManager::Get().GetAudioStreamingManager().TrimMemory(NumBytesToFree);
+	return (float)(((double) NumBytesFreed / 1024) / 1024.0);
 }
 
 void UAudioMixerBlueprintLibrary::PopulateSpectrumAnalyzerSettings(EFFTSize FFTSize, EFFTPeakInterpolationMethod InterpolationMethod, EFFTWindowType WindowType, float HopSize, Audio::FSpectrumAnalyzerSettings &OutSettings)

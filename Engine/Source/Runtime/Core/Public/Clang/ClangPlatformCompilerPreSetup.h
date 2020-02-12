@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -40,6 +40,28 @@
 		_Pragma("clang diagnostic pop")
 #endif // DISABLE_DEPRECATION
 
+#ifndef PRAGMA_DISABLE_OVERLOADED_VIRTUAL_WARNINGS
+	#define PRAGMA_DISABLE_OVERLOADED_VIRTUAL_WARNINGS \
+		_Pragma("clang diagnostic push") \
+		_Pragma("clang diagnostic ignored \"-Woverloaded-virtual\"")
+#endif // PRAGMA_DISABLE_OVERLOADED_VIRTUAL_WARNINGS
+
+#ifndef PRAGMA_ENABLE_OVERLOADED_VIRTUAL_WARNINGS
+	#define PRAGMA_ENABLE_OVERLOADED_VIRTUAL_WARNINGS \
+		_Pragma("clang diagnostic pop")
+#endif // PRAGMA_ENABLE_OVERLOADED_VIRTUAL_WARNINGS
+
+#ifndef PRAGMA_DISABLE_MISSING_BRACES_WARNINGS
+	#define PRAGMA_DISABLE_MISSING_BRACES_WARNINGS \
+		_Pragma("clang diagnostic push") \
+		_Pragma("clang diagnostic ignored \"-Wmissing-braces\"")
+#endif // PRAGMA_DISABLE_MISSING_BRACES_WARNINGS
+
+#ifndef PRAGMA_ENABLE_MISSING_BRACES_WARNINGS
+	#define PRAGMA_ENABLE_MISSING_BRACES_WARNINGS \
+		_Pragma("clang diagnostic pop")
+#endif // PRAGMA_ENABLE_MISSING_BRACES_WARNINGS
+
 #ifndef PRAGMA_DISABLE_SHADOW_VARIABLE_WARNINGS
 	#define PRAGMA_DISABLE_SHADOW_VARIABLE_WARNINGS \
 		_Pragma("clang diagnostic push") \
@@ -50,6 +72,32 @@
 	#define PRAGMA_ENABLE_SHADOW_VARIABLE_WARNINGS \
 		_Pragma("clang diagnostic pop")
 #endif // PRAGMA_ENABLE_SHADOW_VARIABLE_WARNINGS
+
+#if __has_warning("-Wimplicit-float-conversion")
+#define DISABLE_IMPLICIT_FLOAT_CONVERSION_FRAGMENT _Pragma("clang diagnostic ignored \"-Wimplicit-float-conversion\"")
+#else
+#define DISABLE_IMPLICIT_FLOAT_CONVERSION_FRAGMENT
+#endif
+
+#if __has_warning("-Wimplicit-int-conversion")
+#define DISABLE_IMPLICIT_INT_CONVERSION_FRAGMENT _Pragma("clang diagnostic ignored \"-Wimplicit-int-conversion\"")
+#else
+#define DISABLE_IMPLICIT_INT_CONVERSION_FRAGMENT
+#endif
+
+#ifndef PRAGMA_DISABLE_UNSAFE_TYPECAST_WARNINGS
+	#define PRAGMA_DISABLE_UNSAFE_TYPECAST_WARNINGS \
+		_Pragma("clang diagnostic push") \
+		_Pragma("clang diagnostic ignored \"-Wfloat-conversion\"") \
+		DISABLE_IMPLICIT_FLOAT_CONVERSION_FRAGMENT \
+		DISABLE_IMPLICIT_INT_CONVERSION_FRAGMENT \
+		_Pragma("clang diagnostic ignored \"-Wc++11-narrowing\"")
+#endif // PRAGMA_DISABLE_UNSAFE_TYPECAST_WARNINGS
+
+#ifndef PRAGMA_ENABLE_UNSAFE_TYPECAST_WARNINGS
+	#define PRAGMA_ENABLE_UNSAFE_TYPECAST_WARNINGS \
+		_Pragma("clang diagnostic pop")
+#endif // PRAGMA_ENABLE_UNSAFE_TYPECAST_WARNINGS
 
 #ifndef PRAGMA_DISABLE_UNDEFINED_IDENTIFIER_WARNINGS
 	#define PRAGMA_DISABLE_UNDEFINED_IDENTIFIER_WARNINGS \
@@ -84,6 +132,17 @@
 		_Pragma("clang diagnostic pop")
 #endif // PRAGMA_ENABLE_REORDER_WARNINGS
 
+#ifndef PRAGMA_DISABLE_REGISTER_WARNINGS
+	#define PRAGMA_DISABLE_REGISTER_WARNINGS \
+		_Pragma("clang diagnostic push") \
+		_Pragma("clang diagnostic ignored \"-Wregister\"")
+#endif // PRAGMA_DISABLE_REGISTER_WARNINGS
+
+#ifndef PRAGMA_ENABLE_REGISTER_WARNINGS
+	#define PRAGMA_ENABLE_REGISTER_WARNINGS \
+		_Pragma("clang diagnostic pop")
+#endif // PRAGMA_ENABLE_REGISTER_WARNINGS
+
 #ifndef PRAGMA_DISABLE_MACRO_REDEFINED_WARNINGS
 	#define PRAGMA_DISABLE_MACRO_REDEFINED_WARNINGS \
 		_Pragma("clang diagnostic push") \
@@ -99,6 +158,14 @@
 	#define PRAGMA_POP \
 		_Pragma("clang diagnostic pop")
 #endif // PRAGMA_POP
+
+#ifndef PRAGMA_PUSH_PLATFORM_DEFAULT_PACKING
+	#define PRAGMA_PUSH_PLATFORM_DEFAULT_PACKING
+#endif // PRAGMA_PUSH_PLATFORM_DEFAULT_PACKING
+	
+#ifndef PRAGMA_POP_PLATFORM_DEFAULT_PACKING
+	#define PRAGMA_POP_PLATFORM_DEFAULT_PACKING
+#endif // PRAGMA_POP_PLATFORM_DEFAULT_PACKING
 
 #ifndef EMIT_CUSTOM_WARNING_AT_LINE
 	#define EMIT_CUSTOM_WARNING_AT_LINE(Line, Warning) \

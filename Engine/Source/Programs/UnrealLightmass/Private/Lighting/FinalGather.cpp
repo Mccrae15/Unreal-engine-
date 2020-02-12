@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "CoreMinimal.h"
 #include "Exporter.h"
@@ -82,11 +82,6 @@ void FStaticLightingSystem::CalculateVolumeSampleIncidentRadiance(
 	bool bDebugThisSample
 	) const
 {
-	if (bDebugThisSample)
-	{
-		int32 asdf = 0;
-	}
-
 	const double StartTime = FPlatformTime::Seconds();
 
 	const FVector4 Position = LightingSample.GetPosition();
@@ -408,13 +403,6 @@ FLinearColor FStaticLightingSystem::FinalGatherSample(
 	FLinearColor Lighting = FLinearColor::Black;
 	OutStationarySkyLighting = FLinearColor::Black;
 
-#if ALLOW_LIGHTMAP_SAMPLE_DEBUGGING
-	if (bDebugThisTexel)
-	{
-		int32 asdf = 0;
-	}
-#endif
-
 	bool bPositiveSample = false;
 
 	OutUnoccludedSkyVector = RayIntersection.bIntersects ? FVector(0) : FVector(WorldPathDirection);
@@ -692,11 +680,6 @@ public:
 		// This is necessary for the neighbor comparisons to work right
 		for (int32 RefinementDepth = 0; RefinementDepth < NumAdaptiveRefinementLevels; RefinementDepth++)
 		{
-			if (bDebugThisTexel)
-			{
-				int32 asdf = 0;
-			}
-
 			FLinearColor TotalLighting = FLinearColor::Black;
 
 			// Recalculate total lighting based on the refined results
@@ -772,7 +755,7 @@ public:
 							const FLinearColor Radiance = RootElementLighting.Lighting + RootElementLighting.StationarySkyLighting;
 							const float RelativeBrightness = Radiance.ComputeLuminance() / AverageBrightness;
 
-							for (int32 NeighborIndex = 0; NeighborIndex < ARRAY_COUNT(Neighbors); NeighborIndex++)
+							for (int32 NeighborIndex = 0; NeighborIndex < UE_ARRAY_COUNT(Neighbors); NeighborIndex++)
 							{
 								int32 NeighborTheta = ThetaIndex + Neighbors[NeighborIndex].X;
 								// Wrap phi around, since it is the angle around the hemisphere axis
@@ -911,7 +894,7 @@ public:
 								const float RelativeBrightness = Radiance.ComputeLuminance() / AverageBrightness;
 
 								// Only search the axis neighbors past the first depth
-								for (int32 NeighborIndex = 0; NeighborIndex < ARRAY_COUNT(Neighbors) / 2; NeighborIndex++)
+								for (int32 NeighborIndex = 0; NeighborIndex < UE_ARRAY_COUNT(Neighbors) / 2; NeighborIndex++)
 								{
 									const float NeighborU = NodeContext.Min.X + (SubThetaIndex + Neighbors[NeighborIndex].X) * NodeContext.Size.X / 2;
 									const float NeighborV = NodeContext.Min.Y + (SubPhiIndex + Neighbors[NeighborIndex].Y) * NodeContext.Size.Y / 2;
@@ -958,11 +941,6 @@ public:
 
 			// Swap input and output for the next step
 			Swap(CurrentNodesToRefine, NextNodesToRefine);
-
-			if (bDebugThisTexel)
-			{
-				int32 asdf = 0;
-			}
 
 			FVector4 WorldPathDirections[4];
 			FVector4 TangentPathDirections[4];
@@ -1115,7 +1093,7 @@ private:
 		{
 			FLightingAndOcclusion FilteredValue;
 
-			for (int32 ChildIndex = 0; ChildIndex < ARRAY_COUNT(Parent->Children); ChildIndex++)
+			for (int32 ChildIndex = 0; ChildIndex < UE_ARRAY_COUNT(Parent->Children); ChildIndex++)
 			{
 				FilteredValue = FilteredValue + GetFilteredValueRecursive(Parent->Children[ChildIndex]) / 4.0f;
 			}
@@ -1137,7 +1115,7 @@ private:
 				FinalGatherHitPoints[Parent->Element.HitPointIndex].Weight = 0.0f;
 			}
 
-			for (int32 ChildIndex = 0; ChildIndex < ARRAY_COUNT(Parent->Children); ChildIndex++)
+			for (int32 ChildIndex = 0; ChildIndex < UE_ARRAY_COUNT(Parent->Children); ChildIndex++)
 			{
 				UpdateHitPointWeightsRecursive(FinalGatherHitPoints, Parent->Children[ChildIndex], ParentWeight / 4.0f);
 			}
@@ -1469,6 +1447,7 @@ FFinalGatherSample FStaticLightingSystem::CachePointIncomingRadiance(
 	const FStaticLightingMapping* Mapping,
 	const FFullStaticLightingVertex& Vertex,
 	int32 ElementIndex,
+	float TexelRadius,
 	float SampleRadius,
 	bool bIntersectingSurface,
 	FStaticLightingMappingContext& MappingContext,
@@ -1486,8 +1465,9 @@ FFinalGatherSample FStaticLightingSystem::CachePointIncomingRadiance(
 	const int32 BounceNumber = 1;
 	FFinalGatherSample IndirectLighting;
 	FFinalGatherSample UnusedSecondLighting;
+	float UnusedBackfacingHitsFraction;
 	// Attempt to interpolate incoming radiance from the lighting cache
-	if (!IrradianceCachingSettings.bAllowIrradianceCaching || !MappingContext.FirstBounceCache.InterpolateLighting(Vertex, true, bDebugThisTexel, 1.0f , IndirectLighting, UnusedSecondLighting, MappingContext.DebugCacheRecords))
+	if (!IrradianceCachingSettings.bAllowIrradianceCaching || !MappingContext.FirstBounceCache.InterpolateLighting(Vertex, true, bDebugThisTexel, 1.0f , IndirectLighting, UnusedSecondLighting, UnusedBackfacingHitsFraction, MappingContext.DebugCacheRecords))
 	{
 		// If final gathering is disabled, all indirect lighting will be estimated using photon mapping.
 		// This is really only useful for debugging since it requires an excessive number of indirect photons to get indirect shadows for the first bounce.
@@ -1713,7 +1693,7 @@ FFinalGatherSample FStaticLightingSystem::CachePointIncomingRadiance(
 					Vertex,
 					ElementIndex,
 					GatherInfo,
-					SampleRadius,
+					BounceNumber == 1 ? TexelRadius : SampleRadius,
 					OverrideRadius,
 					IrradianceCachingSettings,
 					GeneralSettings,

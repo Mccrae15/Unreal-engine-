@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -190,3 +190,23 @@ inline FFrameTime ClampToDiscreteRange(FFrameTime InTime, const TRange<FFrameNum
 
 
 } // namespace MovieScene
+
+inline FString LexToString(const TRange<FFrameNumber>& InRange)
+{
+	TRangeBound<FFrameNumber> SourceLower = InRange.GetLowerBound();
+	TRangeBound<FFrameNumber> SourceUpper = InRange.GetUpperBound();
+
+	return *FString::Printf(TEXT("%s,%s"),
+		SourceLower.IsOpen() ?
+		TEXT("[-inf") :
+		SourceLower.IsInclusive() ?
+		*FString::Printf(TEXT("[%i"), SourceLower.GetValue().Value) :
+		*FString::Printf(TEXT("(%i"), SourceLower.GetValue().Value),
+
+		SourceUpper.IsOpen() ?
+		TEXT("+inf]") :
+		SourceUpper.IsInclusive() ?
+		*FString::Printf(TEXT("%i]"), SourceUpper.GetValue().Value) :
+		*FString::Printf(TEXT("%i)"), SourceUpper.GetValue().Value)
+	);
+}

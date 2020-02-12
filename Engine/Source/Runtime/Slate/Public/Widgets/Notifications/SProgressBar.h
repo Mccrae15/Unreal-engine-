@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -53,7 +53,9 @@ public:
 		, _FillImage(nullptr)
 		, _MarqueeImage(nullptr)
 		, _RefreshRate(2.0f)
-		{}
+		{
+			_Visibility = EVisibility::SelfHitTestInvisible;
+		}
 
 		/** Style used for the progress bar */
 		SLATE_STYLE_ARGUMENT( FProgressBarStyle, Style )

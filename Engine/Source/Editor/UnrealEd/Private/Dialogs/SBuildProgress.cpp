@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 
 #include "Dialogs/SBuildProgress.h"
@@ -20,7 +20,8 @@ SBuildProgressWidget::~SBuildProgressWidget()
 
 void SBuildProgressWidget::Construct( const FArguments& InArgs )
 {
-	BorderImage = FEditorStyle::GetBrush("Menu.Background");
+	BorderImage = FInvalidatableBrushAttribute(FEditorStyle::GetBrush("Menu.Background"));
+
 	this->ChildSlot
 	.VAlign(VAlign_Center)
 	[

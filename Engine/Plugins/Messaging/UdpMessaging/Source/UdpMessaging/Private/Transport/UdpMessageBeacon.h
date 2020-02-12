@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -10,17 +10,16 @@
 #include "HAL/Runnable.h"
 #include "Shared/UdpMessageSegment.h"
 #include "Templates/SharedPointer.h"
+#include "Interfaces/IPv4/IPv4Endpoint.h"
+#include "Containers/Queue.h"
 
 class FEvent;
 class FInternetAddr;
 class FSocket;
-struct FIPv4Endpoint;
-
 
 /**
  * Implements a beacon sender thread.
  *
- * @todo udpmessaging: gmp: add documentation for FUdpMessageBeacon
  */
 class FUdpMessageBeacon
 	: public FRunnable
@@ -36,7 +35,7 @@ public:
 	 * @param InMulticastEndpoint The multicast group endpoint to transport messages to.
 	 * @param InStaticEndpoints The static nodes to broadcast to alongside the multicast.
 	 */
-	FUdpMessageBeacon(FSocket* InSocket, const FGuid& InSocketId, const FIPv4Endpoint& InMulticastEndpoint, const TArray<FIPv4Endpoint>& InStaticEndpoints);
+	FUdpMessageBeacon(FSocket* InSocket, const FGuid& InSocketId, const FIPv4Endpoint& InMulticastEndpoint);
 
 	/** Virtual destructor. */
 	virtual ~FUdpMessageBeacon();
@@ -59,6 +58,24 @@ public:
 	 * @param EndpointCount The current number of known endpoints.
 	 */
 	void SetEndpointCount(int32 EndpointCount);
+
+	/** 
+	 * Get the socket error flag.
+	 * @return if there were any socket error
+	 */
+	bool HasSocketError() const;
+
+	/**
+	 * Add a static endpoint to the beacon
+	 * @param InEndpoint the endpoint to add
+	 */
+	void AddStaticEndpoint(const FIPv4Endpoint& InEndpoint);
+
+	/**
+	 * Remove a static endpoint from the beacon
+	 * @param InEndpoint the endpoint to remove
+	 */
+	void RemoveStaticEndpoint(const FIPv4Endpoint& InEndpoint);
 
 public:
 
@@ -102,6 +119,11 @@ protected:
 	virtual void Tick() override;
 
 private:
+	/** Add pending endpoints to the list of static addresses. */
+	void ProcessStaticEndpointQueue();
+
+	/** Add local static endpoints to discover other processes bound to other local network adapters. */
+	void AddLocalEndpoints();
 
 	/** Holds the calculated interval between Hello segments. */
 	FTimespan BeaconInterval;
@@ -118,6 +140,16 @@ private:
 	/** Holds the multicast address and port number to send to. */
 	TSharedPtr<FInternetAddr> MulticastAddress;
 
+	/** Pending static endpoint to send to the beacon. */
+	struct FPendingEndpoint
+	{
+		FIPv4Endpoint StaticEndpoint;
+		bool bAdd;
+	};
+
+	/** Static endpoint queue to add/remove static endpoints. */
+	TQueue<FPendingEndpoint> StaticEndpointQueue;
+
 	/** Holds the static addresses to broadcast ping to. */
 	TArray<TSharedPtr<FInternetAddr>> StaticAddresses;
 
@@ -133,9 +165,11 @@ private:
 	/** Holds a flag indicating that the thread is stopping. */
 	bool Stopping;
 
+	/** Holds a flag indicating if we encountered socket sending error. */
+	bool bSocketError;
+
 	/** Holds the thread object. */
 	FRunnableThread* Thread;
-
 private:
 	
 	/** Defines the time interval per endpoint. */

@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "Config/Parser/DisplayClusterConfigParser.h"
 
@@ -49,6 +49,11 @@ void FDisplayClusterConfigParser::AddViewport(const FDisplayClusterConfigViewpor
 	ConfigParserListener->AddViewport(InCfgViewport);
 }
 
+void FDisplayClusterConfigParser::AddPostprocess(const FDisplayClusterConfigPostprocess& InCfgPostprocess)
+{
+	ConfigParserListener->AddPostprocess(InCfgPostprocess);
+}
+
 void FDisplayClusterConfigParser::AddCamera(const FDisplayClusterConfigCamera& InCfgCamera)
 {
 	ConfigParserListener->AddCamera(InCfgCamera);
@@ -67,6 +72,11 @@ void FDisplayClusterConfigParser::AddGeneral(const FDisplayClusterConfigGeneral&
 void FDisplayClusterConfigParser::AddRender(const FDisplayClusterConfigRender& InCfgRender)
 {
 	ConfigParserListener->AddRender(InCfgRender);
+}
+
+void FDisplayClusterConfigParser::AddNvidia(const FDisplayClusterConfigNvidia& InCfgNvidia)
+{
+	ConfigParserListener->AddNvidia(InCfgNvidia);
 }
 
 void FDisplayClusterConfigParser::AddNetwork(const FDisplayClusterConfigNetwork& InCfgNetwork)
@@ -97,4 +107,9 @@ void FDisplayClusterConfigParser::AddInputSetup(const FDisplayClusterConfigInput
 void FDisplayClusterConfigParser::AddCustom(const FDisplayClusterConfigCustom& InCfgCustom)
 {
 	ConfigParserListener->AddCustom(InCfgCustom);
+}
+
+void FDisplayClusterConfigParser::AddProjection(const FDisplayClusterConfigProjection& InCfgProjection)
+{
+	ConfigParserListener->AddProjection(InCfgProjection);
 }

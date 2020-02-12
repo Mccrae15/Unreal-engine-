@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 /*==============================================================================
 ParticleCurveTexture.cpp: Texture used to hold particle curves.
@@ -82,7 +82,7 @@ public:
 		Parameters.PixelScale.Y = 1.0f / GParticleCurveTextureSizeY;
 		Parameters.CurveOffset = CurveOffset;
 		FParticleCurveInjectionBufferRef UniformBuffer = FParticleCurveInjectionBufferRef::CreateUniformBufferImmediate(Parameters, UniformBuffer_SingleDraw);
-		FVertexShaderRHIParamRef VertexShader = GetVertexShader();
+		FRHIVertexShader* VertexShader = RHICmdList.GetBoundVertexShader();
 		SetUniformBufferParameter(RHICmdList, VertexShader, GetUniformBufferParameter<FParticleCurveInjectionParameters>(), UniformBuffer);
 	}
 };
@@ -110,13 +110,6 @@ public:
 	explicit FParticleCurveInjectionPS(const ShaderMetaType::CompiledShaderInitializerType& Initializer)
 		: FGlobalShader(Initializer)
 	{
-	}
-
-	/** Serialization. */
-	virtual bool Serialize(FArchive& Ar) override
-	{
-		bool bShaderHasOutdatedParameters = FGlobalShader::Serialize(Ar);
-		return bShaderHasOutdatedParameters;
 	}
 };
 
@@ -154,7 +147,7 @@ public:
 			Offset += sizeof(FVector2D);
 		}
 
-		VertexDeclarationRHI = RHICreateVertexDeclaration(Elements);
+		VertexDeclarationRHI = PipelineStateCache::GetOrCreateVertexDeclaration(Elements);
 	}
 
 	virtual void ReleaseRHI() override
@@ -175,8 +168,8 @@ TGlobalResource<FParticleCurveInjectionVertexDeclaration> GParticleCurveInjectio
 */
 static void InjectCurves(
 	FRHICommandListImmediate& RHICmdList,
-	FTexture2DRHIParamRef CurveTextureRHI,
-	FTexture2DRHIParamRef CurveTextureTargetRHI,
+	FRHITexture2D* CurveTextureRHI,
+	FRHITexture2D* CurveTextureTargetRHI,
 	TArray<FCurveSamples>& InPendingCurves)
 {
 	static bool bFirstCall = true;
@@ -203,7 +196,7 @@ static void InjectCurves(
 		RHICmdList.ApplyCachedRenderTargets(GraphicsPSOInit);
 
 		RHICmdList.SetScissorRect(false, 0, 0, 0, 0);
-		RHICmdList.SetViewport(0, 0, 0.0f, GParticleCurveTextureSizeX, GParticleCurveTextureSizeY, 1.0f);
+		RHICmdList.SetViewport(0.0f, 0.0f, 0.0f, (float)GParticleCurveTextureSizeX, (float)GParticleCurveTextureSizeY, 1.0f);
 		GraphicsPSOInit.DepthStencilState = TStaticDepthStencilState<false, CF_Always>::GetRHI();
 		GraphicsPSOInit.RasterizerState = TStaticRasterizerState<FM_Solid, CM_None>::GetRHI();
 		GraphicsPSOInit.BlendState = TStaticBlendState<>::GetRHI();
@@ -213,8 +206,8 @@ static void InjectCurves(
 		TShaderMapRef<FParticleCurveInjectionPS> PixelShader(GetGlobalShaderMap(GMaxRHIFeatureLevel));
 
 		GraphicsPSOInit.BoundShaderState.VertexDeclarationRHI = GParticleCurveInjectionVertexDeclaration.VertexDeclarationRHI;
-		GraphicsPSOInit.BoundShaderState.VertexShaderRHI = GETSAFERHISHADER_VERTEX(*VertexShader);
-		GraphicsPSOInit.BoundShaderState.PixelShaderRHI = GETSAFERHISHADER_PIXEL(*PixelShader);
+		GraphicsPSOInit.BoundShaderState.VertexShaderRHI = VertexShader.GetVertexShader();
+		GraphicsPSOInit.BoundShaderState.PixelShaderRHI = PixelShader.GetPixelShader();
 		GraphicsPSOInit.PrimitiveType = PT_TriangleList;
 
 		SetGraphicsPipelineState(RHICmdList, GraphicsPSOInit);
@@ -524,6 +517,8 @@ void FParticleCurveTexture::InitRHI()
 {
 	// 8-bit per channel RGBA texture for curves.
 	FRHIResourceCreateInfo CreateInfo = { FClearValueBinding(FLinearColor::Blue) };
+	CreateInfo.DebugName = TEXT("ParticleCurveTexture");
+
 	RHICreateTargetableShaderResource2D(
 		GParticleCurveTextureSizeX,
 		GParticleCurveTextureSizeY,
@@ -617,12 +612,11 @@ void FParticleCurveTexture::SubmitPendingCurves()
 	check(IsInGameThread());
 	if (PendingCurves.Num())
 	{
-		ENQUEUE_UNIQUE_RENDER_COMMAND_TWOPARAMETER(
-			FInjectPendingCurvesCommand,
-			FParticleCurveTexture*, ParticleCurveTexture, this,
-			TArray<FCurveSamples>, PendingCurves, PendingCurves,
+		FParticleCurveTexture* ParticleCurveTexture = this;
+		//TArray<FCurveSamples> InPendingCurves = PendingCurves;
+		ENQUEUE_RENDER_COMMAND(FInjectPendingCurvesCommand)(
+			[ParticleCurveTexture, PendingCurves = PendingCurves](FRHICommandListImmediate& RHICmdList) mutable
 			{
-
 				InjectCurves(
 					RHICmdList,
 					ParticleCurveTexture->CurveTextureRHI,

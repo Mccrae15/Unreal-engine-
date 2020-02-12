@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 using UnrealBuildTool;
 
@@ -28,6 +28,5 @@ public class GoogleARCoreRendering : ModuleRules
 				// ... add private dependencies that you statically link with here ...
 			}
 			);
-		bFasterWithoutUnity = true;
 	}
 }

@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -163,6 +163,12 @@ public:
 	FORCEINLINE int32 IndexOfByPredicate(const PredicateType& Pred) const
 	{
 		return Array.IndexOfByPredicate( Pred );
+	}
+
+	template<typename PredicateType>
+	FORCEINLINE int32 FindLastByPredicate(const PredicateType& Pred) const
+	{
+		return Array.FindLastByPredicate(Pred);
 	}
 
 	FORCEINLINE void Remove(int32 Index, int32 Count=1)

@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "Internationalization/TextLocalizationManager.h"
 #include "Internationalization/TextLocalizationResource.h"
@@ -6,13 +6,14 @@
 #include "Internationalization/LocalizationResourceTextSource.h"
 #include "Internationalization/PolyglotTextSource.h"
 #include "Internationalization/StringTableRegistry.h"
+#include "Internationalization/Cultures/LeetCulture.h"
 #include "GenericPlatform/GenericPlatformFile.h"
 #include "HAL/FileManager.h"
 #include "HAL/LowLevelMemTracker.h"
 #include "Misc/Parse.h"
-#include "Templates/ScopedPointer.h"
 #include "Misc/ScopeLock.h"
 #include "Misc/CommandLine.h"
+#include "Misc/LazySingleton.h"
 #include "Internationalization/Culture.h"
 #include "Internationalization/Internationalization.h"
 #include "Internationalization/StringTableCore.h"
@@ -20,6 +21,7 @@
 #include "Stats/Stats.h"
 #include "Misc/ConfigCacheIni.h"
 #include "Misc/App.h"
+#include "Misc/CoreDelegates.h"
 #include "Templates/UniquePtr.h"
 
 DEFINE_LOG_CATEGORY_STATIC(LogTextLocalizationManager, Log, All);
@@ -46,9 +48,9 @@ void ApplyDefaultCultureSettings(const ELocalizationLoadFlags LocLoadFlags)
 
 	// Set culture according to configuration now that configs are available.
 #if ENABLE_LOC_TESTING
-	if (FCommandLine::IsInitialized() && FParse::Param(FCommandLine::Get(), TEXT("LEET")))
+	if (FCommandLine::IsInitialized() && FParse::Param(FCommandLine::Get(), *FLeetCulture::StaticGetName()))
 	{
-		I18N.SetCurrentCulture(TEXT("LEET"));
+		I18N.SetCurrentCulture(FLeetCulture::StaticGetName());
 	}
 	else
 #endif
@@ -187,7 +189,7 @@ void ApplyDefaultCultureSettings(const ELocalizationLoadFlags LocLoadFlags)
 			FString TargetCultureName = InRequestedCulture;
 
 #if ENABLE_LOC_TESTING
-			if (TargetCultureName != TEXT("LEET"))
+			if (TargetCultureName != FLeetCulture::StaticGetName())
 #endif
 			{
 				ELocalizationLoadFlags ValidationFlags = ELocalizationLoadFlags::None;
@@ -290,6 +292,17 @@ void ApplyDefaultCultureSettings(const ELocalizationLoadFlags LocLoadFlags)
 	}
 }
 
+void BeginPreInitTextLocalization()
+{
+	LLM_SCOPE(ELLMTag::Localization);
+
+	SCOPED_BOOT_TIMING("BeginPreInitTextLocalization");
+	DECLARE_SCOPE_CYCLE_COUNTER(TEXT("BeginPreInitTextLocalization"), STAT_BeginPreInitTextLocalization, STATGROUP_LoadTime);
+
+	// Bind this delegate before the PAK file loader is created
+	FCoreDelegates::OnPakFileMounted.AddRaw(&FTextLocalizationManager::Get(), &FTextLocalizationManager::OnPakFileMounted);
+}
+
 void BeginInitTextLocalization()
 {
 	LLM_SCOPE(ELLMTag::Localization);
@@ -377,21 +390,26 @@ void InitGameTextLocalization()
 	//FTextLocalizationManager::Get().DumpMemoryInfo();
 }
 
-
 FTextLocalizationManager& FTextLocalizationManager::Get()
 {
-	static FTextLocalizationManager TextLocalizationManager;
-	return TextLocalizationManager;
+	return TLazySingleton<FTextLocalizationManager>::Get();
+}
+
+void FTextLocalizationManager::TearDown()
+{
+	TLazySingleton<FTextLocalizationManager>::TearDown();
+	FTextKey::TearDown();
 }
 
 FTextLocalizationManager::FTextLocalizationManager()
 	: bIsInitialized(false)
 	, SynchronizationObject()
 	, TextRevisionCounter(0)
+	, LocResTextSource(MakeShared<FLocalizationResourceTextSource>())
 	, PolyglotTextSource(MakeShared<FPolyglotTextSource>())
 {
 	const bool bRefreshResources = false;
-	RegisterTextSource(MakeShared<FLocalizationResourceTextSource>(), bRefreshResources);
+	RegisterTextSource(LocResTextSource.ToSharedRef(), bRefreshResources);
 	RegisterTextSource(PolyglotTextSource.ToSharedRef(), bRefreshResources);
 }
 
@@ -567,7 +585,7 @@ FTextDisplayStringRef FTextLocalizationManager::GetDisplayString(const FTextKey&
 	}
 
 #if ENABLE_LOC_TESTING
-	const bool bShouldLEETIFYAll = bIsInitialized && FInternationalization::Get().GetCurrentLanguage()->GetName() == TEXT("LEET");
+	const bool bShouldLEETIFYAll = bIsInitialized && FInternationalization::Get().GetCurrentLanguage()->GetName() == FLeetCulture::StaticGetName();
 
 	// Attempt to set bShouldLEETIFYUnlocalizedString appropriately, only once, after the commandline is initialized and parsed.
 	static bool bShouldLEETIFYUnlocalizedString = false;
@@ -831,6 +849,87 @@ void FTextLocalizationManager::RefreshResources()
 	LoadLocalizationResourcesForCulture(FInternationalization::Get().GetCurrentLanguage()->GetName(), LocLoadFlags);
 }
 
+void FTextLocalizationManager::OnPakFileMounted(const TCHAR* PakFilename, const int32 ChunkId)
+{
+	if (ChunkId == INDEX_NONE || ChunkId == 0)
+	{
+		// Skip non-chunked PAK files, and chunk 0 as that contains the standard localization data
+		return;
+	}
+
+	// Track this so that full resource refreshes (eg, changing culture) work as expected
+	LocResTextSource->RegisterChunkId(ChunkId);
+
+	UE_LOG(LogTextLocalizationManager, Verbose, TEXT("Request to load localization data for chunk %d (from PAK '%s')"), ChunkId, PakFilename);
+
+	if (!bIsInitialized)
+	{
+		// If we're not yet initialized then don't bother patching, as the full initialization path will load the data for this chunk
+		return;
+	}
+
+	// Load the resources from each target in this chunk
+	// Note: We only allow game localization targets to be chunked, and the layout is assumed to follow our standard pattern (as used by the localization dashboard and FLocTextHelper)
+	const TArray<FString> ChunkedLocalizationTargets = FLocalizationResourceTextSource::GetChunkedLocalizationTargets();
+	const TArray<FString> PrioritizedCultureNames = FInternationalization::Get().GetPrioritizedCultureNames(FInternationalization::Get().GetCurrentLanguage()->GetName());
+	const ELocalizationLoadFlags LocLoadFlags = ELocalizationLoadFlags::Game;
+	FTextLocalizationResource UnusedNativeResource;
+	FTextLocalizationResource LocalizedResource;
+	{
+		TArray<FString> PrioritizedLocalizationPaths;
+		for (const FString& LocalizationTarget : ChunkedLocalizationTargets)
+		{
+			const FString LocalizationTargetForChunk = TextLocalizationResourceUtil::GetLocalizationTargetNameForChunkId(LocalizationTarget, ChunkId);
+			PrioritizedLocalizationPaths.Add(FPaths::ProjectContentDir() / TEXT("Localization") / LocalizationTargetForChunk);
+			UE_LOG(LogTextLocalizationManager, Verbose, TEXT("Loading chunked localization data from '%s'"), *PrioritizedLocalizationPaths.Last());
+		}
+		LocResTextSource->LoadLocalizedResourcesFromPaths(TArrayView<FString>(), PrioritizedLocalizationPaths, TArrayView<FString>(), LocLoadFlags, PrioritizedCultureNames, UnusedNativeResource, LocalizedResource);
+	}
+
+	// Allow any higher priority text sources to override the text loaded for the chunk (eg, to allow polyglot hot-fixes to take priority)
+	// Note: If any text sources don't support dynamic queries, then we must do a much slower full refresh instead :(
+	bool bNeedsFullRefresh = false;
+	{
+		// Copy the IDs array as QueryLocalizedResource can update the map
+		TArray<FTextId> ChunkTextIds;
+		LocalizedResource.Entries.GenerateKeyArray(ChunkTextIds);
+
+		for (const TSharedPtr<ILocalizedTextSource>& LocalizedTextSource : LocalizedTextSources)
+		{
+			if (LocalizedTextSource->GetPriority() <= LocResTextSource->GetPriority())
+			{
+				continue;
+			}
+
+			for (const FTextId& ChunkTextId : ChunkTextIds)
+			{
+				if (LocalizedTextSource->QueryLocalizedResource(LocLoadFlags, PrioritizedCultureNames, ChunkTextId, UnusedNativeResource, LocalizedResource) == EQueryLocalizedResourceResult::NotImplemented)
+				{
+					bNeedsFullRefresh = true;
+					break;
+				}
+			}
+
+			if (bNeedsFullRefresh)
+			{
+				break;
+			}
+		}
+	}
+
+	// Apply the new data
+	if (bNeedsFullRefresh)
+	{
+		UE_LOG(LogTextLocalizationManager, Verbose, TEXT("Patching chunked localization data failed, performing full refresh"));
+		RefreshResources();
+	}
+	else
+	{
+		UE_LOG(LogTextLocalizationManager, Verbose, TEXT("Patching chunked localization data for %d entries"), LocalizedResource.Entries.Num());
+		UpdateFromLocalizations(MoveTemp(LocalizedResource), /*bDirtyTextRevision*/true);
+	}
+}
+
 void FTextLocalizationManager::OnCultureChanged()
 {
     if (!bIsInitialized)
@@ -880,12 +979,21 @@ void FTextLocalizationManager::LoadLocalizationResourcesForPrioritizedCultures(T
 		return;
 	}
 
+	// Leet-ify always needs the native text to operate on, so force native data if we're loading for LEET
+	ELocalizationLoadFlags FinalLocLoadFlags = LocLoadFlags;
+#if ENABLE_LOC_TESTING
+	if (PrioritizedCultureNames[0] == FLeetCulture::StaticGetName())
+	{
+		FinalLocLoadFlags |= ELocalizationLoadFlags::Native;
+	}
+#endif
+
 	// Load the resources from each text source
 	FTextLocalizationResource NativeResource;
 	FTextLocalizationResource LocalizedResource;
 	for (const TSharedPtr<ILocalizedTextSource>& LocalizedTextSource : LocalizedTextSources)
 	{
-		LocalizedTextSource->LoadLocalizedResources(LocLoadFlags, PrioritizedCultureNames, NativeResource, LocalizedResource);
+		LocalizedTextSource->LoadLocalizedResources(FinalLocLoadFlags, PrioritizedCultureNames, NativeResource, LocalizedResource);
 	}
 
 	// When loc testing is enabled, UpdateFromNative also takes care of restoring non-localized text which is why the condition below is gated
@@ -898,7 +1006,7 @@ void FTextLocalizationManager::LoadLocalizationResourcesForPrioritizedCultures(T
 
 #if ENABLE_LOC_TESTING
 	// The leet culture is fake. Just leet-ify existing strings.
-	if (PrioritizedCultureNames[0] == TEXT("LEET"))
+	if (PrioritizedCultureNames[0] == FLeetCulture::StaticGetName())
 	{
 		// Lock while updating the tables
 		{

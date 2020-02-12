@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "Toolkits/SimpleAssetEditor.h"
 #include "Modules/ModuleManager.h"
@@ -7,6 +7,8 @@
 #include "PropertyEditorModule.h"
 #include "IDetailsView.h"
 #include "Editor.h"
+#include "Widgets/Input/SHyperlink.h"
+#include "SourceCodeNavigation.h"
 
 
 #define LOCTEXT_NAMESPACE "GenericEditor"
@@ -38,6 +40,7 @@ const FName FSimpleAssetEditor::SimpleEditorAppIdentifier( TEXT( "GenericEditorA
 FSimpleAssetEditor::~FSimpleAssetEditor()
 {
 	GEditor->GetEditorSubsystem<UImportSubsystem>()->OnAssetPostImport.RemoveAll(this);
+	GEditor->OnObjectsReplaced().RemoveAll(this);
 
 	DetailsView.Reset();
 	PropertiesTab.Reset();
@@ -51,7 +54,8 @@ void FSimpleAssetEditor::InitEditor( const EToolkitMode::Type Mode, const TShare
 	const bool bIsLockable = false;
 
 	EditingObjects = ObjectsToEdit;
-	GEditor->GetEditorSubsystem<UImportSubsystem>()->OnAssetPostImport.AddRaw(this, &FSimpleAssetEditor::HandleAssetPostImport);
+	GEditor->GetEditorSubsystem<UImportSubsystem>()->OnAssetPostImport.AddSP(this, &FSimpleAssetEditor::HandleAssetPostImport);
+	GEditor->OnObjectsReplaced().AddSP(this, &FSimpleAssetEditor::OnObjectsReplaced);
 
 	FPropertyEditorModule& PropertyEditorModule = FModuleManager::GetModuleChecked<FPropertyEditorModule>( "PropertyEditor" );
 	const FDetailsViewArgs DetailsViewArgs( bIsUpdatable, bIsLockable, true, FDetailsViewArgs::ObjectsUseNameArea, false );
@@ -82,6 +86,7 @@ void FSimpleAssetEditor::InitEditor( const EToolkitMode::Type Mode, const TShare
 	const bool bCreateDefaultToolbar = true;
 	FAssetEditorToolkit::InitAssetEditor( Mode, InitToolkitHost, FSimpleAssetEditor::SimpleEditorAppIdentifier, StandaloneDefaultLayout, bCreateDefaultStandaloneMenu, bCreateDefaultToolbar, ObjectsToEdit );
 
+	RegenerateMenusAndToolbars();
 	// @todo toolkit world centric editing
 	// Setup our tool's layout
 	/*if( IsWorldCentricAssetEditor() && !PropertiesTab.IsValid() )
@@ -251,6 +256,29 @@ void FSimpleAssetEditor::HandleAssetPostImport(UFactory* InFactory, UObject* InO
 	}
 }
 
+void FSimpleAssetEditor::OnObjectsReplaced(const TMap<UObject*, UObject*>& ReplacementMap)
+{
+	bool bChangedAny = false;
+
+	// Refresh our details view if one of the objects replaced was in the map. This gets called before the reinstance GC fixup, so we might as well fixup EditingObjects now too
+	for (int32 i = 0; i < EditingObjects.Num(); i++)
+	{
+		UObject* SourceObject = EditingObjects[i];
+		UObject* ReplacedObject = ReplacementMap.FindRef(SourceObject);
+
+		if (ReplacedObject && ReplacedObject != SourceObject)
+		{
+			EditingObjects[i] = ReplacedObject;
+			bChangedAny = true;
+		}
+	}
+
+	if (bChangedAny)
+	{
+		DetailsView->SetObjects(EditingObjects);
+	}
+}
+
 FString FSimpleAssetEditor::GetWorldCentricTabPrefix() const
 {
 	return LOCTEXT("WorldCentricTabPrefix", "Generic Asset ").ToString();
@@ -272,6 +300,61 @@ TSharedRef<FSimpleAssetEditor> FSimpleAssetEditor::CreateEditor( const EToolkitM
 	TSharedRef< FSimpleAssetEditor > NewEditor( new FSimpleAssetEditor() );
 	NewEditor->InitEditor( Mode, InitToolkitHost, ObjectsToEdit, GetDetailsViewObjects );
 	return NewEditor;
+}
+
+void FSimpleAssetEditor::PostRegenerateMenusAndToolbars()
+{
+	// Find the common denominator class of the assets we're editing
+	TArray<UClass*> ClassList;
+	for (UObject* Obj : EditingObjects)
+	{
+		check(Obj);
+		ClassList.Add(Obj->GetClass());
+	}
+
+	UClass* CommonDenominatorClass = UClass::FindCommonBase(ClassList);
+	const bool bNotAllSame = (EditingObjects.Num() > 0) && (EditingObjects[0]->GetClass() != CommonDenominatorClass);
+
+	// Provide a hyperlink to view that native class
+	if (CommonDenominatorClass)
+	{
+		TWeakObjectPtr<UClass> WeakClassPtr(CommonDenominatorClass);
+		auto OnNavigateToClassCode = [WeakClassPtr]()
+		{
+			if (UClass* StrongClassPtr = WeakClassPtr.Get())
+			{
+				if (FSourceCodeNavigation::CanNavigateToClass(StrongClassPtr))
+				{
+					FSourceCodeNavigation::NavigateToClass(StrongClassPtr);
+				}
+			}
+		};
+
+		// build and attach the menu overlay
+		TSharedRef<SHorizontalBox> MenuOverlayBox = SNew(SHorizontalBox)
+			+ SHorizontalBox::Slot()
+			.AutoWidth()
+			.VAlign(VAlign_Center)
+			[
+				SNew(STextBlock)
+				.ColorAndOpacity(FSlateColor::UseSubduedForeground())
+				.ShadowOffset(FVector2D::UnitVector)
+				.Text(bNotAllSame ? LOCTEXT("SimpleAssetEditor_AssetType_Varied", "Common Asset Type: ") : LOCTEXT("SimpleAssetEditor_AssetType", "Asset Type: "))
+			]
+			+SHorizontalBox::Slot()
+			.AutoWidth()
+			.VAlign(VAlign_Center)
+			.Padding(0.0f, 0.0f, 8.0f, 0.0f)
+			[
+				SNew(SHyperlink)
+				.Style(FEditorStyle::Get(), "Common.GotoNativeCodeHyperlink")
+				.OnNavigate_Lambda(OnNavigateToClassCode)
+				.Text(FText::FromName(CommonDenominatorClass->GetFName()))
+				.ToolTipText(FText::Format(LOCTEXT("GoToCode_ToolTip", "Click to open this source file in {0}"), FSourceCodeNavigation::GetSelectedSourceCodeIDE()))
+			];
+	
+		SetMenuOverlay(MenuOverlayBox);
+	}
 }
 
 #undef LOCTEXT_NAMESPACE

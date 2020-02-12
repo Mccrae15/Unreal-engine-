@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 /*=============================================================================
 	PhysicsReplication.cpp: Code for updating body instance physics state based on replication
@@ -192,6 +192,7 @@ bool FPhysicsReplication::ApplyRigidBodyState(float DeltaSeconds, FBodyInstance*
 	const FQuat DeltaQuat = InvCurrentQuat * TargetQuat;
 	DeltaQuat.ToAxisAndAngle(AngDiffAxis, AngDiff);
 	AngDiff = FMath::RadiansToDegrees(FMath::UnwindRadians(AngDiff));
+	const float AngDiffSize = FMath::Abs(AngDiff);
 
 	/////// ACCUMULATE ERROR IF NOT APPROACHING SOLUTION ///////
 
@@ -200,7 +201,7 @@ bool FPhysicsReplication::ApplyRigidBodyState(float DeltaSeconds, FBodyInstance*
 	const bool bWasAwake = BI->IsInstanceAwake();
 	const bool bAutoWake = false;
 
-	const float Error = (LinDiffSize * ErrorPerLinearDiff) + (AngDiff * ErrorPerAngularDiff);
+	const float Error = (LinDiffSize * ErrorPerLinearDiff) + (AngDiffSize * ErrorPerAngularDiff);
 	bRestoredState = Error < MaxRestoredStateError;
 	if (bRestoredState)
 	{
@@ -383,8 +384,9 @@ void FPhysicsReplication::OnTick(float DeltaSeconds, TMap<TWeakObjectPtr<UPrimit
 				bool bUpdated = false;
 				if (AActor* OwningActor = PrimComp->GetOwner())
 				{
-					const bool bIsSimulated = OwningActor->Role == ROLE_SimulatedProxy;
-					const bool bIsReplicatedAutonomous = OwningActor->Role == ROLE_AutonomousProxy && PrimComp->bReplicatePhysicsToAutonomousProxy;
+					const ENetRole OwnerRole = OwningActor->GetLocalRole();
+					const bool bIsSimulated = OwnerRole == ROLE_SimulatedProxy;
+					const bool bIsReplicatedAutonomous = OwnerRole == ROLE_AutonomousProxy && PrimComp->bReplicatePhysicsToAutonomousProxy;
 					if (bIsSimulated || bIsReplicatedAutonomous)
 					{
 						// Get the ping of the guy who owns this thing. If nobody is,

@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 /*=============================================================================
 	Canvas.cpp: Unreal canvas rendering.
@@ -26,6 +26,7 @@
 #include "StereoRendering.h"
 #include "Debug/ReporterGraph.h"
 #include "Fonts/FontMeasure.h"
+#include "EngineModule.h"
 
 DEFINE_LOG_CATEGORY_STATIC(LogCanvas, Log, All);
 
@@ -255,6 +256,7 @@ FCanvas::FCanvas(FRenderTarget* InRenderTarget,FHitProxyConsumer* InHitProxyCons
 ,	CurrentRealTime(InRealTime)
 ,	CurrentWorldTime(InWorldTime)
 ,	CurrentDeltaWorldTime(InWorldDeltaTime)
+,	bAllowsToSwitchVerticalAxis(false)
 ,	FeatureLevel(InFeatureLevel)
 ,	bUseInternalTexture(false)
 ,	DrawMode(CDM_DeferDrawing)
@@ -267,7 +269,7 @@ void FCanvas::Construct()
 {
 	bStereoRendering = false;
 	bScaledToRenderTarget = false;
-	bAllowsToSwitchVerticalAxis = true;
+	bAllowsToSwitchVerticalAxis = false;
 
 	const FIntPoint RenderTargetSizeXY = RenderTarget ? RenderTarget->GetSizeXY() : FIntPoint(1, 1);
 
@@ -391,7 +393,7 @@ bool FCanvasBatchedElementRenderItem::Render_RenderThread(FRHICommandListImmedia
 			Gamma = 1.0f;
 		}
 
-		bool bNeedsToSwitchVerticalAxis = RHINeedsToSwitchVerticalAxis(Canvas->GetShaderPlatform()) && !Canvas->GetAllowSwitchVerticalAxis();
+		bool bNeedsToSwitchVerticalAxis = RHINeedsToSwitchVerticalAxis(Canvas->GetShaderPlatform()) && Canvas->GetAllowSwitchVerticalAxis();
 
 		// draw batched items
 		Data->BatchedElements.Draw(
@@ -429,7 +431,7 @@ bool FCanvasBatchedElementRenderItem::Render_GameThread(const FCanvas* Canvas, F
 			Gamma = 1.0f;
 		}
 
-		bool bNeedsToSwitchVerticalAxis = RHINeedsToSwitchVerticalAxis(Canvas->GetShaderPlatform()) && !Canvas->GetAllowSwitchVerticalAxis();
+		bool bNeedsToSwitchVerticalAxis = RHINeedsToSwitchVerticalAxis(Canvas->GetShaderPlatform()) && Canvas->GetAllowSwitchVerticalAxis();
 
 		// Render the batched elements.
 		struct FBatchedDrawParameters
@@ -626,23 +628,11 @@ void FCanvas::AddTriangleRenderItem(const FCanvasUVTri& Tri, const FMaterialRend
 
 FCanvas::~FCanvas()
 {
-	// delete batches from elements entries
-	for( int32 Idx=0; Idx < SortedElements.Num(); Idx++ )
-	{
-		FCanvasSortElement& SortElement = SortedElements[Idx];
-		for( int32 BatchIdx=0; BatchIdx < SortElement.RenderBatchArray.Num(); BatchIdx++ )
-		{
-			FCanvasBaseRenderItem* RenderItem = SortElement.RenderBatchArray[BatchIdx];
-			delete RenderItem;
-		}
-	}
+	ClearBatchesToRender();
 }
 
-void FCanvas::Flush_RenderThread(FRHICommandListImmediate& RHICmdList, bool bForce)
+void FCanvas::Flush_RenderThread(FRHICommandListImmediate& RHICmdList, bool bForce, bool bInsideRenderPass)
 {
-	// This renderpass is self contained.
-	check(RHICmdList.IsOutsideRenderPass());
-
 	SCOPE_CYCLE_COUNTER(STAT_Canvas_FlushTime);
 
 	if (!(AllowedModes&Allow_Flush) && !bForce)
@@ -660,9 +650,7 @@ void FCanvas::Flush_RenderThread(FRHICommandListImmediate& RHICmdList, bool bFor
 	}
 
 	// Update the font cache with new text before elements are drawn
-	{
-		FEngineFontServices::Get().UpdateCache();
-	}
+	FEngineFontServices::Get().UpdateCache();
 
 	// FCanvasSortElement compare class
 	struct FCompareFCanvasSortElement
@@ -676,22 +664,33 @@ void FCanvas::Flush_RenderThread(FRHICommandListImmediate& RHICmdList, bool bFor
 	SortedElements.Sort(FCompareFCanvasSortElement());
 
 	SCOPED_DRAW_EVENT(RHICmdList, CanvasFlush);
-	const FTexture2DRHIRef& RenderTargetTexture = RenderTarget->GetRenderTargetTexture();
 
-	check(IsValidRef(RenderTargetTexture));
-
-	FRHIRenderPassInfo RPInfo(RenderTargetTexture, ERenderTargetActions::Load_Store);
-	
-	// Set the RHI render target.
-	if (IsUsingInternalTexture())
+	if (!bInsideRenderPass)
 	{
-		RPInfo.ColorRenderTargets[0].Action = ERenderTargetActions::Clear_Store;
+		GetRendererModule().InitializeSystemTextures(RHICmdList);
+		const FTexture2DRHIRef& RenderTargetTexture = RenderTarget->GetRenderTargetTexture();
+
+		check(IsValidRef(RenderTargetTexture));
+		check(RHICmdList.IsOutsideRenderPass());
+
+		FRHIRenderPassInfo RPInfo(RenderTargetTexture, ERenderTargetActions::Load_Store);
+
+		// Set the RHI render target.
+		if (IsUsingInternalTexture())
+		{
+			RPInfo.ColorRenderTargets[0].Action = ERenderTargetActions::Clear_Store;
+		}
+
+		RHICmdList.BeginRenderPass(RPInfo, TEXT("CanvasRenderThread"));
 	}
-	
-	RHICmdList.BeginRenderPass(RPInfo, TEXT("CanvasRenderThread"));
+	else
 	{
+		check(RHICmdList.IsInsideRenderPass());
+	}
+
+	{
+		// Disable depth test & writes
 		FMeshPassProcessorRenderState DrawRenderState;
-		// disable depth test & writes
 		DrawRenderState.SetDepthStencilState(TStaticDepthStencilState<false, CF_Always>::GetRHI());
 
 		if (ViewRect.Area() <= 0)
@@ -738,7 +737,11 @@ void FCanvas::Flush_RenderThread(FRHICommandListImmediate& RHICmdList, bool bFor
 			LastElementIndex = INDEX_NONE;
 		}
 	}
-	RHICmdList.EndRenderPass();	
+
+	if (!bInsideRenderPass)
+	{
+		RHICmdList.EndRenderPass();
+	}
 }
 
 void FCanvas::Flush_GameThread(bool bForce)
@@ -799,12 +802,13 @@ void FCanvas::Flush_GameThread(bool bForce)
 	bool bEmitCanvasDrawEvents = GetEmitDrawEvents();
 
 	// Only create these render commands if we actually have something to draw.
-	if(SortedElements.Num() > 0)
+	if(SortedElements.Num() > 0 && !GUsingNullRHI)
 	{
 		FRenderThreadScope RenderThreadScope;
 		RenderThreadScope.EnqueueRenderCommand(
-			[FlushParameters](FRHICommandList& RHICmdList)
+			[FlushParameters](FRHICommandListImmediate& RHICmdList)
 		{
+			GetRendererModule().InitializeSystemTextures(RHICmdList);
 			check(RHICmdList.IsOutsideRenderPass());
 
 			// Set the RHI render target.
@@ -852,7 +856,7 @@ void FCanvas::Flush_GameThread(bool bForce)
 		}
 
 		RenderThreadScope.EnqueueRenderCommand(
-			[](FRHICommandList& RHICmdList)
+			[](FRHICommandListImmediate& RHICmdList)
 		{
 			RHICmdList.EndRenderPass();
 		});
@@ -930,6 +934,22 @@ bool FCanvas::HasBatchesToRender() const
 	return false;
 }
 
+void FCanvas::ClearBatchesToRender()
+{
+	// delete batches from elements entries
+	for (FCanvasSortElement& SortElement : SortedElements)
+	{
+		for (FCanvasBaseRenderItem* RenderItem : SortElement.RenderBatchArray)
+		{
+			delete RenderItem;
+		}
+	}
+
+	// empty the array of entries
+	SortedElements.Empty();
+	SortedElementLookupMap.Empty();
+	LastElementIndex = INDEX_NONE;
+}
 
 void FCanvas::CopyTransformStack(const FCanvas& Copy)
 { 
@@ -974,6 +994,7 @@ void FCanvas::Clear(const FLinearColor& ClearColor)
 				{
 					// do fast clear
 					FRHIRenderPassInfo RPInfo(CanvasRenderTarget->GetRenderTargetTexture(), ERenderTargetActions::Clear_Store);
+					TransitionRenderPassTargets(RHICmdList, RPInfo);
 					RHICmdList.BeginRenderPass(RPInfo, TEXT("ClearCanvas"));
 					RHICmdList.EndRenderPass();					
 				}
@@ -1370,22 +1391,39 @@ void UCanvas::UpdateSafeZoneData()
 
 		SafeZonePadX = (CachedDisplayWidth - (CachedDisplayWidth * SafeRegionPercentage.X))/2.f;
 		SafeZonePadY = (CachedDisplayHeight - (CachedDisplayHeight * SafeRegionPercentage.Y))/2.f;
-		SafeZonePadX = SafeZonePadEX;
-		SafeZonePadY = SafeZonePadEY;
+		SafeZonePadEX = SafeZonePadX;
+		SafeZonePadEY = SafeZonePadY;
 	}
 	else if(FSlateApplication::IsInitialized())
 	{
 		FDisplayMetrics DisplayMetrics;
+		FSlateApplication::Get().GetDisplayMetrics(DisplayMetrics);
+ 		CachedDisplayWidth = DisplayMetrics.PrimaryDisplayWidth;
+ 		CachedDisplayHeight = DisplayMetrics.PrimaryDisplayHeight;
 
-		FSlateApplication::Get().GetCachedDisplayMetrics(DisplayMetrics);
+#if PLATFORM_DESKTOP
+		TSharedPtr<SWindow> Window = FSlateApplication::Get().GetActiveTopLevelWindow();
+		if (Window.IsValid())
+		{
+			FVector2D WindowSize = Window->GetClientSizeInScreen();
+			if (ISlateViewport* SlateViewport = Window->GetViewport().Get())
+			{
+				WindowSize = SlateViewport->GetSize();
+			}
 
-		SafeZonePadX = FMath::CeilToInt(DisplayMetrics.TitleSafePaddingSize.X);
-		SafeZonePadY = FMath::CeilToInt(DisplayMetrics.TitleSafePaddingSize.Y);
-		SafeZonePadEX = FMath::CeilToInt(DisplayMetrics.TitleSafePaddingSize.Z);
-		SafeZonePadEY = FMath::CeilToInt(DisplayMetrics.TitleSafePaddingSize.W);
+			CachedDisplayWidth = WindowSize.X;
+			CachedDisplayHeight = WindowSize.Y;
+		}
+#endif
 
-		CachedDisplayWidth = DisplayMetrics.PrimaryDisplayWidth;
-		CachedDisplayHeight = DisplayMetrics.PrimaryDisplayHeight;
+		const FVector2D EffectiveScreenSize = FVector2D(CachedDisplayWidth, CachedDisplayHeight);
+		FMargin SafeZone;
+		FSlateApplication::Get().GetSafeZoneSize(/*out*/ SafeZone, EffectiveScreenSize);
+
+		SafeZonePadX = FMath::CeilToInt(SafeZone.Left);
+		SafeZonePadY = FMath::CeilToInt(SafeZone.Top);
+		SafeZonePadEX = FMath::CeilToInt(SafeZone.Right);
+		SafeZonePadEY = FMath::CeilToInt(SafeZone.Bottom);
 	}
 
 }
@@ -1465,6 +1503,8 @@ ESimpleElementBlendMode FCanvas::BlendToSimpleElementBlend(EBlendMode BlendMode)
 			return SE_BLEND_Modulate;
 		case BLEND_AlphaComposite:
 			return SE_BLEND_AlphaComposite;
+		case BLEND_AlphaHoldout:
+			return SE_BLEND_AlphaHoldout;
 		case BLEND_Translucent:
 		default:
 			return SE_BLEND_Translucent;
@@ -1520,7 +1560,7 @@ void UCanvas::ClippedStrLen( const UFont* Font, float ScaleX, float ScaleY, int3
 void VARARGS UCanvas::WrappedStrLenf( const UFont* Font, float ScaleX, float ScaleY, int32& XL, int32& YL, const TCHAR* Fmt, ... ) 
 {
 	TCHAR Text[4096];
-	GET_VARARGS( Text, ARRAY_COUNT(Text), ARRAY_COUNT(Text)-1, Fmt, Fmt );
+	GET_VARARGS( Text, UE_ARRAY_COUNT(Text), UE_ARRAY_COUNT(Text)-1, Fmt, Fmt );
 
 	FFontRenderInfo Info;
 	WrappedPrint( false, 0.0f, 0.0f, XL, YL, Font, ScaleX, ScaleY, false, false, Text, Info ); 
@@ -1889,7 +1929,7 @@ void UCanvas::SetView(FSceneView* InView)
 	SceneView = InView;
 	if (InView)
 	{
-		if (GEngine->StereoRenderingDevice.IsValid() && InView->StereoPass != eSSP_FULL)
+		if (GEngine->StereoRenderingDevice.IsValid() && IStereoRendering::IsStereoEyeView(*InView))
 		{
 			GEngine->StereoRenderingDevice->InitCanvasFromView(InView, this);
 		}

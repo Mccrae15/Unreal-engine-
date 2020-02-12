@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "WidgetBlueprintEditorUtils.h"
 #include "Components/PanelSlot.h"
@@ -34,6 +34,9 @@
 #include "Widgets/Notifications/SNotificationList.h"
 #include "Components/Widget.h"
 #include "Blueprint/WidgetNavigation.h"
+#include "Subsystems/AssetEditorSubsystem.h"
+#include "UObject/ScriptInterface.h"
+#include "Components/NamedSlotInterface.h"
 
 #define LOCTEXT_NAMESPACE "UMG"
 
@@ -146,7 +149,7 @@ bool FWidgetBlueprintEditorUtils::VerifyWidgetRename(TSharedRef<class FWidgetBlu
 		}
 	}
 
-	UProperty* Property = Blueprint->ParentClass->FindPropertyByName( NewNameSlug );
+	FProperty* Property = Blueprint->ParentClass->FindPropertyByName( NewNameSlug );
 	if ( Property && FWidgetBlueprintEditorUtils::IsBindWidgetProperty(Property))
 	{
 		return true;
@@ -191,7 +194,7 @@ bool FWidgetBlueprintEditorUtils::RenameWidget(TSharedRef<FWidgetBlueprintEditor
 	// Get the new FName slug from the given display name
 	const FName NewFName = MakeObjectNameFromDisplayLabel(NewDisplayName, Widget->GetFName());
 
-	UObjectPropertyBase* ExistingProperty = Cast<UObjectPropertyBase>(ParentClass->FindPropertyByName(NewFName));
+	FObjectPropertyBase* ExistingProperty = CastField<FObjectPropertyBase>(ParentClass->FindPropertyByName(NewFName));
 	const bool bBindWidget = ExistingProperty && FWidgetBlueprintEditorUtils::IsBindWidgetProperty(ExistingProperty) && Widget->IsA(ExistingProperty->PropertyClass);
 
 	// NewName should be already validated. But one must make sure that NewTemplateName is also unique.
@@ -216,9 +219,12 @@ bool FWidgetBlueprintEditorUtils::RenameWidget(TSharedRef<FWidgetBlueprintEditor
 			WidgetPreview->Rename(*NewNameStr);
 		}
 
-		// Find and update all variable references in the graph
-		Widget->SetDisplayLabel(NewDisplayName);
-		Widget->Rename(*NewNameStr);
+		if (!WidgetPreview || WidgetPreview != Widget)
+		{
+			// Find and update all variable references in the graph
+			Widget->SetDisplayLabel(NewDisplayName);
+			Widget->Rename(*NewNameStr);
+		}
 
 		// Update Variable References and
 		// Update Event References to member variables
@@ -340,7 +346,7 @@ void FWidgetBlueprintEditorUtils::ExecuteOpenSelectedWidgetsForEdit( TSet<FWidge
 {
 	for ( auto& Widget : SelectedWidgets )
 	{
-		FAssetEditorManager::Get().OpenEditorForAsset( Widget.GetTemplate()->GetClass()->ClassGeneratedBy );
+		GEditor->GetEditorSubsystem<UAssetEditorSubsystem>()->OpenEditorForAsset( Widget.GetTemplate()->GetClass()->ClassGeneratedBy );
 	}
 }
 
@@ -426,9 +432,9 @@ void FWidgetBlueprintEditorUtils::DeleteWidgets(UWidgetBlueprint* Blueprint, TSe
 	}
 }
 
-INamedSlotInterface* FWidgetBlueprintEditorUtils::FindNamedSlotHostForContent(UWidget* WidgetTemplate, UWidgetTree* WidgetTree)
+TScriptInterface<INamedSlotInterface> FWidgetBlueprintEditorUtils::FindNamedSlotHostForContent(UWidget* WidgetTemplate, UWidgetTree* WidgetTree)
 {
-	return Cast<INamedSlotInterface>(FindNamedSlotHostWidgetForContent(WidgetTemplate, WidgetTree));
+	return TScriptInterface<INamedSlotInterface>(FindNamedSlotHostWidgetForContent(WidgetTemplate, WidgetTree));
 }
 
 UWidget* FWidgetBlueprintEditorUtils::FindNamedSlotHostWidgetForContent(UWidget* WidgetTemplate, UWidgetTree* WidgetTree)
@@ -511,12 +517,12 @@ void FWidgetBlueprintEditorUtils::FindAllAncestorNamedSlotHostWidgetsForContent(
 	}
 }
 
-bool FWidgetBlueprintEditorUtils::RemoveNamedSlotHostContent(UWidget* WidgetTemplate, INamedSlotInterface* NamedSlotHost)
+bool FWidgetBlueprintEditorUtils::RemoveNamedSlotHostContent(UWidget* WidgetTemplate, TScriptInterface<INamedSlotInterface> NamedSlotHost)
 {
 	return ReplaceNamedSlotHostContent(WidgetTemplate, NamedSlotHost, nullptr);
 }
 
-bool FWidgetBlueprintEditorUtils::ReplaceNamedSlotHostContent(UWidget* WidgetTemplate, INamedSlotInterface* NamedSlotHost, UWidget* NewContentWidget)
+bool FWidgetBlueprintEditorUtils::ReplaceNamedSlotHostContent(UWidget* WidgetTemplate, TScriptInterface<INamedSlotInterface> NamedSlotHost, UWidget* NewContentWidget)
 {
 	TArray<FName> SlotNames;
 	NamedSlotHost->GetSlotNames(SlotNames);
@@ -527,6 +533,11 @@ bool FWidgetBlueprintEditorUtils::ReplaceNamedSlotHostContent(UWidget* WidgetTem
 		{
 			if (SlotContent == WidgetTemplate)
 			{
+				if (NewContentWidget)
+				{
+					NewContentWidget->Modify();
+				}
+				NamedSlotHost.GetObject()->Modify();
 				NamedSlotHost->SetContentForSlot(SlotName, NewContentWidget);
 				return true;
 			}
@@ -539,7 +550,7 @@ bool FWidgetBlueprintEditorUtils::ReplaceNamedSlotHostContent(UWidget* WidgetTem
 bool FWidgetBlueprintEditorUtils::FindAndRemoveNamedSlotContent(UWidget* WidgetTemplate, UWidgetTree* WidgetTree)
 {
 	UWidget* NamedSlotHostWidget = FindNamedSlotHostWidgetForContent(WidgetTemplate, WidgetTree);
-	if ( INamedSlotInterface* NamedSlotHost = Cast<INamedSlotInterface>(NamedSlotHostWidget) )
+	if (TScriptInterface<INamedSlotInterface> NamedSlotHost = TScriptInterface<INamedSlotInterface>(NamedSlotHostWidget) )
 	{
 		NamedSlotHostWidget->Modify();
 		return RemoveNamedSlotHostContent(WidgetTemplate, NamedSlotHost);
@@ -611,8 +622,7 @@ void FWidgetBlueprintEditorUtils::WrapWidgets(TSharedRef<FWidgetBlueprintEditor>
 		if (CurrentSlot)
 		{
 			// If this is a named slot, we need to properly remove and reassign the slot content
-			INamedSlotInterface* NamedSlotHost = Cast<INamedSlotInterface>(CurrentSlot);
-			if (NamedSlotHost != nullptr)
+			if (TScriptInterface<INamedSlotInterface> NamedSlotHost = TScriptInterface<INamedSlotInterface>(CurrentSlot))
 			{
 				CurrentSlot->SetFlags(RF_Transactional);
 				CurrentSlot->Modify();
@@ -689,6 +699,27 @@ void FWidgetBlueprintEditorUtils::BuildReplaceWithMenu(FMenuBuilder& Menu, TShar
 						FCanExecuteAction()
 					));
 
+				Menu.AddMenuSeparator();
+			}			
+			if (TScriptInterface<INamedSlotInterface> NamedSlotHost = TScriptInterface<INamedSlotInterface>(Widget.GetTemplate()))
+			{								
+				TArray<FName> SlotNames;
+				NamedSlotHost->GetSlotNames(SlotNames);
+				for (const FName SlotName : SlotNames)
+				{
+					const FText SlotNameTxt = FText::FromString(SlotName.ToString());
+					if (UWidget* Content = NamedSlotHost->GetContentForSlot(SlotName))
+					{
+						Menu.AddMenuEntry(
+							FText::Format(LOCTEXT("ReplaceWithNamedSlot", "Replace With '{0}'"), SlotNameTxt),
+							FText::Format(LOCTEXT("ReplaceWithNamedSlotTooltip", "Remove this widget and insert '{0}' content into the parent."), SlotNameTxt),
+							FSlateIcon(),
+							FUIAction(
+								FExecuteAction::CreateStatic(&FWidgetBlueprintEditorUtils::ReplaceWidgetWithNamedSlot, BlueprintEditor, BP, Widget, SlotName),
+								FCanExecuteAction()
+							));
+					}
+				}
 				Menu.AddMenuSeparator();
 			}
 		}
@@ -778,6 +809,18 @@ void FWidgetBlueprintEditorUtils::ReplaceWidgetWithSelectedTemplate(TSharedRef<F
 		CurrentParent->SetFlags(RF_Transactional);
 		CurrentParent->Modify();
 		CurrentParent->ReplaceChild(ThisWidget, NewReplacementWidget);
+
+		FString ReplaceName = ThisWidget->GetName();
+		bool bIsGeneratedName = ThisWidget->IsGeneratedName();
+		// Rename the removed widget to the transient package so that it doesn't conflict with future widgets sharing the same name.
+		ThisWidget->Rename(nullptr, nullptr);
+
+		// Rename the new Widget to maintain the current name if it's not a generic name
+		if (!bIsGeneratedName)
+		{
+			ReplaceName = FindNextValidName(BP->WidgetTree, ReplaceName);
+			NewReplacementWidget->Rename(*ReplaceName, BP->WidgetTree);
+		}
 	}
 	else if (ThisWidget == BP->WidgetTree->RootWidget)
 	{
@@ -877,6 +920,10 @@ void FWidgetBlueprintEditorUtils::ReplaceWidgetWithChildren(TSharedRef<FWidgetBl
 			BP->WidgetTree->Modify();
 			BP->WidgetTree->RootWidget = FirstChildTemplate;
 		}
+		else if (TScriptInterface<INamedSlotInterface> NamedSlotHost = FindNamedSlotHostForContent(ExistingPanelTemplate, BP->WidgetTree))
+		{
+			ReplaceNamedSlotHostContent(ExistingPanelTemplate, NamedSlotHost, FirstChildTemplate);
+		}
 		else
 		{
 			Transaction.Cancel();
@@ -885,6 +932,49 @@ void FWidgetBlueprintEditorUtils::ReplaceWidgetWithChildren(TSharedRef<FWidgetBl
 
 		// Rename the removed widget to the transient package so that it doesn't conflict with future widgets sharing the same name.
 		ExistingPanelTemplate->Rename(nullptr, nullptr);
+
+		FBlueprintEditorUtils::MarkBlueprintAsStructurallyModified(BP);
+	}
+}
+
+void FWidgetBlueprintEditorUtils::ReplaceWidgetWithNamedSlot(TSharedRef<FWidgetBlueprintEditor> BlueprintEditor, UWidgetBlueprint* BP, FWidgetReference Widget, FName NamedSlot)
+{
+	UWidget* WidgetTemplate = Widget.GetTemplate();
+	if (INamedSlotInterface* ExistingNamedSlotContainerTemplate = Cast<INamedSlotInterface>(WidgetTemplate))
+	{
+		UWidget* NamedSlotContentTemplate = ExistingNamedSlotContainerTemplate->GetContentForSlot(NamedSlot);
+
+		FScopedTransaction Transaction(LOCTEXT("ReplaceWidgets", "Replace Widgets"));
+
+		WidgetTemplate->Modify();
+		NamedSlotContentTemplate->Modify();
+
+		if (UPanelWidget* PanelParentTemplate = WidgetTemplate->GetParent())
+		{
+			PanelParentTemplate->Modify();
+
+			NamedSlotContentTemplate->RemoveFromParent();
+			PanelParentTemplate->ReplaceChild(WidgetTemplate, NamedSlotContentTemplate);
+		}
+		else if (WidgetTemplate == BP->WidgetTree->RootWidget)
+		{
+			NamedSlotContentTemplate->RemoveFromParent();
+
+			BP->WidgetTree->Modify();
+			BP->WidgetTree->RootWidget = NamedSlotContentTemplate;
+		}
+		else if (TScriptInterface<INamedSlotInterface> NamedSlotHost = FindNamedSlotHostForContent(WidgetTemplate, BP->WidgetTree))
+		{
+			ReplaceNamedSlotHostContent(WidgetTemplate, NamedSlotHost, NamedSlotContentTemplate);
+		}
+		else
+		{
+			Transaction.Cancel();
+			return;
+		}
+
+		// Rename the removed widget to the transient package so that it doesn't conflict with future widgets sharing the same name.
+		WidgetTemplate->Rename(nullptr, nullptr);
 
 		FBlueprintEditorUtils::MarkBlueprintAsStructurallyModified(BP);
 	}
@@ -933,8 +1023,18 @@ void FWidgetBlueprintEditorUtils::ReplaceWidgets(TSharedRef<FWidgetBlueprintEdit
 				}
 			}
 
+			FString ReplaceName = Item.GetTemplate()->GetName();
+			bool bIsGeneratedName = Item.GetTemplate()->IsGeneratedName();
 			// Rename the removed widget to the transient package so that it doesn't conflict with future widgets sharing the same name.
 			Item.GetTemplate()->Rename(nullptr, nullptr);
+
+			// Rename the new Widget to maintain the current name if it's not a generic name
+			if (!bIsGeneratedName)
+			{
+				ReplaceName = FindNextValidName(BP->WidgetTree, ReplaceName);
+				NewReplacementWidget->Rename(*ReplaceName, BP->WidgetTree);
+			}
+
 	}
 
 	FBlueprintEditorUtils::MarkBlueprintAsStructurallyModified(BP);
@@ -1127,7 +1227,25 @@ TArray<UWidget*> FWidgetBlueprintEditorUtils::PasteWidgetsInternal(TSharedRef<FW
 		// automatically.
 		if ( NewWidget->GetParent() == nullptr )
 		{
-			RootPasteWidgets.Add(NewWidget);
+			// Check to see if this widget is content of another widget holding it in a named slot.
+			bool bIsNamedSlot = false;
+			for (UWidget* ContainerWidget : PastedWidgets)
+			{
+				if (INamedSlotInterface* NamedSlotContainer = Cast<INamedSlotInterface>(ContainerWidget))
+				{
+					if (NamedSlotContainer->ContainsContent(NewWidget))
+					{
+						bIsNamedSlot = true;
+						break;
+					}
+				}
+			}
+
+			// It's a Root widget only if it's not not in a named slot.
+			if (!bIsNamedSlot)
+			{
+				RootPasteWidgets.Add(NewWidget);
+			}
 		}
 	}
 
@@ -1326,17 +1444,28 @@ void FWidgetBlueprintEditorUtils::ImportWidgetsFromText(UWidgetBlueprint* BP, co
 
 		Widget->SetFlags(RF_Transactional);
 
+		// We don't export parent slot pointers, so each panel will need to point it's children back to itself
+		UPanelWidget* PanelWidget = Cast<UPanelWidget>(Widget);
+		if (PanelWidget)
+		{
+			TArray<UPanelSlot*> PanelSlots = PanelWidget->GetSlots();
+			for (int32 i = 0; i < PanelWidget->GetChildrenCount(); i++)
+			{
+				PanelWidget->GetChildAt(i)->Slot = PanelSlots[i];
+			}
+		}
+
 		// If there is an existing widget with the same name, rename the newly placed widget.
 		FString WidgetOldName = Widget->GetName();
-		if ( FindObject<UObject>(BP->WidgetTree, *WidgetOldName) )
+		FString NewName = FindNextValidName(BP->WidgetTree, WidgetOldName);
+		if (NewName != WidgetOldName)
 		{
 			UWidgetSlotPair* SlotData = PastedExtraSlotData.FindRef(Widget->GetFName());
 			if ( SlotData )
 			{
 				PastedExtraSlotData.Remove(Widget->GetFName());
 			}
-
-			Widget->Rename(nullptr, BP->WidgetTree);
+			Widget->Rename(*NewName, BP->WidgetTree);
 
 			if (Widget->GetDisplayLabel().Equals(WidgetOldName))
 			{
@@ -1363,12 +1492,12 @@ void FWidgetBlueprintEditorUtils::ExportPropertiesToText(UObject* Object, TMap<F
 {
 	if ( Object )
 	{
-		for ( TFieldIterator<UProperty> PropertyIt(Object->GetClass(), EFieldIteratorFlags::ExcludeSuper); PropertyIt; ++PropertyIt )
+		for ( TFieldIterator<FProperty> PropertyIt(Object->GetClass(), EFieldIteratorFlags::ExcludeSuper); PropertyIt; ++PropertyIt )
 		{
-			UProperty* Property = *PropertyIt;
+			FProperty* Property = *PropertyIt;
 
 			// Don't serialize out object properties, we just want value data.
-			if ( !Property->IsA<UObjectProperty>() )
+			if ( !Property->IsA<FObjectProperty>() )
 			{
 				FString ValueText;
 				if ( Property->ExportText_InContainer(0, ValueText, Object, Object, Object, PPF_IncludeTransient) )
@@ -1386,7 +1515,7 @@ void FWidgetBlueprintEditorUtils::ImportPropertiesFromText(UObject* Object, cons
 	{
 		for ( const auto& Entry : ExportedProperties )
 		{
-			if ( UProperty* Property = FindField<UProperty>(Object->GetClass(), Entry.Key) )
+			if ( FProperty* Property = FindField<FProperty>(Object->GetClass(), Entry.Key) )
 			{
 				FEditPropertyChain PropertyChain;
 				PropertyChain.AddHead(Property);
@@ -1401,13 +1530,13 @@ void FWidgetBlueprintEditorUtils::ImportPropertiesFromText(UObject* Object, cons
 	}
 }
 
-bool FWidgetBlueprintEditorUtils::IsBindWidgetProperty(UProperty* InProperty)
+bool FWidgetBlueprintEditorUtils::IsBindWidgetProperty(FProperty* InProperty)
 {
 	bool bIsOptional;
 	return IsBindWidgetProperty(InProperty, bIsOptional);
 }
 
-bool FWidgetBlueprintEditorUtils::IsBindWidgetProperty(UProperty* InProperty, bool& bIsOptional)
+bool FWidgetBlueprintEditorUtils::IsBindWidgetProperty(FProperty* InProperty, bool& bIsOptional)
 {
 	if ( InProperty )
 	{
@@ -1420,13 +1549,13 @@ bool FWidgetBlueprintEditorUtils::IsBindWidgetProperty(UProperty* InProperty, bo
 	return false;
 }
 
-bool FWidgetBlueprintEditorUtils::IsBindWidgetAnimProperty(UProperty* InProperty)
+bool FWidgetBlueprintEditorUtils::IsBindWidgetAnimProperty(FProperty* InProperty)
 {
 	bool bIsOptional;
 	return IsBindWidgetAnimProperty(InProperty, bIsOptional);
 }
 
-bool FWidgetBlueprintEditorUtils::IsBindWidgetAnimProperty(UProperty* InProperty, bool& bIsOptional)
+bool FWidgetBlueprintEditorUtils::IsBindWidgetAnimProperty(FProperty* InProperty, bool& bIsOptional)
 {
 	if (InProperty)
 	{
@@ -1445,7 +1574,8 @@ bool FWidgetBlueprintEditorUtils::IsUsableWidgetClass(UClass* WidgetClass)
 	{
 		// We aren't interested in classes that are experimental or cannot be instantiated
 		bool bIsExperimental, bIsEarlyAccess;
-		FObjectEditorUtils::GetClassDevelopmentStatus(WidgetClass, bIsExperimental, bIsEarlyAccess);
+		FString MostDerivedDevelopmentClassName;
+		FObjectEditorUtils::GetClassDevelopmentStatus(WidgetClass, bIsExperimental, bIsEarlyAccess, MostDerivedDevelopmentClassName);
 		const bool bIsInvalid = WidgetClass->HasAnyClassFlags(CLASS_Abstract | CLASS_Deprecated | CLASS_NewerVersionExists);
 		if ( bIsExperimental || bIsEarlyAccess || bIsInvalid )
 		{
@@ -1465,6 +1595,47 @@ bool FWidgetBlueprintEditorUtils::IsUsableWidgetClass(UClass* WidgetClass)
 	}
 
 	return false;
+}
+
+FString RemoveSuffixFromName(const FString OldName)
+{
+	int NameLen = OldName.Len();
+	int SuffixIndex = 0;
+	if (OldName.FindLastChar('_', SuffixIndex))
+	{
+		NameLen = SuffixIndex;
+		for (int32 i = SuffixIndex + 1; i < OldName.Len(); ++i)
+		{
+			const TCHAR& C = OldName[i];
+			const bool bGoodChar = ((C >= '0') && (C <= '9'));
+			if (!bGoodChar)
+			{
+				return OldName;
+			}
+		}
+	}
+	return FString(NameLen, *OldName);
+}
+
+FString FWidgetBlueprintEditorUtils::FindNextValidName(UWidgetTree* WidgetTree, const FString& Name)
+{
+	// If the name of the widget is not already used, we use it.	
+	if (FindObject<UObject>(WidgetTree, *Name))
+	{
+		// If the name is already used, we will suffix it with '_X'
+		FString NameWithoutSuffix = RemoveSuffixFromName(Name);
+		FString NewName = NameWithoutSuffix;
+
+		int32 Postfix = 0;
+		while (FindObject<UObject>(WidgetTree, *NewName))
+		{
+			++Postfix;
+			NewName = FString::Printf(TEXT("%s_%d"), *NameWithoutSuffix, Postfix);
+		}
+
+		return NewName;
+	}
+	return Name;
 }
 
 #undef LOCTEXT_NAMESPACE

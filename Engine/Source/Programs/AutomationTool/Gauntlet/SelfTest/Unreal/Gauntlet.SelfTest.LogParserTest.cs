@@ -1,4 +1,4 @@
-﻿// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+﻿// Copyright Epic Games, Inc. All Rights Reserved.
 
 using System;
 using System.Collections.Generic;
@@ -122,9 +122,9 @@ namespace Gauntlet.SelfTest
 	{
 		public override void TickTest()
 		{
-			foreach (var Platform in new[] { "Win64Client", "PS4Client" })
+			foreach (var Platform in new[] { "Win64", "PS4" })
 			{
-				UnrealLogParser Parser = new UnrealLogParser(GetFileContents("OrionLogWithFatalError" + Platform + ".txt"));
+				UnrealLogParser Parser = new UnrealLogParser(GetFileContents(Platform + "FatalError" + ".txt"));
 
 				UnrealLogParser.CallstackMessage FatalError = Parser.GetFatalError();
 

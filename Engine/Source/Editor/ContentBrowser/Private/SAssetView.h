@@ -1,8 +1,9 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
 #include "CoreMinimal.h"
+#include "UObject/GCObject.h"
 #include "Misc/Attribute.h"
 #include "Input/Reply.h"
 #include "Layout/Visibility.h"
@@ -21,8 +22,10 @@
 #include "Editor/ContentBrowser/Private/AssetViewSortManager.h"
 #include "AssetViewTypes.h"
 #include "HistoryManager.h"
+#include "Misc/BlacklistNames.h"
 
 class FMenuBuilder;
+class FBlacklistPaths;
 class FWeakWidgetPath;
 class FWidgetPath;
 class SAssetColumnView;
@@ -41,7 +44,7 @@ DECLARE_DELEGATE(FOnSearchOptionChanged);
 /**
  * A widget to display a list of filtered assets
  */
-class SAssetView : public SCompoundWidget
+class SAssetView : public SCompoundWidget, public FGCObject
 {
 public:
 	SLATE_BEGIN_ARGS( SAssetView )
@@ -57,8 +60,8 @@ public:
 		, _FilterRecursivelyWithBackendFilter(true)
 		, _CanShowRealTimeThumbnails(false)
 		, _CanShowDevelopersFolder(false)
-		, _CanShowCollections(false)
 		, _CanShowFavorites(false)
+		, _CanDockCollections(false)
 		, _PreloadAssetsForContextMenu(true)
 		, _SelectionMode( ESelectionMode::Multi )
 		, _AllowDragging(true)
@@ -162,11 +165,11 @@ public:
 		/** Indicates if the 'Show Developers' option should be enabled or disabled */
 		SLATE_ARGUMENT( bool, CanShowDevelopersFolder )
 
-		/** Indicates if the 'Show Collections' option should be enabled or disabled */
-		SLATE_ARGUMENT( bool, CanShowCollections )
-
 		/** Indicates if the 'Show Favorites' option should be enabled or disabled */
 		SLATE_ARGUMENT(bool, CanShowFavorites)
+
+		/** Indicates if the 'Dock Collections' option should be enabled or disabled */
+		SLATE_ARGUMENT(bool, CanDockCollections)
 
 		/** Indicates if the context menu is going to load the assets, and if so to preload before the context menu is shown, and warn about the pending load. */
 		SLATE_ARGUMENT( bool, PreloadAssetsForContextMenu )
@@ -191,6 +194,9 @@ public:
 
 		/** Sort by path in the column view. Only works if the initial view type is Column */
 		SLATE_ARGUMENT(bool, SortByPathInColumnView)
+
+		/** Should always show engine content */
+		SLATE_ARGUMENT(bool, ForceShowEngineContent)
 
 		/** Called to check if an asset tag should be display in details view. */
 		SLATE_EVENT( FOnShouldDisplayAssetTag, OnAssetTagWantsToBeDisplayed )
@@ -295,6 +301,10 @@ public:
 	virtual FReply OnKeyDown( const FGeometry& MyGeometry, const FKeyEvent& InKeyEvent ) override;
 	virtual FReply OnMouseWheel( const FGeometry& MyGeometry, const FPointerEvent& MouseEvent ) override;
 	virtual void OnFocusChanging( const FWeakWidgetPath& PreviousFocusPath, const FWidgetPath& NewWidgetPath, const FFocusEvent& InFocusEvent ) override;
+
+	//~ FGCObject inherited
+	virtual void AddReferencedObjects(FReferenceCollector& Collector) override;
+	virtual FString GetReferencerName() const override { return TEXT("SAssetView"); }
 
 	/** Opens the selected assets or folders, depending on the selection */
 	void OnOpenAssetsOrFolders();
@@ -434,11 +444,11 @@ private:
 	/** Returns true if the specified asset data item passes all applied frontend (non asset registry) filters */
 	bool PassesCurrentFrontendFilter(const FAssetData& Item) const;
 
-	/** Returns true if the specified asset data item passes all applied backend (asset registry) filters */
-	bool PassesCurrentBackendFilter(const FAssetData& Item) const;
-
 	/** Removes asset data items from the given array that don't pass all applied backend (asset registry) filters */
 	void RunAssetsThroughBackendFilter(TArray<FAssetData>& InOutAssetDataList) const;
+
+	/** Removes asset data items from the given array that don't pass all blacklist filters */
+	void RunAssetsThroughBlacklists(TArray<FAssetData>& InOutAssetDataList) const;
 
 	/** Returns true if the current filters deem that the asset view should be filtered recursively (overriding folder view) */
 	bool ShouldFilterRecursively() const;
@@ -454,6 +464,12 @@ private:
 
 	/** Handler for when the view combo button is clicked */
 	TSharedRef<SWidget> GetViewButtonContent();
+
+	/** Register menu for when the view combo button is clicked */
+	static void RegisterGetViewButtonMenu();
+
+	/** Fill in menu content for when the view combo button is clicked */
+	void PopulateViewButtonMenu(class UToolMenu* Menu);
 
 	/** Toggle whether folders should be shown or not */
 	void ToggleShowFolders();
@@ -509,17 +525,11 @@ private:
 	/** Whether or not it's possible to toggle developers content */
 	bool IsToggleShowDevelopersContentAllowed() const;
 
+	/** Whether or not it's possible to toggle engine content */
+	bool IsToggleShowEngineContentAllowed() const;
+
 	/** @return true when we are showing the developers content */
 	bool IsShowingDevelopersContent() const;
-
-	/** Toggle whether collections should be shown or not */
-	void ToggleShowCollections();
-
-	/** Whether or not it's possible to toggle collections */
-	bool IsToggleShowCollectionsAllowed() const;
-
-	/** @return true when we are showing collections */
-	bool IsShowingCollections() const;
 
 	/** Toggle whether favorites should be shown or not */
 	void ToggleShowFavorites();
@@ -529,6 +539,15 @@ private:
 
 	/** @return true when we are showing favorites */
 	bool IsShowingFavorites() const;
+
+	/** Toggle whether the collections view should be docked under the paths view */
+	void ToggleDockCollections();
+
+	/** Whether or not it's possible to dock the collections view */
+	bool IsToggleDockCollectionsAllowed() const;
+
+	/** @return true when the collections view is docked */
+	bool HasDockedCollections() const;
 
 	/** Toggle whether C++ content should be shown or not */
 	void ToggleShowCppContent();
@@ -556,6 +575,15 @@ private:
 
 	/** Whether or not it's possible to include collection names in search criteria */
 	bool IsToggleIncludeCollectionNamesAllowed() const;
+
+	/** @return true when we are filtering recursively when we have an asset path */
+	bool IsFilteringRecursively() const;
+
+	/** Whether or not it's possible to toggle how to filtering recursively */
+	bool IsToggleFilteringRecursivelyAllowed() const;
+
+	/** Toggle whether we're filtering recursively */
+	void ToggleFilteringRecursively();
 
 	/** Sets the view type and updates lists accordingly */
 	void SetCurrentViewType(EAssetViewType::Type NewType);
@@ -789,18 +817,38 @@ private:
 
 	/** Creates the row header context menu allowing for hiding individually clicked columns*/
 	TSharedRef<SWidget> CreateRowHeaderMenuContent(const FString ColumnName);
+
 	/** Will compute the max row size from all its children for the specified column id*/
 	FVector2D GetMaxRowSizeForColumn(const FName& ColumnId);
+
+	/** Append the current effective backend filter (intersection of BackendFilter and SupportedFilter) to the given filter. */
+	void AppendBackendFilter(FARFilter& FilterToAppendTo) const;
 
 public:
 	/** Delegate that handles if any folder paths changed as a result of a move, rename, etc. in the asset view*/
 	FOnFolderPathChanged OnFolderPathChanged;
 
 private:
+	struct FAssetDataKeyFuncs : BaseKeyFuncs<FAssetData, FName>
+	{
+		static FORCEINLINE const FName& GetSetKey(const FAssetData& AssetData)
+		{
+			return AssetData.ObjectPath;
+		}
+		static FORCEINLINE bool Matches(const FName& A, const FName& B)
+		{
+			return A.GetDisplayIndex() == B.GetDisplayIndex();
+		}
+		static FORCEINLINE uint32 GetKeyHash(const FName& Key)
+		{
+			return GetTypeHash(Key.GetDisplayIndex());
+		}
+	};
+	typedef TSet<FAssetData, FAssetDataKeyFuncs> FAssetDataSet;
 
 	/** The asset items being displayed in the view and the filtered list */
-	TArray<FAssetData> QueriedAssetItems;
-	TArray<FAssetData> AssetItems;
+	FAssetDataSet QueriedAssetItems;
+	FAssetDataSet AssetItems;
 	TArray<TSharedPtr<FAssetViewItem>> FilteredAssetItems;
 
 	/** The folder items being displayed in the view */
@@ -827,6 +875,8 @@ private:
 	/** The current base source filter for the view */
 	FSourcesData SourcesData;
 	FARFilter BackendFilter;
+	TSharedPtr<FBlacklistNames> AssetClassBlacklist;
+	TSharedPtr<FBlacklistPaths> FolderBlacklist;
 	TSharedPtr<FAssetFilterCollectionType> FrontendFilters;
 
 	/** If true, the source items will be refreshed next frame. Very slow. */
@@ -974,11 +1024,11 @@ private:
 	/** Indicates if the 'Show Developers' option should be enabled or disabled */
 	bool bCanShowDevelopersFolder;
 
-	/** Indicates if the 'Show Collections' option should be enabled or disabled */
-	bool bCanShowCollections;
-
 	/** Indicates if the 'Show Favorites' option should be enabled or disabled */
 	bool bCanShowFavorites;
+
+	/** Indicates if the 'Dock Collections' option should be enabled or disabled */
+	bool bCanDockCollections;
 
 	/** Indicates if the context menu is going to load the assets, and if so to preload before the context menu is shown, and warn about the pending load. */
 	bool bPreloadAssetsForContextMenu;
@@ -991,6 +1041,9 @@ private:
 
 	/** If true, it sorts by path and then name */
 	bool bSortByPathInColumnView;
+
+	/** If true, engine content is always shown */
+	bool bForceShowEngineContent;
 
 	/** The current selection mode used by the asset view */
 	ESelectionMode::Type SelectionMode;
@@ -1054,10 +1107,16 @@ private:
 
 		/** The factory to use */
 		UFactory* Factory;
+
+		void AddReferencedObjects(FReferenceCollector& Collector)
+		{
+			Collector.AddReferencedObject(AssetClass);
+			Collector.AddReferencedObject(Factory);
+		}
 	};
 
 	/** Asset pending deferred creation */
-	TSharedPtr<FCreateDeferredAssetData> DeferredAssetToCreate;
+	TUniquePtr<FCreateDeferredAssetData> DeferredAssetToCreate;
 
 	/** A struct to hold data for the deferred creation of a folder */
 	struct FCreateDeferredFolderData
@@ -1070,7 +1129,7 @@ private:
 	};
 
 	/** Folder pending deferred creation */
-	TSharedPtr<FCreateDeferredFolderData> DeferredFolderToCreate;
+	TUniquePtr<FCreateDeferredFolderData> DeferredFolderToCreate;
 
 	/** Struct holding the data for the asset quick-jump */
 	struct FQuickJumpData

@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -201,6 +201,9 @@ namespace ELauncherProfileValidationErrors
 
 		/** Device is unauthorized or is locked */
 		LaunchDeviceIsUnauthorized,
+ 
+		/** Using I/O store container file(s) requires using UnrealPak */
+		IoStoreRequiresPakFiles,
 
 		Count
 	};
@@ -241,7 +244,7 @@ public:
 	 * @return Build configuration name.
 	 * @see SetBuildConfigurationName
 	 */
-	virtual EBuildConfigurations::Type GetBuildConfiguration() const = 0;
+	virtual EBuildConfiguration GetBuildConfiguration() const = 0;
 
 	/**
 	 * Gets the selected cook mode.
@@ -285,7 +288,7 @@ public:
 	 * @param InConfiguration The build configuration name to set.
 	 * @see GetBuildConfigurationName
 	 */
-	virtual void SetBuildConfiguration(EBuildConfigurations::Type InConfiguration) = 0;
+	virtual void SetBuildConfiguration(EBuildConfiguration InConfiguration) = 0;
 
 	/**
 	 * Sets the cook mode.
@@ -487,7 +490,7 @@ public:
 	 * @return Build configuration name.
 	 * @see SetBuildConfigurationName
 	 */
-	virtual EBuildConfigurations::Type GetBuildConfiguration( ) const = 0;
+	virtual EBuildConfiguration GetBuildConfiguration( ) const = 0;
 
 	/**
 	 * Gets the build configuration name of the cooker.
@@ -495,7 +498,7 @@ public:
 	 * @return Cook configuration name.
 	 * @see SetCookConfigurationName
 	 */
-	virtual EBuildConfigurations::Type GetCookConfiguration( ) const = 0;
+	virtual EBuildConfiguration GetCookConfiguration( ) const = 0;
 
 	/**
 	 * Gets the selected cook mode.
@@ -983,7 +986,7 @@ public:
 	 * @param ConfigurationName The build configuration name to set.
 	 * @see GetBuildConfigurationName
 	 */
-	virtual void SetBuildConfiguration( EBuildConfigurations::Type Configuration ) = 0;
+	virtual void SetBuildConfiguration( EBuildConfiguration Configuration ) = 0;
 
 	/**
 	 * Sets the build configuration of the cooker.
@@ -991,7 +994,7 @@ public:
 	 * @param Configuration The cooker's build configuration to set.
 	 * @see GetBuildConfigurationName
 	 */
-	virtual void SetCookConfiguration( EBuildConfigurations::Type Configuration ) = 0;
+	virtual void SetCookConfiguration( EBuildConfiguration Configuration ) = 0;
 
 	/**
 	 * Sets the cook mode.
@@ -1258,6 +1261,19 @@ public:
 	 * @return The delegate.
 	 */
 	virtual FOnProfileProjectChanged& OnProjectChanged() = 0;
+
+	/**
+	 * Sets whether to use I/O store for optimized loading.
+	 * @param bUseIoStore Whether to use I/O store
+	 */
+	virtual void SetUseIoStore(bool bUseIoStore) = 0;
+
+	/**
+	 * Using I/O store or not.
+	 *
+	 * @return true if using I/O store
+	 */
+	virtual bool IsUsingIoStore() const = 0;
 
 public:
 

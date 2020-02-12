@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 /*=============================================================================
 	OpenGLResources.h: OpenGL resource RHI definitions.
@@ -359,6 +359,8 @@ typedef TOpenGLResourceProxy<FRHIPixelShader, FOpenGLPixelShader> FOpenGLPixelSh
 typedef TOpenGLResourceProxy<FRHIGeometryShader, FOpenGLGeometryShader> FOpenGLGeometryShaderProxy;
 typedef TOpenGLResourceProxy<FRHIHullShader, FOpenGLHullShader> FOpenGLHullShaderProxy;
 typedef TOpenGLResourceProxy<FRHIDomainShader, FOpenGLDomainShader> FOpenGLDomainShaderProxy;
+typedef TOpenGLResourceProxy<FRHIComputeShader, FOpenGLComputeShader> FOpenGLComputeShaderProxy;
+
 
 template <typename T>
 struct TIsGLProxyObject
@@ -517,27 +519,29 @@ public:
 		{
 			auto DeleteGLResources = [Resource=Resource, RealSize= RealSize, bStreamDraw= (bool)bStreamDraw, LockBuffer = LockBuffer, bLockBufferWasAllocated=bLockBufferWasAllocated]()
 			{
-		VERIFY_GL_SCOPE();
+				VERIFY_GL_SCOPE();
 				if (BaseType::OnDelete(Resource, RealSize, bStreamDraw, 0))
-		{
-			FOpenGL::DeleteBuffers(1, &Resource);
-		}
-		if (LockBuffer != NULL)
-		{
-			if (bLockBufferWasAllocated)
-			{
-				FMemory::Free(LockBuffer);
-			}
-			else
-			{
-				UE_LOG(LogRHI,Warning,TEXT("Destroying TOpenGLBuffer without returning memory to the driver; possibly called RHIMapStagingSurface() but didn't call RHIUnmapStagingSurface()? Resource %u"), Resource);
-			}
-		}
+				{
+					FOpenGL::DeleteBuffers(1, &Resource);
+				}
+				if (LockBuffer != NULL)
+				{
+					if (bLockBufferWasAllocated)
+					{
+						FMemory::Free(LockBuffer);
+					}
+					else
+					{
+						UE_LOG(LogRHI,Warning,TEXT("Destroying TOpenGLBuffer without returning memory to the driver; possibly called RHIMapStagingSurface() but didn't call RHIUnmapStagingSurface()? Resource %u"), Resource);
+					}
+				}
 			};
 
 			RunOnGLRenderContextThread(MoveTemp(DeleteGLResources));
 			LockBuffer = nullptr;
 			DecrementBufferMemory(Type, BaseType::IsStructuredBuffer(), RealSize);
+
+			ReleaseCachedBuffer();
 		}
 
 	}
@@ -565,14 +569,7 @@ public:
 		uint8 *Data = NULL;
 
 		// Discard if the input size is the same as the backing store size, regardless of the input argument, as orphaning the backing store will typically be faster.
-		bDiscard = bDiscard || (!bReadOnly && InSize == RealSize);
-
-#if PLATFORM_HTML5
-		// In browsers calling glBufferData() to discard-reupload is slower than calling glBufferSubData(),
-		// because changing glBufferData() with a different size from before incurs security related validation.
-		// Therefore never use the glBufferData() discard trick on HTML5 builds.
-		bDiscard = false;
-#endif
+		bDiscard = (bDiscard || (!bReadOnly && InSize == RealSize)) && FOpenGL::DiscardFrameBufferToResize();
 
 		// Map buffer is faster in some circumstances and slower in others, decide when to use it carefully.
 		bool const bCanUseMapBuffer = FOpenGL::SupportsMapBuffer() && BaseType::GLSupportsType();
@@ -616,7 +613,7 @@ public:
 
 		if ( bUseMapBuffer)
 		{
-			FOpenGL::EResourceLockMode LockMode = bReadOnly ? FOpenGL::RLM_ReadOnly : FOpenGL::RLM_WriteOnly;
+			FOpenGL::EResourceLockMode LockMode = bReadOnly ? FOpenGL::EResourceLockMode::RLM_ReadOnly : FOpenGL::EResourceLockMode::RLM_WriteOnly;
 			Data = static_cast<uint8*>( FOpenGL::MapBufferRange( Type, InOffset, InSize, LockMode ) );
 //			checkf(Data != NULL, TEXT("FOpenGL::MapBufferRange Failed, glError %d (0x%x)"), glGetError(), glGetError());
 
@@ -630,7 +627,18 @@ public:
 			// Allocate a temp buffer to write into
 			LockOffset = InOffset;
 			LockSize = InSize;
-			LockBuffer = FMemory::Malloc( InSize );
+			if (CachedBuffer && InSize <= CachedBufferSize)
+			{
+				LockBuffer = CachedBuffer;
+				CachedBuffer = nullptr;
+				// Keep CachedBufferSize to keep the actual size allocated.
+			}
+			else
+			{
+				ReleaseCachedBuffer();
+				LockBuffer = FMemory::Malloc( InSize );
+				CachedBufferSize = InSize; // Safegard
+			}
 			Data = static_cast<uint8*>( LockBuffer );
 			bLockBufferWasAllocated = true;
 		}
@@ -655,14 +663,7 @@ public:
 		uint8 *Data = NULL;
 
 		// Discard if the input size is the same as the backing store size, regardless of the input argument, as orphaning the backing store will typically be faster.
-		bDiscard = bDiscard || InSize == RealSize;
-
-#if PLATFORM_HTML5
-		// In browsers calling glBufferData() to discard-reupload is slower than calling glBufferSubData(),
-		// because changing glBufferData() with a different size from before incurs security related validation.
-		// Therefore never use the glBufferData() discard trick on HTML5 builds.
-		bDiscard = false;
-#endif
+		bDiscard = (bDiscard || InSize == RealSize) && FOpenGL::DiscardFrameBufferToResize();
 
 		// Map buffer is faster in some circumstances and slower in others, decide when to use it carefully.
 		bool const bCanUseMapBuffer = FOpenGL::SupportsMapBuffer() && BaseType::GLSupportsType();
@@ -683,7 +684,7 @@ public:
 
 		if ( bUseMapBuffer)
 		{
-			FOpenGL::EResourceLockMode LockMode = bDiscard ? FOpenGL::RLM_WriteOnly : FOpenGL::RLM_WriteOnlyUnsynchronized;
+			FOpenGL::EResourceLockMode LockMode = bDiscard ? FOpenGL::EResourceLockMode::RLM_WriteOnly : FOpenGL::EResourceLockMode::RLM_WriteOnlyUnsynchronized;
 			Data = static_cast<uint8*>( FOpenGL::MapBufferRange( Type, InOffset, InSize, LockMode ) );
 			LockOffset = InOffset;
 			LockSize = InSize;
@@ -695,7 +696,18 @@ public:
 			// Allocate a temp buffer to write into
 			LockOffset = InOffset;
 			LockSize = InSize;
-			LockBuffer = FMemory::Malloc( InSize );
+			if (CachedBuffer && InSize <= CachedBufferSize)
+			{
+				LockBuffer = CachedBuffer;
+				CachedBuffer = nullptr;
+				// Keep CachedBufferSize to keep the actual size allocated.
+			}
+			else
+			{
+				ReleaseCachedBuffer();
+				LockBuffer = FMemory::Malloc( InSize );
+				CachedBufferSize = InSize; // Safegard
+			}
 			Data = static_cast<uint8*>( LockBuffer );
 			bLockBufferWasAllocated = true;
 		}
@@ -734,14 +746,14 @@ public:
 					// Check for the typical, optimized case
 					if( LockSize == RealSize )
 					{
-#if PLATFORM_HTML5
-						// In browsers using glBufferData() to upload data is slower
-						// than using glBufferSubData(), because glBufferData()
-						// can resize the buffer storage, and so incurs extra validation.
-						FOpenGL::BufferSubData(Type, 0, LockSize, LockBuffer);
-#else
-						glBufferData(Type, RealSize, LockBuffer, GetAccess());
-#endif
+						if (FOpenGL::DiscardFrameBufferToResize())
+						{
+							glBufferData(Type, RealSize, LockBuffer, GetAccess());
+						}
+						else
+						{
+							FOpenGL::BufferSubData(Type, 0, LockSize, LockBuffer);
+						}
 						check( LockBuffer != NULL );
 					}
 					else
@@ -756,9 +768,22 @@ public:
 #endif
 				}
 				check(bLockBufferWasAllocated);
-				FMemory::Free(LockBuffer);
+
+				if ((this->GetUsage() & BUF_Volatile) != 0)
+				{
+					ReleaseCachedBuffer(); // Safegard
+
+					CachedBuffer = LockBuffer;
+					// Possibly > LockSize when reusing cached allocation.
+					CachedBufferSize = FMath::Max<GLuint>(CachedBufferSize, LockSize);
+				}
+				else
+				{
+					FMemory::Free(LockBuffer);
+				}
 				LockBuffer = NULL;
 				bLockBufferWasAllocated = false;
+				LockSize = 0;
 			}
 			ModificationCount += (bIsLockReadOnly ? 0 : 1);
 			bIsLocked = false;
@@ -784,6 +809,16 @@ public:
 	bool IsLockReadOnly() const { return bIsLockReadOnly; }
 	void* GetLockedBuffer() const { return LockBuffer; }
 
+	void ReleaseCachedBuffer()
+	{
+		if (CachedBuffer)
+		{
+			FMemory::Free(CachedBuffer);
+			CachedBuffer = nullptr;
+			CachedBufferSize = 0;
+		}
+		// Don't reset CachedBufferSize if !CachedBuffer since it could be the locked buffer allocation size.
+	}
 private:
 
 	uint32 bIsLocked : 1;
@@ -794,6 +829,11 @@ private:
 	GLuint LockSize;
 	GLuint LockOffset;
 	void* LockBuffer;
+
+	// A cached allocation that can be reused. The same allocation can never be in CachedBuffer and LockBuffer at the same time.
+	void* CachedBuffer = nullptr;
+	// The size of the cached buffer allocation. Can be non zero even though CachedBuffer is  null, to preserve the allocation size.
+	GLuint CachedBufferSize = 0;
 
 	uint32 RealSize;	// sometimes (for example, for uniform buffer pool) we allocate more in OpenGL than is requested of us.
 
@@ -843,7 +883,7 @@ public:
 		}
 
 #if ENABLE_LOW_LEVEL_MEM_TRACKER
-		LLM_SCOPED_PAUSE_TRACKING_WITH_ENUM_AND_AMOUNT(ELLMTag::VertexBuffer, InSize, ELLMTracker::Default, ELLMAllocType::None);
+		LLM_SCOPED_PAUSE_TRACKING_WITH_ENUM_AND_AMOUNT(ELLMTag::Meshes, InSize, ELLMTracker::Default, ELLMAllocType::None);
 #endif
 	}
 
@@ -855,7 +895,7 @@ public:
 		}
 
 #if ENABLE_LOW_LEVEL_MEM_TRACKER
-		LLM_SCOPED_PAUSE_TRACKING_WITH_ENUM_AND_AMOUNT(ELLMTag::VertexBuffer, -(int64)GetSize(), ELLMTracker::Default, ELLMAllocType::None);
+		LLM_SCOPED_PAUSE_TRACKING_WITH_ENUM_AND_AMOUNT(ELLMTag::Meshes, -(int64)GetSize(), ELLMTracker::Default, ELLMAllocType::None);
 #endif
 	}
 
@@ -952,14 +992,14 @@ public:
 	FOpenGLBaseIndexBuffer(uint32 InStride,uint32 InSize,uint32 InUsage): FRHIIndexBuffer(InStride,InSize,InUsage)
 	{
 #if ENABLE_LOW_LEVEL_MEM_TRACKER
-		LLM_SCOPED_PAUSE_TRACKING_WITH_ENUM_AND_AMOUNT(ELLMTag::IndexBuffer, InSize, ELLMTracker::Default, ELLMAllocType::None);
+		LLM_SCOPED_PAUSE_TRACKING_WITH_ENUM_AND_AMOUNT(ELLMTag::Meshes, InSize, ELLMTracker::Default, ELLMAllocType::None);
 #endif
 	}
 
 	~FOpenGLBaseIndexBuffer(void)
 	{
 #if ENABLE_LOW_LEVEL_MEM_TRACKER
-		LLM_SCOPED_PAUSE_TRACKING_WITH_ENUM_AND_AMOUNT(ELLMTag::IndexBuffer, -(int64)GetSize(), ELLMTracker::Default, ELLMAllocType::None);
+		LLM_SCOPED_PAUSE_TRACKING_WITH_ENUM_AND_AMOUNT(ELLMTag::Meshes, -(int64)GetSize(), ELLMTracker::Default, ELLMAllocType::None);
 #endif
 	}
 
@@ -1166,15 +1206,16 @@ public:
 	/** Initialization constructor. */
 	FOpenGLBoundShaderState(
 		FOpenGLLinkedProgram* InLinkedProgram,
-		FVertexDeclarationRHIParamRef InVertexDeclarationRHI,
-		FVertexShaderRHIParamRef InVertexShaderRHI,
-		FPixelShaderRHIParamRef InPixelShaderRHI,
-		FGeometryShaderRHIParamRef InGeometryShaderRHI,
-		FHullShaderRHIParamRef InHullShaderRHI,
-		FDomainShaderRHIParamRef InDomainShaderRHI
+		FRHIVertexDeclaration* InVertexDeclarationRHI,
+		FRHIVertexShader* InVertexShaderRHI,
+		FRHIPixelShader* InPixelShaderRHI,
+		FRHIGeometryShader* InGeometryShaderRHI,
+		FRHIHullShader* InHullShaderRHI,
+		FRHIDomainShader* InDomainShaderRHI
 		);
 
 	const TBitArray<>& GetTextureNeeds(int32& OutMaxTextureStageUsed);
+	const TBitArray<>& GetUAVNeeds(int32& OutMaxUAVUnitUsed) const;
 	void GetNumUniformBuffers(int32 NumVertexUniformBuffers[SF_Compute]);
 
 	bool NeedsTextureStage(int32 TextureStageIndex);
@@ -1588,7 +1629,7 @@ class FOpenGLBaseTexture2DArray : public FRHITexture2DArray
 {
 public:
 	FOpenGLBaseTexture2DArray(uint32 InSizeX, uint32 InSizeY, uint32 InSizeZ, uint32 InNumMips, uint32 InNumSamples, uint32 InNumSamplesTileMem, uint32 InArraySize, EPixelFormat InFormat, uint32 InFlags, const FClearValueBinding& InClearValue)
-	: FRHITexture2DArray(InSizeX,InSizeY,InSizeZ,InNumMips,InFormat,InFlags, InClearValue)
+	: FRHITexture2DArray(InSizeX,InSizeY,InSizeZ,InNumMips,InNumSamples,InFormat,InFlags, InClearValue)
 	{
 		check(InNumSamples == 1);	// OpenGL supports multisampled texture arrays, but they're currently not implemented in OpenGLDrv.
 		check(InNumSamplesTileMem == 1);
@@ -1810,15 +1851,32 @@ public:
 	{
 		return 0;
 	}
+
+	virtual bool IsLayered() const
+	{
+		return false;
+	}
+
+	virtual GLint GetLayer() const
+	{
+		return 0;
+	}
+
 };
 
 class FOpenGLTextureUnorderedAccessView : public FOpenGLUnorderedAccessView
 {
 public:
 
-	FOpenGLTextureUnorderedAccessView(FTextureRHIParamRef InTexture);
+	FOpenGLTextureUnorderedAccessView(FRHITexture* InTexture);
 
 	FTextureRHIRef TextureRHI; // to keep the texture alive
+	bool bLayered;
+
+	virtual bool IsLayered() const override
+	{
+		return bLayered;
+	}
 };
 
 
@@ -1828,11 +1886,27 @@ public:
 
 	FOpenGLVertexBufferUnorderedAccessView();
 
-	FOpenGLVertexBufferUnorderedAccessView(	FOpenGLDynamicRHI* InOpenGLRHI, FVertexBufferRHIParamRef InVertexBuffer, uint8 Format);
+	FOpenGLVertexBufferUnorderedAccessView(	FOpenGLDynamicRHI* InOpenGLRHI, FRHIVertexBuffer* InVertexBuffer, uint8 Format);
 
 	virtual ~FOpenGLVertexBufferUnorderedAccessView();
 
 	FVertexBufferRHIRef VertexBufferRHI; // to keep the vertex buffer alive
+
+	FOpenGLDynamicRHI* OpenGLRHI;
+
+	virtual uint32 GetBufferSize() override;
+};
+
+class FOpenGLStructuredBufferUnorderedAccessView : public FOpenGLUnorderedAccessView
+{
+public:
+	FOpenGLStructuredBufferUnorderedAccessView();
+
+	FOpenGLStructuredBufferUnorderedAccessView(	FOpenGLDynamicRHI* InOpenGLRHI, FRHIStructuredBuffer* InBuffer, uint8 Format);
+
+	virtual ~FOpenGLStructuredBufferUnorderedAccessView();
+
+	FStructuredBufferRHIRef StructuredBufferRHI; // to keep the stuctured buffer alive
 
 	FOpenGLDynamicRHI* OpenGLRHI;
 
@@ -1870,7 +1944,7 @@ public:
 	,	OwnsResource(true)
 	{}
 
-	FOpenGLShaderResourceView( FOpenGLDynamicRHI* InOpenGLRHI, GLuint InResource, GLenum InTarget, FVertexBufferRHIParamRef InVertexBuffer, uint8 InFormat )
+	FOpenGLShaderResourceView( FOpenGLDynamicRHI* InOpenGLRHI, GLuint InResource, GLenum InTarget, FRHIVertexBuffer* InVertexBuffer, uint8 InFormat )
 	:	Resource(InResource)
 	,	Target(InTarget)
 	,	LimitMip(-1)
@@ -1914,7 +1988,7 @@ protected:
 class FOpenGLShaderResourceViewProxy : public TOpenGLResourceProxy<FRHIShaderResourceView, FOpenGLShaderResourceView>
 {
 public:
-	FOpenGLShaderResourceViewProxy(TFunction<FOpenGLShaderResourceView*(FShaderResourceViewRHIParamRef)> CreateFunc)
+	FOpenGLShaderResourceViewProxy(TFunction<FOpenGLShaderResourceView*(FRHIShaderResourceView*)> CreateFunc)
 		: TOpenGLResourceProxy<FRHIShaderResourceView, FOpenGLShaderResourceView>(CreateFunc)
 	{}
 
@@ -1933,7 +2007,7 @@ struct TIsGLProxyObject<FOpenGLShaderResourceViewProxy>
 void OPENGLDRV_API OpenGLTextureDeleted(FRHITexture* Texture);
 void OPENGLDRV_API OpenGLTextureAllocated( FRHITexture* Texture , uint32 Flags);
 
-void OPENGLDRV_API ReleaseOpenGLFramebuffers(FOpenGLDynamicRHI* Device, FTextureRHIParamRef TextureRHI);
+void OPENGLDRV_API ReleaseOpenGLFramebuffers(FOpenGLDynamicRHI* Device, FRHITexture* TextureRHI);
 
 /** A OpenGL event query resource. */
 class FOpenGLEventQuery : public FRenderResource
@@ -2015,7 +2089,7 @@ private:
 // Fences
 
 // Note that Poll() and WriteInternal() will stall the RHI thread if one is present.
-class FOpenGLGPUFence : public FRHIGPUFence
+class FOpenGLGPUFence final : public FRHIGPUFence
 {
 public:
 	FOpenGLGPUFence(FName InName)
@@ -2023,10 +2097,10 @@ public:
 		, bValidSync(false)
 	{}
 
-	virtual ~FOpenGLGPUFence() final override;
+	~FOpenGLGPUFence() override;
 
-	virtual void Clear() final override;
-	virtual bool Poll() const final override;
+	void Clear() override;
+	bool Poll() const override;
 	
 	void WriteInternal();
 private:
@@ -2035,7 +2109,7 @@ private:
 	bool bValidSync;
 };
 
-class FOpenGLStagingBuffer : public FRHIStagingBuffer
+class FOpenGLStagingBuffer final : public FRHIStagingBuffer
 {
 	friend class FOpenGLDynamicRHI;
 public:
@@ -2044,13 +2118,13 @@ public:
 		Initialize();
 	}
 
-	virtual ~FOpenGLStagingBuffer() final override;
+	~FOpenGLStagingBuffer() override;
 
 	// Locks the shadow of VertexBuffer for read. This will stall the RHI thread.
-	virtual void *Lock(uint32 Offset, uint32 NumBytes) final override;
+	void *Lock(uint32 Offset, uint32 NumBytes) override;
 
 	// Unlocks the shadow. This is an error if it was not locked previously.
-	virtual void Unlock() final override;
+	void Unlock() override;
 private:
 	void Initialize();
 
@@ -2105,7 +2179,7 @@ struct TOpenGLResourceTraits<FRHIPixelShader>
 template<>
 struct TOpenGLResourceTraits<FRHIComputeShader>
 {
-	typedef FOpenGLComputeShader TConcreteType;
+	typedef FOpenGLComputeShaderProxy TConcreteType;
 };
 template<>
 struct TOpenGLResourceTraits<FRHIBoundShaderState>

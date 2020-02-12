@@ -1,7 +1,9 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "Engine/Scene.h"
 #include "HAL/IConsoleManager.h"
+#include "UObject/RenderingObjectVersion.h"
+#include "UObject/ReleaseObjectVersion.h"
 
 void FColorGradingSettings::ExportToPostProcessSettings(FPostProcessSettings* OutPostProcessSettings) const
 {
@@ -165,8 +167,8 @@ FCameraExposureSettings::FCameraExposureSettings()
 
 	// next value might get overwritten by r.DefaultFeature.AutoExposure.Method
 	Method = AEM_Histogram;
-	LowPercent = 80.0f;
-	HighPercent = 98.3f;
+	LowPercent = 10.0f;
+	HighPercent = 90.0f;
 
 	if (bExtendedLuminanceRange)
 	{
@@ -187,7 +189,9 @@ FCameraExposureSettings::FCameraExposureSettings()
 	SpeedUp = 3.0f;
 	SpeedDown = 1.0f;
 	Bias = 0.0f;
-	CalibrationConstant	= 16.0;
+	CalibrationConstant	= 18.0;
+
+	ApplyPhysicalCameraExposure = 0;
 }
 
 void FCameraExposureSettings::ExportToPostProcessSettings(FPostProcessSettings* OutPostProcessSettings) const
@@ -200,8 +204,11 @@ void FCameraExposureSettings::ExportToPostProcessSettings(FPostProcessSettings* 
 	OutPostProcessSettings->bOverride_AutoExposureSpeedUp = true;
 	OutPostProcessSettings->bOverride_AutoExposureSpeedDown = true;
 	OutPostProcessSettings->bOverride_AutoExposureBias = true;
+	OutPostProcessSettings->bOverride_AutoExposureBiasCurve = true;
+	OutPostProcessSettings->bOverride_AutoExposureMeterMask = true;
 	OutPostProcessSettings->bOverride_HistogramLogMin = true;
 	OutPostProcessSettings->bOverride_HistogramLogMax = true;
+	OutPostProcessSettings->bOverride_AutoExposureApplyPhysicalCameraExposure = true;
 
 	OutPostProcessSettings->AutoExposureLowPercent = LowPercent;
 	OutPostProcessSettings->AutoExposureHighPercent = HighPercent;
@@ -210,8 +217,11 @@ void FCameraExposureSettings::ExportToPostProcessSettings(FPostProcessSettings* 
 	OutPostProcessSettings->AutoExposureSpeedUp = SpeedUp;
 	OutPostProcessSettings->AutoExposureSpeedDown = SpeedDown;
 	OutPostProcessSettings->AutoExposureBias = Bias;
+	OutPostProcessSettings->AutoExposureBiasCurve = BiasCurve;
+	OutPostProcessSettings->AutoExposureMeterMask = MeterMask;
 	OutPostProcessSettings->HistogramLogMin = HistogramLogMin;
 	OutPostProcessSettings->HistogramLogMax = HistogramLogMax;
+	OutPostProcessSettings->AutoExposureApplyPhysicalCameraExposure = ApplyPhysicalCameraExposure;
 }
 
 
@@ -225,12 +235,12 @@ static void VerifyPostProcessingProperties(
 {
 	const UStruct* LegacyStruct = FPostProcessSettings::StaticStruct();
 
-	TMap<FString, const UProperty*> NewPropertySet;
+	TMap<FString, const FProperty*> NewPropertySet;
 
 	// Walk new struct and build list of property name.
 	for (const UStruct* NewStruct : NewStructs)
 	{
-		for (UProperty* Property = NewStruct->PropertyLink; Property; Property = Property->PropertyLinkNext)
+		for (FProperty* Property = NewStruct->PropertyLink; Property; Property = Property->PropertyLinkNext)
 		{
 			// Make sure there is no duplicate.
 			check(!NewPropertySet.Contains(Property->GetNameCPP()));
@@ -239,7 +249,7 @@ static void VerifyPostProcessingProperties(
 	}
 
 	// Walk FPostProcessSettings.
-	for (UProperty* Property = LegacyStruct->PropertyLink; Property; Property = Property->PropertyLinkNext)
+	for (FProperty* Property = LegacyStruct->PropertyLink; Property; Property = Property->PropertyLinkNext)
 	{
 		if (!Property->GetNameCPP().StartsWith(PropertyPrefix))
 		{
@@ -427,6 +437,7 @@ FPostProcessSettings::FPostProcessSettings()
 	BloomConvolutionCenterUV = FVector2D(0.5f, 0.5f);
 #if WITH_EDITORONLY_DATA
 	BloomConvolutionPreFilter_DEPRECATED = FVector(-1.f, -1.f, -1.f);
+	DepthOfFieldMethod_DEPRECATED = EDepthOfFieldMethod::DOFM_MAX;
 #endif
 	BloomConvolutionPreFilterMin = 7.f;
 	BloomConvolutionPreFilterMax = 15000.f;
@@ -446,10 +457,10 @@ FPostProcessSettings::FPostProcessSettings()
 	// next value might get overwritten by r.DefaultFeature.AutoExposure.Method
 	CameraShutterSpeed = 60.f;
 	CameraISO = 100.f;
-	AutoExposureCalibrationConstant = 16.f;
+	AutoExposureCalibrationConstant_DEPRECATED = 16.f;
 	AutoExposureMethod = AEM_Histogram;
-	AutoExposureLowPercent = 80.0f;
-	AutoExposureHighPercent = 98.3f;
+	AutoExposureLowPercent = 10.0f;
+	AutoExposureHighPercent = 90.0f;
 
 	// next value might get overwritten by r.DefaultFeature.AutoExposure
 	static const auto VarDefaultAutoExposureExtendDefaultLuminanceRange = IConsoleManager::Get().FindTConsoleVariableDataInt(TEXT("r.DefaultFeature.AutoExposure.ExtendDefaultLuminanceRange"));
@@ -472,6 +483,9 @@ FPostProcessSettings::FPostProcessSettings()
 	AutoExposureBias = 0.0f;
 	AutoExposureSpeedUp = 3.0f;
 	AutoExposureSpeedDown = 1.0f;
+
+	AutoExposureApplyPhysicalCameraExposure = 1;
+
 	LPVDirectionalOcclusionIntensity = 0.0f;
 	LPVDirectionalOcclusionRadius = 8.0f;
 	LPVDiffuseOcclusionExponent = 1.0f;
@@ -504,12 +518,17 @@ FPostProcessSettings::FPostProcessSettings()
 	AmbientOcclusionMipScale = 1.7f;
 	AmbientOcclusionMipThreshold = 0.01f;
 	AmbientOcclusionRadiusInWS = false;
+	RayTracingAO = 1;
+	RayTracingAOSamplesPerPixel = 1;
 	IndirectLightingColor = FLinearColor(1.0f, 1.0f, 1.0f);
 	IndirectLightingIntensity = 1.0f;
 	ColorGradingIntensity = 1.0f;
-	PRAGMA_DISABLE_DEPRECATION_WARNINGS
-	DepthOfFieldFocalDistance = 1000.0f;
-	DepthOfFieldFstop = 4.0f;
+	RayTracingGIType = ERayTracingGlobalIlluminationType::Disabled;
+	RayTracingGIMaxBounces = 1;
+	RayTracingGISamplesPerPixel = 4;
+
+	DepthOfFieldFocalDistance = 0; // Intentionally invalid to disable DOF by default.
+	DepthOfFieldFstop = 4.0f; 
 	DepthOfFieldMinFstop = 1.2f;
 	DepthOfFieldBladeCount = FPostProcessSettings::kDefaultDepthOfFieldBladeCount;
 	DepthOfFieldSensorWidth = 24.576f;			// APS-C
@@ -519,14 +538,10 @@ FPostProcessSettings::FPostProcessSettings()
 	DepthOfFieldNearTransitionRegion = 300.0f;
 	DepthOfFieldFarTransitionRegion = 500.0f;
 	DepthOfFieldScale = 0.0f;
-	DepthOfFieldMaxBokehSize = 15.0f;
 	DepthOfFieldNearBlurSize = 15.0f;
 	DepthOfFieldFarBlurSize = 15.0f;
 	DepthOfFieldOcclusion = 0.4f;
-	DepthOfFieldColorThreshold = 1.0f;
-	DepthOfFieldSizeThreshold = 0.08f;
 	DepthOfFieldSkyFocusDistance = 0.0f;
-	PRAGMA_ENABLE_DEPRECATION_WARNINGS
 	// 200 should be enough even for extreme aspect ratios to give the default no effect
 	DepthOfFieldVignetteSize = 200.0f;
 	LensFlareTints[0] = FLinearColor(1.0f, 0.8f, 0.4f, 0.6f);
@@ -540,11 +555,29 @@ FPostProcessSettings::FPostProcessSettings()
 	// next value might get overwritten by r.DefaultFeature.MotionBlur
 	MotionBlurAmount = 0.5f;
 	MotionBlurMax = 5.0f;
+	MotionBlurTargetFPS = 30;
 	MotionBlurPerObjectSize = 0.5f;
 	ScreenPercentage = 100.0f;
+	ReflectionsType = EReflectionsType::RayTracing;
 	ScreenSpaceReflectionIntensity = 100.0f;
 	ScreenSpaceReflectionQuality = 50.0f;
 	ScreenSpaceReflectionMaxRoughness = 0.6f;
+	RayTracingReflectionsMaxRoughness = 0.6f;
+	RayTracingReflectionsMaxBounces = 1;
+	RayTracingReflectionsSamplesPerPixel = 1;
+	RayTracingReflectionsShadows = EReflectedAndRefractedRayTracedShadows::Hard_shadows;
+	RayTracingReflectionsTranslucency = 0;
+
+	TranslucencyType = ETranslucencyType::Raster;
+	RayTracingTranslucencyMaxRoughness = 0.6f;
+	RayTracingTranslucencyRefractionRays = 3; // 3 to: first hit surface, second hit back inner surface and a third to fetch the background.
+	RayTracingTranslucencySamplesPerPixel = 1;
+	RayTracingTranslucencyShadows = EReflectedAndRefractedRayTracedShadows::Hard_shadows;
+	RayTracingTranslucencyRefraction = 1;
+
+	PathTracingMaxBounces = 32;
+	PathTracingSamplesPerPixel = 16384;
+	
 	bMobileHQGaussian = false;
 
 #if DO_CHECK && WITH_EDITOR
@@ -640,10 +673,13 @@ FPostProcessSettings::FPostProcessSettings(const FPostProcessSettings& Settings)
 	, bOverride_AutoExposureHighPercent(Settings.bOverride_AutoExposureHighPercent)
 	, bOverride_AutoExposureMinBrightness(Settings.bOverride_AutoExposureMinBrightness)
 	, bOverride_AutoExposureMaxBrightness(Settings.bOverride_AutoExposureMaxBrightness)
-	, bOverride_AutoExposureCalibrationConstant(Settings.bOverride_AutoExposureCalibrationConstant)
+	, bOverride_AutoExposureCalibrationConstant_DEPRECATED(Settings.bOverride_AutoExposureCalibrationConstant_DEPRECATED)
 	, bOverride_AutoExposureSpeedUp(Settings.bOverride_AutoExposureSpeedUp)
 	, bOverride_AutoExposureSpeedDown(Settings.bOverride_AutoExposureSpeedDown)
 	, bOverride_AutoExposureBias(Settings.bOverride_AutoExposureBias)
+	, bOverride_AutoExposureBiasCurve(Settings.bOverride_AutoExposureBiasCurve)
+	, bOverride_AutoExposureMeterMask(Settings.bOverride_AutoExposureMeterMask)
+	, bOverride_AutoExposureApplyPhysicalCameraExposure(Settings.bOverride_AutoExposureApplyPhysicalCameraExposure)
 	, bOverride_HistogramLogMin(Settings.bOverride_HistogramLogMin)
 	, bOverride_HistogramLogMax(Settings.bOverride_HistogramLogMax)
 	, bOverride_LensFlareIntensity(Settings.bOverride_LensFlareIntensity)
@@ -668,6 +704,8 @@ FPostProcessSettings::FPostProcessSettings(const FPostProcessSettings& Settings)
 	, bOverride_AmbientOcclusionMipBlend(Settings.bOverride_AmbientOcclusionMipBlend)
 	, bOverride_AmbientOcclusionMipScale(Settings.bOverride_AmbientOcclusionMipScale)
 	, bOverride_AmbientOcclusionMipThreshold(Settings.bOverride_AmbientOcclusionMipThreshold)
+	, bOverride_RayTracingAO(Settings.bOverride_RayTracingAO)
+	, bOverride_RayTracingAOSamplesPerPixel(Settings.bOverride_RayTracingAOSamplesPerPixel)
 	, bOverride_LPVIntensity(Settings.bOverride_LPVIntensity)
 	, bOverride_LPVDirectionalOcclusionIntensity(Settings.bOverride_LPVDirectionalOcclusionIntensity)
 	, bOverride_LPVDirectionalOcclusionRadius(Settings.bOverride_LPVDirectionalOcclusionRadius)
@@ -687,7 +725,6 @@ FPostProcessSettings::FPostProcessSettings(const FPostProcessSettings& Settings)
 	, bOverride_IndirectLightingIntensity(Settings.bOverride_IndirectLightingIntensity)
 	, bOverride_ColorGradingIntensity(Settings.bOverride_ColorGradingIntensity)
 	, bOverride_ColorGradingLUT(Settings.bOverride_ColorGradingLUT)
-	PRAGMA_DISABLE_DEPRECATION_WARNINGS
 	, bOverride_DepthOfFieldFocalDistance(Settings.bOverride_DepthOfFieldFocalDistance)
 	, bOverride_DepthOfFieldFstop(Settings.bOverride_DepthOfFieldFstop)
 	, bOverride_DepthOfFieldMinFstop(Settings.bOverride_DepthOfFieldMinFstop)
@@ -699,18 +736,12 @@ FPostProcessSettings::FPostProcessSettings(const FPostProcessSettings& Settings)
 	, bOverride_DepthOfFieldNearTransitionRegion(Settings.bOverride_DepthOfFieldNearTransitionRegion)
 	, bOverride_DepthOfFieldFarTransitionRegion(Settings.bOverride_DepthOfFieldFarTransitionRegion)
 	, bOverride_DepthOfFieldScale(Settings.bOverride_DepthOfFieldScale)
-	, bOverride_DepthOfFieldMaxBokehSize(Settings.bOverride_DepthOfFieldMaxBokehSize)
 	, bOverride_DepthOfFieldNearBlurSize(Settings.bOverride_DepthOfFieldNearBlurSize)
 	, bOverride_DepthOfFieldFarBlurSize(Settings.bOverride_DepthOfFieldFarBlurSize)
-	, bOverride_DepthOfFieldMethod(Settings.bOverride_DepthOfFieldMethod)
 	, bOverride_MobileHQGaussian(Settings.bOverride_MobileHQGaussian)
-	, bOverride_DepthOfFieldBokehShape(Settings.bOverride_DepthOfFieldBokehShape)
 	, bOverride_DepthOfFieldOcclusion(Settings.bOverride_DepthOfFieldOcclusion)
-	, bOverride_DepthOfFieldColorThreshold(Settings.bOverride_DepthOfFieldColorThreshold)
-	, bOverride_DepthOfFieldSizeThreshold(Settings.bOverride_DepthOfFieldSizeThreshold)
 	, bOverride_DepthOfFieldSkyFocusDistance(Settings.bOverride_DepthOfFieldSkyFocusDistance)
 	, bOverride_DepthOfFieldVignetteSize(Settings.bOverride_DepthOfFieldVignetteSize)
-	PRAGMA_ENABLE_DEPRECATION_WARNINGS
 	, bOverride_MotionBlurAmount(Settings.bOverride_MotionBlurAmount)
 	, bOverride_MotionBlurMax(Settings.bOverride_MotionBlurMax)
 	, bOverride_MotionBlurPerObjectSize(Settings.bOverride_MotionBlurPerObjectSize)
@@ -719,13 +750,27 @@ FPostProcessSettings::FPostProcessSettings(const FPostProcessSettings& Settings)
 	, bOverride_ScreenSpaceReflectionQuality(Settings.bOverride_ScreenSpaceReflectionQuality)
 	, bOverride_ScreenSpaceReflectionMaxRoughness(Settings.bOverride_ScreenSpaceReflectionMaxRoughness)
 	, bOverride_ScreenSpaceReflectionRoughnessScale(Settings.bOverride_ScreenSpaceReflectionRoughnessScale)
+	, bOverride_ReflectionsType(Settings.bOverride_ReflectionsType)
+	, bOverride_RayTracingReflectionsMaxRoughness(Settings.bOverride_RayTracingReflectionsMaxRoughness)
+	, bOverride_RayTracingReflectionsMaxBounces(Settings.bOverride_RayTracingReflectionsMaxBounces)
+	, bOverride_RayTracingReflectionsSamplesPerPixel(Settings.bOverride_RayTracingReflectionsSamplesPerPixel)
+	, bOverride_RayTracingReflectionsShadows(Settings.bOverride_RayTracingReflectionsShadows)
+	, bOverride_RayTracingReflectionsTranslucency(Settings.bOverride_RayTracingReflectionsTranslucency)
+	, bOverride_TranslucencyType(Settings.bOverride_TranslucencyType)
+	, bOverride_RayTracingTranslucencyMaxRoughness(Settings.bOverride_RayTracingTranslucencyMaxRoughness)
+	, bOverride_RayTracingTranslucencyRefractionRays(Settings.bOverride_RayTracingTranslucencyRefractionRays)
+	, bOverride_RayTracingTranslucencySamplesPerPixel(Settings.bOverride_RayTracingTranslucencySamplesPerPixel)
+	, bOverride_RayTracingTranslucencyShadows(Settings.bOverride_RayTracingTranslucencyShadows)
+	, bOverride_RayTracingTranslucencyRefraction(Settings.bOverride_RayTracingTranslucencyRefraction)
+	, bOverride_RayTracingGI(Settings.bOverride_RayTracingGI)
+	, bOverride_RayTracingGIMaxBounces(Settings.bOverride_RayTracingGIMaxBounces)
+	, bOverride_RayTracingGISamplesPerPixel(Settings.bOverride_RayTracingGISamplesPerPixel)
+	, bOverride_PathTracingMaxBounces(Settings.bOverride_PathTracingMaxBounces)
+	, bOverride_PathTracingSamplesPerPixel(Settings.bOverride_PathTracingSamplesPerPixel)
 
 	, bMobileHQGaussian(Settings.bMobileHQGaussian)
 	, BloomMethod(Settings.BloomMethod)
 	, AutoExposureMethod(Settings.AutoExposureMethod)
-	PRAGMA_DISABLE_DEPRECATION_WARNINGS
-	, DepthOfFieldMethod(Settings.DepthOfFieldMethod)
-	PRAGMA_ENABLE_DEPRECATION_WARNINGS
 	, WhiteTemp(Settings.WhiteTemp)
 	, WhiteTint(Settings.WhiteTint)
 	, ColorSaturation(Settings.ColorSaturation)
@@ -807,6 +852,9 @@ FPostProcessSettings::FPostProcessSettings(const FPostProcessSettings& Settings)
 	, DepthOfFieldMinFstop(Settings.DepthOfFieldMinFstop)
 	, DepthOfFieldBladeCount(Settings.DepthOfFieldBladeCount)
 	, AutoExposureBias(Settings.AutoExposureBias)
+	, AutoExposureApplyPhysicalCameraExposure(Settings.AutoExposureApplyPhysicalCameraExposure)
+	, AutoExposureBiasCurve(Settings.AutoExposureBiasCurve)
+	, AutoExposureMeterMask(Settings.AutoExposureMeterMask)
 	, AutoExposureLowPercent(Settings.AutoExposureLowPercent)
 	, AutoExposureHighPercent(Settings.AutoExposureHighPercent)
 	, AutoExposureMinBrightness(Settings.AutoExposureMinBrightness)
@@ -815,7 +863,7 @@ FPostProcessSettings::FPostProcessSettings(const FPostProcessSettings& Settings)
 	, AutoExposureSpeedDown(Settings.AutoExposureSpeedDown)
 	, HistogramLogMin(Settings.HistogramLogMin)
 	, HistogramLogMax(Settings.HistogramLogMax)
-	, AutoExposureCalibrationConstant(Settings.AutoExposureCalibrationConstant)
+	, AutoExposureCalibrationConstant_DEPRECATED(Settings.AutoExposureCalibrationConstant_DEPRECATED)
 	, LensFlareIntensity(Settings.LensFlareIntensity)
 	, LensFlareTint(Settings.LensFlareTint)
 	, LensFlareBokehSize(Settings.LensFlareBokehSize)
@@ -837,11 +885,15 @@ FPostProcessSettings::FPostProcessSettings(const FPostProcessSettings& Settings)
 	, AmbientOcclusionMipBlend(Settings.AmbientOcclusionMipBlend)
 	, AmbientOcclusionMipScale(Settings.AmbientOcclusionMipScale)
 	, AmbientOcclusionMipThreshold(Settings.AmbientOcclusionMipThreshold)
+	, RayTracingAO(Settings.RayTracingAO)
+	, RayTracingAOSamplesPerPixel(Settings.RayTracingAOSamplesPerPixel)
 	, IndirectLightingColor(Settings.IndirectLightingColor)
 	, IndirectLightingIntensity(Settings.IndirectLightingIntensity)
+	, RayTracingGIType(Settings.RayTracingGIType)
+	, RayTracingGIMaxBounces(Settings.RayTracingGIMaxBounces)
+	, RayTracingGISamplesPerPixel(Settings.RayTracingGISamplesPerPixel)
 	, ColorGradingIntensity(Settings.ColorGradingIntensity)
 	, ColorGradingLUT(Settings.ColorGradingLUT)
-	PRAGMA_DISABLE_DEPRECATION_WARNINGS
 	, DepthOfFieldSensorWidth(Settings.DepthOfFieldSensorWidth)
 	, DepthOfFieldFocalDistance(Settings.DepthOfFieldFocalDistance)
 	, DepthOfFieldDepthBlurAmount(Settings.DepthOfFieldDepthBlurAmount)
@@ -850,18 +902,14 @@ FPostProcessSettings::FPostProcessSettings(const FPostProcessSettings& Settings)
 	, DepthOfFieldNearTransitionRegion(Settings.DepthOfFieldNearTransitionRegion)
 	, DepthOfFieldFarTransitionRegion(Settings.DepthOfFieldFarTransitionRegion)
 	, DepthOfFieldScale(Settings.DepthOfFieldScale)
-	, DepthOfFieldMaxBokehSize(Settings.DepthOfFieldMaxBokehSize)
 	, DepthOfFieldNearBlurSize(Settings.DepthOfFieldNearBlurSize)
 	, DepthOfFieldFarBlurSize(Settings.DepthOfFieldFarBlurSize)
 	, DepthOfFieldOcclusion(Settings.DepthOfFieldOcclusion)
-	, DepthOfFieldBokehShape(Settings.DepthOfFieldBokehShape)
-	, DepthOfFieldColorThreshold(Settings.DepthOfFieldColorThreshold)
-	, DepthOfFieldSizeThreshold(Settings.DepthOfFieldSizeThreshold)
 	, DepthOfFieldSkyFocusDistance(Settings.DepthOfFieldSkyFocusDistance)
 	, DepthOfFieldVignetteSize(Settings.DepthOfFieldVignetteSize)
-	PRAGMA_ENABLE_DEPRECATION_WARNINGS
 	, MotionBlurAmount(Settings.MotionBlurAmount)
 	, MotionBlurMax(Settings.MotionBlurMax)
+	, MotionBlurTargetFPS(Settings.MotionBlurTargetFPS)
 	, MotionBlurPerObjectSize(Settings.MotionBlurPerObjectSize)
 	, LPVIntensity(Settings.LPVIntensity)
 	, LPVVplInjectionBias(Settings.LPVVplInjectionBias)
@@ -876,19 +924,207 @@ FPostProcessSettings::FPostProcessSettings(const FPostProcessSettings& Settings)
 	, LPVSpecularOcclusionExponent(Settings.LPVSpecularOcclusionExponent)
 	, LPVDiffuseOcclusionIntensity(Settings.LPVDiffuseOcclusionIntensity)
 	, LPVSpecularOcclusionIntensity(Settings.LPVSpecularOcclusionIntensity)
+
+	, ReflectionsType(Settings.ReflectionsType)
 	, ScreenSpaceReflectionIntensity(Settings.ScreenSpaceReflectionIntensity)
 	, ScreenSpaceReflectionQuality(Settings.ScreenSpaceReflectionQuality)
 	, ScreenSpaceReflectionMaxRoughness(Settings.ScreenSpaceReflectionMaxRoughness)
+
+	, RayTracingReflectionsMaxRoughness(Settings.RayTracingReflectionsMaxRoughness)
+	, RayTracingReflectionsMaxBounces(Settings.RayTracingReflectionsMaxBounces)
+	, RayTracingReflectionsSamplesPerPixel(Settings.RayTracingReflectionsSamplesPerPixel)
+	, RayTracingReflectionsShadows(Settings.RayTracingReflectionsShadows)
+	, RayTracingReflectionsTranslucency(Settings.RayTracingReflectionsTranslucency)
+
+	, TranslucencyType(Settings.TranslucencyType)
+	, RayTracingTranslucencyMaxRoughness(Settings.RayTracingTranslucencyMaxRoughness)
+	, RayTracingTranslucencyRefractionRays(Settings.RayTracingTranslucencyRefractionRays)
+	, RayTracingTranslucencySamplesPerPixel(Settings.RayTracingTranslucencySamplesPerPixel)
+	, RayTracingTranslucencyShadows(Settings.RayTracingTranslucencyShadows)
+	, RayTracingTranslucencyRefraction(Settings.RayTracingTranslucencyRefraction)
+
+	, PathTracingMaxBounces(Settings.PathTracingMaxBounces)
+	, PathTracingSamplesPerPixel(Settings.PathTracingSamplesPerPixel)
+
 	, LPVFadeRange(Settings.LPVFadeRange)
 	, LPVDirectionalOcclusionFadeRange(Settings.LPVDirectionalOcclusionFadeRange)
+
 	, ScreenPercentage(Settings.ScreenPercentage)
 
 	, WeightedBlendables(Settings.WeightedBlendables)
 	//, Blendables_DEPRECATED(Settings.Blendables_DEPRECATED)
 {
-	for (int32 i = 0; i < ARRAY_COUNT(LensFlareTints); i++)
+	for (int32 i = 0; i < UE_ARRAY_COUNT(LensFlareTints); i++)
 		LensFlareTints[i] = Settings.LensFlareTints[i];
 }
+	
+#if WITH_EDITORONLY_DATA
+bool FPostProcessSettings::Serialize(FArchive& Ar)
+{
+	Ar.UsingCustomVersion(FRenderingObjectVersion::GUID);
+	Ar.UsingCustomVersion(FReleaseObjectVersion::GUID);
+
+	// Don't actually serialize, just write the custom version for PostSerialize
+	return false;
+}
+
+// Conversion estimate for auto-exposure parameters from 4.24 to 4.25. Because we reduced the complexity of the algorithm,
+// we can't do an exact match of legacy parameters to current parameters. So we are storing the backup exposure compensation just in case.
+float CalculateEyeAdaptationExposureVersionUpdate(const FPostProcessSettings& Settings, const bool bExtendedLuminanceRange)
+{
+	float ExtraExposureCompensation = 0.0f;
+
+	// Since we are doing this without CVars, we can not call LuminanceMaxFromLensAttenuation(). Instead, assume 1.0
+	const float CurrLuminanceMax = 1.0f; 
+	const float PrevLuminanceMax = bExtendedLuminanceRange ? 1.2f : 1.0f;
+
+	// In legacy, some parameters (like Calibration Constant) would apply an exposure bias before the min/max luminance clamp. So if we
+	// match the previous look of Calibration Constant by adding an exposure bias, it will look fine with wide EV ranges.  But it is 
+	// quite common for levels to fake manual exposure by forcing min and max luminance to the same value. In those cases adding an EV
+	// bias causes more problems than it solves.
+	//
+	// Additionally, when bExtendedLuminanceRange is false, in general, the range is pretty tight. So if we add one or two stops of
+	// exposure compensation it will often look much too bright.
+	//
+	// So the compromise is:
+	// 1. We always include the Luminance Max 1.2 conversion for Extended range, and keep it at 1.0 for not extended range.
+	// 2. When AutoExposureMinBrightness=AutoExposureMaxBrightness, do nothing (fake manual exposure).
+	// 3a. In Basic mode, apply the basic Calibration Constant (it behaves slightly differently when bExtendedLuminanceRange is true)
+	// 3b. In Histogram mode, when bExtendedLuminanceRange is false, do nothing.
+	// 3c. In Histogram mode, otherwise apply a rough perceptual conversion.
+	if (Settings.AutoExposureMinBrightness >= Settings.AutoExposureMaxBrightness)
+	{
+		// fake manual exposure, no op
+	}
+	else
+	{
+		if (Settings.AutoExposureMethod == EAutoExposureMethod::AEM_Basic)
+		{
+			if (bExtendedLuminanceRange)
+			{
+				// add the Calibration Constant into EC
+				ExtraExposureCompensation += FMath::Log2(18.0f / Settings.AutoExposureCalibrationConstant_DEPRECATED);
+			}
+			else
+			{
+				// add the Calibration Constant into EC, but it without extended luminance range the minimum is 16.
+				ExtraExposureCompensation += FMath::Log2(18 / FMath::Max(16.0f, Settings.AutoExposureCalibrationConstant_DEPRECATED));
+			}
+		}
+		else if (Settings.AutoExposureMethod == EAutoExposureMethod::AEM_Histogram)
+		{
+			if (bExtendedLuminanceRange)
+			{
+				// We're matching the look of the old and new formula by adding exposure compensation. But this does not work correctly
+				// at the min and max values of the exposure range, because adding exposure compensation pushes it outside the clamped
+				// value. So in the general case of AutoExposureMinBrightness < AutoExposureMaxBrightness, tweak the exposure compensation
+				// to adjust the look. But in the other special case, do nothing.
+				if (Settings.AutoExposureMinBrightness < Settings.AutoExposureMaxBrightness)
+				{
+					// The previous version of the histogram would take the averge luminance between high and low, and then make that
+					// value the white point. This is different from basic exposure (and the new version) which makes that point 
+					// middle grey instead. The following formula gives a similar look for auto-conversion.
+					const float Average = ((Settings.AutoExposureLowPercent + Settings.AutoExposureHighPercent) * .5f);
+					const float X0 = 50.00f;
+					const float X1 = 89.15f;
+					const float Y0 = 1.0f;
+					const float Y1 = 1.5f;
+
+					// These numbers actually under-correct a bit. Since we are doing a hidden upgrade, it's better to undercorrect
+					// than to overcorrect.
+
+					const float T = (Average - X0) / (X1 - X0);
+					ExtraExposureCompensation += FMath::Lerp(Y0, Y1, T);
+				}
+				else
+				{
+					// no op, histogram auto-exposure is effectively being used as manual exposure
+				}
+			}
+			else
+			{
+				// If we are not in extended luminance range, then do nothing. The default ranges is pretty tight (0.03 linear to 2.0),
+				// so if we apply an exposure bias to "fix the look" it will probably do more harm than good.
+			}
+		}
+		else // ConvertedSettings.AutoExposureMethod == EAutoExposureMethod::AEM_Manual
+		{
+			// nothing to do
+		}
+	}
+
+	// add the exposure compensation from the LuminanceMax. In general, if extended luminance range is enabled, the old value should be 1.2 and the new
+	// value should be 1.0. Otherwise they should both be 1.0.
+	ExtraExposureCompensation += FMath::Log2(PrevLuminanceMax/ CurrLuminanceMax);
+
+	return ExtraExposureCompensation;
+}
+
+void FPostProcessSettings::PostSerialize(const FArchive& Ar)
+{
+	if (Ar.IsLoading())
+	{
+		const int32 RenderingObjectVersion = Ar.CustomVer(FRenderingObjectVersion::GUID);
+		const int32 ReleaseObjectVersion = Ar.CustomVer(FReleaseObjectVersion::GUID);
+
+		if (RenderingObjectVersion < FRenderingObjectVersion::DiaphragmDOFOnlyForDeferredShadingRenderer)
+		{
+			// This is impossible because FocalDistanceDisablesDOF was in Release 4.23 branch where DiaphragmDOFOnlyForDeferredShadingRenderer was already existing.
+			check(ReleaseObjectVersion < FReleaseObjectVersion::FocalDistanceDisablesDOF);
+
+			// Make sure the DOF of the deferred shading renderer is enabled if the circle DOF method was used before with previous default setting for DepthOfFieldFstop.
+			if (DepthOfFieldFocalDistance == 0.0f && DepthOfFieldMethod_DEPRECATED == DOFM_CircleDOF)
+			{
+				DepthOfFieldFocalDistance = 1000.0f;
+			}
+			else if (DepthOfFieldMethod_DEPRECATED != DOFM_CircleDOF)
+			{
+				// Aggressively force disable DOF by setting default value on the focal distance to be invalid if the method was not CircleDOF, in case.
+				// it focal distance was modified if even if DOF was in the end disabled.
+				DepthOfFieldFocalDistance = 0.0f;
+			}
+
+			// Make sure gaussian DOF is disabled on mobile if the DOF method was set to something else.
+			if (DepthOfFieldMethod_DEPRECATED != DOFM_Gaussian)
+			{
+				DepthOfFieldScale = 0.0f;
+			}
+		}
+		else if (ReleaseObjectVersion < FReleaseObjectVersion::FocalDistanceDisablesDOF)
+		{
+			// This is only for assets saved in the the window DiaphragmDOFOnlyForDeferredShadingRenderer -> FocalDistanceDisablesDOF
+			DepthOfFieldFocalDistance = 0.0f;
+		}
+		
+		if (RenderingObjectVersion < FRenderingObjectVersion::AutoExposureChanges)
+		{
+			// Backup the exposure bias in case we run into a major problem with the conversion below
+			AutoExposureBiasBackup = AutoExposureBias;
+
+			// Only adjust this post process volume if the autoexposure values are selected. Speed up/down and new values are skipped from this check.
+			const bool bIsAnyNonDefault = bOverride_AutoExposureBias ||
+				bOverride_AutoExposureLowPercent ||
+				bOverride_AutoExposureHighPercent ||
+				bOverride_AutoExposureBiasCurve ||
+				bOverride_AutoExposureMethod ||
+				bOverride_AutoExposureMinBrightness ||
+				bOverride_AutoExposureMaxBrightness;
+
+			// Calculate an exposure bias to try and keep the look similar from 4.24 to 4.25
+			if (bIsAnyNonDefault)
+			{
+				const auto VarDefaultAutoExposureExtendDefaultLuminanceRange = IConsoleManager::Get().FindTConsoleVariableDataInt(TEXT("r.DefaultFeature.AutoExposure.ExtendDefaultLuminanceRange"));
+				bool bExtendedLuminanceRange = (VarDefaultAutoExposureExtendDefaultLuminanceRange->GetValueOnAnyThread() == 1);
+
+				const float ExtraAutoExposureBias = CalculateEyeAdaptationExposureVersionUpdate(*this, bExtendedLuminanceRange);
+
+				AutoExposureBias += ExtraAutoExposureBias;
+			}
+		}
+
+	}
+}
+#endif
 
 UScene::UScene(const FObjectInitializer& ObjectInitializer)
 	: Super(ObjectInitializer)

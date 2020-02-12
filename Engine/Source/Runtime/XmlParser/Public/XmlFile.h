@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -85,7 +85,7 @@ private:
 	/** Whites of the text at the specified locations in a passed-in array */
 	void WhiteOut(TArray<FString>& Input, int32 LineStart, int32 LineEnd, int32 IndexStart, int32 IndexEnd);
 	/** Converts the passed input into a list of tokens for parsing */
-	TArray<FString> Tokenize(FString Input);
+	void Tokenize(FString Input, TArray<FString>& Tokens);
 	/** Converts the passed input into a list of tokens for parsing */
 	TArray<FString> Tokenize(TArray<FString>& Input);
 	/** 

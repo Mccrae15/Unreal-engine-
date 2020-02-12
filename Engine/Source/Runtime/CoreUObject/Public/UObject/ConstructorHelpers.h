@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 /*=============================================================================
 	ConstructorHelpers.h: Constructor helper templates
@@ -14,7 +14,7 @@
 namespace ConstructorHelpersInternal
 {
 	template<typename T>
-	inline T* FindOrLoadObject( FString& PathName )
+	inline T* FindOrLoadObject( FString& PathName, uint32 LoadFlags )
 	{
 		// If there is no dot, add a dot and repeat the object name.
 		int32 PackageDelimPos = INDEX_NONE;
@@ -33,7 +33,7 @@ namespace ConstructorHelpersInternal
 
 		UClass* Class = T::StaticClass();
 		Class->GetDefaultObject(); // force the CDO to be created if it hasn't already
-		T* ObjectPtr = LoadObject<T>(NULL, *PathName);
+		T* ObjectPtr = LoadObject<T>(NULL, *PathName, nullptr, LoadFlags);
 		if (ObjectPtr)
 		{
 			ObjectPtr->AddToRoot();
@@ -42,7 +42,7 @@ namespace ConstructorHelpersInternal
 	}
 
 	template<>
-	inline UPackage* FindOrLoadObject<UPackage>( FString& PathName )
+	inline UPackage* FindOrLoadObject<UPackage>( FString& PathName, uint32 LoadFlags)
 	{
 		// If there is a dot, remove it.
 		int32 PackageDelimPos = INDEX_NONE;
@@ -57,7 +57,7 @@ namespace ConstructorHelpersInternal
 		if( !PackagePtr )
 		{
 			// If it is not in memory, try to load it.
-			PackagePtr = LoadPackage( nullptr, *PathName, LOAD_None );
+			PackagePtr = LoadPackage( nullptr, *PathName, LoadFlags);
 		}
 		if (PackagePtr)
 		{
@@ -100,13 +100,13 @@ public:
 	struct FObjectFinder : public FGCObject
 	{
 		T* Object;
-		FObjectFinder(const TCHAR* ObjectToFind)
+		FObjectFinder(const TCHAR* ObjectToFind, uint32 InLoadFlags = LOAD_None)
 		{
 			CheckIfIsInConstructor(ObjectToFind);
 			FString PathName(ObjectToFind);
 			StripObjectClass(PathName,true);
 
-			Object = ConstructorHelpersInternal::FindOrLoadObject<T>(PathName);
+			Object = ConstructorHelpersInternal::FindOrLoadObject<T>(PathName, InLoadFlags);
 			ValidateObject( Object, PathName, ObjectToFind );
 		}
 		bool Succeeded() const
@@ -114,9 +114,14 @@ public:
 			return !!Object;
 		}
 
-		virtual void AddReferencedObjects( FReferenceCollector& Collector )
+		virtual void AddReferencedObjects( FReferenceCollector& Collector ) override
 		{
 			Collector.AddReferencedObject(Object);
+		}
+
+		virtual FString GetReferencerName() const override
+		{
+			return TEXT("FObjectFinder");
 		}
 	};
 
@@ -126,10 +131,12 @@ public:
 	private:
 		T* Object;
 		const TCHAR* ObjectToFind;
+		uint32 LoadFlags;
 	public:
-		FObjectFinderOptional(const TCHAR* InObjectToFind)
+		FObjectFinderOptional(const TCHAR* InObjectToFind, uint32 InLoadFlags = LOAD_None)
 			: Object(nullptr)
 			, ObjectToFind(InObjectToFind)
+			, LoadFlags(InLoadFlags)
 		{
 		}
 		T* Get()
@@ -140,8 +147,14 @@ public:
 				FString PathName(ObjectToFind);
 				StripObjectClass(PathName,true);
 
-				Object = ConstructorHelpersInternal::FindOrLoadObject<T>(PathName);
-				ValidateObject( Object, PathName, ObjectToFind );
+				Object = ConstructorHelpersInternal::FindOrLoadObject<T>(PathName, LoadFlags);
+
+				bool WarnMissing = (LoadFlags & (LOAD_Quiet | LOAD_NoWarn)) == 0;
+
+				if (Object || WarnMissing)
+				{
+					ValidateObject(Object, PathName, ObjectToFind);
+				}
 
 				ObjectToFind = nullptr; // don't try to look again
 			}
@@ -152,9 +165,14 @@ public:
 			return !!Get();
 		}
 
-		virtual void AddReferencedObjects( FReferenceCollector& Collector )
+		virtual void AddReferencedObjects( FReferenceCollector& Collector ) override
 		{
 			Collector.AddReferencedObject(Object);
+		}
+
+		virtual FString GetReferencerName() const override
+		{
+			return TEXT("FObjectFinderOptional");
 		}
 	};
 
@@ -175,11 +193,16 @@ public:
 			return !!*Class;
 		}
 		
-		virtual void AddReferencedObjects( FReferenceCollector& Collector )
+		virtual void AddReferencedObjects( FReferenceCollector& Collector ) override
 		{
 			UClass* ReferencedClass = Class.Get();
 			Collector.AddReferencedObject(ReferencedClass);
 			Class = ReferencedClass;
+		}
+
+		virtual FString GetReferencerName() const override
+		{
+			return TEXT("FClassFinder");
 		}
 	};
 

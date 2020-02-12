@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "SlateRHIResourceManager.h"
 #include "RenderingThread.h"
@@ -24,6 +24,7 @@
 #include "Slate/SlateTextureAtlasInterface.h"
 #include "SlateAtlasedTextureResource.h"
 #include "ImageUtils.h"
+#include "Async/ParallelFor.h"
 
 #define LOCTEXT_NAMESPACE "Slate"
 
@@ -272,100 +273,96 @@ int32 FSlateRHIResourceManager::GetNumAtlasPages() const
 	return TextureAtlases.Num();
 }
 
-FIntPoint FSlateRHIResourceManager::GetAtlasPageSize() const
-{
-	return FIntPoint(1024, 1024);
-}
-
 FSlateShaderResource* FSlateRHIResourceManager::GetAtlasPageResource(const int32 InIndex) const
 {
 	return TextureAtlases[InIndex]->GetAtlasTexture();
 }
 
-bool FSlateRHIResourceManager::IsAtlasPageResourceAlphaOnly() const
+bool FSlateRHIResourceManager::IsAtlasPageResourceAlphaOnly(const int32 InIndex) const
 {
 	return false;
 }
 
+#if WITH_ATLAS_DEBUGGING
+FAtlasSlotInfo FSlateRHIResourceManager::GetAtlasSlotInfoAtPosition(FIntPoint InPosition, int32 AtlasIndex) const
+{
+	if (TextureAtlases.IsValidIndex(AtlasIndex))
+	{
+		FAtlasSlotInfo NewInfo;
+
+		const FAtlasedTextureSlot* Slot = TextureAtlases[AtlasIndex]->GetSlotAtPosition(InPosition);
+		if (Slot)
+		{
+			NewInfo.AtlasSlotRect = FSlateRect(FVector2D(Slot->X, Slot->Y), FVector2D(Slot->X + Slot->Width, Slot->Y + Slot->Height));
+
+			NewInfo.TextureName = AtlasDebugData.FindRef(Slot);
+
+			return NewInfo;
+		}
+	}
+
+	return FAtlasSlotInfo();
+}
+#endif
 void FSlateRHIResourceManager::Tick(float DeltaSeconds)
 {
 	TryToCleanupExpiredResources(false);
-
-	// Don't need to do this if there's no RHI thread.
-	if (IsRunningRHIInSeparateThread())
-	{
-		struct FDeleteCachedRenderDataContext
-		{
-			FSlateRHIResourceManager* ResourceManager;
-		};
-		FDeleteCachedRenderDataContext DeleteCachedRenderDataContext =
-		{
-			this,
-		};
-		ENQUEUE_UNIQUE_RENDER_COMMAND_ONEPARAMETER(
-			DeleteCachedRenderData,
-			FDeleteCachedRenderDataContext, Context, DeleteCachedRenderDataContext,
-			{
-				// Go through the pending delete buffers and see if any of their fences has cleared
-				// the RHI thread, if so, they should be safe to delete now.
-				for ( int32 BufferIndex = Context.ResourceManager->PooledBuffersPendingRelease.Num() - 1; BufferIndex >= 0; BufferIndex-- )
-				{
-					FCachedRenderBuffers* PooledBuffer = Context.ResourceManager->PooledBuffersPendingRelease[BufferIndex];
-
-					if ( PooledBuffer->ReleaseResourcesFence->IsComplete() )
-					{
-						PooledBuffer->VertexBuffer.Destroy();
-						PooledBuffer->IndexBuffer.Destroy();
-						delete PooledBuffer;
-
-						Context.ResourceManager->PooledBuffersPendingRelease.RemoveAt(BufferIndex);
-					}
-				}
-			});
-	}
 }
 
 void FSlateRHIResourceManager::CreateTextures( const TArray< const FSlateBrush* >& Resources )
 {
-	TMap<FName,FNewTextureInfo> TextureInfoMap;
+	FModuleManager::LoadModuleChecked<IImageWrapperModule>(FName("ImageWrapper"));
 
-	const uint32 Stride = GPixelFormats[PF_R8G8B8A8].BlockBytes;
-	for( int32 ResourceIndex = 0; ResourceIndex < Resources.Num(); ++ResourceIndex )
+	TMap<FName,FNewTextureInfo> TextureInfoMap;
+	FCriticalSection Lock;
+
+	// reserve space so we don't reallocate memory during the ParallelFor
+	TextureInfoMap.Reserve(Resources.Num());
+
+	ParallelFor(Resources.Num(), [this, &Resources, &Lock, &TextureInfoMap](int32 ResourceIndex)
 	{
+		const uint32 Stride = GPixelFormats[PF_R8G8B8A8].BlockBytes;
 		const FSlateBrush& Brush = *Resources[ResourceIndex];
 		const FName TextureName = Brush.GetResourceName();
 		if( TextureName != NAME_None && !Brush.HasUObject() && !Brush.IsDynamicallyLoaded() && !ResourceMap.Contains(TextureName) )
 		{
 			// Find the texture or add it if it doesnt exist (only load the texture once)
-			FNewTextureInfo& Info = TextureInfoMap.FindOrAdd( TextureName );
+			FNewTextureInfo* Info;
+			{
+				FScopeLock Locker(&Lock);
+				Info = &TextureInfoMap.FindOrAdd(TextureName);
+			}
 	
-			Info.bSrgb = (Brush.ImageType != ESlateBrushImageType::Linear);
+			Info->bSrgb = (Brush.ImageType != ESlateBrushImageType::Linear);
 
 			// Only atlas the texture if none of the brushes that use it tile it and the image is srgb
 		
-			Info.bShouldAtlas &= ( Brush.Tiling == ESlateBrushTileType::NoTile && Info.bSrgb && AtlasSize > 0 );
+			Info->bShouldAtlas &= ( Brush.Tiling == ESlateBrushTileType::NoTile && Info->bSrgb && AtlasSize > 0 );
 
 			// Texture has been loaded if the texture data is valid
-			if( !Info.TextureData.IsValid() )
+			if( !Info->TextureData.IsValid() )
 			{
 				uint32 Width = 0;
 				uint32 Height = 0;
 				TArray<uint8> RawData;
-				bool bSucceeded = LoadTexture( Brush, Width, Height, RawData );
-
-				Info.TextureData = MakeShareable( new FSlateTextureData( Width, Height, Stride, RawData ) );
-
-				const bool bTooLargeForAtlas = (Width >= (uint32)MaxAltasedTextureSize.X || Height >= (uint32)MaxAltasedTextureSize.Y || Width >= AtlasSize || Height >= AtlasSize );
-
-				Info.bShouldAtlas &= !bTooLargeForAtlas;
-
-				if( !bSucceeded || !ensureMsgf( Info.TextureData->GetRawBytes().Num() > 0, TEXT("Slate resource: (%s) contains no data"), *TextureName.ToString() ) )
+				const bool bSucceeded = LoadTexture( Brush, Width, Height, RawData );
+				if (bSucceeded)
 				{
+					Info->TextureData = MakeShareable(new FSlateTextureData(Width, Height, Stride, RawData));
+
+					const bool bTooLargeForAtlas = (Width >= (uint32)MaxAltasedTextureSize.X || Height >= (uint32)MaxAltasedTextureSize.Y || Width >= AtlasSize || Height >= AtlasSize);
+
+					Info->bShouldAtlas &= !bTooLargeForAtlas;
+				}
+
+				if( !bSucceeded || !ensureMsgf( Info->TextureData->GetRawBytes().Num() > 0, TEXT("Slate resource: (%s) contains no data"), *TextureName.ToString() ) )
+				{
+					FScopeLock Locker(&Lock);
 					TextureInfoMap.Remove( TextureName );
 				}
 			}
 		}
-	}
+	});
 
 	// Sort textures by size.  The largest textures are atlased first which creates a more compact atlas
 	TextureInfoMap.ValueSort( FCompareFNewTextureInfoByTextureSize() );
@@ -374,11 +371,10 @@ void FSlateRHIResourceManager::CreateTextures( const TArray< const FSlateBrush* 
 	{
 		const FNewTextureInfo& Info = It.Value();
 		FName TextureName = It.Key();
-		FString NameStr = TextureName.ToString();
 
 		checkSlow( TextureName != NAME_None );
 
-		FSlateShaderResourceProxy* NewTexture = GenerateTextureResource( Info );
+		FSlateShaderResourceProxy* NewTexture = GenerateTextureResource( Info, TextureName );
 
 		ResourceMap.Add( TextureName, NewTexture );
 	}
@@ -398,9 +394,10 @@ bool FSlateRHIResourceManager::LoadTexture( const FSlateBrush& InBrush, uint32& 
  */
 bool FSlateRHIResourceManager::LoadTexture( const FName& TextureName, const FString& ResourcePath, uint32& Width, uint32& Height, TArray<uint8>& DecodedImage )
 {
-	checkSlow( IsThreadSafeForSlateRendering() );
+	// @todo loadtime: nothing in this function uses SlateRendering, so why is this here? I think it's a bad check, and breaks ParallelFor above
+//	checkSlow( IsThreadSafeForSlateRendering() );
 
-	bool bSucceeded = true;
+	bool bSucceeded = false;
 	uint32 BytesPerPixel = 4;
 
 	TArray<uint8> RawFileData;
@@ -421,34 +418,29 @@ bool FSlateRHIResourceManager::LoadTexture( const FName& TextureName, const FStr
 			Width = ImageWrapper->GetWidth();
 			Height = ImageWrapper->GetHeight();
 			
-			const TArray<uint8>* RawData = NULL;
-			if (ImageWrapper->GetRaw( ERGBFormat::BGRA, 8, RawData))
+			if (ImageWrapper->GetRaw( ERGBFormat::BGRA, 8, DecodedImage))
 			{
-				DecodedImage.AddUninitialized( Width*Height*BytesPerPixel );
-				DecodedImage = *RawData;
+				bSucceeded = true;
 			}
 			else
 			{
 				UE_LOG(LogSlate, Log, TEXT("Invalid texture format for Slate resource only RGBA and RGB pngs are supported: %s"), *TextureName.ToString() );
-				bSucceeded = false;
 			}
 		}
 		else
 		{
 			UE_LOG(LogSlate, Log, TEXT("Only pngs are supported in Slate"));
-			bSucceeded = false;
 		}
 	}
 	else
 	{
 		UE_LOG(LogSlate, Log, TEXT("Could not find file for Slate resource: %s"), *TextureName.ToString() );
-		bSucceeded = false;
 	}
 
 	return bSucceeded;
 }
 
-FSlateShaderResourceProxy* FSlateRHIResourceManager::GenerateTextureResource( const FNewTextureInfo& Info )
+FSlateShaderResourceProxy* FSlateRHIResourceManager::GenerateTextureResource( const FNewTextureInfo& Info, const FName TextureName )
 {
 	FSlateShaderResourceProxy* NewProxy = NULL;
 	const uint32 Width = Info.TextureData->GetWidth();
@@ -477,6 +469,10 @@ FSlateShaderResourceProxy* FSlateRHIResourceManager::GenerateTextureResource( co
 		}
 		
 		check( Atlas && NewSlot );
+
+#if WITH_ATLAS_DEBUGGING
+		AtlasDebugData.Add(NewSlot, TextureName);
+#endif
 
 		// Create a proxy to the atlased texture. The texture being used is the atlas itself with sub uvs to access the correct texture
 		NewProxy = new FSlateShaderResourceProxy;
@@ -620,19 +616,20 @@ TSharedPtr<FSlateDynamicTextureResource> FSlateRHIResourceManager::MakeDynamicTe
 
 
 	// Init render thread data
-	ENQUEUE_UNIQUE_RENDER_COMMAND_TWOPARAMETER(InitNewSlateDynamicTextureResource,
-		FSlateDynamicTextureResource*, TextureResource, TextureResource.Get(),
-		FSlateTextureDataPtr, InNewTextureData, TextureData,
-	{
-		if(InNewTextureData.IsValid())
+	FSlateDynamicTextureResource* InTextureResource = TextureResource.Get();
+	FSlateTextureDataPtr InNewTextureData = TextureData;
+	ENQUEUE_RENDER_COMMAND(InitNewSlateDynamicTextureResource)(
+		[InTextureResource, InNewTextureData](FRHICommandListImmediate& RHICmdList)
 		{
-			// Set the texture to use as the texture we just loaded
-			TextureResource->RHIRefTexture->SetTextureData(InNewTextureData, PF_B8G8R8A8, TexCreate_SRGB);
-		}
+			if (InNewTextureData.IsValid())
+			{
+				// Set the texture to use as the texture we just loaded
+				InTextureResource->RHIRefTexture->SetTextureData(InNewTextureData, PF_B8G8R8A8, TexCreate_SRGB);
+			}
 
-		// Initialize and link the rendering resource
-		TextureResource->RHIRefTexture->InitResource();
-	});
+			// Initialize and link the rendering resource
+			InTextureResource->RHIRefTexture->InitResource();
+		});
 
 	// Map the new resource so we don't have to load again
 	DynamicResourceMap.AddDynamicTextureResource( ResourceName, TextureResource.ToSharedRef() );
@@ -928,117 +925,6 @@ void FSlateRHIResourceManager::UpdateTextureAtlases()
 	}
 }
 
-FCachedRenderBuffers* FSlateRHIResourceManager::FindOrCreateCachedBuffersForHandle(const TSharedRef<FSlateRenderDataHandle, ESPMode::ThreadSafe>& RenderHandle)
-{
-	// Should only be called by the rendering thread
-	check(IsInRenderingThread());
-
-	FCachedRenderBuffers* Buffers = CachedBuffers.FindRef(&RenderHandle.Get());
-	if ( Buffers == nullptr )
-	{
-		// Rather than having a global pool, we associate the pools with a particular layout cacher.
-		// If we don't do this, all buffers eventually become as larger as the largest buffer, and it
-		// would be much better to keep the pools coherent with the sizes typically associated with
-		// a particular caching panel.
-		const ILayoutCache* LayoutCacher = RenderHandle->GetCacher();
-		TArray< FCachedRenderBuffers* >& Pool = CachedBufferPool.FindOrAdd(LayoutCacher);
-
-		// If the cached buffer pool is empty, time to create a new one!
-		if ( Pool.Num() == 0 )
-		{
-			Buffers = new FCachedRenderBuffers();
-			Buffers->VertexBuffer.Init(100);
-			Buffers->IndexBuffer.Init(100);
-		}
-		else
-		{
-			// If we found one in the pool, lets use it!
-			Buffers = Pool[0];
-			Pool.RemoveAtSwap(0, 1, false);
-		}
-
-		CachedBuffers.Add(&RenderHandle.Get(), Buffers);
-	}
-
-	return Buffers;
-}
-
-void FSlateRHIResourceManager::BeginReleasingRenderData(const FSlateRenderDataHandle* RenderHandle)
-{
-	struct FReleaseCachedRenderDataContext
-	{
-		FSlateRHIResourceManager* ResourceManager;
-		const FSlateRenderDataHandle* RenderDataHandle;
-		const ILayoutCache* LayoutCacher;
-	};
-	FReleaseCachedRenderDataContext ReleaseCachedRenderDataContext =
-	{
-		this,
-		RenderHandle,
-		RenderHandle->GetCacher()
-	};
-	ENQUEUE_UNIQUE_RENDER_COMMAND_ONEPARAMETER(
-		ReleaseCachedRenderData,
-		FReleaseCachedRenderDataContext, Context, ReleaseCachedRenderDataContext,
-		{
-			Context.ResourceManager->ReleaseCachedRenderData(RHICmdList, Context.RenderDataHandle, Context.LayoutCacher);
-		});
-}
-
-void FSlateRHIResourceManager::ReleaseCachedRenderData(FRHICommandListImmediate& RHICmdList, const FSlateRenderDataHandle* RenderHandle, const ILayoutCache* LayoutCacher)
-{
-	check(IsInRenderingThread());
-	check(RenderHandle);
-
-	FCachedRenderBuffers* PooledBuffer = CachedBuffers.FindRef(RenderHandle);
-	if ( ensure(PooledBuffer != nullptr) )
-	{
-		TArray< FCachedRenderBuffers* >* Pool = CachedBufferPool.Find(LayoutCacher);
-		if ( Pool )
-		{
-			Pool->Add(PooledBuffer);
-		}
-		else
-		{
-			ReleaseCachedBuffer(RHICmdList, PooledBuffer);
-		}
-
-		CachedBuffers.Remove(RenderHandle);
-	}
-}
-
-void FSlateRHIResourceManager::ReleaseCachingResourcesFor(FRHICommandListImmediate& RHICmdList, const ILayoutCache* Cacher)
-{
-	check(IsInRenderingThread());
-
-	TArray< FCachedRenderBuffers* >* Pool = CachedBufferPool.Find(Cacher);
-	if ( Pool )
-	{
-		for ( FCachedRenderBuffers* PooledBuffer : *Pool )
-		{
-			ReleaseCachedBuffer(RHICmdList, PooledBuffer);
-		}
-
-		CachedBufferPool.Remove(Cacher);
-	}
-}
-
-void FSlateRHIResourceManager::ReleaseCachedBuffer(FRHICommandListImmediate& RHICmdList, FCachedRenderBuffers* PooledBuffer)
-{
-	check(IsInRenderingThread());
-
-	if (IsRunningRHIInSeparateThread())
-	{
-		PooledBuffersPendingRelease.Add(PooledBuffer);
-		PooledBuffer->ReleaseResourcesFence = RHICmdList.RHIThreadFence();
-	}
-	else
-	{
-		PooledBuffer->VertexBuffer.Destroy();
-		PooledBuffer->IndexBuffer.Destroy();
-		delete PooledBuffer;
-	}
-}
 
 void FSlateRHIResourceManager::ReleaseResources()
 {
@@ -1055,27 +941,6 @@ void FSlateRHIResourceManager::ReleaseResources()
 	}
 
 	DynamicResourceMap.ReleaseResources();
-
-	for ( TCachedBufferMap::TIterator BufferIt(CachedBuffers); BufferIt; ++BufferIt )
-	{
-		FSlateRenderDataHandle* Handle = BufferIt.Key();
-		FCachedRenderBuffers* Buffer = BufferIt.Value();
-
-		Handle->Disconnect();
-
-		Buffer->VertexBuffer.Destroy();
-		Buffer->IndexBuffer.Destroy();
-	}
-
-	for ( TCachedBufferPoolMap::TIterator BufferIt(CachedBufferPool); BufferIt; ++BufferIt )
-	{
-		TArray< FCachedRenderBuffers* >& Pool = BufferIt.Value();
-		for ( FCachedRenderBuffers* PooledBuffer : Pool )
-		{
-			PooledBuffer->VertexBuffer.Destroy();
-			PooledBuffer->IndexBuffer.Destroy();
-		}
-	}
 
 	// Note the base class has texture proxies only which do not need to be released
 }
@@ -1116,7 +981,6 @@ void FSlateRHIResourceManager::DeleteResources()
 
 	DeleteUObjectBrushResources();
 
-	DeleteCachedBuffers();
 }
 
 void FSlateRHIResourceManager::DeleteUObjectBrushResources()
@@ -1124,28 +988,6 @@ void FSlateRHIResourceManager::DeleteUObjectBrushResources()
 	DynamicResourceMap.Empty();
 	MaterialResourceFreeList.Empty();
 	UTextureFreeList.Empty();
-}
-
-void FSlateRHIResourceManager::DeleteCachedBuffers()
-{
-	for (TCachedBufferMap::TIterator BufferIt(CachedBuffers); BufferIt; ++BufferIt)
-	{
-		FCachedRenderBuffers* Buffer = BufferIt.Value();
-		delete Buffer;
-	}
-
-	CachedBuffers.Empty();
-
-	for (TCachedBufferPoolMap::TIterator BufferIt(CachedBufferPool); BufferIt; ++BufferIt)
-	{
-		TArray< FCachedRenderBuffers* >& Pool = BufferIt.Value();
-		for (FCachedRenderBuffers* PooledBuffer : Pool)
-		{
-			delete PooledBuffer;
-		}
-	}
-
-	CachedBufferPool.Empty();
 }
 
 void FSlateRHIResourceManager::ReloadTextures()

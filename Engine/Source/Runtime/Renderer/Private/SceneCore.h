@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 /*=============================================================================
 	SceneCore.h: Core scene definitions.
@@ -168,12 +168,12 @@ private:
 class FStaticMeshBatchRelevance
 {
 public:
-	FStaticMeshBatchRelevance(const FStaticMeshBatch& StaticMesh, float InScreenSize, bool InbSupportsCachingMeshDrawCommands)
+	FStaticMeshBatchRelevance(const FStaticMeshBatch& StaticMesh, float InScreenSize, bool InbSupportsCachingMeshDrawCommands, bool InbUseSkyMaterial, bool bInUseSingleLayerWaterMaterial, ERHIFeatureLevel::Type FeatureLevel)
 		: Id(StaticMesh.Id)
 		, ScreenSize(InScreenSize)
+		, NumElements(StaticMesh.Elements.Num())
 		, CommandInfosBase(0)
 		, LODIndex(StaticMesh.LODIndex)
-		, NumElements(StaticMesh.Elements.Num())
 		, bDitheredLODTransition(StaticMesh.bDitheredLODTransition)
 		, bRequiresPerElementVisibility(StaticMesh.bRequiresPerElementVisibility)
 		, bSelectable(StaticMesh.bSelectable)
@@ -181,9 +181,17 @@ public:
 		, bUseForMaterial(StaticMesh.bUseForMaterial)
 		, bUseForDepthPass(StaticMesh.bUseForDepthPass)
 		, bUseAsOccluder(StaticMesh.bUseAsOccluder)
+		, bUseSkyMaterial(InbUseSkyMaterial)
+		, bUseSingleLayerWaterMaterial(bInUseSingleLayerWaterMaterial)
+		, bUseHairStrands(StaticMesh.UseForHairStrands(FeatureLevel))
+		, bRenderToVirtualTexture(StaticMesh.bRenderToVirtualTexture)
+		, RuntimeVirtualTextureMaterialType(StaticMesh.RuntimeVirtualTextureMaterialType)
 		, bSupportsCachingMeshDrawCommands(InbSupportsCachingMeshDrawCommands)
 	{
 	}
+
+	/** Starting offset into continuous array of command infos for this mesh in FPrimitiveSceneInfo::CachedMeshDrawCommandInfos. */
+	FMeshPassMask CommandInfosMask;
 
 	/** The index of the mesh in the scene's static meshes array. */
 	int32 Id;
@@ -191,17 +199,14 @@ public:
 	/** The screen space size to draw this primitive at */
 	float ScreenSize;
 
-	/** Starting offset into continuous array of command infos for this mesh in FPrimitiveSceneInfo::CachedMeshDrawCommandInfos. */
-	FMeshPassMask CommandInfosMask;
+	/** Number of elements in this mesh. */
+	uint16 NumElements;
 
 	/* Every bit corresponds to one MeshPass. If bit is set, then FPrimitiveSceneInfo::CachedMeshDrawCommandInfos contains this mesh pass. */
 	uint16 CommandInfosBase;
 
 	/** LOD index of the mesh, used for fading LOD transitions. */
 	int8 LODIndex;
-
-	/** Number of elements in this mesh. */
-	uint16 NumElements;
 
 	/** Whether the mesh batch should apply dithered LOD. */
 	uint8 bDitheredLODTransition : 1;
@@ -212,10 +217,18 @@ public:
 	/** Whether the mesh batch can be selected through editor selection, aka hit proxies. */
 	uint8 bSelectable : 1;
 
-	uint8 CastShadow		: 1; // Whether it can be used in shadow renderpasses.
+	uint8 CastShadow	: 1; // Whether it can be used in shadow renderpasses.
 	uint8 bUseForMaterial	: 1; // Whether it can be used in renderpasses requiring material outputs.
 	uint8 bUseForDepthPass	: 1; // Whether it can be used in depth pass.
 	uint8 bUseAsOccluder	: 1; // User hint whether it's a good occluder.
+	uint8 bUseSkyMaterial	: 1; // Whether this batch uses a Sky material or not.
+	uint8 bUseSingleLayerWaterMaterial : 1; // Whether this batch uses a water material or not.
+	uint8 bUseHairStrands	: 1; // Whether it contains hair strands geometry.
+
+	/** Whether the mesh batch can be used for rendering to a virtual texture. */
+	uint8 bRenderToVirtualTexture : 1;
+	/** What virtual texture material type this mesh batch should be rendered with. */
+	uint8 RuntimeVirtualTextureMaterialType : RuntimeVirtualTexture::MaterialType_NumBits;
 
 	/** Cached from vertex factory to avoid dereferencing VF in InitViews. */
 	uint8 bSupportsCachingMeshDrawCommands : 1;
@@ -245,7 +258,6 @@ public:
 	float FogMaxOpacity;
 	float StartDistance; 
 	float FogCutoffDistance;
-	float LightTerminatorAngle;
 	FLinearColor FogColor;
 	float DirectionalInscatteringExponent; 
 	float DirectionalInscatteringStartDistance;

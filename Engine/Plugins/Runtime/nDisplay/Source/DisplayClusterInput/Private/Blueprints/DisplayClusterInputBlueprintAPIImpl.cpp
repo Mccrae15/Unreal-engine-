@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "Blueprints/DisplayClusterInputBlueprintAPIImpl.h"
 
@@ -64,14 +64,6 @@ bool UDisplayClusterInputBlueprintAPIImpl::BindVrpnTracker(const FString& VrpnDe
 {
 	DISPLAY_CLUSTER_FUNC_TRACE(LogDisplayClusterInputBP);
 
-	const FString ObjName(TEXT("EControllerHand"));
-	const UEnum* const EnumPtr = FindObject<UEnum>(ANY_PACKAGE, *ObjName, true);
-	if (!EnumPtr)
-	{
-		UE_LOG(LogDisplayClusterInputBP, Error, TEXT("Couldn't find %s object"), *ObjName);
-		return false;
-	}
-
-	FName TargetName = EnumPtr->GetNameByValue((int64)Target);
-	return IDisplayClusterInputModule::Get().BindVrpnChannel(VrpnDeviceId, VrpnChannel, TargetName.ToString());
+	const FString TargetString = UEnum::GetValueAsString(Target);
+	return IDisplayClusterInputModule::Get().BindVrpnChannel(VrpnDeviceId, VrpnChannel, TargetString);
 }

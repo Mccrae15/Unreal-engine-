@@ -1,8 +1,9 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "BoneControllers/AnimNode_SpringBone.h"
 #include "GameFramework/WorldSettings.h"
 #include "Animation/AnimInstanceProxy.h"
+#include "Animation/AnimTrace.h"
 
 /////////////////////////////////////////////////////
 // FAnimNode_SpringBone
@@ -32,18 +33,21 @@ FAnimNode_SpringBone::FAnimNode_SpringBone()
 
 void FAnimNode_SpringBone::Initialize_AnyThread(const FAnimationInitializeContext& Context)
 {
+	DECLARE_SCOPE_HIERARCHICAL_COUNTER_ANIMNODE(Initialize_AnyThread)
 	FAnimNode_SkeletalControlBase::Initialize_AnyThread(Context);
 
 	RemainingTime = 0.0f;
 }
 
-void FAnimNode_SpringBone::CacheBones_AnyThread(const FAnimationCacheBonesContext& Context) 
+void FAnimNode_SpringBone::CacheBones_AnyThread(const FAnimationCacheBonesContext& Context)
 {
+	DECLARE_SCOPE_HIERARCHICAL_COUNTER_ANIMNODE(CacheBones_AnyThread)
 	FAnimNode_SkeletalControlBase::CacheBones_AnyThread(Context);
 }
 
 void FAnimNode_SpringBone::UpdateInternal(const FAnimationUpdateContext& Context)
 {
+	DECLARE_SCOPE_HIERARCHICAL_COUNTER_ANIMNODE(UpdateInternal)
 	FAnimNode_SkeletalControlBase::UpdateInternal(Context);
 
 	RemainingTime += Context.GetDeltaTime();
@@ -54,6 +58,7 @@ void FAnimNode_SpringBone::UpdateInternal(const FAnimationUpdateContext& Context
 
 void FAnimNode_SpringBone::GatherDebugData(FNodeDebugData& DebugData)
 {
+	DECLARE_SCOPE_HIERARCHICAL_COUNTER_ANIMNODE(GatherDebugData)
 	const float ActualBiasedAlpha = AlphaScaleBias.ApplyTo(Alpha);
 
 	//MDW_TODO Add more output info?
@@ -82,6 +87,7 @@ FORCEINLINE void CopyToVectorByFlags(FVector& DestVec, const FVector& SrcVec, bo
 
 void FAnimNode_SpringBone::EvaluateSkeletalControl_AnyThread(FComponentSpacePoseContext& Output, TArray<FBoneTransform>& OutBoneTransforms)
 {
+	DECLARE_SCOPE_HIERARCHICAL_COUNTER_ANIMNODE(EvaluateSkeletalControl_AnyThread)
 	check(OutBoneTransforms.Num() == 0);
 
 	const bool bNoOffset = !bTranslateX && !bTranslateY && !bTranslateZ;
@@ -208,6 +214,8 @@ void FAnimNode_SpringBone::EvaluateSkeletalControl_AnyThread(FComponentSpacePose
 
 	// Output new transform for current bone.
 	OutBoneTransforms.Add(FBoneTransform(SpringBoneIndex, OutBoneTM));
+
+	TRACE_ANIM_NODE_VALUE(Output, TEXT("Remaining Time"), RemainingTime);
 }
 
 
@@ -218,6 +226,7 @@ bool FAnimNode_SpringBone::IsValidToEvaluate(const USkeleton* Skeleton, const FB
 
 void FAnimNode_SpringBone::InitializeBoneReferences(const FBoneContainer& RequiredBones) 
 {
+	DECLARE_SCOPE_HIERARCHICAL_COUNTER_ANIMNODE(InitializeBoneReferences)
 	SpringBone.Initialize(RequiredBones);
 }
 

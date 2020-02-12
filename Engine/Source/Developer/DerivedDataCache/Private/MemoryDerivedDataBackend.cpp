@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "MemoryDerivedDataBackend.h"
 #include "Templates/UniquePtr.h"
@@ -29,12 +29,6 @@ bool FMemoryDerivedDataBackend::CachedDataProbablyExists(const TCHAR* CacheKey)
 	if (bDisabled)
 	{
 		return false;
-	}
-	// to avoid constant error reporting in async put due to restricted cache size, 
-	// we report true if the max size has been exceeded
-	if (bMaxSizeExceeded)
-	{
-		return true;
 	}
 
 	bool Result = CacheItems.Contains(FString(CacheKey));

@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 #pragma once
 
 #include "CoreMinimal.h"
@@ -15,6 +15,7 @@ public:
 	SLATE_BEGIN_ARGS( SPropertyAssetPicker ) {}
 		SLATE_EVENT( FOnGetAllowedClasses, OnGetAllowedClasses )
 		SLATE_EVENT( FOnAssetSelected, OnAssetSelected )
+		SLATE_ARGUMENT( TSharedPtr<IPropertyHandle>, PropertyHandle )
 	SLATE_END_ARGS()
 
 	void Construct( const FArguments& InArgs );
@@ -32,4 +33,5 @@ private:
 
 	FOnGetAllowedClasses OnGetAllowedClasses;
 	FOnAssetSelected OnAssetSelected;
+	TSharedPtr<IPropertyHandle> PropertyHandle;
 };

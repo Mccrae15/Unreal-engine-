@@ -1,7 +1,7 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "PacketHandler.h"
-#include "PacketAudit.h"
+#include "Net/Core/Misc/PacketAudit.h"
 #include "EncryptionComponent.h"
 
 #include "Misc/ConfigCacheIni.h"
@@ -10,10 +10,12 @@
 #include "UObject/Package.h"
 #include "HAL/ConsoleManager.h"
 
-#include "DDoSDetection.h"
+#include "Net/Core/Misc/DDoSDetection.h"
 #include "HandlerComponentFactory.h"
 #include "ReliabilityHandlerComponent.h"
 #include "PacketHandlerProfileConfig.h"
+
+#include "SocketSubsystem.h"
 
 // @todo #JohnB: There is quite a lot of inefficient copying of packet data going on.
 //					Redo the whole packet parsing/modification pipeline.
@@ -35,6 +37,7 @@ PacketHandler::PacketHandler(FDDoSDetection* InDDoS/*=nullptr*/)
 	, DDoS(InDDoS)
 	, LowLevelSendDel()
 	, LowLevelSendDel_Deprecated()
+	, NetDriverGetAddressFromString_Deprecated(nullptr)
 	, HandshakeCompleteDel()
 	, OutgoingPacket()
 	, IncomingPacket()
@@ -146,10 +149,6 @@ void PacketHandler::NotifyAnalyticsProvider(TSharedPtr<IAnalyticsProvider> InPro
 
 	if (State != Handler::State::Uninitialized)
 	{
-		// Hotfixes should never reach this code from NetConnection's, but we can't avoid it in the case of the stateless connect handler.
-		// The latter should be ok without special/expensive multithreaded handling, as the hotfix happens so early - but it's not ideal.
-		ensure(bConnectionlessHandler || HandlerComponents.Num() == 0);
-
 		for (const TSharedPtr<HandlerComponent>& CurComponent : HandlerComponents)
 		{
 			if (CurComponent->IsInitialized())
@@ -323,11 +322,12 @@ TSharedPtr<HandlerComponent> PacketHandler::AddHandler(const FString& ComponentS
 			{
 				FPacketHandlerComponentModuleInterface* PacketHandlerInterface = FModuleManager::Get().LoadModulePtr<FPacketHandlerComponentModuleInterface>(FName(*ComponentName));
 
-				if (PacketHandlerInterface)
+				if (PacketHandlerInterface != nullptr)
 				{
 					ReturnVal = PacketHandlerInterface->CreateComponentInstance(ComponentOptions);
 				}
-				else
+
+				if (!ReturnVal.IsValid())
 				{
 					UE_LOG(PacketHandlerLog, Warning, TEXT("Unable to Load Module: %s"), *ComponentName);
 				}
@@ -427,7 +427,8 @@ void HandlerComponent::CountBytes(FArchive& Ar) const
 	Ar.CountBytes(sizeof(*this), sizeof(*this));
 }
 
-const ProcessedPacket PacketHandler::Incoming_Internal(uint8* Packet, int32 CountBytes, bool bConnectionless, const FString& Address)
+
+const ProcessedPacket PacketHandler::Incoming_Internal(uint8* Packet, int32 CountBytes, bool bConnectionless, const TSharedPtr<const FInternetAddr>& Address)
 {
 	SCOPE_CYCLE_COUNTER(Stat_PacketHandler_Incoming_Internal);
 
@@ -520,7 +521,7 @@ const ProcessedPacket PacketHandler::Incoming_Internal(uint8* Packet, int32 Coun
 	}
 }
 
-const ProcessedPacket PacketHandler::Outgoing_Internal(uint8* Packet, int32 CountBits, FOutPacketTraits& Traits, bool bConnectionless, const FString& Address)
+const ProcessedPacket PacketHandler::Outgoing_Internal(uint8* Packet, int32 CountBits, FOutPacketTraits& Traits, bool bConnectionless, const TSharedPtr<const FInternetAddr>& Address)
 {
 	SCOPE_CYCLE_COUNTER(Stat_PacketHandler_Outgoing_Internal);
 
@@ -1008,3 +1009,32 @@ void FPacketHandlerComponentModuleInterface::ShutdownModule()
 	FPacketAudit::Destruct();
 }
 
+PRAGMA_DISABLE_DEPRECATION_WARNINGS
+TSharedPtr<const FInternetAddr> PacketHandler::GetAddressFromString(const FString& Address)
+{
+	if (NetDriverGetAddressFromString_Deprecated)
+	{
+		return NetDriverGetAddressFromString_Deprecated(Address);
+	}
+
+	return nullptr;
+}
+
+void BufferedPacket::SetAddressFromIP(const FString& InAddress)
+{
+	ISocketSubsystem* SocketSub = ISocketSubsystem::Get();
+	if (SocketSub != nullptr)
+	{
+		// TODO: @jleonard - Don't require the bracket removal here.
+		FString SanitizedAddress = InAddress;
+		SanitizedAddress.RemoveFromEnd(TEXT("]"));
+		SanitizedAddress.RemoveFromStart(TEXT("["));
+		TSharedPtr<FInternetAddr> NewAddress = SocketSub->GetAddressFromString(SanitizedAddress);
+		if (NewAddress.IsValid())
+		{
+			Address = NewAddress;
+		}
+	}
+}
+
+PRAGMA_ENABLE_DEPRECATION_WARNINGS

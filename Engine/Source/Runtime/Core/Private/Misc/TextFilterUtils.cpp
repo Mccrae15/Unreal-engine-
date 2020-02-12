@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "Misc/TextFilterUtils.h"
 
@@ -208,13 +208,13 @@ namespace FastToUpper
 		0,		// ~
 		0,		// 	
 	};
-	static const int32 ToUpperAdjustmentTableCount = ARRAY_COUNT(ToUpperAdjustmentTable);
+	static const int32 ToUpperAdjustmentTableCount = UE_ARRAY_COUNT(ToUpperAdjustmentTable);
 
 	FORCEINLINE TCHAR ToUpper(const TCHAR InChar)
 	{
 		if (InChar < ToUpperAdjustmentTableCount)
 		{
-			return InChar + ToUpperAdjustmentTable[(int32)InChar];
+			return (TCHAR)(InChar + ToUpperAdjustmentTable[(int32)InChar]);
 		}
 		return FChar::ToUpper(InChar);
 	}

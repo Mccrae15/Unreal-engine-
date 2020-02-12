@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "MediaAssets/ProxyMediaSource.h"
 #include "MediaFrameworkUtilitiesModule.h"
@@ -86,8 +86,16 @@ bool UProxyMediaSource::IsProxyValid() const
 
 void UProxyMediaSource::SetDynamicMediaSource(UMediaSource* InProxy)
 {
-	DynamicProxy = (Proxy == InProxy) ? nullptr : InProxy;
+	DynamicProxy = InProxy;
 }
+
+
+#if WITH_EDITOR
+void UProxyMediaSource::SetMediaSource(UMediaSource* InProxy)
+{
+	Proxy = InProxy;
+}
+#endif
 
 
 /* IMediaOptions interface

@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -24,7 +24,7 @@ public:
 private:
 
 	// Get the collection attached to the parameter struct.
-	UGeometryCollection* GetCollection() const;
+	const UGeometryCollection* GetCollection() const;
 
 	// Whether we filter out caches. Condition is that the Id guids match.
 	bool ShouldFilterAsset(const FAssetData& InData) const;

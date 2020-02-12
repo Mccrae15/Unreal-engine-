@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "ClassViewerNode.h"
 #include "Engine/Blueprint.h"
@@ -8,12 +8,37 @@
 #include "ClassViewerFilter.h"
 #include "PropertyHandle.h"
 
+FClassViewerNode::FClassViewerNode(UClass* InClass)
+{
+	Class = InClass;
+	ClassName = MakeShareable(new FString(Class->GetName()));
+	ClassDisplayName = MakeShareable(new FString(Class->GetDisplayNameText().ToString()));
+	ClassPath = FName(*Class->GetPathName());
+
+	if (Class->GetSuperClass())
+	{
+		ParentClassPath = FName(*Class->GetSuperClass()->GetPathName());
+	}
+
+	if (Class->ClassGeneratedBy && Class->ClassGeneratedBy->IsA(UBlueprint::StaticClass()))
+	{
+		Blueprint = Cast<UBlueprint>(Class->ClassGeneratedBy);
+	}
+	else
+	{
+		Blueprint = nullptr;
+	}
+
+	bPassesFilter = false;
+	bPassesFilterRegardlessTextFilter = false;
+}
+
 FClassViewerNode::FClassViewerNode(const FString& InClassName, const FString& InClassDisplayName)
 {
 	ClassName = MakeShareable(new FString(InClassName));
 	ClassDisplayName = MakeShareable(new FString(InClassDisplayName));
 	bPassesFilter = false;
-	bIsBPNormalType = false;
+	bPassesFilterRegardlessTextFilter = false;
 
 	Class = nullptr;
 	Blueprint = nullptr;
@@ -24,6 +49,7 @@ FClassViewerNode::FClassViewerNode( const FClassViewerNode& InCopyObject)
 	ClassName = InCopyObject.ClassName;
 	ClassDisplayName = InCopyObject.ClassDisplayName;
 	bPassesFilter = InCopyObject.bPassesFilter;
+	bPassesFilterRegardlessTextFilter = InCopyObject.bPassesFilterRegardlessTextFilter;
 
 	Class = InCopyObject.Class;
 	Blueprint = InCopyObject.Blueprint;
@@ -34,7 +60,6 @@ FClassViewerNode::FClassViewerNode( const FClassViewerNode& InCopyObject)
 	ParentClassPath = InCopyObject.ParentClassPath;
 	ClassName = InCopyObject.ClassName;
 	BlueprintAssetPath = InCopyObject.BlueprintAssetPath;
-	bIsBPNormalType = InCopyObject.bIsBPNormalType;
 
 	// We do not want to copy the child list, do not add it. It should be the only item missing.
 }
@@ -144,4 +169,9 @@ bool FClassViewerNode::IsClassPlaceable() const
 bool FClassViewerNode::IsBlueprintClass() const
 {
 	return BlueprintAssetPath != NAME_None;
+}
+
+bool FClassViewerNode::IsEditorOnlyClass() const
+{
+	return Class.IsValid() && IsEditorOnlyObject(Class.Get());
 }

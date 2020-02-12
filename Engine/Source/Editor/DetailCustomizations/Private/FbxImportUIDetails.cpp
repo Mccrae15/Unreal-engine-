@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "FbxImportUIDetails.h"
 #include "Misc/Attribute.h"
@@ -237,7 +237,7 @@ void FFbxImportUIDetails::CustomizeDetails( IDetailLayoutBuilder& DetailBuilder 
 	{
 		if (bShowCompareResult && Handle->GetProperty() != nullptr)
 		{
-			UProperty* Property = Handle->GetProperty();
+			FProperty* Property = Handle->GetProperty();
 			if (Property->GetFName() == GET_MEMBER_NAME_CHECKED(UFbxImportUI, Skeleton) ||
 				Property->GetFName() == GET_MEMBER_NAME_CHECKED(UFbxImportUI, bImportRigidMesh) ||
 				Property->GetFName() == GET_MEMBER_NAME_CHECKED(UFbxSkeletalMeshImportData, bImportMeshesInBoneHierarchy) ||
@@ -333,7 +333,7 @@ void FFbxImportUIDetails::CustomizeDetails( IDetailLayoutBuilder& DetailBuilder 
 			Args.Add(FString::FromInt(LodIndex));
 			FString LodDistancePropertyName = FString::Format(TEXT("{0}{1}"), Args);
 			TSharedRef<IPropertyHandle> Handle = DetailBuilder.GetProperty(FName(*LodDistancePropertyName));
-			UProperty* Property = Handle->GetProperty();
+			FProperty* Property = Handle->GetProperty();
 			if (Property != nullptr && Property->GetName().Compare(LodDistancePropertyName) == 0)
 			{
 				DetailBuilder.HideProperty(Handle);
@@ -391,7 +391,7 @@ void FFbxImportUIDetails::CustomizeDetails( IDetailLayoutBuilder& DetailBuilder 
 
 	for(TSharedPtr<IPropertyHandle> Handle : ExtraProperties)
 	{
-		UProperty* Property = Handle->GetProperty();
+		FProperty* Property = Handle->GetProperty();
 		FString ImportTypeMetaData = Handle->GetMetaData(TEXT("ImportType"));
 		const FString& CategoryMetaData = Handle->GetMetaData(TEXT("ImportCategory"));
 		const FString& SubCategoryData = Handle->GetMetaData(TEXT("SubCategory"));
@@ -445,20 +445,25 @@ void FFbxImportUIDetails::CustomizeDetails( IDetailLayoutBuilder& DetailBuilder 
 						}
 					}
 
-					if (Property->GetFName() == GET_MEMBER_NAME_CHECKED(UFbxStaticMeshImportData, VertexOverrideColor))
+					if (ImportType == FBXIT_StaticMesh)
 					{
-						// Cache the VertexColorImportOption property
-						VertexColorImportOptionHandle = StaticMeshDataProp->GetChildHandle(GET_MEMBER_NAME_CHECKED(UFbxStaticMeshImportData, VertexColorImportOption));
+						if (Property->GetFName() == GET_MEMBER_NAME_CHECKED(UFbxStaticMeshImportData, VertexOverrideColor))
+						{
+							// Cache the VertexColorImportOption property
+							VertexColorImportOptionHandle = StaticMeshDataProp->GetChildHandle(GET_MEMBER_NAME_CHECKED(UFbxStaticMeshImportData, VertexColorImportOption));
 
-						PropertyRow.IsEnabled(TAttribute<bool>(this, &FFbxImportUIDetails::GetVertexOverrideColorEnabledState));
+							PropertyRow.IsEnabled(TAttribute<bool>(this, &FFbxImportUIDetails::GetVertexOverrideColorEnabledState));
+						}
 					}
-
-					if (Property->GetFName() == GET_MEMBER_NAME_CHECKED(UFbxSkeletalMeshImportData, VertexOverrideColor))
+					else
 					{
-						// Cache the VertexColorImportOption property
-						SkeletalMeshVertexColorImportOptionHandle = SkeletalMeshDataProp->GetChildHandle(GET_MEMBER_NAME_CHECKED(UFbxSkeletalMeshImportData, VertexColorImportOption));
+						if (Property->GetFName() == GET_MEMBER_NAME_CHECKED(UFbxSkeletalMeshImportData, VertexOverrideColor))
+						{
+							// Cache the VertexColorImportOption property
+							SkeletalMeshVertexColorImportOptionHandle = SkeletalMeshDataProp->GetChildHandle(GET_MEMBER_NAME_CHECKED(UFbxSkeletalMeshImportData, VertexColorImportOption));
 
-						PropertyRow.IsEnabled(TAttribute<bool>(this, &FFbxImportUIDetails::GetSkeletalMeshVertexOverrideColorEnabledState));
+							PropertyRow.IsEnabled(TAttribute<bool>(this, &FFbxImportUIDetails::GetSkeletalMeshVertexOverrideColorEnabledState));
+						}
 					}
 					
 				}
@@ -486,7 +491,7 @@ void FFbxImportUIDetails::CustomizeDetails( IDetailLayoutBuilder& DetailBuilder 
 		}
 	}
 
-	if(ImportType == FBXIT_Animation || (ImportType == FBXIT_SkeletalMesh && !bImportGeoOnly))
+	if(ImportType == FBXIT_Animation || (ImportType == FBXIT_SkeletalMesh && !bImportGeoOnly && !ImportUI->bIsReimport))
 	{
 		ExtraProperties.Empty();
 		CollectChildPropertiesRecursive(AnimSequenceDataProp, ExtraProperties);
@@ -507,7 +512,7 @@ void FFbxImportUIDetails::CustomizeDetails( IDetailLayoutBuilder& DetailBuilder 
 		for(TSharedPtr<IPropertyHandle> Handle : ExtraProperties)
 		{
 			const FString& CategoryMetaData = Handle->GetMetaData(TEXT("ImportCategory"));
-			if(Handle->GetProperty()->GetOuter() == UFbxAnimSequenceImportData::StaticClass()
+			if(Handle->GetProperty()->GetOwner<UObject>() == UFbxAnimSequenceImportData::StaticClass()
 			   && CategoryMetaData.IsEmpty())
 			{
 				// Add to default anim category if no override specified
@@ -555,7 +560,7 @@ void FFbxImportUIDetails::CustomizeDetails( IDetailLayoutBuilder& DetailBuilder 
 		for (TSharedPtr<IPropertyHandle> Handle : ExtraProperties)
 		{
 			// We ignore base import data for this window.
-			if (Handle->GetProperty()->GetOuter() == UFbxTextureImportData::StaticClass())
+			if (Handle->GetProperty()->GetOwner<UObject>() == UFbxTextureImportData::StaticClass())
 			{
 				if (Handle->GetProperty()->GetFName() == GET_MEMBER_NAME_CHECKED(UFbxTextureImportData, MaterialSearchLocation))
 				{
@@ -578,7 +583,7 @@ void FFbxImportUIDetails::CustomizeDetails( IDetailLayoutBuilder& DetailBuilder 
 		for(TSharedPtr<IPropertyHandle> Handle : ExtraProperties)
 		{
 			// We ignore base import data for this window.
-			if(Handle->GetProperty()->GetOuter() == UFbxTextureImportData::StaticClass())
+			if(Handle->GetProperty()->GetOwner<UObject>() == UFbxTextureImportData::StaticClass())
 			{
 				if (Handle->GetProperty()->GetFName() == GET_MEMBER_NAME_CHECKED(UFbxTextureImportData, BaseMaterialName))
 				{
@@ -593,6 +598,18 @@ void FFbxImportUIDetails::CustomizeDetails( IDetailLayoutBuilder& DetailBuilder 
 				}
 			}
 		}
+
+		TSharedPtr<IPropertyHandle> ReorderMaterialToFbxOrderProp = nullptr;
+		if (ImportUI->MeshTypeToImport == FBXIT_StaticMesh)
+		{
+			ReorderMaterialToFbxOrderProp = StaticMeshDataProp->GetChildHandle(GET_MEMBER_NAME_CHECKED(UFbxStaticMeshImportData, bReorderMaterialToFbxOrder));
+		}
+		else if (ImportUI->MeshTypeToImport == FBXIT_SkeletalMesh)
+		{
+			ReorderMaterialToFbxOrderProp = SkeletalMeshDataProp->GetChildHandle(GET_MEMBER_NAME_CHECKED(UFbxSkeletalMeshImportData, bReorderMaterialToFbxOrder));
+		}
+		//Add the advance reorder option at the end
+		MaterialCategory.AddProperty(ReorderMaterialToFbxOrderProp);
 	}
 
 	//Information category
@@ -933,7 +950,35 @@ void FFbxImportUIDetails::ConstructBaseMaterialUI(TSharedPtr<IPropertyHandle> Ha
 				]
 			]
 		];
+
+		// base opacity properties
+		InitialSelect = FindString(BaseTextureNames, ImportUI->TextureImportData->BaseOpacityTextureName);
+		InitialSelect = InitialSelect == INDEX_NONE ? 0 : InitialSelect; // default to the empty string located at index 0
+		MaterialCategory.AddCustomRow(LOCTEXT("BaseOpacityTextureProperty", "Base Opacity Texture Property")).NameContent()
+		[
+			SNew(STextBlock)
+			.Text(LOCTEXT("BaseOpacityTextureProperty", "Base Opacity Texture Property"))
+			.Font(IDetailLayoutBuilder::GetDetailFont())
+		]
+		.ValueContent()
+		.MaxDesiredWidth(Row.ValueWidget.MaxWidth)
+		[
+			SNew(SHorizontalBox)
+			+ SHorizontalBox::Slot()
+			.AutoWidth()
+			[
+				SNew(SBox)
+				.MinDesiredWidth(MinDesiredWidth)
+				[
+					SNew(STextComboBox)
+					.OptionsSource(&BaseTextureNames)
+					.OnSelectionChanged(this, &FFbxImportUIDetails::OnOpacityTextureColor)
+					.InitiallySelectedItem(BaseTextureNames[InitialSelect])
+				]
+			]
+		];
 	}
+
 	if (BaseTextureNames.Num() > 1 || BaseColorNames.Num() > 1)
 	{
 		MaterialCategory.AddCustomRow(LOCTEXT("BaseParamPropertyClearAll", "Clear All Properties"))
@@ -1157,6 +1202,11 @@ void FFbxImportUIDetails::OnSpecularTextureColor(TSharedPtr<FString> Selection, 
 	GetSelectionParameterString(Selection, ImportUI->TextureImportData->BaseSpecularTextureName);
 }
 
+void FFbxImportUIDetails::OnOpacityTextureColor(TSharedPtr<FString> Selection, ESelectInfo::Type SelectInfo)
+{
+	GetSelectionParameterString(Selection, ImportUI->TextureImportData->BaseOpacityTextureName);
+}
+
 FReply FFbxImportUIDetails::MaterialBaseParamClearAllProperties()
 {
 	ImportUI->TextureImportData->BaseColorName.Empty();
@@ -1165,6 +1215,7 @@ FReply FFbxImportUIDetails::MaterialBaseParamClearAllProperties()
 	ImportUI->TextureImportData->BaseEmmisiveTextureName.Empty();
 	ImportUI->TextureImportData->BaseEmissiveColorName.Empty();
 	ImportUI->TextureImportData->BaseSpecularTextureName.Empty();
+	ImportUI->TextureImportData->BaseOpacityTextureName.Empty();
 	//Need to refresh the custom detail since we do not have any pointer on the combo box
 	RefreshCustomDetail();
 	return FReply::Handled();

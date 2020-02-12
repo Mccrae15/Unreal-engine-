@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "Channels/MovieSceneFloatChannel.h"
 #include "MovieSceneFwd.h"
@@ -13,6 +13,12 @@ static TAutoConsoleVariable<int32> CVarSequencerLinearCubicInterpolation(
 	TEXT("If 1 Linear Keys Act As Cubic Interpolation with Linear Tangents, if 0 Linear Key Forces Linear Interpolation to Next Key."),
 	ECVF_Default);
 
+static TAutoConsoleVariable<int32> CVarSequencerAutoTangentInterpolation(
+	TEXT("Sequencer.AutoTangentNew"),
+	1,
+	TEXT("If 1 Auto Tangent will use new algorithm to gradually flatten maximum/minimum keys, if 0 Auto Tangent will average all keys (pre 4.23 behavior)."),
+	ECVF_Default);
+
 bool FMovieSceneTangentData::Serialize(FArchive& Ar)
 {
 	Ar.UsingCustomVersion(FSequencerObjectVersion::GUID);
@@ -21,13 +27,22 @@ bool FMovieSceneTangentData::Serialize(FArchive& Ar)
 		return false;
 	}
 
-	// Serialization is handled manually to avoid the extra size overhead of UProperty tagging.
-	// Otherwise with many keys in a FMovieSceneTangentData the size can become quite large.
-	Ar << ArriveTangent;
-	Ar << LeaveTangent;
-	Ar << TangentWeightMode;
-	Ar << ArriveTangentWeight;
-	Ar << LeaveTangentWeight;
+	if (Ar.CustomVer(FSequencerObjectVersion::GUID) < FSequencerObjectVersion::SerializeFloatChannelCompletely)
+	{
+		Ar << ArriveTangent;
+		Ar << LeaveTangent;
+		Ar << TangentWeightMode;
+		Ar << ArriveTangentWeight;
+		Ar << LeaveTangentWeight;
+	}
+	else
+	{
+		Ar << ArriveTangent;
+		Ar << LeaveTangent;
+		Ar << ArriveTangentWeight;
+		Ar << LeaveTangentWeight;
+		Ar << TangentWeightMode;
+	}
 
 	return true;
 }
@@ -49,13 +64,29 @@ bool FMovieSceneFloatValue::Serialize(FArchive& Ar)
 	{
 		return false;
 	}
+	
+	if (Ar.CustomVer(FSequencerObjectVersion::GUID) < FSequencerObjectVersion::SerializeFloatChannelCompletely)
+	{
+		// Serialization is handled manually to avoid the extra size overhead of FProperty tagging.
+		// Otherwise with many keys in a FMovieSceneFloatValue the size can become quite large.
+		Ar << Value;
+		Ar << InterpMode;
+		Ar << TangentMode;
+		Ar << Tangent;
+	}
+	else
+	{
+		Ar << Value;
+		Ar << Tangent.ArriveTangent;
+		Ar << Tangent.LeaveTangent;
+		Ar << Tangent.ArriveTangentWeight;
+		Ar << Tangent.LeaveTangentWeight;
+		Ar << Tangent.TangentWeightMode;
+		Ar << InterpMode;
+		Ar << TangentMode;
+		Ar << PaddingByte;
+	}
 
-	// Serialization is handled manually to avoid the extra size overhead of UProperty tagging.
-	// Otherwise with many keys in a FMovieSceneFloatValue the size can become quite large.
-	Ar << Value;
-	Ar << InterpMode;
-	Ar << TangentMode;
-	Ar << Tangent;
 
 	return true;
 }
@@ -647,6 +678,12 @@ bool FMovieSceneFloatChannel::Evaluate(FFrameTime InTime,  float& OutValue) cons
 							}
 						}
 					}
+
+					if (NewInterp == TNumericLimits<float>::Lowest())
+					{
+						NewInterp = 0.f;
+					}
+
 				}
 				//now use NewInterp and adjusted tangents plugged into the Y (Value) part of the graph.
 				const float P0 = Key1.Value;
@@ -678,6 +715,7 @@ void FMovieSceneFloatChannel::AutoSetTangents(float Tension)
 	{
 		return;
 	}
+	const int UseNewAutoTangent = CVarSequencerAutoTangentInterpolation->GetInt();
 
 	{
 		FMovieSceneFloatValue& FirstValue = Values[0];
@@ -722,11 +760,40 @@ void FMovieSceneFloatChannel::AutoSetTangents(float Tension)
 		if (ThisKey.InterpMode == RCIM_Cubic && ThisKey.TangentMode == RCTM_Auto)
 		{
 			FMovieSceneFloatValue& NextKey = Values[Index+1];
-			const float PrevToNextTimeDiff = FMath::Max<double>(KINDA_SMALL_NUMBER, Times[Index+1].Value - Times[Index-1].Value);
-
 			float NewTangent = 0.f;
-			AutoCalcTangent(PrevKey.Value, ThisKey.Value, NextKey.Value, Tension, NewTangent);
-			NewTangent /= PrevToNextTimeDiff;
+			const float PrevToNextTimeDiff = FMath::Max<double>(KINDA_SMALL_NUMBER, Times[Index + 1].Value - Times[Index - 1].Value);
+
+			if (!UseNewAutoTangent)
+			{
+				AutoCalcTangent(PrevKey.Value, ThisKey.Value, NextKey.Value, Tension, NewTangent);
+				NewTangent /= PrevToNextTimeDiff;
+			}
+			else
+			{
+				// if key doesn't lie between we keep it flat(0.0).
+				if ( (ThisKey.Value > PrevKey.Value && ThisKey.Value < NextKey.Value) ||
+					(ThisKey.Value < PrevKey.Value && ThisKey.Value > NextKey.Value))
+				{
+					AutoCalcTangent(PrevKey.Value, ThisKey.Value, NextKey.Value, Tension, NewTangent);
+					NewTangent /= PrevToNextTimeDiff;
+					//if within 0 to 15% or 85% to 100% range we gradually weight tangent to zero
+					const float AverageToZeroRange = 0.85f;
+					const float ValDiff = FMath::Abs<float>(NextKey.Value - PrevKey.Value);
+					const float OurDiff = FMath::Abs<float>(ThisKey.Value - PrevKey.Value);
+					//ValDiff won't be zero ever due to previous check
+					float PercDiff = OurDiff / ValDiff;
+					if (PercDiff > AverageToZeroRange)
+					{
+						PercDiff = (PercDiff - AverageToZeroRange) / (1.0f - AverageToZeroRange);
+						NewTangent = NewTangent * (1.0f - PercDiff);
+					}
+					else if (PercDiff < (1.0f - AverageToZeroRange))
+					{
+						PercDiff = PercDiff  / (1.0f - AverageToZeroRange);
+						NewTangent = NewTangent * PercDiff;
+					}
+				}
+			}
 
 			// In 'auto' mode, arrive and leave tangents are always the same
 			ThisKey.Tangent.LeaveTangent = ThisKey.Tangent.ArriveTangent = NewTangent;
@@ -745,15 +812,7 @@ void FMovieSceneFloatChannel::AutoSetTangents(float Tension)
 			NewTangent = (NextKey.Value - ThisKey.Value) / NextTimeDiff;
 			ThisKey.Tangent.LeaveTangent = NewTangent;
 		}
-		else if (PrevKey.InterpMode == RCIM_Constant || ThisKey.InterpMode == RCIM_Constant)
-		{
-			if (PrevKey.InterpMode != RCIM_Cubic)
-			{
-				ThisKey.Tangent.ArriveTangent = 0.f;
-			}
 
-			ThisKey.Tangent.LeaveTangent  = 0.0f;
-		}
 		
 	}
 }
@@ -807,9 +866,9 @@ void FMovieSceneFloatChannel::RefineCurvePoints(FFrameRate InTickResolution, dou
 		{
 			bool bSegmentIsLinear = true;
 
-			TTuple<double, double> Evaluated[ARRAY_COUNT(InterpTimes)];
+			TTuple<double, double> Evaluated[UE_ARRAY_COUNT(InterpTimes)];
 
-			for (int32 InterpIndex = 0; InterpIndex < ARRAY_COUNT(InterpTimes); ++InterpIndex)
+			for (int32 InterpIndex = 0; InterpIndex < UE_ARRAY_COUNT(InterpTimes); ++InterpIndex)
 			{
 				double& EvalTime  = Evaluated[InterpIndex].Get<0>();
 
@@ -830,7 +889,7 @@ void FMovieSceneFloatChannel::RefineCurvePoints(FFrameRate InTickResolution, dou
 			if (!bSegmentIsLinear)
 			{
 				// Add the point
-				InOutPoints.Insert(Evaluated, ARRAY_COUNT(Evaluated), Index+1);
+				InOutPoints.Insert(Evaluated, UE_ARRAY_COUNT(Evaluated), Index+1);
 				--Index;
 			}
 		}
@@ -860,6 +919,25 @@ void FMovieSceneFloatChannel::DuplicateKeys(TArrayView<const FKeyHandle> InHandl
 void FMovieSceneFloatChannel::DeleteKeys(TArrayView<const FKeyHandle> InHandles)
 {
 	GetData().DeleteKeys(InHandles);
+}
+
+void FMovieSceneFloatChannel::DeleteKeysFrom(FFrameNumber InTime, bool bDeleteKeysBefore)
+{
+	// Insert a key at the current time to maintain evaluation
+	if (GetData().GetTimes().Num() > 0)
+	{
+		int32 KeyHandleIndex = GetData().FindKey(InTime);
+		if (KeyHandleIndex == INDEX_NONE)
+		{
+			float Value = 0.f;
+			if (Evaluate(InTime, Value))
+			{
+				AddCubicKey(InTime, Value);
+			}
+		}
+	}
+
+	GetData().DeleteKeysFrom(InTime, bDeleteKeysBefore);
 }
 
 void FMovieSceneFloatChannel::ChangeFrameResolution(FFrameRate SourceRate, FFrameRate DestinationRate)
@@ -1000,9 +1078,88 @@ void FMovieSceneFloatChannel::AddKeys(const TArray<FFrameNumber>& InTimes, const
 bool FMovieSceneFloatChannel::Serialize(FArchive& Ar)
 {
 	Ar.UsingCustomVersion(FSequencerObjectVersion::GUID);
-	return false;
+	if (Ar.CustomVer(FSequencerObjectVersion::GUID) < FSequencerObjectVersion::SerializeFloatChannelCompletely)
+	{
+		return false;
+	}
+
+	Ar << PreInfinityExtrap;
+	Ar << PostInfinityExtrap;
+
+	//Save FFrameNumber(int32) and  FMovieSceneFloatValue Arrays.
+	//We try to save and load the full array data, unless we are
+	//ByteSwapping or the Size has a mismatch on load, then we do normal save/load
+	if (Ar.IsLoading())
+	{
+		int32 CurrentSerializedElementSize = sizeof(FFrameNumber);
+		int32 SerializedElementSize = 0;
+		Ar << SerializedElementSize;
+		if (SerializedElementSize != CurrentSerializedElementSize || Ar.IsByteSwapping())
+		{
+			Ar << Times;
+		}
+		else
+		{
+			Times.CountBytes(Ar);
+			int32 NewArrayNum = 0;
+			Ar << NewArrayNum;
+			Times.Empty(NewArrayNum);
+			if (NewArrayNum > 0)
+			{
+				Times.AddUninitialized(NewArrayNum);
+				Ar.Serialize(Times.GetData(), NewArrayNum * SerializedElementSize);
+			}
+		}
+		CurrentSerializedElementSize = sizeof(FMovieSceneFloatValue);
+		Ar << SerializedElementSize;
+		if (SerializedElementSize != CurrentSerializedElementSize || Ar.IsByteSwapping())
+		{
+			Ar << Values;
+		}
+		else
+		{
+			Values.CountBytes(Ar);
+			int32 NewArrayNum = 0;
+			Ar << NewArrayNum;
+			Values.Empty(NewArrayNum);
+			if (NewArrayNum > 0)
+			{
+				Values.AddUninitialized(NewArrayNum);
+				Ar.Serialize(Values.GetData(), NewArrayNum * SerializedElementSize);
+			}
+		}
+	}
+	else if (Ar.IsSaving())
+	{
+		int32 SerializedElementSize = sizeof(FFrameNumber);
+		Ar << SerializedElementSize;
+		Times.CountBytes(Ar);
+		int32 ArrayCount = Times.Num();
+		Ar << ArrayCount;
+		if (ArrayCount > 0)
+		{
+			Ar.Serialize(Times.GetData(), ArrayCount * SerializedElementSize);
+		}
+		Values.CountBytes(Ar);
+		SerializedElementSize = sizeof(FMovieSceneFloatValue);
+		Ar << SerializedElementSize;
+		ArrayCount = Values.Num();
+		Ar << ArrayCount;
+		if (ArrayCount > 0)
+		{
+			Ar.Serialize(Values.GetData(), ArrayCount * SerializedElementSize);
+		}
+	}
+
+	Ar << DefaultValue;
+	Ar << bHasDefaultValue;
+	Ar << TickResolution.Numerator;
+	Ar << TickResolution.Denominator;
+
+	return true;
 }
 
+#if WITH_EDITORONLY_DATA
 void FMovieSceneFloatChannel::PostSerialize(const FArchive& Ar)
 {
 	if (Ar.CustomVer(FSequencerObjectVersion::GUID) < FSequencerObjectVersion::ModifyLinearKeysForOldInterp)
@@ -1034,3 +1191,4 @@ void FMovieSceneFloatChannel::PostSerialize(const FArchive& Ar)
 		}
 	}
 }
+#endif

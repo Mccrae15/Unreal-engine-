@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "Components/SpinBox.h"
 #include "UObject/ConstructorHelpers.h"
@@ -9,6 +9,8 @@
 /////////////////////////////////////////////////////
 // USpinBox
 
+static FSpinBoxStyle* DefaultSpinBoxStyle = nullptr;
+
 USpinBox::USpinBox(const FObjectInitializer& ObjectInitializer)
 	: Super(ObjectInitializer)
 {
@@ -18,22 +20,31 @@ USpinBox::USpinBox(const FObjectInitializer& ObjectInitializer)
 		Font = FSlateFontInfo(RobotoFontObj.Object, 12, FName("Bold"));
 	}
 
-	// Grab other defaults from slate arguments.
-	SSpinBox<float>::FArguments Defaults;
-
-	Value = Defaults._Value.Get();
-	MinValue = Defaults._MinValue.Get().Get(0.0f);
-	MaxValue = Defaults._MaxValue.Get().Get(0.0f);
-	MinSliderValue = Defaults._MinSliderValue.Get().Get(0.0f);
-	MaxSliderValue = Defaults._MaxSliderValue.Get().Get(0.0f);
-	Delta = Defaults._Delta.Get();
-	SliderExponent = Defaults._SliderExponent.Get();
-	MinDesiredWidth = Defaults._MinDesiredWidth.Get();
-	ClearKeyboardFocusOnCommit = Defaults._ClearKeyboardFocusOnCommit.Get();
-	SelectAllTextOnCommit = Defaults._SelectAllTextOnCommit.Get();
-
-	WidgetStyle = *Defaults._Style;
+	Value = 0;
+	MinValue = 0;
+	MaxValue = 0;
+	MinSliderValue = 0;
+	MaxSliderValue = 0;	
+	MinFractionalDigits = 1;
+	MaxFractionalDigits = 6;
+	bAlwaysUsesDeltaSnap = false;
+	Delta = 0;
+	SliderExponent = 1;
+	MinDesiredWidth = 0;
+	ClearKeyboardFocusOnCommit = false;
+	SelectAllTextOnCommit = true;
 	ForegroundColor = FSlateColor(FLinearColor::Black);
+
+	if (DefaultSpinBoxStyle == nullptr)
+	{
+		// HACK: THIS SHOULD NOT COME FROM CORESTYLE AND SHOULD INSTEAD BE DEFINED BY ENGINE TEXTURES/PROJECT SETTINGS
+		DefaultSpinBoxStyle = new FSpinBoxStyle(FCoreStyle::Get().GetWidgetStyle<FSpinBoxStyle>("SpinBox"));
+
+		// Unlink UMG default colors from the editor settings colors.
+		DefaultSpinBoxStyle->UnlinkColors();
+	}
+
+	WidgetStyle = *DefaultSpinBoxStyle;
 }
 
 void USpinBox::ReleaseSlateResources(bool bReleaseChildren)
@@ -70,6 +81,10 @@ void USpinBox::SynchronizeProperties()
 
 	MySpinBox->SetForegroundColor(ForegroundColor);
 
+	MySpinBox->SetMinFractionalDigits(MinFractionalDigits);
+	MySpinBox->SetMaxFractionalDigits(MaxFractionalDigits);
+	MySpinBox->SetAlwaysUsesDeltaSnap(bAlwaysUsesDeltaSnap);
+
 	// Set optional values
 	bOverride_MinValue ? SetMinValue(MinValue) : ClearMinValue();
 	bOverride_MaxValue ? SetMaxValue(MaxValue) : ClearMaxValue();
@@ -97,6 +112,83 @@ void USpinBox::SetValue(float InValue)
 	if (MySpinBox.IsValid())
 	{
 		MySpinBox->SetValue(InValue);
+	}
+}
+
+int32 USpinBox::GetMinFractionalDigits() const
+{
+	if (MySpinBox.IsValid())
+	{
+		return MySpinBox->GetMinFractionalDigits();
+	}
+
+	return MinFractionalDigits;
+}
+
+void USpinBox::SetMinFractionalDigits(int32 NewValue)
+{
+	MinFractionalDigits = FMath::Max(0, NewValue);
+	if (MySpinBox.IsValid())
+	{
+		MySpinBox->SetMinFractionalDigits(MinFractionalDigits);
+	}
+}
+
+int32 USpinBox::GetMaxFractionalDigits() const
+{
+	if (MySpinBox.IsValid())
+	{
+		return MySpinBox->GetMaxFractionalDigits();
+	}
+
+	return MaxFractionalDigits;
+}
+
+void USpinBox::SetMaxFractionalDigits(int32 NewValue)
+{
+	MaxFractionalDigits = FMath::Max(0, NewValue);
+	if (MySpinBox.IsValid())
+	{
+		MySpinBox->SetMaxFractionalDigits(MaxFractionalDigits);
+	}
+}
+
+bool USpinBox::GetAlwaysUsesDeltaSnap() const
+{
+	if (MySpinBox.IsValid())
+	{
+		return MySpinBox->GetAlwaysUsesDeltaSnap();
+	}
+
+	return bAlwaysUsesDeltaSnap;
+}
+
+void USpinBox::SetAlwaysUsesDeltaSnap(bool bNewValue)
+{
+	bAlwaysUsesDeltaSnap = bNewValue;
+
+	if (MySpinBox.IsValid())
+	{
+		MySpinBox->SetAlwaysUsesDeltaSnap(bNewValue);
+	}
+}
+
+float USpinBox::GetDelta() const
+{
+	if (MySpinBox.IsValid())
+	{
+		return MySpinBox->GetDelta();
+	}
+
+	return Delta;
+}
+
+void USpinBox::SetDelta(float NewValue)
+{
+	Delta = NewValue;
+	if (MySpinBox.IsValid())
+	{
+		MySpinBox->SetDelta(NewValue);
 	}
 }
 

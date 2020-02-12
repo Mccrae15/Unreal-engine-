@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "Launcher/Launcher.h"
 
@@ -24,8 +24,10 @@ ILauncherWorkerPtr FLauncher::Launch(const TSharedRef<ITargetDeviceProxyManager>
 
 		if ((LauncherWorker != nullptr) && (FRunnableThread::Create(LauncherWorker, *WorkerName) != nullptr))
 		{
-			return MakeShareable(LauncherWorker);
-		}			
+			ILauncherWorkerPtr Worker = MakeShareable(LauncherWorker);
+			FLauncherWorkerStartedDelegate.Broadcast(Worker, Profile);
+			return Worker;
+		}
 	}
 
 	return nullptr;

@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -152,7 +152,7 @@ struct FVirtualPointerPosition
  * Base class for all mouse and keyevents.
  */
 USTRUCT(BlueprintType)
-struct FInputEvent
+struct SLATECORE_VTABLE FInputEvent
 {
 	GENERATED_USTRUCT_BODY()
 
@@ -370,7 +370,7 @@ struct TStructOpsTypeTraits<FInputEvent> : public TStructOpsTypeTraitsBase2<FInp
  * It is passed to event handlers dealing with key input.
  */
 USTRUCT(BlueprintType)
-struct FKeyEvent : public FInputEvent
+struct SLATECORE_VTABLE FKeyEvent : public FInputEvent
 {
 	GENERATED_USTRUCT_BODY()
 
@@ -464,7 +464,7 @@ struct TStructOpsTypeTraits<FKeyEvent> : public TStructOpsTypeTraitsBase2<FKeyEv
  * It is passed to event handlers dealing with analog keys.
  */
 USTRUCT(BlueprintType)
-struct FAnalogInputEvent
+struct SLATECORE_VTABLE FAnalogInputEvent
 	: public FKeyEvent
 {
 	GENERATED_USTRUCT_BODY()
@@ -527,7 +527,7 @@ struct TStructOpsTypeTraits<FAnalogInputEvent> : public TStructOpsTypeTraitsBase
  * FCharacterEvent describes a keyboard action where the utf-16 code is given.  Used for OnKeyChar messages
  */
 USTRUCT(BlueprintType)
-struct FCharacterEvent
+struct SLATECORE_VTABLE FCharacterEvent
 	: public FInputEvent
 {
 	GENERATED_USTRUCT_BODY()
@@ -609,7 +609,7 @@ public:
  * It is passed to event handlers dealing with pointer-based input.
  */
 USTRUCT(BlueprintType)
-struct FPointerEvent
+struct SLATECORE_VTABLE FPointerEvent
 	: public FInputEvent
 {
 	GENERATED_USTRUCT_BODY()
@@ -631,6 +631,8 @@ public:
 		, GestureType(EGestureEvent::None)
 		, WheelOrGestureDelta(0.0f, 0)
 		, bIsDirectionInvertedFromDevice(false)
+		, bIsTouchForceChanged(false)
+		, bIsTouchFirstMove(false)
 	{ }
 
 	/** Events are immutable once constructed. */
@@ -656,6 +658,8 @@ public:
 		, GestureType(EGestureEvent::None)
 		, WheelOrGestureDelta(0.0f, InWheelDelta)
 		, bIsDirectionInvertedFromDevice(false)
+		, bIsTouchForceChanged(false)
+		, bIsTouchFirstMove(false)
 	{ }
 
 	FPointerEvent(
@@ -681,6 +685,33 @@ public:
 		, GestureType(EGestureEvent::None)
 		, WheelOrGestureDelta(0.0f, InWheelDelta)
 		, bIsDirectionInvertedFromDevice(false)
+		, bIsTouchForceChanged(false)
+		, bIsTouchFirstMove(false)
+	{ }
+
+	FPointerEvent(
+		uint32 InUserIndex,
+		uint32 InPointerIndex,
+		const FVector2D& InScreenSpacePosition,
+		const FVector2D& InLastScreenSpacePosition,
+		const FVector2D& InDelta,
+		const TSet<FKey>& InPressedButtons,
+		const FModifierKeysState& InModifierKeys
+	)
+		: FInputEvent(InModifierKeys, InUserIndex, false)
+		, ScreenSpacePosition(InScreenSpacePosition)
+		, LastScreenSpacePosition(InLastScreenSpacePosition)
+		, CursorDelta(InDelta)
+		, PressedButtons(InPressedButtons)
+		, PointerIndex(InPointerIndex)
+		, TouchpadIndex(0)
+		, Force(1.0f)
+		, bIsTouchEvent(false)
+		, GestureType(EGestureEvent::None)
+		, WheelOrGestureDelta(0.0f, 0.0f)
+		, bIsDirectionInvertedFromDevice(false)
+		, bIsTouchForceChanged(false)
+		, bIsTouchFirstMove(false)
 	{ }
 
 	/** A constructor for raw mouse events */
@@ -704,6 +735,8 @@ public:
 		, GestureType(EGestureEvent::None)
 		, WheelOrGestureDelta(0.0f, 0.0f)
 		, bIsDirectionInvertedFromDevice(false)
+		, bIsTouchForceChanged(false)
+		, bIsTouchFirstMove(false)
 	{ }
 
 	/** A constructor for touch events */
@@ -770,6 +803,8 @@ public:
 		, GestureType(InGestureType)
 		, WheelOrGestureDelta(InGestureDelta)
 		, bIsDirectionInvertedFromDevice(bInIsDirectionInvertedFromDevice)
+		, bIsTouchForceChanged(false)
+		, bIsTouchFirstMove(false)
 	{ }
 	
 public:
@@ -781,7 +816,7 @@ public:
 	const FVector2D& GetLastScreenSpacePosition() const { return LastScreenSpacePosition; }
 
 	/** Returns the distance the mouse traveled since the last event was handled. */
-	FVector2D GetCursorDelta() const { return CursorDelta; }
+	const FVector2D& GetCursorDelta() const { return CursorDelta; }
 
 	/** Mouse buttons that are currently pressed */
 	bool IsMouseButtonDown( FKey MouseButton ) const { return PressedButtons.Contains( MouseButton ); }

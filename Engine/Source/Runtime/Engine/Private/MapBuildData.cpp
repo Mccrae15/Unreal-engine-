@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 /*=============================================================================
 MapBuildData.cpp
@@ -37,6 +37,12 @@ FArchive& operator<<(FArchive& Ar, FMeshMapBuildData& MeshMapBuildData)
 	return Ar;
 }
 
+FArchive& operator<<(FArchive& Ar, FSkyAtmosphereMapBuildData& Data)
+{
+	//Ar << Data.Dummy; // No serialisation needed
+	return Ar;
+}
+
 ULevel* UWorld::GetActiveLightingScenario() const
 {
 	for (int32 LevelIndex = 0; LevelIndex < Levels.Num(); LevelIndex++)
@@ -54,6 +60,17 @@ ULevel* UWorld::GetActiveLightingScenario() const
 
 void UWorld::PropagateLightingScenarioChange()
 {
+	for (ULevel* Level : GetLevels())
+	{
+		Level->ReleaseRenderingResources();
+		Level->InitializeRenderingResources();
+
+		for (UModelComponent* ModelComponent : Level->ModelComponents)
+		{
+			ModelComponent->PropagateLightingScenarioChange();
+		}
+	}
+
 	for (FActorIterator It(this); It; ++It)
 	{
 		TInlineComponentArray<USceneComponent*> Components;
@@ -63,17 +80,6 @@ void UWorld::PropagateLightingScenarioChange()
 		{
 			USceneComponent* CurrentComponent = Components[ComponentIndex];
 			CurrentComponent->PropagateLightingScenarioChange();
-		}
-	}
-
-	for (ULevel* Level : GetLevels())
-	{
-		Level->ReleaseRenderingResources();
-		Level->InitializeRenderingResources();
-
-		for (UModelComponent* ModelComponent : Level->ModelComponents)
-		{
-			ModelComponent->PropagateLightingScenarioChange();
 		}
 	}
 
@@ -380,6 +386,11 @@ void UMapBuildDataRegistry::Serialize(FArchive& Ar)
 		{
 			Ar << ReflectionCaptureBuildData;
 		}
+
+		if (Ar.CustomVer(FRenderingObjectVersion::GUID) >= FRenderingObjectVersion::SkyAtmosphereStaticLightingVersioning)
+		{
+			Ar << SkyAtmosphereBuildData;
+		}
 	}
 }
 
@@ -393,9 +404,9 @@ void UMapBuildDataRegistry::PostLoad()
 	{
 		// We already stripped unneeded formats during cooking, but some cooking targets require multiple formats to be stored
 		// Strip unneeded formats for the current max feature level
-		bool bRetainAllFeatureLevelData = GIsEditor && GMaxRHIFeatureLevel >= ERHIFeatureLevel::SM4;
+		bool bRetainAllFeatureLevelData = GIsEditor && GMaxRHIFeatureLevel >= ERHIFeatureLevel::SM5;
 		bool bEncodedDataRequired = bRetainAllFeatureLevelData || (GMaxRHIFeatureLevel == ERHIFeatureLevel::ES2 || GMaxRHIFeatureLevel == ERHIFeatureLevel::ES3_1);
-		bool bFullDataRequired = GMaxRHIFeatureLevel >= ERHIFeatureLevel::SM4;
+		bool bFullDataRequired = GMaxRHIFeatureLevel >= ERHIFeatureLevel::SM5;
 
 		for (TMap<FGuid, FReflectionCaptureMapBuildData>::TIterator It(ReflectionCaptureBuildData); It; ++It)
 		{
@@ -615,6 +626,23 @@ FReflectionCaptureMapBuildData* UMapBuildDataRegistry::GetReflectionCaptureBuild
 	return ReflectionCaptureBuildData.Find(CaptureId);
 }
 
+FSkyAtmosphereMapBuildData& UMapBuildDataRegistry::FindOrAllocateSkyAtmosphereBuildData(const FGuid& Guid)
+{
+	check(Guid.IsValid());
+	return SkyAtmosphereBuildData.FindOrAdd(Guid);
+}
+
+const FSkyAtmosphereMapBuildData* UMapBuildDataRegistry::GetSkyAtmosphereBuildData(const FGuid& Guid) const
+{
+	check(Guid.IsValid());
+	return SkyAtmosphereBuildData.Find(Guid);
+}
+
+void UMapBuildDataRegistry::ClearSkyAtmosphereBuildData()
+{
+	SkyAtmosphereBuildData.Empty();
+}
+
 void UMapBuildDataRegistry::InvalidateStaticLighting(UWorld* World, bool bRecreateRenderState, const TSet<FGuid>* ResourcesToKeep)
 {
 	TUniquePtr<FGlobalComponentRecreateRenderStateContext> RecreateContext;
@@ -676,6 +704,11 @@ void UMapBuildDataRegistry::InvalidateStaticLighting(UWorld* World, bool bRecrea
 
 		MarkPackageDirty();
 	}
+
+	// Clear all the atmosphere guids from the MapBuildData when starting a new build.
+	ClearSkyAtmosphereBuildData();
+
+	bSetupResourceClusters = false;
 }
 
 void UMapBuildDataRegistry::InvalidateReflectionCaptures(const TSet<FGuid>* ResourcesToKeep)
@@ -738,6 +771,7 @@ FLightmapClusterResourceInput GetClusterInput(const FMeshMapBuildData& MeshBuild
 		ClusterInput.LightMapTextures[1] = LightMap2D->GetTexture(1);
 		ClusterInput.SkyOcclusionTexture = LightMap2D->GetSkyOcclusionTexture();
 		ClusterInput.AOMaterialMaskTexture = LightMap2D->GetAOMaterialMaskTexture();
+		ClusterInput.LightMapVirtualTexture = LightMap2D->GetVirtualTexture();
 	}
 
 	FShadowMap2D* ShadowMap2D = MeshBuildData.ShadowMap ? MeshBuildData.ShadowMap->GetShadowMap2D() : nullptr;
@@ -782,6 +816,13 @@ void UMapBuildDataRegistry::SetupLightmapResourceClusters()
 			LightmapResourceClusters[ClusterIndex].Input = ClusterInput;
 			Data.ResourceCluster = &LightmapResourceClusters[ClusterIndex];
 		}
+
+		// Init empty cluster uniform buffers so they can be referenced by cached mesh draw commands.
+		// Can't create final uniform buffers as feature level is unknown at this point.
+		for (FLightmapResourceCluster& Cluster : LightmapResourceClusters)
+		{
+			BeginInitResource(&Cluster);
+		}
 	}
 }
 
@@ -799,10 +840,10 @@ void UMapBuildDataRegistry::InitializeClusterRenderingResources(ERHIFeatureLevel
 	// If we have any mesh build data, we must have at least one resource cluster, otherwise clusters have not been setup properly.
 	check(LightmapResourceClusters.Num() > 0 || MeshBuildData.Num() == 0);
 
+	// At this point all lightmap cluster resources are initialized and we can update cluster uniform buffers.
 	for (FLightmapResourceCluster& Cluster : LightmapResourceClusters)
 	{
-		Cluster.SetFeatureLevel(InFeatureLevel);
-		BeginInitResource(&Cluster);
+		Cluster.UpdateUniformBuffer(InFeatureLevel);
 	}
 }
 
@@ -856,7 +897,6 @@ void UMapBuildDataRegistry::EmptyLevelData(const TSet<FGuid>* ResourcesToKeep)
 	}
 
 	LightmapResourceClusters.Empty();
-	bSetupResourceClusters = false;
 }
 
 FUObjectAnnotationSparse<FMeshMapBuildLegacyData, true> GComponentsWithLegacyLightmaps;

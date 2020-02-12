@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -11,6 +11,7 @@
 #include "GenericPlatform/ICursor.h"
 #include "Types/ISlateMetaData.h"
 #include "Widgets/SNullWidget.h"
+#include "Widgets/Accessibility/SlateWidgetAccessibleTypes.h"
 
 class IToolTip;
 class SUserWidget;
@@ -313,6 +314,18 @@ template<typename WidgetType> struct TSlateBaseNamedArgs;
 			return this->Me(); \
 		}
 
+/**
+ * Like SLATE_ARGUMENT, but support a default value. e.g.
+ * 
+ * SLATE_ARGUMENT_DEFAULT(float, WheelScrollMultiplier) { 1.0f };
+ */
+#define SLATE_ARGUMENT_DEFAULT( ArgType, ArgName ) \
+		WidgetArgsType& ArgName( ArgType InArg ) \
+		{ \
+			_##ArgName = InArg; \
+			return this->Me(); \
+		}\
+		ArgType _##ArgName
 
 /**
  * Use this macro to declare a slate argument.
@@ -465,6 +478,12 @@ struct NamedSlotProperty
 			return *this; \
 		} \
 		\
+		WidgetArgsType& EventName( DelegateName&& InDelegate ) \
+		{ \
+			_##EventName = MoveTemp(InDelegate); \
+			return *this; \
+		} \
+		\
 		/* Set event delegate to a global function */ \
 		/* NOTE: We use a template here to avoid 'typename' issues when hosting attributes inside templated classes */ \
 		template< typename StaticFuncPtr > \
@@ -500,10 +519,10 @@ struct NamedSlotProperty
 		\
 		/* Set event delegate to a lambda
 		 * technically this works for any functor types, but lambdas are the primary use case */ \
-		template<typename FunctorType> \
-		WidgetArgsType& EventName##_Lambda(FunctorType&& InFunctor) \
+		template<typename FunctorType, typename... VarTypes> \
+		WidgetArgsType& EventName##_Lambda(FunctorType&& InFunctor, VarTypes... Vars) \
 		{ \
-			_##EventName = DelegateName::CreateLambda(Forward<FunctorType>(InFunctor)); \
+			_##EventName = DelegateName::CreateLambda(Forward<FunctorType>(InFunctor), Vars... ); \
 			return this->Me(); \
 		} \
 		\
@@ -771,11 +790,13 @@ struct TSlateBaseNamedArgs
 	, _IsEnabled( true )
 	, _Visibility( EVisibility::Visible )
 	, _RenderOpacity(1.0f)
-	, _RenderTransform( )
-	, _RenderTransformPivot( FVector2D::ZeroVector )
 	, _ForceVolatile( false )
 	, _Clipping( EWidgetClipping::Inherit )
 	, _FlowDirectionPreference( EFlowDirectionPreference::Inherit )
+	, _RenderTransform( )
+	, _RenderTransformPivot( FVector2D::ZeroVector )
+	, _AccessibleParams()
+	, _AccessibleText()
 	{
 	}
 
@@ -814,12 +835,14 @@ struct TSlateBaseNamedArgs
 	SLATE_ATTRIBUTE( bool, IsEnabled )
 	SLATE_ATTRIBUTE( EVisibility, Visibility )
 	SLATE_ARGUMENT( float, RenderOpacity )
-	SLATE_ATTRIBUTE( TOptional<FSlateRenderTransform>, RenderTransform )
-	SLATE_ATTRIBUTE( FVector2D, RenderTransformPivot )
-	SLATE_ARGUMENT( FName, Tag )
 	SLATE_ARGUMENT( bool, ForceVolatile )
 	SLATE_ARGUMENT( EWidgetClipping, Clipping )
 	SLATE_ARGUMENT( EFlowDirectionPreference, FlowDirectionPreference)
+	SLATE_ATTRIBUTE( TOptional<FSlateRenderTransform>, RenderTransform )
+	SLATE_ATTRIBUTE( FVector2D, RenderTransformPivot )
+	SLATE_ARGUMENT( FName, Tag )
+	SLATE_ARGUMENT(TOptional<FAccessibleWidgetData>, AccessibleParams)
+	SLATE_ATTRIBUTE(FText, AccessibleText)
 
 	TArray<TSharedRef<ISlateMetaData>> MetaData;
 };
@@ -1093,6 +1116,7 @@ struct TDecl
 			InArgs._ForceVolatile,
 			InArgs._Clipping,
 			InArgs._FlowDirectionPreference,
+			InArgs._AccessibleText.IsSet() ? FAccessibleWidgetData(InArgs._AccessibleText) : InArgs._AccessibleParams,
 			InArgs.MetaData );
 
 		_RequiredArgs.CallConstruct(_Widget, InArgs);

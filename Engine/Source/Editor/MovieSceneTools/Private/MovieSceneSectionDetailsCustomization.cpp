@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "MovieSceneSectionDetailsCustomization.h"
 #include "IDetailPropertyRow.h"
@@ -68,6 +68,7 @@ void FMovieSceneSectionDetailsCustomization::CustomizeDetails(IDetailLayoutBuild
 			.IsEnabled(this, &FMovieSceneSectionDetailsCustomization::IsRangeStartTextboxEnabled)
 			.SelectAllTextWhenFocused(true)
 			.RevertTextOnEscape(true)
+			.ClearKeyboardFocusOnCommit(false)
 			.Font(IDetailLayoutBuilder::GetDetailFont())
 		]
 		+ SHorizontalBox::Slot()
@@ -112,6 +113,7 @@ void FMovieSceneSectionDetailsCustomization::CustomizeDetails(IDetailLayoutBuild
 			.IsEnabled(this, &FMovieSceneSectionDetailsCustomization::IsRangeEndTextboxEnabled)
 			.SelectAllTextWhenFocused(true)
 			.RevertTextOnEscape(true)
+			.ClearKeyboardFocusOnCommit(false)
 			.Font(IDetailLayoutBuilder::GetDetailFont())
 		]
 		+ SHorizontalBox::Slot()
@@ -326,7 +328,7 @@ void FMovieSceneSectionDetailsCustomization::SetRangeStartBounded(bool InbIsBoun
 					NewFrameNumber = ParentMovieScene->GetPlaybackRange().GetLowerBoundValue().Value;
 				}
 
-				MovieSceneFrameRange->Value.SetLowerBound(TRangeBound<FFrameNumber>(FFrameNumber(NewFrameNumber)));
+				MovieSceneFrameRange->Value.SetLowerBound(TRangeBound<FFrameNumber>::Inclusive(FFrameNumber(NewFrameNumber)));
 			}
 			else
 			{
@@ -525,7 +527,7 @@ void FMovieSceneSectionDetailsCustomization::SetRangeEndBounded(bool InbIsBounde
 				{
 					NewFrameNumber = ParentMovieScene->GetPlaybackRange().GetUpperBoundValue().Value;
 				}
-				MovieSceneFrameRange->Value.SetUpperBound(TRangeBound<FFrameNumber>(FFrameNumber(NewFrameNumber)));
+				MovieSceneFrameRange->Value.SetUpperBound(TRangeBound<FFrameNumber>::Exclusive(FFrameNumber(NewFrameNumber)));
 			}
 			else
 			{

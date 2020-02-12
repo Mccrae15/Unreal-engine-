@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "OculusIdentityCallbackProxy.h"
 #include "OnlineSubsystemOculusPrivate.h"
@@ -23,7 +23,7 @@ void UOculusIdentityCallbackProxy::Activate()
 
 	if (OculusIdentityInterface.IsValid())
 	{
-		DelegateHandle = Online::GetIdentityInterface()->AddOnLoginCompleteDelegate_Handle(
+		DelegateHandle = OculusIdentityInterface->AddOnLoginCompleteDelegate_Handle(
 			0, 
 			FOnLoginCompleteDelegate::CreateUObject(this, &UOculusIdentityCallbackProxy::OnLoginCompleteDelegate)
 		);

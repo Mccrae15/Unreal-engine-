@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -99,7 +99,7 @@ public:
 	/**
 	 * @return The category node that this node is nested in, if any:
 	 */
-	virtual TSharedPtr<FDetailCategoryImpl> GetParentCategory() { return TSharedPtr<FDetailCategoryImpl>(); }
+	virtual TSharedPtr<FDetailCategoryImpl> GetParentCategory() const { return TSharedPtr<FDetailCategoryImpl>(); }
 
 	/**
 	 * @return The property path that this node is associate with, if any:

@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "ShaderFormatD3D.h"
 #include "Modules/ModuleInterface.h"
@@ -7,9 +7,7 @@
 #include "Interfaces/IShaderFormatModule.h"
 
 static FName NAME_PCD3D_SM5(TEXT("PCD3D_SM5"));
-static FName NAME_PCD3D_SM4(TEXT("PCD3D_SM4"));
 static FName NAME_PCD3D_ES3_1(TEXT("PCD3D_ES31"));
-static FName NAME_PCD3D_ES2(TEXT("PCD3D_ES2"));
 
 class FShaderFormatD3D : public IShaderFormat
 {
@@ -17,14 +15,12 @@ class FShaderFormatD3D : public IShaderFormat
 	{
 		/** Version for shader format, this becomes part of the DDC key. */
 		UE_SHADER_PCD3D_SM5_VER = 8,
-		UE_SHADER_PCD3D_SM4_VER = 8,
-		UE_SHADER_PCD3D_ES2_VER = 8,
 		UE_SHADER_PCD3D_ES3_1_VER = 8,
 	};
 
 	void CheckFormat(FName Format) const
 	{
-		check(Format == NAME_PCD3D_SM5 ||  Format == NAME_PCD3D_SM4 ||  Format == NAME_PCD3D_ES2 || Format == NAME_PCD3D_ES3_1);
+		check(Format == NAME_PCD3D_SM5 || Format == NAME_PCD3D_ES3_1);
 	}
 
 public:
@@ -35,42 +31,25 @@ public:
 		{
 			return UE_SHADER_PCD3D_SM5_VER;
 		}
-		else if (Format == NAME_PCD3D_SM4) 
-		{
-			return UE_SHADER_PCD3D_SM4_VER;
-		}
 		else if (Format == NAME_PCD3D_ES3_1) 
 		{
 			return UE_SHADER_PCD3D_ES3_1_VER;
 		}
-		else if (Format == NAME_PCD3D_ES2)
-		{
-			return UE_SHADER_PCD3D_ES2_VER;
-		}
-		check(0);
+		checkf(0, TEXT("Unknown Format %s"), *Format.ToString());
 		return 0;
 	}
 	virtual void GetSupportedFormats(TArray<FName>& OutFormats) const
 	{
 		OutFormats.Add(NAME_PCD3D_SM5);
-		OutFormats.Add(NAME_PCD3D_SM4);
 		OutFormats.Add(NAME_PCD3D_ES3_1);
-		OutFormats.Add(NAME_PCD3D_ES2);
 	}
+
 	virtual void CompileShader(FName Format, const struct FShaderCompilerInput& Input, struct FShaderCompilerOutput& Output,const FString& WorkingDirectory) const
 	{
 		CheckFormat(Format);
 		if (Format == NAME_PCD3D_SM5)
 		{
 			CompileShader_Windows_SM5(Input, Output, WorkingDirectory);
-		}
-		else if (Format == NAME_PCD3D_SM4)
-		{
-			CompileShader_Windows_SM4(Input, Output, WorkingDirectory);
-		}
-		else if (Format == NAME_PCD3D_ES2)
-		{
-			CompileShader_Windows_ES2(Input, Output, WorkingDirectory);
 		}
 		else if (Format == NAME_PCD3D_ES3_1)
 		{
@@ -83,7 +62,7 @@ public:
 	}
 	virtual const TCHAR* GetPlatformIncludeDirectory() const
 	{
-		return TEXT("");
+		return TEXT("D3D");
 	}
 };
 

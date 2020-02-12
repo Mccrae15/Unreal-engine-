@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "Tracks/MovieSceneCameraShakeTrack.h"
 #include "Sections/MovieSceneCameraShakeSection.h"
@@ -14,6 +14,8 @@
 
 UMovieSceneSection* UMovieSceneCameraShakeTrack::AddNewCameraShake(FFrameNumber KeyTime, TSubclassOf<UCameraShake> ShakeClass)
 {
+	Modify();
+
 	UMovieSceneCameraShakeSection* const NewSection = Cast<UMovieSceneCameraShakeSection>(CreateNewSection());
 	if (NewSection)
 	{
@@ -85,6 +87,12 @@ void UMovieSceneCameraShakeTrack::AddSection(UMovieSceneSection& Section)
 void UMovieSceneCameraShakeTrack::RemoveSection(UMovieSceneSection& Section)
 {
 	CameraShakeSections.Remove(&Section);
+}
+
+
+void UMovieSceneCameraShakeTrack::RemoveSectionAt(int32 SectionIndex)
+{
+	CameraShakeSections.RemoveAt(SectionIndex);
 }
 
 

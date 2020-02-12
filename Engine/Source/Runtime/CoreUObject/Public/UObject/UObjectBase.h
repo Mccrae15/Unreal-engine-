@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 /*=============================================================================
 	UObjectBase.h: Base class for UObject, defines low level functionality
@@ -23,7 +23,7 @@ class COREUOBJECT_API UObjectBase
 	friend struct Z_Construct_UClass_UObject_Statics;
 	friend class FUObjectArray; // for access to InternalIndex without revealing it to anyone else
 	friend class FUObjectAllocator; // for access to destructor without revealing it to anyone else
-	friend COREUOBJECT_API void UObjectForceRegistration(UObjectBase* Object);
+	friend COREUOBJECT_API void UObjectForceRegistration(UObjectBase* Object, bool bCheckForModuleRelease);
 	friend COREUOBJECT_API void InitializePrivateStaticClass(
 		class UClass* TClass_Super_StaticClass,
 		class UClass* TClass_PrivateStaticClass,
@@ -34,9 +34,6 @@ class COREUOBJECT_API UObjectBase
 protected:
 	UObjectBase() :
 		 NamePrivate(NoInit)  // screwy, but the name was already set and we don't want to set it again
-#if ENABLE_STATNAMEDEVENTS_UOBJECT
-		, StatIDStringStorage(nullptr)
-#endif
 	{
 	}
 
@@ -141,40 +138,6 @@ public:
 		return NamePrivate;
 	}
 
-	/** 
-	 * Returns the stat ID of the object, used for profiling. This will create a stat ID if needed.
-	 *
-	 * @param bForDeferred If true, a stat ID will be created even if a group is disabled
-	 */
-	FORCEINLINE TStatId GetStatID(bool bForDeferredUse = false) const
-	{
-#if STATS
-		// this is done to avoid even registering stats for a disabled group (unless we plan on using it later)
-		if (bForDeferredUse || FThreadStats::IsCollectingData(GET_STATID(STAT_UObjectsStatGroupTester)))
-		{
-			if (!StatID.IsValidStat())
-			{
-				CreateStatID();
-			}
-			return StatID;
-		}
-#elif ENABLE_STATNAMEDEVENTS_UOBJECT
-		if (!StatID.IsValidStat() && (bForDeferredUse || GCycleStatsShouldEmitNamedEvents))
-		{
-			CreateStatID();
-		}
-		return StatID;
-#endif // STATS
-		return TStatId(); // not doing stats at the moment, or ever
-	}
-
-	
-private:
-#if STATS || ENABLE_STATNAMEDEVENTS_UOBJECT
-	/** Creates a stat ID for this object */
-	void CreateStatID() const;
-#endif
-
 protected:
 	/**
 	 * Set the object flags directly
@@ -249,17 +212,6 @@ private:
 
 	/** Object this object resides in. */
 	UObject*						OuterPrivate;
-
-
-#if STATS || ENABLE_STATNAMEDEVENTS_UOBJECT
-	/** Stat id of this object, 0 if nobody asked for it yet */
-	mutable TStatId				StatID;
-
-#if ENABLE_STATNAMEDEVENTS_UOBJECT
-	mutable PROFILER_CHAR* StatIDStringStorage;
-#endif
-#endif // STATS || ENABLE_STATNAMEDEVENTS
-
 	
 	friend class FBlueprintCompileReinstancer;
 
@@ -272,25 +224,18 @@ private:
 #endif // HACK_HEADER_GENERATOR
 };
 
-namespace Internal
-{
-	/** Internal state indicating whether uobject system is initialized. Do not use that directly. Use
-		UObjectInitialized() instead. */
-	COREUOBJECT_API extern bool GObjInitialized;
-}
-
 /**
  * Checks to see if the UObject subsystem is fully bootstrapped and ready to go.
  * If true, then all objects are registered and auto registration of natives is over, forever.
  *
  * @return true if the UObject subsystem is initialized.
  */
-FORCEINLINE bool UObjectInitialized() { return Internal::GObjInitialized; }
+COREUOBJECT_API bool UObjectInitialized();
 
 /**
  * Force a pending registrant to register now instead of in the natural order
  */
-COREUOBJECT_API void UObjectForceRegistration(UObjectBase* Object);
+COREUOBJECT_API void UObjectForceRegistration(UObjectBase* Object, bool bCheckForModuleRelease = true);
 
 /** 
  * Base class for deferred native class registration
@@ -416,7 +361,7 @@ COREUOBJECT_API class UScriptStruct* FindExistingStructIfHotReloadOrDynamic(UObj
 COREUOBJECT_API class UEnum* FindExistingEnumIfHotReloadOrDynamic(UObject* Outer, const TCHAR* EnumName, SIZE_T Size, uint32 Crc, bool bIsDynamic);
 
 /** Must be called after a module has been loaded that contains UObject classes */
-COREUOBJECT_API void ProcessNewlyLoadedUObjects();
+COREUOBJECT_API void ProcessNewlyLoadedUObjects(FName Package = NAME_None, bool bCanProcessNewlyLoadedObjects = true);
 
 #if WITH_HOT_RELOAD
 /** Map of duplicated CDOs for reinstancing during hot-reload purposes. */

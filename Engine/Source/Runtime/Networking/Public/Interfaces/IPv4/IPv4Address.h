@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -232,6 +232,17 @@ public:
 	bool IsSiteLocalMulticast() const
 	{
 		return ((A == 239) && (B == 255));
+	}
+
+	/**
+	 * Checks whether this IP address is the multicast address we use for the Session Frontend
+	 * Which is 230.0.0.1
+	 *
+	 * @return true if this address matches, false otherwise.
+	 */
+	bool IsSessionFrontendMulticast() const
+	{
+		return (A == 230 && B == 0 && C == 0 && D == 1);
 	}
 
 	/**

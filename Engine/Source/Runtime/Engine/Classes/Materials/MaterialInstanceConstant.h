@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -9,13 +9,15 @@
 
 #include "MaterialInstanceConstant.generated.h"
 
+class UPhysicalMaterialMask;
+
 /**
  * Material Instances may be used to change the appearance of a material without incurring an expensive recompilation of the material.
  * General modification of the material cannot be supported without recompilation, so the instances are limited to changing the values of
  * predefined material parameters. The parameters are statically defined in the compiled material by a unique name, type and default value.
  */
 UCLASS(hidecategories=Object, collapsecategories, BlueprintType,MinimalAPI)
-class UMaterialInstanceConstant : public UMaterialInstance
+class ENGINE_VTABLE UMaterialInstanceConstant : public UMaterialInstance
 {
 	GENERATED_UCLASS_BODY()
 
@@ -35,6 +37,14 @@ class UMaterialInstanceConstant : public UMaterialInstance
 	virtual ENGINE_API void PostEditChangeProperty(FPropertyChangedEvent& PropertyChangedEvent) override;
 #endif
 
+	/** Physical material mask to use for this graphics material. Used for sounds, effects etc.*/
+	UPROPERTY(EditAnywhere, Category = PhysicalMaterial)
+	class UPhysicalMaterialMask* PhysMaterialMask;
+
+	// Begin UMaterialInterface interface.
+	ENGINE_API virtual UPhysicalMaterialMask* GetPhysicalMaterialMask() const override;
+	// End UMaterialInterface interface.
+
 	/** Get the scalar (float) parameter value from an MIC */
 	UFUNCTION(BlueprintCallable, meta=(DisplayName = "GetScalarParameterValue", ScriptName = "GetScalarParameterValue", Keywords = "GetFloatParameterValue"), Category="Rendering|Material")
 	float K2_GetScalarParameterValue(FName ParameterName);
@@ -52,8 +62,9 @@ class UMaterialInstanceConstant : public UMaterialInstance
 	 * Set the parent of this material instance. This function may only be called in the Editor!
 	 *   WARNING: You MUST call PostEditChange afterwards to propagate changes to other materials in the chain!
 	 * @param NewParent - The new parent for this material instance.
+ 	 * @param RecacheShader - Will recache required shaders.
 	 */
-	ENGINE_API void SetParentEditorOnly(class UMaterialInterface* NewParent);
+	ENGINE_API void SetParentEditorOnly(class UMaterialInterface* NewParent, bool RecacheShader = true);
 
 	/**
 	* Copies the uniform parameters (scalar, vector and texture) from a material or instance hierarchy.
@@ -73,6 +84,7 @@ class UMaterialInstanceConstant : public UMaterialInstance
 	ENGINE_API void SetScalarParameterValueEditorOnly(const FMaterialParameterInfo& ParameterInfo, float Value);
 	ENGINE_API void SetScalarParameterAtlasEditorOnly(const FMaterialParameterInfo& ParameterInfo, FScalarParameterAtlasInstanceData AtlasData);
 	ENGINE_API void SetTextureParameterValueEditorOnly(const FMaterialParameterInfo& ParameterInfo, class UTexture* Value);
+	ENGINE_API void SetRuntimeVirtualTextureParameterValueEditorOnly(const FMaterialParameterInfo& ParameterInfo, class URuntimeVirtualTexture* Value);
 	ENGINE_API void SetFontParameterValueEditorOnly(const FMaterialParameterInfo& ParameterInfo, class UFont* FontValue, int32 FontPage);
 
 	/**

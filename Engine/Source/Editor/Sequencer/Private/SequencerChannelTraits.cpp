@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "SequencerChannelTraits.h"
 #include "EditorStyleSet.h"
@@ -8,7 +8,7 @@ namespace Sequencer
 {
 
 
-void DrawKeys(FMovieSceneChannel* Channel, TArrayView<const FKeyHandle> InHandles, TArrayView<FKeyDrawParams> OutKeyDrawParams)
+void DrawKeys(FMovieSceneChannel* Channel, TArrayView<const FKeyHandle> InHandles, const UMovieSceneSection* InOwner, TArrayView<FKeyDrawParams> OutKeyDrawParams)
 {
 	// By default just render diamonds for keys
 	FKeyDrawParams DefaultParams;
@@ -18,6 +18,11 @@ void DrawKeys(FMovieSceneChannel* Channel, TArrayView<const FKeyHandle> InHandle
 	{
 		Param = DefaultParams;
 	}
+}
+
+bool SupportsCurveEditorModels(const FMovieSceneChannelHandle& ChannelHandle)
+{
+	return false;
 }
 
 TUniquePtr<FCurveModel> CreateCurveEditorModel(const FMovieSceneChannelHandle& ChannelHandle, UMovieSceneSection* OwningSection, TSharedRef<ISequencer> InSequencer)

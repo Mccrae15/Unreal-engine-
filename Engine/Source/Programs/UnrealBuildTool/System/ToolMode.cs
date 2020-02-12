@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 using System;
 using System.Collections.Generic;
@@ -36,14 +36,24 @@ namespace UnrealBuildTool
 		BuildPlatforms = 4,
 
 		/// <summary>
+		/// Registers build platforms
+		/// </summary>
+		BuildPlatformsHostOnly = 8,
+
+		/// <summary>
 		/// Registers build platforms for validation
 		/// </summary>
-		BuildPlatformsForValidation = 8,
+		BuildPlatformsForValidation = 16,
 
 		/// <summary>
 		/// Only allow a single instance running in the branch at once
 		/// </summary>
-		SingleInstance = 16,
+		SingleInstance = 32,
+
+		/// <summary>
+		/// Print out the total time taken to execute
+		/// </summary>
+		ShowExecutionTime = 64,
 	}
 
 	/// <summary>

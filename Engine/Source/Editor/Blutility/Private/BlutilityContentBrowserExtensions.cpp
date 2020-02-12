@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "BlutilityContentBrowserExtensions.h"
 #include "Modules/ModuleManager.h"
@@ -18,7 +18,7 @@
 #include "AssetRegistryModule.h"
 #include "EditorUtilityBlueprint.h"
 #include "Framework/Application/SlateApplication.h"
-#include "Toolkits/AssetEditorManager.h"
+
 #include "BlueprintEditorModule.h"
 #include "BlutilityMenuExtensions.h"
 
@@ -35,7 +35,7 @@ public:
 		TSharedRef<FExtender> Extender(new FExtender());
 
 		// Run thru the assets to determine if any meet our criteria
-		TArray<UGlobalEditorUtilityBase*> SupportedUtils;
+		TArray<IEditorUtilityExtension*> SupportedUtils;
 		if (SelectedAssets.Num() > 0)
 		{
 			// Check blueprint utils (we need to load them to query their validity against these assets)
@@ -53,8 +53,30 @@ public:
 							{
 								if(UAssetActionUtility* DefaultObject = Cast<UAssetActionUtility>(BPClass->GetDefaultObject()))
 								{
+									bool bIsActionForBlueprints = DefaultObject->IsActionForBlueprints();
 									UClass* SupportedClass = DefaultObject->GetSupportedClass();
-									if(SupportedClass == nullptr || (SupportedClass && Asset.GetClass()->IsChildOf(SupportedClass)))
+									
+									bool bPassesClassFilter = false;
+									if(bIsActionForBlueprints)
+									{
+										if(UBlueprint* AssetAsBlueprint = Cast<UBlueprint>(Asset.GetAsset()))
+										{
+											// It's a blueprint, but is it the right kind?
+											bPassesClassFilter = (SupportedClass == nullptr || (SupportedClass && AssetAsBlueprint->ParentClass && AssetAsBlueprint->ParentClass->IsChildOf(SupportedClass)));
+										}
+										else
+										{
+											// Not a blueprint
+											bPassesClassFilter = false;
+										}
+									}
+									else
+									{
+										// Is the asset the right kind?
+										bPassesClassFilter = (SupportedClass == nullptr || (SupportedClass && Asset.GetClass()->IsChildOf(SupportedClass)));
+									}
+
+									if(bPassesClassFilter)
 									{
 										SupportedUtils.AddUnique(DefaultObject);
 									}

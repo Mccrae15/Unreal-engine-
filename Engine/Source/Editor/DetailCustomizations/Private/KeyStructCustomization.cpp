@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "KeyStructCustomization.h"
 #include "DetailWidgetRow.h"
@@ -38,6 +38,7 @@ void FKeyStructCustomization::CustomizeHeader( TSharedRef<class IPropertyHandle>
 		.OnKeyChanged(this, &FKeyStructCustomization::OnKeyChanged)
 		.Font(StructCustomizationUtils.GetRegularFont())
 		.AllowClear(!StructPropertyHandle->GetProperty()->HasAnyPropertyFlags(CPF_NoClear))
+		.FilterBlueprintBindable(false)
 	];
 }
 

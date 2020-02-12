@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 /*================================================================================
 	IOSPlatformProperties.h - Basic static properties of a platform 
@@ -33,6 +33,11 @@ struct FIOSPlatformProperties
 		return "IOS";
 	}
 
+	static FORCEINLINE const TCHAR* GetRuntimeSettingsClassName()
+	{
+		return TEXT("/Script/IOSRuntimeSettings.IOSRuntimeSettings");
+	}
+
 	static FORCEINLINE bool IsGameOnly()
 	{
 		return true;
@@ -42,15 +47,10 @@ struct FIOSPlatformProperties
 	{
 		return true;
 	}
-
-    static FORCEINLINE bool SupportsQuit()
-    {
-        return true;
-    }
     
-	static FORCEINLINE bool SupportsBuildTarget( EBuildTargets::Type BuildTarget )
+	static FORCEINLINE bool SupportsBuildTarget( EBuildTargetType TargetType )
 	{
-		return (BuildTarget == EBuildTargets::Game);
+		return (TargetType == EBuildTargetType::Game);
 	}
 
 	static FORCEINLINE bool SupportsLowQualityLightmaps()
@@ -76,6 +76,10 @@ struct FIOSPlatformProperties
 	{
 		return true;
 	}
+	static FORCEINLINE bool SupportsMemoryMappedAnimation()
+	{
+		return true;
+	}
 	static FORCEINLINE int64 GetMemoryMappingAlignment()
 	{
 		return 16384;
@@ -96,3 +100,7 @@ struct FIOSPlatformProperties
 		return true;
 	}
 };
+
+#ifdef PROPERTY_HEADER_SHOULD_DEFINE_TYPE
+typedef FIOSPlatformProperties FPlatformProperties;
+#endif

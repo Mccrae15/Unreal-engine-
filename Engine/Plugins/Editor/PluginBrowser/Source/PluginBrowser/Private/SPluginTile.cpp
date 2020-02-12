@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "SPluginTile.h"
 #include "HAL/PlatformFilemanager.h"
@@ -54,12 +54,6 @@ void SPluginTile::RecreateWidgets()
 	// @todo plugedit: Maybe we should do the FileExists check ONCE at plugin load time and not at query time
 
 	const FPluginDescriptor& PluginDescriptor = Plugin->GetDescriptor();
-
-	// Disable Enterprise plugins if project is not an Enterprise project
-	if (Plugin->GetType() == EPluginType::Enterprise && !IProjectManager::Get().IsEnterpriseProject())
-	{
-		SetEnabled(false);
-	}
 
 	// Plugin thumbnail image
 	FString Icon128FilePath = Plugin->GetBaseDir() / TEXT("Resources/Icon128.png");
@@ -280,31 +274,40 @@ void SPluginTile::RecreateWidgets()
 											[
 												SNew(SHorizontalBox)
 
+												// beta version label
 												+ SHorizontalBox::Slot()
 													.AutoWidth()
-													.Padding(0.0f, 0.0f, 0.0f, 1.0f) // Lower padding to align font with version number base
+													.VAlign(VAlign_Bottom)
 													[
 														SNew(SHorizontalBox)
-
-														// beta version icon
+														.Visibility((PluginDescriptor.bIsBetaVersion || PluginDescriptor.bIsExperimentalVersion) ? EVisibility::Visible : EVisibility::Collapsed)
 														+ SHorizontalBox::Slot()
 															.AutoWidth()
 															.VAlign(VAlign_Bottom)
-															.Padding(0.0f, 0.0f, 3.0f, 2.0f)
+															.Padding(0.0f, 0.0f, 0.0f, 2.0f)
 															[
 																SNew(SImage)
-																	.Visibility(PluginDescriptor.bIsBetaVersion ? EVisibility::Visible : EVisibility::Collapsed)
 																	.Image(FPluginStyle::Get()->GetBrush("PluginTile.BetaWarning"))
 															]
-
-														// version label
 														+ SHorizontalBox::Slot()
 															.AutoWidth()
 															.VAlign(VAlign_Bottom)
+															.Padding(2.0f, 0.0f, 8.0f, 1.0f)
 															[
 																SNew(STextBlock)
-																	.Text(PluginDescriptor.bIsBetaVersion ? LOCTEXT("PluginBetaVersionLabel", "BETA Version ") : LOCTEXT("PluginVersionLabel", "Version "))
+																	.TextStyle(FPluginStyle::Get(), "PluginTile.BetaText")
+																	.Text(PluginDescriptor.bIsBetaVersion ? LOCTEXT("PluginBetaVersionText", "BETA") : LOCTEXT("PluginExperimentalVersionText", "EXPERIMENTAL"))
 															]
+													]
+
+												// version number
+												+ SHorizontalBox::Slot()
+													.AutoWidth()
+													.VAlign( VAlign_Bottom )
+													.Padding(0.0f, 0.0f, 0.0f, 1.0f) // Lower padding to align font with version number base
+													[
+														SNew(STextBlock)
+															.Text(LOCTEXT("PluginVersionLabel", "Version "))
 													]
 
 												+ SHorizontalBox::Slot()
@@ -329,6 +332,7 @@ void SPluginTile::RecreateWidgets()
 											[
 												SNew(STextBlock)
 													.Text(FText::FromString(PluginDescriptor.Description))
+													.HighlightText_Raw(&OwnerWeak.Pin()->GetOwner().GetPluginTextFilter(), &FPluginTextFilter::GetRawFilterText)
 													.AutoWrapText(true)
 											]
 

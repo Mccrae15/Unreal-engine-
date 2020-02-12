@@ -1,10 +1,27 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "VirtualCameraMovementComponent.h"
+
+#include "Components/PrimitiveComponent.h"
 #include "Kismet/KismetMathLibrary.h"
 
-// Used to help get stabilization to be more finely tunable
-#define STABILIZATION_NRM_EXP .25f
+namespace
+{
+	float ClampStabilizationScale(float StabilizationScale)
+	{
+		const float StabilizationMin = 0.0f;
+		const float StabilizationMax = 0.97f;
+		const float StabilizationExp = 0.25f;
+
+		// Stabilization is applied as an exponential curve defined by StabilizationMax
+		// This exponent is less than 1 so value changes at numbers closer to 0 have a greater degree of change than those closer to 1.
+		// This has the effect of stabilization being introduced much faster when it is first applied, and giving a finer degree of control as values increase.
+		// This is necessary because stabilization is not noticeable or useful until a certain amount is applied.
+
+		float NewStabilizationAmountRotationX = FMath::Clamp<float>(StabilizationScale, StabilizationMin, StabilizationMax);
+		return FMath::Pow(NewStabilizationAmountRotationX, StabilizationExp) * StabilizationMax;
+	}
+}
 
 UVirtualCameraMovementComponent::UVirtualCameraMovementComponent(const FObjectInitializer& ObjectInitializer)
 {
@@ -43,9 +60,9 @@ void UVirtualCameraMovementComponent::AddInputVectorFromController(FVector World
 	}
 
 	WorldVector *= AxisSettings[MovementScaleAxis].MovementScale;
-	ApplyLocationLocks(WorldVector);
 
-	TargetLocation += WorldVector;
+	// For Controller movement, move the RootUpdatedComponent
+	FromControllerTargetLocation += WorldVector;
 }
 
 void UVirtualCameraMovementComponent::ProcessMovementInput(const FVector& TrackerLocation, const FRotator& TrackerRotation)
@@ -64,8 +81,20 @@ void UVirtualCameraMovementComponent::ProcessMovementInput(const FVector& Tracke
 	TargetRotation = TrackerRotation - GetRotationOffset() + GetOwner()->GetActorRotation();
 	PreviousTrackerRotation = TrackerRotation;
 
-	FHitResult OutResult = FHitResult();
-	SafeMoveUpdatedComponent(GetStabilizedDeltaLocation(), GetStabilizedRotation(), false, OutResult);
+	{
+		FHitResult OutResult = FHitResult();
+		SafeMoveUpdatedComponent(GetStabilizedDeltaLocation(), GetStabilizedRotation(), false, OutResult);
+	}
+
+	// Apply the location change for the RootUpdatedComponent
+	if (RootUpdatedComponent)
+	{
+		TGuardValue<USceneComponent*> UpdateComponentGuard(UpdatedComponent, RootUpdatedComponent);
+		TGuardValue<UPrimitiveComponent*> UpdatePrimitiveGuard(UpdatedPrimitive, RootUpdatedPrimitive);
+		FHitResult OutResult = FHitResult();
+		SafeMoveUpdatedComponent(FromControllerTargetLocation, FQuat::Identity, false, OutResult);
+		FromControllerTargetLocation = FVector::ZeroVector;
+	}
 }
 
 bool UVirtualCameraMovementComponent::ToggleAxisLock(const EVirtualCameraAxis AxisToToggle)
@@ -96,21 +125,13 @@ bool UVirtualCameraMovementComponent::ToggleAxisFreeze(const EVirtualCameraAxis 
 
 float UVirtualCameraMovementComponent::SetAxisStabilizationScale(const EVirtualCameraAxis AxisToAdjust, float NewStabilizationAmount)
 {
-	// Stabilization is applied as an exponential curve defined by STABILIZATION_NRM_EXP
-	// This exponent is less than 1 so value changes at numbers closer to 0 have a greater degree of change than those closer to 1.
-	// This has the effect of stabilization being introduced much faster when it is first applied, and giving a finer degree of control as values increase.
-	// This is necessary because stabilization is not noticeable or useful until a certain amount is applied.
-	NewStabilizationAmount = FMath::Clamp<float>(NewStabilizationAmount, 0.0f, .97f);
-	AxisSettings[AxisToAdjust].StabilizationScale = FMath::Pow(NewStabilizationAmount, STABILIZATION_NRM_EXP);
-	AxisSettings[AxisToAdjust].StabilizationScale *= .97f;
+	AxisSettings[AxisToAdjust].StabilizationScale = FMath::Clamp<float>(NewStabilizationAmount, 0.0f, 1.0f);
 	return AxisSettings[AxisToAdjust].StabilizationScale;
 }
 
 float UVirtualCameraMovementComponent::GetAxisStabilizationScale(const EVirtualCameraAxis AxisToRetrieve) const
 {
-	float ValueToReturn = AxisSettings[AxisToRetrieve].StabilizationScale / .97f;
-	ValueToReturn = FMath::Pow(ValueToReturn, (1 / STABILIZATION_NRM_EXP));
-	return ValueToReturn;
+	return AxisSettings[AxisToRetrieve].StabilizationScale;
 }
 
 void UVirtualCameraMovementComponent::ResetCameraOffsetsToTracker()
@@ -122,7 +143,6 @@ void UVirtualCameraMovementComponent::ResetCameraOffsetsToTracker()
 	UpdatedComponent->SetRelativeRotation(TargetRotation);
 
 	// Clear all locks
-	// ToDo: Do we need to clear freeze states here as well?
 	for (auto Iterator = AxisSettings.CreateIterator(); Iterator; ++Iterator)
 	{
 		Iterator.Value().SetIsLocked(false);
@@ -163,7 +183,7 @@ void UVirtualCameraMovementComponent::OnMoveUp(const float InValue)
 	if (bUseGlobalBoom)
 	{
 		FVector InputVector = FVector(0.f, 0.f, 1.f);
-		AddInputVector(InputVector * InValue);
+		AddInputVectorFromController(InputVector * InValue, EVirtualCameraAxis::LocationZ);
 	}
 	else
 	{
@@ -183,6 +203,18 @@ void UVirtualCameraMovementComponent::Teleport(const FTransform& TargetTransform
 
 	UpdatedComponent->AddLocalOffset(DeltaOffset);
 	TargetLocation += DeltaOffset;
+
+	if (RootUpdatedComponent)
+	{
+		RootUpdatedComponent->SetRelativeLocation(FVector::ZeroVector);
+		FromControllerTargetLocation = FVector::ZeroVector;
+	}
+}
+
+void UVirtualCameraMovementComponent::SetRootComponent(USceneComponent* InFromController)
+{
+	RootUpdatedComponent = InFromController;
+	RootUpdatedPrimitive = Cast<UPrimitiveComponent>(RootUpdatedComponent);
 }
 
 void UVirtualCameraMovementComponent::ApplyLocationLocks(const FVector& InVector)
@@ -220,15 +252,17 @@ FVector UVirtualCameraMovementComponent::GetStabilizedDeltaLocation() const
 
 	FVector TargetLocationWithOffsets = TargetLocation - GetLocationOffset();
 
+	const FVector UpdatedComponentRelativeLocation = UpdatedComponent->GetRelativeLocation();
+
 	// Calculate each component by getting the needed vector component and doing a lerp with the stabilization scale for that axis
-	FMath::PointDistToLine(TargetLocationWithOffsets, UpdatedComponent->GetForwardVector(), UpdatedComponent->RelativeLocation, ClosestPoint);
-	ReturnVector += (ClosestPoint - UpdatedComponent->RelativeLocation) * (1 - AxisSettings[EVirtualCameraAxis::LocationX].StabilizationScale);
+	FMath::PointDistToLine(TargetLocationWithOffsets, UpdatedComponent->GetForwardVector(), UpdatedComponentRelativeLocation, ClosestPoint);
+	ReturnVector += (ClosestPoint - UpdatedComponentRelativeLocation) * (1 - ClampStabilizationScale(AxisSettings[EVirtualCameraAxis::LocationX].StabilizationScale));
 
-	FMath::PointDistToLine(TargetLocationWithOffsets, UpdatedComponent->GetRightVector(), UpdatedComponent->RelativeLocation, ClosestPoint);
-	ReturnVector += (ClosestPoint - UpdatedComponent->RelativeLocation) * (1 - AxisSettings[EVirtualCameraAxis::LocationY].StabilizationScale);
+	FMath::PointDistToLine(TargetLocationWithOffsets, UpdatedComponent->GetRightVector(), UpdatedComponentRelativeLocation, ClosestPoint);
+	ReturnVector += (ClosestPoint - UpdatedComponentRelativeLocation) * (1 - ClampStabilizationScale(AxisSettings[EVirtualCameraAxis::LocationY].StabilizationScale));
 
-	FMath::PointDistToLine(TargetLocationWithOffsets, UpdatedComponent->GetUpVector(), UpdatedComponent->RelativeLocation, ClosestPoint);
-	ReturnVector += (ClosestPoint - UpdatedComponent->RelativeLocation) * (1 - AxisSettings[EVirtualCameraAxis::LocationZ].StabilizationScale);
+	FMath::PointDistToLine(TargetLocationWithOffsets, UpdatedComponent->GetUpVector(), UpdatedComponentRelativeLocation, ClosestPoint);
+	ReturnVector += (ClosestPoint - UpdatedComponentRelativeLocation) * (1 - ClampStabilizationScale(AxisSettings[EVirtualCameraAxis::LocationZ].StabilizationScale));
 
 	ReturnVector = GetOwner()->GetActorRotation().RotateVector(ReturnVector);
 	return ReturnVector;
@@ -273,9 +307,9 @@ FRotator UVirtualCameraMovementComponent::GetStabilizedRotation() const
 	// Needs to be done as Quaternions to avoid gimbal locking
 	FRotator TargetAdjustment = UKismetMathLibrary::ComposeRotators(TargetRotation, UpdatedComponent->GetComponentRotation().GetInverse());
 
-	TargetAdjustment.Roll *= 1 - AxisSettings[EVirtualCameraAxis::RotationX].StabilizationScale;
-	TargetAdjustment.Pitch *= 1 - AxisSettings[EVirtualCameraAxis::RotationY].StabilizationScale;
-	TargetAdjustment.Yaw *= 1 - AxisSettings[EVirtualCameraAxis::RotationZ].StabilizationScale;
+	TargetAdjustment.Roll  *= (1 - ClampStabilizationScale(AxisSettings[EVirtualCameraAxis::RotationX].StabilizationScale));
+	TargetAdjustment.Pitch *= (1 - ClampStabilizationScale(AxisSettings[EVirtualCameraAxis::RotationY].StabilizationScale));
+	TargetAdjustment.Yaw   *= (1 - ClampStabilizationScale(AxisSettings[EVirtualCameraAxis::RotationZ].StabilizationScale));
 
 	return UKismetMathLibrary::ComposeRotators(TargetAdjustment, UpdatedComponent->GetComponentRotation());
 }

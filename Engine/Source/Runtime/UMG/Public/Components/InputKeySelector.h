@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -115,6 +115,9 @@ public:
 	void SetEscapeKeys(const TArray<FKey>& InKeys);
 
 	//~ Begin UWidget Interface
+#if WITH_EDITOR	
+	virtual const FText GetPaletteCategory() override;
+#endif
 	virtual void SynchronizeProperties() override;
 	//~ End UWidget Interface
 

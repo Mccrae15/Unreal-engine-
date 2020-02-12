@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -76,7 +76,7 @@ private:
 class FSlateFontAtlasD3D : public FSlateFontAtlas
 {
 public:
-	FSlateFontAtlasD3D( uint32 Width, uint32 Height );
+	FSlateFontAtlasD3D(uint32 Width, uint32 Height, const bool InIsGrayscale);
 	~FSlateFontAtlasD3D();
 
 	/** FSlateFontAtlas interface */

@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -16,6 +16,7 @@ public:
 
 public:
 	SLATE_BEGIN_ARGS(SNiagaraStackFunctionInputName) { }
+		SLATE_ATTRIBUTE(bool, IsSelected);
 	SLATE_END_ARGS();
 
 	void Construct(const FArguments& InArgs, UNiagaraStackFunctionInput* InFunctionInput, UNiagaraStackViewModel* InStackViewModel);
@@ -35,10 +36,14 @@ private:
 
 	bool GetIsEnabled() const;
 
+	FText GetToolTipText() const;
+
 	void OnNameTextCommitted(const FText& InText, ETextCommit::Type InCommitType);
 
 private:
 	UNiagaraStackFunctionInput* FunctionInput;
 
 	TSharedPtr<SInlineEditableTextBlock> NameTextBlock;
+
+	TAttribute<bool> IsSelected;
 };

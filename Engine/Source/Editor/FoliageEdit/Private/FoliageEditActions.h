@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -30,6 +30,12 @@ public:
 	/** Commands for the foliage brush settings. */
 	TSharedPtr< FUICommandInfo > IncreaseBrushSize;
 	TSharedPtr< FUICommandInfo > DecreaseBrushSize;
+
+	TSharedPtr< FUICommandInfo > IncreasePaintDensity;
+	TSharedPtr< FUICommandInfo > DecreasePaintDensity;
+
+	TSharedPtr< FUICommandInfo > IncreaseUnpaintDensity;
+	TSharedPtr< FUICommandInfo > DecreaseUnpaintDensity;
 
 	/** Commands for the tools toolbar. */
 	TSharedPtr< FUICommandInfo > SetPaint;

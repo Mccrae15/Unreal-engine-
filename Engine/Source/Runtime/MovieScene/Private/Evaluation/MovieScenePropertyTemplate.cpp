@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "Evaluation/MovieScenePropertyTemplate.h"
 
@@ -40,16 +40,7 @@ const FMovieSceneInterrogationKey FMovieScenePropertySectionTemplate::GetInt32In
 	const static FMovieSceneAnimTypeID TypeID = FMovieSceneAnimTypeID::Unique();
 	return TypeID;
 }
-const FMovieSceneInterrogationKey FMovieScenePropertySectionTemplate::GetTransformInterrogationKey()
-{
-	const static FMovieSceneAnimTypeID TypeID = FMovieSceneAnimTypeID::Unique();
-	return TypeID;
-}
-const FMovieSceneInterrogationKey FMovieScenePropertySectionTemplate::GetEulerTransformInterrogationKey()
-{
-	const static FMovieSceneAnimTypeID TypeID = FMovieSceneAnimTypeID::Unique();
-	return TypeID;
-}
+
 const FMovieSceneInterrogationKey FMovieScenePropertySectionTemplate::GetVector4InterrogationKey()
 {
 	const static FMovieSceneAnimTypeID TypeID = FMovieSceneAnimTypeID::Unique();
@@ -61,6 +52,12 @@ const FMovieSceneInterrogationKey FMovieScenePropertySectionTemplate::GetVectorI
 	return TypeID;
 }
 const FMovieSceneInterrogationKey FMovieScenePropertySectionTemplate::GetVector2DInterrogationKey()
+{
+	const static FMovieSceneAnimTypeID TypeID = FMovieSceneAnimTypeID::Unique();
+	return TypeID;
+}
+
+const FMovieSceneInterrogationKey FMovieScenePropertySectionTemplate::GetColorInterrogationKey()
 {
 	const static FMovieSceneAnimTypeID TypeID = FMovieSceneAnimTypeID::Unique();
 	return TypeID;

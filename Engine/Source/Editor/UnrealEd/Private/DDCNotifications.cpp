@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "DDCNotifications.h"
 #include "Misc/EngineBuildSettings.h"
@@ -46,7 +46,7 @@ FDDCNotifications::~FDDCNotifications()
 void FDDCNotifications::ClearSharedDDCNotification()
 {
 	// Don't call back into slate if already exiting
-	if (GIsRequestingExit)
+	if (IsEngineExitRequested())
 	{
 		return;
 	}

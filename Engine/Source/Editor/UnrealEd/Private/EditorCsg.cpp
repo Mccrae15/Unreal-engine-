@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 
 #include "CoreMinimal.h"
@@ -98,7 +98,7 @@ public:
 	 *
 	 * @return true if iterator points to a suitable actor, false if it has reached the end
 	 */
-	operator bool()
+	explicit operator bool() const
 	{
 		return !ReachedEnd;
 	}
@@ -1320,9 +1320,6 @@ void UEditorEngine::MapBrushGet(UWorld* InWorld)
 
 void UEditorEngine::mapBrushPut()
 {
-	TArray<FEdMode*> ActiveModes; 
-	GLevelEditorModeTools().GetActiveModes( ActiveModes );
-
 	for ( FSelectionIterator It( GEditor->GetSelectedActorIterator() ) ; It ; ++It )
 	{
 		AActor* Actor = static_cast<AActor*>( *It );
@@ -1342,10 +1339,7 @@ void UEditorEngine::mapBrushPut()
 
 			WorldBrush->ReregisterAllComponents();
 
-			for( int32 ModeIndex = 0; ModeIndex < ActiveModes.Num(); ++ModeIndex )
-			{
-				ActiveModes[ModeIndex]->UpdateInternalData();
-			}
+			GLevelEditorModeTools().UpdateInternalData();
 		}
 	}
 }

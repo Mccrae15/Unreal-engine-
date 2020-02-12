@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "MediaIOCoreWaitVsyncThread.h"
 #include "IMediaIOCoreHardwareSync.h"
@@ -27,7 +27,7 @@ bool FMediaIOCoreWaitVSyncThread::Init()
 
 uint32 FMediaIOCoreWaitVSyncThread::Run()
 {
-	while (!GIsRequestingExit && bAlive.Load() && HardwareSync->IsValid())
+	while (!IsEngineExitRequested() && bAlive.Load() && HardwareSync->IsValid())
 	{
 		// wait for event
 		HardwareSync->WaitVSync();

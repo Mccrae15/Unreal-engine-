@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "IOpenColorIOEditorModule.h"
 
@@ -8,7 +8,6 @@
 #include "ISettingsModule.h"
 #include "ISettingsSection.h"
 #include "Modules/ModuleManager.h"
-#include "OpenColorIOLibHandler.h"
 #include "OpenColorIOColorSpaceConversionCustomization.h"
 #include "OpenColorIOColorSpaceCustomization.h"
 #include "OpenColorIOColorTransform.h"
@@ -29,12 +28,8 @@ class FOpenColorIOEditorModule : public IOpenColorIOEditorModule
 {
 public:
 
-	virtual bool IsInitialized() const override { return FOpenColorIOLibHandler::IsInitialized(); }
-
 	virtual void StartupModule() override
 	{
-		FOpenColorIOLibHandler::Initialize();
-
 		FWorldDelegates::OnPreWorldInitialization.AddRaw(this, &FOpenColorIOEditorModule::OnWorldInit);
 
 		// Register asset type actions for OpenColorIOConfiguration class
@@ -67,8 +62,6 @@ public:
 
 		CleanFeatureLevelDelegate();
 		FWorldDelegates::OnPreWorldInitialization.RemoveAll(this);
-
-		FOpenColorIOLibHandler::Shutdown();
 	}
 
 	void RegisterCustomizations()
@@ -80,9 +73,12 @@ public:
 
 	void UnregisterCustomizations()
 	{
-		FPropertyEditorModule& PropertyModule = FModuleManager::LoadModuleChecked<FPropertyEditorModule>("PropertyEditor");
-		PropertyModule.UnregisterCustomPropertyTypeLayout(FOpenColorIOColorSpace::StaticStruct()->GetFName());
-		PropertyModule.UnregisterCustomPropertyTypeLayout(FOpenColorIOColorConversionSettings::StaticStruct()->GetFName());
+		if (UObjectInitialized() == true)
+		{
+			FPropertyEditorModule& PropertyModule = FModuleManager::LoadModuleChecked<FPropertyEditorModule>("PropertyEditor");
+			PropertyModule.UnregisterCustomPropertyTypeLayout(FOpenColorIOColorSpace::StaticStruct()->GetFName());
+			PropertyModule.UnregisterCustomPropertyTypeLayout(FOpenColorIOColorConversionSettings::StaticStruct()->GetFName());
+		}
 	}
 
 	void OnWorldInit(UWorld* InWorld, const UWorld::InitializationValues InInitializationValues)

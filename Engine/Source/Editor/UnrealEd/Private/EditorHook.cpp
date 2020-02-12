@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 
 // Includes.
@@ -27,19 +27,13 @@ UEngine* Engine;
 	Editor hook exec.
 -----------------------------------------------------------------------------*/
 
-void UUnrealEdEngine::NotifyPreChange(UProperty* PropertyAboutToChange)
+void UUnrealEdEngine::NotifyPreChange(FProperty* PropertyAboutToChange)
 {
 }
-void UUnrealEdEngine::NotifyPostChange(const FPropertyChangedEvent& PropertyChangedEvent, UProperty* PropertyThatChanged)
+void UUnrealEdEngine::NotifyPostChange(const FPropertyChangedEvent& PropertyChangedEvent, FProperty* PropertyThatChanged)
 {
 	// Notify all active modes of actor property changes.
-	TArray<FEdMode*> ActiveModes;
-	GLevelEditorModeTools().GetActiveModes(ActiveModes);
-
-	for (int32 ModeIndex = 0; ModeIndex < ActiveModes.Num(); ++ModeIndex)
-	{
-		ActiveModes[ModeIndex]->ActorPropChangeNotify();
-	}
+	GLevelEditorModeTools().ActorPropChangeNotify();
 }
 
 void UUnrealEdEngine::UpdateFloatingPropertyWindows(bool bForceRefresh)

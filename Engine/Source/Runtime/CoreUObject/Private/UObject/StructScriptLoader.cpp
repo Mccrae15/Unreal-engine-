@@ -1,10 +1,12 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "UObject/StructScriptLoader.h"
 #include "HAL/ThreadSingleton.h"
 #include "Misc/CoreMisc.h"
 #include "UObject/LinkerLoad.h"
 #include "Serialization/ArchiveScriptReferenceCollector.h"
+#include "UObject/Package.h"
+#include "UObject/PropertyProxyArchive.h"
 
 /*******************************************************************************
  * FDeferredScriptTracker
@@ -205,10 +207,17 @@ bool FStructScriptLoader::LoadStructWithScript(UStruct* DestScriptContainer, FAr
 	// script code), we define a minimum script version
 	bool bSkipScriptSerialization = (Ar.UE4Ver() < VER_MIN_SCRIPTVM_UE4) || (Ar.LicenseeUE4Ver() < VER_MIN_SCRIPTVM_LICENSEEUE4);
 #if WITH_EDITOR
-	static const FBoolConfigValueHelper SkipByteCodeHelper(TEXT("StructSerialization"), TEXT("SkipByteCodeSerialization"));
-	// in editor builds, we're going to regenerate the bytecode anyways, so it
-	// is a waste of cycles to try and serialize it in
-	bSkipScriptSerialization |= (bool)SkipByteCodeHelper;
+	if (!bSkipScriptSerialization)
+	{
+		// Always serialize script for cooked packages loaded in the editor
+		if (!(GAllowCookedDataInEditorBuilds && Ar.GetLinker() && Ar.GetLinker()->LinkerRoot && Ar.GetLinker()->LinkerRoot->bIsCookedForEditor))
+		{
+			static const FBoolConfigValueHelper SkipByteCodeHelper(TEXT("StructSerialization"), TEXT("SkipByteCodeSerialization"));
+			// in editor builds, we're going to regenerate the bytecode anyways, so it
+			// is a waste of cycles to try and serialize it in
+			bSkipScriptSerialization |= (bool)SkipByteCodeHelper;
+		}
+	}
 #endif // WITH_EDITOR
 	bSkipScriptSerialization &= bIsLinkerLoader; // to keep consistent with old UStruct::Serialize() functionality
 
@@ -256,9 +265,16 @@ bool FStructScriptLoader::LoadStructWithScript(UStruct* DestScriptContainer, FAr
 	DestScriptContainer->Script.AddUninitialized(BytecodeBufferSize);
 
 	int32 BytecodeIndex = 0;
-	while (BytecodeIndex < BytecodeBufferSize)
 	{
-		DestScriptContainer->SerializeExpr(BytecodeIndex, Ar);
+		DestScriptContainer->UnresolvedScriptProperties.Empty();
+
+		FPropertyProxyArchive PropertyAr(Ar, BytecodeIndex, DestScriptContainer);
+		while (BytecodeIndex < BytecodeBufferSize)
+		{
+			DestScriptContainer->SerializeExpr(BytecodeIndex, PropertyAr);
+		}
+
+		DestScriptContainer->UnresolvedScriptProperties = MoveTemp(PropertyAr.UnresolvedProperties);
 	}
 	ensure(ScriptEndOffset == Ar.Tell());
 	checkf(BytecodeIndex == BytecodeBufferSize, TEXT("'%s' script expression-count mismatch; Expected: %i, Got: %i"), *DestScriptContainer->GetName(), BytecodeBufferSize, BytecodeIndex);

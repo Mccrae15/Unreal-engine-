@@ -7,6 +7,7 @@
 #include "IAudioExtensionPlugin.h"
 #include "Sound/SoundEffectSubmix.h"
 #include "Sound/SoundEffectPreset.h"
+#include "ResonanceAudioEnums.h"
 #include "ResonanceAudioCommon.h"
 #include "ResonanceAudioReverb.generated.h"
 
@@ -95,7 +96,6 @@ struct FResonanceAudioReverbPluginSettings
 		, ReverbBrightness(0.0f)
 	{
 	}
-
 };
 
 namespace ResonanceAudio
@@ -111,10 +111,11 @@ namespace ResonanceAudio
 		virtual void Initialize(const FAudioPluginInitializationParams InitializationParams) override;
 		virtual void OnInitSource(const uint32 SourceId, const FName& AudioComponentUserId, const uint32 NumChannels, UReverbPluginSourceSettingsBase* InSettings) override;
 		virtual void OnReleaseSource(const uint32 SourceId) override;
-		virtual class FSoundEffectSubmix* GetEffectSubmix(class USoundSubmix* Submix) override;
+		virtual FSoundEffectSubmixPtr GetEffectSubmix() override;
+		virtual USoundSubmix* GetSubmix() override;
 		virtual void ProcessSourceAudio(const FAudioPluginSourceInputData& InputData, FAudioPluginSourceOutputData& OutputData) override;
 
-		void SetResonanceAudioApi(vraudio::VrAudioApi* InResonanceAudioApi) { ResonanceAudioApi = InResonanceAudioApi; };
+		void SetResonanceAudioApi(vraudio::ResonanceAudioApi* InResonanceAudioApi) { ResonanceAudioApi = InResonanceAudioApi; };
 		void SetPreset(UResonanceAudioReverbPluginPreset* InPreset);
 		void ProcessMixedAudio(const FSoundEffectSubmixInputData& InData, FSoundEffectSubmixOutputData& OutData);
 		
@@ -133,14 +134,22 @@ namespace ResonanceAudio
 		void SetReverbBrightness();
 
 	private:
+
+		void InitEffectSubmix();
+
 		FResonanceAudioReverbPluginSettings ReverbSettings;
 		RaRoomProperties RoomProperties;
+		RaReverbProperties ReverbProperties;
+		RaReflectionProperties ReflectionProperties;
 
-		vraudio::VrAudioApi* ResonanceAudioApi;
+
+		vraudio::ResonanceAudioApi* ResonanceAudioApi;
 		FResonanceAudioModule* ResonanceAudioModule;
 		UResonanceAudioReverbPluginPreset* ReverbPluginPreset;
 		UResonanceAudioReverbPluginPreset* GlobalReverbPluginPreset;
 		TArray<float, TAlignedHeapAllocator<AUDIO_BUFFER_ALIGNMENT>>  TemporaryStereoBuffer;
+
+		FSoundEffectSubmixPtr SubmixEffect;
 	};
 
 } // namespace ResonanceAudio

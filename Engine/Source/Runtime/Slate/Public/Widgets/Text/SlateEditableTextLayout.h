@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -13,7 +13,6 @@
 #include "Widgets/Input/IVirtualKeyboardEntry.h"
 #include "Widgets/Text/ISlateEditableTextWidget.h"
 #include "Framework/Text/ITextLayoutMarshaller.h"
-#include "Framework/Text/TextRange.h"
 #include "Framework/Text/TextLineHighlight.h"
 #include "Framework/Text/IRun.h"
 #include "Framework/Text/TextLayout.h"
@@ -139,6 +138,12 @@ public:
 	/** Get the absolute scroll offset value */
 	FVector2D GetScrollOffset() const;
 
+	/** Returns the computed wrap location for this layout */
+	float GetComputedWrappingWidth() const;
+
+	/** Returns whether or not we are auto wrapping text */
+	bool GetAutoWrapText() const;
+
 	/** Called when our parent widget receives focus */
 	bool HandleFocusReceived(const FFocusEvent& InFocusEvent);
 
@@ -179,7 +184,7 @@ public:
 	bool HandleTypeChar(const TCHAR InChar);
 
 	/** Called to handle a carriage return action acting on the current selection or at the cursor position */
-	bool HandleCarriageReturn();
+	bool HandleCarriageReturn(bool isRepeat);
 
 	/** Are we able to delete the currently selected text? */
 	bool CanExecuteDelete() const;
@@ -242,13 +247,16 @@ public:
 	void GoTo(const FTextLocation& NewLocation);
 
 	/** Move the cursor specified location */
-	void GoTo(ETextLocation NewLocation);
+	void GoTo(const ETextLocation NewLocation);
 
 	/** Jump the cursor to the given location in the document */
 	void JumpTo(ETextLocation JumpLocation, ECursorAction Action);
 
 	/** Scroll to the given location in the document (without moving the cursor) */
 	void ScrollTo(const FTextLocation& NewLocation);
+
+	/** Scroll to the given location in the document (without moving the cursor) */
+	void ScrollTo(const ETextLocation NewLocation);
 
 	/** Update the active cursor highlight based on the state of the text layout */
 	void UpdateCursorHighlight();
@@ -364,10 +372,6 @@ public:
 	TSharedRef<SWidget> BuildDefaultContextMenu(const TSharedPtr<FExtender>& InMenuExtender) const;
 
 	bool HasActiveContextMenu() const;
-
-protected:
-
-	void CommitTextChanges(ETextCommit::Type CommitReason);
 
 private:
 	/** Insert the given text at the current cursor position, correctly taking into account new line characters */
@@ -608,9 +612,6 @@ private:
 
 	/** Whether the text has been committed by a virtual keyboard */
 	bool bTextCommittedByVirtualKeyboard;
-
-	/** Whether the widget contains uncommitted text */
-	bool bHasUncommittedText;
 
 	/** What text was submitted by a virtual keyboard */
 	FText VirtualKeyboardText;

@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 //=====================================================================================================================
 // Implementation of a minimal subset of the Windows API required for inline function definitions and platform-specific
@@ -18,6 +18,16 @@
 	#define MINIMAL_WINDOWS_API extern "C" __declspec(dllimport)
 #endif
 
+// The 10.0.18362.0 SDK introduces an error if the packing isn't the default for the platform.
+PRAGMA_PUSH_PLATFORM_DEFAULT_PACKING
+
+// Undefine Windows types that we're going to redefine. This should be done by HideWindowsPlatformTypes.h after including any system headers, 
+// but it's less friction to just undefine them here.
+#pragma push_macro("TRUE")
+#pragma push_macro("FALSE")
+#undef TRUE
+#undef FALSE
+
 // Use strongly typed handles
 #ifndef STRICT
 #define STRICT
@@ -31,6 +41,7 @@ struct HWND__;
 struct HKEY__;
 struct HDC__;
 struct HICON__;
+struct _RTL_SRWLOCK;
 
 // Other types
 struct tagPROCESSENTRY32W;
@@ -78,12 +89,18 @@ namespace Windows
 	typedef _OVERLAPPED* LPOVERLAPPED;
 	typedef _LARGE_INTEGER* LPLARGE_INTEGER;
 
-	typedef struct _RTL_SRWLOCK
+	typedef _RTL_SRWLOCK RTL_SRWLOCK, *PRTL_SRWLOCK;
+	typedef RTL_SRWLOCK *PSRWLOCK;
+
+	// Opaque SRWLOCK structure
+	struct SRWLOCK
 	{
 		void* Ptr;
-	} RTL_SRWLOCK, *PRTL_SRWLOCK;
+	};
 
-	typedef RTL_SRWLOCK SRWLOCK, *PSRWLOCK;
+	// Constants
+	static const BOOL TRUE = 1;
+	static const BOOL FALSE = 0;
 
 	// Modules
 	MINIMAL_WINDOWS_API HMODULE WINAPI LoadLibraryW(LPCTSTR lpFileName);
@@ -103,6 +120,31 @@ namespace Windows
 	MINIMAL_WINDOWS_API void WINAPI ReleaseSRWLockShared(PSRWLOCK SRWLock);
 	MINIMAL_WINDOWS_API void WINAPI AcquireSRWLockExclusive(PSRWLOCK SRWLock);
 	MINIMAL_WINDOWS_API void WINAPI ReleaseSRWLockExclusive(PSRWLOCK SRWLock);
+
+	FORCEINLINE void WINAPI InitializeSRWLock(SRWLOCK* SRWLock)
+	{
+		InitializeSRWLock((PSRWLOCK)SRWLock);
+	}
+
+	FORCEINLINE void WINAPI AcquireSRWLockShared(SRWLOCK* SRWLock)
+	{
+		AcquireSRWLockShared((PSRWLOCK)SRWLock);
+	}
+
+	FORCEINLINE void WINAPI ReleaseSRWLockShared(SRWLOCK* SRWLock)
+	{
+		ReleaseSRWLockShared((PSRWLOCK)SRWLock);
+	}
+
+	FORCEINLINE void WINAPI AcquireSRWLockExclusive(SRWLOCK* SRWLock)
+	{
+		AcquireSRWLockExclusive((PSRWLOCK)SRWLock);
+	}
+
+	FORCEINLINE void WINAPI ReleaseSRWLockExclusive(SRWLOCK* SRWLock)
+	{
+		ReleaseSRWLockExclusive((PSRWLOCK)SRWLock);
+	}
 
 	// I/O
 	MINIMAL_WINDOWS_API BOOL WINAPI ConnectNamedPipe(HANDLE hNamedPipe, LPOVERLAPPED lpOverlapped);
@@ -188,3 +230,10 @@ namespace Windows
 		return QueryPerformanceCounter((LPLARGE_INTEGER)Cycles);
 	}
 }
+
+// Restore the definitions for TRUE and FALSE
+#pragma pop_macro("FALSE")
+#pragma pop_macro("TRUE")
+
+// Restore the packing setting
+PRAGMA_POP_PLATFORM_DEFAULT_PACKING

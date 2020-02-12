@@ -1,4 +1,4 @@
-﻿// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+﻿// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "LiveLinkTypes.h"
 
@@ -18,12 +18,5 @@ const FLiveLinkFrameRate FLiveLinkFrameRate::FPS_240(240, 1);
 const FLiveLinkFrameRate FLiveLinkFrameRate::NTSC_24(24000, 1001);
 const FLiveLinkFrameRate FLiveLinkFrameRate::NTSC_30(30000, 1001);
 const FLiveLinkFrameRate FLiveLinkFrameRate::NTSC_60(60000, 1001);
-
-FLiveLinkMetaData::FLiveLinkMetaData() = default;
-FLiveLinkMetaData::FLiveLinkMetaData(const FLiveLinkMetaData&) = default;
-FLiveLinkMetaData& FLiveLinkMetaData::operator=(const FLiveLinkMetaData&) = default;
-
-FLiveLinkMetaData::FLiveLinkMetaData(FLiveLinkMetaData&&) = default;
-FLiveLinkMetaData& FLiveLinkMetaData::operator=(FLiveLinkMetaData&&) = default;
 
 PRAGMA_ENABLE_DEPRECATION_WARNINGS

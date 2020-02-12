@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -20,10 +20,10 @@ enum ESoundDistanceCalc
 UENUM()
 enum ESoundSpatializationAlgorithm
 {
-	// Standard panning method for spatialization, built-in to the audio engine.
+	// Standard panning method for spatialization (linear or equal power method defined in project settings)
 	SPATIALIZATION_Default UMETA(DisplayName = "Panning"),
 
-	// 3rd party binaural spatialization (HRTF, Atmos). Requires a spatializaton plugin.
+	// Binaural spatialization method if available (requires headphones, enabled by plugins)
 	SPATIALIZATION_HRTF UMETA(DisplayName = "Binaural"),
 };
 
@@ -47,7 +47,21 @@ enum class EReverbSendMethod : uint8
 	// A reverb send based on a supplied curve
 	CustomCurve,
 
-	// A manual reverb send level (Uses the specififed constant send level value. Useful for 2D sounds.)
+	// A manual reverb send level (Uses the specified constant send level value. Useful for 2D sounds.)
+	Manual,
+};
+
+
+UENUM(BlueprintType)
+enum class EPriorityAttenuationMethod : uint8
+{
+	// A priority attenuation based on linear interpolation between a distance range and priority attenuation range
+	Linear,
+
+	// A priority attenuation based on a supplied curve
+	CustomCurve,
+
+	// A manual priority attenuation (Uses the specified constant value. Useful for 2D sounds.)
 	Manual,
 };
 
@@ -57,15 +71,15 @@ struct ENGINE_API FSoundAttenuationPluginSettings
 {
 	GENERATED_USTRUCT_BODY()
 
-	/** Settings to use with occlusion audio plugin. These are defined by the plugin creator. Not all audio plugins utilize this feature. Note that this is an array so multiple plugins can have settings. */
+	/** Settings to use with spatialization audio plugin. These are defined by the plugin creator. Not all audio plugins utilize this feature. This is an array so multiple plugins can have settings. */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = AttenuationSpatialization, meta = (DisplayName = "Spatialization Plugin Settings"))
 	TArray<USpatializationPluginSourceSettingsBase*> SpatializationPluginSettingsArray;
 
-	/** Settings to use with occlusion audio plugin. These are defined by the plugin creator. Not all audio plugins utilize this feature. Note that this is an array so multiple plugins can have settings. */
+	/** Settings to use with occlusion audio plugin. These are defined by the plugin creator. Not all audio plugins utilize this feature. This  is an array so multiple plugins can have settings. */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = AttenuationOcclusion, meta = (DisplayName = "Occlusion Plugin Settings"))
 	TArray<UOcclusionPluginSourceSettingsBase*> OcclusionPluginSettingsArray;
 
-	/** Settings to use with reverb audio plugin. These are defined by the plugin creator. Not all audio plugins utilize this feature. Note that this is an array so multiple plugins can have settings. */
+	/** Settings to use with reverb audio plugin. These are defined by the plugin creator. Not all audio plugins utilize this feature. This  is an array so multiple plugins can have settings. */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = AttenuationReverbSend, meta = (DisplayName = "Reverb Plugin Settings"))
 	TArray<UReverbPluginSourceSettingsBase*> ReverbPluginSettingsArray;
 };
@@ -110,6 +124,10 @@ struct ENGINE_API FSoundAttenuationSettings : public FBaseAttenuationSettings
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = AttenuationReverbSend, meta = (DisplayName = "Enable Reverb Send"))
 	uint8 bEnableReverbSend : 1;
 
+	/** Enables attenuation of sound priority based off distance. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = AttenuationPriority, meta = (DisplayName = "Enable Priority Attenuation"))
+	uint8 bEnablePriorityAttenuation : 1;
+
 	/** Enables applying a -6 dB attenuation to stereo assets which are 3d spatialized. Avoids clipping when assets have spread of 0.0 due to channel summing. */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = AttenuationSpatialization, meta = (DisplayName = "Normalize 3D Stereo Sounds"))
 	uint8 bApplyNormalizationToStereoSounds : 1;
@@ -121,6 +139,10 @@ struct ENGINE_API FSoundAttenuationSettings : public FBaseAttenuationSettings
 	/** What method we use to spatialize the sound. */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = AttenuationSpatialization, meta = (ClampMin = "0", EditCondition = "bSpatialize", DisplayName = "Spatialization Method"))
 	TEnumAsByte<enum ESoundSpatializationAlgorithm> SpatializationAlgorithm;
+
+	/** What min radius to use to swap to non-binaural audio when a sound starts playing. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = AttenuationSpatialization, meta = (ClampMin = "0", EditCondition = "bSpatialize"))
+	float BinauralRadius;
 
 	/** What method to use to map distance values to frequency absorption values. */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = AttenuationAirAbsorption)
@@ -134,6 +156,10 @@ struct ENGINE_API FSoundAttenuationSettings : public FBaseAttenuationSettings
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = AttenuationReverbSend)
 	EReverbSendMethod ReverbSendMethod;
 
+	/** What method to use to control priority attenuation */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = AttenuationPriority)
+	EPriorityAttenuationMethod PriorityAttenuationMethod;
+
 #if WITH_EDITORONLY_DATA
 	UPROPERTY()
 	TEnumAsByte<enum ESoundDistanceCalc> DistanceType_DEPRECATED;
@@ -143,7 +169,7 @@ struct ENGINE_API FSoundAttenuationSettings : public FBaseAttenuationSettings
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = AttenuationSpatialization, meta=(ClampMin = "0", EditCondition="bSpatialize", DisplayName="Non-Spatialized Radius"))
 	float OmniRadius;
 
-	/** The world-space absolution distance between left and right stereo channels when stereo assets are 3D spatialized. */
+	/** The world-space distance between left and right stereo channels when stereo assets are 3D spatialized. */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = AttenuationSpatialization, meta = (ClampMin = "0", EditCondition = "bSpatialize", DisplayName = "3D Stereo Spread"))
 	float StereoSpread;
 
@@ -274,6 +300,30 @@ struct ENGINE_API FSoundAttenuationSettings : public FBaseAttenuationSettings
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = AttenuationReverbSend)
 	FRuntimeFloatCurve CustomReverbSendCurve;
 
+	/** The priority attenuation to use when the sound is at the minimum priority attenuation distance. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = AttenuationPriority, meta = (DisplayName = "Min Priority Attenuation"))
+	float PriorityAttenuationMin;
+
+	/** The priority attenuation to use when the sound is at the maximum priority attenuation distance. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = AttenuationPriority, meta = (DisplayName = "Max Priority Attenuation"))
+	float PriorityAttenuationMax;
+
+	/** The min distance to attenuate priority. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = AttenuationPriority, meta = (DisplayName = "Priority Attenuation Min Distance"))
+	float PriorityAttenuationDistanceMin;
+
+	/** The max distance to attenuate priority. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = AttenuationPriority, meta = (DisplayName = "Priority Attenuation Max Distance"))
+	float PriorityAttenuationDistanceMax;
+
+	/* The manual priority attenuation to use. Doesn't change as a function of distance. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = AttenuationPriority)
+	float ManualPriorityAttenuation;
+
+	/* The custom curve to use for distance-based priority attenuation. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = AttenuationPriority)
+	FRuntimeFloatCurve CustomPriorityAttenuationCurve;
+
 	/** Sound attenuation plugin settings to use with sounds that play with this attenuation setting. */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = AttenuationPluginSettings, meta = (ShowOnlyInnerProperties))
 	FSoundAttenuationPluginSettings PluginSettings;
@@ -287,12 +337,15 @@ struct ENGINE_API FSoundAttenuationSettings : public FBaseAttenuationSettings
 		, bEnableOcclusion(false)
 		, bUseComplexCollisionForOcclusion(false)
 		, bEnableReverbSend(true)
+		, bEnablePriorityAttenuation(false)
 		, bApplyNormalizationToStereoSounds(false)
 		, bEnableLogFrequencyScaling(false)
 		, SpatializationAlgorithm(ESoundSpatializationAlgorithm::SPATIALIZATION_Default)
+		, BinauralRadius(0.0f)
 		, AbsorptionMethod(EAirAbsorptionMethod::Linear)
 		, OcclusionTraceChannel(ECC_Visibility)
 		, ReverbSendMethod(EReverbSendMethod::Linear)
+		, PriorityAttenuationMethod(EPriorityAttenuationMethod::Linear)
 #if WITH_EDITORONLY_DATA
 		, DistanceType_DEPRECATED(SOUNDDISTANCE_Normal)
 #endif
@@ -330,12 +383,19 @@ struct ENGINE_API FSoundAttenuationSettings : public FBaseAttenuationSettings
 		, ReverbWetLevelMax(0.95f)
 		, ReverbDistanceMin(AttenuationShapeExtents.X)
 		, ReverbDistanceMax(AttenuationShapeExtents.X + FalloffDistance)
-		, ManualReverbSendLevel(0.2f)
+		, ManualReverbSendLevel(0.0f)
+		, PriorityAttenuationMin(1.0f)
+		, PriorityAttenuationMax(1.0f)
+		, PriorityAttenuationDistanceMin(AttenuationShapeExtents.X)
+		, PriorityAttenuationDistanceMax(AttenuationShapeExtents.X + FalloffDistance)
+		, ManualPriorityAttenuation(1.0f)
 	{
 	}
 
 	bool operator==(const FSoundAttenuationSettings& Other) const;
+#if WITH_EDITORONLY_DATA
 	void PostSerialize(const FArchive& Ar);
+#endif
 
 	virtual void CollectAttenuationShapesForVisualization(TMultiMap<EAttenuationShape::Type, FBaseAttenuationSettings::AttenuationShapeDetails>& ShapeDetailsMap) const override;
 	float GetFocusPriorityScale(const struct FGlobalFocusSettings& FocusSettings, float FocusFactor) const;
@@ -343,9 +403,7 @@ struct ENGINE_API FSoundAttenuationSettings : public FBaseAttenuationSettings
 	float GetFocusDistanceScale(const struct FGlobalFocusSettings& FocusSettings, float FocusFactor) const;
 };
 
-UE_DEPRECATED(4.15, "FAttenuationSettings has been renamed FSoundAttenuationSettings")
-typedef FSoundAttenuationSettings FAttenuationSettings;
-
+#if WITH_EDITORONLY_DATA
 template<>
 struct TStructOpsTypeTraits<FSoundAttenuationSettings> : public TStructOpsTypeTraitsBase2<FSoundAttenuationSettings>
 {
@@ -354,6 +412,7 @@ struct TStructOpsTypeTraits<FSoundAttenuationSettings> : public TStructOpsTypeTr
 		WithPostSerialize = true,
 	};
 };
+#endif
 
 /** 
  * Defines how a sound changes volume with distance to the listener

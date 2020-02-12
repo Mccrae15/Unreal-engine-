@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 /*=============================================================================
 	PostProcessDOF.cpp: Post process Depth of Field implementation.
@@ -14,6 +14,26 @@
 #include "PostProcess/PostProcessing.h"
 #include "ClearQuad.h"
 #include "PipelineStateCache.h"
+
+FVector4 GetDepthOfFieldParameters(const FPostProcessSettings& PostProcessSettings)
+{
+	const float SkyFocusDistance = PostProcessSettings.DepthOfFieldSkyFocusDistance;
+
+	// *2 to go to account for Radius/Diameter, 100 for percent
+	const float DepthOfFieldVignetteSize = FMath::Max(0.0f, PostProcessSettings.DepthOfFieldVignetteSize / 100.0f * 2);
+
+	// doesn't make much sense to expose this property as the effect is very non linear and it would cost some performance to fix that
+	const float DepthOfFieldVignetteFeather = 10.0f / 100.0f;
+
+	const float DepthOfFieldVignetteMul = 1.0f / DepthOfFieldVignetteFeather;
+	const float DepthOfFieldVignetteAdd = (0.5f - DepthOfFieldVignetteSize) * DepthOfFieldVignetteMul;
+
+	return FVector4(
+		(SkyFocusDistance > 0) ? SkyFocusDistance : 100000000.0f, // very large if <0 to not mask out skybox, can be optimized to disable feature completely
+		DepthOfFieldVignetteMul,
+		DepthOfFieldVignetteAdd,
+		0.0f);
+}
 
 /** Encapsulates the DOF setup pixel shader. */
 // @param FarBlur 0:off, 1:on
@@ -31,7 +51,7 @@ class FPostProcessDOFSetupPS : public FGlobalShader
 	static void ModifyCompilationEnvironment(const FGlobalShaderPermutationParameters& Parameters, FShaderCompilerEnvironment& OutEnvironment)
 	{
 		FGlobalShader::ModifyCompilationEnvironment(Parameters,OutEnvironment);
-		OutEnvironment.SetDefine(TEXT("MOBILE_SHADING"), IsFeatureLevelSupported(Parameters.Platform, ERHIFeatureLevel::SM4) ? 0u : 1u);
+		OutEnvironment.SetDefine(TEXT("MOBILE_SHADING"), IsFeatureLevelSupported(Parameters.Platform, ERHIFeatureLevel::SM5) ? 0u : 1u);
 		OutEnvironment.SetDefine(TEXT("NEAR_BLUR"), (uint32)(NearBlur >= 1));
 		OutEnvironment.SetDefine(TEXT("DOF_VIGNETTE"), (uint32)(NearBlur == 2));
 		OutEnvironment.SetDefine(TEXT("MRT_COUNT"), FarBlur + (NearBlur > 0));
@@ -41,9 +61,9 @@ class FPostProcessDOFSetupPS : public FGlobalShader
 	FPostProcessDOFSetupPS() {}
 
 public:
-	FPostProcessPassParameters PostprocessParameter;
-	FSceneTextureShaderParameters SceneTextureParameters;
-	FShaderParameter DepthOfFieldParams;
+	LAYOUT_FIELD(FPostProcessPassParameters, PostprocessParameter);
+	LAYOUT_FIELD(FSceneTextureShaderParameters, SceneTextureParameters);
+	LAYOUT_FIELD(FShaderParameter, DepthOfFieldParams);
 	
 	/** Initialization constructor. */
 	FPostProcessDOFSetupPS(const ShaderMetaType::CompiledShaderInitializerType& Initializer)
@@ -54,22 +74,14 @@ public:
 		DepthOfFieldParams.Bind(Initializer.ParameterMap,TEXT("DepthOfFieldParams"));
 	}
 
-	// FShader interface.
-	virtual bool Serialize(FArchive& Ar) override
-	{
-		bool bShaderHasOutdatedParameters = FGlobalShader::Serialize(Ar);
-		Ar << PostprocessParameter << SceneTextureParameters << DepthOfFieldParams;
-		return bShaderHasOutdatedParameters;
-	}
-
 	template <typename TRHICmdList>
 	void SetParameters(TRHICmdList& RHICmdList, const FRenderingCompositePassContext& Context)
 	{
-		const FPixelShaderRHIParamRef ShaderRHI = GetPixelShader();
+		FRHIPixelShader* ShaderRHI = RHICmdList.GetBoundPixelShader();
 
 		FGlobalShader::SetParameters<FViewUniformShaderParameters>(RHICmdList, ShaderRHI, Context.View.ViewUniformBuffer);
 
-		if (Context.GetFeatureLevel() < ERHIFeatureLevel::SM4)
+		if (Context.GetFeatureLevel() < ERHIFeatureLevel::SM5)
 		{
 			// Trying bilin here to attempt to alleviate some issues with 1/4 res input...
 			PostprocessParameter.SetPS(RHICmdList, ShaderRHI, Context, TStaticSamplerState<SF_Bilinear, AM_Border, AM_Border, AM_Clamp>::GetRHI());
@@ -82,11 +94,9 @@ public:
 		SceneTextureParameters.Set(RHICmdList, ShaderRHI, Context.View.FeatureLevel, ESceneTextureSetupMode::All);
 
 		{
-			FVector4 DepthOfFieldParamValues[2];
+			const FVector4 DepthOfFieldParamValue = GetDepthOfFieldParameters(Context.View.FinalPostProcessSettings);
 
-			FRCPassPostProcessBokehDOF::ComputeDepthOfFieldParams(Context, DepthOfFieldParamValues);
-
-			SetShaderValueArray(RHICmdList, ShaderRHI, DepthOfFieldParams, DepthOfFieldParamValues, 2);
+			SetShaderValue(RHICmdList, ShaderRHI, DepthOfFieldParams, DepthOfFieldParamValue);
 		}
 	}
 
@@ -113,7 +123,7 @@ public:
 // @param FarBlur 0:off, 1:on
 // @param NearBlur 0:off, 1:on, 2:on with Vignette
 template <uint32 FarBlur, uint32 NearBlur>
-static FShader* SetDOFShaderTempl(const FRenderingCompositePassContext& Context)
+static TShaderRef<FShader> SetDOFShaderTempl(const FRenderingCompositePassContext& Context)
 {
 	FGraphicsPipelineStateInitializer GraphicsPSOInit;
 	Context.RHICmdList.ApplyCachedRenderTargets(GraphicsPSOInit);
@@ -128,14 +138,14 @@ static FShader* SetDOFShaderTempl(const FRenderingCompositePassContext& Context)
 	TShaderMapRef<FPostProcessDOFSetupPS<FarBlur, NearBlur> > PixelShader(Context.GetShaderMap());
 
 	GraphicsPSOInit.BoundShaderState.VertexDeclarationRHI = GFilterVertexDeclaration.VertexDeclarationRHI;
-	GraphicsPSOInit.BoundShaderState.VertexShaderRHI = GETSAFERHISHADER_VERTEX(*VertexShader);
-	GraphicsPSOInit.BoundShaderState.PixelShaderRHI = GETSAFERHISHADER_PIXEL(*PixelShader);
+	GraphicsPSOInit.BoundShaderState.VertexShaderRHI = VertexShader.GetVertexShader();
+	GraphicsPSOInit.BoundShaderState.PixelShaderRHI = PixelShader.GetPixelShader();
 	SetGraphicsPipelineState(Context.RHICmdList, GraphicsPSOInit);
 
 	VertexShader->SetParameters(Context);
 	PixelShader->SetParameters(Context.RHICmdList, Context);
 
-	return *VertexShader;
+	return VertexShader;
 }
 
 
@@ -172,7 +182,7 @@ void FRCPassPostProcessDOFSetup::Process(FRenderingCompositePassContext& Context
 	const FSceneRenderTargetItem& DestRenderTarget1 = (NumRenderTargets == 2) ? PassOutputs[1].RequestSurface(Context) : FSceneRenderTargetItem();
 
 	// Set the view family's render target/viewport.
-	FTextureRHIParamRef RenderTargets[2] =
+	FRHITexture* RenderTargets[2] =
 	{
 		DestRenderTarget0.TargetableTexture,
 		DestRenderTarget1.TargetableTexture
@@ -217,8 +227,7 @@ void FRCPassPostProcessDOFSetup::Process(FRenderingCompositePassContext& Context
 			}
 		}
 
-		FShader* VertexShader = 0;
-
+		TShaderRef<FShader> VertexShader;
 		if (bFarBlur)
 		{
 			switch (NearBlur)
@@ -311,16 +320,16 @@ class FPostProcessDOFRecombinePS : public FGlobalShader
 		OutEnvironment.SetDefine(TEXT("FAR_BLUR"), FarBlur);
 		OutEnvironment.SetDefine(TEXT("NEAR_BLUR"), NearBlur);
 		OutEnvironment.SetDefine(TEXT("SEPARATE_TRANSLUCENCY"), SeparateTranslucency);
-		OutEnvironment.SetDefine(TEXT("MOBILE_SHADING"), IsFeatureLevelSupported(Parameters.Platform, ERHIFeatureLevel::SM4) ? 0u : 1u);
+		OutEnvironment.SetDefine(TEXT("MOBILE_SHADING"), IsFeatureLevelSupported(Parameters.Platform, ERHIFeatureLevel::SM5) ? 0u : 1u);
 	}
 
 	/** Default constructor. */
 	FPostProcessDOFRecombinePS() {}
 
 public:
-	FPostProcessPassParameters PostprocessParameter;
-	FSceneTextureShaderParameters SceneTextureParameters;
-	FShaderParameter DepthOfFieldUVLimit;
+	LAYOUT_FIELD(FPostProcessPassParameters, PostprocessParameter);
+	LAYOUT_FIELD(FSceneTextureShaderParameters, SceneTextureParameters);
+	LAYOUT_FIELD(FShaderParameter, DepthOfFieldUVLimit);
 
 	/** Initialization constructor. */
 	FPostProcessDOFRecombinePS(const ShaderMetaType::CompiledShaderInitializerType& Initializer)
@@ -331,18 +340,10 @@ public:
 		DepthOfFieldUVLimit.Bind(Initializer.ParameterMap,TEXT("DepthOfFieldUVLimit"));
 	}
 
-	// FShader interface.
-	virtual bool Serialize(FArchive& Ar) override
-	{
-		bool bShaderHasOutdatedParameters = FGlobalShader::Serialize(Ar);
-		Ar << PostprocessParameter << SceneTextureParameters << DepthOfFieldUVLimit;
-		return bShaderHasOutdatedParameters;
-	}
-
 	void SetParameters(const FRenderingCompositePassContext& Context)
 	{
 		FSceneRenderTargets& SceneContext = FSceneRenderTargets::Get(Context.RHICmdList);
-		const FPixelShaderRHIParamRef ShaderRHI = GetPixelShader();
+		FRHIPixelShader* ShaderRHI = Context.RHICmdList.GetBoundPixelShader();
 
 		FGlobalShader::SetParameters<FViewUniformShaderParameters>(Context.RHICmdList, ShaderRHI, Context.View.ViewUniformBuffer);
 
@@ -382,7 +383,7 @@ public:
 // @param FarBlur 0:off, 1:on
 // @param NearBlur 0:off, 1:on, 2:on with Vignette
 template <uint32 FarBlur, uint32 NearBlur, uint32 SeparateTranslucency>
-static FShader* SetDOFRecombineShaderTempl(const FRenderingCompositePassContext& Context)
+static TShaderRef<FShader> SetDOFRecombineShaderTempl(const FRenderingCompositePassContext& Context)
 {
 	FGraphicsPipelineStateInitializer GraphicsPSOInit;
 	Context.RHICmdList.ApplyCachedRenderTargets(GraphicsPSOInit);
@@ -395,18 +396,18 @@ static FShader* SetDOFRecombineShaderTempl(const FRenderingCompositePassContext&
 	TShaderMapRef<FPostProcessDOFRecombinePS<FarBlur, NearBlur, SeparateTranslucency> > PixelShader(Context.GetShaderMap());
 
 	GraphicsPSOInit.BoundShaderState.VertexDeclarationRHI = GFilterVertexDeclaration.VertexDeclarationRHI;
-	GraphicsPSOInit.BoundShaderState.VertexShaderRHI = GETSAFERHISHADER_VERTEX(*VertexShader);
-	GraphicsPSOInit.BoundShaderState.PixelShaderRHI = GETSAFERHISHADER_PIXEL(*PixelShader);
+	GraphicsPSOInit.BoundShaderState.VertexShaderRHI = VertexShader.GetVertexShader();
+	GraphicsPSOInit.BoundShaderState.PixelShaderRHI = PixelShader.GetPixelShader();
 	SetGraphicsPipelineState(Context.RHICmdList, GraphicsPSOInit);
 
 	VertexShader->SetParameters(Context);
 	PixelShader->SetParameters(Context);
 
-	return *VertexShader;
+	return VertexShader;
 }
 
 template <uint32 FarBlur, uint32 NearBlur>
-static FShader* SetDOFRecombineShaderTempl(const FRenderingCompositePassContext& Context, bool bSeparateTranslucency)
+static TShaderRef<FShader> SetDOFRecombineShaderTempl(const FRenderingCompositePassContext& Context, bool bSeparateTranslucency)
 {
 	if (bSeparateTranslucency)
 	{
@@ -473,8 +474,7 @@ void FRCPassPostProcessDOFRecombine::Process(FRenderingCompositePassContext& Con
 		bool bNearBlur = GetInputDesc(ePId_Input2) != 0;
 		bool bSeparateTranslucency = GetInputDesc(ePId_Input3) != 0;
 
-		FShader* VertexShader = 0;
-
+		TShaderRef<FShader> VertexShader;
 		if (bFarBlur)
 		{
 			if (bNearBlur)

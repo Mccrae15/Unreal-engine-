@@ -1,8 +1,8 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 // Copyright 2016 Magic Leap, Inc. All Rights Reserved.
 
 #pragma once
-#include "Android/AndroidProcess.h"
+#include "Android/AndroidPlatformProcess.h"
 
 /**
 * Android implementation of the Process OS functions

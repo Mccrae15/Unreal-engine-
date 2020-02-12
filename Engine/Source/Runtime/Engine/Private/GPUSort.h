@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 /*=============================================================================
 	GPUSort.cpp: Interface for sorting buffers on the GPU.
@@ -15,20 +15,30 @@
 struct FGPUSortBuffers
 {
 	/** Shader resource views for vertex buffers containing the keys. */
-	FShaderResourceViewRHIParamRef RemoteKeySRVs[2];
+	FRHIShaderResourceView* RemoteKeySRVs[2];
 	/** Unordered access views for vertex buffers containing the keys. */
-	FUnorderedAccessViewRHIParamRef RemoteKeyUAVs[2];
+	FRHIUnorderedAccessView* RemoteKeyUAVs[2];
 
 	/** Shader resource views for vertex buffers containing the values. */
-	FShaderResourceViewRHIParamRef RemoteValueSRVs[2];
+	FRHIShaderResourceView* RemoteValueSRVs[2];
 	/** Unordered access views for vertex buffers containing the values. */
-	FUnorderedAccessViewRHIParamRef RemoteValueUAVs[2];
+	FRHIUnorderedAccessView* RemoteValueUAVs[2];
+
+	/** Shader resource view holding the initial state of the values. */
+	FRHIShaderResourceView* FirstValuesSRV = nullptr;
+	/** Unordered access view holding the final state of the value. */
+	FRHIUnorderedAccessView* FinalValuesUAV = nullptr;
 
 	/** Default constructor. */
 	FGPUSortBuffers()
 	{
 	}
 };
+
+/**
+ * Get the number of passes we will need to make in order to sort
+ */
+int32 GetGPUSortPassCount(uint32 KeyMask);
 
 /**
  * Sort a buffer on the GPU.

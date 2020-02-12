@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -74,6 +74,8 @@ public:
 	enum EDrawElements
 	{
 		Bounds = 0x020,
+		InstructionCounts = 0x040,
+		ParticleCounts = 0x080,
 	};
 
 	bool GetDrawElement(EDrawElements Element) const;

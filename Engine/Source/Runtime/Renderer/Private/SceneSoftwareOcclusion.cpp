@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 /*=============================================================================
 	SceneSoftwareOcclusion.cpp 
@@ -908,6 +908,11 @@ static int32 ApplyResults(const FScene* Scene, FViewInfo& View, const FOcclusion
 				View.PrimitiveDefinitelyUnoccludedMap[PrimitiveIndex] = true;
 			}
 		}
+		else
+		{
+			// This applies for those are not occludees, so just follow the frustum culling result.
+			View.PrimitiveDefinitelyUnoccludedMap[PrimitiveIndex] = View.PrimitiveVisibilityMap[PrimitiveIndex];
+		}
 	}
 
 	INC_DWORD_STAT_BY(STAT_SoftwareCulledPrimitives, NumOccluded);
@@ -940,7 +945,7 @@ static const ENamedThreads::Type ThreadNameMap[] =
 
 static ENamedThreads::Type GetOcclusionThreadName()
 {
-	int32 Index = FMath::Clamp<int32>(GSOThreadName, 0, ARRAY_COUNT(ThreadNameMap)-1);
+	int32 Index = FMath::Clamp<int32>(GSOThreadName, 0, UE_ARRAY_COUNT(ThreadNameMap)-1);
 	return ThreadNameMap[Index];
 }
 
@@ -1041,17 +1046,14 @@ static FGraphEventRef SubmitScene(const FScene* Scene, FViewInfo& View, FOcclusi
 
 			// Relevance requirements
 			FPrimitiveViewRelevance ViewRelevance = Proxy->GetViewRelevance(&View);
-			const bool bNonOpaqueRelevance = (ViewRelevance.bMaskedRelevance || ViewRelevance.HasTranslucency()); // TODO: opaque sections
-			bool bCanBeOccluder = ViewRelevance.bDrawRelevance && (ViewRelevance.bOpaqueRelevance && !bNonOpaqueRelevance);
+			const bool bNonOpaqueRelevance = (ViewRelevance.bMasked || ViewRelevance.HasTranslucency()); // TODO: opaque sections
+			bool bCanBeOccluder = ViewRelevance.bDrawRelevance && (ViewRelevance.bOpaque && !bNonOpaqueRelevance);
 
 			if (bCanBeOccluder)
 			{
 				Collector.SetPrimitiveID(PrimitiveComponentId);
 				// Collect occluder geometry
-				if (Proxy->CollectOccluderElements(Collector))
-				{
-					NumCollectedOccluders++;
-				}
+				NumCollectedOccluders+= Proxy->CollectOccluderElements(Collector);
 			}
 
 			if (NumCollectedOccluders >= GSOMaxOccluderNum)
@@ -1139,7 +1141,7 @@ void FSceneSoftwareOcclusion::DebugDraw(FRHICommandListImmediate& RHICmdList, co
 	}
 
 	FCanvas Canvas(&TempRenderTarget, NULL, View.Family->CurrentRealTime, View.Family->CurrentWorldTime, View.Family->DeltaWorldTime, View.GetFeatureLevel());
-	Canvas.SetAllowSwitchVerticalAxis(false);
+	Canvas.SetAllowSwitchVerticalAxis(true);
 	FBatchedElements* BatchedElements = Canvas.GetBatchedElements(FCanvas::ET_Line);
 						
 	for (int32 i = 0; i < BIN_NUM; ++i)

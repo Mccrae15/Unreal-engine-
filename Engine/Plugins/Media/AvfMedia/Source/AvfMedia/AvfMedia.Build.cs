@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 namespace UnrealBuildTool.Rules
 {
@@ -18,15 +18,9 @@ namespace UnrealBuildTool.Rules
 					"ApplicationCore",
 					"MediaUtils",
 					"RenderCore",
-					"RHI",
-					"UtilityShaders",
+					"RHI"
 				});
-
-			PrivateIncludePathModuleNames.AddRange(
-				new string[] {
-					"UtilityShaders",
-				});
-
+			
 			PrivateIncludePathModuleNames.AddRange(
 				new string[] {
 					"Media",

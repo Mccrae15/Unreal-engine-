@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "SFontEditorViewport.h"
 #include "Fonts/SlateFontInfo.h"
@@ -60,6 +60,8 @@ public:
 
 	/** FViewport interface */
 	virtual float UpdateViewportClientWindowDPIScale() const override;
+	virtual bool ShouldDPIScaleSceneCanvas() const override { return false; }
+
 private:
 	/** Updates the states of the scrollbars */
 	void UpdateScrollBars();
@@ -69,6 +71,9 @@ private:
 
 	/** Returns the positions of the scrollbars relative to the font textures */
 	FVector2D GetViewportScrollBarPositions() const;
+
+	/** Get the raw (unscaled) FontEditorViewport size */
+	FIntPoint GetDPIUnscaledViewportSizeXY() const;
 
 	void HandleWindowDPIScaleChanged(TSharedRef<SWindow> Window);
 private:
@@ -120,7 +125,7 @@ void FFontEditorViewportClient::Draw(FViewport* Viewport, FCanvas* Canvas)
 	if (!FontEditorViewportPtr.Pin()->IsPreviewViewport())
 	{
 		FVector2D Ratio = FVector2D(GetViewportHorizontalScrollBarRatio(), GetViewportVerticalScrollBarRatio());
-		FVector2D ViewportSize = FVector2D(FontEditorViewportPtr.Pin()->GetViewport()->GetSizeXY().X, FontEditorViewportPtr.Pin()->GetViewport()->GetSizeXY().Y);
+		FVector2D ViewportSize = FVector2D(GetDPIUnscaledViewportSizeXY().X, GetDPIUnscaledViewportSizeXY().Y);
 		FVector2D ScrollBarPos = GetViewportScrollBarPositions();
 		int32 YOffset = (Ratio.Y > 1.0f)? ((ViewportSize.Y - (ViewportSize.Y / Ratio.Y)) * 0.5f): 0;
 		int32 YPos = YOffset - ScrollBarPos.Y;
@@ -212,11 +217,11 @@ void FFontEditorViewportClient::Draw(FViewport* Viewport, FCanvas* Canvas)
 		// And draw the text with the foreground color
 		if (Font->FontCacheType == EFontCacheType::Runtime)
 		{
-			static const float FontScale = Canvas->GetDPIScale();
+			const float FontScale = GetDPIScale();
 
 			TSharedRef<FSlateFontCache> FontCache = FSlateApplication::Get().GetRenderer()->GetFontCache();
 
-			FVector2D CurPos = StartPos;
+			FVector2D CurPos = StartPos * FontScale;
 			int32 WidestName = 0;
 
 			// Draw and measure each name so we can work out where to start drawing the preview text column
@@ -233,10 +238,10 @@ void FFontEditorViewportClient::Draw(FViewport* Viewport, FCanvas* Canvas)
 				const FVector2D MeasuredText = ShapedTextItem.DrawnSize;
 				WidestName = FMath::Max(WidestName, EntryNameShapedText->GetMeasuredWidth());
 
-				CurPos.Y += EntryNameShapedText->GetMaxTextHeight() + 8.0f;
+				CurPos.Y += EntryNameShapedText->GetMaxTextHeight() + (8.0f * FontScale);
 			}
 
-			CurPos = FVector2D(WidestName + 12.0f, StartPos.Y);
+			CurPos = FVector2D(WidestName + (12.0f * FontScale), StartPos.Y * FontScale);
 
 			// Draw the preview text using each of the default fonts
 			for (const FTypefaceEntry& TypefaceEntry : Font->CompositeFont.DefaultTypeface.Fonts)
@@ -259,11 +264,14 @@ void FFontEditorViewportClient::Draw(FViewport* Viewport, FCanvas* Canvas)
 							if (GlyphToRender.bIsVisible)
 							{
 								const FShapedGlyphFontAtlasData GlyphAtlasData = FontCache->GetShapedGlyphFontAtlasData(GlyphToRender, FFontOutlineSettings::NoOutline);
+								
+								const float BitmapRenderScale = GlyphToRender.GetBitmapRenderScale();
+								const float InvBitmapRenderScale = 1.0f / BitmapRenderScale;
 
 								const float X = CurPos.X + LineX + GlyphAtlasData.HorizontalOffset + GlyphToRender.XOffset;
-								const float Y = CurPos.Y - GlyphAtlasData.VerticalOffset + GlyphToRender.YOffset + ShapedPreviewText->GetTextBaseline() + ShapedPreviewText->GetMaxTextHeight();
+								const float Y = CurPos.Y - GlyphAtlasData.VerticalOffset + GlyphToRender.YOffset + ((ShapedPreviewText->GetTextBaseline() + ShapedPreviewText->GetMaxTextHeight()) * InvBitmapRenderScale);
 
-								FCanvasBoxItem BoundingBoxItem(FVector2D(X, Y), FVector2D(GlyphAtlasData.USize, GlyphAtlasData.VSize));
+								FCanvasBoxItem BoundingBoxItem(FVector2D(X, Y), FVector2D(GlyphAtlasData.USize * BitmapRenderScale, GlyphAtlasData.VSize * BitmapRenderScale));
 								BoundingBoxItem.SetColor(FColor::Orange);
 								Canvas->DrawItem(BoundingBoxItem);
 							}
@@ -289,9 +297,12 @@ void FFontEditorViewportClient::Draw(FViewport* Viewport, FCanvas* Canvas)
 								if (GlyphToRender.bIsVisible)
 								{
 									const FShapedGlyphFontAtlasData GlyphAtlasData = FontCache->GetShapedGlyphFontAtlasData(GlyphToRender,FFontOutlineSettings::NoOutline);
+									
+									const float BitmapRenderScale = GlyphToRender.GetBitmapRenderScale();
+									const float InvBitmapRenderScale = 1.0f / BitmapRenderScale;
 
 									const float X = CurPos.X + LineX + GlyphClusterAdvance + GlyphAtlasData.HorizontalOffset + GlyphToRender.XOffset;
-									const float Y = CurPos.Y - GlyphAtlasData.VerticalOffset + GlyphToRender.YOffset + ShapedPreviewText->GetTextBaseline() + ShapedPreviewText->GetMaxTextHeight();
+									const float Y = CurPos.Y - GlyphAtlasData.VerticalOffset + GlyphToRender.YOffset + ((ShapedPreviewText->GetTextBaseline() + ShapedPreviewText->GetMaxTextHeight()) * InvBitmapRenderScale);
 
 									FVector2D ExtraWidth = FVector2D(ForceInitToZero);
 									if (GlyphClusterBounds.bIsValid)
@@ -300,7 +311,7 @@ void FFontEditorViewportClient::Draw(FViewport* Viewport, FCanvas* Canvas)
 										ExtraWidth.Y = (GlyphClusterBounds.Min.Y > Y) ? FMath::Abs(GlyphClusterBounds.Min.Y - Y) : 0.0f;
 									}
 
-									GlyphClusterBounds += FBox2D(FVector2D(X, Y), FVector2D(GlyphAtlasData.USize, GlyphAtlasData.VSize));
+									GlyphClusterBounds += FBox2D(FVector2D(X, Y), FVector2D(GlyphAtlasData.USize * BitmapRenderScale, GlyphAtlasData.VSize * BitmapRenderScale));
 									GlyphClusterBounds.Max += ExtraWidth;
 								}
 
@@ -339,14 +350,14 @@ void FFontEditorViewportClient::Draw(FViewport* Viewport, FCanvas* Canvas)
 					}
 				}
 
-				CurPos.Y += ShapedPreviewText->GetMaxTextHeight() + 8.0f;
+				CurPos.Y += ShapedPreviewText->GetMaxTextHeight() + (8.0f * FontScale);
 			}
 
 			// Draw the key
 			if (bDrawFontMetrics)
 			{
 				const FSlateFontInfo FontInfo = FEditorStyle::GetFontStyle("NormalFont");
-				const float KeyBoxSize = 14.0f;
+				const float KeyBoxSize = 14.0f * FontScale;
 
 				struct FKeyDataType
 				{
@@ -368,13 +379,13 @@ void FFontEditorViewportClient::Draw(FViewport* Viewport, FCanvas* Canvas)
 					KeyBox.LineThickness = KeyBoxSize * 0.5f;
 					Canvas->DrawItem(KeyBox);
 
-					CurPos.X += KeyBoxSize + 4.0f;
+					CurPos.X += KeyBoxSize + (4.0f * FontScale);
 
 					FShapedGlyphSequenceRef KeyLabelShapedText = FontCache->ShapeBidirectionalText(*KeyData.KeyText.ToString(), FontInfo, FontScale, TextBiDi::ETextDirection::LeftToRight, GetDefaultTextShapingMethod());
 					FCanvasShapedTextItem ShapedTextItem(CurPos, KeyLabelShapedText, FLinearColor(ForegroundColor));
 					Canvas->DrawItem(ShapedTextItem);
 
-					CurPos.X += KeyLabelShapedText->GetMeasuredWidth() + 8.0f;
+					CurPos.X += KeyLabelShapedText->GetMeasuredWidth() + (8.0f * FontScale);
 				}
 			}
 		}
@@ -529,7 +540,7 @@ float FFontEditorViewportClient::GetViewportVerticalScrollBarRatio() const
 	{
 		UFont* Font = FontEditorViewportPtr.Pin()->GetFontEditor().Pin()->GetFont();
 		
-		WidgetHeight = FontEditorViewportPtr.Pin()->GetViewport()->GetSizeXY().Y;
+		WidgetHeight = GetDPIUnscaledViewportSizeXY().Y;
 		
 		for (int32 Idx = 0; Idx < Font->Textures.Num(); ++Idx)
 		{
@@ -557,7 +568,7 @@ float FFontEditorViewportClient::GetViewportHorizontalScrollBarRatio() const
 		UFont* Font = FontEditorViewportPtr.Pin()->GetFontEditor().Pin()->GetFont();
 		uint32 Height = 1;
 
-		WidgetWidth = FontEditorViewportPtr.Pin()->GetViewport()->GetSizeXY().X;
+		WidgetWidth = GetDPIUnscaledViewportSizeXY().X;
 
 		if(Font->Textures.Num())
 		{
@@ -571,6 +582,11 @@ float FFontEditorViewportClient::GetViewportHorizontalScrollBarRatio() const
 	}
 
 	return WidgetWidth / Width;
+}
+
+FIntPoint FFontEditorViewportClient::GetDPIUnscaledViewportSizeXY() const
+{
+	return FontEditorViewportPtr.Pin()->GetViewport()->GetSizeXY() / GetDPIScale();
 }
 
 float FFontEditorViewportClient::UpdateViewportClientWindowDPIScale() const

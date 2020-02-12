@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 #pragma once
 
 #include "CoreMinimal.h"
@@ -17,7 +17,9 @@ enum class ELauncherAction : uint32
 	/** Check for an available update to the App after the launcher is started */
 	AppUpdateCheck,
 	/** Modify the Apps installation - app has to support SD and be installed */
-	AppInstaller
+	AppInstaller,
+	/** Notify the launcher that installation corruption was detected and that it should verify */
+	AppVerifyInstallation
 };
 
 /**

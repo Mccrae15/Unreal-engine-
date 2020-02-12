@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 /*=============================================================================
 	MetalCommandList.cpp: Metal command buffer list wrapper.
@@ -10,6 +10,7 @@
 #include "MetalCommandQueue.h"
 #include "MetalProfiler.h"
 #include "MetalCommandBuffer.h"
+#include "MetalCommandEncoder.h"
 #include "ns.hpp"
 
 #pragma mark - Public C++ Boilerplate -
@@ -17,6 +18,7 @@
 #if PLATFORM_IOS
 extern bool GIsSuspended;
 #endif
+extern int32 GMetalDebugOpsCount;
 
 FMetalCommandList::FMetalCommandList(FMetalCommandQueue& InCommandQueue, bool const bInImmediate)
 : CommandQueue(InCommandQueue)
@@ -32,8 +34,11 @@ FMetalCommandList::~FMetalCommandList(void)
 	
 #pragma mark - Public Command List Mutators -
 
+extern CORE_API bool GIsGPUCrashed;
 static void ReportMetalCommandBufferFailure(mtlpp::CommandBuffer const& CompletedBuffer, TCHAR const* ErrorType, bool bDoCheck=true)
 {
+	GIsGPUCrashed = true;
+	
 	NSString* Label = CompletedBuffer.GetLabel();
 	int32 Code = CompletedBuffer.GetError().GetCode();
 	NSString* Domain = CompletedBuffer.GetError().GetDomain();
@@ -47,29 +52,128 @@ static void ReportMetalCommandBufferFailure(mtlpp::CommandBuffer const& Complete
 	FString FailureString = FailureDesc ? FString(FailureDesc) : FString(TEXT("Unknown"));
 	FString RecoveryString = RecoveryDesc ? FString(RecoveryDesc) : FString(TEXT("Unknown"));
 	
-	if (GetMetalDeviceContext().GetCommandQueue().GetRuntimeDebuggingLevel() == EMetalDebugLevelLogDebugGroups)
-	{
-		NSMutableString* DescString = [NSMutableString new];
-		[DescString appendFormat:@"Command Buffer %p %@:", CompletedBuffer.GetPtr(), Label ? Label : @"Unknown"];
-
-		for (NSString* String in ((NSObject<MTLCommandBuffer>*)CompletedBuffer.GetPtr()).debugGroups)
-		{
-			[DescString appendFormat:@"\n\tDebugGroup: %@", String];
-		}
-		
-		UE_LOG(LogMetal, Warning, TEXT("Command Buffer %p %s:%s"), CompletedBuffer.GetPtr(), *LabelString, *FString(DescString));
-	}
-	else
-	{
-		NSString* Desc = CompletedBuffer.GetPtr().debugDescription;
-		UE_LOG(LogMetal, Warning, TEXT("%s"), *FString(Desc));
-	}
+	NSString* Desc = CompletedBuffer.GetPtr().debugDescription;
+	UE_LOG(LogMetal, Warning, TEXT("%s"), *FString(Desc));
 	
 #if PLATFORM_IOS
     if (bDoCheck && !GIsSuspended && !GIsRenderingThreadSuspended)
 #endif
     {
+		FMetalCommandBufferMarkers Markers = FMetalCommandBufferMarkers::Get(CompletedBuffer);
+		if (Markers)
+		{
+			uint32 CommandBufferIndex = Markers.GetIndex();
+			FMetalDebugInfo BrokenDraw;
+			BrokenDraw.EncoderIndex = UINT32_MAX;
+			BrokenDraw.CommandIndex = UINT32_MAX;
+			BrokenDraw.CmdBuffIndex = UINT32_MAX;
+			BrokenDraw.ContextIndex = UINT32_MAX;
+            BrokenDraw.CommandBuffer = 0;
+			uint32 BrokenContext = 0;
+			bool bFoundBrokenDraw = false;
+			for (uint32 i = 0; (CommandBufferIndex != ~0u) && !bFoundBrokenDraw && i < Markers.NumContexts(); i++)
+			{
+				ns::AutoReleased<FMetalBuffer> DebugBuffer = Markers.GetDebugBuffer(i);
+				TArray<FMetalCommandDebug>* Commands = Markers.GetCommands(i);
+				if (DebugBuffer && Commands && Commands->Num())
+				{
+					uint32 DebugLength = DebugBuffer.GetLength();
+					uint32 DebugCount = DebugLength / sizeof(FMetalDebugInfo);
+					check(DebugCount >= 1);
+					
+					FMetalDebugInfo* DebugArray = (FMetalDebugInfo*)DebugBuffer.GetContents();
+					FMetalDebugInfo CurrentDraw = DebugArray[0];
+					
+					// On TBDR we find the disjoint where one tile has progressed further than another
+					// We find the earliest failure in the probably vain hope that this is the tile that actually failed
+					// There's actually no guarantee of that, it might be one of the later tiles that exploded
+					for (uint32 j = 0; j < DebugCount; j++)
+					{
+						if (CommandBufferIndex == DebugArray[j].CmdBuffIndex && DebugArray[j].EncoderIndex < CurrentDraw.EncoderIndex && DebugArray[j].CommandIndex < CurrentDraw.CommandIndex)
+						{
+							CurrentDraw = DebugArray[j];
+							break;
+						}
+					}
+
+					// Find the first command to fail - which depends on the order of encoders - parallel contexts make this more complicated
+					if (CurrentDraw.CmdBuffIndex == BrokenDraw.CmdBuffIndex && CurrentDraw.CommandIndex < Commands->Num() && CurrentDraw.EncoderIndex < BrokenDraw.EncoderIndex)
+					{
+						BrokenDraw = CurrentDraw;
+                        BrokenContext = i;
+                        bFoundBrokenDraw = true;
+					}
+                    else if(Commands->Num() > 1)
+                    {
+						BrokenDraw.EncoderIndex = 0;
+						BrokenDraw.CommandIndex = 0;
+						BrokenDraw.CmdBuffIndex = CommandBufferIndex;
+						BrokenDraw.ContextIndex = 0;
+                        BrokenContext = i;
+						BrokenDraw.CommandBuffer = (uintptr_t)CompletedBuffer.GetPtr();
+                        BrokenDraw = DebugArray[1];
+                        bFoundBrokenDraw = true;
+                    }
+				}
+			}
+			if (bFoundBrokenDraw)
+			{
+				id<MTLCommandBuffer> Ptr = reinterpret_cast<id<MTLCommandBuffer>>(BrokenDraw.CommandBuffer);
+				UE_LOG(LogMetal, Error, TEXT("GPU last wrote Command Buffer: %u (%llx) Encoder Index: %d Context Index: %d Draw Index: %d PSO: VS: %u_%u, PS: %u_%u."), BrokenDraw.CmdBuffIndex, BrokenDraw.CommandBuffer, BrokenDraw.EncoderIndex, BrokenDraw.ContextIndex, BrokenDraw.CommandIndex, BrokenDraw.PSOSignature[0], BrokenDraw.PSOSignature[1], BrokenDraw.PSOSignature[2], BrokenDraw.PSOSignature[3]);
+			
+				ns::AutoReleased<FMetalBuffer> DebugBuffer = Markers.GetDebugBuffer(BrokenContext);
+				TArray<FMetalCommandDebug>* Commands = Markers.GetCommands(BrokenContext);
+				if (Commands->Num())
+				{
+					UE_LOG(LogMetal, Error, TEXT("Failed executing following commands:"));
+					uint32 StartIdx = BrokenDraw.CommandIndex;
+					for (uint32 CmdIdx = StartIdx; CmdIdx < Commands->Num(); CmdIdx++)
+					{
+						FMetalCommandDebug& Command = (*Commands)[CmdIdx];
+						FString VSHash = Command.PSO->VertexShader->GetHash().ToString();
+						uint32 VSSig[2] = { Command.PSO->VertexShader->SourceLen, Command.PSO->VertexShader->SourceCRC };
+						
+						FString PSHash;
+						uint32 PSSig[2] = { 0, 0 };
+						if (Command.PSO->PixelShader.IsValid())
+						{
+							PSHash = Command.PSO->PixelShader->GetHash().ToString();
+							PSSig[0] = Command.PSO->PixelShader->SourceLen;
+							PSSig[1] = Command.PSO->PixelShader->SourceCRC;
+						}
+						
+						UE_LOG(LogMetal, Error, TEXT("Command Buffer: %d (%p) Encoder: %d Command: %d: %s PSO: VS: %s (%u_%u), PS: %s (%u_%u)"), Command.CmdBufIndex, CompletedBuffer.GetPtr(), Command.Encoder, Command.Index, *Command.Data.ToString(), *VSHash, VSSig[0], VSSig[1], *PSHash, PSSig[0], PSSig[1]);
+					}
+				}
+                if (DebugBuffer)
+                {
+                    uint32 DebugLength = DebugBuffer.GetLength();
+                    uint32 DebugCount = DebugLength / sizeof(FMetalDebugInfo);
+                    check(DebugCount >= 1);
+                    
+                    FMetalDebugInfo* DebugArray = (FMetalDebugInfo*)DebugBuffer.GetContents();
+                    for (uint32 i = 0; i < DebugCount; i++)
+                    {
+                        FMetalDebugInfo& Command = DebugArray[i];
+						
+						// Stop when nothing has been written into the buffer
+						if (Command.CmdBuffIndex == 0 && Command.CommandBuffer == 0 && Command.EncoderIndex == 0 && Command.CommandIndex == 0 && Command.PSOSignature[0] == 0 && Command.PSOSignature[1] == 0 && Command.PSOSignature[2] == 0 && Command.PSOSignature[3] == 0)
+						{
+							break;
+						}
+						
+                        UE_LOG(LogMetal, Error, TEXT("Command Buffer: %d (%p) Debug Buffer: %p Tile: %u Context: %d Encoder: %d Command: %d PSO: VS: %u_%u, PS: %u_%u"), Command.CmdBuffIndex, Command.CommandBuffer, DebugBuffer.GetPtr(), i, Command.ContextIndex, Command.EncoderIndex, Command.CommandIndex, Command.PSOSignature[0], Command.PSOSignature[1], Command.PSOSignature[2], Command.PSOSignature[3]);
+                    }
+                }
+			}
+		}
+		
+#if PLATFORM_IOS
+        UE_LOG(LogMetal, Warning, TEXT("Command Buffer %s Failed with %s Error! Error Domain: %s Code: %d Description %s %s %s"), *LabelString, ErrorType, *DomainString, Code, *ErrorString, *FailureString, *RecoveryString);
+        FIOSPlatformMisc::GPUAssert();
+#else
 		UE_LOG(LogMetal, Fatal, TEXT("Command Buffer %s Failed with %s Error! Error Domain: %s Code: %d Description %s %s %s"), *LabelString, ErrorType, *DomainString, Code, *ErrorString, *FailureString, *RecoveryString);
+#endif
     }
 }
 
@@ -154,7 +258,7 @@ static __attribute__ ((optnone)) void HandleNVIDIAMetalCommandBufferError(mtlpp:
 	HandleMetalCommandBufferError(CompletedBuffer);
 }
 
-static void HandleIntelMetalCommandBufferError(mtlpp::CommandBuffer const& CompletedBuffer)
+static __attribute__ ((optnone)) void HandleIntelMetalCommandBufferError(mtlpp::CommandBuffer const& CompletedBuffer)
 {
 	HandleMetalCommandBufferError(CompletedBuffer);
 }
@@ -198,8 +302,20 @@ void FMetalCommandList::SetParallelIndex(uint32 InIndex, uint32 InNum)
 void FMetalCommandList::Commit(mtlpp::CommandBuffer& Buffer, TArray<ns::Object<mtlpp::CommandBufferHandler>> CompletionHandlers, bool const bWait, bool const bIsLastCommandBuffer)
 {
 	check(Buffer);
-	
-	Buffer.AddCompletedHandler([CompletionHandlers, bIsLastCommandBuffer](mtlpp::CommandBuffer const& CompletedBuffer)
+
+	// The lifetime of this array is per frame
+	if (!FrameCommitedBufferTimings.IsValid())
+	{
+		FrameCommitedBufferTimings = MakeShared<TArray<FMetalCommandBufferTiming>, ESPMode::ThreadSafe>();
+	}
+
+	// The lifetime of this should be for the entire game
+	if (!LastCompletedBufferTiming.IsValid())
+	{
+		LastCompletedBufferTiming = MakeShared<FMetalCommandBufferTiming, ESPMode::ThreadSafe>();
+	}
+
+	Buffer.AddCompletedHandler([CompletionHandlers, FrameCommitedBufferTimingsLocal = FrameCommitedBufferTimings, LastCompletedBufferTimingLocal = LastCompletedBufferTiming](mtlpp::CommandBuffer const& CompletedBuffer)
 	{
 		if (CompletedBuffer.GetStatus() == mtlpp::CommandBufferStatus::Error)
 		{
@@ -212,16 +328,24 @@ void FMetalCommandList::Commit(mtlpp::CommandBuffer& Buffer, TArray<ns::Object<m
 				Handler.GetPtr()(CompletedBuffer);
 			}
 		}
-		
-		FMetalGPUProfiler::RecordCommandBuffer(CompletedBuffer);
-		
-		// The final command buffer in a frame will publish its frame
-		// stats and reset the counters for the next frame.
-		if(bIsLastCommandBuffer)
+
+		if (CompletedBuffer.GetStatus() == mtlpp::CommandBufferStatus::Completed)
 		{
-			FMetalGPUProfiler::RecordFrame();
+			FrameCommitedBufferTimingsLocal->Add({CompletedBuffer.GetGpuStartTime(), CompletedBuffer.GetGpuEndTime()});
+		}
+
+		// If this is the last reference, then it is the last command buffer to return, so record the frame
+		if (FrameCommitedBufferTimingsLocal.IsUnique())
+		{
+			FMetalGPUProfiler::RecordFrame(*FrameCommitedBufferTimingsLocal, *LastCompletedBufferTimingLocal);
 		}
 	});
+
+	// If bIsLastCommandBuffer is set then this is the end of the "frame".
+	if (bIsLastCommandBuffer)
+	{
+		FrameCommitedBufferTimings = MakeShared<TArray<FMetalCommandBufferTiming>, ESPMode::ThreadSafe>();
+	}
 
 	if (bImmediate)
 	{

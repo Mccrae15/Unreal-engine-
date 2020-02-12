@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "AssetTypeActions_NiagaraParameterCollection.h"
 #include "NiagaraParameterCollection.h"
@@ -9,7 +9,7 @@
 #include "IContentBrowserSingleton.h"
 #include "ContentBrowserModule.h"
 
-#include "Framework/MultiBox/MultiBoxBuilder.h"
+#include "ToolMenus.h"
 #include "EditorStyleSet.h"
 
 #define LOCTEXT_NAMESPACE "AssetTypeActions_NiagaraParameterCollection"
@@ -34,11 +34,12 @@ void FAssetTypeActions_NiagaraParameterCollection::OpenAssetEditor(const TArray<
 	}
 }
 
-void FAssetTypeActions_NiagaraParameterCollection::GetActions(const TArray<UObject*>& InObjects, FMenuBuilder& MenuBuilder)
+void FAssetTypeActions_NiagaraParameterCollection::GetActions(const TArray<UObject*>& InObjects, FToolMenuSection& Section)
 {
 	auto Collections = GetTypedWeakObjectPtrs<UNiagaraParameterCollection>(InObjects);
 
-	MenuBuilder.AddMenuEntry(
+	Section.AddMenuEntry(
+		"Niagara_NewNPC",
 		LOCTEXT("NewNPC", "Create Niagara Parameter Collection Instance"),
 		LOCTEXT("NewNPCTooltip", "Creates an instance of this Niagara Parameter Collection."),
 		FSlateIcon(FEditorStyle::GetStyleSetName(), "ClassIcon.MaterialInstanceActor"),

@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "DefaultStereoLayers.h"
 #include "HeadMountedDisplayBase.h"
@@ -14,6 +14,7 @@
 #include "ClearQuad.h"
 #include "SceneView.h"
 #include "CommonRenderResources.h"
+#include "IXRLoadingScreen.h"
 
 namespace 
 {
@@ -63,55 +64,60 @@ void FDefaultStereoLayers::StereoLayerRender(FRHICommandListImmediate& RHICmdLis
 	}
 
 	IRendererModule& RendererModule = GetRendererModule();
+	using TOpaqueBlendState = TStaticBlendState<CW_RGBA, BO_Add, BF_One, BF_Zero, BO_Add, BF_One, BF_Zero>;
+	using TAlphaBlendState = TStaticBlendState<CW_RGBA, BO_Add, BF_SourceAlpha, BF_InverseSourceAlpha, BO_Add, BF_One, BF_InverseSourceAlpha>;
 
 	// Set render state
 	FGraphicsPipelineStateInitializer GraphicsPSOInit;
 	RHICmdList.ApplyCachedRenderTargets(GraphicsPSOInit);
-	bool bLastNoAlpha = (RenderThreadLayers[LayersToRender[0]].Flags & LAYER_FLAG_TEX_NO_ALPHA_CHANNEL) != 0;
-	if (bLastNoAlpha)
-	{
-		GraphicsPSOInit.BlendState = TStaticBlendState<CW_RGBA, BO_Add, BF_One, BF_Zero, BO_Add, BF_One, BF_Zero>::GetRHI();
-	}
-	else
-	{
-		GraphicsPSOInit.BlendState = TStaticBlendState<CW_RGBA, BO_Add, BF_SourceAlpha, BF_InverseSourceAlpha, BO_Add, BF_One, BF_InverseSourceAlpha>::GetRHI();
-	}
 
 	GraphicsPSOInit.RasterizerState = TStaticRasterizerState<FM_Solid, CM_None, true, false>::GetRHI();
 	GraphicsPSOInit.DepthStencilState = TStaticDepthStencilState<false, CF_Always>::GetRHI();
 	RHICmdList.SetScissorRect(false, 0, 0, 0, 0);
-	RHICmdList.SetViewport(RenderParams.Viewport.Min.X, RenderParams.Viewport.Min.Y, 0, RenderParams.Viewport.Max.X, RenderParams.Viewport.Max.Y, 1.0f);
+	RHICmdList.SetViewport((float)RenderParams.Viewport.Min.X, (float)RenderParams.Viewport.Min.Y, 0, (float)RenderParams.Viewport.Max.X, (float)RenderParams.Viewport.Max.Y, 1.0f);
 
-	// Set shader state
+	// Set initial shader state
 	auto ShaderMap = GetGlobalShaderMap(GMaxRHIFeatureLevel);
 	TShaderMapRef<FStereoLayerVS> VertexShader(ShaderMap);
 	TShaderMapRef<FStereoLayerPS> PixelShader(ShaderMap);
+	TShaderMapRef<FStereoLayerPS_External> PixelShader_External(ShaderMap);
 
 	GraphicsPSOInit.BoundShaderState.VertexDeclarationRHI = GFilterVertexDeclaration.VertexDeclarationRHI;
-	GraphicsPSOInit.BoundShaderState.VertexShaderRHI = GETSAFERHISHADER_VERTEX(*VertexShader);
-	GraphicsPSOInit.BoundShaderState.PixelShaderRHI = GETSAFERHISHADER_PIXEL(*PixelShader);
+	GraphicsPSOInit.BoundShaderState.VertexShaderRHI = VertexShader.GetVertexShader();
+
 	GraphicsPSOInit.PrimitiveType = PT_TriangleList;
-	SetGraphicsPipelineState(RHICmdList, GraphicsPSOInit);
+
+	// Force initialization of pipeline state on first iteration:
+	bool bLastWasOpaque = (RenderThreadLayers[LayersToRender[0]].Flags & LAYER_FLAG_TEX_NO_ALPHA_CHANNEL) == 0;
+	bool bLastWasExternal = (RenderThreadLayers[LayersToRender[0]].Flags & LAYER_FLAG_TEX_EXTERNAL) == 0;
 
 	// For each layer
 	for (uint32 LayerIndex : LayersToRender)
 	{
 		const FLayerDesc& Layer = RenderThreadLayers[LayerIndex];
-		check(Layer.Texture.IsValid());
-		const bool bNoAlpha = (Layer.Flags & LAYER_FLAG_TEX_NO_ALPHA_CHANNEL) != 0;
-		if (bNoAlpha != bLastNoAlpha)
+		check(Layer.IsVisible());
+		const bool bIsOpaque = (Layer.Flags & LAYER_FLAG_TEX_NO_ALPHA_CHANNEL) != 0;
+		const bool bIsExternal = (Layer.Flags & LAYER_FLAG_TEX_EXTERNAL) != 0;
+		bool bPipelineStateNeedsUpdate = false;
+
+		if (bIsOpaque != bLastWasOpaque)
+		{
+			bLastWasOpaque = bIsOpaque;
+			GraphicsPSOInit.BlendState = bIsOpaque ? TOpaqueBlendState::GetRHI() : TAlphaBlendState::GetRHI();
+			bPipelineStateNeedsUpdate = true;
+		}
+
+		if (bIsExternal != bLastWasExternal)
+		{
+			bLastWasExternal = bIsExternal;
+			GraphicsPSOInit.BoundShaderState.PixelShaderRHI = bIsExternal ? PixelShader_External.GetPixelShader() : PixelShader.GetPixelShader();
+			bPipelineStateNeedsUpdate = true;
+		}
+
+		if (bPipelineStateNeedsUpdate)
 		{
 			// Updater render state
-			if (bNoAlpha)
-			{
-				GraphicsPSOInit.BlendState = TStaticBlendState<CW_RGBA, BO_Add, BF_One, BF_Zero, BO_Add, BF_InverseSourceAlpha, BF_Zero>::GetRHI();
-			}
-			else
-			{
-				GraphicsPSOInit.BlendState = TStaticBlendState<CW_RGBA, BO_Add, BF_SourceAlpha, BF_InverseSourceAlpha, BO_Add, BF_One, BF_InverseSourceAlpha>::GetRHI();
-			}
 			SetGraphicsPipelineState(RHICmdList, GraphicsPSOInit);
-			bLastNoAlpha = bNoAlpha;
 		}
 
 		FMatrix LayerMatrix = ConvertTransform(Layer.Transform);
@@ -155,7 +161,7 @@ void FDefaultStereoLayers::StereoLayerRender(FRHICommandListImmediate& RHICmdLis
 			1.0f, 1.0f,
 			TargetSize,
 			FIntPoint(1, 1),
-			*VertexShader
+			VertexShader
 		);
 	}
 }
@@ -178,7 +184,7 @@ void FDefaultStereoLayers::PreRenderViewFamily_RenderThread(FRHICommandListImmed
 	for (uint32 LayerIndex = 0; LayerIndex < LayerCount; ++LayerIndex)
 	{
 		const auto& Layer = RenderThreadLayers[LayerIndex];
-		if (!Layer.Texture.IsValid())
+		if (!Layer.IsVisible())
 		{
 			continue;
 		}
@@ -203,7 +209,7 @@ void FDefaultStereoLayers::PreRenderViewFamily_RenderThread(FRHICommandListImmed
 
 void FDefaultStereoLayers::PostRenderView_RenderThread(FRHICommandListImmediate& RHICmdList, FSceneView& InView)
 {
-	if (!HMDDevice->IsStereoEyePass(InView.StereoPass))
+	if (!HMDDevice->DeviceIsStereoEyeView(InView))
 	{
 		return;
 	}
@@ -245,8 +251,13 @@ void FDefaultStereoLayers::PostRenderView_RenderThread(FRHICommandListImmediate&
 
 	FRHIRenderPassInfo RPInfo(RenderTarget, ERenderTargetActions::Load_Store);
 	RHICmdList.BeginRenderPass(RPInfo, TEXT("StereoLayerRender"));
+	RHICmdList.SetViewport((float)RenderParams.Viewport.Min.X, (float)RenderParams.Viewport.Min.Y, 0.0f, (float)RenderParams.Viewport.Max.X, (float)RenderParams.Viewport.Max.Y, 1.0f);
 
-	RHICmdList.SetViewport(RenderParams.Viewport.Min.X, RenderParams.Viewport.Min.Y, 0, RenderParams.Viewport.Max.X, RenderParams.Viewport.Max.Y, 1.0f);
+	if (bSplashIsShown || !IsBackgroundLayerVisible())
+	{
+		DrawClearQuad(RHICmdList, FLinearColor::Black);
+	}
+
 	StereoLayerRender(RHICmdList, SortedSceneLayers, RenderParams);
 	
 	// Optionally render face-locked layers into a non-reprojected target if supported by the HMD platform
@@ -259,7 +270,7 @@ void FDefaultStereoLayers::PostRenderView_RenderThread(FRHICommandListImmediate&
 		RHICmdList.BeginRenderPass(RPInfoOverlayRenderTarget, TEXT("StereoLayerRenderIntoOverlay"));
 
 		DrawClearQuad(RHICmdList, FLinearColor(0.0f, 0.0f, 0.0f, 0.0f));
-		RHICmdList.SetViewport(RenderParams.Viewport.Min.X, RenderParams.Viewport.Min.Y, 0, RenderParams.Viewport.Max.X, RenderParams.Viewport.Max.Y, 1.0f);
+		RHICmdList.SetViewport((float)RenderParams.Viewport.Min.X, (float)RenderParams.Viewport.Min.Y, 0.0f, (float)RenderParams.Viewport.Max.X, (float)RenderParams.Viewport.Max.Y, 1.0f);
 	}
 
 	StereoLayerRender(RHICmdList, SortedOverlayLayers, RenderParams);
@@ -272,47 +283,6 @@ bool FDefaultStereoLayers::IsActiveThisFrame(class FViewport* InViewport) const
 	return GEngine && GEngine->IsStereoscopic3D(InViewport);
 }
 
-void FDefaultStereoLayers::UpdateSplashScreen()
-{
-	FTexture2DRHIRef Texture = (bSplashShowMovie && SplashMovie.IsValid()) ? SplashMovie : SplashTexture;
-	if (bSplashIsShown && Texture.IsValid())
-	{
-		FQuat Orientation;
-		FVector Position;
-
-		HMDDevice->GetCurrentPose(IXRTrackingSystem::HMDDeviceId, Orientation, Position);
-		FLayerDesc LayerDesc;
-		LayerDesc.Flags = ELayerFlags::LAYER_FLAG_TEX_NO_ALPHA_CHANNEL;
-		LayerDesc.PositionType = ELayerType::TrackerLocked;
-		LayerDesc.Texture = Texture;
-
-		FTransform Translation(FVector(500.0f, 0.0f, 100.0f) + SplashOffset);
-		FRotator Rotation(Orientation);
-		Rotation.Pitch = 0.0f;
-		Rotation.Roll = 0.0f;
-		LayerDesc.Transform = Translation * FTransform(Rotation.Quaternion());
-
-		LayerDesc.QuadSize = FVector2D(800.0f, 450.0f) * SplashScale;
-
-		if (SplashLayerHandle)
-		{
-			SetLayerDesc(SplashLayerHandle, LayerDesc);
-		}
-		else
-		{
-			SplashLayerHandle = CreateLayer(LayerDesc);
-		}
-	}
-	else
-	{
-		if (SplashLayerHandle)
-		{
-			DestroyLayer(SplashLayerHandle);
-			SplashLayerHandle = 0;
-		}
-	}
-}
-
 void FDefaultStereoLayers::SetupViewFamily(FSceneViewFamily& InViewFamily)
 {
 	// Initialize HMD position.
@@ -320,48 +290,4 @@ void FDefaultStereoLayers::SetupViewFamily(FSceneViewFamily& InViewFamily)
 	FVector HmdPosition = FVector::ZeroVector;
 	HMDDevice->GetCurrentPose(IXRTrackingSystem::HMDDeviceId, HmdOrientation, HmdPosition);
 	HmdTransform = FTransform(HmdOrientation, HmdPosition);
-}
-
-void FDefaultStereoLayers::GetAllocatedTexture(uint32 LayerId, FTextureRHIRef &Texture, FTextureRHIRef &LeftTexture)
-{
-	Texture = LeftTexture = nullptr;
-	FLayerDesc* LayerFound = nullptr;
-
-	if (IsInRenderingThread())
-	{
-		for (int32 LayerIndex = 0; LayerIndex < RenderThreadLayers.Num(); LayerIndex++)
-		{
-			if (RenderThreadLayers[LayerIndex].GetLayerId() == LayerId)
-			{
-				LayerFound = &RenderThreadLayers[LayerIndex];
-			}
-		}
-	}
-
-	else
-	{
-		// Only supporting the use of this function on RenderingThread.
-		check(false);
-		return;
-	}
-
-	if (LayerFound && LayerFound->Texture)
-	{
-		switch (LayerFound->ShapeType)
-		{
-		case IStereoLayers::CubemapLayer:
-			Texture = LayerFound->Texture->GetTextureCube();
-			LeftTexture = LayerFound->LeftTexture ? LayerFound->LeftTexture->GetTextureCube() : nullptr;			
-			break;
-
-		case IStereoLayers::CylinderLayer:
-		case IStereoLayers::QuadLayer:
-			Texture = LayerFound->Texture->GetTexture2D();
-			LeftTexture = LayerFound->LeftTexture ? LayerFound->LeftTexture->GetTexture2D() : nullptr;
-			break;
-
-		default:
-			break;
-		}
-	}
 }

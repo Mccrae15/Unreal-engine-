@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -9,31 +9,36 @@
 #include "HardwareTargetingSettings.h"
 
 class UTemplateProjectDefs;
+class UTemplateCategories;
 struct FProjectDescriptor;
 enum class EClassDomain : uint8;
+struct FTemplateConfigValue;
 
 struct FProjectInformation
 {
-	FProjectInformation(FString InProjectFilename, bool bInGenerateCode, bool bInCopyStarterContent, FString InTemplateFile = FString())
-		: ProjectFilename(MoveTemp(InProjectFilename))
-		, TemplateFile(MoveTemp(InTemplateFile))
-		, bShouldGenerateCode(bInGenerateCode)
-		, bCopyStarterContent(bInCopyStarterContent)
-		, bIsEnterpriseProject(false)
-		, TargetedHardware(EHardwareClass::Desktop)
-		, DefaultGraphicsPerformance(EGraphicsPreset::Maximum)
-	{
-	}
+	FProjectInformation() = default;
 
 	FString ProjectFilename;
 	FString TemplateFile;
+	FName TemplateCategory;
 
-	bool bShouldGenerateCode;
-	bool bCopyStarterContent;
-	bool bIsEnterpriseProject;
+	bool bShouldGenerateCode = false;
+	bool bCopyStarterContent = false;
+	bool bIsBlankTemplate = false;
+	bool bIsEnterpriseProject = false;
+	bool bForceExtendedLuminanceRange; // See "r.DefaultFeature.AutoExposure.ExtendDefaultLuminanceRange"
 
-	EHardwareClass::Type TargetedHardware;
-	EGraphicsPreset::Type DefaultGraphicsPerformance;
+	// These are all optional, because there is an additional state introduced by hiding the setting in the template.
+	// In this case, the template author has chosen not to give the user a choice,
+	// so we must assume that the template already controls these settings explicitly.
+	TOptional<bool> bEnableXR;
+	TOptional<bool> bEnableRaytracing;
+
+	TOptional<EHardwareClass::Type> TargetedHardware;
+	TOptional<EGraphicsPreset::Type> DefaultGraphicsPerformance;
+
+	/** The name of the feature pack to use as starter content. Must be located under FeaturePacks\. */
+	FString StarterContent;
 };
 
 DECLARE_DELEGATE_RetVal_OneParam(bool, FProjectDescriptorModifier, FProjectDescriptor&);
@@ -68,7 +73,7 @@ public:
 
 		/** There were errors when adding the new source files */
 		FailedToAddCode,
-		 
+
 		/** There were errors when hot-reloading the new module */
 		FailedToHotReload,
 	};
@@ -81,7 +86,7 @@ public:
 
 		/** There were errors while duplicating project files */
 		Failed,
-		 
+
 		/** User has canceled project duplication process */
 		UserCanceled
 	};
@@ -110,8 +115,8 @@ public:
 	/** Updates the given project file to an engine identifier. Returns true if the project was updated successfully or if no update was needed */
 	static bool UpdateGameProject(const FString& ProjectFile, const FString& EngineIdentifier, FText& OutFailReason);
 
-	/** 
-	 * Opens a dialog to add code files or blueprints to the current project. 
+	/**
+	 * Opens a dialog to add code files or blueprints to the current project.
 	 *
 	 * @param	Config			Configuration options for the dialog
 	 * @param	InDomain		The domain of the class we're creating (native or blueprint)
@@ -133,13 +138,16 @@ public:
 	/** Adds new source code to the project. When returning Succeeded or FailedToHotReload, OutSyncFileAndLineNumber will be the the preferred target file to sync in the users code editing IDE, formatted for use with GenericApplication::GotoLineInSource */
 	static EAddCodeToProjectResult AddCodeToProject(const FString& NewClassName, const FString& NewClassPath, const FModuleContextInfo& ModuleInfo, const FNewClassInfo ParentClassInfo, const TSet<FString>& DisallowedHeaderNames, FString& OutHeaderFilePath, FString& OutCppFilePath, FText& OutFailReason);
 
+	/** Loads a list of template categories defined in the TemplateCategories.ini file in the specified folder */
+	static UTemplateCategories* LoadTemplateCategories(const FString& RootDir);
+
 	/** Loads a template project definitions object from the TemplateDefs.ini file in the specified project */
 	static UTemplateProjectDefs* LoadTemplateDefs(const FString& ProjectDirectory);
 
 	/** @return The number of code files in the currently loaded project */
 	static int32 GetProjectCodeFileCount();
 
-	/** 
+	/**
 	* Retrieves file and size info about the project's source directory
 	* @param OutNumFiles Contains the number of files within the source directory
 	* @param OutDirectorySize Contains the combined size of all files in the directory
@@ -157,6 +165,7 @@ public:
 
 	/** Returns true if there are starter content files available for instancing into new projects. */
 	static bool IsStarterContentAvailableForNewProjects();
+	static bool IsStarterContentAvailableForProject(const FProjectInformation& ProjectInfo);
 
 	/**
 	 * Get the information about any modules referenced in the .uproject file of the currently loaded project
@@ -173,18 +182,18 @@ public:
 	 */
 	static void ResetCurrentProjectModulesCache();
 
-	/** 
-	 * Check to see if the given path is a valid place to put source code for this project (exists within the source root path) 
+	/**
+	 * Check to see if the given path is a valid place to put source code for this project (exists within the source root path)
 	 *
 	 * @param	InPath				The path to check
 	 * @param	ModuleInfo			Information about the module being validated
 	 * @param	OutFailReason		Optional parameter to fill with failure information
-	 * 
+	 *
 	 * @return	true if the path is valid, false otherwise
 	 */
 	static bool IsValidSourcePath(const FString& InPath, const FModuleContextInfo& ModuleInfo, FText* const OutFailReason = nullptr);
 
-	/** 
+	/**
 	 * Given the path provided, work out where generated .h and .cpp files would be placed
 	 *
 	 * @param	InPath				The path to use a base
@@ -192,19 +201,19 @@ public:
 	 * @param	OutHeaderPath		The path where the .h file should be placed
 	 * @param	OutSourcePath		The path where the .cpp file should be placed
 	 * @param	OutFailReason		Optional parameter to fill with failure information
-	 * 
+	 *
 	 * @return	false if the paths are invalid
 	 */
 	static bool CalculateSourcePaths(const FString& InPath, const FModuleContextInfo& ModuleInfo, FString& OutHeaderPath, FString& OutSourcePath, FText* const OutFailReason = nullptr);
 
-	/** 
+	/**
 	 * Given the path provided, work out where it's located within the Source folder
 	 *
 	 * @param	InPath				The path to use a base
 	 * @param	ModuleInfo			Information about the module being validated
 	 * @param	OutClassLocation	The location within the Source folder
 	 * @param	OutFailReason		Optional parameter to fill with failure information
-	 * 
+	 *
 	 * @return	false if the paths are invalid
 	 */
 	static bool GetClassLocation(const FString& InPath, const FModuleContextInfo& ModuleInfo, EClassLocation& OutClassLocation, FText* const OutFailReason = nullptr);
@@ -215,7 +224,7 @@ public:
 	/**
 	 * Update the list of supported target platforms based upon the parameters provided
 	 * This will take care of checking out and saving the updated .uproject file automatically
-	 * 
+	 *
 	 * @param	InPlatformName		Name of the platform to target (eg, WindowsNoEditor)
 	 * @param	bIsSupported		true if the platform should be supported by this project, false if it should not
 	 */
@@ -247,7 +256,7 @@ public:
 
 	/** Returns the contents of the specified template file */
 	static bool ReadTemplateFile(const FString& TemplateFileName, FString& OutFileContents, FText& OutFailReason);
-	
+
 	/** Writes an output file. OutputFilename includes a path */
 	static bool WriteOutputFile(const FString& OutputFilename, const FString& OutputFileContents, FText& OutFailReason);
 
@@ -259,9 +268,6 @@ public:
 
 	/** Returns a list of #include lines formed from InList */
 	static FString MakeIncludeList(const TArray<FString>& InList);
-
-	/** Returns true if the currently loaded project requires a code build */
-	static bool ProjectRequiresBuild(const FName InPlatformInfoName);		
 
 	/** Deletes the specified list of files that were created during file creation */
 	static void DeleteCreatedFiles(const FString& RootFolder, const TArray<FString>& CreatedFiles);
@@ -275,15 +281,22 @@ public:
 	 */
 	static void UpdateAdditionalPluginDirectory(const FString& InDir, const bool bAddOrRemove);
 
-private:
+	/** Gets the default build settings version for UBT */
+	static const TCHAR* GetDefaultBuildSettingsVersion();
 
-	static FString GetHardwareConfigString(const FProjectInformation& InProjectInfo);
+private:
+	
+	/** Add hardware-specific config values such as the target platform and RHI. */
+	static void AddHardwareConfigValues(const FProjectInformation& InProjectInfo, TArray<FTemplateConfigValue>& ConfigValues);
+	
+	/** Get the name of the starter content pack to use for the given project. */
+	static FString GetStarterContentName(const FProjectInformation& InProjectInfo);
 
 	/** Generates a new project without using a template project */
-	static bool GenerateProjectFromScratch(const FProjectInformation& InProjectInfo, FText& OutFailReason, FText& OutFailLog);
+	static TOptional<FGuid> GenerateProjectFromScratch(const FProjectInformation& InProjectInfo, FText& OutFailReason, FText& OutFailLog);
 
 	/** Generates a new project using a template project */
-	static bool CreateProjectFromTemplate(const FProjectInformation& InProjectInfo, FText& OutFailReason, FText& OutFailLog, TArray<FString>* OutCreatedFiles = nullptr);
+	static TOptional<FGuid> CreateProjectFromTemplate(const FProjectInformation& InProjectInfo, FText& OutFailReason, FText& OutFailLog, TArray<FString>* OutCreatedFiles = nullptr);
 
 	/** Sets the engine association for a new project. Handles foreign and non-foreign projects. */
 	static bool SetEngineAssociationForForeignProject(const FString& ProjectFileName, FText& OutFailReason);
@@ -291,7 +304,7 @@ private:
 	/** Insert any required feature packs into the DefaultGame.ini file */
 	static bool InsertFeaturePacksIntoINIFile(const FProjectInformation& InProjectInfo, FText& OutFailReason);
 
-	/* 
+	/*
 	 * Insert the addition files from any feature packs specified in the temapalte defs file
 	 * @param InProjectInfo		Project infor to add content for
 	 * @param CreatedFiles		List of files we copied
@@ -300,9 +313,6 @@ private:
 	 * @returns true if no errors
 	 */
 	static bool AddSharedContentToProject(const FProjectInformation &InProjectInfo, TArray<FString> &CreatedFiles, FText& OutFailReason);
-
-	/** Returns list of starter content files */
-	static void GetStarterContentFiles(TArray<FString>& OutFilenames);
 
 	/** Returns the template defs ini filename */
 	static FString GetTemplateDefsFilename();
@@ -320,10 +330,10 @@ private:
 	static bool CleanupIsEnabled();
 
 	/** Creates ini files for a new project. On failure, OutFailReason will be populated. */
-	static bool GenerateConfigFiles(const FProjectInformation& InProjectInfo, TArray<FString>& OutCreatedFiles, FText& OutFailReason);
+	static bool GenerateConfigFiles(const FProjectInformation& InProjectInfo, TArray<FString>& OutCreatedFiles, FText& OutFailReason, FGuid& OutProjectID);
 
-	/* Creates new ini files for a specific project. This is used for turning on the AudioMixer by default on specific platforms in GenerateConfigFiles. */
-	static bool GeneratePlatformConfigFiles(const FProjectInformation& InProjectInfo, const FString& InPlatformName, FText& OutFailReason);
+	/* Creates new ini files for a specific project's platform configurations. */
+	static bool GeneratePlatformConfigFiles(const FProjectInformation& InProjectInfo, FText& OutFailReason);
 
 	/** Creates the basic source code for a new project. On failure, OutFailReason will be populated. */
 	static bool GenerateBasicSourceCode(const FString& NewProjectSourcePath, const FString& NewProjectName, const FString& NewProjectRoot, TArray<FString>& OutGeneratedStartupModuleNames, TArray<FString>& OutCreatedFiles, FText& OutFailReason);
@@ -486,11 +496,6 @@ private:
 	 */
 	static bool UpdateRequiredAdditionalDependencies(FProjectDescriptor& Descriptor, TArray<FString>& RequiredDependencies, const FString& ModuleName);
 
-	/** checks the project ini file against the default ini file to determine whether or not the build settings have changed from default */
-	static bool HasDefaultBuildSettings(const FName InPlatformInfoName);
-	static bool DoProjectSettingsMatchDefault(const FString& InPlatformnName, const FString& InSection, const TArray<FString>* InBoolKeys, const TArray<FString>* InIntKeys = NULL, const TArray<FString>* InStringKeys = NULL);
-
-private:
 	/**
 	 * Updates the projects and modifies FProjectDescriptor accordingly to given modifier.
 	 *
@@ -510,13 +515,11 @@ private:
 	 */
 	static bool UpdateGameProjectFile_Impl(const FString& ProjectFilename, const FString& EngineIdentifier, const FProjectDescriptorModifier* Modifier, FText& OutFailReason);
 
+private:
+
 	static TWeakPtr<SNotificationItem> UpdateGameProjectNotification;
 	static TWeakPtr<SNotificationItem> WarningProjectNameNotification;
-	static FString DefaultFeaturePackExtension;
 
 	// Whether we should use AudioMixer for all platforms:
 	static bool bUseAudioMixerForAllPlatforms;
-	
-	// List of platforms we want to explicitly enable the new audio engine for when generating a new project.
-	static TArray<FString> AudioMixerEnabledPlatforms;
 };

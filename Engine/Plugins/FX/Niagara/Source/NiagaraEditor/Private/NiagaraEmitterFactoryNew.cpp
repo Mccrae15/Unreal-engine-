@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "NiagaraEmitterFactoryNew.h"
 #include "NiagaraEmitter.h"
@@ -31,6 +31,7 @@ UNiagaraEmitterFactoryNew::UNiagaraEmitterFactoryNew(const FObjectInitializer& O
 	bEditAfterNew = true;
 	bCreateNew = true;
 	EmitterToCopy = nullptr;
+	bUseInheritance = false;
 }
 
 bool UNiagaraEmitterFactoryNew::ConfigureProperties()
@@ -51,6 +52,7 @@ bool UNiagaraEmitterFactoryNew::ConfigureProperties()
 	if (SelectedEmitterAsset.IsSet())
 	{
 		EmitterToCopy = Cast<UNiagaraEmitter>(SelectedEmitterAsset->GetAsset());
+		bUseInheritance = NewEmitterDialog->GetUseInheritance();
 		if (EmitterToCopy == nullptr)
 		{
 			FText Title = LOCTEXT("FailedToLoadTitle", "Create Default?");
@@ -120,7 +122,16 @@ UObject* UNiagaraEmitterFactoryNew::FactoryCreateNew(UClass* Class, UObject* InP
 
 	if (EmitterToCopy != nullptr)
 	{
-		NewEmitter = Cast<UNiagaraEmitter>(StaticDuplicateObject(EmitterToCopy, InParent, Name, Flags, Class));
+		if (bUseInheritance && EmitterToCopy->bIsTemplateAsset == false)
+		{
+			NewEmitter = UNiagaraEmitter::CreateWithParentAndOwner(*EmitterToCopy, InParent, Name, Flags);
+		}
+		else
+		{
+			NewEmitter = Cast<UNiagaraEmitter>(StaticDuplicateObject(EmitterToCopy, InParent, Name, Flags, Class));
+			NewEmitter->SetUniqueEmitterName(Name.GetPlainNameString());
+		}
+
 		NewEmitter->bIsTemplateAsset = false;
 		NewEmitter->TemplateAssetDescription = FText();
 	}

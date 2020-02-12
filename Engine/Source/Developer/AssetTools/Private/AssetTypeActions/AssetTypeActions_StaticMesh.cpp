@@ -1,7 +1,8 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "AssetTypeActions/AssetTypeActions_StaticMesh.h"
 #include "Framework/MultiBox/MultiBoxBuilder.h"
+#include "ToolMenus.h"
 #include "EditorStyleSet.h"
 #include "EditorFramework/AssetImportData.h"
 #include "ThumbnailRendering/SceneThumbnailInfo.h"
@@ -23,13 +24,14 @@ static TAutoConsoleVariable<int32> CVarEnableSaveGeneratedLODsInPackage(
 	TEXT("1 - Enable this option and save the LODs in the Package.\n"),
 	ECVF_Default);
 
-void FAssetTypeActions_StaticMesh::GetActions( const TArray<UObject*>& InObjects, FMenuBuilder& MenuBuilder )
+void FAssetTypeActions_StaticMesh::GetActions(const TArray<UObject*>& InObjects, FToolMenuSection& Section)
 {
 	auto Meshes = GetTypedWeakObjectPtrs<UStaticMesh>(InObjects);
 
 	if (CVarEnableSaveGeneratedLODsInPackage.GetValueOnGameThread() != 0)
 	{
-		MenuBuilder.AddMenuEntry(
+		Section.AddMenuEntry(
+			"ObjectContext_SaveGeneratedLODsInPackage",
 			NSLOCTEXT("AssetTypeActions_StaticMesh", "ObjectContext_SaveGeneratedLODsInPackage", "Save Generated LODs"),
 			NSLOCTEXT("AssetTypeActions_StaticMesh", "ObjectContext_SaveGeneratedLODsInPackageTooltip", "Run the mesh reduce and save the generated LODs as part of the package."),
 			FSlateIcon(),
@@ -40,7 +42,8 @@ void FAssetTypeActions_StaticMesh::GetActions( const TArray<UObject*>& InObjects
 			);
 	}
 
-	MenuBuilder.AddSubMenu(
+	Section.AddSubMenu(
+		"StaticMesh_LODMenu",
 		NSLOCTEXT("AssetTypeActions_StaticMesh", "StaticMesh_LODMenu", "Level Of Detail"),
 		NSLOCTEXT("AssetTypeActions_StaticMesh", "StaticMesh_LODTooltip", "LOD Options and Tools"),
 		FNewMenuDelegate::CreateSP(this, &FAssetTypeActions_StaticMesh::GetLODMenu, Meshes),
@@ -48,7 +51,8 @@ void FAssetTypeActions_StaticMesh::GetActions( const TArray<UObject*>& InObjects
 		FSlateIcon(FEditorStyle::GetStyleSetName(), "ContentBrowser.AssetActions")
 		);
 
-	MenuBuilder.AddMenuEntry(
+	Section.AddMenuEntry(
+		"ObjectContext_ClearVertexColors",
 		NSLOCTEXT("AssetTypeActions_StaticMesh", "ObjectContext_ClearVertexColors", "Remove Vertex Colors"),
 		NSLOCTEXT("AssetTypeActions_StaticMesh", "ObjectContext_ClearVertexColorsTooltip", "Removes vertex colors from all LODS in all selected meshes."),
 		FSlateIcon(),
@@ -111,7 +115,7 @@ void FAssetTypeActions_StaticMesh::GetImportLODMenu(class FMenuBuilder& MenuBuil
 		FText ToolTip = NSLOCTEXT("AssetTypeActions_StaticMesh", "ReimportTip", "Reimport over existing LOD");
 		if(LOD == First->GetNumLODs())
 		{
-			Description = FText::Format( NSLOCTEXT("AssetTypeActions_StaticMesh", "LOD (number)", "LOD {0}"), LODText );
+			Description = FText::Format( NSLOCTEXT("AssetTypeActions_StaticMesh", "LOD (number)", "Add LOD {0}"), LODText );
 			ToolTip = NSLOCTEXT("AssetTypeActions_StaticMesh", "NewImportTip", "Import new LOD");
 		}
 
@@ -191,11 +195,11 @@ void FAssetTypeActions_StaticMesh::ExecutePasteLODSettings(TArray<TWeakObjectPtr
 	};
 
 	TArray<FLODSettings> LODSettings;
-	LODSettings.AddZeroed(LODCopyMesh->SourceModels.Num());
-	for (int32 i = 0; i < LODCopyMesh->SourceModels.Num(); i++)
+	LODSettings.AddZeroed(LODCopyMesh->GetNumSourceModels());
+	for (int32 i = 0; i < LODCopyMesh->GetNumSourceModels(); i++)
 	{
-		LODSettings[i].ReductionSettings = LODCopyMesh->SourceModels[i].ReductionSettings;
-		LODSettings[i].ScreenSize = LODCopyMesh->SourceModels[i].ScreenSize.Default;
+		LODSettings[i].ReductionSettings = LODCopyMesh->GetSourceModel(i).ReductionSettings;
+		LODSettings[i].ScreenSize = LODCopyMesh->GetSourceModel(i).ScreenSize.Default;
 	}
 
 	const bool bAutoComputeLODScreenSize = LODCopyMesh->bAutoComputeLODScreenSize;
@@ -212,14 +216,7 @@ void FAssetTypeActions_StaticMesh::ExecutePasteLODSettings(TArray<TWeakObjectPtr
 
 			for (int32 i = 0; i < LODCount; i++)
 			{
-				Mesh->SourceModels[i].ReductionSettings = LODSettings[i].ReductionSettings;
-				Mesh->SourceModels[i].ScreenSize.Default = LODSettings[i].ScreenSize;
-			}
-
-			for (int32 i = LODCount; i < LODSettings.Num(); ++i)
-			{
-				FStaticMeshSourceModel& SrcModel = Mesh->SourceModels[i];
-
+				FStaticMeshSourceModel& SrcModel = Mesh->GetSourceModel(i);
 				SrcModel.ReductionSettings = LODSettings[i].ReductionSettings;
 				SrcModel.ScreenSize.Default = LODSettings[i].ScreenSize;
 			}

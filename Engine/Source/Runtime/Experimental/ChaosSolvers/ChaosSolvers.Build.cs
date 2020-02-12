@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 namespace UnrealBuildTool.Rules
 {
@@ -13,13 +13,14 @@ namespace UnrealBuildTool.Rules
                 "Core",
                 "CoreUObject",
 				"Chaos",
-				"FieldSystemCore"
+				"FieldSystemCore",
+				"GeometryCollectionCore",
+                "GeometryCollectionSimulationCore",
+				"PhysicsCore"
                 }
-            );
+            ); 
 
             PublicDefinitions.Add("COMPILE_WITHOUT_UNREAL_SUPPORT=0");
-
-            SetupModulePhysicsSupport(Target);
         }
     }
 }

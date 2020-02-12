@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 /**
  * Gives the depth of the current pixel being drawn for use in a material
@@ -11,7 +11,7 @@
 #include "Materials/MaterialExpression.h"
 #include "MaterialExpressionPixelDepth.generated.h"
 
-UCLASS(collapsecategories, hidecategories=Object)
+UCLASS(collapsecategories, hidecategories=Object, MinimalAPI)
 class UMaterialExpressionPixelDepth : public UMaterialExpression
 {
 	GENERATED_UCLASS_BODY()

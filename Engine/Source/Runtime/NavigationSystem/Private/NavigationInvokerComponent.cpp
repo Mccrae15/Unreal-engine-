@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "NavigationInvokerComponent.h"
 #include "NavigationSystem.h"
@@ -43,4 +43,10 @@ void UNavigationInvokerComponent::RegisterWithNavigationSystem(UNavigationSystem
 			NavSys.RegisterInvoker(*Owner, TileGenerationRadius, TileRemovalRadius);
 		}
 	}
+}
+
+void UNavigationInvokerComponent::SetGenerationRadii(const float GenerationRadius, const float RemovalRadius)
+{
+	TileGenerationRadius = GenerationRadius;
+	TileRemovalRadius = RemovalRadius;
 }

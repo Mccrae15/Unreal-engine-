@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "Dialogs/SDeleteAssetsDialog.h"
 #include "Framework/Commands/UIAction.h"
@@ -14,12 +14,13 @@
 #include "Settings/EditorLoadingSavingSettings.h"
 #include "EditorDirectories.h"
 #include "FileHelpers.h"
-#include "Dialogs/Dialogs.h"
+#include "Misc/MessageDialog.h"
 #include "IContentBrowserSingleton.h"
 #include "ContentBrowserModule.h"
 #include "Editor.h"
-#include "Toolkits/AssetEditorManager.h"
+
 #include "Framework/Commands/GenericCommands.h"
+#include "Subsystems/AssetEditorSubsystem.h"
 
 #define LOCTEXT_NAMESPACE "SDeleteAssetsDialog"
 
@@ -739,7 +740,7 @@ FReply SDeleteAssetsDialog::ReplaceReferences()
 	FText Message = FText::Format( LOCTEXT( "ReplaceMessage", "This will replace any reference to the pending deleted assets with {0}; and then delete them.\n\nAre you sure?" ), FText::FromName( ConsolidationAsset.AssetName ) );
 	FText Title = LOCTEXT( "ReplaceTitle", "Replace References?" );
 
-	if ( EAppReturnType::Ok == OpenMsgDlgInt( EAppMsgType::OkCancel, Message, Title ) )
+	if ( EAppReturnType::Ok == FMessageDialog::Open( EAppMsgType::OkCancel, Message, &Title ) )
 	{
 		ParentWindow.Get()->RequestDestroyWindow();
 		DeleteRelevantSourceContent();
@@ -850,7 +851,7 @@ void SDeleteAssetsDialog::OnAssetsActivated(const TArray<FAssetData>& ActivatedA
 			}
 			else
 			{
-				FAssetEditorManager::Get().OpenEditorForAsset(ActivatedAsset.GetAsset());
+				GEditor->GetEditorSubsystem<UAssetEditorSubsystem>()->OpenEditorForAsset(ActivatedAsset.GetAsset());
 
 				// @todo ndarnell select in content browser maybe as well?
 			}

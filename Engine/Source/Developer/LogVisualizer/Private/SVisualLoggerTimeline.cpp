@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "SVisualLoggerTimeline.h"
 #include "Widgets/SBoxPanel.h"
@@ -180,7 +180,7 @@ void SLogVisualizerTimeline::Construct(const FArguments& InArgs, TSharedPtr<FVis
 							[
 								SNew(STextBlock)
 								.Text(FText::FromName(OwnerClassName))
-								.TextStyle(FLogVisualizerStyle::Get(), TEXT("Sequencer.ClassNAme"))
+								.TextStyle(FLogVisualizerStyle::Get(), TEXT("Sequencer.ClassName"))
 							]
 						]
 					]

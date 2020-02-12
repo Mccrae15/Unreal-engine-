@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "SkeletalMeshComponentDetails.h"
 #include "Modules/ModuleManager.h"
@@ -11,6 +11,7 @@
 #include "Animation/AnimInstance.h"
 #include "Animation/AnimBlueprint.h"
 #include "Editor.h"
+#include "EditorCategoryUtils.h"
 #include "DetailLayoutBuilder.h"
 #include "IDetailPropertyRow.h"
 #include "DetailCategoryBuilder.h"
@@ -74,21 +75,7 @@ void FSkeletalMeshComponentDetails::CustomizeDetails(IDetailLayoutBuilder& Detai
 	DetailBuilder.EditCategory("Physics", FText::GetEmpty(), ECategoryPriority::TypeSpecific);
 	DetailBuilder.HideProperty("bCastStaticShadow", UPrimitiveComponent::StaticClass());
 	DetailBuilder.HideProperty("LightmapType", UPrimitiveComponent::StaticClass());
-	DetailBuilder.EditCategory("Animation", FText::GetEmpty(), ECategoryPriority::Important);
-	if (!FModuleManager::Get().IsModuleLoaded("UEPhysics"))
-	{
-		DetailBuilder.HideProperty("EdgeStiffness");
-		DetailBuilder.HideProperty("BendingStiffness");
-		DetailBuilder.HideProperty("AreaStiffness");
-		DetailBuilder.HideProperty("VolumeStiffness");
-		DetailBuilder.HideProperty("StrainLimitingStiffness");
-		DetailBuilder.HideProperty("ShapeTargetStiffness");
-		DetailBuilder.HideProperty("bUseBendingElements");
-		DetailBuilder.HideProperty("bUseTetrahedralConstraints");
-		DetailBuilder.HideProperty("bUseThinShellVolumeConstraints");
-		DetailBuilder.HideProperty("bUseSelfCollisions");
-		DetailBuilder.HideProperty("bUseContinuousCollisionDetection");
-	}
+	DetailBuilder.EditCategory("Animation", FText::GetEmpty(), ECategoryPriority::Important);	
 
 	PerformInitialRegistrationOfSkeletalMeshes(DetailBuilder);
 
@@ -96,8 +83,14 @@ void FSkeletalMeshComponentDetails::CustomizeDetails(IDetailLayoutBuilder& Detai
 	UpdatePhysicsCategory(DetailBuilder);
 }
 
-void FSkeletalMeshComponentDetails::UpdateAnimationCategory( IDetailLayoutBuilder& DetailBuilder )
+void FSkeletalMeshComponentDetails::UpdateAnimationCategory(IDetailLayoutBuilder& DetailBuilder)
 {
+	// Custom skeletal mesh components may hide the animation category, so we won't assume it's visible
+	if (DetailBuilder.GetBaseClass() && FEditorCategoryUtils::IsCategoryHiddenFromClass(DetailBuilder.GetBaseClass(), "Animation"))
+	{
+		return;
+	}
+
 	UpdateSkeletonNameAndPickerVisibility();
 
 	IDetailCategoryBuilder& AnimationCategory = DetailBuilder.EditCategory("Animation", FText::GetEmpty(), ECategoryPriority::Important);

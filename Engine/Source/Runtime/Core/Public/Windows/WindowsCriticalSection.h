@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -44,11 +44,7 @@ public:
 	 */
 	FORCEINLINE void Lock()
 	{
-		// Spin first before entering critical section, causing ring-0 transition and context switch.
-		if(Windows::TryEnterCriticalSection(&CriticalSection) == 0 )
-		{
-			Windows::EnterCriticalSection(&CriticalSection);
-		}
+		Windows::EnterCriticalSection(&CriticalSection);
 	}
 
 	/**

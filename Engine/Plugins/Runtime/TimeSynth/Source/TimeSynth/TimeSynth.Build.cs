@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 namespace UnrealBuildTool.Rules
 {
@@ -6,12 +6,13 @@ namespace UnrealBuildTool.Rules
 	{
         public TimeSynth(ReadOnlyTargetRules Target) : base(Target)
 		{
-            PublicDependencyModuleNames.AddRange(
+            PrivateDependencyModuleNames.AddRange(
 				new string[] {
                     "Core",
 					"CoreUObject",
 					"Engine",
 					"AudioMixer",
+					"SignalProcessing",
                     "UMG",
                     "Slate",
                     "SlateCore",

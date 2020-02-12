@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "CoreMinimal.h"
 #include "Templates/Greater.h"
@@ -403,7 +403,7 @@ void FEnvQueryInstance::ExecuteOneStep(float TimeLimit)
 		// item generator uses this flag to alter the scoring behavior
 		bPassOnSingleResult = (bDoingLastTest && Mode == EEnvQueryRunMode::SingleResult && TestObject->CanRunAsFinalCondition());
 
-		if (bPassOnSingleResult)
+		if (bPassOnSingleResult && (CurrentTestStartingItem == 0))
 		{
 			// Since we know we're the last test that is a final condition, if we were scoring previously we should sort the tests now before we test them
 			bool bSortTests = false;

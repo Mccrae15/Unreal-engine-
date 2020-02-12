@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -17,7 +17,7 @@ struct FFrameNumber;
 class AActor;
 class FMenuBuilder;
 class FToolBarBuilder;
-class ILevelViewport;
+class IAssetViewport;
 class ISequencer;
 class UActorComponent;
 class ULevelSequence;
@@ -120,9 +120,6 @@ private:
 
 	/** Callback for executing the Add Component action. */
 	void HandleAddComponentActionExecute(UActorComponent* Component);
-
-	/** Callback for executing the add component material track. */
-	void HandleAddComponentMaterialActionExecute(UPrimitiveComponent* Component, int32 MaterialIndex);
 
 	/** Create a new binding for the specified skeletal mesh component's animation instance. */
 	void BindAnimationInstance(USkeletalMeshComponent* SkeletalComponent);

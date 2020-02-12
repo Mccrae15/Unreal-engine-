@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -6,6 +6,7 @@
 #include "Layout/Geometry.h"
 #include "SequencerSelectedKey.h"
 #include "SequencerHotspots.h"
+#include "SectionHandle.h"
 #include "CommonMovieSceneTools.h"
 
 class FSequencer;

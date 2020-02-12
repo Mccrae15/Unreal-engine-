@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -55,7 +55,7 @@ public:
 	 * @param InSocketDescription the debug description of the socket
 	 * @param InSocketProtocol the protocol used to create this socket.
 	 */
-	FSocketSteam(ISteamNetworking* InSteamNetworkingPtr, FUniqueNetIdSteam& InLocalSteamId, const FString& InSocketDescription, ESocketProtocolFamily InSocketProtocol) :
+	FSocketSteam(ISteamNetworking* InSteamNetworkingPtr, FUniqueNetIdSteam& InLocalSteamId, const FString& InSocketDescription, const FName& InSocketProtocol) :
 		FSocket(SOCKTYPE_Datagram, InSocketDescription, InSocketProtocol),
 		LocalSteamId(InLocalSteamId),
 		SteamChannel(0),
@@ -214,6 +214,11 @@ public:
 	 * @return true if successful, false otherwise
 	 */
 	virtual bool SetBroadcast(bool bAllowBroadcast = true) override;
+
+	virtual bool SetNoDelay(bool bIsNoDelay = true) override
+	{
+		return true;
+	}
 
 	virtual bool JoinMulticastGroup(const FInternetAddr& GroupAddress) override;
 

@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 
 /*=============================================================================================
@@ -78,13 +78,37 @@ DECLARE_DELEGATE_OneParam(FPlatformChunkInstallCompleteDelegate, uint32);
 DECLARE_DELEGATE_TwoParams(FPlatformChunkInstallDelegate, uint32, bool);
 DECLARE_MULTICAST_DELEGATE_TwoParams(FPlatformChunkInstallMultiDelegate, uint32, bool);
 
-struct FChunkTagID
+enum class ECustomChunkType : uint8
+{
+	OnDemandChunk,
+	LanguageChunk
+};
+
+struct FCustomChunk
 {
 	FString ChunkTag;
 	uint32	ChunkID;
+	ECustomChunkType ChunkType;
 
-	FChunkTagID(FString InTag, uint32 InID) :
-		ChunkTag(InTag), ChunkID(InID)
+	FCustomChunk(FString InTag, uint32 InID, ECustomChunkType InChunkType) :
+		ChunkTag(InTag), ChunkID(InID), ChunkType(InChunkType)
+	{}
+};
+
+struct FCustomChunkMapping
+{
+	enum class CustomChunkMappingType : uint8
+	{
+		Main,
+		Optional
+	};
+
+	FString Pattern;
+	uint32	ChunkID;
+	CustomChunkMappingType MappingType;
+
+	FCustomChunkMapping(FString InPattern, uint32 InChunkID, CustomChunkMappingType InMappingType) :
+		Pattern(InPattern), ChunkID(InChunkID), MappingType(InMappingType)
 	{}
 };
 
@@ -99,11 +123,11 @@ public:
 	virtual ~IPlatformChunkInstall() {}
 
 	/**
-	 * Get the current location of a chunk.
-	 * @param ChunkID		The id of the chunk to check.
+	 * Get the current location of a chunk with pakchunk index.
+	 * @param PakchunkIndex	The id of the pak chunk.
 	 * @return				Enum specifying whether the chunk is available to use, waiting to install, or does not exist.
 	 **/
-	virtual EChunkLocation::Type GetChunkLocation( uint32 ChunkID ) = 0;
+	virtual EChunkLocation::Type GetPakchunkLocation( int32 PakchunkIndex) = 0;
 
 	/** 
 	 * Check if a given reporting type is supported.
@@ -134,11 +158,11 @@ public:
 	
 	/**
 	 * Hint to the installer that we would like to prioritize a specific chunk
-	 * @param ChunkID		The id of the chunk to prioritize.
+	 * @param PakchunkIndex	The index of the pakchunk to prioritize.
 	 * @param Priority		The priority for the chunk.
 	 * @return				false if the operation is not allowed or the chunk doesn't exist, otherwise true.
 	 **/
-	virtual bool PrioritizeChunk( uint32 ChunkID, EChunkPriority::Type Priority ) = 0;
+	virtual bool PrioritizePakchunk( int32 PakchunkIndex, EChunkPriority::Type Priority ) = 0;
 
 	/**
 	 * For platforms that support emulation of the Chunk install.  Starts transfer of the next chunk.
@@ -185,19 +209,37 @@ public:
 	* Check whether installation of chunks are pending
 	* @return				whether installation task has been kicked
 	*/
-	virtual bool IsChunkInstallationPending(const TArray<FChunkTagID> ChunkTagsID) = 0;
+	virtual bool IsChunkInstallationPending(const TArray<FCustomChunk>& ChunkTagsID) = 0;
 
 	/**
 	* Install chunks with Intelligent Delivery API
 	* @return				whether installation task has been kicked
 	*/
-	virtual bool InstallChunks(const TArray<FChunkTagID> ChunkTagsID) = 0;
+	virtual bool InstallChunks(const TArray<FCustomChunk>& ChunkTagsID) = 0;
 
 	/**
 	* Uninstall chunks with Intelligent Delivery API
 	* @return				whether uninstallation task has been kicked
 	*/
-	virtual bool UninstallChunks(const TArray<FChunkTagID> ChunkTagsID) = 0;
+	virtual bool UninstallChunks(const TArray<FCustomChunk>& ChunkTagsID) = 0;
+
+protected:
+		/**
+		 * Get the current location of a chunk.
+		 * Pakchunk index and platform chunk id are not always the same.  Call GetPakchunkLocation instead of calling from outside.
+		 * @param ChunkID		The id of the chunk to check.
+		 * @return				Enum specifying whether the chunk is available to use, waiting to install, or does not exist.
+		 **/
+		virtual EChunkLocation::Type GetChunkLocation(uint32 ChunkID) = 0;
+
+		/**
+		 * Hint to the installer that we would like to prioritize a specific chunk
+		 * @param ChunkID		The id of the chunk to prioritize.
+		 * @param Priority		The priority for the chunk.
+		 * @return				false if the operation is not allowed or the chunk doesn't exist, otherwise true.
+		 **/
+		virtual bool PrioritizeChunk(uint32 ChunkID, EChunkPriority::Type Priority) = 0;
+
 };
 
 PRAGMA_DISABLE_DEPRECATION_WARNINGS
@@ -207,9 +249,14 @@ PRAGMA_DISABLE_DEPRECATION_WARNINGS
 class CORE_API FGenericPlatformChunkInstall : public IPlatformChunkInstall
 {
 public:
-	virtual EChunkLocation::Type GetChunkLocation( uint32 ChunkID ) override
+	virtual EChunkLocation::Type GetPakchunkLocation( int32 PakchunkIndex ) override
 	{
-		return EChunkLocation::LocalFast;
+		return GetChunkLocation(PakchunkIndex);
+	}
+
+	virtual bool PrioritizePakchunk(int32 PakchunkIndex, EChunkPriority::Type Priority)
+	{
+		return PrioritizeChunk(PakchunkIndex, Priority);
 	}
 
 	virtual bool GetProgressReportingTypeSupported(EChunkProgressReportingType::Type ReportType) override
@@ -281,17 +328,17 @@ public:
 		return false;
 	}
 
-	virtual bool IsChunkInstallationPending(const TArray<FChunkTagID> ChunkTags) override
+	virtual bool IsChunkInstallationPending(const TArray<FCustomChunk>& ChunkTags) override
 	{
 		return false;
 	}
 
-	virtual bool InstallChunks(const TArray<FChunkTagID> ChunkTagIDs) override
+	virtual bool InstallChunks(const TArray<FCustomChunk>& ChunkTagIDs) override
 	{
 		return false;
 	}
 
-	virtual bool UninstallChunks(const TArray<FChunkTagID> ChunkTagsID) override
+	virtual bool UninstallChunks(const TArray<FCustomChunk>& ChunkTagsID) override
 	{
 		return false;
 	}
@@ -300,6 +347,11 @@ protected:
 
 	/** Delegate called when installation succeeds or fails */
 	FPlatformChunkInstallMultiDelegate InstallDelegate;
+
+	virtual EChunkLocation::Type GetChunkLocation(uint32 ChunkID) override
+	{
+		return EChunkLocation::LocalFast;
+	}
 };
 
 PRAGMA_ENABLE_DEPRECATION_WARNINGS

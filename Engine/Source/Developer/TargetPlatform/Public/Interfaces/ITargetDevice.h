@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -51,7 +51,10 @@ enum class ETargetDeviceTypes
 	Phone,
 
 	/** The device is a tablet computer. */
-	Tablet
+	Tablet,
+
+	/** The device is a standalone HMD */
+	HMD
 };
 
 
@@ -304,12 +307,12 @@ public:
 	 *
 	 * @param AppId The identifier of the application to launch (as returned by the Deploy() method).
 	 * @param BuildConfiguration The build configuration to launch.
-	 * @param BuildTarget The build target type to launch
+	 * @param TargetType The target type to launch
 	 * @param Params The command line parameters to launch with.
 	 * @param OutProcessId Will hold the identifier of the created process (can be NULL).
 	 * @return true on success, false otherwise.
 	 */
-	virtual bool Launch( const FString& AppId, EBuildConfigurations::Type BuildConfiguration, EBuildTargets::Type BuildTarget, const FString& Params, uint32* OutProcessId ) = 0;
+	virtual bool Launch( const FString& AppId, EBuildConfiguration BuildConfiguration, EBuildTargetType TargetType, const FString& Params, uint32* OutProcessId ) = 0;
 
 	/**
 	 * Powers off the device.
@@ -404,9 +407,9 @@ public:
 	virtual ITargetDeviceOutputPtr CreateDeviceOutputRouter(FOutputDevice* Output) const { return nullptr; };
 
 	/**
-	* Cancel the application running on the device
-	* @param ProcessIdentifier The bundle id
-	*/
+	 * Cancel the application running on the device
+	 * @param ProcessIdentifier The bundle id
+	 */
 	virtual bool TerminateLaunchedProcess(const FString & ProcessIdentifier) { return false;  };
 
 public:

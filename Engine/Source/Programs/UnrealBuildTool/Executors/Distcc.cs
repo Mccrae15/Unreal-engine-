@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 using System;
 using System.Collections.Generic;
@@ -15,7 +15,7 @@ namespace UnrealBuildTool
 	class Distcc : ActionExecutor
 	{
 		/// <summary>
-		/// When enabled allows DMUCS/Distcc to fallback to local compilation when remote compiling fails. Defaults to true as separation of pre-process and compile stages can introduce non-fatal errors.
+		/// When enabled, allows DMUCS/Distcc to fallback to local compilation when remote compiling fails. Defaults to true as separation of pre-process and compile stages can introduce non-fatal errors.
 		/// </summary>
 		[XmlConfigFile(Category = "BuildConfiguration")]
 		public bool bAllowDistccLocalFallback = true;
@@ -33,7 +33,7 @@ namespace UnrealBuildTool
 		public string DistccExecutablesPath = "/usr/local/bin";
 
 		/// <summary>
-		/// DMUCS coordinator hostname or IP address.
+		/// The DMUCS coordinator hostname or IP address.
 		/// </summary>
 		[XmlConfigFile(Category = "BuildConfiguration")]
 		public string DMUCSCoordinator = "localhost";
@@ -358,12 +358,11 @@ namespace UnrealBuildTool
 
 					Log.WriteLineIf(bLogDetailedActionStats,
 						LogEventType.Console,
-						"^{0}^{1:0.00}^{2}^{3}^{4}",
+						"^{0}^{1:0.00}^{2}^{3}",
 						Action.ActionType.ToString(),
 						ThreadSeconds,
 						Action.CommandPath.GetFileName(),
-						Action.StatusDescription,
-						Action.bIsUsingPCH);
+						Action.StatusDescription);
 
 					// Keep track of total thread seconds spent on tasks.
 					TotalThreadSeconds += ThreadSeconds;

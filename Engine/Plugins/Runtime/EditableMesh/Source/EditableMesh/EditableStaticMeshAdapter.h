@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -7,35 +7,6 @@
 #include "EditableMeshCustomVersion.h"
 #include "StaticMeshResources.h"
 #include "EditableStaticMeshAdapter.generated.h"
-
-
-USTRUCT()
-struct FTriangleID : public FElementID
-{
-	GENERATED_BODY()
-
-	FTriangleID()
-	{
-	}
-
-	explicit FTriangleID( const FElementID InitElementID )
-		: FElementID( InitElementID.GetValue() )
-	{
-	}
-
-	explicit FTriangleID( const uint32 InitIDValue )
-		: FElementID( InitIDValue )
-	{
-	}
-
-	FORCEINLINE friend uint32 GetTypeHash( const FTriangleID& Other )
-	{
-		return GetTypeHash( Other.IDValue );
-	}
-
-	/** Invalid triangle ID */
-	static const FTriangleID Invalid;
-};
 
 
 USTRUCT()
@@ -166,6 +137,8 @@ public:
 	virtual void GeometryHitTest(const FHitParamsIn& InParams, FHitParamsOut& OutParams) override;
 #endif // WITH_EDITOR
 
+	void SetRecreateSimpleCollision(bool bInRecreateSimplifiedCollision) { bRecreateSimplifiedCollision = bInRecreateSimplifiedCollision; }
+	bool GetRecreateSimpleCollision() const { return bRecreateSimplifiedCollision;  }
 
 private:
 
@@ -179,9 +152,6 @@ private:
 
 	/** Makes sure our mesh's index buffer is 32-bit, converting if needed */
 	void EnsureIndexBufferIs32Bit();
-
-	/** If any of the specified triangles contain vertex indices greater than 0xffff, updates our mesh's index buffer to be 32-bit if it isn't already */
-	void UpdateIndexBufferFormatIfNeeded( const TArray<FMeshTriangle>& Triangles );
 
 	/** Rebuilds bounds */
 	void UpdateBounds( const UEditableMesh* EditableMesh, const bool bShouldRecompute );
@@ -220,4 +190,10 @@ private:
 	/** Cached bounding box for the static mesh.  This bounds can be (temporarily) larger than the actual mesh itself as
 	    an optimization. */
 	FBoxSphereBounds CachedBoundingBoxAndSphere;
+
+	/** Flag to indicate if a modification requires regenerating collision */
+	bool bUpdateCollisionNeeded;
+
+	/** Flag to indicate if the simple collision has to be regenerated */
+	bool bRecreateSimplifiedCollision;
 };

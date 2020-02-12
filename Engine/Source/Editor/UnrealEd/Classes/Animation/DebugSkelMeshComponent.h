@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 
 #pragma once
@@ -269,6 +269,10 @@ class UNREALED_API UDebugSkelMeshComponent : public USkeletalMeshComponent
 	UPROPERTY(transient)
 	bool bIsUsingInGameBounds;
 	
+	/** Does this component use pre-skinned bounds? This overrides other bounds settings */
+	UPROPERTY(transient)
+	bool bIsUsingPreSkinnedBounds;
+
 	/** Base skel mesh has support for suspending clothing, but single ticks are more of a debug feature when stepping through an animation
 	 *  So we control that using this flag
 	 */
@@ -302,18 +306,18 @@ class UNREALED_API UDebugSkelMeshComponent : public USkeletalMeshComponent
 	//~ Begin SkeletalMeshComponent Interface
 	virtual void InitAnim(bool bForceReinit) override;
 	virtual bool IsWindEnabled() const override { return true; }
-	virtual void K2_SetAnimInstanceClass(class UClass* NewClass) override;
+	virtual void SetAnimClass(class UClass* NewClass) override;
 	//~ End SkeletalMeshComponent Interface
-	// Preview.
-	// @todo document
-	bool IsPreviewOn() const;
+
+	// return true if currently preview animation asset is on
+	virtual bool IsPreviewOn() const;
 
 	// @todo document
 	FString GetPreviewText() const;
 
 	// @todo anim : you still need to give asset, so that we know which one to disable
 	// we can disable per asset, so that if some other window disabled before me, I don't accidently turn it off
-	void EnablePreview(bool bEnable, class UAnimationAsset * PreviewAsset);
+	virtual void EnablePreview(bool bEnable, class UAnimationAsset * PreviewAsset);
 
 	// reference pose for this component
 	// we don't want to use default refpose because you still want to move joint when this mode is on
@@ -341,6 +345,16 @@ class UNREALED_API UDebugSkelMeshComponent : public USkeletalMeshComponent
 	 * Set to use in-game bounds or bounds calculated from bones
 	 */
 	void UseInGameBounds(bool bUseInGameBounds);
+
+	/**
+	 * Does it use pre-skinned bounds
+	 */
+	bool IsUsingPreSkinnedBounds() const;
+
+	/**
+	 * Set to use pre-skinned bounds
+	 */
+	void UsePreSkinnedBounds(bool bUsePreSkinnedBounds);
 
 	/**
 	 * Test if in-game bounds are as big as preview bounds
@@ -458,6 +472,8 @@ public:
 
 	void RefreshSelectedClothingSkinnedPositions();
 
+	virtual bool CanOverrideCollisionProfile() const { return true; }
+
 	virtual void GetUsedMaterials(TArray<UMaterialInterface *>& OutMaterials, bool bGetDebugMaterials = false) const override;
 
 	/**
@@ -496,7 +512,38 @@ public:
 	 */
 	virtual FTransform GetDrawTransform(int32 BoneIndex) const
 	{
-		return GetComponentSpaceTransforms()[BoneIndex];
+		const TArray<FTransform>& SpaceTransforms = GetComponentSpaceTransforms();
+		if (SpaceTransforms.IsValidIndex(BoneIndex))
+		{
+			return SpaceTransforms[BoneIndex];
+		}
+
+		return FTransform::Identity;
 	}
 
+};
+
+
+/*
+ * This class is use to remove the alternate skinning preview from the multiple editor that can show it.
+ * Important it should be destroy after the PostEditChange of the skeletalmesh is done and the renderdata have been recreate
+ * i.e. FScopedSkeletalMeshPostEditChange should be create after FScopedSuspendAlternateSkinWeightPreview and delete before FScopedSuspendAlternateSkinWeightPreview
+ */
+class UNREALED_API FScopedSuspendAlternateSkinWeightPreview
+{
+public:
+	/*
+	 * This constructor suspend the alternate skinning preview for all editor component that use the specified skeletalmesh
+	 * Parameters:
+	 * @param InSkeletalMesh - SkeletalMesh use to know which preview component we have to suspend the alternate skinning preview.
+	 */
+	FScopedSuspendAlternateSkinWeightPreview(class USkeletalMesh* InSkeletalMesh);
+
+	/*
+	 * This destructor put back the preview alternate skinning
+	 */
+	~FScopedSuspendAlternateSkinWeightPreview();
+
+private:
+	TArray< TTuple<UDebugSkelMeshComponent*, FName> > SuspendedComponentArray;
 };

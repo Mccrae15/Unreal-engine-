@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "MaterialStats.h"
 #include "MaterialStatsGrid.h"
@@ -101,16 +101,16 @@ FText FShaderPlatformSettings::GetShaderCode(const EMaterialQualityLevel::Type Q
 	// check if shader compilation is done and extract shader code
 	if (bCompilationFinished)
 	{
-		TMap<FName, FShader*> ShaderMap;
+		TMap<FHashedName, TShaderRef<FShader>> ShaderMap;
 		MaterialShaderMap->GetShaderList(ShaderMap);
 
 		const auto Entry = ShaderMap.Find(PlatformData[QualityType].ComboBoxSelectedName);
 		if (Entry != nullptr)
 		{
-			const FShader* Shader = *Entry;
+			const TShaderRef<FShader>& Shader = *Entry;
 
-			const FName ShaderFName = Shader->GetType()->GetFName();
-			const FString* ShaderSource = MaterialShaderMap->GetShaderSource(ShaderFName);
+			const FName ShaderFName = Shader.GetType()->GetFName();
+			const FMemoryImageString* ShaderSource = MaterialShaderMap->GetShaderSource(ShaderFName);
 			if (ShaderSource != nullptr)
 			{
 				PlatformData[QualityType].bUpdateShaderCode = false;
@@ -173,17 +173,14 @@ bool FShaderPlatformSettings::CheckShaders()
 			{
 				Data.MaterialResourcesStats->CancelCompilation();
 
-				Material->RebuildExpressionTextureReferences();
+				Material->UpdateCachedExpressionData();
 
 				if (MaterialInstance != nullptr)
 				{
-					MaterialInstance->PermutationTextureReferences.Empty();
-					MaterialInstance->AppendReferencedTextures(MaterialInstance->PermutationTextureReferences);
+					MaterialInstance->UpdateCachedLayerParameters();
 				}
 
-				FMaterialShaderMapId ShaderMapId;
-				Data.MaterialResourcesStats->GetShaderMapId(PlatformShaderID, ShaderMapId);
-				Data.MaterialResourcesStats->CacheShaders(ShaderMapId, PlatformShaderID, false);
+				Data.MaterialResourcesStats->CacheShaders(PlatformShaderID);
 
 				Data.bCompilingShaders = true;
 				Data.bUpdateShaderCode = true;
@@ -221,13 +218,13 @@ bool FShaderPlatformSettings::Update()
 				const FMaterialShaderMap* MaterialShaderMap = Resource->GetGameThreadShaderMap();
 				if (MaterialShaderMap != nullptr)
 				{
-					TMap<FShaderId, FShader*> ShaderMap;
+					TMap<FShaderId, TShaderRef<FShader>> ShaderMap;
 					MaterialShaderMap->GetShaderList(ShaderMap);
 
 					QualityItem.ArrShaderNames.Empty();
 					for (const auto Entry : ShaderMap)
 					{
-						QualityItem.ArrShaderNames.Add(MakeShareable(new FName(Entry.Key.ShaderType->GetFName())));
+						QualityItem.ArrShaderNames.Add(MakeShareable(new FName(Entry.Value.GetType()->GetFName())));
 					}
 
 					if (QualityItem.ArrShaderNames.Num() > 0)
@@ -412,16 +409,13 @@ void FMaterialStats::BuildShaderPlatformDB()
 #if PLATFORM_WINDOWS
 	// DirectX
 	AddShaderPlatform(EPlatformCategoryType::Desktop, SP_PCD3D_SM5, TEXT("DirectX SM5"), true, true, TEXT("Desktop, DirectX, Shader Model 5"));
-	AddShaderPlatform(EPlatformCategoryType::Desktop, SP_PCD3D_SM4, TEXT("DirectX SM4"), true, true, TEXT("Desktop, DirectX, Shader Model 4"));
 #endif
 
 	// Vulkan
 	AddShaderPlatform(EPlatformCategoryType::Desktop, SP_VULKAN_SM5, TEXT("Vulkan SM5"), false, true, TEXT("Desktop, Vulkan, Shader Model 5"));
-	AddShaderPlatform(EPlatformCategoryType::Desktop, SP_VULKAN_SM4, TEXT("Vulkan SM4"), false, true, TEXT("Desktop, Vulkan, Shader Model 4"));
 
 	// OpenGL
 	AddShaderPlatform(EPlatformCategoryType::Desktop, SP_OPENGL_SM5, TEXT("OpenGL SM5"), false, true, TEXT("Desktop, OpenGL, Shader Model 5"));
-	AddShaderPlatform(EPlatformCategoryType::Desktop, SP_OPENGL_SM4, TEXT("OpenGL SM4"), false, true, TEXT("Desktop, OpenGL, Shader Model 4"));
 
 	// Android
 	AddShaderPlatform(EPlatformCategoryType::Android, SP_OPENGL_ES3_1_ANDROID, TEXT("Android GLES 3.1"), true, true, TEXT("Android, OpenGLES 3.1"));
@@ -432,6 +426,26 @@ void FMaterialStats::BuildShaderPlatformDB()
 	AddShaderPlatform(EPlatformCategoryType::Desktop, SP_METAL_SM5, TEXT("Metal SM5"), false, true, TEXT("macOS, Metal, Shader Model 5"));
 	AddShaderPlatform(EPlatformCategoryType::IOS, SP_METAL, TEXT("Metal"), false, true, TEXT("iOS, Metal, Mobile"));
 	AddShaderPlatform(EPlatformCategoryType::IOS, SP_METAL_MRT, TEXT("Metal MRT"), false, true, TEXT("iOS, Metal, Shader Model 5"));
+
+	// Look to see what console platforms we have
+	static const EShaderPlatform ConsolePlatforms[] =
+	{
+		SP_PS4,
+		SP_XBOXONE_D3D12,
+		SP_SWITCH,
+		SP_SWITCH_FORWARD,
+	};
+
+	ITargetPlatformManagerModule& TPM = GetTargetPlatformManagerRef();
+	for (EShaderPlatform ShaderPlatform : ConsolePlatforms)
+	{
+		const FName ShaderFormat = LegacyShaderPlatformToShaderFormat(ShaderPlatform);
+		if (TPM.FindShaderFormat(ShaderFormat) != nullptr )
+		{
+			FString PlatformName = FMaterialStatsUtils::ShaderPlatformTypeName(ShaderPlatform);
+			AddShaderPlatform(EPlatformCategoryType::Console, ShaderPlatform, FName(*PlatformName), true, true, PlatformName);
+		}
+	}
 }
 
 TSharedPtr<FShaderPlatformSettings> FMaterialStats::AddShaderPlatform(const EPlatformCategoryType PlatformType, const EShaderPlatform PlatformID, const FName PlatformName,

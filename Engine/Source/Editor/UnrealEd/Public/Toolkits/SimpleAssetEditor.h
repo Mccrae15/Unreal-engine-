@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -41,6 +41,10 @@ public:
 	virtual FString GetWorldCentricTabPrefix() const override;
 	virtual FLinearColor GetWorldCentricTabColorScale() const override;
 	virtual bool IsPrimaryEditor() const override { return true; }
+	virtual bool IsSimpleAssetEditor() const override { return true; }
+
+	/** FAssetEditorToolkit interface */
+	virtual void PostRegenerateMenusAndToolbars() override;
 	
 	/** Used to show or hide certain properties */
 	void SetPropertyVisibilityDelegate(FIsPropertyVisible InVisibilityDelegate);
@@ -51,6 +55,9 @@ private:
 
 	/** Handles when an asset is imported */
 	void HandleAssetPostImport(class UFactory* InFactory, UObject* InObject);
+
+	/** Called when objects need to be swapped out for new versions, like after a blueprint recompile. */
+	void OnObjectsReplaced(const TMap<UObject*, UObject*>& ReplacementMap);
 
 	/** Dockable tab for properties */
 	TSharedPtr< SDockableTab > PropertiesTab;

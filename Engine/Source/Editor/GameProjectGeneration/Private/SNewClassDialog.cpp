@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 
 #include "SNewClassDialog.h"
@@ -24,7 +24,7 @@
 #include "ClassViewerFilter.h"
 #include "IContentBrowserSingleton.h"
 #include "ContentBrowserModule.h"
-#include "Editor/ClassViewer/Private/SClassViewer.h"
+#include "SClassViewer.h"
 #include "DesktopPlatformModule.h"
 #include "IDocumentation.h"
 #include "EditorClassUtils.h"
@@ -34,10 +34,12 @@
 #include "TutorialMetaData.h"
 #include "Kismet2/KismetEditorUtilities.h"
 #include "AssetRegistryModule.h"
-#include "Toolkits/AssetEditorManager.h"
+
 #include "Framework/Notifications/NotificationManager.h"
 #include "Widgets/Notifications/SNotificationList.h"
 #include "FeaturedClasses.inl"
+#include "Subsystems/AssetEditorSubsystem.h"
+#include "Editor.h"
 
 #define LOCTEXT_NAMESPACE "GameProjectGeneration"
 
@@ -1217,7 +1219,7 @@ void SNewClassDialog::FinishClicked()
 					ContentBrowserModule.Get().SyncBrowserToAssets(SyncAssets);
 
 					// Open the editor for the new asset
-					FAssetEditorManager::Get().OpenEditorForAsset(NewBP);
+					GEditor->GetEditorSubsystem<UAssetEditorSubsystem>()->OpenEditorForAsset(NewBP);
 
 					// Successfully created the code and potentially opened the IDE. Close the dialog.
 					CloseContainingWindow();

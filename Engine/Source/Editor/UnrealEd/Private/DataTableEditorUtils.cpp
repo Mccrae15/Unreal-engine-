@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "DataTableEditorUtils.h"
 #include "UObject/UObjectHash.h"
@@ -6,14 +6,441 @@
 #include "Styling/SlateTypes.h"
 #include "Fonts/FontMeasure.h"
 #include "Framework/Application/SlateApplication.h"
+#include "Framework/Application/SlateUser.h"
 #include "EditorStyleSet.h"
 #include "Engine/UserDefinedStruct.h"
 #include "ScopedTransaction.h"
 #include "K2Node_GetDataTableRow.h"
+#include "Input/Reply.h"
+#include "Widgets/Input/SComboButton.h"
+#include "Widgets/Input/SEditableTextBox.h"
+#include "Widgets/Views/SListView.h"
+#include "Widgets/Input/SComboBox.h"
+#include "AssetRegistryModule.h"
 
 #define LOCTEXT_NAMESPACE "DataTableEditorUtils"
 
+/** Combobox that allows selecting a struct row for a data table. Based off of SSearchableComboBox */
+class SDataTableStructComboBox : public SComboButton
+{
+public:
+	/** Type of list used for showing menu options. */
+	typedef SListView< TSharedPtr<FString> > SComboListType;
+	/** Delegate type used to generate widgets that represent Options */
+	typedef typename TSlateDelegates< TSharedPtr<FString> >::FOnGenerateWidget FOnGenerateWidget;
+	typedef typename TSlateDelegates< TSharedPtr<FString> >::FOnSelectionChanged FOnSelectionChanged;
+	DECLARE_DELEGATE_OneParam(FOnFillComboBoxStrings, TArray<TSharedPtr<FString>>&);
+
+	SLATE_BEGIN_ARGS(SDataTableStructComboBox)
+		: _Content()
+		, _ComboBoxStyle(&FCoreStyle::Get().GetWidgetStyle< FComboBoxStyle >("ComboBox"))
+		, _ButtonStyle(nullptr)
+		, _ItemStyle(&FCoreStyle::Get().GetWidgetStyle< FTableRowStyle >("TableView.Row"))
+		, _ContentPadding(FMargin(4.0, 2.0))
+		, _ForegroundColor(FCoreStyle::Get().GetSlateColor("InvertedForeground"))
+		, _OnStructSelected()
+		, _InitiallySelectedItem(nullptr)
+		, _Method()
+		, _MaxListHeight(450.0f)
+		, _HasDownArrow(true)
+	{}
+
+	/** Slot for this button's content (optional) */
+	SLATE_DEFAULT_SLOT(FArguments, Content)
+
+	SLATE_STYLE_ARGUMENT(FComboBoxStyle, ComboBoxStyle)
+
+	/** The visual style of the button part of the combo box (overrides ComboBoxStyle) */
+	SLATE_STYLE_ARGUMENT(FButtonStyle, ButtonStyle)
+
+	SLATE_STYLE_ARGUMENT(FTableRowStyle, ItemStyle)
+
+	SLATE_ATTRIBUTE(FMargin, ContentPadding)
+	SLATE_ATTRIBUTE(FSlateColor, ForegroundColor)
+
+	SLATE_EVENT(FDataTableEditorUtils::FOnDataTableStructSelected, OnStructSelected)
+	
+	/** The custom scrollbar to use in the ListView */
+	SLATE_ARGUMENT(TSharedPtr<SScrollBar>, CustomScrollbar)
+
+	/** The option that should be selected when the combo box is first created */
+	SLATE_ARGUMENT(TSharedPtr<FString>, InitiallySelectedItem)
+
+	SLATE_ARGUMENT(TOptional<EPopupMethod>, Method)
+
+	/** The max height of the combo box menu */
+	SLATE_ARGUMENT(float, MaxListHeight)
+
+	/**
+	 * When false, the down arrow is not generated and it is up to the API consumer
+	 * to make their own visual hint that this is a drop down.
+	 */
+	SLATE_ARGUMENT(bool, HasDownArrow)
+
+	SLATE_END_ARGS()
+
+	/**
+	 * Construct the widget from a declaration
+	 *
+	 * @param InArgs   Declaration from which to construct the combo box
+	 */
+	void Construct(const FArguments& InArgs);
+
+	void ClearSelection();
+
+	void SetSelectedItem(TSharedPtr<FString> InSelectedItem);
+
+	/** @return the item currently selected by the combo box. */
+	TSharedPtr<FString> GetSelectedItem();
+
+	/**
+	 * Requests a list refresh after updating options
+	 * Call SetSelectedItem to update the selected item if required
+	 * @see SetSelectedItem
+	 */
+	void RefreshOptions();
+
+	/** Returns the asset data for a specific string, or null if not found */
+	const FAssetData* FindAssetDataForString(TSharedPtr<FString> StringOption) const;
+
+	/** Returns struct from AssetData, possibly loading it */
+	UScriptStruct* GetOrLoadStruct(const FAssetData* AssetData);
+
+private:
+
+	/** Generate a row for the InItem in the combo box's list (passed in as OwnerTable). Do this by calling the user-specified OnGenerateWidget */
+	TSharedRef<ITableRow> GenerateMenuItemRow(TSharedPtr<FString> InItem, const TSharedRef<STableViewBase>& OwnerTable);
+
+	/** Called if the menu is closed */
+	void OnMenuOpenChanged(bool bOpen);
+
+	/** Invoked when the selection in the list changes */
+	void OnSelectionChanged_Internal(TSharedPtr<FString> ProposedSelection, ESelectInfo::Type SelectInfo);
+
+	/** Invoked when the search text changes */
+	void OnSearchTextChanged(const FText& ChangedText);
+
+	/** Text to display inside box */
+	FText GetSelectedText() const;
+
+	/** Show tooltip text for a specific option */
+	FText GetTooltipText(TSharedPtr<FString> StringOption);
+
+	/** Handle clicking on the content menu */
+	virtual FReply OnButtonClicked() override;
+
+	/** The item style to use. */
+	const FTableRowStyle* ItemStyle;
+
+private:
+	/** Delegate that is invoked when the selected item in the combo box changes */
+	FDataTableEditorUtils::FOnDataTableStructSelected OnStructSelected;
+
+	/** The item currently selected in the combo box */
+	TSharedPtr<FString> SelectedItem;
+	/** The search field used for the combox box's contents */
+	TSharedPtr< SEditableTextBox > SearchField;
+	/** The ListView that we pop up; visualized the available options. */
+	TSharedPtr< SComboListType > ComboListView;
+	/** The Scrollbar used in the ListView. */
+	TSharedPtr< SScrollBar > CustomScrollbar;
+
+	/** List of names to show in combo box, there is a 1:1 mapping to PossibleStructs */
+	TArray< TSharedPtr<FString> > CurrentOptions;
+	/** List of AssetData representing rows */
+	TArray<FAssetData> PossibleStructs;
+};
+
+void SDataTableStructComboBox::Construct(const FArguments& InArgs)
+{
+	check(InArgs._ComboBoxStyle);
+
+	ItemStyle = InArgs._ItemStyle;
+
+	// Work out which values we should use based on whether we were given an override, or should use the style's version
+	const FComboButtonStyle& OurComboButtonStyle = InArgs._ComboBoxStyle->ComboButtonStyle;
+	const FButtonStyle* const OurButtonStyle = InArgs._ButtonStyle ? InArgs._ButtonStyle : &OurComboButtonStyle.ButtonStyle;
+
+	this->OnStructSelected = InArgs._OnStructSelected;
+
+	CustomScrollbar = InArgs._CustomScrollbar;
+
+	TSharedRef<SWidget> ComboBoxMenuContent =
+		SNew(SBox)
+		.MaxDesiredHeight(InArgs._MaxListHeight)
+		[
+			SNew(SVerticalBox)
+			+ SVerticalBox::Slot()
+			.AutoHeight()
+			[
+				SAssignNew(this->SearchField, SEditableTextBox)
+				.HintText(LOCTEXT("Search", "Search"))
+				.OnTextChanged(this, &SDataTableStructComboBox::OnSearchTextChanged)
+			]
+
+			+ SVerticalBox::Slot()
+			[
+				SAssignNew(this->ComboListView, SComboListType)
+				.ListItemsSource(&CurrentOptions)
+				.OnGenerateRow(this, &SDataTableStructComboBox::GenerateMenuItemRow)
+				.OnSelectionChanged(this, &SDataTableStructComboBox::OnSelectionChanged_Internal)
+				.SelectionMode(ESelectionMode::Single)
+				.ExternalScrollbar(InArgs._CustomScrollbar)
+			]
+		];
+
+	// Set up content
+	TSharedPtr<SWidget> ButtonContent = InArgs._Content.Widget;
+	if (InArgs._Content.Widget == SNullWidget::NullWidget)
+	{
+		SAssignNew(ButtonContent, STextBlock)
+			.Text(this, &SDataTableStructComboBox::GetSelectedText);
+	}
+
+	SComboButton::Construct(SComboButton::FArguments()
+		.ComboButtonStyle(&OurComboButtonStyle)
+		.ButtonStyle(OurButtonStyle)
+		.Method(InArgs._Method)
+		.ButtonContent()
+		[
+			ButtonContent.ToSharedRef()
+		]
+		.MenuContent()
+		[
+			ComboBoxMenuContent
+		]
+		.HasDownArrow(InArgs._HasDownArrow)
+		.ContentPadding(InArgs._ContentPadding)
+		.ForegroundColor(InArgs._ForegroundColor)
+		.OnMenuOpenChanged(this, &SDataTableStructComboBox::OnMenuOpenChanged)
+		.IsFocusable(true)
+		);
+
+	// Better to select search field so you can type right away
+	SetMenuContentWidgetToFocus(SearchField);
+
+	// Refresh options now
+	RefreshOptions();
+
+	// Need to establish the selected item at point of construction so its available for querying
+	// NB: If you need a selection to fire use SetItemSelection rather than setting an IntiallySelectedItem
+	SelectedItem = InArgs._InitiallySelectedItem;
+	if (TListTypeTraits<TSharedPtr<FString>>::IsPtrValid(SelectedItem))
+	{
+		ComboListView->Private_SetItemSelection(SelectedItem, true);
+	}
+}
+
+void SDataTableStructComboBox::ClearSelection()
+{
+	ComboListView->ClearSelection();
+}
+
+void SDataTableStructComboBox::SetSelectedItem(TSharedPtr<FString> InSelectedItem)
+{
+	if (TListTypeTraits<TSharedPtr<FString>>::IsPtrValid(InSelectedItem))
+	{
+		ComboListView->SetSelection(InSelectedItem);
+	}
+	else
+	{
+		ComboListView->ClearSelection();
+	}
+}
+
+TSharedPtr<FString> SDataTableStructComboBox::GetSelectedItem()
+{
+	return SelectedItem;
+}
+
+FText SDataTableStructComboBox::GetSelectedText() const
+{
+	if (SelectedItem.IsValid())
+	{
+		return FText::FromString(*SelectedItem);
+	}
+
+	return FText::GetEmpty();
+}
+
+FText SDataTableStructComboBox::GetTooltipText(TSharedPtr<FString> StringOption)
+{
+	const FAssetData* FoundAsset = FindAssetDataForString(StringOption);
+
+	if (FoundAsset)
+	{
+		return FText::FromString(FoundAsset->PackageName.ToString());
+	}
+	return FText::GetEmpty();
+}
+
+void SDataTableStructComboBox::RefreshOptions()
+{
+	if (PossibleStructs.Num() == 0)
+	{
+		FDataTableEditorUtils::GetPossibleStructAssetData(PossibleStructs);
+
+		CurrentOptions.Reset();
+		for (const FAssetData& FoundStruct : PossibleStructs)
+		{
+			CurrentOptions.Add(MakeShareable(new FString(FoundStruct.AssetName.ToString())));
+		}
+	}
+
+	if (!ComboListView->IsPendingRefresh())
+	{
+		ComboListView->RequestListRefresh();
+	}
+}
+
+const FAssetData* SDataTableStructComboBox::FindAssetDataForString(TSharedPtr<FString> StringOption) const
+{
+	check(CurrentOptions.Num() == PossibleStructs.Num());
+	for (int32 i = 0; i < CurrentOptions.Num(); i++)
+	{
+		if (StringOption == CurrentOptions[i])
+		{
+			return &PossibleStructs[i];
+		}
+	}
+	return nullptr;
+}
+
+UScriptStruct* SDataTableStructComboBox::GetOrLoadStruct(const FAssetData* AssetData)
+{
+	if (!AssetData)
+	{
+		return nullptr;
+	}
+
+	return Cast<UScriptStruct>(AssetData->GetAsset());
+}
+
+TSharedRef<ITableRow> SDataTableStructComboBox::GenerateMenuItemRow(TSharedPtr<FString> InItem, const TSharedRef<STableViewBase>& OwnerTable)
+{
+	FString SearchToken = SearchField->GetText().ToString().ToLower();
+	EVisibility WidgetVisibility = EVisibility::Visible;
+	if (!SearchToken.IsEmpty())
+	{
+		if (InItem->ToLower().Find(SearchToken) < 0)
+		{
+			WidgetVisibility = EVisibility::Collapsed;
+		}
+	}
+	
+	TAttribute<FText> OnGetToolTip = TAttribute<FText>::Create(TAttribute<FText>::FGetter::CreateSP(this, &SDataTableStructComboBox::GetTooltipText, InItem));
+
+	return SNew(SComboRow<TSharedPtr<FString>>, OwnerTable)
+		.Style(ItemStyle)
+		.Visibility(WidgetVisibility)
+		[
+			SNew(STextBlock)
+			.Text(FText::FromString(*InItem))
+			.ToolTipText(OnGetToolTip)
+		];
+}
+
+void SDataTableStructComboBox::OnMenuOpenChanged(bool bOpen)
+{
+	if (bOpen == false)
+	{
+		if (TListTypeTraits<TSharedPtr<FString>>::IsPtrValid(SelectedItem))
+		{
+			// Ensure the ListView selection is set back to the last committed selection
+			ComboListView->SetSelection(SelectedItem, ESelectInfo::OnNavigation);
+			ComboListView->RequestScrollIntoView(SelectedItem, 0);
+		}
+
+		// Set focus back to ComboBox for users focusing the ListView that just closed
+		TSharedRef<SWidget> ThisRef = AsShared();
+		FSlateApplication::Get().ForEachUser([&ThisRef](FSlateUser& User) {
+			if (User.HasFocusedDescendants(ThisRef))
+			{
+				User.SetFocus(ThisRef, EFocusCause::SetDirectly);
+			}
+		});
+	}
+}
+
+void SDataTableStructComboBox::OnSelectionChanged_Internal(TSharedPtr<FString> ProposedSelection, ESelectInfo::Type SelectInfo)
+{
+	// Ensure that the proposed selection is different
+	if (SelectInfo != ESelectInfo::OnNavigation)
+	{
+		// Ensure that the proposed selection is different from selected
+		if (ProposedSelection != SelectedItem)
+		{
+			SelectedItem = ProposedSelection;
+			
+			UScriptStruct* SelectedStruct = GetOrLoadStruct(FindAssetDataForString(SelectedItem));
+
+			OnStructSelected.ExecuteIfBound(SelectedStruct);
+
+		}
+		// close combo even if user reselected item
+		this->SetIsOpen(false);
+	}
+}
+
+void SDataTableStructComboBox::OnSearchTextChanged(const FText& ChangedText)
+{
+	FString SearchToken = ChangedText.ToString().ToLower();
+	for (int32 i = 0; i < CurrentOptions.Num(); i++)
+	{
+		TSharedPtr<ITableRow> Row = ComboListView->WidgetFromItem(CurrentOptions[i]);
+		if (Row)
+		{
+			if (SearchToken.IsEmpty())
+			{
+				Row->AsWidget()->SetVisibility(EVisibility::Visible);
+			}
+			else if (CurrentOptions[i]->ToLower().Find(SearchToken) >= 0)
+			{
+				Row->AsWidget()->SetVisibility(EVisibility::Visible);
+			}
+			else
+			{
+				Row->AsWidget()->SetVisibility(EVisibility::Collapsed);
+			}
+		}
+	}
+
+	ComboListView->RequestListRefresh();
+
+	SelectedItem = TSharedPtr< FString >();
+}
+
+FReply SDataTableStructComboBox::OnButtonClicked()
+{
+	// if user clicked to close the combo menu
+	if (this->IsOpen())
+	{
+		// Re-select first selected item, just in case it was selected by navigation previously
+		TArray<TSharedPtr<FString>> SelectedItems = ComboListView->GetSelectedItems();
+		if (SelectedItems.Num() > 0)
+		{
+			OnSelectionChanged_Internal(SelectedItems[0], ESelectInfo::Direct);
+		}
+	}
+	else
+	{
+		SearchField->SetText(FText::GetEmpty());
+		RefreshOptions();
+	}
+
+	return SComboButton::OnButtonClicked();
+}
+
 const FString FDataTableEditorUtils::VariableTypesTooltipDocLink = TEXT("Shared/Editor/Blueprint/VariableTypes");
+
+TSharedRef<SWidget> FDataTableEditorUtils::MakeRowStructureComboBox(FOnDataTableStructSelected OnSelected)
+{
+	TSharedRef<SDataTableStructComboBox> ComboBox = SNew(SDataTableStructComboBox)
+		.OnStructSelected(OnSelected)
+		.ContentPadding(3);
+
+	return ComboBox;
+}
 
 FDataTableEditorUtils::FDataTableEditorManager& FDataTableEditorUtils::FDataTableEditorManager::Get()
 {
@@ -66,6 +493,91 @@ uint8* FDataTableEditorUtils::AddRow(UDataTable* DataTable, FName RowName)
 	DataTable->AddRowInternal(RowName, RowData);
 	BroadcastPostChange(DataTable, EDataTableChangeInfo::RowList);
 	return RowData;
+}
+
+uint8* FDataTableEditorUtils::AddRowAboveOrBelowSelection(UDataTable* DataTable, const FName& RowName, const FName& NewRowName, ERowInsertionPosition InsertPosition)
+{
+	if (!DataTable || (NewRowName == NAME_None) || (DataTable->GetRowMap().Find(NewRowName) != nullptr) || !DataTable->RowStruct)
+	{
+		return nullptr;
+	}
+
+	const FScopedTransaction Transaction(LOCTEXT("AddDataTableRowAboveBelow", "Add Data Table Row Above or Below"));
+
+	TArray<FName> OrderedRowNames;
+	DataTable->GetRowMap().GenerateKeyArray(OrderedRowNames);
+
+	int32 CurrentRowIndex = OrderedRowNames.IndexOfByKey(RowName);
+	if (CurrentRowIndex == INDEX_NONE)
+	{
+		return nullptr;
+	}
+
+	if (InsertPosition == ERowInsertionPosition::Below)
+	{
+		CurrentRowIndex += 1;
+	}
+
+	OrderedRowNames.Insert(NewRowName, CurrentRowIndex);
+	
+	// Build a name -> index map as the KeySort will hit this a lot
+	TMap<FName, int32> NamesToNewIndex;
+	for (int32 NameIndex = 0; NameIndex < OrderedRowNames.Num(); ++NameIndex)
+	{
+		NamesToNewIndex.Add(OrderedRowNames[NameIndex], NameIndex);
+	}
+	
+	
+	BroadcastPreChange(DataTable, EDataTableChangeInfo::RowList);
+	
+	DataTable->Modify();
+	
+	// Allocate data to store information, using UScriptStruct to know its size
+	uint8* RowData = (uint8*)FMemory::Malloc(DataTable->RowStruct->GetStructureSize());
+
+	// And be sure to call DestroyScriptStruct later
+	DataTable->RowStruct->InitializeStruct(RowData);
+
+	// Add to row map
+	DataTable->AddRowInternal(NewRowName, RowData);
+
+	// Re-sort the map keys to match the new order
+	DataTable->GetNonConstRowMap().KeySort([&NamesToNewIndex](const FName& One, const FName& Two) -> bool
+	{
+		const int32 OneIndex = NamesToNewIndex.FindRef(One);
+		const int32 TwoIndex = NamesToNewIndex.FindRef(Two);
+		return OneIndex < TwoIndex;
+	});
+
+	BroadcastPostChange(DataTable, EDataTableChangeInfo::RowList);
+
+	return RowData;
+}
+
+
+uint8* FDataTableEditorUtils::DuplicateRow(UDataTable* DataTable, FName SourceRowName, FName RowName)
+{
+	if (!DataTable || (SourceRowName == NAME_None) || !DataTable->RowMap.Contains(SourceRowName) || DataTable->RowMap.Contains(RowName) || !DataTable->RowStruct)
+	{
+		return NULL;
+	}
+
+	const FScopedTransaction Transaction(LOCTEXT("DuplicateDataTableRow", "Duplicate Data Table Row"));
+
+	BroadcastPreChange(DataTable, EDataTableChangeInfo::RowList);
+	DataTable->Modify();
+
+	// Allocate data to store information, using UScriptStruct to know its size
+	uint8* OldRowData = *DataTable->RowMap.Find(SourceRowName);
+	uint8* NewRowData = (uint8*)FMemory::Malloc(DataTable->RowStruct->GetStructureSize());
+
+	DataTable->RowStruct->InitializeStruct(NewRowData);
+	DataTable->RowStruct->CopyScriptStruct(NewRowData, OldRowData);
+
+	// Add to row map
+	DataTable->RowMap.Add(RowName, NewRowData);
+	BroadcastPostChange(DataTable, EDataTableChangeInfo::RowList);
+	return NewRowData;
 }
 
 bool FDataTableEditorUtils::RenameRow(UDataTable* DataTable, FName OldName, FName NewName)
@@ -167,7 +679,7 @@ bool FDataTableEditorUtils::MoveRow(UDataTable* DataTable, FName RowName, ERowMo
 	return true;
 }
 
-bool FDataTableEditorUtils::SelectRow(UDataTable* DataTable, FName RowName)
+bool FDataTableEditorUtils::SelectRow(const UDataTable* DataTable, FName RowName)
 {
 	for (auto Listener : FDataTableEditorManager::Get().GetListeners())
 	{
@@ -248,10 +760,10 @@ void FDataTableEditorUtils::CacheDataTableForEditing(const UDataTable* DataTable
 	TArray<FDataTableEditorRowListViewDataPtr> OldRows = OutAvailableRows;
 
 	// First build array of properties
-	TArray<const UProperty*> StructProps;
-	for (TFieldIterator<const UProperty> It(DataTable->RowStruct); It; ++It)
+	TArray<const FProperty*> StructProps;
+	for (TFieldIterator<const FProperty> It(DataTable->RowStruct); It; ++It)
 	{
-		const UProperty* Prop = *It;
+		const FProperty* Prop = *It;
 		check(Prop);
 		if (!Prop->HasMetaData(FName(TEXT("HideFromDataTableEditorColumn"))))
 		{
@@ -267,8 +779,8 @@ void FDataTableEditorUtils::CacheDataTableForEditing(const UDataTable* DataTable
 	OutAvailableColumns.Reset(StructProps.Num());
 	for (int32 Index = 0; Index < StructProps.Num(); ++Index)
 	{
-		const UProperty* Prop = StructProps[Index];
-		const FText PropertyDisplayName = FText::FromString(DataTableUtils::GetPropertyDisplayName(Prop, FName::NameToDisplayString(Prop->GetName(), Prop->IsA<UBoolProperty>())));
+		const FProperty* Prop = StructProps[Index];
+		const FText PropertyDisplayName = DataTableUtils::GetPropertyDisplayName(Prop, FName::NameToDisplayString(Prop->GetName(), Prop->IsA<FBoolProperty>()));
 
 		FDataTableEditorColumnHeaderDataPtr CachedColumnData;
 		
@@ -316,13 +828,14 @@ void FDataTableEditorUtils::CacheDataTableForEditing(const UDataTable* DataTable
 		}
 
 		CachedRowData->DesiredRowHeight = FontMeasure->GetMaxCharacterHeight(CellTextStyle.Font);
+		CachedRowData->RowNum = Index + 1;
 
 		// Always rebuild cell data
 		{
 			uint8* RowData = RowIt.Value();
 			for (int32 ColumnIndex = 0; ColumnIndex < StructProps.Num(); ++ColumnIndex)
 			{
-				const UProperty* Prop = StructProps[ColumnIndex];
+				const FProperty* Prop = StructProps[ColumnIndex];
 				FDataTableEditorColumnHeaderDataPtr CachedColumnData = OutAvailableColumns[ColumnIndex];
 
 				const FText CellText = DataTableUtils::GetPropertyValueAsText(Prop, RowData);
@@ -360,9 +873,40 @@ TArray<UScriptStruct*> FDataTableEditorUtils::GetPossibleStructs()
 	return RowStructs;
 }
 
-bool FDataTableEditorUtils::IsValidTableStruct(UScriptStruct* Struct)
+void FDataTableEditorUtils::GetPossibleStructAssetData(TArray<FAssetData>& StructAssets)
 {
-	UScriptStruct* TableRowStruct = FindObjectChecked<UScriptStruct>(ANY_PACKAGE, TEXT("TableRowBase"));
+	StructAssets.Reset();
+
+	// Make combo of table rowstruct options
+	for (TObjectIterator<UScriptStruct> It; It; ++It)
+	{
+		UScriptStruct* Struct = *It;
+		if (IsValidTableStruct(Struct))
+		{
+			StructAssets.Add(FAssetData(Struct));
+		}
+	}
+
+	// Now get unloaded ones
+	const FAssetRegistryModule& AssetRegistryModule = FModuleManager::LoadModuleChecked<FAssetRegistryModule>(TEXT("AssetRegistry"));
+	TArray<FAssetData> AssetData;
+	AssetRegistryModule.Get().GetAssetsByClass(UUserDefinedStruct::StaticClass()->GetFName(), AssetData);
+
+	for (int32 AssetIndex = 0; AssetIndex < AssetData.Num(); ++AssetIndex)
+	{
+		const FAssetData& Asset = AssetData[AssetIndex];
+		if (Asset.IsValid() && !Asset.IsAssetLoaded())
+		{
+			StructAssets.Add(Asset);
+		}
+	}
+
+	StructAssets.Sort([](const FAssetData& A, const FAssetData& B) { return A.AssetName.LexicalLess(B.AssetName); });
+}
+
+bool FDataTableEditorUtils::IsValidTableStruct(const UScriptStruct* Struct)
+{
+	const UScriptStruct* TableRowStruct = FTableRowBase::StaticStruct();
 
 	// If a child of the table row struct base, but not itself
 	const bool bBasedOnTableRowBase = TableRowStruct && Struct->IsChildOf(TableRowStruct) && (Struct != TableRowStruct);
@@ -376,14 +920,14 @@ FText FDataTableEditorUtils::GetRowTypeInfoTooltipText(FDataTableEditorColumnHea
 {
 	if (ColumnHeaderDataPtr.IsValid())
 	{
-		const UProperty* Property = ColumnHeaderDataPtr->Property;
+		const FProperty* Property = ColumnHeaderDataPtr->Property;
 		if (Property)
 		{
-			const UClass* PropertyClass = Property->GetClass();
-			const UStructProperty* StructProp = Cast<const UStructProperty>(Property);
+			const FFieldClass* PropertyClass = Property->GetClass();
+			const FStructProperty* StructProp = CastField<const FStructProperty>(Property);
 			if (StructProp)
 			{
-				FString TypeName = FName::NameToDisplayString(Property->GetCPPType(), Property->IsA<UBoolProperty>());
+				FString TypeName = FName::NameToDisplayString(Property->GetCPPType(), Property->IsA<FBoolProperty>());
 				if (TypeName.Len())
 				{
 					// If type name starts with F and another capital letter, assume standard naming and remove F in the string shown to the user
@@ -409,10 +953,10 @@ FString FDataTableEditorUtils::GetRowTypeTooltipDocExcerptName(FDataTableEditorC
 {
 	if (ColumnHeaderDataPtr.IsValid())
 	{
-		const UProperty* Property = ColumnHeaderDataPtr->Property;
+		const FProperty* Property = ColumnHeaderDataPtr->Property;
 		if (Property)
 		{
-			const UStructProperty* StructProp = Cast<const UStructProperty>(Property);
+			const FStructProperty* StructProp = CastField<const FStructProperty>(Property);
 			if (StructProp)
 			{
 				if (StructProp->Struct == TBaseStructure<FSoftObjectPath>::Get())
@@ -423,7 +967,7 @@ FString FDataTableEditorUtils::GetRowTypeTooltipDocExcerptName(FDataTableEditorC
 				{
 					return "SoftClass";
 				}
-				FString TypeName = FName::NameToDisplayString(Property->GetCPPType(), Property->IsA<UBoolProperty>());
+				FString TypeName = FName::NameToDisplayString(Property->GetCPPType(), Property->IsA<FBoolProperty>());
 				if (TypeName.Len())
 				{
 					// If type name starts with F and another capital letter, assume standard naming and remove F to match the doc excerpt name
@@ -434,10 +978,10 @@ FString FDataTableEditorUtils::GetRowTypeTooltipDocExcerptName(FDataTableEditorC
 					return TypeName;
 				}
 			}
-			const UClass* PropertyClass = Property->GetClass();
+			const FFieldClass* PropertyClass = Property->GetClass();
 			if (PropertyClass)
 			{
-				if (PropertyClass == UStrProperty::StaticClass())
+				if (PropertyClass == FStrProperty::StaticClass())
 				{
 					return "String";
 				}

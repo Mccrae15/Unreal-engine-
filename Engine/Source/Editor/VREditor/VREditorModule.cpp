@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "VREditorModule.h"
 #include "Modules/ModuleManager.h"
@@ -11,6 +11,7 @@
 #include "Framework/MultiBox/MultiBoxBuilder.h"
 #include "Framework/MultiBox/MultiBoxExtender.h"
 #include "HeadMountedDisplayTypes.h"
+#include "VREditorFloatingUI.h"
 
 class FVREditorModule : public IVREditorModule
 {
@@ -35,8 +36,8 @@ public:
 	virtual void EnableVREditor( const bool bEnable, const bool bForceWithoutHMD ) override;
 	virtual bool IsVREditorModeActive() override;
 	virtual UVREditorMode* GetVRMode() override;
-	virtual void UpdateActorPreview(TSharedRef<SWidget> InWidget, int32 Index, AActor *Actor) override;
-	virtual void UpdateExternalUMGUI(TSubclassOf<UUserWidget> InUMGClass, FName Name, FVector2D InSize) override;
+	virtual void UpdateActorPreview(TSharedRef<SWidget> InWidget, int32 Index, AActor *Actor, bool bIsPanelDetached = false) override;
+	virtual void UpdateExternalUMGUI(const FVREditorFloatingUICreationContext& CreationContext) override;
 	virtual void UpdateExternalSlateUI(TSharedRef<SWidget> InSlateWidget, FName Name, FVector2D InSize) override;
 	virtual TSharedPtr<FExtender> GetRadialMenuExtender() override
 	{
@@ -112,14 +113,14 @@ UVREditorMode* FVREditorModule::GetVRMode()
 	return ModeManager.GetCurrentVREditorMode();
 }
 
-void FVREditorModule::UpdateActorPreview(TSharedRef<SWidget> InWidget, int32 Index, AActor* Actor)
+void FVREditorModule::UpdateActorPreview(TSharedRef<SWidget> InWidget, int32 Index, AActor* Actor, bool bIsPanelDetached)
 {
-	GetVRMode()->RefreshActorPreviewWidget(InWidget, Index, Actor);
+	GetVRMode()->RefreshActorPreviewWidget(InWidget, Index, Actor, bIsPanelDetached);
 }
-
-void FVREditorModule::UpdateExternalUMGUI(TSubclassOf<UUserWidget> InUMGClass, FName Name, FVector2D InSize)
+  
+void FVREditorModule::UpdateExternalUMGUI(const FVREditorFloatingUICreationContext& CreationContext)
 {
-	GetVRMode()->UpdateExternalUMGUI(InUMGClass, Name, InSize);
+	GetVRMode()->UpdateExternalUMGUI(CreationContext); 
 }
 
 void FVREditorModule::UpdateExternalSlateUI(TSharedRef<SWidget> InSlateWidget, FName Name, FVector2D InSize)

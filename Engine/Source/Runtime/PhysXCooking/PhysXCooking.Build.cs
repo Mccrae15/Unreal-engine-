@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 using UnrealBuildTool;
 using System.IO;
@@ -13,7 +13,6 @@ public class PhysXCooking : ModuleRules
             new string[] {
                 "Core",
                 "CoreUObject", // @todo Mac: for some reason it's needed to link in debug on Mac
-				"Engine",
                 "PhysXCookingLib"
             }
             );

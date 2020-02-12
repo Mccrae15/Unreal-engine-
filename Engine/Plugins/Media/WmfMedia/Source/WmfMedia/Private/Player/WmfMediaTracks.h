@@ -1,8 +1,8 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
-#include "WmfMediaPrivate.h"
+#include "WmfMediaCommon.h"
 
 #if WMFMEDIA_SUPPORTED_PLATFORM
 
@@ -332,9 +332,12 @@ private:
 	/** Whether the track selection changed. */
 	bool SelectionChanged;
 
+	/** Flag to display if the topology node has requested hardware acceleration. */
+	bool bVideoTrackRequestedHardwareAcceleration;
+
 	/** Video sample object pool. */
 	FWmfMediaTextureSamplePool* VideoSamplePool;
-	FWmfMediaHardwareVideoDecodingTextureSamplePool* VideoHardwareVideoDecodingSamplePool;
+	TSharedPtr<FWmfMediaHardwareVideoDecodingTextureSamplePool> VideoHardwareVideoDecodingSamplePool;
 
 	/** Video sample queue. */
 	TMediaSampleQueue<IMediaTextureSample> VideoSampleQueue;

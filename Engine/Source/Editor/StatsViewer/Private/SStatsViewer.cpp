@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "SStatsViewer.h"
 #include "HAL/FileManager.h"
@@ -52,6 +52,8 @@ void SStatsViewer::Construct( const FArguments& InArgs )
 {
 	FPropertyEditorModule& PropertyEditorModule = FModuleManager::GetModuleChecked<FPropertyEditorModule>( "PropertyEditor" );
 
+	StatsPageManagerPtr = InArgs._StatsPageManager;
+
 	// create empty property table
 	PropertyTable = PropertyEditorModule.CreatePropertyTable();
 	PropertyTable->SetIsUserAllowedToChangeRoot( false );
@@ -61,10 +63,10 @@ void SStatsViewer::Construct( const FArguments& InArgs )
 
 	// we want to customize some columns
 	TArray< TSharedRef< IPropertyTableCustomColumn > > CustomColumns;
-	FStatsPageManager& StatsPageManager = FStatsPageManager::Get();
+	FStatsPageManager& StatsPageManager = GetStatsPageManager();
 	for( int32 PageIndex = 0; PageIndex < StatsPageManager.NumPages(); PageIndex++ )
 	{
-		TSharedRef<IStatsPage> StatsPage = StatsPageManager.GetPage( PageIndex );
+		TSharedRef<IStatsPage> StatsPage = StatsPageManager.GetPageByIndex( PageIndex );
 		TArray< TSharedRef< IPropertyTableCustomColumn > > PagesCustomColumns;
 		StatsPage->GetCustomColumns(PagesCustomColumns);
 		if(PagesCustomColumns.Num() > 0)
@@ -209,14 +211,20 @@ void SStatsViewer::Construct( const FArguments& InArgs )
 	{
 		TSharedPtr<IStatsPage> InitialStatsPage;
 		FString DisplayedStatsPageName;
-		if (GConfig->GetString(*StatsViewerConstants::ConfigSectionName, TEXT("DisplayedStatsPageName"), DisplayedStatsPageName, GEditorPerProjectIni))
+		FString ConfigKey = TEXT("DisplayedStatsPageName");
+		if (StatsPageManager.GetName() != NAME_None)
 		{
-			InitialStatsPage = FStatsPageManager::Get().GetPage(FName(*DisplayedStatsPageName));
+			ConfigKey += TEXT("_") + StatsPageManager.GetName().ToString();
+		}
+
+		if (GConfig->GetString(*StatsViewerConstants::ConfigSectionName, *ConfigKey, DisplayedStatsPageName, GEditorPerProjectIni))
+		{
+			InitialStatsPage = StatsPageManager.GetPage(FName(*DisplayedStatsPageName));
 		}
 		else
 		{
 			// Default to primitive stats if no config data exists yet
-			InitialStatsPage = FStatsPageManager::Get().GetPage(EStatsPage::PrimitiveStats);
+			InitialStatsPage = StatsPageManager.GetPage(EStatsPage::PrimitiveStats);
 		}
 
 		SetDisplayedStats(InitialStatsPage.ToSharedRef());
@@ -225,6 +233,7 @@ void SStatsViewer::Construct( const FArguments& InArgs )
 
 SStatsViewer::SStatsViewer() :
 	bNeedsRefresh( false ),
+	bNeedsRefreshForFilterChange( false ),
 	CurrentObjectSetIndex( 0 ),
 	CurrentFilterIndex( 0 ),
 	CustomColumn( new FStatsCustomColumn )
@@ -276,12 +285,11 @@ static FString GetCellString( const TSharedPtr<IPropertyTableCell> Cell, bool bG
 
 void SStatsViewer::Tick( const FGeometry& AllottedGeometry, const double InCurrentTime, const float InDeltaTime )
 {
-	FStatsPageManager& StatsPageManager = FStatsPageManager::Get();
-
 	// check if we need to switch pages - i.e. if a page wants to be shown
+	FStatsPageManager& StatsPageManager = GetStatsPageManager();
 	for( int32 PageIndex = 0; PageIndex < StatsPageManager.NumPages(); PageIndex++ )
 	{
-		TSharedRef<IStatsPage> StatsPage = StatsPageManager.GetPage( PageIndex );
+		TSharedRef<IStatsPage> StatsPage = StatsPageManager.GetPageByIndex( PageIndex );
 		if( StatsPage->IsShowPending() )
 		{
 			SetDisplayedStats( StatsPage );
@@ -294,7 +302,7 @@ void SStatsViewer::Tick( const FGeometry& AllottedGeometry, const double InCurre
 	SearchTextUpdateTimer -= InDeltaTime;
 	if( bTimerActive && SearchTextUpdateTimer < 0.0f )
 	{
-		bNeedsRefresh = true;
+		bNeedsRefreshForFilterChange = true;
 	}
 
 	if( CurrentStats.IsValid() )
@@ -306,47 +314,59 @@ void SStatsViewer::Tick( const FGeometry& AllottedGeometry, const double InCurre
 		}
 	}
 
-	if( bNeedsRefresh )
+	if( bNeedsRefresh || bNeedsRefreshForFilterChange)
 	{
 		if( CurrentStats.IsValid() )
 		{
-			// Flag all the current stat objects for death
-			for(auto Iter = CurrentObjects.CreateIterator(); Iter; Iter++)
+			if (bNeedsRefresh)
 			{
-				if((*Iter).IsValid())
+				// Flag all the current stat objects for death
+				for (auto Iter = LastGeneratedObjectList.CreateIterator(); Iter; Iter++)
 				{
-					(*Iter)->RemoveFromRoot();
+					if ((*Iter).IsValid())
+					{
+						(*Iter)->RemoveFromRoot();
+					}
 				}
+
+				// Generate new set of objects
+				LastGeneratedObjectList.Empty();
+				CurrentObjects.Empty();
+				CurrentStats->Generate(CurrentObjects);
+
+				// Backup list for future use (see bNeedsRefreshForFilterChange)
+				LastGeneratedObjectList = CurrentObjects;
 			}
-			CurrentObjects.Empty();
-			
+			else if (bNeedsRefreshForFilterChange)
+			{
+				// For a filter change, recycle last generated object list
+				CurrentObjects = LastGeneratedObjectList;
+			}
+
 			// clear the map of total strings
 			CustomColumn->TotalsMap.Empty();
 
-			// generate new set of objects
-			CurrentStats->Generate( CurrentObjects );
-
 			// plug objects into table
-			PropertyTable->SetObjects( CurrentObjects );
+			PropertyTable->SetObjects(CurrentObjects);
 
 			// freeze & resize columns & sort if required
 			const TArray< TSharedRef< IPropertyTableColumn > >& Columns = PropertyTable->GetColumns();
-			for( int32 ColumnIndex = 0; ColumnIndex < Columns.Num(); ++ColumnIndex )
+			for (int32 ColumnIndex = 0; ColumnIndex < Columns.Num(); ++ColumnIndex)
 			{
 				TSharedRef< IPropertyTableColumn > Column = Columns[ColumnIndex];
-				if( Columns[ColumnIndex]->GetDataSource()->IsValid() )
+				if (Columns[ColumnIndex]->GetDataSource()->IsValid())
 				{
 					TSharedPtr< FPropertyPath > PropertyPath = Column->GetDataSource()->AsPropertyPath();
 					const FPropertyInfo& PropertyInfo = PropertyPath->GetRootProperty();
 					const FString& ColumnWidthString = PropertyInfo.Property->GetMetaData(StatsViewerMetadata::ColumnWidth);
-					const float ColumnWidth = ColumnWidthString.Len() > 0 ? FCString::Atof( *ColumnWidthString ) : 100.0f;
-					Column->SetWidth( ColumnWidth );
+					const float ColumnWidth = ColumnWidthString.Len() > 0 ? FCString::Atof(*ColumnWidthString) : 100.0f;
+					Column->SetWidth(ColumnWidth);
 
 					const FString& SortModeString = PropertyInfo.Property->GetMetaData(StatsViewerMetadata::SortMode);
-					if( SortModeString.Len() > 0 )
+					if (SortModeString.Len() > 0)
 					{
-						EColumnSortMode::Type SortType = SortModeString == TEXT( "Ascending" ) ? EColumnSortMode::Ascending : EColumnSortMode::Descending;
-						PropertyTable->SortByColumn( Column, SortType, EColumnSortPriority::Primary);
+						EColumnSortMode::Type SortType = SortModeString == TEXT("Ascending") ? EColumnSortMode::Ascending : EColumnSortMode::Descending;
+						PropertyTable->SortByColumn(Column, SortType, EColumnSortPriority::Primary);
 					}
 				}
 
@@ -399,6 +419,7 @@ void SStatsViewer::Tick( const FGeometry& AllottedGeometry, const double InCurre
 		}
 
 		bNeedsRefresh = false;
+		bNeedsRefreshForFilterChange = false;
 	}
 }
 
@@ -457,7 +478,7 @@ FReply SStatsViewer::OnExportClicked()
 				{
 					TSharedPtr< FPropertyPath > PropertyPath = Column->GetDataSource()->AsPropertyPath();
 					const FPropertyInfo& PropertyInfo = PropertyPath->GetRootProperty();
-					const TWeakObjectPtr< UProperty > Property = PropertyInfo.Property;
+					const TWeakFieldPtr< FProperty > Property = PropertyInfo.Property;
 					FString Name = UEditorEngine::GetFriendlyName(Property.Get());
 					Name.ReplaceInline( *Delimiter, TEXT(" ") );
 					HeaderRow += Name + Delimiter;
@@ -558,11 +579,56 @@ FReply SStatsViewer::OnExportClicked()
 	return FReply::Handled();
 }
 
+FStatsPageManager& SStatsViewer::GetStatsPageManager() const
+{
+	// We can use either provided page manager or use the default (global) one.
+	return StatsPageManagerPtr.IsValid() ? *StatsPageManagerPtr : FStatsPageManager::Get();
+}
+
 int32 SStatsViewer::GetObjectSetIndex() const
 {
 	return CurrentObjectSetIndex;
 }
 
+void SStatsViewer::SwitchAndFilterPage(int32 Page, const FString& FilterValue, const FString& FilterProperty)
+{
+	FStatsPageManager& Manager = FStatsPageManager::Get();
+	if(Page < Manager.NumPages())
+	{
+		TSharedRef<IStatsPage> StatsPage = FStatsPageManager::Get().GetPage(Page);
+		SetDisplayedStats(StatsPage);
+
+		int32 FilterIndex = -1;
+		if(FilterProperty.Len())
+		{
+			int32 ColumnIndex = 0;
+			for (TFieldIterator<FProperty> PropertyIter( CurrentStats->GetEntryClass(), EFieldIteratorFlags::IncludeSuper ); PropertyIter; ++PropertyIter )
+			{
+				FProperty* Property = *PropertyIter;
+				if( Property->HasAnyPropertyFlags(CPF_AssetRegistrySearchable) )
+				{
+					FString FilterName = Property->GetDisplayNameText().ToString();
+					if( FilterName.Len() == 0 )
+					{
+						FilterName = UEditorEngine::GetFriendlyName(Property);
+					}
+					if(FilterName == FilterProperty)
+					{
+						FilterIndex = ColumnIndex;
+						break;
+					}
+					ColumnIndex++;
+				}
+			}
+		}
+		if(FilterIndex >= 0)
+		{
+			FilterTextBoxWidget->SetText(FText::FromString(FilterValue));
+			SetSearchFilter(FilterIndex);
+		}
+		Refresh();
+	}
+}
 void SStatsViewer::OnFilterTextChanged( const FText& InFilterText )
 {
 	FilterText = InFilterText.ToString();
@@ -592,16 +658,17 @@ FText SStatsViewer::OnGetObjectSetMenuLabel() const
 TSharedRef<SWidget> SStatsViewer::OnGetDisplayMenuContent() const
 {
 	FMenuBuilder MenuBuilder(true, NULL);
+	FStatsPageManager& StatsPageManager = GetStatsPageManager();
 
-	for( int32 PageIndex = 0; PageIndex < FStatsPageManager::Get().NumPages(); PageIndex++ )
+	for( int32 PageIndex = 0; PageIndex < StatsPageManager.NumPages(); PageIndex++ )
 	{
-		TSharedRef<IStatsPage> StatsPage = FStatsPageManager::Get().GetPage( PageIndex );
+		TSharedRef<IStatsPage> StatsPage = StatsPageManager.GetPageByIndex( PageIndex );
 		MenuBuilder.AddMenuEntry( 
 			StatsPage->GetDisplayName(), 
 			StatsPage->GetToolTip(), 
 			FSlateIcon(), 
 			FUIAction( 
-				FExecuteAction::CreateSP( this, &SStatsViewer::SetDisplayedStats, StatsPage ),
+				FExecuteAction::CreateSP( const_cast<SStatsViewer*>(this), &SStatsViewer::SetDisplayedStats, StatsPage ),
 				FCanExecuteAction(),
 				FIsActionChecked::CreateSP( this, &SStatsViewer::AreStatsDisplayed, StatsPage )
 			),
@@ -626,7 +693,7 @@ TSharedRef<SWidget> SStatsViewer::OnGetObjectSetMenuContent() const
 				FText::FromString( CurrentStats->GetObjectSetToolTip( ObjectSetIndex ) ), 
 				FSlateIcon(), 
 				FUIAction( 
-					FExecuteAction::CreateSP( this, &SStatsViewer::SetObjectSet, ObjectSetIndex ),
+					FExecuteAction::CreateSP( const_cast<SStatsViewer*>(this), &SStatsViewer::SetObjectSet, ObjectSetIndex ),
 					FCanExecuteAction(),
 					FIsActionChecked::CreateSP( this, &SStatsViewer::IsObjectSetSelected, ObjectSetIndex )
 				),
@@ -646,9 +713,9 @@ TSharedRef<SWidget> SStatsViewer::OnGetFilterMenuContent() const
 	if( CurrentStats.IsValid() )
 	{
 		int32 ColumnIndex = 0;
-		for (TFieldIterator<UProperty> PropertyIter( CurrentStats->GetEntryClass(), EFieldIteratorFlags::IncludeSuper ); PropertyIter; ++PropertyIter )
+		for (TFieldIterator<FProperty> PropertyIter( CurrentStats->GetEntryClass(), EFieldIteratorFlags::IncludeSuper ); PropertyIter; ++PropertyIter )
 		{
-			TWeakObjectPtr< UProperty > Property = *PropertyIter;
+			TWeakFieldPtr< FProperty > Property = *PropertyIter;
 			if( Property->HasAnyPropertyFlags(CPF_AssetRegistrySearchable) )
 			{
 				FString FilterName = Property->GetDisplayNameText().ToString();
@@ -672,7 +739,7 @@ TSharedRef<SWidget> SStatsViewer::OnGetFilterMenuContent() const
 					FText::Format( LOCTEXT( "FilterMenuEntry_Tooltip", "Search statistics by {FilterName}.\n{FilterDesc}" ), Arguments ), 
 					FSlateIcon(), 
 					FUIAction( 
-						FExecuteAction::CreateSP( this, &SStatsViewer::SetSearchFilter, ColumnIndex ),
+						FExecuteAction::CreateSP( const_cast<SStatsViewer*>(this), &SStatsViewer::SetSearchFilter, ColumnIndex ),
 						FCanExecuteAction(),
 						FIsActionChecked::CreateSP( this, &SStatsViewer::IsSearchFilterSelected, ColumnIndex )
 					),
@@ -764,7 +831,7 @@ FText SStatsViewer::OnGetFilterComboButtonLabel() const
 	if( CurrentStats.IsValid() )
 	{
 		int32 ColumnIndex = 0;
-		for (TFieldIterator<UProperty> PropertyIter( CurrentStats->GetEntryClass(), EFieldIteratorFlags::IncludeSuper ); PropertyIter; ++PropertyIter )
+		for (TFieldIterator<FProperty> PropertyIter( CurrentStats->GetEntryClass(), EFieldIteratorFlags::IncludeSuper ); PropertyIter; ++PropertyIter )
 		{
 			if( PropertyIter->HasAnyPropertyFlags(CPF_AssetRegistrySearchable) )
 			{
@@ -808,7 +875,7 @@ void SStatsViewer::SetSearchFilter( int32 InFilterIndex )
 {
 	CurrentFilterIndex = InFilterIndex;
 
-	Refresh();
+	bNeedsRefreshForFilterChange = true;
 }
 
 bool SStatsViewer::IsSearchFilterSelected( int32 InFilterIndex ) const

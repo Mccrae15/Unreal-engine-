@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -47,6 +47,20 @@ enum class EDescendantScrollDestination : uint8
 	Center,
 };
 
+/** Set behavior when user focus changes inside this scroll box */
+UENUM(BlueprintType)
+enum class EScrollWhenFocusChanges : uint8
+{
+	/** Don't automatically scroll, navigation or child widget will handle this */
+	NoScroll,
+
+	/** Instantly scroll using NavigationDestination rule */
+	InstantScroll,
+
+	/** Use animation to scroll using NavigationDestination rule */
+	AnimatedScroll,
+};
+
 /** SScrollBox can scroll through an arbitrary number of widgets. */
 class SLATE_API SScrollBox : public SCompoundWidget
 {
@@ -89,10 +103,14 @@ public:
 		, _ScrollBarVisibility(EVisibility::Visible)
 		, _ScrollBarAlwaysVisible(false)
 		, _ScrollBarDragFocusCause(EFocusCause::Mouse)
-		, _ScrollBarThickness(FVector2D(5, 5))
+		, _ScrollBarThickness(FVector2D(9.0f, 9.0f))
+		, _ScrollBarPadding(2.0f)
 		, _AllowOverscroll(EAllowOverscroll::Yes)
+		, _AnimateWheelScrolling(false)
+		, _WheelScrollMultiplier(1.f)
 		, _NavigationDestination(EDescendantScrollDestination::IntoView)
 		, _NavigationScrollPadding(0.0f)
+		, _ScrollWhenFocusChanges(EScrollWhenFocusChanges::NoScroll)
 		, _OnUserScrolled()
 		, _ConsumeMouseWheel(EConsumeMouseWheel::WhenScrollingPossible)
 		{
@@ -121,7 +139,13 @@ public:
 
 		SLATE_ARGUMENT( FVector2D, ScrollBarThickness )
 
+		SLATE_ARGUMENT( FMargin, ScrollBarPadding )
+
 		SLATE_ARGUMENT(EAllowOverscroll, AllowOverscroll);
+
+		SLATE_ARGUMENT(bool, AnimateWheelScrolling);
+
+		SLATE_ARGUMENT(float, WheelScrollMultiplier);
 
 		SLATE_ARGUMENT(EDescendantScrollDestination, NavigationDestination);
 
@@ -130,6 +154,8 @@ public:
 		 * scrollbox.  Use this if you want to ensure there's a preview of the next item the user could scroll to.
 		 */
 		SLATE_ARGUMENT(float, NavigationScrollPadding);
+
+		SLATE_ARGUMENT(EScrollWhenFocusChanges, ScrollWhenFocusChanges);
 
 		/** Called when the button is clicked */
 		SLATE_EVENT(FOnUserScrolled, OnUserScrolled)
@@ -162,17 +188,26 @@ public:
 
 	void SetAllowOverscroll( EAllowOverscroll NewAllowOverscroll );
 
+	void SetAnimateWheelScrolling(bool bInAnimateWheelScrolling);
+
+	void SetWheelScrollMultiplier(float NewWheelScrollMultiplier);
+
 	float GetScrollOffset() const;
 
 	float GetViewFraction() const;
 
 	float GetViewOffsetFraction() const;
 
+	/** Gets the scroll offset of the bottom of the ScrollBox in Slate Units. */
+	float GetScrollOffsetOfEnd() const;
+
 	void SetScrollOffset( float NewScrollOffset );
 
 	void ScrollToStart();
 
 	void ScrollToEnd();
+
+	void EndInertialScrolling();
 
 	/** 
 	 * Attempt to scroll a widget into view, will safely handle non-descendant widgets 
@@ -199,6 +234,8 @@ public:
 
 	void SetScrollBarThickness(FVector2D InThickness);
 
+	void SetScrollBarPadding(const FMargin& InPadding);
+
 	void SetScrollBarRightClickDragAllowed(bool bIsAllowed);
 public:
 
@@ -217,6 +254,7 @@ public:
 	virtual FReply OnTouchEnded(const FGeometry& MyGeometry, const FPointerEvent& InTouchEvent) override;
 	virtual void OnMouseCaptureLost(const FCaptureLostEvent& CaptureLostEvent) override;
 	virtual FNavigationReply OnNavigation(const FGeometry& MyGeometry, const FNavigationEvent& InNavigationEvent) override;
+	virtual void OnFocusChanging(const FWeakWidgetPath& PreviousFocusPath, const FWidgetPath& NewWidgetPath, const FFocusEvent& InFocusEvent) override;
 	// End of SWidget interface
 
 protected:
@@ -285,8 +323,6 @@ private:
 
 	void BeginInertialScrolling();
 
-	void EndInertialScrolling();
-
 	TSharedPtr<SWidget> GetKeyboardFocusableWidget(TSharedPtr<SWidget> InWidget);
 
 protected:
@@ -324,10 +360,11 @@ protected:
 	 */
 	float NavigationScrollPadding;
 
-	/**
-	 * 
-	 */
+	/** Sets where to scroll a widget to when using explicit navigation or if ScrollWhenFocusChanges is enabled */
 	EDescendantScrollDestination NavigationDestination;
+
+	/** Scroll behavior when user focus is given to a child widget */
+	EScrollWhenFocusChanges ScrollWhenFocusChanges;
 
 	/**	The current position of the software cursor */
 	FVector2D SoftwareCursorPosition;
@@ -356,6 +393,12 @@ protected:
 	TSharedPtr<FActiveTimerHandle> UpdateInertialScrollHandle;
 
 	double LastScrollTime;
+
+	/** Multiplier applied to each click of the scroll wheel (applied alongside the global scroll amount) */
+	float WheelScrollMultiplier = 1.f;
+
+	/** Whether to animate wheel scrolling */
+	bool bAnimateWheelScrolling : 1;
 
 	/**	Whether the software cursor should be drawn in the viewport */
 	bool bShowSoftwareCursor : 1;

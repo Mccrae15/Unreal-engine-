@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "TileMapEditing/TileMapEditor.h"
 #include "Widgets/Text/STextBlock.h"
@@ -15,6 +15,7 @@
 #include "SCommonEditorViewportToolbarBase.h"
 #include "TileMapEditing/STileMapEditorViewportToolbar.h"
 #include "Widgets/Docking/SDockTab.h"
+#include "Subsystems/AssetEditorSubsystem.h"
 
 #define LOCTEXT_NAMESPACE "TileMapEditor"
 
@@ -233,7 +234,7 @@ TSharedRef<SDockTab> FTileMapEditor::SpawnTab_Viewport(const FSpawnTabArgs& Args
 					SNew(STextBlock)
 					.Visibility(EVisibility::HitTestInvisible)
 					.TextStyle(FEditorStyle::Get(), "Graph.CornerText")
-					.Text(LOCTEXT("TileMapEditorViewportEarlyAccessPreviewWarning", "Early access preview"))
+					.Text(LOCTEXT("TileMapEditorViewportEarlyAccessPreviewWarning", "Beta preview"))
 				]
 		];
 }
@@ -298,7 +299,7 @@ void FTileMapEditor::UnregisterTabSpawners(const TSharedRef<class FTabManager>& 
 
 void FTileMapEditor::InitTileMapEditor(const EToolkitMode::Type Mode, const TSharedPtr< class IToolkitHost >& InitToolkitHost, class UPaperTileMap* InitTileMap)
 {
-	FAssetEditorManager::Get().CloseOtherEditors(InitTileMap, this);
+	GEditor->GetEditorSubsystem<UAssetEditorSubsystem>()->CloseOtherEditors(InitTileMap, this);
 	TileMapBeingEdited = InitTileMap;
 
 	FTileMapEditorCommands::Register();

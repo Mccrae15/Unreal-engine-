@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "NiagaraCommon.h"
 #include "NiagaraDataSet.h"
@@ -12,55 +12,80 @@
 #include "UObject/Class.h"
 #include "UObject/Package.h"
 #include "Modules/ModuleManager.h"
+#include "NiagaraWorldManager.h"
 
 DECLARE_CYCLE_STAT(TEXT("Niagara - Utilities - PrepareRapidIterationParameters"), STAT_Niagara_Utilities_PrepareRapidIterationParameters, STATGROUP_Niagara);
 
+
 //////////////////////////////////////////////////////////////////////////
 
-FString FNiagaraTypeHelper::ToString(const uint8* ValueData, const UScriptStruct* Struct)
+int32 GNiagaraAllowComputeShaders = 1;
+FAutoConsoleVariableRef CVarAllowComputeShaders(
+	TEXT("fx.NiagaraAllowComputeShaders"),
+	GNiagaraAllowComputeShaders,
+	TEXT("If true, allow the usage compute shaders within Niagara."),
+	ECVF_Default);
+
+int32 GNiagaraAllowGPUParticles = 1;
+FAutoConsoleVariableRef CVarAllowGPUParticles(
+	TEXT("fx.NiagaraAllowGPUParticles"),
+	GNiagaraAllowGPUParticles,
+	TEXT("If true, allow the usage of GPU particles for Niagara."),
+	ECVF_Default);
+
+//////////////////////////////////////////////////////////////////////////
+
+FString FNiagaraTypeHelper::ToString(const uint8* ValueData, const UObject* StructOrEnum)
 {
 	FString Ret;
-	if (Struct == FNiagaraTypeDefinition::GetFloatStruct())
+	if (const UEnum* Enum = Cast<const UEnum>(StructOrEnum))
 	{
-		Ret += FString::Printf(TEXT("%g "), *(float*)ValueData);
+		Ret = Enum->GetNameStringByValue(*(int32*)ValueData);
 	}
-	else if (Struct == FNiagaraTypeDefinition::GetIntStruct())
+	else if (const UScriptStruct* Struct = Cast<const UScriptStruct>(StructOrEnum))
 	{
-		Ret += FString::Printf(TEXT("%d "), *(int32*)ValueData);
-	}
-	else if (Struct == FNiagaraTypeDefinition::GetBoolStruct())
-	{
-		int32 Val = *(int32*)ValueData;
-		Ret += Val == 0xFFFFFFFF ? (TEXT("True")) : ( Val == 0x0 ? TEXT("False") : TEXT("Invalid"));		
-	}
-	else
-	{
-		for (TFieldIterator<UProperty> PropertyIt(Struct, EFieldIteratorFlags::IncludeSuper); PropertyIt; ++PropertyIt)
+		if (Struct == FNiagaraTypeDefinition::GetFloatStruct())
 		{
-			const UProperty* Property = *PropertyIt;
-			const uint8* PropPtr = ValueData + PropertyIt->GetOffset_ForInternal();
-			if (Property->IsA(UFloatProperty::StaticClass()))
+			Ret += FString::Printf(TEXT("%g "), *(float*)ValueData);
+		}
+		else if (Struct == FNiagaraTypeDefinition::GetIntStruct())
+		{
+			Ret += FString::Printf(TEXT("%d "), *(int32*)ValueData);
+		}
+		else if (Struct == FNiagaraTypeDefinition::GetBoolStruct())
+		{
+			int32 Val = *(int32*)ValueData;
+			Ret += Val == 0xFFFFFFFF ? (TEXT("True")) : (Val == 0x0 ? TEXT("False") : TEXT("Invalid"));
+		}
+		else
+		{
+			for (TFieldIterator<FProperty> PropertyIt(Struct, EFieldIteratorFlags::IncludeSuper); PropertyIt; ++PropertyIt)
 			{
-				Ret += FString::Printf(TEXT("%s: %g "), *Property->GetNameCPP(), *(float*)PropPtr);
-			}
-			else if (Property->IsA(UIntProperty::StaticClass()))
-			{
-				Ret += FString::Printf(TEXT("%s: %d "), *Property->GetNameCPP(), *(int32*)PropPtr);
-			}
-			else if (Property->IsA(UBoolProperty::StaticClass()))
-			{
-				int32 Val = *(int32*)ValueData;
-				FString BoolStr = Val == 0xFFFFFFFF ? (TEXT("True")) : (Val == 0x0 ? TEXT("False") : TEXT("Invalid"));
-				Ret += FString::Printf(TEXT("%s: %d "), *Property->GetNameCPP(), *BoolStr);
-			}
-			else if (const UStructProperty* StructProp = CastChecked<UStructProperty>(Property))
-			{
-				Ret += FString::Printf(TEXT("%s: (%s) "), *Property->GetNameCPP(), *FNiagaraTypeHelper::ToString(PropPtr, StructProp->Struct));
-			}
-			else
-			{
-				check(false);
-				Ret += TEXT("Unknown Type");
+				const FProperty* Property = *PropertyIt;
+				const uint8* PropPtr = ValueData + PropertyIt->GetOffset_ForInternal();
+				if (Property->IsA(FFloatProperty::StaticClass()))
+				{
+					Ret += FString::Printf(TEXT("%s: %g "), *Property->GetNameCPP(), *(float*)PropPtr);
+				}
+				else if (Property->IsA(FIntProperty::StaticClass()))
+				{
+					Ret += FString::Printf(TEXT("%s: %d "), *Property->GetNameCPP(), *(int32*)PropPtr);
+				}
+				else if (Property->IsA(FBoolProperty::StaticClass()))
+				{
+					int32 Val = *(int32*)ValueData;
+					FString BoolStr = Val == 0xFFFFFFFF ? (TEXT("True")) : (Val == 0x0 ? TEXT("False") : TEXT("Invalid"));
+					Ret += FString::Printf(TEXT("%s: %d "), *Property->GetNameCPP(), *BoolStr);
+				}
+				else if (const FStructProperty* StructProp = CastFieldChecked<const FStructProperty>(Property))
+				{
+					Ret += FString::Printf(TEXT("%s: (%s) "), *Property->GetNameCPP(), *FNiagaraTypeHelper::ToString(PropPtr, StructProp->Struct));
+				}
+				else
+				{
+					check(false);
+					Ret += TEXT("Unknown Type");
+				}
 			}
 		}
 	}
@@ -70,20 +95,37 @@ FString FNiagaraTypeHelper::ToString(const uint8* ValueData, const UScriptStruct
 
 FNiagaraSystemUpdateContext::~FNiagaraSystemUpdateContext()
 {
-	INiagaraModule& NiagaraModule = FModuleManager::LoadModuleChecked<INiagaraModule>("Niagara");
+	CommitUpdate();
+}
+
+void FNiagaraSystemUpdateContext::CommitUpdate()
+{
 	for (UNiagaraSystem* Sys : SystemSimsToDestroy)
 	{
-		NiagaraModule.DestroyAllSystemSimulations(Sys);
+		if(Sys)
+		{
+			FNiagaraWorldManager::DestroyAllSystemSimulations(Sys);
+		}		
 	}
+	SystemSimsToDestroy.Empty();
 
 	for (UNiagaraComponent* Comp : ComponentsToReInit)
 	{
-		Comp->ReinitializeSystem();
+		if (Comp)
+		{
+			Comp->ReinitializeSystem();
+		}
 	}
+	ComponentsToReInit.Empty();
+
 	for (UNiagaraComponent* Comp : ComponentsToReset)
 	{
-		Comp->ResetSystem();
+		if (Comp)
+		{
+			Comp->ResetSystem();
+		}
 	}
+	ComponentsToReset.Empty();
 }
 
 void FNiagaraSystemUpdateContext::AddAll(bool bReInit)
@@ -171,6 +213,11 @@ void FNiagaraSystemUpdateContext::Add(const UNiagaraParameterCollection* Collect
 
 void FNiagaraSystemUpdateContext::AddInternal(UNiagaraComponent* Comp, bool bReInit)
 {
+	if (bDestroyOnAdd)
+	{
+		Comp->DeactivateImmediate();
+	}
+
 	if (bReInit)
 	{
 		ComponentsToReInit.AddUnique(Comp);
@@ -184,6 +231,16 @@ void FNiagaraSystemUpdateContext::AddInternal(UNiagaraComponent* Comp, bool bReI
 
 
 //////////////////////////////////////////////////////////////////////////
+
+bool FNiagaraUtilities::AllowGPUParticles(EShaderPlatform ShaderPlatform)
+{
+	return SupportsGPUParticles(ShaderPlatform) && GNiagaraAllowGPUParticles && GNiagaraAllowComputeShaders;
+}
+
+bool FNiagaraUtilities::AllowComputeShaders(EShaderPlatform ShaderPlatform)
+{
+	return RHISupportsComputeShaders(ShaderPlatform) && GNiagaraAllowComputeShaders;
+}
 
 FName NIAGARA_API FNiagaraUtilities::GetUniqueName(FName CandidateName, const TSet<FName>& ExistingNames)
 {
@@ -248,7 +305,7 @@ FNiagaraVariable FNiagaraUtilities::ConvertVariableToRapidIterationConstantName(
 	return Var;
 }
 
-void FNiagaraUtilities::CollectScriptDataInterfaceParameters(const UObject& Owner, const TArray<UNiagaraScript*>& Scripts, FNiagaraParameterStore& OutDataInterfaceParameters)
+void FNiagaraUtilities::CollectScriptDataInterfaceParameters(const UObject& Owner, const TArrayView<UNiagaraScript*>& Scripts, FNiagaraParameterStore& OutDataInterfaceParameters)
 {
 	for (UNiagaraScript* Script : Scripts)
 	{
@@ -288,6 +345,34 @@ UNiagaraDataInterface* FNiagaraScriptDataInterfaceCompileInfo::GetDefaultDataInt
 	// Note that this can be called on non-game threads. We ensure that the data interface CDO object is already in existence at application init time, so we don't allow this to be auto-created.
 	UNiagaraDataInterface* Obj = CastChecked<UNiagaraDataInterface>(const_cast<UClass*>(Type.GetClass())->GetDefaultObject(false));
 	return Obj;
+}
+
+void FNiagaraUtilities::DumpHLSLText(const FString& SourceCode, const FString& DebugName)
+{
+	UE_LOG(LogNiagara, Display, TEXT("Compile output as text: %s"), *DebugName);
+	UE_LOG(LogNiagara, Display, TEXT("==================================================================================="));
+	TArray<FString> OutputByLines;
+	SourceCode.ParseIntoArrayLines(OutputByLines, false);
+	for (int32 i = 0; i < OutputByLines.Num(); i++)
+	{
+		UE_LOG(LogNiagara, Display, TEXT("/*%04d*/\t\t%s"), i + 1, *OutputByLines[i]);
+	}
+	UE_LOG(LogNiagara, Display, TEXT("==================================================================================="));
+}
+
+FString FNiagaraUtilities::SystemInstanceIDToString(FNiagaraSystemInstanceID ID)
+{
+	TCHAR Buffer[17];
+	uint64 Value = ID;
+	for (int i = 15; i >= 0; --i)
+	{
+		TCHAR ch = Value & 0xf;
+		Value >>= 4;
+		Buffer[i] = (ch >= 10 ? TCHAR('A' - 10) : TCHAR('0')) + ch;
+	}
+	Buffer[16] = 0;
+
+	return FString(Buffer);
 }
 
 #if WITH_EDITORONLY_DATA
@@ -335,11 +420,10 @@ void FNiagaraUtilities::PrepareRapidIterationParameters(const TArray<UNiagaraScr
 		}
 		else
 		{
-			const TMap<FNiagaraVariable, int32>& SourceParameterOffsets = Script->RapidIterationParameters.GetParameterOffsets();
-			for (auto ParameterOffsetIt = SourceParameterOffsets.CreateConstIterator(); ParameterOffsetIt; ++ParameterOffsetIt)
+			for (const FNiagaraVariableWithOffset& ParamWithOffset : Script->RapidIterationParameters.GetSortedParameterOffsets())
 			{
-				const FNiagaraVariable& SourceParameter = ParameterOffsetIt.Key();
-				int32 SourceOffset = ParameterOffsetIt.Value();
+				const FNiagaraVariable& SourceParameter = ParamWithOffset;
+				const int32 SourceOffset = ParamWithOffset.Offset;
 
 				int32 PreparedOffset = PreparedParameterStore.IndexOf(SourceParameter);
 				if (PreparedOffset == INDEX_NONE)
@@ -368,3 +452,38 @@ void FNiagaraUtilities::PrepareRapidIterationParameters(const TArray<UNiagaraScr
 	}
 }
 #endif
+
+//////////////////////////////////////////////////////////////////////////
+
+FNiagaraUserParameterBinding::FNiagaraUserParameterBinding()
+	: Parameter(FNiagaraTypeDefinition::GetUObjectDef(), NAME_None)
+	{
+
+	}
+
+//////////////////////////////////////////////////////////////////////////
+
+bool FVMExternalFunctionBindingInfo::Serialize(FArchive& Ar)
+{
+	Ar.UsingCustomVersion(FNiagaraCustomVersion::GUID);
+
+	if (Ar.IsLoading() || Ar.IsSaving())
+	{
+		UScriptStruct* Struct = FVMExternalFunctionBindingInfo::StaticStruct();
+		Struct->SerializeTaggedProperties(Ar, (uint8*)this, Struct, nullptr);
+	}
+
+#if WITH_EDITORONLY_DATA
+	const int32 NiagaraVersion = Ar.CustomVer(FNiagaraCustomVersion::GUID);
+
+	if (NiagaraVersion < FNiagaraCustomVersion::MemorySaving)
+	{
+		for (auto it = Specifiers_DEPRECATED.CreateConstIterator(); it; ++it)
+		{
+			FunctionSpecifiers.Emplace(it->Key, it->Value);
+		}
+	}
+#endif
+
+	return true;
+}

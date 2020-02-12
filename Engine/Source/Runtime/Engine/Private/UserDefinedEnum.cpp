@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "Engine/UserDefinedEnum.h"
 #include "UObject/EditorObjectVersion.h"
@@ -158,6 +158,21 @@ FText UUserDefinedEnum::GetDisplayNameTextByIndex(int32 InIndex) const
 	}
 
 	return Super::GetDisplayNameTextByIndex(InIndex);
+}
+
+FString UUserDefinedEnum::GetAuthoredNameStringByIndex(int32 InIndex) const
+{
+	const FName EnumEntryName = *GetNameStringByIndex(InIndex);
+
+	if (const FText* EnumEntryDisplayName = DisplayNameMap.Find(EnumEntryName))
+	{
+		if (const FString* SourceString = FTextInspector::GetSourceString(*EnumEntryDisplayName))
+		{
+			return *SourceString;
+		}
+	}
+
+	return Super::GetAuthoredNameStringByIndex(InIndex);
 }
 
 bool UUserDefinedEnum::SetEnums(TArray<TPair<FName, int64>>& InNames, ECppForm InCppForm, bool bAddMaxKeyIfMissing)

@@ -1,5 +1,7 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 #include "SubmixEffects/SubmixEffectDelay.h"
+
+const float FSubmixEffectDelay::MinLengthDelaySec = 0.4f;
 
 FSubmixEffectDelay::FSubmixEffectDelay()
 	: SampleRate(0.0f)
@@ -48,7 +50,7 @@ void FSubmixEffectDelay::OnProcessAudio(const FSoundEffectSubmixInputData& InDat
 		{
 			const int32 SampleIndex = OutputBufferIndex + DelayIndex;
 			OutBuffer[SampleIndex] = DelaysPtr[DelayIndex].ProcessAudioSample(InBuffer[SampleIndex]);
-			DelayLines[DelayIndex].SetDelayMsec(InterpolationInfo.GetValue());
+			DelayLines[DelayIndex].SetDelayMsec(InterpolationInfo.GetNextValue());
 		}
 	}
 }
@@ -76,25 +78,27 @@ void FSubmixEffectDelay::SetInterpolationTime(float Time)
 
 void FSubmixEffectDelay::SetDelayLineLength(float Length)
 {
-	TargetDelayLineLength = FMath::Clamp(Length, 0.4f, MaxDelayLineLength);
+	TargetDelayLineLength = FMath::Clamp(Length, MinLengthDelaySec, MaxDelayLineLength);
 	InterpolationInfo.SetValue(TargetDelayLineLength, InterpolationTime);
 }
 
 void FSubmixEffectDelay::UpdateParameters()
 {
+
 	FSubmixEffectDelaySettings NewSettings;
 
 	if (Params.GetParams(&NewSettings))
 	{
 		Audio::FDelay* DelaysPtr = DelayLines.GetData();
 
-		MaxDelayLineLength = NewSettings.MaximumDelayLength;
+		const float LastLength = MaxDelayLineLength;
+
+		MaxDelayLineLength = FMath::Max(NewSettings.MaximumDelayLength, MinLengthDelaySec);
 		InterpolationTime = NewSettings.InterpolationTime / 1000.0f;
 
-		TargetDelayLineLength = FMath::Clamp(NewSettings.DelayLength, 0.4f, MaxDelayLineLength);
-		InterpolationInfo.SetValue(TargetDelayLineLength, InterpolationTime);
+		SetDelayLineLength(NewSettings.DelayLength);
 
-		if (MaxDelayLineLength != NewSettings.MaximumDelayLength)
+		if (MaxDelayLineLength != LastLength)
 		{
 			for (int32 DelayIndex = 0; DelayIndex < DelayLines.Num(); DelayIndex++)
 			{

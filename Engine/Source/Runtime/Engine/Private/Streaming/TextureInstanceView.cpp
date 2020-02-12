@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 /*=============================================================================
 	TextureInstanceView.cpp: Implementation of content streaming classes.
@@ -11,7 +11,7 @@
 #include "Components/PrimitiveComponent.h"
 #include "ContentStreaming.h"
 
-void FRenderAssetInstanceView::FBounds4::Set(int32 Index, const FBoxSphereBounds& Bounds, uint32 InPackedRelativeBox, float InLastRenderTime, const FVector& RangeOrigin, float InMinDistance, float InMinRange, float InMaxRange)
+void FRenderAssetInstanceView::FBounds4::Set(int32 Index, const FBoxSphereBounds& Bounds, uint32 InPackedRelativeBox, float InLastRenderTime, const FVector& RangeOrigin, float InMinDistanceSq, float InMinRangeSq, float InMaxRangeSq)
 {
 	check(Index >= 0 && Index < 4);
 
@@ -26,9 +26,9 @@ void FRenderAssetInstanceView::FBounds4::Set(int32 Index, const FBoxSphereBounds
 	ExtentZ.Component(Index) = Bounds.BoxExtent.Z;
 	Radius.Component(Index) = Bounds.SphereRadius;
 	PackedRelativeBox[Index] = InPackedRelativeBox;
-	MinDistanceSq.Component(Index) = InMinDistance * InMinDistance;
-	MinRangeSq.Component(Index) = InMinRange * InMinRange;
-	MaxRangeSq.Component(Index) = InMaxRange != FLT_MAX ? (InMaxRange * InMaxRange) : FLT_MAX;
+	MinDistanceSq.Component(Index) = InMinDistanceSq;
+	MinRangeSq.Component(Index) = InMinRangeSq;
+	MaxRangeSq.Component(Index) = InMaxRangeSq;
 	LastRenderTime.Component(Index) = InLastRenderTime;
 }
 
@@ -43,8 +43,8 @@ void FRenderAssetInstanceView::FBounds4::UnpackBounds(int32 Index, const UPrimit
 		UnpackRelativeBox(Component->Bounds, PackedRelativeBox[Index], SubBounds);
 
 		// Update the visibility range once we have the bounds.
-		float MinDistance = 0, MinRange = 0, MaxRange = FLT_MAX;
-		FRenderAssetInstanceView::GetDistanceAndRange(Component, SubBounds, MinDistance, MinRange, MaxRange);
+		float MinDistance2 = 0, MinRange2 = 0, MaxRange2 = FLT_MAX;
+		FRenderAssetInstanceView::GetDistanceAndRange(Component, SubBounds, MinDistance2, MinRange2, MaxRange2);
 
 		OriginX.Component(Index) = SubBounds.Origin.X;
 		OriginY.Component(Index) = SubBounds.Origin.Y;
@@ -57,9 +57,9 @@ void FRenderAssetInstanceView::FBounds4::UnpackBounds(int32 Index, const UPrimit
 		ExtentZ.Component(Index) = SubBounds.BoxExtent.Z;
 		Radius.Component(Index) = SubBounds.SphereRadius;
 		PackedRelativeBox[Index] = PackedRelativeBox_Identity;
-		MinDistanceSq.Component(Index) = MinDistance * MinDistance;
-		MinRangeSq.Component(Index) = MinRange * MinRange;
-		MaxRangeSq.Component(Index) = MaxRange != FLT_MAX ? (MaxRange * MaxRange) : FLT_MAX;
+		MinDistanceSq.Component(Index) = MinDistance2;
+		MinRangeSq.Component(Index) = MinRange2;
+		MaxRangeSq.Component(Index) = MaxRange2;
 	}
 }
 
@@ -223,11 +223,17 @@ TRefCountPtr<FRenderAssetInstanceView> FRenderAssetInstanceView::CreateViewWithU
 	return NewView;
 }
 
-void FRenderAssetInstanceView::GetDistanceAndRange(const UPrimitiveComponent* Component, const FBoxSphereBounds& RenderAssetInstanceBounds, float& MinDistance, float& MinRange, float& MaxRange)
+float FRenderAssetInstanceView::GetMaxDrawDistSqWithLODParent(const FVector& Origin, const FVector& ParentOrigin, float ParentMinDrawDist, float ParentBoundingSphereRadius)
+{
+	const float Result = ParentMinDrawDist + ParentBoundingSphereRadius + (Origin - ParentOrigin).Size();
+	return Result * Result;
+}
+
+void FRenderAssetInstanceView::GetDistanceAndRange(const UPrimitiveComponent* Component, const FBoxSphereBounds& RenderAssetInstanceBounds, float& MinDistanceSq, float& MinRangeSq, float& MaxRangeSq)
 {
 	check(Component && Component->IsRegistered());
 
-	// In the engine, the MinDistance is computed from the component bound center to the viewpoint.
+	// In the engine, the MinDistance is computed from the component bound center to the viewpoint (except for HLODs).
 	// The streaming computes the distance as the distance from viewpoint to the edge of the texture bound box.
 	// The implementation also handles MinDistance by bounding the distance to it so that if the viewpoint gets closer the screen size will stop increasing at some point.
 	// The fact that the primitive will disappear is not so relevant as this will be handled by the visibility logic, normally streaming one less mip than requested.
@@ -235,10 +241,12 @@ void FRenderAssetInstanceView::GetDistanceAndRange(const UPrimitiveComponent* Co
 
 	const UPrimitiveComponent* LODParent = Component->GetLODParentPrimitive();
 
-	MinDistance = FMath::Max<float>(0, Component->MinDrawDistance - (RenderAssetInstanceBounds.Origin - Component->Bounds.Origin).Size() - RenderAssetInstanceBounds.SphereRadius);
-	MinRange = FMath::Max<float>(0, Component->MinDrawDistance);
+	MinDistanceSq = FMath::Max<float>(0, Component->MinDrawDistance - (RenderAssetInstanceBounds.Origin - Component->Bounds.Origin).Size() - RenderAssetInstanceBounds.SphereRadius);
+	MinDistanceSq *= MinDistanceSq;
+	MinRangeSq = FMath::Max<float>(0, Component->MinDrawDistance);
+	MinRangeSq *= MinRangeSq;
 	// Max distance when HLOD becomes visible.
-	MaxRange = LODParent ? (LODParent->MinDrawDistance + (Component->Bounds.Origin - LODParent->Bounds.Origin).Size()) : FLT_MAX;
+	MaxRangeSq = LODParent ? GetMaxDrawDistSqWithLODParent(Component->Bounds.Origin, LODParent->Bounds.Origin, LODParent->MinDrawDistance, LODParent->Bounds.SphereRadius) : FLT_MAX;
 }
 
 void FRenderAssetInstanceView::SwapData(FRenderAssetInstanceView* Lfs, FRenderAssetInstanceView* Rhs)
@@ -248,11 +256,76 @@ void FRenderAssetInstanceView::SwapData(FRenderAssetInstanceView* Lfs, FRenderAs
 	check(Lfs->Elements.Num() == Rhs->Elements.Num());
 	check(Lfs->RenderAssetMap.Num() == Rhs->RenderAssetMap.Num());
 	check(Lfs->CompiledRenderAssetMap.Num() == 0 && Rhs->CompiledRenderAssetMap.Num() == 0);
+	check(!Lfs->CompiledNumForcedLODCompMap.Num() && !Rhs->CompiledNumForcedLODCompMap.Num());
 
 	FMemory::Memswap(&Lfs->Bounds4 , &Rhs->Bounds4, sizeof(Lfs->Bounds4));
 	FMemory::Memswap(&Lfs->Elements , &Rhs->Elements, sizeof(Lfs->Elements));
 	FMemory::Memswap(&Lfs->RenderAssetMap, &Rhs->RenderAssetMap, sizeof(Lfs->RenderAssetMap));
 	FMemory::Memswap(&Lfs->MaxTexelFactor , &Rhs->MaxTexelFactor, sizeof(Lfs->MaxTexelFactor));
+}
+
+void FRenderAssetInstanceView::OnVerifyElementIdxFailed(int32 Idx, bool bInRange, int32 IterationCount, TMap<const UPrimitiveComponent*, int32>* ComponentMapPtr, TArray<int32>* FreeIndicesPtr) const
+{
+	const UStreamableRenderAsset* AssetPtr = bInRange ? Elements[Idx].RenderAsset : nullptr;
+	const UPrimitiveComponent* CompPtr = bInRange ? Elements[Idx].Component : nullptr;
+	const int32 BoundsIdx = bInRange ? Elements[Idx].BoundsIndex : INDEX_NONE;
+	const float TexelFactor = bInRange ? Elements[Idx].TexelFactor : 0.f;
+	const int32 bForceLoad = bInRange ? Elements[Idx].bForceLoad : 0;
+	const int32 PrevAssetLink = bInRange ? Elements[Idx].PrevRenderAssetLink : INDEX_NONE;
+	const int32 NextAssetLink = bInRange ? Elements[Idx].NextRenderAssetLink : INDEX_NONE;
+	const int32 NextCompLink = bInRange ? Elements[Idx].NextComponentLink : INDEX_NONE;
+	const int32* CompLink = ComponentMapPtr ? ComponentMapPtr->Find(CompPtr) : nullptr;
+	const FRenderAssetDesc* AssetDesc = RenderAssetMap.Find(AssetPtr);
+	const int32 bFoundInFreeIndices = FreeIndicesPtr ? FreeIndicesPtr->Contains(Idx) : 0;
+
+	FString CompLinkStr;
+	if (CompLink)
+	{
+		int32 NextLink = *CompLink;
+		bool bLinkValid;
+		while (NextLink != INDEX_NONE)
+		{
+			bLinkValid = NextLink >= 0 && NextLink < Elements.Num();
+			CompLinkStr += FString::FromInt(NextLink);
+			CompLinkStr += bLinkValid ? TEXT("") : TEXT("(invalid)");
+			NextLink = bLinkValid ? Elements[NextLink].NextComponentLink : INDEX_NONE;
+			if (NextLink != INDEX_NONE)
+			{
+				CompLinkStr += TEXT("->");
+			}
+		}
+	}
+
+	FString AssetLinkStr;
+	if (AssetDesc)
+	{
+		int32 NextLink = AssetDesc->HeadLink;
+		bool bLinkValid = NextLink >= 0 && NextLink < Elements.Num();
+		if (bLinkValid && Elements[NextLink].PrevRenderAssetLink != INDEX_NONE)
+		{
+			AssetLinkStr += FString::FromInt(Elements[NextLink].PrevRenderAssetLink);
+			AssetLinkStr += TEXT("(?)->");
+		}
+		while (NextLink != INDEX_NONE)
+		{
+			AssetLinkStr += FString::FromInt(NextLink);
+			AssetLinkStr += bLinkValid ? TEXT("") : TEXT("(invalid)");
+			NextLink = bLinkValid ? Elements[NextLink].NextRenderAssetLink : INDEX_NONE;
+			bLinkValid = NextLink >= 0 && NextLink < Elements.Num();
+			if (NextLink != INDEX_NONE)
+			{
+				AssetLinkStr += TEXT("->");
+			}
+		}
+	}
+
+	UE_LOG(LogContentStreaming, Fatal,
+		TEXT("VerifyElementIdx failed: Num=%d, Idx=%d, Asset=%p, Comp=%p, BoundsIdx=%d, TexelFactor=%.2f, ")
+		TEXT("bForceLoad=%d, PrevAssetLink=%d, NextAssetLink=%d, NextCompLink=%d, CompMapEntry=%p, AssetMapEntry=%p, ")
+		TEXT("CompLinks=%s, AssetLinks=%s, bFoundInFreeIndices=%d, Iteration=%d"),
+		Elements.Num(), Idx, AssetPtr, CompPtr, BoundsIdx, TexelFactor,
+		bForceLoad, PrevAssetLink, NextAssetLink, NextCompLink, CompLink, AssetDesc,
+		*CompLinkStr, *AssetLinkStr, bFoundInFreeIndices, IterationCount);
 }
 
 void FRenderAssetInstanceAsyncView::UpdateBoundSizes_Async(
@@ -483,6 +556,15 @@ void FRenderAssetInstanceAsyncView::GetRenderAssetScreenSize(
 					const FRenderAssetInstanceView::FCompiledElement& CompiledElement = CompiledElementData[CompiledElementIndex];
 					if (ensure(BoundsViewInfo.IsValidIndex(CompiledElement.BoundsIndex)))
 					{
+						// Texel factor wasn't available because the component wasn't registered. Lazy initialize it now.
+						if (AssetType != FStreamingRenderAsset::AT_Texture
+							&& CompiledElement.TexelFactor == 0.f
+							&& ensure(CompiledElement.BoundsIndex < View->NumBounds4() * 4))
+						{
+							FRenderAssetInstanceView::FCompiledElement* MutableCompiledElement = const_cast<FRenderAssetInstanceView::FCompiledElement*>(&CompiledElement);
+							MutableCompiledElement->TexelFactor = View->GetBounds4(CompiledElement.BoundsIndex / 4).Radius.Component(CompiledElement.BoundsIndex % 4) * 2.f;
+						}
+
 						ProcessElement(
 							AssetType,
 							BoundsViewInfo[CompiledElement.BoundsIndex],
@@ -505,8 +587,10 @@ void FRenderAssetInstanceAsyncView::GetRenderAssetScreenSize(
 		}
 		else
 		{
-			for (auto It = View->GetElementIterator(InAsset); It && (MaxSize_VisibleOnly < MAX_TEXTURE_SIZE || LogPrefix); ++It)
+			int32 IterationCount_DebuggingOnly = 0;
+			for (auto It = View->GetElementIterator(InAsset); It && (AssetType != FStreamingRenderAsset::AT_Texture || MaxSize_VisibleOnly < MAX_TEXTURE_SIZE || LogPrefix); ++It, ++IterationCount_DebuggingOnly)
 			{
+				View->VerifyElementIdx_DebuggingOnly(It.GetCurElementIdx_ForDebuggingOnly(), IterationCount_DebuggingOnly);
 				// Only handle elements that are in bounds.
 				if (ensure(BoundsViewInfo.IsValidIndex(It.GetBoundsIndex())))
 				{
@@ -525,4 +609,14 @@ void FRenderAssetInstanceAsyncView::GetRenderAssetScreenSize(
 bool FRenderAssetInstanceAsyncView::HasRenderAssetReferences(const UStreamableRenderAsset* InAsset) const
 {
 	return View.IsValid() && (bool)View->GetElementIterator(InAsset);
+}
+
+bool FRenderAssetInstanceAsyncView::HasComponentWithForcedLOD(const UStreamableRenderAsset* InAsset) const
+{
+	return View.IsValid() && View->HasComponentWithForcedLOD(InAsset);
+}
+
+bool FRenderAssetInstanceAsyncView::HasAnyComponentWithForcedLOD() const
+{
+	return View.IsValid() && View->HasAnyComponentWithForcedLOD();
 }

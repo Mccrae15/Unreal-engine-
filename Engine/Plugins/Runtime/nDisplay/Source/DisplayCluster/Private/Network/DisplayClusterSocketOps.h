@@ -1,12 +1,11 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
 #include "CoreMinimal.h"
 #include "Sockets.h"
 
-#include "Network/DisplayClusterMessage.h"
-
+class FDisplayClusterMessage;
 class FJsonObject;
 
 
@@ -47,7 +46,7 @@ protected:
 private:
 	struct FDisplayClusterMessageHeader
 	{
-		uint16 Length;
+		uint32 Length;
 
 		FString ToString()
 		{

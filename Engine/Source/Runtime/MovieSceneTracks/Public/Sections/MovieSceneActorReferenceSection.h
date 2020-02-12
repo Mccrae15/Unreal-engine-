@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -28,16 +28,22 @@ struct FMovieSceneActorReferenceKey
 
 	friend bool operator==(const FMovieSceneActorReferenceKey& A, const FMovieSceneActorReferenceKey& B)
 	{
-		return A.Object == B.Object;
+		return A.Object == B.Object && A.ComponentName == B.ComponentName && A.SocketName == B.SocketName;
 	}
 
 	friend bool operator!=(const FMovieSceneActorReferenceKey& A, const FMovieSceneActorReferenceKey& B)
 	{
-		return A.Object != B.Object;
+		return A.Object != B.Object || A.ComponentName != B.ComponentName || A.SocketName != B.SocketName;
 	}
 
 	UPROPERTY(EditAnywhere, Category="Key")
 	FMovieSceneObjectBindingID Object;
+
+	UPROPERTY(EditAnywhere, Category="Key")
+	FName ComponentName;
+
+	UPROPERTY(EditAnywhere, Category="Key")
+	FName SocketName;
 };
 
 /** A curve of events */
@@ -74,9 +80,10 @@ struct MOVIESCENETRACKS_API FMovieSceneActorReferenceData : public FMovieSceneCh
 	 * Evaluate this channel
 	 *
 	 * @param InTime     The time to evaluate at
-	 * @return the result of the evaluation
+	 * @param OutValue   A value to receive the result
+	 * @return true if the channel was evaluated successfully, false otherwise
 	 */
-	FMovieSceneActorReferenceKey Evaluate(FFrameTime InTime) const;
+	bool Evaluate(FFrameTime InTime, FMovieSceneActorReferenceKey& OutValue) const;
 
 public:
 
@@ -86,6 +93,7 @@ public:
 	virtual void SetKeyTimes(TArrayView<const FKeyHandle> InHandles, TArrayView<const FFrameNumber> InKeyTimes) override;
 	virtual void DuplicateKeys(TArrayView<const FKeyHandle> InHandles, TArrayView<FKeyHandle> OutNewHandles) override;
 	virtual void DeleteKeys(TArrayView<const FKeyHandle> InHandles) override;
+	virtual void DeleteKeysFrom(FFrameNumber InTime, bool bDeleteKeysBefore) override;
 	virtual void ChangeFrameResolution(FFrameRate SourceRate, FFrameRate DestinationRate) override;
 	virtual TRange<FFrameNumber> ComputeEffectiveRange() const override;
 	virtual int32 GetNumKeys() const override;
@@ -178,6 +186,5 @@ private:
 
 inline bool EvaluateChannel(const FMovieSceneActorReferenceData* InChannel, FFrameTime InTime, FMovieSceneActorReferenceKey& OutValue)
 {
-	OutValue = InChannel->Evaluate(InTime);
-	return true;
+	return InChannel->Evaluate(InTime, OutValue);
 }

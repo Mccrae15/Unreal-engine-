@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 /*=============================================================================
 PlanarReflectionRendering.h: shared planar reflection rendering declarations.
@@ -29,7 +29,7 @@ BEGIN_GLOBAL_SHADER_PARAMETER_STRUCT(FPlanarReflectionUniformParameters, )
 	SHADER_PARAMETER_ARRAY(FMatrix, ProjectionWithExtraFOV, [GPlanarReflectionUniformMaxReflectionViews])
 	SHADER_PARAMETER_ARRAY(FVector4, PlanarReflectionScreenScaleBias, [GPlanarReflectionUniformMaxReflectionViews])
 	SHADER_PARAMETER(FVector2D, PlanarReflectionScreenBound)
-	SHADER_PARAMETER(bool, bIsStereo)
+	SHADER_PARAMETER(uint32, bIsStereo)
 	SHADER_PARAMETER_TEXTURE(Texture2D, PlanarReflectionTexture)
 	SHADER_PARAMETER_SAMPLER(SamplerState, PlanarReflectionSampler)
 END_GLOBAL_SHADER_PARAMETER_STRUCT()

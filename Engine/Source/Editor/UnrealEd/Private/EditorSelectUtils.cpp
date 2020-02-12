@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 
 #include "CoreMinimal.h"
@@ -26,6 +26,7 @@
 #include "SnappingUtils.h"
 #include "Logging/MessageLog.h"
 #include "ActorGroupingUtils.h"
+#include "Subsystems/BrushEditingSubsystem.h"
 
 #define LOCTEXT_NAMESPACE "EditorSelectUtils"
 
@@ -353,10 +354,12 @@ void UUnrealEdEngine::UpdatePivotLocationForSelection( bool bOnChange )
 		SetPivot(SingleComponent->GetComponentLocation(), false, true);
 	}
 	else if( SingleActor != NULL ) 
-	{		
+	{
+		UBrushEditingSubsystem* BrushSubsystem = GEditor->GetEditorSubsystem<UBrushEditingSubsystem>();
+		const bool bGeometryMode = BrushSubsystem ? BrushSubsystem->IsGeometryEditorModeActive() : false;
+
 		// For geometry mode use current pivot location as it's set to selected face, not actor
-		FEditorModeTools& Tools = GLevelEditorModeTools();
-		if( Tools.IsModeActive(FBuiltinEditorModes::EM_Geometry) == false || bOnChange == true )
+		if (!bGeometryMode || bOnChange == true)
 		{
 			// Set pivot point to the actor's location, accounting for any set pivot offset
 			FVector PivotPoint = SingleActor->GetTransform().TransformPosition(SingleActor->GetPivotOffset());
@@ -389,14 +392,9 @@ void UUnrealEdEngine::NoteSelectionChange(bool bNotify)
 	UpdatePivotLocationForSelection( true );
 
 	// Clear active editing visualizer on selection change
-	GUnrealEd->ComponentVisManager.ClearActiveComponentVis();
+	ComponentVisManager.ClearActiveComponentVis();
 
-	TArray<FEdMode*> ActiveModes;
-	GLevelEditorModeTools().GetActiveModes( ActiveModes );
-	for( int32 ModeIndex = 0; ModeIndex < ActiveModes.Num(); ++ModeIndex )
-	{
-		ActiveModes[ModeIndex]->ActorSelectionChangeNotify();
-	}
+	GLevelEditorModeTools().ActorSelectionChangeNotify();
 
 	const bool bComponentSelectionChanged = GetSelectedComponentCount() > 0;
 	if (bNotify)
@@ -529,16 +527,8 @@ bool UUnrealEdEngine::CanSelectActor(AActor* Actor, bool bInSelected, bool bSele
 		return false;
 	}
 
-	// Allow active modes to determine whether the selection is allowed. If there are no active modes, allow selection anyway.
-	TArray<FEdMode*> ActiveModes;
-	GLevelEditorModeTools().GetActiveModes( ActiveModes );
-	bool bSelectionAllowed = (ActiveModes.Num() == 0);
-	for( int32 ModeIndex = 0; ModeIndex < ActiveModes.Num(); ++ModeIndex )
-	{
-		bSelectionAllowed |= ActiveModes[ModeIndex]->IsSelectionAllowed( Actor, bInSelected );
-	}
-
-	return bSelectionAllowed;
+	// Allow active modes to determine whether the selection is allowed. 
+	return GLevelEditorModeTools().IsSelectionAllowed(Actor, bInSelected);
 }
 
 void UUnrealEdEngine::SelectActor(AActor* Actor, bool bInSelected, bool bNotify, bool bSelectEvenIfHidden, bool bForceRefresh)
@@ -549,24 +539,18 @@ void UUnrealEdEngine::SelectActor(AActor* Actor, bool bInSelected, bool bNotify,
 		return;
 	}
 
-	bool bSelectionHandled = false;
+	bool bSelectionHandled = GLevelEditorModeTools().IsSelectionHandled(Actor, bInSelected);
 
-	TArray<FEdMode*> ActiveModes;
-	GLevelEditorModeTools().GetActiveModes( ActiveModes );
-	for( int32 ModeIndex = 0; ModeIndex < ActiveModes.Num(); ++ModeIndex )
-	{
-		bSelectionHandled |= ActiveModes[ModeIndex]->Select( Actor, bInSelected );
-	}
 
 	// Select the actor and update its internals.
 	if( !bSelectionHandled )
 	{
-		if(bInSelected)
+		if (bInSelected)
 		{
-			// If trying to select an Actor spawned by a ChildACtorComponent, instead select Actor that spawned us
-			if (UChildActorComponent* ParentComponent = Actor->GetParentComponent())
+			// If trying to select an Actor spawned by a ChildActorComponent, instead iterate up the hierarchy until we find a valid actor to select
+			while (Actor->IsChildActor())
 			{
-				Actor = ParentComponent->GetOwner();
+				Actor = Actor->GetParentComponent()->GetOwner();
 			}
 		}
 
@@ -592,7 +576,7 @@ void UUnrealEdEngine::SelectActor(AActor* Actor, bool bInSelected, bool bNotify,
 
 		// Don't do any work if the actor's selection state is already the selected state.
 		const bool bActorSelected = Actor->IsSelected();
-		if ( (bActorSelected && !bInSelected) || (!bActorSelected && bInSelected) )
+		if ( bActorSelected != bInSelected )
 		{
 			if(bInSelected)
 			{

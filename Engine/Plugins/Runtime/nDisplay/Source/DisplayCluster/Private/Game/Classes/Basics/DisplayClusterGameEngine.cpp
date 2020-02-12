@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "DisplayClusterGameEngine.h"
 
@@ -10,11 +10,18 @@
 #include "Misc/App.h"
 #include "Misc/CommandLine.h"
 #include "Misc/DisplayClusterAppExit.h"
-#include "Misc/DisplayClusterHelpers.h"
-#include "Misc/DisplayClusterLog.h"
 #include "Misc/Parse.h"
+#include "Misc/QualifiedFrameTime.h"
 #include "DisplayClusterBuildConfig.h"
+#include "DisplayClusterEnums.h"
 #include "DisplayClusterGlobals.h"
+#include "DisplayClusterHelpers.h"
+#include "DisplayClusterLog.h"
+#include "DisplayClusterStrings.h"
+
+#include "Stats/Stats.h"
+
+#include "Misc/CoreDelegates.h"
 
 
 void UDisplayClusterGameEngine::Init(class IEngineLoop* InEngineLoop)
@@ -23,6 +30,13 @@ void UDisplayClusterGameEngine::Init(class IEngineLoop* InEngineLoop)
 
 	// Detect requested operation mode
 	OperationMode = DetectOperationMode();
+
+	if (OperationMode == EDisplayClusterOperationMode::Cluster ||
+		OperationMode == EDisplayClusterOperationMode::Standalone)
+	{
+		// Instantiate the tickable helper
+		TickableHelper = NewObject<UDisplayClusterGameEngineTickableHelper>();
+	}
 
 	// Initialize Display Cluster
 	if (!GDisplayCluster->Init(OperationMode))
@@ -65,8 +79,8 @@ void UDisplayClusterGameEngine::Init(class IEngineLoop* InEngineLoop)
 	if (OperationMode == EDisplayClusterOperationMode::Cluster ||
 		OperationMode == EDisplayClusterOperationMode::Standalone)
 	{
-		DisplayClusterHelpers::str::DustCommandLineValue(cfgPath);
-		DisplayClusterHelpers::str::DustCommandLineValue(nodeId);
+		DisplayClusterHelpers::str::TrimStringValue(cfgPath);
+		DisplayClusterHelpers::str::TrimStringValue(nodeId);
 
 		// Start game session
 		if (!GDisplayCluster->StartSession(cfgPath, nodeId))
@@ -96,7 +110,7 @@ EDisplayClusterOperationMode UDisplayClusterGameEngine::DetectOperationMode()
 		OpMode = EDisplayClusterOperationMode::Standalone;
 	}
 
-	UE_LOG(LogDisplayClusterEngine, Log, TEXT("Detected operation mode: %s"), *FDisplayClusterTypesConverter::ToString(OpMode));
+	UE_LOG(LogDisplayClusterEngine, Log, TEXT("Detected operation mode: %s"), *FDisplayClusterTypesConverter::template ToString(OpMode));
 
 	return OpMode;
 }
@@ -115,7 +129,7 @@ bool UDisplayClusterGameEngine::InitializeInternals()
 	FDisplayClusterConfigClusterNode LocalClusterNode;
 	if (DisplayClusterHelpers::config::GetLocalClusterNode(LocalClusterNode))
 	{
-		UE_LOG(LogDisplayClusterEngine, Log, TEXT("Configuring sound enabled: %s"), *FDisplayClusterTypesConverter::ToString(LocalClusterNode.SoundEnabled));
+		UE_LOG(LogDisplayClusterEngine, Log, TEXT("Configuring sound enabled: %s"), *FDisplayClusterTypesConverter::template ToString(LocalClusterNode.SoundEnabled));
 		bUseSound = LocalClusterNode.SoundEnabled;
 	}
 
@@ -144,17 +158,30 @@ bool UDisplayClusterGameEngine::LoadMap(FWorldContext& WorldContext, FURL URL, c
 {
 	DISPLAY_CLUSTER_FUNC_TRACE(LogDisplayClusterEngine);
 
-	// Perform map loading
-	if (!Super::LoadMap(WorldContext, URL, Pending, Error))
-	{
-		return false;
-	}
-
 	if (OperationMode == EDisplayClusterOperationMode::Cluster ||
 		OperationMode == EDisplayClusterOperationMode::Standalone)
 	{
+		// Finish previous scene
+		GDisplayCluster->EndScene();
+
+		// Perform map loading
+		if (!Super::LoadMap(WorldContext, URL, Pending, Error))
+		{
+			return false;
+		}
+
+		// Start new scene
+		GDisplayCluster->StartScene(WorldContext.World());
+
 		// Game start barrier
-		NodeController->WaitForGameStart();
+		if (NodeController)
+		{
+			NodeController->WaitForGameStart();
+		}
+	}
+	else
+	{
+		return Super::LoadMap(WorldContext, URL, Pending, Error);
 	}
 
 	return true;
@@ -167,46 +194,46 @@ void UDisplayClusterGameEngine::Tick(float DeltaSeconds, bool bIdleMode)
 	if (OperationMode == EDisplayClusterOperationMode::Cluster ||
 		OperationMode == EDisplayClusterOperationMode::Standalone)
 	{
-		FTimecode Timecode;
-		FFrameRate FrameRate;
-
-		// Update input device state (master only)
-		InputMgr->Update();
-
-		// Update delta time. Cluster slaves will get this value from the master few steps later
-		ClusterMgr->SetDeltaTime(DeltaSeconds);
-
-		// Sync cluster objects
-		ClusterMgr->SyncObjects();
+		TOptional<FQualifiedFrameTime> FrameTime;
 
 		//////////////////////////////////////////////////////////////////////////////////////////////
 		// Frame start barrier
 		NodeController->WaitForFrameStart();
 		UE_LOG(LogDisplayClusterEngine, Verbose, TEXT("Sync frame start"));
 
-		// Get DisplayCluster time delta
+		// Perform StartFrame notification
+		GDisplayCluster->StartFrame(GFrameCounter);
+
+		// Sync DeltaSeconds
 		NodeController->GetDeltaTime(DeltaSeconds);
-		NodeController->GetTimecode(Timecode, FrameRate);
-		UE_LOG(LogDisplayClusterEngine, Verbose, TEXT("DisplayCluster delta time (seconds): %f"), DeltaSeconds);
-		UE_LOG(LogDisplayClusterEngine, Verbose, TEXT("DisplayCluster Timecode: %s | %s"), *Timecode.ToString(), *FrameRate.ToPrettyText().ToString());
-
-		// Update delta time in the application
 		FApp::SetDeltaTime(DeltaSeconds);
-		FApp::SetTimecodeAndFrameRate(Timecode, FrameRate);
+		UE_LOG(LogDisplayClusterEngine, Verbose, TEXT("DisplayCluster delta seconds: %f"), DeltaSeconds);
 
-		// Update input state in the cluster
-		ClusterMgr->SyncInput();
+		// Sync timecode and framerate
+		NodeController->GetFrameTime(FrameTime);
+
+		if (FrameTime.IsSet())
+		{
+			FApp::SetCurrentFrameTime(FrameTime.GetValue());
+			UE_LOG(LogDisplayClusterEngine, Verbose, TEXT("DisplayCluster timecode: %s | %s"), *FTimecode::FromFrameNumber(FrameTime->Time.GetFrame(), FrameTime->Rate).ToString(), *FrameTime->Rate.ToPrettyText().ToString());
+		}
+		else
+		{
+			FApp::InvalidateCurrentFrameTime();
+			UE_LOG(LogDisplayClusterEngine, Verbose, TEXT("DisplayCluster timecode: [Invalid]"));
+		}
 
 		// Perform PreTick for DisplayCluster module
 		UE_LOG(LogDisplayClusterEngine, Verbose, TEXT("Perform PreTick()"));
 		GDisplayCluster->PreTick(DeltaSeconds);
 
-		// Sync cluster events
-		ClusterMgr->SyncEvents();
-
-		// Perform Tick() calls for scene actors
-		UE_LOG(LogDisplayClusterEngine, Verbose, TEXT("Perform Tick()"));
+		// Perform UGameEngine::Tick() calls for scene actors
+		UE_LOG(LogDisplayClusterEngine, Verbose, TEXT("Perform UGameEngine::Tick()"));
 		Super::Tick(DeltaSeconds, bIdleMode);
+
+		// Perform PostTick for DisplayCluster module
+		UE_LOG(LogDisplayClusterEngine, Verbose, TEXT("Perform PostTick()"));
+		GDisplayCluster->PostTick(DeltaSeconds);
 
 		if (CfgDebug.LagSimulateEnabled)
 		{
@@ -228,6 +255,10 @@ void UDisplayClusterGameEngine::Tick(float DeltaSeconds, bool bIdleMode)
 		//////////////////////////////////////////////////////////////////////////////////////////////
 		// Frame end barrier
 		NodeController->WaitForFrameEnd();
+
+		// Perform EndFrame notification
+		GDisplayCluster->EndFrame(GFrameCounter);
+
 		UE_LOG(LogDisplayClusterEngine, Verbose, TEXT("Sync frame end"));
 	}
 	else
@@ -236,3 +267,19 @@ void UDisplayClusterGameEngine::Tick(float DeltaSeconds, bool bIdleMode)
 	}
 }
 
+TStatId UDisplayClusterGameEngineTickableHelper::GetStatId() const
+{
+	RETURN_QUICK_DECLARE_CYCLE_STAT(UDisplayClusterGameEngineTickableHelper, STATGROUP_Tickables);
+}
+
+void UDisplayClusterGameEngineTickableHelper::Tick(float DeltaSeconds)
+{
+	static const EDisplayClusterOperationMode OperationMode = GDisplayCluster->GetOperationMode();
+
+	if (OperationMode == EDisplayClusterOperationMode::Cluster ||
+		OperationMode == EDisplayClusterOperationMode::Standalone)
+	{
+		UE_LOG(LogDisplayClusterEngine, Verbose, TEXT("Perform Tick()"));
+		GDisplayCluster->Tick(DeltaSeconds);
+	}
+}

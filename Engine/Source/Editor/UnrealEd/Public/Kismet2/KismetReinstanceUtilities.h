@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -62,14 +62,22 @@ struct UNREALED_API FReplaceInstancesOfClassParameters
 	bool bPreserveRootComponent; 
 };
 
+struct UNREALED_API FBatchReplaceInstancesOfClassParameters
+{
+	TSet<UObject*>* ObjectsThatShouldUseOldStuff = nullptr;
+	
+	const TSet<UObject*>* InstancesThatShouldUseOldClass = nullptr;
+
+	bool bArchetypesAreUpToDate = false; 
+};
+
 class UNREALED_API FBlueprintCompileReinstancer : public TSharedFromThis<FBlueprintCompileReinstancer>, public FGCObject
 {
 protected:
 	friend struct FBlueprintCompilationManagerImpl;
+	friend struct FReinstancingJob;
 
 	static TSet<TWeakObjectPtr<UBlueprint>> DependentBlueprintsToRefresh;
-	static TSet<TWeakObjectPtr<UBlueprint>> DependentBlueprintsToRecompile;
-	static TSet<TWeakObjectPtr<UBlueprint>> DependentBlueprintsToByteRecompile;
 	static TSet<TWeakObjectPtr<UBlueprint>> CompiledBlueprintsToSave;
 
 	static UClass* HotReloadedOldClass;
@@ -91,7 +99,7 @@ protected:
 	TArray<UBlueprint*> Dependencies;
 
 	/** Mappings from old fields before recompilation to their new equivalents */
-	TMap<FName, UProperty*> PropertyMap;
+	TMap<FName, FProperty*> PropertyMap;
 	TMap<FName, UFunction*> FunctionMap;
 
 	/** Whether or not this resinstancer has already reinstanced  */
@@ -140,7 +148,7 @@ public:
 	void SaveClassFieldMapping(UClass* InClassToReinstance);
 
 	/** Helper to gather mappings from the old class's fields to the new class's version */
-	void GenerateFieldMappings(TMap<UObject*, UObject*>& FieldMapping);
+	void GenerateFieldMappings(TMap<FFieldVariant, FFieldVariant>& FieldMapping);
 
 	/** Reinstances all objects in the ObjectReinstancingMap */
 	void ReinstanceObjects(bool bForceAlwaysReinstance = false);
@@ -153,7 +161,7 @@ public:
 	static void ReplaceInstancesOfClassEx(const FReplaceInstancesOfClassParameters& Parameters );
 
 	/** Batch replaces a mapping of one or more classes to their new class by leveraging ReplaceInstancesOfClass */
-	static void BatchReplaceInstancesOfClass(TMap<UClass*, UClass*>& InOldToNewClassMap, bool bArchetypesAreUpToDate);
+	static void BatchReplaceInstancesOfClass(TMap<UClass*, UClass*>& InOldToNewClassMap, const FBatchReplaceInstancesOfClassParameters& Options = FBatchReplaceInstancesOfClassParameters());
 	
 	/** Function used to safely discard a CDO, so that the class can have its layout changed, callers must move parent CDOs aside before moving child CDOs aside: */
 	static UClass* MoveCDOToNewClass(UClass* OwnerClass, const TMap<UClass*, UClass*>& OldToNewMap, bool bAvoidCDODuplication);

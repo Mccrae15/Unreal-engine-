@@ -1,9 +1,11 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 #pragma once
 
 #include "CoreMinimal.h"
 #include "Engine/DataTable.h"
 #include "Kismet2/ListenerManager.h"
+#include "Widgets/SWidget.h"
+#include "AssetData.h"
 
 struct FDataTableEditorColumnHeaderData
 {
@@ -16,8 +18,8 @@ struct FDataTableEditorColumnHeaderData
 	/** The calculated width of this column taking into account the cell data for each row */
 	float DesiredColumnWidth;
 
-	/** The UProperty for the variable in this column */
-	const UProperty* Property;
+	/** The FProperty for the variable in this column */
+	const FProperty* Property;
 };
 
 struct FDataTableEditorRowListViewData
@@ -31,12 +33,23 @@ struct FDataTableEditorRowListViewData
 	/** The calculated height of this row taking into account the cell data for each column */
 	float DesiredRowHeight;
 
+	/** Insertion number of the row */
+	uint32 RowNum;
+
 	/** Array corresponding to each cell in this row */
 	TArray<FText> CellData;
 };
 
 typedef TSharedPtr<FDataTableEditorColumnHeaderData> FDataTableEditorColumnHeaderDataPtr;
 typedef TSharedPtr<FDataTableEditorRowListViewData>  FDataTableEditorRowListViewDataPtr;
+
+
+enum class ERowInsertionPosition
+{
+	Above,
+	Below,
+	Bottom,
+};
 
 struct UNREALED_API FDataTableEditorUtils
 {
@@ -71,20 +84,28 @@ struct UNREALED_API FDataTableEditorUtils
 
 	static bool RemoveRow(UDataTable* DataTable, FName Name);
 	static uint8* AddRow(UDataTable* DataTable, FName RowName);
+	static uint8* DuplicateRow(UDataTable* DataTable, FName SourceRowName, FName RowName);
 	static bool RenameRow(UDataTable* DataTable, FName OldName, FName NewName);
 	static bool MoveRow(UDataTable* DataTable, FName RowName, ERowMoveDirection Direction, int32 NumRowsToMoveBy = 1);
-	static bool SelectRow(UDataTable* DataTable, FName RowName);
+	static bool SelectRow(const UDataTable* DataTable, FName RowName);
 	static bool DiffersFromDefault(UDataTable* DataTable, FName RowName);
 	static bool ResetToDefault(UDataTable* DataTable, FName RowName);
+
+	static uint8* AddRowAboveOrBelowSelection(UDataTable* DataTable, const FName& RowName, const FName& NewRowName, ERowInsertionPosition InsertPosition);
 
 	static void BroadcastPreChange(UDataTable* DataTable, EDataTableChangeInfo Info);
 	static void BroadcastPostChange(UDataTable* DataTable, EDataTableChangeInfo Info);
 
 	static void CacheDataTableForEditing(const UDataTable* DataTable, TArray<FDataTableEditorColumnHeaderDataPtr>& OutAvailableColumns, TArray<FDataTableEditorRowListViewDataPtr>& OutAvailableRows);
 
+	/** Returns all script structs that can be used as a data table row. This only includes loaded ones */
 	static TArray<UScriptStruct*> GetPossibleStructs();
+
+	/** Fills in an array with all possible DataTable structs, unloaded and loaded */
+	static void GetPossibleStructAssetData(TArray<FAssetData>& StructAssets);
+	
 	/** Utility function which verifies that the specified struct type is viable for data tables */
-	static bool IsValidTableStruct(UScriptStruct* Struct);
+	static bool IsValidTableStruct(const UScriptStruct* Struct);
 
 	/** Tooltip text for the data table row type */
 	static FText GetRowTypeInfoTooltipText(FDataTableEditorColumnHeaderDataPtr ColumnHeaderDataPtr);
@@ -94,4 +115,10 @@ struct UNREALED_API FDataTableEditorUtils
 
 	/** Link to variable type doc  */
 	static const FString VariableTypesTooltipDocLink;
+
+	/** Delegate called when a data table struct is selected */
+	DECLARE_DELEGATE_OneParam(FOnDataTableStructSelected, UScriptStruct*);
+
+	/** Creates a combo box that allows selecting from the list of possible row structures */
+	static TSharedRef<SWidget> MakeRowStructureComboBox(FOnDataTableStructSelected OnSelected);
 };

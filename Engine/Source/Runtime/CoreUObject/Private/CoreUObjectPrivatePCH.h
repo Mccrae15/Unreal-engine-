@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -180,7 +180,6 @@
 #include "Math/RandomStream.h"
 #include "Containers/List.h"
 #include "Serialization/CustomVersion.h"
-#include "Templates/ScopedPointer.h"
 #include "Misc/OutputDeviceError.h"
 #include "Misc/ObjectThumbnail.h"
 #include "Internationalization/GatherableTextData.h"

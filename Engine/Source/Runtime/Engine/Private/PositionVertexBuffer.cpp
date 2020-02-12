@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "Rendering/PositionVertexBuffer.h"
 
@@ -18,8 +18,8 @@ class FPositionVertexData :
 	public TStaticMeshVertexData<FPositionVertex>
 {
 public:
-	FPositionVertexData( bool InNeedsCPUAccess=false )
-		: TStaticMeshVertexData<FPositionVertex>( InNeedsCPUAccess )
+	FPositionVertexData(bool InNeedsCPUAccess = false)
+		: TStaticMeshVertexData<FPositionVertex>(InNeedsCPUAccess)
 	{
 	}
 };
@@ -29,8 +29,7 @@ FPositionVertexBuffer::FPositionVertexBuffer():
 	VertexData(NULL),
 	Data(NULL),
 	Stride(0),
-	NumVertices(0),
-	bStreamed(false)
+	NumVertices(0)
 {}
 
 FPositionVertexBuffer::~FPositionVertexBuffer()
@@ -44,7 +43,7 @@ void FPositionVertexBuffer::CleanUp()
 	if (VertexData)
 	{
 		delete VertexData;
-		VertexData = NULL;
+		VertexData = nullptr;
 	}
 }
 
@@ -175,6 +174,11 @@ void FPositionVertexBuffer::SerializeMetaData(FArchive& Ar)
 	Ar << Stride << NumVertices;
 }
 
+void FPositionVertexBuffer::ClearMetaData()
+{
+	Stride = NumVertices = 0;
+}
+
 /**
 * Specialized assignment operator, only used when importing LOD's.  
 */
@@ -187,19 +191,19 @@ void FPositionVertexBuffer::operator=(const FPositionVertexBuffer &Other)
 template <bool bRenderThread>
 FVertexBufferRHIRef FPositionVertexBuffer::CreateRHIBuffer_Internal()
 {
-	check(VertexData);
-	FResourceArrayInterface* ResourceArray = VertexData->GetResourceArray();
-	if (ResourceArray->GetResourceDataSize())
+	if (NumVertices)
 	{
-		// Create the vertex buffer.
+		FResourceArrayInterface* RESTRICT ResourceArray = VertexData ? VertexData->GetResourceArray() : nullptr;
+		const uint32 SizeInBytes = ResourceArray ? ResourceArray->GetResourceDataSize() : 0;
 		FRHIResourceCreateInfo CreateInfo(ResourceArray);
+		CreateInfo.bWithoutNativeResource = !VertexData;
 		if (bRenderThread)
 		{
-			return RHICreateVertexBuffer(ResourceArray->GetResourceDataSize(), BUF_Static | BUF_ShaderResource, CreateInfo);
+			return RHICreateVertexBuffer(SizeInBytes, BUF_Static | BUF_ShaderResource, CreateInfo);
 		}
 		else
 		{
-			return RHIAsyncCreateVertexBuffer(ResourceArray->GetResourceDataSize(), BUF_Static | BUF_ShaderResource, CreateInfo);
+			return RHIAsyncCreateVertexBuffer(SizeInBytes, BUF_Static | BUF_ShaderResource, CreateInfo);
 		}
 	}
 	return nullptr;
@@ -217,14 +221,22 @@ FVertexBufferRHIRef FPositionVertexBuffer::CreateRHIBuffer_Async()
 
 void FPositionVertexBuffer::InitRHI()
 {
-	if (!bStreamed)
-	{
-		VertexBufferRHI = CreateRHIBuffer_RenderThread();
-	}
+	VertexBufferRHI = CreateRHIBuffer_RenderThread();
 	// we have decide to create the SRV based on GMaxRHIShaderPlatform because this is created once and shared between feature levels for editor preview.
-	if ((bStreamed || VertexBufferRHI) && (RHISupportsManualVertexFetch(GMaxRHIShaderPlatform) || IsGPUSkinCacheAvailable()))
+	// Also check to see whether cpu access has been activated on the vertex data
+	if (VertexBufferRHI)
 	{
-		PositionComponentSRV = RHICreateShaderResourceView(VertexBufferRHI, 4, PF_R32_FLOAT);
+		// we have decide to create the SRV based on GMaxRHIShaderPlatform because this is created once and shared between feature levels for editor preview.
+		bool bSRV = RHISupportsManualVertexFetch(GMaxRHIShaderPlatform) || IsGPUSkinCacheAvailable(GMaxRHIShaderPlatform);
+
+		// When bAllowCPUAccess is true, the meshes is likely going to be used for Niagara to spawn particles on mesh surface.
+		// And it can be the case for CPU *and* GPU access: no differenciation today. That is why we create a SRV in this case.
+		// This also avoid setting lots of states on all the members of all the different buffers used by meshes. Follow up: https://jira.it.epicgames.net/browse/UE-69376.
+		bSRV |= (VertexData && VertexData->GetAllowCPUAccess());
+		if(bSRV)
+		{
+			PositionComponentSRV = RHICreateShaderResourceView(VertexData ? VertexBufferRHI : nullptr, 4, PF_R32_FLOAT);
+		}
 	}
 }
 

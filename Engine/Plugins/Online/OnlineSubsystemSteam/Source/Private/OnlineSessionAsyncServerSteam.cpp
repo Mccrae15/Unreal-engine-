@@ -1,13 +1,16 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "OnlineSessionAsyncServerSteam.h"
 #include "GameFramework/GameStateBase.h"
 #include "GameFramework/PlayerState.h"
+#include "Misc/CoreMisc.h"
+#include "Misc/ConfigCacheIni.h"
 #include "OnlineSubsystemUtils.h"
 #include "SocketSubsystem.h"
 #include "IPAddressSteam.h"
 #include "SteamSessionKeys.h"
 #include "SteamUtilities.h"
+#include "OnlineSubsystemSteam.h"
 #include "OnlineAuthInterfaceSteam.h"
 
 
@@ -128,24 +131,58 @@ void GetServerKeyValuePairsFromSessionSettings(const FOnlineSessionSettings& Ses
  * @param SessionInfo session info to get key, value pairs from
  * @param KeyValuePairs key value pair structure to add to
  */
-void GetServerKeyValuePairsFromSessionInfo(const FOnlineSessionInfoSteam* SessionInfo, FSteamSessionKeyValuePairs& KeyValuePairs)
+void GetServerKeyValuePairsFromSessionInfo(FOnlineSessionInfoSteam* SessionInfo, FSteamSessionKeyValuePairs& KeyValuePairs)
 {
-	// @TODO ONLINE - not needed
-	/*
-	if (SessionInfo->HostAddr.IsValid())
+	FOnlineSubsystemSteam* SteamSubsystem = static_cast<FOnlineSubsystemSteam*>(IOnlineSubsystem::Get(STEAM_SUBSYSTEM));
+	FSteamConnectionMethod MethodUsed = SessionInfo->ConnectionMethod;
+
+	// We should not enter this check here if we're using LAN.
+	if (SteamSubsystem && GConfig && MethodUsed == FSteamConnectionMethod::None)
 	{
-		uint32 HostAddr;
-		SessionInfo->HostAddr->GetIp(HostAddr);
-		KeyValuePairs.Add(STEAMKEY_HOSTIP, FString::FromInt(HostAddr));
-		KeyValuePairs.Add(STEAMKEY_HOSTPORT, FString::FromInt(SessionInfo->HostAddr->GetPort()));
+		bool bUseRelays = false;
+		bool bIsDefaultSubsystem = false;
+		GConfig->GetBool(TEXT("OnlineSubsystemSteam"), TEXT("bAllowP2PPacketRelay"), bUseRelays, GEngineIni);
+		// If this config specifically does not exist, then set it to true
+		if (!GConfig->GetBool(TEXT("OnlineSubsystemSteam"), TEXT("bUseSteamNetworking"), bIsDefaultSubsystem, GEngineIni))
+		{
+			bIsDefaultSubsystem = true;
+		}
+
+		// Using Steam sockets. This checks if the SteamSockets plugin is enabled
+		if (!SteamSubsystem->IsUsingSteamNetworking())
+		{
+			if (!bUseRelays)
+			{
+				MethodUsed = FSteamConnectionMethod::Direct;
+			}
+			else
+			{
+				MethodUsed = FSteamConnectionMethod::P2P;
+			}
+		}
+		else
+		{
+			// Determine if we are a default. If so, we're using SteamNetworking P2P.
+			if (bIsDefaultSubsystem)
+			{
+				MethodUsed = FSteamConnectionMethod::P2P;
+			}
+			else
+			{
+				MethodUsed = FSteamConnectionMethod::Direct;
+			}
+		}
+
+		// Set this if it hasn't been set yet.
+		SessionInfo->ConnectionMethod = MethodUsed;
 	}
-	*/
+
+	KeyValuePairs.Add(STEAMKEY_CONNECTIONMETHOD, FString::Printf(TEXT("%s"), *LexToString(MethodUsed)));
 
 	if (SessionInfo->SteamP2PAddr.IsValid())
 	{
-		TSharedPtr<FInternetAddrSteam> SteamAddr = StaticCastSharedPtr<FInternetAddrSteam>(SessionInfo->SteamP2PAddr);
-		KeyValuePairs.Add(STEAMKEY_P2PADDR, SteamAddr->ToString(false));
-		KeyValuePairs.Add(STEAMKEY_P2PPORT, FString::FromInt(SteamAddr->GetPort()));
+		KeyValuePairs.Add(STEAMKEY_P2PADDR, SessionInfo->SteamP2PAddr->ToString(false));
+		KeyValuePairs.Add(STEAMKEY_P2PPORT, FString::FromInt(SessionInfo->SteamP2PAddr->GetPort()));
 	}
 }
 
@@ -219,10 +256,10 @@ void UpdatePublishedSettings(UWorld* World, FNamedOnlineSession* Session)
 			for (int32 PlayerIdx=0; PlayerIdx < GameState->PlayerArray.Num(); PlayerIdx++)
 			{
 				APlayerState const* const PlayerState = GameState->PlayerArray[PlayerIdx];
-				if (PlayerState && PlayerState->UniqueId.IsValid())
+				if (PlayerState && PlayerState->GetUniqueId().IsValid())
 				{
-					CSteamID SteamId(*(uint64*)PlayerState->UniqueId->GetBytes());
-					SteamGameServerPtr->BUpdateUserData(SteamId, TCHAR_TO_UTF8(*PlayerState->GetPlayerName()), PlayerState->Score);
+					CSteamID SteamId(*(uint64*)PlayerState->GetUniqueId()->GetBytes());
+					SteamGameServerPtr->BUpdateUserData(SteamId, TCHAR_TO_UTF8(*PlayerState->GetPlayerName()), PlayerState->GetScore());
 				}
 			}
 		}
@@ -406,7 +443,9 @@ void FOnlineAsyncTaskSteamCreateServer::Finalize()
 			UE_LOG_ONLINE_SESSION(Verbose, TEXT("Server SteamP2P IP: %s"), *NewSessionInfo->SteamP2PAddr->ToString(true));
 
 			// Create the proper ip address for this server
-			NewSessionInfo->HostAddr = ISocketSubsystem::Get(PLATFORM_SOCKETSUBSYSTEM)->CreateInternetAddr(SteamGameServerPtr->GetPublicIP(), Subsystem->GetGameServerGamePort());
+			NewSessionInfo->HostAddr = ISocketSubsystem::Get(PLATFORM_SOCKETSUBSYSTEM)->CreateInternetAddr();
+			NewSessionInfo->HostAddr->SetIp(SteamGameServerPtr->GetPublicIP().m_unIPv4);
+			NewSessionInfo->HostAddr->SetPort(Subsystem->GetGameServerGamePort());
 			UE_LOG_ONLINE_SESSION(Verbose, TEXT("Server IP: %s"), *NewSessionInfo->HostAddr->ToString(true));
 
 			if (!Session->OwningUserId.IsValid())
@@ -441,7 +480,7 @@ void FOnlineAsyncTaskSteamCreateServer::Finalize()
 			if (SteamUser() && bShouldUseAdvertise)
 			{
 				UE_LOG_ONLINE(Warning, TEXT("AUTH: CreateServerSteam is calling the depricated AdvertiseGame call"));
-				SteamUser()->AdvertiseGame(k_steamIDNonSteamGS, SteamGameServerPtr->GetPublicIP(), Subsystem->GetGameServerGamePort());
+				SteamUser()->AdvertiseGame(k_steamIDNonSteamGS, SteamGameServerPtr->GetPublicIP().m_unIPv4, Subsystem->GetGameServerGamePort());
 			}
 		}
 		else
@@ -633,6 +672,11 @@ bool FPendingSearchResultSteam::FillSessionFromServerRules()
 				KeysFound++;
 			}
 		}
+		else if (FCStringAnsi::Stricmp(TCHAR_TO_ANSI(*It.Key()), STEAMKEY_CONNECTIONMETHOD) == 0)
+		{
+			SessionInfo->ConnectionMethod = ToConnectionMethod(It.Value());
+			++KeysFound;
+		}
 // 		else if (FCStringAnsi::Stricmp(TCHAR_TO_ANSI(*It.Key()), STEAMKEY_NUMOPENPRIVATECONNECTIONS) == 0)
 // 		{
 // 			Session->NumOpenPrivateConnections = FCString::Atoi(*It.Value());
@@ -645,7 +689,11 @@ bool FPendingSearchResultSteam::FillSessionFromServerRules()
 // 		}
 		else if (FCStringAnsi::Stricmp(TCHAR_TO_ANSI(*It.Key()), STEAMKEY_P2PADDR) == 0)
 		{
-			uint64 SteamAddr = FCString::Atoi64(*It.Value());
+			FString KeyValue = It.Value();
+			// Remove any protocol flags from the start.
+			KeyValue.RemoveFromStart(STEAM_URL_PREFIX);
+
+			uint64 SteamAddr = FCString::Atoi64(*KeyValue);
 			if (SteamAddr != 0)
 			{
 				SteamP2PAddr->SteamId.UniqueNetId = SteamAddr;
@@ -675,7 +723,8 @@ bool FPendingSearchResultSteam::FillSessionFromServerRules()
 	}
 
 	// Verify success with all required keys found
-	if (bSuccess && (KeysFound == STEAMKEY_NUMREQUIREDSERVERKEYS) && (SteamAddrKeysFound == 2))
+	// If the user has SteamNetworking off, then we should just check if their host addressing is correct.
+	if (bSuccess && (KeysFound == STEAMKEY_NUMREQUIREDSERVERKEYS) && (SteamAddrKeysFound == 2 || (HostAddr.IsValid() && HostAddr->IsValid())))
 	{
 		SessionInfo->HostAddr = HostAddr;
 		SessionInfo->SteamP2PAddr = SteamP2PAddr;
@@ -956,7 +1005,7 @@ void FOnlineAsyncTaskSteamFindServerBase::ParseSearchResult(class gameserveritem
 		GameTags.ParseIntoArray(TagArray, TEXT(","), true);
 		if (TagArray.Num() > 0 && TagArray[0].StartsWith(STEAMKEY_BUILDUNIQUEID))
 		{
-			ServerBuildId = FCString::Atoi(*TagArray[0].Mid(ARRAY_COUNT(STEAMKEY_BUILDUNIQUEID)));
+			ServerBuildId = FCString::Atoi(*TagArray[0].Mid(UE_ARRAY_COUNT(STEAMKEY_BUILDUNIQUEID)));
 		}
 
 		if (ServerBuildId == BuildUniqueId)
@@ -1255,7 +1304,7 @@ void FOnlineAsyncEventSteamInviteAccepted::Finalize()
 		SessionInt->CurrentSessionSearch->SearchState = EOnlineAsyncTaskState::InProgress;
 
 		TCHAR ParsedURL[1024];
-		if (!FParse::Value(*ConnectionURL, TEXT("SteamConnectIP="), ParsedURL, ARRAY_COUNT(ParsedURL)))
+		if (!FParse::Value(*ConnectionURL, TEXT("SteamConnectIP="), ParsedURL, UE_ARRAY_COUNT(ParsedURL)))
 		{
 			UE_LOG_ONLINE_SESSION(Warning, TEXT("FOnlineAsyncEventSteamInviteAccepted: Failed to parse connection URL"));
 			return;
@@ -1273,10 +1322,8 @@ void FOnlineAsyncEventSteamInviteAccepted::Finalize()
 		Port = (Port > 0) ? Port : Subsystem->GetGameServerGamePort();
 
 		// Parse the address
-		bool bIsValid;
-		TSharedRef<FInternetAddr> IpAddr = ISocketSubsystem::Get(PLATFORM_SOCKETSUBSYSTEM)->CreateInternetAddr();
-		IpAddr->SetIp(ParsedURL, bIsValid);
-		if (bIsValid)
+		TSharedPtr<FInternetAddr> IpAddr = ISocketSubsystem::Get(PLATFORM_SOCKETSUBSYSTEM)->GetAddressFromString(ParsedURL);
+		if (IpAddr.IsValid())
 		{
 			SessionInt->CurrentSessionSearch->QuerySettings.Set(FName(SEARCH_STEAM_HOSTIP), IpAddr->ToString(false), EOnlineComparisonOp::Equals);
 			FOnlineAsyncTaskSteamFindServerForInviteSession* NewTask = new FOnlineAsyncTaskSteamFindServerForInviteSession(Subsystem, SearchSettings, LocalUserNum, SessionInt->OnSessionUserInviteAcceptedDelegates);

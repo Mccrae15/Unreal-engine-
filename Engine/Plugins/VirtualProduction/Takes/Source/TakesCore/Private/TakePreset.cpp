@@ -1,7 +1,8 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "TakePreset.h"
 #include "LevelSequence.h"
+#include "MovieSceneToolsProjectSettings.h"
 #include "UObject/Package.h"
 
 UTakePreset::UTakePreset(const FObjectInitializer& ObjInit)
@@ -33,7 +34,13 @@ void UTakePreset::CreateLevelSequence()
 	LevelSequence = NewObject<ULevelSequence>(this, GetFName(), SequenceFlags);
 	LevelSequence->Initialize();
 
-	LevelSequence->GetMovieScene()->SetPlaybackRange(TRange<FFrameNumber>(0, TNumericLimits<int32>::Max()-1));
+	const UMovieSceneToolsProjectSettings* ProjectSettings = GetDefault<UMovieSceneToolsProjectSettings>();
+	UMovieScene* MovieScene = LevelSequence->GetMovieScene();
+
+	FFrameNumber StartFrame = (ProjectSettings->DefaultStartTime * MovieScene->GetTickResolution()).RoundToFrame();
+	int32        Duration = (ProjectSettings->DefaultDuration * MovieScene->GetTickResolution()).RoundToFrame().Value;
+
+	LevelSequence->GetMovieScene()->SetPlaybackRange(StartFrame, Duration);
 
 	FMovieSceneEditorData& EditorData = LevelSequence->GetMovieScene()->GetEditorData();
 	EditorData.ViewStart = -1.0;

@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 
 #include "UnrealHeaderTool.h"
@@ -13,7 +13,6 @@
 #include "Modules/ModuleManager.h"
 #include "Misc/CompilationResult.h"
 #include "UnrealHeaderToolGlobals.h"
-
 #include "RequiredProgramMainCPPInclude.h"
 
 IMPLEMENT_APPLICATION(UnrealHeaderTool, "UnrealHeaderTool");
@@ -36,7 +35,7 @@ INT32_MAIN_INT32_ARGC_TCHAR_ARGV()
 	for (int32 Arg = 0; Arg < ArgC; Arg++)
 	{
 		FString LocalArg = ArgV[Arg];
-		if (LocalArg.Contains(TEXT(" ")))
+		if (LocalArg.Contains(TEXT(" "), ESearchCase::CaseSensitive))
 		{
 			CmdLine += TEXT("\"");
 			CmdLine += LocalArg;
@@ -70,11 +69,13 @@ INT32_MAIN_INT32_ARGC_TCHAR_ARGV()
 		ModuleInfoFilename = FParse::Token(CmdLinePtr, false );
 	}
 
+#if !NO_LOGGING
 	const static bool bVerbose = FParse::Param(*CmdLine,TEXT("VERBOSE"));
 	if (bVerbose)
 	{
-		LogCompile.SetVerbosity(ELogVerbosity::Verbose);
+		UE_SET_LOG_VERBOSITY(LogCompile, Verbose);
 	}
+#endif
 
 	// Make sure the engine is properly cleaned up whenever we exit this function
 	ON_SCOPE_EXIT

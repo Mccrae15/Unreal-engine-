@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -48,12 +48,10 @@ public:
 	//~ End IToolkit Interface
 
 	//~ Begin IBehaviorTreeEditor Interface
-	virtual uint32 GetSelectedNodesCount() const override { return SelectedNodesCount; }
 	virtual void InitializeDebuggerState(class FBehaviorTreeDebugger* ParentDebugger) const override;
 	virtual UEdGraphNode* FindInjectedNode(int32 Index) const override;
 	virtual void DoubleClickNode(class UEdGraphNode* Node) override;
 	virtual void FocusWindow(UObject* ObjectToFocusOn = NULL) override;
-	virtual bool GetBoundsForSelectedNodes(class FSlateRect& Rect, float Padding) const override;
 	//~ End IBehaviorTreeEditor Interface
 
 	//~ Begin FEditorUndoClient Interface
@@ -62,7 +60,7 @@ public:
 	// End of FEditorUndoClient
 
 	//~ Begin FNotifyHook Interface
-	virtual void NotifyPostChange( const FPropertyChangedEvent& PropertyChangedEvent, UProperty* PropertyThatChanged ) override;
+	virtual void NotifyPostChange( const FPropertyChangedEvent& PropertyChangedEvent, FProperty* PropertyThatChanged ) override;
 	// End of FNotifyHook
 
 	// Delegates
@@ -281,6 +279,9 @@ private:
 	/** Refresh the debugger's display */
 	void RefreshDebugger();
 
+	/** Push new associated Blackboard data to Blackboard views */
+	void RefreshBlackboardViewsAssociatedObject();
+
 	TSharedPtr<FDocumentTracker> DocumentManager;
 	TWeakPtr<FDocumentTabFactory> GraphEditorTabFactoryPtr;
 
@@ -305,7 +306,6 @@ private:
 	uint32 bForceDisablePropertyEdit : 1;
 	uint32 bSelectedNodeIsInjected : 1;
 	uint32 bSelectedNodeIsRootLevel : 1;
-	uint32 SelectedNodesCount;
 
 	uint32 bHasMultipleTaskBP : 1;
 	uint32 bHasMultipleDecoratorBP : 1;

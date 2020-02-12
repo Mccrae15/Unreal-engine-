@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 using UnrealBuildTool;
 
@@ -11,7 +11,7 @@ public class UElibJPG : ModuleRules
 		string libJPGPath = Target.UEThirdPartySourceDirectory + "libJPG";
 		PublicIncludePaths.Add(libJPGPath);
 
-        bEnableShadowVariableWarnings = false;
-    }
+		ShadowVariableWarningLevel = WarningLevel.Off;
+	}
 }
 

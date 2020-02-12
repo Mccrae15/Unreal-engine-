@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -28,9 +28,10 @@ struct APPLEARKIT_API FAppleARKitFrame
 	 * with the UE4-ified versions of ARFrames properties.
 	 *
 	 * @param InARFrame 		- The frame to convert / copy
-	 * @param MetalTextureCache - A CVMetalTextureCacheRef to use in the conversion of InARFrame's CVPixelBufferRef to CVMetalTextureRef for our CapturedImage property.
-	 */ 
-	FAppleARKitFrame( ARFrame* InARFrame, CVMetalTextureCacheRef MetalTextureCache );
+	 * @param MinCameraUV 		- The minimum (top left) UV used to render the passthrough camera
+	 * @param MaxCameraUV 		- The maximum (bottom right) UV used to render the passthrough camera
+	 */
+	FAppleARKitFrame( ARFrame* InARFrame, const FVector2D MinCameraUV, const FVector2D MaxCameraUV );
 
 	/** 
 	 * Copy contructor. CapturedImage is skipped as we don't need / want to retain access to the 
@@ -53,10 +54,6 @@ struct APPLEARKIT_API FAppleARKitFrame
 
 #if SUPPORTS_ARKIT_1_0
 
-	/** The frame's captured images */
-    CVMetalTextureRef CapturedYImage;
-    CVMetalTextureRef CapturedCbCrImage;
-
 	/** The raw camera buffer from ARKit */
 	CVPixelBufferRef CameraImage;
 	/** The raw camera depth info from ARKit (needs iPhone X) */
@@ -64,13 +61,6 @@ struct APPLEARKIT_API FAppleARKitFrame
 	void* NativeFrame;
 #endif
 
-	/** The width and height in pixels of the frame's captured images. */
-	uint32 CapturedYImageWidth;
-	uint32 CapturedYImageHeight;
-    
-    uint32 CapturedCbCrImageWidth;
-    uint32 CapturedCbCrImageHeight;
-    
 	/** The camera used to capture the frame's image. */
 	FAppleARKitCamera Camera;
 
@@ -81,6 +71,17 @@ struct APPLEARKIT_API FAppleARKitFrame
 	
 	/** The current world mapping state is reported on the frame */
 	EARWorldMappingState WorldMappingState;
+	
+	/** The current tracked 2D pose */
+	FARPose2D Tracked2DPose;
+
+#if SUPPORTS_ARKIT_3_0
+	/** The person segmentation buffer from ARKit */
+	CVPixelBufferRef SegmentationBuffer = nullptr;
+		
+	/** The estimated depth buffer for person segmentation from ARKit */
+	CVPixelBufferRef EstimatedDepthData = nullptr;
+#endif
 
 	/* 
 	 * When adding new member variables, don't forget to handle them in the copy constructor and

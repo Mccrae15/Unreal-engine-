@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 #pragma once
 
 #include "CoreMinimal.h"
@@ -10,7 +10,7 @@
 DECLARE_DYNAMIC_MULTICAST_DELEGATE(FEmptyOnlineDelegate);
 
 UCLASS(MinimalAPI)
-class UOnlineBlueprintCallProxyBase : public UObject
+class ENGINE_VTABLE UOnlineBlueprintCallProxyBase : public UObject
 {
 	GENERATED_UCLASS_BODY()
 

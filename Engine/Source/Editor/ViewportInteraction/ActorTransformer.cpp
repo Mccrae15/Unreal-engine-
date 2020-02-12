@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "ActorTransformer.h"
 #include "ActorViewportTransformable.h"
@@ -83,6 +83,14 @@ void UActorTransformer::OnActorSelectionChanged( UObject* ChangedObject )
 
 				Transformable->ActorWeakPtr = SelectedActor;
 				Transformable->StartTransform = SelectedActor->GetTransform();
+				for (UViewportInteractor* Interactor : ViewportWorldInteraction->GetInteractors())
+				{
+					if (Interactor->CanCarry())
+					{
+						Transformable->bShouldBeCarried = true;
+						break;
+					}
+				}
 			}
 		}
 	}

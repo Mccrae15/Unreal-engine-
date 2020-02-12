@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -68,6 +68,9 @@ public:
 	{
 		return LastCursorInteractionTime;
 	}
+
+	/** Update the last cursor interaction time to now */
+	void UpdateLastCursorInteractionTime();
 
 	/** Set the position of the cursor, and then work out the correct alignment based on the current text layout */
 	void SetCursorLocationAndCalculateAlignment(const FTextLayout& InTextLayout, const FTextLocation& InCursorPosition);

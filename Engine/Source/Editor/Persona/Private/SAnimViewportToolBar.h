@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -161,6 +161,10 @@ private:
 
 	/** Build the follow bone widget (as a combo button) */
 	TSharedRef<SWidget> MakeFollowBoneComboWidget() const;
+
+public:
+	/** Extend the anim menu */
+	void AddMenuExtender(FName MenuToExtend, FMenuExtensionDelegate MenuBuilderDelegate);
 
 private:
 	/** Build the main toolbar */

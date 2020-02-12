@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 /*=============================================================================
 DebugViewModeMaterialProxy.cpp : Contains definitions the debug view mode material shaders.
@@ -10,202 +10,19 @@ DebugViewModeMaterialProxy.cpp : Contains definitions the debug view mode materi
 #include "EngineModule.h"
 #include "RendererInterface.h"
 
-ENGINE_API bool GetDebugViewMaterial(const UMaterialInterface* InMaterialInterface, EDebugViewShaderMode InDebugViewMode, const FMaterialRenderProxy*& OutMaterialRenderProxy, const FMaterial*& OutMaterial)
-{
 #if WITH_EDITORONLY_DATA
-	return FDebugViewModeMaterialProxy::GetShader(InMaterialInterface, InDebugViewMode, OutMaterialRenderProxy, OutMaterial);
-#else
-	return false;
-#endif
-}
-
-ENGINE_API void ClearDebugViewMaterials(UMaterialInterface* InMaterialInterface)
-{
-#if WITH_EDITORONLY_DATA
-	FDebugViewModeMaterialProxy::ClearAllShaders(InMaterialInterface);
-#endif
-}
-
-#if WITH_EDITORONLY_DATA
-
-TMap<FDebugViewModeMaterialProxy::FMaterialUsagePair, FDebugViewModeMaterialProxy*> FDebugViewModeMaterialProxy::DebugMaterialShaderMap;
-
-volatile bool FDebugViewModeMaterialProxy::bReentrantCall = false;
-
-void FDebugViewModeMaterialProxy::AddShader(
-	UMaterialInterface* InMaterialInterface, 
-	EMaterialQualityLevel::Type InQualityLevel, 
-	ERHIFeatureLevel::Type InFeatureLevel, 
-	bool bSynchronousCompilation, 
-	EDebugViewShaderMode InDebugViewMode)
-{
-	if (!InMaterialInterface) return;
-
-	const FMaterial* Material = InMaterialInterface->GetMaterialResource(InFeatureLevel);
-	const FDebugViewModeInterface* DebugViewModeInterface = FDebugViewModeInterface::GetInterface(InDebugViewMode);
-	if (!Material || !DebugViewModeInterface) return;
-
-	if (!DebugViewModeInterface->bNeedsMaterialProperties && FDebugViewModeInterface::AllowFallbackToDefaultMaterial(Material))
-	{
-		InMaterialInterface = UMaterial::GetDefaultMaterial(MD_Surface);
-	}
-
-	FMaterialUsagePair ShaderMapKey(InMaterialInterface, InDebugViewMode);
-	if (!DebugMaterialShaderMap.Contains(ShaderMapKey))
-	{
-		DebugMaterialShaderMap.Add(ShaderMapKey, new FDebugViewModeMaterialProxy(InMaterialInterface, InQualityLevel, InFeatureLevel, bSynchronousCompilation, InDebugViewMode));
-	}
-}
-
-bool FDebugViewModeMaterialProxy::GetShader(const UMaterialInterface* InMaterialInterface, EDebugViewShaderMode InDebugViewMode, const FMaterialRenderProxy*& OutMaterialRenderProxy, const FMaterial*& OutMaterial)
-{
-	FDebugViewModeMaterialProxy** BoundMaterial = DebugMaterialShaderMap.Find(FMaterialUsagePair(InMaterialInterface, InDebugViewMode));
-	if (BoundMaterial && *BoundMaterial && (*BoundMaterial)->IsValid() && (*BoundMaterial)->GetRenderingThreadShaderMap())
-	{
-		OutMaterialRenderProxy = *BoundMaterial;
-		OutMaterial = *BoundMaterial;
-		return true;
-	}
-	else
-	{
-		return false;
-	}
-}
-
-void FDebugViewModeMaterialProxy::ClearAllShaders(UMaterialInterface* InMaterialInterface)
-{
-	if (bReentrantCall || DebugMaterialShaderMap.Num() == 0) return;
-
-	FlushRenderingCommands();
-	bReentrantCall = true;
-
-	TArray<FDebugViewModeMaterialProxy*, TInlineAllocator<1> > MaterialsToDelete;
-
-	if (!InMaterialInterface)
-	{
-		for (TMap<FMaterialUsagePair, FDebugViewModeMaterialProxy*>::TIterator It(DebugMaterialShaderMap); It; ++It)
-		{
-			FDebugViewModeMaterialProxy* Proxy = It.Value();
-			MaterialsToDelete.Add(Proxy);
-			It.Value() = nullptr;
-		}
-		DebugMaterialShaderMap.Empty();
-	}
-	else
-	{
-		for (TMap<FMaterialUsagePair, FDebugViewModeMaterialProxy*>::TIterator It(DebugMaterialShaderMap); It; ++It)
-		{
-			if (It.Key().MaterialInterface == InMaterialInterface)
-			{
-				FDebugViewModeMaterialProxy* Proxy = It.Value();
-				MaterialsToDelete.Add(Proxy);
-				It.Value() = nullptr;
-
-				It.RemoveCurrent();
-			}
-		}
-	}
-
-	if (MaterialsToDelete.Num())
-	{
-		ENQUEUE_RENDER_COMMAND(DeleteDebugMaterials)([MaterialsToDelete](FRHICommandList& RHICmdList)
-		{
-			for (FDebugViewModeMaterialProxy* MaterialToDelete : MaterialsToDelete)
-			{
-				if (MaterialToDelete)
-				{
-					delete MaterialToDelete;
-				}
-			}
-		});
-
-		FlushRenderingCommands();
-	}
-
-	bReentrantCall = false;
-}
-
-void FDebugViewModeMaterialProxy::ValidateAllShaders(TSet<UMaterialInterface*>& Materials)
-{
-	FlushRenderingCommands();
-
-	TArray<FDebugViewModeMaterialProxy*> MaterialsToUpdate;
-
-	for (TMap<FMaterialUsagePair, FDebugViewModeMaterialProxy*>::TIterator It(DebugMaterialShaderMap); It; ++It)
-	{
-		const UMaterialInterface* OriginalMaterialInterface = It.Key().MaterialInterface;
-		FDebugViewModeMaterialProxy* DebugMaterial = It.Value();
-
-		if (DebugMaterial != nullptr)
-		{
-			const FMaterial* OriginalMaterial = OriginalMaterialInterface->GetMaterialResource(DebugMaterial->FMaterial::GetFeatureLevel());
-
-			if (OriginalMaterial != nullptr && OriginalMaterial->GetGameThreadShaderMap() && DebugMaterial->GetGameThreadShaderMap())
-			{
-				const FUniformExpressionSet& DebugViewUniformExpressionSet = DebugMaterial->GetGameThreadShaderMap()->GetUniformExpressionSet();
-				const FUniformExpressionSet& OrignialUniformExpressionSet = OriginalMaterial->GetGameThreadShaderMap()->GetUniformExpressionSet();
-
-				if (DebugViewUniformExpressionSet == OrignialUniformExpressionSet)
-				{
-					MaterialsToUpdate.Add(DebugMaterial);
-				}
-				else
-				{
-					// This will happen when the debug shader compiled misses logic. Usually caused by custom features in the original shader compilation not implemented in FDebugViewModeMaterialProxy.
-					UE_LOG(TextureStreamingBuild, Verbose, TEXT("Uniform expression set mismatch for %s, skipping shader"), *DebugMaterial->GetMaterialInterface()->GetName());
-
-					// Here we can't destroy the invalid material because it would trigger ClearAllShaders.
-					DebugMaterial->MarkAsInvalid();
-					Materials.Remove(const_cast<UMaterialInterface*>(DebugMaterial->GetMaterialInterface()));
-				}
-			}
-			else
-			{
-				// When using synchronous compilation, it is normal for the original material to not be ready yet.
-				// In this case, we can't validate that the shader will be 100% compatible for overrides, meaning it is risky to use for viewmodes.
-				// This implies that viewmode can't use synchronous compilation.
-				if (!DebugMaterial->GetGameThreadShaderMap() || !DebugMaterial->RequiresSynchronousCompilation())
-				{
-					UE_LOG(TextureStreamingBuild, Verbose, TEXT("Can't get valid shadermap for %s, skipping shader"), *DebugMaterial->GetMaterialInterface()->GetName());
-
-					// Here we can't destroy the invalid material because it would trigger ClearAllShaders.
-					DebugMaterial->MarkAsInvalid();
-					Materials.Remove(const_cast<UMaterialInterface*>(DebugMaterial->GetMaterialInterface()));
-				}
-				else
-				{
-					MaterialsToUpdate.Add(DebugMaterial);
-				}
-				
-			}
-		}
-	}
-
-	if (MaterialsToUpdate.Num())
-	{
-		ENQUEUE_RENDER_COMMAND(UpdateDebugMaterialExpressionCache)([MaterialsToUpdate](FRHICommandList& RHICmdList)
-		{
-			for (FDebugViewModeMaterialProxy* MaterialToUpdate : MaterialsToUpdate)
-			{
-				check(MaterialToUpdate);
-				MaterialToUpdate->UpdateUniformExpressionCacheIfNeeded(MaterialToUpdate->FMaterial::GetFeatureLevel());
-			}
-		});
-
-		FlushRenderingCommands();
-	}
-}
 
 FDebugViewModeMaterialProxy::FDebugViewModeMaterialProxy(
 	UMaterialInterface* InMaterialInterface, 
 	EMaterialQualityLevel::Type QualityLevel, 
-	ERHIFeatureLevel::Type FeatureLevel, 
+	ERHIFeatureLevel::Type InFeatureLevel,
 	bool InSynchronousCompilation, 
 	EDebugViewShaderMode InDebugViewMode
 )
 	: FMaterial()
 	, MaterialInterface(InMaterialInterface)
 	, Material(nullptr)
+	, FeatureLevel(InFeatureLevel)
 	, Usage(EMaterialShaderMapUsage::DebugViewMode)
 	, DebugViewMode(InDebugViewMode)
 	, PixelShaderName(nullptr)
@@ -215,52 +32,61 @@ FDebugViewModeMaterialProxy::FDebugViewModeMaterialProxy(
 	, bSynchronousCompilation(InSynchronousCompilation)
 {
 	SetQualityLevelProperties(QualityLevel, false, FeatureLevel);
+	const EShaderPlatform ShaderPlatform = GetFeatureLevelShaderPlatform(FeatureLevel);
+
 	Material = InMaterialInterface->GetMaterial();
-	MaterialInterface->AppendReferencedTextures(ReferencedTextures);
+	ReferencedTextures = MaterialInterface->GetReferencedTextures();
 
 	FMaterialResource* Resource = InMaterialInterface->GetMaterialResource(FeatureLevel);
-	
-	const FDebugViewModeInterface* DebugViewModeInterface = FDebugViewModeInterface::GetInterface(InDebugViewMode);
-	if (DebugViewModeInterface)
+	if (Resource)
 	{
-		PixelShaderName = DebugViewModeInterface->PixelShaderName;
-
-		if (!DebugViewModeInterface->bNeedsOnlyLocalVertexFactor)
+		const FDebugViewModeInterface* DebugViewModeInterface = FDebugViewModeInterface::GetInterface(InDebugViewMode);
+		if (DebugViewModeInterface)
 		{
-			// Cache material usage.
-			bIsUsedWithSkeletalMesh = Resource->IsUsedWithSkeletalMesh();
-			bIsUsedWithLandscape = Resource->IsUsedWithLandscape();
-			bIsUsedWithParticleSystem = Resource->IsUsedWithParticleSystem();
-			bIsUsedWithParticleSprites = Resource->IsUsedWithParticleSprites();
-			bIsUsedWithBeamTrails = Resource->IsUsedWithBeamTrails();
-			bIsUsedWithMeshParticles = Resource->IsUsedWithMeshParticles();
-			bIsUsedWithNiagaraSprites = Resource->IsUsedWithNiagaraSprites();
-			bIsUsedWithNiagaraRibbons = Resource->IsUsedWithNiagaraRibbons();
-			bIsUsedWithNiagaraMeshParticles = Resource->IsUsedWithNiagaraMeshParticles();
-			bIsUsedWithMorphTargets = Resource->IsUsedWithMorphTargets();
-			bIsUsedWithSplineMeshes = Resource->IsUsedWithSplineMeshes();
-			bIsUsedWithInstancedStaticMeshes = Resource->IsUsedWithInstancedStaticMeshes();
-			bIsUsedWithAPEXCloth = Resource->IsUsedWithAPEXCloth();
+			PixelShaderName = DebugViewModeInterface->PixelShaderName;
+
+			if (!DebugViewModeInterface->bNeedsOnlyLocalVertexFactor)
+			{
+				// Cache material usage.
+				bIsUsedWithSkeletalMesh = Resource->IsUsedWithSkeletalMesh();
+				bIsUsedWithLandscape = Resource->IsUsedWithLandscape();
+				bIsUsedWithParticleSystem = Resource->IsUsedWithParticleSystem();
+				bIsUsedWithParticleSprites = Resource->IsUsedWithParticleSprites();
+				bIsUsedWithBeamTrails = Resource->IsUsedWithBeamTrails();
+				bIsUsedWithMeshParticles = Resource->IsUsedWithMeshParticles();
+				bIsUsedWithNiagaraSprites = Resource->IsUsedWithNiagaraSprites();
+				bIsUsedWithNiagaraRibbons = Resource->IsUsedWithNiagaraRibbons();
+				bIsUsedWithNiagaraMeshParticles = Resource->IsUsedWithNiagaraMeshParticles();
+				bIsUsedWithMorphTargets = Resource->IsUsedWithMorphTargets();
+				bIsUsedWithSplineMeshes = Resource->IsUsedWithSplineMeshes();
+				bIsUsedWithInstancedStaticMeshes = Resource->IsUsedWithInstancedStaticMeshes();
+				bIsUsedWithAPEXCloth = Resource->IsUsedWithAPEXCloth();
+				bIsUsedWithWater = Resource->IsUsedWithWater();
+			}
 		}
+
+		FMaterialShaderMapId ResourceId;
+		Resource->GetShaderMapId(ShaderPlatform, ResourceId);
+
+		{
+			TArray<FShaderType*> ShaderTypes;
+			TArray<FVertexFactoryType*> VFTypes;
+			TArray<const FShaderPipelineType*> ShaderPipelineTypes;
+			GetDependentShaderAndVFTypes(ShaderPlatform, ShaderTypes, ShaderPipelineTypes, VFTypes);
+
+			// Overwrite the shader map Id's dependencies with ones that came from the FMaterial actually being compiled (this)
+			// This is necessary as we change FMaterial attributes like GetShadingModels(), which factor into the ShouldCache functions that determine dependent shader types
+			ResourceId.SetShaderDependencies(ShaderTypes, ShaderPipelineTypes, VFTypes, ShaderPlatform);
+		}
+
+		ResourceId.Usage = Usage;
+
+		CacheShaders(ResourceId, ShaderPlatform);
 	}
-
-	FMaterialShaderMapId ResourceId;
-	Resource->GetShaderMapId(GMaxRHIShaderPlatform, ResourceId);
-
+	else
 	{
-		TArray<FShaderType*> ShaderTypes;
-		TArray<FVertexFactoryType*> VFTypes;
-		TArray<const FShaderPipelineType*> ShaderPipelineTypes;
-		GetDependentShaderAndVFTypes(GMaxRHIShaderPlatform, ShaderTypes, ShaderPipelineTypes, VFTypes);
-
-		// Overwrite the shader map Id's dependencies with ones that came from the FMaterial actually being compiled (this)
-		// This is necessary as we change FMaterial attributes like GetShadingModel(), which factor into the ShouldCache functions that determine dependent shader types
-		ResourceId.SetShaderDependencies(ShaderTypes, ShaderPipelineTypes, VFTypes, GMaxRHIShaderPlatform);
+		bValid = false;
 	}
-
-	ResourceId.Usage = Usage;
-
-	CacheShaders(ResourceId, GMaxRHIShaderPlatform, true);
 }
 
 bool FDebugViewModeMaterialProxy::RequiresSynchronousCompilation() const
@@ -268,7 +94,7 @@ bool FDebugViewModeMaterialProxy::RequiresSynchronousCompilation() const
 	return bSynchronousCompilation;
 }
 
-const FMaterial& FDebugViewModeMaterialProxy::GetMaterialWithFallback(ERHIFeatureLevel::Type FeatureLevel, const FMaterialRenderProxy*& OutFallbackMaterialRenderProxy) const
+const FMaterial& FDebugViewModeMaterialProxy::GetMaterialWithFallback(ERHIFeatureLevel::Type InFeatureLevel, const FMaterialRenderProxy*& OutFallbackMaterialRenderProxy) const
 {
 	if (GetRenderingThreadShaderMap())
 	{
@@ -277,23 +103,28 @@ const FMaterial& FDebugViewModeMaterialProxy::GetMaterialWithFallback(ERHIFeatur
 	else
 	{
 		OutFallbackMaterialRenderProxy = UMaterial::GetDefaultMaterial(MD_Surface)->GetRenderProxy();
-		return OutFallbackMaterialRenderProxy->GetMaterialWithFallback(FeatureLevel, OutFallbackMaterialRenderProxy);
+		return OutFallbackMaterialRenderProxy->GetMaterialWithFallback(InFeatureLevel, OutFallbackMaterialRenderProxy);
 	}
 }
 
-bool FDebugViewModeMaterialProxy::GetVectorValue(const FMaterialParameterInfo& ParameterInfo, FLinearColor* OutValue, const FMaterialRenderContext& Context) const
+bool FDebugViewModeMaterialProxy::GetVectorValue(const FHashedMaterialParameterInfo& ParameterInfo, FLinearColor* OutValue, const FMaterialRenderContext& Context) const
 {
 	return MaterialInterface->GetRenderProxy()->GetVectorValue(ParameterInfo, OutValue, Context);
 }
 
-bool FDebugViewModeMaterialProxy::GetScalarValue(const FMaterialParameterInfo& ParameterInfo, float* OutValue, const FMaterialRenderContext& Context) const
+bool FDebugViewModeMaterialProxy::GetScalarValue(const FHashedMaterialParameterInfo& ParameterInfo, float* OutValue, const FMaterialRenderContext& Context) const
 {
 	return MaterialInterface->GetRenderProxy()->GetScalarValue(ParameterInfo, OutValue, Context);
 }
 
-bool FDebugViewModeMaterialProxy::GetTextureValue(const FMaterialParameterInfo& ParameterInfo,const UTexture** OutValue, const FMaterialRenderContext& Context) const
+bool FDebugViewModeMaterialProxy::GetTextureValue(const FHashedMaterialParameterInfo& ParameterInfo,const UTexture** OutValue, const FMaterialRenderContext& Context) const
 {
 	return MaterialInterface->GetRenderProxy()->GetTextureValue(ParameterInfo,OutValue,Context);
+}
+
+bool FDebugViewModeMaterialProxy::GetTextureValue(const FHashedMaterialParameterInfo& ParameterInfo, const URuntimeVirtualTexture** OutValue, const FMaterialRenderContext& Context) const
+{
+	return MaterialInterface->GetRenderProxy()->GetTextureValue(ParameterInfo, OutValue, Context);
 }
 
 EMaterialDomain FDebugViewModeMaterialProxy::GetMaterialDomain() const
@@ -341,9 +172,14 @@ enum EBlendMode FDebugViewModeMaterialProxy::GetBlendMode() const
 	return MaterialInterface ? MaterialInterface->GetBlendMode() : BLEND_Opaque;
 }
 
-enum EMaterialShadingModel FDebugViewModeMaterialProxy::GetShadingModel() const
+FMaterialShadingModelField FDebugViewModeMaterialProxy::GetShadingModels() const
 { 
-	return Material ? Material->GetShadingModel() : MSM_Unlit;
+	return Material ? Material->GetShadingModels() : MSM_Unlit;
+}
+
+bool FDebugViewModeMaterialProxy::IsShadingModelFromMaterialExpression() const
+{ 
+	return Material ? Material->IsShadingModelFromMaterialExpression() : false;
 }
 
 float FDebugViewModeMaterialProxy::GetOpacityMaskClipValue() const
@@ -372,4 +208,28 @@ void FDebugViewModeMaterialProxy::GatherExpressionsForCustomInterpolators(TArray
 	}
 }
 
-#endif
+enum EMaterialTessellationMode FDebugViewModeMaterialProxy::GetTessellationMode() const
+{
+	FMaterialResource* Resource = MaterialInterface->GetMaterialResource(FeatureLevel);
+	return Resource ? Resource->GetTessellationMode() : MTM_NoTessellation;
+}
+
+bool FDebugViewModeMaterialProxy::IsCrackFreeDisplacementEnabled() const
+{
+	FMaterialResource* Resource = MaterialInterface->GetMaterialResource(FeatureLevel);
+	return Resource ? Resource->IsCrackFreeDisplacementEnabled() : false;
+}
+
+bool FDebugViewModeMaterialProxy::IsAdaptiveTessellationEnabled() const
+{
+	FMaterialResource* Resource = MaterialInterface->GetMaterialResource(FeatureLevel);
+	return Resource ? Resource->IsAdaptiveTessellationEnabled() : false;
+}
+
+float FDebugViewModeMaterialProxy::GetMaxDisplacement() const
+{
+	FMaterialResource* Resource = MaterialInterface->GetMaterialResource(FeatureLevel);
+	return Resource ? Resource->GetMaxDisplacement() : 0.0f;
+}
+
+#endif // WITH_EDITORONLY_DATA

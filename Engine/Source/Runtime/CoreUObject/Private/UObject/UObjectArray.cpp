@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 /*=============================================================================
 	UnObjArray.cpp: Unreal array of all objects
@@ -14,6 +14,69 @@ DEFINE_LOG_CATEGORY_STATIC(LogUObjectArray, Log, All);
 
 FUObjectClusterContainer GUObjectClusters;
 
+#if STATS || ENABLE_STATNAMEDEVENTS_UOBJECT
+void FUObjectItem::CreateStatID() const
+{
+	// @todo can we put this in a header?
+//		SCOPE_CYCLE_COUNTER(STAT_CreateStatID);
+
+	FString LongName;
+	LongName.Reserve(255);
+	TArray<UObjectBase const*, TInlineAllocator<24>> ClassChain;
+
+	// Build class hierarchy
+	UObjectBase const* Target = Object;
+	do
+	{
+		ClassChain.Add(Target);
+		Target = Target->GetOuter();
+	} while (Target);
+
+	// Start with class name
+	if (Object->GetClass())
+	{
+		Object->GetClass()->GetFName().GetDisplayNameEntry()->AppendNameToString(LongName);
+	}
+
+	// Now process from parent -> child so we can append strings more efficiently.
+	bool bFirstEntry = true;
+	for (int32 i = ClassChain.Num() - 1; i >= 0; i--)
+	{
+		Target = ClassChain[i];
+		const FNameEntry* NameEntry = Target->GetFName().GetDisplayNameEntry();
+		if (bFirstEntry)
+		{
+			NameEntry->AppendNameToPathString(LongName);
+		}
+		else
+		{
+			if (!LongName.IsEmpty())
+			{
+				LongName += TEXT(".");
+			}
+			NameEntry->AppendNameToString(LongName);
+		}
+		bFirstEntry = false;
+	}
+
+#if STATS
+	StatID = FDynamicStats::CreateStatId<FStatGroup_STATGROUP_UObjects>(LongName);
+#else // ENABLE_STATNAMEDEVENTS
+	const auto& ConversionData = StringCast<PROFILER_CHAR>(*LongName);
+	const int32 NumStorageChars = (ConversionData.Length() + 1);	//length doesn't include null terminator
+
+	PROFILER_CHAR* StoragePtr = new PROFILER_CHAR[NumStorageChars];
+	FMemory::Memcpy(StoragePtr, ConversionData.Get(), NumStorageChars * sizeof(PROFILER_CHAR));
+
+	if (FPlatformAtomics::InterlockedCompareExchangePointer((void**)&StatIDStringStorage, StoragePtr, nullptr) != nullptr)
+	{
+		delete[] StoragePtr;
+	}
+
+	StatID = TStatId(StatIDStringStorage);
+#endif
+}
+#endif
 FUObjectArray::FUObjectArray()
 : ObjFirstGCIndex(0)
 , ObjLastNonGCIndex(INDEX_NONE)
@@ -66,40 +129,40 @@ void FUObjectArray::CloseDisregardForGC()
 	check(OpenForDisregardForGC);
 
 	// Make sure all classes that have been loaded/created so far are properly initialized
-	if (!GIsRequestingExit)
+	if (!IsEngineExitRequested())
 	{
 		ProcessNewlyLoadedUObjects();
-	}
 
-	UClass::AssembleReferenceTokenStreams();
+		UClass::AssembleReferenceTokenStreams();
 
-	if (GIsInitialLoad)
-	{
-		// Iterate over all objects and mark them to be part of root set.
-		int32 NumAlwaysLoadedObjects = 0;
-		int32 NumRootObjects = 0;
-		for (FObjectIterator It; It; ++It)
+		if (GIsInitialLoad)
 		{
-			UObject* Object = *It;
-			if (Object->IsSafeForRootSet())
+			// Iterate over all objects and mark them to be part of root set.
+			int32 NumAlwaysLoadedObjects = 0;
+			int32 NumRootObjects = 0;
+			for (FObjectIterator It; It; ++It)
 			{
-				NumRootObjects++;
-				Object->AddToRoot();
+				UObject* Object = *It;
+				if (Object->IsSafeForRootSet())
+				{
+					NumRootObjects++;
+					Object->AddToRoot();
+				}
+				else if (Object->IsRooted())
+				{
+					Object->RemoveFromRoot();
+				}
+				NumAlwaysLoadedObjects++;
 			}
-			else if (Object->IsRooted())
+
+			UE_LOG(LogUObjectArray, Log, TEXT("%i objects as part of root set at end of initial load."), NumAlwaysLoadedObjects);
+			if (GUObjectArray.DisregardForGCEnabled())
 			{
-				Object->RemoveFromRoot();
+				UE_LOG(LogUObjectArray, Log, TEXT("%i objects are not in the root set, but can never be destroyed because they are in the DisregardForGC set."), NumAlwaysLoadedObjects - NumRootObjects);
 			}
-			NumAlwaysLoadedObjects++;
-		}
 
-		UE_LOG(LogUObjectArray, Log, TEXT("%i objects as part of root set at end of initial load."), NumAlwaysLoadedObjects);
-		if (GUObjectArray.DisregardForGCEnabled())
-		{
-			UE_LOG(LogUObjectArray, Log, TEXT("%i objects are not in the root set, but can never be destroyed because they are in the DisregardForGC set."), NumAlwaysLoadedObjects - NumRootObjects);
+			GUObjectAllocator.BootMessage();
 		}
-
-		GUObjectAllocator.BootMessage();
 	}
 
 	// When disregard for GC pool is closed, make sure the first GC index is set after the last non-GC index.
@@ -197,7 +260,7 @@ void FUObjectArray::AllocateUObjectIndex(UObjectBase* Object, bool bMergingThrea
 void FUObjectArray::FreeUObjectIndex(UObjectBase* Object)
 {
 	// This should only be happening on the game thread (GC runs only on game thread when it's freeing objects)
-	check(IsInGameThread());
+	check(IsInGameThread() || IsInGarbageCollectorThread());
 
 	int32 Index = Object->InternalIndex;
 	// At this point no two objects exist with the same index so no need to lock here
@@ -206,17 +269,21 @@ void FUObjectArray::FreeUObjectIndex(UObjectBase* Object)
 		UE_LOG(LogUObjectArray, Fatal, TEXT("Unexpected concurency while adding new object"));
 	}
 
-	// @todo: threading: delete listeners should be locked while we're doing this
-	// Iterate in reverse order so that when one of the listeners removes itself from the array inside of NotifyUObjectDeleted we don't skip the next listener.
-	for (int32 ListenerIndex = UObjectDeleteListeners.Num() - 1; ListenerIndex >= 0; --ListenerIndex)
 	{
-		UObjectDeleteListeners[ListenerIndex]->NotifyUObjectDeleted(Object, Index);
+#if THREADSAFE_UOBJECTS
+		FScopeLock UObjectDeleteListenersLock(&UObjectDeleteListenersCritical);
+#endif
+		// Iterate in reverse order so that when one of the listeners removes itself from the array inside of NotifyUObjectDeleted we don't skip the next listener.
+		for (int32 ListenerIndex = UObjectDeleteListeners.Num() - 1; ListenerIndex >= 0; --ListenerIndex)
+		{
+			UObjectDeleteListeners[ListenerIndex]->NotifyUObjectDeleted(Object, Index);
+		}
 	}
 	// You cannot safely recycle indicies in the non-GC range
 	// No point in filling this list when doing exit purge. Nothing should be allocated afterwards anyway.
+	IndexToObject(Index)->ResetSerialNumberAndFlags();
 	if (Index > ObjLastNonGCIndex && !GExitPurge)  
 	{
-		IndexToObject(Index)->ResetSerialNumberAndFlags();
 		ObjAvailableList.Push((int32*)(uintptr_t)Index);
 #if UE_GC_TRACK_OBJ_AVAILABLE
 		ObjAvailableCount.Increment();
@@ -335,4 +402,23 @@ int32 FUObjectArray::AllocateSerialNumber(int32 Index)
  */
 void FUObjectArray::ShutdownUObjectArray()
 {
+	{
+#if THREADSAFE_UOBJECTS
+		FScopeLock UObjectDeleteListenersLock(&UObjectDeleteListenersCritical);
+#endif
+		for (int32 Index = UObjectDeleteListeners.Num() - 1; Index >= 0; --Index)
+		{
+			FUObjectDeleteListener* Listener = UObjectDeleteListeners[Index];
+			Listener->OnUObjectArrayShutdown();
+		}
+		UE_CLOG(UObjectDeleteListeners.Num(), LogUObjectArray, Fatal, TEXT("All UObject delete listeners should be unregistered when shutting down the UObject array"));
+	}
+	{
+		for (int32 Index = UObjectCreateListeners.Num() - 1; Index >= 0; --Index)
+		{
+			FUObjectCreateListener* Listener = UObjectCreateListeners[Index];
+			Listener->OnUObjectArrayShutdown();
+		}
+		UE_CLOG(UObjectCreateListeners.Num(), LogUObjectArray, Fatal, TEXT("All UObject delete listeners should be unregistered when shutting down the UObject array"));
+	}
 }

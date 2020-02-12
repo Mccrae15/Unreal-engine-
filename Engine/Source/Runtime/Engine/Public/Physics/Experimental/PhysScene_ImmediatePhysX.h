@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -11,6 +11,7 @@
 #include "PhysScene_PhysX.h"
 #include "PhysicsEngine/PhysicsSettingsEnums.h"
 #include "GenericPhysicsInterface.h"
+#include "HAL/LowLevelMemTracker.h"
 
 struct FConstraintBrokenDelegateData;
 class IPhysicsReplicationFactory;
@@ -174,6 +175,7 @@ class FPhysScene_ImmediatePhysX : public FGenericPhysicsInterface
 	
 		FPageStruct* AllocPage()
 		{
+			LLM_SCOPE(ELLMTag::PhysX);
 			FPageStruct* ReturnPage = (FPageStruct*)FMemory::Malloc(sizeof(FPageStruct), 16);
 			new(ReturnPage) FPageStruct();
 		
@@ -468,7 +470,7 @@ public:
 	ENGINE_API void DeferredRemoveCollisionDisableTable(uint32 SkelMeshCompID);
 
 	/** Add this SkeletalMeshComponent to the list needing kinematic bodies updated before simulating physics */
-	void MarkForPreSimKinematicUpdate(USkeletalMeshComponent* InSkelComp, ETeleportType InTeleport, bool bNeedsSkinning);
+	bool MarkForPreSimKinematicUpdate(USkeletalMeshComponent* InSkelComp, ETeleportType InTeleport, bool bNeedsSkinning);
 
 	/** Remove this SkeletalMeshComponent from set needing kinematic update before simulating physics*/
 	void ClearPreSimKinematicUpdate(USkeletalMeshComponent* InSkelComp);

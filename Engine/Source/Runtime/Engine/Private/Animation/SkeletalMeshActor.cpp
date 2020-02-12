@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "Animation/SkeletalMeshActor.h"
 #include "Net/UnrealNetwork.h"
@@ -78,7 +78,7 @@ void ASkeletalMeshActor::PreviewSetAnimPosition(FName SlotName, int32 ChannelInd
 	if (CanPlayAnimation(InAnimSequence))
 	{
 		TWeakObjectPtr<class UAnimMontage>& CurrentlyPlayingMontage = CurrentlyPlayingMontages.FindOrAdd(SlotName);
-		CurrentlyPlayingMontage = FAnimMontageInstance::PreviewMatineeSetAnimPositionInner(SlotName, SkeletalMeshComponent, InAnimSequence, InPosition, bLooping, bFireNotifies, DeltaTime);
+		CurrentlyPlayingMontage = FAnimMontageInstance::PreviewMatineeSetAnimPositionInner(SlotName, SkeletalMeshComponent, SkeletalMeshComponent->GetAnimInstance(),  InAnimSequence, InPosition, bLooping, bFireNotifies, DeltaTime);
 	}
 }
 
@@ -169,7 +169,7 @@ void ASkeletalMeshActor::PostInitializeComponents()
 {
 	Super::PostInitializeComponents();
 	// grab the current mesh for replication
-	if (Role == ROLE_Authority && SkeletalMeshComponent)
+	if (GetLocalRole() == ROLE_Authority && SkeletalMeshComponent)
 	{
 		ReplicatedMesh = SkeletalMeshComponent->SkeletalMesh;
 	}
@@ -224,7 +224,7 @@ void ASkeletalMeshActor::SetAnimPosition(FName SlotName, int32 ChannelIndex, UAn
 	if (CanPlayAnimation(InAnimSequence))
 	{
 		TWeakObjectPtr<class UAnimMontage>& CurrentlyPlayingMontage = CurrentlyPlayingMontages.FindOrAdd(SlotName);
-		CurrentlyPlayingMontage = FAnimMontageInstance::SetMatineeAnimPositionInner(SlotName, SkeletalMeshComponent, InAnimSequence, InPosition, bLooping);
+		CurrentlyPlayingMontage = FAnimMontageInstance::SetMatineeAnimPositionInner(SlotName, SkeletalMeshComponent->GetAnimInstance(), InAnimSequence, InPosition, bLooping);
 	}
 }
 
@@ -291,7 +291,7 @@ void ASkeletalMeshActor::LoadedFromAnotherClass(const FName& OldClassName)
 			SkeletalMeshComponent->bBlendPhysics = true;
 
 			bAlwaysRelevant = true;
-			bReplicateMovement = true;
+			SetReplicatingMovement(true);
 			SetRemoteRoleForBackwardsCompat(ROLE_SimulatedProxy);
 			bReplicates = true;
 		}

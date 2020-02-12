@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -7,6 +7,7 @@
 #include "UObject/GCObject.h"
 #include "UnrealWidget.h"
 #include "EdMode.h"
+#include "LandscapeEdit.h"
 
 class FEditorViewportClient;
 class FPrimitiveDrawInterface;
@@ -136,18 +137,6 @@ struct FLandscapeBrushSet
 	}
 };
 
-namespace ELandscapeToolTargetType
-{
-	enum Type : int8
-	{
-		Heightmap  = 0,
-		Weightmap  = 1,
-		Visibility = 2,
-
-		Invalid    = -1, // only valid for LandscapeEdMode->CurrentToolTarget.TargetType
-	};
-}
-
 namespace ELandscapeToolTargetTypeMask
 {
 	enum Type : uint8
@@ -176,14 +165,12 @@ struct FLandscapeToolTarget
 	ELandscapeToolTargetType::Type TargetType;
 	TWeakObjectPtr<ULandscapeLayerInfoObject> LayerInfo;
 	FName LayerName;
-	int32 CurrentProceduralLayerIndex;
-
+	
 	FLandscapeToolTarget()
 		: LandscapeInfo()
 		, TargetType(ELandscapeToolTargetType::Heightmap)
 		, LayerInfo()
 		, LayerName(NAME_None)
-		, CurrentProceduralLayerIndex(INDEX_NONE)
 	{
 	}
 };
@@ -216,6 +203,7 @@ public:
 	virtual ~FLandscapeTool() {}
 	virtual const TCHAR* GetToolName() = 0;
 	virtual FText GetDisplayName() = 0;
+	virtual FText GetDisplayMessage() = 0;
 	virtual void SetEditRenderType();
 	virtual void Render(const FSceneView* View, FViewport* Viewport, FPrimitiveDrawInterface* PDI) {}
 	virtual bool SupportsMask() { return true; }
@@ -230,6 +218,15 @@ public:
 	virtual FVector GetWidgetLocation() const { return FVector::ZeroVector; }
 	virtual FMatrix GetWidgetRotation() const { return FMatrix::Identity; }
 	virtual bool DisallowMouseDeltaTracking() const { return false; }
+
+	/** Get override cursor visibility settings */
+	virtual bool GetOverrideCursorVisibility(bool& bWantsOverride, bool& bHardwareCursorVisible, bool bSoftwareCursorVisible) const { return false; }
+
+	/** Called before mouse movement is converted to drag/rot */
+	virtual bool PreConvertMouseMovement(FEditorViewportClient* InViewportClient) { return false; }
+
+	/** Called after mouse movement is converted to drag/rot */
+	virtual bool PostConvertMouseMovement(FEditorViewportClient* InViewportClient) { return false; }
 
 	virtual void SetCanToolBeActivated(bool Value) { }
 	virtual bool CanToolBeActivated() const { return true;  }

@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -47,7 +47,7 @@ struct NAVIGATIONSYSTEM_API FNavigationFilterArea
 };
 
 // 
-// Use UNavigationSystem.DescribeFilterFlags() to setup user friendly names of flags
+// Use UNavigationSystemV1.DescribeFilterFlags() to setup user friendly names of flags
 // 
 USTRUCT()
 struct NAVIGATIONSYSTEM_API FNavigationFilterFlags

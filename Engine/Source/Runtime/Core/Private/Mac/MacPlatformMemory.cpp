@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 /*=============================================================================
 	MacPlatformMemory.cpp: Mac platform memory functions
@@ -134,7 +134,7 @@ FPlatformMemoryStats FMacPlatformMemory::GetStats()
 {
 	const FPlatformMemoryConstants& MemoryConstants = FPlatformMemory::GetConstants();
 
-	FPlatformMemoryStats MemoryStats;
+	static FPlatformMemoryStats MemoryStats;
 
 	// Gather platform memory stats.
 	vm_statistics Stats;

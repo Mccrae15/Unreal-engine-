@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 /**
 	Concrete implementation of FAudioDevice for Apple's CoreAudio
@@ -6,19 +6,26 @@
 */
 
 #include "AudioMixer.h"
-#include "AudioMixerDevice.h"
 #include "AudioMixerPlatformAudioUnit.h"
-
+#include "Modules/ModuleManager.h"
 
 class FAudioMixerModuleAudioUnit : public IAudioDeviceModule
 {
 public:
+
+	virtual void StartupModule() override
+	{
+		IAudioDeviceModule::StartupModule();
+
+		FModuleManager::Get().LoadModuleChecked(TEXT("AudioMixerCore"));
+	}
+
 	virtual bool IsAudioMixerModule() const override { return true; }
 
-	virtual FAudioDevice* CreateAudioDevice() override
-	{
-		return new Audio::FMixerDevice(new Audio::FMixerPlatformAudioUnit());
-	}
+    virtual Audio::IAudioMixerPlatformInterface* CreateAudioMixerPlatformInterface() override
+    {
+        return new Audio::FMixerPlatformAudioUnit();
+    }
 };
 
 IMPLEMENT_MODULE(FAudioMixerModuleAudioUnit, AudioMixerAudioUnit);

@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 /*=============================================================================
 LightMapRendering.cpp: Light map rendering implementations.
@@ -9,8 +9,10 @@ LightMapRendering.cpp: Light map rendering implementations.
 #include "PrecomputedVolumetricLightmap.h"
 
 #include "Runtime/Engine/Classes/VT/VirtualTexture.h"
-#include "Runtime/Engine/Classes/VT/VirtualTextureSpace.h"
+#include "Runtime/Renderer/Private/VT/VirtualTextureSpace.h"
 #include "VT/VirtualTextureSpace.h"
+
+IMPLEMENT_TYPE_LAYOUT(FUniformLightMapPolicyShaderParametersType);
 
 IMPLEMENT_GLOBAL_SHADER_PARAMETER_STRUCT(FIndirectLightingCacheUniformParameters, "IndirectLightingCache");
 
@@ -26,23 +28,28 @@ int32 GNumLightmapCoefficients[2] =
 	NUM_HQ_LIGHTMAP_COEF
 };
 
-void FCachedPointIndirectLightingPolicy::ModifyCompilationEnvironment(EShaderPlatform Platform, const FMaterial* Material, FShaderCompilerEnvironment& OutEnvironment)
+void FCachedPointIndirectLightingPolicy::ModifyCompilationEnvironment(const FMaterialShaderPermutationParameters& Parameters, FShaderCompilerEnvironment& OutEnvironment)
 {
 	OutEnvironment.SetDefine(TEXT("CACHED_POINT_INDIRECT_LIGHTING"),TEXT("1"));	
 }
 
-void FSelfShadowedCachedPointIndirectLightingPolicy::ModifyCompilationEnvironment(EShaderPlatform Platform, const FMaterial* Material, FShaderCompilerEnvironment& OutEnvironment)
+void FSelfShadowedCachedPointIndirectLightingPolicy::ModifyCompilationEnvironment(const FMaterialShaderPermutationParameters& Parameters, FShaderCompilerEnvironment& OutEnvironment)
 {
 	OutEnvironment.SetDefine(TEXT("CACHED_POINT_INDIRECT_LIGHTING"),TEXT("1"));	
-	FSelfShadowedTranslucencyPolicy::ModifyCompilationEnvironment(Platform, Material, OutEnvironment);
+	FSelfShadowedTranslucencyPolicy::ModifyCompilationEnvironment(Parameters, OutEnvironment);
 }
 
-void SetupLCIUniformBuffers(const FPrimitiveSceneProxy* PrimitiveSceneProxy, const FLightCacheInterface* LCI, FUniformBufferRHIParamRef& PrecomputedLightingBuffer, FUniformBufferRHIParamRef& LightmapResourceClusterBuffer, FUniformBufferRHIParamRef& IndirectLightingCacheBuffer)
+void SetupLCIUniformBuffers(const FPrimitiveSceneProxy* PrimitiveSceneProxy, const FLightCacheInterface* LCI, FRHIUniformBuffer*& PrecomputedLightingBuffer, FRHIUniformBuffer*& LightmapResourceClusterBuffer, FRHIUniformBuffer*& IndirectLightingCacheBuffer)
 {
 	if (LCI)
 	{
 		PrecomputedLightingBuffer = LCI->GetPrecomputedLightingBuffer();
-		LightmapResourceClusterBuffer = LCI->GetResourceCluster() ? LCI->GetResourceCluster()->UniformBuffer : nullptr;
+	}
+
+	if (LCI && LCI->GetResourceCluster())
+	{
+		check(LCI->GetResourceCluster()->UniformBuffer);
+		LightmapResourceClusterBuffer = LCI->GetResourceCluster()->UniformBuffer;
 	}
 
 	if (!PrecomputedLightingBuffer)
@@ -72,9 +79,9 @@ void FSelfShadowedCachedPointIndirectLightingPolicy::GetPixelShaderBindings(
 	const PixelParametersType* PixelShaderParameters,
 	FMeshDrawSingleShaderBindings& ShaderBindings)
 {
-	FUniformBufferRHIParamRef PrecomputedLightingBuffer = nullptr;
-	FUniformBufferRHIParamRef LightmapResourceClusterBuffer = nullptr;
-	FUniformBufferRHIParamRef IndirectLightingCacheBuffer = nullptr;
+	FRHIUniformBuffer* PrecomputedLightingBuffer = nullptr;
+	FRHIUniformBuffer* LightmapResourceClusterBuffer = nullptr;
+	FRHIUniformBuffer* IndirectLightingCacheBuffer = nullptr;
 
 	SetupLCIUniformBuffers(PrimitiveSceneProxy, ShaderElementData.LCI, PrecomputedLightingBuffer, LightmapResourceClusterBuffer, IndirectLightingCacheBuffer);
 
@@ -91,9 +98,9 @@ void FSelfShadowedVolumetricLightmapPolicy::GetPixelShaderBindings(
 	const PixelParametersType* PixelShaderParameters,
 	FMeshDrawSingleShaderBindings& ShaderBindings)
 {
-	FUniformBufferRHIParamRef PrecomputedLightingBuffer = nullptr;
-	FUniformBufferRHIParamRef LightmapResourceClusterBuffer = nullptr;
-	FUniformBufferRHIParamRef IndirectLightingCacheBuffer = nullptr;
+	FRHIUniformBuffer* PrecomputedLightingBuffer = nullptr;
+	FRHIUniformBuffer* LightmapResourceClusterBuffer = nullptr;
+	FRHIUniformBuffer* IndirectLightingCacheBuffer = nullptr;
 
 	SetupLCIUniformBuffers(PrimitiveSceneProxy, ShaderElementData.LCI, PrecomputedLightingBuffer, LightmapResourceClusterBuffer, IndirectLightingCacheBuffer);
 
@@ -110,9 +117,9 @@ void FUniformLightMapPolicy::GetVertexShaderBindings(
 	const VertexParametersType* VertexShaderParameters,
 	FMeshDrawSingleShaderBindings& ShaderBindings) 
 {
-	FUniformBufferRHIParamRef PrecomputedLightingBuffer = nullptr;
-	FUniformBufferRHIParamRef LightmapResourceClusterBuffer = nullptr;
-	FUniformBufferRHIParamRef IndirectLightingCacheBuffer = nullptr;
+	FRHIUniformBuffer* PrecomputedLightingBuffer = nullptr;
+	FRHIUniformBuffer* LightmapResourceClusterBuffer = nullptr;
+	FRHIUniformBuffer* IndirectLightingCacheBuffer = nullptr;
 
 	SetupLCIUniformBuffers(PrimitiveSceneProxy, ShaderElementData, PrecomputedLightingBuffer, LightmapResourceClusterBuffer, IndirectLightingCacheBuffer);
 
@@ -127,9 +134,9 @@ void FUniformLightMapPolicy::GetPixelShaderBindings(
 	const PixelParametersType* PixelShaderParameters,
 	FMeshDrawSingleShaderBindings& ShaderBindings)
 {
-	FUniformBufferRHIParamRef PrecomputedLightingBuffer = nullptr;
-	FUniformBufferRHIParamRef LightmapResourceClusterBuffer = nullptr;
-	FUniformBufferRHIParamRef IndirectLightingCacheBuffer = nullptr;
+	FRHIUniformBuffer* PrecomputedLightingBuffer = nullptr;
+	FRHIUniformBuffer* LightmapResourceClusterBuffer = nullptr;
+	FRHIUniformBuffer* IndirectLightingCacheBuffer = nullptr;
 
 	SetupLCIUniformBuffers(PrimitiveSceneProxy, ShaderElementData, PrecomputedLightingBuffer, LightmapResourceClusterBuffer, IndirectLightingCacheBuffer);
 
@@ -146,9 +153,9 @@ void FUniformLightMapPolicy::GetRayHitGroupShaderBindings(
 	FMeshDrawSingleShaderBindings& RayHitGroupBindings
 ) const
 {
-	FUniformBufferRHIParamRef PrecomputedLightingBuffer = nullptr;
-	FUniformBufferRHIParamRef LightmapResourceClusterBuffer = nullptr;
-	FUniformBufferRHIParamRef IndirectLightingCacheBuffer = nullptr;
+	FRHIUniformBuffer* PrecomputedLightingBuffer = nullptr;
+	FRHIUniformBuffer* LightmapResourceClusterBuffer = nullptr;
+	FRHIUniformBuffer* IndirectLightingCacheBuffer = nullptr;
 
 	SetupLCIUniformBuffers(PrimitiveSceneProxy, LCI, PrecomputedLightingBuffer, LightmapResourceClusterBuffer, IndirectLightingCacheBuffer);
 
@@ -166,18 +173,21 @@ void InterpolateVolumetricLightmap(
 	SCOPE_CYCLE_COUNTER(STAT_InterpolateVolumetricLightmapOnCPU);
 
 	checkSlow(VolumetricLightmapSceneData.HasData());
-	const FPrecomputedVolumetricLightmapData& VolumetricLightmapData = *VolumetricLightmapSceneData.GetLevelVolumetricLightmap()->Data;
+	const FPrecomputedVolumetricLightmapData& GlobalVolumetricLightmapData = *VolumetricLightmapSceneData.GetLevelVolumetricLightmap()->Data;
 	
-	const FVector IndirectionDataSourceCoordinate = ComputeIndirectionCoordinate(LookupPosition, VolumetricLightmapData.GetBounds(), VolumetricLightmapData.IndirectionTextureDimensions);
+	const FVector IndirectionDataSourceCoordinate = ComputeIndirectionCoordinate(LookupPosition, GlobalVolumetricLightmapData.GetBounds(), GlobalVolumetricLightmapData.IndirectionTextureDimensions);
 
-	check(VolumetricLightmapData.IndirectionTexture.Data.Num() > 0);
-	checkSlow(GPixelFormats[VolumetricLightmapData.IndirectionTexture.Format].BlockBytes == sizeof(uint8) * 4);
-	const int32 NumIndirectionTexels = VolumetricLightmapData.IndirectionTextureDimensions.X * VolumetricLightmapData.IndirectionTextureDimensions.Y * VolumetricLightmapData.IndirectionTextureDimensions.Z;
-	check(VolumetricLightmapData.IndirectionTexture.Data.Num() * VolumetricLightmapData.IndirectionTexture.Data.GetTypeSize() == NumIndirectionTexels * sizeof(uint8) * 4);
+	check(GlobalVolumetricLightmapData.IndirectionTexture.Data.Num() > 0);
+	checkSlow(GPixelFormats[GlobalVolumetricLightmapData.IndirectionTexture.Format].BlockBytes == sizeof(uint8) * 4);
+	const int32 NumIndirectionTexels = GlobalVolumetricLightmapData.IndirectionTextureDimensions.X * GlobalVolumetricLightmapData.IndirectionTextureDimensions.Y * GlobalVolumetricLightmapData.IndirectionTextureDimensions.Z;
+	check(GlobalVolumetricLightmapData.IndirectionTexture.Data.Num() * GlobalVolumetricLightmapData.IndirectionTexture.Data.GetTypeSize() == NumIndirectionTexels * sizeof(uint8) * 4);
 	
 	FIntVector IndirectionBrickOffset;
 	int32 IndirectionBrickSize;
-	SampleIndirectionTexture(IndirectionDataSourceCoordinate, VolumetricLightmapData.IndirectionTextureDimensions, VolumetricLightmapData.IndirectionTexture.Data.GetData(), IndirectionBrickOffset, IndirectionBrickSize);
+	int32 SubLevelIndex;
+	SampleIndirectionTextureWithSubLevel(IndirectionDataSourceCoordinate, GlobalVolumetricLightmapData.IndirectionTextureDimensions, GlobalVolumetricLightmapData.IndirectionTexture.Data.GetData(), GlobalVolumetricLightmapData.CPUSubLevelIndirectionTable, IndirectionBrickOffset, IndirectionBrickSize, SubLevelIndex);
+
+	const FPrecomputedVolumetricLightmapData& VolumetricLightmapData = *GlobalVolumetricLightmapData.CPUSubLevelBrickDataList[SubLevelIndex];
 
 	const FVector BrickTextureCoordinate = ComputeBrickTextureCoordinate(IndirectionDataSourceCoordinate, IndirectionBrickOffset, IndirectionBrickSize, VolumetricLightmapData.BrickSize);
 
@@ -185,7 +195,7 @@ void InterpolateVolumetricLightmap(
 	
 	auto ReadSHCoefficient = [&BrickTextureCoordinate, &VolumetricLightmapData, &AmbientVector](uint32 CoefficientIndex)
 	{
-		check(CoefficientIndex < ARRAY_COUNT(VolumetricLightmapData.BrickData.SHCoefficients));
+		check(CoefficientIndex < UE_ARRAY_COUNT(VolumetricLightmapData.BrickData.SHCoefficients));
 
 		// Undo normalization done in FIrradianceBrickData::SetFromVolumeLightingSample
 		const FLinearColor SHDenormalizationScales0(
@@ -351,7 +361,7 @@ void GetIndirectLightingCacheParameters(
 		// If we are using FCachedVolumeIndirectLightingPolicy then InitViews should have updated the lighting cache which would have initialized it
 		// However the conditions for updating the lighting cache are complex and fail very occasionally in non-reproducible ways
 		// Silently skipping setting the cache texture under failure for now
-		if (FeatureLevel >= ERHIFeatureLevel::SM4 && LightingCache && LightingCache->IsInitialized() && GSupportsVolumeTextureRendering)
+		if (FeatureLevel >= ERHIFeatureLevel::SM5 && LightingCache && LightingCache->IsInitialized() && GSupportsVolumeTextureRendering)
 		{
 			Parameters.IndirectLightingCacheTexture0 = const_cast<FIndirectLightingCache*>(LightingCache)->GetTexture0().ShaderResourceTexture;
 			Parameters.IndirectLightingCacheTexture1 = const_cast<FIndirectLightingCache*>(LightingCache)->GetTexture1().ShaderResourceTexture;

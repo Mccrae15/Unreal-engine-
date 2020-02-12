@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "RHI.h"
 #include "Modules/ModuleManager.h"
@@ -45,6 +45,10 @@ FDynamicRHI* PlatformCreateDynamicRHI()
 		// Create the dynamic RHI.
 		DynamicRHI = DynamicRHIModule->CreateRHI(RequestedFeatureLevel);
 	}
+
+#if !PLATFORM_LUMIN
+	FPlatformMisc::UnlockAndroidWindow();
+#endif
 
 	return DynamicRHI;
 }

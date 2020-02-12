@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -201,6 +201,29 @@ public:
 		OutItem = Tail->NextNode->Item;
 
 		return true;
+	}
+
+	/**
+	 * Peek at the queue's tail item without removing it.
+	 *
+	 * This version of Peek allows peeking at a queue of items that do not allow
+	 * copying, such as TUniquePtr.
+	 *
+	 * @return Pointer to the item, or nullptr if queue is empty
+	 */
+	ItemType* Peek()
+	{
+		if (Tail->NextNode == nullptr)
+		{
+			return nullptr;
+		}
+
+		return &Tail->NextNode->Item;
+	}
+
+	FORCEINLINE const ItemType* Peek() const
+	{
+		return const_cast<TQueue*>(this)->Peek();
 	}
 
 	/**

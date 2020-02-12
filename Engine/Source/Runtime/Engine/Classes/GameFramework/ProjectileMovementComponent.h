@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -37,6 +37,10 @@ class ENGINE_API UProjectileMovementComponent : public UMovementComponent
 	/** If true, this projectile will have its rotation updated each frame to match the direction of its velocity. */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category=Projectile)
 	uint8 bRotationFollowsVelocity:1;
+
+	/** If true, this projectile will have its rotation updated each frame to maintain the rotations Yaw only. (bRotationFollowsVelocity is required to be true) */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category=Projectile, meta = (EditCondition = "bRotationFollowsVelocity"))
+	uint8 bRotationRemainsVertical:1;
 
 	/** If true, simple bounces will be simulated. Set this to false to stop simulating on contact. */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category=ProjectileBounces)
@@ -94,7 +98,8 @@ class ENGINE_API UProjectileMovementComponent : public UMovementComponent
 
 	/**
 	 * If true and there is an interpolated component set, location (and optionally rotation) interpolation is enabled which allows the interpolated object to smooth uneven updates
-	 * of the UpdatedComponent's location (usually to smooth network updates). 
+	 * of the UpdatedComponent's location (usually to smooth network updates). This requires using SetInterpolatedComponent() to indicate the visual component that lags behind the collision,
+	 * and using MoveInterpolationTarget() when the new target location/rotation is received (usually on a net update).
 	 * @see SetInterpolatedComponent(), MoveInterpolationTarget()
 	 */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category=ProjectileInterpolation)
@@ -226,7 +231,7 @@ public:
 	UFUNCTION(BlueprintCallable, Category="Game|Components|ProjectileMovement")
 	virtual void StopSimulating(const FHitResult& HitResult);
 
-	bool HasStoppedSimulation() { return (UpdatedComponent == nullptr) || (bIsActive == false); }
+	bool HasStoppedSimulation() { return (UpdatedComponent == nullptr) || (IsActive() == false); }
 
 	/**
 	 * Compute remaining time step given remaining time and current iterations.
@@ -395,6 +400,8 @@ protected:
 	/** Computes result of a bounce and returns the new velocity. */
 	virtual FVector ComputeBounceResult(const FHitResult& Hit, float TimeSlice, const FVector& MoveDelta);
 
+public:
+
 	/** Don't allow velocity magnitude to exceed MaxSpeed, if MaxSpeed is non-zero. */
 	UFUNCTION(BlueprintCallable, Category="Game|Components|ProjectileMovement")
 	FVector LimitVelocity(FVector NewVelocity) const;
@@ -408,6 +415,21 @@ protected:
 	/** Allow the projectile to track towards its homing target. */
 	virtual FVector ComputeHomingAcceleration(const FVector& InVelocity, float DeltaTime) const;
 
+	/** Adds a force which is accumulated until next tick, used by ComputeAcceleration() to affect Velocity. */
+	void AddForce(FVector Force);
+
+	/** Returns the sum of pending forces from AddForce(). */
+	FVector GetPendingForce() const { return PendingForce; }
+
+	/** Clears any pending forces from AddForce(). If bClearImmediateForce is true, clears any force being processed during this update as well. */
+	void ClearPendingForce(bool bClearImmediateForce = false);
+	
+protected:
+
+	// Double-buffer of pending force so that updates can use the accumulated value and reset the data so other AddForce() calls work correctly.
+	// Also prevents accumulation over frames where the update aborts for whatever reason, and works with substepping movement.
+	FVector PendingForceThisUpdate;
+
 	virtual void TickInterpolation(float DeltaTime);
 	
 	FVector InterpLocationOffset;
@@ -415,6 +437,11 @@ protected:
 	TWeakObjectPtr<USceneComponent> InterpolatedComponentPtr;
 	FQuat InterpRotationOffset;
 	FQuat InterpInitialRotationOffset;
+
+private:
+
+	// Pending force for next tick.
+	FVector PendingForce;
 
 public:
 	/** Compute gravity effect given current physics volume, projectile gravity scale, etc. */

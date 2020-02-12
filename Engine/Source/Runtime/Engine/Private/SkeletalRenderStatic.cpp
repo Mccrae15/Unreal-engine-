@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 /*=============================================================================
 	SkeletalRenderStatic.cpp: CPU skinned skeletal mesh rendering code.
@@ -131,7 +131,6 @@ void FSkeletalMeshObjectStatic::FSkeletalMeshObjectLOD::InitResources(FSkelMeshC
 		FIndexBufferRHIRef IndexBufferRHI = LODModel.MultiSizeIndexContainer.GetIndexBuffer()->IndexBufferRHI;
 		uint32 VertexBufferStride = LODModel.StaticVertexBuffers.PositionVertexBuffer.GetStride();
 
-		//#dxr_todo: do we need support for separate sections in FRayTracingGeometryData?
 		uint32 TrianglesCount = 0;
 		for (int32 SectionIndex = 0; SectionIndex < LODModel.RenderSections.Num(); SectionIndex++)
 		{
@@ -144,14 +143,9 @@ void FSkeletalMeshObjectStatic::FSkeletalMeshObjectLOD::InitResources(FSkelMeshC
 			[this, VertexBufferRHI, IndexBufferRHI, VertexBufferStride, TrianglesCount, RenderSections](FRHICommandListImmediate& RHICmdList)
 			{
 				FRayTracingGeometryInitializer Initializer;
-				Initializer.PositionVertexBuffer = VertexBufferRHI;
 				Initializer.IndexBuffer = IndexBufferRHI;
-				Initializer.BaseVertexIndex = 0;
-				Initializer.VertexBufferStride = VertexBufferStride;
-				Initializer.VertexBufferByteOffset = 0;
 				Initializer.TotalPrimitiveCount = TrianglesCount;
-				Initializer.VertexBufferElementType = VET_Float3;
-				Initializer.PrimitiveType = PT_TriangleList;
+				Initializer.GeometryType = RTGT_Triangles;
 				Initializer.bFastBuild = false;
 
 				TArray<FRayTracingGeometrySegment> GeometrySections;
@@ -159,8 +153,13 @@ void FSkeletalMeshObjectStatic::FSkeletalMeshObjectLOD::InitResources(FSkelMeshC
 				for (const FSkelMeshRenderSection& Section : *RenderSections)
 				{
 					FRayTracingGeometrySegment Segment;
+					Segment.VertexBuffer = VertexBufferRHI;
+					Segment.VertexBufferElementType = VET_Float3;
+					Segment.VertexBufferOffset = 0;
+					Segment.VertexBufferStride = VertexBufferStride;
 					Segment.FirstPrimitive = Section.BaseIndex / 3;
 					Segment.NumPrimitives = Section.NumTriangles;
+					Segment.bEnabled = !Section.bDisabled;
 					GeometrySections.Add(Segment);
 				}
 				Initializer.Segments = GeometrySections;
@@ -187,18 +186,3 @@ void FSkeletalMeshObjectStatic::FSkeletalMeshObjectLOD::ReleaseResources()
 	bResourcesInitialized = false;
 }
 
-#if RHI_RAYTRACING
-// #dxr_todo: this looks like dead code
-void FSkeletalMeshObjectStatic::FSkeletalMeshObjectLOD::BuildRayTracingAccelerationStructure()
-{
-	if (RayTracingGeometry.Initializer.PositionVertexBuffer && RayTracingGeometry.Initializer.IndexBuffer)
-	{
-		ENQUEUE_RENDER_COMMAND(SkeletalRenderStaticBuildRayTracingAccelerationStructure)(
-			[this](FRHICommandListImmediate& RHICmdList)
-		{
-			RHICmdList.BuildAccelerationStructure(RayTracingGeometry.RayTracingGeometryRHI);
-		}
-		);
-	}
-}
-#endif // RHI_RAYTRACING

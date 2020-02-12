@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "MetalRHIPrivate.h"
 
@@ -42,6 +42,7 @@ void SafeReleaseMetalBuffer(FMetalBuffer& Buffer)
 {
 	if(GIsMetalInitialized && GDynamicRHI && Buffer)
 	{
+		Buffer.SetOwner(nullptr);
 		FMetalRHICommandContext* Context = static_cast<FMetalRHICommandContext*>(RHIGetDefaultContext());
 		if(Context)
 		{
@@ -72,6 +73,7 @@ FMetalRHICommandContext::FMetalRHICommandContext(class FMetalProfiler* InProfile
 , PendingNumPrimitives(0)
 {
 	check(Context);
+	GlobalUniformBuffers.AddZeroed(FUniformBufferStaticSlotRegistry::Get().GetSlotCount());
 }
 
 FMetalRHICommandContext::~FMetalRHICommandContext()
@@ -101,7 +103,7 @@ void FMetalRHIComputeContext::RHISetAsyncComputeBudget(EAsyncComputeBudget Budge
 	FMetalRHICommandContext::RHISetAsyncComputeBudget(Budget);
 }
 
-void FMetalRHIComputeContext::RHISetComputeShader(FComputeShaderRHIParamRef ComputeShader)
+void FMetalRHIComputeContext::RHISetComputeShader(FRHIComputeShader* ComputeShader)
 {
 	if (!Context->GetCurrentCommandBuffer())
 	{
@@ -125,7 +127,7 @@ void FMetalRHIComputeContext::RHISubmitCommandsHint()
 	{
 		Context->InitFrame(false, 0, 0);
 	}
-	Context->FinishFrame();
+	Context->FinishFrame(false);
 	
 #if ENABLE_METAL_GPUPROFILE
 	FMetalContext::MakeCurrent(&GetMetalDeviceContext());
@@ -139,6 +141,9 @@ FMetalRHIImmediateCommandContext::FMetalRHIImmediateCommandContext(class FMetalP
 
 void FMetalRHICommandContext::RHIBeginRenderPass(const FRHIRenderPassInfo& InInfo, const TCHAR* InName)
 {
+	@autoreleasepool {
+	bool bHasTarget = (InInfo.DepthStencilRenderTarget.DepthStencilTarget != nullptr || InInfo.GetNumColorRenderTargets() > 0);
+	
 	if (InInfo.bGeneratingMips)
 	{
 		FRHITexture* Textures[MaxSimultaneousRenderTargets];
@@ -167,46 +172,21 @@ void FMetalRHICommandContext::RHIBeginRenderPass(const FRHIRenderPassInfo& InInf
 		Context->GetCommandList().SetParallelIndex(0, 0);
 	}
 
-	FRHISetRenderTargetsInfo RenderTargetsInfo;
-	InInfo.ConvertToRenderTargetsInfo(RenderTargetsInfo);
-
-	@autoreleasepool {
-	bool bHasTarget = (RenderTargetsInfo.DepthStencilRenderTarget.Texture != nullptr);
-	if (Context->GetCommandQueue().SupportsFeature(EMetalFeaturesGraphicsUAVs))
-	{
-		for (uint32 i = 0; !bHasTarget && i < RenderTargetsInfo.NumUAVs; i++)
-		{
-			if (IsValidRef(RenderTargetsInfo.UnorderedAccessView[i]))
-			{
-				bHasTarget = true;
-			}
-		}
-	}
-	else
-	{
-		checkf(RenderTargetsInfo.NumUAVs == 0, TEXT("Calling SetRenderTargets with UAVs is not supported in this Metal standard"));
-	}
-	
-	for (uint32 i = 0; bHasTarget == false && i < RenderTargetsInfo.NumColorRenderTargets; i++)
-	{
-		bHasTarget = (RenderTargetsInfo.ColorRenderTarget[i].Texture != nullptr);
-	}
-
 	// Ignore any attempt to "clear" the render-targets as that is senseless with the way MetalRHI has to try and coalesce passes.
 	if (bHasTarget)
 	{
-		Context->SetRenderTargetsInfo(RenderTargetsInfo);
+		Context->SetRenderPassInfo(InInfo);
 
 		// Set the viewport to the full size of render target 0.
-		if (RenderTargetsInfo.ColorRenderTarget[0].Texture)
+		if (InInfo.ColorRenderTargets[0].RenderTarget)
 		{
-			const FRHIRenderTargetView& RenderTargetView = RenderTargetsInfo.ColorRenderTarget[0];
-			FMetalSurface* RenderTarget = GetMetalSurfaceFromRHITexture(RenderTargetView.Texture);
+			const FRHIRenderPassInfo::FColorEntry& RenderTargetView = InInfo.ColorRenderTargets[0];
+			FMetalSurface* RenderTarget = GetMetalSurfaceFromRHITexture(RenderTargetView.RenderTarget);
 
 			uint32 Width = FMath::Max((uint32)(RenderTarget->Texture.GetWidth() >> RenderTargetView.MipIndex), (uint32)1);
 			uint32 Height = FMath::Max((uint32)(RenderTarget->Texture.GetHeight() >> RenderTargetView.MipIndex), (uint32)1);
 
-			RHISetViewport(0, 0, 0.0f, Width, Height, 1.0f);
+			RHISetViewport(0.0f, 0.0f, 0.0f, (float)Width, (float)Height, 1.0f);
 		}
 	}
 	}
@@ -245,7 +225,7 @@ void FMetalRHICommandContext::RHIEndRenderPass()
 
 void FMetalRHICommandContext::RHIBeginComputePass(const TCHAR* InName)
 {
-	RHISetRenderTargets(0, nullptr, nullptr, 0, nullptr);
+	RHISetRenderTargets(0, nullptr, nullptr);
 }
 
 void FMetalRHICommandContext::RHIEndComputePass()

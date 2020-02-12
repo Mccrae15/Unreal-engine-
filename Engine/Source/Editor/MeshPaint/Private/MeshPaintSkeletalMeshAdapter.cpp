@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "MeshPaintSkeletalMeshAdapter.h"
 #include "Engine/SkeletalMesh.h"
@@ -10,10 +10,96 @@
 #include "Rendering/SkeletalMeshModel.h"
 #include "Factories/FbxSkeletalMeshImportData.h"
 
+DEFINE_LOG_CATEGORY_STATIC(LogMeshPaintSkeletalMeshAdapter, Log, All);
+
 //////////////////////////////////////////////////////////////////////////
 // FMeshPaintGeometryAdapterForSkeletalMeshes
 
 FMeshPaintGeometryAdapterForSkeletalMeshes::FMeshToComponentMap FMeshPaintGeometryAdapterForSkeletalMeshes::MeshToComponentMap;
+
+
+//HACK for 4.24.2 we cannot change public API so we use this global function to remap and propagate the vertex color data to the imported model when the user release the mouse
+void PropagateVertexPaintToAsset(USkeletalMesh* SkeletalMesh, int32 LODIndex)
+{
+	struct FMatchFaceData
+	{
+		int32 SoftVerticeIndexes[3];
+	};
+
+	if (!SkeletalMesh || SkeletalMesh->IsLODImportedDataEmpty(LODIndex) || !SkeletalMesh->IsLODImportedDataBuildAvailable(LODIndex))
+	{
+		//We do not propagate vertex color for old asset
+		return;
+	}
+
+	auto GetMatchKey = [](const FVector& PositionA, const FVector& PositionB, const FVector& PositionC)->FSHAHash
+	{
+		FSHA1 SHA;
+		FSHAHash SHAHash;
+
+		SHA.Update((const uint8*)&PositionA, sizeof(FVector));
+		SHA.Update((const uint8*)&PositionB, sizeof(FVector));
+		SHA.Update((const uint8*)&PositionC, sizeof(FVector));
+		SHA.Final();
+		SHA.GetHash(&SHAHash.Hash[0]);
+
+		return SHAHash;
+	};
+
+	FSkeletalMeshLODModel& LODModel = SkeletalMesh->GetImportedModel()->LODModels[LODIndex];
+	const TArray<uint32>& SrcIndexBuffer = LODModel.IndexBuffer;
+
+	TArray<FSoftSkinVertex> SrcVertices;
+	LODModel.GetVertices(SrcVertices);
+	
+	FSkeletalMeshImportData ImportData;
+	SkeletalMesh->LoadLODImportedData(LODIndex, ImportData);
+
+	TMap<FSHAHash, FMatchFaceData> MatchTriangles;
+	MatchTriangles.Reserve(ImportData.Wedges.Num());
+
+	for (int32 IndexBufferIndex = 0, SrcIndexBufferNum = SrcIndexBuffer.Num(); IndexBufferIndex < SrcIndexBufferNum; IndexBufferIndex += 3)
+	{
+		FVector PositionA = SrcVertices[SrcIndexBuffer[IndexBufferIndex]].Position;
+		FVector PositionB = SrcVertices[SrcIndexBuffer[IndexBufferIndex + 1]].Position;
+		FVector PositionC = SrcVertices[SrcIndexBuffer[IndexBufferIndex + 2]].Position;
+
+		FSHAHash Key = GetMatchKey(PositionA, PositionB, PositionC);
+		FMatchFaceData MatchFaceData;
+		MatchFaceData.SoftVerticeIndexes[0] = SrcIndexBuffer[IndexBufferIndex];
+		MatchFaceData.SoftVerticeIndexes[1] = SrcIndexBuffer[IndexBufferIndex + 1];
+		MatchFaceData.SoftVerticeIndexes[2] = SrcIndexBuffer[IndexBufferIndex + 2];
+		MatchTriangles.Add(Key, MatchFaceData);
+	}
+
+	bool bAllVertexFound = true;
+	for (int32 FaceIndex = 0, FaceNum = ImportData.Faces.Num(); FaceIndex < FaceNum; ++FaceIndex)
+	{
+		const SkeletalMeshImportData::FTriangle& Triangle = ImportData.Faces[FaceIndex];
+		SkeletalMeshImportData::FVertex& WedgeA = ImportData.Wedges[Triangle.WedgeIndex[0]];
+		SkeletalMeshImportData::FVertex& WedgeB = ImportData.Wedges[Triangle.WedgeIndex[1]];
+		SkeletalMeshImportData::FVertex& WedgeC = ImportData.Wedges[Triangle.WedgeIndex[2]];
+		FVector PositionA = ImportData.Points[WedgeA.VertexIndex];
+		FVector PositionB = ImportData.Points[WedgeB.VertexIndex];
+		FVector PositionC = ImportData.Points[WedgeC.VertexIndex];
+
+		const FSHAHash Key = GetMatchKey(PositionA, PositionB, PositionC);
+		if (FMatchFaceData* MatchFaceData = MatchTriangles.Find(Key))
+		{
+			WedgeA.Color = SrcVertices[MatchFaceData->SoftVerticeIndexes[0]].Color;
+			WedgeB.Color = SrcVertices[MatchFaceData->SoftVerticeIndexes[1]].Color;
+			WedgeC.Color = SrcVertices[MatchFaceData->SoftVerticeIndexes[2]].Color;
+		}
+		else if(bAllVertexFound)
+		{
+			bAllVertexFound = false;
+			FString SkeletalMeshName(SkeletalMesh->GetName());
+			UE_LOG(LogMeshPaintSkeletalMeshAdapter, Warning, TEXT("Some vertex color data could not be applied to the %s SkeletalMesh asset."), *SkeletalMeshName);
+		}
+	}
+		
+	SkeletalMesh->SaveLODImportedData(LODIndex, ImportData);
+}
 
 bool FMeshPaintGeometryAdapterForSkeletalMeshes::Construct(UMeshComponent* InComponent, int32 InMeshLODIndex)
 {
@@ -109,6 +195,19 @@ void FMeshPaintGeometryAdapterForSkeletalMeshes::InitializeAdapterGlobals()
 	}
 }
 
+void FMeshPaintGeometryAdapterForSkeletalMeshes::CleanupGlobals()
+{
+	for (TPair<USkeletalMesh*, FSkeletalMeshReferencers>& Pair : MeshToComponentMap)
+	{
+		if (Pair.Key && Pair.Value.RestoreBodySetup)
+		{
+			Pair.Key->BodySetup = Pair.Value.RestoreBodySetup;
+		}
+	}
+
+	MeshToComponentMap.Empty();
+}
+
 void FMeshPaintGeometryAdapterForSkeletalMeshes::OnAdded()
 {
 	checkf(SkeletalMeshComponent, TEXT("Invalid SkeletalMesh Component"));
@@ -171,14 +270,13 @@ void FMeshPaintGeometryAdapterForSkeletalMeshes::OnAdded()
 
 void FMeshPaintGeometryAdapterForSkeletalMeshes::OnRemoved()
 {
-	checkf(SkeletalMeshComponent, TEXT("Invalid SkeletalMesh Component"));
-	
 	// If the referenced skeletal mesh has been destroyed (and nulled by GC), don't try to do anything more.
 	// It should be in the process of removing all global geometry adapters if it gets here in this situation.
-	if (!ReferencedSkeletalMesh)
+	if (!ReferencedSkeletalMesh || !SkeletalMeshComponent)
 	{
 		return;
 	}
+	PropagateVertexPaintToAsset(ReferencedSkeletalMesh, MeshLODIndex);
 
 	// Remove a reference from the skeletal mesh map
 	FSkeletalMeshReferencers* SkeletalMeshReferencers = MeshToComponentMap.Find(ReferencedSkeletalMesh);
@@ -286,25 +384,23 @@ void FMeshPaintGeometryAdapterForSkeletalMeshes::ApplyOrRemoveTextureOverride(UT
 	DefaultApplyOrRemoveTextureOverride(SkeletalMeshComponent, SourceTexture, OverrideTexture);
 }
 
+void FMeshPaintGeometryAdapterForSkeletalMeshes::AddReferencedObjectsGlobals(FReferenceCollector& Collector)
+{
+	for (TPair<USkeletalMesh*, FSkeletalMeshReferencers>& Pair : MeshToComponentMap)
+	{
+		Collector.AddReferencedObject(Pair.Key);
+		Collector.AddReferencedObject(Pair.Value.RestoreBodySetup);
+		for (FSkeletalMeshReferencers::FReferencersInfo& ReferencerInfo : Pair.Value.Referencers)
+		{
+			Collector.AddReferencedObject(ReferencerInfo.SkeletalMeshComponent);
+		}
+	}
+}
+
 void FMeshPaintGeometryAdapterForSkeletalMeshes::AddReferencedObjects(FReferenceCollector& Collector)
 {
-	if (!ReferencedSkeletalMesh)
-	{
-		return;
-	}
-
-	FSkeletalMeshReferencers* SkeletalMeshReferencers = MeshToComponentMap.Find(ReferencedSkeletalMesh);
-	checkf(SkeletalMeshReferencers, TEXT("No references found for Skeletal Mesh"));
-	if (SkeletalMeshReferencers->RestoreBodySetup != nullptr)
-	{
-		Collector.AddReferencedObject(SkeletalMeshReferencers->RestoreBodySetup);
-	}
-	
-
-	for (auto& Info : SkeletalMeshReferencers->Referencers)
-	{
-		Collector.AddReferencedObject(Info.SkeletalMeshComponent);
-	}
+	Collector.AddReferencedObject(ReferencedSkeletalMesh);
+	Collector.AddReferencedObject(SkeletalMeshComponent);
 }
 
 void FMeshPaintGeometryAdapterForSkeletalMeshes::GetTextureCoordinate(int32 VertexIndex, int32 ChannelIndex, FVector2D& OutTextureCoordinate) const

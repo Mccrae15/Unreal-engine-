@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -6,6 +6,7 @@
 
 #if PLATFORM_WINDOWS
 #include "Windows/WindowsHWrapper.h"
+#include "Windows/AllowWindowsPlatformTypes.h"
 #endif
 
 THIRD_PARTY_INCLUDES_START
@@ -13,6 +14,10 @@ THIRD_PARTY_INCLUDES_START
 #include <Alembic/Abc/All.h>
 #include <Alembic/AbcGeom/All.h>
 THIRD_PARTY_INCLUDES_END
+
+#if PLATFORM_WINDOWS
+#include "Windows/HideWindowsPlatformTypes.h"
+#endif
 
 #include "GeometryCache.h"
 #include "GeometryCacheTrackFlipbookAnimation.h"
@@ -27,6 +32,7 @@ THIRD_PARTY_INCLUDES_END
 #include "AbcImportLogger.h"
 #include "AbcImportSettings.h"
 
+class FAbcPolyMesh;
 struct FAbcMeshSample;
 struct FCompressedAbcData;
 
@@ -142,12 +148,57 @@ namespace AbcImporterUtilities
 		InOutData = NewData;
 	}
 
+	template<typename T> void ExpandPrimitiveAttributeArray(const TArray<uint32>& InFaceCounts, TArray<T>& InOutArray)
+	{
+		int32 NumIndices = 0;
+		for (const uint32 NumIndicesForFace : InFaceCounts)
+		{
+			NumIndices += NumIndicesForFace;
+		}
+
+		TArray<T> NewArray;
+		NewArray.Reserve(NumIndices);
+
+		int32 PrimitiveIndex = 0;
+		for (const uint32 NumIndicesForFace : InFaceCounts)
+		{
+			T data = InOutArray[PrimitiveIndex];
+			if (NumIndicesForFace > 3)
+			{
+				// Triangle 0
+				NewArray.Add(data);
+				NewArray.Add(data);
+				NewArray.Add(data);
+
+				// Triangle 1
+				NewArray.Add(data);
+				NewArray.Add(data);
+				NewArray.Add(data);
+			}
+			else
+			{
+				NewArray.Add(data);
+				NewArray.Add(data);
+				NewArray.Add(data);
+			}
+
+			PrimitiveIndex++;
+		}
+
+		InOutArray = NewArray;
+	}
+
 	template<typename T> void ProcessVertexAttributeArray(const TArray<uint32>& InIndices, const TArray<uint32>& InFaceCounts, const bool bTriangulation, const uint32 NumVertices, TArray<T>& InOutArray)
 	{
 		// Expand using the vertex indices (if num entries == num vertices)
 		if (InOutArray.Num() != InIndices.Num() && InOutArray.Num() == NumVertices)
 		{
 			ExpandVertexAttributeArray(InIndices, InOutArray);
+		}
+		// Expand using the primitive indices (if num entries == num faces)
+		else if (InOutArray.Num() != InIndices.Num() && InOutArray.Num() == InFaceCounts.Num())
+		{
+			ExpandPrimitiveAttributeArray(InFaceCounts, InOutArray);
 		}
 		// Otherwise the attributes are stored per face, so triangulate if the faces contain quads
 		else if (bTriangulation)
@@ -263,7 +314,7 @@ namespace AbcImporterUtilities
 	/** Applies user/preset conversion to the given matrices */
 	void ApplyConversion(FMatrix& InOutMatrix, const FAbcConversionSettings& InConversionSettings);
 
-        /** Extracts the bounding box from the given alembic property (initialised to zero if the property is invalid) */
+	/** Extracts the bounding box from the given alembic property (initialised to zero if the property is invalid) */
 	FBoxSphereBounds ExtractBounds(Alembic::Abc::IBox3dProperty InBoxBoundsProperty);
 	
 	/** Applies user/preset conversion to the given BoxSphereBounds */
@@ -272,4 +323,20 @@ namespace AbcImporterUtilities
 	bool IsObjectVisible(const Alembic::Abc::IObject& Object, const Alembic::Abc::ISampleSelector FrameSelector);
 	/** Returns whether or not the Objects visibility property is constant across the entire sequence (this includes parent Objects) */
 	bool IsObjectVisibilityConstant(const Alembic::Abc::IObject& Object);
+
+	/** Generates and populates a FGeometryCacheMeshData instance from and for the given mesh sample */
+	void GeometryCacheDataForMeshSample(FGeometryCacheMeshData &OutMeshData, const FAbcMeshSample* MeshSample, const uint32 MaterialOffset);
+
+	/**
+	 * Merges the given PolyMeshes at the given FrameIndex into a GeometryCacheMeshData
+	 *
+	 * @param FrameIndex	The frame index to merge the PolyMeshes at
+	 * @param FrameStart	The starting frame number of the range being processed
+	 * @param PolyMeshes	The PolyMeshes to merge, which will be sampled at FrameIndex
+	 * @param UniqueFaceSetNames	The array of unique face set names of the PolyMeshes
+	 * @param MeshData		The GeometryCacheMeshData where to output the merged PolyMeshes
+	 * @param PreviousNumVertices	The number of vertices in the merged PolyMeshes, used to determine if its topology is constant between 2 frames
+	 * @param bConstantTopology		Flag to indicate if the merged PolyMeshes has constant topology
+	 */
+	void MergePolyMeshesToMeshData(int32 FrameIndex, int32 FrameStart, const TArray<FAbcPolyMesh*>& PolyMeshes, const TArray<FString>& UniqueFaceSetNames, FGeometryCacheMeshData& MeshData, int32& PreviousNumVertices, bool& bConstantTopology);
 }

@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "CoreMinimal.h"
 #include "Misc/ConfigCacheIni.h"
@@ -111,7 +111,7 @@ FString UEnum::GetBaseEnumNameOnDuplication() const
 	check(DoubleColonPos != INDEX_NONE);
 
 	// Get actual base name.
-	BaseEnumName = BaseEnumName.LeftChop(BaseEnumName.Len() - DoubleColonPos);
+	BaseEnumName.LeftChopInline(BaseEnumName.Len() - DoubleColonPos, false);
 
 	return BaseEnumName;
 }
@@ -308,7 +308,7 @@ FString UEnum::GenerateEnumPrefix() const
 			}
 
 			// Trim the prefix to the length of the common prefix.
-			Prefix = Prefix.Left(PrefixIdx);
+			Prefix.LeftInline(PrefixIdx, false);
 		}
 
 		// Find the index of the rightmost underscore in the prefix.
@@ -317,7 +317,7 @@ FString UEnum::GenerateEnumPrefix() const
 		// If an underscore was found, trim the prefix so only the part before the rightmost underscore is included.
 		if (UnderscoreIdx > 0)
 		{
-			Prefix = Prefix.Left(UnderscoreIdx);
+			Prefix.LeftInline(UnderscoreIdx, false);
 		}
 		else
 		{
@@ -414,6 +414,17 @@ FText UEnum::GetDisplayNameTextByValue(int64 Value) const
 	return GetDisplayNameTextByIndex(Index);
 }
 
+FString UEnum::GetAuthoredNameStringByIndex(int32 InIndex) const
+{
+	return GetNameStringByIndex(InIndex);
+}
+
+FString UEnum::GetAuthoredNameStringByValue(int64 Value) const
+{
+	int32 Index = GetIndexByValue(Value);
+	return GetAuthoredNameStringByIndex(Index);
+}
+
 int32 UEnum::GetIndexByNameString(const FString& InSearchString, EGetByNameFlags Flags) const
 {
 	ENameCase         NameComparisonMethod   = !!(Flags & EGetByNameFlags::CaseSensitive) ? ENameCase  ::CaseSensitive : ENameCase  ::IgnoreCase;
@@ -469,12 +480,25 @@ int32 UEnum::GetIndexByNameString(const FString& InSearchString, EGetByNameFlags
 	FName SearchName = FName(*SearchEnumEntryString);
 	FName ModifiedName = FName(*ModifiedEnumEntryString);
 
+	// Check authored name, but only if this is a subclass of Enum that might have implemented it
+	const bool bCheckAuthoredName = !!(Flags & EGetByNameFlags::CheckAuthoredName) && (GetClass() != UEnum::StaticClass());
+
 	const int32 Count = Names.Num();
 	for (int32 Counter = 0; Counter < Count; ++Counter)
 	{
 		if (Names[Counter].Key.IsEqual(SearchName, NameComparisonMethod) || Names[Counter].Key.IsEqual(ModifiedName, NameComparisonMethod))
 		{
 			return Counter;
+		}
+
+		if (bCheckAuthoredName)
+		{
+			FString AuthoredName = GetAuthoredNameStringByIndex(Counter);
+
+			if (AuthoredName.Equals(SearchEnumEntryString, StringComparisonMethod) || AuthoredName.Equals(ModifiedEnumEntryString, StringComparisonMethod))
+			{
+				return Counter;
+			}
 		}
 	}
 
@@ -644,7 +668,7 @@ FString UEnum::GetMetaData( const TCHAR* Key, int32 NameIndex/*=INDEX_NONE*/, bo
 		if (!GConfig->GetString(TEXT("EnumRemap"), *KeyString, ResultString, GEngineIni))
 		{
 			// if this fails, then use what's after the ini:
-			ResultString = ResultString.Mid(4);
+			ResultString.MidInline(4, MAX_int32, false);
 		}
 	}
 

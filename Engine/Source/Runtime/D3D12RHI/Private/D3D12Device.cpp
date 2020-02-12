@@ -1,9 +1,10 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 /*=============================================================================
 D3D12Device.cpp: D3D device RHI implementation.
 =============================================================================*/
 #include "D3D12RHIPrivate.h"
+#include "RHIValidation.h"
 
 
 namespace D3D12RHI
@@ -34,8 +35,11 @@ FD3D12Device::FD3D12Device(FRHIGPUMask InGPUMask, FD3D12Adapter* InAdapter) :
 	SamplerAllocator(InGPUMask, FD3D12_DESCRIPTOR_HEAP_TYPE_SAMPLER, 128),
 	GlobalSamplerHeap(this, InGPUMask),
 	GlobalViewHeap(this, InGPUMask),
-	OcclusionQueryHeap(this, D3D12_QUERY_HEAP_TYPE_OCCLUSION, 65536, 4 /*frames to keep results */ * 1 /*batches per frame*/),
-	TimestampQueryHeap(this, D3D12_QUERY_HEAP_TYPE_TIMESTAMP, 8192, 4 /*frames to keep results */ * 5 /*batches per frame*/ ),
+	OcclusionQueryHeap(this, D3D12_QUERY_TYPE_OCCLUSION, 65536, 4 /*frames to keep results */ * 1 /*batches per frame*/),
+	TimestampQueryHeap(this, D3D12_QUERY_TYPE_TIMESTAMP, 8192, 4 /*frames to keep results */ * 5 /*batches per frame*/ ),
+#if WITH_PROFILEGPU
+	CmdListExecTimeQueryHeap(this, D3D12_QUERY_HEAP_TYPE_TIMESTAMP, 8192),
+#endif
 	DefaultBufferAllocator(this, InGPUMask), //Note: Cross node buffers are possible 
 	SamplerID(0),
 	DefaultFastAllocator(this, InGPUMask, D3D12_HEAP_TYPE_UPLOAD, 1024 * 1024 * 4),
@@ -47,13 +51,13 @@ FD3D12Device::FD3D12Device(FRHIGPUMask InGPUMask, FD3D12Adapter* InAdapter) :
 FD3D12Device::~FD3D12Device()
 {
 #if D3D12_RHI_RAYTRACING
-	DestroyRayTracingDescriptorCache(); // #dxr_todo: unify RT descriptor cache with main FD3D12DescriptorCache
+	DestroyRayTracingDescriptorCache(); // #dxr_todo UE-72158: unify RT descriptor cache with main FD3D12DescriptorCache
 #endif
 
 	// Cleanup the allocator near the end, as some resources may be returned to the allocator or references are shared by multiple GPUs
 	DefaultBufferAllocator.FreeDefaultBufferPools();
 
-	DefaultFastAllocator.Destroy<FD3D12ScopeLock>();
+	DefaultFastAllocator.Destroy();
 
 	TextureAllocator.CleanUpAllocations();
 	TextureAllocator.Destroy();
@@ -74,6 +78,15 @@ ID3D12Device5* FD3D12Device::GetRayTracingDevice()
 	return GetParentAdapter()->GetD3DRayTracingDevice();
 }
 #endif // D3D12_RHI_RAYTRACING
+
+FD3D12LinearQueryHeap* FD3D12Device::GetCmdListExecTimeQueryHeap()
+{
+#if WITH_PROFILEGPU
+	return &CmdListExecTimeQueryHeap;
+#else
+	return nullptr;
+#endif
+}
 
 FD3D12DynamicRHI* FD3D12Device::GetOwningRHI()
 { 
@@ -146,6 +159,7 @@ bool FD3D12Device::IsGPUIdle()
 typedef HRESULT(WINAPI *FDXGIGetDebugInterface1)(UINT, REFIID, void **);
 #endif
 
+ID3D12CommandQueue* gD3D12CommandQueue;
 
 void FD3D12Device::SetupAfterDeviceCreation()
 {
@@ -166,6 +180,18 @@ void FD3D12Device::SetupAfterDeviceCreation()
 				// Running under RenderDoc, so enable capturing mode
 				bUnderGPUCapture = true;
 			}
+		}
+	}
+
+	// Intel GPA
+	{
+		TRefCountPtr<IUnknown> IntelGPA;
+		static const IID IntelGPAID = { 0xCCFFEF16, 0x7B69, 0x468F, {0xBC, 0xE3, 0xCD, 0x95, 0x33, 0x69, 0xA3, 0x9A} };
+
+		if (SUCCEEDED(Direct3DDevice->QueryInterface(IntelGPAID, (void**)(IntelGPA.GetInitReference()))))
+		{
+			// Running under Intel GPA, so enable capturing mode
+			bUnderGPUCapture = true;
 		}
 	}
 
@@ -210,7 +236,7 @@ void FD3D12Device::SetupAfterDeviceCreation()
 
 	if(bUnderGPUCapture)
 	{
-		GDynamicRHI->EnableIdealGPUCaptureOptions(true);
+		GetDynamicRHI<FD3D12DynamicRHI>()->EnableIdealGPUCaptureOptions(true);
 	}
 #endif
 
@@ -254,9 +280,10 @@ void FD3D12Device::SetupAfterDeviceCreation()
 	OcclusionQueryHeap.Init();
 	TimestampQueryHeap.Init();
 
-	CommandListManager->Create(L"3D Queue");
-	CopyCommandListManager->Create(L"Copy Queue");
-	AsyncCommandListManager->Create(L"Async Compute Queue", 0, AsyncComputePriority_Default);
+	CommandListManager->Create(*FString::Printf(TEXT("3D Queue %d"), GetGPUIndex()));
+	gD3D12CommandQueue = CommandListManager->GetD3DCommandQueue();
+	CopyCommandListManager->Create(*FString::Printf(TEXT("Copy Queue %d"), GetGPUIndex()));
+	AsyncCommandListManager->Create(*FString::Printf(TEXT("Compute Queue %d"), GetGPUIndex()), 0, AsyncComputePriority_Default);
 
 	// Needs to be called before creating command contexts
 	UpdateConstantBufferPageProperties();
@@ -367,10 +394,22 @@ void FD3D12Device::RegisterGPUWork(uint32 NumPrimitives, uint32 NumVertices)
 	GetParentAdapter()->GetGPUProfiler().RegisterGPUWork(NumPrimitives, NumVertices);
 }
 
+void FD3D12Device::RegisterGPUDispatch(FIntVector GroupCount)
+{
+	GetParentAdapter()->GetGPUProfiler().RegisterGPUDispatch(GroupCount);
+}
+
 void FD3D12Device::PushGPUEvent(const TCHAR* Name, FColor Color)
 {
 	GetParentAdapter()->GetGPUProfiler().PushEvent(Name, Color);
 }
+
+#if NV_AFTERMATH
+void FD3D12Device::PushGPUEvent(const TCHAR* Name, FColor Color, GFSDK_Aftermath_ContextHandle Context)
+{
+	GetParentAdapter()->GetGPUProfiler().PushEvent(Name, Color, Context);
+}
+#endif
 
 void FD3D12Device::PopGPUEvent()
 {

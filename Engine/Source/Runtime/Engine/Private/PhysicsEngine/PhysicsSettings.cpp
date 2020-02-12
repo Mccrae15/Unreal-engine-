@@ -1,9 +1,12 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "PhysicsEngine/PhysicsSettings.h"
 #include "GameFramework/MovementComponent.h"
 #include "PhysicalMaterials/PhysicalMaterial.h"
 #include "UObject/Package.h"
+
+#include "Framework/Threading.h"
+#include "ChaosSolversModule.h"
 
 UPhysicsSettings::UPhysicsSettings(const FObjectInitializer& ObjectInitializer)
 	: Super(ObjectInitializer)
@@ -30,6 +33,8 @@ UPhysicsSettings::UPhysicsSettings(const FObjectInitializer& ObjectInitializer)
 	, bSuppressFaceRemapTable(false)
 	, bDisableActiveActors(false)
 	, bEnableEnhancedDeterminism(false)
+	, AnimPhysicsMinDeltaTime(0.f)
+	, bSimulateAnimPhysicsAfterReset(false)
 	, MaxPhysicsDeltaTime(1.f / 30.f)
 	, bSubstepping(false)
 	, MaxSubstepDeltaTime(1.f / 60.f)
@@ -79,10 +84,17 @@ void UPhysicsSettings::PostInitProperties()
 	{
 		DefaultShapeComplexity = bDefaultHasComplexCollision_DEPRECATED ? CTF_UseSimpleAndComplex : CTF_UseSimpleAsComplex;
 	}
+
+	// Temporarily override dedicated thread to taskgraph. The enum selection for dedicated
+	// thread is hidden until that threading mode is made to work with the world physics system overall
+	if(ChaosSettings.DefaultThreadingModel == EChaosThreadingMode::DedicatedThread)
+	{
+		ChaosSettings.DefaultThreadingModel = EChaosThreadingMode::TaskGraph;
+	}
 }
 
 #if WITH_EDITOR
-bool UPhysicsSettings::CanEditChange(const UProperty* Property) const
+bool UPhysicsSettings::CanEditChange(const FProperty* Property) const
 {
 	bool bIsEditable = Super::CanEditChange(Property);
 	if(bIsEditable && Property != NULL)
@@ -109,6 +121,12 @@ void UPhysicsSettings::PostEditChangeProperty(struct FPropertyChangedEvent& Prop
 	else if (PropertyName == GET_MEMBER_NAME_CHECKED(UPhysicsSettings, DefaultDegreesOfFreedom))
 	{
 		UMovementComponent::PhysicsLockedAxisSettingChanged();
+	}
+
+	const FName MemberName = PropertyChangedEvent.MemberProperty ? PropertyChangedEvent.MemberProperty->GetFName() : NAME_None;
+	if(MemberName == GET_MEMBER_NAME_CHECKED(UPhysicsSettings, ChaosSettings))
+	{
+		ChaosSettings.OnSettingsUpdated();
 	}
 }
 
@@ -145,4 +163,21 @@ void UPhysicsSettings::LoadSurfaceType()
 		Enum->RemoveMetaData(*HiddenMeta, Iter->Type);
 	}
 }
+
 #endif	// WITH_EDITOR
+
+FChaosPhysicsSettings::FChaosPhysicsSettings() 
+	: DefaultThreadingModel(EChaosThreadingMode::TaskGraph)
+	, DedicatedThreadTickMode(EChaosSolverTickMode::VariableCappedWithTarget)
+	, DedicatedThreadBufferMode(EChaosBufferMode::Double)
+{
+
+}
+
+void FChaosPhysicsSettings::OnSettingsUpdated()
+{
+	if(FChaosSolversModule* SolverModule = FChaosSolversModule::GetModule())
+	{
+		SolverModule->OnSettingsChanged();
+	}
+}

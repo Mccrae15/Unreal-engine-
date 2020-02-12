@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 /*=============================================================================
 	DecalComponent.cpp: Decal component implementation.
@@ -9,6 +9,7 @@
 #include "TimerManager.h"
 #include "SceneManagement.h"
 #include "Materials/MaterialInstanceDynamic.h"
+#include "HAL/LowLevelMemTracker.h"
 
 static TAutoConsoleVariable<float> CVarDecalFadeDurationScale(
 	TEXT("r.Decal.FadeDurationScale"),
@@ -17,8 +18,8 @@ static TAutoConsoleVariable<float> CVarDecalFadeDurationScale(
 	);
 
 FDeferredDecalProxy::FDeferredDecalProxy(const UDecalComponent* InComponent)
-	: DrawInGame( InComponent->bVisible && !InComponent->bHiddenInGame )
-	, DrawInEditor( InComponent->bVisible )
+	: DrawInGame(InComponent->GetVisibleFlag() && !InComponent->bHiddenInGame)
+	, DrawInEditor(InComponent->GetVisibleFlag())
 	, InvFadeDuration(-1.0f)
 	, InvFadeInDuration(1.0f)
 	, FadeStartDelayNormalized(1.0f)
@@ -54,7 +55,7 @@ FDeferredDecalProxy::FDeferredDecalProxy(const UDecalComponent* InComponent)
 	
 	if ( InComponent->GetOwner() )
 	{
-		DrawInGame &= !( InComponent->GetOwner()->bHidden );
+		DrawInGame &= !(InComponent->GetOwner()->IsHidden());
 #if WITH_EDITOR
 		DrawInEditor &= !InComponent->GetOwner()->IsHiddenEd();
 #endif
@@ -263,6 +264,7 @@ void UDecalComponent::GetUsedMaterials( TArray<UMaterialInterface*>& OutMaterial
 
 FDeferredDecalProxy* UDecalComponent::CreateSceneProxy()
 {
+	LLM_SCOPE(ELLMTag::SceneRender);
 	return new FDeferredDecalProxy(this);
 }
 
@@ -278,9 +280,9 @@ void UDecalComponent::BeginPlay()
 	SetLifeSpan(FadeStartDelay + FadeDuration);
 }
 
-void UDecalComponent::CreateRenderState_Concurrent()
+void UDecalComponent::CreateRenderState_Concurrent(FRegisterComponentContext* Context)
 {
-	Super::CreateRenderState_Concurrent();
+	Super::CreateRenderState_Concurrent(Context);
 
 	// Mimics UPrimitiveComponent's visibility logic, although without the UPrimitiveCompoent visibility flags
 	if ( ShouldComponentAddToScene() && ShouldRender() )

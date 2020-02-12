@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -21,7 +21,7 @@ public:
 		, Widget(InWidget)
 	{ }
 
-	SLATECORE_API static FArrangedWidget NullWidget;
+	SLATECORE_API static const FArrangedWidget& GetNullWidget();
 
 public:
 

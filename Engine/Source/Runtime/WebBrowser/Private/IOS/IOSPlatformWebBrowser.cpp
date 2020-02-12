@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "IOSPlatformWebBrowser.h"
 
@@ -41,6 +41,8 @@ class SIOSWebBrowserWidget : public SLeafWidget
 
 		bool bSupportsMetal = false;
 		GConfig->GetBool(TEXT("/Script/IOSRuntimeSettings.IOSRuntimeSettings"), TEXT("bSupportsMetal"), bSupportsMetal, GEngineIni);
+		// At this point we MUST be a Metal renderer.
+		check(bSupportsMetal);
 
 		WebViewWrapper = [IOSWebViewWrapper alloc];
 		[WebViewWrapper create : TSharedPtr<SIOSWebBrowserWidget>(this) useTransparency : Args._UseTransparency supportsMetal : bSupportsMetal supportsMetalMRT : bSupportsMetalMRT];
@@ -142,53 +144,54 @@ class SIOSWebBrowserWidget : public SLeafWidget
 
 					FIntPoint viewportSize = WebBrowserWindowPtr.Pin()->GetViewportSize();
 
-					FWriteWebBrowserParams WriteWebBrowserParams = { WebViewWrapper, WebBrowserTexture->GetExternalTextureGuid(), viewportSize };
+					FWriteWebBrowserParams Params = { WebViewWrapper, WebBrowserTexture->GetExternalTextureGuid(), viewportSize };
 
-					ENQUEUE_UNIQUE_RENDER_COMMAND_ONEPARAMETER(WriteWebBrowser, FWriteWebBrowserParams, Params, WriteWebBrowserParams,
-					{
-						IOSWebViewWrapper* NativeWebBrowser = Params.NativeWebBrowserPtr;
-
-					if (NativeWebBrowser == nil)
-					{
-						return;
-					}
-
-					FTextureRHIRef VideoTexture = [NativeWebBrowser GetVideoTexture];
-					if (VideoTexture == nullptr)
-					{
-						FRHIResourceCreateInfo CreateInfo;
-						FRHICommandListImmediate& RHICmdList = FRHICommandListExecutor::GetImmediateCommandList();
-						FIntPoint Size = Params.Size;
-						VideoTexture = RHICmdList.CreateTextureExternal2D(Size.X, Size.Y, PF_R8G8B8A8, 1, 1, 0, CreateInfo);
-						[NativeWebBrowser SetVideoTexture : VideoTexture];
-						//UE_LOG(LogIOS, Log, TEXT("NativeWebBrowser SetVideoTexture:VideoTexture!"));
-
-						if (VideoTexture == nullptr)
+					ENQUEUE_RENDER_COMMAND(WriteWebBrowser)(
+						[Params](FRHICommandListImmediate& RHICmdList)
 						{
-							UE_LOG(LogIOS, Warning, TEXT("CreateTextureExternal2D failed!"));
-							return;
-						}
+							IOSWebViewWrapper* NativeWebBrowser = Params.NativeWebBrowserPtr;
 
-						[NativeWebBrowser SetVideoTextureValid : false];
+							if (NativeWebBrowser == nil)
+							{
+								return;
+							}
 
-					}
+							FTextureRHIRef VideoTexture = [NativeWebBrowser GetVideoTexture];
+							if (VideoTexture == nullptr)
+							{
+								FRHIResourceCreateInfo CreateInfo;
+								FRHICommandListImmediate& LocalRHICmdList = FRHICommandListExecutor::GetImmediateCommandList();
+								FIntPoint Size = Params.Size;
+								VideoTexture = LocalRHICmdList.CreateTextureExternal2D(Size.X, Size.Y, PF_R8G8B8A8, 1, 1, 0, CreateInfo);
+								[NativeWebBrowser SetVideoTexture : VideoTexture];
+								//UE_LOG(LogIOS, Log, TEXT("NativeWebBrowser SetVideoTexture:VideoTexture!"));
 
-					if ([NativeWebBrowser UpdateVideoFrame : VideoTexture->GetNativeResource()])
-					{
-						// if region changed, need to reregister UV scale/offset
-						//UE_LOG(LogIOS, Log, TEXT("UpdateVideoFrame RT: %s"), *Params.PlayerGuid.ToString());
-					}
+								if (VideoTexture == nullptr)
+								{
+									UE_LOG(LogIOS, Warning, TEXT("CreateTextureExternal2D failed!"));
+									return;
+								}
 
-					if (![NativeWebBrowser IsVideoTextureValid])
-					{
-						FSamplerStateInitializerRHI SamplerStateInitializer(SF_Bilinear, AM_Clamp, AM_Clamp, AM_Clamp);
-						FSamplerStateRHIRef SamplerStateRHI = RHICreateSamplerState(SamplerStateInitializer);
-						FExternalTextureRegistry::Get().RegisterExternalTexture(Params.PlayerGuid, VideoTexture, SamplerStateRHI);
-						//UE_LOG(LogIOS, Log, TEXT("Fetch RT: Register Guid: %s"), *Params.PlayerGuid.ToString());
+								[NativeWebBrowser SetVideoTextureValid : false];
 
-						[NativeWebBrowser SetVideoTextureValid : true];
-					}
-					});
+							}
+
+							if ([NativeWebBrowser UpdateVideoFrame : VideoTexture->GetNativeResource()])
+							{
+								// if region changed, need to reregister UV scale/offset
+								//UE_LOG(LogIOS, Log, TEXT("UpdateVideoFrame RT: %s"), *Params.PlayerGuid.ToString());
+							}
+
+							if (![NativeWebBrowser IsVideoTextureValid])
+							{
+								FSamplerStateInitializerRHI SamplerStateInitializer(SF_Bilinear, AM_Clamp, AM_Clamp, AM_Clamp);
+								FSamplerStateRHIRef SamplerStateRHI = RHICreateSamplerState(SamplerStateInitializer);
+								FExternalTextureRegistry::Get().RegisterExternalTexture(Params.PlayerGuid, VideoTexture, SamplerStateRHI);
+								//UE_LOG(LogIOS, Log, TEXT("Fetch RT: Register Guid: %s"), *Params.PlayerGuid.ToString());
+
+								[NativeWebBrowser SetVideoTextureValid : true];
+							}
+						});
 				}
 			}
 #endif
@@ -715,41 +718,15 @@ supportsMetal : (bool)InSupportsMetal supportsMetalMRT : (bool)InSupportsMetalMR
 {
 #if !PLATFORM_TVOS
 	@synchronized(self) // Briefly block render thread
-		{
-		if (bSupportsMetal)
-		{
-			id<MTLTexture> ptrToMetalTexture = (id<MTLTexture>)ptr;
-			NSUInteger width = [ptrToMetalTexture width];
-			NSUInteger height = [ptrToMetalTexture height];
+	{
+		id<MTLTexture> ptrToMetalTexture = (id<MTLTexture>)ptr;
+		NSUInteger width = [ptrToMetalTexture width];
+		NSUInteger height = [ptrToMetalTexture height];
 
-			[self updateWebViewMetalTexture : ptrToMetalTexture];
-		}
-		else
-		{
-			GLuint glTexture = (GLuint)*reinterpret_cast<int32*>(ptr);
-			glBindTexture(GL_TEXTURE_2D, glTexture);
-			[self updateWebViewGLESTexture : glTexture];
-		}
-		}
+		[self updateWebViewMetalTexture : ptrToMetalTexture];
+	}
 #endif
 	return true;
-}
-
--(void)updateWebViewGLESTexture:(GLuint)gltexture
-{
-#if !PLATFORM_TVOS
-	// create a suitable CoreGraphics context
-	CGColorSpaceRef colourSpace = CGColorSpaceCreateDeviceRGB();
-	CGContextRef context =
-		CGBitmapContextCreate(&gltexture, WebView.bounds.size.width, WebView.bounds.size.height, 8, 4 * WebView.bounds.size.width, colourSpace, kCGImageAlphaPremultipliedLast | kCGBitmapByteOrder32Big);
-	CGColorSpaceRelease(colourSpace);
-	// draw the view to the buffer
-	[WebView.layer renderInContext : context];
-	// upload to OpenGL
-	glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, WebView.bounds.size.width, WebView.bounds.size.height, 0, GL_RGBA, GL_UNSIGNED_BYTE, &gltexture);
-	// clean up
-	CGContextRelease(context);
-#endif
 }
 
 -(void)updateWebViewMetalTexture:(id<MTLTexture>)texture

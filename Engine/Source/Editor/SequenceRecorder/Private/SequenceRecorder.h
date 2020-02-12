@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -239,7 +239,4 @@ private:
 
 	/** Duplicated level sequence actors to trigger, to be stopped at the end of recording */
 	TArray<TWeakObjectPtr<ALevelSequenceActor>> DupActorsToTrigger;
-
-	/** Whether or not the live client is saving data, set this back after recording */
-	bool bLiveLinkWasSaving;
 };

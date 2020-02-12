@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -16,7 +16,8 @@ public:
 
 	/** Sets up safe defaults */
 	FActorViewportTransformable()
-		: ActorWeakPtr()
+		: ActorWeakPtr(),
+		  bShouldBeCarried( false )
 	{
 	}
 
@@ -32,6 +33,8 @@ public:
 
 	/** The actual actor object */
 	TWeakObjectPtr<class AActor> ActorWeakPtr;
+	/** whether this actor should be 'carried' (moved and rotated) when dragged, if possible, instead of only translated  */
+	bool bShouldBeCarried;
 };
 
 

@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 /*=============================================================================
 	PostProcessPassThrough.h: Post processing pass through implementation.
@@ -20,20 +20,20 @@ class FPostProcessPassThroughPS : public FGlobalShader
 
 	static bool ShouldCompilePermutation(const FGlobalShaderPermutationParameters& Parameters)
 	{
-		return IsFeatureLevelSupported(Parameters.Platform, ERHIFeatureLevel::SM4);
+		return IsFeatureLevelSupported(Parameters.Platform, ERHIFeatureLevel::SM5);
 	}
 
 	/** Default constructor. */
 	FPostProcessPassThroughPS() {}
 
 public:
-	FPostProcessPassParameters PostprocessParameter;
+	LAYOUT_FIELD(FPostProcessPassParameters, PostprocessParameter)
 
 	/** Initialization constructor. */
 	FPostProcessPassThroughPS(const ShaderMetaType::CompiledShaderInitializerType& Initializer);
 
 	// FShader interface.
-	virtual bool Serialize(FArchive& Ar) override;
+	//virtual bool Serialize(FArchive& Ar) override;
 
 	template <typename TRHICmdList>
 	void SetParameters(TRHICmdList& RHICmdList, const FRenderingCompositePassContext& Context);
@@ -67,12 +67,3 @@ private:
 	bool bAdditiveBlend;
 	FPooledRenderTargetDesc NewDesc;
 };
-
-// useful to replace the SceneColor and leave the other views e.g. when doing stereo rendering, assumed there is no scaling on the size (input and output is BufferSize)
-// call before SetViewport()
-// assumes this to be called before
-//  SetRenderTarget()
-//  Context.RHICmdList.SetBlendState(TStaticBlendState<>::GetRHI());
-//  Context.RHICmdList.SetRasterizerState(TStaticRasterizerState<>::GetRHI());
-// 	Context.RHICmdList.SetDepthStencilState(TStaticDepthStencilState<false, CF_Always>::GetRHI());
-void CopyOverOtherViewportsIfNeeded(FRenderingCompositePassContext& Context, const FSceneView& ExcludeView);

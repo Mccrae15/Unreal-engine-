@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -16,6 +16,7 @@ public:
 	virtual bool CanHandlePinDefaults() const override;
 	virtual FString GetPinDefaultStringFromValue(const FNiagaraVariable& AllocatedVariable) const override;
 	virtual bool SetValueFromPinDefaultString(const FString& StringValue, FNiagaraVariable& Variable) const override;
+	virtual FText GetSearchTextFromValue(const FNiagaraVariable& AllocatedVariable) const override;
 };
 
 /** Niagara editor utilities for the FVector type. */
@@ -28,6 +29,7 @@ public:
 	virtual bool CanHandlePinDefaults() const override;
 	virtual FString GetPinDefaultStringFromValue(const FNiagaraVariable& AllocatedVariable) const override;
 	virtual bool SetValueFromPinDefaultString(const FString& StringValue, FNiagaraVariable& Variable) const override;
+	virtual FText GetSearchTextFromValue(const FNiagaraVariable& AllocatedVariable) const override;
 };
 
 /** Niagara editor utilities for the FVector4 type. */
@@ -40,6 +42,7 @@ public:
 	virtual bool CanHandlePinDefaults() const override;
 	virtual FString GetPinDefaultStringFromValue(const FNiagaraVariable& AllocatedVariable) const override;
 	virtual bool SetValueFromPinDefaultString(const FString& StringValue, FNiagaraVariable& Variable) const override;
+	virtual FText GetSearchTextFromValue(const FNiagaraVariable& AllocatedVariable) const override;
 };
 
 /** Niagara editor utilities for the FVector4 type. */
@@ -54,4 +57,5 @@ public:
 	virtual bool CanHandlePinDefaults() const override;
 	virtual FString GetPinDefaultStringFromValue(const FNiagaraVariable& AllocatedVariable) const override;
 	virtual bool SetValueFromPinDefaultString(const FString& StringValue, FNiagaraVariable& Variable) const override;
+	virtual FText GetSearchTextFromValue(const FNiagaraVariable& AllocatedVariable) const override;
 };

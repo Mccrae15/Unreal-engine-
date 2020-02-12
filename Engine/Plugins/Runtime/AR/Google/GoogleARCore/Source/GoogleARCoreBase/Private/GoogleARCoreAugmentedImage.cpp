@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "GoogleARCoreAugmentedImage.h"
 
@@ -78,9 +78,6 @@ void UGoogleARCoreAugmentedImage::UpdateTrackedGeometry(
 
 	ImageIndex = InImageIndex;
 	ImageName = InImageName;
-PRAGMA_DISABLE_DEPRECATION_WARNINGS
-	bIsTracked = (GetTrackingState() == EARTrackingState::Tracking);
-PRAGMA_ENABLE_DEPRECATION_WARNINGS
 }
 
 FVector UGoogleARCoreAugmentedImage::GetCenter() const

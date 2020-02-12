@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -8,6 +8,7 @@
 
 #include "Misc/FrameRate.h"
 #include "Misc/Timecode.h"
+#include "Misc/QualifiedFrameTime.h"
 
 #include "TimecodeProvider.generated.h"
 
@@ -42,18 +43,37 @@ class ENGINE_API UTimecodeProvider : public UObject
 
 public:
 	/**
-	 * Return the Timecode at that moment. It may not be in sync with the current frame.
-	 * Only valid when GetSynchronizationState() is Synchronized.
+	 * Number of frames to subtract from the qualified frame time when GetDelayedQualifiedFrameTime or GetDelayedTimecode is called.
+	 * @see GetDelayedQualifiedFrameTime, GetDelayedTimecode
 	 */
-	UFUNCTION(BlueprintCallable, Category = "Provider")
-	virtual FTimecode GetTimecode() const PURE_VIRTUAL(UTimecodeProvider::GetTimecode, return FTimecode(););
+	UPROPERTY(EditAnywhere, AdvancedDisplay, Category = "Settings")
+	float FrameDelay = 0.f;
 	
 	/**
-	 * Return the frame rate.
+	 * Return the frame number and the frame rate of the frame number at that moment. It may not be in sync with the current frame.
 	 * Depending on the implementation, it may or may not be valid only when GetSynchronizationState() is Synchronized.
-	 */
+	*/
 	UFUNCTION(BlueprintCallable, Category = "Provider")
-	virtual FFrameRate GetFrameRate() const PURE_VIRTUAL(UTimecodeProvider::GetFrameRate, return FFrameRate(););
+	virtual FQualifiedFrameTime GetQualifiedFrameTime() const PURE_VIRTUAL(UTimecodeProvider::GetQualifiedFrameTime, return FQualifiedFrameTime(););
+
+	/**
+	 * Return the frame number and the frame rate of the frame number with the Frame Delay applied. It may not be in sync with the current frame.
+	 * Depending on the implementation, it may or may not be valid only when GetSynchronizationState() is Synchronized.
+	*/
+	UFUNCTION(BlueprintCallable, Category = "Provider")
+	FQualifiedFrameTime GetDelayedQualifiedFrameTime() const;
+
+	/** Return the frame time converted into a timecode value. */
+	UFUNCTION(BlueprintCallable, Category = "Provider")
+	FTimecode GetTimecode() const;
+
+	/** Return the delayed frame time converted into a timecode value. */
+	UFUNCTION(BlueprintCallable, Category = "Provider")
+	FTimecode GetDelayedTimecode() const;
+	
+	/** Return the frame rate of the frame time. */
+	UFUNCTION(BlueprintCallable, Category = "Provider")
+	FFrameRate GetFrameRate() const { return GetQualifiedFrameTime().Rate; }
 
 	/** The state of the TimecodeProvider and if it's currently synchronized and the Timecode and FrameRate are valid. */
 	UFUNCTION(BlueprintCallable, Category = "Provider")

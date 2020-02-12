@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "Generation/PackageChunkData.h"
 
@@ -35,6 +35,7 @@
 #include "Installer/OptimisedDelta.h"
 #include "BuildPatchManifest.h"
 #include "BuildPatchProgress.h"
+#include "IBuildManifestSet.h"
 #include "Core/AsyncHelpers.h"
 
 DECLARE_LOG_CATEGORY_CLASS(LogPackageChunkData, Log, All);
@@ -57,14 +58,14 @@ namespace PackageChunksHelpers
 		return FString::Printf(TEXT("%d"), Integer).Len();
 	}
 
-	TArray<FGuid> GetCustomChunkReferences(const TArray<TSet<FString>>& TagSetArray, const FBuildPatchAppManifestRef& NewManifest, const FBuildPatchAppManifestRef& PrevManifest)
+	TArray<FGuid> GetCustomChunkReferences(const TArray<TSet<FString>>& TagSetArray, const FBuildPatchAppManifestRef& NewManifest, const TSet<FString>& PrevTagSet, const FBuildPatchAppManifestRef& PrevManifest)
 	{
 		using namespace BuildPatchServices;
 		TSet<FGuid> VisitedChunks;
 		TArray<FGuid> UniqueChunkReferences;
 		for (const TSet<FString>& TagSet : TagSetArray)
 		{
-			for (const FGuid& ChunkReference : CustomChunkReferencesHelpers::OrderedUniquePatchReferencesTagged(NewManifest, PrevManifest, TagSet))
+			for (const FGuid& ChunkReference : CustomChunkReferencesHelpers::OrderedUniquePatchReferencesTagged(NewManifest, TagSet, PrevManifest, PrevTagSet))
 			{
 				bool bIsAlreadyInSet = false;
 				VisitedChunks.Add(ChunkReference, &bIsAlreadyInSet);
@@ -114,15 +115,15 @@ namespace BuildPatchServices
 	private:
 		void HandleDownloadComplete(int32 RequestId, const FDownloadRef& Download);
 		void HandleManifestComplete();
-		void HandleManifestSelection(FBuildPatchAppManifestPtr DeltaManifest);
+		void HandleManifestSelection(const IOptimisedDelta::FResultValueOrError& ResultValueOrError);
 		void BeginPackageProcess();
 		void OnPackageComplete(bool bInSuccess);
 
 		typedef void(FPackageChunks::*PromiseCompleteFunc)();
 		TFunction<void()> MakePromiseCompleteDelegate(PromiseCompleteFunc OnComplete);
 
-		typedef void(FPackageChunks::*OptimiseCompleteFunc)(FBuildPatchAppManifestPtr);
-		TFunction<void(FBuildPatchAppManifestPtr)> MakeOptimiseCompleteDelegate(OptimiseCompleteFunc OnComplete);
+		typedef void(FPackageChunks::*OptimiseCompleteFunc)(const IOptimisedDelta::FResultValueOrError&);
+		TFunction<void(const IOptimisedDelta::FResultValueOrError&)> MakeOptimiseCompleteDelegate(OptimiseCompleteFunc OnComplete);
 
 	private:
 		// Configuration.
@@ -132,6 +133,30 @@ namespace BuildPatchServices
 		FTicker& CoreTicker;
 		FDownloadCompleteDelegate DownloadCompleteDelegate;
 		FDownloadProgressDelegate DownloadProgressDelegate;
+
+		// Process control.
+		TArray<FMessageHandler*> MessageHandlers;
+		bool bManifestsProcessed;
+		FThreadSafeBool bShouldRun;
+		FThreadSafeBool bSuccess;
+
+		// Manifest acquisition.
+		int32 RequestIdManifestFile;
+		int32 RequestIdPrevManifestFile;
+		TPromise<FBuildPatchAppManifestPtr> PromiseManifestFile;
+		TPromise<FBuildPatchAppManifestPtr> PromisePrevManifestFile;
+		TFuture<FBuildPatchAppManifestPtr> FutureManifestFile;
+		TFuture<FBuildPatchAppManifestPtr> FuturePrevManifestFile;
+		FBuildPatchAppManifestPtr Manifest;
+		FBuildPatchAppManifestPtr PrevManifest;
+		TUniquePtr<IBuildManifestSet> ManifestSet;
+		bool bUsingOptimisedDelta;
+
+		// Packaging.
+		TArray<FChunkDatabaseFile> ChunkDbFiles;
+		TArray<TArray<int32>> TagSetLookupTable;
+
+		// Declare constructed systems last, to ensure they are destructed before our data members.
 		TUniquePtr<IPlatform> Platform;
 		TUniquePtr<IHttpManager> HttpManager;
 		TUniquePtr<IFileSystem> FileSystem;
@@ -151,28 +176,9 @@ namespace BuildPatchServices
 		TUniquePtr<IChunkDataSerialization> ChunkDataSerialization;
 		TUniquePtr<IChunkEvictionPolicy> MemoryEvictionPolicy;
 		TUniquePtr<IMemoryChunkStore> CloudChunkStore;
+		TUniquePtr<IDownloadConnectionCount> DownloadConnectionCount;
 		TUniquePtr<ICloudChunkSource> CloudChunkSource;
 		TUniquePtr<IChunkDatabaseWriter> ChunkDatabaseWriter;
-
-		// Process control.
-		bool bManifestsProcessed;
-		FThreadSafeBool bShouldRun;
-		FThreadSafeBool bSuccess;
-
-		// Manifest acquisition.
-		int32 RequestIdManifestFile;
-		int32 RequestIdPrevManifestFile;
-		TPromise<FBuildPatchAppManifestPtr> PromiseManifestFile;
-		TPromise<FBuildPatchAppManifestPtr> PromisePrevManifestFile;
-		TFuture<FBuildPatchAppManifestPtr> FutureManifestFile;
-		TFuture<FBuildPatchAppManifestPtr> FuturePrevManifestFile;
-		FBuildPatchAppManifestPtr Manifest;
-		FBuildPatchAppManifestPtr PrevManifest;
-		bool bUsingOptimisedDelta;
-
-		// Packaging.
-		TArray<FChunkDatabaseFile> ChunkDbFiles;
-		TArray<TArray<int32>> TagSetLookupTable;
 	};
 
 	FPackageChunks::FPackageChunks(const FPackageChunksConfiguration& InConfiguration)
@@ -180,17 +186,6 @@ namespace BuildPatchServices
 		, CoreTicker(FTicker::GetCoreTicker())
 		, DownloadCompleteDelegate(FDownloadCompleteDelegate::CreateRaw(this, &FPackageChunks::HandleDownloadComplete))
 		, DownloadProgressDelegate()
-		, Platform(FPlatformFactory::Create())
-		, HttpManager(FHttpManagerFactory::Create())
-		, FileSystem(FFileSystemFactory::Create())
-		, MessagePump(FMessagePumpFactory::Create())
-		, InstallerError(FInstallerErrorFactory::Create())
-		, DownloadSpeedRecorder(FSpeedRecorderFactory::Create())
-		, ChunkDataSizeProvider(FChunkDataSizeProviderFactory::Create())
-		, InstallerAnalytics(FInstallerAnalyticsFactory::Create(nullptr, nullptr))
-		, DownloadServiceStatistics(FDownloadServiceStatisticsFactory::Create(DownloadSpeedRecorder.Get(), ChunkDataSizeProvider.Get(), InstallerAnalytics.Get()))
-		, DownloadService(FDownloadServiceFactory::Create(CoreTicker, HttpManager.Get(), FileSystem.Get(), DownloadServiceStatistics.Get(), InstallerAnalytics.Get()))
-		, FileOperationTracker(FFileOperationTrackerFactory::Create(CoreTicker))
 		, bManifestsProcessed(false)
 		, bShouldRun(true)
 		, bSuccess(true)
@@ -201,7 +196,29 @@ namespace BuildPatchServices
 		, FutureManifestFile(PromiseManifestFile.GetFuture())
 		, FuturePrevManifestFile(PromisePrevManifestFile.GetFuture())
 		, bUsingOptimisedDelta(false)
+		, Platform(FPlatformFactory::Create())
+		, HttpManager(FHttpManagerFactory::Create())
+		, FileSystem(FFileSystemFactory::Create())
+		, MessagePump(FMessagePumpFactory::Create())
+		, InstallerError(FInstallerErrorFactory::Create())
+		, DownloadSpeedRecorder(FSpeedRecorderFactory::Create())
+		, ChunkDataSizeProvider(FChunkDataSizeProviderFactory::Create())
+		, InstallerAnalytics(FInstallerAnalyticsFactory::Create(nullptr))
+		, DownloadServiceStatistics(FDownloadServiceStatisticsFactory::Create(DownloadSpeedRecorder.Get(), ChunkDataSizeProvider.Get(), InstallerAnalytics.Get()))
+		, DownloadService(FDownloadServiceFactory::Create(CoreTicker, HttpManager.Get(), FileSystem.Get(), DownloadServiceStatistics.Get(), InstallerAnalytics.Get()))
+		, FileOperationTracker(FFileOperationTrackerFactory::Create(CoreTicker))
 	{
+		// Make sure the cloud chunk source gets the abort signal if an error occurred.
+		InstallerError->RegisterForErrors([this]()
+		{
+			AsyncHelpers::ExecuteOnGameThread<void>([this]()
+			{
+				if (CloudChunkSource.IsValid())
+				{
+					CloudChunkSource->Abort();
+				}
+			}).Wait();
+		});
 	}
 
 	FPackageChunks::~FPackageChunks()
@@ -234,6 +251,11 @@ namespace BuildPatchServices
 			// Application tick.
 			FTaskGraphInterface::Get().ProcessThreadUntilIdle(ENamedThreads::GameThread);
 			FTicker::GetCoreTicker().Tick(DeltaTime);
+
+			// Message pump.
+			MessagePump->PumpMessages(MessageHandlers);
+
+			// Flush any threaded logging.
 			GLog->FlushThreadedLogs();
 
 			// Control frame rate.
@@ -255,9 +277,9 @@ namespace BuildPatchServices
 		TPromise<FBuildPatchAppManifestPtr>* RelevantPromisePtr = RequestId == RequestIdManifestFile ? &PromiseManifestFile : RequestId == RequestIdPrevManifestFile ? &PromisePrevManifestFile : nullptr;
 		if (RelevantPromisePtr != nullptr)
 		{
-			if (Download->WasSuccessful())
+			if (Download->ResponseSuccessful())
 			{
-				Async<void>(EAsyncExecution::ThreadPool, [Download, RelevantPromisePtr]()
+				Async(EAsyncExecution::ThreadPool, [Download, RelevantPromisePtr]()
 				{
 					FBuildPatchAppManifestPtr DownloadedManifest = MakeShareable(new FBuildPatchAppManifest());
 					if (!DownloadedManifest->DeserializeFromData(Download->GetData()))
@@ -311,14 +333,16 @@ namespace BuildPatchServices
 		}
 	}
 
-	void FPackageChunks::HandleManifestSelection(FBuildPatchAppManifestPtr DeltaManifest)
+	void FPackageChunks::HandleManifestSelection(const IOptimisedDelta::FResultValueOrError& ResultValueOrError)
 	{
+		FBuildPatchAppManifestPtr DeltaManifest = ResultValueOrError.IsValid() ? ResultValueOrError.GetValue() : nullptr;
 		bUsingOptimisedDelta = Manifest.Get() != DeltaManifest.Get();
 		if (DeltaManifest.IsValid())
 		{
 			Manifest = DeltaManifest;
 		}
-		FileOperationTracker->OnManifestSelection(*Manifest.Get());
+		ManifestSet.Reset(FBuildManifestSetFactory::Create({ FInstallerAction::MakeInstall(Manifest.ToSharedRef()) }));
+		FileOperationTracker->OnManifestSelection(ManifestSet.Get());
 		ChunkDataSizeProvider->AddManifestData(Manifest.Get());
 		BeginPackageProcess();
 	}
@@ -327,9 +351,10 @@ namespace BuildPatchServices
 	{
 		const TCHAR* StandardExtension = TEXT(".chunkdb");
 		const TCHAR* DeltaExtension = TEXT(".delta.chunkdb");
-		const TCHAR* ChunkDbExtension =  bUsingOptimisedDelta ? DeltaExtension : StandardExtension;
+		const TCHAR* ChunkDbExtension = bUsingOptimisedDelta ? DeltaExtension : StandardExtension;
 
 		TArray<TSet<FString>> TagSetArray;
+		TSet<FString> PrevTagSet;
 
 		// If TagSetArray was not provided, we need to adjust it to contain an entry that uses all tags.
 		if (Configuration.TagSetArray.Num() == 0)
@@ -346,7 +371,16 @@ namespace BuildPatchServices
 		// Construct the chunk reference tracker, building our list of ordered unique chunk references.
 		if (PrevManifest.IsValid())
 		{
-			ChunkReferenceTracker.Reset(FChunkReferenceTrackerFactory::Create(PackageChunksHelpers::GetCustomChunkReferences(TagSetArray, Manifest.ToSharedRef(), PrevManifest.ToSharedRef())));
+			// If PrevTagSet was not provided, we need to adjust it to contain an entry that uses all tags.
+			if (Configuration.PrevTagSet.Num() == 0)
+			{
+				PrevManifest->GetFileTagList(PrevTagSet);
+			}
+			else
+			{
+				PrevTagSet = Configuration.PrevTagSet;
+			}
+			ChunkReferenceTracker.Reset(FChunkReferenceTrackerFactory::Create(PackageChunksHelpers::GetCustomChunkReferences(TagSetArray, Manifest.ToSharedRef(), PrevTagSet, PrevManifest.ToSharedRef())));
 		}
 		else
 		{
@@ -464,7 +498,6 @@ namespace BuildPatchServices
 			FCloudSourceConfig CloudSourceConfig({ Configuration.CloudDir });
 			CloudSourceConfig.bBeginDownloadsOnFirstGet = false;
 			CloudSourceConfig.MaxRetryCount = 30;
-			CloudSourceConfig.NumSimultaneousDownloads = 30;
 
 			// Create systems.
 			const int32 CloudStoreId = 0;
@@ -483,6 +516,7 @@ namespace BuildPatchServices
 				MemoryEvictionPolicy.Get(),
 				nullptr,
 				MemoryChunkStoreStatistics.Get()));
+			DownloadConnectionCount.Reset(FDownloadConnectionCountFactory::Create(FDownloadConnectionCountConfig(), DownloadServiceStatistics.Get()));
 			CloudChunkSource.Reset(FCloudChunkSourceFactory::Create(
 				CloudSourceConfig,
 				Platform.Get(),
@@ -492,8 +526,9 @@ namespace BuildPatchServices
 				ChunkDataSerialization.Get(),
 				MessagePump.Get(),
 				InstallerError.Get(),
+				DownloadConnectionCount.Get(),
 				CloudChunkSourceStatistics.Get(),
-				Manifest.ToSharedRef(),
+				ManifestSet.Get(),
 				FullDataSet));
 
 			// Start an IO output thread which saves all the chunks to the chunkdbs.
@@ -505,6 +540,12 @@ namespace BuildPatchServices
 				ChunkDataSerialization.Get(),
 				ChunkDbFiles,
 				[this](bool bInSuccess) { OnPackageComplete(bInSuccess); }));
+		}
+		// If there are no chunks required to install or patch the provided manifests and tags, we don't create any chunkdbs.
+		else
+		{
+			UE_LOG(LogPackageChunkData, Log, TEXT("No chunks were necessary for the provided manifest(s) and tagset(s). No chunkdb files were created."));
+			OnPackageComplete(true);
 		}
 	}
 
@@ -572,11 +613,16 @@ namespace BuildPatchServices
 		return GameThreadWrapper;
 	}
 
-	TFunction<void(FBuildPatchAppManifestPtr)> FPackageChunks::MakeOptimiseCompleteDelegate(OptimiseCompleteFunc OnComplete)
+	TFunction<void(const IOptimisedDelta::FResultValueOrError&)> FPackageChunks::MakeOptimiseCompleteDelegate(OptimiseCompleteFunc OnComplete)
 	{
-		typedef TMemberFunctionCaller<FPackageChunks, OptimiseCompleteFunc> FOptimiseCompleteCaller;
-		TFunction<void(FBuildPatchAppManifestPtr)> OnCompleteDelegate = [this, OnComplete](FBuildPatchAppManifestPtr ManifestPtr) { FOptimiseCompleteCaller(this, OnComplete)(ManifestPtr); };
-		TFunction<void(FBuildPatchAppManifestPtr)> GameThreadWrapper = [OnCompleteDelegate](FBuildPatchAppManifestPtr ManifestPtr) { AsyncHelpers::ExecuteOnGameThread<void, FBuildPatchAppManifestPtr>(OnCompleteDelegate, ManifestPtr); };
+		TFunction<void(const IOptimisedDelta::FResultValueOrError&)> GameThreadWrapper = [this, OnComplete](const IOptimisedDelta::FResultValueOrError& Result)
+		{
+			// This is boiler plate overcoming IOptimisedDelta::FResultValueOrError being non-copyable, and interface between async thread and main game thread.
+			typedef TMemberFunctionCaller<FPackageChunks, OptimiseCompleteFunc> FOptimiseCompleteCaller;
+			TSharedPtr<IOptimisedDelta::FResultValueOrError> NewResult = Result.IsValid() ? MakeShared<IOptimisedDelta::FResultValueOrError>(MakeValue(Result.GetValue())) : MakeShared<IOptimisedDelta::FResultValueOrError>(MakeError(Result.GetError()));
+			TFunction<void()> OnCompleteDelegate = [this, OnComplete, NewResult = MoveTemp(NewResult)]() { FOptimiseCompleteCaller(this, OnComplete)(*NewResult); };
+			AsyncHelpers::ExecuteOnGameThread<void>(OnCompleteDelegate);
+		};
 		return GameThreadWrapper;
 	}
 

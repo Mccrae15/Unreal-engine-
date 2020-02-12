@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -9,6 +9,7 @@
 #include "Math/IntPoint.h"
 #include "MediaSampleQueue.h"
 #include "Misc/Timespan.h"
+#include "Templates/Atomic.h"
 #include "Templates/SharedPointer.h"
 #include "UObject/ObjectMacros.h"
 #include "UObject/ScriptMacros.h"
@@ -45,6 +46,14 @@ class MEDIAASSETS_API UMediaTexture
 	/** The color used to clear the texture if AutoClear is enabled (default = black). */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="MediaTexture")
 	FLinearColor ClearColor;
+
+	/** Basic enablement for mip generation. */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "MediaTexture", meta = (DisplayName = "Enable Mipmap generation"))
+	bool EnableGenMips;
+
+	/** The number of mips to use (default = 1). */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "MediaTexture", meta=(DisplayName="Total number of Mipmaps to output"))
+	uint8 NumMips;
 
 public:
 
@@ -94,9 +103,16 @@ public:
 	void SetMediaPlayer(UMediaPlayer* NewMediaPlayer);
 
 	/**
+	 * Caches the next available sample time from the queue when last rendering was made
+	 * @see GetNextSampleTime
+	 */
+	void CacheNextAvailableSampleTime(FTimespan InNextSampleTime);
+
+	/**
 	 * Gets the next sample Time. Only valid if GetAvailableSampleCount is greater than 0
-	 * @return FTimespan of the next sample
-	 * @see GetAvailableSampleCount
+	 * @note This value is cached when last render command was executed to keep single consumer requirements.
+	 * @return FTimespan of the next sample or FTimespan::MinValue if no sample was available in the queue.
+	 * @see GetAvailableSampleCount, CacheNextAvailableSampleTime
 	 */
 	FTimespan GetNextSampleTime() const;
 
@@ -128,6 +144,7 @@ public:
 	virtual float GetSurfaceWidth() const override;
 	virtual float GetSurfaceHeight() const override;
 	virtual FGuid GetExternalTextureGuid() const override;
+	void SetRenderedExternalTextureGuid(const FGuid& InNewGuid);
 
 public:
 
@@ -175,7 +192,10 @@ private:
 	TSharedPtr<FMediaTextureClockSink, ESPMode::ThreadSafe> ClockSink;
 
 	/** The default external texture GUID if no media player is assigned. */
-	/*TAtomic<*/FGuid/*>*/ CurrentGuid;
+	FGuid CurrentGuid;
+
+	/** The last Guid that was rendered and registered in the render command*/
+	FGuid CurrentRenderedGuid;
 
 	/** The player that is currently associated with this texture. */
 	TWeakObjectPtr<UMediaPlayer> CurrentPlayer;
@@ -197,4 +217,10 @@ private:
 
 	/** Current size of the resource (in bytes).*/
 	SIZE_T Size;
+
+	/** Critical section to protect last rendered guid since it can be read from anywhere. */
+	mutable FCriticalSection CriticalSection;
+
+	/** Next available sample time when last render call was made */
+	TAtomic<FTimespan> CachedNextSampleTime;
 };

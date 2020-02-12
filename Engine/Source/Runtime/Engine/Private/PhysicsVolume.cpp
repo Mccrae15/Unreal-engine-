@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "GameFramework/PhysicsVolume.h"
 #include "Engine/World.h"
@@ -16,7 +16,7 @@ APhysicsVolume::APhysicsVolume(const FObjectInitializer& ObjectInitializer)
 	TerminalVelocity = UPhysicsSettings::Get()->DefaultTerminalVelocity;
 	bAlwaysRelevant = true;
 	NetUpdateFrequency = 0.1f;
-	bReplicateMovement = false;
+	SetReplicatingMovement(false);
 }
 
 #if WITH_EDITOR

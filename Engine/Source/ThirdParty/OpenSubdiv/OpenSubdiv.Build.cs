@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 using UnrealBuildTool;
 
@@ -22,8 +22,7 @@ public class OpenSubdiv : ModuleRules
                 bool bDebug = (Target.Configuration == UnrealTargetConfiguration.Debug && Target.bDebugBuildsActuallyUseDebugCRT);
                 string ConfigFolder = bDebug ? "/Debug" : "/RelWithDebInfo";
 
-                PublicLibraryPaths.Add(OpenSubdivPath + LibFolder + ConfigFolder);
-                PublicAdditionalLibraries.Add("osdCPU.lib");
+                PublicAdditionalLibraries.Add(OpenSubdivPath + LibFolder + ConfigFolder + "/osdCPU.lib");
             }
         }
 		else if (Target.Platform == UnrealTargetPlatform.Mac)
@@ -32,16 +31,14 @@ public class OpenSubdiv : ModuleRules
 //            string LibFolder = "/lib/Mac";
 //            string ConfigFolder = bDebug ? "" : "";
 //
-//            PublicLibraryPaths.Add(OpenSubdivPath + LibFolder + ConfigFolder);
-//            PublicAdditionalLibraries.Add("libosdCPU.a");
+//            PublicAdditionalLibraries.Add(OpenSubdivPath + LibFolder + ConfigFolder + "libosdCPU.a");
         }
 		else if (Target.Platform == UnrealTargetPlatform.Linux)
         {
 			// @todo: build Linux libraries
 //            string LibFolder = "/lib/Linux/" + Target.Architecture;
 //
-//            PublicLibraryPaths.Add(OpenSubdivPath + LibFolder);
-//            PublicAdditionalLibraries.Add("libosdCPU.a");
+//            PublicAdditionalLibraries.Add(OpenSubdivPath + LibFolder + "libosdCPU.a");
         }
     }
 }

@@ -1,17 +1,19 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "TrackRecorders/MovieSceneAnimationTrackRecorder.h"
 #include "TrackRecorders/MovieSceneAnimationTrackRecorderSettings.h"
 #include "TakesUtils.h"
+#include "TakeMetaData.h"
 #include "Tracks/MovieSceneSkeletalAnimationTrack.h"
 #include "Sections/MovieSceneSkeletalAnimationSection.h"
-#include "AnimationRecorder.h"
 #include "MovieScene.h"
 #include "AssetRegistryModule.h"
-#include "SequenceRecorderUtils.h"
 #include "SequenceRecorderSettings.h"
 #include "Components/SkeletalMeshComponent.h"
 #include "Animation/AnimSequence.h"
+#include "Engine/TimecodeProvider.h"
+#include "Engine/Engine.h"
+#include "LevelSequence.h"
 
 DEFINE_LOG_CATEGORY(AnimationSerialization);
 
@@ -35,12 +37,27 @@ UMovieSceneTrackRecorder* FMovieSceneAnimationTrackRecorderFactory::CreateTrackR
 
 void UMovieSceneAnimationTrackRecorder::CreateAnimationAssetAndSequence(const AActor* Actor, const FDirectoryPath& AnimationDirectory)
 {
+	UMovieSceneAnimationTrackRecorderSettings* AnimSettings = CastChecked<UMovieSceneAnimationTrackRecorderSettings>(Settings.Get());
+
 	SkeletalMesh = SkeletalMeshComponent->SkeletalMesh;
 	if (SkeletalMesh.IsValid())
 	{
 		ComponentTransform = SkeletalMeshComponent->GetComponentToWorld().GetRelativeTransform(Actor->GetTransform());
 		FString AnimationAssetName = Actor->GetActorLabel();
-		AnimSequence = SequenceRecorderUtils::MakeNewAsset<UAnimSequence>(AnimationDirectory.Path, AnimationAssetName);
+
+		if (ULevelSequence* MasterLevelSequence = OwningTakeRecorderSource->GetMasterLevelSequence())
+		{
+			UTakeMetaData* AssetMetaData = MasterLevelSequence->FindMetaData<UTakeMetaData>();
+
+			AnimationAssetName = AssetMetaData->GenerateAssetPath(AnimSettings->AnimationAssetName);
+
+			TMap<FString, FStringFormatArg> FormatArgs;
+			FormatArgs.Add(TEXT("actor"), Actor->GetActorLabel());
+
+			AnimationAssetName = FString::Format(*AnimationAssetName, FormatArgs);
+		}
+
+		AnimSequence = TakesUtils::MakeNewAsset<UAnimSequence>(AnimationDirectory.Path, AnimationAssetName);
 		if (AnimSequence.IsValid())
 		{
 			FAssetRegistryModule::AssetCreated(AnimSequence.Get());
@@ -102,11 +119,16 @@ void UMovieSceneAnimationTrackRecorder::CreateTrackImpl()
 
 		if (AnimSequence.IsValid())
 		{
+			//If we are syncing to a timecode provider use that's frame rate as our frame rate since
+			//otherwise use the displayrate.
+			const TOptional<FQualifiedFrameTime> CurrentFrameTime = FApp::GetCurrentFrameTime();
+			FFrameRate SampleRate = CurrentFrameTime.IsSet() ? CurrentFrameTime.GetValue().Rate : MovieScene->GetDisplayRate();
+
 			FText Error;
 			FString Name = SkeletalMeshComponent->GetName();
 			FName SerializedType("Animation");
 			FString FileName = FString::Printf(TEXT("%s_%s"), *(SerializedType.ToString()), *Name);
-			float IntervalTime = AnimSettings->SampleRate.AsDecimal() > 0.0f ? 1.0f / AnimSettings->SampleRate.AsDecimal() : 1.0f / FAnimationRecordingSettings::DefaultSampleRate;
+			float IntervalTime = SampleRate.AsDecimal() > 0.0f ? 1.0f / SampleRate.AsDecimal() : 1.0f / FAnimationRecordingSettings::DefaultSampleRate;
 			FAnimationFileHeader Header(SerializedType, ObjectGuid, IntervalTime);
 
 			USkeleton* AnimSkeleton = AnimSequence->GetSkeleton();
@@ -172,10 +194,10 @@ void UMovieSceneAnimationTrackRecorder::StopRecordingImpl()
 	{
 		// Legacy Animation Recorder allowed recording into an animation asset directly and not creating an movie section
 		const bool bShowAnimationAssetCreatedToast = false;
-		FAnimationRecorderManager::Get().StopRecordingAnimation(SkeletalMeshComponent.Get(), bShowAnimationAssetCreatedToast);
+		InitialRootTransform = AnimationRecorder.Recorder.Get()->GetInitialRootTransform();
+		AnimationRecorder.FinishRecording(bShowAnimationAssetCreatedToast);
 	}
 }
-
 
 void UMovieSceneAnimationTrackRecorder::FinalizeTrackImpl()
 { 
@@ -198,42 +220,70 @@ void UMovieSceneAnimationTrackRecorder::RecordSampleImpl(const FQualifiedFrameTi
 {
 	// The animation recorder does most of the work here
 	//  Note we wait for first tick so that we can make sure all of the attach tracks are set up .
+	float CurrentSeconds = CurrentTime.AsSeconds();
+
 	if (!bAnimationRecorderCreated)
 	{
-		
+		/*
+		//Reset the start times based upon when the animation really starts.
+		if (MovieSceneSection.IsValid())
+		{
+			MovieSceneSection->TimecodeSource = FMovieSceneTimecodeSource(FApp::GetTimecode());
+			FFrameRate   TickResolution = MovieSceneSection->GetTypedOuter<UMovieScene>()->GetTickResolution();
+			FFrameNumber CurrentFrame = CurrentTime.ConvertTo(TickResolution).FloorToFrame();
+
+			// Ensure we're expanded to at least the next frame so that we don't set the start past the end
+			// when we set the first frame.
+			MovieSceneSection->ExpandToFrame(CurrentFrame + FFrameNumber(1));
+			MovieSceneSection->SetStartFrame(TRangeBound<FFrameNumber>::Inclusive(CurrentFrame));
+		}
+		*/
 		bAnimationRecorderCreated = true;
 		AActor* Actor = nullptr;
 		SkeletalMeshComponent = CastChecked<USkeletalMeshComponent>(ObjectToRecord.Get());
 		Actor = SkeletalMeshComponent->GetOwner();
 		USceneComponent* RootComponent = Actor->GetRootComponent();
 		USceneComponent* AttachParent = RootComponent ? RootComponent->GetAttachParent() : nullptr;
-		
+
 		//In Sequence Recorder this would be done via checking if the component was dynamically created, due to changes in how the take recorder handles this, it no longer 
 		//possible so it seems if it's native do root, otherwise, don't.  
 		bool bRemoveRootAnimation = SkeletalMeshComponent->CreationMethod != EComponentCreationMethod::Native ? false : true;
-
 		// Need to pass this up to the settings since it's used later to force root lock and transfer root from animation to transform
 		UMovieSceneAnimationTrackRecorderSettings* AnimSettings = CastChecked<UMovieSceneAnimationTrackRecorderSettings>(Settings.Get());
 		AnimSettings->bRemoveRootAnimation = bRemoveRootAnimation;
-
 		//If not removing root we also don't record in world space ( not totally sure if it matters but matching up with Sequence Recorder)
 		bool bRecordInWorldSpace = bRemoveRootAnimation == false ? false : true;
-		
+
 		if (bRecordInWorldSpace && AttachParent && OwningTakeRecorderSource)
 		{
 			// We capture world space transforms for actors if they're attached, but we're not recording the attachment parent
 			bRecordInWorldSpace = !OwningTakeRecorderSource->IsOtherActorBeingRecorded(AttachParent->GetOwner());
 		}
+
+		const TOptional<FQualifiedFrameTime> CurrentFrameTime = FApp::GetCurrentFrameTime();
+		FFrameRate SampleRate = CurrentFrameTime.IsSet() ? CurrentFrameTime.GetValue().Rate : MovieScene->GetDisplayRate();
+
 		//Set this up here so we know that it's parent sources have also been added so we record in the correct space
 		FAnimationRecordingSettings RecordingSettings;
-		RecordingSettings.SampleRate = AnimSettings->SampleRate.AsDecimal();
+		RecordingSettings.SampleRate = SampleRate.AsDecimal();
 		RecordingSettings.InterpMode = AnimSettings->InterpMode;
 		RecordingSettings.TangentMode = AnimSettings->TangentMode;
 		RecordingSettings.Length = 0;
 		RecordingSettings.bRecordInWorldSpace = bRecordInWorldSpace;
 		RecordingSettings.bRemoveRootAnimation = bRemoveRootAnimation;
-		FAnimationRecorderManager::Get().RecordAnimation(SkeletalMeshComponent.Get(), AnimSequence.Get(), &AnimationSerializer, RecordingSettings);
+		RecordingSettings.bCheckDeltaTimeAtBeginning = false;
+		AnimationRecorder.Init(SkeletalMeshComponent.Get(), AnimSequence.Get(), &AnimationSerializer, RecordingSettings);
+		AnimationRecorder.BeginRecording();
 	}
+	else
+	{
+		float DeltaTime = CurrentSeconds - PreviousSeconds;
+		AnimationRecorder.Update(DeltaTime);
+	}
+
+	PreviousSeconds = CurrentSeconds;
+
+
 	if (SkeletalMeshComponent.IsValid())
 	{
 		// re-force updates on as gameplay can sometimes turn these back off!

@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "Components/InvalidationBox.h"
 #include "Widgets/SNullWidget.h"
@@ -28,7 +28,6 @@ TSharedRef<SWidget> UInvalidationBox::RebuildWidget()
 {
 	MyInvalidationPanel =
 		SNew(SInvalidationPanel)
-		.CacheRelativeTransforms(CacheRelativeTransforms)
 #if !UE_BUILD_SHIPPING
 		.DebugName(GetPathName())
 #endif
@@ -64,10 +63,6 @@ void UInvalidationBox::OnSlotRemoved(UPanelSlot* InSlot)
 
 void UInvalidationBox::InvalidateCache()
 {
-	if ( MyInvalidationPanel.IsValid() )
-	{
-		return MyInvalidationPanel->InvalidateCache();
-	}
 }
 
 bool UInvalidationBox::GetCanCache() const

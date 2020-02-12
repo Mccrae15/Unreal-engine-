@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 using UnrealBuildTool;
 
@@ -40,7 +40,8 @@ public class PropertyEditor : ModuleRules
                 "AssetRegistry",
                 "AssetTools",
 				"ClassViewer",
-                "ContentBrowser",
+				"StructViewer",
+				"ContentBrowser",
 				"ConfigEditor",
 			}
 		);
@@ -61,6 +62,8 @@ public class PropertyEditor : ModuleRules
                 "RHI",
 				"ConfigEditor",
                 "SceneOutliner",
+				"DesktopPlatform",
+				"PropertyPath",
             }
         );
 
@@ -69,6 +72,7 @@ public class PropertyEditor : ModuleRules
                 "AssetRegistry",
                 "AssetTools",
 				"ClassViewer",
+				"StructViewer",
 				"ContentBrowser",
 				"MainFrame",
 			}

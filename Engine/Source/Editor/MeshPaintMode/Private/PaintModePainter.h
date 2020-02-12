@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -101,6 +101,10 @@ public:
 	virtual TSharedPtr<SWidget> GetWidget() override;
 	/** End IMeshPainter overrides */
 	
+	/**
+	 * Get the color buffer size for selected components being vertex painted
+	 */
+	int32 GetVertexPaintColorBufferSize() const { return CachedVertexDataSize; }
 protected:
 	/** Override from IMeshPainter used for applying actual painting */
 	virtual bool PaintInternal(const FVector& InCameraOrigin, const TArrayView<TPair<FVector, FVector>>& Rays, EMeshPaintAction PaintAction, float PaintStrength) override;
@@ -155,7 +159,8 @@ protected:
 	void RemoveVertexColors();
 	void PropagateVertexColorsToLODs();
 	void CycleMeshLODs(int32 Direction);
-	
+	void UpdateCachedVertexDataSize();
+
 	/** Checks whether or not the current selection contains components which reference the same (static/skeletal)-mesh */
 	bool ContainsDuplicateMeshes(TArray<UMeshComponent*>& Components) const;
 	
@@ -244,6 +249,7 @@ private:
 	void ImportVertexColors();
 	void SavePaintedAssets();
 	void SaveModifiedTextures();
+	void Cleanup();
 protected:	
 	/** Texture paint state */
 	/** Textures eligible for painting retrieved from the current selection */
@@ -303,6 +309,7 @@ protected:
 	TArray<UMeshComponent*> PaintableComponents;
 	/** Contains copied vertex color data */
 	TArray<FPerComponentVertexColorData> CopiedColorsByComponent;
+	uint32 CachedVertexDataSize;
 	// End vertex paint state
 
 	/** UI command list object */

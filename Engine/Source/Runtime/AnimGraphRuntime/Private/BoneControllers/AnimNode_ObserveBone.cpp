@@ -1,8 +1,9 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "BoneControllers/AnimNode_ObserveBone.h"
 #include "AnimationRuntime.h"
 #include "Animation/AnimInstanceProxy.h"
+#include "Animation/AnimTrace.h"
 
 /////////////////////////////////////////////////////
 // FAnimNode_ObserveBone
@@ -18,6 +19,7 @@ FAnimNode_ObserveBone::FAnimNode_ObserveBone()
 
 void FAnimNode_ObserveBone::GatherDebugData(FNodeDebugData& DebugData)
 {
+	DECLARE_SCOPE_HIERARCHICAL_COUNTER_ANIMNODE(GatherDebugData)
 	const FString DebugLine = FString::Printf(TEXT("(Bone: %s has T(%s), R(%s), S(%s))"), *BoneToObserve.BoneName.ToString(), *Translation.ToString(), *Rotation.Euler().ToString(), *Scale.ToString());
 
 	DebugData.AddDebugItem(DebugLine);
@@ -27,6 +29,7 @@ void FAnimNode_ObserveBone::GatherDebugData(FNodeDebugData& DebugData)
 
 void FAnimNode_ObserveBone::EvaluateSkeletalControl_AnyThread(FComponentSpacePoseContext& Output, TArray<FBoneTransform>& OutBoneTransforms)
 {
+	DECLARE_SCOPE_HIERARCHICAL_COUNTER_ANIMNODE(EvaluateSkeletalControl_AnyThread)
 	const FBoneContainer& BoneContainer = Output.Pose.GetPose().GetBoneContainer();
 
 	const FCompactPoseBoneIndex BoneIndex = BoneToObserve.GetCompactPoseIndex(BoneContainer);
@@ -46,6 +49,11 @@ void FAnimNode_ObserveBone::EvaluateSkeletalControl_AnyThread(FComponentSpacePos
 	Translation = BoneTM.GetTranslation();
 	Rotation = BoneTM.GetRotation().Rotator();
 	Scale = BoneTM.GetScale3D();
+
+	TRACE_ANIM_NODE_VALUE(Output, TEXT("Bone"), BoneToObserve.BoneName);
+	TRACE_ANIM_NODE_VALUE(Output, TEXT("Translation"), Translation);
+	TRACE_ANIM_NODE_VALUE(Output, TEXT("Rotation"), Rotation.Euler());
+	TRACE_ANIM_NODE_VALUE(Output, TEXT("Scale"), Scale);
 }
 
 bool FAnimNode_ObserveBone::IsValidToEvaluate(const USkeleton* Skeleton, const FBoneContainer& RequiredBones)
@@ -55,5 +63,6 @@ bool FAnimNode_ObserveBone::IsValidToEvaluate(const USkeleton* Skeleton, const F
 
 void FAnimNode_ObserveBone::InitializeBoneReferences(const FBoneContainer& RequiredBones)
 {
+	DECLARE_SCOPE_HIERARCHICAL_COUNTER_ANIMNODE(InitializeBoneReferences)
 	BoneToObserve.Initialize(RequiredBones);
 }

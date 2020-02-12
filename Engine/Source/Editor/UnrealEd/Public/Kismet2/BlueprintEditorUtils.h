@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -29,6 +29,10 @@ class USCS_Node;
 class UTimelineTemplate;
 struct FBlueprintCookedComponentInstancingData;
 struct FComponentKey;
+class UAnimGraphNode_Root;
+class UBlueprint;
+struct FBPInterfaceDescription;
+class UFunction;
 
 /** 
   * Flags describing how to handle graph removal
@@ -267,11 +271,11 @@ public:
 	static const UClass* GetMostUpToDateClass(const UClass* FromClass);
 	
 	/** Looks at the most up to data class and returns whether the given property exists in it as well */
-	static bool PropertyStillExists(UProperty* Property);
+	static bool PropertyStillExists(FProperty* Property);
 
 	/** Returns the skeleton version of the property, skeleton classes are often more up to date than the authoritative GeneratedClass */
-	static UProperty* GetMostUpToDateProperty(UProperty* Property);
-	static const UProperty* GetMostUpToDateProperty(const UProperty* Property);
+	static FProperty* GetMostUpToDateProperty(FProperty* Property);
+	static const FProperty* GetMostUpToDateProperty(const FProperty* Property);
 
 	static UFunction* GetMostUpToDateFunction(UFunction* Function);
 	static const UFunction* GetMostUpToDateFunction(const UFunction* Function);
@@ -348,9 +352,9 @@ public:
 					ExtraFunctionFlags |= FUNC_Static;
 				}
 				// We need to mark the function entry as editable so that we can
-				// set metadata on it if it is a blutility:
+				// set metadata on it if it is an editor utility blueprint/widget:
 				K2Schema->MarkFunctionEntryAsEditable(Graph, true);
-				if( IsBlutility( Blueprint ))
+				if( IsEditorUtilityBlueprint( Blueprint ))
 				{
 					if( FKismetUserDeclaredFunctionMetadata* MetaData = GetGraphFunctionMetaData( Graph ))
 					{
@@ -379,6 +383,17 @@ public:
 
 		FBlueprintEditorUtils::MarkBlueprintAsStructurallyModified(Blueprint);
 	}
+
+	/**
+	* Get the override class of a given function from its name
+	* 
+	* @param Blueprint		Blueprint to check the function on
+	* @param FuncName		Name of the function
+	* @param OutFunction	The function that has this name
+	* 
+	* @return The override class of a given function
+	*/
+	static UClass* const GetOverrideFunctionClass(UBlueprint* Blueprint, const FName FuncName, UFunction** OutFunction = nullptr);
 
 	/** Adds a macro graph to this blueprint.  If bIsUserCreated is true, the entry/exit nodes will be editable. SignatureFromClass is used to find signature for entry/exit nodes if using an existing signature. */
 	static void AddMacroGraph(UBlueprint* Blueprint, class UEdGraph* Graph,  bool bIsUserCreated, UClass* SignatureFromClass);
@@ -508,8 +523,11 @@ public:
 	/** Gather all bps that Blueprint depends on */
 	static void GatherDependencies(const UBlueprint* Blueprint, TSet<TWeakObjectPtr<UBlueprint>>& OutDependencies, TSet<TWeakObjectPtr<UStruct>>& OutUDSDependencies);
 
-	/** Returns a list of loaded Blueprints that are dependent on the given Blueprint. */
-	static void GetDependentBlueprints(UBlueprint* Blueprint, TArray<UBlueprint*>& DependentBlueprints, bool bRemoveSelf = true);
+	/** Returns cached a list of loaded Blueprints that are dependent on the given Blueprint. */
+	static void GetDependentBlueprints(UBlueprint* Blueprint, TArray<UBlueprint*>& DependentBlueprints);
+
+	/** Searches the reference graph to find blueprints that are dependent on this BP */
+	static void FindDependentBlueprints(UBlueprint* Blueprint, TArray<UBlueprint*>& DependentBlueprints);
 
 	/** Ensures, that CachedDependencies in BP are up to date */
 	static void EnsureCachedDependenciesUpToDate(UBlueprint* Blueprint);
@@ -523,8 +541,8 @@ public:
 	/** Returns whether or not the blueprint is const during execution */
 	static bool IsBlueprintConst(const UBlueprint* Blueprint);
 
-	/** Returns whether or not the blueprint is a blutility */
-	static bool IsBlutility(const UBlueprint* Blueprint);
+	/** Returns whether or not the blueprint is an editor utility blueprint or widget */
+	static bool IsEditorUtilityBlueprint(const UBlueprint* Blueprint);
 
 	/**
 	 * Whether or not this is an actor-based blueprint, and supports features like the uber-graph, components, etc
@@ -539,6 +557,13 @@ public:
 	 * @return	Whether or not this is an interface blueprint
 	 */
 	static bool IsInterfaceBlueprint(const UBlueprint* Blueprint);
+
+	/**
+	* Whether or not this graph is an interface graph (i.e. is from an interface blueprint)
+	* 
+	* @return	Whether or not this is an interface graph
+	*/
+	static bool IsInterfaceGraph(const UEdGraph* Graph);
 
 	/**
 	 * Whether or not this blueprint is an interface, used only for defining functions to implement
@@ -624,6 +649,9 @@ public:
 
 	/** return find first native class in the hierarchy */
 	static UClass* FindFirstNativeClass(UClass* Class);
+
+	/** returns true if this blueprints signature (inc. visibility) was determined by UHT, rather than the blueprint compiler */
+	static bool IsNativeSignature(const UFunction* Fn);
 
 	/**
 	 * Gets the names of all graphs in the Blueprint
@@ -952,7 +980,7 @@ public:
 	static void ReplaceVariableReferences(UBlueprint* Blueprint, const FName OldName, const FName NewName);
 
 	/** Replaces all variable references in the specified blueprint */
-	static void ReplaceVariableReferences(UBlueprint* Blueprint, const UProperty* OldVariable, const UProperty* NewVariable);
+	static void ReplaceVariableReferences(UBlueprint* Blueprint, const FProperty* OldVariable, const FProperty* NewVariable);
 
 	/** Check blueprint variable metadata keys/values for validity and make adjustments if needed */
 	static void FixupVariableDescription(UBlueprint* Blueprint, FBPVariableDescription& VarDesc);
@@ -1018,6 +1046,14 @@ public:
 	 */
 	static void SetVariableAdvancedDisplayFlag(UBlueprint* InBlueprint, const FName& InVarName, const bool bInIsAdvancedDisplay);
 
+	/**
+	 * Sets the Deprecated flag on the variable with the specified name
+	 *
+	 * @param	InVarName				Name of the var to set the flag on
+	 * @param	bInIsDeprecated			The new value to set the bitflag to
+	 */
+	static void SetVariableDeprecatedFlag(UBlueprint* InBlueprint, const FName& InVarName, const bool bInIsDeprecated);
+
 	/** Sets a metadata key/value on the specified variable
 	 *
 	 * @param Blueprint				The Blueprint to find the variable in
@@ -1069,6 +1105,23 @@ public:
 	 */
 	static void SetBlueprintFunctionOrMacroCategory(UEdGraph* Graph, const FText& NewCategory, bool bDontRecompile=false);
 
+	/** 
+	 * Helper function to grab the root node from an anim graph. 
+	 * Asserts if anything other than 1 node is found in an anim graph.
+	 * @param	InGraph		The graph to check
+	 * @return the one and only root, if this is an anim graph, or null otherwise
+	 */
+	static UAnimGraphNode_Root* GetAnimGraphRoot(UEdGraph* InGraph);
+
+	/**
+	 * Sets the layer group on the anim graph
+	 * @note: Will not change the category for functions defined via native classes.
+	 *
+	 * @param	InGraph				Graph associated with the layer
+	 * @param	InGroupName			The new value of the group for the layer
+	 */
+	static void SetAnimationGraphLayerGroup(UEdGraph* InGraph, const FText& InGroupName);
+
 	/** Finds the index of the specified graph (function or macro) in the parent (if it is not reorderable, then we will return INDEX_NONE) */
 	static int32 FindIndexOfGraphInParent(UEdGraph* Graph);
 
@@ -1094,7 +1147,7 @@ public:
 	static void SetBlueprintVariableRepNotifyFunc(UBlueprint* Blueprint, const FName& VarName, const FName& RepNotifyFunc);
 
 	/** Returns TRUE if the variable was created by the Blueprint */
-	static bool IsVariableCreatedByBlueprint(UBlueprint* InBlueprint, UProperty* InVariableProperty);
+	static bool IsVariableCreatedByBlueprint(UBlueprint* InBlueprint, FProperty* InVariableProperty);
 
 	/**
 	 * Find the index of a variable first declared in this blueprint. Returns INDEX_NONE if not found.
@@ -1105,8 +1158,19 @@ public:
 	 */
 	static int32 FindNewVariableIndex(const UBlueprint* Blueprint, const FName& InName);
 
+	/**
+	 * Find the index of a local variable declared in this blueprint. Returns INDEX_NONE if not found.
+	 *
+	 * @param	VariableScope	Struct of owning function.
+	 *
+	 * @param	InVariableName	Name of the variable to find.
+	 *
+	 * @return	The index of the variable, or INDEX_NONE if it wasn't introduced in this blueprint.
+	 */
+	static int32 FindLocalVariableIndex(const UBlueprint* Blueprint, UStruct* VariableScope, const FName& InVariableName);
+
 	/** Change the order of variables in the Blueprint */
-	static bool MoveVariableBeforeVariable(UBlueprint* Blueprint, FName VarNameToMove, FName TargetVarName, bool bDontRecompile);
+	static bool MoveVariableBeforeVariable(UBlueprint* Blueprint, UStruct* VariableScope, FName VarNameToMove, FName TargetVarName, bool bDontRecompile);
 
 	/**
 	 * Find the index of a timeline first declared in this blueprint. Returns INDEX_NONE if not found.
@@ -1148,23 +1212,23 @@ public:
 	static bool IsVariableUsed(const UBlueprint* Blueprint, const FName& Name, UEdGraph* LocalGraphScope = nullptr);
 
 	/** Copies the value from the passed in string into a property. ContainerMem points to the Struct or Class containing Property */
-	static bool PropertyValueFromString(const UProperty* Property, const FString& StrValue, uint8* Container);
+	static bool PropertyValueFromString(const FProperty* Property, const FString& StrValue, uint8* Container, UObject* OwningObject = nullptr);
 
 	/** Copies the value from the passed in string into a property. DirectValue is the raw memory address of the property value */
-	static bool PropertyValueFromString_Direct(const UProperty* Property, const FString& StrValue, uint8* DirectValue);
+	static bool PropertyValueFromString_Direct(const FProperty* Property, const FString& StrValue, uint8* DirectValue, UObject* OwningObject = nullptr);
 
 	/** Copies the value from a property into the string OutForm. ContainerMem points to the Struct or Class containing Property */
-	static bool PropertyValueToString(const UProperty* Property, const uint8* Container, FString& OutForm);
+	static bool PropertyValueToString(const FProperty* Property, const uint8* Container, FString& OutForm, UObject* OwningObject = nullptr);
 
 	/** Copies the value from a property into the string OutForm. DirectValue is the raw memory address of the property value */
-	static bool PropertyValueToString_Direct(const UProperty* Property, const uint8* DirectValue, FString& OutForm);
+	static bool PropertyValueToString_Direct(const FProperty* Property, const uint8* DirectValue, FString& OutForm, UObject* OwningObject = nullptr);
 
 	/** Call PostEditChange() on all Actors based on the given Blueprint */
 	static void PostEditChangeBlueprintActors(UBlueprint* Blueprint, bool bComponentEditChange = false);
 
 	/** Checks if the property can be modified in given blueprint */
 	UE_DEPRECATED(4.17, "Use IsPropertyWritableInBlueprint instead.")
-	static bool IsPropertyReadOnlyInCurrentBlueprint(const UBlueprint* Blueprint, const UProperty* Property);
+	static bool IsPropertyReadOnlyInCurrentBlueprint(const UBlueprint* Blueprint, const FProperty* Property);
 
 	/** Enumeration of whether a property is writable or if not, why. */
 	enum class EPropertyWritableState : uint8
@@ -1176,7 +1240,7 @@ public:
 	};
 
 	/** Returns an enumeration indicating if the property can be written to by the given Blueprint */
-	static EPropertyWritableState IsPropertyWritableInBlueprint(const UBlueprint* Blueprint, const UProperty* Property);
+	static EPropertyWritableState IsPropertyWritableInBlueprint(const UBlueprint* Blueprint, const FProperty* Property);
 
 	/** Enumeration of whether a property is readable or if not, why. */
 	enum class EPropertyReadableState : uint8
@@ -1187,13 +1251,13 @@ public:
 	};
 
 	/** Returns an enumeration indicating if the property can be read by the given Blueprint */
-	static EPropertyReadableState IsPropertyReadableInBlueprint(const UBlueprint* Blueprint, const UProperty* Property);
+	static EPropertyReadableState IsPropertyReadableInBlueprint(const UBlueprint* Blueprint, const FProperty* Property);
 
 	/** Ensures that the CDO root component reference is valid for Actor-based Blueprints */
 	static void UpdateRootComponentReference(UBlueprint* Blueprint);
 
 	/** Determines if this property is associated with a component that would be displayed in the SCS editor */
-	static bool IsSCSComponentProperty(UObjectProperty* MemberProperty);
+	static bool IsSCSComponentProperty(FObjectProperty* MemberProperty);
 
 	/** Attempts to match up the FComponentKey with a ComponentTemplate from the Blueprint's UCS */
 	static UActorComponent* FindUCSComponentTemplate(const FComponentKey& ComponentKey);
@@ -1211,6 +1275,14 @@ public:
 	// Interface
 
 	/** 
+	 * Find the interface Guid for a graph if it exists.
+	 * 
+	 * @param	GraphName		The graph name to find a GUID for.
+	 * @param	InterfaceClass	The interface's generated class.
+	 */
+	static FGuid FindInterfaceGraphGuid(const FName& GraphName, const UClass* InterfaceClass);
+
+	/** 
 	 * Find the interface Guid for a function if it exists.
 	 * 
 	 * @param	Function		The function to find a graph for.
@@ -1223,6 +1295,14 @@ public:
 
 	/** Remove an implemented interface, and its associated member function graphs.  If bPreserveFunctions is true, then the interface will move its functions to be normal implemented blueprint functions */
 	static void RemoveInterface(UBlueprint* Blueprint, const FName& InterfaceClassName, bool bPreserveFunctions = false);
+	
+	/**
+	* Attempt to remove a function from an interfaces list of function graphs.
+	* Note that this will NOT remove interface events (i.e. functions with no outputs)
+	* 
+	* @return	True if the function was removed from the blueprint
+	*/
+	static bool RemoveInterfaceFunction(UBlueprint* Blueprint, FBPInterfaceDescription& Interface, UFunction* Function, bool bPreserveFunction);
 
 	/**
 	* Promotes a Graph from being an Interface Override to a full member function
@@ -1234,6 +1314,28 @@ public:
 
 	/** Gets the graphs currently in the blueprint associated with the specified interface */
 	static void GetInterfaceGraphs(UBlueprint* Blueprint, const FName& InterfaceClassName, TArray<UEdGraph*>& ChildGraphs);
+
+	/**
+	* Checks if the given function is a part of an interface on this blueprint
+	* 
+	* @param Blueprint		The blueprint to consider
+	* @param Function		Function to check if it is an interface or not
+	* @return	True if the given function is implemented as part of an interface
+	*/
+	static bool IsInterfaceFunction(UBlueprint* Blueprint, UFunction* Function);
+
+	/**
+	* Get the corresponding UFunction pointer to the name given on the blueprint.
+	* Searches the given blueprints implemented interfaces first, and then looks 
+	* in the parent. 
+	* 
+	* @param Blueprint		The blueprint to consider
+	* @param FuncName		The name of the function to look for
+	*
+	* @return	Corresponding UFunction pointer to the name given; Nullptr if not 
+	*			part of any interfaces
+	*/
+	static UFunction* GetInterfaceFunction(UBlueprint* Blueprint, const FName FuncName);
 
 	/** Makes sure that all graphs for all interfaces we implement exist, and add if not */
 	static void ConformImplementedInterfaces(UBlueprint* Blueprint);
@@ -1427,6 +1529,13 @@ public:
 	static FKismetUserDeclaredFunctionMetadata* GetGraphFunctionMetaData(const UEdGraph* InGraph);
 
 	/**
+	 * Modifies the graph entry node that contains the function metadata block, used in metadata transactions.
+	 *
+	 * @param InGraph			The graph to modify
+	 */
+	static void ModifyFunctionMetaData(const UEdGraph* InGraph);
+
+	/**
 	 * Returns the description of the graph from the metadata
 	 *
 	 * @param InGraph			Graph to find the description of
@@ -1464,9 +1573,9 @@ public:
 	static bool HasGetTypeHash(const FEdGraphPinType& PinType);
 
 	/**
-	 * Returns true if this type of UProperty can be hashed. Matches native constructors of UNumericProperty, etc.
+	 * Returns true if this type of FProperty can be hashed. Matches native constructors of FNumericProperty, etc.
 	 */
-	static bool PropertyHasGetTypeHash(const UProperty* PropertyType);
+	static bool PropertyHasGetTypeHash(const FProperty* PropertyType);
 
 	/**
 	 * Returns true if the StructType is native and has a GetTypeHash or is non-native and all of its member types are handled by UScriptStruct::GetStructTypeHash
@@ -1586,6 +1695,21 @@ public:
 	static FString GetClassNameWithoutSuffix(const UClass* Class);
 
 	/**
+	 * Returns a formatted menu item label for a deprecated variable or function member with the given name.
+	 *
+	 * @param MemberName		(Required) User-facing name of the deprecated variable or function.
+	 */
+	static FText GetDeprecatedMemberMenuItemName(const FText& MemberName);
+
+	/**
+	 * Returns a formatted warning message regarding usage of a deprecated variable or function member with the given name.
+	 *
+	 * @param MemberName		(Required) User-facing name of the deprecated variable or function.
+	 * @param DetailedMessage	(Optional) Instructional text or other details from the owner. If empty, a default message will be used.
+	 */
+	static FText GetDeprecatedMemberUsageNodeWarning(const FText& MemberName, const FText& DetailedMessage);
+
+	/**
 	 * Remove overridden component templates from instance component handlers when a parent class disables editable when inherited boolean.
 	 */
 	static void HandleDisableEditableWhenInherited(UObject* ModifiedObject, TArray<UObject*>& ArchetypeInstances);
@@ -1594,6 +1718,9 @@ public:
 	 * Returns the BPs most derived native parent type:
 	 */
 	static UClass* GetNativeParent(const UBlueprint* BP);
+
+	/** Returns the UClass type for an object pin, if any */
+	static UClass* GetTypeForPin(const UEdGraphPin& Pin);
 
 	/**
 	 * Returns true if this BP is currently based on a type that returns true for the UObject::ImplementsGetWorld() call:

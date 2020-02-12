@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 using System;
 using System.Collections.Generic;
@@ -51,6 +51,7 @@ namespace UnrealBuildTool
 	 *	$S(BuildDir) = project's platform appropriate build directory (within the Intermediate folder)
 	 *	$S(Configuration) = configuration type (Debug, DebugGame, Development, Test, Shipping)
 	 *	$B(Distribution) = true if distribution build
+	 *	$B(IsEmbedded) = true if project compiled for embedded use [Android-only]
 	 *	$I(EngineMajorVersion) = major version of engine (ex. 4)
 	 *	$I(EngineMinorVersion) = minor version of engine (ex. 21)
 	 *	$I(EnginePatchVersion) = patch version of engine (ex. 0)
@@ -2401,9 +2402,10 @@ namespace UnrealBuildTool
 			return GlobalContext.StringVariables["Output"];
 		}
 
-		public void Init(List<string> Architectures, bool bDistribution, string EngineDirectory, string BuildDirectory, string ProjectDirectory, string Configuration)
+		public void Init(List<string> Architectures, bool bDistribution, string EngineDirectory, string BuildDirectory, string ProjectDirectory, string Configuration, bool bIsEmbedded)
 		{
 			GlobalContext.BoolVariables["Distribution"] = bDistribution;
+			GlobalContext.BoolVariables["IsEmbedded"] = bIsEmbedded;
 			GlobalContext.StringVariables["Configuration"] = Configuration;
 
 			GlobalContext.StringVariables["EngineDir"] = EngineDirectory.Replace("\\", "/");
@@ -2528,7 +2530,7 @@ namespace UnrealBuildTool
 			// cache base ini for use as the seed for the rest
 			if (!BaseIniCache.ContainsKey(BaseIniName))
 			{
-				BaseIniCache.Add(BaseIniName, new ConfigCacheIni_UPL(UnrealTargetPlatform.Unknown, BaseIniName, null, EngineDirectory, EngineOnly: true));
+				BaseIniCache.Add(BaseIniName, new ConfigCacheIni_UPL(BuildHostPlatform.Current.Platform, BaseIniName, null, EngineDirectory, EngineOnly: true));
 			}
 
 			// build the new ini and cache it for later re-use
@@ -2608,7 +2610,7 @@ namespace UnrealBuildTool
 		/// <param name="EngineDirectory"></param>
 		public ConfigCacheIni_UPL(string BaseIniName, string ProjectDirectory, string EngineDirectory = null)
 		{
-			Init(UnrealTargetPlatform.Unknown, BaseIniName, (ProjectDirectory == null) ? null : new DirectoryReference(ProjectDirectory), (EngineDirectory == null) ? null : new DirectoryReference(EngineDirectory));
+			Init(BuildHostPlatform.Current.Platform, BaseIniName, (ProjectDirectory == null) ? null : new DirectoryReference(ProjectDirectory), (EngineDirectory == null) ? null : new DirectoryReference(EngineDirectory));
 		}
 
 		/// <summary>
@@ -2619,7 +2621,7 @@ namespace UnrealBuildTool
 		/// <param name="EngineDirectory"></param>
 		public ConfigCacheIni_UPL(string BaseIniName, DirectoryReference ProjectDirectory, DirectoryReference EngineDirectory = null)
 		{
-			Init(UnrealTargetPlatform.Unknown, BaseIniName, ProjectDirectory, EngineDirectory);
+			Init(BuildHostPlatform.Current.Platform, BaseIniName, ProjectDirectory, EngineDirectory);
 		}
 
 		/// <summary>
@@ -3233,9 +3235,8 @@ namespace UnrealBuildTool
 				// Engine/Config/NotForLicensees/Base* ini
 				yield return FileReference.Combine(EngineDirectory, "Config", "NotForLicensees", "Base" + BaseIniName + ".ini");
 
-				// NOTE: 4.7: See comment in GetSourceIniHierarchyFilenames()
 				// Engine/Config/NoRedist/Base* ini
-				// yield return Path.Combine(EngineDirectory, "Config", "NoRedist", "Base" + BaseIniName + ".ini");
+				yield return FileReference.Combine(EngineDirectory, "Config", "NoRedist", "Base" + BaseIniName + ".ini");
 			}
 
 			if (ProjectDirectory != null)
@@ -3251,16 +3252,13 @@ namespace UnrealBuildTool
 			}
 
 			string PlatformName = GetIniPlatformName(Platform);
-			if (Platform != UnrealTargetPlatform.Unknown)
-			{
-				// Engine/Config/Platform/Platform* ini
-				yield return FileReference.Combine(EngineDirectory, "Config", PlatformName, PlatformName + BaseIniName + ".ini");
+			// Engine/Config/Platform/Platform* ini
+			yield return FileReference.Combine(EngineDirectory, "Config", PlatformName, PlatformName + BaseIniName + ".ini");
 
-				if (ProjectDirectory != null)
-				{
-					// Game/Config/Platform/Platform* ini
-					yield return FileReference.Combine(ProjectDirectory, "Config", PlatformName, PlatformName + BaseIniName + ".ini");
-				}
+			if (ProjectDirectory != null)
+			{
+				// Game/Config/Platform/Platform* ini
+				yield return FileReference.Combine(ProjectDirectory, "Config", PlatformName, PlatformName + BaseIniName + ".ini");
 			}
 
 			DirectoryReference UserSettingsFolder = Utils.GetUserSettingDirectory(); // Match FPlatformProcess::UserSettingsDir()
@@ -3313,7 +3311,7 @@ namespace UnrealBuildTool
 			}
 			else
 			{
-				return Enum.GetName(typeof(UnrealTargetPlatform), TargetPlatform);
+				return TargetPlatform.ToString();
 			}
 		}
 	}

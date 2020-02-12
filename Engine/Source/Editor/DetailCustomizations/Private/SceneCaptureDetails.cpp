@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "SceneCaptureDetails.h"
 #include "ShowFlags.h"
@@ -63,7 +63,7 @@ void FSceneCaptureDetails::CustomizeDetails( IDetailLayoutBuilder& DetailLayout 
 	// Show flags that should be exposed for Scene Captures
 	TArray<FEngineShowFlags::EShowFlag> ShowFlagsToAllowForCaptures;
 
-	ShowFlagsToAllowForCaptures.Add(FEngineShowFlags::EShowFlag::SF_AtmosphericFog);
+	ShowFlagsToAllowForCaptures.Add(FEngineShowFlags::EShowFlag::SF_Atmosphere);
 	ShowFlagsToAllowForCaptures.Add(FEngineShowFlags::EShowFlag::SF_BSP);
 	ShowFlagsToAllowForCaptures.Add(FEngineShowFlags::EShowFlag::SF_Decals);
 	ShowFlagsToAllowForCaptures.Add(FEngineShowFlags::EShowFlag::SF_Fog);
@@ -161,6 +161,7 @@ void FSceneCaptureDetails::CustomizeDetails( IDetailLayoutBuilder& DetailLayout 
 				GroupName = LOCTEXT("CollisionModesShowFlagsMenu", "Collision Modes Show Flags");
 				break;
 			case SFG_Hidden:
+			case SFG_Transient:
 				GroupName = LOCTEXT("HiddenShowFlagsMenu", "Hidden Show Flags");
 				break;
 			default:

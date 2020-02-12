@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "ComponentMaterialCategory.h"
 #include "UObject/UnrealType.h"
@@ -15,7 +15,7 @@
 #include "Editor.h"
 #include "DetailLayoutBuilder.h"
 #include "DetailCategoryBuilder.h"
-#include "PropertyCustomizationHelpers.h"
+#include "MaterialList.h"
 #include "IPropertyUtilities.h"
 
 #include "LandscapeProxy.h"
@@ -116,7 +116,7 @@ public:
 	/**
 	 * @return Whether or not the iterator is valid
 	 */
-	operator bool()
+	explicit operator bool() const
 	{
 		return !bReachedEnd;	
 	}
@@ -165,7 +165,11 @@ void FComponentMaterialCategory::Create( IDetailLayoutBuilder& DetailBuilder )
 	FMaterialListDelegates MaterialListDelegates;
 	MaterialListDelegates.OnGetMaterials.BindSP( this, &FComponentMaterialCategory::OnGetMaterialsForView );
 	MaterialListDelegates.OnMaterialChanged.BindSP( this, &FComponentMaterialCategory::OnMaterialChanged );
-	TSharedRef<FMaterialList> MaterialList = MakeShareable( new FMaterialList( DetailBuilder, MaterialListDelegates ) );
+	
+	//Pass an empty material list owner (owner can be use by the asset picker filter. In this case we do not need it)
+	TArray<FAssetData> MaterialListOwner;
+
+	TSharedRef<FMaterialList> MaterialList = MakeShareable( new FMaterialList( DetailBuilder, MaterialListDelegates, MaterialListOwner) );
 
 	bool bAnyMaterialsToDisplay = false;
 
@@ -253,7 +257,7 @@ void FComponentMaterialCategory::OnMaterialChanged( UMaterialInterface* NewMater
 	struct FObjectAndProperty
 	{
 		UObject* Object;
-		UProperty* PropertyThatChanged;
+		FProperty* PropertyThatChanged;
 	};
 	TArray<FObjectAndProperty> ObjectsThatChanged;
 	// Scan the selected actors mesh components for the old material and swap it with the new material 
@@ -285,23 +289,23 @@ void FComponentMaterialCategory::OnMaterialChanged( UMaterialInterface* NewMater
 					bMadeTransaction = true;
 				}
 
-				UProperty* MaterialProperty = NULL;
+				FProperty* MaterialProperty = NULL;
 				UObject* EditChangeObject = CurrentComponent;
 				if( CurrentComponent->IsA( UMeshComponent::StaticClass() ) )
 				{
-					MaterialProperty = FindField<UProperty>( UMeshComponent::StaticClass(), "OverrideMaterials" );
+					MaterialProperty = FindField<FProperty>( UMeshComponent::StaticClass(), "OverrideMaterials" );
 				}
 				else if( CurrentComponent->IsA( UDecalComponent::StaticClass() ) )
 				{
-					MaterialProperty = FindField<UProperty>( UDecalComponent::StaticClass(), "DecalMaterial" );
+					MaterialProperty = FindField<FProperty>( UDecalComponent::StaticClass(), "DecalMaterial" );
 				}
 				else if( CurrentComponent->IsA( UTextRenderComponent::StaticClass() ) )
 				{
-					MaterialProperty = FindField<UProperty>( UTextRenderComponent::StaticClass(), "TextMaterial" );
+					MaterialProperty = FindField<FProperty>( UTextRenderComponent::StaticClass(), "TextMaterial" );
 				}
 				else if (CurrentComponent->IsA<ULandscapeComponent>() )
 				{
-					MaterialProperty = FindField<UProperty>( ALandscapeProxy::StaticClass(), "LandscapeMaterial" );
+					MaterialProperty = FindField<FProperty>( ALandscapeProxy::StaticClass(), "LandscapeMaterial" );
 					EditChangeObject = CastChecked<ULandscapeComponent>(CurrentComponent)->GetLandscapeProxy();
 				}
 

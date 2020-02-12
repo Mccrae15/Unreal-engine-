@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 /*=============================================================================
 	MaterialInstanceConstant.cpp: MaterialInstanceConstant implementation.
@@ -12,6 +12,7 @@
 UMaterialInstanceConstant::UMaterialInstanceConstant(const FObjectInitializer& ObjectInitializer)
 	: Super(ObjectInitializer)
 {
+	PhysMaterialMask = nullptr;
 }
 
 void UMaterialInstanceConstant::PostLoad()
@@ -41,6 +42,11 @@ UTexture* UMaterialInstanceConstant::K2_GetTextureParameterValue(FName Parameter
 	return Result;
 }
 
+UPhysicalMaterialMask* UMaterialInstanceConstant::GetPhysicalMaterialMask() const
+{
+	return PhysMaterialMask;
+}
+
 #if WITH_EDITOR
 void UMaterialInstanceConstant::PostEditChangeProperty(FPropertyChangedEvent& PropertyChangedEvent)
 {
@@ -49,10 +55,10 @@ void UMaterialInstanceConstant::PostEditChangeProperty(FPropertyChangedEvent& Pr
 	ParameterStateId = FGuid::NewGuid();
 }
 
-void UMaterialInstanceConstant::SetParentEditorOnly(UMaterialInterface* NewParent)
+void UMaterialInstanceConstant::SetParentEditorOnly(UMaterialInterface* NewParent, bool RecacheShader)
 {
 	check(GIsEditor || IsRunningCommandlet());
-	SetParentInternal(NewParent, true);
+	SetParentInternal(NewParent, RecacheShader);
 }
 
 void UMaterialInstanceConstant::CopyMaterialUniformParametersEditorOnly(UMaterialInterface* Source, bool bIncludeStaticParams)
@@ -100,6 +106,12 @@ void UMaterialInstanceConstant::SetTextureParameterValueEditorOnly(const FMateri
 {
 	check(GIsEditor || IsRunningCommandlet());
 	SetTextureParameterValueInternal(ParameterInfo,Value);
+}
+
+void UMaterialInstanceConstant::SetRuntimeVirtualTextureParameterValueEditorOnly(const FMaterialParameterInfo& ParameterInfo, URuntimeVirtualTexture* Value)
+{
+	check(GIsEditor || IsRunningCommandlet());
+	SetRuntimeVirtualTextureParameterValueInternal(ParameterInfo, Value);
 }
 
 void UMaterialInstanceConstant::SetFontParameterValueEditorOnly(const FMaterialParameterInfo& ParameterInfo,class UFont* FontValue,int32 FontPage)

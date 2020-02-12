@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -121,6 +121,9 @@ namespace MovementBaseUtility
 {
 	/** Determine whether MovementBase can possibly move. */
 	ENGINE_API bool IsDynamicBase(const UPrimitiveComponent* MovementBase);
+
+	/** Determine whether MovementBase is simulating or attached to a simulating object. */
+	ENGINE_API bool IsSimulatedBase(const UPrimitiveComponent* MovementBase);
 
 	/** Determine if we should use relative positioning when based on a component (because it may move). */
 	FORCEINLINE bool UseRelativeLocation(const UPrimitiveComponent* MovementBase)
@@ -621,7 +624,7 @@ public:
 	UFUNCTION(BlueprintCallable, Category=Character)
 	virtual bool IsJumpProvidingForce() const;
 
-	/** Play Animation Montage on the character mesh **/
+	/** Play Animation Montage on the character mesh. Returns the length of the animation montage in seconds, or 0.f if failed to play. **/
 	UFUNCTION(BlueprintCallable, Category=Animation)
 	virtual float PlayAnimMontage(class UAnimMontage* AnimMontage, float InPlayRate = 1.f, FName StartSectionName = NAME_None);
 
@@ -732,7 +735,8 @@ public:
 	virtual void UnCrouch(bool bClientSimulation = false);
 
 	/** @return true if this character is currently able to crouch (and is not currently crouched) */
-	virtual bool CanCrouch();
+	UFUNCTION(BlueprintCallable, Category=Character)
+	virtual bool CanCrouch() const;
 
 	/** 
 	 * Called when Character stops crouching. Called on non-owned Characters through bIsCrouched replication.

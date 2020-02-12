@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 
 /*=============================================================================
@@ -32,7 +32,7 @@ union FEGLGLSync
 
 	}
 
-	operator bool() const
+	explicit operator bool() const
 	{
 		return GL;
 	}
@@ -173,6 +173,7 @@ typedef void (GL_APIENTRYP PFNGLFRAMEBUFFERTEXTUREMULTISAMPLEMULTIVIEWOVRPROC) (
 	EnumMacro(PFNGLRENDERBUFFERSTORAGEMULTISAMPLEPROC,glRenderbufferStorageMultisample) \
 	EnumMacro(PFNGLSAMPLERPARAMETERIPROC,glSamplerParameteri) \
 	EnumMacro(PFNGLTEXBUFFEREXTPROC,glTexBufferEXT) \
+	EnumMacro(PFNGLTEXBUFFERRANGEEXTPROC,glTexBufferRangeEXT) \
 	EnumMacro(PFNGLTEXIMAGE3DPROC,glTexImage3D) \
 	EnumMacro(PFNGLTEXSUBIMAGE3DPROC,glTexSubImage3D) \
 	EnumMacro(PFNGLUNIFORM1UIVPROC,glUniform1uiv) \

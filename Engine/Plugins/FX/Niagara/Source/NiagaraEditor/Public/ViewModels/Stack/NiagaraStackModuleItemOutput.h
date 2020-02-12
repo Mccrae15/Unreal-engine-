@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -30,6 +30,7 @@ public:
 	virtual FText GetTooltipText() const override;
 	virtual bool GetIsEnabled() const override;
 	virtual EStackRowStyle GetStackRowStyle() const override;
+	virtual void GetSearchItems(TArray<FStackSearchItem>& SearchItems) const override;
 
 	/** Gets the parameter handle which defined this Output in the module. */
 	const FNiagaraParameterHandle& GetOutputParameterHandle() const;

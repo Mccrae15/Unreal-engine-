@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "Bus/MessageContext.h"
 
@@ -111,6 +111,12 @@ const FMessageAddress& FMessageContext::GetSender() const
 		return OriginalContext->GetSender();
 	}
 
+	return Sender;
+}
+
+
+const FMessageAddress& FMessageContext::GetForwarder() const
+{
 	return Sender;
 }
 

@@ -1,11 +1,10 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "Evaluation/MovieSceneEvaluationTree.h"
 #include "CoreMinimal.h"
 #include "Misc/AutomationTest.h"
 #include "Compilation/MovieSceneSegmentCompiler.h"
 #include "Compilation/MovieSceneCompilerRules.h"
-#include "Tests/MovieSceneTestsCommon.h"
 #include "Evaluation/MovieSceneEvaluationField.h"
 #include "MovieSceneCommonHelpers.h"
 #include "UObject/Package.h"

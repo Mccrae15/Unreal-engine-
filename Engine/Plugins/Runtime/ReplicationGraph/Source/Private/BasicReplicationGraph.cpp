@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 // 
 #include "BasicReplicationGraph.h"
 #include "Net/UnrealNetwork.h"
@@ -7,6 +7,7 @@
 #include "CoreGlobals.h"
 #include "UObject/UObjectIterator.h"
 #include "Engine/NetConnection.h"
+#include "Engine/ChildConnection.h"
 
 UBasicReplicationGraph::UBasicReplicationGraph()
 {
@@ -37,15 +38,15 @@ void UBasicReplicationGraph::InitGlobalActorClassSettings()
 		FClassReplicationInfo ClassInfo;
 
 		// Replication Graph is frame based. Convert NetUpdateFrequency to ReplicationPeriodFrame based on Server MaxTickRate.
-		ClassInfo.ReplicationPeriodFrame = FMath::Max<uint32>( (uint32)FMath::RoundToFloat(NetDriver->NetServerMaxTickRate / ActorCDO->NetUpdateFrequency), 1);
+		ClassInfo.ReplicationPeriodFrame = GetReplicationPeriodFrameForFrequency(ActorCDO->NetUpdateFrequency);
 		
 		if (ActorCDO->bAlwaysRelevant || ActorCDO->bOnlyRelevantToOwner)
 		{
-			ClassInfo.CullDistanceSquared = 0.f;
+			ClassInfo.SetCullDistanceSquared(0.f);
 		}
 		else
 		{
-			ClassInfo.CullDistanceSquared = ActorCDO->NetCullDistanceSquared;
+			ClassInfo.SetCullDistanceSquared(ActorCDO->NetCullDistanceSquared);
 		}
 		
 		GlobalActorReplicationInfoMap.SetClassInfo( Class, ClassInfo );
@@ -109,6 +110,7 @@ void UBasicReplicationGraph::RouteRemoveNetworkActorToNodes(const FNewReplicated
 	if (ActorInfo.Actor->bAlwaysRelevant)
 	{
 		AlwaysRelevantNode->NotifyRemoveNetworkActor(ActorInfo);
+		SetActorDestructionInfoToIgnoreDistanceCulling(ActorInfo.GetActor());
 	}
 	else if (ActorInfo.Actor->bOnlyRelevantToOwner)
 	{
@@ -183,4 +185,15 @@ int32 UBasicReplicationGraph::ServerReplicateActors(float DeltaSeconds)
 
 
 	return Super::ServerReplicateActors(DeltaSeconds);
+}
+
+bool FConnectionAlwaysRelevantNodePair::operator==(UNetConnection* InConnection) const
+{
+	// Any children should be looking at their parent connections instead.
+	if (InConnection->GetUChildConnection() != nullptr)
+	{
+		InConnection = ((UChildConnection*)InConnection)->Parent;
+	}
+
+	return InConnection == NetConnection;
 }

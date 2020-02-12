@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 /*=============================================================================
 	EditorBuildUtils.h: Utilities for building in the editor
@@ -32,8 +32,10 @@ struct FBuildOptions
 	UNREALED_API static const FName BuildAllOnlySelectedPaths;
 	/** Build Hierarchical LOD system - need WorldSetting setup*/
 	UNREALED_API static const FName BuildHierarchicalLOD;
-	/** Build Hierarchical LOD system - need WorldSetting setup*/
+	/** Build texture streaming */
 	UNREALED_API static const FName BuildTextureStreaming;
+	/** Build virtual textures */
+	UNREALED_API static const FName BuildVirtualTexture;
 };
 /**
  * Result of a custom editor build.
@@ -125,6 +127,13 @@ public:
 	static UNREALED_API bool EditorBuild( UWorld* InWorld, FName Id, const bool bAllowLightingDialog = true );
 
 	/**
+	 * Update every used material texture binding (see FMaterialTextureInfo::TextureIndex)
+	 *
+	 * @param	InWorld				WorldContext
+	 */
+	static UNREALED_API void UpdateTextureStreamingMaterialBindings( UWorld* InWorld );
+
+	/**
 	 * Perform an editor build for texture streaming
 	 *
 	 * @param	InWorld				WorldContext
@@ -145,14 +154,13 @@ public:
 	static UNREALED_API bool EditorBuildMaterialTextureStreamingData(UPackage* Package);
 
 	/**
-	 * Compiled required shader for the given viewmode
+	 * Perform an editor build for virtual textures
 	 *
-	 * @param	InWorld				WorldContext to find out which shader to build.
-	 * @param	InViewMode			Viewmode to build the data for.
+	 * @param	InWorld				WorldContext
 	 *
 	 * @return	true if the build completed successfully; false if it did not (or was manually canceled)
 	 */
-	static UNREALED_API bool CompileViewModeShaders(UWorld* InWorld, EViewModeIndex InViewMode);
+	static UNREALED_API bool EditorBuildVirtualTexture(UWorld* InWorld);
 
 	/** 
 	* check if navigation build was was triggered from editor as user request

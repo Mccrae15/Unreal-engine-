@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "GeometryCacheSceneProxy.h"
 #include "MaterialShared.h"
@@ -12,6 +12,8 @@
 #include "GeometryCacheTrackStreamable.h"
 #include "GeometryCacheModule.h"
 #include "GeometryCacheHelpers.h"
+#include "RayTracingDefinitions.h"
+#include "RayTracingInstance.h"
 
 DECLARE_CYCLE_STAT(TEXT("Gather Mesh Elements"), STAT_GeometryCacheSceneProxy_GetMeshElements, STATGROUP_GeometryCache);
 DECLARE_DWORD_COUNTER_STAT(TEXT("Triangle Count"), STAT_GeometryCacheSceneProxy_TriangleCount, STATGROUP_GeometryCache);
@@ -19,6 +21,7 @@ DECLARE_DWORD_COUNTER_STAT(TEXT("Batch Count"), STAT_GeometryCacheSceneProxy_Mes
 DECLARE_CYCLE_STAT(TEXT("Vertex Buffer Update"), STAT_VertexBufferUpdate, STATGROUP_GeometryCache);
 DECLARE_CYCLE_STAT(TEXT("Index Buffer Update"), STAT_IndexBufferUpdate, STATGROUP_GeometryCache);
 DECLARE_CYCLE_STAT(TEXT("Buffer Update Task"), STAT_BufferUpdateTask, STATGROUP_GeometryCache);
+DECLARE_CYCLE_STAT(TEXT("InterpolateFrames"), STAT_InterpolateFrames, STATGROUP_GeometryCache);
 
 static TAutoConsoleVariable<int32> CVarOffloadUpdate(
 	TEXT("GeometryCache.OffloadUpdate"),
@@ -44,13 +47,21 @@ struct FNoPositionVertex
 	FColor Color;
 };
 
-FGeometryCacheSceneProxy::FGeometryCacheSceneProxy(UGeometryCacheComponent* Component) : FPrimitiveSceneProxy(Component)
+FGeometryCacheSceneProxy::FGeometryCacheSceneProxy(UGeometryCacheComponent* Component) 
+: FGeometryCacheSceneProxy(Component, [this]() { return new FGeomCacheTrackProxy(GetScene().GetFeatureLevel()); })
+{
+}
+
+FGeometryCacheSceneProxy::FGeometryCacheSceneProxy(UGeometryCacheComponent* Component, TFunction<FGeomCacheTrackProxy*()> TrackProxyCreator)
+: FPrimitiveSceneProxy(Component)
 , MaterialRelevance(Component->GetMaterialRelevance(GetScene().GetFeatureLevel()))
+, CreateTrackProxy(TrackProxyCreator)
 {
 	Time = Component->GetAnimationTime();
 	bLooping = Component->IsLooping();
 	bAlwaysHasVelocity = true;
 	PlaybackSpeed = (Component->IsPlaying()) ? Component->GetPlaybackSpeed() : 0.0f;
+	UpdatedFrameNum = 0;
 
 	// Copy each section
 	const int32 NumTracks = Component->TrackSections.Num();
@@ -58,16 +69,15 @@ FGeometryCacheSceneProxy::FGeometryCacheSceneProxy(UGeometryCacheComponent* Comp
 	for (int32 TrackIdx = 0; TrackIdx < NumTracks; TrackIdx++)
 	{
 		FTrackRenderData& SrcSection = Component->TrackSections[TrackIdx];
-		UGeometryCacheTrackStreamable* StreamableTrack = Cast<UGeometryCacheTrackStreamable>(Component->GeometryCache->Tracks[TrackIdx]);
-		check(StreamableTrack);
+		UGeometryCacheTrack* CurrentTrack = Component->GeometryCache->Tracks[TrackIdx];
 
-		const FGeometryCacheTrackStreamableSampleInfo& SampleInfo = StreamableTrack->GetSampleInfo(Time, bLooping);
-		
+		const FGeometryCacheTrackSampleInfo& SampleInfo = CurrentTrack->GetSampleInfo(Time, bLooping);
+
 		if (SampleInfo.NumVertices > 0)
 		{
-			FGeomCacheTrackProxy* NewSection = new FGeomCacheTrackProxy(GetScene().GetFeatureLevel());
+			FGeomCacheTrackProxy* NewSection = CreateTrackProxy();
 
-			NewSection->Resource = StreamableTrack->GetRenderResource();
+			NewSection->Track = CurrentTrack;
 			NewSection->WorldMatrix = SrcSection.Matrix;
 			NewSection->FrameIndex = -1;
 			NewSection->UploadedSampleIndex = -1;
@@ -76,12 +86,12 @@ FGeometryCacheSceneProxy::FGeometryCacheSceneProxy(UGeometryCacheComponent* Comp
 
 			// Allocate verts
 
-			
+
 			NewSection->TangentXBuffer.Init(SampleInfo.NumVertices * sizeof(FPackedNormal));
 			NewSection->TangentZBuffer.Init(SampleInfo.NumVertices * sizeof(FPackedNormal));
 			NewSection->TextureCoordinatesBuffer.Init(SampleInfo.NumVertices * sizeof(FVector2D));
 			NewSection->ColorBuffer.Init(SampleInfo.NumVertices * sizeof(FColor));
-			
+
 
 			//NewSection->VertexBuffer.Init(SampleInfo.NumVertices * sizeof(FNoPositionVertex));
 			NewSection->PositionBuffers[0].Init(SampleInfo.NumVertices * sizeof(FVector));
@@ -109,7 +119,7 @@ FGeometryCacheSceneProxy::FGeometryCacheSceneProxy(UGeometryCacheComponent* Comp
 			// Grab materials
 			int32 Dummy = -1;
 			NewSection->MeshData = new FGeometryCacheMeshData();
-			NewSection->Resource->UpdateMeshData(Time, bLooping, Dummy, *NewSection->MeshData);
+			NewSection->UpdateMeshData(Time, bLooping, Dummy, *NewSection->MeshData);
 			NewSection->NextFrameMeshData = new FGeometryCacheMeshData();
 
 			// Some basic sanity checks
@@ -122,7 +132,7 @@ FGeometryCacheSceneProxy::FGeometryCacheSceneProxy(UGeometryCacheComponent* Comp
 				}
 
 				NewSection->Materials.Add(Material);
-			}			
+			}
 
 			// Save ref to new section
 			Tracks[TrackIdx] = NewSection;
@@ -133,43 +143,49 @@ FGeometryCacheSceneProxy::FGeometryCacheSceneProxy(UGeometryCacheComponent* Comp
 	{
 		// Update at least once after the scene proxy has been constructed
 		// Otherwise it is invisible until animation starts
-		ENQUEUE_UNIQUE_RENDER_COMMAND_ONEPARAMETER(
-			FGeometryCacheUpdateAnimation,
-			FGeometryCacheSceneProxy*, SceneProxy, this,
-			{
-				SceneProxy->FrameUpdate();
-			});
-
-	#if RHI_RAYTRACING
-		if (IsRayTracingEnabled())
+		FGeometryCacheSceneProxy* SceneProxy = this;
+		ENQUEUE_RENDER_COMMAND(FGeometryCacheUpdateAnimation)(
+			[SceneProxy](FRHICommandListImmediate& RHICmdList)
 		{
-			ENQUEUE_UNIQUE_RENDER_COMMAND_ONEPARAMETER(
-				FGeometryCacheInitRayTracingGeometry,
-				FGeometryCacheSceneProxy*, SceneProxy, this,
-				{
-					for (FGeomCacheTrackProxy* Section : SceneProxy->Tracks)
-					{
-						if (Section != nullptr)
-						{
-							FRayTracingGeometryInitializer Initializer;
-							const int PositionBufferIndex = Section->CurrentPositionBufferIndex != -1 ? Section->CurrentPositionBufferIndex % 2 : 0;
-							Initializer.PositionVertexBuffer = Section->PositionBuffers[PositionBufferIndex].VertexBufferRHI;
-							Initializer.IndexBuffer = Section->IndexBuffer.IndexBufferRHI;
-							Initializer.BaseVertexIndex = 0;
-							Initializer.VertexBufferStride = sizeof(FVector);
-							Initializer.VertexBufferByteOffset = 0;
-							Initializer.TotalPrimitiveCount = Section->IndexBuffer.NumIndices / 3;
-							Initializer.VertexBufferElementType = VET_Float3;
-							Initializer.PrimitiveType = PT_TriangleList;
-							Initializer.bFastBuild = false;
+			SceneProxy->FrameUpdate();
+		});
 
-							Section->RayTracingGeometry.SetInitializer(Initializer);
-							Section->RayTracingGeometry.InitResource();
+#if RHI_RAYTRACING
+		{
+			ENQUEUE_RENDER_COMMAND(FGeometryCacheInitRayTracingGeometry)(
+				[SceneProxy](FRHICommandListImmediate& RHICmdList)
+			{
+				for (FGeomCacheTrackProxy* Section : SceneProxy->Tracks)
+				{
+					if (Section != nullptr)
+					{
+						FRayTracingGeometryInitializer Initializer;
+						const int PositionBufferIndex = Section->CurrentPositionBufferIndex != -1 ? Section->CurrentPositionBufferIndex % 2 : 0;
+						Initializer.IndexBuffer = Section->IndexBuffer.IndexBufferRHI;
+						Initializer.TotalPrimitiveCount = 0;
+						Initializer.GeometryType = RTGT_Triangles;
+						Initializer.bFastBuild = false;
+
+						TArray<FRayTracingGeometrySegment> Segments;
+						for (FGeometryCacheMeshBatchInfo& BatchInfo : Section->MeshData->BatchesInfo)
+						{
+							FRayTracingGeometrySegment Segment;
+							Segment.FirstPrimitive = BatchInfo.StartIndex / 3;
+							Segment.NumPrimitives = BatchInfo.NumTriangles;
+							Segment.VertexBuffer = Section->PositionBuffers[PositionBufferIndex].VertexBufferRHI;
+							Segments.Add(Segment);
+							Initializer.TotalPrimitiveCount += BatchInfo.NumTriangles;
 						}
+
+						Initializer.Segments = Segments;
+
+						Section->RayTracingGeometry.SetInitializer(Initializer);
+						Section->RayTracingGeometry.InitResource();
 					}
-				});
+				}
+			});
 		}
-	#endif
+#endif
 	}
 }
 
@@ -199,16 +215,17 @@ FGeometryCacheSceneProxy::~FGeometryCacheSceneProxy()
 	Tracks.Empty();
 }
 
-struct FRHICommandUpdateGeometryCacheBuffer : public FRHICommand<FRHICommandUpdateGeometryCacheBuffer>
+#if 0
+FRHICOMMAND_MACRO(FRHICommandUpdateGeometryCacheBuffer)
 {
 	FGraphEventRef BufferGenerationCompleteFence;
 
-	FVertexBufferRHIParamRef VertexBuffer;
+	FRHIVertexBuffer* VertexBuffer;
 	//void *VertexData;
 	//uint32 VertexSize;
 	TArray<uint8> VertexData;
 
-	FIndexBufferRHIParamRef IndexBuffer;
+	FRHIIndexBuffer* IndexBuffer;
 	//void *IndexData;
 	//uint32 IndexSize;
 	TArray<uint8> IndexData;
@@ -217,10 +234,10 @@ struct FRHICommandUpdateGeometryCacheBuffer : public FRHICommand<FRHICommandUpda
 	
 	FORCEINLINE_DEBUGGABLE FRHICommandUpdateGeometryCacheBuffer(
 		FGraphEventRef& InBufferGenerationCompleteFence,
-		FVertexBufferRHIParamRef InVertexBuffer,
+		FRHIVertexBuffer* InVertexBuffer,
 		void *InVertexData,
 		uint32 InVertexSize,
-		FIndexBufferRHIParamRef InIndexBuffer,
+		FRHIIndexBuffer* InIndexBuffer,
 		void *InIndexData,
 		uint32 InIndexSize)
 	:
@@ -259,6 +276,7 @@ struct FRHICommandUpdateGeometryCacheBuffer : public FRHICommand<FRHICommandUpda
 		BufferGenerationCompleteFence = nullptr;
 	}
 };
+#endif
 
 class FGeometryCacheVertexFactoryUserDataWrapper : public FOneFrameResource
 {
@@ -296,6 +314,82 @@ SIZE_T FGeometryCacheSceneProxy::GetTypeHash() const
 	return reinterpret_cast<size_t>(&UniquePointer);
 }
 
+void FGeometryCacheSceneProxy::CreateMeshBatch(
+	const FGeomCacheTrackProxy* TrackProxy, 
+	const FGeometryCacheMeshBatchInfo& BatchInfo, 
+	FGeometryCacheVertexFactoryUserDataWrapper& UserDataWrapper,
+	FDynamicPrimitiveUniformBuffer& DynamicPrimitiveUniformBuffer,
+	FMeshBatch& Mesh) const
+{
+	FGeometryCacheVertexFactoryUserData& UserData = UserDataWrapper.Data;
+
+	UserData.MeshExtension = FVector::OneVector;
+	UserData.MeshOrigin = FVector::ZeroVector;
+
+	const bool bHasMotionVectors = (
+		TrackProxy->MeshData->VertexInfo.bHasMotionVectors &&
+		TrackProxy->NextFrameMeshData->VertexInfo.bHasMotionVectors &&
+		TrackProxy->MeshData->Positions.Num() == TrackProxy->MeshData->MotionVectors.Num())
+		&& (TrackProxy->NextFrameMeshData->Positions.Num() == TrackProxy->NextFrameMeshData->MotionVectors.Num());
+
+				if (!bHasMotionVectors)
+	            {
+		            const float PreviousPositionScale = (GFrameNumber <= UpdatedFrameNum) ? 1.f : 0.f;
+					UserData.MotionBlurDataExtension = FVector::OneVector * PreviousPositionScale;
+					UserData.MotionBlurDataOrigin = FVector::ZeroVector;
+					UserData.MotionBlurPositionScale = 1.f - PreviousPositionScale;
+	            }
+	            else
+	            {
+		            UserData.MotionBlurDataExtension = FVector::OneVector * PlaybackSpeed;
+		            UserData.MotionBlurDataOrigin = FVector::ZeroVector;
+		            UserData.MotionBlurPositionScale = 1.0f;
+	            }
+
+	if (IsRayTracingEnabled())
+	{
+		// No vertex manipulation is allowed in the vertex shader
+		// Otherwise we need an additional compute shader pass to execute the vertex shader and dump to a staging buffer
+		check(UserData.MeshExtension == FVector::OneVector);
+		check(UserData.MeshOrigin == FVector::ZeroVector);
+	}
+
+	UserData.PositionBuffer = &TrackProxy->PositionBuffers[TrackProxy->CurrentPositionBufferIndex % 2];
+	UserData.MotionBlurDataBuffer = &TrackProxy->PositionBuffers[(TrackProxy->CurrentPositionBufferIndex+1) % 2];
+
+	FGeometryCacheVertexFactoryUniformBufferParameters UniformBufferParameters;
+
+	UniformBufferParameters.MeshOrigin = UserData.MeshOrigin;
+	UniformBufferParameters.MeshExtension = UserData.MeshExtension;
+	UniformBufferParameters.MotionBlurDataOrigin = UserData.MotionBlurDataOrigin;
+	UniformBufferParameters.MotionBlurDataExtension = UserData.MotionBlurDataExtension;
+	UniformBufferParameters.MotionBlurPositionScale = UserData.MotionBlurPositionScale;
+
+	UserData.UniformBuffer = FGeometryCacheVertexFactoryUniformBufferParametersRef::CreateUniformBufferImmediate(UniformBufferParameters, UniformBuffer_SingleFrame);
+	TrackProxy->VertexFactory.CreateManualVertexFetchUniformBuffer(UserData.PositionBuffer, UserData.MotionBlurDataBuffer, UserData);
+
+	// Draw the mesh.
+	FMeshBatchElement& BatchElement = Mesh.Elements[0];
+	BatchElement.IndexBuffer = &TrackProxy->IndexBuffer;
+	Mesh.VertexFactory = &TrackProxy->VertexFactory;
+	Mesh.SegmentIndex = 0;
+
+	const FMatrix& LocalToWorldTransform = TrackProxy->WorldMatrix * GetLocalToWorld();
+
+	DynamicPrimitiveUniformBuffer.Set(LocalToWorldTransform, LocalToWorldTransform, GetBounds(), GetLocalBounds(), true, false, DrawsVelocity(), false);
+	BatchElement.PrimitiveUniformBuffer = DynamicPrimitiveUniformBuffer.UniformBuffer.GetUniformBufferRHI();
+
+	BatchElement.FirstIndex = BatchInfo.StartIndex;
+	BatchElement.NumPrimitives = BatchInfo.NumTriangles;
+	BatchElement.MinVertexIndex = 0;
+	BatchElement.MaxVertexIndex = TrackProxy->MeshData->Positions.Num() - 1;
+	BatchElement.VertexFactoryUserData = &UserDataWrapper.Data;
+	Mesh.ReverseCulling = IsLocalToWorldDeterminantNegative();
+	Mesh.Type = PT_TriangleList;
+	Mesh.DepthPriorityGroup = SDPG_World;
+	Mesh.bCanApplyViewModeOverrides = false;
+}
+
 void FGeometryCacheSceneProxy::GetDynamicMeshElements(const TArray<const FSceneView*>& Views, const FSceneViewFamily& ViewFamily, uint32 VisibilityMap, FMeshElementCollector& Collector) const
 {
 	SCOPE_CYCLE_COUNTER(STAT_GeometryCacheSceneProxy_GetMeshElements);
@@ -306,10 +400,20 @@ void FGeometryCacheSceneProxy::GetDynamicMeshElements(const TArray<const FSceneV
 	FColoredMaterialRenderProxy* WireframeMaterialInstance = nullptr;
 	if (bWireframe)
 	{
+		const FEngineShowFlags& EngineShowFlags = ViewFamily.EngineShowFlags;
+		const bool bLevelColorationEnabled = EngineShowFlags.LevelColoration;
+		const bool bPropertyColorationEnabled = EngineShowFlags.PropertyColoration;
+
+		FLinearColor ViewWireframeColor(bLevelColorationEnabled ? GetLevelColor() : GetWireframeColor());
+		if (bPropertyColorationEnabled)
+		{
+			ViewWireframeColor = GetPropertyColor();
+		}
+
 		WireframeMaterialInstance = new FColoredMaterialRenderProxy(
 			GEngine->WireframeMaterial ? GEngine->WireframeMaterial->GetRenderProxy() : nullptr,
-			FLinearColor(0, 0.5f, 1.f)
-			);
+			GetSelectionColor(ViewWireframeColor, !(GIsEditor && EngineShowFlags.Selection) || IsSelected(), IsHovered(), false)
+		);
 
 		Collector.RegisterOneFrameMaterialProxy(WireframeMaterialInstance);
 	}
@@ -338,95 +442,36 @@ void FGeometryCacheSceneProxy::GetDynamicMeshElements(const TArray<const FSceneV
 		// Iterate over all batches in all tracks and add them to all the relevant views	
 		for (const FGeomCacheTrackProxy* TrackProxy : Tracks)
 		{
-			const FVisibilitySample& VisibilitySample = TrackProxy->Resource->GetTrack()->GetVisibilitySample(Time, bLooping);
+			const FVisibilitySample& VisibilitySample = TrackProxy->GetVisibilitySample(Time, bLooping);
 			if (!VisibilitySample.bVisibilityState)
 			{
 				continue;
 			}
 
 			const int32 NumBatches = TrackProxy->MeshData->BatchesInfo.Num();
-			const bool bHasMotionVectors = (
-				TrackProxy->MeshData->VertexInfo.bHasMotionVectors &&
-				TrackProxy->NextFrameMeshData->VertexInfo.bHasMotionVectors &&
-				TrackProxy->MeshData->Positions.Num() == TrackProxy->MeshData->MotionVectors.Num())
-				&& (TrackProxy->NextFrameMeshData->Positions.Num() == TrackProxy->NextFrameMeshData->MotionVectors.Num());
 
 			for (int32 BatchIndex = 0; BatchIndex < NumBatches; ++BatchIndex)
 			{
-				FMaterialRenderProxy* MaterialProxy = bWireframe ? WireframeMaterialInstance : TrackProxy->Materials[BatchIndex]->GetRenderProxy();
 				const FGeometryCacheMeshBatchInfo BatchInfo = TrackProxy->MeshData->BatchesInfo[BatchIndex];
-
-				FGeometryCacheVertexFactoryUserDataWrapper &UserDataWrapper = Collector.AllocateOneFrameResource<FGeometryCacheVertexFactoryUserDataWrapper>();
-				FGeometryCacheVertexFactoryUserData &UserData = UserDataWrapper.Data;
-
-				UserData.MeshExtension = FVector::OneVector;
-				UserData.MeshOrigin = FVector::ZeroVector;
-				if (!bHasMotionVectors)
-				{
-					UserData.MotionBlurDataExtension = FVector::OneVector;
-					UserData.MotionBlurDataOrigin = FVector::ZeroVector;
-					UserData.MotionBlurPositionScale = 0.0f;
-				}
-				else
-				{
-					UserData.MotionBlurDataExtension = FVector::OneVector * PlaybackSpeed;
-					UserData.MotionBlurDataOrigin = FVector::ZeroVector;
-					UserData.MotionBlurPositionScale = 1.0f;
-				}
-
-				if (IsRayTracingEnabled())
-				{
-					// No vertex manipulation is allowed in the vertex shader
-					// Otherwise we need an additional compute shader pass to execute the vertex shader and dump to a staging buffer
-					check(UserData.MeshExtension == FVector::OneVector);
-					check(UserData.MeshOrigin == FVector::ZeroVector);
-				}
-
-				UserData.PositionBuffer = &TrackProxy->PositionBuffers[TrackProxy->CurrentPositionBufferIndex % 2];
-				UserData.MotionBlurDataBuffer = &TrackProxy->PositionBuffers[(TrackProxy->CurrentPositionBufferIndex+1) % 2];
-
-				FGeometryCacheVertexFactoryUniformBufferParameters UniformBufferParameters;
-
-				UniformBufferParameters.MeshOrigin = UserData.MeshOrigin;
-				UniformBufferParameters.MeshExtension = UserData.MeshExtension;
-				UniformBufferParameters.MotionBlurDataOrigin = UserData.MotionBlurDataOrigin;
-				UniformBufferParameters.MotionBlurDataExtension = UserData.MotionBlurDataExtension;
-				UniformBufferParameters.MotionBlurPositionScale = UserData.MotionBlurPositionScale;
-
-				UserData.UniformBuffer = FGeometryCacheVertexFactoryUniformBufferParametersRef::CreateUniformBufferImmediate(UniformBufferParameters, UniformBuffer_SingleFrame);
-				TrackProxy->VertexFactory.CreateManualVertexFetchUniformBuffer(UserData.PositionBuffer, UserData.MotionBlurDataBuffer, UserData);
-
-				// Draw the mesh.
-				FMeshBatch& Mesh = Collector.AllocateMesh();
-				FMeshBatchElement& BatchElement = Mesh.Elements[0];
-				BatchElement.IndexBuffer = &TrackProxy->IndexBuffer;
-				Mesh.bWireframe = bWireframe;
-				Mesh.VertexFactory = &TrackProxy->VertexFactory;
-				Mesh.MaterialRenderProxy = MaterialProxy;
-				Mesh.SegmentIndex = 0;
-
-				const FMatrix& LocalToWorldTransform = TrackProxy->WorldMatrix * GetLocalToWorld();
-
-				FDynamicPrimitiveUniformBuffer& DynamicPrimitiveUniformBuffer = Collector.AllocateOneFrameResource<FDynamicPrimitiveUniformBuffer>();
-				DynamicPrimitiveUniformBuffer.Set(LocalToWorldTransform, LocalToWorldTransform, GetBounds(), GetLocalBounds(), true, false, UseEditorDepthTest());
-				BatchElement.PrimitiveUniformBuffer = DynamicPrimitiveUniformBuffer.UniformBuffer.GetUniformBufferRHI();
-
-				BatchElement.FirstIndex = BatchInfo.StartIndex;
-				BatchElement.NumPrimitives = BatchInfo.NumTriangles;
-				BatchElement.MinVertexIndex = 0;
-				BatchElement.MaxVertexIndex = TrackProxy->MeshData->Positions.Num() - 1;
-				BatchElement.VertexFactoryUserData = &UserDataWrapper.Data;
-				Mesh.ReverseCulling = IsLocalToWorldDeterminantNegative();
-				Mesh.Type = PT_TriangleList;
-				Mesh.DepthPriorityGroup = SDPG_World;
-				Mesh.bCanApplyViewModeOverrides = false;
 
 				for (int32 ViewIndex = 0; ViewIndex < Views.Num(); ViewIndex++)
 				{
 					if (VisibilityMap & (1 << ViewIndex))
 					{
-						Collector.AddMesh(ViewIndex, Mesh);
-						INC_DWORD_STAT_BY(STAT_GeometryCacheSceneProxy_TriangleCount, BatchElement.NumPrimitives);
+						FMeshBatch& MeshBatch = Collector.AllocateMesh();
+
+						FGeometryCacheVertexFactoryUserDataWrapper& UserDataWrapper = Collector.AllocateOneFrameResource<FGeometryCacheVertexFactoryUserDataWrapper>();
+						FDynamicPrimitiveUniformBuffer& DynamicPrimitiveUniformBuffer = Collector.AllocateOneFrameResource<FDynamicPrimitiveUniformBuffer>();
+						CreateMeshBatch(TrackProxy, BatchInfo, UserDataWrapper, DynamicPrimitiveUniformBuffer, MeshBatch);
+
+						// Apply view mode material overrides
+						FMaterialRenderProxy* MaterialProxy = bWireframe ? WireframeMaterialInstance : TrackProxy->Materials[BatchIndex]->GetRenderProxy();
+						MeshBatch.bWireframe = bWireframe;
+						MeshBatch.MaterialRenderProxy = MaterialProxy;
+
+						Collector.AddMesh(ViewIndex, MeshBatch);
+
+						INC_DWORD_STAT_BY(STAT_GeometryCacheSceneProxy_TriangleCount, MeshBatch.Elements[0].NumPrimitives);
 						INC_DWORD_STAT_BY(STAT_GeometryCacheSceneProxy_MeshBatchCount, 1);
 
 					#if !(UE_BUILD_SHIPPING || UE_BUILD_TEST)
@@ -441,22 +486,38 @@ void FGeometryCacheSceneProxy::GetDynamicMeshElements(const TArray<const FSceneV
 }
 
 #if RHI_RAYTRACING
-void FGeometryCacheSceneProxy::GetRayTracingGeometryInstances(TArray<FRayTracingGeometryInstanceCollection>& OutInstanceCollections)
+void FGeometryCacheSceneProxy::GetDynamicRayTracingInstances(FRayTracingMaterialGatheringContext& Context, TArray<FRayTracingInstance>& OutRayTracingInstances)
 {
 	for (FGeomCacheTrackProxy* TrackProxy : Tracks)
 	{
-		const FVisibilitySample& VisibilitySample = TrackProxy->Resource->GetTrack()->GetVisibilitySample(Time, bLooping);
+		const FVisibilitySample& VisibilitySample = TrackProxy->GetVisibilitySample(Time, bLooping);
 		if (!VisibilitySample.bVisibilityState)
 		{
 			continue;
 		}
 
-		FRayTracingGeometryInstanceCollection Collection;
-		Collection.Geometry = &TrackProxy->RayTracingGeometry;
-		Collection.DynamicVertexPositionBuffer = nullptr;
-		Collection.InstanceTransformMode = FRayTracingGeometryInstanceCollection::TransformMode::InheritFromSceneProxy;
+		FRayTracingInstance RayTracingInstance;
+		RayTracingInstance.Geometry = &TrackProxy->RayTracingGeometry;
+		RayTracingInstance.InstanceTransforms.Add(GetLocalToWorld());
 
-		OutInstanceCollections.Add(Collection);
+		for (int32 SegmentIndex = 0; SegmentIndex < TrackProxy->MeshData->BatchesInfo.Num(); ++SegmentIndex)
+		{
+			const FGeometryCacheMeshBatchInfo BatchInfo = TrackProxy->MeshData->BatchesInfo[SegmentIndex];
+			FMeshBatch MeshBatch;
+
+			FGeometryCacheVertexFactoryUserDataWrapper& UserDataWrapper = Context.RayTracingMeshResourceCollector.AllocateOneFrameResource<FGeometryCacheVertexFactoryUserDataWrapper>();
+			FDynamicPrimitiveUniformBuffer& DynamicPrimitiveUniformBuffer = Context.RayTracingMeshResourceCollector.AllocateOneFrameResource<FDynamicPrimitiveUniformBuffer>();
+			CreateMeshBatch(TrackProxy, BatchInfo, UserDataWrapper, DynamicPrimitiveUniformBuffer, MeshBatch);
+
+			MeshBatch.MaterialRenderProxy = TrackProxy->Materials[SegmentIndex]->GetRenderProxy();
+			MeshBatch.CastRayTracedShadow = IsShadowCast(Context.ReferenceView);
+
+			RayTracingInstance.Materials.Add(MeshBatch);
+		}
+
+		RayTracingInstance.BuildInstanceMaskAndFlags();
+
+		OutRayTracingInstances.Add(RayTracingInstance);
 	}
 }
 #endif
@@ -469,7 +530,7 @@ FPrimitiveViewRelevance FGeometryCacheSceneProxy::GetViewRelevance(const FSceneV
 	Result.bDynamicRelevance = true;
 	Result.bRenderCustomDepth = ShouldRenderCustomDepth();
 	MaterialRelevance.SetPrimitiveViewRelevance(Result);
-	Result.bVelocityRelevance = IsMovable() && Result.bOpaqueRelevance && Result.bRenderInMainPass;
+	Result.bVelocityRelevance = IsMovable() && Result.bOpaque && Result.bRenderInMainPass;
 	return Result;
 }
 
@@ -499,6 +560,7 @@ void FGeometryCacheSceneProxy::UpdateAnimation(float NewTime, bool bNewLooping, 
 	bLooping = bNewLooping;
 	bIsPlayingBackwards = bNewIsPlayingBackwards;
 	PlaybackSpeed = NewPlaybackSpeed;
+	UpdatedFrameNum = GFrameNumber + 1;
 
 	if (IsRayTracingEnabled())
 	{
@@ -512,8 +574,23 @@ void FGeometryCacheSceneProxy::UpdateAnimation(float NewTime, bool bNewLooping, 
 			{
 				const int PositionBufferIndex = Section->CurrentPositionBufferIndex != -1 ? Section->CurrentPositionBufferIndex % 2 : 0;
 
-				Section->RayTracingGeometry.Initializer.PositionVertexBuffer = Section->PositionBuffers[PositionBufferIndex].VertexBufferRHI;
-				Section->RayTracingGeometry.Initializer.TotalPrimitiveCount = Section->IndexBuffer.NumIndices / 3;
+				Section->RayTracingGeometry.Initializer.IndexBuffer = Section->IndexBuffer.IndexBufferRHI;
+				Section->RayTracingGeometry.Initializer.TotalPrimitiveCount = 0;
+				
+				TMemoryImageArray<FRayTracingGeometrySegment>& Segments = Section->RayTracingGeometry.Initializer.Segments;
+				Segments.Reset();
+
+				for (FGeometryCacheMeshBatchInfo& BatchInfo : Section->MeshData->BatchesInfo)
+				{
+					FRayTracingGeometrySegment Segment;
+					Segment.FirstPrimitive = BatchInfo.StartIndex / 3;
+					Segment.NumPrimitives = BatchInfo.NumTriangles;
+					Segment.VertexBuffer = Section->PositionBuffers[PositionBufferIndex].VertexBufferRHI;
+
+					Segments.Add(Segment);
+					Section->RayTracingGeometry.Initializer.TotalPrimitiveCount += BatchInfo.NumTriangles;
+				}
+							
 				Section->RayTracingGeometry.UpdateRHI();
 			}
 		}
@@ -528,7 +605,7 @@ void FGeometryCacheSceneProxy::FrameUpdate() const
 		// Render out stored TrackProxy's
 		if (TrackProxy != nullptr)
 		{
-			const FVisibilitySample& VisibilitySample = TrackProxy->Resource->GetTrack()->GetVisibilitySample(Time, bLooping);
+			const FVisibilitySample& VisibilitySample = TrackProxy->GetVisibilitySample(Time, bLooping);
 			if (!VisibilitySample.bVisibilityState)
 			{
 				continue;
@@ -538,7 +615,7 @@ void FGeometryCacheSceneProxy::FrameUpdate() const
 			int32 FrameIndex;
 			int32 NextFrameIndex;
 			float InterpolationFactor;
-			TrackProxy->Resource->GetTrack()->FindSampleIndexesFromTime(Time, bLooping, bIsPlayingBackwards, FrameIndex, NextFrameIndex, InterpolationFactor);
+			TrackProxy->FindSampleIndexesFromTime(Time, bLooping, bIsPlayingBackwards, FrameIndex, NextFrameIndex, InterpolationFactor);
 			bool bDecodedAnything = false; // Did anything new get decoded this frame
 			bool bSeeked = false; // Is this frame a seek and thus the previous rendered frame's data invalid
 			bool bDecoderError = false; // If we have a decoder error we don't interpolate and we don't update the vertex buffers
@@ -561,7 +638,7 @@ void FGeometryCacheSceneProxy::FrameUpdate() const
 					TrackProxy->NextFrameIndex = OldFrameIndex;
 
 					// Decode the new next frame
-					if (TrackProxy->Resource->DecodeMeshData(NextFrameIndex, *TrackProxy->NextFrameMeshData))
+					if (TrackProxy->GetMeshData(NextFrameIndex, *TrackProxy->NextFrameMeshData))
 					{
 						bDecodedAnything = true;
 						// Only register this if we actually successfully decoded
@@ -577,10 +654,10 @@ void FGeometryCacheSceneProxy::FrameUpdate() const
 				// Probably a seek or the mesh hasn't been visible in a while decode two frames
 				else
 				{
-					if (TrackProxy->Resource->DecodeMeshData(FrameIndex, *TrackProxy->MeshData))
+					if (TrackProxy->GetMeshData(FrameIndex, *TrackProxy->MeshData))
 					{
 						TrackProxy->NextFrameMeshData->Indices = TrackProxy->MeshData->Indices;
-						if (TrackProxy->Resource->DecodeMeshData(NextFrameIndex, *TrackProxy->NextFrameMeshData))
+						if (TrackProxy->GetMeshData(NextFrameIndex, *TrackProxy->NextFrameMeshData))
 						{
 							TrackProxy->FrameIndex = FrameIndex;
 							TrackProxy->NextFrameIndex = NextFrameIndex;
@@ -604,7 +681,7 @@ void FGeometryCacheSceneProxy::FrameUpdate() const
 			}
 
 			// Check if we can interpolate between the two frames we have available
-			const bool bCanInterpolate = TrackProxy->Resource->IsTopologyCompatible(TrackProxy->FrameIndex, TrackProxy->NextFrameIndex);
+			const bool bCanInterpolate = TrackProxy->IsTopologyCompatible(TrackProxy->FrameIndex, TrackProxy->NextFrameIndex);
 
 			// Check if we have explicit motion vectors
 			const bool bHasMotionVectors = (
@@ -616,6 +693,7 @@ void FGeometryCacheSceneProxy::FrameUpdate() const
 			// Can we interpolate the vertex data?
 			if (bCanInterpolate && !bDecoderError && CVarInterpolateFrames.GetValueOnRenderThread() != 0)
 			{
+				SCOPE_CYCLE_COUNTER(STAT_InterpolateFrames);
 				// Interpolate if the time has changed.
 				// note: This is a bit precarious as this code is called multiple times per frame. This ensures
 				// we only interpolate once (which is a nice optimization) but more importantly that we only
@@ -651,44 +729,93 @@ void FGeometryCacheSceneProxy::FrameUpdate() const
 					const int32 InterpFixed = (int32)(InterpolationFactor * 255.0f);
 					const int32 OneMinusInterpFixed = 255 - InterpFixed;
 
-					for (int32 Index = 0; Index < NumVerts; ++Index)
 					{
-						const FVector& PositionA = TrackProxy->MeshData->Positions[Index];
-						const FVector& PositionB = TrackProxy->NextFrameMeshData->Positions[Index];
-						InterpolatedPositions[Index] = PositionA * OneMinusInterp + PositionB* InterpolationFactor;
+						check(TrackProxy->MeshData->Positions.Num() >= NumVerts);
+						check(TrackProxy->NextFrameMeshData->Positions.Num() >= NumVerts);
+						check(InterpolatedPositions.Num() >= NumVerts);
+						const FVector* PositionAPtr = TrackProxy->MeshData->Positions.GetData();
+						const FVector* PositionBPtr = TrackProxy->NextFrameMeshData->Positions.GetData();
+						FVector* InterpolationPositionsPtr = InterpolatedPositions.GetData();
+						for (int32 Index = 0; Index < NumVerts; ++Index)
+						{
+							const FVector& PositionA = PositionAPtr[Index];
+							const FVector& PositionB = PositionBPtr[Index];
+							InterpolationPositionsPtr[Index] = PositionA * OneMinusInterp + PositionB * InterpolationFactor;
+						}
+					}
+					
+					{
+						check(TrackProxy->MeshData->TangentsX.Num() >= NumVerts);
+						check(TrackProxy->NextFrameMeshData->TangentsX.Num() >= NumVerts);
+						check(TrackProxy->MeshData->TangentsZ.Num() >= NumVerts);
+						check(TrackProxy->NextFrameMeshData->TangentsZ.Num() >= NumVerts);
+						check(InterpolatedTangentX.Num() >= NumVerts);
+						check(InterpolatedTangentZ.Num() >= NumVerts);
+						const FPackedNormal* TangentXAPtr = TrackProxy->MeshData->TangentsX.GetData();
+						const FPackedNormal* TangentXBPtr = TrackProxy->NextFrameMeshData->TangentsX.GetData();
+						const FPackedNormal* TangentZAPtr = TrackProxy->MeshData->TangentsZ.GetData();
+						const FPackedNormal* TangentZBPtr = TrackProxy->NextFrameMeshData->TangentsZ.GetData();
+						FPackedNormal* InterpolatedTangentXPtr = InterpolatedTangentX.GetData();
+						FPackedNormal* InterpolatedTangentZPtr = InterpolatedTangentZ.GetData();
+						for (int32 Index = 0; Index < NumVerts; ++Index)
+						{
+							// The following are already 8 bit so quantized enough we can do exact equal comparisons
+							const FPackedNormal& TangentXA = TangentXAPtr[Index];
+							const FPackedNormal& TangentXB = TangentXBPtr[Index];
+							const FPackedNormal& TangentZA = TangentZAPtr[Index];
+							const FPackedNormal& TangentZB = TangentZBPtr[Index];
+
+							InterpolatedTangentXPtr[Index] = InterpolatePackedNormal(TangentXA, TangentXB, InterpFixed, OneMinusInterpFixed);
+							InterpolatedTangentZPtr[Index] = InterpolatePackedNormal(TangentZA, TangentZB, InterpFixed, OneMinusInterpFixed);
+						}
+					}
+					
+
+					if (TrackProxy->MeshData->VertexInfo.bHasColor0)
+					{
+						check(TrackProxy->MeshData->Colors.Num() >= NumVerts);
+						check(TrackProxy->NextFrameMeshData->Colors.Num() >= NumVerts);
+						check(InterpolatedColors.Num() >= NumVerts);
+						const FColor* ColorAPtr = TrackProxy->MeshData->Colors.GetData();
+						const FColor* ColorBPtr = TrackProxy->NextFrameMeshData->Colors.GetData();
+						FColor* InterpolatedColorsPtr = InterpolatedColors.GetData();
+						for (int32 Index = 0; Index < NumVerts; ++Index)
+						{
+							const FColor& ColorA = ColorAPtr[Index];
+							const FColor& ColorB = ColorBPtr[Index];
+							InterpolatedColorsPtr[Index] = InterpolatePackedColor(ColorA, ColorB, InterpFixed, OneMinusInterpFixed);
+						}
 					}
 
-					for (int32 Index = 0; Index < NumVerts; ++Index)
+					if (TrackProxy->MeshData->VertexInfo.bHasUV0)
 					{
-						// The following are already 8 bit so quantized enough we can do exact equal comparisons
-						const FPackedNormal& TangentXA = TrackProxy->MeshData->TangentsX[Index];
-						const FPackedNormal& TangentXB = TrackProxy->NextFrameMeshData->TangentsX[Index];
-						const FPackedNormal& TangentZA = TrackProxy->MeshData->TangentsZ[Index];
-						const FPackedNormal& TangentZB = TrackProxy->NextFrameMeshData->TangentsZ[Index];
-
-						InterpolatedTangentX[Index] = InterpolatePackedNormal(TangentXA, TangentXB, InterpFixed, OneMinusInterpFixed);
-						InterpolatedTangentZ[Index] = InterpolatePackedNormal(TangentZA, TangentZB, InterpFixed, OneMinusInterpFixed);
+						check(TrackProxy->MeshData->TextureCoordinates.Num() >= NumVerts);
+						check(TrackProxy->NextFrameMeshData->TextureCoordinates.Num() >= NumVerts);
+						check(InterpolatedUVs.Num() >= NumVerts);
+						const FVector2D* UVAPtr = TrackProxy->MeshData->TextureCoordinates.GetData();
+						const FVector2D* UVBPtr = TrackProxy->NextFrameMeshData->TextureCoordinates.GetData();
+						FVector2D* InterpolatedUVsPtr = InterpolatedUVs.GetData();
+						for (int32 Index = 0; Index < NumVerts; ++Index)
+						{
+							const FVector2D& UVA = UVAPtr[Index];
+							const FVector2D& UVB = UVBPtr[Index];
+							InterpolatedUVsPtr[Index] = UVA * OneMinusInterp + UVB * InterpolationFactor;
+						}
 					}
 
-					if (TrackProxy->MeshData->VertexInfo.bHasColor0) for (int32 Index = 0; Index < NumVerts; ++Index)
+					if (bHasMotionVectors)
 					{
-						const FColor& ColorA = TrackProxy->MeshData->Colors[Index];
-						const FColor& ColorB = TrackProxy->NextFrameMeshData->Colors[Index];
-						InterpolatedColors[Index] = InterpolatePackedColor(ColorA, ColorB, InterpFixed, OneMinusInterpFixed);
-					}
+						check(TrackProxy->MeshData->MotionVectors.Num() >= NumVerts);
+						check(TrackProxy->NextFrameMeshData->MotionVectors.Num() >= NumVerts);
+						check(InterpolatedMotionVectors.Num() >= NumVerts);
+						const FVector* MotionVectorAPtr = TrackProxy->MeshData->MotionVectors.GetData();
+						const FVector* MotionVectorBPtr = TrackProxy->NextFrameMeshData->MotionVectors.GetData();
+						FVector* InterpolatedMotionVectorsPtr = InterpolatedMotionVectors.GetData();
 
-					if (TrackProxy->MeshData->VertexInfo.bHasUV0) for (int32 Index = 0; Index < NumVerts; ++Index)
-					{
-						const FVector2D& UVA = TrackProxy->MeshData->TextureCoordinates[Index];
-						const FVector2D& UVB = TrackProxy->NextFrameMeshData->TextureCoordinates[Index];
-
-						InterpolatedUVs[Index] = UVA * OneMinusInterp + UVB * InterpolationFactor;
-					}
-
-					if (bHasMotionVectors) for (int32 Index = 0; Index < NumVerts; ++Index)
-					{
-						InterpolatedMotionVectors[Index] = TrackProxy->MeshData->MotionVectors[Index] * OneMinusInterp +
-							TrackProxy->NextFrameMeshData->MotionVectors[Index] * InterpolationFactor;
+						for (int32 Index = 0; Index < NumVerts; ++Index)
+						{
+							InterpolatedMotionVectorsPtr[Index] = MotionVectorAPtr[Index] * OneMinusInterp + MotionVectorBPtr[Index] * InterpolationFactor;
+						}
 					}
 
 					// Upload other non-motionblurred data
@@ -706,7 +833,7 @@ void FGeometryCacheSceneProxy::FrameUpdate() const
 					if (TrackProxy->MeshData->VertexInfo.bHasColor0)
 						TrackProxy->ColorBuffer.Update(InterpolatedColors);
 
-					bool bIsCompatibleWithCachedFrame = TrackProxy->Resource->IsTopologyCompatible(
+					bool bIsCompatibleWithCachedFrame = TrackProxy->IsTopologyCompatible(
 						TrackProxy->PositionBufferFrameIndices[TrackProxy->CurrentPositionBufferIndex % 2],
 						TrackProxy->FrameIndex);
 
@@ -774,8 +901,8 @@ void FGeometryCacheSceneProxy::FrameUpdate() const
 					if (TrackProxy->MeshData->VertexInfo.bHasColor0)
 						TrackProxy->ColorBuffer.Update(TrackProxy->MeshData->Colors);
 
-					bool bIsCompatibleWithCachedFrame = TrackProxy->Resource->IsTopologyCompatible(
-						TrackProxy->PositionBufferFrameIndices[TrackProxy->CurrentPositionBufferIndex % 2],
+					bool bIsCompatibleWithCachedFrame = TrackProxy->IsTopologyCompatible(
+							TrackProxy->PositionBufferFrameIndices[TrackProxy->CurrentPositionBufferIndex % 2],
 						TrackProxy->FrameIndex);
 
 					if (!bHasMotionVectors)
@@ -890,6 +1017,50 @@ void FGeometryCacheSceneProxy::ClearSections()
 	Tracks.Empty();
 }
 
+bool FGeomCacheTrackProxy::UpdateMeshData(float Time, bool bLooping, int32& InOutMeshSampleIndex, FGeometryCacheMeshData& OutMeshData)
+{
+	if (UGeometryCacheTrackStreamable* StreamableTrack = Cast<UGeometryCacheTrackStreamable>(Track))
+	{
+		return StreamableTrack->GetRenderResource()->UpdateMeshData(Time, bLooping, InOutMeshSampleIndex, OutMeshData);
+	}
+	return false;
+}
+
+bool FGeomCacheTrackProxy::GetMeshData(int32 SampleIndex, FGeometryCacheMeshData& OutMeshData)
+{
+	if (UGeometryCacheTrackStreamable* StreamableTrack = Cast<UGeometryCacheTrackStreamable>(Track))
+	{
+		return StreamableTrack->GetRenderResource()->DecodeMeshData(SampleIndex, OutMeshData);
+	}
+	return false;
+}
+
+bool FGeomCacheTrackProxy::IsTopologyCompatible(int32 SampleIndexA, int32 SampleIndexB)
+{
+	if (UGeometryCacheTrackStreamable* StreamableTrack = Cast<UGeometryCacheTrackStreamable>(Track))
+	{
+		return StreamableTrack->GetRenderResource()->IsTopologyCompatible(SampleIndexA, SampleIndexB);
+	}
+	return false;
+}
+
+const FVisibilitySample& FGeomCacheTrackProxy::GetVisibilitySample(float Time, const bool bLooping) const
+{
+	if (UGeometryCacheTrackStreamable* StreamableTrack = Cast<UGeometryCacheTrackStreamable>(Track))
+	{
+		return StreamableTrack->GetVisibilitySample(Time, bLooping);
+	}
+	return FVisibilitySample::InvisibleSample;
+}
+
+void FGeomCacheTrackProxy::FindSampleIndexesFromTime(float Time, bool bLooping, bool bIsPlayingBackwards, int32 &OutFrameIndex, int32 &OutNextFrameIndex, float &InterpolationFactor)
+{
+	if (UGeometryCacheTrackStreamable* StreamableTrack = Cast<UGeometryCacheTrackStreamable>(Track))
+	{
+		StreamableTrack->FindSampleIndexesFromTime(Time, bLooping, bIsPlayingBackwards, OutFrameIndex, OutNextFrameIndex, InterpolationFactor);
+	}
+}
+
 FGeomCacheVertexFactory::FGeomCacheVertexFactory(ERHIFeatureLevel::Type InFeatureLevel)
 	: FGeometryCacheVertexVertexFactory(InFeatureLevel)
 {
@@ -927,7 +1098,6 @@ void FGeomCacheVertexFactory::Init(const FVertexBuffer* PositionBuffer, const FV
 			{
 			Init_RenderThread(PositionBuffer, MotionBlurDataBuffer, TangentXBuffer, TangentZBuffer, TextureCoordinateBuffer, ColorBuffer);
 		});
-		FlushRenderingCommands();
 	}
 }
 
@@ -935,7 +1105,7 @@ void FGeomCacheIndexBuffer::InitRHI()
 {
 	FRHIResourceCreateInfo CreateInfo;
 	void* Buffer = nullptr;
-	IndexBufferRHI = RHICreateAndLockIndexBuffer(sizeof(uint32), NumIndices * sizeof(uint32), BUF_Static | BUF_ShaderResource, CreateInfo, Buffer);
+	IndexBufferRHI = RHICreateAndLockIndexBuffer(sizeof(uint32), NumIndices * sizeof(uint32), BUF_Dynamic | BUF_ShaderResource, CreateInfo, Buffer);
 	RHIUnlockIndexBuffer(IndexBufferRHI);
 }
 
@@ -952,7 +1122,7 @@ void FGeomCacheIndexBuffer::Update(const TArray<uint32> &Indices)
 	{
 		NumIndices = Indices.Num();
 		FRHIResourceCreateInfo CreateInfo;
-		IndexBufferRHI = RHICreateAndLockIndexBuffer(sizeof(uint32), NumIndices * sizeof(uint32), BUF_Static | BUF_ShaderResource, CreateInfo, Buffer);
+		IndexBufferRHI = RHICreateAndLockIndexBuffer(sizeof(uint32), NumIndices * sizeof(uint32), BUF_Dynamic | BUF_ShaderResource, CreateInfo, Buffer);
 	}
 	else
 	{
@@ -972,7 +1142,7 @@ void FGeomCacheIndexBuffer::UpdateSizeOnly(int32 NewNumIndices)
 	if (NewNumIndices > NumIndices)
 	{
 		FRHIResourceCreateInfo CreateInfo;
-		IndexBufferRHI = RHICreateIndexBuffer(sizeof(uint32), NewNumIndices * sizeof(uint32), BUF_Static | BUF_ShaderResource, CreateInfo);
+		IndexBufferRHI = RHICreateIndexBuffer(sizeof(uint32), NewNumIndices * sizeof(uint32), BUF_Dynamic | BUF_ShaderResource, CreateInfo);
 		NumIndices = NewNumIndices;
 	}
 }

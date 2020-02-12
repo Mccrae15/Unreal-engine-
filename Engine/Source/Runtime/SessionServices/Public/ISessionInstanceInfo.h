@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -111,13 +111,6 @@ public:
 	 * @return true if the user is authorized, false otherwise.
 	 */
 	virtual bool IsAuthorized() const = 0;
-
-	/**
-	 * Check whether this instance is a console build (i.e. no editor features).
-	 *
-	 * @return true if it is a console build, false otherwise.
-	 */
-	virtual const bool IsConsole() const = 0;
 
 	/**
 	 * Checks whether this instance has already begun game play.

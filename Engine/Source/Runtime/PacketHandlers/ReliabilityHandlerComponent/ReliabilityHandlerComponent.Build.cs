@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 using UnrealBuildTool;
 using System.IO;
@@ -11,7 +11,8 @@ public class ReliabilityHandlerComponent : ModuleRules
         PublicDependencyModuleNames.AddRange(
             new string[] {
 				"Core",
-                "PacketHandler",
+				"NetCore",
+                "PacketHandler"
             }
         );
     }

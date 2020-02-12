@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "Framework/MultiBox/MultiBox.h"
 #include "Misc/ConfigCacheIni.h"
@@ -8,7 +8,9 @@
 #include "Framework/Application/SlateApplication.h"
 #include "Widgets/Layout/SBorder.h"
 #include "Framework/MultiBox/MultiBoxBuilder.h"
+#include "Framework/MultiBox/ToolMenuBase.h"
 #include "Widgets/Input/SButton.h"
+#include "Widgets/Images/SImage.h"
 #include "Widgets/SToolTip.h"
 #include "Widgets/Views/STableViewBase.h"
 #include "Widgets/Views/STableRow.h"
@@ -16,16 +18,16 @@
 #include "Widgets/Layout/SScrollBox.h"
 #include "Framework/MultiBox/SToolBarButtonBlock.h"
 #include "Framework/MultiBox/SMenuEntryBlock.h"
+#include "Framework/MultiBox/SMenuSeparatorBlock.h"
 #include "Framework/MultiBox/MultiBoxCustomization.h"
 #include "Framework/MultiBox/SClippingHorizontalBox.h"
 #include "Framework/Commands/UICommandDragDropOp.h"
+#include "SUniformToolbarPanel.h"
 
 
 TAttribute<bool> FMultiBoxSettings::UseSmallToolBarIcons;
 TAttribute<bool> FMultiBoxSettings::DisplayMultiboxHooks;
 FMultiBoxSettings::FConstructToolTip FMultiBoxSettings::ToolTipConstructor = FConstructToolTip::CreateStatic( &FMultiBoxSettings::ConstructDefaultToolTip );
-
-bool FMultiBoxSettings::bInToolbarEditMode;
 
 
 FMultiBoxSettings::FMultiBoxSettings()
@@ -49,17 +51,6 @@ TSharedRef< SToolTip > FMultiBoxSettings::ConstructDefaultToolTip( const TAttrib
 void FMultiBoxSettings::ResetToolTipConstructor()
 {
 	ToolTipConstructor = FConstructToolTip::CreateStatic( &FMultiBoxSettings::ConstructDefaultToolTip );
-}
-
-void FMultiBoxSettings::ToggleToolbarEditing()
-{
-	bool bCanBeEnabled = false;
-	if( GIsEditor )
-	{
-		GConfig->GetBool(TEXT("/Script/UnrealEd.EditorExperimentalSettings"), TEXT("bToolbarCustomization"), bCanBeEnabled, GEditorPerProjectIni);
-	}
-
-	bInToolbarEditMode = !bInToolbarEditMode && bCanBeEnabled;
 }
 
 const FMultiBoxCustomization FMultiBoxCustomization::None( NAME_None );
@@ -126,6 +117,16 @@ FReply SMultiBlockBaseWidget::OnDrop( const FGeometry& MyGeometry, const FDragDr
 	return FReply::Unhandled();
 }
 
+bool SMultiBlockBaseWidget::IsInEditMode() const
+{
+	if (OwnerMultiBoxWidget.IsValid())
+	{
+		return OwnerMultiBoxWidget.Pin()->GetMultiBox()->IsInEditMode();
+	}
+
+	return false;
+}
+
 /**
  * Creates a MultiBlock widget for this MultiBlock
  *
@@ -172,9 +173,8 @@ bool FMultiBlock::GetSearchable() const
  * @param	InType	Type of MultiBox
  * @param	bInShouldCloseWindowAfterMenuSelection	Sets whether or not the window that contains this multibox should be destroyed after the user clicks on a menu item in this box
  */
-FMultiBox::FMultiBox( const EMultiBoxType::Type InType, FMultiBoxCustomization InCustomization, const bool bInShouldCloseWindowAfterMenuSelection )
-	: CustomizationData( new FMultiBoxCustomizationData( InCustomization.GetCustomizationName() ) )
-	, CommandLists()
+FMultiBox::FMultiBox( const EMultiBoxType InType, FMultiBoxCustomization InCustomization, const bool bInShouldCloseWindowAfterMenuSelection )
+	: CommandLists()
 	, Blocks()
 	, StyleSet( &FCoreStyle::Get() )
 	, StyleName( "ToolBar" )
@@ -187,7 +187,7 @@ FMultiBox::~FMultiBox()
 {
 }
 
-TSharedRef<FMultiBox> FMultiBox::Create( const EMultiBoxType::Type InType, FMultiBoxCustomization InCustomization, const bool bInShouldCloseWindowAfterMenuSelection )
+TSharedRef<FMultiBox> FMultiBox::Create( const EMultiBoxType InType, FMultiBoxCustomization InCustomization, const bool bInShouldCloseWindowAfterMenuSelection )
 {
 	TSharedRef<FMultiBox> NewBox = MakeShareable( new FMultiBox( InType, InCustomization, bInShouldCloseWindowAfterMenuSelection ) );
 
@@ -221,9 +221,6 @@ void FMultiBox::RemoveCustomMultiBlock( TSharedRef< const FMultiBlock> InBlock )
 		if( Index != INDEX_NONE )
 		{
 			Blocks.RemoveAt( Index );
-
-			// Remove the block from the customization data
-			CustomizationData->BlockRemoved( InBlock, Index, Blocks );
 		}
 
 	}
@@ -231,24 +228,103 @@ void FMultiBox::RemoveCustomMultiBlock( TSharedRef< const FMultiBlock> InBlock )
 
 void FMultiBox::InsertCustomMultiBlock( TSharedRef<const FMultiBlock> InBlock, int32 Index )
 {
-	if( IsCustomizable() && ensure( InBlock->GetAction().IsValid() ) )
+	if (IsCustomizable() && ensure(InBlock->GetExtensionHook() != NAME_None))
 	{
 		int32 ExistingIndex = Blocks.Find( InBlock );
-		if( ExistingIndex != INDEX_NONE )
+
+		FName DestinationBlockName = NAME_None;
+		FName DestinationSectionName = NAME_None;
+		if (Blocks.IsValidIndex(Index))
 		{
-			Blocks.RemoveAt( ExistingIndex );
+			DestinationBlockName = Blocks[Index]->GetExtensionHook();
 
-			CustomizationData->BlockRemoved( InBlock, ExistingIndex, Blocks );
-
-			if( ExistingIndex < Index )
+			int32 DestinationSectionEndIndex = INDEX_NONE;
+			int32 DestinationSectionIndex = GetSectionEditBounds(Index, DestinationSectionEndIndex);
+			if (Blocks.IsValidIndex(DestinationSectionIndex))
 			{
-				--Index;
+				DestinationSectionName = Blocks[DestinationSectionIndex]->GetExtensionHook();
 			}
 		}
 
-		Blocks.Insert( InBlock, Index );
+		if (InBlock->IsPartOfHeading())
+		{
+			if (InBlock->GetExtensionHook() == DestinationSectionName)
+			{
+				return;
+			}
 
-		CustomizationData->BlockAdded( InBlock, Index, Blocks );
+			if (ExistingIndex != INDEX_NONE)
+			{
+				int32 SourceSectionEndIndex = INDEX_NONE;
+				int32 SourceSectionIndex = GetSectionEditBounds(ExistingIndex, SourceSectionEndIndex);
+				if (SourceSectionIndex != INDEX_NONE && SourceSectionEndIndex != INDEX_NONE)
+				{
+					bool bHadSeparator = Blocks[SourceSectionIndex]->IsSeparator();
+
+					TArray< TSharedRef< const FMultiBlock > > BlocksToMove;
+					BlocksToMove.Reset(SourceSectionEndIndex - SourceSectionIndex + 1);
+					for (int32 BlockIdx = SourceSectionIndex; BlockIdx < SourceSectionEndIndex; ++BlockIdx)
+					{
+						BlocksToMove.Add(Blocks[BlockIdx]);
+					}
+
+					Blocks.RemoveAt(SourceSectionIndex, SourceSectionEndIndex - SourceSectionIndex, false);
+
+					if (Index > SourceSectionIndex)
+					{
+						Index -= BlocksToMove.Num();
+					}
+
+					if (Index == 0)
+					{
+						// Add missing separator for next section
+						if (Blocks.Num() > 0 && (Blocks[0]->GetType() == EMultiBlockType::Heading))
+						{
+							BlocksToMove.Add(MakeShareable(new FMenuSeparatorBlock(Blocks[0]->GetExtensionHook(), /* bInIsPartOfHeading=*/ true)));
+						}
+					}
+					else
+					{
+						// Add separator to beginning of section
+						if (BlocksToMove.Num() > 0 && (BlocksToMove[0]->GetType() == EMultiBlockType::Heading))
+						{
+							BlocksToMove.Insert(MakeShareable(new FMenuSeparatorBlock(BlocksToMove[0]->GetExtensionHook(), /* bInIsPartOfHeading=*/ true)), 0);
+						}
+					}
+
+					Blocks.Insert(BlocksToMove, Index);
+
+					// Menus do not start with separators, remove separator if one exists
+					if (Blocks.Num() > 0 && Blocks[0]->IsSeparator())
+					{
+						Blocks.RemoveAt(0, 1, false);
+					}
+
+					if (UToolMenuBase* ToolMenu = GetToolMenu())
+					{
+						ToolMenu->UpdateMenuCustomizationFromMultibox(SharedThis(this));
+					}
+				}
+			}
+		}
+		else
+		{
+			if (ExistingIndex != INDEX_NONE)
+			{
+				Blocks.RemoveAt(ExistingIndex);
+				if (ExistingIndex < Index)
+				{
+					--Index;
+				}
+			}
+
+			Blocks.Insert(InBlock, Index);
+
+			if (UToolMenuBase* ToolMenu = GetToolMenu())
+			{
+				ToolMenu->UpdateMenuCustomizationFromMultibox(SharedThis(this));
+			}
+		}
 	}
 }
 
@@ -257,10 +333,8 @@ void FMultiBox::InsertCustomMultiBlock( TSharedRef<const FMultiBlock> InBlock, i
  *
  * @return  MultiBox widget object
  */
-TSharedRef< SMultiBoxWidget > FMultiBox::MakeWidget( bool bSearchable, FOnMakeMultiBoxBuilderOverride* InMakeMultiBoxBuilderOverride /* = nullptr */ )
+TSharedRef< SMultiBoxWidget > FMultiBox::MakeWidget( bool bSearchable, FOnMakeMultiBoxBuilderOverride* InMakeMultiBoxBuilderOverride /* = nullptr */, TAttribute<float> InMaxHeight )
 {	
-	ApplyCustomizedBlocks();
-
 	TSharedRef< SMultiBoxWidget > NewMultiBoxWidget =
 		SNew( SMultiBoxWidget );
 
@@ -269,6 +343,9 @@ TSharedRef< SMultiBoxWidget > FMultiBox::MakeWidget( bool bSearchable, FOnMakeMu
 
 	// Assign ourselves to the MultiBox widget
 	NewMultiBoxWidget->SetMultiBox( AsShared() );
+
+	// Set the maximum height the MultiBox widget should be
+	NewMultiBoxWidget->SetMaxHeight( InMaxHeight );
 
 	if( (InMakeMultiBoxBuilderOverride != nullptr) && (InMakeMultiBoxBuilderOverride->IsBound()) )
 	{
@@ -293,69 +370,17 @@ TSharedRef< SMultiBoxWidget > FMultiBox::MakeWidget( bool bSearchable, FOnMakeMu
 
 bool FMultiBox::IsCustomizable() const
 {
-	bool bIsCustomizable = false;
-	if( CustomizationData->GetCustomizationName() != NAME_None )
+	if (UToolMenuBase* ToolMenu = GetToolMenu())
 	{
-		GConfig->GetBool(TEXT("/Script/UnrealEd.EditorExperimentalSettings"), TEXT("bToolbarCustomization"), bIsCustomizable, GEditorPerProjectIni);
+		return ToolMenu->IsEditing();
 	}
 
-	return bIsCustomizable;
-}
-
-void FMultiBox::ApplyCustomizedBlocks()
-{
-	if( IsCustomizable() )
-	{
-		CustomizationData->LoadCustomizedBlocks();
-
-		// Build a map of commands to existing blocks,  we'll try to use existing blocks before creating new ones
-		TMap< TSharedPtr<const FUICommandInfo>, TSharedPtr<const FMultiBlock> > CommandToBlockMap;
-
-		for( int32 BlockIndex = 0; BlockIndex < Blocks.Num(); ++BlockIndex )
-		{
-			TSharedPtr<const FMultiBlock> Block = Blocks[BlockIndex];
-			if( Block->GetAction().IsValid() )
-			{
-				CommandToBlockMap.Add( Block->GetAction(), Block );
-			}
-		}
-
-		// Rebuild the users customized box by executing the transactions the user made to get the 
-		// box to its customized state
-		for( uint32 TransIndex = 0; TransIndex < CustomizationData->GetNumTransactions(); ++TransIndex )
-		{
-			const FCustomBlockTransaction& Transaction = CustomizationData->GetTransaction(TransIndex);
-		
-			// Try and find the block in the default map;
-			TSharedPtr<const FMultiBlock> Block = CommandToBlockMap.FindRef( Transaction.Command.Pin() );
-
-			if( Transaction.TransactionType == FCustomBlockTransaction::Add )
-			{
-			
-				if( !Block.IsValid() )
-				{
-					Block = MakeMultiBlockFromCommand( Transaction.Command.Pin(), false );
-				}
-
-				if( Block.IsValid() )
-				{
-					Blocks.Insert( Block.ToSharedRef(), FMath::Clamp( Transaction.BlockIndex, 0, Blocks.Num() ) );
-				}
-			}
-			else
-			{
-				if( Block.IsValid() )
-				{
-					Blocks.Remove( Block.ToSharedRef() );
-				}
-			}
-		}
-	}
+	return false;
 }
 
 FName FMultiBox::GetCustomizationName() const
 {
-	return CustomizationData->GetCustomizationName(); 
+	return NAME_None;
 }
 
 TSharedPtr<FMultiBlock> FMultiBox::MakeMultiBlockFromCommand( TSharedPtr<const FUICommandInfo> CommandInfo, bool bCommandMustBeBound ) const
@@ -405,20 +430,74 @@ TSharedPtr<FMultiBlock> FMultiBox::MakeMultiBlockFromCommand( TSharedPtr<const F
 
 }
 
-TSharedPtr<const FMultiBlock> FMultiBox::FindBlockFromCommand( TSharedPtr<const FUICommandInfo> Command ) const
+TSharedPtr<const FMultiBlock> FMultiBox::FindBlockFromNameAndType(const FName InName, const EMultiBlockType InType) const
 {
-	for (TArray< TSharedRef< const FMultiBlock > >::TConstIterator It(Blocks); It; ++It)
+	for (const auto& Block : Blocks)
 	{
-		const TSharedRef< const FMultiBlock >& Block = *It;
-		if( Block->GetAction() == Command )
+		if (Block->GetExtensionHook() == InName && Block->GetType() == InType)
 		{
 			return Block;
 		}
 	}
 
-	return NULL;
+	return nullptr;
 }
 
+int32 FMultiBox::GetSectionEditBounds(const int32 Index, int32& OutSectionEndIndex) const
+{
+	// Only used by edit mode, identifies sections by heading blocks
+	if (!IsInEditMode())
+	{
+		return INDEX_NONE;
+	}
+
+	int32 SectionBeginIndex = INDEX_NONE;
+	for (int32 BlockIdx = Index; BlockIdx >= 0; --BlockIdx)
+	{
+		if (Blocks[BlockIdx]->GetType() == EMultiBlockType::Heading)
+		{
+			if (BlockIdx > 0 && Blocks[BlockIdx - 1]->IsSeparator() && Blocks[BlockIdx]->GetExtensionHook() == Blocks[BlockIdx - 1]->GetExtensionHook())
+			{
+				SectionBeginIndex = BlockIdx - 1;
+			}
+			else
+			{
+				SectionBeginIndex = BlockIdx;
+			}
+			break;
+		}
+	}
+
+	OutSectionEndIndex = Blocks.Num();
+	for (int32 BlockIdx = Index + 1; BlockIdx < Blocks.Num(); ++BlockIdx)
+	{
+		if (Blocks[BlockIdx]->GetType() == EMultiBlockType::Heading)
+		{
+			if (BlockIdx > 0 && Blocks[BlockIdx - 1]->IsSeparator() && Blocks[BlockIdx]->GetExtensionHook() == Blocks[BlockIdx - 1]->GetExtensionHook())
+			{
+				OutSectionEndIndex = BlockIdx - 1;
+			}
+			else
+			{
+				OutSectionEndIndex = BlockIdx;
+			}
+			break;
+		}
+	}
+
+	return SectionBeginIndex;
+}
+
+UToolMenuBase* FMultiBox::GetToolMenu() const
+{
+	return WeakToolMenu.Get();
+}
+
+bool FMultiBox::IsInEditMode() const
+{
+	UToolMenuBase* ToolMenu = GetToolMenu();
+	return ToolMenu && ToolMenu->IsEditing();
+}
 
 void SMultiBoxWidget::Construct( const FArguments& InArgs )
 {
@@ -435,22 +514,22 @@ TSharedRef<ITableRow> SMultiBoxWidget::GenerateTiles(TSharedPtr<SWidget> Item, c
 
 float SMultiBoxWidget::GetItemWidth() const
 {
-	float MaxWidth = 0;
+	float MaxItemWidth = 0;
 	for (int32 i = 0; i < TileViewWidgets.Num(); ++i)
 	{
-		MaxWidth = FMath::Max(TileViewWidgets[i]->GetDesiredSize().X, MaxWidth);
+		MaxItemWidth = FMath::Max(TileViewWidgets[i]->GetDesiredSize().X, MaxItemWidth);
 	}
-	return MaxWidth;
+	return MaxItemWidth;
 }
 
 float SMultiBoxWidget::GetItemHeight() const
 {
-	float MaxHeight = 0;
+	float MaxItemHeight = 0;
 	for (int32 i = 0; i < TileViewWidgets.Num(); ++i)
 	{
-		MaxHeight = FMath::Max(TileViewWidgets[i]->GetDesiredSize().Y, MaxHeight);
+		MaxItemHeight = FMath::Max(TileViewWidgets[i]->GetDesiredSize().Y, MaxItemHeight);
 	}
-	return MaxHeight;
+	return MaxItemHeight;
 }
 
 bool SMultiBoxWidget::IsBlockBeingDragged( TSharedPtr<const FMultiBlock> Block ) const
@@ -461,6 +540,37 @@ bool SMultiBoxWidget::IsBlockBeingDragged( TSharedPtr<const FMultiBlock> Block )
 	}
 
 	return false;
+}
+
+EVisibility SMultiBoxWidget::GetCustomizationBorderDragVisibility(const FName InBlockName, const EMultiBlockType InBlockType, bool& bOutInsertAfter) const
+{
+	bOutInsertAfter = false;
+
+	if (DragPreview.PreviewBlock.IsValid())
+	{
+		const TArray< TSharedRef< const FMultiBlock > >& Blocks = MultiBox->GetBlocks();
+		if (Blocks.IsValidIndex(DragPreview.InsertIndex))
+		{
+			if (InBlockName != NAME_None)
+			{
+				const TSharedRef< const FMultiBlock >& DropDestination = Blocks[DragPreview.InsertIndex];
+				if (DropDestination->GetExtensionHook() == InBlockName && DropDestination->GetType() == InBlockType)
+				{
+					return EVisibility::Visible;
+				}
+			}
+		}
+		else if (Blocks.Num() == DragPreview.InsertIndex)
+		{
+			if (Blocks.Num() > 0 && Blocks.Last()->GetExtensionHook() == InBlockName && Blocks.Last()->GetType() == InBlockType)
+			{
+				bOutInsertAfter = true;
+				return EVisibility::Visible;
+			}
+		}
+	}
+
+	return EVisibility::Collapsed;
 }
 
 void SMultiBoxWidget::AddBlockWidget( const FMultiBlock& Block, TSharedPtr<SHorizontalBox> HorizontalBox, TSharedPtr<SVerticalBox> VerticalBox, EMultiBlockLocation::Type InLocation, bool bSectionContainsIcons )
@@ -476,85 +586,81 @@ void SMultiBoxWidget::AddBlockWidget( const FMultiBlock& Block, TSharedPtr<SHori
 
 	const ISlateStyle* const StyleSet = MultiBox->GetStyleSet();
 
-	TSharedRef<SWidget> FinalWidget =
-	SNew( SOverlay )
-	+ SOverlay::Slot()
-	[
-		BlockWidget
-	]
-	+ SOverlay::Slot()
-	[
-		// This overlay prevents users from clicking on the actual block when in edit mode and also allows new blocks
-		// to be dropped on disabled blocks
-		SNew( SMultiBlockDragHandle, SharedThis( this ), Block.AsShared(), MultiBox->GetCustomizationName() )
-		.Visibility( this, &SMultiBoxWidget::GetCustomizationVisibility, BlockWeakPtr, BlockWidgetWeakPtr )
-	]
-	+ SOverlay::Slot()
-	.HAlign( HAlign_Right )
-	.VAlign( VAlign_Top )
-	.Padding( FMargin(0.0f, 2.0f, 1.0f, 0.0f ) )
-	[
-		// The delete button for removing blocks is only visible when in edit mode
-		SNew( SButton )
-		.Visibility( this, &SMultiBoxWidget::GetCustomizationVisibility, BlockWeakPtr, BlockWidgetWeakPtr )
-		.ContentPadding(0)
-		.OnClicked( this, &SMultiBoxWidget::OnDeleteBlockClicked, BlockWeakPtr )
-		.ButtonStyle( StyleSet, "MultiBox.DeleteButton" )
-	];
+	TSharedPtr<SWidget> FinalWidget;
+
+	const EMultiBlockType BlockType = Block.GetType();
+
+	if (MultiBox->ModifyBlockWidgetAfterMake.IsBound())
+	{
+		FinalWidget = MultiBox->ModifyBlockWidgetAfterMake.Execute(SharedThis(this), Block, BlockWidget);
+	}
+	else
+	{
+		FinalWidget = BlockWidget;
+	}
+
+	TSharedRef<SWidget> FinalWidgetWithHook = 
+		SNew(SVerticalBox)
+		+ SVerticalBox::Slot()
+		.HAlign(HAlign_Center)
+		.AutoHeight()
+		[
+			SNew(STextBlock)
+			.Visibility(bDisplayExtensionHooks ? EVisibility::Visible : EVisibility::Collapsed)
+			.ColorAndOpacity(StyleSet->GetColor("MultiboxHookColor"))
+			.Text(FText::FromName(Block.GetExtensionHook()))
+		]
+		+ SVerticalBox::Slot()
+		[
+			FinalWidget.ToSharedRef()
+		];
 
 	switch (MultiBox->GetType())
 	{
 	case EMultiBoxType::MenuBar:
-	case EMultiBoxType::ToolBar:
 	case EMultiBoxType::ToolMenuBar:
+	case EMultiBoxType::ToolBar:
 		{
+
 			HorizontalBox->AddSlot()
 			.AutoWidth()
-			.Padding( 0 )
+			.Padding(0)
 			[
-				SNew(SVerticalBox)
-				+SVerticalBox::Slot()
-				.HAlign(HAlign_Center)
-				.AutoHeight()
-				[
-					SNew(STextBlock)
-					.Visibility(bDisplayExtensionHooks ? EVisibility::Visible : EVisibility::Collapsed)
-					.ColorAndOpacity(StyleSet->GetColor("MultiboxHookColor"))
-					.Text(FText::FromName(Block.GetExtensionHook()))
-				]
-				+SVerticalBox::Slot()
-				[
-					FinalWidget
-				]
+				FinalWidgetWithHook
 			];
 		}
 		break;
 	case EMultiBoxType::VerticalToolBar:
 		{
-			VerticalBox->AddSlot()
-				.AutoHeight()
-				.Padding( 0.0f, 1.0f, 0.0f, 1.0f )
+			if (UniformToolbarPanel.IsValid())
+			{
+				UniformToolbarPanel->AddSlot()
 				[
-					SNew(SVerticalBox)
-					+SVerticalBox::Slot()
-					.HAlign(HAlign_Center)
-					.AutoHeight()
-					[
-						SNew(STextBlock)
-						.Visibility(bDisplayExtensionHooks ? EVisibility::Visible : EVisibility::Collapsed)
-						.ColorAndOpacity(StyleSet->GetColor("MultiboxHookColor"))
-						.Text(FText::FromName(Block.GetExtensionHook()))
-					]
-					+SVerticalBox::Slot()
-					[
-						FinalWidget
-					]
+					FinalWidgetWithHook
 				];
+			}
+			else
+			{
+				VerticalBox->AddSlot()
+				.AutoHeight()
+				.Padding(0.0f, 1.0f, 0.0f, 1.0f)
+				[
+					FinalWidgetWithHook
+				];
+			}
+		}
+		break;
+	case EMultiBoxType::UniformToolBar:
+		{
+			UniformToolbarPanel->AddSlot()
+			[
+				FinalWidgetWithHook
+			];
 		}
 		break;
 	case EMultiBoxType::ButtonRow:
 		{
-			TileViewWidgets.Add( FinalWidget );
+			TileViewWidgets.Add( FinalWidget.ToSharedRef() );
 		}
 		break;
 	case EMultiBoxType::Menu:
@@ -575,7 +681,7 @@ void SMultiBoxWidget::AddBlockWidget( const FMultiBlock& Block, TSharedPtr<SHori
 				]
 				+SHorizontalBox::Slot()
 				[
-					FinalWidget
+					FinalWidget.ToSharedRef()
 				]
 			];
 		}
@@ -613,9 +719,10 @@ void SMultiBoxWidget::BuildMultiBoxWidget()
 
 	// Create a box panel that the various multiblocks will resides within
 	// @todo Slate MultiBox: Expose margins and other useful bits
-	TSharedPtr< SHorizontalBox > HorizontalBox;
 	TSharedPtr< SVerticalBox > VerticalBox;
 	TSharedPtr< SWidget > MainWidget;
+
+	TSharedPtr<SHorizontalBox> HorizontalBox;
 
 	/** The current row of buttons for if the multibox type is a button row */
 	TSharedPtr<SHorizontalBox> ButtonRow;
@@ -628,16 +735,28 @@ void SMultiBoxWidget::BuildMultiBoxWidget()
 	case EMultiBoxType::ToolBar:
 	case EMultiBoxType::ToolMenuBar:
 		{
-				MainWidget = HorizontalBox = ClippedHorizontalBox = SNew( SClippingHorizontalBox )
-					.BackgroundBrush(BackgroundBrush)
-					.OnWrapButtonClicked(FOnGetContent::CreateSP(this, &SMultiBoxWidget::OnWrapButtonClicked))
-					.StyleSet( StyleSet )
-					.StyleName( StyleName );
+			MainWidget = HorizontalBox = ClippedHorizontalBox = SNew(SClippingHorizontalBox)
+				.BackgroundBrush(BackgroundBrush)
+				.OnWrapButtonClicked(FOnGetContent::CreateSP(this, &SMultiBoxWidget::OnWrapButtonClicked))
+				.StyleSet(StyleSet)
+				.StyleName(StyleName);
 		}
 		break;
 	case EMultiBoxType::VerticalToolBar:
 		{
-			MainWidget = VerticalBox = SNew( SVerticalBox );
+			MainWidget = VerticalBox = SNew(SVerticalBox);
+		}
+		break;
+	case EMultiBoxType::UniformToolBar:
+		{
+			MainWidget = UniformToolbarPanel =
+				SAssignNew(UniformToolbarPanel, SUniformToolbarPanel)
+				.Orientation(Orient_Horizontal)
+				.StyleSet(StyleSet)
+				.StyleName(StyleName)
+				.MinUniformSize(StyleSet->GetFloat(StyleName, ".MinUniformToolbarSize", 0.0f))
+				.MaxUniformSize(StyleSet->GetFloat(StyleName, ".MaxUniformToolbarSize", 0.0f))
+				.OnDropdownOpened(FOnGetContent::CreateSP(this, &SMultiBoxWidget::OnWrapButtonClicked));
 		}
 		break;
 	case EMultiBoxType::ButtonRow:
@@ -652,12 +771,29 @@ void SMultiBoxWidget::BuildMultiBoxWidget()
 		break;
 	case EMultiBoxType::Menu:
 		{
-			// wrap menu content in a scrollbox to support vertical scrolling if needed
-			MainWidget = SNew(SScrollBox)
-				+SScrollBox::Slot()
-				[
-					SAssignNew( VerticalBox, SVerticalBox )
-				];
+			if (MaxHeight.IsSet())
+			{
+				MainWidget = SNew(SVerticalBox)
+					+ SVerticalBox::Slot()
+					.MaxHeight(MaxHeight)
+					[
+						// wrap menu content in a scrollbox to support vertical scrolling if needed
+						SNew(SScrollBox)
+						+ SScrollBox::Slot()
+						[
+							SAssignNew(VerticalBox, SVerticalBox)
+						]
+					];
+			}
+			else
+			{
+				// wrap menu content in a scrollbox to support vertical scrolling if needed
+				MainWidget = SNew(SScrollBox)
+					+ SScrollBox::Slot()
+					[
+						SAssignNew(VerticalBox, SVerticalBox)
+					];
+			}
 		}
 		break;
 	}
@@ -670,6 +806,7 @@ void SMultiBoxWidget::BuildMultiBoxWidget()
 
 	// Assign and add the search widget at the top
 	SearchTextWidget = MultiBox->SearchTextWidget;
+
 
 	for( int32 Index = 0; Index < Blocks.Num(); Index++ )
 	{
@@ -694,7 +831,7 @@ void SMultiBoxWidget::BuildMultiBoxWidget()
 
 		const FMultiBlock& Block = *Blocks[Index];
 		EMultiBlockLocation::Type Location = EMultiBlockLocation::None;
-
+		
 		// Determine the location of the current block, used for group styling information
 		{
 			// Check if we are a start or end block
@@ -819,11 +956,16 @@ TSharedRef<SWidget> SMultiBoxWidget::OnWrapButtonClicked()
 {
 	FMenuBuilder MenuBuilder(true, NULL, TSharedPtr<FExtender>(), false, GetStyleSet());
 	{ 
+		const int32 ClippedIndex = ClippedHorizontalBox.IsValid() ? ClippedHorizontalBox->GetClippedIndex() : UniformToolbarPanel->GetClippedIndex();
 		// Iterate through the array of blocks telling each one to add itself to the menu
 		const TArray< TSharedRef< const FMultiBlock > >& Blocks = MultiBox->GetBlocks();
-		for (int32 BlockIdx = ClippedHorizontalBox->GetClippedIndex(); BlockIdx < Blocks.Num(); ++BlockIdx)
+		for (int32 BlockIdx = ClippedIndex; BlockIdx < Blocks.Num(); ++BlockIdx)
 		{
-			Blocks[BlockIdx]->CreateMenuEntry(MenuBuilder);
+			// Skip the first entry if its a separator
+			if (BlockIdx != ClippedIndex || !Blocks[BlockIdx]->IsSeparator())
+			{
+				Blocks[BlockIdx]->CreateMenuEntry(MenuBuilder);
+			}
 		}
 	}
 
@@ -832,34 +974,31 @@ TSharedRef<SWidget> SMultiBoxWidget::OnWrapButtonClicked()
 
 void SMultiBoxWidget::UpdateDropAreaPreviewBlock( TSharedRef<const FMultiBlock> MultiBlock, TSharedPtr<FUICommandDragDropOp> DragDropContent, const FGeometry& DragAreaGeometry, const FVector2D& DragPos )
 {
-	TSharedPtr<const FUICommandInfo> UICommand = DragDropContent->UICommand;
+	const FName BlockName = DragDropContent->ItemName;
+	const EMultiBlockType BlockType = DragDropContent->BlockType;
 	FName OriginMultiBox = DragDropContent->OriginMultiBox;
 
 	FVector2D LocalDragPos = DragAreaGeometry.AbsoluteToLocal( DragPos );
 
 	FVector2D DrawSize = DragAreaGeometry.GetDrawSize();
 
+	bool bIsDraggingSection = DragDropContent->bIsDraggingSection;
+
 	bool bAddedNewBlock = false;
 	bool bValidCommand = true;
-	if( DragPreview.UICommand != UICommand )
-	{	
-		TSharedPtr<const FMultiBlock> ExistingBlock = MultiBox->FindBlockFromCommand( UICommand );
-
-		// Check that the command does not already exist and that we can create it or that we are dragging an exisiting block in this box
+	if (!DragPreview.IsSameBlockAs(BlockName, BlockType))
+	{
+		TSharedPtr<const FMultiBlock> ExistingBlock = MultiBox->FindBlockFromNameAndType(BlockName, BlockType);
+		// Check that the command does not already exist and that we can create it or that we are dragging an existing block in this box
 		if( !ExistingBlock.IsValid() || ( ExistingBlock.IsValid() && OriginMultiBox == MultiBox->GetCustomizationName() ) )
 		{
-
 			TSharedPtr<const FMultiBlock> NewBlock = ExistingBlock;
-
-			if( !ExistingBlock.IsValid() )
-			{
-				NewBlock = MultiBox->MakeMultiBlockFromCommand( UICommand, true );
-			}
 
 			if( NewBlock.IsValid() )
 			{
 				DragPreview.Reset();
-				DragPreview.UICommand = UICommand;
+				DragPreview.BlockName = BlockName;
+				DragPreview.BlockType = BlockType;
 				DragPreview.PreviewBlock = 
 					MakeShareable(
 						new FDropPreviewBlock( 
@@ -869,8 +1008,6 @@ void SMultiBoxWidget::UpdateDropAreaPreviewBlock( TSharedRef<const FMultiBlock> 
 
 				bAddedNewBlock = true;
 			}
-
-
 		}
 		else
 		{
@@ -912,38 +1049,57 @@ void SMultiBoxWidget::UpdateDropAreaPreviewBlock( TSharedRef<const FMultiBlock> 
 			}
 		}
 
-
 		int32 CurrentIndex = DragPreview.InsertIndex;
 		DragPreview.InsertIndex = INDEX_NONE;
 		// Find the index of the multiblock being dragged over. This is where we will insert the new block
 		if( DragPreview.PreviewBlock.IsValid() )
 		{
 			const TArray< TSharedRef< const FMultiBlock > >& Blocks = MultiBox->GetBlocks();
-			for (int32 BlockIdx = 0; BlockIdx < Blocks.Num(); ++BlockIdx)
+			int32 HoverIndex = Blocks.IndexOfByKey(MultiBlock);
+			int32 HoverSectionEndIndex = INDEX_NONE;
+			int32 HoverSectionBeginIndex = MultiBox->GetSectionEditBounds(HoverIndex, HoverSectionEndIndex);
+
+			if (bIsDraggingSection)
 			{
-				TSharedRef<const FMultiBlock> Block = Blocks[BlockIdx];
-				if( Block == MultiBlock )
+				// Hovering over final block means insert at end of list
+				if ((HoverIndex == Blocks.Num() - 1) && Blocks.Num() > 0)
 				{
-					if( bInsertBefore)
+					DragPreview.InsertIndex = Blocks.Num();
+				}
+				else if (Blocks.IsValidIndex(HoverSectionBeginIndex))
+				{
+					DragPreview.InsertIndex = HoverSectionBeginIndex;
+				}
+			}
+			else if (HoverIndex != INDEX_NONE)
+			{
+				if (MultiBlock->IsPartOfHeading())
+				{
+					if (MultiBlock->IsSeparator())
 					{
-						DragPreview.InsertIndex = BlockIdx;
+						// Move insert index above separator of heading
+						DragPreview.InsertIndex = HoverIndex;
 					}
 					else
 					{
-						DragPreview.InsertIndex = FMath::Min(Blocks.Num()-1, BlockIdx+1);
+						// Move insert index after heading
+						DragPreview.InsertIndex = HoverIndex + 1;
 					}
-
-					break;
+				}
+				else
+				{
+					if (bInsertBefore)
+					{
+						DragPreview.InsertIndex = HoverIndex;
+					}
+					else
+					{
+						DragPreview.InsertIndex = HoverIndex + 1;
+					}
 				}
 			}
 		}
-
-		if( CurrentIndex != DragPreview.InsertIndex && DragPreview.InsertIndex != INDEX_NONE )
-		{
-			BuildMultiBoxWidget();
-		}
 	}
-
 }
 
 EVisibility SMultiBoxWidget::GetCustomizationVisibility( TWeakPtr<const FMultiBlock> BlockWeakPtr, TWeakPtr<SWidget> BlockWidgetWeakPtr ) const
@@ -957,17 +1113,6 @@ EVisibility SMultiBoxWidget::GetCustomizationVisibility( TWeakPtr<const FMultiBl
 	{
 		return EVisibility::Collapsed;
 	}
-}
-
-FReply SMultiBoxWidget::OnDeleteBlockClicked( TWeakPtr<const FMultiBlock> BlockWeakPtr )
-{
-	if( BlockWeakPtr.IsValid() )
-	{
-		MultiBox->RemoveCustomMultiBlock( BlockWeakPtr.Pin().ToSharedRef() );
-		BuildMultiBoxWidget();
-	}
-
-	return FReply::Handled();
 }
 
 void SMultiBoxWidget::OnCustomCommandDragEnter( TSharedRef<const FMultiBlock> MultiBlock, const FGeometry& MyGeometry, const FDragDropEvent& DragDropEvent )
@@ -997,14 +1142,18 @@ void SMultiBoxWidget::OnCustomCommandDropped()
 	{	
 
 		// Check that the command does not already exist and that we can create it or that we are dragging an exisiting block in this box
-		TSharedPtr<const FMultiBlock> Block = MultiBox->FindBlockFromCommand( DragPreview.UICommand );
-		if( !Block.IsValid() )
+		TSharedPtr<const FMultiBlock> Block = MultiBox->FindBlockFromNameAndType(DragPreview.BlockName, DragPreview.BlockType);
+		if(Block.IsValid())
 		{
-			Block = MultiBox->MakeMultiBlockFromCommand( DragPreview.UICommand, true );
-		}
+			if (Block->IsSeparator() && Block->IsPartOfHeading())
+			{
+				TSharedPtr<const FMultiBlock> HeadingBlock = MultiBox->FindBlockFromNameAndType(DragPreview.BlockName, EMultiBlockType::Heading);
+				if (HeadingBlock.IsValid())
+				{
+					Block = HeadingBlock;
+				}
+			}
 
-		if( Block.IsValid() )
-		{
 			MultiBox->InsertCustomMultiBlock( Block.ToSharedRef(), DragPreview.InsertIndex );
 		}
 

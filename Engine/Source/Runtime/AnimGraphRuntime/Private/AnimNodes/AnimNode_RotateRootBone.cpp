@@ -1,12 +1,14 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "AnimNodes/AnimNode_RotateRootBone.h"
+#include "Animation/AnimTrace.h"
 
 /////////////////////////////////////////////////////
 // FAnimNode_RotateRootBone
 
 void FAnimNode_RotateRootBone::Initialize_AnyThread(const FAnimationInitializeContext& Context)
 {
+	DECLARE_SCOPE_HIERARCHICAL_COUNTER_ANIMNODE(Initialize_AnyThread)
 	FAnimNode_Base::Initialize_AnyThread(Context);
 
 	BasePose.Initialize(Context);
@@ -15,22 +17,28 @@ void FAnimNode_RotateRootBone::Initialize_AnyThread(const FAnimationInitializeCo
 	YawScaleBiasClamp.Reinitialize();
 }
 
-void FAnimNode_RotateRootBone::CacheBones_AnyThread(const FAnimationCacheBonesContext& Context) 
+void FAnimNode_RotateRootBone::CacheBones_AnyThread(const FAnimationCacheBonesContext& Context)
 {
+	DECLARE_SCOPE_HIERARCHICAL_COUNTER_ANIMNODE(CacheBones_AnyThread)
 	BasePose.CacheBones(Context);
 }
 
 void FAnimNode_RotateRootBone::Update_AnyThread(const FAnimationUpdateContext& Context)
 {
+	DECLARE_SCOPE_HIERARCHICAL_COUNTER_ANIMNODE(Update_AnyThread)
 	GetEvaluateGraphExposedInputs().Execute(Context);
 	BasePose.Update(Context);
 
 	ActualPitch = PitchScaleBiasClamp.ApplyTo(Pitch, Context.GetDeltaTime());
 	ActualYaw = YawScaleBiasClamp.ApplyTo(Yaw, Context.GetDeltaTime());
+
+	TRACE_ANIM_NODE_VALUE(Context, TEXT("Pitch"), ActualPitch);
+	TRACE_ANIM_NODE_VALUE(Context, TEXT("Yaw"), ActualYaw);
 }
 
 void FAnimNode_RotateRootBone::Evaluate_AnyThread(FPoseContext& Output)
 {
+	DECLARE_SCOPE_HIERARCHICAL_COUNTER_ANIMNODE(Evaluate_AnyThread)
 	// Evaluate the input
 	BasePose.Evaluate(Output);
 
@@ -57,6 +65,7 @@ void FAnimNode_RotateRootBone::Evaluate_AnyThread(FPoseContext& Output)
 
 void FAnimNode_RotateRootBone::GatherDebugData(FNodeDebugData& DebugData)
 {
+	DECLARE_SCOPE_HIERARCHICAL_COUNTER_ANIMNODE(GatherDebugData)
 	FString DebugLine = DebugData.GetNodeName(this);
 
 	DebugLine += FString::Printf(TEXT("Pitch(%.2f) Yaw(%.2f)"), ActualPitch, ActualYaw);

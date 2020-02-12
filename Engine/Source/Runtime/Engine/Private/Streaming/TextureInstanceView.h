@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 /*=============================================================================
 TextureInstanceView.h: Definitions of classes used for texture streaming.
@@ -69,10 +69,11 @@ public:
 		FVector4 LastRenderTime; //(FApp::GetCurrentTime() - Component->LastRenderTime);
 
 
-		void Set(int32 Index, const FBoxSphereBounds& Bounds, uint32 InPackedRelativeBox, float LastRenderTime, const FVector& RangeOrigin, float MinDistance, float MinRange, float MaxRange);
+		void Set(int32 Index, const FBoxSphereBounds& Bounds, uint32 InPackedRelativeBox, float LastRenderTime, const FVector& RangeOrigin, float MinDistanceSq, float MinRangeSq, float MaxRangeSq);
 		void UnpackBounds(int32 Index, const UPrimitiveComponent* Component);
 		void FullUpdate(int32 Index, const FBoxSphereBounds& Bounds, float LastRenderTime);
 		FORCEINLINE void UpdateLastRenderTime(int32 Index, float LastRenderTime);
+		FORCEINLINE void UpdateMaxDrawDistanceSquared(int32 Index, float InMaxRangeSq);
 
 		// Clears entry between 0 and 4
 		FORCEINLINE void Clear(int32 Index);
@@ -131,7 +132,7 @@ public:
 	public:
 		FRenderAssetLinkConstIterator(const FRenderAssetInstanceView& InState, const UStreamableRenderAsset* InAsset);
 
-		FORCEINLINE operator bool() const { return CurrElementIndex != INDEX_NONE; }
+		FORCEINLINE explicit operator bool() const { return CurrElementIndex != INDEX_NONE; }
 		FORCEINLINE void operator++() { CurrElementIndex = State.Elements[CurrElementIndex].NextRenderAssetLink; }
 
 		void OutputToLog(float MaxNormalizedSize, float MaxNormalizedSize_VisibleOnly, const TCHAR* Prefix) const;
@@ -142,7 +143,7 @@ public:
 
 		FBoxSphereBounds GetBounds() const;
 
-	protected:
+		int32 GetCurElementIdx_ForDebuggingOnly() const { return CurrElementIndex; }
 
 		FORCEINLINE const UPrimitiveComponent* GetComponent() const { return State.Elements[CurrElementIndex].Component; }
 
@@ -167,7 +168,7 @@ public:
 	public:
 		FRenderAssetIterator(const FRenderAssetInstanceView& InState) : MapIt(InState.RenderAssetMap) {}
 
-		operator bool() const { return (bool)MapIt; }
+		explicit operator bool() const { return (bool)MapIt; }
 		void operator++() { ++MapIt; }
 
 		const UStreamableRenderAsset* operator*() const { return MapIt.Key(); }
@@ -192,13 +193,30 @@ public:
 	// If this has compiled elements, return the array relate to a given texture or mesh.
 	const TArray<FCompiledElement>* GetCompiledElements(const UStreamableRenderAsset* Asset) const { return CompiledRenderAssetMap.Find(Asset); }
 
+	bool HasComponentWithForcedLOD(const UStreamableRenderAsset* Asset) const { return !!CompiledNumForcedLODCompMap.Find(Asset); }
+	bool HasAnyComponentWithForcedLOD() const { return !!CompiledNumForcedLODCompMap.Num(); }
+
 	static TRefCountPtr<const FRenderAssetInstanceView> CreateView(const FRenderAssetInstanceView* RefView);
 	static TRefCountPtr<FRenderAssetInstanceView> CreateViewWithUninitializedBounds(const FRenderAssetInstanceView* RefView);
 	static void SwapData(FRenderAssetInstanceView* Lfs, FRenderAssetInstanceView* Rhs);
 
 	float GetMaxTexelFactor() const { return MaxTexelFactor; }
 
-	static void GetDistanceAndRange(const UPrimitiveComponent* Component, const FBoxSphereBounds& RenderAssetInstanceBounds, float& MinDistance, float& MinRange, float& MaxRange);
+	static float GetMaxDrawDistSqWithLODParent(const FVector& Origin, const FVector& ParentOrigin, float ParentMinDrawDist, float ParentBoundingSphereRadius);
+
+	static void GetDistanceAndRange(const UPrimitiveComponent* Component, const FBoxSphereBounds& RenderAssetInstanceBounds, float& MinDistanceSq, float& MinRangeSq, float& MaxRangeSq);
+
+	// FORT-159677
+	FORCEINLINE void VerifyElementIdx_DebuggingOnly(int32 Idx, int32 IterationCount, TMap<const UPrimitiveComponent*, int32>* ComponentMapPtr = nullptr, TArray<int32>* FreeIndicesPtr = nullptr) const
+	{
+#if PLATFORM_WINDOWS && 0 // TEMPORARILY DISABLED
+		const bool bInRange = Idx >= 0 && Idx < Elements.Num();
+		if (!bInRange)
+		{
+			OnVerifyElementIdxFailed(Idx, bInRange, IterationCount, ComponentMapPtr, FreeIndicesPtr);
+		}
+#endif
+	}
 
 protected:
 
@@ -211,8 +229,14 @@ protected:
 	// CompiledTextureMap is used to iterate more quickly on each elements by avoiding the linked list indirections.
 	TMap<const UStreamableRenderAsset*, TArray<FCompiledElement> > CompiledRenderAssetMap;
 
+	// If an asset has components with forced LOD levels, it will appear here after level compilation.
+	TMap<const UStreamableRenderAsset*, int32> CompiledNumForcedLODCompMap;
+
 	/** Max texel factor across all elements. Used for early culling */
 	float MaxTexelFactor;
+
+private:
+	FORCENOINLINE void OnVerifyElementIdxFailed(int32 Idx, bool bInRange, int32 IterationCount, TMap<const UPrimitiveComponent*, int32>* ComponentMapPtr, TArray<int32>* FreeIndicesPtr) const;
 };
 
 struct FStreamingViewInfoExtra
@@ -254,6 +278,10 @@ public:
 		const TCHAR* LogPrefix) const;
 
 	bool HasRenderAssetReferences(const UStreamableRenderAsset* InAsset) const;
+
+	bool HasComponentWithForcedLOD(const UStreamableRenderAsset* InAsset) const;
+
+	bool HasAnyComponentWithForcedLOD() const;
 
 	// Release the data now as this is expensive.
 	void OnTaskDone() { BoundsViewInfo.Empty(); }

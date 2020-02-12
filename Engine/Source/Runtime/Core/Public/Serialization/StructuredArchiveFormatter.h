@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -6,24 +6,21 @@
 #include "CoreFwd.h"
 
 // Define a structure to encapsulate a field name, which compiles to an empty object if WITH_TEXT_ARCHIVE_SUPPORT = 0
+struct FArchiveFieldName
+{
 #if WITH_TEXT_ARCHIVE_SUPPORT
-	struct FArchiveFieldName
-	{
-		const TCHAR* Name;
-
-		explicit FArchiveFieldName(const TCHAR* InName) : Name(InName){ }
-	};
-
-	#define FIELD_NAME_TEXT(x) FArchiveFieldName(TEXT(x))
-	#define FIELD_NAME(x) FArchiveFieldName(x)
-#else
-	struct FArchiveFieldName
-	{
-	};
-
-	#define FIELD_NAME_TEXT(x) FArchiveFieldName()
-	#define FIELD_NAME(x) FArchiveFieldName()
+	const TCHAR* Name;
 #endif
+
+	explicit FArchiveFieldName(const TCHAR* InName) 
+#if WITH_TEXT_ARCHIVE_SUPPORT
+		: Name(InName)
+#endif
+	{
+	}
+};
+
+#define SA_FIELD_NAME(x) FArchiveFieldName(x)
 
 /**
  * Specifies the type of a value in a slot. Used by FContextFreeArchiveFormatter for introspection.
@@ -55,6 +52,8 @@ enum class EArchiveValueType
 	SoftObjectPath,
 	LazyObjectPtr,
 	RawData,
+	AttributedValue,
+	Attribute,
 };
 
 /**
@@ -102,6 +101,14 @@ public:
 	virtual void EnterMapElement(FString& Name) = 0;
 	virtual void EnterMapElement_TextOnly(FString& Name, EArchiveValueType& OutType) = 0;
 	virtual void LeaveMapElement() = 0;
+
+	virtual void EnterAttributedValue() = 0;
+	virtual void EnterAttribute(FArchiveFieldName AttributeName) = 0;
+	virtual void EnterAttributedValueValue() = 0;
+	virtual void LeaveAttribute() = 0;
+	virtual void LeaveAttributedValue() = 0;
+	virtual bool TryEnterAttribute(FArchiveFieldName AttributeName, bool bEnterWhenWriting) = 0;
+	virtual bool TryEnterAttributedValueValue() = 0;
 
 	virtual void Serialize(uint8& Value) = 0;
 	virtual void Serialize(uint16& Value) = 0;

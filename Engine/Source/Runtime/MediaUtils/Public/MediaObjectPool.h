@@ -1,8 +1,9 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
 #include "Containers/Array.h"
+#include "Containers/Queue.h"
 #include "Misc/ScopeLock.h"
 #include "Templates/SharedPointer.h"
 #include "Templates/UniquePtr.h"
@@ -35,12 +36,26 @@ public:
 	 */
 	virtual void ShutdownPoolable() { }
 
+	/**
+	 * Used to check if returned object is ready for reuse right away
+	 */
+	virtual bool IsReadyForReuse()
+	{
+		return true;
+	}
+
 public:
 
 	/** Virtual destructor. */
 	virtual ~IMediaPoolable() { }
 };
 
+
+template<typename ObjectType> class TMediaPoolDefaultObjectAllocator
+{
+public:
+	static ObjectType *Alloc() { return new ObjectType; }
+};
 
 /**
  * Template for media object pools.
@@ -50,7 +65,7 @@ public:
  * @param ObjectType The type of objects managed by this pool. 
  * @todo gmp: Make media object pool lock-free
  */
-template<typename ObjectType>
+template<typename ObjectType, typename ObjectAllocator=TMediaPoolDefaultObjectAllocator<ObjectType>>
 class TMediaObjectPool
 {
 	static_assert(TPointerIsConvertibleFromTo<ObjectType, IMediaPoolable>::Value, "Poolable objects must implement the IMediaPoolable interface.");
@@ -59,11 +74,20 @@ class TMediaObjectPool
 	class TStorage
 	{
 	public:
+		TStorage(ObjectAllocator *InObjectAllocatorInstance)
+			: ObjectAllocatorInstance(InObjectAllocatorInstance)
+		{}
 
 		/** Destructor. */
 		~TStorage()
 		{
 			Reserve(0);
+			ObjectType* Object;
+			while (WaitReadyForReuse.Dequeue(Object))
+			{
+				Object->ShutdownPoolable();
+				delete Object;
+			}
 		}
 
 	public:
@@ -79,11 +103,26 @@ class TMediaObjectPool
 				{
 					Result = Pool.Pop(false);
 				}
+				else
+				{
+					if (WaitReadyForReuse.Peek(Result))
+					{
+						if (Result->IsReadyForReuse())
+						{
+							WaitReadyForReuse.Pop();
+							Result->ShutdownPoolable();
+						}
+						else
+						{
+							Result = nullptr;
+						}
+					}
+				}
 			}
 
 			if (Result == nullptr)
 			{
-				Result = new ObjectType;
+				Result = ObjectAllocatorInstance->Alloc();
 			}
 			
 			Result->InitializePoolable();
@@ -108,8 +147,15 @@ class TMediaObjectPool
 
 			FScopeLock Lock(&CriticalSection);
 
-			Object->ShutdownPoolable();
-			Pool.Push(Object);
+			if (Object->IsReadyForReuse())
+			{
+				Object->ShutdownPoolable();
+				Pool.Push(Object);
+			}
+			else
+			{
+				WaitReadyForReuse.Enqueue(Object);
+			}
 		}
 
 		/** Reserve the specified number of objects. */
@@ -124,17 +170,48 @@ class TMediaObjectPool
 
 			while (NumObjects > (uint32)Pool.Num())
 			{
-				Pool.Push(new ObjectType);
+				Pool.Push(ObjectAllocatorInstance->Alloc());
+			}
+		}
+
+		/** Regular tick call */
+		void Tick()
+		{
+			if (WaitReadyForReuse.IsEmpty())
+			{
+				// Conservative early out to avoid CS: we will get any items missed the next time around
+				return;
+			}
+
+			FScopeLock Lock(&CriticalSection);
+
+			ObjectType* Object;
+			while (WaitReadyForReuse.Peek(Object))
+			{
+				if (!Object->IsReadyForReuse())
+				{
+					break;
+				}
+
+				Object->ShutdownPoolable();
+				Pool.Push(Object);
+				WaitReadyForReuse.Pop();
 			}
 		}
 
 	private:
 
 		/** Critical section for synchronizing access to the free list. */
-		FCriticalSection CriticalSection;
+		mutable FCriticalSection CriticalSection;
 
 		/** List of unused objects. */
 		TArray<ObjectType*> Pool;
+
+		/** List of unused objects, waiting for reuse-ability. */
+		TQueue<ObjectType*> WaitReadyForReuse;
+
+		/** Object allocator instance (nullptr by default) */
+		ObjectAllocator *ObjectAllocatorInstance;
 	};
 
 
@@ -172,8 +249,8 @@ class TMediaObjectPool
 public:
 
 	/** Default constructor. */
-	TMediaObjectPool()
-		: Storage(MakeShareable(new TStorage))
+	TMediaObjectPool(ObjectAllocator *ObjectAllocatorInstance = nullptr)
+		: Storage(MakeShareable(new TStorage(ObjectAllocatorInstance)))
 	{ }
 
 	/**
@@ -222,23 +299,6 @@ public:
 	}
 
 	/**
-	 * Acquire a tracked unique object from the pool.
-	 *
-	 * Unique objects do not need to be returned to the pool. They'll be
-	 * reclaimed automatically when the unique pointer is destroyed.
-	 *
-	 * @return The object.
-	 * @see Acquire, AcquireShared, Reset, ToUnique
-	 */
-	TUniquePtr<ObjectType> AcquireUnique()
-	{
-		ObjectType* Object = Acquire();
-		check(Object != nullptr);
-
-		return MakeUnique(Object, TDeleter(Storage));
-	}
-
-	/**
 	 * Get the number of objects available in the pool.
 	 *
 	 * @return Number of available objects.
@@ -258,18 +318,6 @@ public:
 	TSharedRef<ObjectType, ESPMode::ThreadSafe> ToShared(ObjectType* Object)
 	{
 		return MakeShareable(Object, TDeleter(Storage));
-	}
-
-	/**
-	 * Convert an object to a unique pooled object.
-	 *
-	 * @param Object The object to convert.
-	 * @return The unique object.
-	 * @see AcquireUnique, ToShared
-	 */
-	TUniquePtr<ObjectType> ToUnique(ObjectType* Object)
-	{
-		return MakeUnique(Object, TDeleter(Storage));
 	}
 
 	/**
@@ -295,6 +343,14 @@ public:
 	void Reset(uint32 NumObjects = 0)
 	{
 		Storage->Reserve(NumObjects);
+	}
+
+	/**
+	 * Regular tick call
+	 */
+	void Tick()
+	{
+		Storage->Tick();
 	}
 
 private:

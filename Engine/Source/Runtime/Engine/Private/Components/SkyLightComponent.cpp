@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 /*=============================================================================
 	SkyLightComponent.cpp: SkyLightComponent implementation.
@@ -21,6 +21,7 @@
 #include "Components/BillboardComponent.h"
 #include "UObject/ReleaseObjectVersion.h"
 #include "Modules/ModuleManager.h"
+#include "Internationalization/Text.h"
 
 #if RHI_RAYTRACING
 #include "GlobalShader.h"
@@ -44,6 +45,18 @@ void OnUpdateSkylights(UWorld* InWorld)
 	USkyLightComponent::UpdateSkyCaptureContents(InWorld);
 }
 
+static bool SkipStaticSkyLightCapture(USkyLightComponent& SkyLight)
+{
+	// We do the following because capture is a heavy operation that can time out on some platforms at launch. But it is not needed for a static sky light.
+	// According to mobility, we remove sky light from capture update queue if Mobility==Static==StaticLighting. The render side proxy will never be created.
+	// We do not even need to check if lighting as been built because the skylight does not generate reflection in the static mobility case.
+	// and Lightmass will capture the scene in any case independently using CaptureEmissiveRadianceEnvironmentCubeMap.
+	// This is also fine in editor because a static sky light will not contribute to any lighting when drag and drop in a level and captured. 
+	// In this case only a "lighting build" will result in usable lighting on any objects.
+	// One exception however is when ray tracing is enabled as light mobility is not relevant to ray tracing effects, many still requiring information from the sky light even if it is static.
+	return SkyLight.HasStaticLighting() && !IsRayTracingEnabled();
+}
+
 FAutoConsoleCommandWithWorld CaptureConsoleCommand(
 	TEXT("r.SkylightRecapture"),
 	TEXT("Updates all stationary and movable skylights, useful for debugging the capture pipeline"),
@@ -58,11 +71,24 @@ FAutoConsoleVariableRef CVarUpdateSkylightsEveryFrame(
 	ECVF_Default
 	);
 
+float GSkylightIntensityMultiplier = 1.0f;
+FAutoConsoleVariableRef CVarSkylightIntensityMultiplier(
+	TEXT("r.SkylightIntensityMultiplier"),
+	GSkylightIntensityMultiplier,
+	TEXT("Intensity scale on Stationary and Movable skylights.  This is useful to control overall lighting contrast in dynamically lit games with scalability levels which disable Ambient Occlusion.  For example, if medium quality disables SSAO and DFAO, reduce skylight intensity."),
+	ECVF_Scalability | ECVF_RenderThreadSafe
+	);
+
+constexpr EPixelFormat SKYLIGHT_CUBEMAP_FORMAT = PF_FloatRGBA;
+
 void FSkyTextureCubeResource::InitRHI()
 {
-	if (GetFeatureLevel() >= ERHIFeatureLevel::SM4 || GSupportsRenderTargetFormat_PF_FloatRGBA)
+	if (GetFeatureLevel() >= ERHIFeatureLevel::SM5 || GSupportsRenderTargetFormat_PF_FloatRGBA)
 	{
 		FRHIResourceCreateInfo CreateInfo;
+		CreateInfo.DebugName = TEXT("SkyTextureCube");
+		
+		checkf(FMath::IsPowerOfTwo(Size), TEXT("Size of SkyTextureCube must be a power of two; size is %d"), Size);
 		TextureCubeRHI = RHICreateTextureCube(Size, Format, NumMips, 0, CreateInfo);
 		TextureRHI = TextureCubeRHI;
 
@@ -139,10 +165,11 @@ void FSkyLightSceneProxy::Initialize(
 		AverageBrightness = *InAverageBrightness;
 		BlendFraction = 0;
 	}
+}
 
-#if RHI_RAYTRACING
-	IsDirtyImportanceSamplingData = true;
-#endif
+FLinearColor FSkyLightSceneProxy::GetEffectiveLightColor() const
+{
+	return LightColor * GSkylightIntensityMultiplier;
 }
 
 FSkyLightSceneProxy::FSkyLightSceneProxy(const USkyLightComponent* InLightComponent)
@@ -154,8 +181,10 @@ FSkyLightSceneProxy::FSkyLightSceneProxy(const USkyLightComponent* InLightCompon
 	, bWantsStaticShadowing(InLightComponent->Mobility == EComponentMobility::Stationary)
 	, bHasStaticLighting(InLightComponent->HasStaticLighting())
 	, bCastVolumetricShadow(InLightComponent->bCastVolumetricShadow)
+	, bCastRayTracedShadow(InLightComponent->bCastRaytracedShadow)
+	, bAffectReflection(InLightComponent->bAffectReflection)
+	, bAffectGlobalIllumination(InLightComponent->bAffectGlobalIllumination)
 	, OcclusionCombineMode(InLightComponent->OcclusionCombineMode)
-	, LightColor(FLinearColor(InLightComponent->LightColor) * InLightComponent->Intensity)
 	, IndirectLightingIntensity(InLightComponent->IndirectLightingIntensity)
 	, VolumetricScatteringIntensity(FMath::Max(InLightComponent->VolumetricScatteringIntensity, 0.0f))
 	, OcclusionMaxDistance(InLightComponent->OcclusionMaxDistance)
@@ -163,9 +192,12 @@ FSkyLightSceneProxy::FSkyLightSceneProxy(const USkyLightComponent* InLightCompon
 	, OcclusionExponent(FMath::Clamp(InLightComponent->OcclusionExponent, .1f, 10.0f))
 	, MinOcclusion(FMath::Clamp(InLightComponent->MinOcclusion, 0.0f, 1.0f))
 	, OcclusionTint(InLightComponent->OcclusionTint)
+	, SamplesPerPixel(InLightComponent->SamplesPerPixel)
 #if RHI_RAYTRACING
-	, IsDirtyImportanceSamplingData(true)
+	, ImportanceSamplingData(InLightComponent->ImportanceSamplingData)
 #endif
+	, LightColor(FLinearColor(InLightComponent->LightColor) * InLightComponent->Intensity)
+	, bMovable(InLightComponent->IsMovable())
 {
 	const FSHVectorRGB3* InIrradianceEnvironmentMap = &InLightComponent->IrradianceEnvironmentMap;
 	const FSHVectorRGB3* BlendDestinationIrradianceEnvironmentMap = &InLightComponent->BlendDestinationIrradianceEnvironmentMap;
@@ -213,14 +245,11 @@ USkyLightComponent::USkyLightComponent(const FObjectInitializer& ObjectInitializ
 	AverageBrightness = 1.0f;
 	BlendDestinationAverageBrightness = 1.0f;
 	bCastVolumetricShadow = true;
+	bCastRaytracedShadow = false;
+	bAffectReflection = true;
+	bAffectGlobalIllumination = true;
+	SamplesPerPixel = 4;
 }
-
-#if RHI_RAYTRACING
-bool FSkyLightSceneProxy::ShouldRebuildCdf() const
-{
-	return IsDirtyImportanceSamplingData;
-}
-#endif
 
 FSkyLightSceneProxy* USkyLightComponent::CreateSceneProxy() const
 {
@@ -234,7 +263,7 @@ FSkyLightSceneProxy* USkyLightComponent::CreateSceneProxy() const
 
 void USkyLightComponent::SetCaptureIsDirty()
 { 
-	if (bVisible && bAffectsWorld)
+	if (GetVisibleFlag() && bAffectsWorld && !SkipStaticSkyLightCapture(*this))
 	{
 		FScopeLock Lock(&SkyCapturesToUpdateLock);
 
@@ -247,14 +276,51 @@ void USkyLightComponent::SetCaptureIsDirty()
 
 void USkyLightComponent::SanitizeCubemapSize()
 {
-	static const int32 MaxCubemapResolution = 1024;
-	static const int32 MinCubemapResolution = 64;
+	const int32 MaxCubemapResolution = GetMaxCubeTextureDimension();
+	const int32 MinCubemapResolution = 8;
+
 	CubemapResolution = FMath::Clamp(int32(FMath::RoundUpToPowerOfTwo(CubemapResolution)), MinCubemapResolution, MaxCubemapResolution);
+
+#if WITH_EDITOR
+	if (FApp::CanEverRender() && !FApp::IsUnattended())
+	{
+		SIZE_T TexMemRequired = CalcTextureSize(CubemapResolution, CubemapResolution, SKYLIGHT_CUBEMAP_FORMAT, FMath::CeilLogTwo(CubemapResolution) + 1) * CubeFace_MAX;
+
+		FTextureMemoryStats TextureMemStats;
+		RHIGetTextureMemoryStats(TextureMemStats);
+
+		if (TextureMemStats.DedicatedVideoMemory > 0 && TexMemRequired > SIZE_T(TextureMemStats.DedicatedVideoMemory / 4))
+		{
+			FNumberFormattingOptions FmtOpts = FNumberFormattingOptions()
+				.SetUseGrouping(false)
+				.SetMaximumFractionalDigits(2)
+				.SetMinimumFractionalDigits(0)
+				.SetRoundingMode(HalfFromZero);
+
+			EAppReturnType::Type Response = FPlatformMisc::MessageBoxExt(
+				EAppMsgType::YesNo,
+				*FText::Format(
+					LOCTEXT("MemAllocWarning_Message_SkylightCubemap", "A resolution of {0} will require {1} of video memory. Are you sure?"),
+					FText::AsNumber(CubemapResolution, &FmtOpts),
+					FText::AsMemory(TexMemRequired, &FmtOpts)
+				).ToString(),
+				*LOCTEXT("MemAllocWarning_Title_SkylightCubemap", "Memory Allocation Warning").ToString()
+			);
+
+			if (Response == EAppReturnType::No)
+			{
+				CubemapResolution = PreEditCubemapResolution;
+			}
+		}
+
+		PreEditCubemapResolution = CubemapResolution;
+	}
+#endif // WITH_EDITOR
 }
 
 void USkyLightComponent::SetBlendDestinationCaptureIsDirty()
 { 
-	if (bVisible && bAffectsWorld && BlendDestinationCubemap)
+	if (GetVisibleFlag() && bAffectsWorld && BlendDestinationCubemap)
 	{
 		SkyCapturesToUpdateBlendDestinations.AddUnique(this); 
 
@@ -267,9 +333,9 @@ TArray<USkyLightComponent*> USkyLightComponent::SkyCapturesToUpdate;
 TArray<USkyLightComponent*> USkyLightComponent::SkyCapturesToUpdateBlendDestinations;
 FCriticalSection USkyLightComponent::SkyCapturesToUpdateLock;
 
-void USkyLightComponent::CreateRenderState_Concurrent()
+void USkyLightComponent::CreateRenderState_Concurrent(FRegisterComponentContext* Context)
 {
-	Super::CreateRenderState_Concurrent();
+	Super::CreateRenderState_Concurrent(Context);
 
 	bool bHidden = false;
 #if WITH_EDITORONLY_DATA
@@ -283,7 +349,7 @@ void USkyLightComponent::CreateRenderState_Concurrent()
 
 	const bool bIsValid = SourceType != SLS_SpecifiedCubemap || Cubemap != NULL;
 
-	if (bAffectsWorld && bVisible && !bHidden && bIsValid)
+	if (bAffectsWorld && GetVisibleFlag() && !bHidden && bIsValid)
 	{
 		// Create the light's scene proxy.
 		SceneProxy = CreateSceneProxy();
@@ -316,8 +382,8 @@ void USkyLightComponent::PostLoad()
 
 	SanitizeCubemapSize();
 
-	// All components are queued for update on creation by default, remove if needed
-	if (!bVisible || HasAnyFlags(RF_ClassDefaultObject | RF_ArchetypeObject))
+	// All components are queued for update on creation by default. But we do not want this top happen in some cases.
+	if (!GetVisibleFlag() || HasAnyFlags(RF_ClassDefaultObject | RF_ArchetypeObject) || SkipStaticSkyLightCapture(*this))
 	{
 		FScopeLock Lock(&SkyCapturesToUpdateLock);
 		SkyCapturesToUpdate.Remove(this);
@@ -339,7 +405,7 @@ void USkyLightComponent::UpdateLimitedRenderingStateFast()
 		ENQUEUE_RENDER_COMMAND(FFastUpdateSkyLightCommand)(
 			[LightSceneProxy, InLightColor, InIndirectLightingIntensity, InVolumetricScatteringIntensity](FRHICommandList& RHICmdList)
 			{
-				LightSceneProxy->LightColor = InLightColor;
+				LightSceneProxy->SetLightColor(InLightColor);
 				LightSceneProxy->IndirectLightingIntensity = InIndirectLightingIntensity;
 				LightSceneProxy->VolumetricScatteringIntensity = InVolumetricScatteringIntensity;
 			});
@@ -372,7 +438,7 @@ void USkyLightComponent::UpdateOcclusionRenderingStateFast()
 *
 * @param PropertyThatChanged	Property that changed
 */
-void USkyLightComponent::PostInterpChange(UProperty* PropertyThatChanged)
+void USkyLightComponent::PostInterpChange(FProperty* PropertyThatChanged)
 {
 	static FName LightColorName(TEXT("LightColor"));
 	static FName IntensityName(TEXT("Intensity"));
@@ -412,16 +478,48 @@ void USkyLightComponent::DestroyRenderState_Concurrent()
 	}
 }
 
+void USkyLightComponent::UpdateImportanceSamplingData()
+{
+	check(IsInGameThread());
+
+#if RHI_RAYTRACING
+	if (IsRayTracingEnabled())
+	{
+		if (!ImportanceSamplingData.IsValid())
+		{
+			ImportanceSamplingData = new FSkyLightImportanceSamplingData();
+			BeginInitResource(ImportanceSamplingData);
+			MarkRenderStateDirty();
+		}
+
+		ENQUEUE_RENDER_COMMAND(UpdateImportanceSamplingDataCmd)(
+			[this](FRHICommandListImmediate& RHICmdList)
+		{
+			ImportanceSamplingData->BuildCDFs(ProcessedSkyTexture);
+		});
+	}
+#endif
+}
+
 #if WITH_EDITOR
+void USkyLightComponent::PreEditChange(FProperty* PropertyAboutToChange)
+{
+	Super::PreEditChange(PropertyAboutToChange);
+	PreEditCubemapResolution = CubemapResolution;
+}
+
 void USkyLightComponent::PostEditChangeProperty(FPropertyChangedEvent& PropertyChangedEvent)
 {
+	if (PropertyChangedEvent.Property && PropertyChangedEvent.Property->GetFName() == GET_MEMBER_NAME_CHECKED(USkyLightComponent, CubemapResolution))
+	{
+		// Simply rounds the cube map size to nearest power of two. Occasionally checks for out of video mem.
+		SanitizeCubemapSize();
+	}
 	Super::PostEditChangeProperty(PropertyChangedEvent);
-
-	SanitizeCubemapSize();
 	SetCaptureIsDirty();
 }
 
-bool USkyLightComponent::CanEditChange(const UProperty* InProperty) const
+bool USkyLightComponent::CanEditChange(const FProperty* InProperty) const
 {
 	if (InProperty)
 	{
@@ -455,7 +553,7 @@ void USkyLightComponent::CheckForErrors()
 {
 	AActor* Owner = GetOwner();
 
-	if (Owner && bVisible && bAffectsWorld)
+	if (Owner && GetVisibleFlag() && bAffectsWorld)
 	{
 		UWorld* ThisWorld = Owner->GetWorld();
 		bool bMultipleFound = false;
@@ -468,7 +566,7 @@ void USkyLightComponent::CheckForErrors()
 
 				if (Component != this 
 					&& !Component->IsPendingKill()
-					&& Component->bVisible
+					&& Component->GetVisibleFlag()
 					&& Component->bAffectsWorld
 					&& Component->GetOwner() 
 					&& ThisWorld->ContainsActor(Component->GetOwner())
@@ -505,6 +603,10 @@ void USkyLightComponent::BeginDestroy()
 	// Release reference
 	ProcessedSkyTexture = NULL;
 
+#if RHI_RAYTRACING
+	ImportanceSamplingData.SafeRelease();
+#endif
+
 	// Begin a fence to track the progress of the above BeginReleaseResource being completed on the RT
 	ReleaseResourcesFence.BeginFence();
 
@@ -523,6 +625,9 @@ TStructOnScope<FActorComponentInstanceData> USkyLightComponent::GetComponentInst
 	FPrecomputedSkyLightInstanceData* SkyLightInstanceData = InstanceData.Cast<FPrecomputedSkyLightInstanceData>();
 	SkyLightInstanceData->LightGuid = LightGuid;
 	SkyLightInstanceData->ProcessedSkyTexture = ProcessedSkyTexture;
+#if RHI_RAYTRACING
+	SkyLightInstanceData->ImportanceSamplingData = ImportanceSamplingData;
+#endif
 
 	// Block until the rendering thread has completed its writes from a previous capture
 	IrradianceMapFence.Wait();
@@ -536,8 +641,11 @@ void USkyLightComponent::ApplyComponentInstanceData(FPrecomputedSkyLightInstance
 {
 	check(LightMapData);
 
-	LightGuid = LightMapData->LightGuid;
+	LightGuid = (HasStaticShadowing() ? LightMapData->LightGuid : FGuid());
 	ProcessedSkyTexture = LightMapData->ProcessedSkyTexture;
+#if RHI_RAYTRACING
+	ImportanceSamplingData = LightMapData->ImportanceSamplingData;
+#endif
 	IrradianceEnvironmentMap = LightMapData->IrradianceEnvironmentMap;
 	AverageBrightness = LightMapData->AverageBrightness;
 
@@ -576,12 +684,13 @@ void USkyLightComponent::UpdateSkyCaptureContentsArray(UWorld* WorldToUpdate, TA
 					if (!CaptureComponent->ProcessedSkyTexture || CaptureComponent->ProcessedSkyTexture->GetSizeX() != CaptureComponent->CubemapResolution)
 					{
 						CaptureComponent->ProcessedSkyTexture = new FSkyTextureCubeResource();
-						CaptureComponent->ProcessedSkyTexture->SetupParameters(CaptureComponent->CubemapResolution, FMath::CeilLogTwo(CaptureComponent->CubemapResolution) + 1, PF_FloatRGBA);
+						CaptureComponent->ProcessedSkyTexture->SetupParameters(CaptureComponent->CubemapResolution, FMath::CeilLogTwo(CaptureComponent->CubemapResolution) + 1, SKYLIGHT_CUBEMAP_FORMAT);
 						BeginInitResource(CaptureComponent->ProcessedSkyTexture);
 						CaptureComponent->MarkRenderStateDirty();
 					}
 
 					WorldToUpdate->Scene->UpdateSkyCaptureContents(CaptureComponent, CaptureComponent->bCaptureEmissiveOnly, CaptureComponent->Cubemap, CaptureComponent->ProcessedSkyTexture, CaptureComponent->AverageBrightness, CaptureComponent->IrradianceEnvironmentMap, NULL);
+					CaptureComponent->UpdateImportanceSamplingData();
 				}
 				else
 				{
@@ -591,12 +700,13 @@ void USkyLightComponent::UpdateSkyCaptureContentsArray(UWorld* WorldToUpdate, TA
 					if (!CaptureComponent->BlendDestinationProcessedSkyTexture || CaptureComponent->BlendDestinationProcessedSkyTexture->GetSizeX() != CaptureComponent->CubemapResolution)
 					{
 						CaptureComponent->BlendDestinationProcessedSkyTexture = new FSkyTextureCubeResource();
-						CaptureComponent->BlendDestinationProcessedSkyTexture->SetupParameters(CaptureComponent->CubemapResolution, FMath::CeilLogTwo(CaptureComponent->CubemapResolution) + 1, PF_FloatRGBA);
+						CaptureComponent->BlendDestinationProcessedSkyTexture->SetupParameters(CaptureComponent->CubemapResolution, FMath::CeilLogTwo(CaptureComponent->CubemapResolution) + 1, SKYLIGHT_CUBEMAP_FORMAT);
 						BeginInitResource(CaptureComponent->BlendDestinationProcessedSkyTexture);
 						CaptureComponent->MarkRenderStateDirty(); 
 					}
 
 					WorldToUpdate->Scene->UpdateSkyCaptureContents(CaptureComponent, CaptureComponent->bCaptureEmissiveOnly, CaptureComponent->BlendDestinationCubemap, CaptureComponent->BlendDestinationProcessedSkyTexture, CaptureComponent->BlendDestinationAverageBrightness, CaptureComponent->BlendDestinationIrradianceEnvironmentMap, NULL);
+					CaptureComponent->UpdateImportanceSamplingData();
 				}
 
 				CaptureComponent->IrradianceMapFence.BeginFence();
@@ -713,18 +823,6 @@ void USkyLightComponent::SetCubemap(UTextureCube* NewCubemap)
 		MarkRenderStateDirty();
 		// Note: this will cause the cubemap to be reprocessed including readback from the GPU
 		SetCaptureIsDirty();
-
-#if RHI_RAYTRACING
-		if (SceneProxy)
-		{
-			FSkyLightSceneProxy* LightSceneProxy = SceneProxy;
-			ENQUEUE_RENDER_COMMAND(SetLightProxyDirty)(
-				[LightSceneProxy](FRHICommandList& RHICmdList)
-				{
-					LightSceneProxy->IsDirtyImportanceSamplingData = true;
-				});
-		}
-#endif
 	}
 }
 
@@ -837,7 +935,7 @@ void USkyLightComponent::OnVisibilityChanged()
 {
 	Super::OnVisibilityChanged();
 
-	if (bVisible && !bHasEverCaptured)
+	if (GetVisibleFlag() && !bHasEverCaptured)
 	{
 		// Capture if we are being enabled for the first time
 		SetCaptureIsDirty();

@@ -1,8 +1,7 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "CoreMinimal.h"
 #include "MagicLeapMediaPlayer.h"
-#include "MagicLeapCameraPreviewPlayer.h"
 #include "IMagicLeapMediaModule.h"
 #include "Modules/ModuleManager.h"
 
@@ -15,11 +14,6 @@ public:
 	virtual TSharedPtr<IMediaPlayer, ESPMode::ThreadSafe> CreatePlayer(IMediaEventSink& EventSink)
 	{
 		return MakeShareable(new FMagicLeapMediaPlayer(EventSink));
-	}
-
-	virtual TSharedPtr<IMediaPlayer, ESPMode::ThreadSafe> CreateCameraPreviewPlayer(IMediaEventSink& EventSink)
-	{
-		return MakeShareable(new FMagicLeapCameraPreviewPlayer(EventSink));
 	}
 
 public:

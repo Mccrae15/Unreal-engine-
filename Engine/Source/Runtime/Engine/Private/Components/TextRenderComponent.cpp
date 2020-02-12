@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "Components/TextRenderComponent.h"
 #include "UObject/ConstructorHelpers.h"
@@ -50,10 +50,10 @@ ATextRenderActor::ATextRenderActor(const FObjectInitializer& ObjectInitializer)
 		static FConstructorStatics ConstructorStatics;
 
 		SpriteComponent->Sprite = ConstructorStatics.TextRenderTexture.Get();
-		SpriteComponent->RelativeScale3D = FVector(0.5f, 0.5f, 0.5f);
+		SpriteComponent->SetRelativeScale3D_Direct(FVector(0.5f, 0.5f, 0.5f));
 		SpriteComponent->SetupAttachment(TextRender);
 		SpriteComponent->bIsScreenSizeScaled = true;
-		SpriteComponent->bAbsoluteScale = true;
+		SpriteComponent->SetUsingAbsoluteScale(true);
 		SpriteComponent->bReceivesDecals = false;
 	}
 #endif
@@ -307,6 +307,7 @@ float CalculateVerticalAlignmentOffset(
 /** Caches MIDs used by text render components to avoid excessive (re)allocation of MIDs when the SCS runs */
 class FTextRenderComponentMIDCache : public FGCObject
 {
+	FCriticalSection CriticalSection;
 public:
 	/** Array of MIDs for a particular material and font */
 	struct FMIDData
@@ -319,9 +320,9 @@ public:
 
 			const int32 NumFontPages = InFont->Textures.Num();
 
-			// Checking GIsRequestingExit as a workaround for lighting rebuild command let crash.
-			// Happening because GIsRequestingExit is true preventing the FTextRenderComponentMIDCache from registering into the GGCObjectReferencer
-			if (!GIsRequestingExit && NumFontPages > 0)
+			// Checking IsEngineExitRequested() as a workaround for lighting rebuild command let crash.
+			// Happening because IsEngineExitRequested() is true preventing the FTextRenderComponentMIDCache from registering into the GGCObjectReferencer
+			if (!IsEngineExitRequested() && NumFontPages > 0)
 			{
 				TArray<FGuid> FontParameterIds;
 				InMaterial->GetAllFontParameterInfo(FontParameters, FontParameterIds);
@@ -419,7 +420,7 @@ public:
 
 	FMIDDataRef GetMIDData(UMaterialInterface* InMaterial, UFont* InFont)
 	{
-		checkfSlow(IsInGameThread(), TEXT("FTextRenderComponentMIDCache::GetMIDData is only expected to be called from the game thread!"));
+		FScopeLock Lock(&CriticalSection);
 
 		check(InMaterial && InFont && InFont->FontCacheType == EFontCacheType::Offline);
 
@@ -440,6 +441,8 @@ public:
 
 	virtual void AddReferencedObjects(FReferenceCollector& Collector) override
 	{
+		FScopeLock Lock(&CriticalSection);
+
 		for (auto& MIDDataPair : CachedMIDs)
 		{
 			const FMIDDataPtr& MIDData = MIDDataPair.Value;
@@ -463,6 +466,11 @@ public:
 				}
 			}
 		}
+	}
+
+	virtual FString GetReferencerName() const override
+	{
+		return "FTextRenderComponentMIDCache";
 	}
 
 private:
@@ -514,6 +522,8 @@ private:
 
 	void PurgeUnreferencedMIDs()
 	{
+		FScopeLock Lock(&CriticalSection);
+
         QUICK_SCOPE_CYCLE_COUNTER(STAT_FTextRenderComponentMIDCache_PurgeUnreferencedMIDs);
 
 		checkfSlow(IsInGameThread(), TEXT("FTextRenderComponentMIDCache::PurgeUnreferencedMIDs is only expected to be called from the game thread!"));
@@ -738,6 +748,7 @@ void FTextRenderSceneProxy::GetDynamicMeshElements(const TArray<const FSceneView
 					Mesh.MaterialRenderProxy = TextBatch.Material->GetRenderProxy();
 					Mesh.bCanApplyViewModeOverrides = !bAlwaysRenderAsText;
 					Mesh.LODIndex = 0;
+					Mesh.bUseWireframeSelectionColoring = IsSelected() ? 1 : 0;
 
 					Collector.AddMesh(ViewIndex, Mesh);
 				}
@@ -814,7 +825,7 @@ FPrimitiveViewRelevance FTextRenderSceneProxy::GetViewRelevance(const FSceneView
 	}
 
 	MaterialRelevance.SetPrimitiveViewRelevance(Result);
-	Result.bVelocityRelevance = IsMovable() && Result.bOpaqueRelevance && Result.bRenderInMainPass;
+	Result.bVelocityRelevance = IsMovable() && Result.bOpaque && Result.bRenderInMainPass;
 	return Result;
 }
 

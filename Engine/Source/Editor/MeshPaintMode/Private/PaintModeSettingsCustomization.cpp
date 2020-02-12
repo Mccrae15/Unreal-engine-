@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "PaintModeSettingsCustomization.h"
 
@@ -19,6 +19,8 @@
 #include "Widgets/Input/SButton.h"
 #include "Widgets/Layout/SBox.h"
 #include "ScopedTransaction.h"
+
+#define LOCTEXT_NAMESPACE "PaintModePainter"
 
 TSharedRef<IPropertyTypeCustomization> FTexturePaintSettingsCustomization::MakeInstance()
 {
@@ -188,7 +190,7 @@ void FVertexPaintSettingsCustomization::CustomizeChildren(TSharedRef<IPropertyHa
 			static const FName EditConditionName = "EnumCondition";
 			if (ChildHandle->HasMetaData(EditConditionName))
 			{
-				int32 EnumCondition = ChildHandle->GetINTMetaData(EditConditionName);
+				int32 EnumCondition = ChildHandle->GetIntMetaData(EditConditionName);
 				Property.Visibility(TAttribute<EVisibility>::Create(TAttribute<EVisibility>::FGetter::CreateSP(this, &FVertexPaintSettingsCustomization::ArePropertiesVisible, EnumCondition)));
 			}
 		}
@@ -324,6 +326,14 @@ void FVertexPaintSettingsCustomization::CustomizeChildren(TSharedRef<IPropertyHa
 		.ValueContent()
 		[
 			SNew(SHorizontalBox)
+			+ SHorizontalBox::Slot()
+			.Padding(0.0f, 0.0f, 4.0f, 0.0f)
+			.AutoWidth()
+			[
+				SNew(SCheckBox)
+				.IsChecked_Lambda([=]() -> ECheckBoxState { return (PaintSettings->bPaintOnSpecificLOD ? ECheckBoxState::Checked : ECheckBoxState::Unchecked); })
+				.OnCheckStateChanged(FOnCheckStateChanged::CreateLambda([=](ECheckBoxState State) { FPaintModePainter::Get()->LODPaintStateChanged(State == ECheckBoxState::Checked); }))
+			]
 			+SHorizontalBox::Slot()
 			.Padding(0.0f, 0.0f, 4.0f, 0.0f)			
 			[
@@ -338,14 +348,35 @@ void FVertexPaintSettingsCustomization::CustomizeChildren(TSharedRef<IPropertyHa
 				.OnValueChanged(SNumericEntryBox<int32>::FOnValueChanged::CreateLambda([=](int32 Value) { PaintSettings->LODIndex = Value; }))
 				.OnValueCommitted(SNumericEntryBox<int32>::FOnValueCommitted::CreateLambda([=](int32 Value, ETextCommit::Type CommitType) { PaintSettings->LODIndex = Value; FPaintModePainter::Get()->PaintLODChanged(); }))
 			]
-			+SHorizontalBox::Slot()
-			.Padding(0.0f, 0.0f, 4.0f, 0.0f)
-			[
-				SNew(SCheckBox)
-				.IsChecked_Lambda([=]() -> ECheckBoxState { return (PaintSettings->bPaintOnSpecificLOD ? ECheckBoxState::Checked : ECheckBoxState::Unchecked); })
-				.OnCheckStateChanged(FOnCheckStateChanged::CreateLambda([=](ECheckBoxState State) { FPaintModePainter::Get()->LODPaintStateChanged(State == ECheckBoxState::Checked); }))
-			]
 		];
+
+		ChildBuilder.AddCustomRow(NSLOCTEXT("LODPainting", "LODPaintingLabel", "LOD Model Painting"))
+			.WholeRowContent()
+			[
+				SNew(SBorder)
+				.Visibility_Lambda([this]() -> EVisibility
+				{
+					return PaintSettings->bPaintOnSpecificLOD ? EVisibility::Collapsed : EVisibility::Visible;
+				})
+				.Padding(FMargin(4.0f))
+				.BorderImage(FEditorStyle::GetBrush("SettingsEditor.CheckoutWarningBorder"))
+				.BorderBackgroundColor(FColor(166, 137, 0))
+				[
+					SNew(STextBlock)
+					.AutoWrapText(true)
+					.Font(IDetailLayoutBuilder::GetDetailFont())
+
+					.Text_Lambda([this]() -> FText
+					{
+						static const FText SkelMeshNotificationText = LOCTEXT("SkelMeshAssetPaintInfo", "Paint is propagated to Skeletal Mesh Asset(s)");
+						static const FText StaticMeshNotificationText = LOCTEXT("StaticMeshAssetPaintInfo", "Paint is applied to all LODs");
+
+						const bool bSkelMeshText = FPaintModePainter::Get()->GetSelectedComponents<USkeletalMeshComponent>().Num() > 0;
+						const bool bLODPaintText = !PaintSettings->bPaintOnSpecificLOD;
+						return FText::Format(FTextFormat::FromString(TEXT("{0}{1}{2}")), bSkelMeshText ? SkelMeshNotificationText : FText::GetEmpty(), bSkelMeshText && bLODPaintText ? FText::FromString(TEXT("\n")) : FText::GetEmpty(), bLODPaintText ? StaticMeshNotificationText : FText::GetEmpty());
+					})
+				]
+			];
 }
 
 EVisibility FVertexPaintSettingsCustomization::ArePropertiesVisible(const int32 VisibleType) const
@@ -442,3 +473,5 @@ TSharedRef<SHorizontalBox> CreateColorChannelWidget(TSharedRef<IPropertyHandle> 
 			ChannelProperty->CreatePropertyNameWidget()
 		];
 }
+
+#undef LOCTEXT_NAMESPACE

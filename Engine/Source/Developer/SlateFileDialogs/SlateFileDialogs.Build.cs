@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 using UnrealBuildTool;
 
@@ -9,6 +9,7 @@ public class SlateFileDialogs : ModuleRules
         PrivateDependencyModuleNames.AddRange(
             new string[] {
                 "Core",
+                "CoreUObject",
                 "InputCore",
                 "Slate",
                 "SlateCore",

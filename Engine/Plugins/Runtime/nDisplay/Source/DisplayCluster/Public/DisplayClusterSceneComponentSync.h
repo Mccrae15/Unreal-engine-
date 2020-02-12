@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -30,7 +30,10 @@ public:
 	//////////////////////////////////////////////////////////////////////////////////////////////
 	// IDisplayClusterClusterSyncObject
 	//////////////////////////////////////////////////////////////////////////////////////////////
-	virtual FString GetSyncId() const override;
+	virtual bool IsActive() const override;
+	
+	virtual FString GetSyncId() const override
+	{ return SyncId; }
 	
 	virtual bool IsDirty() const override
 	{ return true; }
@@ -42,15 +45,17 @@ public:
 	//////////////////////////////////////////////////////////////////////////////////////////////
 	// IDisplayClusterStringSerializable
 	//////////////////////////////////////////////////////////////////////////////////////////////
-	virtual FString SerializeToString() const override final;
-	virtual bool    DeserializeFromString(const FString& data) override final;
+	virtual FString SerializeToString() const override;
+	virtual bool    DeserializeFromString(const FString& data) override;
 
 public:
 	virtual void BeginPlay() override;
+	virtual void EndPlay(const EEndPlayReason::Type EndPlayReason) override;
 	virtual void TickComponent(float DeltaTime, ELevelTick TickType, FActorComponentTickFunction* ThisTickFunction) override;
-	virtual void DestroyComponent(bool bPromoteChildren) override;
 
 protected:
+	virtual FString GenerateSyncId();
+
 	virtual FTransform GetSyncTransform() const
 	{ return FTransform(); }
 

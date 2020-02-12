@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 /**
  * Widget for editor utilities
@@ -16,15 +16,15 @@
 class AActor;
 class UEditorPerProjectUserSettings;
 
-UCLASS(Abstract, config = Editor)
+UCLASS(Abstract, meta = (ShowWorldContextPin), config = Editor)
 class BLUTILITY_API UEditorUtilityWidget : public UUserWidget
 {
 	GENERATED_UCLASS_BODY()
 
 public:
-	// The default action called when the blutility is invoked if bAutoRunDefaultAction=true (it is never called otherwise)
-	UFUNCTION(BlueprintImplementableEvent)
-	void OnDefaultActionClicked();
+	// The default action called when the widget is invoked if bAutoRunDefaultAction=true (it is never called otherwise)
+	UFUNCTION(BlueprintCallable, BlueprintImplementableEvent, Category = "Editor")
+	void Run();
 
 	// Run the default action
 	void ExecuteDefaultAction();

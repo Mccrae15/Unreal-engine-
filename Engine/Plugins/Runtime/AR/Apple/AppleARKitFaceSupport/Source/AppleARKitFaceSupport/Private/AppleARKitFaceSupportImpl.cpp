@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "AppleARKitFaceSupportImpl.h"
 #include "AppleARKitSettings.h"
@@ -12,6 +12,9 @@
 #include "Engine/TimecodeProvider.h"
 
 DECLARE_CYCLE_STAT(TEXT("Conversion"), STAT_FaceAR_Conversion, STATGROUP_FaceAR);
+
+// MERGE-todo
+//bool FAppleARKitFaceSupport::bNeedsInit = true;
 
 #if SUPPORTS_ARKIT_1_0
 
@@ -69,7 +72,7 @@ FAppleARKitFaceSupport::FAppleARKitFaceSupport() :
 FAppleARKitFaceSupport::~FAppleARKitFaceSupport()
 {
 	// Should only be called durirng shutdown
-	check(GIsRequestingExit);
+	check(IsEngineExitRequested());
 }
 
 void FAppleARKitFaceSupport::Init()
@@ -214,9 +217,8 @@ void FAppleARKitFaceSupport::PublishLiveLinkData(TSharedPtr<FAppleARKitAnchorDat
 	{
 		bNeedsInit = false;
 	    // Create our LiveLink provider if the project setting is enabled
-		if (GetDefault<UAppleARKitSettings>()->bEnableLiveLinkForFaceTracking)
+		if (GetMutableDefault<UAppleARKitSettings>()->IsLiveLinkEnabledForFaceTracking())
 		{
-			FaceTrackingLiveLinkSubjectName = GetDefault<UAppleARKitSettings>()->DefaultFaceTrackingLiveLinkSubjectName;
 #if PLATFORM_IOS
 			LiveLinkSource = FAppleARKitLiveLinkSourceFactory::CreateLiveLinkSource();
 #else
@@ -228,6 +230,7 @@ void FAppleARKitFaceSupport::PublishLiveLinkData(TSharedPtr<FAppleARKitAnchorDat
 
 	if (LiveLinkSource.IsValid())
 	{
+		FaceTrackingLiveLinkSubjectName = GetMutableDefault<UAppleARKitSettings>()->GetLiveLinkSubjectName();
         LiveLinkSource->PublishBlendShapes(FaceTrackingLiveLinkSubjectName, Anchor->Timecode, Anchor->FrameRate, Anchor->BlendShapes, LocalDeviceId);
 	}
 }
@@ -241,5 +244,12 @@ bool FAppleARKitFaceSupport::DoesSupportFaceAR()
 TArray<FARVideoFormat> FAppleARKitFaceSupport::ToARConfiguration()
 {
 	return FAppleARKitConversion::FromARVideoFormatArray(ARFaceTrackingConfiguration.supportedVideoFormats);
+}
+#endif
+
+#if SUPPORTS_ARKIT_3_0
+bool FAppleARKitFaceSupport::IsARFrameSemanticsSupported(ARFrameSemantics InSemantics) const
+{
+	return [ARFaceTrackingConfiguration supportsFrameSemantics: InSemantics];
 }
 #endif

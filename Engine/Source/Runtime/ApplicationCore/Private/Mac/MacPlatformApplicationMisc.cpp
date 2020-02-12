@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "Mac/MacPlatformApplicationMisc.h"
 #include "Mac/MacPlatformMisc.h"
@@ -329,7 +329,7 @@ void FMacPlatformApplicationMisc::TearDown()
 void FMacPlatformApplicationMisc::LoadPreInitModules()
 {
 	FModuleManager::Get().LoadModule(TEXT("CoreAudio"));
-	FModuleManager::Get().LoadModule(TEXT("AudioMixerAudioUnit"));
+	FModuleManager::Get().LoadModule(TEXT("AudioMixerCoreAudio"));
 }
 
 class FOutputDeviceConsole* FMacPlatformApplicationMisc::CreateConsoleOutputDevice()
@@ -517,13 +517,19 @@ void FMacPlatformApplicationMisc::ClipboardCopy(const TCHAR* Str)
 	{
 		SCOPED_AUTORELEASE_POOL;
 
-		CFStringRef CocoaString = FPlatformString::TCHARToCFString(Str);
-		NSPasteboard *Pasteboard = [NSPasteboard generalPasteboard];
-		[Pasteboard clearContents];
-		NSPasteboardItem *Item = [[[NSPasteboardItem alloc] init] autorelease];
-		[Item setString: (NSString *)CocoaString forType: NSPasteboardTypeString];
-		[Pasteboard writeObjects:[NSArray arrayWithObject:Item]];
-		CFRelease(CocoaString);
+		NSString* CocoaString = FString(Str).GetNSString();
+		if (CocoaString)
+		{
+			NSPasteboard *Pasteboard = [NSPasteboard generalPasteboard];
+			[Pasteboard clearContents];
+			NSPasteboardItem *Item = [[[NSPasteboardItem alloc] init] autorelease];
+			[Item setString:CocoaString forType:NSPasteboardTypeString];
+			[Pasteboard writeObjects:[NSArray arrayWithObject:Item]];
+		}
+		else
+		{
+			UE_LOG(LogMac, Warning, TEXT("Failed to create NSString to copy text to the pasteboard."));
+		}
 	}
 }
 

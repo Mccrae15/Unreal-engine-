@@ -1,10 +1,12 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
 #include "CoreTypes.h"
 #include "Misc/AssertionMacros.h"
 #include "Serialization/Archive.h"
+#include "Serialization/MemoryLayout.h"
+#include "HAL/PlatformAtomics.h"
 
 /** A virtual interface for ref counted objects to implement. */
 class IRefCountedObject
@@ -16,9 +18,58 @@ public:
 	virtual uint32 GetRefCount() const = 0;
 };
 
+/**
+ * Base class implementing thread-safe reference counting.
+ */
+class FRefCountBase
+{
+public:
+			FRefCountBase() = default;
+	virtual ~FRefCountBase() = default;
+
+	FRefCountBase(const FRefCountBase& Rhs) = delete;
+	FRefCountBase& operator=(const FRefCountBase& Rhs) = delete;
+
+	inline uint32 AddRef() const
+	{
+		return uint32(FPlatformAtomics::InterlockedIncrement(&NumRefs));
+	}
+
+	inline uint32 Release() const
+	{
+#if DO_GUARD_SLOW
+		if (NumRefs == 0)
+		{
+			CheckRefCount();
+		}
+#endif
+
+		const int32 Refs = FPlatformAtomics::InterlockedDecrement(&NumRefs);
+		if (Refs == 0)
+		{
+			delete this;
+		}
+
+		return uint32(Refs);
+	}
+
+	uint32 GetRefCount() const
+	{
+		return uint32(NumRefs);
+	}
+
+private:
+	mutable int32 NumRefs = 0;
+
+	CORE_API void CheckRefCount() const;
+};
 
 /**
  * The base class of reference counted objects.
+ *
+ * This class should not be used for new code as it does not use atomic operations to update 
+ * the reference count.
+ *
  */
 class CORE_API FRefCountedObject
 {
@@ -45,6 +96,36 @@ public:
 private:
 	mutable int32 NumRefs;
 };
+
+/**
+ * Like FRefCountedObject, but internal ref count is thread safe
+ */
+class CORE_API FThreadSafeRefCountedObject
+{
+public:
+	FThreadSafeRefCountedObject() : NumRefs(0) {}
+	virtual ~FThreadSafeRefCountedObject() { check(NumRefs.GetValue() == 0); }
+	uint32 AddRef() const
+	{
+		return uint32(NumRefs.Increment());
+	}
+	uint32 Release() const
+	{
+		uint32 Refs = uint32(NumRefs.Decrement());
+		if (Refs == 0)
+		{
+			delete this;
+		}
+		return Refs;
+	}
+	uint32 GetRefCount() const
+	{
+		return uint32(NumRefs.GetValue());
+	}
+private:
+	mutable FThreadSafeCounter NumRefs;
+};
+
 
 
 /**
@@ -74,6 +155,16 @@ public:
 	{
 		Reference = Copy.Reference;
 		if(Reference)
+		{
+			Reference->AddRef();
+		}
+	}
+
+	template<typename CopyReferencedType>
+	explicit TRefCountPtr(const TRefCountPtr<CopyReferencedType>& Copy)
+	{
+		Reference = static_cast<ReferencedType*>(Copy.GetReference());
+		if (Reference)
 		{
 			Reference->AddRef();
 		}
@@ -112,6 +203,12 @@ public:
 	FORCEINLINE TRefCountPtr& operator=(const TRefCountPtr& InPtr)
 	{
 		return *this = InPtr.Reference;
+	}
+
+	template<typename CopyReferencedType>
+	FORCEINLINE TRefCountPtr& operator=(const TRefCountPtr<CopyReferencedType>& InPtr)
+	{
+		return *this = InPtr.GetReference();
 	}
 
 	TRefCountPtr& operator=(TRefCountPtr&& InPtr)
@@ -203,6 +300,8 @@ private:
 
 	ReferencedType* Reference;
 };
+
+ALIAS_TEMPLATE_TYPE_LAYOUT(template<typename T>, TRefCountPtr<T>, void*);
 
 template<typename ReferencedType>
 FORCEINLINE bool operator==(const TRefCountPtr<ReferencedType>& A, const TRefCountPtr<ReferencedType>& B)

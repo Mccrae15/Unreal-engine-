@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 using UnrealBuildTool;
 
@@ -12,7 +12,7 @@ public class InputCore : ModuleRules
 		{
 			PrivateIncludePathModuleNames.Add("ApplicationCore");
 		}
-		if(Target.Platform == UnrealTargetPlatform.Linux || Target.Platform == UnrealTargetPlatform.HTML5)
+		if(Target.IsInPlatformGroup(UnrealPlatformGroup.Linux))
 		{
 			PrivateIncludePathModuleNames.Add("SDL2");
 		}

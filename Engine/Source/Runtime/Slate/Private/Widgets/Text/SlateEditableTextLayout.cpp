@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "Widgets/Text/SlateEditableTextLayout.h"
 #include "Styling/CoreStyle.h"
@@ -105,9 +105,6 @@ FSlateEditableTextLayout::FSlateEditableTextLayout(ISlateEditableTextWidget& InO
 		const FText& InitialTextToSet = BoundText.Get(FText::GetEmpty());
 		SetEditableText(InitialTextToSet, true);
 
-		// treat the initial text as uncommitted
-		bHasUncommittedText = true;
-
 		// Update the cached BoundText value to prevent it triggering another SetEditableText update again next Tick
 		BoundTextLastTick = FTextSnapshot(InitialTextToSet);
 		bWasPasswordLastTick = bIsPassword;
@@ -150,12 +147,9 @@ FSlateEditableTextLayout::FSlateEditableTextLayout(ISlateEditableTextWidget& InO
 
 	auto ExecuteDeleteAction = [this]()
 	{
-		if (CanExecuteDelete())
-		{
-			BeginEditTransation();
-			DeleteSelectedText();
-			EndEditTransaction();
-		}
+		BeginEditTransation();
+		DeleteSelectedText();
+		EndEditTransaction();
 	};
 
 	UICommandList = MakeShareable(new FUICommandList());
@@ -222,7 +216,6 @@ FSlateEditableTextLayout::~FSlateEditableTextLayout()
 	{
 		FSlateApplication::Get().ShowVirtualKeyboard(false, 0);
 	}
-
 }
 
 void FSlateEditableTextLayout::SetText(const TAttribute<FText>& InText)
@@ -264,6 +257,8 @@ void FSlateEditableTextLayout::SetText(const TAttribute<FText>& InText)
 
 FText FSlateEditableTextLayout::GetText() const
 {
+	SLATE_CROSS_THREAD_CHECK();
+
 	return BoundText.Get(FText::GetEmpty());
 }
 
@@ -332,6 +327,8 @@ void FSlateEditableTextLayout::SetCompositionBrush(const TAttribute<const FSlate
 
 FText FSlateEditableTextLayout::GetPlainText() const
 {
+	SLATE_CROSS_THREAD_CHECK();
+
 	const TArray< FTextLayout::FLineModel >& Lines = TextLayout->GetLineModels();
 
 	const int32 NumberOfLines = Lines.Num();
@@ -349,6 +346,8 @@ FText FSlateEditableTextLayout::GetPlainText() const
 
 bool FSlateEditableTextLayout::SetEditableText(const FText& TextToSet, const bool bForce)
 {
+	SLATE_CROSS_THREAD_CHECK();
+
 	bool bHasTextChanged = bForce;
 	if (!bHasTextChanged)
 	{
@@ -479,9 +478,12 @@ void FSlateEditableTextLayout::SetMargin(const TAttribute<FMargin>& InMargin)
 
 void FSlateEditableTextLayout::SetJustification(const TAttribute<ETextJustify::Type>& InJustification)
 {
-	Justification = InJustification;
+	if (!Justification.IdenticalTo(InJustification))
+	{
+		Justification = InJustification;
 
-	OwnerWidget->GetSlateWidget()->Invalidate(EInvalidateWidget::LayoutAndVolatility);
+		OwnerWidget->GetSlateWidget()->Invalidate(EInvalidateWidget::LayoutAndVolatility);
+	}
 }
 
 void FSlateEditableTextLayout::SetLineHeightPercentage(const TAttribute<float>& InLineHeightPercentage)
@@ -521,6 +523,8 @@ bool FSlateEditableTextLayout::Refresh()
 
 bool FSlateEditableTextLayout::RefreshImpl(const FText* InTextToSet, const bool bForce)
 {
+	SLATE_CROSS_THREAD_CHECK();
+
 	bool bHasSetText = false;
 
 	const bool bIsPassword = OwnerWidget->IsTextPassword();
@@ -659,6 +663,17 @@ FVector2D FSlateEditableTextLayout::GetScrollOffset() const
 	return ScrollOffset;
 }
 
+
+float FSlateEditableTextLayout::GetComputedWrappingWidth() const
+{
+	return TextLayout->GetWrappingWidth();
+}
+
+bool FSlateEditableTextLayout::GetAutoWrapText() const
+{
+	return AutoWrapText.Get();
+}
+
 bool FSlateEditableTextLayout::HandleFocusReceived(const FFocusEvent& InFocusEvent)
 {
 	if (ActiveContextMenu.IsValid())
@@ -731,6 +746,9 @@ bool FSlateEditableTextLayout::HandleFocusReceived(const FFocusEvent& InFocusEve
 	// Focus change affects volatility, so update that too
 	OwnerWidget->GetSlateWidget()->Invalidate(EInvalidateWidget::LayoutAndVolatility);
 
+	// Force update of last cursor interaction time to ensure the caret blinks at the correct frequency regardless of how focus is set.
+	CursorInfo.UpdateLastCursorInteractionTime();
+
 	return true;
 }
 
@@ -779,7 +797,16 @@ bool FSlateEditableTextLayout::HandleFocusLost(const FFocusEvent& InFocusEvent)
 		break;
 	}
 
-	CommitTextChanges(TextAction);
+	// Always clear the local undo chain on commit
+	ClearUndoStates();
+
+	const FText EditedText = GetEditableText();
+
+	OwnerWidget->OnTextCommitted(EditedText, TextAction);
+
+	// Reload underlying value now it is committed  (commit may alter the value) 
+	// so it can be re-displayed in the edit box
+	LoadText();
 
 	UpdateCursorHighlight();
 
@@ -791,38 +818,6 @@ bool FSlateEditableTextLayout::HandleFocusLost(const FFocusEvent& InFocusEvent)
 	OwnerWidget->GetSlateWidget()->Invalidate(EInvalidateWidget::LayoutAndVolatility);
 
 	return true;
-}
-
-void FSlateEditableTextLayout::CommitTextChanges(ETextCommit::Type CommitReason)
-{
-	// don't try to commit changes if we haven't changed anything
-	if (bHasUncommittedText)
-	{
-		bHasUncommittedText = false;
-
-		// Always clear the local undo chain on commit
-		ClearUndoStates();
-
-		const FText EditedText = GetEditableText();
-
-		OwnerWidget->OnTextCommitted(EditedText, CommitReason);
-
-		// Reload underlying value now it is committed  (commit may alter the value) 
-		// so it can be re-displayed in the edit box
-		LoadText();
-
-		// Select all text?
-		if (OwnerWidget->ShouldSelectAllTextOnCommit())
-		{
-			SelectAllText();
-		}
-
-		// Release input focus?
-		if (CommitReason == ETextCommit::OnEnter && OwnerWidget->ShouldClearKeyboardFocusOnCommit())
-		{
-			FSlateApplication::Get().ClearKeyboardFocus(EFocusCause::Cleared);
-		}
-	}
 }
 
 FReply FSlateEditableTextLayout::HandleKeyChar(const FCharacterEvent& InCharacterEvent)
@@ -875,25 +870,43 @@ FReply FSlateEditableTextLayout::HandleKeyDown(const FKeyEvent& InKeyEvent)
 
 	if (Key == EKeys::Left)
 	{
-		Reply = BoolToReply(MoveCursor(FMoveCursor::Cardinal(
-			// Ctrl moves a whole word instead of one character.	
-			InKeyEvent.IsControlDown() ? ECursorMoveGranularity::Word : ECursorMoveGranularity::Character,
-			// Move left
-			FIntPoint(-1, 0),
-			// Shift selects text.	
-			InKeyEvent.IsShiftDown() ? ECursorAction::SelectText : ECursorAction::MoveCursor
+		if (OwnerWidget->IsTextPassword() && InKeyEvent.IsControlDown())
+		{
+			// If the text is sensitive, we should not clue the user in to where word breaks are
+			JumpTo(ETextLocation::BeginningOfLine, InKeyEvent.IsShiftDown() ? ECursorAction::SelectText : ECursorAction::MoveCursor);
+			Reply = FReply::Handled();
+		}
+		else
+		{
+			Reply = BoolToReply(MoveCursor(FMoveCursor::Cardinal(
+				// Ctrl moves a whole word instead of one character.	
+				InKeyEvent.IsControlDown() ? ECursorMoveGranularity::Word : ECursorMoveGranularity::Character,
+				// Move left
+				FIntPoint(-1, 0),
+				// Shift selects text.	
+				InKeyEvent.IsShiftDown() ? ECursorAction::SelectText : ECursorAction::MoveCursor
 			)));
+		}
 	}
 	else if (Key == EKeys::Right)
 	{
-		Reply = BoolToReply(MoveCursor(FMoveCursor::Cardinal(
-			// Ctrl moves a whole word instead of one character.	
-			InKeyEvent.IsControlDown() ? ECursorMoveGranularity::Word : ECursorMoveGranularity::Character,
-			// Move right
-			FIntPoint(+1, 0),
-			// Shift selects text.	
-			InKeyEvent.IsShiftDown() ? ECursorAction::SelectText : ECursorAction::MoveCursor
+		if (OwnerWidget->IsTextPassword() && InKeyEvent.IsControlDown())
+		{
+			// If the text is sensitive, we should not clue the user in to where word breaks are
+			JumpTo(ETextLocation::EndOfLine, InKeyEvent.IsShiftDown() ? ECursorAction::SelectText : ECursorAction::MoveCursor);
+			Reply = FReply::Handled();
+		}
+		else
+		{
+			Reply = BoolToReply(MoveCursor(FMoveCursor::Cardinal(
+				// Ctrl moves a whole word instead of one character.	
+				InKeyEvent.IsControlDown() ? ECursorMoveGranularity::Word : ECursorMoveGranularity::Character,
+				// Move right
+				FIntPoint(+1, 0),
+				// Shift selects text.	
+				InKeyEvent.IsShiftDown() ? ECursorAction::SelectText : ECursorAction::MoveCursor
 			)));
+		}
 	}
 	else if (Key == EKeys::Up)
 	{
@@ -950,26 +963,8 @@ FReply FSlateEditableTextLayout::HandleKeyDown(const FKeyEvent& InKeyEvent)
 	else if (Key == EKeys::Enter && !OwnerWidget->IsTextReadOnly())
 	{
 		FScopedEditableTextTransaction TextTransaction(*this);
-		HandleCarriageReturn();
+		HandleCarriageReturn(InKeyEvent.IsRepeat());
 		Reply = FReply::Handled();
-	}
-	else if (Key == EKeys::Delete && !OwnerWidget->IsTextReadOnly())
-	{
-		// @Todo: Slate keybindings support more than one set of keys. 
-		// Delete to next word boundary (Ctrl+Delete)
-		if (InKeyEvent.IsControlDown() && !InKeyEvent.IsAltDown() && !InKeyEvent.IsShiftDown())
-		{
-			MoveCursor(FMoveCursor::Cardinal(
-				ECursorMoveGranularity::Word,
-				// Move right
-				FIntPoint(+1, 0),
-				// selects text.	
-				ECursorAction::SelectText
-				));
-		}
-
-		FScopedEditableTextTransaction TextTransaction(*this);
-		Reply = BoolToReply(HandleDelete());
 	}
 	else if (Key == EKeys::Tab && OwnerWidget->CanTypeCharacter(TEXT('\t')))
 	{
@@ -988,7 +983,33 @@ FReply FSlateEditableTextLayout::HandleKeyDown(const FKeyEvent& InKeyEvent)
 		CutSelectedTextToClipboard();
 		Reply = FReply::Handled();
 	}
+	// This must come after the Cut hotkey or else Cut is unreachable
+	else if (Key == EKeys::Delete && !OwnerWidget->IsTextReadOnly())
+	{
+		// @Todo: Slate keybindings support more than one set of keys. 
+		// Delete to next word boundary (Ctrl+Delete), only if there is no Text Selected in that case we carry on with a normal delete.
+		if (!AnyTextSelected() && InKeyEvent.IsControlDown() && !InKeyEvent.IsAltDown() && !InKeyEvent.IsShiftDown())
+		{
+			if (OwnerWidget->IsTextPassword())
+			{
+				// If the text is sensitive, we should not clue the user in to where word breaks are
+				JumpTo(ETextLocation::EndOfLine, ECursorAction::SelectText);
+			}
+			else
+			{
+				MoveCursor(FMoveCursor::Cardinal(
+					ECursorMoveGranularity::Word,
+					// Move right
+					FIntPoint(+1, 0),
+					// selects text.	
+					ECursorAction::SelectText
+				));
+			}
+		}
 
+		FScopedEditableTextTransaction TextTransaction(*this);
+		Reply = BoolToReply(HandleDelete());
+	}
 	// @Todo: Slate keybindings support more than one set of keys. 
 	// Alternate key for copy (Ctrl+Insert) 
 	else if (Key == EKeys::Insert && InKeyEvent.IsControlDown() && CanExecuteCopy())
@@ -1032,12 +1053,20 @@ FReply FSlateEditableTextLayout::HandleKeyDown(const FKeyEvent& InKeyEvent)
 	{
 		FScopedEditableTextTransaction TextTransaction(*this);
 
-		MoveCursor(FMoveCursor::Cardinal(
-			ECursorMoveGranularity::Word,
-			// Move left
-			FIntPoint(-1, 0),
-			ECursorAction::SelectText
+		if (OwnerWidget->IsTextPassword())
+		{
+			// If the text is sensitive, we should not clue the user in to where word breaks are
+			JumpTo(ETextLocation::BeginningOfLine, ECursorAction::SelectText);
+		}
+		else
+		{
+			MoveCursor(FMoveCursor::Cardinal(
+				ECursorMoveGranularity::Word,
+				// Move left
+				FIntPoint(-1, 0),
+				ECursorAction::SelectText
 			));
+		}
 		Reply = BoolToReply(HandleBackspace());
 	}
 
@@ -1078,7 +1107,7 @@ FReply FSlateEditableTextLayout::HandleKeyDown(const FKeyEvent& InKeyEvent)
 
 FReply FSlateEditableTextLayout::HandleKeyUp(const FKeyEvent& InKeyEvent)
 {
-	if (FPlatformApplicationMisc::RequiresVirtualKeyboard() && InKeyEvent.GetKey() == EKeys::Virtual_Accept)
+	if (FPlatformApplicationMisc::RequiresVirtualKeyboard() && FSlateApplication::Get().GetNavigationActionFromKey(InKeyEvent) == EUINavigationAction::Accept)
 	{
 		if (!OwnerWidget->IsTextReadOnly())
 		{
@@ -1343,11 +1372,13 @@ bool FSlateEditableTextLayout::HandleBackspace()
 		}
 		else
 		{
-			// Delete character to the left of the caret
-			if (TextLayout->RemoveAt(FTextLocation(CursorInteractionPosition, -1)))
+			// Delete grapheme to the left of the caret
+			const FTextSelection DeleteSelection = TextLayout->GetGraphemeAt(FTextLocation(CursorInteractionPosition, -1));
+			const int32 GraphemeSize = DeleteSelection.GetEnd().GetOffset() - DeleteSelection.GetBeginning().GetOffset();
+			if (TextLayout->RemoveAt(DeleteSelection.GetBeginning(), GraphemeSize))
 			{
-				// Adjust caret position one to the left
-				FinalCursorLocation = FTextLocation(CursorInteractionPosition, -1);
+				// Adjust caret to the left
+				FinalCursorLocation = FTextLocation(CursorInteractionPosition, -GraphemeSize);
 			}
 		}
 
@@ -1404,8 +1435,10 @@ bool FSlateEditableTextLayout::HandleDelete()
 		}
 		else
 		{
-			// Delete character to the right of the caret
-			TextLayout->RemoveAt(CursorInteractionPosition);
+			// Delete grapheme to the right of the caret
+			const FTextSelection DeleteSelection = TextLayout->GetGraphemeAt(CursorInteractionPosition);
+			const int32 GraphemeSize = DeleteSelection.GetEnd().GetOffset() - DeleteSelection.GetBeginning().GetOffset();
+			TextLayout->RemoveAt(DeleteSelection.GetBeginning(), GraphemeSize);
 			// do nothing to the cursor as the FinalCursorLocation is already correct
 		}
 
@@ -1455,7 +1488,7 @@ bool FSlateEditableTextLayout::HandleTypeChar(const TCHAR InChar)
 	return false;
 }
 
-bool FSlateEditableTextLayout::HandleCarriageReturn()
+bool FSlateEditableTextLayout::HandleCarriageReturn(bool isRepeat)
 {
 	if (OwnerWidget->IsTextReadOnly())
 	{
@@ -1466,9 +1499,36 @@ bool FSlateEditableTextLayout::HandleCarriageReturn()
 	{
 		InsertNewLineAtCursorImpl();
 	}
+	else if (isRepeat)
+	{
+		// Skip committing text on a repeat enter key
+		return false;
+	}
 	else
 	{
-		CommitTextChanges(ETextCommit::OnEnter);
+		// Always clear the local undo chain on commit.
+		ClearUndoStates();
+
+		const FText EditedText = GetEditableText();
+
+		// When enter is pressed text is committed.  Let anyone interested know about it.
+		OwnerWidget->OnTextCommitted(EditedText, ETextCommit::OnEnter);
+
+		// Reload underlying value now it is committed  (commit may alter the value) 
+		// so it can be re-displayed in the edit box if it retains focus
+		LoadText();
+
+		// Select all text?
+		if (OwnerWidget->ShouldSelectAllTextOnCommit())
+		{
+			SelectAllText();
+		}
+
+		// Release input focus?
+		if (OwnerWidget->ShouldClearKeyboardFocusOnCommit())
+		{
+			FSlateApplication::Get().ClearKeyboardFocus(EFocusCause::Cleared);
+		}
 	}
 
 	return true;
@@ -1616,27 +1676,7 @@ bool FSlateEditableTextLayout::IsTextSelectedAt(const FVector2D& InLocalPosition
 
 bool FSlateEditableTextLayout::CanExecuteSelectAll() const
 {
-	bool bCanExecute = true;
-
-	// Can't select all if string is empty
-	if (TextLayout->IsEmpty())
-	{
-		bCanExecute = false;
-	}
-
-	const TArray< FTextLayout::FLineModel >& Lines = TextLayout->GetLineModels();
-	const int32 NumberOfLines = Lines.Num();
-
-	// Can't select all if entire string is already selected
-	const FTextLocation CursorInteractionPosition = CursorInfo.GetCursorInteractionLocation();
-	if (SelectionStart.IsSet() &&
-		SelectionStart.GetValue() == FTextLocation(0, 0) &&
-		CursorInteractionPosition == FTextLocation(NumberOfLines - 1, Lines[NumberOfLines - 1].Text->Len()))
-	{
-		bCanExecute = false;
-	}
-
-	return bCanExecute;
+	return true;
 }
 
 void FSlateEditableTextLayout::SelectAllText()
@@ -2429,6 +2469,29 @@ void FSlateEditableTextLayout::ScrollTo(const FTextLocation& NewLocation)
 	}
 }
 
+void FSlateEditableTextLayout::ScrollTo(const ETextLocation NewLocation)
+{
+	const TArray< FTextLayout::FLineModel >& Lines = TextLayout->GetLineModels();
+
+	FTextLocation ResolvedTextLocation;
+	switch (NewLocation)
+	{
+	case ETextLocation::BeginningOfDocument:
+		ResolvedTextLocation = FTextLocation(0);
+		break;
+
+	case ETextLocation::EndOfDocument:
+		ResolvedTextLocation = FTextLocation(FMath::Max(0, Lines.Num() - 1));
+		break;
+
+	default:
+		checkf(false, TEXT("Unsupported ETextLocation mode passed to ScrollTo!"));
+		break;
+	}
+
+	ScrollTo(ResolvedTextLocation);
+}
+
 void FSlateEditableTextLayout::UpdateCursorHighlight()
 {
 	PositionToScrollIntoView = SlateEditableTextTypes::FScrollInfo(CursorInfo.GetCursorInteractionLocation(), CursorInfo.GetCursorAlignment());
@@ -2545,20 +2608,10 @@ void FSlateEditableTextLayout::UpdateCursorHighlight()
 		const TArray< FTextLayout::FLineModel >& Lines = TextLayout->GetLineModels();
 		if (Lines.IsValidIndex(CursorPosition.GetLineIndex()))
 		{
-			const int32 LineTextLength = Lines[CursorPosition.GetLineIndex()].Text->Len();
-
-			if (LineTextLength == 0)
-			{
-				ActiveLineHighlights.Add(FTextLineHighlight(CursorPosition.GetLineIndex(), FTextRange(0, 0), CursorZOrder, CursorLineHighlighter.ToSharedRef()));
-			}
-			else if (CursorPosition.GetOffset() == LineTextLength)
-			{
-				ActiveLineHighlights.Add(FTextLineHighlight(CursorPosition.GetLineIndex(), FTextRange(LineTextLength - 1, LineTextLength), CursorZOrder, CursorLineHighlighter.ToSharedRef()));
-			}
-			else
-			{
-				ActiveLineHighlights.Add(FTextLineHighlight(CursorPosition.GetLineIndex(), FTextRange(CursorPosition.GetOffset(), CursorPosition.GetOffset() + 1), CursorZOrder, CursorLineHighlighter.ToSharedRef()));
-			}
+			// Ensure the cursor is sitting on a valid grapheme
+			// Right-aligned cursors naively subtract 1 from their real position, which may leave us in the middle of a codepoint or grapheme and break measuring
+			const FTextSelection CursorSelection = TextLayout->GetGraphemeAt(CursorPosition);
+			ActiveLineHighlights.Add(FTextLineHighlight(CursorPosition.GetLineIndex(), FTextRange(CursorSelection.GetBeginning().GetOffset(), CursorSelection.GetEnd().GetOffset()), CursorZOrder, CursorLineHighlighter.ToSharedRef()));
 		}
 	}
 
@@ -2777,7 +2830,7 @@ FTextLocation FSlateEditableTextLayout::TranslatedLocation(const FTextLocation& 
 	const TArray< FTextLayout::FLineModel >& Lines = TextLayout->GetLineModels();
 
 	// Move to the previous or next grapheme based upon the requested direction and current position
-	GraphemeBreakIterator->SetString(*Lines[Location.GetLineIndex()].Text);
+	GraphemeBreakIterator->SetStringRef(&Lines[Location.GetLineIndex()].Text.Get());
 	const int32 NewOffsetInLine = (Direction > 0) ? GraphemeBreakIterator->MoveToCandidateAfter(Location.GetOffset()) : GraphemeBreakIterator->MoveToCandidateBefore(Location.GetOffset());
 	GraphemeBreakIterator->ClearString();
 
@@ -2897,7 +2950,6 @@ void FSlateEditableTextLayout::RestoreOriginalText()
 
 		// Let outsiders know that the text content has been changed
 		OwnerWidget->OnTextCommitted(OriginalText.Text, ETextCommit::OnCleared);
-		bHasUncommittedText = false;
 	}
 }
 
@@ -2944,8 +2996,6 @@ void FSlateEditableTextLayout::EndEditTransaction()
 	const bool bHasTextChanged = !EditedText.ToString().Equals(StateBeforeChangingText.GetValue().Text.ToString(), ESearchCase::CaseSensitive);
 	if (bHasTextChanged)
 	{
-		bHasUncommittedText = true;
-
 		// Save text state
 		SaveText(EditedText);
 
@@ -3153,6 +3203,8 @@ bool FSlateEditableTextLayout::ComputeVolatility() const
 
 void FSlateEditableTextLayout::Tick(const FGeometry& AllottedGeometry, const double InCurrentTime, const float InDeltaTime)
 {
+	check(IsInGameThread());
+
 	if (bTextChangedByVirtualKeyboard)
 	{
 		SetEditableText(VirtualKeyboardText);
@@ -3166,7 +3218,6 @@ void FSlateEditableTextLayout::Tick(const FGeometry& AllottedGeometry, const dou
 		// Let outsiders know that the text content has been changed
 		OwnerWidget->OnTextCommitted(GetEditableText(), VirtualKeyboardTextCommitType);
 		bTextCommittedByVirtualKeyboard = false;
-		bHasUncommittedText = false;
 	}
 
 	if (TextInputMethodChangeNotifier.IsValid() && TextInputMethodContext.IsValid() && TextInputMethodContext->UpdateCachedGeometry(AllottedGeometry))
@@ -3351,6 +3402,8 @@ void FSlateEditableTextLayout::CacheDesiredSize(float LayoutScaleMultiplier)
 
 FVector2D FSlateEditableTextLayout::ComputeDesiredSize(float LayoutScaleMultiplier) const
 {
+	check(IsInGameThread());
+
 	const float FontMaxCharHeight = FTextEditHelper::GetFontHeight(TextStyle.Font);
 	const float CaretWidth = FTextEditHelper::CalculateCaretWidth(FontMaxCharHeight);
 
@@ -3475,7 +3528,6 @@ bool FSlateEditableTextLayout::HasActiveContextMenu() const
 	return ActiveContextMenu.IsValid();
 }
 
-
 TSharedRef<FSlateEditableTextLayout::FVirtualKeyboardEntry> FSlateEditableTextLayout::FVirtualKeyboardEntry::Create(FSlateEditableTextLayout& InOwnerLayout)
 {
 	return MakeShareable(new FVirtualKeyboardEntry(InOwnerLayout));
@@ -3488,14 +3540,14 @@ FSlateEditableTextLayout::FVirtualKeyboardEntry::FVirtualKeyboardEntry(FSlateEdi
 
 void FSlateEditableTextLayout::FVirtualKeyboardEntry::SetTextFromVirtualKeyboard(const FText& InNewText, ETextEntryType TextEntryType)
 {
+	check(IsInGameThread());
+
 	// Only set the text if the text attribute doesn't have a getter binding (otherwise it would be blown away).
 	// If it is bound, we'll assume that OnTextCommitted will handle the update.
 	if (!OwnerLayout->BoundText.IsBound())
 	{
 		OwnerLayout->BoundText.Set(InNewText);
 	}
-
-	OwnerLayout->bHasUncommittedText = true;
 
 	// Update the internal editable text
 	// This method is called from the main thread (i.e. not the game thread) of the device with the virtual keyboard
@@ -3524,6 +3576,8 @@ void FSlateEditableTextLayout::FVirtualKeyboardEntry::SetTextFromVirtualKeyboard
 
 void FSlateEditableTextLayout::FVirtualKeyboardEntry::SetSelectionFromVirtualKeyboard(int InSelStart, int InSelEnd)
 {
+	check(IsInGameThread());
+
 	// Update the text selection and the cursor position
 	// This method is called externally (eg. on Android from the native virtual keyboard implementation) 
 	// The text may also change on the same frame, so the external selection must happen in Tick after the text update
@@ -3535,26 +3589,36 @@ void FSlateEditableTextLayout::FVirtualKeyboardEntry::SetSelectionFromVirtualKey
 
 FText FSlateEditableTextLayout::FVirtualKeyboardEntry::GetText() const
 {
+	check(IsInGameThread());
+
 	return OwnerLayout->GetText();
 }
 
 FText FSlateEditableTextLayout::FVirtualKeyboardEntry::GetHintText() const
 {
+	check(IsInGameThread());
+
 	return OwnerLayout->GetHintText();
 }
 
 EKeyboardType FSlateEditableTextLayout::FVirtualKeyboardEntry::GetVirtualKeyboardType() const
 {
+	check(IsInGameThread());
+
 	return (OwnerLayout->OwnerWidget->IsTextPassword()) ? Keyboard_Password : OwnerLayout->OwnerWidget->GetVirtualKeyboardType();
 }
 
 FVirtualKeyboardOptions FSlateEditableTextLayout::FVirtualKeyboardEntry::GetVirtualKeyboardOptions() const
 {
+	check(IsInGameThread());
+
 	return OwnerLayout->OwnerWidget->GetVirtualKeyboardOptions();
 }
 
 bool FSlateEditableTextLayout::FVirtualKeyboardEntry::IsMultilineEntry() const
 {
+	check(IsInGameThread());
+
 	return OwnerLayout->OwnerWidget->IsMultiLineTextEdit();
 }
 

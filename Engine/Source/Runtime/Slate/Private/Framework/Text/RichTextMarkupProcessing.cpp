@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "Framework/Text/RichTextMarkupProcessing.h"
 
@@ -47,10 +47,15 @@ struct FEscapeSequenceRegexPatternString
 	}
 };
 
-
 TSharedRef< FDefaultRichTextMarkupParser > FDefaultRichTextMarkupParser::Create()
 {
-	return MakeShareable( new FDefaultRichTextMarkupParser() );
+	return MakeShareable(new FDefaultRichTextMarkupParser());
+}
+
+TSharedRef< FDefaultRichTextMarkupParser > FDefaultRichTextMarkupParser::GetStaticInstance()
+{
+	static TSharedRef< FDefaultRichTextMarkupParser > Parser = MakeShareable( new FDefaultRichTextMarkupParser() );
+	return Parser;
 }
 
 FDefaultRichTextMarkupParser::FDefaultRichTextMarkupParser()
@@ -258,6 +263,12 @@ void FDefaultRichTextMarkupParser::HandleEscapeSequences(const FString& Input, T
 TSharedRef< FDefaultRichTextMarkupWriter > FDefaultRichTextMarkupWriter::Create()
 {
 	return MakeShareable( new FDefaultRichTextMarkupWriter() );
+}
+
+TSharedRef< FDefaultRichTextMarkupWriter > FDefaultRichTextMarkupWriter::GetStaticInstance()
+{
+	static TSharedRef< FDefaultRichTextMarkupWriter > Writer = MakeShareable(new FDefaultRichTextMarkupWriter());
+	return Writer;
 }
 
 void FDefaultRichTextMarkupWriter::Write(const TArray<FRichTextLine>& InLines, FString& Output)

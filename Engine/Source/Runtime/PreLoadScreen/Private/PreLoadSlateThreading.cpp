@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "PreLoadSlateThreading.h"
 #include "HAL/Runnable.h"
@@ -51,6 +51,13 @@ FPreLoadSlateWidgetRenderer::FPreLoadSlateWidgetRenderer(TSharedPtr<SWindow> InM
 
 void FPreLoadSlateWidgetRenderer::DrawWindow(float DeltaTime)
 {
+	// If the engine has requested exit, early out the draw loop, several
+	// of the things inside of here are not safe to perform while shutting down.
+	if (IsEngineExitRequested())
+	{
+		return;
+	}
+
     if (GDynamicRHI && GDynamicRHI->RHIIsRenderingSuspended())
     {
         // This avoids crashes if we Suspend rendering whilst the loading screen is up
@@ -69,7 +76,8 @@ void FPreLoadSlateWidgetRenderer::DrawWindow(float DeltaTime)
 
     FSlateRect ClipRect = WindowGeometry.GetLayoutBoundingRect();
 
-    HittestGrid->ClearGridForNewFrame(ClipRect);
+	HittestGrid->SetHittestArea(VirtualRenderWindow->GetPositionInScreen(), VirtualRenderWindow->GetViewportSize());
+    HittestGrid->Clear();
 
     // Get the free buffer & add our virtual window
     FSlateDrawBuffer& DrawBuffer = SlateRenderer->GetDrawBuffer();
@@ -79,7 +87,7 @@ void FPreLoadSlateWidgetRenderer::DrawWindow(float DeltaTime)
 
     int32 MaxLayerId = 0;
     {
-        FPaintArgs PaintArgs(*VirtualRenderWindow, *HittestGrid, FVector2D::ZeroVector, FSlateApplication::Get().GetCurrentTime(), FSlateApplication::Get().GetDeltaTime());
+        FPaintArgs PaintArgs(nullptr, *HittestGrid, FVector2D::ZeroVector, FSlateApplication::Get().GetCurrentTime(), FSlateApplication::Get().GetDeltaTime());
 
         // Paint the window
         MaxLayerId = VirtualRenderWindow->Paint(
@@ -212,9 +220,9 @@ void FPreLoadScreenSlateSynchMechanism::SlateThreadRunMainLoop()
             }
 
             //Queue up a render tick every time we tick on this sync thread.
-            ENQUEUE_UNIQUE_RENDER_COMMAND_ONEPARAMETER(
-                PreLoadScreenRenderTick,
-                FPreLoadScreenSlateSynchMechanism*, SyncMech, this,
+			FPreLoadScreenSlateSynchMechanism* SyncMech = this;
+			ENQUEUE_RENDER_COMMAND(PreLoadScreenRenderTick)(
+				[SyncMech](FRHICommandListImmediate& RHICmdList)
                 {
                     FPreLoadScreenManager* PreLoadManager = FPreLoadScreenManager::Get();
                     if (PreLoadManager && FPreLoadScreenManager::ShouldRender())

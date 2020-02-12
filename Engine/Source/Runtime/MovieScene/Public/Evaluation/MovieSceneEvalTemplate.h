@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -191,7 +191,7 @@ protected:
 USTRUCT()
 struct FMovieSceneEvalTemplatePtr
 #if CPP
-	: TInlineValue<FMovieSceneEvalTemplate, 48>
+	: TInlineValue<FMovieSceneEvalTemplate, 128>
 #endif
 {
 	GENERATED_BODY()

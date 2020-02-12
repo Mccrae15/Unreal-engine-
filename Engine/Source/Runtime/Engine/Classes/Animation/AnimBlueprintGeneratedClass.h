@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -11,6 +11,7 @@
 #include "Animation/AnimStateMachineTypes.h"
 #include "Animation/AnimClassInterface.h"
 #include "Animation/AnimNodeBase.h"
+#include "Animation/BlendSpaceBase.h"
 
 #include "AnimBlueprintGeneratedClass.generated.h"
 
@@ -22,13 +23,52 @@ class UAnimStateTransitionNode;
 class UEdGraph;
 class USkeleton;
 
+// Represents the debugging information for a single state within a state machine
+USTRUCT()
+struct FStateMachineStateDebugData
+{
+	GENERATED_BODY()
+
+public:
+	FStateMachineStateDebugData()
+		: StateMachineIndex(INDEX_NONE)
+		, StateIndex(INDEX_NONE)
+		, Weight(0.0f)
+		, ElapsedTime(0.0f)
+	{
+	}
+
+	FStateMachineStateDebugData(int32 InStateMachineIndex, int32 InStateIndex, float InWeight, float InElapsedTime)
+		: StateMachineIndex(InStateMachineIndex)
+		, StateIndex(InStateIndex)
+		, Weight(InWeight)
+		, ElapsedTime(InElapsedTime)
+	{}
+
+	// The index of the state machine
+	int32 StateMachineIndex;
+
+	// The index of the state
+	int32 StateIndex;
+
+	// The last recorded weight for this state
+	float Weight;
+
+	// The time that this state has been active (only valid if this is the current state)
+	float ElapsedTime;
+};
+
 // This structure represents debugging information for a single state machine
 USTRUCT()
 struct FStateMachineDebugData
 {
-	GENERATED_USTRUCT_BODY()
+	GENERATED_BODY()
 
 public:
+	FStateMachineDebugData()
+		: MachineIndex(INDEX_NONE)
+	{}
+
 	// Map from state nodes to their state entry in a state machine
 	TMap<TWeakObjectPtr<UEdGraphNode>, int32> NodeToStateIndex;
 	TMap<TWeakObjectPtr<UEdGraphNode>, int32> NodeToTransitionIndex;
@@ -102,9 +142,15 @@ public:
 	// Map from animation node to their property index
 	TMap<TWeakObjectPtr<const UAnimGraphNode_Base>, int32> NodePropertyToIndexMap;
 
+	// Map from node property index to source editor node
+	TMap<int32, TWeakObjectPtr<const UEdGraphNode> > NodePropertyIndexToNodeMap;
+
 	// Map from animation node GUID to property index
 	TMap<FGuid, int32> NodeGuidToIndexMap;
 
+	// The debug data for each state machine state
+	TArray<FStateMachineStateDebugData> StateData;	
+	
 	// History of snapshots of animation data
 	TSimpleRingBuffer<FAnimationFrameSnapshot>* SnapshotBuffer;
 
@@ -125,6 +171,61 @@ public:
 
 	// History of activated nodes
 	TArray<FNodeVisit> UpdatedNodesThisFrame;
+
+	// Values output by nodes
+	struct FNodeValue
+	{
+		FString Text;
+		int32 NodeID;
+
+		FNodeValue(const FString& InText, int32 InNodeID)
+			: Text(InText)
+			, NodeID(InNodeID)
+		{}
+	};
+
+	// Values output by nodes
+	TArray<FNodeValue> NodeValuesThisFrame;
+
+	// Record of a sequence player's state
+	struct FSequencePlayerRecord
+	{
+		FSequencePlayerRecord(int32 InNodeID, float InPosition, float InLength, int32 InFrameCount)
+			: NodeID(InNodeID)
+			, Position(InPosition)
+			, Length(InLength) 
+			, FrameCount(InFrameCount)
+		{}
+
+		int32 NodeID;
+		float Position;
+		float Length;
+		int32 FrameCount;
+	};
+
+	// All sequence player records this frame
+	TArray<FSequencePlayerRecord> SequencePlayerRecordsThisFrame;
+
+	// Record of a blend space player's state
+	struct FBlendSpacePlayerRecord
+	{
+		FBlendSpacePlayerRecord(int32 InNodeID, UBlendSpaceBase* InBlendSpace, float InPositionX, float InPositionY, float InPositionZ)
+			: NodeID(InNodeID)
+			, BlendSpace(InBlendSpace)
+			, PositionX(InPositionX)
+			, PositionY(InPositionY) 
+			, PositionZ(InPositionY)
+		{}
+
+		int32 NodeID;
+		TWeakObjectPtr<const UBlendSpaceBase> BlendSpace;
+		float PositionX;
+		float PositionY;
+		float PositionZ;
+	};
+
+	// All blend space player records this frame
+	TArray<FBlendSpacePlayerRecord> BlendSpacePlayerRecordsThisFrame;
 
 	// Active pose watches to track
 	TArray<FAnimNodePoseWatch> AnimNodePoseWatch;
@@ -155,6 +256,10 @@ public:
 	void ResetNodeVisitSites();
 	void RecordNodeVisit(int32 TargetNodeIndex, int32 SourceNodeIndex, float BlendWeight);
 	void RecordNodeVisitArray(const TArray<FNodeVisit>& Nodes);
+	void RecordStateData(int32 StateMachineIndex, int32 StateIndex, float Weight, float ElapsedTime);
+	void RecordNodeValue(int32 InNodeID, const FString& InText);
+	void RecordSequencePlayer(int32 InNodeID, float InPosition, float InLength, int32 InFrameCount);
+	void RecordBlendSpacePlayer(int32 InNodeID, UBlendSpaceBase* InBlendSpace, float InPositionX, float InPositionY, float InPositionZ);
 
 	void AddPoseWatch(int32 NodeID, FColor Color);
 	void RemovePoseWatch(int32 NodeID);
@@ -190,16 +295,21 @@ class ENGINE_API UAnimBlueprintGeneratedClass : public UBlueprintGeneratedClass,
 	UPROPERTY()
 	TArray<FAnimNotifyEvent> AnimNotifies;
 
-	// The index of the root node in the animation tree (created during link)
-	int32 RootAnimNodeIndex;
-
-	// Indices for each of the saved pose nodes that require updating, in the order they need to get updates.
+	// Indices for each of the saved pose nodes that require updating, in the order they need to get updates, per layer
 	UPROPERTY()
-	TArray<int32> OrderedSavedPoseIndices;
+	TMap<FName, FCachedPoseIndices> OrderedSavedPoseIndicesMap;
 
-	// The array of anim nodes; this is transient generated data (created during Link)
-	UStructProperty* RootAnimNodeProperty;
-	TArray<UStructProperty*> AnimNodeProperties;
+	// The various anim functions that this class holds (created during GenerateAnimationBlueprintFunctions)
+	TArray<FAnimBlueprintFunction> AnimBlueprintFunctions;
+
+	// The arrays of anim nodes; this is transient generated data (created during Link)
+	TArray<FStructPropertyPath> AnimNodeProperties;
+	TArray<FStructPropertyPath> LinkedAnimGraphNodeProperties;
+	TArray<FStructPropertyPath> LinkedAnimLayerNodeProperties;
+	TArray<FStructPropertyPath> PreUpdateNodeProperties;
+	TArray<FStructPropertyPath> DynamicResetNodeProperties;
+	TArray<FStructPropertyPath> StateMachineNodeProperties;
+	TArray<FStructPropertyPath> InitializationNodeProperties;
 
 	// Array of sync group names in the order that they are requested during compile
 	UPROPERTY()
@@ -209,28 +319,34 @@ class ENGINE_API UAnimBlueprintGeneratedClass : public UBlueprintGeneratedClass,
 	UPROPERTY()
 	TArray<FExposedValueHandler> EvaluateGraphExposedInputs;
 
+	// Indices for any Asset Player found within a specific (named) Anim Layer Graph, or implemented Anim Interface Graph
+	UPROPERTY()
+	TMap<FName, FGraphAssetPlayerInformation> GraphAssetPlayerInformation;
+
+	// Per layer graph blending options
+	UPROPERTY()
+	TMap<FName, FAnimGraphBlendOptions> GraphBlendOptions;
+
 public:
 
 	virtual const TArray<FBakedAnimationStateMachine>& GetBakedStateMachines() const override { return BakedStateMachines; }
-
 	virtual USkeleton* GetTargetSkeleton() const override { return TargetSkeleton; }
-
 	virtual const TArray<FAnimNotifyEvent>& GetAnimNotifies() const override { return AnimNotifies; }
-
-	virtual int32 GetRootAnimNodeIndex() const override { return RootAnimNodeIndex; }
-
-	virtual UStructProperty* GetRootAnimNodeProperty() const override { return RootAnimNodeProperty; }
-
-	virtual const TArray<UStructProperty*>& GetAnimNodeProperties() const override { return AnimNodeProperties; }
-
+	virtual const TArray<FStructPropertyPath>& GetAnimNodeProperties() const override { return AnimNodeProperties; }
+	virtual const TArray<FStructPropertyPath>& GetLinkedAnimGraphNodeProperties() const override { return LinkedAnimGraphNodeProperties; }
+	virtual const TArray<FStructPropertyPath>& GetLinkedAnimLayerNodeProperties() const override { return LinkedAnimLayerNodeProperties; }
+	virtual const TArray<FStructPropertyPath>& GetPreUpdateNodeProperties() const override { return PreUpdateNodeProperties; }
+	virtual const TArray<FStructPropertyPath>& GetDynamicResetNodeProperties() const override { return DynamicResetNodeProperties; }
+	virtual const TArray<FStructPropertyPath>& GetStateMachineNodeProperties() const override { return StateMachineNodeProperties; }
+	virtual const TArray<FStructPropertyPath>& GetInitializationNodeProperties() const override { return InitializationNodeProperties; }
 	virtual const TArray<FName>& GetSyncGroupNames() const override { return SyncGroupNames; }
-
-	virtual const TArray<int32>& GetOrderedSavedPoseNodeIndices() const override { return OrderedSavedPoseIndices; }
-
+	virtual const TMap<FName, FCachedPoseIndices>& GetOrderedSavedPoseNodeIndicesMap() const override { return OrderedSavedPoseIndicesMap; }
 	virtual int32 GetSyncGroupIndex(FName SyncGroupName) const override { return SyncGroupNames.IndexOfByKey(SyncGroupName); }
-
 	virtual const TArray<FExposedValueHandler>& GetExposedValueHandlers() const { return EvaluateGraphExposedInputs; }
-
+	virtual const TArray<FAnimBlueprintFunction>& GetAnimBlueprintFunctions() const override { return AnimBlueprintFunctions; }
+	virtual const TMap<FName, FGraphAssetPlayerInformation>& GetGraphAssetPlayerInformation() const override { return GraphAssetPlayerInformation; }
+	virtual const TMap<FName, FAnimGraphBlendOptions>& GetGraphBlendOptions() const override { return GraphBlendOptions; }
+	
 public:
 #if WITH_EDITORONLY_DATA
 	FAnimBlueprintDebugData AnimBlueprintDebugData;
@@ -279,12 +395,12 @@ public:
 	}
 
 	template<typename StructType>
-	UStructProperty* GetPropertyForNode(UAnimGraphNode_Base* Node, EPropertySearchMode::Type SearchMode = EPropertySearchMode::OnlyThis)
+	FStructProperty* GetPropertyForNode(UAnimGraphNode_Base* Node, EPropertySearchMode::Type SearchMode = EPropertySearchMode::OnlyThis)
 	{
 		const int32* pIndex = GetNodePropertyIndex<StructType>(Node, SearchMode);
 		if (pIndex)
 		{
-			if (UStructProperty* AnimationProperty = AnimNodeProperties[AnimNodeProperties.Num() - 1 - *pIndex])
+			if (FStructProperty* AnimationProperty = AnimNodeProperties[AnimNodeProperties.Num() - 1 - *pIndex].Get())
 			{
 				if (AnimationProperty->Struct->IsChildOf(StructType::StaticStruct()))
 				{
@@ -299,7 +415,7 @@ public:
 	template<typename StructType>
 	StructType* GetPropertyInstance(UObject* Object, UAnimGraphNode_Base* Node, EPropertySearchMode::Type SearchMode = EPropertySearchMode::OnlyThis)
 	{
-		UStructProperty* AnimationProperty = GetPropertyForNode<StructType>(Node);
+		FStructProperty* AnimationProperty = GetPropertyForNode<StructType>(Node);
 		if (AnimationProperty)
 		{
 			return AnimationProperty->ContainerPtrToValuePtr<StructType>((void*)Object);
@@ -314,7 +430,7 @@ public:
 		const int32* pIndex = GetNodePropertyIndexFromGuid(NodeGuid, SearchMode);
 		if (pIndex)
 		{
-			if (UStructProperty* AnimProperty = AnimNodeProperties[AnimNodeProperties.Num() - 1 - *pIndex])
+			if (FStructProperty* AnimProperty = AnimNodeProperties[AnimNodeProperties.Num() - 1 - *pIndex].Get())
 			{
 				if (AnimProperty->Struct->IsChildOf(StructType::StaticStruct()))
 				{
@@ -330,7 +446,7 @@ public:
 	StructType& GetPropertyInstanceChecked(UObject* Object, UAnimGraphNode_Base* Node, EPropertySearchMode::Type SearchMode = EPropertySearchMode::OnlyThis)
 	{
 		const int32 Index = AnimBlueprintDebugData.NodePropertyToIndexMap.FindChecked(Node);
-		UStructProperty* AnimationProperty = AnimNodeProperties[AnimNodeProperties.Num() - 1 - Index];
+		FStructProperty* AnimationProperty = AnimNodeProperties[AnimNodeProperties.Num() - 1 - Index].Get();
 		check(AnimationProperty);
 		check(AnimationProperty->Struct->IsChildOf(StructType::StaticStruct()));
 		return AnimationProperty->ContainerPtrToValuePtr<StructType>((void*)Object);
@@ -338,7 +454,14 @@ public:
 
 	const int32* GetNodePropertyIndexFromGuid(FGuid Guid, EPropertySearchMode::Type SearchMode = EPropertySearchMode::OnlyThis);
 
+	const UEdGraphNode* GetVisualNodeFromNodePropertyIndex(int32 PropertyIndex) const;
 #endif
+
+	// Called after Link to patch up references to the nodes in the CDO
+	void LinkFunctionsToDefaultObjectNodes(UObject* DefaultObject);
+
+	// Populates AnimBlueprintFunctions according to the UFunction(s) on this class
+	void GenerateAnimationBlueprintFunctions();
 
 	// UObject interface
 	virtual void Serialize(FArchive& Ar) override;
@@ -350,7 +473,9 @@ public:
 
 	// UClass interface
 	virtual void PurgeClass(bool bRecompilingOnLoad) override;
+	virtual uint8* GetPersistentUberGraphFrame(UObject* Obj, UFunction* FuncToCheck) const override;
 	virtual void PostLoadDefaultObject(UObject* Object) override;
+	virtual void PostLoad() override;
 	// End of UClass interface
 };
 
@@ -359,7 +484,7 @@ NodeType* GetNodeFromPropertyIndex(UObject* AnimInstanceObject, const IAnimClass
 {
 	if (PropertyIndex != INDEX_NONE)
 	{
-		UStructProperty* NodeProperty = AnimBlueprintClass->GetAnimNodeProperties()[AnimBlueprintClass->GetAnimNodeProperties().Num() - 1 - PropertyIndex]; //@TODO: Crazysauce
+		FStructProperty* NodeProperty = AnimBlueprintClass->GetAnimNodeProperties()[AnimBlueprintClass->GetAnimNodeProperties().Num() - 1 - PropertyIndex].Get(); //@TODO: Crazysauce
 		check(NodeProperty->Struct == NodeType::StaticStruct());
 		return NodeProperty->ContainerPtrToValuePtr<NodeType>(AnimInstanceObject);
 	}

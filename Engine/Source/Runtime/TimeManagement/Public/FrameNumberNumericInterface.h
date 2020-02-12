@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -8,6 +8,9 @@
 #include "Misc/FrameRate.h"
 #include "FrameNumberTimeEvaluator.h"
 #include "Misc/Timecode.h"
+#include "Misc/ExpressionParserTypes.h"
+#include "Math/BasicMathExpressionEvaluator.h"
+#include "Internationalization/FastDecimalFormat.h"
 
 /**
 * A large portion of the Sequencer UI is built around using SpinBox and NumericBox because the framerate
@@ -36,6 +39,21 @@ struct FFrameNumberInterface : public INumericTypeInterface<double>
 		check(InTickResolutionAttr.IsSet());
 		check(InDisplayRateAttr.IsSet());
 	}
+
+	/** Gets the minimum and maximum fractional digits. */
+	virtual int32 GetMinFractionalDigits() const override
+	{
+		return 0;
+	}
+	virtual int32 GetMaxFractionalDigits() const override
+	{
+		return 0;
+	}
+
+	/** Sets the minimum and maximum fractional digits - A minimum greater than 0 will always have that many trailing zeros */
+	virtual void SetMinFractionalDigits(const TAttribute<TOptional<int32>>& NewValue) override {}
+
+	virtual void SetMaxFractionalDigits(const TAttribute<TOptional<int32>>& NewValue) override {}
 
 	/** Check whether the typed character is valid */
 	virtual bool IsCharacterValid(TCHAR InChar) const override
@@ -78,7 +96,12 @@ struct FFrameNumberInterface : public INumericTypeInterface<double>
 		case EFrameNumberDisplayFormats::Seconds:
 		{
 			double TimeInSeconds = SourceFrameRate.AsSeconds(FFrameTime::FromDecimal(Value));
-			return FString::Printf(TEXT("%.2f s"), TimeInSeconds);
+
+			static const FNumberFormattingOptions NumberFormattingOptions = FNumberFormattingOptions()
+				.SetUseGrouping(false)
+				.SetMinimumFractionalDigits(2)
+				.SetMaximumFractionalDigits(ZeroPadFramesAttr.Get());
+			return FastDecimalFormat::NumberToString(TimeInSeconds, ExpressionParser::GetLocalizedNumberFormattingRules(), NumberFormattingOptions);
 		}
 		case EFrameNumberDisplayFormats::NonDropFrameTimecode:
 		case EFrameNumberDisplayFormats::DropFrameTimecode:
@@ -135,6 +158,34 @@ struct FFrameNumberInterface : public INumericTypeInterface<double>
 			else if (FrameResult.IsValid() && FallbackFormat == EFrameNumberDisplayFormats::Frames)
 			{
 				return TOptional<double>(FrameResult.GetValue().GetFrame().Value);
+			}
+
+			static FBasicMathExpressionEvaluator Parser;
+
+			// If not parsed, try the math expression evaluator
+			if (FallbackFormat == EFrameNumberDisplayFormats::Seconds)
+			{
+				double TimeInSeconds = DestinationFrameRate.AsSeconds(FFrameTime::FromDecimal(InExistingValue));
+
+				TValueOrError<double, FExpressionError> Result = Parser.Evaluate(*InString, TimeInSeconds);
+				if (Result.IsValid())
+				{
+					FFrameTime ResultTime = DestinationFrameRate.AsFrameTime(Result.GetValue());
+
+					return TOptional<double>(ResultTime.GetFrame().Value);
+				}
+			}
+			else if (FallbackFormat == EFrameNumberDisplayFormats::Frames)
+			{
+				FFrameTime ExistingTime = FFrameRate::TransformTime(FFrameTime::FromDecimal(InExistingValue), DestinationFrameRate, SourceFrameRate);
+
+				TValueOrError<double, FExpressionError> Result = Parser.Evaluate(*InString, (double)(ExistingTime.GetFrame().Value));
+				if (Result.IsValid())
+				{
+					FFrameTime ResultTime = FFrameRate::TransformTime(FFrameTime::FromDecimal(Result.GetValue()), SourceFrameRate, DestinationFrameRate);
+
+					return TOptional<double>(ResultTime.GetFrame().Value);
+				}
 			}
 
 			// Whatever they entered wasn't understood by any of our parsers, so it was probably malformed or had letters, etc.

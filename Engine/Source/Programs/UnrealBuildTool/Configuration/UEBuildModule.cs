@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 using System;
 using System.Collections.Generic;
@@ -39,6 +39,11 @@ namespace UnrealBuildTool
 		}
 
 		/// <summary>
+		/// Paths to all potential module source directories (with platform extension directories added in)
+		/// </summary>
+		public DirectoryReference[] ModuleDirectories;
+
+		/// <summary>
 		/// The name of the .Build.cs file this module was created from, if any
 		/// </summary>
 		public FileReference RulesFile
@@ -62,49 +67,59 @@ namespace UnrealBuildTool
 		protected readonly string ModuleApiDefine;
 
 		/// <summary>
+		/// The name of the _VTABLE define for this module
+		/// </summary>
+		protected readonly string ModuleVTableDefine;
+
+		/// <summary>
 		/// Set of all the public definitions
 		/// </summary>
-		protected readonly HashSet<string> PublicDefinitions;
+		public readonly HashSet<string> PublicDefinitions;
 
 		/// <summary>
 		/// Set of all public include paths
 		/// </summary>
-		protected readonly HashSet<DirectoryReference> PublicIncludePaths;
+		public readonly HashSet<DirectoryReference> PublicIncludePaths;
 
 		/// <summary>
 		/// Nested public include paths which used to be added automatically, but are now only added for modules with bNestedPublicIncludePaths set.
 		/// </summary>
-		protected readonly HashSet<DirectoryReference> LegacyPublicIncludePaths = new HashSet<DirectoryReference>();
+		public readonly HashSet<DirectoryReference> LegacyPublicIncludePaths = new HashSet<DirectoryReference>();
 
 		/// <summary>
 		/// Set of all private include paths
 		/// </summary>
-		protected readonly HashSet<DirectoryReference> PrivateIncludePaths;
+		public readonly HashSet<DirectoryReference> PrivateIncludePaths;
 
 		/// <summary>
 		/// Set of all system include paths
 		/// </summary>
-		protected readonly HashSet<DirectoryReference> PublicSystemIncludePaths;
+		public readonly HashSet<DirectoryReference> PublicSystemIncludePaths;
 
 		/// <summary>
-		/// Set of all public library paths
+		/// Set of all public system library paths
 		/// </summary>
-		protected readonly HashSet<DirectoryReference> PublicLibraryPaths;
+		public readonly HashSet<DirectoryReference> PublicSystemLibraryPaths;
 
 		/// <summary>
 		/// Set of all additional libraries
 		/// </summary>
-		protected readonly HashSet<string> PublicAdditionalLibraries;
+		public readonly HashSet<string> PublicAdditionalLibraries;
+
+		/// <summary>
+		/// Set of all system libraries
+		/// </summary>
+		protected readonly HashSet<string> PublicSystemLibraries;
 
 		/// <summary>
 		/// Set of additional frameworks
 		/// </summary>
-		protected readonly HashSet<string> PublicFrameworks;
+		public readonly HashSet<string> PublicFrameworks;
 
 		/// <summary>
 		/// 
 		/// </summary>
-		protected readonly HashSet<string> PublicWeakFrameworks;
+		public readonly HashSet<string> PublicWeakFrameworks;
 
 		/// <summary>
 		/// 
@@ -119,32 +134,32 @@ namespace UnrealBuildTool
 		/// <summary>
 		/// Names of modules with header files that this module's public interface needs access to.
 		/// </summary>
-		protected List<UEBuildModule> PublicIncludePathModules;
+		public List<UEBuildModule> PublicIncludePathModules;
 
 		/// <summary>
 		/// Names of modules that this module's public interface depends on.
 		/// </summary>
-		protected List<UEBuildModule> PublicDependencyModules;
+		public List<UEBuildModule> PublicDependencyModules;
 
 		/// <summary>
 		/// Names of DLLs that this module should delay load
 		/// </summary>
-		protected HashSet<string> PublicDelayLoadDLLs;
+		public HashSet<string> PublicDelayLoadDLLs;
 
 		/// <summary>
 		/// Names of modules with header files that this module's private implementation needs access to.
 		/// </summary>
-		protected List<UEBuildModule> PrivateIncludePathModules;
+		public List<UEBuildModule> PrivateIncludePathModules;
 
 		/// <summary>
 		/// Names of modules that this module's private implementation depends on.
 		/// </summary>
-		protected List<UEBuildModule> PrivateDependencyModules;
+		public List<UEBuildModule> PrivateDependencyModules;
 
 		/// <summary>
 		/// Extra modules this module may require at run time
 		/// </summary>
-		protected List<UEBuildModule> DynamicallyLoadedModules;
+		public List<UEBuildModule> DynamicallyLoadedModules;
 
 		/// <summary>
 		/// Set of all whitelisted restricted folder references
@@ -160,14 +175,28 @@ namespace UnrealBuildTool
 			this.Rules = Rules;
 
 			ModuleApiDefine = Name.ToUpperInvariant() + "_API";
+			ModuleVTableDefine = Name.ToUpperInvariant() + "_VTABLE";
 
 			PublicDefinitions = HashSetFromOptionalEnumerableStringParameter(Rules.PublicDefinitions);
 			PublicIncludePaths = CreateDirectoryHashSet(Rules.PublicIncludePaths);
 			PublicSystemIncludePaths = CreateDirectoryHashSet(Rules.PublicSystemIncludePaths);
-			PublicLibraryPaths = CreateDirectoryHashSet(Rules.PublicLibraryPaths);
+			PublicSystemLibraryPaths = CreateDirectoryHashSet(Rules.PublicSystemLibraryPaths);
 			PublicAdditionalLibraries = HashSetFromOptionalEnumerableStringParameter(Rules.PublicAdditionalLibraries);
+			PublicSystemLibraries = HashSetFromOptionalEnumerableStringParameter(Rules.PublicSystemLibraries);
 			PublicFrameworks = HashSetFromOptionalEnumerableStringParameter(Rules.PublicFrameworks);
 			PublicWeakFrameworks = HashSetFromOptionalEnumerableStringParameter(Rules.PublicWeakFrameworks);
+
+			foreach (string LibraryName in PublicAdditionalLibraries)
+			{
+				// if the library path is fully qualified we just add it, this is the preferred method of adding a library
+				if (File.Exists(LibraryName))
+				{
+					continue;
+				}
+
+				// the library path does not seem to be resolvable as is, lets warn about it as dependency checking will not work for it
+				Log.TraceWarning("Library '{0}' was not resolvable to a file when used in Module '{1}', assuming it is a filename and will search library paths for it. This is slow and dependency checking will not work for it. Please update reference to be fully qualified alternatively use PublicSystemLibraryPaths if you do intended to use this slow path to suppress this warning. ", LibraryName, Name);
+			}
 
 			PublicAdditionalFrameworks = new HashSet<UEBuildFramework>();
 			if(Rules.PublicAdditionalFrameworks != null)
@@ -181,7 +210,7 @@ namespace UnrealBuildTool
 					}
 					else
 					{
-						Framework = new UEBuildFramework(FrameworkRules.Name, FileReference.Combine(ModuleDirectory, FrameworkRules.ZipPath), DirectoryReference.Combine(UnrealBuildTool.EngineDirectory, "Intermediate", "UnzippedFrameworks", Name, Path.GetFileNameWithoutExtension(FrameworkRules.ZipPath)), FrameworkRules.CopyBundledAssets);
+						Framework = new UEBuildFramework(FrameworkRules.Name, FileReference.Combine(ModuleDirectory, FrameworkRules.ZipPath), DirectoryReference.Combine(UnrealBuildTool.EngineDirectory, "Intermediate", "UnzippedFrameworks", FrameworkRules.Name, Path.GetFileNameWithoutExtension(FrameworkRules.ZipPath)), FrameworkRules.CopyBundledAssets);
 					}
 					PublicAdditionalFrameworks.Add(Framework);
 				}
@@ -200,6 +229,17 @@ namespace UnrealBuildTool
 			IsRedistributableOverride = Rules.IsRedistributableOverride;
 
 			WhitelistRestrictedFolders = new HashSet<DirectoryReference>(Rules.WhitelistRestrictedFolders.Select(x => DirectoryReference.Combine(ModuleDirectory, x)));
+
+			// merge the main directory and any others set in the Rules
+			List<DirectoryReference> MergedDirectories = new List<DirectoryReference> { ModuleDirectory };
+			DirectoryReference[] ExtraModuleDirectories = Rules.GetModuleDirectoriesForAllSubClasses();
+			if (ExtraModuleDirectories != null)
+			{
+				MergedDirectories.AddRange(ExtraModuleDirectories);
+			}
+
+			// cache the results (it will always at least have the ModuleDirectory)
+			ModuleDirectories = MergedDirectories.ToArray();
 		}
 
 		/// <summary>
@@ -252,7 +292,7 @@ namespace UnrealBuildTool
 				foreach(string InputString in InEnumerableStrings)
 				{
 					DirectoryReference Dir = new DirectoryReference(ExpandPathVariables(InputString, null, null));
-					if(DirectoryReference.Exists(Dir))
+					if(DirectoryLookupCache.DirectoryExists(Dir))
 					{
 						Directories.Add(Dir);
 					}
@@ -290,18 +330,19 @@ namespace UnrealBuildTool
 		public void GatherAdditionalResources(List<string> Libraries, List<UEBuildBundleResource> BundleResources)
 		{
 			Libraries.AddRange(PublicAdditionalLibraries);
+			Libraries.AddRange(PublicSystemLibraries);
 			BundleResources.AddRange(PublicAdditionalBundleResources);
 		}
 
 		/// <summary>
 		/// Determines the distribution level of a module based on its directory and includes.
 		/// </summary>
-		/// <param name="ProjectDir">The project directory, if available</param>
+		/// <param name="RootDirectories">The set of additional paths to check, if available</param>
 		/// <returns>Map of the restricted folder types to the first found instance</returns>
-		public Dictionary<RestrictedFolder, DirectoryReference> FindRestrictedFolderReferences(DirectoryReference ProjectDir)
+		public Dictionary<RestrictedFolder, DirectoryReference> FindRestrictedFolderReferences(List<DirectoryReference> RootDirectories)
 		{
 			Dictionary<RestrictedFolder, DirectoryReference> References = new Dictionary<RestrictedFolder, DirectoryReference>();
-			if (!Rules.bOutputPubliclyDistributable)
+			if (!Rules.bLegalToDistributeObjectCode)
 			{
 				// Find all the directories that this module references
 				HashSet<DirectoryReference> ReferencedDirs = new HashSet<DirectoryReference>();
@@ -316,16 +357,9 @@ namespace UnrealBuildTool
 				foreach(DirectoryReference ReferencedDir in ReferencedDirs)
 				{
 					// Find the base directory containing this reference
-					DirectoryReference BaseDir;
-					if(ReferencedDir.IsUnderDirectory(UnrealBuildTool.EngineDirectory))
-					{
-						BaseDir = UnrealBuildTool.EngineDirectory;
-					}
-					else if(ProjectDir != null && ReferencedDir.IsUnderDirectory(ProjectDir))
-					{
-						BaseDir = ProjectDir;
-					}
-					else
+					DirectoryReference BaseDir = RootDirectories.FirstOrDefault(x => ReferencedDir.IsUnderDirectory(x));
+					// @todo platplug does this need to check platform extension engine directories? what are ReferencedDir's here?
+					if (BaseDir == null)
 					{
 						continue;
 					}
@@ -364,9 +398,9 @@ namespace UnrealBuildTool
 			{
 				Directories.Add(PublicSystemIncludePath);
 			}
-			foreach(DirectoryReference PublicLibraryPath in PublicLibraryPaths)
+			foreach (DirectoryReference PublicSystemLibraryPath in PublicSystemLibraryPaths)
 			{
-				Directories.Add(PublicLibraryPath);
+				Directories.Add(PublicSystemLibraryPath);
 			}
 		}
 
@@ -474,25 +508,30 @@ namespace UnrealBuildTool
 			{
 				if(Rules.Target.LinkType == TargetLinkType.Monolithic)
 				{
-					if (Rules.Target.bShouldCompileAsDLL && Rules.Target.bHasExports)
+					if (Rules.Target.bShouldCompileAsDLL && (Rules.Target.bHasExports || Rules.ModuleSymbolVisibility == ModuleRules.SymbolVisibility.VisibileForDll))
 					{
+						Definitions.Add(ModuleVTableDefine + "=DLLEXPORT_VTABLE");
 						Definitions.Add(ModuleApiDefine + "=DLLEXPORT");
 					}
 					else
 					{
+						Definitions.Add(ModuleVTableDefine + "=");
 						Definitions.Add(ModuleApiDefine + "=");
 					}
 				}
 				else if(Binary == null || SourceBinary != Binary)
 				{
+					Definitions.Add(ModuleVTableDefine + "=DLLIMPORT_VTABLE");
 					Definitions.Add(ModuleApiDefine + "=DLLIMPORT");
 				}
 				else if(!Binary.bAllowExports)
 				{
+					Definitions.Add(ModuleVTableDefine + "=");
 					Definitions.Add(ModuleApiDefine + "=");
 				}
 				else
 				{
+					Definitions.Add(ModuleVTableDefine + "=DLLEXPORT_VTABLE");
 					Definitions.Add(ModuleApiDefine + "=DLLEXPORT");
 				}
 			}
@@ -678,8 +717,9 @@ namespace UnrealBuildTool
 				}
 
 				// Add this module's public include library paths and additional libraries.
-				LibraryPaths.AddRange(PublicLibraryPaths);
+				LibraryPaths.AddRange(PublicSystemLibraryPaths);
 				AdditionalLibraries.AddRange(PublicAdditionalLibraries);
+				AdditionalLibraries.AddRange(PublicSystemLibraries);
 				RuntimeLibraryPaths.AddRange(ExpandPathVariables(Rules.PublicRuntimeLibraryPaths, SourceBinary.OutputDir, ExeDir));
 				Frameworks.AddRange(PublicFrameworks);
 				WeakFrameworks.AddRange(PublicWeakFrameworks);
@@ -720,12 +760,15 @@ namespace UnrealBuildTool
 
 			// Add all the additional properties
 			LinkEnvironment.AdditionalProperties.AddRange(Rules.AdditionalPropertiesForReceipt.Inner);
+
+			// this is a link-time property that needs to be accumulated (if any modules contributing to this module is ignoring, all are ignoring)
+			LinkEnvironment.bIgnoreUnresolvedSymbols |= Rules.bIgnoreUnresolvedSymbols;
 		}
 
 		/// <summary>
 		/// Compiles the module, and returns a list of files output by the compiler.
 		/// </summary>
-		public abstract List<FileItem> Compile(ReadOnlyTargetRules Target, UEToolChain ToolChain, CppCompileEnvironment CompileEnvironment, ISourceFileWorkingSet WorkingSet, TargetMakefile Makefile);
+		public abstract List<FileItem> Compile(ReadOnlyTargetRules Target, UEToolChain ToolChain, CppCompileEnvironment CompileEnvironment, FileReference SingleFileToCompile, ISourceFileWorkingSet WorkingSet, TargetMakefile Makefile);
 
 		// Object interface.
 		public override string ToString()
@@ -821,10 +864,25 @@ namespace UnrealBuildTool
 		}
 
 		/// <summary>
+		/// Returns valueless API defines (like MODULE_API or MODULE_VTABLE)
+		/// </summary>
+		public IEnumerable<string> GetEmptyApiMacros()
+		{
+			if (Rules.Type == ModuleRules.ModuleType.CPlusPlus)
+			{
+				return new[] {ModuleVTableDefine + "=", ModuleApiDefine + "="};
+			}
+
+			return new string[0];
+		}
+
+		/// <summary>
 		/// Write information about this binary to a JSON file
 		/// </summary>
+		/// <param name="BinaryOutputDir">The output directory for the binary containing this module</param>
+		/// <param name="TargetOutputDir">The output directory for the target executable</param>
 		/// <param name="Writer">Writer for this binary's data</param>
-		public virtual void ExportJson(JsonWriter Writer)
+		public virtual void ExportJson(DirectoryReference BinaryOutputDir, DirectoryReference TargetOutputDir, JsonWriter Writer)
 		{
 			Writer.WriteValue("Name", Name);
 			Writer.WriteValue("Directory", ModuleDirectory.FullName);
@@ -850,8 +908,9 @@ namespace UnrealBuildTool
 			ExportJsonStringArray(Writer, "PublicSystemIncludePaths", PublicSystemIncludePaths.Select(x => x.FullName));
 			ExportJsonStringArray(Writer, "PublicIncludePaths", PublicIncludePaths.Select(x => x.FullName));
 			ExportJsonStringArray(Writer, "PrivateIncludePaths", PrivateIncludePaths.Select(x => x.FullName));
-			ExportJsonStringArray(Writer, "PublicLibraryPaths", PublicLibraryPaths.Select(x => x.FullName));
+			ExportJsonStringArray(Writer, "PublicSystemLibraryPaths", PublicSystemLibraryPaths.Select(x => x.FullName));
 			ExportJsonStringArray(Writer, "PublicAdditionalLibraries", PublicAdditionalLibraries);
+			ExportJsonStringArray(Writer, "PublicSystemLibraries", PublicSystemLibraries);
 			ExportJsonStringArray(Writer, "PublicFrameworks", PublicFrameworks);
 			ExportJsonStringArray(Writer, "PublicWeakFrameworks", PublicWeakFrameworks);
 			ExportJsonStringArray(Writer, "PublicDelayLoadDLLs", PublicDelayLoadDLLs);
@@ -861,6 +920,20 @@ namespace UnrealBuildTool
 			foreach(string ModuleName in Rules.CircularlyReferencedDependentModules)
 			{
 				Writer.WriteValue(ModuleName);
+			}
+			Writer.WriteArrayEnd();
+
+			Writer.WriteArrayStart("RuntimeDependencies");
+			foreach(ModuleRules.RuntimeDependency RuntimeDependency in Rules.RuntimeDependencies.Inner)
+			{
+				Writer.WriteObjectStart();
+				Writer.WriteValue("Path", ExpandPathVariables(RuntimeDependency.Path, BinaryOutputDir, TargetOutputDir));
+				if(RuntimeDependency.SourcePath != null)
+				{
+					Writer.WriteValue("SourcePath", ExpandPathVariables(RuntimeDependency.SourcePath, BinaryOutputDir, TargetOutputDir));
+				}
+				Writer.WriteValue("Type", RuntimeDependency.Type.ToString());
+				Writer.WriteObjectEnd();
 			}
 			Writer.WriteArrayEnd();
 		}

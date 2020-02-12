@@ -1,8 +1,9 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
 #include "CoreMinimal.h"
+#include "AssetData.h"
 
 struct FBasePropertyOverrideNode
 {
@@ -161,6 +162,7 @@ public:
 	FString Path;
 	FName ObjectPath;
 	FAnalyzedMaterialNodePtr Parent;
+	FAssetData AssetData;
 
 	TArray<FBasePropertyOverrideNodeRef> BasePropertyOverrides;
 	TArray<FStaticMaterialLayerParameterNodeRef> MaterialLayerParameters;

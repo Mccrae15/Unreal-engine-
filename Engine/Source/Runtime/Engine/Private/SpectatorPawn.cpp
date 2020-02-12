@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 
 #include "GameFramework/SpectatorPawn.h"
@@ -11,7 +11,7 @@ ASpectatorPawn::ASpectatorPawn(const FObjectInitializer& ObjectInitializer)
 	.DoNotCreateDefaultSubobject(Super::MeshComponentName)
 	)
 {
-	bCanBeDamaged = false;
+	SetCanBeDamaged(false);
 	//SetRemoteRoleForBackwardsCompat(ROLE_SimulatedProxy);
 	//bReplicates = true;
 

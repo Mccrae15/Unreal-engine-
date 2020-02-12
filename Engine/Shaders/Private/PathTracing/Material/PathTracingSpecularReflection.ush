@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 /*=============================================================================================
 PathTracingSpecularReflection.usf: Lambertian BRDF sampling functions
@@ -13,20 +13,15 @@ void SpecularReflection_SampleMaterial(
 	out float OutPdf)
 {
 	float3 N_World = GetWorldNormal(Payload);
-	float3 DiffuseColor = GetDiffuseColor(Payload);
+	float3 SpecularColor = GetSpecularColor(Payload);
 
-	//OutDirection = reflect(RayDirection, N_World); // To reflect in world coords directly
 	float3 V_World = normalize(-RayDirection);
-	float3 V_Local = WorldToTangent(V_World, N_World);
+	OutDirection = reflect(-V_World, N_World);
 
-	float3 L_Local;
-	L_Local.x = -V_Local.x;
-	L_Local.y = -V_Local.y;
-	L_Local.z = V_Local.z;
-	OutDirection = TangentToWorld(L_Local, N_World);
+	float NoV = saturate(dot(V_World, N_World));
+	float VoH = NoV;
+	OutThroughput = F_Schlick(SpecularColor, VoH);
 
-	float NoL = max(L_Local.z, 0.0);
-	OutThroughput = DiffuseColor * NoL;
 	OutPdf = 1.0;
 }
 

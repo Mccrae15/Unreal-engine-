@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "LocationServicesAndroidImpl.h"
 #include "Android/AndroidJNI.h"
@@ -57,11 +57,11 @@ FLocationServicesData ULocationServicesAndroidImpl::GetLastKnownLocation()
 	{
 		static jmethodID GetLastKnownLocationMethod = FJavaWrapper::FindMethod(Env, FJavaWrapper::GameActivityClassID, "AndroidThunkJava_GetLastKnownLocation", "()[F", false);
 
-		jfloatArray FloatValuesArray = (jfloatArray)FJavaWrapper::CallObjectMethod(Env, FJavaWrapper::GameActivityThis, GetLastKnownLocationMethod);
+		auto FloatValuesArray = NewScopedJavaObject(Env, (jfloatArray)FJavaWrapper::CallObjectMethod(Env, FJavaWrapper::GameActivityThis, GetLastKnownLocationMethod));
 
-		jfloat* FloatValues = Env->GetFloatArrayElements(FloatValuesArray, 0);
+		jfloat* FloatValues = Env->GetFloatArrayElements(*FloatValuesArray, 0);
 
-		if (Env->GetArrayLength(FloatValuesArray) >= 6)
+		if (Env->GetArrayLength(*FloatValuesArray) >= 6)
 		{
 			LocData.Timestamp = FloatValues[0];
 			LocData.Longitude = FloatValues[1];
@@ -71,8 +71,7 @@ FLocationServicesData ULocationServicesAndroidImpl::GetLastKnownLocation()
 			LocData.Altitude = FloatValues[5];
 		}
 
-		Env->ReleaseFloatArrayElements(FloatValuesArray, FloatValues, 0);
-		Env->DeleteLocalRef(FloatValuesArray);
+		Env->ReleaseFloatArrayElements(*FloatValuesArray, FloatValues, 0);
 	}
 
 	return LocData;

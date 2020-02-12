@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -50,6 +50,7 @@ class MEDIAUTILS_API FMediaPlayerFacade
 	: public IMediaClockSink
 	, public IMediaTickable
 	, protected IMediaEventSink
+	, public TSharedFromThis<FMediaPlayerFacade, ESPMode::ThreadSafe>
 {
 public:
 
@@ -473,6 +474,13 @@ public:
 	bool IsPreparing() const;
 
 	/**
+	 * Whether media is currently closed.
+	 *
+	 * @return true if media is closed, false otherwise.
+	 */
+	bool IsClosed() const;
+
+	/**
 	 * Whether media is ready for playback.
 	 *
 	 * A player is ready for playback if it has a media source opened that
@@ -559,6 +567,11 @@ public:
 	 * @see IsLooping
 	 */
 	bool SetLooping(bool Looping);
+
+	/**
+	 * Changes media ooptions on the player.
+	 */
+	void SetMediaOptions(const IMediaOptions* Options);
 
 	/**
 	 * Changes the media's playback rate.

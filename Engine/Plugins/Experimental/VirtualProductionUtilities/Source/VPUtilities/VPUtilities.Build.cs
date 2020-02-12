@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 using UnrealBuildTool;
 
@@ -16,7 +16,19 @@ public class VPUtilities : ModuleRules
 				"CoreUObject",
 				"Engine",
 				"GameplayTags",
+				"TimeManagement",
+				"UMG",
 				"VPBookmark",
+			}
+		);
+
+		PrivateDependencyModuleNames.AddRange(
+			new string[]
+			{
+				"RenderCore",
+				"RHI",
+				"Slate",
+				"SlateCore",
 			}
 		);
 
@@ -25,9 +37,11 @@ public class VPUtilities : ModuleRules
 			PrivateDependencyModuleNames.AddRange(
 				new string[]
 				{
-					"VPBookmarkEditor",
+					"Blutility",
+					"LevelEditor",
 					"UnrealEd",
 					"ViewportInteraction",
+					"VPBookmarkEditor",
 					"VREditor",
 				}
 			);

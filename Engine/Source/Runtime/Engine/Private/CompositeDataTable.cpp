@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "Engine/CompositeDataTable.h"
 #include "Serialization/PropertyLocalizationDataGathering.h"
@@ -52,22 +52,25 @@ UCompositeDataTable::ERowState UCompositeDataTable::GetRowState(FName RowName) c
 }
 #endif
 
-void UCompositeDataTable::UpdateCachedRowMap()
+void UCompositeDataTable::UpdateCachedRowMap(bool bWarnOnInvalidChildren)
 {
 	bool bLeaveEmpty = false;
 	// Throw up an error message and stop if any loops are found
 	if (const UCompositeDataTable* LoopTable = FindLoops(TArray<const UCompositeDataTable*>()))
 	{
-		const FText ErrorMsg = FText::Format(LOCTEXT("FoundLoopError", "Cyclic dependency found. Table {0} depends on itself. Please fix your data"), FText::FromString(LoopTable->GetPathName()));
+		if (bWarnOnInvalidChildren)
+		{
+			const FText ErrorMsg = FText::Format(LOCTEXT("FoundLoopError", "Cyclic dependency found. Table {0} depends on itself. Please fix your data"), FText::FromString(LoopTable->GetPathName()));
 #if WITH_EDITOR
-		if (!bIsLoading)
-		{
-			FMessageDialog::Open(EAppMsgType::Ok, ErrorMsg);
-		}
-		else
+			if (!bIsLoading)
+			{
+				FMessageDialog::Open(EAppMsgType::Ok, ErrorMsg);
+			}
+			else
 #endif
-		{
-			UE_LOG(LogDataTable, Warning, TEXT("%s"), *ErrorMsg.ToString());
+			{
+				UE_LOG(LogDataTable, Warning, TEXT("%s"), *ErrorMsg.ToString());
+			}
 		}
 		bLeaveEmpty = true;
 
@@ -95,10 +98,13 @@ void UCompositeDataTable::UpdateCachedRowMap()
 			}
 			if (ParentTable->RowStruct != RowStruct)
 			{
-				bParentsHaveDifferentRowStruct = true;
-				FString CompositeRowStructName = RowStruct ? RowStruct->GetName() : "Missing row struct";
-				FString ParentRowStructName = ParentTable->RowStruct ? ParentTable->RowStruct->GetName() : "Missing row struct";
-				UE_LOG(LogDataTable, Error, TEXT("Composite tables must have the same row struct as their parent tables. Composite Table: %s, Composite Row Struct: %s, Parent Table: %s, Parent Row Struct: %s."), *GetName(), *CompositeRowStructName, *ParentTable->GetName(), *ParentRowStructName);
+				if (bWarnOnInvalidChildren)
+				{
+					bParentsHaveDifferentRowStruct = true;
+					FString CompositeRowStructName = RowStruct ? RowStruct->GetName() : "Missing row struct";
+					FString ParentRowStructName = ParentTable->RowStruct ? ParentTable->RowStruct->GetName() : "Missing row struct";
+					UE_LOG(LogDataTable, Error, TEXT("Composite tables must have the same row struct as their parent tables. Composite Table: %s, Composite Row Struct: %s, Parent Table: %s, Parent Row Struct: %s."), *GetName(), *CompositeRowStructName, *ParentTable->GetName(), *ParentRowStructName);
+				}
 				continue;
 			}
 
@@ -201,7 +207,14 @@ void UCompositeDataTable::Serialize(FArchive& Ar)
 
 	Super::Serialize(Ar); // When loading, this should load our RowStruct!	
 
-	if (Ar.IsLoading())
+#if WITH_EDITORONLY_DATA
+	if (Ar.IsLoading() && GIsTransacting)
+	{
+		bIsLoading = false;
+	}
+#endif
+
+	if (bIsLoading)
 	{
 		for (UDataTable* ParentTable : ParentTables)
 		{
@@ -240,20 +253,41 @@ void UCompositeDataTable::PostEditChangeProperty(FPropertyChangedEvent& Property
 {
 	static FName Name_ParentTables = GET_MEMBER_NAME_CHECKED(UCompositeDataTable, ParentTables);
 
-	UProperty* PropertyThatChanged = PropertyChangedEvent.Property;
+	FProperty* PropertyThatChanged = PropertyChangedEvent.Property;
 	const FName PropertyName = PropertyThatChanged != nullptr ? PropertyThatChanged->GetFName() : NAME_None;
 
 	if (PropertyName == Name_ParentTables)
 	{
-		OnParentTablesUpdated();
+		OnParentTablesUpdated(PropertyChangedEvent.ChangeType);
 	}
 
 	Super::PostEditChangeProperty(PropertyChangedEvent);
 }
+
+void UCompositeDataTable::PostEditUndo()
+{
+	OnParentTablesUpdated(EPropertyChangeType::ValueSet);
+
+	Super::PostEditUndo();
+}
+
 #endif // WITH_EDITOR
 
-void UCompositeDataTable::OnParentTablesUpdated()
+void UCompositeDataTable::AppendParentTables(const TArray<UDataTable*>& NewTables)
 {
+	ParentTables.Append(NewTables);
+	OnParentTablesUpdated(EPropertyChangeType::ValueSet);
+}
+
+void UCompositeDataTable::OnParentTablesUpdated(EPropertyChangeType::Type ChangeType)
+{
+	// Prevent recursion when there was a cycle in the parent hierarchy (or during the undo of the action that created the cycle; in that case PostEditUndo will recall OnParentTablesUpdated when the dust has settled)
+	if (bUpdatingParentTables)
+	{
+		return;
+	}
+	bUpdatingParentTables = true;
+
 	for (UDataTable* Table : OldParentTables)
 	{
 		if (Table && ParentTables.Find(Table) == INDEX_NONE)
@@ -262,17 +296,19 @@ void UCompositeDataTable::OnParentTablesUpdated()
 		}
 	}
 
-	UpdateCachedRowMap();
+	UpdateCachedRowMap(ChangeType == EPropertyChangeType::ValueSet || ChangeType == EPropertyChangeType::Duplicate);
 
 	for (UDataTable* Table : ParentTables)
 	{
-		if (Table && OldParentTables.Find(Table) == INDEX_NONE)
+		if ((Table != nullptr) && (Table != this) && (OldParentTables.Find(Table) == INDEX_NONE))
 		{
-			Table->OnDataTableChanged().AddUObject(this, &UCompositeDataTable::UpdateCachedRowMap);
+			Table->OnDataTableChanged().AddUObject(this, &UCompositeDataTable::OnParentTablesUpdated, EPropertyChangeType::Unspecified);
 		}
 	}
 
 	OldParentTables = ParentTables;
+
+	bUpdatingParentTables = false;
 }
 
 #undef LOCTEXT_NAMESPACE

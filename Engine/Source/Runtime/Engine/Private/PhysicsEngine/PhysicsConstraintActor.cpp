@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "PhysicsEngine/PhysicsConstraintActor.h"
 #include "UObject/ConstructorHelpers.h"
@@ -24,7 +24,7 @@ APhysicsConstraintActor::APhysicsConstraintActor(const FObjectInitializer& Objec
 
 	ConstraintComp = CreateDefaultSubobject<UPhysicsConstraintComponent>(TEXT("MyConstraintComp"));
 	RootComponent = ConstraintComp;
-	bHidden = true;
+	SetHidden(true);
 }
 
 void APhysicsConstraintActor::PostLoad()

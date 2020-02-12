@@ -1,13 +1,15 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "SLandscapeEditor.h"
 #include "Framework/MultiBox/MultiBoxDefs.h"
 #include "Framework/MultiBox/MultiBoxBuilder.h"
 #include "Widgets/Layout/SBorder.h"
+#include "Widgets/Input/SMultiLineEditableTextBox.h"
 #include "Modules/ModuleManager.h"
 #include "SlateOptMacros.h"
 #include "Widgets/Layout/SBox.h"
 #include "Widgets/Notifications/SErrorText.h"
+#include "Classes/EditorStyleSettings.h"
 #include "EditorStyleSet.h"
 #include "EditorModeManager.h"
 #include "EditorModes.h"
@@ -93,6 +95,7 @@ void FLandscapeToolKit::Init(const TSharedPtr<IToolkitHost>& InitToolkitHost)
 	MAP_TOOL("ResizeLandscape");
 
 	MAP_TOOL("Sculpt");
+	MAP_TOOL("Erase");
 	MAP_TOOL("Paint");
 	MAP_TOOL("Smooth");
 	MAP_TOOL("Flatten");
@@ -102,7 +105,7 @@ void FLandscapeToolKit::Init(const TSharedPtr<IToolkitHost>& InitToolkitHost)
 	MAP_TOOL("Noise");
 	MAP_TOOL("Retopologize");
 	MAP_TOOL("Visibility");
-	MAP_TOOL("BPCustom");
+	MAP_TOOL("BlueprintBrush");
 
 	MAP_TOOL("Select");
 	MAP_TOOL("AddComponent");
@@ -133,6 +136,11 @@ void FLandscapeToolKit::Init(const TSharedPtr<IToolkitHost>& InitToolkitHost)
 
 	LandscapeEditorWidgets = SNew(SLandscapeEditor, SharedThis(this));
 
+	if (!GetDefault<UEditorStyleSettings>()->bEnableLegacyEditorModeUI)
+	{
+		BrushesWidgets = StaticCastSharedRef<FLandscapeEditorDetails>(FLandscapeEditorDetails::MakeInstance());
+	}
+
 	FModeToolkit::Init(InitToolkitHost);
 }
 
@@ -143,7 +151,7 @@ FName FLandscapeToolKit::GetToolkitFName() const
 
 FText FLandscapeToolKit::GetBaseToolkitName() const
 {
-	return LOCTEXT("ToolkitName", "Landscape Editor");
+	return LOCTEXT("ToolkitName", "Landscape");
 }
 
 FEdModeLandscape* FLandscapeToolKit::GetEditorMode() const
@@ -154,6 +162,143 @@ FEdModeLandscape* FLandscapeToolKit::GetEditorMode() const
 TSharedPtr<SWidget> FLandscapeToolKit::GetInlineContent() const
 {
 	return LandscapeEditorWidgets;
+}
+
+const TArray<FName> FLandscapeToolKit::PaletteNames = { LandscapeEditorNames::Manage, LandscapeEditorNames::Sculpt, LandscapeEditorNames::Paint };
+
+void FLandscapeToolKit::GetToolPaletteNames(TArray<FName>& InPaletteName) const
+{
+	if (!GetDefault<UEditorStyleSettings>()->bEnableLegacyEditorModeUI)
+	{
+		InPaletteName = PaletteNames;
+	}
+}
+
+FText FLandscapeToolKit::GetToolPaletteDisplayName(FName PaletteName) const
+{
+
+	if (PaletteName == LandscapeEditorNames::Manage)
+	{
+		return LOCTEXT("Mode.Manage", "Manage");
+	}
+	else if (PaletteName == LandscapeEditorNames::Sculpt)
+	{
+		return LOCTEXT("Mode.Sculpt", "Sculpt");
+	}
+	else if (PaletteName == LandscapeEditorNames::Paint)
+	{
+		return LOCTEXT("Mode.Paint",  "Paint");
+	}
+
+	return FText();
+}
+
+void FLandscapeToolKit::BuildToolPalette(FName PaletteName, class FToolBarBuilder& ToolBarBuilder)
+{
+	auto Commands = FLandscapeEditorCommands::Get();
+	FEdModeLandscape* LandscapeEdMode = GetEditorMode();
+	if (PaletteName == LandscapeEditorNames::Manage)
+	{
+		ToolBarBuilder.BeginSection("Manage");
+
+		ToolBarBuilder.AddToolBarButton(Commands.NewLandscape);
+		ToolBarBuilder.AddSeparator();	
+
+		ToolBarBuilder.AddToolBarButton(Commands.SelectComponentTool);
+		ToolBarBuilder.AddToolBarButton(Commands.AddComponentTool);
+		ToolBarBuilder.AddToolBarButton(Commands.DeleteComponentTool);
+		ToolBarBuilder.AddToolBarButton(Commands.MoveToLevelTool);
+
+		ToolBarBuilder.AddSeparator();	
+		ToolBarBuilder.AddToolBarButton(Commands.SplineTool);
+		ToolBarBuilder.EndSection();
+	}
+
+	else if (PaletteName == LandscapeEditorNames::Sculpt)
+	{
+
+		ToolBarBuilder.AddToolBarButton(Commands.SculptTool);
+		if (LandscapeEdMode->CanHaveLandscapeLayersContent())
+		{
+			ToolBarBuilder.AddToolBarButton(Commands.EraseTool);
+		}
+
+		ToolBarBuilder.AddToolBarButton(Commands.SmoothTool);
+		ToolBarBuilder.AddToolBarButton(Commands.FlattenTool);
+		ToolBarBuilder.AddToolBarButton(Commands.RampTool);
+		ToolBarBuilder.AddToolBarButton(Commands.ErosionTool);
+		ToolBarBuilder.AddToolBarButton(Commands.HydroErosionTool);
+		ToolBarBuilder.AddToolBarButton(Commands.NoiseTool);
+		ToolBarBuilder.AddToolBarButton(Commands.RetopologizeTool);
+		ToolBarBuilder.AddToolBarButton(Commands.VisibilityTool);
+		if (LandscapeEdMode->CanHaveLandscapeLayersContent())
+		{
+			ToolBarBuilder.AddToolBarButton(Commands.BlueprintBrushTool);
+		}
+		ToolBarBuilder.AddToolBarButton(Commands.MirrorTool);
+
+		ToolBarBuilder.AddSeparator();
+
+		ToolBarBuilder.AddToolBarButton(Commands.RegionSelectTool);
+		ToolBarBuilder.AddToolBarButton(Commands.RegionCopyPasteTool);
+
+		ToolBarBuilder.AddSeparator();
+
+		if (BrushesWidgets)
+		{
+			BrushesWidgets->CustomizeToolBarPalette(ToolBarBuilder, SharedThis(this));
+		}
+
+	}
+
+	else if (PaletteName == LandscapeEditorNames::Paint)
+	{
+
+		ToolBarBuilder.AddToolBarButton(Commands.PaintTool);
+		ToolBarBuilder.AddToolBarButton(Commands.SmoothTool);
+		ToolBarBuilder.AddToolBarButton(Commands.FlattenTool);
+		ToolBarBuilder.AddToolBarButton(Commands.NoiseTool);
+		if (LandscapeEdMode->CanHaveLandscapeLayersContent())
+		{
+			ToolBarBuilder.AddToolBarButton(Commands.BlueprintBrushTool);
+		}
+
+		ToolBarBuilder.AddSeparator();	
+
+		if (BrushesWidgets)
+		{
+			BrushesWidgets->CustomizeToolBarPalette(ToolBarBuilder, SharedThis(this));
+		}
+	}
+
+}
+
+void FLandscapeToolKit::OnToolPaletteChanged(FName PaletteName)
+{
+	if (PaletteName == LandscapeEditorNames::Manage && !IsModeActive(LandscapeEditorNames::Manage ))
+	{
+		OnChangeMode(LandscapeEditorNames::Manage);
+	}
+	else if (PaletteName == LandscapeEditorNames::Sculpt && !IsModeActive(LandscapeEditorNames::Sculpt ))
+	{
+		OnChangeMode(LandscapeEditorNames::Sculpt); 
+	}
+	else if (PaletteName == LandscapeEditorNames::Paint  && !IsModeActive(LandscapeEditorNames::Paint ))
+	{
+		OnChangeMode(LandscapeEditorNames::Paint); 
+	}
+}
+
+FText FLandscapeToolKit::GetActiveToolDisplayName() const
+{
+	FEdModeLandscape* LandscapeEdMode = GetEditorMode();
+	return LandscapeEdMode->CurrentTool->GetDisplayName();
+}
+
+FText FLandscapeToolKit::GetActiveToolMessage() const
+{
+	FEdModeLandscape* LandscapeEdMode = GetEditorMode();
+	return LandscapeEdMode->CurrentTool->GetDisplayMessage();
 }
 
 void FLandscapeToolKit::NotifyToolChanged()
@@ -186,7 +331,7 @@ bool FLandscapeToolKit::IsModeEnabled(FName ModeName) const
 	if (LandscapeEdMode)
 	{
 		// Manage is the only mode enabled if we have no landscape
-		if (ModeName == "ToolMode_Manage" || LandscapeEdMode->GetLandscapeList().Num() > 0)
+		if (ModeName == LandscapeEditorNames::Manage || (LandscapeEdMode->GetLandscapeList().Num() > 0 && LandscapeEdMode->CanEditCurrentTarget()))
 		{
 			return true;
 		}
@@ -253,7 +398,9 @@ void FLandscapeToolKit::OnChangeBrushSet(FName BrushSetName)
 bool FLandscapeToolKit::IsBrushSetEnabled(FName BrushSetName) const
 {
 	FEdModeLandscape* LandscapeEdMode = GetEditorMode();
-	if (LandscapeEdMode && LandscapeEdMode->CurrentTool)
+	if (LandscapeEdMode 
+		&& LandscapeEdMode->IsEditingEnabled()
+		&& LandscapeEdMode->CurrentTool )
 	{
 		return LandscapeEdMode->CurrentTool->ValidBrushes.Contains(BrushSetName);
 	}
@@ -299,6 +446,7 @@ bool FLandscapeToolKit::IsBrushActive(FName BrushName) const
 BEGIN_SLATE_FUNCTION_BUILD_OPTIMIZATION
 void SLandscapeEditor::Construct(const FArguments& InArgs, TSharedRef<FLandscapeToolKit> InParentToolkit)
 {
+	ParentToolkit = InParentToolkit;
 	TSharedRef<FUICommandList> CommandList = InParentToolkit->GetToolkitCommands();
 
 	// Modes:
@@ -337,7 +485,6 @@ void SLandscapeEditor::Construct(const FArguments& InArgs, TSharedRef<FLandscape
 		[
 			SNew(SVerticalBox)
 			.IsEnabled(this, &SLandscapeEditor::GetLandscapeEditorIsEnabled)
-
 			+ SVerticalBox::Slot()
 			.AutoHeight()
 			.Padding(4, 0, 4, 5)
@@ -346,6 +493,7 @@ void SLandscapeEditor::Construct(const FArguments& InArgs, TSharedRef<FLandscape
 				+ SOverlay::Slot()
 				[
 					SNew(SBorder)
+					.Visibility_Lambda( [] () -> EVisibility { return GetDefault<UEditorStyleSettings>()->bEnableLegacyEditorModeUI ? EVisibility::Visible : EVisibility::Collapsed; } )
 					.BorderImage(FEditorStyle::GetBrush("ToolPanel.GroupBorder"))
 					.HAlign(HAlign_Center)
 					[
@@ -449,11 +597,22 @@ bool SLandscapeEditor::GetLandscapeEditorIsEnabled() const
 
 bool SLandscapeEditor::GetIsPropertyVisible(const FPropertyAndParent& PropertyAndParent) const
 {
-	const UProperty& Property = PropertyAndParent.Property;
+	return ParentToolkit.Pin()->GetIsPropertyVisibleFromProperty(PropertyAndParent.Property);
+}
 
+bool FLandscapeToolKit::GetIsPropertyVisibleFromProperty(const FProperty& Property) const
+{
 	FEdModeLandscape* LandscapeEdMode = GetEditorMode();
+	
 	if (LandscapeEdMode != nullptr && LandscapeEdMode->CurrentTool != nullptr)
 	{
+	    // Hide all properties if the current target can't be edited. Except in New Landscape tool
+		if (LandscapeEdMode->CurrentTool->GetToolName() != FName("NewLandscape") &&
+			!LandscapeEdMode->CanEditCurrentTarget())
+		{
+			return false;
+		}
+
 		if (Property.HasMetaData("ShowForMask"))
 		{
 			const bool bMaskEnabled = LandscapeEdMode->CurrentTool &&
@@ -504,11 +663,18 @@ bool SLandscapeEditor::GetIsPropertyVisible(const FPropertyAndParent& PropertyAn
 				return false;
 			}
 		}
-		if (Property.HasMetaData("ShowForBPCustomTool"))
+		if (Property.HasMetaData("ShowForBlueprintBrushTool"))
 		{
 			const FName CurrentToolName = LandscapeEdMode->CurrentTool->GetToolName();
 
-			if (CurrentToolName != TEXT("BPCustom"))
+			if (CurrentToolName != TEXT("BlueprintBrush"))
+			{
+				return false;
+			}
+		}
+		if (Property.HasMetaData("ShowForLandscapeLayerSystem"))
+		{
+			if (!LandscapeEdMode->HasLandscapeLayersContent())
 			{
 				return false;
 			}

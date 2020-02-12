@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "Engine/SpotLight.h"
 #include "Components/ArrowComponent.h"
@@ -22,7 +22,7 @@ ASpotLight::ASpotLight(const FObjectInitializer& ObjectInitializer)
 
 	SpotLightComponent = CastChecked<USpotLightComponent>(GetLightComponent());
 	SpotLightComponent->Mobility = EComponentMobility::Stationary;
-	SpotLightComponent->RelativeRotation = FRotator(-90, 0, 0);
+	SpotLightComponent->SetRelativeRotation(FRotator(-90, 0, 0));
 
 	RootComponent = SpotLightComponent;
 

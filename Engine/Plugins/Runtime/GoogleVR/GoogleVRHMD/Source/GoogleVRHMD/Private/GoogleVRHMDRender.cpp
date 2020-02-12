@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "CoreMinimal.h"
 #include "IHeadMountedDisplay.h"
@@ -75,17 +75,7 @@ void FGoogleVRHMD::GenerateDistortionCorrectionVertexBuffer(EStereoscopicPass Ey
 				}
 			}
 
-			float ScreenYDirection = -1.0f;
-
-#if GOOGLEVRHMD_SUPPORTED_IOS_PLATFORMS && HAS_METAL
-			// Metal render the scene flipped, so we need to flip to back again.
-			bool bSupportsMetal = false;
-			GConfig->GetBool(TEXT("/Script/IOSRuntimeSettings.IOSRuntimeSettings"), TEXT("bSupportsMetal"), bSupportsMetal, GEngineIni);
-			if(bSupportsMetal)
-			{
-				ScreenYDirection = 1.0f;
-			}
-#endif
+			const float ScreenYDirection = -1.0f;
 			const FVector2D ScreenPos = FVector2D(UnDistortedCoord.X * 2.0f - 1.0f, (UnDistortedCoord.Y * 2.0f - 1.0f) * ScreenYDirection);
 
 			const FVector2D OrigRedUV = FVector2D(DistortedCoords[0].x, DistortedCoords[0].y);
@@ -97,14 +87,6 @@ void FGoogleVRHMD::GenerateDistortionCorrectionVertexBuffer(EStereoscopicPass Ey
 			FVector2D FinalGreenUV = OrigGreenUV;
 			FVector2D FinalBlueUV = OrigBlueUV;
 
-#if GOOGLEVRHMD_SUPPORTED_IOS_PLATFORMS && HAS_METAL
-			if(bSupportsMetal)
-			{
-				FinalRedUV.Y = 1.0f - FinalRedUV.Y;
-				FinalGreenUV.Y = 1.0f - FinalGreenUV.Y;
-				FinalBlueUV.Y = 1.0f - FinalBlueUV.Y;
-			}
-#endif
 			float Vignette = FMath::Clamp(XYNorm.X * kVignetteHardness, 0.0f, 1.0f)
 				* FMath::Clamp((1 - XYNorm.X)* kVignetteHardness, 0.0f, 1.0f)
 				* FMath::Clamp(XYNorm.Y * kVignetteHardness, 0.0f, 1.0f)
@@ -195,7 +177,7 @@ static void ResolvePendingRenderTarget(FRHICommandListImmediate& RHICmdList, FGr
 			const uint16 Indices[] = { 0, 1, 2, 2, 1, 3, 0, 4, 5 };
 
 			TResourceArray<uint16, INDEXBUFFER_ALIGNMENT> IndexBuffer;
-			uint32 InternalNumIndices = ARRAY_COUNT(Indices);
+			uint32 InternalNumIndices = UE_ARRAY_COUNT(Indices);
 			IndexBuffer.AddUninitialized(InternalNumIndices);
 			FMemory::Memcpy(IndexBuffer.GetData(), Indices, InternalNumIndices * sizeof(uint16));
 
@@ -216,8 +198,8 @@ static void ResolvePendingRenderTarget(FRHICommandListImmediate& RHICmdList, FGr
 		RHICmdList.ApplyCachedRenderTargets(GraphicsPSOInit);
 
 		GraphicsPSOInit.BoundShaderState.VertexDeclarationRHI = GFilterVertexDeclaration.VertexDeclarationRHI;
-		GraphicsPSOInit.BoundShaderState.VertexShaderRHI = GETSAFERHISHADER_VERTEX(*VertexShader);
-		GraphicsPSOInit.BoundShaderState.PixelShaderRHI = GETSAFERHISHADER_PIXEL(*PixelShader);
+		GraphicsPSOInit.BoundShaderState.VertexShaderRHI = VertexShader.GetVertexShader();
+		GraphicsPSOInit.BoundShaderState.PixelShaderRHI = PixelShader.GetPixelShader();
 		GraphicsPSOInit.PrimitiveType = PT_TriangleList;
 
 		RHICmdList.DrawIndexedPrimitive(
@@ -241,7 +223,7 @@ static void ResolvePendingRenderTarget(FRHICommandListImmediate& RHICmdList, FGr
 #endif
 }
 
-void FGoogleVRHMD::RenderTexture_RenderThread(FRHICommandListImmediate& RHICmdList, FTexture2DRHIParamRef BackBuffer, FTexture2DRHIParamRef SrcTexture, FVector2D WindowSize) const
+void FGoogleVRHMD::RenderTexture_RenderThread(FRHICommandListImmediate& RHICmdList, FRHITexture2D* BackBuffer, FRHITexture2D* SrcTexture, FVector2D WindowSize) const
 {
 	check(IsInRenderingThread());
 
@@ -302,8 +284,8 @@ void FGoogleVRHMD::RenderTexture_RenderThread(FRHICommandListImmediate& RHICmdLi
 			TShaderMapRef<FScreenPS> PixelShader(ShaderMap);
 
 			GraphicsPSOInit.BoundShaderState.VertexDeclarationRHI = GFilterVertexDeclaration.VertexDeclarationRHI;
-			GraphicsPSOInit.BoundShaderState.VertexShaderRHI = GETSAFERHISHADER_VERTEX(*VertexShader);
-			GraphicsPSOInit.BoundShaderState.PixelShaderRHI = GETSAFERHISHADER_PIXEL(*PixelShader);
+			GraphicsPSOInit.BoundShaderState.VertexShaderRHI = VertexShader.GetVertexShader();
+			GraphicsPSOInit.BoundShaderState.PixelShaderRHI = PixelShader.GetPixelShader();
 			GraphicsPSOInit.PrimitiveType = PT_TriangleList;
 
 			SetGraphicsPipelineState(RHICmdList, GraphicsPSOInit);
@@ -318,7 +300,7 @@ void FGoogleVRHMD::RenderTexture_RenderThread(FRHICommandListImmediate& RHICmdLi
 				1.0f, 1.0f,
 				FIntPoint(ViewportWidth, ViewportHeight),
 				FIntPoint(1, 1),
-				*VertexShader,
+				VertexShader,
 				EDRF_Default);
 		}
 		RHICmdList.EndRenderPass();

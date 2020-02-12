@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "ClothingPaintEditMode.h"
 #include "IPersonaPreviewScene.h"
@@ -9,10 +9,10 @@
 
 #include "ClothPainter.h"
 #include "ComponentReregisterContext.h"
-#include "ClothingAssetInterface.h"
+#include "ClothingAssetBase.h"
 #include "ComponentRecreateRenderStateContext.h"
 #include "IPersonaToolkit.h"
-#include "Assets/ClothingAsset.h"
+#include "ClothingAsset.h"
 #include "EditorViewportClient.h"
 #include "AssetViewerSettings.h"
 #include "Editor/EditorPerProjectUserSettings.h"
@@ -92,7 +92,7 @@ void FClothingPaintEditMode::Exit()
 			{
 				for(UClothingAssetBase* AssetBase : SkelMesh->MeshClothingAssets)
 				{
-					UClothingAsset* ConcreteAsset = CastChecked<UClothingAsset>(AssetBase);
+					UClothingAssetCommon* ConcreteAsset = CastChecked<UClothingAssetCommon>(AssetBase);
 					ConcreteAsset->ApplyParameterMasks();
 				}
 			}

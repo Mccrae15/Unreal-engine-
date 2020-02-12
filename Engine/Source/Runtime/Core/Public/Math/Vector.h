@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -18,6 +18,7 @@
 #include "Internationalization/Internationalization.h"
 #include "Math/IntVector.h"
 #include "Math/Axis.h"
+#include "Serialization/MemoryLayout.h"
 
 #if PLATFORM_VECTOR_CUBIC_INTERP_SSE
 #include "Math/UnrealMathSSE.h"
@@ -983,20 +984,6 @@ public:
 	static CORE_API void GenerateClusterCenters(TArray<FVector>& Clusters, const TArray<FVector>& Points, int32 NumIterations, int32 NumConnectionsToBeValid);
 
 	/**
-	 * Serializer.
-	 *
-	 * @param Ar Serialization Archive.
-	 * @param V Vector to serialize.
-	 * @return Reference to Archive after serialization.
-	 */
-	friend FArchive& operator<<(FArchive& Ar, FVector& V)
-	{
-		// @warning BulkSerialize: FVector is serialized as memory dump
-		// See TArray::BulkSerialize for detailed description of implied limitations.
-		return Ar << V.X << V.Y << V.Z;
-	}
-
-	/**
 	 * Structured archive slot serializer.
 	 *
 	 * @param Slot Structured archive slot.
@@ -1006,18 +993,12 @@ public:
 	{
 		// @warning BulkSerialize: FVector is serialized as memory dump
 		// See TArray::BulkSerialize for detailed description of implied limitations.
-		FStructuredArchive::FStream Stream = Slot.EnterStream();
-		Stream.EnterElement() << V.X;
-		Stream.EnterElement() << V.Y;
-		Stream.EnterElement() << V.Z;
+		FStructuredArchive::FRecord Record = Slot.EnterRecord();
+		Record << SA_VALUE(TEXT("X"), V.X);
+		Record << SA_VALUE(TEXT("Y"), V.Y);
+		Record << SA_VALUE(TEXT("Z"), V.Z);
 	}
 	
-	bool Serialize(FArchive& Ar)
-	{
-		Ar << *this;
-		return true;
-	}
-
 	bool Serialize(FStructuredArchive::FSlot Slot)
 	{
 		Slot << *this;
@@ -1032,6 +1013,9 @@ public:
 	 */
 	CORE_API bool NetSerialize(FArchive& Ar, class UPackageMap* Map, bool& bOutSuccess);
 };
+template<> struct TCanBulkSerialize<FVector> { enum { Value = true }; };
+
+DECLARE_INTRINSIC_TYPE_LAYOUT(FVector);
 
 
 /* FVector inline functions
@@ -1273,13 +1257,13 @@ FORCEINLINE FVector::FVector(const FLinearColor& InColor)
 }
 
 FORCEINLINE FVector::FVector(FIntVector InVector)
-	: X(InVector.X), Y(InVector.Y), Z(InVector.Z)
+	: X((float)InVector.X), Y((float)InVector.Y), Z((float)InVector.Z)
 {
 	DiagnosticCheckNaN();
 }
 
 FORCEINLINE FVector::FVector(FIntPoint A)
-	: X(A.X), Y(A.Y), Z(0.f)
+	: X((float)A.X), Y((float)A.Y), Z(0.f)
 {
 	DiagnosticCheckNaN();
 }
@@ -2074,7 +2058,7 @@ inline FVector FMath::VRand()
 
 FORCEINLINE FVector2D::FVector2D( const FVector& V )
 	: X(V.X), Y(V.Y)
-{ 
+{
 }
 
 inline FVector FVector2D::SphericalToUnitCartesian() const

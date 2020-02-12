@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "FileMediaCapture.h"
 
@@ -9,18 +9,18 @@
 #include "Modules/ModuleManager.h"
 
 
-void UFileMediaCapture::OnFrameCaptured_RenderingThread(const FCaptureBaseData& InBaseData, TSharedPtr<FMediaCaptureUserData> InUserData, void* InBuffer, int32 Width, int32 Height)
+void UFileMediaCapture::OnFrameCaptured_RenderingThread(const FCaptureBaseData& InBaseData, TSharedPtr<FMediaCaptureUserData, ESPMode::ThreadSafe> InUserData, void* InBuffer, int32 Width, int32 Height)
 {
 	IImageWriteQueueModule* ImageWriteQueueModule = FModuleManager::Get().GetModulePtr<IImageWriteQueueModule>("ImageWriteQueue");
 	if (ImageWriteQueueModule == nullptr)
 	{
-		MediaState = EMediaCaptureState::Error;
+		SetState(EMediaCaptureState::Error);
 		return;
 	}
 
 	TUniquePtr<FImageWriteTask> ImageTask = MakeUnique<FImageWriteTask>();
 	ImageTask->Format = ImageFormat;
-	ImageTask->Filename = FString::Printf(TEXT("%s%5d"), *BaseFilePathName, InBaseData.SourceFrameNumberRenderThread);
+	ImageTask->Filename = FString::Printf(TEXT("%s%05d"), *BaseFilePathName, InBaseData.SourceFrameNumberRenderThread);
 	ImageTask->bOverwriteFile = bOverwriteFile;
 	ImageTask->CompressionQuality = CompressionQuality;
 	ImageTask->OnCompleted = OnCompleteWrapper;
@@ -61,7 +61,7 @@ bool UFileMediaCapture::CaptureSceneViewportImpl(TSharedPtr<FSceneViewport>& InS
 	FModuleManager::Get().LoadModuleChecked<IImageWriteQueueModule>("ImageWriteQueue");
 	CacheMediaOutputValues();
 
-	MediaState = EMediaCaptureState::Capturing;
+	SetState(EMediaCaptureState::Capturing);
 	return true;
 }
 
@@ -71,7 +71,7 @@ bool UFileMediaCapture::CaptureRenderTargetImpl(UTextureRenderTarget2D* InRender
 	FModuleManager::Get().LoadModuleChecked<IImageWriteQueueModule>("ImageWriteQueue");
 	CacheMediaOutputValues();
 
-	MediaState = EMediaCaptureState::Capturing;
+	SetState(EMediaCaptureState::Capturing);
 	return true;
 }
 

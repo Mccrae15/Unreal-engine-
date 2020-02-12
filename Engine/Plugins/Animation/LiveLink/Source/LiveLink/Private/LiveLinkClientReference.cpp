@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "LiveLinkClientReference.h"
 #include "Features/IModularFeatures.h"
@@ -13,6 +13,23 @@ FLiveLinkClientReference::FLiveLinkClientReference()
 	ModularFeatures.OnModularFeatureUnregistered().AddRaw(this, &FLiveLinkClientReference::OnLiveLinkClientUnregistered);
 
 	InitClient();
+}
+
+FLiveLinkClientReference::FLiveLinkClientReference(const FLiveLinkClientReference& Other)
+	: LiveLinkClient(Other.LiveLinkClient)
+{
+	IModularFeatures& ModularFeatures = IModularFeatures::Get();
+
+	ModularFeatures.OnModularFeatureRegistered().AddRaw(this, &FLiveLinkClientReference::OnLiveLinkClientRegistered);
+	ModularFeatures.OnModularFeatureUnregistered().AddRaw(this, &FLiveLinkClientReference::OnLiveLinkClientUnregistered);
+
+	InitClient();
+}
+
+FLiveLinkClientReference& FLiveLinkClientReference::operator=(const FLiveLinkClientReference& Other)
+{
+	LiveLinkClient = Other.LiveLinkClient;
+	return *this;
 }
 
 FLiveLinkClientReference::~FLiveLinkClientReference()

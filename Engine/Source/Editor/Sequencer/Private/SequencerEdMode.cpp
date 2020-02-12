@@ -1,9 +1,11 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "SequencerEdMode.h"
 #include "EditorViewportClient.h"
 #include "Curves/KeyHandle.h"
 #include "ISequencer.h"
+#include "MovieSceneSequence.h"
+#include "MovieScene.h"
 #include "DisplayNodes/SequencerDisplayNode.h"
 #include "Sequencer.h"
 #include "Framework/Application/SlateApplication.h"
@@ -13,6 +15,8 @@
 #include "MovieSceneHitProxy.h"
 #include "Tracks/MovieScene3DTransformTrack.h"
 #include "Sections/MovieScene3DTransformSection.h"
+#include "Tracks/MovieSceneAudioTrack.h"
+#include "Sections/MovieSceneAudioSection.h"
 #include "SubtitleManager.h"
 #include "SequencerMeshTrail.h"
 #include "SequencerKeyActor.h"
@@ -24,6 +28,11 @@
 
 const FEditorModeID FSequencerEdMode::EM_SequencerMode(TEXT("EM_SequencerMode"));
 
+static TAutoConsoleVariable<bool> CVarDrawMeshTrails(
+	TEXT("Sequencer.DrawMeshTrails"),
+	true,
+	TEXT("Toggle to show or hide Level Sequencer VR Editor trails"));
+
 FSequencerEdMode::FSequencerEdMode()
 {
 	FSequencerEdModeTool* SequencerEdModeTool = new FSequencerEdModeTool(this);
@@ -31,12 +40,19 @@ FSequencerEdMode::FSequencerEdMode()
 	Tools.Add( SequencerEdModeTool );
 	SetCurrentTool( SequencerEdModeTool );
 
-	// todo vreditor: make this a setting
-	bDrawMeshTrails = true;
+	bDrawMeshTrails = CVarDrawMeshTrails->GetBool();
+	CVarDrawMeshTrails.AsVariable()->SetOnChangedCallback(FConsoleVariableDelegate::CreateLambda([this](IConsoleVariable* Var) 
+	{
+		bDrawMeshTrails = Var->GetBool();
+	}));
+
+	AudioTexture = LoadObject<UTexture2D>(NULL, TEXT("/Engine/EditorResources/AudioIcons/S_AudioComponent.S_AudioComponent"));
+	check(AudioTexture);
 }
 
 FSequencerEdMode::~FSequencerEdMode()
 {
+	CVarDrawMeshTrails.AsVariable()->SetOnChangedCallback(FConsoleVariableDelegate());
 }
 
 void FSequencerEdMode::Enter()
@@ -90,6 +106,11 @@ void FSequencerEdMode::Render(const FSceneView* View, FViewport* Viewport, FPrim
 	FEdMode::Render(View, Viewport, PDI);
 
 #if WITH_EDITORONLY_DATA
+	if (PDI)
+	{
+		DrawAudioTracks(PDI);
+	}
+
 	// Draw spline trails using the PDI
 	if (View->Family->EngineShowFlags.Splines)
 	{
@@ -165,38 +186,28 @@ void FSequencerEdMode::OnKeySelected(FViewport* Viewport, HMovieSceneKeyProxy* K
 			for (const FTrajectoryKey::FData KeyData : KeyProxy->Key.KeyData)
 			{
 				UMovieSceneSection* Section = KeyData.Section.Get();
-				if (Section && KeyData.KeyHandle.IsSet())
+				TOptional<FSectionHandle> SectionHandle = Sequencer->GetNodeTree()->GetSectionHandle(Section);
+				if (SectionHandle && KeyData.KeyHandle.IsSet())
 				{
-					TSet<TWeakObjectPtr<UMovieSceneSection>> SectionsToFind;
-					SectionsToFind.Add(Section);
+					TArray<TSharedRef<FSequencerSectionKeyAreaNode>> KeyAreaNodes;
+					SectionHandle->GetTrackNode()->GetChildKeyAreaNodesRecursively(KeyAreaNodes);
 
-					// Find the key area with the specified channel name
-					TArray<FSectionHandle> SectionHandles = StaticCastSharedRef<SSequencer>(Sequencer->GetSequencerWidget())->GetSectionHandles(SectionsToFind);
-
-					for (FSectionHandle Handle : SectionHandles)
+					for (TSharedRef<FSequencerSectionKeyAreaNode> KeyAreaNode : KeyAreaNodes)
 					{
-						TArray<TSharedRef<FSequencerSectionKeyAreaNode>> KeyAreaNodes;
-						Handle.TrackNode->GetChildKeyAreaNodesRecursively(KeyAreaNodes);
-
-						for (TSharedRef<FSequencerSectionKeyAreaNode> KeyAreaNode : KeyAreaNodes)
+						TSharedPtr<IKeyArea> KeyArea = KeyAreaNode->GetKeyArea(Section);
+						if (KeyArea.IsValid() && KeyArea->GetName() == KeyData.ChannelName)
 						{
-							TSharedPtr<IKeyArea> KeyArea = KeyAreaNode->GetKeyArea(Section);
-							if (KeyArea.IsValid() && KeyArea->GetName() == KeyData.ChannelName)
+							if (!bChangedSelection)
 							{
-								if (!bChangedSelection)
-								{
-									Sequencer->GetSelection().SuspendBroadcast();
-									bChangedSelection = true;
-								}
-
-								Sequencer->SelectKey(Section, KeyArea, KeyData.KeyHandle.GetValue(), bToggleSelection);
-								goto next_key;
+								Sequencer->GetSelection().SuspendBroadcast();
+								bChangedSelection = true;
 							}
+
+							Sequencer->SelectKey(Section, KeyArea, KeyData.KeyHandle.GetValue(), bToggleSelection);
+							break;
 						}
 					}
 				}
-next_key:
-				continue;
 			}
 			if (bChangedSelection)
 			{
@@ -275,52 +286,51 @@ void FSequencerEdMode::GetParents(TArray<const UObject *>& Parents, const UObjec
 /** This is not that scalable moving forward with stuff like the control rig , need a better caching solution there */
 bool FSequencerEdMode::GetParentTM(FTransform& CurrentRefTM, const TSharedPtr<FSequencer>& Sequencer, UObject* ParentObject, FFrameTime KeyTime)
 {
-	FGuid ObjectBinding = Sequencer->FindCachedObjectId(*ParentObject, Sequencer->GetFocusedTemplateID());
-
-	if (ObjectBinding.IsValid())
+	UMovieSceneSequence* Sequence = Sequencer->GetFocusedMovieSceneSequence();
+	if (!Sequence)
 	{
-		const TSharedPtr< FSequencerDisplayNode >& ObjectNode = Sequencer->GetNodeTree()->GetObjectBindingMap()[ObjectBinding];
-
-		for (const TSharedRef< FSequencerDisplayNode >& ChildNode : ObjectNode->GetChildNodes())
-		{
-			if (ChildNode->GetType() == ESequencerNode::Track)
-			{
-				const TSharedRef<FSequencerTrackNode> TrackNode = StaticCastSharedRef<FSequencerTrackNode>(ChildNode);
-				const UMovieSceneTrack* TrackNodeTrack = TrackNode->GetTrack();
-				const UMovieScene3DTransformTrack* TransformTrack = Cast<UMovieScene3DTransformTrack>(TrackNodeTrack);
-
-				if (TransformTrack != nullptr)
-				{
-					for (const UMovieSceneSection* Section : TransformTrack->GetAllSections())
-					{
-						if (Section->IsTimeWithinSection(KeyTime.FrameNumber))
-						{
-							const UMovieScene3DTransformSection* ParentSection = Cast<UMovieScene3DTransformSection>(Section);
-
-							if (ParentSection != nullptr)
-							{
-								FVector ParentKeyPos;
-								FRotator ParentKeyRot;
-
-								FMovieSceneEvaluationTrack* EvalTrack = MovieSceneToolHelpers::GetEvaluationTrack(Sequencer.Get(), TransformTrack->GetSignature());
-								if (EvalTrack)
-								{
-									GetLocationAtTime(EvalTrack, ParentObject, KeyTime, ParentKeyPos, ParentKeyRot, Sequencer);
-									CurrentRefTM = FTransform(ParentKeyRot, ParentKeyPos);
-									return true;
-								}
-							}
-						}
-					}
-				}
-			}
-		}
+		return false;
 	}
-	
+
+	FGuid ObjectBinding = Sequencer->FindCachedObjectId(*ParentObject, Sequencer->GetFocusedTemplateID());
+	if (!ObjectBinding.IsValid())
+	{
+		return false;
+	}
+
+	const FMovieSceneBinding* Binding = Sequence->GetMovieScene()->FindBinding(ObjectBinding);
+	if (!Binding)
+	{
+		return false;
+	}
+	//TODO this doesn't handle blended sections at all
+	for (const UMovieSceneTrack* Track : Binding->GetTracks())
+	{
+		const UMovieScene3DTransformTrack* TransformTrack = Cast<UMovieScene3DTransformTrack>(Track);
+		if (!TransformTrack)
+		{
+			continue;
+		}
+
+		//we used to loop between sections here and only evaluate if we are in a section, this will give us wrong transfroms though
+		//when in between or outside of the section range. We still want to evaluate, though it is heavy.
+
+		FMovieSceneEvaluationTrack* EvalTrack = MovieSceneToolHelpers::GetEvaluationTrack(Sequencer.Get(), TransformTrack->GetSignature());
+		if (EvalTrack)
+		{
+			FVector ParentKeyPos;
+			FRotator ParentKeyRot;
+			GetLocationAtTime(EvalTrack, ParentObject, KeyTime, ParentKeyPos, ParentKeyRot, Sequencer);
+			CurrentRefTM = FTransform(ParentKeyRot, ParentKeyPos);
+			return true;
+		}
+		
+	}
+
 	return false;
 }
 
-FTransform FSequencerEdMode::GetRefFrame(const TSharedPtr<FSequencer>& Sequencer, const TArray<const UObject *>& Parents, FFrameTime KeyTime)
+FTransform FSequencerEdMode::GetRefFrameFromParents(const TSharedPtr<FSequencer>& Sequencer, const TArray<const UObject *>& Parents, FFrameTime KeyTime)
 {
 	FTransform RefTM = FTransform::Identity;
 	FTransform ParentRefTM = FTransform::Identity;
@@ -332,9 +342,18 @@ FTransform FSequencerEdMode::GetRefFrame(const TSharedPtr<FSequencer>& Sequencer
 		{
 			if (Actor->GetRootComponent() != nullptr && Actor->GetRootComponent()->GetAttachParent() != nullptr)
 			{
+				//Always get local ref tm since we don't know which parent is in the sequencer or not.
 				if (!GetParentTM(ParentRefTM, Sequencer, Actor->GetRootComponent()->GetAttachParent()->GetOwner(), KeyTime))
 				{
-					RefTM = Actor->GetRootComponent()->GetAttachParent()->GetSocketTransform(Actor->GetRootComponent()->GetAttachSocketName());
+					AActor *Parent = Actor->GetRootComponent()->GetAttachParent()->GetOwner();
+					if (Parent && Parent->GetRootComponent())
+					{
+						ParentRefTM = Parent->GetRootComponent()->GetRelativeTransform();
+					}
+					else
+					{
+						continue;
+					}
 				}
 				RefTM = ParentRefTM * RefTM;
 			}
@@ -358,112 +377,6 @@ FTransform FSequencerEdMode::GetRefFrame(const TSharedPtr<FSequencer>& Sequencer
 	return RefTM;
 }
 
-FTransform FSequencerEdMode::GetRefFrame(const TSharedPtr<FSequencer>& Sequencer, const UObject* InObject, FFrameTime KeyTime)
-{
-	FTransform RefTM = FTransform::Identity;
-	const AActor* Actor = Cast<AActor>(InObject);
-	if (Actor != nullptr)
-	{
-		RefTM = GetRefFrame(Sequencer, Actor, KeyTime);
-	}
-	else
-	{
-		const USceneComponent* SceneComponent = Cast<USceneComponent>(InObject);
-
-		if (SceneComponent != nullptr)
-		{
-			RefTM = GetRefFrame(Sequencer, SceneComponent, KeyTime);
-		}
-	}
-
-	return RefTM;
-}
-
-FTransform FSequencerEdMode::GetRefFrame(const TSharedPtr<FSequencer>& Sequencer, const AActor* Actor, FFrameTime KeyTime)
-{
-	FTransform RefTM = FTransform::Identity;
-
-	if (Actor != nullptr && Actor->GetRootComponent() != nullptr && Actor->GetRootComponent()->GetAttachParent() != nullptr)
-	{
-		RefTM = Actor->GetRootComponent()->GetAttachParent()->GetSocketTransform(Actor->GetRootComponent()->GetAttachSocketName());
-	}
-
-	return RefTM;
-}
-
-FTransform FSequencerEdMode::GetRefFrame(const TSharedPtr<FSequencer>& Sequencer, const USceneComponent* SceneComponent, FFrameTime KeyTime)
-{
-	FTransform RefTM = FTransform::Identity;
-
-	if (SceneComponent != nullptr && SceneComponent->GetAttachParent() != nullptr)
-	{
-		FTransform ParentRefTM;
-
-		// If our parent is the root component, get the RefFrame from the Actor
-		if (SceneComponent->GetAttachParent() == SceneComponent->GetOwner()->GetRootComponent())
-		{
-			ParentRefTM = GetRefFrame(Sequencer, SceneComponent->GetAttachParent()->GetOwner(), KeyTime);
-		}
-		else
-		{
-			ParentRefTM = GetRefFrame(Sequencer, SceneComponent->GetAttachParent(), KeyTime);
-		}
-		
-		FTransform CurrentRefTM = SceneComponent->GetAttachParent()->GetRelativeTransform();
-
-		// Check if our parent is animated in this Sequencer
-
-		UObject* ParentObject = SceneComponent->GetAttachParent() == SceneComponent->GetOwner()->GetRootComponent() ? static_cast<UObject*>(SceneComponent->GetOwner()) : SceneComponent->GetAttachParent();
-		FGuid ObjectBinding = Sequencer->FindCachedObjectId(*ParentObject, Sequencer->GetFocusedTemplateID());
-
-		if (ObjectBinding.IsValid())
-		{
-			const TSharedPtr< FSequencerDisplayNode >& ObjectNode = Sequencer->GetNodeTree()->GetObjectBindingMap()[ObjectBinding];
-
-			for (const TSharedRef< FSequencerDisplayNode >& ChildNode : ObjectNode->GetChildNodes())
-			{
-				if (ChildNode->GetType() == ESequencerNode::Track)
-				{
-					const TSharedRef<FSequencerTrackNode> TrackNode = StaticCastSharedRef<FSequencerTrackNode>(ChildNode);
-					const UMovieSceneTrack* TrackNodeTrack = TrackNode->GetTrack();
-					const UMovieScene3DTransformTrack* TransformTrack = Cast<UMovieScene3DTransformTrack>(TrackNodeTrack);
-
-					if (TransformTrack != nullptr)
-					{
-						for (const UMovieSceneSection* Section : TransformTrack->GetAllSections())
-						{
-							if (Section->IsTimeWithinSection(KeyTime.FrameNumber))
-							{
-								const UMovieScene3DTransformSection* ParentSection = Cast<UMovieScene3DTransformSection>(Section);
-
-								if (ParentSection != nullptr)
-								{
-									FVector ParentKeyPos;
-									FRotator ParentKeyRot;
-
-									FMovieSceneEvaluationTrack* EvalTrack = MovieSceneToolHelpers::GetEvaluationTrack(Sequencer.Get(), TransformTrack->GetSignature());
-									if (EvalTrack)
-									{
-										GetLocationAtTime(EvalTrack, ParentObject, KeyTime, ParentKeyPos, ParentKeyRot, Sequencer);
-
-										CurrentRefTM = FTransform(ParentKeyRot, ParentKeyPos);
-
-										return CurrentRefTM * ParentRefTM;
-									}
-								}
-							}
-						}
-					}
-				}
-			}
-		}
-
-		RefTM = CurrentRefTM * ParentRefTM;
-	}
-
-	return RefTM;
-}
-
 void FSequencerEdMode::GetLocationAtTime(FMovieSceneEvaluationTrack* Track, UObject* Object, FFrameTime KeyTime, FVector& KeyPos, FRotator& KeyRot, const TSharedPtr<FSequencer>& Sequencer)
 {
 	FMovieSceneInterrogationData InterrogationData;
@@ -472,16 +385,16 @@ void FSequencerEdMode::GetLocationAtTime(FMovieSceneEvaluationTrack* Track, UObj
 	FMovieSceneContext Context(FMovieSceneEvaluationRange(KeyTime, Sequencer->GetFocusedTickResolution()));
 	Track->Interrogate(Context, InterrogationData, Object);
 
-	for (const FTransform& Transform : InterrogationData.Iterate<FTransform>(UMovieScene3DTransformTrack::GetInterrogationKey()))
+	for (const FTransformData& Transform : InterrogationData.Iterate<FTransformData>(UMovieScene3DTransformSection::GetInterrogationKey()))
 	{
-		KeyPos = Transform.GetTranslation();
-		KeyRot = Transform.GetRotation().Rotator();
+		KeyPos = Transform.Translation;
+		KeyRot = Transform.Rotation;
 		break;
 	}
 }
 
 void FSequencerEdMode::DrawTransformTrack(const TSharedPtr<FSequencer>& Sequencer, FPrimitiveDrawInterface* PDI,
-											UMovieScene3DTransformTrack* TransformTrack, const TArray<TWeakObjectPtr<UObject>>& BoundObjects, const bool bIsSelected)
+											UMovieScene3DTransformTrack* TransformTrack, TArrayView<const TWeakObjectPtr<>> BoundObjects, const bool bIsSelected)
 {
 	bool bHitTesting = true;
 	if( PDI != nullptr )
@@ -564,13 +477,18 @@ void FSequencerEdMode::DrawTransformTrack(const TSharedPtr<FSequencer>& Sequence
 			KeyPosRots.Reserve(TrajectoryKeys.Num());
 			for (const FTrajectoryKey& NewTrajectoryKey : TrajectoryKeys)
 			{
+				if (NewTrajectoryKey.KeyData.Num() == 0)
+				{
+					continue;
+				}
+
 				FFrameTime NewKeyTime = NewTrajectoryKey.Time;
 
 				FVector NewKeyPos(0);
 				FRotator NewKeyRot(0,0,0);
 
 				GetLocationAtTime(EvalTrack, BoundObject, NewKeyTime, NewKeyPos, NewKeyRot, Sequencer);
-				FTransform NewPosRefTM = GetRefFrame(Sequencer, Parents, NewKeyTime);
+				FTransform NewPosRefTM = GetRefFrameFromParents(Sequencer, Parents, NewKeyTime);
 				FVector NewKeyPos_G = NewPosRefTM.TransformPosition(NewKeyPos);
 				FKeyPositionRotation KeyPosRot(NewTrajectoryKey,NewKeyPos, NewKeyRot, NewKeyPos_G);
 				KeyPosRots.Push(KeyPosRot);
@@ -607,7 +525,7 @@ void FSequencerEdMode::DrawTransformTrack(const TSharedPtr<FSequencer>& Sequence
 							FRotator NewRot(0,0,0);
 							GetLocationAtTime(EvalTrack, BoundObject, NewTime, NewPos, NewRot, Sequencer);
 
-							FTransform RefTM = GetRefFrame(Sequencer, Parents, NewTime);
+							FTransform RefTM = GetRefFrameFromParents(Sequencer, Parents, NewTime);
 
 							FVector NewPos_G = RefTM.TransformPosition(NewPos);
 							if (PDI != nullptr)
@@ -690,44 +608,46 @@ void FSequencerEdMode::DrawTracks3D(FPrimitiveDrawInterface* PDI)
 			continue;
 		}
 
-		TSet<TSharedRef<FSequencerDisplayNode> > ObjectBindingNodes;
-
-		// Map between object binding nodes and selection
-		TMap<TSharedRef<FSequencerDisplayNode>, bool > ObjectBindingNodesSelectionMap;
-
-		for (auto ObjectBinding : Sequencer->GetNodeTree()->GetObjectBindingMap() )
+		UMovieSceneSequence* Sequence = Sequencer->GetFocusedMovieSceneSequence();
+		if (!Sequence)
 		{
-			if (!ObjectBinding.Value.IsValid())
+			continue;
+		}
+
+		// Gather a map of object bindings to their implict selection state
+		TMap<const FMovieSceneBinding*, bool> ObjectBindingNodesSelectionMap;
+
+		const FSequencerSelection& Selection = Sequencer->GetSelection();
+		const TSharedRef<FSequencerNodeTree>& NodeTree  = Sequencer->GetNodeTree();
+		for (const FMovieSceneBinding& Binding : Sequence->GetMovieScene()->GetBindings())
+		{
+			TSharedPtr<FSequencerObjectBindingNode> ObjectBindingNode = NodeTree->FindObjectBindingNode(Binding.GetObjectGuid());
+			if (!ObjectBindingNode.IsValid())
 			{
 				continue;
 			}
-			TSharedRef<FSequencerObjectBindingNode> ObjectBindingNode = ObjectBinding.Value.ToSharedRef();
-			bool bSelected = Sequencer->GetSelection().IsSelected(ObjectBindingNode);
 
-			if (!bSelected)
+			bool bSelected = false;
+			auto Traverse_IsSelected = [&Selection, &bSelected](FSequencerDisplayNode& InNode)
 			{
-				TSet<TSharedRef<FSequencerDisplayNode> > DescendantNodes;
-				SequencerHelpers::GetDescendantNodes(ObjectBindingNode, DescendantNodes);
-
-				// If one of our child is selected, we're considered selected
-				for (auto& DescendantNode : DescendantNodes)
+				TSharedRef<FSequencerDisplayNode> Shared = InNode.AsShared();
+				if (Selection.IsSelected(Shared) || Selection.NodeHasSelectedKeysOrSections(Shared))
 				{
-					if (Sequencer->GetSelection().IsSelected(DescendantNode) ||
-						Sequencer->GetSelection().NodeHasSelectedKeysOrSections(DescendantNode))
-					{
-						bSelected = true;
-						break;
-					}
+					bSelected = true;
+					// Stop traversing
+					return false;
 				}
-			}
+
+				return true;
+			};
+
+			ObjectBindingNode->Traverse_ParentFirst(Traverse_IsSelected, true);
 
 			// If one of our parent is selected, we're considered selected
 			TSharedPtr<FSequencerDisplayNode> ParentNode = ObjectBindingNode->GetParent();
-
 			while (!bSelected && ParentNode.IsValid())
 			{
-				if (Sequencer->GetSelection().IsSelected(ParentNode.ToSharedRef()) ||
-					Sequencer->GetSelection().NodeHasSelectedKeysOrSections(ParentNode.ToSharedRef()))
+				if (Selection.IsSelected(ParentNode.ToSharedRef()) || Selection.NodeHasSelectedKeysOrSections(ParentNode.ToSharedRef()))
 				{
 					bSelected = true;
 				}
@@ -735,48 +655,119 @@ void FSequencerEdMode::DrawTracks3D(FPrimitiveDrawInterface* PDI)
 				ParentNode = ParentNode->GetParent();
 			}
 
-			ObjectBindingNodesSelectionMap.Add(ObjectBindingNode, bSelected);
+			ObjectBindingNodesSelectionMap.Add(&Binding, bSelected);
 		}
 
 		// Gather up the transform track nodes from the object binding nodes
-		for (auto& ObjectBindingNode : ObjectBindingNodesSelectionMap)
+		for (TTuple<const FMovieSceneBinding*, bool>& Pair : ObjectBindingNodesSelectionMap)
 		{
-			FGuid ObjectBinding = StaticCastSharedRef<FSequencerObjectBindingNode>(ObjectBindingNode.Key)->GetObjectBinding();
-
-			TArray<TWeakObjectPtr<UObject>> BoundObjects;
-			for (TWeakObjectPtr<> Ptr : Sequencer->FindObjectsInCurrentSequence(ObjectBinding))
+			for (UMovieSceneTrack* Track : Pair.Key->GetTracks())
 			{
-				BoundObjects.Add(Ptr);
+				UMovieScene3DTransformTrack* TransformTrack = Cast<UMovieScene3DTransformTrack>(Track);
+				if (!TransformTrack)
+				{
+					continue;
+				}
+
+				// Ensure that we've got a mesh trail for this track
+				if (bDrawMeshTrails)
+				{
+					const bool bHasMeshTrail = Algo::FindBy(MeshTrails, TransformTrack, &FMeshTrailData::Track) != nullptr;
+					if (!bHasMeshTrail)
+					{
+						UViewportWorldInteraction* WorldInteraction = Cast<UViewportWorldInteraction>( GEditor->GetEditorWorldExtensionsManager()->GetEditorWorldExtensions( GetWorld() )->FindExtension( UViewportWorldInteraction::StaticClass() ) );
+						if( WorldInteraction != nullptr )
+						{
+							ASequencerMeshTrail* TrailActor = WorldInteraction->SpawnTransientSceneActor<ASequencerMeshTrail>(TEXT("SequencerMeshTrail"), true);
+							FMeshTrailData MeshTrail = FMeshTrailData(TransformTrack, TrailActor);
+							MeshTrails.Add(MeshTrail);
+						}
+					}
+				}
+
+				const bool bIsSelected = Pair.Value;
+				DrawTransformTrack(Sequencer, PDI, TransformTrack, Sequencer->FindObjectsInCurrentSequence(Pair.Key->GetObjectGuid()), bIsSelected);
+			}
+		}
+	}
+}
+
+void FSequencerEdMode::DrawAudioTracks(FPrimitiveDrawInterface* PDI)
+{
+	for (TWeakPtr<FSequencer> WeakSequencer : Sequencers)
+	{
+		TSharedPtr<FSequencer> Sequencer = WeakSequencer.Pin();
+		if (!Sequencer.IsValid())
+		{
+			continue;
+		}
+
+		UMovieSceneSequence* Sequence = Sequencer->GetFocusedMovieSceneSequence();
+		if (!Sequence)
+		{
+			continue;
+		}
+
+		FQualifiedFrameTime CurrentTime = Sequencer->GetLocalTime();
+
+		const FSequencerSelection& Selection = Sequencer->GetSelection();
+		for (UMovieSceneTrack* Track : Selection.GetSelectedTracks())
+		{
+			UMovieSceneAudioTrack* AudioTrack = Cast<UMovieSceneAudioTrack>(Track);
+
+			if (!AudioTrack || !AudioTrack->IsAMasterTrack())
+			{
+				continue;
 			}
 
-			for (auto& DisplayNode : ObjectBindingNode.Key.Get().GetChildNodes())
+			for (UMovieSceneSection* Section : AudioTrack->GetAudioSections())
 			{
-				if (DisplayNode->GetType() == ESequencerNode::Track)
+				UMovieSceneAudioSection* AudioSection = Cast<UMovieSceneAudioSection>(Section);
+				const FMovieSceneActorReferenceData& AttachActorData = AudioSection->GetAttachActorData();
+
+				TMovieSceneChannelData<const FMovieSceneActorReferenceKey> ChannelData = AttachActorData.GetData();
+
+				TArrayView<const FFrameNumber> Times = ChannelData.GetTimes();
+				TArrayView<const FMovieSceneActorReferenceKey> Values = ChannelData.GetValues();
+		
+				FMovieSceneActorReferenceKey CurrentValue;
+				AttachActorData.Evaluate(CurrentTime.Time, CurrentValue);
+
+				for (int32 Index = 0; Index < Times.Num(); ++Index)
 				{
-					TSharedRef<FSequencerTrackNode> TrackNode = StaticCastSharedRef<FSequencerTrackNode>(DisplayNode);
-					UMovieScene3DTransformTrack* TransformTrack = Cast<UMovieScene3DTransformTrack>(TrackNode->GetTrack());
-					if (TransformTrack != nullptr)
+					FMovieSceneObjectBindingID AttachBindingID = Values[Index].Object;
+					FName AttachSocketName = Values[Index].SocketName;
+
+					FMovieSceneSequenceID SequenceID = Sequencer->GetFocusedTemplateID();
+					if (AttachBindingID.GetSequenceID().IsValid())
 					{
-						// If we are drawing mesh trails but we haven't made one for this track yet
-						if (bDrawMeshTrails)
+						// Ensure that this ID is resolvable from the root, based on the current local sequence ID
+						FMovieSceneObjectBindingID RootBindingID = AttachBindingID.ResolveLocalToRoot(SequenceID, Sequencer->GetEvaluationTemplate().GetHierarchy());
+						SequenceID = RootBindingID.GetSequenceID();
+					}
+
+					// If the transform is set, otherwise use the bound actor's transform
+					FMovieSceneEvaluationOperand ObjectOperand(SequenceID, AttachBindingID.GetGuid());
+
+					for (TWeakObjectPtr<> WeakObject : Sequencer->FindBoundObjects(ObjectOperand))
+					{
+						AActor* AttachActor = Cast<AActor>(WeakObject.Get());
+						if (AttachActor)
 						{
-							FMeshTrailData* TrailPtr = MeshTrails.FindByPredicate([TransformTrack](const FMeshTrailData InTrail)
+							USceneComponent* AttachComponent = AudioSection->GetAttachComponent(AttachActor, Values[Index]);
+							if (AttachComponent)
 							{
-								return InTrail.Track == TransformTrack;
-							});
-							if (TrailPtr == nullptr)
-							{
-								UViewportWorldInteraction* WorldInteraction = Cast<UViewportWorldInteraction>( GEditor->GetEditorWorldExtensionsManager()->GetEditorWorldExtensions( GetWorld() )->FindExtension( UViewportWorldInteraction::StaticClass() ) );
-								if( WorldInteraction != nullptr )
-								{
-									ASequencerMeshTrail* TrailActor = WorldInteraction->SpawnTransientSceneActor<ASequencerMeshTrail>(TEXT("SequencerMeshTrail"), true);
-									FMeshTrailData MeshTrail = FMeshTrailData(TransformTrack, TrailActor);
-									MeshTrails.Add(MeshTrail);
-								}
+								FVector Location = AttachComponent->GetSocketLocation(AttachSocketName);
+								bool bIsActive = CurrentValue == Values[Index];
+								FColor Color = bIsActive ? FColor::Green : FColor::White;
+
+								float Scale = PDI->View->WorldToScreen(Location).W * (4.0f / PDI->View->UnscaledViewRect.Width() / PDI->View->ViewMatrices.GetProjectionMatrix().M[0][0]);
+								Scale *= bIsActive ? 15.f : 10.f;
+
+								PDI->DrawSprite(Location, Scale, Scale, AudioTexture->Resource, Color, SDPG_Foreground, 0.0, 0.0, 0.0, 0.0, SE_BLEND_Masked);
+								break;
 							}
 						}
-
-						DrawTransformTrack(Sequencer, PDI, TransformTrack, BoundObjects, ObjectBindingNode.Value);
 					}
 				}
 			}

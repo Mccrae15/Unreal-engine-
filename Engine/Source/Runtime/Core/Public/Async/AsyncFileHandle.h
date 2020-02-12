@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -204,6 +204,12 @@ public:
 	* @return A request for the read. This is owned by the caller and must be deleted by the caller.
 	**/
 	virtual IAsyncReadRequest* ReadRequest(int64 Offset, int64 BytesToRead, EAsyncIOPriorityAndFlags PriorityAndFlags = AIOP_Normal, FAsyncFileCallBack* CompleteCallback = nullptr, uint8* UserSuppliedMemory = nullptr) = 0;
+
+	/** Return true if this file is backed by a cache, if not, then precache requests are ignored. **/
+	virtual bool UsesCache()
+	{
+		return true;
+	}
 
 	// Non-copyable
 	IAsyncReadFileHandle(const IAsyncReadFileHandle&) = delete;

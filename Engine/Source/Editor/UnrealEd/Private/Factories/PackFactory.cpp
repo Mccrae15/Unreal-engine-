@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 /*=============================================================================
 	PackFactory.cpp: Factory for importing asset and feature packs
@@ -35,6 +35,10 @@
 #include "Templates/UniquePtr.h"
 #include "Logging/MessageLog.h"
 #include "Misc/CoreDelegates.h"
+
+#if WITH_LIVE_CODING
+#include "ILiveCodingModule.h"
+#endif
 
 DEFINE_LOG_CATEGORY_STATIC(LogPackFactory, Log, All);
 
@@ -182,8 +186,8 @@ namespace PackFactoryHelper
 		PackConfig.ProcessInputFileContents(ConfigString);
 
 		// Input Settings
-		static UArrayProperty* ActionMappingsProp = FindFieldChecked<UArrayProperty>(UInputSettings::StaticClass(), GET_MEMBER_NAME_CHECKED(UInputSettings, ActionMappings));
-		static UArrayProperty* AxisMappingsProp = FindFieldChecked<UArrayProperty>(UInputSettings::StaticClass(), GET_MEMBER_NAME_CHECKED(UInputSettings, AxisMappings));
+		static FArrayProperty* ActionMappingsProp = FindFieldChecked<FArrayProperty>(UInputSettings::StaticClass(), UInputSettings::GetActionMappingsPropertyName());
+		static FArrayProperty* AxisMappingsProp = FindFieldChecked<FArrayProperty>(UInputSettings::StaticClass(), UInputSettings::GetAxisMappingsPropertyName());
 
 		UInputSettings* InputSettingsCDO = GetMutableDefault<UInputSettings>();
 		bool bCheckedOut = false;
@@ -196,32 +200,14 @@ namespace PackFactoryHelper
 
 			for (auto SettingPair : *InputSettingsSection)
 			{
-				struct FMatchMappingByName
-				{
-					FMatchMappingByName(const FName InName)
-						: Name(InName)
-					{
-					}
-
-					bool operator() (const FInputActionKeyMapping& ActionMapping)
-					{
-						return ActionMapping.ActionName == Name;
-					}
-
-					bool operator() (const FInputAxisKeyMapping& AxisMapping)
-					{
-						return AxisMapping.AxisName == Name;
-					}
-
-					FName Name;
-				};
+				
 
 				if (SettingPair.Key.ToString().Contains("ActionMappings"))
 				{
 					FInputActionKeyMapping ActionKeyMapping;
 					ActionMappingsProp->Inner->ImportText(*SettingPair.Value.GetValue(), &ActionKeyMapping, PPF_None, nullptr);
 
-					if (InputSettingsCDO->ActionMappings.FindByPredicate(FMatchMappingByName(ActionKeyMapping.ActionName)) == nullptr)
+					if (!InputSettingsCDO->DoesActionExist(ActionKeyMapping.ActionName))
 					{
 						ActionMappingsToAdd.Add(ActionKeyMapping);
 					}
@@ -231,7 +217,7 @@ namespace PackFactoryHelper
 					FInputAxisKeyMapping AxisKeyMapping;
 					AxisMappingsProp->Inner->ImportText(*SettingPair.Value.GetValue(), &AxisKeyMapping, PPF_None, nullptr);
 
-					if (InputSettingsCDO->AxisMappings.FindByPredicate(FMatchMappingByName(AxisKeyMapping.AxisName)) == nullptr)
+					if (!InputSettingsCDO->DoesAxisExist(AxisKeyMapping.AxisName))
 					{
 						AxisMappingsToAdd.Add(AxisKeyMapping);
 					}
@@ -497,14 +483,14 @@ UObject* UPackFactory::FactoryCreateBinary
 					FString DestFilename = It.Filename();
 					if (DestFilename.StartsWith(TEXT("Source/")))
 					{
-						DestFilename = DestFilename.RightChop(7);
+						DestFilename.RightChopInline(7, false);
 					}
 					else 
 					{
 						const int32 SourceIndex = DestFilename.Find(TEXT("/Source/"));
 						if (SourceIndex != INDEX_NONE)
 						{
-							DestFilename = DestFilename.RightChop(SourceIndex + 8);
+							DestFilename.RightChopInline(SourceIndex + 8, false);
 						}
 					}
 
@@ -539,14 +525,14 @@ UObject* UPackFactory::FactoryCreateBinary
 					FString DestFilename = It.Filename();
 					if (DestFilename.StartsWith(TEXT("Content/")))
 					{
-						DestFilename = DestFilename.RightChop(8);
+						DestFilename.RightChopInline(8, false);
 					}
 					else
 					{
 						const int32 ContentIndex = DestFilename.Find(ContentFolder);
 						if (ContentIndex != INDEX_NONE)
 						{
-							DestFilename = DestFilename.RightChop(ContentIndex + 9);
+							DestFilename.RightChopInline(ContentIndex + 9, false);
 						}
 					}
 					DestFilename = ContentDestinationRoot / DestFilename;
@@ -586,14 +572,14 @@ UObject* UPackFactory::FactoryCreateBinary
 					FString DestFilename = FileToCopy;
 					if (DestFilename.StartsWith(TEXT("Source/")))
 					{
-						DestFilename = DestFilename.RightChop(7);
+						DestFilename.RightChopInline(7, false);
 					}
 					else 
 					{
 						const int32 SourceIndex = DestFilename.Find(TEXT("/Source/"));
 						if (SourceIndex != INDEX_NONE)
 						{
-							DestFilename = DestFilename.RightChop(SourceIndex + 8);
+							DestFilename.RightChopInline(SourceIndex + 8, false);
 						}
 					}
 					DestFilename = SourceModuleInfo.ModuleSourcePath / DestFilename;
@@ -638,14 +624,14 @@ UObject* UPackFactory::FactoryCreateBinary
 					FString DestFilename = FileToCopy;
 					if (DestFilename.StartsWith(TEXT("Content/")))
 					{
-						DestFilename = DestFilename.RightChop(8);
+						DestFilename.RightChopInline(8, false);
 					}
 					else
 					{
 						const int32 ContentIndex = DestFilename.Find(ContentFolder);
 						if (ContentIndex != INDEX_NONE)
 						{
-							DestFilename = DestFilename.RightChop(ContentIndex + 9);
+							DestFilename.RightChopInline(ContentIndex + 9, false);
 						}
 					}
 					DestFilename = ContentDestinationRoot / DestFilename;
@@ -685,7 +671,19 @@ UObject* UPackFactory::FactoryCreateBinary
 					SOutputLogDialog::Open(NSLOCTEXT("PackFactory", "CreateBinary", "Create binary"), FailReason, FailLog, FText::GetEmpty());
 				}
 
-				if (ConfigParameters.bCompileSource)
+				bool bCompileSource = ConfigParameters.bCompileSource;
+#if WITH_LIVE_CODING
+				if (bCompileSource)
+				{
+					ILiveCodingModule* LiveCoding = FModuleManager::GetModulePtr<ILiveCodingModule>(LIVE_CODING_MODULE_NAME);
+					if (LiveCoding != nullptr && LiveCoding->IsEnabledForSession())
+					{
+						FMessageDialog::Open(EAppMsgType::Ok, NSLOCTEXT("PackFactory", "CannotCompileWithLiveCoding", "Unable to compile source code while Live Coding is enabled. Please close the editor and build from your IDE."));
+						bCompileSource = false;
+					}
+				}
+#endif
+				if (bCompileSource)
 				{
 					// Compile the new code, either using the in editor hot-reload (if an existing module), or as a brand new module (if no existing code)
 					IHotReloadInterface& HotReloadSupport = FModuleManager::LoadModuleChecked<IHotReloadInterface>("HotReload");
@@ -699,10 +697,7 @@ UObject* UPackFactory::FactoryCreateBinary
 					}
 					else
 					{
-						const bool bReloadAfterCompiling = true;
-						const bool bForceCodeProject = true;
-						const bool bFailIfGeneratedCodeChanges = false;
-						if (!HotReloadSupport.RecompileModule(FApp::GetProjectName(), bReloadAfterCompiling, *GWarn, bFailIfGeneratedCodeChanges, bForceCodeProject))
+						if (!HotReloadSupport.RecompileModule(FApp::GetProjectName(), *GWarn, ERecompileModuleFlags::ReloadAfterRecompile | ERecompileModuleFlags::ForceCodeProject))
 						{
 							FMessageDialog::Open(EAppMsgType::Ok, NSLOCTEXT("PackFactory", "FailedToCompileNewGameModule", "Failed to compile newly created game module."));
 						}

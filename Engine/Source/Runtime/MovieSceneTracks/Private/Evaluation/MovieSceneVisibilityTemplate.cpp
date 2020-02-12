@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "Evaluation/MovieSceneVisibilityTemplate.h"
 #include "Sections/MovieSceneBoolSection.h"
@@ -60,7 +60,7 @@ struct FTemporarilyHiddenInGameTokenProducer : IMovieScenePreAnimatedTokenProduc
 #else
 				false;
 #endif
-			return FTemporarilyHiddenInGamePreAnimatedToken(Actor->bHidden, bInTemporarilyHiddenInGame);
+			return FTemporarilyHiddenInGamePreAnimatedToken(Actor->IsHidden(), bInTemporarilyHiddenInGame);
 		}
 		else if (InObject.IsA(USceneComponent::StaticClass()))
 		{

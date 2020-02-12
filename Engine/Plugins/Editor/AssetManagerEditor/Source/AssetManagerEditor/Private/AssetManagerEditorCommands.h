@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -21,6 +21,9 @@ public:
 
 	// Shows a size map for the selected assets
 	TSharedPtr<FUICommandInfo> ViewSizeMap;
+
+	// Shows shader cook statistics
+	TSharedPtr<FUICommandInfo> ViewShaderCookStatistics;
 
 	// Adds assets to asset audit window
 	TSharedPtr<FUICommandInfo> ViewAssetAudit;
@@ -48,6 +51,12 @@ public:
 
 	// Adds all referenced objects to asset audit window
 	TSharedPtr<FUICommandInfo> AuditReferencedObjects;
+
+	/** Zoom in to fit the selected objects in the window */
+	TSharedPtr<FUICommandInfo> ZoomToFit;
+	
+	/** Start finding objects */
+	TSharedPtr<FUICommandInfo> Find;
 
 	// Creates a new collection with the list of assets that this asset references, user selects which ECollectionShareType to use.
 	TSharedPtr<FUICommandInfo> MakeLocalCollectionWithReferencers;

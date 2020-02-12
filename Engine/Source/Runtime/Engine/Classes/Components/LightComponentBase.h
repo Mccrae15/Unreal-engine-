@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -77,6 +77,24 @@ class ENGINE_API ULightComponentBase : public USceneComponent
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = Light, AdvancedDisplay)
 	uint32 bCastVolumetricShadow : 1;
 
+	/**
+	 * Whether the light should cast high quality hair-strands self-shadowing. When this option is enabled, an extra GPU cost for this light. 
+	 **/
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = Light, AdvancedDisplay)
+	uint32 bCastDeepShadow : 1;
+
+	/** Whether the light shadows are computed with shadow-mapping or ray-tracing (when available). */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = Light, meta = (DisplayName = "Cast Ray Tracing Shadows"), AdvancedDisplay)
+	uint32 bCastRaytracedShadow : 1;
+
+	/** Whether the light affects objects in reflections, when ray-traced reflection is enabled. */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = Light, AdvancedDisplay, meta = (DisplayName = "Affect Ray Tracing Reflections"))
+	uint32 bAffectReflection : 1;
+
+	/** Whether the light affects global illumination, when ray-traced global illumination is enabled. */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = Light, AdvancedDisplay, meta = (DisplayName = "Affect Ray Tracing Global Illumination"))
+	uint32 bAffectGlobalIllumination : 1;
+
 	/** 
 	 * Scales the indirect lighting contribution from this light. 
 	 * A value of 0 disables any GI from this light. Default is 1.
@@ -87,6 +105,10 @@ class ENGINE_API ULightComponentBase : public USceneComponent
 	/** Intensity of the volumetric scattering from this light.  This scales Intensity and LightColor. */
 	UPROPERTY(BlueprintReadOnly, interp, Category=Light, meta=(UIMin = "0.25", UIMax = "4.0"))
 	float VolumetricScatteringIntensity;
+
+	/** Samples per pixel for ray tracing */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = RayTracing)
+	int SamplesPerPixel;
 
 #if WITH_EDITORONLY_DATA
 	/** Sprite for static light in the editor. */
@@ -116,6 +138,21 @@ class ENGINE_API ULightComponentBase : public USceneComponent
 
 	UFUNCTION(BlueprintCallable, Category = "Rendering|Components|Light")
 	void SetCastVolumetricShadow(bool bNewValue);
+
+	UFUNCTION(BlueprintCallable, Category = "Rendering|Components|Light")
+	void SetCastDeepShadow(bool bNewValue);
+
+	UFUNCTION(BlueprintCallable, Category = "Rendering|Components|Light")
+	void SetAffectReflection(bool bNewValue);
+
+	UFUNCTION(BlueprintCallable, Category = "Rendering|Components|Light")
+	void SetAffectGlobalIllumination(bool bNewValue);
+
+	UFUNCTION(BlueprintCallable, Category = "Rendering|Components|Light")
+	void SetCastRaytracedShadow(bool bNewValue);
+
+	UFUNCTION(BlueprintCallable, Category = "Rendering|Components|Light")
+	void SetSamplesPerPixel(int NewValue);
 
 	virtual void Serialize(FArchive& Ar) override;
 
@@ -179,9 +216,12 @@ class ENGINE_API ULightComponentBase : public USceneComponent
 	bool HasStaticShadowing() const;
 
 #if WITH_EDITOR
+	/** UObject Interface */
+	virtual void PostLoad() override;
+
 	/** UActorComponent Interface */
 	virtual void OnRegister() override;
-	virtual bool CanEditChange(const UProperty* InProperty) const override;
+	virtual bool CanEditChange(const FProperty* InProperty) const override;
 #endif
 
 	/** We return a small bounds to allow us to non-interpenetrates when placing lights in the level. */

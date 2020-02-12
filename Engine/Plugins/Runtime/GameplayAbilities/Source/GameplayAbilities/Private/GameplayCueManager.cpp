@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "GameplayCueManager.h"
 #include "Engine/ObjectLibrary.h"
@@ -112,7 +112,7 @@ void UGameplayCueManager::HandleGameplayCues(AActor* TargetActor, const FGamepla
 #if WITH_EDITOR
 	if (GIsEditor && TargetActor == nullptr && UGameplayCueManager::PreviewComponent)
 	{
-		TargetActor = Cast<AActor>(AActor::StaticClass()->GetDefaultObject());
+		TargetActor = GetMutableDefault<AActor>();
 	}
 #endif
 
@@ -129,6 +129,10 @@ void UGameplayCueManager::HandleGameplayCues(AActor* TargetActor, const FGamepla
 
 void UGameplayCueManager::HandleGameplayCue(AActor* TargetActor, FGameplayTag GameplayCueTag, EGameplayCueEvent::Type EventType, const FGameplayCueParameters& Parameters, EGameplayCueExecutionOptions Options)
 {
+#if WITH_SERVER_CODE
+	QUICK_SCOPE_CYCLE_COUNTER(STAT_GameplayCueManager_HandleGameplayCue);
+#endif
+
 #if WITH_EDITOR
 	if (GIsEditor && TargetActor == nullptr && UGameplayCueManager::PreviewComponent)
 	{
@@ -151,26 +155,23 @@ void UGameplayCueManager::HandleGameplayCue(AActor* TargetActor, FGameplayTag Ga
 
 bool UGameplayCueManager::ShouldSuppressGameplayCues(AActor* TargetActor)
 {
-	if (DisableGameplayCues)
-	{
-		return true;
-	}
-
-	if (GameplayCueRunOnDedicatedServer == 0 && IsDedicatedServerForGameplayCue())
-	{
-		return true;
-	}
-
-	if (TargetActor == nullptr)
+	if (DisableGameplayCues ||
+		!TargetActor ||
+		(GameplayCueRunOnDedicatedServer == 0 && IsDedicatedServerForGameplayCue()))
 	{
 		return true;
 	}
 
 	return false;
+
 }
 
 void UGameplayCueManager::RouteGameplayCue(AActor* TargetActor, FGameplayTag GameplayCueTag, EGameplayCueEvent::Type EventType, const FGameplayCueParameters& Parameters, EGameplayCueExecutionOptions Options)
 {
+#if WITH_SERVER_CODE
+	QUICK_SCOPE_CYCLE_COUNTER(STAT_GameplayCueManager_RouteGameplayCue);
+#endif
+
 	// If we want to ignore interfaces, set the pointer to null
 	IGameplayCueInterface* GameplayCueInterface = !(Options & EGameplayCueExecutionOptions::IgnoreInterfaces) ? Cast<IGameplayCueInterface>(TargetActor) : nullptr;
 	bool bAcceptsCue = true;
@@ -224,6 +225,10 @@ void UGameplayCueManager::RouteGameplayCue(AActor* TargetActor, FGameplayTag Gam
 
 void UGameplayCueManager::TranslateGameplayCue(FGameplayTag& Tag, AActor* TargetActor, const FGameplayCueParameters& Parameters)
 {
+#if WITH_SERVER_CODE
+	QUICK_SCOPE_CYCLE_COUNTER(STAT_GameplayCueManager_TranslateGameplayCue);
+#endif
+
 	TranslationManager.TranslateTag(Tag, TargetActor, Parameters);
 }
 
@@ -301,9 +306,20 @@ void UGameplayCueManager::OnMissingCueAsyncLoadComplete(FSoftObjectPath LoadedOb
 		return;
 	}
 
-	if (OwningSet.IsValid() && TargetActor.IsValid())
+	if (OwningSet.IsValid())
 	{
-		CurrentWorld = TargetActor->GetWorld();
+		CurrentWorld = TargetActor.IsValid() ? TargetActor->GetWorld() : nullptr;
+		if (!CurrentWorld)
+		{
+			// TargetActor has since been destroyed.  Attempt to get the world from the other actors.
+			const AActor* CueInstigator = Parameters.GetInstigator();
+			CurrentWorld = CueInstigator ? CueInstigator->GetWorld() : nullptr;
+			if (!CurrentWorld)
+			{
+				const AActor* EffectCauser = Parameters.GetEffectCauser();
+				CurrentWorld = EffectCauser ? EffectCauser->GetWorld() : nullptr;
+			}
+		}
 
 		// Don't handle gameplay cues when world is tearing down
 		if (!GetWorld() || GetWorld()->bIsTearingDown)
@@ -720,7 +736,7 @@ TSharedPtr<FStreamableHandle> UGameplayCueManager::InitObjectLibrary(FGameplayCu
 	// Instantiate the UObjectLibraries if they aren't there already
 	if (!Lib.StaticObjectLibrary)
 	{
-		Lib.StaticObjectLibrary = UObjectLibrary::CreateLibrary(AGameplayCueNotify_Actor::StaticClass(), true, GIsEditor && !IsRunningCommandlet());
+		Lib.StaticObjectLibrary = UObjectLibrary::CreateLibrary(UGameplayCueNotify_Static::StaticClass(), true, GIsEditor && !IsRunningCommandlet());
 		if (GIsEditor)
 		{
 			Lib.StaticObjectLibrary->bIncludeOnlyOnDiskAssets = false;
@@ -728,7 +744,7 @@ TSharedPtr<FStreamableHandle> UGameplayCueManager::InitObjectLibrary(FGameplayCu
 	}
 	if (!Lib.ActorObjectLibrary)
 	{
-		Lib.ActorObjectLibrary = UObjectLibrary::CreateLibrary(UGameplayCueNotify_Static::StaticClass(), true, GIsEditor && !IsRunningCommandlet());
+		Lib.ActorObjectLibrary = UObjectLibrary::CreateLibrary(AGameplayCueNotify_Actor::StaticClass(), true, GIsEditor && !IsRunningCommandlet());
 		if (GIsEditor)
 		{
 			Lib.ActorObjectLibrary->bIncludeOnlyOnDiskAssets = false;
@@ -815,13 +831,14 @@ TSharedPtr<FStreamableHandle> UGameplayCueManager::InitObjectLibrary(FGameplayCu
 
 		if (AssetsToLoad.Num() > 0)
 		{
-			GameplayCueAssetHandle = StreamableManager.RequestAsyncLoad(AssetsToLoad, FStreamableDelegate::CreateStatic( ForwardLambda, AssetsToLoad, Lib.OnLoaded), Lib.AsyncPriority);
+			FStreamableDelegate Del = FStreamableDelegate::CreateStatic(ForwardLambda, AssetsToLoad, Lib.OnLoaded);
+			GameplayCueAssetHandle = StreamableManager.RequestAsyncLoad(MoveTemp(AssetsToLoad), MoveTemp(Del), Lib.AsyncPriority);
 			RetVal = GameplayCueAssetHandle;
 		}
 		else
 		{
 			// Still fire the delegate even if nothing was found to load
-			Lib.OnLoaded.ExecuteIfBound(AssetsToLoad);
+			Lib.OnLoaded.ExecuteIfBound(MoveTemp(AssetsToLoad));
 		}
 	}
 
@@ -1272,7 +1289,7 @@ void UGameplayCueManager::InvokeGameplayCueExecuted_FromSpec(UAbilitySystemCompo
 
 	if (AbilitySystemAlwaysConvertGESpecToGCParams)
 	{
-		// Transform the GE Spec into GameplayCue parmameters here (on the server)
+		// Transform the GE Spec into GameplayCue parameters here (on the server)
 		PendingCue.PayloadType = EGameplayCuePayloadType::CueParameters;
 		PendingCue.OwningComponent = OwningComponent;
 		PendingCue.PredictionKey = PredictionKey;
@@ -1288,55 +1305,48 @@ void UGameplayCueManager::InvokeGameplayCueExecuted_FromSpec(UAbilitySystemCompo
 	}
 	else
 	{
-		// Transform the GE Spec into a FGameplayEffectSpecForRPC (holds less information than the GE Spec itself, but more information that the FGamepalyCueParameter)
+		// Transform the GE Spec into a FGameplayEffectSpecForRPC (holds less information than the GE Spec itself, but more information than the FGameplayCueParameter)
 		PendingCue.PayloadType = EGameplayCuePayloadType::FromSpec;
 		PendingCue.OwningComponent = OwningComponent;
 		PendingCue.FromSpec = FGameplayEffectSpecForRPC(Spec);
 		PendingCue.PredictionKey = PredictionKey;
 	}
 
-	if (ProcessPendingCueExecute(PendingCue))
-	{
-		PendingExecuteCues.Add(PendingCue);
-	}
-
-	if (GameplayCueSendContextCount == 0)
-	{
-		// Not in a context, flush now
-		FlushPendingCues();
-	}
+	AddPendingCueExecuteInternal(PendingCue);
 }
 
 void UGameplayCueManager::InvokeGameplayCueExecuted(UAbilitySystemComponent* OwningComponent, const FGameplayTag GameplayCueTag, FPredictionKey PredictionKey, FGameplayEffectContextHandle EffectContext)
 {
-	FGameplayCuePendingExecute PendingCue;
-	PendingCue.PayloadType = EGameplayCuePayloadType::CueParameters;
-	PendingCue.GameplayCueTags.Add(GameplayCueTag);
-	PendingCue.OwningComponent = OwningComponent;
-	UAbilitySystemGlobals::Get().InitGameplayCueParameters(PendingCue.CueParameters, EffectContext);
-	PendingCue.PredictionKey = PredictionKey;
-
-	if (ProcessPendingCueExecute(PendingCue))
+	if (OwningComponent)
 	{
-		PendingExecuteCues.Add(PendingCue);
-	}
+		FGameplayCuePendingExecute PendingCue;
+		PendingCue.PayloadType = EGameplayCuePayloadType::CueParameters;
+		PendingCue.GameplayCueTags.Add(GameplayCueTag);
+		PendingCue.OwningComponent = OwningComponent;
+		UAbilitySystemGlobals::Get().InitGameplayCueParameters(PendingCue.CueParameters, EffectContext);
+		PendingCue.PredictionKey = PredictionKey;
 
-	if (GameplayCueSendContextCount == 0)
-	{
-		// Not in a context, flush now
-		FlushPendingCues();
+		AddPendingCueExecuteInternal(PendingCue);
 	}
 }
 
 void UGameplayCueManager::InvokeGameplayCueExecuted_WithParams(UAbilitySystemComponent* OwningComponent, const FGameplayTag GameplayCueTag, FPredictionKey PredictionKey, FGameplayCueParameters GameplayCueParameters)
 {
-	FGameplayCuePendingExecute PendingCue;
-	PendingCue.PayloadType = EGameplayCuePayloadType::CueParameters;
-	PendingCue.GameplayCueTags.Add(GameplayCueTag);
-	PendingCue.OwningComponent = OwningComponent;
-	PendingCue.CueParameters = GameplayCueParameters;
-	PendingCue.PredictionKey = PredictionKey;
+	if (OwningComponent)
+	{
+		FGameplayCuePendingExecute PendingCue;
+		PendingCue.PayloadType = EGameplayCuePayloadType::CueParameters;
+		PendingCue.GameplayCueTags.Add(GameplayCueTag);
+		PendingCue.OwningComponent = OwningComponent;
+		PendingCue.CueParameters = GameplayCueParameters;
+		PendingCue.PredictionKey = PredictionKey;
 
+		AddPendingCueExecuteInternal(PendingCue);
+	}
+}
+
+void UGameplayCueManager::AddPendingCueExecuteInternal(FGameplayCuePendingExecute& PendingCue)
+{
 	if (ProcessPendingCueExecute(PendingCue))
 	{
 		PendingExecuteCues.Add(PendingCue);
@@ -1392,9 +1402,8 @@ void UGameplayCueManager::FlushPendingCues()
 			}
 
 			// TODO: Could implement non-rpc method for replicating if desired
-			switch (PendingCue.PayloadType)
+			if (PendingCue.PayloadType == EGameplayCuePayloadType::CueParameters)
 			{
-			case EGameplayCuePayloadType::CueParameters:
 				if (ensure(PendingCue.GameplayCueTags.Num() >= 1))
 				{
 					if (bHasAuthority)
@@ -1420,34 +1429,9 @@ void UGameplayCueManager::FlushPendingCues()
 						}
 					}
 				}
-				break;
-			case EGameplayCuePayloadType::EffectContext:
-				if (ensure(PendingCue.GameplayCueTags.Num() >= 1))
-				{
-					if (bHasAuthority)
-					{
-						PendingCue.OwningComponent->ForceReplication();
-						if (PendingCue.GameplayCueTags.Num() > 1)
-						{
-							RepInterface->Call_InvokeGameplayCuesExecuted(FGameplayTagContainer::CreateFromArray(PendingCue.GameplayCueTags), PendingCue.PredictionKey, PendingCue.CueParameters.EffectContext);
-						}
-						else
-						{
-							RepInterface->Call_InvokeGameplayCueExecuted(PendingCue.GameplayCueTags[0], PendingCue.PredictionKey, PendingCue.CueParameters.EffectContext);
-							static FName NetMulticast_InvokeGameplayCueExecutedName = TEXT("NetMulticast_InvokeGameplayCueExecuted");
-							CheckForTooManyRPCs(NetMulticast_InvokeGameplayCueExecutedName, PendingCue, PendingCue.GameplayCueTags[0].ToString(), PendingCue.CueParameters.EffectContext.Get());
-						}
-					}
-					else if (bLocalPredictionKey)
-					{
-						for (const FGameplayTag& Tag : PendingCue.GameplayCueTags)
-						{
-							PendingCue.OwningComponent->InvokeGameplayCueEvent(Tag, EGameplayCueEvent::Executed, PendingCue.CueParameters.EffectContext);
-						}
-					}
-				}
-				break;
-			case EGameplayCuePayloadType::FromSpec:
+			}
+			else if (PendingCue.PayloadType == EGameplayCuePayloadType::FromSpec)
+			{
 				if (bHasAuthority)
 				{
 					RepInterface->ForceReplication();
@@ -1460,7 +1444,6 @@ void UGameplayCueManager::FlushPendingCues()
 				{
 					PendingCue.OwningComponent->InvokeGameplayCueEvent(PendingCue.FromSpec, EGameplayCueEvent::Executed);
 				}
-				break;
 			}
 		}
 	}
@@ -1621,6 +1604,22 @@ void UGameplayCueManager::OnWorldCleanup(UWorld* World, bool bSessionEnded, bool
 	}
 
 	IGameplayCueInterface::ClearTagToFunctionMap();
+}
+
+void UGameplayCueManager::AddReferencedObjects(UObject* InThis, FReferenceCollector& Collector)
+{
+	Super::AddReferencedObjects(InThis, Collector);
+
+	UGameplayCueManager* GCManager = Cast<UGameplayCueManager>(InThis);
+	for (int32 idx = 0; idx < GCManager->PreallocationInfoList_Internal.Num(); ++idx)
+	{
+		FPreallocationInfo& Info = GCManager->PreallocationInfoList_Internal[idx];
+		for (auto &It : Info.PreallocatedInstances)
+		{
+			TArray<AGameplayCueNotify_Actor*>& GameplayCueArray = It.Value;
+			Collector.AddReferencedObjects(GameplayCueArray);
+		}
+	}
 }
 
 void UGameplayCueManager::DumpPreallocationStats(UWorld* World)

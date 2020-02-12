@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -145,19 +145,20 @@ class FXmppMultiUserChatStrophe
 public:
 	// FXmppMultiUserChatStrophe
 	FXmppMultiUserChatStrophe(class FXmppConnectionStrophe& InConnectionManager);
-	virtual ~FXmppMultiUserChatStrophe() = default;
+	virtual ~FXmppMultiUserChatStrophe();
 
-	void OnDisconnect();
+	// XMPP Thread
 	bool ReceiveStanza(const FStropheStanza& IncomingStanza);
-
 	bool HandlePresenceStanza(const FStropheStanza& IncomingStanza);
 	bool HandlePresenceErrorStanza(const FStropheStanza& IncomingStanza);
-
 	bool HandleGroupChatStanza(const FStropheStanza& IncomingStanza);
 	bool HandleGroupChatErrorStanza(const FStropheStanza& IncomingStanza);
-
 	bool HandleRoomConfigStanza(const FStropheStanza& IncomingStanza);
 	bool HandleRoomConfigErrorStanza(const FStropheStanza& IncomingStanza);
+
+	// Game Thread
+	void OnDisconnect();
+	void OnReconnect();
 
 	// IXmppMultiUserChat
 	virtual bool CreateRoom(const FXmppRoomId& RoomId, const FString& Nickname, const FXmppRoomConfig& RoomConfig) override;
@@ -215,6 +216,9 @@ protected:
 	void HandleRoomMemberJoined(FXmppRoomStrophe& Room, FXmppMucPresence&& MemberPresence);
 	void HandleRoomMemberChanged(FXmppRoomStrophe& Room, FXmppMucPresence&& MemberPresence);
 	void HandleRoomMemberLeft(FXmppRoomStrophe& Room, FXmppMucPresence&& MemberPresence);
+
+	/** Remove pending messages and engine KeepAwake calls */
+	void CleanupMessages();
 
 protected:
 	/** Connection manager controls sending data to XMPP thread */

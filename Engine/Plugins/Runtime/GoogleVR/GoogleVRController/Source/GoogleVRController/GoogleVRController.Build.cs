@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 using System.IO;
 
@@ -8,8 +8,6 @@ namespace UnrealBuildTool.Rules
 	{
 		public GoogleVRController(ReadOnlyTargetRules Target) : base(Target)
 		{
-			bFasterWithoutUnity = true;
-
 //			string GoogleVRSDKDir = Target.UEThirdPartySourceDirectory + "GoogleVR/";
 			PrivateIncludePaths.AddRange(
 				new string[] {

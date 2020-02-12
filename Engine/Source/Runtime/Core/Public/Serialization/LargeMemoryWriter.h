@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -42,10 +42,13 @@ public:
 
 	/** 
 	 * Releases ownership of the written data
+	 *
+	 * Also returns the pointer, so that the caller only needs to call this function to take control
+	 * of the memory.
 	 */
-	FORCEINLINE void ReleaseOwnership()
+	FORCEINLINE uint8* ReleaseOwnership()
 	{
-		Data.ReleaseOwnership();
+		return Data.ReleaseOwnership();
 	}
 
 private:

@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 /*=============================================================================
 WeightedRandomSampler.h: 
@@ -23,9 +23,12 @@ GetEntryIndex takes two random floating values. This does not generate randoms f
 #pragma once
 
 #include "CoreMinimal.h"
+#include "Serialization/MemoryImage.h"
+#include "Serialization/MemoryLayout.h"
 
 struct ENGINE_API FWeightedRandomSampler
 {
+	DECLARE_TYPE_LAYOUT(FWeightedRandomSampler, Abstract);
 public:
 	FWeightedRandomSampler();
 	virtual ~FWeightedRandomSampler() { }
@@ -49,8 +52,12 @@ public:
 	virtual void Serialize(FArchive& Ar);
 
 	int32 GetNumEntries() const { return Prob.Num(); }
+
+	const TArray<float, FMemoryImageAllocator>& GetProb() const { return Prob; }
+	const TArray<int32, FMemoryImageAllocator>& GetAlias() const { return Alias; }
+
 protected:
-	TArray<float> Prob;
-	TArray<int32> Alias;
-	float TotalWeight;
+	LAYOUT_FIELD(TMemoryImageArray<float>, Prob);
+	LAYOUT_FIELD(TMemoryImageArray<int32>, Alias);
+	LAYOUT_FIELD(float, TotalWeight);
 };

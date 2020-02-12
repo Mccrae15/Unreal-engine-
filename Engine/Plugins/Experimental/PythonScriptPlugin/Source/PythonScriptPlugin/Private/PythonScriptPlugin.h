@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -9,8 +9,15 @@
 #include "Misc/CoreMisc.h"
 #include "HAL/IConsoleManager.h"
 #include "Framework/Commands/InputChord.h"
+#include "Kismet2/EnumEditorUtils.h"
 
 class FPythonScriptPlugin;
+class FPythonScriptRemoteExecution;
+class FPackageReloadedEvent;
+
+struct FAssetData;
+
+enum class EPackageReloadPhase : uint8;
 
 #if WITH_PYTHON
 
@@ -20,7 +27,7 @@ class FPythonScriptPlugin;
 class FPythonCommandExecutor : public IConsoleCommandExecutor
 {
 public:
-	FPythonCommandExecutor(FPythonScriptPlugin* InPythonScriptPlugin);
+	FPythonCommandExecutor(IPythonScriptPlugin* InPythonScriptPlugin);
 
 	static FName StaticName();
 	virtual FName GetName() const override;
@@ -37,7 +44,33 @@ public:
 		return FInputChord();
 	}
 private:
-	FPythonScriptPlugin* PythonScriptPlugin;
+	IPythonScriptPlugin* PythonScriptPlugin;
+};
+
+/**
+ * Executor for "Python (REPL)" commands
+ */
+class FPythonREPLCommandExecutor : public IConsoleCommandExecutor
+{
+public:
+	FPythonREPLCommandExecutor(IPythonScriptPlugin* InPythonScriptPlugin);
+
+	static FName StaticName();
+	virtual FName GetName() const override;
+	virtual FText GetDisplayName() const override;
+	virtual FText GetDescription() const override;
+	virtual FText GetHintText() const override;
+	virtual void GetAutoCompleteSuggestions(const TCHAR* Input, TArray<FString>& Out) override;
+	virtual void GetExecHistory(TArray<FString>& Out) override;
+	virtual bool Exec(const TCHAR* Input) override;
+	virtual bool AllowHotKeyClose() const override;
+	virtual bool AllowMultiLine() const override;
+	virtual FInputChord GetHotKey() const override
+	{
+		return FInputChord();
+	}
+private:
+	IPythonScriptPlugin* PythonScriptPlugin;
 };
 
 /**
@@ -54,7 +87,10 @@ struct IPythonCommandMenu
 };
 #endif	// WITH_PYTHON
 
-class FPythonScriptPlugin : public IPythonScriptPlugin, public FSelfRegisteringExec
+class FPythonScriptPlugin 
+	: public IPythonScriptPlugin
+	, public FSelfRegisteringExec
+	, public FEnumEditorUtils::INotifyOnEnumChanged
 {
 public:
 	FPythonScriptPlugin();
@@ -68,6 +104,7 @@ public:
 	//~ IPythonScriptPlugin interface
 	virtual bool IsPythonAvailable() const override;
 	virtual bool ExecPythonCommand(const TCHAR* InPythonCommand) override;
+	virtual bool ExecPythonCommandEx(FPythonCommandEx& InOutPythonCommand) override;
 	virtual FSimpleMulticastDelegate& OnPythonInitialized() override;
 	virtual FSimpleMulticastDelegate& OnPythonShutdown() override;
 
@@ -78,21 +115,39 @@ public:
 	//~ FSelfRegisteringExec interface
 	virtual bool Exec(UWorld* InWorld, const TCHAR* Cmd, FOutputDevice& Ar) override;
 
+	//~ FEnumEditorUtils::INotifyOnEnumChanged interface
+	virtual void PreChange(const UUserDefinedEnum* Enum, FEnumEditorUtils::EEnumEditorChangeInfo Info) override;
+	virtual void PostChange(const UUserDefinedEnum* Enum, FEnumEditorUtils::EEnumEditorChangeInfo Info) override;
+
 #if WITH_PYTHON
+
+#if WITH_EDITOR	
+	void OnPostEngineInit();
+#endif
+
+	/** Sync the remote execution environment to the current settings, starting or stopping it as required */
+	void SyncRemoteExecutionToSettings();
+
 	/** 
 	 * Import the given module into the "unreal" package.
 	 * This function will take the given name and attempt to import either "unreal_{name}" or "_unreal_{name}" into the "unreal" package as "unreal.{name}".
 	 */
 	void ImportUnrealModule(const TCHAR* InModuleName);
 
-	bool HandlePythonExecCommand(const TCHAR* InPythonCommand);
-
+	/** Evaluate/Execute a Python string, and return the result */
 	PyObject* EvalString(const TCHAR* InStr, const TCHAR* InContext, const int InMode);
 	PyObject* EvalString(const TCHAR* InStr, const TCHAR* InContext, const int InMode, PyObject* InGlobalDict, PyObject* InLocalDict);
 
-	bool RunString(const TCHAR* InStr);
+	/** Run literal Python script */
+	bool RunString(FPythonCommandEx& InOutPythonCommand);
 
-	bool RunFile(const TCHAR* InFile, const TCHAR* InArgs);
+	/** Run a Python file */
+	bool RunFile(const TCHAR* InFile, const TCHAR* InArgs, FPythonCommandEx& InOutPythonCommand);
+
+	PyObject* GetDefaultGlobalDict() { return PyDefaultGlobalDict.Get(); }
+	PyObject* GetDefaultLocalDict()  { return PyDefaultLocalDict.Get();  }
+	PyObject* GetConsoleGlobalDict() { return PyConsoleGlobalDict.Get(); }
+	PyObject* GetConsoleLocalDict()  { return PyConsoleLocalDict.Get();  }
 #endif	// WITH_PYTHON
 
 private:
@@ -115,11 +170,21 @@ private:
 
 	void OnContentPathDismounted(const FString& InAssetPath, const FString& InFilesystemPath);
 
+	void OnAssetRenamed(const FAssetData& Data, const FString& OldName);
+
+	void OnAssetRemoved(const FAssetData& Data);
+
+	void OnAssetReload(const EPackageReloadPhase InPackageReloadPhase, FPackageReloadedEvent* InPackageReloadedEvent);
+
+	void OnAssetUpdated(const UObject* InObj);
+
 #if WITH_EDITOR
 	void OnPrepareToCleanseEditorObject(UObject* InObject);
 #endif	// WITH_EDITOR
 
+	TUniquePtr<FPythonScriptRemoteExecution> RemoteExecution;
 	FPythonCommandExecutor CmdExec;
+	FPythonREPLCommandExecutor CmdREPLExec;
 	IPythonCommandMenu* CmdMenu;
 	FDelegateHandle TickHandle;
 	FDelegateHandle ModuleDelayedHandle;

@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -11,7 +11,7 @@
 /**
  * Archive for mapping out the referencers of a collection of objects.
  */
-class FFindReferencersArchive : public FArchiveUObject
+class COREUOBJECT_VTABLE FFindReferencersArchive : public FArchiveUObject
 {
 public:
 	/**
@@ -33,7 +33,7 @@ public:
 	 * @return	the number of references to TargetObject which were encountered when PotentialReferencer
 	 *			was serialized.
 	 */
-	COREUOBJECT_API int32 GetReferenceCount( class UObject* TargetObject, TArray<class UProperty*>* out_ReferencingProperties=NULL ) const;
+	COREUOBJECT_API int32 GetReferenceCount( class UObject* TargetObject, TArray<class FProperty*>* out_ReferencingProperties=NULL ) const;
 
 	/**
 	 * Retrieves the number of references from PotentialReferencer list of TargetObjects
@@ -52,7 +52,7 @@ public:
 	 *
 	 * @return	the number of objects which were referenced by PotentialReferencer.
 	 */
-	COREUOBJECT_API int32 GetReferenceCounts( TMap<class UObject*, int32>& out_ReferenceCounts, TMultiMap<class UObject*,class UProperty*>& out_ReferencingProperties ) const;
+	COREUOBJECT_API int32 GetReferenceCounts( TMap<class UObject*, int32>& out_ReferenceCounts, TMultiMap<class UObject*,class FProperty*>& out_ReferencingProperties ) const;
 
 	/**
 	 * Returns the name of the Archive.  Useful for getting the name of the package a struct or object
@@ -69,10 +69,115 @@ public:
 	COREUOBJECT_API void ResetPotentialReferencer(UObject* InPotentialReferencer);
 
 protected:
-	TMap<class UObject*, int32>	TargetObjects;
+	// Container specifically optimized for the operations we're doing here.
+	//   - Reduce allocations while adding.
+	//   - Reduce cache misses while searching.
+	//   - Fast to reset its values as they're all contiguous in memory.
+	//   - Reduce iteration count to initialized values only when searching for values > 0 by stopping at ValueNum().
+	class FTargetObjectContainer
+	{
+	public:
+		// Functions used to prepare the container until it is frozen
+
+		void Reserve(int32 Num)
+		{
+			CheckUnfrozen();
+
+			TargetObjects.Reserve(Num);
+		}
+
+		void AddObject(UObject* Object)
+		{
+			CheckUnfrozen();
+
+			TargetObjects.Add(Object);
+		}
+
+		void Freeze()
+		{
+			CheckUnfrozen();
+
+			bFrozen = true;
+			Algo::Sort(TargetObjects);
+			ResetRefCounts();
+		}
+
+		// Functions to use once the container has been frozen
+
+		// This will initialize and return the refcount associated with the object if it exists
+		int32* GetRefCountPtr(UObject* Object)
+		{
+			CheckFrozen();
+
+			int32 ExistingIndex = Algo::BinarySearch(TargetObjects, Object);
+			if (ExistingIndex == INDEX_NONE)
+			{
+				return nullptr;
+			}
+
+			if (ExistingIndex >= RefCounts.Num())
+			{
+				RefCounts.SetNumZeroed(ExistingIndex+1, false);
+			}
+
+			return &RefCounts[ExistingIndex];
+		}
+
+		// This won't initialize the refcount associated with the object even if it exists
+		const int32* TryGetRefCountPtr(UObject* Object) const
+		{
+			CheckFrozen();
+
+			int32 ExistingIndex = Algo::BinarySearch(TargetObjects, Object);
+			if (ExistingIndex == INDEX_NONE)
+			{
+				return nullptr;
+			}
+
+			return (ExistingIndex < RefCounts.Num()) ? &RefCounts[ExistingIndex] : nullptr;
+		}
+
+		void ResetRefCounts()
+		{
+			RefCounts.Empty(TargetObjects.Num());
+		}
+
+		int32 RefCountNum() const
+		{
+			return RefCounts.Num();
+		}
+
+		UObject* GetObject(int32 Index) const
+		{
+			return TargetObjects[Index];
+		}
+
+		// This should not be queried past RefCountNum(), otherwise you're doing useless work.
+		int32 GetRefCount(int32 Index) const
+		{
+			return RefCounts[Index];
+		}
+
+	private:
+		FORCEINLINE void CheckFrozen() const
+		{
+			checkf(bFrozen, TEXT("Container has not been frozen and cannot be searched yet"));
+		}
+
+		FORCEINLINE void CheckUnfrozen() const
+		{
+			checkf(!bFrozen, TEXT("Container has been frozen and cannot be modified anymore"));
+		}
+
+		bool              bFrozen = false;
+		TArray<UObject*>  TargetObjects;
+		TArray<int32>     RefCounts;
+	};
+
+	FTargetObjectContainer TargetObjects;
 
 	/** a mapping of target object => the properties in PotentialReferencer that hold the reference to target object */
-	TMultiMap<class UObject*,class UProperty*> ReferenceMap;
+	TMultiMap<class UObject*,class FProperty*> ReferenceMap;
 
 	/** The potential referencer we ignore */
 	class UObject* PotentialReferencer;

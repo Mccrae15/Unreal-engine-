@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "DisplayNodes/SequencerFolderNode.h"
 #include "Textures/SlateIcon.h"
@@ -24,12 +24,14 @@
 
 #define LOCTEXT_NAMESPACE "SequencerFolderNode"
 
-FSequencerFolderNode::FSequencerFolderNode( UMovieSceneFolder& InMovieSceneFolder, TSharedPtr<FSequencerDisplayNode> InParentNode, FSequencerNodeTree& InParentTree )
-	: FSequencerDisplayNode( InMovieSceneFolder.GetFolderName(), InParentNode, InParentTree )
+FSequencerFolderNode::FSequencerFolderNode( UMovieSceneFolder& InMovieSceneFolder, FSequencerNodeTree& InParentTree )
+	: FSequencerDisplayNode( InMovieSceneFolder.GetFolderName(), InParentTree )
 	, MovieSceneFolder(InMovieSceneFolder)
 {
 	FolderOpenBrush = FEditorStyle::GetBrush( "ContentBrowser.AssetTreeFolderOpen" );
 	FolderClosedBrush = FEditorStyle::GetBrush( "ContentBrowser.AssetTreeFolderClosed" );
+
+	SortType = EDisplayNodeSortType::Folders;
 }
 
 
@@ -74,7 +76,7 @@ void FSequencerFolderNode::SetDisplayName( const FText& NewDisplayName )
 		{
 			for ( TSharedRef<FSequencerDisplayNode> SiblingNode : ParentSeqNode->GetChildNodes() )
 			{
-				if ( SiblingNode != AsShared() )
+				if ( SiblingNode != AsShared() && SiblingNode->GetType() == ESequencerNode::Folder )
 				{
 					SiblingNames.Add( FName(*SiblingNode->GetDisplayName().ToString()) );
 				}
@@ -84,7 +86,7 @@ void FSequencerFolderNode::SetDisplayName( const FText& NewDisplayName )
 		{
 			for (TSharedRef<FSequencerDisplayNode> RootNode : GetParentTree().GetRootNodes())
 			{
-				if ( RootNode != AsShared() )
+				if ( RootNode != AsShared() && RootNode->GetType() == ESequencerNode::Folder )
 				{
 					SiblingNames.Add( FName(*RootNode->GetDisplayName().ToString()) );
 				}
@@ -94,7 +96,6 @@ void FSequencerFolderNode::SetDisplayName( const FText& NewDisplayName )
 		FName UniqueName = FSequencerUtilities::GetUniqueName( FName( *NewDisplayName.ToString() ), SiblingNames );
 
 		const FScopedTransaction Transaction( NSLOCTEXT( "SequencerFolderNode", "RenameFolder", "Rename folder." ) );
-		MovieSceneFolder.Modify();
 		MovieSceneFolder.SetFolderName( UniqueName );
 	}
 }
@@ -110,8 +111,24 @@ const FSlateBrush* FSequencerFolderNode::GetIconBrush() const
 
 FSlateColor FSequencerFolderNode::GetIconColor() const
 {
+	if (ParentTree.IsNodeMute(this))
+	{
+		return FSlateColor(MovieSceneFolder.GetFolderColor().ReinterpretAsLinear() * FLinearColor(0.6f, 0.6f, 0.6f, 0.6f));
+	}
+
 	return FSlateColor(MovieSceneFolder.GetFolderColor());
 }
+
+FLinearColor FSequencerFolderNode::GetDisplayNameColor() const
+{
+	if (ParentTree.IsNodeMute(this))
+	{
+		return FLinearColor(0.6f, 0.6f, 0.6f, 0.6f);
+	}
+
+	return FLinearColor::White;
+}
+
 
 bool FSequencerFolderNode::CanDrag() const
 {
@@ -145,12 +162,12 @@ TOptional<EItemDropZone> FSequencerFolderNode::CanDrop( FSequencerDisplayNodeDra
 	// If they're trying to move an item above/below or into us. This item may or may not be a sibling; If it is not already a sibling then
 	// we need to check if it has a conflicting name with a sibling that we already have (for folders).
 	TArray<UMovieSceneFolder*> AdjacentFolders;
-	TSharedPtr<FSequencerDisplayNode> ChildParent;
+	TSharedPtr<const FSequencerDisplayNode> ChildParent;
 
 	if (ItemDropZone == EItemDropZone::OntoItem)
 	{
 		// If the item is being dropped onto us, we check our own children for name conflicts
-		ChildParent = SharedThis((FSequencerDisplayNode*)this);
+		ChildParent = AsShared();
 	}
 	else
 	{
@@ -234,7 +251,6 @@ void FSequencerFolderNode::MoveDisplayNodeToFolder(TSharedRef<FSequencerDisplayN
 			{
 				checkf(ParentSeqNode->GetType() == ESequencerNode::Folder, TEXT("Can not remove from unsupported parent node."));
 				TSharedPtr<FSequencerFolderNode> ParentFolder = StaticCastSharedPtr<FSequencerFolderNode>(ParentSeqNode);
-				ParentFolder->GetFolder().Modify();
 				ParentFolder->GetFolder().RemoveChildFolder(&DraggedFolderNode->GetFolder());
 			}
 			else
@@ -255,7 +271,6 @@ void FSequencerFolderNode::MoveDisplayNodeToFolder(TSharedRef<FSequencerDisplayN
 			{
 				checkf(ParentSeqNode->GetType() == ESequencerNode::Folder, TEXT("Can not remove from unsupported parent node."));
 				TSharedPtr<FSequencerFolderNode> ParentFolder = StaticCastSharedPtr<FSequencerFolderNode>(ParentSeqNode);
-				ParentFolder->GetFolder().Modify();
 				ParentFolder->GetFolder().RemoveChildMasterTrack(DraggedTrackNode->GetTrack());
 			}
 			
@@ -270,7 +285,6 @@ void FSequencerFolderNode::MoveDisplayNodeToFolder(TSharedRef<FSequencerDisplayN
 			{
 				checkf(ParentSeqNode->GetType() == ESequencerNode::Folder, TEXT("Can not remove from unsupported parent node."));
 				TSharedPtr<FSequencerFolderNode> ParentFolder = StaticCastSharedPtr<FSequencerFolderNode>(ParentSeqNode);
-				ParentFolder->GetFolder().Modify();
 				ParentFolder->GetFolder().RemoveChildObjectBinding(DraggedObjectBindingNode->GetObjectBinding());
 			}
 
@@ -281,7 +295,7 @@ void FSequencerFolderNode::MoveDisplayNodeToFolder(TSharedRef<FSequencerDisplayN
 
 	// Update the node's parent so that request for the NodePath reflect the new path
 	// instead of waiting until all nodes are regenerated by the subsequent Refresh call.
-	AddChildAndSetParent(Node);
+	Node->SetParent(AsShared());
 
 	// Update the expansion state using our new path.
 	Node->Traverse_ParentFirst([](FSequencerDisplayNode& TraversalNode)
@@ -419,11 +433,6 @@ void FSequencerFolderNode::OnColorPickerCancelled(FLinearColor NewFolderColor)
 	MovieSceneFolder.SetFolderColor(InitialFolderColor);
 }
 
-void FSequencerFolderNode::AddChildNode( TSharedRef<FSequencerDisplayNode> ChildNode )
-{
-	AddChildAndSetParent( ChildNode );
-}
-
 
 UMovieSceneFolder& FSequencerFolderNode::GetFolder() const
 {
@@ -445,4 +454,5 @@ void FSequencerFolderNode::ModifyAndSetSortingOrder(const int32 InSortingOrder)
 	MovieSceneFolder.Modify();
 	SetSortingOrder(InSortingOrder);
 }
+
 #undef LOCTEXT_NAMESPACE

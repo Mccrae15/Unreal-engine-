@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "Evaluation/MovieSceneEvaluationTrack.h"
 #include "Evaluation/MovieSceneExecutionTokens.h"
@@ -115,6 +115,7 @@ FMovieSceneEvaluationTrack::FMovieSceneEvaluationTrack()
 	, SourceTrack(nullptr)
 	, bEvaluateInPreroll(true)
 	, bEvaluateInPostroll(true)
+	, bTearDownPriority(false)
 {
 }
 
@@ -125,13 +126,15 @@ FMovieSceneEvaluationTrack::FMovieSceneEvaluationTrack(const FGuid& InObjectBind
 	, SourceTrack(nullptr)
 	, bEvaluateInPreroll(true)
 	, bEvaluateInPostroll(true)
+	, bTearDownPriority(false)
 {
 }
 
 void FMovieSceneEvaluationTrack::PostSerialize(const FArchive& Ar)
 {
-	if (Ar.IsLoading())
+	if (Ar.IsLoading() && !Ar.IsObjectReferenceCollector())
 	{
+#if WITH_EDITORONLY_DATA
 		// Guard against serialization mismatches where structs have been removed
 		TArray<int32, TInlineAllocator<2>> ImplsToRemove;
 		for (int32 Index = 0; Index < ChildTemplates.Num(); ++Index)
@@ -150,8 +153,10 @@ void FMovieSceneEvaluationTrack::PostSerialize(const FArchive& Ar)
 				Segment.Impls.RemoveAll([&](const FSectionEvaluationData& In) { return ImplsToRemove.Contains(In.ImplIndex); });
 			}
 		}
+#endif
+
+		SetupOverrides();
 	}
-	SetupOverrides();
 }
 
 void FMovieSceneEvaluationTrack::DefineAsSingleTemplate(FMovieSceneEvalTemplatePtr&& InTemplate)
@@ -394,6 +399,14 @@ void FMovieSceneEvaluationTrack::Initialize(FMovieSceneSegmentIdentifier Segment
 
 void FMovieSceneEvaluationTrack::DefaultInitialize(FMovieSceneSegmentIdentifier SegmentID, const FMovieSceneEvaluationOperand& Operand, FMovieSceneContext Context, FPersistentEvaluationData& PersistentData, IMovieScenePlayer& Player) const
 {
+	// If we only have a single child template and a single segment, short-circuit the lookup into the impl array to avoid the unnecessary cache misses
+	if (ChildTemplates.Num() == 1 && Segments.Num() == 1)
+	{
+		PersistentData.DeriveSectionKey(0);
+		ChildTemplates[0]->Initialize(Operand, Context, PersistentData, Player);
+		return;
+	}
+
 	const FMovieSceneSegment& Segment = Segments[SegmentID];
 	for (const FSectionEvaluationData& EvalData : Segment.Impls)
 	{
@@ -438,6 +451,19 @@ void FMovieSceneEvaluationTrack::DefaultEvaluate(FMovieSceneSegmentIdentifier Se
 
 void FMovieSceneEvaluationTrack::EvaluateStatic(FMovieSceneSegmentIdentifier SegmentID, const FMovieSceneEvaluationOperand& Operand, FMovieSceneContext Context, const FPersistentEvaluationData& PersistentData, FMovieSceneExecutionTokens& ExecutionTokens) const
 {
+	// If we only have a single child template and a single segment, short-circuit the lookup into the impl array to avoid the unnecessary cache misses
+	if (ChildTemplates.Num() == 1 && Segments.Num() == 1)
+	{
+		const FMovieSceneEvalTemplate& Template = ChildTemplates[0].GetValue();
+
+		PersistentData.DeriveSectionKey(0);
+		ExecutionTokens.SetCurrentScope(FMovieSceneEvaluationScope(PersistentData.GetSectionKey(), Template.GetCompletionMode()));
+		ExecutionTokens.SetContext(Context);
+
+		Template.Evaluate(Operand, Context, PersistentData, ExecutionTokens);
+		return;
+	}
+
 	int32 SortedIndex = Segments.GetSortedIndex(SegmentID);
 	if (SortedIndex == INDEX_NONE)
 	{

@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -12,13 +12,14 @@
 #include "Misc/NetworkGuid.h"
 #include "UObject/CoreNetTypes.h"
 #include "UObject/SoftObjectPath.h"
+#include "UObject/Field.h"
+#include "Trace/Config.h"
 
 class FOutBunch;
 class INetDeltaBaseState;
+class FNetTraceCollector;
 
 DECLARE_DELEGATE_RetVal_OneParam( bool, FNetObjectIsDynamic, const UObject*);
-
-class FOutBunch;
 
 //
 // Information about a field.
@@ -26,14 +27,14 @@ class FOutBunch;
 class COREUOBJECT_API FFieldNetCache
 {
 public:
-	UField*			Field;
+	FFieldVariant			Field;
 	int32			FieldNetIndex;
 	uint32			FieldChecksum;
 	mutable bool	bIncompatible;
 
 	FFieldNetCache()
 	{}
-	FFieldNetCache( UField* InField, int32 InFieldNetIndex, uint32 InFieldChecksum )
+	FFieldNetCache(FFieldVariant InField, int32 InFieldNetIndex, uint32 InFieldChecksum )
 		: Field(InField), FieldNetIndex(InFieldNetIndex), FieldChecksum(InFieldChecksum), bIncompatible(false)
 	{}
 };
@@ -53,13 +54,13 @@ public:
 		return FieldsBase + Fields.Num();
 	}
 
-	const FFieldNetCache* GetFromField( const UObject* Field ) const
+	const FFieldNetCache* GetFromField( FFieldVariant Field ) const
 	{
 		FFieldNetCache* Result = NULL;
 
 		for ( const FClassNetCache* C= this; C; C = C->Super )
 		{
-			if ( ( Result = C->FieldMap.FindRef( Field ) ) != NULL )
+			if ( ( Result = C->FieldMap.FindRef( Field.GetRawPointer() ) ) != NULL )
 			{
 				break;
 			}
@@ -106,7 +107,7 @@ private:
 	TWeakObjectPtr< const UClass >		Class;
 	uint32								ClassChecksum;
 	TArray< FFieldNetCache >			Fields;
-	TMap< UObject*, FFieldNetCache* >	FieldMap;
+	TMap< void*, FFieldNetCache* >	FieldMap;
 	TMap< uint32, FFieldNetCache* >		FieldChecksumMap;
 };
 
@@ -121,9 +122,9 @@ public:
 	const FClassNetCache*	GetClassNetCache( UClass* Class );
 	void					ClearClassNetCache();
 
-	void				SortProperties( TArray< UProperty* >& Properties ) const;
+	void				SortProperties( TArray< FProperty* >& Properties ) const;
 	uint32				SortedStructFieldsChecksum( const UStruct* Struct, uint32 Checksum ) const;
-	uint32				GetPropertyChecksum( const UProperty* Property, uint32 Checksum, const bool bIncludeChildren ) const;
+	uint32				GetPropertyChecksum( const FProperty* Property, uint32 Checksum, const bool bIncludeChildren ) const;
 	uint32				GetFunctionChecksum( const UFunction* Function, uint32 Checksum ) const;
 	uint32				GetFieldChecksum( const UField* Field, uint32 Checksum ) const;
 
@@ -184,6 +185,7 @@ class COREUOBJECT_API UPackageMap : public UObject
 
 protected:
 
+	UE_DEPRECATED(4.25, "bSuppressLogs will be removed in a future release.")
 	bool					bSuppressLogs;
 
 	bool					bShouldTrackUnmappedGuids;
@@ -246,20 +248,46 @@ struct FPropertyRetirement
 class FLifetimeProperty
 {
 public:
-	uint16				RepIndex;
-	ELifetimeCondition	Condition;
+
+	uint16 RepIndex;
+	ELifetimeCondition Condition;
 	ELifetimeRepNotifyCondition RepNotifyCondition;
+	bool bIsPushBased;
 
-	FLifetimeProperty() : RepIndex( 0 ), Condition( COND_None ), RepNotifyCondition(REPNOTIFY_OnChanged) {}
-	FLifetimeProperty( int32 InRepIndex ) : RepIndex( InRepIndex ), Condition( COND_None ), RepNotifyCondition(REPNOTIFY_OnChanged) { check( InRepIndex <= 65535 ); }
-	FLifetimeProperty(int32 InRepIndex, ELifetimeCondition InCondition, ELifetimeRepNotifyCondition InRepNotifyCondition=REPNOTIFY_OnChanged) : RepIndex(InRepIndex), Condition(InCondition), RepNotifyCondition(InRepNotifyCondition) { check(InRepIndex <= 65535); }
-
-	inline bool operator==( const FLifetimeProperty& Other ) const
+	FLifetimeProperty()
+		: RepIndex(0)
+		, Condition(COND_None)
+		, RepNotifyCondition(REPNOTIFY_OnChanged)
+		, bIsPushBased(false)
 	{
-		if ( RepIndex == Other.RepIndex )
+	}
+
+	FLifetimeProperty(int32 InRepIndex)
+		: RepIndex(InRepIndex)
+		, Condition(COND_None)
+		, RepNotifyCondition(REPNOTIFY_OnChanged)
+		, bIsPushBased(false)
+	{
+		check(InRepIndex <= 65535);
+	}
+
+	FLifetimeProperty(int32 InRepIndex, ELifetimeCondition InCondition, ELifetimeRepNotifyCondition InRepNotifyCondition=REPNOTIFY_OnChanged, bool bInIsPushBased=false)
+		: RepIndex(InRepIndex)
+		, Condition(InCondition)
+		, RepNotifyCondition(InRepNotifyCondition)
+		, bIsPushBased(bInIsPushBased)
+	{
+		check(InRepIndex <= 65535);
+	}
+
+	inline bool operator==(const FLifetimeProperty& Other) const
+	{
+		if (RepIndex == Other.RepIndex)
 		{
-			check( Condition == Other.Condition );		// Can't have different conditions if the RepIndex matches, doesn't make sense
-			check( RepNotifyCondition == Other.RepNotifyCondition);
+			// Can't have different conditions if the RepIndex matches, doesn't make sense
+			check(Condition == Other.Condition);
+			check(RepNotifyCondition == Other.RepNotifyCondition);
+			check(bIsPushBased == Other.bIsPushBased);
 			return true;
 		}
 
@@ -270,6 +298,29 @@ public:
 template <> struct TIsZeroConstructType<FLifetimeProperty> { enum { Value = true }; };
 
 GENERATE_MEMBER_FUNCTION_CHECK(GetLifetimeReplicatedProps, void, const, TArray<FLifetimeProperty>&)
+
+// Consider adding UE_NET_TRACE_ENABLE to build config, for now we use the UE_TRACE_ENABLED as NetTrace is not support unless tracing is enabled
+#if UE_TRACE_ENABLED
+/**
+ * We pass a NetTraceCollector along with the NetBitWriter in order avoid modifying all API`s where we want to be able to collect Network stats
+ * Since the pointer to the collector is temporary we need to avoid copying it around by accident
+ */
+class FNetTraceCollectorDoNotCopyWrapper
+{
+public:
+	FNetTraceCollectorDoNotCopyWrapper() : Collector(nullptr) {}
+	FNetTraceCollectorDoNotCopyWrapper(const FNetTraceCollectorDoNotCopyWrapper&) : Collector(nullptr) {}
+    FNetTraceCollectorDoNotCopyWrapper(FNetTraceCollectorDoNotCopyWrapper&&) { Collector = nullptr; }
+	FNetTraceCollectorDoNotCopyWrapper& operator=(const FNetTraceCollectorDoNotCopyWrapper& Other) { Collector = nullptr; return *this; }
+    FNetTraceCollectorDoNotCopyWrapper& operator=(FNetTraceCollectorDoNotCopyWrapper&&) { Collector = nullptr; return *this; }
+
+	void Set(FNetTraceCollector* InCollector) { Collector = InCollector; }
+	FNetTraceCollector* Get() const { return Collector; }
+
+private:
+	FNetTraceCollector* Collector;
+};
+#endif
 
 /**
  * FNetBitWriter
@@ -284,6 +335,10 @@ public:
 	FNetBitWriter();
 
 	class UPackageMap * PackageMap;
+
+#if UE_TRACE_ENABLED
+	FNetTraceCollectorDoNotCopyWrapper TraceCollector;
+#endif
 
 	virtual FArchive& operator<<(FName& Name) override;
 	virtual FArchive& operator<<(UObject*& Object) override;
@@ -355,13 +410,74 @@ public:
 private:
 };
 
+struct FNetDeltaSerializeInfo;
 
-class INetSerializeCB
+/**
+ * An interface for handling serialization of Structs for networking.
+ *
+ * See notes in NetSerialization.h
+ */
+class COREUOBJECT_API INetSerializeCB
 {
+protected:
+
+	using FGuidReferencesMap = TMap<int32, class FGuidReferences>;
+
 public:
+
 	INetSerializeCB() { }
 
-	virtual void NetSerializeStruct( UScriptStruct* Struct, FBitArchive& Ar, UPackageMap* Map, void* Data, bool& bHasUnmapped ) = 0;
+	virtual ~INetSerializeCB() {}
+
+	/**
+	 * Serializes an entire struct to / from the given archive.
+	 * It is up to callers to manage Guid References created during reads.
+	 *
+	 * @param Params		NetDeltaSerialization Params to use.
+	 *						Object must be valid.
+	 *						Data must be valid.
+	 *						Connection must be valid.
+	 *						Map must be valid.
+	 *						Struct must point to the UScriptStruct of Data.
+	 *						Either Reader or Writer (but not both) must be valid.
+	 *						bOutHasMoreUnmapped will be used to return whether or not we have we have unmapped guids.
+	 *						Only used when reading.
+	 */
+	virtual void NetSerializeStruct(FNetDeltaSerializeInfo& Params) = 0;
+
+	UE_DEPRECATED(4.23, "Please use the version of NetSerializeStruct that accepts an FNetDeltaSerializeInfo reference")
+	virtual void NetSerializeStruct(
+		class UScriptStruct* Struct,
+		class FBitArchive& Ar,
+		class UPackageMap* Map,
+		void* Data,
+		bool& bHasUnmapped);
+
+	/**
+	 * Gathers any guid references for a FastArraySerializer.
+	 * @see GuidReferences.h for more info.
+	 */
+	virtual void GatherGuidReferencesForFastArray(struct FFastArrayDeltaSerializeParams& Params) = 0;
+
+	/**
+	 * Moves a previously mapped guid to an unmapped state for a FastArraySerializer.
+	 * @see GuidReferences.h for more info.
+	 *
+	 * @return True if the guid was found and unmapped.
+	 */
+	virtual bool MoveGuidToUnmappedForFastArray(struct FFastArrayDeltaSerializeParams& Params) = 0;
+
+	/**
+	 * Updates any unmapped guid references for a FastArraySerializer.
+	 * @see GuidReferences.h for more info.
+	 */
+	virtual void UpdateUnmappedGuidsForFastArray(struct FFastArrayDeltaSerializeParams& Params) = 0;
+
+	/**
+	 * Similar to NetSerializeStruct, except serializes an entire FastArraySerializer at once
+	 * instead of element by element.
+	 */
+	virtual bool NetDeltaSerializeForFastArray(struct FFastArrayDeltaSerializeParams& Params) = 0;
 };
 
 
@@ -370,9 +486,12 @@ class IRepChangedPropertyTracker
 public:
 	IRepChangedPropertyTracker() { }
 
-	virtual void SetCustomIsActiveOverride( const uint16 RepIndex, const bool bIsActive ) = 0;
+	virtual void SetCustomIsActiveOverride(
+		UObject* OwningObject,
+		const uint16 RepIndex,
+		const bool bIsActive) = 0;
 
-	virtual void SetExternalData( const uint8* Src, const int32 NumBits ) = 0;
+	virtual void SetExternalData(const uint8* Src, const int32 NumBits) = 0;
 
 	virtual bool IsReplay() const = 0;
 
@@ -390,64 +509,98 @@ public:
  */
 struct FNetDeltaSerializeInfo
 {
-	FNetDeltaSerializeInfo()
-	{
-		Writer		= NULL;
-		Reader		= NULL;
+	/** Used when writing */
+	FBitWriter* Writer = nullptr;
 
-		NewState	= NULL;
-		OldState	= NULL;
-		Map			= NULL;
-		Data		= NULL;
+	/** Used when reading */
+	FBitReader* Reader = nullptr;
 
-		Struct		= NULL;
+	/** SharedPtr to new base state created by NetDeltaSerialize. Used when writing.*/
+	TSharedPtr<INetDeltaBaseState>* NewState = nullptr;
 
-		NetSerializeCB = NULL;
+	/** Pointer to the previous base state. Used when writing. */
+	INetDeltaBaseState* OldState = nullptr;
 
-		bUpdateUnmappedObjects		= false;
-		bOutSomeObjectsWereMapped	= false;
-		bCalledPreNetReceive		= false;
-		bOutHasMoreUnmapped			= false;
-		bGuidListsChanged			= false;
-		bIsWritingOnClient			= false;
-		Object						= nullptr;
-		GatherGuidReferences		= nullptr;
-		TrackedGuidMemoryBytes		= nullptr;
-		MoveGuidToUnmapped			= nullptr;
-	}
+	/** PackageMap that can be used to serialize objects and track Guid References. Used primarily when reading. */
+	class UPackageMap* Map = nullptr;
 
-	// Used when writing
-	FBitWriter*						Writer;
+	/** Connection that we're currently serializing data for. */
+	class UNetConnection* Connection = nullptr;
 
-	// Used for when reading
-	FBitReader*						Reader;
+	/** Pointer to the struct that we're serializing.*/
+	void* Data = nullptr;
 
-	TSharedPtr<INetDeltaBaseState>*	NewState;		// SharedPtr to new base state created by NetDeltaSerialize.
-	INetDeltaBaseState*				OldState;				// Pointer to the previous base state.
-	UPackageMap*					Map;
-	void*							Data;
+	/** Type of struct that we're serializing. */
+	class UStruct* Struct = nullptr;
 
-	// Only used for fast TArray replication
-	UStruct*						Struct;
+	/** Pointer to a NetSerializeCB implementation that can be used when serializing. */
+	INetSerializeCB* NetSerializeCB = nullptr;
 
-	INetSerializeCB*				NetSerializeCB;
+	/** If true, we are updating unmapped objects */
+	bool bUpdateUnmappedObjects = false;
 
-	bool							bUpdateUnmappedObjects;		// If true, we are wanting to update unmapped objects
-	bool							bOutSomeObjectsWereMapped;
-	bool							bCalledPreNetReceive;
-	bool							bOutHasMoreUnmapped;
-	bool							bGuidListsChanged;
-	bool							bIsWritingOnClient;
-	UObject*						Object;
+	/** If true, then we successfully mapped some unmapped objects. */
+	bool bOutSomeObjectsWereMapped = false;
 
-	TSet< FNetworkGUID >*			GatherGuidReferences;
-	int32*							TrackedGuidMemoryBytes;
-	const FNetworkGUID*				MoveGuidToUnmapped;
+	/** Whether or not PreNetReceive has been called on the owning object. */
+	bool bCalledPreNetReceive = false;
+
+	/** Whether or not there are still some outstanding unmapped objects referenced by the struct. */
+	bool bOutHasMoreUnmapped = false;
+
+	/** Whether or not we changed Guid / Object references. Used when reading. */
+	bool bGuidListsChanged = false;
+
+	/** Whether or not we're sending / writing data from the client. */
+	bool bIsWritingOnClient = false;
+
+	//~ TODO: This feels hacky, and a better alternative might be something like connection specific
+	//~ capabilities.
+
+	/** Whether or not we support FFastArraySerializer::FastArrayDeltaSerialize_DeltaSerializeStructs */
+	bool bSupportsFastArrayDeltaStructSerialization = false;
+
+	/**
+	 * Whether or the connection is completely reliable.
+	 * We cache this off separate from UNetConnection so we can limit usage.
+	 */
+	bool bInternalAck = false;
+
+	/** The object that owns the struct we're serializing. */
+	UObject* Object = nullptr;
+
+	/**
+	 * When non-null, this indicates that we're gathering Guid References.
+	 * Any Guids the struct is referencing should be added.
+	 * This may contain gathered Guids from other structs, so do not clear this set.
+	 */
+	TSet<FNetworkGUID>* GatherGuidReferences = nullptr;
+
+	/**
+	 * When we're gathering guid references, ny memory used to track Guids can be added to this.
+	 * This may be tracking Guid memory from other structs, so do not reset this.
+	 * Note, this is not guaranteed to be valid when GatherGuidReferences is.
+	 */
+	int32* TrackedGuidMemoryBytes = nullptr;
+
+	/** When non-null, this indicates the given Guid has become unmapped and any references to it should be updated. */
+	const FNetworkGUID* MoveGuidToUnmapped = nullptr;
+
+	uint16 CustomDeltaIndex = INDEX_NONE;
 
 	// Debugging variables
-	FString							DebugName;
+	FString DebugName;
 };
 
+struct FEncryptionData
+{
+	/** Encryption key */
+	TArray<uint8> Key;
+	/** Encryption fingerprint */
+	TArray<uint8> Fingerprint;
+	/** Encryption identifier */
+	FString Identifier;
+};
 
 /**
  * Checksum macros for verifying archives stay in sync

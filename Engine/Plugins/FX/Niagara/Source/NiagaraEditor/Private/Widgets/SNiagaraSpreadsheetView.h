@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -132,7 +132,7 @@ protected:
 	bool CanCapture() const;
 	bool IsPausedAtRightTimeOnRightHandle() const;
 
-	void SelectedEmitterHandlesChanged();
+	void SystemSelectionChanged();
 
 	void ResetColumns(EUITab Tab);
 	void ResetEntries(EUITab Tab);

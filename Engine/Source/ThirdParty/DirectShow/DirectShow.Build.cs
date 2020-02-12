@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 using UnrealBuildTool;
 
 public class DirectShow : ModuleRules
@@ -16,9 +16,6 @@ public class DirectShow : ModuleRules
 
 			PublicSystemIncludePaths.Add(Target.UEThirdPartySourceDirectory + "DirectShow/DirectShow-1.0.0/src/Public");
 
-
-            PublicLibraryPaths.Add( DirectShowLibPath );
-
 			string LibraryName = "DirectShow";
 			if (Target.Configuration == UnrealTargetConfiguration.Debug && Target.bDebugBuildsActuallyUseDebugCRT)
 			{
@@ -29,7 +26,7 @@ public class DirectShow : ModuleRules
 				LibraryName += "_64";
 			}
 			LibraryName += ".lib";
-			PublicAdditionalLibraries.Add(LibraryName);
+			PublicAdditionalLibraries.Add(DirectShowLibPath + LibraryName);
 		}
 	}
 }

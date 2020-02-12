@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "OneSkyLocalizationServiceOperations.h"
 #include "Misc/FileHelper.h"
@@ -1148,7 +1148,7 @@ bool FOneSkyShowImportTaskWorker::Execute(class FOneSkyLocalizationServiceComman
 
 	double ElapsedTimeInSeconds = (FDateTime::UtcNow() - InCreationTimeStamp).GetTotalSeconds();
 
-	while (!GIsRequestingExit && (ElapsedTimeInSeconds <= InExecutionDelayInSeconds))
+	while (!IsEngineExitRequested() && (ElapsedTimeInSeconds <= InExecutionDelayInSeconds))
 	{
 		ElapsedTimeInSeconds = (FDateTime::UtcNow() - InCreationTimeStamp).GetTotalSeconds();
 		FPlatformProcess::Sleep(0.05);

@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -6,6 +6,7 @@
 #include "AdvancedPreviewScene.h"
 #include "Containers/ArrayView.h"
 #include "Types/SlateEnums.h"
+#include "Animation/AnimBlueprint.h"
 
 class UAnimationAsset;
 class UDebugSkelMeshComponent;
@@ -43,6 +44,9 @@ typedef FOnSelectedBoneChangedMulticaster::FDelegate FOnSelectedBoneChanged;
 //The selected socket changed
 DECLARE_MULTICAST_DELEGATE_OneParam(FOnSelectedSocketChangedMulticaster, const FSelectedSocketInfo& /*InSocketInfo*/);
 typedef FOnSelectedSocketChangedMulticaster::FDelegate FOnSelectedSocketChanged;
+
+//The delegate to check if the attach component can be removed
+DECLARE_DELEGATE_RetVal_OneParam(bool, FOnRemoveAttachedComponentFilter, const USceneComponent* /*InComponent*/);
 
 /** Modes that the preview scene defaults to (usually depending on asset editor context) */
 enum class EPreviewSceneDefaultAnimationMode : int32
@@ -83,6 +87,9 @@ public:
 	/** Set the additional meshes used by this preview scene (sets the additional meshes on the skeleton) */
 	virtual void SetAdditionalMeshes(class UDataAsset* InAdditionalMeshes) = 0;
 
+	/** Set whether additional meshes are selectable */
+	virtual void SetAdditionalMeshesSelectable(bool bSelectable) = 0;
+
 	/** Refreshes the additional meshes displayed in this preview scene */
 	virtual void RefreshAdditionalMeshes(bool bAllowOverrideBaseMesh) = 0;
 
@@ -97,6 +104,9 @@ public:
 
 	/** Get the preview mesh for this scene (does go via skeleton/asset) */
 	virtual USkeletalMesh* GetPreviewMesh() const = 0;
+
+	/** Set the preview animation blueprint and an optional overlay (for sub-layers) */
+	virtual void SetPreviewAnimationBlueprint(UAnimBlueprint* InAnimBlueprint, UAnimBlueprint* InOverlayOrSubAnimBlueprint) = 0;
 
 	/** Show the reference pose of the displayed skeletal mesh. Otherwise display the default. Optionally reset bone transforms, if any. */
 	virtual void ShowReferencePose(bool bShowRefPose, bool bResetBoneTransforms = false) = 0;
@@ -148,6 +158,15 @@ public:
 
 	/** Unregisters a delegate to be called when the preview mesh's LOD has changed */
 	virtual void UnregisterOnLODChanged(void* Thing) = 0;
+
+	/** Registers a delegate to be called when the preview mesh's morph targets has changed */
+	virtual void RegisterOnMorphTargetsChanged(const FSimpleDelegate& Delegate) = 0;
+
+	/** Unregisters a delegate to be called when the preview mesh's morph targets has changed */
+	virtual void UnregisterOnMorphTargetsChanged(void* Thing) = 0;
+
+	/** Broadcasts that the preview mesh morph targets has changed */
+	virtual void BroadcastOnMorphTargetsChanged() = 0;
 
 	/** Registers a delegate to be called when the view is invalidated */
 	virtual void RegisterOnInvalidateViews(const FSimpleDelegate& Delegate) = 0;
@@ -266,6 +285,10 @@ public:
 
 	/** Unregister a callback for just after the preview scene is ticked */
 	virtual void UnregisterOnPostTick(void* Thing) = 0;
+
+	/** setter/getter for can remove attach component */
+	virtual void SetRemoveAttachedComponentFilter(const FOnRemoveAttachedComponentFilter& Delegate) = 0;
+	virtual void ClearRemoveAttachedComponentFilter() = 0;
 
 	/** Let the preview scene know that it should tick (because it is visible) */
 	virtual void FlagTickable() = 0;

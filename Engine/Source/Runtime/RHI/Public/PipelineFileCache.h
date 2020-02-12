@@ -1,9 +1,10 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
  
 #pragma once
 
 #include "CoreMinimal.h"
 #include "Containers/List.h"
+#include "Containers/StringView.h"
 #include "RHI.h"
 
 DECLARE_STATS_GROUP(TEXT("ShaderPipelineCache"),STATGROUP_PipelineStateCache, STATCAT_Advanced);
@@ -71,7 +72,7 @@ struct RHI_API FPipelineFileCacheRasterizerState
 		return KeyHash;
 	}
 	FString ToString() const;
-	void FromString(const FString& Src);
+	void FromString(const FStringView& Src);
 };
 
 /**
@@ -111,7 +112,7 @@ struct RHI_API FPipelineCacheFileFormatPSO
 
 		FString ToString() const;
 		static FString HeaderLine();
-		void FromString(const FString& Src);
+		void FromString(const FStringView& Src);
 	};
 	struct RHI_API GraphicsDescriptor
 	{
@@ -139,18 +140,21 @@ struct RHI_API FPipelineCacheFileFormatPSO
 		ERenderTargetStoreAction StencilStore;
 		
 		EPrimitiveType PrimitiveType;
-
+		
+		uint8 SubpassHint;	
+		uint8 SubpassIndex;
+		
 		FString ToString() const;
 		static FString HeaderLine();
-		void FromString(const FString& Src);
+		bool FromString(const FStringView& Src);
 
 		FString ShadersToString() const;
 		static FString ShaderHeaderLine();
-		void ShadersFromString(const FString& Src);
+		void ShadersFromString(const FStringView& Src);
 
 		FString StateToString() const;
 		static FString StateHeaderLine();
-		void StateFromString(const FString& Src);
+		bool StateFromString(const FStringView& Src);
 	};
 	enum class DescriptorType : uint32
 	{
@@ -184,7 +188,10 @@ struct RHI_API FPipelineCacheFileFormatPSO
 	
 	FString CommonToString() const;
 	static FString CommonHeaderLine();
-	void CommonFromString(const FString& Src);
+	void CommonFromString(const FStringView& Src);
+	
+	// Potential cases for seperating verify logic if requiired: RunTime-Logging, RunTime-UserCaching, RunTime-PreCompile, CommandLet-Cooking
+	bool Verify() const;
 };
 
 struct RHI_API FPipelineCacheFileFormatPSORead
@@ -193,7 +200,7 @@ struct RHI_API FPipelineCacheFileFormatPSORead
 	: Ar(nullptr)
 	, Hash(0)
 	, bReadCompleted(false)
-    , bValid(false)
+	, bValid(false)
 	{}
 	
 	~FPipelineCacheFileFormatPSORead()
@@ -210,10 +217,12 @@ struct RHI_API FPipelineCacheFileFormatPSORead
 	
 	uint32 Hash;
 	bool bReadCompleted;
-    bool bValid;
+	bool bValid;
 	
-	TSharedPtr<class IAsyncReadRequest, ESPMode::ThreadSafe> ReadRequest;
+	// Note that the contract of IAsyncReadFileHandle and IAsyncReadRequest requires that we delete the ReadRequest before deleting its ParentFileHandle. 
+	// We therefore require that ParentFileHandle is declared before ReadRequest, so that the class destructor tears down first ReadRequest then ParentFileHandle.
 	TSharedPtr<class IAsyncReadFileHandle, ESPMode::ThreadSafe> ParentFileHandle;
+	TSharedPtr<class IAsyncReadRequest, ESPMode::ThreadSafe> ReadRequest;
 };
 
 struct RHI_API FPipelineCachePSOHeader
@@ -240,9 +249,11 @@ typedef bool(*FPSOMaskComparisonFn)(uint64 ReferenceMask, uint64 PSOMask);
 
 struct FPSOUsageData
 {
-	FPSOUsageData(uint32 InPSOHash, uint64 InUsageMask): PSOHash(InPSOHash), UsageMask(InUsageMask) {}
+	FPSOUsageData(): PSOHash(0), UsageMask(0), EngineFlags(0) {}
+	FPSOUsageData(uint32 InPSOHash, uint64 InUsageMask, uint16 InEngineFlags): PSOHash(InPSOHash), UsageMask(InUsageMask), EngineFlags(InEngineFlags) {}
 	uint32 PSOHash;
 	uint64 UsageMask;
+	uint16 EngineFlags;
 };
 
 class RHI_API FPipelineFileCache
@@ -281,6 +292,12 @@ public:
 	static void CacheComputePSO(uint32 RunTimeHash, FRHIComputeShader const* Initializer);
 	static FPipelineStateStats* RegisterPSOStats(uint32 RunTimeHash);
 	
+	/*
+	 * This PSO has failed compile and is invalid - this cache should not return this invalid PSO from subsequent calls for PreCompile requests.
+	 * Note: Not implementated for Compute that has no flag to say it came from this cache - don't want to consume failures that didn't propagate from this cache.
+	 */
+	static void RegisterPSOCompileFailure(uint32 RunTimeHash, FGraphicsPipelineStateInitializer const& Initializer);
+	
 	/**
 	 * Event signature for being notified that a new PSO has been logged
 	 */
@@ -308,17 +325,21 @@ public:
 	static uint64 SetGameUsageMaskWithComparison(uint64 GameUsageMask, FPSOMaskComparisonFn InComparisonFnPtr);
 	static uint64 GetGameUsageMask()	{ return GameUsageMask;}
 	
+	static void PreCompileComplete();
 private:
 	
-	static void EnsurePSOUsageMask(uint32 PSOHash, uint64 UsageMask);
+	static void RegisterPSOUsageDataUpdateForNextSave(FPSOUsageData& UsageData);
+	static void ClearOSPipelineCache();
+	static bool ShouldEnableFileCache();
 	
 private:
 	static FRWLock FileCacheLock;
 	static class FPipelineCacheFile* FileCache;
-	static TMap<uint32, FPSOUsageData> RunTimeToPSOUsage;
-	static TMap<uint32, uint64> NewPSOUsageMasks;			// Note: this is not only for new PSO's but also for existing PSO's in the filecache when they have a new UsageMask
+	static TMap<uint32, FPSOUsageData> RunTimeToPSOUsage;		// Fast check structure - Not saved (External state cache runtime hash to seen usage data)
+	static TMap<uint32, FPSOUsageData> NewPSOUsage;				// For mask or engine updates - Merged + Saved (Our internal PSO hash to latest usage data) - temp working scratch, only holds updates since last "save" so is not the authority on state
 	static TMap<uint32, FPipelineStateStats*> Stats;
 	static TSet<FPipelineCacheFileFormatPSO> NewPSOs;
+	static TSet<uint32> NewPSOHashes;
     static uint32 NumNewPSOs;
 	static PSOOrder RequestedOrder;
 	static bool FileCacheEnabled;

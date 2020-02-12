@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -7,6 +7,8 @@
 #include "UObject/UObjectAnnotation.h"
 #include "Serialization/DuplicatedObject.h"
 #include "Serialization/LargeMemoryData.h"
+#include "Templates/RefCounting.h"
+#include "UObject/UObjectThreadContext.h"
 
 struct FObjectInstancingGraph;
 
@@ -34,11 +36,15 @@ private:
 	 */
 	struct FObjectInstancingGraph*			InstanceGraph;
 
+	/** Context for duplication */
+	TRefCountPtr<FUObjectSerializeContext> DuplicateContext;
+
 	//~ Begin FArchive Interface.
 
-	virtual FArchive& operator<<(FName& N);
-	virtual FArchive& operator<<(UObject*& Object);
-	virtual FArchive& operator<<(FLazyObjectPtr& LazyObjectPtr);
+	virtual FArchive& operator<<(FName& N) override;
+	virtual FArchive& operator<<(UObject*& Object) override;
+	virtual FArchive& operator<<(FLazyObjectPtr& LazyObjectPtr) override;
+	virtual FArchive& operator<<(FField*& Field) override;
 
 	virtual void Serialize(void* Data,int64 Num)
 	{
@@ -78,6 +84,16 @@ public:
 	virtual int64 TotalSize()
 	{
 		return ObjectData.GetSize();
+	}
+
+	virtual void SetSerializeContext(FUObjectSerializeContext* InLoadContext) override
+	{
+		DuplicateContext = InLoadContext;
+	}
+
+	virtual FUObjectSerializeContext* GetSerializeContext() override
+	{
+		return DuplicateContext;
 	}
 
 	TArray<UObject*>	UnserializedObjects;

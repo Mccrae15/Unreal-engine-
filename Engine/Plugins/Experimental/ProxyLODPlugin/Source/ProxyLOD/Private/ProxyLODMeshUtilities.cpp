@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "ProxyLODMeshUtilities.h"
 
@@ -10,13 +10,11 @@
 #include "Modules/ModuleManager.h"
 #include "MeshUtilities.h" // IMeshUtilities
 
+THIRD_PARTY_INCLUDES_START
 #include <DirectXMeshCode/DirectXMesh/DirectXMesh.h>
+THIRD_PARTY_INCLUDES_END
 
-#include "MeshDescription.h"
-#include "MeshAttributes.h"
-#include "MeshAttributeArray.h"
-
-#include "MeshDescriptionOperations.h"
+#include "StaticMeshAttributes.h"
 
 #include <vector>
 #include <map>
@@ -31,37 +29,9 @@
 
 void ProxyLOD::ComputeTangentSpace(FMeshDescription& RawMesh, const bool bRecomputeNormals)
 {
-	FVertexInstanceArray& VertexInstanceArray = RawMesh.VertexInstances();
-	TVertexInstanceAttributesRef<FVector> Normals = RawMesh.VertexInstanceAttributes().GetAttributesRef<FVector>(MeshAttribute::VertexInstance::Normal);
-	TVertexInstanceAttributesRef<FVector> Tangents = RawMesh.VertexInstanceAttributes().GetAttributesRef<FVector>(MeshAttribute::VertexInstance::Tangent);
-	TVertexInstanceAttributesRef<float> BinormalSigns = RawMesh.VertexInstanceAttributes().GetAttributesRef<float>(MeshAttribute::VertexInstance::BinormalSign);
-
 	// Static meshes always blend normals of overlapping corners.
-	uint32 TangentOptions = FMeshDescriptionOperations::ETangentOptions::BlendOverlappingNormals | FMeshDescriptionOperations::ETangentOptions::IgnoreDegenerateTriangles;
-
-	//Keep the original mesh description NTBs if we do not rebuild the normals or tangents.
-	bool bHasAllNormals = true;
-	bool bHasAllTangents = true;
-	for (const FVertexInstanceID VertexInstanceID : VertexInstanceArray.GetElementIDs())
-	{
-		//Dump the tangents
-		BinormalSigns[VertexInstanceID] = 0.0f;
-		Tangents[VertexInstanceID] = FVector(0.0f);
-
-		if (bRecomputeNormals)
-		{
-			//Dump the normals
-			Normals[VertexInstanceID] = FVector(0.0f);
-		}
-		bHasAllNormals &= !Normals[VertexInstanceID].IsNearlyZero();
-		bHasAllTangents &= !Tangents[VertexInstanceID].IsNearlyZero();
-	}
-
-	if (!bHasAllNormals)
-	{
-		FMeshDescriptionOperations::CreateNormals(RawMesh, (FMeshDescriptionOperations::ETangentOptions)TangentOptions, false);
-	}
-	FMeshDescriptionOperations::CreateMikktTangents(RawMesh, (FMeshDescriptionOperations::ETangentOptions)TangentOptions);
+	EComputeNTBsFlags ComputeNTBsOptions = EComputeNTBsFlags::BlendOverlappingNormals | EComputeNTBsFlags::IgnoreDegenerateTriangles | EComputeNTBsFlags::Tangents | EComputeNTBsFlags::UseMikkTSpace;
+	FStaticMeshOperations::ComputeTangentsAndNormals(RawMesh, ComputeNTBsOptions);
 }
 
 // Calls into the direxXMesh library to compute the per-vertex normal, by default this will weight by area.
@@ -1318,6 +1288,8 @@ void TAddNormals<FPositionOnlyVertex>(TAOSMesh<FPositionOnlyVertex>& Mesh)
 
 void ProxyLOD::AddNormals(TAOSMesh<FPositionOnlyVertex>& InOutMesh)
 {
+	TRACE_CPUPROFILER_EVENT_SCOPE(ProxyLOD::AddNormals)
+
 	TAddNormals(InOutMesh);
 }
 
@@ -1478,11 +1450,7 @@ int32 CorrectCollapsedWalls(const ProxyLOD::FkDOPTree& kDOPTree,
 	ProxyLOD::FUnitTransformDataProvider kDOPDataProvider(kDOPTree);
 
 	// Number of triangle in our mesh
-	int32 NumTriangle = 0;
-	for (const FPolygonID& PolygonID : MeshDescription.Polygons().GetElementIDs())
-	{
-		NumTriangle += MeshDescription.GetPolygonTriangles(PolygonID).Num();
-	}
+	int32 NumTriangle = MeshDescription.Triangles().Num();
 
 	// This will hold the intersecting faces for each edge.
 
@@ -1684,14 +1652,13 @@ void ProxyLOD::ColorPartitions(FMeshDescription& InOutRawMesh, const std::vector
 	int32 TriangleIndex = 0;
 	TMap<uint32, FVertexInstanceID> WedgeIndexToVertexInstanceID;
 	WedgeIndexToVertexInstanceID.Reserve(InOutRawMesh.VertexInstances().Num());
-	for (const FPolygonID& PolygonID : InOutRawMesh.Polygons().GetElementIDs())
+	for (const FPolygonID PolygonID : InOutRawMesh.Polygons().GetElementIDs())
 	{
-		const FMeshPolygon& Polygon = InOutRawMesh.GetPolygon(PolygonID);
-		for (const FMeshTriangle& Triangle : Polygon.Triangles)
+		for (const FTriangleID TriangleID : InOutRawMesh.GetPolygonTriangleIDs(PolygonID))
 		{
 			for (int32 Corner = 0; Corner < 3; ++Corner)
 			{
-				WedgeIndexToVertexInstanceID.Add((TriangleIndex * 3) + Corner, Triangle.GetVertexInstanceID(Corner));
+				WedgeIndexToVertexInstanceID.Add((TriangleIndex * 3) + Corner, InOutRawMesh.GetTriangleVertexInstance(TriangleID, Corner));
 			}
 			TriangleIndex++;
 		}
@@ -1741,15 +1708,13 @@ void ProxyLOD::AddWedgeColors(FMeshDescription& RawMesh)
 
 	//Recolor the vertex instances
 	int32 TriangleIndex = 0;
-	for (const FPolygonID& PolygonID : RawMesh.Polygons().GetElementIDs())
+	for (const FPolygonID PolygonID : RawMesh.Polygons().GetElementIDs())
 	{
-		const FMeshPolygon& Polygon = RawMesh.GetPolygon(PolygonID);
-		for (const FMeshTriangle& Triangle : Polygon.Triangles)
+		for (const FTriangleID TriangleID : RawMesh.GetPolygonTriangleIDs(PolygonID))
 		{
 			for (int32 Corner = 0; Corner < 3; ++Corner)
 			{
-
-				VertexInstanceColors[Triangle.GetVertexInstanceID(Corner)] = FLinearColor(ColorRange[((TriangleIndex*3) + Corner) % 13]);
+				VertexInstanceColors[RawMesh.GetTriangleVertexInstance(TriangleID, Corner)] = FLinearColor(ColorRange[((TriangleIndex*3) + Corner) % 13]);
 			}
 			TriangleIndex++;
 		}

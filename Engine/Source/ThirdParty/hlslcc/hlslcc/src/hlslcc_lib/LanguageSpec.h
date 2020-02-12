@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -14,6 +14,8 @@ struct ILanguageSpec
 	
 	// Whether the backend can generate a fused-multiply-add instruction
 	virtual bool SupportsFusedMultiplyAdd() const { return false; }
+
+	virtual bool LowerSubToAddNeg() const { return true; }
 
 	// half3x3 <-> float3x3
 	virtual bool SupportsMatrixConversions() const = 0;

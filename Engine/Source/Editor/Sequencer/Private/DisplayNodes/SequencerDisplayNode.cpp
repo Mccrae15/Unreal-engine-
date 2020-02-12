@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "DisplayNodes/SequencerDisplayNode.h"
 #include "Curves/KeyHandle.h"
@@ -8,7 +8,10 @@
 #include "Widgets/SLeafWidget.h"
 #include "Textures/SlateIcon.h"
 #include "Framework/Commands/UIAction.h"
+#include "Widgets/SBoxPanel.h"
+#include "Widgets/SOverlay.h"
 #include "Widgets/Layout/SSpacer.h"
+#include "Widgets/Images/SImage.h"
 #include "Framework/MultiBox/MultiBoxBuilder.h"
 #include "EditorStyleSet.h"
 #include "DisplayNodes/SequencerObjectBindingNode.h"
@@ -22,8 +25,13 @@
 #include "SSequencerSectionAreaView.h"
 #include "CommonMovieSceneTools.h"
 #include "Framework/Commands/GenericCommands.h"
+#include "CurveEditor.h"
+#include "Tree/SCurveEditorTreePin.h"
+#include "Tree/CurveEditorTreeFilter.h"
 #include "ScopedTransaction.h"
 #include "SequencerKeyTimeCache.h"
+#include "SequencerNodeSortingMethods.h"
+#include "SequencerSelectionCurveFilter.h"
 #include "SequencerKeyCollection.h"
 
 #define LOCTEXT_NAMESPACE "SequencerDisplayNode"
@@ -35,6 +43,125 @@ namespace SequencerNodeConstants
 	const float CommonPadding = 4.f;
 
 	static const FVector2D KeyMarkSize = FVector2D(3.f, 21.f);
+
+	static const uint8 DefaultSortBias[(__underlying_type(EDisplayNodeSortType))EDisplayNodeSortType::NUM] = {
+		2, // Folders
+		3, // Tracks
+		4, // ObjectBindings
+		1, // CameraCuts
+		0, // Shots
+		5, // Anything else
+	};
+
+	static const uint8 ObjectBindingSortBias[(__underlying_type(EDisplayNodeSortType))EDisplayNodeSortType::NUM] = {
+		2, // Folders            - shouldn't exist inside object bindings
+		1, // Tracks
+		0, // ObjectBindings
+		3, // CameraCuts         - shouldn't exist inside object bindings
+		4, // Shots              - shouldn't exist inside object bindings
+		5, // Anything else
+	};
+
+	static_assert(UE_ARRAY_COUNT(DefaultSortBias) == (__underlying_type(EDisplayNodeSortType))EDisplayNodeSortType::NUM, "Mismatched type/bias count");
+	static_assert(UE_ARRAY_COUNT(ObjectBindingSortBias) == (__underlying_type(EDisplayNodeSortType))EDisplayNodeSortType::NUM, "Mismatched type/bias count");
+
+	inline bool SortChildrenWithBias(const TSharedRef<FSequencerDisplayNode>& A, const TSharedRef<FSequencerDisplayNode>& B, const uint8* SortBias)
+	{
+		const uint8 BiasA = SortBias[(__underlying_type(EDisplayNodeSortType))A->GetSortType()];
+		const uint8 BiasB = SortBias[(__underlying_type(EDisplayNodeSortType))B->GetSortType()];
+
+		// For nodes of the same bias, sort by name
+		if (BiasA == BiasB)
+		{
+			const int32 Compare = A->GetDisplayName().CompareToCaseIgnored(B->GetDisplayName());
+
+			if (Compare != 0)
+			{
+				return Compare < 0;
+			}
+
+			// If the nodes have the same name, try to maintain current sorting order
+			const int32 SortA = A->GetSortingOrder();
+			const int32 SortB = B->GetSortingOrder();
+
+			if (SortA >= 0 && SortB >= 0)
+			{
+				// Both nodes have persistent sort orders, use those
+				return SortA < SortB;
+			}
+			else if (SortA >= 0 || SortB >= 0)
+			{
+				// Only one nodes has a persistent sort order, list it first
+				return SortA > SortB;
+			}
+			
+			// If same name and neither has a persistent sort order, then report them as equal
+			return false;
+
+		}
+		return BiasA < BiasB;
+	}
+
+	inline bool SortObjectBindingChildren(const TSharedRef<FSequencerDisplayNode>& A, const TSharedRef<FSequencerDisplayNode>& B)
+	{
+		return SortChildrenWithBias(A, B, SequencerNodeConstants::ObjectBindingSortBias);
+	}
+
+	static bool SortChildrenDefault(const TSharedRef<FSequencerDisplayNode>& A, const TSharedRef<FSequencerDisplayNode>& B)
+	{
+		const int32 SortA = A->GetSortingOrder();
+		const int32 SortB = B->GetSortingOrder();
+
+		if (SortA >= 0 && SortB >= 0)
+		{
+			// Both nodes have persistent sort orders, use those
+			return SortA < SortB;
+		}
+
+		// When either or neither node has a persistent sort order, we use the default ordering between the two nodes to ensure that 
+		// New nodes get added to the correctly sorted position by default
+		return SortChildrenWithBias(A, B, SequencerNodeConstants::DefaultSortBias);
+	}
+
+	static bool NodeMatchesTextFilterTerm(TSharedPtr<const FSequencerDisplayNode> Node, const FCurveEditorTreeTextFilterTerm& Term)
+	{
+		bool bMatched = false;
+
+		for (const FCurveEditorTreeTextFilterToken& Token : Term.ChildToParentTokens)
+		{
+			if (!Node)
+			{
+				// No match - ran out of parents
+				return false;
+			}
+			else if (!Token.Match(*Node->GetDisplayName().ToString()))
+			{
+				return false;
+			}
+
+			bMatched = true;
+			Node = Node->GetParent();
+		}
+
+		return bMatched;
+	}
+
+	FText GetCurveEditorHighlightText(TWeakPtr<FCurveEditor> InCurveEditor)
+	{
+		TSharedPtr<FCurveEditor> PinnedCurveEditor = InCurveEditor.Pin();
+		if (!PinnedCurveEditor)
+		{
+			return FText::GetEmpty();
+		}
+
+		const FCurveEditorTreeFilter* Filter = PinnedCurveEditor->GetTree()->FindFilterByType(ECurveEditorTreeFilterType::Text);
+		if (Filter)
+		{
+			return static_cast<const FCurveEditorTreeTextFilter*>(Filter)->InputText;
+		}
+
+		return FText::GetEmpty();
+	}
 }
 
 struct FNameAndSignature
@@ -58,12 +185,12 @@ struct FNameAndSignature
 	}
 };
 
-class SSequencerObjectTrack
+class SSequencerCombinedKeysTrack
 	: public SLeafWidget
 {
 public:
 
-	SLATE_BEGIN_ARGS(SSequencerObjectTrack) {}
+	SLATE_BEGIN_ARGS(SSequencerCombinedKeysTrack) {}
 		/** The view range of the section area */
 		SLATE_ATTRIBUTE( TRange<double>, ViewRange )
 		/** The tick resolution of the current sequence*/
@@ -80,8 +207,6 @@ public:
 		
 		ViewRange = InArgs._ViewRange;
 		TickResolution = InArgs._TickResolution;
-
-		check(RootNode->GetType() == ESequencerNode::Object);
 	}
 
 protected:
@@ -117,7 +242,7 @@ private:
 };
 
 
-void SSequencerObjectTrack::Tick( const FGeometry& AllottedGeometry, const double InCurrentTime, const float InDeltaTime )
+void SSequencerCombinedKeysTrack::Tick( const FGeometry& AllottedGeometry, const double InCurrentTime, const float InDeltaTime )
 {
 	SWidget::Tick(AllottedGeometry, InCurrentTime, InDeltaTime);
 
@@ -136,7 +261,7 @@ void SSequencerObjectTrack::Tick( const FGeometry& AllottedGeometry, const doubl
 	}
 }
 
-int32 SSequencerObjectTrack::OnPaint(const FPaintArgs& Args, const FGeometry& AllottedGeometry, const FSlateRect& MyCullingRect, FSlateWindowElementList& OutDrawElements, int32 LayerId, const FWidgetStyle& InWidgetStyle, bool bParentEnabled) const
+int32 SSequencerCombinedKeysTrack::OnPaint(const FPaintArgs& Args, const FGeometry& AllottedGeometry, const FSlateRect& MyCullingRect, FSlateWindowElementList& OutDrawElements, int32 LayerId, const FWidgetStyle& InWidgetStyle, bool bParentEnabled) const
 {
 	if (RootNode->GetSequencer().GetSequencerSettings()->GetShowCombinedKeyframes())
 	{
@@ -164,14 +289,14 @@ int32 SSequencerObjectTrack::OnPaint(const FPaintArgs& Args, const FGeometry& Al
 }
 
 
-FVector2D SSequencerObjectTrack::ComputeDesiredSize( float ) const
+FVector2D SSequencerCombinedKeysTrack::ComputeDesiredSize( float ) const
 {
 	// Note: X Size is not used
 	return FVector2D( 100.0f, RootNode->GetNodeHeight() );
 }
 
 
-void SSequencerObjectTrack::GenerateCachedKeyPositions(const FGeometry& AllottedGeometry)
+void SSequencerCombinedKeysTrack::GenerateCachedKeyPositions(const FGeometry& AllottedGeometry)
 {
 	static float DuplicateThresholdPx = 3.f;
 
@@ -182,12 +307,28 @@ void SSequencerObjectTrack::GenerateCachedKeyPositions(const FGeometry& Allotted
 	// Unnamed key areas are uncacheable, so we track those separately
 	TArray<FSequencerCachedKeys> UncachableKeyTimes;
 
+	TArray<double> SectionBoundTimes;
+
 	// First off, accumulate (and cache) KeyDrawPositions as times, we convert to positions in the later loop
 	for (auto& CachePair : KeyCollectionSignature.GetKeyAreas())
 	{
 		TSharedRef<IKeyArea> KeyArea = CachePair.Key;
 
 		UMovieSceneSection* Section = KeyArea->GetOwningSection();
+
+		if (Section)
+		{
+			if (Section->HasStartFrame())
+			{
+				SectionBoundTimes.Add(Section->GetInclusiveStartFrame() / CachedTickResolution);
+			}
+
+			if (Section->HasEndFrame())
+			{
+				SectionBoundTimes.Add(Section->GetExclusiveEndFrame() / CachedTickResolution);
+			}
+		}
+
 		FNameAndSignature CacheKey{ CachePair.Value, KeyArea->GetName() };
 
 		// If we cached this last frame, use those key times again
@@ -243,6 +384,7 @@ void SSequencerObjectTrack::GenerateCachedKeyPositions(const FGeometry& Allotted
 		Uncached.GetKeysInRange(CachedViewRange, &Times, nullptr, nullptr);
 		AllIterators.Add(Times);
 	}
+	AllIterators.Add(TArrayView<const double>(SectionBoundTimes));
 
 	FTimeToPixel TimeToPixelConverter(AllottedGeometry, CachedViewRange, CachedTickResolution);
 
@@ -274,31 +416,155 @@ void SSequencerObjectTrack::GenerateCachedKeyPositions(const FGeometry& Allotted
 }
 
 
-FSequencerDisplayNode::FSequencerDisplayNode( FName InNodeName, TSharedPtr<FSequencerDisplayNode> InParentNode, FSequencerNodeTree& InParentTree )
-	: VirtualTop( 0.f )
+FSequencerDisplayNode::FSequencerDisplayNode( FName InNodeName, FSequencerNodeTree& InParentTree )
+	: TreeSerialNumber(0)
+	, VirtualTop( 0.f )
 	, VirtualBottom( 0.f )
-	, ParentNode( InParentNode )
 	, ParentTree( InParentTree )
 	, NodeName( InNodeName )
 	, bExpanded( false )
+	, bPinned( false )
+	, bInPinnedBranch( false )
+	, bHasBeenInitialized( false )
 {
+	SortType = EDisplayNodeSortType::Undefined;
 }
 
-
-void FSequencerDisplayNode::Initialize(float InVirtualTop, float InVirtualBottom)
+bool FSequencerDisplayNode::IsParentStillRelevant(uint32 SerialNumber) const
 {
-	bExpanded = ParentTree.GetSavedExpansionState( *this );
+	TSharedPtr<FSequencerDisplayNode> ExistingParent = GetParent();
+	return ExistingParent.IsValid() && ExistingParent->TreeSerialNumber == SerialNumber;
+}
+
+bool FSequencerDisplayNode::IsRootNode() const
+{
+	return ParentNode == ParentTree.GetRootNode();
+}
+
+void FSequencerDisplayNode::SetParentDirectly(TSharedPtr<FSequencerDisplayNode> InParent)
+{
+	ParentNode = InParent;
+}
+
+void FSequencerDisplayNode::SetParent(TSharedPtr<FSequencerDisplayNode> InParent, int32 DesiredChildIndex)
+{
+	TSharedPtr<FSequencerDisplayNode> CurrentParent = ParentNode.Pin();
+	if (CurrentParent != InParent)
+	{
+		TSharedRef<FSequencerDisplayNode> ThisNode = AsShared();
+		if (CurrentParent)
+		{
+			// Remove from parent
+			CurrentParent->ChildNodes.Remove(ThisNode);
+		}
+
+		if (InParent)
+		{
+			// Add to new parent
+			if (DesiredChildIndex != INDEX_NONE && ensureMsgf(DesiredChildIndex <= InParent->ChildNodes.Num(), TEXT("Invalid insert index specified")))
+			{
+				InParent->ChildNodes.Insert(ThisNode, DesiredChildIndex);
+			}
+			else
+			{
+				InParent->ChildNodes.Add(ThisNode);
+			}
+
+			bExpanded = ParentTree.GetSavedExpansionState( *this );
+
+			if (InParent != ParentTree.GetRootNode())
+			{
+				bPinned = false;
+				ParentTree.SavePinnedState(*this, false);
+			}
+		}
+	}
+
+	ParentNode = InParent;
+}
+
+void FSequencerDisplayNode::MoveChild(int32 InChildIndex, int32 InDesiredNewIndex)
+{
+	check(ChildNodes.IsValidIndex(InChildIndex) && InDesiredNewIndex >= 0 && InDesiredNewIndex <= ChildNodes.Num());
+
+	TSharedRef<FSequencerDisplayNode> Child = ChildNodes[InChildIndex];
+	ChildNodes.RemoveAt(InChildIndex, 1, false);
+
+	if (InDesiredNewIndex > InChildIndex)
+	{
+		// Decrement the desired index to account for the removal
+		--InDesiredNewIndex;
+	}
+
+	ChildNodes.Insert(Child, InDesiredNewIndex);
+}
+
+FSequencer& FSequencerDisplayNode::GetSequencer() const
+{
+	return ParentTree.GetSequencer();
+}
+
+void FSequencerDisplayNode::OnTreeRefreshed(float InVirtualTop, float InVirtualBottom)
+{
+	if (!bHasBeenInitialized)
+	{
+		// Assign the saved expansion state when this node is initialized for the first time
+		bExpanded = ParentTree.GetSavedExpansionState( *this );
+		if (IsRootNode())
+		{
+			bPinned = ParentTree.GetSavedPinnedState(*this);
+		}
+	}
 
 	VirtualTop = InVirtualTop;
 	VirtualBottom = InVirtualBottom;
+
+	SortImmediateChildren();
+
+	bHasBeenInitialized = true;
 }
 
-
-void FSequencerDisplayNode::AddObjectBindingNode(TSharedRef<FSequencerObjectBindingNode> ObjectBindingNode)
+void FSequencerDisplayNode::SortImmediateChildren()
 {
-	AddChildAndSetParent( ObjectBindingNode );
+	const ESequencerNode::Type NodeType = GetType();
+	if (ChildNodes.Num() == 0 || NodeType == ESequencerNode::Category || NodeType == ESequencerNode::Track)
+	{
+		return;
+	}
+
+	if (NodeType == ESequencerNode::Object)
+	{
+		// Objects never use their serialized sort order
+		Algo::Sort(ChildNodes, SequencerNodeConstants::SortObjectBindingChildren);
+	}
+	else
+	{
+		Algo::Sort(ChildNodes, SequencerNodeConstants::SortChildrenDefault);
+	}
+
+	if (NodeType != ESequencerNode::Track || static_cast<FSequencerTrackNode*>(this)->GetSubTrackMode() == FSequencerTrackNode::ESubTrackMode::None)
+	{
+		// Set persistent sort orders
+		for (int32 Index = 0; Index < ChildNodes.Num(); ++Index)
+		{
+			ChildNodes[Index]->SetSortingOrder(Index);
+		}
+	}
 }
 
+void FSequencerDisplayNode::ResortImmediateChildren()
+{
+	if (ChildNodes.Num() > 0)
+	{
+		// Unset persistent sort orders
+		for (TSharedRef<FSequencerDisplayNode> Child : ChildNodes)
+		{
+			Child->SetSortingOrder(-1);
+		}
+
+		SortImmediateChildren();
+	}
+}
 
 TSharedPtr<FSequencerObjectBindingNode> FSequencerDisplayNode::FindParentObjectBindingNode() const
 {
@@ -306,13 +572,9 @@ TSharedPtr<FSequencerObjectBindingNode> FSequencerDisplayNode::FindParentObjectB
 
 	while (CurrentParentNode.IsValid())
 	{
-		if (CurrentParentNode.Get()->GetType() == ESequencerNode::Object)
+		if (CurrentParentNode->GetType() == ESequencerNode::Object)
 		{
-			TSharedPtr<FSequencerObjectBindingNode> ObjectNode = StaticCastSharedPtr<FSequencerObjectBindingNode>(CurrentParentNode);
-			if (ObjectNode.IsValid())
-			{
-				return ObjectNode;
-			}
+			return StaticCastSharedPtr<FSequencerObjectBindingNode>(CurrentParentNode);
 		}
 		CurrentParentNode = CurrentParentNode->GetParent();
 	}
@@ -320,6 +582,27 @@ TSharedPtr<FSequencerObjectBindingNode> FSequencerDisplayNode::FindParentObjectB
 	return nullptr;
 }
 
+TSharedPtr<FSequencerTrackNode> FSequencerDisplayNode::FindParentTrackNode() const
+{
+	TSharedPtr<FSequencerDisplayNode> CurrentParentNode = GetParent();
+	while (CurrentParentNode.IsValid())
+	{
+		if (CurrentParentNode->GetType() == ESequencerNode::Track)
+		{
+			return StaticCastSharedPtr<FSequencerTrackNode>(CurrentParentNode);
+		}
+		CurrentParentNode = CurrentParentNode->GetParent();
+	}
+
+	return nullptr;
+}
+
+
+FGuid FSequencerDisplayNode::GetObjectGuid() const
+{
+	TSharedPtr<FSequencerObjectBindingNode> ObjectBindingNode = FindParentObjectBindingNode();
+	return ObjectBindingNode ? ObjectBindingNode->GetObjectBinding() : FGuid();
+}
 
 bool FSequencerDisplayNode::Traverse_ChildFirst(const TFunctionRef<bool(FSequencerDisplayNode&)>& InPredicate, bool bIncludeThisNode)
 {
@@ -400,61 +683,14 @@ bool FSequencerDisplayNode::TraverseVisible_ParentFirst(const TFunctionRef<bool(
 	return true;
 }
 
-TSharedRef<FSequencerSectionCategoryNode> FSequencerDisplayNode::AddCategoryNode( FName CategoryName, const FText& DisplayLabel )
-{
-	TSharedPtr<FSequencerSectionCategoryNode> CategoryNode;
-
-	// See if there is an already existing category node to use
-	for (const TSharedRef<FSequencerDisplayNode>& Node : ChildNodes)
-	{
-		if ((Node->GetNodeName() == CategoryName) && (Node->GetType() == ESequencerNode::Category))
-		{
-			CategoryNode = StaticCastSharedRef<FSequencerSectionCategoryNode>(Node);
-		}
-	}
-
-	if (!CategoryNode.IsValid())
-	{
-		// No existing category found, make a new one
-		CategoryNode = MakeShareable(new FSequencerSectionCategoryNode(CategoryName, DisplayLabel, SharedThis(this), ParentTree));
-		ChildNodes.Add(CategoryNode.ToSharedRef());
-	}
-
-	return CategoryNode.ToSharedRef();
-}
-
-
-void FSequencerDisplayNode::AddKeyAreaNode(FName KeyAreaName, const FText& DisplayName, TSharedRef<IKeyArea> KeyArea)
-{
-	TSharedPtr<FSequencerSectionKeyAreaNode> KeyAreaNode;
-
-	// See if there is an already existing key area node to use
-	for (const TSharedRef<FSequencerDisplayNode>& Node : ChildNodes)
-	{
-		if ((Node->GetNodeName() == KeyAreaName) && (Node->GetType() == ESequencerNode::KeyArea))
-		{
-			KeyAreaNode = StaticCastSharedRef<FSequencerSectionKeyAreaNode>(Node);
-		}
-	}
-
-	if (!KeyAreaNode.IsValid())
-	{
-		// No existing node found make a new one
-		KeyAreaNode = MakeShareable( new FSequencerSectionKeyAreaNode( KeyAreaName, DisplayName, SharedThis( this ), ParentTree ) );
-		ChildNodes.Add(KeyAreaNode.ToSharedRef());
-	}
-
-	KeyAreaNode->AddKeyArea(KeyArea);
-}
-
-FLinearColor FSequencerDisplayNode::GetDisplayNameColor() const
+bool FSequencerDisplayNode::IsDimmed() const
 {
 	auto FindInActiveSection = [](FSequencerDisplayNode& InNode, bool EmptyNotActive = true)
 	{
 		if (InNode.GetType() == ESequencerNode::KeyArea)
 		{
 			const FSequencerSectionKeyAreaNode& KeyAreaNode = static_cast<FSequencerSectionKeyAreaNode&>(InNode);
-			auto KeyAreaNodes=  KeyAreaNode.GetAllKeyAreas();
+			auto KeyAreaNodes = KeyAreaNode.GetAllKeyAreas();
 			if (KeyAreaNodes.Num() > 0)
 			{
 				for (const TSharedRef<IKeyArea>& KeyArea : KeyAreaNodes)
@@ -515,18 +751,70 @@ FLinearColor FSequencerDisplayNode::GetDisplayNameColor() const
 		return true;
 	};
 
+	if (GetSequencer().IsReadOnly())
+	{
+		return true;
+	}
+
 	FSequencerDisplayNode *This = const_cast<FSequencerDisplayNode*>(this);
 	//if empty with no key areas or sections then it's active, otherwise
 	//find first child with active section, then it's active, else inactive.
-	const bool bFoundInActiveSection = ChildNodes.Num() > 0 ? This->Traverse_ParentFirst(FindInActiveSection) :
+	bool bDimLabel = ChildNodes.Num() > 0 ? This->Traverse_ParentFirst(FindInActiveSection) :
 		((this->GetType() == ESequencerNode::Track || this->GetType() == ESequencerNode::KeyArea) && FindInActiveSection(*(This), false))
-		||false;
-	return bFoundInActiveSection ? FLinearColor(0.6f, 0.6f, 0.6f, 0.6f) : FLinearColor(1.0f, 1.0f, 1.0f, 1.0f);
+		|| false;
+
+	if (!bDimLabel)
+	{
+		// If the node is a track node, we can use the cached value in UMovieSceneTrack
+		if (GetType() == ESequencerNode::Track)
+		{
+			UMovieSceneTrack* Track = static_cast<const FSequencerTrackNode*>(this)->GetTrack();
+			if (Track && Track->IsEvalDisabled())
+			{
+				bDimLabel = true;
+			}
+		}
+		else
+		{
+			if (ParentTree.IsNodeMute(this) || (ParentTree.HasSoloNodes() && !ParentTree.IsNodeSolo(this)))
+			{
+				bDimLabel = true;
+			}
+		}
+	}
+
+	return bDimLabel;
+}
+
+FSlateFontInfo FSequencerDisplayNode::GetDisplayNameFont() const
+{
+	FSlateFontInfo NodeFont = FEditorStyle::GetFontStyle("Sequencer.AnimationOutliner.RegularFont");
+	return NodeFont;
+}
+
+FLinearColor FSequencerDisplayNode::GetDisplayNameColor() const
+{
+	return IsDimmed() ? FLinearColor(0.6f, 0.6f, 0.6f, 0.6f) : FLinearColor(1.0f, 1.0f, 1.0f, 1.0f);
 }
 
 FText FSequencerDisplayNode::GetDisplayNameToolTipText() const
 {
 	return FText();
+}
+
+bool FSequencerDisplayNode::ValidateDisplayName(const FText& NewDisplayName, FText& OutErrorMessage) const
+{
+	if (NewDisplayName.IsEmpty())
+	{
+		OutErrorMessage = NSLOCTEXT("Sequencer", "RenameFailed_LeftBlank", "Labels cannot be left blank");
+		return false;
+	}
+	else if (NewDisplayName.ToString().Len() >= NAME_SIZE)
+	{
+		OutErrorMessage = FText::Format(NSLOCTEXT("Sequencer", "RenameFailed_TooLong", "Names must be less than {0} characters long"), NAME_SIZE);
+		return false;
+	}
+	return true;
 }
 
 TSharedRef<SWidget> FSequencerDisplayNode::GenerateContainerWidgetForOutliner(const TSharedRef<SSequencerTreeViewRow>& InRow)
@@ -561,7 +849,7 @@ const FSlateBrush* FSequencerDisplayNode::GetIconOverlayBrush() const
 
 FSlateColor FSequencerDisplayNode::GetIconColor() const
 {
-	return FSlateColor( FLinearColor::White );
+	return GetDisplayNameColor();
 }
 
 FText FSequencerDisplayNode::GetIconToolTipText() const
@@ -577,16 +865,21 @@ TSharedRef<SWidget> FSequencerDisplayNode::GenerateWidgetForSectionArea(const TA
 			.ViewRange(ViewRange);
 	}
 	
-	if (GetType() == ESequencerNode::Object)
-	{
-		return SNew(SSequencerObjectTrack, SharedThis(this))
-			.ViewRange(ViewRange)
-			.IsEnabled(!GetSequencer().IsReadOnly())
-			.TickResolution(this, &FSequencerDisplayNode::GetTickResolution);
-	}
-
-	// currently only section areas display widgets
-	return SNullWidget::NullWidget;
+	return SNew(SSequencerCombinedKeysTrack, SharedThis(this))
+		.ViewRange(ViewRange)
+		.IsEnabled(!GetSequencer().IsReadOnly())
+		.Visibility_Lambda([this]()
+		{
+			if (GetType() == ESequencerNode::Track)
+			{
+				if (static_cast<FSequencerTrackNode&>(*this).GetSubTrackMode() == FSequencerTrackNode::ESubTrackMode::ParentTrack && IsExpanded())
+				{
+					return EVisibility::Hidden;
+				}
+			}
+			return EVisibility::Visible;
+		})
+		.TickResolution(this, &FSequencerDisplayNode::GetTickResolution);
 }
 
 FFrameRate FSequencerDisplayNode::GetTickResolution() const
@@ -619,10 +912,11 @@ FString FSequencerDisplayNode::GetPathName() const
 	// First get our parent's path
 	FString PathName;
 
-	if (ParentNode.IsValid())
+	TSharedPtr<FSequencerDisplayNode> Parent = GetParent();
+	if (Parent.IsValid())
 	{
-		ensure(ParentNode != SharedThis(this));
-		PathName = ParentNode.Pin()->GetPathName() + TEXT(".");
+		ensure(Parent != SharedThis(this));
+		PathName = Parent->GetPathName() + TEXT(".");
 	}
 
 	//then append our path
@@ -638,6 +932,21 @@ TSharedPtr<SWidget> FSequencerDisplayNode::OnSummonContextMenu()
 	const bool bShouldCloseWindowAfterMenuSelection = true;
 	FMenuBuilder MenuBuilder(bShouldCloseWindowAfterMenuSelection, GetSequencer().GetCommandBindings());
 
+	// let track editors & object bindings populate the menu
+	if (CanAddObjectBindingsMenu())
+	{
+		MenuBuilder.BeginSection("ObjectBindings");
+		GetSequencer().BuildAddObjectBindingsMenu(MenuBuilder);
+		MenuBuilder.EndSection();
+	}
+
+	if (CanAddTracksMenu())
+	{
+		MenuBuilder.BeginSection("AddTracks");
+		GetSequencer().BuildAddTrackMenu(MenuBuilder);
+		MenuBuilder.EndSection();
+	}
+
 	BuildContextMenu(MenuBuilder);
 
 	return MenuBuilder.MakeWidget();
@@ -646,7 +955,7 @@ TSharedPtr<SWidget> FSequencerDisplayNode::OnSummonContextMenu()
 
 namespace
 {
-	void AddEvalOptionsPropertyMenuItem(FMenuBuilder& MenuBuilder, FCanExecuteAction InCanExecute, const TArray<UMovieSceneTrack*>& AllTracks, const UBoolProperty* Property, TFunction<bool(UMovieSceneTrack*)> Validator = nullptr)
+	void AddEvalOptionsPropertyMenuItem(FMenuBuilder& MenuBuilder, FCanExecuteAction InCanExecute, const TArray<UMovieSceneTrack*>& AllTracks, const FBoolProperty* Property, TFunction<bool(UMovieSceneTrack*)> Validator = nullptr)
 	{
 		bool bIsChecked = AllTracks.ContainsByPredicate(
 			[=](UMovieSceneTrack* InTrack)
@@ -680,7 +989,7 @@ namespace
 		);
 	}
 
-	void AddDisplayOptionsPropertyMenuItem(FMenuBuilder& MenuBuilder, FCanExecuteAction InCanExecute, const TArray<UMovieSceneTrack*>& AllTracks, const UBoolProperty* Property, TFunction<bool(UMovieSceneTrack*)> Validator = nullptr)
+	void AddDisplayOptionsPropertyMenuItem(FMenuBuilder& MenuBuilder, FCanExecuteAction InCanExecute, const TArray<UMovieSceneTrack*>& AllTracks, const FBoolProperty* Property, TFunction<bool(UMovieSceneTrack*)> Validator = nullptr)
 	{
 		bool bIsChecked = AllTracks.ContainsByPredicate(
 			[=](UMovieSceneTrack* InTrack)
@@ -719,25 +1028,16 @@ namespace
 void FSequencerDisplayNode::BuildContextMenu(FMenuBuilder& MenuBuilder)
 {
 	TSharedRef<FSequencerDisplayNode> ThisNode = SharedThis(this);
+	FSequencerDisplayNode* BaseNode = GetBaseNode();
 
+	ESequencerNode::Type BaseNodeType = BaseNode->GetType();
+
+	bool bCanSolo = (BaseNodeType == ESequencerNode::Track || BaseNodeType == ESequencerNode::Object || BaseNodeType == ESequencerNode::Folder);
 	bool bIsReadOnly = !GetSequencer().IsReadOnly();
 	FCanExecuteAction CanExecute = FCanExecuteAction::CreateLambda([bIsReadOnly]{ return bIsReadOnly; });
 
 	MenuBuilder.BeginSection("Edit", LOCTEXT("EditContextMenuSectionName", "Edit"));
 	{
-		MenuBuilder.AddMenuEntry(
-			LOCTEXT("ToggleNodeActive", "Active"),
-			LOCTEXT("ToggleNodeActiveTooltip", "Set this track or selected tracks active/inactive"),
-			FSlateIcon(),
-			FUIAction(
-				FExecuteAction::CreateSP(&GetSequencer(), &FSequencer::ToggleNodeActive),
-				CanExecute,
-				FIsActionChecked::CreateSP(&GetSequencer(), &FSequencer::IsNodeActive)
-			),
-			NAME_None,
-			EUserInterfaceActionType::ToggleButton
-		);
-
 		MenuBuilder.AddMenuEntry(
 			LOCTEXT("ToggleNodeLock", "Locked"),
 			LOCTEXT("ToggleNodeLockTooltip", "Lock or unlock this node or selected tracks"),
@@ -751,6 +1051,51 @@ void FSequencerDisplayNode::BuildContextMenu(FMenuBuilder& MenuBuilder)
 			EUserInterfaceActionType::ToggleButton
 		);
 
+		// Only support pinning root nodes
+		if (BaseNode->IsRootNode())
+		{
+			MenuBuilder.AddMenuEntry(
+				LOCTEXT("ToggleNodePin", "Pinned"),
+				LOCTEXT("ToggleNodePinTooltip", "Pin or unpin this node or selected tracks"),
+				FSlateIcon(),
+				FUIAction(
+					FExecuteAction::CreateSP(this, &FSequencerDisplayNode::TogglePinned),
+					FCanExecuteAction(),
+					FIsActionChecked::CreateSP(this, &FSequencerDisplayNode::IsPinned)
+				),
+				NAME_None,
+				EUserInterfaceActionType::ToggleButton
+			);
+		}
+
+		if (bCanSolo)
+		{
+			MenuBuilder.AddMenuEntry(
+				LOCTEXT("ToggleNodeSolo", "Solo"),
+				LOCTEXT("ToggleNodeSoloTooltip", "Solo or unsolo this node or selected tracks"),
+				FSlateIcon(),
+				FUIAction(
+					FExecuteAction::CreateRaw(&ParentTree, &FSequencerNodeTree::ToggleSelectedNodesSolo),
+					CanExecute,
+					FIsActionChecked::CreateSP(&ParentTree, &FSequencerNodeTree::IsSelectedNodesSolo)
+				),
+				NAME_None,
+				EUserInterfaceActionType::ToggleButton
+			);
+
+			MenuBuilder.AddMenuEntry(
+				LOCTEXT("ToggleNodeMute", "Mute"),
+				LOCTEXT("ToggleNodeMuteTooltip", "Mute or unmute this node or selected tracks"),
+				FSlateIcon(),
+				FUIAction(
+					FExecuteAction::CreateRaw(&ParentTree, &FSequencerNodeTree::ToggleSelectedNodesMute),
+					CanExecute,
+					FIsActionChecked::CreateSP(&ParentTree, &FSequencerNodeTree::IsSelectedNodesMute)
+				),
+				NAME_None,
+				EUserInterfaceActionType::ToggleButton
+			);
+		}
 
 		// Add cut, copy and paste functions to the tracks
 		MenuBuilder.AddMenuEntry(FGenericCommands::Get().Cut);
@@ -765,8 +1110,18 @@ void FSequencerDisplayNode::BuildContextMenu(FMenuBuilder& MenuBuilder)
 			LOCTEXT("DeleteNode", "Delete"),
 			LOCTEXT("DeleteNodeTooltip", "Delete this or selected tracks"),
 			FSlateIcon(FEditorStyle::GetStyleSetName(), "ContentBrowser.AssetActions.Delete"),
-			FUIAction(FExecuteAction::CreateSP(&GetSequencer(), &FSequencer::DeleteNode, ThisNode), CanExecute)
+			FUIAction(FExecuteAction::CreateSP(&GetSequencer(), &FSequencer::DeleteNode, ThisNode, false), CanExecute)
 		);
+
+		if (ThisNode->GetType() == ESequencerNode::Object)
+		{
+			MenuBuilder.AddMenuEntry(
+				LOCTEXT("DeleteNodeAndKeepState", "Delete and Keep State"),
+				LOCTEXT("DeleteNodeAndKeepStateTooltip", "Delete this object's tracks and keep its current animated state"),
+				FSlateIcon(FEditorStyle::GetStyleSetName(), "ContentBrowser.AssetActions.Delete"),
+				FUIAction(FExecuteAction::CreateSP(&GetSequencer(), &FSequencer::DeleteNode, ThisNode, true), CanExecute)
+			);
+		}
 
 		MenuBuilder.AddMenuEntry(
 			LOCTEXT("RenameNode", "Rename"),
@@ -781,6 +1136,7 @@ void FSequencerDisplayNode::BuildContextMenu(FMenuBuilder& MenuBuilder)
 	MenuBuilder.EndSection();
 
 	TArray<UMovieSceneTrack*> AllTracks;
+	TArray<TSharedRef<FSequencerDisplayNode> > DragableNodes;
 	for (TSharedRef<FSequencerDisplayNode> Node : GetSequencer().GetSelection().GetSelectedOutlinerNodes())
 	{
 		if (Node->GetType() == ESequencerNode::Track)
@@ -791,15 +1147,33 @@ void FSequencerDisplayNode::BuildContextMenu(FMenuBuilder& MenuBuilder)
 				AllTracks.Add(Track);
 			}
 		}
+
+		if (Node->CanDrag())
+		{
+			DragableNodes.Add(Node);
+		}
 	}
-	
+
+	MenuBuilder.BeginSection("Organize", LOCTEXT("OrganizeContextMenuSectionName", "Organize"));
+	{
+		if (DragableNodes.Num())
+		{
+			MenuBuilder.AddMenuEntry(
+				LOCTEXT("MoveTracksToNewFolder", "Move to New Folder"),
+				LOCTEXT("MoveTracksToNewFolderTooltip", "Move the selected tracks to a new folder."),
+				FSlateIcon(FEditorStyle::GetStyleSetName(), "ContentBrowser.AssetTreeFolderOpen"),
+				FUIAction(FExecuteAction::CreateSP(&GetSequencer(), &FSequencer::MoveSelectedNodesToNewFolder)));
+		}
+	}
+	MenuBuilder.EndSection();
+
 	if (AllTracks.Num())
 	{
 		MenuBuilder.BeginSection("GeneralTrackOptions", NSLOCTEXT("Sequencer", "TrackNodeGeneralOptions", "Track Options"));
 		{
 			UStruct* EvalOptionsStruct = FMovieSceneTrackEvalOptions::StaticStruct();
 
-			const UBoolProperty* NearestSectionProperty = Cast<UBoolProperty>(EvalOptionsStruct->FindPropertyByName(GET_MEMBER_NAME_CHECKED(FMovieSceneTrackEvalOptions, bEvalNearestSection)));
+			const FBoolProperty* NearestSectionProperty = CastField<FBoolProperty>(EvalOptionsStruct->FindPropertyByName(GET_MEMBER_NAME_CHECKED(FMovieSceneTrackEvalOptions, bEvalNearestSection)));
 			auto CanEvaluateNearest = [](UMovieSceneTrack* InTrack) { return InTrack->EvalOptions.bCanEvaluateNearestSection != 0; };
 			if (NearestSectionProperty && AllTracks.ContainsByPredicate(CanEvaluateNearest))
 			{
@@ -807,13 +1181,13 @@ void FSequencerDisplayNode::BuildContextMenu(FMenuBuilder& MenuBuilder)
 				AddEvalOptionsPropertyMenuItem(MenuBuilder, CanExecute, AllTracks, NearestSectionProperty, Validator);
 			}
 
-			const UBoolProperty* PrerollProperty = Cast<UBoolProperty>(EvalOptionsStruct->FindPropertyByName(GET_MEMBER_NAME_CHECKED(FMovieSceneTrackEvalOptions, bEvaluateInPreroll)));
+			const FBoolProperty* PrerollProperty = CastField<FBoolProperty>(EvalOptionsStruct->FindPropertyByName(GET_MEMBER_NAME_CHECKED(FMovieSceneTrackEvalOptions, bEvaluateInPreroll)));
 			if (PrerollProperty)
 			{
 				AddEvalOptionsPropertyMenuItem(MenuBuilder, CanExecute, AllTracks, PrerollProperty);
 			}
 
-			const UBoolProperty* PostrollProperty = Cast<UBoolProperty>(EvalOptionsStruct->FindPropertyByName(GET_MEMBER_NAME_CHECKED(FMovieSceneTrackEvalOptions, bEvaluateInPostroll)));
+			const FBoolProperty* PostrollProperty = CastField<FBoolProperty>(EvalOptionsStruct->FindPropertyByName(GET_MEMBER_NAME_CHECKED(FMovieSceneTrackEvalOptions, bEvaluateInPostroll)));
 			if (PostrollProperty)
 			{
 				AddEvalOptionsPropertyMenuItem(MenuBuilder, CanExecute, AllTracks, PostrollProperty);
@@ -825,7 +1199,7 @@ void FSequencerDisplayNode::BuildContextMenu(FMenuBuilder& MenuBuilder)
 		{
 			UStruct* DisplayOptionsStruct = FMovieSceneTrackDisplayOptions::StaticStruct();
 
-			const UBoolProperty* ShowVerticalFramesProperty = Cast<UBoolProperty>(DisplayOptionsStruct->FindPropertyByName(GET_MEMBER_NAME_CHECKED(FMovieSceneTrackDisplayOptions, bShowVerticalFrames)));
+			const FBoolProperty* ShowVerticalFramesProperty = CastField<FBoolProperty>(DisplayOptionsStruct->FindPropertyByName(GET_MEMBER_NAME_CHECKED(FMovieSceneTrackDisplayOptions, bShowVerticalFrames)));
 			if (ShowVerticalFramesProperty)
 			{
 				AddDisplayOptionsPropertyMenuItem(MenuBuilder, CanExecute, AllTracks, ShowVerticalFramesProperty);
@@ -864,10 +1238,68 @@ bool FSequencerDisplayNode::IsExpanded() const
 	return bExpanded;
 }
 
+FSequencerDisplayNode* FSequencerDisplayNode::GetBaseNode() const
+{
+	ESequencerNode::Type Type = GetType();
+
+	if (IsRootNode() || Type == ESequencerNode::Folder || Type == ESequencerNode::Object
+		|| (Type == ESequencerNode::Track && static_cast<const FSequencerTrackNode*>(this)->GetSubTrackMode() != FSequencerTrackNode::ESubTrackMode::SubTrack))
+	{
+		return (FSequencerDisplayNode*)this;
+	}
+
+	return GetParentOrRoot()->GetBaseNode();
+}
+
+void FSequencerDisplayNode::UpdateCachedPinnedState(bool bParentIsPinned)
+{
+	bInPinnedBranch = bPinned || bParentIsPinned;
+
+	for (TSharedPtr<FSequencerDisplayNode> Child : ChildNodes)
+	{
+		Child->UpdateCachedPinnedState(bInPinnedBranch);
+	}
+}
+
+bool FSequencerDisplayNode::IsPinned() const
+{
+	return bInPinnedBranch;
+}
+
+void FSequencerDisplayNode::TogglePinned()
+{
+	FSequencerDisplayNode* BaseNode = GetBaseNode();
+	bool bShouldPin = !BaseNode->bPinned;
+	ParentTree.UnpinAllNodes();
+
+	BaseNode->bPinned = bShouldPin;
+	ParentTree.SavePinnedState(*this, bShouldPin);
+	
+	ParentTree.GetSequencer().RefreshTree();
+}
+
+void FSequencerDisplayNode::Unpin()
+{
+	FSequencerDisplayNode* BaseNode = GetBaseNode();
+	if (BaseNode->bPinned)
+	{
+		BaseNode->bPinned = false;
+		ParentTree.SavePinnedState(*this, false);
+	
+		ParentTree.GetSequencer().RefreshTree();
+	}
+}
+
 
 bool FSequencerDisplayNode::IsHidden() const
 {
 	return ParentTree.HasActiveFilter() && !ParentTree.IsNodeFiltered(AsShared());
+}
+
+
+bool FSequencerDisplayNode::IsVisible() const
+{
+	return !ParentTree.HasActiveFilter() || ParentTree.IsNodeFiltered(AsShared());
 }
 
 
@@ -889,11 +1321,88 @@ bool FSequencerDisplayNode::HandleContextMenuRenameNodeCanExecute() const
 }
 
 
-void FSequencerDisplayNode::AddChildAndSetParent( TSharedRef<FSequencerDisplayNode> InChild )
+TSharedPtr<SWidget> FSequencerDisplayNode::GenerateCurveEditorTreeWidget(const FName& InColumnName, TWeakPtr<FCurveEditor> InCurveEditor, FCurveEditorTreeItemID InTreeItemID, const TSharedRef<ITableRow>& TableRow)
 {
-	ChildNodes.Add( InChild );
-	InChild->ParentNode = SharedThis( this );
+	if (InColumnName == ColumnNames.Label)
+	{
+		return SNew(SHorizontalBox)
+
+			+ SHorizontalBox::Slot()
+			.Padding(FMargin(0.f, 0.f, 4.f, 0.f))
+			.VAlign(VAlign_Center)
+			.AutoWidth()
+			[
+				SNew(SOverlay)
+
+				+ SOverlay::Slot()
+				[
+					SNew(SImage)
+					.Image(this, &FSequencerDisplayNode::GetIconBrush)
+					.ColorAndOpacity(this, &FSequencerDisplayNode::GetIconColor)
+				]
+
+				+ SOverlay::Slot()
+				.VAlign(VAlign_Top)
+				.HAlign(HAlign_Right)
+				[
+					SNew(SImage)
+					.Image(this, &FSequencerDisplayNode::GetIconOverlayBrush)
+				]
+
+				+ SOverlay::Slot()
+				[
+					SNew(SSpacer)
+					.Visibility(EVisibility::Visible)
+					.ToolTipText(this, &FSequencerDisplayNode::GetIconToolTipText)
+				]
+			]
+
+			+ SHorizontalBox::Slot()
+			.VAlign(VAlign_Center)
+			.Padding(FMargin(0.f, 4.f, 0.f, 4.f))
+			[
+				SNew(STextBlock)
+				.Text(this, &FSequencerDisplayNode::GetDisplayName)
+				.Font(this, &FSequencerDisplayNode::GetDisplayNameFont)
+				.HighlightText_Static(SequencerNodeConstants::GetCurveEditorHighlightText, InCurveEditor)
+				.ToolTipText(this, &FSequencerDisplayNode::GetDisplayNameToolTipText)
+			];
+	}
+	else if (InColumnName == ColumnNames.PinHeader)
+	{
+		return SNew(SCurveEditorTreePin, InCurveEditor, InTreeItemID, TableRow);
+	}
+
+	return nullptr;
 }
 
+void FSequencerDisplayNode::CreateCurveModels(TArray<TUniquePtr<FCurveModel>>& OutCurveModels)
+{
+}
+
+bool FSequencerDisplayNode::PassesFilter(const FCurveEditorTreeFilter* InFilter) const
+{
+	if (InFilter->GetType() == ECurveEditorTreeFilterType::Text)
+	{
+		const FCurveEditorTreeTextFilter* Filter = static_cast<const FCurveEditorTreeTextFilter*>(InFilter);
+
+		TSharedRef<const FSequencerDisplayNode> This = AsShared();
+		for (const FCurveEditorTreeTextFilterTerm& Term : Filter->GetTerms())
+		{
+			if (SequencerNodeConstants::NodeMatchesTextFilterTerm(This, Term))
+			{
+				return true;
+			}
+		}
+
+		return false;
+	}
+	else if (InFilter->GetType() == ISequencerModule::GetSequencerSelectionFilterType())
+	{
+		const FSequencerSelectionCurveFilter* Filter = static_cast<const FSequencerSelectionCurveFilter*>(InFilter);
+		return Filter->Match(AsShared());
+	}
+	return false;
+}
 
 #undef LOCTEXT_NAMESPACE

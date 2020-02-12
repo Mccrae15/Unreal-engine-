@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "GeometryCollection/GeometryCollectionProviderEditor.h"
 
@@ -9,7 +9,7 @@
 #include "UObject/Package.h"
 #include "Misc/PackageName.h"
 
-UGeometryCollectionCache* FTargetCacheProviderEditor::GetCacheForCollection(UGeometryCollection* InCollection)
+UGeometryCollectionCache* FTargetCacheProviderEditor::GetCacheForCollection(const UGeometryCollection* InCollection)
 {
 	// Put it in the same folder as the collection
 	UPackage* CollectionPackage = InCollection->GetOutermost();

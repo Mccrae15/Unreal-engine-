@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "MobileJSStructDeserializerBackend.h"
 
@@ -21,11 +21,11 @@ namespace
 	 * @return true on success, false otherwise.
 	 * @see ClearPropertyValue
 	 */
-	template<typename UPropertyType, typename PropertyType>
-	bool SetPropertyValue( UProperty* Property, UProperty* Outer, void* Data, int32 ArrayIndex, const PropertyType& Value )
+	template<typename FPropertyType, typename PropertyType>
+	bool SetPropertyValue( FProperty* Property, FProperty* Outer, void* Data, int32 ArrayIndex, const PropertyType& Value )
 	{
 		PropertyType* ValuePtr = nullptr;
-		UArrayProperty* ArrayProperty = Cast<UArrayProperty>(Outer);
+		FArrayProperty* ArrayProperty = CastField<FArrayProperty>(Outer);
 
 		if (ArrayProperty != nullptr)
 		{
@@ -41,7 +41,7 @@ namespace
 		}
 		else
 		{
-			UPropertyType* TypedProperty = Cast<UPropertyType>(Property);
+			FPropertyType* TypedProperty = CastField<FPropertyType>(Property);
 
 			if (TypedProperty == nullptr || ArrayIndex >= TypedProperty->ArrayDim)
 			{
@@ -62,15 +62,15 @@ namespace
 	}
 }
 
-bool FMobileJSStructDeserializerBackend::ReadProperty( UProperty* Property, UProperty* Outer, void* Data, int32 ArrayIndex )
+bool FMobileJSStructDeserializerBackend::ReadProperty( FProperty* Property, FProperty* Outer, void* Data, int32 ArrayIndex )
 {
 	switch (GetLastNotation())
 	{
 		case EJsonNotation::String:
 		{
-			if (Property->IsA<UStructProperty>())
+			if (Property->IsA<FStructProperty>())
 			{
-				UStructProperty* StructProperty = Cast<UStructProperty>(Property);
+				FStructProperty* StructProperty = CastField<FStructProperty>(Property);
 
 				if ( StructProperty->Struct == FWebJSFunction::StaticStruct())
 				{
@@ -82,7 +82,7 @@ bool FMobileJSStructDeserializerBackend::ReadProperty( UProperty* Property, UPro
 					}
 
 					FWebJSFunction CallbackObject(Scripting, CallbackID);
-					return SetPropertyValue<UStructProperty, FWebJSFunction>(Property, Outer, Data, ArrayIndex, CallbackObject);
+					return SetPropertyValue<FStructProperty, FWebJSFunction>(Property, Outer, Data, ArrayIndex, CallbackObject);
 				}
 			}
 		}
@@ -99,8 +99,10 @@ FMobileJSStructDeserializerBackend::FMobileJSStructDeserializerBackend(FMobileJS
 	, JsonData()
 	, Reader(JsonData)
 {
-	auto Convert = StringCast<UCS2CHAR>(*JsonString);
-	JsonData.Append((uint8*)Convert.Get(), JsonString.Len() * sizeof(UCS2CHAR));
+	// Note: This is a no-op on platforms that are using a 16-bit TCHAR
+	FTCHARToUTF16 UTF16String(*JsonString, JsonString.Len());
+
+	JsonData.Append((uint8*)UTF16String.Get(), UTF16String.Length() * sizeof(UTF16CHAR));
 }
 
 #endif // PLATFORM_ANDROID || PLATFORM_IOS

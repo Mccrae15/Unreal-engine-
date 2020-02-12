@@ -1,8 +1,9 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "SocialManager.h"
 #include "SocialToolkit.h"
 #include "SocialSettings.h"
+#include "SocialDebugTools.h"
 
 #include "Interactions/CoreInteractions.h"
 #include "Interactions/PartyInteractions.h"
@@ -200,6 +201,12 @@ void USocialManager::InitSocialManager()
 	{
 		HandleWorldEstablished(World);
 	}
+
+#if !UE_SERVER && !UE_BUILD_SHIPPING
+	SocialDebugTools = NewObject<USocialDebugTools>(this, GetSocialDebugToolsClass());
+	check(SocialDebugTools);
+#endif
+
 }
 
 void USocialManager::ShutdownSocialManager()
@@ -227,11 +234,17 @@ void USocialManager::ShutdownSocialManager()
 
 	RejoinableParty.Reset();
 
+	if (SocialDebugTools)
+	{
+		SocialDebugTools->Shutdown();
+		SocialDebugTools = nullptr;
+	}
+
 	// We could have outstanding OSS queries and requests, and we are no longer interested in getting any callbacks triggered
 	MarkPendingKill();
 }
 
-USocialToolkit& USocialManager::GetSocialToolkit(ULocalPlayer& LocalPlayer) const
+USocialToolkit& USocialManager::GetSocialToolkit(const ULocalPlayer& LocalPlayer) const
 {
 	USocialToolkit* FoundToolkit = nullptr;
 	for (USocialToolkit* Toolkit : SocialToolkits)
@@ -252,6 +265,18 @@ USocialToolkit* USocialManager::GetSocialToolkit(int32 LocalPlayerNum) const
 	for (USocialToolkit* Toolkit : SocialToolkits)
 	{
 		if (Toolkit->GetLocalUserNum() == LocalPlayerNum)
+		{
+			return Toolkit;
+		}
+	}
+	return nullptr;
+}
+
+USocialToolkit* USocialManager::GetSocialToolkit(FUniqueNetIdRepl LocalUserId) const
+{
+	for (USocialToolkit* Toolkit : SocialToolkits)
+	{
+		if (Toolkit->GetOwningLocalPlayer().GetPreferredUniqueNetId() == LocalUserId)
 		{
 			return Toolkit;
 		}
@@ -289,6 +314,11 @@ void USocialManager::HandlePlatformSessionInviteAccepted(const TSharedRef<const 
 	}
 }
 
+TSubclassOf<USocialDebugTools> USocialManager::GetSocialDebugToolsClass() const
+{
+	return USocialDebugTools::StaticClass();
+}
+
 USocialToolkit* USocialManager::GetFirstLocalUserToolkit() const
 {
 	if (SocialToolkits.Num() > 0)
@@ -305,6 +335,20 @@ FUniqueNetIdRepl USocialManager::GetFirstLocalUserId(ESocialSubsystem SubsystemT
 		return SocialToolkits[0]->GetLocalUserNetId(SubsystemType);
 	}
 	return FUniqueNetIdRepl();
+}
+
+
+bool USocialManager::IsLocalUser(const FUniqueNetIdRepl& LocalUserId, ESocialSubsystem SubsystemType) const
+{
+	for(USocialToolkit* SocialToolkit : SocialToolkits)
+	{
+		if (SocialToolkit->GetLocalUserNetId(SubsystemType) == LocalUserId)
+		{
+			return true;
+		}
+	}
+
+	return false;
 }
 
 int32 USocialManager::GetFirstLocalUserNum() const
@@ -334,7 +378,7 @@ void USocialManager::CreateParty(const FOnlinePartyTypeId& PartyTypeId, const FP
 		}
 		else
 		{
-			UE_LOG(LogParty, Warning, TEXT("Cannot create party of type [%d] - no PartyInterface available on the primary OSS [%s]"), PartyTypeId.GetValue(), *GetSocialOssName(ESocialSubsystem::Primary).ToString());
+			UE_LOG(LogParty, Warning, TEXT("Cannot create party of type [%d] - PartyInterface.IsValid=%s PrimaryLocalUserId.IsValid=%s primary OSS [%s]"), PartyTypeId.GetValue(), *LexToString(PartyInterface.IsValid()), *LexToString(PrimaryLocalUserId.IsValid()), *GetSocialOssName(ESocialSubsystem::Primary).ToString());
 			OnCreatePartyComplete.ExecuteIfBound(ECreatePartyCompletionResult::UnknownClientFailure);
 		}
 	}
@@ -478,6 +522,10 @@ FJoinPartyResult USocialManager::ValidateJoinTarget(const USocialUser& UserToJoi
 				return FPartyJoinDenialReason(EPartyJoinDenialReason::TargetUserMissingPresence);
 			}
 		}
+		else if (!UserToJoin.IsPlayingThisGame())
+		{
+			return FPartyJoinDenialReason(EPartyJoinDenialReason::TargetUserPlayingDifferentGame);
+		}
 		else
 		{
 			// We've got no info on this party for the given user, so it's gotta be private (or doesn't even exist)
@@ -611,7 +659,7 @@ UGameInstance& USocialManager::GetGameInstance() const
 	return *GetTypedOuter<UGameInstance>();
 }
 
-USocialToolkit& USocialManager::CreateSocialToolkit(ULocalPlayer& OwningLocalPlayer)
+USocialToolkit& USocialManager::CreateSocialToolkit(ULocalPlayer& OwningLocalPlayer, int32 LocalPlayerIndex)
 {
 	for (USocialToolkit* ExistingToolkit : SocialToolkits)
 	{
@@ -620,10 +668,54 @@ USocialToolkit& USocialManager::CreateSocialToolkit(ULocalPlayer& OwningLocalPla
 	check(ToolkitClass);
 
 	USocialToolkit* NewToolkit = NewObject<USocialToolkit>(this, ToolkitClass);
-	SocialToolkits.Add(NewToolkit);
+	SocialToolkits.Insert(NewToolkit, LocalPlayerIndex);
 	NewToolkit->InitializeToolkit(OwningLocalPlayer);
 	OnToolkitCreatedInternal(*NewToolkit);
+	NewToolkit->OnToolkitReset().AddUObject(this, &USocialManager::HandleToolkitReset, NewToolkit->GetLocalUserNum());
 	return *NewToolkit;
+}
+
+void USocialManager::RegisterSecondaryPlayer(int32 LocalPlayerNum, const FOnJoinPartyComplete& JoinDelegate)
+{
+	USocialToolkit* SocialToolkit = GetSocialToolkit(LocalPlayerNum);
+	IOnlinePartyPtr PartyInterface = Online::GetPartyInterfaceChecked(GetWorld());
+	USocialParty* PersistentParty = GetPersistentParty();
+
+	if (PartyInterface != nullptr && PersistentParty != nullptr)
+	{
+		FUniqueNetIdRepl PrimaryUserId = GetFirstLocalUserId(ESocialSubsystem::Primary);
+		FUniqueNetIdRepl SecondaryUserId = SocialToolkit->GetLocalUser().GetUserId(ESocialSubsystem::Primary);
+
+		if (PrimaryUserId.IsValid() && SecondaryUserId.IsValid())
+		{
+			// FORT-245799 If P2 is already in the party, leave first so we can join cleanly
+			if (PersistentParty->GetPartyMember(SecondaryUserId))
+			{
+				PersistentParty->RemoveLocalMember(SecondaryUserId, USocialParty::FOnLeavePartyAttemptComplete::CreateWeakLambda(this, [this, LocalPlayerNum, JoinDelegate](ELeavePartyCompletionResult LeaveResult)
+				{
+					if (LeaveResult == ELeavePartyCompletionResult::Succeeded)
+					{
+						RegisterSecondaryPlayer(LocalPlayerNum, JoinDelegate);
+					}
+					else
+					{
+						UE_LOG(LogParty, Warning, TEXT("RegisterSecondaryPlayer RemoveLocalMember failed LeaveResult=%s"), ToString(LeaveResult));
+						USocialToolkit* LambdaSocialToolkit = GetSocialToolkit(LocalPlayerNum);
+						USocialParty* LambdaPersistentParty = GetPersistentParty();
+						FUniqueNetIdRepl LambdaSecondaryUserId = LambdaSocialToolkit->GetLocalUser().GetUserId(ESocialSubsystem::Primary);
+						JoinDelegate.Execute(*LambdaSecondaryUserId, LambdaPersistentParty->GetPartyId(), EJoinPartyCompletionResult::UnknownClientFailure, 0);
+					}
+				}));
+			}
+
+			FString JoinInfoStr = PartyInterface->MakeJoinInfoJson(*PrimaryUserId, PersistentParty->GetPartyId());
+			IOnlinePartyJoinInfoConstPtr JoinInfo = PartyInterface->MakeJoinInfoFromJson(JoinInfoStr);
+			if (JoinInfo && JoinInfo->IsValid())
+			{
+				PartyInterface->JoinParty(*SecondaryUserId, *JoinInfo, JoinDelegate);
+			}
+		}
+	}
 }
 
 void USocialManager::QueryPartyJoinabilityInternal(FJoinPartyAttempt& JoinAttempt)
@@ -646,20 +738,25 @@ void USocialManager::JoinPartyInternal(FJoinPartyAttempt& JoinAttempt)
 {
 	IOnlinePartyPtr PartyInterface = Online::GetPartyInterfaceChecked(GetWorld());
 	FUniqueNetIdRepl LocalUserId = GetFirstLocalUserId(ESocialSubsystem::Primary);
-	check(LocalUserId.IsValid());
-
-	JoinAttempt.ActionTimeTracker.BeginStep(FJoinPartyAttempt::Step_JoinParty);
-
-	if (JoinAttempt.RejoinInfo.IsValid())
+	if (LocalUserId.IsValid())
 	{
-		UE_LOG(LogParty, Verbose, TEXT("Attempting to rejoin party [%s] now."), *JoinAttempt.RejoinInfo->PartyId->ToDebugString());
+		JoinAttempt.ActionTimeTracker.BeginStep(FJoinPartyAttempt::Step_JoinParty);
 
-		// Rejoin attempts are initiated differently, but the handler/follow-up is identical to a normal join
-		PartyInterface->RejoinParty(*GetFirstLocalUserId(ESocialSubsystem::Primary), *JoinAttempt.RejoinInfo->PartyId, IOnlinePartySystem::GetPrimaryPartyTypeId(), JoinAttempt.RejoinInfo->MemberIds, FOnJoinPartyComplete::CreateUObject(this, &USocialManager::HandleJoinPartyComplete, IOnlinePartySystem::GetPrimaryPartyTypeId()));
+		if (JoinAttempt.RejoinInfo.IsValid())
+		{
+			UE_LOG(LogParty, Verbose, TEXT("Attempting to rejoin party [%s] now."), *JoinAttempt.RejoinInfo->PartyId->ToDebugString());
+
+			// Rejoin attempts are initiated differently, but the handler/follow-up is identical to a normal join
+			PartyInterface->RejoinParty(*LocalUserId, *JoinAttempt.RejoinInfo->PartyId, IOnlinePartySystem::GetPrimaryPartyTypeId(), JoinAttempt.RejoinInfo->MemberIds, FOnJoinPartyComplete::CreateUObject(this, &USocialManager::HandleJoinPartyComplete, IOnlinePartySystem::GetPrimaryPartyTypeId()));
+		}
+		else
+		{
+			PartyInterface->JoinParty(*LocalUserId, *JoinAttempt.JoinInfo, FOnJoinPartyComplete::CreateUObject(this, &USocialManager::HandleJoinPartyComplete, JoinAttempt.JoinInfo->GetPartyTypeId()));
+		}
 	}
 	else
 	{
-		PartyInterface->JoinParty(*LocalUserId, *JoinAttempt.JoinInfo, FOnJoinPartyComplete::CreateUObject(this, &USocialManager::HandleJoinPartyComplete, JoinAttempt.JoinInfo->GetPartyTypeId()));
+		UE_LOG(LogParty, Error, TEXT("USocialManager::JoinPartyInternal Invalid LocalUserId=[%s] on primary subsystem."), *LocalUserId.ToDebugString());
 	}
 }
 
@@ -706,6 +803,7 @@ USocialParty* USocialManager::EstablishNewParty(const FUniqueNetId& LocalUserId,
 		USocialParty* NewParty = NewObject<USocialParty>(this, *PartyClass);
 		NewParty->OnPartyLeaveBegin().AddUObject(this, &USocialManager::HandlePartyLeaveBegin, NewParty);
 		NewParty->OnPartyLeft().AddUObject(this, &USocialManager::HandlePartyLeft, NewParty);
+		NewParty->OnPartyDisconnected().AddUObject(this, &USocialManager::HandlePartyDisconnected, NewParty);
 
 		// This must be done before InitializeParty(), as initialization can complete synchronously.
 		JoinedPartiesByTypeId.Add(PartyTypeId, NewParty);
@@ -715,7 +813,7 @@ USocialParty* USocialManager::EstablishNewParty(const FUniqueNetId& LocalUserId,
 		if (NewParty->IsPersistentParty())
 		{
 			NewParty->OnPartyStateChanged().AddUObject(this, &USocialManager::HandlePersistentPartyStateChanged, NewParty);
-			HandlePersistentPartyStateChanged(NewParty->GetOssPartyState(), NewParty);
+			HandlePersistentPartyStateChanged(NewParty->GetOssPartyState(), NewParty->GetOssPartyPreviousState(), NewParty);
 		}
 
 		return NewParty;
@@ -757,7 +855,7 @@ USocialParty* USocialManager::GetPartyInternal(const FOnlinePartyId& PartyId, bo
 	return nullptr;
 }
 
-TSharedPtr<IOnlinePartyJoinInfo> USocialManager::GetJoinInfoFromSession(const FOnlineSessionSearchResult& PlatformSession)
+TSharedPtr<const IOnlinePartyJoinInfo> USocialManager::GetJoinInfoFromSession(const FOnlineSessionSearchResult& PlatformSession)
 {
 	static const FName JoinInfoSettingName = PLATFORM_XBOXONE ? SETTING_CUSTOM_JOIN_INFO : SETTING_CUSTOM;
 
@@ -786,9 +884,12 @@ void USocialManager::HandleGameViewportInitialized()
 	GameViewport->OnPlayerRemoved().AddUObject(this, &USocialManager::HandleLocalPlayerRemoved);
 
 	// Immediately spin up toolkits for local players that already exist
-	for (ULocalPlayer* ExistingLocalPlayer : GameInstance.GetLocalPlayers())
+	const TArray<ULocalPlayer*>& LocalPlayers = GameInstance.GetLocalPlayers();
+	for (int32 LocalPlayerIndex = 0; LocalPlayerIndex < LocalPlayers.Num(); ++LocalPlayerIndex)
 	{
-		CreateSocialToolkit(*ExistingLocalPlayer);
+		ULocalPlayer* ExistingLocalPlayer = LocalPlayers[LocalPlayerIndex];
+
+		CreateSocialToolkit(*ExistingLocalPlayer, LocalPlayerIndex);
 	}
 }
 
@@ -813,19 +914,69 @@ void USocialManager::HandleWorldEstablished(UWorld* World)
 
 void USocialManager::HandleLocalPlayerAdded(int32 LocalUserNum)
 {
-	ULocalPlayer* NewLocalPlayer = GetGameInstance().FindLocalPlayerFromControllerId(LocalUserNum);
+	ULocalPlayer* NewLocalPlayer = GetGameInstance().GetLocalPlayerByIndex(LocalUserNum);
 	check(NewLocalPlayer);
 
-	CreateSocialToolkit(*NewLocalPlayer);
+	CreateSocialToolkit(*NewLocalPlayer, LocalUserNum);
 }
 
 void USocialManager::HandleLocalPlayerRemoved(int32 LocalUserNum)
 {
-	if (USocialToolkit* Toolkit = GetSocialToolkit(LocalUserNum))
+	//GetSocialToolkit accepts a ControllerId, not a player index, so we'll access it directly 
+	if (SocialToolkits.IsValidIndex(LocalUserNum))
 	{
-		SocialToolkits.Remove(Toolkit);
-		Toolkit->MarkPendingKill();
+		if (USocialToolkit* Toolkit = SocialToolkits[LocalUserNum])
+		{
+			SocialToolkits.Remove(Toolkit);
+			Toolkit->MarkPendingKill();
+		}
 	}
+}
+
+void USocialManager::HandleToolkitReset(int32 LocalUserNum)
+{
+	JoinAttemptsByTypeId.Reset();
+}
+
+void USocialManager::RestorePartyStateFromPartySystem(const FOnRestorePartyStateFromPartySystemComplete& OnRestoreComplete)
+{
+	UE_LOG(LogParty, Verbose, TEXT("RestorePartyStateFromPartySystem"));
+	FUniqueNetIdRepl LocalUserId = GetFirstLocalUserId(ESocialSubsystem::Primary);
+
+	// If the player has any parties, do not try to restore
+	if (LocalUserId.IsValid() &&
+		bCanCreatePartyObjects &&
+		JoinedPartiesByTypeId.Num() == 0 &&
+		JoinAttemptsByTypeId.Num() == 0)
+	{
+		IOnlinePartyPtr PartyInterface = Online::GetPartyInterfaceChecked(GetWorld());
+		PartyInterface->RestoreParties(*LocalUserId, FOnRestorePartiesComplete::CreateUObject(this, &USocialManager::OnRestorePartiesComplete, OnRestoreComplete));
+	}
+	else
+	{
+		OnRestoreComplete.ExecuteIfBound(false);
+	}
+}
+
+void USocialManager::OnRestorePartiesComplete(const FUniqueNetId& LocalUserId, const FOnlineError& Result, const FOnRestorePartyStateFromPartySystemComplete OnRestoreComplete)
+{
+	if (Result.WasSuccessful())
+	{
+		// Restore our parties
+		IOnlinePartyPtr PartyInterface = Online::GetPartyInterfaceChecked(GetWorld());
+		TArray<TSharedRef<const FOnlinePartyId>> JoinedParties;
+		PartyInterface->GetJoinedParties(LocalUserId, JoinedParties);
+		for (const TSharedRef<const FOnlinePartyId>& PartyId : JoinedParties)
+		{
+			TSharedPtr<const FOnlineParty> Party = PartyInterface->GetParty(LocalUserId, *PartyId);
+			check(Party.IsValid());
+			if (!EstablishNewParty(LocalUserId, *PartyId, Party->PartyTypeId))
+			{
+				UE_LOG(LogParty, Warning, TEXT("OnRestorePartiesComplete: User=[%s] Party=[%s] Type=%d failed to establish party"), *LocalUserId.ToDebugString(), *PartyId->ToDebugString(), Party->PartyTypeId.GetValue());
+			}
+		}
+	}
+	OnRestoreComplete.ExecuteIfBound(Result.WasSuccessful());
 }
 
 void USocialManager::HandleQueryJoinabilityComplete(const FUniqueNetId& LocalUserId, const FOnlinePartyId& PartyId, EJoinPartyCompletionResult Result, int32 NotApprovedReasonCode, FOnlinePartyTypeId PartyTypeId)
@@ -874,7 +1025,7 @@ void USocialManager::HandleCreatePartyComplete(const FUniqueNetId& LocalUserId, 
 
 void USocialManager::HandleJoinPartyComplete(const FUniqueNetId& LocalUserId, const FOnlinePartyId& PartyId, EJoinPartyCompletionResult Result, int32 NotApprovedReasonCode, FOnlinePartyTypeId PartyTypeId)
 {
-	UE_LOG(LogParty, Log, TEXT("Attempt to join party of type [%d] completed with result [%s] and reason code [%d]"), PartyTypeId.GetValue(), ToString(Result), NotApprovedReasonCode);
+	UE_LOG(LogParty, Log, TEXT("Attempt to join party of type [%d] completed with result [%s] and reason code [%d] by user is [%s] "), PartyTypeId.GetValue(), ToString(Result), NotApprovedReasonCode, *LocalUserId.ToDebugString());
 
 	FJoinPartyResult JoinResult(Result, NotApprovedReasonCode);
 	FJoinPartyAttempt* JoinAttempt = JoinAttemptsByTypeId.Find(PartyTypeId);
@@ -922,13 +1073,21 @@ void USocialManager::HandleJoinPartyComplete(const FUniqueNetId& LocalUserId, co
 	}
 }
 
-void USocialManager::HandlePersistentPartyStateChanged(EPartyState NewState, USocialParty* PersistentParty)
+void USocialManager::HandlePersistentPartyStateChanged(EPartyState NewState, EPartyState PreviousState, USocialParty* PersistentParty)
 {
 	UE_LOG(LogParty, Verbose, TEXT("Persistent party state changed to %s"), ToString(NewState));
 
 	if (NewState == EPartyState::Disconnected)
 	{
 		bIsConnectedToPartyService = false;
+		
+		if (PreviousState == EPartyState::Active)
+		{
+			if (USocialSettings::ShouldLeavePartyOnDisconnect())
+			{
+				PersistentParty->LeaveParty();
+			}
+		}
 
 		// If we have other members in our party, then we will try to rejoin this when we come back online
 		if (!RejoinableParty.IsValid() && PersistentParty->ShouldCacheForRejoinOnDisconnect())
@@ -965,6 +1124,13 @@ void USocialManager::HandleLeavePartyForJoinComplete(ELeavePartyCompletionResult
 	UE_LOG(LogParty, Verbose, TEXT("Attempt to leave party [%s] for pending join completed with result [%s]"), *LeftParty->ToDebugString(), ToString(LeaveResult));
 }
 
+void USocialManager::HandlePartyDisconnected(USocialParty* DisconnectingParty)
+{
+	const FOnlinePartyTypeId& PartyTypeId = DisconnectingParty->GetPartyTypeId();
+	JoinedPartiesByTypeId.Remove(PartyTypeId);
+	DisconnectingParty->MarkPendingKill();
+}
+
 void USocialManager::HandlePartyLeaveBegin(EMemberExitedReason Reason, USocialParty* LeavingParty)
 {
 	const FOnlinePartyTypeId& PartyTypeId = LeavingParty->GetPartyTypeId();
@@ -997,7 +1163,7 @@ void USocialManager::HandlePartyLeft(EMemberExitedReason Reason, USocialParty* L
 			JoinPartyInternal(*JoinAttempt);
 			return;
 		}
-		else
+		else if (LeftParty)
 		{
 			// An attempt to join a party of this type has been initiated, but something/someone decided to leave the party before the attempt was ready to do so
 			// It's not worth accounting for the potential limbo that this could put us into, so just abort the join attempt and let the explicit leave action win
@@ -1006,7 +1172,7 @@ void USocialManager::HandlePartyLeft(EMemberExitedReason Reason, USocialParty* L
 		}
 	}
 
-	if (LeftParty->IsPersistentParty() && GetFirstLocalUserToolkit()->IsOwnerLoggedIn())
+	if (LeftParty && LeftParty->IsPersistentParty() && GetFirstLocalUserToolkit()->IsOwnerLoggedIn())
 	{
 		UE_LOG(LogParty, Verbose, TEXT("Finished leaving persistent party without a join/rejoin target. Creating a new persistent party now."));
 
@@ -1052,4 +1218,23 @@ void USocialManager::HandleFindSessionForJoinComplete(bool bWasSuccessful, const
 			FinishJoinPartyAttempt(*JoinAttempt, FJoinPartyResult(EPartyJoinDenialReason::TargetUserMissingPlatformSession));
 		}
 	}
+}
+
+bool USocialManager::Exec(class UWorld* InWorld, const TCHAR* Cmd, FOutputDevice& Out)
+{
+	if (FParse::Command(&Cmd, TEXT("SOCIAL")))
+	{
+		if (SocialDebugTools &&
+			SocialDebugTools->Exec(InWorld, Cmd, Out))
+		{
+			return true;
+		}
+		return true;
+	}
+	return false;
+}
+
+USocialDebugTools* USocialManager::GetDebugTools() const
+{
+	return SocialDebugTools;
 }

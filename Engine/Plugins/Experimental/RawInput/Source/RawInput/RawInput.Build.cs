@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 using System;
 
@@ -12,15 +12,16 @@ namespace UnrealBuildTool.Rules
 				new string[]
 				{
 					"Core",
-				    "CoreUObject",
-				    "Engine",
+					"CoreUObject",
+					"Engine",
+					"ApplicationCore",
 					"InputCore",
 					"SlateCore",
 					"Slate"
 				}
 			);
 
-            PrivateDependencyModuleNames.AddRange(
+			PrivateDependencyModuleNames.AddRange(
 				new string[]
 				{
 					"InputDevice",

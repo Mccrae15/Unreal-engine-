@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 /*=============================================================================
 	RenderResource.cpp: Render resource implementation.
@@ -8,6 +8,8 @@
 #include "Misc/ScopedEvent.h"
 #include "Misc/App.h"
 #include "RenderingThread.h"
+#include "ProfilingDebugging/LoadTimeTracker.h"
+
 
 /** Whether to enable mip-level fading or not: +1.0f if enabled, -1.0f if disabled. */
 float GEnableMipLevelFading = 1.0f;
@@ -20,10 +22,35 @@ FAutoConsoleVariableRef CVarMaxVertexBytesAllocatedPerFrame(
 	GMaxVertexBytesAllocatedPerFrame,
 	TEXT("The maximum number of transient vertex buffer bytes to allocate before we start panic logging who is doing the allocations"));
 
-TLinkedList<FRenderResource*>*& FRenderResource::GetResourceList()
+int32 GGlobalBufferNumFramesUnusedThresold = 30;
+FAutoConsoleVariableRef CVarReadBufferNumFramesUnusedThresold(
+	TEXT("r.NumFramesUnusedBeforeReleasingGlobalResourceBuffers"),
+	GGlobalBufferNumFramesUnusedThresold ,
+	TEXT("Number of frames after which unused global resource allocations will be discarded. Set 0 to ignore. (default=30)"));
+
+FThreadSafeCounter FRenderResource::ResourceListIterationActive;
+
+TArray<int32>& GetFreeIndicesList()
 {
-	static TLinkedList<FRenderResource*>* FirstResourceLink = NULL;
-	return FirstResourceLink;
+	static TArray<int32> FreeIndicesList;
+	return FreeIndicesList;
+}
+
+TArray<FRenderResource*>& FRenderResource::GetResourceList()
+{
+	static TArray<FRenderResource*> RenderResourceList;
+	return RenderResourceList;
+}
+
+/** Initialize all resources initialized before the RHI was initialized */
+void FRenderResource::InitPreRHIResources()
+{	
+	// Notify all initialized FRenderResources that there's a valid RHI device to create their RHI resources for now.
+	FRenderResource::InitRHIForAllResources();
+
+#if !PLATFORM_NEEDS_RHIRESOURCELIST
+	FRenderResource::GetResourceList().Empty();
+#endif
 }
 
 void FRenderResource::ChangeFeatureLevel(ERHIFeatureLevel::Type NewFeatureLevel)
@@ -31,12 +58,10 @@ void FRenderResource::ChangeFeatureLevel(ERHIFeatureLevel::Type NewFeatureLevel)
 	ENQUEUE_RENDER_COMMAND(FRenderResourceChangeFeatureLevel)(
 		[NewFeatureLevel](FRHICommandList& RHICmdList)
 	{
-		for (TLinkedList<FRenderResource*>::TIterator It(FRenderResource::GetResourceList()); It; It.Next())
+		FRenderResource::ForAllResources([NewFeatureLevel](FRenderResource* Resource)
 		{
-			FRenderResource* Resource = *It;
-
 			// Only resources configured for a specific feature level need to be updated
-			if (Resource->HasValidFeatureLevel())
+			if (Resource->HasValidFeatureLevel() && (Resource->FeatureLevel != NewFeatureLevel))
 			{
 				Resource->ReleaseRHI();
 				Resource->ReleaseDynamicRHI();
@@ -44,24 +69,43 @@ void FRenderResource::ChangeFeatureLevel(ERHIFeatureLevel::Type NewFeatureLevel)
 				Resource->InitDynamicRHI();
 				Resource->InitRHI();
 			}
-		}
+		});
 	});
 }
 
 void FRenderResource::InitResource()
 {
 	check(IsInRenderingThread());
-	if(!bInitialized)
+	if (ListIndex == INDEX_NONE)
 	{
-		ResourceLink = TLinkedList<FRenderResource*>(this);
-		ResourceLink.LinkHead(GetResourceList());
-		if(GIsRHIInitialized)
+		check(!IsEngineExitRequested());
+
+		TArray<FRenderResource*>& ResourceList = GetResourceList();
+		TArray<int32>& FreeIndicesList = GetFreeIndicesList();
+
+		// If resource list is currently being iterated, new resources must be added to the end of the list, to ensure they're processed during the iteration
+		// Otherwise empty slots in the list may be re-used for new resources
+		int32 LocalListIndex = INDEX_NONE;
+		if (FreeIndicesList.Num() > 0 && ResourceListIterationActive.GetValue() == 0)
 		{
+			LocalListIndex = FreeIndicesList.Pop();
+			check(ResourceList[LocalListIndex] == nullptr);
+			ResourceList[LocalListIndex] = this;
+		}
+		else
+		{
+			LocalListIndex = ResourceList.Add(this);
+		}
+
+		if (GIsRHIInitialized)
+		{
+			CSV_SCOPED_TIMING_STAT_EXCLUSIVE(InitRenderResource);
 			InitDynamicRHI();
 			InitRHI();
 		}
-		FPlatformMisc::MemoryBarrier(); // there are some multithreaded reads of bInitialized
-		bInitialized = true;
+
+		FPlatformMisc::MemoryBarrier(); // there are some multithreaded reads of ListIndex
+		ListIndex = LocalListIndex;
 	}
 }
 
@@ -70,15 +114,19 @@ void FRenderResource::ReleaseResource()
 	if ( !GIsCriticalError )
 	{
 		check(IsInRenderingThread());
-		if(bInitialized)
+		if(ListIndex != INDEX_NONE)
 		{
 			if(GIsRHIInitialized)
 			{
 				ReleaseRHI();
 				ReleaseDynamicRHI();
 			}
-			ResourceLink.Unlink();
-			bInitialized = false;
+
+			TArray<FRenderResource*>& ResourceList = GetResourceList();
+			TArray<int32>& FreeIndicesList = GetFreeIndicesList();
+			ResourceList[ListIndex] = nullptr;
+			FreeIndicesList.Add(ListIndex);
+			ListIndex = INDEX_NONE;
 		}
 	}
 }
@@ -86,7 +134,7 @@ void FRenderResource::ReleaseResource()
 void FRenderResource::UpdateRHI()
 {
 	check(IsInRenderingThread());
-	if(bInitialized && GIsRHIInitialized)
+	if(IsInitialized() && GIsRHIInitialized)
 	{
 		ReleaseRHI();
 		ReleaseDynamicRHI();
@@ -95,57 +143,9 @@ void FRenderResource::UpdateRHI()
 	}
 }
 
-void FRenderResource::InitResourceFromPossiblyParallelRendering()
-{
-	check(IsInParallelRenderingThread());
-
-	if (IsInRenderingThread())
-	{
-		InitResource();
-	}
-	else
-	{
-		class FInitResourceRenderThreadTask
-		{
-			FRenderResource& Resource;
-			FScopedEvent& Event;
-		public:
-
-			FInitResourceRenderThreadTask(FRenderResource& InResource, FScopedEvent& InEvent)
-				: Resource(InResource)
-				, Event(InEvent)
-			{
-			}
-
-			static FORCEINLINE TStatId GetStatId()
-			{
-				RETURN_QUICK_DECLARE_CYCLE_STAT(FInitResourceRenderThreadTask, STATGROUP_TaskGraphTasks);
-			}
-
-			static FORCEINLINE ENamedThreads::Type GetDesiredThread()
-			{
-				return ENamedThreads::GetRenderThread_Local();
-			}
-
-			static FORCEINLINE ESubsequentsMode::Type GetSubsequentsMode() { return ESubsequentsMode::FireAndForget; }
-
-			void DoTask(ENamedThreads::Type CurrentThread, const FGraphEventRef& MyCompletionGraphEvent)
-			{
-				Resource.InitResource();
-				Event.Trigger();
-			}
-		};
-		{
-			FScopedEvent Event;
-			TGraphTask<FInitResourceRenderThreadTask>::CreateTask().ConstructAndDispatchWhenReady(*this, Event);
-		}
-	}
-}
-
-
 FRenderResource::~FRenderResource()
 {
-	if (bInitialized && !GIsCriticalError)
+	if (IsInitialized() && !GIsCriticalError)
 	{
 		// Deleting an initialized FRenderResource will result in a crash later since it is still linked
 		UE_LOG(LogRendererCore, Fatal,TEXT("A FRenderResource was deleted without being released first!"));
@@ -292,6 +292,7 @@ void FTextureReference::InvalidateLastRenderTime()
 
 void FTextureReference::InitRHI()
 {
+	SCOPED_LOADTIMER(FTextureReference_InitRHI);
 	TextureReferenceRHI = RHICreateTextureReference(&LastRenderTimeRHI);
 }
 	
@@ -326,6 +327,8 @@ public:
 	uint32 BufferSize;
 	/** Number of bytes currently allocated from the buffer. */
 	uint32 AllocatedByteCount;
+	/** Number of successive frames for which AllocatedByteCount == 0. Used as a metric to decide when to free the allocation. */
+	int32 NumFramesUnused = 0;
 
 	/** Default constructor. */
 	explicit FDynamicVertexBuffer(uint32 InMinBufferSize)
@@ -356,6 +359,7 @@ public:
 		RHIUnlockVertexBuffer(VertexBufferRHI);
 		MappedBuffer = NULL;
 		AllocatedByteCount = 0;
+		NumFramesUnused = 0;
 	}
 
 	// FRenderResource interface.
@@ -487,6 +491,18 @@ void FGlobalDynamicVertexBuffer::Commit()
 		{
 			VertexBuffer.Unlock();
 		}
+		else if (GGlobalBufferNumFramesUnusedThresold && !VertexBuffer.AllocatedByteCount)
+		{
+			++VertexBuffer.NumFramesUnused;
+			if (VertexBuffer.NumFramesUnused >= GGlobalBufferNumFramesUnusedThresold)
+			{
+				// Remove the buffer, assumes they are unordered.
+				VertexBuffer.ReleaseResource();
+				Pool->VertexBuffers.RemoveAtSwap(BufferIndex);
+				--BufferIndex;
+				--NumBuffers;
+			}
+		}
 	}
 	Pool->CurrentVertexBuffer = NULL;
 	TotalAllocatedSinceLastCommit = 0;
@@ -515,6 +531,8 @@ public:
 	uint32 AllocatedByteCount;
 	/** Stride of the buffer in bytes. */
 	uint32 Stride;
+	/** Number of successive frames for which AllocatedByteCount == 0. Used as a metric to decide when to free the allocation. */
+	int32 NumFramesUnused = 0;
 
 	/** Initialization constructor. */
 	explicit FDynamicIndexBuffer(uint32 InMinBufferSize, uint32 InStride)
@@ -546,6 +564,7 @@ public:
 		RHIUnlockIndexBuffer(IndexBufferRHI);
 		MappedBuffer = NULL;
 		AllocatedByteCount = 0;
+		NumFramesUnused = 0;
 	}
 
 	// FRenderResource interface.
@@ -682,6 +701,18 @@ void FGlobalDynamicIndexBuffer::Commit()
 			if (IndexBuffer.MappedBuffer != NULL)
 			{
 				IndexBuffer.Unlock();
+			}
+			else if (GGlobalBufferNumFramesUnusedThresold && !IndexBuffer.AllocatedByteCount)
+			{
+				++IndexBuffer.NumFramesUnused;
+				if (IndexBuffer.NumFramesUnused >= GGlobalBufferNumFramesUnusedThresold)
+				{
+					// Remove the buffer, assumes they are unordered.
+					IndexBuffer.ReleaseResource();
+					Pool->IndexBuffers.RemoveAtSwap(BufferIndex);
+					--BufferIndex;
+					--NumBuffers;
+				}
 			}
 		}
 		Pool->CurrentIndexBuffer = NULL;

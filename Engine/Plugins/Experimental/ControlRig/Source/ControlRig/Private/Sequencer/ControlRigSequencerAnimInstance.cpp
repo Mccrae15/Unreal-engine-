@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "Sequencer/ControlRigSequencerAnimInstance.h"
 #include "ControlRigSequencerAnimInstanceProxy.h"
@@ -15,8 +15,13 @@ FAnimInstanceProxy* UControlRigSequencerAnimInstance::CreateAnimInstanceProxy()
 	return new FControlRigSequencerAnimInstanceProxy(this);
 }
 
-bool UControlRigSequencerAnimInstance::UpdateControlRig(UControlRig* InControlRig, uint32 SequenceId, bool bAdditive, bool bApplyBoneFilter, const FInputBlendPose& BoneFilter, float Weight)
+bool UControlRigSequencerAnimInstance::UpdateControlRig(UControlRig* InControlRig, uint32 SequenceId, bool bAdditive, bool bApplyBoneFilter, const FInputBlendPose& BoneFilter, float Weight, const FControlRigIOSettings& InputSettings, bool bExecute)
 {
 	CachedControlRig = InControlRig;
-	return GetProxyOnGameThread<FControlRigSequencerAnimInstanceProxy>().UpdateControlRig(InControlRig, SequenceId, bAdditive, bApplyBoneFilter, BoneFilter, Weight);
+	return GetProxyOnGameThread<FControlRigSequencerAnimInstanceProxy>().UpdateControlRig(InControlRig, SequenceId, bAdditive, bApplyBoneFilter, BoneFilter, Weight, InputSettings, bExecute);
+}
+
+bool UControlRigSequencerAnimInstance::SetAnimationAsset(class UAnimationAsset* NewAsset)
+{
+	return GetProxyOnGameThread<FControlRigSequencerAnimInstanceProxy>().SetAnimationAsset(NewAsset);
 }

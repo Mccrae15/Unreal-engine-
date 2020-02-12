@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -121,13 +121,6 @@ struct ANIMGRAPHRUNTIME_API FAnimNode_Trail : public FAnimNode_SkeletalControlBa
 	/** To avoid hitches causing stretch of trail, you can use MaxDeltaTime to clamp the long delta time. If you want 30 fps to set it to 0.03333f ( = 1/30 ).  */
 	UPROPERTY(EditAnywhere, Category = Limit)
 	float MaxDeltaTime;
-
-	/** If you want to avoid loop, how many you want to unwind at once. 
-	 * Bigger value can cause jitter as it becomes more unstable in the ordering
-	 * Defaulted to 3. It will use this length to unwind at once 
-	 */
-	UPROPERTY(EditAnywhere, Category = Trail, meta = (EditCondition = "!bAllowLoop", ClampMin = "3", UIMin = "3"))
-	uint32 UnwindingSize;
 
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = Trail, meta = (PinHiddenByDefault))
 	float RelaxationSpeedScale;

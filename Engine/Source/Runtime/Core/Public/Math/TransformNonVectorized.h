@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -184,19 +184,6 @@ public:
 		: Rotation(InRotation),
 		Translation(InTranslation),
 		Scale3D(InScale3D)
-	{
-		DiagnosticCheckNaN_All();
-	}
-
-	/**
-	* Copy-constructor
-	*
-	* @param InTransform The source transform from which all components will be copied
-	*/
-	FORCEINLINE FTransform(const FTransform& InTransform) :
-		Rotation(InTransform.Rotation),
-		Translation(InTransform.Translation),
-		Scale3D(InTransform.Scale3D)
 	{
 		DiagnosticCheckNaN_All();
 	}

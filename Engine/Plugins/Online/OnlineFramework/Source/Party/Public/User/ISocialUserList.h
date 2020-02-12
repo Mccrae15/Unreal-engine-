@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -29,12 +29,51 @@ class FSocialUserListConfig
 public:
 	FSocialUserListConfig() {}
 
+	FString Name = TEXT("");
 	ESocialRelationship RelationshipType = ESocialRelationship::Friend;
 	TArray<ESocialSubsystem> RelevantSubsystems;
 	TArray<ESocialSubsystem> ForbiddenSubsystems;
 	ESocialUserStateFlags RequiredPresenceFlags = ESocialUserStateFlags::None;
 	ESocialUserStateFlags ForbiddenPresenceFlags = ESocialUserStateFlags::None;
+
+	// Delegate that is evaluated every time we test a user for inclusion/exclusion
 	FOnCustomFilterUser OnCustomFilterUser;
+
+	// These functions run whenever the User broadcasts OnGameSpecificStatusChanged and if they all return true will trigger a full re-evaluation of this user for list eligibility
+	TArray<TFunction<bool(const USocialUser&)>> GameSpecificStatusFilters;
+
+	// Whether or not the list should be polled regularly for updates (as opposed to manually having UpdateNow triggered)
+	bool bAutoUpdate = false;
+
+	bool bSortDuringUpdate = true;
+
+	bool operator==(const FSocialUserListConfig& OtherConfig) const
+	{
+		bool bHasSameConfigs = RelationshipType == OtherConfig.RelationshipType &&
+			RequiredPresenceFlags == OtherConfig.RequiredPresenceFlags &&
+			ForbiddenPresenceFlags == OtherConfig.ForbiddenPresenceFlags &&
+			CompoundSubsystemEnum(RelevantSubsystems) == CompoundSubsystemEnum(OtherConfig.RelevantSubsystems) &&
+			CompoundSubsystemEnum(ForbiddenSubsystems) == CompoundSubsystemEnum(OtherConfig.ForbiddenSubsystems);
+
+		if (bHasSameConfigs && (OnCustomFilterUser.IsBound() || OtherConfig.OnCustomFilterUser.IsBound() || GameSpecificStatusFilters.Num() > 0 || OtherConfig.GameSpecificStatusFilters.Num() > 0))
+		{
+			UE_LOG(LogParty, Verbose, TEXT("Userlist %s and Userlist %s has the exact same list config, but one (or both) have custom filters or game specific filters so we are treating them as separate lists."), *Name, *OtherConfig.Name);
+			return false;
+		}
+
+		return bHasSameConfigs;
+	}
+
+private:
+	uint8 CompoundSubsystemEnum(const TArray<ESocialSubsystem>& Subsystems ) const
+	{
+		uint8 OutputValue = 0;
+		for (ESocialSubsystem Subsystem : Subsystems)
+		{
+			OutputValue |= (uint8)Subsystem;
+		}
+		return OutputValue;
+	}
 };
 
 class ISocialUserList
@@ -53,10 +92,13 @@ public:
 	virtual FOnUpdateComplete& OnUpdateComplete() const = 0;
 
 	virtual const TArray<USocialUser*>& GetUsers() const = 0;
+	virtual FString GetListName() const = 0;
 
 	/** Trigger an update of the list immediately, regardless of auto update period */
 	virtual void UpdateNow() = 0;
 
-	/** Sets the period at which to update the list with all users that  */
-	virtual void SetAutoUpdatePeriod(float InAutoUpdatePeriod) = 0;
+	/** Give external overwrite to disable list auto update for perf */
+	virtual void SetAllowAutoUpdate(bool bIsEnabled) = 0;
+
+	virtual void SetAllowSortDuringUpdate(bool bIsEnabled) = 0;
 };

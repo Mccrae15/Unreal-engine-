@@ -1,13 +1,16 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 
 #include "CoreMinimal.h"
 #include "Preferences/CascadeOptions.h"
 #include "Preferences/CurveEdOptions.h"
 #include "Preferences/MaterialEditorOptions.h"
+#include "Preferences/BlueprintEditorOptions.h"
 #include "Preferences/PersonaOptions.h"
+#include "Preferences/AnimationBlueprintEditorOptions.h"
 #include "Preferences/PhysicsAssetEditorOptions.h"
 #include "Preferences/MaterialStatsOptions.h"
+#include "FrameNumberDisplayFormat.h"
 
 // @todo find a better place for all of this, preferably in the appropriate modules
 // though this would require the classes to be relocated as well
@@ -50,6 +53,8 @@ UPhysicsAssetEditorOptions::UPhysicsAssetEditorOptions(const FObjectInitializer&
 
 	CollisionOpacity = 0.3f;
 	bSolidRenderingForSelectedOnly = false;
+	bHideSimulatedBodies = false;
+	bHideKinematicBodies = false;
 	bResetClothWhenSimulating = false;
 }
 
@@ -62,14 +67,24 @@ UMaterialStatsOptions::UMaterialStatsOptions(const FObjectInitializer& ObjectIni
 	: Super(ObjectInitializer)
 {
 #if PLATFORM_WINDOWS
-	bPlatformUsed[GMaxRHIFeatureLevel == ERHIFeatureLevel::SM5 ? SP_PCD3D_SM5 : SP_PCD3D_SM4] = 1;
+	//#todo-sm6
+	bPlatformUsed[/*GMaxRHIFeatureLevel == ERHIFeatureLevel::SM5 ? */SP_PCD3D_SM5/* : SP_PCD3D_SM4*/] = 1;
 #elif PLATFORM_IOS
-	bPlatformUsed[SP_OPENGL_ES2_IOS] = 1;
+	bPlatformUsed[SP_METAL] = 1;
 #endif
 
 	bMaterialQualityUsed[EMaterialQualityLevel::High] = 1;
 }
 
+UBlueprintEditorOptions::UBlueprintEditorOptions(const FObjectInitializer& ObjectInitializer)
+	: Super(ObjectInitializer)
+{
+}
+
+UAnimationBlueprintEditorOptions::UAnimationBlueprintEditorOptions(const FObjectInitializer& ObjectInitializer)
+	: Super(ObjectInitializer)
+{
+}
 
 UCurveEdOptions::UCurveEdOptions(const FObjectInitializer& ObjectInitializer)
 	: Super(ObjectInitializer)
@@ -109,8 +124,8 @@ UPersonaOptions::UPersonaOptions(const FObjectInitializer& ObjectInitializer)
 		EditorOptions.SetViewportConfigsToDefault();
 	}
 
-	SectionTimingNodeColor = FLinearColor(0.0f, 1.0f, 0.0f);
-	NotifyTimingNodeColor = FLinearColor(1.0f, 0.0f, 0.0f);
+	SectionTimingNodeColor = FLinearColor(0.39f, 0.39f, 1.0f, 0.75f);
+	NotifyTimingNodeColor = FLinearColor(0.8f, 0.1f, 0.1f);
 	BranchingPointTimingNodeColor = FLinearColor(0.5f, 1.0f, 1.0f);
 
 	bAutoAlignFloorToMesh = true;
@@ -118,6 +133,18 @@ UPersonaOptions::UPersonaOptions(const FObjectInitializer& ObjectInitializer)
 	NumFolderFiltersInAssetBrowser = 2;
 
 	bUseAudioAttenuation = true;
+
+	CurveEditorSnapInterval = 0.01f;
+
+	// Default to millisecond resolution
+	TimelineScrubSnapValue = 1000;
+
+	TimelineDisplayFormat = EFrameNumberDisplayFormats::Frames;
+
+	bTimelineDisplayPercentage = true;
+	bTimelineDisplayFormatSecondary = true;
+
+	bTimelineDisplayCurveKeys = false;
 }
 
 void UPersonaOptions::SetShowGrid( bool bInShowGrid )

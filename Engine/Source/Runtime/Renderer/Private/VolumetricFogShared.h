@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 /*=============================================================================
 	VolumetricFogShared.h
@@ -27,18 +27,19 @@ struct FVolumetricFogIntegrationParameterData
 
 	bool bTemporalHistoryIsValid;
 	TArray<FVector4, TInlineAllocator<16>> FrameJitterOffsetValues;
-	const FRDGTexture* VBufferA;
-	const FRDGTexture* VBufferB;
-	const FRDGTextureUAV* VBufferA_UAV;
-	const FRDGTextureUAV* VBufferB_UAV;
+	FRDGTexture* VBufferA;
+	FRDGTexture* VBufferB;
+	FRDGTextureUAV* VBufferA_UAV;
+	FRDGTextureUAV* VBufferB_UAV;
 
-	const FRDGTexture* LightScattering;
-	const FRDGTextureUAV* LightScatteringUAV;
+	FRDGTexture* LightScattering;
+	FRDGTextureUAV* LightScatteringUAV;
 };
 
 /**  */
 class FVolumetricFogIntegrationParameters
 {
+	DECLARE_TYPE_LAYOUT(FVolumetricFogIntegrationParameters, NonVirtual);
 public:
 
 	static void ModifyCompilationEnvironment(EShaderPlatform Platform, FShaderCompilerEnvironment& OutEnvironment)
@@ -116,18 +117,19 @@ public:
 	}
 
 private:
-
-	FRWShaderParameter VBufferA;
-	FRWShaderParameter VBufferB;
-	FRWShaderParameter LightScattering;
-	FRWShaderParameter IntegratedLightScattering;
-	FShaderResourceParameter IntegratedLightScatteringSampler;
-	FShaderUniformBufferParameter VolumetricFogData;
-	FShaderParameter UnjitteredClipToTranslatedWorld;
-	FShaderParameter UnjitteredPrevWorldToClip;
-	FShaderParameter FrameJitterOffsets;
-	FShaderParameter HistoryWeight;
-	FShaderParameter HistoryMissSuperSampleCount;
+	
+		LAYOUT_FIELD(FRWShaderParameter, VBufferA)
+		LAYOUT_FIELD(FRWShaderParameter, VBufferB)
+		LAYOUT_FIELD(FRWShaderParameter, LightScattering)
+		LAYOUT_FIELD(FRWShaderParameter, IntegratedLightScattering)
+		LAYOUT_FIELD(FShaderResourceParameter, IntegratedLightScatteringSampler)
+		LAYOUT_FIELD(FShaderUniformBufferParameter, VolumetricFogData)
+		LAYOUT_FIELD(FShaderParameter, UnjitteredClipToTranslatedWorld)
+		LAYOUT_FIELD(FShaderParameter, UnjitteredPrevWorldToClip)
+		LAYOUT_FIELD(FShaderParameter, FrameJitterOffsets)
+		LAYOUT_FIELD(FShaderParameter, HistoryWeight)
+		LAYOUT_FIELD(FShaderParameter, HistoryMissSuperSampleCount)
+	
 };
 
 inline int32 ComputeZSliceFromDepth(float SceneDepth, FVector GridZParams)

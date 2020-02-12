@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 /*=============================================================================
 	RayTracingHitGroupCommon.ush: common header used in all hit group shaders
@@ -9,7 +9,8 @@
 #ifndef RAYTRACINGHITGROUPCOMMON_USH_INCLUDED
 #define RAYTRACINGHITGROUPCOMMON_USH_INCLUDED // Workarround for UE-66460
 
-#include "CommonRayTracingBuiltInResources.ush"
+#include "/Engine/Private/RayTracing/RayTracingCommon.ush"
+#include "/Engine/Shared/RayTracingBuiltInResources.h"
 
 uint3 LoadIndices16Bit(ByteAddressBuffer SourceBuffer, uint OffsetInBytes)
 {
@@ -84,8 +85,7 @@ FTriangleBaseAttributes LoadTriangleBaseAttributes(uint PrimitiveId)
 	// Fetch vertex positions (in local space)
 	const uint VertexStride = HitGroupSystemRootConstants.GetVertexStride();
 
-	// #dxr_todo: handle various vertex formats, for now only supporting float3
-	// #dxr_todo: handle BaseVertexIndex
+	// #dxr_todo: UE-72160 handle various vertex formats, for now only supporting float3
 	Result.LocalPositions[0] = LoadVertexPositionFloat3(HitGroupSystemVertexBuffer, Result.Indices[0], VertexStride);
 	Result.LocalPositions[1] = LoadVertexPositionFloat3(HitGroupSystemVertexBuffer, Result.Indices[1], VertexStride);
 	Result.LocalPositions[2] = LoadVertexPositionFloat3(HitGroupSystemVertexBuffer, Result.Indices[2], VertexStride);
@@ -96,6 +96,16 @@ FTriangleBaseAttributes LoadTriangleBaseAttributes(uint PrimitiveId)
 uint GetInstanceUserData()
 {
 	return InstanceID();
+}
+
+uint GetHitGroupUserData()
+{
+	return HitGroupSystemRootConstants.UserData;
+}
+
+uint GetBaseInstanceIndex()
+{
+	return HitGroupSystemRootConstants.BaseInstanceIndex;
 }
 
 #endif // RAYTRACINGHITGROUPCOMMON_USH_INCLUDED // Workarround for UE-66460

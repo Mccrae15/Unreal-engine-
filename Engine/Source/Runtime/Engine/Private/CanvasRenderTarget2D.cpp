@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "Engine/CanvasRenderTarget2D.h"
 #include "Misc/App.h"
@@ -16,6 +16,7 @@ UCanvasRenderTarget2D::UCanvasRenderTarget2D( const FObjectInitializer& ObjectIn
 {
 	bNeedsTwoCopies = false;
 	bShouldClearRenderTargetOnReceiveUpdate = true;
+	bCanCreateUAV = true;
 }
 
 

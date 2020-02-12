@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -17,8 +17,14 @@ class SPluginBrowser;
  */
 class SPluginCategoryTree : public SCompoundWidget
 {
-
 public:
+
+	enum class EFilterType : uint8
+	{
+		None,
+		OnlyEnabled,
+		OnlyDisabled,
+	};
 
 	SLATE_BEGIN_ARGS( SPluginCategoryTree )
 	{
@@ -47,6 +53,9 @@ public:
 
 	/** Signal that the categories list needs to be refreshed */
 	void SetNeedsRefresh();
+
+	void ToggleFilterType(EFilterType FilterValue);
+	bool IsFilterEnabled(EFilterType FilterValue) const;
 
 private:
 	
@@ -87,5 +96,7 @@ private:
 
 	/** Category for mods */
 	TSharedPtr<FPluginCategory> ModCategory;
+
+	EFilterType FilterType;
 };
 

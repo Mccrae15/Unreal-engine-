@@ -1,10 +1,10 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "AsyncDestroyer.h"
 #include "Engine/Engine.h"
 #include "AppEventHandler.h"
 #if PLATFORM_LUMIN
-#include "Lumin/LuminAffinity.h"
+#include "Lumin/LuminPlatformAffinity.h"
 #endif // PLATFORM_LUMIN
 
 namespace MagicLeap

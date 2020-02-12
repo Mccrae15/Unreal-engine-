@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -15,10 +15,14 @@
 
 #include "PreLoadSlateThreading.h"
 
+DECLARE_MULTICAST_DELEGATE_OneParam(FIsPreloadScreenResponsibleForRenderingMultiDelegate, bool);
+
 // Class that handles storing all registered PreLoadScreens and Playing/Stopping them
 class PRELOADSCREEN_API FPreLoadScreenManager
 {
 public:
+	static FIsPreloadScreenResponsibleForRenderingMultiDelegate IsResponsibleForRenderingDelegate;
+
     //Gets the single instance of this settings object. Also creates it if needed
     static FPreLoadScreenManager* Get()
     {
@@ -75,9 +79,6 @@ public:
     void SetEngineLoadingComplete(bool IsEngineLoadingFinished = true);
     bool IsEngineLoadingComplete() const { return bIsEngineLoadingComplete; }
 
-	void OnPostEngineInit();
-	void SetupSceneViewport();
-
     void CleanUpResources();
 
     static void EnableRendering(bool bEnabled);
@@ -106,8 +107,6 @@ protected:
     //Singleton Instance
     static TSharedPtr<FPreLoadScreenManager> Instance;
 
-	void OnFirstEngineFrame();
-
     void BeginPlay();
 
     /*** These functions describe the flow for an EarlyPreLoadScreen where everything is blocking waiting on a call to StopPreLoadScreen ***/
@@ -117,8 +116,13 @@ protected:
     void GameLogicFrameTick();
     void EarlyPlayRenderFrameTick();
 
+	void PlatformSpecificGameLogicFrameTick();
+
     /*** These functions describe how everything is handled during an non-Early PreLoadPlay. Everything is handled asynchronously in this case with a standalone renderer ***/
-    void HandleEngineLoadingPlay();
+	void HandleEngineLoadingPlay();
+
+	/*** These functions describe the flow for showing an CustomSplashScreen ***/
+	void HandleCustomSplashScreenPlay();
 
     IPreLoadScreen* GetActivePreLoadScreen();
     const IPreLoadScreen* GetActivePreLoadScreen() const;
@@ -145,8 +149,19 @@ protected:
     static FCriticalSection RenderingEnabledCriticalSection;
     static bool bRenderingEnabled;
 
+	bool bIsResponsibleForRendering = false;
+
     double LastRenderTickTime;
 
     float OriginalSlateSleepVariableValue;
     bool bIsEngineLoadingComplete;
+
+private:
+#if PLATFORM_ANDROID
+	void Android_PlatformSpecificGameLogicFrameTick();
+#endif //PLATFORM_ANDROID
+
+#if PLATFORM_IOS
+	void IOS_PlatformSpecificGameLogicFrameTick();
+#endif //PLATFORM_IOS
 };

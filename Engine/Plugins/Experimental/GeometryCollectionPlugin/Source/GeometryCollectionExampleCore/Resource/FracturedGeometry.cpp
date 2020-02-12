@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "GeometryCollectionExampleCore/Resource/FracturedGeometry.h"
 #include "Chaos/Box.h"
@@ -1857,18 +1857,64 @@ const TArray<FTransform> FracturedGeometry::RawTransformArray = {
    FTransform(FQuat(0, 0, 0, 1), FVector(-5.27474, -31.0959, 32.0566), FVector(1, 1, 1)),
 };
 
-const TArray<FGeometryCollectionBoneNode> FracturedGeometry::RawBoneHierarchyArray = {
-   FGeometryCollectionBoneNode(0, -1, 0),
-   FGeometryCollectionBoneNode(1, 0, 1),
-   FGeometryCollectionBoneNode(1, 0, 1),
-   FGeometryCollectionBoneNode(1, 0, 1),
-   FGeometryCollectionBoneNode(1, 0, 1),
-   FGeometryCollectionBoneNode(1, 0, 1),
-   FGeometryCollectionBoneNode(1, 0, 1),
-   FGeometryCollectionBoneNode(1, 0, 1),
-   FGeometryCollectionBoneNode(1, 0, 1),
-   FGeometryCollectionBoneNode(1, 0, 1),
-   FGeometryCollectionBoneNode(1, 0, 1),
+const TArray<int32> FracturedGeometry::RawLevelArray = {
+   0,
+   1,
+   1,
+   1,
+   1,
+   1,
+   1,
+   1,
+   1,
+   1,
+   1,
+};
+
+const TArray<int32> FracturedGeometry::RawParentArray = {
+  -1,
+   0, 
+   0, 
+   0, 
+   0, 
+   0, 
+   0, 
+   0, 
+   0, 
+   0, 
+   0, 
+};
+
+const TArray<TSet<int32>> FracturedGeometry::RawChildrenArray = {
+
+};
+
+const TArray<int32> FracturedGeometry::RawSimulationTypeArray = {
+   0,
+   0,
+   0,
+   0,
+   0,
+   0,
+   0,
+   0,
+   0,
+   0,
+   0
+};
+
+const TArray<int32> FracturedGeometry::RawStatusFlagsArray = {
+   0,
+   0,
+   0,
+   0,
+   0,
+   0,
+   0,
+   0,
+   0,
+   0,
+   0
 };
 
 FracturedGeometry::FracturedGeometry()
@@ -1884,7 +1930,11 @@ GlobalFracturedGeometry::GlobalFracturedGeometry()
 	, RawIndicesArray(RawIndicesArray1)
 	, RawBoneMapArray(FracturedGeometry::RawBoneMapArray)
 	, RawTransformArray(FracturedGeometry::RawTransformArray)
-	, RawBoneHierarchyArray(FracturedGeometry::RawBoneHierarchyArray)
+	, RawLevelArray(FracturedGeometry::RawLevelArray)
+	, RawParentArray(FracturedGeometry::RawParentArray)
+	, RawChildrenArray(FracturedGeometry::RawChildrenArray)
+	, RawSimulationTypeArray(FracturedGeometry::RawSimulationTypeArray)
+	, RawStatusFlagsArray(FracturedGeometry::RawStatusFlagsArray)
 {
 	// The FracturedGeometry data set has lots of free and coincident vertices.
 	// We're going to concatenate 2 copies of it.
@@ -1904,7 +1954,7 @@ GlobalFracturedGeometry::GlobalFracturedGeometry()
 	}
 
 	// Measure the extent of the second point set.
-	Chaos::TBox<float, 3> BBox(
+	Chaos::TAABB<float, 3> BBox(
 		Chaos::TVector<float, 3>(
 			RawVertexArray[NumOrigFractured + 0],
 			RawVertexArray[NumOrigFractured + 1],

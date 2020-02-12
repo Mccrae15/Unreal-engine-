@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -25,6 +25,14 @@ enum class ELocalFileChunkType : uint32
 	Unknown = 0xFFFFFFFF
 };
 
+enum class EReadReplayInfoFlags : uint32
+{
+	None = 0,
+	SkipHeaderChunkTest = 1,
+};
+
+ENUM_CLASS_FLAGS(EReadReplayInfoFlags);
+
 /** Struct to hold chunk metadata */
 struct FLocalFileChunkInfo
 {
@@ -49,6 +57,7 @@ struct FLocalFileReplayDataInfo
 		Time1(0),
 		Time2(0),
 		SizeInBytes(0),
+		MemorySizeInBytes(0),
 		ReplayDataOffset(0),
 		StreamOffset(0)
 	{}
@@ -57,6 +66,7 @@ struct FLocalFileReplayDataInfo
 	uint32 Time1;
 	uint32 Time2;
 	int32 SizeInBytes;
+	int32 MemorySizeInBytes;
 	int64 ReplayDataOffset;
 	int64 StreamOffset;
 };
@@ -96,6 +106,7 @@ struct FLocalFileReplayInfo
 		bIsLive(false),
 		bIsValid(false),
 		bCompressed(false),
+		bEncrypted(false),
 		HeaderChunkIndex(INDEX_NONE)
 	{}
 
@@ -109,6 +120,9 @@ struct FLocalFileReplayInfo
 	bool bIsValid;
 	bool bCompressed;
 
+	bool bEncrypted;
+	TArray<uint8> EncryptionKey;
+
 	int32 HeaderChunkIndex;
 
 	TArray<FLocalFileChunkInfo> Chunks;
@@ -121,15 +135,15 @@ struct FLocalFileReplayInfo
 class LOCALFILENETWORKREPLAYSTREAMING_API FLocalFileStreamFArchive : public FArchive
 {
 public:
-	FLocalFileStreamFArchive() : Pos( 0 ), bAtEndOfReplay( false ) {}
+	FLocalFileStreamFArchive() : Pos(0), bAtEndOfReplay(false) {}
 
-	virtual void	Serialize( void* V, int64 Length ) override;
+	virtual void	Serialize(void* V, int64 Length) override;
 	virtual int64	Tell() override;
 	virtual int64	TotalSize() override;
-	virtual void	Seek( int64 InPos ) override;
+	virtual void	Seek(int64 InPos) override;
 	virtual bool	AtEnd() override;
 
-	TArray< uint8 >	Buffer;
+	TArray<uint8>	Buffer;
 	int32			Pos;
 	bool			bAtEndOfReplay;
 };
@@ -213,7 +227,9 @@ namespace EQueuedLocalFileRequestType
 class FCachedFileRequest
 {
 public:
-	FCachedFileRequest( const TArray<uint8>& InRequestData, const double InLastAccessTime ) : RequestData( InRequestData ), LastAccessTime( InLastAccessTime )
+	FCachedFileRequest(const TArray<uint8>& InRequestData, const double InLastAccessTime) 
+		: RequestData(InRequestData)
+		, LastAccessTime(InLastAccessTime)
 	{
 	}
 
@@ -250,7 +266,7 @@ protected:
 class FGenericQueuedLocalFileRequest : public FQueuedLocalFileRequest, public TSharedFromThis<FGenericQueuedLocalFileRequest, ESPMode::ThreadSafe>
 {
 public:
-	FGenericQueuedLocalFileRequest(const TSharedPtr<FLocalFileNetworkReplayStreamer>& InStreamer, EQueuedLocalFileRequestType::Type InType, TFunction<void()>& InFunction, TFunction<void()>& InCompletionCallback)
+	FGenericQueuedLocalFileRequest(const TSharedPtr<FLocalFileNetworkReplayStreamer>& InStreamer, EQueuedLocalFileRequestType::Type InType, TFunction<void()>&& InFunction, TFunction<void()>&& InCompletionCallback)
 		: FQueuedLocalFileRequest(InStreamer, InType)
 		, RequestFunction(MoveTemp(InFunction))
 		, CompletionCallback(MoveTemp(InCompletionCallback))
@@ -305,7 +321,7 @@ template <typename StorageType>
 class TGenericQueuedLocalFileRequest : public FQueuedLocalFileRequest, public TSharedFromThis<TGenericQueuedLocalFileRequest<StorageType>, ESPMode::ThreadSafe>
 {
 public:
-	TGenericQueuedLocalFileRequest(const TSharedPtr<FLocalFileNetworkReplayStreamer>& InStreamer, EQueuedLocalFileRequestType::Type InType, TFunction<void(StorageType&)>& InFunction, TFunction<void(StorageType&)>& InCompletionCallback)
+	TGenericQueuedLocalFileRequest(const TSharedPtr<FLocalFileNetworkReplayStreamer>& InStreamer, EQueuedLocalFileRequestType::Type InType, TFunction<void(StorageType&)>&& InFunction, TFunction<void(StorageType&)>&& InCompletionCallback)
 		: FQueuedLocalFileRequest(InStreamer, InType)
 		, RequestFunction(MoveTemp(InFunction))
 		, CompletionCallback(MoveTemp(InCompletionCallback))
@@ -366,15 +382,15 @@ template <typename DelegateResultType>
 class TGenericCachedLocalFileRequest : public TGenericQueuedLocalFileRequest<TLocalFileRequestCommonData<DelegateResultType>>
 {
 public:
-	TGenericCachedLocalFileRequest(int32 InCacheKey, const TSharedPtr<FLocalFileNetworkReplayStreamer>& InStreamer, EQueuedLocalFileRequestType::Type InType, TFunction<void(TLocalFileRequestCommonData<DelegateResultType>&)>& InFunction, TFunction<void(TLocalFileRequestCommonData<DelegateResultType>&)>& InCompletionCallback)
-		: TGenericQueuedLocalFileRequest<TLocalFileRequestCommonData<DelegateResultType>>(InStreamer, InType, InFunction, InCompletionCallback)
+	TGenericCachedLocalFileRequest(int32 InCacheKey, const TSharedPtr<FLocalFileNetworkReplayStreamer>& InStreamer, EQueuedLocalFileRequestType::Type InType, TFunction<void(TLocalFileRequestCommonData<DelegateResultType>&)>&& InFunction, TFunction<void(TLocalFileRequestCommonData<DelegateResultType>&)>&& InCompletionCallback)
+		: TGenericQueuedLocalFileRequest<TLocalFileRequestCommonData<DelegateResultType>>(InStreamer, InType, MoveTemp(InFunction), MoveTemp(InCompletionCallback))
 		, CacheKey(InCacheKey)
 	{}
 
 	virtual bool GetCachedRequest() override
 	{
-		FCachedFileRequest* CachedRequest = this->Streamer->RequestCache.Find(CacheKey);
-		if (CachedRequest != nullptr)
+		TSharedPtr<FCachedFileRequest> CachedRequest = this->Streamer->RequestCache.FindRef(CacheKey);
+		if (CachedRequest.IsValid())
 		{
 			// If we have this response in the cache, process it now
 			CachedRequest->LastAccessTime = FPlatformTime::Seconds();
@@ -398,16 +414,16 @@ public:
 	virtual ~FLocalFileNetworkReplayStreamer();
 
 	/** INetworkReplayStreamer implementation */
-	virtual void StartStreaming(const FString& CustomName, const FString& FriendlyName, const TArray< FString >& UserNames, bool bRecord, const FNetworkReplayVersion& ReplayVersion, const FStartStreamingCallback& Delegate) override;
-	virtual void StartStreaming(const FString& CustomName, const FString& FriendlyName, const TArray< int32 >& UserIndices, bool bRecord, const FNetworkReplayVersion& ReplayVersion, const FStartStreamingCallback& Delegate) override;
+	virtual void StartStreaming(const FStartStreamingParameters& Params, const FStartStreamingCallback& Delegate) override;
 	virtual void StopStreaming() override;
 	virtual FArchive* GetHeaderArchive() override;
 	virtual FArchive* GetStreamingArchive() override;
 	virtual FArchive* GetCheckpointArchive() override;
 	virtual void FlushCheckpoint(const uint32 TimeInMS) override;
-	virtual void GotoCheckpointIndex(const int32 CheckpointIndex, const FGotoCallback& Delegate) override;
-	virtual void GotoTimeInMS(const uint32 TimeInMS, const FGotoCallback& Delegate) override;
+	virtual void GotoCheckpointIndex(const int32 CheckpointIndex, const FGotoCallback& Delegate, EReplayCheckpointType CheckpointType) override;
+	virtual void GotoTimeInMS(const uint32 TimeInMS, const FGotoCallback& Delegate, EReplayCheckpointType CheckpointType) override;
 	virtual void UpdateTotalDemoTime(uint32 TimeInMS) override;
+	virtual void UpdatePlaybackTime(uint32 TimeInMS) override {}
 	virtual uint32 GetTotalDemoTime() const override { return CurrentReplayInfo.LengthInMS; }
 	virtual bool IsDataAvailable() const override;
 	virtual void SetHighPriorityTimeRange(const uint32 StartTimeInMS, const uint32 EndTimeInMS) override;
@@ -416,10 +432,7 @@ public:
 	virtual bool IsLive() const override;
 	virtual void DeleteFinishedStream(const FString& StreamName, const FDeleteFinishedStreamCallback& Delegate) override;
 	virtual void DeleteFinishedStream( const FString& StreamName, const int32 UserIndex, const FDeleteFinishedStreamCallback& Delegate ) override;
-	virtual void EnumerateStreams(const FNetworkReplayVersion& ReplayVersion, const FString& UserString, const FString& MetaString, const FEnumerateStreamsCallback& Delegate) override;
-	virtual void EnumerateStreams(const FNetworkReplayVersion& InReplayVersion, const FString& UserString, const FString& MetaString, const TArray< FString >& ExtraParms, const FEnumerateStreamsCallback& Delegate) override;
 	virtual void EnumerateStreams( const FNetworkReplayVersion& InReplayVersion, const int32 UserIndex, const FString& MetaString, const TArray< FString >& ExtraParms, const FEnumerateStreamsCallback& Delegate ) override;
-	virtual void EnumerateRecentStreams(const FNetworkReplayVersion& ReplayVersion, const FString& RecentViewer, const FEnumerateStreamsCallback& Delegate) override;
 	virtual void EnumerateRecentStreams( const FNetworkReplayVersion& ReplayVersion, const int32 UserIndex, const FEnumerateStreamsCallback& Delegate ) override;
 	virtual ENetworkReplayError::Type GetLastError() const override;
 	virtual void AddUserToReplay(const FString& UserString) override;
@@ -431,6 +444,9 @@ public:
 	virtual void RequestEventData(const FString& EventID, const FRequestEventDataCallback& Delegate) override;
 	virtual void RequestEventData(const FString& ReplayName, const FString& EventID, const FRequestEventDataCallback& Delegate) override;
 	virtual void RequestEventData(const FString& ReplayName, const FString& EventId, const int32 UserIndex, const FRequestEventDataCallback& Delegate) override;
+	virtual void RequestEventGroupData(const FString& Group, const FRequestEventGroupDataCallback& Delegate) override;
+	virtual void RequestEventGroupData(const FString& ReplayName, const FString& Group, const FRequestEventGroupDataCallback& Delegate) override;
+	virtual void RequestEventGroupData(const FString& ReplayName, const FString& Group, const int32 UserIndex, const FRequestEventGroupDataCallback& Delegate) override;
 	virtual void SearchEvents(const FString& EventGroup, const FSearchEventsCallback& Delegate) override;
 	virtual void KeepReplay(const FString& ReplayName, const bool bKeep, const FKeepReplayCallback& Delegate) override;
 	virtual void KeepReplay(const FString& ReplayName, const bool bKeep, const int32 UserIndex, const FKeepReplayCallback& Delegate) override;
@@ -438,15 +454,25 @@ public:
 	virtual void RenameReplayFriendlyName(const FString& ReplayName, const FString& NewFriendlyName, const int32 UserIndex, const FRenameReplayCallback& Delegate) override;
 	virtual void RenameReplay(const FString& ReplayName, const FString& NewName, const FRenameReplayCallback& Delegate) override;
 	virtual void RenameReplay(const FString& ReplayName, const FString& NewName, const int32 UserIndex, const FRenameReplayCallback& Delegate) override;
-	virtual FString	GetReplayID() const override { return TEXT(""); }
+	virtual FString	GetReplayID() const override { return CurrentStreamName; }
 	virtual void SetTimeBufferHintSeconds(const float InTimeBufferHintSeconds) override {}
 	virtual void RefreshHeader() override;
 	virtual void DownloadHeader(const FDownloadHeaderCallback& Delegate) override;
 
+	virtual bool IsCheckpointTypeSupported(EReplayCheckpointType CheckpointType) const override;
+
 	virtual bool SupportsCompression() const { return false; }
-	virtual int32 GetDecompressedSize(FArchive& InCompressed) const { return 0; }
-	virtual bool DecompressBuffer(const TArray<uint8>& InCompressed, TArray< uint8 >& OutBuffer) const { return false; }
-	virtual bool CompressBuffer(const TArray< uint8 >& InBuffer, TArray< uint8 >& OutCompressed) const { return false; }
+
+	UE_DEPRECATED(4.25, "No longer used")
+	virtual int32 GetDecompressedSize(FArchive& InCompressed) const;
+
+	virtual bool DecompressBuffer(const TArray<uint8>& InCompressed, TArray<uint8>& OutBuffer) const { return false; }
+	virtual bool CompressBuffer(const TArray<uint8>& InBuffer, TArray<uint8>& OutCompressed) const { return false; }
+
+	virtual bool SupportsEncryption() const { return false; }
+	virtual void GenerateEncryptionKey(TArray<uint8>& EncryptionKey) {}
+	virtual bool EncryptBuffer(TArrayView<const uint8> Plaintext, TArray<uint8>& Ciphertext, TArrayView<const uint8> EncryptionKey) const { return false; }
+	virtual bool DecryptBuffer(TArrayView<const uint8> Ciphertext, TArray<uint8>& Plaintext, TArrayView<const uint8> EncryptionKey) const { return false; }
 
 	void Tick(float DeltaSeconds);
 
@@ -479,13 +505,13 @@ public:
 
 	void AddSimpleRequestToQueue(EQueuedLocalFileRequestType::Type RequestType, TFunction<void()>&& InFunction, TFunction<void()>&& InCompletionCallback)
 	{
-		QueuedRequests.Add(MakeShared<FGenericQueuedLocalFileRequest, ESPMode::ThreadSafe>(AsShared(), RequestType, InFunction, InCompletionCallback));
+		QueuedRequests.Add(MakeShared<FGenericQueuedLocalFileRequest, ESPMode::ThreadSafe>(AsShared(), RequestType, MoveTemp(InFunction), MoveTemp(InCompletionCallback)));
 	}
 
 	template <typename StorageType>
 	void AddGenericRequestToQueue(EQueuedLocalFileRequestType::Type RequestType, TFunction<void(StorageType&)>&& InFunction, TFunction<void(StorageType&)>&& InCompletionCallback)
 	{
-		QueuedRequests.Add(MakeShared<TGenericQueuedLocalFileRequest<StorageType>, ESPMode::ThreadSafe>(AsShared(), RequestType, InFunction, InCompletionCallback));
+		QueuedRequests.Add(MakeShared<TGenericQueuedLocalFileRequest<StorageType>, ESPMode::ThreadSafe>(AsShared(), RequestType, MoveTemp(InFunction), MoveTemp(InCompletionCallback)));
 	}
 
 	template<typename DelegateResultType>
@@ -507,24 +533,18 @@ public:
 	template<typename DelegateResultType>
 	void AddCachedFileRequestToQueue(EQueuedLocalFileRequestType::Type RequestType, int32 InCacheKey, TFunction<void(TLocalFileRequestCommonData<DelegateResultType>&)>&& InFunction, TFunction<void(TLocalFileRequestCommonData<DelegateResultType>&)>&& InCompletionCallback)
 	{
-		QueuedRequests.Add(MakeShared<TGenericCachedLocalFileRequest<DelegateResultType>, ESPMode::ThreadSafe>(InCacheKey, AsShared(), RequestType, InFunction, InCompletionCallback));
+		QueuedRequests.Add(MakeShared<TGenericCachedLocalFileRequest<DelegateResultType>, ESPMode::ThreadSafe>(InCacheKey, AsShared(), RequestType, MoveTemp(InFunction), MoveTemp(InCompletionCallback)));
 	}
 
 	/** Map of chunk index to cached value */
-	TMap<int32, FCachedFileRequest> RequestCache;
+	TMap<int32, TSharedPtr<FCachedFileRequest>> RequestCache;
+
+	/** Map of checkpoint index to cached value */
+	TMap<int32, TSharedPtr<FCachedFileRequest>> DeltaCheckpointCache;
 
 protected:
 
-	static const FString GetUserStringFromUserIndex(const int32 UserIndex);
-	static const void GetUserStringsFromUserIndices(const TArray<int32>& UserIndices, TArray<FString>& OutUserStrings);
-
-	static const int32 GetUserIndexFromUserString(const FString& UserString);
-	static const void GetUserIndicesFromUserStrings(const TArray<FString>& UserStrings, TArray<int32>& OutUserIndices);
-
-	void StartStreaming_Internal(const FString& CustomName, const FString& FriendlyName, const TArray<int32>& UserIndices, bool bRecord, const FNetworkReplayVersion& ReplayVersion, const FStartStreamingCallback& Delegate);
 	void DeleteFinishedStream_Internal(const FString& StreamName, const int32 UserIndex, const FDeleteFinishedStreamCallback& Delegate);
-	void EnumerateStreams_Internal(const FNetworkReplayVersion& InReplayVersion, const int32 UserIndex, const FString& MetaString, const TArray< FString >& ExtraParms, const FEnumerateStreamsCallback& Delegate);
-	void EnumerateRecentStreams_Internal(const FNetworkReplayVersion& ReplayVersion, const int32 UserIndex, const FEnumerateStreamsCallback& Delegate);
 	void EnumerateEvents_Internal(const FString& ReplayName, const FString& Group, const int32 UserIndex, const FEnumerateEventsCallback& Delegate);
 	void RequestEventData_Internal(const FString& ReplayName, const FString& EventId, const int32 UserIndex, const FRequestEventDataCallback& Delegate);
 	void KeepReplay_Internal(const FString& ReplayName, const bool bKeep, const int32 UserIndex, const FKeepReplayCallback& Delegate);
@@ -568,9 +588,22 @@ protected:
 		FString FileFriendlyName;
 	};
 
-	bool ReadReplayInfo(const FString& StreamName, FLocalFileReplayInfo& OutReplayInfo) const;
+	bool ReadReplayInfo(const FString& StreamName, FLocalFileReplayInfo& OutReplayInfo) const
+	{
+		return ReadReplayInfo(StreamName, OutReplayInfo, EReadReplayInfoFlags::None);
+	}
+
+	bool ReadReplayInfo(const FString& StreamName, FLocalFileReplayInfo& OutReplayInfo, EReadReplayInfoFlags Flags) const;
+
+	UE_DEPRECATED(4.25, "Now takes a set of read flags")
 	bool ReadReplayInfo(FArchive& Archive, FLocalFileReplayInfo& OutReplayInfo) const;
+
+	bool ReadReplayInfo(FArchive& Archive, FLocalFileReplayInfo& OutReplayInfo, EReadReplayInfoFlags Flags) const;
+
+	UE_DEPRECATED(4.25, "Now takes a set of read flags")
 	bool ReadReplayInfo(FArchive& Archive, FLocalFileReplayInfo& OutReplayInfo, struct FLocalFileSerializationInfo& SerializationInfo) const;
+
+	bool ReadReplayInfo(FArchive& Archive, FLocalFileReplayInfo& OutReplayInfo, struct FLocalFileSerializationInfo& SerializationInfo, EReadReplayInfoFlags Flags) const;
 
 	bool WriteReplayInfo(const FString& StreamName, const FLocalFileReplayInfo& ReplayInfo);
 	bool WriteReplayInfo(FArchive& Archive, const FLocalFileReplayInfo& ReplayInfo);
@@ -630,14 +663,23 @@ protected:
 	mutable TMap<FString, TArray<uint8>> FileContentsCache;
 	const TArray<uint8>& GetCachedFileContents(const FString& Filename) const;
 
+	void UpdateCurrentReplayInfo(FLocalFileReplayInfo& ReplayInfo);
+
 public:
 	static const FString& GetDefaultDemoSavePath();
+
+	static const uint32 FileMagic;
+	static const uint32 MaxFriendlyNameLen;
+	static const uint32 LatestVersion;
 };
 
 class LOCALFILENETWORKREPLAYSTREAMING_API FLocalFileNetworkReplayStreamingFactory : public INetworkReplayStreamingFactory, public FTickableGameObject
 {
 public:
-	virtual TSharedPtr<INetworkReplayStreamer> CreateReplayStreamer();
+	virtual void ShutdownModule() override;
+
+	virtual TSharedPtr<INetworkReplayStreamer> CreateReplayStreamer() override;
+	virtual void Flush() override;
 
 	/** FTickableGameObject */
 	virtual void Tick(float DeltaTime) override;
@@ -646,5 +688,7 @@ public:
 	bool IsTickableWhenPaused() const override { return true; }
 
 protected:
+	bool HasAnyPendingRequests() const;
+
 	TArray<TSharedPtr<FLocalFileNetworkReplayStreamer>> LocalFileStreamers;
 };

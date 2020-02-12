@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 // AppleARKit
 #include "AppleARKitCamera.h"
@@ -40,6 +40,31 @@ FAppleARKitCamera::FAppleARKitCamera( ARCamera* InARCamera )
 		
 		case ARTrackingStateNormal:
 			TrackingQuality = EARTrackingQuality::OrientationAndPosition;
+			break;
+	}
+	
+	// tracking quality reason
+	switch (InARCamera.trackingStateReason)
+	{
+		default:
+		case ARTrackingStateReasonNone:
+			TrackingQualityReason = EARTrackingQualityReason::None;
+			break;
+
+		case ARTrackingStateReasonInitializing:
+			TrackingQualityReason = EARTrackingQualityReason::Initializing;
+			break;
+
+		case ARTrackingStateReasonRelocalizing:
+			TrackingQualityReason = EARTrackingQualityReason::Relocalizing;
+			break;
+
+		case ARTrackingStateReasonExcessiveMotion:
+			TrackingQualityReason = EARTrackingQualityReason::ExcessiveMotion;
+			break;
+
+		case ARTrackingStateReasonInsufficientFeatures:
+			TrackingQualityReason = EARTrackingQualityReason::InsufficientFeatures;
 			break;
 	}
 	

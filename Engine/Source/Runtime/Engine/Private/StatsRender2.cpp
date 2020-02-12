@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 /**
  *
@@ -529,29 +529,6 @@ static int32 RenderMemoryHeadings( class FCanvas* Canvas, const int32 X, const  
 	return Globals.GetFontHeight() + (Globals.GetFontHeight() / 3);
 }
 
-// @param bAutoType true: automatically choose GB/MB/KB/... false: always use MB for easier comparisons
-static FString GetMemoryString( const double Value, const bool bAutoType = true )
-{
-	if (bAutoType)
-	{
-		if (Value > 1024.0 * 1024.0 * 1024.0)
-		{
-			return FString::Printf( TEXT( "%.2f GB" ), float( Value / (1024.0 * 1024.0 * 1024.0) ) );
-		}
-		if (Value > 1024.0 * 1024.0)
-		{
-			return FString::Printf( TEXT( "%.2f MB" ), float( Value / (1024.0 * 1024.0) ) );
-		}
-		if (Value > 1024.0)
-		{
-			return FString::Printf( TEXT( "%.2f KB" ), float( Value / (1024.0) ) );
-		}
-		return FString::Printf( TEXT( "%.2f B" ), float( Value ) );
-	}
-
-	return FString::Printf( TEXT( "%.2f MB" ), float( Value / (1024.0 * 1024.0) ) );
-}
-
 static int32 RenderMemoryCounter( const FGameThreadStatsData& ViewData, const FComplexStatMessage& All, class FCanvas* Canvas, const int32 X, const int32 Y, const float Budget, const bool bIsBudgetIgnored )
 {
 	FPlatformMemory::EMemoryCounterRegion Region = FPlatformMemory::EMemoryCounterRegion(All.NameAndInfo.GetField<EMemoryRegion>());
@@ -603,7 +580,9 @@ static int32 RenderCounter( const FGameThreadStatsData& ViewData, const FComplex
 	const bool bDisplayAll = All.NameAndInfo.GetFlag(EStatMetaFlags::ShouldClearEveryFrame);
 
 	// Draw the label
-	Canvas->DrawShadowedString(X, Y, *ShortenName(*All.GetDescription()), Globals.StatFont, Globals.StatColor);
+	const FString StatDesc = All.GetDescription();
+	const FString StatDisplay = StatDesc.Len() == 0 ? All.GetShortName().GetPlainNameString() : StatDesc;
+	Canvas->DrawShadowedString(X, Y, *ShortenName(*StatDisplay), Globals.StatFont, Globals.StatColor);
 	int32 CurrX = X + Globals.AfterNameColumnOffset;
 
 	if( bDisplayAll )
@@ -790,6 +769,15 @@ static void RenderGroupedWithHierarchy(const FGameThreadStatsData& ViewData, FVi
 	for( int32 GroupIndex = 0; GroupIndex < ViewData.ActiveStatGroups.Num(); ++GroupIndex )
 	{
 		const FActiveStatGroupInfo& StatGroup = ViewData.ActiveStatGroups[GroupIndex];
+
+		// If the stat isn't enabled for this particular viewport, skip
+		FString StatGroupName = ViewData.GroupNames[GroupIndex].ToString();
+		StatGroupName.RemoveFromStart(TEXT("STATGROUP_"), ESearchCase::CaseSensitive);
+		if (!Viewport->GetClient() || !Viewport->GetClient()->IsStatEnabled(StatGroupName))
+		{
+			continue;
+		}
+
 		const bool bBudget = StatGroup.ThreadBudgetMap.Num() > 0;
 		const int32 NumThreadsBreakdown = bBudget ? StatGroup.FlatAggregateThreadBreakdown.Num() : 1;
 		TArray<FName> ThreadNames;
@@ -797,14 +785,6 @@ static void RenderGroupedWithHierarchy(const FGameThreadStatsData& ViewData, FVi
 
 		for(int32 ThreadBreakdownIdx = 0; ThreadBreakdownIdx < NumThreadsBreakdown; ++ThreadBreakdownIdx)
 		{
-			// If the stat isn't enabled for this particular viewport, skip
-			FString StatGroupName = ViewData.GroupNames[GroupIndex].ToString();
-			StatGroupName.RemoveFromStart(TEXT("STATGROUP_"), ESearchCase::CaseSensitive);
-			if (!Viewport->GetClient() || !Viewport->GetClient()->IsStatEnabled(StatGroupName))
-			{
-				continue;
-			}
-
 			// Render header.
 			const FName& GroupName = ViewData.GroupNames[GroupIndex];
 			const FString& GroupDesc = ViewData.GroupDescriptions[GroupIndex];
@@ -854,22 +834,22 @@ static void RenderGroupedWithHierarchy(const FGameThreadStatsData& ViewData, FVi
 		}
 		
 
-			// Render memory counters.
-			if (StatGroup.MemoryAggregate.Num())
-			{
-				Y += RenderMemoryHeadings(Canvas, X, Y);
+		// Render memory counters.
+		if (StatGroup.MemoryAggregate.Num())
+		{
+			Y += RenderMemoryHeadings(Canvas, X, Y);
 			RenderArrayOfStats(Canvas, X, Y, StatGroup.MemoryAggregate, ViewData, StatGroup.BudgetIgnoreStats, -1.f, RenderMemoryCounter);
-				Y += Globals.GetFontHeight();
-			}
-
-			// Render remaining counters.
-			if (StatGroup.CountersAggregate.Num())
-			{
-				Y += RenderCounterHeadings(Canvas, X, Y);
-			RenderArrayOfStats(Canvas, X, Y, StatGroup.CountersAggregate, ViewData, StatGroup.BudgetIgnoreStats, -1.f, RenderCounter);
-				Y += Globals.GetFontHeight();
-			}
+			Y += Globals.GetFontHeight();
 		}
+
+		// Render remaining counters.
+		if (StatGroup.CountersAggregate.Num())
+		{
+			Y += RenderCounterHeadings(Canvas, X, Y);
+			RenderArrayOfStats(Canvas, X, Y, StatGroup.CountersAggregate, ViewData, StatGroup.BudgetIgnoreStats, -1.f, RenderCounter);
+			Y += Globals.GetFontHeight();
+		}
+	}
 }
 
 /**

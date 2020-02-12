@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "AbcFile.h"
 #include "Misc/Paths.h"
@@ -16,10 +16,19 @@
 
 #include "HAL/Platform.h"
 
+
+#if PLATFORM_WINDOWS
+#include "Windows/AllowWindowsPlatformTypes.h"
+#endif
+
 THIRD_PARTY_INCLUDES_START
 #include <Alembic/AbcGeom/All.h>
 #include "Materials/MaterialInstance.h"
 THIRD_PARTY_INCLUDES_END
+
+#if PLATFORM_WINDOWS
+#include "Windows/HideWindowsPlatformTypes.h"
+#endif
 
 #define LOCTEXT_NAMESPACE "AbcFile"
 
@@ -115,12 +124,12 @@ EAbcImportError FAbcFile::Import(UAbcImportSettings* InImportSettings)
 
 	if (ImportSettings->ImportType == EAlembicImportType::StaticMesh)
 	{
-		EndFrameIndex = StartFrameIndex + 1;
+		EndFrameIndex = StartFrameIndex;
 	}
 
 	int32 FrameSpan = EndFrameIndex - StartFrameIndex;
 	// If Start==End or Start > End output error message due to invalid frame span
-	if (FrameSpan <= 0)
+	if (FrameSpan <= 0 && ImportSettings->ImportType != EAlembicImportType::StaticMesh)
 	{
 		TSharedRef<FTokenizedMessage> Message = FTokenizedMessage::Create(EMessageSeverity::Error, FText::Format(LOCTEXT("NoFramesForMeshObject", "Invalid frame range specified {0} - {1}."), FText::FromString(FString::FromInt(StartFrameIndex)), FText::FromString(FString::FromInt(EndFrameIndex))));
 		FAbcImportLogger::AddImportMessage(Message);
@@ -460,6 +469,16 @@ const float FAbcFile::GetImportLength() const
 const int32 FAbcFile::GetFramerate() const
 {
 	return FramesPerSecond;
+}
+
+int32 FAbcFile::GetFrameIndex(float Time)
+{
+	if (SecondsPerFrame > 0.f)
+	{
+		int32 FrameIndex = (int32) (Time / SecondsPerFrame);
+		return FMath::Clamp(FrameIndex, StartFrameIndex, EndFrameIndex);
+	}
+	return 0;
 }
 
 const FBoxSphereBounds& FAbcFile::GetArchiveBounds() const

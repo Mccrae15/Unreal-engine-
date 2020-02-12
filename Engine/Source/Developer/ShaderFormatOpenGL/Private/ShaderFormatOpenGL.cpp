@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 //
 
 #include "ShaderFormatOpenGL.h"
@@ -8,14 +8,10 @@
 #include "Interfaces/IShaderFormatModule.h"
 #include "ShaderCore.h"
 
-static FName NAME_GLSL_150(TEXT("GLSL_150")); 
 static FName NAME_GLSL_430(TEXT("GLSL_430"));
 static FName NAME_GLSL_ES2(TEXT("GLSL_ES2"));
 static FName NAME_GLSL_ES2_WEBGL(TEXT("GLSL_ES2_WEBGL"));
-static FName NAME_GLSL_150_ES2(TEXT("GLSL_150_ES2"));
-static FName NAME_GLSL_150_ES2_NOUB(TEXT("GLSL_150_ES2_NOUB"));
 static FName NAME_GLSL_150_ES3_1(TEXT("GLSL_150_ES31"));
-static FName NAME_GLSL_ES2_IOS(TEXT("GLSL_ES2_IOS"));
 static FName NAME_GLSL_310_ES_EXT(TEXT("GLSL_310_ES_EXT"));
 static FName NAME_GLSL_ES3_1_ANDROID(TEXT("GLSL_ES3_1_ANDROID"));
  
@@ -24,20 +20,15 @@ class FShaderFormatGLSL : public IShaderFormat
 	enum
 	{
 		/** Version for shader format, this becomes part of the DDC key. */
-		UE_SHADER_GLSL_VER = 78,
-		UE_SHADER_GLSL_ANDROID_VER = 78,
+		UE_SHADER_GLSL_VER = 88,
 	};
 
 	void CheckFormat(FName Format) const
 	{
-		check(	Format == NAME_GLSL_150 ||  
-				Format == NAME_GLSL_430 || 
+		check(	Format == NAME_GLSL_430 || 
 				Format == NAME_GLSL_ES2 || 
-				Format == NAME_GLSL_150_ES2 ||
-				Format == NAME_GLSL_150_ES2_NOUB ||
 				Format == NAME_GLSL_150_ES3_1 ||
                 Format == NAME_GLSL_ES2_WEBGL ||
-				Format == NAME_GLSL_ES2_IOS ||
 				Format == NAME_GLSL_310_ES_EXT ||
 				Format == NAME_GLSL_ES3_1_ANDROID
 			);
@@ -48,45 +39,14 @@ public:
 	{
 		CheckFormat(Format);
 		uint32 GLSLVersion = 0;
-		if (Format == NAME_GLSL_150)
-		{
-			GLSLVersion  = UE_SHADER_GLSL_VER;
-		}
-		else if (Format == NAME_GLSL_430)
+		if (Format == NAME_GLSL_430
+			|| Format == NAME_GLSL_ES2
+			|| Format == NAME_GLSL_150_ES3_1
+			|| Format == NAME_GLSL_ES2_WEBGL
+			|| Format == NAME_GLSL_310_ES_EXT
+			|| Format == NAME_GLSL_ES3_1_ANDROID)
 		{
 			GLSLVersion = UE_SHADER_GLSL_VER;
-		}
-		else if (Format == NAME_GLSL_ES2)
-		{
-			GLSLVersion = UE_SHADER_GLSL_ANDROID_VER;
-		}
-		else if (Format == NAME_GLSL_150_ES2)
-		{
-			GLSLVersion = UE_SHADER_GLSL_ANDROID_VER;
-		}
-		else if (Format == NAME_GLSL_150_ES3_1)
-		{
-			GLSLVersion = UE_SHADER_GLSL_ANDROID_VER;
-		}
-		else if (Format == NAME_GLSL_150_ES2_NOUB)
-		{
-			GLSLVersion = UE_SHADER_GLSL_ANDROID_VER;
-		}
-		else if (Format == NAME_GLSL_ES2_WEBGL)
-		{
-			GLSLVersion = UE_SHADER_GLSL_ANDROID_VER;
-		}
-		else if (Format == NAME_GLSL_ES2_IOS)
-		{
-			GLSLVersion = UE_SHADER_GLSL_ANDROID_VER;
-		}
-		else if (Format == NAME_GLSL_310_ES_EXT)
-		{
-			GLSLVersion = UE_SHADER_GLSL_ANDROID_VER;
-		}
-		else if (Format == NAME_GLSL_ES3_1_ANDROID)
-		{
-			GLSLVersion = UE_SHADER_GLSL_ANDROID_VER;
 		}
 		else
 		{
@@ -97,25 +57,17 @@ public:
 	}
 	virtual void GetSupportedFormats(TArray<FName>& OutFormats) const override
 	{
-		OutFormats.Add(NAME_GLSL_150);
 		OutFormats.Add(NAME_GLSL_430);
 		OutFormats.Add(NAME_GLSL_ES2);
 		OutFormats.Add(NAME_GLSL_ES2_WEBGL);
-		OutFormats.Add(NAME_GLSL_150_ES2);
 		OutFormats.Add(NAME_GLSL_150_ES3_1);
-		OutFormats.Add(NAME_GLSL_ES2_IOS);
 		OutFormats.Add(NAME_GLSL_310_ES_EXT);
-		OutFormats.Add(NAME_GLSL_150_ES2_NOUB);
 		OutFormats.Add(NAME_GLSL_ES3_1_ANDROID);
 	}
 
 	static GLSLVersion TranslateFormatNameToEnum(FName Format)
 	{
-		if (Format == NAME_GLSL_150)
-		{
-			return GLSL_150;
-		}
-		else if (Format == NAME_GLSL_430)
+		if (Format == NAME_GLSL_430)
 		{
 			return GLSL_430;
 		}
@@ -127,21 +79,9 @@ public:
 		{
 			return GLSL_ES2_WEBGL;
 		}
-		else if (Format == NAME_GLSL_ES2_IOS )
-		{
-			return GLSL_ES2_IOS;
-		}
 		else if (Format == NAME_GLSL_150_ES3_1)
 		{
 			return GLSL_150_ES3_1;
-		}
-		else if (Format == NAME_GLSL_150_ES2_NOUB)
-		{
-			return GLSL_150_ES2_NOUB;
-		}
-		else if (Format == NAME_GLSL_150_ES2)
-		{
-			return GLSL_150_ES2;
 		}
 		else if (Format == NAME_GLSL_310_ES_EXT)
 		{
@@ -168,14 +108,14 @@ public:
 		// the frontend will run the cross compiler
 		Frontend.CompileShader(Input, Output, WorkingDirectory, Version);
 
-		if (Version == GLSL_ES2 || Version == GLSL_150_ES2 || Version == GLSL_ES2_WEBGL)
+		if (Version == GLSL_ES2 || Version == GLSL_ES2_WEBGL)
 		{
 			if (Input.DumpDebugInfoPath != TEXT("") && IFileManager::Get().DirectoryExists(*Input.DumpDebugInfoPath))
 			{
 				FShaderCompilerInput ES2Input = Input;
 				ES2Input.DumpDebugInfoPath = ES2Input.DumpDebugInfoPath.Replace(
 					TEXT("GLSL_150_ES2"), 
-					(Version == GLSL_ES2 ? TEXT("GLSL_ES2") : Version == GLSL_150_ES2 ? TEXT("GLSL_ES2_150") : TEXT("GLSL_ES2_WEBGL")),
+					(Version == GLSL_ES2 ? TEXT("GLSL_ES2") : TEXT("GLSL_ES2_WEBGL")),
 					ESearchCase::CaseSensitive);
 				
 				if (!IFileManager::Get().DirectoryExists(*ES2Input.DumpDebugInfoPath))

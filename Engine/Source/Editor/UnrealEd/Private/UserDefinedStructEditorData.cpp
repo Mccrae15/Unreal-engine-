@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "UserDefinedStructure/UserDefinedStructEditorData.h"
 #include "Misc/ITransaction.h"
@@ -179,6 +179,12 @@ void UUserDefinedStructEditorData::RecreateDefaultInstance(FString* OutLog)
 {
 	UUserDefinedStruct* ScriptStruct = GetOwnerStruct();
 	ScriptStruct->DefaultStructInstance.Recreate(ScriptStruct);
+	ReinitializeDefaultInstance(OutLog);
+}
+
+void UUserDefinedStructEditorData::ReinitializeDefaultInstance(FString* OutLog)
+{
+	UUserDefinedStruct* ScriptStruct = GetOwnerStruct();
 	uint8* StructData = ScriptStruct->DefaultStructInstance.GetStructMemory();
 	ensure(ScriptStruct->DefaultStructInstance.IsValid() && ScriptStruct->DefaultStructInstance.GetStruct() == ScriptStruct);
 	if (ScriptStruct->DefaultStructInstance.IsValid() && StructData)
@@ -190,9 +196,9 @@ void UUserDefinedStructEditorData::RecreateDefaultInstance(FString* OutLog)
 
 		ScriptStruct->DefaultStructInstance.SetPackage(ScriptStruct->GetOutermost());
 
-		for (TFieldIterator<UProperty> It(ScriptStruct); It; ++It)
+		for (TFieldIterator<FProperty> It(ScriptStruct); It; ++It)
 		{
-			UProperty* Property = *It;
+			FProperty* Property = *It;
 			if (Property)
 			{
 				FGuid VarGuid = FStructureEditorUtils::GetGuidFromPropertyName(Property->GetFName());
@@ -200,7 +206,7 @@ void UUserDefinedStructEditorData::RecreateDefaultInstance(FString* OutLog)
 				FStructVariableDescription* VarDesc = VariablesDescriptions.FindByPredicate(FStructureEditorUtils::FFindByGuidHelper<FStructVariableDescription>(VarGuid));
 				if (VarDesc && !VarDesc->CurrentDefaultValue.IsEmpty())
 				{
-					if (!FBlueprintEditorUtils::PropertyValueFromString(Property, VarDesc->CurrentDefaultValue, StructData))
+					if (!FBlueprintEditorUtils::PropertyValueFromString(Property, VarDesc->CurrentDefaultValue, StructData, ScriptStruct))
 					{
 						const FString Message = FString::Printf(TEXT("Cannot parse value. Property: %s String: \"%s\" ")
 							, *Property->GetDisplayNameText().ToString()

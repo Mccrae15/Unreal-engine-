@@ -1,10 +1,9 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
 #include "CoreMinimal.h"
 #include "Containers/IndirectArray.h"
-#include "PackedNormal.h"
 #include "GPUSkinPublicDefs.h"
 #include "Components.h"
 #include "BoneIndices.h"
@@ -26,7 +25,7 @@ struct FSkeletalMeshVertIndexAndZ
 struct FSoftSkinBuildVertex
 {
 	FVector			Position;
-	FPackedNormal	TangentX,	// Tangent, U-direction
+	FVector			TangentX,	// Tangent, U-direction
 					TangentY,	// Binormal, V-direction
 					TangentZ;	// Normal
 	FVector2D		UVs[MAX_TEXCOORDS]; // UVs
@@ -52,6 +51,8 @@ struct FSkinnedMeshChunk
 	TArray<uint32> Indices;
 	/** If not empty, contains a map from bones referenced in this chunk to the skeleton. */
 	TArray<FBoneIndexType> BoneMap;
+	/** The parent original section index for which this chunk was generated. INDEX_NONE for parent the value of the parent for BONE child chunked*/
+	int32 ParentChunkSectionIndex;
 };
 
 /**
@@ -110,7 +111,7 @@ namespace SkeletalMeshTools
 	 * @param Chunks			Chunks to split. Upon return contains the results of splitting chunks.
 	 * @param MaxBonesPerChunk	The maximum number of bones a chunk may reference.
 	*/
-	void ChunkSkinnedVertices(TArray<FSkinnedMeshChunk*>& Chunks,int32 MaxBonesPerChunk);
+	void ChunkSkinnedVertices(TArray<FSkinnedMeshChunk*>& Chunks, TMap<uint32, TArray<FBoneIndexType>>& AlternateBoneIDs, int32 MaxBonesPerChunk);
 
 	void CalcBoneVertInfos(USkeletalMesh* SkeletalMesh, TArray<FBoneVertInfo>& Infos, bool bOnlyDominant);
 };

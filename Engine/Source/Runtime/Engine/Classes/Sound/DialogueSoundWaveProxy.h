@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -20,7 +20,6 @@ class UDialogueSoundWaveProxy : public USoundBase
 
 	USoundWave* SoundWave;
 	TArray<struct FSubtitleCue> Subtitles;
-	FWaveInstance* CurrentWaveInstance;
 
 public:
 	/** Returns whether the sound base is set up in a playable manner */

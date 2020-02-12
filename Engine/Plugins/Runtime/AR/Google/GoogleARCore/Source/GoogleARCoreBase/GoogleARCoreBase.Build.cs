@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 
 using System.IO;
@@ -20,12 +20,12 @@ namespace UnrealBuildTool.Rules
 			PublicIncludePathModuleNames.Add("TargetPlatform");
 
 			PublicDependencyModuleNames.AddRange(
-					new string[]
-					{
-						"HeadMountedDisplay",
-						"AugmentedReality",
-					}
-				);
+				new string[]
+				{
+					"HeadMountedDisplay",
+					"AugmentedReality",
+				}
+			);
 
 			PrivateDependencyModuleNames.AddRange(
 				new string[]
@@ -42,6 +42,7 @@ namespace UnrealBuildTool.Rules
 					"GoogleARCoreRendering",
 					"GoogleARCoreSDK",
 					"OpenGL",
+					"ProceduralMeshComponent",
 					"UElibPNG",
 					"zlib"
 				}
@@ -57,10 +58,21 @@ namespace UnrealBuildTool.Rules
 			if (Target.Platform == UnrealTargetPlatform.Android)
 			{
 				// Additional dependencies on android...
-				PrivateDependencyModuleNames.Add("Launch");
+				PrivateDependencyModuleNames.AddRange(
+					new string[]
+					{
+						"Launch",
+						"OpenGLDrv"
+					}
+				);
 
 				// Register Plugin Language
-				AdditionalPropertiesForReceipt.Add("AndroidPlugin", Path.Combine(ModuleDirectory, "GoogleARCoreBase_APL.xml"));
+				string PluginPath = Utils.MakePathRelativeTo(ModuleDirectory, Target.RelativeEnginePath);
+				AdditionalPropertiesForReceipt.Add("AndroidPlugin", Path.Combine(PluginPath, "GoogleARCoreBase_APL.xml"));
+				
+				// Needed for including "AndroidEGL.h"
+				string EnginePath = Path.GetFullPath(Target.RelativeEnginePath);
+				PrivateIncludePaths.Add(Path.Combine(EnginePath, "Source/Runtime/OpenGLDrv/Private"));
 			}
 
 			if (Target.bBuildEditor)
@@ -84,8 +96,6 @@ namespace UnrealBuildTool.Rules
 					RuntimeDependencies.Add("$(EngineDir)/Plugins/Runtime/AR/Google/GoogleARCore/Binaries/ThirdParty/Google/ARCoreImg/" + ExecName);
 				}
 			}
-			
-			bFasterWithoutUnity = false;
         }
     }
 }

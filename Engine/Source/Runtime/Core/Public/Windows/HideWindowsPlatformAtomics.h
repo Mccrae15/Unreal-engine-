@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #ifdef WINDOWS_PLATFORM_ATOMICS_GUARD
 	#undef WINDOWS_PLATFORM_ATOMICS_GUARD
@@ -18,4 +18,7 @@
 #undef InterlockedCompareExchange64
 #undef InterlockedIncrement64
 #undef InterlockedDecrement64
+#undef InterlockedAnd
+#undef InterlockedOr
+#undef InterlockedXor
 

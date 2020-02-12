@@ -1,14 +1,16 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "AnimNodes/AnimNode_BlendBoneByChannel.h"
 #include "AnimationRuntime.h"
 #include "Animation/AnimInstanceProxy.h"
+#include "Animation/AnimTrace.h"
 
 /////////////////////////////////////////////////////
 // FAnimNode_BlendBoneByChannel
 
 void FAnimNode_BlendBoneByChannel::Initialize_AnyThread(const FAnimationInitializeContext& Context)
 {
+	DECLARE_SCOPE_HIERARCHICAL_COUNTER_ANIMNODE(Initialize_AnyThread)
 	FAnimNode_Base::Initialize_AnyThread(Context);
 
 	A.Initialize(Context);
@@ -17,6 +19,7 @@ void FAnimNode_BlendBoneByChannel::Initialize_AnyThread(const FAnimationInitiali
 
 void FAnimNode_BlendBoneByChannel::CacheBones_AnyThread(const FAnimationCacheBonesContext& Context)
 {
+	DECLARE_SCOPE_HIERARCHICAL_COUNTER_ANIMNODE(CacheBones_AnyThread)
 	A.CacheBones(Context);
 	B.CacheBones(Context);
 
@@ -38,6 +41,7 @@ void FAnimNode_BlendBoneByChannel::CacheBones_AnyThread(const FAnimationCacheBon
 
 void FAnimNode_BlendBoneByChannel::Update_AnyThread(const FAnimationUpdateContext& Context)
 {
+	DECLARE_SCOPE_HIERARCHICAL_COUNTER_ANIMNODE(Update_AnyThread)
 	QUICK_SCOPE_CYCLE_COUNTER(STAT_FAnimNode_BlendBoneByChannel_Update);
 	GetEvaluateGraphExposedInputs().Execute(Context);
 
@@ -49,10 +53,13 @@ void FAnimNode_BlendBoneByChannel::Update_AnyThread(const FAnimationUpdateContex
 	{
 		B.Update(Context.FractionalWeight(InternalBlendAlpha));
 	}
+
+	TRACE_ANIM_NODE_VALUE(Context, TEXT("Alpha"), InternalBlendAlpha);
 }
 
 void FAnimNode_BlendBoneByChannel::Evaluate_AnyThread(FPoseContext& Output)
 {
+	DECLARE_SCOPE_HIERARCHICAL_COUNTER_ANIMNODE(Evaluate_AnyThread)
 	A.Evaluate(Output);
 
 	if (bBIsRelevant)
@@ -171,6 +178,7 @@ void FAnimNode_BlendBoneByChannel::Evaluate_AnyThread(FPoseContext& Output)
 
 void FAnimNode_BlendBoneByChannel::GatherDebugData(FNodeDebugData& DebugData)
 {
+	DECLARE_SCOPE_HIERARCHICAL_COUNTER_ANIMNODE(GatherDebugData)
 	FString DebugLine = DebugData.GetNodeName(this);
 	DebugLine += FString::Printf(TEXT("(Alpha: %.1f%%)"), InternalBlendAlpha * 100);
 	DebugData.AddDebugItem(DebugLine);

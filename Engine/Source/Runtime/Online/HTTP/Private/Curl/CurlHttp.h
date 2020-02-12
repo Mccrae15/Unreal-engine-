@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -8,16 +8,17 @@
 #include "IHttpThreadedRequest.h"
 #include "Containers/Queue.h"
 #include "GenericPlatform/HttpRequestPayload.h"
+#include "HAL/ThreadSafeBool.h"
 
 class FCurlHttpResponse;
 
 #if WITH_LIBCURL
-#if PLATFORM_WINDOWS
+#if PLATFORM_WINDOWS || PLATFORM_HOLOLENS
 #include "Windows/WindowsHWrapper.h"
 #include "Windows/AllowWindowsPlatformTypes.h"
 #endif
 	#include "curl/curl.h"
-#if PLATFORM_WINDOWS
+#if PLATFORM_WINDOWS || PLATFORM_HOLOLENS
 #include "Windows/HideWindowsPlatformTypes.h"
 #endif
 
@@ -179,8 +180,8 @@ public:
 	 */
 	inline void MarkAsCompleted(CURLcode InCurlCompletionResult)
 	{
-		bCurlRequestCompleted = true;
 		CurlCompletionResult = InCurlCompletionResult;
+		bCurlRequestCompleted = true;
 	}
 	
 	/** 
@@ -223,6 +224,25 @@ private:
 	 * @return number of bytes actually written to buffer, or CURL_READFUNC_ABORT to abort the operation
 	 */
 	size_t UploadCallback(void* Ptr, size_t SizeInBlocks, size_t BlockSizeInBytes);
+
+	/**
+	 * Static callback to be used as seek function (CURLOPT_SEEKFUNCTION), will dispatch the call to proper instance
+	 *
+	 * @param UserData data we associated with request (will be a pointer to FCurlHttpRequest instance)
+	 * @param Offset offset from Origin to seek to
+	 * @param Origin where to seek to. Can be SEEK_SET, SEEK_CUR, or SEEK_END
+	 * @return CURL_SEEKFUNC_OK if the seek was successful, CURL_SEEKFUNC_FAIL if the request should be failed due to inability to seek, or CURL_SEEKFUNC_CANTSEEK to allow curl to try to workaround the inability to seek
+	 */
+	static int StaticSeekCallback(void* UserData, curl_off_t Offset, int Origin);
+
+	/**
+	 * Method called when libcurl wants us to seek to a position in the stream (see CURLOPT_SEEKFUNCTION)
+	 *
+	 * @param Offset offset from Origin to seek to
+	 * @param Origin where to seek to. Can be SEEK_SET, SEEK_CUR, or SEEK_END
+	 * @return CURL_SEEKFUNC_OK if the seek was successful, CURL_SEEKFUNC_FAIL if the request should be failed due to inability to seek, or CURL_SEEKFUNC_CANTSEEK to allow curl to try to workaround the inability to seek
+	 */
+	int SeekCallback(curl_off_t Offset, int Origin);
 
 	/**
 	 * Static callback to be used as header function (CURLOPT_HEADERFUNCTION), will dispatch the call to proper instance
@@ -328,7 +348,7 @@ private:
 	/** Set to true if request has been canceled */
 	bool			bCanceled;
 	/** Set to true when request has been completed */
-	bool			bCurlRequestCompleted;
+	FThreadSafeBool	bCurlRequestCompleted;
 	/** Set to true when request has "30* Multiple Choices" (e.g. 301 Moved Permanently, 302 temporary redirect, 308 Permanent Redirect, etc.) */
 	bool			bRedirected;
 	/** Set to true if request failed to be added to curl multi */
@@ -337,8 +357,10 @@ private:
 	CURLcode		CurlCompletionResult;
 	/** The response object which we will use to pair with this request */
 	TSharedPtr<class FCurlHttpResponse,ESPMode::ThreadSafe> Response;
-	/** BYTE array payload to use with the request. Typically for a POST */
+	/** Payload to use with the request. Typically for POST, PUT, or PATCH */
 	TUniquePtr<FRequestPayload> RequestPayload;
+	/** Is the request payload seekable? */
+	bool bIsRequestPayloadSeekable = false;
 	/** Current status of request being processed */
 	EHttpRequestStatus::Type CompletionStatus;
 	/** Mapping of header section to values. */
@@ -351,16 +373,18 @@ private:
 	bool bAnyHttpActivity;
 	/** Number of bytes sent already */
 	FThreadSafeCounter BytesSent;
+	/** Total number of bytes sent already (includes data re-sent by seek attempts) */
+	FThreadSafeCounter TotalBytesSent;
 	/** Last bytes read reported to progress delegate */
 	int32 LastReportedBytesRead;
 	/** Last bytes sent reported to progress delegate */
 	int32 LastReportedBytesSent;
 	/** Number of info channel messages to cache */
-	static int32 NumberOfInfoMessagesToCache;
+	static const constexpr int32 NumberOfInfoMessagesToCache = 50;
 	/** Index of least recently cached message */
 	int32 LeastRecentlyCachedInfoMessageIndex;
 	/** Cache of info messages from libcurl */
-	TArray<FString> InfoMessageCache;
+	TArray<FString, TFixedAllocator<NumberOfInfoMessagesToCache>> InfoMessageCache;
 };
 
 /**

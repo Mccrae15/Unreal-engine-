@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 
 #include "SMorphTargetViewer.h"
@@ -330,6 +330,7 @@ void SMorphTargetViewer::Construct(const FArguments& InArgs, const TSharedRef<IP
 
 	SkeletalMesh = InPreviewScene->GetPreviewMeshComponent()->SkeletalMesh;
 	InPreviewScene->RegisterOnPreviewMeshChanged( FOnPreviewMeshChanged::CreateSP( this, &SMorphTargetViewer::OnPreviewMeshChanged ) );
+	InPreviewScene->RegisterOnMorphTargetsChanged(FSimpleDelegate::CreateSP(this, &SMorphTargetViewer::OnMorphTargetsChanged));
 	OnPostUndo.Add(FSimpleDelegate::CreateSP(this, &SMorphTargetViewer::OnPostUndo));
 
 	const FText SkeletalMeshName = SkeletalMesh ? FText::FromString( SkeletalMesh->GetName() ) : LOCTEXT( "MorphTargetMeshNameLabel", "No Skeletal Mesh Present" );
@@ -397,6 +398,11 @@ void SMorphTargetViewer::OnPreviewMeshChanged(class USkeletalMesh* OldPreviewMes
 	CreateMorphTargetList( NameFilterBox->GetText().ToString() );
 }
 
+void SMorphTargetViewer::OnMorphTargetsChanged()
+{
+	CreateMorphTargetList(NameFilterBox->GetText().ToString());
+}
+
 void SMorphTargetViewer::OnFilterTextChanged( const FText& SearchText )
 {
 	FilterText = SearchText;
@@ -431,7 +437,7 @@ TSharedPtr<SWidget> SMorphTargetViewer::OnGetContextMenuContent() const
 		FUIAction Action;
 
 		{
-			Action.ExecuteAction = FExecuteAction::CreateSP(this, &SMorphTargetViewer::OnDeleteMorphTargets);
+			Action.ExecuteAction = FExecuteAction::CreateSP(const_cast<SMorphTargetViewer*>(this), &SMorphTargetViewer::OnDeleteMorphTargets);
 			Action.CanExecuteAction = FCanExecuteAction::CreateSP(this, &SMorphTargetViewer::CanPerformDelete);
 			const FText Label = LOCTEXT("DeleteMorphTargetButtonLabel", "Delete");
 			const FText ToolTipText = LOCTEXT("DeleteMorphTargetButtonTooltip", "Deletes the selected morph targets.");
@@ -439,7 +445,7 @@ TSharedPtr<SWidget> SMorphTargetViewer::OnGetContextMenuContent() const
 		}
 
 		{
-			Action.ExecuteAction = FExecuteAction::CreateSP(this, &SMorphTargetViewer::OnCopyMorphTargetNames);
+			Action.ExecuteAction = FExecuteAction::CreateSP(const_cast<SMorphTargetViewer*>(this), &SMorphTargetViewer::OnCopyMorphTargetNames);
 			Action.CanExecuteAction = nullptr;
 			const FText Label = LOCTEXT("CopyMorphTargetNamesButtonLabel", "Copy Names");
 			const FText ToolTipText = LOCTEXT("CopyMorphTargetNamesButtonTooltip", "Copy the names of selected morph targets to clipboard");

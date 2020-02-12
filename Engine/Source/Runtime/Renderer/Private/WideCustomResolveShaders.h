@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -6,6 +6,7 @@
 #include "ShaderParameters.h"
 #include "Shader.h"
 #include "GlobalShader.h"
+#include "ShaderParameterUtils.h"
 
 class FWideCustomResolveVS : public FGlobalShader
 {
@@ -17,15 +18,9 @@ public:
 	{
 	}
 
-	virtual bool Serialize(FArchive& Ar) override
-	{
-		bool bShaderHasOutdatedParameters = FGlobalShader::Serialize(Ar);
-		return bShaderHasOutdatedParameters;
-	}
-
 	static bool ShouldCompilePermutation(const FGlobalShaderPermutationParameters& Parameters)
 	{
-		return IsFeatureLevelSupported(Parameters.Platform, ERHIFeatureLevel::SM5) || (Parameters.Platform == SP_PCD3D_ES2);
+		return IsFeatureLevelSupported(Parameters.Platform, ERHIFeatureLevel::SM5);
 	}
 };
 
@@ -49,27 +44,18 @@ public:
 		ResolveOrigin.Bind(Initializer.ParameterMap, TEXT("ResolveOrigin"));
 	}
 
-	virtual bool Serialize(FArchive& Ar) override
-	{
-		bool bShaderHasOutdatedParameters = FGlobalShader::Serialize(Ar);
-		Ar << Tex;
-		Ar << FMaskTex;
-		Ar << ResolveOrigin;
-		return bShaderHasOutdatedParameters;
-	}
-
 	static bool ShouldCompilePermutation(const FGlobalShaderPermutationParameters& Parameters)
 	{
 		return IsFeatureLevelSupported(Parameters.Platform, ERHIFeatureLevel::SM5);
 	}
 
-	void SetParameters(FRHICommandList& RHICmdList, FTextureRHIParamRef Texture2DMS, FTextureRHIParamRef FMaskTexture2D, FIntPoint Origin)
+	void SetParameters(FRHICommandList& RHICmdList, FRHITexture* Texture2DMS, FRHIShaderResourceView* FmaskSRV, FIntPoint Origin)
 	{
-		FPixelShaderRHIParamRef PixelShaderRHI = GetPixelShader();
+		FRHIPixelShader* PixelShaderRHI = RHICmdList.GetBoundPixelShader();
 		SetTextureParameter(RHICmdList, PixelShaderRHI, Tex, Texture2DMS);
 		if (MSAASampleCount > 0)
 		{
-			SetTextureParameter(RHICmdList, PixelShaderRHI, FMaskTex, FMaskTexture2D);
+			SetSRVParameter(RHICmdList, PixelShaderRHI, FMaskTex, FmaskSRV);
 		}
 		SetShaderValue(RHICmdList, PixelShaderRHI, ResolveOrigin, FVector2D(Origin));
 	}
@@ -83,9 +69,9 @@ public:
 	}
 
 protected:
-	FShaderResourceParameter Tex;
-	FShaderResourceParameter FMaskTex;
-	FShaderParameter ResolveOrigin;
+	LAYOUT_FIELD(FShaderResourceParameter, Tex);
+	LAYOUT_FIELD(FShaderResourceParameter, FMaskTex);
+	LAYOUT_FIELD(FShaderParameter, ResolveOrigin);
 };
 
 extern void ResolveFilterWide(
@@ -93,7 +79,8 @@ extern void ResolveFilterWide(
 	FGraphicsPipelineStateInitializer& GraphicsPSOInit,
 	const ERHIFeatureLevel::Type CurrentFeatureLevel,
 	const FTextureRHIRef& SrcTexture,
-	const FTexture2DRHIRef& FMaskTexture,
+	FRHIShaderResourceView* FmaskSRV,
 	const FIntPoint& SrcOrigin,
 	int32 NumSamples,
-	int32 WideFilterWidth);
+	int32 WideFilterWidth,
+	FRHIVertexBuffer* DummyVB);

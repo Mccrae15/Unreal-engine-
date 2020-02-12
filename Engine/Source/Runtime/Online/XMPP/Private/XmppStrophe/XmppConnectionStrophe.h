@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -31,7 +31,7 @@ class FXmppConnectionStrophe
 public:
 	// FXmppConnectionStrophe
 	explicit FXmppConnectionStrophe();
-	virtual ~FXmppConnectionStrophe() = default;
+	virtual ~FXmppConnectionStrophe();
 	FXmppConnectionStrophe(const FXmppConnectionStrophe& Other) = delete;
 	FXmppConnectionStrophe(FXmppConnectionStrophe&& Other) = delete;
 	FXmppConnectionStrophe& operator=(const FXmppConnectionStrophe& Other) = delete;
@@ -51,14 +51,18 @@ public:
 	virtual const FXmppUserJid& GetUserJid() const override;
 
 	virtual FOnXmppLoginComplete& OnLoginComplete() override { return OnXmppLoginCompleteDelegate; }
-	virtual FOnXmppLogingChanged& OnLoginChanged() override { return OnXmppLogingChangedDelegate; }
+	virtual FOnXmppLoginChanged& OnLoginChanged() override { return OnXmppLoginChangedDelegate; }
 	virtual FOnXmppLogoutComplete& OnLogoutComplete() override { return OnXmppLogoutCompleteDelegate; }
+	virtual FOnXmppStanzaSent& OnStanzaSent() override { return OnXmppStanzaSentDelegate; }
+	virtual FOnXmppStanzaReceived& OnStanzaReceived() override { return OnXmppStanzaReceivedDelegate; }
 
 	virtual IXmppMessagesPtr Messages() override;
 	virtual IXmppMultiUserChatPtr MultiUserChat() override;
 	virtual IXmppPresencePtr Presence() override;
 	virtual IXmppChatPtr PrivateChat() override;
 	virtual IXmppPubSubPtr PubSub() override;
+
+	virtual void DumpState() const override;
 
 	// FTickerObjectBase
 	virtual bool Tick(float DeltaTime) override;
@@ -81,6 +85,10 @@ public:
 
 	/** Get the MUC domain that was saved right before we connected */
 	const FString& GetMucDomain() const { return MucDomain; }
+
+private:
+	/** Notify that Login was triggered again while already connected */
+	void ReconnectLogin();
 
 protected:
 	/** XMPP Context to use across this connection */
@@ -112,8 +120,12 @@ protected:
 
 	/** Login status delegates */
 	FOnXmppLoginComplete OnXmppLoginCompleteDelegate;
-	FOnXmppLogingChanged OnXmppLogingChangedDelegate;
+	FOnXmppLoginChanged OnXmppLoginChangedDelegate;
 	FOnXmppLogoutComplete OnXmppLogoutCompleteDelegate;
+
+	/** Message Status delegates */
+	FOnXmppStanzaReceived OnXmppStanzaReceivedDelegate;
+	FOnXmppStanzaSent OnXmppStanzaSentDelegate;
 
 	/** XMPP Implementation Shared Pointers */
 	FXmppMessagesStrophePtr MessagesStrophe;

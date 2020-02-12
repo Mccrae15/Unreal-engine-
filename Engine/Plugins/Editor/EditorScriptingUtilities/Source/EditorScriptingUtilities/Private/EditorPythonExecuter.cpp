@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "EditorPythonExecuter.h"
 
@@ -153,7 +153,7 @@ namespace InternalEditorPythonRunner
 			}
 
 			// if we are here the editor is ready.
-			if (!GIsRequestingExit && !bIsRunning && GWorld && GEngine && GEditor && DeltaTime > 0 && GLog)
+			if (!IsEngineExitRequested() && !bIsRunning && GWorld && GEngine && GEditor && DeltaTime > 0 && GLog)
 			{
 				if (!FileName.IsEmpty())
 				{
@@ -164,7 +164,7 @@ namespace InternalEditorPythonRunner
 						bIsRunning = true;
 
 						// Try and run the command
-						if (!GEngine->Exec(GWorld, *FString::Printf(TEXT("PY \"%s\""), *FileName), *GLog))
+						if (!GEngine->Exec(GWorld, *FString::Printf(TEXT("PY %s"), *FileName), *GLog))
 						{
 							UE_LOG(LogEditorPythonExecuter, Error, TEXT("-ExecutePythonScript cannot be used without a valid Python Script Plugin. Ensure the plugin is enabled and wasn't compiled with Python support stubbed out."));
 						}

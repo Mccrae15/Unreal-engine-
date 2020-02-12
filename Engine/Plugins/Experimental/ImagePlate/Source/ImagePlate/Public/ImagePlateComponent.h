@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -114,18 +114,13 @@ public:
 
 #if WITH_EDITOR
 	/** Access the property relating to this component's image plate */
-	static UStructProperty* GetImagePlateProperty();
+	static FStructProperty* GetImagePlateProperty();
 #endif
 
 	/**
 	 * Finds a view target that this image plate is presenting to
 	 */
 	AActor* FindViewTarget() const;
-
-	/**
-	 * Calculate projection matrices from a specified view target
-	 */
-	static void GetProjectionMatricesFromViewTarget(AActor* InViewTarget, FMatrix& OutViewProjectionMatrix, FMatrix& OutInvViewProjectionMatrix);
 
 protected:
 

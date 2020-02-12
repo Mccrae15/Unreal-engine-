@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 /*=============================================================================
 	AnimEncoding_ConstantKeyLerp.cpp: Skeletal mesh animation functions.
@@ -7,23 +7,26 @@
 #include "AnimEncoding_ConstantKeyLerp.h"
 #include "Serialization/MemoryReader.h"
 #include "Serialization/MemoryWriter.h"
+#if INTEL_ISPC
+#include "AnimEncoding_ConstantKeyLerp.ispc.generated.h"
+#endif
 
 /**
  * Handles the ByteSwap of compressed rotation data on import
  *
- * @param	Seq				The UAnimSequence container.
+ * @param	CompressedData		The compressed animation data being operated on.
  * @param	MemoryReader	The FMemoryReader to read from.
  * @param	TrackData		The compressed data stream.
  * @param	NumKeys			The number of keys present in the stream.
  */
 void AEFConstantKeyLerpShared::ByteSwapRotationIn(
-	UAnimSequence& Seq, 
+	FUECompressedAnimData& CompressedData,
 	FMemoryReader& MemoryReader,
 	uint8*& TrackData,
 	int32 NumKeys)
 {
 	// Calculate the effective compression (in a track with only one key, it's always stored lossless)
-	const int32 EffectiveFormat = (NumKeys == 1) ? ACF_Float96NoW : (int32) Seq.RotationCompressionFormat;
+	const int32 EffectiveFormat = (NumKeys == 1) ? ACF_Float96NoW : (int32)CompressedData.RotationCompressionFormat;
 	const int32 KeyComponentSize = CompressedRotationStrides[EffectiveFormat];
 	const int32 KeyNumComponents = CompressedRotationNum[EffectiveFormat];
 
@@ -49,19 +52,19 @@ void AEFConstantKeyLerpShared::ByteSwapRotationIn(
 /**
  * Handles the ByteSwap of compressed translation data on import
  *
- * @param	Seq				The UAnimSequence container.
+ * @param	CompressedData	The compressed animation data being operated on.
  * @param	MemoryReader	The FMemoryReader to read from.
  * @param	TrackData		The compressed data stream.
  * @param	NumKeys			The number of keys present in the stream.
  */
 void AEFConstantKeyLerpShared::ByteSwapTranslationIn(
-	UAnimSequence& Seq, 
+	FUECompressedAnimData& CompressedData,
 	FMemoryReader& MemoryReader,
 	uint8*& TrackData,
 	int32 NumKeys)
 {
 	// Calculate the effective compression (in a track with only one key, it's always stored lossless)
-	const int32 EffectiveFormat = (NumKeys == 1) ? ACF_None : (int32) Seq.TranslationCompressionFormat;
+	const int32 EffectiveFormat = (NumKeys == 1) ? ACF_None : (int32) CompressedData.TranslationCompressionFormat;
 	const int32 KeyComponentSize = CompressedTranslationStrides[EffectiveFormat];
 	const int32 KeyNumComponents = CompressedTranslationNum[EffectiveFormat];
 
@@ -87,19 +90,19 @@ void AEFConstantKeyLerpShared::ByteSwapTranslationIn(
 /**
  * Handles the ByteSwap of compressed Scale data on import
  *
- * @param	Seq				The UAnimSequence container.
+ * @param	CompressedData	The compressed animation data being operated on.
  * @param	MemoryReader	The FMemoryReader to read from.
  * @param	TrackData		The compressed data stream.
  * @param	NumKeys			The number of keys present in the stream.
  */
 void AEFConstantKeyLerpShared::ByteSwapScaleIn(
-	UAnimSequence& Seq, 
+	FUECompressedAnimData& CompressedData,
 	FMemoryReader& MemoryReader,
 	uint8*& TrackData,
 	int32 NumKeys)
 {
 	// Calculate the effective compression (in a track with only one key, it's always stored lossless)
-	const int32 EffectiveFormat = (NumKeys == 1) ? ACF_None : (int32) Seq.ScaleCompressionFormat;
+	const int32 EffectiveFormat = (NumKeys == 1) ? ACF_None : (int32)CompressedData.ScaleCompressionFormat;
 	const int32 KeyComponentSize = CompressedScaleStrides[EffectiveFormat];
 	const int32 KeyNumComponents = CompressedScaleNum[EffectiveFormat];
 
@@ -124,19 +127,19 @@ void AEFConstantKeyLerpShared::ByteSwapScaleIn(
 /**
  * Handles the ByteSwap of compressed rotation data on export
  *
- * @param	Seq				The UAnimSequence container.
+ * @param	CompressedData	The compressed animation data being operated on.
  * @param	MemoryWriter	The FMemoryWriter to write to.
  * @param	TrackData		The compressed data stream.
  * @param	NumKeys			The number of keys to write to the stream.
  */
 void AEFConstantKeyLerpShared::ByteSwapRotationOut(
-	UAnimSequence& Seq, 
+	FUECompressedAnimData& CompressedData,
 	FMemoryWriter& MemoryWriter,
 	uint8*& TrackData,
 	int32 NumKeys)
 {
 	// Calculate the effective compression (in a track with only one key, it's always stored lossless)
-	const int32 EffectiveFormat = (NumKeys == 1) ? ACF_Float96NoW : (int32) Seq.RotationCompressionFormat;
+	const int32 EffectiveFormat = (NumKeys == 1) ? ACF_Float96NoW : (int32) CompressedData.RotationCompressionFormat;
 	const int32 KeyComponentSize = CompressedRotationStrides[EffectiveFormat];
 	const int32 KeyNumComponents = CompressedRotationNum[EffectiveFormat];
 
@@ -162,19 +165,19 @@ void AEFConstantKeyLerpShared::ByteSwapRotationOut(
 /**
  * Handles the ByteSwap of compressed translation data on export
  *
- * @param	Seq				The UAnimSequence container.
+ * @param	CompressedData	The compressed animation data being operated on.
  * @param	MemoryWriter	The FMemoryWriter to write to.
  * @param	TrackData		The compressed data stream.
  * @param	NumKeys			The number of keys to write to the stream.
  */
 void AEFConstantKeyLerpShared::ByteSwapTranslationOut(
-	UAnimSequence& Seq, 
+	FUECompressedAnimData& CompressedData,
 	FMemoryWriter& MemoryWriter,
 	uint8*& TrackData,
 	int32 NumKeys)
 {
 	// Calculate the effective compression (in a track with only one key, it's always stored lossless)
-	const int32 EffectiveFormat = (NumKeys == 1) ? ACF_None : (int32) Seq.TranslationCompressionFormat;
+	const int32 EffectiveFormat = (NumKeys == 1) ? ACF_None : (int32) CompressedData.TranslationCompressionFormat;
 	const int32 KeyComponentSize = CompressedTranslationStrides[EffectiveFormat];
 	const int32 KeyNumComponents = CompressedTranslationNum[EffectiveFormat];
 
@@ -200,19 +203,19 @@ void AEFConstantKeyLerpShared::ByteSwapTranslationOut(
 /**
  * Handles the ByteSwap of compressed Scale data on export
  *
- * @param	Seq				The UAnimSequence container.
+ * @param	CompressedData	The compressed animation data being operated on.
  * @param	MemoryWriter	The FMemoryWriter to write to.
  * @param	TrackData		The compressed data stream.
  * @param	NumKeys			The number of keys to write to the stream.
  */
 void AEFConstantKeyLerpShared::ByteSwapScaleOut(
-	UAnimSequence& Seq, 
+	FUECompressedAnimData& CompressedData,
 	FMemoryWriter& MemoryWriter,
 	uint8*& TrackData,
 	int32 NumKeys)
 {
 	// Calculate the effective compression (in a track with only one key, it's always stored lossless)
-	const int32 EffectiveFormat = (NumKeys == 1) ? ACF_None : (int32) Seq.ScaleCompressionFormat;
+	const int32 EffectiveFormat = (NumKeys == 1) ? ACF_None : (int32) CompressedData.ScaleCompressionFormat;
 	const int32 KeyComponentSize = CompressedScaleStrides[EffectiveFormat];
 	const int32 KeyNumComponents = CompressedScaleNum[EffectiveFormat];
 
@@ -235,59 +238,191 @@ void AEFConstantKeyLerpShared::ByteSwapScaleOut(
 	}
 }
 
-#if USE_SEGMENTING_CONTEXT
-void AEFConstantKeyLerpShared::CreateEncodingContext(FAnimSequenceDecompressionContext& DecompContext)
-{
-	checkSlow(DecompContext.EncodingContext == nullptr);
-	DecompContext.EncodingContext = new FAEConstantKeyLerpContext(DecompContext);
-}
+#if USE_ANIMATION_CODEC_BATCH_SOLVER
 
-void AEFConstantKeyLerpShared::ReleaseEncodingContext(FAnimSequenceDecompressionContext& DecompContext)
+/**
+ * Decompress all requested rotation components from an Animation Sequence
+ *
+ * @param	Atoms			The FTransform array to fill in.
+ * @param	DesiredPairs	Array of requested bone information
+ * @param	DecompContext	The decompression context to use.
+ */
+template<int32 FORMAT>
+inline void AEFConstantKeyLerp<FORMAT>::GetPoseRotations(
+	TArrayView<FTransform>& Atoms,
+	const BoneTrackArray& DesiredPairs,
+	FAnimSequenceDecompressionContext& DecompContext)
 {
-	checkSlow(DecompContext.EncodingContext != nullptr);
-	delete DecompContext.EncodingContext;
-	DecompContext.EncodingContext = nullptr;
-}
+	const int32 PairCount = DesiredPairs.Num();
 
-FAEConstantKeyLerpContext::FAEConstantKeyLerpContext(const FAnimSequenceDecompressionContext& DecompContext)
-	: KeyFrameSize(-1)
-{
-}
-
-void FAEConstantKeyLerpContext::Seek(const FAnimSequenceDecompressionContext& DecompContext, float SampleAtTime)
-{
-	if (KeyFrameSize < 0)
+	if (INTEL_ISPC)
 	{
-		// First update, cache some stuff
-		UniformKeyOffsets.Empty(DecompContext.NumTracks * DecompContext.NumStreamsPerTrack);
-		UniformKeyOffsets.AddUninitialized(DecompContext.NumTracks * DecompContext.NumStreamsPerTrack);
+#if INTEL_ISPC
+		const FUECompressedAnimData& AnimData = static_cast<const FUECompressedAnimData&>(DecompContext.CompressedAnimData);
 
-		const int32 PackedTranslationSize0 = CompressedTranslationStrides[DecompContext.Segment0->TranslationCompressionFormat] * CompressedTranslationNum[DecompContext.Segment0->TranslationCompressionFormat];
-		const int32 PackedRotationSize0 = CompressedRotationStrides[DecompContext.Segment0->RotationCompressionFormat] * CompressedRotationNum[DecompContext.Segment0->RotationCompressionFormat];
-		const int32 PackedScaleSize0 = DecompContext.bHasScale ? (CompressedScaleStrides[DecompContext.Segment0->ScaleCompressionFormat] * CompressedScaleNum[DecompContext.Segment0->ScaleCompressionFormat]) : 0;
-
-		int32 KeyOffset = 0;
-		for (int32 TrackIndex = 0; TrackIndex < DecompContext.NumTracks; ++TrackIndex)
+		ispc::GetConstantKeyLerpPoseRotations(
+			(ispc::FTransform*)&Atoms[0],
+			(ispc::BoneTrackPair*)&DesiredPairs[0],
+			AnimData.CompressedTrackOffsets.GetData(),
+			AnimData.CompressedByteStream.GetData(),
+			DecompContext.SequenceLength,
+			DecompContext.RelativePos,
+			(uint8)DecompContext.Interpolation,
+			FORMAT,
+			PairCount);
+#endif
+	}
+	else
+	{
+		for (int32 PairIndex = 0; PairIndex < PairCount; ++PairIndex)
 		{
-			const FTrivialTrackFlags TrackFlags(DecompContext.TrackFlags[TrackIndex]);
+			const BoneTrackPair& Pair = DesiredPairs[PairIndex];
+			const int32 TrackIndex = Pair.TrackIndex;
+			const int32 AtomIndex = Pair.AtomIndex;
+			FTransform& BoneAtom = Atoms[AtomIndex];
 
-			UniformKeyOffsets[DecompContext.GetTranslationValueOffset(TrackIndex)] = KeyOffset;
-			KeyOffset += TrackFlags.IsTranslationTrivial() ? 0 : PackedTranslationSize0;
+			// call the decoder directly (not through the vtable)
+			AEFConstantKeyLerp<FORMAT>::GetBoneAtomRotation(BoneAtom, DecompContext, TrackIndex);
+		}
+	}
+}
 
-			UniformKeyOffsets[DecompContext.GetRotationValueOffset(TrackIndex)] = KeyOffset;
-			KeyOffset += TrackFlags.IsRotationTrivial() ? 0 : PackedRotationSize0;
+/**
+ * Decompress all requested translation components from an Animation Sequence
+ *
+ * @param	Atoms			The FTransform array to fill in.
+ * @param	DesiredPairs	Array of requested bone information
+ * @param	DecompContext	The decompression context to use.
+ */
+template<int32 FORMAT>
+inline void AEFConstantKeyLerp<FORMAT>::GetPoseTranslations(
+	TArrayView<FTransform>& Atoms,
+	const BoneTrackArray& DesiredPairs,
+	FAnimSequenceDecompressionContext& DecompContext)
+{
+	const int32 PairCount = DesiredPairs.Num();
 
-			if (DecompContext.bHasScale)
-			{
-				UniformKeyOffsets[DecompContext.GetScaleValueOffset(TrackIndex)] = KeyOffset;
-				KeyOffset += TrackFlags.IsScaleTrivial() ? 0 : PackedScaleSize0;
-			}
+	if (INTEL_ISPC)
+	{
+#if INTEL_ISPC
+		const FUECompressedAnimData& AnimData = static_cast<const FUECompressedAnimData&>(DecompContext.CompressedAnimData);
+
+		ispc::GetConstantKeyLerpPoseTranslations(
+			(ispc::FTransform*)&Atoms[0],
+			(ispc::BoneTrackPair*)&DesiredPairs[0],
+			AnimData.CompressedTrackOffsets.GetData(),
+			AnimData.CompressedByteStream.GetData(),
+			DecompContext.SequenceLength,
+			DecompContext.RelativePos,
+			(uint8)DecompContext.Interpolation,
+			FORMAT,
+			PairCount);
+#endif
+	}
+	else
+	{
+		//@TODO: Verify that this prefetch is helping
+		// Prefetch the desired pairs array and 2 destination spots; the loop will prefetch one 2 out each iteration
+		FPlatformMisc::Prefetch(&(DesiredPairs[0]));
+		const int32 PrefetchCount = FMath::Min(PairCount, 1);
+		for (int32 PairIndex = 0; PairIndex < PairCount; ++PairIndex)
+		{
+			const BoneTrackPair& Pair = DesiredPairs[PairIndex];
+			FPlatformMisc::Prefetch(Atoms.GetData() + Pair.AtomIndex);
 		}
 
-		KeyFrameSize = KeyOffset;
-	}
+		for (int32 PairIndex = 0; PairIndex < PairCount; ++PairIndex)
+		{
+			int32 PrefetchIndex = PairIndex + PrefetchCount;
+			if (PrefetchIndex < PairCount)
+			{
+				FPlatformMisc::Prefetch(Atoms.GetData() + DesiredPairs[PrefetchIndex].AtomIndex);
+			}
 
-	FrameKeysOffset[0] = DecompContext.Segment0->ByteStreamOffset + DecompContext.RangeDataSize0 + (KeyFrameSize * DecompContext.SegmentKeyIndex0);
-	FrameKeysOffset[1] = DecompContext.Segment1->ByteStreamOffset + DecompContext.RangeDataSize0 + (KeyFrameSize * DecompContext.SegmentKeyIndex1);
+			const BoneTrackPair& Pair = DesiredPairs[PairIndex];
+			const int32 TrackIndex = Pair.TrackIndex;
+			const int32 AtomIndex = Pair.AtomIndex;
+			FTransform& BoneAtom = Atoms[AtomIndex];
+
+			// call the decoder directly (not through the vtable)
+			AEFConstantKeyLerp<FORMAT>::GetBoneAtomTranslation(BoneAtom, DecompContext, TrackIndex);
+		}
+	}
 }
+
+/**
+ * Decompress all requested Scale components from an Animation Sequence
+ *
+ * @param	Atoms			The FTransform array to fill in.
+ * @param	DesiredPairs	Array of requested bone information
+ * @param	DecompContext	The decompression context to use.
+ */
+template<int32 FORMAT>
+inline void AEFConstantKeyLerp<FORMAT>::GetPoseScales(
+	TArrayView<FTransform>& Atoms,
+	const BoneTrackArray& DesiredPairs,
+	FAnimSequenceDecompressionContext& DecompContext)
+{
+	const int32 PairCount= DesiredPairs.Num();
+
+	if (INTEL_ISPC)
+	{
+#if INTEL_ISPC
+		const FUECompressedAnimData& AnimData = static_cast<const FUECompressedAnimData&>(DecompContext.CompressedAnimData);
+
+		const TArrayView<int32> ScaleOffsets = AnimData.CompressedScaleOffsets.OffsetData;
+		const int32 StripSize = AnimData.CompressedScaleOffsets.StripSize;
+
+		ispc::GetConstantKeyLerpPoseScales(
+			(ispc::FTransform*)&Atoms[0],
+			(ispc::BoneTrackPair*)&DesiredPairs[0],
+			ScaleOffsets.GetData(),
+			StripSize,
+			AnimData.CompressedByteStream.GetData(),
+			DecompContext.SequenceLength,
+			DecompContext.RelativePos,
+			(uint8)DecompContext.Interpolation,
+			FORMAT,
+			PairCount);
+#endif
+	}
+	else
+	{
+		//@TODO: Verify that this prefetch is helping
+		// Prefetch the desired pairs array and 2 destination spots; the loop will prefetch one 2 out each iteration
+		FPlatformMisc::Prefetch(&(DesiredPairs[0]));
+		const int32 PrefetchCount = FMath::Min(PairCount, 1);
+		for (int32 PairIndex = 0; PairIndex < PairCount; ++PairIndex)
+		{
+			const BoneTrackPair& Pair = DesiredPairs[PairIndex];
+			FPlatformMisc::Prefetch(Atoms.GetData() + Pair.AtomIndex);
+		}
+
+		for (int32 PairIndex = 0; PairIndex < PairCount; ++PairIndex)
+		{
+			int32 PrefetchIndex = PairIndex + PrefetchCount;
+			if (PrefetchIndex < PairCount)
+			{
+				FPlatformMisc::Prefetch(Atoms.GetData() + DesiredPairs[PrefetchIndex].AtomIndex);
+			}
+
+			const BoneTrackPair& Pair = DesiredPairs[PairIndex];
+			const int32 TrackIndex = Pair.TrackIndex;
+			const int32 AtomIndex = Pair.AtomIndex;
+			FTransform& BoneAtom = Atoms[AtomIndex];
+
+			// call the decoder directly (not through the vtable)
+			AEFConstantKeyLerp<FORMAT>::GetBoneAtomScale(BoneAtom, DecompContext, TrackIndex);
+		}
+	}
+}
+
+template class AEFConstantKeyLerp<ACF_None>;
+template class AEFConstantKeyLerp<ACF_Float96NoW>;
+template class AEFConstantKeyLerp<ACF_Fixed48NoW>;
+template class AEFConstantKeyLerp<ACF_IntervalFixed32NoW>;
+template class AEFConstantKeyLerp<ACF_Fixed32NoW>;
+template class AEFConstantKeyLerp<ACF_Float32NoW>;
+template class AEFConstantKeyLerp<ACF_Identity>;
+
 #endif

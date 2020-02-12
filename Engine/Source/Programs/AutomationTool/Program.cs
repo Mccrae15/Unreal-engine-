@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 // This software is provided "as-is," without any express or implied warranty. 
 // In no event shall the author, nor Epic Games, Inc. be held liable for any damages arising from the use of this software.
 // This software will not be supported.
@@ -89,8 +89,22 @@ namespace AutomationTool
 			}
 			catch (AutomationException Ex)
 			{
+				// Output the message in the desired format
+				if(Ex.OutputFormat == AutomationExceptionOutputFormat.Silent)
+				{
+					Log.TraceLog("{0}", ExceptionUtils.FormatExceptionDetails(Ex));
+				}
+				else if(Ex.OutputFormat == AutomationExceptionOutputFormat.Minimal)
+				{
+					Log.TraceInformation("{0}", Ex.ToString().Replace("\n", "\n  "));
+					Log.TraceLog("{0}", ExceptionUtils.FormatExceptionDetails(Ex));
+				}
+				else
+				{
+					Log.WriteException(Ex, LogUtils.FinalLogFileName);
+				}
+
 				// Take the exit code from the exception
-				Log.WriteException(Ex, LogUtils.FinalLogFileName);
 				ReturnCode = Ex.ErrorCode;
 			}
 			catch (Exception Ex)

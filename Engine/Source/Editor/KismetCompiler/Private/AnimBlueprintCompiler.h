@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -12,7 +12,8 @@ class UAnimationGraphSchema;
 class UAnimGraphNode_SaveCachedPose;
 class UAnimGraphNode_StateMachineBase;
 class UAnimGraphNode_StateResult;
-class UAnimGraphNode_SubInstance;
+class UAnimGraphNode_CustomProperty;
+
 class UAnimGraphNode_UseCachedPose;
 class UAnimStateTransitionNode;
 class UK2Node_CallFunction;
@@ -22,10 +23,12 @@ class UK2Node_CallFunction;
 //
 class UAnimGraphNode_SaveCachedPose;
 class UAnimGraphNode_UseCachedPose;
-class UAnimGraphNode_SubInput;
-class UAnimGraphNode_SubInstance;
+class UAnimGraphNode_LinkedInputPose;
+class UAnimGraphNode_LinkedAnimGraphBase;
+class UAnimGraphNode_LinkedAnimGraph;
+class UAnimGraphNode_Root;
 
-class UStructProperty;
+class FStructProperty;
 class UBlueprintGeneratedClass;
 struct FPoseLinkMappingRecord;
 
@@ -56,6 +59,8 @@ protected:
 	virtual void EnsureProperGeneratedClass(UClass*& TargetClass) override;
 	virtual void CleanAndSanitizeClass(UBlueprintGeneratedClass* ClassToClean, UObject*& InOldCDO) override;
 	virtual void FinishCompilingClass(UClass* Class) override;
+	virtual void PrecompileFunction(FKismetFunctionContext& Context, EInternalCompilerFlags InternalFlags) override;
+	virtual void SetCalculatedMetaDataAndFlags(UFunction* Function, UK2Node_FunctionEntry* EntryNode, const UEdGraphSchema_K2* Schema ) override;
 	// End of FKismetCompilerContext interface
 
 protected:
@@ -65,7 +70,7 @@ protected:
 	/** Record of a single copy operation */
 	struct FPropertyCopyRecord
 	{
-		FPropertyCopyRecord(UEdGraphPin* InDestPin, UProperty* InDestProperty, int32 InDestArrayIndex)
+		FPropertyCopyRecord(UEdGraphPin* InDestPin, FProperty* InDestProperty, int32 InDestArrayIndex)
 			: DestPin(InDestPin)
 			, DestProperty(InDestProperty)
 			, DestArrayIndex(InDestArrayIndex)
@@ -91,7 +96,7 @@ protected:
 		UEdGraphPin* DestPin;
 
 		/** The destination property we are copying to (on an animation node) */
-		UProperty* DestProperty;
+		FProperty* DestProperty;
 
 		/** The array index we use if the destination property is an array */
 		int32 DestArrayIndex;
@@ -126,10 +131,10 @@ protected:
 	{
 	public:
 		// The node variable that the handler is in
-		class UStructProperty* NodeVariableProperty;
+		class FStructProperty* NodeVariableProperty;
 
 		// The property within the struct to set
-		class UProperty* ConstantProperty;
+		class FProperty* ConstantProperty;
 
 		// The array index if ConstantProperty is an array property, or INDEX_NONE otherwise
 		int32 ArrayIndex;
@@ -145,7 +150,7 @@ protected:
 		{
 		}
 
-		FEffectiveConstantRecord(UStructProperty* ContainingNodeProperty, UEdGraphPin* SourcePin, UProperty* SourcePinProperty, int32 SourceArrayIndex)
+		FEffectiveConstantRecord(FStructProperty* ContainingNodeProperty, UEdGraphPin* SourcePin, FProperty* SourcePinProperty, int32 SourceArrayIndex)
 			: NodeVariableProperty(ContainingNodeProperty)
 			, ConstantProperty(SourcePinProperty)
 			, ArrayIndex(SourceArrayIndex)
@@ -156,15 +161,19 @@ protected:
 		bool Apply(UObject* Object);
 	};
 
+	/** BP execution handler for Anim node - possibly */
 	struct FEvaluationHandlerRecord
 	{
 	public:
 
 		// The node variable that the handler is in
-		UStructProperty* NodeVariableProperty;
+		FStructProperty* NodeVariableProperty;
 
 		// The specific evaluation handler inside the specified node
 		int32 EvaluationHandlerIdx;
+
+		// Whether or not our serviced properties are actually on the anim node 
+		bool bServicesNodeProperties;
 
 		// Whether or not our serviced properties are actually on the instance instead of the node
 		bool bServicesInstanceProperties;
@@ -180,6 +189,7 @@ protected:
 		FEvaluationHandlerRecord()
 			: NodeVariableProperty(nullptr)
 			, EvaluationHandlerIdx(INDEX_NONE)
+			, bServicesNodeProperties(false)
 			, bServicesInstanceProperties(false)
 			, HandlerFunctionName(NAME_None)
 		{}
@@ -208,9 +218,9 @@ protected:
 
 		void PatchFunctionNameAndCopyRecordsInto(FExposedValueHandler& Handler) const;
 
-		void RegisterPin(UEdGraphPin* DestPin, UProperty* AssociatedProperty, int32 AssociatedPropertyArrayIndex);
+		void RegisterPin(UEdGraphPin* DestPin, FProperty* AssociatedProperty, int32 AssociatedPropertyArrayIndex);
 
-		UStructProperty* GetHandlerNodeProperty() const { return NodeVariableProperty; }
+		FStructProperty* GetHandlerNodeProperty() const { return NodeVariableProperty; }
 
 		void BuildFastPathCopyRecords();
 
@@ -252,9 +262,9 @@ protected:
 	UAnimationGraphSchema* AnimSchema;
 
 	// Map of allocated v3 nodes that are members of the class
-	TMap<class UAnimGraphNode_Base*, UProperty*> AllocatedAnimNodes;
-	TMap<UProperty*, class UAnimGraphNode_Base*> AllocatedNodePropertiesToNodes;
-	TMap<int32, UProperty*> AllocatedPropertiesByIndex;
+	TMap<class UAnimGraphNode_Base*, FProperty*> AllocatedAnimNodes;
+	TMap<FProperty*, class UAnimGraphNode_Base*> AllocatedNodePropertiesToNodes;
+	TMap<int32, FProperty*> AllocatedPropertiesByIndex;
 
 	// Map of true source objects (user edited ones) to the cloned ones that are actually compiled
 	TMap<class UAnimGraphNode_Base*, UAnimGraphNode_Base*> SourceNodeToProcessedNodeMap;
@@ -282,6 +292,9 @@ protected:
 	// Set of used handler function names
 	TSet<FName> HandlerFunctionNames;
 
+	// Stub graphs we generated for animation graph functions
+	TArray<UEdGraph*> GeneratedStubGraphs;
+
 	// True if any parent class is also generated from an animation blueprint
 	bool bIsDerivedAnimBlueprint;
 private:
@@ -290,8 +303,7 @@ private:
 	UK2Node_CallFunction* SpawnCallAnimInstanceFunction(UEdGraphNode* SourceNode, FName FunctionName);
 
 	// Creates an evaluation handler for an FExposedValue property in an animation node
-	void CreateEvaluationHandlerStruct(UAnimGraphNode_Base* VisualAnimNode, FEvaluationHandlerRecord& Record);
-	void CreateEvaluationHandlerInstance(UAnimGraphNode_Base* VisualAnimNode, FEvaluationHandlerRecord& Record);
+	void CreateEvaluationHandler(UAnimGraphNode_Base* VisualAnimNode, FEvaluationHandlerRecord& Record);
 
 	// Prunes any nodes that aren't reachable via a pose link
 	void PruneIsolatedAnimationNodes(const TArray<UAnimGraphNode_Base*>& RootSet, TArray<UAnimGraphNode_Base*>& GraphNodes);
@@ -305,12 +317,24 @@ private:
 	// Compiles one use cached pose instance
 	void ProcessUseCachedPose(UAnimGraphNode_UseCachedPose* UseCachedPose);
 
-	// Compiles one sub instance node
-	void ProcessSubInstance(UAnimGraphNode_SubInstance* SubInstance, bool bCheckForCycles);
+	// Compiles one custom property node
+	void ProcessCustomPropertyNode(UAnimGraphNode_CustomProperty* CustomPropNode);
 
-	// Traverses subinstance links looking for slot names and state machine names, returning their count in a name map
+	// Compiles one linked anim graph node
+	void ProcessLinkedAnimGraph(UAnimGraphNode_LinkedAnimGraphBase* InLinkedAnimGraph, bool bCheckForCycles);
+
+	// Compiles one linked input pose
+	void ProcessLinkedInputPose(UAnimGraphNode_LinkedInputPose* InLinkedInputPose);
+
+	// Compiles one root node
+	void ProcessRoot(UAnimGraphNode_Root* Root);
+
+	// Compiles one state result node
+	void ProcessStateResult(UAnimGraphNode_StateResult* StateResult);
+
+	// Traverses linked anim graph links looking for slot names and state machine names, returning their count in a name map
 	typedef TMap<FName, int32> NameToCountMap;
-	void GetDuplicatedSlotAndStateNames(UAnimGraphNode_SubInstance* InSubInstance, NameToCountMap& OutStateMachineNameToCountMap, NameToCountMap& OutSlotNameToCountMap);
+	void GetDuplicatedSlotAndStateNames(UAnimGraphNode_LinkedAnimGraphBase* InLinkedAnimGraph, NameToCountMap& OutStateMachineNameToCountMap, NameToCountMap& OutSlotNameToCountMap);
 
 	// Compiles an entire animation graph
 	void ProcessAllAnimationNodes();
@@ -346,10 +370,13 @@ private:
 	//	 If supplied, will also return an array of all cloned nodes
 	int32 ExpandGraphAndProcessNodes(UEdGraph* SourceGraph, UAnimGraphNode_Base* SourceRootNode, UAnimStateTransitionNode* TransitionNode = NULL, TArray<UEdGraphNode*>* ClonedNodes = NULL);
 
-	// Dumps compiler diagnostic information
-	void DumpAnimDebugData();
-
 	// Returns the allocation index of the specified node, processing it if it was pending
 	int32 GetAllocationIndexOfNode(UAnimGraphNode_Base* VisualAnimNode);
+
+	// Create transient stub functions for each anim graph we are compiling
+	void CreateAnimGraphStubFunctions();
+
+	// Clean up transient stub functions
+	void DestroyAnimGraphStubFunctions();
 };
 

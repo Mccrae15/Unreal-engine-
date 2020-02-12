@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "CoreMinimal.h"
 #include "HAL/FileManager.h"
@@ -34,7 +34,7 @@
 #include "ObjectTools.h"
 #include "ARFilter.h"
 #include "AssetRegistryModule.h"
-#include "Toolkits/AssetEditorManager.h"
+
 
 #include "Kismet2/KismetEditorUtilities.h"
 #include "EdGraphSchema_K2.h"
@@ -42,6 +42,7 @@
 #include "Kismet2/CompilerResultsLog.h"
 #include "DiffResults.h"
 #include "GraphDiffControl.h"
+#include "Subsystems/AssetEditorSubsystem.h"
 
 DEFINE_LOG_CATEGORY_STATIC(LogBlueprintAutomationTests, Log, All);
 
@@ -120,12 +121,12 @@ public:
 	}
 
 	/** 
-	 * Filter used to test to see if a UProperty is candidate for comparison.
+	 * Filter used to test to see if a FProperty is candidate for comparison.
 	 * @param Property	The property to test
 	 *
-	 * @return True if UProperty should be compared, false otherwise
+	 * @return True if FProperty should be compared, false otherwise
 	 */
-	static bool ShouldCompareProperty (const UProperty* Property)
+	static bool ShouldCompareProperty (const FProperty* Property)
 	{
 		// Ignore components & transient properties
 		const bool bIsTransient = !!( Property->PropertyFlags & CPF_Transient );
@@ -143,9 +144,9 @@ public:
 	 */
 	static void GetObjProperties (UObject* Obj, FPropertiesMap& ObjProperties)
 	{
-		for (TFieldIterator<UProperty> PropIt(Obj->GetClass(), EFieldIteratorFlags::IncludeSuper); PropIt; ++PropIt)
+		for (TFieldIterator<FProperty> PropIt(Obj->GetClass(), EFieldIteratorFlags::IncludeSuper); PropIt; ++PropIt)
 		{
-			UProperty* Prop = *PropIt;
+			FProperty* Prop = *PropIt;
 
 			if ( ShouldCompareProperty(Prop) )
 			{
@@ -324,7 +325,7 @@ public:
 	 */
 	static void CloseBlueprint(UBlueprint* const BlueprintObj)
 	{
-		IAssetEditorInstance* EditorInst = FAssetEditorManager::Get().FindEditorForAsset(BlueprintObj, /*bool bFocusIfOpen =*/false);
+		IAssetEditorInstance* EditorInst = GEditor->GetEditorSubsystem<UAssetEditorSubsystem>()->FindEditorForAsset(BlueprintObj, /*bool bFocusIfOpen =*/false);
 		if (EditorInst != nullptr)
 		{
 			UE_LOG(LogBlueprintAutomationTests, Log, TEXT("Closing '%s' so we don't invalidate the open version when unloading it."), *BlueprintObj->GetName());
@@ -901,7 +902,7 @@ bool FBlueprintCompileOnLoadTest::RunTest(const FString& BlueprintAssetPath)
 	TSet<TWeakObjectPtr<UBlueprint>> BlueprintDependencies;
 	{
 		TArray<UBlueprint*> DependentBlueprints;
-		FBlueprintEditorUtils::GetDependentBlueprints(InitialBlueprint, DependentBlueprints);
+		FBlueprintEditorUtils::FindDependentBlueprints(InitialBlueprint, DependentBlueprints);
 		for (auto BP : DependentBlueprints)
 		{
 			BlueprintDependencies.Add(BP);

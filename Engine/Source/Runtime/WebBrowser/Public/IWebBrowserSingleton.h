@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -131,6 +131,10 @@ public:
 
 	virtual TSharedPtr<IWebBrowserWindow> CreateBrowserWindow(const FCreateBrowserWindowSettings& Settings) = 0;
 
+#if	BUILD_EMBEDDED_APP
+	virtual TSharedPtr<IWebBrowserWindow> CreateNativeBrowserProxy() = 0;
+#endif
+
 	/**
 	 * Delete all browser cookies.
 	 *
@@ -181,7 +185,7 @@ public:
 
 
 	/**
-	 * Returns wether the CTRL/CMD-SHIFT-I shortcut to show the Chromium Dev tools window is enabled.
+	 * Returns whether the CTRL/CMD-SHIFT-I shortcut to show the Chromium Dev tools window is enabled.
 	 *
 	 * The relevant handlers for spawning new browser windows have to be set up correctly in addition to this flag being true before anything is shown.
 	 *

@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -274,6 +274,7 @@ MONOLITHIC_HEADER_BOILERPLATE()
 #include "ThumbnailRendering/ParticleSystemThumbnailRenderer.h"
 #include "ThumbnailRendering/SubsurfaceProfileRenderer.h"
 #include "Factories/TextureCubeThumbnailRenderer.h"
+#include "Factories/Texture2dArrayThumbnailRenderer.h"
 #include "Editor/TransBuffer.h"
 #include "Preferences/UnrealEdKeyBindings.h"
 #include "Preferences/UnrealEdOptions.h"

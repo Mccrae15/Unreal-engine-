@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -19,6 +19,7 @@
 #include "SMaterialEditorViewport.h"
 #include "Materials/Material.h"
 #include "Tickable.h"
+#include "UObject/WeakFieldPtr.h"
 
 struct FAssetData;
 class FCanvas;
@@ -34,7 +35,9 @@ class UFactory;
 class UMaterialEditorOptions;
 class UMaterialExpressionComment;
 class UMaterialInstance;
+class UMaterialGraphNode;
 struct FGraphAppearanceInfo;
+class UMaterialFunctionInstance;
 
 /**
  * Class for rendering previews of material expressions in the material editor's linked object viewport.
@@ -44,6 +47,7 @@ class FMatExpressionPreview : public FMaterial, public FMaterialRenderProxy
 public:
 	FMatExpressionPreview()
 	: FMaterial()
+	, UnrelatedNodesOpacity(1.0f)
 	{
 		// Register this FMaterial derivative with AddEditorLoadedMaterialResource since it does not have a corresponding UMaterialInterface
 		FMaterial::AddEditorLoadedMaterialResource(this);
@@ -52,13 +56,14 @@ public:
 
 	FMatExpressionPreview(UMaterialExpression* InExpression)
 	: FMaterial()
+	, UnrelatedNodesOpacity(1.0f)
 	, Expression(InExpression)
 	{
 		FMaterial::AddEditorLoadedMaterialResource(this);
 		FPlatformMisc::CreateGuid(Id);
 
 		check(InExpression->Material && InExpression->Material->Expressions.Contains(InExpression));
-		InExpression->Material->AppendReferencedTextures(ReferencedTextures);
+		ReferencedTextures = InExpression->Material->GetReferencedTextures();
 		SetQualityLevelProperties(EMaterialQualityLevel::High, false, GMaxRHIFeatureLevel);
 	}
 
@@ -88,9 +93,9 @@ public:
 	 */
 	virtual bool ShouldCache(EShaderPlatform Platform, const FShaderType* ShaderType, const FVertexFactoryType* VertexFactoryType) const override;
 
-	virtual const TArray<UTexture*>& GetReferencedTextures() const override
+	virtual TArrayView<UObject* const> GetReferencedTextures() const override
 	{
-		return ReferencedTextures;
+		return MakeArrayView(ReferencedTextures);
 	}
 
 	////////////////
@@ -109,7 +114,7 @@ public:
 		}
 	}
 
-	virtual bool GetVectorValue(const FMaterialParameterInfo& ParameterInfo, FLinearColor* OutValue, const FMaterialRenderContext& Context) const override
+	virtual bool GetVectorValue(const FHashedMaterialParameterInfo& ParameterInfo, FLinearColor* OutValue, const FMaterialRenderContext& Context) const override
 	{
 		if (Expression.IsValid() && Expression->Material)
 		{
@@ -118,7 +123,7 @@ public:
 		return false;
 	}
 
-	virtual bool GetScalarValue(const FMaterialParameterInfo& ParameterInfo, float* OutValue, const FMaterialRenderContext& Context) const override
+	virtual bool GetScalarValue(const FHashedMaterialParameterInfo& ParameterInfo, float* OutValue, const FMaterialRenderContext& Context) const override
 	{
 		if (Expression.IsValid() && Expression->Material)
 		{
@@ -127,7 +132,7 @@ public:
 		return false;
 	}
 
-	virtual bool GetTextureValue(const FMaterialParameterInfo& ParameterInfo,const UTexture** OutValue, const FMaterialRenderContext& Context) const override
+	virtual bool GetTextureValue(const FHashedMaterialParameterInfo& ParameterInfo,const UTexture** OutValue, const FMaterialRenderContext& Context) const override
 	{
 		if (Expression.IsValid() && Expression->Material)
 		{
@@ -135,7 +140,16 @@ public:
 		}
 		return false;
 	}
-	
+
+	virtual bool GetTextureValue(const FHashedMaterialParameterInfo& ParameterInfo, const URuntimeVirtualTexture** OutValue, const FMaterialRenderContext& Context) const override
+	{
+		if (Expression.IsValid() && Expression->Material)
+		{
+			return Expression->Material->GetRenderProxy()->GetTextureValue(ParameterInfo, OutValue, Context);
+		}
+		return false;
+	}
+
 	// Material properties.
 	/** Entry point for compiling a specific material property.  This must call SetMaterialProperty. */
 	virtual int32 CompilePropertyAndSetMaterialProperty(EMaterialProperty Property, FMaterialCompiler* Compiler, EShaderFrequency OverrideShaderFrequency, bool bUsePreviousFrameTime) const override;
@@ -150,8 +164,9 @@ public:
 	virtual bool IsSpecialEngineMaterial() const override { return false; }
 	virtual bool IsWireframe() const override { return false; }
 	virtual bool IsMasked() const override { return false; }
-	virtual enum EBlendMode GetBlendMode() const override { return BLEND_Opaque; }
-	virtual enum EMaterialShadingModel GetShadingModel() const override { return MSM_Unlit; }
+	virtual enum EBlendMode GetBlendMode() const override { return BLEND_Translucent; }
+	virtual FMaterialShadingModelField GetShadingModels() const override { return MSM_Unlit; }
+	virtual bool IsShadingModelFromMaterialExpression() const override { return false; }
 	virtual float GetOpacityMaskClipValue() const override { return 0.5f; }
 	virtual bool GetCastDynamicShadowAsMasked() const override { return false; }
 	virtual FString GetFriendlyName() const override { return FString::Printf(TEXT("FMatExpressionPreview %s"), Expression.IsValid() ? *Expression->GetName() : TEXT("NULL")); }
@@ -172,9 +187,19 @@ public:
 		return Ar << V.Expression;
 	}
 
+	virtual void GatherExpressionsForCustomInterpolators(TArray<UMaterialExpression*>& OutExpressions) const override
+	{
+		if(Expression.IsValid() && Expression->Material)
+		{
+			Expression->Material->GetAllExpressionsForCustomInterpolators(OutExpressions);
+		}
+	}
+
+	float UnrelatedNodesOpacity;
+
 private:
 	TWeakObjectPtr<UMaterialExpression> Expression;
-	TArray<UTexture*> ReferencedTextures;
+	TArray<UObject*> ReferencedTextures;
 	FGuid Id;
 };
 
@@ -363,7 +388,9 @@ public:
 	virtual bool CanPasteNodes() const override;
 	virtual void PasteNodesHere(const FVector2D& Location) override;
 	virtual int32 GetNumberOfSelectedNodes() const override;
-	virtual FMaterialRenderProxy* GetExpressionPreview(UMaterialExpression* InExpression) override;
+	virtual TSet<UObject*> GetSelectedNodes() const override;
+	virtual void GetBoundsForNode(const UEdGraphNode* InNode, class FSlateRect& OutRect, float InPadding) const override;
+	virtual FMatExpressionPreview* GetExpressionPreview(UMaterialExpression* InExpression) override;
 	virtual void DeleteNodes(const TArray<class UEdGraphNode*>& NodesToDelete) override;
 
 
@@ -383,6 +410,9 @@ public:
 
 	/** Called to bring focus to the details panel */
 	void FocusDetailsPanel();
+
+	/** Rebuilds the inheritance list for this material. */
+	void RebuildInheritanceList();
 
 public:
 	/** Set to true when modifications have been made to the material */
@@ -519,6 +549,8 @@ private:
 	/** Creates the toolbar buttons. Bound by ExtendToolbar*/
 	void FillToolbar(FToolBarBuilder& ToolbarBuilder);
 
+	TSharedRef<SWidget> GenerateInheritanceMenu();
+
 	TSharedRef< SWidget > GeneratePreviewMenuContent();
 
 	/** Allows editor to veto the setting of a preview asset */
@@ -585,6 +617,20 @@ private:
 	bool IsOnAlwaysRefreshAllPreviews() const;
 	/** Command for the stats button */
 
+	/** Make nodes which are unrelated to the selected nodes fade out */
+	void ToggleHideUnrelatedNodes();
+	bool IsToggleHideUnrelatedNodesChecked() const;
+	void CollectDownstreamNodes(UMaterialGraphNode* CurrentNode, TArray<UMaterialGraphNode*>& CollectedNodes);
+	void CollectUpstreamNodes(UMaterialGraphNode* CurrentNode, TArray<UMaterialGraphNode*>& CollectedNodes);
+	void HideUnrelatedNodes();
+
+	/** Make a drop down menu to control the opacity of unrelated nodes */
+	TSharedRef<SWidget> MakeHideUnrelatedNodesOptionsMenu();
+	TOptional<float> HandleUnrelatedNodesOpacityBoxValue() const;
+	void HandleUnrelatedNodesOpacityBoxChanged(float NewOpacity);
+	void OnLockNodeStateCheckStateChanged(ECheckBoxState NewCheckedState);
+	void OnFocusWholeChainCheckStateChanged(ECheckBoxState NewCheckedState);
+
 	void ToggleReleaseStats();
 	bool IsToggleReleaseStatsChecked() const;
 	void ToggleBuiltinStats();
@@ -650,8 +696,8 @@ private:
 	virtual void PostRedo(bool bSuccess) override { PostUndo(bSuccess); }
 
 	// FNotifyHook interface
-	virtual void NotifyPreChange(UProperty* PropertyAboutToChange) override;
-	virtual void NotifyPostChange( const FPropertyChangedEvent& PropertyChangedEvent, UProperty* PropertyThatChanged) override;
+	virtual void NotifyPreChange(FProperty* PropertyAboutToChange) override;
+	virtual void NotifyPostChange( const FPropertyChangedEvent& PropertyChangedEvent, FProperty* PropertyThatChanged) override;
 
 	/** Flags the material as dirty */
 	void SetMaterialDirty() {bMaterialDirty = true;}
@@ -680,7 +726,7 @@ private:
 
 	/** Pointer to the object that the current color picker is working on. Can be NULL and stale. */
 	TWeakObjectPtr<UObject> ColorPickerObject;
-	TWeakObjectPtr<UProperty> ColorPickerProperty;
+	TWeakFieldPtr<FProperty> ColorPickerProperty;
 
 	/** Called before the color picker commits a change. */
 	void PreColorPickerCommit(FLinearColor LinearColor);
@@ -721,6 +767,7 @@ private:
 	TSharedRef<SDockTab> SpawnTab_Find(const FSpawnTabArgs& Args);
 	TSharedRef<SDockTab> SpawnTab_PreviewSettings(const FSpawnTabArgs& Args);
 	TSharedRef<SDockTab> SpawnTab_ParameterDefaults(const FSpawnTabArgs& Args);
+	TSharedRef<SDockTab> SpawnTab_CustomPrimitiveData(const FSpawnTabArgs& Args);
 	TSharedRef<SDockTab> SpawnTab_LayerProperties(const FSpawnTabArgs& Args);
 
 	void OnFinishedChangingProperties(const FPropertyChangedEvent& PropertyChangedEvent);
@@ -757,6 +804,8 @@ private:
 	/** Parameter overview list View */
 	TSharedPtr<class SMaterialParametersOverviewPanel> MaterialParametersOverviewWidget;
 
+	TSharedPtr<class SMaterialCustomPrimitiveDataPanel> MaterialCustomPrimitiveDataWidget;
+
 	/** Layer Properties View */
 	TSharedPtr<class SMaterialLayersFunctionsMaterialWrapper> MaterialLayersFunctionsInstance;
 
@@ -787,6 +836,18 @@ private:
 	/** If true, show stats for an empty material. Helps artists to judge the cost of their changes to the graph. */
 	bool bShowBuiltinStats;
 
+	/** If true, fade out nodes which are unrelated to the selected nodes automatically. */
+	bool bHideUnrelatedNodes;
+
+	/** Lock the current fade state of each node */
+	bool bLockNodeFadeState;
+
+	/** Focus all nodes in the same output chain  */
+	bool bFocusWholeChain;
+
+	/** If a regular node (not a comment node, not the output node) has been selected */
+	bool bSelectRegularNode;
+
 	/** Command list for this editor */
 	TSharedPtr<FUICommandList> GraphEditorCommands;
 
@@ -801,6 +862,7 @@ private:
 	static const FName FindTabId;
 	static const FName PreviewSettingsTabId;
 	static const FName ParameterDefaultsTabId;
+	static const FName CustomPrimitiveTabId;
 	static const FName LayerPropertiesTabId;
 
 	/** Object that stores all of the possible parameters we can edit. */
@@ -821,4 +883,9 @@ private:
 	/** True if the quality level or feature level to preview has been changed */
 	bool bPreviewFeaturesChanged;
 
+	/** List of children used to populate the inheritance list chain. */
+	TArray< FAssetData > MaterialChildList;
+
+	/** List of children used to populate the inheritance list chain. */
+	TArray< FAssetData > FunctionChildList;
 };

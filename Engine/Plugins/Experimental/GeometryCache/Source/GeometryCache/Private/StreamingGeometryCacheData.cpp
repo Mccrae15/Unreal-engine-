@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "StreamingGeometryCacheData.h"
 #include "Async/AsyncFileHandle.h"
@@ -27,7 +27,7 @@ DECLARE_MEMORY_STAT(TEXT("Streamed Chunks"), STAT_ChunkDataStreamed, STATGROUP_G
 DECLARE_MEMORY_STAT(TEXT("Resident Chunks"), STAT_ChunkDataResident, STATGROUP_GeometryCache);
 
 FStreamingGeometryCacheData::FStreamingGeometryCacheData(UGeometryCacheTrackStreamable* InTrack)
-	: Track(InTrack), IORequestHandle(nullptr)
+	: Track(InTrack)
 {
 }
 
@@ -48,12 +48,6 @@ FStreamingGeometryCacheData::~FStreamingGeometryCacheData()
 		RemoveResidentChunk(Iter.Value());
 	}
 	Chunks.Empty();
-
-	if (IORequestHandle)
-	{
-		delete IORequestHandle;
-		IORequestHandle = nullptr;
-	}
 }
 
 void FStreamingGeometryCacheData::ResetNeededChunks()
@@ -97,10 +91,10 @@ void FStreamingGeometryCacheData::RemoveResidentChunk(FResidentChunk& LoadedChun
 /**
 This is called from some random thread when reading is complete.
 */
-void FStreamingGeometryCacheData::OnAsyncReadComplete(int32 LoadedChunkIndex, IAsyncReadRequest* ReadRequest)
+void FStreamingGeometryCacheData::OnAsyncReadComplete(int32 LoadedChunkIndex, IBulkDataIORequest* ReadRequest)
 {
 	// We should do the least amount of work possible here as to not stall the async io threads.
-	// We calso cannot take the critical section here as this would lead to a deadlock between the
+	// We also cannot take the critical section here as this would lead to a deadlock between the
 	// our critical section and the async-io internal critical section. 
 	// So we just put this on queue here and then process the results later when we are on a different
 	// thread that already holds our lock.
@@ -182,7 +176,7 @@ void FStreamingGeometryCacheData::PrefetchData(UGeometryCacheComponent *Componen
 		ResidentChunk.Memory = static_cast<uint8*>(FMemory::Malloc(Chunk.DataSize));
 		INC_MEMORY_STAT_BY(STAT_ChunkDataResident, Chunk.DataSize);
 		INC_MEMORY_STAT_BY(STAT_ChunkDataStreamed, Chunk.DataSize);
-		Chunk.BulkData.GetCopy((void**)&ResidentChunk.Memory); //note: This does the actual loading internally...
+		Chunk.BulkData.GetCopy((void**)&ResidentChunk.Memory,true); //note: This does the actual loading internally...
 		ChunksAvailable.Add(ChunkId);
 	}
 }
@@ -207,7 +201,7 @@ void FStreamingGeometryCacheData::UpdateStreamingStatus()
 			// If not requested yet, then request a load
 			if (!ChunksRequested.Contains(NeededIndex))
 			{
-				const FStreamedGeometryCacheChunk& Chunk = Track->GetChunk(NeededIndex);
+				FStreamedGeometryCacheChunk& Chunk = Track->GetChunk(NeededIndex);
 
 				// This can happen in the editor if the asset hasn't been saved yet.
 				if (Chunk.BulkData.IsBulkDataLoaded())
@@ -223,8 +217,8 @@ void FStreamingGeometryCacheData::UpdateStreamingStatus()
 					continue;
 				}
 
-				checkf(Chunk.BulkData.GetFilename().Len(), TEXT("Bulk data is not loaded and not associated with a file."));
-				check(!Chunk.BulkData.IsStoredCompressedOnDisk());
+				checkf(Chunk.BulkData.CanLoadFromDisk(), TEXT("Bulk data is not loaded and cannot be loaded from disk!"));
+				check(!Chunk.BulkData.IsStoredCompressedOnDisk()); // We do not support compressed Bulkdata for this system
 
 				FResidentChunk &ResidentChunk = AddResidentChunk(NeededIndex, Chunk);
 
@@ -232,19 +226,14 @@ void FStreamingGeometryCacheData::UpdateStreamingStatus()
 				EAsyncIOPriorityAndFlags AsyncIOPriority = AIOP_BelowNormal;
 
 				// Kick of a load
-				if (!IORequestHandle)
-				{
-					IORequestHandle = FPlatformFileManager::Get().GetPlatformFile().OpenAsyncRead(*Chunk.BulkData.GetFilename());
-					checkf(IORequestHandle, TEXT("Could not opan an async file")); // this generally cannot fail because it is async
-				}
 				check(Chunk.BulkData.GetBulkDataSize() == ResidentChunk.DataSize);
 
-				FAsyncFileCallBack AsyncFileCallBack = [this, NeededIndex](bool bWasCancelled, IAsyncReadRequest* Req)
+				FBulkDataIORequestCallBack AsyncFileCallBack = [this, NeededIndex](bool bWasCancelled, IBulkDataIORequest* Req)
 				{
 					this->OnAsyncReadComplete(NeededIndex, Req);
 				};
-
-				ResidentChunk.IORequest = IORequestHandle->ReadRequest(Chunk.BulkData.GetBulkDataOffsetInFile(), ResidentChunk.DataSize, AsyncIOPriority, &AsyncFileCallBack);
+				
+				ResidentChunk.IORequest = Chunk.BulkData.CreateStreamingRequest(AsyncIOPriority, &AsyncFileCallBack, nullptr);
 				if (!ResidentChunk.IORequest)
 				{
 					UE_LOG(LogGeoCaStreaming, Error, TEXT("Geometry cache streaming read request failed."));
@@ -329,42 +318,47 @@ void FStreamingGeometryCacheData::ProcessCompletedChunks()
 	//Note: This function should only be called from code which owns the CriticalSection
 	check(IsInGameThread() || IsInRenderingThread());
 
-	FCompletedChunk CompletedCunk;
-	while (CompletedChunks.Dequeue(CompletedCunk))
+	FCompletedChunk CompletedChunk;
+	while (CompletedChunks.Dequeue(CompletedChunk))
 	{
-		FResidentChunk* Chunk = Chunks.Find(CompletedCunk.LoadedChunkIndex);
+		FResidentChunk* Chunk = Chunks.Find(CompletedChunk.LoadedChunkIndex);
 		if (!Chunk)
 		{
 			UE_LOG(LogGeoCaStreaming, Error, TEXT("Got a stray async read request"));
 			return;
 		}
 
-		check(CompletedCunk.ReadRequest == Chunk->IORequest);
+		// Chunks can be queued up multiple times when scrubbing but we can trust the LoadedChunkIndex of the completed chunk
+		// so all we need to check is if the FResidentChunk  has a valid IORequest pointer or not.
+		// If it is nullptr then we already processed a request for the chunk and it can be ignored.
+		if (Chunk->IORequest != nullptr)
+		{
+			// Check to see if we successfully managed to load anything
+			uint8* Mem = CompletedChunk.ReadRequest->GetReadResults();
+			if (Mem)
+			{
+				Chunk->Memory = Mem;
+				ChunksAvailable.Add(CompletedChunk.LoadedChunkIndex);
+				ChunksRequested.Remove(CompletedChunk.LoadedChunkIndex);
+				DEC_DWORD_STAT(STAT_OutstandingRequests);
+				INC_MEMORY_STAT_BY(STAT_ChunkDataResident, Chunk->DataSize);
+				INC_MEMORY_STAT_BY(STAT_ChunkDataStreamed, Chunk->DataSize);
+				IGeometryCacheStreamingManager::Get().IoBandwidth.Add(Chunk->DataSize);
+			}
+			else
+			{
+				UE_LOG(LogGeoCaStreaming, Error, TEXT("Async loading request failed!"));
+				ChunksRequested.Remove(CompletedChunk.LoadedChunkIndex);
+				// Fix me do we want to recover from this? Granite simply reschedules requests
+				// as it may have failed for transient reasons (buffer contention, ...)
+			}
 
-		// Check to see if we successfully managed to load anything
-		uint8* Mem = CompletedCunk.ReadRequest->GetReadResults();
-		if (Mem)
-		{
-			Chunk->Memory = Mem;
-			ChunksAvailable.Add(CompletedCunk.LoadedChunkIndex);
-			ChunksRequested.Remove(CompletedCunk.LoadedChunkIndex);
-			DEC_DWORD_STAT(STAT_OutstandingRequests);
-			INC_MEMORY_STAT_BY(STAT_ChunkDataResident, Chunk->DataSize);
-			INC_MEMORY_STAT_BY(STAT_ChunkDataStreamed, Chunk->DataSize);
-			IGeometryCacheStreamingManager::Get().IoBandwidth.Add(Chunk->DataSize);
-		}
-		else
-		{
-			UE_LOG(LogGeoCaStreaming, Error, TEXT("Async loading request failed!"));
-			ChunksRequested.Remove(CompletedCunk.LoadedChunkIndex);
-			// Fix me do we want to recover from this? Granite simply reschedules requests
-			// as it may have failed for transient reasons (buffer contention, ...)
+			Chunk->IORequest = nullptr;
 		}
 
 		// Clean up the now fully processed IO request
-		check(Chunk->IORequest->PollCompletion());
-		delete Chunk->IORequest;
-		Chunk->IORequest = nullptr;
+		check(CompletedChunk.ReadRequest->PollCompletion());
+		delete CompletedChunk.ReadRequest;
 	}
 }
 
@@ -403,7 +397,6 @@ const uint8* FStreamingGeometryCacheData::MapChunk(uint32 ChunkIndex, uint32* Ou
 			*OutChunkSize = ResidentChunk->DataSize;
 		}
 		ResidentChunk->Refcount++;
-		check(ResidentChunk->Refcount == 1);
 		return (uint8*)ResidentChunk->Memory;
 	}
 }
@@ -419,7 +412,6 @@ void FStreamingGeometryCacheData::UnmapChunk(uint32 ChunkIndex)
 		checkf(ResidentChunk->Refcount > 0, TEXT("Map/Unmap out of balance. Make sure you unmap once fore every map."));
 		checkf(ChunksAvailable.Contains(ChunkIndex) || ChunksEvicted.Contains(ChunkIndex), TEXT("Tried to unmap a chunk in an invalid state."));
 		ResidentChunk->Refcount--;
-		check(ResidentChunk->Refcount == 0);
 	}
 	else
 	{

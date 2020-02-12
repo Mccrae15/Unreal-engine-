@@ -1,11 +1,10 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
 #include "CoreMinimal.h"
 #include "Fonts/ShapedTextFwd.h"
 #include "Fonts/SlateFontInfo.h"
-#include "Framework/Text/TextRange.h"
 #include "Framework/Text/IRun.h"
 
 class FSlateFontCache;
@@ -27,7 +26,7 @@ public:
 		return TextRange == Other.TextRange
 			&& Scale == Other.Scale
 			&& TextContext == Other.TextContext
-			&& FontInfo.IsIdentialToForCaching(Other.FontInfo);
+			&& FontInfo.IsIdenticalTo(Other.FontInfo);
 	}
 
 	FORCEINLINE bool operator!=(const FCachedShapedTextKey& Other) const

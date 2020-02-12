@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 /*=============================================================================
 	SHCommon.usf: Spherical Harmonic functionality
@@ -48,6 +48,15 @@ struct FThreeBandSHVectorRGB
 	FThreeBandSHVector G;
 	FThreeBandSHVector B;
 };
+
+FTwoBandSHVectorRGB MulSH(FTwoBandSHVectorRGB A, half Scalar)
+{
+	FTwoBandSHVectorRGB Result;
+	Result.R.V = A.R.V * Scalar;
+	Result.G.V = A.G.V * Scalar;
+	Result.B.V = A.B.V * Scalar;
+	return Result;
+}
 
 FTwoBandSHVectorRGB MulSH(FTwoBandSHVector A, half3 Color)
 {

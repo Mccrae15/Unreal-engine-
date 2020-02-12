@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "MeshPaintAdapterFactory.h"
 #include "IMeshPaintGeometryAdapterFactory.h"
@@ -27,5 +27,21 @@ void FMeshPaintAdapterFactory::InitializeAdapterGlobals()
 	for (const auto& Factory : FactoryList)
 	{
 		Factory->InitializeAdapterGlobals();
+	}
+}
+
+void FMeshPaintAdapterFactory::AddReferencedObjectsGlobals(FReferenceCollector& Collector)
+{
+	for (const auto& Factory : FactoryList)
+	{
+		Factory->AddReferencedObjectsGlobals(Collector);
+	}
+}
+
+void FMeshPaintAdapterFactory::CleanupGlobals()
+{
+	for (const auto& Factory : FactoryList)
+	{
+		Factory->CleanupGlobals();
 	}
 }

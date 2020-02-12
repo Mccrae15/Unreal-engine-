@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 /*=============================================================================
 	DestructibleComponent.cpp: UDestructibleComponent methods.
@@ -27,7 +27,7 @@
 #include "UObject/UObjectThreadContext.h"
 
 #if WITH_PHYSX
-#include "Physics/PhysicsGeometryPhysX.h"
+#include "Physics/PhysicsGeometry.h"
 #endif
 
 UDestructibleComponent::UDestructibleComponent(const FObjectInitializer& ObjectInitializer)
@@ -45,14 +45,14 @@ UDestructibleComponent::UDestructibleComponent(const FObjectInitializer& ObjectI
 	SetCollisionProfileName(CollisionProfileName);
 
 	bAlwaysCreatePhysicsState = true;
-	bIsActive = true;
+	SetActiveFlag(true);
 	bMultiBodyOverlap = true;
 
 	LargeChunkThreshold = 25.f;
 
 	SetComponentSpaceTransformsDoubleBuffering(false);
 
-#if WITH_PHYSX
+#if WITH_PHYSX && PHYSICS_INTERFACE_PHYSX
 	// Get contact offset params
 	FBodySetupShapeIterator::GetContactOffsetParams(ContactOffsetFactor, MinContactOffset, MaxContactOffset);
 #endif //WITH_PHYSX
@@ -1159,7 +1159,7 @@ void UDestructibleComponent::Activate( bool bReset/*=false*/ )
 {
 	if (bReset || ShouldActivate()==true)
 	{
-		bIsActive = true;
+		SetActiveFlag(true);
 	}
 }
 
@@ -1167,7 +1167,7 @@ void UDestructibleComponent::Deactivate()
 {
 	if (ShouldActivate()==false)
 	{
-		bIsActive = false;
+		SetActiveFlag(false);
 	}
 }
 
@@ -1503,7 +1503,7 @@ void UDestructibleComponent::SetCollisionEnabled(ECollisionEnabled::Type NewType
 #endif // WITH_APEX
 }
 
-void UDestructibleComponent::SetCollisionProfileName(FName InCollisionProfileName)
+void UDestructibleComponent::SetCollisionProfileName(FName InCollisionProfileName, bool bUpdateOverlaps)
 {
     FBodyInstance* LocalInstance = GetBodyInstance();
     if (!LocalInstance)
@@ -1529,7 +1529,7 @@ void UDestructibleComponent::SetCollisionProfileName(FName InCollisionProfileNam
 		{
 			EnsurePhysicsStateCreated();
 		}
-		OnComponentCollisionSettingsChanged();
+		OnComponentCollisionSettingsChanged(bUpdateOverlaps);
 	}
 }
 

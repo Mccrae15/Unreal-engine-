@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -7,6 +7,7 @@
 #include "Layout/Visibility.h"
 #include "IDetailCustomization.h"
 #include "Input/Reply.h"
+#include "Customizations/ColorStructCustomization.h"
 
 
 struct FAssetData;
@@ -16,7 +17,6 @@ class IPropertyHandle;
 class UMaterialEditorInstanceConstant;
 
 DECLARE_DELEGATE_OneParam(FGetShowHiddenParameters, bool&);
-
 
 /*-----------------------------------------------------------------------------
    FMaterialInstanceParameterDetails
@@ -52,6 +52,7 @@ private:
 	void CreateMaskParameterValueWidget(class UDEditorParameterValue* Parameter, TSharedPtr<IPropertyHandle> ParameterProperty, IDetailGroup& DetailGroup);
 	void CreateVectorChannelMaskParameterValueWidget(class UDEditorParameterValue* Parameter, TSharedPtr<IPropertyHandle> ParameterProperty, IDetailGroup& DetailGroup);
 	void CreateScalarAtlasPositionParameterValueWidget(class UDEditorParameterValue* Parameter, TSharedPtr<IPropertyHandle> ParameterProperty, IDetailGroup& DetailGroup);
+	void CreateLabeledTextureParameterValueWidget(class UDEditorParameterValue* Parameter, TSharedPtr<IPropertyHandle> ParameterProperty, IDetailGroup& DetailGroup);
 
 	FString GetCurvePath(class UDEditorScalarParameterValue * Parameter) const;
 
@@ -79,7 +80,7 @@ private:
 	//Functions supporting BasePropertyOverrides
 
 	/** Creates all the base property override widgets. */
-	void CreateBasePropertyOverrideWidgets(IDetailLayoutBuilder& DetailLayout);
+	void CreateBasePropertyOverrideWidgets(IDetailLayoutBuilder& DetailLayout, IDetailGroup& MaterialPropertyOverrideGroup);
 
 	EVisibility IsOverriddenAndVisible(TAttribute<bool> IsOverridden) const;
 

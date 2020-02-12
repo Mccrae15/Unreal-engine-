@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -83,6 +83,26 @@ namespace ELerpInterpolationMode
 
 		/** Dual quaternion interpolation, follows helix or screw-motion path between keyframes.   */
 		DualQuatInterp
+	};
+}
+
+/** Possible columns for an FMatrix */
+UENUM(BlueprintType)
+namespace EMatrixColumns
+{
+	enum Type
+	{
+		/** First Column. */
+		First,
+
+		/** Second Column. */
+		Second,
+
+		/** Third Column. */
+		Third,
+
+		/** Fourth Column. */
+		Fourth
 	};
 }
 
@@ -462,8 +482,8 @@ class ENGINE_API UKismetMathLibrary : public UBlueprintFunctionLibrary
 	/** Custom thunk to allow script stack trace in case of divide by zero */
 	DECLARE_FUNCTION(execDivide_FloatFloat)
 	{
-		P_GET_PROPERTY(UFloatProperty, A);
-		P_GET_PROPERTY(UFloatProperty, B);
+		P_GET_PROPERTY(FFloatProperty, A);
+		P_GET_PROPERTY(FFloatProperty, B);
 
 		P_FINISH;
 
@@ -486,8 +506,8 @@ class ENGINE_API UKismetMathLibrary : public UBlueprintFunctionLibrary
 	/** Custom thunk to allow script stack trace in case of modulo by zero */
 	DECLARE_FUNCTION(execPercent_FloatFloat)
 	{
-		P_GET_PROPERTY(UFloatProperty, A);
-		P_GET_PROPERTY(UFloatProperty, B);
+		P_GET_PROPERTY(FFloatProperty, A);
+		P_GET_PROPERTY(FFloatProperty, B);
 
 		P_FINISH;
 
@@ -590,7 +610,7 @@ class ENGINE_API UKismetMathLibrary : public UBlueprintFunctionLibrary
 
 	/** Returns the inverse tan (atan2) of A/B (result is in Radians)*/
 	UFUNCTION(BlueprintPure, meta=(DisplayName = "Atan2 (Radians)"), Category="Math|Trig")
-	static float Atan2(float A, float B);
+	static float Atan2(float Y, float X);
 
 	/** Returns exponential(e) to the power A (e^A)*/
 	UFUNCTION(BlueprintPure, Category="Math|Float", meta=(CompactNodeTitle = "e"))
@@ -662,7 +682,7 @@ class ENGINE_API UKismetMathLibrary : public UBlueprintFunctionLibrary
 
 	/** Returns the inverse tan (atan2) of A/B (result is in Degrees)*/
 	UFUNCTION(BlueprintPure, meta=(DisplayName = "Atan2 (Degrees)"), Category="Math|Trig")
-	static float DegAtan2(float A, float B);
+	static float DegAtan2(float Y, float X);
 
 	/** 
 	 * Clamps an arbitrary angle to be between the given angles.  Will clamp to nearest boundary.
@@ -685,6 +705,10 @@ class ENGINE_API UKismetMathLibrary : public UBlueprintFunctionLibrary
 	/** Returns Value clamped between A and B (inclusive) */
 	UFUNCTION(BlueprintPure, meta=(DisplayName = "Clamp (float)", Min="0.0", Max="1.0"), Category="Math|Float")
 	static float FClamp(float Value, float Min, float Max);
+
+	/** This functions returns 0 if B (the denominator) is zero */
+	UFUNCTION(BlueprintPure, Category = "Math|Float", meta = (Keywords = "percent"))
+	static float SafeDivide(float A, float B);
 
 	/** Returns max of all array entries and the index at which it was found. Returns value of 0 and index of -1 if the supplied array is empty. */
 	UFUNCTION(BlueprintPure, Category="Math|Integer")
@@ -721,37 +745,37 @@ class ENGINE_API UKismetMathLibrary : public UBlueprintFunctionLibrary
 	UFUNCTION(BlueprintPure, meta = (DisplayName = "Ease", BlueprintInternalUseOnly = "true"), Category = "Math|Interpolation")
 	static float Ease(float A, float B, float Alpha, TEnumAsByte<EEasingFunc::Type> EasingFunc, float BlendExp = 2, int32 Steps = 2);
 
-	/** Rounds A to the nearest integer */
+	/** Rounds A to the nearest integer (e.g., -1.6 becomes -2 and 1.6 becomes 2) */
 	UFUNCTION(BlueprintPure, Category="Math|Float")
 	static int32 Round(float A);
 
-	/** Rounds A to the largest previous integer */
+	/** Rounds A down towards negative infinity / down to the previous integer (e.g., -1.6 becomes -2 and 1.6 becomes 1) */
 	UFUNCTION(BlueprintPure, meta=(DisplayName = "Floor"), Category="Math|Float")
 	static int32 FFloor(float A);
 	
-	/** Rounds A to an integer with truncation towards zero.  (e.g. -1.7 truncated to -1, 2.8 truncated to 2) */
+	/** Rounds A towards zero, truncating the fractional part (e.g., -1.6 becomes -1 and 1.6 becomes 1) */
 	UFUNCTION(BlueprintPure, meta=(DisplayName = "Truncate", BlueprintAutocast), Category="Math|Float")
 	static int32 FTrunc(float A);
 
-	/** Rounds A to the nearest 32 bit integer then upconverts to 64 bit integer */
+	/** Rounds A up towards positive infinity / up to the next integer (e.g., -1.6 becomes -1 and 1.6 becomes 2) */
+	UFUNCTION(BlueprintPure, Category = "Math|Float", meta=(DisplayName="Ceil"))
+	static int32 FCeil(float A);
+
+	/** Rounds A to the nearest integer (e.g., -1.6 becomes -2 and 1.6 becomes 2) */
 	UFUNCTION(BlueprintPure, meta = (DisplayName = "Round to Int64"), Category = "Math|Float")
 	static int64 Round64(float A);
 
-	/** Rounds A to the largest previous 32 bit integer then upconverts to 64 bit integer */
+	/** Rounds A down towards negative infinity / down to the previous integer (e.g., -1.6 becomes -2 and 1.6 becomes 1) */
 	UFUNCTION(BlueprintPure, meta = (DisplayName = "Floor to Int64"), Category = "Math|Float")
 	static int64 FFloor64(float A);
 
-	/** Rounds A to an 32 bit integer with truncation towards zero then upconverts to 64 bit integer.  (e.g. -1.7 truncated to -1, 2.8 truncated to 2) */
+	/** Rounds A towards zero, truncating the fractional part (e.g., -1.6 becomes -1 and 1.6 becomes 1) */
 	UFUNCTION(BlueprintPure, meta = (DisplayName = "Truncate to Int64", BlueprintAutocast), Category = "Math|Float")
 	static int64 FTrunc64(float A);
 
-	/** Rounds A to the smallest following 32 bit integer then upconverts to 64 bit integer */
-	UFUNCTION(BlueprintPure, meta = (DisplayName = "Floor to Int64"), Category = "Math|Float")
+	/** Rounds A up towards positive infinity / up to the next integer (e.g., -1.6 becomes -1 and 1.6 becomes 2) */
+	UFUNCTION(BlueprintPure, meta = (DisplayName = "Ceil to Int64"), Category = "Math|Float")
 	static int64 FCeil64(float A);
-
-	/** Rounds A to the smallest following integer */
-	UFUNCTION(BlueprintPure, Category="Math|Float")
-	static int32 FCeil(float A);
 
 	/** Returns the number of times Divisor will go into Dividend (i.e., Dividend divided by Divisor), as well as the remainder */
 	UFUNCTION(BlueprintPure, meta=(DisplayName = "Division (whole and remainder)"), Category="Math|Float")
@@ -807,6 +831,83 @@ class ENGINE_API UKismetMathLibrary : public UBlueprintFunctionLibrary
 
 
 	//
+	// IntPoint constants
+	//
+	
+	/** Zero Int Point (0, 0) */
+	UFUNCTION(BlueprintPure, meta = (ScriptConstant = "Zero", ScriptConstantHost = "IntPoint"), Category = "Math|IntPoint|Constants")
+	static FIntPoint IntPoint_Zero();
+	
+	/** One Int Point (1, 1) */
+	UFUNCTION(BlueprintPure, meta = (ScriptConstant = "One", ScriptConstantHost = "IntPoint"), Category = "Math|IntPoint|Constants")
+	static FIntPoint IntPoint_One();
+	
+	/** Up Int Point (0, -1) */
+	UFUNCTION(BlueprintPure, meta = (ScriptConstant = "Up", ScriptConstantHost = "IntPoint"), Category = "Math|IntPoint|Constants")
+	static FIntPoint IntPoint_Up();
+	
+	/** Left Int Point (-1, 0) */
+	UFUNCTION(BlueprintPure, meta = (ScriptConstant = "Left", ScriptConstantHost = "IntPoint"), Category = "Math|IntPoint|Constants")
+	static FIntPoint IntPoint_Left();
+	
+	/** Right Int Point (1, 0) */
+	UFUNCTION(BlueprintPure, meta = (ScriptConstant = "Right", ScriptConstantHost = "IntPoint"), Category = "Math|IntPoint|Constants")
+	static FIntPoint IntPoint_Right();
+	
+	/** Down Int Point (0, 1) */
+	UFUNCTION(BlueprintPure, meta = (ScriptConstant = "Down", ScriptConstantHost = "IntPoint"), Category = "Math|IntPoint|Constants")
+	static FIntPoint IntPoint_Down();
+
+	//
+	// IntPoint functions
+	//
+
+	/** Convert an IntPoint to a Vector2D */
+	UFUNCTION(BlueprintPure, meta = (DisplayName = "To Vector2D (IntPoint)", CompactNodeTitle = "->", ScriptMethod = "Vector2D", Keywords = "cast convert", BlueprintAutocast), Category = "Math|Conversions")
+	static FVector2D Conv_IntPointToVector2D(FIntPoint InIntPoint);
+
+	/** Returns IntPoint A added by B */
+	UFUNCTION(BlueprintPure, meta = (DisplayName = "IntPoint + IntPoint", CompactNodeTitle = "+", ScriptMethod = "Add", ScriptOperator = "+;+=", Keywords = "+ add plus"), Category = "Math|IntPoint")
+	static FIntPoint Add_IntPointIntPoint(FIntPoint A, FIntPoint B);
+
+	/** Returns IntPoint A added by B */
+	UFUNCTION(BlueprintPure, meta = (DisplayName = "IntPoint + int", CompactNodeTitle = "+", ScriptMethod = "AddInt", ScriptOperator = "+;+=", Keywords = "+ add plus"), Category = "Math|IntPoint")
+	static FIntPoint Add_IntPointInt(FIntPoint A, int32 B);
+
+	/** Returns IntPoint A subtracted by B */
+	UFUNCTION(BlueprintPure, meta = (DisplayName = "IntPoint - IntPoint", CompactNodeTitle = "-", ScriptMethod = "Subtract", ScriptOperator = "-;-=", Keywords = "- subtract minus"), Category = "Math|IntPoint")
+	static FIntPoint Subtract_IntPointIntPoint(FIntPoint A, FIntPoint B);
+
+	/** Returns IntPoint A subtracted by B */
+	UFUNCTION(BlueprintPure, meta = (DisplayName = "IntPoint - Int", CompactNodeTitle = "-", ScriptMethod = "SubtractInt", ScriptOperator = "-;-=", Keywords = "- subtract minus"), Category = "Math|IntPoint")
+	static FIntPoint Subtract_IntPointInt(FIntPoint A, int32 B);
+
+	/** Returns IntPoint A multiplied by B */
+	UFUNCTION(BlueprintPure, meta = (DisplayName = "IntPoint * IntPoint", CompactNodeTitle = "*", ScriptMethod = "Multiply", ScriptOperator = "*;*=", Keywords = "* multiply"), Category = "Math|IntPoint")
+	static FIntPoint Multiply_IntPointIntPoint(FIntPoint A, FIntPoint B);
+
+	/** Returns IntPoint A multiplied by B */
+	UFUNCTION(BlueprintPure, meta = (DisplayName = "IntPoint * Int", CompactNodeTitle = "*", ScriptMethod = "MultiplyInt", ScriptOperator = "*;*=", Keywords = "* multiply"), Category = "Math|IntPoint")
+	static FIntPoint Multiply_IntPointInt(FIntPoint A, int32 B);
+
+	/** Returns IntPoint A divided by B */
+	UFUNCTION(BlueprintPure, meta = (DisplayName = "IntPoint / IntPoint", CompactNodeTitle = "/", ScriptMethod = "Divide", ScriptOperator = "/;/=", Keywords = "/ divide"), Category = "Math|IntPoint")
+	static FIntPoint Divide_IntPointIntPoint(FIntPoint A, FIntPoint B);
+
+	/** Returns IntPoint A divided by B */
+	UFUNCTION(BlueprintPure, meta = (DisplayName = "IntPoint / Int", CompactNodeTitle = "/", ScriptMethod = "DivideInt", ScriptOperator = "/;/=", Keywords = "/ divide"), Category = "Math|IntPoint")
+	static FIntPoint Divide_IntPointInt(FIntPoint A, int32 B);
+
+	/** Returns true if IntPoint A is equal to IntPoint B (A == B) */
+	UFUNCTION(BlueprintPure, meta = (DisplayName = "Equal (IntPoint)", CompactNodeTitle = "==", ScriptMethod = "Equals", ScriptOperator = "==", Keywords = "== equal"), Category = "Math|IntPoint")
+	static bool Equal_IntPointIntPoint(FIntPoint A, FIntPoint B);
+
+	/** Returns true if IntPoint A is NOT equal to IntPoint B (A != B) */
+	UFUNCTION(BlueprintPure, meta = (DisplayName = "Not Equal (IntPoint)", CompactNodeTitle = "!=", ScriptMethod = "NotEqual", ScriptOperator = "==", Keywords = "== not equal"), Category = "Math|IntPoint")
+	static bool NotEqual_IntPointIntPoint(FIntPoint A, FIntPoint B);
+	
+
+	//
 	// Vector2D constants - exposed for scripting
 	//
 
@@ -839,7 +940,7 @@ class ENGINE_API UKismetMathLibrary : public UBlueprintFunctionLibrary
 	UFUNCTION(BlueprintPure, meta = (DisplayName = "To Vector (Vector2D)", CompactNodeTitle = "->", ScriptMethod = "Vector", Keywords = "cast convert", BlueprintAutocast), Category = "Math|Conversions")
 	static FVector Conv_Vector2DToVector(FVector2D InVector2D, float Z = 0);
 
-	/** Convert a Vector2D to a Vector */
+	/** Convert a Vector2D to an IntPoint */
 	UFUNCTION(BlueprintPure, meta = (DisplayName = "To IntPoint (Vector2D)", CompactNodeTitle = "->", ScriptMethod = "IntPoint", Keywords = "cast convert", BlueprintAutocast), Category = "Math|Conversions")
 	static FIntPoint Conv_Vector2DToIntPoint(FVector2D InVector2D);
 
@@ -901,8 +1002,8 @@ class ENGINE_API UKismetMathLibrary : public UBlueprintFunctionLibrary
 	 * @param InX New X coordinate.
 	 * @param InY New Y coordinate.
 	 */
-	UFUNCTION(BlueprintPure, meta = (ScriptMethod = "Set"), Category = "Math|Vector2D")
-	static void Set2D(UPARAM(ref) FVector2D& A, float InX, float InY);
+	UFUNCTION(BlueprintCallable, meta = (ScriptMethod = "Set"), Category = "Math|Vector2D")
+	static void Set2D(UPARAM(ref) FVector2D& A, float X, float Y);
 
 	/**
 	 * Creates a copy of this vector with both axes clamped to the given range.
@@ -1003,7 +1104,7 @@ class ENGINE_API UKismetMathLibrary : public UBlueprintFunctionLibrary
 	 * @param		Current			Actual position
 	 * @param		Target			Target position
 	 * @param		DeltaTime		Time since last tick
-	 * @param		InterpSpeed		Interpolation speed
+	 * @param		InterpSpeed		Interpolation speed, if the speed given is 0, then jump to the target.
 	 * @return		New interpolated position
 	 */
 	UFUNCTION(BlueprintPure, Category="Math|Interpolation", meta=(ScriptMethod="InterpTo", Keywords="position"))
@@ -1041,7 +1142,7 @@ class ENGINE_API UKismetMathLibrary : public UBlueprintFunctionLibrary
 	 * @param Tolerance Minimum squared length of vector for normalization.
 	 * @see NormalSafe2D()
 	 */
-	UFUNCTION(BlueprintPure, meta = (DisplayName = "Normalize In Place (Vector2D)", Keywords = "Unit Vector", ScriptMethod = "Normalize"), Category = "Math|Vector2D")
+	UFUNCTION(BlueprintCallable, meta = (DisplayName = "Normalize In Place (Vector2D)", Keywords = "Unit Vector", ScriptMethod = "Normalize"), Category = "Math|Vector2D")
 	static void Normalize2D(UPARAM(ref) FVector2D& A, float Tolerance = 1.e-8);
 
 	/** Converts spherical coordinates on the unit sphere into a Cartesian unit length vector. */
@@ -1054,7 +1155,7 @@ class ENGINE_API UKismetMathLibrary : public UBlueprintFunctionLibrary
 	 * @param OutDir Reference passed in to store unit direction vector.
 	 * @param OutLength Reference passed in to store length of the vector.
 	 */
-	UFUNCTION(BlueprintPure, meta = (ScriptMethod = "To Direction And Length"), Category = "Math|Vector2D")
+	UFUNCTION(BlueprintPure, meta = (DisplayName = "To Direction And Length", ScriptMethod = "ToDirectionAndLength"), Category = "Math|Vector2D")
 	static void ToDirectionAndLength2D(FVector2D A, FVector2D &OutDir, float &OutLength);
 
 	/**
@@ -1062,7 +1163,7 @@ class ENGINE_API UKismetMathLibrary : public UBlueprintFunctionLibrary
 	 *
 	 * @return New FVector2D from this vector that is rounded.
 	 */
-	UFUNCTION(BlueprintPure, meta = (ScriptMethod = "To Rounded (Vector2D)"), Category = "Math|Vector2D")
+	UFUNCTION(BlueprintPure, meta = (DisplayName = "To Rounded (Vector2D)", ScriptMethod = "ToRounded"), Category = "Math|Vector2D")
 	static FVector2D ToRounded2D(FVector2D A);
 
 	/**
@@ -1136,7 +1237,7 @@ class ENGINE_API UKismetMathLibrary : public UBlueprintFunctionLibrary
 	 *
 	 * @param InVector Vector to copy values from.
 	 */
-	UFUNCTION(BlueprintPure, meta = (ScriptMethod = "Assign"), Category = "Math|Vector")
+	UFUNCTION(BlueprintCallable, meta = (ScriptMethod = "Assign"), Category = "Math|Vector")
 	static void Vector_Assign(UPARAM(ref) FVector& A, const FVector& InVector);
 
 	/**
@@ -1146,8 +1247,8 @@ class ENGINE_API UKismetMathLibrary : public UBlueprintFunctionLibrary
 	 * @param InY New Y coordinate.
 	 * @param InZ New Z coordinate.
 	 */
-	UFUNCTION(BlueprintPure, meta = (ScriptMethod = "Set"), Category = "Math|Vector")
-	static void Vector_Set(UPARAM(ref) FVector& A, float InX, float InY, float InZ);
+	UFUNCTION(BlueprintCallable, meta = (ScriptMethod = "Set"), Category = "Math|Vector")
+	static void Vector_Set(UPARAM(ref) FVector& A, float X, float Y, float Z);
 
 	/** Breaks a vector apart into X, Y, Z */
 	UFUNCTION(BlueprintPure, Category="Math|Vector", meta=(NativeBreakFunc))
@@ -1161,7 +1262,7 @@ class ENGINE_API UKismetMathLibrary : public UBlueprintFunctionLibrary
 	UFUNCTION(BlueprintPure, meta=(DisplayName = "ToTransform (Vector)", CompactNodeTitle = "->", ScriptMethod = "Transform", Keywords="cast convert", BlueprintAutocast), Category="Math|Conversions")
 	static FTransform Conv_VectorToTransform(FVector InLocation);
 	
-	/** Convert a Vector to a Vector2D */
+	/** Convert a Vector to a Vector2D using the Vector's (X, Y) coordinates */
 	UFUNCTION(BlueprintPure, meta=(DisplayName = "ToVector2D (Vector)", CompactNodeTitle = "->", ScriptMethod = "Vector2D", Keywords="cast convert", BlueprintAutocast), Category="Math|Conversions")
 	static FVector2D Conv_VectorToVector2D(FVector InVector);
 
@@ -1279,7 +1380,7 @@ class ENGINE_API UKismetMathLibrary : public UBlueprintFunctionLibrary
 	static FVector LessLess_VectorRotator(FVector A, FRotator B);
 
 	/** When this vector contains Euler angles (degrees), ensure that angles are between +/-180 */
-	UFUNCTION(BlueprintPure, meta = (ScriptMethod = "UnwindEuler"), Category = "Math|Vector")
+	UFUNCTION(BlueprintCallable, meta = (ScriptMethod = "UnwindEuler"), Category = "Math|Vector")
 	static void Vector_UnwindEuler(UPARAM(ref) FVector& A);
 
 	/** Create a copy of this vector, with its magnitude/size/length clamped between Min and Max. */
@@ -1547,7 +1648,7 @@ class ENGINE_API UKismetMathLibrary : public UBlueprintFunctionLibrary
 	 *
 	 * @param Tolerance Minimum squared length of vector for normalization.
 	 */
-	UFUNCTION(BlueprintPure, meta = (DisplayName = "Normalize In Place (Vector)", ScriptMethod = "Normalize", Keywords = "Unit Vector"), Category = "Math|Vector")
+	UFUNCTION(BlueprintCallable, meta = (DisplayName = "Normalize In Place (Vector)", ScriptMethod = "Normalize", Keywords = "Unit Vector"), Category = "Math|Vector")
 	static void Vector_Normalize(UPARAM(ref) FVector& A, float Tolerance = 1.e-8);
 
 	/** Linearly interpolates between A and B based on Alpha (100% of A when Alpha=0 and 100% of B when Alpha=1) */
@@ -1564,7 +1665,7 @@ class ENGINE_API UKismetMathLibrary : public UBlueprintFunctionLibrary
 	 * @param		Current			Actual position
 	 * @param		Target			Target position
 	 * @param		DeltaTime		Time since last tick
-	 * @param		InterpSpeed		Interpolation speed
+	 * @param		InterpSpeed		Interpolation speed, if the speed given is 0, then jump to the target.
 	 * @return		New interpolated position
 	 */
 	UFUNCTION(BlueprintPure, Category="Math|Interpolation", meta=(ScriptMethod = "InterpTo", Keywords="position"))
@@ -1661,7 +1762,7 @@ class ENGINE_API UKismetMathLibrary : public UBlueprintFunctionLibrary
 	 * @param InAddVect Vector to add.
 	 * @param InRadius Half size of the cube.
 	 */
-	UFUNCTION(BlueprintPure, meta=(ScriptMethod = "AddBounded", Keywords = "Bounding"), Category="Math|Vector")
+	UFUNCTION(BlueprintCallable, meta=(ScriptMethod = "AddBounded", Keywords = "Bounding"), Category="Math|Vector")
 	static void Vector_AddBounded(UPARAM(ref) FVector& A, FVector InAddVect, float InRadius);
 
 	/** Get a copy of this vector, clamped inside of the specified axis aligned cube. */
@@ -1903,7 +2004,7 @@ class ENGINE_API UKismetMathLibrary : public UBlueprintFunctionLibrary
 	 *
 	 * @param InVector Vector to copy values from.
 	 */
-	UFUNCTION(BlueprintPure, meta = (ScriptMethod = "Assign"), Category = "Math|Vector4")
+	UFUNCTION(BlueprintCallable, meta = (ScriptMethod = "Assign"), Category = "Math|Vector4")
 	static void Vector4_Assign(UPARAM(ref) FVector4& A, const FVector4& InVector);
 
 	/**
@@ -1914,8 +2015,8 @@ class ENGINE_API UKismetMathLibrary : public UBlueprintFunctionLibrary
 	 * @param InZ New Z coordinate.
 	 * @param InW New W coordinate.
 	 */
-	UFUNCTION(BlueprintPure, meta = (ScriptMethod = "Set"), Category = "Math|Vector4")
-	static void Vector4_Set(UPARAM(ref) FVector4& A, float InX, float InY, float InZ, float InW);
+	UFUNCTION(BlueprintCallable, meta = (ScriptMethod = "Set"), Category = "Math|Vector4")
+	static void Vector4_Set(UPARAM(ref) FVector4& A, float X, float Y, float Z, float W);
 
 	/** Returns the cross product of two vectors - see  http://mathworld.wolfram.com/CrossProduct.html */
 	UFUNCTION(BlueprintPure, meta = (DisplayName = "Cross Product XYZ (Vector4)", CompactNodeTitle = "cross3", ScriptMethod = "Cross3"), Category = "Math|Vector4")
@@ -2009,7 +2110,7 @@ class ENGINE_API UKismetMathLibrary : public UBlueprintFunctionLibrary
 	 *
 	 * @param Tolerance Minimum squared length of vector for normalization.
 	 */
-	UFUNCTION(BlueprintPure, meta = (DisplayName = "Normalize In Place XYZ (Vector4)", ScriptMethod = "Normalize3", Keywords = "Unit Vector"), Category = "Math|Vector4")
+	UFUNCTION(BlueprintCallable, meta = (DisplayName = "Normalize In Place XYZ (Vector4)", ScriptMethod = "Normalize3", Keywords = "Unit Vector"), Category = "Math|Vector4")
 	static void Vector4_Normalize3(UPARAM(ref) FVector4& A, float Tolerance = 1.e-8);
 
 	/** 
@@ -2025,6 +2126,13 @@ class ENGINE_API UKismetMathLibrary : public UBlueprintFunctionLibrary
 	UFUNCTION(BlueprintPure, meta=(ScriptMethod = "MirrorByVector3", Keywords = "Reflection"), Category = "Math|Vector4")
 	static FVector4 Vector4_MirrorByVector3(const FVector4& Direction, const FVector4& SurfaceNormal);
 
+	/**
+	 * Transform the input vector4 by a provided matrix4x4 and returns the resulting vector4.
+	 *
+	 * @return Transformed vector4.
+	 */
+	UFUNCTION(BlueprintPure, meta = (DisplayName = "Transform Vector4 by Matrix"), Category = "Math|Vector4")
+	static FVector4 TransformVector4(const FMatrix& Matrix, const FVector4& Vec4);
 
 	//
 	// Rotator functions.
@@ -2180,22 +2288,321 @@ class ENGINE_API UKismetMathLibrary : public UBlueprintFunctionLibrary
 	// Matrix functions
 	//
 
-	/** Convert a Matrix to a Transform */
-	UFUNCTION(BlueprintPure, meta = (DisplayName = "To Transform (Matrix)", CompactNodeTitle = "->", ScriptMethod = "Transform", Keywords = "cast convert", BlueprintAutocast), Category = "Math|Conversions")
+	/** Convert a Matrix to a Transform 
+	* (Assumes Matrix represents a transform) 
+	*/
+	UFUNCTION(BlueprintPure, meta = (DisplayName = "To Transform (Matrix)", CompactNodeTitle = "->", ScriptMethod = "Transform", Keywords = "cast convert"), Category = "Math|Conversions")
 	static FTransform Conv_MatrixToTransform(const FMatrix& InMatrix);
 
-	/** Convert a Matrix to a Rotator */
-	UFUNCTION(BlueprintPure, meta = (DisplayName = "To Rotator (Matrix)", CompactNodeTitle = "->", ScriptMethod = "Rotator", Keywords = "cast convert", BlueprintAutocast), Category = "Math|Conversions")
+	/** Convert a Matrix to a Rotator 
+	* (Assumes Matrix represents a transform) 
+	*/
+	UFUNCTION(BlueprintPure, meta = (DisplayName = "To Rotator (Matrix)", CompactNodeTitle = "->", ScriptMethod = "Rotator", Keywords = "cast convert"), Category = "Math|Conversions")
 	static FRotator Conv_MatrixToRotator(const FMatrix& InMatrix);
 
 	/**
 	 * Get the origin of the co-ordinate system
+	 * (Assumes Matrix represents a transform)
 	 *
 	 * @return co-ordinate system origin
 	 */
 	UFUNCTION(BlueprintPure, meta = (DisplayName = "Get Origin (Matrix)", ScriptMethod = "GetOrigin"), Category = "Math|Matrix")
 	static FVector Matrix_GetOrigin(const FMatrix& InMatrix);
 
+	// Identity matrix
+	UFUNCTION(BlueprintPure, meta = (DisplayName = "Identity (Matrix)", ScriptConstant = "Identity", ScriptConstantHost = "Matrix"), Category = "Math|Matrix")
+	static FMatrix Matrix_Identity();
+
+	/**
+	 * Gets the result of multiplying a Matrix to this.
+	 *
+	 * @param Other The matrix to multiply this by.
+	 * @return The result of multiplication.
+	 */
+	UFUNCTION(BlueprintPure, meta = (DisplayName = "Matrix * Matrix", CompactNodeTitle = "*", ScriptMethod = "Multiply", ScriptOperator = "*;*=", Keywords = "* multiply"), Category = "Math|Matrix")
+	static FMatrix Multiply_MatrixMatrix (const FMatrix& A, const FMatrix& B);
+
+	/**
+	 * Gets the result of adding a matrix to this.
+	 *
+	 * @param Other The Matrix to add.
+	 * @return The result of addition.
+	 */
+	UFUNCTION(BlueprintPure, meta = (DisplayName = "Matrix + Matrix", CompactNodeTitle = "+", ScriptMethod = "Add", ScriptOperator = "+;+=", Keywords = "+ add plus", CommutativeAssociativeBinaryOperator = "true"), Category = "Math|Matrix")
+	static FMatrix Add_MatrixMatrix (const FMatrix& A, const FMatrix& B);
+
+	/**
+	  * Multiplies all values of the matrix by a float.
+	  * If your Matrix represents a Transform that you wish to scale you should use Apply Scale instead
+	  */
+	UFUNCTION(BlueprintPure, meta = (DisplayName = "Matrix * Float", CompactNodeTitle = "*", ScriptMethod = "MultiplyFloat", ScriptOperator = "*;*=", Keywords = "* multiply"), Category = "Math|Matrix")
+	static FMatrix Multiply_MatrixFloat (const FMatrix& A, float B);
+
+	/**
+	 * Checks whether another Matrix is equal to this, within specified tolerance.
+	 *
+	 * @param Other The other Matrix.
+	 * @param Tolerance Error Tolerance.
+	 * @return true if two Matrix are equal, within specified tolerance, otherwise false.
+	 */
+	UFUNCTION(BlueprintPure, meta = (DisplayName = "Equal (Matrix)", CompactNodeTitle = "==", ScriptMethod = "Equals", ScriptOperator = "==", Keywords = "== equal"), Category = "Math|Matrix")
+	static bool EqualEqual_MatrixMatrix(const FMatrix& A, const FMatrix& B, float Tolerance = 1.e-4f);
+
+	/**
+	 * Checks whether another Matrix is not equal to this, within specified tolerance.
+	 *
+	 * @param Other The other Matrix.
+	 * @return true if two Matrix are not equal, within specified tolerance, otherwise false.
+	 */
+	UFUNCTION(BlueprintPure, meta = (DisplayName = "Not Equal (Matrix)", CompactNodeTitle = "!=", ScriptMethod = "NotEqual", ScriptOperator = "!=", Keywords = "!= not equal"), Category = "Math|Matrix")
+	static bool NotEqual_MatrixMatrix(const FMatrix& A, const FMatrix& B, float Tolerance = 1.e-4f);
+
+	/**
+	 * Transform a vector by the matrix.
+	 * (Assumes Matrix represents a transform) 
+	*/
+	UFUNCTION(BlueprintPure, meta = (DisplayName = "Transform Vector4 (Matrix)", ScriptMethod = "TransformVector4"), Category = "Math|Matrix")
+	static FVector4 Matrix_TransformVector4(const FMatrix& M, FVector4 V);
+
+	/** Transform a location - will take into account translation part of the FMatrix.
+	 * (Assumes Matrix represents a transform)
+	 */
+	UFUNCTION(BlueprintPure, meta = (DisplayName = "Transform Position (Matrix)", ScriptMethod = "TransformPosition"), Category = "Math|Matrix")
+	static FVector4 Matrix_TransformPosition(const FMatrix& M, FVector V);
+
+	/** Inverts the matrix and then transforms V - correctly handles scaling in this matrix.
+	* (Assumes Matrix represents a transform)
+	*/
+	UFUNCTION(BlueprintPure, meta = (DisplayName = "Inverse Transform Position (Matrix)", ScriptMethod = "InverseTransformPosition"), Category = "Math|Matrix")
+	static FVector Matrix_InverseTransformPosition(const FMatrix& M, FVector V);
+
+	/**
+	 *	Transform a direction vector - will not take into account translation part of the FMatrix.
+	 *	If you want to transform a surface normal (or plane) and correctly account for non-uniform scaling you should use TransformByUsingAdjointT.
+	 * (Assumes Matrix represents a transform)
+	*/
+	UFUNCTION(BlueprintPure, meta = (DisplayName = "Transform Vector (Matrix)", ScriptMethod = "TransformVector"), Category = "Math|Matrix")
+	static FVector4 Matrix_TransformVector(const FMatrix& M, FVector V);
+
+	/**
+	 *	Transform a direction vector by the inverse of this matrix - will not take into account translation part.
+	 *	If you want to transform a surface normal (or plane) and correctly account for non-uniform scaling you should use TransformByUsingAdjointT with adjoint of matrix inverse.
+	 * (Assumes Matrix represents a transform)
+	*/
+	UFUNCTION(BlueprintPure, meta = (DisplayName = "Inverse Transform Vector (Matrix)", ScriptMethod = "InverseTransformVector"), Category = "Math|Matrix")
+	static FVector Matrix_InverseTransformVector(const FMatrix& M, FVector V);
+
+	// Transpose.
+	UFUNCTION(BlueprintPure, meta = (DisplayName = "Get Transposed (Matrix)", ScriptMethod = "GetTransposed"), Category = "Math|Matrix")
+	static FMatrix Matrix_GetTransposed(const FMatrix& M);
+
+	// @return determinant of this matrix.
+	UFUNCTION(BlueprintPure, meta = (DisplayName = "Get Determinant (Matrix)", ScriptMethod = "GetDeterminant"), Category = "Math|Matrix")
+	static float Matrix_GetDeterminant(const FMatrix& M);
+
+	/** @return the determinant of rotation 3x3 matrix 
+	* (Assumes Top Left 3x3 Submatrix represents a Rotation)
+	*/
+	UFUNCTION(BlueprintPure, meta = (DisplayName = "Get Rotation Determinant (Matrix)", ScriptMethod = "GetRotDeterminant"), Category = "Math|Matrix")
+	static float Matrix_GetRotDeterminant(const FMatrix& M);
+
+	/** Get the inverse of the Matrix. Handles nil matrices. */
+	UFUNCTION(BlueprintPure, meta = (DisplayName = "GetInverse (Matrix)", ScriptMethod = "GetInverse"), Category = "Math|Matrix")
+	static FMatrix Matrix_GetInverse(const FMatrix& M);
+
+	/** Get the Transose Adjoint of the Matrix. */
+	UFUNCTION(BlueprintPure, meta = (DisplayName = "Get Transpose Adjoint (Matrix)", ScriptMethod = "GetTransposeAdjoint"), Category = "Math|Matrix")
+	static FMatrix Matrix_GetTransposeAdjoint(const FMatrix& M);
+
+	/** Remove any scaling from this matrix (ie magnitude of each row is 1) with error Tolerance
+	* (Assumes Matrix represents a transform) 
+	*/
+	UFUNCTION(BlueprintCallable, meta = (DisplayName = "Remove Scaling (Matrix)", ScriptMethod = "RemoveScaling"), Category = "Math|Matrix")
+	static void Matrix_RemoveScaling(UPARAM(Ref) FMatrix& M, float Tolerance = 1.e-8f);
+
+	/** Returns matrix after RemoveScaling with error Tolerance
+	* (Assumes Matrix represents a transform)
+	*/
+	UFUNCTION(BlueprintPure, meta = (DisplayName = "Get Matrix Without Scale (Matrix)", ScriptMethod = "GetMatrixWithoutScale"), Category = "Math|Matrix")
+	static FMatrix Matrix_GetMatrixWithoutScale(const FMatrix& M, float Tolerance = 1.e-8f);
+
+	/** return a 3D scale vector calculated from this matrix (where each component is the magnitude of a row vector) with error Tolerance.
+	* (Assumes Matrix represents a transform)
+	*/
+	UFUNCTION(BlueprintPure, meta = (DisplayName = "Get Scale Vector (Matrix)", ScriptMethod = "GetScaleVector"), Category = "Math|Matrix")
+	static FVector Matrix_GetScaleVector(const FMatrix& M, float Tolerance = 1.e-8f);
+
+	/** Remove any translation from this matrix
+	* (Assumes Matrix represents a transform)
+	*/
+	UFUNCTION(BlueprintPure, meta = (DisplayName = "Remove Translation (Matrix)", ScriptMethod = "RemoveTranslation"), Category = "Math|Matrix")
+	static FMatrix Matrix_RemoveTranslation(const FMatrix& M);
+
+	/** Returns a matrix with an additional translation concatenated.
+	* (Assumes Matrix represents a transform)
+	*/
+	UFUNCTION(BlueprintPure, meta = (DisplayName = "Concatenate Translation (Matrix)", ScriptMethod = "ConcatenateTranslation"), Category = "Math|Matrix")
+	static FMatrix Matrix_ConcatenateTranslation(const FMatrix& M, FVector Translation);
+
+	/** Returns true if any element of this matrix is NaN */
+	UFUNCTION(BlueprintPure, meta = (DisplayName = "Contains NaN (Matrix)", ScriptMethod = "ContainsNaN"), Category = "Math|Matrix")
+	static bool Matrix_ContainsNaN(const FMatrix& M);
+
+	/** Scale the translation part of the matrix by the supplied vector.
+	* (Assumes Matrix represents a transform)
+	*/
+	UFUNCTION(BlueprintPure, meta = (DisplayName = "Scale Translation (Matrix)", ScriptMethod = "ScaleTranslation"), Category = "Math|Matrix")
+	static FMatrix Matrix_ScaleTranslation(const FMatrix& M, FVector Scale3D);
+
+	/** @return the maximum magnitude of any row of the matrix.
+	* (Assumes Matrix represents a transform)
+	*/
+	UFUNCTION(BlueprintPure, meta = (DisplayName = "Get Maximum Axis Scale (Matrix)", ScriptMethod = "GetMaximumAxisScale"), Category = "Math|Matrix")
+	static float Matrix_GetMaximumAxisScale(const FMatrix& M);
+
+	/** Apply Scale to this matrix
+	* (Assumes Matrix represents a transform)
+	*/
+	UFUNCTION(BlueprintPure, meta = (DisplayName = "Apply Scale (Matrix)", ScriptMethod = "ApplyScale"), Category = "Math|Matrix")
+	static FMatrix Matrix_ApplyScale(const FMatrix& M, float Scale);
+
+	/**
+	 * get axis of this matrix scaled by the scale of the matrix
+	 * (Assumes Matrix represents a transform)
+	 *
+	 * @param i index into the axis of the matrix
+	 * @ return vector of the axis
+	 */
+	UFUNCTION(BlueprintPure, meta = (DisplayName = "Get Scaled Axis (Matrix)", ScriptMethod = "GetScaledAxis"), Category = "Math|Matrix")
+	static FVector Matrix_GetScaledAxis(const FMatrix& M, TEnumAsByte<EAxis::Type> Axis);
+
+	/**
+	 * get axes of this matrix scaled by the scale of the matrix
+	 * (Assumes Matrix represents a transform)
+	 *
+	 * @param X axes returned to this param
+	 * @param Y axes returned to this param
+	 * @param Z axes returned to this param
+	 */
+	UFUNCTION(BlueprintPure, meta = (DisplayName = "Get Scaled Axes (Matrix)", ScriptMethod = "GetScaledAxes"), Category = "Math|Matrix")
+	static void Matrix_GetScaledAxes(const FMatrix& M, FVector &X, FVector &Y, FVector &Z);
+
+	/**
+	 * get unit length axis of this matrix
+	 * (Assumes Matrix represents a transform)
+	 *
+	 * @param i index into the axis of the matrix
+	 * @return vector of the axis
+	 */
+	UFUNCTION(BlueprintPure, meta = (DisplayName = "Get Unit Axis (Matrix)", ScriptMethod = "GetUnitAxis"), Category = "Math|Matrix")
+	static FVector Matrix_GetUnitAxis(const FMatrix& M, TEnumAsByte<EAxis::Type> Axis);
+
+	/**
+	 * get unit length axes of this matrix
+	 * (Assumes Matrix represents a transform)
+	 *
+	 * @param X axes returned to this param
+	 * @param Y axes returned to this param
+	 * @param Z axes returned to this param
+	 */
+	UFUNCTION(BlueprintPure, meta = (DisplayName = "Get Unit Axes (Matrix)", ScriptMethod = "GetUnitAxes"), Category = "Math|Matrix")
+	static void Matrix_GetUnitAxes(const FMatrix& M, FVector &X, FVector &Y, FVector &Z);
+
+	/**
+	 * set an axis of this matrix
+	 * (Assumes Matrix represents a transform)
+	 *
+	 * @param i index into the axis of the matrix
+	 * @param Axis vector of the axis
+	 */
+	UFUNCTION(BlueprintCallable, meta = (DisplayName = "Set Axis (Matrix)", ScriptMethod = "SetAxis"), Category = "Math|Matrix")
+	static void Matrix_SetAxis(UPARAM(Ref) FMatrix& M, TEnumAsByte<EAxis::Type> Axis, FVector AxisVector);
+
+	/** Set the origin of the coordinate system to the given vector
+	* (Assumes Matrix represents a transform)
+	*/
+	UFUNCTION(BlueprintCallable, meta = (DisplayName = "Set Origin (Matrix)", ScriptMethod = "SetOrigin"), Category = "Math|Matrix")
+	static void Matrix_SetOrigin(UPARAM(Ref) FMatrix& M, FVector NewOrigin);
+
+	/**
+	 * get a column of this matrix
+	 *
+	 * @param i index into the column of the matrix
+	 * @return vector of the column
+	 */
+	UFUNCTION(BlueprintPure, meta = (DisplayName = "Get Column (Matrix)", ScriptMethod = "GetColumn"), Category = "Math|Matrix")
+	static FVector Matrix_GetColumn(const FMatrix& M, TEnumAsByte<EMatrixColumns::Type> Column);
+
+	UFUNCTION(BlueprintCallable, meta = (DisplayName = "Set Column (Matrix)", ScriptMethod = "SetColumn"), Category = "Math|Matrix")
+	static void Matrix_SetColumn(UPARAM(Ref) FMatrix& M, TEnumAsByte<EMatrixColumns::Type> Column, FVector Value);
+
+	/** 
+	* Get the rotator representation of this matrix
+	* (Assumes Matrix represents a transform)
+	*@return rotator representation of this matrix
+	*/
+	UFUNCTION(BlueprintPure, meta = (DisplayName = "Get Rotator (Matrix)", ScriptMethod = "GetRotator"), Category = "Math|Matrix")
+	static FRotator Matrix_GetRotator(const FMatrix& M);
+
+	/**
+	 * Transform a rotation matrix into a quaternion.
+	 * (Assumes Matrix represents a transform)
+	 *
+	 * @warning rotation part will need to be unit length for this to be right!
+	 */
+	UFUNCTION(BlueprintPure, meta = (DisplayName = "To Quat (Matrix)", ScriptMethod = "ToQuat"), Category = "Math|Matrix")
+	static FQuat Matrix_ToQuat(const FMatrix& M);
+
+	// Frustum plane extraction.
+
+	/** Get the near plane of the Frustum of this matrix 
+	 * (Assumes Matrix represents a View Projection Matrix)
+	 * @param OutPlane the near plane of the Frustum of this matrix 
+	 */
+	UFUNCTION(BlueprintPure, meta = (DisplayName = "Get Frustum Near Plane (Matrix)", ScriptMethod = "GetFrustumNearPlane"), Category = "Math|Matrix")
+	static bool Matrix_GetFrustumNearPlane(const FMatrix& M, FPlane& OutPlane);
+
+	/** Get the far plane of the Frustum of this matrix
+	 * (Assumes Matrix represents a View Projection Matrix)
+	 * @param OutPlane the far plane of the Frustum of this matrix 
+	 */
+	UFUNCTION(BlueprintPure, meta = (DisplayName = "Get Frustum Far Plane (Matrix)", ScriptMethod = "GetFrustumFarPlane"), Category = "Math|Matrix")
+	static bool Matrix_GetFrustumFarPlane(const FMatrix& M, FPlane& OutPlane);
+
+	/** Get the left plane of the Frustum of this matrix
+	 * (Assumes Matrix represents a View Projection Matrix)
+	 * @param OutPlane the left plane of the Frustum of this matrix 
+	 */
+	UFUNCTION(BlueprintPure, meta = (DisplayName = "Get Frustum Left Plane (Matrix)", ScriptMethod = "GetFrustumLeftPlane"), Category = "Math|Matrix")
+	static bool Matrix_GetFrustumLeftPlane(const FMatrix& M, FPlane& OutPlane);
+
+	/** Get the right plane of the Frustum of this matrix
+	 * (Assumes Matrix represents a View Projection Matrix)
+	 * @param OutPlane the right plane of the Frustum of this matrix 
+	 */
+	UFUNCTION(BlueprintPure, meta = (DisplayName = "Get Frustum Right Plane (Matrix)", ScriptMethod = "GetFrustumRightPlane"), Category = "Math|Matrix")
+	static bool Matrix_GetFrustumRightPlane(const FMatrix& M, FPlane& OutPlane);
+
+	/** Get the top plane of the Frustum of this matrix
+	 * (Assumes Matrix represents a View Projection Matrix)
+	 * @param OutPlane the top plane of the Frustum of this matrix 
+	 */
+	UFUNCTION(BlueprintPure, meta = (DisplayName = "Get Frustum Top Plane (Matrix)", ScriptMethod = "GetFrustumTopPlane"), Category = "Math|Matrix")
+	static bool Matrix_GetFrustumTopPlane(const FMatrix& M, FPlane& OutPlane);
+
+	/** Get the bottom plane of the Frustum of this matrix
+	 * (Assumes Matrix represents a View Projection Matrix)
+	 * @param OutPlane the bottom plane of the Frustum of this matrix 
+	 */
+	UFUNCTION(BlueprintPure, meta = (DisplayName = "Get Frustum Bottom Plane (Matrix)", ScriptMethod = "GetFrustumBottomPlane"), Category = "Math|Matrix")
+	static bool Matrix_GetFrustumBottomPlane(const FMatrix& M, FPlane& OutPlane);
+
+	/**
+	 * Utility for mirroring this transform across a certain plane, and flipping one of the axis as well.
+	 * (Assumes Matrix represents a transform)
+	 */
+	UFUNCTION(BlueprintPure, meta = (DisplayName = "Mirror (Matrix)", ScriptMethod = "Mirror"), Category = "Math|Matrix")
+	static FMatrix Matrix_Mirror(const FMatrix& M, TEnumAsByte<EAxis::Type> MirrorAxis, TEnumAsByte<EAxis::Type> FlipAxis);
 
 	//
 	// Quat constants - exposed for scripting
@@ -2269,7 +2676,7 @@ class ENGINE_API UKismetMathLibrary : public UBlueprintFunctionLibrary
 	static float Quat_AngularDistance(const FQuat& A, const FQuat& B);
 
 	/** Modify the quaternion to ensure that the delta between it and B represents the shortest possible rotation angle. */
-	UFUNCTION(BlueprintPure, meta = (DisplayName = "Ensure shortest arc to (Quat)", ScriptMethod = "EnsureShortestArcTo"), Category = "Math|Quat")
+	UFUNCTION(BlueprintCallable, meta = (DisplayName = "Ensure shortest arc to (Quat)", ScriptMethod = "EnsureShortestArcTo"), Category = "Math|Quat")
 	static void Quat_EnforceShortestArcWith(UPARAM(ref) FQuat& A, const FQuat& B);
 
 	/**	Convert a Quaternion into floating-point Euler angles (in degrees). */
@@ -2318,7 +2725,7 @@ class ENGINE_API UKismetMathLibrary : public UBlueprintFunctionLibrary
 	 *
 	 * @param Tolerance Minimum squared length of quaternion for normalization.
 	 */
-	UFUNCTION(BlueprintPure, meta = (DisplayName = "Normalize (Quat)", ScriptMethod = "Normalize"), Category = "Math|Quat")
+	UFUNCTION(BlueprintCallable, meta = (DisplayName = "Normalize (Quat)", ScriptMethod = "Normalize"), Category = "Math|Quat")
 	static void Quat_Normalize(UPARAM(ref) FQuat& Q, float Tolerance = 1.e-4f);
 
 	/**
@@ -2347,8 +2754,17 @@ class ENGINE_API UKismetMathLibrary : public UBlueprintFunctionLibrary
 	static FQuat Quat_Log(const FQuat& Q);
 
 	/** Set X, Y, Z, W components of Quaternion. */
-	UFUNCTION(BlueprintPure, meta = (DisplayName = "Set Components (Quat)", ScriptMethod = "SetComponents"), Category = "Math|Quat")
-	static void Quat_SetComponents(UPARAM(ref) FQuat& Q, float InX, float InY, float InZ, float InW);
+	UFUNCTION(BlueprintCallable, meta = (DisplayName = "Set Components (Quat)", ScriptMethod = "SetComponents"), Category = "Math|Quat")
+	static void Quat_SetComponents(UPARAM(ref) FQuat& Q, float X, float Y, float Z, float W);
+
+	/**
+	 * Convert a vector of floating-point Euler angles (in degrees) into a Quaternion.
+	 * 
+	 * @param Q Quaternion to update
+	 * @param Euler the Euler angles
+	 */
+	UFUNCTION(BlueprintCallable, meta = (DisplayName = "Set from Euler (Quat)", ScriptMethod = "SetFromEuler"), Category = "Math|Quat")
+	static void Quat_SetFromEuler(UPARAM(ref) FQuat& Q, const FVector& Euler);
 
 	/**
 	 * Convert a vector of floating-point Euler angles (in degrees) into a Quaternion.
@@ -2356,8 +2772,8 @@ class ENGINE_API UKismetMathLibrary : public UBlueprintFunctionLibrary
 	 * @param Euler the Euler angles
 	 * @return constructed Quat
 	 */
-	UFUNCTION(BlueprintPure, meta = (DisplayName = "Set from Euler (Quat)", ScriptMethod = "SetFromEuler"), Category = "Math|Quat")
-	static void Quat_SetFromEuler(UPARAM(ref) FQuat& Q, const FVector& Euler);
+	UFUNCTION(BlueprintPure, meta = (DisplayName = "Make from Euler (Quat)"), Category = "Math|Quat")
+	static FQuat Quat_MakeFromEuler(const FVector& Euler);
 
 	/** Convert to Rotator representation of this Quaternion. */
 	UFUNCTION(BlueprintPure, meta = (DisplayName = "ToRotator (Quat)", CompactNodeTitle = "->", ScriptMethod = "Rotator", Keywords = "cast convert", BlueprintAutocast), Category = "Math|Conversions")
@@ -2448,37 +2864,37 @@ class ENGINE_API UKismetMathLibrary : public UBlueprintFunctionLibrary
 	static void BreakColor(FLinearColor InColor, float& R, float& G, float& B, float& A);
 
 	/** Assign contents of InColor */
-	UFUNCTION(BlueprintPure, meta = (ScriptMethod = "Set"), Category = "Math|Color")
+	UFUNCTION(BlueprintCallable, meta = (ScriptMethod = "Set"), Category = "Math|Color")
 	static void LinearColor_Set(UPARAM(ref) FLinearColor& InOutColor, FLinearColor InColor);
 
 	/** Assign individual linear RGBA components. */
-	UFUNCTION(BlueprintPure, meta = (ScriptMethod = "SetRGBA"), Category = "Math|Color")
+	UFUNCTION(BlueprintCallable, meta = (ScriptMethod = "SetRGBA"), Category = "Math|Color")
 	static void LinearColor_SetRGBA(UPARAM(ref) FLinearColor& InOutColor, float R, float G, float B, float A = 1.0f);
 
 	/** Assigns an HSV color to a linear space RGB color */
-	UFUNCTION(BlueprintPure, meta = (ScriptMethod = "SetFromHSV"), Category = "Math|Color")
+	UFUNCTION(BlueprintCallable, meta = (ScriptMethod = "SetFromHSV"), Category = "Math|Color")
 	static void LinearColor_SetFromHSV(UPARAM(ref) FLinearColor& InOutColor, float H, float S, float V, float A = 1.0f);
 
 	/**
 	 * Assigns an FColor coming from an observed sRGB output, into a linear color.
 	 * @param InSRGB The sRGB color that needs to be converted into linear space.
 	 */
-	UFUNCTION(BlueprintPure, meta = (ScriptMethod = "SetFromSRGB"), Category = "Math|Color")
+	UFUNCTION(BlueprintCallable, meta = (ScriptMethod = "SetFromSRGB"), Category = "Math|Color")
 	static void LinearColor_SetFromSRGB(UPARAM(ref) FLinearColor& InOutColor, const FColor& InSRGB);
 
 	/**
 	 * Assigns an FColor coming from an observed Pow(1/2.2) output, into a linear color.
 	 * @param InColor The Pow(1/2.2) color that needs to be converted into linear space.
 	 */
-	UFUNCTION(BlueprintPure, meta = (ScriptMethod = "SetFromPow22"), Category = "Math|Color")
+	UFUNCTION(BlueprintCallable, meta = (ScriptMethod = "SetFromPow22"), Category = "Math|Color")
 	static void LinearColor_SetFromPow22(UPARAM(ref) FLinearColor& InOutColor, const FColor& InColor);
 
 	/** Converts temperature in Kelvins of a black body radiator to RGB chromaticity. */
-	UFUNCTION(BlueprintPure, meta = (ScriptMethod = "SetTemperature"), Category = "Math|Color")
+	UFUNCTION(BlueprintCallable, meta = (ScriptMethod = "SetTemperature"), Category = "Math|Color")
 	static void LinearColor_SetTemperature(UPARAM(ref) FLinearColor& InOutColor, float InTemperature);
 
 	/** Sets to a random color. Choses a quite nice color based on a random hue. */
-	UFUNCTION(BlueprintPure, meta = (ScriptMethod = "SetRandomHue"), Category = "Math|Color")
+	UFUNCTION(BlueprintCallable, meta = (ScriptMethod = "SetRandomHue"), Category = "Math|Color")
 	static void LinearColor_SetRandomHue(UPARAM(ref) FLinearColor& InOutColor);
 
 	/** Convert a float into a LinearColor, where each element is that float */
@@ -2572,7 +2988,7 @@ class ENGINE_API UKismetMathLibrary : public UBlueprintFunctionLibrary
 	 * @param		Current			Current Color
 	 * @param		Target			Target Color
 	 * @param		DeltaTime		Time since last tick
-	 * @param		InterpSpeed		Interpolation speed
+	 * @param		InterpSpeed		Interpolation speed, if the speed given is 0, then jump to the target.
 	 * @return		New interpolated Color
 	 */
 	UFUNCTION(BlueprintPure, meta = (DisplayName = "Interpolate (LinearColor)", ScriptMethod = "InterpolateTo", Keywords = "color"), Category = "Math|Interpolation")
@@ -2651,7 +3067,7 @@ class ENGINE_API UKismetMathLibrary : public UBlueprintFunctionLibrary
 	static FDateTime MakeDateTime(int32 Year, int32 Month, int32 Day, int32 Hour = 0, int32 Minute = 0, int32 Second = 0, int32 Millisecond = 0);
 
 	/** Breaks a DateTime into its components */
-	UFUNCTION(BlueprintPure, Category="Math|DateTime", meta=(NativeBreakFunc))
+	UFUNCTION(BlueprintPure, Category="Math|DateTime", meta=(NativeBreakFunc, AdvancedDisplay = "4"))
 	static void BreakDateTime(FDateTime InDateTime, int32& Year, int32& Month, int32& Day, int32& Hour, int32& Minute, int32& Second, int32& Millisecond);
 
 	/** Addition (A + B) */
@@ -2661,6 +3077,10 @@ class ENGINE_API UKismetMathLibrary : public UBlueprintFunctionLibrary
 	/** Subtraction (A - B) */
 	UFUNCTION(BlueprintPure, meta=(DisplayName="DateTime - Timespan", CompactNodeTitle="-", Keywords="- subtract minus"), Category="Math|DateTime")
 	static FDateTime Subtract_DateTimeTimespan(FDateTime A, FTimespan B);
+
+	/** Addition (A + B) */
+	UFUNCTION(BlueprintPure, meta = (DisplayName = "DateTime + DateTime", CompactNodeTitle = "+", Keywords = "+ add plus"), Category = "Math|DateTime")
+	static FDateTime Add_DateTimeDateTime(FDateTime A, FDateTime B);
 
 	/** Subtraction (A - B) */
 	UFUNCTION(BlueprintPure, meta = (DisplayName = "DateTime - DateTime", CompactNodeTitle = "-", Keywords = "- subtract minus"), Category = "Math|DateTime")
@@ -2831,8 +3251,8 @@ class ENGINE_API UKismetMathLibrary : public UBlueprintFunctionLibrary
 	UFUNCTION(BlueprintPure, meta=(DisplayName="Timespan * float", CompactNodeTitle="*", Keywords="* multiply"), Category="Math|Timespan")
 	static FTimespan Multiply_TimespanFloat( FTimespan A, float Scalar );
 
-	/** Scalar division (A * s) */
-	UFUNCTION(BlueprintPure, meta=(DisplayName="Timespan * float", CompactNodeTitle="/", Keywords="/ divide"), Category="Math|Timespan")
+	/** Scalar division (A / s) */
+	UFUNCTION(BlueprintPure, meta=(DisplayName="Timespan / float", CompactNodeTitle="/", Keywords="/ divide"), Category="Math|Timespan")
 	static FTimespan Divide_TimespanFloat( FTimespan A, float Scalar );
 
 	/** Returns true if the values are equal (A == B) */
@@ -2968,6 +3388,14 @@ class ENGINE_API UKismetMathLibrary : public UBlueprintFunctionLibrary
 	/** Converts an integer to a byte (if the integer is too large, returns the low 8 bits) */
 	UFUNCTION(BlueprintPure, meta=(DisplayName = "ToByte (integer)", CompactNodeTitle = "->", Keywords="cast convert", BlueprintAutocast), Category="Math|Conversions")
 	static uint8 Conv_IntToByte(int32 InInt);
+
+	/** Converts a 64 bit integer to a 32 bit integer (if the integer is too large, returns the low 32 bits) */
+	UFUNCTION(BlueprintPure, meta=(DisplayName = "ToInt (Int64)", CompactNodeTitle = "->", Keywords="cast convert", BlueprintAutocast), Category="Math|Conversions")
+	static int32 Conv_Int64ToInt(int64 InInt);
+
+	/** Converts a 64 bit integer to a byte (if the integer is too large, returns the low 8 bits) */
+	UFUNCTION(BlueprintPure, meta=(DisplayName = "ToByte (Int64)", CompactNodeTitle = "->", Keywords="cast convert", BlueprintAutocast), Category="Math|Conversions")
+	static uint8 Conv_Int64ToByte(int64 InInt);
 
 	/** Converts an integer to an IntVector*/
 	UFUNCTION(BlueprintPure, meta = (DisplayName = "ToIntVector (integer)", CompactNodeTitle = "->", Keywords = "cast convert", BlueprintAutocast), Category = "Math|Conversions")
@@ -3237,13 +3665,25 @@ class ENGINE_API UKismetMathLibrary : public UBlueprintFunctionLibrary
 	UFUNCTION(BlueprintPure, meta = (DisplayName = "Ease (Transform)", BlueprintInternalUseOnly = "true", ScriptMethod = "Ease"), Category = "Math|Interpolation")
 	static FTransform TEase(const FTransform& A, const FTransform& B, float Alpha, TEnumAsByte<EEasingFunc::Type> EasingFunc, float BlendExp = 2, int32 Steps = 2);
 
-	/** Tries to reach a target transform. */
+	/**
+	 * Tries to reach Target transform based on distance from Current position, giving a nice smooth feeling when tracking a position.
+	 *
+	 * @param		Current			Actual transform
+	 * @param		Target			Target transform
+	 * @param		DeltaTime		Time since last tick
+	 * @param		InterpSpeed		Interpolation speed, if the speed given is 0, then jump to the target.
+	 * @return		New interpolated transform
+	 */
 	UFUNCTION(BlueprintPure, meta = (ScriptMethod = "InterpTo"), Category="Math|Interpolation")
 	static FTransform TInterpTo(const FTransform& Current, const FTransform& Target, float DeltaTime, float InterpSpeed);
 
 	/** Calculates the determinant of the transform (converts to FMatrix internally) */
 	UFUNCTION(BlueprintPure, Category="Math|Transform", meta = (DisplayName = "Determinant", ScriptMethod = "Determinant"))
 	static float Transform_Determinant(const FTransform& Transform);
+
+	/** Convert a Transform to a Matrix with scale */
+	UFUNCTION(BlueprintPure, Category="Math|Transform", meta = (DisplayName = "To Matrix (Transform)", ScriptMethod = "ToMatrix", CompactNodeTitle = "->", Keywords = "cast convert", BlueprintAutocast))
+	static FMatrix Conv_TransformToMatrix(const FTransform& Transform);
 
 
 	//
@@ -3252,11 +3692,11 @@ class ENGINE_API UKismetMathLibrary : public UBlueprintFunctionLibrary
 
 	/**
 	 * Tries to reach Target based on distance from Current position, giving a nice smooth feeling when tracking a position.
-	 *
+	 * 
 	 * @param		Current			Actual position
 	 * @param		Target			Target position
 	 * @param		DeltaTime		Time since last tick
-	 * @param		InterpSpeed		Interpolation speed
+	 * @param		InterpSpeed		Interpolation speed, if the speed given is 0, then jump to the target.
 	 * @return		New interpolated position
 	 */
 	UFUNCTION(BlueprintPure, Category="Math|Interpolation")
@@ -3280,7 +3720,7 @@ class ENGINE_API UKismetMathLibrary : public UBlueprintFunctionLibrary
 	 * @param		Current			Actual rotation
 	 * @param		Target			Target rotation
 	 * @param		DeltaTime		Time since last tick
-	 * @param		InterpSpeed		Interpolation speed
+	 * @param		InterpSpeed		Interpolation speed, if the speed given is 0, then jump to the target.
 	 * @return		New interpolated position
 	 */
 	UFUNCTION(BlueprintPure, Category="Math|Interpolation", meta=(Keywords="rotation rotate"))
@@ -3503,6 +3943,89 @@ class ENGINE_API UKismetMathLibrary : public UBlueprintFunctionLibrary
 	UFUNCTION(BlueprintPure, Category = "Math|Intersection", meta = (DisplayName = "Line Plane Intersection (Origin & Normal)"))
 	static bool LinePlaneIntersection_OriginNormal(const FVector& LineStart, const FVector& LineEnd, FVector PlaneOrigin, FVector PlaneNormal, float& T, FVector& Intersection);
 
+	/**
+	 * Calculates the new value in a weighted moving average series using the previous value and the weight
+	 *
+	 * @param CurrentSample - The value to blend with the previous sample to get a new weighted value
+	 * @param PreviousSample - The last value from the series
+	 * @param Weight - The weight to blend with
+	 *
+	 * @return the next value in the series
+	 */
+	UFUNCTION(BlueprintPure, Category="Math|Smoothing", meta=(DisplayName="Weighted Moving Average Float"))
+	static float WeightedMovingAverage_Float(float CurrentSample, float PreviousSample, float Weight);
+
+	/**
+	 * Calculates the new value in a weighted moving average series using the previous value and the weight
+	 *
+	 * @param CurrentSample - The value to blend with the previous sample to get a new weighted value
+	 * @param PreviousSample - The last value from the series
+	 * @param Weight - The weight to blend with
+	 *
+	 * @return the next value in the series
+	 */
+	UFUNCTION(BlueprintPure, Category="Math|Smoothing", meta=(DisplayName="Weighted Moving Average Vector"))
+	static FVector WeightedMovingAverage_FVector(FVector CurrentSample, FVector PreviousSample, float Weight);
+
+	/**
+	 * Calculates the new value in a weighted moving average series using the previous value and the weight
+	 *
+	 * @param CurrentSample - The value to blend with the previous sample to get a new weighted value
+	 * @param PreviousSample - The last value from the series
+	 * @param Weight - The weight to blend with
+	 *
+	 * @return the next value in the series
+	 */
+	UFUNCTION(BlueprintPure, Category="Math|Smoothing", meta=(DisplayName="Weighted Moving Average Rotator"))
+	static FRotator WeightedMovingAverage_FRotator(FRotator CurrentSample, FRotator PreviousSample, float Weight);
+
+	/**
+	 * Calculates the new value in a weighted moving average series using the previous value and a weight range.
+	 * The weight range is used to dynamically adjust based upon distance between the samples
+	 * This allows you to smooth a value more aggressively for small noise and let large movements be smoothed less (or vice versa)
+	 *
+	 * @param CurrentSample - The value to blend with the previous sample to get a new weighted value
+	 * @param PreviousSample - The last value from the series
+	 * @param MaxDistance - Distance to use as the blend between min weight or max weight
+	 * @param MinWeight - The weight use when the distance is small
+	 * @param MaxWeight - The weight use when the distance is large
+	 *
+	 * @return the next value in the series
+	 */
+	UFUNCTION(BlueprintPure, Category="Math|Smoothing", meta=(DisplayName="Dynamic Weighted Moving Average Float"))
+	static float DynamicWeightedMovingAverage_Float(float CurrentSample, float PreviousSample, float MaxDistance, float MinWeight, float MaxWeight);
+
+	/**
+	 * Calculates the new value in a weighted moving average series using the previous value and a weight range.
+	 * The weight range is used to dynamically adjust based upon distance between the samples
+	 * This allows you to smooth a value more aggressively for small noise and let large movements be smoothed less (or vice versa)
+	 *
+	 * @param CurrentSample - The value to blend with the previous sample to get a new weighted value
+	 * @param PreviousSample - The last value from the series
+	 * @param MaxDistance - Distance to use as the blend between min weight or max weight
+	 * @param MinWeight - The weight use when the distance is small
+	 * @param MaxWeight - The weight use when the distance is large
+	 *
+	 * @return the next value in the series
+	 */
+	UFUNCTION(BlueprintPure, Category="Math|Smoothing", meta=(DisplayName="Dynamic Weighted Moving Average Vector"))
+	static FVector DynamicWeightedMovingAverage_FVector(FVector CurrentSample, FVector PreviousSample, float MaxDistance, float MinWeight, float MaxWeight);
+
+	/**
+	 * Calculates the new value in a weighted moving average series using the previous value and a weight range.
+	 * The weight range is used to dynamically adjust based upon distance between the samples
+	 * This allows you to smooth a value more aggressively for small noise and let large movements be smoothed less (or vice versa)
+	 *
+	 * @param CurrentSample - The value to blend with the previous sample to get a new weighted value
+	 * @param PreviousSample - The last value from the series
+	 * @param MaxDistance - Distance to use as the blend between min weight or max weight
+	 * @param MinWeight - The weight use when the distance is small
+	 * @param MaxWeight - The weight use when the distance is large
+	 *
+	 * @return the next value in the series
+	 */
+	UFUNCTION(BlueprintPure, Category="Math|Smoothing", meta=(DisplayName="Dynamic Weighted Moving Average Rotator"))
+	static FRotator DynamicWeightedMovingAverage_FRotator(FRotator CurrentSample, FRotator PreviousSample, float MaxDistance, float MinWeight, float MaxWeight);
 
 private:
 
@@ -3516,6 +4039,8 @@ private:
 	static void ReportError_Divide_VectorInt();
 	static void ReportError_Divide_VectorVector();
 	static void ReportError_ProjectVectorOnToVector();
+	static void ReportError_Divide_IntPointOnInt();
+	static void ReportError_Divide_IntPointOnIntPoint();
 	static void ReportError_Divide_Vector2DFloat();
 	static void ReportError_Divide_Vector2DVector2D();
 	static void ReportError_DaysInMonth();
@@ -3526,4 +4051,3 @@ private:
 #if KISMET_MATH_INLINE_ENABLED
 #include "KismetMathLibrary.inl"
 #endif
-

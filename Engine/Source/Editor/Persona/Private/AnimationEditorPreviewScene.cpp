@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "AnimationEditorPreviewScene.h"
 #include "Framework/Notifications/NotificationManager.h"
@@ -24,6 +24,7 @@
 #include "Particles/ParticleSystemComponent.h"
 #include "Factories/PreviewMeshCollectionFactory.h"
 #include "AnimPreviewAttacheInstance.h"
+#include "AnimCustomInstanceHelper.h"
 #include "Animation/PreviewCollectionInterface.h"
 #include "ScopedTransaction.h"
 #include "Preferences/PersonaOptions.h"
@@ -51,6 +52,7 @@ FAnimationEditorPreviewScene::FAnimationEditorPreviewScene(const ConstructionVal
 	, LastTickTime(0.0)
 	, bSelecting(false)
 	, bAllowAdditionalMeshes(true)
+	, bAdditionalMeshesSelectable(true)
 {
 	if (GEditor)
 	{
@@ -74,6 +76,13 @@ FAnimationEditorPreviewScene::FAnimationEditorPreviewScene(const ConstructionVal
 	if(InEditableSkeleton.IsValid())
 	{
 		PreviewSceneDescription->AdditionalMeshes = InEditableSkeleton->GetSkeleton().GetAdditionalPreviewSkeletalMeshes();
+	}
+
+	if(UAnimBlueprint* AnimBlueprint = InPersonaToolkit->GetAnimBlueprint())
+	{
+		PreviewSceneDescription->PreviewAnimationBlueprint = AnimBlueprint->GetPreviewAnimationBlueprint();
+		PreviewSceneDescription->ApplicationMethod = AnimBlueprint->GetPreviewAnimationBlueprintApplicationMethod();
+		PreviewSceneDescription->LinkedAnimGraphTag = AnimBlueprint->GetPreviewAnimationBlueprintTag();
 	}
 
 	// create a default additional mesh collection so we dont always have to create an asset to edit additional meshes
@@ -167,6 +176,27 @@ void FAnimationEditorPreviewScene::SetPreviewMesh(USkeletalMesh* NewPreviewMesh,
 	RefreshAdditionalMeshes(bAllowOverrideBaseMesh);
 }
 
+void FAnimationEditorPreviewScene::SetPreviewAnimationBlueprint(UAnimBlueprint* InAnimBlueprint, UAnimBlueprint* InOverlayOrSubAnimBlueprint)
+{
+	if (InOverlayOrSubAnimBlueprint)
+	{
+		SkeletalMeshComponent->SetAnimInstanceClass(InAnimBlueprint ? InAnimBlueprint->GeneratedClass : nullptr);
+		EPreviewAnimationBlueprintApplicationMethod ApplicationMethod = InOverlayOrSubAnimBlueprint->GetPreviewAnimationBlueprintApplicationMethod();
+		if(ApplicationMethod == EPreviewAnimationBlueprintApplicationMethod::LinkedLayers)
+		{
+			SkeletalMeshComponent->LinkAnimClassLayers(InOverlayOrSubAnimBlueprint ? InOverlayOrSubAnimBlueprint->GeneratedClass.Get() : nullptr);
+		}
+		else if(ApplicationMethod == EPreviewAnimationBlueprintApplicationMethod::LinkedAnimGraph)
+		{
+			SkeletalMeshComponent->LinkAnimGraphByTag(InOverlayOrSubAnimBlueprint->GetPreviewAnimationBlueprintTag(), InOverlayOrSubAnimBlueprint ? InOverlayOrSubAnimBlueprint->GeneratedClass.Get() : nullptr);
+		}
+	}
+	else
+	{
+		SkeletalMeshComponent->SetAnimInstanceClass(InAnimBlueprint ? InAnimBlueprint->GeneratedClass : nullptr);
+	}
+}
+
 USkeletalMesh* FAnimationEditorPreviewScene::GetPreviewMesh() const
 {
 	return PreviewSceneDescription->PreviewMesh.Get();
@@ -246,7 +276,7 @@ void FAnimationEditorPreviewScene::SetPreviewMeshInternal(USkeletalMesh* NewPrev
 	if (DebuggedSkeletalMeshComponent)
 	{
 		UAnimBlueprint* SourceBlueprint = PersonaToolkit.Pin()->GetAnimBlueprint();
-		SourceBlueprint->SetObjectBeingDebugged(DebuggedSkeletalMeshComponent->GetAnimInstance());
+		PersonaUtils::SetObjectBeingDebugged(SourceBlueprint, DebuggedSkeletalMeshComponent->GetAnimInstance());
 	}
 
 	OnPreviewMeshChanged.Broadcast(OldPreviewMesh, NewPreviewMesh);
@@ -289,15 +319,20 @@ void FAnimationEditorPreviewScene::SetAdditionalMeshes(class UDataAsset* InAddit
 	RefreshAdditionalMeshes(true);
 }
 
+void FAnimationEditorPreviewScene::SetAdditionalMeshesSelectable(bool bSelectable)
+{
+	bAdditionalMeshesSelectable = bSelectable;
+}
+
 void FAnimationEditorPreviewScene::RefreshAdditionalMeshes(bool bAllowOverrideBaseMesh)
 {
 	// remove all components
 	for (USkeletalMeshComponent* Component : AdditionalMeshes)
 	{
 		const UAnimInstance* AnimInst = Component->GetAnimInstance();
-		if (AnimInst && AnimInst->IsA(UAnimCustomInstance::StaticClass()))
+		if (AnimInst && AnimInst->IsA(UAnimPreviewAttacheInstance::StaticClass()))
 		{
-			UAnimCustomInstance::UnbindFromSkeletalMeshComponent(Component);
+			FAnimCustomInstanceHelper::UnbindFromSkeletalMeshComponent<UAnimPreviewAttacheInstance>(Component);
 		}
 		
 		RemoveComponent(Component);
@@ -341,20 +376,20 @@ void FAnimationEditorPreviewScene::RefreshAdditionalMeshes(bool bAllowOverrideBa
 					if (SkeletalMesh)
 					{
 						USkeletalMeshComponent* NewComp = NewObject<USkeletalMeshComponent>(Actor);
+						NewComp->bSelectable = bAdditionalMeshesSelectable;
 						NewComp->RegisterComponent();
 						NewComp->SetSkeletalMesh(SkeletalMesh);
 						NewComp->bUseAttachParentBound = true;
 						AddComponent(NewComp, FTransform::Identity, true);
-
 						if (bUseCustomAnimBP && AnimInstances.IsValidIndex(MeshIndex) && AnimInstances[MeshIndex] != nullptr)
 						{
 							NewComp->SetAnimInstanceClass(AnimInstances[MeshIndex]);
 						}
 						else
 						{
-							UAnimCustomInstance::BindToSkeletalMeshComponent<UAnimPreviewAttacheInstance>(NewComp);
+							bool bWasCreated = false;
+							FAnimCustomInstanceHelper::BindToSkeletalMeshComponent<UAnimPreviewAttacheInstance>(NewComp,bWasCreated);
 						}
-
 						AdditionalMeshes.Add(NewComp);
 					}
 				}
@@ -522,6 +557,12 @@ void FAnimationEditorPreviewScene::RemoveAttachedComponent( bool bRemovePreviewA
 				bRemove = false;
 			}
 
+			// you can use delegate to avoid being removed
+			if (OnRemoveAttachedComponentFilter.IsBound() && !OnRemoveAttachedComponentFilter.Execute(ChildComponent))
+			{
+				bRemove = false;
+			}
+
 			if(bRemove)
 			{
 				// PreviewComponet will be cleaned up by PreviewScene, 
@@ -571,7 +612,7 @@ void FAnimationEditorPreviewScene::SetPreviewAnimationAsset(UAnimationAsset* Ani
 			}
 
 			// Treat it as invalid if it's got a bogus skeleton pointer
-			if (AnimAsset->GetSkeleton() != Skeleton)
+			if (AnimAsset->GetSkeleton() != Skeleton && Skeleton != nullptr)
 			{
 				return;
 			}
@@ -672,10 +713,19 @@ void FAnimationEditorPreviewScene::ShowDefaultMode()
 		{
 			SkeletalMeshComponent->EnablePreview(false, nullptr);
 
-			UAnimBlueprint* AnimBP = PersonaToolkit.Pin()->GetAnimBlueprint();
-			if (AnimBP)
+			UAnimBlueprint* AnimBlueprint = PersonaToolkit.Pin()->GetAnimBlueprint();
+			if (AnimBlueprint)
 			{
-				SkeletalMeshComponent->SetAnimInstanceClass(AnimBP->GeneratedClass);
+				UAnimBlueprint* PreviewAnimBlueprint = AnimBlueprint->GetPreviewAnimationBlueprint();
+		
+				if (PreviewAnimBlueprint)
+				{
+					SetPreviewAnimationBlueprint(PreviewAnimBlueprint, AnimBlueprint);
+				}
+				else
+				{
+					SetPreviewAnimationBlueprint(AnimBlueprint, nullptr);
+				}
 			}
 		}
 		break;

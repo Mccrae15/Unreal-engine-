@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -16,7 +16,8 @@
 #include "Misc/FrameRate.h"
 #include "Subsystems/SubsystemCollection.h"
 #include "Subsystems/EngineSubsystem.h"
-
+#include "RHI.h"
+#include "AudioDeviceManager.h"
 #include "Engine.generated.h"
 
 #define WITH_DYNAMIC_RESOLUTION (!UE_SERVER)
@@ -89,25 +90,16 @@ enum EFullyLoadPackageType
  * Enumerates transition types.
  */
 UENUM()
-enum ETransitionType
+enum class ETransitionType : uint8
 {
-	TT_None,
-	TT_Paused,
-	TT_Loading,
-	TT_Saving,
-	TT_Connecting,
-	TT_Precaching,
-	TT_WaitingToConnect,
-	TT_MAX,
-};
-
-
-UENUM()
-enum EConsoleType
-{
-	CONSOLE_Any,
-	CONSOLE_Mobile,
-	CONSOLE_MAX,
+	None,
+	Paused,
+	Loading,
+	Saving,
+	Connecting,
+	Precaching,
+	WaitingToConnect,
+	MAX
 };
 
 /** Status of dynamic resolution that depends on project setting cvar, game user settings, and pause */
@@ -374,7 +366,10 @@ struct FWorldContext
 	bool	bWaitingOnOnlineSubsystem;
 
 	/** Handle to this world context's audio device.*/
-	uint32 AudioDeviceHandle;
+	uint32 AudioDeviceID;
+
+	/** Custom description to be display in blueprint debugger UI */
+	FString CustomDescription;
 
 	/**************************************************************/
 
@@ -419,7 +414,7 @@ struct FWorldContext
 		, PIEWorldFeatureLevel(ERHIFeatureLevel::Num)
 		, RunAsDedicated(false)
 		, bWaitingOnOnlineSubsystem(false)
-		, AudioDeviceHandle(INDEX_NONE)
+		, AudioDeviceID(INDEX_NONE)
 		, ThisCurrentWorld(nullptr)
 	{ }
 
@@ -622,7 +617,7 @@ class IAnalyticsProvider;
 DECLARE_DELEGATE_OneParam(FBeginStreamingPauseDelegate, FViewport*);
 DECLARE_DELEGATE(FEndStreamingPauseDelegate);
 
-enum class EFrameHitchType: uint8;
+enum class EFrameHitchType : uint8;
 
 DECLARE_MULTICAST_DELEGATE_TwoParams(FEngineHitchDetectedDelegate, EFrameHitchType /*HitchType*/, float /*HitchDurationInSeconds*/);
 
@@ -862,10 +857,26 @@ public:
 	/** The material used to render wireframe meshes. */
 	UPROPERTY()
 	class UMaterial* WireframeMaterial;
-
+	
 	/** @todo document */
 	UPROPERTY(globalconfig)
 	FString WireframeMaterialName;
+
+	/** The material used to default hair meshes. */
+	UPROPERTY()
+	class UMaterial* HairDefaultMaterial;
+
+	/** @todo document */
+	UPROPERTY(globalconfig)
+	FString HairDefaultMaterialName;
+
+	/** The material used to debug hair meshes. */
+	UPROPERTY()
+	class UMaterial* HairDebugMaterial;
+
+	/** @todo document */
+	UPROPERTY(globalconfig)
+	FString HairDebugMaterialName;
 
 #if WITH_EDITORONLY_DATA
 	/** A translucent material used to render things in geometry mode. */
@@ -881,9 +892,17 @@ public:
 	UPROPERTY()
 	class UMaterial* DebugMeshMaterial;
 
-	/** @todo document */
+	/** Path of the default material for debug mesh */
 	UPROPERTY(globalconfig)
 	FSoftObjectPath DebugMeshMaterialName;
+
+	/** A material used to render emissive meshes (e.g. light source surface). */
+	UPROPERTY()
+	class UMaterial* EmissiveMeshMaterial;
+
+	/** Path of the default material for emissive mesh */
+	UPROPERTY(globalconfig)
+	FSoftObjectPath EmissiveMeshMaterialName;
 
 	/** Material used for visualizing level membership in lit view port modes. */
 	UPROPERTY()
@@ -1007,6 +1026,14 @@ public:
 	/** Name of the material used to render cloth wireframe in the clothing tools */
 	UPROPERTY(globalconfig)
 	FSoftObjectPath ClothPaintMaterialWireframeName;
+
+	/** A material used to render physical material mask on mesh. */
+	UPROPERTY()
+	class UMaterial* PhysicalMaterialMaskMaterial;
+
+	/** A material used to render physical material mask on mesh. */
+	UPROPERTY(globalconfig)
+	FSoftObjectPath PhysicalMaterialMaskMaterialName;
 
 	/** A material used to render debug meshes. */
 	UPROPERTY()
@@ -1188,6 +1215,13 @@ public:
 	UPROPERTY(globalconfig)
 	FSoftObjectPath PreIntegratedSkinBRDFTextureName;
 
+	/** Tiled blue-noise texture */
+	UPROPERTY()
+	class UTexture2D* BlueNoiseTexture;
+
+	UPROPERTY(globalconfig)
+	FSoftObjectPath BlueNoiseTextureName;
+
 	/** Texture used to do font rendering in shaders */
 	UPROPERTY()
 	class UTexture2D* MiniFontTexture;
@@ -1297,13 +1331,15 @@ public:
 	FFloatRange SmoothedFrameRateRange;
 
 private:
-	/** Control how the Engine process the Framerate/Timestep */
+	/** Controls how the Engine process the Framerate/Timestep */
 	UPROPERTY(transient)
-	UEngineCustomTimeStep* DefaultCustomTimeStep;
+	UEngineCustomTimeStep* CustomTimeStep;
 
-	/** Control how the Engine process the Framerate/Timestep */
-	UPROPERTY(transient)
-	UEngineCustomTimeStep* CurrentCustomTimeStep;
+	/** Broadcasts whenever the custom time step changed. */
+	FSimpleMulticastDelegate CustomTimeStepChangedEvent;
+
+	/** Is the current custom time step was initialized properly and if we should shut it down. */
+	bool bIsCurrentCustomTimeStepInitialized;
 
 public:
 	/**
@@ -1311,48 +1347,45 @@ public:
 	 * This class will be responsible of updating the application Time and DeltaTime.
 	 * Can be used to synchronize the engine with another process (gen-lock).
 	 */
-	UPROPERTY(AdvancedDisplay, config, EditAnywhere, Category=Framerate, meta=(MetaClass="EngineCustomTimeStep", DisplayName="Custom TimeStep", ConfigRestartRequired=true))
+	UPROPERTY(AdvancedDisplay, config, EditAnywhere, Category=Framerate, meta=(MetaClass="EngineCustomTimeStep", DisplayName="Custom TimeStep"))
 	FSoftClassPath CustomTimeStepClassName;
 
 private:
-	/**
-	 * Default timecode provider that will be used when no custom provider is set.
-	 * This is expected to be valid throughout the entire life of the application.
-	 */
+	/** Controls the Engine's timecode. */
 	UPROPERTY(transient)
-	UTimecodeProvider* DefaultTimecodeProvider;
+	UTimecodeProvider* TimecodeProvider;
 
-	UPROPERTY(transient)
-	UTimecodeProvider* CustomTimecodeProvider;
+	/** Broadcasts whenever the timecode provider changed. */
+	FSimpleMulticastDelegate TimecodeProviderChangedEvent;
+
+	/** Is the current timecode provider was initialized properly and if we should shut it down. */
+	bool bIsCurrentTimecodeProviderInitialized;
 
 public:
-
-	/**
-	 * Allows UEngine subclasses a chance to override the DefaultTimecodeProvider class.
-	 * This must be set before InitializeObjectReferences is called.
-	 * This is intentionally protected and not exposed to config.
-	 */
-	UPROPERTY(config, EditAnywhere, Category=Timecode, meta=(MetaClass="TimecodeProvider", DisplayName="DefaultTimecodeProvider", ConfigRestartRequired=true))
-	FSoftClassPath DefaultTimecodeProviderClassName;
-
-	/**
-	 * Override the CustomTimecodeProvider when the engine is started.
-	 * When set, this does not change the DefaultTImecodeProvider class.
-	 * Instead, it will create an instance and set it as the CustomTimecodeProvider.
-	 */
-	UPROPERTY(config, EditAnywhere, Category=Timecode, meta=(MetaClass="TimecodeProvider", DisplayName="TimecodeProvider", ConfigRestartRequired=true))
+	/** Set TimecodeProvider when the engine is started. */
+	UPROPERTY(config, EditAnywhere, Category=Timecode, meta=(MetaClass="TimecodeProvider", DisplayName="Timecode Provider"))
 	FSoftClassPath TimecodeProviderClassName;
-	
+
 	/**
-	 * Frame rate used to generated the engine Timecode's frame number when no TimecodeProvider are specified.
-	 * It doesn't control the Engine frame rate. The Engine can run faster or slower that the specified TimecodeFrameRate.
+	 * Generate a default timecode from the computer clock when there is no timecode provider.
+	 * On desktop, the system time will be used and will behave as if a USystemTimecodeProvider was set.
+	 * On console, the high performance clock will be used. That may introduce drift over time.
+	 * If you wish to use the system time on console, set the timecode provider to USystemeTimecodeProvider.
 	 */
-	UPROPERTY(config, EditAnywhere, Category=Timecode, Meta=(ConfigRestartRequired=true))
-	FFrameRate DefaultTimecodeFrameRate;
+	UPROPERTY(config, EditAnywhere, Category=Timecode)
+	bool bGenerateDefaultTimecode;
+
+	/** When generating a default timecode (bGenerateDefaultTimecode is true and no timecode provider is set) at which frame rate it should be generated (number of frames). */
+	UPROPERTY(config, EditAnywhere, Category=Timecode, meta=(EditCondition="bGenerateDefaultTimecode"))
+	FFrameRate GenerateDefaultTimecodeFrameRate;
+
+	/** Number of frames to subtract from generated default timecode. */
+	UPROPERTY(AdvancedDisplay, config, EditAnywhere, Category=Timecode, meta=(EditCondition="bGenerateDefaultTimecode"))
+	float GenerateDefaultTimecodeFrameDelay;
 
 public:
 	/** 
-	 * Whether we should check for more than N pawns spawning in a single frame.  
+	 * Whether we should check for more than N pawns spawning in a single frame.
 	 * Basically, spawning pawns and all of their attachments can be slow.  And on consoles it
 	 * can be really slow.  If this bool is true we will display a 
 	 **/
@@ -1368,14 +1401,6 @@ public:
 	 */
 	UPROPERTY(globalconfig)
 	uint32 bShouldGenerateLowQualityLightmaps_DEPRECATED :1;
-
-	/**
-	 * Bool that indicates that 'console' input is desired. This flag is mis named as it is used for a lot of gameplay related things
-	 * (e.g. increasing collision size, changing vehicle turning behavior, modifying put down/up weapon speed, bot behavior)
-	 *
-	 * currently set when you are running a console build (implicitly or explicitly via ?param on the commandline)
-	 */
-	uint32 bUseConsoleInput:1;
 
 	// Color preferences.
 	UPROPERTY()
@@ -1439,7 +1464,7 @@ public:
 
 	/** The current transition type. */
 	UPROPERTY()
-	TEnumAsByte<enum ETransitionType> TransitionType;
+	ETransitionType TransitionType;
 
 	/** The current transition description text. */
 	UPROPERTY()
@@ -1569,9 +1594,6 @@ public:
 	/** Particle event manager **/
 	UPROPERTY(globalconfig)
 	FString ParticleEventManagerClassPath;
-
-	/** A collection of messages to display on-screen. */
-	TArray<struct FScreenMessageString> PriorityScreenMessages;
 
 	/** Used to alter the intensity level of the selection highlight on selected objects */
 	UPROPERTY(transient)
@@ -1767,15 +1789,35 @@ private:
 protected:
 
 	/** The audio device manager */
-	class FAudioDeviceManager* AudioDeviceManager;
+	FAudioDeviceManager* AudioDeviceManager;
 
 	/** Audio device handle to the main audio device. */
-	uint32 MainAudioDeviceHandle;
+	FAudioDeviceHandle MainAudioDeviceHandle;
 
-public:
+private:
+	/** A collection of messages to display on-screen. */
+	TArray<struct FScreenMessageString> PriorityScreenMessages;
 
 	/** A collection of messages to display on-screen. */
 	TMap<int32, FScreenMessageString> ScreenMessages;
+
+public:
+	float DrawOnscreenDebugMessages(UWorld* World, FViewport* Viewport, FCanvas* Canvas, UCanvas* CanvasObject, float MessageX, float MessageY);
+
+	/** Add a FString to the On-screen debug message system. bNewerOnTop only works with Key == INDEX_NONE */
+	void AddOnScreenDebugMessage(uint64 Key, float TimeToDisplay, FColor DisplayColor, const FString& DebugMessage, bool bNewerOnTop = true, const FVector2D& TextScale = FVector2D::UnitVector);
+
+	/** Add a FString to the On-screen debug message system. bNewerOnTop only works with Key == INDEX_NONE */
+	void AddOnScreenDebugMessage(int32 Key, float TimeToDisplay, FColor DisplayColor, const FString& DebugMessage, bool bNewerOnTop = true, const FVector2D& TextScale = FVector2D::UnitVector);
+
+	/** Retrieve the message for the given key */
+	bool OnScreenDebugMessageExists(uint64 Key);
+
+	/** Clear any existing debug messages */
+	void ClearOnScreenDebugMessages();
+
+	//Remove the message for the given key
+	void RemoveOnScreenDebugMessage(uint64 Key);
 
 	/** Reference to the stereoscopic rendering interface, if any */
 	TSharedPtr< class IStereoRendering, ESPMode::ThreadSafe > StereoRenderingDevice;
@@ -1809,6 +1851,9 @@ public:
 
 	virtual bool IsInitialized() const { return bIsInitialized; }
 
+	/** The feature used to create new worlds, by default. Overridden for feature level preview in the editor */
+	virtual ERHIFeatureLevel::Type GetDefaultWorldFeatureLevel() const { return GMaxRHIFeatureLevel;  }
+
 #if WITH_EDITOR
 
 	/** Editor-only event triggered when the actor list of the world has changed */
@@ -1832,6 +1877,13 @@ public:
 	/** Called by internal engine systems after level actors have changed to notify other subsystems */
 	void BroadcastLevelActorDeleted(AActor* InActor) { LevelActorDeletedEvent.Broadcast(InActor); }
 
+	/** Editor-only event triggered when actors outer changes */
+	DECLARE_EVENT_TwoParams(UEngine, FLevelActorOuterChangedEvent, AActor*, UObject*);
+	FLevelActorOuterChangedEvent& OnLevelActorOuterChanged() { return LevelActorOuterChangedEvent; }
+
+	/** Called by internal engine systems after level actors have changed outer */
+	void BroadcastLevelActorOuterChanged(AActor* InActor, UObject* InOldOuter) { LevelActorOuterChangedEvent.Broadcast(InActor, InOldOuter); }
+
 	/** Editor-only event triggered when actors are attached in the world */
 	DECLARE_EVENT_TwoParams( UEngine, FLevelActorAttachedEvent, AActor*, const AActor* );
 	FLevelActorAttachedEvent& OnLevelActorAttached() { return LevelActorAttachedEvent; }
@@ -1852,6 +1904,22 @@ public:
 
 	/** Called by internal engine systems after a level actor's folder has been changed */
 	void BroadcastLevelActorFolderChanged(const AActor* InActor, FName OldPath) { LevelActorFolderChangedEvent.Broadcast(InActor, OldPath); }
+
+	/** Editor-only event triggered when an actor is being moved, rotated or scaled (AActor::PostEditMove) */
+	DECLARE_EVENT_OneParam(UEngine, FOnActorMovingEvent, AActor*);
+	FOnActorMovingEvent& OnActorMoving() { return OnActorMovingEvent; }
+
+	/** Called by internal engine systems when an actor is being moved to notify other subsystems */
+	void BroadcastOnActorMoving(AActor* Actor) { OnActorMovingEvent.Broadcast(Actor); }
+
+	/** Editor-only event triggered after actors are moved, rotated or scaled by an editor system */
+	DECLARE_EVENT_OneParam(UEditorEngine, FOnActorsMovedEvent, TArray<AActor*>&);
+	FOnActorsMovedEvent& OnActorsMoved() { return OnActorsMovedEvent; }
+
+	/**
+	 * Called when actors have been translated, rotated, or scaled by the editor
+	 */
+	void BroadcastActorsMoved(TArray<AActor*>& Actors) const { OnActorsMovedEvent.Broadcast(Actors); }
 
 	/** Editor-only event triggered after an actor is moved, rotated or scaled (AActor::PostEditMove) */
 	DECLARE_EVENT_OneParam( UEngine, FOnActorMovedEvent, AActor* );
@@ -1908,10 +1976,7 @@ public:
 	/** Event triggered after a network failure of any kind has occurred */
 	FOnNetworkFailure& OnNetworkFailure() { return NetworkFailureEvent; }
 	/** Called by internal engine systems after a network failure has occurred */
-	void BroadcastNetworkFailure(UWorld * World, UNetDriver *NetDriver, ENetworkFailure::Type FailureType, const FString& ErrorString = TEXT(""))
-	{
-		NetworkFailureEvent.Broadcast(World, NetDriver, FailureType, ErrorString);
-	}
+	void BroadcastNetworkFailure(UWorld * World, UNetDriver *NetDriver, ENetworkFailure::Type FailureType, const FString& ErrorString = TEXT(""));
 
 	/** Event triggered after network lag is being experienced or lag has ended */
 	FOnNetworkLagStateChanged& OnNetworkLagStateChanged() { return NetworkLagStateChangedEvent; }
@@ -1933,6 +1998,10 @@ public:
 	virtual void FinishDestroy() override;
 	virtual void Serialize(FArchive& Ar) override;
 	static void AddReferencedObjects(UObject* InThis, FReferenceCollector& Collector);
+	virtual bool IsDestructionThreadSafe() const override { return false; }
+#if WITH_EDITOR
+	virtual void PostEditChangeProperty(struct FPropertyChangedEvent& PropertyChangedEvent) override;
+#endif
 	//~ End UObject Interface.
 
 	/** Initialize the game engine. */
@@ -2004,7 +2073,6 @@ public:
 	bool HandleProfileGPUHitchesCommand( const TCHAR* Cmd, FOutputDevice& Ar );
 	bool HandleShaderComplexityCommand( const TCHAR* Cmd, FOutputDevice& Ar );
 	bool HandleFreezeRenderingCommand( const TCHAR* Cmd, FOutputDevice& Ar, UWorld* InWorld );
-	bool HandleShowSelectedLightmapCommand( const TCHAR* Cmd, FOutputDevice& Ar );
 	bool HandleStartFPSChartCommand( const TCHAR* Cmd, FOutputDevice& Ar );
 	bool HandleStopFPSChartCommand( const TCHAR* Cmd, FOutputDevice& Ar, UWorld* InWorld );
 	bool HandleDumpLevelScriptActorsCommand( UWorld* InWorld, const TCHAR* Cmd, FOutputDevice& Ar );
@@ -2051,24 +2119,30 @@ public:
 	 */
 	void UpdateTimeAndHandleMaxTickRate();
 
-	/** Causes the current CustomTimeStep to be shut down and then reinitialized. */
+	/**
+	 * Allows games to correct the negative delta
+	 *
+	 * @return new delta
+	 */
+	virtual double CorrectNegativeTimeDelta(double DeltaRealTime);
+
+	/** Causes the current custom time step to be shut down and then reinitialized. */
 	void ReinitializeCustomTimeStep();
 
 	/**
-	 * Set the CustomTimeStep that will control the Engine Framerate/Timestep
+	 * Set the custom time step that will control the Engine Framerate/Timestep.
+	 * It will shutdown the previous custom time step.
+	 * The new custom time step will be initialized.
 	 *
-	 * @return	true if the CustomTimeStep was properly initialized
+	 * @return	the result of the custom time step initialization.
 	 */
 	bool SetCustomTimeStep(UEngineCustomTimeStep* InCustomTimeStep);
 
-	/** Get the CustomTimeStep that control the Engine Framerate/Timestep */
-	UEngineCustomTimeStep* GetCustomTimeStep() const { return CurrentCustomTimeStep; };
+	/** Get the custom time step that control the Engine Framerate/Timestep */
+	UEngineCustomTimeStep* GetCustomTimeStep() const { return CustomTimeStep; };
 
-	/**
-	 * Get the DefaultCustomTimeStep created at the engine initialization.
-	 * This may be null if no CustomTimeStep was defined in the project settings and may not be currently active.
-	 */
-	UEngineCustomTimeStep* GetDefaultCustomTimeStep() const { return DefaultCustomTimeStep; }
+	/** Return custom time step changed event. */
+	FSimpleMulticastDelegate& OnCustomTimeStepChanged() { return CustomTimeStepChangedEvent; }
 
 	/** Executes the deferred commands */
 	void TickDeferredCommands();
@@ -2091,34 +2165,23 @@ public:
 	/** Update FApp::Timecode. */
 	void UpdateTimecode();
 
-	/** Causes the current TimecodeProvider to be shut down and then reinitialized. */
+	/** Causes the current timecode provider to be shut down and then reinitialized. */
 	void ReinitializeTimecodeProvider();
 
 	/**
-	 * Sets the CustomTimecodeProvider for the engine, shutting down the the default provider if necessary.
-	 * Passing nullptr will clear the current CustomTimecodeProvider, and re-initialize the default.
+	 * Set the timecode provider that will control the Engine's timecode.
+	 * It will shutdown the previous timecode provider.
+	 * The new timecode provider will be initialized.
 	 *
-	 * @return True if the provider was set (and initialized successfully when non-null).
+	 * @return	the result value of the new timecode provider initialization.
 	 */
 	bool SetTimecodeProvider(UTimecodeProvider* InTimecodeProvider);
 
-	/**
-	 * Get the TimecodeProvider that control the Engine's Timecode
-	 * The return value should always be non-null.
-	 */
-	const UTimecodeProvider* GetTimecodeProvider() const { return CustomTimecodeProvider ? CustomTimecodeProvider : GetDefaultTimecodeProvider(); }
+	/** Get the TimecodeProvider that control the Engine's Timecode. */
+	UTimecodeProvider* GetTimecodeProvider() const { return TimecodeProvider; };
 
-	/**
-	 * Get the DefaultTimecodeProvider.
-	 * This should be valid throughout the lifetime of the Engine (although, it may not always be active).
-	 */
-	const UTimecodeProvider* GetDefaultTimecodeProvider() const { check(DefaultTimecodeProvider != nullptr); return DefaultTimecodeProvider; }
-
-protected:
-
-	/** Provide mutable access to the current TimecodeProvider to Engine. This is needed to Initialize / Shutdown providers. */
-	UTimecodeProvider* GetTimecodeProviderProtected() { return const_cast<UTimecodeProvider*>(const_cast<const UEngine*>(this)->GetTimecodeProvider()); }
-	UTimecodeProvider* GetDefaultTimecodeProviderProtected() { return const_cast<UTimecodeProvider*>(const_cast<const UEngine*>(this)->GetDefaultTimecodeProvider()); }
+	/** Return timecode provider changed event. */
+	FSimpleMulticastDelegate& OnTimecodeProviderChanged() { return TimecodeProviderChangedEvent; }
 
 public:
 
@@ -2314,26 +2377,6 @@ public:
 	 */
 	float GetTimeBetweenGarbageCollectionPasses() const;
 
-	/**
-	 * Returns whether we are running on a console platform or on the PC.
-	 * @param ConsoleType - if specified, only returns true if we're running on the specified platform
-	 *
-	 * @return true if we're on a console, false if we're running on a PC
-	 */
-	bool IsConsoleBuild(EConsoleType ConsoleType = CONSOLE_Any) const;
-
-	/** Add a FString to the On-screen debug message system. bNewerOnTop only works with Key == INDEX_NONE */
-	void AddOnScreenDebugMessage(uint64 Key,float TimeToDisplay,FColor DisplayColor,const FString& DebugMessage, bool bNewerOnTop = true, const FVector2D& TextScale = FVector2D::UnitVector);
-
-	/** Add a FString to the On-screen debug message system. bNewerOnTop only works with Key == INDEX_NONE */
-	void AddOnScreenDebugMessage(int32 Key, float TimeToDisplay, FColor DisplayColor, const FString& DebugMessage, bool bNewerOnTop = true, const FVector2D& TextScale = FVector2D::UnitVector);
-
-	/** Retrieve the message for the given key */
-	bool OnScreenDebugMessageExists(uint64 Key);
-
-	/** Clear any existing debug messages */
-	void ClearOnScreenDebugMessages();
-
 #if !UE_BUILD_SHIPPING
 	/** 
 	 * Capture screenshots and performance metrics
@@ -2424,19 +2467,20 @@ public:
 	bool IsEditor();
 
 	/** @return the audio device manager of the UEngine, this allows the creation and management of multiple audio devices. */
-	class FAudioDeviceManager* GetAudioDeviceManager();
+	FAudioDeviceManager* GetAudioDeviceManager();
 
 	/** @return the main audio device handle used by the engine. */
-	uint32 GetAudioDeviceHandle() const;
+	uint32 GetMainAudioDeviceID() const;
 
 	/** @return the main audio device. */
-	class FAudioDevice* GetMainAudioDevice();
+	FAudioDeviceHandle GetMainAudioDevice();
+	class FAudioDevice* GetMainAudioDeviceRaw();
 
 	/** @return the currently active audio device */
-	class FAudioDevice* GetActiveAudioDevice();
+	FAudioDeviceHandle GetActiveAudioDevice();
 
 	/** @return whether we're currently running in split screen (more than one local player) */
-	bool IsSplitScreen(UWorld *InWorld);
+	virtual bool IsSplitScreen(UWorld *InWorld);
 
 	/** @return whether we're currently running with stereoscopic 3D enabled for the specified viewport (or globally, if viewport is nullptr) */
 	bool IsStereoscopic3D(FViewport* InViewport = nullptr);
@@ -2503,13 +2547,13 @@ public:
 	 * Find a Local Player Controller, which may not exist at all if this is a server.
 	 * @return first found LocalPlayerController. Fine for single player, in split screen, one will be picked. 
 	 */
-	class APlayerController* GetFirstLocalPlayerController(UWorld *InWorld);
+	class APlayerController* GetFirstLocalPlayerController(const UWorld* InWorld);
 
 	/** Gets all local players associated with the engine. 
 	 *	This function should only be used in rare cases where no UWorld* is available to get a player list associated with the world.
 	 *  E.g, - use GetFirstLocalPlayerController(UWorld *InWorld) when possible!
 	 */
-	void GetAllLocalPlayerControllers(TArray<APlayerController*>	& PlayerList);
+	void GetAllLocalPlayerControllers(TArray<APlayerController*>& PlayerList);
 
 	/** Returns the GameViewport widget */
 	virtual TSharedPtr<class SViewport> GetGameViewportWidget() const
@@ -2700,6 +2744,9 @@ private:
 	/** Broadcasts whenever an actor is removed. */
 	FLevelActorDeletedEvent LevelActorDeletedEvent;
 
+	/** Broadcasts whenever an actor's outer changes */
+	FLevelActorOuterChangedEvent LevelActorOuterChangedEvent;
+
 	/** Broadcasts whenever an actor is attached. */
 	FLevelActorAttachedEvent LevelActorAttachedEvent;
 
@@ -2715,8 +2762,14 @@ private:
 	/** Broadcasts whenever a component is being renamed */
 	FLevelComponentRequestRenameEvent LevelComponentRequestRenameEvent;
 
+	/** Broadcasts when an actor is being moved, rotated or scaled */
+	FOnActorMovingEvent	OnActorMovingEvent;
+
 	/** Broadcasts after an actor has been moved, rotated or scaled */
-	FOnActorMovedEvent		OnActorMovedEvent;
+	FOnActorMovedEvent	OnActorMovedEvent;
+
+	/** Broadcast when a group of actors have been moved, rotated, or scaled */
+	FOnActorsMovedEvent OnActorsMovedEvent;
 
 	/** Broadcasts after a component has been moved, rotated or scaled */
 	FOnComponentTransformChangedEvent OnComponentTransformChangedEvent;
@@ -3270,7 +3323,7 @@ public:
 
 private:
 	/**
-	 * Function definition for those stats which have their own render funcsions (or affect another render functions).
+	 * Function definition for those stats which have their own render functions (or affect another render functions).
 	 *
 	 * @param World	The world being drawn to.
 	 * @param ViewportClient The viewport being drawn to.
@@ -3283,7 +3336,7 @@ private:
 	typedef int32 (UEngine::*EngineStatRender)(UWorld* World, FViewport* Viewport, FCanvas* Canvas, int32 X, int32 Y, const FVector* ViewLocation, const FRotator* ViewRotation);
 
 	/**
-	 * Function definition for those stats which have their own toggle funcsions (or toggle other stats).
+	 * Function definition for those stats which have their own toggle functions (or toggle other stats).
 	 *
 	 * @param World	The world being drawn to.
 	 * @param ViewportClient The viewport being drawn to.
@@ -3366,6 +3419,7 @@ private:
 	bool ToggleStatNamedEvents(UWorld* World, FCommonViewportClient* ViewportClient, const TCHAR* Stream = nullptr);
 	bool ToggleStatUnit(UWorld* World, FCommonViewportClient* ViewportClient, const TCHAR* Stream = nullptr);
 #if !UE_BUILD_SHIPPING
+	bool PostStatSoundModulatorHelp(UWorld* World, FCommonViewportClient* ViewportClient, const TCHAR* Stream = nullptr);
 	bool ToggleStatUnitMax(UWorld* World, FCommonViewportClient* ViewportClient, const TCHAR* Stream = nullptr);
 	bool ToggleStatUnitGraph(UWorld* World, FCommonViewportClient* ViewportClient, const TCHAR* Stream = nullptr);
 	bool ToggleStatUnitTime(UWorld* World, FCommonViewportClient* ViewportClient, const TCHAR* Stream = nullptr);
@@ -3373,7 +3427,9 @@ private:
 	bool ToggleStatSoundWaves(UWorld* World, FCommonViewportClient* ViewportClient, const TCHAR* Stream = nullptr);
 	bool ToggleStatSoundCues(UWorld* World, FCommonViewportClient* ViewportClient, const TCHAR* Stream = nullptr);
 	bool ToggleStatSounds(UWorld* World, FCommonViewportClient* ViewportClient, const TCHAR* Stream = nullptr);
+	bool ToggleStatAudioStreaming(UWorld* World, FCommonViewportClient* ViewportClient, const TCHAR* Stream = nullptr);
 	bool ToggleStatSoundMixes(UWorld* World, FCommonViewportClient* ViewportClient, const TCHAR* Stream = nullptr);
+	bool ToggleStatSoundModulators(UWorld* World, FCommonViewportClient* ViewportClient, const TCHAR* Stream = nullptr);
 #endif
 
 	/**
@@ -3399,9 +3455,11 @@ private:
 	int32 RenderStatLevelMap(UWorld* World, FViewport* Viewport, FCanvas* Canvas, int32 X, int32 Y, const FVector* ViewLocation = nullptr, const FRotator* ViewRotation = nullptr);
 	int32 RenderStatUnit(UWorld* World, FViewport* Viewport, FCanvas* Canvas, int32 X, int32 Y, const FVector* ViewLocation = nullptr, const FRotator* ViewRotation = nullptr);
 #if !UE_BUILD_SHIPPING
-	int32 RenderStatReverb(UWorld* World, FViewport* Viewport, FCanvas* Canvas, int32 X, int32 Y, const FVector* ViewLocation = nullptr, const FRotator* ViewRotation = nullptr);
-	int32 RenderStatSoundMixes(UWorld* World, FViewport* Viewport, FCanvas* Canvas, int32 X, int32 Y, const FVector* ViewLocation = nullptr, const FRotator* ViewRotation = nullptr);
+	int32 RenderStatSoundReverb(UWorld* World, FViewport* Viewport, FCanvas* Canvas, int32 X, int32 Y, const FVector* ViewLocation = nullptr, const FRotator* ViewRotation = nullptr);
+ 	int32 RenderStatSoundMixes(UWorld* World, FViewport* Viewport, FCanvas* Canvas, int32 X, int32 Y, const FVector* ViewLocation = nullptr, const FRotator* ViewRotation = nullptr);
+	int32 RenderStatSoundModulators(UWorld* World, FViewport* Viewport, FCanvas* Canvas, int32 X, int32 Y, const FVector* ViewLocation = nullptr, const FRotator* ViewRotation = nullptr);
 	int32 RenderStatSoundWaves(UWorld* World, FViewport* Viewport, FCanvas* Canvas, int32 X, int32 Y, const FVector* ViewLocation = nullptr, const FRotator* ViewRotation = nullptr);
+	int32 RenderStatAudioStreaming(UWorld* World, FViewport* Viewport, FCanvas* Canvas, int32 X, int32 Y, const FVector* ViewLocation = nullptr, const FRotator* ViewRotation = nullptr);
 	int32 RenderStatSoundCues(UWorld* World, FViewport* Viewport, FCanvas* Canvas, int32 X, int32 Y, const FVector* ViewLocation = nullptr, const FRotator* ViewRotation = nullptr);
 	int32 RenderStatSounds(UWorld* World, FViewport* Viewport, FCanvas* Canvas, int32 X, int32 Y, const FVector* ViewLocation = nullptr, const FRotator* ViewRotation = nullptr);
 #endif // !UE_BUILD_SHIPPING

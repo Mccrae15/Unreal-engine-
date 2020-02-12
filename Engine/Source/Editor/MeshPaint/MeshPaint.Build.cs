@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 using UnrealBuildTool;
 
@@ -28,6 +28,7 @@ public class MeshPaint : ModuleRules
                 "EditorStyle",
                 "UnrealEd",
                 "MeshDescription",
+				"StaticMeshDescription",
                 "SourceControl",
                 "ViewportInteraction",
                 "VREditor",

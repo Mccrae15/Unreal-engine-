@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "Engine/MemberReference.h"
 #include "Misc/ConfigCacheIni.h"
@@ -8,8 +8,6 @@
 #include "Kismet2/BlueprintEditorUtils.h"
 #include "BlueprintCompilationManager.h"
 #endif
-
-extern COREUOBJECT_API bool GBlueprintUseCompilationManager;
 
 //////////////////////////////////////////////////////////////////////////
 // FMemberReference
@@ -116,6 +114,19 @@ void FMemberReference::InvalidateScope()
 		// Make it into a member reference since we are clearing the local context
 		bSelfContext = true;
 	}
+}
+
+bool FMemberReference::IsSparseClassData(const UClass* OwningClass) const
+{
+	bool bIsSparseClassData = false;
+	UScriptStruct* SparseClassDataStruct = OwningClass ? OwningClass->GetSparseClassDataStruct() : nullptr;
+	if (SparseClassDataStruct)
+	{
+		FProperty* VariableProperty = FindField<FProperty>(SparseClassDataStruct, GetMemberName());
+		bIsSparseClassData = VariableProperty != nullptr;
+	}
+
+	return bIsSparseClassData;
 }
 
 #if WITH_EDITOR
@@ -253,7 +264,7 @@ void FMemberReference::InitFieldRedirectMap()
 
 UClass* FMemberReference::GetClassToUse(UClass* InClass, bool bUseUpToDateClass)
 {
-	if(GBlueprintUseCompilationManager && bUseUpToDateClass)
+	if(bUseUpToDateClass)
 	{
 		return FBlueprintEditorUtils::GetMostUpToDateClass(InClass);
 	}
@@ -263,14 +274,15 @@ UClass* FMemberReference::GetClassToUse(UClass* InClass, bool bUseUpToDateClass)
 	}
 }
 
-UField* FMemberReference::FindRemappedField(UClass *FieldClass, UClass* InitialScope, FName InitialName, bool bInitialScopeMustBeOwnerOfField)
+template <typename TFieldType>
+TFieldType* FindRemappedFieldImpl(FName FieldClassOutermostName, FName FieldClassName, UClass* InitialScope, FName InitialName, bool bInitialScopeMustBeOwnerOfField)
 {
 	DECLARE_SCOPE_CYCLE_COUNTER(TEXT("FMemberReference::FindRemappedField"), STAT_LinkerLoad_FindRemappedField, STATGROUP_LoadTimeVerbose);
 
-	InitFieldRedirectMap();
+	FMemberReference::InitFieldRedirectMap();
 
 	// In the case of a bifurcation of a variable (e.g. moved from a parent into certain children), verify that we don't also define the variable in the current scope first
-	if (FindField<UField>(InitialScope, InitialName) != nullptr)
+	if (FindField<TFieldType>(InitialScope, InitialName) != nullptr)
 	{
 		return nullptr;
 	}
@@ -284,7 +296,7 @@ UField* FMemberReference::FindRemappedField(UClass *FieldClass, UClass* InitialS
 		FName NewFieldName;
 
 		FCoreRedirectObjectName OldRedirectName = FCoreRedirectObjectName(InitialName, TestRemapClass->GetFName(), TestRemapClass->GetOutermost()->GetFName());
-		FCoreRedirectObjectName NewRedirectName = FCoreRedirects::GetRedirectedName(FCoreRedirects::GetFlagsForTypeClass(FieldClass), OldRedirectName);
+		FCoreRedirectObjectName NewRedirectName = FCoreRedirects::GetRedirectedName(FCoreRedirects::GetFlagsForTypeName(FieldClassOutermostName, FieldClassName), OldRedirectName);
 
 		if (NewRedirectName != OldRedirectName)
 		{
@@ -314,7 +326,7 @@ UField* FMemberReference::FindRemappedField(UClass *FieldClass, UClass* InitialS
 		if (NewFieldName != NAME_None)
 		{
 			// Find the actual field specified by the redirector, so we can return it and update the node that uses it
-			UField* NewField = FindField<UField>(SearchClass, NewFieldName);
+			TFieldType* NewField = FindField<TFieldType>(SearchClass, NewFieldName);
 			if (NewField != nullptr)
 			{
 				if (bInitialScopeMustBeOwnerOfField && !InitialScope->IsChildOf(SearchClass))
@@ -339,6 +351,16 @@ UField* FMemberReference::FindRemappedField(UClass *FieldClass, UClass* InitialS
 	}
 
 	return nullptr;
+}
+
+UField* FMemberReference::FindRemappedField(UClass* FieldClass, UClass* InitialScope, FName InitialName, bool bInitialScopeMustBeOwnerOfField)
+{	
+	return FindRemappedFieldImpl<UField>(FieldClass->GetOutermost()->GetFName(), FieldClass->GetFName(), InitialScope, InitialName, bInitialScopeMustBeOwnerOfField);
+}
+
+FField* FMemberReference::FindRemappedField(FFieldClass* FieldClass, UClass* InitialScope, FName InitialName, bool bInitialScopeMustBeOwnerOfField)
+{
+	return FindRemappedFieldImpl<FField>(GLongCoreUObjectPackageName, FieldClass->GetFName(), InitialScope, InitialName, bInitialScopeMustBeOwnerOfField);
 }
 
 #endif

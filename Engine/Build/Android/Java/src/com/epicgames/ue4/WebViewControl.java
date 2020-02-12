@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 package com.epicgames.ue4;
 
 import android.os.Build;
@@ -7,6 +7,7 @@ import android.content.Context;
 
 import android.view.View;
 import android.view.ViewGroup;
+import android.webkit.ConsoleMessage;
 import android.webkit.WebView;
 import android.webkit.WebViewClient;
 import android.webkit.WebChromeClient;
@@ -1386,6 +1387,7 @@ class WebViewControl
 		private int mTextureID = -1;
 		private float[] mTransformMatrix = new float[16];
 		private boolean mTextureSizeChanged = true;
+		private int GL_TEXTURE_EXTERNAL_OES = 0x8D65;
 
 		private float mUScale = 1.0f;
 		private float mVScale = -1.0f;
@@ -1515,7 +1517,11 @@ class WebViewControl
 			// Get the latest video texture frame.
 			
 			mSurfaceTexture.updateTexImage();
-			
+
+			// updateTexImage binds an external texture to active texture unit
+			// make sure to unbind it to prevent state leak
+			GLES20.glBindTexture(GL_TEXTURE_EXTERNAL_OES, 0);
+						
 			return frameUpdateInfo;
 		}
 	};
@@ -1680,6 +1686,14 @@ class WebViewControl
             transport.setWebView(newView);
             resultMsg.sendToTarget();
             return true;
+		}
+
+		@Override
+		public boolean onConsoleMessage(ConsoleMessage cm) {
+			GameActivity.Log.warn(cm.message() + " -- From line "
+				+ cm.lineNumber() + " of "
+				+ cm.sourceId() );
+			return true;
 		}
 	}
 	public long GetNativePtr()

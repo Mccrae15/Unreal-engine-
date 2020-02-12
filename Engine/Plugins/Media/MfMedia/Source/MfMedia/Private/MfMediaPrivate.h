@@ -1,10 +1,10 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
 #include "Logging/LogMacros.h"
 
-#define MFMEDIA_SUPPORTED_PLATFORM (PLATFORM_XBOXONE || (PLATFORM_WINDOWS && WINVER >= 0x0601 /*Win7*/ && !UE_SERVER))
+#define MFMEDIA_SUPPORTED_PLATFORM (PLATFORM_XBOXONE || PLATFORM_HOLOLENS || (PLATFORM_WINDOWS && WINVER >= 0x0601 /*Win7*/ && !UE_SERVER))
 
 #if MFMEDIA_SUPPORTED_PLATFORM
 	#if PLATFORM_WINDOWS

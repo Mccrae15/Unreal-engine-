@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "Sound/SoundCue.h"
 #include "Misc/App.h"
@@ -9,25 +9,29 @@
 #include "Components/AudioComponent.h"
 #include "UObject/UObjectIterator.h"
 #include "EngineUtils.h"
+#include "Sound/SoundClass.h"
 #include "Sound/SoundNode.h"
-#include "Sound/SoundNodeMixer.h"
 #include "Sound/SoundNodeAssetReferencer.h"
+#include "Sound/SoundNodeMixer.h"
 #include "Sound/SoundWave.h"
-#include "Sound/SoundNodeWavePlayer.h"
 #include "Sound/SoundNodeAttenuation.h"
+#include "Sound/SoundNodeModulator.h"
 #include "Sound/SoundNodeQualityLevel.h"
-#include "Sound/SoundNodeSoundClass.h"
 #include "Sound/SoundNodeRandom.h"
+#include "Sound/SoundNodeSoundClass.h"
+#include "Sound/SoundNodeWavePlayer.h"
 #include "GameFramework/GameUserSettings.h"
 #include "AudioCompressionSettingsUtils.h"
 #include "AudioThread.h"
+#include "DSP/Dsp.h"
 #if WITH_EDITOR
 #include "Kismet2/BlueprintEditorUtils.h"
+#include "Sound/AudioSettings.h"
 #include "SoundCueGraph/SoundCueGraphNode.h"
 #include "SoundCueGraph/SoundCueGraph.h"
 #include "SoundCueGraph/SoundCueGraphNode_Root.h"
 #include "SoundCueGraph/SoundCueGraphSchema.h"
-#endif
+#endif // WITH_EDITOR
 
 /*-----------------------------------------------------------------------------
 	USoundCue implementation.
@@ -37,7 +41,7 @@ int32 USoundCue::CachedQualityLevel = -1;
 
 #if WITH_EDITOR
 TSharedPtr<ISoundCueAudioEditor> USoundCue::SoundCueAudioEditor = nullptr;
-#endif
+#endif // WITH_EDITOR
 
 USoundCue::USoundCue(const FObjectInitializer& ObjectInitializer)
 	: Super(ObjectInitializer)
@@ -45,6 +49,8 @@ USoundCue::USoundCue(const FObjectInitializer& ObjectInitializer)
 	VolumeMultiplier = 0.75f;
 	PitchMultiplier = 1.0f;
 	SubtitlePriority = DEFAULT_SUBTITLE_PRIORITY;
+
+	bIsRetainingAudio = false;
 }
 
 #if WITH_EDITOR
@@ -58,7 +64,6 @@ void USoundCue::PostInitProperties()
 
 	CacheAggregateValues();
 }
-
 
 void USoundCue::AddReferencedObjects(UObject* InThis, FReferenceCollector& Collector)
 {
@@ -78,17 +83,38 @@ void USoundCue::CacheAggregateValues()
 
 		Duration = FirstNode->GetDuration();
 
-		MaxDistance = FirstNode->GetMaxDistance();
-		// If no sound cue nodes overrode the max distance, we need to check the base attenuation
-		if (MaxDistance == 0.0f)
-		{
-			MaxDistance = USoundBase::GetMaxDistance();
-		}
-
+		MaxDistance = FindMaxDistanceInternal();
 		bHasDelayNode = FirstNode->HasDelayNode();
 		bHasConcatenatorNode = FirstNode->HasConcatenatorNode();
-		bHasVirtualizeWhenSilent = FirstNode->IsVirtualizeWhenSilent();
+		bHasPlayWhenSilent = FirstNode->IsPlayWhenSilent();
 	}
+}
+
+void USoundCue::PrimeSoundCue()
+{
+	if (FirstNode != nullptr)
+	{
+		FirstNode->PrimeChildWavePlayers(true);
+	}
+}
+
+void USoundCue::RetainSoundCue()
+{
+	if (FirstNode)
+	{
+		FirstNode->RetainChildWavePlayers(true);
+	}
+	bIsRetainingAudio = true;
+}
+
+void USoundCue::ReleaseRetainedAudio()
+{
+	if (FirstNode)
+	{
+		FirstNode->ReleaseRetainerOnChildWavePlayers(true);
+	}
+
+	bIsRetainingAudio = false;
 }
 
 void USoundCue::Serialize(FStructuredArchive::FRecord Record)
@@ -106,20 +132,20 @@ void USoundCue::Serialize(FStructuredArchive::FRecord Record)
 
 	if (UnderlyingArchive.UE4Ver() >= VER_UE4_COOKED_ASSETS_IN_EDITOR_SUPPORT)
 	{
-		FStripDataFlags StripFlags(Record.EnterField(FIELD_NAME_TEXT("SoundCueStripFlags")));
+		FStripDataFlags StripFlags(Record.EnterField(SA_FIELD_NAME(TEXT("SoundCueStripFlags"))));
 #if WITH_EDITORONLY_DATA
 		if (!StripFlags.IsEditorDataStripped())
 		{
-			Record << NAMED_FIELD(SoundCueGraph);
+			Record << SA_VALUE(TEXT("SoundCueGraph"), SoundCueGraph);
 		}
-#endif
+#endif // WITH_EDITORONLY_DATA
 	}
 #if WITH_EDITOR
 	else
 	{
-		Record << NAMED_FIELD(SoundCueGraph);
+		Record << SA_VALUE(TEXT("SoundCueGraph"), SoundCueGraph);
 	}
-#endif
+#endif // WITH_EDITOR
 }
 
 void USoundCue::PostLoad()
@@ -146,7 +172,7 @@ void USoundCue::PostLoad()
 		}
 	}
 	else
-#endif
+#endif // WITH_EDITOR
 	if (GEngine && *GEngine->GameUserSettingsClass)
 	{
 		EvaluateNodes(false);
@@ -157,6 +183,26 @@ void USoundCue::PostLoad()
 	}
 
 	CacheAggregateValues();
+	
+	ESoundWaveLoadingBehavior SoundClassLoadingBehavior = ESoundWaveLoadingBehavior::Inherited;
+
+	USoundClass* CurrentSoundClass = SoundClassObject;
+
+	// Recurse through this sound class's parents until we find an override.
+	while (SoundClassLoadingBehavior == ESoundWaveLoadingBehavior::Inherited && CurrentSoundClass != nullptr)
+	{
+		SoundClassLoadingBehavior = CurrentSoundClass->Properties.LoadingBehavior;
+		CurrentSoundClass = CurrentSoundClass->ParentClass;
+	}
+
+	if (SoundClassLoadingBehavior == ESoundWaveLoadingBehavior::RetainOnLoad)
+	{
+		RetainSoundCue();
+	}
+	else if (bPrimeOnLoad || SoundClassLoadingBehavior == ESoundWaveLoadingBehavior::PrimeOnLoad)
+	{
+		PrimeSoundCue();
+	}
 }
 
 bool USoundCue::CanBeClusterRoot() const
@@ -189,31 +235,60 @@ void USoundCue::EvaluateNodes(bool bAddToRoot)
 		}
 	}
 
-	TArray<USoundNode*> NodesToEvaluate;
-	NodesToEvaluate.Push(FirstNode);
-
-	while (NodesToEvaluate.Num() > 0)
+	TFunction<void(USoundNode*)> EvaluateNodes_Internal = [&](USoundNode* SoundNode)
 	{
-		if (USoundNode* SoundNode = NodesToEvaluate.Pop(false))
+		if (USoundNodeAssetReferencer* AssetReferencerNode = Cast<USoundNodeAssetReferencer>(SoundNode))
 		{
-			if (USoundNodeAssetReferencer* AssetReferencerNode = Cast<USoundNodeAssetReferencer>(SoundNode))
+			AssetReferencerNode->ConditionalPostLoad();
+			AssetReferencerNode->LoadAsset(bAddToRoot);
+		}
+		else if (USoundNodeQualityLevel* QualityLevelNode = Cast<USoundNodeQualityLevel>(SoundNode))
+		{
+			if (CachedQualityLevel < QualityLevelNode->ChildNodes.Num())
 			{
-				AssetReferencerNode->ConditionalPostLoad();
-				AssetReferencerNode->LoadAsset(bAddToRoot);
-			}
-			else if (USoundNodeQualityLevel* QualityLevelNode = Cast<USoundNodeQualityLevel>(SoundNode))
-			{
-				if (CachedQualityLevel < QualityLevelNode->ChildNodes.Num())
-				{
-					NodesToEvaluate.Add(QualityLevelNode->ChildNodes[CachedQualityLevel]);
-				}
-			}
-			else
-			{
-				NodesToEvaluate.Append(SoundNode->ChildNodes);
+				EvaluateNodes_Internal(QualityLevelNode->ChildNodes[CachedQualityLevel]);
 			}
 		}
+		else if (SoundNode)
+		{
+			for (USoundNode* ChildNode : SoundNode->ChildNodes)
+			{
+				if (ChildNode)
+				{
+					EvaluateNodes_Internal(ChildNode);
+				}
+			}
+		}
+	};
+
+	EvaluateNodes_Internal(FirstNode);
+}
+
+float USoundCue::FindMaxDistanceInternal() const
+{
+	float OutMaxDistance = 0.0f;
+	if (const FSoundAttenuationSettings* Settings = GetAttenuationSettingsToApply())
+	{
+		if (!Settings->bAttenuate)
+		{
+			return WORLD_MAX;
+		}
+
+		OutMaxDistance = FMath::Max(OutMaxDistance, Settings->GetMaxDimension());
 	}
+
+	if (FirstNode)
+	{
+		OutMaxDistance = FMath::Max(OutMaxDistance, FirstNode->GetMaxDistance());
+	}
+
+	if (OutMaxDistance > KINDA_SMALL_NUMBER)
+	{
+		return OutMaxDistance;
+	}
+
+	// If no sound cue nodes has overridden the max distance, check the base attenuation
+	return USoundBase::GetMaxDistance();
 }
 
 
@@ -244,7 +319,7 @@ void USoundCue::PostEditChangeProperty(struct FPropertyChangedEvent& PropertyCha
 	{
 		for (TObjectIterator<UAudioComponent> It; It; ++It)
 		{
-			if (It->Sound == this && It->bIsActive)
+			if (It->Sound == this && It->IsActive())
 			{
 				It->Stop();
 				It->Play();
@@ -254,8 +329,10 @@ void USoundCue::PostEditChangeProperty(struct FPropertyChangedEvent& PropertyCha
 		// Propagate branch exclusion to child nodes which care (sound node random)
 		RecursivelySetExcludeBranchCulling(FirstNode);
 	}
+
+	CacheAggregateValues();
 }
-#endif
+#endif // WITH_EDITOR
 
 void USoundCue::RecursiveFindAttenuation( USoundNode* Node, TArray<class USoundNodeAttenuation*> &OutNodes )
 {
@@ -356,6 +433,11 @@ void USoundCue::AudioQualityChanged()
 	EvaluateNodes(false);
 }
 
+void USoundCue::BeginDestroy()
+{
+	Super::BeginDestroy();
+}
+
 FString USoundCue::GetDesc()
 {
 	FString Description = TEXT( "" );
@@ -399,7 +481,10 @@ int32 USoundCue::GetResourceSizeForFormat(FName Format)
 
 float USoundCue::GetMaxDistance() const
 {
-	return MaxDistance;
+	// Always recalc the max distance when in the editor as it could change
+	// from a referenced attenuation asset being updated without this cue
+	// asset re-caching the aggregate 'MaxDistance' value
+	return GIsEditor ? FindMaxDistanceInternal() : MaxDistance;
 }
 
 float USoundCue::GetDuration()
@@ -455,11 +540,21 @@ bool USoundCue::IsPlayable() const
 	return FirstNode != nullptr;
 }
 
-void USoundCue::Parse( FAudioDevice* AudioDevice, const UPTRINT NodeWaveInstanceHash, FActiveSound& ActiveSound, const FSoundParseParameters& ParseParams, TArray<FWaveInstance*>& WaveInstances )
+bool USoundCue::IsPlayWhenSilent() const
+{
+	if (VirtualizationMode == EVirtualizationMode::PlayWhenSilent)
+	{
+		return true;
+	}
+
+	return bHasPlayWhenSilent;
+}
+
+void USoundCue::Parse(FAudioDevice* AudioDevice, const UPTRINT NodeWaveInstanceHash, FActiveSound& ActiveSound, const FSoundParseParameters& ParseParams, TArray<FWaveInstance*>& WaveInstances)
 {
 	if (FirstNode)
 	{
-		FirstNode->ParseNodes(AudioDevice,(UPTRINT)FirstNode,ActiveSound,ParseParams,WaveInstances);
+		FirstNode->ParseNodes(AudioDevice, (UPTRINT)FirstNode, ActiveSound, ParseParams, WaveInstances);
 	}
 }
 
@@ -541,7 +636,7 @@ bool USoundCue::HasCookedAmplitudeEnvelopeData() const
 
 #if WITH_EDITOR
 UEdGraph* USoundCue::GetGraph()
-{ 
+{
 	return SoundCueGraph;
 }
 
@@ -594,11 +689,20 @@ void USoundCue::SetSoundCueAudioEditor(TSharedPtr<ISoundCueAudioEditor> InSoundC
 	SoundCueAudioEditor = InSoundCueAudioEditor;
 }
 
+void USoundCue::ResetGraph()
+{
+	for (const USoundNode* Node : AllNodes)
+	{
+		SoundCueGraph->RemoveNode(Node->GraphNode);
+	}
+
+	AllNodes.Reset();
+	FirstNode = nullptr;
+}
+
 /** Gets the sound cue graph editor implementation. */
 TSharedPtr<ISoundCueAudioEditor> USoundCue::GetSoundCueAudioEditor()
-	{
+{
 	return SoundCueAudioEditor;
 }
-			
-
-#endif
+#endif // WITH_EDITOR

@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "CoreMinimal.h"
 #include "Misc/MessageDialog.h"
@@ -24,6 +24,8 @@
 #include "Modules/ModuleManager.h"
 #include "Rendering/SkeletalMeshRenderData.h"
 #include "Physics/PhysicsInterfaceCore.h"
+#include "AnimationRuntime.h"
+#include "ClothCollisionData.h"
 
 #include "Logging/MessageLog.h"
 #include "CollisionDebugDrawingPublic.h"
@@ -36,11 +38,11 @@
 
 #if WITH_APEX
 
-#if WITH_APEX_CLOTHING
+#if WITH_APEX_CLOTHING || WITH_CHAOS_CLOTHING
 	// for cloth morph target	
 	#include "Animation/MorphTarget.h"
 
-#endif// #if WITH_APEX_CLOTHING
+#endif// #if WITH_APEX_CLOTHING || WITH_CHAOS_CLOTHING
 
 #endif//#if WITH_APEX
 #include "PhysicsEngine/ConstraintInstance.h"
@@ -57,6 +59,7 @@
 
 DECLARE_CYCLE_STAT(TEXT("CreateClothing"), STAT_CreateClothing, STATGROUP_Physics);
 
+CSV_DECLARE_CATEGORY_MODULE_EXTERN(ENGINE_API, Animation);
 CSV_DECLARE_CATEGORY_MODULE_EXTERN(CORE_API, Basic);
 
 TAutoConsoleVariable<int32> CVarEnableClothPhysics(TEXT("p.ClothPhysics"), 1, TEXT("If 1, physics cloth will be used for simulation."));
@@ -204,7 +207,7 @@ void USkeletalMeshComponent::SetSimulatePhysics(bool bSimulate)
  	UpdateClothTickRegisteredState();
 }
 
-void USkeletalMeshComponent::OnComponentCollisionSettingsChanged()
+void USkeletalMeshComponent::OnComponentCollisionSettingsChanged(bool bUpdateOverlaps)
 {
 	for(int32 i=0; i<Bodies.Num(); i++)
 	{
@@ -219,7 +222,7 @@ void USkeletalMeshComponent::OnComponentCollisionSettingsChanged()
 		((FSkeletalMeshSceneProxy*)SceneProxy)->SetCollisionEnabled_GameThread(IsCollisionEnabled());
 	}
 
-	Super::OnComponentCollisionSettingsChanged();
+	Super::OnComponentCollisionSettingsChanged(bUpdateOverlaps);
 }
 
 void USkeletalMeshComponent::AddRadialImpulse(FVector Origin, float Radius, float Strength, ERadialImpulseFalloff Falloff, bool bVelChange)
@@ -611,13 +614,13 @@ void USkeletalMeshComponent::InitArticulated(FPhysScene* PhysScene)
 
 
 	// Update Flag
-#if WITH_APEX_CLOTHING
+#if WITH_APEX_CLOTHING || WITH_CHAOS_CLOTHING
 	PrevRootBoneMatrix = GetBoneMatrix(0); // save the root bone transform
 
 	// pre-compute cloth teleport thresholds for performance
 	ComputeTeleportDistanceThresholdInRadians();
 	ComputeTeleportRotationThresholdInRadians();
-#endif // #if WITH_APEX_CLOTHING
+#endif // #if WITH_APEX_CLOTHING || WITH_CHAOS_CLOTHING
 }
 
 TAutoConsoleVariable<int32> CVarEnableRagdollPhysics(TEXT("p.RagdollPhysics"), 1, TEXT("If 1, ragdoll physics will be used. Otherwise just root body is simulated"));
@@ -632,25 +635,41 @@ void USkeletalMeshComponent::InstantiatePhysicsAsset(const UPhysicsAsset& PhysAs
 	InstantiatePhysicsAsset_Internal(PhysAsset, Scale3D, OutBodies, OutConstraints, BoneTMCallable, PhysScene, OwningComponent, UseRootBodyIndex, UseAggregate);
 }
 
-void USkeletalMeshComponent::InstantiatePhysicsAssetRefPose(const UPhysicsAsset& PhysAsset, const FVector& Scale3D, TArray<FBodyInstance*>& OutBodies, TArray<FConstraintInstance*>& OutConstraints, FPhysScene* PhysScene /*= nullptr*/, USkeletalMeshComponent* OwningComponent /*= nullptr*/, int32 UseRootBodyIndex /*= INDEX_NONE*/, const FPhysicsAggregateHandle& UseAggregate) const
+void USkeletalMeshComponent::InstantiatePhysicsAssetRefPose(const UPhysicsAsset& PhysAsset, const FVector& Scale3D, TArray<FBodyInstance*>& OutBodies, TArray<FConstraintInstance*>& OutConstraints, FPhysScene* PhysScene /*= nullptr*/, USkeletalMeshComponent* OwningComponent /*= nullptr*/, int32 UseRootBodyIndex /*= INDEX_NONE*/, const FPhysicsAggregateHandle& UseAggregate, bool bCreateBodiesInRefPose) const
 {
 	if(SkeletalMesh)
 	{
-		auto BoneTMCallable = [this](int32 BoneIndex)
+		const FReferenceSkeleton& RefSkeleton = SkeletalMesh->RefSkeleton;
+
+		if (bCreateBodiesInRefPose)
 		{
-			const FReferenceSkeleton& RefSkel = SkeletalMesh->RefSkeleton;
+			// Create the bodies posed in component-space with the ref pose
+			TArray<FTransform> CachedTransforms;
+			TArray<bool> CachedTransformReady;
+			CachedTransforms.SetNumUninitialized(RefSkeleton.GetRefBonePose().Num());
+			CachedTransformReady.SetNumZeroed(RefSkeleton.GetRefBonePose().Num());
 
-			if(RefSkel.IsValidIndex(BoneIndex))
+			auto BoneTMCallable = [&](int32 BoneIndex)
 			{
-				return RefSkel.GetRefBonePose()[BoneIndex];
-			}
-			else
+				return FAnimationRuntime::GetComponentSpaceTransformWithCache(RefSkeleton, RefSkeleton.GetRefBonePose(), BoneIndex, CachedTransforms, CachedTransformReady);
+			};
+
+			InstantiatePhysicsAsset_Internal(PhysAsset, Scale3D, OutBodies, OutConstraints, BoneTMCallable, PhysScene, OwningComponent, UseRootBodyIndex, UseAggregate);
+		}
+		else
+		{
+			// Create the bodies with each body in its local ref pose (all bodies will be on top of each other close to the origin, but should still have the correct scale)
+			auto BoneTMCallable = [&](int32 BoneIndex)
 			{
+				if (RefSkeleton.IsValidIndex(BoneIndex))
+				{
+					return RefSkeleton.GetRefBonePose()[BoneIndex];
+				}
 				return FTransform::Identity;
-			}
-		};
+			};;
 
-		InstantiatePhysicsAsset_Internal(PhysAsset, Scale3D, OutBodies, OutConstraints, BoneTMCallable, PhysScene, OwningComponent, UseRootBodyIndex, UseAggregate);
+			InstantiatePhysicsAsset_Internal(PhysAsset, Scale3D, OutBodies, OutConstraints, BoneTMCallable, PhysScene, OwningComponent, UseRootBodyIndex, UseAggregate);
+		}
 	}
 }
 
@@ -724,7 +743,7 @@ void USkeletalMeshComponent::InstantiatePhysicsAsset_Internal(const UPhysicsAsse
 			// Create physics body instance.
 			FTransform BoneTransform = BoneTransformGetter(BoneIndex);
 
-			FBodyInstance::FInitBodySpawnParams SpawnParams(OwningComponent);
+			FInitBodySpawnParams SpawnParams(OwningComponent);
 
 			if(OwningComponent == nullptr)
 			{
@@ -915,14 +934,14 @@ void USkeletalMeshComponent::TermBodiesBelow(FName ParentBoneName)
 
 float USkeletalMeshComponent::GetTotalMassBelowBone(FName InBoneName)
 {
-	float TotalMass = 0.f;
+	float TotalBodyMass = 0.f;
 
-	ForEachBodyBelow(InBoneName, /*bIncludeSelf=*/true, /*bSkipCustomPhysics=*/false, [&TotalMass](FBodyInstance* BI)
+	ForEachBodyBelow(InBoneName, /*bIncludeSelf=*/true, /*bSkipCustomPhysics=*/false, [&TotalBodyMass](FBodyInstance* BI)
 	{
-		TotalMass += BI->GetBodyMass();
+		TotalBodyMass += BI->GetBodyMass();
 	});
 
-	return TotalMass;
+	return TotalBodyMass;
 }
 
 void USkeletalMeshComponent::SetAllBodiesSimulatePhysics(bool bNewSimulate)
@@ -1317,7 +1336,7 @@ void USkeletalMeshComponent::OnUpdateTransform(EUpdateTransformFlags UpdateTrans
 	}
 }
 
-bool USkeletalMeshComponent::UpdateOverlapsImpl(TArray<FOverlapInfo> const* PendingOverlaps, bool bDoNotifies, const TArray<FOverlapInfo>* OverlapsAtEndLocation)
+bool USkeletalMeshComponent::UpdateOverlapsImpl(const TOverlapArrayView* PendingOverlaps, bool bDoNotifies, const TOverlapArrayView* OverlapsAtEndLocation)
 {
 	// Parent class (USkinnedMeshComponent) routes only to children, but we really do want to test our own bodies for overlaps.
 	return UPrimitiveComponent::UpdateOverlapsImpl(PendingOverlaps, bDoNotifies, OverlapsAtEndLocation);
@@ -1401,10 +1420,10 @@ void USkeletalMeshComponent::SendRenderDebugPhysics(FPrimitiveSceneProxy* Overri
 			}
 		}
 
-		ENQUEUE_UNIQUE_RENDER_COMMAND_TWOPARAMETER(
-			SkeletalMesh_SendRenderDebugPhysics, FPrimitiveSceneProxy*, PassedSceneProxy, UseSceneProxy, TArray<FPrimitiveSceneProxy::FDebugMassData>, UseDebugMassData, DebugMassData,
+		ENQUEUE_RENDER_COMMAND(SkeletalMesh_SendRenderDebugPhysics)(
+			[UseSceneProxy, DebugMassData](FRHICommandListImmediate& RHICmdList)
 			{
-				PassedSceneProxy->SetDebugMassData(UseDebugMassData);
+				UseSceneProxy->SetDebugMassData(DebugMassData);
 			}
 		);
 		
@@ -1777,7 +1796,7 @@ void USkeletalMeshComponent::SetPhysicsAsset(UPhysicsAsset* InPhysicsAsset, bool
 
 			// Initialize new Physics Asset
 			UWorld* World = GetWorld();
-			if(World->GetPhysicsScene() != nullptr && ShouldCreatePhysicsState())
+			if(World && World->GetPhysicsScene() != nullptr && ShouldCreatePhysicsState())
 			{
 			//	UE_LOG(LogSkeletalMesh, Warning, TEXT("Creating Physics State (%s : %s)"), *GetNameSafe(GetOuter()),  *GetName());			
 				InitArticulated(World->GetPhysicsScene());
@@ -1916,9 +1935,7 @@ FVector GetTypedSkinnedVertexPositionWithCloth(USkeletalMeshComponent* Component
 				if (Component->ClothBlendWeight < 1.0f)
 				{
 					// blend with a skinned position
-					FVector SkinnedPos = SkinWeightBuffer.HasExtraBoneInfluences() ?
-						GetTypedSkinnedVertexPosition<true, bCachedMatrices>(Component, Section, LODData.StaticVertexBuffers.PositionVertexBuffer, SkinWeightBuffer, VertIndexInChunk, CachedRefToLocals) :
-						GetTypedSkinnedVertexPosition<false, bCachedMatrices>(Component, Section, LODData.StaticVertexBuffers.PositionVertexBuffer, SkinWeightBuffer, VertIndexInChunk, CachedRefToLocals);
+					FVector SkinnedPos = GetTypedSkinnedVertexPosition<bCachedMatrices>(Component, Section, LODData.StaticVertexBuffers.PositionVertexBuffer, SkinWeightBuffer, VertIndexInChunk, CachedRefToLocals);
 
 					SimulatedPos = SimulatedPos*Component->ClothBlendWeight + SkinnedPos*(1.0f - Component->ClothBlendWeight);
 				}
@@ -1927,9 +1944,7 @@ FVector GetTypedSkinnedVertexPositionWithCloth(USkeletalMeshComponent* Component
 		}
 	}
 
-	return SkinWeightBuffer.HasExtraBoneInfluences() ?
-		GetTypedSkinnedVertexPosition<true, bCachedMatrices>(Component, Section, LODData.StaticVertexBuffers.PositionVertexBuffer, SkinWeightBuffer, VertIndexInChunk, CachedRefToLocals) :
-		GetTypedSkinnedVertexPosition<false, bCachedMatrices>(Component, Section, LODData.StaticVertexBuffers.PositionVertexBuffer, SkinWeightBuffer, VertIndexInChunk, CachedRefToLocals);
+	return GetTypedSkinnedVertexPosition<bCachedMatrices>(Component, Section, LODData.StaticVertexBuffers.PositionVertexBuffer, SkinWeightBuffer, VertIndexInChunk, CachedRefToLocals);
 }
 
 FVector USkeletalMeshComponent::GetSkinnedVertexPosition(USkeletalMeshComponent* Component, int32 VertexIndex, const FSkeletalMeshLODRenderData& LODData, FSkinWeightVertexBuffer& SkinWeightBuffer)
@@ -1953,7 +1968,6 @@ void USkeletalMeshComponent::ComputeSkinnedPositions(USkeletalMeshComponent* Com
 
 	OutPositions.Empty();
 	OutPositions.AddUninitialized(LODData.GetNumVertices());
-	bool bHasExtraBoneInfluences = SkinWeightBuffer.HasExtraBoneInfluences();
 	
 	if (Component->SkeletalMesh->MeshClothingAssets.Num() > 0 &&
 		!Component->bDisableClothSimulation &&
@@ -1997,9 +2011,7 @@ void USkeletalMeshComponent::ComputeSkinnedPositions(USkeletalMeshComponent* Com
 							{
 								FVector SimulatedPos = ActorData->Positions[SoftIdx];
 
-								FVector SkinnedPosition = bHasExtraBoneInfluences ? 
-									GetTypedSkinnedVertexPosition<true, true>(Component, Section, LODData.StaticVertexBuffers.PositionVertexBuffer, SkinWeightBuffer, SoftIdx, CachedRefToLocals) :
-									GetTypedSkinnedVertexPosition<false, true>(Component, Section, LODData.StaticVertexBuffers.PositionVertexBuffer, SkinWeightBuffer, SoftIdx, CachedRefToLocals);
+								FVector SkinnedPosition = GetTypedSkinnedVertexPosition<true>(Component, Section, LODData.StaticVertexBuffers.PositionVertexBuffer, SkinWeightBuffer, SoftIdx, CachedRefToLocals);
 
 								OutPositions[SoftOffset + SoftIdx] = SimulatedPos*Component->ClothBlendWeight + SkinnedPosition*(1.0f - Component->ClothBlendWeight);
 							}
@@ -2022,9 +2034,7 @@ void USkeletalMeshComponent::ComputeSkinnedPositions(USkeletalMeshComponent* Com
 			const uint32 NumSoftVerts = Section.GetNumVertices();
 			for (uint32 SoftIdx = 0; SoftIdx < NumSoftVerts; ++SoftIdx)
 			{
-				FVector SkinnedPosition = bHasExtraBoneInfluences ?
-					GetTypedSkinnedVertexPosition<true, true>(Component, Section, LODData.StaticVertexBuffers.PositionVertexBuffer, SkinWeightBuffer, SoftIdx, CachedRefToLocals) :
-					GetTypedSkinnedVertexPosition<false, true>(Component, Section, LODData.StaticVertexBuffers.PositionVertexBuffer, SkinWeightBuffer, SoftIdx, CachedRefToLocals);
+				FVector SkinnedPosition = GetTypedSkinnedVertexPosition<true>(Component, Section, LODData.StaticVertexBuffers.PositionVertexBuffer, SkinWeightBuffer, SoftIdx, CachedRefToLocals);
 				OutPositions[SoftOffset + SoftIdx] = SkinnedPosition;
 			}
 		}
@@ -2039,9 +2049,7 @@ void USkeletalMeshComponent::ComputeSkinnedPositions(USkeletalMeshComponent* Com
 			const uint32 NumSoftVerts = Section.GetNumVertices();
 			for (uint32 SoftIdx = 0; SoftIdx < NumSoftVerts; ++SoftIdx)
 			{
-				FVector SkinnedPosition = bHasExtraBoneInfluences ? 
-					GetTypedSkinnedVertexPosition<true, true>(Component, Section, LODData.StaticVertexBuffers.PositionVertexBuffer, SkinWeightBuffer, SoftIdx, CachedRefToLocals) :
-					GetTypedSkinnedVertexPosition<false, true>(Component, Section, LODData.StaticVertexBuffers.PositionVertexBuffer, SkinWeightBuffer, SoftIdx, CachedRefToLocals);
+				FVector SkinnedPosition = GetTypedSkinnedVertexPosition<true>(Component, Section, LODData.StaticVertexBuffers.PositionVertexBuffer, SkinWeightBuffer, SoftIdx, CachedRefToLocals);
 				OutPositions[SoftOffset + SoftIdx] = SkinnedPosition;
 			}
 		}
@@ -2192,17 +2200,26 @@ bool USkeletalMeshComponent::LineTraceComponent(struct FHitResult& OutHit, const
 	UWorld* const World = GetWorld();
 	bool bHaveHit = false;
 
-	float MinTime = MAX_FLT;
-	FHitResult Hit;
-	for (int32 BodyIdx=0; BodyIdx < Bodies.Num(); ++BodyIdx)
+	if (bEnablePerPolyCollision)
 	{
-		if (Bodies[BodyIdx] && Bodies[BodyIdx]->LineTrace(Hit, Start, End, Params.bTraceComplex, Params.bReturnPhysicalMaterial))
+		// Using PrimitiveComponent implementation
+		//as it intersects against mesh polys.
+		bHaveHit = UPrimitiveComponent::LineTraceComponent(OutHit, Start, End, Params);
+	}
+	else
+	{
+		float MinTime = MAX_FLT;
+		FHitResult Hit;
+		for (int32 BodyIdx = 0; BodyIdx < Bodies.Num(); ++BodyIdx)
 		{
-			bHaveHit = true;
-			if(MinTime > Hit.Time)
+			if (Bodies[BodyIdx] && Bodies[BodyIdx]->LineTrace(Hit, Start, End, Params.bTraceComplex, Params.bReturnPhysicalMaterial))
 			{
-				MinTime = Hit.Time;
-				OutHit = Hit;
+				bHaveHit = true;
+				if (MinTime > Hit.Time)
+				{
+					MinTime = Hit.Time;
+					OutHit = Hit;
+				}
 			}
 		}
 	}
@@ -2226,12 +2243,25 @@ bool USkeletalMeshComponent::SweepComponent( FHitResult& OutHit, const FVector S
 {
 	bool bHaveHit = false;
 
-	for (int32 BodyIdx=0; BodyIdx < Bodies.Num(); ++BodyIdx)
+	if (bEnablePerPolyCollision)
 	{
-		if (Bodies[BodyIdx]->Sweep(OutHit, Start, End, ShapeWorldRotation, CollisionShape, bTraceComplex))
+		// Using PrimitiveComponent implementation
+		//as it intersects against mesh polys.
+		bHaveHit =  UPrimitiveComponent::SweepComponent(OutHit, Start, End, ShapeWorldRotation, CollisionShape, bTraceComplex);
+	}
+	else
+	{
+		FHitResult Hit;
+		for (int32 BodyIdx = 0; BodyIdx < Bodies.Num(); ++BodyIdx)
 		{
-			bHaveHit = true;
-			break;
+			if (Bodies[BodyIdx] && Bodies[BodyIdx]->Sweep(Hit, Start, End, ShapeWorldRotation, CollisionShape, bTraceComplex))
+			{
+				if (!bHaveHit || Hit.Time < OutHit.Time)
+				{
+					OutHit = Hit;
+				}
+				bHaveHit = true;
+			}
 		}
 	}
 
@@ -2306,6 +2336,8 @@ void USkeletalMeshComponent::AddClothingBounds(FBoxSphereBounds& InOutBounds, co
 
 void USkeletalMeshComponent::RecreateClothingActors()
 {
+	CSV_SCOPED_TIMING_STAT(Animation, ClothInit);
+
 	ReleaseAllClothingResources();
 
 	if(SkeletalMesh == nullptr || !IsRegistered())
@@ -2345,15 +2377,13 @@ void USkeletalMeshComponent::RecreateClothingActors()
 			for(int32 BaseAssetIndex = 0; BaseAssetIndex < NumMeshAssets; ++BaseAssetIndex)
 			{
 				UClothingAssetBase* Asset = SkeletalMesh->MeshClothingAssets[BaseAssetIndex];
-
-				if(!AssetsInUse.Contains(Asset))
+				if(!Asset || !AssetsInUse.Contains(Asset))
 				{
 					continue;
 				}
-
 				ClothingSimulation->CreateActor(this, Asset, BaseAssetIndex);
 			}
-
+			ClothingSimulation->PostActorCreationInitialize();
 			WritebackClothingSimulationData();
 		}
 	}
@@ -2438,13 +2468,21 @@ void USkeletalMeshComponent::FindClothCollisions(FClothCollisionData& OutCollisi
 	}
 }
 
-void USkeletalMeshComponent::ExtractCollisionsForCloth(USkeletalMeshComponent* SourceComponent, UPhysicsAsset* PhysicsAsset, USkeletalMeshComponent* DestClothComponent, FClothCollisionData& OutCollisions, FClothCollisionSource& ClothCollisionSource)
+void USkeletalMeshComponent::ExtractCollisionsForCloth(
+	USkeletalMeshComponent* SourceComponent, 
+	UPhysicsAsset* PhysicsAsset, 
+	USkeletalMeshComponent* DestClothComponent, 
+	FClothCollisionData& OutCollisions, 
+	FClothCollisionSource& ClothCollisionSource)
 {
-	// Extract collisions from this mesh 'raw', as this isnt a mesh that has cloth simulation
+	// Extract collisions from this mesh 'raw', as this isn't a mesh that has cloth simulation
 	// (but we want it to affect other meshes with cloth simulation)
 	if(SourceComponent->SkeletalMesh && PhysicsAsset)
 	{
-		const FTransform& ComponentToComponentTransform = SourceComponent->GetComponentTransform() * DestClothComponent->GetComponentTransform().Inverse();
+		const FTransform& ComponentToComponentTransform = 
+			SourceComponent != DestClothComponent ? 
+				SourceComponent->GetComponentTransform() * DestClothComponent->GetComponentTransform().Inverse() : 
+				FTransform::Identity;
 
 		// Init cache on first copy
 		if(!ClothCollisionSource.bCached || ClothCollisionSource.CachedSkeletalMesh.Get() != SourceComponent->SkeletalMesh)
@@ -2676,8 +2714,7 @@ void USkeletalMeshComponent::ProcessClothCollisionWithEnvironment()
 
 							case ECollisionShapeType::Sphere:
 							{
-								PxSphereGeometry SphereGeo;
-								GeoCollection.GetSphereGeometry(SphereGeo);
+								PxSphereGeometry& SphereGeo = GeoCollection.GetSphereGeometry();
 
 								NewCollisionData.Spheres.AddDefaulted();
 								FClothCollisionPrim_Sphere& NewSphere = NewCollisionData.Spheres.Last();
@@ -2690,8 +2727,7 @@ void USkeletalMeshComponent::ProcessClothCollisionWithEnvironment()
 
 							case ECollisionShapeType::Capsule:
 							{
-								PxCapsuleGeometry CapGeo;
-								GeoCollection.GetCapsuleGeometry(CapGeo);
+								PxCapsuleGeometry& CapGeo = GeoCollection.GetCapsuleGeometry();
 
 								const int32 BaseSphereIndex = NewCollisionData.Spheres.Num();
 
@@ -2719,8 +2755,7 @@ void USkeletalMeshComponent::ProcessClothCollisionWithEnvironment()
 
 							case ECollisionShapeType::Box:
 							{
-								PxBoxGeometry BoxGeo;
-								GeoCollection.GetBoxGeometry(BoxGeo);
+								PxBoxGeometry& BoxGeo = GeoCollection.GetBoxGeometry();
 
 								// We're building the box in local space, so to get to the cloth transform
 								// we need to go through local -> actor -> world -> cloth
@@ -2764,8 +2799,7 @@ void USkeletalMeshComponent::ProcessClothCollisionWithEnvironment()
 
 							case ECollisionShapeType::Convex:
 							{
-								PxConvexMeshGeometry MeshGeo;
-								GeoCollection.GetConvexGeometry(MeshGeo);
+								PxConvexMeshGeometry& MeshGeo = GeoCollection.GetConvexGeometry();
 
 								// we need to inflate the hull to get nicer collisions (only particles collide)
 								const static float Inflate = 2.0f;
@@ -2816,7 +2850,10 @@ void USkeletalMeshComponent::ProcessClothCollisionWithEnvironment()
 
 					if(SkelComp->ClothingSimulation)
 					{
-						SkelComp->ClothingSimulation->GetCollisions(NewCollisionData, false);
+						// append skeletal component collisions
+						FClothCollisionData SkelCollisionData;
+						SkelComp->ClothingSimulation->GetCollisions(SkelCollisionData, false);
+						NewCollisionData.Append(SkelCollisionData);
 					}
 				}
 			}
@@ -3261,19 +3298,19 @@ float USkeletalMeshComponent::GetBoneMass(FName BoneName, bool bScaleMass) const
 FVector USkeletalMeshComponent::GetSkeletalCenterOfMass() const
 {
 	FVector Location = FVector::ZeroVector;
-	float TotalMass = 0.0f;
+	float Mass = 0.0f;
 	for (int32 i = 0; i < Bodies.Num(); i++)
 	{
 		FBodyInstance* BI = Bodies[i];
 		if (BI->IsValidBodyInstance())
 		{
-			float Mass = BI->MassScale*BI->GetBodyMass();
-			Location += Mass*BI->GetCOMPosition();
-			TotalMass += Mass;
+			float BodyMass = BI->MassScale*BI->GetBodyMass();
+			Location += BodyMass*BI->GetCOMPosition();
+			Mass += BodyMass;
 		}
 	}
 
-	return Location / TotalMass;
+	return Location / Mass;
 }
 
 void USkeletalMeshComponent::SetAllUseCCD(bool InUseCCD)
@@ -3289,7 +3326,7 @@ void USkeletalMeshComponent::SetAllUseCCD(bool InUseCCD)
 }
 
 // blueprint callable methods 
-float USkeletalMeshComponent::GetClothMaxDistanceScale()
+float USkeletalMeshComponent::GetClothMaxDistanceScale() const
 {
 	return ClothMaxDistanceScale;
 }

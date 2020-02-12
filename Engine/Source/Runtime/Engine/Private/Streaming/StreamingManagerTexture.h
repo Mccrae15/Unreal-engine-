@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 /*=============================================================================
 TextureStreamingManager.h: Definitions of classes used for texture streaming.
@@ -18,8 +18,6 @@ class FRenderAssetStreamingMipCalcTask;
 class UPrimitiveComponent;
 
 template<typename TTask> class FAsyncTask;
-
-#define STATS_FAST 0
 
 /*-----------------------------------------------------------------------------
 	Texture or mesh streaming.
@@ -52,6 +50,15 @@ struct FRenderAssetStreamingManager final : public IRenderAssetStreamingManager
 	 * @param RenderAsset	Texture or mesh to update
 	 */
 	virtual void UpdateIndividualRenderAsset( UStreamableRenderAsset* RenderAsset ) override;
+
+	/**
+	 * Register an asset whose non-resident mips need to be loaded ASAP when visible.
+	 * bIgnoreStreamingMipBias must be set on the asset.
+	 * Either bForceMiplevelsToBeResident or ForceMipLevelsToBeResidentTimestamp need to be set on the asset.
+	 *
+	 * @param RenderAsset The asset to register
+	 */
+	virtual void FastForceFullyResident(UStreamableRenderAsset* RenderAsset) override;
 
 	/**
 	 * Blocks till all pending requests are fulfilled.
@@ -104,13 +111,9 @@ struct FRenderAssetStreamingManager final : public IRenderAssetStreamingManager
 	/**
 	 * Exec command handlers
 	 */
-#if STATS_FAST
-	bool HandleDumpTextureStreamingStatsCommand( const TCHAR* Cmd, FOutputDevice& Ar );
-#endif // STATS_FAST
-#if STATS
-	bool HandleListStreamingRenderAssetsCommand(const TCHAR* Cmd, FOutputDevice& Ar);
-#endif // STATS
 #if !UE_BUILD_SHIPPING
+	bool HandleDumpTextureStreamingStatsCommand(const TCHAR* Cmd, FOutputDevice& Ar);
+	bool HandleListStreamingRenderAssetsCommand(const TCHAR* Cmd, FOutputDevice& Ar);
 	bool HandleResetMaxEverRequiredRenderAssetMemoryCommand(const TCHAR* Cmd, FOutputDevice& Ar);
 	bool HandleLightmapStreamingFactorCommand( const TCHAR* Cmd, FOutputDevice& Ar );
 	bool HandleCancelRenderAssetStreamingCommand( const TCHAR* Cmd, FOutputDevice& Ar );
@@ -167,6 +170,8 @@ struct FRenderAssetStreamingManager final : public IRenderAssetStreamingManager
 	/** Return all bounds related to the ref object */
 	virtual void GetObjectReferenceBounds(const UObject* RefObject, TArray<FBox>& AssetBoxes) override;
 
+	virtual void GetAssetComponents(const UStreamableRenderAsset* RenderAsset, TArray<const UPrimitiveComponent*>& OutComps, TFunction<bool(const UPrimitiveComponent*)> ShouldChoose) override;
+
 	/** Propagates a change to the active lighting scenario. */
 	void PropagateLightingScenarioChange() override;
 
@@ -186,6 +191,9 @@ private:
 		 * @param NumUpdateStages	Number of texture/mesh update stages
 		 */
 		void UpdateStreamingRenderAssets( int32 StageIndex, int32 NumStages, bool bWaitForMipFading );
+
+		/** Check visibility of fast response assets and initiate stream-in requests if necessary. */
+		void TickFastResponseAssets();
 
 		void ProcessRemovedRenderAssets();
 		void ProcessAddedRenderAssets();
@@ -276,6 +284,7 @@ private:
 
 	void	SetLastUpdateTime();
 	void	UpdateStats();
+	void	UpdateCSVOnlyStats();
 	void	LogViewLocationChange();
 
 	void	IncrementalUpdate( float Percentage, bool bUpdateDynamicComponents);
@@ -332,6 +341,12 @@ private:
 	/** The list of indices with null render asset in StreamingRenderAssets. */
 	TArray<int32>	RemovedRenderAssetIndices;
 
+	/** [Game Thread] Forced fully resident assets that need to be loaded ASAP when visible. */
+	TSet<UStreamableRenderAsset*> FastResponseRenderAssets;
+
+	/** [Game Thread] Fast response assets detected visible before the end of full streaming update. */
+	TSet<int32> VisibleFastResponseRenderAssetIndices;
+
 	// Represent a pending request to stream in/out mips to/from GPU for a texture or mesh
 	struct FPendingMipCopyRequest
 	{
@@ -384,22 +399,17 @@ private:
 	/** Last time all data were fully updated. Instances are considered visible if they were rendered between that last time and the current time. */
 	float LastWorldUpdateTime;
 
+	/** LastWorldUpdateTime seen by the async task. */
+	float LastWorldUpdateTime_MipCalcTask;
+
 	FRenderAssetStreamingStats DisplayedStats;
 	FRenderAssetStreamingStats GatheredStats;
 
 	TArray<int32> InflightRenderAssets;
 
 	TMap<FString, bool> CachedFileExistsChecks;
-	void OnPakFileMounted(const TCHAR* PakFilename);
+	void OnPakFileMounted(const TCHAR* PakFilename, const int32 ChunkId);
 
-#if STATS_FAST
-	uint64 MaxStreamingTexturesSize;
-	uint64 MaxOptimalTextureSize;
-	int64 MaxStreamingOverBudget;
-	uint64 MaxTexturePoolAllocatedSize;
-	uint32 MaxNumWantingTextures;
-#endif
-	
 	// A critical section use around code that could be called in parallel with NotifyPrimitiveUpdated() or NotifyPrimitiveUpdated_Concurrent().
 	FCriticalSection CriticalSection;
 

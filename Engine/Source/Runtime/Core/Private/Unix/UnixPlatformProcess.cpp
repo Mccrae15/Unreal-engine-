@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "Unix/UnixPlatformProcess.h"
 #include "Unix/UnixPlatformCrashContext.h"
@@ -141,8 +141,8 @@ const TCHAR* FUnixPlatformProcess::ComputerName()
 			SysName = "Unix Computer";
 		}
 
-		FCString::Strcpy(CachedResult, ARRAY_COUNT(CachedResult) - 1, UTF8_TO_TCHAR(SysName));
-		CachedResult[ARRAY_COUNT(CachedResult) - 1] = 0;
+		FCString::Strcpy(CachedResult, UE_ARRAY_COUNT(CachedResult) - 1, UTF8_TO_TCHAR(SysName));
+		CachedResult[UE_ARRAY_COUNT(CachedResult) - 1] = 0;
 		bHaveResult = true;
 	}
 	return CachedResult;
@@ -163,7 +163,7 @@ const TCHAR* FUnixPlatformProcess::UserName(bool bOnlyAlphaNumeric)
 			{
 				const TCHAR *Src = *TempName;
 				TCHAR * Dst = Name;
-				for (; *Src != 0 && (Dst - Name) < ARRAY_COUNT(Name) - 1; ++Src)
+				for (; *Src != 0 && (Dst - Name) < UE_ARRAY_COUNT(Name) - 1; ++Src)
 				{
 					if (FChar::IsAlnum(*Src))
 					{
@@ -174,7 +174,7 @@ const TCHAR* FUnixPlatformProcess::UserName(bool bOnlyAlphaNumeric)
 			}
 			else
 			{
-				FCString::Strncpy(Name, *TempName, ARRAY_COUNT(Name) - 1);
+				FCString::Strncpy(Name, *TempName, UE_ARRAY_COUNT(Name) - 1);
 			}
 		}
 		else
@@ -207,8 +207,8 @@ const TCHAR* FUnixPlatformProcess::UserDir()
 				if (DocLen > 0)
 				{
 					DocPath[DocLen] = '\0';
-					FCString::Strncpy(Result, UTF8_TO_TCHAR(DocPath), ARRAY_COUNT(Result));
-					FCString::Strncat(Result, TEXT("/"), ARRAY_COUNT(Result));
+					FCString::Strncpy(Result, UTF8_TO_TCHAR(DocPath), UE_ARRAY_COUNT(Result));
+					FCString::Strncat(Result, TEXT("/"), UE_ARRAY_COUNT(Result));
 				}
 			}
 			pclose(FilePtr);
@@ -217,8 +217,8 @@ const TCHAR* FUnixPlatformProcess::UserDir()
 		// if xdg-user-dir did not work, use $HOME
 		if (!Result[0])
 		{
-			FCString::Strncpy(Result, FPlatformProcess::UserHomeDir(), ARRAY_COUNT(Result));
-			FCString::Strncat(Result, TEXT("/Documents/"), ARRAY_COUNT(Result));
+			FCString::Strncpy(Result, FPlatformProcess::UserHomeDir(), UE_ARRAY_COUNT(Result));
+			FCString::Strncat(Result, TEXT("/Documents/"), UE_ARRAY_COUNT(Result));
 		}
 	}
 	return Result;
@@ -235,7 +235,7 @@ const TCHAR* FUnixPlatformProcess::UserHomeDir()
 		const char * VarValue = secure_getenv("HOME");
 		if (VarValue)
 		{
-			FCString::Strcpy(CachedResult, ARRAY_COUNT(CachedResult) - 1, UTF8_TO_TCHAR(VarValue));
+			FCString::Strcpy(CachedResult, UE_ARRAY_COUNT(CachedResult) - 1, UTF8_TO_TCHAR(VarValue));
 			bHaveHome = true;
 		}
 		else
@@ -243,7 +243,7 @@ const TCHAR* FUnixPlatformProcess::UserHomeDir()
 			struct passwd * UserInfo = getpwuid(geteuid());
 			if (NULL != UserInfo && NULL != UserInfo->pw_dir)
 			{
-				FCString::Strcpy(CachedResult, ARRAY_COUNT(CachedResult) - 1, UTF8_TO_TCHAR(UserInfo->pw_dir));
+				FCString::Strcpy(CachedResult, UE_ARRAY_COUNT(CachedResult) - 1, UTF8_TO_TCHAR(UserInfo->pw_dir));
 				bHaveHome = true;
 			}
 			else
@@ -271,8 +271,8 @@ const TCHAR* FUnixPlatformProcess::ApplicationSettingsDir()
 	static TCHAR Result[UNIX_MAX_PATH] = TEXT("");
 	if (!Result[0])
 	{
-		FCString::Strncpy(Result, FPlatformProcess::UserHomeDir(), ARRAY_COUNT(Result));
-		FCString::Strncat(Result, TEXT("/.config/Epic/"), ARRAY_COUNT(Result));
+		FCString::Strncpy(Result, FPlatformProcess::UserHomeDir(), UE_ARRAY_COUNT(Result));
+		FCString::Strncat(Result, TEXT("/.config/Epic/"), UE_ARRAY_COUNT(Result));
 	}
 	return Result;
 }
@@ -319,6 +319,40 @@ bool FUnixPlatformProcess::SetProcessLimits(EProcessResource::Type Resource, uin
 	return true;
 }
 
+const FString FUnixPlatformProcess::GetModulesDirectory()
+{
+	static FString CachedModulePath;
+	if (CachedModulePath.IsEmpty())
+	{
+		CachedModulePath = FPaths::GetPath(FString(ExecutablePath()));
+	}
+
+	return CachedModulePath;
+}
+
+const TCHAR* FUnixPlatformProcess::ExecutablePath()
+{
+	static bool bHaveResult = false;
+	static TCHAR CachedResult[ PlatformProcessLimits::MaxBaseDirLength ];
+	if (!bHaveResult)
+	{
+		char SelfPath[ PlatformProcessLimits::MaxBaseDirLength ] = {0};
+		if (readlink( "/proc/self/exe", SelfPath, UE_ARRAY_COUNT(SelfPath) - 1) == -1)
+		{
+			int ErrNo = errno;
+			UE_LOG(LogHAL, Fatal, TEXT("readlink() failed with errno = %d (%s)"), ErrNo,
+				StringCast< TCHAR >(strerror(ErrNo)).Get());
+			return CachedResult;
+		}
+		SelfPath[UE_ARRAY_COUNT(SelfPath) - 1] = 0;
+
+		FCString::Strcpy(CachedResult, UE_ARRAY_COUNT(CachedResult) - 1, UTF8_TO_TCHAR(SelfPath));
+		CachedResult[UE_ARRAY_COUNT(CachedResult) - 1] = 0;
+		bHaveResult = true;
+	}
+	return CachedResult;
+}
+
 const TCHAR* FUnixPlatformProcess::ExecutableName(bool bRemoveExtension)
 {
 	static bool bHaveResult = false;
@@ -326,31 +360,31 @@ const TCHAR* FUnixPlatformProcess::ExecutableName(bool bRemoveExtension)
 	if (!bHaveResult)
 	{
 		char SelfPath[ PlatformProcessLimits::MaxBaseDirLength ] = {0};
-		if (readlink( "/proc/self/exe", SelfPath, ARRAY_COUNT(SelfPath) - 1) == -1)
+		if (readlink( "/proc/self/exe", SelfPath, UE_ARRAY_COUNT(SelfPath) - 1) == -1)
 		{
 			int ErrNo = errno;
 			UE_LOG(LogHAL, Fatal, TEXT("readlink() failed with errno = %d (%s)"), ErrNo,
 				StringCast< TCHAR >(strerror(ErrNo)).Get());
 			return CachedResult;
 		}
-		SelfPath[ARRAY_COUNT(SelfPath) - 1] = 0;
+		SelfPath[UE_ARRAY_COUNT(SelfPath) - 1] = 0;
 
-		FCString::Strcpy(CachedResult, ARRAY_COUNT(CachedResult) - 1, UTF8_TO_TCHAR(basename(SelfPath)));
-		CachedResult[ARRAY_COUNT(CachedResult) - 1] = 0;
+		FCString::Strcpy(CachedResult, UE_ARRAY_COUNT(CachedResult) - 1, UTF8_TO_TCHAR(basename(SelfPath)));
+		CachedResult[UE_ARRAY_COUNT(CachedResult) - 1] = 0;
 		bHaveResult = true;
 	}
 	return CachedResult;
 }
 
 
-FString FUnixPlatformProcess::GenerateApplicationPath( const FString& AppName, EBuildConfigurations::Type BuildConfiguration)
+FString FUnixPlatformProcess::GenerateApplicationPath( const FString& AppName, EBuildConfiguration BuildConfiguration)
 {
 	FString PlatformName = FPlatformProcess::GetBinariesSubdirectory();
-	FString ExecutablePath = FString::Printf(TEXT("../../../Engine/Binaries/%s/%s"), *PlatformName, *AppName);
+	FString ExecutablePath = FPaths::EngineDir() / FString::Printf(TEXT("Binaries/%s/%s"), *PlatformName, *AppName);
 	
-	if (BuildConfiguration != EBuildConfigurations::Development)
+	if (BuildConfiguration != EBuildConfiguration::Development)
 	{
-		ExecutablePath += FString::Printf(TEXT("-%s-%s"), *PlatformName, EBuildConfigurations::ToString(BuildConfiguration));
+		ExecutablePath += FString::Printf(TEXT("-%s-%s"), *PlatformName, LexToString(BuildConfiguration));
 	}
 	return ExecutablePath;
 }
@@ -365,7 +399,7 @@ FString FUnixPlatformProcess::GetApplicationName( uint32 ProcessId )
 	FCStringAnsi::Sprintf(ReadLinkCmd, "/proc/%d/exe", ProcessId);
 	
 	char ProcessPath[ PlatformProcessLimits::MaxBaseDirLength ] = {0};
-	int32 Ret = readlink(ReadLinkCmd, ProcessPath, ARRAY_COUNT(ProcessPath) - 1);
+	int32 Ret = readlink(ReadLinkCmd, ProcessPath, UE_ARRAY_COUNT(ProcessPath) - 1);
 	if (Ret != -1)
 	{
 		Output = UTF8_TO_TCHAR(ProcessPath);
@@ -498,7 +532,7 @@ bool FUnixPlatformProcess::WritePipe(void* WritePipe, const FString& Message, FS
 
 	// Convert input to UTF8CHAR
 	uint32 BytesAvailable = Message.Len();
-	UTF8CHAR * Buffer = new UTF8CHAR[BytesAvailable + 1];
+	UTF8CHAR * Buffer = new UTF8CHAR[BytesAvailable + 2];
 	for (uint32 i = 0; i < BytesAvailable; i++)
 	{
 		Buffer[i] = Message[i];
@@ -989,6 +1023,28 @@ FProcHandle FUnixPlatformProcess::CreateProc(const TCHAR* URL, const TCHAR* Parm
 	return FProcHandle(new FProcState(ChildPid, bLaunchDetached));
 }
 
+/*
+ * Return a limited use FProcHandle from a PID. Currently can only use w/ IsProcRunning().
+ *
+ * WARNING (from Arciel): PIDs can and will be reused. We have had that issue
+ * before: the editor was tracking ShaderCompileWorker by their PIDs, and a
+ * long-running process (something from PS4 SDK) got a reused SCW PID,
+ * resulting in compilation never ending.
+ */
+FProcHandle FUnixPlatformProcess::OpenProcess(uint32 ProcessID)
+{
+	pid_t Pid = static_cast< pid_t >(ProcessID);
+
+	// check if actually running
+	int KillResult = kill(Pid, 0);	// no actual signal is sent
+	check(KillResult != -1 || errno != EINVAL);
+
+	// errno == EPERM: don't have permissions to send signal
+	// errno == ESRCH: proc doesn't exist
+	bool bIsRunning = (KillResult == 0);
+	return FProcHandle(bIsRunning ? Pid : -1);
+}
+
 /** Initialization constructor. */
 FProcState::FProcState(pid_t InProcessId, bool bInFireAndForget)
 	:	ProcessId(InProcessId)
@@ -1141,8 +1197,25 @@ void FProcState::Wait()
 
 bool FUnixPlatformProcess::IsProcRunning( FProcHandle & ProcessHandle )
 {
+	bool bIsRunning = false;
 	FProcState * ProcInfo = ProcessHandle.GetProcessInfo();
-	return ProcInfo ? ProcInfo->IsRunning() : false;
+
+	if (ProcInfo)
+	{
+		bIsRunning = ProcInfo->IsRunning();
+	}
+	else if (ProcessHandle.Get() != -1)
+	{
+		// Process opened with OpenProcess() call (we only have pid)
+		int KillResult = kill(ProcessHandle.Get(), 0);	// no actual signal is sent
+		check(KillResult != -1 || errno != EINVAL);
+
+		// errno == EPERM: don't have permissions to send signal
+		// errno == ESRCH: proc doesn't exist
+		bIsRunning = (KillResult == 0);
+	}
+
+	return bIsRunning;
 }
 
 void FUnixPlatformProcess::WaitForProc( FProcHandle & ProcessHandle )
@@ -1151,6 +1224,10 @@ void FUnixPlatformProcess::WaitForProc( FProcHandle & ProcessHandle )
 	if (ProcInfo)
 	{
 		ProcInfo->Wait();
+	}
+	else if (ProcessHandle.Get() != -1)
+	{
+		STUBBED("FUnixPlatformProcess::WaitForProc() : Waiting on OpenProcess() handle not implemented yet");
 	}
 }
 
@@ -1177,13 +1254,18 @@ void FUnixPlatformProcess::TerminateProc( FProcHandle & ProcessHandle, bool Kill
 		int KillResult = kill(ProcInfo->GetProcessId(), SIGTERM);	// graceful
 		check(KillResult != -1 || errno != EINVAL);
 	}
+	else if (ProcessHandle.Get() != -1)
+	{
+		STUBBED("FUnixPlatformProcess::TerminateProc() : Terminating OpenProcess() handle not implemented");
+	}
 }
 
 /*
  * WaitAndFork on Unix
  *
  * This is a function that halts execution and waits for signals to cause forked processes to be created and continue execution.
- * The parent process will return when GIsRequestingExit is true. SIGRTMIN+1 is used to cause a fork to happen.
+ * The parent process will return when IsEngineExitRequested() is true. SIGRTMIN+1 is used to cause a fork to happen.
+ * Optionally, the parent process will also return if any of the children close with an exit code equal to WAIT_AND_FORK_PARENT_SHUTDOWN_EXIT_CODE if it is set to non-zero.
  * If sigqueue is used, the payload int will be split into the upper and lower uint16 values. The upper value is a "cookie" and the
  *     lower value is an "index". These two values will be used to name the process using the pattern DS-<cookie>-<index>. This name
  *     can be used to uniquely discover the process that was spawned.
@@ -1197,6 +1279,9 @@ FGenericPlatformProcess::EWaitAndForkResult FUnixPlatformProcess::WaitAndFork()
 #define WAIT_AND_FORK_QUEUE_LENGTH 4096
 #define WAIT_AND_FORK_PARENT_SLEEP_DURATION 10
 #define WAIT_AND_FORK_CHILD_SPAWN_DELAY 0.125
+#ifndef WAIT_AND_FORK_PARENT_SHUTDOWN_EXIT_CODE
+	#define WAIT_AND_FORK_PARENT_SHUTDOWN_EXIT_CODE 0
+#endif
 
 	// Only works in -nothreading mode for now (probably best this way)
 	if (FPlatformProcess::SupportsMultithreading())
@@ -1262,7 +1347,7 @@ FGenericPlatformProcess::EWaitAndForkResult FUnixPlatformProcess::WaitAndFork()
 	};
 	TArray<FPidAndSignal> AllChildren;
 	AllChildren.Reserve(1024); // Sized to be big enough that it probably wont reallocte, but its not the end of the world if it does.
-	while (!GIsRequestingExit)
+	while (!IsEngineExitRequested())
 	{
 		int32 SignalValue = 0;
 		if (WaitAndForkSignalQueue.Dequeue(SignalValue))
@@ -1345,7 +1430,7 @@ FGenericPlatformProcess::EWaitAndForkResult FUnixPlatformProcess::WaitAndFork()
 					sigaction(WAIT_AND_FORK_RESPONSE_SIGNAL, &Action, nullptr);
 
 					UE_LOG(LogHAL, Log, TEXT("[Child] WaitAndFork child waiting for signal %d to proceed."), WAIT_AND_FORK_RESPONSE_SIGNAL);
-					while (!GIsRequestingExit && !bResponseReceived)
+					while (!IsEngineExitRequested() && !bResponseReceived)
 					{
 						FPlatformProcess::Sleep(1);
 					}
@@ -1379,7 +1464,8 @@ FGenericPlatformProcess::EWaitAndForkResult FUnixPlatformProcess::WaitAndFork()
 			{
 				const FPidAndSignal& ChildPidAndSignal = AllChildren[ChildIdx];
 
-				pid_t WaitResult = waitpid(ChildPidAndSignal.Pid, nullptr, WNOHANG);
+				int32 Status = 0;
+				pid_t WaitResult = waitpid(ChildPidAndSignal.Pid, &Status, WNOHANG);
 				if (WaitResult == -1)
 				{
 					int32 ErrNo = errno;
@@ -1387,7 +1473,13 @@ FGenericPlatformProcess::EWaitAndForkResult FUnixPlatformProcess::WaitAndFork()
 				}
 				else if (WaitResult != 0)
 				{
-					if (NumForks > 0 && ChildPidAndSignal.SignalValue > 0 && ChildPidAndSignal.SignalValue <= NumForks)
+					int32 ExitCode = WIFEXITED(Status) ? WEXITSTATUS(Status) : 0;
+					if (ExitCode != 0 && ExitCode == WAIT_AND_FORK_PARENT_SHUTDOWN_EXIT_CODE)
+					{
+						UE_LOG(LogHAL, Log, TEXT("[Parent] WaitAndFork child %d exited with return code %d, indicating that the parent process should shut down. Shutting down..."), ChildPidAndSignal.Pid, WAIT_AND_FORK_PARENT_SHUTDOWN_EXIT_CODE);
+						RequestEngineExit(TEXT("Unix Child has exited"));
+					}
+					else if (NumForks > 0 && ChildPidAndSignal.SignalValue > 0 && ChildPidAndSignal.SignalValue <= NumForks)
 					{
 						UE_LOG(LogHAL, Log, TEXT("[Parent] WaitAndFork child %d missing. This was NumForks child %d. Relaunching..."), ChildPidAndSignal.Pid, ChildPidAndSignal.SignalValue);
 						WaitAndForkSignalQueue.Enqueue(ChildPidAndSignal.SignalValue);
@@ -1418,10 +1510,19 @@ uint32 FUnixPlatformProcess::GetCurrentProcessId()
 	return getpid();
 }
 
+uint32 FUnixPlatformProcess::GetCurrentCoreNumber()
+{
+	return sched_getcpu();
+}
+
 void FUnixPlatformProcess::SetCurrentWorkingDirectoryToBaseDir()
 {
+#if defined(DISABLE_CWD_CHANGES) && DISABLE_CWD_CHANGES != 0
+	check(false);
+#else
 	FPlatformMisc::CacheLaunchDir();
 	chdir(TCHAR_TO_ANSI(FPlatformProcess::BaseDir()));
+#endif
 }
 
 FString FUnixPlatformProcess::GetCurrentWorkingDirectory()
@@ -1440,7 +1541,16 @@ bool FUnixPlatformProcess::GetProcReturnCode(FProcHandle& ProcHandle, int32* Ret
 	}
 
 	FProcState * ProcInfo = ProcHandle.GetProcessInfo();
-	return ProcInfo ? ProcInfo->GetReturnCode(ReturnCode) : false;
+	if (ProcInfo)
+	{
+		return ProcInfo->GetReturnCode(ReturnCode);
+	}
+	else if (ProcHandle.Get() != -1)
+	{
+		STUBBED("FUnixPlatformProcess::GetProcReturnCode() : Return code of OpenProcess() handle not implemented yet");
+	}
+
+	return false;
 }
 
 bool FUnixPlatformProcess::Daemonize()
@@ -1458,6 +1568,12 @@ bool FUnixPlatformProcess::Daemonize()
 
 bool FUnixPlatformProcess::IsApplicationRunning( uint32 ProcessId )
 {
+	// PID 0 is not a valid user application so lets ignore it as valid
+	if (ProcessId == 0)
+	{
+		return false;
+	}
+
 	errno = 0;
 	getpriority(PRIO_PROCESS, ProcessId);
 	return errno == 0;
@@ -1720,9 +1836,9 @@ bool FUnixPlatformProcess::IsFirstInstance()
 		{
 			FString LockFileName(TEXT("/tmp/"));
 			FString ExecPath(FPlatformProcess::ExecutableName());
-			ExecPath.ReplaceInline(TEXT("/"), TEXT("-"));
+			ExecPath.ReplaceInline(TEXT("/"), TEXT("-"), ESearchCase::CaseSensitive);
 			// [RCL] 2015-09-20: can run out of filename limits (256 bytes) due to a long path, be conservative and assume 4-char UTF-8 name like e.g. Japanese
-			ExecPath = ExecPath.Right(80);
+			ExecPath.RightInline(80, false);
 
 			LockFileName += ExecPath;
 

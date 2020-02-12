@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -51,9 +51,9 @@ private:
 	// Listening endpoint
 	FIPv4Endpoint Endpoint;
 	// Holds the thread object
-	FRunnableThread* ThreadObj;
+	TUniquePtr<FRunnableThread> ThreadObj;
 	// Sync access
-	FCriticalSection InternalsSyncScope;
+	FCriticalSection InternalsCritSec;
 	// Listening state
 	bool bIsListening = false;
 

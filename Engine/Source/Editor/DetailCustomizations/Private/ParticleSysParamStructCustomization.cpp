@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "ParticleSysParamStructCustomization.h"
 #include "Widgets/DeclarativeSyntaxSupport.h"
@@ -134,17 +134,17 @@ EVisibility FParticleSysParamStructCustomization::GetScalarLowVisibility() const
 
 EVisibility FParticleSysParamStructCustomization::GetVectorVisibility() const
 {
-	return (ParameterType == PSPT_Vector || ParameterType == PSPT_VectorRand) ? EVisibility::Visible : EVisibility::Collapsed;
+	return (ParameterType == PSPT_Vector || ParameterType == PSPT_VectorRand || ParameterType == PSPT_VectorUnitRand) ? EVisibility::Visible : EVisibility::Collapsed;
 }
 
 EVisibility FParticleSysParamStructCustomization::GetVectorLowVisibility() const
 {
-	return (ParameterType == PSPT_VectorRand) ? EVisibility::Visible : EVisibility::Collapsed;
+	return (ParameterType == PSPT_VectorRand || ParameterType == PSPT_VectorUnitRand) ? EVisibility::Visible : EVisibility::Collapsed;
 }
 
 EVisibility FParticleSysParamStructCustomization::GetColorVisibility() const
 {
-	return (ParameterType == PSPT_Vector || ParameterType == PSPT_VectorRand || ParameterType == PSPT_Color) ? EVisibility::Visible : EVisibility::Collapsed;
+	return (ParameterType == PSPT_Vector || ParameterType == PSPT_VectorRand || ParameterType == PSPT_Color || ParameterType == PSPT_VectorUnitRand) ? EVisibility::Visible : EVisibility::Collapsed;
 }
 
 EVisibility FParticleSysParamStructCustomization::GetActorVisibility() const

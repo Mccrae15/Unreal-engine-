@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 #pragma once
 
 #include "CoreMinimal.h"
@@ -18,7 +18,6 @@ struct FGeometryCacheCodecRenderStateV1 : FGeometryCacheCodecRenderStateBase
 {
 	FGeometryCacheCodecRenderStateV1(const TArray<int32> &SetTopologyRanges); 
 	~FGeometryCacheCodecRenderStateV1();	
-	ICodecDecoder* Decoder;
 	
 	virtual bool DecodeSingleFrame(FGeometryCacheCodecDecodeArguments &Args) override;
 };

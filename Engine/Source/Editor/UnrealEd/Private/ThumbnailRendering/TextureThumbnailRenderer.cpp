@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "ThumbnailRendering/TextureThumbnailRenderer.h"
 #include "CanvasItem.h"
@@ -9,6 +9,8 @@
 #include "ThumbnailRendering/ThumbnailManager.h"
 #include "EngineGlobals.h"
 #include "Engine/TextureCube.h"
+#include "Engine/Texture2DArray.h"
+#include "Texture2DPreview.h"
 #include "Engine/TextureRenderTargetCube.h"
 
 #include "CubemapUnwrapUtils.h"
@@ -44,7 +46,7 @@ void UTextureThumbnailRenderer::GetThumbnailSize(UObject* Object, float Zoom, ui
 	}
 }
 
-void UTextureThumbnailRenderer::Draw(UObject* Object, int32 X, int32 Y, uint32 Width, uint32 Height, FRenderTarget*, FCanvas* Canvas)
+void UTextureThumbnailRenderer::Draw(UObject* Object, int32 X, int32 Y, uint32 Width, uint32 Height, FRenderTarget*, FCanvas* Canvas, bool bAdditionalViewFamily)
 {
 	UTexture* Texture = Cast<UTexture>(Object);
 	if (Texture != nullptr && Texture->Resource != nullptr) 
@@ -58,6 +60,7 @@ void UTextureThumbnailRenderer::Draw(UObject* Object, int32 X, int32 Y, uint32 W
 		const bool bUseTranslucentBlend = Texture2D && Texture2D->HasAlphaChannel() && ((Texture2D->LODGroup == TEXTUREGROUP_UI) || (Texture2D->LODGroup == TEXTUREGROUP_Pixels2D));
 
 		UTextureCube* TextureCube = Cast<UTextureCube>(Texture);
+		UTexture2DArray* Texture2DArray = Cast<UTexture2DArray>(Texture);
 		UTextureRenderTargetCube* RTTextureCube = Cast<UTextureRenderTargetCube>(Texture);
 		UTextureLightProfile* TextureLightProfile = Cast<UTextureLightProfile>(Texture);
 
@@ -74,6 +77,12 @@ void UTextureThumbnailRenderer::Draw(UObject* Object, int32 X, int32 Y, uint32 W
 				Height = Width / 2;
 				Y += Height / 2;
 			}
+		}
+		else if (Texture2DArray) 
+		{
+			bool bIsNormalMap = Texture2DArray->IsNormalMap();
+			bool bIsSingleChannel = true;
+			BatchedElementParameters = new FBatchedElementTexture2DPreviewParameters(0, 0, bIsNormalMap, bIsSingleChannel, false, false, true);
 		}
 		else if (TextureLightProfile)
 		{
@@ -110,6 +119,23 @@ void UTextureThumbnailRenderer::Draw(UObject* Object, int32 X, int32 Y, uint32 W
 			FCanvasTextItem TextItem( FVector2D( 5.0f, 5.0f ), BrightnessText, GEngine->GetLargeFont(), FLinearColor::White );
 			TextItem.EnableShadow(FLinearColor::Black);
 			TextItem.Scale = FVector2D(Width / 128.0f, Height / 128.0f);
+			TextItem.Draw(Canvas);
+		}
+
+		if (Texture2D && Texture2D->IsCurrentlyVirtualTextured())
+		{
+			auto VTChars = TEXT("VT");
+			int32 VTWidth = 0;
+			int32 VTHeight = 0;
+			StringSize(GEngine->GetLargeFont(), VTWidth, VTHeight, VTChars);
+			float PaddingX = Width / 128.0f;
+			float PaddingY = Height / 128.0f;
+			float ScaleX = Width / 64.0f; //Text is 1/64'th of the size of the thumbnails
+			float ScaleY = Height / 64.0f;
+			// VT overlay
+			FCanvasTextItem TextItem(FVector2D(Width - PaddingX - VTWidth * ScaleX, Height - PaddingY - VTHeight * ScaleY), FText::FromString(VTChars), GEngine->GetLargeFont(), FLinearColor::White);
+			TextItem.EnableShadow(FLinearColor::Black);
+			TextItem.Scale = FVector2D(ScaleX, ScaleY);
 			TextItem.Draw(Canvas);
 		}
 	}

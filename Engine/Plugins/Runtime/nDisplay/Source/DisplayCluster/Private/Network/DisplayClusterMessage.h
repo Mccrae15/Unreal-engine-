@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -7,7 +7,7 @@
 #include "Serialization/MemoryReader.h"
 #include "Serialization/MemoryWriter.h"
 
-#include "Misc/DisplayClusterTypesConverter.h"
+#include "DisplayClusterUtils/DisplayClusterTypesConverter.h"
 
 
 /**
@@ -44,7 +44,7 @@ public:
 		if (Arguments.Contains(ArgName))
 		{
 			FString StrVal = Arguments[ArgName];
-			ArgVal = FDisplayClusterTypesConverter::FromString<ValType>(StrVal);
+			ArgVal = FDisplayClusterTypesConverter::template FromString<ValType>(StrVal);
 			return true;
 		}
 		return false;
@@ -54,7 +54,7 @@ public:
 	template <typename ValType>
 	void SetArg(const FString& ArgName, const ValType& ArgVal)
 	{
-		Arguments.Add(ArgName, FDisplayClusterTypesConverter::ToString<ValType>(ArgVal));
+		Arguments.Add(ArgName, FDisplayClusterTypesConverter::template ToString<ValType>(ArgVal));
 	}
 
 	// Get all arguments (be careful with the reference)

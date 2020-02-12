@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -29,6 +29,11 @@ struct FKeyHandle
 	friend bool operator<(FKeyHandle A, FKeyHandle B)
 	{
 		return A.Index < B.Index;
+	}
+
+	friend bool operator>(FKeyHandle A, FKeyHandle B)
+	{
+		return A.Index > B.Index;
 	}
 
 	friend uint32 GetTypeHash(const FKeyHandle& Handle)

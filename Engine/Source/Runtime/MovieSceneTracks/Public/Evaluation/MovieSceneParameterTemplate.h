@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -32,10 +32,16 @@ struct FEvaluatedParameterSectionValues
 
 	/** Array of evaluated scalar values */
 	TArray<FScalarParameterNameAndValue, TInlineAllocator<2>> ScalarValues;
+	/** Array of evaluated bool values */
+	TArray<FBoolParameterNameAndValue, TInlineAllocator<2>> BoolValues;
+	/** Array of evaluated vector2D values */
+	TArray<FVector2DParameterNameAndValue, TInlineAllocator<2>> Vector2DValues;
 	/** Array of evaluated vector values */
 	TArray<FVectorParameterNameAndValue, TInlineAllocator<2>> VectorValues;
 	/** Array of evaluated color values */
 	TArray<FColorParameterNameAndValue, TInlineAllocator<2>> ColorValues;
+	/** Array of evaluated transform values */
+	TArray<FTransformParameterNameAndValue, TInlineAllocator<2>> TransformValues;
 };
 
 /** Template that performs evaluation of parameter sections */
@@ -54,11 +60,19 @@ protected:
 	/** Evaluate our curves, outputting evaluated values into the specified container */
 	MOVIESCENETRACKS_API void EvaluateCurves(const FMovieSceneContext& Context, FEvaluatedParameterSectionValues& OutValues) const;
 
-private:
+protected:
 
 	/** The scalar parameter names and their associated curves. */
 	UPROPERTY()
 	TArray<FScalarParameterNameAndCurve> Scalars;
+
+	/** The bool parameter names and their associated curves. */
+	UPROPERTY()
+	TArray<FBoolParameterNameAndCurve> Bools;
+
+	/** The vector parameter names and their associated curves. */
+	UPROPERTY()
+	TArray<FVector2DParameterNameAndCurves> Vector2Ds;
 
 	/** The vector parameter names and their associated curves. */
 	UPROPERTY()
@@ -67,6 +81,9 @@ private:
 	/** The color parameter names and their associated curves. */
 	UPROPERTY()
 	TArray<FColorParameterNameAndCurves> Colors;
+
+	UPROPERTY()
+	TArray<FTransformParameterNameAndCurves> Transforms;
 };
 
 /** Default accessor type for use with TMaterialTrackExecutionToken */
@@ -120,12 +137,12 @@ struct TMaterialTrackExecutionToken : IMovieSceneExecutionToken
 				continue;
 			}
 
+			// Save the old instance
+			Player.SavePreAnimatedState(*Object, Accessor.GetAnimTypeID(), FPreAnimatedTokenProducer(Accessor));
+
 			UMaterialInstanceDynamic* DynamicMaterialInstance = Cast<UMaterialInstanceDynamic>(Material);
 			if (!DynamicMaterialInstance)
 			{
-				// Save the old instance
-				Player.SavePreAnimatedState(*Object, Accessor.GetAnimTypeID(), FPreAnimatedTokenProducer(Accessor));
-
 				FString DynamicName = Material->GetName() + "_Animated";
 				FName UniqueDynamicName = MakeUniqueObjectName( Object, UMaterialInstanceDynamic::StaticClass() , *DynamicName );
 				DynamicMaterialInstance = UMaterialInstanceDynamic::Create( Material, Object, UniqueDynamicName );

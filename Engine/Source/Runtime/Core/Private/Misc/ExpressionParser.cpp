@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "Misc/ExpressionParser.h"
 #include "Misc/AutomationTest.h"
@@ -33,7 +33,7 @@ TCHAR FTokenStream::PeekChar(int32 Offset) const
 
 int32 FTokenStream::CharsRemaining() const
 {
-	return End - ReadPos;
+	return UE_PTRDIFF_TO_INT32(End - ReadPos);
 }
 
 bool FTokenStream::IsEmpty() const
@@ -43,7 +43,7 @@ bool FTokenStream::IsEmpty() const
 
 int32 FTokenStream::GetPosition() const
 {
-	return ReadPos - Start;
+	return UE_PTRDIFF_TO_INT32(ReadPos - Start);
 }
 
 FString FTokenStream::GetErrorContext() const
@@ -82,7 +82,7 @@ TOptional<FStringToken> FTokenStream::ParseToken(TFunctionRef<EParseState(TCHAR)
 		return TOptional<FStringToken>();
 	}
 
-	FStringToken Token(OptReadPos, 0, OptReadPos - Start);
+	FStringToken Token(OptReadPos, 0, UE_PTRDIFF_TO_INT32(OptReadPos - Start));
 
 	while (Token.GetTokenEndPos() != End)
 	{
@@ -126,7 +126,7 @@ TOptional<FStringToken> FTokenStream::ParseSymbol(FStringToken* Accumulate) cons
 		return TOptional<FStringToken>();
 	}
 	
-	FStringToken Token(OptReadPos, 0, OptReadPos - Start);
+	FStringToken Token(OptReadPos, 0, UE_PTRDIFF_TO_INT32(OptReadPos - Start));
 	++Token.TokenEnd;
 
 	if (Accumulate)
@@ -146,7 +146,7 @@ TOptional<FStringToken> FTokenStream::ParseSymbol(TCHAR Symbol, FStringToken* Ac
 		return TOptional<FStringToken>();
 	}
 	
-	FStringToken Token(OptReadPos, 0, OptReadPos - Start);
+	FStringToken Token(OptReadPos, 0, UE_PTRDIFF_TO_INT32(OptReadPos - Start));
 
 	if (*Token.TokenEnd == Symbol)
 	{
@@ -178,7 +178,7 @@ TOptional<FStringToken> FTokenStream::ParseToken(const TCHAR* Symbol, FStringTok
 		return TOptional<FStringToken>();		
 	}
 
-	FStringToken Token(OptReadPos, 0, OptReadPos - Start);
+	FStringToken Token(OptReadPos, 0, UE_PTRDIFF_TO_INT32(OptReadPos - Start));
 	
 	if (FCString::Strncmp(Token.GetTokenEndPos(), Symbol, Len) == 0)
 	{
@@ -205,7 +205,7 @@ TOptional<FStringToken> FTokenStream::ParseTokenIgnoreCase(const TCHAR* Symbol, 
 		return TOptional<FStringToken>();
 	}
 
-	FStringToken Token(OptReadPos, 0, OptReadPos - Start);
+	FStringToken Token(OptReadPos, 0, UE_PTRDIFF_TO_INT32(OptReadPos - Start));
 	
 	if (FCString::Strnicmp(OptReadPos, Symbol, Len) == 0)
 	{
@@ -240,7 +240,7 @@ TOptional<FStringToken> FTokenStream::GenerateToken(int32 NumChars, FStringToken
 
 	if (IsReadPosValid(OptReadPos, NumChars))
 	{
-		FStringToken Token(OptReadPos, 0, OptReadPos - Start);
+		FStringToken Token(OptReadPos, 0, UE_PTRDIFF_TO_INT32(OptReadPos - Start));
 		Token.TokenEnd += NumChars;
 		if (Accumulate)
 		{
@@ -1050,13 +1050,19 @@ public:
 		return MakeError(NSLOCTEXT("Anon", "UnrecognizedResult", "Unrecognized result returned from expression"));
 	}
 
+	static FShortCircuitParser& Get()
+	{
+		static FShortCircuitParser Singleton;
+		return Singleton;
+	}
+
 private:
 
 	FTokenDefinitions TokenDefinitions;
 	FExpressionGrammar Grammar;
 	TOperatorJumpTable<FShortCircuitTestContext> JumpTable;
 
-} TestParser;
+};
 
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FShortCircuitParserTest, "System.Core.Expression Parser.Short Circuit", EAutomationTestFlags::ApplicationContextMask | EAutomationTestFlags::SmokeFilter | EAutomationTestFlags::HighPriority)
 bool FShortCircuitParserTest::RunTest(const FString& Parameters)
@@ -1076,7 +1082,7 @@ bool FShortCircuitParserTest::RunTest(const FString& Parameters)
 	{
 		FShortCircuitTestContext Context;
 
-		TValueOrError<bool, FExpressionError> Result = TestParser.Evaluate(Expected.Expression, Context);
+		TValueOrError<bool, FExpressionError> Result = FShortCircuitParser::Get().Evaluate(Expected.Expression, Context);
 		if (ensureAlways(Result.IsValid()))
 		{
 			ensureAlways(Expected.Result == Result.GetValue());

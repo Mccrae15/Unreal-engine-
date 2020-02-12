@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "Tracks/MovieSceneSlomoTrack.h"
 #include "Sections/MovieSceneSlomoSection.h"
@@ -37,7 +37,7 @@ FMovieSceneEvalTemplatePtr UMovieSceneSlomoTrack::CreateTemplateForSection(const
 
 FText UMovieSceneSlomoTrack::GetDefaultDisplayName() const
 {
-	return LOCTEXT("TrackName", "Play Rate");
+	return LOCTEXT("TrackName", "Time Dilation");
 }
 
 #endif

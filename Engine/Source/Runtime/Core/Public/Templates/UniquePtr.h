@@ -1,12 +1,12 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
 #include "CoreTypes.h"
-#include "Templates/PointerIsConvertibleFromTo.h"
 #include "Templates/UnrealTemplate.h"
 #include "Templates/IsArray.h"
 #include "Templates/RemoveExtent.h"
+#include "Serialization/MemoryLayout.h"
 
 // Single-ownership smart pointer in the vein of std::unique_ptr.
 // Use this when you need an object's lifetime to be strictly bound to the lifetime of a single smart pointer.
@@ -20,6 +20,8 @@
 template <typename T>
 struct TDefaultDelete
 {
+	DECLARE_INLINE_TYPE_LAYOUT(TDefaultDelete, NonVirtual);
+
 	TDefaultDelete() = default;
 	TDefaultDelete(const TDefaultDelete&) = default;
 	TDefaultDelete& operator=(const TDefaultDelete&) = default;
@@ -27,7 +29,7 @@ struct TDefaultDelete
 
 	template <
 		typename U,
-		typename = typename TEnableIf<TPointerIsConvertibleFromTo<U, T>::Value>::Type
+		typename = decltype(ImplicitConv<T*>((U*)nullptr))
 	>
 	TDefaultDelete(const TDefaultDelete<U>&)
 	{
@@ -35,7 +37,7 @@ struct TDefaultDelete
 
 	template <
 		typename U,
-		typename = typename TEnableIf<TPointerIsConvertibleFromTo<U, T>::Value>::Type
+		typename = decltype(ImplicitConv<T*>((U*)nullptr))
 	>
 	TDefaultDelete& operator=(const TDefaultDelete<U>&)
 	{
@@ -58,7 +60,7 @@ struct TDefaultDelete<T[]>
 
 	template <
 		typename U,
-		typename = typename TEnableIf<TPointerIsConvertibleFromTo<U[], T[]>::Value>::Type
+		typename = decltype(ImplicitConv<T(*)[]>((U(*)[])nullptr))
 	>
 	TDefaultDelete(const TDefaultDelete<U[]>&)
 	{
@@ -66,27 +68,34 @@ struct TDefaultDelete<T[]>
 
 	template <
 		typename U,
-		typename = typename TEnableIf<TPointerIsConvertibleFromTo<U[], T[]>::Value>::Type
+		typename = decltype(ImplicitConv<T(*)[]>((U(*)[])nullptr))
 	>
 	TDefaultDelete& operator=(const TDefaultDelete<U[]>&)
 	{
 		return *this;
 	}
 
-	template <typename U>
-	typename TEnableIf<TPointerIsConvertibleFromTo<U[], T[]>::Value>::Type operator()(U* Ptr) const
+	template <
+		typename U,
+		typename = decltype(ImplicitConv<T(*)[]>((U(*)[])nullptr))
+	>
+	void operator()(U* Ptr) const
 	{
 		delete [] Ptr;
 	}
 };
 
 template <typename T, typename Deleter = TDefaultDelete<T>>
-class TUniquePtr : private Deleter
+class TUniquePtr : public /*private*/ Deleter // @todo loadtime: can we go back to private? I get this: error C2243: 'static_cast': conversion from 'T *' to 'Base *' exists, but is inaccessible
 {
+	DECLARE_INLINE_TYPE_LAYOUT_EXPLICIT_BASES(TUniquePtr, NonVirtual, Deleter);
+
 	template <typename OtherT, typename OtherDeleter>
 	friend class TUniquePtr;
 
 public:
+	using ElementType = T;
+
 	/**
 	 * Default constructor - initializes the TUniquePtr to null.
 	 */
@@ -129,7 +138,8 @@ public:
 	template <
 		typename OtherT,
 		typename OtherDeleter,
-		typename = typename TEnableIf<!TIsArray<OtherT>::Value>::Type
+		typename = typename TEnableIf<!TIsArray<OtherT>::Value>::Type,
+		typename = decltype(ImplicitConv<T*>((OtherT*)nullptr))
 	>
 	FORCEINLINE TUniquePtr(TUniquePtr<OtherT, OtherDeleter>&& Other)
 		: Deleter(MoveTemp(Other.GetDeleter()))
@@ -160,8 +170,13 @@ public:
 	/**
 	 * Assignment operator for rvalues of other (usually derived) types
 	 */
-	template <typename OtherT, typename OtherDeleter>
-	FORCEINLINE typename TEnableIf<!TIsArray<OtherT>::Value, TUniquePtr&>::Type operator=(TUniquePtr<OtherT, OtherDeleter>&& Other)
+	template <
+		typename OtherT,
+		typename OtherDeleter,
+		typename = typename TEnableIf<!TIsArray<OtherT>::Value>::Type,
+		typename = decltype(ImplicitConv<T*>((OtherT*)nullptr))
+	>
+	FORCEINLINE TUniquePtr& operator=(TUniquePtr<OtherT, OtherDeleter>&& Other)
 	{
 		// We delete last, because we don't want odd side effects if the destructor of T relies on the state of this or Other
 		T* OldPtr = Ptr;
@@ -308,7 +323,8 @@ private:
 	TUniquePtr(const TUniquePtr&);
 	TUniquePtr& operator=(const TUniquePtr&);
 
-	T* Ptr;
+	using PtrType = T*;
+	LAYOUT_FIELD(PtrType, Ptr);
 };
 
 template <typename T, typename Deleter>
@@ -318,6 +334,8 @@ class TUniquePtr<T[], Deleter> : private Deleter
 	friend class TUniquePtr;
 
 public:
+	using ElementType = T;
+
 	/**
 	 * Default constructor - initializes the TUniquePtr to null.
 	 */
@@ -333,7 +351,7 @@ public:
 	 */
 	template <
 		typename U,
-		typename = typename TEnableIf<TPointerIsConvertibleFromTo<U[], T[]>::Value>::Type
+		typename = decltype(ImplicitConv<T(*)[]>((U(*)[])nullptr))
 	>
 	explicit FORCEINLINE TUniquePtr(U* InPtr)
 		: Ptr(InPtr)
@@ -364,7 +382,7 @@ public:
 	template <
 		typename OtherT,
 		typename OtherDeleter,
-		typename = typename TEnableIf<TPointerIsConvertibleFromTo<OtherT[], T[]>::Value>::Type
+		typename = decltype(ImplicitConv<T(*)[]>((OtherT(*)[])nullptr))
 	>
 	FORCEINLINE TUniquePtr(TUniquePtr<OtherT, OtherDeleter>&& Other)
 		: Deleter(MoveTemp(Other.GetDeleter()))
@@ -395,8 +413,12 @@ public:
 	/**
 	 * Assignment operator for rvalues of other (usually less qualified) types
 	 */
-	template <typename OtherT, typename OtherDeleter>
-	FORCEINLINE typename TEnableIf<TPointerIsConvertibleFromTo<OtherT[], T[]>::Value, TUniquePtr&>::Type operator=(TUniquePtr<OtherT>&& Other)
+	template <
+		typename OtherT,
+		typename OtherDeleter,
+		typename = decltype(ImplicitConv<T(*)[]>((OtherT(*)[])nullptr))
+	>
+	FORCEINLINE TUniquePtr& operator=(TUniquePtr<OtherT>&& Other)
 	{
 		// We delete last, because we don't want odd side effects if the destructor of T relies on the state of this or Other
 		T* OldPtr = Ptr;
@@ -497,8 +519,11 @@ public:
 	 *
 	 * @param InPtr A pointer to the array to take ownership of.
 	 */
-	template <typename U>
-	FORCEINLINE typename TEnableIf<TPointerIsConvertibleFromTo<U[], T[]>::Value>::Type Reset(U* InPtr)
+	template <
+		typename U,
+		typename = decltype(ImplicitConv<T(*)[]>((U(*)[])nullptr))
+	>
+	FORCEINLINE void Reset(U* InPtr)
 	{
 		// We delete last, because we don't want odd side effects if the destructor of T relies on the state of this
 		T* OldPtr = Ptr;

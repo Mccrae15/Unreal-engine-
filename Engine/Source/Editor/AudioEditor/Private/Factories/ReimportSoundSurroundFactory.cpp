@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "Factories/ReimportSoundSurroundFactory.h"
 #include "Logging/MessageLog.h"
@@ -26,7 +26,11 @@ bool UReimportSoundSurroundFactory::CanReimport(UObject* Obj, TArray<FString>& O
 	if (SoundWave && SoundWave->NumChannels > 2)
 	{
 		FString SourceFilename = SoundWave->AssetImportData->GetFirstFilename();
-		if (!SourceFilename.IsEmpty() && FactoryCanImport(SourceFilename))
+		if (!FactoryCanImport(SourceFilename))
+		{
+			return false;
+		}
+		if (!SourceFilename.IsEmpty())
 		{
 			// Get filename with speaker location removed
 			FString BaseFilename = FPaths::GetBaseFilename(SourceFilename).LeftChop(3);

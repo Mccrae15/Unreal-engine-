@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -6,36 +6,10 @@
 #include "UObject/ObjectMacros.h"
 #include "UObject/SoftObjectPath.h"
 #include "Engine/DeveloperSettings.h"
+#include "AudioMixerTypes.h"
 #include "AudioSettings.generated.h"
 
-struct ENGINE_API FAudioPlatformSettings
-{
-	/** Sample rate to use on the platform for the mixing engine. Higher sample rates will incur more CPU cost. */
-	int32 SampleRate;
-
-	/** The amount of audio to compute each callback block. Lower values decrease latency but may increase CPU cost. */
-	int32 CallbackBufferFrameSize;
-
-	/** The number of buffers to keep enqueued. More buffers increases latency, but can compensate for variable compute availability in audio callbacks on some platforms. */
-	int32 NumBuffers;
-
-	/** The max number of channels to limit for this platform. The max channels used will be the minimum of this value and the global audio quality settings. A value of 0 will not apply a platform channel count max. */
-	int32 MaxChannels;
-
-	/** The number of workers to use to compute source audio. Will only use up to the max number of sources. Will evenly divide sources to each source worker. */
-	int32 NumSourceWorkers;
-
-	static FAudioPlatformSettings GetPlatformSettings(const TCHAR* PlatformSettingsConfigFile);
-
-	FAudioPlatformSettings()
-		: SampleRate(48000)
-		, CallbackBufferFrameSize(1024)
-		, NumBuffers(2)
-		, MaxChannels(0)
-		, NumSourceWorkers(0)
-	{
-	}
-};
+struct FPropertyChangedChainEvent;
 
 // Enumeration for what our options are for sample rates used for VOIP.
 UENUM()
@@ -63,7 +37,7 @@ enum class EMonoChannelUpmixMethod : int8
 {
 	// The mono channel is split 0.5 left/right
 	Linear,
-	
+
 	// The mono channel is split 0.707 left/right
 	EqualPower,
 
@@ -99,9 +73,12 @@ class ENGINE_API UAudioSettings : public UDeveloperSettings
 	GENERATED_UCLASS_BODY()
 
 #if WITH_EDITOR
-	virtual void PreEditChange(UProperty* PropertyAboutToChange) override;
-	virtual void PostEditChangeChainProperty( struct FPropertyChangedChainEvent& PropertyChangedEvent) override;
-#endif
+	virtual void PreEditChange(FProperty* PropertyAboutToChange) override;
+	virtual void PostEditChangeChainProperty(FPropertyChangedChainEvent& PropertyChangedEvent) override;
+
+	/** Event to listen for when settings reflected properties are changed. */
+	DECLARE_EVENT(UAudioSettings, FAudioSettingsChanged)
+#endif // WITH_EDITOR
 
 	/** The SoundClass assigned to newly created sounds */
 	UPROPERTY(config, EditAnywhere, Category="Audio", meta=(AllowedClasses="SoundClass", DisplayName="Default Sound Class"))
@@ -115,25 +92,33 @@ class ENGINE_API UAudioSettings : public UDeveloperSettings
 	UPROPERTY(config, EditAnywhere, Category = "Audio", meta = (AllowedClasses = "SoundConcurrency", DisplayName = "Default Sound Concurrency"))
 	FSoftObjectPath DefaultSoundConcurrencyName;
 
-	/** The SoundMix to use as base when no other system has speciicefied a Base SoundMix */
+	/** The SoundMix to use as base when no other system has specified a Base SoundMix */
 	UPROPERTY(config, EditAnywhere, Category="Audio", meta=(AllowedClasses="SoundMix"))
 	FSoftObjectPath DefaultBaseSoundMix;
-	
+
 	/** Sound class to be used for the VOIP audio component */
 	UPROPERTY(config, EditAnywhere, Category="Audio", meta=(AllowedClasses="SoundClass", DisplayName = "VOIP Sound Class"))
 	FSoftObjectPath VoiPSoundClass;
+
+	/** The Master submix through which all sounds are routed */
+	UPROPERTY(config, EditAnywhere, Category="Mix", meta=(AllowedClasses="SoundSubmix"))
+	FSoftObjectPath MasterSubmix;
+
+	/** The submix through which all sounds set to use reverb are routed */
+	UPROPERTY(config, EditAnywhere, Category="Mix", meta=(AllowedClasses="SoundSubmix"))
+	FSoftObjectPath ReverbSubmix;
+
+	/** The submix through which all sounds set to use legacy EQ system are routed */
+	UPROPERTY(config, EditAnywhere, Category="Mix", meta=(AllowedClasses="SoundSubmix", DisplayName = "EQ Submix (Legacy)"), AdvancedDisplay)
+	FSoftObjectPath EQSubmix;
 
 	/** Sample rate used for voice over IP. VOIP audio is resampled to the application's sample rate on the receiver side. */
 	UPROPERTY(config, EditAnywhere, Category = "Audio", meta = (DisplayName = "VOIP Sample Rate"))
 	EVoiceSampleRate VoiPSampleRate;
 
-	/** The amount of time to buffer incoming voice audio for ahead of time. Increasing this value can help avoid jitter on slower network connections. */
-	UPROPERTY(config, EditAnywhere, Category = "Audio", AdvancedDisplay, meta = (ClampMin = 0.05, ClampMax = 3.0))
-	float VoipBufferingDelay;
-
 	/** The amount of audio to send to reverb submixes if no reverb send is setup for the source through attenuation settings. Only used in audio mixer. */
-	UPROPERTY(config, EditAnywhere, Category = "Audio", AdvancedDisplay)
-	float DefaultReverbSendLevel;
+	UPROPERTY(config)
+	float DefaultReverbSendLevel_DEPRECATED;
 
 	/** How many streaming sounds can be played at the same time (if more are played they will be sorted by priority) */
 	UPROPERTY(config, EditAnywhere, Category="Audio", meta=(ClampMin=0))
@@ -152,7 +137,7 @@ class ENGINE_API UAudioSettings : public UDeveloperSettings
 
 	/** Allows sounds to play at 0 volume. */
 	UPROPERTY(config, EditAnywhere, Category = "Quality", AdvancedDisplay)
-	uint32 bAllowVirtualizedSounds:1;
+	uint32 bAllowPlayWhenSilent:1;
 
 	/** Disables master EQ effect in the audio DSP graph. */
 	UPROPERTY(config, EditAnywhere, Category = "Quality", AdvancedDisplay)
@@ -162,13 +147,9 @@ class ENGINE_API UAudioSettings : public UDeveloperSettings
 	UPROPERTY(config, EditAnywhere, Category = "Quality", AdvancedDisplay)
 	uint32 bAllowCenterChannel3DPanning : 1;
 
-	/** The max number of active sounds allowed. Used to cull numbers of active sounds, which reduces CPU cost of audio thread. */
-	UPROPERTY(config, EditAnywhere, Category = "Quality", AdvancedDisplay)
-	uint32 MaxWaveInstances;
-
-	/** 
+	/**
 	 * The max number of sources to reserve for "stopping" sounds. A "stopping" sound applies a fast fade in the DSP
-	 * render to prevent discontinuities when stopping sources.  
+	 * render to prevent discontinuities when stopping sources.
 	 */
 	UPROPERTY(config, EditAnywhere, Category = "Quality", AdvancedDisplay)
 	uint32 NumStoppingSources;
@@ -197,9 +178,21 @@ class ENGINE_API UAudioSettings : public UDeveloperSettings
 	UPROPERTY(config, EditAnywhere, Category="Dialogue")
 	FString DialogueFilenameFormat;
 
-	const FAudioQualitySettings& GetQualityLevelSettings(int32 QualityLevel) const;
+#if WITH_EDITOR
+	FAudioSettingsChanged AudioSettingsChanged;
+#endif // WITH_EDITOR
 
-	// Sets whether audio mixer is enabled. Set once an audio mixer platform modu le is loaded.
+public:
+	// Get the quality level settings at the provided level index
+	const FAudioQualitySettings& GetQualityLevelSettings(int32 QualityLevel) const;
+	
+	// Get the quality name level for a given index
+	FString FindQualityNameByIndex(int32 Index) const;
+
+	// Get the total number of quality level settings
+	int32 GetQualityLevelSettingsNum() const;
+
+	// Sets whether audio mixer is enabled. Set once an audio mixer platform module is loaded.
 	void SetAudioMixerEnabled(const bool bInAudioMixerEnabled);
 
 	// Returns if the audio mixer is currently enabled
@@ -208,11 +201,17 @@ class ENGINE_API UAudioSettings : public UDeveloperSettings
 	/** Returns the highest value for MaxChannels among all quality levels */
 	int32 GetHighestMaxChannels() const;
 
-private:
+#if WITH_EDITOR
+	/** Returns event to be bound to if caller wants to know when audio settings are modified */
+	FAudioSettingsChanged& OnAudioSettingsChanged() { return AudioSettingsChanged; }
+#endif // WITH_EDITOR
 
+private:
 #if WITH_EDITOR
 	TArray<FAudioQualitySettings> CachedQualityLevels;
-#endif
+	FSoftObjectPath CachedAmbisonicSubmix;
+	FSoftObjectPath CachedMasterSubmix;
+#endif // WITH_EDITOR
 
 	void AddDefaultSettings();
 

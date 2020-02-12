@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "Bus/MessageBus.h"
 #include "HAL/RunnableThread.h"
@@ -11,11 +11,12 @@
 /* FMessageBus structors
  *****************************************************************************/
 
-FMessageBus::FMessageBus(const TSharedPtr<IAuthorizeMessageRecipients>& InRecipientAuthorizer)
-	: RecipientAuthorizer(InRecipientAuthorizer)
+FMessageBus::FMessageBus(FString InName, const TSharedPtr<IAuthorizeMessageRecipients>& InRecipientAuthorizer)
+	: Name(MoveTemp(InName))
+	, RecipientAuthorizer(InRecipientAuthorizer)
 {
 	Router = new FMessageRouter();
-	RouterThread = FRunnableThread::Create(Router, TEXT("FMessageBus.Router"), 128 * 1024, TPri_Normal, FPlatformAffinity::GetPoolThreadMask());
+	RouterThread = FRunnableThread::Create(Router, *FString::Printf(TEXT("FMessageBus.%s.Router"), *Name), 128 * 1024, TPri_Normal, FPlatformAffinity::GetPoolThreadMask());
 
 	check(Router != nullptr);
 }
@@ -80,14 +81,16 @@ void FMessageBus::Publish(
 	void* Message,
 	UScriptStruct* TypeInfo,
 	EMessageScope Scope,
+	const TMap<FName, FString>& Annotations,
 	const FTimespan& Delay,
 	const FDateTime& Expiration,
 	const TSharedRef<IMessageSender, ESPMode::ThreadSafe>& Publisher
 )
 {
-	Router->RouteMessage(MakeShareable(new FMessageContext(
+	Router->RouteMessage(MakeShared<FMessageContext, ESPMode::ThreadSafe>(
 		Message,
 		TypeInfo,
+		Annotations,
 		nullptr,
 		Publisher->GetSenderAddress(),
 		TArray<FMessageAddress>(),
@@ -96,7 +99,7 @@ void FMessageBus::Publish(
 		FDateTime::UtcNow() + Delay,
 		Expiration,
 		FTaskGraphInterface::Get().GetCurrentThreadIfKnown()
-	)));
+	));
 }
 
 
@@ -110,6 +113,7 @@ void FMessageBus::Send(
 	void* Message,
 	UScriptStruct* TypeInfo,
 	EMessageFlags Flags,
+	const TMap<FName, FString>& Annotations,
 	const TSharedPtr<IMessageAttachment, ESPMode::ThreadSafe>& Attachment,
 	const TArray<FMessageAddress>& Recipients,
 	const FTimespan& Delay,
@@ -117,9 +121,10 @@ void FMessageBus::Send(
 	const TSharedRef<IMessageSender, ESPMode::ThreadSafe>& Sender
 )
 {
-	Router->RouteMessage(MakeShareable(new FMessageContext(
+	Router->RouteMessage(MakeShared<FMessageContext, ESPMode::ThreadSafe>(
 		Message,
 		TypeInfo,
+		Annotations,
 		Attachment,
 		Sender->GetSenderAddress(),
 		Recipients,
@@ -128,7 +133,7 @@ void FMessageBus::Send(
 		FDateTime::UtcNow() + Delay,
 		Expiration,
 		FTaskGraphInterface::Get().GetCurrentThreadIfKnown()
-	)));
+	));
 }
 
 
@@ -203,4 +208,9 @@ void FMessageBus::AddNotificationListener(const TSharedRef<IBusListener, ESPMode
 void FMessageBus::RemoveNotificationListener(const TSharedRef<IBusListener, ESPMode::ThreadSafe>& Listener)
 {
 	Router->RemoveNotificationListener(Listener);
+}
+
+const FString& FMessageBus::GetName() const
+{
+	return Name;
 }

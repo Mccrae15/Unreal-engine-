@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 /*=============================================================================
 	PreviewScene.cpp: Preview scene implementation.
@@ -15,9 +15,11 @@
 #include "Components/SkyLightComponent.h"
 #include "Components/LineBatchComponent.h"
 #include "Components/ReflectionCaptureComponent.h"
+#include "GameFramework/GameModeBase.h"
+#include "GameFramework/GameMode.h"
 
 FPreviewScene::FPreviewScene(FPreviewScene::ConstructionValues CVS)
-	: PreviewWorld(NULL)
+	: PreviewWorld(nullptr)
 	, bForceAllUsedMipsResident(CVS.bForceMipsResident)
 {
 	EObjectFlags NewObjectFlags = RF_NoFlags;
@@ -35,28 +37,57 @@ FPreviewScene::FPreviewScene(FPreviewScene::ConstructionValues CVS)
 	PreviewWorld->InitializeNewWorld(UWorld::InitializationValues()
 										.AllowAudioPlayback(CVS.bAllowAudioPlayback)
 										.CreatePhysicsScene(CVS.bCreatePhysicsScene)
-										.RequiresHitProxies(true)
+										.RequiresHitProxies(CVS.bEditor) // Only Need hit proxies in an editor scene
 										.CreateNavigation(false)
 										.CreateAISystem(false)
 										.ShouldSimulatePhysics(CVS.bShouldSimulatePhysics)
-										.SetTransactional(CVS.bTransactional));
-	PreviewWorld->InitializeActorsForPlay(FURL());
+										.SetTransactional(CVS.bTransactional)
+										.SetDefaultGameMode(CVS.DefaultGameMode));
 
-	DirectionalLight = NewObject<UDirectionalLightComponent>(GetTransientPackage(), NAME_None, RF_Transient);
-	DirectionalLight->Intensity = CVS.LightBrightness;
-	DirectionalLight->LightColor = FColor::White;
-	AddComponent(DirectionalLight, FTransform(CVS.LightRotation));
+	FURL URL = FURL();
+	//URL += TEXT("?SpectatorOnly=1");
+	//URL = FURL(NULL, *EditorEngine->BuildPlayWorldURL(*PIEMapName, Params.bStartInSpectatorMode, ExtraURLOptions), TRAVEL_Absolute);
 
-	SkyLight = NewObject<USkyLightComponent>(GetTransientPackage(), NAME_None, RF_Transient);
-	SkyLight->bLowerHemisphereIsBlack = false;
-	SkyLight->SourceType = ESkyLightSourceType::SLS_SpecifiedCubemap;
-	SkyLight->Intensity = CVS.SkyBrightness;
-	SkyLight->Mobility = EComponentMobility::Movable;
-	AddComponent(SkyLight, FTransform::Identity);
+	if (CVS.OwningGameInstance && PreviewWorld->WorldType == EWorldType::GamePreview)
+	{
+		PreviewWorld->SetGameInstance(CVS.OwningGameInstance);
 
-	LineBatcher = NewObject<ULineBatchComponent>(GetTransientPackage());
-	LineBatcher->bCalculateAccurateBounds = false;
-	AddComponent(LineBatcher, FTransform::Identity);
+		FWorldContext& PreviewWorldContext = GEngine->GetWorldContextFromWorldChecked(PreviewWorld);
+		PreviewWorldContext.OwningGameInstance = CVS.OwningGameInstance;
+		PreviewWorldContext.GameViewport = CVS.OwningGameInstance->GetGameViewportClient();
+		PreviewWorldContext.AddRef(PreviewWorld);
+		
+		//PreviewWorldContext.PIEInstance =
+
+		if (CVS.DefaultGameMode)
+		{
+			PreviewWorld->SetGameMode(URL);
+
+			AGameMode* Mode = PreviewWorld->GetAuthGameMode<AGameMode>();
+			ensure(Mode);
+		}
+	}
+
+	PreviewWorld->InitializeActorsForPlay(URL);
+
+	if (CVS.bDefaultLighting)
+	{
+		DirectionalLight = NewObject<UDirectionalLightComponent>(GetTransientPackage(), NAME_None, RF_Transient);
+		DirectionalLight->Intensity = CVS.LightBrightness;
+		DirectionalLight->LightColor = FColor::White;
+		AddComponent(DirectionalLight, FTransform(CVS.LightRotation));
+
+		SkyLight = NewObject<USkyLightComponent>(GetTransientPackage(), NAME_None, RF_Transient);
+		SkyLight->bLowerHemisphereIsBlack = false;
+		SkyLight->SourceType = ESkyLightSourceType::SLS_SpecifiedCubemap;
+		SkyLight->Intensity = CVS.SkyBrightness;
+		SkyLight->Mobility = EComponentMobility::Movable;
+		AddComponent(SkyLight, FTransform::Identity);
+
+		LineBatcher = NewObject<ULineBatchComponent>(GetTransientPackage());
+		LineBatcher->bCalculateAccurateBounds = false;
+		AddComponent(LineBatcher, FTransform::Identity);
+	}
 }
 
 FPreviewScene::~FPreviewScene()
@@ -67,7 +98,7 @@ FPreviewScene::~FPreviewScene()
 		UWorld* World = GetWorld();
 		if (World)
 		{
-			if (FAudioDevice* AudioDevice = World->GetAudioDevice())
+			if (FAudioDeviceHandle AudioDevice = World->GetAudioDevice())
 			{
 				AudioDevice->Flush(GetWorld(), false);
 			}
@@ -92,8 +123,14 @@ FPreviewScene::~FPreviewScene()
 		Component->UnregisterComponent();
 	}
 	
-	PreviewWorld->CleanupWorld();
-	GEngine->DestroyWorldContext(GetWorld());
+	// The world may be released by now.
+	if (PreviewWorld)
+	{
+		PreviewWorld->CleanupWorld();
+		GEngine->DestroyWorldContext(GetWorld());
+		// Release PhysicsScene for fixing big fbx importing bug
+		PreviewWorld->ReleasePhysicsScene();
+	}
 }
 
 void FPreviewScene::AddComponent(UActorComponent* Component,const FTransform& LocalToWorld, bool bAttachToRoot /*= false*/)
@@ -115,6 +152,14 @@ void FPreviewScene::AddComponent(UActorComponent* Component,const FTransform& Lo
 		if (pMesh != NULL)
 		{
 			pMesh->SetTextureForceResidentFlag(true);
+		}
+	}
+
+	{
+		UStaticMeshComponent* pStaticMesh = Cast<UStaticMeshComponent>(Component);
+		if(pStaticMesh != nullptr)
+		{
+			pStaticMesh->bEvaluateWorldPositionOffset = true;
 		}
 	}
 
@@ -141,6 +186,11 @@ void FPreviewScene::AddReferencedObjects( FReferenceCollector& Collector )
 {
 	Collector.AddReferencedObjects( Components );
 	Collector.AddReferencedObject( PreviewWorld );
+}
+
+FString FPreviewScene::GetReferencerName() const
+{
+	return TEXT("FPreviewScene");
 }
 
 void FPreviewScene::UpdateCaptureContents()

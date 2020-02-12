@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 #include "FbxCompareWindow.h"
 #include "Modules/ModuleManager.h"
 #include "Widgets/Layout/SBorder.h"
@@ -23,7 +23,7 @@
 #include "Framework/Commands/UIAction.h"
 #include "Framework/MultiBox/MultiBoxBuilder.h"
 #include "Factories/FbxSceneImportFactory.h"
-#include "Toolkits/AssetEditorManager.h"
+
 #include "Framework/Application/SlateApplication.h"
 #include "Engine/SkeletalMesh.h"
 #include "Engine/StaticMesh.h"

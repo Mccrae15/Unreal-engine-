@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -9,7 +9,12 @@
 #include "Framework/Commands/UICommandList.h"
 #include "Toolkits/IToolkitHost.h"
 
+class UInteractiveTool;
+class UInteractiveToolManager;
 class SDockableTab;
+class UEdMode;
+class IDetailsView;
+enum class EToolShutdownType;
 
 /**
  * Base class for all toolkits (abstract).
@@ -59,6 +64,7 @@ public:
 	 */
 	void AddToolkitTab(const TSharedRef<SDockableTab>& TabToAdd, const EToolkitTabSpot::Type TabSpot);
 
+
 protected:
 
 	/** @return Returns the prefix string to use for tabs created for this toolkit.  In world-centric mode, tabs get a
@@ -89,8 +95,10 @@ protected:
 };
 
 
+
 /**
- * Base class for all editor mode toolkits.
+ * This FModeToolkit just creates a basic UI panel that allows various InteractiveTools to
+ * be initialized, and a DetailsView used to show properties of the active Tool.
  */
 class UNREALED_API FModeToolkit
 	: public FBaseToolkit
@@ -100,6 +108,7 @@ public:
 
 	/** Initializes the mode toolkit */
 	virtual void Init(const TSharedPtr<IToolkitHost>& InitToolkitHost);
+	~FModeToolkit();
 
 public:
 
@@ -111,10 +120,54 @@ public:
 public:
 
 	// IToolkit interface
+	virtual FName GetToolkitFName() const override;
+	virtual FText GetBaseToolkitName() const override;
 	virtual FText GetToolkitName() const override { return GetBaseToolkitName(); }
 	virtual FText GetToolkitToolTipText() const override { return GetBaseToolkitName(); }
 	virtual FString GetWorldCentricTabPrefix() const override;
 	virtual bool IsAssetEditor() const override;
 	virtual const TArray<UObject*>* GetObjectsCurrentlyBeingEdited() const override;
 	virtual FLinearColor GetWorldCentricTabColorScale() const override;
+	virtual class FEdMode* GetEditorMode() const override;
+	virtual FText GetEditorModeDisplayName() const override;
+	virtual FSlateIcon GetEditorModeIcon() const override;
+
+	virtual UEdMode* GetScriptableEditorMode() const;
+	virtual TSharedPtr<SWidget> GetInlineContent() const override;
+
+	/** Returns the number of Mode specific tabs in the mode toolbar **/
+	virtual void GetToolPaletteNames(TArray<FName>& PaletteNames) const {}
+
+	/**
+	 * @param PaletteIndex      The index of the ToolPalette to build
+	 * @returns the name of Tool Palette
+	 **/
+	virtual FText GetToolPaletteDisplayName(FName Palette) const { return FText(); }
+
+	/**
+	 * @param PaletteIndex      The index of the ToolPalette to build
+	 * @param ToolbarBuilder    The builder to use for given PaletteIndex
+	**/
+	virtual void BuildToolPalette(FName Palette, class FToolBarBuilder& ToolbarBuilder);
+
+	virtual FText GetActiveToolDisplayName() const { return FText(); }
+	virtual FText GetActiveToolMessage() const { return FText(); }
+
+	virtual void OnToolPaletteChanged(FName PaletteName);
+
+	void SetModeSettingsObject(UObject* InSettingsObject);
+
+protected:
+	bool CanStartTool(const FString& ToolTypeIdentifier);
+	bool CanAcceptActiveTool();
+	bool CanCancelActiveTool();
+	bool CanCompleteActiveTool();
+
+	virtual void OnToolStarted(UInteractiveToolManager* Manager, UInteractiveTool* Tool);
+	virtual void OnToolEnded(UInteractiveToolManager* Manager, UInteractiveTool* Tool);
+
+protected:
+	TSharedPtr<SWidget> ToolkitWidget;
+	TSharedPtr<IDetailsView> ModeDetailsView;
+	TSharedPtr<IDetailsView> DetailsView;
 };

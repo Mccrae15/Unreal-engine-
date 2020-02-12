@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "NavMesh/RecastNavMeshGenerator.h"
 #include "AI/Navigation/NavRelevantInterface.h"
@@ -16,6 +16,10 @@
 #if WITH_PHYSX
 	#include "PhysXPublic.h"
 #endif
+#if WITH_CHAOS
+	#include "Chaos/HeightField.h"
+	#include "Chaos/TriangleMeshImplicitObject.h"
+#endif
 #include "NavMesh/PImplRecastNavMesh.h"
 
 // recast includes
@@ -27,6 +31,11 @@
 #include "VisualLogger/VisualLoggerTypes.h"
 #include "PhysicsEngine/ConvexElem.h"
 #include "PhysicsEngine/BodySetup.h"
+
+#if RECAST_INTERNAL_DEBUG_DATA
+#include "DebugUtils/DebugDraw.h"
+#include "DebugUtils/RecastDebugDraw.h"
+#endif //RECAST_INTERNAL_DEBUG_DATA
 
 #ifndef OUTPUT_NAV_TILE_LAYER_COMPRESSION_DATA
 	#define OUTPUT_NAV_TILE_LAYER_COMPRESSION_DATA 0
@@ -45,7 +54,22 @@
 
 #define TEXT_WEAKOBJ_NAME(obj) (obj.IsValid(false) ? *obj->GetName() : (obj.IsValid(false, true)) ? TEXT("MT-Unreachable") : TEXT("INVALID"))
 
+CSV_DEFINE_CATEGORY(NAVREGEN, false);
+
 struct dtTileCacheAlloc;
+
+//Experimental debug tools
+static int32 GNavmeshSynchronousTileGeneration = 0;
+static FAutoConsoleVariableRef NavmeshVarSynchronous(TEXT("n.GNavmeshSynchronousTileGeneration"), GNavmeshSynchronousTileGeneration, TEXT(""), ECVF_Default);
+
+#if RECAST_INTERNAL_DEBUG_DATA
+static int32 GNavmeshDisplayStep = 0;
+static int32 GNavmeshDebugTileX = 1;
+static int32 GNavmeshDebugTileY = 1;
+static FAutoConsoleVariableRef NavmeshVarDisplayStep(TEXT("n.GNavmeshDisplayStep"), GNavmeshDisplayStep, TEXT(""), ECVF_Default);
+static FAutoConsoleVariableRef NavmeshVarDebugTileX(TEXT("n.GNavmeshDebugTileX"), GNavmeshDebugTileX, TEXT(""), ECVF_Default);
+static FAutoConsoleVariableRef NavmeshVarDebugTileY(TEXT("n.GNavmeshDebugTileY"), GNavmeshDebugTileY, TEXT(""), ECVF_Default);
+#endif //RECAST_INTERNAL_DEBUG_DATA
 
 FORCEINLINE bool DoesBoxContainOrOverlapVector(const FBox& BigBox, const FVector& In)
 {
@@ -203,6 +227,11 @@ struct FRecastGeometryExport : public FNavigableGeometryExport
 	virtual void ExportPxConvexMesh(physx::PxConvexMesh const * const ConvexMesh, const FTransform& LocalToWorld) override;
 	virtual void ExportPxHeightField(physx::PxHeightField const * const HeightField, const FTransform& LocalToWorld) override;
 #endif // WITH_PHYSX
+#if WITH_CHAOS
+	virtual void ExportChaosTriMesh(const Chaos::FTriangleMeshImplicitObject* const TriMesh, const FTransform& LocalToWorld) override;
+	virtual void ExportChaosConvexMesh(const FKConvexElem* const Convex, const FTransform& LocalToWorld) override;
+	virtual void ExportChaosHeightField(const Chaos::THeightField<float>* const Heightfield, const FTransform& LocalToWorld) override;
+#endif
 	virtual void ExportHeightFieldSlice(const FNavHeightfieldSamples& PrefetchedHeightfieldSamples, const int32 NumRows, const int32 NumCols, const FTransform& LocalToWorld, const FBox& SliceBox) override;
 	virtual void ExportCustomMesh(const FVector* InVertices, int32 NumVerts, const int32* InIndices, int32 NumIndices, const FTransform& LocalToWorld) override;
 	virtual void ExportRigidBodySetup(UBodySetup& BodySetup, const FTransform& LocalToWorld) override;
@@ -298,8 +327,8 @@ static void StoreCollisionCache(FRecastGeometryExport& GeomExport)
 
 	HeaderInfo.Validation.DataSize = CacheSize;
 
-	// reserve + add combo to allocate exact amount (without any overhead/slack)
-	GeomExport.Data->CollisionData.Reserve(CacheSize);
+	// empty + add combo to allocate exact amount (without any overhead/slack)
+	GeomExport.Data->CollisionData.Empty(CacheSize);
 	GeomExport.Data->CollisionData.AddUninitialized(CacheSize);
 
 	// store collisions
@@ -526,6 +555,231 @@ void ExportPxHeightField(PxHeightField const * const HeightField, const FTransfo
 }
 #endif // WITH_PHYSX
 
+#if WITH_CHAOS
+void ExportChaosTriMesh(const Chaos::FTriangleMeshImplicitObject* const TriMesh, const FTransform& LocalToWorld
+	, TNavStatArray<float>& VertexBuffer, TNavStatArray<int32>& IndexBuffer
+	, FBox& UnrealBounds)
+{
+	if (TriMesh == nullptr)
+	{
+		return;
+	}
+
+	using namespace Chaos;
+
+	int32 VertOffset = VertexBuffer.Num() / 3;
+
+	auto LambdaHelper = [&](const auto& Triangles)
+	{
+		int32 NumTris = Triangles.Num();
+		const TParticles<FReal, 3>& Vertices = TriMesh->Particles();
+	
+		VertexBuffer.Reserve(VertexBuffer.Num() + NumTris * 9);
+		IndexBuffer.Reserve(IndexBuffer.Num() + NumTris * 3);
+
+		const bool bFlipCullMode = (LocalToWorld.GetDeterminant() < 0.f);
+
+		const int32 IndexOrder[3] = { bFlipCullMode ? 0 : 2, 1, bFlipCullMode ? 2 : 0 };
+
+	#if SHOW_NAV_EXPORT_PREVIEW
+		UWorld* DebugWorld = FindEditorWorld();
+	#endif // SHOW_NAV_EXPORT_PREVIEW
+
+		for (int32 TriIdx = 0; TriIdx < NumTris; ++TriIdx)
+		{
+			for (int32 i = 0; i < 3; i++)
+			{
+				const FVector UnrealCoords = LocalToWorld.TransformPosition(Vertices.X(Triangles[TriIdx][i]));
+				UnrealBounds += UnrealCoords;
+
+				VertexBuffer.Add(UnrealCoords.X);
+				VertexBuffer.Add(UnrealCoords.Y);
+				VertexBuffer.Add(UnrealCoords.Z);
+			}
+
+			IndexBuffer.Add(VertOffset + IndexOrder[0]);
+			IndexBuffer.Add(VertOffset + IndexOrder[1]);
+			IndexBuffer.Add(VertOffset + IndexOrder[2]);
+
+	#if SHOW_NAV_EXPORT_PREVIEW
+			if (DebugWorld)
+			{
+				FVector V0(VertexBuffer[(VertOffset + IndexOrder[0]) * 3 + 0], VertexBuffer[(VertOffset + IndexOrder[0]) * 3 + 1], VertexBuffer[(VertOffset + IndexOrder[0]) * 3 + 2]);
+				FVector V1(VertexBuffer[(VertOffset + IndexOrder[1]) * 3 + 0], VertexBuffer[(VertOffset + IndexOrder[1]) * 3 + 1], VertexBuffer[(VertOffset + IndexOrder[1]) * 3 + 2]);
+				FVector V2(VertexBuffer[(VertOffset + IndexOrder[2]) * 3 + 0], VertexBuffer[(VertOffset + IndexOrder[2]) * 3 + 1], VertexBuffer[(VertOffset + IndexOrder[2]) * 3 + 2]);
+
+				DrawDebugLine(DebugWorld, V0, V1, bFlipCullMode ? FColor::Red : FColor::Blue, true);
+				DrawDebugLine(DebugWorld, V1, V2, bFlipCullMode ? FColor::Red : FColor::Blue, true);
+				DrawDebugLine(DebugWorld, V2, V0, bFlipCullMode ? FColor::Red : FColor::Blue, true);
+			}
+	#endif // SHOW_NAV_EXPORT_PREVIEW
+
+			VertOffset += 3;
+		}
+	};
+
+
+	const FTrimeshIndexBuffer& IdxBuffer = TriMesh->Elements();
+	if(IdxBuffer.RequiresLargeIndices())
+	{
+		LambdaHelper(IdxBuffer.GetLargeIndexBuffer());
+	}
+	else
+	{
+		LambdaHelper(IdxBuffer.GetSmallIndexBuffer());
+	}
+}
+
+
+
+void ExportChaosConvexMesh(const FKConvexElem* const Convex, const FTransform& LocalToWorld
+	, TNavStatArray<float>& VertexBuffer, TNavStatArray<int32>& IndexBuffer
+	, FBox& UnrealBounds)
+{
+	using namespace Chaos;
+
+	if (Convex == nullptr)
+	{
+		return;
+	}
+
+
+	QUICK_SCOPE_CYCLE_COUNTER(STAT_NavMesh_ExportChaosConvexMesh);
+
+	int32 VertOffset = VertexBuffer.Num() / 3;
+
+	VertexBuffer.Reserve(VertexBuffer.Num() + Convex->VertexData.Num() * 3);
+	IndexBuffer.Reserve(IndexBuffer.Num() + Convex->IndexData.Num());
+
+#if SHOW_NAV_EXPORT_PREVIEW
+	UWorld* DebugWorld = FindEditorWorld();
+#endif // SHOW_NAV_EXPORT_PREVIEW
+
+	if (Convex->VertexData.Num())
+	{
+		if(Convex->IndexData.Num() == 0)
+		{
+			UE_LOG(LogNavigation, Verbose, TEXT("Zero indices in convex."));
+			return;
+		}
+
+		if(Convex->IndexData.Num() % 3 != 0)
+		{
+			UE_LOG(LogNavigation, Verbose, TEXT("Invalid indices in convex."));
+			return;
+		}
+	}
+
+	for (const FVector& Vertex : Convex->VertexData)
+	{
+		const FVector UnrealCoord = LocalToWorld.TransformPosition(Vertex);
+		UnrealBounds += UnrealCoord;
+
+		VertexBuffer.Add(UnrealCoord.X);
+		VertexBuffer.Add(UnrealCoord.Y);
+		VertexBuffer.Add(UnrealCoord.Z);
+	}
+
+	if (Convex->IndexData.Num() % 3 == 0)
+	{
+		for (int32 i = 0; i < Convex->IndexData.Num(); i += 3)
+		{
+			IndexBuffer.Add(VertOffset + Convex->IndexData[i]);
+			IndexBuffer.Add(VertOffset + Convex->IndexData[i + 2]);
+			IndexBuffer.Add(VertOffset + Convex->IndexData[i + 1]);
+		}
+	}
+
+#if SHOW_NAV_EXPORT_PREVIEW
+	if (DebugWorld)
+	{
+		for (int32 Index = StartVertOffset; Index < VertexBuffer.Num(); Index += 3)
+		{
+			FVector V0(VertexBuffer[IndexBuffer[Index] * 3], VertexBuffer[IndexBuffer[Index] * 3 + 1], VertexBuffer[IndexBuffer[Index] * 3] + 2);
+			FVector V1(VertexBuffer[IndexBuffer[Index + 1] * 3], VertexBuffer[IndexBuffer[Index + 1] * 3 + 1], VertexBuffer[IndexBuffer[Index + 1] * 3] + 2);
+			FVector V2(VertexBuffer[IndexBuffer[Index + 2] * 3], VertexBuffer[IndexBuffer[Index + 2] * 3 + 1], VertexBuffer[IndexBuffer[Index + 2] * 3] + 2);
+
+			DrawDebugLine(DebugWorld, V0, V1, FColor::Blue, true);
+			DrawDebugLine(DebugWorld, V1, V2, FColor::Blue, true);
+			DrawDebugLine(DebugWorld, V2, V0, fColor::Blue, true);
+		}
+	#endif // SHOW_NAV_EXPORT_PREVIEW
+}
+
+void ExportChaosHeightField(const Chaos::THeightField<float>* const HeightField, const FTransform& LocalToWorld
+	, TNavStatArray<float>& VertexBuffer, TNavStatArray<int32>& IndexBuffer
+	, FBox& UnrealBounds)
+{
+	using namespace Chaos;
+
+	if(HeightField == nullptr)
+	{
+		return;
+	}
+
+	QUICK_SCOPE_CYCLE_COUNTER(STAT_NavMesh_ExportPxHeightField);
+
+	const int32 NumRows = HeightField->GetNumRows();
+	const int32 NumCols = HeightField->GetNumCols();
+	const int32 VertexCount = NumRows * NumCols;
+
+	const int32 VertOffset = VertexBuffer.Num() / 3;
+	const int32 NumQuads = (NumRows - 1) * (NumCols - 1);
+
+	VertexBuffer.Reserve(VertexBuffer.Num() + VertexCount * 3);
+	IndexBuffer.Reserve(IndexBuffer.Num() + NumQuads * 6);
+
+	const bool bMirrored = (LocalToWorld.GetDeterminant() < 0.f);
+
+	for(int32 Y = 0; Y < NumRows; Y++)
+	{
+		for(int32 X = 0; X < NumCols; X++)
+		{
+			const int32 SampleIdx = Y * NumCols + X;
+
+			const FVector UnrealCoords = LocalToWorld.TransformPosition(FVector(X, Y, HeightField->GetHeight(SampleIdx)));
+			UnrealBounds += UnrealCoords;
+
+			VertexBuffer.Add(UnrealCoords.X);
+			VertexBuffer.Add(UnrealCoords.Y);
+			VertexBuffer.Add(UnrealCoords.Z);
+		}
+	}
+
+	for(int32 Y = 0; Y < NumRows - 1; Y++)
+	{
+		for(int32 X = 0; X < NumCols - 1; X++)
+		{
+			// #PHYSTODO Hole support for chaos heightfields
+			const bool bIsHole = false;
+			if(bIsHole)
+			{
+				continue;
+			}
+
+			const int32 I0 = Y * NumCols + X;
+			int32 I1 = I0 + 1;
+			int32 I2 = I0 + NumCols;
+			const int32 I3 = I2 + 1;
+
+			if(bMirrored)
+			{
+				// Flip the winding so the triangles face the right way after scaling
+				Swap(I1, I2);
+			}
+
+			IndexBuffer.Add(VertOffset + I0);
+			IndexBuffer.Add(VertOffset + I3);
+			IndexBuffer.Add(VertOffset + I1);
+
+			IndexBuffer.Add(VertOffset + I0);
+			IndexBuffer.Add(VertOffset + I2);
+			IndexBuffer.Add(VertOffset + I3);
+		}
+	}
+}
+#endif
+
 void ExportHeightFieldSlice(const FNavHeightfieldSamples& PrefetchedHeightfieldSamples, const int32 NumRows, const int32 NumCols, const FTransform& LocalToWorld
 	, TNavStatArray<float>& VertexBuffer, TNavStatArray<int32>& IndexBuffer, const FBox& SliceBox
 	, FBox& UnrealBounds)
@@ -697,19 +951,18 @@ FORCEINLINE_DEBUGGABLE void AddFacesToRecast(TArray<FVector, OtherAllocator>& In
 }
 
 FORCEINLINE_DEBUGGABLE void ExportRigidBodyConvexElements(UBodySetup& BodySetup, TNavStatArray<float>& VertexBuffer, TNavStatArray<int32>& IndexBuffer,
-														  TNavStatArray<int32>& ShapeBuffer, FBox& UnrealBounds, const FTransform& LocalToWorld)
+	TNavStatArray<int32>& ShapeBuffer, FBox& UnrealBounds, const FTransform& LocalToWorld)
 {
-#if WITH_PHYSX
 	const int32 ConvexCount = BodySetup.AggGeom.ConvexElems.Num();
-	FKConvexElem const * ConvexElem = BodySetup.AggGeom.ConvexElems.GetData();
-
+	FKConvexElem const* ConvexElem = BodySetup.AggGeom.ConvexElems.GetData();
 	const FTransform NegXScale(FQuat::Identity, FVector::ZeroVector, FVector(-1, 1, 1));
 
-	for(int32 i=0; i< ConvexCount; ++i, ++ConvexElem)
+	for (int32 i = 0; i < ConvexCount; ++i, ++ConvexElem)
 	{
 		// Store index of first vertex in shape buffer
 		ShapeBuffer.Add(VertexBuffer.Num() / 3);
 
+#if WITH_PHYSX && PHYSICS_INTERFACE_PHYSX
 		// Get verts/triangles from this hull.
 		if (!ConvexElem->GetConvexMesh() && ConvexElem->GetMirroredConvexMesh())
 		{
@@ -721,17 +974,23 @@ FORCEINLINE_DEBUGGABLE void ExportRigidBodyConvexElements(UBodySetup& BodySetup,
 			// Otherwise use the regular mesh in the case that both exist
 			ExportPxConvexMesh(ConvexElem->GetConvexMesh(), LocalToWorld, VertexBuffer, IndexBuffer, UnrealBounds);
 		}
+#elif WITH_CHAOS
+		if (ConvexElem->GetChaosConvexMesh())
+		{
+			// TODO use ConvexElem->GetTransform?() transform?
+			ExportChaosConvexMesh(ConvexElem, LocalToWorld, VertexBuffer, IndexBuffer, UnrealBounds);
+		}
+#endif
 	}
-#endif // WITH_PHYSX
 }
 
 FORCEINLINE_DEBUGGABLE void ExportRigidBodyTriMesh(UBodySetup& BodySetup, TNavStatArray<float>& VertexBuffer, TNavStatArray<int32>& IndexBuffer,
-												   FBox& UnrealBounds, const FTransform& LocalToWorld)
+	FBox& UnrealBounds, const FTransform& LocalToWorld)
 {
-#if WITH_PHYSX
 	if (BodySetup.GetCollisionTraceFlag() == CTF_UseComplexAsSimple)
 	{
-		for(PxTriangleMesh* TriMesh : BodySetup.TriMeshes)
+#if WITH_PHYSX && PHYSICS_INTERFACE_PHYSX
+		for (PxTriangleMesh* TriMesh : BodySetup.TriMeshes)
 		{
 			if (TriMesh->getTriangleMeshFlags() & PxTriangleMeshFlag::e16_BIT_INDICES)
 			{
@@ -742,8 +1001,13 @@ FORCEINLINE_DEBUGGABLE void ExportRigidBodyTriMesh(UBodySetup& BodySetup, TNavSt
 				ExportPxTriMesh<PxU32>(TriMesh, LocalToWorld, VertexBuffer, IndexBuffer, UnrealBounds);
 			}
 		}
-	}
-#endif // WITH_PHYSX
+#elif WITH_CHAOS
+		for(const auto& TriMesh : BodySetup.ChaosTriMeshes)
+		{
+			ExportChaosTriMesh(TriMesh.Get(), LocalToWorld, VertexBuffer, IndexBuffer, UnrealBounds);
+		}
+#endif
+}
 }
 
 void ExportRigidBodyBoxElements(const FKAggregateGeom& AggGeom, TNavStatArray<float>& VertexBuffer, TNavStatArray<int32>& IndexBuffer,
@@ -772,7 +1036,7 @@ void ExportRigidBodyBoxElements(const FKAggregateGeom& AggGeom, TNavStatArray<fl
 			ElemTM.TransformPosition(FVector( Extent.X,  Extent.Y, -Extent.Z))
 		};
 
-		for (int32 iv = 0; iv < ARRAY_COUNT(UnrealVerts); iv++)
+		for (int32 iv = 0; iv < UE_ARRAY_COUNT(UnrealVerts); iv++)
 		{
 			UnrealBounds += UnrealVerts[iv];
 
@@ -1087,6 +1351,23 @@ void FRecastGeometryExport::ExportPxHeightField(physx::PxHeightField const * con
 }
 #endif // WITH_PHYSX
 
+#if WITH_CHAOS
+void FRecastGeometryExport::ExportChaosTriMesh(const Chaos::FTriangleMeshImplicitObject* const TriMesh, const FTransform& LocalToWorld)
+{
+	RecastGeometryExport::ExportChaosTriMesh(TriMesh, LocalToWorld, VertexBuffer, IndexBuffer, Data->Bounds);
+}
+
+void FRecastGeometryExport::ExportChaosConvexMesh(const FKConvexElem* const Convex, const FTransform& LocalToWorld)
+{
+	RecastGeometryExport::ExportChaosConvexMesh(Convex, LocalToWorld, VertexBuffer, IndexBuffer, Data->Bounds);
+}
+
+void FRecastGeometryExport::ExportChaosHeightField(const Chaos::THeightField<float>* const Heightfield, const FTransform& LocalToWorld)
+{
+	RecastGeometryExport::ExportChaosHeightField(Heightfield, LocalToWorld, VertexBuffer, IndexBuffer, Data->Bounds);
+}
+#endif
+
 void FRecastGeometryExport::ExportHeightFieldSlice(const FNavHeightfieldSamples& PrefetchedHeightfieldSamples, const int32 NumRows, const int32 NumCols, const FTransform& LocalToWorld, const FBox& SliceBox)
 {
 	RecastGeometryExport::ExportHeightFieldSlice(PrefetchedHeightfieldSamples, NumRows, NumCols, LocalToWorld, VertexBuffer, IndexBuffer, SliceBox, Data->Bounds);
@@ -1110,23 +1391,6 @@ void FRecastGeometryExport::AddNavModifiers(const FCompositeNavModifier& Modifie
 void FRecastGeometryExport::SetNavDataPerInstanceTransformDelegate(const FNavDataPerInstanceTransformDelegate& InDelegate)
 {
 	Data->NavDataPerInstanceTransformDelegate = InDelegate;
-}
-
-static void PartialTransformConvexHull(FConvexNavAreaData& ConvexData, const FTransform& LocalToWorld)
-{
-	FVector ScaleXY = LocalToWorld.GetScale3D().GetAbs();
-	ScaleXY.Z = 1.f;
-
-	FVector TranslationXY = LocalToWorld.GetLocation();
-	TranslationXY.Z = 0.f;
-
-	for (FVector& Point : ConvexData.Points)
-	{
-		Point = Point*ScaleXY + TranslationXY;
-	}
-
-	ConvexData.MaxZ+= LocalToWorld.GetLocation().Z;
-	ConvexData.MinZ+= LocalToWorld.GetLocation().Z;
 }
 
 FORCEINLINE void GrowConvexHull(const float ExpandBy, const TArray<FVector>& Verts, TArray<FVector>& OutResult)
@@ -1377,10 +1641,18 @@ protected:
 class FNavMeshBuildContext : public rcContext, public dtTileCacheLogContext
 {
 public:
-	FNavMeshBuildContext()
+	FNavMeshBuildContext(FRecastTileGenerator& InTileGenerator)
 		: rcContext(true)
+#if RECAST_INTERNAL_DEBUG_DATA
+		, InternalDebugData(InTileGenerator.GetMutableDebugData())
+#endif
 	{
 	}
+
+#if RECAST_INTERNAL_DEBUG_DATA
+	FRecastInternalDebugData& InternalDebugData;
+#endif
+
 protected:
 	/// Logs a message.
 	///  @param[in]		category	The category of the message.
@@ -1552,13 +1824,42 @@ static FBox CalculateTileBounds(int32 X, int32 Y, const FVector& RcNavMeshOrigin
 	return TileBox;
 }
 
+void FTimeSlicer::SetTimeSliceDuration(double SliceDuration)
+{
+	TimeSliceDuration = SliceDuration;
+}
+
+void FTimeSlicer::StartTimeSlice()
+{
+	TimeSliceStartTime = FPlatformTime::Seconds();
+	bTimeSliceFinishedCached = false;
+}
+
+double FTimeSlicer::GetStartTime() const
+{
+	return TimeSliceStartTime;
+}
+
+bool FTimeSlicer::TestTimeSliceFinished() const
+{
+	ensureMsgf(!bTimeSliceFinishedCached, TEXT("Testing time slice is finished when we have already confirmed that!"));
+
+	bTimeSliceFinishedCached = FPlatformTime::Seconds() - TimeSliceStartTime >= TimeSliceDuration;
+	return bTimeSliceFinishedCached;
+}
+
+bool FTimeSlicer::IsTimeSliceFinishedCached() const
+{
+	return bTimeSliceFinishedCached;
+}
+
 //----------------------------------------------------------------------//
 // FRecastTileGenerator
 //----------------------------------------------------------------------//
 
 FRecastTileGenerator::FRecastTileGenerator(FRecastNavMeshGenerator& ParentGenerator, const FIntPoint& Location)
+	: TimeSlicer(ParentGenerator.GetTimeSlicer())
 {
-	bSucceeded = false;
 	bUpdateGeometry = true;
 	bHasLowAreaModifiers = false;
 
@@ -1569,17 +1870,25 @@ FRecastTileGenerator::FRecastTileGenerator(FRecastNavMeshGenerator& ParentGenera
 	Version = ParentGenerator.GetVersion();
 	AdditionalCachedData = ParentGenerator.GetAdditionalCachedData();
 
-	ParentGeneratorWeakPtr = ParentGenerator.AsShared();
+	ParentGeneratorWeakPtr = ((FNavDataGenerator&)ParentGenerator).AsShared();
 
-#if TIME_SLICE_NAV_REGEN
-	bDoneAsyncDataGathering = false;
-	bDoneRegenerateCompressedLayers = false;
-	bDoneWork = false;
-#endif
+	RasterizeGeomRecastState = ERasterizeGeomRecastTimeSlicedState::MarkWalkableTriangles;
+	RasterizeGeomState = ERasterizeGeomTimeSlicedState::RasterizeGeometryTransformCoords;
+	DoWorkTimeSlicedState = EDoWorkTimeSlicedState::DoAsyncGeometryGathering;
+	GenerateTileTimeSlicedState = EGenerateTileTimeSlicedState::GenerateCompressedLayers;
+
+	GenerateNavDataTimeSlicedState = EGenerateNavDataTimeSlicedState::Init;
+	GenNavDataLayerTimeSlicedIdx = 0;
+	GenCompressedLayersTimeSlicedState = EGenerateCompressedLayersTimeSliced::Init;
+	RasterizeTrianglesTimeSlicedRawGeomIdx = 0;
+	RasterizeTrianglesTimeSlicedInstTransformIdx = 0;
 }
 
 FRecastTileGenerator::~FRecastTileGenerator()
 {
+	GenNavDataTimeSlicedGenerationContext.Reset();
+	GenNavDataTimeSlicedAllocator.Reset();
+	GenCompressedlayersTimeSlicedRasterContext.Reset();
 }
 
 void FRecastTileGenerator::Setup(const FRecastNavMeshGenerator& ParentGenerator, const TArray<FBox>& DirtyAreas)
@@ -1671,46 +1980,78 @@ bool FRecastTileGenerator::HasDataToBuild() const
 		|| (InclusionBounds.Num() && NavigationRelevantData.Num() > 0);
 }
 
-ETimeSliceWorkResult FRecastTileGenerator::DoWork()
+ETimeSliceWorkResult FRecastTileGenerator::DoWorkTimeSliced()
 {
 	TSharedPtr<FNavDataGenerator, ESPMode::ThreadSafe> ParentGenerator = ParentGeneratorWeakPtr.Pin();
-
-	ETimeSliceWorkResult TimeSliceWorkResult = ETimeSliceWorkResult::Succeeded;
+	ETimeSliceWorkResult WorkResult = ETimeSliceWorkResult::Succeeded;
 
 	if (ParentGenerator.IsValid())
 	{
-		if (InclusionBounds.Num()
-#if TIME_SLICE_NAV_REGEN
-			&& !bDoneAsyncDataGathering
-#endif
-			)
+		switch (DoWorkTimeSlicedState)
+		{
+		case EDoWorkTimeSlicedState::Invalid:
+		{
+			ensureMsgf(false, TEXT("Invalid EDoWorkTimeSlicedState, has this function been called when its already finished processing?"));
+			return ETimeSliceWorkResult::Failed;
+		}
+		break;
+		case EDoWorkTimeSlicedState::DoAsyncGeometryGathering:
+		{
+			DoWorkTimeSlicedState = EDoWorkTimeSlicedState::GenerateTile;
+
+			if (InclusionBounds.Num())
+			{
+				const bool bHadNavigationRelevantData = DoAsyncGeometryGathering();
+
+				//check bHadNavigationRelevantData as an optimization so we don't call TestTimeSliceFinished when its unnecessary 
+				if (bHadNavigationRelevantData && TimeSlicer.TestTimeSliceFinished())
+				{
+					return ETimeSliceWorkResult::CallAgainNextTimeSlice;
+				}
+			}
+		} //fall through to next state
+		case EDoWorkTimeSlicedState::GenerateTile:
+		{
+			WorkResult = GenerateTileTimeSliced();
+
+			if (WorkResult != ETimeSliceWorkResult::CallAgainNextTimeSlice)
+			{
+				DumpAsyncData();
+
+				DoWorkTimeSlicedState = EDoWorkTimeSlicedState::Invalid;//Set to Invalid as we never want to call this again on this instance
+			}
+		}
+		break;
+
+		default:
+		{
+			ensureMsgf(false, TEXT("unhandled EDoWorkTimeSlicedState"));
+			return ETimeSliceWorkResult::Failed;
+		}
+		}
+	}
+
+	return WorkResult;
+}
+
+bool FRecastTileGenerator::DoWork()
+{
+	TSharedPtr<FNavDataGenerator, ESPMode::ThreadSafe> ParentGenerator = ParentGeneratorWeakPtr.Pin();
+	bool bSucceess = true;
+
+	if (ParentGenerator.IsValid())
+	{
+		if (InclusionBounds.Num())
 		{
 			DoAsyncGeometryGathering();
 		}
 
-		TimeSliceWorkResult = GenerateTile();
+		bSucceess = GenerateTile();
 
-		//bSucceeded is set false in the constructor anyway
-		bSucceeded = (TimeSliceWorkResult == ETimeSliceWorkResult::Succeeded);
-	}
-
-#if TIME_SLICE_NAV_REGEN
-	if (TimeSliceWorkResult != ETimeSliceWorkResult::CallAgain)
-#endif
-	{
 		DumpAsyncData();
-
-		if (!bSucceeded)
-		{
-			TimeSliceWorkResult = ETimeSliceWorkResult::Failed;
-		}
-
-#if TIME_SLICE_NAV_REGEN
-		bDoneWork = true;
-#endif
 	}
 
-	return TimeSliceWorkResult;
+	return bSucceess;
 }
 
 void FRecastTileGenerator::DumpAsyncData()
@@ -1723,13 +2064,11 @@ void FRecastTileGenerator::DumpAsyncData()
 	NavOctree = nullptr;
 }
 
-void FRecastTileGenerator::DoAsyncGeometryGathering()
+bool FRecastTileGenerator::DoAsyncGeometryGathering()
 {
 	QUICK_SCOPE_CYCLE_COUNTER(STAT_RecastNavMeshGenerator_PrepareGeometrySources);
-	
-#if TIME_SLICE_NAV_REGEN
-	bDoneAsyncDataGathering = true;
-#endif
+
+	const bool bRetVal = NavigationRelevantData.Num() > 0;
 
 	for (auto& ElementData : NavigationRelevantData)
 	{
@@ -1769,6 +2108,8 @@ void FRecastTileGenerator::DoAsyncGeometryGathering()
 			NavOctree->DemandLazyDataGathering(*ElementData);
 		}
 
+		const FCompositeNavModifier ModifierInstance = ElementData->Modifiers.HasMetaAreas() ? ElementData->Modifiers.GetInstantiatedMetaModifier(&NavDataConfig, ElementData->SourceObject) : ElementData->Modifiers;
+
 		const bool bExportGeometry = bUpdateGeometry && ElementData->HasGeometry();
 		if (bExportGeometry)
 		{
@@ -1783,7 +2124,7 @@ void FRecastTileGenerator::DoAsyncGeometryGathering()
 				if (!HasVoxelCache(ElementData->VoxelData, CachedVoxels, NumCachedVoxels))
 				{
 					// rasterize
-					PrepareVoxelCache(ElementData->CollisionData, SpanData);
+					PrepareVoxelCache(ElementData->CollisionData, ModifierInstance, SpanData);
 					CachedVoxels = SpanData.GetData();
 					NumCachedVoxels = SpanData.Num();
 
@@ -1799,7 +2140,7 @@ void FRecastTileGenerator::DoAsyncGeometryGathering()
 			}
 			else
 			{
-				ValidateAndAppendGeometry(ElementData);
+				ValidateAndAppendGeometry(ElementData, ModifierInstance);
 			}
 
 			if (bDumpGeometryData)
@@ -1808,12 +2149,12 @@ void FRecastTileGenerator::DoAsyncGeometryGathering()
 			}
 		}
 
-		const FCompositeNavModifier ModifierInstance = ElementData->Modifiers.HasMetaAreas() ? ElementData->Modifiers.GetInstantiatedMetaModifier(&NavDataConfig, ElementData->SourceObject) : ElementData->Modifiers;
 		if (ModifierInstance.IsEmpty() == false)
 		{
 			AppendModifier(ModifierInstance, ElementData->NavDataPerInstanceTransformDelegate);
 		}
 	}
+	return bRetVal;
 }
 
 void FRecastTileGenerator::PrepareGeometrySources(const FRecastNavMeshGenerator& ParentGenerator, bool bGeometryChanged)
@@ -1900,6 +2241,8 @@ void FRecastTileGenerator::GatherGeometry(const FRecastNavMeshGenerator& ParentG
 				}
 			}
 
+			const FCompositeNavModifier ModifierInstance = Element.GetModifierForAgent(&OwnerNavDataConfig);
+
 			const bool bExportGeometry = bGeometryChanged && Element.Data->HasGeometry();
 			if (bExportGeometry)
 			{
@@ -1914,7 +2257,7 @@ void FRecastTileGenerator::GatherGeometry(const FRecastNavMeshGenerator& ParentG
 					if (!HasVoxelCache(Element.Data->VoxelData, CachedVoxels, NumCachedVoxels))
 					{
 						// rasterize
-						PrepareVoxelCache(Element.Data->CollisionData, SpanData);
+						PrepareVoxelCache(Element.Data->CollisionData, ModifierInstance, SpanData);
 						CachedVoxels = SpanData.GetData();
 						NumCachedVoxels = SpanData.Num();
 
@@ -1930,7 +2273,7 @@ void FRecastTileGenerator::GatherGeometry(const FRecastNavMeshGenerator& ParentG
 				}
 				else
 				{
-					ValidateAndAppendGeometry(Element.Data);
+					ValidateAndAppendGeometry(Element.Data, ModifierInstance);
 				}
 
 				if (bDumpGeometryData)
@@ -1939,7 +2282,6 @@ void FRecastTileGenerator::GatherGeometry(const FRecastNavMeshGenerator& ParentG
 				}
 			}
 						
-			const FCompositeNavModifier ModifierInstance = Element.GetModifierForAgent(&OwnerNavDataConfig);
 			if (ModifierInstance.IsEmpty() == false)
 			{
 				AppendModifier(ModifierInstance, Element.Data->NavDataPerInstanceTransformDelegate);
@@ -2057,7 +2399,7 @@ void FRecastTileGenerator::ApplyVoxelFilter(rcHeightfield* HF, float WalkableRad
 	}
 }
 
-void FRecastTileGenerator::PrepareVoxelCache(const TNavStatArray<uint8>& RawCollisionCache, TNavStatArray<rcSpanCache>& SpanData)
+void FRecastTileGenerator::PrepareVoxelCache(const TNavStatArray<uint8>& RawCollisionCache, const FCompositeNavModifier& InModifier, TNavStatArray<rcSpanCache>& SpanData)
 {
 	// tile's geometry: voxel cache (only for synchronous rebuilds)
 	const int32 WalkableClimbVX = TileConfig.walkableClimb;
@@ -2080,9 +2422,13 @@ void FRecastTileGenerator::PrepareVoxelCache(const TNavStatArray<uint8>& RawColl
 		CachedCollisions.Indices, CachedCollisions.Header.NumFaces,
 		TriAreas.GetData());
 
+	// To prevent navmesh generation under the triangles, set the RC_PROJECT_TO_BOTTOM flag to true.
+	// This rasterize triangles as filled columns down to the HF lower bound.
+	const rcRasterizationFlags Flags = InModifier.GetFillCollisionUnderneathForNavmesh() ? RC_PROJECT_TO_BOTTOM : rcRasterizationFlags(0);
+
 	rcRasterizeTriangles(0, CachedCollisions.Verts, CachedCollisions.Header.NumVerts,
 		CachedCollisions.Indices, TriAreas.GetData(), CachedCollisions.Header.NumFaces,
-		*VoxelCacheContext.RasterizeHF, WalkableClimbVX);
+		*VoxelCacheContext.RasterizeHF, WalkableClimbVX, Flags);
 
 	const int32 NumSpans = rcCountSpans(0, *VoxelCacheContext.RasterizeHF);
 	if (NumSpans > 0)
@@ -2169,16 +2515,16 @@ void FRecastTileGenerator::AppendModifier(const FCompositeNavModifier& Modifier,
 	Modifiers.Add(MoveTemp(ModifierElement));
 }
 
-void FRecastTileGenerator::ValidateAndAppendGeometry(TSharedRef<FNavigationRelevantData, ESPMode::ThreadSafe> ElementData)
+void FRecastTileGenerator::ValidateAndAppendGeometry(TSharedRef<FNavigationRelevantData, ESPMode::ThreadSafe> ElementData, const FCompositeNavModifier& InModifier)
 {
 	const FNavigationRelevantData& DataRef = ElementData.Get();
 	if (DataRef.IsCollisionDataValid())
 	{
-		AppendGeometry(DataRef.CollisionData, DataRef.NavDataPerInstanceTransformDelegate);
+		AppendGeometry(DataRef.CollisionData, InModifier, DataRef.NavDataPerInstanceTransformDelegate);
 	}
 }
 
-void FRecastTileGenerator::AppendGeometry(const TNavStatArray<uint8>& RawCollisionCache, const FNavDataPerInstanceTransformDelegate& InTransformsDelegate)
+void FRecastTileGenerator::AppendGeometry(const TNavStatArray<uint8>& RawCollisionCache, const FCompositeNavModifier& InModifier, const FNavDataPerInstanceTransformDelegate& InTransformsDelegate)
 {	
 	if (RawCollisionCache.Num() == 0)
 	{
@@ -2186,6 +2532,11 @@ void FRecastTileGenerator::AppendGeometry(const TNavStatArray<uint8>& RawCollisi
 	}
 	
 	FRecastRawGeometryElement GeometryElement;
+
+	// To prevent navmesh generation under the geometry, set the RC_PROJECT_TO_BOTTOM flag to true.
+	// This rasterize triangles as filled columns down to the HF lower bound.
+	GeometryElement.RasterizationFlags = InModifier.GetFillCollisionUnderneathForNavmesh() ? RC_PROJECT_TO_BOTTOM : rcRasterizationFlags(0);
+
 	FRecastGeometryCache CollisionCache(RawCollisionCache.GetData());
 	
 	// Gather per instance transforms
@@ -2212,59 +2563,99 @@ void FRecastTileGenerator::AppendGeometry(const TNavStatArray<uint8>& RawCollisi
 	}	
 }
 
-ETimeSliceWorkResult FRecastTileGenerator::GenerateTile()
+ETimeSliceWorkResult FRecastTileGenerator::GenerateTileTimeSliced()
 {
-	ETimeSliceWorkResult TimeSliceWorkResult = ETimeSliceWorkResult::Succeeded;
-	FNavMeshBuildContext BuildContext;
+	FNavMeshBuildContext BuildContext(*this);
+	ETimeSliceWorkResult WorkResult = ETimeSliceWorkResult::Succeeded;
 
-	if (bRegenerateCompressedLayers
-#if TIME_SLICE_NAV_REGEN
-		&& !bDoneRegenerateCompressedLayers
-#endif
-		)
+	switch (GenerateTileTimeSlicedState)
+	{
+	case EGenerateTileTimeSlicedState::Invalid:
+	{
+		ensureMsgf(false, TEXT("Invalid EGenerateTileTimeSlicedState, has this function been called when its already finished time processong?"));
+		return ETimeSliceWorkResult::Failed;
+	}
+	break;
+	case EGenerateTileTimeSlicedState::GenerateCompressedLayers:
+	{
+		if (bRegenerateCompressedLayers)
+		{
+			const ETimeSliceWorkResult WorkResultCompressed = GenerateCompressedLayersTimeSliced(BuildContext);
+
+			if (WorkResultCompressed == ETimeSliceWorkResult::Succeeded)
+			{
+				GenerateTileTimeSlicedState = EGenerateTileTimeSlicedState::GenerateNavigationData;
+				// Mark all layers as dirty
+				DirtyLayers.Init(true, CompressedLayers.Num());
+			}
+			else if (WorkResultCompressed == ETimeSliceWorkResult::Failed)
+			{
+				GenerateTileTimeSlicedState = EGenerateTileTimeSlicedState::Invalid;
+				return ETimeSliceWorkResult::Failed;
+			}
+
+			if (TimeSlicer.IsTimeSliceFinishedCached())
+			{
+				return ETimeSliceWorkResult::CallAgainNextTimeSlice;
+			}
+		}
+		else
+		{
+			GenerateTileTimeSlicedState = EGenerateTileTimeSlicedState::GenerateNavigationData;
+		}
+	} //fall through to next state
+	case EGenerateTileTimeSlicedState::GenerateNavigationData:
+	{
+		WorkResult = GenerateNavigationDataTimeSliced(BuildContext);
+
+		if (WorkResult != ETimeSliceWorkResult::CallAgainNextTimeSlice)
+		{
+			GenerateTileTimeSlicedState = EGenerateTileTimeSlicedState::Invalid;
+		}
+	}
+	break;
+	default:
+	{
+		ensureMsgf(false, TEXT("unhandled EGenerateTileTimeSlicedState"));
+		return ETimeSliceWorkResult::Failed;
+	}
+	};
+
+	// it's possible to have valid generation with empty resulting tile (no navigable geometry in tile)
+	return WorkResult;
+}
+
+
+bool FRecastTileGenerator::GenerateTile()
+{
+	FNavMeshBuildContext BuildContext(*this);
+	bool bSuccess = true;
+
+	if (bRegenerateCompressedLayers)
 	{
 		CompressedLayers.Reset();
-		
-		const bool bSuccess = GenerateCompressedLayers(BuildContext);
 
-#if TIME_SLICE_NAV_REGEN
-		bDoneRegenerateCompressedLayers = true;
-#endif
+		bSuccess = GenerateCompressedLayers(BuildContext);
 
 		if (bSuccess)
 		{
 			// Mark all layers as dirty
 			DirtyLayers.Init(true, CompressedLayers.Num());
-
-#if TIME_SLICE_NAV_REGEN
-			TimeSliceWorkResult = ETimeSliceWorkResult::CallAgain;
-#else
-			TimeSliceWorkResult = ETimeSliceWorkResult::Succeeded;
-#endif
-		}
-		else
-		{
-			TimeSliceWorkResult = ETimeSliceWorkResult::Failed;
 		}
 	}
 
-	if (TimeSliceWorkResult == ETimeSliceWorkResult::Succeeded)
+	if (bSuccess)
 	{
-		const bool bSuccess = GenerateNavigationData(BuildContext);
-
-		if (!bSuccess)
-		{
-			TimeSliceWorkResult = ETimeSliceWorkResult::Failed;
-		}
+		bSuccess = GenerateNavigationData(BuildContext);
 	}
 
 	// it's possible to have valid generation with empty resulting tile (no navigable geometry in tile)
-	return TimeSliceWorkResult;
+	return bSuccess;
 }
 
 struct FTileRasterizationContext
 {
-	FTileRasterizationContext() : SolidHF(0), LayerSet(0), CompactHF(0)
+	FTileRasterizationContext() : SolidHF(0), LayerSet(0), CompactHF(0), RasterizationFlags(rcRasterizationFlags(0))
 	{
 	}
 
@@ -2275,61 +2666,24 @@ struct FTileRasterizationContext
 		rcFreeCompactHeightfield(CompactHF);
 	}
 
+	rcRasterizationFlags GetRasterizationFlags() const { return RasterizationFlags; }
+	void SetRasterizationFlags(rcRasterizationFlags Value) { RasterizationFlags = Value; }
+
 	struct rcHeightfield* SolidHF;
 	struct rcHeightfieldLayerSet* LayerSet;
 	struct rcCompactHeightfield* CompactHF;
 	TArray<FNavMeshTileData> Layers;
+
+private:
+	rcRasterizationFlags RasterizationFlags;
 };
 
-static void RasterizeGeometry(
-	FNavMeshBuildContext& BuildContext, const FRecastBuildConfig& TileConfig, 
-	const TArray<float>& Coords, const TArray<int32>& Indices, FTileRasterizationContext& RasterContext)
+bool FRecastTileGenerator::CreateHeightField(FNavMeshBuildContext& BuildContext, FTileRasterizationContext& RasterContext)
 {
-	const int32 NumFaces = Indices.Num() / 3;
-	const int32 NumVerts = Coords.Num() / 3;
+	SCOPE_CYCLE_COUNTER(STAT_Navigation_RecastCreateHeightField);
 
-	TNavStatArray<uint8> TriAreas;
-	TriAreas.Reserve(NumFaces);
-	TriAreas.AddZeroed(NumFaces);
-
-	rcMarkWalkableTriangles(&BuildContext, TileConfig.walkableSlopeAngle,
-		Coords.GetData(), NumVerts, Indices.GetData(), NumFaces,
-		TriAreas.GetData());
-
-	rcRasterizeTriangles(&BuildContext,
-		Coords.GetData(), NumVerts, 
-		Indices.GetData(), TriAreas.GetData(), NumFaces,
-		*RasterContext.SolidHF, TileConfig.walkableClimb);
-}
-
-static void RasterizeGeometry(
-	FNavMeshBuildContext& BuildContext,const FRecastBuildConfig& TileConfig, 
-	const TArray<float>& Coords, const TArray<int32>& Indices, const FTransform& LocalToWorld, FTileRasterizationContext& RasterContext)
-{
-	TArray<float> WorldRecastCoords;
-	WorldRecastCoords.SetNumUninitialized(Coords.Num());
-	
-	FMatrix LocalToRecastWorld = LocalToWorld.ToMatrixWithScale()*Unreal2RecastMatrix();
-	// Convert geometry to recast world space
-	for (int32 i = 0; i < Coords.Num(); i+=3)
-	{
-		// collision cache stores coordinates in recast space, convert them to unreal and transform to recast world space
-		FVector WorldRecastCoord = LocalToRecastWorld.TransformPosition(Recast2UnrealPoint(&Coords[i])); 
-
-		WorldRecastCoords[i+0] = WorldRecastCoord.X;
-		WorldRecastCoords[i+1] = WorldRecastCoord.Y;
-		WorldRecastCoords[i+2] = WorldRecastCoord.Z;
-	}
-
-	RasterizeGeometry(BuildContext, TileConfig, WorldRecastCoords, Indices, RasterContext);
-}
-
-bool FRecastTileGenerator::GenerateCompressedLayers(FNavMeshBuildContext& BuildContext)
-{
-	SCOPE_CYCLE_COUNTER(STAT_Navigation_RecastBuildCompressedLayers);
-	
-	TileConfig.width = TileConfig.tileSize + TileConfig.borderSize*2;
-	TileConfig.height = TileConfig.tileSize + TileConfig.borderSize*2;
+	TileConfig.width = TileConfig.tileSize + TileConfig.borderSize * 2;
+	TileConfig.height = TileConfig.tileSize + TileConfig.borderSize * 2;
 
 	const float BBoxPadding = TileConfig.borderSize * TileConfig.cs;
 	TileConfig.bmin[0] -= BBoxPadding;
@@ -2337,289 +2691,750 @@ bool FRecastTileGenerator::GenerateCompressedLayers(FNavMeshBuildContext& BuildC
 	TileConfig.bmax[0] += BBoxPadding;
 	TileConfig.bmax[2] += BBoxPadding;
 
-	BuildContext.log(RC_LOG_PROGRESS, "GenerateCompressedLayers:");
+	BuildContext.log(RC_LOG_PROGRESS, "CreateHeightField:");
 	BuildContext.log(RC_LOG_PROGRESS, " - %d x %d cells", TileConfig.width, TileConfig.height);
 
-	FTileRasterizationContext RasterContext;
 	const bool bHasGeometry = RawGeometry.Num() > 0;
 
 	// Allocate voxel heightfield where we rasterize our input data to.
 	if (bHasGeometry)
 	{
+		RasterContext.SolidHF = rcAllocHeightfield();
+		if (RasterContext.SolidHF == nullptr)
 		{
-			SCOPE_CYCLE_COUNTER(STAT_Navigation_RecastCreateHeightField);
-
-			RasterContext.SolidHF = rcAllocHeightfield();
-			if (RasterContext.SolidHF == NULL)
-			{
-				BuildContext.log(RC_LOG_ERROR, "GenerateCompressedLayers: Out of memory 'SolidHF'.");
-				return false;
-			}
-			if (!rcCreateHeightfield(&BuildContext, *RasterContext.SolidHF, TileConfig.width, TileConfig.height, TileConfig.bmin, TileConfig.bmax, TileConfig.cs, TileConfig.ch))
-			{
-				BuildContext.log(RC_LOG_ERROR, "GenerateCompressedLayers: Could not create solid heightfield.");
-				return false;
-			}
+			BuildContext.log(RC_LOG_ERROR, "CreateHeightField: Out of memory 'SolidHF'.");
+			return false;
 		}
-
+		if (!rcCreateHeightfield(&BuildContext, *RasterContext.SolidHF, TileConfig.width, TileConfig.height, TileConfig.bmin, TileConfig.bmax, TileConfig.cs, TileConfig.ch))
 		{
-			// Rasterize geometry
-			SCOPE_CYCLE_COUNTER(STAT_Navigation_RecastRasterizeTriangles)
-		
-			for (const FRecastRawGeometryElement& Element : RawGeometry)
-			{
-				for (const FTransform& InstanceTransform : Element.PerInstanceTransform)
-				{
-					RasterizeGeometry(BuildContext, TileConfig, Element.GeomCoords, Element.GeomIndices, InstanceTransform, RasterContext);
-				}
-			
-				if (Element.PerInstanceTransform.Num() == 0)
-				{
-					RasterizeGeometry(BuildContext, TileConfig, Element.GeomCoords, Element.GeomIndices, RasterContext);
-				}
-			}
+			BuildContext.log(RC_LOG_ERROR, "CreateHeightField: Could not create solid heightfield.");
+			return false;
 		}
 	}
+	return true;
+}
+
+ETimeSliceWorkResult FRecastTileGenerator::RasterizeGeometryRecastTimeSliced(FNavMeshBuildContext& BuildContext, const TArray<float>& Coords, const TArray<int32>& Indices, const rcRasterizationFlags RasterizationFlags, FTileRasterizationContext& RasterContext)
+{
+	QUICK_SCOPE_CYCLE_COUNTER(STAT_Navigation_RasterizeGeometryRecast);
+
+	const int32 NumFaces = Indices.Num() / 3;
+	const int32 NumVerts = Coords.Num() / 3;
+
+	switch (RasterizeGeomRecastState)
+	{
+	case ERasterizeGeomRecastTimeSlicedState::MarkWalkableTriangles:
+	{
+		QUICK_SCOPE_CYCLE_COUNTER(STAT_Navigation_MarkWalkableTriangles);
+
+		RasterizeGeomRecastTriAreas.AddZeroed(NumFaces);
+
+		rcMarkWalkableTriangles(&BuildContext, TileConfig.walkableSlopeAngle,
+			Coords.GetData(), NumVerts, Indices.GetData(), NumFaces,
+			RasterizeGeomRecastTriAreas.GetData());
+
+		RasterizeGeomRecastState = ERasterizeGeomRecastTimeSlicedState::RasterizeTriangles;
+
+		if (TimeSlicer.TestTimeSliceFinished())
+		{
+			return ETimeSliceWorkResult::CallAgainNextTimeSlice;
+		}
+	}// fall through to next state
+	case ERasterizeGeomRecastTimeSlicedState::RasterizeTriangles:
+	{
+		QUICK_SCOPE_CYCLE_COUNTER(STAT_Navigation_RasterizeGeomRecastRasterizeTriangles);
+
+		rcRasterizeTriangles(&BuildContext,
+			Coords.GetData(), NumVerts,
+			Indices.GetData(), RasterizeGeomRecastTriAreas.GetData(), NumFaces,
+			*RasterContext.SolidHF, TileConfig.walkableClimb, RasterizationFlags);
+
+		RasterizeGeomRecastTriAreas.Reset();
+
+		//reset this so next call we start by marking walkable triangles
+		RasterizeGeomRecastState = ERasterizeGeomRecastTimeSlicedState::MarkWalkableTriangles;
+
+		TimeSlicer.TestTimeSliceFinished();
+	}
+	break;
+	default:
+	{
+		ensureMsgf(false, TEXT("unhandled ERasterizeGeomRecastTimeSlicedState"));
+		return ETimeSliceWorkResult::Failed;
+	}
+	}
+	return ETimeSliceWorkResult::Succeeded;
+}
+
+
+void FRecastTileGenerator::RasterizeGeometryRecast(FNavMeshBuildContext& BuildContext, const TArray<float>& Coords, const TArray<int32>& Indices, const rcRasterizationFlags RasterizationFlags, FTileRasterizationContext& RasterContext)
+{
+	QUICK_SCOPE_CYCLE_COUNTER(STAT_Navigation_RasterizeGeometryRecast);
+
+	const int32 NumFaces = Indices.Num() / 3;
+	const int32 NumVerts = Coords.Num() / 3;
+
+	RasterizeGeomRecastTriAreas.AddZeroed(NumFaces);
+
+	{
+		QUICK_SCOPE_CYCLE_COUNTER(STAT_Navigation_MarkWalkableTriangles);
+
+		rcMarkWalkableTriangles(&BuildContext, TileConfig.walkableSlopeAngle,
+			Coords.GetData(), NumVerts, Indices.GetData(), NumFaces,
+			RasterizeGeomRecastTriAreas.GetData());
+	}
+
+	{
+		QUICK_SCOPE_CYCLE_COUNTER(STAT_Navigation_RasterizeGeomRecastRasterizeTriangles);
+
+		rcRasterizeTriangles(&BuildContext,
+			Coords.GetData(), NumVerts,
+			Indices.GetData(), RasterizeGeomRecastTriAreas.GetData(), NumFaces,
+			*RasterContext.SolidHF, TileConfig.walkableClimb, RasterizationFlags);
+	}
+
+	RasterizeGeomRecastTriAreas.Reset();
+}
+
+void FRecastTileGenerator::RasterizeGeometryTransformCoords(const TArray<float>& Coords, const FTransform& LocalToWorld)
+{
+	QUICK_SCOPE_CYCLE_COUNTER(STAT_Navigation_RasterizeGeometryTransformCoords);
+
+	RasterizeGeometryWorldRecastCoords.SetNumUninitialized(Coords.Num(), false);
+
+	FMatrix LocalToRecastWorld = LocalToWorld.ToMatrixWithScale()*Unreal2RecastMatrix();
+
+	// Convert geometry to recast world space
+	for (int32 i = 0; i < Coords.Num(); i+=3)
+	{
+		// collision cache stores coordinates in recast space, convert them to unreal and transform to recast world space
+		FVector WorldRecastCoord = LocalToRecastWorld.TransformPosition(Recast2UnrealPoint(&Coords[i]));
+
+		RasterizeGeometryWorldRecastCoords[i+0] = WorldRecastCoord.X;
+		RasterizeGeometryWorldRecastCoords[i+1] = WorldRecastCoord.Y;
+		RasterizeGeometryWorldRecastCoords[i+2] = WorldRecastCoord.Z;
+	}
+}
+
+ETimeSliceWorkResult FRecastTileGenerator::RasterizeGeometryTimeSliced(FNavMeshBuildContext& BuildContext, const TArray<float>& Coords, const TArray<int32>& Indices, const FTransform& LocalToWorld, const rcRasterizationFlags RasterizationFlags, FTileRasterizationContext& RasterContext)
+{
+	QUICK_SCOPE_CYCLE_COUNTER(STAT_Navigation_RasterizeGeometry);
+	ETimeSliceWorkResult WorkResult = ETimeSliceWorkResult::Succeeded;
+
+	switch (RasterizeGeomState)
+	{
+	case ERasterizeGeomTimeSlicedState::RasterizeGeometryTransformCoords:
+	{
+		RasterizeGeometryTransformCoords(Coords, LocalToWorld);
+
+		RasterizeGeomState = ERasterizeGeomTimeSlicedState::RasterizeGeometryRecast;
+
+		if (TimeSlicer.TestTimeSliceFinished())
+		{
+			return ETimeSliceWorkResult::CallAgainNextTimeSlice;
+		}
+	}// fall through to next state
+	case ERasterizeGeomTimeSlicedState::RasterizeGeometryRecast:
+	{
+		WorkResult = RasterizeGeometryRecastTimeSliced(BuildContext, RasterizeGeometryWorldRecastCoords, Indices, RasterizationFlags, RasterContext);
+
+		if (WorkResult != ETimeSliceWorkResult::CallAgainNextTimeSlice)
+		{
+			//if we have finished rasterizing this geometry then reset RasterizeGeomTimeSlicedState so next time this function is called we go back to RasterizeGeometryTransformCoords first
+			RasterizeGeomState = ERasterizeGeomTimeSlicedState::RasterizeGeometryTransformCoords;
+		}
+	}
+	break;
+	default:
+	{
+		ensureMsgf(false, TEXT("unhandled ERasterizeGeomTimeSlicedState"));
+		return ETimeSliceWorkResult(ETimeSliceWorkResult::Failed);
+	}
+	}
+	return WorkResult;
+}
+
+void FRecastTileGenerator::RasterizeGeometry(FNavMeshBuildContext& BuildContext, const TArray<float>& Coords, const TArray<int32>& Indices, const FTransform& LocalToWorld, const rcRasterizationFlags RasterizationFlags, FTileRasterizationContext& RasterContext)
+{
+	QUICK_SCOPE_CYCLE_COUNTER(STAT_Navigation_RasterizeGeometry);
+
+	RasterizeGeometryTransformCoords(Coords, LocalToWorld);
+	RasterizeGeometryRecast(BuildContext, RasterizeGeometryWorldRecastCoords, Indices, RasterizationFlags, RasterContext);
+}
+
+ETimeSliceWorkResult FRecastTileGenerator::RasterizeTrianglesTimeSliced(FNavMeshBuildContext& BuildContext, FTileRasterizationContext& RasterContext)
+{
+	// Rasterize geometry
+	SCOPE_CYCLE_COUNTER(STAT_Navigation_RecastRasterizeTriangles)
+
+	while (RasterizeTrianglesTimeSlicedRawGeomIdx < RawGeometry.Num())
+	{
+		const FRecastRawGeometryElement& Element = RawGeometry[RasterizeTrianglesTimeSlicedRawGeomIdx];
+		if (Element.PerInstanceTransform.Num() > 0)
+		{
+			while (RasterizeTrianglesTimeSlicedInstTransformIdx < Element.PerInstanceTransform.Num())
+			{
+				const FTransform& InstanceTransform = Element.PerInstanceTransform[RasterizeTrianglesTimeSlicedInstTransformIdx];
+				const ETimeSliceWorkResult WorkResult = RasterizeGeometryTimeSliced(BuildContext, Element.GeomCoords, Element.GeomIndices, InstanceTransform, Element.RasterizationFlags, RasterContext);
+			
+				//the original code just kept calling the RasterizeGeometry() functions and had no return type, 
+				//so we will process the next layer (if we are not needing to process this layer again next time slice) 
+				if (TimeSlicer.IsTimeSliceFinishedCached())
+				{
+					if (WorkResult != ETimeSliceWorkResult::CallAgainNextTimeSlice)
+					{
+						++RasterizeTrianglesTimeSlicedInstTransformIdx;
+					}
+
+					return ETimeSliceWorkResult::CallAgainNextTimeSlice;
+				}
+
+				++RasterizeTrianglesTimeSlicedInstTransformIdx;
+			}
+			//reset RasterizeTrianglesTimeSlicedIdx 
+			RasterizeTrianglesTimeSlicedInstTransformIdx = 0;
+		}
+		else
+		{
+			const ETimeSliceWorkResult WorkResult = RasterizeGeometryRecastTimeSliced(BuildContext, Element.GeomCoords, Element.GeomIndices, Element.RasterizationFlags, RasterContext);
 	
+			if (TimeSlicer.IsTimeSliceFinishedCached())
+			{
+				if (WorkResult != ETimeSliceWorkResult::CallAgainNextTimeSlice)
+				{
+					++RasterizeTrianglesTimeSlicedRawGeomIdx;
+				}
+				return ETimeSliceWorkResult::CallAgainNextTimeSlice;
+			}
+		}
+		++RasterizeTrianglesTimeSlicedRawGeomIdx;
+	}
+
+	//return sucess as non timesliced functionality does not detect failure here
+	return ETimeSliceWorkResult::Succeeded;
+}
+
+void FRecastTileGenerator::RasterizeTriangles(FNavMeshBuildContext& BuildContext, FTileRasterizationContext& RasterContext)
+{
+	// Rasterize geometry
+	SCOPE_CYCLE_COUNTER(STAT_Navigation_RecastRasterizeTriangles)
+
+	for (int32 RawGeomIdx = 0; RawGeomIdx < RawGeometry.Num(); ++RawGeomIdx)
+	{
+		const FRecastRawGeometryElement& Element = RawGeometry[RawGeomIdx];
+		if (Element.PerInstanceTransform.Num() > 0)
+		{
+			for (const FTransform& InstanceTransform : Element.PerInstanceTransform)
+			{
+				RasterizeGeometry(BuildContext, Element.GeomCoords, Element.GeomIndices, InstanceTransform, Element.RasterizationFlags, RasterContext);
+			}
+		}
+		else
+		{
+			RasterizeGeometryRecast(BuildContext, Element.GeomCoords, Element.GeomIndices, Element.RasterizationFlags, RasterContext);
+		}
+	}
+}
+
+void FRecastTileGenerator::GenerateRecastFilter(FNavMeshBuildContext& BuildContext, FTileRasterizationContext& RasterContext)
+{
+	SCOPE_CYCLE_COUNTER(STAT_Navigation_RecastFilter)
+
+	// TileConfig.walkableHeight is set to 1 when marking low spans, calculate real value for filtering
+	const int32 FilterWalkableHeight = FMath::CeilToInt(TileConfig.AgentHeight / TileConfig.ch);
+
+	// Once all geometry is rasterized, we do initial pass of filtering to
+	// remove unwanted overhangs caused by the conservative rasterization
+	// as well as filter spans where the character cannot possibly stand.
+	{
+		rcFilterLowHangingWalkableObstacles(&BuildContext, TileConfig.walkableClimb, *RasterContext.SolidHF);
+	}
+	{
+		SCOPE_CYCLE_COUNTER(STAT_Navigation_FilterLedgeSpans)
+
+		rcFilterLedgeSpans(&BuildContext, TileConfig.walkableHeight, TileConfig.walkableClimb, *RasterContext.SolidHF);
+	}
+	if (!TileConfig.bMarkLowHeightAreas)
+	{
+		rcFilterWalkableLowHeightSpans(&BuildContext, TileConfig.walkableHeight, *RasterContext.SolidHF);
+	}
+	else if (TileConfig.bFilterLowSpanFromTileCache)
+	{
+		// TODO: investigate if creating detailed 2D map from active modifiers is cheap enough
+		// for now, switch on presence of those modifiers, will save memory as long as they are sparse (should be)
+
+		if (TileConfig.bFilterLowSpanSequences && bHasLowAreaModifiers)
+		{
+			rcFilterWalkableLowHeightSpansSequences(&BuildContext, FilterWalkableHeight, *RasterContext.SolidHF);
+		}
+		else
+		{
+			rcFilterWalkableLowHeightSpans(&BuildContext, FilterWalkableHeight, *RasterContext.SolidHF);
+		}
+	}
+}
+
+bool FRecastTileGenerator::BuildCompactHeightField(FNavMeshBuildContext& BuildContext, FTileRasterizationContext& RasterContext)
+{
+	SCOPE_CYCLE_COUNTER(STAT_Navigation_RecastBuildCompactHeightField);
+
+	// Compact the heightfield so that it is faster to handle from now on.
+	// This will result more cache coherent data as well as the neighbors
+	// between walkable cells will be calculated.
+	RasterContext.CompactHF = rcAllocCompactHeightfield();
+	if (RasterContext.CompactHF == nullptr)
+	{
+		BuildContext.log(RC_LOG_ERROR, "BuildCompactHeightField: Out of memory 'CompactHF'.");
+		return false;
+	}
+	if (!rcBuildCompactHeightfield(&BuildContext, TileConfig.walkableHeight, TileConfig.walkableClimb, *RasterContext.SolidHF, *RasterContext.CompactHF))
+	{
+		const int SpanCount = rcGetHeightFieldSpanCount(&BuildContext, *RasterContext.SolidHF);
+		if (SpanCount > 0)
+		{
+			BuildContext.log(RC_LOG_ERROR, "BuildCompactHeightField: Could not build compact data.");
+		}
+		// else there's just no spans to walk on (no spans at all or too small/sparse)
+		else
+		{
+			BuildContext.log(RC_LOG_WARNING, "BuildCompactHeightField: no walkable spans - aborting");
+		}
+		return false;
+	}
+	return true;
+}
+
+bool FRecastTileGenerator::RecastErodeWalkable(FNavMeshBuildContext& BuildContext, FTileRasterizationContext& RasterContext)
+{
+	SCOPE_CYCLE_COUNTER(STAT_Navigation_RecastErodeWalkable);
+
+	// TileConfig.walkableHeight is set to 1 when marking low spans, calculate real value for filtering
+	const int32 FilterWalkableHeight = FMath::CeilToInt(TileConfig.AgentHeight / TileConfig.ch);
+
+	if (TileConfig.walkableRadius > RECAST_VERY_SMALL_AGENT_RADIUS)
+	{
+		uint8 FilterFlags = 0;
+		if (TileConfig.bFilterLowSpanSequences)
+		{
+			FilterFlags = RC_LOW_FILTER_POST_PROCESS | (TileConfig.bFilterLowSpanFromTileCache ? 0 : RC_LOW_FILTER_SEED_SPANS);
+		}
+
+		const bool bEroded = TileConfig.bMarkLowHeightAreas ?
+			rcErodeWalkableAndLowAreas(&BuildContext, TileConfig.walkableRadius, FilterWalkableHeight, RECAST_LOW_AREA, FilterFlags, *RasterContext.CompactHF) :
+			rcErodeWalkableArea(&BuildContext, TileConfig.walkableRadius, *RasterContext.CompactHF);
+
+		if (!bEroded)
+		{
+			BuildContext.log(RC_LOG_ERROR, "GenerateCompressedLayers: Could not erode.");
+			return false;
+		}
+
+	}
+	else if (TileConfig.bMarkLowHeightAreas)
+	{
+		rcMarkLowAreas(&BuildContext, FilterWalkableHeight, RECAST_LOW_AREA, *RasterContext.CompactHF);
+	}
+
+	return true;
+}
+
+bool FRecastTileGenerator::RecastBuildLayers(FNavMeshBuildContext& BuildContext, FTileRasterizationContext& RasterContext)
+{
+	SCOPE_CYCLE_COUNTER(STAT_Navigation_RecastBuildLayers);
+
+	RasterContext.LayerSet = rcAllocHeightfieldLayerSet();
+	if (RasterContext.LayerSet == nullptr)
+	{
+		BuildContext.log(RC_LOG_ERROR, "RecastBuildLayers: Out of memory 'LayerSet'.");
+		return false;
+	}
+
+	if (TileConfig.regionPartitioning == RC_REGION_MONOTONE)
+	{
+		if (!rcBuildHeightfieldLayersMonotone(&BuildContext, *RasterContext.CompactHF, TileConfig.borderSize, TileConfig.walkableHeight, *RasterContext.LayerSet))
+		{
+			BuildContext.log(RC_LOG_ERROR, "RecastBuildLayers: Could not build heightfield layers.");
+			return false;
+
+		}
+	}
+	else if (TileConfig.regionPartitioning == RC_REGION_WATERSHED)
+	{
+		if (!rcBuildDistanceField(&BuildContext, *RasterContext.CompactHF))
+		{
+			BuildContext.log(RC_LOG_ERROR, "RecastBuildLayers: Could not build distance field.");
+			return false;
+		}
+
+		if (!rcBuildHeightfieldLayers(&BuildContext, *RasterContext.CompactHF, TileConfig.borderSize, TileConfig.walkableHeight, *RasterContext.LayerSet))
+		{
+			BuildContext.log(RC_LOG_ERROR, "RecastBuildLayers: Could not build heightfield layers.");
+			return false;
+		}
+	}
+	else
+	{
+		if (!rcBuildHeightfieldLayersChunky(&BuildContext, *RasterContext.CompactHF, TileConfig.borderSize, TileConfig.walkableHeight, TileConfig.regionChunkSize, *RasterContext.LayerSet))
+		{
+			BuildContext.log(RC_LOG_ERROR, "RecastBuildLayers: Could not build heightfield layers.");
+			return false;
+		}
+	}
+	return true;
+}
+
+bool FRecastTileGenerator::RecastBuildTileCache(FNavMeshBuildContext& BuildContext, FTileRasterizationContext& RasterContext)
+{
+	SCOPE_CYCLE_COUNTER(STAT_Navigation_RecastBuildTileCache);
+
+	const int32 NumLayers = RasterContext.LayerSet->nlayers;
+
+	// use this to expand vertically layer's bounds
+	// this is needed to allow off-mesh connections that are not quite
+	// touching tile layer still connect with it.
+	const float StepHeights = TileConfig.AgentMaxClimb;
+
+	FTileCacheCompressor TileCompressor;
+	for (int32 i = 0; i < NumLayers; i++)
+	{
+		const rcHeightfieldLayer* layer = &RasterContext.LayerSet->layers[i];
+
+		// Store header
+		dtTileCacheLayerHeader header;
+		header.magic = DT_TILECACHE_MAGIC;
+		header.version = DT_TILECACHE_VERSION;
+
+		// Tile layer location in the navmesh.
+		header.tx = TileX;
+		header.ty = TileY;
+		header.tlayer = i;
+		dtVcopy(header.bmin, layer->bmin);
+		dtVcopy(header.bmax, layer->bmax);
+
+		// Tile info.
+		header.width = (unsigned short)layer->width;
+		header.height = (unsigned short)layer->height;
+		header.minx = (unsigned short)layer->minx;
+		header.maxx = (unsigned short)layer->maxx;
+		header.miny = (unsigned short)layer->miny;
+		header.maxy = (unsigned short)layer->maxy;
+		header.hmin = (unsigned short)layer->hmin;
+		header.hmax = (unsigned short)layer->hmax;
+
+		// Layer bounds in unreal coords
+		FBox LayerBBox = Recast2UnrealBox(header.bmin, header.bmax);
+		LayerBBox.Min.Z -= StepHeights;
+		LayerBBox.Max.Z += StepHeights;
+
+		// Compress tile layer
+		uint8* TileData = nullptr;
+		int32 TileDataSize = 0;
+		const dtStatus status = dtBuildTileCacheLayer(&TileCompressor, &header, layer->heights, layer->areas, layer->cons, &TileData, &TileDataSize);
+		if (dtStatusFailed(status))
+		{
+			dtFree(TileData);
+			BuildContext.log(RC_LOG_ERROR, "RecastBuildTileCache: failed to build layer.");
+			return false;
+		}
+#if !UE_BUILD_SHIPPING && OUTPUT_NAV_TILE_LAYER_COMPRESSION_DATA
+		else
+		{
+			const int gridSize = (int)header.width * (int)header.height;
+			const int bufferSize = gridSize * 4;
+
+			FPlatformMisc::CustomNamedStat("NavTileLayerUncompSize", static_cast<float>(bufferSize), "NavMesh", "Bytes");
+			FPlatformMisc::CustomNamedStat("NavTileLayerCompSize", static_cast<float>(TileDataSize), "NavMesh", "Bytes");
+		}
+#endif
+
+		// copy compressed data to new buffer in rasterization context
+		// (TileData allocates a lots of space, but only first TileDataSize bytes hold compressed data)
+
+		uint8* CompressedData = (uint8*)dtAlloc(TileDataSize * sizeof(uint8), DT_ALLOC_PERM);
+		if (CompressedData == nullptr)
+		{
+			dtFree(TileData);
+			BuildContext.log(RC_LOG_ERROR, "RecastBuildTileCache: Out of memory 'CompressedData'.");
+			return false;
+		}
+
+		FMemory::Memcpy(CompressedData, TileData, TileDataSize);
+		RasterContext.Layers.Add(FNavMeshTileData(CompressedData, TileDataSize, i, LayerBBox));
+
+		dtFree(TileData);
+
+		const int32 UncompressedSize = ((sizeof(dtTileCacheLayerHeader) + 3) & ~3) + (3 * header.width * header.height);
+		const float Inv1kB = 1.0f / 1024.0f;
+		BuildContext.log(RC_LOG_PROGRESS, ">> Cache[%d,%d:%d] = %.2fkB (full:%.2fkB rate:%.2f%%)", TileX, TileY, i,
+			TileDataSize * Inv1kB, UncompressedSize * Inv1kB, 1.0f * TileDataSize / UncompressedSize);
+	}
+	CompressedLayers = MoveTemp(RasterContext.Layers);
+	return true;
+}
+
+ETimeSliceWorkResult FRecastTileGenerator::GenerateCompressedLayersTimeSliced(FNavMeshBuildContext& BuildContext)
+{
+	SCOPE_CYCLE_COUNTER(STAT_Navigation_RecastBuildCompressedLayers);
+
+	FTileRasterizationContext* RasterContext = GenCompressedlayersTimeSlicedRasterContext.Get();
+
+	switch (GenCompressedLayersTimeSlicedState)
+	{
+	case EGenerateCompressedLayersTimeSliced::Invalid:
+	{
+		ensureMsgf(false, TEXT("Invalid EGenerateCompressedLayersTimeSliced, has this function been called when its already finished processing?"));
+		return ETimeSliceWorkResult::Failed;
+	}
+	break;
+
+	case EGenerateCompressedLayersTimeSliced::Init:
+	{
+		CompressedLayers.Reset();
+		GenCompressedlayersTimeSlicedRasterContext = MakeUnique<FTileRasterizationContext>();
+		RasterContext = GenCompressedlayersTimeSlicedRasterContext.Get();
+		GenCompressedLayersTimeSlicedState = EGenerateCompressedLayersTimeSliced::CreateHeightField;
+	} // fall through to next state
+	case EGenerateCompressedLayersTimeSliced::CreateHeightField:
+	{
+		if (!CreateHeightField(BuildContext, *RasterContext))
+		{
+			GenCompressedLayersTimeSlicedState = EGenerateCompressedLayersTimeSliced::Invalid;
+			//no need to check time slice as not much work done
+			return ETimeSliceWorkResult::Failed;
+		}
+
+		GenCompressedLayersTimeSlicedState = EGenerateCompressedLayersTimeSliced::RasterizeTriangles;
+
+		if (TimeSlicer.TestTimeSliceFinished())
+		{
+			return ETimeSliceWorkResult::CallAgainNextTimeSlice;
+		}
+	} // fall through to next state
+	case EGenerateCompressedLayersTimeSliced::RasterizeTriangles:
+	{
+		const ETimeSliceWorkResult WorkResult = RasterizeTrianglesTimeSliced(BuildContext, *RasterContext);
+
+		//original code did not care about success or failure here
+		if (WorkResult != ETimeSliceWorkResult::CallAgainNextTimeSlice)
+		{
+			GenCompressedLayersTimeSlicedState = EGenerateCompressedLayersTimeSliced::EmptyLayers;
+		}
+
+		if (TimeSlicer.IsTimeSliceFinishedCached())
+		{
+			return ETimeSliceWorkResult::CallAgainNextTimeSlice;
+		}
+	} // fall through to next state
+	case EGenerateCompressedLayersTimeSliced::EmptyLayers:
+	{
+		if (!RasterContext->SolidHF || RasterContext->SolidHF->pools == 0)
+		{
+			BuildContext.log(RC_LOG_WARNING, "GenerateCompressedLayersTimeSliced: empty tile - aborting");
+
+			//no need to check time slice as not much work done
+			GenCompressedLayersTimeSlicedState = EGenerateCompressedLayersTimeSliced::Invalid;
+			return ETimeSliceWorkResult::Succeeded;
+		}
+
+		GenCompressedLayersTimeSlicedState = EGenerateCompressedLayersTimeSliced::VoxelFilter;
+		//no need to check time slice as not much work done
+	}// fall through to next state
+	case EGenerateCompressedLayersTimeSliced::VoxelFilter:
+	{
+		GenCompressedLayersTimeSlicedState = EGenerateCompressedLayersTimeSliced::RecastFilter;
+		// Reject voxels outside generation boundaries
+		if (TileConfig.bPerformVoxelFiltering && !bFullyEncapsulatedByInclusionBounds)
+		{
+			ApplyVoxelFilter(RasterContext->SolidHF, TileConfig.walkableRadius);
+
+			if (TimeSlicer.TestTimeSliceFinished())
+			{
+				return ETimeSliceWorkResult::CallAgainNextTimeSlice;
+			}
+		}
+	}// fall through to next state
+	case EGenerateCompressedLayersTimeSliced::RecastFilter:
+	{
+		GenerateRecastFilter(BuildContext, *RasterContext);
+
+		GenCompressedLayersTimeSlicedState = EGenerateCompressedLayersTimeSliced::CompactHeightField;
+
+		if (TimeSlicer.TestTimeSliceFinished())
+		{
+			return ETimeSliceWorkResult::CallAgainNextTimeSlice;
+		}
+	}// fall through to next state
+	case EGenerateCompressedLayersTimeSliced::CompactHeightField:
+	{
+		if (!BuildCompactHeightField(BuildContext, *RasterContext))
+		{
+			//no need to check time slice as not much work done
+			GenCompressedLayersTimeSlicedState = EGenerateCompressedLayersTimeSliced::Invalid;
+
+			return ETimeSliceWorkResult::Failed;
+		}
+
+		GenCompressedLayersTimeSlicedState = EGenerateCompressedLayersTimeSliced::ErodeWalkable;
+
+		if (TimeSlicer.TestTimeSliceFinished())
+		{
+			return ETimeSliceWorkResult::CallAgainNextTimeSlice;
+		}
+	}// fall through to next state
+	case EGenerateCompressedLayersTimeSliced::ErodeWalkable:
+	{
+		if (!RecastErodeWalkable(BuildContext, *RasterContext))
+		{
+			//no need to check time slice as not much work done
+			GenCompressedLayersTimeSlicedState = EGenerateCompressedLayersTimeSliced::Invalid;
+
+			return ETimeSliceWorkResult::Failed;
+		}
+
+		GenCompressedLayersTimeSlicedState = EGenerateCompressedLayersTimeSliced::BuildLayers;
+
+		if (TimeSlicer.TestTimeSliceFinished())
+		{
+			return ETimeSliceWorkResult::CallAgainNextTimeSlice;
+		}
+	}// fall through to next state
+	case EGenerateCompressedLayersTimeSliced::BuildLayers:
+	{
+		const bool bRecastBuildLayers = RecastBuildLayers(BuildContext, *RasterContext);
+
+		//this could have done a fair amount of work either way so check time slice
+		TimeSlicer.TestTimeSliceFinished();
+
+		if (!bRecastBuildLayers)
+		{
+			GenCompressedLayersTimeSlicedState = EGenerateCompressedLayersTimeSliced::Invalid;
+
+			return ETimeSliceWorkResult::Failed;
+		}
+
+		GenCompressedLayersTimeSlicedState = EGenerateCompressedLayersTimeSliced::BuildTileCache;
+
+		if (TimeSlicer.IsTimeSliceFinishedCached())
+		{
+			return ETimeSliceWorkResult::CallAgainNextTimeSlice;
+		}
+	}// fall through to next state
+	case EGenerateCompressedLayersTimeSliced::BuildTileCache:
+	{
+		GenCompressedLayersTimeSlicedState = EGenerateCompressedLayersTimeSliced::Invalid;
+
+		const bool bRecastBuildTileCache = RecastBuildTileCache(BuildContext, *RasterContext);
+	
+		//this could have done a fair amount of work either way so check time slice
+		TimeSlicer.TestTimeSliceFinished();
+
+		if (!bRecastBuildTileCache)
+		{
+			return ETimeSliceWorkResult::Failed;
+		}
+	}
+	break;
+
+	default:
+	{
+		ensureMsgf(false, TEXT("unknow EGenerateCompressedLayersTimeSliced state"));
+		return ETimeSliceWorkResult::Failed;
+	}
+	}
+
+	return ETimeSliceWorkResult::Succeeded;
+}
+
+bool FRecastTileGenerator::GenerateCompressedLayers(FNavMeshBuildContext& BuildContext)
+{
+	SCOPE_CYCLE_COUNTER(STAT_Navigation_RecastBuildCompressedLayers);
+
+
+	FTileRasterizationContext RasterContext;
+	CompressedLayers.Reset();
+
+	if (!CreateHeightField(BuildContext, RasterContext))
+	{
+		return false;
+	}
+
+	RasterizeTriangles(BuildContext, RasterContext);
 	if (!RasterContext.SolidHF || RasterContext.SolidHF->pools == 0)
 	{
 		BuildContext.log(RC_LOG_WARNING, "GenerateCompressedLayers: empty tile - aborting");
 		return true;
 	}
 
+#if RECAST_INTERNAL_DEBUG_DATA
+	if (GNavmeshDisplayStep == 10 && IsTileToDebug())
+	{
+		duDebugDrawHeightfieldSolid(&BuildContext.InternalDebugData, *RasterContext.SolidHF);
+	}
+#endif
 
 	// Reject voxels outside generation boundaries
 	if (TileConfig.bPerformVoxelFiltering && !bFullyEncapsulatedByInclusionBounds)
 	{
-		SCOPE_CYCLE_COUNTER(STAT_Navigation_RecastVoxelFilter)
-
 		ApplyVoxelFilter(RasterContext.SolidHF, TileConfig.walkableRadius);
 	}
 
-	// TileConfig.walkableHeight is set to 1 when marking low spans, calculate real value for filtering
-	const int32 FilterWalkableHeight = FMath::CeilToInt(TileConfig.AgentHeight / TileConfig.ch);
-
+#if RECAST_INTERNAL_DEBUG_DATA
+	if (GNavmeshDisplayStep == 20 && IsTileToDebug())
 	{
-		SCOPE_CYCLE_COUNTER(STAT_Navigation_RecastFilter)
-
-		// Once all geometry is rasterized, we do initial pass of filtering to
-		// remove unwanted overhangs caused by the conservative rasterization
-		// as well as filter spans where the character cannot possibly stand.
-		rcFilterLowHangingWalkableObstacles(&BuildContext, TileConfig.walkableClimb, *RasterContext.SolidHF);
-		rcFilterLedgeSpans(&BuildContext, TileConfig.walkableHeight, TileConfig.walkableClimb, *RasterContext.SolidHF);
-		if (!TileConfig.bMarkLowHeightAreas)
-		{
-			rcFilterWalkableLowHeightSpans(&BuildContext, TileConfig.walkableHeight, *RasterContext.SolidHF);
-		}
-		else if (TileConfig.bFilterLowSpanFromTileCache)
-		{
-			// TODO: investigate if creating detailed 2D map from active modifiers is cheap enough
-			// for now, switch on presence of those modifiers, will save memory as long as they are sparse (should be)
-
-			if (TileConfig.bFilterLowSpanSequences && bHasLowAreaModifiers)
-			{
-				rcFilterWalkableLowHeightSpansSequences(&BuildContext, FilterWalkableHeight, *RasterContext.SolidHF);
-			}
-			else
-			{
-				rcFilterWalkableLowHeightSpans(&BuildContext, FilterWalkableHeight, *RasterContext.SolidHF);
-			}
-		}
+		duDebugDrawHeightfieldSolid(&BuildContext.InternalDebugData, *RasterContext.SolidHF);
 	}
-
-	{
-		SCOPE_CYCLE_COUNTER(STAT_Navigation_RecastBuildCompactHeightField);
-
-		// Compact the heightfield so that it is faster to handle from now on.
-		// This will result more cache coherent data as well as the neighbors
-		// between walkable cells will be calculated.
-		RasterContext.CompactHF = rcAllocCompactHeightfield();
-		if (RasterContext.CompactHF == NULL)
-		{
-			BuildContext.log(RC_LOG_ERROR, "GenerateCompressedLayers: Out of memory 'CompactHF'.");
-			return false;
-		}
-		if (!rcBuildCompactHeightfield(&BuildContext, TileConfig.walkableHeight, TileConfig.walkableClimb, *RasterContext.SolidHF, *RasterContext.CompactHF))
-		{
-			const int SpanCount = rcGetHeightFieldSpanCount(&BuildContext, *RasterContext.SolidHF);
-			if (SpanCount > 0)
-			{
-				BuildContext.log(RC_LOG_ERROR, "GenerateCompressedLayers: Could not build compact data.");
-			}
-			// else there's just no spans to walk on (no spans at all or too small/sparse)
-			else
-			{
-				BuildContext.log(RC_LOG_WARNING, "GenerateCompressedLayers: no walkable spans - aborting");
-			}
-			return false;
-		}
-	}
-
-	{
-		SCOPE_CYCLE_COUNTER(STAT_Navigation_RecastErodeWalkable);
-
-		if (TileConfig.walkableRadius > RECAST_VERY_SMALL_AGENT_RADIUS)
-		{
-			uint8 FilterFlags = 0;
-			if (TileConfig.bFilterLowSpanSequences)
-			{
-				FilterFlags = RC_LOW_FILTER_POST_PROCESS | (TileConfig.bFilterLowSpanFromTileCache ? 0 : RC_LOW_FILTER_SEED_SPANS);
-			}
-
-			const bool bEroded = TileConfig.bMarkLowHeightAreas ?
-				rcErodeWalkableAndLowAreas(&BuildContext, TileConfig.walkableRadius, FilterWalkableHeight, RECAST_LOW_AREA, FilterFlags, *RasterContext.CompactHF) :
-				rcErodeWalkableArea(&BuildContext, TileConfig.walkableRadius, *RasterContext.CompactHF);
-
-			if (!bEroded)
-			{
-				BuildContext.log(RC_LOG_ERROR, "GenerateCompressedLayers: Could not erode.");
-				return false;
-			}
-		}
-		else if (TileConfig.bMarkLowHeightAreas)
-		{
-			rcMarkLowAreas(&BuildContext, FilterWalkableHeight, RECAST_LOW_AREA, *RasterContext.CompactHF);
-		}
-	}
-
-	// Build layers
-	{
-		SCOPE_CYCLE_COUNTER(STAT_Navigation_RecastBuildLayers);
-		
-		RasterContext.LayerSet = rcAllocHeightfieldLayerSet();
-		if (RasterContext.LayerSet == NULL)
-		{
-			BuildContext.log(RC_LOG_ERROR, "GenerateCompressedLayers: Out of memory 'LayerSet'.");
-			return false;
-		}
-
-		if (TileConfig.regionPartitioning == RC_REGION_MONOTONE)
-		{
-			if (!rcBuildHeightfieldLayersMonotone(&BuildContext, *RasterContext.CompactHF, TileConfig.borderSize, TileConfig.walkableHeight, *RasterContext.LayerSet))
-			{
-				BuildContext.log(RC_LOG_ERROR, "GenerateCompressedLayers: Could not build heightfield layers.");
-				return 0;
-			}
-		}
-		else if (TileConfig.regionPartitioning == RC_REGION_WATERSHED)
-		{
-			if (!rcBuildDistanceField(&BuildContext, *RasterContext.CompactHF))
-			{
-				BuildContext.log(RC_LOG_ERROR, "GenerateCompressedLayers: Could not build distance field.");
-				return 0;
-			}
-
-			if (!rcBuildHeightfieldLayers(&BuildContext, *RasterContext.CompactHF, TileConfig.borderSize, TileConfig.walkableHeight, *RasterContext.LayerSet))
-			{
-				BuildContext.log(RC_LOG_ERROR, "GenerateCompressedLayers: Could not build heightfield layers.");
-				return 0;
-			}
-		}
-		else
-		{
-			if (!rcBuildHeightfieldLayersChunky(&BuildContext, *RasterContext.CompactHF, TileConfig.borderSize, TileConfig.walkableHeight, TileConfig.regionChunkSize, *RasterContext.LayerSet))
-			{
-				BuildContext.log(RC_LOG_ERROR, "GenerateCompressedLayers: Could not build heightfield layers.");
-				return 0;
-			}
-		}
-	}
-
-	{
-		SCOPE_CYCLE_COUNTER(STAT_Navigation_RecastBuildTileCache);
-
-		const int32 NumLayers = RasterContext.LayerSet->nlayers;
-	
-		// use this to expand vertically layer's bounds
-		// this is needed to allow off-mesh connections that are not quite
-		// touching tile layer still connect with it.
-		const float StepHeights = TileConfig.AgentMaxClimb;
-
-		FTileCacheCompressor TileCompressor;
-		for (int32 i = 0; i < NumLayers; i++)
-		{
-			const rcHeightfieldLayer* layer = &RasterContext.LayerSet->layers[i];
-
-			// Store header
-			dtTileCacheLayerHeader header;
-			header.magic = DT_TILECACHE_MAGIC;
-			header.version = DT_TILECACHE_VERSION;
-
-			// Tile layer location in the navmesh.
-			header.tx = TileX;
-			header.ty = TileY;
-			header.tlayer = i;
-			dtVcopy(header.bmin, layer->bmin);
-			dtVcopy(header.bmax, layer->bmax);
-
-			// Tile info.
-			header.width = (unsigned short)layer->width;
-			header.height = (unsigned short)layer->height;
-			header.minx = (unsigned short)layer->minx;
-			header.maxx = (unsigned short)layer->maxx;
-			header.miny = (unsigned short)layer->miny;
-			header.maxy = (unsigned short)layer->maxy;
-			header.hmin = (unsigned short)layer->hmin;
-			header.hmax = (unsigned short)layer->hmax;
-
-			// Layer bounds in unreal coords
-			FBox LayerBBox = Recast2UnrealBox(header.bmin, header.bmax);
-			LayerBBox.Min.Z -= StepHeights;
-			LayerBBox.Max.Z += StepHeights;
-			
-			// Compress tile layer
-			uint8* TileData = NULL;
-			int32 TileDataSize = 0;
-			const dtStatus status = dtBuildTileCacheLayer(&TileCompressor, &header, layer->heights, layer->areas, layer->cons, &TileData, &TileDataSize);
-			if (dtStatusFailed(status))
-			{
-				dtFree(TileData);
-				BuildContext.log(RC_LOG_ERROR, "GenerateCompressedLayers: failed to build layer.");
-				return false;
-			}
-#if !UE_BUILD_SHIPPING && OUTPUT_NAV_TILE_LAYER_COMPRESSION_DATA
-			else
-			{
-				const int gridSize = (int)header.width * (int)header.height;
-				const int bufferSize = gridSize * 4;
-
-				FPlatformMisc::CustomNamedStat("NavTileLayerUncompSize", static_cast<float>(bufferSize), "NavMesh", "Bytes");
-				FPlatformMisc::CustomNamedStat("NavTileLayerCompSize", static_cast<float>(TileDataSize), "NavMesh", "Bytes");
-			}
 #endif
 
-			// copy compressed data to new buffer in rasterization context
-			// (TileData allocates a lots of space, but only first TileDataSize bytes hold compressed data)
+	GenerateRecastFilter(BuildContext, RasterContext);
 
-			uint8* CompressedData = (uint8*)dtAlloc(TileDataSize * sizeof(uint8), DT_ALLOC_PERM);
-			if (CompressedData == NULL)
-			{
-				dtFree(TileData);
-				BuildContext.log(RC_LOG_ERROR, "GenerateCompressedLayers: Out of memory 'CompressedData'.");
-				return false;
-			}
+#if RECAST_INTERNAL_DEBUG_DATA
+	if (GNavmeshDisplayStep == 30 && IsTileToDebug())
+	{
+		duDebugDrawHeightfieldSolid(&BuildContext.InternalDebugData, *RasterContext.SolidHF);
+	}
+#endif
 
-			FMemory::Memcpy(CompressedData, TileData, TileDataSize);
-			RasterContext.Layers.Add(FNavMeshTileData(CompressedData, TileDataSize, i, LayerBBox));
-
-			dtFree(TileData);
-
-			const int32 UncompressedSize = ((sizeof(dtTileCacheLayerHeader)+3) & ~3) + (3 * header.width * header.height);
-			const float Inv1kB = 1.0f / 1024.0f;
-			BuildContext.log(RC_LOG_PROGRESS, ">> Cache[%d,%d:%d] = %.2fkB (full:%.2fkB rate:%.2f%%)", TileX, TileY, i,
-				TileDataSize * Inv1kB, UncompressedSize * Inv1kB, 1.0f * TileDataSize / UncompressedSize);
-		}
+	if (!BuildCompactHeightField(BuildContext, RasterContext))
+	{
+		return false;
 	}
 
-	// Transfer final data
-	CompressedLayers = RasterContext.Layers;
-	return true;
+#if RECAST_INTERNAL_DEBUG_DATA
+	if (GNavmeshDisplayStep == 40 && IsTileToDebug())
+	{
+		duDebugDrawCompactHeightfieldSolid(&BuildContext.InternalDebugData, *RasterContext.CompactHF);
+	}
+#endif
+
+	if (!RecastErodeWalkable(BuildContext, RasterContext))
+	{
+		return false;
+	}
+
+#if RECAST_INTERNAL_DEBUG_DATA
+	if (GNavmeshDisplayStep == 50 && IsTileToDebug())
+	{
+		duDebugDrawCompactHeightfieldSolid(&BuildContext.InternalDebugData, *RasterContext.CompactHF);
+	}
+#endif
+
+	if (!RecastBuildLayers(BuildContext, RasterContext))
+	{
+		return false;
+	}
+
+	return RecastBuildTileCache(BuildContext, RasterContext);
 }
 
 struct FTileGenerationContext
 {
 	FTileGenerationContext(dtTileCacheAlloc* MyAllocator) :
-		Allocator(MyAllocator), Layer(0), DistanceField(0), ContourSet(0), ClusterSet(0), PolyMesh(0), DetailMesh(0)
+		Allocator(MyAllocator), Layer(nullptr), DistanceField(nullptr), ContourSet(nullptr), ClusterSet(nullptr), PolyMesh(nullptr), DetailMesh(nullptr)
+	{
+	}
+
+	FTileGenerationContext() :
+		Allocator(nullptr), Layer(nullptr), DistanceField(nullptr), ContourSet(nullptr), ClusterSet(nullptr), PolyMesh(nullptr), DetailMesh(nullptr)
 	{
 	}
 
@@ -2630,19 +3445,22 @@ struct FTileGenerationContext
 
 	void ResetIntermediateData()
 	{
-		dtFreeTileCacheLayer(Allocator, Layer);
-		Layer = 0;
-		dtFreeTileCacheDistanceField(Allocator, DistanceField);
-		DistanceField = 0;
-		dtFreeTileCacheContourSet(Allocator, ContourSet);
-		ContourSet = 0;
-		dtFreeTileCacheClusterSet(Allocator, ClusterSet);
-		ClusterSet = 0;
-		dtFreeTileCachePolyMesh(Allocator, PolyMesh);
-		PolyMesh = 0;
-		dtFreeTileCachePolyMeshDetail(Allocator, DetailMesh);
-		DetailMesh = 0;
-		// don't clear NavigationData here!
+		if (Allocator)
+		{
+			dtFreeTileCacheLayer(Allocator, Layer);
+			Layer = nullptr;
+			dtFreeTileCacheDistanceField(Allocator, DistanceField);
+			DistanceField = nullptr;
+			dtFreeTileCacheContourSet(Allocator, ContourSet);
+			ContourSet = nullptr;
+			dtFreeTileCacheClusterSet(Allocator, ClusterSet);
+			ClusterSet = nullptr;
+			dtFreeTileCachePolyMesh(Allocator, PolyMesh);
+			PolyMesh = nullptr;
+			dtFreeTileCachePolyMeshDetail(Allocator, DetailMesh);
+			DetailMesh = nullptr;
+			// don't clear NavigationData here!
+		}
 	}
 
 	struct dtTileCacheAlloc* Allocator;
@@ -2655,241 +3473,229 @@ struct FTileGenerationContext
 	TArray<FNavMeshTileData> NavigationData;
 };
 
-bool FRecastTileGenerator::GenerateNavigationData(FNavMeshBuildContext& BuildContext)
+bool FRecastTileGenerator::GenerateNavigationDataLayer(FNavMeshBuildContext& BuildContext, FTileCacheCompressor& TileCompressor, FTileCacheAllocator& GenNavAllocator, FTileGenerationContext& GenerationContext, int32 LayerIdx)
 {
-	SCOPE_CYCLE_COUNTER(STAT_Navigation_RecastBuildNavigation);
+	SCOPE_CYCLE_COUNTER(STAT_Navigation_GenerateNavigationDataLayer)
 		
-	FTileCacheAllocator MyAllocator;
-	FTileCacheCompressor TileCompressor;
-	
-	FTileGenerationContext GenerationContext(&MyAllocator);
-	GenerationContext.NavigationData.Reserve(CompressedLayers.Num());
-
 	dtStatus status = DT_SUCCESS;
 
-	for (int32 iLayer = 0; iLayer < CompressedLayers.Num(); iLayer++)
-	{
-		if (DirtyLayers[iLayer] == false || !CompressedLayers[iLayer].IsValid())
-		{
-			// skip layers not marked for rebuild
-			continue;
-		}
-				
-		FNavMeshTileData& CompressedData = CompressedLayers[iLayer];
-		const dtTileCacheLayerHeader* TileHeader = (const dtTileCacheLayerHeader*)CompressedData.GetData();
-		GenerationContext.ResetIntermediateData();
+	FNavMeshTileData& CompressedData = CompressedLayers[LayerIdx];
+	const dtTileCacheLayerHeader* TileHeader = (const dtTileCacheLayerHeader*)CompressedData.GetData();
+	GenerationContext.ResetIntermediateData();
 
-		// Decompress tile layer data. 
-		status = dtDecompressTileCacheLayer(&MyAllocator, &TileCompressor, (unsigned char*)CompressedData.GetData(), CompressedData.DataSize, &GenerationContext.Layer);
+	// Decompress tile layer data. 
+	status = dtDecompressTileCacheLayer(&GenNavAllocator, &TileCompressor, (unsigned char*)CompressedData.GetData(), CompressedData.DataSize, &GenerationContext.Layer);
+	if (dtStatusFailed(status))
+	{
+		BuildContext.log(RC_LOG_ERROR, "GenerateNavigationDataLayer: failed to decompress layer.");
+		return false;
+	}
+
+	// Rasterize obstacles.
+	MarkDynamicAreas(*GenerationContext.Layer);
+
+	{
+		SCOPE_CYCLE_COUNTER(STAT_Navigation_RecastBuildRegions)
+
+		// Build regions
+		if (TileConfig.TileCachePartitionType == RC_REGION_MONOTONE)
+		{
+			status = dtBuildTileCacheRegionsMonotone(&GenNavAllocator, TileConfig.minRegionArea, TileConfig.mergeRegionArea, *GenerationContext.Layer);
+		}
+		else if (TileConfig.TileCachePartitionType == RC_REGION_WATERSHED)
+		{
+			GenerationContext.DistanceField = dtAllocTileCacheDistanceField(&GenNavAllocator);
+			if (GenerationContext.DistanceField == nullptr)
+			{
+				BuildContext.log(RC_LOG_ERROR, "GenerateNavigationDataLayer: Out of memory 'DistanceField'.");
+				return false;
+			}
+
+			status = dtBuildTileCacheDistanceField(&GenNavAllocator, *GenerationContext.Layer, *GenerationContext.DistanceField);
+			if (dtStatusFailed(status))
+			{
+				BuildContext.log(RC_LOG_ERROR, "GenerateNavigationDataLayer: Failed to build distance field.");
+				return false;
+			}
+
+			status = dtBuildTileCacheRegions(&GenNavAllocator, TileConfig.minRegionArea, TileConfig.mergeRegionArea, *GenerationContext.Layer, *GenerationContext.DistanceField);
+		}
+		else
+		{
+			status = dtBuildTileCacheRegionsChunky(&GenNavAllocator, TileConfig.minRegionArea, TileConfig.mergeRegionArea, *GenerationContext.Layer, TileConfig.TileCacheChunkSize);
+		}
+
 		if (dtStatusFailed(status))
 		{
-			BuildContext.log(RC_LOG_ERROR, "GenerateNavigationData: failed to decompress layer.");
+			BuildContext.log(RC_LOG_ERROR, "GenerateNavigationDataLayer: Failed to build regions.");
 			return false;
 		}
 
-		// Rasterize obstacles.
-		MarkDynamicAreas(*GenerationContext.Layer);
-
+		// skip empty layer
+		if (GenerationContext.Layer->regCount <= 0)
 		{
-			SCOPE_CYCLE_COUNTER(STAT_Navigation_RecastBuildRegions)
-			// Build regions
-			if (TileConfig.TileCachePartitionType == RC_REGION_MONOTONE)
-			{
-				status = dtBuildTileCacheRegionsMonotone(&MyAllocator, TileConfig.minRegionArea, TileConfig.mergeRegionArea, *GenerationContext.Layer);
-			}
-			else if (TileConfig.TileCachePartitionType == RC_REGION_WATERSHED)
-			{
-				GenerationContext.DistanceField = dtAllocTileCacheDistanceField(&MyAllocator);
-				if (GenerationContext.DistanceField == NULL)
-				{
-					BuildContext.log(RC_LOG_ERROR, "GenerateNavigationData: Out of memory 'DistanceField'.");
-					return false;
-				}
-
-				status = dtBuildTileCacheDistanceField(&MyAllocator, *GenerationContext.Layer, *GenerationContext.DistanceField);
-				if (dtStatusFailed(status))
-				{
-					BuildContext.log(RC_LOG_ERROR, "GenerateNavigationData: Failed to build distance field.");
-					return false;
-				}
-
-				status = dtBuildTileCacheRegions(&MyAllocator, TileConfig.minRegionArea, TileConfig.mergeRegionArea, *GenerationContext.Layer, *GenerationContext.DistanceField);
-			}
-			else
-			{
-				status = dtBuildTileCacheRegionsChunky(&MyAllocator, TileConfig.minRegionArea, TileConfig.mergeRegionArea, *GenerationContext.Layer, TileConfig.TileCacheChunkSize);
-			}
-
-			if (dtStatusFailed(status))
-			{
-				BuildContext.log(RC_LOG_ERROR, "GenerateNavigationData: Failed to build regions.");
-				return false;
-			}
-
-			// skip empty layer
-			if (GenerationContext.Layer->regCount <= 0)
-			{
-				continue;
-			}
+			return true;
 		}
-	
+	}
+
+	{
+		SCOPE_CYCLE_COUNTER(STAT_Navigation_RecastBuildContours);
+		// Build contour set
+		GenerationContext.ContourSet = dtAllocTileCacheContourSet(&GenNavAllocator);
+		if (GenerationContext.ContourSet == nullptr)
 		{
-			SCOPE_CYCLE_COUNTER(STAT_Navigation_RecastBuildContours);
-			// Build contour set
-			GenerationContext.ContourSet = dtAllocTileCacheContourSet(&MyAllocator);
-			if (GenerationContext.ContourSet == NULL)
-			{
-				BuildContext.log(RC_LOG_ERROR, "GenerateNavigationData: Out of memory 'ContourSet'.");
-				return false;
-			}
-
-			GenerationContext.ClusterSet = dtAllocTileCacheClusterSet(&MyAllocator);
-			if (GenerationContext.ClusterSet == NULL)
-			{
-				BuildContext.log(RC_LOG_ERROR, "GenerateNavigationData: Out of memory 'ClusterSet'.");
-				return false;
-			}
-
-			status = dtBuildTileCacheContours(&MyAllocator, *GenerationContext.Layer,
-				TileConfig.walkableClimb, TileConfig.maxSimplificationError, TileConfig.cs, TileConfig.ch,
-				*GenerationContext.ContourSet, *GenerationContext.ClusterSet);
-			if (dtStatusFailed(status))
-			{
-				BuildContext.log(RC_LOG_ERROR, "GenerateNavigationData: Failed to generate contour set (0x%08X).", status);
-				return false;
-			}
-
-			// skip empty layer, sometimes there are regions assigned but all flagged as empty (id=0)
-			if (GenerationContext.ContourSet->nconts <= 0)
-			{
-				continue;
-			}
+			BuildContext.log(RC_LOG_ERROR, "GenerateNavigationDataLayer: Out of memory 'ContourSet'.");
+			return false;
 		}
 
+		GenerationContext.ClusterSet = dtAllocTileCacheClusterSet(&GenNavAllocator);
+		if (GenerationContext.ClusterSet == nullptr)
 		{
-			SCOPE_CYCLE_COUNTER(STAT_Navigation_RecastBuildPolyMesh);
-			// Build poly mesh
-			GenerationContext.PolyMesh = dtAllocTileCachePolyMesh(&MyAllocator);
-			if (GenerationContext.PolyMesh == NULL)
-			{
-				BuildContext.log(RC_LOG_ERROR, "GenerateNavigationData: Out of memory 'PolyMesh'.");
-				return false;
-			}
+			BuildContext.log(RC_LOG_ERROR, "GenerateNavigationDataLayer: Out of memory 'ClusterSet'.");
+			return false;
+		}
 
-			status = dtBuildTileCachePolyMesh(&MyAllocator, &BuildContext, *GenerationContext.ContourSet, *GenerationContext.PolyMesh);
-			if (dtStatusFailed(status))
-			{
-				BuildContext.log(RC_LOG_ERROR, "GenerateNavigationData: Failed to generate poly mesh.");
-				return false;
-			}
+		status = dtBuildTileCacheContours(&GenNavAllocator, *GenerationContext.Layer,
+			TileConfig.walkableClimb, TileConfig.maxSimplificationError, TileConfig.cs, TileConfig.ch,
+			*GenerationContext.ContourSet, *GenerationContext.ClusterSet);
+		if (dtStatusFailed(status))
+		{
+			BuildContext.log(RC_LOG_ERROR, "GenerateNavigationDataLayer: Failed to generate contour set (0x%08X).", status);
+			return false;
+		}
 
-			status = dtBuildTileCacheClusters(&MyAllocator, *GenerationContext.ClusterSet, *GenerationContext.PolyMesh);
-			if (dtStatusFailed(status))
+		// skip empty layer, sometimes there are regions assigned but all flagged as empty (id=0)
+		if (GenerationContext.ContourSet->nconts <= 0)
+		{
+			return true;
+		}
+	}
+
+	{
+		SCOPE_CYCLE_COUNTER(STAT_Navigation_RecastBuildPolyMesh);
+		// Build poly mesh
+		GenerationContext.PolyMesh = dtAllocTileCachePolyMesh(&GenNavAllocator);
+		if (GenerationContext.PolyMesh == nullptr)
+		{
+			BuildContext.log(RC_LOG_ERROR, "GenerateNavigationData: Out of memory 'PolyMesh'.");
+			return false;
+		}
+
+		status = dtBuildTileCachePolyMesh(&GenNavAllocator, &BuildContext, *GenerationContext.ContourSet, *GenerationContext.PolyMesh);
+		if (dtStatusFailed(status))
+		{
+			BuildContext.log(RC_LOG_ERROR, "GenerateNavigationData: Failed to generate poly mesh.");
+			return false;
+		}
+
+		status = dtBuildTileCacheClusters(&GenNavAllocator, *GenerationContext.ClusterSet, *GenerationContext.PolyMesh);
+		if (dtStatusFailed(status))
+		{
+			BuildContext.log(RC_LOG_ERROR, "GenerateNavigationData: Failed to update cluster set.");
+			return false;
+		}
+	}
+
+	// Build detail mesh
+	if (TileConfig.bGenerateDetailedMesh)
+	{
+		SCOPE_CYCLE_COUNTER(STAT_Navigation_RecastBuildPolyDetail);
+
+		// Build detail mesh.
+		GenerationContext.DetailMesh = dtAllocTileCachePolyMeshDetail(&GenNavAllocator);
+		if (GenerationContext.DetailMesh == nullptr)
+		{
+			BuildContext.log(RC_LOG_ERROR, "GenerateNavigationData: Out of memory 'DetailMesh'.");
+			return false;
+		}
+
+		status = dtBuildTileCachePolyMeshDetail(&GenNavAllocator, TileConfig.cs, TileConfig.ch, TileConfig.detailSampleDist, TileConfig.detailSampleMaxError,
+			*GenerationContext.Layer, *GenerationContext.PolyMesh, *GenerationContext.DetailMesh);
+		if (dtStatusFailed(status))
+		{
+			BuildContext.log(RC_LOG_ERROR, "GenerateNavigationData: Failed to generate poly detail mesh.");
+			return false;
+		}
+	}
+
+	unsigned char* NavData = nullptr;
+	int32 NavDataSize = 0;
+
+	if (TileConfig.maxVertsPerPoly <= DT_VERTS_PER_POLYGON &&
+		GenerationContext.PolyMesh->npolys > 0 && GenerationContext.PolyMesh->nverts > 0)
+	{
+		ensure(GenerationContext.PolyMesh->npolys <= TileConfig.MaxPolysPerTile && "Polys per Tile limit exceeded!");
+		if (GenerationContext.PolyMesh->nverts >= 0xffff)
+		{
+			// The vertex indices are ushorts, and cannot point to more than 0xffff vertices.
+			BuildContext.log(RC_LOG_ERROR, "Too many vertices per tile %d (max: %d).", GenerationContext.PolyMesh->nverts, 0xffff);
+			return false;
+		}
+
+		// if we didn't fail already then it's high time we created data for off-mesh links
+		FOffMeshData OffMeshData;
+		if (OffmeshLinks.Num() > 0)
+		{
+			SCOPE_CYCLE_COUNTER(STAT_Navigation_RecastGatherOffMeshData);
+
+			OffMeshData.Reserve(OffmeshLinks.Num());
+			OffMeshData.AreaClassToIdMap = &AdditionalCachedData.AreaClassToIdMap;
+			OffMeshData.FlagsPerArea = AdditionalCachedData.FlagsPerOffMeshLinkArea;
+			const FSimpleLinkNavModifier* LinkModifier = OffmeshLinks.GetData();
+			const float DefaultSnapHeight = TileConfig.walkableClimb * TileConfig.ch;
+
+			for (int32 LinkModifierIndex = 0; LinkModifierIndex < OffmeshLinks.Num(); ++LinkModifierIndex, ++LinkModifier)
 			{
-				BuildContext.log(RC_LOG_ERROR, "GenerateNavigationData: Failed to update cluster set.");
-				return false;
+				OffMeshData.AddLinks(LinkModifier->Links, LinkModifier->LocalToWorld, TileConfig.AgentIndex, DefaultSnapHeight);
+#if GENERATE_SEGMENT_LINKS
+				OffMeshData.AddSegmentLinks(LinkModifier->SegmentLinks, LinkModifier->LocalToWorld, TileConfig.AgentIndex, DefaultSnapHeight);
+#endif // GENERATE_SEGMENT_LINKS
 			}
 		}
 
-		// Build detail mesh
+		// fill flags, or else detour won't be able to find polygons
+		// Update poly flags from areas.
+		for (int32 i = 0; i < GenerationContext.PolyMesh->npolys; i++)
+		{
+			GenerationContext.PolyMesh->flags[i] = AdditionalCachedData.FlagsPerArea[GenerationContext.PolyMesh->areas[i]];
+		}
+
+		dtNavMeshCreateParams Params;
+		memset(&Params, 0, sizeof(Params));
+		Params.verts = GenerationContext.PolyMesh->verts;
+		Params.vertCount = GenerationContext.PolyMesh->nverts;
+		Params.polys = GenerationContext.PolyMesh->polys;
+		Params.polyAreas = GenerationContext.PolyMesh->areas;
+		Params.polyFlags = GenerationContext.PolyMesh->flags;
+		Params.polyCount = GenerationContext.PolyMesh->npolys;
+		Params.nvp = GenerationContext.PolyMesh->nvp;
 		if (TileConfig.bGenerateDetailedMesh)
 		{
-			SCOPE_CYCLE_COUNTER(STAT_Navigation_RecastBuildPolyDetail);
-
-			// Build detail mesh.
-			GenerationContext.DetailMesh = dtAllocTileCachePolyMeshDetail(&MyAllocator);
-			if (GenerationContext.DetailMesh == NULL)
-			{
-				BuildContext.log(RC_LOG_ERROR, "GenerateNavigationData: Out of memory 'DetailMesh'.");
-				return false;
-			}
-
-			status = dtBuildTileCachePolyMeshDetail(&MyAllocator, TileConfig.cs, TileConfig.ch, TileConfig.detailSampleDist, TileConfig.detailSampleMaxError,
-				*GenerationContext.Layer, *GenerationContext.PolyMesh, *GenerationContext.DetailMesh);
-			if (dtStatusFailed(status))
-			{
-				BuildContext.log(RC_LOG_ERROR, "GenerateNavigationData: Failed to generate poly detail mesh.");
-				return false;
-			}
+			Params.detailMeshes = GenerationContext.DetailMesh->meshes;
+			Params.detailVerts = GenerationContext.DetailMesh->verts;
+			Params.detailVertsCount = GenerationContext.DetailMesh->nverts;
+			Params.detailTris = GenerationContext.DetailMesh->tris;
+			Params.detailTriCount = GenerationContext.DetailMesh->ntris;
 		}
-
-		unsigned char* NavData = 0;
-		int32 NavDataSize = 0;
-
-		if (TileConfig.maxVertsPerPoly <= DT_VERTS_PER_POLYGON &&
-			GenerationContext.PolyMesh->npolys > 0 && GenerationContext.PolyMesh->nverts > 0)
-		{
-			ensure(GenerationContext.PolyMesh->npolys <= TileConfig.MaxPolysPerTile && "Polys per Tile limit exceeded!");
-			if (GenerationContext.PolyMesh->nverts >= 0xffff)
-			{
-				// The vertex indices are ushorts, and cannot point to more than 0xffff vertices.
-				BuildContext.log(RC_LOG_ERROR, "Too many vertices per tile %d (max: %d).", GenerationContext.PolyMesh->nverts, 0xffff);
-				return false;
-			}
-
-			// if we didn't fail already then it's high time we created data for off-mesh links
-			FOffMeshData OffMeshData;
-			if (OffmeshLinks.Num() > 0)
-			{
-				SCOPE_CYCLE_COUNTER(STAT_Navigation_RecastGatherOffMeshData);
-
-				OffMeshData.Reserve(OffmeshLinks.Num());
-				OffMeshData.AreaClassToIdMap = &AdditionalCachedData.AreaClassToIdMap;
-				OffMeshData.FlagsPerArea = AdditionalCachedData.FlagsPerOffMeshLinkArea;
-				const FSimpleLinkNavModifier* LinkModifier = OffmeshLinks.GetData();
-				const float DefaultSnapHeight = TileConfig.walkableClimb * TileConfig.ch;
-
-				for (int32 LinkModifierIndex = 0; LinkModifierIndex < OffmeshLinks.Num(); ++LinkModifierIndex, ++LinkModifier)
-				{
-					OffMeshData.AddLinks(LinkModifier->Links, LinkModifier->LocalToWorld, TileConfig.AgentIndex, DefaultSnapHeight);
-#if GENERATE_SEGMENT_LINKS
-					OffMeshData.AddSegmentLinks(LinkModifier->SegmentLinks, LinkModifier->LocalToWorld, TileConfig.AgentIndex, DefaultSnapHeight);
-#endif // GENERATE_SEGMENT_LINKS
-				}
-			}
-
-			// fill flags, or else detour won't be able to find polygons
-			// Update poly flags from areas.
-			for (int32 i = 0; i < GenerationContext.PolyMesh->npolys; i++)
-			{
-				GenerationContext.PolyMesh->flags[i] = AdditionalCachedData.FlagsPerArea[GenerationContext.PolyMesh->areas[i]];
-			}
-
-			dtNavMeshCreateParams Params;
-			memset(&Params, 0, sizeof(Params));
-			Params.verts = GenerationContext.PolyMesh->verts;
-			Params.vertCount = GenerationContext.PolyMesh->nverts;
-			Params.polys = GenerationContext.PolyMesh->polys;
-			Params.polyAreas = GenerationContext.PolyMesh->areas;
-			Params.polyFlags = GenerationContext.PolyMesh->flags;
-			Params.polyCount = GenerationContext.PolyMesh->npolys;
-			Params.nvp = GenerationContext.PolyMesh->nvp;
-			if (TileConfig.bGenerateDetailedMesh)
-			{
-				Params.detailMeshes = GenerationContext.DetailMesh->meshes;
-				Params.detailVerts = GenerationContext.DetailMesh->verts;
-				Params.detailVertsCount = GenerationContext.DetailMesh->nverts;
-				Params.detailTris = GenerationContext.DetailMesh->tris;
-				Params.detailTriCount = GenerationContext.DetailMesh->ntris;
-			}
-			Params.offMeshCons = OffMeshData.LinkParams.GetData();
-			Params.offMeshConCount = OffMeshData.LinkParams.Num();
-			Params.walkableHeight = TileConfig.AgentHeight;
-			Params.walkableRadius = TileConfig.AgentRadius;
-			Params.walkableClimb = TileConfig.AgentMaxClimb;
-			Params.tileX = TileX;
-			Params.tileY = TileY;
-			Params.tileLayer = iLayer;
-			rcVcopy(Params.bmin, GenerationContext.Layer->header->bmin);
-			rcVcopy(Params.bmax, GenerationContext.Layer->header->bmax);
-			Params.cs = TileConfig.cs;
-			Params.ch = TileConfig.ch;
-			Params.buildBvTree = TileConfig.bGenerateBVTree;
+		Params.offMeshCons = OffMeshData.LinkParams.GetData();
+		Params.offMeshConCount = OffMeshData.LinkParams.Num();
+		Params.walkableHeight = TileConfig.AgentHeight;
+		Params.walkableRadius = TileConfig.AgentRadius;
+		Params.walkableClimb = TileConfig.AgentMaxClimb;
+		Params.tileX = TileX;
+		Params.tileY = TileY;
+		Params.tileLayer = LayerIdx;
+		rcVcopy(Params.bmin, GenerationContext.Layer->header->bmin);
+		rcVcopy(Params.bmax, GenerationContext.Layer->header->bmax);
+		Params.cs = TileConfig.cs;
+		Params.ch = TileConfig.ch;
+		Params.buildBvTree = TileConfig.bGenerateBVTree;
 #if GENERATE_CLUSTER_LINKS
-			Params.clusterCount = GenerationContext.ClusterSet->nclusters;
-			Params.polyClusters = GenerationContext.ClusterSet->polyMap;
+		Params.clusterCount = GenerationContext.ClusterSet->nclusters;
+		Params.polyClusters = GenerationContext.ClusterSet->polyMap;
 #endif
 
+		{
 			SCOPE_CYCLE_COUNTER(STAT_Navigation_RecastCreateNavMeshData);
 
 			if (!dtCreateNavMeshData(&Params, &NavData, &NavDataSize))
@@ -2898,18 +3704,129 @@ bool FRecastTileGenerator::GenerateNavigationData(FNavMeshBuildContext& BuildCon
 				return false;
 			}
 		}
-
-		GenerationContext.NavigationData.Add(FNavMeshTileData(NavData, NavDataSize, iLayer, CompressedData.LayerBBox));
-
-		const float ModkB = 1.0f / 1024.0f;
-		BuildContext.log(RC_LOG_PROGRESS, ">> Layer[%d] = Verts(%d) Polys(%d) Memory(%.2fkB) Cache(%.2fkB)",
-			iLayer, GenerationContext.PolyMesh->nverts, GenerationContext.PolyMesh->npolys,
-			GenerationContext.NavigationData.Last().DataSize * ModkB, CompressedLayers[iLayer].DataSize * ModkB);
 	}
 
-	// prepare navigation data of actually rebuild layers for transfer
-	NavigationData = GenerationContext.NavigationData;
+	GenerationContext.NavigationData.Add(FNavMeshTileData(NavData, NavDataSize, LayerIdx, CompressedData.LayerBBox));
+
+	const float ModkB = 1.0f / 1024.0f;
+	BuildContext.log(RC_LOG_PROGRESS, ">> Layer[%d] = Verts(%d) Polys(%d) Memory(%.2fkB) Cache(%.2fkB)",
+		LayerIdx, GenerationContext.PolyMesh->nverts, GenerationContext.PolyMesh->npolys,
+		GenerationContext.NavigationData.Last().DataSize * ModkB, CompressedLayers[LayerIdx].DataSize * ModkB);
+
 	return true;
+}
+
+ETimeSliceWorkResult FRecastTileGenerator::GenerateNavigationDataTimeSliced(FNavMeshBuildContext& BuildContext)
+{
+	SCOPE_CYCLE_COUNTER(STAT_Navigation_RecastBuildNavigation);
+
+	FTileCacheCompressor TileCompressor;
+	ETimeSliceWorkResult WorkResult = ETimeSliceWorkResult::Succeeded;
+	dtStatus status = DT_SUCCESS;
+
+	switch (GenerateNavDataTimeSlicedState)
+	{
+	case EGenerateNavDataTimeSlicedState::Invalid:
+	{
+		ensureMsgf(false, TEXT("Invalid EGenerateNavDataTimeSlicedState, has this function been called when its already finished processing?"));
+		return ETimeSliceWorkResult::Failed;
+	}
+	break;
+
+	case EGenerateNavDataTimeSlicedState::Init:
+	{
+		GenNavDataTimeSlicedAllocator = MakeUnique<FTileCacheAllocator>();
+		GenNavDataTimeSlicedGenerationContext = MakeUnique<FTileGenerationContext>(GenNavDataTimeSlicedAllocator.Get());
+		GenNavDataTimeSlicedGenerationContext->NavigationData.Reserve(CompressedLayers.Num());
+		GenerateNavDataTimeSlicedState = EGenerateNavDataTimeSlicedState::GenerateLayers;
+	}//fall through to next state
+	case EGenerateNavDataTimeSlicedState::GenerateLayers:
+	{
+		for (; GenNavDataLayerTimeSlicedIdx < CompressedLayers.Num(); GenNavDataLayerTimeSlicedIdx++)
+		{
+			if (DirtyLayers[GenNavDataLayerTimeSlicedIdx] == false || !CompressedLayers[GenNavDataLayerTimeSlicedIdx].IsValid())
+			{
+				// skip layers not marked for rebuild
+				continue;
+			}
+
+			if (TimeSlicer.IsTimeSliceFinishedCached())
+			{
+				WorkResult = ETimeSliceWorkResult::CallAgainNextTimeSlice;
+				break;
+			}
+
+			const bool bGenDataLayer = GenerateNavigationDataLayer(BuildContext, TileCompressor, *GenNavDataTimeSlicedAllocator, *GenNavDataTimeSlicedGenerationContext, GenNavDataLayerTimeSlicedIdx);
+
+			//carry on iterating but don't do any more work if the time slice is finished (as we may not need to in which case we can avoid calling this function again)
+			TimeSlicer.TestTimeSliceFinished();
+
+			if (!bGenDataLayer)
+			{
+				WorkResult = ETimeSliceWorkResult::Failed;
+				break;
+			}
+		}
+
+		if (WorkResult != ETimeSliceWorkResult::CallAgainNextTimeSlice)
+		{
+			GenNavDataLayerTimeSlicedIdx = 0;
+			GenerateNavDataTimeSlicedState = EGenerateNavDataTimeSlicedState::Invalid;
+
+			if (WorkResult == ETimeSliceWorkResult::Succeeded)
+			{
+				NavigationData = MoveTemp(GenNavDataTimeSlicedGenerationContext->NavigationData);
+			}
+			GenNavDataTimeSlicedGenerationContext->ResetIntermediateData();
+		}
+	}
+	break;
+
+	default:
+	{
+		ensureMsgf(false, TEXT("unhandled EGenerateNavDataTimeSlicedState"));
+		return ETimeSliceWorkResult::Failed;
+	}
+	}
+
+	return WorkResult;
+}
+
+bool FRecastTileGenerator::GenerateNavigationData(FNavMeshBuildContext& BuildContext)
+{
+	SCOPE_CYCLE_COUNTER(STAT_Navigation_RecastBuildNavigation);
+
+	FTileCacheAllocator GenNavAllocator;
+	FTileGenerationContext GenerationContext(&GenNavAllocator);
+	GenerationContext.NavigationData.Reserve(CompressedLayers.Num());
+	FTileCacheCompressor TileCompressor;
+	bool bGenDataLayer = true;
+	dtStatus status = DT_SUCCESS;
+
+	for (int32 LayerIdx = 0; LayerIdx < CompressedLayers.Num(); LayerIdx++)
+	{
+		if (DirtyLayers[LayerIdx] == false || !CompressedLayers[LayerIdx].IsValid())
+		{
+			// skip layers not marked for rebuild
+			continue;
+		}
+
+		bGenDataLayer = GenerateNavigationDataLayer(BuildContext, TileCompressor, GenNavAllocator, GenerationContext, LayerIdx);
+
+		if (!bGenDataLayer)
+		{
+			break;
+		}
+	}
+
+	if (bGenDataLayer)
+	{
+		NavigationData = MoveTemp(GenerationContext.NavigationData);
+	}
+	
+	GenerationContext.ResetIntermediateData();
+
+	return bGenDataLayer;
 }
 
 void FRecastTileGenerator::MarkDynamicAreas(dtTileCacheLayer& Layer)
@@ -3090,11 +4007,17 @@ void FRecastTileGenerator::MarkDynamicArea(const FAreaNavModifier& Modifier, con
 		break;
 
 	case ENavigationShapeType::Convex:
+	case ENavigationShapeType::InstancedConvex:
 		{
 			FConvexNavAreaData ConvexData;
-			Modifier.GetConvex(ConvexData);
-			// Only scaling and translation
-			PartialTransformConvexHull(ConvexData, LocalToWorld);
+			if (Modifier.GetShapeType() == ENavigationShapeType::InstancedConvex)
+			{
+				Modifier.GetPerInstanceConvex(LocalToWorld, ConvexData);
+			} 
+			else
+			{
+				Modifier.GetConvex(ConvexData);
+			}
 
 			TArray<FVector> ConvexVerts;
 			GrowConvexHull(ExpandBy, ConvexData.Points, ConvexVerts);
@@ -3187,6 +4110,11 @@ void FRecastTileGenerator::AddReferencedObjects(FReferenceCollector& Collector)
 	}
 }
 
+FString FRecastTileGenerator::GetReferencerName() const
+{
+	return TEXT("FRecastTileGenerator");
+}
+
 static int32 CaclulateMaxTilesCount(const TNavStatArray<FBox>& NavigableAreas, float TileSizeinWorldUnits, float AvgLayersPerGridCell)
 {
 	int32 GridCellsCount = 0;
@@ -3219,6 +4147,7 @@ FRecastNavMeshGenerator::FRecastNavMeshGenerator(ARecastNavMesh& InDestNavMesh)
 	, DestNavMesh(&InDestNavMesh)
 	, bInitialized(false)
 	, bRestrictBuildingToActiveTiles(false)
+	, bSortTilesWithSeedLocations(true)
 	, Version(0)
 {
 	INC_DWORD_STAT_BY(STAT_NavigationMemory, sizeof(*this));
@@ -3235,7 +4164,6 @@ void FRecastNavMeshGenerator::ConfigureBuildProperties(FRecastBuildConfig& OutCo
 	const float CellSize = DestNavMesh->CellSize;
 	const float CellHeight = DestNavMesh->CellHeight;
 	const float AgentHeight = DestNavMesh->AgentHeight;
-	const float MaxAgentHeight = DestNavMesh->AgentMaxHeight;
 	const float AgentMaxSlope = DestNavMesh->AgentMaxSlope;
 	const float AgentMaxClimb = DestNavMesh->AgentMaxStepHeight;
 	const float AgentRadius = DestNavMesh->AgentRadius;
@@ -3265,7 +4193,6 @@ void FRecastNavMeshGenerator::ConfigureBuildProperties(FRecastBuildConfig& OutCo
 	OutConfig.maxVertsPerPoly = (int32)MAX_VERTS_PER_POLY;
 	OutConfig.detailSampleDist = 600.0f;
 	OutConfig.detailSampleMaxError = 1.0f;
-	OutConfig.PolyMaxHeight = (int32)ceilf(MaxAgentHeight / CellHeight);
 
 	OutConfig.minRegionArea = (int32)rcSqr(DestNavMesh->MinRegionArea / CellSize);
 	OutConfig.mergeRegionArea = (int32)rcSqr(DestNavMesh->MergeRegionSize / CellSize);
@@ -3301,6 +4228,14 @@ void FRecastNavMeshGenerator::Init()
 	
 	AdditionalCachedData = FRecastNavMeshCachedData::Construct(DestNavMesh);
 
+	if (Config.MaxPolysPerTile <= 0 && DestNavMesh->HasValidNavmesh())
+	{
+		const dtNavMeshParams* SavedNavParams = DestNavMesh->GetRecastNavMeshImpl()->DetourNavMesh->getParams();
+		if (SavedNavParams)
+		{
+			Config.MaxPolysPerTile = SavedNavParams->maxPolys;
+		}
+	}
 	UpdateNavigationBounds();
 
 	/** setup maximum number of active tile generator*/
@@ -3316,6 +4251,7 @@ void FRecastNavMeshGenerator::Init()
 	}
 
 	bInitialized = true;
+
 
 	int32 MaxTiles = 0;
 	int32 MaxPolysPerTile = 0;
@@ -3345,6 +4281,11 @@ void FRecastNavMeshGenerator::Init()
 					{
 						bRecreateNavmesh = false;
 					}
+					else
+					{
+						UE_LOG(LogNavigation, Warning, TEXT("Recreating dtNavMesh instance due to saved navmesh origin (%s, usually the RecastNavMesh location) not being aligned with tile size (%d uu) ")
+							, *Orig.ToString(), int(TileDim));
+					}
 				}
 
 				// if new navmesh needs more tiles, force recreating
@@ -3354,6 +4295,9 @@ void FRecastNavMeshGenerator::Init()
 					if (FMath::Log2(MaxTiles) != FMath::Log2(SavedNavParams->maxTiles))
 					{
 						bRecreateNavmesh = true;
+						UE_LOG(LogNavigation, Warning, TEXT("Recreating dtNavMesh instance due mismatch in number of bytes required to store serialized maxTiles (%d, %d bits) vs calculated maxtiles (%d, %d bits)")
+							, SavedNavParams->maxTiles, FMath::CeilToInt(FMath::Log2(SavedNavParams->maxTiles))
+							, MaxTiles, FMath::CeilToInt(FMath::Log2(MaxTiles)));
 					}
 				}
 			}
@@ -3364,6 +4308,13 @@ void FRecastNavMeshGenerator::Init()
 	{
 		// recreate navmesh from scratch if no data was loaded
 		ConstructTiledNavMesh();
+
+		// mark all the areas we need to update, which is the whole (known) navigable space if not restricted to active tiles
+		const UNavigationSystemV1* NavSys = FNavigationSystem::GetCurrent<UNavigationSystemV1>(GetWorld());
+		if (NavSys && NavSys->IsActiveTilesGenerationEnabled() == false)
+		{
+			MarkNavBoundsDirty();
+		}
 	}
 	else
 	{
@@ -3435,18 +4386,31 @@ bool FRecastNavMeshGenerator::ConstructTiledNavMesh()
 		CalcNavMeshProperties(TiledMeshParameters.maxTiles, TiledMeshParameters.maxPolys);
 		Config.MaxPolysPerTile = TiledMeshParameters.maxPolys;
 
-		const dtStatus status = DetourMesh->init(&TiledMeshParameters);
-
-		if (dtStatusFailed(status))
+		if (TiledMeshParameters.maxTiles == 0)
 		{
-			UE_LOG(LogNavigation, Warning, TEXT("ConstructTiledNavMesh: Could not init navmesh.") );
+			UE_LOG(LogNavigation, Warning, TEXT("ConstructTiledNavMesh: Failed to create navmesh of size 0."));
 			bSuccess = false;
 		}
 		else
 		{
-			bSuccess = true;
-			NumActiveTiles = GetTilesCountHelper(DetourMesh);
-			DestNavMesh->GetRecastNavMeshImpl()->SetRecastMesh(DetourMesh);
+			const dtStatus status = DetourMesh->init(&TiledMeshParameters);
+
+			if (dtStatusFailed(status))
+			{
+				UE_LOG(LogNavigation, Warning, TEXT("ConstructTiledNavMesh: Could not init navmesh."));
+				bSuccess = false;
+			}
+			else
+			{
+				bSuccess = true;
+				NumActiveTiles = GetTilesCountHelper(DetourMesh);
+				DestNavMesh->GetRecastNavMeshImpl()->SetRecastMesh(DetourMesh);
+			}
+		}
+
+		if (bSuccess == false)
+		{
+			dtFreeNavMesh(DetourMesh);
 		}
 	}
 	else
@@ -3517,19 +4481,7 @@ bool FRecastNavMeshGenerator::RebuildAll()
 
 	ConstructTiledNavMesh();
 	
-	// if rebuilding all no point in keeping "old" invalidated areas
-	TArray<FNavigationDirtyArea> DirtyAreas;
-	for (FBox AreaBounds : InclusionBounds)
-	{
-		FNavigationDirtyArea DirtyArea(AreaBounds, ENavigationDirtyFlag::All | ENavigationDirtyFlag::NavigationBounds);
-		DirtyAreas.Add(DirtyArea);
-	}
-
-	if (DirtyAreas.Num())
-	{
-		MarkDirtyTiles(DirtyAreas);
-	}
-	else
+	if (MarkNavBoundsDirty() == false)
 	{
 		// There are no navigation bounds to build, probably navmesh was resized and we just need to update debug draw
 		DestNavMesh->RequestDrawingUpdate();
@@ -3574,6 +4526,8 @@ void FRecastNavMeshGenerator::CancelBuild()
 
 void FRecastNavMeshGenerator::TickAsyncBuild(float DeltaSeconds)
 {
+	QUICK_SCOPE_CYCLE_COUNTER(STAT_RecastNavMeshGenerator_TickAsyncBuild);
+
 	bool bRequestDrawingUpdate = false;
 
 #if	WITH_EDITOR
@@ -3602,8 +4556,13 @@ void FRecastNavMeshGenerator::TickAsyncBuild(float DeltaSeconds)
 			
 	if (UpdatedTileIndices.Num() > 0)
 	{
-		// Invalidate active paths that go through regenerated tiles
-		DestNavMesh->OnNavMeshTilesUpdated(UpdatedTileIndices);
+		{
+			QUICK_SCOPE_CYCLE_COUNTER(STAT_RecastNavMeshGenerator_OnNavMeshTilesUpdated);
+
+			// Invalidate active paths that go through regenerated tiles
+			DestNavMesh->OnNavMeshTilesUpdated(UpdatedTileIndices);
+		}
+
 		bRequestDrawingUpdate = true;
 
 #if	WITH_EDITOR
@@ -3637,8 +4596,22 @@ void FRecastNavMeshGenerator::OnNavigationBoundsChanged()
 		int32 MaxRequestedTiles = CaclulateMaxTilesCount(InclusionBounds, Config.tileSize * Config.cs, AvgLayersPerTile);
 		if (DetourMesh->getMaxTiles() != MaxRequestedTiles)
 		{
-			// Destroy current NavMesh, it will be allocated with a new size on next build request
+			// Destroy current NavMesh
 			DestNavMesh->GetRecastNavMeshImpl()->SetRecastMesh(nullptr);
+
+			// if there are any valid bounds recreate detour navmesh instance
+			// and mark all bounds as dirty
+			if (InclusionBounds.Num() > 0)
+			{
+				TArray<FNavigationDirtyArea> AsDirtyAreas;
+				AsDirtyAreas.Reserve(InclusionBounds.Num());
+				for (const FBox& BBox : InclusionBounds)
+				{
+					AsDirtyAreas.Add(FNavigationDirtyArea(BBox, ENavigationDirtyFlag::NavigationBounds));
+				}
+				
+				RebuildDirtyAreas(AsDirtyAreas);
+			}
 		}
 	}
 }
@@ -3706,6 +4679,19 @@ bool FRecastNavMeshGenerator::IsInActiveSet(const FIntPoint& Tile) const
 	return bRestrictBuildingToActiveTiles == false || ActiveTiles.Find(Tile) != INDEX_NONE;
 }
 
+void FRecastNavMeshGenerator::ResetTimeSlicedTileGeneratorSync()
+{
+	SyncTimeSlicedData.TileGeneratorSync.Reset();
+
+	//reset variables used for timeslicing TileGenratorSync
+	SyncTimeSlicedData.ProcessTileTasksSyncState = EProcessTileTasksSyncTimeSlicedState::Init;
+	SyncTimeSlicedData.UpdatedTilesCache.Reset();
+	SyncTimeSlicedData.OldLayerTileIdMapCached.Reset();
+	SyncTimeSlicedData.ResultTileIndicesCached.Reset();
+	SyncTimeSlicedData.AddGeneratedTilesState = EAddGeneratedTilesTimeSlicedState::Init;
+	SyncTimeSlicedData.AddGenTilesLayerIndex = 0;
+}
+
 //@TODO Investigate removing from RunningDirtyTiles here too (or atleast not using the results in any way)
 void FRecastNavMeshGenerator::RemoveTiles(const TArray<FIntPoint>& Tiles)
 {
@@ -3720,15 +4706,13 @@ void FRecastNavMeshGenerator::RemoveTiles(const TArray<FIntPoint>& Tiles)
 			PendingDirtyTiles.Remove(DirtyTile);
 		}
 
-#if TIME_SLICE_NAV_REGEN
-		if (TileGeneratorSync.Get())
+		if (SyncTimeSlicedData.TileGeneratorSync.Get())
 		{
-			if (TileGeneratorSync->GetTileX() == TileXY.X && TileGeneratorSync->GetTileY() == TileXY.Y)
+			if (SyncTimeSlicedData.TileGeneratorSync->GetTileX() == TileXY.X && SyncTimeSlicedData.TileGeneratorSync->GetTileY() == TileXY.Y)
 			{
-				TileGeneratorSync.Reset();
+				ResetTimeSlicedTileGeneratorSync();
 			}
 		}
-#endif
 	}
 }
 
@@ -3861,20 +4845,214 @@ TArray<uint32> FRecastNavMeshGenerator::RemoveTileLayers(const int32 TileX, cons
 
 		// Remove compressed tile cache layers
 		DestNavMesh->RemoveTileCacheLayers(TileX, TileY);
+
+#if RECAST_INTERNAL_DEBUG_DATA
+		DestNavMesh->RemoveTileDebugData(TileX, TileY);
+#endif
 	}
 
 	return UpdatedIndices;
 }
 
+FRecastNavMeshGenerator::FSyncTimeSlicedData::FSyncTimeSlicedData()
+	: CurrentTileRegenDuration(0.)
+	, MinTimeSliceDuration(0.00075)
+	, MaxTimeSliceDuration(0.004)
+	, RealTimeSecsLastCall(-1.f)
+	, MaxDesiredTileRegenDuration(0.7f)
+#if TIME_SLICE_NAV_REGEN
+	, bTimeSliceRegenActive(true)
+	, bNextTimeSliceRegenActive(true)
+#else
+	, bTimeSliceRegenActive(false)
+	, bNextTimeSliceRegenActive(false)
+#endif
+	, ProcessTileTasksSyncState(EProcessTileTasksSyncTimeSlicedState::Init)
+	, AddGeneratedTilesState(EAddGeneratedTilesTimeSlicedState::Init)
+	, AddGenTilesLayerIndex(0)
+	, TimeSlicer(0.0025)
+{
+}
+
+void FRecastNavMeshGenerator::AddGeneratedTileLayer(int32 LayerIndex, FRecastTileGenerator& TileGenerator, const TMap<int32, dtPolyRef>& OldLayerTileIdMap, TArray<uint32>& OutResultTileIndices)
+{
+	SCOPE_CYCLE_COUNTER(STAT_Navigation_RecastAddGeneratedTileLayer);
+
+	struct FLayerIndexFinder
+	{
+		int32 LayerIndex;
+		explicit FLayerIndexFinder(const int32 InLayerIndex) : LayerIndex(InLayerIndex) {}
+		bool operator()(const FNavMeshTileData& LayerData) const
+		{
+			return LayerData.LayerIndex == LayerIndex;
+		}
+	};
+
+	const int32 TileX = TileGenerator.GetTileX();
+	const int32 TileY = TileGenerator.GetTileY();
+	dtNavMesh* DetourMesh = DestNavMesh->GetRecastNavMeshImpl()->GetRecastMesh();
+	TArray<FNavMeshTileData>& TileLayers = TileGenerator.GetNavigationData();
+	dtTileRef OldTileRef = DetourMesh->getTileRefAt(TileX, TileY, LayerIndex);
+	const int32 LayerDataIndex = TileLayers.IndexOfByPredicate(FLayerIndexFinder(LayerIndex));
+
+	if (LayerDataIndex != INDEX_NONE)
+	{
+		FNavMeshTileData& LayerData = TileLayers[LayerDataIndex];
+		if (OldTileRef)
+		{
+			NumActiveTiles--;
+			UE_LOG(LogNavigation, Log, TEXT("%s> Tile (%d,%d:%d), removing TileRef: 0x%X (active:%d)"),
+				*DestNavMesh->GetName(), TileX, TileY, LayerIndex, OldTileRef, NumActiveTiles);
+
+			DetourMesh->removeTile(OldTileRef, nullptr, nullptr);
+
+			const uint32 TileId = RecastTileVersionHelper::GetUpdatedTileId(OldTileRef, DetourMesh);
+			OutResultTileIndices.AddUnique(TileId);
+		}
+		else
+		{
+			OldTileRef = OldLayerTileIdMap.FindRef(LayerIndex);
+		}
+
+		if (LayerData.IsValid())
+		{
+			bool bRejectNavmesh = false;
+			dtTileRef ResultTileRef = 0;
+
+			dtStatus status = 0;
+
+			{
+				// let navmesh know it's tile generator who owns the data
+				status = DetourMesh->addTile(LayerData.GetData(), LayerData.DataSize, DT_TILE_FREE_DATA, OldTileRef, &ResultTileRef);
+
+				// if tile index was already taken by other layer try adding it on first free entry (salt was already updated by whatever took that spot)
+				if (dtStatusFailed(status) && dtStatusDetail(status, DT_OUT_OF_MEMORY) && OldTileRef)
+				{
+					OldTileRef = 0;
+					status = DetourMesh->addTile(LayerData.GetData(), LayerData.DataSize, DT_TILE_FREE_DATA, OldTileRef, &ResultTileRef);
+				}
+			}
+
+			if (dtStatusFailed(status))
+			{
+				if (dtStatusDetail(status, DT_OUT_OF_MEMORY))
+				{
+					UE_LOG(LogNavigation, Error, TEXT("%s> Tile (%d,%d:%d), tile limit reached!! (%d)"),
+						*DestNavMesh->GetName(), TileX, TileY, LayerIndex, DetourMesh->getMaxTiles());
+				}
+			}
+			else
+			{
+				OutResultTileIndices.AddUnique(DetourMesh->decodePolyIdTile(ResultTileRef));
+				NumActiveTiles++;
+
+				UE_LOG(LogNavigation, Log, TEXT("%s> Tile (%d,%d:%d), added TileRef: 0x%X (active:%d)"),
+					*DestNavMesh->GetName(), TileX, TileY, LayerIndex, ResultTileRef, NumActiveTiles);
+
+				{
+					// NavMesh took the ownership of generated data, so we don't need to deallocate it
+					uint8* ReleasedData = LayerData.Release();
+				}
+			}
+		}
+	}
+	else
+	{
+		// remove the layer since it ended up empty
+		DetourMesh->removeTile(OldTileRef, nullptr, nullptr);
+		const uint32 TileId = RecastTileVersionHelper::GetUpdatedTileId(OldTileRef, DetourMesh);
+		OutResultTileIndices.AddUnique(TileId);
+	}
+}
+
+ETimeSliceWorkResult FRecastNavMeshGenerator::AddGeneratedTilesTimeSliced(FRecastTileGenerator& TileGenerator, TArray<uint32>& OutResultTileIndices)
+{
+	SCOPE_CYCLE_COUNTER(STAT_Navigation_RecastAddGeneratedTiles);
+
+	const int32 TileX = TileGenerator.GetTileX();
+	const int32 TileY = TileGenerator.GetTileY();
+	dtNavMesh* DetourMesh = DestNavMesh->GetRecastNavMeshImpl()->GetRecastMesh();
+	TArray<FNavMeshTileData>& TileLayers = TileGenerator.GetNavigationData();
+	ETimeSliceWorkResult WorkResult = ETimeSliceWorkResult::Succeeded;
+	bool bIteratedThroughDirtyLayers = true;
+
+	switch (SyncTimeSlicedData.AddGeneratedTilesState)
+	{
+	case EAddGeneratedTilesTimeSlicedState::Init:
+	{
+		SyncTimeSlicedData.ResultTileIndicesCached.Reset();
+		SyncTimeSlicedData.ResultTileIndicesCached.Reserve(TileLayers.Num());
+		SyncTimeSlicedData.OldLayerTileIdMapCached.Reset();
+		SyncTimeSlicedData.OldLayerTileIdMapCached.Reserve(TileLayers.Num());
+		SyncTimeSlicedData.AddGenTilesLayerIndex = TileGenerator.GetDirtyLayersMask().Find(true);
+		if (TileGenerator.IsFullyRegenerated())
+		{
+			// remove all layers
+			SyncTimeSlicedData.ResultTileIndicesCached = RemoveTileLayers(TileX, TileY, &SyncTimeSlicedData.OldLayerTileIdMapCached);
+		}
+
+		SyncTimeSlicedData.AddGeneratedTilesState = EAddGeneratedTilesTimeSlicedState::AddTiles;
+	}//fall through to next state
+	case EAddGeneratedTilesTimeSlicedState::AddTiles:
+	{
+		if (DetourMesh != nullptr
+			// no longer testing this here, we can live with a stray unwanted tile here 
+			// and there. It will be removed the next time around the invokers get
+			// updated 
+			// && IsInActiveSet(FIntPoint(TileX, TileY))
+			&& SyncTimeSlicedData.AddGenTilesLayerIndex != INDEX_NONE)
+		{
+			for (; SyncTimeSlicedData.AddGenTilesLayerIndex < TileGenerator.GetDirtyLayersMask().Num(); ++SyncTimeSlicedData.AddGenTilesLayerIndex)
+			{
+				if (TileGenerator.IsLayerChanged(SyncTimeSlicedData.AddGenTilesLayerIndex))
+				{
+					if (SyncTimeSlicedData.TimeSlicer.IsTimeSliceFinishedCached())
+					{
+						WorkResult = ETimeSliceWorkResult::CallAgainNextTimeSlice;
+						break;
+					}
+
+					AddGeneratedTileLayer(SyncTimeSlicedData.AddGenTilesLayerIndex, TileGenerator, SyncTimeSlicedData.OldLayerTileIdMapCached, SyncTimeSlicedData.ResultTileIndicesCached);
+
+					SyncTimeSlicedData.TimeSlicer.TestTimeSliceFinished();
+				}
+			}
+		}
+		else
+		{
+			WorkResult = ETimeSliceWorkResult::Failed;
+			bIteratedThroughDirtyLayers = false;
+		}
+	}
+	break;
+
+	default:
+	{
+		ensureMsgf(false, TEXT("unhandled EAddGeneratedTilesTimeSlicedState"));
+		WorkResult = ETimeSliceWorkResult::Failed;
+	}
+	}
+
+	if (SyncTimeSlicedData.AddGenTilesLayerIndex == TileGenerator.GetDirtyLayersMask().Num() || !bIteratedThroughDirtyLayers)
+	{
+		SyncTimeSlicedData.AddGenTilesLayerIndex = 0;
+		SyncTimeSlicedData.AddGeneratedTilesState = EAddGeneratedTilesTimeSlicedState::Init;
+
+		OutResultTileIndices = MoveTemp(SyncTimeSlicedData.ResultTileIndicesCached);
+	}
+
+	return WorkResult;
+}
+
 TArray<uint32> FRecastNavMeshGenerator::AddGeneratedTiles(FRecastTileGenerator& TileGenerator)
 {
 	SCOPE_CYCLE_COUNTER(STAT_Navigation_RecastAddGeneratedTiles);
-	
+
 	TMap<int32, dtPolyRef> OldLayerTileIdMap;
 	TArray<uint32> ResultTileIndices;
 	const int32 TileX = TileGenerator.GetTileX();
 	const int32 TileY = TileGenerator.GetTileY();
-	
+
 	if (TileGenerator.IsFullyRegenerated())
 	{
 		// remove all layers
@@ -3884,101 +5062,21 @@ TArray<uint32> FRecastNavMeshGenerator::AddGeneratedTiles(FRecastTileGenerator& 
 	dtNavMesh* DetourMesh = DestNavMesh->GetRecastNavMeshImpl()->GetRecastMesh();
 	const int32 FirstDirtyTileIndex = TileGenerator.GetDirtyLayersMask().Find(true);
 
-	if (DetourMesh != nullptr && IsInActiveSet(FIntPoint(TileX, TileY))
+	if (DetourMesh != nullptr
+		// no longer testing this here, we can live with a stray unwanted tile here 
+		// and there. It will be removed the next time around the invokers get
+		// updated 
+		// && IsInActiveSet(FIntPoint(TileX, TileY))
 		&& FirstDirtyTileIndex != INDEX_NONE)
 	{
 		TArray<FNavMeshTileData> TileLayers = TileGenerator.GetNavigationData();
 		ResultTileIndices.Reserve(TileLayers.Num());
 
-		struct FLayerIndexFinder
-		{
-			int32 LayerIndex;
-			explicit FLayerIndexFinder(const int32 InLayerIndex) : LayerIndex(InLayerIndex) {}
-			bool operator()(const FNavMeshTileData& LayerData) const
-			{
-				return LayerData.LayerIndex == LayerIndex;
-			}
-		};
-
 		for (int32 LayerIndex = FirstDirtyTileIndex; LayerIndex < TileGenerator.GetDirtyLayersMask().Num(); ++LayerIndex)
 		{
 			if (TileGenerator.IsLayerChanged(LayerIndex))
 			{
-				dtTileRef OldTileRef = DetourMesh->getTileRefAt(TileX, TileY, LayerIndex);
-				const int32 LayerDataIndex = TileLayers.IndexOfByPredicate(FLayerIndexFinder(LayerIndex));
-
-				if (LayerDataIndex != INDEX_NONE)
-				{
-					FNavMeshTileData& LayerData = TileLayers[LayerDataIndex];
-					if (OldTileRef)
-					{
-						QUICK_SCOPE_CYCLE_COUNTER(STAT_NavMesh_RemoveOldTIle);
-
-						NumActiveTiles--;
-						UE_LOG(LogNavigation, Log, TEXT("%s> Tile (%d,%d:%d), removing TileRef: 0x%X (active:%d)"),
-							*DestNavMesh->GetName(), TileX, TileY, LayerIndex, OldTileRef, NumActiveTiles);
-
-						DetourMesh->removeTile(OldTileRef, nullptr, nullptr);
-
-						const uint32 TileId = RecastTileVersionHelper::GetUpdatedTileId(OldTileRef, DetourMesh);
-						ResultTileIndices.AddUnique(TileId);
-					}
-					else
-					{
-						OldTileRef = OldLayerTileIdMap.FindRef(LayerIndex);
-					}
-
-					if (LayerData.IsValid())
-					{
-						bool bRejectNavmesh = false;
-						dtTileRef ResultTileRef = 0;
-
-						dtStatus status = 0;
-
-						{
-							QUICK_SCOPE_CYCLE_COUNTER(STAT_NavMesh_AddTileToDetourMesh);
-							// let navmesh know it's tile generator who owns the data
-							status = DetourMesh->addTile(LayerData.GetData(), LayerData.DataSize, DT_TILE_FREE_DATA, OldTileRef, &ResultTileRef);
-
-							// if tile index was already taken by other layer try adding it on first free entry (salt was already updated by whatever took that spot)
-							if (dtStatusFailed(status) && dtStatusDetail(status, DT_OUT_OF_MEMORY) && OldTileRef)
-							{
-								OldTileRef = 0;
-								status = DetourMesh->addTile(LayerData.GetData(), LayerData.DataSize, DT_TILE_FREE_DATA, OldTileRef, &ResultTileRef);
-							}
-						}
-
-						if (dtStatusFailed(status))
-						{
-							if (dtStatusDetail(status, DT_OUT_OF_MEMORY))
-							{
-								UE_LOG(LogNavigation, Error, TEXT("%s> Tile (%d,%d:%d), tile limit reached!! (%d)"),
-									*DestNavMesh->GetName(), TileX, TileY, LayerIndex, DetourMesh->getMaxTiles());
-							}
-						}
-						else
-						{
-							ResultTileIndices.AddUnique(DetourMesh->decodePolyIdTile(ResultTileRef));
-							NumActiveTiles++;
-
-							UE_LOG(LogNavigation, Log, TEXT("%s> Tile (%d,%d:%d), added TileRef: 0x%X (active:%d)"),
-								*DestNavMesh->GetName(), TileX, TileY, LayerIndex, ResultTileRef, NumActiveTiles);
-
-							{
-								QUICK_SCOPE_CYCLE_COUNTER(STAT_NavMesh_ReleaseTileLayers);
-								// NavMesh took the ownership of generated data, so we don't need to deallocate it
-								uint8* ReleasedData = LayerData.Release();
-							}
-						}
-					}
-				}
-				else
-				{
-					// remove the layer since it ended up empty
-					DetourMesh->removeTile(OldTileRef, nullptr, nullptr);
-					const uint32 TileId = RecastTileVersionHelper::GetUpdatedTileId(OldTileRef, DetourMesh);
-					ResultTileIndices.AddUnique(TileId);
-				}
+				AddGeneratedTileLayer(LayerIndex, TileGenerator, OldLayerTileIdMap, ResultTileIndices);
 			}
 		}
 	}
@@ -4000,10 +5098,8 @@ void FRecastNavMeshGenerator::DiscardCurrentBuildingTasks()
 		}
 	}
 
-#if TIME_SLICE_NAV_REGEN
-	TileGeneratorSync.Reset();
-#endif
-	
+	ResetTimeSlicedTileGeneratorSync();
+
 	RunningDirtyTiles.Empty();
 }
 
@@ -4011,9 +5107,7 @@ bool FRecastNavMeshGenerator::HasDirtyTiles() const
 {
 	return (PendingDirtyTiles.Num() > 0 
 		|| RunningDirtyTiles.Num() > 0
-#if TIME_SLICE_NAV_REGEN
-		|| TileGeneratorSync.Get() != nullptr
-#endif
+		|| SyncTimeSlicedData.TileGeneratorSync.Get() != nullptr
 		);
 }
 
@@ -4024,7 +5118,7 @@ FBox FRecastNavMeshGenerator::GrowBoundingBox(const FBox& BBox, bool bIncludeAge
 	return FBox(BBox.Min - BBoxGrowth - BBoxGrowOffsetMin, BBox.Max + BBoxGrowth);
 }
 
-static bool IntercestBounds(const FBox& TestBox, const TNavStatArray<FBox>& Bounds)
+static bool IntersectBounds(const FBox& TestBox, const TNavStatArray<FBox>& Bounds)
 {
 	for (const FBox& Box : Bounds)
 	{
@@ -4039,7 +5133,7 @@ static bool IntercestBounds(const FBox& TestBox, const TNavStatArray<FBox>& Boun
 
 namespace 
 {
-	FBox CalculateBoxIntercetion(const FBox& BoxA, const FBox& BoxB)
+	FBox CalculateBoxIntersection(const FBox& BoxA, const FBox& BoxB)
 	{
 		// assumes boxes overlap
 		ensure(BoxA.Intersect(BoxB));
@@ -4051,6 +5145,67 @@ namespace
 							, FMath::Min(BoxA.Max.Z, BoxB.Max.Z))
 					);
 	}
+}
+
+bool FRecastNavMeshGenerator::HasDirtyTiles(const FBox& AreaBounds) const
+{
+	if (HasDirtyTiles() == false)
+	{
+		return false;
+	}
+
+	bool bRetDirty = false;
+	const float TileSizeInWorldUnits = Config.tileSize * Config.cs;
+	const FRcTileBox TileBox(AreaBounds, RcNavMeshOrigin, TileSizeInWorldUnits);
+		
+	for (int32 Index = 0; bRetDirty == false && Index < PendingDirtyTiles.Num(); ++Index)
+	{
+		bRetDirty = TileBox.Contains(PendingDirtyTiles[Index].Coord);
+	}
+	for (int32 Index = 0; bRetDirty == false && Index < RunningDirtyTiles.Num(); ++Index)
+	{
+		bRetDirty = TileBox.Contains(RunningDirtyTiles[Index].Coord);
+	}
+
+	return bRetDirty;
+}
+
+int32 FRecastNavMeshGenerator::GetDirtyTilesCount(const FBox& AreaBounds) const
+{
+	const float TileSizeInWorldUnits = Config.tileSize * Config.cs;
+	const FRcTileBox TileBox(AreaBounds, RcNavMeshOrigin, TileSizeInWorldUnits);
+
+	int32 DirtyPendingCount = 0;
+	for (const FPendingTileElement& PendingElement : PendingDirtyTiles)
+	{
+		DirtyPendingCount += TileBox.Contains(PendingElement.Coord) ? 1 : 0;
+	}
+
+	int32 RunningCount = 0;
+	for (const FRunningTileElement& RunningElement : RunningDirtyTiles)
+	{
+		RunningCount += TileBox.Contains(RunningElement.Coord) ? 1 : 0;
+	}
+
+	return DirtyPendingCount + RunningCount;
+}
+
+bool FRecastNavMeshGenerator::MarkNavBoundsDirty()
+{
+	// if rebuilding all no point in keeping "old" invalidated areas
+	TArray<FNavigationDirtyArea> DirtyAreas;
+	for (FBox AreaBounds : InclusionBounds)
+	{
+		FNavigationDirtyArea DirtyArea(AreaBounds, ENavigationDirtyFlag::All | ENavigationDirtyFlag::NavigationBounds);
+		DirtyAreas.Add(DirtyArea);
+	}
+
+	if (DirtyAreas.Num())
+	{
+		MarkDirtyTiles(DirtyAreas);
+		return true;
+	}
+	return false;
 }
 
 void FRecastNavMeshGenerator::MarkDirtyTiles(const TArray<FNavigationDirtyArea>& DirtyAreas)
@@ -4086,11 +5241,11 @@ void FRecastNavMeshGenerator::MarkDirtyTiles(const TArray<FNavigationDirtyArea>&
 				continue;
 			}
 
-			const FBox CutDownArea = CalculateBoxIntercetion(GetTotalBounds(), DirtyArea.Bounds);
+			const FBox CutDownArea = CalculateBoxIntersection(GetTotalBounds(), DirtyArea.Bounds);
 			AdjustedAreaBounds = GrowBoundingBox(CutDownArea, DirtyArea.HasFlag(ENavigationDirtyFlag::UseAgentHeight));
 
 			// @TODO this and the following test share some work in common
-			if (IntercestBounds(AdjustedAreaBounds, InclusionBounds) == false)
+			if (IntersectBounds(AdjustedAreaBounds, InclusionBounds) == false)
 			{
 				continue;
 			}
@@ -4098,30 +5253,26 @@ void FRecastNavMeshGenerator::MarkDirtyTiles(const TArray<FNavigationDirtyArea>&
 			// check if any of inclusion volumes encapsulates this box
 			// using CutDownArea not AdjustedAreaBounds since if the area is on the border of navigable space
 			// then FindInclusionBoundEncapsulatingBox can produce false negative
-			bDoTileInclusionTest = FindInclusionBoundEncapsulatingBox(CutDownArea) == INDEX_NONE;
+			bDoTileInclusionTest = (FindInclusionBoundEncapsulatingBox(CutDownArea) == INDEX_NONE);
 		}
-				
-		const FBox RcAreaBounds = Unreal2RecastBox(AdjustedAreaBounds);
-		const int32 XMin = FMath::FloorToInt((RcAreaBounds.Min.X - RcNavMeshOrigin.X) / TileSizeInWorldUnits);
-		const int32 XMax = FMath::FloorToInt((RcAreaBounds.Max.X - RcNavMeshOrigin.X) / TileSizeInWorldUnits);
-		const int32 YMin = FMath::FloorToInt((RcAreaBounds.Min.Z - RcNavMeshOrigin.Z) / TileSizeInWorldUnits);
-		const int32 YMax = FMath::FloorToInt((RcAreaBounds.Max.Z - RcNavMeshOrigin.Z) / TileSizeInWorldUnits);
+		
+		const FRcTileBox TileBox(AdjustedAreaBounds, RcNavMeshOrigin, TileSizeInWorldUnits);
 
-		for (int32 TileY = YMin; TileY <= YMax; ++TileY)
+		for (int32 TileY = TileBox.YMin; TileY <= TileBox.YMax; ++TileY)
 		{
-			for (int32 TileX = XMin; TileX <= XMax; ++TileX)
+			for (int32 TileX = TileBox.XMin; TileX <= TileBox.XMax; ++TileX)
 			{
 				if (IsInActiveSet(FIntPoint(TileX, TileY)) == false)
 				{
 					continue;
 				}
 
-				if (DirtyArea.HasFlag(ENavigationDirtyFlag::NavigationBounds) == false && bDoTileInclusionTest == true)
+				if (bDoTileInclusionTest == true && DirtyArea.HasFlag(ENavigationDirtyFlag::NavigationBounds) == false)
 				{
-					const FBox TileBox = CalculateTileBounds(TileX, TileY, RcNavMeshOrigin, TotalNavBounds, TileSizeInWorldUnits);
+					const FBox TileBounds = CalculateTileBounds(TileX, TileY, RcNavMeshOrigin, TotalNavBounds, TileSizeInWorldUnits);
 
 					// do per tile check since we can have lots of tiles inbetween navigable bounds volumes
-					if (IntercestBounds(TileBox, InclusionBounds) == false)
+					if (IntersectBounds(TileBounds, InclusionBounds) == false)
 					{
 						// Skip this tile
 						continue;
@@ -4199,28 +5350,24 @@ void FRecastNavMeshGenerator::MarkDirtyTiles(const TArray<FNavigationDirtyArea>&
 
 void FRecastNavMeshGenerator::SortPendingBuildTiles()
 {
-	TArray<FVector2D> SeedLocations;
+	if (bSortTilesWithSeedLocations == false)
+	{
+		return;
+	}
+
 	UWorld* CurWorld = GetWorld();
 	if (CurWorld == nullptr)
 	{
 		return;
 	}
 
-	// Collect players positions
-	for (FConstPlayerControllerIterator PlayerIt = CurWorld->GetPlayerControllerIterator(); PlayerIt; ++PlayerIt)
-	{
-		APlayerController* PC = PlayerIt->Get();
-		if (PC && PC->GetPawn() != NULL)
-		{
-			const FVector2D SeedLoc(PC->GetPawn()->GetActorLocation());
-			SeedLocations.Add(SeedLoc);
-		}
-	}
+	TArray<FVector2D> SeedLocations;
+	GetSeedLocations(*CurWorld, SeedLocations);
 
 	if (SeedLocations.Num() == 0)
 	{
 		// Use navmesh origin for sorting
-		SeedLocations.Add(FVector2D::ZeroVector);
+		SeedLocations.Add(FVector2D(TotalNavBounds.GetCenter()));
 	}
 
 	if (SeedLocations.Num() > 0)
@@ -4234,16 +5381,26 @@ void FRecastNavMeshGenerator::SortPendingBuildTiles()
 			FVector2D TileCenter2D = FVector2D(TileBox.GetCenter());
 			for (FVector2D SeedLocation : SeedLocations)
 			{
-				const float DistSq = FVector2D::DistSquared(TileCenter2D, SeedLocation);
-				if (DistSq < Element.SeedDistance)
-				{
-					Element.SeedDistance = DistSq;
-				}
+				Element.SeedDistance = FMath::Min(Element.SeedDistance, FVector2D::DistSquared(TileCenter2D, SeedLocation));
 			}
 		}
 
 		// nearest tiles should be at the end of the list
 		PendingDirtyTiles.Sort();
+	}
+}
+
+void FRecastNavMeshGenerator::GetSeedLocations(UWorld& World, TArray<FVector2D>& OutSeedLocations) const
+{
+	// Collect players positions
+	for (FConstPlayerControllerIterator PlayerIt = World.GetPlayerControllerIterator(); PlayerIt; ++PlayerIt)
+	{
+		APlayerController* PC = PlayerIt->Get();
+		if (PC && PC->GetPawn() != NULL)
+		{
+			const FVector2D SeedLoc(PC->GetPawn()->GetActorLocation());
+			OutSeedLocations.Add(SeedLoc);
+		}
 	}
 }
 
@@ -4262,6 +5419,27 @@ void FRecastNavMeshGenerator::RemoveLayers(const FIntPoint& Tile, TArray<uint32>
 	);
 	DestNavMesh->MarkEmptyTileCacheLayers(Tile.X, Tile.Y);
 }
+
+void FRecastNavMeshGenerator::StoreCompressedTileCacheLayers(const FRecastTileGenerator& TileGenerator, int32 TileX, int32 TileY)
+{
+	// Store compressed tile cache layers so it can be reused later
+	if (TileGenerator.GetCompressedLayers().Num())
+	{
+		SCOPE_CYCLE_COUNTER(STAT_RecastNavMeshGenerator_StoringCompressedLayers);
+		DestNavMesh->AddTileCacheLayers(TileX, TileY, TileGenerator.GetCompressedLayers());
+	}
+	else
+	{
+		DestNavMesh->MarkEmptyTileCacheLayers(TileX, TileY);
+	}
+}
+
+#if RECAST_INTERNAL_DEBUG_DATA
+void FRecastNavMeshGenerator::StoreDebugData(const FRecastTileGenerator& TileGenerator, int32 TileX, int32 TileY)
+{
+	DestNavMesh->AddTileDebugData(TileX, TileY, TileGenerator.GetDebugData());
+}
+#endif
 
 #if RECAST_ASYNC_REBUILDING
 TArray<uint32> FRecastNavMeshGenerator::ProcessTileTasksAsync(const int32 NumTasksToProcess)
@@ -4290,7 +5468,15 @@ TArray<uint32> FRecastNavMeshGenerator::ProcessTileTasksAsync(const int32 NumTas
 			if (TileTask->GetTask().TileGenerator->HasDataToBuild())
 			{
 				RunningElement.AsyncTask = TileTask.Release();
-				RunningElement.AsyncTask->StartBackgroundTask();
+
+				if (!GNavmeshSynchronousTileGeneration)
+				{
+					RunningElement.AsyncTask->StartBackgroundTask();
+				}
+				else
+				{
+					RunningElement.AsyncTask->StartSynchronousTask();
+				}
 			
 				RunningDirtyTiles.Add(RunningElement);
 			}
@@ -4300,15 +5486,15 @@ TArray<uint32> FRecastNavMeshGenerator::ProcessTileTasksAsync(const int32 NumTas
 			}
 
 			// Remove submitted element from pending list
-			PendingDirtyTiles.RemoveAt(ElementIdx);
-
-			// Release memory, list could be quite big after map load
-			if (PendingDirtyTiles.Num() == 0)
-			{
-				PendingDirtyTiles.Empty(32);
-			}
+			PendingDirtyTiles.RemoveAt(ElementIdx, 1, /*bAllowShrinking=*/false);
 			NumProcessedTasks++;
 		}
+	}
+
+	// Release memory, list could be quite big after map load
+	if (NumProcessedTasks > 0 && PendingDirtyTiles.Num() == 0)
+	{
+		PendingDirtyTiles.Empty(64);
 	}
 	
 	// Collect completed tasks and apply generated data to navmesh
@@ -4328,16 +5514,11 @@ TArray<uint32> FRecastNavMeshGenerator::ProcessTileTasksAsync(const int32 NumTas
 				TArray<uint32> UpdatedTileIndices = AddGeneratedTiles(TileGenerator);
 				UpdatedTiles.Append(UpdatedTileIndices);
 			
-				// Store compressed tile cache layers so it can be reused later
-				if (TileGenerator.GetCompressedLayers().Num())
-				{
-					QUICK_SCOPE_CYCLE_COUNTER(STAT_RecastNavMeshGenerator_StoringCompressedLayers);
-					DestNavMesh->AddTileCacheLayers(Element.Coord.X, Element.Coord.Y, TileGenerator.GetCompressedLayers());
-				}
-				else
-				{
-					DestNavMesh->MarkEmptyTileCacheLayers(Element.Coord.X, Element.Coord.Y);
-				}
+				StoreCompressedTileCacheLayers(TileGenerator, Element.Coord.X, Element.Coord.Y);
+
+#if RECAST_INTERNAL_DEBUG_DATA
+				StoreDebugData(TileGenerator, Element.Coord.X, Element.Coord.Y);
+#endif
 			}
 
 			{
@@ -4356,172 +5537,276 @@ TArray<uint32> FRecastNavMeshGenerator::ProcessTileTasksAsync(const int32 NumTas
 }
 #endif
 
-#if TIME_SLICE_NAV_REGEN
-bool IsTimeSliceDurationExceeded(const double StartTime)
-{
-	const float TimeSliceDuration = 0.0025f;
-	const float	CurTime = FPlatformTime::Seconds();
-	
-	return CurTime - StartTime >= TimeSliceDuration;
-}
-#endif
-
 #if !RECAST_ASYNC_REBUILDING
-TArray<uint32> FRecastNavMeshGenerator::ProcessTileTasksSync(const int32 NumTasksToProcess)
+TSharedRef<FRecastTileGenerator> FRecastNavMeshGenerator::CreateTileGeneratorFromPendingElement(FIntPoint& OutTileLocation)
 {
-	QUICK_SCOPE_CYCLE_COUNTER(STAT_RecastNavMeshGenerator_ProcessTileTasksSync);
+	ensureMsgf(PendingDirtyTiles.Num() > 0, TEXT("Its an assumption of this function that PendingDirtyTiles.Num() > 0"));
+
+	const int32 PendingItemIdx = PendingDirtyTiles.Num() - 1;
+	FPendingTileElement& PendingElement = PendingDirtyTiles[PendingItemIdx];
+
+	OutTileLocation.X = PendingElement.Coord.X;
+	OutTileLocation.Y = PendingElement.Coord.Y;
+
+	TSharedRef<FRecastTileGenerator> TileGenerator = CreateTileGenerator(PendingElement.Coord, PendingElement.DirtyAreas);
+	PendingDirtyTiles.RemoveAt(PendingItemIdx, 1, false);
+
+	return TileGenerator;
+}
+
+TArray<uint32> FRecastNavMeshGenerator::ProcessTileTasksSyncTimeSliced()
+{
+	QUICK_SCOPE_CYCLE_COUNTER(STAT_RecastNavMeshGenerator_ProcessTileTasksSyncTimeSliced);
+	CSV_SCOPED_TIMING_STAT(NAVREGEN, ProcessTileTasksSyncTimeSliced);
 
 	TArray<uint32> UpdatedTiles;
-	const bool bGameStaticNavMesh = IsGameStaticNavMesh(DestNavMesh);
+	const UWorld* World = GetWorld();
+	double TimeStartProcessingTileThisFrame = 0.;
 
-#if TIME_SLICE_NAV_REGEN
-	const double StartTime = FPlatformTime::Seconds();
-	double CurTime = StartTime;
-
-	//if we are time slice processing a tile (ie we have already done some processing on this tile last frame)
-	bool bIsTimeSliceProcessingTile = TileGeneratorSync.Get() != nullptr;
-#endif
-
-	int32 NumProcessedTasks = 0;
-
-	//if bIsTimeSliceProcessingTile is true then this will be the Idx of the next Element to process not the Idx of TileGeneratorSync
-	int32 ElementIdx = PendingDirtyTiles.Num() - 1;
-
-	if ((ElementIdx >= 0
-		&& NumProcessedTasks < NumTasksToProcess)
-#if TIME_SLICE_NAV_REGEN
-		|| bIsTimeSliceProcessingTile
-#endif
-		)
+	auto HasWorkToDo = [this]()
 	{
+		return (PendingDirtyTiles.Num() > 0) || SyncTimeSlicedData.TileGeneratorSync.IsValid();
+	};
+
+
+	auto EndFunction = [&, this](bool bCalcTileRegenDuration) {
+		// Release memory, list could be quite big after map load
+		if (PendingDirtyTiles.Num() == 0)
+		{
+			PendingDirtyTiles.Empty(64);
+		}
+
+		if (World)
+		{
+			SyncTimeSlicedData.RealTimeSecsLastCall = World->GetRealTimeSeconds();
+		}
+
+		//this will only be true when we haven't finished generating this tile but are ending
+		//the function and need to record the TileRegenDuration so far for the tile
+		//being currently processed
+		if (bCalcTileRegenDuration)
+		{
+			SyncTimeSlicedData.CurrentTileRegenDuration += (FPlatformTime::Seconds() - TimeStartProcessingTileThisFrame);
+		}
+
+		return UpdatedTiles;
+	};
+
+	//Calculate the time slice duration
+	//Calc the MovingWindowDeltaTimeAverage this accounts for all scenarios we could be tile regening including unbounded frame rates or dropping frames as well as keeping
+	//calculation to an average which is fairly local temporally
+	if (World && SyncTimeSlicedData.RealTimeSecsLastCall >= 0.f)
+	{
+		const float DeltaTime = World->GetRealTimeSeconds() - SyncTimeSlicedData.RealTimeSecsLastCall;
+		SyncTimeSlicedData.MovingWindowDeltaTime.PushValue(DeltaTime);
+	}	
+	
+	//only calculate the time slice and process tiles if we have work to do
+	if (HasWorkToDo())
+	{
+		CSV_SCOPED_TIMING_STAT(NAVREGEN, ProcessTileTasksSyncTimeSlicedDoWork);
+
+		const bool bGameStaticNavMesh = IsGameStaticNavMesh(DestNavMesh);
+
+		SyncTimeSlicedData.TimeSlicer.StartTimeSlice();
+
+		const float DeltaTimesAverage = (SyncTimeSlicedData.MovingWindowDeltaTime.GetAverage() > 0.f) ? SyncTimeSlicedData.MovingWindowDeltaTime.GetAverage() : (1.f / 30.f); //use default 33 ms
+
+		const double TileRegenTimesAverage = (SyncTimeSlicedData.MovingWindowTileRegenTime.GetAverage() > 0.) ? SyncTimeSlicedData.MovingWindowTileRegenTime.GetAverage() : 0.0025; //use default of 2.5 milli secs to regen a full tile
+
+		//calculate the max desired frames to regen all the tiles in PendingDirtyTiles
+		const float MaxDesiredFramesToRegen = FMath::FloorToFloat(SyncTimeSlicedData.MaxDesiredTileRegenDuration / DeltaTimesAverage);
+
+		//tiles to add to PendingDirtyTiles if the current tile is taking longer than average to regen
+		//we add 1 tile for however many times longer the current tile is taking compared with the moving window average
+		const int32 TilesToAddForLongCurrentTileRegen = (SyncTimeSlicedData.CurrentTileRegenDuration > 0.) ? (static_cast<int32>(SyncTimeSlicedData.CurrentTileRegenDuration/ TileRegenTimesAverage)) : 0;
+
+		const int32 TotalTilesToRegen = PendingDirtyTiles.Num() + (SyncTimeSlicedData.TileGeneratorSync.IsValid() ? 1 : 0);
+
+		//calculate the total processing time to regen all the tiles based on the moving window average
+		const double TotalRegenTime = TileRegenTimesAverage * static_cast<double>(TotalTilesToRegen + TilesToAddForLongCurrentTileRegen);
+
+		//calculate the time slice per frame required to regen all the tiles clamped between MinTimeSliceDuration and MaxTimeSliceDuration
+		const double NextRegenTimeSliceTime = FMath::Clamp(TotalRegenTime / static_cast<double>(MaxDesiredFramesToRegen), SyncTimeSlicedData.MinTimeSliceDuration, SyncTimeSlicedData.MaxTimeSliceDuration);
+		SyncTimeSlicedData.TimeSlicer.SetTimeSliceDuration(NextRegenTimeSliceTime);
+
+#if !UE_BUILD_SHIPPING
+		CSV_CUSTOM_STAT(NAVREGEN, NavTileRegenTimeSliceTime, static_cast<float>(NextRegenTimeSliceTime), ECsvCustomStatOp::Set);
+		CSV_CUSTOM_STAT(NAVREGEN, NavTileRegenQueueLength, TotalTilesToRegen, ECsvCustomStatOp::Set);
+		CSV_CUSTOM_STAT(NAVREGEN, TilesToAddForLongCurrentTileRegen, TilesToAddForLongCurrentTileRegen, ECsvCustomStatOp::Set);
+		CSV_CUSTOM_STAT(NAVREGEN, NavTileAvRegenTime, static_cast<float>(SyncTimeSlicedData.MovingWindowTileRegenTime.GetAverage()), ECsvCustomStatOp::Set);
+		CSV_CUSTOM_STAT(NAVREGEN, NavTileAvRegenDeltaTime, static_cast<float>(SyncTimeSlicedData.MovingWindowDeltaTime.GetAverage()), ECsvCustomStatOp::Set);
+#endif
+
 		// Submit pending tile elements
-		while (true)
+		do
 		{
 			QUICK_SCOPE_CYCLE_COUNTER(STAT_RecastNavMeshGenerator_ProcessTileTasks_NewTasks);
 
 			FIntPoint TileLocation;
+			TimeStartProcessingTileThisFrame = FPlatformTime::Seconds();
 
-			//this will only be set up when bIsTimeSliceProcessingTile == false,
-			//its currently not needed at other times.
-			TArray<FBox> DirtyAreas;
-
-#if TIME_SLICE_NAV_REGEN
-			if (bIsTimeSliceProcessingTile)
+			if (SyncTimeSlicedData.ProcessTileTasksSyncState == EProcessTileTasksSyncTimeSlicedState::Init)
 			{
-				TileLocation.X = TileGeneratorSync->GetTileX();
-				TileLocation.Y = TileGeneratorSync->GetTileY();
-			}
-			else
-#endif //TIME_SLICE_NAV_REGEN
-			{
-				FPendingTileElement& PendingElement = PendingDirtyTiles[ElementIdx];
-
-				TileLocation.X = PendingElement.Coord.X;
-				TileLocation.Y = PendingElement.Coord.Y;
-
-				DirtyAreas = MoveTemp(PendingElement.DirtyAreas);
-
-				// Remove submitted element from pending list, this simplifies time sliced tile processing
-				PendingDirtyTiles.RemoveAt(ElementIdx);
-
-				// Release memory, list could be quite big after map load
-				if (PendingDirtyTiles.Num() == 0)
+				//if the next time slice regen state is false, we want to go to non time sliced tile regen so break here and switch
+				//next frame (as we've finished time slice processing the last tile)
+				if (!SyncTimeSlicedData.bNextTimeSliceRegenActive)
 				{
-					PendingDirtyTiles.Empty(32);
+					return EndFunction(false);
 				}
 
-				//see definition of bIsTimeSliceProcessingTile
-				ensureMsgf(TileGeneratorSync.Get() == nullptr, TEXT("TileGeneratorSync should be NULL if we aren't currently time slicing this tile"));
+				SyncTimeSlicedData.TileGeneratorSync = CreateTileGeneratorFromPendingElement(TileLocation);
 
-				TileGeneratorSync = CreateTileGenerator(TileLocation, DirtyAreas);
+				SyncTimeSlicedData.CurrentTileRegenDuration = 0.;
 
-#if TIME_SLICE_NAV_REGEN
-				if (IsTimeSliceDurationExceeded(StartTime))
+				if (SyncTimeSlicedData.TileGeneratorSync->HasDataToBuild())
 				{
-					break;
-				}
-#endif //TIME_SLICE_NAV_REGEN
-			}
-
-			FRecastTileGenerator& TileGeneratorRef = *TileGeneratorSync.Get();
-			ensureMsgf(TileGeneratorRef.GetTileX() == TileLocation.X && TileGeneratorRef.GetTileY() == TileLocation.Y,
-				TEXT("X Loc Mismatch between TileGeneratorRef and PendingElement"));
-
-			if (TileGeneratorRef.HasDataToBuild())
-			{
-#if TIME_SLICE_NAV_REGEN
-				bool bContinueTimeSliceProcessing = true;
-				ETimeSliceWorkResult TimeSliceWorkResult = ETimeSliceWorkResult::CallAgain;
-
-				if (!TileGeneratorRef.HasDoneWork())
-				{
-					while (TimeSliceWorkResult == ETimeSliceWorkResult::CallAgain && bContinueTimeSliceProcessing)
-					{
-						TimeSliceWorkResult = TileGeneratorRef.DoWork();
-
-						bContinueTimeSliceProcessing = !IsTimeSliceDurationExceeded(StartTime);
-					}
-
-					if (!bContinueTimeSliceProcessing)
-					{
-						break;
-					}
-				}
-#else //TIME_SLICE_NAV_REGEN
-				TileGeneratorRef.DoWork();
-#endif //TIME_SLICE_NAV_REGEN
-
-				//@TODO Investigate preventing further processing of tiles when generation has failed
-				const TArray<uint32> UpdatedTileIndices = AddGeneratedTiles(TileGeneratorRef);
-				UpdatedTiles.Append(UpdatedTileIndices);
-
-				// Store compressed tile cache layers so it can be reused later
-				if (TileGeneratorRef.GetCompressedLayers().Num())
-				{
-					QUICK_SCOPE_CYCLE_COUNTER(STAT_RecastNavMeshGenerator_StoringCompressedLayers);
-					DestNavMesh->AddTileCacheLayers(TileLocation.X, TileLocation.Y, TileGeneratorRef.GetCompressedLayers());
+					SyncTimeSlicedData.ProcessTileTasksSyncState = EProcessTileTasksSyncTimeSlicedState::DoWork;
 				}
 				else
 				{
-					DestNavMesh->MarkEmptyTileCacheLayers(TileLocation.X, TileLocation.Y);
+					SyncTimeSlicedData.ProcessTileTasksSyncState = EProcessTileTasksSyncTimeSlicedState::Finish;
+
+					if (!bGameStaticNavMesh)
+					{
+						RemoveLayers(TileLocation, UpdatedTiles);
+					}
+				}
+
+				if (SyncTimeSlicedData.TimeSlicer.TestTimeSliceFinished())
+				{
+					return EndFunction(true);
 				}
 			}
-			else if (!bGameStaticNavMesh)
-			{
-				RemoveLayers(TileLocation, UpdatedTiles);
-			}
-
-			TileGeneratorSync = nullptr;
-
-			NumProcessedTasks++;
-
-#if TIME_SLICE_NAV_REGEN
-			//only subtract from the ElementIdx if we aren't time slice Processing this tile (ie the tile hasn't already had some
-			//processing done on it last frame)
-			if (!bIsTimeSliceProcessingTile)
-			{
-				--ElementIdx;
-			}
-			bIsTimeSliceProcessingTile = false;
-#else //TIME_SLICE_NAV_REGEN
-			--ElementIdx;
-#endif //TIME_SLICE_NAV_REGEN
-
-			if (NumProcessedTasks >= NumTasksToProcess || ElementIdx < 0)
-			{
-				break;
-			}
-#if TIME_SLICE_NAV_REGEN
 			else
 			{
-				//only perform the time slice check if we are going to iterate again
-				if (IsTimeSliceDurationExceeded(StartTime))
-				{
-					break;
-				}
+				TileLocation.X = SyncTimeSlicedData.TileGeneratorSync->GetTileX();
+				TileLocation.Y = SyncTimeSlicedData.TileGeneratorSync->GetTileY();
 			}
-#endif //TIME_SLICE_NAV_REGEN
+
+			FRecastTileGenerator& TileGeneratorRef = *SyncTimeSlicedData.TileGeneratorSync;
+
+			switch (SyncTimeSlicedData.ProcessTileTasksSyncState)
+			{
+			case EProcessTileTasksSyncTimeSlicedState::Init:
+			{
+				//do nothing 
+				ensureMsgf(false, TEXT("This State should not be used here!"));
+			}
+			break;
+
+			case EProcessTileTasksSyncTimeSlicedState::DoWork:
+			{
+				const ETimeSliceWorkResult WorkResult = TileGeneratorRef.DoWorkTimeSliced();
+
+				if (WorkResult != ETimeSliceWorkResult::CallAgainNextTimeSlice)
+				{
+					SyncTimeSlicedData.ProcessTileTasksSyncState = EProcessTileTasksSyncTimeSlicedState::AddGeneratedTiles;
+				}
+
+				if (SyncTimeSlicedData.TimeSlicer.IsTimeSliceFinishedCached())
+				{
+					return EndFunction(true);
+				}
+			}//fall through to next state
+			case EProcessTileTasksSyncTimeSlicedState::AddGeneratedTiles:
+			{
+				const ETimeSliceWorkResult WorkResult = AddGeneratedTilesTimeSliced(TileGeneratorRef, SyncTimeSlicedData.UpdatedTilesCache);
+
+				if (WorkResult != ETimeSliceWorkResult::CallAgainNextTimeSlice)
+				{
+					SyncTimeSlicedData.ProcessTileTasksSyncState = EProcessTileTasksSyncTimeSlicedState::StoreCompessedTileCacheLayers;
+				}
+
+				if (SyncTimeSlicedData.TimeSlicer.IsTimeSliceFinishedCached())
+				{
+					return EndFunction(true);
+				}
+			}//fall through to next state
+			case EProcessTileTasksSyncTimeSlicedState::StoreCompessedTileCacheLayers:
+			{
+				StoreCompressedTileCacheLayers(TileGeneratorRef, TileLocation.X, TileLocation.Y);
+
+				//no need to check time slicing as not much work done
+				SyncTimeSlicedData.ProcessTileTasksSyncState = EProcessTileTasksSyncTimeSlicedState::AppendUpdateTiles;
+			}//fall through to next state
+			case EProcessTileTasksSyncTimeSlicedState::AppendUpdateTiles: //this state was added purely to separate the functionality and allow the code to be more easily changed in future.
+			{
+				UpdatedTiles.Append(SyncTimeSlicedData.UpdatedTilesCache);
+				SyncTimeSlicedData.UpdatedTilesCache.Empty();
+
+				//no need to check time slicing as not much work done
+				SyncTimeSlicedData.ProcessTileTasksSyncState = EProcessTileTasksSyncTimeSlicedState::Finish;
+			}//fall through to next state
+			case EProcessTileTasksSyncTimeSlicedState::Finish:
+			{
+				//no need to check time slicing as not much work done
+				//reset state to Init for next tile to be processed
+				SyncTimeSlicedData.ProcessTileTasksSyncState = EProcessTileTasksSyncTimeSlicedState::Init;
+				SyncTimeSlicedData.TileGeneratorSync.Reset();
+
+				SyncTimeSlicedData.CurrentTileRegenDuration += (FPlatformTime::Seconds() - TimeStartProcessingTileThisFrame);
+
+				SyncTimeSlicedData.MovingWindowTileRegenTime.PushValue(SyncTimeSlicedData.CurrentTileRegenDuration);
+
+				SyncTimeSlicedData.CurrentTileRegenDuration = 0.;
+			}
+			break;
+			default:
+			{
+				ensureMsgf(false, TEXT("unhandled EProcessTileTasksSyncTimeSlicedState"));
+			}
+			}
 		}
+		while (HasWorkToDo());
+	}
+
+	// we only hit this if we have processed too many tiles in a frame and we will already
+	// have calculated the tile regen duration, or if we have processed no tiles and we also
+	// don't need to calcualte the tile regen duration
+	return EndFunction(false);
+}
+
+//this code path is approx 10% faster than ProcessTileTasksSyncTimeSliced, however it spikes far worse for most use cases.
+TArray<uint32> FRecastNavMeshGenerator::ProcessTileTasksSync(const int32 NumTasksToProcess)
+{
+	QUICK_SCOPE_CYCLE_COUNTER(STAT_RecastNavMeshGenerator_ProcessTileTasksSync);
+
+	const bool bGameStaticNavMesh = IsGameStaticNavMesh(DestNavMesh);
+	int32 NumProcessedTasks = 0;
+	TArray<uint32> UpdatedTiles;
+	FIntPoint TileLocation;
+
+	// Submit pending tile elements
+	while ((PendingDirtyTiles.Num() > 0 && NumProcessedTasks < NumTasksToProcess))
+	{
+		QUICK_SCOPE_CYCLE_COUNTER(STAT_RecastNavMeshGenerator_ProcessTileTasks_NewTasks);
+
+		TSharedRef<FRecastTileGenerator> TileGenerator = CreateTileGeneratorFromPendingElement(TileLocation);
+		
+		FRecastTileGenerator& TileGeneratorRef = *TileGenerator;
+
+		//Does this remain true whenever we stop time slicing?
+		if (TileGeneratorRef.HasDataToBuild())
+		{
+			TileGeneratorRef.DoWork();
+
+			UpdatedTiles = AddGeneratedTiles(TileGeneratorRef);
+
+			StoreCompressedTileCacheLayers(TileGeneratorRef, TileLocation.X, TileLocation.Y);
+		}
+		else if (!bGameStaticNavMesh)
+		{
+			RemoveLayers(TileLocation, UpdatedTiles);
+		}
+
+		NumProcessedTasks++;
+	}
+
+	// Release memory, list could be quite big after map load
+	if (PendingDirtyTiles.Num() == 0)
+	{
+		PendingDirtyTiles.Empty(64);
 	}
 
 	return UpdatedTiles;
@@ -4530,18 +5815,43 @@ TArray<uint32> FRecastNavMeshGenerator::ProcessTileTasksSync(const int32 NumTask
 
 TArray<uint32> FRecastNavMeshGenerator::ProcessTileTasks(const int32 NumTasksToProcess)
 {
+	QUICK_SCOPE_CYCLE_COUNTER(STAT_RecastNavMeshGenerator_ProcessTileTasks);
+
 	const bool bHasTasksAtStart = GetNumRemaningBuildTasks() > 0;
+	TArray<uint32> UpdatedTiles;
 
 #if RECAST_ASYNC_REBUILDING
-	TArray<uint32> UpdatedTiles = ProcessTileTasksAsync(NumTasksToProcess);
+	UpdatedTiles = ProcessTileTasksAsync(NumTasksToProcess);
 #else
-	TArray<uint32> UpdatedTiles = ProcessTileTasksSync(NumTasksToProcess);
+	//only switch bTimeSliceRegen state if we are not time slicing or if we are but aren't part way through time slicing a tile
+	if (SyncTimeSlicedData.bTimeSliceRegenActive != SyncTimeSlicedData.bNextTimeSliceRegenActive)
+	{
+		if (!SyncTimeSlicedData.bTimeSliceRegenActive)
+		{
+			SyncTimeSlicedData.bTimeSliceRegenActive = SyncTimeSlicedData.bNextTimeSliceRegenActive;
+		}
+		else if (!SyncTimeSlicedData.TileGeneratorSync.IsValid())//test if we have finished processing a tile
+		{
+			SyncTimeSlicedData.bTimeSliceRegenActive = SyncTimeSlicedData.bNextTimeSliceRegenActive;
+		}
+	}
+
+	if (SyncTimeSlicedData.bTimeSliceRegenActive)
+	{
+		UpdatedTiles = ProcessTileTasksSyncTimeSliced();
+	}
+	else
+	{
+		UpdatedTiles = ProcessTileTasksSync(NumTasksToProcess);
+	}
 #endif
 
 	// Notify owner in case all tasks has been completed
 	const bool bHasTasksAtEnd = GetNumRemaningBuildTasks() > 0;
 	if (bHasTasksAtStart && !bHasTasksAtEnd)
 	{
+		QUICK_SCOPE_CYCLE_COUNTER(STAT_RecastNavMeshGenerator_OnNavMeshGenerationFinished);
+
 		DestNavMesh->OnNavMeshGenerationFinished();
 	}
 
@@ -4549,6 +5859,8 @@ TArray<uint32> FRecastNavMeshGenerator::ProcessTileTasks(const int32 NumTasksToP
 	//only do this if framepro is recording as its an expensive operation
 	if (FFrameProProfiler::IsFrameProRecording())
 	{
+		QUICK_SCOPE_CYCLE_COUNTER(STAT_RecastNavMeshGenerator_GetCompressedTileCacheSize);
+
 		int32 TileCacheSize = DestNavMesh->GetCompressedTileCacheSize();
 
 		FPlatformMisc::CustomNamedStat("TotalTileCacheSize", static_cast<float>(TileCacheSize), "NavMesh", "Bytes");
@@ -4556,6 +5868,39 @@ TArray<uint32> FRecastNavMeshGenerator::ProcessTileTasks(const int32 NumTasksToP
 #endif
 	return UpdatedTiles;
 }
+
+#if !UE_BUILD_SHIPPING
+void FRecastNavMeshGenerator::GetDebugGeometry(const FNavigationRelevantData& EncodedData, FNavDebugMeshData& DebugMeshData)
+{
+	const uint8* RawMemory = EncodedData.CollisionData.GetData();
+	if (RawMemory == nullptr)
+	{
+		return;
+	}
+	const FRecastGeometryCache::FHeader* HeaderInfo = reinterpret_cast<const FRecastGeometryCache::FHeader*>(RawMemory);
+	if (HeaderInfo->NumVerts == 0 || HeaderInfo->NumFaces == 0)
+	{
+		return;
+	}
+	
+	const int32 HeaderSize = sizeof(FRecastGeometryCache);
+	const int32 IndicesCount = HeaderInfo->NumFaces * 3;
+		
+	DebugMeshData.Vertices.AddZeroed(HeaderInfo->NumVerts);
+	FDynamicMeshVertex* DebugVert = DebugMeshData.Vertices.GetData();
+	// we cannot copy verts directly since not only are the EncodedData's verts in
+	// a float[3] format, they're also in Recast coords so we need to translate it 
+	// back to Unreal coords
+	const float* VertCoord = reinterpret_cast<const float*>(RawMemory + HeaderSize);
+	for (int VertIndex = 0; VertIndex < HeaderInfo->NumVerts; ++VertIndex, ++DebugVert, VertCoord += 3)
+	{
+		new (DebugVert) FDynamicMeshVertex(Recast2UnrealPoint(VertCoord));
+	}
+
+	DebugMeshData.Indices.AddZeroed(IndicesCount);
+	FMemory::Memcpy(DebugMeshData.Indices.GetData(), RawMemory + HeaderSize + HeaderInfo->NumVerts * 3 * sizeof(float), IndicesCount * sizeof(int32));
+}
+#endif // !UE_BUILD_SHIPPING
 
 void FRecastNavMeshGenerator::ExportComponentGeometry(UActorComponent* Component, FNavigationRelevantData& Data)
 {
@@ -4643,29 +5988,20 @@ bool FRecastNavMeshGenerator::IsBuildInProgress(bool bCheckDirtyToo) const
 {
 	return RunningDirtyTiles.Num()
 		|| (bCheckDirtyToo && PendingDirtyTiles.Num())
-#if TIME_SLICE_NAV_REGEN
-		|| TileGeneratorSync.Get()
-#endif 
-		;
+		|| SyncTimeSlicedData.TileGeneratorSync.Get();
 }
 
 int32 FRecastNavMeshGenerator::GetNumRemaningBuildTasks() const
 {
 	return RunningDirtyTiles.Num() 
 		+ PendingDirtyTiles.Num()
-#if TIME_SLICE_NAV_REGEN
-		+ (TileGeneratorSync.Get() ? 1 : 0)
-#endif
-		;
+		+ (SyncTimeSlicedData.TileGeneratorSync.Get() ? 1 : 0);
 }
 
 int32 FRecastNavMeshGenerator::GetNumRunningBuildTasks() const
 {
 	return RunningDirtyTiles.Num()
-#if TIME_SLICE_NAV_REGEN
-		+ (TileGeneratorSync.Get() ? 1 : 0)
-#endif
-		;
+		+ (SyncTimeSlicedData.TileGeneratorSync.Get() ? 1 : 0);
 }
 
 bool FRecastNavMeshGenerator::GatherGeometryOnGameThread() const 
@@ -4699,9 +6035,10 @@ uint32 FRecastNavMeshGenerator::LogMemUsed() const
 	for (const FRunningTileElement& Element : RunningDirtyTiles)
 	{
 		GeneratorsMem += Element.AsyncTask->GetTask().TileGenerator->UsedMemoryOnStartup;
-#if TIME_SLICE_NAV_REGEN
-		GeneratorsMem += TileGeneratorSync->UsedMemoryOnStartup;
-#endif
+		if (SyncTimeSlicedData.TileGeneratorSync.IsValid())
+		{
+			GeneratorsMem += SyncTimeSlicedData.TileGeneratorSync->UsedMemoryOnStartup;
+		}
 	}
 
 	UE_LOG(LogNavigation, Display, TEXT("    FRecastNavMeshGenerator: Total Generator\'s size %u, count %d"), GeneratorsMem, RunningDirtyTiles.Num());
@@ -4742,17 +6079,13 @@ void FRecastNavMeshGenerator::GrabDebugSnapshot(struct FVisualLogEntry* Snapshot
 				const FNavigationOctreeElement& Element = It.GetCurrentElement();
 				const bool bExportGeometry = Element.Data->HasGeometry() && Element.ShouldUseGeometry(DestNavMesh->GetConfig());
 
+				TArray<FTransform> InstanceTransforms;
+				Element.Data->NavDataPerInstanceTransformDelegate.ExecuteIfBound(Element.Bounds.GetBox(), InstanceTransforms);
+
 				if (bExportGeometry && Element.Data->CollisionData.Num())
 				{
 					FRecastGeometryCache CachedGeometry(Element.Data->CollisionData.GetData());
 					
-					const uint32 NumVerts = CachedGeometry.Header.NumVerts;
-					CoordBuffer.Reset(NumVerts);
-					for (uint32 VertIdx = 0; VertIdx < NumVerts * 3; VertIdx += 3)
-					{
-						CoordBuffer.Add(Recast2UnrealPoint(&CachedGeometry.Verts[VertIdx]));
-					}
-
 					const uint32 NumIndices = CachedGeometry.Header.NumFaces * 3;
 					Indices.SetNum(NumIndices, false);
 					for (uint32 IndicesIdx = 0; IndicesIdx < NumIndices; ++IndicesIdx)
@@ -4760,50 +6093,89 @@ void FRecastNavMeshGenerator::GrabDebugSnapshot(struct FVisualLogEntry* Snapshot
 						Indices[IndicesIdx] = CachedGeometry.Indices[IndicesIdx];
 					}
 
-					Snapshot->AddElement(CoordBuffer, Indices, CategoryName, LogVerbosity, FColorList::LightGrey.WithAlpha(255));
+					auto AddElementFunc = [&](const FTransform& Transform)
+					{
+						const uint32 NumVerts = CachedGeometry.Header.NumVerts;
+						CoordBuffer.Reset(NumVerts);
+						for (uint32 VertIdx = 0; VertIdx < NumVerts * 3; VertIdx += 3)
+						{
+							CoordBuffer.Add(Transform.TransformPosition(Recast2UnrealPoint(&CachedGeometry.Verts[VertIdx])));
+						}
+
+						Snapshot->AddElement(CoordBuffer, Indices, CategoryName, LogVerbosity, FColorList::LightGrey.WithAlpha(255));
+					};
+
+					if (InstanceTransforms.Num() == 0)
+					{
+						AddElementFunc(FTransform::Identity);
+					}
+					for (const FTransform& InstanceTransform : InstanceTransforms)
+					{
+						AddElementFunc(InstanceTransform);
+					}
 				}
 				else
 				{
 					TArray<FVector> Verts;
-					const TArray<FAreaNavModifier>& AreaMods = Element.Data->Modifiers.GetAreas();
-					for (int32 i = 0; i < AreaMods.Num(); i++)
+					for (const FAreaNavModifier& AreaMod : Element.Data->Modifiers.GetAreas())
 					{
-						if (AreaMods[i].GetShapeType() == ENavigationShapeType::Unknown)
+						ENavigationShapeType::Type ShapeType = AreaMod.GetShapeType();
+						if (ShapeType == ENavigationShapeType::Unknown)
 						{
 							continue;
 						}
 
-						const uint8 AreaId = NavData->GetAreaID(AreaMods[i].GetAreaClass());
+						const uint8 AreaId = NavData->GetAreaID(AreaMod.GetAreaClass());
 						const UClass* AreaClass = NavData->GetAreaClass(AreaId);
 						const UNavArea* DefArea = AreaClass ? ((UClass*)AreaClass)->GetDefaultObject<UNavArea>() : NULL;
 						const FColor PolygonColor = AreaClass != FNavigationSystem::GetDefaultWalkableArea() ? (DefArea ? DefArea->DrawColor : NavData->GetConfig().Color) : FColorList::Cyan;
 
-						if (AreaMods[i].GetShapeType() == ENavigationShapeType::Box)
+						if (ShapeType == ENavigationShapeType::Box)
 						{
 							FBoxNavAreaData Box;
-							AreaMods[i].GetBox(Box);
+							AreaMod.GetBox(Box);
 
 							Snapshot->AddElement(FBox::BuildAABB(Box.Origin, Box.Extent), FMatrix::Identity, CategoryName, NavAreaVerbosity, PolygonColor.WithAlpha(255));
 						}
-						else if (AreaMods[i].GetShapeType() == ENavigationShapeType::Cylinder)
+						else if (ShapeType == ENavigationShapeType::Cylinder)
 						{
 							FCylinderNavAreaData Cylinder;
-							AreaMods[i].GetCylinder(Cylinder);
+							AreaMod.GetCylinder(Cylinder);
 
 							Snapshot->AddElement(Cylinder.Origin, Cylinder.Origin + FVector(0, 0, Cylinder.Height), Cylinder.Radius, CategoryName, NavAreaVerbosity, PolygonColor.WithAlpha(255));
 						}
-						else
+						else if (ShapeType == ENavigationShapeType::Convex || ShapeType == ENavigationShapeType::InstancedConvex)
 						{
-							FConvexNavAreaData Convex;
-							AreaMods[i].GetConvex(Convex);
-							Verts.Reset();
-							GrowConvexHull(NavData->AgentRadius, Convex.Points, Verts);
+							auto AddElementFunc = [&](const FConvexNavAreaData& InConvexNavAreaData)
+							{
+								Verts.Reset();
+								GrowConvexHull(NavData->AgentRadius, InConvexNavAreaData.Points, Verts);
 
-							Snapshot->AddElement(
-								Verts,
-								Convex.MinZ - NavData->CellHeight, 
-								Convex.MaxZ + NavData->CellHeight, 
-								CategoryName, NavAreaVerbosity, PolygonColor.WithAlpha(255));
+								if (Verts.Num())
+								{
+									Snapshot->AddElement(
+										Verts,
+										InConvexNavAreaData.MinZ - NavData->CellHeight,
+										InConvexNavAreaData.MaxZ + NavData->CellHeight,
+										CategoryName, NavAreaVerbosity, PolygonColor.WithAlpha(255));
+								}
+							};
+
+							if (ShapeType == ENavigationShapeType::Convex)
+							{
+								FConvexNavAreaData Convex;
+								AreaMod.GetConvex(Convex);
+								AddElementFunc(Convex);
+							}
+							else // ShapeType == ENavigationShapeType::InstancedConvex
+							{
+								for (const FTransform& InstanceTransform : InstanceTransforms)
+								{
+									FConvexNavAreaData Convex;
+									AreaMod.GetPerInstanceConvex(InstanceTransform, Convex);
+									AddElementFunc(Convex);
+								}
+							}
 						}
 					}
 				}
@@ -4851,39 +6223,85 @@ void FRecastNavMeshGenerator::ExportNavigationData(const FString& FileName) cons
 				const FNavigationOctreeElement& Element = It.GetCurrentElement();
 				const bool bExportGeometry = Element.Data->HasGeometry() && Element.ShouldUseGeometry(DestNavMesh->GetConfig());
 
+				TArray<FTransform> InstanceTransforms;
+				Element.Data->NavDataPerInstanceTransformDelegate.ExecuteIfBound(Element.Bounds.GetBox(), InstanceTransforms);
+				
 				if (bExportGeometry && Element.Data->CollisionData.Num())
 				{
+					const int32 NumInstances = FMath::Max(InstanceTransforms.Num(), 1);
 					FRecastGeometryCache CachedGeometry(Element.Data->CollisionData.GetData());
-					IndexBuffer.Reserve( IndexBuffer.Num() + (CachedGeometry.Header.NumFaces * 3 ));
-					CoordBuffer.Reserve( CoordBuffer.Num() + (CachedGeometry.Header.NumVerts * 3 ));
-					for (int32 i = 0; i < CachedGeometry.Header.NumFaces * 3; i++)
+					IndexBuffer.Reserve( IndexBuffer.Num() + (CachedGeometry.Header.NumFaces * 3 ) * NumInstances );
+					CoordBuffer.Reserve( CoordBuffer.Num() + (CachedGeometry.Header.NumVerts * 3 ) * NumInstances );
+
+					if (InstanceTransforms.Num() == 0)
 					{
-						IndexBuffer.Add(CachedGeometry.Indices[i] + CoordBuffer.Num() / 3);
+						for (int32 i = 0; i < CachedGeometry.Header.NumFaces * 3; i++)
+						{
+							IndexBuffer.Add(CachedGeometry.Indices[i] + CoordBuffer.Num() / 3);
+						}
+						for (int32 i = 0; i < CachedGeometry.Header.NumVerts * 3; i++)
+						{
+							CoordBuffer.Add(CachedGeometry.Verts[i]);
+						}
 					}
-					for (int32 i = 0; i < CachedGeometry.Header.NumVerts * 3; i++)
+					for (const FTransform& InstanceTransform : InstanceTransforms)
 					{
-						CoordBuffer.Add(CachedGeometry.Verts[i]);
+						for (int32 i = 0; i < CachedGeometry.Header.NumFaces * 3; i++)
+						{
+							IndexBuffer.Add(CachedGeometry.Indices[i] + CoordBuffer.Num() / 3);
+						}
+
+						FMatrix LocalToRecastWorld = InstanceTransform.ToMatrixWithScale()*Unreal2RecastMatrix();
+
+						for (int32 i = 0; i < CachedGeometry.Header.NumVerts * 3; i += 3)
+						{
+							// collision cache stores coordinates in recast space, convert them to unreal and transform to recast world space
+							FVector WorldRecastCoord = LocalToRecastWorld.TransformPosition(Recast2UnrealPoint(&CachedGeometry.Verts[i]));
+
+							CoordBuffer.Add(WorldRecastCoord.X);
+							CoordBuffer.Add(WorldRecastCoord.Y);
+							CoordBuffer.Add(WorldRecastCoord.Z);
+						}
 					}
 				}
 				else
 				{
-					const TArray<FAreaNavModifier>& AreaMods = Element.Data->Modifiers.GetAreas();
-					for (int32 i = 0; i < AreaMods.Num(); i++)
+					for (const FAreaNavModifier& AreaMod : Element.Data->Modifiers.GetAreas())
 					{
-						FAreaExportData ExportInfo;
-						ExportInfo.AreaId = NavData->GetAreaID(AreaMods[i].GetAreaClass());
-
-						if (AreaMods[i].GetShapeType() == ENavigationShapeType::Convex)
+						ENavigationShapeType::Type ShapeType = AreaMod.GetShapeType();
+						
+						if (ShapeType == ENavigationShapeType::Convex || ShapeType == ENavigationShapeType::InstancedConvex)
 						{
-							AreaMods[i].GetConvex(ExportInfo.Convex);
+							FAreaExportData ExportInfo;
+							ExportInfo.AreaId = NavData->GetAreaID(AreaMod.GetAreaClass());
 
-							TArray<FVector> ConvexVerts;
-							GrowConvexHull(NavData->AgentRadius, ExportInfo.Convex.Points, ConvexVerts);
-							ExportInfo.Convex.MinZ -= NavData->CellHeight;
-							ExportInfo.Convex.MaxZ += NavData->CellHeight;
-							ExportInfo.Convex.Points = ConvexVerts;
+							auto AddAreaExportDataFunc = [&](const FConvexNavAreaData& InConvexNavAreaData)
+							{
+								TArray<FVector> ConvexVerts;
+								GrowConvexHull(NavData->AgentRadius, ExportInfo.Convex.Points, ConvexVerts);
+								if (ConvexVerts.Num())
+								{
+									ExportInfo.Convex.MinZ -= NavData->CellHeight;
+									ExportInfo.Convex.MaxZ += NavData->CellHeight;
+									ExportInfo.Convex.Points = ConvexVerts;
 
-							AreaExport.Add(ExportInfo);
+									AreaExport.Add(ExportInfo);
+								}								
+							};
+
+							if (ShapeType == ENavigationShapeType::Convex)
+							{
+								AreaMod.GetConvex(ExportInfo.Convex);
+								AddAreaExportDataFunc(ExportInfo.Convex);
+							}
+							else // ShapeType == ENavigationShapeType::InstancedConvex
+							{
+								for (const FTransform& InstanceTransform : InstanceTransforms)
+								{
+									AreaMod.GetPerInstanceConvex(InstanceTransform, ExportInfo.Convex);
+									AddAreaExportDataFunc(ExportInfo.Convex);
+								}
+							}
 						}
 					}
 				}
@@ -5016,44 +6434,48 @@ public:
 	/** Console commands, see embeded usage statement **/
 	virtual bool Exec( UWorld* InWorld, const TCHAR* Cmd, FOutputDevice& Ar ) override
 	{
+		bool bExported = false;
 #if ALLOW_DEBUG_FILES && !(UE_BUILD_SHIPPING || UE_BUILD_TEST)
-		bool bCorrectCmd = FParse::Command(&Cmd, TEXT("ExportNavigation"));
-		if (bCorrectCmd && !InWorld)
+		if (FParse::Command(&Cmd, TEXT("ExportNavigation")))
 		{
-			UE_LOG(LogNavigation, Error, TEXT("Failed to export navigation data due to missing UWorld"));
-		}
-		else if (InWorld && bCorrectCmd)
-		{
-			UNavigationSystemV1* NavSys = FNavigationSystem::GetCurrent<UNavigationSystemV1>(InWorld);
-			if (NavSys)
+			if (InWorld == nullptr)
 			{
-				const ANavigationData* NavData = NavSys->GetDefaultNavDataInstance();
-				if (NavData)
+				UE_LOG(LogNavigation, Error, TEXT("Failed to export navigation data due to missing UWorld"));
+			}
+			else 
+			{
+				UNavigationSystemV1* NavSys = FNavigationSystem::GetCurrent<UNavigationSystemV1>(InWorld);
+				if (NavSys)
 				{
-					if (const FNavDataGenerator* Generator = NavData->GetGenerator())
+					for (ANavigationData* NavData : NavSys->NavDataSet)
 					{
-						const FString Name = NavData->GetName();
-						Generator->ExportNavigationData( FString::Printf( TEXT("%s/%s"), *FPaths::ProjectSavedDir(), *Name ));
-						return true;
-					}
-					else
-					{
-						UE_LOG(LogNavigation, Error, TEXT("Failed to export navigation data due to missing generator"));
+						if (const FNavDataGenerator* Generator = NavData->GetGenerator())
+						{
+							Generator->ExportNavigationData(FString::Printf(TEXT("%s/%s"), *FPaths::ProjectSavedDir(), *NavData->GetName()));
+							bExported = true;
+						}
+						else
+						{
+							UE_LOG(LogNavigation, Error, TEXT("Failed to export navigation data %s due to missing generator"), *NavData->GetName());
+						}
 					}
 				}
 				else
 				{
-					UE_LOG(LogNavigation, Error, TEXT("Failed to export navigation data due to navigation data"));
+					UE_LOG(LogNavigation, Error, TEXT("Failed to export navigation data due to missing navigation system"));
 				}
 			}
-			else
-			{
-				UE_LOG(LogNavigation, Error, TEXT("Failed to export navigation data due to missing navigation system"));
-			}
 		}
-#endif // ALLOW_DEBUG_FILES && WITH_EDITOR
-		return false;
+#endif // ALLOW_DEBUG_FILES && !(UE_BUILD_SHIPPING || UE_BUILD_TEST)
+		return bExported;
 	}
 } NavigationGeomExec;
 
 #endif // WITH_RECAST
+
+#if RECAST_INTERNAL_DEBUG_DATA
+bool FRecastTileGenerator::IsTileToDebug()
+{
+	return TileX == GNavmeshDebugTileX && TileY == GNavmeshDebugTileY;
+}
+#endif //RECAST_INTERNAL_DEBUG_DATA

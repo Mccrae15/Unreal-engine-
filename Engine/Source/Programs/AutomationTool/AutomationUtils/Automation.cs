@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 using System;
 using System.Collections.Generic;
 using System.Linq;
@@ -11,8 +11,6 @@ using Tools.DotNETCommon;
 
 namespace AutomationTool
 {
-	#region Command info
-
 	/// <summary>
 	/// Command to execute info.
 	/// </summary>
@@ -37,10 +35,6 @@ namespace AutomationTool
 			return Result;
 		}
 	}
-
-	#endregion
-
-	#region Command Line helpers
 
 	/// <summary>
 	/// Helper class for automatically registering command line params.
@@ -98,18 +92,20 @@ namespace AutomationTool
 
 		public static CommandLineArg CompileOnly = new CommandLineArg("-CompileOnly");
 		public static CommandLineArg Verbose = new CommandLineArg("-Verbose");
+		public static CommandLineArg TimeStamps = new CommandLineArg("-TimeStamps");
 		public static CommandLineArg Submit = new CommandLineArg("-Submit");
 		public static CommandLineArg NoSubmit = new CommandLineArg("-NoSubmit");
 		public static CommandLineArg NoP4 = new CommandLineArg("-NoP4");
 		public static CommandLineArg P4 = new CommandLineArg("-P4");
         public static CommandLineArg Compile = new CommandLineArg("-Compile");
-        /// <summary>
-        /// This command is LEGACY because we used to run UAT.exe to compile scripts by default.
-        /// Now we only compile by default when run via RunUAT.bat, which still understands -nocompile.
-        /// However, the batch file simply passes on all arguments, so UAT will choke when encountering -nocompile.
-        /// Keep this CommandLineArg around so that doesn't happen.
-        /// </summary>
-        public static CommandLineArg NoCompileLegacyDontUse = new CommandLineArg("-NoCompile");
+		public static CommandLineArg IgnoreDependencies = new CommandLineArg("-IgnoreDependencies");
+		/// <summary>
+		/// This command is LEGACY because we used to run UAT.exe to compile scripts by default.
+		/// Now we only compile by default when run via RunUAT.bat, which still understands -nocompile.
+		/// However, the batch file simply passes on all arguments, so UAT will choke when encountering -nocompile.
+		/// Keep this CommandLineArg around so that doesn't happen.
+		/// </summary>
+		public static CommandLineArg NoCompileLegacyDontUse = new CommandLineArg("-NoCompile");
         public static CommandLineArg NoCompileEditor = new CommandLineArg("-NoCompileEditor");
 		public static CommandLineArg Help = new CommandLineArg("-Help");
 		public static CommandLineArg List = new CommandLineArg("-List");
@@ -131,8 +127,6 @@ namespace AutomationTool
 		}
 	}
 
-	#endregion
-
 	[Help(
 @"Executes scripted commands
 
@@ -152,8 +146,6 @@ AutomationTool.exe [-verbose] [-compileonly] [-p4] Command0 [-Arg0 -Arg1 -Arg2 .
     [Help("UseLocalBuildStorage", @"Allows you to use local storage for your root build storage dir (default of P:\Builds (on PC) is changed to Engine\Saved\LocalBuilds). Used for local testing.")]
     public static class Automation
 	{
-		#region Command line parsing
-
 		/// <summary>
 		/// Parses command line parameter.
 		/// </summary>
@@ -375,16 +367,20 @@ AutomationTool.exe [-verbose] [-compileonly] [-p4] Command0 [-Arg0 -Arg1 -Arg2 .
 			CommandInfo CurrentCommand = null;
 			for (int Index = 0; Index < Arguments.Length; ++Index)
 			{
-				var Param = Arguments[Index];
-				if (Param.StartsWith("-") || Param.Contains("="))
+				// Guard against empty arguments passed as "" on the command line
+				string Param = Arguments[Index];
+				if(Param.Length > 0) 
 				{
-					ParseParam(Arguments[Index], CurrentCommand, ref OutScriptsForProjectFileName, OutAdditionalScriptsFolders);
-				}
-				else
-				{
-					CurrentCommand = new CommandInfo();
-					CurrentCommand.CommandName = Arguments[Index];
-					OutCommandsToExecute.Add(CurrentCommand);
+					if (Param.StartsWith("-") || Param.Contains("="))
+					{
+						ParseParam(Arguments[Index], CurrentCommand, ref OutScriptsForProjectFileName, OutAdditionalScriptsFolders);
+					}
+					else
+					{
+						CurrentCommand = new CommandInfo();
+						CurrentCommand.CommandName = Arguments[Index];
+						OutCommandsToExecute.Add(CurrentCommand);
+					}
 				}
 			}
 
@@ -412,9 +408,10 @@ AutomationTool.exe [-verbose] [-compileonly] [-p4] Command0 [-Arg0 -Arg1 -Arg2 .
 			}
 		}
 
-		#endregion
-
-		#region Main Program
+		/// <summary>
+		/// Compiler with all scripts
+		/// </summary>
+		public static ScriptCompiler Compiler { get; set; }
 
 		/// <summary>
 		/// Main method.
@@ -424,7 +421,17 @@ AutomationTool.exe [-verbose] [-compileonly] [-p4] Command0 [-Arg0 -Arg1 -Arg2 .
 		{
 			// Initial check for local or build machine runs BEFORE we parse the command line (We need this value set
 			// in case something throws the exception while parsing the command line)
-			IsBuildMachine = !String.IsNullOrEmpty(Environment.GetEnvironmentVariable("uebp_LOCAL_ROOT")) || Arguments.Any(x => x.Equals("-BuildMachine", StringComparison.InvariantCultureIgnoreCase));
+			IsBuildMachine = Arguments.Any(x => x.Equals("-BuildMachine", StringComparison.InvariantCultureIgnoreCase));
+			if (!IsBuildMachine)
+			{
+				int Value;
+				if (int.TryParse(Environment.GetEnvironmentVariable("IsBuildMachine"), out Value) && Value != 0)
+				{
+					IsBuildMachine = true;
+				}
+			}
+			Log.TraceVerbose("IsBuildMachine={0}", IsBuildMachine);
+			Environment.SetEnvironmentVariable("IsBuildMachine", IsBuildMachine ? "1" : "0");
 
 			// Scan the command line for commands to execute.
 			var CommandsToExecute = new List<CommandInfo>();
@@ -434,9 +441,6 @@ AutomationTool.exe [-verbose] [-compileonly] [-p4] Command0 [-Arg0 -Arg1 -Arg2 .
 
 			// Get the path to the telemetry file, if present
 			string TelemetryFile = CommandUtils.ParseParamValue(Arguments, "-Telemetry");
-			
-			Log.TraceVerbose("IsBuildMachine={0}", IsBuildMachine);
-			Environment.SetEnvironmentVariable("IsBuildMachine", IsBuildMachine ? "1" : "0");
 
 			// should we kill processes on exit
 			ShouldKillProcesses = !GlobalCommandLine.NoKill;
@@ -474,7 +478,7 @@ AutomationTool.exe [-verbose] [-compileonly] [-p4] Command0 [-Arg0 -Arg1 -Arg2 .
 			ProjectUtils.CleanupFolders();
 
 			// Compile scripts.
-			ScriptCompiler Compiler = new ScriptCompiler();
+			Compiler = new ScriptCompiler();
 			using(TelemetryStopwatch ScriptCompileStopwatch = new TelemetryStopwatch("ScriptCompile"))
 			{
 				Compiler.FindAndCompileAllScripts(OutScriptsForProjectFileName, AdditionalScriptsFolders);
@@ -561,10 +565,6 @@ AutomationTool.exe [-verbose] [-compileonly] [-p4] Command0 [-Arg0 -Arg1 -Arg2 .
 			return ExitCode.Success;
 		}
 
-		#endregion
-
-		#region Help
-
 		/// <summary>
 		/// Display help for the specified commands (to execute)
 		/// </summary>
@@ -610,10 +610,6 @@ AutomationTool.exe [-verbose] [-compileonly] [-p4] Command0 [-Arg0 -Arg1 -Arg2 .
 			CommandUtils.LogInformation(Message);
 		}
 
-		#endregion
-
-		#region HelperFunctions
-
 		/// <summary>
 		/// Returns true if AutomationTool is running using installed Engine components
 		/// </summary>
@@ -623,10 +619,6 @@ AutomationTool.exe [-verbose] [-compileonly] [-p4] Command0 [-Arg0 -Arg1 -Arg2 .
 		{
 			return CommandUtils.IsEngineInstalled();
 		}
-
-		#endregion
-
-		#region Properties
 
 		/// <summary>
 		/// True if this process is running on a build machine, false if locally.
@@ -668,7 +660,6 @@ AutomationTool.exe [-verbose] [-compileonly] [-p4] Command0 [-Arg0 -Arg1 -Arg2 .
 			}
 		}
 		private static bool? bShouldKillProcesses;
-		#endregion
 	}
 
 }

@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "Windows/WindowsPlatformMemory.h"
 #include "Misc/AssertionMacros.h"
@@ -13,8 +13,8 @@
 
 #include "HAL/MallocTBB.h"
 #include "HAL/MallocAnsi.h"
+#include "HAL/MallocMimalloc.h"
 #include "HAL/MallocStomp.h"
-#include "GenericPlatform/GenericPlatformMemoryPoolStats.h"
 #include "HAL/MemoryMisc.h"
 #include "HAL/MallocBinned.h"
 #include "HAL/MallocBinned2.h"
@@ -95,11 +95,15 @@ FMalloc* FWindowsPlatformMemory::BaseAllocator()
 	{
 		AllocatorToUse = EMemoryAllocatorToUse::Ansi;
 	}
-	else if ((WITH_EDITORONLY_DATA || IS_PROGRAM) && TBB_ALLOCATOR_ALLOWED)
+	else if ((WITH_EDITORONLY_DATA || IS_PROGRAM) && TBB_ALLOCATOR_ALLOWED) //-V517
 	{
 		AllocatorToUse = EMemoryAllocatorToUse::TBB;
 	}
 #if PLATFORM_64BITS
+	else if ((WITH_EDITORONLY_DATA || IS_PROGRAM) && MIMALLOC_ALLOCATOR_ALLOWED) //-V517
+	{
+		AllocatorToUse = EMemoryAllocatorToUse::Mimalloc;
+	}
 	else if (USE_MALLOC_BINNED3)
 	{
 		AllocatorToUse = EMemoryAllocatorToUse::Binned3;
@@ -126,6 +130,12 @@ FMalloc* FWindowsPlatformMemory::BaseAllocator()
 	else if (FCString::Stristr(CommandLine, TEXT("-tbbmalloc")))
 	{
 		AllocatorToUse = EMemoryAllocatorToUse::TBB;
+	}
+#endif
+#if MIMALLOC_ALLOCATOR_ALLOWED
+	else if (FCString::Stristr(CommandLine, TEXT("-mimalloc")))
+	{
+		AllocatorToUse = EMemoryAllocatorToUse::Mimalloc;
 	}
 #endif
 #if PLATFORM_64BITS
@@ -161,6 +171,10 @@ FMalloc* FWindowsPlatformMemory::BaseAllocator()
 #if TBB_ALLOCATOR_ALLOWED
 	case EMemoryAllocatorToUse::TBB:
 		return new FMallocTBB();
+#endif
+#if MIMALLOC_ALLOCATOR_ALLOWED && PLATFORM_SUPPORTS_MIMALLOC
+	case EMemoryAllocatorToUse::Mimalloc:
+		return new FMallocMimalloc();
 #endif
 	case EMemoryAllocatorToUse::Binned2:
 		return new FMallocBinned2();
@@ -257,7 +271,7 @@ const FPlatformMemoryConstants& FWindowsPlatformMemory::GetConstants()
 		MemoryConstants.PageSize = SystemInfo.dwPageSize;
 		MemoryConstants.AddressLimit = FPlatformMath::RoundUpToPowerOfTwo64(MemoryConstants.TotalPhysical);
 
-		MemoryConstants.TotalPhysicalGB = (MemoryConstants.TotalPhysical + 1024 * 1024 * 1024 - 1) / 1024 / 1024 / 1024;
+		MemoryConstants.TotalPhysicalGB = (uint32)((MemoryConstants.TotalPhysical + 1024 * 1024 * 1024 - 1) / 1024 / 1024 / 1024);
 	}
 
 	return MemoryConstants;	
@@ -301,35 +315,81 @@ void FWindowsPlatformMemory::BinnedFreeToOS( void* Ptr, SIZE_T Size )
 	verify(VirtualFree( Ptr, 0, MEM_RELEASE ) != 0);
 }
 
-void* FWindowsPlatformMemory::MemoryRangeReserve(SIZE_T Size, bool bCommit, int32 Node)
+
+size_t FWindowsPlatformMemory::FPlatformVirtualMemoryBlock::GetVirtualSizeAlignment()
 {
-	if (bCommit)
+	static SIZE_T OsAllocationGranularity = FPlatformMemory::GetConstants().OsAllocationGranularity;
+	return OsAllocationGranularity;
+}
+
+size_t FWindowsPlatformMemory::FPlatformVirtualMemoryBlock::GetCommitAlignment()
+{
+	static SIZE_T OSPageSize = FPlatformMemory::GetConstants().PageSize;
+	return OSPageSize;
+}
+
+FWindowsPlatformMemory::FPlatformVirtualMemoryBlock FWindowsPlatformMemory::FPlatformVirtualMemoryBlock::AllocateVirtual(size_t InSize, size_t InAlignment)
+{
+	FPlatformVirtualMemoryBlock Result;
+	InSize = Align(InSize, GetVirtualSizeAlignment());
+	Result.VMSizeDivVirtualSizeAlignment = InSize / GetVirtualSizeAlignment();
+
+	size_t Alignment = FMath::Max(InAlignment, GetVirtualSizeAlignment());
+	check(Alignment <= GetVirtualSizeAlignment());
+
+	bool bTopDown = Result.GetActualSize() > 100ll * 1024 * 1024; // this is hacky, but we want to allocate huge VM blocks (like for MB3) top down
+
+	Result.Ptr = VirtualAlloc(NULL, Result.GetActualSize(), MEM_RESERVE | (bTopDown ? MEM_TOP_DOWN : 0), PAGE_NOACCESS);
+
+
+	if (!LIKELY(Result.Ptr))
 	{
-		return BinnedAllocFromOS(Size);
+		FPlatformMemory::OnOutOfMemory(Result.GetActualSize(), Alignment);
 	}
-	void* Ptr = VirtualAlloc(NULL, Size, MEM_RESERVE | MEM_TOP_DOWN, PAGE_NOACCESS);
-	// no LLM for uncommitted memory!
-	return Ptr;
-
+	check(Result.Ptr && IsAligned(Result.Ptr, Alignment));
+	return Result;
 }
 
-void FWindowsPlatformMemory::MemoryRangeFree(void* Ptr, SIZE_T Size)
+
+
+void FWindowsPlatformMemory::FPlatformVirtualMemoryBlock::FreeVirtual()
 {
-	// this is an iffy assumption, mallocbinned3 will never free decommitted memory, but we don't know that anyone else will
-	BinnedFreeToOS(Ptr, Size);
+	if (Ptr)
+	{
+		check(GetActualSize() > 0);
+
+		CA_SUPPRESS(6001)
+		// Windows maintains the size of allocation internally, so Size is unused
+		verify(VirtualFree(Ptr, 0, MEM_RELEASE) != 0);
+
+		Ptr = nullptr;
+		VMSizeDivVirtualSizeAlignment = 0;
+	}
 }
 
-bool FWindowsPlatformMemory::MemoryRangeCommit(void* Ptr, SIZE_T Size)
+void FWindowsPlatformMemory::FPlatformVirtualMemoryBlock::Commit(size_t InOffset, size_t InSize)
 {
-	LLM(FLowLevelMemTracker::Get().OnLowLevelAlloc(ELLMTracker::Platform, Ptr, Size));
-	return VirtualAlloc(Ptr, Size, MEM_COMMIT, PAGE_READWRITE) == Ptr;
+	check(IsAligned(InOffset, GetCommitAlignment()) && IsAligned(InSize, GetCommitAlignment()));
+	check(InOffset >= 0 && InSize >= 0 && InOffset + InSize <= GetActualSize() && Ptr);
+
+	uint8* UsePtr = ((uint8*)Ptr) + InOffset;
+	if (VirtualAlloc(UsePtr, InSize, MEM_COMMIT, PAGE_READWRITE) != UsePtr)
+	{
+		FPlatformMemory::OnOutOfMemory(InSize, 0);
+	}
 }
 
-bool FWindowsPlatformMemory::MemoryRangeDecommit(void* Ptr, SIZE_T Size)
+void FWindowsPlatformMemory::FPlatformVirtualMemoryBlock::Decommit(size_t InOffset, size_t InSize)
 {
-	LLM(FLowLevelMemTracker::Get().OnLowLevelFree(ELLMTracker::Platform, Ptr));
-	return VirtualFree(Ptr, Size, MEM_DECOMMIT) != 0;
+	check(IsAligned(InOffset, GetCommitAlignment()) && IsAligned(InSize, GetCommitAlignment()));
+	check(InOffset >= 0 && InSize >= 0 && InOffset + InSize <= GetActualSize() && Ptr);
+	uint8* UsePtr = ((uint8*)Ptr) + InOffset;
+	VirtualFree(UsePtr, InSize, MEM_DECOMMIT);
 }
+
+
+
+
 
 
 FPlatformMemory::FSharedMemoryRegion* FWindowsPlatformMemory::MapNamedSharedMemoryRegion(const FString& InName, bool bCreate, uint32 AccessMode, SIZE_T Size)

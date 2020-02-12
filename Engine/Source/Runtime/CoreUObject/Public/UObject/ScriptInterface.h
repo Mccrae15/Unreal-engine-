@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 /*=============================================================================
 	ScriptInterface.h: Script interface definitions.
@@ -13,7 +13,7 @@
 /**
  * FScriptInterface
  *
- * This utility class stores the UProperty data for a native interface property.  ObjectPointer and InterfacePointer point to different locations in the same UObject.
+ * This utility class stores the FProperty data for a native interface property.  ObjectPointer and InterfacePointer point to different locations in the same UObject.
  */
 class FScriptInterface
 {
@@ -220,7 +220,7 @@ public:
 	 *
 	 * @return	true if InterfacePointer is non-NULL.
 	 */
-	FORCEINLINE operator bool() const
+	FORCEINLINE explicit operator bool() const
 	{
 		return GetInterface() != NULL;
 	}

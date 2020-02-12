@@ -1,8 +1,11 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 // Implementation of D3D12 Pipelinestate related functions
 
 #pragma once
+#if PLATFORM_HOLOLENS
+	#include "d3d12.h"
+#endif
 
 // FORT-101886
 // UE4 implemented high level PSO caches on the general RHI level already
@@ -14,8 +17,6 @@
 #define D3D12RHI_USE_HIGH_LEVEL_PSO_CACHE 0
 #endif
 #define D3D12_USE_DERIVED_PSO PLATFORM_XBOXONE
-
-static bool GCPUSupportsSSE4;
 
 #if D3D12RHI_USE_HIGH_LEVEL_PSO_CACHE
 DECLARE_DWORD_ACCUMULATOR_STAT(TEXT("Graphics: Num high-level cache entries"), STAT_PSOGraphicsNumHighlevelCacheEntries, STATGROUP_D3D12PipelineState);
@@ -45,7 +46,6 @@ struct FD3D12_GRAPHICS_PIPELINE_STATE_DESC
 	D3D12_SHADER_BYTECODE DS;
 	D3D12_SHADER_BYTECODE HS;
 	D3D12_SHADER_BYTECODE GS;
-	D3D12_STREAM_OUTPUT_DESC StreamOutput;
 #if !D3D12_USE_DERIVED_PSO
 	D3D12_BLEND_DESC BlendState;
 	uint32 SampleMask;
@@ -62,7 +62,7 @@ struct FD3D12_GRAPHICS_PIPELINE_STATE_DESC
 	D3D12_CACHED_PIPELINE_STATE CachedPSO;
 	D3D12_PIPELINE_STATE_FLAGS Flags;
 
-#if PLATFORM_WINDOWS
+#if PLATFORM_WINDOWS || PLATFORM_HOLOLENS
 	FD3D12_GRAPHICS_PIPELINE_STATE_STREAM PipelineStateStream() const;
 	D3D12_GRAPHICS_PIPELINE_STATE_DESC GraphicsDescV0() const;
 #endif // PLATFORM_WINDOWS
@@ -77,8 +77,33 @@ struct FD3D12LowLevelGraphicsPipelineStateDesc
 	ShaderBytecodeHash DSHash;
 	ShaderBytecodeHash GSHash;
 	ShaderBytecodeHash PSHash;
+	uint32 InputLayoutHash;
+	bool bFromPSOFileCache;
 
 	SIZE_T CombinedHash;
+
+#if PLATFORM_WINDOWS
+	// TODO: Replace with a global hash lookup to reduce overall footprint?
+	// Very few permutations, so a single > 0 u32 hash code would be lower
+	// memory usage, and very rarely cause a look up.
+	const TArray<FShaderCodeVendorExtension>* VSExtensions;
+	const TArray<FShaderCodeVendorExtension>* HSExtensions;
+	const TArray<FShaderCodeVendorExtension>* DSExtensions;
+	const TArray<FShaderCodeVendorExtension>* GSExtensions;
+	const TArray<FShaderCodeVendorExtension>* PSExtensions;
+
+	FORCEINLINE bool HasVendorExtensions() const
+	{
+		return (
+			VSExtensions != nullptr ||
+			PSExtensions != nullptr ||
+			GSExtensions != nullptr ||
+			HSExtensions != nullptr ||
+			DSExtensions != nullptr);
+	}
+#else
+	FORCEINLINE bool HasVendorExtensions() const { return false; }
+#endif
 
 	FORCEINLINE FString GetName() const { return FString::Printf(TEXT("%llu"), CombinedHash); }
 
@@ -90,7 +115,7 @@ struct FD3D12LowLevelGraphicsPipelineStateDesc
 // Compute pipeline struct that represents the latest versions of PSO subobjects currently supported by the RHI.
 struct FD3D12_COMPUTE_PIPELINE_STATE_DESC : public D3D12_COMPUTE_PIPELINE_STATE_DESC
 {
-#if PLATFORM_WINDOWS
+#if PLATFORM_WINDOWS || PLATFORM_HOLOLENS
 	FD3D12_COMPUTE_PIPELINE_STATE_STREAM PipelineStateStream() const;
 	D3D12_COMPUTE_PIPELINE_STATE_DESC ComputeDescV0() const;
 #endif
@@ -103,6 +128,13 @@ struct FD3D12ComputePipelineStateDesc
 	ShaderBytecodeHash CSHash;
 
 	SIZE_T CombinedHash;
+
+#if PLATFORM_WINDOWS
+	const TArray<FShaderCodeVendorExtension>* Extensions;
+	FORCEINLINE bool HasVendorExtensions() const { return (Extensions != nullptr); }
+#else
+	FORCEINLINE bool HasVendorExtensions() const { return false; }
+#endif
 
 	FORCEINLINE FString GetName() const { return FString::Printf(TEXT("%llu"), CombinedHash); }
 
@@ -156,9 +188,6 @@ template <> struct equality_pipeline_state_desc<FD3D12LowLevelGraphicsPipelineSt
 #endif
 		PSO_IF_NOT_EQUAL_RETURN_FALSE(Desc.IBStripCutValue)
 		PSO_IF_NOT_EQUAL_RETURN_FALSE(Desc.NodeMask)
-		PSO_IF_NOT_EQUAL_RETURN_FALSE(Desc.StreamOutput.RasterizedStream)
-		PSO_IF_NOT_EQUAL_RETURN_FALSE(Desc.StreamOutput.NumEntries)
-		PSO_IF_NOT_EQUAL_RETURN_FALSE(Desc.StreamOutput.NumStrides)
 		PSO_IF_NOT_EQUAL_RETURN_FALSE(Desc.SampleDesc.Count)
 		PSO_IF_NOT_EQUAL_RETURN_FALSE(Desc.SampleDesc.Quality)
 
@@ -176,29 +205,6 @@ template <> struct equality_pipeline_state_desc<FD3D12LowLevelGraphicsPipelineSt
 		PSO_IF_NOT_EQUAL_RETURN_FALSE(HSHash)
 		PSO_IF_NOT_EQUAL_RETURN_FALSE(DSHash)
 
-		if (lhs.Desc.StreamOutput.pSODeclaration != rhs.Desc.StreamOutput.pSODeclaration &&
-			lhs.Desc.StreamOutput.NumEntries)
-		{
-			for (uint32 i = 0; i < lhs.Desc.StreamOutput.NumEntries; i++)
-			{
-				PSO_IF_NOT_EQUAL_RETURN_FALSE(Desc.StreamOutput.pSODeclaration[i].Stream)
-				PSO_IF_NOT_EQUAL_RETURN_FALSE(Desc.StreamOutput.pSODeclaration[i].SemanticIndex)
-				PSO_IF_NOT_EQUAL_RETURN_FALSE(Desc.StreamOutput.pSODeclaration[i].StartComponent)
-				PSO_IF_NOT_EQUAL_RETURN_FALSE(Desc.StreamOutput.pSODeclaration[i].ComponentCount)
-				PSO_IF_NOT_EQUAL_RETURN_FALSE(Desc.StreamOutput.pSODeclaration[i].OutputSlot)
-				PSO_IF_STRING_COMPARE_FAILS_RETURN_FALSE(Desc.StreamOutput.pSODeclaration[i].SemanticName)
-			}
-		}
-
-		if (lhs.Desc.StreamOutput.pBufferStrides != rhs.Desc.StreamOutput.pBufferStrides &&
-			lhs.Desc.StreamOutput.NumStrides)
-		{
-			for (uint32 i = 0; i < lhs.Desc.StreamOutput.NumStrides; i++)
-			{
-				PSO_IF_NOT_EQUAL_RETURN_FALSE(Desc.StreamOutput.pBufferStrides[i])
-			}
-		}
-
 		if (lhs.Desc.InputLayout.pInputElementDescs != rhs.Desc.InputLayout.pInputElementDescs &&
 			lhs.Desc.InputLayout.NumElements)
 		{
@@ -213,6 +219,15 @@ template <> struct equality_pipeline_state_desc<FD3D12LowLevelGraphicsPipelineSt
 				PSO_IF_STRING_COMPARE_FAILS_RETURN_FALSE(Desc.InputLayout.pInputElementDescs[i].SemanticName)
 			}
 		}
+
+	#if PLATFORM_WINDOWS
+		PSO_IF_NOT_EQUAL_RETURN_FALSE(VSExtensions);
+		PSO_IF_NOT_EQUAL_RETURN_FALSE(PSExtensions);
+		PSO_IF_NOT_EQUAL_RETURN_FALSE(GSExtensions);
+		PSO_IF_NOT_EQUAL_RETURN_FALSE(HSExtensions);
+		PSO_IF_NOT_EQUAL_RETURN_FALSE(DSExtensions);
+	#endif
+
 		return true;
 	}
 };
@@ -222,7 +237,7 @@ template <> struct equality_pipeline_state_desc<FD3D12ComputePipelineStateDesc>
 	bool operator()(const FD3D12ComputePipelineStateDesc& lhs, const FD3D12ComputePipelineStateDesc& rhs)
 	{
 		PSO_IF_NOT_EQUAL_RETURN_FALSE(Desc.CS.BytecodeLength)
-#if PLATFORM_WINDOWS
+#if PLATFORM_WINDOWS || PLATFORM_HOLOLENS
 		PSO_IF_NOT_EQUAL_RETURN_FALSE(Desc.Flags)
 #endif
 		PSO_IF_NOT_EQUAL_RETURN_FALSE(Desc.pRootSignature)
@@ -245,6 +260,10 @@ template <> struct equality_pipeline_state_desc<FD3D12ComputePipelineStateDesc>
 		}
 #endif
 
+#if PLATFORM_WINDOWS
+		PSO_IF_NOT_EQUAL_RETURN_FALSE(Extensions)
+#endif
+
 		return true;
 	}
 };
@@ -263,8 +282,8 @@ struct FD3D12PipelineStateWorker : public FD3D12AdapterChild, public FNonAbandon
 
 	union PipelineCreationArgs
 	{
-		ComputePipelineCreationArgs_POD ComputeArgs;
-		GraphicsPipelineCreationArgs_POD GraphicsArgs;
+		ComputePipelineCreationArgs_POD* ComputeArgs;
+		GraphicsPipelineCreationArgs_POD* GraphicsArgs;
 	} CreationArgs;
 
 	const bool bIsGraphics;
@@ -287,23 +306,33 @@ public:
 	void Create(const GraphicsPipelineCreationArgs& InCreationArgs);
 	void CreateAsync(const GraphicsPipelineCreationArgs& InCreationArgs);
 
-	ID3D12PipelineState* GetPipelineState();
-
-	FD3D12PipelineState& operator=(const FD3D12PipelineState& other)
+	FORCEINLINE bool IsValid()
 	{
-		checkSlow(GPUMask == other.GPUMask);
-		checkSlow(VisibilityMask == other.VisibilityMask);
-		ensure(PendingWaitOnWorkerCalls == 0);
-
-		PipelineState = other.PipelineState;
-		Worker = other.Worker;
-		return *this;
+		return (GetPipelineState() != nullptr);
 	}
+
+	FORCEINLINE ID3D12PipelineState* GetPipelineState()
+	{
+		if (bInitialized)
+		{
+			return PipelineState.GetReference();
+		}
+		else
+		{
+			return InternalGetPipelineState();
+		}
+	}
+
+	FD3D12PipelineState& operator=(const FD3D12PipelineState& other) = delete;
+
+private:
+	ID3D12PipelineState* InternalGetPipelineState();
 
 protected:
 	TRefCountPtr<ID3D12PipelineState> PipelineState;
 	FAsyncTask<FD3D12PipelineStateWorker>* Worker;
-	volatile int32 PendingWaitOnWorkerCalls;
+	FRWLock GetPipelineStateMutex;
+	volatile bool bInitialized;
 };
 
 struct FD3D12GraphicsPipelineState : public FRHIGraphicsPipelineState
@@ -311,7 +340,7 @@ struct FD3D12GraphicsPipelineState : public FRHIGraphicsPipelineState
 	explicit FD3D12GraphicsPipelineState(const FGraphicsPipelineStateInitializer& Initializer, const FD3D12RootSignature* InRootSignature, FD3D12PipelineState* InPipelineState);
 	~FD3D12GraphicsPipelineState();
 
-	const FGraphicsPipelineStateInitializer PipelineStateInitializer;
+	FGraphicsPipelineStateInitializer PipelineStateInitializer;
 	const FD3D12RootSignature* RootSignature;
 	uint16 StreamStrides[MaxVertexElementCount];
 	bool bShaderNeedsGlobalConstantBuffer[SF_NumStandardFrequencies];
@@ -320,9 +349,18 @@ struct FD3D12GraphicsPipelineState : public FRHIGraphicsPipelineState
 
 	FORCEINLINE class FD3D12VertexShader*   GetVertexShader() const { return (FD3D12VertexShader*)PipelineStateInitializer.BoundShaderState.VertexShaderRHI; }
 	FORCEINLINE class FD3D12PixelShader*    GetPixelShader() const { return (FD3D12PixelShader*)PipelineStateInitializer.BoundShaderState.PixelShaderRHI; }
+#if PLATFORM_SUPPORTS_TESSELLATION_SHADERS
 	FORCEINLINE class FD3D12HullShader*     GetHullShader() const { return (FD3D12HullShader*)PipelineStateInitializer.BoundShaderState.HullShaderRHI; }
 	FORCEINLINE class FD3D12DomainShader*   GetDomainShader() const { return (FD3D12DomainShader*)PipelineStateInitializer.BoundShaderState.DomainShaderRHI; }
+#else
+	FORCEINLINE class FD3D12HullShader*     GetHullShader() const { return nullptr; }
+	FORCEINLINE class FD3D12DomainShader*   GetDomainShader() const { return nullptr; }
+#endif
+#if PLATFORM_SUPPORTS_GEOMETRY_SHADERS
 	FORCEINLINE class FD3D12GeometryShader* GetGeometryShader() const { return (FD3D12GeometryShader*)PipelineStateInitializer.BoundShaderState.GeometryShaderRHI; }
+#else
+	FORCEINLINE class FD3D12GeometryShader* GetGeometryShader() const { return nullptr; }
+#endif
 };
 
 struct FD3D12ComputePipelineState : public FRHIComputePipelineState
@@ -414,12 +452,7 @@ protected:
 	mutable FRWLock LowLevelGraphicsPipelineStateCacheMutex;
 	mutable FRWLock ComputePipelineStateCacheMutex;
 
-	FCriticalSection DiskCachesCS;
-
-#if !PLATFORM_WINDOWS
-	FRWLock CS;
-#endif
-
+	FRWLock DiskCachesCS;
 	FDiskCacheInterface DiskCaches[NUM_PSO_CACHE_TYPES];
 
 	void CleanupPipelineStateCaches();
@@ -457,10 +490,10 @@ public:
 	FD3D12ComputePipelineState* FindInLoadedCache(FD3D12ComputeShader* ComputeShader, FD3D12ComputePipelineStateDesc& OutLowLevelDesc);
 	FD3D12ComputePipelineState* CreateAndAdd(FD3D12ComputeShader* ComputeShader, const FD3D12ComputePipelineStateDesc& LowLevelDesc);
 
-	static SIZE_T HashPSODesc(const FD3D12LowLevelGraphicsPipelineStateDesc& Desc);
-	static SIZE_T HashPSODesc(const FD3D12ComputePipelineStateDesc& Desc);
+	static uint64 HashPSODesc(const FD3D12LowLevelGraphicsPipelineStateDesc& Desc);
+	static uint64 HashPSODesc(const FD3D12ComputePipelineStateDesc& Desc);
 
-	static uint32 HashData(const void* Data, SIZE_T NumBytes);
+	static uint64 HashData(const void* Data, int32 NumBytes);
 
 	FD3D12PipelineStateCacheBase(FD3D12Adapter* InParent);
 	virtual ~FD3D12PipelineStateCacheBase();

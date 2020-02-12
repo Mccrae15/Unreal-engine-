@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "ProjectManager.h"
 #include "Misc/MessageDialog.h"
@@ -249,24 +249,29 @@ void FProjectManager::ClearSupportedTargetPlatformsForCurrentProject()
 	OnTargetPlatformsForCurrentProjectChangedEvent.Broadcast();
 }
 
-bool FProjectManager::HasDefaultPluginSettings() const
+PROJECTS_API bool HasDefaultPluginSettings(const FString& Platform)
 {
+	const FProjectDescriptor* CurrentProject = IProjectManager::Get().GetCurrentProject();
+	bool bAllowEnginePluginsEnabledByDefault = true;
+
 	// Get settings for the plugins which are currently enabled or disabled by the project file
 	TMap<FString, bool> ConfiguredPlugins;
-	if (CurrentProject.IsValid())
+	if (CurrentProject != nullptr)
 	{
+		bAllowEnginePluginsEnabledByDefault = !CurrentProject->bDisableEnginePluginsByDefault;
 		for (const FPluginReferenceDescriptor& PluginReference : CurrentProject->Plugins)
 		{
-			ConfiguredPlugins.Add(PluginReference.Name, PluginReference.bEnabled);
+			ConfiguredPlugins.Add(PluginReference.Name, PluginReference.IsEnabledForPlatform(Platform));
 		}
 	}
 
 	// Check whether the setting for any default plugin has been changed
 	for(const TSharedRef<IPlugin>& Plugin: IPluginManager::Get().GetDiscoveredPlugins())
 	{
-		if (Plugin->GetDescriptor().SupportsTargetPlatform(FPlatformMisc::GetUBTPlatform()))
+		if (Plugin->GetDescriptor().SupportsTargetPlatform(Platform))
 		{
-			bool bEnabled = Plugin->IsEnabledByDefault();
+			const bool bEnabledByDefault = Plugin->IsEnabledByDefault(bAllowEnginePluginsEnabledByDefault);
+			bool bEnabled = bEnabledByDefault;
 
 			bool* EnabledPtr = ConfiguredPlugins.Find(Plugin->GetName());
 			if(EnabledPtr != nullptr)
@@ -274,7 +279,7 @@ bool FProjectManager::HasDefaultPluginSettings() const
 				bEnabled = *EnabledPtr;
 			}
 
-			bool bEnabledInDefaultExe = (Plugin->GetLoadedFrom() == EPluginLoadedFrom::Engine && Plugin->IsEnabledByDefault() && !Plugin->GetDescriptor().bInstalled);
+			bool bEnabledInDefaultExe = (Plugin->GetLoadedFrom() == EPluginLoadedFrom::Engine && bEnabledByDefault && !Plugin->GetDescriptor().bInstalled);
 			if(bEnabled != bEnabledInDefaultExe)
 			{
 				return false;
@@ -283,6 +288,11 @@ bool FProjectManager::HasDefaultPluginSettings() const
 	}
 
 	return true;
+}
+
+bool FProjectManager::HasDefaultPluginSettings() const
+{
+	return ::HasDefaultPluginSettings(FPlatformMisc::GetUBTPlatform());
 }
 
 bool FProjectManager::SetPluginEnabled(const FString& PluginName, bool bEnabled, FText& OutFailReason)
@@ -339,7 +349,7 @@ bool FProjectManager::SetPluginEnabled(const FString& PluginName, bool bEnabled,
 		{
 			// Get the default list of enabled plugins
 			TArray<FString> DefaultEnabledPlugins;
-			GetDefaultEnabledPlugins(DefaultEnabledPlugins, false);
+			GetDefaultEnabledPlugins(DefaultEnabledPlugins, false, !CurrentProject->bDisableEnginePluginsByDefault);
 
 			// Check the enabled state is the same in that
 			if(DefaultEnabledPlugins.Contains(PluginName) == bEnabled)
@@ -378,12 +388,12 @@ bool FProjectManager::RemovePluginReference(const FString& PluginName, FText& Ou
 	return bPluginFound;
 }
 
-void FProjectManager::GetDefaultEnabledPlugins(TArray<FString>& OutPluginNames, bool bIncludeInstalledPlugins)
+void FProjectManager::GetDefaultEnabledPlugins(TArray<FString>& OutPluginNames, bool bIncludeInstalledPlugins, bool bAllowEnginePluginsEnabledByDefault)
 {
 	// Add all the game plugins and everything marked as enabled by default
 	for (TSharedRef<IPlugin>& Plugin : IPluginManager::Get().GetDiscoveredPlugins())
 	{
-		if(Plugin->IsEnabledByDefault())
+		if(Plugin->IsEnabledByDefault(bAllowEnginePluginsEnabledByDefault))
 		{
 			if(bIncludeInstalledPlugins || !Plugin->GetDescriptor().bInstalled)
 			{

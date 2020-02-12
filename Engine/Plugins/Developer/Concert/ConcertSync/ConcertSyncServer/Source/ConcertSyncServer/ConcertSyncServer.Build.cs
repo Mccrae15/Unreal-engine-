@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 namespace UnrealBuildTool.Rules
 {
@@ -11,25 +11,18 @@ namespace UnrealBuildTool.Rules
 				{
 					"Core",
 					"CoreUObject",
-                    "ConcertSyncCore",
-                }
+					"Concert",
+					"ConcertSyncCore",
+				}
 			);
 
-            PrivateDependencyModuleNames.AddRange(
-                new string[]
-                {
-                    // TODO: Review
-                    "Concert",
-                    "ConcertTransport",
-                    //"ConcertSyncCore",
-                }
-            );
-
-            PrivateIncludePathModuleNames.AddRange(
-                new string[] {
-                    "Concert",
-                }
-            );
-        }
-    }
+			PrivateDependencyModuleNames.AddRange(
+				new string[]
+				{
+					"ConcertTransport",
+					"Serialization",
+				}
+			);
+		}
+	}
 }

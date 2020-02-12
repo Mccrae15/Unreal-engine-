@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 // This code is modified from that in the Mesa3D Graphics library available at
 // http://mesa3d.org/
@@ -585,6 +585,10 @@ ir_constant_propagation_visitor::add_constant(ir_assignment *ir)
 	* arrays, or structures would require more work elsewhere.
 	*/
 	if (!deref->var->type->is_vector() && !deref->var->type->is_scalar())
+		return;
+
+	// Shared variables should be considered volatile
+	if (deref->var->mode == ir_var_shared)
 		return;
 
 	entry = new(this->mem_ctx) cpv_entry(deref->var, ir->write_mask, constant);

@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -53,7 +53,15 @@ public:
 	void Add(const T& Item)
 	{
 		if (Count == Capacity)
-			Reserve(Capacity ? (150U * Capacity) / 100U : DefaultCapacity);
+		{
+			uint32 NewCapacity = DefaultCapacity;
+			if (Capacity)
+			{
+				NewCapacity = Capacity + (Capacity / 2);
+				ensureMsgf(NewCapacity > Capacity, TEXT("Unsigned integer overflow."));
+			}
+			Reserve(NewCapacity);
+		}
 
 		Array[Count] = Item;
 		++Count;
@@ -137,10 +145,11 @@ public:
 
 	void Trim()
 	{
-		if (Array != StaticArray && (Count * 128) / Capacity < 100)
+		// Trim if usage has dropped below 3/4 of the total capacity
+		if (Array != StaticArray && Count < (Capacity - (Capacity / 4)))
 		{
 			Reserve(Count);
-		}
+		} 
 	}
 
 private:

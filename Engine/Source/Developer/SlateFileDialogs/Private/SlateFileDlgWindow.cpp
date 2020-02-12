@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "SlateFileDlgWindow.h"
 #include "SlateFileDialogsPrivate.h"
@@ -755,7 +755,7 @@ void SSlateFileOpenDlg::Construct(const FArguments& InArgs)
 						.Padding(FMargin(0.0f))
 						[
 							SNew(STextBlock)
-							.Text(LOCTEXT("FilterLabel", "Filter:"))
+							.Text(bSaveFile ? LOCTEXT("SaveTypeLabel", "Save as type:") : LOCTEXT("FilterLabel", "Filter:"))
 							.Font(StyleSet->GetFontStyle("SlateFileDialogs.Dialog"))
 							.Justification(ETextJustify::Left)
 						]
@@ -874,14 +874,14 @@ void SSlateFileOpenDlg::BuildDirectoryPath()
 			BuiltPath = BuiltPath + TEXT("/") + AbsPath.Left(Idx);
 		}
 
-		FCString::Strcpy(Temp, ARRAY_COUNT(Temp), &AbsPath[Idx < AbsPath.Len() - 1 ? Idx + 1 : Idx]);
+		FCString::Strcpy(Temp, UE_ARRAY_COUNT(Temp), &AbsPath[Idx < AbsPath.Len() - 1 ? Idx + 1 : Idx]);
 
 		DirectoryNodesArray.Add(FDirNode(AbsPath.Left(Idx), nullptr));
 	}
 	else if (PLATFORM_LINUX)
 	{
 		// start with system base directory
-		FCString::Strcpy(Temp, ARRAY_COUNT(Temp), *AbsPath);
+		FCString::Strcpy(Temp, UE_ARRAY_COUNT(Temp), *AbsPath);
 
 		BuiltPath = "/";
 		DirectoryNodesArray.Add(FDirNode(FString(TEXT("/")), nullptr));
@@ -984,7 +984,7 @@ void SSlateFileOpenDlg::OnPathMenuItemClicked( FString ClickedPath )
 }
 
 
-TSharedPtr<SWidget> SSlateFileOpenDlg::OnGetCrumbDelimiterContent(const FString& CrumbData) const
+TSharedRef<SWidget> SSlateFileOpenDlg::OnGetCrumbDelimiterContent(const FString& CrumbData) const
 {
 	TSharedPtr<SWidget> Widget = SNullWidget::NullWidget;
 	TArray<FString> SubDirs;
@@ -1020,7 +1020,7 @@ TSharedPtr<SWidget> SSlateFileOpenDlg::OnGetCrumbDelimiterContent(const FString&
 						FText::FromString(Drive),
 						FText::GetEmpty(),
 						FSlateIcon(),
-						FUIAction(FExecuteAction::CreateSP(this, &SSlateFileOpenDlg::OnPathMenuItemClicked, Drive + TEXT("/"))));
+						FUIAction(FExecuteAction::CreateSP(const_cast<SSlateFileOpenDlg*>(this), &SSlateFileOpenDlg::OnPathMenuItemClicked, Drive + TEXT("/"))));
 				}
 
 				DrivesMask >>= 1;
@@ -1051,7 +1051,7 @@ TSharedPtr<SWidget> SSlateFileOpenDlg::OnGetCrumbDelimiterContent(const FString&
 				FText::FromString(SubDir),
 				FText::GetEmpty(),
 				FSlateIcon(),
-				FUIAction(FExecuteAction::CreateSP(this, &SSlateFileOpenDlg::OnPathMenuItemClicked, CrumbData + SubDir + TEXT("/"))));
+				FUIAction(FExecuteAction::CreateSP(const_cast<SSlateFileOpenDlg*>(this), &SSlateFileOpenDlg::OnPathMenuItemClicked, CrumbData + SubDir + TEXT("/"))));
 		}
 
 		Widget = 
@@ -1063,7 +1063,7 @@ TSharedPtr<SWidget> SSlateFileOpenDlg::OnGetCrumbDelimiterContent(const FString&
 			];
 	}
 
-	return Widget;
+	return Widget.ToSharedRef();
 }
 
 
@@ -1304,7 +1304,10 @@ void SSlateFileOpenDlg::OnItemDoubleClicked(TSharedPtr<FFileEntry> Item)
 {
 	if (Item->bIsDirectory)
 	{
-		SetDefaultFile(FString(""));
+		if (!bSaveFile)
+		{
+			SetDefaultFile(FString(""));
+		}
 
 		CurrentPath = CurrentPath + Item->Label + TEXT("/");
 		bNeedsBuilding = true;
@@ -1331,7 +1334,7 @@ void SSlateFileOpenDlg::OnFilterChanged(TSharedPtr<FString> NewValue, ESelectInf
 {
 	for (int32 i = 0; i < FilterNameArray.Num(); i++)
 	{
-		if (FilterNameArray[i].Get()->Compare(*NewValue.Get(), ESearchCase::CaseSensitive) == 0)
+		if (NewValue.IsValid() && FilterNameArray[i].Get()->Compare(*NewValue.Get(), ESearchCase::CaseSensitive) == 0)
 		{
 			FilterIndex = i;
 			break;
@@ -1392,6 +1395,19 @@ void SSlateFileOpenDlg::ParseTextField(TArray<FString> &FilenameArray, FString F
 	}
 	else
 	{
+		FString Extension;
+
+		// get current filter extension
+		if (!bDirectoriesOnly && GetFilterExtension(Extension))
+		{
+			// append extension to filename if user left it off
+			if (!SaveFilename.EndsWith(Extension, ESearchCase::CaseSensitive) &&
+				!IsWildcardExtension(Extension))
+			{
+				Files = Files + Extension;
+			}
+		}
+
 		FilenameArray.Add(Files);
 	}
 }
@@ -1433,20 +1449,7 @@ void SSlateFileOpenDlg::OnFileNameCommitted(const FText& InText, ETextCommit::Ty
 	// update edit box unless user choose to escape out
 	if (InCommitType != ETextCommit::OnCleared)
 	{
-		FString Extension;
 		SaveFilename = InText.ToString();
-
-		// get current filter extension
-		if (!bDirectoriesOnly && GetFilterExtension(Extension))
-		{
-			// append extension to filename if user left it off
-			if (!SaveFilename.EndsWith(Extension, ESearchCase::CaseSensitive) &&
-				!IsWildcardExtension(Extension))
-			{
-				SaveFilename = SaveFilename + Extension;
-			}
-		}
-
 		ListView->ClearSelection();
 
 		SetDefaultFile(SaveFilename);
@@ -1498,7 +1501,7 @@ void SSlateFileOpenDlg::ParseFilters()
 			if (FilterNameArray.Num() == 0)
 			{
 				TCHAR Temp[MAX_FILTER_LENGTH] = {0};
-				FCString::Strcpy(Temp, ARRAY_COUNT(Temp), *Filters);
+				FCString::Strcpy(Temp, UE_ARRAY_COUNT(Temp), *Filters);
 
 				// break path into tokens
 				TCHAR *ContextStr = nullptr;
@@ -1540,9 +1543,15 @@ bool SSlateFileOpenDlg::GetFilterExtension(FString &OutString)
 		return false;
 	}
 
+	// We have attempted to get the filter extension before parsing them
+	if (FilterNameArray.Num() == 0)
+	{
+		ParseFilters();
+	}
+
 	// make a copy of filter string that we can modify
 	TCHAR Temp[MAX_FILTER_LENGTH] = {0};
-	FCString::Strcpy(Temp, ARRAY_COUNT(Temp), *(*FilterNameArray[FilterIndex].Get()));
+	FCString::Strcpy(Temp, UE_ARRAY_COUNT(Temp), *(*FilterNameArray[FilterIndex].Get()));
 
 	// find start of extension
 	TCHAR *FilterExt = FCString::Strchr(Temp, '.');
@@ -1645,7 +1654,10 @@ FReply SSlateFileOpenDlg::OnGoForwardClick()
 {
 	if ((HistoryIndex+1) < History.Num())
 	{
-		SetDefaultFile(FString(""));
+		if (!bSaveFile)
+		{
+			SetDefaultFile(FString(""));
+		}
 
 		HistoryIndex++;
 		CurrentPath = History[HistoryIndex];
@@ -1662,7 +1674,10 @@ FReply SSlateFileOpenDlg::OnGoBackClick()
 {
 	if (HistoryIndex > 0)
 	{
-		SetDefaultFile(FString(""));
+		if (!bSaveFile)
+		{
+			SetDefaultFile(FString(""));
+		}
 
 		HistoryIndex--;
 		CurrentPath = History[HistoryIndex];

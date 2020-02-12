@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -187,6 +187,7 @@ struct FHardwareSurveyResults
 	TCHAR MultimediaAPI_DEPRECATED[MaxStringLength];
 
 	uint32 HardDriveGB;
+	uint32 HardDriveFreeMB;
 	uint32 MemoryMB;
 
 	float CPUPerformanceIndex;

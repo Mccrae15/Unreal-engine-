@@ -1,6 +1,8 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
+
+#include "Misc/Build.h"
 
 // define all other platforms to be zero
 //@port Define the platform here to be zero when compiling for other platforms
@@ -58,11 +60,11 @@
 #if !defined(PLATFORM_APPLE)
 	#define PLATFORM_APPLE 0
 #endif
-#if !defined(PLATFORM_HTML5)
-	#define PLATFORM_HTML5 0
-#endif
 #if !defined(PLATFORM_LINUX)
 	#define PLATFORM_LINUX 0
+#endif
+#if !defined(PLATFORM_LINUXAARCH64)
+	#define PLATFORM_LINUXAARCH64 0
 #endif
 #if !defined(PLATFORM_SWITCH)
 	#define PLATFORM_SWITCH 0
@@ -73,31 +75,13 @@
 #if !defined(PLATFORM_UNIX)
 	#define PLATFORM_UNIX 0
 #endif
+#if !defined(PLATFORM_HOLOLENS)
+#define PLATFORM_HOLOLENS 0
+#endif
 
 // Platform specific compiler pre-setup.
-#if PLATFORM_WINDOWS
-	#include "Windows/WindowsPlatformCompilerPreSetup.h"
-#elif PLATFORM_PS4
-	#include "PS4/PS4PlatformCompilerPreSetup.h"
-#elif PLATFORM_XBOXONE
-	#include "XboxOne/XboxOnePlatformCompilerPreSetup.h"
-#elif PLATFORM_MAC
-	#include "Mac/MacPlatformCompilerPreSetup.h"
-#elif PLATFORM_IOS
-	#include "IOS/IOSPlatformCompilerPreSetup.h"
-#elif PLATFORM_ANDROID
-	#include "Android/AndroidPlatformCompilerPreSetup.h"
-#elif PLATFORM_HTML5
-	#include "HTML5/HTML5PlatformCompilerPreSetup.h"
-#elif PLATFORM_LINUX
-	#include "Linux/LinuxPlatformCompilerPreSetup.h"
-#elif PLATFORM_QUAIL
-	#include "Quail/QuailPlatformCompilerPreSetup.h"
-#elif PLATFORM_SWITCH
-	#include "Switch/SwitchPlatformCompilerPreSetup.h"
-#else
-	#error Unknown Compiler
-#endif
+#include "PreprocessorHelpers.h"
+#include COMPILED_PLATFORM_HEADER(PlatformCompilerPreSetup.h)
 
 // Generic compiler pre-setup.
 #include "GenericPlatform/GenericPlatformCompilerPreSetup.h"
@@ -148,33 +132,10 @@
 #endif
 
 //---------------------------------------------------------
-// Identify the current platform and include that header
+// Include main platform setup header (XXX/XXXPlatform.h)
 //---------------------------------------------------------
 
-//@port Identify the platform here and include the platform header to setup the platform types, etc
-#if PLATFORM_WINDOWS
-	#include "Windows/WIndowsPlatform.h"	// this is the actual filename on disk, alas cannot be easily renamed in source control
-#elif PLATFORM_PS4
-	#include "PS4/PS4Platform.h"
-#elif PLATFORM_XBOXONE
-	#include "XboxOne/XboxOnePlatform.h"
-#elif PLATFORM_MAC
-	#include "Mac/MacPlatform.h"
-#elif PLATFORM_IOS
-	#include "IOS/IOSPlatform.h"
-#elif PLATFORM_ANDROID
-	#include "Android/AndroidPlatform.h"
-#elif PLATFORM_HTML5
-	#include "HTML5/HTML5Platform.h"
-#elif PLATFORM_LINUX
-	#include "Linux/LinuxPlatform.h"
-#elif PLATFORM_QUAIL
-	#include "Quail/QuailPlatform.h"
-#elif PLATFORM_SWITCH
-	#include "Switch/SwitchPlatform.h"
-#else
-	#error Unknown platform
-#endif
+#include COMPILED_PLATFORM_HEADER(Platform.h)
 
 //------------------------------------------------------------------
 // Finalize define setup
@@ -204,9 +165,29 @@
 #ifndef PLATFORM_SUPPORTS_PRAGMA_PACK
 	#define PLATFORM_SUPPORTS_PRAGMA_PACK		0
 #endif
+
+// Defines for the availibility of the various levels of vector intrinsics.
+// These may be set from UnrealBuildTool, otherwise each platform-specific platform.h is expected to set them appropriately.
 #ifndef PLATFORM_ENABLE_VECTORINTRINSICS
 	#define PLATFORM_ENABLE_VECTORINTRINSICS	0
 #endif
+// If PLATFORM_MAYBE_HAS_### is 1, then ### intrinsics are compilable.
+// This does not guarantee that the intrinsics are runnable on all instances of the platform however; a runtime check such as cpuid may be required to confirm availability.
+// If PLATFORM_ALWAYS_HAS_### is 1, then ## intrinsics will compile and run on all instances of the platform.  PLATFORM_ALWAYS_HAS_### == 1 implies PLATFORM_MAYBE_HAS_### == 1.
+#ifndef PLATFORM_MAYBE_HAS_SSE4_1
+	#define PLATFORM_MAYBE_HAS_SSE4_1			0
+#endif
+#ifndef PLATFORM_ALWAYS_HAS_SSE4_1
+	#define PLATFORM_ALWAYS_HAS_SSE4_1			0
+#endif
+#ifndef PLATFORM_MAYBE_HAS_AVX
+	#define PLATFORM_MAYBE_HAS_AVX				0
+#endif
+#ifndef PLATFORM_ALWAYS_HAS_AVX
+	#define PLATFORM_ALWAYS_HAS_AVX				0
+#endif
+
+
 #ifndef PLATFORM_HAS_CPUID
 	#if defined(_M_IX86) || defined(__i386__) || defined(_M_X64) || defined(__x86_64__) || defined (__amd64__)
 		#define PLATFORM_HAS_CPUID				1
@@ -259,11 +240,20 @@
 #ifndef PLATFORM_COMPILER_HAS_DECLTYPE_AUTO
 	#define PLATFORM_COMPILER_HAS_DECLTYPE_AUTO 1
 #endif
+#ifndef PLATFORM_COMPILER_HAS_IF_CONSTEXPR
+	#define PLATFORM_COMPILER_HAS_IF_CONSTEXPR 1
+#endif
+#ifndef PLATFORM_COMPILER_HAS_FOLD_EXPRESSIONS
+	#define PLATFORM_COMPILER_HAS_FOLD_EXPRESSIONS 0
+#endif
 #ifndef PLATFORM_TCHAR_IS_1_BYTE
 	#define PLATFORM_TCHAR_IS_1_BYTE			0
 #endif
 #ifndef PLATFORM_TCHAR_IS_4_BYTES
 	#define PLATFORM_TCHAR_IS_4_BYTES			0
+#endif
+#ifndef PLATFORM_WCHAR_IS_4_BYTES
+	#define PLATFORM_WCHAR_IS_4_BYTES			0
 #endif
 #ifndef PLATFORM_TCHAR_IS_CHAR16
 	#define PLATFORM_TCHAR_IS_CHAR16			0
@@ -288,6 +278,9 @@
 #endif
 #ifndef PLATFORM_SUPPORTS_TEXTURE_STREAMING
 	#define PLATFORM_SUPPORTS_TEXTURE_STREAMING	1
+#endif
+#ifndef PLATFORM_SUPPORTS_VIRTUAL_TEXTURE_STREAMING
+	#define PLATFORM_SUPPORTS_VIRTUAL_TEXTURE_STREAMING	0
 #endif
 #ifndef PLATFORM_SUPPORTS_VIRTUAL_TEXTURES
 	#define PLATFORM_SUPPORTS_VIRTUAL_TEXTURES		0
@@ -322,6 +315,15 @@
 #ifndef PLATFORM_HAS_BSD_SOCKET_FEATURE_MSG_DONTWAIT
 	#define PLATFORM_HAS_BSD_SOCKET_FEATURE_MSG_DONTWAIT	0
 #endif
+#ifndef PLATFORM_HAS_BSD_SOCKET_FEATURE_RECVMMSG
+	#define PLATFORM_HAS_BSD_SOCKET_FEATURE_RECVMMSG	0
+#endif
+#ifndef PLATFORM_HAS_BSD_SOCKET_FEATURE_TIMESTAMP
+	#define PLATFORM_HAS_BSD_SOCKET_FEATURE_TIMESTAMP 0
+#endif
+#ifndef PLATFORM_HAS_BSD_SOCKET_FEATURE_NODELAY
+	#define PLATFORM_HAS_BSD_SOCKET_FEATURE_NODELAY	1
+#endif
 #ifndef PLATFORM_HAS_NO_EPROCLIM
 	#define PLATFORM_HAS_NO_EPROCLIM			0
 #endif
@@ -335,6 +337,18 @@
 
 #ifndef PLATFORM_USES_ES2
 	#define PLATFORM_USES_ES2					0
+#endif
+
+#ifndef PLATFORM_SUPPORTS_GEOMETRY_SHADERS
+	#define PLATFORM_SUPPORTS_GEOMETRY_SHADERS		1
+#endif
+
+#ifndef PLATFORM_SUPPORTS_TESSELLATION_SHADERS
+	#define PLATFORM_SUPPORTS_TESSELLATION_SHADERS	1
+#endif
+
+#if PLATFORM_SUPPORTS_TESSELLATION_SHADERS && !PLATFORM_SUPPORTS_GEOMETRY_SHADERS
+	#error Geometry shader support is required by tessellation
 #endif
 
 #ifndef PLATFORM_BUILTIN_VERTEX_HALF_FLOAT
@@ -449,6 +463,119 @@
 	#define PLATFORM_HAS_CRC_INTRINSICS							0
 #endif
 
+#ifndef PLATFORM_NEEDS_RHIRESOURCELIST
+	#define PLATFORM_NEEDS_RHIRESOURCELIST 1
+#endif
+
+#ifndef PLATFORM_USE_FULL_TASK_GRAPH
+	#define PLATFORM_USE_FULL_TASK_GRAPH						1
+#endif
+
+#ifndef PLATFORM_USE_ANSI_POSIX_MALLOC
+	#define PLATFORM_USE_ANSI_POSIX_MALLOC						0
+#endif
+
+#ifndef PLATFORM_USE_ANSI_MEMALIGN
+	#define PLATFORM_USE_ANSI_MEMALIGN							0
+#endif
+
+#ifndef PLATFORM_USE_ANSI_POSIX_MALLOC
+	#define PLATFORM_USE_ANSI_POSIX_MALLOC						0
+#endif
+
+#ifndef PLATFORM_IS_ANSI_MALLOC_THREADSAFE
+	#define PLATFORM_IS_ANSI_MALLOC_THREADSAFE					0
+#endif
+
+#ifndef PLATFORM_SUPPORTS_OPUS_CODEC
+	#define PLATFORM_SUPPORTS_OPUS_CODEC						1
+#endif
+
+#ifndef PLATFORM_SUPPORTS_VORBIS_CODEC
+	#define PLATFORM_SUPPORTS_VORBIS_CODEC						1
+#endif
+
+
+#ifndef PLATFORM_USE_MINIMAL_HANG_DETECTION
+	#define PLATFORM_USE_MINIMAL_HANG_DETECTION					0
+#endif
+
+#ifndef PLATFORM_USE_GENERIC_STRING_IMPLEMENTATION
+	#define PLATFORM_USE_GENERIC_STRING_IMPLEMENTATION			1
+#endif
+
+#ifndef PLATFORM_SUPPORTS_LLM
+	#define PLATFORM_SUPPORTS_LLM								1
+#endif
+
+#ifndef PLATFORM_ALLOW_ALLOCATIONS_IN_FASYNCWRITER_SERIALIZEBUFFERTOARCHIVE
+	#define	PLATFORM_ALLOW_ALLOCATIONS_IN_FASYNCWRITER_SERIALIZEBUFFERTOARCHIVE 1
+#endif
+
+#ifndef PLATFORM_HAS_FPlatformVirtualMemoryBlock
+	#define	PLATFORM_HAS_FPlatformVirtualMemoryBlock 1
+#endif
+#ifndef PLATFORM_BYPASS_PAK_PRECACHE
+	#define PLATFORM_BYPASS_PAK_PRECACHE 0
+#endif
+
+#ifndef PLATFORM_SUPPORTS_FLIP_TRACKING
+	#define PLATFORM_SUPPORTS_FLIP_TRACKING 0
+#endif
+
+#ifndef PLATFORM_USE_FULL_TASK_GRAPH
+	#define PLATFORM_USE_FULL_TASK_GRAPH						1
+#endif
+
+#ifndef PLATFORM_USE_ANSI_POSIX_MALLOC
+	#define PLATFORM_USE_ANSI_POSIX_MALLOC						0
+#endif
+
+#ifndef PLATFORM_USE_ANSI_MEMALIGN
+	#define PLATFORM_USE_ANSI_MEMALIGN							0
+#endif
+
+#ifndef PLATFORM_USE_ANSI_POSIX_MALLOC
+	#define PLATFORM_USE_ANSI_POSIX_MALLOC						0
+#endif
+
+#ifndef PLATFORM_IS_ANSI_MALLOC_THREADSAFE
+	#define PLATFORM_IS_ANSI_MALLOC_THREADSAFE					0
+#endif
+
+#ifndef PLATFORM_SUPPORTS_OPUS_CODEC
+	#define PLATFORM_SUPPORTS_OPUS_CODEC						1
+#endif
+
+#ifndef PLATFORM_SUPPORTS_VORBIS_CODEC
+	#define PLATFORM_SUPPORTS_VORBIS_CODEC						1
+#endif
+
+#ifndef PLATFORM_USE_MINIMAL_HANG_DETECTION
+	#define PLATFORM_USE_MINIMAL_HANG_DETECTION					0
+#endif
+
+#ifndef PLATFORM_USE_GENERIC_STRING_IMPLEMENTATION
+	#define PLATFORM_USE_GENERIC_STRING_IMPLEMENTATION			1
+#endif
+
+#ifndef PLATFORM_USE_SHOWFLAGS_ALWAYS_BITFIELD
+	#define	PLATFORM_USE_SHOWFLAGS_ALWAYS_BITFIELD				1
+#endif
+
+#ifndef PLATFORM_SUPPORTS_LLM
+	#define PLATFORM_SUPPORTS_LLM								1
+#endif
+
+#ifndef PLATFORM_ALLOW_ALLOCATIONS_IN_FASYNCWRITER_SERIALIZEBUFFERTOARCHIVE
+	#define	PLATFORM_ALLOW_ALLOCATIONS_IN_FASYNCWRITER_SERIALIZEBUFFERTOARCHIVE 1
+#endif
+
+#ifndef PLATFORM_HAS_FPlatformVirtualMemoryBlock
+	#define	PLATFORM_HAS_FPlatformVirtualMemoryBlock 1
+#endif
+
+
 // deprecated, do not use
 #define PLATFORM_HAS_THREADSAFE_RHIGetRenderQueryResult	#
 #define PLATFORM_SUPPORTS_RHI_THREAD #
@@ -514,12 +641,21 @@
 	#define FUNCTION_CHECK_RETURN(...) DEPRECATED_MACRO(4.12, "FUNCTION_CHECK_RETURN has been deprecated and should be replaced with FUNCTION_CHECK_RETURN_START and FUNCTION_CHECK_RETURN_END.") FUNCTION_CHECK_RETURN_START __VA_ARGS__ FUNCTION_CHECK_RETURN_END
 #endif
 
-#ifndef ASSUME										/* Hints compiler that expression is true; generally restricted to comparisons against constants */
-	#define ASSUME(...)
+/** Promise expression is true. Compiler can optimize accordingly with undefined behavior if wrong. Static analyzers understand this.  */
+#ifndef UE_ASSUME
+	#if defined(__clang__)
+		#define UE_ASSUME(x) __builtin_assume(x)
+	#elif defined(_MSC_VER)
+		#define UE_ASSUME(x) __assume(x)
+	#else
+		#define UE_ASSUME(x)
+	#endif
 #endif
 
+#define ASSUME(x) UE_ASSUME(x) DEPRECATED_MACRO(4.25, "Please use UE_ASSUME instead.")
+
 /** Branch prediction hints */
-#ifndef LIKELY						/* Hints compiler that expression is likely to be true, much softer than ASSUME - allows (penalized by worse performance) expression to be false */
+#ifndef LIKELY						/* Hints compiler that expression is likely to be true, much softer than UE_ASSUME - allows (penalized by worse performance) expression to be false */
 	#if ( defined(__clang__) || defined(__GNUC__) ) && (PLATFORM_UNIX)	// effect of these on non-Linux platform has not been analyzed as of 2016-03-21
 		#define LIKELY(x)			__builtin_expect(!!(x), 1)
 	#else
@@ -658,6 +794,11 @@
 #ifndef DLLEXPORT
 	#define DLLEXPORT
 	#define DLLIMPORT
+#endif
+
+#ifndef DLLEXPORT_VTABLE
+	#define DLLEXPORT_VTABLE
+	#define DLLIMPORT_VTABLE
 #endif
 
 // embedded app is not default (embedding UE4 in a native view, right now just for IOS and Android)
@@ -819,6 +960,9 @@ namespace TypeTests
 	static_assert(!PLATFORM_TCHAR_IS_4_BYTES || sizeof(TCHAR) == 4, "TCHAR size must be 4 bytes.");
 	static_assert(PLATFORM_TCHAR_IS_4_BYTES || sizeof(TCHAR) == 2, "TCHAR size must be 2 bytes.");
 
+	static_assert(!PLATFORM_WCHAR_IS_4_BYTES || sizeof(wchar_t) == 4, "wchar_t size must be 4 bytes.");
+	static_assert(PLATFORM_WCHAR_IS_4_BYTES || sizeof(wchar_t) == 2, "wchar_t size must be 2 bytes.");
+
 	static_assert(PLATFORM_32BITS || PLATFORM_64BITS, "Type tests pointer size failed.");
 	static_assert(PLATFORM_32BITS != PLATFORM_64BITS, "Type tests pointer exclusive failed.");
 	static_assert(!PLATFORM_64BITS || sizeof(void*) == 8, "Pointer size is 64bit, but pointers are short.");
@@ -831,30 +975,30 @@ namespace TypeTests
 	static_assert((!TAreTypesEqual<WIDECHAR, UCS2CHAR>::Value), "WIDECHAR and CHAR16 should be different types.");
 	static_assert((TAreTypesEqual<TCHAR, ANSICHAR>::Value == true || TAreTypesEqual<TCHAR, WIDECHAR>::Value == true), "TCHAR should either be ANSICHAR or WIDECHAR.");
 
-	static_assert(sizeof(uint8) == 1, "BYTE type size test failed.");
-	static_assert(int32(uint8(-1)) == 0xFF, "BYTE type sign test failed.");
+	static_assert(sizeof(uint8) == 1, "uint8 type size test failed.");
+	static_assert(int32(uint8(-1)) == 0xFF, "uint8 type sign test failed.");
 
-	static_assert(sizeof(uint16) == 2, "WORD type size test failed.");
-	static_assert(int32(uint16(-1)) == 0xFFFF, "WORD type sign test failed.");
+	static_assert(sizeof(uint16) == 2, "uint16 type size test failed.");
+	static_assert(int32(uint16(-1)) == 0xFFFF, "uint16 type sign test failed.");
 
-	static_assert(sizeof(uint32) == 4, "DWORD type size test failed.");
-	static_assert(int64(uint32(-1)) == int64(0xFFFFFFFF), "DWORD type sign test failed.");
+	static_assert(sizeof(uint32) == 4, "uint32 type size test failed.");
+	static_assert(int64(uint32(-1)) == int64(0xFFFFFFFF), "uint32 type sign test failed.");
 
-	static_assert(sizeof(uint64) == 8, "QWORD type size test failed.");
-	static_assert(uint64(-1) > uint64(0), "QWORD type sign test failed.");
+	static_assert(sizeof(uint64) == 8, "uint64 type size test failed.");
+	static_assert(uint64(-1) > uint64(0), "uint64 type sign test failed.");
 
 
-	static_assert(sizeof(int8) == 1, "SBYTE type size test failed.");
-	static_assert(int32(int8(-1)) == -1, "SBYTE type sign test failed.");
+	static_assert(sizeof(int8) == 1, "int8 type size test failed.");
+	static_assert(int32(int8(-1)) == -1, "int8 type sign test failed.");
 
-	static_assert(sizeof(int16) == 2, "SWORD type size test failed.");
-	static_assert(int32(int16(-1)) == -1, "SWORD type sign test failed.");
+	static_assert(sizeof(int16) == 2, "int16 type size test failed.");
+	static_assert(int32(int16(-1)) == -1, "int16 type sign test failed.");
 
-	static_assert(sizeof(int32) == 4, "INT type size test failed.");
-	static_assert(int64(int32(-1)) == int64(-1), "INT type sign test failed.");
+	static_assert(sizeof(int32) == 4, "int32 type size test failed.");
+	static_assert(int64(int32(-1)) == int64(-1), "int32 type sign test failed.");
 
-	static_assert(sizeof(int64) == 8, "SQWORD type size test failed.");
-	static_assert(int64(-1) < int64(0), "SQWORD type sign test failed.");
+	static_assert(sizeof(int64) == 8, "int64 type size test failed.");
+	static_assert(int64(-1) < int64(0), "int64 type sign test failed.");
 
 	static_assert(sizeof(ANSICHAR) == 1, "ANSICHAR type size test failed.");
 	static_assert(int32(ANSICHAR(-1)) == -1, "ANSICHAR type sign test failed.");
@@ -862,9 +1006,6 @@ namespace TypeTests
 	static_assert(sizeof(WIDECHAR) == 2 || sizeof(WIDECHAR) == 4, "WIDECHAR type size test failed.");
 
 	static_assert(sizeof(UCS2CHAR) == 2, "UCS2CHAR type size test failed.");
-
-	static_assert(sizeof(uint32) == 4, "BITFIELD type size test failed.");
-	static_assert(int64(uint32(-1)) == int64(0xFFFFFFFF), "BITFIELD type sign test failed.");
 
 	static_assert(sizeof(PTRINT) == sizeof(void *), "PTRINT type size test failed.");
 	static_assert(PTRINT(-1) < PTRINT(0), "PTRINT type sign test failed.");
@@ -877,29 +1018,8 @@ namespace TypeTests
 }
 
 // Platform specific compiler setup.
-#if PLATFORM_WINDOWS
-	#include "Windows/WindowsPlatformCompilerSetup.h"
-#elif PLATFORM_PS4
-	#include "PS4/PS4CompilerSetup.h"
-#elif PLATFORM_XBOXONE
-	#include "XboxOne/XboxOneCompilerSetup.h"
-#elif PLATFORM_MAC
-	#include "Mac/MacPlatformCompilerSetup.h"
-#elif PLATFORM_IOS
-	#include "IOS/IOSPlatformCompilerSetup.h"
-#elif PLATFORM_ANDROID
-	#include "Android/AndroidCompilerSetup.h"
-#elif PLATFORM_HTML5
-	#include "HTML5/HTML5PlatformCompilerSetup.h"
-#elif PLATFORM_LINUX
-	#include "Linux/LinuxPlatformCompilerSetup.h"
-#elif PLATFORM_QUAIL
-	#include "Quail/QuailPlatformCompilerSetup.h"
-#elif PLATFORM_SWITCH
-	#include "Switch/SwitchPlatformCompilerSetup.h"
-#else
-	#error Unknown Compiler
-#endif
+#include COMPILED_PLATFORM_HEADER(PlatformCompilerSetup.h)
+
 
 // If we don't have a platform-specific define for the TEXT macro, define it now.
 #if !defined(TEXT) && !UE_BUILD_DOCS
@@ -909,13 +1029,6 @@ namespace TypeTests
 		#define TEXT_PASTE(x) L ## x
 	#endif
 		#define TEXT(x) TEXT_PASTE(x)
-#endif
-
-// this function is used to suppress static analysis warnings
-#if PLATFORM_HTML5
-FORCEINLINE bool IsHTML5Platform() { return true; }
-#else
-FORCEINLINE bool IsHTML5Platform() { return false; }
 #endif
 
 

@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -48,9 +48,6 @@ class CORE_API FAsyncWriter : public FRunnable, public FArchive
 
 	/** [WRITER THREAD] Last time the archive was flushed. used in threaded situations to flush the underlying archive at a certain maximum rate. */
 	double LastArchiveFlushTime;
-
-	/** [WRITER THREAD] Archive flush interval. */
-	double ArchiveFlushIntervalSec;
 
 	/** [WRITER THREAD] Flushes the archive and reset the flush timer. */
 	void FlushArchiveAndResetTimer();

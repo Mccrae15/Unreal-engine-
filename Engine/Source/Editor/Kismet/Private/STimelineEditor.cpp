@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 
 #include "STimelineEditor.h"
@@ -1657,7 +1657,7 @@ TSharedPtr< SWidget > STimelineEditor::MakeContextMenu() const
 	{
 		TSharedRef<SWidget> SizeSlider = SNew(SSlider)
 			.Value(this, &STimelineEditor::GetSizeScaleValue)
-			.OnValueChanged(this, &STimelineEditor::SetSizeScaleValue);
+			.OnValueChanged(const_cast<STimelineEditor*>(this), &STimelineEditor::SetSizeScaleValue);
 
 		MenuBuilder.AddWidget(SizeSlider, LOCTEXT("TimelineEditorVerticalSize", "Height"));
 	}

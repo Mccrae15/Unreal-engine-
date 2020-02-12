@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "Tracks/MovieSceneParticleParameterTrack.h"
 #include "MovieSceneCommonHelpers.h"
@@ -49,6 +49,11 @@ void UMovieSceneParticleParameterTrack::RemoveSection(UMovieSceneSection& Sectio
 	Sections.Remove(&Section);
 }
 
+void UMovieSceneParticleParameterTrack::RemoveSectionAt(int32 SectionIndex)
+{
+	Sections.RemoveAt(SectionIndex);
+}
+
 bool UMovieSceneParticleParameterTrack::IsEmpty() const
 {
 	return Sections.Num() == 0;
@@ -74,7 +79,12 @@ void UMovieSceneParticleParameterTrack::AddScalarParameterKey( FName ParameterNa
 	if ( NearestSection == nullptr )
 	{
 		NearestSection = Cast<UMovieSceneParameterSection>(CreateNewSection());
-		NearestSection->SetRange(TRange<FFrameNumber>::Inclusive(Time, Time));
+
+		UMovieScene* MovieScene = GetTypedOuter<UMovieScene>();
+		check(MovieScene);
+
+		NearestSection->SetRange(MovieScene->GetPlaybackRange());
+
 		Sections.Add( NearestSection );
 	}
 	NearestSection->AddScalarParameterKey(ParameterName, Time, Value);
@@ -86,7 +96,12 @@ void UMovieSceneParticleParameterTrack::AddVectorParameterKey( FName ParameterNa
 	if ( NearestSection == nullptr )
 	{
 		NearestSection = Cast<UMovieSceneParameterSection>( CreateNewSection() );
-		NearestSection->SetRange(TRange<FFrameNumber>::Inclusive(Time, Time));
+
+		UMovieScene* MovieScene = GetTypedOuter<UMovieScene>();
+		check(MovieScene);
+
+		NearestSection->SetRange(MovieScene->GetPlaybackRange());
+
 		Sections.Add( NearestSection );
 	}
 	NearestSection->AddVectorParameterKey( ParameterName, Time, Value );
@@ -98,7 +113,12 @@ void UMovieSceneParticleParameterTrack::AddColorParameterKey( FName ParameterNam
 	if ( NearestSection == nullptr )
 	{
 		NearestSection = Cast<UMovieSceneParameterSection>( CreateNewSection() );
-		NearestSection->SetRange(TRange<FFrameNumber>::Inclusive(Time, Time));
+
+		UMovieScene* MovieScene = GetTypedOuter<UMovieScene>();
+		check(MovieScene);
+
+		NearestSection->SetRange(MovieScene->GetPlaybackRange());
+
 		Sections.Add( NearestSection );
 	}
 	NearestSection->AddColorParameterKey( ParameterName, Time, Value );

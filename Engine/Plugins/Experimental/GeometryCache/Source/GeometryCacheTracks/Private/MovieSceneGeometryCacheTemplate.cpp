@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "MovieSceneGeometryCacheTemplate.h"
 #include "Compilation/MovieSceneCompilerRules.h"
@@ -29,6 +29,7 @@ struct FPreAnimatedGeometryCacheTokenProducer : IMovieScenePreAnimatedTokenProdu
 			{
 				UGeometryCacheComponent* Component = CastChecked<UGeometryCacheComponent>(&ObjectToRestore);
 				Component->SetManualTick(bInManualTick);
+				Component->ResetAnimationTime();
 			}
 			bool bInManualTick;
 		};
@@ -45,35 +46,77 @@ struct FPreAnimatedGeometryCacheTokenProducer : IMovieScenePreAnimatedTokenProdu
 /** A movie scene execution token that executes a geometry cache */
 struct FGeometryCacheExecutionToken
 	: IMovieSceneExecutionToken
-	
+
 {
-	FGeometryCacheExecutionToken(const FMovieSceneGeometryCacheSectionTemplateParameters &InParams):
+	FGeometryCacheExecutionToken(const FMovieSceneGeometryCacheSectionTemplateParameters &InParams) :
 		Params(InParams)
 	{}
+
+	static UGeometryCacheComponent* GeometryMeshComponentFromObject(UObject* BoundObject)
+	{
+		if (AActor* Actor = Cast<AActor>(BoundObject))
+		{
+			for (UActorComponent* Component : Actor->GetComponents())
+			{
+				if (UGeometryCacheComponent* GeometryMeshComp = Cast<UGeometryCacheComponent>(Component))
+				{
+					return GeometryMeshComp;
+				}
+			}
+		}
+		else if (UGeometryCacheComponent* GeometryMeshComp = Cast<UGeometryCacheComponent>(BoundObject))
+		{
+			if (GeometryMeshComp->GetGeometryCache())
+			{
+				return GeometryMeshComp;
+			}
+		}
+		return nullptr;
+	}
 
 	/** Execute this token, operating on all objects referenced by 'Operand' */
 	virtual void Execute(const FMovieSceneContext& Context, const FMovieSceneEvaluationOperand& Operand, FPersistentEvaluationData& PersistentData, IMovieScenePlayer& Player) override
 	{
-		if (Params.GeometryCache.ResolveObject())
+		MOVIESCENE_DETAILED_SCOPE_CYCLE_COUNTER(MovieSceneEval_GeometryCache_TokenExecute)
+		if (Operand.ObjectBindingID.IsValid())
 		{
-			MOVIESCENE_DETAILED_SCOPE_CYCLE_COUNTER(MovieSceneEval_GeometryCache_TokenExecute)
-
-			UGeometryCacheComponent* GeometryCache = Cast<UGeometryCacheComponent>(Params.GeometryCache.ResolveObject());
-
-			Player.SavePreAnimatedState(*GeometryCache, FPreAnimatedGeometryCacheTokenProducer::GetAnimTypeID(), FPreAnimatedGeometryCacheTokenProducer());
-			GeometryCache->SetManualTick(true);
-			// calculate the time at which to evaluate the animation
-			float EvalTime = Params.MapTimeToAnimation(Context.GetTime(), Context.GetFrameRate());
-			GeometryCache->TickAtThisTime(EvalTime, true, Params.bReverse, true);
+			for (TWeakObjectPtr<> WeakObj : Player.FindBoundObjects(Operand))
+			{
+				if (UObject* Obj = WeakObj.Get())
+				{
+					UGeometryCacheComponent* GeometryComp = GeometryMeshComponentFromObject(Obj);
+					if (GeometryComp)
+					{
+						// Set the GeometryCache on the component only if it's set and valid in the Params
+						if (Params.GeometryCacheAsset && Params.GeometryCacheAsset != GeometryComp->GetGeometryCache())
+						{
+							UGeometryCache* GeomCache = Params.GeometryCacheAsset;
+							{
+								GeometryComp->SetGeometryCache(GeomCache);
+							}
+						}
+						else
+						{
+							// It could be unset if the Params was referencing a transient GeometryCache
+							// In that case, use the GeometryCache that is set on the component
+							Params.GeometryCacheAsset = GeometryComp->GetGeometryCache();
+						}
+						Player.SavePreAnimatedState(*GeometryComp, FPreAnimatedGeometryCacheTokenProducer::GetAnimTypeID(), FPreAnimatedGeometryCacheTokenProducer());
+						GeometryComp->SetManualTick(true);
+						// calculate the time at which to evaluate the animation
+						float EvalTime = Params.MapTimeToAnimation(GeometryComp->GetDuration(), Context.GetTime(), Context.GetFrameRate());
+						GeometryComp->TickAtThisTime(EvalTime, true, Params.bReverse, true);
+					}
+				}
+			}
 		}
-
 	}
 
 	FMovieSceneGeometryCacheSectionTemplateParameters Params;
 };
 
 FMovieSceneGeometryCacheSectionTemplate::FMovieSceneGeometryCacheSectionTemplate(const UMovieSceneGeometryCacheSection& InSection)
-	: Params(InSection.Params, InSection.GetInclusiveStartFrame(), InSection.GetExclusiveEndFrame())
+	: Params(const_cast<FMovieSceneGeometryCacheParams&> (InSection.Params), InSection.GetInclusiveStartFrame(), InSection.GetExclusiveEndFrame())
 {
 }
 
@@ -82,27 +125,35 @@ FMovieSceneGeometryCacheSectionTemplate::FMovieSceneGeometryCacheSectionTemplate
 void FMovieSceneGeometryCacheSectionTemplate::Evaluate(const FMovieSceneEvaluationOperand& Operand, const FMovieSceneContext& Context, const FPersistentEvaluationData& PersistentData, FMovieSceneExecutionTokens& ExecutionTokens) const
 {
 	MOVIESCENE_DETAILED_SCOPE_CYCLE_COUNTER(MovieSceneEval_GeometryCache_Evaluate)
-	ExecutionTokens.Add(FGeometryCacheExecutionToken(Params));
+		ExecutionTokens.Add(FGeometryCacheExecutionToken(Params));
 }
 
-float FMovieSceneGeometryCacheSectionTemplateParameters::MapTimeToAnimation(FFrameTime InPosition, FFrameRate InFrameRate) const
+float FMovieSceneGeometryCacheSectionTemplateParameters::MapTimeToAnimation(float ComponentDuration, FFrameTime InPosition, FFrameRate InFrameRate) const
 {
-	InPosition = FMath::Clamp(InPosition, FFrameTime(SectionStartTime), FFrameTime(SectionEndTime-1));
+	const float SequenceLength = ComponentDuration;
+	const FFrameTime AnimationLength = SequenceLength * InFrameRate;
+	const int32 LengthInFrames = AnimationLength.FrameNumber.Value + (int)(AnimationLength.GetSubFrame() + 0.5f) + 1;
+	//we only play end if we are not looping, and assuming we are looping if Length is greater than default length;
+	const bool bLooping = (SectionEndTime.Value - SectionStartTime.Value + StartFrameOffset + EndFrameOffset) > LengthInFrames;
+
+	InPosition = FMath::Clamp(InPosition, FFrameTime(SectionStartTime), FFrameTime(SectionEndTime - 1));
 
 	const float SectionPlayRate = PlayRate;
 	const float AnimPlayRate = FMath::IsNearlyZero(SectionPlayRate) ? 1.0f : SectionPlayRate;
 
-	const float SeqLength = GetSequenceLength() - InFrameRate.AsSeconds(StartFrameOffset + EndFrameOffset);
+	const float FirstLoopSeqLength = SequenceLength - InFrameRate.AsSeconds(FirstLoopStartFrameOffset + StartFrameOffset + EndFrameOffset);
+	const float SeqLength = SequenceLength - InFrameRate.AsSeconds(StartFrameOffset + EndFrameOffset);
 
 	float AnimPosition = FFrameTime::FromDecimal((InPosition - SectionStartTime).AsDecimal() * AnimPlayRate) / InFrameRate;
-	if (SeqLength > 0.f)
+	AnimPosition += InFrameRate.AsSeconds(FirstLoopStartFrameOffset);
+	if (SeqLength > 0.f && (bLooping || !FMath::IsNearlyEqual(AnimPosition, SeqLength, 1e-4f)))
 	{
 		AnimPosition = FMath::Fmod(AnimPosition, SeqLength);
 	}
 	AnimPosition += InFrameRate.AsSeconds(StartFrameOffset);
 	if (bReverse)
 	{
-		AnimPosition = (SeqLength - (AnimPosition - InFrameRate.AsSeconds(StartFrameOffset))) + InFrameRate.AsSeconds(StartFrameOffset);
+		AnimPosition = SequenceLength - AnimPosition;
 	}
 
 	return AnimPosition;

@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "Serialization/ObjectWriter.h"
 #include "UObject/LazyObjectPtr.h"
@@ -9,8 +9,8 @@
 
 FArchive& FObjectWriter::operator<<( class FName& N )
 {
-	NAME_INDEX ComparisonIndex = N.GetComparisonIndex();
-	NAME_INDEX DisplayIndex = N.GetDisplayIndex();
+	FNameEntryId ComparisonIndex = N.GetComparisonIndex();
+	FNameEntryId DisplayIndex = N.GetDisplayIndex();
 	int32 Number = N.GetNumber();
 	ByteOrderSerialize(&ComparisonIndex, sizeof(ComparisonIndex));
 	ByteOrderSerialize(&DisplayIndex, sizeof(DisplayIndex));

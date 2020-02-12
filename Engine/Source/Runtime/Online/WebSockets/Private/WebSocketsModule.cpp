@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "WebSocketsModule.h"
 #include "WebSocketsLog.h"
@@ -42,6 +42,7 @@ void FWebSocketsModule::ShutdownModule()
 	if (WebSocketsManager)
 	{
 		WebSocketsManager->ShutdownWebSockets();
+		delete WebSocketsManager;
 		WebSocketsManager = nullptr;
 	}
 #endif
@@ -58,15 +59,23 @@ FWebSocketsModule& FWebSocketsModule::Get()
 TSharedRef<IWebSocket> FWebSocketsModule::CreateWebSocket(const FString& Url, const TArray<FString>& Protocols, const TMap<FString, FString>& UpgradeHeaders)
 {
 	check(WebSocketsManager);
-	return WebSocketsManager->CreateWebSocket(Url, Protocols, UpgradeHeaders);
+
+	TArray<FString> ProtocolsCopy = Protocols;
+	ProtocolsCopy.RemoveAll([](const FString& Protocol){ return Protocol.IsEmpty(); });	
+	TSharedRef<IWebSocket> WebSocket = WebSocketsManager->CreateWebSocket(Url, ProtocolsCopy, UpgradeHeaders);
+	OnWebSocketCreated.Broadcast(WebSocket, Protocols, Url);
+	
+	return WebSocket;
 }
 
 TSharedRef<IWebSocket> FWebSocketsModule::CreateWebSocket(const FString& Url, const FString& Protocol, const TMap<FString, FString>& UpgradeHeaders)
 {
-	check(WebSocketsManager);
-
 	TArray<FString> Protocols;
-	Protocols.Add(Protocol);
-	return WebSocketsManager->CreateWebSocket(Url, Protocols, UpgradeHeaders);
+	if (!Protocol.IsEmpty())
+	{
+		Protocols.Add(Protocol);
+	}
+	
+	return CreateWebSocket(Url, Protocols, UpgradeHeaders);
 }
 #endif // #if WITH_WEBSOCKETS

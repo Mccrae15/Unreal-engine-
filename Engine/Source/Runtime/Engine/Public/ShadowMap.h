@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -258,7 +258,7 @@ public:
 	}
 	void Release()
 	{
-		check(IsInGameThread() || IsInAsyncLoadingThread());
+		check(IsInGameThread() || IsInAsyncLoadingThread() || IsInGarbageCollectorThread());
 		checkSlow(NumRefs > 0);
 		if (--NumRefs == 0)
 		{

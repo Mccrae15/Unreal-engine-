@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "TrackEditors/AudioTrackEditor.h"
 #include "Textures/SlateTextureData.h"
@@ -296,7 +296,7 @@ void FAudioThumbnail::GenerateWaveformPreview(TArray<uint8>& OutData, TRange<flo
 	{
 		// @todo Sequencer optimize - We might want to generate the data when we generate the texture
 		// and then discard the data afterwards, though that might be a perf hit traded for better memory usage
-		FAudioDevice* AudioDevice = GEngine->GetMainAudioDevice();
+		FAudioDeviceHandle AudioDevice = GEngine->GetMainAudioDevice();
 		if (AudioDevice)
 		{
 			AudioDevice->StopAllSounds(true);
@@ -329,7 +329,7 @@ void FAudioThumbnail::GenerateWaveformPreview(TArray<uint8>& OutData, TRange<flo
 	double     SectionStartTime     = AudioSection->GetInclusiveStartFrame() / FrameRate;
 
 	// @todo Sequencer This fixes looping drawing by pretending we are only dealing with a SoundWave
-	TRange<double> AudioTrueRange = TRange<double>(
+	TRange<float> AudioTrueRange = TRange<float>(
 		SectionStartTime - FrameRate.AsSeconds(AudioSection->GetStartOffset()),
 		SectionStartTime - FrameRate.AsSeconds(AudioSection->GetStartOffset()) + DeriveUnloopedDuration(AudioSection) * (1.0f / PitchMultiplierValue));
 
@@ -337,36 +337,30 @@ void FAudioThumbnail::GenerateWaveformPreview(TArray<uint8>& OutData, TRange<flo
 	float DrawRangeSize = DrawRange.Size<float>();
 
 	const int32 MaxAmplitude = NumChannels == 1 ? GetSize().Y : GetSize().Y / 2;
-
-	int32 DrawOffsetPx = FMath::Max(FMath::RoundToInt((DrawRange.GetLowerBoundValue() - SectionStartTime) / DisplayScale), 0);
-
+	const int32 DrawOffsetPx = FMath::Max(FMath::RoundToInt((DrawRange.GetLowerBoundValue() - SectionStartTime) / DisplayScale), 0);
 
 	// In order to prevent flickering waveforms when moving the display position/range around, we have to lock our sample position and spline segments to the view range
-	float RangeLookupFraction = (SmoothingAmount*DisplayScale) / TrueRangeSize;
-	int32 LookupRange = FMath::Clamp(FMath::TruncToInt(RangeLookupFraction * LookupSize), 1, LookupSize);
+	const float RangeLookupFraction = (SmoothingAmount * DisplayScale) / TrueRangeSize;
+	const int32 LookupRange = FMath::Clamp(FMath::TruncToInt(RangeLookupFraction * LookupSize), 1, LookupSize);
 
-	int32 SampleLockOffset = DrawOffsetPx % SmoothingAmount;
+	const int32 SampleLockOffset = DrawOffsetPx % SmoothingAmount;
 
-	int32 FirstSample = -2.f*SmoothingAmount - SampleLockOffset;
-	int32 LastSample = GetSize().X + 2*SmoothingAmount;
-
-	{
-		// @todo: when SampleCount <= 0, we have fewer samples than pixels, and should start to interpolate the spline by that distance, rather than a hard coded pixel density
-		int32 NumSamplesInRange = FMath::TruncToInt(LookupSize * (DrawRangeSize /GetSize().X) / TrueRangeSize);
-		int32 SampleCount = NumSamplesInRange / NumChannels;
-	}
-
+	const FIntPoint ThumbnailSize = GetSize();
+	const int32 FirstSample = -2.f * SmoothingAmount - SampleLockOffset;
+	const int32 LastSample = ThumbnailSize.X + 2.f * SmoothingAmount;
 
 	// Sample the audio one pixel to the left and right
 	for (int32 X = FirstSample; X < LastSample; ++X)
 	{
-		float LookupTime = ((float)(X - 0.5f) / (float)GetSize().X) * DrawRangeSize + DrawRange.GetLowerBoundValue();
+		float LookupTime = ((float)(X - 0.5f) / (float)ThumbnailSize.X) * DrawRangeSize + DrawRange.GetLowerBoundValue();
 		float LookupFraction = (LookupTime - AudioTrueRange.GetLowerBoundValue()) / TrueRangeSize;
-		int32 LookupIndex = FMath::TruncToInt(LookupFraction * LookupSize);
+		float LookupFractionLooping = FMath::Fmod(LookupFraction, 1.f);
+		int32 LookupIndex = FMath::TruncToInt(LookupFractionLooping * LookupSize);
 		
-		float NextLookupTime = ((float)(X + 0.5f) / (float)GetSize().X) * DrawRangeSize + DrawRange.GetLowerBoundValue();
+		float NextLookupTime = ((float)(X + 0.5f) / (float)ThumbnailSize.X) * DrawRangeSize + DrawRange.GetLowerBoundValue();
 		float NextLookupFraction = (NextLookupTime - AudioTrueRange.GetLowerBoundValue()) / TrueRangeSize;
-		int32 NextLookupIndex = FMath::TruncToInt(NextLookupFraction  * LookupSize);
+		float NextLookupFractionLooping = FMath::Fmod(NextLookupFraction, 1.f);
+		int32 NextLookupIndex = FMath::TruncToInt(NextLookupFractionLooping * LookupSize);
 		
 		SampleAudio(SoundWave->NumChannels, LookupData, LookupIndex, NextLookupIndex, LookupSize, MaxAmplitude);
 	}
@@ -375,8 +369,8 @@ void FAudioThumbnail::GenerateWaveformPreview(TArray<uint8>& OutData, TRange<flo
 	GenerateSpline(SoundWave->NumChannels, FirstSample);
 
 	// Now draw the spline
-	const int32 Height = GetSize().Y;
-	const int32 Width = GetSize().X;
+	const int32 Width = ThumbnailSize.X;
+	const int32 Height = ThumbnailSize.Y;
 
 	FLinearColor BoundaryColor = BoundaryColorHSV.HSVToLinearRGB();
 
@@ -671,6 +665,53 @@ int32 FAudioSection::OnPaintSection( FSequencerSectionPainter& Painter ) const
 		);
 	}
 
+	const ESlateDrawEffect DrawEffects = Painter.bParentEnabled ? ESlateDrawEffect::None : ESlateDrawEffect::DisabledEffect;
+
+	const FTimeToPixel& TimeToPixelConverter = Painter.GetTimeConverter();
+
+	static const FSlateBrush* GenericDivider = FEditorStyle::GetBrush("Sequencer.GenericDivider");
+
+	if (!Section.HasStartFrame() || !Section.HasEndFrame())
+	{
+		return LayerId;
+	}
+
+	UMovieSceneAudioSection* AudioSection = Cast<UMovieSceneAudioSection>(&Section);
+	if (!AudioSection || !AudioSection->GetSound())
+	{
+		return LayerId;
+	}
+
+	// Add lines where the animation starts and ends/loops
+	FFrameRate TickResolution = TimeToPixelConverter.GetTickResolution();
+	const float AudioDuration = DeriveUnloopedDuration(AudioSection);
+
+	if (AudioDuration > KINDA_SMALL_NUMBER)
+	{
+		const float MaxOffset = Section.GetRange().Size<FFrameTime>() / TickResolution;
+		const float StartOffsetTime = TickResolution.AsSeconds(AudioSection->GetStartOffset());
+		const float SectionStartTime = TickResolution.AsSeconds(AudioSection->GetInclusiveStartFrame());
+
+		float OffsetTime = AudioDuration - StartOffsetTime;
+		while (OffsetTime < MaxOffset)
+		{
+			float OffsetPixel = TimeToPixelConverter.SecondsToPixel(SectionStartTime + OffsetTime);
+
+			FSlateDrawElement::MakeBox(
+				Painter.DrawElements,
+				LayerId,
+				Painter.SectionGeometry.MakeChild(
+					FVector2D(2.f, Painter.SectionGeometry.Size.Y - 2.f),
+					FSlateLayoutTransform(FVector2D(OffsetPixel, 1.f))
+				).ToPaintGeometry(),
+				GenericDivider,
+				DrawEffects
+			);
+
+			OffsetTime += AudioDuration;
+		}
+	}
+
 	return LayerId;
 }
 
@@ -833,6 +874,17 @@ void FAudioTrackEditor::BuildAddTrackMenu(FMenuBuilder& MenuBuilder)
 	);
 }
 
+void FAudioTrackEditor::BuildObjectBindingTrackMenu(FMenuBuilder& MenuBuilder, const TArray<FGuid>& ObjectBindings, const UClass* ObjectClass)
+{
+	if (ObjectClass != nullptr && ObjectClass->IsChildOf(AActor::StaticClass()))
+	{
+		MenuBuilder.AddSubMenu(
+			LOCTEXT("AddAttachedAudioTrack", "Audio"),
+			LOCTEXT("AddAttachedAudioTooltip", "Adds an audio track attached to the object."),
+			FNewMenuDelegate::CreateSP(this, &FAudioTrackEditor::HandleAddAttachedAudioTrackMenuEntryExecute, ObjectBindings));
+	}
+}
+
 
 bool FAudioTrackEditor::SupportsType( TSubclassOf<UMovieSceneTrack> Type ) const
 {
@@ -958,7 +1010,20 @@ FReply FAudioTrackEditor::OnDrop(const FDragDropEvent& DragDropEvent, UMovieScen
 
 		if (Sound)
 		{
-			AnimatablePropertyChanged( FOnKeyProperty::CreateRaw(this, &FAudioTrackEditor::AddNewMasterSound, Sound, RowIndex));
+			if (TargetObjectGuid.IsValid())
+			{
+				TArray<TWeakObjectPtr<>> OutObjects;
+				for (TWeakObjectPtr<> Object : GetSequencer()->FindObjectsInCurrentSequence(TargetObjectGuid))
+				{
+					OutObjects.Add(Object);
+				}
+
+				AnimatablePropertyChanged(FOnKeyProperty::CreateRaw(this, &FAudioTrackEditor::AddNewAttachedSound, Sound, OutObjects));
+			}
+			else
+			{
+				AnimatablePropertyChanged(FOnKeyProperty::CreateRaw(this, &FAudioTrackEditor::AddNewMasterSound, Sound, RowIndex));
+			}
 
 			bAnyDropped = true;
 		}
@@ -983,7 +1048,7 @@ TSharedPtr<SWidget> FAudioTrackEditor::BuildOutlinerEditWidget(const FGuid& Obje
 	.AutoWidth()
 	.VAlign(VAlign_Center)
 	[
-		FSequencerUtilities::MakeAddButton(LOCTEXT("AudioText", "Audio"), FOnGetContent::CreateSP(this, &FAudioTrackEditor::BuildAudioSubMenu, Track), Params.NodeIsHovered, GetSequencer())
+		FSequencerUtilities::MakeAddButton(LOCTEXT("AudioText", "Audio"), FOnGetContent::CreateSP(this, &FAudioTrackEditor::BuildAudioSubMenu, FOnAssetSelected::CreateRaw(this, &FAudioTrackEditor::OnAudioAssetSelected, Track), FOnAssetEnterPressed::CreateRaw(this, &FAudioTrackEditor::OnAudioAssetEnterPressed, Track)), Params.NodeIsHovered, GetSequencer())
 	];
 }
 
@@ -1042,16 +1107,11 @@ FKeyPropertyResult FAudioTrackEditor::AddNewMasterSound( FFrameNumber KeyTime, U
 
 		if (GetSequencer().IsValid())
 		{
-			GetSequencer()->OnAddTrack(AudioTrack);
+			GetSequencer()->OnAddTrack(AudioTrack, FGuid());
 		}
 	}
 
 	KeyPropertyResult.bTrackModified = true;
-
-	GetSequencer()->EmptySelection();
-	GetSequencer()->SelectSection(NewSection);
-	GetSequencer()->ThrobSectionSelection();
-
 	return KeyPropertyResult;
 }
 
@@ -1120,13 +1180,17 @@ void FAudioTrackEditor::HandleAddAudioTrackMenuEntryExecute()
 
 	if (GetSequencer().IsValid())
 	{
-		GetSequencer()->OnAddTrack(NewTrack);
+		GetSequencer()->OnAddTrack(NewTrack, FGuid());
 	}
-
-	GetSequencer()->NotifyMovieSceneDataChanged( EMovieSceneDataChangeType::MovieSceneStructureItemAdded );
 }
 
-TSharedRef<SWidget> FAudioTrackEditor::BuildAudioSubMenu(UMovieSceneTrack* Track)
+void FAudioTrackEditor::HandleAddAttachedAudioTrackMenuEntryExecute(FMenuBuilder& MenuBuilder, TArray<FGuid> ObjectBindings)
+{
+	MenuBuilder.AddWidget(BuildAudioSubMenu(FOnAssetSelected::CreateRaw(this, &FAudioTrackEditor::OnAttachedAudioAssetSelected, ObjectBindings), FOnAssetEnterPressed::CreateRaw(this, &FAudioTrackEditor::OnAttachedAudioEnterPressed, ObjectBindings)), FText::GetEmpty(), true);
+}
+
+
+TSharedRef<SWidget> FAudioTrackEditor::BuildAudioSubMenu(FOnAssetSelected OnAssetSelected, FOnAssetEnterPressed OnAssetEnterPressed)
 {
 	FAssetRegistryModule& AssetRegistryModule = FModuleManager::LoadModuleChecked<FAssetRegistryModule>(TEXT("AssetRegistry"));
 	TArray<FName> ClassNames;
@@ -1138,8 +1202,8 @@ TSharedRef<SWidget> FAudioTrackEditor::BuildAudioSubMenu(UMovieSceneTrack* Track
 
 	FAssetPickerConfig AssetPickerConfig;
 	{
-		AssetPickerConfig.OnAssetSelected = FOnAssetSelected::CreateRaw( this, &FAudioTrackEditor::OnAudioAssetSelected, Track);
-		AssetPickerConfig.OnAssetEnterPressed = FOnAssetEnterPressed::CreateRaw( this, &FAudioTrackEditor::OnAudioAssetEnterPressed, Track);
+		AssetPickerConfig.OnAssetSelected = OnAssetSelected;
+		AssetPickerConfig.OnAssetEnterPressed = OnAssetEnterPressed;
 		AssetPickerConfig.bAllowNullSelection = false;
 		AssetPickerConfig.InitialAssetViewType = EAssetViewType::List;
 		for (auto ClassName : DerivedClassNames)
@@ -1198,6 +1262,33 @@ void FAudioTrackEditor::OnAudioAssetEnterPressed(const TArray<FAssetData>& Asset
 		OnAudioAssetSelected(AssetData[0].GetAsset(), Track);
 	}
 }
+
+void FAudioTrackEditor::OnAttachedAudioAssetSelected(const FAssetData& AssetData, TArray<FGuid> ObjectBindings)
+{
+	FSlateApplication::Get().DismissAllMenus();
+
+	UObject* SelectedObject = AssetData.GetAsset();
+
+	if (SelectedObject)
+	{
+		const FScopedTransaction Transaction(NSLOCTEXT("Sequencer", "AddAudio_Transaction", "Add Audio"));
+
+		for (FGuid ObjectBinding : ObjectBindings)
+		{
+			HandleAssetAdded(SelectedObject, ObjectBinding);
+		}
+	}
+}
+
+void FAudioTrackEditor::OnAttachedAudioEnterPressed(const TArray<FAssetData>& AssetData, TArray<FGuid> ObjectBindings)
+{
+	if (AssetData.Num() > 0)
+	{
+		OnAttachedAudioAssetSelected(AssetData[0].GetAsset(), ObjectBindings);
+	}
+}
+
+
 
 
 #undef LOCTEXT_NAMESPACE

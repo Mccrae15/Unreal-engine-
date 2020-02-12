@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -74,7 +74,17 @@ struct TSequencerKeyEditor
 		if (Channel && Sequencer && OwningSection)
 		{
 			const FFrameTime CurrentTime = MovieScene::ClampToDiscreteRange(Sequencer->GetLocalTime().Time, OwningSection->GetRange());
-			EvaluateChannel(Channel, CurrentTime, Result);
+			//If we have no keys and no default, key with the external value if it exists
+			if (!EvaluateChannel(Channel, CurrentTime, Result))
+			{
+				if (TOptional<ValueType> ExternalValue = GetExternalValue())
+				{
+					if (ExternalValue.IsSet())
+					{
+						Result = ExternalValue.GetValue();
+					}
+				}
+			}
 		}
 
 		return Result;

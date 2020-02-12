@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved..
+// Copyright Epic Games, Inc. All Rights Reserved..
 
 /*=============================================================================
 	VulkanPendingState.cpp: Private VulkanPendingState function definitions.
@@ -402,7 +402,9 @@ void FVulkanPendingComputeState::PrepareForDispatch(FVulkanCmdBuffer* InCmdBuffe
 
 FVulkanPendingGfxState::~FVulkanPendingGfxState()
 {
-	for (auto& Pair : PipelineStates)
+	TMap<FVulkanRHIGraphicsPipelineState*, FVulkanGraphicsPipelineDescriptorState*> Temp;
+	Swap(Temp, PipelineStates);
+	for (auto& Pair : Temp)
 	{
 		FVulkanGraphicsPipelineDescriptorState* State = Pair.Value;
 		delete State;
@@ -417,6 +419,13 @@ void FVulkanPendingGfxState::PrepareForDraw(FVulkanCmdBuffer* CmdBuffer)
 
 	check(CmdBuffer->bHasPipeline);
 
+	// TODO: Add 'dirty' flag? Need to rebind only on PSO change
+	if (CurrentPipeline->bHasInputAttachments)
+	{
+		FVulkanFramebuffer* CurrentFramebuffer = Context.GetTransitionAndLayoutManager().CurrentFramebuffer;
+		UpdateInputAttachments(CurrentFramebuffer);
+	}
+	
 	bool bHasDescriptorSets = CurrentState->UpdateDescriptorSets(&Context, CmdBuffer);
 
 	UpdateDynamicStates(CmdBuffer);
@@ -432,7 +441,7 @@ void FVulkanPendingGfxState::PrepareForDraw(FVulkanCmdBuffer* CmdBuffer)
 		SCOPE_CYCLE_COUNTER(STAT_VulkanBindVertexStreamsTime);
 #endif
 		// Its possible to have no vertex buffers
-		const FVulkanVertexInputStateInfo& VertexInputStateInfo = CurrentPipeline->Pipeline->GetVertexInputState();
+		const FVulkanVertexInputStateInfo& VertexInputStateInfo = CurrentPipeline->GetVertexInputState();
 		if (VertexInputStateInfo.AttributesNum == 0)
 		{
 			// However, we need to verify that there are also no bindings
@@ -554,7 +563,7 @@ void FVulkanPendingGfxState::UpdateInputAttachments(FVulkanFramebuffer* Framebuf
 			CurrentState->SetInputAttachment(AttachmentData.DescriptorSet, AttachmentData.BindingIndex, Framebuffer->AttachmentTextureViews[0], VK_IMAGE_LAYOUT_GENERAL);
 			break;
 		case FVulkanShaderHeader::EAttachmentType::Depth:
-			CurrentState->SetInputAttachment(AttachmentData.DescriptorSet, AttachmentData.BindingIndex, Framebuffer->GetPartialDepthTextureView(), VK_IMAGE_LAYOUT_GENERAL);
+			CurrentState->SetInputAttachment(AttachmentData.DescriptorSet, AttachmentData.BindingIndex, Framebuffer->GetPartialDepthTextureView(), VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL);
 			break;
 		default:
 			check(0);
@@ -781,7 +790,8 @@ void FVulkanDescriptorSetCache::AddCachedPool()
 			CachedPools.EmplaceAt(0, MoveTemp(FreePool));
 			return;
 		}
-		UE_LOG(LogVulkanRHI, Display, TEXT("FVulkanDescriptorSetCache::AddCachedPool() MaxDescriptorSets Error: %f. Tolerance: [%f..%f]."),
+		// Don't write 'error' as it confuses reporting; it's a perf warning more than an actual error
+		UE_LOG(LogVulkanRHI, Display, TEXT("FVulkanDescriptorSetCache::AddCachedPool() MaxDescriptorSets Delta/Err: %f. Tolerance: [%f..%f]."),
 			static_cast<double>(Error), static_cast<double>(MinErrorTolerance), static_cast<double>(MaxErrorTolerance));
 		FreePool.Reset();
 	}
@@ -908,4 +918,34 @@ float FVulkanDescriptorSetCache::FCachedPool::CalcAllocRatio() const
 		AllocRatio = MinAllocRatio;
 	}
 	return AllocRatio;
+}
+bool FVulkanPendingGfxState::SetGfxPipeline(FVulkanRHIGraphicsPipelineState* InGfxPipeline, bool bForceReset)
+{
+	bool bChanged = bForceReset;
+
+	if (InGfxPipeline != CurrentPipeline)
+	{
+		CurrentPipeline = InGfxPipeline;
+		FVulkanGraphicsPipelineDescriptorState** Found = PipelineStates.Find(InGfxPipeline);
+		if (Found)
+		{
+			CurrentState = *Found;
+			check(CurrentState->GfxPipeline == InGfxPipeline);
+		}
+		else
+		{
+			CurrentState = new FVulkanGraphicsPipelineDescriptorState(Device, InGfxPipeline);
+			PipelineStates.Add(CurrentPipeline, CurrentState);
+		}
+
+		PrimitiveType = InGfxPipeline->PrimitiveType;
+		bChanged = true;
+	}
+
+	if (bChanged || bForceReset)
+	{
+		CurrentState->Reset();
+	}
+
+	return bChanged;
 }

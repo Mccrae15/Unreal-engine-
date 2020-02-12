@@ -1,6 +1,7 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "TrackEditors/CameraAnimTrackEditor.h"
+#include "TrackEditors/CameraAnimTrackEditorHelper.h"
 #include "Widgets/SBoxPanel.h"
 #include "Framework/MultiBox/MultiBoxBuilder.h"
 #include "GameFramework/Actor.h"
@@ -122,11 +123,18 @@ bool FCameraAnimTrackEditor::HandleAssetAdded(UObject* Asset, const FGuid& Targe
 }
 
 
-
-void FCameraAnimTrackEditor::BuildObjectBindingTrackMenu(FMenuBuilder& MenuBuilder, const FGuid& ObjectBinding, const UClass* ObjectClass)
+void FCameraAnimTrackEditor::BuildObjectBindingTrackMenu(FMenuBuilder& MenuBuilder, const TArray<FGuid>& ObjectBindings, const UClass* ObjectClass)
 {
+	IModuleInterface* TemplateSequenceEditorModule = FModuleManager::Get().GetModule("TemplateSequenceEditor");
+	if (TemplateSequenceEditorModule != nullptr)
+	{
+		// The template sequence plugin will add a new menu which lets people add CameraAnim assets as
+		// "legacy" assets, with a way to upgrade them to a template sequence.
+		return;
+	}
+
 	// only offer this track if we can find a camera component
-	UCameraComponent const* const CamComponent = AcquireCameraComponentFromObjectGuid(ObjectBinding);
+	UCameraComponent const* const CamComponent = AcquireCameraComponentFromObjectGuid(ObjectBindings[0]);
 	if (CamComponent)
 	{
 		const TSharedPtr<ISequencer> ParentSequencer = GetSequencer();
@@ -140,7 +148,7 @@ void FCameraAnimTrackEditor::BuildObjectBindingTrackMenu(FMenuBuilder& MenuBuild
 
 		MenuBuilder.AddSubMenu(
 			LOCTEXT("AddCameraAnim", "Camera Anim"), NSLOCTEXT("Sequencer", "AddCameraAnimTooltip", "Adds an additive camera animation track."),
-			FNewMenuDelegate::CreateRaw(this, &FCameraAnimTrackEditor::AddCameraAnimSubMenu, ObjectBinding)
+			FNewMenuDelegate::CreateRaw(this, &FCameraAnimTrackEditor::AddCameraAnimSubMenu, ObjectBindings)
 			);
 	}
 }
@@ -149,13 +157,16 @@ TSharedRef<SWidget> FCameraAnimTrackEditor::BuildCameraAnimSubMenu(FGuid ObjectB
 {
 	FMenuBuilder MenuBuilder(true, nullptr);
 
-	AddCameraAnimSubMenu(MenuBuilder, ObjectBinding);
+	TArray<FGuid> ObjectBindings;
+	ObjectBindings.Add(ObjectBinding);
+
+	AddCameraAnimSubMenu(MenuBuilder, ObjectBindings);
 
 	return MenuBuilder.MakeWidget();
 }
 
 
-void FCameraAnimTrackEditor::AddCameraAnimSubMenu(FMenuBuilder& MenuBuilder, FGuid ObjectBinding)
+void FCameraAnimTrackEditor::AddCameraAnimSubMenu(FMenuBuilder& MenuBuilder, TArray<FGuid> ObjectBinding)
 {
 	FAssetPickerConfig AssetPickerConfig;
 	{
@@ -193,7 +204,7 @@ TSharedPtr<SWidget> FCameraAnimTrackEditor::BuildOutlinerEditWidget(const FGuid&
 	];
 }
 
-void FCameraAnimTrackEditor::OnCameraAnimAssetSelected(const FAssetData& AssetData, FGuid ObjectBinding)
+void FCameraAnimTrackEditor::OnCameraAnimAssetSelected(const FAssetData& AssetData, TArray<FGuid> ObjectBindings)
 {
 	FSlateApplication::Get().DismissAllMenus();
 
@@ -204,36 +215,49 @@ void FCameraAnimTrackEditor::OnCameraAnimAssetSelected(const FAssetData& AssetDa
 		UCameraAnim* const CameraAnim = CastChecked<UCameraAnim>(AssetData.GetAsset());
 
 		TArray<TWeakObjectPtr<>> OutObjects;
-		for (TWeakObjectPtr<> Object : GetSequencer()->FindObjectsInCurrentSequence(ObjectBinding))
+		for (FGuid ObjectBinding : ObjectBindings)
 		{
-			OutObjects.Add(Object);
+			for (TWeakObjectPtr<> Object : GetSequencer()->FindObjectsInCurrentSequence(ObjectBinding))
+			{
+				OutObjects.Add(Object);
+			}
 		}
+		
+		const FScopedTransaction Transaction(LOCTEXT("AddCameraAnim_Transaction", "Add Camera Anim"));
+
 		AnimatablePropertyChanged(FOnKeyProperty::CreateRaw(this, &FCameraAnimTrackEditor::AddKeyInternal, OutObjects, CameraAnim));
 	}
 }
 
-void FCameraAnimTrackEditor::OnCameraAnimAssetEnterPressed(const TArray<FAssetData>& AssetData, FGuid ObjectBinding)
+void FCameraAnimTrackEditor::OnCameraAnimAssetEnterPressed(const TArray<FAssetData>& AssetData, TArray<FGuid> ObjectBindings)
 {
 	if (AssetData.Num() > 0)
 	{
-		OnCameraAnimAssetSelected(AssetData[0].GetAsset(), ObjectBinding);
+		OnCameraAnimAssetSelected(AssetData[0].GetAsset(), ObjectBindings);
 	}
 }
 
 FKeyPropertyResult FCameraAnimTrackEditor::AddKeyInternal(FFrameNumber KeyTime, const TArray<TWeakObjectPtr<UObject>> Objects, UCameraAnim* CameraAnim)
 {
+	return FCameraAnimTrackEditorHelper::AddCameraAnimKey(*this, KeyTime, Objects, CameraAnim);
+}
+
+
+FKeyPropertyResult FCameraAnimTrackEditorHelper::AddCameraAnimKey(FMovieSceneTrackEditor& TrackEditor, FFrameNumber KeyTime, const TArray<TWeakObjectPtr<UObject>> Objects, UCameraAnim* CameraAnim)
+{
 	FKeyPropertyResult KeyPropertyResult;
+	const TSharedPtr<ISequencer> Sequencer = TrackEditor.GetSequencer();
 
 	for (int32 ObjectIndex = 0; ObjectIndex < Objects.Num(); ++ObjectIndex)
 	{
 		UObject* Object = Objects[ObjectIndex].Get();
 
-		FFindOrCreateHandleResult HandleResult = FindOrCreateHandleToObject(Object);
+		FMovieSceneTrackEditor::FFindOrCreateHandleResult HandleResult = TrackEditor.FindOrCreateHandleToObject(Object);
 		FGuid ObjectHandle = HandleResult.Handle;
 		KeyPropertyResult.bHandleCreated |= HandleResult.bWasCreated;
 		if (ObjectHandle.IsValid())
 		{
-			FFindOrCreateTrackResult TrackResult = FindOrCreateTrackForObject(ObjectHandle, UMovieSceneCameraAnimTrack::StaticClass());
+			FMovieSceneTrackEditor::FFindOrCreateTrackResult TrackResult = TrackEditor.FindOrCreateTrackForObject(ObjectHandle, UMovieSceneCameraAnimTrack::StaticClass());
 			UMovieSceneTrack* Track = TrackResult.Track;
 			KeyPropertyResult.bTrackCreated |= TrackResult.bWasCreated;
 
@@ -242,16 +266,15 @@ FKeyPropertyResult FCameraAnimTrackEditor::AddKeyInternal(FFrameNumber KeyTime, 
 				UMovieSceneSection* NewSection = Cast<UMovieSceneCameraAnimTrack>(Track)->AddNewCameraAnim(KeyTime, CameraAnim);
 				KeyPropertyResult.bTrackModified = true;
 
-				GetSequencer()->EmptySelection();
-				GetSequencer()->SelectSection(NewSection);
-				GetSequencer()->ThrobSectionSelection();
+				Sequencer->EmptySelection();
+				Sequencer->SelectSection(NewSection);
+				Sequencer->ThrobSectionSelection();
 			}
 		}
 	}
 
 	return KeyPropertyResult;
 }
-
 
 UCameraComponent* FCameraAnimTrackEditor::AcquireCameraComponentFromObjectGuid(const FGuid& Guid)
 {
@@ -270,7 +293,7 @@ UCameraComponent* FCameraAnimTrackEditor::AcquireCameraComponentFromObjectGuid(c
 		}
 		else if (UCameraComponent* const CameraComp = Cast<UCameraComponent>(Obj))
 		{
-			if (CameraComp->bIsActive)
+			if (CameraComp->IsActive())
 			{
 				return CameraComp;
 			}

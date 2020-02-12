@@ -1,8 +1,8 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
-#include "Serialization/ArchiveFromStructuredArchive.h"
+#include "Serialization/StructuredArchive.h"
 #include "Serialization/ArchiveUObject.h"
 #include "UObject/ObjectResource.h"
 
@@ -11,12 +11,15 @@
 #include "UObject/LazyObjectPtr.h"
 #include "UObject/WeakObjectPtr.h"
 
-class COREUOBJECT_API FArchiveUObjectFromStructuredArchive : public FArchiveFromStructuredArchive
+#if WITH_TEXT_ARCHIVE_SUPPORT
+
+class COREUOBJECT_API FArchiveUObjectFromStructuredArchiveImpl : public FArchiveFromStructuredArchiveImpl
 {
+	using Super = FArchiveFromStructuredArchiveImpl;
+
 public:
 
-	FArchiveUObjectFromStructuredArchive(FStructuredArchive::FSlot Slot);
-	virtual ~FArchiveUObjectFromStructuredArchive();
+	FArchiveUObjectFromStructuredArchiveImpl(FStructuredArchive::FSlot Slot);
 
 	using FArchive::operator<<; // For visibility of the overloads we don't override
 
@@ -29,8 +32,6 @@ public:
 
 private:
 
-	bool bPendingSerialize;
-
 	TArray<FLazyObjectPtr> LazyObjectPtrs;
 	TArray<FWeakObjectPtr> WeakObjectPtrs;
 	TArray<FSoftObjectPtr> SoftObjectPtrs;
@@ -41,5 +42,37 @@ private:
 	TMap<FSoftObjectPtr, int32> SoftObjectPtrToIndex;
 	TMap<FSoftObjectPath, int32> SoftObjectPathToIndex;
 
-	virtual void SerializeInternal(FStructuredArchive::FRecord Record) override;
+	virtual bool Finalize(FStructuredArchive::FRecord Record) override;
 };
+
+class FArchiveUObjectFromStructuredArchive
+{
+public:
+	explicit FArchiveUObjectFromStructuredArchive(FStructuredArchive::FSlot InSlot)
+		: Impl(InSlot)
+	{
+	}
+
+	      FArchive& GetArchive()       { return Impl; }
+	const FArchive& GetArchive() const { return Impl; }
+
+	void Close() { Impl.Close(); }
+
+private:
+	FArchiveUObjectFromStructuredArchiveImpl Impl;
+};
+
+#else
+
+class COREUOBJECT_API FArchiveUObjectFromStructuredArchive : public FArchiveFromStructuredArchive
+{
+public:
+
+	FArchiveUObjectFromStructuredArchive(FStructuredArchive::FSlot InSlot)
+		: FArchiveFromStructuredArchive(InSlot)
+	{
+
+	}
+};
+
+#endif

@@ -1,13 +1,14 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 
 #pragma once
 
+#import <UIKit/UIKit.h>
+#import <GameKit/GameKit.h>
 
 #include "OnlineSubsystemIOSTypes.h"
 #include "Interfaces/OnlineIdentityInterface.h"
 #include "OnlineSubsystemIOSPackage.h"
-
 
 class FOnlineIdentityIOS :
 	public IOnlineIdentity

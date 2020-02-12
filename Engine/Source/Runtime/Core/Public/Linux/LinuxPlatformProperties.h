@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 /*================================================================================
 	LinuxPlatformProperties.h - Basic static properties of a platform 
@@ -16,7 +16,7 @@
 /**
  * Implements Linux platform properties.
  */
-template<bool HAS_EDITOR_DATA, bool IS_DEDICATED_SERVER, bool IS_CLIENT_ONLY>
+template<bool HAS_EDITOR_DATA, bool IS_DEDICATED_SERVER, bool IS_CLIENT_ONLY, bool IS_AARCH64>
 struct FLinuxPlatformProperties
 	: public FGenericPlatformProperties
 {
@@ -27,7 +27,12 @@ struct FLinuxPlatformProperties
 
 	static FORCEINLINE const char* IniPlatformName( )
 	{
-		return "Linux";
+		return IS_AARCH64 ? "LinuxAArch64" : "Linux";
+	}
+
+	static FORCEINLINE const TCHAR* GetRuntimeSettingsClassName()
+	{
+		return TEXT("/Script/LinuxTargetPlatform.LinuxTargetSettings");
 	}
 
 	static FORCEINLINE bool IsGameOnly( )
@@ -45,11 +50,16 @@ struct FLinuxPlatformProperties
 		return IS_CLIENT_ONLY;
 	}
 
+	static FORCEINLINE bool IsAArch64()
+	{
+		return IS_AARCH64;
+	}
+
 	static FORCEINLINE const char* PlatformName( )
 	{
 		if (IS_DEDICATED_SERVER)
 		{
-			return "LinuxServer";
+			return IS_AARCH64 ? "LinuxAArch64Server" : "LinuxServer";
 		}
 
 		if (HAS_EDITOR_DATA)
@@ -59,10 +69,10 @@ struct FLinuxPlatformProperties
 
 		if (IS_CLIENT_ONLY)
 		{
-			return "LinuxClient";
+			return IS_AARCH64 ? "LinuxAArch64Client" : "LinuxClient";
 		}
 
-		return "LinuxNoEditor";
+		return IS_AARCH64 ? "LinuxAArch64NoEditor" : "LinuxNoEditor";
 	}
 
 	static FORCEINLINE bool RequiresCookedData( )
@@ -150,3 +160,7 @@ struct FLinuxPlatformProperties
 		return !IsServerOnly();
 	}
 };
+
+#ifdef PROPERTY_HEADER_SHOULD_DEFINE_TYPE
+typedef FLinuxPlatformProperties<WITH_EDITORONLY_DATA, UE_SERVER, !WITH_SERVER_CODE, !!PLATFORM_CPU_ARM_FAMILY> FPlatformProperties;
+#endif

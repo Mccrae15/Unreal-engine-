@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -8,10 +8,29 @@
 #include "Math/UnrealMathUtility.h"
 #include <initializer_list>
 
+static FORCEINLINE uint32 MurmurFinalize32(uint32 Hash)
+{
+	Hash ^= Hash >> 16;
+	Hash *= 0x85ebca6b;
+	Hash ^= Hash >> 13;
+	Hash *= 0xc2b2ae35;
+	Hash ^= Hash >> 16;
+	return Hash;
+}
+
+static FORCEINLINE uint64 MurmurFinalize64(uint64 Hash)
+{
+	Hash ^= Hash >> 33;
+	Hash *= 0xff51afd7ed558ccdull;
+	Hash ^= Hash >> 33;
+	Hash *= 0xc4ceb9fe1a85ec53ull;
+	Hash ^= Hash >> 33;
+	return Hash;
+}
+
 static FORCEINLINE uint32 Murmur32( std::initializer_list< uint32 > InitList )
 {
 	uint32 Hash = 0;
-
 	for( auto Element : InitList )
 	{
 		Element *= 0xcc9e2d51;
@@ -23,13 +42,7 @@ static FORCEINLINE uint32 Murmur32( std::initializer_list< uint32 > InitList )
 		Hash = Hash * 5 + 0xe6546b64;
 	}
 
-	Hash ^= Hash >> 16;
-	Hash *= 0x85ebca6b;
-	Hash ^= Hash >> 13;
-	Hash *= 0xc2b2ae35;
-	Hash ^= Hash >> 16;
-
-	return Hash;
+	return MurmurFinalize32(Hash);
 }
 
 /*-----------------------------------------------------------------------------
@@ -52,6 +65,8 @@ class TStaticHashTable
 {
 public:
 				TStaticHashTable();
+				TStaticHashTable(ENoInit);
+
 	
 	void		Clear();
 
@@ -74,6 +89,13 @@ FORCEINLINE TStaticHashTable< HashSize, IndexSize >::TStaticHashTable()
 	static_assert( ( HashSize & (HashSize - 1) ) == 0, "Hash size must be power of 2" );
 	static_assert( IndexSize - 1 < 0xffff, "Index 0xffff is reserved" );
 	Clear();
+}
+
+template< uint16 HashSize, uint16 IndexSize >
+FORCEINLINE TStaticHashTable< HashSize, IndexSize >::TStaticHashTable(ENoInit)
+{
+	static_assert((HashSize & (HashSize - 1)) == 0, "Hash size must be power of 2");
+	static_assert(IndexSize - 1 < 0xffff, "Index 0xffff is reserved");
 }
 
 template< uint16 HashSize, uint16 IndexSize >
@@ -161,6 +183,8 @@ public:
 					FHashTable( uint32 InHashSize = 1024, uint32 InIndexSize = 0 );
 					~FHashTable();
 
+	void			Initialize(uint32 InHashSize = 1024, uint32 InIndexSize = 0);
+
 	void			Clear();
 	void			Free();
 	CORE_API void	Resize( uint32 NewIndexSize );
@@ -169,6 +193,7 @@ public:
 	uint32			First( uint16 Key ) const;
 	uint32			Next( uint32 Index ) const;
 	bool			IsValid( uint32 Index ) const;
+	bool			Contains( uint16 Key ) const;
 	
 	void			Add( uint16 Key, uint32 Index );
 	void			Remove( uint16 Key, uint32 Index );
@@ -190,23 +215,37 @@ protected:
 
 
 FORCEINLINE FHashTable::FHashTable( uint32 InHashSize, uint32 InIndexSize )
-	: HashSize( InHashSize )
+	: HashSize( 0 )
 	, HashMask( 0 )
-	, IndexSize( InIndexSize )
+	, IndexSize( 0 )
 	, Hash( EmptyHash )
 	, NextIndex( NULL )
 {
-	check( HashSize <= 0x10000 );
-	check( FMath::IsPowerOfTwo( HashSize ) );
-	
-	if( IndexSize )
+	if (InHashSize > 0u)
 	{
-		HashMask = HashSize - 1;
-		
-		Hash = new uint32[ HashSize ];
-		NextIndex = new uint32[ IndexSize ];
+		Initialize(InHashSize, InIndexSize);
+	}
+}
 
-		FMemory::Memset( Hash, 0xff, HashSize * 4 );
+FORCEINLINE void FHashTable::Initialize(uint32 InHashSize, uint32 InIndexSize)
+{
+	check(HashSize == 0u);
+	check(IndexSize == 0u);
+
+	HashSize = InHashSize;
+	IndexSize = InIndexSize;
+
+	check(HashSize <= 0x10000);
+	check(FMath::IsPowerOfTwo(HashSize));
+
+	if (IndexSize)
+	{
+		HashMask = (uint16)(HashSize - 1);
+
+		Hash = new uint32[HashSize];
+		NextIndex = new uint32[IndexSize];
+
+		FMemory::Memset(Hash, 0xff, HashSize * 4);
 	}
 }
 
@@ -249,12 +288,18 @@ FORCEINLINE uint32 FHashTable::First( uint16 Key ) const
 FORCEINLINE uint32 FHashTable::Next( uint32 Index ) const
 {
 	checkSlow( Index < IndexSize );
+	checkSlow( NextIndex[Index] != Index ); // check for corrupt tables
 	return NextIndex[ Index ];
 }
 
 FORCEINLINE bool FHashTable::IsValid( uint32 Index ) const
 {
 	return Index != ~0u;
+}
+
+FORCEINLINE bool FHashTable::Contains( uint16 Key ) const
+{
+	return First( Key ) != ~0u;
 }
 
 FORCEINLINE void FHashTable::Add( uint16 Key, uint32 Index )

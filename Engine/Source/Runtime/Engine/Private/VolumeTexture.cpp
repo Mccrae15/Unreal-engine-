@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 /*=============================================================================
 	VolumeTexture.cpp: UvolumeTexture implementation.
@@ -11,13 +11,6 @@
 #include "DeviceProfiles/DeviceProfile.h"
 #include "DeviceProfiles/DeviceProfileManager.h"
 #include "Containers/ResourceArray.h"
-
-static TAutoConsoleVariable<int32> CVarAllowVolumeTextureAssetCreation(
-	TEXT("r.AllowVolumeTextureAssetCreation"),
-	0,
-	TEXT("Enable UVolumeTexture assets"),
-	ECVF_ReadOnly
-	);
 
 // Limit the possible depth of volume texture otherwise when the user converts 2D textures, he can crash the engine.
 const int32 MAX_VOLUME_TEXTURE_DEPTH = 512;
@@ -43,11 +36,10 @@ bool UVolumeTexture::UpdateSourceFromSourceTexture()
 		const int32 TileSizeZ = FMath::Min<int32>(Num2DTileX * Num2DTileY, MAX_VOLUME_TEXTURE_DEPTH);
 		if (TileSizeZ > 0)
 		{
-			const FPixelFormatInfo& InitialFormat = GPixelFormats[InitialSource.GetFormat()];
-			const int32 FormatDataSize = InitialFormat.BlockBytes;
+			const int32 FormatDataSize = InitialSource.GetBytesPerPixel();
 			if (FormatDataSize > 0)
 			{
-				TArray<uint8> Ref2DData;
+				TArray64<uint8> Ref2DData;
 				if (InitialSource.GetMipData(Ref2DData, 0))
 				{
 					uint8* NewData = (uint8*)FMemory::Malloc(Source2DTileSizeX * Source2DTileSizeY * TileSizeZ * FormatDataSize);
@@ -98,49 +90,51 @@ bool UVolumeTexture::UpdateSourceFromSourceTexture()
 	return bSourceValid;
 }
 
-ENGINE_API bool UVolumeTexture::UpdateSourceFromFunction(TFunction<void(const int32 x, const int32 y, const int32 z, FFloat16 *ret)> Func, const int32 SizeX, const int32 SizeY, const int32 SizeZ)
+ENGINE_API bool UVolumeTexture::UpdateSourceFromFunction(TFunction<void(int32, int32, int32, void*)> Func, int32 SizeX, int32 SizeY, int32 SizeZ, ETextureSourceFormat Format)
 {
 	bool bSourceValid = false;
 
 #if WITH_EDITOR
-	if (SizeX <= 0 || SizeY <= 0 || SizeZ <= 0) {
+	if (SizeX <= 0 || SizeY <= 0 || SizeZ <= 0)
+	{
 		UE_LOG(LogTexture, Warning, TEXT("%s UpdateSourceFromFunction size in x,y, and z must be greater than zero"), *GetFullName());
 		return false;
 	}
 
-	// Note for now we are only supporting 16 bit rgba 3d textures
-	// @todo: expose this as a parameter
-	const FPixelFormatInfo& InitialFormat = GPixelFormats[PF_A16B16G16R16];
-	const int32 FormatDataSize = InitialFormat.BlockBytes;
+	// First clear up the existing source with the requested TextureSourceFormat
+	Source.Init(0, 0, 0, 1, Format, nullptr);
+	// It is now possible to query the correct FormatDataSize (there is no static version of GetBytesPerPixel)
+	const int32 FormatDataSize = Source.GetBytesPerPixel();
 
 	// Allocate temp buffer used to fill texture
-	uint8* NewData = (uint8*)FMemory::Malloc(SizeX * SizeY * SizeZ * FormatDataSize);
+	uint8* const NewData = (uint8*)FMemory::Malloc(SizeX * SizeY * SizeZ * FormatDataSize);
 	uint8* CurPos = NewData;
 
-	// tmp array to store a single voxel value extracted from the lambda
-	FFloat16 *tmpVoxel = (FFloat16*)FMemory::Malloc(4 * sizeof(FFloat16));
+	// Temporary storage for a single voxel value extracted from the lambda, type depends on Format
+	void* const NewValue = FMemory::Malloc(FormatDataSize);
 
-	// loop over all voxels and fill from our TFunction
-	for (int x = 0; x < SizeX; ++x) {
-		for (int y = 0; y < SizeY; ++y) {
-			for (int z = 0; z < SizeZ; ++z) {
+	// Loop over all voxels and fill from our TFunction
+	for (int32 PosZ = 0; PosZ < SizeZ; ++PosZ)
+	{
+		for (int32 PosY = 0; PosY < SizeY; ++PosY)
+		{
+			for (int32 PosX = 0; PosX < SizeX; ++PosX)
+			{
+				Func(PosX, PosY, PosZ, NewValue);
 
-				Func(x, y, z, tmpVoxel);
-
-				FMemory::Memcpy(CurPos, (uint8*)tmpVoxel, FormatDataSize);
+				FMemory::Memcpy(CurPos, NewValue, FormatDataSize);
 
 				CurPos += FormatDataSize;
 			}
 		}
 	}
 
-	// Init the source data from the temp buffer
-	// @todo: expose texture type as a parameters
-	Source.Init(SizeX, SizeY, SizeZ, 1, TSF_RGBA16F, NewData);
+	// Init the final source data from the temp buffer
+	Source.Init(SizeX, SizeY, SizeZ, 1, Format, NewData);
 	
 	// Free temp buffers
 	FMemory::Free(NewData);
-	FMemory::Free(tmpVoxel);
+	FMemory::Free(NewValue);
 
 	SetLightingGuid(); // Because the content has changed, use a new GUID.
 
@@ -246,7 +240,7 @@ uint32 UVolumeTexture::CalcTextureMemorySize(int32 MipCount) const
 		CalcMipMapExtent3D(GetSizeX(), GetSizeY(), GetSizeZ(), Format, FMath::Max<int32>(0, GetNumMips() - MipCount), SizeX, SizeY, SizeZ);
 
 		uint32 TextureAlign = 0;
-		Size = (uint32)RHICalcTexture3DPlatformSize(SizeX, SizeY, SizeZ, Format, MipCount, Flags, TextureAlign);
+		Size = (uint32)RHICalcTexture3DPlatformSize(SizeX, SizeY, SizeZ, Format, FMath::Max(1, MipCount), Flags, FRHIResourceCreateInfo(PlatformData->GetExtData()), TextureAlign);
 	}
 	return Size;
 }
@@ -351,30 +345,31 @@ public:
 	 * Minimal initialization constructor.
 	 * @param InOwner - The UVolumeTexture which this FTexture3DResource represents.
 	 */
-	FTexture3DResource(UVolumeTexture* VolumeTexture, int32 MipBias)
-	:	SizeX(VolumeTexture->GetSizeX())
-	,	SizeY(VolumeTexture->GetSizeY())
-	,	SizeZ(VolumeTexture->GetSizeZ())
+	FTexture3DResource(UVolumeTexture* InOwner, int32 MipBias)
+	:	Owner( InOwner )
+	,	SizeX(InOwner->GetSizeX())
+	,	SizeY(InOwner->GetSizeY())
+	,	SizeZ(InOwner->GetSizeZ())
 	,	CurrentFirstMip(INDEX_NONE)
-	,	NumMips(VolumeTexture->GetNumMips())
-	,	PixelFormat(VolumeTexture->GetPixelFormat())
+	,	NumMips(InOwner->GetNumMips())
+	,	PixelFormat(InOwner->GetPixelFormat())
 	,	TextureSize(0)
-	,	TextureReference(&VolumeTexture->TextureReference)
+	,	TextureReference(&InOwner->TextureReference)
 	,	InitialData(MipBias)
 	{
 		check(0 < NumMips && NumMips <= MAX_TEXTURE_MIP_COUNT);
 		check(0 <= MipBias && MipBias < NumMips);
 
-		STAT(LODGroupStatName = TextureGroupStatFNames[VolumeTexture->LODGroup]);
-		TextureName = VolumeTexture->GetFName();
+		STAT(LODGroupStatName = TextureGroupStatFNames[Owner->LODGroup]);
+		TextureName = Owner->GetFName();
 
-		CreationFlags = (VolumeTexture->SRGB ? TexCreate_SRGB : 0)  | TexCreate_OfflineProcessed | TexCreate_ShaderResource | (VolumeTexture->bNoTiling ? TexCreate_NoTiling : 0);
-		SamplerFilter = (ESamplerFilter)UDeviceProfileManager::Get().GetActiveProfile()->GetTextureLODSettings()->GetSamplerFilter(VolumeTexture);
+		CreationFlags = (Owner->SRGB ? TexCreate_SRGB : 0)  | TexCreate_OfflineProcessed | TexCreate_ShaderResource | (Owner->bNoTiling ? TexCreate_NoTiling : 0);
+		SamplerFilter = (ESamplerFilter)UDeviceProfileManager::Get().GetActiveProfile()->GetTextureLODSettings()->GetSamplerFilter(Owner);
 
 		bGreyScaleFormat = (PixelFormat == PF_G8) || (PixelFormat == PF_BC4);
 
-		FTexturePlatformData* PlatformData = VolumeTexture->PlatformData;
-		if (PlatformData && PlatformData->TryLoadMips(MipBias, InitialData.GetMipData() + MipBias))
+		FTexturePlatformData* PlatformData = Owner->PlatformData;
+		if (PlatformData && PlatformData->TryLoadMips(MipBias, InitialData.GetMipData() + MipBias, Owner))
 		{
 			for (int32 MipIndex = MipBias; MipIndex < NumMips; ++MipIndex)
 			{
@@ -418,6 +413,7 @@ public:
 			const uint32 BaseMipSizeY = FMath::Max<uint32>(SizeY >> CurrentFirstMip, 1);
 			const uint32 BaseMipSizeZ = FMath::Max<uint32>(SizeZ >> CurrentFirstMip, 1);
 
+			CreateInfo.ExtData = Owner->PlatformData ? Owner->PlatformData->GetExtData() : 0;
 			Texture3DRHI = RHICreateTexture3D(BaseMipSizeX, BaseMipSizeY, BaseMipSizeZ, PixelFormat, NumMips - CurrentFirstMip, CreationFlags, CreateInfo);
 			TextureRHI = Texture3DRHI; 
 		}
@@ -466,9 +462,9 @@ public:
 		FSamplerStateInitializerRHI SamplerStateInitializer
 		(
 			SamplerFilter,
-			AM_Clamp,
-			AM_Clamp,
-			AM_Clamp
+			AM_Wrap,
+			AM_Wrap,
+			AM_Wrap
 		);
 		SamplerStateRHI = RHICreateSamplerState(SamplerStateInitializer);
 	}
@@ -479,7 +475,7 @@ public:
 		DEC_DWORD_STAT_FNAME_BY( LODGroupStatName, TextureSize );
 		if (TextureReference)
 		{
-			RHIUpdateTextureReference(TextureReference->TextureReferenceRHI, FTextureRHIParamRef());
+			RHIUpdateTextureReference(TextureReference->TextureReferenceRHI, nullptr);
 		}
 		Texture3DRHI.SafeRelease();
 		FTextureResource::ReleaseRHI();
@@ -497,6 +493,9 @@ public:
 	}
 
 private:
+
+	/** The UTexture2D which this resource represents.														*/
+	UVolumeTexture*	Owner;
 
 #if STATS
 	/** The FName of the LODGroup-specific stat	*/
@@ -569,7 +568,7 @@ void UVolumeTexture::GetResourceSizeEx(FResourceSizeEx& CumulativeResourceSize)
 
 void UVolumeTexture::PostEditChangeProperty(FPropertyChangedEvent& PropertyChangedEvent)
 {
- 	UProperty* PropertyThatChanged = PropertyChangedEvent.Property;
+ 	FProperty* PropertyThatChanged = PropertyChangedEvent.Property;
 	if (PropertyChangedEvent.Property)
 	{
 		static const FName SourceTextureName("Source2DTexture");
@@ -606,21 +605,19 @@ void UVolumeTexture::UpdateMipGenSettings()
 
 #endif // #if WITH_EDITOR
 
-bool UVolumeTexture::ShaderPlatformSupportsCompression(EShaderPlatform ShaderPlatform)
+bool UVolumeTexture::ShaderPlatformSupportsCompression(FStaticShaderPlatform ShaderPlatform)
 {
 	switch (ShaderPlatform)
 	{
-	case SP_PCD3D_SM4:
 	case SP_PCD3D_SM5:
 	case SP_PS4:
 	case SP_XBOXONE_D3D12:
 	case SP_VULKAN_SM5:
-	case SP_VULKAN_SM4:
 	case SP_VULKAN_SM5_LUMIN:
 		return true;
 
 	default:
-		return false;
+		return FDataDrivenShaderPlatformInfo::GetSupportsVolumeTextureCompression(ShaderPlatform);
 	}
 }
 

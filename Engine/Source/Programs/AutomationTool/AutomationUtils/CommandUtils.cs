@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 using System;
 using System.Collections;
 using System.Collections.Generic;
@@ -20,8 +20,6 @@ using System.Xml.Serialization;
 
 namespace AutomationTool
 {
-	#region ParamList
-
 	/// <summary>
 	/// Wrapper around List with support for multi parameter constructor, i.e:
 	///   var Maps = new ParamList<string>("Map1", "Map2");
@@ -54,10 +52,6 @@ namespace AutomationTool
 		}
 	}
 
-	#endregion
-
-	#region PathSeparator
-
 	public enum PathSeparator
 	{
 		Default = 0,
@@ -67,15 +61,11 @@ namespace AutomationTool
 		Local
 	}
 
-	#endregion
-
 	/// <summary>
 	/// Base utility function for script commands.
 	/// </summary>
 	public partial class CommandUtils
 	{
-		#region Environment Setup
-
 		static private CommandEnvironment CmdEnvironment;
 
 		/// <summary>
@@ -104,8 +94,6 @@ namespace AutomationTool
 			CmdEnvironment = new CommandEnvironment();
 		}
 
-		#endregion
-
 		/// <summary>
 		/// Returns true if AutomationTool is running using installed Engine components
 		/// </summary>
@@ -120,31 +108,6 @@ namespace AutomationTool
 		}
 
 		static private bool? bIsEngineInstalled;
-
-		#region Logging
-
-		/// <summary>
-		/// Writes formatted text to log (with LogEventType.Console).
-		/// </summary>
-		/// <param name="Format">Format string</param>
-		/// <param name="Args">Parameters</param>
-		[MethodImplAttribute(MethodImplOptions.NoInlining)]
-		[Obsolete("CommandUtils.Log() has been deprecated. Use CommandUtils.LogInformation() instead.", false)]
-		public static void Log(string Format, params object[] Args)
-		{
-			Tools.DotNETCommon.Log.WriteLine(1, Tools.DotNETCommon.LogEventType.Console, Format, Args);
-		}
-
-		/// <summary>
-		/// Writes formatted text to log (with LogEventType.Console).
-		/// </summary>
-		/// <param name="Message">Text</param>
-		[MethodImplAttribute(MethodImplOptions.NoInlining)]
-		[Obsolete("CommandUtils.Log() has been deprecated. Use CommandUtils.LogInformation() instead.", false)]
-		public static void Log(string Message)
-		{
-			Tools.DotNETCommon.Log.WriteLine(1, Tools.DotNETCommon.LogEventType.Console, Message);
-		}
 
 		/// <summary>
 		/// Writes formatted text to log (with LogEventType.Console).
@@ -306,10 +269,6 @@ namespace AutomationTool
             Tools.DotNETCommon.Log.WriteLine(1, Verbosity, LogUtils.FormatException(Ex));
 		}
 
-		#endregion
-
-		#region Progress Logging
-
 		public static void LogPushProgress(bool bShowProgress, int Numerator, int Denominator)
 		{
 			if(bShowProgress)
@@ -349,10 +308,6 @@ namespace AutomationTool
 				LogInformation("[@progress {0}/{1} '{2}' skipline]", Numerator, Denominator, String.Format(Format, Args));
 			}
 		}
-
-		#endregion
-
-		#region IO
 
 		/// <summary>
 		/// Finds files in specified paths. 
@@ -591,6 +546,16 @@ namespace AutomationTool
 
 		/// <summary>
 		/// Deletes a directory(or directories) including its contents (recursively, will delete read-only files).
+		/// If the deletion of the directory fails, this function throws an Exception.
+		/// </summary>
+        /// <param name="Directories">Directories</param>
+        public static void DeleteDirectory(DirectoryReference Directory)
+		{
+			DeleteDirectory(Directory.FullName);
+		}
+
+		/// <summary>
+		/// Deletes a directory(or directories) including its contents (recursively, will delete read-only files).
 		/// If the deletion of the directory fails, prints a warning.
 		/// </summary>
 		/// <param name="bQuiet">Suppresses log output if true</param>
@@ -655,6 +620,17 @@ namespace AutomationTool
 		}
 
 		/// <summary>
+		/// Attempts to delete a directory, if that fails deletes all files and folder from the specified directory.
+		/// This works around the issue when the user has a file open in a notepad from that directory. Somehow deleting the file works but
+		/// deleting the directory with the file that's open, doesn't.
+		/// </summary>
+		/// <param name="DirectoryName"></param>
+		public static void DeleteDirectoryContents(DirectoryReference DirectoryName)
+		{
+			DeleteDirectoryContents(DirectoryName.FullName);
+		}
+
+		/// <summary>
 		/// Checks if a directory(or directories) exists.
 		/// </summary>
         /// <param name="Directories">Directories</param>
@@ -686,10 +662,43 @@ namespace AutomationTool
 		}
 
 		/// <summary>
+		/// Renames/moves a directory.
+		/// If the rename of the directory fails, this function throws an Exception.
+		/// </summary>
+		/// <param name="OldName">Old name</param>
+		/// <param name="NewName">new name</param>
+		public static void RenameDirectory(string OldName, string NewName)
+		{
+			var OldNormalized = ConvertSeparators(PathSeparator.Default, OldName);
+			var NewNormalized = ConvertSeparators(PathSeparator.Default, NewName);
+			Directory.Move(OldNormalized, NewNormalized);
+		}
+
+		/// <summary>
+		/// Renames/moves a directory.
+		/// If the rename of the directory fails, this function prints a warning.
+		/// </summary>
+		/// <param name="OldName">Old name</param>
+		/// <param name="NewName">new name</param>
+		public static bool RenameDirectory_NoExceptions(string OldName, string NewName)
+		{
+			try
+			{
+				RenameDirectory(OldName, NewName);
+			}
+			catch (Exception)
+			{
+				LogWarning("Failed to rename/move file '{0}' to '{1}'", OldName, NewName);
+				return false;
+			}
+			return true;
+		}
+
+		/// <summary>
 		/// Creates a directory. Throws an exception on failure.
 		/// </summary>
-        /// <param name="DirectoryName">Name of the directory to create</param>
-        public static void CreateDirectory(string DirectoryName)
+		/// <param name="DirectoryName">Name of the directory to create</param>
+		public static void CreateDirectory(string DirectoryName)
 		{
 			string NormalizedDirectory = ConvertSeparators(PathSeparator.Default, DirectoryName);
 			try
@@ -1370,7 +1379,7 @@ namespace AutomationTool
 		/// <param name="Dest">The full path to the destination file</param>
 		/// <param name="bAllowDifferingTimestamps">If true, will always skip a file if the destination exists, even if timestamp differs; defaults to false</param>
 		/// <returns>True if the operation was successful, false otherwise.</returns>
-		public static void CopyFileIncremental(FileReference Source, FileReference Dest, bool bAllowDifferingTimestamps = false, bool bFilterSpecialLinesFromIniFiles = false)
+		public static void CopyFileIncremental(FileReference Source, FileReference Dest, bool bAllowDifferingTimestamps = false, List<string> IniKeyBlacklist = null, List<string> IniSectionBlacklist = null)
 		{
 			if (InternalUtils.SafeFileExists(Dest.FullName, true))
 			{
@@ -1398,7 +1407,7 @@ namespace AutomationTool
 			{
 				throw new AutomationException("Failed to delete {0} for copy", Dest);
 			}
-			if (!InternalUtils.SafeCopyFile(Source.FullName, Dest.FullName, bFilterSpecialLinesFromIniFiles:bFilterSpecialLinesFromIniFiles))
+			if (!InternalUtils.SafeCopyFile(Source.FullName, Dest.FullName, IniKeyBlacklist:IniKeyBlacklist, IniSectionBlacklist:IniSectionBlacklist))
 			{
 				throw new AutomationException("Failed to copy {0} to {1}", Source, Dest);
 			}
@@ -1621,10 +1630,6 @@ namespace AutomationTool
 			CloneDirectoryRecursiveWorker(SourcePath, TargetPath, ClonedFiles, bIncremental: true);
 		}
 
-		#endregion
-
-		#region Threaded Copy
-
         /// <summary>
 		/// Copies files using multiple threads
 		/// </summary>
@@ -1637,6 +1642,11 @@ namespace AutomationTool
             var SourceFiles = Directory.EnumerateFiles(SourceDirectory, "*", SearchOption.AllDirectories).ToList();
             var DestFiles = SourceFiles.Select(SourceFile => CommandUtils.MakeRerootedFilePath(SourceFile, SourceDirectory, DestDirectory)).ToList();
 			ThreadedCopyFiles(SourceFiles, DestFiles, MaxThreads);
+		}
+
+		public static void ThreadedCopyFiles(DirectoryReference SourceDirectory, DirectoryReference DestDirectory, int MaxThreads = 64)
+		{
+			ThreadedCopyFiles(SourceDirectory.FullName, DestDirectory.FullName, MaxThreads);
 		}
 
 		/// <summary>
@@ -1740,10 +1750,6 @@ namespace AutomationTool
 			}
 		}
 
-		#endregion
-
-		#region Environment variables
-
 		/// <summary>
 		/// Gets environment variable value.
 		/// </summary>
@@ -1796,10 +1802,6 @@ namespace AutomationTool
 				Environment.SetEnvironmentVariable(VarName, Value);
 			}
 		}
-
-		#endregion
-
-		#region CommandLine
 
 		/// <summary>
 		/// Converts a list of arguments to a string where each argument is separated with a space character.
@@ -1931,10 +1933,6 @@ namespace AutomationTool
 			return UnrealBuildTool.Utils.MakePathSafeToUseWithCommandLine(InPath);
 		}
 
-		#endregion
-
-		#region Other
-
 		public static string EscapePath(string InPath)
 		{
 			return InPath.Replace(":", "").Replace("/", "+").Replace("\\", "+").Replace(" ", "+");
@@ -1949,10 +1947,6 @@ namespace AutomationTool
 		{
 			return Collection == null || Collection.Count == 0;
 		}
-
-	    #endregion
-
-		#region Properties
 
 		/// <summary>
 		/// Checks if this command is running on a build machine.
@@ -1973,11 +1967,39 @@ namespace AutomationTool
 		public static readonly DirectoryReference EngineDirectory = DirectoryReference.Combine(RootDirectory, "Engine");
 
 		/// <summary>
+		/// Return the main engine directory and any platform extension engine directories
+		/// </summary>
+ 		public static DirectoryReference[] GetAllEngineDirectories()
+		{
+			List<DirectoryReference> EngineDirectories = new List<DirectoryReference>() { EngineDirectory };
+			DirectoryReference EnginePlatformsDirectory = DirectoryReference.Combine(EngineDirectory, "Platforms");
+			if (DirectoryReference.Exists(EnginePlatformsDirectory))
+			{
+				EngineDirectories.AddRange(DirectoryReference.EnumerateDirectories(EnginePlatformsDirectory).ToList());
+			}
+
+			return EngineDirectories.ToArray();
+		}
+
+		/// <summary>
+		/// Return the main project directory and any platform extension project directories
+		/// </summary>
+		public static DirectoryReference[] GetAllProjectDirectories(FileReference ProjectFile)
+		{
+			List<DirectoryReference> ProjectDirectories = new List<DirectoryReference>() { ProjectFile.Directory };
+			DirectoryReference ProjectPlatformsDirectory = DirectoryReference.Combine(ProjectFile.Directory, "Platforms");
+			if (DirectoryReference.Exists(ProjectPlatformsDirectory))
+			{
+				ProjectDirectories.AddRange(DirectoryReference.EnumerateDirectories(ProjectPlatformsDirectory).ToList());
+			}
+
+			return ProjectDirectories.ToArray();
+		}
+
+		/// <summary>
 		/// Telemetry data for the current run. Add -WriteTelemetry=<Path> to the command line to export to disk.
 		/// </summary>
 		public static TelemetryData Telemetry = new TelemetryData();
-
-		#endregion
 
         /// <summary>
         /// Cached location of the build root storage because the logic to compute it is a little non-trivial.
@@ -2079,9 +2101,13 @@ namespace AutomationTool
 			{
 				return "Windows";
 			}
+			else if(Platform == UnrealTargetPlatform.Linux || Platform == UnrealTargetPlatform.LinuxAArch64)
+			{
+				return "Linux";
+			}
 			else
 			{
-				return Enum.GetName(typeof(UnrealBuildTool.UnrealTargetPlatform), Platform);
+				return Platform.ToString();
 			}
 		}
 
@@ -2105,32 +2131,9 @@ namespace AutomationTool
 		/// <param name="Files">Files to include in the archive</param>
 		public static void ZipFiles(FileReference ZipFile, DirectoryReference BaseDirectory, IEnumerable<FileReference> Files)
 		{
-			// Ionic.Zip.Zip64Option.Always option produces broken archives on Mono, so we use system zip tool instead
-			if (Utils.IsRunningOnMono)
-			{
-				CommandUtils.CreateDirectory(ZipFile.Directory);
- 				CommandUtils.PushDir(BaseDirectory.FullName);
- 				string FilesList = "";
-				foreach(FileReference File in Files)
-				{
-					FilesList += " \"" + File.MakeRelativeTo(BaseDirectory) + "\"";
-					if (FilesList.Length > 32000)
-					{
-						CommandUtils.RunAndLog(CommandUtils.CmdEnv, "zip", "-g -q \"" + ZipFile.FullName + "\"" + FilesList);
-						FilesList = "";
-					}
-				}
-				if (FilesList.Length > 0)
-				{
-					CommandUtils.RunAndLog(CommandUtils.CmdEnv, "zip", "-g -q \"" + ZipFile.FullName + "\"" + FilesList);
-				}
-				CommandUtils.PopDir();
-			}
-			else
-			{
 				using(Ionic.Zip.ZipFile Zip = new Ionic.Zip.ZipFile(Encoding.UTF8))
 				{
-					Zip.UseZip64WhenSaving = Ionic.Zip.Zip64Option.Always;
+				Zip.UseZip64WhenSaving = Ionic.Zip.Zip64Option.AsNecessary;
 					foreach(FileReference File in Files)
 					{
 						Zip.AddFile(File.FullName, Path.GetDirectoryName(File.MakeRelativeTo(BaseDirectory)));
@@ -2139,7 +2142,6 @@ namespace AutomationTool
 					Zip.Save(ZipFile.FullName);
 				}
 			}
-		}
 
 		/// <summary>
 		/// Extracts the contents of a zip file
@@ -2286,27 +2288,6 @@ namespace AutomationTool
 
 			return BuildVersionPaths;
 		}
-
-		static public string GetPreviousXboxOneReleaseArchiveDir(string XboxOneReleasesArchiveDir)
-		{
-			var BuildFolders = Directory.GetDirectories(XboxOneReleasesArchiveDir);
-			if (BuildFolders.Length > 0)
-			{
-				Dictionary<Version, string> BuildVersionPathMap = GetBuildVersionPathMap(BuildFolders);
-				if (BuildVersionPathMap.Count > 0)
-				{
-					return BuildVersionPathMap.Where(archiveDir => DirectoryExists(CombinePaths(archiveDir.Value, "Paks"))).OrderByDescending(versionPathPair => versionPathPair.Key).First().Value;
-				}
-				else
-				{
-					throw new AutomationException(String.Format("No valid builds were found in %s", XboxOneReleasesArchiveDir));
-				}
-			}
-			else
-			{
-				throw new AutomationException(String.Format("No builds were found in %s", XboxOneReleasesArchiveDir));
-			}
-		}
 		
 		public static string FormatSizeString(long Size)
 		{
@@ -2417,6 +2398,7 @@ namespace AutomationTool
 		Minutes,
 		Bytes,
 		Megabytes,
+		Percentage,
 	}
 
 	/// <summary>
@@ -2465,6 +2447,7 @@ namespace AutomationTool
 		{
 			Samples.RemoveAll(x => x.Name == Name);
 			Samples.Add(new TelemetrySample() { Name = Name, Value = Value, Units = Units });
+			Log.TraceLog("Added telemetry value: {0} = {1} ({2})", Name, Value, Units);
 		}
 
 		/// <summary>
@@ -2527,6 +2510,7 @@ namespace AutomationTool
 		/// <param name="FileName"></param>
 		public void Write(string FileName)
 		{
+			Log.TraceLog("Writing telemetry to {0}...", FileName);
 			using (JsonWriter Writer = new JsonWriter(FileName))
 			{
 				Writer.WriteObjectStart();
@@ -2694,33 +2678,119 @@ namespace AutomationTool
         public string Uploaded { get; set; }
     }
 
-	/// <summary>
-	/// Code signing
-	/// </summary>
-	[Help("NoSign", "Skips signing of code/content files.")]
-	public class CodeSign
+	static class CodeSignWindows
 	{
 		/// <summary>
-		/// If so, what is the signing identity to search for?
+		/// The signing identity to find a certificate for
 		/// </summary>
-		public static string SigningIdentity = "Epic Games";
+		const string SigningIdentity = "Epic Games";
 
 		/// <summary>
-		/// Should we use the machine store?
+		/// Whether to look in the machine store for signing certificates, rather than the user store.
 		/// </summary>
-		public static bool bUseMachineStoreInsteadOfUserStore = false;
+		static bool bUseMachineStoreForCertificates = true;
 
-		/// <summary>
-		/// How long to keep re-trying code signing for
-		/// </summary>
-		public static TimeSpan CodeSignTimeOut = new TimeSpan(0, 3, 0); // Keep trying to sign one file for up to 3 minutes
+		public enum SignatureType
+		{
+			SHA1,
+			SHA256
+		};
+
+		static readonly string[] TimestampServersSHA1 =
+		{
+			"http://timestamp.verisign.com/scripts/timestamp.dll",
+			"http://timestamp.globalsign.com/scripts/timstamp.dll",
+			"http://timestamp.comodoca.com/authenticode"
+		};
+
+		static readonly string[] TimestampServersSHA256 =
+		{
+			"http://sha256timestamp.ws.symantec.com/sha256/timestamp",
+			"http://rfc3161timestamp.globalsign.com/advanced",
+			"http://timestamp.comodoca.com/?td=sha256"
+		};
+
+		public static void Sign(FileReference File, SignatureType SignatureType)
+		{
+			List<FileReference> Files = new List<FileReference> { File };
+			Sign(Files, SignatureType);
+		}
+
+		public static void Sign(List<FileReference> Files, SignatureType SignatureType)
+		{
+			string SignToolPath = GetSignToolPath();
+			string SpecificStoreArg = bUseMachineStoreForCertificates ? " /sm" : "";
+
+			for(int FileIdx = 0; FileIdx < Files.Count; )
+			{
+				Stopwatch Timer = Stopwatch.StartNew();
+
+				int NumAttempts = 0;
+				for(;;)
+				{
+					//@TODO: Verbosity choosing
+					//  /v will spew lots of info
+					//  /q does nothing on success and minimal output on failure
+					StringBuilder CommandLine = new StringBuilder();
+					if(SignatureType == SignatureType.SHA1)
+					{
+						CommandLine.AppendFormat("sign{0} /a /n \"{1}\" /t {2} /v", SpecificStoreArg, SigningIdentity, TimestampServersSHA1[NumAttempts % TimestampServersSHA1.Length]);
+					}
+					else if(SignatureType == SignatureType.SHA256)
+					{
+						CommandLine.AppendFormat("sign{0} /a /fd sha256 /td sha256 /as /n \"{1}\" /tr {2}", SpecificStoreArg, SigningIdentity, TimestampServersSHA256[NumAttempts % TimestampServersSHA256.Length]);
+					}
+					else
+					{
+						throw new ArgumentException(String.Format("Invalid signature type type ({0})", SignatureType));
+					}
+
+					// Append the files for this batch
+					int NextFileIdx = FileIdx;
+					while(NextFileIdx < Files.Count && CommandLine.Length + Files[NextFileIdx].FullName.Length < 2000)
+					{
+						CommandLine.AppendFormat(" \"{0}\"", Files[NextFileIdx]);
+						NextFileIdx++;
+					}
+
+					IProcessResult Result = CommandUtils.Run(SignToolPath, CommandLine.ToString(), null, CommandUtils.ERunOptions.AllowSpew);
+					NumAttempts++;
+
+					if (Result.ExitCode != 1)
+					{
+						if (Result.ExitCode == 2)
+						{
+							CommandUtils.LogError(String.Format("Signtool returned a warning."));
+						}
+						// Success!
+						FileIdx = NextFileIdx;
+						break;
+					}
+
+					if (Timer.Elapsed.TotalMinutes > 3.0)
+					{
+						throw new AutomationException("Failed to sign files {0} times over a period of {1}", NumAttempts, Timer.Elapsed);
+					}
+				}
+			}
+		}
 
 		/// <summary>
 		/// Finds the path to SignTool.exe, or throws an exception.
 		/// </summary>
 		/// <returns>Path to signtool.exe</returns>
-		public static string GetSignToolPath()
+		static string GetSignToolPath()
 		{
+			List<KeyValuePair<string, DirectoryReference>> WindowsSdkDirs = WindowsExports.GetWindowsSdkDirs();
+			foreach (KeyValuePair<string, DirectoryReference> Pair in WindowsSdkDirs)
+			{
+				FileReference SignToolFile = FileReference.Combine(Pair.Value, "bin", Pair.Key, "x64", "SignTool.exe");
+				if (FileReference.Exists(SignToolFile))
+				{
+					return SignToolFile.FullName;
+				}
+			}
+
 			string[] PossibleSignToolNames =
 			{
 				"C:/Program Files (x86)/Windows Kits/8.1/bin/x86/SignTool.exe",
@@ -2737,7 +2807,14 @@ namespace AutomationTool
 
 			throw new AutomationException("SignTool not found at '{0}' (are you missing the Windows SDK?)", String.Join("' or '", PossibleSignToolNames));
 		}
+	}
 
+	/// <summary>
+	/// Code signing
+	/// </summary>
+	[Help("NoSign", "Skips signing of code/content files.")]
+	public class CodeSign
+	{
 		/// <summary>
 		/// Code signs the specified file
 		/// </summary>
@@ -2776,59 +2853,13 @@ namespace AutomationTool
 				return;
 			}
 
-			string SignToolName = GetSignToolPath();
-
 			TargetFileInfo.IsReadOnly = false;
 
-			// Code sign the executable
-			string[] TimestampServer = { "http://timestamp.verisign.com/scripts/timestamp.dll",
-									     "http://timestamp.globalsign.com/scripts/timstamp.dll",
-										 "http://timestamp.comodoca.com/authenticode",
-										 "http://www.startssl.com/timestamp"
-									   };
-			int TimestampServerIndex = 0;
-
-			string SpecificStoreArg = bUseMachineStoreInsteadOfUserStore ? " /sm" : "";
-
-			DateTime StartTime = DateTime.Now;
-
-			int NumTrials = 0;
-			for (; ; )
+			CodeSignWindows.Sign(new FileReference(TargetFileInfo), CodeSignWindows.SignatureType.SHA1);
+			// MSI files can only have one signature; prefer SHA1 for compatibility, so don't run SHA256 on msi files.
+			if (!TargetFileInfo.FullName.EndsWith(".msi", StringComparison.InvariantCultureIgnoreCase))
 			{
-				//@TODO: Verbosity choosing
-				//  /v will spew lots of info
-				//  /q does nothing on success and minimal output on failure
-				string CodeSignArgs = String.Format("sign{0} /a /n \"{1}\" /t {2} /d \"{3}\" /v \"{4}\"", SpecificStoreArg, SigningIdentity, TimestampServer[TimestampServerIndex], TargetFileInfo.Name, TargetFileInfo.FullName);
-
-				IProcessResult Result = CommandUtils.Run(SignToolName, CodeSignArgs, null, CommandUtils.ERunOptions.AllowSpew);
-				++NumTrials;
-
-				if (Result.ExitCode != 1)
-				{
-					if (Result.ExitCode == 2)
-					{
-						CommandUtils.LogError(String.Format("Signtool returned a warning."));
-					}
-					// Success!
-					break;
-				}
-				else
-				{
-					// try another timestamp server on the next iteration
-					TimestampServerIndex++;
-					if (TimestampServerIndex >= TimestampServer.Count())
-					{
-						// loop back to the first timestamp server
-						TimestampServerIndex = 0;
-					}
-
-					// Keep retrying until we run out of time
-					TimeSpan RunTime = DateTime.Now - StartTime;
-					if (RunTime > CodeSignTimeOut)
-					{
-						throw new AutomationException("Failed to sign executable '{0}' {1} times over a period of {2}", TargetFileInfo.FullName, NumTrials, RunTime);
-					}
-				}
+				CodeSignWindows.Sign(new FileReference(TargetFileInfo), CodeSignWindows.SignatureType.SHA256);
 			}
 		}
 
@@ -2837,6 +2868,8 @@ namespace AutomationTool
 		/// </summary>
 		public static void SignMacFileOrFolder(string InPath, bool bIgnoreExtension = false)
 		{
+			TimeSpan CodeSignTimeOut = new TimeSpan(0, 3, 0); // Keep trying to sign one file for up to 3 minutes
+
 			bool bExists = CommandUtils.FileExists(InPath) || CommandUtils.DirectoryExists(InPath);
 			if (!bExists)
 			{
@@ -2939,59 +2972,6 @@ namespace AutomationTool
 			}
 		}
 
-		public static void SignListFilesIfEXEOrDLL(string FilesToSign)
-		{
-			string SignToolName = GetSignToolPath();
-
-			// nothing to sign
-			if (String.IsNullOrEmpty(FilesToSign))
-			{
-				return;
-			}
-
-			// Code sign the executable
-			string[] TimestampServer = { "http://timestamp.verisign.com/scripts/timestamp.dll",
-									     "http://timestamp.globalsign.com/scripts/timstamp.dll",
-										 "http://timestamp.comodoca.com/authenticode",
-										 "http://www.startssl.com/timestamp"
-									   };
-
-			string SpecificStoreArg = bUseMachineStoreInsteadOfUserStore ? " /sm" : "";	
-			
-			Stopwatch Stopwatch = Stopwatch.StartNew();
-
-			int NumTrials = 0;
-			for (; ; )
-			{
-				//@TODO: Verbosity choosing
-				//  /v will spew lots of info
-				//  /q does nothing on success and minimal output on failure
-				string CodeSignArgs = String.Format("sign{0} /a /n \"{1}\" /t {2} /debug {3}", SpecificStoreArg, SigningIdentity, TimestampServer[NumTrials % TimestampServer.Length], FilesToSign);
-
-				IProcessResult Result = CommandUtils.Run(SignToolName, CodeSignArgs, null, CommandUtils.ERunOptions.AllowSpew);
-				++NumTrials;
-
-				if (Result.ExitCode != 1)
-				{
-					if (Result.ExitCode == 2)
-					{
-						CommandUtils.LogError(String.Format("Signtool returned a warning."));
-					}
-					// Success!
-					break;
-				}
-				else
-				{
-					// Keep retrying until we run out of time
-					TimeSpan RunTime = Stopwatch.Elapsed;
-					if (RunTime > CodeSignTimeOut && NumTrials >= TimestampServer.Length)
-					{
-						throw new AutomationException("Failed to sign executables {0} times over a period of {1}", NumTrials, RunTime);
-					}
-				}
-			}
-		}
-
 		public static void SignMultipleFilesIfEXEOrDLL(List<FileReference> Files, bool bIgnoreExtension = false)
 		{
 			if (UnrealBuildTool.Utils.IsRunningOnMono)
@@ -2999,7 +2979,7 @@ namespace AutomationTool
 				CommandUtils.LogLog(String.Format("Can't sign we are running under mono."));
 				return;
 			}
-			List<string> FinalFiles = new List<string>();
+			List<FileReference> FinalFiles = new List<FileReference>();
 			foreach (string Filename in Files.Select(x => x.FullName))
 			{
 				FileInfo TargetFileInfo = new FileInfo(Filename);
@@ -3025,28 +3005,11 @@ namespace AutomationTool
 				}
 				if (IsExecutable && CommandUtils.FileExists(Filename))
 				{
-					FinalFiles.Add(Filename);
+					FinalFiles.Add(new FileReference(TargetFileInfo));
 				}
 			}			
-
-			StringBuilder FilesToSignBuilder = new StringBuilder();
-			List<string> FinalListSignStrings = new List<string>();
-			foreach(string File in FinalFiles)
-			{
-				FilesToSignBuilder.Append("\"" + File + "\" ");				
-				if(FilesToSignBuilder.Length > 1900)
-				{
-					string AddFilesToFinalList = FilesToSignBuilder.ToString();
-					FinalListSignStrings.Add(AddFilesToFinalList);
-					FilesToSignBuilder.Clear();
-				}
-			}
-			FinalListSignStrings.Add(FilesToSignBuilder.ToString());
-			foreach(string FilesToSign in FinalListSignStrings)
-			{
-				SignListFilesIfEXEOrDLL(FilesToSign);
-			}
-
+			CodeSignWindows.Sign(FinalFiles, CodeSignWindows.SignatureType.SHA1);
+			CodeSignWindows.Sign(FinalFiles.Where(x => !x.HasExtension(".msi")).ToList(), CodeSignWindows.SignatureType.SHA256); // MSI files can only have one signature; prefer SHA1 for compatibility
 		}
 	}
 

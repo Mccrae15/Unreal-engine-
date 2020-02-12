@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -8,6 +8,8 @@
 #include "UnrealWidget.h"
 #include "Editor.h"
 #include "EditorUndoClient.h"
+#include "Widgets/Layout/SWidgetSwitcher.h"
+#include "EdMode.h"
 
 class FCanvas;
 class FEditorViewportClient;
@@ -20,6 +22,7 @@ class IToolkitHost;
 class USelection;
 struct FConvexVolume;
 struct FViewportClick;
+class UEdMode;
 
 /**
  * A helper class to store the state of the various editor modes.
@@ -52,6 +55,11 @@ public:
 	void RemoveDefaultMode( const FEditorModeID DefaultModeID );
 
 	/**
+	 * Returns whether or not the provided mode ID is a default mode
+	 */
+	bool IsDefaultMode(const FEditorModeID ModeID) const { return DefaultModeIDs.Contains(ModeID); }
+
+	/**
 	 * Activates the default modes defined by this class.  Note that there can be more than one default mode, and this call will activate them all in sequence.
 	 */
 	void ActivateDefaultMode();
@@ -81,11 +89,30 @@ public:
 	 */
 	void DestroyMode(FEditorModeID InID);
 
+	/**
+	 * Creates the mode toolbar tab if needed
+	 */
+	TSharedRef<SDockTab> MakeModeToolbarTab();
+
+	/**
+	 * Whether or not the mode toolbar should be shown.  If any active modes generated a toolbar this method will return true
+	 */
+	bool ShouldShowModeToolbar() const;
+
+	/**
+	 * Whether or not the mode toolbox (where mode details panels and some tools are) should be shown.
+	 */
+	bool ShouldShowModeToolbox() const;
 protected:
 	
 	/** Deactivates the editor mode at the specified index */
 	void DeactivateModeAtIndex( int32 InIndex );
+	/** Deactivates the editor mode at the specified index */
+	void DeactivateScriptableModeAtIndex(int32 InIndex);
 		
+private:
+	void RebuildModeToolBar();
+	void SpawnOrUpdateModeToolbar();
 public:
 
 	/**
@@ -96,7 +123,10 @@ public:
 	/** 
 	 * Returns the editor mode specified by the passed in ID
 	 */
+	UE_DEPRECATED(4.24, "Use GetActiveMode instead.")
 	FEdMode* FindMode( FEditorModeID InID );
+
+	UEdMode* GetActiveScriptableMode(FEditorModeID InID) const;
 
 	/**
 	 * Returns true if the current mode is not the specified ModeID.  Also optionally warns the user.
@@ -110,6 +140,7 @@ public:
 
 	FMatrix GetCustomDrawingCoordinateSystem();
 	FMatrix GetCustomInputCoordinateSystem();
+	FMatrix GetLocalCoordinateSystem();
 	
 	/** 
 	 * Returns true if the passed in editor mode is active 
@@ -144,10 +175,11 @@ public:
 	/** 
 	 * Returns an array of all active modes
 	 */
+	UE_DEPRECATED(4.24, "All access to modes now needs to go through the mode manager")
 	void GetActiveModes( TArray<FEdMode*>& OutActiveModes );
 
 	void SetShowWidget( bool InShowWidget )	{ bShowWidget = InShowWidget; }
-	bool GetShowWidget() const				{ return bShowWidget; }
+	bool GetShowWidget() const;
 
 	/** Cycle the widget mode, forwarding queries to modes */
 	void CycleWidgetMode (void);
@@ -193,6 +225,16 @@ public:
 
 	/** Notifies all active modes of mouse click messages. */
 	bool HandleClick(FEditorViewportClient* InViewportClient,  HHitProxy *HitProxy, const FViewportClick &Click );
+
+	/**
+	 * Allows editor modes to override the bounding box used to focus the viewport on a selection
+	 * 
+	 * @param Actor			The selected actor that is being considered for focus
+	 * @param PrimitiveComponent	The component in the actor being considered for focus
+	 * @param InOutBox		The box that should be computed for the actor and component
+	 * @return bool			true if a mode overrides the box and populated InOutBox, false if it did not populate InOutBox
+	 */
+	bool ComputeBoundingBoxForViewportFocus(AActor* Actor, UPrimitiveComponent* PrimitiveComponent, FBox& InOutBox);
 
 	/** true if the passed in brush actor should be drawn in wireframe */	
 	bool ShouldDrawBrushWireframe( AActor* InActor ) const;
@@ -261,6 +303,15 @@ public:
 
 	/** Get a cursor to override the default with, if any */
 	bool GetCursor(EMouseCursor::Type& OutCursor) const;
+
+	/** Get override cursor visibility settings */
+	bool GetOverrideCursorVisibility(bool& bWantsOverride, bool& bHardwareCursorVisible, bool bSoftwareCursorVisible) const;
+
+	/** Called before converting mouse movement to drag/rot */
+	bool PreConvertMouseMovement(FEditorViewportClient* InViewportClient);
+
+	/** Called after converting mouse movement to drag/rot */
+	bool PostConvertMouseMovement(FEditorViewportClient* InViewportClient);
 
 	/**
 	 * Returns a good location to draw the widget at.
@@ -382,8 +433,14 @@ public:
 	 * First parameter:  The editor mode that was changed
 	 * Second parameter:  True if entering the mode, or false if exiting the mode
 	 */
+PRAGMA_DISABLE_DEPRECATION_WARNINGS
 	DECLARE_EVENT_TwoParams( FEditorModeTools, FEditorModeChangedEvent, FEdMode*, bool );
+UE_DEPRECATED(4.24, "Use OnEditorModeIDChanged() instead.")
 	FEditorModeChangedEvent& OnEditorModeChanged() { return EditorModeChangedEvent; }
+PRAGMA_ENABLE_DEPRECATION_WARNINGS
+
+	DECLARE_EVENT_TwoParams(FEditorModeTools, FEditorModeIDChangedEvent, const FEditorModeID&, bool);
+	FEditorModeIDChangedEvent& OnEditorModeIDChanged() { return EditorModeIDChangedEvent; }
 
 	/** delegate type for triggering when widget mode changed */
 	DECLARE_EVENT_OneParam( FEditorModeTools, FWidgetModeChangedEvent, FWidget::EWidgetMode );
@@ -393,8 +450,19 @@ public:
 	void BroadcastWidgetModeChanged(FWidget::EWidgetMode InWidgetMode) { WidgetModeChangedEvent.Broadcast(InWidgetMode); }
 
 	/**	Broadcasts the EditorModeChanged event */
+	UE_DEPRECATED(4.24, "Use BroadcastEditorModeIDChanged() instead.")
 	void BroadcastEditorModeChanged(FEdMode* Mode, bool IsEnteringMode) { EditorModeChangedEvent.Broadcast(Mode, IsEnteringMode); }
 
+	/**	Broadcasts the EditorModeIDChanged event */
+	void BroadcastEditorModeIDChanged(const FEditorModeID& ModeID, bool IsEnteringMode) { EditorModeIDChangedEvent.Broadcast(ModeID, IsEnteringMode); }
+
+	/** delegate type for triggering when coordinate system changed */
+	DECLARE_EVENT_OneParam(FEditorModeTools, FCoordSystemChangedEvent, ECoordSystem);
+	FCoordSystemChangedEvent& OnCoordSystemChanged() { return CoordSystemChangedEvent; }
+
+	/**	Broadcasts the CoordSystemChangedEvent event */
+	void BroadcastCoordSystemChanged(ECoordSystem InCoordSystem) { CoordSystemChangedEvent.Broadcast(InCoordSystem); }
+	
 	/**
 	 * Returns the current CoordSystem
 	 * 
@@ -410,6 +478,9 @@ public:
 
 	/** Is the viewport UI hidden? */
 	bool IsViewportUIHidden() const { return bHideViewportUI; }
+
+	/** The toolbar tab name that should be used as the tab identifier */
+	static const FName EditorModeToolbarTabName;
 
 	bool PivotShown;
 	bool Snapping;
@@ -462,6 +533,40 @@ public:
 	 * Whether or not the current selection has a scene component selected
  	 */
 	bool SelectionHasSceneComponent() const;
+
+	bool IsSelectionAllowed(AActor* InActor, const bool bInSelected) const;
+
+	bool IsSelectionHandled(AActor* InActor, const bool bInSelected) const;
+
+	bool ProcessEditDuplicate();
+	bool ProcessEditDelete();
+	bool ProcessEditCut();
+	bool ProcessEditCopy();
+	bool ProcessEditPaste();
+	EEditAction::Type  GetActionEditDuplicate();
+	EEditAction::Type  GetActionEditDelete();
+	EEditAction::Type  GetActionEditCut();
+	EEditAction::Type  GetActionEditCopy();
+	EEditAction::Type GetActionEditPaste();
+
+	void DeactivateOtherVisibleModes(FEditorModeID InMode);
+	bool IsSnapRotationEnabled() const;
+	bool SnapRotatorToGridOverride(FRotator& InRotation) const;
+	void ActorsDuplicatedNotify(TArray<AActor*>& InPreDuplicateSelection, TArray<AActor*>& InPostDuplicateSelection, const bool bOffsetLocations);
+	void ActorMoveNotify();
+	void ActorSelectionChangeNotify();
+	void ActorPropChangeNotify();
+	void UpdateInternalData();
+	bool IsOnlyVisibleActiveMode(FEditorModeID InMode) const;
+
+	/** returns true if all active EdModes are OK with an AutoSave happening now  */
+	bool CanAutoSave() const;
+
+	/*
+	* Sets the active Modes ToolBar Palette Tab to the named Palette
+	*/
+	void  InvokeToolPaletteTab(FEditorModeID InMode, FName InPaletteName);
+
 protected:
 	/** 
 	 * Delegate handlers
@@ -473,13 +578,19 @@ protected:
 	TArray<FEditorModeID> DefaultModeIDs;
 
 	/** A list of active editor modes. */
-	TArray< TSharedPtr<FEdMode> > Modes;
+	TArray< TSharedPtr<FEdMode> > ActiveModes;
+
+	/** A list of active editor modes. */
+	TArray< UEdMode* > ActiveScriptableModes;
 
 	/** The host of the toolkits created by these modes */
 	TWeakPtr<IToolkitHost> ToolkitHost;
 
 	/** A list of previously active editor modes that we will potentially recycle */
 	TMap< FEditorModeID, TSharedPtr<FEdMode> > RecycledModes;
+
+	/** A list of previously active editor modes that we will potentially recycle */
+	TMap< FEditorModeID, UEdMode* > RecycledScriptableModes;
 
 	/** The mode that the editor viewport widget is in. */
 	FWidget::EWidgetMode WidgetMode;
@@ -496,6 +607,22 @@ protected:
 	/** if true the current selection has a scene component */
 	bool bSelectionHasSceneComponent;
 private:
+	struct FEdModeToolbarRow
+	{
+		FEdModeToolbarRow(FName InModeID, FName InPaletteName, FText InDisplayName, TSharedRef<SWidget> InToolbarWidget)
+			: ModeID(InModeID)
+			, PaletteName(InPaletteName)
+			, DisplayName(InDisplayName)
+			, ToolbarWidget(InToolbarWidget)
+		{}
+		FName ModeID;
+		FName PaletteName;
+		FText DisplayName;
+		TSharedPtr<SWidget> ToolbarWidget;
+	};
+
+	/** All toolbar rows generated by active modes.  There will be one row per active mode that generates a toolbar */
+	TArray<FEdModeToolbarRow> ActiveToolBarRows;
 
 	/** The coordinate system the widget is operating within. */
 	ECoordSystem CoordSystem;
@@ -503,8 +630,23 @@ private:
 	/** Multicast delegate that is broadcast when a mode is entered or exited */
 	FEditorModeChangedEvent EditorModeChangedEvent;
 
+	/** Multicast delegate that is broadcast when a mode is entered or exited */
+	FEditorModeIDChangedEvent EditorModeIDChangedEvent;
+
 	/** Multicast delegate that is broadcast when a widget mode is changed */
 	FWidgetModeChangedEvent WidgetModeChangedEvent;
+
+	/** Multicast delegate that is broadcast when the coordinate system is changed */
+	FCoordSystemChangedEvent CoordSystemChangedEvent;
+
+	/** The dock tab for any modes that generate a toolbar */
+	TWeakPtr<SDockTab> ModeToolbarTab;
+
+	/** The actual toolbar rows will be placed in this vertical box */
+	TWeakPtr<SVerticalBox> ModeToolbarBox;
+
+	/** The modes palette toolbar **/	
+	TWeakPtr<SWidgetSwitcher> ModeToolbarPaletteSwitcher;
 
 	/** Flag set between calls to StartTracking() and EndTracking() */
 	bool bIsTracking;

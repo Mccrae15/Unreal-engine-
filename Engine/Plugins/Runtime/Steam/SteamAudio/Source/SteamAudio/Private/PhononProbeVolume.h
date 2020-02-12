@@ -38,14 +38,14 @@ struct FBakedDataInfo
 	int32 Size;
 };
 
-inline bool operator==(const FBakedDataInfo& lhs, const FBakedDataInfo& rhs)
+inline bool operator==(const FBakedDataInfo& Lhs, const FBakedDataInfo& Rhs)
 {
-	return lhs.Name == rhs.Name && lhs.Size == rhs.Size;
+	return Lhs.Name == Rhs.Name && Lhs.Size == Rhs.Size;
 }
 
-inline bool operator<(const FBakedDataInfo& lhs, const FBakedDataInfo& rhs)
+inline bool operator<(const FBakedDataInfo& Lhs, const FBakedDataInfo& Rhs)
 {
-	return lhs.Name < rhs.Name;
+	return Lhs.Name.LexicalLess(Rhs.Name);
 }
 
 /**
@@ -73,7 +73,7 @@ public:
 	/** Writes a given probe batch out to the Runtime folder. Returns file size, or 0 if no file was written. */
 	int32 SaveProbeBatchToDisk(IPLhandle ProbeBatch);
 
-	virtual bool CanEditChange(const UProperty* InProperty) const override;
+	virtual bool CanEditChange(const FProperty* InProperty) const override;
 
 #endif
 

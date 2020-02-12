@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 /*=============================================================================
 IOSPlatformProcess.cpp: iOS implementations of Process functions
@@ -23,8 +23,8 @@ const TCHAR* FIOSPlatformProcess::ComputerName()
 
 	if( !Result[0] )
 	{
-		ANSICHAR AnsiResult[ARRAY_COUNT(Result)];
-		gethostname(AnsiResult, ARRAY_COUNT(Result));
+		ANSICHAR AnsiResult[UE_ARRAY_COUNT(Result)];
+		gethostname(AnsiResult, UE_ARRAY_COUNT(Result));
 		FCString::Strcpy(Result, ANSI_TO_TCHAR(AnsiResult));
 	}
 	return Result;
@@ -77,22 +77,7 @@ FString FIOSPlatformProcess::GetGameBundleId()
 
 void FIOSPlatformProcess::SetRealTimeMode()
 {
-	if ([IOSAppDelegate GetDelegate].OSVersion < 7 && FPlatformMisc::NumberOfCores() > 1)
-	{
-		mach_timebase_info_data_t TimeBaseInfo;
-		mach_timebase_info( &TimeBaseInfo );
-		double MsToAbs = ((double)TimeBaseInfo.denom / (double)TimeBaseInfo.numer) * 1000000.0;
-		uint32 NormalProcessingTimeMs = 20;
-		uint32 ConstraintProcessingTimeMs = 60;
-
-		thread_time_constraint_policy_data_t Policy;
-		Policy.period      = 0;
-		Policy.computation = (uint32_t)(NormalProcessingTimeMs * MsToAbs);
-		Policy.constraint  = (uint32_t)(ConstraintProcessingTimeMs * MsToAbs);
-		Policy.preemptible = true;
-
-		thread_policy_set(pthread_mach_thread_np(pthread_self()), THREAD_TIME_CONSTRAINT_POLICY, (thread_policy_t)&Policy, THREAD_TIME_CONSTRAINT_POLICY_COUNT);
-	}
+	// removed some ios 6 code that used to do something here
 }
 
 // Set the game thread priority to very high, slightly above the render thread
@@ -123,7 +108,7 @@ void FIOSPlatformProcess::SetupRenderThread()
 
 void FIOSPlatformProcess::SetThreadAffinityMask(uint64 AffinityMask)
 {
-	if ([IOSAppDelegate GetDelegate].OSVersion >= 8 && FPlatformMisc::NumberOfCores() > 1)
+	if (FPlatformMisc::NumberOfCores() > 1)
 	{
 		thread_affinity_policy AP;
 		AP.affinity_tag = AffinityMask;
@@ -146,15 +131,15 @@ const TCHAR* FIOSPlatformProcess::ExecutableName(bool bRemoveExtension)
 	return Result;
 }
 
-FString FIOSPlatformProcess::GenerateApplicationPath( const FString& AppName, EBuildConfigurations::Type BuildConfiguration)
+FString FIOSPlatformProcess::GenerateApplicationPath( const FString& AppName, EBuildConfiguration BuildConfiguration)
 {
     SCOPED_AUTORELEASE_POOL;
     
     FString PlatformName = TEXT("IOS");
     FString ExecutableName = AppName;
-    if (BuildConfiguration != EBuildConfigurations::Development && BuildConfiguration != EBuildConfigurations::DebugGame)
+    if (BuildConfiguration != EBuildConfiguration::Development && BuildConfiguration != EBuildConfiguration::DebugGame)
     {
-        ExecutableName += FString::Printf(TEXT("-%s-%s"), *PlatformName, EBuildConfigurations::ToString(BuildConfiguration));
+        ExecutableName += FString::Printf(TEXT("-%s-%s"), *PlatformName, LexToString(BuildConfiguration));
     }
     
     NSURL* CurrentBundleURL = [[NSBundle mainBundle] bundleURL];

@@ -1,10 +1,11 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "MaterialEditor/PreviewMaterial.h"
 #include "Modules/ModuleManager.h"
 #include "MaterialEditor/DEditorParameterValue.h"
 #include "MaterialEditor/DEditorFontParameterValue.h"
 #include "MaterialEditor/DEditorMaterialLayersParameterValue.h"
+#include "MaterialEditor/DEditorRuntimeVirtualTextureParameterValue.h"
 #include "MaterialEditor/DEditorScalarParameterValue.h"
 #include "MaterialEditor/DEditorStaticComponentMaskParameterValue.h"
 #include "MaterialEditor/DEditorStaticSwitchParameterValue.h"
@@ -102,12 +103,13 @@ public:
 					return false;
 				}
 
-				extern ENGINE_API bool IsGPUSkinCacheAvailable();
-				bool bSkinCache = IsGPUSkinCacheAvailable() && (VertexFactoryType == FindVertexFactoryType(FName(TEXT("FGPUSkinPassthroughVertexFactory"), FNAME_Find)));
+				extern ENGINE_API bool IsGPUSkinCacheAvailable(EShaderPlatform Platform);
+				bool bSkinCache = IsGPUSkinCacheAvailable(Platform) && (VertexFactoryType == FindVertexFactoryType(FName(TEXT("FGPUSkinPassthroughVertexFactory"), FNAME_Find)));
 					
 				if (
-					VertexFactoryType != FindVertexFactoryType(FName(TEXT("TGPUSkinVertexFactoryfalse"), FNAME_Find)) &&
-					VertexFactoryType != FindVertexFactoryType(FName(TEXT("TGPUSkinVertexFactorytrue"), FNAME_Find)) &&
+					VertexFactoryType != FindVertexFactoryType(FName(TEXT("TGPUSkinVertexFactoryDefault"), FNAME_Find)) &&
+					VertexFactoryType != FindVertexFactoryType(FName(TEXT("TGPUSkinVertexFactoryExtra"), FNAME_Find)) &&
+					VertexFactoryType != FindVertexFactoryType(FName(TEXT("TGPUSkinVertexFactoryUnlimited"), FNAME_Find)) &&
 					!bSkinCache
 					)
 				{
@@ -137,7 +139,15 @@ public:
 			bool bShaderTypeMatches = false;
 
 			// For FMaterialResource::GetRepresentativeInstructionCounts
-			if (FCString::Stricmp(ShaderType->GetName(), TEXT("MobileDirectionalLight")))
+			if (FCString::Stristr(ShaderType->GetName(), TEXT("MaterialCHSFNoLightMapPolicy")))
+			{
+				bShaderTypeMatches = true;
+			}
+			else if (FCString::Stristr(ShaderType->GetName(), TEXT("MobileDirectionalLight")))
+			{
+				bShaderTypeMatches = true;
+			}
+			else if (FCString::Stristr(ShaderType->GetName(), TEXT("MobileMovableDirectionalLight")))
 			{
 				bShaderTypeMatches = true;
 			}
@@ -180,7 +190,7 @@ public:
 			{
 				bShaderTypeMatches = true;
 			}
-			else if (FCString::Stristr(ShaderType->GetName(), TEXT("TDistortion")))
+			else if (FCString::Stristr(ShaderType->GetName(), TEXT("Distortion")))
 			{
 				bShaderTypeMatches = true;
 			}
@@ -193,6 +203,14 @@ public:
 				bShaderTypeMatches = true;
 			}
 			else if (FCString::Stristr(ShaderType->GetName(), TEXT("FDebugViewModeVS")))
+			{
+				bShaderTypeMatches = true;
+			}
+			else if (FCString::Stristr(ShaderType->GetName(), TEXT("FVelocity")))
+			{
+				bShaderTypeMatches = true;
+			}
+			else if (FCString::Stristr(ShaderType->GetName(), TEXT("RayTracingDynamicGeometryConverter")))
 			{
 				bShaderTypeMatches = true;
 			}
@@ -221,19 +239,24 @@ public:
 		}
 	}
 
-	virtual bool GetVectorValue(const FMaterialParameterInfo& ParameterInfo, FLinearColor* OutValue, const FMaterialRenderContext& Context) const
+	virtual bool GetVectorValue(const FHashedMaterialParameterInfo& ParameterInfo, FLinearColor* OutValue, const FMaterialRenderContext& Context) const
 	{
 		return Material->GetRenderProxy()->GetVectorValue(ParameterInfo, OutValue, Context);
 	}
 
-	virtual bool GetScalarValue(const FMaterialParameterInfo& ParameterInfo, float* OutValue, const FMaterialRenderContext& Context) const
+	virtual bool GetScalarValue(const FHashedMaterialParameterInfo& ParameterInfo, float* OutValue, const FMaterialRenderContext& Context) const
 	{
 		return Material->GetRenderProxy()->GetScalarValue(ParameterInfo, OutValue, Context);
 	}
 
-	virtual bool GetTextureValue(const FMaterialParameterInfo& ParameterInfo, const UTexture** OutValue, const FMaterialRenderContext& Context) const
+	virtual bool GetTextureValue(const FHashedMaterialParameterInfo& ParameterInfo, const UTexture** OutValue, const FMaterialRenderContext& Context) const
 	{
 		return Material->GetRenderProxy()->GetTextureValue(ParameterInfo,OutValue,Context);
+	}
+
+	virtual bool GetTextureValue(const FHashedMaterialParameterInfo& ParameterInfo, const URuntimeVirtualTexture** OutValue, const FMaterialRenderContext& Context) const
+	{
+		return Material->GetRenderProxy()->GetTextureValue(ParameterInfo, OutValue, Context);
 	}
 };
 
@@ -253,7 +276,7 @@ void UMaterialEditorPreviewParameters::PostEditChangeProperty(FPropertyChangedEv
 {
 	if (PreviewMaterial && PropertyChangedEvent.ChangeType != EPropertyChangeType::Interactive)
 	{
-		UProperty* PropertyThatChanged = PropertyChangedEvent.Property;
+		FProperty* PropertyThatChanged = PropertyChangedEvent.Property;
 		if (OriginalFunction == nullptr)
 		{
 			CopyToSourceInstance();
@@ -323,6 +346,9 @@ void UMaterialEditorPreviewParameters::RegenerateArrays()
 		// Only operate on base materials
 		UMaterial* ParentMaterial = PreviewMaterial;
 
+		// Ensure all cached data is up-to-date before looping over parameters
+		PreviewMaterial->UpdateCachedExpressionData();
+
 		// Loop through all types of parameters for this material and add them to the parameter arrays.
 		TArray<FMaterialParameterInfo> ParameterInfo;
 		TArray<FGuid> Guids;
@@ -341,7 +367,8 @@ void UMaterialEditorPreviewParameters::RegenerateArrays()
 			if (PreviewMaterial->GetVectorParameterValue(ParameterValue.ParameterInfo, Value))
 			{
 				ParameterValue.ParameterValue = Value;
-				PreviewMaterial->IsVectorParameterUsedAsChannelMask(ParameterValue.ParameterInfo, ParameterValue.bIsUsedAsChannelMask);			
+				PreviewMaterial->IsVectorParameterUsedAsChannelMask(ParameterValue.ParameterInfo, ParameterValue.bIsUsedAsChannelMask);		
+				PreviewMaterial->GetVectorParameterChannelNames(ParameterValue.ParameterInfo, ParameterValue.ChannelNames);
 			}
 			if (PreviewMaterial->GetParameterSortPriority(ParameterName, SortPriority))
 			{
@@ -398,6 +425,35 @@ void UMaterialEditorPreviewParameters::RegenerateArrays()
 			ParameterValue.ExpressionId = Guids[ParameterIdx];
 
 			if (PreviewMaterial->GetTextureParameterValue(ParameterValue.ParameterInfo, Value))
+			{
+				ParameterValue.ParameterValue = Value;
+				PreviewMaterial->GetTextureParameterChannelNames(ParameterValue.ParameterInfo, ParameterValue.ChannelNames);
+			}
+			if (ParentMaterial->GetParameterSortPriority(ParameterName, SortPriority))
+			{
+				ParameterValue.SortPriority = SortPriority;
+			}
+			else
+			{
+				ParameterValue.SortPriority = 0;
+			}
+			AssignParameterToGroup(ParentMaterial, &ParameterValue);
+		}
+
+		// Runtime Virtual Texture Parameters.
+		ParentMaterial->GetAllTextureParameterInfo(ParameterInfo, Guids);
+		for (int32 ParameterIdx = 0; ParameterIdx < ParameterInfo.Num(); ParameterIdx++)
+		{
+			UDEditorRuntimeVirtualTextureParameterValue& ParameterValue = *(NewObject<UDEditorRuntimeVirtualTextureParameterValue>());
+			FName ParameterName = ParameterInfo[ParameterIdx].Name;
+			URuntimeVirtualTexture* Value;
+			int32 SortPriority;
+
+			ParameterValue.bOverride = true;
+			ParameterValue.ParameterInfo = ParameterInfo[ParameterIdx];
+			ParameterValue.ExpressionId = Guids[ParameterIdx];
+
+			if (PreviewMaterial->GetRuntimeVirtualTextureParameterValue(ParameterValue.ParameterInfo, Value))
 			{
 				ParameterValue.ParameterValue = Value;
 			}
@@ -663,11 +719,16 @@ void UMaterialEditorPreviewParameters::CopyToSourceInstance()
 					PreviewMaterial->SetFontParameterValueEditorOnly(FontParameterValue->ParameterInfo.Name, FontParameterValue->ParameterValue.FontValue, FontParameterValue->ParameterValue.FontPage);
 					continue;
 				}
-
 				UDEditorTextureParameterValue* TextureParameterValue = Cast<UDEditorTextureParameterValue>(Group.Parameters[ParameterIdx]);
 				if (TextureParameterValue)
 				{
 					PreviewMaterial->SetTextureParameterValueEditorOnly(TextureParameterValue->ParameterInfo.Name, TextureParameterValue->ParameterValue);
+					continue;
+				}
+				UDEditorRuntimeVirtualTextureParameterValue* RuntimeVirtualTextureParameterValue = Cast<UDEditorRuntimeVirtualTextureParameterValue>(Group.Parameters[ParameterIdx]);
+				if (RuntimeVirtualTextureParameterValue)
+				{
+					PreviewMaterial->SetRuntimeVirtualTextureParameterValueEditorOnly(RuntimeVirtualTextureParameterValue->ParameterInfo.Name, RuntimeVirtualTextureParameterValue->ParameterValue);
 					continue;
 				}
 				UDEditorVectorParameterValue* VectorParameterValue = Cast<UDEditorVectorParameterValue>(Group.Parameters[ParameterIdx]);
@@ -730,11 +791,16 @@ void UMaterialEditorPreviewParameters::ApplySourceFunctionChanges()
 					OriginalFunction->SetFontParameterValueEditorOnly(FontParameterValue->ParameterInfo.Name, FontParameterValue->ParameterValue.FontValue, FontParameterValue->ParameterValue.FontPage);
 					continue;
 				}
-
 				UDEditorTextureParameterValue * TextureParameterValue = Cast<UDEditorTextureParameterValue>(Group.Parameters[ParameterIdx]);
 				if (TextureParameterValue)
 				{
 					OriginalFunction->SetTextureParameterValueEditorOnly(TextureParameterValue->ParameterInfo.Name, TextureParameterValue->ParameterValue);
+					continue;
+				}
+				UDEditorRuntimeVirtualTextureParameterValue * RuntimeVirtualTextureParameterValue = Cast<UDEditorRuntimeVirtualTextureParameterValue>(Group.Parameters[ParameterIdx]);
+				if (RuntimeVirtualTextureParameterValue)
+				{
+					OriginalFunction->SetRuntimeVirtualTextureParameterValueEditorOnly(RuntimeVirtualTextureParameterValue->ParameterInfo.Name, RuntimeVirtualTextureParameterValue->ParameterValue);
 					continue;
 				}
 				UDEditorVectorParameterValue * VectorParameterValue = Cast<UDEditorVectorParameterValue>(Group.Parameters[ParameterIdx]);
@@ -789,7 +855,7 @@ void UMaterialEditorInstanceConstant::PostEditChangeProperty(FPropertyChangedEve
 {
 	if (SourceInstance)
 	{
-		UProperty* PropertyThatChanged = PropertyChangedEvent.Property;
+		FProperty* PropertyThatChanged = PropertyChangedEvent.Property;
 		bool bLayersParameterChanged = false;
 
 		FNavigationLockContext NavUpdateLock(ENavigationLockReason::MaterialUpdate);
@@ -868,6 +934,10 @@ void  UMaterialEditorInstanceConstant::AssignParameterToGroup(UMaterial* ParentM
 			{
 				ParameterGroupName = TEXT("Texture Parameter Values");
 			}
+			else if (Cast<UDEditorRuntimeVirtualTextureParameterValue>(ParameterValue))
+			{
+				ParameterGroupName = TEXT("Texture Parameter Values");
+			}
 			else if (Cast<UDEditorScalarParameterValue>(ParameterValue))
 			{
 				ParameterGroupName = TEXT("Scalar Parameter Values");
@@ -933,6 +1003,7 @@ void UMaterialEditorInstanceConstant::RegenerateArrays()
 		// Only operate on base materials
 		UMaterial* ParentMaterial = Parent->GetMaterial();
 		SourceInstance->UpdateParameterNames();	// Update any parameter names that may have changed.
+		SourceInstance->UpdateCachedLayerParameters();
 
 		// Get all static parameters from the source instance.  This will handle inheriting parent values.	
 		FStaticParameterSet SourceStaticParameters;
@@ -1007,6 +1078,7 @@ void UMaterialEditorInstanceConstant::RegenerateArrays()
 
 			SourceInstance->GetVectorParameterValue(ParameterInfo, ParameterValue.ParameterValue);
 			SourceInstance->IsVectorParameterUsedAsChannelMask(ParameterInfo, ParameterValue.bIsUsedAsChannelMask);
+			SourceInstance->GetVectorParameterChannelNames(ParameterInfo, ParameterValue.ChannelNames);
 
 			// @todo: This is kind of slow, maybe store these in a map for lookup?
 			// See if this keyname exists in the source instance.
@@ -1039,6 +1111,7 @@ void UMaterialEditorInstanceConstant::RegenerateArrays()
 
 			ParameterValue.ParameterValue = nullptr;
 			SourceInstance->GetTextureParameterValue(ParameterInfo, ParameterValue.ParameterValue);
+			SourceInstance->GetTextureParameterChannelNames(ParameterInfo, ParameterValue.ChannelNames);
 
 			// @todo: This is kind of slow, maybe store these in a map for lookup?
 			// See if this keyname exists in the source instance.
@@ -1057,6 +1130,43 @@ void UMaterialEditorInstanceConstant::RegenerateArrays()
 				}
 			}
 			
+			ParameterValue.SortPriority = 0;
+			SourceInstance->GetParameterSortPriority(ParameterInfo, ParameterValue.SortPriority);
+
+			AssignParameterToGroup(ParentMaterial, &ParameterValue);
+		}
+
+		// Runtime Virtual Texture Parameters.
+		SourceInstance->GetAllRuntimeVirtualTextureParameterInfo(OutParameterInfo, Guids);
+		for (int32 ParameterIdx = 0; ParameterIdx < OutParameterInfo.Num(); ParameterIdx++)
+		{
+			UDEditorRuntimeVirtualTextureParameterValue& ParameterValue = *(NewObject<UDEditorRuntimeVirtualTextureParameterValue>());
+			const FMaterialParameterInfo& ParameterInfo = OutParameterInfo[ParameterIdx];
+
+			ParameterValue.bOverride = false;
+			ParameterValue.ParameterInfo = ParameterInfo;
+			ParameterValue.ExpressionId = Guids[ParameterIdx];
+
+			ParameterValue.ParameterValue = nullptr;
+			SourceInstance->GetRuntimeVirtualTextureParameterValue(ParameterInfo, ParameterValue.ParameterValue);
+
+			// @todo: This is kind of slow, maybe store these in a map for lookup?
+			// See if this keyname exists in the source instance.
+			for (int32 TextureParameterIdx = 0; TextureParameterIdx < SourceInstance->RuntimeVirtualTextureParameterValues.Num(); TextureParameterIdx++)
+			{
+				FRuntimeVirtualTextureParameterValue& SourceParam = SourceInstance->RuntimeVirtualTextureParameterValues[TextureParameterIdx];
+				if (ParameterInfo == SourceParam.ParameterInfo)
+				{
+					ParameterValue.bOverride = true;
+					ParameterValue.ParameterValue = SourceParam.ParameterValue;
+				}
+				if (ParameterInfo.Name.IsEqual(SourceParam.ParameterInfo.Name) && ParameterInfo.Association == SourceParam.ParameterInfo.Association && ParameterInfo.Index == SourceParam.ParameterInfo.Index)
+				{
+					ParameterValue.bOverride = true;
+					ParameterValue.ParameterValue = SourceParam.ParameterValue;
+				}
+			}
+
 			ParameterValue.SortPriority = 0;
 			SourceInstance->GetParameterSortPriority(ParameterInfo, ParameterValue.SortPriority);
 
@@ -1257,6 +1367,7 @@ void UMaterialEditorInstanceConstant::ResetOverrides(int32 Index, EMaterialParam
 				UDEditorScalarParameterValue* ScalarParameterValue = Cast<UDEditorScalarParameterValue>(Parameter);
 				UDEditorVectorParameterValue* VectorParameterValue = Cast<UDEditorVectorParameterValue>(Parameter);
 				UDEditorTextureParameterValue* TextureParameterValue = Cast<UDEditorTextureParameterValue>(Parameter);
+				UDEditorRuntimeVirtualTextureParameterValue* RuntimeVirtualTextureParameterValue = Cast<UDEditorRuntimeVirtualTextureParameterValue>(Parameter);
 				UDEditorFontParameterValue* FontParameterValue = Cast<UDEditorFontParameterValue>(Parameter);
 				UDEditorStaticSwitchParameterValue* StaticSwitchParameterValue = Cast<UDEditorStaticSwitchParameterValue>(Parameter);
 				UDEditorStaticComponentMaskParameterValue* StaticMaskParameterValue = Cast<UDEditorStaticComponentMaskParameterValue>(Parameter);
@@ -1274,6 +1385,11 @@ void UMaterialEditorInstanceConstant::ResetOverrides(int32 Index, EMaterialParam
 				{
 					UTexture* Value;
 					Parameter->bOverride = SourceInstance->GetTextureParameterValue(Parameter->ParameterInfo, Value, true);
+				}
+				if (RuntimeVirtualTextureParameterValue)
+				{
+					URuntimeVirtualTexture* Value;
+					Parameter->bOverride = SourceInstance->GetRuntimeVirtualTextureParameterValue(Parameter->ParameterInfo, Value, true);
 				}
 				if (FontParameterValue)
 				{
@@ -1332,6 +1448,7 @@ void UMaterialEditorInstanceConstant::CopyToSourceInstance(const bool bForceStat
 				UDEditorScalarParameterValue* ScalarParameterValue = Cast<UDEditorScalarParameterValue>(Group.Parameters[ParameterIdx]);
 				UDEditorVectorParameterValue* VectorParameterValue = Cast<UDEditorVectorParameterValue>(Group.Parameters[ParameterIdx]);
 				UDEditorTextureParameterValue* TextureParameterValue = Cast<UDEditorTextureParameterValue>(Group.Parameters[ParameterIdx]);
+				UDEditorRuntimeVirtualTextureParameterValue* RuntimeVirtualTextureParameterValue = Cast<UDEditorRuntimeVirtualTextureParameterValue>(Group.Parameters[ParameterIdx]);
 				UDEditorFontParameterValue* FontParameterValue = Cast<UDEditorFontParameterValue>(Group.Parameters[ParameterIdx]);
 				if (ScalarParameterValue && ScalarParameterValue->bOverride)
 				{
@@ -1353,6 +1470,10 @@ void UMaterialEditorInstanceConstant::CopyToSourceInstance(const bool bForceStat
 				else if (TextureParameterValue && TextureParameterValue->bOverride)
 				{
 					SourceInstance->SetTextureParameterValueEditorOnly(TextureParameterValue->ParameterInfo, TextureParameterValue->ParameterValue);
+				}
+				else if (RuntimeVirtualTextureParameterValue && RuntimeVirtualTextureParameterValue->bOverride)
+				{
+					SourceInstance->SetRuntimeVirtualTextureParameterValueEditorOnly(RuntimeVirtualTextureParameterValue->ParameterInfo, RuntimeVirtualTextureParameterValue->ParameterValue);
 				}
 				else if (FontParameterValue && FontParameterValue->bOverride)
 				{
@@ -1409,6 +1530,7 @@ void UMaterialEditorInstanceConstant::ApplySourceFunctionChanges()
 		SourceFunction->ScalarParameterValues = SourceInstance->ScalarParameterValues;
 		SourceFunction->VectorParameterValues = SourceInstance->VectorParameterValues;
 		SourceFunction->TextureParameterValues = SourceInstance->TextureParameterValues;
+		SourceFunction->RuntimeVirtualTextureParameterValues = SourceInstance->RuntimeVirtualTextureParameterValues;
 		SourceFunction->FontParameterValues = SourceInstance->FontParameterValues;
 
 		const FStaticParameterSet& StaticParameters = SourceInstance->GetStaticParameters();
@@ -1507,6 +1629,7 @@ void UMaterialEditorInstanceConstant::UpdateSourceInstanceParent()
 	}
 
 	SourceInstance->SetParentEditorOnly( Parent );
+	SourceInstance->PostEditChange();
 }
 
 
@@ -1524,7 +1647,14 @@ void UMaterialEditorInstanceConstant::CopyBasePropertiesFromParent()
 	}
 	if (!BasePropertyOverrides.bOverride_ShadingModel)
 	{
-		BasePropertyOverrides.ShadingModel = SourceInstance->GetShadingModel();
+		if (SourceInstance->IsShadingModelFromMaterialExpression())
+		{
+			BasePropertyOverrides.ShadingModel = MSM_FromMaterialExpression;
+		}
+		else
+		{
+			BasePropertyOverrides.ShadingModel = SourceInstance->GetShadingModels().GetFirstShadingModel(); 
+		}
 	}
 	if (!BasePropertyOverrides.bOverride_TwoSided)
 	{
@@ -1546,22 +1676,29 @@ void UMaterialEditorInstanceConstant::CopyBasePropertiesFromParent()
 	//Copy refraction settings
 	SourceInstance->GetRefractionSettings(RefractionDepthBias);
 
-	if (!bOverrideSubsurfaceProfile)
-	{
-		SubsurfaceProfile = SourceInstance->SubsurfaceProfile;
-	}
+	bOverrideSubsurfaceProfile = SourceInstance->bOverrideSubsurfaceProfile;
+	// Copy the subsurface profile. GetSubsurfaceProfile_Internal() will return either the overridden profile or one from a parent
+	SubsurfaceProfile = SourceInstance->GetSubsurfaceProfile_Internal();
 }
 
 #if WITH_EDITOR
 void UMaterialEditorInstanceConstant::PostEditUndo()
 {
-	FMaterialUpdateContext UpdateContext;
-
-	UpdateSourceInstanceParent();
-
-	UpdateContext.AddMaterialInstance(SourceInstance);
-
 	Super::PostEditUndo();
+
+	if (bIsFunctionPreviewMaterial && SourceFunction)
+	{
+		bIsFunctionInstanceDirty = true;
+		ApplySourceFunctionChanges();
+	}
+	else if (SourceInstance)
+	{
+		FMaterialUpdateContext Context;
+
+		UpdateSourceInstanceParent();
+
+		Context.AddMaterialInstance(SourceInstance);
+	}
 }
 #endif
 

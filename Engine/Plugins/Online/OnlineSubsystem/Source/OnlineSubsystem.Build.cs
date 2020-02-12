@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 using UnrealBuildTool;
 
@@ -10,8 +10,8 @@ public class OnlineSubsystem : ModuleRules
 		
 		PublicDependencyModuleNames.AddRange(
 			new string[] {
-				"Json",
-			}
+				"Json"
+            }
 		);
 
 		PublicIncludePaths.Add(ModuleDirectory);
@@ -25,7 +25,8 @@ public class OnlineSubsystem : ModuleRules
 				"CoreUObject",
 				"ImageCore",
 				"Sockets",
-				"JsonUtilities"
+				"JsonUtilities",
+				"AudioMixer",
 			}
 		);
 	}

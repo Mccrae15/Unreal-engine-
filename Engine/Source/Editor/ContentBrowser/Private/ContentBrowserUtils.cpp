@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 
 #include "ContentBrowserUtils.h"
@@ -43,7 +43,7 @@
 #include "EmptyFolderVisibilityManager.h"
 #include "Settings/EditorExperimentalSettings.h"
 
-#include "Toolkits/AssetEditorManager.h"
+
 #include "PackagesDialog.h"
 #include "PackageTools.h"
 #include "ObjectTools.h"
@@ -56,6 +56,8 @@
 #include "SAssetView.h"
 #include "SPathView.h"
 #include "ContentBrowserLog.h"
+#include "Subsystems/AssetEditorSubsystem.h"
+#include "Editor.h"
 
 #define LOCTEXT_NAMESPACE "ContentBrowser"
 
@@ -308,7 +310,7 @@ bool ContentBrowserUtils::OpenEditorForAsset(UObject* Asset)
 	if( Asset != NULL )
 	{
 		// @todo toolkit minor: Needs world-centric support?
-		return FAssetEditorManager::Get().OpenEditorForAsset(Asset);
+		return GEditor->GetEditorSubsystem<UAssetEditorSubsystem>()->OpenEditorForAsset(Asset);
 	}
 
 	return false;
@@ -322,7 +324,7 @@ bool ContentBrowserUtils::OpenEditorForAsset(const TArray<UObject*>& Assets)
 	}
 	else if ( Assets.Num() > 1 )
 	{
-		return FAssetEditorManager::Get().OpenEditorForAssets(Assets);
+		return GEditor->GetEditorSubsystem<UAssetEditorSubsystem>()->OpenEditorForAssets(Assets);
 	}
 	
 	return false;
@@ -470,6 +472,13 @@ void ContentBrowserUtils::RenameAsset(UObject* Asset, const FString& NewName, FT
 
 void ContentBrowserUtils::CopyAssets(const TArray<UObject*>& Assets, const FString& DestPath)
 {
+	FAssetToolsModule& AssetToolsModule = FModuleManager::LoadModuleChecked<FAssetToolsModule>("AssetTools");
+	if (!AssetToolsModule.Get().GetWritableFolderBlacklist()->PassesStartsWithFilter(DestPath))
+	{
+		AssetToolsModule.Get().NotifyBlockedByWritableFolderFilter();
+		return;
+	}
+
 	TArray<UObject*> NewObjects;
 	ObjectTools::DuplicateObjects(Assets, TEXT(""), DestPath, /*bOpenDialog=*/false, &NewObjects);
 
@@ -497,6 +506,12 @@ void ContentBrowserUtils::MoveAssets(const TArray<UObject*>& Assets, const FStri
 	check(DestPath.Len() > 0);
 
 	FAssetToolsModule& AssetToolsModule = FModuleManager::LoadModuleChecked<FAssetToolsModule>("AssetTools");
+	if (!AssetToolsModule.Get().GetWritableFolderBlacklist()->PassesStartsWithFilter(DestPath))
+	{
+		AssetToolsModule.Get().NotifyBlockedByWritableFolderFilter();
+		return;
+	}
+
 	TArray<FAssetRenameData> AssetsAndNames;
 	for ( auto AssetIt = Assets.CreateConstIterator(); AssetIt; ++AssetIt )
 	{
@@ -759,6 +774,42 @@ void ContentBrowserUtils::DisplayConfirmationPopup(const FText& Message, const F
 	Popup->OpenPopup(ParentContent);
 }
 
+bool ContentBrowserUtils::RenameFolder(const FString& DestPath, const FString& SourcePath)
+{
+	if (DestPath == SourcePath)
+	{
+		return false;
+	}
+
+	FAssetRegistryModule& AssetRegistryModule = FModuleManager::LoadModuleChecked<FAssetRegistryModule>("AssetRegistry");
+	// move any assets in our folder
+	TArray<FAssetData> AssetsInFolder;
+	AssetRegistryModule.Get().GetAssetsByPath(*SourcePath, AssetsInFolder, true);
+	TArray<UObject*> ObjectsInFolder;
+	GetObjectsInAssetData(AssetsInFolder, ObjectsInFolder);
+	MoveAssets(ObjectsInFolder, DestPath, SourcePath);
+
+	// Now check to see if the original folder is empty, if so we can delete it
+	TArray<FAssetData> AssetsInOriginalFolder;
+	AssetRegistryModule.Get().GetAssetsByPath(*SourcePath, AssetsInOriginalFolder, true);
+	if (AssetsInOriginalFolder.Num() == 0)
+	{
+		TArray<FString> FoldersToDelete;
+		FoldersToDelete.Add(SourcePath);
+		DeleteFolders(FoldersToDelete);
+	}
+
+	// set color of folder to new path
+	const TSharedPtr<FLinearColor> FolderColor = LoadColor(SourcePath);
+	if (FolderColor.IsValid())
+	{
+		SaveColor(SourcePath, nullptr);
+		SaveColor(DestPath, FolderColor);
+	}
+
+	return true;
+}
+
 bool ContentBrowserUtils::CopyFolders(const TArray<FString>& InSourcePathNames, const FString& DestPath)
 {
 	TMap<FString, TArray<UObject*> > SourcePathToLoadedAssets;
@@ -798,15 +849,10 @@ bool ContentBrowserUtils::CopyFolders(const TArray<FString>& InSourcePathNames, 
 			ObjectTools::DuplicateObjects( PathIt.Value(), SourcePath, Destination, /*bOpenDialog=*/false );
 		}
 
-		// Attempt to copy the folder color to the new path location
-		if (FPaths::FileExists(GEditorPerProjectIni))
+		const TSharedPtr<FLinearColor> FolderColor = LoadColor(SourcePath);
+		if (FolderColor.IsValid())
 		{
-			FString ColorStr;
-			if (GConfig->GetString(TEXT("PathColor"), *SourcePath, ColorStr, GEditorPerProjectIni))
-			{
-				// Add the new path
-				GConfig->SetString(TEXT("PathColor"), *Destination, *ColorStr, GEditorPerProjectIni);
-			}
+			SaveColor(Destination, FolderColor);
 		}
 	}
 
@@ -861,7 +907,7 @@ bool ContentBrowserUtils::MoveFolders(const TArray<FString>& InSourcePathNames, 
 		if ( PathIt.Value().Num() > 0 )
 		{
 			// Move assets and supply a source path to indicate it is relative
-			ContentBrowserUtils::MoveAssets( PathIt.Value(), Destination, PathIt.Key() );
+			MoveAssets( PathIt.Value(), Destination, PathIt.Key() );
 		}
 
 		// Attempt to remove the old path
@@ -870,18 +916,11 @@ bool ContentBrowserUtils::MoveFolders(const TArray<FString>& InSourcePathNames, 
 			AssetRegistryModule.Get().RemovePath(SourcePath);
 		}
 
-		// Attempt to move the folder color to the new path location
-		if (FPaths::FileExists(GEditorPerProjectIni))
+		const TSharedPtr<FLinearColor> FolderColor = LoadColor(SourcePath);
+		if (FolderColor.IsValid())
 		{
-			FString ColorStr;
-			if (GConfig->GetString(TEXT("PathColor"), *SourcePath, ColorStr, GEditorPerProjectIni))
-			{
-				// Remove the old path
-				GConfig->RemoveKey(TEXT("PathColor"), *SourcePath, GEditorPerProjectIni);
-
-				// Add the new path
-				GConfig->SetString(TEXT("PathColor"), *Destination, *ColorStr, GEditorPerProjectIni);
-			}
+			SaveColor(SourcePath, nullptr);
+			SaveColor(Destination, FolderColor);
 		}
 	}
 
@@ -976,6 +1015,33 @@ void ContentBrowserUtils::CopyAssetReferencesToClipboard(const TArray<FAssetData
 	}
 
 	FPlatformApplicationMisc::ClipboardCopy( *ClipboardText );
+}
+
+void ContentBrowserUtils::CopyFilePathsToClipboard(const TArray<FAssetData>& AssetsToCopy)
+{
+	FString ClipboardText;
+	for (const FAssetData& Asset : AssetsToCopy)
+	{
+		if (ClipboardText.Len() > 0)
+		{
+			ClipboardText += LINE_TERMINATOR;
+		}
+		FString PackageFileName;
+		FString PackageFile;
+		if (FPackageName::TryConvertLongPackageNameToFilename(Asset.PackageName.ToString(), PackageFileName) &&
+			FPackageName::FindPackageFileWithoutExtension(PackageFileName, PackageFile))
+		{
+			ClipboardText += FPaths::ConvertRelativePathToFull(PackageFile);
+		}
+		else
+		{
+			// Add a message for when a user tries to copy the path to a file that doesn't exist on disk of the form
+			// <AssetName>: No file on disk
+			ClipboardText += Asset.AssetName.ToString() + FString(": No file on disk");
+		}
+	}
+
+	FPlatformApplicationMisc::ClipboardCopy(*ClipboardText);
 }
 
 void ContentBrowserUtils::CaptureThumbnailFromViewport(FViewport* InViewport, const TArray<FAssetData>& InAssetsToAssign)
@@ -1229,13 +1295,13 @@ bool ContentBrowserUtils::IsClassesFolder(const FString& InPath)
 	// Strip off any leading or trailing forward slashes
 	// We just want the name without any path separators
 	FString CleanFolderPath = InPath;
-	while ( CleanFolderPath.StartsWith(TEXT("/")) )
+	while ( CleanFolderPath.StartsWith(TEXT("/"), ESearchCase::CaseSensitive) )
 	{
-		CleanFolderPath = CleanFolderPath.Mid(1);
+		CleanFolderPath.MidInline(1, MAX_int32, false);
 	}
-	while ( CleanFolderPath.EndsWith(TEXT("/")) )
+	while ( CleanFolderPath.EndsWith(TEXT("/"), ESearchCase::CaseSensitive) )
 	{
-		CleanFolderPath = CleanFolderPath.Mid(0, CleanFolderPath.Len() - 1);
+		CleanFolderPath.MidInline(0, CleanFolderPath.Len() - 1, false);
 	}
 
 	static const FString ClassesPrefix = TEXT("Classes_");
@@ -1274,12 +1340,12 @@ bool ContentBrowserUtils::IsValidFolderName(const FString& FolderName, FText& Re
 
 	if ( FolderName.Len() > FPlatformMisc::GetMaxPathLength() )
 	{
-		Reason = FText::Format( LOCTEXT("InvalidFolderName_TooLongForCooking", "Filename '{0}' is too long; this may interfere with cooking for consoles. Unreal filenames should be no longer than {1} characters." ),
-			FText::FromString(FolderName), FText::AsNumber(FPlatformMisc::GetMaxPathLength()) );
+		Reason = FText::Format( LOCTEXT("InvalidFolderName_TooLongForCooking", "Filename is too long ({0} characters); this may interfere with cooking for consoles. Unreal filenames should be no longer than {1} characters. Filename value: {2}" ),
+			FText::AsNumber(FolderName.Len()), FText::AsNumber(FPlatformMisc::GetMaxPathLength()), FText::FromString(FolderName) );
 		return false;
 	}
 
-	const FString InvalidChars = INVALID_LONGPACKAGE_CHARACTERS TEXT("/"); // Slash is an invalid character for a folder name
+	const FString InvalidChars = INVALID_LONGPACKAGE_CHARACTERS TEXT("/[]"); // Slash and Square brackets are invalid characters for a folder name
 
 	// See if the name contains invalid characters.
 	FString Char;
@@ -1361,13 +1427,13 @@ FText ContentBrowserUtils::GetRootDirDisplayName(const FString& FolderPath)
 	// Strip off any leading or trailing forward slashes
 	// We just want the name without any path separators
 	FString CleanFolderPath = FolderPath;
-	while(CleanFolderPath.StartsWith(TEXT("/")))
+	while(CleanFolderPath.StartsWith(TEXT("/"), ESearchCase::CaseSensitive))
 	{
-		CleanFolderPath = CleanFolderPath.Mid(1);
+		CleanFolderPath.MidInline(1, MAX_int32, false);
 	}
-	while(CleanFolderPath.EndsWith(TEXT("/")))
+	while(CleanFolderPath.EndsWith(TEXT("/"), ESearchCase::CaseSensitive))
 	{
-		CleanFolderPath = CleanFolderPath.Mid(0, CleanFolderPath.Len() - 1);
+		CleanFolderPath.MidInline(0, CleanFolderPath.Len() - 1, false);
 	}
 
 	static const FString ClassesPrefix = TEXT("Classes_");
@@ -1376,7 +1442,7 @@ FText ContentBrowserUtils::GetRootDirDisplayName(const FString& FolderPath)
 	// Strip off the "Classes_" prefix
 	if(bIsClassDir)
 	{
-		CleanFolderPath = CleanFolderPath.Mid(ClassesPrefix.Len());
+		CleanFolderPath.MidInline(ClassesPrefix.Len(), MAX_int32, false);
 	}
 
 	// Also localize well known folder names, like "Engine" and "Game"
@@ -1504,7 +1570,13 @@ bool ContentBrowserUtils::IsValidPathToCreateNewFolder(const FString& InPath)
 {
 	// We can't currently make folders in class paths
 	// If we do later allow folders in class paths, they must only be created within modules (see IsValidPathToCreateNewClass above)
-	return !IsClassPath(InPath);
+	if (IsClassPath(InPath))
+	{
+		return false;
+	}
+
+	FAssetToolsModule& AssetToolsModule = FModuleManager::LoadModuleChecked<FAssetToolsModule>("AssetTools");
+	return AssetToolsModule.Get().GetWritableFolderBlacklist()->PassesStartsWithFilter(InPath);
 }
 
 const TSharedPtr<FLinearColor> ContentBrowserUtils::LoadColor(const FString& FolderPath)
@@ -1675,6 +1747,11 @@ static const auto CVarMaxFullPathLength =
 
 bool ContentBrowserUtils::IsValidObjectPathForCreate(const FString& ObjectPath, FText& OutErrorMessage, bool bAllowExistingAsset)
 {
+	return IsValidObjectPathForCreate(ObjectPath, nullptr, OutErrorMessage, bAllowExistingAsset);
+}
+
+bool ContentBrowserUtils::IsValidObjectPathForCreate(const FString& ObjectPath, const UClass* ObjectClass, FText& OutErrorMessage, bool bAllowExistingAsset)
+{
 	const FString ObjectName = FPackageName::ObjectPathToObjectName(ObjectPath);
 
 	// Make sure the name is not already a class or otherwise invalid for saving
@@ -1695,7 +1772,8 @@ bool ContentBrowserUtils::IsValidObjectPathForCreate(const FString& ObjectPath, 
 	if ( ObjectPath.Len() > NAME_SIZE )
 	{
 		// This asset already exists at this location, inform the user and continue
-		OutErrorMessage = LOCTEXT("AssetNameTooLong", "This asset name is too long. Please choose a shorter name.");
+		OutErrorMessage = FText::Format(LOCTEXT("AssetNameTooLong", "This asset name is too long ({0} characters), the maximum is {1}. Please choose a shorter name. Asset name: {2}"),
+			FText::AsNumber(ObjectPath.Len()), FText::AsNumber(NAME_SIZE), FText::FromString(ObjectPath));
 		// Return false to indicate that the user should enter a new name
 		return false;
 	}
@@ -1710,24 +1788,42 @@ bool ContentBrowserUtils::IsValidObjectPathForCreate(const FString& ObjectPath, 
 	// Make sure we are not creating an path that is too long for the OS
 	const FString RelativePathFilename = FPackageName::LongPackageNameToFilename(PackageName, FPackageName::GetAssetPackageExtension());	// full relative path with name + extension
 	const FString FullPath = FPaths::ConvertRelativePathToFull(RelativePathFilename);	// path to file on disk
-	if ( ObjectPath.Len() > (FPlatformMisc::GetMaxPathLength() - MAX_CLASS_NAME_LENGTH) || FullPath.Len() > CVarMaxFullPathLength->GetValueOnGameThread() )
+	if (ObjectPath.Len() > (FPlatformMisc::GetMaxPathLength() - MAX_CLASS_NAME_LENGTH))
 	{
 		// The full path for the asset is too long
-		OutErrorMessage = FText::Format( LOCTEXT("AssetPathTooLong", 
-			"The full path for the asset is too deep, the maximum is '{0}'. \nPlease choose a shorter name for the asset or create it in a shallower folder structure."), 
-			FText::AsNumber(FPlatformMisc::GetMaxPathLength()) );
+		OutErrorMessage = FText::Format(LOCTEXT("ObjectPathTooLong",
+			"The object path for the asset is too long ({0} characters), the maximum is {1}. \nPlease choose a shorter name for the asset or create it in a shallower folder structure. Asset name: {2}"),
+			FText::AsNumber(ObjectPath.Len()), FText::AsNumber((FPlatformMisc::GetMaxPathLength() - MAX_CLASS_NAME_LENGTH)), FText::FromString(ObjectPath));
 		// Return false to indicate that the user should enter a new name
 		return false;
 	}
 
-	// Check for an existing asset, unless it we were asked not to.
-	if ( !bAllowExistingAsset )
+	if (FullPath.Len() > CVarMaxFullPathLength->GetValueOnGameThread())
 	{
-		FAssetRegistryModule& AssetRegistryModule = FModuleManager::LoadModuleChecked<FAssetRegistryModule>("AssetRegistry");
-		FAssetData ExistingAsset = AssetRegistryModule.Get().GetAssetByObjectPath(FName(*ObjectPath));
-		if (ExistingAsset.IsValid())
+		// The full path for the asset is too long
+		OutErrorMessage = FText::Format( LOCTEXT("AssetPathTooLong",
+			"The absolute file path for the asset is too long ({0} characters), the maximum is {1}. \nPlease choose a shorter name for the asset or create it in a shallower folder structure. Absolute path: {2}"),
+			FText::AsNumber(FullPath.Len()), FText::AsNumber(CVarMaxFullPathLength->GetValueOnGameThread()), FText::FromString(FullPath));
+		// Return false to indicate that the user should enter a new name
+		return false;
+	}
+
+	// Check for an existing asset
+	FAssetRegistryModule& AssetRegistryModule = FModuleManager::LoadModuleChecked<FAssetRegistryModule>("AssetRegistry");
+	FAssetData ExistingAsset = AssetRegistryModule.Get().GetAssetByObjectPath(FName(*ObjectPath));
+	if (ExistingAsset.IsValid())
+	{
+		// An asset of a different type already exists at this location, inform the user and continue
+		if (ObjectClass && !ExistingAsset.GetClass()->IsChildOf(ObjectClass))
 		{
-			// This asset already exists at this location, inform the user and continue
+			OutErrorMessage = FText::Format(LOCTEXT("RenameAssetOtherTypeAlreadyExists", "An asset of type '{0}' already exists at this location with the name '{1}'."), FText::FromName(ExistingAsset.AssetClass), FText::FromString(ObjectName));
+			
+			// Return false to indicate that the user should enter a new name
+			return false;
+		}
+        // This asset already exists at this location, warn user if asked to.
+		else if (!bAllowExistingAsset)
+		{
 			OutErrorMessage = FText::Format( LOCTEXT("RenameAssetAlreadyExists", "An asset already exists at this location with the name '{0}'."), FText::FromString( ObjectName ) );
 
 			// Return false to indicate that the user should enter a new name
@@ -1753,13 +1849,20 @@ bool ContentBrowserUtils::IsValidFolderPathForCreate(const FString& InFolderPath
 		return false;
 	}
 
+	FString NewPathOnDisk;
+	if (!FPackageName::TryConvertLongPackageNameToFilename(NewFolderPath, NewPathOnDisk))
+	{
+		OutErrorMessage = FText::Format(LOCTEXT("RenameFolderFailedDiskPath", "Folder path could not be converted to disk path: '{0}'"), FText::FromString(NewFolderPath));
+		return false;
+	}
+
 	// Make sure we are not creating a folder path that is too long
-	if (NewFolderPath.Len() > FPlatformMisc::GetMaxPathLength() - MAX_CLASS_NAME_LENGTH)
+	if (NewPathOnDisk.Len() > FPlatformMisc::GetMaxPathLength() - MAX_CLASS_NAME_LENGTH)
 	{
 		// The full path for the folder is too long
 		OutErrorMessage = FText::Format(LOCTEXT("RenameFolderPathTooLong",
 			"The full path for the folder is too deep, the maximum is '{0}'. Please choose a shorter name for the folder or create it in a shallower folder structure."),
-			FText::AsNumber(FPlatformMisc::GetMaxPathLength()));
+			FText::AsNumber(FPlatformMisc::GetMaxPathLength() - MAX_CLASS_NAME_LENGTH));
 		// Return false to indicate that the user should enter a new name for the folder
 		return false;
 	}
@@ -1802,19 +1905,16 @@ int32 ContentBrowserUtils::GetPackageLengthForCooking(const FString& PackageName
 	int32 AbsoluteCookPathToAssetLength = 0;
 
 	FString RelativePathToAsset;
-
-	const FString AbsolutePath = bIsEngineAsset ? AbsoluteEnginePath : AbsoluteGamePath;
-
-	const FString& AbsoluteCookPath = bIsEngineAsset ? AbsoluteEngineCookPath : AbsoluteGameCookPath;
-
-	if(FPackageName::TryConvertLongPackageNameToFilename(PackageName, RelativePathToAsset, FPackageName::GetAssetPackageExtension()))
+	if (FPackageName::TryConvertLongPackageNameToFilename(PackageName, RelativePathToAsset, FPackageName::GetAssetPackageExtension()))
 	{
+		const FString AbsolutePath = bIsEngineAsset ? AbsoluteEnginePath : AbsoluteGamePath;
+		const FString& AbsoluteCookPath = bIsEngineAsset ? AbsoluteEngineCookPath : AbsoluteGameCookPath;
+
 		const FString AbsolutePathToAsset = FPaths::ConvertRelativePathToFull(RelativePathToAsset);
 
 		FString AssetPathWithinCookDir = AbsolutePathToAsset;
 		FPaths::RemoveDuplicateSlashes(AssetPathWithinCookDir);
 		AssetPathWithinCookDir.RemoveFromStart(AbsolutePath, ESearchCase::CaseSensitive);
-
 
 		if (IsInternalBuild)
 		{
@@ -1832,8 +1932,8 @@ int32 ContentBrowserUtils::GetPackageLengthForCooking(const FString& PackageName
 			
 			FString AbsoluteBuildMachineCookPathToAsset = FString(TEXT("D:/BuildFarm/buildmachine_++depot+UE4-Releases+4.10")) / CookDirWithoutBasePath / AssetPathWithinCookDir;
 
-			// only add game name padding if it is not an engine asset, otherwise it is considered portable already
-			if(!bIsEngineAsset)
+			// only add game name padding to project plugins so that they can ported to other projects
+			if (bIsPluginAsset && bIsProjectAsset)
 			{
 				AbsoluteBuildMachineCookPathToAsset.ReplaceInline(*GameName, *GameNamePadded, ESearchCase::CaseSensitive);
 			}
@@ -1845,8 +1945,8 @@ int32 ContentBrowserUtils::GetPackageLengthForCooking(const FString& PackageName
 			// Test that the package can be cooked based on the current project path
 			FString AbsoluteCookPathToAsset = AbsoluteCookPath / AssetPathWithinCookDir;
 
-			// only add game name padding if it is not an engine asset, otherwise it is considered portable already
-			if (!bIsEngineAsset)
+			// only add game name padding to project plugins so that they can ported to other projects
+			if (bIsPluginAsset && bIsProjectAsset)
 			{
 				AbsoluteCookPathToAsset.ReplaceInline(*GameName, *GameNamePadded, ESearchCase::CaseSensitive);
 			}
@@ -1858,6 +1958,7 @@ int32 ContentBrowserUtils::GetPackageLengthForCooking(const FString& PackageName
 	{
 		UE_LOG(LogContentBrowser, Error, TEXT("Package Name '%' is not a valid path and cannot be converted to a filename"), *PackageName);
 	}
+
 	return AbsoluteCookPathToAssetLength;
 }
 
@@ -1878,12 +1979,16 @@ bool ContentBrowserUtils::IsValidPackageForCooking(const FString& PackageName, F
 		if (FEngineBuildSettings::IsInternalBuild())
 		{
 			// The projected length of the path for cooking is too long
-			OutErrorMessage = FText::Format(LOCTEXT("AssetCookingPathTooLongForBuildMachine", "The path to the asset is too long '{0}' for cooking by the build machines, the maximum is '{1}'\nPlease choose a shorter name for the asset or create it in a shallower folder structure with shorter folder names."), FText::AsNumber(AbsoluteCookPathToAssetLength), FText::AsNumber(MaxCookPathLen));
+			OutErrorMessage = FText::Format(LOCTEXT("AssetCookingPathTooLongForBuildMachine",
+				"The path to the asset is too long ({0} characters) for cooking by the build machines, the maximum is {1}.\nPlease choose a shorter name for the asset or create it in a shallower folder structure with shorter folder names."),
+				FText::AsNumber(AbsoluteCookPathToAssetLength), FText::AsNumber(MaxCookPathLen));
 		}
 		else
 		{
 			// The projected length of the path for cooking is too long
-			OutErrorMessage = FText::Format(LOCTEXT("AssetCookingPathTooLong", "The path to the asset is too long '{0}', the maximum for cooking is '{1}'\nPlease choose a shorter name for the asset or create it in a shallower folder structure with shorter folder names."), FText::AsNumber(AbsoluteCookPathToAssetLength), FText::AsNumber(MaxCookPathLen));
+			OutErrorMessage = FText::Format(LOCTEXT("AssetCookingPathTooLong",
+				"The path to the asset is too long ({0} characters), the maximum for cooking is {1}.\nPlease choose a shorter name for the asset or create it in a shallower folder structure with shorter folder names."),
+				FText::AsNumber(AbsoluteCookPathToAssetLength), FText::AsNumber(MaxCookPathLen));
 		}
 
 		// Return false to indicate that the user should enter a new name
@@ -2109,7 +2214,7 @@ void ContentBrowserUtils::SyncPathsFromSourceControl(const TArray<FString>& Cont
 				if (PackagePath.Len() > 1 && PackagePath[PackagePath.Len() - 1] == TEXT('/'))
 				{
 					// The filter path can't end with a trailing slash
-					PackagePath = PackagePath.LeftChop(1);
+					PackagePath.LeftChopInline(1, false);
 				}
 				Filter.PackagePaths.Emplace(*PackagePath);
 			}
@@ -2120,11 +2225,15 @@ void ContentBrowserUtils::SyncPathsFromSourceControl(const TArray<FString>& Cont
 			TSet<FName> UniquePackageNames;
 			for (const FAssetData& Asset : AssetList)
 			{
-				bool bWasInSet = false;
-				UniquePackageNames.Add(Asset.PackageName, &bWasInSet);
-				if (!bWasInSet)
+				// Don't operate on Redirectors
+				if (Asset.AssetClass != UObjectRedirector::StaticClass()->GetFName())
 				{
-					PackageNames.Add(Asset.PackageName.ToString());
+					bool bWasInSet = false;
+					UniquePackageNames.Add(Asset.PackageName, &bWasInSet);
+					if (!bWasInSet)
+					{
+						PackageNames.Add(Asset.PackageName.ToString());
+					}
 				}
 			}
 		}

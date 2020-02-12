@@ -1,9 +1,10 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
 #include "CoreMinimal.h"
 #include "Animation/NodeMappingContainer.h"
+#include "AssetTypeActions_Base.h"
 
 class FAssetTypeActions_NodeMappingContainer : public FAssetTypeActions_Base
 {

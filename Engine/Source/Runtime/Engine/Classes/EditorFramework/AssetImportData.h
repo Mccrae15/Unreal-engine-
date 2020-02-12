@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -152,7 +152,7 @@ protected:
 	FString ResolveImportFilename(const FString& InRelativePath) const;
 
 	/** Overridden serialize function to write out the underlying data as json */
-	virtual void Serialize(FArchive& Ar) override;
+	virtual void Serialize(FStructuredArchive::FRecord Record) override;
 	
 #endif		// WITH_EDITORONLY_DATA
 };

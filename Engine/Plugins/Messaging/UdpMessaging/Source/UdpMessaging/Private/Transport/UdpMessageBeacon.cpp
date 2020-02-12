@@ -1,15 +1,14 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "Transport/UdpMessageBeacon.h"
 #include "UdpMessagingPrivate.h"
 
 #include "HAL/Event.h"
 #include "HAL/RunnableThread.h"
-#include "Interfaces/IPv4/IPv4Endpoint.h"
 #include "IPAddress.h"
 #include "Serialization/ArrayWriter.h"
 #include "Sockets.h"
-
+#include "SocketSubsystem.h"
 
 /* FUdpMessageHelloSender static initialization
  *****************************************************************************/
@@ -21,7 +20,7 @@ const FTimespan FUdpMessageBeacon::MinimumInterval = FTimespan::FromMilliseconds
 /* FUdpMessageHelloSender structors
  *****************************************************************************/
 
-FUdpMessageBeacon::FUdpMessageBeacon(FSocket* InSocket, const FGuid& InSocketId, const FIPv4Endpoint& InMulticastEndpoint, const TArray<FIPv4Endpoint>& InStaticEndpoints)
+FUdpMessageBeacon::FUdpMessageBeacon(FSocket* InSocket, const FGuid& InSocketId, const FIPv4Endpoint& InMulticastEndpoint)
 	: BeaconInterval(MinimumInterval)
 	, LastEndpointCount(1)
 	, LastHelloSent(FDateTime::MinValue())
@@ -29,13 +28,11 @@ FUdpMessageBeacon::FUdpMessageBeacon(FSocket* InSocket, const FGuid& InSocketId,
 	, NodeId(InSocketId)
 	, Socket(InSocket)
 	, Stopping(false)
+	, bSocketError(false)
 {
 	EndpointLeftEvent = FPlatformProcess::GetSynchEventFromPool(false);
 	MulticastAddress = InMulticastEndpoint.ToInternetAddr();
-	for (const FIPv4Endpoint& Endpoint : InStaticEndpoints)
-	{
-		StaticAddresses.Add(Endpoint.ToInternetAddr());
-	}
+	AddLocalEndpoints();
 
 	Thread = FRunnableThread::Create(this, TEXT("FUdpMessageBeacon"), 128 * 1024, TPri_AboveNormal, FPlatformAffinity::GetPoolThreadMask());
 }
@@ -77,6 +74,21 @@ void FUdpMessageBeacon::SetEndpointCount(int32 EndpointCount)
 	}
 }
 
+
+bool FUdpMessageBeacon::HasSocketError() const
+{
+	return bSocketError;
+}
+
+void FUdpMessageBeacon::AddStaticEndpoint(const FIPv4Endpoint& InEndpoint)
+{
+	StaticEndpointQueue.Enqueue({ InEndpoint, true });
+}
+
+void FUdpMessageBeacon::RemoveStaticEndpoint(const FIPv4Endpoint& InEndpoint)
+{
+	StaticEndpointQueue.Enqueue({ InEndpoint, false });
+}
 
 /* FRunnable interface
  *****************************************************************************/
@@ -143,6 +155,7 @@ bool FUdpMessageBeacon::SendSegment(EUdpMessageSegments SegmentType, const FTime
 
 	if (!Socket->SendTo(Writer.GetData(), Writer.Num(), Sent, *MulticastAddress))
 	{
+		bSocketError = true;
 		return false; // send failed
 	}
 
@@ -178,7 +191,7 @@ bool FUdpMessageBeacon::SendPing(const FTimespan& SocketWaitTime)
 	for (const auto& StaticAddress : StaticAddresses)
 	{
 		if (!Socket->SendTo(Writer.GetData(), Writer.Num(), Sent, *StaticAddress))
-		{
+		{	
 			return false; // send failed
 		}
 
@@ -189,6 +202,8 @@ bool FUdpMessageBeacon::SendPing(const FTimespan& SocketWaitTime)
 
 void FUdpMessageBeacon::Update(const FDateTime& CurrentTime, const FTimespan& SocketWaitTime)
 {
+	ProcessStaticEndpointQueue();
+
 	if (CurrentTime < NextHelloTime)
 	{
 		return;
@@ -203,7 +218,6 @@ void FUdpMessageBeacon::Update(const FDateTime& CurrentTime, const FTimespan& So
 	SendPing(SocketWaitTime);
 }
 
-
 /* FSingleThreadRunnable interface
  *****************************************************************************/
 
@@ -211,3 +225,38 @@ void FUdpMessageBeacon::Tick()
 {
 	Update(FDateTime::UtcNow(), FTimespan::Zero());
 }
+
+/* Private
+ *****************************************************************************/
+
+void FUdpMessageBeacon::ProcessStaticEndpointQueue()
+{
+	FPendingEndpoint PendingEndpoint;
+	while (StaticEndpointQueue.Dequeue(PendingEndpoint))
+	{
+		TSharedRef<FInternetAddr> Address = PendingEndpoint.StaticEndpoint.ToInternetAddr();
+		if (PendingEndpoint.bAdd)
+		{
+			StaticAddresses.Add(Address);
+		}
+		else
+		{
+			StaticAddresses.RemoveAll([Address](TSharedPtr<FInternetAddr> Addr)
+			{
+				return Address->CompareEndpoints(*Addr.Get());
+			});
+		}
+	}
+}
+
+
+void FUdpMessageBeacon::AddLocalEndpoints()
+{
+	// this is to properly discover other message bus process bound on the loopback address (i.e for the launcher not to trigger firewall)
+	// note: this will only properly work if the socket is not bound (or bound to the any address)
+	FIPv4Endpoint LocalEndpoint(FIPv4Address(127, 0, 0, 1), MulticastAddress->GetPort());
+	{
+		StaticAddresses.Add(LocalEndpoint.ToInternetAddr());
+	}
+}
+

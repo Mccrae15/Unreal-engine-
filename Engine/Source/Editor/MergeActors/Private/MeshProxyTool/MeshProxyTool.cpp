@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "MeshProxyTool/MeshProxyTool.h"
 #include "Misc/Paths.h"
@@ -9,6 +9,7 @@
 #include "Widgets/DeclarativeSyntaxSupport.h"
 #include "GameFramework/Actor.h"
 #include "Components/StaticMeshComponent.h"
+#include "Components/InstancedStaticMeshComponent.h"
 #include "Components/SplineMeshComponent.h"
 #include "Engine/Selection.h"
 #include "Editor.h"
@@ -23,10 +24,18 @@
 
 #define LOCTEXT_NAMESPACE "MeshProxyTool"
 
+bool UMeshProxySettingsObject::bInitialized = false;
+UMeshProxySettingsObject* UMeshProxySettingsObject::DefaultSettings = nullptr;
 
 FMeshProxyTool::FMeshProxyTool()
 {
 	SettingsObject = UMeshProxySettingsObject::Get();
+}
+
+FMeshProxyTool::~FMeshProxyTool()
+{
+	UMeshProxySettingsObject::Destroy();
+	SettingsObject = nullptr;
 }
 
 TSharedRef<SWidget> FMeshProxyTool::GetWidget()
@@ -142,7 +151,7 @@ bool FMeshProxyTool::RunMerge(const FString& PackageName)
 					StaticMeshComponentsToMerge.Add(StaticMeshComponent);
 			}
 		}
-		StaticMeshComponentsToMerge.RemoveAll([](UStaticMeshComponent* Val) { return !((Val->GetClass() == UStaticMeshComponent::StaticClass() && Val->GetStaticMesh()) || Val->IsA(USplineMeshComponent::StaticClass())); });
+		StaticMeshComponentsToMerge.RemoveAll([](UStaticMeshComponent* Val) { return Val->GetStaticMesh() == nullptr; });
 		
 		if ( StaticMeshComponentsToMerge.Num())
 		{
@@ -278,3 +287,4 @@ TSharedRef<SWidget> FThirdPartyMeshProxyTool::GetWidget()
 }
 
 #undef LOCTEXT_NAMESPACE
+

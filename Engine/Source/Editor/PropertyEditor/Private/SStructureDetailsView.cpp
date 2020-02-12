@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "SStructureDetailsView.h"
 #include "Framework/MultiBox/MultiBoxBuilder.h"
@@ -252,6 +252,11 @@ void SStructureDetailsView::SetStructureData(TSharedPtr<FStructOnScope> InStruct
 	UpdatePropertyMaps();
 
 	UpdateFilteredDetails();
+}
+
+void SStructureDetailsView::SetCustomName(const FText& Text)
+{
+	CustomName = Text;
 }
 
 void SStructureDetailsView::ForceRefresh()

@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "MediaPlayerFacade.h"
 #include "MediaUtilsPrivate.h"
@@ -16,6 +16,7 @@
 #include "IMediaTextureSample.h"
 #include "IMediaTracks.h"
 #include "IMediaView.h"
+#include "IMediaTicker.h"
 #include "MediaPlayerOptions.h"
 #include "Math/NumericLimits.h"
 #include "Misc/CoreMisc.h"
@@ -412,6 +413,10 @@ bool FMediaPlayerFacade::IsPreparing() const
 	return Player.IsValid() && (Player->GetControls().GetState() == EMediaState::Preparing);
 }
 
+bool FMediaPlayerFacade::IsClosed() const
+{
+	return Player.IsValid() && (Player->GetControls().GetState() == EMediaState::Closed);
+}
 
 bool FMediaPlayerFacade::IsReady() const
 {
@@ -444,6 +449,11 @@ bool FMediaPlayerFacade::Open(const FString& Url, const IMediaOptions* Options, 
 		return false;
 	}
 
+	static const FName MediaModuleName("Media");
+	IMediaModule* MediaModule;
+	MediaModule = FModuleManager::GetModulePtr<IMediaModule>(MediaModuleName);
+	check(MediaModule);
+
 	// find & initialize new player
 	TSharedPtr<IMediaPlayer, ESPMode::ThreadSafe> NewPlayer = GetPlayerForUrl(Url, Options);
 
@@ -455,8 +465,14 @@ bool FMediaPlayerFacade::Open(const FString& Url, const IMediaOptions* Options, 
 
 	if (!Player.IsValid())
 	{
+		// Make sure we don't get called from the "tickable" thread anymore - no need as we have no player
+		MediaModule->GetTicker().RemoveTickable(AsShared());
 		return false;
 	}
+
+	// Make sure we get ticked on the "tickable" thread
+	// (this will not re-add us, should we already be registered)
+	MediaModule->GetTicker().AddTickable(AsShared());
 
 	// update the Guid
 	Player->SetGuid(PlayerGuid);
@@ -559,6 +575,11 @@ void FMediaPlayerFacade::SetGuid(FGuid& Guid)
 bool FMediaPlayerFacade::SetLooping(bool Looping)
 {
 	return Player.IsValid() && Player->GetControls().SetLooping(Looping);
+}
+
+
+void FMediaPlayerFacade::SetMediaOptions(const IMediaOptions* Options)
+{
 }
 
 
@@ -888,6 +909,26 @@ void FMediaPlayerFacade::ProcessEvent(EMediaEvent Event)
 			FlushSinks();
 		}
 	}
+	else if (Event == EMediaEvent::MediaClosed)
+	{
+		// Player still closed?
+		if (CurrentUrl.IsEmpty())
+		{
+			// Yes, this also means: if we still have a player, it's still the one this event originated from
+
+			// If player allows: close it down all the way right now
+			if(Player.IsValid() && Player->GetPlayerFeatureFlag(IMediaPlayer::FeatureFlag::AllowShutdownOnClose))
+			{
+				FScopeLock Lock(&CriticalSection);
+				Player.Reset();
+			}
+
+			// Stop issuing audio thread ticks until we open the player again
+			IMediaModule* MediaModule = FModuleManager::LoadModulePtr<IMediaModule>("Media");
+			check(MediaModule);
+			MediaModule->GetTicker().RemoveTickable(AsShared());
+		}
+	}
 
 	MediaEvent.Broadcast(Event);
 }
@@ -1167,6 +1208,12 @@ void FMediaPlayerFacade::ProcessSubtitleSamples(IMediaSamples& Samples, TRange<F
 
 void FMediaPlayerFacade::ProcessVideoSamples(IMediaSamples& Samples, TRange<FTimespan> TimeRange)
 {
+	// Let the player do some processing if needed.
+	if (Player.IsValid())
+	{
+		Player->ProcessVideoSamples();
+	}
+
 	TSharedPtr<IMediaTextureSample, ESPMode::ThreadSafe> Sample;
 
 	while (Samples.FetchVideo(TimeRange, Sample))

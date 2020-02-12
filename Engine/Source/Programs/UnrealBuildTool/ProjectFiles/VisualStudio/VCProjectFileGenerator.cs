@@ -1,10 +1,11 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 using System;
 using System.Collections.Generic;
-using System.Text;
 using System.IO;
 using System.Linq;
+using System.Security.Cryptography;
+using System.Text;
 using System.Xml.Linq;
 using Tools.DotNETCommon;
 
@@ -21,18 +22,6 @@ namespace UnrealBuildTool
 		public VisualStudioSolutionFolder(ProjectFileGenerator InitOwnerProjectFileGenerator, string InitFolderName)
 			: base(InitOwnerProjectFileGenerator, InitFolderName)
 		{
-			// Generate a unique GUID for this folder
-			// NOTE: When saving generated project files, we ignore differences in GUIDs if every other part of the file
-			//       matches identically with the pre-existing file
-			FolderGUID = Guid.NewGuid();
-		}
-
-
-		/// GUID for this folder
-		public Guid FolderGUID
-		{
-			get;
-			private set;
 		}
 	}
 
@@ -58,28 +47,34 @@ namespace UnrealBuildTool
 		protected VCProjectFileFormat ProjectFileFormat = VCProjectFileFormat.Default;
 
 		/// <summary>
-		/// Whether to write a solution option (suo) file for the sln
+		/// Whether to write a solution option (suo) file for the sln.
 		/// </summary>
 		[XmlConfigFile(Category = "BuildConfiguration")]
 		protected bool bWriteSolutionOptionFile = true;
 
 		/// <summary>
-		/// Whether to add the -FastPDB option to build command lines by default
+		/// Whether to add the -FastPDB option to build command lines by default.
 		/// </summary>
 		[XmlConfigFile(Category = "BuildConfiguration")]
 		bool bAddFastPDBToProjects = false;
 
 		/// <summary>
-		/// Whether to generate per-file intellisense data
+		/// Whether to generate per-file intellisense data.
 		/// </summary>
 		[XmlConfigFile(Category = "BuildConfiguration")]
-		bool bUsePerFileIntellisense = false;
+		bool bUsePerFileIntellisense = true;
 
 		/// <summary>
 		/// Whether to include a dependency on ShaderCompileWorker when generating project files for the editor.
 		/// </summary>
 		[XmlConfigFile(Category = "BuildConfiguration")]
 		bool bEditorDependsOnShaderCompileWorker = true;
+
+		/// <summary>
+		/// Whether to include a dependency on LiveCodingConsole when building targets that support live coding.
+		/// </summary>
+		[XmlConfigFile]
+		bool bBuildLiveCodingConsole = false;
 
 		/// <summary>
 		/// Override for the build tool to use in generated projects. If the compiler version is specified on the command line, we use the same argument on the 
@@ -115,6 +110,11 @@ namespace UnrealBuildTool
 			{
 				BuildToolOverride = "-2019";
 			}
+		}
+
+		public override string[] GetTargetArguments(string[] Arguments)
+		{
+			return Arguments.Where(s => string.Equals(s, BuildToolOverride, StringComparison.InvariantCultureIgnoreCase)).ToArray();
 		}
 
 		/// File extension for project files we'll be generating (e.g. ".vcxproj")
@@ -179,7 +179,7 @@ namespace UnrealBuildTool
 		/// <returns>The newly allocated project file object</returns>
 		protected override ProjectFile AllocateProjectFile(FileReference InitFilePath)
 		{
-			return new VCProjectFile(InitFilePath, OnlyGameProject, ProjectFileFormat, bAddFastPDBToProjects, bUsePerFileIntellisense, bUsePrecompiled, bEditorDependsOnShaderCompileWorker, BuildToolOverride);
+			return new VCProjectFile(InitFilePath, OnlyGameProject, ProjectFileFormat, bAddFastPDBToProjects, bUsePerFileIntellisense, bUsePrecompiled, bEditorDependsOnShaderCompileWorker, bBuildLiveCodingConsole, BuildToolOverride);
 		}
 
 
@@ -281,17 +281,17 @@ namespace UnrealBuildTool
 			if (ProjectFileFormat == VCProjectFileFormat.Default)
 			{
 				// Pick the best platform installed by default
-				if (WindowsPlatform.HasCompiler(WindowsCompiler.VisualStudio2017) && WindowsPlatform.HasIDE(WindowsCompiler.VisualStudio2017))
+				if (WindowsPlatform.HasCompiler(WindowsCompiler.VisualStudio2019) && WindowsPlatform.HasIDE(WindowsCompiler.VisualStudio2019))
+				{
+					ProjectFileFormat = VCProjectFileFormat.VisualStudio2019;
+				}
+				else if (WindowsPlatform.HasCompiler(WindowsCompiler.VisualStudio2017) && WindowsPlatform.HasIDE(WindowsCompiler.VisualStudio2017))
 				{
 					ProjectFileFormat = VCProjectFileFormat.VisualStudio2017;
 				}
 				else if (WindowsPlatform.HasCompiler(WindowsCompiler.VisualStudio2015_DEPRECATED) && WindowsPlatform.HasIDE(WindowsCompiler.VisualStudio2015_DEPRECATED))
 				{
 					ProjectFileFormat = VCProjectFileFormat.VisualStudio2015;
-				}
-				else if (WindowsPlatform.HasCompiler(WindowsCompiler.VisualStudio2019) && WindowsPlatform.HasIDE(WindowsCompiler.VisualStudio2019))
-				{
-					ProjectFileFormat = VCProjectFileFormat.VisualStudio2019;
 				}
 
 				// Allow the SDKs to override
@@ -370,6 +370,38 @@ namespace UnrealBuildTool
 			}
 
 			return SolutionConfigName;
+		}
+
+		static IDictionary<MasterProjectFolder, Guid> GenerateProjectFolderGuids(MasterProjectFolder RootFolder)
+		{
+			IDictionary<MasterProjectFolder, Guid> Guids = new Dictionary<MasterProjectFolder, Guid>();
+			foreach (MasterProjectFolder Folder in RootFolder.SubFolders)
+			{
+				GenerateProjectFolderGuids("UE4", Folder, Guids);
+			}
+			return Guids;
+		}
+
+		static void GenerateProjectFolderGuids(string ParentPath, MasterProjectFolder Folder, IDictionary<MasterProjectFolder, Guid> Guids)
+		{
+			string Path = String.Format("{0}/{1}", ParentPath, Folder.FolderName);
+			Guids[Folder] = MakeMd5Guid(Encoding.UTF8.GetBytes(Path));
+
+			foreach (MasterProjectFolder SubFolder in Folder.SubFolders)
+			{
+				GenerateProjectFolderGuids(Path, SubFolder, Guids);
+			}
+		}
+
+		static Guid MakeMd5Guid(byte[] Input)
+		{
+			byte[] Hash = MD5.Create().ComputeHash(Input);
+			Hash[6] = (byte)(0x30 | (Hash[6] & 0x0f)); // 0b0011'xxxx Version 3 UUID (MD5)
+			Hash[8] = (byte)(0x80 | (Hash[8] & 0x3f)); // 0b10xx'xxxx RFC 4122 UUID
+			Array.Reverse(Hash, 0, 4);
+			Array.Reverse(Hash, 4, 2);
+			Array.Reverse(Hash, 6, 2);
+			return new Guid(Hash);
 		}
 
 		/// <summary>
@@ -461,6 +493,8 @@ namespace UnrealBuildTool
 				throw new BuildException("Unexpected ProjectFileFormat");
 			}
 
+			IDictionary<MasterProjectFolder, Guid> ProjectFolderGuids = GenerateProjectFolderGuids(RootFolder);
+
 			// Solution folders, files and project entries
 			{
 				// This the GUID that Visual Studio uses to identify a solution folder
@@ -468,21 +502,10 @@ namespace UnrealBuildTool
 
 				// Solution folders
 				{
-					List<MasterProjectFolder> AllSolutionFolders = new List<MasterProjectFolder>();
-					System.Action<List<MasterProjectFolder> /* Folders */ > GatherFoldersFunction = null;
-					GatherFoldersFunction = FolderList =>
-						{
-							AllSolutionFolders.AddRange(FolderList);
-							foreach (MasterProjectFolder CurSubFolder in FolderList)
-							{
-								GatherFoldersFunction(CurSubFolder.SubFolders);
-							}
-						};
-					GatherFoldersFunction(RootFolder.SubFolders);
-
-					foreach (VisualStudioSolutionFolder CurFolder in AllSolutionFolders)
+					IEnumerable<MasterProjectFolder> AllSolutionFolders = ProjectFolderGuids.Keys.OrderBy(Folder => Folder.FolderName).ThenBy(Folder => ProjectFolderGuids[Folder]);
+					foreach (MasterProjectFolder CurFolder in AllSolutionFolders)
 					{
-						string FolderGUIDString = CurFolder.FolderGUID.ToString("B").ToUpperInvariant();
+						string FolderGUIDString = ProjectFolderGuids[CurFolder].ToString("B").ToUpperInvariant();
 						VCSolutionFileContent.AppendLine("Project(\"" + SolutionFolderEntryGUID + "\") = \"" + CurFolder.FolderName + "\", \"" + CurFolder.FolderName + "\", \"" + FolderGUIDString + "\"");
 
 						// Add any files that are inlined right inside the solution folder
@@ -503,6 +526,7 @@ namespace UnrealBuildTool
 
 
 				// Project files
+				List<MSBuildProjectFile> AllProjectFilesSorted = AllProjectFiles.OrderBy((ProjFile) => ProjFile.ProjectFilePath.GetFileNameWithoutExtension()).Cast<MSBuildProjectFile>().ToList();
 				foreach (MSBuildProjectFile CurProject in AllProjectFiles)
 				{
 					// Visual Studio uses different GUID types depending on the project type
@@ -551,7 +575,7 @@ namespace UnrealBuildTool
 				FileReference VisualizersFile = FileReference.Combine(UnrealBuildTool.EngineDirectory, "Extras", "VisualStudioDebugging", "UE4.natvis");
 
 				// Add the visualizers at the solution level. Doesn't seem to be picked up from a makefile project in VS2017 15.8.5.
-				VCSolutionFileContent.AppendLine(String.Format("Project(\"{{2150E333-8FDC-42A3-9474-1A3956D46DE8}}\") = \"Visualizers\", \"Visualizers\", \"{0}\"", Guid.NewGuid().ToString("B").ToUpperInvariant()));
+				VCSolutionFileContent.AppendLine(String.Format("Project(\"{0}\") = \"Visualizers\", \"Visualizers\", \"{{1CCEC849-CC72-4C59-8C36-2F7C38706D4C}}\"", SolutionFolderEntryGUID));
 				VCSolutionFileContent.AppendLine("\tProjectSection(SolutionItems) = preProject");
 				VCSolutionFileContent.AppendLine("\t\t{0} = {0}", VisualizersFile.MakeRelativeTo(MasterProjectPath));
 				VCSolutionFileContent.AppendLine("\tEndProjectSection");
@@ -713,9 +737,9 @@ namespace UnrealBuildTool
 						System.Action<StringBuilder /* VCSolutionFileContent */, List<MasterProjectFolder> /* Folders */ > FolderProcessorFunction = null;
 						FolderProcessorFunction = (LocalVCSolutionFileContent, LocalMasterProjectFolders) =>
 							{
-								foreach (VisualStudioSolutionFolder CurFolder in LocalMasterProjectFolders)
+								foreach (MasterProjectFolder CurFolder in LocalMasterProjectFolders)
 								{
-									string CurFolderGUIDString = CurFolder.FolderGUID.ToString("B").ToUpperInvariant();
+									string CurFolderGUIDString = ProjectFolderGuids[CurFolder].ToString("B").ToUpperInvariant();
 
 									foreach (MSBuildProjectFile ChildProject in CurFolder.ChildProjects)
 									{
@@ -723,10 +747,10 @@ namespace UnrealBuildTool
 										LocalVCSolutionFileContent.AppendLine("		" + ChildProject.ProjectGUID.ToString("B").ToUpperInvariant() + " = " + CurFolderGUIDString);
 									}
 
-									foreach (VisualStudioSolutionFolder SubFolder in CurFolder.SubFolders)
+									foreach (MasterProjectFolder SubFolder in CurFolder.SubFolders)
 									{
 										//	e.g. "{BF6FB09F-A2A6-468F-BE6F-DEBE07EAD3EA} = {C43B6BB5-3EF0-4784-B896-4099753BCDA9}"
-										LocalVCSolutionFileContent.AppendLine("		" + SubFolder.FolderGUID.ToString("B").ToUpperInvariant() + " = " + CurFolderGUIDString);
+										LocalVCSolutionFileContent.AppendLine("		" + ProjectFolderGuids[SubFolder].ToString("B").ToUpperInvariant() + " = " + CurFolderGUIDString);
 									}
 
 									// Recurse into subfolders
@@ -771,7 +795,7 @@ namespace UnrealBuildTool
 						SolutionOptionsFileName = FileReference.Combine(MasterProjectPath, ".vs", Path.GetFileNameWithoutExtension(SolutionFileName), "v15", ".suo");
 						break;
 					case VCProjectFileFormat.VisualStudio2019:
-						SolutionOptionsFileName = FileReference.Combine(MasterProjectPath, ".vs", Path.GetFileNameWithoutExtension(SolutionFileName), "v16", ".suo");
+						SolutionOptionsFileName = FileReference.Combine(MasterProjectPath, ".vs", Path.GetFileNameWithoutExtension(SolutionFileName), "v15", ".suo"); // Still uses v15
 						break;
 					default:
 						throw new BuildException("Unsupported Visual Studio version");

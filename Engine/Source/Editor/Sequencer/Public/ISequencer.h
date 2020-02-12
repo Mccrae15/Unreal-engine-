@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -28,7 +28,9 @@ class FSequencerKeyCollection;
 class UMovieSceneSequence;
 class UMovieSceneSubSection;
 class IDetailsView;
+class IKeyArea;
 enum class EMapChangeType : uint8;
+class FCurveModel;
 
 /**
  * Defines auto change modes.
@@ -92,7 +94,10 @@ enum class ESequencerCommandBindings
 	Sequencer,
 
 	/** Bindings that are shared between Sequencer and non-Sequencer widgets (subset of Sequencer commands). */
-	Shared
+	Shared,
+
+	/** Bindings that are available in the Curve Editor. */
+	CurveEditor
 };
 
 
@@ -138,7 +143,6 @@ enum class EMovieSceneDataChangeType
 	Unknown
 };
 
-
 /**
  * Interface for sequencers.
  */
@@ -162,6 +166,9 @@ public:
 	DECLARE_MULTICAST_DELEGATE_OneParam(FOnSelectionChangedTracks, TArray<UMovieSceneTrack*> /*Tracks*/);
 
 	DECLARE_MULTICAST_DELEGATE_OneParam(FOnSelectionChangedSections, TArray<UMovieSceneSection*> /*Sections*/);
+
+	DECLARE_MULTICAST_DELEGATE_TwoParams(FOnCurveDisplayChanged, FCurveModel* , bool /*displayed*/);
+
 
 	DECLARE_MULTICAST_DELEGATE_OneParam(FOnCloseEvent, TSharedRef<ISequencer>);
 
@@ -224,9 +231,10 @@ public:
 	 *
 	 * @param	Object	The asset, class, or actor to add a spawnable for
 	 * @param	ActorFactory	Optional actor factory to use to create spawnable type
+	 * @param   bSetupDefaults Setup default tracks for this spawnable
 	 * @return	The spawnable guid for the spawnable, or an invalid Guid if we were not able to create a spawnable
 	 */
-	virtual FGuid MakeNewSpawnable(UObject& SourceObject, UActorFactory* ActorFactory = nullptr, bool bSetupDefaults = false) = 0;
+	virtual FGuid MakeNewSpawnable(UObject& SourceObject, UActorFactory* ActorFactory = nullptr, bool bSetupDefaults = true) = 0;
 
 	/**
 	 * Add actors as possessable objects to sequencer.
@@ -238,10 +246,11 @@ public:
 	virtual TArray<FGuid> AddActors(const TArray<TWeakObjectPtr<AActor> >& InActors, bool bSelectActors = true) = 0;
 
 	/**
-	 * Calling this function will add the specified track to the currently selected folder
-	 * if there is one, and will set the newly created track as the current selection.
+	 * Should be called after adding a track to the MovieScene. This will set the specified track as your current selection
+	 * cause it to throb, notify the sequence to rebuild any data required. The track will be added to the selected folder
+	 * unless ObjectBinding points to a valid FGuid.
 	 */
-	virtual void OnAddTrack(const TWeakObjectPtr<UMovieSceneTrack>& InTrack) = 0;
+	virtual void OnAddTrack(const TWeakObjectPtr<UMovieSceneTrack>& InTrack, const FGuid& ObjectBinding) = 0;
 
 	/**
 	 * Adds a movie scene as a section inside the current movie scene
@@ -317,6 +326,8 @@ public:
 	 */
 	virtual FQualifiedFrameTime GetGlobalTime() const = 0;
 
+	virtual uint32 GetLocalLoopIndex() const = 0;
+
 	/**
 	 * Sets the cursor position relative to the currently focused sequence
 	 *
@@ -349,6 +360,12 @@ public:
 	 * @param Interpolation How to interpolate to the new view range
 	 */
 	virtual void SetViewRange(TRange<double> NewViewRange, EViewRangeInterpolation Interpolation = EViewRangeInterpolation::Animated) = 0;
+
+	/**
+	 * Set the clamp range
+	 * @param NewClampRange The new clamp range. Must be a finite range
+	 */
+	virtual void SetClampRange(TRange<double> NewClampRange) = 0;
 
 	/**
 	 * Sets whether perspective viewport hijacking is enabled.
@@ -460,11 +477,23 @@ public:
 	virtual FSequencerSelection& GetSelection() = 0;
 	virtual FSequencerSelectionPreview& GetSelectionPreview() = 0;
 
+	virtual void SuspendSelectionBroadcast() = 0;
+	virtual void ResumeSelectionBroadcast() = 0;
+
 	/** Gets the currently selected tracks. */
 	virtual void GetSelectedTracks(TArray<UMovieSceneTrack*>& OutSelectedTracks) = 0;
 
 	/** Gets the currently selected sections. */
 	virtual void GetSelectedSections(TArray<UMovieSceneSection*>& OutSelectedSections) = 0;
+
+	/** Gets the currently selected folders. */
+	virtual void GetSelectedFolders(TArray<UMovieSceneFolder*>& OutSelectedFolders) = 0;
+
+	/** Gets the currently selected key areas */
+	virtual void GetSelectedKeyAreas(TArray<const IKeyArea*>& OutSelectedKeyAreas) = 0;
+
+	/** Gets the currently selected Object Guids*/
+	virtual void GetSelectedObjects(TArray<FGuid>& OutSelectedObjects) = 0;
 
 	/** Selects an object by GUID */
 	virtual void SelectObject(FGuid ObjectBinding) = 0;
@@ -477,6 +506,12 @@ public:
 
 	/** Selects property tracks by property path */
 	virtual void SelectByPropertyPaths(const TArray<FString>& InPropertyPaths) = 0;
+
+	/** Selects nodes by key areas */
+	virtual void SelectByKeyAreas(UMovieSceneSection* Section, const TArray<IKeyArea>& InKeyAreas, bool bSelectParentInstead, bool bSelect) = 0;
+
+	/** Selects nodes by the nth category node under a section */
+	virtual void SelectByNthCategoryNode(UMovieSceneSection* Section, int Index, bool bSelect) = 0;
 
 	/** Empties the current selection. */
 	virtual void EmptySelection() = 0;
@@ -517,6 +552,9 @@ public:
 
 	/** Gets a multicast delegate with an array of UMovieSceneSections which is called when the outliner node selection changes. */
 	virtual FOnSelectionChangedSections& GetSelectionChangedSections() = 0;
+
+	/** Gets a multicast delegate when the curve edtior associated with this sequencer has it's selection change. */
+	virtual FOnCurveDisplayChanged& GetCurveDisplayChanged() = 0;
 
 	/** @return a numeric type interface that will parse and display numbers as frames and times correctly */
 	virtual TSharedRef<INumericTypeInterface<double>> GetNumericTypeInterface() const = 0;
@@ -584,7 +622,21 @@ public:
 	* @see SetSelectionRange, SetSelectionRangeEnd, SetSelectionRangeStart
 	*/
 	virtual TRange<FFrameNumber> GetSelectionRange() const = 0;
+public:
 
+	/**
+	* Specify that an object was implicitly added. We will notify the track editors that it was
+	@InObject Object that was added to be part of a track/binding but not the real binding
+	*/
+	virtual void ObjectImplicitlyAdded(UObject* InObject) const = 0;
+
+public:
+	/**
+	*    Turn on/off the filter with the specified name
+	* @InName The name of the of the filter
+	* @bOn   Whether or not the filter is on or off.
+	*/
+	virtual void SetFilterOn(const FText& InName, bool bOn) = 0;
 public:
 
 	/**

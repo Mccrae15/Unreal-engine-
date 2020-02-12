@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -31,7 +31,7 @@ enum class ETakeRecorderActorRecordType : uint8
 * Records the properties of the actor and the components on the actor and safely
 * handles new components being spawned at runtime and the actor being destroyed.
 */
-UCLASS(DisplayName="Any Actor", Category="Actors")
+UCLASS(Category="Actors", meta = (TakeRecorderDisplayName="Any Actor"))
 class UTakeRecorderActorSource : public UTakeRecorderSource, public IMovieSceneTrackRecorderHost
 {
 public:
@@ -91,10 +91,21 @@ public:
 	 * Add a take recorder source for the given actor. 
 	 *
 	 * @param InActor The actor to add a source for
-	 * @return The added source
+	 * @param InSources The sources to add the actor to
+	 * @return The added source or the source already present with the same actor
 	 */
 	UFUNCTION(BlueprintCallable, Category = "Take Recorder")
 	static UTakeRecorderSource* AddSourceForActor(AActor* InActor, UTakeRecorderSources* InSources);
+
+	/*
+	 * Remove the given actor from TakeRecorderSources.
+	 *
+	 * @param InActor The actor to remove from the sources
+	 * @param InSources The sources from where to remove the actor
+	 */
+	UFUNCTION(BlueprintCallable, Category = "Take Recorder")
+	static void RemoveActorFromSources(AActor* InActor, UTakeRecorderSources* InSources);
+
 
 public:
 	UTakeRecorderActorSource(const FObjectInitializer& ObjInit);
@@ -106,7 +117,8 @@ public:
 	virtual void StopRecording(class ULevelSequence* InSequence) override;
 	virtual TArray<UTakeRecorderSource*> PostRecording(class ULevelSequence* InSequence, class ULevelSequence* InMasterSequence) override;
 	virtual TArray<UObject*> GetAdditionalSettingsObjects() const { return TArray<UObject*>(FactorySettings); }
-	virtual FString GetSubsceneName(ULevelSequence* InSequence) const override;
+	virtual FString GetSubsceneTrackName(ULevelSequence* InSequence) const override;
+	virtual FString GetSubsceneAssetName(ULevelSequence* InSequence) const override;
 	virtual void AddContentsToFolder(class UMovieSceneFolder* InFolder) override;
 	// ~UTakeRecorderSource Interface
 
@@ -134,7 +146,7 @@ protected:
 	* particular Actor/Component.
 	*/
 	void RebuildRecordedPropertyMap();
-	void RebuildRecordedPropertyMapRecursive(UObject* InObject, UActorRecorderPropertyMap* PropertyMap, const FString& OuterStructPath = FString());
+	void RebuildRecordedPropertyMapRecursive(const FFieldVariant& InObject, UActorRecorderPropertyMap* PropertyMap, const FString& OuterStructPath = FString());
 	
 	/**
 	* Looks at the given component and determines what the parent of this component is. For the root component and Actor Components the
@@ -224,6 +236,10 @@ protected:
 	FMovieSceneSequenceID GetLevelSequenceID(class AActor* OtherActor) override;
 	/** Returns generic track recorder settings */
 	FTrackRecorderSettings GetTrackRecorderSettings() const override;
+	/** Returns offset that may get set when recording a skeletal mesh animation. Needed to correctly transform attached children*/
+	FTransform GetRecordedActorAnimationInitialRootTransform(class AActor* OtherActor) const override;
+	/** Returns the master level sequence being recorded into */
+	ULevelSequence* GetMasterLevelSequence() const override { return MasterLevelSequence; };
 	// ~IMovieSceneTrackRecorderHost Interface
 	
 	/** Initializes an instance of the specified class if we don't already have it in our Settings array. */

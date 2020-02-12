@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -11,8 +11,6 @@ USTRUCT(BlueprintInternalUseOnly)
 struct ANIMGRAPHRUNTIME_API FAnimNode_MultiWayBlend : public FAnimNode_Base
 {
 	GENERATED_USTRUCT_BODY()
-
-	friend struct FAnimSequencerInstanceProxy;
 
 public:
 
@@ -54,6 +52,7 @@ public:
 	{
 		Poses.AddDefaulted();
 		DesiredAlphas.AddZeroed();
+		UpdateCachedAlphas();
 
 		return Poses.Num();
 	}
@@ -61,16 +60,18 @@ public:
 	void RemovePose(int32 PoseIndex)
 	{
 		Poses.RemoveAt(PoseIndex);
+		CachedAlphas.RemoveAt(PoseIndex);
 		DesiredAlphas.RemoveAt(PoseIndex);
 	}
 
 	void ResetPoses()
 	{
 		Poses.Reset();
+		CachedAlphas.Reset();
 		DesiredAlphas.Reset();
 	}
-private:
-	float GetTotalAlpha()
+
+	float GetTotalAlpha() const
 	{
 		float TotalAlpha = 0.f;
 
@@ -82,6 +83,7 @@ private:
 		return TotalAlpha;
 	}
 
+private:
 	// process new weights and then return out
 	void UpdateCachedAlphas();
 };

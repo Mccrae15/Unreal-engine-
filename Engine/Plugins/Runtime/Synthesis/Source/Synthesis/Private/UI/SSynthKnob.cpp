@@ -1,7 +1,8 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "UI/SSynthKnob.h"
 #include "Rendering/DrawElements.h"
+#include "Framework/Application/SlateApplication.h"
 
 #define LOCTEXT_NAMESPACE "SynthKnob"
 
@@ -37,7 +38,6 @@ void SSynthKnob::Construct(const SSynthKnob::FArguments& InDeclaration)
 	bControllerInputCaptured = false;
 
 	// independently create a synth tooltip slate object (not a child)
-	SynthTooltip = SNew(SSynthTooltip);
 }
 
 int32 SSynthKnob::OnPaint(const FPaintArgs& Args, const FGeometry& AllottedGeometry, const FSlateRect& MyCullingRect, FSlateWindowElementList& OutDrawElements, int32 LayerId, const FWidgetStyle& InWidgetStyle, bool bParentEnabled) const
@@ -62,12 +62,13 @@ int32 SSynthKnob::OnPaint(const FPaintArgs& Args, const FGeometry& AllottedGeome
 		const float MinValueAngle = Style->MinValueAngle;
 		const float MaxValueAngle = Style->MaxValueAngle;
 		const float CurrentValue = GetValue();
+		const FVector2D ImageCenter = AllottedGeometry.GetLocalSize() * 0.5f;
 
 		float NormalizedRotationAngle = CurrentValue * (MaxValueAngle - MinValueAngle) + MinValueAngle;
 		float RotationAngle = 2.0f * PI * NormalizedRotationAngle;
-
+		
 		const FLinearColor FinalColorAndOpacity(InWidgetStyle.GetColorAndOpacityTint() * OverlayImageBrush->GetTint(InWidgetStyle));
-		FSlateDrawElement::MakeRotatedBox(OutDrawElements, LayerId++, AllottedGeometry.ToPaintGeometry(), OverlayImageBrush, DrawEffects, RotationAngle, MyCullingRect.GetCenter(), FSlateDrawElement::RelativeToWorld, FinalColorAndOpacity);
+		FSlateDrawElement::MakeRotatedBox(OutDrawElements, LayerId++, AllottedGeometry.ToPaintGeometry(), OverlayImageBrush, DrawEffects, RotationAngle, ImageCenter, FSlateDrawElement::RelativeToElement, FinalColorAndOpacity);
 	}
 
 	return LayerId;
@@ -110,9 +111,9 @@ void SSynthKnob::ResetControllerState()
 FReply SSynthKnob::OnKeyDown(const FGeometry& MyGeometry, const FKeyEvent& InKeyEvent)
 {
 	FReply Reply = FReply::Unhandled();
-	const FKey KeyPressed = InKeyEvent.GetKey();
+	const EUINavigation NavDirection = FSlateApplication::Get().GetNavigationDirectionFromKey(InKeyEvent);
 
-	if (KeyPressed == FineTuneKey)
+	if (InKeyEvent.GetKey() == FineTuneKey)
 	{
 		bIsFineTune = true;
 	}
@@ -122,7 +123,7 @@ FReply SSynthKnob::OnKeyDown(const FGeometry& MyGeometry, const FKeyEvent& InKey
 		// The controller's bottom face button must be pressed once to begin manipulating the slider's value.
 		// Navigation away from the widget is prevented until the button has been pressed again or focus is lost.
 		// The value can be manipulated by using the game pad's directional arrows ( relative to slider orientation ).
-		if (KeyPressed == EKeys::Enter || KeyPressed == EKeys::SpaceBar || KeyPressed == EKeys::Virtual_Accept)
+		if (FSlateApplication::Get().GetNavigationActionFromKey(InKeyEvent) == EUINavigationAction::Accept)
 		{
 			if (bControllerInputCaptured == false)
 			{
@@ -141,11 +142,11 @@ FReply SSynthKnob::OnKeyDown(const FGeometry& MyGeometry, const FKeyEvent& InKey
 		if (bControllerInputCaptured)
 		{
 			float NewValue = ValueAttribute.Get();
-			if (KeyPressed == EKeys::Down || KeyPressed == EKeys::Gamepad_DPad_Down || KeyPressed == EKeys::Gamepad_LeftStick_Down)
+			if (NavDirection == EUINavigation::Down)
 			{
 				NewValue -= StepSize.Get();
 			}
-			else if (KeyPressed == EKeys::Up || KeyPressed == EKeys::Gamepad_DPad_Up || KeyPressed == EKeys::Gamepad_LeftStick_Up)
+			else if (NavDirection == EUINavigation::Up)
 			{
 				NewValue += StepSize.Get();
 			}
@@ -222,8 +223,6 @@ FReply SSynthKnob::OnMouseButtonUp(const FGeometry& MyGeometry, const FPointerEv
 		// Release capture for controller/keyboard when switching to mouse.
 		ResetControllerState();
 
-		SynthTooltip->SetWindowContainerVisibility(false);
-
 		return FReply::Handled().ReleaseMouseCapture();
 	}
 
@@ -250,20 +249,6 @@ FReply SSynthKnob::OnMouseMove(const FGeometry& MyGeometry, const FPointerEvent&
 		// Release capture for controller/keyboard when switching to mouse
 		ResetControllerState();
 
-		// TODO: fix tooltip
-// 		if (ShowTooltip.Get())
-// 		{
-// 			FVector2D TooltipPosition = MyGeometry.AbsolutePosition + MyGeometry.Size * MyGeometry.Scale + FVector2D(2.0f, 2.0f);
-// 			SynthTooltip->SetOverlayWindowPosition(TooltipPosition);
-// 			SynthTooltip->SetWindowContainerVisibility(true);
-// 
-// 			FNumberFormattingOptions FormattingOptions;
-// 			FText ValueNumberText = FText::AsNumber(NewValue, &FormattingOptions);
-// 			FText ValueText = FText::Format(LOCTEXT("SynthKnobValue", "{0} {1} {2}"), FText::FromString(TEXT("Frequency")), ValueNumberText, FText::FromString(TEXT("hz")));
-// 
-// 			SynthTooltip->SetOverlayText(ValueText);
-// 		}
-		
 		return FReply::Handled();
 	}
 

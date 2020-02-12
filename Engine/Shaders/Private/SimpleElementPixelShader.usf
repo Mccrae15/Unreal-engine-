@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 /*=============================================================================
 	SimpleElementPixelShader.hlsl: Pixel shader for drawing simple elements.
@@ -48,6 +48,10 @@ float3 SimpleElementFrameBufferBlendOp(float4 Source)
 // so ensure  MATERIALBLENDING_ALPHACOMPOSITE gets first in line
 #elif MATERIALBLENDING_ALPHACOMPOSITE
 	return Source.rgb + (Dest.rgb*(1.0 - Source.a));
+// AlphaHoldout will set both MATERIALBLENDING_TRANSLUCENT and MATERIALBLENDING_ALPHAHOLDOUT defines
+// so ensure  MATERIALBLENDING_ALPHAHOLDOUT gets first in line
+#elif MATERIALBLENDING_ALPHAHOLDOUT
+	return (Dest.rgb*(1.0 - Source.a));
 #elif SE_BLEND_MODE == SE_BLEND_TRANSLUCENT || SE_BLEND_MODE == SE_BLEND_TRANSLUCENTALPHAONLY || SE_BLEND_MODE == SE_BLEND_ALPHABLEND || SE_BLEND_MODE == SE_BLEND_TRANSLUCENTDISTANCEFIELD || SE_BLEND_MODE == SE_BLEND_TRANSLUCENTDISTANCEFIELDSHADOWED || SE_BLEND_MODE == SE_BLEND_TRANSLUCENTALPHAONLYWRITEALPHA
 	return (Source.rgb*Source.a) + (Dest.rgb*(1.0 - Source.a));
 #elif SE_BLEND_MODE == SE_BLEND_ADDITIVE
@@ -56,6 +60,8 @@ float3 SimpleElementFrameBufferBlendOp(float4 Source)
 	return Source.rgb * Dest.rgb;
 #elif SE_BLEND_MODE == SE_BLEND_ALPHACOMPOSITE
 	return Source.rgb + (Dest.rgb*(1.0 - Source.a));
+#elif SE_BLEND_MODE == SE_BLEND_ALPHAHOLDOUT
+	return (Dest.rgb*(1.0 - Source.a));
 #endif
 
 	return Source.rgb;
@@ -224,7 +230,7 @@ void GammaMaskedMain(
 /** the width to smooth the edge the texture */
 float SmoothWidth;
 /** toggles drop shadow rendering */
-bool EnableShadow;
+uint EnableShadow;
 /** 2d vector specifying the direction of shadow */
 float2 ShadowDirection;
 /** Color of the shadowed pixels */
@@ -232,7 +238,7 @@ float4 ShadowColor;
 /** the width to smooth the edge the shadow of the texture */
 float ShadowSmoothWidth;
 /** toggles glow rendering */
-bool EnableGlow;
+uint EnableGlow;
 /** base color to use for the glow */
 float4 GlowColor;
 /** outline glow outer radius */

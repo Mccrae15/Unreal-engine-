@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -51,7 +51,7 @@ public:
 
 		/** We'll put the tab relative to this node */
 		TWeakPtr<class SDockingNode> TargetNode;
-		/** Relation to node where we will put the tab.qqq */
+		/** Relation to node where we will put the tab. */
 		SDockingNode::RelativeDirection DockDirection;
 	};
 
@@ -147,6 +147,9 @@ protected:
 
 	/** The area from which we initially started dragging */
 	TSharedPtr<SDockingArea> TabOwnerAreaOfOrigin;
+
+	/** Decorator widget where we add temp doc tabs to */
+	TSharedPtr<SDockingTabStack> CursorDecoratorStackNode;
 
 	/** Tab stack from which we started dragging this tab. */
 	TWeakPtr<class SDockingTabStack> TabStackOfOrigin;

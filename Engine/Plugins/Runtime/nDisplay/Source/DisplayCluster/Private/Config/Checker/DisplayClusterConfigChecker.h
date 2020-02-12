@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -22,6 +22,7 @@ public:
 	virtual void AddClusterNode (const FDisplayClusterConfigClusterNode& InCfgCNode) override;
 	virtual void AddScreen      (const FDisplayClusterConfigScreen& InCfgScreen) override;
 	virtual void AddViewport    (const FDisplayClusterConfigViewport& InCfgViewport) override;
+	virtual void AddPostprocess (const FDisplayClusterConfigPostprocess& InCfgPostprocess) override;
 	virtual void AddCamera      (const FDisplayClusterConfigCamera& InCfgCamera) override;
 	virtual void AddSceneNode   (const FDisplayClusterConfigSceneNode& InCfgSNode) override;
 	virtual void AddGeneral     (const FDisplayClusterConfigGeneral& InCfgGeneral) override;

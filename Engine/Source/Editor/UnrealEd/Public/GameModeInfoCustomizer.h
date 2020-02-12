@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -10,7 +10,7 @@
 #include "Widgets/SBoxPanel.h"
 #include "Engine/Blueprint.h"
 #include "Editor.h"
-#include "Toolkits/AssetEditorManager.h"
+
 #include "DetailLayoutBuilder.h"
 #include "DetailCategoryBuilder.h"
 #include "Widgets/Text/STextBlock.h"
@@ -25,6 +25,7 @@
 #include "Kismet2/KismetEditorUtilities.h"
 #include "Kismet2/BlueprintEditorUtils.h"
 #include "EditorClassUtils.h"
+#include "Subsystems/AssetEditorSubsystem.h"
 
 #define LOCTEXT_NAMESPACE "FGameModeInfoCustomizer"
 
@@ -44,7 +45,7 @@ public:
 	/** Create widget for the name of a default class property */
 	TSharedRef<SWidget> CreateGameModePropertyLabelWidget(FName PropertyName)
 	{
-		UProperty* Prop = FindFieldChecked<UProperty>(AGameModeBase::StaticClass(), PropertyName);
+		FProperty* Prop = FindFieldChecked<FProperty>(AGameModeBase::StaticClass(), PropertyName);
 
 		FString DisplayName = Prop->GetDisplayNameText().ToString();
 		if (DisplayName.Len() == 0)
@@ -64,7 +65,7 @@ public:
 	void CustomizeGameModeDefaultClass(IDetailGroup& Group, FName DefaultClassPropertyName)
 	{
 		// Find the metaclass of this property
-		UClassProperty* ClassProp = FindFieldChecked<UClassProperty>(AGameModeBase::StaticClass(), DefaultClassPropertyName);
+		FClassProperty* ClassProp = FindFieldChecked<FClassProperty>(AGameModeBase::StaticClass(), DefaultClassPropertyName);
 
 		UClass* MetaClass = ClassProp->MetaClass;
 		const bool bAllowNone = !(ClassProp->PropertyFlags & CPF_NoClear);
@@ -230,7 +231,7 @@ public:
 		const UClass* GameModeClass = GetCurrentGameModeClass();
 		if (GameModeClass != NULL)
 		{
-			UClassProperty* ClassProp = FindFieldChecked<UClassProperty>(GameModeClass, ClassPropertyName);
+			FClassProperty* ClassProp = FindFieldChecked<FClassProperty>(GameModeClass, ClassPropertyName);
 			CurrentDefaultClass = (UClass*)ClassProp->GetObjectPropertyValue(ClassProp->ContainerPtrToValuePtr<void>(GetCurrentGameModeCDO()));
 		}
 		return CurrentDefaultClass;
@@ -242,7 +243,7 @@ public:
 		const UClass* GameModeClass = GetCurrentGameModeClass();
 		if (GameModeClass != NULL && AllowModifyGameMode())
 		{
-			UClassProperty* ClassProp = FindFieldChecked<UClassProperty>(GameModeClass, ClassPropertyName);
+			FClassProperty* ClassProp = FindFieldChecked<FClassProperty>(GameModeClass, ClassPropertyName);
 			const UClass** DefaultClassPtr = ClassProp->ContainerPtrToValuePtr<const UClass*>(GetCurrentGameModeCDO());
 			*DefaultClassPtr = NewDefaultClass;
 
@@ -267,7 +268,7 @@ public:
 
 	void OnMakeNewDefaultClassClicked(FName ClassPropertyName)
 	{
-		UClassProperty* ClassProp = FindFieldChecked<UClassProperty>(AGameModeBase::StaticClass(), ClassPropertyName);
+		FClassProperty* ClassProp = FindFieldChecked<FClassProperty>(AGameModeBase::StaticClass(), ClassPropertyName);
 
 		UBlueprint* Blueprint = FKismetEditorUtilities::CreateBlueprintFromClass(LOCTEXT("CreateNewBlueprint", "Create New Blueprint"), ClassProp->MetaClass, FString::Printf(TEXT("New%s"),*ClassProp->MetaClass->GetName()));
 
@@ -275,7 +276,7 @@ public:
 		{
 			OnSetDefaultClass(Blueprint->GeneratedClass, ClassPropertyName);
 
-			FAssetEditorManager::Get().OpenEditorForAsset(Blueprint);
+			GEditor->GetEditorSubsystem<UAssetEditorSubsystem>()->OpenEditorForAsset(Blueprint);
 		}
 	}
 
@@ -283,7 +284,7 @@ public:
 	{
 		FEditorDelegates::LoadSelectedAssetsIfNeeded.Broadcast();
 
-		UClassProperty* ClassProp = FindFieldChecked<UClassProperty>(AGameModeBase::StaticClass(), ClassPropertyName);
+		FClassProperty* ClassProp = FindFieldChecked<FClassProperty>(AGameModeBase::StaticClass(), ClassPropertyName);
 		const UClass* SelectedClass = GEditor->GetFirstSelectedClass(ClassProp->MetaClass);
 		if (SelectedClass)
 		{

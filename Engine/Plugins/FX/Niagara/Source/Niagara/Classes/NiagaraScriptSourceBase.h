@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -6,6 +6,7 @@
 #include "UObject/ObjectMacros.h"
 #include "UObject/Object.h"
 #include "NiagaraCommon.h"
+#include "NiagaraCompileHash.h"
 #include "NiagaraScriptSourceBase.generated.h"
 
 struct EditorExposedVectorConstant
@@ -31,6 +32,7 @@ public:
 	virtual int32 GetDependentRequestCount() const = 0;
 	virtual TSharedPtr<FNiagaraCompileRequestDataBase, ESPMode::ThreadSafe> GetDependentRequest(int32 Index) = 0;
 	virtual FName ResolveEmitterAlias(FName VariableName) const = 0;
+	virtual bool GetUseRapidIterationParams() const = 0;
 };
 
 class FNiagaraCompileOptions
@@ -87,7 +89,11 @@ class UNiagaraScriptSourceBase : public UObject
 
 	virtual FGuid GetChangeID() { return FGuid(); };
 
-	virtual void ComputeVMCompilationId(struct FNiagaraVMExecutableDataId& Id, ENiagaraScriptUsage InUsage, const FGuid& InUsageId) const {};
+	virtual void ComputeVMCompilationId(struct FNiagaraVMExecutableDataId& Id, ENiagaraScriptUsage InUsage, const FGuid& InUsageId, bool bForceRebuild = false) const {};
+
+	virtual FGuid GetCompileBaseId(ENiagaraScriptUsage InUsage, const FGuid& InUsageId) const { return FGuid(); }
+
+	virtual FNiagaraCompileHash GetCompileHash(ENiagaraScriptUsage InUsage, const FGuid& InUsageId) const { return FNiagaraCompileHash(); }
 	
 	/** Cause the source to build up any internal variables that will be useful in the compilation process.*/
 	virtual TSharedPtr<FNiagaraCompileRequestDataBase, ESPMode::ThreadSafe> PreCompile(UNiagaraEmitter* Emitter, const TArray<FNiagaraVariable>& EncounterableVariables, TArray<TSharedPtr<FNiagaraCompileRequestDataBase, ESPMode::ThreadSafe>>& ReferencedCompileRequests, bool bClearErrors = true) { return nullptr; }
@@ -106,7 +112,9 @@ class UNiagaraScriptSourceBase : public UObject
 
 	FOnChanged& OnChanged() { return OnChangedDelegate; }
 
-	virtual void InvalidateCachedCompileIds() {}
+	virtual void ForceGraphToRecompileOnNextCheck() {}
+
+	virtual void RefreshFromExternalChanges() {}
 
 protected:
 	FOnChanged OnChangedDelegate;

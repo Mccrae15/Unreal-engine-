@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -9,6 +9,8 @@
 
 class FEngineVersion;
 class FJsonObject;
+
+PRAGMA_DISABLE_DEPRECATION_WARNINGS // For FDesktopPlatformBase::GetSolutionPath() implementation
 
 class FDesktopPlatformBase : public IDesktopPlatform
 {
@@ -45,10 +47,12 @@ public:
 	virtual bool CleanGameProject(const FString& ProjectDir, FString& OutFailPath, FFeedbackContext* Warn) override;
 	virtual bool CompileGameProject(const FString& RootDir, const FString& ProjectFileName, FFeedbackContext* Warn) override;
 	virtual bool GenerateProjectFiles(const FString& RootDir, const FString& ProjectFileName, FFeedbackContext* Warn, FString LogFilePath = FString()) override;
-	virtual bool InvalidateMakefiles(const FString& RootDir, const FString& ProjectFileName, FFeedbackContext* Warn) override;
 	virtual bool IsUnrealBuildToolAvailable() override;
 	virtual bool InvokeUnrealBuildToolSync(const FString& InCmdLineParams, FOutputDevice &Ar, bool bSkipBuildUBT, int32& OutReturnCode, FString& OutProcOutput) override;
 	virtual FProcHandle InvokeUnrealBuildToolAsync(const FString& InCmdLineParams, FOutputDevice &Ar, void*& OutReadPipe, void*& OutWritePipe, bool bSkipBuildUBT = false) override;
+
+	virtual const TArray<FTargetInfo>& GetTargetsForProject(const FString& ProjectFile) const override;
+	virtual const TArray<FTargetInfo>& GetTargetsForCurrentProject() const override;
 
 	virtual bool GetSolutionPath(FString& OutSolutionPath) override;
 
@@ -60,6 +64,7 @@ private:
 	FDateTime LauncherInstallationTimestamp;
 	TMap<FString, FString> LauncherInstallationList;
 	TMap<FString, FUProjectDictionary> CachedProjectDictionaries;
+	mutable TMap<FString, TArray<FTargetInfo>> ProjectFileToTargets;
 
 	void ReadLauncherInstallationList();
 	void CheckForLauncherEngineInstallation(const FString &AppId, const FString &Identifier, TMap<FString, FString> &OutInstallations);
@@ -73,8 +78,12 @@ private:
 	void GetProjectBuildProducts(const FString& ProjectFileName, TArray<FString> &OutFileNames, TArray<FString> &OutDirectoryNames);
 	bool BuildUnrealBuildTool(const FString& RootDir, FOutputDevice &Ar);
 
+	static bool ReadTargetInfo(const FString& FileName, TArray<FTargetInfo>& Targets);
+
 protected:
 
 	FString GetUnrealBuildToolProjectFileName(const FString& RootDir) const;
 	FString GetUnrealBuildToolExecutableFilename(const FString& RootDir) const;	
 };
+
+PRAGMA_ENABLE_DEPRECATION_WARNINGS

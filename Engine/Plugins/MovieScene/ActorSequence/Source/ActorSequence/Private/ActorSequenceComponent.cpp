@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "ActorSequenceComponent.h"
 #include "ActorSequence.h"
@@ -6,7 +6,6 @@
 
 UActorSequenceComponent::UActorSequenceComponent(const FObjectInitializer& ObjectInitializer)
 	: Super(ObjectInitializer)
-	, bAutoPlay(false)
 {
 	PrimaryComponentTick.bCanEverTick = true;
 
@@ -31,12 +30,25 @@ void UActorSequenceComponent::BeginPlay()
 		SequencePlayer = NewObject<UActorSequencePlayer>(this, "SequencePlayer");
 		SequencePlayer->Initialize(Sequence, PlaybackSettings);
 
-		if (bAutoPlay)
+		if (PlaybackSettings.bAutoPlay)
 		{
 			SequencePlayer->Play();
 		}
 	}
 }
+
+void UActorSequenceComponent::EndPlay(const EEndPlayReason::Type EndPlayReason)
+{
+	if (SequencePlayer)
+	{
+		// Stop the internal sequence player during EndPlay when it's safer
+		// to modify other actor's state during state restoration.
+		SequencePlayer->Stop();
+	}
+	
+	Super::EndPlay(EndPlayReason);
+}
+
 
 void UActorSequenceComponent::TickComponent(float DeltaSeconds, enum ELevelTick TickType, FActorComponentTickFunction *ThisTickFunction)
 {

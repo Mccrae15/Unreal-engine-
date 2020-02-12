@@ -2,7 +2,7 @@
  * Copyright 2016-2017 Nikolay Aleksiev. All rights reserved.
  * License: https://github.com/naleksiev/mtlpp/blob/master/LICENSE
  */
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 // Modifications for Unreal Engine
 
 #include <Metal/MTLComputeCommandEncoder.h>
@@ -71,7 +71,7 @@ namespace mtlpp
 		for (NSUInteger i = 0; i < range.Length; i++)
 		{
 			array[i] = (id<MTLBuffer>)buffers[i].GetPtr();
-			theOffsets[i] = offsets[i] + buffers[i].GetOffset();
+			theOffsets[i] = offsets[i] + (buffers[i] ? buffers[i].GetOffset() : 0);
 		}
 #if MTLPP_CONFIG_IMP_CACHE
 		m_table->Setbuffersoffsetswithrange(m_ptr, (id<MTLBuffer>*)array, (NSUInteger const*)theOffsets, NSMakeRange(range.Location, range.Length));

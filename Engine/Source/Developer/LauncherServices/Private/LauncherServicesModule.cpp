@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "CoreMinimal.h"
 #include "Misc/Guid.h"
@@ -32,7 +32,9 @@ public:
 
 	virtual ILauncherRef CreateLauncher() override
 	{
-		return MakeShareable(new FLauncher());
+		ILauncherRef Launcher = MakeShareable(new FLauncher());
+		OnCreateLauncherDelegate.Broadcast(Launcher);
+		return Launcher;
 	}
 
 	virtual ILauncherProfileRef CreateProfile(const FString& ProfileName) override
@@ -62,6 +64,37 @@ public:
 	void BroadcastLauncherServicesSDKNotInstalled(const FString& PlatformName, const FString& DocLink) override
 	{
 		return LauncherServicesSDKNotInstalled.Broadcast(PlatformName, DocLink);
+	}
+
+	virtual FString GetExecutableForCommandlets() const
+	{
+		FString ExecutableName;
+#if WITH_EDITOR
+		ExecutableName = FString(FPlatformProcess::ExecutablePath());
+#if PLATFORM_WINDOWS
+		// turn UE4editor into UE4editor-cmd
+		if (ExecutableName.EndsWith(".exe", ESearchCase::IgnoreCase) && !FPaths::GetBaseFilename(ExecutableName).EndsWith("-cmd", ESearchCase::IgnoreCase))
+		{
+			FString NewExeName = ExecutableName.Left(ExecutableName.Len() - 4) + "-Cmd.exe";
+			if (FPaths::FileExists(NewExeName))
+			{
+				ExecutableName = NewExeName;
+			}
+		}
+#elif PLATFORM_MAC
+		// turn UE4editor into UE4editor-cmd
+		if (!FPaths::GetBaseFilename(ExecutableName).EndsWith("-cmd", ESearchCase::IgnoreCase))
+		{
+			FString NewExeName = ExecutableName + "-Cmd";
+			if (FPaths::FileExists(NewExeName))
+			{
+				ExecutableName = NewExeName;
+			}
+		}
+#endif
+#endif
+		return ExecutableName;
+
 	}
 
 private:

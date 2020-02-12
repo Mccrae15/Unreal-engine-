@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -20,6 +20,9 @@ struct CORE_API FIOSCrashContext : public FApplePlatformCrashContext
 	
 	/** Generates information for ensures sent via the CrashReporter */
 	void GenerateEnsureInfo() const;
+	
+	/** Creates the crash folder */
+	FString CreateCrashFolder() const;
 };
 
 typedef FIOSCrashContext FPlatformCrashContext;

@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "ThumbnailRendering/ThumbnailManager.h"
 #include "HAL/FileManager.h"
@@ -13,7 +13,7 @@
 #include "Engine/StaticMesh.h"
 #include "UnrealClient.h"
 #include "Engine/TextureCube.h"
-
+#include "Engine/Texture2DArray.h"
 #include "ImageUtils.h"
 
 
@@ -38,6 +38,7 @@ UThumbnailManager::UThumbnailManager(const FObjectInitializer& ObjectInitializer
 			ConstructorHelpers::FObjectFinder<UStaticMesh> EditorSkySphereMesh;
 			ConstructorHelpers::FObjectFinder<UMaterial> FloorPlaneMaterial;
 			ConstructorHelpers::FObjectFinder<UTextureCube> DaylightAmbientCubemap;
+			
 			FConstructorStatics()
 				: EditorCubeMesh(TEXT("/Engine/EditorMeshes/EditorCube"))
 				, EditorSphereMesh(TEXT("/Engine/EditorMeshes/EditorSphere"))

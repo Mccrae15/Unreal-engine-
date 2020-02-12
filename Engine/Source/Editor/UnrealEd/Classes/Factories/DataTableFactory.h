@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -14,8 +14,8 @@ class UNREALED_API UDataTableFactory : public UFactory
 {
 	GENERATED_UCLASS_BODY()
 
-	UPROPERTY()
-	class UScriptStruct* Struct;
+	UPROPERTY(BlueprintReadWrite, Category = "Data Table Factory")
+	const class UScriptStruct* Struct;
 
 	//~ Begin UFactory Interface
 	virtual bool ConfigureProperties() override;

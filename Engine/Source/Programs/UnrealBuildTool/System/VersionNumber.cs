@@ -1,4 +1,4 @@
-﻿// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+﻿// Copyright Epic Games, Inc. All Rights Reserved.
 
 using System;
 using System.Collections.Generic;
@@ -14,6 +14,11 @@ namespace UnrealBuildTool
 	[Serializable]
 	class VersionNumber : IComparable<VersionNumber>
 	{
+		/// <summary>
+		/// Set of delimiters for version numbers
+		/// </summary>
+		static readonly char[] Delimiters = { '.', ',' };
+
 		/// <summary>
 		/// The individual version components
 		/// </summary>
@@ -193,7 +198,7 @@ namespace UnrealBuildTool
 		public static VersionNumber Parse(string Text)
 		{
 			List<int> Components = new List<int>();
-			foreach(string TextElement in Text.Split('.'))
+			foreach(string TextElement in Text.Split(Delimiters))
 			{
 				Components.Add(int.Parse(TextElement));
 			}
@@ -209,7 +214,7 @@ namespace UnrealBuildTool
 		public static bool TryParse(string Text, out VersionNumber OutNumber)
 		{
 			List<int> Components = new List<int>();
-			foreach(string TextElement in Text.Split('.'))
+			foreach(string TextElement in Text.Split(Delimiters))
 			{
 				int Component;
 				if(!int.TryParse(TextElement, out Component))

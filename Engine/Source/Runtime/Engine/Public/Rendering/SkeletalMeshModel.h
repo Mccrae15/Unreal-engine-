@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -41,6 +41,10 @@ public:
 
 	/** Get current GUID Id as a string, for DDC key */
 	FString GetIdString() const;
+
+	void SyncronizeLODUserSectionsData();
+
+	FString GetLODModelIdString() const;
 
 	ENGINE_API void EmptyOriginalReductionSourceMeshData();
 	/* When user reduce an imported LOD with himself (BaseLOD == TargetLOD), we need to store some imported model data so we can reduce again from the same data.*/

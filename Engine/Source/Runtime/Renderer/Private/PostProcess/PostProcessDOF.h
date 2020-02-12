@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 /*=============================================================================
 	PostProcessDOF.h: Post process Depth of Field implementation.
@@ -9,6 +9,8 @@
 #include "CoreMinimal.h"
 #include "RendererInterface.h"
 #include "PostProcess/RenderingCompositionGraph.h"
+
+FVector4 GetDepthOfFieldParameters(const FPostProcessSettings& PostProcessSettings);
 
 // down sample and setup DOF input
 // ePId_Input0: SceneColor
@@ -21,7 +23,7 @@ public:
 		: bFarBlur(bInFarBlur)
 		, bNearBlur(bInNearBlur)
 	{}
-
+	
 	// interface FRenderingCompositePass ---------
 
 	virtual void Process(FRenderingCompositePassContext& Context) override;

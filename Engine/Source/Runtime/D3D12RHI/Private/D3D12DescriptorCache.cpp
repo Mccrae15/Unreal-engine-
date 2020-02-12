@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 //-----------------------------------------------------------------------------
 //	Include Files
@@ -254,7 +254,7 @@ bool FD3D12DescriptorCache::SetDescriptorHeaps()
 	if (bHeapChanged)
 	{
 		ID3D12DescriptorHeap* /*const*/ ppHeaps[] = { pCurrentViewHeap, pCurrentSamplerHeap };
-		CmdContext->CommandListHandle->SetDescriptorHeaps(ARRAY_COUNT(ppHeaps), ppHeaps);
+		CmdContext->CommandListHandle->SetDescriptorHeaps(UE_ARRAY_COUNT(ppHeaps), ppHeaps);
 
 		pPreviousViewHeap = pCurrentViewHeap;
 		pPreviousSamplerHeap = pCurrentSamplerHeap;
@@ -279,12 +279,6 @@ void FD3D12DescriptorCache::NotifyCurrentCommandList(const FD3D12CommandListHand
 	LocalSamplerHeap.NotifyCurrentCommandList(CommandListHandle);
 }
 
-void FD3D12DescriptorCache::SetIndexBuffer(FD3D12IndexBufferCache& Cache)
-{
-	CmdContext->CommandListHandle.UpdateResidency(Cache.ResidencyHandle);
-	CmdContext->CommandListHandle->IASetIndexBuffer(&Cache.CurrentIndexBufferView);
-}
-
 void FD3D12DescriptorCache::SetVertexBuffers(FD3D12VertexBufferCache& Cache)
 {
 	const uint32 Count = Cache.MaxBoundVertexBufferIndex + 1;
@@ -300,9 +294,7 @@ void FD3D12DescriptorCache::SetVertexBuffers(FD3D12VertexBufferCache& Cache)
 template <EShaderFrequency ShaderStage>
 void FD3D12DescriptorCache::SetUAVs(const FD3D12RootSignature* RootSignature, FD3D12UnorderedAccessViewCache& Cache, const UAVSlotMask& SlotsNeededMask, uint32 SlotsNeeded, uint32& HeapSlot)
 {
-#if D3D12_RHI_RAYTRACING
-	static_assert(ShaderStage != SF_RayGen, "SF_RayGen is expected to share state with SF_Compute and should never be used itself.");
-#endif
+	static_assert(ShaderStage < SF_NumStandardFrequencies, "Unexpected shader frequency.");
 
 	UAVSlotMask& CurrentDirtySlotMask = Cache.DirtySlotMask[ShaderStage];
 	check(CurrentDirtySlotMask != 0);	// All dirty slots for the current shader stage.
@@ -337,9 +329,8 @@ void FD3D12DescriptorCache::SetUAVs(const FD3D12RootSignature* RootSignature, FD
 			FD3D12DynamicRHI::TransitionResource(CommandList, UAVs[SlotIndex], D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
 			CommandList.UpdateResidency(Cache.ResidencyHandles[ShaderStage][SlotIndex]);
 		}
-
-		FD3D12UnorderedAccessViewCache::CleanSlot(CurrentDirtySlotMask, SlotIndex);
 	}
+	FD3D12UnorderedAccessViewCache::CleanSlots(CurrentDirtySlotMask, SlotsNeeded);
 
 	check((CurrentDirtySlotMask & SlotsNeededMask) == 0);	// Check all slots that needed to be set, were set.
 
@@ -463,9 +454,7 @@ void FD3D12DescriptorCache::SetStreamOutTargets(FD3D12Resource** Buffers, uint32
 template <EShaderFrequency ShaderStage>
 void FD3D12DescriptorCache::SetSamplers(const FD3D12RootSignature* RootSignature, FD3D12SamplerStateCache& Cache, const SamplerSlotMask& SlotsNeededMask, uint32 SlotsNeeded, uint32& HeapSlot)
 {
-#if D3D12_RHI_RAYTRACING
-	static_assert(ShaderStage != SF_RayGen, "SF_RayGen is expected to share state with SF_Compute and should never be used itself.");
-#endif
+	static_assert(ShaderStage < SF_NumStandardFrequencies, "Unexpected shader frequency.");
 
 	check(CurrentSamplerHeap != &GetParentDevice()->GetGlobalSamplerHeap());
 	check(bUsingGlobalSamplerHeap == false);
@@ -482,7 +471,7 @@ void FD3D12DescriptorCache::SetSamplers(const FD3D12RootSignature* RootSignature
 
 	// Check to see if the sampler configuration is already in the sampler heap
 	FD3D12SamplerArrayDesc Desc = {};
-	if (SlotsNeeded <= ARRAY_COUNT(Desc.SamplerID))
+	if (SlotsNeeded <= UE_ARRAY_COUNT(Desc.SamplerID))
 	{
 		Desc.Count = SlotsNeeded;
 
@@ -490,12 +479,11 @@ void FD3D12DescriptorCache::SetSamplers(const FD3D12RootSignature* RootSignature
 		for (uint32 SlotIndex = 0; SlotIndex < SlotsNeeded; SlotIndex++)
 		{
 			Desc.SamplerID[SlotIndex] = Samplers[SlotIndex] ? Samplers[SlotIndex]->ID : 0;
-
-			FD3D12SamplerStateCache::CleanSlot(CacheDirtySlotMask, SlotIndex);
 		}
+		FD3D12SamplerStateCache::CleanSlots(CacheDirtySlotMask, SlotsNeeded);
 
 		// The hash uses all of the bits
-		for (uint32 SlotIndex = SlotsNeeded; SlotIndex < ARRAY_COUNT(Desc.SamplerID); SlotIndex++)
+		for (uint32 SlotIndex = SlotsNeeded; SlotIndex < UE_ARRAY_COUNT(Desc.SamplerID); SlotIndex++)
 		{
 			Desc.SamplerID[SlotIndex] = 0;
 		}
@@ -518,7 +506,7 @@ void FD3D12DescriptorCache::SetSamplers(const FD3D12RootSignature* RootSignature
 		D3D12_CPU_DESCRIPTOR_HANDLE DestDescriptor = CurrentSamplerHeap->GetCPUSlotHandle(FirstSlotIndex);
 		BindDescriptor = CurrentSamplerHeap->GetGPUSlotHandle(FirstSlotIndex);
 
-		checkSlow(SlotsNeeded < MAX_SAMPLERS);
+		checkSlow(SlotsNeeded <= MAX_SAMPLERS);
 
 		// Fill heap slots
 		CD3DX12_CPU_DESCRIPTOR_HANDLE SrcDescriptors[MAX_SAMPLERS];
@@ -532,9 +520,8 @@ void FD3D12DescriptorCache::SetSamplers(const FD3D12RootSignature* RootSignature
 			{
 				SrcDescriptors[SlotIndex] = pDefaultSampler->Descriptor;
 			}
-
-			FD3D12SamplerStateCache::CleanSlot(CurrentDirtySlotMask, SlotIndex);
 		}
+		FD3D12SamplerStateCache::CleanSlots(CurrentDirtySlotMask, SlotsNeeded);
 
 		GetParentDevice()->GetDevice()->CopyDescriptors(
 			1, &DestDescriptor, &SlotsNeeded,
@@ -542,7 +529,7 @@ void FD3D12DescriptorCache::SetSamplers(const FD3D12RootSignature* RootSignature
 			FD3D12_DESCRIPTOR_HEAP_TYPE_SAMPLER);
 
 		// Remember the locations of the samplers in the sampler map
-		if (SlotsNeeded <= ARRAY_COUNT(Desc.SamplerID))
+		if (SlotsNeeded <= UE_ARRAY_COUNT(Desc.SamplerID))
 		{
 			UniqueTables.Add(FD3D12UniqueSamplerTable(Desc, SrcDescriptors));
 
@@ -577,16 +564,13 @@ void FD3D12DescriptorCache::SetSamplers(const FD3D12RootSignature* RootSignature
 template <EShaderFrequency ShaderStage>
 void FD3D12DescriptorCache::SetSRVs(const FD3D12RootSignature* RootSignature, FD3D12ShaderResourceViewCache& Cache, const SRVSlotMask& SlotsNeededMask, uint32 SlotsNeeded, uint32& HeapSlot)
 {
-#if D3D12_RHI_RAYTRACING
-	static_assert(ShaderStage != SF_RayGen, "SF_RayGen is expected to share state with SF_Compute and should never be used itself.");
-#endif
+	static_assert(ShaderStage < SF_NumStandardFrequencies, "Unexpected shader frequency.");
 
 	SRVSlotMask& CurrentDirtySlotMask = Cache.DirtySlotMask[ShaderStage];
 	check(CurrentDirtySlotMask != 0);	// All dirty slots for the current shader stage.
 	check(SlotsNeededMask != 0);		// All dirty slots for the current shader stage AND used by the current shader stage.
 	check(SlotsNeeded != 0);
 
-	ID3D12Device* Device = GetParentDevice()->GetDevice();
 	FD3D12CommandListHandle& CommandList = CmdContext->CommandListHandle;
 
 	auto& SRVs = Cache.Views[ShaderStage];
@@ -596,17 +580,13 @@ void FD3D12DescriptorCache::SetSRVs(const FD3D12RootSignature* RootSignature, FD
 	HeapSlot += SlotsNeeded;
 
 	D3D12_CPU_DESCRIPTOR_HANDLE DestDescriptor = CurrentViewHeap->GetCPUSlotHandle(FirstSlotIndex);
-	const uint64 DescriptorSize = CurrentViewHeap->GetDescriptorSize();
+	D3D12_CPU_DESCRIPTOR_HANDLE SrcDescriptors[MAX_SRVS];
 
 	for (uint32 SlotIndex = 0; SlotIndex < SlotsNeeded; SlotIndex++)
 	{
-		CD3DX12_CPU_DESCRIPTOR_HANDLE SrcDescriptor;
-
 		if (SRVs[SlotIndex] != nullptr)
 		{
-			SrcDescriptor = SRVs[SlotIndex]->GetView();
-
-			CommandList.UpdateResidency(Cache.ResidencyHandles[ShaderStage][SlotIndex]);
+			SrcDescriptors[SlotIndex] = SRVs[SlotIndex]->GetView();
 
 			if (SRVs[SlotIndex]->IsDepthStencilResource())
 			{
@@ -620,19 +600,20 @@ void FD3D12DescriptorCache::SetSRVs(const FD3D12RootSignature* RootSignature, FD
 			{
 				FD3D12DynamicRHI::TransitionResource(CommandList, SRVs[SlotIndex], D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE | D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
 			}
+
+			CommandList.UpdateResidency(Cache.ResidencyHandles[ShaderStage][SlotIndex]);
 		}
 		else
 		{
-			SrcDescriptor = pNullSRV->GetHandle();
+			SrcDescriptors[SlotIndex] = pNullSRV->GetHandle();
 		}
-		check(SrcDescriptor.ptr != 0);
-
-		Device->CopyDescriptorsSimple(1, DestDescriptor, SrcDescriptor, D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
-
-		DestDescriptor.ptr += DescriptorSize;
-
-		FD3D12ShaderResourceViewCache::CleanSlot(CurrentDirtySlotMask, SlotIndex);
+		check(SrcDescriptors[SlotIndex].ptr != 0);
 	}
+	FD3D12ShaderResourceViewCache::CleanSlots(CurrentDirtySlotMask, SlotsNeeded);
+
+	ID3D12Device* Device = GetParentDevice()->GetDevice();
+	Device->CopyDescriptors(1, &DestDescriptor, &SlotsNeeded, SlotsNeeded, SrcDescriptors, nullptr, D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
+
 
 	check((CurrentDirtySlotMask & SlotsNeededMask) == 0);	// Check all slots that needed to be set, were set.
 
@@ -667,9 +648,7 @@ void FD3D12DescriptorCache::SetConstantBuffers(const FD3D12RootSignature* RootSi
 void FD3D12DescriptorCache::SetConstantBuffers(const FD3D12RootSignature* RootSignature, FD3D12ConstantBufferCache& Cache, const CBVSlotMask& SlotsNeededMask)
 #endif
 {
-#if D3D12_RHI_RAYTRACING
-	static_assert(ShaderStage != SF_RayGen, "SF_RayGen is expected to share state with SF_Compute and should never be used itself.");
-#endif
+	static_assert(ShaderStage < SF_NumStandardFrequencies, "Unexpected shader frequency.");
 
 	CBVSlotMask& CurrentDirtySlotMask = Cache.DirtySlotMask[ShaderStage];
 	check(CurrentDirtySlotMask != 0);	// All dirty slots for the current shader stage.
@@ -742,42 +721,39 @@ void FD3D12DescriptorCache::SetConstantBuffers(const FD3D12RootSignature* RootSi
 	FMsg::Logf(__FILE__, __LINE__, TEXT("DescriptorCache"), ELogVerbosity::Log, TEXT("SetShaderResourceViewTable [STAGE %d] to slots %d - %d"), (int32)ShaderStage, FirstSlotIndex, FirstSlotIndex + SlotsNeeded - 1);
 #endif
 #else
-	auto& CBVs = Cache.CurrentGPUVirtualAddress[ShaderStage];
+
+	// Set root descriptors.
+	// At least one needed root descriptor is dirty.
+	const uint32 BaseIndex = RootSignature->CBVRDBaseBindSlot(ShaderStage);
+	ensure(BaseIndex != 255);
+	const uint32 RDCBVsNeeded = FMath::FloorLog2(RDCBVSlotsNeededMask) + 1;	// Get the index of the most significant bit that's set.
+	check(RDCBVsNeeded <= MAX_ROOT_CBVS);
+	for (uint32 SlotIndex = 0; SlotIndex < RDCBVsNeeded; SlotIndex++)
 	{
-		// Set root descriptors.
-		// At least one needed root descriptor is dirty.
-
-		const uint32 BaseIndex = RootSignature->CBVRDBaseBindSlot(ShaderStage);
-		ensure(BaseIndex != 255);
-		const uint32 RDCBVsNeeded = FMath::FloorLog2(RDCBVSlotsNeededMask) + 1;	// Get the index of the most significant bit that's set.
-		check(RDCBVsNeeded <= MAX_ROOT_CBVS);
-		for (uint32 SlotIndex = 0; SlotIndex < RDCBVsNeeded; SlotIndex++)
+		// Only set the root descriptor if it's dirty and we need to set it (it can be used by the shader).
+		if (FD3D12ConstantBufferCache::IsSlotDirty(RDCBVSlotsNeededMask, SlotIndex))
 		{
-			// Only set the root descriptor if it's dirty and we need to set it (it can be used by the shader).
-			if (FD3D12ConstantBufferCache::IsSlotDirty(RDCBVSlotsNeededMask, SlotIndex))
+			const D3D12_GPU_VIRTUAL_ADDRESS& CurrentGPUVirtualAddress = Cache.CurrentGPUVirtualAddress[ShaderStage][SlotIndex];
+			check(CurrentGPUVirtualAddress != 0);
+			if (ShaderStage == SF_Compute)
 			{
-				const D3D12_GPU_VIRTUAL_ADDRESS& CurrentGPUVirtualAddress = Cache.CurrentGPUVirtualAddress[ShaderStage][SlotIndex];
-				check(CurrentGPUVirtualAddress != 0);
-				if (ShaderStage == SF_Compute)
-				{
-					CommandList->SetComputeRootConstantBufferView(BaseIndex + SlotIndex, CurrentGPUVirtualAddress);
-				}
-				else
-				{
-					CommandList->SetGraphicsRootConstantBufferView(BaseIndex + SlotIndex, CurrentGPUVirtualAddress);
-				}
-
-				// Update residency.
-				CommandList.UpdateResidency(Cache.ResidencyHandles[ShaderStage][SlotIndex]);
-
-				// Clear the dirty bit.
-				FD3D12ConstantBufferCache::CleanSlot(CurrentDirtySlotMask, SlotIndex);
+				CommandList->SetComputeRootConstantBufferView(BaseIndex + SlotIndex, CurrentGPUVirtualAddress);
 			}
-		}
-		check((CurrentDirtySlotMask & RDCBVSlotsNeededMask) == 0);	// Check all slots that needed to be set, were set.
+			else
+			{
+				CommandList->SetGraphicsRootConstantBufferView(BaseIndex + SlotIndex, CurrentGPUVirtualAddress);
+			}
 
-		static_assert(GDescriptorTableCBVSlotMask == 0, "FD3D12DescriptorCache::SetConstantBuffers needs to be updated to handle descriptor tables.");	// Check that all CBVs slots are controlled by root descriptors.
+			// Update residency.
+			CommandList.UpdateResidency(Cache.ResidencyHandles[ShaderStage][SlotIndex]);
+
+			// Clear the dirty bit.
+			FD3D12ConstantBufferCache::CleanSlot(CurrentDirtySlotMask, SlotIndex);
+		}
 	}
+	check((CurrentDirtySlotMask & RDCBVSlotsNeededMask) == 0);	// Check all slots that needed to be set, were set.
+
+	static_assert(GDescriptorTableCBVSlotMask == 0, "FD3D12DescriptorCache::SetConstantBuffers needs to be updated to handle descriptor tables.");	// Check that all CBVs slots are controlled by root descriptors.
 #endif	
 }
 
@@ -920,7 +896,7 @@ void FD3D12GlobalOnlineHeap::Init(uint32 TotalSize, D3D12_DESCRIPTOR_HEAP_TYPE T
 	Desc.Flags = HeapFlags;
 	Desc.Type = Type;
 	Desc.NumDescriptors = TotalSize;
-	Desc.NodeMask = (uint32)GetGPUMask();
+	Desc.NodeMask = GetGPUMask().GetNative();
 
 	//LLM_SCOPE(ELLMTag::DescriptorCache);
 
@@ -1079,7 +1055,7 @@ void FD3D12ThreadLocalOnlineHeap::Init(uint32 NumDescriptors, D3D12_DESCRIPTOR_H
 	Desc.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE;
 	Desc.Type = Type;
 	Desc.NumDescriptors = NumDescriptors;
-	Desc.NodeMask = (uint32)GetGPUMask();
+	Desc.NodeMask = GetGPUMask().GetNative();
 
 	//LLM_SCOPE(ELLMTag::DescriptorCache);
 	VERIFYD3D12RESULT(GetParentDevice()->GetDevice()->CreateDescriptorHeap(&Desc, IID_PPV_ARGS(Heap.GetInitReference())));

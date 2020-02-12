@@ -1,10 +1,11 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "VRScoutingInteractor.h"
 
 #include "Components/StaticMeshComponent.h"
 #include "ViewportWorldInteraction.h"
 #include "VREditorMode.h"
+#include "VREditorActions.h"
 
 #if WITH_EDITOR
 #include "Editor.h"
@@ -47,6 +48,16 @@ void UVRScoutingInteractor::Shutdown_Implementation()
 	Super::Shutdown_Implementation();
 
 	FlyingIndicatorComponent = nullptr;
+}
+
+void UVRScoutingInteractor::SetGizmoMode(EGizmoHandleTypes InGizmoMode)
+{
+	FVREditorActionCallbacks::SetGizmoMode(&GetVRMode(), InGizmoMode);
+}
+
+EGizmoHandleTypes UVRScoutingInteractor::GetGizmoMode() const
+{
+	return FVREditorActionCallbacks::GetGizmoMode(&GetVRMode());
 }
 
 TArray<AActor*> UVRScoutingInteractor::GetSelectedActors()

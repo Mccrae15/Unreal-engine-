@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "FrontendFilters.h"
 #include "Framework/Commands/UIAction.h"
@@ -9,6 +9,7 @@
 #include "ISourceControlModule.h"
 #include "SourceControlHelpers.h"
 #include "SourceControlOperations.h"
+#include "SourceControlWindows.h"
 #include "Editor.h"
 #include "AssetToolsModule.h"
 #include "ICollectionManager.h"
@@ -33,17 +34,31 @@ namespace FrontendFilterHelper
 	 */
 	void GetDependencies(const FARFilter& InAssetRegistryFilter, const IAssetRegistry& AssetRegistry, TSet<FName>& OutDependencySet)
 	{
-		TArray<FAssetData> FoundAssets;
-		AssetRegistry.GetAssets(InAssetRegistryFilter, FoundAssets);
-
-		for (const FAssetData& AssetData : FoundAssets)
+		TArray<FName> PackageNamesToProcess;
 		{
-			// Store all the dependencies of all the levels
-			TArray<FAssetIdentifier> AssetDependencies;
-			AssetRegistry.GetDependencies(FAssetIdentifier(AssetData.PackageName), AssetDependencies);
+			TArray<FAssetData> FoundAssets;
+			AssetRegistry.GetAssets(InAssetRegistryFilter, FoundAssets);
+			for (const FAssetData& AssetData : FoundAssets)
+			{
+				PackageNamesToProcess.Add(AssetData.PackageName);
+				OutDependencySet.Add(AssetData.PackageName);
+			}
+		}
+
+		TArray<FAssetIdentifier> AssetDependencies;
+		while (PackageNamesToProcess.Num() > 0)
+		{
+			const FName PackageName = PackageNamesToProcess.Pop(false);
+			AssetDependencies.Reset();
+			AssetRegistry.GetDependencies(FAssetIdentifier(PackageName), AssetDependencies);
 			for (const FAssetIdentifier& Dependency : AssetDependencies)
 			{
-				OutDependencySet.Add(Dependency.PackageName);
+				bool bIsAlreadyInSet = false;
+				OutDependencySet.Add(Dependency.PackageName, &bIsAlreadyInSet);
+				if (bIsAlreadyInSet == false)
+				{
+					PackageNamesToProcess.Add(Dependency.PackageName);
+				}
 			}
 		}
 	}
@@ -91,7 +106,7 @@ public:
 
 				for (const auto& KeyValuePair : InAssetData.TagsAndValues)
 				{
-					if (UProperty* Field = FindField<UProperty>(AssetClass, KeyValuePair.Key))
+					if (FProperty* Field = FindField<FProperty>(AssetClass, KeyValuePair.Key))
 					{
 						if (Field->HasMetaData(NAME_DisplayName))
 						{
@@ -267,7 +282,7 @@ public:
 		, TypeKeyName("Type")
 		, CollectionKeyName("Collection")
 		, TagKeyName("Tag")
-		, CollectionManager(FCollectionManagerModule::IsModuleAvailable() ? &FCollectionManagerModule::GetModule().Get() : nullptr)
+		, CollectionManager(nullptr)
 	{
 	}
 
@@ -290,7 +305,12 @@ public:
 			}
 		}
 
-		if (bIncludeCollectionNames && CollectionManager)
+		if (CollectionManager == nullptr)
+		{
+			CollectionManager = &FCollectionManagerModule::GetModule().Get();
+		}
+
+		if (CollectionManager)
 		{
 			CollectionManager->GetCollectionsContainingObject(AssetPtr->ObjectPath, ECollectionShareType::CST_All, AssetCollectionNames, ECollectionRecursionFlags::SelfAndChildren);
 
@@ -834,9 +854,7 @@ void FFrontendFilter_NotSourceControlled::RequestStatus()
 		// Request the state of files at filter construction time to make sure files have the correct state for the filter
 		TSharedRef<FUpdateStatus, ESPMode::ThreadSafe> UpdateStatusOperation = ISourceControlOperation::Create<FUpdateStatus>();
 
-		TArray<FString> Filenames;
-		Filenames.Add(FPaths::ConvertRelativePathToFull(FPaths::EngineContentDir()));
-		Filenames.Add(FPaths::ConvertRelativePathToFull(FPaths::ProjectContentDir()));
+		TArray<FString> Filenames = FSourceControlWindows::GetSourceControlLocations(/*bContentOnly*/true);
 		UpdateStatusOperation->SetCheckingAllFiles(false);
 		SourceControlProvider.Execute(UpdateStatusOperation, Filenames, EConcurrency::Asynchronous, FSourceControlOperationComplete::CreateSP(this, &FFrontendFilter_NotSourceControlled::SourceControlOperationComplete));
 	}
@@ -1087,9 +1105,9 @@ FString FFrontendFilter_ArbitraryComparisonOperation::ConvertOperationToString(E
 
 FFrontendFilter_ShowOtherDevelopers::FFrontendFilter_ShowOtherDevelopers(TSharedPtr<FFrontendFilterCategory> InCategory)
 	: FFrontendFilter(InCategory)
-	, BaseDeveloperPath(FPackageName::FilenameToLongPackageName(FPaths::GameDevelopersDir()))
+	, BaseDeveloperPath(TEXT("/Game/Developers/"))
 	, BaseDeveloperPathAnsi()
-	, UserDeveloperPath(FPackageName::FilenameToLongPackageName(FPaths::GameUserDeveloperDir()))
+	, UserDeveloperPath(BaseDeveloperPath + FPaths::GameUserDeveloperFolderName() + TEXT("/"))
 	, bIsOnlyOneDeveloperPathSelected(false)
 	, bShowOtherDeveloperAssets(false)
 {

@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "DatasmithContentEditorModule.h"
 
@@ -36,6 +36,8 @@ public:
 		TSharedPtr<FAssetTypeActions_DatasmithScene> DatasmithSceneAssetTypeAction = MakeShareable(new FAssetTypeActions_DatasmithScene);
 		AssetTools.RegisterAssetTypeActions(DatasmithSceneAssetTypeAction.ToSharedRef());
 		AssetTypeActionsArray.Add(DatasmithSceneAssetTypeAction);
+
+		FDatasmithContentEditorStyle::Initialize();
 	}
 
 	virtual void ShutdownModule() override
@@ -119,9 +121,9 @@ public:
 	}
 
 private:
-	static TSharedPtr<IDataPrepImporterInterface> CreateEmptyDatasmithImportHandler()
+	static TSharedPtr<IDataprepImporterInterface> CreateEmptyDatasmithImportHandler()
 	{
-		return TSharedPtr<IDataPrepImporterInterface>();
+		return TSharedPtr<IDataprepImporterInterface>();
 	}
 
 private:

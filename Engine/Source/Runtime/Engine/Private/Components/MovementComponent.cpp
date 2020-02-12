@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 
 #include "GameFramework/MovementComponent.h"
@@ -248,7 +248,7 @@ void UMovementComponent::PostEditChangeProperty(FPropertyChangedEvent& PropertyC
 {
 	Super::PostEditChangeProperty(PropertyChangedEvent);
 
-	const UProperty* PropertyThatChanged = PropertyChangedEvent.MemberProperty;
+	const FProperty* PropertyThatChanged = PropertyChangedEvent.MemberProperty;
 	if (PropertyThatChanged)
 	{
 		if (PropertyThatChanged->GetFName() == GET_MEMBER_NAME_CHECKED(UMovementComponent, PlaneConstraintAxisSetting))
@@ -336,7 +336,7 @@ bool UMovementComponent::ShouldSkipUpdate(float DeltaTime) const
 
 		const float RenderTimeThreshold = 0.41f;
 		UWorld* TheWorld = GetWorld();
-		if (UpdatedPrimitive && TheWorld->TimeSince(UpdatedPrimitive->LastRenderTime) <= RenderTimeThreshold)
+		if (UpdatedPrimitive && TheWorld->TimeSince(UpdatedPrimitive->GetLastRenderTime()) <= RenderTimeThreshold)
 		{
 			return false; // Rendered, don't skip it.
 		}
@@ -349,7 +349,7 @@ bool UMovementComponent::ShouldSkipUpdate(float DeltaTime) const
 			const UPrimitiveComponent* PrimitiveChild = Cast<UPrimitiveComponent>(Child);
 			if (PrimitiveChild)
 			{
-				if (PrimitiveChild->IsRegistered() && TheWorld->TimeSince(PrimitiveChild->LastRenderTime) <= RenderTimeThreshold)
+				if (PrimitiveChild->IsRegistered() && TheWorld->TimeSince(PrimitiveChild->GetLastRenderTime()) <= RenderTimeThreshold)
 				{
 					return false; // Rendered, don't skip it.
 				}
@@ -366,7 +366,8 @@ bool UMovementComponent::ShouldSkipUpdate(float DeltaTime) const
 
 float UMovementComponent::GetGravityZ() const
 {
-	return GetPhysicsVolume()->GetGravityZ();
+	APhysicsVolume* PhysicsVolume = GetPhysicsVolume();
+	return PhysicsVolume ? PhysicsVolume->GetGravityZ() : UPhysicsSettings::Get()->DefaultGravityZ;
 }
 
 void UMovementComponent::HandleImpact(const FHitResult& Hit, float TimeSlice, const FVector& MoveDelta)
@@ -683,8 +684,17 @@ bool UMovementComponent::ResolvePenetrationImpl(const FVector& ProposedAdjustmen
 				{
 					bMoved = MoveUpdatedComponent(Adjustment + MoveDelta, NewRotationQuat, true, nullptr, ETeleportType::TeleportPhysics);
 					UE_LOG(LogMovement, Verbose, TEXT("ResolvePenetration:   sweep by %s (adjusted attempt success = %d)"), *(Adjustment + MoveDelta).ToString(), bMoved);
+
+					// Finally, try the original move without MTD adjustments, but allowing depenetration along the MTD normal.
+					// This was blocked because MOVECOMP_NeverIgnoreBlockingOverlaps was true for the original move to try a better depenetration normal, but we might be running in to other geometry in the attempt.
+					// This won't necessarily get us all the way out of penetration, but can in some cases and does make progress in exiting the penetration.
+					if (!bMoved && FVector::DotProduct(MoveDelta, Adjustment) > 0.f)
+					{
+						bMoved = MoveUpdatedComponent(MoveDelta, NewRotationQuat, true, nullptr, ETeleportType::TeleportPhysics);
+						UE_LOG(LogMovement, Verbose, TEXT("ResolvePenetration:   sweep by %s (Original move, attempt success = %d)"), *(MoveDelta).ToString(), bMoved);
+					}
 				}
-			}	
+			}
 
 			return bMoved;
 		}

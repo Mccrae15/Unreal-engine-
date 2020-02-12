@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 using UnrealBuildTool;
 
@@ -11,7 +11,8 @@ public class DataValidation : ModuleRules
 				"Core",
 				"CoreUObject",
 				"Engine",
-				"TargetPlatform"
+				"TargetPlatform",
+				"EditorSubsystem"
 			}
 		);
 //		goto through these one by one and remove extra ones
@@ -32,7 +33,9 @@ public class DataValidation : ModuleRules
 				"GraphEditor",
 				"BlueprintGraph",
 				"KismetCompiler",
-				"SandboxFile"
+				"SandboxFile",
+				"Blutility",
+				"ToolMenus",
 			}
 		);
 	}

@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 using System;
 using System.Collections.Generic;
@@ -57,14 +57,22 @@ namespace UnrealGameSync
 
 		private void ThreadProc()
 		{
-			string ErrorMessageValue;
-			if(Task.Run(out ErrorMessageValue))
+			try
 			{
-				PendingResult = ModalTaskResult.Succeeded;
+				string ErrorMessageValue;
+				if (Task.Run(out ErrorMessageValue))
+				{
+					PendingResult = ModalTaskResult.Succeeded;
+				}
+				else
+				{
+					ErrorMessage = ErrorMessageValue;
+					PendingResult = ModalTaskResult.Failed;
+				}
 			}
-			else
+			catch(Exception Ex)
 			{
-				ErrorMessage =  ErrorMessageValue;
+				ErrorMessage = Ex.ToString();
 				PendingResult = ModalTaskResult.Failed;
 			}
 			SyncContext.Post((o) => ThreadCompleteCallback(), null);

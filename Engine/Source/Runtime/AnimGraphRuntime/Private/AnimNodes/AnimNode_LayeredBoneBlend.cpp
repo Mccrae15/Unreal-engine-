@@ -1,8 +1,9 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "AnimNodes/AnimNode_LayeredBoneBlend.h"
 #include "AnimationRuntime.h"
 #include "Animation/AnimInstanceProxy.h"
+#include "Animation/AnimTrace.h"
 
 #define DEFAULT_SOURCEINDEX 0xFF
 /////////////////////////////////////////////////////
@@ -10,6 +11,7 @@
 
 void FAnimNode_LayeredBoneBlend::Initialize_AnyThread(const FAnimationInitializeContext& Context)
 {
+	DECLARE_SCOPE_HIERARCHICAL_COUNTER_ANIMNODE(Initialize_AnyThread)
 	FAnimNode_Base::Initialize_AnyThread(Context);
 
 	const int NumPoses = BlendPoses.Num();
@@ -24,10 +26,6 @@ void FAnimNode_LayeredBoneBlend::Initialize_AnyThread(const FAnimationInitialize
 		{
 			BlendPoses[ChildIndex].Initialize(Context);
 		}
-
-		// initialize mask weight now
-		check (Context.AnimInstanceProxy->GetSkeleton());
-		ReinitializeBoneBlendWeights(Context.AnimInstanceProxy->GetRequiredBones(), Context.AnimInstanceProxy->GetSkeleton());
 	}
 }
 
@@ -41,8 +39,7 @@ void FAnimNode_LayeredBoneBlend::PostCompile(const class USkeleton* InSkeleton)
 
 void FAnimNode_LayeredBoneBlend::RebuildCacheData(const USkeleton* InSkeleton)
 {
-	// make sure it's Finished post load yet, this might cause more things to cache in initialize instead of during cooking
-	if (InSkeleton && !(InSkeleton->GetFlags() & RF_NeedPostLoad))
+	if (InSkeleton)
 	{
 		FAnimationRuntime::CreateMaskWeights(PerBoneBlendWeights, LayerSetup, InSkeleton);
 		SkeletonGuid = InSkeleton->GetGuid();
@@ -82,13 +79,14 @@ void FAnimNode_LayeredBoneBlend::ReinitializeBoneBlendWeights(const FBoneContain
 	FAnimationRuntime::UpdateDesiredBoneWeight(DesiredBoneBlendWeights, CurrentBoneBlendWeights, BlendWeights);
 
 	TArray<uint16> const& CurveUIDFinder = RequiredBones.GetUIDToArrayLookupTable();
+	const int32 CurveUIDCount = CurveUIDFinder.Num();
 	const int32 TotalCount = FBlendedCurve::GetValidElementCount(&CurveUIDFinder);
 	CurvePoseSourceIndices.Reset(TotalCount);
 	// initialize with FF - which is default
 	CurvePoseSourceIndices.Init(DEFAULT_SOURCEINDEX, TotalCount);
 
 	// now go through point to correct source indices. Curve only picks one source index
-	for (int32 UIDIndex = 0; UIDIndex < CurveUIDFinder.Num(); ++UIDIndex)
+	for (int32 UIDIndex = 0; UIDIndex < CurveUIDCount; ++UIDIndex)
 	{
 		int32 CurrentPoseIndex = CurveUIDFinder[UIDIndex];
 		if (CurrentPoseIndex != MAX_uint16)
@@ -96,11 +94,13 @@ void FAnimNode_LayeredBoneBlend::ReinitializeBoneBlendWeights(const FBoneContain
 			SmartName::UID_Type CurveUID = (SmartName::UID_Type)UIDIndex;
 
 			const FCurveMetaData* CurveMetaData = Skeleton->GetCurveMetaData(CurveUID);
-			if (CurveMetaData && CurveMetaData->LinkedBones.Num() > 0)
+			if (CurveMetaData)
 			{
-				for (int32 LinkedBoneIndex = 0; LinkedBoneIndex < CurveMetaData->LinkedBones.Num(); ++LinkedBoneIndex)
+				const TArray<FBoneReference>& LinkedBones = CurveMetaData->LinkedBones;
+				const int32 NumLinkedBones = LinkedBones.Num();
+				for (int32 LinkedBoneIndex = 0; LinkedBoneIndex < NumLinkedBones; ++LinkedBoneIndex)
 				{
-					FCompactPoseBoneIndex CompactPoseIndex = CurveMetaData->LinkedBones[LinkedBoneIndex].GetCompactPoseIndex(RequiredBones);
+					FCompactPoseBoneIndex CompactPoseIndex = LinkedBones[LinkedBoneIndex].GetCompactPoseIndex(RequiredBones);
 					if (CompactPoseIndex != INDEX_NONE)
 					{
 						if (DesiredBoneBlendWeights[CompactPoseIndex.GetInt()].BlendWeight > 0.f)
@@ -114,8 +114,9 @@ void FAnimNode_LayeredBoneBlend::ReinitializeBoneBlendWeights(const FBoneContain
 	}
 }
 
-void FAnimNode_LayeredBoneBlend::CacheBones_AnyThread(const FAnimationCacheBonesContext& Context) 
+void FAnimNode_LayeredBoneBlend::CacheBones_AnyThread(const FAnimationCacheBonesContext& Context)
 {
+	DECLARE_SCOPE_HIERARCHICAL_COUNTER_ANIMNODE(CacheBones_AnyThread)
 	BasePose.CacheBones(Context);
 	int32 NumPoses = BlendPoses.Num();
 	for(int32 ChildIndex=0; ChildIndex<NumPoses; ChildIndex++)
@@ -131,6 +132,7 @@ void FAnimNode_LayeredBoneBlend::CacheBones_AnyThread(const FAnimationCacheBones
 
 void FAnimNode_LayeredBoneBlend::Update_AnyThread(const FAnimationUpdateContext& Context)
 {
+	DECLARE_SCOPE_HIERARCHICAL_COUNTER_ANIMNODE(Update_AnyThread)
 	bHasRelevantPoses = false;
 	int32 RootMotionBlendPose = -1;
 	float RootMotionWeight = 0.f;
@@ -199,10 +201,13 @@ void FAnimNode_LayeredBoneBlend::Update_AnyThread(const FAnimationUpdateContext&
 	{
 		BasePose.Update(Context);
 	}
+
+	TRACE_ANIM_NODE_VALUE(Context, TEXT("Num Poses"), BlendPoses.Num());
 }
 
 void FAnimNode_LayeredBoneBlend::Evaluate_AnyThread(FPoseContext& Output)
 {
+	DECLARE_SCOPE_HIERARCHICAL_COUNTER_ANIMNODE(Evaluate_AnyThread)
 	ANIM_MT_SCOPE_CYCLE_COUNTER(BlendPosesInGraph, !IsInGameThread());
 
 	const int NumPoses = BlendPoses.Num();
@@ -247,7 +252,7 @@ void FAnimNode_LayeredBoneBlend::Evaluate_AnyThread(FPoseContext& Output)
 		for (int32 UIDIndex = 0; UIDIndex < CurveUIDFinder->Num(); ++UIDIndex)
 		{
 			int32 CurvePoseIndex = Output.Curve.GetArrayIndexByUID(UIDIndex);
-			if (CurvePoseIndex != INDEX_NONE)
+			if (CurvePoseSourceIndices.IsValidIndex(CurvePoseIndex))
 			{
 				int32 SourceIndex = CurvePoseSourceIndices[CurvePoseIndex];
 				if (SourceIndex != DEFAULT_SOURCEINDEX)
@@ -266,13 +271,23 @@ void FAnimNode_LayeredBoneBlend::Evaluate_AnyThread(FPoseContext& Output)
 			}
 		}
 
-		FAnimationRuntime::BlendPosesPerBoneFilter(BasePoseContext.Pose, TargetBlendPoses, BasePoseContext.Curve, TargetBlendCurves, Output.Pose, Output.Curve, CurrentBoneBlendWeights, bMeshSpaceRotationBlend, CurveBlendOption);
+		FAnimationRuntime::EBlendPosesPerBoneFilterFlags BlendFlags = FAnimationRuntime::EBlendPosesPerBoneFilterFlags::None;
+		if (bMeshSpaceRotationBlend)
+		{
+			BlendFlags |= FAnimationRuntime::EBlendPosesPerBoneFilterFlags::MeshSpaceRotation;
+		}
+		if (bMeshSpaceScaleBlend)
+		{
+			BlendFlags |= FAnimationRuntime::EBlendPosesPerBoneFilterFlags::MeshSpaceScale;
+		}
+		FAnimationRuntime::BlendPosesPerBoneFilter(BasePoseContext.Pose, TargetBlendPoses, BasePoseContext.Curve, TargetBlendCurves, Output.Pose, Output.Curve, CurrentBoneBlendWeights, BlendFlags, CurveBlendOption);
 	}
 }
 
 
 void FAnimNode_LayeredBoneBlend::GatherDebugData(FNodeDebugData& DebugData)
 {
+	DECLARE_SCOPE_HIERARCHICAL_COUNTER_ANIMNODE(GatherDebugData)
 	const int NumPoses = BlendPoses.Num();
 
 	FString DebugLine = DebugData.GetNodeName(this);

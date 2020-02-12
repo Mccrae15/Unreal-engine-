@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "BoneContainer.h"
 #include "Animation/Skeleton.h"
@@ -260,7 +260,7 @@ void FBoneContainer::CacheRequiredAnimCurveUids(const FCurveEvaluationOption& Cu
 									{
 										const FBoneReference& BoneReference = CurveMetaData->LinkedBones[LinkedBoneIndex];
 										// when you enter first time, sometimes it does not have all info yet
-										if (BoneReference.BoneName != NAME_None)
+										if (BoneReference.BoneIndex != INDEX_NONE && BoneReference.BoneName != NAME_None)
 										{
 											// this linked bone alkways use skeleton index
 											ensure(BoneReference.bUseSkeletonIndex);
@@ -439,7 +439,9 @@ void FBoneContainer::RemapFromSkeleton(USkeleton const & SourceSkeleton)
 
 bool FBoneReference::Initialize(const FBoneContainer& RequiredBones)
 {
+#if WITH_EDITOR
 	BoneName = *BoneName.ToString().TrimStartAndEnd();
+#endif
 	BoneIndex = RequiredBones.GetPoseBoneIndexForBoneName(BoneName);
 
 	bUseSkeletonIndex = false;
@@ -467,7 +469,9 @@ bool FBoneReference::Initialize(const USkeleton* Skeleton)
 {
 	if (Skeleton && (BoneName != NAME_None))
 	{
+#if WITH_EDITOR
 		BoneName = *BoneName.ToString().TrimStartAndEnd();
+#endif
 		BoneIndex = Skeleton->GetReferenceSkeleton().FindBoneIndex(BoneName);
 		bUseSkeletonIndex = true;
 	}

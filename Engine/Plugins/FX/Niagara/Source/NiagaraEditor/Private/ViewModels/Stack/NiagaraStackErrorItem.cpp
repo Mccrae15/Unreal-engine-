@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "ViewModels/Stack/NiagaraStackErrorItem.h"
 #include "NiagaraStackEditorData.h"
@@ -33,6 +33,12 @@ UNiagaraStackEntry::EStackRowStyle UNiagaraStackErrorItem::GetStackRowStyle() co
 UNiagaraStackErrorItem::FOnIssueNotify& UNiagaraStackErrorItem::OnIssueModified()
 {
 	return IssueModifiedDelegate;
+}
+
+void UNiagaraStackErrorItem::GetSearchItems(TArray<FStackSearchItem>& SearchItems) const
+{
+	SearchItems.Add({ FName("ErrorShortDescription"), StackIssue.GetShortDescription() });
+	SearchItems.Add({ FName("ErrorLongDescription"), StackIssue.GetLongDescription() });
 }
 
 void UNiagaraStackErrorItem::RefreshChildrenInternal(const TArray<UNiagaraStackEntry*>& CurrentChildren, TArray<UNiagaraStackEntry*>& NewChildren, TArray<FStackIssue>& NewIssues)
@@ -70,8 +76,13 @@ void UNiagaraStackErrorItem::RefreshChildrenInternal(const TArray<UNiagaraStackE
 		{
 			ErrorEntryFix->SetFixDelegate(CurrentFix.GetFixDelegate());
 		}
-		ErrorEntryFix->OnIssueFixed().AddUObject(this, &UNiagaraStackErrorItem::IssueFixed);
-		NewChildren.Add(ErrorEntryFix);
+		if (ensureMsgf(NewChildren.Contains(ErrorEntryFix) == false,
+			TEXT("Duplicate stack issue fix rows detected. This is caused by two different issue fixes with the same description which is used to generate their unique ID. Issue Fix description: %s.  This issue fix will not be shown in the UI."),
+			*CurrentFix.GetDescription().ToString()))
+		{
+			ErrorEntryFix->OnIssueFixed().AddUObject(this, &UNiagaraStackErrorItem::IssueFixed);
+			NewChildren.Add(ErrorEntryFix);
+		}
 	}
 	// dismiss button
 	if (StackIssue.GetCanBeDismissed())
@@ -121,16 +132,16 @@ void UNiagaraStackErrorItemFix::Initialize(FRequiredEntryData InRequiredEntryDat
 	IssueFix = InIssueFix;
 }
 
-FText UNiagaraStackErrorItemFix::FixDescription() const
-{
-	return IssueFix.GetDescription();
-}
-
 FReply UNiagaraStackErrorItemFix::OnTryFixError()
 {
 	IssueFix.GetFixDelegate().ExecuteIfBound();
 	OnIssueFixed().Broadcast();
 	return FReply::Handled();
+}
+
+FText UNiagaraStackErrorItemFix::GetDisplayName() const
+{
+	return IssueFix.GetDescription();
 }
 
 UNiagaraStackEntry::EStackRowStyle UNiagaraStackErrorItemFix::GetStackRowStyle() const
@@ -161,7 +172,7 @@ void UNiagaraStackErrorItemDismiss::Initialize(FRequiredEntryData InRequiredEntr
 	UNiagaraStackEntry::Initialize(InRequiredEntryData, ErrorStackEditorDataKey);
 	StackIssue = InStackIssue;
 	IssueFix = FStackIssueFix(
-		LOCTEXT("DismissError", "Dismiss the issue without fixing (I know what I'm doing)."),
+		LOCTEXT("DismissError", "Dismiss the issue without fixing (I know what I'm doing)"),
 		FStackIssueFixDelegate::CreateUObject(this, &UNiagaraStackErrorItemDismiss::DismissIssue));
 }
 

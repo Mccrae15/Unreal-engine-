@@ -1,16 +1,20 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 /*=============================================================================================
 PathTracingRayGenShader.usf: Reference path tracing
 ===============================================================================================*/
 
+#define PATH_TRACING
+
 #include "../Common.ush"
 #include "../PostProcessCommon.ush"
-#include "../Montecarlo.ush"
+#include "../RectLight.ush"
+#include "../RayTracing/RayTracingCommon.ush"
 
 #include "PathTracingCommon.ush"
 #include "../RayTracing/RayTracingHitGroupCommon.ush"
 
+#include "../ShadingModels.ush"
 #include "./Utilities/PathTracingRandomSequence.ush"
 #include "./Light/PathTracingLightSampling.ush"
 #include "./Material/PathTracingMaterialSampling.ush"
@@ -24,21 +28,9 @@ RWTexture2D<uint>	RayCountPerPixelRT;
 RaytracingAccelerationStructure TLAS;
 
 
-float GetHitT(FMaterialClosestHitPayload HitInfo)
+RAY_TRACING_ENTRY_RAYGEN(PathTracingMainRG)
 {
-	return HitInfo.HitT;
-}
-
-bool IsHit(RayDesc Ray, FMaterialClosestHitPayload HitInfo)
-{
-	float t = HitInfo.HitT;
-	return t > Ray.TMin && t < Ray.TMax;
-}
-
-[shader("raygeneration")]
-void PathTracingMainRG()
-{
-	uint2 LaunchIndex = DispatchRaysIndex().xy;
+	uint2 LaunchIndex = DispatchRaysIndex().xy + View.ViewRectMin + PathTracingData.TileOffset;
 	
 	bool IsUnidirectionalEnabled = true;
 	bool IsNextEventEstimationEnabled = true;
@@ -53,8 +45,7 @@ void PathTracingMainRG()
 	float2 BufferSize = View.BufferSizeAndInvSize.xy; 
 	uint LinearIndex = LaunchIndex.x + (LaunchIndex.y * BufferSize.x); 
 	RandomSequence RandSequence;
-	// #dxr_todo: unify initialization between ray tracing and path tracing raygen shaders
-	RandomSequence_Initialize(RandSequence, LinearIndex, AdaptiveSamplingData.Iteration);
+	RandomSequence_Initialize(RandSequence, LinearIndex, AdaptiveSamplingData.TemporalSeed);
 	RandSequence.Type = AdaptiveSamplingData.RandomSequence;
 	uint SampleIndex = 0;
 	uint SampleCount = 1;
@@ -79,27 +70,28 @@ void PathTracingMainRG()
 		FRayCone RayCone = (FRayCone)0;
 		RayCone.SpreadAngle = View.EyeToPixelSpreadAngle;
 
-		uint RayFlags = RAY_FLAG_CULL_BACK_FACING_TRIANGLES;
-
 		// Cast ray
-		FMaterialClosestHitPayload Payload = TraceRayInternal(
-			TLAS,   // AccelerationStructure
-			RayFlags,
-			0xFF,   // InstanceInclusionMask
-			0,      // RayContributionToHitGroupIndex
-			1,      // MultiplierForGeometryContributionToShaderIndex #dxr_todo: we currently only support shader binding per mesh instance
-			0,      // MissShaderIndex
-			Ray,    // RayDesc
-			RayCone
-		);
+		const uint InitialRayFlags = 0;
+		const uint InitialInstanceInclusionMask = RAY_TRACING_MASK_ALL;
+		const bool bInitialDisableSkyLightContribution = false;
+
+		FMaterialClosestHitPayload Payload = TraceMaterialRay(
+			TLAS,
+			InitialRayFlags,
+			InitialInstanceInclusionMask,
+			Ray,
+			RayCone,
+			bInitialDisableSkyLightContribution);
 		RayCounter++;
 
 		float MaterialPdf = 0.0;
+		FMaterialClosestHitPayload PrevMaterialPayload = (FMaterialClosestHitPayload)0;
 		uint Bounces = 0;
-		while (Bounces < 32)
+		bool bIsNeeValid = true;
+		while (Bounces < PathTracingData.MaxBounces)
 		{
 			// Environment contribution
-			if (!IsHit(Ray, Payload))
+			if (Payload.IsMiss())
 			{
 				// WARNING: Until ray payload encodes NEE LightId, the execution depends on this ordering!
 				uint SkyLightId = 0;
@@ -111,13 +103,12 @@ void PathTracingMainRG()
 					{
 						// Apply NEE Pdf for correct MIS weight
 						float MisWeight = 1.0;
-						if (IsNextEventEstimationEnabled && Bounces > 0)
+						if (IsNextEventEstimationEnabled && Bounces > 0 && bIsNeeValid)
 						{
 							float NeePdf = 0.0;
 							float3 LightUV = GetLightUV(SkyLightId, Ray, Payload);
-							PdfLight(Ray, SkyLightId, LightUV, NeePdf);
+							PdfLight(Ray, PrevMaterialPayload, SkyLightId, LightUV, NeePdf);
 
-							// Note: MaterialPdf will need to be stored on the ray for an iterative solution
 							MisWeight = MaterialPdf / (MaterialPdf + NeePdf);
 						}
 						Irradiance += EnvironmentRadiance * RayThroughput * MisWeight / RayPdf;
@@ -139,12 +130,12 @@ void PathTracingMainRG()
 				{
 					// Apply NEE Pdf for correct MIS weight
 					float MisWeight = 1.0;
-					if (IsNextEventEstimationEnabled && Bounces > 0)
+					if (IsNextEventEstimationEnabled && Bounces > 0 && bIsNeeValid)
 					{
 						float NeePdf = 0.0;
 						int LightId = GetLightId(Payload);
 						float3 LightUV = GetLightUV(LightId, Ray, Payload);
-						PdfLight(Ray, LightId, LightUV, NeePdf);
+						PdfLight(Ray, PrevMaterialPayload, LightId, LightUV, NeePdf);
 
 						float MisWeight = MaterialPdf / (MaterialPdf + NeePdf);
 					}
@@ -161,12 +152,13 @@ void PathTracingMainRG()
 
 			Bounces = Bounces + 1;
 			// Update origin
-			Ray.Origin = Ray.Origin + Ray.Direction * GetHitT(Payload);
+			Ray.Origin = Ray.Origin + Ray.Direction * Payload.HitT;
 			FMaterialClosestHitPayload RayHitInfo = Payload; 
 
+			bIsNeeValid = IsNeeValidMaterial(RayHitInfo);
+
 			// Perform next-event estimation
-			bool bIsPureSpecular = IsPureSpecular(RayHitInfo);
-			if (IsNextEventEstimationEnabled && !bIsPureSpecular)
+			if (IsNextEventEstimationEnabled && bIsNeeValid)
 			{
 				int LightId;
 				float3 LightUV;
@@ -179,32 +171,26 @@ void PathTracingMainRG()
 				{
 					RayDesc LightRay;
 
-					FRayCone LightRayCone = RayCone;
-
 					GenerateLightRay(Ray, LightId, LightUV, LightRay);
-					// #dxr_todo: Guard against tracing a back-facing ray
+					ApplyPositionBias(LightRay, Payload.WorldNormal, AdaptiveSamplingData.MaxNormalBias);
 
-					uint RayFlags = RAY_FLAG_CULL_BACK_FACING_TRIANGLES;
+					const uint RayFlags = RAY_FLAG_ACCEPT_FIRST_HIT_AND_END_SEARCH | RAY_FLAG_SKIP_CLOSEST_HIT_SHADER;
+					const uint InstanceInclusionMask = RAY_TRACING_MASK_SHADOW;
 
-					FMaterialClosestHitPayload NeePayload = TraceRayInternal(
-						TLAS,      // AccelerationStructure
+					FMinimalPayload NeePayload = TraceVisibilityRay(
+						TLAS,
 						RayFlags,
-						0xFF,      // InstanceInclusionMask
-						0,         // RayContributionToHitGroupIndex
-						1,         // MultiplierForGeometryContributionToShaderIndex #dxr_todo: we currently only support shader binding per mesh instance
-						0,         // MissShaderIndex
-						LightRay,
-						LightRayCone
-					);
+						InstanceInclusionMask,
+						LightRay);
 					RayCounter++;
 
-					if (!IsHit(LightRay, NeePayload))
+					if (NeePayload.IsMiss())
 					{
 						FMaterialClosestHitPayload RayHitInfo = Payload; 
 #if 0
 						// DEBUG: Validate NEE PDF
 						float NeePdfTmp;
-						PdfLight(Ray, LightId, LightUV, NeePdfTmp);
+						PdfLight(Ray, RayHitInfo, LightId, LightUV, NeePdfTmp);
 						if (abs(NeePdf - NeePdfTmp) > 0.0001)
 						{
 							Irradiance = float3(-10, -10, -10);
@@ -247,23 +233,30 @@ void PathTracingMainRG()
 			float3 Direction;
 			float3 Throughput;
 			float4 RandSample = RandomSequence_GenerateSample4D(RandSequence, SampleIndex);
-			SampleMaterial(Ray.Direction, RayHitInfo, RandSample, Direction, Throughput, MaterialPdf);
-			if (MaterialPdf == 0.0)
+			float SignedPositionBias;
+			float SamplePdf;
+			SampleMaterial(Ray.Direction, RayHitInfo, RandSample, Direction, Throughput, SamplePdf, SignedPositionBias);
+			if (SamplePdf == 0.0)
 			{
 				break;
 			}
 
+			PdfMaterial(Ray.Direction, Direction, Payload, MaterialPdf);
+			// Debug: Evaluation of a candidate sample direction should maintain energy balance with pathspace MIS
+			// EvalMaterial(Ray.Direction, Direction, RayHitInfo, Throughput, MaterialPdf);
+			// SamplePdf = MaterialPdf;
+
 			// Update ray
 			Ray.Direction = Direction;
+			ApplyPositionBias(Ray, SignedPositionBias * Payload.WorldNormal, AdaptiveSamplingData.MaxNormalBias);
 			RayThroughput *= Throughput;
-			RayPdf *= MaterialPdf;
+			RayPdf *= SamplePdf;
 
 			// Russian roulette
 			float PathEnergy = max(max(RayThroughput.x, RayThroughput.y), RayThroughput.z);
 			float EnergyThreshold = 1.0; 
 			if (PathEnergy < EnergyThreshold && Bounces > 4)
 			{
-
 				float Q = 1.0 - PathEnergy;
 				if (RandomSequence_GenerateSample1D(RandSequence, SampleIndex) < Q)
 				{
@@ -282,16 +275,18 @@ void PathTracingMainRG()
 			}
 
 			// Trace again
-			//#dxr-todo: check ray flags when hit shaders are supported
-			Payload = TraceRayInternal(TLAS,
-				RAY_FLAG_CULL_BACK_FACING_TRIANGLES,
-				0xFF, // InstanceInclusionMask
-				0,    // RayContributionToHitGroupIndex
-				1,    // MultiplierForGeometryContributionToShaderIndex
-				0,    // MissShaderIndex
+			const uint RayFlags = 0;
+			const uint InstanceInclusionMask = RAY_TRACING_MASK_ALL;
+			const bool bDisableSkyLightContribution = false;
+
+			PrevMaterialPayload = Payload;
+			Payload = TraceMaterialRay(
+				TLAS,
+				RayFlags,
+				InstanceInclusionMask,
 				Ray,
-				RayCone /* propagated by the material CHS */
-			);
+				RayCone,
+				bDisableSkyLightContribution);
 			RayCounter++;
 		}
 

@@ -1,9 +1,9 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "ClothingSystemEditorModule.h"
 #include "ClothingSystemEditorInterfaceModule.h"
 
-#include "ClothingSimulationFactory.h"
+#include "ClothingSimulationFactoryNv.h"
 #include "SimulationEditorExtenderNv.h"
 #include "ClothingAssetFactory.h"
 #include "Modules/ModuleManager.h"

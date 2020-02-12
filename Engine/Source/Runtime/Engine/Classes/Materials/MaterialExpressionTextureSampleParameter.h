@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 
 #pragma once
@@ -32,6 +32,9 @@ class ENGINE_API UMaterialExpressionTextureSampleParameter : public UMaterialExp
 	/** Controls where the this parameter is displayed in a material instance parameter list.  The lower the number the higher up in the parameter list. */
 	UPROPERTY(EditAnywhere, Category = MaterialExpressionTextureSampleParameter)
 	int32 SortPriority;
+
+	UPROPERTY(EditAnywhere, Category = ParameterCustomization)
+	FParameterChannelNames ChannelNames;
 #endif
 
 	//~ Begin UMaterialExpression Interface
@@ -52,27 +55,23 @@ class ENGINE_API UMaterialExpressionTextureSampleParameter : public UMaterialExp
 	//~ End UMaterialExpression Interface
 
 	/** Return whether this is the named parameter, and fill in its value */
-	bool IsNamedParameter(const FMaterialParameterInfo& ParameterInfo, UTexture*& OutValue) const;
+	bool IsNamedParameter(const FHashedMaterialParameterInfo& ParameterInfo, UTexture*& OutValue) const;
 
 #if WITH_EDITOR
 	bool SetParameterValue(FName InParameterName, UTexture* InValue);
+	virtual void PostEditChangeProperty(FPropertyChangedEvent& PropertyChangedEvent) override;
+	void ApplyChannelNames();
 #endif
 
 	/**
 	 * Return true if the texture is a movie texture
 	 *
 	 * @param	InTexture - texture to test
+	 * @param	OutMessage - if texture isn't valid, gives a description of the problem
 	 * @return	true/false
 	 */	
-	virtual bool TextureIsValid( UTexture* InTexture );
+	virtual bool TextureIsValid(UTexture* InTexture, FString& OutMessage);
 
-	/**
-	 * Called when TextureIsValid==false
-	 *
-	 * @return	Descriptive error text
-	 */	
-	virtual const TCHAR* GetRequirements();
-	
 	/**
 	 *	Sets the default texture if none is set
 	 */
@@ -82,6 +81,13 @@ class ENGINE_API UMaterialExpressionTextureSampleParameter : public UMaterialExp
 	{
 		return ExpressionGUID;
 	}
+
+#if WITH_EDITOR
+	FParameterChannelNames GetTextureChannelNames() const
+	{
+		return ChannelNames;
+	}
+#endif
 
 	void GetAllParameterInfo(TArray<FMaterialParameterInfo> &OutParameterInfo, TArray<FGuid> &OutParameterIds, const FMaterialParameterInfo& InBaseParameterInfo) const;
 };

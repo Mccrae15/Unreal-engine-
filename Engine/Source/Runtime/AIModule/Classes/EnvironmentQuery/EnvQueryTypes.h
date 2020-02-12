@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -150,6 +150,7 @@ namespace EEnvTestScoreOperator
 		AverageScore	UMETA(Tooltip = "Use average score from all contexts"),
 		MinScore		UMETA(Tooltip = "Use minimum score from all contexts"),
 		MaxScore		UMETA(Tooltip = "Use maximum score from all contexts"),
+		Multiply		UMETA(Tooltip = "Multiply scores from all contexts"),
 	};
 }
 
@@ -426,7 +427,8 @@ struct AIMODULE_API FEnvOverlapData
 		OverlapChannel(ECC_WorldStatic),
 		OverlapShape(EEnvOverlapShape::Box),
 		bOnlyBlockingHits(true),
-		bOverlapComplex(false)
+		bOverlapComplex(false),
+		bSkipOverlapQuerier(false)
 	{
 	}
 
@@ -461,6 +463,10 @@ struct AIMODULE_API FEnvOverlapData
 	/** if set, overlap will run on complex collisions */
 	UPROPERTY(EditDefaultsOnly, Category = Overlap, AdvancedDisplay)
 	uint32 bOverlapComplex : 1;
+
+	/** if set, overlap will skip querier context hits */
+	UPROPERTY(EditDefaultsOnly, Category = Overlap, AdvancedDisplay)
+	uint32 bSkipOverlapQuerier : 1;
 };
 
 //////////////////////////////////////////////////////////////////////////
@@ -1085,7 +1091,7 @@ public:
 			{
 				case EEnvTestFilterType::Match:
 					bPassedTest = (bScore == bExpected);
-					UE_EQS_DBGMSG(!bPassedTest, TEXT("Boolean score don't mach (expected %s and got %s)"), bExpected ? TEXT("TRUE") : TEXT("FALSE"), bScore ? TEXT("TRUE") : TEXT("FALSE"));
+					UE_EQS_DBGMSG(!bPassedTest, TEXT("Boolean score doesn't match (expected %s and got %s)"), bExpected ? TEXT("TRUE") : TEXT("FALSE"), bScore ? TEXT("TRUE") : TEXT("FALSE"));
 					break;
 
 				case EEnvTestFilterType::Maximum:
@@ -1197,6 +1203,9 @@ public:
 				{
 					ItemScore = Score;
 				}
+				break;
+			case EEnvTestScoreOperator::Multiply:
+				ItemScore *= Score;
 				break;
 			}
 		}

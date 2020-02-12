@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "ITDSpatializationSourceSettingsFactory.h"
 #include "ITDSpatializationSourceSettings.h"
@@ -21,6 +21,15 @@ UClass* FAssetTypeActions_ITDSpatializationSettings::GetSupportedClass() const
 uint32 FAssetTypeActions_ITDSpatializationSettings::GetCategories()
 {
 	return EAssetTypeCategories::Sounds;
+}
+
+const TArray<FText>& FAssetTypeActions_ITDSpatializationSettings::GetSubMenus() const
+{
+	static const TArray<FText> ITDSubMenus
+	{
+		NSLOCTEXT("Spatialization", "AssetSpatializationSettingsSubMenu", "Spatialization")
+	};
+	return ITDSubMenus;
 }
 
 UITDSpatializationSettingsFactory::UITDSpatializationSettingsFactory(const FObjectInitializer& ObjectInitializer)

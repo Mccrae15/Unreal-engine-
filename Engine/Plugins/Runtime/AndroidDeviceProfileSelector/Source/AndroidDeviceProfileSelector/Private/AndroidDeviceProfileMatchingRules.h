@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -20,6 +20,8 @@ enum ESourceType
 	SRC_UsingHoudini,
 	SRC_VulkanAvailable,
 	SRC_CommandLine,
+	SRC_Hardware,
+	SRC_Chipset,
 	SRC_MAX,
 };
 
@@ -39,6 +41,7 @@ enum ECompareType
 	CMP_GreaterIgnore,
 	CMP_GreaterEqualIgnore,
 	CMP_NotEqualIgnore,
+	CMP_Hash,
 	CMP_MAX,
 };
 
@@ -75,6 +78,12 @@ class UAndroidDeviceProfileMatchingRules : public UObject
 	GENERATED_UCLASS_BODY()
 
 public:
+
+	// Use Android .ini files in the editor
+	virtual const TCHAR* GetConfigOverridePlatform() const override
+	{
+		return TEXT("Android");
+	}
 
 	/** Array of rules to match */
 	UPROPERTY(EditAnywhere, config, Category = "Matching Rules")

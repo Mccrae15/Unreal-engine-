@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -71,6 +71,10 @@
 
 #ifndef MCP_SUBSYSTEM
 #define MCP_SUBSYSTEM FName(TEXT("MCP"))
+#endif
+
+#ifndef MCP_SUBSYSTEM_EMBEDDED
+#define MCP_SUBSYSTEM_EMBEDDED FName(TEXT("MCP:EMBEDDED"))
 #endif
 
 #ifndef TENCENT_SUBSYSTEM

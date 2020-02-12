@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "Installer/BuildStatistics.h"
 #include "Installer/Statistics/FileOperationTracker.h"
@@ -33,7 +33,7 @@ namespace BuildPatchServices
 
 	public:
 		// IBuildStatistics interface begin.
-		virtual const FInstallerConfiguration& GetConfiguration() const override;
+		virtual const FBuildInstallerConfiguration& GetConfiguration() const override;
 		virtual int64 GetDownloadSize() const override;
 		virtual int64 GetBuildSize() const override;
 		virtual int32 GetMemoryChunkStoreSize() const override;
@@ -53,6 +53,7 @@ namespace BuildPatchServices
 		virtual double GetDiskReadByteSpeed() const override;
 		virtual double GetChunkDbReadByteSpeed() const override;
 		virtual double GetDiskWriteByteSpeed() const override;
+		virtual int32 GetNumVerifyErrors() const override;
 		virtual TMap<EVerifyError, int32> GetVerifyErrorCounts() const override;
 		// IBuildStatistics interface end.
 
@@ -65,7 +66,7 @@ namespace BuildPatchServices
 	{
 	}
 
-	const FInstallerConfiguration& FBuildStatistics::GetConfiguration() const
+	const FBuildInstallerConfiguration& FBuildStatistics::GetConfiguration() const
 	{
 		return Installer->GetConfiguration();
 	}
@@ -165,6 +166,11 @@ namespace BuildPatchServices
 	double FBuildStatistics::GetDiskWriteByteSpeed() const
 	{
 		return Installer->GetDiskWriteSpeedRecorder()->GetAverageSpeed(10.0f);
+	}
+
+	int32 FBuildStatistics::GetNumVerifyErrors() const
+	{
+		return Installer->GetVerifierStatistics()->GetNumFailedFilesVerified();
 	}
 
 	TMap<EVerifyError, int32> FBuildStatistics::GetVerifyErrorCounts() const

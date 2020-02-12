@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -15,6 +15,7 @@
 #define PIXEL_INSPECTOR_SHADINGMODELID_HAIR 7
 #define PIXEL_INSPECTOR_SHADINGMODELID_CLOTH 8
 #define PIXEL_INSPECTOR_SHADINGMODELID_EYE 9
+#define PIXEL_INSPECTOR_SHADINGMODELID_SINGLELAYERWATER 10
 #define PIXEL_INSPECTOR_SHADINGMODELID_MASK 0xF
 
 namespace PixelInspector

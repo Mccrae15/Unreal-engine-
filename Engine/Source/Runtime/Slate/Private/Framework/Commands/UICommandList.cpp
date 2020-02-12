@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "Framework/Commands/UICommandList.h"
 #include "Framework/Application/SlateApplication.h"
@@ -53,7 +53,10 @@ void FUICommandList::MapAction( const TSharedPtr< const FUICommandInfo > InUICom
 
 void FUICommandList::MapAction( const TSharedPtr< const FUICommandInfo > InUICommandInfo, const FUIAction& InUIAction )
 {
-	check( InUICommandInfo.IsValid() );
+	if (!ensure(InUICommandInfo.IsValid()))
+	{
+		return;
+	}
 
 	// Check against already mapped actions
 	checkfSlow(!UICommandBindingMap.Contains(InUICommandInfo), TEXT("Command list already contains a command named '%s'"), *InUICommandInfo->GetCommandName().ToString());

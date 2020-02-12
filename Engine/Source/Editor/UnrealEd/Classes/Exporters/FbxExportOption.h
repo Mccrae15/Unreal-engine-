@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 /**
  * Import data and options used when importing a static mesh from fbx
@@ -44,12 +44,16 @@ public:
 	uint32 VertexColor : 1;
 
 	/** If enabled, export the level of detail */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, config, category = StaticMesh)
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, config, category = Mesh)
 	uint32 LevelOfDetail : 1;
 
 	/** If enabled, export collision */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, config, category = StaticMesh)
 	uint32 Collision : 1;
+
+	/** If enabled, export the morph targets */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, config, category = SkeletalMesh)
+	uint32 bExportMorphTargets : 1;
 
 	/** If enable, the preview mesh link to the exported animations will be also exported. */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, config, category = Animation)
@@ -59,12 +63,16 @@ public:
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, config, category = Animation)
 	uint32 MapSkeletalMotionToRoot : 1;
 
-	/* Set all the UProperty to the CDO value */
+	/** If enabled, export sequencer animation in its local time, relative to its master sequence. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, config, category = Animation)
+	uint32 bExportLocalTime : 1;
+
+	/* Set all the FProperty to the CDO value */
 	void ResetToDefault();
 
-	/* Save the UProperty to a local ini to retrieve the value the next time we call function LoadOptions() */
+	/* Save the FProperty to a local ini to retrieve the value the next time we call function LoadOptions() */
 	virtual void SaveOptions();
 	
-	/* Load the UProperty data from a local ini which the value was store by the function SaveOptions() */
+	/* Load the FProperty data from a local ini which the value was store by the function SaveOptions() */
 	virtual void LoadOptions();
 };

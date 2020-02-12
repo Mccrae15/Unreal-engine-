@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 using UnrealBuildTool;
 using System;
@@ -8,13 +8,20 @@ public class VulkanRHI : ModuleRules
 {
 	public VulkanRHI(ReadOnlyTargetRules Target) : base(Target)
 	{
-		bOutputPubliclyDistributable = true;
+		bLegalToDistributeObjectCode = true;
 
 		PrivateIncludePaths.Add("Runtime/VulkanRHI/Private");
 		if (Target.Platform == UnrealTargetPlatform.Win32 || Target.Platform == UnrealTargetPlatform.Win64)
 		{
 			PrivateIncludePaths.Add("Runtime/VulkanRHI/Private/Windows");
 			AddEngineThirdPartyPrivateStaticDependencies(Target, "AMD_AGS");
+		}
+		else if (Target.IsInPlatformGroup(UnrealPlatformGroup.Unix))
+		{
+			if (Target.IsInPlatformGroup(UnrealPlatformGroup.Linux))
+			{
+				PrivateIncludePaths.Add("Runtime/VulkanRHI/Private/Linux");
+			}
 		}
 		else
 		{
@@ -29,9 +36,9 @@ public class VulkanRHI : ModuleRules
 				"Engine", 
 				"RHI", 
 				"RenderCore", 
-				"UtilityShaders",
 				"HeadMountedDisplay",
-                "PreLoadScreen"
+                "PreLoadScreen",
+				"BuildSettings"
             }
         );
 
@@ -42,8 +49,9 @@ public class VulkanRHI : ModuleRules
         }
         else if (Target.IsInPlatformGroup(UnrealPlatformGroup.Unix))
 		{
-			if (Target.Platform == UnrealTargetPlatform.Linux)
+			if (Target.IsInPlatformGroup(UnrealPlatformGroup.Linux))
 			{
+				PrivateDependencyModuleNames.Add("ApplicationCore");
 				AddEngineThirdPartyPrivateStaticDependencies(Target, "SDL2");
 
 				string VulkanSDKPath = Environment.GetEnvironmentVariable("VULKAN_SDK");
@@ -56,8 +64,7 @@ public class VulkanRHI : ModuleRules
 				{
 					PrivateIncludePaths.Add(VulkanSDKPath + "/include");
 					PrivateIncludePaths.Add(VulkanSDKPath + "/include/vulkan");
-					PublicLibraryPaths.Add(VulkanSDKPath + "/lib");
-					PublicAdditionalLibraries.Add("vulkan");
+					PublicAdditionalLibraries.Add(Path.Combine(VulkanSDKPath, "lib", "vulkan"));
 				}
 			}
 			else

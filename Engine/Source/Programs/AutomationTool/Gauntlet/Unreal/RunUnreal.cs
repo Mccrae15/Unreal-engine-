@@ -1,4 +1,4 @@
-﻿// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+﻿// Copyright Epic Games, Inc. All Rights Reserved.
 
 using System;
 using System.Collections.Generic;
@@ -13,6 +13,7 @@ using System.IO;
 using Newtonsoft.Json;
 using System.Reflection;
 using System.Text.RegularExpressions;
+using Tools.DotNETCommon;
 
 namespace Gauntlet
 {
@@ -30,6 +31,12 @@ namespace Gauntlet
 	/// </summary>
 	public class RunUnreal : BuildCommand
 	{
+
+		/// <summary>
+		/// Test node to create if none were specified
+		/// </summary>
+		public virtual string DefaultTestName { get { return "DefaultTest"; } }
+
 		/// <summary>
 		/// Main UAT entrance point. Custom games can derive from RunUnrealTests to run custom setup steps or
 		/// directly set params on ContextOptions to remove the need for certain command line params (e.g.
@@ -102,8 +109,8 @@ namespace Gauntlet
 
 			if (ContextOptions.TestList.Count == 0)
 			{
-				Gauntlet.Log.Info("No test specified, creating default test node");
-				ContextOptions.TestList.Add(TestRequest.CreateRequest("DefaultTest"));
+				Gauntlet.Log.Info("No test specified, using default '{0}'", DefaultTestName);
+				ContextOptions.TestList.Add(TestRequest.CreateRequest(DefaultTestName));
 			}
 
 			bool EditorForAllRoles = Globals.Params.ParseParam("editor") || string.Equals(Globals.Params.ParseValue("build", ""), "editor", StringComparison.OrdinalIgnoreCase);
@@ -119,8 +126,10 @@ namespace Gauntlet
 			UnrealTargetPlatform DefaultPlatform = BuildHostPlatform.Current.Platform;
 			UnrealTargetConfiguration DefaultConfiguration = UnrealTargetConfiguration.Development;
 
+			DirectoryReference UnrealPath = new DirectoryReference(Environment.CurrentDirectory);
+					
 			// todo, pass this in as a BuildSource and remove the COntextOption params specific to finding builds
-			UnrealBuildSource BuildInfo = (UnrealBuildSource)Activator.CreateInstance(ContextOptions.BuildSourceType, new object[] { ContextOptions.Project, ContextOptions.UsesSharedBuildType, Environment.CurrentDirectory, ContextOptions.Build, ContextOptions.SearchPaths });
+			UnrealBuildSource BuildInfo = (UnrealBuildSource)Activator.CreateInstance(ContextOptions.BuildSourceType, new object[] { ContextOptions.Project, ContextOptions.ProjectPath, UnrealPath, ContextOptions.UsesSharedBuildType, ContextOptions.Build, ContextOptions.SearchPaths });
 
 			// Setup accounts
 			SetupAccounts();
@@ -139,12 +148,7 @@ namespace Gauntlet
 				// combine global and platform-specific params
 				Params CombinedParams = new Params(ContextOptions.Params.AllArguments.Concat(PlatformWithParams.AllArguments).ToArray());
 
-				UnrealTargetPlatform PlatformType;
-
-				if (!Enum.TryParse<UnrealTargetPlatform>(PlatformString, true, out PlatformType))
-				{
-					throw new AutomationException("Unable to convert platform '{0}' into an UnrealTargetPlatform", PlatformString);
-				}
+				UnrealTargetPlatform PlatformType = UnrealTargetPlatform.Parse(PlatformString);
 
 				if (!InitializedDevices)
 				{
@@ -174,7 +178,7 @@ namespace Gauntlet
 
 					if (string.IsNullOrEmpty(PlatformRoleString) == false)
 					{
-						RequestedPlatform = (UnrealTargetPlatform)Enum.Parse(typeof(UnrealTargetPlatform), PlatformRoleString, true);
+						RequestedPlatform = UnrealTargetPlatform.Parse(PlatformRoleString);
 					}
 
 					if (string.IsNullOrEmpty(ConfigString) == false)
@@ -184,6 +188,14 @@ namespace Gauntlet
 
 					// look for -clientargs= and -editorclient etc
 					Role.ExtraArgs = Globals.Params.ParseValue(Type.ToString() + "Args", "");
+
+					// look for -clientexeccmds=, -editorexeccmds= etc, these are separate from clientargs for sanity
+					string ExecCmds = Globals.Params.ParseValue(Type.ToString() + "ExecCmds", "");
+					if (!string.IsNullOrEmpty(ExecCmds))
+					{
+						Role.ExtraArgs += string.Format(" -ExecCmds=\"{0}\"", ExecCmds);
+					}
+
 					bool UsesEditor = EditorForAllRoles || Globals.Params.ParseParam("Editor" + Type.ToString());
 
 					if (UsesEditor)
@@ -318,11 +330,7 @@ namespace Gauntlet
 			
 			List<string> BuildIssues = new List<string>();
 
-			UnrealTargetPlatform UnrealPlatform = UnrealTargetPlatform.Unknown;
-			if (!Enum.TryParse(PlatformParams.Argument, true, out UnrealPlatform))
-			{
-				throw new AutomationException("Could not convert platform {0} to a valid UnrealTargetPlatform", PlatformParams.Argument);
-			}
+			UnrealTargetPlatform UnrealPlatform = UnrealTargetPlatform.Parse(PlatformParams.Argument);
 
 			//List<string> Platforms = Globals.Params.ParseValue("platform")
 
@@ -356,7 +364,15 @@ namespace Gauntlet
 					throw new AutomationException("Unable to convert perfspec '{0}' into an EPerfSpec", PerfSpec);
 				}
 
-				TestContext.Constraint = new UnrealTargetConstraint(UnrealPlatform, PerfSpec);
+				// parse hardware model
+				List<string> ModelArgs = CombinedParams.ParseValues("PerfModel", false);
+				string Model = ModelArgs.Count > 0 ? ModelArgs.Last() : string.Empty;
+
+				TestContext.Constraint = new UnrealTargetConstraint(UnrealPlatform, PerfSpec, Model);
+
+				// parse worker job id
+				List<string> WorkerJobIDArgs = CombinedParams.ParseValues("WorkerJobID", false);
+				TestContext.WorkerJobID = WorkerJobIDArgs.Count > 0 ? WorkerJobIDArgs.Last() : null;
 
 				TestContext.TestParams = CombinedParams;
 
@@ -377,6 +393,9 @@ namespace Gauntlet
 		/// <returns></returns>
 		protected virtual void SetupAccounts()
 		{
+			// Set up account manager before we set up accounts.
+			AccountPool.Initialize();
+
 			string Username = Globals.Params.ParseValue("username", null);
 			string Password = Globals.Params.ParseValue("password", null);
 
@@ -401,7 +420,7 @@ namespace Gauntlet
 				// see if one of the params is a platform
 				foreach (var Param in DeviceWithParams.AllArguments)
 				{
-					if (Enum.TryParse(Param, true, out Platform))
+					if (UnrealTargetPlatform.TryParse(Param, out Platform))
 					{
 						break;
 					}

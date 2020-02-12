@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "Components/PanelSlot.h"
 #include "Components/PanelWidget.h"
@@ -11,10 +11,12 @@ UPanelSlot::UPanelSlot(const FObjectInitializer& ObjectInitializer)
 {
 }
 
+#if WITH_EDITOR
 bool UPanelSlot::IsDesignTime() const
 {
 	return Parent->IsDesignTime();
 }
+#endif
 
 void UPanelSlot::ReleaseSlateResources(bool bReleaseChildren)
 {

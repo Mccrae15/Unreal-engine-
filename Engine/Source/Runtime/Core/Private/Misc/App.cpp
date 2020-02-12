@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "Misc/App.h"
 #include "HAL/FileManager.h"
@@ -24,6 +24,7 @@ FGuid FApp::InstanceId = FGuid::NewGuid();
 FGuid FApp::SessionId = FGuid::NewGuid();
 FString FApp::SessionName = FString();
 FString FApp::SessionOwner = FString();
+FString FApp::GraphicsRHI = FString();
 TArray<FString> FApp::SessionUsers = TArray<FString>();
 bool FApp::Standalone = true;
 bool FApp::bIsBenchmarking = false;
@@ -35,8 +36,7 @@ double FApp::LastTime = 0.0;
 double FApp::DeltaTime = 1 / 30.0;
 double FApp::IdleTime = 0.0;
 double FApp::IdleTimeOvershoot = 0.0;
-FTimecode FApp::Timecode = FTimecode();
-FFrameRate FApp::TimecodeFrameRate = FFrameRate(60,1);
+TOptional<FQualifiedFrameTime> FApp::CurrentFrameTime;
 float FApp::VolumeMultiplier = 1.0f;
 float FApp::UnfocusedVolumeMultiplier = 0.0f;
 bool FApp::bUseVRFocus = false;
@@ -67,22 +67,39 @@ FString FApp::GetEpicProductIdentifier()
 	return FString(TEXT(EPIC_PRODUCT_IDENTIFIER));
 }
 
-EBuildConfigurations::Type FApp::GetBuildConfiguration()
+EBuildConfiguration FApp::GetBuildConfiguration()
 {
 #if UE_BUILD_DEBUG
-	return EBuildConfigurations::Debug;
+	return EBuildConfiguration::Debug;
 
 #elif UE_BUILD_DEVELOPMENT
-	return bIsDebugGame ? EBuildConfigurations::DebugGame : EBuildConfigurations::Development;
+	return bIsDebugGame ? EBuildConfiguration::DebugGame : EBuildConfiguration::Development;
 
 #elif UE_BUILD_SHIPPING
-	return EBuildConfigurations::Shipping;
+	return EBuildConfiguration::Shipping;
 
 #elif UE_BUILD_TEST
-	return EBuildConfigurations::Test;
+	return EBuildConfiguration::Test;
 
 #else
-	return EBuildConfigurations::Unknown;
+	return EBuildConfiguration::Unknown;
+#endif
+}
+
+EBuildTargetType FApp::GetBuildTargetType()
+{
+#if IS_CLIENT_TARGET
+	return EBuildTargetType::Client;
+#elif UE_GAME
+	return EBuildTargetType::Game;
+#elif UE_EDITOR
+	return EBuildTargetType::Editor;
+#elif UE_SERVER
+	return EBuildTargetType::Server;
+#elif IS_PROGRAM
+	return EBuildTargetType::Program;
+#else
+	static_assert(false, "No host type is set.");
 #endif
 }
 
@@ -98,6 +115,15 @@ FString FApp::GetBuildDate()
 	return FString(BuildSettings::GetBuildDate());
 }
 
+FString FApp::GetGraphicsRHI()
+{
+	return GraphicsRHI;
+}
+
+void FApp::SetGraphicsRHI(FString RHIString)
+{
+	GraphicsRHI = RHIString;
+}
 
 void FApp::InitializeSession()
 {
@@ -202,35 +228,6 @@ bool FApp::IsEngineInstalled()
 	return EngineInstalledState == 1;
 }
 
-bool FApp::IsEnterpriseInstalled()
-{
-	static int32 EnterpriseInstalledState = -1;
-
-	if (EnterpriseInstalledState == -1)
-	{
-		bool bIsInstalledEnterprise = false;
-
-#if PLATFORM_DESKTOP
-		FString InstalledBuildFile = FPaths::RootDir() / TEXT("Enterprise/Build/InstalledBuild.txt");
-		FPaths::NormalizeFilename(InstalledBuildFile);
-		bIsInstalledEnterprise |= IFileManager::Get().FileExists(*InstalledBuildFile);
-#endif
-
-		// Allow commandline options to disable/enable installed engine behavior
-		if (bIsInstalledEnterprise)
-		{
-			bIsInstalledEnterprise = !FParse::Param(FCommandLine::Get(), TEXT("NotInstalledEnterprise"));
-		}
-		else
-		{
-			bIsInstalledEnterprise = FParse::Param(FCommandLine::Get(), TEXT("InstalledEnterprise"));
-		}
-		EnterpriseInstalledState = bIsInstalledEnterprise ? 1 : 0;
-	}
-
-	return EnterpriseInstalledState == 1;
-}
-
 #if PLATFORM_WINDOWS && defined(__clang__)
 bool FApp::IsUnattended() // @todo clang: Workaround for missing symbol export
 {
@@ -255,11 +252,32 @@ bool FApp::ShouldUseThreadingForPerformance()
 		IsRunningDedicatedServer() ||
 		!FPlatformProcess::SupportsMultithreading() ||
 		FPlatformMisc::NumberOfCoresIncludingHyperthreads() < MIN_CORE_COUNT;
-	return !OnlyOneThread;
+
+	// Enable at runtime for experimentation by passing "useperfthreads" as a command line arg.
+	static bool bForceUsePerfThreads = FParse::Param(FCommandLine::Get(), TEXT("useperfthreads"));
+	return !OnlyOneThread || bForceUsePerfThreads;
 }
 #undef MIN_CORE_COUNT
 
 #endif // HAVE_RUNTIME_THREADING_SWITCHES
+
+FTimecode FApp::GetTimecode()
+{
+	if (CurrentFrameTime.IsSet())
+	{
+		return FTimecode::FromFrameNumber(CurrentFrameTime->Time.GetFrame(), CurrentFrameTime->Rate);
+	}
+	return FTimecode();
+}
+
+FFrameRate FApp::GetTimecodeFrameRate()
+{
+	if (CurrentFrameTime.IsSet())
+	{
+		return CurrentFrameTime->Rate;
+	}
+	return FFrameRate();
+}
 
 static bool GUnfocusedVolumeMultiplierInitialised = false;
 float FApp::GetUnfocusedVolumeMultiplier()
@@ -329,7 +347,7 @@ void FApp::PrintStartupLogMessages()
 	UE_LOG(LogInit, Log, TEXT("Compiled with unrecognized C++ compiler"));
 #endif
 
-	UE_LOG(LogInit, Log, TEXT("Build Configuration: %s"), EBuildConfigurations::ToString(FApp::GetBuildConfiguration()));
+	UE_LOG(LogInit, Log, TEXT("Build Configuration: %s"), LexToString(FApp::GetBuildConfiguration()));
 	UE_LOG(LogInit, Log, TEXT("Branch Name: %s"), *FApp::GetBranchName());
 	FString FilteredString = FCommandLine::IsCommandLineLoggingFiltered() ? TEXT("Filtered ") : TEXT("");
 	UE_LOG(LogInit, Log, TEXT("%sCommand Line: %s"), *FilteredString, FCommandLine::GetForLogging());

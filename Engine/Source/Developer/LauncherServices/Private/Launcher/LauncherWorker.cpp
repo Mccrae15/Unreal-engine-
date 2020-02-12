@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "Launcher/LauncherWorker.h"
 #include "HAL/PlatformTime.h"
@@ -316,6 +316,10 @@ FString FLauncherWorker::CreateUATCommand( const ILauncherProfileRef& InProfile,
 			{
 				ServerPlatforms += TEXT("+Linux");
 			}
+			else if (PlatformInfo->TargetPlatformName == FName("LinuxAArch64Server"))
+			{
+				ServerPlatforms += TEXT("+LinuxAArch64");
+			}
 			else if (PlatformInfo->TargetPlatformName == FName("WindowsServer"))
 			{
 				ServerPlatforms += TEXT("+Win64");
@@ -327,6 +331,10 @@ FString FLauncherWorker::CreateUATCommand( const ILauncherProfileRef& InProfile,
 			else if (PlatformInfo->TargetPlatformName == FName("LinuxNoEditor") || PlatformInfo->TargetPlatformName == FName("LinuxClient"))
 			{
 				Platforms += TEXT("+Linux");
+			}
+			else if (PlatformInfo->TargetPlatformName == FName("LinuxAArch64NoEditor") || PlatformInfo->TargetPlatformName == FName("LinuxAArch64Client"))
+			{
+				Platforms += TEXT("+LinuxAArch64");
 			}
 			else if (PlatformInfo->TargetPlatformName == FName("WindowsNoEditor") || PlatformInfo->TargetPlatformName == FName("Windows") || PlatformInfo->TargetPlatformName == FName("WindowsClient"))
 			{
@@ -340,10 +348,18 @@ FString FLauncherWorker::CreateUATCommand( const ILauncherProfileRef& InProfile,
 			{
 				Platforms += TEXT("+IOS");
 			}
+			else if (PlatformInfo->TargetPlatformName == FName("TVOSClient"))
+			{
+				Platforms += TEXT("+TVOS");
+			}
+			else if (PlatformInfo->TargetPlatformName == FName("HoloLens"))
+			{
+				Platforms += TEXT("+HoloLens");
+			}
 			else
 			{
 				Platforms += TEXT("+");
-				Platforms += PlatformInfo->TargetPlatformName.ToString();
+				Platforms += PlatformInfo->VanillaPlatformName.ToString();
 			}
 
 			// Append any extra UAT flags specified for this platform flavor
@@ -408,30 +424,37 @@ FString FLauncherWorker::CreateUATCommand( const ILauncherProfileRef& InProfile,
 
 	if (DeviceGroup.IsValid())
 	{
-		const TArray<FString>& Devices = DeviceGroup->GetDeviceIDs();		
+		const TArray<FString>& Devices = DeviceGroup->GetDeviceIDs();
 
-		// for each deployed device...
-		for (int32 DeviceIndex = 0; DeviceIndex < Devices.Num(); ++DeviceIndex)
+		if (Devices.Num() > 0)
 		{
-			const FString& DeviceId = Devices[DeviceIndex];
-			TSharedPtr<ITargetDeviceProxy> DeviceProxy = DeviceProxyManager->FindProxyDeviceForTargetDevice(DeviceId);
-			if (DeviceProxy.IsValid())
+			// for each deployed device...
+			for (int32 DeviceIndex = 0; DeviceIndex < Devices.Num(); ++DeviceIndex)
 			{
-				AddDeviceToLaunchCommand(DeviceId, DeviceProxy, InProfile, DeviceNames, RoleCommands, bVsyncAdded);
-
-				// also add the credentials, if necessary
-				FString DeviceUser = DeviceProxy->GetDeviceUser();
-				if (DeviceUser.Len() > 0)
+				const FString& DeviceId = Devices[DeviceIndex];
+				TSharedPtr<ITargetDeviceProxy> DeviceProxy = DeviceProxyManager->FindProxyDeviceForTargetDevice(DeviceId);
+				if (DeviceProxy.IsValid())
 				{
-					DeviceCommand += FString::Printf(TEXT(" -deviceuser=%s"), *DeviceUser);
-				}
+					AddDeviceToLaunchCommand(DeviceId, DeviceProxy, InProfile, DeviceNames, RoleCommands, bVsyncAdded);
 
-				FString DeviceUserPassword = DeviceProxy->GetDeviceUserPassword();
-				if (DeviceUserPassword.Len() > 0)
-				{
-					DeviceCommand += FString::Printf(TEXT(" -devicepass=%s"), *DeviceUserPassword);
+					// also add the credentials, if necessary
+					FString DeviceUser = DeviceProxy->GetDeviceUser();
+					if (DeviceUser.Len() > 0)
+					{
+						DeviceCommand += FString::Printf(TEXT(" -deviceuser=%s"), *DeviceUser);
+					}
+
+					FString DeviceUserPassword = DeviceProxy->GetDeviceUserPassword();
+					if (DeviceUserPassword.Len() > 0)
+					{
+						DeviceCommand += FString::Printf(TEXT(" -devicepass=%s"), *DeviceUserPassword);
+					}
 				}
 			}
+		}
+		else
+		{
+			RoleCommands = InProfile->GetDefaultLaunchRole()->GetUATCommandLine();
 		}
 	}
 
@@ -562,6 +585,11 @@ FString FLauncherWorker::CreateUATCommand( const ILauncherProfileRef& InProfile,
 			if (InProfile->IsPackingWithUnrealPak())
 			{
 				UATCommand += TEXT(" -pak");
+			}
+
+			if (InProfile->IsUsingIoStore())
+			{
+				UATCommand += TEXT(" -iostore");
 			}
 
 			if ( InProfile->IsCreatingReleaseVersion() )
@@ -1075,10 +1103,10 @@ bool FLauncherWorker::TerminateLaunchedProcess()
 				FString TargetDeviceId = DeviceId;
 				
 				// remove the variant prefix (eg. Android_ETC@deviceId)
-				int32 InPos = TargetDeviceId.Find("@");
+				int32 InPos = TargetDeviceId.Find("@", ESearchCase::CaseSensitive);
 				if (InPos > 0) 
 				{ 
-					TargetDeviceId = TargetDeviceId.Right(TargetDeviceId.Len() -  InPos - 1);
+					TargetDeviceId.RightInline(TargetDeviceId.Len() -  InPos - 1, false);
 
 				}
 

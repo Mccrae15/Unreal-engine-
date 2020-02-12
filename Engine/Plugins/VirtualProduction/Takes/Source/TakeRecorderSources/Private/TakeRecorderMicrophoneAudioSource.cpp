@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "TakeRecorderMicrophoneAudioSource.h"
 #include "TakeRecorderSources.h"
@@ -39,11 +39,20 @@ void UTakeRecorderMicrophoneAudioSourceSettings::PostEditChangeProperty(FPropert
 	}
 }
 
-FString UTakeRecorderMicrophoneAudioSourceSettings::GetSubsceneName(ULevelSequence* InSequence) const
+FString UTakeRecorderMicrophoneAudioSourceSettings::GetSubsceneTrackName(ULevelSequence* InSequence) const
 {
 	if (UTakeMetaData* TakeMetaData = InSequence->FindMetaData<UTakeMetaData>())
 	{
-		return TakeMetaData->GetSlate() + TEXT("Audio");
+		return FString::Printf(TEXT("Audio_%s"), *TakeMetaData->GenerateAssetPath("{slate}"));
+	}
+	return TEXT("MicrophoneAudio");
+}
+
+FString UTakeRecorderMicrophoneAudioSourceSettings::GetSubsceneAssetName(ULevelSequence* InSequence) const
+{
+	if (UTakeMetaData* TakeMetaData = InSequence->FindMetaData<UTakeMetaData>())
+	{
+		return FString::Printf(TEXT("Audio_%s"), *TakeMetaData->GenerateAssetPath("{slate}_{take}"));
 	}
 	return TEXT("MicrophoneAudio");
 }
@@ -100,6 +109,17 @@ TArray<UTakeRecorderSource*> UTakeRecorderMicrophoneAudioSource::PreRecording(UL
 		CachedAudioTrack->SetDisplayName(AudioTrackName);
 	}
 
+	FString PathToRecordTo = FPackageName::GetLongPackagePath(InSequence->GetOutermost()->GetPathName());
+	FString BaseName = InSequence->GetName();
+
+	AudioDirectory.Path = PathToRecordTo;
+	if (AudioSubDirectory.Len())
+	{
+		AudioDirectory.Path /= AudioSubDirectory;
+	}
+
+	AssetName = MakeNewAssetName(AudioDirectory.Path, BaseName);
+
 	return TArray<UTakeRecorderSource*>();
 }
 
@@ -115,18 +135,6 @@ void UTakeRecorderMicrophoneAudioSource::AddContentsToFolder(UMovieSceneFolder* 
 void UTakeRecorderMicrophoneAudioSource::StartRecording(const FTimecode& InSectionStartTimecode, const FFrameNumber& InSectionFirstFrame, class ULevelSequence* InSequence)
 {
 	Super::StartRecording(InSectionStartTimecode, InSectionFirstFrame, InSequence);
-
-	FString PathToRecordTo = FPackageName::GetLongPackagePath(InSequence->GetOutermost()->GetPathName());
-	FString BaseName = InSequence->GetName();
-
-	FDirectoryPath AudioDirectory;
-	AudioDirectory.Path = PathToRecordTo;
-	if (AudioSubDirectory.Len())
-	{
-		AudioDirectory.Path /= AudioSubDirectory;
-	}
-
-	FString AssetName = MakeNewAssetName(AudioDirectory.Path, BaseName);
 
 	ISequenceRecorder& Recorder = FModuleManager::Get().LoadModuleChecked<ISequenceRecorder>("SequenceRecorder");
 
@@ -187,10 +195,13 @@ void UTakeRecorderMicrophoneAudioSource::StopRecording(class ULevelSequence* InS
 		UMovieSceneAudioSection* NewAudioSection = NewObject<UMovieSceneAudioSection>(CachedAudioTrack.Get(), UMovieSceneAudioSection::StaticClass());
 
 		FFrameRate TickResolution = CachedAudioTrack->GetTypedOuter<UMovieScene>()->GetTickResolution();
+		FFrameRate DisplayRate = CachedAudioTrack->GetTypedOuter<UMovieScene>()->GetDisplayRate();
 
-		NewAudioSection->SetRowIndex(RowIndex + 1);
+		FFrameNumber RecordStartFrame = Parameters.Project.bStartAtCurrentTimecode ? FFrameRate::TransformTime(FFrameTime(TimecodeSource.ToFrameNumber(DisplayRate)), DisplayRate, TickResolution).FloorToFrame() : 0;
+
 		NewAudioSection->SetSound(RecordedAudio);
-		NewAudioSection->SetRange(TRange<FFrameNumber>(FFrameNumber(0), (RecordedAudio->GetDuration() * TickResolution).CeilToFrame()));
+		NewAudioSection->SetRange(TRange<FFrameNumber>(RecordStartFrame, RecordStartFrame + (RecordedAudio->GetDuration() * TickResolution).CeilToFrame()));
+		NewAudioSection->TimecodeSource = TimecodeSource;
 
 		CachedAudioTrack->AddSection(*NewAudioSection);
 

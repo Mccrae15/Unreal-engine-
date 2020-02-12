@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "OnlineSubsystemOculus.h"
 #include "OnlineSubsystemOculusPrivate.h"
@@ -18,6 +18,11 @@
 #if !defined(OVRPL_DISABLED) && WITH_EDITOR
 OVRPL_PUBLIC_FUNCTION(void) ovr_ResetInitAndContext();
 #endif
+
+namespace FNetworkProtocolTypes
+{
+	const FLazyName Oculus(TEXT("Oculus"));
+}
 
 IOnlineSessionPtr FOnlineSubsystemOculus::GetSessionInterface() const
 {
@@ -80,11 +85,6 @@ IOnlinePartyPtr FOnlineSubsystemOculus::GetPartyInterface() const
 }
 
 IOnlineTitleFilePtr FOnlineSubsystemOculus::GetTitleFileInterface() const
-{
-	return nullptr;
-}
-
-IOnlineStorePtr FOnlineSubsystemOculus::GetStoreInterface() const
 {
 	return nullptr;
 }
@@ -231,10 +231,7 @@ bool FOnlineSubsystemOculus::Init()
 		// Shutdown stops the ticker, but construction of the object starts the ticker.
 		// Since this hangs around, ensure that the ticker gets started in the editor when 
 		// we init.
-		if (!TickHandle.IsValid())
-		{
-			StartTicker();
-		}
+		StartTicker();
 #endif
 	}
 	else

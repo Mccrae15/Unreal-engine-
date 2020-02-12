@@ -1,8 +1,7 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "ProfilerRawStatsForThreadView.h"
 #include "HAL/FileManager.h"
-#include "Templates/ScopedPointer.h"
 #include "Serialization/MemoryReader.h"
 #include "ProfilerDataProvider.h"
 
@@ -169,11 +168,6 @@ void FRawProfilerSession::PrepareLoading()
 		Stream.ReadFNamesAndMetadataMessages( *FileReader, MetadataMessages );
 		StatsThreadStats.ProcessMetaDataOnly( MetadataMessages );
 
-		const FName F00245 = FName(245, 245, 0);
-		
-		const FName F11602 = FName(11602, 11602, 0);
-		const FName F06394 = FName(6394, 6394, 0);
-
 		const int64 CurrentFilePos = FileReader->Tell();
 
 		// Update profiler's metadata.
@@ -196,6 +190,7 @@ void FRawProfilerSession::PrepareLoading()
 		// !!CAUTION!! Frame number in the raw stats is pointless, because it is time based, not frame based.
 		// Background threads usually execute time consuming operations, so the frame number won't be valid.
 		// Needs to be combined by the thread and the time, not by the frame number.
+		if (Stream.FramesInfo.Num() > 0)
 		{
 			int64 FrameOffset0 = Stream.FramesInfo[0].FrameFileOffset;
 			FileReader->Seek( FrameOffset0 );

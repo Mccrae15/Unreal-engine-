@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -7,12 +7,6 @@
 #include "TrackRecorders/IMovieSceneTrackRecorderHost.h"
 #include "TakeRecorderParameters.generated.h"
 
-
-UCLASS(Abstract)
-class TAKERECORDER_API UTakeRecorderClock : public UObject
-{
-	GENERATED_BODY()
-};
 
 USTRUCT(BlueprintType)
 struct FTakeRecorderUserParameters
@@ -32,10 +26,6 @@ struct FTakeRecorderUserParameters
 	/** The engine time dilation to apply during the recording */
 	UPROPERTY(config, EditAnywhere, BlueprintReadWrite, Category="User Settings", meta=(Units=Multiplier, ClampMin="0.00001", UIMin="0.00001"))
 	float EngineTimeDilation;
-
-	/** The clock source to use */
-	UPROPERTY(config, EditAnywhere, BlueprintReadWrite, Category="User Settings", meta=(ShowDisplayNames))
-	TSoftClassPtr<UTakeRecorderClock> SampleClock;
 
 	/** Recommended for use with recorded spawnables. Beware that changes to actor instances in the map after recording may alter the recording when played back */
 	UPROPERTY(config, EditAnywhere, BlueprintReadWrite, Category="User Settings")
@@ -57,8 +47,15 @@ struct FTakeRecorderProjectParameters
 
 	TAKERECORDER_API FTakeRecorderProjectParameters();
 
+	/** The take asset path, composed of the TakeRootSaveDir and the TakeSaveDir */
+	TAKERECORDER_API FString GetTakeAssetPath() const { return RootTakeSaveDir.Path / TakeSaveDir; }
+
+	/** The root of the directory in which to save recorded takes. */
+	UPROPERTY(config, EditAnywhere, BlueprintReadWrite, Category = "Take Recorder", meta = (ContentDir))
+	FDirectoryPath RootTakeSaveDir;
+
 	/**
-	 * The location in which to save recorded takes. Supports any of the following format specifiers that will be substituted when a take is recorded:
+	 * The name of the directory in which to save recorded takes. Supports any of the following format specifiers that will be substituted when a take is recorded:
 	 * {day}       - The day of the timestamp for the start of the recording.
 	 * {month}     - The month of the timestamp for the start of the recording.
 	 * {year}      - The year of the timestamp for the start of the recording.
@@ -68,8 +65,8 @@ struct FTakeRecorderProjectParameters
 	 * {take}      - The take number.
 	 * {slate}     - The slate string.
 	 */
-	UPROPERTY(config, EditAnywhere, BlueprintReadWrite, Category="Take Recorder")
-	FDirectoryPath TakeSaveDir;
+	UPROPERTY(config, EditAnywhere, BlueprintReadWrite, Category = "Take Recorder")
+	FString TakeSaveDir;
 
 	/**
 	 * The default name to use for the Slate information
@@ -77,6 +74,11 @@ struct FTakeRecorderProjectParameters
 	UPROPERTY(config, EditAnywhere, BlueprintReadWrite, Category = "Take Recorder")
 	FString DefaultSlate;
 
+	/**
+	 * If enabled, track sections will start at the current timecode. Otherwise, 0.
+	 */
+	UPROPERTY(config, EditAnywhere, BlueprintReadWrite, Category = "Take Recorder")
+	bool bStartAtCurrentTimecode;
 
 	/**
 	* If enabled, each Source will be recorded into a separate Sequence and embedded in the Master Sequence will link to them via Subscenes track.

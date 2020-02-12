@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 /*=============================================================================
 	VisualizeTexture.cpp: Post processing visualize texture.
@@ -229,7 +229,11 @@ void FVisualizeTexturePresent::PresentContent(FRHICommandListImmediate& RHICmdLi
 		{
 			FRenderTargetPool::SMemoryStats MemoryStats = GRenderTargetPool.ComputeView();
 
-			SetRenderTarget(RHICmdList, View.Family->RenderTarget->GetRenderTargetTexture(), FTextureRHIRef());
+			FRHIRenderPassInfo RPInfos;
+			RPInfos.ColorRenderTargets[0].RenderTarget = View.Family->RenderTarget->GetRenderTargetTexture();
+			RPInfos.ColorRenderTargets[0].ResolveTarget = View.Family->RenderTarget->GetRenderTargetTexture();
+			RPInfos.ColorRenderTargets[0].Action = ERenderTargetActions::Load_Store;
+			RHICmdList.BeginRenderPass(RPInfos, TEXT("PresentVisualizeTexture"));
 			RHICmdList.SetViewport(0, 0, 0.0f, FSceneRenderTargets::Get(RHICmdList).GetBufferSizeXY().X, FSceneRenderTargets::Get(RHICmdList).GetBufferSizeXY().Y, 1.0f);
 
 
@@ -360,13 +364,18 @@ void FVisualizeTexturePresent::PresentContent(FRHICommandListImmediate& RHICmdLi
 				}
 			}
 
-			Canvas.Flush_RenderThread(RHICmdList);
+			const bool bForce = false;
+			const bool bInsideRenderPass = true;
+			Canvas.Flush_RenderThread(RHICmdList, bForce, bInsideRenderPass);
 
 			GRenderTargetPool.CurrentEventRecordingTime = 0;
 			GRenderTargetPool.RenderTargetPoolEvents.Empty();
+
+			RHICmdList.EndRenderPass();
 		}
 	}
 
+	// TODO(RDG): delete this old technic of visualizing a buffer based on id that predates when render target had names.
 	if (GVisualizeTexture.Mode != 0)
 	{
 		// old mode is used, lets copy the specified texture to do it similar to the new system
@@ -375,9 +384,9 @@ void FVisualizeTexturePresent::PresentContent(FRHICommandListImmediate& RHICmdLi
 		{
 			FRDGBuilder GraphBuilder(RHICmdList);
 
-			TRefCountPtr<IPooledRenderTarget> ElementRefCount;
+			TRefCountPtr<IPooledRenderTarget> ElementRefCount = Element;
 
-			GVisualizeTexture.CreateContentCapturePass(GraphBuilder, GraphBuilder.RegisterExternalTexture(ElementRefCount));
+			GVisualizeTexture.CreateContentCapturePass(GraphBuilder, GraphBuilder.RegisterExternalTexture(ElementRefCount), /* CaptureId = */ 0);
 			GraphBuilder.Execute();
 		}
 	}
@@ -404,7 +413,7 @@ void FVisualizeTexturePresent::PresentContent(FRHICommandListImmediate& RHICmdLi
 		{
 		case 0:
 		{
-			DestRect = SrcRect;
+			DestRect = View.UnconstrainedViewRect;
 		}
 		break;
 
@@ -447,7 +456,10 @@ void FVisualizeTexturePresent::PresentContent(FRHICommandListImmediate& RHICmdLi
 	}
 
 	auto& RenderTarget = View.Family->RenderTarget->GetRenderTargetTexture();
-	SetRenderTarget(RHICmdList, RenderTarget, FTextureRHIRef(), true);
+	RHICmdList.TransitionResource(EResourceTransitionAccess::EWritable, RenderTarget);
+
+	FRHIRenderPassInfo RPInfo(RenderTarget, ERenderTargetActions::Load_Store);
+	RHICmdList.BeginRenderPass(RPInfo, TEXT("VisualizeTexture"));
 	RHICmdList.SetViewport(DestRect.Min.X, DestRect.Min.Y, 0.0f, DestRect.Max.X, DestRect.Max.Y, 1.0f);
 
 	FGraphicsPipelineStateInitializer GraphicsPSOInit;
@@ -461,8 +473,8 @@ void FVisualizeTexturePresent::PresentContent(FRHICommandListImmediate& RHICmdLi
 	TShaderMapRef<FVisualizeTexturePresentPS> PixelShader(ShaderMap);
 
 	GraphicsPSOInit.BoundShaderState.VertexDeclarationRHI = GFilterVertexDeclaration.VertexDeclarationRHI;
-	GraphicsPSOInit.BoundShaderState.VertexShaderRHI = GETSAFERHISHADER_VERTEX(*VertexShader);
-	GraphicsPSOInit.BoundShaderState.PixelShaderRHI = GETSAFERHISHADER_PIXEL(*PixelShader);
+	GraphicsPSOInit.BoundShaderState.VertexShaderRHI = VertexShader.GetVertexShader();
+	GraphicsPSOInit.BoundShaderState.PixelShaderRHI = PixelShader.GetPixelShader();
 	GraphicsPSOInit.PrimitiveType = PT_TriangleList;
 	SetGraphicsPipelineState(RHICmdList, GraphicsPSOInit);
 
@@ -471,7 +483,7 @@ void FVisualizeTexturePresent::PresentContent(FRHICommandListImmediate& RHICmdLi
 		FVisualizeTexturePresentPS::FParameters Parameters;
 		Parameters.VisualizeTexture2D = GVisualizeTexture.VisualizeTextureContent->GetRenderTargetItem().ShaderResourceTexture;
 		Parameters.VisualizeTexture2DSampler = TStaticSamplerState<SF_Point, AM_Clamp, AM_Clamp, AM_Clamp>::GetRHI();
-		SetShaderParameters(RHICmdList, *PixelShader, PixelShader->GetPixelShader(), Parameters);
+		SetShaderParameters(RHICmdList, PixelShader, PixelShader.GetPixelShader(), Parameters);
 	}
 
 	{
@@ -484,9 +496,10 @@ void FVisualizeTexturePresent::PresentContent(FRHICommandListImmediate& RHICmdLi
 			SrcRect.Width(), SrcRect.Height(),
 			DestRect.Size(),
 			SrcSize,
-			*VertexShader,
+			VertexShader,
 			EDRF_Default);
 	}
+	RHICmdList.EndRenderPass();
 
 	FRenderTargetTemp TempRenderTarget(View, View.UnconstrainedViewRect.Size());
 	FCanvas Canvas(&TempRenderTarget, NULL, View.Family->CurrentRealTime, View.Family->CurrentWorldTime, View.Family->DeltaWorldTime, View.GetFeatureLevel());

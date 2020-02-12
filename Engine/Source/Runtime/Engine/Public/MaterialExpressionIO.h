@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -203,6 +203,25 @@ struct FScalarMaterialInput : FMaterialInput<float>
 template<>
 struct TStructOpsTypeTraits<FScalarMaterialInput>
 	: public TStructOpsTypeTraitsBase2<FScalarMaterialInput>
+{
+	enum
+	{
+		WithSerializer = true,
+	};
+};
+
+struct FShadingModelMaterialInput : FMaterialInput<uint32>
+{
+#if WITH_EDITOR
+	ENGINE_API int32 CompileWithDefault(class FMaterialCompiler* Compiler, EMaterialProperty Property);
+#endif  // WITH_EDITOR
+	/** ICPPStructOps interface */
+	ENGINE_API bool Serialize(FArchive& Ar);
+};
+
+template<>
+struct TStructOpsTypeTraits<FShadingModelMaterialInput>
+	: public TStructOpsTypeTraitsBase2<FShadingModelMaterialInput>
 {
 	enum
 	{

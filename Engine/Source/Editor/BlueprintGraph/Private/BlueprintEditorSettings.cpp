@@ -1,11 +1,13 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "BlueprintEditorSettings.h"
 #include "Misc/ConfigCacheIni.h"
 #include "Editor/EditorPerProjectUserSettings.h"
 #include "Settings/EditorExperimentalSettings.h"
-#include "Toolkits/AssetEditorManager.h"
+
 #include "FindInBlueprintManager.h"
+#include "Subsystems/AssetEditorSubsystem.h"
+#include "Editor.h"
 
 UBlueprintEditorSettings::UBlueprintEditorSettings(const FObjectInitializer& ObjectInitializer)
 	: Super(ObjectInitializer)
@@ -16,13 +18,17 @@ UBlueprintEditorSettings::UBlueprintEditorSettings(const FObjectInitializer& Obj
 	, bSplitContextTargetSettings(true)
 	, bExposeAllMemberComponentFunctions(true)
 	, bShowContextualFavorites(false)
+	, bExposeDeprecatedFunctions(false)
 	, bCompactCallOnMemberNodes(false)
 	, bFlattenFavoritesMenus(true)
 	, bFavorPureCastNodes(false)
 	, bAutoCastObjectConnections(false)
 	, bShowViewportOnSimulate(false)
 	, bShowInheritedVariables(false)
+	, bAlwaysShowInterfacesInOverrides(true)
+	, bShowParentClassInOverrides(true)
 	, bShowEmptySections(true)
+	, bShowAccessSpecifier(false)
 	, bSpawnDefaultBlueprintNodes(true)
 	, bHideConstructionScriptComponentsInDetailsView(true)
 	, bHostFindInBlueprintsInGlobalTab(true)
@@ -65,13 +71,13 @@ void UBlueprintEditorSettings::PostEditChangeProperty(FPropertyChangedEvent& Pro
 	if (PropertyName == GET_MEMBER_NAME_CHECKED(UBlueprintEditorSettings, bHostFindInBlueprintsInGlobalTab))
 	{
 		// Close all open Blueprint editors to reset associated FiB states.
-		FAssetEditorManager& AssetEditorManager = FAssetEditorManager::Get();
-		TArray<UObject*> EditedAssets = AssetEditorManager.GetAllEditedAssets();
+		UAssetEditorSubsystem* AssetEditorSubsystem = GEditor->GetEditorSubsystem<UAssetEditorSubsystem>();
+		TArray<UObject*> EditedAssets = AssetEditorSubsystem->GetAllEditedAssets();
 		for (UObject* EditedAsset : EditedAssets)
 		{
 			if (EditedAsset->IsA<UBlueprint>())
 			{
-				AssetEditorManager.CloseAllEditorsForAsset(EditedAsset);
+				AssetEditorSubsystem->CloseAllEditorsForAsset(EditedAsset);
 			}
 		}
 

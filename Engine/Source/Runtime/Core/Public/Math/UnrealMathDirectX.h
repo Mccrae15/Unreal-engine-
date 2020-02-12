@@ -1,13 +1,17 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
-#if __cplusplus_cli
+#if defined __cplusplus_cli && !PLATFORM_HOLOLENS
 // there are compile issues with this file in managed mode, so use the FPU version
 #include "Math/UnrealMathFPU.h"
 #else
 
+#pragma warning( push )
+// We're in non-managed mode, ignore warnings about _M_CEE and _MANAGED for DirectXMath.h
+#pragma warning ( disable : 4668 )
 #include <DirectXMath.h>
+#pragma warning( pop )
 #include <DirectXPackedVector.h>
 
 /*=============================================================================
@@ -633,6 +637,21 @@ FORCEINLINE VectorRegister VectorCombineLow(const VectorRegister& Vec1, const Ve
 }
 
 /**
+ * These functions return a vector mask to indicate which components pass the comparison.
+ * Each component is 0xffffffff if it passes, 0x00000000 if it fails.
+ *
+ * @param Vec1			1st source vector
+ * @param Vec2			2nd source vector
+ * @return				Vector with a mask for each component.
+ */
+#define VectorMask_LT( Vec1, Vec2 )	_mm_cmplt_ps( Vec1, Vec2 )
+#define VectorMask_LE( Vec1, Vec2 )	_mm_cmple_ps( Vec1, Vec2 )
+#define VectorMask_GT( Vec1, Vec2 )	DirectX::XMVectorGreater( Vec1, Vec2 )
+#define VectorMask_GE( Vec1, Vec2 )	DirectX::XMVectorGreaterOrEqual( Vec1, Vec2 )
+#define VectorMask_EQ( Vec1, Vec2 )	DirectX::XMVectorEqual( Vec1, Vec2 )
+#define VectorMask_NE( Vec1, Vec2 )	DirectX::XMVectorNotEqual( Vec1, Vec2 )
+
+/**
  * Merges the XYZ components of one vector with the W component of another vector and returns the result.
  *
  * @param VecXYZ	Source vector for XYZ_
@@ -1042,7 +1061,10 @@ FORCEINLINE VectorRegister VectorFractional(const VectorRegister& X)
 
 FORCEINLINE VectorRegister VectorMod(const VectorRegister& X, const VectorRegister& Y)
 {
-	return DirectX::XMVectorMod(X, Y);
+	VectorRegister AbsY = VectorAbs(Y);
+	VectorRegister Result = DirectX::XMVectorMod(X, Y);
+	// Clamp to [-AbsY, AbsY] because of possible failures for very large numbers (>1e10) due to precision loss.
+	return DirectX::XMVectorClamp(Result, VectorNegate(AbsY), AbsY);
 }
 
 //TODO: Vectorize
@@ -1059,10 +1081,10 @@ FORCEINLINE VectorRegister VectorSign(const VectorRegister& X)
 FORCEINLINE VectorRegister VectorStep(const VectorRegister& X)
 {
 	return MakeVectorRegister(
-		(float)(VectorGetComponent(X, 0) >= 0.0f ? 1.0f : -1.0f),
-		(float)(VectorGetComponent(X, 1) >= 0.0f ? 1.0f : -1.0f),
-		(float)(VectorGetComponent(X, 2) >= 0.0f ? 1.0f : -1.0f),
-		(float)(VectorGetComponent(X, 3) >= 0.0f ? 1.0f : -1.0f));
+		(float)(VectorGetComponent(X, 0) >= 0.0f ? 1.0f : 0.0f),
+		(float)(VectorGetComponent(X, 1) >= 0.0f ? 1.0f : 0.0f),
+		(float)(VectorGetComponent(X, 2) >= 0.0f ? 1.0f : 0.0f),
+		(float)(VectorGetComponent(X, 3) >= 0.0f ? 1.0f : 0.0f));
 }
 
 //////////////////////////////////////////////////////////////////////////
@@ -1171,7 +1193,7 @@ FORCEINLINE VectorRegisterInt VectorIntAbs(const VectorRegisterInt& A)
 * @param Ptr	Unaligned memory pointer to the 4 int32s
 * @return		VectorRegisterInt(*Ptr, *Ptr, *Ptr, *Ptr)
 */
-#define VectorIntLoad1( Ptr )	_mm_shuffle_epi32(_mm_loadu_si128((VectorRegisterInt*)Ptr),_MM_SHUFFLE(0,0,0,0))
+#define VectorIntLoad1( Ptr )	_mm_shuffle_epi32(_mm_loadu_si128((VectorRegisterInt*)(Ptr)),_MM_SHUFFLE(0,0,0,0))
 
 #endif
 

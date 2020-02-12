@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "MediaFrameworkUtilitiesModule.h"
 
@@ -126,7 +126,7 @@ class FMediaFrameworkUtilitiesModule : public IMediaFrameworkUtilitiesModule
 			FCoreDelegates::OnPostEngineInit.Remove(PostEngineInitHandle);
 		}
 
-		if (!GIsRequestingExit)
+		if (!IsEngineExitRequested())
 		{
 			MediaProfileManager.SetCurrentMediaProfile(nullptr);
 		}

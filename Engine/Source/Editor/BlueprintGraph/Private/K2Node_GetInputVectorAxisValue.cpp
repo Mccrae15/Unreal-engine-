@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "K2Node_GetInputVectorAxisValue.h"
 #include "GameFramework/Actor.h"
@@ -39,6 +39,10 @@ void UK2Node_GetInputVectorAxisValue::ValidateNodeDuringCompilation(class FCompi
 	else if (!InputAxisKey.IsVectorAxis())
 	{
 		MessageLog.Warning(*FText::Format(NSLOCTEXT("KismetCompiler", "NotAxis_GetInputVectorAxis_Warning", "GetInputVectorAxis Value specifies FKey'{0}' which is not a vector axis for @@"), FText::FromString(InputAxisKey.ToString())).ToString(), this);
+	}
+	else if (InputAxisKey.IsDeprecated())
+	{
+		MessageLog.Warning(*FText::Format(NSLOCTEXT("KismetCompiler", "Deprecated_GetInputVectorAxis_Warning", "GetInputVectorAxis Value specifies FKey'{0}' which has been deprecated for @@"), FText::FromString(InputAxisKey.ToString())).ToString(), this);
 	}
 	else if (!InputAxisKey.IsBindableInBlueprints())
 	{

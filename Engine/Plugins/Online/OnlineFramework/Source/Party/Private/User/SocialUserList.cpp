@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "User/SocialUserList.h"
 #include "User/SocialUser.h"
@@ -6,24 +6,28 @@
 #include "Party/PartyMember.h"
 
 #include "Containers/Ticker.h"
-#include "Interfaces/OnlinePresenceInterface.h"
+#include "SocialSettings.h"
+#include "Algo/Transform.h"
+#include "SocialManager.h"
+#include "Party/SocialParty.h"
 
-TSharedRef<FSocialUserList> FSocialUserList::CreateUserList(USocialToolkit& InOwnerToolkit, const FSocialUserListConfig& InConfig)
+TSharedRef<FSocialUserList> FSocialUserList::CreateUserList(const USocialToolkit& InOwnerToolkit, const FSocialUserListConfig& InConfig)
 {
 	TSharedRef<FSocialUserList> NewList = MakeShareable(new FSocialUserList(InOwnerToolkit, InConfig));
 	NewList->InitializeList();
 	return NewList;
 }
 
-FSocialUserList::FSocialUserList(USocialToolkit& InOwnerToolkit, const FSocialUserListConfig& InConfig)
+FSocialUserList::FSocialUserList(const USocialToolkit& InOwnerToolkit, const FSocialUserListConfig& InConfig)
 	: OwnerToolkit(&InOwnerToolkit)
 	, ListConfig(InConfig)
 {
-	if (HasPresenceFilters() &&
+	if (HasPresenceFilters() && ListConfig.RequiredPresenceFlags != ESocialUserStateFlags::SameParty && ListConfig.ForbiddenPresenceFlags != ESocialUserStateFlags::SameParty &&
+		ListConfig.RelationshipType != ESocialRelationship::Any &&
 		ListConfig.RelationshipType != ESocialRelationship::Friend &&
 		ListConfig.RelationshipType != ESocialRelationship::PartyInvite)
 	{
-		UE_LOG(LogParty, Error, TEXT("A user list with presence filters can only ever track friends. No users will ever appear in this list."));
+		UE_LOG(LogParty, Error, TEXT("A user list with friend presence filters can only ever track friends. No users will ever appear in this list."));
 	}
 }
 
@@ -49,19 +53,34 @@ void FSocialUserList::InitializeList()
 		OwnerToolkit->OnRecentPlayerAdded().AddSP(this, &FSocialUserList::HandleRecentPlayerAdded);
 		OwnerToolkit->OnFriendshipEstablished().AddSP(this, &FSocialUserList::HandleFriendshipEstablished);
 		break;
+	case ESocialRelationship::SuggestedFriend:
+		OwnerToolkit->OnFriendshipEstablished().AddSP(this, &FSocialUserList::HandleFriendshipEstablished);
+		break;
 	}
 
 	OwnerToolkit->OnToolkitReset().AddSP(this, &FSocialUserList::HandleOwnerToolkitReset);
 	OwnerToolkit->OnUserBlocked().AddSP(this, &FSocialUserList::HandleUserBlocked);
 
 	// Run through all the users on the toolkit and add any that qualify for this list
+	check(Users.Num() == 0);
 	for (USocialUser* User : OwnerToolkit->GetAllUsers())
 	{
 		check(User);
 		TryAddUserFast(*User);
 	}
+	
+	if (EnumHasAnyFlags(ListConfig.ForbiddenPresenceFlags, ESocialUserStateFlags::SameParty) ||
+		EnumHasAnyFlags(ListConfig.RequiredPresenceFlags, ESocialUserStateFlags::SameParty))
+	{
+		OwnerToolkit->GetSocialManager().OnPartyJoined().AddSP(this, &FSocialUserList::HandlePartyJoined);
+		if (USocialParty* PersistentParty = OwnerToolkit->GetSocialManager().GetPersistentParty())
+		{
+			HandlePartyJoined(*PersistentParty);
+		}
+	}
 
-	SetAutoUpdatePeriod(AutoUpdatePeriod);
+	AutoUpdatePeriod = USocialSettings::GetUserListAutoUpdateRate();
+	SetAllowAutoUpdate(ListConfig.bAutoUpdate);
 }
 
 void FSocialUserList::AddReferencedObjects(FReferenceCollector& Collector)
@@ -71,21 +90,28 @@ void FSocialUserList::AddReferencedObjects(FReferenceCollector& Collector)
 
 void FSocialUserList::UpdateNow()
 {
-	HandleAutoUpdateList(0.f);
+	UpdateListInternal();
 }
 
-void FSocialUserList::SetAutoUpdatePeriod(float InAutoUpdatePeriod)
+void FSocialUserList::SetAllowAutoUpdate(bool bIsEnabled)
 {
-	AutoUpdatePeriod = InAutoUpdatePeriod;
-	if (UpdateTickerHandle.IsValid())
+	bIsEnabled ? AutoUpdateRequests++ : AutoUpdateRequests--;
+	AutoUpdateRequests = FMath::Max(AutoUpdateRequests, 0);
+
+	if (AutoUpdateRequests == 0 && UpdateTickerHandle.IsValid())
 	{
 		FTicker::GetCoreTicker().RemoveTicker(UpdateTickerHandle);
+		UpdateTickerHandle.Reset();
 	}
-
-	if (InAutoUpdatePeriod >= 0.f)
+	else if (bIsEnabled && !UpdateTickerHandle.IsValid())
 	{
-		UpdateTickerHandle = FTicker::GetCoreTicker().AddTicker(FTickerDelegate::CreateSP(this, &FSocialUserList::HandleAutoUpdateList), InAutoUpdatePeriod);
+		UpdateTickerHandle = FTicker::GetCoreTicker().AddTicker(FTickerDelegate::CreateSP(this, &FSocialUserList::HandleAutoUpdateList), AutoUpdatePeriod);
 	}
+}
+
+void FSocialUserList::SetAllowSortDuringUpdate(bool bIsEnabled)
+{
+	ListConfig.bSortDuringUpdate = bIsEnabled;
 }
 
 bool FSocialUserList::HasPresenceFilters() const
@@ -117,23 +143,25 @@ void FSocialUserList::HandleOwnerToolkitReset()
 void FSocialUserList::HandlePartyInviteReceived(USocialUser& InvitingUser)
 {
 	TryAddUser(InvitingUser);
+	UpdateListInternal();
 }
 
 void FSocialUserList::HandlePartyInviteHandled(USocialUser* InvitingUser)
 {
 	TryRemoveUser(*InvitingUser);
-	UpdateNow();
+	UpdateListInternal();
 }
 
 void FSocialUserList::HandleFriendInviteReceived(USocialUser& User, ESocialSubsystem SubsystemType)
 {
 	TryAddUser(User);
+	UpdateListInternal();
 }
 
 void FSocialUserList::HandleFriendInviteRemoved(ESocialSubsystem SubsystemType, USocialUser* User)
 {
 	TryRemoveUser(*User);
-	UpdateNow();
+	UpdateListInternal();
 }
 
 void FSocialUserList::HandleFriendshipEstablished(USocialUser& NewFriend, ESocialSubsystem SubsystemType, bool bIsNewRelationship)
@@ -144,19 +172,18 @@ void FSocialUserList::HandleFriendshipEstablished(USocialUser& NewFriend, ESocia
 		TryAddUser(NewFriend);
 	}
 
-	if (ListConfig.RelationshipType != ESocialRelationship::Friend ||
-		ListConfig.RelationshipType == ESocialRelationship::FriendInviteReceived)
+	if (ListConfig.RelationshipType != ESocialRelationship::Friend)
 	{
 		// Any non-friends list that cares about friendship does so to remove entries (i.e. invites & recent players)
 		TryRemoveUser(NewFriend);
-		UpdateNow();
+		UpdateListInternal();
 	}
 }
 
 void FSocialUserList::HandleFriendRemoved(ESocialSubsystem SubsystemType, USocialUser* User)
 {
 	TryRemoveUser(*User);
-	UpdateNow();
+	UpdateListInternal();
 }
 
 void FSocialUserList::HandleUserBlocked(USocialUser& BlockedUser, ESocialSubsystem SubsystemType, bool bIsNewRelationship)
@@ -171,7 +198,7 @@ void FSocialUserList::HandleUserBlocked(USocialUser& BlockedUser, ESocialSubsyst
 		TryRemoveUser(BlockedUser);
 	}
 	
-	UpdateNow();
+	UpdateListInternal();
 }
 
 void FSocialUserList::HandleUserBlockStatusChanged(ESocialSubsystem SubsystemType, bool bIsBlocked, USocialUser* User)
@@ -179,7 +206,7 @@ void FSocialUserList::HandleUserBlockStatusChanged(ESocialSubsystem SubsystemTyp
 	if (!bIsBlocked)
 	{
 		TryRemoveUser(*User);
-		UpdateNow();
+		UpdateListInternal();
 	}
 }
 
@@ -195,8 +222,19 @@ void FSocialUserList::HandleRecentPlayerRemoved(USocialUser& RemovedUser, ESocia
 
 void FSocialUserList::HandleUserPresenceChanged(ESocialSubsystem SubsystemType, USocialUser* User)
 {
+	MarkUserAsDirty(*User);
+}
+
+void FSocialUserList::HandleUserGameSpecificStatusChanged(USocialUser* User)
+{
+	MarkUserAsDirty(*User);
+	UpdateNow();
+}
+
+void FSocialUserList::MarkUserAsDirty(USocialUser& User)
+{
 	// Save this dirtied user for re-evaluation during the next update
-	UsersWithDirtyPresence.Add(User);
+	UsersWithDirtyPresence.Add(&User);
 	bNeedsSort = true;
 }
 
@@ -234,11 +272,30 @@ void FSocialUserList::TryAddUserFast(USocialUser& User)
 				User.OnUserPresenceChanged().AddSP(this, &FSocialUserList::HandleUserPresenceChanged, &User);
 			}
 
+			if (ListConfig.GameSpecificStatusFilters.Num() > 0)
+			{
+				if (!User.OnUserGameSpecificStatusChanged().IsBoundToObject(this))
+				{
+					User.OnUserGameSpecificStatusChanged().AddSP(this, &FSocialUserList::HandleUserGameSpecificStatusChanged, &User);
+				}
+			}
+
 			// Check that the user's current presence is acceptable
 			if (EvaluateUserPresence(User, RelationshipSubsystem))
 			{
 				// Last step is to check the custom filter, if provided
 				bCanAdd = ListConfig.OnCustomFilterUser.IsBound() ? ListConfig.OnCustomFilterUser.Execute(User) : true;
+
+				// do an initial pass on the GameSpecificStatusFilters on newly added user, and for users that passed other checks but don't yet have the correct presence or game status,
+				// this will be called again from UpdateListInternal(), after the user broadcasts OnGameSpecificStatusChanged, or OnUserPresenceChanged, and the list mark it dirty.
+				for (TFunction<bool(const USocialUser&)> CustomFilterFunction : ListConfig.GameSpecificStatusFilters)
+				{
+					if (!bCanAdd)
+					{
+						break;
+					}
+					bCanAdd &= CustomFilterFunction(User);
+				}
 			}
 		}
 	}
@@ -297,6 +354,16 @@ void FSocialUserList::TryRemoveUserFast(USocialUser& User)
 			{
 				// We're going to keep the user based on the stock filters, but the custom filter can still veto
 				bRemoveUser = ListConfig.OnCustomFilterUser.IsBound() ? !ListConfig.OnCustomFilterUser.Execute(User) : false;
+
+				// For users that we decide to remove due to incorrect presence or game status, we'll keep listening to their presence and game status change since they may qualify again.
+				// For users that have presence or game status changed but still fit this list, these will be run again next time we got a presence changed or game status changed event.
+				if (!bRemoveUser)
+				{
+					for (TFunction<bool(const USocialUser&)> CustomFilterFunction : ListConfig.GameSpecificStatusFilters)
+					{
+						bRemoveUser |= !CustomFilterFunction(User);
+					}
+				}
 			}
 		}
 	}
@@ -311,13 +378,12 @@ void FSocialUserList::TryRemoveUserFast(USocialUser& User)
 		User.OnPartyInviteAccepted().RemoveAll(this);
 		User.OnPartyInviteRejected().RemoveAll(this);
 		User.OnBlockedStatusChanged().RemoveAll(this);
-		User.OnPartyInviteAccepted().RemoveAll(this);
-		User.OnPartyInviteRejected().RemoveAll(this);
 
 		if (bUnbindFromPresenceUpdates)
 		{
 			// Not only does this user not qualify for the list, they don't even have the appropriate relationship anymore (so we no longer care about presence changes)
 			User.OnUserPresenceChanged().RemoveAll(this);
+			User.OnUserGameSpecificStatusChanged().RemoveAll(this);
 		}
 	}
 }
@@ -326,17 +392,39 @@ bool FSocialUserList::EvaluateUserPresence(const USocialUser& User, ESocialSubsy
 {
 	if (HasPresenceFilters())
 	{
+		bool bIsOnline = false;
+		bool bIsPlayingThisGame = false;
+		bool bInSameParty = false;
 		if (const FOnlineUserPresence* UserPresence = User.GetFriendPresenceInfo(SubsystemType))
 		{
-			return EvaluatePresenceFlag(UserPresence->bIsOnline, ESocialUserStateFlags::Online)
-				&& EvaluatePresenceFlag(UserPresence->bIsPlayingThisGame, ESocialUserStateFlags::SameApp);
-			// && EvaluatePresenceFlag(UserPresence->bIsJoinable, ESocialUserStateFlags::Joinable) <-- //@todo DanH: This property exists on presence, but is ALWAYS false... 
-			// && EvaluateFlag(UserPresence->?, ESocialUserStateFlag::SamePlatform)
-			// && EvaluateFlag(UserPresence->?, ESocialUserStateFlag::SameParty)
-			// && EvaluateFlag(UserPresence->?, ESocialUserStateFlag::LookingForGroup)
+			bIsOnline = UserPresence->bIsOnline;
+			bIsPlayingThisGame = UserPresence->bIsPlayingThisGame;
 		}
-		return false;
+		
+		if (OwnerToolkit.IsValid())
+		{
+			if (const USocialParty* CurrentParty = OwnerToolkit->GetSocialManager().GetPersistentParty())
+			{
+				bInSameParty = CurrentParty->ContainsUser(User);
+			}
+
+#if WITH_EDITOR
+			if (OwnerToolkit->Debug_IsRandomlyChangingPresence())
+			{
+				bIsOnline = User.GetOnlineStatus() != EOnlinePresenceState::Offline;
+				bIsPlayingThisGame = bIsOnline;
+			}
+#endif
+		}
+
+		return EvaluatePresenceFlag(bIsOnline, ESocialUserStateFlags::Online)
+			&& EvaluatePresenceFlag(bIsPlayingThisGame, ESocialUserStateFlags::SameApp)
+			&& EvaluatePresenceFlag(bInSameParty, ESocialUserStateFlags::SameParty);
+		// && EvaluatePresenceFlag(UserPresence->bIsJoinable, ESocialUserStateFlags::Joinable) <-- //@todo DanH: This property exists on presence, but is ALWAYS false... 
+		// && EvaluateFlag(UserPresence->?, ESocialUserStateFlag::SamePlatform)
+		// && EvaluateFlag(UserPresence->?, ESocialUserStateFlag::LookingForGroup)
 	}
+
 	return true;
 }
 
@@ -356,53 +444,114 @@ bool FSocialUserList::EvaluatePresenceFlag(bool bPresenceValue, ESocialUserState
 	return true;
 }
 
+// encapsulates UserList sorting comparator and supporting data needed
+struct FUserSortData
+{
+	FUserSortData(USocialUser* InUser, EOnlinePresenceState::Type InStatus, bool InPlayingThisGame, FString InDisplayName, int64 InCustomSortValuePrimary, int64 InCustomSortValueSecondary)
+		: User(InUser), OnlineStatus(InStatus), PlayingThisGame(InPlayingThisGame), DisplayName(MoveTemp(InDisplayName)), CustomSortValuePrimary(InCustomSortValuePrimary), CustomSortValueSecondary(InCustomSortValueSecondary)
+	{ }
+
+	USocialUser* User;
+	EOnlinePresenceState::Type OnlineStatus;
+	bool PlayingThisGame;
+	FString DisplayName;
+	int64 CustomSortValuePrimary;
+	int64 CustomSortValueSecondary;
+
+	bool operator<(const FUserSortData& OtherSortData) const
+	{
+		// Goes from if online, playing this game, then alphabetical
+		if (OnlineStatus == OtherSortData.OnlineStatus)
+		{
+			if (PlayingThisGame == OtherSortData.PlayingThisGame)
+			{
+				if (CustomSortValuePrimary == OtherSortData.CustomSortValuePrimary)
+				{
+					if (CustomSortValueSecondary == OtherSortData.CustomSortValueSecondary)
+					{
+						return DisplayName < OtherSortData.DisplayName;
+					}
+					else
+					{
+						return CustomSortValueSecondary > OtherSortData.CustomSortValueSecondary;
+					}
+				}
+				else
+				{
+					return CustomSortValuePrimary > OtherSortData.CustomSortValuePrimary;
+				}
+			}
+			else
+			{
+				return PlayingThisGame > OtherSortData.PlayingThisGame;
+			}
+		}
+		else
+		{
+			// @todo StephanJ: note Online < Offline < Away, but it's okay for now since we show offline in a separate list #future
+			return OnlineStatus < OtherSortData.OnlineStatus;
+		}
+	}
+};
+
 bool FSocialUserList::HandleAutoUpdateList(float)
 {
+	UpdateListInternal();
+	return true;
+}
+
+void FSocialUserList::UpdateListInternal()
+{
+	QUICK_SCOPE_CYCLE_COUNTER(STAT_SocialUserList_UpdateList);
+
 	// Re-evaluate whether each user with dirtied presence is still fit for the list
 	for (TWeakObjectPtr<USocialUser> DirtyUser : UsersWithDirtyPresence)
 	{
-		const bool bContainsUser = Users.Contains(DirtyUser);
-		const bool bPendingAdd = PendingAdds.Contains(DirtyUser);
-		const bool bPendingRemove = PendingRemovals.Contains(DirtyUser);
+		if (DirtyUser.IsValid())
+		{
+			const bool bContainsUser = Users.Contains(DirtyUser);
+			const bool bPendingAdd = PendingAdds.Contains(DirtyUser);
+			const bool bPendingRemove = PendingRemovals.Contains(DirtyUser);
 
-		if (bPendingRemove || (!bContainsUser && !bPendingAdd))
-		{
-			TryAddUserFast(*DirtyUser);
-		}
-		else if (bPendingAdd || (bContainsUser && !bPendingRemove))
-		{
-			TryRemoveUser(*DirtyUser);
+			if (bPendingRemove || (!bContainsUser && !bPendingAdd))
+			{
+				TryAddUserFast(*DirtyUser);
+			}
+			else if (bPendingAdd || (bContainsUser && !bPendingRemove))
+			{
+				TryRemoveUser(*DirtyUser);
+			}
 		}
 	}
 	UsersWithDirtyPresence.Reset();
 
 	// Update the users in the list
-	bool bListChanged = false;
+	bool bListUpdated = false;
 	if (PendingRemovals.Num() > 0)
 	{
-		bListChanged = true;
+		bListUpdated = true;
 
 		Users.RemoveAllSwap(
 			[this] (USocialUser* User)
-			{
-				return PendingRemovals.Contains(User);
+		{
+				if (PendingRemovals.Contains(User))
+				{
+					PendingRemovals.Remove(User);
+					OnUserRemoved().Broadcast(*User);
+					return true;
+				}
+
+				return false;
 			});
 
-		for (TWeakObjectPtr<const USocialUser> User : PendingRemovals)
-		{
-			if (User.IsValid())
-			{
-				OnUserRemoved().Broadcast(*User.Get());
-			}
-		}
 		PendingRemovals.Reset();
 	}
-	
+
 	if (PendingAdds.Num() > 0)
 	{
-		bListChanged = true;
+		bListUpdated = true;
 		Users.Append(PendingAdds);
-		
+
 		for (USocialUser* User : PendingAdds)
 		{
 			OnUserAdded().Broadcast(*User);
@@ -410,47 +559,71 @@ bool FSocialUserList::HandleAutoUpdateList(float)
 		PendingAdds.Reset();
 	}
 
-	if (bListChanged || bNeedsSort)
+	if (bListUpdated || bNeedsSort)
 	{
-		bNeedsSort = false;
+		if (ListConfig.bSortDuringUpdate)
+		{
+			bNeedsSort = false;
+			bListUpdated = true;
 
-		Users.Sort([](USocialUser& UserA, USocialUser& UserB)
+			const int32 NumUsers = Users.Num();
+			if (NumUsers > 1)
 			{
-				const UPartyMember* PartyMemberA = UserA.GetPartyMember(IOnlinePartySystem::GetPrimaryPartyTypeId());
-				const UPartyMember* PartyMemberB = UserB.GetPartyMember(IOnlinePartySystem::GetPrimaryPartyTypeId());
+				SCOPED_NAMED_EVENT(STAT_SocialUserList_Sort, FColor::Orange);
 
-				// Put party members at the top
-				if (PartyMemberA && !PartyMemberB)
-				{
-					return true;
-				}
-				else if (PartyMemberB && !PartyMemberA)
-				{
-					return false;
-				}
+				UE_LOG(LogParty, VeryVerbose, TEXT("%s sorting list of [%d] users"), ANSI_TO_TCHAR(__FUNCTION__), NumUsers);
 
-				// Goes from if online, then alphabetical
-				if (UserA.GetOnlineStatus() == UserB.GetOnlineStatus())
-				{
-					if (UserA.IsPlayingThisGame() == UserB.IsPlayingThisGame())
-					{
-						return UserA.GetDisplayName() < UserB.GetDisplayName();
-					}
-					else
-					{
-						return UserA.IsPlayingThisGame() > UserB.IsPlayingThisGame();
-					}
-				}
-				else
-				{
-					// @todo StephanJ: note Online < Offline < Away, but it's okay for now since we show offline in a separate list #future
-					return UserA.GetOnlineStatus() < UserB.GetOnlineStatus();
-				}
-				
-			});
+				TArray<FUserSortData> SortedData;
+				SortedData.Reserve(NumUsers);
 
-		OnUpdateComplete().Broadcast();
+				Algo::Transform(Users, SortedData, [](USocialUser* const User) -> FUserSortData
+				{
+					return FUserSortData(User, User->GetOnlineStatus(), User->IsPlayingThisGame(), User->GetDisplayName(), User->GetCustomSortValuePrimary(), User->GetCustomSortValueSecondary());
+				});
+
+				Algo::Sort(SortedData);
+
+				// replace contents of Users from SortedData array
+				for (int Index = 0; Index < NumUsers; Index++)
+				{
+					Users[Index] = SortedData[Index].User;
+				}
+			}
+		}
+		else
+		{
+			bNeedsSort = true;
+		}
+
+		if (bListUpdated)
+		{
+			OnUpdateComplete().Broadcast();
+		}
+	}
+}
+
+void FSocialUserList::HandlePartyJoined(USocialParty& Party)
+{
+	Party.OnPartyMemberCreated().AddSP(this, &FSocialUserList::HandlePartyMemberCreated);
+
+	for (UPartyMember* PartyMember : Party.GetPartyMembers())
+	{
+		PartyMember->OnLeftParty().AddSP(this, &FSocialUserList::HandlePartyMemberLeft, PartyMember);
+		MarkUserAsDirty(PartyMember->GetSocialUser());
 	}
 
-	return true;
+	UpdateNow();
+}
+
+void FSocialUserList::HandlePartyMemberCreated(UPartyMember& Member)
+{
+	Member.OnLeftParty().AddSP(this, &FSocialUserList::HandlePartyMemberLeft, &Member);
+	MarkUserAsDirty(Member.GetSocialUser());
+	UpdateNow();
+}
+
+void FSocialUserList::HandlePartyMemberLeft(EMemberExitedReason Reason, UPartyMember* Member)
+{
+	MarkUserAsDirty(Member->GetSocialUser());
+	UpdateNow();
 }

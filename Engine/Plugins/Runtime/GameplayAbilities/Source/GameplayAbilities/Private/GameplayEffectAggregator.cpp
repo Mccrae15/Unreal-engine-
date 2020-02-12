@@ -1,9 +1,10 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "GameplayEffectAggregator.h"
 #include "UObject/UObjectHash.h"
 #include "UObject/UObjectIterator.h"
 #include "AbilitySystemComponent.h"
+#include "AbilitySystemStats.h"
 
 void FAggregatorMod::UpdateQualifies(const FAggregatorEvaluateParameters& Parameters) const
 {
@@ -127,7 +128,7 @@ void FAggregatorModChannel::RemoveModsWithActiveHandle(const FActiveGameplayEffe
 {
 	check(Handle.IsValid());
 
-	for (int32 ModOpIdx = 0; ModOpIdx < ARRAY_COUNT(Mods); ++ModOpIdx)
+	for (int32 ModOpIdx = 0; ModOpIdx < UE_ARRAY_COUNT(Mods); ++ModOpIdx)
 	{
 		Mods[ModOpIdx].RemoveAllSwap([&Handle](const FAggregatorMod& Element)
 		{
@@ -139,7 +140,7 @@ void FAggregatorModChannel::RemoveModsWithActiveHandle(const FActiveGameplayEffe
 
 void FAggregatorModChannel::AddModsFrom(const FAggregatorModChannel& Other)
 {
-	for (int32 ModOpIdx = 0; ModOpIdx < ARRAY_COUNT(Mods); ++ModOpIdx)
+	for (int32 ModOpIdx = 0; ModOpIdx < UE_ARRAY_COUNT(Mods); ++ModOpIdx)
 	{
 		Mods[ModOpIdx].Append(Other.Mods[ModOpIdx]);
 	}
@@ -147,7 +148,7 @@ void FAggregatorModChannel::AddModsFrom(const FAggregatorModChannel& Other)
 
 void FAggregatorModChannel::UpdateQualifiesOnAllMods(const FAggregatorEvaluateParameters& Parameters) const
 {
-	for (int32 ModOpIdx = 0; ModOpIdx < ARRAY_COUNT(Mods); ++ModOpIdx)
+	for (int32 ModOpIdx = 0; ModOpIdx < UE_ARRAY_COUNT(Mods); ++ModOpIdx)
 	{
 		for (const FAggregatorMod& Mod : Mods[ModOpIdx])
 		{
@@ -158,7 +159,7 @@ void FAggregatorModChannel::UpdateQualifiesOnAllMods(const FAggregatorEvaluatePa
 
 void FAggregatorModChannel::ForEachMod(FAggregatorModInfo& Info, TFunction<void (const FAggregatorModInfo&) > Func) const
 {
-	for (int32 ModOpIdx = 0; ModOpIdx < ARRAY_COUNT(Mods); ++ModOpIdx)
+	for (int32 ModOpIdx = 0; ModOpIdx < UE_ARRAY_COUNT(Mods); ++ModOpIdx)
 	{
 		Info.Op = (EGameplayModOp::Type)ModOpIdx;
 		for (const FAggregatorMod& Mod : Mods[ModOpIdx])
@@ -176,7 +177,7 @@ void FAggregatorModChannel::GetAllAggregatorMods(EGameplayModEvaluationChannel C
 
 void FAggregatorModChannel::OnActiveEffectDependenciesSwapped(const TMap<FActiveGameplayEffectHandle, FActiveGameplayEffectHandle>& SwappedDependencies)
 {
-	for (int32 ModOpIdx = 0; ModOpIdx < ARRAY_COUNT(Mods); ++ModOpIdx)
+	for (int32 ModOpIdx = 0; ModOpIdx < UE_ARRAY_COUNT(Mods); ++ModOpIdx)
 	{
 		for (FAggregatorMod& Mod : Mods[ModOpIdx])
 		{
@@ -567,6 +568,7 @@ void FAggregator::BroadcastOnDirty()
 		return;
 	}
 
+	SCOPE_CYCLE_COUNTER(STAT_AggregatorBroadcastOnDirty);
 
 	// --------------------------------------------------
 	//	The code below attempts to avoid recursion issues: an aggregator is dirty and while it is broadcasting this out, someone dirties it again.

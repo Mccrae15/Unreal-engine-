@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 using UnrealBuildTool;
 
@@ -17,7 +17,7 @@ public class LocalizationService : ModuleRules
 			}
 		);
 
-        if (Target.Platform != UnrealTargetPlatform.Linux)
+        if (!Target.IsInPlatformGroup(UnrealPlatformGroup.Linux))
         {
             PrivateDependencyModuleNames.AddRange(
                 new string[] {

@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "NavModifierVolume.h"
 #include "NavigationSystem.h"
@@ -59,6 +59,10 @@ void ANavModifierVolume::PostEditUndo()
 {
 	Super::PostEditUndo();
 
+	if (GetBrushComponent())
+	{
+		GetBrushComponent()->BuildSimpleBrushCollision();
+	}
 	FNavigationSystem::UpdateActorData(*this);
 }
 

@@ -1,7 +1,7 @@
 @echo off
 
 rem ## Unreal Engine 4 AutomationTool setup script
-rem ## Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+rem ## Copyright Epic Games, Inc. All Rights Reserved.
 rem ##
 rem ## This script is expecting to exist in the UE4/Engine/Build/BatchFiles directory.  It will not work correctly
 rem ## if you copy it to a different location and run it.
@@ -14,7 +14,7 @@ set UATDirectory=Binaries\DotNET\
 set UATCompileArg=-compile
 
 rem ## Change the CWD to /Engine. 
-pushd %~dp0..\..\
+pushd "%~dp0..\..\"
 if not exist Build\BatchFiles\RunUAT.bat goto Error_BatchFileInWrongLocation
 
 rem ## Use the pre-compiled UAT scripts if -nocompile is specified in the command line

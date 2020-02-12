@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "PacketHandlers/StatelessConnectHandlerComponent.h"
 #include "Stats/Stats.h"
@@ -6,7 +6,7 @@
 #include "EngineStats.h"
 #include "Misc/SecureHash.h"
 #include "Engine/NetConnection.h"
-#include "PacketAudit.h"
+#include "Net/Core/Misc/PacketAudit.h"
 
 
 
@@ -51,20 +51,20 @@ DEFINE_LOG_CATEGORY(LogHandshake);
  * and the server responding with a unique 'Cookie' value, which the client has to respond with.
  *
  * Client - Initial Connect:
- * [HandshakeBit][RestartHandshakeBit][SecretIdBit][24:PacketSizeFiller][AlignPad]
- *																--->
- *																		Server - Stateless Handshake Challenge:
- *																		[HandshakeBit][RestartHandshakeBit][SecretIdBit][4:Timestamp][20:Cookie][AlignPad]
- *																<---
+ * [?:MagicHeader][HandshakeBit][RestartHandshakeBit][SecretIdBit][28:PacketSizeFiller][AlignPad]
+ *													--->
+ *															Server - Stateless Handshake Challenge:
+ *															[?:MagicHeader][HandshakeBit][RestartHandshakeBit][SecretIdBit][8:Timestamp][20:Cookie][AlignPad]
+ *													<---
  * Client - Stateless Challenge Response:
- * [HandshakeBit][RestartHandshakeBit][SecretIdBit][4:Timestamp][20:Cookie][AlignPad]
- *																--->
- *																		Server:
- *																		Ignore, or create UNetConnection.
+ * [?:MagicHeader][HandshakeBit][RestartHandshakeBit][SecretIdBit][8:Timestamp][20:Cookie][AlignPad]
+ *													--->
+ *															Server:
+ *															Ignore, or create UNetConnection.
  *
- *																		Server - Stateless Handshake Ack
- *																		[HandshakeBit][RestartHandshakeBit][SecretIdBit][4:Timestamp][20:Cookie][AlignPad]
- *																<---
+ *															Server - Stateless Handshake Ack
+ *															[?:MagicHeader][HandshakeBit][RestartHandshakeBit][SecretIdBit][8:Timestamp][20:Cookie][AlignPad]
+ *													<---
  * Client:
  * Handshake Complete.
  *
@@ -74,26 +74,27 @@ DEFINE_LOG_CATEGORY(LogHandshake);
  * The Restart Handshake process is triggered by receiving a (possibly spoofed) non-handshake packet from an unknown IP,
  * so the protocol has been crafted so the server sends only a minimal (1 byte) response, to minimize DRDoS reflection amplification.
  *
- *																		Server - Restart Handshake Request:
- *																		[HandshakeBit][RestartHandshakeBit][AlignPad]
- *																<--
+ *															Server - Restart Handshake Request:
+ *															[?:MagicHeader][HandshakeBit][RestartHandshakeBit][AlignPad]
+ *													<--
  * Client -  Initial Connect (as above)
- *																-->
- *																		Server -  Stateless Handshake Challenge (as above)
- *																<--
+ *													-->
+ *															Server -  Stateless Handshake Challenge (as above)
+ *													<--
  * Client - Stateless Challenge Response + Original Cookie
- * [HandshakeBit][RestartHandshakeBit][SecretIdBit][4:Timestamp][20:Cookie][20:OriginalCookie][AlignPad]
- *																-->
- *																		Server:
- *																		Ignore, or restore UNetConnection.
+ * [?:MagicHeader][HandshakeBit][RestartHandshakeBit][SecretIdBit][8:Timestamp][20:Cookie][20:OriginalCookie][AlignPad]
+ *													-->
+ *															Server:
+ *															Ignore, or restore UNetConnection.
  *
- *																		Server - Stateless Handshake Ack (as above)
- *																<--
+ *															Server - Stateless Handshake Ack (as above)
+ *													<--
  * Client:
  * Handshake Complete. Connection restored.
  *
  *
  *
+ *	- MagicHeader:			An optional static/predefined header, between 0-32 bits in size. Serves no purpose for the handshake code.
  *	- HandshakeBit:			Bit signifying whether a packet is a handshake packet. Applied to all game packets.
  *	- SecretIdBit:			For handshake packets, specifies which HandshakeSecret array was used to generate Cookie.
  *	- RestartHandshakeBit:  Sent by the server when it detects normal game traffic from an unknown IP/port combination.
@@ -163,13 +164,24 @@ DEFINE_LOG_CATEGORY(LogHandshake);
 #define PACKETLOSS_TEST 0
 
 
+// Whether or not clients should send diagnostics to the server with the restart handshake, detailing why the request was accepted.
+#define RESTART_HANDSHAKE_DIAGNOSTICS 0
+
+// Disable client sending of handshake diagnostics
+#define DISABLE_SEND_HANDSHAKE_DIAGNOSTICS 1
+
+
 /**
  * Defines
  */
 
-#define HANDSHAKE_PACKET_SIZE_BITS				195
+#define HANDSHAKE_PACKET_SIZE_BITS				227
 #define RESTART_HANDSHAKE_PACKET_SIZE_BITS		2
-#define RESTART_RESPONSE_SIZE_BITS				355
+#define RESTART_RESPONSE_SIZE_BITS				387
+
+#if RESTART_HANDSHAKE_DIAGNOSTICS
+#define RESTART_RESPONSE_DIAGNOSTICS_SIZE_BITS	483
+#endif
 
 
 // The number of seconds between secret value updates, and the random variance applied to this
@@ -184,6 +196,59 @@ DEFINE_LOG_CATEGORY(LogHandshake);
 
 
 /**
+ * CVars
+ */
+
+TAutoConsoleVariable<FString> CVarNetMagicHeader(
+	TEXT("net.MagicHeader"),
+	TEXT(""),
+	TEXT("String representing binary bits which are prepended to every packet sent by the game. Max length: 32 bits."));
+
+
+#if RESTART_HANDSHAKE_DIAGNOSTICS
+TAutoConsoleVariable<int32> CVarNetRestartHandshakeDiagnostics(
+	TEXT("net.RestartHandshakeDiagnostics"),
+	0,
+	TEXT("Enables or disables restart handshake diagnostics. Serverside this controls logging. Clientside this controls sending."));
+#endif
+
+
+/**
+ * Structs/enums
+ */
+
+#if RESTART_HANDSHAKE_DIAGNOSTICS
+struct FRestartHandshakeDiagnostics
+{
+	float LastRestartPacketTimeDiff = -1.f;
+	float LastNetConnPacketTimeDiff = -1.f;
+
+	uint64 ReservedUnused = 0;
+
+
+	bool IsValid()
+	{
+		return LastRestartPacketTimeDiff != -1.f || LastNetConnPacketTimeDiff != -1.f;
+	}
+};
+
+static_assert(((RESTART_RESPONSE_DIAGNOSTICS_SIZE_BITS - RESTART_RESPONSE_SIZE_BITS) - (sizeof(FRestartHandshakeDiagnostics) * 8)) == 0,
+				"FRestartHandshakeDiagnostics must be properly factored into packet size defines.");
+
+FArchive& operator << (FArchive& Ar, FRestartHandshakeDiagnostics& D)
+{
+	Ar << D.LastRestartPacketTimeDiff;
+	Ar << D.LastNetConnPacketTimeDiff;
+	Ar << D.ReservedUnused;
+
+	return Ar;
+}
+
+static FRestartHandshakeDiagnostics HandshakeDiagnostics;
+#endif
+
+
+/**
  * StatelessConnectHandlerComponent
  */
 
@@ -192,21 +257,55 @@ StatelessConnectHandlerComponent::StatelessConnectHandlerComponent()
 	, Driver(nullptr)
 	, HandshakeSecret()
 	, ActiveSecret(255)
-	, LastSecretUpdateTimestamp(0.f)
-	, LastChallengeSuccessAddress(TEXT(""))
+	, LastSecretUpdateTimestamp(0.0)
+	, LastChallengeSuccessAddress(nullptr)
 	, LastServerSequence(0)
 	, LastClientSequence(0)
 	, LastClientSendTimestamp(0.0)
 	, LastChallengeTimestamp(0.0)
+	, LastRestartPacketTimestamp(0.0)
 	, LastSecretId(0)
-	, LastTimestamp(0.f)
+	, LastTimestamp(0.0)
 	, LastCookie()
 	, bRestartedHandshake(false)
 	, AuthorisedCookie()
+	, MagicHeader()
 {
 	SetActive(true);
 
 	bRequiresHandshake = true;
+
+	FString MagicHeaderStr = CVarNetMagicHeader.GetValueOnAnyThread();
+
+	if (!MagicHeaderStr.IsEmpty())
+	{
+		int32 HeaderStrLen = MagicHeaderStr.Len();
+
+		if (HeaderStrLen <= 32)
+		{
+			bool bValidBinaryStr = true;
+
+			for (int32 i=0; i<MagicHeaderStr.Len() && bValidBinaryStr; i++)
+			{
+				const TCHAR& CurChar = MagicHeaderStr[i];
+
+				bValidBinaryStr = CurChar == '0' || CurChar == '1';
+
+				MagicHeader.Add(CurChar != '0');
+			}
+
+			if (!bValidBinaryStr)
+			{
+				UE_LOG(LogHandshake, Error, TEXT("CVar net.MagicHeader must be a binary string, containing only 1's and 0's, e.g.: 00010101. Current string: %s"), *MagicHeaderStr);
+
+				MagicHeader.Empty();
+			}
+		}
+		else
+		{
+			UE_LOG(LogHandshake, Error, TEXT("CVar net.MagicHeader is too long (%i), maximum size is 32 bits: %s"), MagicHeaderStr.Len(), *MagicHeaderStr);
+		}
+	}
 }
 
 void StatelessConnectHandlerComponent::CountBytes(FArchive& Ar) const
@@ -219,8 +318,6 @@ void StatelessConnectHandlerComponent::CountBytes(FArchive& Ar) const
 	{
 		HandshakeSecret[i].CountBytes(Ar);
 	}
-
-	LastChallengeSuccessAddress.CountBytes(Ar);
 }
 
 void StatelessConnectHandlerComponent::NotifyHandshakeBegin()
@@ -231,8 +328,13 @@ void StatelessConnectHandlerComponent::NotifyHandshakeBegin()
 
 		if (ServerConn != nullptr)
 		{
-			FBitWriter InitialPacket(HANDSHAKE_PACKET_SIZE_BITS + 1 /* Termination bit */);
+			FBitWriter InitialPacket(GetAdjustedSizeBits(HANDSHAKE_PACKET_SIZE_BITS) + 1 /* Termination bit */);
 			uint8 bHandshakePacket = 1;
+
+			if (MagicHeader.Num() > 0)
+			{
+				InitialPacket.SerializeBits(MagicHeader.GetData(), MagicHeader.Num());
+			}
 
 			InitialPacket.WriteBit(bHandshakePacket);
 
@@ -240,13 +342,13 @@ void StatelessConnectHandlerComponent::NotifyHandshakeBegin()
 			// In order to prevent DRDoS reflection amplification attacks, clients must pad the packet to match server packet size
 			uint8 bRestartHandshake = bRestartedHandshake ? 1 : 0;
 			uint8 SecretIdPad = 0;
-			uint8 PacketSizeFiller[24];
+			uint8 PacketSizeFiller[28];
 
 			InitialPacket.WriteBit(bRestartHandshake);
 			InitialPacket.WriteBit(SecretIdPad);
 
-			FMemory::Memzero(PacketSizeFiller, ARRAY_COUNT(PacketSizeFiller));
-			InitialPacket.Serialize(PacketSizeFiller, ARRAY_COUNT(PacketSizeFiller));
+			FMemory::Memzero(PacketSizeFiller, UE_ARRAY_COUNT(PacketSizeFiller));
+			InitialPacket.Serialize(PacketSizeFiller, UE_ARRAY_COUNT(PacketSizeFiller));
 
 
 
@@ -286,30 +388,35 @@ void StatelessConnectHandlerComponent::NotifyHandshakeBegin()
 	}
 }
 
-void StatelessConnectHandlerComponent::SendConnectChallenge(const FString& ClientAddress)
+void StatelessConnectHandlerComponent::SendConnectChallenge(TSharedPtr<const FInternetAddr> ClientAddress)
 {
 	if (Driver != nullptr)
 	{
-		FBitWriter ChallengePacket(HANDSHAKE_PACKET_SIZE_BITS + 1 /* Termination bit */);
+		FBitWriter ChallengePacket(GetAdjustedSizeBits(HANDSHAKE_PACKET_SIZE_BITS) + 1 /* Termination bit */);
 		uint8 bHandshakePacket = 1;
 		uint8 bRestartHandshake = 0; // Ignored clientside
-		float Timestamp = Driver->Time;
+		double Timestamp = Driver->GetElapsedTime();
 		uint8 Cookie[COOKIE_BYTE_SIZE];
 
 		GenerateCookie(ClientAddress, ActiveSecret, Timestamp, Cookie);
+
+		if (MagicHeader.Num() > 0)
+		{
+			ChallengePacket.SerializeBits(MagicHeader.GetData(), MagicHeader.Num());
+		}
 
 		ChallengePacket.WriteBit(bHandshakePacket);
 		ChallengePacket.WriteBit(bRestartHandshake);
 		ChallengePacket.WriteBit(ActiveSecret);
 
 		ChallengePacket << Timestamp;
-		ChallengePacket.Serialize(Cookie, ARRAY_COUNT(Cookie));
+		ChallengePacket.Serialize(Cookie, UE_ARRAY_COUNT(Cookie));
 
 #if !UE_BUILD_SHIPPING
 		FDDoSDetection* DDoS = Handler->GetDDoS();
 
 		UE_CLOG((DDoS == nullptr || !DDoS->CheckLogRestrictions()), LogHandshake, Log,
-				TEXT("SendConnectChallenge. Timestamp: %f, Cookie: %s" ), Timestamp, *FString::FromBlob(Cookie, ARRAY_COUNT(Cookie)));
+				TEXT("SendConnectChallenge. Timestamp: %f, Cookie: %s" ), Timestamp, *FString::FromBlob(Cookie, UE_ARRAY_COUNT(Cookie)));
 #endif
 
 		CapHandshakePacket(ChallengePacket);
@@ -356,15 +463,29 @@ void StatelessConnectHandlerComponent::SendConnectChallenge(const FString& Clien
 	}
 }
 
-void StatelessConnectHandlerComponent::SendChallengeResponse(uint8 InSecretId, float InTimestamp, uint8 InCookie[COOKIE_BYTE_SIZE])
+void StatelessConnectHandlerComponent::SendChallengeResponse(uint8 InSecretId, double InTimestamp, uint8 InCookie[COOKIE_BYTE_SIZE])
 {
 	UNetConnection* ServerConn = (Driver != nullptr ? Driver->ServerConnection : nullptr);
 
 	if (ServerConn != nullptr)
 	{
-		FBitWriter ResponsePacket((bRestartedHandshake ? RESTART_RESPONSE_SIZE_BITS : HANDSHAKE_PACKET_SIZE_BITS) + 1 /* Termination bit */);
+		int32 RestartHandshakeResponseSize = RESTART_RESPONSE_SIZE_BITS;
+
+#if RESTART_HANDSHAKE_DIAGNOSTICS && !DISABLE_SEND_HANDSHAKE_DIAGNOSTICS
+		bool bEnableDiagnostics = bRestartedHandshake && !!CVarNetRestartHandshakeDiagnostics.GetValueOnAnyThread();
+
+		RestartHandshakeResponseSize = bEnableDiagnostics ? RESTART_RESPONSE_DIAGNOSTICS_SIZE_BITS : RestartHandshakeResponseSize;
+#endif
+
+		const int32 BaseSize = GetAdjustedSizeBits(bRestartedHandshake ? RestartHandshakeResponseSize : HANDSHAKE_PACKET_SIZE_BITS);
+		FBitWriter ResponsePacket(BaseSize + 1 /* Termination bit */);
 		uint8 bHandshakePacket = 1;
 		uint8 bRestartHandshake = (bRestartedHandshake ? 1 : 0);
+
+		if (MagicHeader.Num() > 0)
+		{
+			ResponsePacket.SerializeBits(MagicHeader.GetData(), MagicHeader.Num());
+		}
 
 		ResponsePacket.WriteBit(bHandshakePacket);
 		ResponsePacket.WriteBit(bRestartHandshake);
@@ -376,6 +497,13 @@ void StatelessConnectHandlerComponent::SendChallengeResponse(uint8 InSecretId, f
 		if (bRestartedHandshake)
 		{
 			ResponsePacket.Serialize(AuthorisedCookie, COOKIE_BYTE_SIZE);
+
+#if RESTART_HANDSHAKE_DIAGNOSTICS && !DISABLE_SEND_HANDSHAKE_DIAGNOSTICS
+			if (bEnableDiagnostics)
+			{
+				ResponsePacket << HandshakeDiagnostics;
+			}
+#endif
 		}
 
 #if !UE_BUILD_SHIPPING
@@ -417,7 +545,7 @@ void StatelessConnectHandlerComponent::SendChallengeResponse(uint8 InSecretId, f
 		LastServerSequence = *CurSequence & (MAX_PACKETID - 1);
 		LastClientSequence = *(CurSequence + 1) & (MAX_PACKETID - 1);
 
-		FMemory::Memcpy(LastCookie, InCookie, ARRAY_COUNT(LastCookie));
+		FMemory::Memcpy(LastCookie, InCookie, UE_ARRAY_COUNT(LastCookie));
 	}
 	else
 	{
@@ -425,14 +553,19 @@ void StatelessConnectHandlerComponent::SendChallengeResponse(uint8 InSecretId, f
 	}
 }
 
-void StatelessConnectHandlerComponent::SendChallengeAck(const FString& ClientAddress, uint8 InCookie[COOKIE_BYTE_SIZE])
+void StatelessConnectHandlerComponent::SendChallengeAck(TSharedPtr<const FInternetAddr> ClientAddress, uint8 InCookie[COOKIE_BYTE_SIZE])
 {
 	if (Driver != nullptr)
 	{
-		FBitWriter AckPacket(HANDSHAKE_PACKET_SIZE_BITS + 1 /* Termination bit */);
+		FBitWriter AckPacket(GetAdjustedSizeBits(HANDSHAKE_PACKET_SIZE_BITS) + 1 /* Termination bit */);
 		uint8 bHandshakePacket = 1;
 		uint8 bRestartHandshake = 0; // Ignored clientside
-		float Timestamp  = -1.f;
+		double Timestamp  = -1.0;
+
+		if (MagicHeader.Num() > 0)
+		{
+			AckPacket.SerializeBits(MagicHeader.GetData(), MagicHeader.Num());
+		}
 
 		AckPacket.WriteBit(bHandshakePacket);
 		AckPacket.WriteBit(bRestartHandshake);
@@ -489,16 +622,21 @@ void StatelessConnectHandlerComponent::SendChallengeAck(const FString& ClientAdd
 	}
 }
 
-void StatelessConnectHandlerComponent::SendRestartHandshakeRequest(const FString& ClientAddress)
+void StatelessConnectHandlerComponent::SendRestartHandshakeRequest(const TSharedPtr<const FInternetAddr> ClientAddress)
 {
 	if (Driver != nullptr)
 	{
-		FBitWriter AckPacket(RESTART_HANDSHAKE_PACKET_SIZE_BITS + 1 /* Termination bit */);
+		FBitWriter RestartPacket(GetAdjustedSizeBits(RESTART_HANDSHAKE_PACKET_SIZE_BITS) + 1 /* Termination bit */);
 		uint8 bHandshakePacket = 1;
 		uint8 bRestartHandshake = 1;
 
-		AckPacket.WriteBit(bHandshakePacket);
-		AckPacket.WriteBit(bRestartHandshake);
+		if (MagicHeader.Num() > 0)
+		{
+			RestartPacket.SerializeBits(MagicHeader.GetData(), MagicHeader.Num());
+		}
+
+		RestartPacket.WriteBit(bHandshakePacket);
+		RestartPacket.WriteBit(bRestartHandshake);
 
 #if !UE_BUILD_SHIPPING
 		FDDoSDetection* DDoS = Handler->GetDDoS();
@@ -506,7 +644,7 @@ void StatelessConnectHandlerComponent::SendRestartHandshakeRequest(const FString
 		UE_CLOG((DDoS == nullptr || !DDoS->CheckLogRestrictions()), LogHandshake, Log, TEXT("SendRestartHandshakeRequest."));
 #endif
 
-		CapHandshakePacket(AckPacket);
+		CapHandshakePacket(RestartPacket);
 
 		
 		// Disable PacketHandler parsing, and send the raw packet
@@ -532,7 +670,7 @@ void StatelessConnectHandlerComponent::SendRestartHandshakeRequest(const FString
 			{
 				FOutPacketTraits Traits;
 
-				Driver->LowLevelSend(ClientAddress, AckPacket.GetData(), AckPacket.GetNumBits(), Traits);
+				Driver->LowLevelSend(ClientAddress, RestartPacket.GetData(), RestartPacket.GetNumBits(), Traits);
 			}
 		}
 
@@ -552,9 +690,14 @@ void StatelessConnectHandlerComponent::SendRestartHandshakeRequest(const FString
 
 void StatelessConnectHandlerComponent::CapHandshakePacket(FBitWriter& HandshakePacket)
 {
-	uint32 NumBits = HandshakePacket.GetNumBits();
+	uint32 NumBits = HandshakePacket.GetNumBits() - GetAdjustedSizeBits(0);
 
+#if RESTART_HANDSHAKE_DIAGNOSTICS
+	check(NumBits == HANDSHAKE_PACKET_SIZE_BITS || NumBits == RESTART_HANDSHAKE_PACKET_SIZE_BITS || NumBits == RESTART_RESPONSE_SIZE_BITS
+			|| NumBits == RESTART_RESPONSE_DIAGNOSTICS_SIZE_BITS);
+#else
 	check(NumBits == HANDSHAKE_PACKET_SIZE_BITS || NumBits == RESTART_HANDSHAKE_PACKET_SIZE_BITS || NumBits == RESTART_RESPONSE_SIZE_BITS);
+#endif
 
 	FPacketAudit::AddStage(TEXT("PostPacketHandler"), HandshakePacket);
 
@@ -598,18 +741,25 @@ void StatelessConnectHandlerComponent::InitFromConnectionless(StatelessConnectHa
 	// Store the cookie/address used for the handshake, to enable server ack-retries
 	LastChallengeSuccessAddress = InConnectionlessHandler->LastChallengeSuccessAddress;
 
-	FMemory::Memcpy(AuthorisedCookie, InConnectionlessHandler->AuthorisedCookie, ARRAY_COUNT(AuthorisedCookie));
+	FMemory::Memcpy(AuthorisedCookie, InConnectionlessHandler->AuthorisedCookie, UE_ARRAY_COUNT(AuthorisedCookie));
 }
 
 void StatelessConnectHandlerComponent::Incoming(FBitReader& Packet)
 {
+	if (MagicHeader.Num() > 0)
+	{
+		// Don't bother with the expense of verifying the magic header here.
+		uint32 ReadMagic = 0;
+		Packet.SerializeBits(&ReadMagic, MagicHeader.Num());
+	}
+
 	bool bHandshakePacket = !!Packet.ReadBit() && !Packet.IsError();
 
 	if (bHandshakePacket)
 	{
 		bool bRestartHandshake = false;
 		uint8 SecretId = 0;
-		float Timestamp = 1.f;
+		double Timestamp = 1.;
 		uint8 Cookie[COOKIE_BYTE_SIZE];
 		uint8 OrigCookie[COOKIE_BYTE_SIZE];
 
@@ -628,9 +778,9 @@ void StatelessConnectHandlerComponent::Incoming(FBitReader& Packet)
 #endif
 					}
 					// Receiving challenge, verify the timestamp is > 0.0f
-					else if (Timestamp > 0.0f)
+					else if (Timestamp > 0.0)
 					{
-						LastChallengeTimestamp = (Driver != nullptr ? Driver->Time : 0.0);
+						LastChallengeTimestamp = (Driver != nullptr ? Driver->GetElapsedTime() : 0.0);
 
 						SendChallengeResponse(SecretId, Timestamp, Cookie);
 
@@ -638,7 +788,7 @@ void StatelessConnectHandlerComponent::Incoming(FBitReader& Packet)
 						SetState(Handler::Component::State::InitializedOnLocal);
 					}
 					// Receiving challenge ack, verify the timestamp is < 0.0f
-					else if (Timestamp < 0.0f)
+					else if (Timestamp < 0.0)
 					{
 						if (!bRestartedHandshake)
 						{
@@ -656,14 +806,14 @@ void StatelessConnectHandlerComponent::Incoming(FBitReader& Packet)
 							}
 
 							// Save the final authorized cookie
-							FMemory::Memcpy(AuthorisedCookie, Cookie, ARRAY_COUNT(AuthorisedCookie));
+							FMemory::Memcpy(AuthorisedCookie, Cookie, UE_ARRAY_COUNT(AuthorisedCookie));
 						}
 
 						// Now finish initializing the handler - flushing the queued packet buffer in the process.
 						SetState(Handler::Component::State::Initialized);
 						Initialized();
 
-						bRestartedHandshake = false;;
+						bRestartedHandshake = false;
 					}
 				}
 				else if (bRestartHandshake)
@@ -675,10 +825,41 @@ void StatelessConnectHandlerComponent::Incoming(FBitReader& Packet)
 					// it has received traffic from us on a different address than before.
 					if (ensure(bValidAuthCookie))
 					{
-						// The server may send multiple restart handshake packets, so have a 10 second delay between accepting them
-						double LastSendTimeDiff = (FPlatformTime::Seconds() - LastClientSendTimestamp) - 10.0;
+						bool bPassedDelayCheck = false;
+						bool bPassedDualIPCheck = false;
+						double CurrentTime = FPlatformTime::Seconds();;
 
-						if (!bRestartedHandshake && LastSendTimeDiff > 0.0)
+						if (!bRestartedHandshake)
+						{
+							UNetConnection* ServerConn = (Driver != nullptr ? Driver->ServerConnection : nullptr);
+							double LastNetConnPacketTime = (ServerConn != nullptr ? ServerConn->LastReceiveRealtime : 0.0);
+
+							// The server may send multiple restart handshake packets, so have a 10 second delay between accepting them
+							bPassedDelayCheck = ((CurrentTime - LastClientSendTimestamp) - 10.0) > 0.0;
+
+							// Some clients end up sending packets duplicated over multiple IP's, triggering the restart handshake.
+							// Detect this by checking if any restart handshake requests have been received in roughly the last second
+							// (Dual IP situations will make the server send them constantly) - and override the checks as a failsafe,
+							// if no NetConnection packets have been received in the last second.
+							double LastRestartPacketTimeDiff = CurrentTime - LastRestartPacketTimestamp;
+							double LastNetConnPacketTimeDiff = CurrentTime - LastNetConnPacketTime;
+
+							bPassedDualIPCheck = LastRestartPacketTimestamp == 0.0 ||
+													((LastRestartPacketTimeDiff) - 1.1) > 0.0 ||
+													((LastNetConnPacketTimeDiff) - 1.0) > 0.0;
+
+#if RESTART_HANDSHAKE_DIAGNOSTICS
+							if (bPassedDualIPCheck)
+							{
+								HandshakeDiagnostics.LastRestartPacketTimeDiff = LastRestartPacketTimeDiff;
+								HandshakeDiagnostics.LastNetConnPacketTimeDiff = LastNetConnPacketTimeDiff;
+							}
+#endif
+						}
+
+						LastRestartPacketTimestamp = CurrentTime;
+
+						if (!bRestartedHandshake && bPassedDelayCheck && bPassedDualIPCheck)
 						{
 							UE_LOG(LogHandshake, Log, TEXT("Beginning restart handshake process."));
 
@@ -692,9 +873,13 @@ void StatelessConnectHandlerComponent::Incoming(FBitReader& Packet)
 							UE_LOG(LogHandshake, Log, TEXT("Ignoring restart handshake request, while already restarted (this is normal)."));
 						}
 #if !UE_BUILD_SHIPPING
-						else // if (LastSendTimeDiff > 0.0)
+						else if (!bPassedDelayCheck)
 						{
 							UE_LOG(LogHandshake, Log, TEXT("Ignoring restart handshake request, due to < 10 seconds since last handshake."));
+						}
+						else // if (!bPassedDualIPCheck)
+						{
+							UE_LOG(LogHandshake, Log, TEXT("Ignoring restart handshake request, due to recent NetConnection packets."));
 						}
 #endif
 					}
@@ -712,14 +897,17 @@ void StatelessConnectHandlerComponent::Incoming(FBitReader& Packet)
 			}
 			else if (Handler->Mode == Handler::Mode::Server)
 			{
-				// The server should not be receiving handshake packets at this stage - resend the ack in case it was lost.
-				// In this codepath, this component is linked to a UNetConnection, and the Last* values below, cache the handshake info.
+				if (LastChallengeSuccessAddress.IsValid())
+				{
+					// The server should not be receiving handshake packets at this stage - resend the ack in case it was lost.
+					// In this codepath, this component is linked to a UNetConnection, and the Last* values below, cache the handshake info.
 #if !UE_BUILD_SHIPPING
-				UE_LOG(LogHandshake, Log, TEXT("Received unexpected post-connect handshake packet - resending ack for LastChallengeSuccessAddress %s and LastCookie %s."),
-						*LastChallengeSuccessAddress, *FString::FromBlob(AuthorisedCookie, COOKIE_BYTE_SIZE));
+					UE_LOG(LogHandshake, Log, TEXT("Received unexpected post-connect handshake packet - resending ack for LastChallengeSuccessAddress %s and LastCookie %s."),
+							*LastChallengeSuccessAddress->ToString(true), *FString::FromBlob(AuthorisedCookie, COOKIE_BYTE_SIZE));
 #endif
 
-				SendChallengeAck(LastChallengeSuccessAddress, AuthorisedCookie);
+					SendChallengeAck(LastChallengeSuccessAddress, AuthorisedCookie);
+				}
 			}
 		}
 		else
@@ -737,13 +925,23 @@ void StatelessConnectHandlerComponent::Incoming(FBitReader& Packet)
 		UE_LOG(LogHandshake, Log, TEXT("Incoming: Error reading handshake bit from packet."));
 	}
 #endif
+	// Servers should wipe LastChallengeSuccessAddress when the first non-handshake packet is received by the client, in order to disable challenge ack resending
+	else if (LastChallengeSuccessAddress.IsValid() && Handler->Mode == Handler::Mode::Server)
+	{
+		LastChallengeSuccessAddress.Reset();
+	}
 }
 
 void StatelessConnectHandlerComponent::Outgoing(FBitWriter& Packet, FOutPacketTraits& Traits)
 {
 	// All UNetConnection packets must specify a zero bHandshakePacket value
-	FBitWriter NewPacket(Packet.GetNumBits()+1, true);
+	FBitWriter NewPacket(GetAdjustedSizeBits(Packet.GetNumBits())+1, true);
 	uint8 bHandshakePacket = 0;
+
+	if (MagicHeader.Num() > 0)
+	{
+		NewPacket.SerializeBits(MagicHeader.GetData(), MagicHeader.Num());
+	}
 
 	NewPacket.WriteBit(bHandshakePacket);
 	NewPacket.SerializeBits(Packet.GetData(), Packet.GetNumBits());
@@ -751,17 +949,24 @@ void StatelessConnectHandlerComponent::Outgoing(FBitWriter& Packet, FOutPacketTr
 	Packet = MoveTemp(NewPacket);
 }
 
-void StatelessConnectHandlerComponent::IncomingConnectionless(const FString& Address, FBitReader& Packet)
+void StatelessConnectHandlerComponent::IncomingConnectionless(const TSharedPtr<const FInternetAddr>& Address, FBitReader& Packet)
 {
+	if (MagicHeader.Num() > 0)
+	{
+		// Don't bother with the expense of verifying the magic header here.
+		uint32 ReadMagic = 0;
+		Packet.SerializeBits(&ReadMagic, MagicHeader.Num());
+	}
+
 	bool bHandshakePacket = !!Packet.ReadBit() && !Packet.IsError();
 
-	LastChallengeSuccessAddress.Empty();
+	LastChallengeSuccessAddress = nullptr;
 
 	if (bHandshakePacket)
 	{
 		bool bRestartHandshake = false;
 		uint8 SecretId = 0;
-		float Timestamp = 1.f;
+		double Timestamp = 1.0;
 		uint8 Cookie[COOKIE_BYTE_SIZE];
 		uint8 OrigCookie[COOKIE_BYTE_SIZE];
 
@@ -771,7 +976,7 @@ void StatelessConnectHandlerComponent::IncomingConnectionless(const FString& Add
 		{
 			if (Handler->Mode == Handler::Mode::Server)
 			{
-				bool bInitialConnect = Timestamp == 0.f;
+				const bool bInitialConnect = Timestamp == 0.0;
 
 				if (bInitialConnect)
 				{
@@ -780,13 +985,13 @@ void StatelessConnectHandlerComponent::IncomingConnectionless(const FString& Add
 				// Challenge response
 				else if (Driver != nullptr)
 				{
-					// NOTE: Allow CookieDelta to be 0.f, as it is possible for a server to send a challenge and receive a response,
+					// NOTE: Allow CookieDelta to be 0.0, as it is possible for a server to send a challenge and receive a response,
 					//			during the same tick
 					bool bChallengeSuccess = false;
-					float CookieDelta = Driver->Time - Timestamp;
-					float SecretDelta = Timestamp - LastSecretUpdateTimestamp;
-					bool bValidCookieLifetime = CookieDelta >= 0.0 && (MAX_COOKIE_LIFETIME - CookieDelta) > 0.f;
-					bool bValidSecretIdTimestamp = (SecretId == ActiveSecret) ? (SecretDelta >= 0.f) : (SecretDelta <= 0.f);
+					const double CookieDelta = Driver->GetElapsedTime() - Timestamp;
+					const double SecretDelta = Timestamp - LastSecretUpdateTimestamp;
+					const bool bValidCookieLifetime = CookieDelta >= 0.0 && (MAX_COOKIE_LIFETIME - CookieDelta) > 0.0;
+					const bool bValidSecretIdTimestamp = (SecretId == ActiveSecret) ? (SecretDelta >= 0.0) : (SecretDelta <= 0.0);
 
 					if (bValidCookieLifetime && bValidSecretIdTimestamp)
 					{
@@ -801,7 +1006,22 @@ void StatelessConnectHandlerComponent::IncomingConnectionless(const FString& Add
 						{
 							if (bRestartHandshake)
 							{
-								FMemory::Memcpy(AuthorisedCookie, OrigCookie, ARRAY_COUNT(AuthorisedCookie));
+								FMemory::Memcpy(AuthorisedCookie, OrigCookie, UE_ARRAY_COUNT(AuthorisedCookie));
+
+#if RESTART_HANDSHAKE_DIAGNOSTICS
+								if (HandshakeDiagnostics.IsValid() && !!CVarNetRestartHandshakeDiagnostics.GetValueOnAnyThread())
+								{
+									FDDoSDetection* DDoS = Handler->GetDDoS();
+
+									UE_CLOG((DDoS == nullptr || !DDoS->CheckLogRestrictions()), LogHandshake, Log,
+											TEXT("Got restart handshake diagnostics: LastRestartPacketTimeDiff: %f, ")
+											TEXT("LastNetConnPacketTimeDiff: %f"),
+											HandshakeDiagnostics.LastRestartPacketTimeDiff,
+											HandshakeDiagnostics.LastNetConnPacketTimeDiff);
+
+									HandshakeDiagnostics = FRestartHandshakeDiagnostics();
+								}
+#endif
 							}
 							else
 							{
@@ -810,11 +1030,11 @@ void StatelessConnectHandlerComponent::IncomingConnectionless(const FString& Add
 								LastServerSequence = *CurSequence & (MAX_PACKETID - 1);
 								LastClientSequence = *(CurSequence + 1) & (MAX_PACKETID - 1);
 
-								FMemory::Memcpy(AuthorisedCookie, Cookie, ARRAY_COUNT(AuthorisedCookie));
+								FMemory::Memcpy(AuthorisedCookie, Cookie, UE_ARRAY_COUNT(AuthorisedCookie));
 							}
 
 							bRestartedHandshake = bRestartHandshake;
-							LastChallengeSuccessAddress = Address;
+							LastChallengeSuccessAddress = Address->Clone();
 
 
 							// Now ack the challenge response - the cookie is stored in AuthorisedCookie, to enable retries
@@ -857,16 +1077,21 @@ void StatelessConnectHandlerComponent::IncomingConnectionless(const FString& Add
 }
 
 bool StatelessConnectHandlerComponent::ParseHandshakePacket(FBitReader& Packet, bool& bOutRestartHandshake, uint8& OutSecretId,
-															float& OutTimestamp, uint8 (&OutCookie)[COOKIE_BYTE_SIZE],
+															double& OutTimestamp, uint8 (&OutCookie)[COOKIE_BYTE_SIZE],
 															uint8 (&OutOrigCookie)[COOKIE_BYTE_SIZE])
 {
 	bool bValidPacket = false;
 	uint32 BitsLeft = Packet.GetBitsLeft();
 	bool bHandshakePacketSize = BitsLeft == (HANDSHAKE_PACKET_SIZE_BITS - 1);
 	bool bRestartResponsePacketSize = BitsLeft == (RESTART_RESPONSE_SIZE_BITS - 1);
+	bool bRestartResponseDiagnosticsPacketSize = false
+#if RESTART_HANDSHAKE_DIAGNOSTICS
+			|| BitsLeft == (RESTART_RESPONSE_DIAGNOSTICS_SIZE_BITS - 1)
+#endif
+		;
 
 	// Only accept handshake packets of precisely the right size
-	if (bHandshakePacketSize || bRestartResponsePacketSize)
+	if (bHandshakePacketSize || bRestartResponsePacketSize || bRestartResponseDiagnosticsPacketSize)
 	{
 		bOutRestartHandshake = !!Packet.ReadBit();
 		OutSecretId = Packet.ReadBit();
@@ -875,9 +1100,16 @@ bool StatelessConnectHandlerComponent::ParseHandshakePacket(FBitReader& Packet, 
 
 		Packet.Serialize(OutCookie, COOKIE_BYTE_SIZE);
 
-		if (bRestartResponsePacketSize)
+		if (bRestartResponsePacketSize || bRestartResponseDiagnosticsPacketSize)
 		{
 			Packet.Serialize(OutOrigCookie, COOKIE_BYTE_SIZE);
+
+#if RESTART_HANDSHAKE_DIAGNOSTICS
+			if (bRestartResponseDiagnosticsPacketSize)
+			{
+				Packet << HandshakeDiagnostics;
+			}
+#endif
 		}
 
 		bValidPacket = !Packet.IsError();
@@ -891,23 +1123,24 @@ bool StatelessConnectHandlerComponent::ParseHandshakePacket(FBitReader& Packet, 
 	return bValidPacket;
 }
 
-void StatelessConnectHandlerComponent::GenerateCookie(FString ClientAddress, uint8 SecretId, float Timestamp, uint8 (&OutCookie)[20])
+void StatelessConnectHandlerComponent::GenerateCookie(TSharedPtr<const FInternetAddr> ClientAddress, uint8 SecretId, double Timestamp, uint8 (&OutCookie)[20])
 {
 	// @todo #JohnB: Add cpu stats tracking, like what Oodle does upon compression
 	//					NOTE: Being serverside, will only show up in .uprof, not on any 'stat' commands. Still necessary though.
 
 	TArray<uint8> CookieData;
 	FMemoryWriter CookieArc(CookieData);
+	FString ClientAddressString(ClientAddress->ToString(true));
 
 	CookieArc << Timestamp;
-	CookieArc << ClientAddress;
+	CookieArc << ClientAddressString;
 
 	FSHA1::HMACBuffer(HandshakeSecret[!!SecretId].GetData(), SECRET_BYTE_SIZE, CookieData.GetData(), CookieData.Num(), OutCookie);
 }
 
 void StatelessConnectHandlerComponent::UpdateSecret()
 {
-	LastSecretUpdateTimestamp = Driver != nullptr ? Driver->Time : 0.f;
+	LastSecretUpdateTimestamp = Driver != nullptr ? Driver->GetElapsedTime() : 0.0;
 
 	// On first update, update both secrets
 	if (ActiveSecret == 255)
@@ -940,7 +1173,7 @@ void StatelessConnectHandlerComponent::UpdateSecret()
 
 int32 StatelessConnectHandlerComponent::GetReservedPacketBits() const
 {
-	int32 ReturnVal = 1;
+	int32 ReturnVal = MagicHeader.Num() + 1 /* bHandshakePacket */;
 
 #if !UE_BUILD_SHIPPING
 	SET_DWORD_STAT(STAT_PacketReservedHandshake, ReturnVal);
@@ -959,7 +1192,7 @@ void StatelessConnectHandlerComponent::Tick(float DeltaTime)
 
 			if (LastSendTimeDiff > 1.0)
 			{
-				bool bRestartChallenge = Driver != nullptr && ((Driver->Time - LastChallengeTimestamp) > MIN_COOKIE_LIFETIME);
+				const bool bRestartChallenge = Driver != nullptr && ((Driver->GetElapsedTime() - LastChallengeTimestamp) > MIN_COOKIE_LIFETIME);
 
 				if (bRestartChallenge)
 				{
@@ -972,7 +1205,7 @@ void StatelessConnectHandlerComponent::Tick(float DeltaTime)
 
 					NotifyHandshakeBegin();
 				}
-				else if (State == Handler::Component::State::InitializedOnLocal && LastTimestamp != 0.f)
+				else if (State == Handler::Component::State::InitializedOnLocal && LastTimestamp != 0.0)
 				{
 					UE_LOG(LogHandshake, Verbose, TEXT("Challenge response packet timeout - resending."));
 
@@ -983,7 +1216,7 @@ void StatelessConnectHandlerComponent::Tick(float DeltaTime)
 	}
 	else // if (Handler->Mode == Handler::Mode::Server)
 	{
-		bool bConnectionlessHandler = Driver != nullptr && Driver->StatelessConnectComponent.HasSameObject(this);
+		const bool bConnectionlessHandler = Driver != nullptr && Driver->StatelessConnectComponent.HasSameObject(this);
 
 		if (bConnectionlessHandler)
 		{
@@ -991,7 +1224,7 @@ void StatelessConnectHandlerComponent::Tick(float DeltaTime)
 
 			// Update the secret value periodically, to reduce replay attacks. Also adds a bit of randomness to the timing of this,
 			// so that handshake Timestamp checking as an added method of reducing replay attacks, is more effective.
-			if (((Driver->Time - LastSecretUpdateTimestamp) - (SECRET_UPDATE_TIME + CurVariance)) > 0.f)
+			if (((Driver->GetElapsedTime() - LastSecretUpdateTimestamp) - (SECRET_UPDATE_TIME + CurVariance)) > 0.0)
 			{
 				CurVariance = FMath::FRandRange(0.f, SECRET_UPDATE_TIME_VARIANCE);
 

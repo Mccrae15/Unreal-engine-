@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "NetworkReplayStreaming.h"
 #include "Misc/CommandLine.h"
@@ -9,11 +9,13 @@ IMPLEMENT_MODULE( FNetworkReplayStreaming, NetworkReplayStreaming );
 
 INetworkReplayStreamingFactory& FNetworkReplayStreaming::GetFactory(const TCHAR* FactoryNameOverride)
 {
-	FString FactoryName = TEXT( "NullNetworkReplayStreaming" );
+	static const FString DefaultFactoryName = TEXT("LocalFileNetworkReplayStreaming");
+
+	FString FactoryName = DefaultFactoryName;
 
 	if (FactoryNameOverride == nullptr)
 	{
-		GConfig->GetString( TEXT( "NetworkReplayStreaming" ), TEXT( "DefaultFactoryName" ), FactoryName, GEngineIni );
+		GConfig->GetString(TEXT("NetworkReplayStreaming"), TEXT("DefaultFactoryName"), FactoryName, GEngineIni);
 	}
 	else
 	{
@@ -21,23 +23,25 @@ INetworkReplayStreamingFactory& FNetworkReplayStreaming::GetFactory(const TCHAR*
 	}
 
 	FString CmdlineFactoryName;
-	if (FParse::Value(FCommandLine::Get(), TEXT("-REPLAYSTREAMER="), CmdlineFactoryName))
+	if (FParse::Value(FCommandLine::Get(), TEXT("-REPLAYSTREAMER="), CmdlineFactoryName) || FParse::Value(FCommandLine::Get(), TEXT("-REPLAYSTREAMEROVERRIDE="), CmdlineFactoryName))
 	{
 		FactoryName = CmdlineFactoryName;
 	}
 
 	// See if we need to forcefully fallback to the null streamer
-	if ( !FModuleManager::Get().IsModuleLoaded( *FactoryName ) )
+	if (!FModuleManager::Get().IsModuleLoaded(*FactoryName))
 	{
-		FModuleManager::Get().LoadModule( *FactoryName );
+		FModuleManager::Get().LoadModule(*FactoryName);
 	
-		if ( !FModuleManager::Get().IsModuleLoaded( *FactoryName ) )
+		if (!FModuleManager::Get().IsModuleLoaded(*FactoryName))
 		{
-			FactoryName = TEXT( "NullNetworkReplayStreaming" );
+			FactoryName = DefaultFactoryName;
 		}
 	}
 
-	return FModuleManager::Get().LoadModuleChecked< INetworkReplayStreamingFactory >( *FactoryName );
+	LoadedFactories.Add(*FactoryName);
+
+	return FModuleManager::Get().LoadModuleChecked<INetworkReplayStreamingFactory>(*FactoryName);
 }
 
 int32 FNetworkReplayStreaming::GetMaxNumberOfAutomaticReplays()
@@ -72,6 +76,11 @@ FString FNetworkReplayStreaming::GetAutomaticReplayPrefix()
 	return CVarReplayStreamerAutoDemoPrefix.GetValueOnAnyThread();
 }
 
+FString FNetworkReplayStreaming::GetReplayFileExtension()
+{
+	return TEXT(".replay");
+}
+
 bool FNetworkReplayStreaming::UseDateTimeAsAutomaticReplayPostfix()
 {
 	return !!CVarReplayStreamerAutoDemoUseDateTimePostfix.GetValueOnAnyThread();
@@ -85,4 +94,37 @@ const FString FNetworkReplayStreaming::GetAutomaticReplayPrefixExtern() const
 const int32 FNetworkReplayStreaming::GetMaxNumberOfAutomaticReplaysExtern() const
 {
 	return GetMaxNumberOfAutomaticReplays();
+}
+
+void FNetworkReplayStreaming::Flush()
+{
+	for (const FName& FactoryName : LoadedFactories)
+	{
+		if (FModuleManager::Get().IsModuleLoaded(FactoryName))
+		{
+			INetworkReplayStreamingFactory& ReplayFactory = FModuleManager::Get().LoadModuleChecked<INetworkReplayStreamingFactory>(FactoryName);
+			ReplayFactory.Flush();
+		}
+	}
+}
+
+bool FNetworkReplayStreaming::Exec(UWorld* InWorld, const TCHAR* Cmd, FOutputDevice& Ar)
+{
+	// expected usage is "replaystreamer <streamer factory name> <streamer specific args>"
+	if (FParse::Command(&Cmd, TEXT("REPLAYSTREAMER")))
+	{
+		FString FactoryName = FParse::Token(Cmd, false);
+		if (!FactoryName.IsEmpty())
+		{
+			TSharedPtr<INetworkReplayStreamer> Streamer = GetFactory(*FactoryName).CreateReplayStreamer();
+			if (Streamer.IsValid())
+			{
+				Streamer->Exec(Cmd, Ar);
+			}
+		}
+
+		return true;
+	}
+
+	return false;
 }

@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -9,8 +9,8 @@
 #include "UnrealClient.h"
 #include "IDetailCustomization.h"
 #include "Editor/LandscapeEditor/Private/LandscapeEditorDetailCustomization_Base.h"
-#include "LandscapeEditorDetailCustomization_ProceduralLayers.h"
-#include "LandscapeEditorDetailCustomization_ProceduralBrushStack.h"
+#include "LandscapeEditorDetailCustomization_Layers.h"
+#include "LandscapeEditorDetailCustomization_LayersBrushStack.h"
 
 class FLandscapeEditorDetailCustomization_AlphaBrush;
 class FLandscapeEditorDetailCustomization_CopyPaste;
@@ -21,6 +21,18 @@ class FLandscapeEditorDetailCustomization_TargetLayers;
 class FUICommandList;
 class IDetailLayoutBuilder;
 class ULandscapeInfo;
+class FLandscapeToolKit;
+
+
+// 
+// FLandscapeEditorDetails
+// 
+// NOTE: If and when the legacy LandscapeEditor Mode (pre the ToolBar implementation) is removed, 
+// this class can cease to inheriting from DetailsCustomization as it will no longer be used as such.
+//
+// The toolbar implementation directly creates an instances and uses the LandscapeEditorDetails
+// to generate and manage the brush and falloff ui.
+// 
 
 class FLandscapeEditorDetails : public FLandscapeEditorDetailCustomization_Base
 {
@@ -30,6 +42,8 @@ public:
 
 	/** IDetailCustomization interface */
 	virtual void CustomizeDetails(IDetailLayoutBuilder& DetailBuilder) override;
+
+	void CustomizeToolBarPalette(FToolBarBuilder& ToolBarBuilder, const TSharedRef<FLandscapeToolKit> LandscapeToolkit);
 
 protected:
 	static FText GetLocalizedName(FString Name);
@@ -55,6 +69,8 @@ protected:
 	TSharedRef<SWidget> GetBrushFalloffSelector();
 	bool GetBrushFalloffSelectorIsVisible() const;
 
+	bool IsBrushSetEnabled() const;
+
 	TSharedPtr<FUICommandList> CommandList;
 
 	TSharedPtr<FLandscapeEditorDetailCustomization_NewLandscape> Customization_NewLandscape;
@@ -63,6 +79,6 @@ protected:
 	TSharedPtr<FLandscapeEditorDetailCustomization_MiscTools> Customization_MiscTools;
 	TSharedPtr<FLandscapeEditorDetailCustomization_AlphaBrush> Customization_AlphaBrush;
 	TSharedPtr<FLandscapeEditorDetailCustomization_TargetLayers> Customization_TargetLayers;
-	TSharedPtr<FLandscapeEditorDetailCustomization_ProceduralLayers> Customization_ProceduralLayers;
-	TSharedPtr<FLandscapeEditorDetailCustomization_ProceduralBrushStack> Customization_ProceduralBrushStack;
+	TSharedPtr<FLandscapeEditorDetailCustomization_Layers> Customization_Layers;
+	TSharedPtr<FLandscapeEditorDetailCustomization_LayersBrushStack> Customization_LayersBrushStack;
 };

@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 /*------------------------------------------------------------------------------------
 	FALSoundSource.
@@ -36,7 +36,7 @@ bool FALSoundSource::Init( FWaveInstance* InWaveInstance )
 			WaveInstance = InWaveInstance;
 
 			// Enable/disable spatialization of sounds
-			alSourcei( SourceId, AL_SOURCE_RELATIVE, WaveInstance->bUseSpatialization ? AL_FALSE : AL_TRUE );
+			alSourcei( SourceId, AL_SOURCE_RELATIVE, WaveInstance->GetUseSpatialization() ? AL_FALSE : AL_TRUE );
 
 			// Setting looping on a real time decompressed source suppresses the buffers processed message
 			alSourcei( SourceId, AL_LOOPING, ( WaveInstance->LoopingMode == LOOP_Forever ) ? AL_TRUE : AL_FALSE );
@@ -104,11 +104,6 @@ void FALSoundSource::Update( void )
 	else
 	{
 		Volume = WaveInstance->GetActualVolume();
-		if (SetStereoBleed())
-		{
-			// Emulate the bleed to rear speakers followed by stereo fold down
-			Volume *= 1.25f;
-		}
 		Volume *= AudioDevice->GetPlatformAudioHeadroom();
 		Volume = FMath::Clamp(Volume, 0.0f, MAX_VOLUME);
 	}
@@ -132,7 +127,7 @@ void FALSoundSource::Update( void )
 
 	// We're using a relative coordinate system for un- spatialized sounds.
 	FVector RelativeDirection = FVector::ZeroVector;
-	if (WaveInstance->bUseSpatialization)
+	if (WaveInstance->GetUseSpatialization())
 	{
 		FVector UnnormalizedDirection = ((FALAudioDevice*)AudioDevice)->InverseTransform.TransformPosition(WaveInstance->Location);
 		RelativeDirection = UnnormalizedDirection.GetSafeNormal();

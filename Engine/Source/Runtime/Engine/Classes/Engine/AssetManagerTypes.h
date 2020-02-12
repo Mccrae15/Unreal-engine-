@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -39,20 +39,20 @@ struct FPrimaryAssetRules
 	UPROPERTY(EditAnywhere, Category = Rules)
 	int32 Priority;
 
-	/** If true, this rule will apply to all referenced Secondary Assets recursively, as long as they are not managed by a higher-priority Primary Asset. */
-	UPROPERTY(EditAnywhere, Category = Rules)
-	bool bApplyRecursively;
-
 	/** Assets will be put into this Chunk ID specifically, if set to something other than -1. The default Chunk is Chunk 0. */
 	UPROPERTY(EditAnywhere, Category = Rules, meta = (DisplayName = "Chunk ID"))
 	int32 ChunkId;
+
+	/** If true, this rule will apply to all referenced Secondary Assets recursively, as long as they are not managed by a higher-priority Primary Asset. */
+	UPROPERTY(EditAnywhere, Category = Rules)
+	bool bApplyRecursively;
 
 	/** Rule describing when this asset should be cooked. */
 	UPROPERTY(EditAnywhere, Category = Rules)
 	EPrimaryAssetCookRule CookRule;
 
 	FPrimaryAssetRules() 
-		: Priority(-1), bApplyRecursively(true), ChunkId(-1), CookRule(EPrimaryAssetCookRule::Unknown)
+		: Priority(-1), ChunkId(-1), bApplyRecursively(true), CookRule(EPrimaryAssetCookRule::Unknown)
 	{
 	}
 
@@ -72,6 +72,26 @@ struct FPrimaryAssetRules
 
 	/** Propagate cook rules from parent to child, won't override non-default values. */
 	ENGINE_API void PropagateCookRules(const FPrimaryAssetRules& ParentRules);
+};
+
+/** Structure defining overrides to rules */
+struct FPrimaryAssetRulesExplicitOverride
+{
+	FPrimaryAssetRules Rules;
+	uint8 bOverridePriority:1;
+	uint8 bOverrideApplyRecursively:1;
+	uint8 bOverrideChunkId:1;
+	uint8 bOverrideCookRule:1;
+
+	FPrimaryAssetRulesExplicitOverride()
+		: bOverridePriority(false), bOverrideApplyRecursively(false), bOverrideChunkId(false), bOverrideCookRule(false)
+	{
+	}
+
+	bool HasAnyOverride() const { return bOverridePriority || bOverrideApplyRecursively || bOverrideChunkId || bOverrideCookRule; }
+
+	/** Override non-default rules from an override struct. */
+	ENGINE_API void OverrideRulesExplicitly(FPrimaryAssetRules& RulesToOverride) const;
 };
 
 /** Structure with publicly exposed information about an asset type. These can be loaded out of a config file. */

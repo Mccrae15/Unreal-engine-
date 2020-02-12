@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -9,6 +9,7 @@
 #include "Input/Reply.h"
 #include "Widgets/SCompoundWidget.h"
 #include "AssetData.h"
+#include "AssetTagItemTypes.h"
 #include "CollectionManagerTypes.h"
 #include "Widgets/Views/STableViewBase.h"
 #include "Widgets/Views/STableRow.h"
@@ -19,7 +20,9 @@
 class FCollectionAssetManagement;
 class FCollectionContextMenu;
 class FCollectionDragDropOp;
+class FSourcesSearch;
 class FUICommandList;
+class SHorizontalBox;
 struct FHistoryData;
 
 /**
@@ -38,6 +41,7 @@ public:
 		, _AllowContextMenu(true)
 		, _AllowCollectionDrag(false)
 		, _AllowQuickAssetManagement(false)
+		, _ShowSeparator(true)
 		{}
 
 		/** Called when a collection was selected */
@@ -55,10 +59,19 @@ public:
 		/** If true, check boxes that let you quickly add/remove the current selection from a collection will be displayed */
 		SLATE_ARGUMENT( bool, AllowQuickAssetManagement )
 
+		/** If true, The tree search bar separator be displayed */
+		SLATE_ARGUMENT( bool, ShowSeparator )
+
+		/** Optional external search. Will hide and replace our internal search UI */
+		SLATE_ARGUMENT( TSharedPtr<FSourcesSearch>, ExternalSearch )
+
 	SLATE_END_ARGS()
 
 	/** Constructs this widget with InArgs */
 	void Construct( const FArguments& InArgs );
+
+	/** Set whether we're using an external search or not */
+	void SetAllowExternalSearch(const bool InAllowExternalSearch);
 
 	/** Selects the specified collections */
 	void SetSelectedCollections(const TArray<FCollectionNameType>& CollectionsToSelect, const bool bEnsureVisible = true);
@@ -142,9 +155,18 @@ private:
 	/** Gets the visibility of the collections search box */
 	EVisibility GetCollectionsSearchBoxVisibility() const;
 
-	/** Gets the visibility of the add collection button */
-	EVisibility GetAddCollectionButtonVisibility() const;
+	/** Gets the visibility of the collection buttons */
+	EVisibility GetCollectionButtonsVisibility() const;
 	
+	/** Get the icon used on the collection view mode switcher button */
+	const FSlateBrush* GetSwitchCollectionViewModeIcon() const;
+
+	/** Get the tooltip text used on the collection view mode switcher button */
+	FText GetSwitchCollectionViewModeToolTipText() const;
+
+	/** Handle the collection view mode switcher button being clicked */
+	FReply OnSwitchCollectionViewMode();
+
 	/** Sets up an inline creation process for a new collection of the specified type */
 	void CreateCollectionItem( ECollectionShareType::Type CollectionType, ECollectionStorageMode::Type StorageMode, const FCreateCollectionPayload& InCreationPayload );
 
@@ -248,7 +270,7 @@ private:
 	void UpdateFilteredCollectionItems();
 
 	/** Set the active filter text */
-	void SetCollectionsSearchFilterText( const FText& InSearchText );
+	void SetCollectionsSearchFilterText( const FText& InSearchText, TArray<FText>& OutErrors );
 
 	/** Get the active filter text */
 	FText GetCollectionsSearchFilterText() const;
@@ -275,8 +297,14 @@ private:
 		TSharedRef<SCollectionView> CollectionView;
 	};
 
-	/** The collection list search box */
-	TSharedPtr< SSearchBox > SearchBoxPtr;
+	/** The collection search interface */
+	TSharedPtr<FSourcesSearch> SearchPtr;
+
+	/** The collection external search interface (if any) */
+	TSharedPtr<FSourcesSearch> ExternalSearchPtr;
+
+	/** The collection title content */
+	TSharedPtr<SHorizontalBox> TitleContent;
 
 	/** The collection tree widget */
 	TSharedPtr< STreeView< TSharedPtr<FCollectionItem> > > CollectionTreePtr;
@@ -313,8 +341,14 @@ private:
 	/** If true, the user will be able to drag collections from this view */
 	bool bAllowCollectionDrag;
 
+	/** If true, we will use the external search if provided during construction */
+	bool bAllowExternalSearch;
+
 	/** True when a drag is over this view with a valid operation for drop */
 	bool bDraggedOver;
+
+	/** The view mode that collections within this view should use */
+	EAssetTagItemViewMode CollectionViewMode = EAssetTagItemViewMode::Standard;
 
 	/** If > 0, the selection changed delegate will not be called. Used to update the tree from an external source or in certain bulk operations. */
 	int32 PreventSelectionChangedDelegateCount;

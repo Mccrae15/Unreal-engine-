@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "Components/RetainerBox.h"
 #include "Widgets/SNullWidget.h"
@@ -142,11 +142,11 @@ const FText URetainerBox::GetPaletteCategory()
 
 #endif
 
-const FGeometry& URetainerBox::GetCachedAllottedGeometry() const
+FGeometry URetainerBox::GetCachedAllottedGeometry() const
 {
 	if (MyRetainerWidget.IsValid())
 	{
-		return MyRetainerWidget->GetCachedGeometry();
+		return MyRetainerWidget->GetTickSpaceGeometry();
 	}
 
 	static const FGeometry TempGeo;

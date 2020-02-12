@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 /*=============================================================================
 	OpenGL3.cpp: OpenGL 3.2 implementation.
@@ -8,10 +8,6 @@
 #include "HAL/IConsoleManager.h"
 #include "OpenGLDrv.h"
 #include "OpenGLDrvPrivate.h"
-
-#if PLATFORM_HTML5
-#include "HTML5JavaScriptFx.h"
-#endif
 
 #if OPENGL_ESDEFERRED
 
@@ -225,6 +221,7 @@ void FOpenGLESDeferred::ProcessQueryGLInt()
 		MaxGeometryTextureImageUnits = 0;
 		MaxHullTextureImageUnits = 0;
 		MaxDomainTextureImageUnits = 0;
+		TextureBufferAlignment = 0;
 	}
 	else
 	{
@@ -237,6 +234,8 @@ void FOpenGLESDeferred::ProcessQueryGLInt()
 
 		GET_GL_INT(GL_MAX_COMPUTE_TEXTURE_IMAGE_UNITS, 0, MaxComputeTextureImageUnits);
 		GET_GL_INT(GL_MAX_COMPUTE_UNIFORM_COMPONENTS, 0, MaxComputeUniformComponents);
+
+		GET_GL_INT(GL_TEXTURE_BUFFER_OFFSET_ALIGNMENT_EXT, 0, TextureBufferAlignment);
 
 		if (bSupportsTessellation)
 		{
@@ -326,13 +325,6 @@ void FOpenGLESDeferred::ProcessExtensions( const FString& ExtensionsString )
 	bSupportsNVFrameBufferBlit = ExtensionsString.Contains(TEXT("GL_NV_framebuffer_blit"));
 	bSupportsPackedDepthStencil = ExtensionsString.Contains(TEXT("GL_OES_packed_depth_stencil"));
 	bSupportsShaderTextureLod = ExtensionsString.Contains(TEXT("GL_EXT_shader_texture_lod"));
-#if PLATFORM_HTML5
-	// WebGL 1 extensions that were adopted to core WebGL 2 spec:
-	if (UE_BrowserWebGLVersion() == 2)
-	{
-		bSupportsColorBufferHalfFloat = bSupportsShaderTextureLod = true;
-	}
-#endif
 	bSupportsTextureStorageEXT = ExtensionsString.Contains(TEXT("GL_EXT_texture_storage"));
 	bSupportsCopyTextureLevels = bSupportsTextureStorageEXT && ExtensionsString.Contains(TEXT("GL_APPLE_copy_texture_levels"));
 	bSupportsDisjointTimeQueries = ExtensionsString.Contains(TEXT("GL_EXT_disjoint_timer_query"));// || ExtensionsString.Contains(TEXT("GL_NV_timer_query"));

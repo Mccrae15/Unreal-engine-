@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "SWebBrowser.h"
 #include "Widgets/Text/STextBlock.h"
@@ -126,6 +126,7 @@ void SWebBrowser::Construct(const FArguments& InArgs, const TSharedPtr<IWebBrows
 				.Visibility(this, &SWebBrowser::GetViewportVisibility)
 				.OnSuppressContextMenu(InArgs._OnSuppressContextMenu)
 				.OnDragWindow(InArgs._OnDragWindow)
+				.BrowserFrameRate(InArgs._BrowserFrameRate)
 			]
 			+ SOverlay::Slot()
 			.HAlign(HAlign_Center)

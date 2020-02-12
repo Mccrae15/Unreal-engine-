@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "ReplicationGraph.h"
 #include "ReplicationGraphTypes.h"
@@ -65,11 +65,6 @@ UNetConnection* AReplicationGraphDebugActor::GetNetConnection() const
 }
 
 // -------------------------------------------------------------
-
-bool AReplicationGraphDebugActor::ServerStartDebugging_Validate()
-{
-	return true;
-}
 
 void AReplicationGraphDebugActor::ServerStartDebugging_Implementation()
 {
@@ -148,44 +143,53 @@ FAutoConsoleCommandWithWorldAndArgs NetRepGraphDebugActorStart(TEXT("Net.RepGrap
 
 // -------------------------------------------------------------
 
-bool AReplicationGraphDebugActor::ServerStopDebugging_Validate()
-{
-	return true;
-}
-
 void AReplicationGraphDebugActor::ServerStopDebugging_Implementation()
 {
 	
 }
 
 // -------------------------------------------------------------
-
-void AReplicationGraphDebugActor::PrintCullDistances()
+void UReplicationGraph::DebugPrintCullDistances(UNetReplicationGraphConnection* SpecificConnection) const
 {
 	struct FData
 	{
 		UClass* Class = nullptr;
-		float DistSq;
+		float Dist;
+		float ConnectionDist;
 		int32 Count;
 	};
 
 	TArray<FData> DataList;
 
-	for (auto It = ReplicationGraph->GlobalActorReplicationInfoMap.CreateActorMapIterator(); It; ++It)
+	for (auto It = GlobalActorReplicationInfoMap.CreateActorMapIterator(); It; ++It)
 	{
 		AActor* Actor = It.Key();
-		TUniquePtr<FGlobalActorReplicationInfo>& InfoPtr = It.Value();
+		const TUniquePtr<FGlobalActorReplicationInfo>& InfoPtr = It.Value();
 		if (!InfoPtr || InfoPtr.Get() == nullptr)
 		{
 			continue;
 		}
 
-		FGlobalActorReplicationInfo& Info = *InfoPtr.Get();
+		const FGlobalActorReplicationInfo& Info = *InfoPtr.Get();
+
+		float ConnectionCullDist = 0.0f;
+
+		// Optionally find this connection's CullDistance
+		if (SpecificConnection)
+		{
+			FPerConnectionActorInfoMap& ConnectionInfo = SpecificConnection->ActorInfoMap;
+			if (FConnectionReplicationActorInfo* ConnectionActorInfo = ConnectionInfo.Find(Actor))
+			{
+				ConnectionCullDist = ConnectionActorInfo->GetCullDistance();
+			}
+		}
 
 		bool bFound = false;
 		for (FData& ExistingData : DataList)
 		{
-			if (ExistingData.Class == Actor->GetClass() && FMath::IsNearlyZero(ExistingData.DistSq - Info.Settings.CullDistanceSquared))
+			if (ExistingData.Class == Actor->GetClass() && 
+				FMath::IsNearlyEqual(ExistingData.Dist, Info.Settings.GetCullDistance()) &&
+				FMath::IsNearlyEqual(ExistingData.ConnectionDist, ConnectionCullDist))
 			{
 				ExistingData.Count++;
 				bFound = true;
@@ -200,32 +204,65 @@ void AReplicationGraphDebugActor::PrintCullDistances()
 
 		FData NewData;
 		NewData.Class = Actor->GetClass();
-		NewData.DistSq = Info.Settings.CullDistanceSquared;
+		NewData.Dist = Info.Settings.GetCullDistance();
+		NewData.ConnectionDist = ConnectionCullDist;
 		NewData.Count = 1;
 		DataList.Add(NewData);
 	}
 
-	DataList.Sort([](const FData& LHS, const FData& RHS) { return LHS.DistSq < RHS.DistSq; });
+	DataList.Sort([](const FData& LHS, const FData& RHS) { return LHS.Dist < RHS.Dist; });
 
 	for (FData& Data : DataList)
 	{
 		const UClass* NativeParent = Data.Class;
-		while(NativeParent && !NativeParent->IsNative())
+		while (NativeParent && !NativeParent->IsNative())
 		{
 			NativeParent = NativeParent->GetSuperClass();
 		}
 
-
-		UE_LOG(LogReplicationGraph, Display, TEXT("%s (%s) [%d] = %.2f"), *GetNameSafe(Data.Class), *GetNameSafe(NativeParent), Data.Count, FMath::Sqrt(Data.DistSq));
+		if( SpecificConnection == nullptr )
+		{
+			UE_LOG(LogReplicationGraph, Display, TEXT("%s (%s) [%d] GlobalCullDistance (%.2f)"), *GetNameSafe(Data.Class), *GetNameSafe(NativeParent), Data.Count, Data.Dist);
+		}
+		else
+		{
+			UE_LOG(LogReplicationGraph, Display, TEXT("%s (%s) [%d] GlobalCullDistance (%.2f) ConnectionCullDistance (%.2f)"), *GetNameSafe(Data.Class), *GetNameSafe(NativeParent), Data.Count, Data.Dist, Data.ConnectionDist);
+		}
 	}
 }
 
-FAutoConsoleCommandWithWorldAndArgs NetRepGraphPrintCullDistancesCommand(TEXT("Net.RepGraph.PrintCullDistances"),TEXT(""),
+void AReplicationGraphDebugActor::ServerPrintCullDistances_Implementation()
+{
+	PrintCullDistances();
+}
+
+void AReplicationGraphDebugActor::PrintCullDistances()
+{
+	ReplicationGraph->DebugPrintCullDistances(ConnectionManager);
+}
+
+// -------------------------------------------------------------
+
+FAutoConsoleCommandWithWorldAndArgs NetRepGraphPrintCullDistancesForConnectionCommand(TEXT("Net.RepGraph.PrintCullDistancesForConnection"),TEXT("Print the cull distances via the ReplicationDebugActor to add the connection cull distances."),
 	FConsoleCommandWithWorldAndArgsDelegate::CreateLambda([](const TArray<FString>& Args, UWorld* World)
 	{
 		for (TActorIterator<AReplicationGraphDebugActor> It(World); It; ++It)
 		{
-			It->PrintCullDistances();
+			It->ServerPrintCullDistances();
+		}
+	})
+);
+
+FAutoConsoleCommandWithWorldAndArgs NetRepGraphPrintCullDistancesCommand(TEXT("Net.RepGraph.PrintCullDistances"), TEXT("Print the cull distances of RepGraph actors on the server."),
+	FConsoleCommandWithWorldAndArgsDelegate::CreateLambda([](const TArray<FString>& Args, UWorld* World)
+	{
+		for (TObjectIterator<UReplicationGraph> It; It; ++It)
+		{
+			if (It->NetDriver && It->NetDriver->GetNetMode() != NM_Client)
+			{
+				It->DebugPrintCullDistances();
+				break;
+			}
 		}
 	})
 );
@@ -236,11 +273,6 @@ FAutoConsoleCommandWithWorldAndArgs NetRepGraphPrintCullDistancesCommand(TEXT("N
 void AReplicationGraphDebugActor::ServerPrintAllActorInfo_Implementation(const FString& Str)
 {
 	PrintAllActorInfo(Str);
-}
-
-bool AReplicationGraphDebugActor::ServerPrintAllActorInfo_Validate(const FString& Str)
-{
-	return true;
 }
 
 void AReplicationGraphDebugActor::PrintAllActorInfo(FString MatchString)
@@ -326,51 +358,67 @@ FAutoConsoleCommandWithWorldAndArgs NetRepGraphPrintAllActorInfoCmd(TEXT("Net.Re
 
 // -------------------------------------------------------------
 
-bool AReplicationGraphDebugActor::ServerCellInfo_Validate()
-{
-	return true;
-}
-
 void AReplicationGraphDebugActor::ServerCellInfo_Implementation()
 {
-	FNetViewer Viewer(GetNetConnection(), 0.f);
+	TArray<FVector, FReplicationGraphConnectionsAllocator> LocationsSent;
+	TArray<UNetConnection*, FReplicationGraphConnectionsAllocator> ConnectionsToConsider;
 
-	UReplicationGraphNode_GridSpatialization2D* GridNode =  nullptr;
-	for (UReplicationGraphNode* Node : ReplicationGraph->GlobalGraphNodes)
+	UNetConnection* PrimaryNetConnection = GetNetConnection();
+	ConnectionsToConsider.Add(PrimaryNetConnection);
+	for (UChildConnection* Child : PrimaryNetConnection->Children)
 	{
-		GridNode = Cast<UReplicationGraphNode_GridSpatialization2D>(Node);
-		if (GridNode)
+		ConnectionsToConsider.Add((UNetConnection*)Child);
+	}
+
+	for (UNetConnection* Connection : ConnectionsToConsider)
+	{
+		FNetViewer Viewer(Connection, 0.f);
+
+		UReplicationGraphNode_GridSpatialization2D* GridNode = nullptr;
+		for (UReplicationGraphNode* Node : ReplicationGraph->GlobalGraphNodes)
 		{
-			break;
-	}
-	}
-
-	if (GridNode == nullptr)
-	{
-		return;
-	}
-
-	int32 CellX = FMath::Max<int32>(0, (Viewer.ViewLocation.X - GridNode->SpatialBias.X) / GridNode->CellSize);
-	int32 CellY = FMath::Max<int32>(0, (Viewer.ViewLocation.Y - GridNode->SpatialBias.Y) / GridNode->CellSize);
-
-	TArray<AActor*> ActorsInCell;
-
-	FVector CellLocation(GridNode->SpatialBias.X + (((float)(CellX)+0.5f) * GridNode->CellSize), GridNode->SpatialBias.Y + (((float)(CellY)+0.5f) * GridNode->CellSize), Viewer.ViewLocation.Z);
-	FVector CellExtent(GridNode->CellSize, GridNode->CellSize, 10.f);
-
-	if (GridNode->Grid.IsValidIndex(CellX))
-	{
-		TArray<UReplicationGraphNode_GridCell*>& GridY = GridNode->Grid[CellX];
-		if (GridY.IsValidIndex(CellY))
-		{
-			if (UReplicationGraphNode_GridCell* LeafNode = GridY[CellY])
+			GridNode = Cast<UReplicationGraphNode_GridSpatialization2D>(Node);
+			if (GridNode)
 			{
-				LeafNode->GetAllActorsInNode_Debugging(ActorsInCell);
+				break;
 			}
 		}
-	}
 
-	ClientCellInfo(CellLocation, CellExtent, ActorsInCell);
+		if (GridNode == nullptr)
+		{
+			return;
+		}
+
+		int32 CellX = FMath::Max<int32>(0, (Viewer.ViewLocation.X - GridNode->SpatialBias.X) / GridNode->CellSize);
+		int32 CellY = FMath::Max<int32>(0, (Viewer.ViewLocation.Y - GridNode->SpatialBias.Y) / GridNode->CellSize);
+
+		FVector CellLocation(GridNode->SpatialBias.X + (((float)(CellX)+0.5f) * GridNode->CellSize), GridNode->SpatialBias.Y + (((float)(CellY)+0.5f) * GridNode->CellSize), Viewer.ViewLocation.Z);
+
+		if (LocationsSent.Contains(CellLocation))
+		{
+			UE_LOG(LogReplicationGraph, Verbose, TEXT("Skipping location %s as we've already sent it"), *(CellLocation.ToString()));
+			continue;
+		}
+
+		LocationsSent.Add(CellLocation);
+
+		TArray<AActor*> ActorsInCell;
+		FVector CellExtent(GridNode->CellSize, GridNode->CellSize, 10.f);
+
+		if (GridNode->Grid.IsValidIndex(CellX))
+		{
+			TArray<UReplicationGraphNode_GridCell*>& GridY = GridNode->Grid[CellX];
+			if (GridY.IsValidIndex(CellY))
+			{
+				if (UReplicationGraphNode_GridCell* LeafNode = GridY[CellY])
+				{
+					LeafNode->GetAllActorsInNode_Debugging(ActorsInCell);
+				}
+			}
+		}
+
+		ClientCellInfo(CellLocation, CellExtent, ActorsInCell);
+	}	
 }
 
 void AReplicationGraphDebugActor::ClientCellInfo_Implementation(FVector CellLocation, FVector CellExtent, const TArray<AActor*>& Actors)
@@ -405,11 +453,6 @@ FAutoConsoleCommandWithWorldAndArgs NetRepGraphCellInfo(TEXT("Net.RepGraph.Spati
 
 // -------------------------------------------------------------
 
-bool AReplicationGraphDebugActor::ServerSetCullDistanceForClass_Validate(UClass* Class, float CullDistance)
-{
-	return true;
-}
-
 void AReplicationGraphDebugActor::ServerSetCullDistanceForClass_Implementation(UClass* Class, float CullDistance)
 {
 	if (!Class)
@@ -421,7 +464,7 @@ void AReplicationGraphDebugActor::ServerSetCullDistanceForClass_Implementation(U
 	const float CullDistSq = CullDistance * CullDistance;
 
 	FClassReplicationInfo& ClassInfo = ReplicationGraph->GlobalActorReplicationInfoMap.GetClassInfo(Class);
-	ClassInfo.CullDistanceSquared = CullDistSq;
+	ClassInfo.SetCullDistanceSquared(CullDistSq);
 	UE_LOG(LogReplicationGraph, Display, TEXT("Setting cull distance for class %s to %.2f"), *Class->GetName(), CullDistance);
 
 	for (TActorIterator<AActor> ActorIt(GetWorld(), Class); ActorIt; ++ActorIt)
@@ -429,14 +472,14 @@ void AReplicationGraphDebugActor::ServerSetCullDistanceForClass_Implementation(U
 		AActor* Actor = *ActorIt;
 		if (FGlobalActorReplicationInfo* ActorInfo = ReplicationGraph->GlobalActorReplicationInfoMap.Find(Actor))
 		{
-			ActorInfo->Settings.CullDistanceSquared = CullDistSq;
+			ActorInfo->Settings.SetCullDistanceSquared(CullDistSq);
 			UE_LOG(LogReplicationGraph, Display, TEXT("Setting GlobalActorInfo cull distance for %s to %.2f"), *Actor->GetName(), CullDistance);
 		}
 
 
 		if (FConnectionReplicationActorInfo* ConnectionActorInfo = ConnectionManager->ActorInfoMap.Find(Actor))
 		{
-			ConnectionActorInfo->CullDistanceSquared = CullDistSq;
+			ConnectionActorInfo->SetCullDistanceSquared(CullDistSq);
 			UE_LOG(LogReplicationGraph, Display, TEXT("Setting Connection cull distance for %s to %.2f"), *Actor->GetName(), CullDistance);
 		}
 	}
@@ -473,11 +516,6 @@ FAutoConsoleCommandWithWorldAndArgs NetRepGraphSetClassCullDistance(TEXT("Net.Re
 
 // -------------------------------------------------------------
 
-bool AReplicationGraphDebugActor::ServerSetPeriodFrameForClass_Validate(UClass* Class, int32 PeriodFrame)
-{
-	return true;
-}
-
 void AReplicationGraphDebugActor::ServerSetPeriodFrameForClass_Implementation(UClass* Class, int32 PeriodFrame)
 {
 	if (!Class)
@@ -488,7 +526,7 @@ void AReplicationGraphDebugActor::ServerSetPeriodFrameForClass_Implementation(UC
 
 	FClassReplicationInfo& ClassInfo = ReplicationGraph->GlobalActorReplicationInfoMap.GetClassInfo(Class);
 	ClassInfo.ReplicationPeriodFrame = PeriodFrame;
-	UE_LOG(LogReplicationGraph, Display, TEXT("Setting ReplicationPeriodFrame for class %s to %d"), *Class->GetName(), PeriodFrame);
+	UE_LOG(LogReplicationGraph, Display, TEXT("Setting ReplicationPeriodFrame for class %s to %u"), *Class->GetName(), ClassInfo.ReplicationPeriodFrame);
 
 	for (TActorIterator<AActor> ActorIt(GetWorld(), Class); ActorIt; ++ActorIt)
 	{
@@ -496,14 +534,14 @@ void AReplicationGraphDebugActor::ServerSetPeriodFrameForClass_Implementation(UC
 		if (FGlobalActorReplicationInfo* ActorInfo = ReplicationGraph->GlobalActorReplicationInfoMap.Find(Actor))
 		{
 			ActorInfo->Settings.ReplicationPeriodFrame = PeriodFrame;
-			UE_LOG(LogReplicationGraph, Display, TEXT("Setting GlobalActorInfo ReplicationPeriodFrame for %s to %d"), *Actor->GetName(), PeriodFrame);
+			UE_LOG(LogReplicationGraph, Display, TEXT("Setting GlobalActorInfo ReplicationPeriodFrame for %s to %u"), *Actor->GetName(), ActorInfo->Settings.ReplicationPeriodFrame);
 		}
 
 
 		if (FConnectionReplicationActorInfo* ConnectionActorInfo = ConnectionManager->ActorInfoMap.Find(Actor))
 		{
 			ConnectionActorInfo->ReplicationPeriodFrame = PeriodFrame;
-			UE_LOG(LogReplicationGraph, Display, TEXT("Setting Connection ReplicationPeriodFrame for %s to %d"), *Actor->GetName(), PeriodFrame);
+			UE_LOG(LogReplicationGraph, Display, TEXT("Setting Connection ReplicationPeriodFrame for %s to %u"), *Actor->GetName(), ConnectionActorInfo->ReplicationPeriodFrame);
 		}
 	}
 }
@@ -538,11 +576,6 @@ FAutoConsoleCommandWithWorldAndArgs NetRepGraphSetPeriodFrame(TEXT("Net.RepGraph
 );
 
 // -------------------------------------------------------------
-
-bool AReplicationGraphDebugActor::ServerSetConditionalActorBreakpoint_Validate(AActor* Actor)
-{
-	return true;
-}
 
 void AReplicationGraphDebugActor::ServerSetConditionalActorBreakpoint_Implementation(AActor* Actor)
 {
@@ -869,7 +902,6 @@ void LogGraphHelper(FOutputDevice& Ar, const TArray< FString >& Args)
 
 	if (!Graph)
 	{
-		UE_LOG(LogReplicationGraph, Warning, TEXT("Could not find valid Replication Graph."));
 		return;
 	}
 
@@ -1108,38 +1140,42 @@ void PrintPrioritizedList(FOutputDevice& Ar, UNetReplicationGraphConnection* Con
 	
 	// Skipped actors
 #if REPGRAPH_DETAILS
-	Ar.Logf(TEXT("[%d Skipped Actors]"), PrioritizedList->SkippedDebugDetails->Num());
 
-	FNativeClassAccumulator DormantClasses;
-	FNativeClassAccumulator CulledClasses;
-
-	for (const FSkippedActorFullDebugDetails& SkippedDetails : *PrioritizedList->SkippedDebugDetails)
+	if (PrioritizedList->SkippedDebugDetails.IsValid())
 	{
-		FString SkippedStr;
-		if (SkippedDetails.bWasDormant)
-		{
-			SkippedStr = TEXT("Dormant");
-			DormantClasses.Increment(SkippedDetails.Actor->GetClass());
-		}
-		else if (SkippedDetails.DistanceCulled > 0.f)
-		{
-			SkippedStr = FString::Printf(TEXT("Dist Culled %.2f"), SkippedDetails.DistanceCulled);
-			CulledClasses.Increment(SkippedDetails.Actor->GetClass());
-		}
-		else if (SkippedDetails.FramesTillNextReplication > 0)
-		{
-			SkippedStr = FString::Printf(TEXT("Not ready (%d frames left)"), SkippedDetails.FramesTillNextReplication);
-		}
-		else
-		{
-			SkippedStr = TEXT("Unknown???");
-		}
+		Ar.Logf(TEXT("[%d Skipped Actors]"), PrioritizedList->SkippedDebugDetails->Num());
 
-		Ar.Logf(TEXT("%-40s %s"), *GetActorRepListTypeDebugString(SkippedDetails.Actor), *SkippedStr);
-	}
+		FNativeClassAccumulator DormantClasses;
+		FNativeClassAccumulator CulledClasses;
+
+		for (const FSkippedActorFullDebugDetails& SkippedDetails : *PrioritizedList->SkippedDebugDetails)
+		{
+			FString SkippedStr;
+			if (SkippedDetails.bWasDormant)
+			{
+				SkippedStr = TEXT("Dormant");
+				DormantClasses.Increment(SkippedDetails.Actor->GetClass());
+			}
+			else if (SkippedDetails.DistanceCulled > 0.f)
+			{
+				SkippedStr = FString::Printf(TEXT("Dist Culled %.2f"), SkippedDetails.DistanceCulled);
+				CulledClasses.Increment(SkippedDetails.Actor->GetClass());
+			}
+			else if (SkippedDetails.FramesTillNextReplication > 0)
+			{
+				SkippedStr = FString::Printf(TEXT("Not ready (%d frames left)"), SkippedDetails.FramesTillNextReplication);
+			}
+			else
+			{
+				SkippedStr = TEXT("Unknown???");
+			}
+
+			Ar.Logf(TEXT("%-40s %s"), *GetActorRepListTypeDebugString(SkippedDetails.Actor), *SkippedStr);
+		}
 
 		Ar.Logf(TEXT(" Dormant Classes: %s"), *DormantClasses.BuildString());
 		Ar.Logf(TEXT(" Culled Classes: %s"), *CulledClasses.BuildString());
+	}
 
 #endif
 

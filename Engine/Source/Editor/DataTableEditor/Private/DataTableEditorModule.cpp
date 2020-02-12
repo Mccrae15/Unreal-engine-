@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "DataTableEditorModule.h"
 #include "Modules/ModuleManager.h"
@@ -15,12 +15,14 @@ const FName FDataTableEditorModule::DataTableEditorAppIdentifier( TEXT( "DataTab
 void FDataTableEditorModule::StartupModule()
 {
 	MenuExtensibilityManager = MakeShareable(new FExtensibilityManager);
+	ToolBarExtensibilityManager = MakeShareable(new FExtensibilityManager);
 }
 
 
 void FDataTableEditorModule::ShutdownModule()
 {
 	MenuExtensibilityManager.Reset();
+	ToolBarExtensibilityManager.Reset();
 }
 
 

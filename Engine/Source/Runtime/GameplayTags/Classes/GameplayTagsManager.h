@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -285,6 +285,9 @@ class GAMEPLAYTAGS_API UGameplayTagsManager : public UObject
 		return *SingletonManager;
 	}
 
+	/** Returns possibly nullptr to the manager. Needed for some shutdown cases to avoid reallocating. */
+	FORCEINLINE static UGameplayTagsManager* GetIfAllocated() { return SingletonManager; }
+
 	/**
 	* Adds the gameplay tags corresponding to the strings in the array TagStrings to OutTagsContainer
 	*
@@ -425,6 +428,9 @@ class GAMEPLAYTAGS_API UGameplayTagsManager : public UObject
 	/** Loads the tag tables referenced in the GameplayTagSettings object */
 	void LoadGameplayTagTables(bool bAllowAsyncLoad = false);
 
+	/** Loads tag inis contained in the specified path */
+	void AddTagIniSearchPath(const FString& RootDir);
+
 	/** Helper function to construct the gameplay tag tree */
 	void ConstructGameplayTagTree();
 
@@ -474,6 +480,9 @@ class GAMEPLAYTAGS_API UGameplayTagsManager : public UObject
 		return bUseFastReplication;
 	}
 
+	/** Returns the hash of NetworkGameplayTagNodeIndex */
+	uint32 GetNetworkGameplayTagNodeIndexHash() const {	return NetworkGameplayTagNodeIndexHash;	}
+
 	/** Returns a list of the ini files that contain restricted tags */
 	void GetRestrictedTagConfigFiles(TArray<FString>& RestrictedConfigFiles) const;
 
@@ -484,16 +493,16 @@ class GAMEPLAYTAGS_API UGameplayTagsManager : public UObject
 	void GetOwnersForTagSource(const FString& SourceName, TArray<FString>& OutOwners) const;
 
 	/** Notification that a tag container has been loaded via serialize */
-	void GameplayTagContainerLoaded(FGameplayTagContainer& Container, UProperty* SerializingProperty) const;
+	void GameplayTagContainerLoaded(FGameplayTagContainer& Container, FProperty* SerializingProperty) const;
 
 	/** Notification that a gameplay tag has been loaded via serialize */
-	void SingleGameplayTagLoaded(FGameplayTag& Tag, UProperty* SerializingProperty) const;
+	void SingleGameplayTagLoaded(FGameplayTag& Tag, FProperty* SerializingProperty) const;
 
 	/** Handles redirectors for an entire container, will also error on invalid tags */
-	void RedirectTagsForContainer(FGameplayTagContainer& Container, UProperty* SerializingProperty) const;
+	void RedirectTagsForContainer(FGameplayTagContainer& Container, FProperty* SerializingProperty) const;
 
 	/** Handles redirectors for a single tag, will also error on invalid tag. This is only called for when individual tags are serialized on their own */
-	void RedirectSingleGameplayTag(FGameplayTag& Tag, UProperty* SerializingProperty) const;
+	void RedirectSingleGameplayTag(FGameplayTag& Tag, FProperty* SerializingProperty) const;
 
 	/** Handles establishing a single tag from an imported tag name (accounts for redirects too). Called when tags are imported via text. */
 	bool ImportSingleGameplayTag(FGameplayTag& Tag, FName ImportedTagName) const;
@@ -528,15 +537,27 @@ class GAMEPLAYTAGS_API UGameplayTagsManager : public UObject
 	/** Returns "Categories" meta property from given handle, used for filtering by tag widget */
 	FString GetCategoriesMetaFromPropertyHandle(TSharedPtr<class IPropertyHandle> PropertyHandle) const;
 
+	/** Helper function, made to be called by custom OnGetCategoriesMetaFromPropertyHandle handlers  */
+	static FString StaticGetCategoriesMetaFromPropertyHandle(TSharedPtr<class IPropertyHandle> PropertyHandle);
+
 	/** Returns "Categories" meta property from given field, used for filtering by tag widget */
-	FString GetCategoriesMetaFromField(UField* Field) const;
+	template <typename TFieldType>
+	FString GetCategoriesMetaFromField(TFieldType* Field) const
+	{
+		check(Field);
+		if (Field->HasMetaData(NAME_Categories))
+		{
+			return Field->GetMetaData(NAME_Categories);
+		}
+		return FString();
+	}
 
 	/** Returns "Categories" meta property from given struct, used for filtering by tag widget */
 	UE_DEPRECATED(4.22, "Please call GetCategoriesMetaFromField instead.")
 	FString GetCategoriesMetaFromStruct(UScriptStruct* Struct) const { return GetCategoriesMetaFromField(Struct); }
 
 	/** Returns "GameplayTagFilter" meta property from given function, used for filtering by tag widget for any parameters of the function that end up as BP pins */
-	FString GetCategoriesMetaFromFunction(UFunction* Func) const;
+	FString GetCategoriesMetaFromFunction(const UFunction* Func, FName ParamName = NAME_None) const;
 
 	/** Gets a list of all gameplay tag nodes added by the specific source */
 	void GetAllTagsFromSource(FName TagSource, TArray< TSharedPtr<FGameplayTagNode> >& OutTagArray) const;
@@ -655,6 +676,8 @@ private:
 
 	void AddChildrenTags(FGameplayTagContainer& TagContainer, TSharedPtr<FGameplayTagNode> GameplayTagNode, bool RecurseAll=true, bool OnlyIncludeDictionaryTags=false) const;
 
+	void AddTagsFromAdditionalLooseIniFiles(const TArray<FString>& IniFileList);
+
 	/**
 	 * Helper function for GameplayTagsMatch to get all parents when doing a parent match,
 	 * NOTE: Must never be made public as it uses the FNames which should never be exposed
@@ -689,6 +712,12 @@ private:
 	/** List of native tags to add when reconstructing tree */
 	TSet<FName> NativeTagsToAdd;
 
+	TSet<FName> RestrictedGameplayTagSourceNames;
+
+	TArray<FString> ExtraTagIniList;
+
+	bool bIsConstructingGameplayTagTree = false;
+
 	/** Cached runtime value for whether we are using fast replication or not. Initialized from config setting. */
 	bool bUseFastReplication;
 
@@ -713,10 +742,15 @@ private:
 	/** Sorted list of nodes, used for network replication */
 	TArray<TSharedPtr<FGameplayTagNode>> NetworkGameplayTagNodeIndex;
 
+	uint32 NetworkGameplayTagNodeIndexHash;
+
 	/** Holds all of the valid gameplay-related tags that can be applied to assets */
 	UPROPERTY()
 	TArray<UDataTable*> GameplayTagTables;
 
 	/** The map of ini-configured tag redirectors */
 	TMap<FName, FGameplayTag> TagRedirects;
+
+	const static FName NAME_Categories;
+	const static FName NAME_GameplayTagFilter;
 };

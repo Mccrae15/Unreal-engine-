@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "CompositingElements/CompositingElementInputs.h"
 
@@ -133,6 +133,12 @@ UTexture* UCompositingMediaInput::GenerateInput_Implementation()
  *****************************************************************************/
 
 #include "MediaTexture.h"
+
+UMediaTextureCompositingInput::UMediaTextureCompositingInput()
+{
+	// set to false so the Chroma Key picker works
+	bIntermediate = false;
+}
 
 UTexture* UMediaTextureCompositingInput::GetMediaTexture() const
 {

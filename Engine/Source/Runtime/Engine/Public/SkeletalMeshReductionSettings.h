@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 /*=============================================================================
 	SkeletalMeshReductionSettings.h: Skeletal Mesh Reduction Settings
@@ -11,6 +11,7 @@
 #include "BoneContainer.h"
 #include "SkeletalMeshReductionSettings.generated.h"
 
+class FSkeletalMeshLODModel;
 
 /** Enum specifying the reduction type to use when simplifying skeletal meshes with internal tool */
 UENUM()
@@ -47,6 +48,8 @@ enum SkeletalMeshOptimizationImportance
 	SMOI_Highest UMETA(DisplayName = "Highest"),
 	SMOI_MAX UMETA(Hidden)
 };
+
+DECLARE_DELEGATE_OneParam(FOnDeleteLODModelOverride, FSkeletalMeshLODModel*);
 
 /**
 * FSkeletalMeshOptimizationSettings - The settings used to optimize a skeletal mesh LOD.
@@ -135,6 +138,10 @@ struct FSkeletalMeshOptimizationSettings
 	UPROPERTY(EditAnywhere, Category = FSkeletalMeshOptimizationSettings, meta = (DisplayName = "Lock Mesh Edges"))
 	uint8 bLockEdges : 1;
 
+	/** Disallow edge collapse when the vertices do not have a common color*/
+	UPROPERTY(EditAnywhere, Category = FSkeletalMeshOptimizationSettings, meta = (DisplayName = "Lock Vertex Color Boundaries"))
+	uint8 bLockColorBounaries : 1;
+
 	/** Base LOD index to generate this LOD. By default, we generate from LOD 0 */
 	UPROPERTY(EditAnywhere, Category = FSkeletalMeshOptimizationSettings)
 	int32 BaseLOD;
@@ -145,6 +152,9 @@ struct FSkeletalMeshOptimizationSettings
 
 	UPROPERTY()
 	class UAnimSequence* BakePose_DEPRECATED;
+
+	//Transient mutable delegate. If the delegate is bound, the reduction will call it instead of deleting the replaced LODModel. It will be then the delegate owner responsible of the LODModel memory
+	mutable FOnDeleteLODModelOverride OnDeleteLODModelDelegate;
 #endif
 
 	FSkeletalMeshOptimizationSettings()
@@ -167,6 +177,7 @@ struct FSkeletalMeshOptimizationSettings
 		, bEnforceBoneBoundaries(false)
 		, VolumeImportance(1.f)
 		, bLockEdges(false)
+		, bLockColorBounaries(false)
 		, BaseLOD(0)
 #if WITH_EDITORONLY_DATA
 		, BakePose_DEPRECATED(nullptr)

@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "TakeRecorderSettings.h"
 #include "UObject/Package.h"
@@ -8,7 +8,6 @@ UTakeRecorderUserSettings::UTakeRecorderUserSettings()
 	Settings.bMaximizeViewport  = false;
 	Settings.CountdownSeconds   = 3.f;
 	Settings.EngineTimeDilation = 1.f;
-	Settings.SampleClock        = nullptr;
 	Settings.bRemoveRedundantTracks = true;
 	Settings.bSaveRecordedAssets = true;
 	Settings.bAutoSerialize     = false;
@@ -29,7 +28,8 @@ void UTakeRecorderUserSettings::PostEditChangeProperty(FPropertyChangedEvent& Pr
 
 UTakeRecorderProjectSettings::UTakeRecorderProjectSettings()
 {
-	Settings.TakeSaveDir.Path = TEXT("/Game/Cinematics/Takes/{year}-{month}-{day}/{slate}_{take}");
+	Settings.RootTakeSaveDir.Path = TEXT("/Game/Cinematics/Takes");
+	Settings.TakeSaveDir = TEXT("{year}-{month}-{day}/{slate}_{take}");
 	Settings.DefaultSlate = TEXT("Scene_1");
 	Settings.bRecordSourcesIntoSubSequences = true;
 	Settings.bRecordToPossessable = false;

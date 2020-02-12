@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 /*=============================================================================
 	Controller.cpp: 
@@ -29,13 +29,23 @@ DEFINE_LOG_CATEGORY(LogPath);
 
 #define LOCTEXT_NAMESPACE "Controller"
 
+namespace ControllerStatics
+{
+	static float InvalidControlRotationMagnitude = 8388608.f; // 2^23, largest float when fractions are lost, and where FMod loses meaningful precision.
+	static FAutoConsoleVariableRef CVarInvalidControlRotationMagnitude(
+		TEXT("Controller.InvalidControlRotationMagnitude"), InvalidControlRotationMagnitude,
+		TEXT("If any component of an FRotator passed to SetControlRotation is larger than this magnitude, ignore the value. Huge values are usually from uninitialized variables and can cause NaN/Inf to propagate later."),
+		ECVF_Default);
+}
+
+
 
 AController::AController(const FObjectInitializer& ObjectInitializer)
 	: Super(ObjectInitializer)
 {
 
 	PrimaryActorTick.bCanEverTick = true;
-	bHidden = true;
+	SetHidden(true);
 #if WITH_EDITORONLY_DATA
 	bHiddenEd = true;
 #endif // WITH_EDITORONLY_DATA
@@ -44,7 +54,7 @@ AController::AController(const FObjectInitializer& ObjectInitializer)
 	TransformComponent = CreateDefaultSubobject<USceneComponent>(TEXT("TransformComponent0"));
 	RootComponent = TransformComponent;
 
-	bCanBeDamaged = false;
+	SetCanBeDamaged(false);
 	bAttachToPawn = false;
 	bIsPlayerController = false;
 	bCanPossessWithoutAuthority = false;
@@ -53,7 +63,7 @@ AController::AController(const FObjectInitializer& ObjectInitializer)
 	{
 		// We attach the RootComponent to the pawn for location updates,
 		// but we want to drive rotation with ControlRotation regardless of attachment state.
-		RootComponent->bAbsoluteRotation = true;
+		RootComponent->SetUsingAbsoluteRotation(true);
 	}
 }
 
@@ -72,13 +82,13 @@ bool AController::IsLocalController() const
 		return true;
 	}
 	
-	if (NetMode == NM_Client && Role == ROLE_AutonomousProxy)
+	if (NetMode == NM_Client && GetLocalRole() == ROLE_AutonomousProxy)
 	{
 		// Networked client in control.
 		return true;
 	}
 
-	if (GetRemoteRole() != ROLE_AutonomousProxy && Role == ROLE_Authority)
+	if (GetRemoteRole() != ROLE_AutonomousProxy && GetLocalRole() == ROLE_Authority)
 	{
 		// Local authority in control.
 		return true;
@@ -106,26 +116,44 @@ FRotator AController::GetControlRotation() const
 
 void AController::SetControlRotation(const FRotator& NewRotation)
 {
-#if ENABLE_NAN_DIAGNOSTIC
-	if (NewRotation.ContainsNaN())
+	if (!IsValidControlRotation(NewRotation))
 	{
-		logOrEnsureNanError(TEXT("AController::SetControlRotation about to apply NaN-containing rotation! (%s)"), *NewRotation.ToString());
+		logOrEnsureNanError(TEXT("AController::SetControlRotation attempted to apply NaN-containing or NaN-causing rotation! (%s)"), *NewRotation.ToString());
 		return;
 	}
-#endif
+
 	if (!ControlRotation.Equals(NewRotation, 1e-3f))
 	{
 		ControlRotation = NewRotation;
 
-		if (RootComponent && RootComponent->bAbsoluteRotation)
+		if (RootComponent && RootComponent->IsUsingAbsoluteRotation())
 		{
 			RootComponent->SetWorldRotation(GetControlRotation());
 		}
 	}
 	else
 	{
-		//UE_LOG(LogPlayerController, Log, TEXT("Skipping SetControlRotation for %s (Pawn %s)"), *GetNameSafe(this), *GetNameSafe(GetPawn()));
+		//UE_LOG(LogPlayerController, Log, TEXT("Skipping SetControlRotation %s for %s (Pawn %s)"), *NewRotation.ToString(), *GetNameSafe(this), *GetNameSafe(GetPawn()));
 	}
+}
+
+bool AController::IsValidControlRotation(FRotator CheckRotation) const
+{
+	if (CheckRotation.ContainsNaN())
+	{
+		return false;
+	}
+
+	// Really large values can be technically valid but are usually the result of uninitialized values, and those can cause
+	// conversion to FQuat or Vector to fail and generate NaN or Inf.
+	if (FMath::Abs(CheckRotation.Pitch) >= ControllerStatics::InvalidControlRotationMagnitude ||
+		FMath::Abs(CheckRotation.Yaw  ) >= ControllerStatics::InvalidControlRotationMagnitude ||
+		FMath::Abs(CheckRotation.Roll ) >= ControllerStatics::InvalidControlRotationMagnitude)
+	{
+		return false;
+	}
+
+	return true;
 }
 
 
@@ -267,7 +295,7 @@ void AController::PostInitializeComponents()
 
 		// Since we avoid updating rotation in SetControlRotation() if it hasn't changed,
 		// we should make sure that the initial RootComponent rotation matches it if ControlRotation was set directly.
-		if (RootComponent && RootComponent->bAbsoluteRotation)
+		if (RootComponent && RootComponent->IsUsingAbsoluteRotation())
 		{
 			RootComponent->SetWorldRotation(GetControlRotation());
 		}
@@ -476,7 +504,7 @@ void AController::OnRep_PlayerState()
 
 void AController::Destroyed()
 {
-	if (Role == ROLE_Authority && PlayerState != NULL)
+	if (GetLocalRole() == ROLE_Authority && PlayerState != NULL)
 	{
 		// if we are a player, log out
 		AGameModeBase* const GameMode = GetWorld()->GetAuthGameMode();
@@ -526,7 +554,7 @@ void AController::InitPlayerState()
 		{
 			FActorSpawnParameters SpawnInfo;
 			SpawnInfo.Owner = this;
-			SpawnInfo.Instigator = Instigator;
+			SpawnInfo.Instigator = GetInstigator();
 			SpawnInfo.SpawnCollisionHandlingOverride = ESpawnActorCollisionHandlingMethod::AlwaysSpawn;
 			SpawnInfo.ObjectFlags |= RF_Transient;	// We never want player states to save into a map
 

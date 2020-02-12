@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "HardwareTargetingModule.h"
 #include "HAL/FileManager.h"
@@ -43,7 +43,7 @@ struct FMetaSettingGatherer
 	{
 	}
 
-	void AddEntry(UObject* SettingsObject, UProperty* Property, FText NewValue, bool bModified)
+	void AddEntry(UObject* SettingsObject, FProperty* Property, FText NewValue, bool bModified)
 	{
 		if (bModified || bIncludeUnmodifiedProperties)
 		{
@@ -125,7 +125,7 @@ static FName HardwareTargetingConsoleVariableMetaFName(TEXT("ConsoleVariable"));
 { \
 	Class* SettingsObject = GetMutableDefault<Class>(); \
 	bool bModified = SettingsObject->PropertyName != (TargetValue); \
-	UProperty* Property = FindFieldChecked<UProperty>(Class::StaticClass(), GET_MEMBER_NAME_CHECKED(Class, PropertyName)); \
+	FProperty* Property = FindFieldChecked<FProperty>(Class::StaticClass(), GET_MEMBER_NAME_CHECKED(Class, PropertyName)); \
 	if (!Builder.bReadOnly) { \
 		const FString& CVarName = Property->GetMetaData(HardwareTargetingConsoleVariableMetaFName); \
 		if (!CVarName.IsEmpty()) { IConsoleVariable* CVar = IConsoleManager::Get().FindConsoleVariable(*CVarName); \
@@ -148,8 +148,8 @@ public:
 	// IHardwareTargetingModule interface
 	virtual void ApplyHardwareTargetingSettings() override;
 	virtual TArray<FModifiedDefaultConfig> GetPendingSettingsChanges() override;
-	virtual TSharedRef<SWidget> MakeHardwareClassTargetCombo(FOnHardwareClassChanged OnChanged, TAttribute<EHardwareClass::Type> SelectedEnum) override;
-	virtual TSharedRef<SWidget> MakeGraphicsPresetTargetCombo(FOnGraphicsPresetChanged OnChanged, TAttribute<EGraphicsPreset::Type> SelectedEnum) override;
+	virtual TSharedRef<SWidget> MakeHardwareClassTargetCombo(FOnHardwareClassChanged OnChanged, TAttribute<EHardwareClass::Type> SelectedEnum, EOrientation Orientation) override;
+	virtual TSharedRef<SWidget> MakeGraphicsPresetTargetCombo(FOnGraphicsPresetChanged OnChanged, TAttribute<EGraphicsPreset::Type> SelectedEnum, EOrientation Orientation) override;
 	// End of IHardwareTargetingModule interface
 
 private:
@@ -280,7 +280,7 @@ void FHardwareTargetingModule::ApplyHardwareTargetingSettings()
 	}
 }
 
-TSharedRef<SWidget> FHardwareTargetingModule::MakeHardwareClassTargetCombo(FOnHardwareClassChanged OnChanged, TAttribute<EHardwareClass::Type> SelectedEnum)
+TSharedRef<SWidget> FHardwareTargetingModule::MakeHardwareClassTargetCombo(FOnHardwareClassChanged OnChanged, TAttribute<EHardwareClass::Type> SelectedEnum, EOrientation Orientation)
 {
 	TArray<SDecoratedEnumCombo<EHardwareClass::Type>::FComboOption> HardwareClassInfo;
 	HardwareClassInfo.Add(SDecoratedEnumCombo<EHardwareClass::Type>::FComboOption(
@@ -293,10 +293,11 @@ TSharedRef<SWidget> FHardwareTargetingModule::MakeHardwareClassTargetCombo(FOnHa
 	return SNew(SDecoratedEnumCombo<EHardwareClass::Type>, MoveTemp(HardwareClassInfo))
 		.SelectedEnum(SelectedEnum)
 		.OnEnumChanged(OnChanged)
+		.Orientation(Orientation)
 		.ToolTip(IDocumentation::Get()->CreateToolTip(LOCTEXT("HardwareClassTooltip", "Choose the overall class of hardware to target (desktop/console or mobile/tablet)."), NULL, TEXT("Shared/Editor/Settings/TargetHardware"), TEXT("HardwareClass")));
 }
 
-TSharedRef<SWidget> FHardwareTargetingModule::MakeGraphicsPresetTargetCombo(FOnGraphicsPresetChanged OnChanged, TAttribute<EGraphicsPreset::Type> SelectedEnum)
+TSharedRef<SWidget> FHardwareTargetingModule::MakeGraphicsPresetTargetCombo(FOnGraphicsPresetChanged OnChanged, TAttribute<EGraphicsPreset::Type> SelectedEnum, EOrientation Orientation)
 {
 	TArray<SDecoratedEnumCombo<EGraphicsPreset::Type>::FComboOption> GraphicsPresetInfo;
 	GraphicsPresetInfo.Add(SDecoratedEnumCombo<EGraphicsPreset::Type>::FComboOption(
@@ -309,6 +310,7 @@ TSharedRef<SWidget> FHardwareTargetingModule::MakeGraphicsPresetTargetCombo(FOnG
 	return SNew(SDecoratedEnumCombo<EGraphicsPreset::Type>, MoveTemp(GraphicsPresetInfo))
 		.SelectedEnum(SelectedEnum)
 		.OnEnumChanged(OnChanged)
+		.Orientation(Orientation)
 		.ToolTip(IDocumentation::Get()->CreateToolTip(LOCTEXT("GraphicsPresetTooltip", "Choose the graphical level to target (high-end only or scalable from low-end on up)."), NULL, TEXT("Shared/Editor/Settings/TargetHardware"), TEXT("GraphicalLevel")));
 }
 

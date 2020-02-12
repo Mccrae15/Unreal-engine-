@@ -1,4 +1,4 @@
-﻿// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 using System;
 using System.Collections.Generic;
@@ -99,7 +99,7 @@ namespace UnrealBuildTool
 			/// <returns>Hash value for this object</returns>
 			public override int GetHashCode()
 			{
-				return ((ProjectDir != null)? ProjectDir.GetHashCode() : 0) + ((int)Type * 123) + ((int)Platform * 345);
+				return ((ProjectDir != null)? ProjectDir.GetHashCode() : 0) + ((int)Type * 123) + ((Platform != null ? Platform.ToString() : "None").GetHashCode() * 345);
 			}
 		}
 
@@ -156,9 +156,8 @@ namespace UnrealBuildTool
 		/// <param name="Type">The type of hierarchy to read</param>
 		/// <param name="ProjectDir">The project directory to read the hierarchy for</param>
 		/// <param name="Platform">Which platform to read platform-specific config files for</param>
-		/// <param name="GeneratedConfigDir">Base directory for generated configs</param>
 		/// <returns>The requested config hierarchy</returns>
-		public static ConfigHierarchy ReadHierarchy(ConfigHierarchyType Type, DirectoryReference ProjectDir, UnrealTargetPlatform Platform, DirectoryReference GeneratedConfigDir = null)
+		public static ConfigHierarchy ReadHierarchy(ConfigHierarchyType Type, DirectoryReference ProjectDir, UnrealTargetPlatform Platform)
 		{
 			// Get the key to use for the cache. It cannot be null, so we use the engine directory if a project directory is not given.
 			ConfigHierarchyKey Key = new ConfigHierarchyKey(Type, ProjectDir, Platform);
@@ -169,32 +168,12 @@ namespace UnrealBuildTool
 			{
 				if (!HierarchyKeyToHierarchy.TryGetValue(Key, out Hierarchy))
 				{
+					// Find all the input files
 					List<ConfigFile> Files = new List<ConfigFile>();
 					foreach (FileReference IniFileName in ConfigHierarchy.EnumerateConfigFileLocations(Type, ProjectDir, Platform))
 					{
 						ConfigFile File;
 						if (TryReadFile(IniFileName, out File))
-						{
-							Files.Add(File);
-						}
-					}
-
-					// If we haven't been given a generated project dir, but we do have a project then the generated configs
-					// should go into ProjectDir/Saved
-					if (GeneratedConfigDir == null && ProjectDir != null)
-					{
-						GeneratedConfigDir = DirectoryReference.Combine(ProjectDir, "Saved");
-					}
-
-					if (GeneratedConfigDir != null)
-					{
-						// We know where the generated version of this config file lives, so we can read it back in
-						// and include any user settings from there in our hierarchy
-						string BaseIniName = Enum.GetName(typeof(ConfigHierarchyType), Type);
-						string PlatformName = ConfigHierarchy.GetIniPlatformName(Platform);
-						FileReference DestinationIniFilename = FileReference.Combine(GeneratedConfigDir, "Config", PlatformName, BaseIniName + ".ini");
-						ConfigFile File;
-						if (TryReadFile(DestinationIniFilename, out File))
 						{
 							Files.Add(File);
 						}
@@ -212,6 +191,7 @@ namespace UnrealBuildTool
 						}
 					}
 
+					// Create the hierarchy
 					Hierarchy = new ConfigHierarchy(Files);
 					HierarchyKeyToHierarchy.Add(Key, Hierarchy);
 				}
@@ -276,20 +256,38 @@ namespace UnrealBuildTool
 		/// <param name="TargetObject">Object to receive the settings</param>
 		public static void ReadSettings(DirectoryReference ProjectDir, UnrealTargetPlatform Platform, object TargetObject)
 		{
+			ReadSettings(ProjectDir, Platform, TargetObject, null);
+		}
+
+		/// <summary>
+		/// Read config settings for the given object
+		/// </summary>
+		/// <param name="ProjectDir">Path to the project directory</param>
+		/// <param name="Platform">The platform being built</param>
+		/// <param name="TargetObject">Object to receive the settings</param>
+		/// <param name="Tracker">Tracks the set of config values that were retrieved. May be null.</param>
+		internal static void ReadSettings(DirectoryReference ProjectDir, UnrealTargetPlatform Platform, object TargetObject, ConfigValueTracker Tracker)
+		{
 			List<ConfigField> Fields = FindConfigFieldsForType(TargetObject.GetType());
 			foreach(ConfigField Field in Fields)
 			{
 				// Read the hierarchy listed
 				ConfigHierarchy Hierarchy = ReadHierarchy(Field.Attribute.ConfigType, ProjectDir, Platform);
 
+				// Get the key name
+				string KeyName = Field.Attribute.KeyName ?? Field.FieldInfo.Name;
+
+				// Get the value(s) associated with this key
+				IReadOnlyList<string> Values;
+				Hierarchy.TryGetValues(Field.Attribute.SectionName, KeyName, out Values);
+
 				// Parse the values from the config files and update the target object
-				if(Field.AddElement == null)
+				if (Field.AddElement == null)
 				{
-					string Text;
-					if(Hierarchy.TryGetValue(Field.Attribute.SectionName, Field.Attribute.KeyName ?? Field.FieldInfo.Name, out Text))
+					if(Values != null && Values.Count == 1)
 					{
 						object Value;
-						if(TryParseValue(Text, Field.FieldInfo.FieldType, out Value))
+						if(TryParseValue(Values[0], Field.FieldInfo.FieldType, out Value))
 						{
 							Field.FieldInfo.SetValue(TargetObject, Value);
 						}
@@ -297,10 +295,9 @@ namespace UnrealBuildTool
 				}
 				else
 				{
-					IEnumerable<string> Items;
-					if(Hierarchy.TryGetValues(Field.Attribute.SectionName, Field.Attribute.KeyName ?? Field.FieldInfo.Name, out Items))
+					if(Values != null)
 					{
-						foreach(string Item in Items)
+						foreach(string Item in Values)
 						{
 							object Value;
 							if(TryParseValue(Item, Field.ElementType, out Value))
@@ -309,6 +306,12 @@ namespace UnrealBuildTool
 							}
 						}
 					}
+				}
+
+				// Save the dependency
+				if (Tracker != null)
+				{
+					Tracker.Add(Field.Attribute.ConfigType, ProjectDir, Platform, Field.Attribute.SectionName, KeyName, Values);
 				}
 			}
 		}

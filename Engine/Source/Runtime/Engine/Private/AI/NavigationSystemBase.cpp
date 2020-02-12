@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "AI/NavigationSystemBase.h"
 #include "Engine/Engine.h"
@@ -12,6 +12,8 @@
 #include "AI/Navigation/NavigationDataChunk.h"
 
 DEFINE_LOG_CATEGORY(LogNavigation);
+DEFINE_LOG_CATEGORY(LogNavigationDataBuild);
+DEFINE_LOG_CATEGORY(LogNavLink);
 
 #if !UE_BUILD_SHIPPING
 #include "CoreGlobals.h"
@@ -36,10 +38,9 @@ namespace FNavigationSystem
 		}
 	}
 
-
-	void AddNavigationSystemToWorld(UWorld& WorldOwner, const FNavigationSystemRunMode RunMode, UNavigationSystemConfig* NavigationSystemConfig, const bool bInitializeForWorld)
+	void AddNavigationSystemToWorld(UWorld& WorldOwner, const FNavigationSystemRunMode RunMode, UNavigationSystemConfig* NavigationSystemConfig, const bool bInitializeForWorld, const bool bOverridePreviousNavSys)
 	{
-		if (WorldOwner.GetNavigationSystem() == nullptr)
+		if (WorldOwner.GetNavigationSystem() == nullptr || bOverridePreviousNavSys)
 		{
 			if (NavigationSystemConfig == nullptr)
 			{
@@ -50,11 +51,11 @@ namespace FNavigationSystem
 				}
 			}
 
-			if (NavigationSystemConfig)
-			{
-				UNavigationSystemBase* NavSysInstance = NavigationSystemConfig->CreateAndConfigureNavigationSystem(WorldOwner);
-				WorldOwner.SetNavigationSystem(NavSysInstance);
-			}
+			UNavigationSystemBase* NavSysInstance = NavigationSystemConfig 
+				? NavigationSystemConfig->CreateAndConfigureNavigationSystem(WorldOwner)
+				: nullptr;
+			// we're setting to an instance or null, both are correct
+			WorldOwner.SetNavigationSystem(NavSysInstance);			
 		}
 
 		if (bInitializeForWorld)
@@ -149,6 +150,8 @@ namespace FNavigationSystem
 
 	FDelegates Delegates;
 
+	void ResetDelegates() { new(&Delegates)FDelegates(); }
+
 	void UpdateActorData(AActor& Actor) { Delegates.UpdateActorData.Execute(Actor); }
 	void UpdateComponentData(UActorComponent& Comp) { Delegates.UpdateComponentData.Execute(Comp); }
 	void UpdateActorAndComponentData(AActor& Actor, bool bUpdateAttachedActors) { Delegates.UpdateActorAndComponentData.Execute(Actor, bUpdateAttachedActors); }
@@ -207,17 +210,38 @@ namespace FNavigationSystem
 	void UpdateLevelCollision(ULevel& Level) { Delegates.UpdateLevelCollision.Execute(Level); }
 #endif // WITH_EDITOR
 
-	FTransform CoordTypeTransformsTo[ENavigationCoordSystem::MAX] = { FTransform::Identity, FTransform::Identity };
-	FTransform CoordTypeTransformsFrom[ENavigationCoordSystem::MAX] = { FTransform::Identity, FTransform::Identity };
+	struct FCoordTransforms
+	{
+		FTransform& Get(const ENavigationCoordSystem::Type FromCoordType, const ENavigationCoordSystem::Type ToCoordType)
+		{
+			static FTransform CoordTypeTransforms[ENavigationCoordSystem::MAX][ENavigationCoordSystem::MAX] = {
+				{FTransform::Identity, FTransform::Identity}
+				, {FTransform::Identity, FTransform::Identity}
+			};
+
+			return CoordTypeTransforms[uint8(FromCoordType)][uint8(ToCoordType)];
+		}
+	};
+
+	FCoordTransforms& GetCoordTypeTransforms()
+	{
+		static FCoordTransforms CoordTypeTransforms;
+		return CoordTypeTransforms;
+	}
 
 	const FTransform& GetCoordTransformTo(const ENavigationCoordSystem::Type CoordType)
 	{
-		return CoordTypeTransformsTo[uint8(CoordType)];
+		return GetCoordTransform(ENavigationCoordSystem::Unreal, CoordType);
 	}
 
 	const FTransform& GetCoordTransformFrom(const ENavigationCoordSystem::Type CoordType)
 	{
-		return CoordTypeTransformsTo[uint8(CoordType)];
+		return GetCoordTransform(CoordType, ENavigationCoordSystem::Unreal);
+	}
+
+	const FTransform& GetCoordTransform(const ENavigationCoordSystem::Type FromCoordType, const ENavigationCoordSystem::Type ToCoordType)
+	{
+		return GetCoordTypeTransforms().Get(FromCoordType, ToCoordType);
 	}
 
 	UWorld* GetWorldFromContextObject(UObject* WorldContextObject)
@@ -285,60 +309,25 @@ void FNavigationLockContext::UnlockUpdates()
 }
 
 //----------------------------------------------------------------------//
-// 
+// UNavigationSystemBase
 //----------------------------------------------------------------------//
-UNavigationSystem::UNavigationSystem(const FObjectInitializer& ObjectInitializer)
-{
-#if !UE_BUILD_SHIPPING
-	if (HasAnyFlags(RF_ClassDefaultObject) && GetClass() == UNavigationSystem::StaticClass())
-	{
-		struct FIniChecker
-		{
-			FIniChecker()
-			{
-				const TCHAR EngineTemplage[] = TEXT("/Script/Engine.%s");
-				const TCHAR MessageTemplate[] = TEXT("[/Script/Engine.%s] found in the DefaultEngine.ini file. This class has been moved. Please rename that section to [/Script/NavigationSystem.%s]");
-				const TArray<FString> MovedIniClasses = {
-					TEXT("RecastNavMesh")
-					, TEXT("NavArea")
-					, TEXT("NavAreaMeta")
-					, TEXT("NavArea_Default")
-					, TEXT("NavArea_LowHeight")
-					, TEXT("NavArea_Null")
-					, TEXT("NavArea_Obstacle")
-					, TEXT("NavAreaMeta_SwitchByAgent")
-					, TEXT("AbstractNavData")
-					, TEXT("NavCollision")
-					, TEXT("NavigationData")
-					, TEXT("NavigationGraph")
-					, TEXT("NavigationGraphNode")
-					, TEXT("NavigationGraphNodeComponent")
-				};
-
-				// NavigationSystem changed name, treat tit separately
-				UE_CLOG(GConfig->DoesSectionExist(*FString::Printf(EngineTemplage, TEXT("NavigationSystem")), GEngineIni)
-					, LogNavigation, Error, MessageTemplate, TEXT("NavigationSystem"), TEXT("NavigationSystemV1"));
-
-				for (auto ClassName : MovedIniClasses)
-				{
-					UE_CLOG(GConfig->DoesSectionExist(*FString::Printf(EngineTemplage, *ClassName), GEngineIni)
-						, LogNavigation, Error, MessageTemplate, *ClassName, *ClassName);
-				}
-			}
-		};
-		static FIniChecker IniChecker;
-	}
-#endif // !UE_BUILD_SHIPPING
-}
-
 void UNavigationSystemBase::SetCoordTransformTo(const ENavigationCoordSystem::Type CoordType, const FTransform& Transform)
 {
-	FNavigationSystem::CoordTypeTransformsTo[uint8(CoordType)] = Transform;
+	SetCoordTransform(ENavigationCoordSystem::Unreal, CoordType, Transform);
 }
 
 void UNavigationSystemBase::SetCoordTransformFrom(const ENavigationCoordSystem::Type CoordType, const FTransform& Transform)
 {
-	FNavigationSystem::CoordTypeTransformsTo[uint8(CoordType)] = Transform;
+	SetCoordTransform(CoordType, ENavigationCoordSystem::Unreal, Transform);
+}
+
+void UNavigationSystemBase::SetCoordTransform(const ENavigationCoordSystem::Type FromCoordType, const ENavigationCoordSystem::Type ToCoordType, const FTransform& Transform, bool bAddInverse)
+{
+	FNavigationSystem::GetCoordTypeTransforms().Get(FromCoordType, ToCoordType) = Transform;
+	if (bAddInverse)
+	{
+		FNavigationSystem::GetCoordTypeTransforms().Get(ToCoordType, FromCoordType) = Transform.Inverse();
+	}
 }
 
 void UNavigationSystemBase::SetWantsComponentChangeNotifies(const bool bEnable)
@@ -357,6 +346,7 @@ void UNavigationSystemBase::SetDefaultObstacleArea(TSubclassOf<UNavAreaBase> InA
 }
 
 
+void UNavigationSystemBase::ResetEventDelegates() { FNavigationSystem::ResetDelegates(); }
 FNavigationSystem::FActorBasedSignature& UNavigationSystemBase::UpdateActorDataDelegate() { return FNavigationSystem::Delegates.UpdateActorData; }
 FNavigationSystem::FActorComponentBasedSignature& UNavigationSystemBase::UpdateComponentDataDelegate() { return FNavigationSystem::Delegates.UpdateComponentData; }
 FNavigationSystem::FSceneComponentBasedSignature& UNavigationSystemBase::UpdateComponentDataAfterMoveDelegate() { return FNavigationSystem::Delegates.UpdateComponentDataAfterMove; }

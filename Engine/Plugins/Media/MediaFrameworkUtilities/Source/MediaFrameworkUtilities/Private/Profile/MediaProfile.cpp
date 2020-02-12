@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 
 #include "Profile/MediaProfile.h"
@@ -12,7 +12,7 @@
 #include "MediaAssets/ProxyMediaSource.h"
 #include "MediaOutput.h"
 #include "MediaSource.h"
-#include "Profile/MediaProfileSettings.h"
+#include "Profile/IMediaProfileManager.h"
 
 
 UMediaSource* UMediaProfile::GetMediaSource(int32 Index) const
@@ -71,15 +71,13 @@ void UMediaProfile::Apply()
 		return;
 	}
 
-	{
-		TArray<UProxyMediaSource*> SourceProxies = GetDefault<UMediaProfileSettings>()->GetAllMediaSourceProxy();
-		if (MediaSources.Num() > SourceProxies.Num())
-		{
-			UE_LOG(LogMediaFrameworkUtilities, Warning, TEXT("The MediaProfile '%s' has too many sources."), *GetName());
-		}
+	// Make sure we have the same amount of sources and outputs as the number of proxies.
+	FixNumSourcesAndOutputs();
 
-		int32 Index = 0;
-		for (; Index < MediaSources.Num() && Index < SourceProxies.Num(); ++Index)
+	{
+		TArray<UProxyMediaSource*> SourceProxies = IMediaProfileManager::Get().GetAllMediaSourceProxy();
+		check(SourceProxies.Num() == MediaSources.Num());
+		for (int32 Index = 0; Index < MediaSources.Num(); ++Index)
 		{
 			UProxyMediaSource* Proxy = SourceProxies[Index];
 			if (Proxy)
@@ -87,26 +85,12 @@ void UMediaProfile::Apply()
 				Proxy->SetDynamicMediaSource(MediaSources[Index]);
 			}
 		}
-		// Reset the other proxies
-		for (; Index < SourceProxies.Num(); ++Index)
-		{
-			UProxyMediaSource* Proxy = SourceProxies[Index];
-			if (Proxy)
-			{
-				Proxy->SetDynamicMediaSource(nullptr);
-			}
-		}
 	}
 
 	{
-		TArray<UProxyMediaOutput*> OutputProxies = GetDefault<UMediaProfileSettings>()->GetAllMediaOutputProxy();
-		if (MediaOutputs.Num() > OutputProxies.Num())
-		{
-			UE_LOG(LogMediaFrameworkUtilities, Warning, TEXT("The MediaProfile '%s' has too many outputs."), *GetName());
-		}
-
-		int32 Index = 0;
-		for (; Index < MediaOutputs.Num() && Index < OutputProxies.Num(); ++Index)
+		TArray<UProxyMediaOutput*> OutputProxies = IMediaProfileManager::Get().GetAllMediaOutputProxy();
+		check(OutputProxies.Num() == MediaOutputs.Num());
+		for (int32 Index = 0; Index < MediaOutputs.Num(); ++Index)
 		{
 			UProxyMediaOutput* Proxy = OutputProxies[Index];
 			if (Proxy)
@@ -114,46 +98,31 @@ void UMediaProfile::Apply()
 				Proxy->SetDynamicMediaOutput(MediaOutputs[Index]);
 			}
 		}
-		// Reset the other proxies
-		for (; Index < OutputProxies.Num(); ++Index)
-		{
-			UProxyMediaOutput* Proxy = OutputProxies[Index];
-			if (Proxy)
-			{
-				Proxy->SetDynamicMediaOutput(nullptr);
-			}
-		}
 	}
 
+	ResetTimecodeProvider();
 	if (bOverrideTimecodeProvider)
 	{
-		if (TimecodeProvider)
+		bTimecodeProvideWasApplied = true;
+		AppliedTimecodeProvider = TimecodeProvider;
+		PreviousTimecodeProvider = GEngine->GetTimecodeProvider();
+		bool bResult = GEngine->SetTimecodeProvider(TimecodeProvider);
+		if (!bResult && TimecodeProvider)
 		{
-			bool bResult = GEngine->SetTimecodeProvider(TimecodeProvider);
-			if (!bResult)
-			{
-				UE_LOG(LogMediaFrameworkUtilities, Warning, TEXT("The TimecodeProvider '%s' could not be initialized."), *TimecodeProvider->GetName());
-			}
-		}
-		else
-		{
-			GEngine->SetTimecodeProvider(nullptr);
+			UE_LOG(LogMediaFrameworkUtilities, Warning, TEXT("The Timecode Provider '%s' could not be initialized."), *TimecodeProvider->GetName());
 		}
 	}
 
+	ResetCustomTimeStep();
 	if (bOverrideCustomTimeStep)
 	{
-		if (CustomTimeStep)
+		bCustomTimeStepWasApplied = true;
+		AppliedCustomTimeStep = CustomTimeStep;
+		PreviousCustomTimeStep = GEngine->GetCustomTimeStep();
+		bool bResult = GEngine->SetCustomTimeStep(CustomTimeStep);
+		if (!bResult && CustomTimeStep)
 		{
-			bool bResult = GEngine->SetCustomTimeStep(CustomTimeStep);
-			if (!bResult)
-			{
-				UE_LOG(LogMediaFrameworkUtilities, Warning, TEXT("The Custom Time Step '%s' could not be initialized."), *CustomTimeStep->GetName());
-			}
-		}
-		else
-		{
-			GEngine->SetCustomTimeStep(nullptr);
+			UE_LOG(LogMediaFrameworkUtilities, Warning, TEXT("The Custom Time Step '%s' could not be initialized."), *CustomTimeStep->GetName());
 		}
 	}
 }
@@ -168,8 +137,8 @@ void UMediaProfile::Reset()
 	}
 
 	{
-		// Reset the proxies
-		TArray<UProxyMediaSource*> SourceProxies = GetDefault<UMediaProfileSettings>()->GetAllMediaSourceProxy();
+		// Reset the source proxies
+		TArray<UProxyMediaSource*> SourceProxies = IMediaProfileManager::Get().GetAllMediaSourceProxy();
 		for (UProxyMediaSource* Proxy : SourceProxies)
 		{
 			if (Proxy)
@@ -180,7 +149,8 @@ void UMediaProfile::Reset()
 	}
 
 	{
-		TArray<UProxyMediaOutput*> OutputProxies = GetDefault<UMediaProfileSettings>()->GetAllMediaOutputProxy();
+		// Reset the output proxies
+		TArray<UProxyMediaOutput*> OutputProxies = IMediaProfileManager::Get().GetAllMediaOutputProxy();
 		for (UProxyMediaOutput* Proxy : OutputProxies)
 		{
 			if (Proxy)
@@ -190,25 +160,84 @@ void UMediaProfile::Reset()
 		}
 	}
 
+	// Reset the timecode provider
+	ResetTimecodeProvider();
+
+	// Reset the engine custom time step
+	ResetCustomTimeStep();
+}
+
+void UMediaProfile::ResetTimecodeProvider()
+{
+	if (bTimecodeProvideWasApplied)
 	{
-		const UTimecodeProvider* CurrentTimecodeProvider = GEngine->GetTimecodeProvider();
-		if (CurrentTimecodeProvider)
+		if (AppliedTimecodeProvider == GEngine->GetTimecodeProvider())
 		{
-			if (CurrentTimecodeProvider->GetOuter() == this)
+			bool bResult = GEngine->SetTimecodeProvider(PreviousTimecodeProvider);
+			if (!bResult && PreviousTimecodeProvider)
 			{
-				GEngine->SetTimecodeProvider(nullptr);
+				UE_LOG(LogMediaFrameworkUtilities, Warning, TEXT("The TimecodeProvider '%s' could not be initialized."), *PreviousTimecodeProvider->GetName());
 			}
 		}
+		else
+		{
+			if (PreviousTimecodeProvider)
+			{
+				UE_LOG(LogMediaFrameworkUtilities, Warning, TEXT("Could not set the previous TimecodeProvider '%s'."), *PreviousTimecodeProvider->GetName());
+			}
+			else
+			{
+				UE_LOG(LogMediaFrameworkUtilities, Warning, TEXT("Could not set the previous TimecodeProvider."));
+			}
+		}
+		PreviousTimecodeProvider = nullptr;
+		AppliedTimecodeProvider = nullptr;
+		bTimecodeProvideWasApplied = false;
+	}
+}
+
+void UMediaProfile::ResetCustomTimeStep()
+{
+	if (bCustomTimeStepWasApplied)
+	{
+		if (AppliedCustomTimeStep == GEngine->GetCustomTimeStep())
+		{
+			bool bResult = GEngine->SetCustomTimeStep(PreviousCustomTimeStep);
+			if (!bResult && PreviousCustomTimeStep)
+			{
+				UE_LOG(LogMediaFrameworkUtilities, Warning, TEXT("The Custom Time Step '%s' could not be initialized."), *PreviousCustomTimeStep->GetName());
+			}
+		}
+		else
+		{
+			if (PreviousCustomTimeStep)
+			{
+				UE_LOG(LogMediaFrameworkUtilities, Warning, TEXT("Could not set the previous Custom Time Step '%s'."), *PreviousCustomTimeStep->GetName());
+			}
+			else
+			{
+				UE_LOG(LogMediaFrameworkUtilities, Warning, TEXT("Could not set the previous Custom Time Step."));
+			}
+		}
+		PreviousCustomTimeStep = nullptr;
+		AppliedCustomTimeStep = nullptr;
+		bCustomTimeStepWasApplied = false;
+	}
+}
+
+void UMediaProfile::FixNumSourcesAndOutputs()
+{
+	const int32 NumSourceProxies = IMediaProfileManager::Get().GetAllMediaSourceProxy().Num();
+	if (MediaSources.Num() != NumSourceProxies)
+	{
+		MediaSources.SetNumZeroed(NumSourceProxies);
+		Modify();
 	}
 
+	const int32 NumOutputProxies = IMediaProfileManager::Get().GetAllMediaOutputProxy().Num();
+	if (MediaOutputs.Num() != NumOutputProxies)
 	{
-		const UEngineCustomTimeStep* CurrentCustomTimeStep = GEngine->GetCustomTimeStep();
-		if (CurrentCustomTimeStep)
-		{
-			if (CurrentCustomTimeStep->GetOuter() == this)
-			{
-				GEngine->SetCustomTimeStep(GEngine->GetDefaultCustomTimeStep());
-			}
-		}
+		Modify();
+		MediaOutputs.SetNumZeroed(NumOutputProxies);
 	}
 }

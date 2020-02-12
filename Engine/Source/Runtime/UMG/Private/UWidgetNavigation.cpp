@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "CoreMinimal.h"
 #include "Types/SlateEnums.h"
@@ -122,7 +122,7 @@ void UWidgetNavigation::UpdateMetaData(TSharedRef<FNavigationMetaData> MetaData)
 	UpdateMetaDataEntry(MetaData, Previous, EUINavigation::Previous);
 }
 
-bool UWidgetNavigation::IsDefault() const
+bool UWidgetNavigation::IsDefaultNavigation() const
 {
 	return Up.Rule == EUINavigationRule::Escape &&
 		Down.Rule == EUINavigationRule::Escape &&

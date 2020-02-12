@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 
 /*=============================================================================================
@@ -16,7 +16,7 @@ typedef void (^FMacFramePacerHandler)(uint32 CGDirectDisplayID, double OutputSec
 /**
  * Mac implementation of FGenericPlatformRHIFramePacer
  **/
-struct FMacPlatformRHIFramePacer : public FGenericPlatformRHIFramePacer
+struct APPLICATIONCORE_API FMacPlatformRHIFramePacer : public FGenericPlatformRHIFramePacer
 {
     // FGenericPlatformRHIFramePacer interface
     static bool IsEnabled();

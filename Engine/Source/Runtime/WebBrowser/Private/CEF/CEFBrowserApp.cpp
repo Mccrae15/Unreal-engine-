@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "CEF/CEFBrowserApp.h"
 
@@ -15,11 +15,9 @@ void FCEFBrowserApp::OnBeforeChildProcessLaunch(CefRefPtr<CefCommandLine> Comman
 
 void FCEFBrowserApp::OnBeforeCommandLineProcessing(const CefString& ProcessType, CefRefPtr< CefCommandLine > CommandLine)
 {
-	CommandLine->AppendSwitch("disable-gpu");
-	CommandLine->AppendSwitch("disable-gpu-compositing");
-#if !PLATFORM_MAC
+	CommandLine->AppendSwitch("enable-gpu");
+	CommandLine->AppendSwitch("enable-gpu-compositing");
 	CommandLine->AppendSwitch("enable-begin-frame-scheduling");
-#endif
 }
 
 void FCEFBrowserApp::OnRenderProcessThreadCreated(CefRefPtr<CefListValue> ExtraInfo)
@@ -32,15 +30,13 @@ void FCEFBrowserApp::OnScheduleMessagePumpWork(int64 delay_ms)
 {
 	FScopeLock Lock(&MessagePumpCountdownCS);
 
-	if (MessagePumpCountdown == -1)
+	// As per CEF documentation, if delay_ms is <= 0, then the call to CefDoMessageLoopWork should happen reasonably soon.  If delay_ms is > 0, then the call
+	//  to CefDoMessageLoopWork should be scheduled to happen after the specified delay and any currently pending scheduled call should be canceled.
+	if(delay_ms < 0)
 	{
-		MessagePumpCountdown = delay_ms;
+		delay_ms = 0;
 	}
-	else
-	{
-		// override if we need the pump to happen sooner
-		MessagePumpCountdown = FMath::Clamp<int64>(MessagePumpCountdown, 0, delay_ms);
-	}
+	MessagePumpCountdown = delay_ms;
 }
 #endif
 
@@ -51,22 +47,29 @@ void FCEFBrowserApp::TickMessagePump(float DeltaTime, bool bForce)
 	return;
 #endif
 
-	FScopeLock Lock(&MessagePumpCountdownCS);
-
-	bool bPump = false;	
-	// count down in order to call message pump
-	if (MessagePumpCountdown >= 0)
+	bool bPump = false;
 	{
-		MessagePumpCountdown -= DeltaTime * 1000;
-		if (MessagePumpCountdown <= 0)
+		FScopeLock Lock(&MessagePumpCountdownCS);
+		
+		// count down in order to call message pump
+		if (MessagePumpCountdown >= 0)
 		{
-			bPump = true;
+			MessagePumpCountdown -= DeltaTime * 1000;
+			if (MessagePumpCountdown <= 0)
+			{
+				bPump = true;
+			}
+			
+			if (bPump || bForce)
+			{
+				// -1 indicates that no countdown is currently happening
+				MessagePumpCountdown = -1;
+			}
 		}
 	}
+	
 	if (bPump || bForce)
 	{
-		// -1 indicates that no countdown is currently happening
-		MessagePumpCountdown = -1;
 		CefDoMessageLoopWork();
 	}
 }

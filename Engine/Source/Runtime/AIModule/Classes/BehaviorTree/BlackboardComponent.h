@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 /** 
  *  Blackboard - holds AI's world knowledge, easily accessible for behavior trees
@@ -37,7 +37,8 @@ namespace EBlackboardDescription
 	};
 }
 
-UCLASS(ClassGroup = AI, meta = (BlueprintSpawnableComponent))
+
+UCLASS(ClassGroup = AI, meta = (BlueprintSpawnableComponent), hidecategories = (Sockets, Collision))
 class AIMODULE_API UBlackboardComponent : public UActorComponent
 {
 	GENERATED_BODY()
@@ -100,7 +101,7 @@ public:
 	/** caches UBrainComponent pointer to be used in communication */
 	void CacheBrainComponent(UBrainComponent& BrainComponent);
 
-	/** setup component for using given blackboard asset */
+	/** setup component for using given blackboard asset, returns true if blackboard is properly initialized for specified blackboard data */
 	bool InitializeBlackboard(UBlackboardData& NewAsset);
 	
 	/** @return true if component can be used with specified blackboard asset */
@@ -185,6 +186,9 @@ public:
 	void ClearValue(const FName& KeyName);
 	void ClearValue(FBlackboard::FKey KeyID);
 
+	/** Copy content from SourceKeyID to DestinationID and return true if it worked */
+	bool CopyKeyValue(FBlackboard::FKey SourceKeyID, FBlackboard::FKey DestinationID);
+
 	template<class TDataClass>
 	bool IsKeyOfType(FBlackboard::FKey KeyID) const;
 
@@ -230,6 +234,9 @@ protected:
 	UBrainComponent* BrainComp;
 
 	/** data asset defining entries */
+	UPROPERTY(EditDefaultsOnly, Category = AI)
+	UBlackboardData* DefaultBlackboardAsset;
+
 	UPROPERTY(transient)
 	UBlackboardData* BlackboardAsset;
 
@@ -367,3 +374,85 @@ typename TDataClass::FDataType UBlackboardComponent::GetValue(FBlackboard::FKey 
 	const uint8* RawData = GetKeyRawData(KeyID) + DataOffset;
 	return RawData ? TDataClass::GetValue((TDataClass*)KeyOb, RawData) : TDataClass::InvalidValue;
 }
+
+
+/**
+ *	A helper type that improved performance of reading data from BB
+ *	It's meant for a specific use-case:
+
+ *		1.	you have a logical property you want to use both in C++ code
+ *			as well as being reflected in the BB
+ *		2.	you only ever set this property in native code
+ *
+ *		If those two are true then add a member variable of type FBlackboardCachedAccessor
+ *		like so:
+
+ *			FBlackboardCachedAccessor<UBlackboardKeyType_Bool> BBEnemyInMeleeRangeKey;
+
+ *		and from this point on whenever you set or read the value use this variable.
+ *		This will make reading almost free.
+ *
+ *		Before you use the variable you need to initialize it with appropriate BB asset.
+ *		This is best done in AAIController::InitializeBlackboard override, like so:
+ *
+ *			const FBlackboard::FKey EnemyInMeleeRangeKey = BlackboardAsset.GetKeyID(TEXT("EnemyInMeleeRange"));
+ *			BBEnemyInMeleeRangeKey = FBlackboardCachedAccessor<UBlackboardKeyType_Bool>(BlackboardComp, EnemyInMeleeRangeKey);
+ *
+ *		Best used with numerical and boolean types. No guarantees made when using pointer types.
+
+ *	@note does not automatically support BB component or asset change */
+template<typename TBlackboardKey>
+struct FBBKeyCachedAccessor
+{
+private:
+	FBlackboard::FKey BBKey;
+	typedef typename TBlackboardKey::FDataType FStoredType;
+	FStoredType CachedValue;
+public:
+	FBBKeyCachedAccessor() : BBKey(FBlackboard::InvalidKey), CachedValue(TBlackboardKey::InvalidValue)
+	{}
+
+	FBBKeyCachedAccessor(UBlackboardComponent& BBComponent, FBlackboard::FKey InBBKey)
+	{
+		ensure(InBBKey != FBlackboard::InvalidKey);
+		if (ensure(BBComponent.IsKeyOfType<TBlackboardKey>(InBBKey)))
+		{
+			BBKey = InBBKey;
+			CachedValue = BBComponent.GetValue<TBlackboardKey>(InBBKey);
+		}
+	}
+
+	template<typename T2>
+	FORCEINLINE bool SetValue(UBlackboardComponent& BBComponent, const T2 InValue)
+	{
+		return SetValue(BBComponent, FStoredType(InValue));
+	}
+
+	/** @return True is value has changed*/
+	FORCEINLINE bool SetValue(UBlackboardComponent& BBComponent, const FStoredType InValue)
+	{
+		ensure(BBKey != FBlackboard::InvalidKey);
+		if (InValue != CachedValue)
+		{
+			CachedValue = InValue;
+			BBComponent.SetValue<TBlackboardKey>(BBKey, InValue);
+			return true;
+		}
+		return false;
+	}
+
+	FORCEINLINE const FStoredType& Get() const
+	{
+		ensure(BBKey != FBlackboard::InvalidKey);
+		return CachedValue;
+	}
+
+	template<typename T2>
+	FORCEINLINE T2 Get() const
+	{
+		ensure(BBKey != FBlackboard::InvalidKey);
+		return (T2)CachedValue;
+	}
+
+	bool IsValid() const { return BBKey != FBlackboard::InvalidKey; }
+};

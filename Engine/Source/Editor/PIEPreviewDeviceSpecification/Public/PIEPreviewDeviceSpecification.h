@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -42,6 +42,10 @@ public:
 	FString DeviceBuildNumber;
 	UPROPERTY()
 	bool UsingHoudini;
+	UPROPERTY()
+	FString Hardware;
+	UPROPERTY()
+	FString Chipset;
 };
 
 USTRUCT()
@@ -63,8 +67,6 @@ public:
 	bool SupportsRenderTargetFormat_PF_FloatRGBA;
 	UPROPERTY()
 	bool SupportsMultipleRenderTargets;
-	UPROPERTY()
-	bool SupportsInstancing;
 };
 
 USTRUCT()
@@ -91,6 +93,10 @@ public:
 	bool VulkanAvailable;
 	UPROPERTY()
 	bool UsingHoudini;
+	UPROPERTY()
+	FString Hardware;
+	UPROPERTY()
+	FString Chipset;
 
 	UPROPERTY()
 	FPIERHIOverrideState GLES2RHIState;

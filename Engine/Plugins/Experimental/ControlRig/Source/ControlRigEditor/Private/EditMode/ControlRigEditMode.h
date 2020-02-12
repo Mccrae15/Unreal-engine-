@@ -1,12 +1,15 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
 #include "CoreMinimal.h"
 #include "InputCoreTypes.h"
 #include "IPersonaEditMode.h"
-#include "ControlRigTrajectoryCache.h"
-#include "ControlUnitProxy.h"
+#include "RigVMModel/RigVMGraph.h"
+#include "Rigs/RigHierarchyContainer.h"
+#include "Drawing/ControlRigDrawInterface.h"
+#include "Units/RigUnitContext.h"
+#include "Framework/MultiBox/MultiBoxBuilder.h"
 
 class FEditorViewportClient;
 class FViewport;
@@ -21,12 +24,18 @@ class FPrimitiveDrawInterface;
 class FToolBarBuilder;
 class FExtender;
 class IMovieScenePlayer;
-struct FRigUnit_Control;
+class AControlRigGizmoActor;
+class UDefaultControlRigManipulationLayer;
+class UControlRigDetailPanelControlProxies;
+class UControlRigControlsProxy;
+struct FRigControl;
+class IControlRigManipulatable;
+class ISequencer;
+enum class EControlRigSetKey : uint8;
 
-/** Delegate fired when controls are selected */
-DECLARE_MULTICAST_DELEGATE_OneParam(FOnControlsSelected, const TArray<FString>& /*SelectedControlPropertyPaths*/);
-DECLARE_DELEGATE_RetVal_TwoParams(FTransform, FOnGetJointTransform, const FName& /*JointName*/, bool /*bLocal*/);
-DECLARE_DELEGATE_TwoParams(FOnSetJointTransform, const FName& /*JointName*/, const FTransform& /*Transform*/);
+DECLARE_DELEGATE_RetVal_ThreeParams(FTransform, FOnGetRigElementTransform, const FRigElementKey& /*RigElementKey*/, bool /*bLocal*/, bool /*bOnDebugInstance*/);
+DECLARE_DELEGATE_ThreeParams(FOnSetRigElementTransform, const FRigElementKey& /*RigElementKey*/, const FTransform& /*Transform*/, bool /*bLocal*/);
+DECLARE_DELEGATE_RetVal(TSharedPtr<FUICommandList>, FNewMenuCommandsDelegate);
 
 class FControlRigEditMode : public IPersonaEditMode
 {
@@ -37,10 +46,7 @@ public:
 	~FControlRigEditMode();
 
 	/** Set the objects to be displayed in the details panel */
-	void SetObjects(const TWeakObjectPtr<>& InSelectedObject, const FGuid& InObjectBinding);
-
-	/** Set the sequencer we are bound to */
-	void SetSequencer(TSharedPtr<ISequencer> InSequencer);
+	void SetObjects(const TWeakObjectPtr<>& InSelectedObject, const FGuid& InObjectBinding, UObject* BindingObject, TWeakPtr<ISequencer> InSequencer);
 
 	/** This edit mode is re-used between the level editor and the control rig editor. Calling this indicates which context we are in */
 	virtual bool IsInLevelEditor() const { return true; }
@@ -77,55 +83,8 @@ public:
 	/** FGCObject interface */
 	virtual void AddReferencedObjects( FReferenceCollector& Collector ) override;
 
-	/** Clear all selected controls */
-	void ClearControlSelection();
-
-	/** Set a control's selection state */
-	void SetControlSelection(const FString& InControlPropertyPath, bool bSelected);
-
-	/** Set multiple control's selection states */
-	void SetControlSelection(const TArray<FString>& InControlPropertyPaths, bool bSelected);
-
-	/** Check if the specified control is selected */
-	bool IsControlSelected(const FString& InControlPropertyPath) const;
-
-	/** Check if any controls are selected */
-	bool AreControlsSelected() const;
-
-	/** Get the number of selected controls */
-	int32 GetNumSelectedControls() const;
-
-	/** Set a control's enabled state */
-	void SetControlEnabled(const FString& InControlPropertyPath, bool bEnabled);
-
-	/** Get the node name from the property path */
-	FString GetControlFromPropertyPath(const FString& PropertyPath) const;
-	/** Check if the specified control is enabled */
-	bool IsControlEnabled(const FString& InControlPropertyPath) const;
-
-	/** 
-	 * Lets the edit mode know that an object has just been spawned. 
-	 * Allows us to redisplay different underlying objects in the details panel.
-	 */
-	void HandleObjectSpawned(FGuid InObjectBinding, UObject* SpawnedObject, IMovieScenePlayer& Player);
-
-	/** Re-bind to the current actor - used when sequence, selection etc. changes */
-	void ReBindToActor();
-
-	/** Bind us to an actor for editing */
-	void HandleBindToActor(AActor* InActor, bool bFocus);
-
 	/** Refresh our internal object list (they may have changed) */
 	void RefreshObjects();
-
-	/** Delegate fired when controls are selected */
-	FOnControlsSelected& OnControlsSelected() { return OnControlsSelectedDelegate; }
-
-	/** Refresh our trajectory cache */
-	void RefreshTrajectoryCache();
-
-	/** Set a key for a specific control */
-	void SetKeyForControl(const FControlUnitProxy& UnitProxy);
 
 	/** Get the settings we are using */
 	const UControlRigEditModeSettings* GetSettings() { return Settings; }
@@ -133,53 +92,78 @@ public:
 	/** Find the edit mode corresponding to the specified world context */
 	static FControlRigEditMode* GetEditModeFromWorldContext(UWorld* InWorldContext);
 
-	/** Helper function - get a rig unit from a proxy and a rig */
-	static FRigUnit_Control* GetRigUnit(const FControlUnitProxy& InProxy, UControlRig* InControlRig, UScriptStruct** OutControlStructPtr = nullptr);
+	/** Bone Manipulation Delegates */
+	FOnGetRigElementTransform& OnGetRigElementTransform() { return OnGetRigElementTransformDelegate; }
+	FOnSetRigElementTransform& OnSetRigElementTransform() { return OnSetRigElementTransformDelegate; }
 
-	/** Select Joint */
-	void SelectJoint(const FName& InJoint);
-	FOnGetJointTransform& OnGetJointTransform() { return OnGetJointTransformDelegate; }
-	FOnSetJointTransform& OnSetJointTransform() { return OnSetJointTransformDelegate; }
+	/** Context Menu Delegates */
+	FNewMenuDelegate& OnContextMenu() { return OnContextMenuDelegate; }
+	FNewMenuCommandsDelegate& OnContextMenuCommands() { return OnContextMenuCommandsDelegate; }
+	FSimpleDelegate&  OnAnimSystemInitialized() { return OnAnimSystemInitializedDelegate; }
+
+	FRigVMGraphModifiedEvent ModifiedEvent;
+	void HandleModifiedEvent(ERigVMGraphNotifType InNotifType, URigVMGraph* InGraph, UObject* InSubject);
+
+	// callback that gets called when rig element is selected in other view
+	void OnRigElementAdded(FRigHierarchyContainer* Container, const FRigElementKey& InKey);
+	void OnRigElementRemoved(FRigHierarchyContainer* Container, const FRigElementKey& InKey);
+	void OnRigElementRenamed(FRigHierarchyContainer* Container, ERigElementType ElementType, const FName& InOldName, const FName& InNewName);
+	void OnRigElementReparented(FRigHierarchyContainer* Container, const FRigElementKey& InKey, const FName& InOldParentName, const FName& InNewParentName);
+	void OnRigElementSelected(FRigHierarchyContainer* Container, const FRigElementKey& InKey, bool bSelected);
+	void OnRigElementChanged(FRigHierarchyContainer* Container, const FRigElementKey& InKey);
+	void OnControlUISettingChanged(FRigHierarchyContainer* Container, const FRigElementKey& InKey);
+	void OnControlModified(IControlRigManipulatable* Subject, const FRigControl& Control, EControlRigSetKey InSetKey);
+
+	/** return true if it can be removed from preview scene 
+	- this is to ensure preview scene doesn't remove Gizmo actors */
+	bool CanRemoveFromPreviewScene(const USceneComponent* InComponent);
+
+	/** Get Control Rig, could be more than one later,  we are animating. Currently used by Sequencer for cross selection.*/
+	UControlRig*  GetControlRig() { return WeakControlRigEditing.IsValid() ? WeakControlRigEditing.Get() : nullptr; }
+protected:
+
+	// Gizmo related functions wrt enable/selection
+	/** Get the node name from the property path */
+	AControlRigGizmoActor* GetGizmoFromControlName(const FName& InControlName) const;
+
+
 protected:
 	/** Helper function: set ControlRigs array to the details panel */
 	void SetObjects_Internal();
+
+	/** Set up Details Panel based upon Selected Objects*/
+	void SetUpDetailPanel();
 
 	/** Updates cached pivot transform */
 	void RecalcPivotTransform();
 
 	/** Helper function for box/frustum intersection */
-	bool IntersectSelect(bool InSelect, const TFunctionRef<bool(const FControlUnitProxy&, const FTransform&)>& Intersects);
+	bool IntersectSelect(bool InSelect, const TFunctionRef<bool(const AControlRigGizmoActor*, const FTransform&)>& Intersects);
 
 	/** Handle selection internally */
-	void HandleSelectionChanged(const TArray<FString>& InSelectedJoints);
-
-	/** Set keys on all selected manipulators */
-	void SetKeysForSelectedManipulators();
+	void HandleSelectionChanged();
 
 	/** Toggles visibility of manipulators in the viewport */
 	void ToggleManipulators();
 
-	/** Toggles visibility of trajectories in the viewport */
-	void ToggleTrajectories();
-
 	/** Bind our keyboard commands */
 	void BindCommands();
 
-	/** Refresh control proxies when the control rig changes */
-	void RefreshControlProxies();
+	/** It creates if it doesn't have it */
+	void RecreateManipulationLayer();
+
+	/** Requests to recreate the manipulation layer in the next tick */
+	void RequestToRecreateManipulationLayer() { bRecreateManipulationLayerRequired = true; }
 
 	/** Let the preview scene know how we want to select components */
-	bool PreviewComponentSelectionOverride(const UPrimitiveComponent* InComponent) const;
+	bool GizmoSelectionOverride(const UPrimitiveComponent* InComponent) const;
 
 protected:
-	/** Cache for rendering trajectories */
-	FControlRigTrajectoryCache TrajectoryCache;
+
+	TWeakPtr<ISequencer> WeakSequencer;
 
 	/** Settings object used to insert controls into the details panel */
 	UControlRigEditModeSettings* Settings;
-
-	/** The units we use to represent the rig */
-	TArray<FControlUnitProxy> ControlUnits;
 
 	/** Whether we are in the middle of a transaction */
 	bool bIsTransacting;
@@ -187,28 +171,18 @@ protected:
 	/** Whether a manipulator actually made a change when transacting */
 	bool bManipulatorMadeChange;
 
-	/** The ControlRig we are animating */
-	TWeakObjectPtr<UControlRig> WeakControlRig;
-
+	/** The ControlRig we are animating as a main. This is the main editing object we're working on */
+	TWeakObjectPtr<UControlRig> WeakControlRigEditing;
 	/** The sequencer GUID of the object we are animating */
 	FGuid ControlRigGuid;
 
-	/** Sequencer we are currently bound to */
-	TWeakPtr<ISequencer> WeakSequencer;
-
-	/** As we cannot cycle widget mode during tracking, we defer cycling until after a click with this flag */
-	bool bSelectedJoint;
-
-	/** Delegate fired when controls are selected */
-	FOnControlsSelected OnControlsSelectedDelegate;
+	/** The draw interface to use for the control rig */
+	FControlRigDrawInterface DrawInterface;
 
 	/** Guard value for selection */
 	bool bSelecting;
 
-	/** Guard value for selection by property path */
-	bool bSelectingByPath;
-
-	/** Cached transform of pivot point for selected Joints */
+	/** Cached transform of pivot point for selected Bones */
 	FTransform PivotTransform;
 
 	/** Command bindings for keyboard shortcuts */
@@ -217,13 +191,70 @@ protected:
 	/** Called from the editor when a blueprint object replacement has occurred */
 	void OnObjectsReplaced(const TMap<UObject*, UObject*>& OldToNewInstanceMap);
 
-	/** Selected Joints */
-	TArray<FName> SelectedJoints;
+	/** Return true if transform setter/getter delegates are available */
+	bool IsTransformDelegateAvailable() const;
 
-	FOnGetJointTransform OnGetJointTransformDelegate;
-	FOnSetJointTransform OnSetJointTransformDelegate;
+	FOnGetRigElementTransform OnGetRigElementTransformDelegate;
+	FOnSetRigElementTransform OnSetRigElementTransformDelegate;
+	FNewMenuDelegate OnContextMenuDelegate;
+	FNewMenuCommandsDelegate OnContextMenuCommandsDelegate;
+	FSimpleDelegate OnAnimSystemInitializedDelegate;
+	FDelegateHandle AnimInitDelegateHandle;
+	
+	TArray<FRigElementKey> SelectedRigElements;
 
-	bool AreJointSelected() const;
+	/* Flag to recreate manipulation layer during tick */
+	bool bRecreateManipulationLayerRequired;
 
-	bool AreJointSelectedAndMovable() const;
+	/** Default Manipulation Layer */
+	UDefaultControlRigManipulationLayer* ManipulationLayer;
+	TArray<AControlRigGizmoActor*> GizmoActors;
+	UControlRigDetailPanelControlProxies* ControlProxy;
+
+	/** Utility functions for UI/Some other viewport manipulation*/
+	bool IsControlSelected() const;
+	bool AreRigElementSelectedAndMovable() const;
+	
+	/** Set initial transform handlers */
+	void OpenContextMenu(FEditorViewportClient* InViewportClient);
+
+	/* Set initial transform helpers*/
+	bool GetRigElementGlobalTransform(const FRigElementKey& InElement, FTransform& OutGlobalTransform) const;
+	
+public: 
+	/** Clear all selected RigElements */
+	void ClearRigElementSelection(uint32 InTypes);
+
+	/** Set a RigElement's selection state */
+	void SetRigElementSelection(ERigElementType Type, const FName& InRigElementName, bool bSelected);
+
+	void SetSelectedRigElement(const FName& InElementName, ERigElementType InRigElementType);
+
+	/** Set multiple RigElement's selection states */
+	void SetRigElementSelection(ERigElementType Type, const TArray<FName>& InRigElementNames, bool bSelected);
+
+	/** Check if any RigElements are selected */
+	bool AreRigElementsSelected(uint32 InTypes) const;
+
+	/** Get the number of selected RigElements */
+	int32 GetNumSelectedRigElements(uint32 InTypes) const;
+
+private:
+	/** Set a RigElement's selection state */
+	void SetRigElementSelectionInternal(ERigElementType Type, const FName& InRigElementName, bool bSelected);
+	
+	FEditorViewportClient* CurrentViewportClient;
+
+/* store coordinate system per widget mode*/
+private:
+	void OnWidgetModeChanged(FWidget::EWidgetMode InWidgetMode);
+	void OnCoordSystemChanged(ECoordSystem InCoordSystem);
+	TArray<ECoordSystem> CoordSystemPerWidgetMode;
+	bool bIsChangingCoordSystem;
+
+private:
+
+	friend class FControlRigEditorModule;
+	friend class UControlRigPickerWidget;
+	friend class FControlRigEditor;
 };

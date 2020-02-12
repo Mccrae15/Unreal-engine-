@@ -1,9 +1,8 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 #pragma once
 
 #include "CoreMinimal.h"
 #include "SlateGlobals.h"
-#include "Framework/Text/TextRange.h"
 #include "Framework/Text/ITextDecorator.h"
 #include "Internationalization/Regex.h"
 #include "Framework/Text/IRichTextMarkupParser.h"
@@ -15,6 +14,7 @@ class SLATE_API FDefaultRichTextMarkupParser : public IRichTextMarkupParser
 {
 public:
 	static TSharedRef< FDefaultRichTextMarkupParser > Create();
+	static TSharedRef< FDefaultRichTextMarkupParser > GetStaticInstance();
 
 public:
 	virtual void Process(TArray<FTextLineParseResults>& Results, const FString& Input, FString& Output) override;
@@ -34,6 +34,7 @@ class SLATE_API FDefaultRichTextMarkupWriter : public IRichTextMarkupWriter
 {
 public:
 	static TSharedRef< FDefaultRichTextMarkupWriter > Create();
+	static TSharedRef< FDefaultRichTextMarkupWriter > GetStaticInstance();
 
 public:
 	virtual void Write(const TArray<FRichTextLine>& InLines, FString& Output) override;

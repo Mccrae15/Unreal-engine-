@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 
 #include "CoreMinimal.h"
@@ -1191,12 +1191,3 @@ bool FWaitForMatineeToCompleteAndDoScreenshotsLatentCommand::Update()
 //}
 
 #endif //WITH_DEV_AUTOMATION_TESTS
-
-/* UAutomationTestSettings interface
-*****************************************************************************/
-
-UAutomationTestSettings::UAutomationTestSettings(const FObjectInitializer& ObjectInitializer)
-	: Super(ObjectInitializer)
-{
-	DefaultScreenshotResolution = FIntPoint(1920, 1080);
-}

@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "ProxyLODRasterizer.h"
 
@@ -6,7 +6,9 @@
 #include "ProxyLODMeshUtilities.h"
 #include "ProxyLODThreadedWrappers.h"
 
+THIRD_PARTY_INCLUDES_START
 #include <tbb/spin_mutex.h>
+THIRD_PARTY_INCLUDES_END
 
 namespace ProxyLOD
 {

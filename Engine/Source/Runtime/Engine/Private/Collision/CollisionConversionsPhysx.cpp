@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #if PHYSICS_INTERFACE_PHYSX
 
@@ -9,7 +9,6 @@
 #include "PhysicalMaterials/PhysicalMaterial.h"
 #include "PhysicsEngine/PhysicsSettings.h"
 #include "PhysicsEngine/BodySetup.h"
-#include "PhysicsEngine/PxQueryFilterCallback.h"
 #include "Physics/PhysicsInterfaceUtils.h"
 
 #include "PhysXPublic.h"
@@ -446,8 +445,8 @@ static bool FindOverlappedTriangleNormal_Internal(const UWorld* World, const PxG
 			bool bOverflow = false;
 
 			const int32 NumTrisHit = bIsTriMesh ?
-				PxMeshQuery::findOverlapTriangleMesh(Geom, QueryTM, PTriMeshGeom, PShapeWorldPose, HitTris, ARRAY_COUNT(HitTris), 0, bOverflow) :
-				PxMeshQuery::findOverlapHeightField(Geom, QueryTM, PHeightfieldGeom, PShapeWorldPose, HitTris, ARRAY_COUNT(HitTris), 0, bOverflow);
+				PxMeshQuery::findOverlapTriangleMesh(Geom, QueryTM, PTriMeshGeom, PShapeWorldPose, HitTris, UE_ARRAY_COUNT(HitTris), 0, bOverflow) :
+				PxMeshQuery::findOverlapHeightField(Geom, QueryTM, PHeightfieldGeom, PShapeWorldPose, HitTris, UE_ARRAY_COUNT(HitTris), 0, bOverflow);
 
 			if (NumTrisHit > 0)
 			{

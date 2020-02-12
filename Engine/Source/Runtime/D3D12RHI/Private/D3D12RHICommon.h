@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 /*=============================================================================
 D3D12RHICommon.h: Common D3D12 RHI definitions for Windows.
@@ -151,6 +151,12 @@ public:
 	FORCEINLINE ObjectType* GetNextObject()
 	{
 		return NextNode.GetReference();
+	}
+
+	void Swap(FD3D12LinkedAdapterObject& Other)
+	{
+		check(bIsHeadLink && Other.bIsHeadLink);
+		NextNode.Swap(Other.NextNode);
 	}
 
 private:

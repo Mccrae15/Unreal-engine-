@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -94,6 +94,9 @@ struct FMinimalViewInfo
 	/** Off-axis / off-center projection offset as proportion of screen dimensions */
 	UPROPERTY(Transient, VisibleInstanceOnly, BlueprintReadWrite, Category = Camera)
 	FVector2D OffCenterProjectionOffset;
+
+	/** Optional transform to be considered as this view's previous transform */
+	TOptional<FTransform> PreviousViewTransform;
 
 	FMinimalViewInfo()
 		: Location(ForceInit)

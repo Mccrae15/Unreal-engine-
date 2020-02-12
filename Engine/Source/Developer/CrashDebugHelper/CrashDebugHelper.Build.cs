@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 using UnrealBuildTool;
 
@@ -17,12 +17,11 @@ public class CrashDebugHelper : ModuleRules
         );
 		PrivateIncludePaths.Add( "ThirdParty/PLCrashReporter/plcrashreporter-master-5ae3b0a/Source" );
 
-        if (Target.Type != TargetType.Game)
+        if (Target.Type != TargetType.Game && Target.Type != TargetType.Client)
         {
             PublicDependencyModuleNames.AddRange(
                 new string[] {
                 "Core",
-                "SourceControl"
                 }
             );
         }
@@ -35,5 +34,10 @@ public class CrashDebugHelper : ModuleRules
                 }
             );
         }
+
+		if(Target.Platform == UnrealTargetPlatform.Win64 && Target.WindowsPlatform.bUseBundledDbgHelp)
+		{
+			throw new System.Exception("CrashDebugHelper uses DBGENG.DLL at runtime, which depends on a matching version of DBGHELP.DLL but cannot be redistributed. Please set WindowsPlatform.bUseBundledDbgHelp = false for this target.");
+		}
     }
 }

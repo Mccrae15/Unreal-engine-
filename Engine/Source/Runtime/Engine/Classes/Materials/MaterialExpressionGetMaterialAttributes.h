@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -27,7 +27,7 @@ class UMaterialExpressionGetMaterialAttributes : public UMaterialExpression
 
 	//~ Begin UObject Interface
 #if WITH_EDITOR
-	virtual void PreEditChange(UProperty* PropertyAboutToChange) override;
+	virtual void PreEditChange(FProperty* PropertyAboutToChange) override;
 	virtual void PostEditChangeProperty(FPropertyChangedEvent& PropertyChangedEvent) override;
 	virtual void PostLoad() override;
 #endif
@@ -40,8 +40,9 @@ class UMaterialExpressionGetMaterialAttributes : public UMaterialExpression
 	virtual const TArray<FExpressionInput*> GetInputs()override;
 	virtual FExpressionInput* GetInput(int32 InputIndex)override;
 	virtual FName GetInputName(int32 InputIndex) const override;
+	virtual uint32 GetOutputType(int32 OutputIndex) override;
 	virtual bool IsInputConnectionRequired(int32 InputIndex) const override {return true;}
-	virtual uint32 GetInputType(int32 InputIndex) override {return MCT_MaterialAttributes;}
+	virtual uint32 GetInputType(int32 InputIndex) override { return MCT_MaterialAttributes; }
 	virtual bool IsResultMaterialAttributes(int32 OutputIndex) override {return OutputIndex == 0;}
 #endif
 	//~ End UMaterialExpression Interface

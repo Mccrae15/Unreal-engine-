@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -212,7 +212,7 @@ private:
 	}
 	int32 GetCacheIndex(int64 Pos) const
 	{
-		for (uint32 i=0; i<ARRAY_COUNT(CacheStart); ++i)
+		for (uint32 i=0; i<UE_ARRAY_COUNT(CacheStart); ++i)
 		{
 			if (Pos >= CacheStart[i] && Pos < CacheEnd[i]) 
 			{

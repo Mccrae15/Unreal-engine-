@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 /*=============================================================================
 	VulkanLayers.cpp: Vulkan device layers implementation.
@@ -6,6 +6,7 @@
 
 #include "VulkanRHIPrivate.h"
 #include "IHeadMountedDisplayModule.h"
+#include "IHeadMountedDisplayVulkanExtensions.h"
 
 #if VULKAN_HAS_DEBUGGING_ENABLED
 bool GRenderDocFound = false;
@@ -30,17 +31,19 @@ TAutoConsoleVariable<int32> GValidationCvar(
 
 static TAutoConsoleVariable<int32> GStandardValidationCvar(
 	TEXT("r.Vulkan.StandardValidation"),
-	1,
-	TEXT("1 to use VK_LAYER_LUNARG_standard_validation (default) if available\n")
-	TEXT("0 to use individual layers"),
+	2,
+	TEXT("2 to use VK_LAYER_KHRONOS_validation (default) if available\n")
+	TEXT("1 to use VK_LAYER_LUNARG_standard_validation if available, or \n")
+	TEXT("0 to use individual validation layers (deprecated)"),
 	ECVF_ReadOnly | ECVF_RenderThreadSafe
 );
 
 #if VULKAN_ENABLE_DRAW_MARKERS
-	#define RENDERDOC_LAYER_NAME		"VK_LAYER_RENDERDOC_Capture"
+	#define RENDERDOC_LAYER_NAME				"VK_LAYER_RENDERDOC_Capture"
 #endif
 
-#define STANDARD_VALIDATION_LAYER_NAME	"VK_LAYER_LUNARG_standard_validation"
+#define KHRONOS_STANDARD_VALIDATION_LAYER_NAME	"VK_LAYER_KHRONOS_validation"
+#define STANDARD_VALIDATION_LAYER_NAME			"VK_LAYER_LUNARG_standard_validation"
 
 static const ANSICHAR* GIndividualValidationLayers[] =
 {
@@ -48,7 +51,10 @@ static const ANSICHAR* GIndividualValidationLayers[] =
 	"VK_LAYER_LUNARG_parameter_validation",
 	"VK_LAYER_LUNARG_object_tracker",
 	"VK_LAYER_LUNARG_core_validation",
+#if !PLATFORM_LUMIN
+	// freezes app inside MLGraphicsCreateClientVk() on Lumin if this is enabled.
 	"VK_LAYER_GOOGLE_unique_objects",
+#endif // !PLATFORM_LUMIN
 	nullptr
 };
 
@@ -57,8 +63,10 @@ static const ANSICHAR* GIndividualValidationLayers[] =
 // Instance Extensions to enable for all platforms
 static const ANSICHAR* GInstanceExtensions[] =
 {
-#if VULKAN_ENABLE_DESKTOP_HMD_SUPPORT
+#if VULKAN_SUPPORTS_EXTERNAL_MEMORY
 	VK_KHR_EXTERNAL_MEMORY_CAPABILITIES_EXTENSION_NAME,
+#endif
+#if VULKAN_SUPPORTS_PHYSICAL_DEVICE_PROPERTIES2
 	VK_KHR_GET_PHYSICAL_DEVICE_PROPERTIES_2_EXTENSION_NAME,
 #endif
 #if VULKAN_SUPPORTS_VALIDATION_CACHE
@@ -82,6 +90,10 @@ static const ANSICHAR* GDeviceExtensions[] =
 #if VULKAN_SUPPORTS_VALIDATION_CACHE
 	VK_EXT_VALIDATION_CACHE_EXTENSION_NAME,
 #endif
+#if VULKAN_SUPPORTS_MEMORY_PRIORITY
+	VK_EXT_MEMORY_PRIORITY_EXTENSION_NAME,
+#endif
+
 	//VK_KHR_SAMPLER_MIRROR_CLAMP_TO_EDGE_EXTENSION_NAME,
 	nullptr
 };
@@ -117,42 +129,26 @@ struct FLayerExtension
 
 static inline void EnumerateInstanceExtensionProperties(const ANSICHAR* LayerName, FLayerExtension& OutLayer)
 {
-	VkResult Result;
-	do
+	uint32 Count = 0;
+	VERIFYVULKANRESULT(VulkanRHI::vkEnumerateInstanceExtensionProperties(LayerName, &Count, nullptr));
+	if (Count > 0)
 	{
-		uint32 Count = 0;
-		Result = VulkanRHI::vkEnumerateInstanceExtensionProperties(LayerName, &Count, nullptr);
-		check(Result >= VK_SUCCESS);
-
-		if (Count > 0)
-		{
-			OutLayer.ExtensionProps.Empty(Count);
-			OutLayer.ExtensionProps.AddUninitialized(Count);
-			Result = VulkanRHI::vkEnumerateInstanceExtensionProperties(LayerName, &Count, OutLayer.ExtensionProps.GetData());
-			check(Result >= VK_SUCCESS);
-		}
+		OutLayer.ExtensionProps.Empty(Count);
+		OutLayer.ExtensionProps.AddUninitialized(Count);
+		VERIFYVULKANRESULT(VulkanRHI::vkEnumerateInstanceExtensionProperties(LayerName, &Count, OutLayer.ExtensionProps.GetData()));
 	}
-	while (Result == VK_INCOMPLETE);
 }
 
 static inline void EnumerateDeviceExtensionProperties(VkPhysicalDevice Device, const ANSICHAR* LayerName, FLayerExtension& OutLayer)
 {
-	VkResult Result;
-	do
+	uint32 Count = 0;
+	VERIFYVULKANRESULT(VulkanRHI::vkEnumerateDeviceExtensionProperties(Device, LayerName, &Count, nullptr));
+	if (Count > 0)
 	{
-		uint32 Count = 0;
-		Result = VulkanRHI::vkEnumerateDeviceExtensionProperties(Device, LayerName, &Count, nullptr);
-		check(Result >= VK_SUCCESS);
-
-		if (Count > 0)
-		{
-			OutLayer.ExtensionProps.Empty(Count);
-			OutLayer.ExtensionProps.AddUninitialized(Count);
-			Result = VulkanRHI::vkEnumerateDeviceExtensionProperties(Device, LayerName, &Count, OutLayer.ExtensionProps.GetData());
-			check(Result >= VK_SUCCESS);
-		}
+		OutLayer.ExtensionProps.Empty(Count);
+		OutLayer.ExtensionProps.AddUninitialized(Count);
+		VERIFYVULKANRESULT(VulkanRHI::vkEnumerateDeviceExtensionProperties(Device, LayerName, &Count, OutLayer.ExtensionProps.GetData()));
 	}
-	while (Result == VK_INCOMPLETE);
 }
 
 
@@ -228,8 +224,6 @@ void FVulkanDynamicRHI::GetInstanceLayersAndExtensions(TArray<const ANSICHAR*>& 
 	// 0 is reserved for NULL/instance
 	GlobalLayerExtensions.AddDefaulted();
 
-	VkResult Result;
-
 	// Global extensions
 	EnumerateInstanceExtensionProperties(nullptr, GlobalLayerExtensions[0]);
 
@@ -242,20 +236,13 @@ void FVulkanDynamicRHI::GetInstanceLayersAndExtensions(TArray<const ANSICHAR*>& 
 
 	{
 		TArray<VkLayerProperties> GlobalLayerProperties;
-		do
+		uint32 InstanceLayerCount = 0;
+		VERIFYVULKANRESULT(VulkanRHI::vkEnumerateInstanceLayerProperties(&InstanceLayerCount, nullptr));
+		if (InstanceLayerCount > 0)
 		{
-			uint32 InstanceLayerCount = 0;
-			Result = VulkanRHI::vkEnumerateInstanceLayerProperties(&InstanceLayerCount, nullptr);
-			check(Result >= VK_SUCCESS);
-
-			if (InstanceLayerCount > 0)
-			{
-				GlobalLayerProperties.AddZeroed(InstanceLayerCount);
-				Result = VulkanRHI::vkEnumerateInstanceLayerProperties(&InstanceLayerCount, &GlobalLayerProperties[GlobalLayerProperties.Num() - InstanceLayerCount]);
-				check(Result >= VK_SUCCESS);
-			}
+			GlobalLayerProperties.AddZeroed(InstanceLayerCount);
+			VERIFYVULKANRESULT(VulkanRHI::vkEnumerateInstanceLayerProperties(&InstanceLayerCount, &GlobalLayerProperties[GlobalLayerProperties.Num() - InstanceLayerCount]));
 		}
-		while (Result == VK_INCOMPLETE);
 
 		for (int32 Index = 0; Index < GlobalLayerProperties.Num(); ++Index)
 		{
@@ -309,25 +296,37 @@ void FVulkanDynamicRHI::GetInstanceLayersAndExtensions(TArray<const ANSICHAR*>& 
 	}
 #endif	// VULKAN_ENABLE_API_DUMP
 
-	int32 VulkanValidationOption = GValidationCvar.GetValueOnAnyThread();
-	if (FParse::Value(FCommandLine::Get(), TEXT("vulkanvalidation="), VulkanValidationOption))
-	{
-		GValidationCvar->Set(VulkanValidationOption, ECVF_SetByCommandline);
-	}
-
+	// At this point the CVar holds the final value
+#if VULKAN_HAS_DEBUGGING_ENABLED
+	const int32 VulkanValidationOption = GValidationCvar.GetValueOnAnyThread();
 	if (!bVkTrace && VulkanValidationOption > 0)
 	{
 		bool bStandardAvailable = false;
 		if (GStandardValidationCvar.GetValueOnAnyThread() != 0)
 		{
-			bStandardAvailable = FindLayerInList(GlobalLayerExtensions, STANDARD_VALIDATION_LAYER_NAME);
-			if (bStandardAvailable)
+			if (GStandardValidationCvar.GetValueOnAnyThread() == 2)
 			{
-				OutInstanceLayers.Add(STANDARD_VALIDATION_LAYER_NAME);
+				bStandardAvailable = FindLayerInList(GlobalLayerExtensions, KHRONOS_STANDARD_VALIDATION_LAYER_NAME);
+				if (bStandardAvailable)
+				{
+					OutInstanceLayers.Add(KHRONOS_STANDARD_VALIDATION_LAYER_NAME);
+				}
+				else
+				{
+					UE_LOG(LogVulkanRHI, Warning, TEXT("Unable to find Vulkan instance validation layer %s; trying individual layers..."), TEXT(STANDARD_VALIDATION_LAYER_NAME));
+				}
 			}
 			else
 			{
-				UE_LOG(LogVulkanRHI, Warning, TEXT("Unable to find Vulkan instance validation layer %s; trying individual layers..."), TEXT(STANDARD_VALIDATION_LAYER_NAME));
+				bStandardAvailable = FindLayerInList(GlobalLayerExtensions, STANDARD_VALIDATION_LAYER_NAME);
+				if (bStandardAvailable)
+				{
+					OutInstanceLayers.Add(STANDARD_VALIDATION_LAYER_NAME);
+				}
+				else
+				{
+					UE_LOG(LogVulkanRHI, Warning, TEXT("Unable to find Vulkan instance validation layer %s; trying individual layers..."), TEXT(STANDARD_VALIDATION_LAYER_NAME));
+				}
 			}
 		}
 
@@ -349,9 +348,10 @@ void FVulkanDynamicRHI::GetInstanceLayersAndExtensions(TArray<const ANSICHAR*>& 
 			}
 		}
 	}
+#endif
 
 #if VULKAN_SUPPORTS_DEBUG_UTILS
-	if (!bVkTrace && GValidationCvar.GetValueOnAnyThread() > 0)
+	if (!bVkTrace && VulkanValidationOption > 0)
 	{
 		const char* FoundDebugUtilsLayer = nullptr;
 		bOutDebugUtils = FindLayerExtensionInList(GlobalLayerExtensions, VK_EXT_DEBUG_UTILS_EXTENSION_NAME, FoundDebugUtilsLayer);
@@ -403,7 +403,7 @@ void FVulkanDynamicRHI::GetInstanceLayersAndExtensions(TArray<const ANSICHAR*>& 
 	}
 #endif
 #if VULKAN_HAS_DEBUGGING_ENABLED
-	if (!bVkTrace && !bOutDebugUtils && GValidationCvar.GetValueOnAnyThread() > 0)
+	if (!bVkTrace && !bOutDebugUtils && VulkanValidationOption > 0)
 	{
 		if (FindLayerExtensionInList(GlobalLayerExtensions, VK_EXT_DEBUG_REPORT_EXTENSION_NAME))
 		{
@@ -412,9 +412,9 @@ void FVulkanDynamicRHI::GetInstanceLayersAndExtensions(TArray<const ANSICHAR*>& 
 	}
 #endif
 
-	TrimDuplicates(OutInstanceLayers);
 	if (OutInstanceLayers.Num() > 0)
 	{
+		TrimDuplicates(OutInstanceLayers);
 		UE_LOG(LogVulkanRHI, Display, TEXT("Using instance layers"));
 		for (const ANSICHAR* Layer : OutInstanceLayers)
 		{
@@ -426,9 +426,9 @@ void FVulkanDynamicRHI::GetInstanceLayersAndExtensions(TArray<const ANSICHAR*>& 
 		UE_LOG(LogVulkanRHI, Display, TEXT("Not using instance layers"));
 	}
 
-	TrimDuplicates(OutInstanceExtensions);
 	if (OutInstanceExtensions.Num() > 0)
 	{
+		TrimDuplicates(OutInstanceExtensions);
 		UE_LOG(LogVulkanRHI, Display, TEXT("Using instance extensions"));
 		for (const ANSICHAR* Extension : OutInstanceExtensions)
 		{
@@ -441,7 +441,7 @@ void FVulkanDynamicRHI::GetInstanceLayersAndExtensions(TArray<const ANSICHAR*>& 
 	}
 }
 
-void FVulkanDevice::GetDeviceExtensionsAndLayers(TArray<const ANSICHAR*>& OutDeviceExtensions, TArray<const ANSICHAR*>& OutDeviceLayers, bool& bOutDebugMarkers)
+void FVulkanDevice::GetDeviceExtensionsAndLayers(VkPhysicalDevice Gpu, EGpuVendorId VendorId, TArray<const ANSICHAR*>& OutDeviceExtensions, TArray<const ANSICHAR*>& OutDeviceLayers, TArray<FString>& OutAllDeviceExtensions, TArray<FString>& OutAllDeviceLayers, bool& bOutDebugMarkers)
 {
 	bOutDebugMarkers = false;
 
@@ -480,16 +480,10 @@ void FVulkanDevice::GetDeviceExtensionsAndLayers(TArray<const ANSICHAR*>& OutDev
 	}
 
 	FoundUniqueLayers.Sort();
-	for (const FString& Name : FoundUniqueLayers)
-	{
-		UE_LOG(LogVulkanRHI, Display, TEXT("- Found device layer %s"), *Name);
-	}
+	OutAllDeviceLayers = FoundUniqueLayers;
 
 	FoundUniqueExtensions.Sort();
-	for (const FString& Name : FoundUniqueExtensions)
-	{
-		UE_LOG(LogVulkanRHI, Display, TEXT("- Found device extension %s"), *Name);
-	}
+	OutAllDeviceExtensions = FoundUniqueExtensions;
 
 	FVulkanPlatform::NotifyFoundDeviceLayersAndExtensions(Gpu, FoundUniqueLayers, FoundUniqueExtensions);
 
@@ -517,8 +511,10 @@ void FVulkanDevice::GetDeviceExtensionsAndLayers(TArray<const ANSICHAR*>& OutDev
 	#endif
 
 	// Verify that all requested debugging device-layers are available. Skip validation layers under RenderDoc
-	if (!GRenderDocFound && GValidationCvar.GetValueOnAnyThread() > 0)
+	const int32 VulkanValidationOption = GValidationCvar.GetValueOnAnyThread();
+	if (!GRenderDocFound && VulkanValidationOption > 0)
 	{
+		// Path for older drivers
 		bool bStandardAvailable = false;
 		if (GStandardValidationCvar.GetValueOnAnyThread() != 0)
 		{
@@ -543,11 +539,6 @@ void FVulkanDevice::GetDeviceExtensionsAndLayers(TArray<const ANSICHAR*>& OutDev
 						OutDeviceLayers.Add(CurrValidationLayer);
 						break;
 					}
-				}
-
-				if (!bValidationFound)
-				{
-					UE_LOG(LogVulkanRHI, Warning, TEXT("Unable to find Vulkan device validation layer '%s'"), ANSI_TO_TCHAR(CurrValidationLayer));
 				}
 			}
 		}
@@ -607,17 +598,16 @@ void FVulkanDevice::GetDeviceExtensionsAndLayers(TArray<const ANSICHAR*>& OutDev
 
 	// Now go through the actual requested lists
 	TArray<const ANSICHAR*> PlatformExtensions;
-	FVulkanPlatform::GetDeviceExtensions(PlatformExtensions);
+	FVulkanPlatform::GetDeviceExtensions(VendorId, PlatformExtensions);
 	for (const ANSICHAR* PlatformExtension : PlatformExtensions)
 	{
 		if (ListContains(AvailableExtensions, PlatformExtension))
 		{
 			OutDeviceExtensions.Add(PlatformExtension);
-			break;
 		}
 	}
 
-	for (uint32 Index = 0; Index < ARRAY_COUNT(GDeviceExtensions) && GDeviceExtensions[Index] != nullptr; ++Index)
+	for (uint32 Index = 0; Index < UE_ARRAY_COUNT(GDeviceExtensions) && GDeviceExtensions[Index] != nullptr; ++Index)
 	{
 		if (ListContains(AvailableExtensions, GDeviceExtensions[Index]))
 		{
@@ -627,7 +617,7 @@ void FVulkanDevice::GetDeviceExtensionsAndLayers(TArray<const ANSICHAR*>& OutDev
 
 #if VULKAN_ENABLE_DRAW_MARKERS && VULKAN_HAS_DEBUGGING_ENABLED
 	if (!bOutDebugMarkers &&
-		(((GRenderDocFound || GValidationCvar.GetValueOnAnyThread() == 0) && ListContains(AvailableExtensions, VK_EXT_DEBUG_MARKER_EXTENSION_NAME)) || FVulkanPlatform::ForceEnableDebugMarkers()))
+		(((GRenderDocFound || VulkanValidationOption == 0) && ListContains(AvailableExtensions, VK_EXT_DEBUG_MARKER_EXTENSION_NAME)) || FVulkanPlatform::ForceEnableDebugMarkers()))
 	{
 		// HACK: Lumin Nvidia driver unofficially supports this extension, but will return false if we try to load it explicitly.
 #if !PLATFORM_LUMIN
@@ -639,85 +629,123 @@ void FVulkanDevice::GetDeviceExtensionsAndLayers(TArray<const ANSICHAR*>& OutDev
 
 	if (OutDeviceExtensions.Num() > 0)
 	{
-		UE_LOG(LogVulkanRHI, Display, TEXT("Using device extensions"));
-		for (const ANSICHAR* Extension : OutDeviceExtensions)
-		{
-			UE_LOG(LogVulkanRHI, Display, TEXT("* %s"), ANSI_TO_TCHAR(Extension));
-		}
+		TrimDuplicates(OutDeviceExtensions);
 	}
 
 	if (OutDeviceLayers.Num() > 0)
 	{
-		UE_LOG(LogVulkanRHI, Display, TEXT("Using device layers"));
-		for (const ANSICHAR* Layer : OutDeviceLayers)
-		{
-			UE_LOG(LogVulkanRHI, Display, TEXT("* %s"), ANSI_TO_TCHAR(Layer));
-		}
+		TrimDuplicates(OutDeviceLayers);
 	}
 }
 
-
-void FVulkanDevice::ParseOptionalDeviceExtensions(const TArray<const ANSICHAR *>& DeviceExtensions)
+static inline bool HasExtension(const TArray<const ANSICHAR*> InExtensions, const ANSICHAR* InName)
 {
-	FMemory::Memzero(OptionalDeviceExtensions);
+	return InExtensions.ContainsByPredicate(
+		[&InName](const ANSICHAR* Extension) -> bool
+		{
+			return FCStringAnsi::Strcmp(Extension, InName) == 0;
+		}
+	);
+};
 
-	auto HasExtension = [&DeviceExtensions](const ANSICHAR* InName) -> bool
-	{
-		return DeviceExtensions.ContainsByPredicate(
-			[&InName](const ANSICHAR* InExtension) -> bool
-			{
-				return FCStringAnsi::Strcmp(InExtension, InName) == 0;
-			}
-		);
-	};
+void FOptionalVulkanInstanceExtensions::Setup(const TArray<const ANSICHAR*>& InstanceExtensions)
+{
+	check(Packed == 0);
+
+#if VULKAN_SUPPORTS_EXTERNAL_MEMORY
+	HasKHRExternalMemoryCapabilities = HasExtension(InstanceExtensions, VK_KHR_EXTERNAL_MEMORY_CAPABILITIES_EXTENSION_NAME);
+#endif
+
+#if VULKAN_SUPPORTS_PHYSICAL_DEVICE_PROPERTIES2
+	HasKHRGetPhysicalDeviceProperties2 = HasExtension(InstanceExtensions, VK_KHR_GET_PHYSICAL_DEVICE_PROPERTIES_2_EXTENSION_NAME);
+#endif
+}
+
+void FOptionalVulkanDeviceExtensions::Setup(const TArray<const ANSICHAR*>& DeviceExtensions)
+{
+	check(Packed == 0);
+
 #if VULKAN_SUPPORTS_MAINTENANCE_LAYER1
-	OptionalDeviceExtensions.HasKHRMaintenance1 = HasExtension(VK_KHR_MAINTENANCE1_EXTENSION_NAME);
+	HasKHRMaintenance1 = HasExtension(DeviceExtensions, VK_KHR_MAINTENANCE1_EXTENSION_NAME);
 #endif
 #if VULKAN_SUPPORTS_MAINTENANCE_LAYER2
-	OptionalDeviceExtensions.HasKHRMaintenance2 = HasExtension(VK_KHR_MAINTENANCE2_EXTENSION_NAME);
+	HasKHRMaintenance2 = HasExtension(DeviceExtensions, VK_KHR_MAINTENANCE2_EXTENSION_NAME);
 #endif
-	//OptionalDeviceExtensions.HasMirrorClampToEdge = HasExtension(VK_KHR_SAMPLER_MIRROR_CLAMP_TO_EDGE_EXTENSION_NAME);
+	//HasMirrorClampToEdge = HasExtension(VK_KHR_SAMPLER_MIRROR_CLAMP_TO_EDGE_EXTENSION_NAME);
 
 #if VULKAN_SUPPORTS_DEDICATED_ALLOCATION
-	OptionalDeviceExtensions.HasKHRDedicatedAllocation = HasExtension(VK_KHR_GET_MEMORY_REQUIREMENTS_2_EXTENSION_NAME) && HasExtension(VK_KHR_DEDICATED_ALLOCATION_EXTENSION_NAME);
-#endif
-
-#if VULKAN_ENABLE_DESKTOP_HMD_SUPPORT
-	OptionalDeviceExtensions.HasKHRExternalMemoryCapabilities = HasExtension(VK_KHR_EXTERNAL_MEMORY_CAPABILITIES_EXTENSION_NAME);
-	OptionalDeviceExtensions.HasKHRGetPhysicalDeviceProperties2 = HasExtension(VK_KHR_GET_PHYSICAL_DEVICE_PROPERTIES_2_EXTENSION_NAME);
+	HasKHRDedicatedAllocation = HasExtension(DeviceExtensions, VK_KHR_GET_MEMORY_REQUIREMENTS_2_EXTENSION_NAME) && HasExtension(DeviceExtensions, VK_KHR_DEDICATED_ALLOCATION_EXTENSION_NAME);
 #endif
 
 #if VULKAN_SUPPORTS_VALIDATION_CACHE
-	OptionalDeviceExtensions.HasEXTValidationCache = HasExtension(VK_EXT_VALIDATION_CACHE_EXTENSION_NAME);
+	HasEXTValidationCache = HasExtension(DeviceExtensions, VK_EXT_VALIDATION_CACHE_EXTENSION_NAME);
 #endif
 
 	bool bHasAnyCrashExtension = false;
 #if VULKAN_SUPPORTS_AMD_BUFFER_MARKER
 	if (GGPUCrashDebuggingEnabled)
 	{
-		OptionalDeviceExtensions.HasAMDBufferMarker = HasExtension(VK_AMD_BUFFER_MARKER_EXTENSION_NAME);
-		bHasAnyCrashExtension = bHasAnyCrashExtension || !OptionalDeviceExtensions.HasAMDBufferMarker;
+		HasAMDBufferMarker = HasExtension(DeviceExtensions, VK_AMD_BUFFER_MARKER_EXTENSION_NAME);
+		bHasAnyCrashExtension = bHasAnyCrashExtension || !HasAMDBufferMarker;
 	}
 #endif
 
 #if VULKAN_SUPPORTS_NV_DIAGNOSTIC_CHECKPOINT
 	if (GGPUCrashDebuggingEnabled)
 	{
-		OptionalDeviceExtensions.HasNVDiagnosticCheckpoints = HasExtension(VK_NV_DEVICE_DIAGNOSTIC_CHECKPOINTS_EXTENSION_NAME);
-		bHasAnyCrashExtension = bHasAnyCrashExtension || !OptionalDeviceExtensions.HasNVDiagnosticCheckpoints;
+		HasNVDiagnosticCheckpoints = HasExtension(DeviceExtensions, VK_NV_DEVICE_DIAGNOSTIC_CHECKPOINTS_EXTENSION_NAME);
+		bHasAnyCrashExtension = bHasAnyCrashExtension || !HasNVDiagnosticCheckpoints;
 	}
 #endif
 
 	if (GGPUCrashDebuggingEnabled && !bHasAnyCrashExtension)
 	{
-		UE_LOG(LogVulkanRHI, Warning, TEXT("Tried to enable GPU crash debugging but no extension found!"));
+		UE_LOG(LogVulkanRHI, Warning, TEXT("Tried to enable GPU crash debugging but no extension found! Will use local tracepoints."));
 	}
 
 #if VULKAN_SUPPORTS_GOOGLE_DISPLAY_TIMING
-	OptionalDeviceExtensions.HasGoogleDisplayTiming = HasExtension(VK_GOOGLE_DISPLAY_TIMING_EXTENSION_NAME);
+	HasGoogleDisplayTiming = HasExtension(DeviceExtensions, VK_GOOGLE_DISPLAY_TIMING_EXTENSION_NAME);
 #endif
 
 #if VULKAN_SUPPORTS_COLOR_CONVERSIONS
-	OptionalDeviceExtensions.HasYcbcrSampler = HasExtension(VK_KHR_SAMPLER_YCBCR_CONVERSION_EXTENSION_NAME) && HasExtension(VK_KHR_BIND_MEMORY_2_EXTENSION_NAME) && HasExtension(VK_KHR_GET_MEMORY_REQUIREMENTS_2_EXTENSION_NAME);
+	HasYcbcrSampler = HasExtension(DeviceExtensions, VK_KHR_SAMPLER_YCBCR_CONVERSION_EXTENSION_NAME) && HasExtension(DeviceExtensions, VK_KHR_BIND_MEMORY_2_EXTENSION_NAME) && HasExtension(DeviceExtensions, VK_KHR_GET_MEMORY_REQUIREMENTS_2_EXTENSION_NAME);
+#endif
+
+#if VULKAN_SUPPORTS_MEMORY_PRIORITY
+	HasMemoryPriority = HasExtension(DeviceExtensions, VK_EXT_MEMORY_PRIORITY_EXTENSION_NAME);
+	if (FParse::Param(FCommandLine::Get(), TEXT("disablememorypriority")))
+	{
+		HasMemoryPriority = 0;
+	}
+#else
+	HasMemoryPriority = 0;
+#endif
+
+#if VULKAN_SUPPORTS_DRIVER_PROPERTIES
+	HasDriverProperties = HasExtension(DeviceExtensions, VK_KHR_DRIVER_PROPERTIES_EXTENSION_NAME);
+#endif
+
+	HasEXTFragmentDensityMap = HasExtension(DeviceExtensions, VK_EXT_FRAGMENT_DENSITY_MAP_EXTENSION_NAME);
+
+#if VULKAN_SUPPORTS_FULLSCREEN_EXCLUSIVE
+	HasEXTFullscreenExclusive = HasExtension(DeviceExtensions, VK_EXT_FULL_SCREEN_EXCLUSIVE_EXTENSION_NAME);
+#endif
+}
+
+void FVulkanDynamicRHI::SetupValidationRequests()
+{
+#if VULKAN_HAS_DEBUGGING_ENABLED
+	int32 VulkanValidationOption = GValidationCvar.GetValueOnAnyThread();
+
+	// Command line overrides Cvar
+	if (FParse::Param(FCommandLine::Get(), TEXT("vulkandebug")))
+	{
+		// Match D3D and GL
+		GValidationCvar->Set(2, ECVF_SetByCommandline);
+	}
+	else if (FParse::Value(FCommandLine::Get(), TEXT("vulkanvalidation="), VulkanValidationOption))
+	{
+		GValidationCvar->Set(VulkanValidationOption, ECVF_SetByCommandline);
+	}
 #endif
 }

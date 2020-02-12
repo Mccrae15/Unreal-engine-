@@ -1,8 +1,9 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 /*=============================================================================
 D3D12View.h: D3D12 Resource Views
 =============================================================================*/
+#pragma once
 
 enum ViewSubresourceSubsetFlags
 {
@@ -37,7 +38,7 @@ public:
 	{
 		switch (Desc.ViewDimension)
 		{
-		default: ASSUME(0 && "Corrupt Resource Type on Shader Resource View"); break;
+		default: UE_ASSUME(0 && "Corrupt Resource Type on Shader Resource View"); break;
 
 		case (D3D12_SRV_DIMENSION_BUFFER) :
 			break;
@@ -125,7 +126,7 @@ public:
 	{
 		switch (Desc.ViewDimension)
 		{
-		default: ASSUME(0 && "Corrupt Resource Type on Unordered Access View"); break;
+		default: UE_ASSUME(0 && "Corrupt Resource Type on Unordered Access View"); break;
 
 		case (D3D12_UAV_DIMENSION_BUFFER) : break;
 
@@ -171,7 +172,7 @@ public:
 	{
 		switch (Desc.ViewDimension)
 		{
-		default: ASSUME(0 && "Corrupt Resource Type on Render Target View"); break;
+		default: UE_ASSUME(0 && "Corrupt Resource Type on Render Target View"); break;
 
 		case (D3D12_RTV_DIMENSION_BUFFER) : break;
 
@@ -225,7 +226,7 @@ public:
 	{
 		switch (Desc.ViewDimension)
 		{
-		default: ASSUME(0 && "Corrupt Resource Type on Depth Stencil View"); break;
+		default: UE_ASSUME(0 && "Corrupt Resource Type on Depth Stencil View"); break;
 
 		case (D3D12_DSV_DIMENSION_TEXTURE1D) :
 			m_BeginMip = uint8(Desc.Texture1D.MipSlice);
@@ -686,28 +687,9 @@ public:
 	inline uint32 GetIndex() const { return Index; }
 
 private:
-	void AllocateDescriptorSlot()
-	{
-		if (Parent)
-		{
-			FD3D12Device* Device = GetParentDevice();
-			FD3D12OfflineDescriptorManager& DescriptorAllocator = Device->template GetViewDescriptorAllocator<TDesc>();
-			Handle = DescriptorAllocator.AllocateHeapSlot(Index);
-			check(Handle.ptr != 0);
-		}
-	}
-
-	void FreeDescriptorSlot()
-	{
-		if (Parent)
-		{
-			FD3D12Device* Device = GetParentDevice();
-			FD3D12OfflineDescriptorManager& DescriptorAllocator = Device->template GetViewDescriptorAllocator<TDesc>();
-			DescriptorAllocator.FreeHeapSlot(Handle, Index);
-			Handle.ptr = 0;
-		}
-		check(!Handle.ptr);
-	}
+	// Implemented in D3D12Device.h due to dependencies on FD3D12Device
+	inline void AllocateDescriptorSlot();
+	inline void FreeDescriptorSlot();
 };
 
 typedef TD3D12ViewDescriptorHandle<D3D12_SHADER_RESOURCE_VIEW_DESC>		FD3D12DescriptorHandleSRV;
@@ -790,13 +772,13 @@ protected:
 public:
 	inline FD3D12Device*					GetParentDevice()			const { return Descriptor.GetParentDevice(); }
 	inline FD3D12Device*					GetParentDevice_Unsafe()	const { return Descriptor.GetParentDevice_Unsafe(); }
-	inline const TDesc&						GetDesc()					const { check(bInitialized); return Desc; }
-	inline CD3DX12_CPU_DESCRIPTOR_HANDLE	GetView()					const { check(bInitialized); return Descriptor.GetHandle(); }
-	inline uint32							GetDescriptorHeapIndex()	const { check(bInitialized); return Descriptor.GetIndex(); }
-	inline FD3D12Resource*					GetResource()				const { check(bInitialized); return ResourceLocation->GetResource(); }
-	inline FD3D12ResourceLocation*			GetResourceLocation()		const { check(bInitialized); return ResourceLocation; }
-	inline FD3D12ResidencyHandle*			GetResidencyHandle()		const { check(bInitialized); return ResidencyHandle; }
-	inline const CViewSubresourceSubset&	GetViewSubresourceSubset()	const { check(bInitialized); return ViewSubresourceSubset; }
+	inline const TDesc&						GetDesc()					const { checkf(bInitialized, TEXT("Uninitialized D3D12View size %d"), (uint32)sizeof(TDesc)); return Desc; }
+	inline CD3DX12_CPU_DESCRIPTOR_HANDLE	GetView()					const { checkf(bInitialized, TEXT("Uninitialized D3D12View size %d"), (uint32)sizeof(TDesc)); return Descriptor.GetHandle(); }
+	inline uint32							GetDescriptorHeapIndex()	const { checkf(bInitialized, TEXT("Uninitialized D3D12View size %d"), (uint32)sizeof(TDesc)); return Descriptor.GetIndex(); }
+	inline FD3D12Resource*					GetResource()				const { checkf(bInitialized, TEXT("Uninitialized D3D12View size %d"), (uint32)sizeof(TDesc)); return ResourceLocation->GetResource(); }
+	inline FD3D12ResourceLocation*			GetResourceLocation()		const { checkf(bInitialized, TEXT("Uninitialized D3D12View size %d"), (uint32)sizeof(TDesc)); return ResourceLocation; }
+	inline FD3D12ResidencyHandle*			GetResidencyHandle()		const { checkf(bInitialized, TEXT("Uninitialized D3D12View size %d"), (uint32)sizeof(TDesc)); return ResidencyHandle; }
+	inline const CViewSubresourceSubset&	GetViewSubresourceSubset()	const { checkf(bInitialized, TEXT("Uninitialized D3D12View size %d"), (uint32)sizeof(TDesc)); return ViewSubresourceSubset; }
 
 	void SetParentDevice(FD3D12Device* InParent)
 	{
@@ -811,7 +793,7 @@ public:
 };
 
 /** Shader resource view class. */
-class FD3D12ShaderResourceView : public FRHIShaderResourceView, public FD3D12View<D3D12_SHADER_RESOURCE_VIEW_DESC>, public FD3D12LinkedAdapterObject<FD3D12ShaderResourceView>
+class FD3D12ShaderResourceView : public FD3D12BaseShaderResourceView, public FRHIShaderResourceView, public FD3D12View<D3D12_SHADER_RESOURCE_VIEW_DESC>, public FD3D12LinkedAdapterObject<FD3D12ShaderResourceView>
 {
 	bool bContainsDepthPlane;
 	bool bContainsStencilPlane;
@@ -832,6 +814,12 @@ public:
 		Initialize(InDesc, InResourceLocation, InStride, InSkipFastClearFinalize);
 	}
 
+	~FD3D12ShaderResourceView()
+	{
+		check(bInitialized);
+		FD3D12BaseShaderResourceView::Remove();
+	}
+
 	void Initialize(D3D12_SHADER_RESOURCE_VIEW_DESC& InDesc, FD3D12ResourceLocation& InResourceLocation, uint32 InStride, bool InSkipFastClearFinalize = false)
 	{
 		Stride = InStride;
@@ -849,7 +837,7 @@ public:
 
 		if (InDesc.ViewDimension == D3D12_SRV_DIMENSION_BUFFER)
 		{
-			check(InResourceLocation.GetOffsetFromBaseOfResource() / Stride == InDesc.Buffer.FirstElement);
+			//check(InResourceLocation.GetOffsetFromBaseOfResource() == InDesc.Buffer.FirstElement * Stride);
 		}
 #endif
 
@@ -894,6 +882,23 @@ public:
 	FORCEINLINE bool IsDepthPlaneResource()		const { return bContainsDepthPlane; }
 	FORCEINLINE bool IsStencilPlaneResource()	const { return bContainsStencilPlane; }
 	FORCEINLINE bool GetSkipFastClearFinalize()	const { return bSkipFastClearFinalize; }
+};
+
+class FD3D12ShaderResourceViewWithLocation : public FD3D12ShaderResourceView
+{
+public:
+	FD3D12ShaderResourceViewWithLocation(FD3D12Device* InParent)
+		: FD3D12ShaderResourceView(InParent)
+		, ViewLocation(InParent)
+	{}
+
+	FD3D12ShaderResourceViewWithLocation(FD3D12Device* InParent, D3D12_SHADER_RESOURCE_VIEW_DESC& InDesc, FD3D12ResourceLocation& InResourceLocation, uint32 InStride = -1, bool InSkipFastClearFinalize = false)
+		: FD3D12ShaderResourceView(InParent, InDesc, ViewLocation, InStride, InSkipFastClearFinalize)
+		, ViewLocation(InParent)
+	{
+	}
+
+	FD3D12ResourceLocation ViewLocation;
 };
 
 class FD3D12UnorderedAccessView : public FRHIUnorderedAccessView, public FD3D12View < D3D12_UNORDERED_ACCESS_VIEW_DESC >, public FD3D12LinkedAdapterObject<FD3D12UnorderedAccessView>

@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -6,7 +6,8 @@
 #include "UObject/Object.h"
 #include "UObject/WeakObjectPtr.h"
 #include "Types/ISlateMetaData.h"
-#include "Widgets/SWidget.h"
+
+class SWidget;
 
 /**
  * Reflection meta-data that can be used by the widget reflector to determine
@@ -40,7 +41,11 @@ public:
 
 public:
 
+	static FString GetWidgetPath(const SWidget* InWidget, bool bShort = true, bool bNativePathOnly = false);
+	static FString GetWidgetPath(const SWidget& InWidget, bool bShort = true, bool bNativePathOnly = false);
+
 	static FString GetWidgetDebugInfo(const SWidget* InWidget);
+	static FString GetWidgetDebugInfo(const SWidget& InWidget);
 
 	static TSharedPtr<FReflectionMetaData> GetWidgetOrParentMetaData(const SWidget* InWidget);
 };

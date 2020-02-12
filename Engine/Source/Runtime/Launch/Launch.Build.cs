@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 using UnrealBuildTool;
 using System.IO;
@@ -31,13 +31,14 @@ public class Launch : ModuleRules
 				"Slate",
 				"SlateCore",
 				"Sockets",
+				"TraceLog",
 				"Overlay",
-				"UtilityShaders",
-				"PreLoadScreen"
+				"PreLoadScreen",
+				"InstallBundleManager"
 			});
 
 		// Set a macro allowing us to switch between debuggame/development configuration
-		if(Target.Configuration == UnrealTargetConfiguration.DebugGame)
+		if (Target.Configuration == UnrealTargetConfiguration.DebugGame)
 		{
 			PrivateDefinitions.Add("UE_BUILD_DEVELOPMENT_WITH_DEBUGGAME=1");
 		}
@@ -77,12 +78,20 @@ public class Launch : ModuleRules
 					"D3D11RHI",
 					"D3D12RHI",
 					"XAudio2",
+					"WindowsPlatformFeatures",
+					"GameplayMediaEncoder",
 				});
+			}
+			else if (Target.Platform == UnrealTargetPlatform.HoloLens)
+			{
+				DynamicallyLoadedModuleNames.Add("D3D11RHI");
+				DynamicallyLoadedModuleNames.Add("XAudio2");
+				DynamicallyLoadedModuleNames.Add("AudioMixerXAudio2");
 			}
 			else if (Target.Platform == UnrealTargetPlatform.Mac)
 			{
 				DynamicallyLoadedModuleNames.AddRange(new string[] {
-					"AudioMixerAudioUnit",
+					"AudioMixerCoreAudio",
 					"CoreAudio",
 				});
 			}
@@ -138,7 +147,7 @@ public class Launch : ModuleRules
 			});
 
 			PrivateDependencyModuleNames.AddRange(new string[] {
-				"ClothingSystemRuntime",
+				"ClothingSystemRuntimeNv",
 				"ClothingSystemRuntimeInterface"
 			});
 
@@ -206,26 +215,6 @@ public class Launch : ModuleRules
 			}
 		}
 
-		if (Target.Platform == UnrealTargetPlatform.IOS ||
-			Target.Platform == UnrealTargetPlatform.TVOS)
-		{
-			PrivateDependencyModuleNames.AddRange(new string[] {
-				"AudioMixerAudioUnit",
-				"IOSAudio",
-				"LaunchDaemonMessages",
-				"OpenGLDrv",
-			});
-
-			DynamicallyLoadedModuleNames.AddRange(new string[] {
-				"IOSLocalNotification",
-				"IOSRuntimeSettings",
-			});
-
-			PublicFrameworks.Add("OpenGLES");
-			// this is weak for IOS8 support for CAMetalLayer that is in QuartzCore
-			PublicWeakFrameworks.Add("QuartzCore");
-		}
-
 		if (Target.IsInPlatformGroup(UnrealPlatformGroup.Android))
 		{
 			PrivateDependencyModuleNames.Add("OpenGLDrv");
@@ -246,31 +235,35 @@ public class Launch : ModuleRules
 			}
 		}
 
+		if (Target.Platform == UnrealTargetPlatform.IOS || Target.Platform == UnrealTargetPlatform.TVOS)
+		{
+			PrivateDependencyModuleNames.AddRange(new string[] {
+				"AudioMixerAudioUnit",
+				"IOSAudio",
+				"LaunchDaemonMessages",
+			});
+
+			DynamicallyLoadedModuleNames.AddRange(new string[] {
+				"IOSLocalNotification",
+				"IOSRuntimeSettings",
+			});
+
+			// needed for Metal layer
+			PublicFrameworks.Add("QuartzCore");
+		}
+
 		if ((Target.Platform == UnrealTargetPlatform.Win32) ||
 			(Target.Platform == UnrealTargetPlatform.Win64) ||
-			(Target.Platform == UnrealTargetPlatform.Linux && Target.Type != TargetType.Server))
+			(Target.IsInPlatformGroup(UnrealPlatformGroup.Linux) && Target.Type != TargetType.Server))
 		{
 			// TODO: re-enable after implementing resource tables for OpenGL.
 			DynamicallyLoadedModuleNames.Add("OpenGLDrv");
 		}
 
-		if (Target.Platform == UnrealTargetPlatform.HTML5 )
+        // @todo ps4 clang bug: this works around a PS4/clang compiler bug (optimizations)
+        if (Target.Platform == UnrealTargetPlatform.PS4)
 		{
-			PrivateDependencyModuleNames.AddRange(
-				new string[] {
-					"ALAudio",
-					"AudioMixerSDL",
-					"Analytics",
-					"AnalyticsET"
-				}
-			);
-            AddEngineThirdPartyPrivateStaticDependencies(Target, "SDL2");
-		}
-
-		// @todo ps4 clang bug: this works around a PS4/clang compiler bug (optimizations)
-		if (Target.Platform == UnrealTargetPlatform.PS4)
-		{
-			bFasterWithoutUnity = true;
+			bUseUnity = true;
 		}
 
 		if (Target.IsInPlatformGroup(UnrealPlatformGroup.Unix))

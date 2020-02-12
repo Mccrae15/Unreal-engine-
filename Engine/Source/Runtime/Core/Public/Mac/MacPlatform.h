@@ -1,10 +1,14 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 /*================================================================================
 	MacPlatform.h: Setup for the Mac platform
 ==================================================================================*/
 
 #pragma once
+
+#include "Clang/ClangPlatform.h"
+
+#define PLATFORM_MAC_USE_CHAR16 1
 
 /**
 * Mac specific types
@@ -14,7 +18,12 @@ struct FMacPlatformTypes : public FGenericPlatformTypes
 	typedef unsigned int		DWORD;
 	typedef size_t				SIZE_T;
 	typedef decltype(NULL)		TYPE_OF_NULL;
+#if PLATFORM_MAC_USE_CHAR16
+	typedef char16_t			WIDECHAR;
+	typedef WIDECHAR			TCHAR;
+#else
 	typedef char16_t			CHAR16;
+#endif
 };
 
 typedef FMacPlatformTypes FPlatformTypes;
@@ -32,20 +41,38 @@ typedef FMacPlatformTypes FPlatformTypes;
 //#define PLATFORM_EXCEPTIONS_DISABLED				!PLATFORM_DESKTOP
 #define PLATFORM_SUPPORTS_PRAGMA_PACK				1
 #define PLATFORM_ENABLE_VECTORINTRINSICS			1
+#ifndef PLATFORM_MAYBE_HAS_SSE4_1 // May be set from UnrealBuildTool
+	#define PLATFORM_MAYBE_HAS_SSE4_1				1
+#endif
+// Current unreal minspec is sse2, not sse4, so on mac any calling code must check _cpuid before calling SSE4 instructions
+// If called on a platform for which _cpuid for SSE4 returns false, attempting to call SSE4 intrinsics will crash
+// If your title has raised the minspec to sse4, you can define PLATFORM_ALWAYS_HAS_SSE4_1 to 1
+#ifndef PLATFORM_ALWAYS_HAS_SSE4_1 // May be set from UnrealBuildTool
+	#define PLATFORM_ALWAYS_HAS_SSE4_1				0
+#endif
 //#define PLATFORM_USE_LS_SPEC_FOR_WIDECHAR			1
 #define PLATFORM_USE_SYSTEM_VSWPRINTF				0
 #define PLATFORM_COMPILER_DISTINGUISHES_INT_AND_LONG			1
-#define PLATFORM_TCHAR_IS_4_BYTES					1
+#define PLATFORM_WCHAR_IS_4_BYTES					1
+#if PLATFORM_MAC_USE_CHAR16
+	#define PLATFORM_TCHAR_IS_CHAR16				1
+#else
+	#define PLATFORM_TCHAR_IS_4_BYTES				1
+#endif
 #define PLATFORM_HAS_BSD_TIME						1
+#define PLATFORM_HAS_BSD_IPV6_SOCKETS				1
 //#define PLATFORM_USE_PTHREADS						1
 #define PLATFORM_MAX_FILEPATH_LENGTH_DEPRECATED		MAC_MAX_PATH
 #define PLATFORM_SUPPORTS_TBB						1
 #define PLATFORM_SUPPORTS_STACK_SYMBOLS				1
 #define PLATFORM_HAS_BSD_SOCKET_FEATURE_MSG_DONTWAIT	1
+#define PLATFORM_IS_ANSI_MALLOC_THREADSAFE			1
 
 #define PLATFORM_RHITHREAD_DEFAULT_BYPASS			WITH_EDITOR
 
 #define PLATFORM_ENABLE_POPCNT_INTRINSIC 1
+
+#define PLATFORM_GLOBAL_LOG_CATEGORY				LogMac
 
 #define PLATFORM_BREAK()							__asm__("int $3")
 
@@ -88,8 +115,12 @@ typedef FMacPlatformTypes FPlatformTypes;
 #define OPERATOR_NEW_NOTHROW_SPEC  _NOEXCEPT
 #define OPERATOR_DELETE_NOTHROW_SPEC  _NOEXCEPT
 
+// DLL export and import for tpyes definitions
+#define DLLEXPORT_VTABLE	__attribute__ ((__type_visibility__("default")))
+#define DLLIMPORT_VTABLE	__attribute__ ((__type_visibility__("default")))
+
 // DLL export and import definitions
-#define DLLEXPORT
-#define DLLIMPORT
+#define DLLEXPORT			__attribute__((visibility("default")))
+#define DLLIMPORT			__attribute__((visibility("default")))
 
 #define MAC_MAX_PATH 1024

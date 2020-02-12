@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "LightingSystem.h"
 #include "Exporter.h"
@@ -59,11 +59,6 @@ static void ConvertToLightSampleHelper(const FGatheredLightSample& InGatheredLig
 
 FLightSample FGatheredLightMapSample::ConvertToLightSample(bool bDebugThisSample) const
 {
-	if (bDebugThisSample)
-	{
-		int32 asdf = 0;
-	}
-
 	FLightSample NewSample;
 	NewSample.bIsMapped = bIsMapped;
 
@@ -158,6 +153,9 @@ FStaticLightingSystem::FStaticLightingSystem(const FLightingBuildOptions& InOpti
 ,	SecondBouncePhotonMap(FVector4(0,0,0), HALF_WORLD_MAX)
 ,	IrradiancePhotonMap(FVector4(0,0,0), HALF_WORLD_MAX)
 ,	AggregateMesh(NULL)
+,	VoxelizationSurfaceAggregateMesh(NULL)
+,	VoxelizationVolumeAggregateMesh(NULL)
+,	LandscapeCullingVoxelizationAggregateMesh(NULL)
 ,	Scene(InScene)
 ,	NumTexelsCompleted(0)
 ,	NumOutstandingVolumeDataLayers(0)
@@ -168,7 +166,7 @@ FStaticLightingSystem::FStaticLightingSystem(const FLightingBuildOptions& InOpti
 ,	Exporter(InExporter)
 {
 	const double SceneSetupStart = FPlatformTime::Seconds();
-	UE_LOG(LogLightmass, Log, TEXT("FStaticLightingSystem started using GKDOPMaxTrisPerLeaf: %d"), GKDOPMaxTrisPerLeaf );
+	UE_LOG(LogLightmass, Log, TEXT("FStaticLightingSystem started using GKDOPMaxTrisPerLeaf: %d"), DEFAULT_MAX_TRIS_PER_LEAF);
 
 	ValidateSettings(InScene);
 
@@ -368,25 +366,98 @@ FStaticLightingSystem::FStaticLightingSystem(const FLightingBuildOptions& InOpti
 	// Add all meshes to the kDOP.
 	AggregateMesh->ReserveMemory(NumMeshes, NumVertices, NumTriangles);
 
+	if (Scene.GeneralSettings.bUseFastVoxelization)
+	{
+		VoxelizationSurfaceAggregateMesh = new FDefaultAggregateMesh(Scene);
+		VoxelizationVolumeAggregateMesh = new FDefaultAggregateMesh(Scene);
+		LandscapeCullingVoxelizationAggregateMesh = new FDefaultAggregateMesh(Scene);
+	}
+
 	for (int32 MappingIndex = 0; MappingIndex < InScene.FluidMappings.Num(); MappingIndex++)
 	{
 		FFluidSurfaceStaticLightingTextureMapping* Mapping = &InScene.FluidMappings[MappingIndex];
 		AggregateMesh->AddMesh(Mapping->Mesh, Mapping);
+
+		if (Scene.GeneralSettings.bUseFastVoxelization)
+		{
+			if (Mapping->GetVolumeMapping() == nullptr)
+			{
+				VoxelizationSurfaceAggregateMesh->AddMeshForVoxelization(Mapping->Mesh, Mapping);
+			}
+			else
+			{
+				VoxelizationVolumeAggregateMesh->AddMeshForVoxelization(Mapping->Mesh, Mapping);
+			}
+		}
 	}
 	for (int32 MappingIndex = 0; MappingIndex < InScene.LandscapeMappings.Num(); MappingIndex++)
 	{
 		FLandscapeStaticLightingTextureMapping* Mapping = &InScene.LandscapeMappings[MappingIndex];
 		AggregateMesh->AddMesh(Mapping->Mesh, Mapping);
+
+		if (Scene.GeneralSettings.bUseFastVoxelization)
+		{
+			if (Mapping->GetVolumeMapping() == nullptr)
+			{
+				VoxelizationSurfaceAggregateMesh->AddMeshForVoxelization(Mapping->Mesh, Mapping);
+			}
+			else
+			{
+				VoxelizationVolumeAggregateMesh->AddMeshForVoxelization(Mapping->Mesh, Mapping);
+			}
+
+			LandscapeCullingVoxelizationAggregateMesh->AddMeshForVoxelization(Mapping->Mesh, Mapping);
+		}
 	}
 	for( int32 MeshIdx=0; MeshIdx < InScene.BspMappings.Num(); ++MeshIdx )
 	{
 		FBSPSurfaceStaticLighting* BSPMapping = &InScene.BspMappings[MeshIdx];
 		AggregateMesh->AddMesh(BSPMapping, &BSPMapping->Mapping);
+
+		if (Scene.GeneralSettings.bUseFastVoxelization)
+		{
+			if (BSPMapping->Mapping.GetVolumeMapping() == nullptr)
+			{
+				VoxelizationSurfaceAggregateMesh->AddMeshForVoxelization(BSPMapping, &BSPMapping->Mapping);
+			}
+			else
+			{
+				VoxelizationVolumeAggregateMesh->AddMeshForVoxelization(BSPMapping, &BSPMapping->Mapping);
+			}
+		}
 	}
 	for (int32 MeshIndex = 0; MeshIndex < InScene.StaticMeshInstances.Num(); MeshIndex++)
 	{
 		FStaticMeshStaticLightingMesh* MeshInstance = &InScene.StaticMeshInstances[MeshIndex];
 		AggregateMesh->AddMesh(MeshInstance, MeshInstance->Mapping);
+
+		if (Scene.GeneralSettings.bUseFastVoxelization)
+		{
+			if (MeshInstance->GetInstanceableStaticMesh() != nullptr)
+			{
+				if (MeshInstance->StaticMesh->VoxelizationMesh == nullptr)
+				{
+					if (MeshInstance->LightingFlags & GI_INSTANCE_CASTSHADOW && MeshInstance->DoesMeshBelongToLOD0())
+					{
+						MeshInstance->StaticMesh->VoxelizationMesh = new FDefaultAggregateMesh(Scene);
+						MeshInstance->StaticMesh->VoxelizationMesh->AddMeshForVoxelization(MeshInstance, MeshInstance->Mapping, true);
+						MeshInstance->StaticMesh->VoxelizationMesh->PrepareForRaytracing();
+					}
+				}
+			}
+			else
+			{
+				// For non-instanceable static meshes (splines), add them to the aggregate scene voxelization mesh
+				if (MeshInstance->Mapping->GetVolumeMapping() == nullptr)
+				{
+					VoxelizationSurfaceAggregateMesh->AddMeshForVoxelization(MeshInstance, MeshInstance->Mapping);
+				}
+				else
+				{
+					VoxelizationVolumeAggregateMesh->AddMeshForVoxelization(MeshInstance, MeshInstance->Mapping);
+				}
+			}
+		}
 	}
 
 	// Comparing mappings based on cost, descending.
@@ -482,6 +553,14 @@ FStaticLightingSystem::FStaticLightingSystem(const FLightingBuildOptions& InOpti
 	AggregateMesh->PrepareForRaytracing();
 	AggregateMesh->DumpStats();
 
+	if (Scene.GeneralSettings.bUseFastVoxelization)
+	{
+		VoxelizationSurfaceAggregateMesh->PrepareForRaytracing();
+		VoxelizationVolumeAggregateMesh->PrepareForRaytracing();
+
+		LandscapeCullingVoxelizationAggregateMesh->PrepareForRaytracing();
+	}
+
 	NumCompletedRadiosityIterationMappings.Empty(GeneralSettings.NumSkyLightingBounces);
 	NumCompletedRadiosityIterationMappings.AddDefaulted(GeneralSettings.NumSkyLightingBounces);
 
@@ -496,6 +575,28 @@ FStaticLightingSystem::~FStaticLightingSystem()
 {
 	delete AggregateMesh;
 	AggregateMesh = NULL;
+
+	if (Scene.GeneralSettings.bUseFastVoxelization)
+	{
+		delete VoxelizationSurfaceAggregateMesh;
+		VoxelizationSurfaceAggregateMesh = NULL;
+
+		delete VoxelizationVolumeAggregateMesh;
+		VoxelizationVolumeAggregateMesh = NULL;
+
+		for (int32 MeshIndex = 0; MeshIndex < Scene.StaticMeshInstances.Num(); MeshIndex++)
+		{
+			const FStaticMeshStaticLightingMesh* MeshInstance = &Scene.StaticMeshInstances[MeshIndex];
+			if (MeshInstance->StaticMesh->VoxelizationMesh != nullptr)
+			{
+				delete MeshInstance->StaticMesh->VoxelizationMesh;
+				MeshInstance->StaticMesh->VoxelizationMesh = nullptr;
+			}
+		}
+
+		delete LandscapeCullingVoxelizationAggregateMesh;
+		LandscapeCullingVoxelizationAggregateMesh = NULL;
+	}
 }
 
 /**
@@ -1304,9 +1405,9 @@ void FStaticLightingSystem::CacheSamples()
 		CachedSamplesMaxUnoccludedLength = (CombinedVector / CachedHemisphereSamples.Num()).Size3();
 	}
 	
-	for (int32 SampleSet = 0; SampleSet < ARRAY_COUNT(CachedHemisphereSamplesForRadiosity); SampleSet++)
+	for (int32 SampleSet = 0; SampleSet < UE_ARRAY_COUNT(CachedHemisphereSamplesForRadiosity); SampleSet++)
 	{
-		float SampleSetScale = FMath::Lerp(.5f, .125f, SampleSet / ((float)ARRAY_COUNT(CachedHemisphereSamplesForRadiosity) - 1));
+		float SampleSetScale = FMath::Lerp(.5f, .125f, SampleSet / ((float)UE_ARRAY_COUNT(CachedHemisphereSamplesForRadiosity) - 1));
 		int32 TargetNumApproximateSkyLightingSamples = FMath::Max(FMath::TruncToInt(ImportanceTracingSettings.NumHemisphereSamples * SampleSetScale * GeneralSettings.IndirectLightingQuality), 12);
 		CachedHemisphereSamplesForRadiosity[SampleSet].Empty(TargetNumApproximateSkyLightingSamples);
 		CachedHemisphereSamplesForRadiosityUniforms[SampleSet].Empty(TargetNumApproximateSkyLightingSamples);
@@ -1590,17 +1691,64 @@ void FStaticLightingSystem::ThreadLoop(bool bIsMainThread, int32 ThreadIndex, FT
 	while (!bIsDone)
 	{
 		const double StartLoopTime = FPlatformTime::Seconds();
-		
-		if (NumOutstandingVolumeDataLayers > 0)
+
+		bool bAnyTaskProcessedByThisThread = false;
+
+		// Process any existing local tasks before fetching new tasks from Swarm
 		{
-			const int32 ThreadZ = FPlatformAtomics::InterlockedIncrement(&OutstandingVolumeDataLayerIndex);
-			if (ThreadZ < VolumeSizeZ)
+			while (FCacheIndirectTaskDescription * NextCacheTask = CacheIndirectLightingTasks.Pop())
 			{
-				CalculateVolumeDistanceFieldWorkRange(ThreadZ);
-				const int32 NumTasksRemaining = FPlatformAtomics::InterlockedDecrement(&NumOutstandingVolumeDataLayers);
-				if (NumTasksRemaining == 0)
+				//UE_LOG(LogLightmass, Warning, TEXT("Thread %u picked up Cache Indirect task for %u"), ThreadIndex, NextCacheTask->TextureMapping->Guid.D);
+				ProcessCacheIndirectLightingTask(NextCacheTask, false);
+				NextCacheTask->TextureMapping->CompletedCacheIndirectLightingTasks.Push(NextCacheTask);
+				FPlatformAtomics::InterlockedDecrement(&NextCacheTask->TextureMapping->NumOutstandingCacheTasks);
+
+				bAnyTaskProcessedByThisThread = true;
+			}
+
+			while (FInterpolateIndirectTaskDescription * NextInterpolateTask = InterpolateIndirectLightingTasks.Pop())
+			{
+				//UE_LOG(LogLightmass, Warning, TEXT("Thread %u picked up Interpolate indirect task for %u"), ThreadIndex, NextInterpolateTask->TextureMapping->Guid.D);
+				ProcessInterpolateTask(NextInterpolateTask, false);
+				NextInterpolateTask->TextureMapping->CompletedInterpolationTasks.Push(NextInterpolateTask);
+				FPlatformAtomics::InterlockedDecrement(&NextInterpolateTask->TextureMapping->NumOutstandingInterpolationTasks);
+
+				bAnyTaskProcessedByThisThread = true;
+			}
+
+			bAnyTaskProcessedByThisThread |= ProcessVolumetricLightmapTaskIfAvailable();
+
+			while (NumOutstandingVolumeDataLayers > 0)
+			{
+				const int32 ThreadZ = FPlatformAtomics::InterlockedIncrement(&OutstandingVolumeDataLayerIndex);
+				if (ThreadZ < VolumeSizeZ)
 				{
-					FPlatformAtomics::InterlockedExchange(&bShouldExportVolumeDistanceField, true);
+					CalculateVolumeDistanceFieldWorkRange(ThreadZ);
+					const int32 NumTasksRemaining = FPlatformAtomics::InterlockedDecrement(&NumOutstandingVolumeDataLayers);
+					if (NumTasksRemaining == 0)
+					{
+						FPlatformAtomics::InterlockedExchange(&bShouldExportVolumeDistanceField, true);
+					}
+
+					bAnyTaskProcessedByThisThread = true;
+				}
+			}
+
+			while (NumVolumeSampleTasksOutstanding > 0)
+			{
+				const int32 TaskIndex = FPlatformAtomics::InterlockedIncrement(&NextVolumeSampleTaskIndex);
+
+				if (TaskIndex < VolumeSampleTasks.Num())
+				{
+					ProcessVolumeSamplesTask(VolumeSampleTasks[TaskIndex]);
+					const int32 NumTasksRemaining = FPlatformAtomics::InterlockedDecrement(&NumVolumeSampleTasksOutstanding);
+
+					if (NumTasksRemaining == 0)
+					{
+						FPlatformAtomics::InterlockedExchange(&bShouldExportVolumeSampleData, true);
+					}
+
+					bAnyTaskProcessedByThisThread = true;
 				}
 			}
 		}
@@ -1677,56 +1825,15 @@ void FStaticLightingSystem::ThreadLoop(bool bIsMainThread, int32 ThreadIndex, FT
 		}
 		else
 		{
-			if (!bSignaledMappingsComplete && NumOutstandingVolumeDataLayers <= 0)
+			if (!bAnyTaskProcessedByThisThread && TasksInProgressThatWillNeedHelp <= 0 && NumOutstandingVolumeDataLayers <= 0 && NumVolumeSampleTasksOutstanding <= 0)
 			{
-				bSignaledMappingsComplete = true;
-				GSwarm->SendMessage( NSwarm::FTimingMessage( NSwarm::PROGSTATE_Processing0, ThreadIndex ) );
-			}
-
-			FCacheIndirectTaskDescription* NextCacheTask = CacheIndirectLightingTasks.Pop();
-
-			if (NextCacheTask)
-			{
-				//UE_LOG(LogLightmass, Warning, TEXT("Thread %u picked up Cache Indirect task for %u"), ThreadIndex, NextCacheTask->TextureMapping->Guid.D);
-				ProcessCacheIndirectLightingTask(NextCacheTask, false);
-				NextCacheTask->TextureMapping->CompletedCacheIndirectLightingTasks.Push(NextCacheTask);
-				FPlatformAtomics::InterlockedDecrement(&NextCacheTask->TextureMapping->NumOutstandingCacheTasks);
-			}
-
-			FInterpolateIndirectTaskDescription* NextInterpolateTask = InterpolateIndirectLightingTasks.Pop();
-
-			if (NextInterpolateTask)
-			{
-				//UE_LOG(LogLightmass, Warning, TEXT("Thread %u picked up Interpolate indirect task for %u"), ThreadIndex, NextInterpolateTask->TextureMapping->Guid.D);
-				ProcessInterpolateTask(NextInterpolateTask, false);
-				NextInterpolateTask->TextureMapping->CompletedInterpolationTasks.Push(NextInterpolateTask);
-				FPlatformAtomics::InterlockedDecrement(&NextInterpolateTask->TextureMapping->NumOutstandingInterpolationTasks);
-			}
-
-			ProcessVolumetricLightmapTaskIfAvailable();
-			
-			if (NumVolumeSampleTasksOutstanding > 0)
-			{
-				const int32 TaskIndex = FPlatformAtomics::InterlockedIncrement(&NextVolumeSampleTaskIndex);
-
-				if (TaskIndex < VolumeSampleTasks.Num())
+				if (!bSignaledMappingsComplete)
 				{
-					ProcessVolumeSamplesTask(VolumeSampleTasks[TaskIndex]);
-					const int32 NumTasksRemaining = FPlatformAtomics::InterlockedDecrement(&NumVolumeSampleTasksOutstanding);
-
-					if (NumTasksRemaining == 0)
-					{
-						FPlatformAtomics::InterlockedExchange(&bShouldExportVolumeSampleData, true);
-					}
+					bSignaledMappingsComplete = true;
+					GSwarm->SendMessage(NSwarm::FTimingMessage(NSwarm::PROGSTATE_Processing0, ThreadIndex));
 				}
-			}
 
-			if (!NextCacheTask 
-				&& !NextInterpolateTask
-				&& NumVolumeSampleTasksOutstanding <= 0
-				&& NumOutstandingVolumeDataLayers <= 0)
-			{
-				if (TasksInProgressThatWillNeedHelp <= 0 && !bRequestForTaskTimedOut)
+				if (!bRequestForTaskTimedOut)
 				{
 					// All mappings have been processed, so end this thread.
 					bIsDone = true;

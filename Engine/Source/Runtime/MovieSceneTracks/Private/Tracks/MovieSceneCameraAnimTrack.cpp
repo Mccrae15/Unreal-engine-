@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "Tracks/MovieSceneCameraAnimTrack.h"
 #include "Sections/MovieSceneCameraAnimSection.h"
@@ -16,6 +16,8 @@
 
 UMovieSceneSection* UMovieSceneCameraAnimTrack::AddNewCameraAnim(FFrameNumber KeyTime, UCameraAnim* CameraAnim)
 {
+	Modify();
+
 	UMovieSceneCameraAnimSection* const NewSection = Cast<UMovieSceneCameraAnimSection>(CreateNewSection());
 	if (NewSection)
 	{
@@ -76,6 +78,11 @@ void UMovieSceneCameraAnimTrack::AddSection(UMovieSceneSection& Section)
 void UMovieSceneCameraAnimTrack::RemoveSection(UMovieSceneSection& Section)
 {
 	CameraAnimSections.Remove(&Section);
+}
+
+void UMovieSceneCameraAnimTrack::RemoveSectionAt(int32 SectionIndex)
+{
+	CameraAnimSections.RemoveAt(SectionIndex);
 }
 
 

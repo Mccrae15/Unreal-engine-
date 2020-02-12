@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -33,6 +33,12 @@ public:
 
 	/** The asset registry tag that contains the timestamp for this meta-data */
 	static const FName AssetRegistryTag_Timestamp;
+
+	/** The asset registry tag that contains the timecode in for this meta-data */
+	static const FName AssetRegistryTag_TimecodeIn;
+
+	/** The asset registry tag that contains the timecode out for this meta-data */
+	static const FName AssetRegistryTag_TimecodeOut;
 
 	/** The asset registry tag that contains the user-description for this meta-data */
 	static const FName AssetRegistryTag_Description;
@@ -99,6 +105,18 @@ public:
 	FDateTime GetTimestamp() const;
 
 	/**
+	 * @return The timecode in for this take
+	 */
+	UFUNCTION(BlueprintCallable, Category = "Take")
+	FTimecode GetTimecodeIn() const;
+
+	/**
+	 * @return The timecode out for this take
+	 */
+	UFUNCTION(BlueprintCallable, Category = "Take")
+	FTimecode GetTimecodeOut() const;
+
+	/**
 	 * @return The duration for this take
 	 */
 	UFUNCTION(BlueprintCallable, Category="Take")
@@ -108,7 +126,7 @@ public:
 	 * @return The frame-rate for this take
 	 */
 	UFUNCTION(BlueprintCallable, Category="Take")
-	FFrameRate GetFrameRate() const;
+	FFrameRate GetFrameRate();
 
 	/**
 	 * @return The user-provided description for this take
@@ -133,7 +151,13 @@ public:
 	 */ 
 	UFUNCTION(BlueprintCallable, Category="Take")
 	ULevel* GetLevelOrigin() const;
-	
+
+	/**
+	*  @return Get if we get frame rate from time code
+	*/
+	UFUNCTION(BlueprintCallable, Category = "Take")
+	bool GetFrameRateFromTimecode() const;
+
 public:
 
 	/**
@@ -156,17 +180,19 @@ public:
 
 	/**
 	 * Set the slate for this take and reset its take number to 1
+	 * @param bEmitChanged Whether or not to send a slate changed event
 	 * @note: Only valid for takes that have not been locked
 	 */
 	UFUNCTION(BlueprintCallable, Category="Take")
-	void SetSlate(FString InSlate);
+	void SetSlate(FString InSlate, bool bEmitChanged = true);
 
 	/**
 	 * Set this take's take number. Take numbers are always clamped to be >= 1.
+	 * @param bEmitChanged Whether or not to send a take number changed event
 	 * @note: Only valid for takes that have not been locked
 	 */
 	UFUNCTION(BlueprintCallable, Category="Take")
-	void SetTakeNumber(int32 InTakeNumber);
+	void SetTakeNumber(int32 InTakeNumber, bool bEmitChanged = true);
 
 	/**
 	 * Set this take's timestamp
@@ -174,6 +200,20 @@ public:
 	 */
 	UFUNCTION(BlueprintCallable, Category="Take")
 	void SetTimestamp(FDateTime InTimestamp);
+
+	/**
+	 * Set this take's timecode in
+	 * @note: Only valid for takes that have not been locked
+	 */
+	UFUNCTION(BlueprintCallable, Category = "Take")
+	void SetTimecodeIn(FTimecode InTimecodeIn);
+
+	/**
+	 * Set this take's timecode out
+	 * @note: Only valid for takes that have not been locked
+	 */
+	UFUNCTION(BlueprintCallable, Category = "Take")
+	void SetTimecodeOut(FTimecode InTimecodeOut);
 
 	/**
 	 * Set this take's duration
@@ -209,6 +249,12 @@ public:
 	UFUNCTION(BlueprintCallable, Category="Take")
 	void SetLevelOrigin(ULevel* InLevelOrigin);
 
+	/**
+	*  Set if we get frame rate from time code
+	*/
+	UFUNCTION(BlueprintCallable, Category = "Take")
+	void SetFrameRateFromTimecode(bool InFromTimecode);
+
 private:
 
 	/** Whether the take is locked */
@@ -227,12 +273,20 @@ private:
 	UPROPERTY()
 	FDateTime Timestamp;
 
+	/** The timecode at the start of recording */
+	UPROPERTY()
+	FTimecode TimecodeIn;
+
+	/** The timecode at the end of recording */
+	UPROPERTY()
+	FTimecode TimecodeOut;
+
 	/** The desired duration for the take */
 	UPROPERTY(config)
 	FFrameTime Duration;
 
 	/** The frame rate the take was recorded at */
-	UPROPERTY(config)
+	UPROPERTY()
 	FFrameRate FrameRate;
 
 	/** A user-provided description for the take */
@@ -246,4 +300,8 @@ private:
 	/** The level map used to create this recording */
 	UPROPERTY()
 	TSoftObjectPtr<ULevel> LevelOrigin;
+
+	/** Whether or not we get or frame rate from Timecode, default to true */
+	UPROPERTY()
+	bool bFrameRateFromTimecode;
 };

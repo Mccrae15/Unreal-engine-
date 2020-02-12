@@ -1,10 +1,13 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "Application/SlateApplicationBase.h"
 #include "Widgets/SWindow.h"
 #include "Layout/WidgetPath.h"
 #include "Application/ActiveTimerHandle.h"
 #include "Misc/ScopeLock.h"
+#if WITH_ACCESSIBILITY
+#include "Widgets/Accessibility/SlateAccessibleMessageHandler.h"
+#endif
 
 
 /* Static initialization
@@ -16,15 +19,18 @@ TSharedPtr<GenericApplication> FSlateApplicationBase::PlatformApplication = null
 const uint32 FSlateApplicationBase::CursorPointerIndex = ETouchIndex::CursorPointerIndex;
 const uint32 FSlateApplicationBase::CursorUserIndex = 0;
 
-FWidgetPath FHitTesting::LocateWidgetInWindow(FVector2D ScreenspaceMouseCoordinate, const TSharedRef<SWindow>& Window, bool bIgnoreEnabledStatus) const
+FWidgetPath FHitTesting::LocateWidgetInWindow(FVector2D ScreenspaceMouseCoordinate, const TSharedRef<SWindow>& Window, bool bIgnoreEnabledStatus, int32 UserIndex) const
 {
-	return SlateApp->LocateWidgetInWindow(ScreenspaceMouseCoordinate, Window, bIgnoreEnabledStatus);
+	return SlateApp->LocateWidgetInWindow(ScreenspaceMouseCoordinate, Window, bIgnoreEnabledStatus, UserIndex);
 }
 
 
 FSlateApplicationBase::FSlateApplicationBase()
 : Renderer()
 , HitTesting(this)
+#if WITH_ACCESSIBILITY
+, AccessibleMessageHandler(new FSlateAccessibleMessageHandler())
+#endif
 , bIsSlateAsleep(false)
 {
 
@@ -146,7 +152,18 @@ bool FSlateApplicationBase::IsSlateAsleep()
 	return bIsSlateAsleep;
 }
 
-void FSlateApplicationBase::InvalidateAllWidgets() const
+void FSlateApplicationBase::ToggleGlobalInvalidation(bool bIsGlobalInvalidationEnabled)
 {
-	OnGlobalInvalidateEvent.Broadcast();
+	if (GSlateEnableGlobalInvalidation != bIsGlobalInvalidationEnabled)
+	{
+		GSlateEnableGlobalInvalidation = bIsGlobalInvalidationEnabled;
+		OnGlobalInvalidationToggledEvent.Broadcast(bIsGlobalInvalidationEnabled);
+	}
+}
+
+void FSlateApplicationBase::InvalidateAllWidgets(bool bClearResourcesImmediately) const
+{
+	SCOPED_NAMED_EVENT(Slate_GlobalInvalidate, FColor::Red);
+	UE_LOG(LogSlate, Log, TEXT("InvalidateAllWidgets triggered.  All widgets were invalidated"));
+	OnInvalidateAllWidgetsEvent.Broadcast(bClearResourcesImmediately);
 }

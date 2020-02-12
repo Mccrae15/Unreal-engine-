@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -154,7 +154,7 @@ public:
 	/**
 	 * Returns current tracking origin.
 	 */
-	virtual EHMDTrackingOrigin::Type GetTrackingOrigin() = 0;
+	virtual EHMDTrackingOrigin::Type GetTrackingOrigin() const = 0;
 
 	/**
 	 * Returns the system's latest known tracking-to-world transform.
@@ -305,6 +305,14 @@ public:
 	 * @return a IXRInput pointer or a nullptr if not supported
 	 */
 	virtual IXRInput* GetXRInput() { return nullptr; }
+
+
+	/**
+	 * Access the loading screen interface associated with this tracking system, if any.
+	 *
+	 * @return an IXRLoadingScreen pointer or a nullptr if this tracking system does not support loading screens.
+	 */
+	virtual class IXRLoadingScreen* GetLoadingScreen() { return nullptr; }
 
 	/*** XR System related methods moved from IHeadMountedDisplay ***/
 

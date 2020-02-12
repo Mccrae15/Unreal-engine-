@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 /*=============================================================================
 	EmptyShaders.cpp: Empty shader RHI implementation.
@@ -9,7 +9,7 @@
 
 /** Initialization constructor. */
 template<typename BaseResourceType>
-TEmptyBaseShader<BaseResourceType>::TEmptyBaseShader(const TArray<uint8>& InCode)
+TEmptyBaseShader<BaseResourceType>::TEmptyBaseShader(TArrayView<const uint8> Code)
 {
 
 }
@@ -23,44 +23,37 @@ TEmptyBaseShader<BaseResourceType>::~TEmptyBaseShader()
 }
 
 
-FVertexShaderRHIRef FEmptyDynamicRHI::RHICreateVertexShader(const TArray<uint8>& Code)
+FVertexShaderRHIRef FEmptyDynamicRHI::RHICreateVertexShader(TArrayView<const uint8> Code, const FSHAHash& Hash)
 {
 	FEmptyVertexShader* Shader = new FEmptyVertexShader(Code);
 	return Shader;
 }
 
-FPixelShaderRHIRef FEmptyDynamicRHI::RHICreatePixelShader(const TArray<uint8>& Code)
+FPixelShaderRHIRef FEmptyDynamicRHI::RHICreatePixelShader(TArrayView<const uint8> Code, const FSHAHash& Hash)
 {
 	FEmptyPixelShader* Shader = new FEmptyPixelShader(Code);
 	return Shader;
 }
 
-FHullShaderRHIRef FEmptyDynamicRHI::RHICreateHullShader(const TArray<uint8>& Code) 
+FHullShaderRHIRef FEmptyDynamicRHI::RHICreateHullShader(TArrayView<const uint8> Code, const FSHAHash& Hash)
 { 
 	FEmptyHullShader* Shader = new FEmptyHullShader(Code);
 	return Shader;
 }
 
-FDomainShaderRHIRef FEmptyDynamicRHI::RHICreateDomainShader(const TArray<uint8>& Code) 
+FDomainShaderRHIRef FEmptyDynamicRHI::RHICreateDomainShader(TArrayView<const uint8> Code, const FSHAHash& Hash)
 { 
 	FEmptyDomainShader* Shader = new FEmptyDomainShader(Code);
 	return Shader;
 }
 
-FGeometryShaderRHIRef FEmptyDynamicRHI::RHICreateGeometryShader(const TArray<uint8>& Code) 
+FGeometryShaderRHIRef FEmptyDynamicRHI::RHICreateGeometryShader(TArrayView<const uint8> Code, const FSHAHash& Hash)
 { 
 	FEmptyGeometryShader* Shader = new FEmptyGeometryShader(Code);
 	return Shader;
 }
 
-FGeometryShaderRHIRef FEmptyDynamicRHI::RHICreateGeometryShaderWithStreamOutput(const TArray<uint8>& Code, const FStreamOutElementList& ElementList,
-	uint32 NumStrides, const uint32* Strides, int32 RasterizedStream)
-{
-	checkf(0, TEXT("Not supported yet"));
-	return NULL;
-}
-
-FComputeShaderRHIRef FEmptyDynamicRHI::RHICreateComputeShader(const TArray<uint8>& Code) 
+FComputeShaderRHIRef FEmptyDynamicRHI::RHICreateComputeShader(TArrayView<const uint8> Code, const FSHAHash& Hash)
 { 
 	FEmptyComputeShader* Shader = new FEmptyComputeShader(Code);
 	return Shader;
@@ -68,12 +61,12 @@ FComputeShaderRHIRef FEmptyDynamicRHI::RHICreateComputeShader(const TArray<uint8
 
 
 FEmptyBoundShaderState::FEmptyBoundShaderState(
-			FVertexDeclarationRHIParamRef InVertexDeclarationRHI,
-			FVertexShaderRHIParamRef InVertexShaderRHI,
-			FPixelShaderRHIParamRef InPixelShaderRHI,
-			FHullShaderRHIParamRef InHullShaderRHI,
-			FDomainShaderRHIParamRef InDomainShaderRHI,
-			FGeometryShaderRHIParamRef InGeometryShaderRHI)
+			FRHIVertexDeclaration* InVertexDeclarationRHI,
+			FRHIVertexShader* InVertexShaderRHI,
+			FRHIPixelShader* InPixelShaderRHI,
+			FRHIHullShader* InHullShaderRHI,
+	FRHIDomainShader* InDomainShaderRHI,
+	FRHIGeometryShader* InGeometryShaderRHI)
 	:	CacheLink(InVertexDeclarationRHI,InVertexShaderRHI,InPixelShaderRHI,InHullShaderRHI,InDomainShaderRHI,InGeometryShaderRHI,this)
 {
 	FEmptyVertexDeclaration* InVertexDeclaration = FEmptyDynamicRHI::ResourceCast(InVertexDeclarationRHI);
@@ -98,12 +91,12 @@ FEmptyBoundShaderState::~FEmptyBoundShaderState()
 }
 
 FBoundShaderStateRHIRef FEmptyDynamicRHI::RHICreateBoundShaderState(
-	FVertexDeclarationRHIParamRef VertexDeclarationRHI, 
-	FVertexShaderRHIParamRef VertexShaderRHI, 
-	FHullShaderRHIParamRef HullShaderRHI, 
-	FDomainShaderRHIParamRef DomainShaderRHI, 
-	FPixelShaderRHIParamRef PixelShaderRHI,
-	FGeometryShaderRHIParamRef GeometryShaderRHI
+	FRHIVertexDeclaration* VertexDeclarationRHI,
+	FRHIVertexShader* VertexShaderRHI,
+	FRHIHullShader* HullShaderRHI,
+	FRHIDomainShader* DomainShaderRHI,
+	FRHIPixelShader* PixelShaderRHI,
+	FRHIGeometryShader* GeometryShaderRHI
 	)
 {
 	check(IsInRenderingThread());

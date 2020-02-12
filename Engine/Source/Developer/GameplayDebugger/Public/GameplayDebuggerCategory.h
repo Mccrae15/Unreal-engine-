@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 
 // GAMEPLAY DEBUGGER CATEGORY
@@ -129,6 +129,9 @@ protected:
 		ReplicatedDataPacks.Add(NewDataPack);
 		return NewDataPack.PackId;
 	}
+
+	/** [AUTH] force data collection on next update */
+	void ForceImmediateCollect() { LastCollectDataTime = -FLT_MAX; }
 
 	/** update interval, 0 = each tick */
 	float CollectDataInterval;

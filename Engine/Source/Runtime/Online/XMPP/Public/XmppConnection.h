@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -9,6 +9,7 @@ class IXmppMessages;
 class IXmppMultiUserChat;
 class IXmppPresence;
 class IXmppPubSub;
+class IXmppStanza;
 
 /** Possible XMPP login states */
 namespace EXmppLoginStatus
@@ -55,6 +56,7 @@ public:
 		, PingTimeout(30.0f)
 		, MaxPingRetries(1)
 		, bPrivateChatFriendsOnly(false)
+		, bResetPingTimeoutOnReceiveStanza(true)
 	{}
 
 	/** ip/host to connect to */
@@ -83,6 +85,8 @@ public:
 	int32 MaxPingRetries;
 	/** limit private chat to friends only */
 	bool bPrivateChatFriendsOnly;
+	/** reset ping timeout on received stanzas */
+	bool bResetPingTimeoutOnReceiveStanza;
 };
 
 /**
@@ -102,6 +106,15 @@ public:
 		, Resource(MoveTemp(InResource))
 	{
 	}
+
+	/**
+	 * Create an FXmppUserJid from a formatted JID
+	 * e.g., user@domain/resource
+	 *
+	 * @param JidString the formatted JID
+	 * @return FXmppUserJid populated from the formatted JID
+	 */
+	static FXmppUserJid FromFullJid(const FString& JidString);
 
 	/** unique id for the user */
 	FString Id;
@@ -275,14 +288,34 @@ public:
 	* @param UserJid jid of user that changed login state
 	* @param LoginState new login state (see EXmppLoginStatus)
 	*/
-	DECLARE_MULTICAST_DELEGATE_TwoParams(FOnXmppLogingChanged, const FXmppUserJid& /*UserJid*/, EXmppLoginStatus::Type /*LoginState*/);
+	DECLARE_MULTICAST_DELEGATE_TwoParams(FOnXmppLoginChanged, const FXmppUserJid& /*UserJid*/, EXmppLoginStatus::Type /*LoginState*/);
+
+	/** Alias for old typo, remove in 4.24 */
+	using FOnXmppLogingChanged UE_DEPRECATED(4.23, "Please update usages of 'FOnXmppLogingChanged' to 'FOnXmppLoginChanged'") = FOnXmppLoginChanged;
+	/**
+	* Delegate called when a message is received (ONLY STROPHE)
+	*
+	* @param reference to stanza
+	*/
+	DECLARE_MULTICAST_DELEGATE_OneParam(FOnXmppStanzaReceived, const IXmppStanza& /* Stanza */);
+
+	/**
+	* Delegate called when a message is sent (ONLY STROPHE)
+	*
+	* @param reference to stanza
+	*/
+	DECLARE_MULTICAST_DELEGATE_OneParam(FOnXmppStanzaSent, const IXmppStanza& /* Stanza */);
 
 	/** @return login complete delegate */
 	virtual FOnXmppLoginComplete& OnLoginComplete() = 0;
 	/** @return login changed delegate */
-	virtual FOnXmppLogingChanged& OnLoginChanged() = 0;
+	virtual FOnXmppLoginChanged& OnLoginChanged() = 0;
 	/** @return logout complete delegate */
 	virtual FOnXmppLogoutComplete& OnLogoutComplete() = 0;
+	/** @return Stanza sent delegate */
+	virtual FOnXmppStanzaSent& OnStanzaSent() = 0;
+	/** @return Stanza received delegate */
+	virtual FOnXmppStanzaReceived& OnStanzaReceived() = 0;
 
 	/** @return Presence interface if available. NULL otherwise */
 	virtual IXmppPresencePtr Presence() = 0;
@@ -294,5 +327,8 @@ public:
 	virtual IXmppMultiUserChatPtr MultiUserChat() = 0;
 	/** @return PrivateChat interface if available. NULL otherwise */
 	virtual IXmppChatPtr PrivateChat() = 0;
+	
+	/** Debug dump of this connection */
+	virtual void DumpState() const = 0;
 };
 

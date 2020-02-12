@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 /*=============================================================================
 	BlendSpaceBase.cpp: Base class for blend space objects
@@ -10,6 +10,10 @@
 #include "Animation/BlendSpaceUtilities.h"
 #include "UObject/FrameworkObjectVersion.h"
 #include "UObject/UObjectIterator.h"
+#include "Logging/TokenizedMessage.h"
+#include "Logging/MessageLog.h"
+
+#define LOCTEXT_NAMESPACE "BlendSpaceBase"
 
 DECLARE_CYCLE_STAT(TEXT("BlendSpace GetAnimPose"), STAT_BlendSpace_GetAnimPose, STATGROUP_Anim);
 
@@ -65,7 +69,7 @@ void UBlendSpaceBase::Serialize(FArchive& Ar)
 }
 
 #if WITH_EDITOR
-void UBlendSpaceBase::PreEditChange(UProperty* PropertyAboutToChange)
+void UBlendSpaceBase::PreEditChange(FProperty* PropertyAboutToChange)
 {
 	Super::PreEditChange(PropertyAboutToChange);
 
@@ -183,6 +187,17 @@ void UBlendSpaceBase::TickAssetPlayer(FAnimTickRecord& Instance, struct FAnimNot
 
 		OldSampleDataList.Append(*Instance.BlendSpace.BlendSampleDataCache);
 
+		// @fixme: temporary code to clear the invalid sample data 
+		// related jira: UE-71107
+		for (int32 Index = 0; Index < OldSampleDataList.Num(); ++Index)
+		{
+			if (!SampleData.IsValidIndex(OldSampleDataList[Index].SampleDataIndex))
+			{
+				OldSampleDataList.RemoveAt(Index);
+				--Index;
+			}
+		}
+		
 		// get sample data based on new input
 		// consolidate all samples and sort them, so that we can handle from biggest weight to smallest
 		Instance.BlendSpace.BlendSampleDataCache->Reset();
@@ -499,6 +514,22 @@ int32 UBlendSpaceBase::GetMarkerUpdateCounter() const
 { 
 	return MarkerDataUpdateCounter; 
 }
+
+void UBlendSpaceBase::RuntimeValidateMarkerData()
+{
+	check(IsInGameThread());
+
+	for (FBlendSample& Sample : SampleData)
+	{
+		if (Sample.Animation && Sample.CachedMarkerDataUpdateCounter != Sample.Animation->GetMarkerUpdateCounter())
+		{
+			// Revalidate data
+			ValidateSampleData();
+			return;
+		}
+	}
+}
+
 #endif // WITH_EDITOR
 
 // @todo fixme: slow approach. If the perbone gets popular, we should change this to array of weight 
@@ -522,6 +553,18 @@ bool UBlendSpaceBase::IsValidAdditiveType(EAdditiveAnimationType AdditiveType) c
 	return false;
 }
 
+void UBlendSpaceBase::ResetToRefPose(FCompactPose& OutPose)
+{
+	if (IsValidAdditive())
+	{
+		OutPose.ResetToAdditiveIdentity();
+	}
+	else
+	{
+		OutPose.ResetToRefPose();
+	}
+}
+
 void UBlendSpaceBase::GetAnimationPose(TArray<FBlendSampleData>& BlendSampleDataCache, /*out*/ FCompactPose& OutPose, /*out*/ FBlendedCurve& OutCurve)
 {
 	SCOPE_CYCLE_COUNTER(STAT_BlendSpace_GetAnimPose);
@@ -529,7 +572,7 @@ void UBlendSpaceBase::GetAnimationPose(TArray<FBlendSampleData>& BlendSampleData
 
 	if(BlendSampleDataCache.Num() == 0)
 	{
-		OutPose.ResetToRefPose();
+		ResetToRefPose(OutPose);
 		return;
 	}
 
@@ -560,7 +603,12 @@ void UBlendSpaceBase::GetAnimationPose(TArray<FBlendSampleData>& BlendSampleData
 			const FBlendSample& Sample = SampleData[BlendSampleDataCache[I].SampleDataIndex];
 			ChildrenWeights[I] = BlendSampleDataCache[I].GetWeight();
 
-			if(Sample.Animation)
+			if(Sample.Animation 
+#if WITH_EDITOR
+				// verify if Sample.Animation->GetSkeleton matches
+				&& ensure(Sample.Animation->GetSkeleton() == GetSkeleton())
+#endif // WITH_EDITOR
+			)
 			{
 				const float Time = FMath::Clamp<float>(BlendSampleDataCache[I].Time, 0.f, Sample.Animation->SequenceLength);
 
@@ -569,12 +617,12 @@ void UBlendSpaceBase::GetAnimationPose(TArray<FBlendSampleData>& BlendSampleData
 			}
 			else
 			{
-				Pose.ResetToRefPose();
+				ResetToRefPose(Pose);
 			}
 		}
 		else
 		{
-			Pose.ResetToRefPose();
+			ResetToRefPose(Pose);
 		}
 	}
 
@@ -640,7 +688,13 @@ bool UBlendSpaceBase::GetSamplesFromBlendInput(const FVector &BlendInput, TArray
 		for(int32 Ind = 0; Ind < GridElement.MAX_VERTICES; ++Ind)
 		{
 			const int32 SampleDataIndex = GridElement.Indices[Ind];		
-			if(SampleData.IsValidIndex(SampleDataIndex))
+			if( SampleData.IsValidIndex(SampleDataIndex) 
+#if WITH_EDITOR // we check these in editor because these could change when editor is running
+				&& SampleData[SampleDataIndex].bIsValid
+				&& SampleData[SampleDataIndex].Animation 
+				&& SampleData[SampleDataIndex].Animation->GetSkeleton() == GetSkeleton()
+#endif // WITH_EDITOR
+				)
 			{
 				int32 Index = OutSampleDataList.AddUnique(SampleDataIndex);
 				FBlendSampleData& NewSampleData = OutSampleDataList[Index];
@@ -759,6 +813,8 @@ void UBlendSpaceBase::ValidateSampleData()
 				AnimLength = Sample.Animation->SequenceLength;
 			}
 
+			Sample.CachedMarkerDataUpdateCounter = Sample.Animation->GetMarkerUpdateCounter();
+
 			if (Sample.Animation->AuthoredSyncMarkers.Num() > 0)
 			{
 				static const TFunction<void(TArray<FName>&, TArray<FAnimSyncMarker>&)> PopulateMarkerNameArray = [](TArray<FName>& Pattern, TArray<struct FAnimSyncMarker>& AuthoredSyncMarkers)
@@ -790,6 +846,24 @@ void UBlendSpaceBase::ValidateSampleData()
 				}
 			}
 		}		
+		else
+		{
+			if (IsRunningGame())
+			{
+				UE_LOG(LogAnimation, Error, TEXT("[%s : %d] - Missing Sample Animation"), *GetFullName(), SampleIndex + 1);
+			}
+			else
+			{
+				static FName NAME_LoadErrors("LoadErrors");
+				FMessageLog LoadErrors(NAME_LoadErrors);
+
+				TSharedRef<FTokenizedMessage> Message = LoadErrors.Error();
+				Message->AddToken(FTextToken::Create(LOCTEXT("EmptyAnimationData1", "The BlendSpace ")));
+				Message->AddToken(FAssetNameToken::Create(GetPathName(), FText::FromString(GetName())));
+				Message->AddToken(FTextToken::Create(LOCTEXT("EmptyAnimationData2", " has sample with no animation. Recommend to remove sample point or set new animation.")));
+				LoadErrors.Notify();
+			}
+		}
 	}
 
 	// set rotation blend in mesh space
@@ -1291,3 +1365,5 @@ TArray<FName>* UBlendSpaceBase::GetUniqueMarkerNames()
 {
 	return (SampleIndexWithMarkers != INDEX_NONE && SampleData.Num() > 0) ? SampleData[SampleIndexWithMarkers].Animation->GetUniqueMarkerNames() : nullptr;
 }
+
+#undef LOCTEXT_NAMESPACE 

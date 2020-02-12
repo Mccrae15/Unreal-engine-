@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "XmppJingle/XmppMessagesJingle.h"
 #include "XmppJingle/XmppConnectionJingle.h"
@@ -6,6 +6,7 @@
 #include "Serialization/JsonReader.h"
 #include "Serialization/JsonSerializer.h"
 #include "Policies/CondensedJsonPrintPolicy.h"
+#include "Containers/BackgroundableTicker.h"
 
 #if WITH_XMPP_JINGLE
 
@@ -17,8 +18,8 @@ class FXmppMessageJingle
 {
 public:
 	FXmppMessageJingle(
-		const buzz::Jid& InFromJid = buzz::Jid(), 
-		const buzz::Jid& InToJid = buzz::Jid(), 
+		const buzz::Jid& InFromJid = buzz::Jid(),
+		const buzz::Jid& InToJid = buzz::Jid(),
 		const std::string& InBody = std::string()
 		)
 		: FromJid(InFromJid)
@@ -185,7 +186,8 @@ protected:
 };
 
 FXmppMessagesJingle::FXmppMessagesJingle(class FXmppConnectionJingle& InConnection)
-	: MessageRcvTask(NULL)
+	: FTickerObjectBase(0.0f, FBackgroundableTicker::GetCoreTicker())
+	, MessageRcvTask(NULL)
 	, MessageSendTask(NULL)
 	, NumMessagesReceived(0)
 	, NumMessagesSent(0)
@@ -227,9 +229,14 @@ static void ConvertToMessage(FXmppMessage& OutMessage, const FXmppMessageJingle&
 			FJsonSerializer::Serialize((*JsonPayload).ToSharedRef(), JsonWriter);
  			JsonWriter->Close();
 		}
+		else if (JsonBody->TryGetStringField(TEXT("payload"), OutMessage.Payload))
+		{
+			// Payload is now in Message.Payload
+		}
 		else
 		{
-			JsonBody->TryGetStringField(TEXT("payload"), OutMessage.Payload);
+			// Treat the entire body as the payload
+			OutMessage.Payload = UTF8_TO_TCHAR(InMessageJingle.Body.c_str());
 		}
 		FString TimestampStr;
 		if (JsonBody->TryGetStringField(TEXT("timestamp"), TimestampStr))

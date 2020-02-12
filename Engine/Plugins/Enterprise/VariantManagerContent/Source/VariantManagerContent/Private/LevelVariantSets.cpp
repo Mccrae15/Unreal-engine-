@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "LevelVariantSets.h"
 
@@ -71,6 +71,11 @@ void ULevelVariantSets::AddVariantSets(const TArray<UVariantSet*>& NewVariantSet
 	TSet<ULevelVariantSets*> ParentsModified;
 	for (UVariantSet* NewVarSet : NewVariantSets)
 	{
+		if (NewVarSet == nullptr)
+		{
+			continue;
+		}
+
 		ULevelVariantSets* OldParent = NewVarSet->GetParent();
 
 		if (OldParent)
@@ -131,6 +136,11 @@ void ULevelVariantSets::AddVariantSets(const TArray<UVariantSet*>& NewVariantSet
 
 int32 ULevelVariantSets::GetVariantSetIndex(UVariantSet* VarSet)
 {
+	if (VarSet == nullptr)
+	{
+		return INDEX_NONE;
+	}
+
 	return VariantSets.Find(VarSet);
 }
 
@@ -168,7 +178,7 @@ FString ULevelVariantSets::GetUniqueVariantSetName(const FString& InPrefix)
 	FString LastChar = VarSetName.Right(1);
 	while (LastChar.IsNumeric())
 	{
-		VarSetName = VarSetName.LeftChop(1);
+		VarSetName.LeftChopInline(1, false);
 		LastChar = VarSetName.Right(1);
 	}
 

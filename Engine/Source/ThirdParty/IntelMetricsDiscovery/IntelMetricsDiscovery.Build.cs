@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 using UnrealBuildTool;
 
@@ -7,8 +7,7 @@ public class IntelMetricsDiscovery : ModuleRules
 	public IntelMetricsDiscovery(ReadOnlyTargetRules Target) : base(Target)
 	{
 		Type = ModuleType.External;
-// #todo-rco: Temporarily disable
-/*
+
 		string IntelMetricsDiscoveryPath = Target.UEThirdPartySourceDirectory + "IntelMetricsDiscovery/MetricsDiscoveryHelper/";
 		bool bUseDebugBuild = false;
 		if ( (Target.Platform == UnrealTargetPlatform.Win64) || (Target.Platform == UnrealTargetPlatform.Win32) )
@@ -18,14 +17,12 @@ public class IntelMetricsDiscovery : ModuleRules
 
 			PublicSystemIncludePaths.Add(IntelMetricsDiscoveryPath + "build/include/metrics_discovery/");
 
-			PublicLibraryPaths.Add(IntelMetricsDiscoveryPath + "build/lib/" + PlatformName + BuildType);
-
-			PublicAdditionalLibraries.Add("metrics_discovery_helper.lib");
+			string LibDir = IntelMetricsDiscoveryPath + "build/lib/" + PlatformName + BuildType + "/";
+			PublicAdditionalLibraries.Add(LibDir + "metrics_discovery_helper.lib");
 
             PublicDefinitions.Add("INTEL_METRICSDISCOVERY=1");
         }
 		else
-*/
         {
             PublicDefinitions.Add("INTEL_METRICSDISCOVERY=0");
         }

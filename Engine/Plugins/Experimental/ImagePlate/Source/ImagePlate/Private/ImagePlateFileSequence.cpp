@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "ImagePlateFileSequence.h"
 #include "IImageWrapper.h"
@@ -16,6 +16,8 @@
 #include "Misc/PackageName.h"
 #include "Engine/Texture2DDynamic.h"
 #include "Engine/TextureRenderTarget2D.h"
+#include "Textures/SlateTextureData.h"
+
 
 DEFINE_LOG_CATEGORY_STATIC(LogImagePlateFileSequence, Log, Warning);
 
@@ -56,7 +58,7 @@ FImagePlateSourceFrame::FImagePlateSourceFrame()
 	: Width(0), Height(0), BitDepth(0), Pitch(0)
 {}
 
-FImagePlateSourceFrame::FImagePlateSourceFrame(const TArray<uint8>& InData, uint32 InWidth, uint32 InHeight, uint32 InBitDepth)
+FImagePlateSourceFrame::FImagePlateSourceFrame(const TArray64<uint8>& InData, uint32 InWidth, uint32 InHeight, uint32 InBitDepth)
 	: Width(InWidth), Height(InHeight), BitDepth(InBitDepth), Pitch(Width * BitDepth / 8 * 4)
 {
 	if (InData.Num())
@@ -168,6 +170,7 @@ bool FImagePlateSourceFrame::EnsureTextureMetrics(UTexture* DestinationTexture) 
 	return true;
 }
 
+
 TFuture<void> FImagePlateSourceFrame::CopyTo(UTexture* DestinationTexture)
 {
 	// Copy the data to the texture via a render command
@@ -189,9 +192,8 @@ TFuture<void> FImagePlateSourceFrame::CopyTo(UTexture* DestinationTexture)
 	CommandData->SourceFrame = *this;
 	CommandData->DestinationTexture = DestinationTexture;
 
-	ENQUEUE_UNIQUE_RENDER_COMMAND_ONEPARAMETER(
-		CopySourceBufferToTexture,
-		FCommandDataPtr, CommandData, CommandData,
+	ENQUEUE_RENDER_COMMAND(CopySourceBufferToTexture)(
+		[CommandData](FRHICommandListImmediate& RHICmdList)
 		{
 			if (!CommandData->DestinationTexture->Resource || !CommandData->DestinationTexture->Resource->TextureRHI)
 			{
@@ -241,6 +243,28 @@ TFuture<void> FImagePlateSourceFrame::CopyTo(UTexture* DestinationTexture)
 	);
 
 	return CompletionFuture;
+}
+
+TSharedRef<FSlateTextureData, ESPMode::ThreadSafe> FImagePlateSourceFrame::AsSlateTexture() const
+{
+	uint32 BytesPerPixel = (BitDepth * 4) / 8;
+	TSharedRef<FSlateTextureData, ESPMode::ThreadSafe> TextureData = MakeShared<FSlateTextureData, ESPMode::ThreadSafe>(nullptr, Width, Height, BytesPerPixel);
+
+	const uint8* SourceBuffer = Buffer.Get();
+	uint8* DestinationBuffer = TextureData->GetRawBytesPtr();
+	if (Pitch == Width * BytesPerPixel)
+	{
+		FMemory::Memcpy(DestinationBuffer, SourceBuffer, Width*Height*BytesPerPixel);
+	}
+	else for (uint32 Row = 0; Row < Height; ++Row)
+	{
+		FMemory::Memcpy(DestinationBuffer, SourceBuffer, FMath::Min(Width*BytesPerPixel, Pitch));
+
+		DestinationBuffer += Pitch;
+		SourceBuffer += (Width*BytesPerPixel);
+	}
+
+	return TextureData;
 }
 
 namespace ImagePlateFrameCache
@@ -528,7 +552,7 @@ namespace ImagePlateFrameCache
 	FImagePlateSourceFrame LoadFileData(FString FilenameToLoad, int32 FrameNumber)
 	{
 		// Start at 100k
-		TArray<uint8> SourceFileData;
+		TArray64<uint8> SourceFileData;
 		SourceFileData.Reserve(1024*100);
 		if (!FFileHelper::LoadFileToArray(SourceFileData, *FilenameToLoad))
 		{
@@ -550,14 +574,14 @@ namespace ImagePlateFrameCache
 		ImageWrapper->SetCompressed(SourceFileData.GetData(), SourceFileData.Num());
 
 		int32 SourceBitDepth = ImageWrapper->GetBitDepth();
-		const TArray<uint8>* RawImageData = nullptr;
-		if (ImageWrapper->GetRaw(ERGBFormat::RGBA, SourceBitDepth, RawImageData) && RawImageData)
+		TArray64<uint8> RawImageData;
+		if (ImageWrapper->GetRaw(ERGBFormat::RGBA, SourceBitDepth, RawImageData))
 		{
 			// BMP image wrappers supply the bitdepth per pixel, rather than per-channel
 			SourceBitDepth = ImageType == EImageFormat::BMP ? ImageWrapper->GetBitDepth() / 4 : ImageWrapper->GetBitDepth();
 
 			return FImagePlateSourceFrame(
-				*RawImageData,
+				RawImageData,
 				ImageWrapper->GetWidth(),
 				ImageWrapper->GetHeight(),
 				SourceBitDepth
@@ -684,7 +708,7 @@ namespace ImagePlateFrameCache
 
 					UncachedFrame.Cache->OnPreloadFrame(UncachedFrame.FrameNumber);
 
-					TFuture<FImagePlateSourceFrame> Future = Async<FImagePlateSourceFrame>(
+					TFuture<FImagePlateSourceFrame> Future = Async(
 						EAsyncExecution::ThreadPool,
 						[FilenameToLoad, FrameNumber]
 						{

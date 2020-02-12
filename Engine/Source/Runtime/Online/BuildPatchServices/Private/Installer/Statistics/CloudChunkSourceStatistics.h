@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 #pragma once
 
 #include "Installer/CloudChunkSource.h"
@@ -47,9 +47,14 @@ namespace BuildPatchServices
 		virtual TArray<float> GetDownloadHealthTimers() const = 0;
 
 		/**
-		 * @return the number of active requests.
+		 * @return the current number of download requests.
 		 */
-		virtual int32 GetActiveRequestCount() const = 0;
+		virtual uint32 GetCurrentRequestCount() const = 0;
+
+		/**
+		 * @return the peak number of download requests.
+		 */
+		virtual uint32 GetPeakRequestCount() const = 0;
 	};
 
 	/**

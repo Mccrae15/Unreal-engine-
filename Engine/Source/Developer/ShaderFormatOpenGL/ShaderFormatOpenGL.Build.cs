@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 using UnrealBuildTool;
 
@@ -17,7 +17,8 @@ public class ShaderFormatOpenGL : ModuleRules
 				"Core",
 				"RenderCore",
 				"ShaderCompilerCommon",
-				"ShaderPreprocessor"
+				"ShaderPreprocessor",
+				"RHI" // @todo platplug: this is caused by the DataDrivenShaderPlatformInfo stuff - maybe it should move to somewhere else, like RenderCore?
 			}
 			);
 
@@ -26,9 +27,22 @@ public class ShaderFormatOpenGL : ModuleRules
 			"HLSLCC"
 			);
 
-        if (Target.Platform == UnrealTargetPlatform.Linux)
+        if (Target.IsInPlatformGroup(UnrealPlatformGroup.Linux))
         {
             AddEngineThirdPartyPrivateStaticDependencies(Target, "SDL2");
         }
+		if (Target.Platform == UnrealTargetPlatform.Mac || Target.Platform == UnrealTargetPlatform.Win64)
+		{
+			AddEngineThirdPartyPrivateStaticDependencies(Target,
+				"ShaderConductor",
+				"SPIRVReflect"
+			);
+		}
+
+		if (Target.Platform == UnrealTargetPlatform.Win64)
+		{
+			PublicDelayLoadDLLs.Add("dxcompiler_sc.dll");
+			PublicDelayLoadDLLs.Add("ShaderConductor.dll");
+		}
 	}
 }

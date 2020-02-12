@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -13,6 +13,9 @@ struct LIVELINK_API FLiveLinkClientReference
 public:
 
 	FLiveLinkClientReference();
+	FLiveLinkClientReference(const FLiveLinkClientReference& Other);
+	FLiveLinkClientReference& operator=(const FLiveLinkClientReference& Other);
+	FLiveLinkClientReference(const FLiveLinkClientReference&& Other) = delete;
 	~FLiveLinkClientReference();
 
 	ILiveLinkClient* GetClient() const { return LiveLinkClient; }

@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "CompElementEditorModule.h"
 #include "CompElementManager.h"
@@ -21,7 +21,7 @@
 #include "Features/IModularFeatures.h"
 #include "Widgets/SCompElementPreviewPane.h"
 #include "Widgets/SCompElementPickerWindow.h"
-#include "ILevelViewport.h"
+#include "IAssetViewport.h"
 #include "LevelEditorViewport.h"
 #include "Widgets/SCompElementPreviewDialog.h"
 
@@ -33,10 +33,10 @@ namespace CompElementEditor_Impl
 	void RedrawViewport()
 	{
 		FLevelEditorModule& LevelEditorModule = FModuleManager::Get().GetModuleChecked<FLevelEditorModule>(TEXT("LevelEditor"));
-		TSharedPtr<ILevelViewport> Viewport = LevelEditorModule.GetFirstActiveViewport();
+		TSharedPtr<IAssetViewport> Viewport = LevelEditorModule.GetFirstActiveViewport();
 		if (Viewport.IsValid())
 		{
-			Viewport->GetLevelViewportClient().RedrawRequested(Viewport->GetActiveViewport());
+			Viewport->GetAssetViewportClient().RedrawRequested(Viewport->GetActiveViewport());
 		}
 		else if (GCurrentLevelEditingViewportClient)
 		{
@@ -233,7 +233,7 @@ TSharedPtr<SWindow> FCompElementEditorModule::RequestCompositingPickerWindow(TWe
 //------------------------------------------------------------------------------
 bool FCompElementEditorModule::DeferCompositingDraw(ACompositingElement* CompElement)
 {
-	IConsoleVariable* CVarUsingDecoupledDrawing = IConsoleManager::Get().FindConsoleVariable(TEXT("r.Composure.CompositingElements.Editor.DecoupleRenderingFromLevelViewport"));
+	static IConsoleVariable* CVarUsingDecoupledDrawing = IConsoleManager::Get().FindConsoleVariable(TEXT("r.Composure.CompositingElements.Editor.DecoupleRenderingFromLevelViewport"));
 	if (CompElement && CVarUsingDecoupledDrawing && CVarUsingDecoupledDrawing->GetInt() > 0 && !CompElementManager->IsDrawing(CompElement))
 	{
 		UWorld* World = CompElement->GetWorld();

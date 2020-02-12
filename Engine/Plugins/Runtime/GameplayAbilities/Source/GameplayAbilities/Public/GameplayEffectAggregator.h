@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -416,3 +416,5 @@ struct GAMEPLAYABILITIES_API FScopedAggregatorOnDirtyBatch
 	static bool		GlobalFromNetworkUpdate;
 	static int32	NetUpdateID;
 };
+
+#define AGGREGATOR_BATCH_SCOPE() FScopedAggregatorOnDirtyBatch AggregatorOnDirtyBatcher;

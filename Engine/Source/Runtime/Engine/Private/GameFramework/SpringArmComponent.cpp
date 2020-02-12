@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "GameFramework/SpringArmComponent.h"
 #include "GameFramework/Pawn.h"
@@ -42,9 +42,14 @@ USpringArmComponent::USpringArmComponent(const FObjectInitializer& ObjectInitial
  	UnfixedCameraPosition = FVector::ZeroVector;
 }
 
+FRotator USpringArmComponent::GetDesiredRotation() const
+{
+	return GetComponentRotation();
+}
+
 FRotator USpringArmComponent::GetTargetRotation() const
 {
-	FRotator DesiredRot = GetComponentRotation();
+	FRotator DesiredRot = GetDesiredRotation();
 
 	if (bUsePawnControlRotation)
 	{
@@ -59,21 +64,22 @@ FRotator USpringArmComponent::GetTargetRotation() const
 	}
 
 	// If inheriting rotation, check options for which components to inherit
-	if (!bAbsoluteRotation)
+	if (!IsUsingAbsoluteRotation())
 	{
+		const FRotator LocalRelativeRotation = GetRelativeRotation();
 		if (!bInheritPitch)
 		{
-			DesiredRot.Pitch = RelativeRotation.Pitch;
+			DesiredRot.Pitch = LocalRelativeRotation.Pitch;
 		}
 
 		if (!bInheritYaw)
 		{
-			DesiredRot.Yaw = RelativeRotation.Yaw;
+			DesiredRot.Yaw = LocalRelativeRotation.Yaw;
 		}
 
 		if (!bInheritRoll)
 		{
-			DesiredRot.Roll = RelativeRotation.Roll;
+			DesiredRot.Roll = LocalRelativeRotation.Roll;
 		}
 	}
 

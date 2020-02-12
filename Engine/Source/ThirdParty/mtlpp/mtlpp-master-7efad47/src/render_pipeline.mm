@@ -2,7 +2,7 @@
  * Copyright 2016-2017 Nikolay Aleksiev. All rights reserved.
  * License: https://github.com/naleksiev/mtlpp/blob/master/LICENSE
  */
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 // Modifications for Unreal Engine
 
 #include <Metal/MTLRenderPipeline.h>
@@ -774,6 +774,13 @@ namespace mtlpp
 #if MTLPP_IS_AVAILABLE_IOS(11_0)
 		[m_ptr setPixelFormat:(MTLPixelFormat)pixelFormat];
 #endif
+	}
+	
+	TileRenderPipelineDescriptor::TileRenderPipelineDescriptor()
+#if MTLPP_IS_AVAILABLE_IOS(11_0)
+	: ns::Object<MTLTileRenderPipelineDescriptor*>([[MTLTileRenderPipelineDescriptor alloc] init], ns::Ownership::Assign)
+#endif
+	{
 	}
 	
 	ns::AutoReleased<ns::String> TileRenderPipelineDescriptor::GetLabel() const

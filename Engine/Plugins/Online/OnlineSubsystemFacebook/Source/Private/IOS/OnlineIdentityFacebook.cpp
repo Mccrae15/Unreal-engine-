@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 // Module includes
 #include "OnlineIdentityFacebook.h"
@@ -154,7 +154,7 @@ bool FOnlineIdentityFacebook::Login(int32 LocalUserNum, const FOnlineAccountCred
 					[Permissions addObject: ScopeStr];
 				}
 
-				[loginManager logInWithReadPermissions:Permissions
+				[loginManager logInWithPermissions:Permissions
 					fromViewController:nil
 					handler: ^(FBSDKLoginManagerLoginResult* result, NSError* error)
 					{

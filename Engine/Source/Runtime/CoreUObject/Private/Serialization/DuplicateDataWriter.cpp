@@ -1,8 +1,9 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "CoreMinimal.h"
 #include "UObject/LazyObjectPtr.h"
 #include "UObject/PropertyPortFlags.h"
+#include "UObject/UnrealType.h"
 #include "Serialization/DuplicatedObject.h"
 #include "Serialization/DuplicatedDataWriter.h"
 
@@ -45,8 +46,8 @@ FDuplicateDataWriter::FDuplicateDataWriter( FUObjectAnnotationSparse<FDuplicated
  */
 FArchive& FDuplicateDataWriter::operator<<(FName& N)
 {
-	NAME_INDEX ComparisonIndex = N.GetComparisonIndex();
-	NAME_INDEX DisplayIndex = N.GetDisplayIndex();
+	FNameEntryId ComparisonIndex = N.GetComparisonIndex();
+	FNameEntryId DisplayIndex = N.GetDisplayIndex();
 	int32 Number = N.GetNumber();
 	ByteOrderSerialize(&ComparisonIndex, sizeof(ComparisonIndex));
 	ByteOrderSerialize(&DisplayIndex, sizeof(DisplayIndex));
@@ -147,4 +148,19 @@ UObject* FDuplicateDataWriter::GetDuplicatedObject(UObject* Object, bool bCreate
 	}
 
 	return Result;
+}
+
+FArchive& FDuplicateDataWriter::operator<<(FField*& Field)
+{
+	//if (Field &&
+	//	!Field->HasAnyFlags(RF_DuplicateTransient) &&
+	//	(!Field->HasAnyFlags(RF_NonPIEDuplicateTransient) || HasAnyPortFlags(PPF_DuplicateForPIE)))
+	//{
+	//}
+	//else
+	//{
+	//	UObject* NullObject = nullptr;
+	//	Serialize(&NullObject, sizeof(UObject*));
+	//}
+	return *this;
 }

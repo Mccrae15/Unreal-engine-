@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 /*=============================================================================
 	PlayerInput.cpp: Unreal input system.
@@ -504,7 +504,7 @@ void UPlayerInput::InvertAxis(const FName AxisName)
 		}
 		if (bInverted)
 		{
-			InvertedAxis.Add(AxisName);
+			InvertedAxis.AddUnique(AxisName);
 		}
 		else
 		{
@@ -644,9 +644,22 @@ void UPlayerInput::ForceRebuildingKeyMaps(const bool bRestoreDefaults)
 {
 	if (bRestoreDefaults)
 	{
-		AxisConfig = GetDefault<UInputSettings>()->AxisConfig;
-		AxisMappings = GetDefault<UInputSettings>()->AxisMappings;
-		ActionMappings = GetDefault<UInputSettings>()->ActionMappings;
+		const UInputSettings* InputSettings = GetDefault<UInputSettings>();
+		if (InputSettings)
+		{
+			AxisConfig = InputSettings->AxisConfig;
+			AxisMappings = InputSettings->GetAxisMappings();
+			ActionMappings = InputSettings->GetActionMappings();
+
+			//append on speech action mappings
+			const TArray<FInputActionSpeechMapping>& SpeechMappings = InputSettings->GetSpeechMappings();
+			for (const FInputActionSpeechMapping& SpeechMapping : SpeechMappings)
+			{
+				FInputActionKeyMapping& ConvertedSpeechToActionMap = ActionMappings.AddDefaulted_GetRef();
+				ConvertedSpeechToActionMap.ActionName = SpeechMapping.GetActionName();
+				ConvertedSpeechToActionMap.Key = SpeechMapping.GetKeyName();
+			}
+		}
 	}
 
 	ActionKeyMap.Reset();
@@ -972,6 +985,8 @@ void UPlayerInput::ProcessNonAxesKeys(FKey InKey, FKeyState* KeyState)
 
 void UPlayerInput::ProcessInputStack(const TArray<UInputComponent*>& InputComponentStack, const float DeltaTime, const bool bGamePaused)
 {
+	ConditionalBuildKeyMappings();
+
 	// We collect axis contributions by delegate, so we can sum up 
 	// contributions from multiple bindings.
 	struct FAxisDelegateDetails
@@ -1389,7 +1404,7 @@ void UPlayerInput::ClearSmoothing()
 float UPlayerInput::SmoothMouse(float aMouse, uint8& SampleCount, int32 Index)
 {
 	check(Index >= 0);
-	check(Index < ARRAY_COUNT(ZeroTime));
+	check(Index < UE_ARRAY_COUNT(ZeroTime));
 
 	UWorld* World = GetWorld();
 	if (World)
@@ -1709,8 +1724,8 @@ FVector UPlayerInput::MassageVectorAxisInput(FKey Key, FVector RawValue)
 			};
 
 			NewVal.X = DeadZoneLambda(NewVal.X);
-			NewVal.X = DeadZoneLambda(NewVal.Y);
-			NewVal.X = DeadZoneLambda(NewVal.Z);
+			NewVal.Y = DeadZoneLambda(NewVal.Y);
+			NewVal.Z = DeadZoneLambda(NewVal.Z);
 		}
 
 		// apply any exponent curvature while we're in the [0..1] range
@@ -1991,7 +2006,7 @@ bool UPlayerInput::Exec(UWorld* InWorld, const TCHAR* Str,FOutputDevice& Ar)
 {
 	TCHAR Temp[256];
 
-	if( FParse::Command( &Str, TEXT("KEYBINDING") ) && FParse::Token( Str, Temp, ARRAY_COUNT(Temp), 0 ) )
+	if( FParse::Command( &Str, TEXT("KEYBINDING") ) && FParse::Token( Str, Temp, UE_ARRAY_COUNT(Temp), 0 ) )
 	{
 		FKey const Key(Temp);
 		if (Key.IsValid())
@@ -2008,7 +2023,7 @@ bool UPlayerInput::Exec(UWorld* InWorld, const TCHAR* Str,FOutputDevice& Ar)
 
 		return 1;
 	}
-	else if( !bExecutingBindCommand && FParse::Token( Str, Temp, ARRAY_COUNT(Temp), 0 ) )
+	else if( !bExecutingBindCommand && FParse::Token( Str, Temp, UE_ARRAY_COUNT(Temp), 0 ) )
 	{
 		FKey const Key(Temp);
 		if(Key.IsValid())
@@ -2083,7 +2098,7 @@ void UPlayerInput::SetBind(FName BindName, const FString& Command)
 		FString CommandMod = Command;
 		if ( CommandMod.Left(1) == TEXT("\"") && CommandMod.Right(1) == ("\"") )
 		{
-			CommandMod = CommandMod.Mid(1, CommandMod.Len() - 2);
+			CommandMod.MidInline(1, CommandMod.Len() - 2, false);
 		}
 
 		for(int32 BindIndex = DebugExecBindings.Num()-1;BindIndex >= 0;BindIndex--)

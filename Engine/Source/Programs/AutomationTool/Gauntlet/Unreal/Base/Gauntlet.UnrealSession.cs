@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 using System;
 using System.Collections.Generic;
@@ -37,7 +37,7 @@ namespace Gauntlet
 		/// <summary>
 		/// Platform this role uses
 		/// </summary>
-		public UnrealTargetPlatform Platform;
+		public UnrealTargetPlatform? Platform;
 
 		/// <summary>
 		/// Configuration this role runs in
@@ -60,10 +60,19 @@ namespace Gauntlet
 		public string CommandLine;
 
 		/// <summary>
+		/// Map override to use on a server in case we don't want them all running the same map.
+		/// </summary>
+		public string MapOverride;
+
+		/// <summary>
 		/// List of files to copy to the device.
 		/// </summary>
 		public List<UnrealFileToCopy> FilesToCopy;
 
+		/// <summary>
+		/// 
+		/// </summary>
+		public List<EIntendedBaseCopyDirectory> AdditionalArtifactDirectories;
 		/// <summary>
 		/// Role device configuration 
 		/// </summary>
@@ -97,7 +106,7 @@ namespace Gauntlet
 		/// <param name="InPlatform"></param>
 		/// <param name="InConfiguration"></param>
 		/// <param name="InOptions"></param>
-		public UnrealSessionRole(UnrealTargetRole InType, UnrealTargetPlatform InPlatform, UnrealTargetConfiguration InConfiguration, IConfigOption<UnrealAppConfig> InOptions)
+		public UnrealSessionRole(UnrealTargetRole InType, UnrealTargetPlatform? InPlatform, UnrealTargetConfiguration InConfiguration, IConfigOption<UnrealAppConfig> InOptions)
 			: this(InType, InPlatform, InConfiguration, null, InOptions)
 		{
 		}
@@ -110,16 +119,17 @@ namespace Gauntlet
 		/// <param name="InConfiguration"></param>
 		/// <param name="InCommandLine"></param>
 		/// <param name="InOptions"></param>
-		public UnrealSessionRole(UnrealTargetRole InType, UnrealTargetPlatform InPlatform, UnrealTargetConfiguration InConfiguration, string InCommandLine = null, IConfigOption<UnrealAppConfig> InOptions = null)
+		public UnrealSessionRole(UnrealTargetRole InType, UnrealTargetPlatform? InPlatform, UnrealTargetConfiguration InConfiguration, string InCommandLine = null, IConfigOption<UnrealAppConfig> InOptions = null)
 		{
 			RoleType = InType;
 
 			Platform = InPlatform;
 			Configuration = InConfiguration;
+			MapOverride = string.Empty;
 
 			if (string.IsNullOrEmpty(InCommandLine))
 			{
-				CommandLine = "";
+				CommandLine = string.Empty;
 			}
 			else
 			{
@@ -135,12 +145,19 @@ namespace Gauntlet
 
 			//@todo: for bulk/packaged builds, we should mark the platform as capable of these as we're catching global and not test specific flags
 			// where we may be running parallel tests on multiple platforms
-			if (Globals.Params.ParseParam("bulk") && (InPlatform == UnrealTargetPlatform.Android || InPlatform == UnrealTargetPlatform.IOS))
-            {
-                RequiredBuildFlags |= BuildFlags.Bulk;
-            }
+			if (InPlatform == UnrealTargetPlatform.Android || InPlatform == UnrealTargetPlatform.IOS)
+			{
+				if (Globals.Params.ParseParam("bulk"))
+				{
+					RequiredBuildFlags |= BuildFlags.Bulk;
+				}
+				else
+				{
+					RequiredBuildFlags |= BuildFlags.NotBulk;
+				}
+			}
 
-			if (Globals.Params.ParseParam("packaged") && (InPlatform == UnrealTargetPlatform.Switch))
+			if (Globals.Params.ParseParam("packaged") && (InPlatform == UnrealTargetPlatform.Switch || InPlatform == UnrealTargetPlatform.XboxOne || InPlatform == UnrealTargetPlatform.PS4))
 			{
 				RequiredBuildFlags |= BuildFlags.Packaged;
 			}
@@ -494,7 +511,7 @@ namespace Gauntlet
 		}
 		#endregion
 
-		void ReleaseDevices()
+		public void ReleaseDevices()
 		{
 			if (ReservedDevices.Count() > 0)
 			{
@@ -513,7 +530,10 @@ namespace Gauntlet
 			// report device has a problem to the pool
 			DevicePool.Instance.ReportDeviceError(Device, "MarkProblemDevice");
 
-			ProblemDevices.Add(new ProblemDevice(Device.Name, Device.Platform));
+			if (Device.Platform != null)
+			{
+				ProblemDevices.Add(new ProblemDevice(Device.Name, Device.Platform.Value));
+			}
 		}
 
 		/// <summary>
@@ -594,7 +614,7 @@ namespace Gauntlet
 			foreach (var PlatformReqKP in RequiredDeviceTypes)
 			{
 				UnrealTargetConstraint Constraint = PlatformReqKP.Key;
-				UnrealTargetPlatform Platform = Constraint.Platform;
+				UnrealTargetPlatform? Platform = Constraint.Platform;
 
 				int NeedOfThisType = RequiredDeviceTypes[Constraint];
 
@@ -834,8 +854,10 @@ namespace Gauntlet
 						Device = new TargetDeviceNull(string.Format("Null{0}", Role.RoleType));
 					}
 
+					var OtherRoles = SortedRoles.Where(R => R != Role);
+
 					// create a config from the build source (this also applies the role options)
-					UnrealAppConfig AppConfig = BuildSource.CreateConfiguration(Role);
+					UnrealAppConfig AppConfig = BuildSource.CreateConfiguration(Role, OtherRoles);
 
 					// todo - should this be elsewhere?
 					AppConfig.Sandbox = Sandbox;
@@ -974,7 +996,7 @@ namespace Gauntlet
 
 			bool IsServer = InRunningRole.Role.RoleType.IsServer();
 			string RoleName = (InRunningRole.Role.IsDummy() ? "Dummy" : "") + InRunningRole.Role.RoleType.ToString();
-			UnrealTargetPlatform Platform = InRunningRole.Role.Platform;
+			UnrealTargetPlatform? Platform = InRunningRole.Role.Platform;
 			string RoleConfig = InRunningRole.Role.Configuration.ToString();
 
 			Directory.CreateDirectory(InDestArtifactPath);
@@ -1062,9 +1084,22 @@ namespace Gauntlet
 				{
 					Log.Info("Skipping archival of assets for dev build");
 				}
-			}			
+			}
 
-
+			foreach (EIntendedBaseCopyDirectory ArtifactDir in InRunningRole.Role.AdditionalArtifactDirectories)
+			{
+				if (InRunningRole.AppInstance.Device.GetPlatformDirectoryMappings().ContainsKey(ArtifactDir))
+				{
+					string SourcePath = InRunningRole.AppInstance.Device.GetPlatformDirectoryMappings()[ArtifactDir];
+					var DirToCopy = new DirectoryInfo(SourcePath);
+					if (DirToCopy.Exists)
+					{
+						// Grab the final dir name to copy everything into so everything's not just going into root artifact dir.
+						string IntendedCopyLocation = Path.Combine(InDestArtifactPath, DirToCopy.Name);
+						Utils.SystemHelpers.CopyDirectory(SourcePath, IntendedCopyLocation);
+					}
+				}
+			}
 			// TODO REMOVEME- this should go elsewhere, likely a util that can be called or inserted by relevant test nodes.
 			if (IsServer == false)
 			{
@@ -1157,27 +1192,41 @@ namespace Gauntlet
 		/// <returns></returns>
 		public IEnumerable<UnrealRoleArtifacts> SaveRoleArtifacts(UnrealTestContext Context, UnrealSessionInstance TestInstance, string OutputPath)
 		{
-			int ClientCount = 1;
-			int DummyClientCount = 1;
+			Dictionary<UnrealTargetRole, int> RoleCounts = new Dictionary<UnrealTargetRole, int>();
+			int DummyClientCount = 0;
 
 			List<UnrealRoleArtifacts> AllArtifacts = new List<UnrealRoleArtifacts>();
 
 			foreach (UnrealSessionInstance.RoleInstance App in TestInstance.RunningRoles)
 			{
-				bool IsServer = App.Role.RoleType.IsServer();
 				string RoleName = (App.Role.IsDummy() ? "Dummy" : "") + App.Role.RoleType.ToString();
 				string FolderName = RoleName;
 
-				if (IsServer == false)
+				int RoleCount = 1;
+
+				if (App.Role.IsDummy())
 				{
-					if ((!App.Role.IsDummy() && ClientCount++ > 1))
+					DummyClientCount++;
+					RoleCount = DummyClientCount;
+				}
+				else
+				{
+					if (!RoleCounts.ContainsKey(App.Role.RoleType))
 					{
-						FolderName += string.Format("_{0:00}", ClientCount);
+						RoleCounts.Add(App.Role.RoleType, 1);
 					}
-					else if (App.Role.IsDummy() && DummyClientCount++ > 1)
+					else
 					{
-						FolderName += string.Format("_{0:00}", DummyClientCount);
+						RoleCounts[App.Role.RoleType]++;
 					}
+
+					RoleCount = RoleCounts[App.Role.RoleType];
+				}
+
+				
+				if (RoleCount > 1)
+				{
+					FolderName += string.Format("_{0:00}", RoleCount);
 				}
 
 				string DestPath = Path.Combine(OutputPath, FolderName);

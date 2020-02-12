@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "SlateRHITextureAtlas.h"
 #include "Textures/SlateTextureData.h"
@@ -71,12 +71,12 @@ void FSlateTextureAtlasRHI::ConditionalUpdateTexture( )
 	{
 		// Copy the game thread data. This is deleted on the render thread
 		FSlateTextureData* RenderThreadData = new FSlateTextureData( AtlasWidth, AtlasHeight, BytesPerPixel, AtlasData ); 
-		ENQUEUE_UNIQUE_RENDER_COMMAND_TWOPARAMETER( SlateUpdateAtlasTextureCommand,
-			FSlateTextureAtlasRHI&, Atlas, *this,
-			FSlateTextureData*, InRenderThreadData, RenderThreadData,
-		{
-			Atlas.UpdateTexture_RenderThread( InRenderThreadData );
-		});
+		FSlateTextureAtlasRHI* Atlas = this;
+		ENQUEUE_RENDER_COMMAND(SlateUpdateAtlasTextureCommand)(
+			[Atlas, RenderThreadData](FRHICommandListImmediate& RHICmdList)
+			{
+				Atlas->UpdateTexture_RenderThread( RenderThreadData );
+			});
 
 		bNeedsUpdate = false;
 

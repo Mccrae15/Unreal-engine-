@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 /*=============================================================================
 	UEditorBrushBuilder.cpp: UnrealEd brush builder.
@@ -53,7 +53,7 @@ bool UEditorBrushBuilder::EndBrush( UWorld* InWorld, ABrush* InBrush )
 	ABrush* BuilderBrush = (InBrush != nullptr) ? InBrush : InWorld->GetDefaultBrush();
 
 	// Ensure the builder brush is unhidden.
-	BuilderBrush->bHidden = false;
+	BuilderBrush->SetHidden(false);
 	BuilderBrush->bHiddenEdLayer = false;
 
 	AActor* Actor = GEditor->GetSelectedActors()->GetTop<AActor>();

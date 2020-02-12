@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 
 #include "CoreTypes.h"
@@ -28,6 +28,8 @@
 #include "HAL/LowLevelMemTracker.h"
 #include "HAL/ThreadHeartBeat.h"
 #include "ProfilingDebugging/ExternalProfiler.h"
+#include "ProfilingDebugging/MiscTrace.h"
+#include "ProfilingDebugging/ScopedTimers.h"
 
 DEFINE_LOG_CATEGORY_STATIC(LogTaskGraph, Log, All);
 
@@ -38,7 +40,7 @@ DEFINE_STAT(STAT_ParallelForTask);
 
 static int32 GNumWorkerThreadsToIgnore = 0;
 
-#if (PLATFORM_XBOXONE || PLATFORM_PS4 || PLATFORM_WINDOWS || PLATFORM_MAC || PLATFORM_UNIX || PLATFORM_SWITCH || PLATFORM_ANDROID) && !IS_PROGRAM && WITH_ENGINE && !UE_SERVER
+#if PLATFORM_USE_FULL_TASK_GRAPH && !IS_PROGRAM && WITH_ENGINE && !UE_SERVER
 	#define CREATE_HIPRI_TASK_THREADS (1)
 	#define CREATE_BACKGROUND_TASK_THREADS (1)
 #else
@@ -410,8 +412,6 @@ public:
 	 *	Sets up some basic information for a thread. Meant to be called from a "main" thread. Also creates the stall event.
 	 *	@param InThreadId; Thread index for this thread.
 	 *	@param InPerThreadIDTLSSlot; TLS slot to store the pointer to me into (later)
-	 *	@param bInAllowsStealsFromMe; If true, this is a worker thread and any other thread can steal tasks from my incoming queue.
-	 *	@param bInStealsFromOthers If true, this is a worker thread and I will attempt to steal tasks when I run out of work.
 	**/
 	void Setup(ENamedThreads::Type InThreadId, uint32 InPerThreadIDTLSSlot, FWorkerThread* InOwnerWorker)
 	{
@@ -440,9 +440,10 @@ public:
 	virtual void ProcessTasksUntilQuit(int32 QueueIndex) = 0;
 
 	/** Used for named threads to start processing tasks until the thread is idle and RequestQuit has been called. **/
-	virtual void ProcessTasksUntilIdle(int32 QueueIndex)
+	virtual uint64 ProcessTasksUntilIdle(int32 QueueIndex)
 	{
 		check(0);
+		return 0;
 	}
 
 	/** 
@@ -583,19 +584,21 @@ public:
 		verify(!--Queue(QueueIndex).RecursionGuard);
 	}
 
-	virtual void ProcessTasksUntilIdle(int32 QueueIndex) override
+	virtual uint64 ProcessTasksUntilIdle(int32 QueueIndex) override
 	{
 		check(Queue(QueueIndex).StallRestartEvent); // make sure we are started up
 
 		Queue(QueueIndex).QuitForReturn = false;
 		verify(++Queue(QueueIndex).RecursionGuard == 1);
-		ProcessTasksNamedThread(QueueIndex, false);
+		uint64 ProcessedTasks = ProcessTasksNamedThread(QueueIndex, false);
 		verify(!--Queue(QueueIndex).RecursionGuard);
+		return ProcessedTasks;
 	}
 
 
-	void ProcessTasksNamedThread(int32 QueueIndex, bool bAllowStall)
+	uint64 ProcessTasksNamedThread(int32 QueueIndex, bool bAllowStall)
 	{
+		uint64 ProcessedTasks = 0;
 #if UE_EXTERNAL_PROFILING_ENABLED
 		static thread_local bool bOnce = false;
 		if (!bOnce)
@@ -662,7 +665,7 @@ public:
 						Queue(QueueIndex).StallRestartEvent->Wait(MAX_uint32, bCountAsStall);
 						if (Queue(QueueIndex).QuitForShutdown)
 						{
-							return;
+							return ProcessedTasks;
 						}
 						TestRandomizedThreads();
 					}
@@ -683,6 +686,7 @@ public:
 			else
 			{
 				Task->Execute(NewTasks, ENamedThreads::Type(ThreadId | (QueueIndex << ENamedThreads::QueueIndexShift)));
+				ProcessedTasks++;
 				TestRandomizedThreads();
 			}
 		}
@@ -693,6 +697,7 @@ public:
 			bTasksOpen = false;
 		}
 #endif
+		return ProcessedTasks;
 	}
 	virtual void EnqueueFromThisThread(int32 QueueIndex, FBaseGraphTask* Task) override
 	{
@@ -854,15 +859,16 @@ public:
 		} while (!Queue.QuitForShutdown && FPlatformProcess::SupportsMultithreading()); // @Hack - quit now when running with only one thread.
 	}
 
-	virtual void ProcessTasksUntilIdle(int32 QueueIndex) override
+	virtual uint64 ProcessTasksUntilIdle(int32 QueueIndex) override
 	{
 		if (!FPlatformProcess::SupportsMultithreading())
 		{
-			ProcessTasks();
+			return ProcessTasks();
 		}
 		else
 		{
 			check(0);
+			return 0;
 		}
 	}
 
@@ -961,12 +967,13 @@ private:
 	*	@param QueueIndex, Queue to process tasks from
 	*	@param bAllowStall,  if true, the thread will block on the stall event when it runs out of tasks.
 	**/
-	void ProcessTasks()
+	uint64 ProcessTasks()
 	{
 		LLM_SCOPE(ELLMTag::TaskGraphTasksMisc);
 
 		TStatId StallStatId;
 		bool bCountAsStall = true;
+		uint64 ProcessedTasks = 0;
 #if STATS
 		TStatId StatName;
 		FCycleCounter ProcessingTasks;
@@ -1026,6 +1033,7 @@ private:
 #endif
 			bDidStall = false;
 			Task->Execute(NewTasks, ENamedThreads::Type(ThreadId));
+			ProcessedTasks++;
 			TestRandomizedThreads();
 			if (Queue.bStallForTuning)
 			{
@@ -1049,6 +1057,7 @@ private:
 			}
 		}
 		verify(!--Queue.RecursionGuard);
+		return ProcessedTasks;
 	}
 
 	/** Grouping of the data for an individual queue. **/
@@ -1210,12 +1219,14 @@ public:
 		for (int32 ThreadIndex = LastExternalThread + 1; ThreadIndex < NumThreads; ThreadIndex++)
 		{
 			FString Name;
+			const ANSICHAR* GroupName = "TaskGraphNormal";
 			int32 Priority = ThreadIndexToPriorityIndex(ThreadIndex);
 			EThreadPriority ThreadPri;
 			uint64 Affinity = FPlatformAffinity::GetTaskGraphThreadMask();
 			if (Priority == 1)
 			{
 				Name = FString::Printf(TEXT("TaskGraphThreadHP %d"), ThreadIndex - (LastExternalThread + 1));
+				GroupName = "TaskGraphHigh";
 				ThreadPri = TPri_SlightlyBelowNormal; // we want even hi priority tasks below the normal threads
 
 				// If the platform defines FPlatformAffinity::GetTaskGraphHighPriorityTaskMask then use it
@@ -1227,6 +1238,7 @@ public:
 			else if (Priority == 2)
 			{
 				Name = FString::Printf(TEXT("TaskGraphThreadBP %d"), ThreadIndex - (LastExternalThread + 1));
+				GroupName = "TaskGraphLow";
 				ThreadPri = TPri_Lowest;
 				// If the platform defines FPlatformAffinity::GetTaskGraphBackgroundTaskMask then use it
 				if ( FPlatformAffinity::GetTaskGraphBackgroundTaskMask() != 0xFFFFFFFFFFFFFFFF )
@@ -1248,6 +1260,10 @@ public:
 #endif
 			WorkerThreads[ThreadIndex].RunnableThread = FRunnableThread::Create(&Thread(ThreadIndex), *Name, StackSize, ThreadPri, Affinity); // these are below normal threads so that they sleep when the named threads are active
 			WorkerThreads[ThreadIndex].bAttached = true;
+			if (WorkerThreads[ThreadIndex].RunnableThread)
+			{
+				TRACE_SET_THREAD_GROUP(WorkerThreads[ThreadIndex].RunnableThread->GetThreadID(), GroupName);
+			}
 		}
 	}
 
@@ -1388,13 +1404,14 @@ public:
 		Thread(CurrentThread).InitializeForCurrentThread();
 	}
 
-	virtual void ProcessThreadUntilIdle(ENamedThreads::Type CurrentThread) final override
+	virtual uint64 ProcessThreadUntilIdle(ENamedThreads::Type CurrentThread) final override
 	{
+		SCOPED_NAMED_EVENT(ProcessThreadUntilIdle, FColor::Red);
 		int32 QueueIndex = ENamedThreads::GetQueueIndex(CurrentThread);
 		CurrentThread = ENamedThreads::GetThreadIndex(CurrentThread);
 		check(CurrentThread >= 0 && CurrentThread < NumNamedThreads);
 		check(CurrentThread == GetCurrentThread());
-		Thread(CurrentThread).ProcessTasksUntilIdle(QueueIndex);
+		return Thread(CurrentThread).ProcessTasksUntilIdle(QueueIndex);
 	}
 
 	virtual void ProcessThreadUntilRequestReturn(ENamedThreads::Type CurrentThread) final override
@@ -1416,6 +1433,7 @@ public:
 
 	virtual void WaitUntilTasksComplete(const FGraphEventArray& Tasks, ENamedThreads::Type CurrentThreadIfKnown = ENamedThreads::AnyThread) final override
 	{
+		TRACE_CPUPROFILER_EVENT_SCOPE(WaitUntilTasksComplete);
 		ENamedThreads::Type CurrentThread = CurrentThreadIfKnown;
 		if (ENamedThreads::GetThreadIndex(CurrentThreadIfKnown) == ENamedThreads::AnyThread)
 		{
@@ -1456,6 +1474,23 @@ public:
 		}
 		else
 		{
+			if (!FPlatformProcess::SupportsMultithreading())
+			{
+				bool bAnyPending = false;
+				for (int32 Index = 0; Index < Tasks.Num(); Index++)
+				{
+					if (!Tasks[Index]->IsComplete())
+					{
+						bAnyPending = true;
+						break;
+					}
+				}
+				if (!bAnyPending)
+				{
+					return;
+				}
+				UE_LOG(LogTaskGraph, Fatal, TEXT("Recursive waits are not allowed in single threaded mode."));
+			}
 			// We will just stall this thread on an event while we wait
 			FScopedEvent Event;
 			TriggerEventWhenTasksComplete(Event.Get(), Tasks, CurrentThreadIfKnown);
@@ -1576,7 +1611,7 @@ private:
 		if (TLSPointer)
 		{
 			checkThreadGraph(TLSPointer - WorkerThreads >= 0 && TLSPointer - WorkerThreads < NumThreads);
-			int32 ThreadIndex = TLSPointer - WorkerThreads;
+			int32 ThreadIndex = UE_PTRDIFF_TO_INT32(TLSPointer - WorkerThreads);
 			checkThreadGraph(Thread(ThreadIndex).GetThreadId() == ThreadIndex);
 			if (ThreadIndex < NumNamedThreads)
 			{
@@ -1797,10 +1832,10 @@ public:
 	void FORCEINLINE DoTask(ENamedThreads::Type CurrentThread, const FGraphEventRef& MyCompletionGraphEvent)
 	{
 		{
-			float ThisTime = FPlatformTime::Seconds() - StartTime;
-			if (ThisTime > 0.02f)
+			const double ThisTime = FPlatformTime::Seconds() - StartTime;
+			if (ThisTime > 0.02)
 			{
-				UE_CLOG(GPrintBroadcastWarnings, LogTaskGraph, Warning, TEXT("Task graph took %6.2fms for %s to recieve broadcast."), ThisTime * 1000.0f, Name);
+				UE_CLOG(GPrintBroadcastWarnings, LogTaskGraph, Warning, TEXT("Task graph took %6.2fms for %s to recieve broadcast."), ThisTime * 1000.0, Name);
 			}
 		}
 
@@ -1809,23 +1844,26 @@ public:
 			Function(CurrentThread);
 		}
 		{
-			float ThisTime = FPlatformTime::Seconds() - StartTime;
-			if (ThisTime > 0.02f)
+			const double ThisTime = FPlatformTime::Seconds() - StartTime;
+			if (ThisTime > 0.02)
 			{
-				UE_CLOG(GPrintBroadcastWarnings, LogTaskGraph, Warning, TEXT("Task graph took %6.2fms for %s to recieve broadcast and do processing."), ThisTime * 1000.0f, Name);
+				UE_CLOG(GPrintBroadcastWarnings, LogTaskGraph, Warning, TEXT("Task graph took %6.2fms for %s to recieve broadcast and do processing."), ThisTime * 1000.0, Name);
 			}
 		}
 		if (StallForTaskThread)
 		{
 			if (StallForTaskThread->Decrement())
 			{
-				QUICK_SCOPE_CYCLE_COUNTER(STAT_Broadcast_WaitForOthers);
-				TaskEvent->Wait();
+				if (TaskEvent)
 				{
-					float ThisTime = FPlatformTime::Seconds() - StartTime;
-					if (ThisTime > 0.02f)
+					QUICK_SCOPE_CYCLE_COUNTER(STAT_Broadcast_WaitForOthers);
+					TaskEvent->Wait();
 					{
-						UE_CLOG(GPrintBroadcastWarnings, LogTaskGraph, Warning, TEXT("Task graph took %6.2fms for %s to recieve broadcast do processing and wait for other task threads."), ThisTime * 1000.0f, Name);
+						const double ThisTime = FPlatformTime::Seconds() - StartTime;
+						if (ThisTime > 0.02)
+						{
+							UE_CLOG(GPrintBroadcastWarnings, LogTaskGraph, Warning, TEXT("Task graph took %6.2fms for %s to recieve broadcast do processing and wait for other task threads."), ThisTime * 1000.0f, Name);
+						}
 					}
 				}
 			}
@@ -1833,10 +1871,10 @@ public:
 			{
 				CallerEvent->Trigger();
 				{
-					float ThisTime = FPlatformTime::Seconds() - StartTime;
-					if (ThisTime > 0.02f)
+					const double ThisTime = FPlatformTime::Seconds() - StartTime;
+					if (ThisTime > 0.02)
 					{
-						UE_CLOG(GPrintBroadcastWarnings, LogTaskGraph, Warning, TEXT("Task graph took %6.2fms for %s to recieve broadcast do processing and trigger other task threads."), ThisTime * 1000.0f, Name);
+						UE_CLOG(GPrintBroadcastWarnings, LogTaskGraph, Warning, TEXT("Task graph took %6.2fms for %s to recieve broadcast do processing and trigger other task threads."), ThisTime * 1000.0, Name);
 					}
 				}
 			}
@@ -1912,7 +1950,12 @@ void FTaskGraphInterface::BroadcastSlow_OnlyUseForSpecialPurposes(bool bDoTaskTh
 
 
 	FGraphEventArray Tasks;
-	STAT(Tasks.Add(TGraphTask<FBroadcastTask>::CreateTask().ConstructAndDispatchWhenReady(Callback, StartTime, TEXT("Stats"), ENamedThreads::SetTaskPriority(ENamedThreads::StatsThread, ENamedThreads::HighTaskPriority), nullptr, nullptr, nullptr)););
+#if STATS
+	if (FTaskGraphInterface::Get().IsThreadProcessingTasks(ENamedThreads::StatsThread))
+	{
+		Tasks.Add(TGraphTask<FBroadcastTask>::CreateTask().ConstructAndDispatchWhenReady(Callback, StartTime, TEXT("Stats"), ENamedThreads::SetTaskPriority(ENamedThreads::StatsThread, ENamedThreads::HighTaskPriority), nullptr, nullptr, nullptr));
+	}
+#endif
 	if (GRHIThread_InternalUseOnly)
 	{
 		Tasks.Add(TGraphTask<FBroadcastTask>::CreateTask().ConstructAndDispatchWhenReady(Callback, StartTime, TEXT("RHIT"), ENamedThreads::SetTaskPriority(ENamedThreads::RHIThread, ENamedThreads::HighTaskPriority), nullptr, nullptr, nullptr));
@@ -1926,7 +1969,9 @@ void FTaskGraphInterface::BroadcastSlow_OnlyUseForSpecialPurposes(bool bDoTaskTh
 	{
 		Tasks.Add(TGraphTask<FBroadcastTask>::CreateTask().ConstructAndDispatchWhenReady(Callback, StartTime, TEXT("AudioT"), ENamedThreads::SetTaskPriority(ENamedThreads::AudioThread, ENamedThreads::HighTaskPriority), nullptr, nullptr, nullptr));
 	}
-	Tasks.Add(TGraphTask<FBroadcastTask>::CreateTask().ConstructAndDispatchWhenReady(Callback, StartTime, TEXT("GT"), ENamedThreads::GameThread_Local, nullptr, nullptr, nullptr));
+
+	Callback(ENamedThreads::GameThread_Local);
+
 	if (bDoTaskThreads)
 	{
 		check(MyEvent);
@@ -1939,14 +1984,14 @@ void FTaskGraphInterface::BroadcastSlow_OnlyUseForSpecialPurposes(bool bDoTaskTh
 			TaskEvent->Trigger();
 		}
 		{
-			double StartTimeInner = FPlatformTime::Seconds();
+			const double StartTimeInner = FPlatformTime::Seconds();
 			QUICK_SCOPE_CYCLE_COUNTER(STAT_Broadcast_WaitForTaskThreads);
 			FTaskGraphInterface::Get().WaitUntilTasksComplete(TaskThreadTasks, ENamedThreads::GameThread_Local);
 			{
-				float ThisTime = FPlatformTime::Seconds() - StartTimeInner;
-				if (ThisTime > 0.02f)
+				const double ThisTime = FPlatformTime::Seconds() - StartTimeInner;
+				if (ThisTime > 0.02)
 				{
-					UE_CLOG(GPrintBroadcastWarnings, LogTaskGraph, Warning, TEXT("Task graph took %6.2fms to wait for task thread broadcast."), ThisTime * 1000.0f);
+					UE_CLOG(GPrintBroadcastWarnings, LogTaskGraph, Warning, TEXT("Task graph took %6.2fms to wait for task thread broadcast."), ThisTime * 1000.0);
 				}
 			}
 		}
@@ -1954,13 +1999,31 @@ void FTaskGraphInterface::BroadcastSlow_OnlyUseForSpecialPurposes(bool bDoTaskTh
 	{
 		double StartTimeInner = FPlatformTime::Seconds();
 		QUICK_SCOPE_CYCLE_COUNTER(STAT_Broadcast_WaitForNamedThreads);
-		FTaskGraphInterface::Get().WaitUntilTasksComplete(Tasks, ENamedThreads::GameThread_Local);
+		
+		// Wait for all tasks to be complete.  Spin and pump messages to avoid deadlocks when other threads send messages and block until messages are processed
+		while (true)
 		{
-			float ThisTime = FPlatformTime::Seconds() - StartTimeInner;
-			if (ThisTime > 0.02f)
+			bool bAnyNotDone = false;
+			for (FGraphEventRef& Item : Tasks)
 			{
-				UE_CLOG(GPrintBroadcastWarnings, LogTaskGraph, Warning, TEXT("Task graph took %6.2fms to wait for named thread broadcast."), ThisTime * 1000.0f);
+				if (Item.GetReference() && !Item->IsComplete())
+				{
+					bAnyNotDone = true;
+					break;
+				}
 			}
+			if (!bAnyNotDone)
+			{
+				break;
+			}
+
+			FPlatformMisc::PumpMessagesOutsideMainLoop();
+		}
+		
+		const double EndTimeInner = FPlatformTime::Seconds() - StartTimeInner;
+		if (EndTimeInner > 0.02)
+		{
+			UE_CLOG(GPrintBroadcastWarnings, LogTaskGraph, Warning, TEXT("Task graph took %6.2fms to wait for named thread broadcast."), EndTimeInner * 1000.0);
 		}
 	}
 	for (FEvent* TaskEvent : TaskEvents)
@@ -1972,10 +2035,10 @@ void FTaskGraphInterface::BroadcastSlow_OnlyUseForSpecialPurposes(bool bDoTaskTh
 		FPlatformProcess::ReturnSynchEventToPool(MyEvent);
 	}
 	{
-		float ThisTime = FPlatformTime::Seconds() - StartTime;
-		if (ThisTime > 0.02f)
+		const double ThisTime = FPlatformTime::Seconds() - StartTime;
+		if (ThisTime > 0.02)
 		{
-			UE_CLOG(GPrintBroadcastWarnings, LogTaskGraph, Warning, TEXT("Task graph took %6.2fms to broadcast."), ThisTime * 1000.0f);
+			UE_CLOG(GPrintBroadcastWarnings, LogTaskGraph, Warning, TEXT("Task graph took %6.2fms to broadcast."), ThisTime * 1000.0);
 		}
 	}
 }
@@ -2457,6 +2520,36 @@ static void TestLockFree(int32 OuterIters = 3)
 		return;
 	}
 
+	const int32 NumWorkers = FTaskGraphInterface::Get().GetNumWorkerThreads();
+	// If we have too many threads active at once, they become too slow due to contention.  Set a reasonable maximum for how many are required to guarantee correctness of our LockFreePointers.
+	const int32 MaxWorkersForTest = 5; 
+	const int32 MinWorkersForTest = 2; // With less than two threads we're not testing threading at all, so the test is pointless.
+	if (NumWorkers < MinWorkersForTest)
+	{
+		UE_LOG(LogConsoleResponse, Display, TEXT("WARNING: TestLockFree disabled for current machine because of not enough worker threads.  Need %d, have %d."), MinWorkersForTest, NumWorkers);
+		return;
+	}
+
+	FScopedDurationTimeLogger DurationLogger(TEXT("TestLockFree Runtime"));
+	const uint32 NumWorkersForTest = static_cast<uint32>(FMath::Clamp(NumWorkers, MinWorkersForTest, MaxWorkersForTest));
+	auto RunWorkersSynchronous = [NumWorkersForTest](const TFunction<void(uint32)>& WorkerTask)
+	{
+		const bool bIsManualReset = true;
+		FEvent* AllDoneEvent = FPlatformProcess::GetSynchEventFromPool(bIsManualReset);
+		FThreadSafeCounter UnfinishedWorkers;
+		FGraphEventArray Tasks;
+		const double StartTime = FPlatformTime::Seconds();
+		UnfinishedWorkers.Add(NumWorkersForTest);
+		for (uint32 Index = 0; Index < NumWorkersForTest; Index++)
+		{
+			TFunction<void(ENamedThreads::Type)> WorkerTaskWithIndex{ [Index, &WorkerTask](ENamedThreads::Type CurrentThread) { WorkerTask(Index); } };
+			Tasks.Add(TGraphTask<FBroadcastTask>::CreateTask().ConstructAndDispatchWhenReady(WorkerTaskWithIndex, StartTime,
+				TEXT("TestLockFreeWorker"), ENamedThreads::AnyNormalThreadHiPriTask, &UnfinishedWorkers, nullptr, AllDoneEvent));
+		}
+		AllDoneEvent->Wait();
+		FPlatformProcess::ReturnSynchEventToPool(AllDoneEvent);
+	};
+
 	for (int32 Iter = 0; Iter < OuterIters; Iter++)
 	{
 		{
@@ -2466,15 +2559,15 @@ static void TestLockFree(int32 OuterIters = 3)
 			{
 				Rig.Test1.Push(new FTestStruct(Index));
 			}
-			TFunction<void(ENamedThreads::Type CurrentThread)> Broadcast =
-				[&Rig](ENamedThreads::Type MyThread)
+			TFunction<void(uint32)> Broadcast =
+				[&Rig](uint32 WorkerIndex)
 			{
-				FRandomStream Stream(((int32)MyThread) * 7 + 13);
+				FRandomStream Stream(((int32)WorkerIndex) * 7 + 13);
 				for (int32 Index = 0; Index < 1000000; Index++)
 				{
 					if (Index % 200000 == 1)
 					{
-						//UE_LOG(LogTemp, Log, TEXT("%8d iters thread=%d"), Index, int32(MyThread));
+						//UE_LOG(LogTemp, Log, TEXT("%8d iters thread=%d"), Index, int32(WorkerIndex));
 					}
 					if (Stream.FRand() < .03f)
 					{
@@ -2548,7 +2641,7 @@ static void TestLockFree(int32 OuterIters = 3)
 					}
 				}
 			};
-			FTaskGraphInterface::BroadcastSlow_OnlyUseForSpecialPurposes(true, false, Broadcast);
+			RunWorkersSynchronous(Broadcast);
 
 			TArray<FTestStruct*> Items;
 			Rig.Test1.PopAll(Items);
@@ -2585,15 +2678,15 @@ static void TestLockFree(int32 OuterIters = 3)
 			{
 				Rig.Test1.Push(new FTestStruct(Index));
 			}
-			TFunction<void(ENamedThreads::Type CurrentThread)> Broadcast =
-				[&Rig](ENamedThreads::Type MyThread)
+			TFunction<void(uint32)> Broadcast =
+				[&Rig](uint32 WorkerIndex)
 			{
-				FRandomStream Stream(((int32)MyThread) * 7 + 13);
+				FRandomStream Stream(((int32)WorkerIndex) * 7 + 13);
 				for (int32 Index = 0; Index < 1000000; Index++)
 				{
 					if (Index % 200000 == 1)
 					{
-						//UE_LOG(LogTemp, Log, TEXT("%8d iters thread=%d"), Index, int32(MyThread));
+						//UE_LOG(LogTemp, Log, TEXT("%8d iters thread=%d"), Index, int32(WorkerIndex));
 					}
 					if (Stream.FRand() < .03f)
 					{
@@ -2667,7 +2760,7 @@ static void TestLockFree(int32 OuterIters = 3)
 					}
 				}
 			};
-			FTaskGraphInterface::BroadcastSlow_OnlyUseForSpecialPurposes(true, false, Broadcast);
+			RunWorkersSynchronous(Broadcast);
 
 			TArray<FTestStruct*> Items;
 			Rig.Test1.PopAll(Items);

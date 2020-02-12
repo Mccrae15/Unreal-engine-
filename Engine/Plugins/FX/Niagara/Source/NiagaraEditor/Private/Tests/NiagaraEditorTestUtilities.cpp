@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "NiagaraEditorTestUtilities.h"
 #include "NiagaraSystem.h"
@@ -36,7 +36,7 @@ UNiagaraSystem* FNiagaraEditorTestUtilities::CreateTestSystemForEmitter(UNiagara
 {
 	UNiagaraSystem* System = NewObject<UNiagaraSystem>((UObject*)GetTransientPackage(), NAME_None, RF_Transient);
 	UNiagaraSystemFactoryNew::InitializeSystem(System, false);
-	System->AddEmitterHandleWithoutCopying(*Emitter);
+	System->AddEmitterHandle(*Emitter, Emitter->GetFName());
 	return System;
 }
 
@@ -48,7 +48,8 @@ TSharedRef<FNiagaraSystemViewModel> FNiagaraEditorTestUtilities::CreateTestSyste
 	SystemViewModelOptions.bCanAutoCompile = false;
 	SystemViewModelOptions.bCanSimulate = false;
 
-	TSharedRef<FNiagaraSystemViewModel> SystemViewModel = MakeShared<FNiagaraSystemViewModel>(*System, SystemViewModelOptions);
+	TSharedRef<FNiagaraSystemViewModel> SystemViewModel = MakeShared<FNiagaraSystemViewModel>();
+	SystemViewModel->Initialize(*System, SystemViewModelOptions);
 
 	return SystemViewModel;
 }

@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -511,10 +511,12 @@ namespace SharedPointerTesting
 			const bool Value = SharedRefHash.FindRef( FooRef );
 
 			// Map a type to shared refs
-			TMap< int32, TSharedRef< int32, Mode > > SharedRefValueHash;
-			SharedRefValueHash.Add( 10, FooRef );
-			const int32* FoundKey = SharedRefValueHash.FindKey( FooRef );
-			check( FoundKey != nullptr && *FoundKey == 10 );
+			{
+				TMap< int32, TSharedRef< int32, Mode > > SharedRefValueHash;
+				SharedRefValueHash.Add(10, FooRef);
+				const int32* FoundKey = SharedRefValueHash.FindKey(FooRef);
+				check(FoundKey != nullptr && *FoundKey == 10);
+			}
 
 			// Maps and 'const'
 			{

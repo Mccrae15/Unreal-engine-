@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 /*=============================================================================
 	Script.h: Blueprint bytecode execution engine.
@@ -270,6 +270,8 @@ enum EExprToken
 	EX_SwitchValue			= 0x69,
 	EX_InstrumentationEvent	= 0x6A, // Instrumentation event
 	EX_ArrayGetByRef		= 0x6B,
+	EX_ClassSparseDataVariable = 0x6C, // Sparse data variable
+	EX_FieldPathConst		= 0x6D,
 	EX_Max					= 0x100,
 };
 
@@ -552,13 +554,3 @@ COREUOBJECT_API FString ToValidCPPIdentifierChars(TCHAR Char);
 */
 COREUOBJECT_API FString UnicodeToCPPIdentifier(const FString& InName, bool bDeprecated, const TCHAR* Prefix);
 
-/**
-	@param ForFn Function to search for a corresponding uber graph frame
-	@param Obj owning the uber graph frame, Obj must be an instance based on ForFn->GetOuterUClass()
-	@return A pointer to the start of the objects persistent uber graph
-		frame if ForFn is an ubergraph function, else nullptr. The uber graph
-		frame is a struct that has a matching layout to a blueprint's UberGraphFunction's
-		parameters. The Uber Graph frame is an optimization because it avoids a large
-		allocation and corresponding initialization when calling the UberGraphFunction
-*/
-COREUOBJECT_API uint8* GetPersistentUberGraphFrame(const UFunction* ForFn, UObject* Obj);

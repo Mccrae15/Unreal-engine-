@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "Misc/ExclusiveLoadPackageTimeTracker.h"
 #include "Misc/OutputDeviceArchiveWrapper.h"
@@ -219,7 +219,7 @@ void FExclusiveLoadPackageTimeTracker::InternalDumpReport(const TArray<FString>&
 		ReportAr->Logf(TEXT("Dumping all loaded assets by exclusive load time:"));
 		if (bAlphaSort)
 		{
-			SortedLoadTimes.Sort([](const FLoadTime& A, const FLoadTime& B) { return A.TimeName < B.TimeName; });
+			SortedLoadTimes.Sort([](const FLoadTime& A, const FLoadTime& B) { return A.TimeName.LexicalLess(B.TimeName); });
 		}
 		else
 		{
@@ -255,7 +255,7 @@ void FExclusiveLoadPackageTimeTracker::InternalDumpReport(const TArray<FString>&
 		ReportAr->Logf(TEXT("Dumping all loaded assets by inclusive load time:"));
 		if (bAlphaSort)
 		{
-			SortedLoadTimes.Sort([](const FLoadTime& A, const FLoadTime& B) { return A.TimeName < B.TimeName; });
+			SortedLoadTimes.Sort([](const FLoadTime& A, const FLoadTime& B) { return A.TimeName.LexicalLess(B.TimeName); });
 		}
 		else
 		{

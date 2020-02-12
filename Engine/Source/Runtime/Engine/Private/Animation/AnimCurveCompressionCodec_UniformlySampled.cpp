@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "Animation/AnimCurveCompressionCodec_UniformlySampled.h"
 #include "Animation/AnimSequence.h"
@@ -14,7 +14,7 @@ UAnimCurveCompressionCodec_UniformlySampled::UAnimCurveCompressionCodec_Uniforml
 }
 
 #if WITH_EDITORONLY_DATA
-bool UAnimCurveCompressionCodec_UniformlySampled::Compress(const UAnimSequence& AnimSeq, FAnimCurveCompressionResult& OutResult)
+bool UAnimCurveCompressionCodec_UniformlySampled::Compress(const FCompressibleAnimData& AnimSeq, FAnimCurveCompressionResult& OutResult)
 {
 	const int32 NumCurves = AnimSeq.RawCurveData.FloatCurves.Num();
 	const float Duration = AnimSeq.SequenceLength;
@@ -23,7 +23,7 @@ bool UAnimCurveCompressionCodec_UniformlySampled::Compress(const UAnimSequence& 
 	float SampleRate_;
 	if (UseAnimSequenceSampleRate)
 	{
-		const FAnimKeyHelper Helper(AnimSeq.SequenceLength, AnimSeq.GetRawNumberOfFrames());
+		const FAnimKeyHelper Helper(AnimSeq.SequenceLength, AnimSeq.NumFrames);
 		SampleRate_ = Helper.KeysPerSecond();
 		NumSamples = FMath::RoundToInt(Duration * SampleRate_) + 1;
 	}
@@ -160,9 +160,9 @@ void UAnimCurveCompressionCodec_UniformlySampled::PopulateDDCKey(FArchive& Ar)
 }
 #endif
 
-void UAnimCurveCompressionCodec_UniformlySampled::DecompressCurves(const UAnimSequence& AnimSeq, FBlendedCurve& Curves, float CurrentTime) const
+void UAnimCurveCompressionCodec_UniformlySampled::DecompressCurves(const FCompressedAnimSequence& AnimSeq, FBlendedCurve& Curves, float CurrentTime) const
 {
-	const TArray<FSmartName>& CompressedCurveNames = AnimSeq.GetCompressedCurveNames();
+	const TArray<FSmartName>& CompressedCurveNames = AnimSeq.CompressedCurveNames;
 	const int32 NumCurves = CompressedCurveNames.Num();
 
 	if (NumCurves == 0)
@@ -176,6 +176,8 @@ void UAnimCurveCompressionCodec_UniformlySampled::DecompressCurves(const UAnimSe
 	const int32 NumConstantCurves = *(const int32*)&Buffer[BufferOffset];
 	BufferOffset += sizeof(int32);
 
+	const int32 NumAnimatedCurves = NumCurves - NumConstantCurves;
+
 	const int32 NumSamples = *(const int32*)&Buffer[BufferOffset];
 	BufferOffset += sizeof(int32);
 
@@ -188,21 +190,19 @@ void UAnimCurveCompressionCodec_UniformlySampled::DecompressCurves(const UAnimSe
 	BufferOffset += sizeof(float);
 
 	const uint32* ConstantCurvesBitsetPtr = (const uint32*)&Buffer[BufferOffset];
-	BufferOffset += sizeof(uint32) * NumCurves;
-
 	const int32 ConstantBitsetSize = sizeof(uint32) * ((NumCurves + 31) / 32);
-	const float* ConstantSamplesPtr = (const float*)&Buffer[BufferOffset];
 	BufferOffset += ConstantBitsetSize;
 
+	const float* ConstantSamplesPtr = (const float*)&Buffer[BufferOffset];
+	BufferOffset += sizeof(float) * NumConstantCurves;
+
 	const float* AnimatedSamplesPtr = (const float*)&Buffer[BufferOffset];
-	//const int32 NumAnimatedCurves = NumCurves - NumConstantCurves;
-	//BufferOffset += sizeof(float) * NumAnimatedCurves * NumSamples;
+	BufferOffset += sizeof(float) * NumAnimatedCurves * NumSamples;
 
 	const float SamplePoint = CurrentTime * SampleRate_;
 	const int32 SampleIndex0 = FMath::Clamp(FMath::FloorToInt(SamplePoint), 0, NumSamples - 1);
 	const int32 SampleIndex1 = FMath::Min(SampleIndex0 + 1, NumSamples - 1);
 	const float InterpolationAlpha = SamplePoint - float(SampleIndex0);
-	const int32 NumAnimatedCurves = NumCurves - NumConstantCurves;
 
 	const float* AnimatedSamples0 = AnimatedSamplesPtr + (SampleIndex0 * NumAnimatedCurves);
 	const float* AnimatedSamples1 = AnimatedSamplesPtr + (SampleIndex1 * NumAnimatedCurves);
@@ -232,9 +232,9 @@ void UAnimCurveCompressionCodec_UniformlySampled::DecompressCurves(const UAnimSe
 	}
 }
 
-float UAnimCurveCompressionCodec_UniformlySampled::DecompressCurve(const UAnimSequence& AnimSeq, SmartName::UID_Type CurveUID, float CurrentTime) const
+float UAnimCurveCompressionCodec_UniformlySampled::DecompressCurve(const FCompressedAnimSequence& AnimSeq, SmartName::UID_Type CurveUID, float CurrentTime) const
 {
-	const TArray<FSmartName>& CompressedCurveNames = AnimSeq.GetCompressedCurveNames();
+	const TArray<FSmartName>& CompressedCurveNames = AnimSeq.CompressedCurveNames;
 	const int32 NumCurves = CompressedCurveNames.Num();
 
 	if (NumCurves == 0)
@@ -255,15 +255,15 @@ float UAnimCurveCompressionCodec_UniformlySampled::DecompressCurve(const UAnimSe
 	BufferOffset += sizeof(float);
 
 	const uint32* ConstantCurvesBitsetPtr = (const uint32*)&Buffer[BufferOffset];
-	BufferOffset += sizeof(uint32) * NumCurves;
-
 	const int32 ConstantBitsetSize = sizeof(uint32) * ((NumCurves + 31) / 32);
-	const float* ConstantSamplesPtr = (const float*)&Buffer[BufferOffset];
 	BufferOffset += ConstantBitsetSize;
+	
+	const float* ConstantSamplesPtr = (const float*)&Buffer[BufferOffset];
+	BufferOffset += sizeof(float) * NumConstantCurves;
 
 	const float* AnimatedSamplesPtr = (const float*)&Buffer[BufferOffset];
-	//const int32 NumAnimatedCurves = NumCurves - NumConstantCurves;
-	//BufferOffset += sizeof(float) * NumAnimatedCurves * NumSamples;
+	const int32 NumAnimatedCurves = NumCurves - NumConstantCurves;
+	BufferOffset += sizeof(float) * NumAnimatedCurves * NumSamples;
 
 	for (int32 CurveIndex = 0, ConstantCurveIndex = 0, AnimatedCurveIndex = 0; CurveIndex < NumCurves; ++CurveIndex)
 	{
@@ -282,7 +282,6 @@ float UAnimCurveCompressionCodec_UniformlySampled::DecompressCurve(const UAnimSe
 				const int32 SampleIndex0 = FMath::Clamp(FMath::FloorToInt(SamplePoint), 0, NumSamples - 1);
 				const int32 SampleIndex1 = FMath::Min(SampleIndex0 + 1, NumSamples - 1);
 				const float InterpolationAlpha = SamplePoint - float(SampleIndex0);
-				const int32 NumAnimatedCurves = NumCurves - NumConstantCurves;
 
 				const float Sample0 = AnimatedSamplesPtr[(SampleIndex0 * NumAnimatedCurves) + CurveIndex];
 				const float Sample1 = AnimatedSamplesPtr[(SampleIndex1 * NumAnimatedCurves) + CurveIndex];

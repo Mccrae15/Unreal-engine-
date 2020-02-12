@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 
 #pragma once
@@ -7,6 +7,7 @@
 #include "RHI.h"
 #include "PackedNormal.h"
 #include "RenderResource.h"
+#include "RHIDefinitions.h"
 
 extern RENDERCORE_API void RenderUtilsInit();
 
@@ -121,15 +122,26 @@ extern RENDERCORE_API SIZE_T CalculateImageBytes(uint32 SizeX,uint32 SizeY,uint3
 
 /** A global white texture. */
 extern RENDERCORE_API class FTexture* GWhiteTexture;
+extern RENDERCORE_API class FTextureWithSRV* GWhiteTextureWithSRV;
 
 /** A global black texture. */
 extern RENDERCORE_API class FTexture* GBlackTexture;
+extern RENDERCORE_API class FTextureWithSRV* GBlackTextureWithSRV;
+extern RENDERCORE_API class FTextureWithSRV* GBlackTextureWithUAV;
+
+extern RENDERCORE_API class FVertexBufferWithSRV* GEmptyVertexBufferWithUAV;
 
 /** A global black array texture. */
 extern RENDERCORE_API class FTexture* GBlackArrayTexture;
 
 /** A global black volume texture. */
 extern RENDERCORE_API class FTexture* GBlackVolumeTexture;
+
+/** A global black volume texture, with alpha=1. */
+extern RENDERCORE_API class FTexture* GBlackAlpha1VolumeTexture;
+
+/** A global black texture<uint> */
+extern RENDERCORE_API class FTexture* GBlackUintTexture;
 
 /** A global black volume texture<uint>  */
 extern RENDERCORE_API class FTexture* GBlackUintVolumeTexture;
@@ -219,7 +231,32 @@ public:
 		RHIUnlockVertexBuffer(VertexBufferRHI);
 	}
 };
+
 extern RENDERCORE_API TGlobalResource<FScreenSpaceVertexBuffer> GScreenSpaceVertexBuffer;
+
+class FTileVertexDeclaration : public FRenderResource
+{
+public:
+	FVertexDeclarationRHIRef VertexDeclarationRHI;
+
+	/** Destructor. */
+	virtual ~FTileVertexDeclaration() {}
+
+	virtual void InitRHI()
+	{
+		FVertexDeclarationElementList Elements;
+		uint32 Stride = sizeof(FVector2D);
+		Elements.Add(FVertexElement(0, 0, VET_Float2, 0, Stride, false));
+		VertexDeclarationRHI = RHICreateVertexDeclaration(Elements);
+	}
+
+	virtual void ReleaseRHI()
+	{
+		VertexDeclarationRHI.SafeRelease();
+	}
+};
+
+extern RENDERCORE_API TGlobalResource<FTileVertexDeclaration> GTileVertexDeclaration;
 
 /**
  * Maps from an X,Y,Z cube vertex coordinate to the corresponding vertex index.
@@ -424,39 +461,68 @@ RENDERCORE_API FVertexDeclarationRHIRef& GetVertexDeclarationFVector3();
 
 RENDERCORE_API FVertexDeclarationRHIRef& GetVertexDeclarationFVector2();
 
-RENDERCORE_API bool PlatformSupportsSimpleForwardShading(EShaderPlatform Platform);
+RENDERCORE_API bool PlatformSupportsSimpleForwardShading(const FStaticShaderPlatform Platform);
 
-RENDERCORE_API bool IsSimpleForwardShadingEnabled(EShaderPlatform Platform);
+RENDERCORE_API bool IsSimpleForwardShadingEnabled(const FStaticShaderPlatform Platform);
+
+RENDERCORE_API bool MobileSupportsGPUScene(const FStaticShaderPlatform Platform);
+
+RENDERCORE_API bool GPUSceneUseTexture2D(const FStaticShaderPlatform Platform);
+
+RENDERCORE_API bool MaskedInEarlyPass(const FStaticShaderPlatform Platform);
+
+RENDERCORE_API bool AllowPixelDepthOffset(const FStaticShaderPlatform Platform);
 
 /** Returns if ForwardShading is enabled. Only valid for the current platform (otherwise call ITargetPlatform::UsesForwardShading()). */
-inline bool IsForwardShadingEnabled(EShaderPlatform Platform)
+inline bool IsForwardShadingEnabled(const FStaticShaderPlatform Platform)
 {
-	extern RENDERCORE_API uint32 GForwardShadingPlatformMask;
-	return !!(GForwardShadingPlatformMask & (1u << Platform))
+	extern RENDERCORE_API uint64 GForwardShadingPlatformMask;
+	return !!(GForwardShadingPlatformMask & (1ull << Platform))
 		// Culling uses compute shader
 		&& GetMaxSupportedFeatureLevel(Platform) >= ERHIFeatureLevel::SM5;
 }
 
 /** Returns if ForwardShading or SimpleForwardShading is enabled. Only valid for the current platform. */
-inline bool IsAnyForwardShadingEnabled(EShaderPlatform Platform)
+inline bool IsAnyForwardShadingEnabled(const FStaticShaderPlatform Platform)
 {
 	return IsForwardShadingEnabled(Platform) || IsSimpleForwardShadingEnabled(Platform);
 }
 
 /** Returns if the GBuffer is used. Only valid for the current platform. */
-inline bool IsUsingGBuffers(EShaderPlatform Platform)
+inline bool IsUsingGBuffers(const FStaticShaderPlatform Platform)
 {
 	return !IsAnyForwardShadingEnabled(Platform);
 }
 
 /** Returns whether DBuffer decals are enabled for a given shader platform */
-inline bool IsUsingDBuffers(EShaderPlatform Platform)
+inline bool IsUsingDBuffers(const FStaticShaderPlatform Platform)
 {
-	extern RENDERCORE_API uint32 GDBufferPlatformMask;
-	return !!(GDBufferPlatformMask & (1u << Platform));
+	extern RENDERCORE_API uint64 GDBufferPlatformMask;
+	return !!(GDBufferPlatformMask & (1ull << Platform));
 }
 
-inline bool IsUsingPerPixelDBufferMask(EShaderPlatform Platform)
+/** Returns whether the base pass should output to the velocity buffer is enabled for a given shader platform */
+inline bool IsUsingBasePassVelocity(const FStaticShaderPlatform Platform)
+{
+	extern RENDERCORE_API uint64 GBasePassVelocityPlatformMask;
+	return !!(GBasePassVelocityPlatformMask & (1ull << Platform));
+}
+
+/** Returns whether the base pass should use selective outputs for a given shader platform */
+inline bool IsUsingSelectiveBasePassOutputs(const FStaticShaderPlatform Platform)
+{
+	extern RENDERCORE_API uint64 GSelectiveBasePassOutputsPlatformMask;
+	return !!(GSelectiveBasePassOutputsPlatformMask & (1ull << Platform));
+}
+
+/** Returns whether distance fields are enabled for a given shader platform */
+inline bool IsUsingDistanceFields(const FStaticShaderPlatform Platform)
+{
+	extern RENDERCORE_API uint64 GDistanceFieldsPlatformMask;
+	return !!(GDistanceFieldsPlatformMask & (1ull << Platform));
+}
+
+inline bool IsUsingPerPixelDBufferMask(const FStaticShaderPlatform Platform)
 {
 	switch (Platform)
 	{
@@ -469,14 +535,20 @@ inline bool IsUsingPerPixelDBufferMask(EShaderPlatform Platform)
 	}
 }
 
-inline bool UseGPUScene(EShaderPlatform Platform, ERHIFeatureLevel::Type FeatureLevel)
+inline bool UseGPUScene(const FStaticShaderPlatform Platform, const FStaticFeatureLevel FeatureLevel)
 {
+	if (FeatureLevel == ERHIFeatureLevel::ES3_1)
+	{
+		return MobileSupportsGPUScene(Platform);
+	}
+	
 	// GPU Scene management uses compute shaders
 	return FeatureLevel >= ERHIFeatureLevel::SM5 
 		//@todo - support GPU Scene management compute shaders on these platforms to get dynamic instancing speedups on the Rendering Thread and RHI Thread
 		&& !IsOpenGLPlatform(Platform)
-		&& !IsVulkanPlatform(Platform)
-		&& !IsSwitchPlatform(Platform);
+		&& !IsSwitchPlatform(Platform)
+		// we only check DDSPI for platforms that have been read in - IsValid() can go away once ALL platforms are converted over to this system
+		&& (!FDataDrivenShaderPlatformInfo::IsValid(Platform) || FDataDrivenShaderPlatformInfo::GetSupportsGPUScene(Platform));
 }
 
 /** Unit cube vertex buffer (VertexDeclarationFVector4) */
@@ -491,3 +563,8 @@ RENDERCORE_API FIndexBufferRHIRef& GetUnitCubeIndexBuffer();
 * be halved in size several times.
 */
 RENDERCORE_API void QuantizeSceneBufferSize(const FIntPoint& InBufferSize, FIntPoint& OutBufferSize);
+
+/**
+*	Checks if virtual texturing enabled and supported
+*/
+RENDERCORE_API bool UseVirtualTexturing(const FStaticFeatureLevel InFeatureLevel, const class ITargetPlatform* TargetPlatform = nullptr);

@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 using System;
 using System.Collections.Generic;
@@ -10,25 +10,6 @@ using Tools.DotNETCommon;
 
 namespace UnrealBuildTool
 {
-	/// <summary>
-	/// The platforms that may be compilation targets for C++ files.
-	/// </summary>
-	enum CppPlatform
-	{
-		Win32,
-		Win64,
-		Mac,
-		XboxOne,
-		PS4,
-		Android,
-		IOS,
-		HTML5,
-		Linux,
-		TVOS,
-		Switch,
-		Quail,
-		Lumin,
-	}
 
 	/// <summary>
 	/// Compiler configuration. This controls whether to use define debug macros and other compiler settings. Note that optimization level should be based on the bOptimizeCode variable rather than
@@ -93,6 +74,7 @@ namespace UnrealBuildTool
 	{
 		public List<FileItem> ObjectFiles = new List<FileItem>();
 		public List<FileItem> DebugDataFiles = new List<FileItem>();
+		public List<FileItem> GeneratedHeaderFiles = new List<FileItem>();
 		public FileItem PrecompiledHeaderFile = null;
 	}
 
@@ -104,7 +86,7 @@ namespace UnrealBuildTool
 		/// <summary>
 		/// The platform to be compiled/linked for.
 		/// </summary>
-		public readonly CppPlatform Platform;
+		public readonly UnrealTargetPlatform Platform;
 
 		/// <summary>
 		/// The configuration to be compiled/linked for.
@@ -152,7 +134,13 @@ namespace UnrealBuildTool
 		public bool bUseInlining = false;
 
 		/// <summary>
-		/// Use AVX instructions
+		/// Whether to compile ISPC files.
+		/// </summary>
+		public bool bCompileISPC = false;
+
+		/// <summary>
+		/// Direct the compiler to generate AVX instructions wherever SSE or AVX intrinsics are used.
+		/// Note that by enabling this you are changing the minspec for the PC platform, and the resultant executable will crash on machines without AVX support.
 		/// </summary>
 		public bool bUseAVX = false;
 
@@ -162,9 +150,10 @@ namespace UnrealBuildTool
 		public bool bEnableBufferSecurityChecks = true;
 
 		/// <summary>
-		/// If true and unity builds are enabled, this module will build without unity.
+		/// If unity builds are enabled this can be used to override if this specific module will build using Unity.
+		/// This is set using the per module configurations in BuildConfiguration.
 		/// </summary>
-		public bool bFasterWithoutUnity = false;
+		public bool bUseUnity = false;
 
 		/// <summary>
 		/// The number of source files in this module before unity build will be activated for that module.  If set to
@@ -195,17 +184,17 @@ namespace UnrealBuildTool
 		/// <summary>
 		/// Whether to warn about the use of shadow variables
 		/// </summary>
-		public bool bEnableShadowVariableWarnings = false;
+		public WarningLevel ShadowVariableWarningLevel = WarningLevel.Warning;
 
 		/// <summary>
-		/// Whether to treat shadow variable warnings as errors.
+		/// How to treat unsafe implicit type cast warnings (e.g., double->float or int64->int32)
 		/// </summary>
-		public bool bShadowVariableWarningsAsErrors = false;
+		public WarningLevel UnsafeTypeCastWarningLevel = WarningLevel.Off;
 
 		/// <summary>
 		/// Whether to warn about the use of undefined identifiers in #if expressions
 		/// </summary>
-		public bool bEnableUndefinedIdentifierWarnings = false;
+		public bool bEnableUndefinedIdentifierWarnings = true;
 
 		/// <summary>
 		/// Whether to treat undefined identifier warnings as errors.
@@ -261,6 +250,11 @@ namespace UnrealBuildTool
 		/// Whether PDB files should be used for Visual C++ builds.
 		/// </summary>
 		public bool bUsePDBFiles = false;
+
+		/// <summary>
+		/// Whether to just preprocess source files
+		/// </summary>
+		public bool bPreprocessOnly = false;
 
 		/// <summary>
 		/// Whether to support edit and continue.  Only works on Microsoft compilers in 32-bit compiles.
@@ -334,6 +328,11 @@ namespace UnrealBuildTool
 		public List<FileItem> ForceIncludeFiles = new List<FileItem>();
 
 		/// <summary>
+		/// List of files that need to be up to date before compile can proceed
+		/// </summary>
+		public List<FileItem> AdditionalPrerequisites = new List<FileItem>();
+
+		/// <summary>
 		/// The C++ preprocessor definitions to use.
 		/// </summary>
 		public List<string> Definitions = new List<string>();
@@ -361,7 +360,7 @@ namespace UnrealBuildTool
 		/// <summary>
 		/// Whether to hide symbols by default
 		/// </summary>
-		public bool bHideSymbolsByDefault;
+		public bool bHideSymbolsByDefault = true;
 
 		/// <summary>
 		/// Which C++ standard to support. May not be compatible with all platforms.
@@ -371,7 +370,7 @@ namespace UnrealBuildTool
 		/// <summary>
 		/// Default constructor.
 		/// </summary>
-        public CppCompileEnvironment(CppPlatform Platform, CppConfiguration Configuration, string Architecture, SourceFileMetadataCache MetadataCache)
+        public CppCompileEnvironment(UnrealTargetPlatform Platform, CppConfiguration Configuration, string Architecture, SourceFileMetadataCache MetadataCache)
 		{
 			this.Platform = Platform;
 			this.Configuration = Configuration;
@@ -398,15 +397,16 @@ namespace UnrealBuildTool
 			bUseSharedBuildEnvironment = Other.bUseSharedBuildEnvironment;
 			bUseRTTI = Other.bUseRTTI;
 			bUseInlining = Other.bUseInlining;
+			bCompileISPC = Other.bCompileISPC;
 			bUseAVX = Other.bUseAVX;
-			bFasterWithoutUnity = Other.bFasterWithoutUnity;
+			bUseUnity = Other.bUseUnity;
 			MinSourceFilesForUnityBuildOverride = Other.MinSourceFilesForUnityBuildOverride;
 			MinFilesUsingPrecompiledHeaderOverride = Other.MinFilesUsingPrecompiledHeaderOverride;
 			bBuildLocallyWithSNDBS = Other.bBuildLocallyWithSNDBS;
 			bEnableExceptions = Other.bEnableExceptions;
 			bEnableObjCExceptions = Other.bEnableObjCExceptions;
-			bShadowVariableWarningsAsErrors = Other.bShadowVariableWarningsAsErrors;
-			bEnableShadowVariableWarnings = Other.bEnableShadowVariableWarnings;
+			ShadowVariableWarningLevel = Other.ShadowVariableWarningLevel;
+			UnsafeTypeCastWarningLevel = Other.UnsafeTypeCastWarningLevel;
 			bUndefinedIdentifierWarningsAsErrors = Other.bUndefinedIdentifierWarningsAsErrors;
 			bEnableUndefinedIdentifierWarnings = Other.bEnableUndefinedIdentifierWarnings;
 			bOptimizeCode = Other.bOptimizeCode;
@@ -419,6 +419,7 @@ namespace UnrealBuildTool
 			bOmitFramePointers = Other.bOmitFramePointers;
 			bEnableOSX109Support = Other.bEnableOSX109Support;
 			bUsePDBFiles = Other.bUsePDBFiles;
+			bPreprocessOnly = Other.bPreprocessOnly;
 			bSupportEditAndContinue = Other.bSupportEditAndContinue;
 			bUseIncrementalLinking = Other.bUseIncrementalLinking;
 			bAllowLTCG = Other.bAllowLTCG;
@@ -433,6 +434,7 @@ namespace UnrealBuildTool
 			SystemIncludePaths = new HashSet<DirectoryReference>(Other.SystemIncludePaths);
 			bCheckSystemHeadersForModification = Other.bCheckSystemHeadersForModification;
 			ForceIncludeFiles.AddRange(Other.ForceIncludeFiles);
+			AdditionalPrerequisites.AddRange(Other.AdditionalPrerequisites);
 			Definitions.AddRange(Other.Definitions);
 			AdditionalArguments = Other.AdditionalArguments;
 			AdditionalFrameworks.AddRange(Other.AdditionalFrameworks);

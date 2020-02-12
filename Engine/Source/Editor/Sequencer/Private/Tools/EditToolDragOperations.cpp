@@ -1,8 +1,9 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "Tools/EditToolDragOperations.h"
 #include "ISequencer.h"
 #include "MovieSceneTrack.h"
+#include "MovieSceneSequence.h"
 #include "Sequencer.h"
 #include "SequencerSettings.h"
 #include "SequencerCommonHelpers.h"
@@ -20,12 +21,12 @@ struct FInvalidKeyAndSectionSnappingCandidates : ISequencerSnapCandidate
 	/**
 	 * Keys and Sections added to this ISequencerSnapCandidate will be ignored as potential candidates for snapping.
 	 */
-	FInvalidKeyAndSectionSnappingCandidates(const TSet<FSequencerSelectedKey>& InKeysToIgnore, const TArray<FSectionHandle>& InSectionsToIgnore)
+	FInvalidKeyAndSectionSnappingCandidates(const TSet<FSequencerSelectedKey>& InKeysToIgnore, const TArray<TWeakObjectPtr<UMovieSceneSection>>& InSectionsToIgnore)
 	{
 		KeysToExclude = InKeysToIgnore;
-		for (const FSectionHandle& SectionHandle : InSectionsToIgnore)
+		for (const TWeakObjectPtr<UMovieSceneSection>& WeakSection : InSectionsToIgnore)
 		{
-			SectionsToExclude.Add(SectionHandle.GetSectionObject());
+			SectionsToExclude.Add(WeakSection.Get());
 		}
 	}
 
@@ -73,39 +74,7 @@ TOptional<FSequencerSnapField::FSnapResult> SnapToInterval(const TArray<FFrameNu
 /** How many pixels near the mouse has to be before snapping occurs */
 const float PixelSnapWidth = 10.f;
 
-TRange<FFrameNumber> GetSectionBoundaries(const UMovieSceneSection* Section, TArray<FSectionHandle>& SectionHandles, TSharedPtr<FSequencerTrackNode> SequencerNode)
-{
-	// Only get boundaries for the sections that aren't being moved
-	TArray<const UMovieSceneSection*> SectionsBeingMoved;
-	for (auto SectionHandle : SectionHandles)
-	{
-		SectionsBeingMoved.Add(SectionHandle.GetSectionObject());
-	}
 
-	// Find the borders of where you can drag to
-	FFrameNumber LowerBound = TNumericLimits<int32>::Lowest(), UpperBound = TNumericLimits<int32>::Max();
-
-	// Also get the closest borders on either side
-	const TArray< TSharedRef<ISequencerSection> >& AllSections = SequencerNode->GetSections();
-	for (int32 SectionIndex = 0; SectionIndex < AllSections.Num(); ++SectionIndex)
-	{
-		const UMovieSceneSection* TestSection = AllSections[SectionIndex]->GetSectionObject();
-
-		if (!SectionsBeingMoved.Contains(TestSection) && Section->GetRowIndex() == TestSection->GetRowIndex())
-		{
-			if (TestSection->HasEndFrame() && Section->HasStartFrame() && TestSection->GetExclusiveEndFrame() <= Section->GetInclusiveStartFrame() && TestSection->GetExclusiveEndFrame() > LowerBound)
-			{
-				LowerBound = TestSection->GetExclusiveEndFrame();
-			}
-			if (TestSection->HasStartFrame() && Section->HasEndFrame() && TestSection->GetInclusiveStartFrame() >= Section->GetExclusiveEndFrame() && TestSection->GetInclusiveStartFrame() < UpperBound)
-			{
-				UpperBound = TestSection->GetInclusiveStartFrame();
-			}
-		}
-	}
-
-	return TRange<FFrameNumber>(LowerBound, UpperBound);
-}
 
 FEditToolDragOperation::FEditToolDragOperation( FSequencer& InSequencer )
 	: Sequencer(InSequencer)
@@ -123,14 +92,14 @@ int32 FEditToolDragOperation::OnPaint(const FGeometry& AllottedGeometry, const F
 	return LayerId;
 }
 
-void FEditToolDragOperation::BeginTransaction( TArray< FSectionHandle >& Sections, const FText& TransactionDesc )
+void FEditToolDragOperation::BeginTransaction( TArray< TWeakObjectPtr<UMovieSceneSection> >& Sections, const FText& TransactionDesc )
 {
 	// Begin an editor transaction and mark the section as transactional so it's state will be saved
 	Transaction.Reset( new FScopedTransaction(TransactionDesc) );
 
 	for (int32 SectionIndex = 0; SectionIndex < Sections.Num(); )
 	{
-		UMovieSceneSection* SectionObj = Sections[SectionIndex].GetSectionObject();
+		UMovieSceneSection* SectionObj = Sections[SectionIndex].Get();
 
 		SectionObj->SetFlags( RF_Transactional );
 		// Save the current state of the section
@@ -151,9 +120,9 @@ void FEditToolDragOperation::EndTransaction()
 	Sequencer.NotifyMovieSceneDataChanged( EMovieSceneDataChangeType::TrackValueChanged );
 }
 
-FResizeSection::FResizeSection( FSequencer& InSequencer, TArray<FSectionHandle> InSections, bool bInDraggingByEnd, bool bInIsSlipping )
+FResizeSection::FResizeSection( FSequencer& InSequencer, const TSet<TWeakObjectPtr<UMovieSceneSection>>& InSections, bool bInDraggingByEnd, bool bInIsSlipping )
 	: FEditToolDragOperation( InSequencer )
-	, Sections( MoveTemp(InSections) )
+	, Sections( InSections.Array() )
 	, bDraggingByEnd(bInDraggingByEnd)
 	, bIsSlipping(bInIsSlipping)
 	, MouseDownTime(0)
@@ -169,22 +138,20 @@ void FResizeSection::OnBeginDrag(const FPointerEvent& MouseEvent, FVector2D Loca
 	// Construct a snap field of unselected sections
 	TSet<FSequencerSelectedKey> EmptyKeySet;
 	FInvalidKeyAndSectionSnappingCandidates SnapCandidates(EmptyKeySet, Sections);
-	SnapField = FSequencerSnapField(Sequencer, SnapCandidates, ESequencerEntity::Section);
+	SnapField = FSequencerSnapField(Sequencer, SnapCandidates, ESequencerEntity::Section | ESequencerEntity::Key);
 
 	SectionInitTimes.Empty();
 
 	bool bIsDilating = MouseEvent.IsControlDown();
-	ISequencerModule& SequencerModule = FModuleManager::Get().LoadModuleChecked<ISequencerModule>("Sequencer");
+	PreDragSectionData.Empty();
 
-	for (auto& Handle : Sections)
+	for (TWeakObjectPtr<UMovieSceneSection> WeakSection : Sections)
 	{
-		UMovieSceneSection* Section = Handle.GetSectionObject();
+		UMovieSceneSection* Section = WeakSection.Get();
 
-		TSharedRef<ISequencerSection> SectionInterface = Handle.GetSectionInterface();
 		if (bIsDilating)
 		{
 			// Populate the resize data for this section
-			PreDragSectionData.Empty();
 			FPreDragSectionData ResizeData; 
 			ResizeData.MovieSection = Section;
 			ResizeData.InitialRange = Section->GetRange();
@@ -205,9 +172,16 @@ void FResizeSection::OnBeginDrag(const FPointerEvent& MouseEvent, FVector2D Loca
 			}
 			PreDragSectionData.Emplace(ResizeData);
 		}
-		else
+		else if (TOptional<FSectionHandle> SectionHandle = Sequencer.GetNodeTree()->GetSectionHandle(Section))
 		{
-			SectionInterface->BeginResizeSection();
+			if (bIsSlipping)
+			{
+				SectionHandle->GetSectionInterface()->BeginSlipSection();
+			}
+			else
+			{
+				SectionHandle->GetSectionInterface()->BeginResizeSection();
+			}
 		}
 
 		SectionInitTimes.Add(Section, bDraggingByEnd ? Section->GetExclusiveEndFrame() : Section->GetInclusiveStartFrame());
@@ -237,9 +211,9 @@ void FResizeSection::OnDrag(const FPointerEvent& MouseEvent, FVector2D LocalMous
 	if ( Settings->GetIsSnapEnabled() )
 	{
 		TArray<FFrameNumber> SectionTimes;
-		for (const FSectionHandle& Handle : Sections)
+		for (const TWeakObjectPtr<UMovieSceneSection>& WeakSection : Sections)
 		{
-			UMovieSceneSection* Section = Handle.GetSectionObject();
+			UMovieSceneSection* Section = WeakSection.Get();
 			SectionTimes.Add(SectionInitTimes[Section] + DeltaTime);
 		}
 
@@ -344,68 +318,66 @@ void FResizeSection::OnDrag(const FPointerEvent& MouseEvent, FVector2D LocalMous
 		}
 	}
 	/********************************************************************/
-	else for (const FSectionHandle& Handle : Sections)
+	else for (const TWeakObjectPtr<UMovieSceneSection>& WeakSection : Sections)
 	{
-		UMovieSceneSection* Section = Handle.GetSectionObject();
-
-		// Find the corresponding sequencer section to this movie scene section
-		for (const TSharedRef<ISequencerSection>& SequencerSection : Handle.TrackNode->GetSections())
+		UMovieSceneSection* Section = WeakSection.Get();
+		TOptional<FSectionHandle> SectionHandle = Sequencer.GetNodeTree()->GetSectionHandle(Section);
+		if (!SectionHandle)
 		{
-			if (SequencerSection->GetSectionObject() == Section)
+			continue;
+		}
+
+		TSharedRef<ISequencerSection> SectionInterface = SectionHandle->GetSectionInterface();
+
+		FFrameNumber NewTime = SectionInitTimes[Section] + DeltaTime;
+
+		if( bDraggingByEnd )
+		{
+			FFrameNumber MinFrame = Section->HasStartFrame() ? Section->GetInclusiveStartFrame() : TNumericLimits<int32>::Lowest();
+
+			// Dragging the end of a section
+			// Ensure we aren't shrinking past the start time
+			NewTime = FMath::Max( NewTime, MinFrame );
+			if (bIsSlipping)
 			{
-				FFrameNumber NewTime = SectionInitTimes[Section] + DeltaTime;
-
-				if( bDraggingByEnd )
-				{
-					FFrameNumber MinFrame = Section->HasStartFrame() ? Section->GetInclusiveStartFrame() : TNumericLimits<int32>::Lowest();
-
-					// Dragging the end of a section
-					// Ensure we aren't shrinking past the start time
-					NewTime = FMath::Max( NewTime, MinFrame );
-				    if (bIsSlipping)
-					{
-						SequencerSection->SlipSection( NewTime );
-					}
-					else
-					{
-						SequencerSection->ResizeSection( SSRM_TrailingEdge, NewTime );
-					}
-				}
-				else
-				{
-					FFrameNumber MaxFrame = Section->HasEndFrame() ? Section->GetExclusiveEndFrame()-1 : TNumericLimits<int32>::Max();
-
-					// Dragging the start of a section
-					// Ensure we arent expanding past the end time
-					NewTime = FMath::Min( NewTime, MaxFrame );
-
-					if (bIsSlipping)
-					{
-						SequencerSection->SlipSection( NewTime );
-					}
-					else
-					{
-						SequencerSection->ResizeSection( SSRM_LeadingEdge, NewTime );
-					}
-				}
-
-				UMovieSceneTrack* OuterTrack = Section->GetTypedOuter<UMovieSceneTrack>();
-				if (OuterTrack)
-				{
-					OuterTrack->Modify();
-					OuterTrack->OnSectionMoved(*Section);
-				}
-
-				break;
+				SectionInterface->SlipSection( NewTime );
 			}
+			else
+			{
+				SectionInterface->ResizeSection( SSRM_TrailingEdge, NewTime );
+			}
+		}
+		else
+		{
+			FFrameNumber MaxFrame = Section->HasEndFrame() ? Section->GetExclusiveEndFrame()-1 : TNumericLimits<int32>::Max();
+
+			// Dragging the start of a section
+			// Ensure we arent expanding past the end time
+			NewTime = FMath::Min( NewTime, MaxFrame );
+
+			if (bIsSlipping)
+			{
+				SectionInterface->SlipSection( NewTime );
+			}
+			else
+			{
+				SectionInterface->ResizeSection( SSRM_LeadingEdge, NewTime );
+			}
+		}
+
+		UMovieSceneTrack* OuterTrack = Section->GetTypedOuter<UMovieSceneTrack>();
+		if (OuterTrack)
+		{
+			OuterTrack->Modify();
+			OuterTrack->OnSectionMoved(*Section);
 		}
 	}
 
 	{
 		TSet<UMovieSceneTrack*> Tracks;
-		for (auto SectionHandle : Sections)
+		for (TWeakObjectPtr<UMovieSceneSection> WeakSection : Sections)
 		{
-			if (UMovieSceneTrack* Track = SectionHandle.GetSectionObject()->GetTypedOuter<UMovieSceneTrack>())
+			if (UMovieSceneTrack* Track = WeakSection.Get()->GetTypedOuter<UMovieSceneTrack>())
 			{
 				Tracks.Add(Track);
 			}
@@ -417,44 +389,6 @@ void FResizeSection::OnDrag(const FPointerEvent& MouseEvent, FVector2D LocalMous
 	}
 
 	Sequencer.NotifyMovieSceneDataChanged( EMovieSceneDataChangeType::TrackValueChanged );
-}
-
-void CollateTrackNodesByTrack(const TArray<TSharedRef<FSequencerDisplayNode>>& DisplayNodes, TMap<UMovieSceneTrack*, TArray<TSharedRef<FSequencerTrackNode>>>& TrackToTrackNodesMap)
-{
-	for (TSharedRef<FSequencerDisplayNode> DisplayNode : DisplayNodes)
-	{
-		if (DisplayNode->GetType() == ESequencerNode::Track)
-		{
-			TSharedRef<FSequencerTrackNode> TrackNode = StaticCastSharedRef<FSequencerTrackNode>(DisplayNode);
-			TArray<TSharedRef<FSequencerTrackNode>>* TrackNodes = TrackToTrackNodesMap.Find(TrackNode->GetTrack());
-			if (TrackNodes == nullptr)
-			{
-				TrackNodes = &TrackToTrackNodesMap.Add(TrackNode->GetTrack());
-			}
-			TrackNodes->Add(TrackNode);
-		}
-
-		CollateTrackNodesByTrack(DisplayNode->GetChildNodes(), TrackToTrackNodesMap);
-	}
-}
-
-bool TryUpdateHandleFromNewTrackNodes(const TArray<TSharedRef<FSequencerTrackNode>>& NewTrackNodes, FSectionHandle& SectionHandle)
-{
-	UMovieSceneSection* MovieSceneSection = SectionHandle.GetSectionObject();
-	for (TSharedRef<FSequencerTrackNode> NewTrackNode : NewTrackNodes)
-	{
-		const TArray<TSharedRef<ISequencerSection>> SequencerSections = NewTrackNode->GetSections();
-		for (int32 i = 0; i < SequencerSections.Num(); i++)
-		{
-			if (SequencerSections[i]->GetSectionObject() == MovieSceneSection)
-			{
-				SectionHandle.TrackNode = NewTrackNode;
-				SectionHandle.SectionIndex = i;
-				return true;
-			}
-		}
-	}
-	return false;
 }
 
 void FDuplicateKeysAndSections::OnBeginDrag(const FPointerEvent& MouseEvent, FVector2D LocalMousePos, const FVirtualTrackArea& VirtualTrackArea)
@@ -479,14 +413,14 @@ void FDuplicateKeysAndSections::OnBeginDrag(const FPointerEvent& MouseEvent, FVe
 	// Duplicate our selections as well.
 	bool bDelayedStructureRebuild = false;
 
-	TArray<UMovieSceneSection*> SectionsToDuplicate;
-	for (const FSectionHandle& SectionHandle : Sections)
+	for (const TWeakObjectPtr<UMovieSceneSection>& WeakSection : Sections)
 	{
-		SectionsToDuplicate.Add(SectionHandle.GetSectionObject());
-	}
+		UMovieSceneSection* SectionToDuplicate = WeakSection.Get();
+		if (!SectionToDuplicate)
+		{
+			continue;
+		}
 
-	for (UMovieSceneSection* SectionToDuplicate : SectionsToDuplicate)
-	{
 		UMovieSceneSection* DuplicatedSection = DuplicateObject<UMovieSceneSection>(SectionToDuplicate, SectionToDuplicate->GetOuter());
 		UMovieSceneTrack* OwningTrack = SectionToDuplicate->GetTypedOuter<UMovieSceneTrack>();
 		OwningTrack->Modify();
@@ -512,9 +446,9 @@ void FDuplicateKeysAndSections::OnEndDrag(const FPointerEvent& MouseEvent, FVect
 	EndTransaction();
 }
 
-FManipulateSectionEasing::FManipulateSectionEasing( FSequencer& InSequencer, FSectionHandle InSection, bool _bEaseIn )
+FManipulateSectionEasing::FManipulateSectionEasing( FSequencer& InSequencer, TWeakObjectPtr<UMovieSceneSection> InSection, bool _bEaseIn )
 	: FEditToolDragOperation(InSequencer)
-	, Handle(InSection)
+	, WeakSection(InSection)
 	, bEaseIn(_bEaseIn)
 	, MouseDownTime(0)
 {
@@ -524,7 +458,7 @@ void FManipulateSectionEasing::OnBeginDrag(const FPointerEvent& MouseEvent, FVec
 {
 	Transaction.Reset( new FScopedTransaction(NSLOCTEXT("Sequencer", "DragSectionEasing", "Change Section Easing")) );
 
-	UMovieSceneSection* Section = Handle.GetSectionObject();
+	UMovieSceneSection* Section = WeakSection.Get();
 	Section->SetFlags( RF_Transactional );
 	Section->Modify();
 
@@ -550,12 +484,12 @@ void FManipulateSectionEasing::OnDrag(const FPointerEvent& MouseEvent, FVector2D
 	// Convert the current mouse position to a time
 	FFrameTime  DeltaTime = VirtualTrackArea.PixelToFrame(LocalMousePos.X) - MouseDownTime;
 
+	UMovieSceneSection* Section = WeakSection.Get();
+
 	// Snapping
 	if (Settings->GetIsSnapEnabled())
 	{
 		TArray<FFrameNumber> SnapTimes;
-
-		UMovieSceneSection* Section = Handle.GetSectionObject();
 		if (bEaseIn)
 		{
 			FFrameNumber DesiredTime = (DeltaTime + Section->GetInclusiveStartFrame() + InitValue.Get(0)).RoundToFrame();
@@ -590,8 +524,6 @@ void FManipulateSectionEasing::OnDrag(const FPointerEvent& MouseEvent, FVector2D
 		}
 	}
 
-	UMovieSceneSection* Section = Handle.GetSectionObject();
-
 	const int32 MaxEasingDuration = Section->HasStartFrame() && Section->HasEndFrame() ? MovieScene::DiscreteSize(Section->GetRange()) : TNumericLimits<int32>::Max() / 2;
 
 	if (bEaseIn)
@@ -620,12 +552,12 @@ void FManipulateSectionEasing::OnEndDrag(const FPointerEvent& MouseEvent, FVecto
 }
 
 
-FMoveKeysAndSections::FMoveKeysAndSections(FSequencer& InSequencer, const TSet<FSequencerSelectedKey>& InSelectedKeys, TArray<FSectionHandle> InSelectedSections, bool InbHotspotWasSection)
+FMoveKeysAndSections::FMoveKeysAndSections(FSequencer& InSequencer, const TSet<FSequencerSelectedKey>& InSelectedKeys, const TSet<TWeakObjectPtr<UMovieSceneSection>>& InSelectedSections, bool InbHotspotWasSection)
 	: FEditToolDragOperation(InSequencer)
 	, bHotspotWasSection(InbHotspotWasSection)
 {
 	// Filter out the keys on sections that are read only
-	for (auto SelectedKey : InSelectedKeys)
+	for (const FSequencerSelectedKey& SelectedKey : InSelectedKeys)
 	{
 		if (!SelectedKey.Section->IsReadOnly())
 		{
@@ -637,22 +569,32 @@ FMoveKeysAndSections::FMoveKeysAndSections(FSequencer& InSequencer, const TSet<F
 
 	// However, we don't want infinite sections to be movable, so we discard them from our selection.
 	// We support partially infinite (infinite on one side) sections however.
-	for (const FSectionHandle& SectionHandle : InSelectedSections)
+	for (const TWeakObjectPtr<UMovieSceneSection>& WeakSection : InSelectedSections)
 	{
-		const UMovieSceneSection* Section = SectionHandle.GetSectionObject();
-		if (Section->HasStartFrame() || Section->HasEndFrame())
+		const UMovieSceneSection* SelectedSection = WeakSection.Get();
+		if (SelectedSection->HasStartFrame() || SelectedSection->HasEndFrame())
 		{
-			Sections.Add(SectionHandle);
+			Sections.AddUnique(WeakSection);
+
+			UMovieScene* MovieScene = InSequencer.GetFocusedMovieSceneSequence()->GetMovieScene();
+			if (MovieScene)
+			{
+				// If the section is in a group, we also want to add the sections it is grouped with
+				const FMovieSceneSectionGroup* SectionGroup = MovieScene->GetSectionGroup(*SelectedSection);
+				if (SectionGroup)
+				{
+					for (TWeakObjectPtr<UMovieSceneSection> WeakGroupedSection : *SectionGroup)
+					{
+						// Verify sections are still valid, and are not infinite.
+						if (WeakGroupedSection.IsValid() && (WeakGroupedSection->HasStartFrame() || WeakGroupedSection->HasEndFrame()))
+						{
+							Sections.AddUnique(WeakGroupedSection);
+						}
+					}
+				}
+			}
 		}
 	}
-
-	// Register a callback for when the node tree is updated so we can update our local Section Handle array.
-	SequencerNodeTreeUpdatedHandle = InSequencer.GetNodeTree()->OnUpdated().AddRaw(this, &FMoveKeysAndSections::OnSequencerNodeTreeUpdated);
-}
-
-FMoveKeysAndSections::~FMoveKeysAndSections()
-{
-	Sequencer.GetNodeTree()->OnUpdated().Remove(SequencerNodeTreeUpdatedHandle);
 }
 
 void FMoveKeysAndSections::OnBeginDrag(const FPointerEvent& MouseEvent, FVector2D LocalMousePos, const FVirtualTrackArea& VirtualTrackArea)
@@ -676,9 +618,9 @@ void FMoveKeysAndSections::OnBeginDrag(const FPointerEvent& MouseEvent, FVector2
 	// Now we store a relative offset to each key and section from the start position. This allows us to know how far away from
 	// the mouse each valid key/section was so we can restore their offset if needed.
 	RelativeOffsets.Reserve(Sections.Num() + Keys.Num());
-	for (int32 Index = 0; Index < Sections.Num(); ++Index)
+	for (TWeakObjectPtr<UMovieSceneSection> WeakSection : Sections)
 	{
-		UMovieSceneSection* Section = Sections[Index].GetSectionObject();
+		UMovieSceneSection* Section = WeakSection.Get();
 		FRelativeOffset Offset;
 
 		if (Section->HasStartFrame())
@@ -697,13 +639,14 @@ void FMoveKeysAndSections::OnBeginDrag(const FPointerEvent& MouseEvent, FVector2
 	// can be dragged above all other sections - this is accomplished by moving all other sections down. We store the row indices for all sections
 	// in all tracks that we're modifying so we can get them later to move them.
 	TSet<UMovieSceneTrack*> Tracks;
-	for (int32 Index = 0; Index < Sections.Num(); ++Index)
+	for (TWeakObjectPtr<UMovieSceneSection> WeakSection : Sections)
 	{
-		Tracks.Add(Sections[Index].TrackNode->GetTrack());
+		UMovieSceneSection* Section = WeakSection.Get();
+		Tracks.Add(Section->GetTypedOuter<UMovieSceneTrack>());
 	}
 	for (UMovieSceneTrack* Track : Tracks)
 	{
-		for (auto Section : Track->GetAllSections())
+		for (UMovieSceneSection* Section : Track->GetAllSections())
 		{
 			InitialSectionRowIndicies.Add(FInitialRowIndex{ Section, Section->GetRowIndex() });
 		}
@@ -797,6 +740,11 @@ void FMoveKeysAndSections::OnDrag(const FPointerEvent& MouseEvent, FVector2D Loc
 		}
 	}
 
+	if (Settings->GetIsSnapEnabled() && Settings->GetSnapKeysAndSectionsToPlayRange() && !Settings->ShouldKeepPlayRangeInSectionBounds())
+	{
+		MouseTime = MovieScene::ClampToDiscreteRange(MouseTime, Sequencer.GetPlaybackRange());
+	}
+
 	// We'll calculate a DeltaX based on limits on movement (snapping, section collision) and then use them on keys and sections below.
 	TOptional<FFrameNumber> MaxDeltaX = GetMovementDeltaX(MouseTime);
 
@@ -811,9 +759,9 @@ void FMoveKeysAndSections::OnDrag(const FPointerEvent& MouseEvent, FVector2D Loc
 
 	// Get a list of the unique tracks in this selection and update their easing so previews draw interactively as you drag.
 	TSet<UMovieSceneTrack*> Tracks;
-	for (auto SectionHandle : Sections)
+	for (TWeakObjectPtr<UMovieSceneSection> WeakSection : Sections)
 	{
-		if (UMovieSceneTrack* Track = SectionHandle.GetSectionObject()->GetTypedOuter<UMovieSceneTrack>())
+		if (UMovieSceneTrack* Track = WeakSection.Get()->GetTypedOuter<UMovieSceneTrack>())
 		{
 			Tracks.Add(Track);
 		}
@@ -849,10 +797,10 @@ void FMoveKeysAndSections::OnEndDrag(const FPointerEvent& MouseEvent, FVector2D 
 	bool bRowIndicesChanged = false;
 	TSet<UMovieSceneTrack*> Tracks;
 
-	for (auto& SectionHandle : Sections)
+	for (TWeakObjectPtr<UMovieSceneSection> WeakSection : Sections)
 	{
 		// Grab only unique tracks as multiple sections can reside on the same track.
-		Tracks.Add(SectionHandle.TrackNode->GetTrack());
+		Tracks.Add(WeakSection.Get()->GetTypedOuter<UMovieSceneTrack>());
 	}
 
 	for (UMovieSceneTrack* Track : Tracks)
@@ -866,9 +814,9 @@ void FMoveKeysAndSections::OnEndDrag(const FPointerEvent& MouseEvent, FVector2D 
 		Sequencer.NotifyMovieSceneDataChanged(EMovieSceneDataChangeType::MovieSceneStructureItemsChanged);
 	}
 
-	for (const FSectionHandle& SectionHandle : Sections)
+	for (const TWeakObjectPtr<UMovieSceneSection>& WeakSection : Sections)
 	{
-		UMovieSceneSection* Section = SectionHandle.GetSectionObject();
+		UMovieSceneSection* Section = WeakSection.Get();
 		UMovieSceneTrack* OuterTrack = Cast<UMovieSceneTrack>(Section->GetOuter());
 
 		if (OuterTrack)
@@ -881,32 +829,13 @@ void FMoveKeysAndSections::OnEndDrag(const FPointerEvent& MouseEvent, FVector2D 
 	EndTransaction();
 }
 
-void FMoveKeysAndSections::OnSequencerNodeTreeUpdated()
-{
-	TMap<UMovieSceneTrack*, TArray<TSharedRef<FSequencerTrackNode>>> TrackToTrackNodesMap;
-	CollateTrackNodesByTrack(Sequencer.GetNodeTree()->GetRootNodes(), TrackToTrackNodesMap);
-
-	// Update the track nodes in the handles based on the original track and section index.
-	for (FSectionHandle& SectionHandle : Sections)
-	{
-		TArray<TSharedRef<FSequencerTrackNode>>* NewTrackNodes = TrackToTrackNodesMap.Find(SectionHandle.TrackNode->GetTrack());
-		ensureMsgf(NewTrackNodes != nullptr, TEXT("Error rebuilding section handles:  Track not found after node tree update."));
-
-		if (NewTrackNodes != nullptr)
-		{
-			bool bHandleUpdated = TryUpdateHandleFromNewTrackNodes(*NewTrackNodes, SectionHandle);
-			ensureMsgf(bHandleUpdated, TEXT("Error rebuilding section handles: Track node with correct track and section index could not be found."));
-		}
-	}
-}
-
 void FMoveKeysAndSections::ModifyNonSelectedSections()
 {
 	for (const FSequencerSelectedKey& Key : Keys)
 	{
 		UMovieSceneSection* OwningSection = Key.Section;
 		const bool bHasBeenModified = ModifiedNonSelectedSections.Contains(OwningSection);
-		const bool bIsAlreadySelected = Sections.ContainsByPredicate([OwningSection](FSectionHandle Handle) { return Handle.GetSectionObject() == OwningSection; });
+		const bool bIsAlreadySelected = Sections.Contains(OwningSection);
 		if (!bHasBeenModified && !bIsAlreadySelected)
 		{
 			OwningSection->SetFlags(RF_Transactional);
@@ -916,6 +845,39 @@ void FMoveKeysAndSections::ModifyNonSelectedSections()
 			}
 		}
 	}
+}
+
+TRange<FFrameNumber> FMoveKeysAndSections::GetSectionBoundaries(const UMovieSceneSection* Section)
+{
+	// Find the borders of where you can drag to
+	FFrameNumber LowerBound = TNumericLimits<int32>::Lowest(), UpperBound = TNumericLimits<int32>::Max();
+
+	// Find the track node for this section
+	TOptional<FSectionHandle> SectionHandle = Sequencer.GetNodeTree()->GetSectionHandle(Section);
+	if (SectionHandle)
+	{
+		// Get the closest borders on either side
+		const TArray< TSharedRef<ISequencerSection> >& AllSections = SectionHandle->GetTrackNode()->GetSections();
+		for (TSharedRef<ISequencerSection> SectionInterface : AllSections)
+		{
+			const UMovieSceneSection* TestSection = SectionInterface->GetSectionObject();
+			if (!TestSection || Sections.Contains(TestSection))
+			{
+				continue;
+			}
+
+			if (TestSection->HasEndFrame() && Section->HasStartFrame() && TestSection->GetExclusiveEndFrame() <= Section->GetInclusiveStartFrame() && TestSection->GetExclusiveEndFrame() > LowerBound)
+			{
+				LowerBound = TestSection->GetExclusiveEndFrame();
+			}
+			if (TestSection->HasStartFrame() && Section->HasEndFrame() && TestSection->GetInclusiveStartFrame() >= Section->GetExclusiveEndFrame() && TestSection->GetInclusiveStartFrame() < UpperBound)
+			{
+				UpperBound = TestSection->GetInclusiveStartFrame();
+			}
+		}
+	}
+
+	return TRange<FFrameNumber>(LowerBound, UpperBound);
 }
 
 TOptional<FFrameNumber> FMoveKeysAndSections::GetMovementDeltaX(FFrameTime MouseTime)
@@ -928,43 +890,103 @@ TOptional<FFrameNumber> FMoveKeysAndSections::GetMovementDeltaX(FFrameTime Mouse
 	// Disallow movement if any of the sections can't move
 	for (int32 Index = 0; Index < Sections.Num(); ++Index)
 	{
-		const FSectionHandle& SectionHandle = Sections[Index];
-
 		// If we're moving a section that is blending with something then it's OK if it overlaps stuff, the blend amount will get updated at the end.
-		UMovieSceneSection* Section = SectionHandle.GetSectionObject();
-		if (Section->GetBlendType().IsValid())
+		UMovieSceneSection* Section = Sections[Index].Get();
+		if (!Section)
 		{
 			continue;
 		}
 
-		// We'll calculate this section's borders and clamp the possible delta time to be less than that
-		TRange<FFrameNumber> SectionBoundaries = GetSectionBoundaries(Section, Sections, SectionHandle.TrackNode);
+		TOptional<FFrameNumber> LeftMovementMaximum;
+		TOptional<FFrameNumber> RightMovementMaximum;
 
-		FFrameNumber LeftMovementMaximum = MovieScene::DiscreteInclusiveLower(SectionBoundaries);
-		FFrameNumber RightMovementMaximum = MovieScene::DiscreteExclusiveUpper(SectionBoundaries);
+		// We'll calculate this section's borders and clamp the possible delta time to be less than that
 		
-		if (Section->HasStartFrame())
+		if (!Section->GetBlendType().IsValid())
 		{
-			FFrameNumber NewStartTime = Section->GetInclusiveStartFrame() + MouseDeltaTime;
-			if (NewStartTime < LeftMovementMaximum)
+			TRange<FFrameNumber> SectionBoundaries = GetSectionBoundaries(Section);
+			LeftMovementMaximum = MovieScene::DiscreteInclusiveLower(SectionBoundaries);
+			RightMovementMaximum = MovieScene::DiscreteExclusiveUpper(SectionBoundaries);
+		}
+		
+		if (Settings->GetIsSnapEnabled() && Settings->GetSnapKeysAndSectionsToPlayRange() && !Settings->ShouldKeepPlayRangeInSectionBounds())
+		{
+			if (!LeftMovementMaximum.IsSet() || LeftMovementMaximum.GetValue() < Sequencer.GetPlaybackRange().GetLowerBoundValue())
 			{
-				FFrameNumber ClampedDeltaTime = LeftMovementMaximum - Section->GetInclusiveStartFrame();
-				if (!DeltaX.IsSet() || DeltaX.GetValue() > ClampedDeltaTime)
+				LeftMovementMaximum = Sequencer.GetPlaybackRange().GetLowerBoundValue();
+			}
+
+			if (!RightMovementMaximum.IsSet() || RightMovementMaximum.GetValue() > Sequencer.GetPlaybackRange().GetUpperBoundValue())
+			{
+				RightMovementMaximum = Sequencer.GetPlaybackRange().GetUpperBoundValue();
+			}
+		}
+
+		if (LeftMovementMaximum.IsSet())
+		{
+			if (Section->HasStartFrame())
+			{
+				FFrameNumber NewStartTime = Section->GetInclusiveStartFrame() + MouseDeltaTime;
+				if (NewStartTime < LeftMovementMaximum.GetValue())
 				{
-					DeltaX = ClampedDeltaTime;
+					FFrameNumber ClampedDeltaTime = LeftMovementMaximum.GetValue() - Section->GetInclusiveStartFrame();
+					if (!DeltaX.IsSet() || DeltaX.GetValue() > ClampedDeltaTime)
+					{
+						DeltaX = ClampedDeltaTime;
+					}
 				}
 			}
 		}
-		
-		if (Section->HasEndFrame())
+
+		if (RightMovementMaximum.IsSet())
 		{
-			FFrameNumber NewEndTime = Section->GetExclusiveEndFrame() + MouseDeltaTime;
-			if (NewEndTime > RightMovementMaximum)
+			if (Section->HasEndFrame())
 			{
-				FFrameNumber ClampedDeltaTime = RightMovementMaximum - Section->GetExclusiveEndFrame();
-				if (!DeltaX.IsSet() || DeltaX.GetValue() > ClampedDeltaTime)
+				FFrameNumber NewEndTime = Section->GetExclusiveEndFrame() + MouseDeltaTime;
+				if (NewEndTime > RightMovementMaximum.GetValue())
 				{
-					DeltaX = ClampedDeltaTime;
+					FFrameNumber ClampedDeltaTime = RightMovementMaximum.GetValue() - Section->GetExclusiveEndFrame();
+					if (!DeltaX.IsSet() || DeltaX.GetValue() > ClampedDeltaTime)
+					{
+						DeltaX = ClampedDeltaTime;
+					}
+				}
+			}
+		}
+	}
+
+	if (Settings->GetIsSnapEnabled() && Settings->GetSnapKeysAndSectionsToPlayRange() && !Settings->ShouldKeepPlayRangeInSectionBounds())
+	{
+		TArray<FFrameNumber> CurrentKeyTimes;
+		CurrentKeyTimes.SetNum(KeysAsArray.Num());
+		GetKeyTimes(KeysAsArray, CurrentKeyTimes);
+
+		for (int32 Index = 0; Index < CurrentKeyTimes.Num(); ++Index)
+		{
+			FSequencerSelectedKey& SelectedKey = KeysAsArray[Index];
+			const bool bOwningSectionIsSelected = Sections.Contains(SelectedKey.Section);
+
+			// We don't want to apply delta if we have the key's section selected as well, otherwise they get double
+			// transformed (moving the section moves the keys + we add the delta to the key positions).
+			if (!bOwningSectionIsSelected)
+			{
+				FFrameNumber NewKeyTime = CurrentKeyTimes[Index] + MouseDeltaTime;
+				if (NewKeyTime < Sequencer.GetPlaybackRange().GetLowerBoundValue())
+				{
+					FFrameNumber ClampedDeltaTime = CurrentKeyTimes[Index] - Sequencer.GetPlaybackRange().GetLowerBoundValue();
+					if (!DeltaX.IsSet() || DeltaX.GetValue() > ClampedDeltaTime)
+					{
+						DeltaX = ClampedDeltaTime;
+					}
+				}
+
+				if (NewKeyTime > Sequencer.GetPlaybackRange().GetUpperBoundValue())
+				{
+					FFrameNumber ClampedDeltaTime = Sequencer.GetPlaybackRange().GetUpperBoundValue() - CurrentKeyTimes[Index];
+					if (!DeltaX.IsSet() || DeltaX.GetValue() > ClampedDeltaTime)
+					{
+						DeltaX = ClampedDeltaTime;
+					}
 				}
 			}
 		}
@@ -983,40 +1005,50 @@ bool FMoveKeysAndSections::HandleSectionMovement(FFrameTime MouseTime, FVector2D
 
 	// If sections are all on different rows, don't set row indices for anything because it leads to odd behavior.
 	bool bSectionsAreOnDifferentRows = false;
-	int32 FirstRowIndex = Sections[0].GetSectionObject()->GetRowIndex();
-	TArray<const UMovieSceneSection*> SectionsBeingMoved;
-	for (auto SectionHandle : Sections)
+	int32 FirstRowIndex = Sections[0].Get()->GetRowIndex();
+
+	for (TWeakObjectPtr<UMovieSceneSection> WeakSection : Sections)
 	{
-		if (FirstRowIndex != SectionHandle.GetSectionObject()->GetRowIndex())
+		UMovieSceneSection* Section = WeakSection.Get();
+		if (FirstRowIndex != Section->GetRowIndex())
 		{
 			bSectionsAreOnDifferentRows = true;
 		}
-		SectionsBeingMoved.Add(SectionHandle.GetSectionObject());
 	}
 
+	TArray<TSharedRef<FSequencerTrackNode> > TrackNodes;
+
 	bool bRowIndexChanged = false;
-	for (int32 Index = 0; Index < Sections.Num(); ++Index)
+	for (TWeakObjectPtr<UMovieSceneSection> WeakSection : Sections)
 	{
-		auto& Handle = Sections[Index];
-		UMovieSceneSection* Section = Handle.GetSectionObject();
+		UMovieSceneSection* Section = WeakSection.Get();
+		UMovieSceneTrack* Track = Section->GetTypedOuter<UMovieSceneTrack>();
 
-
-		const TArray<UMovieSceneSection*>& AllSections = Handle.TrackNode->GetTrack()->GetAllSections();
+		const TArray<UMovieSceneSection*>& AllSections = Track->GetAllSections();
 
 		TArray<UMovieSceneSection*> NonDraggedSections;
 		for (UMovieSceneSection* TrackSection : AllSections)
 		{
-			if (!SectionsBeingMoved.Contains(TrackSection))
+			if (!Sections.Contains(TrackSection))
 			{
 				NonDraggedSections.Add(TrackSection);
 			}
 		}
 
+		TOptional<FSectionHandle> SectionHandle = Sequencer.GetNodeTree()->GetSectionHandle(Section);
+		if (!SectionHandle)
+		{
+			continue;
+		}
+
+		TSharedRef<FSequencerTrackNode> TrackNode = SectionHandle->GetTrackNode();
+		TrackNodes.AddUnique(TrackNode);
+
 		int32 TargetRowIndex = Section->GetRowIndex();
 
 		// Handle vertical dragging to re-arrange tracks. We don't support vertical rearranging if you're dragging via
 		// a key, as the built in offset causes it to always jump down a row even without moving the mouse.
-		if (Handle.TrackNode->GetTrack()->SupportsMultipleRows() && AllSections.Num() > 1 && bHotspotWasSection)
+		if (Track->SupportsMultipleRows() && AllSections.Num() > 1 && bHotspotWasSection)
 		{
 			// Compute the max row index whilst disregarding the one we're dragging
 			int32 MaxRowIndex = 0;
@@ -1029,17 +1061,17 @@ bool FMoveKeysAndSections::HandleSectionMovement(FFrameTime MouseTime, FVector2D
 			}
 
 			// Handle sub-track and non-sub-track dragging
-			if (Handle.TrackNode->GetSubTrackMode() == FSequencerTrackNode::ESubTrackMode::None)
+			if (TrackNode->GetSubTrackMode() == FSequencerTrackNode::ESubTrackMode::None)
 			{
 				const int32 NumRows = FMath::Max(Section->GetRowIndex() + 1, MaxRowIndex);
 
 				// Find the total height of the track - this is necessary because tracks may contain key areas, but they will not use sub tracks unless there is more than one row
 				float VirtualSectionBottom = 0.f;
-				Handle.TrackNode->TraverseVisible_ParentFirst([&](FSequencerDisplayNode& Node) { VirtualSectionBottom = Node.GetVirtualBottom(); return true; }, true);
+				TrackNode->TraverseVisible_ParentFirst([&](FSequencerDisplayNode& Node) { VirtualSectionBottom = Node.GetVirtualBottom(); return true; }, true);
 
 				// Assume same height rows
-				const float VirtualSectionTop = Handle.TrackNode->GetVirtualTop();
-				const float VirtualSectionHeight = VirtualSectionBottom - Handle.TrackNode->GetVirtualTop();
+				const float VirtualSectionTop = TrackNode->GetVirtualTop();
+				const float VirtualSectionHeight = VirtualSectionBottom - TrackNode->GetVirtualTop();
 
 				const float VirtualRowHeight = VirtualSectionHeight / NumRows;
 				const float MouseOffsetWithinRow = VirtualMousePos.Y - (VirtualSectionTop + (VirtualRowHeight * TargetRowIndex));
@@ -1056,9 +1088,9 @@ bool FMoveKeysAndSections::HandleSectionMovement(FFrameTime MouseTime, FVector2D
 					TargetRowIndex = -1;
 				}
 			}
-			else if (Handle.TrackNode->GetSubTrackMode() == FSequencerTrackNode::ESubTrackMode::SubTrack)
+			else if (TrackNode->GetSubTrackMode() == FSequencerTrackNode::ESubTrackMode::SubTrack)
 			{
-				TSharedPtr<FSequencerTrackNode> ParentTrack = StaticCastSharedPtr<FSequencerTrackNode>(Handle.TrackNode->GetParent());
+				TSharedPtr<FSequencerTrackNode> ParentTrack = StaticCastSharedPtr<FSequencerTrackNode>(TrackNode->GetParent());
 				if (ensure(ParentTrack.IsValid()))
 				{
 					for (int32 ChildIndex = 0; ChildIndex < ParentTrack->GetChildNodes().Num(); ++ChildIndex)
@@ -1068,7 +1100,20 @@ bool FMoveKeysAndSections::HandleSectionMovement(FFrameTime MouseTime, FVector2D
 						float VirtualSectionBottom = 0.f;
 						ChildNode->TraverseVisible_ParentFirst([&](FSequencerDisplayNode& Node) { VirtualSectionBottom = Node.GetVirtualBottom(); return true; }, true);
 
-						if (VirtualMousePos.Y < VirtualSectionBottom)
+						if (ChildIndex == 0 && (VirtualMousePos.Y <= VirtualSectionTop || LocalMousePos.Y <= 0))
+						{
+							TargetRowIndex = 0;
+							for (TSharedRef<ISequencerSection> TrackSection : TrackNode->GetSections())
+							{
+								if (!Sections.Contains(TrackSection->GetSectionObject()))
+								{
+									TargetRowIndex = -1;
+									break;
+								}
+							}
+							break;
+						}
+						else if (VirtualMousePos.Y < VirtualSectionBottom)
 						{
 							TargetRowIndex = ChildIndex;
 							break;
@@ -1078,18 +1123,52 @@ bool FMoveKeysAndSections::HandleSectionMovement(FFrameTime MouseTime, FVector2D
 							TargetRowIndex = ChildIndex + 1;
 						}
 					}
+				
+					// Track if we're expanding a parent track so we can unexpand it if we stop targeting it
+					if (TargetRowIndex > 0)
+					{
+						if (!ParentTrack->IsExpanded() && ParentTrack != ExpandedParentTrack)
+						{
+							if (ExpandedParentTrack.IsValid())
+							{
+								ExpandedParentTrack->SetExpansionState(false);
+								ExpandedParentTrack = nullptr;
+							}
+							ExpandedParentTrack = ParentTrack;
+							ParentTrack->SetExpansionState(true);
+						}
+					}
+					else if (ExpandedParentTrack.IsValid())
+					{
+						ExpandedParentTrack->SetExpansionState(false);
+						ExpandedParentTrack = nullptr;
+					}				
 				}
 			}
 		}
 
 		bool bDeltaX = DesiredDeltaX != 0;
 		bool bDeltaY = TargetRowIndex != Section->GetRowIndex();
+		const int32 TargetRowDelta = TargetRowIndex - Section->GetRowIndex();
+
+		// Prevent flickering by only moving sections if the user has actually made an effort to do so
+		if (bDeltaY && PrevMousePosY.IsSet())
+		{
+			// Check mouse has been moved in the direction of intended move
+			if ((TargetRowDelta < 0 && LocalMousePos.Y - PrevMousePosY.GetValue() > 1.0f) || (TargetRowDelta > 0 && LocalMousePos.Y - PrevMousePosY.GetValue() < 1.0f))
+			{
+				// Mouse was not moved in the direction the section wants to swap
+				// Assume offset is due to UI relayout and block moving the section
+				bDeltaY = false;
+			}
+		}
 
 		// Horizontal movement
 		if (bDeltaX)
 		{
 			Section->MoveSection(MaxDeltaX.Get(DesiredDeltaX));
 		}
+
 
 		// Vertical movement
 		if (bDeltaY && !bSectionsAreOnDifferentRows &&
@@ -1106,9 +1185,9 @@ bool FMoveKeysAndSections::HandleSectionMovement(FFrameTime MouseTime, FVector2D
 				{
 					// If the sections being moved are all at the top, and all others are below it, do nothing
 					bool bSectionsBeingMovedAreAtTop = true;
-					for (auto InitialRowIndex : InitialSectionRowIndicies)
+					for (const FInitialRowIndex& InitialRowIndex : InitialSectionRowIndicies)
 					{
-						if (!SectionsBeingMoved.Contains(InitialRowIndex.Section))
+						if (!Sections.Contains(InitialRowIndex.Section))
 						{
 							if (InitialRowIndex.RowIndex <= FirstRowIndex)
 							{
@@ -1120,9 +1199,9 @@ bool FMoveKeysAndSections::HandleSectionMovement(FFrameTime MouseTime, FVector2D
 
 					if (!bSectionsBeingMovedAreAtTop)
 					{
-						for (auto InitialRowIndex : InitialSectionRowIndicies)
+						for (const FInitialRowIndex& InitialRowIndex : InitialSectionRowIndicies)
 						{
-							if (!SectionsBeingMoved.Contains(InitialRowIndex.Section))
+							if (!Sections.Contains(InitialRowIndex.Section))
 							{
 								InitialRowIndex.Section->Modify();
 								InitialRowIndex.Section->SetRowIndex(InitialRowIndex.RowIndex + 1);
@@ -1137,6 +1216,33 @@ bool FMoveKeysAndSections::HandleSectionMovement(FFrameTime MouseTime, FVector2D
 				Section->Modify();
 				Section->SetRowIndex(TargetRowIndex);
 				bRowIndexChanged = true;
+			}
+		}
+	}
+
+	if (bRowIndexChanged)
+	{
+		PrevMousePosY = LocalMousePos.Y;
+
+		// Expand track node if it wasn't already expanded. This ensures that multi row tracks will show multiple rows if regenerated
+		for (TSharedRef<FSequencerTrackNode> TrackNode : TrackNodes)
+		{
+			if (!TrackNode->IsExpanded())
+			{
+				TArray<TSharedRef<ISequencerSection> > TrackNodeSections = TrackNode->GetSections();
+				if (TrackNodeSections.Num() && TrackNodeSections[0]->GetSectionObject())
+				{
+					int32 SectionFirstRowIndex = TrackNodeSections[0]->GetSectionObject()->GetRowIndex();
+
+					for (TSharedRef<ISequencerSection> TrackNodeSection : TrackNodeSections)
+					{
+						if (TrackNodeSection->GetSectionObject() && SectionFirstRowIndex != TrackNodeSection->GetSectionObject()->GetRowIndex())
+						{
+							TrackNode->SetExpansionState(true);
+							break;
+						}
+					}
+				}
 			}
 		}
 	}
@@ -1160,7 +1266,7 @@ void FMoveKeysAndSections::HandleKeyMovement(TOptional<FFrameNumber> MaxDeltaX, 
 	for (int32 Index = 0; Index < CurrentKeyTimes.Num(); ++Index)
 	{
 		FSequencerSelectedKey& SelectedKey = KeysAsArray[Index];
-		const bool bOwningSectionIsSelected = Sections.ContainsByPredicate([SelectedKey](FSectionHandle Handle) { return Handle.GetSectionObject() == SelectedKey.Section; });
+		const bool bOwningSectionIsSelected = Sections.Contains(SelectedKey.Section);
 
 		// We don't want to apply delta if we have the key's section selected as well, otherwise they get double
 		// transformed (moving the section moves the keys + we add the delta to the key positions).
@@ -1212,6 +1318,9 @@ void FMoveKeysAndSections::HandleKeyMovement(TOptional<FFrameNumber> MaxDeltaX, 
 
 	for (UMovieSceneSection* Section : ModifiedNonSelectedSections)
 	{
-		Section->MarkAsChanged();
+		if (Section)
+		{
+			Section->MarkAsChanged();
+		}
 	}
 }

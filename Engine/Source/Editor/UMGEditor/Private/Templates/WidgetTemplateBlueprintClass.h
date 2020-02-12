@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -43,9 +43,6 @@ public:
 
 	/** Opens the widget blueprint for edit */
 	virtual FReply OnDoubleClicked() override;
-
-	/** Gets the asset data for this widget blueprint */
-	FAssetData GetWidgetAssetData();
 
 	/** Returns true if the supplied class is supported by this template */
 	static bool Supports(UClass* InClass);

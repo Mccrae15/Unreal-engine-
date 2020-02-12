@@ -1,16 +1,19 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
 #include "Widgets/SCompoundWidget.h"
 #include "Widgets/DeclarativeSyntaxSupport.h"
+#include "Misc/NotifyHook.h"
+#include "Widgets/Notifications/SErrorText.h"
 
 class FPaintModePainter;
 class UPaintModeSettings;
 class IDetailsView;
+class SErrorText;
 
 /** Widget representing the state / functionality and settings for PaintModePainter*/
-class SPaintModeWidget : public SCompoundWidget
+class SPaintModeWidget : public SCompoundWidget, public FNotifyHook
 {
 public:
 	SLATE_BEGIN_ARGS(SPaintModeWidget) {}
@@ -44,4 +47,11 @@ protected:
 	FPaintModePainter* MeshPainter;
 	/** Paint settings instance */
 	UPaintModeSettings* PaintModeSettings;
+
+	TSharedPtr<SErrorText> ErrorTextWidget;
+		
+private:
+	virtual void NotifyPostChange(const FPropertyChangedEvent& PropertyChangedEvent, FProperty* PropertyThatChanged) override;
+	
+	bool GetMeshPaintEditorIsEnabled() const;
 };

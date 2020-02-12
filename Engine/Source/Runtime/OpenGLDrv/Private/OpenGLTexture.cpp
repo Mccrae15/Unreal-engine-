@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 /*=============================================================================
 	OpenGLVertexBuffer.cpp: OpenGL texture RHI implementation.
@@ -212,19 +212,19 @@ void OpenGLTextureDeleted( FRHITexture* Texture )
 	}
 }
 
-uint64 FOpenGLDynamicRHI::RHICalcTexture2DPlatformSize(uint32 SizeX, uint32 SizeY, uint8 Format, uint32 NumMips, uint32 NumSamples, uint32 Flags, uint32& OutAlign)
+uint64 FOpenGLDynamicRHI::RHICalcTexture2DPlatformSize(uint32 SizeX, uint32 SizeY, uint8 Format, uint32 NumMips, uint32 NumSamples, uint32 Flags, const FRHIResourceCreateInfo& CreateInfo, uint32& OutAlign)
 {
 	OutAlign = 0;
 	return CalcTextureSize(SizeX, SizeY, (EPixelFormat)Format, NumMips);
 }
 
-uint64 FOpenGLDynamicRHI::RHICalcTexture3DPlatformSize(uint32 SizeX, uint32 SizeY, uint32 SizeZ, uint8 Format, uint32 NumMips, uint32 Flags, uint32& OutAlign)
+uint64 FOpenGLDynamicRHI::RHICalcTexture3DPlatformSize(uint32 SizeX, uint32 SizeY, uint32 SizeZ, uint8 Format, uint32 NumMips, uint32 Flags, const FRHIResourceCreateInfo& CreateInfo, uint32& OutAlign)
 {
 	OutAlign = 0;
 	return CalcTextureSize3D(SizeX, SizeY, SizeZ, (EPixelFormat)Format, NumMips);
 }
 
-uint64 FOpenGLDynamicRHI::RHICalcTextureCubePlatformSize(uint32 Size, uint8 Format, uint32 NumMips, uint32 Flags,	uint32& OutAlign)
+uint64 FOpenGLDynamicRHI::RHICalcTextureCubePlatformSize(uint32 Size, uint8 Format, uint32 NumMips, uint32 Flags, const FRHIResourceCreateInfo& CreateInfo, uint32& OutAlign)
 {
 	OutAlign = 0;
 	return CalcTextureSize(Size, Size, (EPixelFormat)Format, NumMips) * 6;
@@ -429,7 +429,7 @@ void FOpenGLDynamicRHI::InitializeGLTexture(FRHITexture* Texture, uint32 SizeX, 
 			}
 		}
 		glTexParameteri(Target, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
-		glTexParameteri(Target, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+		glTexParameteri(Target, GL_TEXTURE_MIN_FILTER, NumMips > 1 ? GL_NEAREST_MIPMAP_NEAREST : GL_NEAREST);
 		if( FOpenGL::SupportsTextureFilterAnisotropic() )
 		{
 			glTexParameteri(Target, GL_TEXTURE_MAX_ANISOTROPY_EXT, 1);
@@ -565,6 +565,8 @@ void FOpenGLDynamicRHI::InitializeGLTexture(FRHITexture* Texture, uint32 SizeX, 
 				uint32 NumBlocksY = AlignArbitrary(FMath::Max<uint32>(1,(SizeY >> MipIndex)), BlockSizeY) / BlockSizeY;
 				uint32 NumLayers = FMath::Max<uint32>(1,ArraySize);
 				
+				glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
+
 				if(bArrayTexture )
 				{
 					if(bCubeTexture)
@@ -614,6 +616,8 @@ void FOpenGLDynamicRHI::InitializeGLTexture(FRHITexture* Texture, uint32 SizeX, 
 						MipOffset += NumBlocksX * NumBlocksY * NumLayers * GPixelFormats[Format].BlockBytes;
 					}
 				}
+
+				glPixelStorei(GL_UNPACK_ALIGNMENT, 4);
 			}
 
 			BulkData->Discard();
@@ -1271,6 +1275,7 @@ void TOpenGLTexture<RHIResourceType>::Unlock(uint32 MipIndex,uint32 ArrayIndex)
 		}
 		else
 		{
+			glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
 			if (GetAllocatedStorageForMip(MipIndex,ArrayIndex))
 			{
 				glTexSubImage2D(
@@ -1298,6 +1303,7 @@ void TOpenGLTexture<RHIResourceType>::Unlock(uint32 MipIndex,uint32 ArrayIndex)
 					LockedBuffer);
 				SetAllocatedStorageForMip(MipIndex,ArrayIndex);
 			}
+			glPixelStorei(GL_UNPACK_ALIGNMENT, 4);
 		}
 		if(bUseClientStorage)
 		{
@@ -1597,12 +1603,12 @@ FTexture2DRHIRef FOpenGLDynamicRHI::RHIAsyncCreateTexture2D(uint32 SizeX, uint32
 	return FTexture2DRHIRef();
 }
 
-void FOpenGLDynamicRHI::RHICopySharedMips(FTexture2DRHIParamRef DestTexture2D,FTexture2DRHIParamRef SrcTexture2D)
+void FOpenGLDynamicRHI::RHICopySharedMips(FRHITexture2D* DestTexture2D, FRHITexture2D* SrcTexture2D)
 {
 	check(0);
 }
 
-FTexture2DArrayRHIRef FOpenGLDynamicRHI::RHICreateTexture2DArray(uint32 SizeX,uint32 SizeY,uint32 SizeZ,uint8 Format,uint32 NumMips,uint32 Flags, FRHIResourceCreateInfo& Info)
+FTexture2DArrayRHIRef FOpenGLDynamicRHI::RHICreateTexture2DArray(uint32 SizeX,uint32 SizeY,uint32 SizeZ,uint8 Format,uint32 NumMips,uint32 NumSamples,uint32 Flags, FRHIResourceCreateInfo& Info)
 {
 	VERIFY_GL_SCOPE();
 
@@ -1658,10 +1664,11 @@ FTexture2DArrayRHIRef FOpenGLDynamicRHI::RHICreateTexture2DArray(uint32 SizeX,ui
 	uint8* Data = Info.BulkData ? (uint8*)Info.BulkData->GetResourceBulkData() : NULL;
 	uint32 MipOffset = 0;
 
-	FOpenGL::TexStorage3D( Target, NumMips, GLFormat.InternalFormat[bSRGB], SizeX, SizeY, SizeZ, GLFormat.Format, GLFormat.Type );
+	FOpenGL::TexStorage3D( Target, NumMips, GLFormat.SizedInternalFormat[bSRGB], SizeX, SizeY, SizeZ, GLFormat.Format, GLFormat.Type );
 
 	if (Data)
 	{
+		glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
 		for(uint32 MipIndex = 0; MipIndex < NumMips; MipIndex++)
 		{
 			FOpenGL::TexSubImage3D(
@@ -1682,6 +1689,7 @@ FTexture2DArrayRHIRef FOpenGLDynamicRHI::RHICreateTexture2DArray(uint32 SizeX,ui
 			uint32 SysMemSlicePitch =  FMath::Max<uint32>(1,SizeY >> MipIndex) * SysMemPitch;
 			MipOffset               += SizeZ * SysMemSlicePitch;
 		}
+		glPixelStorei(GL_UNPACK_ALIGNMENT, 4);
 
 		Info.BulkData->Discard();
 	}
@@ -1773,7 +1781,7 @@ FTexture3DRHIRef FOpenGLDynamicRHI::RHICreateTexture3D(uint32 SizeX,uint32 SizeY
 	uint32 DataSize = CreateInfo.BulkData ? CreateInfo.BulkData->GetResourceBulkDataSize() : 0;
 	uint32 MipOffset = 0;
 
-	FOpenGL::TexStorage3D( Target, NumMips, GLFormat.InternalFormat[bSRGB], SizeX, SizeY, SizeZ, GLFormat.Format, GLFormat.Type );
+	FOpenGL::TexStorage3D( Target, NumMips, GLFormat.SizedInternalFormat[bSRGB], SizeX, SizeY, SizeZ, GLFormat.Format, GLFormat.Type );
 
 	if (Data)
 	{
@@ -1808,6 +1816,7 @@ FTexture3DRHIRef FOpenGLDynamicRHI::RHICreateTexture3D(uint32 SizeX,uint32 SizeY
 			}
 			else
 			{
+				glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
 				FOpenGL::TexSubImage3D(
 					/*Target=*/ Target,
 					/*Level=*/ MipIndex,
@@ -1816,6 +1825,7 @@ FTexture3DRHIRef FOpenGLDynamicRHI::RHICreateTexture3D(uint32 SizeX,uint32 SizeY
 					/*Format=*/ GLFormat.Format,
 					/*Type=*/ GLFormat.Type,
 					/*Data=*/ Data + MipOffset);
+				glPixelStorei(GL_UNPACK_ALIGNMENT, 4);
 			}
 
 			MipOffset += MipSize;
@@ -1853,249 +1863,212 @@ FTexture3DRHIRef FOpenGLDynamicRHI::RHICreateTexture3D(uint32 SizeX,uint32 SizeY
 	return Texture;
 }
 
-void FOpenGLDynamicRHI::RHIGetResourceInfo(FTextureRHIParamRef Ref, FRHIResourceInfo& OutInfo)
+void FOpenGLDynamicRHI::RHIGetResourceInfo(FRHITexture* Ref, FRHIResourceInfo& OutInfo)
 {
 }
 
-FShaderResourceViewRHIRef FOpenGLDynamicRHI::RHICreateShaderResourceView(FTexture2DRHIParamRef Texture2DRHI, uint8 MipLevel)
+FShaderResourceViewRHIRef FOpenGLDynamicRHI::RHICreateShaderResourceView(FRHITexture* Texture, const FRHITextureSRVCreateInfo& CreateInfo)
 {
-	FOpenGLShaderResourceViewProxy *ViewProxy = new FOpenGLShaderResourceViewProxy([=](FShaderResourceViewRHIParamRef OwnerRHI)
+	const uint32 MipLevel = CreateInfo.MipLevel;
+	const uint32 NumMipLevels = CreateInfo.NumMipLevels;
+	EPixelFormat TextureBaseFormat = Texture->GetFormat();
+	const uint8 Format = (CreateInfo.Format == PF_Unknown) ? TextureBaseFormat : CreateInfo.Format;
+
+	FOpenGLShaderResourceViewProxy *ViewProxy = new FOpenGLShaderResourceViewProxy([this, Texture, MipLevel, NumMipLevels, Format](FRHIShaderResourceView* OwnerRHI) -> FOpenGLShaderResourceView*
 	{
-		FOpenGLTexture2D* Texture2D = ResourceCast(Texture2DRHI);
-
-		if (FOpenGL::SupportsTextureView())
+		if (FRHITexture2D* Texture2DRHI = Texture->GetTexture2D())
 		{
-			VERIFY_GL_SCOPE();
+			FOpenGLTexture2D* Texture2D = ResourceCast(Texture2DRHI);
+			FOpenGLShaderResourceView *View = 0;
 
-			GLuint Resource = 0;
-
-			FOpenGL::GenTextures(1, &Resource);
-			const FOpenGLTextureFormat& GLFormat = GOpenGLTextureFormats[Texture2D->GetFormat()];
-			const bool bSRGB = (Texture2D->GetFlags()&TexCreate_SRGB) != 0;
-
-			FOpenGL::TextureView(Resource, Texture2D->Target, Texture2D->Resource, GLFormat.InternalFormat[bSRGB], MipLevel, 1, 0, 1);
-
-			return new FOpenGLShaderResourceView(this, Resource, Texture2D->Target, MipLevel, true);
-		}
-		else
-		{
-			return new FOpenGLShaderResourceView(this, Texture2D->Resource, Texture2D->Target, MipLevel, false);
-		}
-
-	});
-
-	return ViewProxy;
-}
-
-FShaderResourceViewRHIRef FOpenGLDynamicRHI::RHICreateShaderResourceView(FTexture2DRHIParamRef Texture2DRHI, uint8 MipLevel, uint8 NumMipLevels, uint8 Format)
-{
-	FOpenGLShaderResourceViewProxy *ViewProxy = new FOpenGLShaderResourceViewProxy([=](FShaderResourceViewRHIParamRef OwnerRHI)
-	{
-		FOpenGLTexture2D* Texture2D = ResourceCast(Texture2DRHI);
-		FOpenGLShaderResourceView *View = 0;
-
-		if (FOpenGL::SupportsTextureView())
-		{
-			VERIFY_GL_SCOPE();
-
-			GLuint Resource = 0;
-
-			FOpenGL::GenTextures( 1, &Resource);
-
-			if (Format != PF_X24_G8)
+			if (FOpenGL::SupportsTextureView())
 			{
-				const FOpenGLTextureFormat& GLFormat = GOpenGLTextureFormats[Format];
-				const bool bSRGB = (Texture2D->GetFlags()&TexCreate_SRGB) != 0;
-		
-				FOpenGL::TextureView( Resource, Texture2D->Target, Texture2D->Resource, GLFormat.InternalFormat[bSRGB], MipLevel, NumMipLevels, 0, 1);
+				VERIFY_GL_SCOPE();
+
+				GLuint Resource = 0;
+
+				FOpenGL::GenTextures(1, &Resource);
+
+				if (Format != PF_X24_G8)
+				{
+					// Choose original format when PF_Unknown is specified (as stated for FRHITextureSRVCreateInfo::Format)
+					const FOpenGLTextureFormat& GLFormat = GOpenGLTextureFormats[Format == PF_Unknown ? Texture2D->GetFormat() : Format];
+					const bool bSRGB = (Texture2D->GetFlags()&TexCreate_SRGB) != 0;
+
+					FOpenGL::TextureView(Resource, Texture2D->Target, Texture2D->Resource, GLFormat.InternalFormat[bSRGB], MipLevel, NumMipLevels, 0, 1);
+				}
+				else
+				{
+					// PF_X24_G8 doesn't correspond to a real format under OpenGL
+					// The solution is to create a view with the original format, and convert it to return the stencil index
+					// To match component locations, texture swizzle needs to be setup too
+					const FOpenGLTextureFormat& GLFormat = GOpenGLTextureFormats[Texture2D->GetFormat()];
+
+					// create a second depth/stencil view
+					FOpenGL::TextureView(Resource, Texture2D->Target, Texture2D->Resource, GLFormat.InternalFormat[0], MipLevel, NumMipLevels, 0, 1);
+
+					// Use a texture stage that's not likely to be used for draws, to avoid waiting
+					FOpenGLContextState& ContextState = GetContextStateForCurrentContext();
+					CachedSetupTextureStage(ContextState, FOpenGL::GetMaxCombinedTextureImageUnits() - 1, Texture2D->Target, Resource, 0, NumMipLevels);
+
+					//set the texture to return the stencil index, and then force the components to match D3D
+					glTexParameteri(Texture2D->Target, GL_DEPTH_STENCIL_TEXTURE_MODE, GL_STENCIL_INDEX);
+					glTexParameteri(Texture2D->Target, GL_TEXTURE_SWIZZLE_R, GL_ZERO);
+					glTexParameteri(Texture2D->Target, GL_TEXTURE_SWIZZLE_G, GL_RED);
+					glTexParameteri(Texture2D->Target, GL_TEXTURE_SWIZZLE_B, GL_ZERO);
+					glTexParameteri(Texture2D->Target, GL_TEXTURE_SWIZZLE_A, GL_ZERO);
+				}
+
+				View = new FOpenGLShaderResourceView(this, Resource, Texture2D->Target, MipLevel, true);
 			}
 			else
 			{
-				// PF_X24_G8 doesn't correspond to a real format under OpenGL
-				// The solution is to create a view with the original format, and convert it to return the stencil index
-				// To match component locations, texture swizzle needs to be setup too
-				const FOpenGLTextureFormat& GLFormat = GOpenGLTextureFormats[Texture2D->GetFormat()];
+				uint32 const Target = Texture2D->Target;
+				GLuint Resource = Texture2D->Resource;
 
-				// create a second depth/stencil view
-				FOpenGL::TextureView( Resource, Texture2D->Target, Texture2D->Resource, GLFormat.InternalFormat[0], MipLevel, NumMipLevels, 0, 1);
+				FRHITexture2D* DepthStencilTex = nullptr;
 
-				// Use a texture stage that's not likely to be used for draws, to avoid waiting
-				FOpenGLContextState& ContextState = GetContextStateForCurrentContext();
-				CachedSetupTextureStage(ContextState, FOpenGL::GetMaxCombinedTextureImageUnits() - 1, Texture2D->Target, Resource, 0, NumMipLevels);
-
-				//set the texture to return the stencil index, and then force the components to match D3D
-				glTexParameteri( Texture2D->Target, GL_DEPTH_STENCIL_TEXTURE_MODE, GL_STENCIL_INDEX);
-				glTexParameteri( Texture2D->Target, GL_TEXTURE_SWIZZLE_R, GL_ZERO);
-				glTexParameteri( Texture2D->Target, GL_TEXTURE_SWIZZLE_G, GL_RED);
-				glTexParameteri( Texture2D->Target, GL_TEXTURE_SWIZZLE_B, GL_ZERO);
-				glTexParameteri( Texture2D->Target, GL_TEXTURE_SWIZZLE_A, GL_ZERO);
-			}
-		
-			View = new FOpenGLShaderResourceView(this, Resource, Texture2D->Target, MipLevel, true);
-		}
-		else
-		{
-			uint32 const Target = Texture2D->Target;
-			GLuint Resource = Texture2D->Resource;
-		
-			FTexture2DRHIParamRef DepthStencilTex = nullptr;
-		
-			// For stencil sampling we have to use a separate single channel texture to blit stencil data into
-	#if PLATFORM_DESKTOP || PLATFORM_ANDROIDESDEFERRED
-			if (FOpenGL::GetFeatureLevel() >= ERHIFeatureLevel::SM4 && Format == PF_X24_G8 && FOpenGL::SupportsPixelBuffers())
-			{
-				check(NumMipLevels == 1 && MipLevel == 0);
-			
-				if (!Texture2D->SRVResource)
+				// For stencil sampling we have to use a separate single channel texture to blit stencil data into
+#if PLATFORM_DESKTOP || PLATFORM_ANDROIDESDEFERRED
+				if (FOpenGL::GetFeatureLevel() >= ERHIFeatureLevel::SM5 && Format == PF_X24_G8 && FOpenGL::SupportsPixelBuffers())
 				{
-					FOpenGL::GenTextures(1, &Texture2D->SRVResource);
-				
-					GLenum const InternalFormat = GL_R8UI;
-					GLenum const ChannelFormat = GL_RED_INTEGER;
-					uint32 const SizeX = Texture2D->GetSizeX();
-					uint32 const SizeY = Texture2D->GetSizeY();
-					GLenum const Type = GL_UNSIGNED_BYTE;
-					uint32 const Flags = 0;
-				
-					FOpenGLContextState& ContextState = GetContextStateForCurrentContext();
-					CachedSetupTextureStage(ContextState, FOpenGL::GetMaxCombinedTextureImageUnits() - 1, Target, Texture2D->SRVResource, MipLevel, NumMipLevels);
-				
-					if (!FOpenGL::TexStorage2D(Target, NumMipLevels, InternalFormat, SizeX, SizeY, ChannelFormat, Type, Flags))
+					check(NumMipLevels == 1 && MipLevel == 0);
+
+					if (!Texture2D->SRVResource)
 					{
-						glTexImage2D(Target, 0, InternalFormat, SizeX, SizeY, 0, ChannelFormat, Type, nullptr);
+						FOpenGL::GenTextures(1, &Texture2D->SRVResource);
+
+						GLenum const InternalFormat = GL_R8UI;
+						GLenum const ChannelFormat = GL_RED_INTEGER;
+						uint32 const SizeX = Texture2D->GetSizeX();
+						uint32 const SizeY = Texture2D->GetSizeY();
+						GLenum const Type = GL_UNSIGNED_BYTE;
+						uint32 const Flags = 0;
+
+						FOpenGLContextState& ContextState = GetContextStateForCurrentContext();
+						CachedSetupTextureStage(ContextState, FOpenGL::GetMaxCombinedTextureImageUnits() - 1, Target, Texture2D->SRVResource, MipLevel, NumMipLevels);
+
+						if (!FOpenGL::TexStorage2D(Target, NumMipLevels, InternalFormat, SizeX, SizeY, ChannelFormat, Type, Flags))
+						{
+							glTexImage2D(Target, 0, InternalFormat, SizeX, SizeY, 0, ChannelFormat, Type, nullptr);
+						}
+
+						TArray<uint8> ZeroData;
+						ZeroData.AddZeroed(SizeX * SizeY);
+
+						glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
+						glTexSubImage2D(
+							Target,
+							0,
+							0,
+							0,
+							SizeX,
+							SizeY,
+							ChannelFormat,
+							Type,
+							ZeroData.GetData());
+						glPixelStorei(GL_UNPACK_ALIGNMENT, 4);
+
+						//set the texture to return the stencil index, and then force the components to match D3D
+						glTexParameteri(Target, GL_TEXTURE_SWIZZLE_R, GL_ZERO);
+						glTexParameteri(Target, GL_TEXTURE_SWIZZLE_G, GL_RED);
+						glTexParameteri(Target, GL_TEXTURE_SWIZZLE_B, GL_ZERO);
+						glTexParameteri(Target, GL_TEXTURE_SWIZZLE_A, GL_ZERO);
 					}
-				
-					TArray<uint8> ZeroData;
-					ZeroData.AddZeroed(SizeX * SizeY);
-				
-					glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
-					glTexSubImage2D(
-									Target,
-									0,
-									0,
-									0,
-									SizeX,
-									SizeY,
-									ChannelFormat,
-									Type,
-									ZeroData.GetData());
-					glPixelStorei(GL_UNPACK_ALIGNMENT, 4);
-				
-					//set the texture to return the stencil index, and then force the components to match D3D
-					glTexParameteri( Target, GL_TEXTURE_SWIZZLE_R, GL_ZERO);
-					glTexParameteri( Target, GL_TEXTURE_SWIZZLE_G, GL_RED);
-					glTexParameteri( Target, GL_TEXTURE_SWIZZLE_B, GL_ZERO);
-					glTexParameteri( Target, GL_TEXTURE_SWIZZLE_A, GL_ZERO);
+					check(Texture2D->SRVResource);
+
+					Resource = Texture2D->SRVResource;
+					DepthStencilTex = Texture2DRHI;
 				}
-				check(Texture2D->SRVResource);
-			
-				Resource = Texture2D->SRVResource;
-				DepthStencilTex = Texture2DRHI;
+#endif
+
+				View = new FOpenGLShaderResourceView(this, Resource, Target, MipLevel, false);
+				View->Texture2D = DepthStencilTex;
 			}
-	#endif
-		
-			View = new FOpenGLShaderResourceView(this, Resource, Target, MipLevel, false);
-			View->Texture2D = DepthStencilTex;
+			return View;
 		}
-		return View;
-	});
-
-	return ViewProxy;
-}
-
-FShaderResourceViewRHIRef FOpenGLDynamicRHI::RHICreateShaderResourceView(FTexture3DRHIParamRef Texture3DRHI, uint8 MipLevel)
-{
-	FOpenGLShaderResourceViewProxy *ViewProxy = new FOpenGLShaderResourceViewProxy([=](FShaderResourceViewRHIParamRef OwnerRHI)
-	{
-		FOpenGLTexture3D* Texture3D = ResourceCast(Texture3DRHI);
-
-		FOpenGLShaderResourceView *View = 0;
-
-		if (FOpenGL::SupportsTextureView())
+		else if (FRHITexture2DArray* Texture2DArrayRHI = Texture->GetTexture2DArray())
 		{
-			VERIFY_GL_SCOPE();
+			FOpenGLTexture2DArray* Texture2DArray = ResourceCast(Texture2DArrayRHI);
+			FOpenGLShaderResourceView *View = 0;
 
-			GLuint Resource = 0;
+			if (FOpenGL::SupportsTextureView())
+			{
+				VERIFY_GL_SCOPE();
 
-			FOpenGL::GenTextures( 1, &Resource);
-			const FOpenGLTextureFormat& GLFormat = GOpenGLTextureFormats[Texture3D->GetFormat()];
-			const bool bSRGB = (Texture3D->GetFlags()&TexCreate_SRGB) != 0;
-		
-			FOpenGL::TextureView( Resource, Texture3D->Target, Texture3D->Resource, GLFormat.InternalFormat[bSRGB], MipLevel, 1, 0, 1);
-		
-			return new FOpenGLShaderResourceView(this, Resource, Texture3D->Target, MipLevel, true);
+				GLuint Resource = 0;
+
+				FOpenGL::GenTextures(1, &Resource);
+				const FOpenGLTextureFormat& GLFormat = GOpenGLTextureFormats[Texture2DArray->GetFormat()];
+				const bool bSRGB = (Texture2DArray->GetFlags()&TexCreate_SRGB) != 0;
+
+				FOpenGL::TextureView(Resource, Texture2DArray->Target, Texture2DArray->Resource, GLFormat.InternalFormat[bSRGB], MipLevel, 1, 0, 1);
+
+				return new FOpenGLShaderResourceView(this, Resource, Texture2DArray->Target, MipLevel, true);
+			}
+			else
+			{
+				return new FOpenGLShaderResourceView(this, Texture2DArray->Resource, Texture2DArray->Target, MipLevel, false);
+			}
+		}
+		else if (FRHITextureCube* TextureCubeRHI = Texture->GetTextureCube())
+		{
+			FOpenGLTextureCube* TextureCube = ResourceCast(TextureCubeRHI);
+			if (FOpenGL::SupportsTextureView())
+			{
+				VERIFY_GL_SCOPE();
+
+				GLuint Resource = 0;
+
+				FOpenGL::GenTextures(1, &Resource);
+				const FOpenGLTextureFormat& GLFormat = GOpenGLTextureFormats[TextureCube->GetFormat()];
+				const bool bSRGB = (TextureCube->GetFlags()&TexCreate_SRGB) != 0;
+
+				FOpenGL::TextureView(Resource, TextureCube->Target, TextureCube->Resource, GLFormat.InternalFormat[bSRGB], MipLevel, 1, 0, 6);
+
+				return new FOpenGLShaderResourceView(this, Resource, TextureCube->Target, MipLevel, true);
+			}
+			else
+			{
+				return new FOpenGLShaderResourceView(this, TextureCube->Resource, TextureCube->Target, MipLevel, false);
+			}
+		}
+		else if (FRHITexture3D* Texture3DRHI = Texture->GetTexture3D())
+		{
+			FOpenGLTexture3D* Texture3D = ResourceCast(Texture3DRHI);
+
+			FOpenGLShaderResourceView *View = 0;
+
+			if (FOpenGL::SupportsTextureView())
+			{
+				VERIFY_GL_SCOPE();
+
+				GLuint Resource = 0;
+
+				FOpenGL::GenTextures(1, &Resource);
+				const FOpenGLTextureFormat& GLFormat = GOpenGLTextureFormats[Texture3D->GetFormat()];
+				const bool bSRGB = (Texture3D->GetFlags()&TexCreate_SRGB) != 0;
+
+				FOpenGL::TextureView(Resource, Texture3D->Target, Texture3D->Resource, GLFormat.InternalFormat[bSRGB], MipLevel, 1, 0, 1);
+
+				return new FOpenGLShaderResourceView(this, Resource, Texture3D->Target, MipLevel, true);
+			}
+			else
+			{
+				return new FOpenGLShaderResourceView(this, Texture3D->Resource, Texture3D->Target, MipLevel, false);
+			}
 		}
 		else
 		{
-			return new FOpenGLShaderResourceView(this, Texture3D->Resource, Texture3D->Target, MipLevel, false);
+			check(false);
+			return nullptr;
 		}
 	});
-
 	return ViewProxy;
 }
-
-FShaderResourceViewRHIRef FOpenGLDynamicRHI::RHICreateShaderResourceView(FTexture2DArrayRHIParamRef Texture2DArrayRHI, uint8 MipLevel)
-{
-	FOpenGLShaderResourceViewProxy *ViewProxy = new FOpenGLShaderResourceViewProxy([=](FShaderResourceViewRHIParamRef OwnerRHI)
-	{
-		FOpenGLTexture2DArray* Texture2DArray = ResourceCast(Texture2DArrayRHI);
-		FOpenGLShaderResourceView *View = 0;
-
-		if (FOpenGL::SupportsTextureView())
-		{
-			VERIFY_GL_SCOPE();
-
-			GLuint Resource = 0;
-
-			FOpenGL::GenTextures(1, &Resource);
-			const FOpenGLTextureFormat& GLFormat = GOpenGLTextureFormats[Texture2DArray->GetFormat()];
-			const bool bSRGB = (Texture2DArray->GetFlags()&TexCreate_SRGB) != 0;
-
-			FOpenGL::TextureView(Resource, Texture2DArray->Target, Texture2DArray->Resource, GLFormat.InternalFormat[bSRGB], MipLevel, 1, 0, 1);
-
-			return new FOpenGLShaderResourceView(this, Resource, Texture2DArray->Target, MipLevel, true);
-		}
-		else
-		{
-			return new FOpenGLShaderResourceView(this, Texture2DArray->Resource, Texture2DArray->Target, MipLevel, false);
-		}
-	});
-	
-	return ViewProxy;
-}
-
-FShaderResourceViewRHIRef FOpenGLDynamicRHI::RHICreateShaderResourceView(FTextureCubeRHIParamRef TextureCubeRHI, uint8 MipLevel)
-{
-
-	FOpenGLShaderResourceViewProxy *ViewProxy = new FOpenGLShaderResourceViewProxy([=](FShaderResourceViewRHIParamRef OwnerRHI)
-	{
-		FOpenGLTextureCube* TextureCube = ResourceCast(TextureCubeRHI);
-		if (FOpenGL::SupportsTextureView())
-		{
-			VERIFY_GL_SCOPE();
-
-			GLuint Resource = 0;
-
-			FOpenGL::GenTextures(1, &Resource);
-			const FOpenGLTextureFormat& GLFormat = GOpenGLTextureFormats[TextureCube->GetFormat()];
-			const bool bSRGB = (TextureCube->GetFlags()&TexCreate_SRGB) != 0;
-
-			FOpenGL::TextureView(Resource, TextureCube->Target, TextureCube->Resource, GLFormat.InternalFormat[bSRGB], MipLevel, 1, 0, 6);
-
-			return new FOpenGLShaderResourceView(this, Resource, TextureCube->Target, MipLevel, true);
-		}
-		else
-		{
-			return new FOpenGLShaderResourceView(this, TextureCube->Resource, TextureCube->Target, MipLevel, false);
-		}
-	});
-
-	return ViewProxy;
-}
-
 
 /** Generates mip maps for the surface. */
-void FOpenGLDynamicRHI::RHIGenerateMips(FTextureRHIParamRef SurfaceRHI)
+void FOpenGLDynamicRHI::RHIGenerateMips(FRHITexture* SurfaceRHI)
 {
 	VERIFY_GL_SCOPE();
 
@@ -2126,7 +2099,7 @@ void FOpenGLDynamicRHI::RHIGenerateMips(FTextureRHIParamRef SurfaceRHI)
  * @param	TextureRHI		- Texture we want to know the size of
  * @return					- Size in Bytes
  */
-uint32 FOpenGLDynamicRHI::RHIComputeMemorySize(FTextureRHIParamRef TextureRHI)
+uint32 FOpenGLDynamicRHI::RHIComputeMemorySize(FRHITexture* TextureRHI)
 {
 	if(!TextureRHI)
 	{
@@ -2142,7 +2115,7 @@ uint32 FOpenGLDynamicRHI::RHIComputeMemorySize(FTextureRHIParamRef TextureRHI)
 }
 
 
-static FTexture2DRHIRef CreateAsyncReallocate2DTextureTarget(FOpenGLDynamicRHI* OGLRHI, FTexture2DRHIParamRef Texture2DRHI, int32 NewMipCountIn, int32 NewSizeX, int32 NewSizeY)
+static FTexture2DRHIRef CreateAsyncReallocate2DTextureTarget(FOpenGLDynamicRHI* OGLRHI, FRHITexture2D* Texture2DRHI, int32 NewMipCountIn, int32 NewSizeX, int32 NewSizeY)
 {
 	FOpenGLTexture2D* Texture2D = FOpenGLDynamicRHI::ResourceCast(Texture2DRHI);
 	uint8 Format = Texture2D->GetFormat();
@@ -2160,7 +2133,7 @@ static FTexture2DRHIRef CreateAsyncReallocate2DTextureTarget(FOpenGLDynamicRHI* 
 	return NewTexture2DRHI;
 }
 
-static void GLCopyAsyncTexture2D(FOpenGLDynamicRHI* OGLRHI, FRHITexture2D* NewTexture2DRHI, int32 NewSizeX, int32 NewSizeY, FTexture2DRHIParamRef SourceTexture2DRHI, FThreadSafeCounter* RequestStatus)
+static void GLCopyAsyncTexture2D(FOpenGLDynamicRHI* OGLRHI, FRHITexture2D* NewTexture2DRHI, int32 NewSizeX, int32 NewSizeY, FRHITexture2D* SourceTexture2DRHI, FThreadSafeCounter* RequestStatus)
 {
 	VERIFY_GL_SCOPE();
 
@@ -2236,7 +2209,7 @@ static void GLCopyAsyncTexture2D(FOpenGLDynamicRHI* OGLRHI, FRHITexture2D* NewTe
 	RequestStatus->Decrement();
 }
 
-FTexture2DRHIRef FOpenGLDynamicRHI::AsyncReallocateTexture2D_RenderThread(class FRHICommandListImmediate& RHICmdList, FTexture2DRHIParamRef Texture2DRHI, int32 NewMipCountIn, int32 NewSizeX, int32 NewSizeY, FThreadSafeCounter* RequestStatus)
+FTexture2DRHIRef FOpenGLDynamicRHI::AsyncReallocateTexture2D_RenderThread(class FRHICommandListImmediate& RHICmdList, FRHITexture2D* Texture2DRHI, int32 NewMipCountIn, int32 NewSizeX, int32 NewSizeY, FThreadSafeCounter* RequestStatus)
 {
 	if (RHICmdList.Bypass() || !IsRunningRHIInSeparateThread())
 	{
@@ -2259,7 +2232,7 @@ FTexture2DRHIRef FOpenGLDynamicRHI::AsyncReallocateTexture2D_RenderThread(class 
 	}
 }
 
-FTexture2DRHIRef FOpenGLDynamicRHI::RHIAsyncReallocateTexture2D(FTexture2DRHIParamRef Texture2DRHI, int32 NewMipCountIn, int32 NewSizeX, int32 NewSizeY, FThreadSafeCounter* RequestStatus)
+FTexture2DRHIRef FOpenGLDynamicRHI::RHIAsyncReallocateTexture2D(FRHITexture2D* Texture2DRHI, int32 NewMipCountIn, int32 NewSizeX, int32 NewSizeY, FThreadSafeCounter* RequestStatus)
 {
 	FTexture2DRHIRef NewTexture2DRHI = CreateAsyncReallocate2DTextureTarget(this, Texture2DRHI, NewMipCountIn, NewSizeX, NewSizeY);
 	GLCopyAsyncTexture2D(this, NewTexture2DRHI, NewSizeX, NewSizeY, Texture2DRHI, RequestStatus);
@@ -2275,7 +2248,7 @@ FTexture2DRHIRef FOpenGLDynamicRHI::RHIAsyncReallocateTexture2D(FTexture2DRHIPar
  * @param Texture2D		- Texture to check the reallocation status for
  * @return				- Current reallocation status
  */
-ETextureReallocationStatus FOpenGLDynamicRHI::RHIFinalizeAsyncReallocateTexture2D( FTexture2DRHIParamRef Texture2D, bool bBlockUntilCompleted )
+ETextureReallocationStatus FOpenGLDynamicRHI::RHIFinalizeAsyncReallocateTexture2D(FRHITexture2D* Texture2D, bool bBlockUntilCompleted )
 {
 	return TexRealloc_Succeeded;
 }
@@ -2288,36 +2261,36 @@ ETextureReallocationStatus FOpenGLDynamicRHI::RHIFinalizeAsyncReallocateTexture2
  * @param bBlockUntilCompleted	If true, blocks until the cancellation is fully completed
  * @return						Reallocation status
  */
-ETextureReallocationStatus FOpenGLDynamicRHI::RHICancelAsyncReallocateTexture2D( FTexture2DRHIParamRef Texture2D, bool bBlockUntilCompleted )
+ETextureReallocationStatus FOpenGLDynamicRHI::RHICancelAsyncReallocateTexture2D(FRHITexture2D* Texture2D, bool bBlockUntilCompleted )
 {
 	return TexRealloc_Succeeded;
 }
 
-void* FOpenGLDynamicRHI::RHILockTexture2D(FTexture2DRHIParamRef TextureRHI,uint32 MipIndex,EResourceLockMode LockMode,uint32& DestStride,bool bLockWithinMiptail)
+void* FOpenGLDynamicRHI::RHILockTexture2D(FRHITexture2D* TextureRHI,uint32 MipIndex,EResourceLockMode LockMode,uint32& DestStride,bool bLockWithinMiptail)
 {
 	FOpenGLTexture2D* Texture = ResourceCast(TextureRHI);
 	return Texture->Lock(MipIndex,0,LockMode,DestStride);
 }
 
-void FOpenGLDynamicRHI::RHIUnlockTexture2D(FTexture2DRHIParamRef TextureRHI,uint32 MipIndex,bool bLockWithinMiptail)
+void FOpenGLDynamicRHI::RHIUnlockTexture2D(FRHITexture2D* TextureRHI,uint32 MipIndex,bool bLockWithinMiptail)
 {
 	FOpenGLTexture2D* Texture = ResourceCast(TextureRHI);
 	Texture->Unlock(MipIndex, 0);
 }
 
-void* FOpenGLDynamicRHI::RHILockTexture2DArray(FTexture2DArrayRHIParamRef TextureRHI,uint32 TextureIndex,uint32 MipIndex,EResourceLockMode LockMode,uint32& DestStride,bool bLockWithinMiptail)
+void* FOpenGLDynamicRHI::RHILockTexture2DArray(FRHITexture2DArray* TextureRHI,uint32 TextureIndex,uint32 MipIndex,EResourceLockMode LockMode,uint32& DestStride,bool bLockWithinMiptail)
 {
 	FOpenGLTexture2DArray* Texture = ResourceCast(TextureRHI);
 	return Texture->Lock(MipIndex,TextureIndex,LockMode,DestStride);
 }
 
-void FOpenGLDynamicRHI::RHIUnlockTexture2DArray(FTexture2DArrayRHIParamRef TextureRHI,uint32 TextureIndex,uint32 MipIndex,bool bLockWithinMiptail)
+void FOpenGLDynamicRHI::RHIUnlockTexture2DArray(FRHITexture2DArray* TextureRHI,uint32 TextureIndex,uint32 MipIndex,bool bLockWithinMiptail)
 {
 	FOpenGLTexture2DArray* Texture = ResourceCast(TextureRHI);
 	Texture->Unlock(MipIndex, TextureIndex);
 }
 
-void FOpenGLDynamicRHI::RHIUpdateTexture2D(FTexture2DRHIParamRef TextureRHI,uint32 MipIndex,const FUpdateTextureRegion2D& UpdateRegionIn,uint32 SourcePitch,const uint8* SourceDataIn)
+void FOpenGLDynamicRHI::RHIUpdateTexture2D(FRHITexture2D* TextureRHI,uint32 MipIndex,const FUpdateTextureRegion2D& UpdateRegionIn,uint32 SourcePitch,const uint8* SourceDataIn)
 {
 	FRHICommandListImmediate& RHICmdList = FRHICommandListExecutor::GetImmediateCommandList();
 	const FUpdateTextureRegion2D UpdateRegion = UpdateRegionIn;
@@ -2369,7 +2342,7 @@ void FOpenGLDynamicRHI::RHIUpdateTexture2D(FTexture2DRHIParamRef TextureRHI,uint
 	});
 }
 
-void FOpenGLDynamicRHI::RHIUpdateTexture3D(FTexture3DRHIParamRef TextureRHI,uint32 MipIndex,const FUpdateTextureRegion3D& UpdateRegion,uint32 SourceRowPitch,uint32 SourceDepthPitch,const uint8* SourceData)
+void FOpenGLDynamicRHI::RHIUpdateTexture3D(FRHITexture3D* TextureRHI, uint32 MipIndex, const FUpdateTextureRegion3D& UpdateRegion, uint32 SourceRowPitch, uint32 SourceDepthPitch, const uint8* SourceData)
 {
 	VERIFY_GL_SCOPE();
 	check( FOpenGL::SupportsTexture3D() );
@@ -2427,7 +2400,7 @@ void FOpenGLDynamicRHI::RHIUpdateTexture3D(FTexture3DRHIParamRef TextureRHI,uint
 void FOpenGLDynamicRHI::InvalidateTextureResourceInCache(GLuint Resource)
 {
 	VERIFY_GL_SCOPE();
-	if (SharedContextState.Textures || RenderingContextState.Textures)
+	if (SharedContextState.Textures || RenderingContextState.Textures || PendingState.Textures)
 	{
 		for (int32 SamplerIndex = 0; SamplerIndex < FOpenGL::GetMaxCombinedTextureImageUnits(); ++SamplerIndex)
 		{
@@ -2442,6 +2415,12 @@ void FOpenGLDynamicRHI::InvalidateTextureResourceInCache(GLuint Resource)
 				RenderingContextState.Textures[SamplerIndex].Target = GL_NONE;
 				RenderingContextState.Textures[SamplerIndex].Resource = 0;
 			}
+
+			if (PendingState.Textures && PendingState.Textures[SamplerIndex].Resource == Resource)
+			{
+				PendingState.Textures[SamplerIndex].Target = GL_NONE;
+				PendingState.Textures[SamplerIndex].Resource = 0;
+			}
 		}
 	}
 	
@@ -2455,7 +2434,7 @@ void FOpenGLDynamicRHI::InvalidateTextureResourceInCache(GLuint Resource)
 
 void FOpenGLDynamicRHI::InvalidateUAVResourceInCache(GLuint Resource)
 {
-	for (int32 UAVIndex = 0; UAVIndex < OGL_MAX_COMPUTE_STAGE_UAV_UNITS; ++UAVIndex)
+	for (int32 UAVIndex = 0; UAVIndex < FOpenGL::GetMaxCombinedUAVUnits(); ++UAVIndex)
 	{
 		if (SharedContextState.UAVs[UAVIndex].Resource == Resource)
 		{
@@ -2467,6 +2446,12 @@ void FOpenGLDynamicRHI::InvalidateUAVResourceInCache(GLuint Resource)
 		{
 			RenderingContextState.UAVs[UAVIndex].Format = GL_NONE;
 			RenderingContextState.UAVs[UAVIndex].Resource = 0;
+		}
+
+		if (PendingState.UAVs[UAVIndex].Resource == Resource)
+		{
+			PendingState.UAVs[UAVIndex].Format = GL_NONE;
+			PendingState.UAVs[UAVIndex].Resource = 0;
 		}
 	}
 }
@@ -2490,19 +2475,19 @@ FTextureCubeRHIRef FOpenGLDynamicRHI::RHICreateTextureCubeArray( uint32 Size, ui
 	return (FRHITextureCube*)CreateOpenGLTexture(Size, Size, true, true, false, Format, NumMips, 1, 6 * ArraySize, Flags, CreateInfo.ClearValueBinding);
 }
 
-void* FOpenGLDynamicRHI::RHILockTextureCubeFace(FTextureCubeRHIParamRef TextureCubeRHI,uint32 FaceIndex,uint32 ArrayIndex,uint32 MipIndex,EResourceLockMode LockMode,uint32& DestStride,bool bLockWithinMiptail)
+void* FOpenGLDynamicRHI::RHILockTextureCubeFace(FRHITextureCube* TextureCubeRHI,uint32 FaceIndex,uint32 ArrayIndex,uint32 MipIndex,EResourceLockMode LockMode,uint32& DestStride,bool bLockWithinMiptail)
 {
 	FOpenGLTextureCube* TextureCube = ResourceCast(TextureCubeRHI);
 	return TextureCube->Lock(MipIndex,FaceIndex + 6 * ArrayIndex,LockMode,DestStride);
 }
 
-void FOpenGLDynamicRHI::RHIUnlockTextureCubeFace(FTextureCubeRHIParamRef TextureCubeRHI,uint32 FaceIndex,uint32 ArrayIndex,uint32 MipIndex,bool bLockWithinMiptail)
+void FOpenGLDynamicRHI::RHIUnlockTextureCubeFace(FRHITextureCube* TextureCubeRHI,uint32 FaceIndex,uint32 ArrayIndex,uint32 MipIndex,bool bLockWithinMiptail)
 {
 	FOpenGLTextureCube* TextureCube = ResourceCast(TextureCubeRHI);
 	TextureCube->Unlock(MipIndex,FaceIndex + ArrayIndex * 6);
 }
 
-void FOpenGLDynamicRHI::RHIBindDebugLabelName(FTextureRHIParamRef TextureRHI, const TCHAR* Name)
+void FOpenGLDynamicRHI::RHIBindDebugLabelName(FRHITexture* TextureRHI, const TCHAR* Name)
 {
 	FRHICommandListImmediate& RHICmdList = FRHICommandListExecutor::GetImmediateCommandList();
 	if (ShouldRunGLRenderContextOpOnThisThread(RHICmdList))
@@ -2526,11 +2511,11 @@ void FOpenGLDynamicRHI::RHIBindDebugLabelName(FTextureRHIParamRef TextureRHI, co
 }
 
 
-void FOpenGLDynamicRHI::RHIVirtualTextureSetFirstMipInMemory(FTexture2DRHIParamRef TextureRHI, uint32 FirstMip)
+void FOpenGLDynamicRHI::RHIVirtualTextureSetFirstMipInMemory(FRHITexture2D* TextureRHI, uint32 FirstMip)
 {
 }
 
-void FOpenGLDynamicRHI::RHIVirtualTextureSetFirstMipVisible(FTexture2DRHIParamRef TextureRHI, uint32 FirstMip)
+void FOpenGLDynamicRHI::RHIVirtualTextureSetFirstMipVisible(FRHITexture2D* TextureRHI, uint32 FirstMip)
 {
 }
 
@@ -2545,7 +2530,7 @@ void FOpenGLTextureReference::SetReferencedTexture(FRHITexture* InTexture)
 	TexturePtr = GetOpenGLTextureFromRHITexture(InTexture);
 }
 
-void FOpenGLDynamicRHI::RHIUpdateTextureReference(FTextureReferenceRHIParamRef TextureRefRHI, FTextureRHIParamRef NewTextureRHI)
+void FOpenGLDynamicRHI::RHIUpdateTextureReference(FRHITextureReference* TextureRefRHI, FRHITexture* NewTextureRHI)
 {
 	auto* TextureRef = (FOpenGLTextureReference*)TextureRefRHI;
 	if (TextureRef)
@@ -2553,6 +2538,200 @@ void FOpenGLDynamicRHI::RHIUpdateTextureReference(FTextureReferenceRHIParamRef T
 		TextureRef->SetReferencedTexture(NewTextureRHI);
 	}
 }
+
+void FOpenGLDynamicRHI::RHICopySubTextureRegion(FRHITexture2D* SourceTextureRHI, FRHITexture2D* DestinationTextureRHI, FBox2D SourceBox, FBox2D DestinationBox)
+{
+	VERIFY_GL_SCOPE();
+	FOpenGLTexture2D* SourceTexture = ResourceCast(SourceTextureRHI);
+	FOpenGLTexture2D* DestinationTexture = ResourceCast(DestinationTextureRHI);
+
+	check(SourceTexture->Target == DestinationTexture->Target);
+
+	// Use a texture stage that's not likely to be used for draws, to avoid waiting
+	FOpenGLContextState& ContextState = GetContextStateForCurrentContext();
+	CachedSetupTextureStage(ContextState, FOpenGL::GetMaxCombinedTextureImageUnits() - 1, DestinationTexture->Target, DestinationTexture->Resource, 0, DestinationTexture->GetNumMips());
+	CachedBindPixelUnpackBuffer(ContextState, 0);
+
+	// Convert sub texture regions to GL types
+	GLint XOffset = DestinationBox.Min.X;
+	GLint YOffset = DestinationBox.Min.Y;
+	GLint X = SourceBox.Min.X;
+	GLint Y = SourceBox.Min.Y;
+	GLsizei Width = DestinationBox.Max.X - DestinationBox.Min.X;
+	GLsizei Height = DestinationBox.Max.Y - DestinationBox.Min.Y;
+
+	// Bind source texture to an FBO to read from
+	FOpenGLTextureBase* RenderTarget[] = { SourceTexture };
+	uint32 MipLevel = 0;
+	GLuint SourceFBO = GetOpenGLFramebuffer(1, RenderTarget, NULL, &MipLevel, NULL);
+	check(SourceFBO != 0);
+
+	glBindFramebuffer(GL_FRAMEBUFFER, SourceFBO);
+
+	FOpenGL::ReadBuffer(GL_COLOR_ATTACHMENT0);
+	FOpenGL::CopyTexSubImage2D(DestinationTexture->Target, 0, XOffset, YOffset, X, Y, Width, Height);
+
+	ContextState.Framebuffer = (GLuint)-1;
+}
+
+
+void FOpenGLDynamicRHI::RHICopyTexture(FRHITexture* SourceTextureRHI, FRHITexture* DestTextureRHI, const FRHICopyTextureInfo& CopyInfo)
+{
+	VERIFY_GL_SCOPE();
+	FOpenGLTextureBase* SourceTexture = GetOpenGLTextureFromRHITexture(SourceTextureRHI);
+	FOpenGLTextureBase* DestTexture = GetOpenGLTextureFromRHITexture(DestTextureRHI);
+
+	checkf(SourceTexture->Target == DestTexture->Target, TEXT("Cannot copy between different texture targets, SourceTexture Target=%x, Format=%d, Flags=%x; DestTexture Target=%x, Format=%d, Flags=%x"),
+		SourceTexture->Target, SourceTextureRHI->GetFormat(), SourceTextureRHI->GetFlags(),
+		DestTexture->Target, DestTextureRHI->GetFormat(), DestTextureRHI->GetFlags()
+	);
+	
+	checkf((SourceTextureRHI->GetFlags() & TexCreate_SRGB) == (DestTextureRHI->GetFlags() & TexCreate_SRGB), TEXT("Cannot copy between sRGB and linear, SourceTexture Format=%d, Flags=%x; DestTexture Format=%d, Flags=%x"),
+		SourceTextureRHI->GetFormat(), SourceTextureRHI->GetFlags(),
+		DestTextureRHI->GetFormat(), DestTextureRHI->GetFlags()
+	);
+
+	GLsizei Width, Height, Depth;
+
+	if (CopyInfo.Size == FIntVector::ZeroValue)
+	{
+		// Copy whole texture when zero vector is specified for region size.
+		FIntVector SrcTexSize = SourceTextureRHI->GetSizeXYZ();
+		Width = FMath::Max(1, SrcTexSize.X >> CopyInfo.SourceMipIndex);
+		Height = FMath::Max(1, SrcTexSize.Y >> CopyInfo.SourceMipIndex);
+		switch (SourceTexture->Target)
+		{
+		case GL_TEXTURE_3D:			Depth = FMath::Max(1, SrcTexSize.Z >> CopyInfo.SourceMipIndex); break;
+		case GL_TEXTURE_CUBE_MAP:	Depth = 6; break;
+		default:					Depth = 1; break;
+		}
+		ensure(CopyInfo.SourcePosition == FIntVector::ZeroValue);
+	}
+	else
+	{
+		Width = CopyInfo.Size.X;
+		Height = CopyInfo.Size.Y;
+		switch (SourceTexture->Target)
+		{
+			case GL_TEXTURE_3D:			Depth = CopyInfo.Size.Z; break;
+			case GL_TEXTURE_CUBE_MAP:	Depth = CopyInfo.NumSlices; break;
+			default:					Depth = 1; break;
+		}
+	}
+
+	GLint SrcMip = CopyInfo.SourceMipIndex;
+	GLint DestMip = CopyInfo.DestMipIndex;
+
+	if (FOpenGL::SupportsCopyImage())
+	{
+		GLint SrcZOffset, DestZOffset;
+		switch (SourceTexture->Target)
+		{
+		case GL_TEXTURE_3D:
+		case GL_TEXTURE_CUBE_MAP:
+			// For cube maps, the Z offsets select the starting faces.
+			SrcZOffset = CopyInfo.SourcePosition.Z;
+			DestZOffset = CopyInfo.DestPosition.Z;
+			break;
+		case GL_TEXTURE_1D_ARRAY:
+		case GL_TEXTURE_2D_ARRAY:
+			// For texture arrays, the Z offsets and depth actually refer to the range of slices to copy.
+			SrcZOffset = CopyInfo.SourceSliceIndex;
+			DestZOffset = CopyInfo.DestSliceIndex;
+			Depth = CopyInfo.NumSlices;
+			break;
+		default:
+			SrcZOffset = 0;
+			DestZOffset = 0;
+			break;
+		}
+
+		for (uint32 MipIndex = 0; MipIndex < CopyInfo.NumMips; ++MipIndex)
+		{
+			FOpenGL::CopyImageSubData(SourceTexture->Resource, SourceTexture->Target, SrcMip, CopyInfo.SourcePosition.X, CopyInfo.SourcePosition.Y, SrcZOffset,
+				DestTexture->Resource, DestTexture->Target, DestMip, CopyInfo.DestPosition.X, CopyInfo.DestPosition.Y, DestZOffset,
+				Width, Height, Depth);
+
+			++SrcMip;
+			++DestMip;
+
+			Width = FMath::Max(1, Width >> 1);
+			Height = FMath::Max(1, Height >> 1);
+			if(DestTexture->Target == GL_TEXTURE_3D)
+			{
+				Depth = FMath::Max(1, Depth >> 1);
+			}
+		}
+
+		return;
+	}
+	
+	// Convert sub texture regions to GL types
+	GLint XOffset = CopyInfo.DestPosition.X;
+	GLint YOffset = CopyInfo.DestPosition.Y;
+	GLint ZOffset = CopyInfo.DestPosition.Z;
+	GLint X = CopyInfo.SourcePosition.X;
+	GLint Y = CopyInfo.SourcePosition.Y;
+	GLint Z = CopyInfo.SourcePosition.Z;
+
+	// Use a texture stage that's not likely to be used for draws, to avoid waiting
+	FOpenGLContextState& ContextState = GetContextStateForCurrentContext();
+	CachedSetupTextureStage(ContextState, FOpenGL::GetMaxCombinedTextureImageUnits() - 1, DestTexture->Target, DestTexture->Resource, 0, DestTextureRHI->GetNumMips());
+	CachedBindPixelUnpackBuffer(ContextState, 0);
+
+	// Bind source texture to an FBO to read from
+	for (uint32 SliceIndex = 0; SliceIndex < CopyInfo.NumSlices; ++SliceIndex)
+	{
+		for (uint32 MipIndex = 0; MipIndex < CopyInfo.NumMips; ++MipIndex)
+		{
+			FOpenGLTextureBase* RenderTargets[1] = { SourceTexture };
+			uint32 MipLevels[1] = { static_cast<uint32>(SrcMip) };
+			uint32 ArrayIndices[1] = { CopyInfo.SourceSliceIndex + SliceIndex };
+
+			GLuint SourceFBO = GetOpenGLFramebuffer(1, RenderTargets, ArrayIndices, MipLevels, nullptr);
+			check(SourceFBO != 0);
+
+			glBindFramebuffer(GL_FRAMEBUFFER, SourceFBO);
+
+			FOpenGL::ReadBuffer(GL_COLOR_ATTACHMENT0);
+
+			switch (DestTexture->Target)
+			{
+				case GL_TEXTURE_1D:
+					FOpenGL::CopyTexSubImage1D(DestTexture->Target, DestMip, XOffset, X, 0, Width);
+					break;
+				case GL_TEXTURE_1D_ARRAY:
+					FOpenGL::CopyTexSubImage2D(DestTexture->Target, DestMip, XOffset, CopyInfo.DestSliceIndex + SliceIndex, X, 0, Width, 1);
+					break;
+				case GL_TEXTURE_2D:
+				case GL_TEXTURE_RECTANGLE:
+					FOpenGL::CopyTexSubImage2D(DestTexture->Target, DestMip, XOffset, YOffset, X, Y, Width, Height);
+					break;
+				case GL_TEXTURE_2D_ARRAY:
+					FOpenGL::CopyTexSubImage3D(DestTexture->Target, DestMip, XOffset, YOffset, CopyInfo.DestSliceIndex + SliceIndex, X, Y, Width, Height);
+					break;
+				case GL_TEXTURE_3D:
+					FOpenGL::CopyTexSubImage3D(DestTexture->Target, DestMip, XOffset, YOffset, ZOffset, X, Y, Width, Height);
+					break;
+				case GL_TEXTURE_CUBE_MAP:
+					for (int32 FaceIndex = FMath::Min((int32)CopyInfo.NumSlices, 6) - 1; FaceIndex >= 0; FaceIndex--)
+					{
+						FOpenGL::CopyTexSubImage2D(GL_TEXTURE_CUBE_MAP_POSITIVE_X + (uint32)FaceIndex, CopyInfo.DestMipIndex, XOffset, YOffset, X, Y, Width, Height);
+					}					
+					break;
+			}
+		}
+
+		++SrcMip;
+		++DestMip;
+
+		Width = FMath::Max(1, Width >> 1);
+		Height = FMath::Max(1, Height >> 1);
+	}
+
+	ContextState.Framebuffer = (GLuint)-1;
+}
+
 
 FTexture2DRHIRef FOpenGLDynamicRHI::RHICreateTexture2DFromResource(EPixelFormat Format, uint32 SizeX, uint32 SizeY, uint32 NumMips, uint32 NumSamples, uint32 NumSamplesTileMem, const FClearValueBinding& ClearValueBinding, GLuint Resource, uint32 TexCreateFlags)
 {
@@ -2632,7 +2811,9 @@ FTextureCubeRHIRef FOpenGLDynamicRHI::RHICreateTextureCubeFromResource(EPixelFor
 	return TextureCube;
 }
 
-void FOpenGLDynamicRHI::RHIAliasTextureResources(FTextureRHIParamRef DestRHITexture, FTextureRHIParamRef SrcRHITexture)
+PRAGMA_DISABLE_DEPRECATION_WARNINGS
+
+void FOpenGLDynamicRHI::RHIAliasTextureResources(FRHITexture* DestRHITexture, FRHITexture* SrcRHITexture)
 {
 	FOpenGLTextureBase* DestTexture = GetOpenGLTextureFromRHITexture(DestRHITexture);
 	FOpenGLTextureBase* SrcTexture = GetOpenGLTextureFromRHITexture(SrcRHITexture);
@@ -2643,7 +2824,78 @@ void FOpenGLDynamicRHI::RHIAliasTextureResources(FTextureRHIParamRef DestRHIText
 	}
 }
 
-void* FOpenGLDynamicRHI::LockTexture2D_RenderThread(class FRHICommandListImmediate& RHICmdList, FTexture2DRHIParamRef Texture, uint32 MipIndex, EResourceLockMode LockMode, uint32& DestStride, bool bLockWithinMiptail, bool bNeedsDefaultRHIFlush)
+FRHITexture* FOpenGLDynamicRHI::CreateTexture2DAliased(FOpenGLTexture2D* SourceTexture)
+{
+	SCOPE_CYCLE_COUNTER(STAT_OpenGLCreateTextureTime);
+
+	FRHITexture* Result = new FOpenGLTexture2D(this, 0, SourceTexture->Target, -1, SourceTexture->GetSizeX(), SourceTexture->GetSizeY(), 0, 
+		SourceTexture->GetNumMips(), SourceTexture->GetNumSamples(), SourceTexture->GetNumSamplesTileMem(), 1, SourceTexture->GetFormat(), 
+		false, false, SourceTexture->GetFlags(), nullptr, SourceTexture->GetClearBinding());
+
+	RHIAliasTextureResources(Result, SourceTexture);
+
+	return Result;
+}
+
+FRHITexture* FOpenGLDynamicRHI::CreateTexture2DArrayAliased(FOpenGLTexture2DArray* SourceTexture)
+{
+	SCOPE_CYCLE_COUNTER(STAT_OpenGLCreateTextureTime);
+
+	FRHITexture* Result = new FOpenGLTexture2DArray(this, 0, SourceTexture->Target, -1, SourceTexture->GetSizeX(), SourceTexture->GetSizeY(), SourceTexture->GetSizeZ(),
+		SourceTexture->GetNumMips(), SourceTexture->GetNumSamples(), 1 /* aka check(InNumSamplesTileMem == 1) in OpenGLResource.h FOpenGLBaseTexture2DArray constructor */,
+		1, SourceTexture->GetFormat(), false, false, SourceTexture->GetFlags(), nullptr, SourceTexture->GetClearBinding());
+
+	RHIAliasTextureResources(Result, SourceTexture);
+
+	return Result;
+}
+
+FRHITexture* FOpenGLDynamicRHI::CreateTextureCubeAliased(FOpenGLTextureCube* SourceTexture)
+{
+	SCOPE_CYCLE_COUNTER(STAT_OpenGLCreateTextureTime);
+
+	FRHITexture* Result = new FOpenGLTextureCube(this, 0, SourceTexture->Target, -1, SourceTexture->GetSizeX(), SourceTexture->GetSizeY(), SourceTexture->GetSizeZ(),
+		SourceTexture->GetNumMips(), SourceTexture->GetNumSamples(), 1 /* OpenGL currently doesn't support multisample cube textures, per OpenGLResource.h FOpenGLBaseTextureCube */,
+		1, SourceTexture->GetFormat(), true, false, SourceTexture->GetFlags(), nullptr, SourceTexture->GetClearBinding());
+
+	RHIAliasTextureResources(Result, SourceTexture);
+
+	return Result;
+}
+
+FTextureRHIRef FOpenGLDynamicRHI::RHICreateAliasedTexture(FRHITexture* SourceTexture)
+{
+	FTextureRHIRef AliasedTexture;
+	if (SourceTexture->GetTexture2D() != nullptr)
+	{
+		AliasedTexture = CreateTexture2DAliased(static_cast<FOpenGLTexture2D*>(SourceTexture));
+	}
+	else if (SourceTexture->GetTexture2DArray() != nullptr)
+	{
+		AliasedTexture = CreateTexture2DArrayAliased(static_cast<FOpenGLTexture2DArray*>(SourceTexture));
+	}
+	else if (SourceTexture->GetTextureCube() != nullptr)
+	{
+		AliasedTexture = CreateTextureCubeAliased(static_cast<FOpenGLTextureCube*>(SourceTexture));
+	}
+	else
+	{
+		UE_LOG(LogRHI, Error, TEXT("Currently FOpenGLDynamicRHI::RHICreateAliasedTexture only supports 2D, 2D Array and Cube textures."));
+	}
+
+	if (AliasedTexture)
+	{
+		FOpenGLTextureBase* BaseTexture = GetOpenGLTextureFromRHITexture(AliasedTexture);
+		// Init memory size to zero, since we're aliased.
+		BaseTexture->SetMemorySize(0);
+	}
+
+	return AliasedTexture;
+}
+
+PRAGMA_ENABLE_DEPRECATION_WARNINGS
+
+void* FOpenGLDynamicRHI::LockTexture2D_RenderThread(class FRHICommandListImmediate& RHICmdList, FRHITexture2D* Texture, uint32 MipIndex, EResourceLockMode LockMode, uint32& DestStride, bool bLockWithinMiptail, bool bNeedsDefaultRHIFlush)
 {
 	check(IsInRenderingThread());
 	static auto* CVarRHICmdBufferWriteLocks = IConsoleManager::Get().FindTConsoleVariableDataInt(TEXT("r.RHICmdBufferWriteLocks"));
@@ -2669,7 +2921,7 @@ void* FOpenGLDynamicRHI::LockTexture2D_RenderThread(class FRHICommandListImmedia
 	return Result;
 }
 
-void FOpenGLDynamicRHI::UnlockTexture2D_RenderThread(class FRHICommandListImmediate& RHICmdList, FTexture2DRHIParamRef Texture, uint32 MipIndex, bool bLockWithinMiptail, bool bNeedsDefaultRHIFlush)
+void FOpenGLDynamicRHI::UnlockTexture2D_RenderThread(class FRHICommandListImmediate& RHICmdList, FRHITexture2D* Texture, uint32 MipIndex, bool bLockWithinMiptail, bool bNeedsDefaultRHIFlush)
 {
 	check(IsInRenderingThread());
 	static auto* CVarRHICmdBufferWriteLocks = IConsoleManager::Get().FindTConsoleVariableDataInt(TEXT("r.RHICmdBufferWriteLocks"));
@@ -2698,7 +2950,7 @@ void FOpenGLDynamicRHI::UnlockTexture2D_RenderThread(class FRHICommandListImmedi
 	}
 }
 
-void* FOpenGLDynamicRHI::RHILockTextureCubeFace_RenderThread(class FRHICommandListImmediate& RHICmdList, FTextureCubeRHIParamRef Texture, uint32 FaceIndex, uint32 ArrayIndex, uint32 MipIndex, EResourceLockMode LockMode, uint32& DestStride, bool bLockWithinMiptail)
+void* FOpenGLDynamicRHI::RHILockTextureCubeFace_RenderThread(class FRHICommandListImmediate& RHICmdList, FRHITextureCube* Texture, uint32 FaceIndex, uint32 ArrayIndex, uint32 MipIndex, EResourceLockMode LockMode, uint32& DestStride, bool bLockWithinMiptail)
 {
 	check(IsInRenderingThread());
 	static auto* CVarRHICmdBufferWriteLocks = IConsoleManager::Get().FindTConsoleVariableDataInt(TEXT("r.RHICmdBufferWriteLocks"));
@@ -2723,7 +2975,7 @@ void* FOpenGLDynamicRHI::RHILockTextureCubeFace_RenderThread(class FRHICommandLi
 	return Result;
 }
 
-void FOpenGLDynamicRHI::RHIUnlockTextureCubeFace_RenderThread(class FRHICommandListImmediate& RHICmdList, FTextureCubeRHIParamRef Texture, uint32 FaceIndex, uint32 ArrayIndex, uint32 MipIndex, bool bLockWithinMiptail)
+void FOpenGLDynamicRHI::RHIUnlockTextureCubeFace_RenderThread(class FRHICommandListImmediate& RHICmdList, FRHITextureCube* Texture, uint32 FaceIndex, uint32 ArrayIndex, uint32 MipIndex, bool bLockWithinMiptail)
 {
 	check(IsInRenderingThread());
 	static auto* CVarRHICmdBufferWriteLocks = IConsoleManager::Get().FindTConsoleVariableDataInt(TEXT("r.RHICmdBufferWriteLocks"));

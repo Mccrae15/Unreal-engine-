@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 /*=============================================================================
 	OpenGLViewport.cpp: OpenGL viewport RHI implementation.
@@ -63,15 +63,12 @@ FViewportRHIRef FOpenGLDynamicRHI::RHICreateViewport(void* WindowHandle,uint32 S
 //	SCOPED_SUSPEND_RENDERING_THREAD(true);
 
 	// Use a default pixel format if none was specified	
-	if (PreferredPixelFormat == EPixelFormat::PF_Unknown)
-	{
-		PreferredPixelFormat = EPixelFormat::PF_B8G8R8A8;
-	}
+	PreferredPixelFormat = RHIPreferredPixelFormatHint(PreferredPixelFormat);
 
 	return new FOpenGLViewport(this,WindowHandle,SizeX,SizeY,bIsFullscreen,PreferredPixelFormat);
 }
 
-void FOpenGLDynamicRHI::RHIResizeViewport(FViewportRHIParamRef ViewportRHI,uint32 SizeX,uint32 SizeY,bool bIsFullscreen)
+void FOpenGLDynamicRHI::RHIResizeViewport(FRHIViewport* ViewportRHI,uint32 SizeX,uint32 SizeY,bool bIsFullscreen)
 {
 	FOpenGLViewport* Viewport = ResourceCast(ViewportRHI);
 	check( IsInGameThread() );
@@ -79,6 +76,11 @@ void FOpenGLDynamicRHI::RHIResizeViewport(FViewportRHIParamRef ViewportRHI,uint3
 //	SCOPED_SUSPEND_RENDERING_THREAD(true);
 
 	Viewport->Resize(SizeX,SizeY,bIsFullscreen);
+}
+
+EPixelFormat FOpenGLDynamicRHI::RHIPreferredPixelFormatHint(EPixelFormat PreferredPixelFormat)
+{
+	return FOpenGL::PreferredPixelFormatHint(PreferredPixelFormat);
 }
 
 void FOpenGLDynamicRHI::RHITick( float DeltaTime )
@@ -89,7 +91,7 @@ void FOpenGLDynamicRHI::RHITick( float DeltaTime )
  *	Viewport functions.
  *=============================================================================*/
 
-void FOpenGLDynamicRHI::RHIBeginDrawingViewport(FViewportRHIParamRef ViewportRHI, FTextureRHIParamRef RenderTarget)
+void FOpenGLDynamicRHI::RHIBeginDrawingViewport(FRHIViewport* ViewportRHI, FRHITexture* RenderTarget)
 {
 	VERIFY_GL_SCOPE();
 
@@ -102,34 +104,36 @@ void FOpenGLDynamicRHI::RHIBeginDrawingViewport(FViewportRHIParamRef ViewportRHI
 
 	bRevertToSharedContextAfterDrawingViewport = false;
 	EOpenGLCurrentContext CurrentContext = PlatformOpenGLCurrentContext( PlatformDevice );
-#ifndef __EMSCRIPTEN__
 	if( CurrentContext != CONTEXT_Rendering )
 	{
 		check(CurrentContext == CONTEXT_Shared);
-		check(!bIsRenderingContextAcquired || !GUseThreadedRendering);
-		bRevertToSharedContextAfterDrawingViewport = true;
-		PlatformRenderingContextSetup(PlatformDevice);
+		if (FOpenGL::GetShaderPlatform() != EShaderPlatform::SP_OPENGL_ES2_WEBGL)
+		{
+			check(!bIsRenderingContextAcquired || !GUseThreadedRendering);
+			bRevertToSharedContextAfterDrawingViewport = true;
+			PlatformRenderingContextSetup(PlatformDevice);
+		}
+		else
+		{
+			// XXX multithread check?
+			// On WebGL, PlatformRenderingContextSetup actually makes-current the Shared context.
+		}
 	}
-#else
-// XXX multithread check?
-	// On WebGL, PlatformRenderingContextSetup actually makes-current the Shared context.
-	check(CurrentContext == CONTEXT_Shared);
-#endif
 
 	// Set the render target and viewport.
 	if( RenderTarget )
 	{
 		FRHIRenderTargetView RTV(RenderTarget, ERenderTargetLoadAction::ELoad);
-		RHISetRenderTargets(1, &RTV, nullptr, 0, NULL);
+		RHISetRenderTargets(1, &RTV, nullptr);
 	}
 	else
 	{
 		FRHIRenderTargetView RTV(DrawingViewport->GetBackBuffer(), ERenderTargetLoadAction::ELoad);
-		RHISetRenderTargets(1, &RTV, nullptr, 0, NULL);
+		RHISetRenderTargets(1, &RTV, nullptr);
 	}
 }
 
-void FOpenGLDynamicRHI::RHIEndDrawingViewport(FViewportRHIParamRef ViewportRHI,bool bPresent,bool bLockToVsync)
+void FOpenGLDynamicRHI::RHIEndDrawingViewport(FRHIViewport* ViewportRHI,bool bPresent,bool bLockToVsync)
 {
 	VERIFY_GL_SCOPE();
 
@@ -209,13 +213,13 @@ void FOpenGLDynamicRHI::RHIEndDrawingViewport(FViewportRHIParamRef ViewportRHI,b
 }
 
 
-FTexture2DRHIRef FOpenGLDynamicRHI::RHIGetViewportBackBuffer(FViewportRHIParamRef ViewportRHI)
+FTexture2DRHIRef FOpenGLDynamicRHI::RHIGetViewportBackBuffer(FRHIViewport* ViewportRHI)
 {
 	FOpenGLViewport* Viewport = ResourceCast(ViewportRHI);
 	return Viewport->GetBackBuffer();
 }
 
-void FOpenGLDynamicRHI::RHIAdvanceFrameForGetViewportBackBuffer(FViewportRHIParamRef Viewport)
+void FOpenGLDynamicRHI::RHIAdvanceFrameForGetViewportBackBuffer(FRHIViewport* Viewport)
 {
 }
 
@@ -232,7 +236,7 @@ FOpenGLViewport::FOpenGLViewport(FOpenGLDynamicRHI* InOpenGLRHI,void* InWindowHa
 {
 	check(OpenGLRHI);
 	// @todo lumin: Add a "PLATFORM_HAS_NO_NATIVE_WINDOW" or something
-#if !PLATFORM_LUMIN
+#if !PLATFORM_LUMIN && !PLATFORM_ANDROID
 	check(InWindowHandle);
 #endif
 	check(IsInGameThread());

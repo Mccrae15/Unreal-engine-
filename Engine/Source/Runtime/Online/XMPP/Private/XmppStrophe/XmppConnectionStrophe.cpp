@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "XmppStrophe/XmppConnectionStrophe.h"
 #include "XmppStrophe/XmppMessagesStrophe.h"
@@ -13,11 +13,13 @@
 #include "XmppStrophe/StropheStanzaConstants.h"
 #include "XmppStrophe/StropheError.h"
 #include "XmppLog.h"
+#include "Containers/BackgroundableTicker.h"
 
 #if WITH_XMPP_STROPHE
 
 FXmppConnectionStrophe::FXmppConnectionStrophe()
-	: LoginStatus(EXmppLoginStatus::NotStarted)
+	: FTickerObjectBase(0.0f, FBackgroundableTicker::GetCoreTicker())
+	, LoginStatus(EXmppLoginStatus::NotStarted)
 {
 	MessagesStrophe = MakeShared<FXmppMessagesStrophe, ESPMode::ThreadSafe>(*this);
 	MultiUserChatStrophe = MakeShared<FXmppMultiUserChatStrophe, ESPMode::ThreadSafe>(*this);
@@ -25,6 +27,20 @@ FXmppConnectionStrophe::FXmppConnectionStrophe()
 	PresenceStrophe = MakeShared<FXmppPresenceStrophe, ESPMode::ThreadSafe>(*this);
 	PrivateChatStrophe = MakeShared<FXmppPrivateChatStrophe, ESPMode::ThreadSafe>(*this);
 	PubSubStrophe = MakeShared<FXmppPubSubStrophe, ESPMode::ThreadSafe>(*this);
+}
+
+FXmppConnectionStrophe::~FXmppConnectionStrophe()
+{
+	// Shutdown our connections before we're fully destructed; strophe calls back into us on its disconnect event
+	if (StropheThread.IsValid())
+	{
+		StopXmppThread();
+	}
+
+	if (WebsocketConnection.IsValid())
+	{
+		WebsocketConnection.Reset();
+	}
 }
 
 void FXmppConnectionStrophe::SetServer(const FXmppServer& NewServerConfiguration)
@@ -63,7 +79,12 @@ void FXmppConnectionStrophe::Login(const FString& UserId, const FString& Auth)
 		}
 		else if (LoginStatus == EXmppLoginStatus::LoggedIn)
 		{
-			ErrorStr = TEXT("Already logged in");
+			UE_LOG(LogXmpp, Log, TEXT("Reusing existing connection for Jid=%s"), *GetUserJid().ToDebugString());
+
+			OnLoginComplete().Broadcast(GetUserJid(), true, FString());
+			OnLoginChanged().Broadcast(GetUserJid(), EXmppLoginStatus::LoggedIn);
+			ReconnectLogin();
+			return;
 		}
 		else
 		{
@@ -93,6 +114,16 @@ void FXmppConnectionStrophe::Login(const FString& UserId, const FString& Auth)
 		UE_LOG(LogXmpp, Warning, TEXT("Login failed. %s"), *ErrorStr);
 		OnLoginComplete().Broadcast(GetUserJid(), false, ErrorStr);
 	}
+}
+
+void FXmppConnectionStrophe::ReconnectLogin()
+{
+	MessagesStrophe->OnReconnect();
+	MultiUserChatStrophe->OnReconnect();
+	PingStrophe->OnReconnect();
+	PresenceStrophe->OnReconnect();
+	PrivateChatStrophe->OnReconnect();
+	PubSubStrophe->OnReconnect();
 }
 
 void FXmppConnectionStrophe::Logout()
@@ -190,6 +221,7 @@ bool FXmppConnectionStrophe::SendStanza(FStropheStanza&& Stanza)
 		return false;
 	}
 
+	OnStanzaSent().Broadcast(Stanza);
 	bool bQueuedStanzaToBeSent = true;
 	if (StropheThread.IsValid())
 	{
@@ -212,7 +244,7 @@ bool FXmppConnectionStrophe::SendStanza(FStropheStanza&& Stanza)
 			PingStrophe->ResetPingTimer();
 		}
 	}
-
+	
 	return bQueuedStanzaToBeSent;
 }
 
@@ -266,9 +298,9 @@ void FXmppConnectionStrophe::ReceiveConnectionError(const FStropheError& Error, 
 void FXmppConnectionStrophe::ReceiveStanza(const FStropheStanza& Stanza)
 {
 	UE_LOG(LogXmpp, Verbose, TEXT("Received Strophe XMPP Stanza %s"), *Stanza.GetName());
-
+	OnStanzaReceived().Broadcast(Stanza);
 	// Reset our ping timer now that we've received traffic
-	if (PingStrophe.IsValid())
+	if (PingStrophe.IsValid() && ServerConfiguration.bResetPingTimeoutOnReceiveStanza)
 	{
 		PingStrophe->ResetPingTimer();
 	}
@@ -368,6 +400,11 @@ void FXmppConnectionStrophe::ProcessLoginStatusChange(EXmppLoginStatus::Type New
 			}
 		}
 	}
+}
+
+void FXmppConnectionStrophe::DumpState() const
+{
+	UE_LOG(LogXmpp, Warning, TEXT("JID=%s Status=%s"), *GetUserJid().ToDebugString(), EXmppLoginStatus::ToString(GetLoginStatus()));
 }
 
 #endif

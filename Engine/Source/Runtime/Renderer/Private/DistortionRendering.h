@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 /*=============================================================================
 	DistortionRendering.h: Distortion rendering implementation.
@@ -69,6 +69,9 @@ BEGIN_GLOBAL_SHADER_PARAMETER_STRUCT(FMobileDistortionPassUniformParameters, )
 	SHADER_PARAMETER_STRUCT(FMobileSceneTextureUniformParameters, SceneTextures)
 	SHADER_PARAMETER(FVector4, DistortionParams)
 END_GLOBAL_SHADER_PARAMETER_STRUCT()
+
+
+extern void SetupDistortionParams(FVector4& DistortionParams, const FViewInfo& View);
 
 extern void SetupMobileDistortionPassUniformBuffer(FRHICommandListImmediate& RHICmdList, const FViewInfo& View, FMobileDistortionPassUniformParameters& DistortionPassParameters);
 

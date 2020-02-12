@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "ShaderCompiler.h"
 #include "GenericPlatform/GenericPlatformFile.h"
@@ -81,12 +81,6 @@ namespace XGEShaderCompilerVariables
 				XGEShaderCompilerVariables::Enabled = 0;
 			}
 
-			//something going wrong with XGE shader compile on the build farm at the moment. Temporarily disable.
-			if (GIsBuildMachine)
-			{
-				XGEShaderCompilerVariables::Enabled = 0;
-			}
-
 			bInitialized = true;
 		}
 	}
@@ -115,7 +109,7 @@ bool FShaderCompileXGEThreadRunnable_XmlInterface::IsSupported()
 	{
 		IPlatformFile& PlatformFile = FPlatformFileManager::Get().GetPlatformFile();
 
-		for (int PathIndex = 0; PathIndex < ARRAY_COUNT(Paths); PathIndex++)
+		for (int PathIndex = 0; PathIndex < UE_ARRAY_COUNT(Paths); PathIndex++)
 		{
 			if (PlatformFile.FileExists(Paths[PathIndex]))
 			{
@@ -131,7 +125,7 @@ bool FShaderCompileXGEThreadRunnable_XmlInterface::IsSupported()
 		}
 	}
 
-	return 
+	return
 		(XGEShaderCompilerVariables::Enabled == 1) && // XGE is enabled by CVar or command line.
 		(XGEShaderCompilerVariables::Mode    != 2) && // XGE xml mode is allowed (not force disabled).
 		bXgeFound;                             // We've found the xgConsole executable.
@@ -272,7 +266,7 @@ void FShaderCompileXGEThreadRunnable_XmlInterface::PostCompletedJobsForBatch(FSh
 {
 	// Enter the critical section so we can access the input and output queues
 	FScopeLock Lock(&Manager->CompileQueueSection);
-	for (FShaderCommonCompileJob* Job : Batch->GetJobs())
+	for (auto Job : Batch->GetJobs())
 	{
 		FShaderMapCompileResults& ShaderMapResults = Manager->ShaderMapJobs.FindChecked(Job->Id);
 		ShaderMapResults.FinishedJobs.Add(Job);
@@ -283,7 +277,7 @@ void FShaderCompileXGEThreadRunnable_XmlInterface::PostCompletedJobsForBatch(FSh
 	FPlatformAtomics::InterlockedAdd(&Manager->NumOutstandingJobs, -Batch->NumJobs());
 }
 
-void FShaderCompileXGEThreadRunnable_XmlInterface::FShaderBatch::AddJob(FShaderCommonCompileJob* Job)
+void FShaderCompileXGEThreadRunnable_XmlInterface::FShaderBatch::AddJob(TSharedRef<FShaderCommonCompileJob, ESPMode::ThreadSafe> Job)
 {
 	// We can only add jobs to a batch which hasn't been written out yet.
 	if (bTransferFileWritten)
@@ -355,7 +349,7 @@ static void WriteScriptFileFooter(FArchive* ScriptFile)
 		"\t</Project>\r\n"
 		"</BuildSet>\r\n";
 
-	ScriptFile->Serialize((void*)HeaderFooter, sizeof(ANSICHAR) * (ARRAY_COUNT(HeaderFooter) - 1));
+	ScriptFile->Serialize((void*)HeaderFooter, sizeof(ANSICHAR) * (UE_ARRAY_COUNT(HeaderFooter) - 1));
 }
 
 void FShaderCompileXGEThreadRunnable_XmlInterface::GatherResultsFromXGE()
@@ -584,7 +578,7 @@ int32 FShaderCompileXGEThreadRunnable_XmlInterface::CompilingLoop()
 	}
 
 	// Try to prepare more shader jobs (even if a build is in flight).
-	TArray<FShaderCommonCompileJob*> JobQueue;
+	TArray<TSharedRef<FShaderCommonCompileJob, ESPMode::ThreadSafe>> JobQueue;
 	{
 		// Enter the critical section so we can access the input and output queues
 		FScopeLock Lock(&Manager->CompileQueueSection);
@@ -686,11 +680,11 @@ class FXGEShaderCompilerTask
 {
 public:
 	TFuture<FXGETaskResult> Future;
-	TArray<FShaderCommonCompileJob*> ShaderJobs;
+	TArray<TSharedRef<FShaderCommonCompileJob, ESPMode::ThreadSafe>> ShaderJobs;
 	FString InputFilePath;
 	FString OutputFilePath;
 
-	FXGEShaderCompilerTask(TFuture<FXGETaskResult>&& Future, TArray<FShaderCommonCompileJob*>&& ShaderJobs, FString&& InputFilePath, FString&& OutputFilePath)
+	FXGEShaderCompilerTask(TFuture<FXGETaskResult>&& Future, TArray<TSharedRef<FShaderCommonCompileJob, ESPMode::ThreadSafe>>&& ShaderJobs, FString&& InputFilePath, FString&& OutputFilePath)
 		: Future(MoveTemp(Future))
 		, ShaderJobs(MoveTemp(ShaderJobs))
 		, InputFilePath(MoveTemp(InputFilePath))
@@ -710,7 +704,7 @@ FShaderCompileXGEThreadRunnable_InterceptionInterface::~FShaderCompileXGEThreadR
 {
 }
 
-void FShaderCompileXGEThreadRunnable_InterceptionInterface::DispatchShaderCompileJobsBatch(TArray<FShaderCommonCompileJob*>& JobsToSerialize)
+void FShaderCompileXGEThreadRunnable_InterceptionInterface::DispatchShaderCompileJobsBatch(TArray<TSharedRef<FShaderCommonCompileJob, ESPMode::ThreadSafe>>& JobsToSerialize)
 {
 #if WITH_XGE_CONTROLLER
 	FString InputFilePath = IXGEController::Get().CreateUniqueFilePath();
@@ -749,7 +743,7 @@ void FShaderCompileXGEThreadRunnable_InterceptionInterface::DispatchShaderCompil
 int32 FShaderCompileXGEThreadRunnable_InterceptionInterface::CompilingLoop()
 {
 #if WITH_XGE_CONTROLLER
-	TArray<FShaderCommonCompileJob*> PendingJobs;
+	TArray<TSharedRef<FShaderCommonCompileJob, ESPMode::ThreadSafe>> PendingJobs;
 
 	// Try to prepare more shader jobs.
 	{
@@ -773,7 +767,7 @@ int32 FShaderCompileXGEThreadRunnable_InterceptionInterface::CompilingLoop()
 
 		struct FJobBatch
 		{
-			TArray<FShaderCommonCompileJob*> Jobs;
+			TArray<TSharedRef<FShaderCommonCompileJob, ESPMode::ThreadSafe>> Jobs;
 			TSet<const FShaderType*> UniquePointers;
 
 			bool operator == (const FJobBatch& B) const
@@ -786,7 +780,7 @@ int32 FShaderCompileXGEThreadRunnable_InterceptionInterface::CompilingLoop()
 		// Different batches.
 		TArray<FJobBatch> JobBatches;
 
-		
+
 		for (int32 i = 0; i < PendingJobs.Num(); i++)
 		{
 			// Randomize the shader compile jobs a little.
@@ -864,6 +858,8 @@ int32 FShaderCompileXGEThreadRunnable_InterceptionInterface::CompilingLoop()
 
 	for (auto Iter = DispatchedTasks.CreateIterator(); Iter; ++Iter)
 	{
+		bool bOutputFileReadFailed = false;
+
 		FXGEShaderCompilerTask* Task = *Iter;
 		if (!Task->Future.IsReady())
 		{
@@ -880,15 +876,43 @@ int32 FShaderCompileXGEThreadRunnable_InterceptionInterface::CompilingLoop()
 
 		if (Result.bCompleted)
 		{
-			// Open the output file, and serialize in the completed jobs.
-			FArchive* OutputFileAr = IFileManager::Get().CreateFileReader(*Task->OutputFilePath, FILEREAD_NoFail);
-			FShaderCompileUtilities::DoReadTaskResults(Task->ShaderJobs, *OutputFileAr);
-			delete OutputFileAr;
+			// Check the output file exists. If it does, attempt to open it and serialize in the completed jobs.
+			FArchive* OutputFileAr = nullptr;
+			if (IFileManager::Get().FileExists(*Task->OutputFilePath))
+			{
+				float TimeWaited = 0.0f;
+				OutputFileAr = IFileManager::Get().CreateFileReader(*Task->OutputFilePath, FILEREAD_Silent);
+				while (OutputFileAr == nullptr && TimeWaited < 5.0f)
+				{
+					UE_LOG(LogShaderCompilers, Warning, TEXT("Expected XGE output file '%s' exists but can't be opened for read, waiting 1 second to try again.."), *Task->OutputFilePath);
+					FPlatformProcess::Sleep(1.0f);
+					TimeWaited += 1.0f;
+					OutputFileAr = IFileManager::Get().CreateFileReader(*Task->OutputFilePath, FILEREAD_Silent);
+				}
+			}
+
+			if (OutputFileAr)
+			{
+				FShaderCompileUtilities::DoReadTaskResults(Task->ShaderJobs, *OutputFileAr);
+				delete OutputFileAr;
+			}
+			else
+			{
+				// Reading result from XGE job failed, so recompile shaders in current job batch locally
+				bOutputFileReadFailed = true;
+
+				UE_LOG(LogShaderCompilers, Warning, TEXT("Rescheduling shader compilation to run locally after XGE job failed: %s"), *Task->OutputFilePath);
+
+				for (TSharedRef<FShaderCommonCompileJob, ESPMode::ThreadSafe> Job : Task->ShaderJobs)
+				{
+					FShaderCompileUtilities::ExecuteShaderCompileJob(*Job);
+				}
+			}
 
 			// Enter the critical section so we can access the input and output queues
 			{
 				FScopeLock Lock(&Manager->CompileQueueSection);
-				for (FShaderCommonCompileJob* Job : Task->ShaderJobs)
+				for (TSharedRef<FShaderCommonCompileJob, ESPMode::ThreadSafe> Job : Task->ShaderJobs)
 				{
 					FShaderMapCompileResults& ShaderMapResults = Manager->ShaderMapJobs.FindChecked(Job->Id);
 					ShaderMapResults.FinishedJobs.Add(Job);
@@ -911,9 +935,13 @@ int32 FShaderCompileXGEThreadRunnable_InterceptionInterface::CompilingLoop()
 		{
 			FPlatformProcess::Sleep(0.01f);
 		}
-		while (!IFileManager::Get().Delete(*Task->OutputFilePath, false, true, true))
+
+		if (!bOutputFileReadFailed)
 		{
-			FPlatformProcess::Sleep(0.01f);
+			while (!IFileManager::Get().Delete(*Task->OutputFilePath, false, true, true))
+			{
+				FPlatformProcess::Sleep(0.01f);
+			}
 		}
 
 		Iter.RemoveCurrent();

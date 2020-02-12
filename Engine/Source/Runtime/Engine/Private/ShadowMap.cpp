@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "ShadowMap.h"
 #include "Engine/MapBuildDataRegistry.h"
@@ -16,6 +16,7 @@
 
 #if WITH_EDITOR
 
+	#include "Modules/ModuleManager.h"
 	#include "TextureCompressorModule.h"
 
 	// NOTE: We're only counting the top-level mip-map for the following variables.
@@ -109,9 +110,12 @@ struct FShadowMapAllocation
 				// TODO: We currently only support one LOD of static lighting in foliage
 				// Need to create per-LOD instance data to fix that
 				MeshBuildData->PerInstanceLightmapData[InstanceIndex].ShadowmapUVBias = ShadowMap->GetCoordinateBias();
-				int32 RenderIndex = Component->InstanceReorderTable.IsValidIndex(InstanceIndex) ? Component->InstanceReorderTable[InstanceIndex] : InstanceIndex;
-				Component->InstanceUpdateCmdBuffer.SetShadowMapData(RenderIndex, MeshBuildData->PerInstanceLightmapData[InstanceIndex].ShadowmapUVBias);
-				Component->MarkRenderStateDirty();
+				const int32 RenderIndex = Component->GetRenderIndex(InstanceIndex);
+				if (RenderIndex != INDEX_NONE)
+				{
+					Component->InstanceUpdateCmdBuffer.SetShadowMapData(RenderIndex, MeshBuildData->PerInstanceLightmapData[InstanceIndex].ShadowmapUVBias);
+					Component->MarkRenderStateDirty();
+				}
 			}
 		}
 	}
@@ -173,7 +177,7 @@ struct FShadowMapPendingTexture : FTextureLayout
 	 * Minimal initialization constructor.
 	 */
 	FShadowMapPendingTexture(uint32 InSizeX,uint32 InSizeY)
-		: FTextureLayout(4, 4, InSizeX, InSizeY, /* PowerOfTwo */ true, /* Force2To1Aspect */ false, /* AlignByFour */ true) // Min size is 4x4 in case of block compression.
+		: FTextureLayout(4, 4, InSizeX, InSizeY, /* PowerOfTwo */ true, /* Aspect */ ETextureLayoutAspectRatio::None, /* AlignByFour */ true) // Min size is 4x4 in case of block compression.
 		, Bounds(FBox(ForceInit))
 		, ShadowmapFlags(SMF_None)
 		, UnallocatedTexels(InSizeX * InSizeY)
@@ -500,7 +504,7 @@ FShadowMap2D::FShadowMap2D() :
 	CoordinateScale(FVector2D(0, 0)),
 	CoordinateBias(FVector2D(0, 0))
 {
-	for (int Channel = 0; Channel < ARRAY_COUNT(bChannelValid); Channel++)
+	for (int Channel = 0; Channel < UE_ARRAY_COUNT(bChannelValid); Channel++)
 	{
 		bChannelValid[Channel] = false;
 	}
@@ -511,7 +515,7 @@ FShadowMap2D::FShadowMap2D(const TMap<ULightComponent*,FShadowMapData2D*>& Shado
 	CoordinateScale(FVector2D(0, 0)),
 	CoordinateBias(FVector2D(0, 0))
 {
-	for (int Channel = 0; Channel < ARRAY_COUNT(bChannelValid); Channel++)
+	for (int Channel = 0; Channel < UE_ARRAY_COUNT(bChannelValid); Channel++)
 	{
 		bChannelValid[Channel] = false;
 	}
@@ -528,7 +532,7 @@ FShadowMap2D::FShadowMap2D(TArray<FGuid> LightGuids)
 	, CoordinateScale(FVector2D(0, 0))
 	, CoordinateBias(FVector2D(0, 0))
 {
-	for (int Channel = 0; Channel < ARRAY_COUNT(bChannelValid); Channel++)
+	for (int Channel = 0; Channel < UE_ARRAY_COUNT(bChannelValid); Channel++)
 	{
 		bChannelValid[Channel] = false;
 	}
@@ -558,7 +562,7 @@ void FShadowMap2D::Serialize(FArchive& Ar)
 
 	Ar << CoordinateScale << CoordinateBias;
 
-	for (int Channel = 0; Channel < ARRAY_COUNT(bChannelValid); Channel++)
+	for (int Channel = 0; Channel < UE_ARRAY_COUNT(bChannelValid); Channel++)
 	{
 		Ar << bChannelValid[Channel];
 	}
@@ -1105,7 +1109,7 @@ int32 FShadowMap2D::EncodeSingleTexture(ULevel* LightingScenario, FShadowMapPend
 							ExtrapolatedFilterableComponents[i] = 0;
 						}
 
-						for (int32 NeighborIndex = 0; NeighborIndex < ARRAY_COUNT(Neighbors); NeighborIndex++)
+						for (int32 NeighborIndex = 0; NeighborIndex < UE_ARRAY_COUNT(Neighbors); NeighborIndex++)
 						{
 							if (static_cast<int32>(DestY) + Neighbors[NeighborIndex].Y >= 0 
 								&& DestY + Neighbors[NeighborIndex].Y < MipSizeY

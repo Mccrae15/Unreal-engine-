@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "NiagaraComponentDetails.h"
 #include "PropertyHandle.h"
@@ -9,6 +9,7 @@
 #include "DetailLayoutBuilder.h"
 #include "IDetailPropertyRow.h"
 #include "DetailWidgetRow.h"
+#include "Materials/Material.h"
 #include "Widgets/Text/SInlineEditableTextBlock.h"
 #include "Widgets/SToolTip.h"
 #include "PropertyCustomizationHelpers.h"
@@ -52,14 +53,25 @@
 class FNiagaraComponentNodeBuilder : public IDetailCustomNodeBuilder
 {
 public:
-	FNiagaraComponentNodeBuilder(UNiagaraComponent* InComponent, UNiagaraScript* SourceSpawn, UNiagaraScript* SourceUpdate)						   
+	FNiagaraComponentNodeBuilder(UNiagaraComponent* InComponent)						   
 	{
 		Component = InComponent;
 		Component->OnSynchronizedWithAssetParameters().AddRaw(this, &FNiagaraComponentNodeBuilder::ComponentSynchronizedWithAssetParameters);
-		if (SourceSpawn)
-			OriginalScripts.Add(SourceSpawn);
-		if (SourceUpdate)
-			OriginalScripts.Add(SourceUpdate);
+
+		if (InComponent->GetAsset() != nullptr)
+		{
+			UNiagaraScript* ScriptSpawn = InComponent->GetAsset()->GetSystemSpawnScript();
+			if (ScriptSpawn != nullptr)
+			{
+				OriginalScripts.Add(ScriptSpawn);
+			}
+
+			UNiagaraScript* ScriptUpdate = InComponent->GetAsset()->GetSystemUpdateScript();
+			if (ScriptUpdate != nullptr)
+			{
+				OriginalScripts.Add(ScriptUpdate);
+			}
+		}
 		//UE_LOG(LogNiagaraEditor, Log, TEXT("FNiagaraComponentNodeBuilder %p Component %p"), this, Component.Get());
 	}
 
@@ -87,6 +99,33 @@ public:
 		return NiagaraComponentNodeBuilder;
 	}
 
+
+	void OnAssetSelectedFromPicker(const FAssetData& InAssetData, FNiagaraVariable InVar)
+	{
+		FScopedTransaction ScopedTransaction(LOCTEXT("ChangeAsset", "Change asset"));
+
+		UObject* Asset = InAssetData.GetAsset();
+		if (Asset == nullptr || Asset->GetClass()->IsChildOf(InVar.GetType().GetClass()))
+		{
+			check(Component.IsValid());
+			Component->Modify();
+			Component->OverrideUObjectParameter(InVar, Asset);
+		}
+	}
+
+	FString GetCurrentAssetPath(FNiagaraVariable InVar) const
+	{
+		check(Component.IsValid());
+		TArray<FNiagaraVariable> Parameters;
+		FNiagaraUserRedirectionParameterStore& ParamStore = Component->GetOverrideParameters();
+		UObject* Obj = ParamStore.GetUObject(InVar);
+		if (Obj)
+		{
+			return Obj->GetPathName();
+		}
+		return FString();
+	}
+
 	virtual void GenerateChildContent(IDetailChildrenBuilder& ChildrenBuilder) override
 	{
 		check(Component.IsValid());
@@ -109,13 +148,7 @@ public:
 
 			TSharedPtr<SWidget> CustomValueWidget;
 
-			if (!Parameter.IsDataInterface())
-			{
-				TSharedPtr<FStructOnScope> StructOnScope = MakeShareable(new FStructOnScope(Parameter.GetType().GetStruct(), (uint8*)ParamStore.GetParameterData(Parameter)));
-				Row = ChildrenBuilder.AddExternalStructureProperty(StructOnScope.ToSharedRef(), NAME_None, Parameter.GetName());
-
-			}
-			else 
+			if (Parameter.IsDataInterface())
 			{
 				int32 DataInterfaceOffset = ParamStore.IndexOf(Parameter);
 				UObject* DefaultValueObject = ParamStore.GetDataInterfaces()[DataInterfaceOffset];
@@ -123,20 +156,84 @@ public:
 				TArray<UObject*> Objects;
 				Objects.Add(DefaultValueObject);
 
-				TOptional<bool> bAllowChildrenOverride(true);
-				TOptional<bool> bCreateCategoryNodesOverride(false);
-				Row = ChildrenBuilder.AddExternalObjectProperty(Objects, NAME_None, Parameter.GetName(), bAllowChildrenOverride, bCreateCategoryNodesOverride); 
+				FAddPropertyParams Params = FAddPropertyParams()
+					.UniqueId(Parameter.GetName())
+					.AllowChildren(true)
+					.CreateCategoryNodes(false);
+
+				Row = ChildrenBuilder.AddExternalObjectProperty(Objects, NAME_None, Params); 
 
 				CustomValueWidget =
 					SNew(STextBlock)
 					.TextStyle(FNiagaraEditorStyle::Get(), "NiagaraEditor.ParameterText")
 					.Text(FText::FromString(FName::NameToDisplayString(DefaultValueObject->GetClass()->GetName(), false)));
 			}
+			else if (Parameter.IsUObject())
+			{
+				int32 ObjectOffst = ParamStore.IndexOf(Parameter);
+				UObject* DefaultValueObject = ParamStore.GetUObjects()[ObjectOffst];
+
+				TArray<UObject*> Objects;
+				Objects.Add(DefaultValueObject);
+
+				//How do I set this up so I can have this pick actors from the level?
+
+				FAddPropertyParams Params = FAddPropertyParams()
+					.UniqueId(Parameter.GetName())
+					.AllowChildren(false) //Don't show the material's properties
+					.CreateCategoryNodes(false);
+
+				Row = ChildrenBuilder.AddExternalObjectProperty(Objects, NAME_None, Params);
+
+				//How do I make this an object picker from the level editor?
+				//Neither of these seem to work well.
+// 				CustomValueWidget = PropertyCustomizationHelpers::MakeActorPickerWithMenu(nullptr,
+// 					true,
+// 					FOnShouldFilterActor::CreateRaw(this, &FNiagaraComponentNodeBuilder::IsFilteredActor),
+// 					FOnActorSelected::CreateRaw(this, &FNiagaraComponentNodeBuilder::OnActorSelected),
+// 					FSimpleDelegate::CreateRaw(this, &FNiagaraComponentNodeBuilder::CloseComboButton),
+// 					FSimpleDelegate::CreateRaw(this, &FNiagaraComponentNodeBuilder::OnUse));
+				
+// 				CustomValueWidget = PropertyCustomizationHelpers::MakeActorPickerAnchorButton(
+// 					FOnGetActorFilters::CreateRaw(this, &FNiagaraComponentNodeBuilder::OnGetActorFiltersForSceneOutliner),
+// 					FOnActorSelected::CreateRaw(this, &FNiagaraComponentNodeBuilder::OnActorSelected));
+
+				if (Parameter.GetType().GetClass() == UMaterialInterface::StaticClass())
+				{
+									
+					CustomValueWidget = SNew(SObjectPropertyEntryBox)
+						.ObjectPath_Raw(this, &FNiagaraComponentNodeBuilder::GetCurrentAssetPath, Parameter )
+						.AllowedClass(UMaterialInterface::StaticClass())
+						.OnObjectChanged_Raw(this, &FNiagaraComponentNodeBuilder::OnAssetSelectedFromPicker, Parameter)
+						.AllowClear(false)
+						.DisplayUseSelected(true)
+						.DisplayBrowse(true)
+						.DisplayThumbnail(true)
+						.NewAssetFactories(TArray<UFactory*>());
+				}
+				else
+				{
+					FString ValueName = DefaultValueObject ? FName::NameToDisplayString(DefaultValueObject->GetClass()->GetName(), false) : TEXT("null");
+					CustomValueWidget =
+						SNew(STextBlock)
+						.TextStyle(FNiagaraEditorStyle::Get(), "NiagaraEditor.ParameterText")
+						.Text(FText::FromString(ValueName));
+				}
+			}
+			else
+			{
+				TSharedPtr<FStructOnScope> StructOnScope = MakeShareable(new FStructOnScope(Parameter.GetType().GetStruct(), (uint8*)ParamStore.GetParameterData(Parameter)));
+
+				Row = ChildrenBuilder.AddExternalStructureProperty(StructOnScope.ToSharedRef(), NAME_None, FAddPropertyParams().UniqueId(Parameter.GetName()));
+
+			}
 
 			if (Row)
 			{
 				TSharedPtr<SWidget> DefaultNameWidget;
 				TSharedPtr<SWidget> DefaultValueWidget;
+
+				Row->DisplayName(FText::FromName(Parameter.GetName()));
 
 				TSharedPtr<IPropertyHandle> PropertyHandle = Row->GetPropertyHandle();
 
@@ -157,6 +254,17 @@ public:
 						FSimpleDelegate::CreateRaw(this, &FNiagaraComponentNodeBuilder::OnDataInterfaceChanged, Parameter));
 					PropertyHandle->SetOnChildPropertyValueChanged(
 						FSimpleDelegate::CreateRaw(this, &FNiagaraComponentNodeBuilder::OnDataInterfaceChanged, Parameter));
+				}
+				else if (Parameter.IsUObject())
+				{
+					PropertyHandle->SetOnPropertyValuePreChange(
+						FSimpleDelegate::CreateRaw(this, &FNiagaraComponentNodeBuilder::OnUObjectPreChange, Parameter));
+					PropertyHandle->SetOnChildPropertyValuePreChange(
+						FSimpleDelegate::CreateRaw(this, &FNiagaraComponentNodeBuilder::OnUObjectPreChange, Parameter));
+					PropertyHandle->SetOnPropertyValueChanged(
+						FSimpleDelegate::CreateRaw(this, &FNiagaraComponentNodeBuilder::OnUObjectChanged, Parameter));
+					PropertyHandle->SetOnChildPropertyValueChanged(
+						FSimpleDelegate::CreateRaw(this, &FNiagaraComponentNodeBuilder::OnUObjectChanged, Parameter));
 				}
 				else
 				{
@@ -231,6 +339,12 @@ private:
 		check(Component.IsValid());
 		Component->Modify();
 	}
+	
+	void OnUObjectPreChange(FNiagaraVariable Var)
+	{
+		check(Component.IsValid());
+		Component->Modify();
+	}
 
 	void OnParameterChanged(FNiagaraVariable Var)
 	{
@@ -242,6 +356,13 @@ private:
 	void OnDataInterfaceChanged(FNiagaraVariable Var)
 	{
 		Component->GetOverrideParameters().OnInterfaceChange();
+		check(Component.IsValid());
+		Component->SetParameterValueOverriddenLocally(Var, true, true);
+	}
+
+	void OnUObjectChanged(FNiagaraVariable Var)
+	{
+		Component->GetOverrideParameters().OnUObjectChange();
 		check(Component.IsValid());
 		Component->SetParameterValueOverriddenLocally(Var, true, true);
 	}
@@ -354,20 +475,20 @@ void FNiagaraComponentDetails::CustomizeDetails(IDetailLayoutBuilder& DetailBuil
 		}
 
 		FGameDelegates::Get().GetEndPlayMapDelegate().AddRaw(this, &FNiagaraComponentDetails::OnPiEEnd);
-
-		if (Component->GetAsset())
-		{
-			UNiagaraScript* ScriptSpawn = Component->GetAsset()->GetSystemSpawnScript();
-			UNiagaraScript* ScriptUpdate = Component->GetAsset()->GetSystemUpdateScript();
-
-			IDetailCategoryBuilder& InputParamCategory = DetailBuilder.EditCategory(ParamCategoryName, LOCTEXT("ParamCategoryName", "Override Parameters"));
-			InputParamCategory.AddCustomBuilder(MakeShared<FNiagaraComponentNodeBuilder>(Component.Get(), ScriptSpawn, ScriptUpdate));
-		}
-		else
-		{
-			IDetailCategoryBuilder& InputParamCategory = DetailBuilder.EditCategory(ParamCategoryName, LOCTEXT("ParamCategoryName", "Override Parameters"));
-			InputParamCategory.AddCustomBuilder(MakeShared<FNiagaraComponentNodeBuilder>(Component.Get(), nullptr, nullptr));
-		}
+			
+		IDetailCategoryBuilder& InputParamCategory = DetailBuilder.EditCategory(ParamCategoryName, LOCTEXT("ParamCategoryName", "Override Parameters"));
+		InputParamCategory.AddCustomBuilder(MakeShared<FNiagaraComponentNodeBuilder>(Component.Get()));
+	}
+	else if (ObjectsCustomized.Num() > 1)
+	{
+		IDetailCategoryBuilder& InputParamCategory = DetailBuilder.EditCategory(ParamCategoryName, LOCTEXT("ParamCategoryName", "Override Parameters"));
+		InputParamCategory.AddCustomRow(LOCTEXT("ParamCategoryName", "Override Parameters"))
+			.WholeRowContent()
+			[
+				SNew(STextBlock)
+				.TextStyle(FEditorStyle::Get(), "SmallText")
+				.Text(LOCTEXT("OverrideParameterMultiselectionUnsupported", "Multiple override parameter sets cannot be edited simultaneously."))
+			];
 	}
 }
 

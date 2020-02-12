@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "Widgets/SCompElementPickerWindow.h"
 #include "Framework/SlateDelegates.h"
@@ -582,7 +582,9 @@ void SCompElementPickerWindow::Construct(const FArguments& InArgs)
 			.SupportsMinimize(false)
 	);		
 
-	TWeakUIntrfacePtr<ICompImageColorPickerInterface> PickerTarget = InArgs._PickerTarget;
+	TWeakUIntrfacePtr<ICompImageColorPickerInterface> PickerTarget; 
+	PickerTarget = InArgs._PickerTarget;
+
 	FColorPickedEventHandler OnColorPicked = InArgs._OnColorPicked;
 	OnPickerCanceled = InArgs._OnPickerCanceled;
 

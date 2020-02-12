@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 /*=============================================================================
 	OpenGLDrv.cpp: Unreal OpenGL RHI library implementation.
@@ -19,6 +19,7 @@ IMPLEMENT_MODULE(FOpenGLDynamicRHIModule, OpenGLDrv);
 
 #include "Shader.h"
 #include "OneColorShader.h"
+#include "OpenGLShaders.h"
 
 /** OpenGL Logging. */
 DEFINE_LOG_CATEGORY(LogOpenGL);
@@ -57,7 +58,10 @@ void FOpenGLGPUProfiler::PopEvent()
 
 }
 
-
+bool FOpenGLDynamicRHI::RHIRequiresComputeGenerateMips() const
+{
+	return !FOpenGL::SupportsGenerateMipmap();
+};
 
 void FOpenGLGPUProfiler::BeginFrame(FOpenGLDynamicRHI* InRHI)
 {
@@ -389,9 +393,9 @@ float FOpenGLEventNode::GetTiming()
 void FOpenGLDynamicRHI::InitializeStateResources()
 {
 	VERIFY_GL_SCOPE();
-	SharedContextState.InitializeResources(FOpenGL::GetMaxCombinedTextureImageUnits(), OGL_MAX_COMPUTE_STAGE_UAV_UNITS);
-	RenderingContextState.InitializeResources(FOpenGL::GetMaxCombinedTextureImageUnits(), OGL_MAX_COMPUTE_STAGE_UAV_UNITS);
-	PendingState.InitializeResources(FOpenGL::GetMaxCombinedTextureImageUnits(), OGL_MAX_COMPUTE_STAGE_UAV_UNITS);
+	SharedContextState.InitializeResources(FOpenGL::GetMaxCombinedTextureImageUnits(), FOpenGL::GetMaxCombinedUAVUnits());
+	RenderingContextState.InitializeResources(FOpenGL::GetMaxCombinedTextureImageUnits(), FOpenGL::GetMaxCombinedUAVUnits());
+	PendingState.InitializeResources(FOpenGL::GetMaxCombinedTextureImageUnits(), FOpenGL::GetMaxCombinedUAVUnits());
 }
 
 GLint FOpenGLBase::MaxTextureImageUnits = -1;
@@ -401,6 +405,7 @@ GLint FOpenGLBase::MaxGeometryTextureImageUnits = -1;
 GLint FOpenGLBase::MaxHullTextureImageUnits = -1;
 GLint FOpenGLBase::MaxDomainTextureImageUnits = -1;
 GLint FOpenGLBase::MaxVaryingVectors = -1;
+GLint FOpenGLBase::TextureBufferAlignment = -1;
 GLint FOpenGLBase::MaxVertexUniformComponents = -1;
 GLint FOpenGLBase::MaxPixelUniformComponents = -1;
 GLint FOpenGLBase::MaxGeometryUniformComponents = -1;
@@ -570,6 +575,11 @@ void FOpenGLBase::ProcessExtensions( const FString& ExtensionsString )
 #endif
 }
 
+void PE_GetCurrentOpenGLShaderDeviceCapabilities(FOpenGLShaderDeviceCapabilities& Capabilities)
+{
+	Capabilities.TargetPlatform = EOpenGLShaderTargetPlatform::OGLSTP_Unknown;
+}
+
 void GetExtensionsString( FString& ExtensionsString)
 {
 	GLint ExtensionCount = 0;
@@ -640,6 +650,9 @@ void InitDefaultGLContextState(void)
 		glClipControl(GL_UPPER_LEFT, GL_ZERO_TO_ONE);
 	}
 #endif
+
+	// optional per platform setup
+	FOpenGL::SetupDefaultGLContextState(ExtensionsString);
 }
 
 #undef LOCTEXT_NAMESPACE

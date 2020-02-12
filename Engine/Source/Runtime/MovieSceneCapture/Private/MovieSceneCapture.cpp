@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "MovieSceneCapture.h"
 #include "Dom/JsonValue.h"
@@ -24,6 +24,7 @@
 #include "AssetRegistryModule.h"
 #include "UObject/UObjectIterator.h"
 #include "Protocols/AudioCaptureProtocol.h"
+#include "Misc/DateTime.h"
 
 #define LOCTEXT_NAMESPACE "MovieSceneCapture"
 
@@ -86,6 +87,8 @@ FMovieSceneCaptureSettings::FMovieSceneCaptureSettings()
 	HandleFrames = 0;
 	GameModeOverride = nullptr;
 	OutputFormat = TEXT("{world}");
+	bUseCustomFrameRate = false;
+	CustomFrameRate = FFrameRate(24, 1);
 	FrameRate = FFrameRate(24, 1);
 	ZeroPadFrameNumbers = 4;
 	bEnableTextureStreaming = false;
@@ -95,6 +98,8 @@ FMovieSceneCaptureSettings::FMovieSceneCaptureSettings()
 	bAllowTurning = false;
 	bShowPlayer = false;
 	bShowHUD = false;
+	bUsePathTracer = false;
+	PathTracerSamplePerPixel = 16;
 
 #if PLATFORM_MAC
 	MovieExtension = TEXT(".mov");
@@ -292,6 +297,21 @@ void UMovieSceneCapture::Initialize(TSharedPtr<FSceneViewport> InSceneViewport, 
 			Settings.bCinematicMode = bOverrideCinematicMode;
 		}
 
+		bool bOverridePathTracer;
+		if (FParse::Bool(FCommandLine::Get(), TEXT("-PathTracer="), bOverridePathTracer))
+		{
+			Settings.bUsePathTracer = bOverridePathTracer;
+			if (bOverridePathTracer)
+			{
+				InSceneViewport->GetClient()->GetEngineShowFlags()->SetPathTracing(true);
+			}
+		}
+
+		uint16 OverridePathTracerSamplePerPixel;
+		if (FParse::Value(FCommandLine::Get(), TEXT("-PathTracerSamplePerPixel="), OverridePathTracerSamplePerPixel))
+		{
+			Settings.PathTracerSamplePerPixel = OverridePathTracerSamplePerPixel;
+		}
 
 		bool bProtocolOverride = false;
 
@@ -365,11 +385,20 @@ void UMovieSceneCapture::Initialize(TSharedPtr<FSceneViewport> InSceneViewport, 
 		FString FrameRateOverrideString;
 		if ( FParse::Value( FCommandLine::Get(), TEXT( "-MovieFrameRate=" ), FrameRateOverrideString ) )
 		{
-			if (!TryParseString(Settings.FrameRate, *FrameRateOverrideString))
+			if (!TryParseString(Settings.CustomFrameRate, *FrameRateOverrideString))
 			{
-				UE_LOG(LogMovieSceneCapture, Error, TEXT("Unrecognized capture frame rate: %s."), *FrameRateOverrideString);
+				UE_LOG(LogMovieSceneCapture, Error, TEXT("Unrecognized capture frame rate: %s. Defaulting to sequence frame rate."), *FrameRateOverrideString);
+			}
+			else
+			{
+				Settings.bUseCustomFrameRate = true;
 			}
 		}
+	}
+
+	if (!IsRayTracingEnabled())
+	{
+		Settings.bUsePathTracer = false;
 	}
 
 	bFinalizeWhenReady = false;
@@ -381,7 +410,7 @@ void UMovieSceneCapture::Initialize(TSharedPtr<FSceneViewport> InSceneViewport, 
 	CachedMetrics.Width = InitSettings->DesiredSize.X;
 	CachedMetrics.Height = InitSettings->DesiredSize.Y;
 
-	double FrameRate = Settings.FrameRate.AsDecimal();
+	double FrameRate = Settings.GetFrameRate().AsDecimal();
 
 	FormatMappings.Reserve(10);
 	if (FrameRate == FMath::RoundToDouble(FrameRate))
@@ -395,6 +424,13 @@ void UMovieSceneCapture::Initialize(TSharedPtr<FSceneViewport> InSceneViewport, 
 	FormatMappings.Add(TEXT("width"), FString::Printf(TEXT("%d"), CachedMetrics.Width));
 	FormatMappings.Add(TEXT("height"), FString::Printf(TEXT("%d"), CachedMetrics.Height));
 	FormatMappings.Add(TEXT("world"), InSceneViewport->GetClient()->GetWorld()->GetName());
+
+	FDateTime CurrentTime = FDateTime::Now();
+	FormatMappings.Add(TEXT("year"), CurrentTime.ToString(TEXT("%Y")));
+	FormatMappings.Add(TEXT("month"), CurrentTime.ToString(TEXT("%m")));
+	FormatMappings.Add(TEXT("day"), CurrentTime.ToString(TEXT("%d")));
+	FormatMappings.Add(TEXT("date"), CurrentTime.ToString(TEXT("%Y.%m.%d")));
+	FormatMappings.Add(TEXT("time"), CurrentTime.ToString(TEXT("%H.%M.%S")));
 
 	if( !CaptureStrategy.IsValid() )
 	{
@@ -514,8 +550,9 @@ void UMovieSceneCapture::CaptureThisFrame(float DeltaSeconds)
 		}
 		UE_LOG(LogMovieSceneCapture, Verbose, TEXT("Captured frame: %d"), CachedMetrics.Frame);
 		++CachedMetrics.Frame;
-		}
+	}
 }
+
 void UMovieSceneCapture::Tick(float DeltaSeconds)
 {
 	if (ImageCaptureProtocol)
@@ -797,6 +834,15 @@ void FFixedTimeStepCaptureStrategy::OnInitialize()
 void FFixedTimeStepCaptureStrategy::OnStop()
 {
 	FApp::SetUseFixedTimeStep(false);
+
+	// This can cause an issue with negative delta times in the engine. Instead of changing
+	// that rather sensitive code, we're going to just override the time that calculation is based off of, so it never comes up with a negative number.
+	if(FApp::GetCurrentTime() > FPlatformTime::Seconds())
+	{
+		UE_LOG(LogTemp, Warning, TEXT("FApp::CurrentTime() is ahead of platform time due to Fixed Timestep. Fixing. AppCurrentTime: %f PlatformCurrentTime: %f"), FApp::GetCurrentTime(), FPlatformTime::Seconds());
+		double CurrentRealTime = FPlatformTime::Seconds();
+		FApp::SetCurrentTime(CurrentRealTime);
+	}
 }
 
 bool FFixedTimeStepCaptureStrategy::ShouldPresent(double CurrentTimeSeconds, uint32 FrameIndex) const

@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "Unix/UnixPlatformFile.h"
 #include "GenericPlatform/GenericPlatformProcess.h"
@@ -10,8 +10,11 @@
 #include <sys/file.h>
 
 #include "HAL/PlatformFileCommon.h"
+#include "HAL/PlatformFilemanager.h"
 
 DEFINE_LOG_CATEGORY_STATIC(LogUnixPlatformFile, Log, All);
+
+#define UNIX_PLATFORM_FILE_SPEEDUP_FILE_OPERATIONS	((!WITH_EDITOR && !IS_PROGRAM) || !PLATFORM_LINUX) 
 
 // make an FTimeSpan object that represents the "epoch" for time_t (from a stat struct)
 const FDateTime UnixEpoch(1970, 1, 1);
@@ -34,7 +37,7 @@ namespace
 			UnixEpoch + FTimespan::FromSeconds(FileInfo.st_mtime), 
 			FileSize,
 			bIsDirectory,
-			!!(FileInfo.st_mode & S_IWUSR)
+			!(FileInfo.st_mode & S_IWUSR)
 		);
 	}
 
@@ -168,25 +171,34 @@ public:
 
 	virtual bool Read(uint8* Destination, int64 BytesToRead) override
 	{
-		int64 BytesRead = 0;
-		// handle virtual file handles
-		GFileRegistry.TrackStartRead(this);
-
+		struct FScopedReadTracker
 		{
+			FScopedReadTracker(FFileHandleUnix& InHandle) : Handle(InHandle) { GFileRegistry.TrackStartRead(&Handle); }
+			~FScopedReadTracker() { GFileRegistry.TrackEndRead(&Handle); }
+			FFileHandleUnix& Handle;
+		};
+
+		check(IsValid());
+		if (!FileOpenAsWrite)
+		{
+			// Handle virtual file handles (only in read mode, write mode doesn't use the file handle registry)
+			FScopedReadTracker ScopedReadTracker(*this);
 			FScopedDiskUtilizationTracker Tracker(BytesToRead, FileOffset);
+
 			// seek to the offset on seek? this matches console behavior more closely
-			check(IsValid());
 			if (lseek(FileHandle, FileOffset, SEEK_SET) == -1)
 			{
 				return false;
 			}
-			BytesRead += ReadInternal(Destination, BytesToRead);
+			int64 BytesRead = ReadInternal(Destination, BytesToRead);
+			FileOffset += BytesRead;
+			return BytesRead == BytesToRead;
 		}
-
-		// handle virtual file handles
-		GFileRegistry.TrackEndRead(this);
-		FileOffset += BytesRead;
-		return BytesRead == BytesToRead;
+		else // FileOffset is invalid in 'read/write' mode, i.e. not updated by Write(), Seek(), SeekFronEnd(). Read from the current location.
+		{
+			FScopedDiskUtilizationTracker Tracker(BytesToRead, Tell());
+			return ReadInternal(Destination, BytesToRead) == BytesToRead;
+		}
 	}
 
 	virtual bool Write(const uint8* Source, int64 BytesToWrite) override
@@ -250,6 +262,20 @@ private:
 			int64 ThisSize = FMath::Min<int64>(READWRITE_SIZE, BytesToRead);
 			check(Destination);
 			int64 ThisRead = read(FileHandle, Destination, ThisSize);
+			if (ThisRead == -1 && errno == EFAULT)
+			{
+				// hacky workaround for UE-69018
+				void* TempDest = FMemory::Malloc(ThisSize);
+				if (TempDest)
+				{
+					ThisRead = read(FileHandle, TempDest, ThisSize);
+					if (ThisRead > 0 && ThisRead <= ThisSize)
+					{
+						FMemory::Memcpy(Destination, TempDest, ThisRead);
+					}
+					FMemory::Free(TempDest);
+				}
+			}
 			BytesRead += ThisRead;
 			if (ThisRead != ThisSize)
 			{
@@ -614,6 +640,14 @@ public:
 			}
 			else
 			{
+#if (UE_GAME || UE_SERVER)
+				// Games (including clients) and servers have no business traversing the filesystem when reading from the pak files - make sure the paths are correct!
+				static bool bReadingFromPakFiles = FPlatformFileManager::Get().FindPlatformFile(TEXT("PakFile")) != nullptr;
+				if (LIKELY(bReadingFromPakFiles))
+				{
+					return -1;
+				}
+#endif
 				// perform a case-insensitive search
 				// make sure we get the absolute filename
 				checkf(Filename[0] == TEXT('/'), TEXT("Filename '%s' given to OpenCaseInsensitiveRead is not absolute!"), *Filename);
@@ -663,11 +697,16 @@ FString FUnixPlatformFile::NormalizeDirectory(const TCHAR* Directory, bool bIsFo
 bool FUnixPlatformFile::FileExists(const TCHAR* Filename)
 {
 	FString CaseSensitiveFilename;
-	if (!GCaseInsensMapper.MapCaseInsensitiveFile(NormalizeFilename(Filename, false), CaseSensitiveFilename))
+	FString NormalizedFilename = NormalizeFilename(Filename, false);
+#if !UNIX_PLATFORM_FILE_SPEEDUP_FILE_OPERATIONS
+	if (!GCaseInsensMapper.MapCaseInsensitiveFile(NormalizedFilename, CaseSensitiveFilename))
 	{
 		// could not find the file
 		return false;
 	}
+#else
+	CaseSensitiveFilename = NormalizedFilename;
+#endif
 
 	struct stat FileInfo;
 	if(stat(TCHAR_TO_UTF8(*CaseSensitiveFilename), &FileInfo) != -1)
@@ -680,11 +719,16 @@ bool FUnixPlatformFile::FileExists(const TCHAR* Filename)
 int64 FUnixPlatformFile::FileSize(const TCHAR* Filename)
 {
 	FString CaseSensitiveFilename;
-	if (!GCaseInsensMapper.MapCaseInsensitiveFile(NormalizeFilename(Filename, false), CaseSensitiveFilename))
+	FString NormalizedFilename = NormalizeFilename(Filename, false);
+#if !UNIX_PLATFORM_FILE_SPEEDUP_FILE_OPERATIONS
+	if (!GCaseInsensMapper.MapCaseInsensitiveFile(NormalizedFilename, CaseSensitiveFilename))
 	{
 		// could not find the file
 		return -1;
 	}
+#else
+	CaseSensitiveFilename = NormalizedFilename;
+#endif
 
 	struct stat FileInfo;
 	FileInfo.st_size = -1;
@@ -903,7 +947,7 @@ IFileHandle* FUnixPlatformFile::OpenWrite(const TCHAR* Filename, bool bAppend, b
 	}
 
 	// Caveat: cannot specify O_TRUNC in flags, as this will corrupt the file which may be "locked" by other process. We will ftruncate() it once we "lock" it
-	int32 Handle = open(TCHAR_TO_UTF8(*NormalizeFilename(Filename, true)), Flags, S_IRUSR | S_IWUSR | S_IRGRP | S_IROTH);
+	int32 Handle = open(TCHAR_TO_UTF8(*NormalizeFilename(Filename, true)), Flags, S_IRUSR | S_IWUSR | S_IRGRP | S_IWGRP | S_IROTH);
 	if (Handle != -1)
 	{
 		// mimic Windows "exclusive write" behavior (we don't use FILE_SHARE_WRITE) by locking the file.
@@ -949,11 +993,16 @@ IFileHandle* FUnixPlatformFile::OpenWrite(const TCHAR* Filename, bool bAppend, b
 bool FUnixPlatformFile::DirectoryExists(const TCHAR* Directory)
 {
 	FString CaseSensitiveFilename;
-	if (!GCaseInsensMapper.MapCaseInsensitiveFile(NormalizeFilename(Directory, false), CaseSensitiveFilename))
+	FString NormalizedFilename = NormalizeFilename(Directory, false);
+#if !UNIX_PLATFORM_FILE_SPEEDUP_FILE_OPERATIONS
+	if (!GCaseInsensMapper.MapCaseInsensitiveFile(NormalizedFilename, CaseSensitiveFilename))
 	{
 		// could not find the file
 		return false;
 	}
+#else
+	CaseSensitiveFilename = NormalizedFilename;
+#endif
 
 	struct stat FileInfo;
 	if (stat(TCHAR_TO_UTF8(*CaseSensitiveFilename), &FileInfo) != -1)
@@ -972,11 +1021,15 @@ bool FUnixPlatformFile::DeleteDirectory(const TCHAR* Directory)
 {
 	FString CaseSensitiveFilename;
 	FString IntendedFilename(NormalizeFilename(Directory,true));
+#if !UNIX_PLATFORM_FILE_SPEEDUP_FILE_OPERATIONS
 	if (!GCaseInsensMapper.MapCaseInsensitiveFile(IntendedFilename, CaseSensitiveFilename))
 	{
 		// could not find the directory
 		return false;
 	}
+#else
+	CaseSensitiveFilename = IntendedFilename;
+#endif
 
 	GetFileMapCache().Invalidate(IntendedFilename);
 
@@ -1113,10 +1166,19 @@ bool FUnixPlatformFile::CreateDirectoriesFromPath(const TCHAR* Path)
 				if (mkdir(SubPath, 0755) == -1)
 				{
 					int ErrNo = errno;
-					UE_LOG_UNIX_FILE(Warning, TEXT( "create dir('%s') failed: errno=%d (%s)" ), UTF8_TO_TCHAR(DirPath), ErrNo, UTF8_TO_TCHAR(strerror(ErrNo)));
+
+					// We happen to have gotten into a position after stat that the folder was created so dont treat this as an error
+					bool bErrnoDirExist = ErrNo == EEXIST;
+
+					if (!bErrnoDirExist)
+					{
+						UE_LOG_UNIX_FILE(Warning, TEXT( "create dir('%s') failed: errno=%d (%s)" ), UTF8_TO_TCHAR(DirPath), ErrNo, UTF8_TO_TCHAR(strerror(ErrNo)));
+					}
+
 					FMemory::Free(DirPath);
 					FMemory::Free(SubPath);
-					return false;
+
+					return bErrnoDirExist;
 				}
 			}
 		}

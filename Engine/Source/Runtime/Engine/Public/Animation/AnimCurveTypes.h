@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -14,6 +14,7 @@
 UENUM(BlueprintType, meta=(Bitflags))
 enum EAnimAssetCurveFlags
 {
+	AACF_NONE = 0 UMETA(Hidden),
 	// Used as morph target curve
 	AACF_DriveMorphTarget_DEPRECATED = 0x00000001 UMETA(Hidden), // This has moved to FAnimCurveType:bMorphTarget. Set per skeleton. DO NOT REMOVE UNTIL FrameworkObjectVersion.MoveCurveTypesToSkeleton expires.
 	// Used as triggering event
@@ -82,6 +83,11 @@ struct ENGINE_API FAnimCurveBase
 	UPROPERTY()
 	FSmartName	Name;
 
+#if WITH_EDITORONLY_DATA
+	UPROPERTY()
+	FLinearColor Color;
+#endif
+
 private:
 	// this flag is mostly used by editor only now
 	// however I can't remove this to editor only because 
@@ -92,12 +98,21 @@ private:
 	int32		CurveTypeFlags;
 
 public:
-	FAnimCurveBase() : CurveTypeFlags(0) {}
+	FAnimCurveBase() 
+		: CurveTypeFlags(0)
+	{
+#if WITH_EDITORONLY_DATA
+		Color = MakeColor();
+#endif
+	}
 
 	FAnimCurveBase(FSmartName InName, int32 InCurveTypeFlags)
 		: Name(InName)
 		, CurveTypeFlags(InCurveTypeFlags)
-	{	
+	{
+#if WITH_EDITORONLY_DATA
+		Color = MakeColor();
+#endif
 	}
 
 	// To be able to use typedef'd types we need to serialize manually
@@ -127,6 +142,15 @@ public:
 	 * returns CurveTypeFlags
 	 */
 	int32 GetCurveTypeFlags() const;
+
+#if WITH_EDITORONLY_DATA
+	/** Get the color used to display this curve in the editor */
+	FLinearColor GetColor() const { return Color; }
+
+private:
+	/** Make an initial color */
+	FLinearColor MakeColor();
+#endif
 };
 
 USTRUCT()
@@ -360,7 +384,7 @@ struct FBaseBlendedCurve
 	/** Get Array Index by UID */
 	int32 GetArrayIndexByUID(USkeleton::AnimCurveUID InUid) const
 	{
-		int32 ArrayIndex = (*UIDToArrayIndexLUT)[InUid];
+		int32 ArrayIndex = (*UIDToArrayIndexLUT).IsValidIndex(InUid) ? (*UIDToArrayIndexLUT)[InUid] : MAX_uint16;
 		if (ArrayIndex != MAX_uint16)
 		{
 			return ArrayIndex;
@@ -373,7 +397,7 @@ struct FBaseBlendedCurve
 	{
 		check(bInitialized);
 
-		return ((*UIDToArrayIndexLUT)[InUid] != MAX_uint16);
+		return (GetArrayIndexByUID(InUid) != INDEX_NONE);
 	}
 	
 	/** Get Valid Element Count from given UIDToArrayIndexLUT */
@@ -382,7 +406,8 @@ struct FBaseBlendedCurve
 		int32 Count = 0;
 		if (InUIDToArrayIndexLUT)
 		{
-			for (int32 Index = 0; Index<InUIDToArrayIndexLUT->Num(); ++Index)
+			const int32 ArraySize = InUIDToArrayIndexLUT->Num();
+			for (int32 Index = 0; Index < ArraySize; ++Index)
 			{
 				if ((*InUIDToArrayIndexLUT)[Index] != MAX_uint16)
 				{
@@ -480,6 +505,68 @@ struct FBaseBlendedCurve
 	/**
 	 * This doesn't blend but combine MAX(current weight, curvetocombine weight)
 	 */
+	void UseMaxValue(const FBaseBlendedCurve& CurveToCombine)
+	{
+		check(bInitialized);
+		check(Num() == CurveToCombine.Num());
+
+		for (int32 CurveId = 0; CurveId < CurveToCombine.Elements.Num(); ++CurveId)
+		{
+			// if target value is valid, we accept target value
+			if (Elements[CurveId].bValid && CurveToCombine.Elements[CurveId].bValid)
+			{
+				Elements[CurveId].Value = FMath::Max(Elements[CurveId].Value, CurveToCombine.Elements[CurveId].Value);
+			}
+			else if (CurveToCombine.Elements[CurveId].bValid)
+			{
+				Elements[CurveId].SetValue(CurveToCombine.Elements[CurveId].Value);
+			}
+		}
+	}
+
+	/**
+	 * This doesn't blend but combine MIN(current weight, curvetocombine weight)
+	 */
+	void UseMinValue(const FBaseBlendedCurve& CurveToCombine)
+	{
+		check(bInitialized);
+		check(Num() == CurveToCombine.Num());
+
+		for (int32 CurveId = 0; CurveId < CurveToCombine.Elements.Num(); ++CurveId)
+		{
+			// if target value is valid, we accept target value
+			if (Elements[CurveId].bValid && CurveToCombine.Elements[CurveId].bValid)
+			{
+				Elements[CurveId].Value = FMath::Min(Elements[CurveId].Value, CurveToCombine.Elements[CurveId].Value);
+			}
+			else if (CurveToCombine.Elements[CurveId].bValid)
+			{
+				Elements[CurveId].SetValue(CurveToCombine.Elements[CurveId].Value);
+			}
+		}
+	}
+
+	/**
+	 * This combines IF the input does not contain valid curve
+	 */
+	void CombinePreserved(const FBaseBlendedCurve& CurveToCombine)
+	{
+		check(bInitialized);
+		check(Num() == CurveToCombine.Num());
+
+		for (int32 CurveId = 0; CurveId < CurveToCombine.Elements.Num(); ++CurveId)
+		{
+			// if target value is valid, we accept target value
+			if (!Elements[CurveId].bValid && CurveToCombine.Elements[CurveId].bValid)
+			{
+				Elements[CurveId].SetValue(CurveToCombine.Elements[CurveId].Value);
+			}
+
+		}
+	}
+	/**
+	 * This doesn't blend but later pose with valid curve value overrides
+	 */
 	void Combine(const FBaseBlendedCurve& CurveToCombine)
 	{
 		check(bInitialized);
@@ -490,8 +577,7 @@ struct FBaseBlendedCurve
 			// if target value is valid, we accept target value
 			if (CurveToCombine.Elements[CurveId].bValid)
 			{
-				Elements[CurveId].bValid = true;
-				Elements[CurveId].Value = CurveToCombine.Elements[CurveId].Value;
+				Elements[CurveId].SetValue(CurveToCombine.Elements[CurveId].Value);
 			}
 
 		}

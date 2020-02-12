@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once 
 
@@ -14,7 +14,9 @@ struct FUSDAssetImportContext : public FUsdImportContext
 {
 	GENERATED_USTRUCT_BODY()
 
-	virtual void Init(UObject* InParent, const FString& InName, class IUsdStage* InStage);
+#if USE_USD_SDK
+	virtual void Init(UObject* InParent, const FString& InName, const TUsdStore< pxr::UsdStageRefPtr >& InStage) override;
+#endif // #if USE_USD_SDK
 };
 
 UCLASS(transient)

@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 #pragma once
 
 #include "Chaos/Matrix.h"
@@ -112,7 +112,7 @@ class TRigidTransform
 };
 
 template<>
-class TRigidTransform<float, 3> : public FTransform
+class TRigidTransform<float, 2> : public FTransform
 {
   public:
 	TRigidTransform()
@@ -123,11 +123,36 @@ class TRigidTransform<float, 3> : public FTransform
 	    : FTransform(Matrix) {}
 	TRigidTransform(const FTransform& Transform)
 	    : FTransform(Transform) {}
+	PMatrix<float, 3, 3> Inverse() const
+	{
+		return ToMatrixNoScale().Inverse();
+	}
+};
+
+template<>
+class TRigidTransform<float, 3> : public FTransform
+{
+  public:
+	TRigidTransform()
+	    : FTransform() {}
+	TRigidTransform(const TVector<float, 3>& Translation, const TRotation<float, 3>& Rotation)
+	    : FTransform(Rotation, Translation) {}
+	TRigidTransform(const TVector<float, 3>& Translation, const TRotation<float, 3>& Rotation, const TVector<float,3>& Scale)
+		: FTransform(Rotation, Translation, Scale) {}
+	TRigidTransform(const FMatrix& Matrix)
+	    : FTransform(Matrix) {}
+	TRigidTransform(const FTransform& Transform)
+	    : FTransform(Transform) {}
 	PMatrix<float, 4, 4> Inverse() const
 	{
 		return ToMatrixNoScale().Inverse();
 	}
 };
+}
+
+inline uint32 GetTypeHash(const Chaos::TRigidTransform<float, 3>& InTransform)
+{
+	return HashCombine(GetTypeHash(InTransform.GetTranslation()), HashCombine(GetTypeHash(InTransform.GetRotation().Euler()), GetTypeHash(InTransform.GetScale3D())));
 }
 
 CHAOS_API Chaos::PMatrix<float, 4, 4> operator*(const Chaos::TRigidTransform<float, 3>& Transform, const Chaos::PMatrix<float, 4, 4>& Matrix);

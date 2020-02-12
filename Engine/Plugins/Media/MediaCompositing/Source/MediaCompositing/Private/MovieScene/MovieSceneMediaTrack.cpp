@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "MovieSceneMediaTrack.h"
 
@@ -94,6 +94,11 @@ bool UMovieSceneMediaTrack::IsEmpty() const
 void UMovieSceneMediaTrack::RemoveSection(UMovieSceneSection& Section)
 {
 	MediaSections.Remove(&Section);
+}
+
+void UMovieSceneMediaTrack::RemoveSectionAt(int32 SectionIndex)
+{
+	MediaSections.RemoveAt(SectionIndex);
 }
 
 

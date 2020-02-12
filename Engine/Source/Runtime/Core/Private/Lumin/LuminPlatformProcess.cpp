@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 // Copyright 2016 Magic Leap, Inc. All Rights Reserved.
 
 #include "Lumin/LuminPlatformProcess.h"
@@ -10,7 +10,7 @@
 #include <pthread.h>
 #include <libgen.h>
 #include <dlfcn.h>
-#include <ml_dispatch.h>
+#include "Lumin/CAPIShims/LuminAPIDispatch.h"
 
 const TCHAR* FLuminPlatformProcess::ComputerName()
 {
@@ -120,7 +120,7 @@ void* FLuminPlatformProcess::GetDllHandle(const TCHAR* Filename)
 	void *Handle = dlopen(TCHAR_TO_UTF8(*AbsolutePath), DlOpenMode);
 	if (!Handle)
 	{
-		UE_LOG(LogLinux, Warning, TEXT("dlopen failed: %s"), UTF8_TO_TCHAR(dlerror()));
+		UE_LOG(LogLumin, Warning, TEXT("dlopen failed: %s"), UTF8_TO_TCHAR(dlerror()));
 	}
 	return Handle;
 }

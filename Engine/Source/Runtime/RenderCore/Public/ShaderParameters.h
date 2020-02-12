@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 /*=============================================================================
 	ShaderParameters.h: Shader parameter definitions.
@@ -7,6 +7,7 @@
 #pragma once
 
 #include "CoreMinimal.h"
+#include "Serialization/MemoryLayout.h"
 #include "RHI.h"
 
 class FShaderParameterMap;
@@ -27,27 +28,21 @@ enum EShaderParameterFlags
 /** A shader parameter's register binding. e.g. float1/2/3/4, can be an array, UAV */
 class FShaderParameter
 {
+	DECLARE_EXPORTED_TYPE_LAYOUT(FShaderParameter, RENDERCORE_API, NonVirtual);
 public:
 	FShaderParameter()
 	:	BufferIndex(0)
 	,	BaseIndex(0)
 	,	NumBytes(0)
-#if UE_BUILD_DEBUG
-	,	bInitialized(false)
-#endif
 	{}
 
 	RENDERCORE_API void Bind(const FShaderParameterMap& ParameterMap,const TCHAR* ParameterName, EShaderParameterFlags Flags = SPF_Optional);
 	friend RENDERCORE_API FArchive& operator<<(FArchive& Ar,FShaderParameter& P);
 	bool IsBound() const { return NumBytes > 0; }
-
+	
 	inline bool IsInitialized() const 
 	{ 
-#if UE_BUILD_DEBUG
-		return bInitialized; 
-#else 
 		return true;
-#endif
 	}
 
 	uint32 GetBufferIndex() const { return BufferIndex; }
@@ -55,26 +50,20 @@ public:
 	uint32 GetNumBytes() const { return NumBytes; }
 
 private:
-	uint16 BufferIndex;
-	uint16 BaseIndex;
+	LAYOUT_FIELD(uint16, BufferIndex);
+	LAYOUT_FIELD(uint16, BaseIndex);
 	// 0 if the parameter wasn't bound
-	uint16 NumBytes;
-
-#if UE_BUILD_DEBUG
-	bool bInitialized;
-#endif
+	LAYOUT_FIELD(uint16, NumBytes);
 };
 
 /** A shader resource binding (textures or samplerstates). */
 class FShaderResourceParameter
 {
+	DECLARE_EXPORTED_TYPE_LAYOUT(FShaderResourceParameter, RENDERCORE_API, NonVirtual);
 public:
 	FShaderResourceParameter()
 	:	BaseIndex(0)
 	,	NumResources(0) 
-#if UE_BUILD_DEBUG
-	,	bInitialized(false)
-#endif
 	{}
 
 	RENDERCORE_API void Bind(const FShaderParameterMap& ParameterMap,const TCHAR* ParameterName,EShaderParameterFlags Flags = SPF_Optional);
@@ -83,27 +72,21 @@ public:
 
 	inline bool IsInitialized() const 
 	{ 
-#if UE_BUILD_DEBUG
-		return bInitialized; 
-#else 
 		return true;
-#endif
 	}
 
 	uint32 GetBaseIndex() const { return BaseIndex; }
 	uint32 GetNumResources() const { return NumResources; }
-private:
-	uint16 BaseIndex;
-	uint16 NumResources;
 
-#if UE_BUILD_DEBUG
-	bool bInitialized;
-#endif
+private:
+	LAYOUT_FIELD(uint16, BaseIndex);
+	LAYOUT_FIELD(uint16, NumResources);
 };
 
 /** A class that binds either a UAV or SRV of a resource. */
 class FRWShaderParameter
 {
+	DECLARE_EXPORTED_TYPE_LAYOUT(FRWShaderParameter, RENDERCORE_API, NonVirtual);
 public:
 
 	void Bind(const FShaderParameterMap& ParameterMap,const TCHAR* BaseName)
@@ -139,21 +122,20 @@ public:
 	}
 
 	template<typename TShaderRHIRef, typename TRHICmdList>
-	inline void SetBuffer(TRHICmdList& RHICmdList, TShaderRHIRef Shader, const FRWBuffer& RWBuffer) const;
+	inline void SetBuffer(TRHICmdList& RHICmdList, const TShaderRHIRef& Shader, const FRWBuffer& RWBuffer) const;
 
 	template<typename TShaderRHIRef, typename TRHICmdList>
-	inline void SetBuffer(TRHICmdList& RHICmdList, TShaderRHIRef Shader, const FRWBufferStructured& RWBuffer) const;
+	inline void SetBuffer(TRHICmdList& RHICmdList, const TShaderRHIRef& Shader, const FRWBufferStructured& RWBuffer) const;
 
 	template<typename TShaderRHIRef, typename TRHICmdList>
-	inline void SetTexture(TRHICmdList& RHICmdList, TShaderRHIRef Shader, const FTextureRHIParamRef Texture, FUnorderedAccessViewRHIParamRef UAV) const;
+	inline void SetTexture(TRHICmdList& RHICmdList, const TShaderRHIRef& Shader, FRHITexture* Texture, FRHIUnorderedAccessView* UAV) const;
 
 	template<typename TRHICmdList>
-	inline void UnsetUAV(TRHICmdList& RHICmdList, FComputeShaderRHIParamRef ComputeShader) const;
+	inline void UnsetUAV(TRHICmdList& RHICmdList, FRHIComputeShader* ComputeShader) const;
 
 private:
-
-	FShaderResourceParameter SRVParameter;
-	FShaderResourceParameter UAVParameter;
+	LAYOUT_FIELD(FShaderResourceParameter, SRVParameter);
+	LAYOUT_FIELD(FShaderResourceParameter, UAVParameter);
 };
 
 /** Creates a shader code declaration of this struct for the given shader platform. */
@@ -161,13 +143,10 @@ extern RENDERCORE_API void CreateUniformBufferShaderDeclaration(const TCHAR* Nam
 
 class FShaderUniformBufferParameter
 {
+	DECLARE_EXPORTED_TYPE_LAYOUT(FShaderUniformBufferParameter, RENDERCORE_API, NonVirtual);
 public:
 	FShaderUniformBufferParameter()
-	:	BaseIndex(0)
-	,	bIsBound(false) 
-#if UE_BUILD_DEBUG
-	,	bInitialized(false)
-#endif
+	:	BaseIndex(0xffff)
 	{}
 
 	static RENDERCORE_API void ModifyCompilationEnvironment(const TCHAR* ParameterName,const FShaderParametersMetadata& Struct,EShaderPlatform Platform,FShaderCompilerEnvironment& OutEnvironment);
@@ -180,44 +159,21 @@ public:
 		return Ar;
 	}
 
-	bool IsBound() const { return bIsBound; }
+	bool IsBound() const { return BaseIndex != 0xffff; }
 
 	void Serialize(FArchive& Ar)
 	{
-#if UE_BUILD_DEBUG
-		if (Ar.IsLoading())
-		{
-			bInitialized = true;
-		}
-#endif
-		Ar << BaseIndex << bIsBound;
+		Ar << BaseIndex;
 	}
 
 	inline bool IsInitialized() const 
 	{ 
-#if UE_BUILD_DEBUG
-		return bInitialized; 
-#else 
 		return true;
-#endif
 	}
-
-	inline void SetInitialized() 
-	{ 
-#if UE_BUILD_DEBUG
-		bInitialized = true; 
-#endif
-	}
-
-	uint32 GetBaseIndex() const { return BaseIndex; }
+	uint32 GetBaseIndex() const { ensure(IsBound()); return BaseIndex; }
 
 private:
-	uint16 BaseIndex;
-	bool bIsBound;
-
-#if UE_BUILD_DEBUG
-	bool bInitialized;
-#endif
+	LAYOUT_FIELD(uint16, BaseIndex);
 };
 
 /** A shader uniform buffer binding with a specific structure. */
@@ -240,7 +196,9 @@ public:
 #if RHI_RAYTRACING
 struct FRayTracingShaderBindingsWriter : FRayTracingShaderBindings
 {
-	void Set(const FShaderResourceParameter& Param, FTextureRHIParamRef Value)
+	FUniformBufferRHIRef RootUniformBuffer;
+
+	void Set(const FShaderResourceParameter& Param, FRHITexture* Value)
 	{
 		if (Param.IsBound())
 		{
@@ -249,7 +207,7 @@ struct FRayTracingShaderBindingsWriter : FRayTracingShaderBindings
 		}
 	}
 
-	void Set(const FShaderResourceParameter& Param, FShaderResourceViewRHIParamRef Value)
+	void Set(const FShaderResourceParameter& Param, FRHIShaderResourceView* Value)
 	{
 		if (Param.IsBound())
 		{
@@ -258,7 +216,7 @@ struct FRayTracingShaderBindingsWriter : FRayTracingShaderBindings
 		}
 	}
 
-	void Set(const FShaderUniformBufferParameter& Param, FUniformBufferRHIParamRef Value)
+	void Set(const FShaderUniformBufferParameter& Param, FRHIUniformBuffer* Value)
 	{
 		if (Param.IsBound())
 		{
@@ -266,7 +224,7 @@ struct FRayTracingShaderBindingsWriter : FRayTracingShaderBindings
 		}
 	}
 
-	void Set(const FShaderResourceParameter& Param, FUnorderedAccessViewRHIParamRef Value)
+	void Set(const FShaderResourceParameter& Param, FRHIUnorderedAccessView* Value)
 	{
 		if (Param.IsBound())
 		{
@@ -275,7 +233,7 @@ struct FRayTracingShaderBindingsWriter : FRayTracingShaderBindings
 		}
 	}
 
-	void Set(const FShaderResourceParameter& Param, FSamplerStateRHIParamRef Value)
+	void Set(const FShaderResourceParameter& Param, FRHISamplerState* Value)
 	{
 		if (Param.IsBound())
 		{
@@ -284,33 +242,33 @@ struct FRayTracingShaderBindingsWriter : FRayTracingShaderBindings
 		}
 	}
 
-	void SetTexture(uint16 BaseIndex, FTextureRHIParamRef Value)
+	void SetTexture(uint16 BaseIndex, FRHITexture* Value)
 	{
-		checkSlow(BaseIndex < ARRAY_COUNT(Textures));
+		checkSlow(BaseIndex < UE_ARRAY_COUNT(Textures));
 		Textures[BaseIndex] = Value;
 	}
 
-	void SetSRV(uint16 BaseIndex, FShaderResourceViewRHIParamRef Value)
+	void SetSRV(uint16 BaseIndex, FRHIShaderResourceView* Value)
 	{
-		checkSlow(BaseIndex < ARRAY_COUNT(SRVs));
+		checkSlow(BaseIndex < UE_ARRAY_COUNT(SRVs));
 		SRVs[BaseIndex] = Value;
 	}
 
-	void SetSampler(uint16 BaseIndex, FSamplerStateRHIParamRef Value)
+	void SetSampler(uint16 BaseIndex, FRHISamplerState* Value)
 	{
-		checkSlow(BaseIndex < ARRAY_COUNT(Samplers));
+		checkSlow(BaseIndex < UE_ARRAY_COUNT(Samplers));
 		Samplers[BaseIndex] = Value;
 	}
 
-	void SetUAV(uint16 BaseIndex, FUnorderedAccessViewRHIParamRef Value)
+	void SetUAV(uint16 BaseIndex, FRHIUnorderedAccessView* Value)
 	{
-		checkSlow(BaseIndex < ARRAY_COUNT(UAVs));
+		checkSlow(BaseIndex < UE_ARRAY_COUNT(UAVs));
 		UAVs[BaseIndex] = Value;
 	}
 
-	void SetUniformBuffer(uint16 BaseIndex, FUniformBufferRHIParamRef Value)
+	void SetUniformBuffer(uint16 BaseIndex, FRHIUniformBuffer* Value)
 	{
-		checkSlow(BaseIndex < ARRAY_COUNT(UniformBuffers));
+		checkSlow(BaseIndex < UE_ARRAY_COUNT(UniformBuffers));
 		UniformBuffers[BaseIndex] = Value;
 	}
 };

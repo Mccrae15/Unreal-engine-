@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "XmppModule.h"
 #include "Misc/CommandLine.h"
@@ -650,6 +650,16 @@ bool FXmppModule::HandleXmppCommand( const TCHAR* Cmd, FOutputDevice& Ar )
 		}
 		return true;
 	}
+	else if (FParse::Command(&Cmd, TEXT("Dump")))
+	{
+		UE_LOG(LogXmpp, Warning, TEXT("Dumping %d XMPP connections: "), ActiveConnections.Num());
+		for (const auto& Pair : ActiveConnections)
+		{
+			const TSharedRef<IXmppConnection>& Connection = Pair.Value;
+			Connection->DumpState();
+		}
+		return true;
+	}
 
 	return false;
 }
@@ -724,7 +734,11 @@ TSharedRef<IXmppConnection> FXmppModule::CreateConnection(const FString& UserId)
 			Connection = FXmppNull::CreateConnection();
 		}
 
-		return ActiveConnections.Add(UserId, Connection.ToSharedRef());
+		TSharedRef<IXmppConnection> ConnectionRef = Connection.ToSharedRef();
+		ActiveConnections.Add(UserId, ConnectionRef);
+		OnXmppConnectionCreated.Broadcast(ConnectionRef);
+		
+		return ConnectionRef;
 	}
 }
 

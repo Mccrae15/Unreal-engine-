@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 using UnrealBuildTool;
 
 public class DX11Input : ModuleRules
@@ -7,23 +7,34 @@ public class DX11Input : ModuleRules
 	{
 		Type = ModuleType.External;
 
-		string DirectXSDKDir = Target.UEThirdPartySourceDirectory + "Windows/DirectX";
+		string DirectXSDKDir = "";
+		if (Target.Platform == UnrealTargetPlatform.HoloLens)
+		{
+			DirectXSDKDir = Target.WindowsPlatform.bUseWindowsSDK10 ?
+			Target.UEThirdPartySourceDirectory + "Windows/DirectXLegacy" :
+			Target.UEThirdPartySourceDirectory + "Windows/DirectX";
+		}
+		else
+		{
+			DirectXSDKDir = Target.UEThirdPartySourceDirectory + "Windows/DirectX";
+		}
 
 		PublicSystemIncludePaths.Add(DirectXSDKDir + "/include");
 
+		string LibDir = null;
 		if (Target.Platform == UnrealTargetPlatform.Win64)
 		{
-			PublicLibraryPaths.Add(DirectXSDKDir + "/Lib/x64");
+			LibDir = DirectXSDKDir + "/Lib/x64/";
 		}
 		else if (Target.Platform == UnrealTargetPlatform.Win32)
 		{
-			PublicLibraryPaths.Add(DirectXSDKDir + "/Lib/x86");
+			LibDir = DirectXSDKDir + "/Lib/x86/";
 		}
 
 		PublicAdditionalLibraries.AddRange(
 			new string[] {
-				"dxguid.lib",
-				"dinput8.lib"
+				LibDir + "dxguid.lib",
+				LibDir + "dinput8.lib"
 			}
 			);
 	}

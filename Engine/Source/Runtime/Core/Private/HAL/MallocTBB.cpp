@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 /*=============================================================================
 	MallocTTB.cpp: IntelTTB Malloc
@@ -30,25 +30,17 @@ THIRD_PARTY_INCLUDES_START
 #include <tbb/scalable_allocator.h>
 THIRD_PARTY_INCLUDES_END
 
-#define MEM_TIME(st)
-
-
-void* FMallocTBB::Malloc( SIZE_T Size, uint32 Alignment )
+void* FMallocTBB::TryMalloc( SIZE_T Size, uint32 Alignment )
 {
-	IncrementTotalMallocCalls();
-
 #if !UE_BUILD_SHIPPING
 	uint64 LocalMaxSingleAlloc = MaxSingleAlloc.Load(EMemoryOrder::Relaxed);
 	if (LocalMaxSingleAlloc != 0 && Size > LocalMaxSingleAlloc)
 	{
-		FPlatformMemory::OnOutOfMemory(Size, Alignment);
 		return nullptr;
 	}
 #endif
 
-	MEM_TIME(MemTime -= FPlatformTime::Seconds());
-
-	void* NewPtr = NULL;
+	void* NewPtr = nullptr;
 #if PLATFORM_MAC
 	// macOS expects all allocations to be aligned to 16 bytes, but TBBs default alignment is 8, so on Mac we always have to use scalable_aligned_malloc.
 	// Contrary to scalable_malloc, scalable_aligned_malloc returns nullptr when trying to allocate 0 bytes, which is inconsistent with system malloc, so
@@ -70,34 +62,38 @@ void* FMallocTBB::Malloc( SIZE_T Size, uint32 Alignment )
 	}
 #endif
 
-	if( !NewPtr && Size )
-	{
-		OutOfMemory(Size, Alignment);
-	}
 #if UE_BUILD_DEBUG
-	else if (Size)
+	if (Size && NewPtr != nullptr)
 	{
 		FMemory::Memset(NewPtr, DEBUG_FILL_NEW, scalable_msize(NewPtr));
 	}
 #endif
-	MEM_TIME(MemTime += FPlatformTime::Seconds());
+
 	return NewPtr;
 }
 
-void* FMallocTBB::Realloc( void* Ptr, SIZE_T NewSize, uint32 Alignment )
+void* FMallocTBB::Malloc(SIZE_T Size, uint32 Alignment)
 {
-	IncrementTotalReallocCalls();
+	void* Result = TryMalloc(Size, Alignment);
 
+	if (Result == nullptr && Size)
+	{
+		OutOfMemory(Size, Alignment);
+	}
+
+	return Result;
+}
+
+void* FMallocTBB::TryRealloc( void* Ptr, SIZE_T NewSize, uint32 Alignment )
+{
 #if !UE_BUILD_SHIPPING
 	uint64 LocalMaxSingleAlloc = MaxSingleAlloc.Load(EMemoryOrder::Relaxed);
 	if (LocalMaxSingleAlloc != 0 && NewSize > LocalMaxSingleAlloc)
 	{
-		FPlatformMemory::OnOutOfMemory(NewSize, Alignment);
 		return nullptr;
 	}
 #endif
 
-	MEM_TIME(MemTime -= FPlatformTime::Seconds())
 #if UE_BUILD_DEBUG
 	SIZE_T OldSize = 0;
 	if (Ptr)
@@ -109,7 +105,7 @@ void* FMallocTBB::Realloc( void* Ptr, SIZE_T NewSize, uint32 Alignment )
 		}
 	}
 #endif
-	void* NewPtr = NULL;
+	void* NewPtr = nullptr;
 #if PLATFORM_MAC
 	// macOS expects all allocations to be aligned to 16 bytes, but TBBs default alignment is 8, so on Mac we always have to use scalable_aligned_realloc
 	Alignment = AlignArbitrary(FMath::Max((uint32)16, Alignment), (uint32)16);
@@ -131,12 +127,20 @@ void* FMallocTBB::Realloc( void* Ptr, SIZE_T NewSize, uint32 Alignment )
 		FMemory::Memset((uint8*)NewPtr + OldSize, DEBUG_FILL_NEW, scalable_msize(NewPtr) -OldSize);
 	}
 #endif
-	if( !NewPtr && NewSize )
+
+	return NewPtr;
+}
+
+void* FMallocTBB::Realloc(void* Ptr, SIZE_T NewSize, uint32 Alignment)
+{
+	void* Result = TryRealloc(Ptr, NewSize, Alignment);
+
+	if (Result == nullptr && NewSize)
 	{
 		OutOfMemory(NewSize, Alignment);
 	}
-	MEM_TIME(MemTime += FPlatformTime::Seconds())
-	return NewPtr;
+
+	return Result;
 }
 
 void FMallocTBB::Free( void* Ptr )
@@ -145,14 +149,11 @@ void FMallocTBB::Free( void* Ptr )
 	{
 		return;
 	}
-	MEM_TIME(MemTime -= FPlatformTime::Seconds())
 #if UE_BUILD_DEBUG
 	FMemory::Memset(Ptr, DEBUG_FILL_FREED, scalable_msize(Ptr)); 
 #endif
-	IncrementTotalFreeCalls();
 	scalable_free(Ptr);
 
-	MEM_TIME(MemTime += FPlatformTime::Seconds())
 }
 
 bool FMallocTBB::GetAllocationSize(void *Original, SIZE_T &SizeOut)
@@ -161,6 +162,15 @@ bool FMallocTBB::GetAllocationSize(void *Original, SIZE_T &SizeOut)
 	return true;
 }
 
-#undef MEM_TIME
+void FMallocTBB::Trim(bool bTrimThreadCaches)
+{
+// TBB memory trimming might impact performance so it is only enabled in editor for now where large thread pools are used
+// and more likely to do allocation migration between threads.
+// Also disabled on other platform than Windows since they use an older TBB (i.e. MACOS).
+// Make sure to coordinate with IntelTBB.Build.cs if making changes here
+#if WITH_EDITOR && PLATFORM_WINDOWS
+	scalable_allocation_command(bTrimThreadCaches ? TBBMALLOC_CLEAN_ALL_BUFFERS : TBBMALLOC_CLEAN_THREAD_BUFFERS, 0);
+#endif
+}
 
 #endif // PLATFORM_SUPPORTS_TBB && TBB_ALLOCATOR_ALLOWED

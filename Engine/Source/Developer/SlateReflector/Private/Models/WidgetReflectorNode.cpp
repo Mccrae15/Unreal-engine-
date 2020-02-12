@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "Models/WidgetReflectorNode.h"
 #include "Modules/ModuleManager.h"
@@ -121,6 +121,11 @@ FText FLiveWidgetReflectorNode::GetWidgetVisibilityText() const
 	return FWidgetReflectorNodeUtils::GetWidgetVisibilityText(Widget.Pin());
 }
 
+bool FLiveWidgetReflectorNode::GetWidgetVisible() const
+{
+	return FWidgetReflectorNodeUtils::GetWidgetVisibility(Widget.Pin());
+}
+
 FText FLiveWidgetReflectorNode::GetWidgetClippingText() const
 {
 	return FWidgetReflectorNodeUtils::GetWidgetClippingText(Widget.Pin());
@@ -129,6 +134,26 @@ FText FLiveWidgetReflectorNode::GetWidgetClippingText() const
 bool FLiveWidgetReflectorNode::GetWidgetFocusable() const
 {
 	return FWidgetReflectorNodeUtils::GetWidgetFocusable(Widget.Pin());
+}
+
+bool FLiveWidgetReflectorNode::GetWidgetNeedsTick() const
+{
+	return FWidgetReflectorNodeUtils::GetWidgetNeedsTick(Widget.Pin());
+}
+
+bool FLiveWidgetReflectorNode::GetWidgetIsVolatile() const
+{
+	return FWidgetReflectorNodeUtils::GetWidgetIsVolatile(Widget.Pin());
+}
+
+bool FLiveWidgetReflectorNode::GetWidgetIsVolatileIndirectly() const
+{
+	return FWidgetReflectorNodeUtils::GetWidgetIsVolatileIndirectly(Widget.Pin());
+}
+
+bool FLiveWidgetReflectorNode::GetWidgetHasActiveTimers() const
+{
+	return FWidgetReflectorNodeUtils::GetWidgetHasActiveTimers(Widget.Pin());
 }
 
 FText FLiveWidgetReflectorNode::GetWidgetReadableLocation() const
@@ -198,7 +223,12 @@ FSnapshotWidgetReflectorNode::FSnapshotWidgetReflectorNode(const FArrangedWidget
 	, CachedWidgetType(FWidgetReflectorNodeUtils::GetWidgetType(InArrangedWidget.Widget))
 	, CachedWidgetTypeAndShortName(FWidgetReflectorNodeUtils::GetWidgetTypeAndShortName(InArrangedWidget.Widget))
 	, CachedWidgetVisibilityText(FWidgetReflectorNodeUtils::GetWidgetVisibilityText(InArrangedWidget.Widget))
+	, bCachedWidgetVisible(FWidgetReflectorNodeUtils::GetWidgetVisibility(InArrangedWidget.Widget))
 	, bCachedWidgetFocusable(FWidgetReflectorNodeUtils::GetWidgetFocusable(InArrangedWidget.Widget))
+	, CachedWidgetNeedsTick(FWidgetReflectorNodeUtils::GetWidgetNeedsTick(InArrangedWidget.Widget))
+	, CachedWidgetIsVolatile(FWidgetReflectorNodeUtils::GetWidgetIsVolatile(InArrangedWidget.Widget))
+	, CachedWidgetIsVolatileIndirectly(FWidgetReflectorNodeUtils::GetWidgetIsVolatileIndirectly(InArrangedWidget.Widget))
+	, CachedWidgetHasActiveTimers(FWidgetReflectorNodeUtils::GetWidgetHasActiveTimers(InArrangedWidget.Widget))
 	, CachedWidgetClippingText(FWidgetReflectorNodeUtils::GetWidgetClippingText(InArrangedWidget.Widget))
 	, CachedWidgetReadableLocation(FWidgetReflectorNodeUtils::GetWidgetReadableLocation(InArrangedWidget.Widget))
 	, CachedWidgetFile(FWidgetReflectorNodeUtils::GetWidgetFile(InArrangedWidget.Widget))
@@ -241,9 +271,34 @@ bool FSnapshotWidgetReflectorNode::GetWidgetFocusable() const
 	return bCachedWidgetFocusable;
 }
 
+bool FSnapshotWidgetReflectorNode::GetWidgetVisible() const
+{
+	return bCachedWidgetFocusable;
+}
+
 FText FSnapshotWidgetReflectorNode::GetWidgetClippingText() const
 {
 	return CachedWidgetClippingText;
+}
+
+bool FSnapshotWidgetReflectorNode::GetWidgetNeedsTick() const
+{
+	return CachedWidgetNeedsTick;
+}
+
+bool FSnapshotWidgetReflectorNode::GetWidgetIsVolatile() const
+{
+	return CachedWidgetIsVolatile;
+}
+
+bool FSnapshotWidgetReflectorNode::GetWidgetIsVolatileIndirectly() const
+{
+	return CachedWidgetIsVolatileIndirectly;
+}
+
+bool FSnapshotWidgetReflectorNode::GetWidgetHasActiveTimers() const
+{
+	return CachedWidgetHasActiveTimers;
 }
 
 FText FSnapshotWidgetReflectorNode::GetWidgetReadableLocation() const
@@ -563,13 +618,28 @@ TSharedRef<FWidgetReflectorNodeBase> FWidgetReflectorNodeUtils::NewNodeTreeFrom(
 {
 	TSharedRef<FWidgetReflectorNodeBase> NewNodeInstance = NewNode(InNodeType, InWidgetGeometry);
 
-	FArrangedChildren ArrangedChildren(EVisibility::All);
-	InWidgetGeometry.Widget->ArrangeChildren(InWidgetGeometry.Geometry, ArrangedChildren);
-	
-	for (int32 WidgetIndex = 0; WidgetIndex < ArrangedChildren.Num(); ++WidgetIndex)
+	TSharedRef<SWidget> CurWidgetParent = InWidgetGeometry.Widget;
+	if (FChildren* Children = CurWidgetParent->GetChildren())
 	{
-		// Note that we include both visible and invisible children!
-		NewNodeInstance->AddChildNode(NewNodeTreeFrom(InNodeType, ArrangedChildren[WidgetIndex]));
+		for (int32 ChildIndex = 0; ChildIndex < Children->Num(); ++ChildIndex)
+		{
+			TSharedRef<SWidget> ChildWidget = Children->GetChildAt(ChildIndex);
+			FGeometry ChildGeometry = ChildWidget->GetCachedGeometry();
+			const EVisibility CurWidgetVisibility = ChildWidget->GetVisibility();
+
+			// Don't add geometry for completely collapsed stuff
+			if (CurWidgetVisibility == EVisibility::Collapsed)
+			{
+				ChildGeometry = FGeometry();
+			}
+			else if (!CurWidgetParent->ValidatePathToChild(&ChildWidget.Get()))
+			{
+				ChildGeometry = FGeometry();
+			}
+
+			// Note that we include both visible and invisible children!
+			NewNodeInstance->AddChildNode(NewNodeTreeFrom(InNodeType, FArrangedWidget(ChildWidget, ChildGeometry)));
+		}
 	}
 
 	return NewNodeInstance;
@@ -624,11 +694,35 @@ FText FWidgetReflectorNodeUtils::GetWidgetVisibilityText(const TSharedPtr<SWidge
 	return (InWidget.IsValid()) ? FText::FromString(InWidget->GetVisibility().ToString()) : FText::GetEmpty();
 }
 
+bool FWidgetReflectorNodeUtils::GetWidgetVisibility(const TSharedPtr<SWidget>& InWidget)
+{
+	return InWidget.IsValid() ? InWidget->GetVisibility().IsVisible() : false;
+}
+
 bool FWidgetReflectorNodeUtils::GetWidgetFocusable(const TSharedPtr<SWidget>& InWidget)
 {
 	return InWidget.IsValid() ? InWidget->SupportsKeyboardFocus() : false;
 }
 
+bool FWidgetReflectorNodeUtils::GetWidgetNeedsTick(const TSharedPtr<SWidget>& InWidget)
+{
+	return InWidget.IsValid() ? InWidget->GetCanTick() : false;
+}
+
+bool FWidgetReflectorNodeUtils::GetWidgetIsVolatile(const TSharedPtr<SWidget>& InWidget)
+{
+	return InWidget.IsValid() ? InWidget->IsVolatile() : false;
+}
+
+bool FWidgetReflectorNodeUtils::GetWidgetIsVolatileIndirectly(const TSharedPtr<SWidget>& InWidget)
+{
+	return InWidget.IsValid() ? InWidget->IsVolatileIndirectly() : false;
+}
+
+bool FWidgetReflectorNodeUtils::GetWidgetHasActiveTimers(const TSharedPtr<SWidget>& InWidget)
+{
+	return InWidget.IsValid() ? InWidget->HasActiveTimers() : false;
+}
 
 FText FWidgetReflectorNodeUtils::GetWidgetClippingText(const TSharedPtr<SWidget>& InWidget)
 {

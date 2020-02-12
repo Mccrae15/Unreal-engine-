@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "EnvironmentQuery/EnvQueryTest.h"
 #include "EnvironmentQuery/Contexts/EnvQueryContext_Item.h"
@@ -250,8 +250,11 @@ FText UEnvQueryTest::DescribeFloatTestParams() const
 	}
 	else
 	{
-		FText ScoreSignDesc = (ScoringFactor.DefaultValue > 0) ? LOCTEXT("Greater", "greater") : LOCTEXT("Lesser", "lesser");
-		FText ScoreValueDesc = FText::AsNumber(FMath::Abs(ScoringFactor.DefaultValue), &NumberFormattingOptions);
+		const bool bScalesUp = (ScoringEquation == EEnvTestScoreEquation::InverseLinear) 
+			? (ScoringFactor.DefaultValue < 0) 
+			: (ScoringFactor.DefaultValue > 0);
+		const FText ScoreSignDesc = bScalesUp ? LOCTEXT("Greater", "greater") : LOCTEXT("Lesser", "lesser");
+		const FText ScoreValueDesc = FText::AsNumber(FMath::Abs(ScoringFactor.DefaultValue), &NumberFormattingOptions);
 		ScoreDesc = FText::Format(FText::FromString("{0} {1} [x{2}]"), LOCTEXT("ScorePrefer", "prefer"), ScoreSignDesc, ScoreValueDesc);
 	}
 

@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 namespace UnrealBuildTool.Rules
 {
@@ -12,7 +12,8 @@ namespace UnrealBuildTool.Rules
 				new string[]
 				{
 					"AudioCapture",
-					"Core",
+                    "AudioCaptureCore",
+                    "Core",
 					"CoreUObject",
 					"Engine",
 					"LinearTimecode",

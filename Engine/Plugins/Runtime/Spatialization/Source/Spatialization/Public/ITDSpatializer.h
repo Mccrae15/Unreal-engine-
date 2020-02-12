@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -68,7 +68,7 @@ public:
 		return DisplayName;
 	}
 
-	virtual bool SupportsPlatform(EAudioPlatform Platform) override
+	virtual bool SupportsPlatform(const FString& PlatformName) override
 	{
 		return true;
 	}

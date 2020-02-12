@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "Kismet/KismetTextLibrary.h"
 #include "Internationalization/TextFormatter.h"
@@ -60,7 +60,7 @@ FText UKismetTextLibrary::Conv_ObjectToText(class UObject* InObj)
 		return FText::AsCultureInvariant(InObj->GetName());
 	}
 
-	return GNone;
+	return FCoreTexts::Get().None;
 }
 
 FText UKismetTextLibrary::Conv_ColorToText(FLinearColor InColor)
@@ -170,6 +170,19 @@ FText UKismetTextLibrary::Conv_ByteToText(uint8 Value)
 }
 
 FText UKismetTextLibrary::Conv_IntToText(int32 Value, bool bAlwaysSign/* = false*/, bool bUseGrouping/* = true*/, int32 MinimumIntegralDigits/* = 1*/, int32 MaximumIntegralDigits/* = 324*/)
+{
+	// Only update the values that need to be changed from the default FNumberFormattingOptions, 
+	// as this lets us use the default formatter if possible (which is a performance win!)
+	FNumberFormattingOptions NumberFormatOptions;
+	NumberFormatOptions.AlwaysSign = bAlwaysSign;
+	NumberFormatOptions.UseGrouping = bUseGrouping;
+	NumberFormatOptions.MinimumIntegralDigits = MinimumIntegralDigits;
+	NumberFormatOptions.MaximumIntegralDigits = MaximumIntegralDigits;
+
+	return FText::AsNumber(Value, &NumberFormatOptions);
+}
+
+FText UKismetTextLibrary::Conv_Int64ToText(int64 Value, bool bAlwaysSign /*= false*/, bool bUseGrouping /*= true*/, int32 MinimumIntegralDigits /*= 1*/, int32 MaximumIntegralDigits /*= 324*/)
 {
 	// Only update the values that need to be changed from the default FNumberFormattingOptions, 
 	// as this lets us use the default formatter if possible (which is a performance win!)

@@ -1,8 +1,8 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "ReliabilityHandlerComponent.h"
 #include "Modules/ModuleManager.h"
-#include "PacketAudit.h"
+#include "Net/Core/Misc/PacketAudit.h"
 #include "HAL/PlatformTime.h"
 
 IMPLEMENT_MODULE(FReliabilityHandlerComponentModuleInterface, ReliabilityHandlerComponent);

@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -9,6 +9,7 @@
 #include "EditorComponents.h"
 #include "EngineGlobals.h"
 #include "EditorModeRegistry.h"
+#include "Tools/UEdMode.h"
 
 class FCanvas;
 class FEditorModeTools;
@@ -29,20 +30,6 @@ struct FViewportClick;
 class FModeTool;
 class FEditorViewportClient;
 struct FViewportClick;
-
-/** Outcomes when determining whether it's possible to perform an action on the edit modes*/
-namespace EEditAction
-{
-	enum Type
-	{
-		/** Can't process this action */
-		Skip		= 0,
-		/** Can process this action */
-		Process,
-		/** Stop evaluating other modes (early out) */
-		Halt,
-	};
-};
 
 /**
  * Base class for all editor modes.
@@ -132,6 +119,15 @@ public:
 	 */
 	virtual bool GetCursor(EMouseCursor::Type& OutCursor) const { return false; }
 
+	/** Get override cursor visibility settings */
+	virtual bool GetOverrideCursorVisibility(bool& bWantsOverride, bool& bHardwareCursorVisible, bool bSoftwareCursorVisible) const { return false; }
+
+	/** Called before mouse movement is converted to drag/rot */
+	virtual bool PreConvertMouseMovement(FEditorViewportClient* InViewportClient) { return false; }
+
+	/** Called after mouse movement is converted to drag/rot */
+	virtual bool PostConvertMouseMovement(FEditorViewportClient* InViewportClient) { return false;}
+
 	virtual bool ShouldDrawBrushWireframe( AActor* InActor ) const { return true; }
 	virtual bool GetCustomDrawingCoordinateSystem(FMatrix& InMatrix, void* InData);
 	virtual bool GetCustomInputCoordinateSystem( FMatrix& InMatrix, void* InData ) { return 0; }
@@ -187,6 +183,12 @@ public:
 
 	virtual void PostUndo() {}
 
+	/** 
+	 * Check to see if this EdMode wants to disallow AutoSave
+	 * @return true if AutoSave can be applied right now
+	 */
+	virtual bool CanAutoSave() const { return true; }
+
 	/**
 	 * Lets each mode/tool handle box selection in its own way.
 	 *
@@ -207,6 +209,16 @@ public:
 	virtual void SelectionChanged() {}
 
 	virtual bool HandleClick(FEditorViewportClient* InViewportClient, HHitProxy* HitProxy, const FViewportClick& Click);
+
+	/**
+	 * Allows an editor mode to override the bounding box used to focus the viewport on a selection
+	 * 
+	 * @param Actor			The selected actor that is being considered for focus
+	 * @param PrimitiveComponent	The component in the actor being considered for focus
+	 * @param InOutBox		The box that should be computed for the actor and component
+	 * @return bool			true if the mode overrides the box and populated InOutBox, false if it did not populate InOutBox
+	 */
+	virtual bool ComputeBoundingBoxForViewportFocus(AActor* Actor, UPrimitiveComponent* PrimitiveComponent, FBox& InOutBox) const { return false; }
 
 	/** Handling SelectActor */
 	virtual bool Select( AActor* InActor, bool bInSelected ) { return 0; }
@@ -269,11 +281,21 @@ public:
 	/** True if this mode uses a toolkit mode (eventually they all should) */
 	virtual bool UsesToolkits() const;
 
+	/** Gets the toolkit created by this mode */
+	TSharedPtr<FModeToolkit> GetToolkit() { return Toolkit; }
+
 	/** Returns the world this toolkit is editing */
 	UWorld* GetWorld() const;
 
 	/** Returns the owning mode manager for this mode */
 	class FEditorModeTools* GetModeManager() const;
+
+	/** 
+	 * Called when the editor mode should rebuild its toolbar 
+	 *
+	 * @param ToolbarBuilder	The builder which should be used to add toolbar widgets
+	 */
+	virtual void BuildModeToolbar(class FToolBarBuilder& ToolbarBuilder) {}
 
 	// Property Widgets
 
@@ -290,9 +312,9 @@ public:
 	/** Returns true if this structure can support creating a widget in the editor */
 	static bool CanCreateWidgetForStructure(const UStruct* InPropStruct);
 	/** Returns true if this property can support creating a widget in the editor */
-	static bool CanCreateWidgetForProperty(UProperty* InProp);
+	static bool CanCreateWidgetForProperty(FProperty* InProp);
 	/** See if we should create a widget for the supplied property when selecting an actor instance */
-	static bool ShouldCreateWidgetForProperty(UProperty* InProp);
+	static bool ShouldCreateWidgetForProperty(FProperty* InProp);
 
 public:
 
@@ -381,7 +403,7 @@ protected:
 ------------------------------------------------------------------------------*/
 
 /**
- * The default editing mode.  User can work with BSP and the builder brush. Vector and array properties are also visually editable.
+ * The default editing mode. 
  */
 class FEdModeDefault : public FEdMode
 {

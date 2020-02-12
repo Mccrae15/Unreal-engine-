@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 
 #pragma once
@@ -54,12 +54,25 @@ class USimpleConstructionScript : public UObject
 	/** Return the Blueprint associated with this SCS instance */
 	ENGINE_API class UBlueprint* GetBlueprint() const;
 
-	/** Helper function to find the current scene root component template and/or owning SCS node */
-	ENGINE_API USceneComponent* GetSceneRootComponentTemplate(USCS_Node** OutSCSNode = nullptr) const;
+	/** 
+	 * Helper function to find the current scene root component template and optionally the owning SCS node 
+	 * @param bShouldUseDefaultRoot  Whether the default scene root, if already in the root node set, should be used (note this will return null in that case because of the expectations of other calling code)
+	 * @param OutSCSNode             If not-null, the SCSNode for the scene root component will be returned in this variable
+	 */
+	ENGINE_API USceneComponent* GetSceneRootComponentTemplate(bool bShouldUseDefaultRoot = false, USCS_Node** OutSCSNode = nullptr) const;
+
+	UE_DEPRECATED(4.25, "Use version that specifies whether the default scene root should be used")
+	ENGINE_API USceneComponent* GetSceneRootComponentTemplate(USCS_Node** OutSCSNode) const
+	{
+		return GetSceneRootComponentTemplate(false, OutSCSNode);
+	}
 #endif
 
 	/** Return the Blueprint associated with this SCS instance */
 	ENGINE_API class UClass* GetOwnerClass() const;
+
+	/** Return the parent class of the SCS owner class */
+	ENGINE_API class UClass* GetParentClass() const;
 
 #if WITH_EDITOR
 	/** Return all nodes in tree as a flat list */
@@ -82,8 +95,12 @@ class USimpleConstructionScript : public UObject
 	/** Adds this node to the root set */
 	ENGINE_API void AddNode(USCS_Node* Node);
 
-	/** Remove this node from the script (will take all its children with it) */
-	ENGINE_API void RemoveNode(USCS_Node* Node);
+	/** 
+	 * Remove this node from the script
+	 * @param Node							The node to remove.
+	 * @param bValidateSceneRootNodes		Whether to validate scene root nodes after removing the node. Set to false if there are other operations that need to occur before validating.
+	 */
+	ENGINE_API void RemoveNode(USCS_Node* Node, bool bValidateSceneRootNodes = true);
 
 	/** Remove this node from the script and if it's the root, promote its first child to replace it */
 	ENGINE_API void RemoveNodeAndPromoteChildren(USCS_Node* Node);
@@ -99,6 +116,11 @@ class USimpleConstructionScript : public UObject
 
 	/** Checks the root node set for scene components and ensures that it is valid (e.g. after a removal) */
 	ENGINE_API void ValidateSceneRootNodes();
+
+#if WITH_EDITOR
+	/** Returns Valid if this object has data validation rules set up for it and the data for this object is valid. Returns Invalid if it does not pass the rules. Returns NotValidated if no rules are set for this object. */
+	virtual EDataValidationResult IsDataValid(TArray<FText>& ValidationErrors) override;
+#endif // WITH_EDITOR
 
 private:
 	/** Root nodes of the construction script */
@@ -137,13 +159,13 @@ private:
 	/** Helper function for generating list of currently used names */
 	void GenerateListOfExistingNames(TSet<FName>& CurrentNames) const;
 
-	/** Helper function for generating a name for a new node, DesiredName can be used to optionally request a name, ComponentClass is mandatory */
-	FName GenerateNewComponentName(const UClass* ComponentClass, FName DesiredName = NAME_None) const;
-
 	/** Helper function to perform actions that all node creation functions have in common */
 	USCS_Node* CreateNodeImpl(UActorComponent* NewComponentTemplate, FName ComponentVariableName);
 
 public:
+	/** Helper function for generating a name for a new node, DesiredName can be used to optionally request a name, ComponentClass is mandatory */
+	ENGINE_API FName GenerateNewComponentName(const UClass* ComponentClass, FName DesiredName = NAME_None) const;
+
 	/** Creates a new SCS node using the given class to create the component template */
 	ENGINE_API USCS_Node* CreateNode(class UClass* NewComponentClass, FName NewComponentVariableName = NAME_None);
 

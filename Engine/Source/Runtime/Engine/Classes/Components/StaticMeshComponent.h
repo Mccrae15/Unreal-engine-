@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -8,7 +8,6 @@
 #include "Misc/Guid.h"
 #include "UObject/Class.h"
 #include "Engine/EngineTypes.h"
-#include "Templates/ScopedPointer.h"
 #include "Engine/TextureStreamingTypes.h"
 #include "Components/MeshComponent.h"
 #include "PackedNormal.h"
@@ -16,6 +15,7 @@
 #include "Templates/UniquePtr.h"
 #include "Runtime/Launch/Resources/Version.h"
 #include "UObject/RenderingObjectVersion.h"
+#include "SceneTypes.h"
 #include "StaticMeshComponent.generated.h"
 
 class FColorVertexBuffer;
@@ -89,11 +89,6 @@ struct FStaticMeshComponentLODInfo
 	/** Uniquely identifies this LOD's built map data. */
 	FGuid MapBuildDataId;
 
-#if WITH_EDITOR
-	/** Check to see if MapBuildDataId was loaded - otherwise we need to display a warning on cook */
-	bool bMapBuildDataIdLoaded;
-#endif
-
 	/** Used during deserialization to temporarily store legacy lightmap data. */
 	FMeshMapBuildData* LegacyMapBuildData;
 
@@ -101,7 +96,6 @@ struct FStaticMeshComponentLODInfo
 	TUniquePtr<FMeshMapBuildData> OverrideMapBuildData;
 
 	/** Vertex data cached at the time this LOD was painted, if any */
-	UPROPERTY()
 	TArray<struct FPaintedVertex> PaintedVertices;
 
 	/** Vertex colors to use for this mesh LOD */
@@ -120,12 +114,19 @@ struct FStaticMeshComponentLODInfo
 
 	/** Default constructor */
 	FStaticMeshComponentLODInfo();
-	FStaticMeshComponentLODInfo(UStaticMeshComponent* InOwningComponent, int32 LodIndex);
+	FStaticMeshComponentLODInfo(UStaticMeshComponent* InOwningComponent);
 	/** Destructor */
 	~FStaticMeshComponentLODInfo();
 
 	/** Delete existing resources */
 	void CleanUp();
+
+	/** 
+	 * Ensure this LODInfo has a valid MapBuildDataId GUID.
+	 * @param LodIndex Index of the LOD this LODInfo represents.
+	 * @return true if a new GUID was created, false otherwise.
+	 */
+	bool CreateMapBuildDataId(int32 LodIndex);
 
 	/**
 	* Enqueues a rendering command to release the vertex colors.
@@ -165,7 +166,7 @@ struct TStructOpsTypeTraits<FStaticMeshComponentLODInfo> : public TStructOpsType
  * @see https://docs.unrealengine.com/latest/INT/Engine/Content/Types/StaticMeshes/
  * @see UStaticMesh
  */
-UCLASS(ClassGroup=(Rendering, Common), hidecategories=(Object,Activation,"Components|Activation"), ShowCategories=(Mobility), editinlinenew, meta=(BlueprintSpawnableComponent))
+UCLASS(Blueprintable, ClassGroup=(Rendering, Common), hidecategories=(Object,Activation,"Components|Activation"), ShowCategories=(Mobility), editinlinenew, meta=(BlueprintSpawnableComponent))
 class ENGINE_API UStaticMeshComponent : public UMeshComponent
 {
 	GENERATED_UCLASS_BODY()
@@ -195,7 +196,6 @@ private:
 	class UStaticMesh* StaticMesh;
 
 public:
-
 	/** Helper function to get the FName of the private static mesh member */
 	static const FName GetMemberNameChecked_StaticMesh() { return GET_MEMBER_NAME_CHECKED(UStaticMeshComponent, StaticMesh); }
 
@@ -205,6 +205,9 @@ public:
 	/** Wireframe color to use if bOverrideWireframeColor is true */
 	UPROPERTY(EditAnywhere, AdvancedDisplay, BlueprintReadOnly, Category=Rendering, meta=(editcondition = "bOverrideWireframeColor"))
 	FColor WireframeColorOverride;
+
+	UPROPERTY(EditAnywhere, AdvancedDisplay, BlueprintReadOnly, Category=RayTracing)
+	uint8 bEvaluateWorldPositionOffset:1;
 
 #if WITH_EDITORONLY_DATA
 	/** The section currently selected in the Editor. Used for highlighting */
@@ -300,6 +303,10 @@ public:
 
 	UPROPERTY(transient)
 	uint8 bDisplayVertexColors:1;
+
+	UPROPERTY(transient)
+	uint8 bDisplayPhysicalMaterialMasks : 1;
+
 #endif
 
 	/**
@@ -389,7 +396,7 @@ public:
 	UFUNCTION(BlueprintCallable, Category="Rendering|Lighting")
 	void SetReverseCulling(bool ReverseCulling);
 
-	virtual void SetCollisionProfileName(FName InCollisionProfileName) override;
+	virtual void SetCollisionProfileName(FName InCollisionProfileName, bool bUpdateOverlaps=true) override;
 
 public:
 
@@ -403,9 +410,11 @@ public:
 	virtual void PostEditUndo() override;
 	virtual void PreEditUndo() override;
 	virtual void PostEditChangeProperty(FPropertyChangedEvent& PropertyChangedEvent) override;
-	virtual bool CanEditChange(const UProperty* InProperty) const override;
+	virtual bool CanEditChange(const FProperty* InProperty) const override;
 #endif // WITH_EDITOR
+#if WITH_EDITORONLY_DATA
 	virtual void PreSave(const class ITargetPlatform* TargetPlatform) override;
+#endif // WITH_EDITORONLY_DATA
 	virtual void PostLoad() override;
 	virtual bool IsPostLoadThreadSafe() const override;
 	virtual bool AreNativePropertiesIdenticalTo( UObject* Other ) const override;
@@ -436,6 +445,7 @@ public:
 protected: 
 	virtual void OnRegister() override;
 	virtual void OnUnregister() override;
+	virtual void CreateRenderState_Concurrent(FRegisterComponentContext* Context) override;
 	virtual void OnCreatePhysicsState() override;
 	virtual void OnDestroyPhysicsState() override;
 public:
@@ -555,6 +565,7 @@ public:
 		int32& VertexLightMapMemoryUsage, int32& VertexShadowMapMemoryUsage,
 		int32& StaticLightingResolution, bool& bIsUsingTextureMapping, bool& bHasLightmapTexCoords) const;
 
+#if WITH_EDITORONLY_DATA
 	/**
 	 * Determines whether any of the component's LODs require override vertex color fixups
 	 *
@@ -577,6 +588,7 @@ public:
 	 * @param SourceComponent The component to copy vertex colors from
 	 */
 	void CopyInstanceVertexColorsIfCompatible( UStaticMeshComponent* SourceComponent );
+#endif
 
 	/**
 	 * Removes instance vertex colors from the specified LOD
@@ -584,13 +596,16 @@ public:
 	 */
 	void RemoveInstanceVertexColorsFromLOD( int32 LODToRemoveColorsFrom );
 
+#if WITH_EDITORONLY_DATA
 	/**
 	 * Removes instance vertex colors from all LODs
 	 */
 	void RemoveInstanceVertexColors();
+#endif
 
 	void UpdatePreCulledData(int32 LODIndex, const TArray<uint32>& PreCulledData, const TArray<int32>& NumTrianglesPerSection);
 
+#if WITH_EDITORONLY_DATA
 	/**
 	*	Sets the value of the SectionIndexPreview flag and reattaches the component as necessary.
 	*	@param	InSectionIndexPreview		New value of SectionIndexPreview.
@@ -602,7 +617,8 @@ public:
 	*	@param	InMaterialIndexPreview		New value of MaterialIndexPreview.
 	*/
 	void SetMaterialPreview(int32 InMaterialIndexPreview);
-	
+#endif
+
 	/** Sets the BodyInstance to use the mesh's body setup for external collision information*/
 	void UpdateCollisionFromStaticMesh();
 
@@ -616,9 +632,10 @@ private:
 	/** Initializes the resources used by the static mesh component. */
 	void InitResources();
 
+#if WITH_EDITOR
 	/** Update the vertex override colors */
 	void PrivateFixupOverrideColors();
-
+#endif
 protected:
 
 	/** Whether the component type supports static lighting. */
@@ -666,7 +683,7 @@ public:
 
 	virtual void PropagateLightingScenarioChange() override;
 
-	const FMeshMapBuildData* GetMeshMapBuildData(const FStaticMeshComponentLODInfo& LODInfo) const;
+	const FMeshMapBuildData* GetMeshMapBuildData(const FStaticMeshComponentLODInfo& LODInfo, bool bCheckForResourceCluster = true) const;
 
 
 #if WITH_EDITOR
@@ -676,6 +693,8 @@ public:
 private:
 	FOnStaticMeshChanged OnStaticMeshChangedEvent;
 #endif
+
+	friend class FStaticMeshComponentRecreateRenderStateContext;
 };
 
 /** Vertex data stored per-LOD */

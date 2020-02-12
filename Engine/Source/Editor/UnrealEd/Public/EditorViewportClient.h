@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -17,6 +17,7 @@
 #include "SceneManagement.h"
 #include "EditorComponents.h"
 #include "Framework/Commands/Commands.h"
+#include "Editor.h"
 
 struct FAssetData;
 class FCachedJoystickState;
@@ -94,6 +95,7 @@ public:
 	bool IsCtrlButtonEvent() const { return (Key == EKeys::LeftControl || Key == EKeys::RightControl); }
 	bool IsShiftButtonEvent() const { return (Key == EKeys::LeftShift || Key == EKeys::RightShift); }
 	bool IsAltButtonEvent() const { return (Key == EKeys::LeftAlt || Key == EKeys::RightAlt); }
+	bool IsCommandButtonEvent() const { return (Key == EKeys::LeftCommand || Key == EKeys::RightCommand); }
 
 	bool IsLeftMouseButtonPressed() const { return IsButtonPressed( EKeys::LeftMouseButton ); }
 	bool IsMiddleMouseButtonPressed() const { return IsButtonPressed( EKeys::MiddleMouseButton ); }
@@ -107,7 +109,9 @@ public:
 	bool IsAltButtonPressed() const { return !( IsAltButtonEvent() && InputEvent == IE_Released ) && ( IsButtonPressed( EKeys::LeftAlt ) || IsButtonPressed( EKeys::RightAlt ) ); }
 	bool IsShiftButtonPressed() const { return !( IsShiftButtonEvent() && InputEvent == IE_Released ) && ( IsButtonPressed( EKeys::LeftShift ) || IsButtonPressed( EKeys::RightShift ) ); }
 	bool IsCtrlButtonPressed() const { return !( IsCtrlButtonEvent() && InputEvent == IE_Released ) && ( IsButtonPressed( EKeys::LeftControl ) || IsButtonPressed( EKeys::RightControl ) ); }
+	bool IsCommandButtonPressed() const { return !(IsCommandButtonEvent() && InputEvent == IE_Released) &&  (IsButtonPressed( EKeys::LeftCommand ) || IsButtonPressed( EKeys::RightCommand ) ); }
 	bool IsSpaceBarPressed() const { return IsButtonPressed( EKeys::SpaceBar ); }
+
 private:
 	/** Viewport the event was sent to */
 	FViewport* Viewport;
@@ -263,6 +267,9 @@ private:
 	float OrthoZoom;
 };
 
+/** Delegate for modifying view parameters of an editor viewport. */
+DECLARE_MULTICAST_DELEGATE_OneParam(FEditorViewportViewModifierDelegate, FMinimalViewInfo&);
+
 /** Viewport client for editor viewports. Contains common functionality for camera movement, rendering debug information, etc. */
 class UNREALED_API FEditorViewportClient : public FCommonViewportClient, public FViewElementDrawer, public FGCObject
 {
@@ -278,6 +285,16 @@ public:
 	FEditorViewportClient& operator=(const FEditorViewportClient&) = delete;
 
 	/**
+	 * Retrieves the FPreviewScene used by this instance of FEditorViewportClient.
+	 *
+	 * @return		The internal FPreviewScene pointer.
+	 */
+	FPreviewScene* GetPreviewScene()
+	{
+		return PreviewScene;
+	}
+
+	/**
 	 * Toggles whether or not the viewport updates in realtime and returns the updated state.
 	 *
 	 * @return		The current state of the realtime flag.
@@ -290,7 +307,7 @@ public:
 	/** @return		True if viewport is in realtime mode, false otherwise. */
 	bool IsRealtime() const
 	{ 
-		return bIsRealtime || RealTimeFrameCount != 0;
+		return bIsRealtime || GFrameCounter < RealTimeUntilFrameNumber;
 	}
 
 	/**
@@ -299,9 +316,9 @@ public:
 	 * this can be used to ensure that not only the viewport renders a frame, but also that the world ticks
 	 * @param NumExtraFrames 		The number of extra real time frames to draw
 	 */
-	void RequestRealTimeFrames(uint32 NumRealTimeFrames = 1)
+	virtual void RequestRealTimeFrames(uint64 NumRealTimeFrames = 1)
 	{
-		RealTimeFrameCount = FMath::Max(NumRealTimeFrames, RealTimeFrameCount);
+		RealTimeUntilFrameNumber = FMath::Max(GFrameCounter + NumRealTimeFrames, RealTimeUntilFrameNumber);
 	}
 
 	/**
@@ -448,7 +465,9 @@ public:
 	void TakeHighResScreenShot();
 
 	/** Called when an editor mode has been (de)activated */
+	UE_DEPRECATED(4.24, "Use OnEditorModeIDChanged() instead.")
 	void OnEditorModeChanged(FEdMode* EditorMode, bool bIsEntering);
+	void OnEditorModeIDChanged(const FEditorModeID& EditorModeID, bool bIsEntering);
 
 	/** FViewElementDrawer interface */
 	virtual void Draw(const FSceneView* View,FPrimitiveDrawInterface* PDI) override;
@@ -462,7 +481,7 @@ public:
 	FViewportCursorLocation GetCursorWorldLocationFromMousePos();
 
 	/** FViewportClient interface */
-	virtual void ProcessScreenShots(FViewport* Viewport) override;
+	virtual bool ProcessScreenShots(FViewport* Viewport) override;
 	virtual void RedrawRequested(FViewport* Viewport) override;
 	virtual void RequestInvalidateHitProxy(FViewport* Viewport) override;
 	virtual bool InputKey(FViewport* Viewport, int32 ControllerId, FKey Key, EInputEvent Event, float AmountDepressed = 1.f, bool bGamepad=false) override;
@@ -485,6 +504,7 @@ public:
 
 	/** FGCObject interface */
 	virtual void AddReferencedObjects( FReferenceCollector& Collector ) override;
+	virtual FString GetReferencerName() const override;
 
 	/**
 	 * Called when the user clicks in the viewport
@@ -554,6 +574,11 @@ public:
 	 */
 	virtual FMatrix GetWidgetCoordSystem() const;
 
+	/**
+	* @return The local coordinate system for the transform widget.
+	* For world coordiante system return the identity matrix
+	*/
+	virtual FMatrix GetLocalCoordinateSystem() const;
 	/**
 	 * Sets the coordinate system space to use
 	 */
@@ -874,6 +899,14 @@ public:
 	 */
 	void FocusViewportOnBox( const FBox& BoundingBox, bool bInstant = false );
 
+	/**
+	 * Translates the viewport so that the given LookAt point is at the center of viewport, while maintaining current Location/LookAt distance
+	 *
+	 * @param NewLookAt			The new NewLookAt point to focus on
+	 * @param bInstant			Whether or not to focus the viewport instantly or over time
+	 */
+	void CenterViewportAtPoint(const FVector& NewLookAt, bool bInstant = false);
+
 	FEditorCameraController* GetCameraController(void) { return CameraController; }
 
 	void InputAxisForOrbit(FViewport* Viewport, const FVector& DragDelta, FVector& Drag, FRotator& Rot);
@@ -939,7 +972,7 @@ public:
 	void MarkMouseMovedSinceClick();
 
 	/** Determines whether this viewport is currently allowed to use Absolute Movement */
-	bool IsUsingAbsoluteTranslation() const;
+	bool IsUsingAbsoluteTranslation(bool bAlsoCheckAbsoluteRotation = false) const;
 
 	bool IsForcedRealtimeAudio() const { return bForceAudioRealtime; }
 
@@ -967,7 +1000,11 @@ public:
 	
 	EAxisList::Type GetCurrentWidgetAxis() const;
 
+	/** Overrides current cursor. */
 	void SetRequiredCursorOverride( bool WantOverride, EMouseCursor::Type RequiredCursor = EMouseCursor::Default ); 
+
+	/** Overrides current widget mode */
+	void SetWidgetModeOverride(FWidget::EWidgetMode InWidgetMode);
 
 	/** Get the camera speed for this viewport */
 	float GetCameraSpeed() const;
@@ -1112,6 +1149,11 @@ public:
 	 * @return	true if the supplied buffer visualization mode is checked
 	 */
 	bool IsBufferVisualizationModeSelected( FName InName ) const;
+
+	/**
+	 * It returns the FText display name associate with CurrentBufferVisualizationMode
+	 */
+	FText GetCurrentBufferVisualizationModeDisplayName() const;
 
 	/**
 	 * Changes the ray tracing debug visualization mode for this viewport
@@ -1466,6 +1508,12 @@ public:
 	/** If true, draw vertices for selected BSP brushes and static meshes if the large vertices show flag is set. */
 	bool bDrawVertices;
 
+	/** List of view modifiers to apply on view parameters. */
+	FEditorViewportViewModifierDelegate ViewModifiers;
+
+	/** Whether view modifiers should be called and applied. */
+	bool bShouldApplyViewModifiers;
+
 protected:
 	/** Does this viewport client own the mode tools instance pointed at by ModeTools control the lifetime of it? */
 	bool bOwnsModeTools;
@@ -1517,6 +1565,17 @@ protected:
 	uint32 CachedMouseX;
 	uint32 CachedMouseY;
 
+	/** Represents the last mouse position. It is constantly updated on tick so it can also be the current position. */
+	int32 CachedLastMouseX = 0;
+	int32 CachedLastMouseY = 0;
+
+	/** True is the use is controling the light via a shorcut*/
+	bool bUserIsControllingAtmosphericLight0 = false;
+	bool bUserIsControllingAtmosphericLight1 = false;
+	float UserIsControllingAtmosphericLightTimer = 0.0f;
+	FTransform UserControlledAtmosphericLightMatrix;
+
+
 	// -1, -1 if not set
 	FIntPoint CurrentMousePos;
 
@@ -1539,8 +1598,8 @@ protected:
 	/** If true, force this viewport to use real time audio regardless of other settings */
 	bool bForceAudioRealtime;
 
-	/** Counter to force real-time mode for a number of frames. Overrides bIsRealtime when non-zero. */
-	uint32 RealTimeFrameCount;
+	/** Overrides bIsRealtime until GFrameCounter is >= this number. Used to force viewports to draw a number of frames even if they are otherwise non-realtime viewports. */
+	uint64 RealTimeUntilFrameNumber;
 
 	/** if the viewport is currently realtime */
 	bool bIsRealtime;
@@ -1589,6 +1648,26 @@ protected:
 	FVector DefaultOrbitLocation;
 	FVector DefaultOrbitZoom;
 	FVector DefaultOrbitLookAt;
+
+public:
+	/**
+	 * Enable customization of the EngineShowFlags for rendering. After calling this function,
+	 * the provided OverrideFunc will be passed a copy of .EngineShowFlags in ::Draw() just before rendering setup.
+	 * Changes made to the ShowFlags will be used for that frame but .EngineShowFlags will not be modified.
+	 * @param OverrideFunc custom override function that will be called every frame until override is disabled.
+	 */
+	void EnableOverrideEngineShowFlags(TUniqueFunction<void(FEngineShowFlags&)> OverrideFunc);
+
+	/** Disable EngineShowFlags override if enabled */
+	void DisableOverrideEngineShowFlags();
+
+	/** @return true if Override EngineShowFlags are currently enabled */
+	bool IsEngineShowFlagsOverrideEnabled() const { return !! OverrideShowFlagsFunc; }
+
+protected:
+	
+	/** Custom override function that will be called every ::Draw() until override is disabled */
+	TUniqueFunction<void(FEngineShowFlags&)> OverrideShowFlagsFunc;
 
 protected:
 	// Used for the display of the current preview light after it has been adjusted

@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "PyWrapperBase.h"
 #include "PyReferenceCollector.h"
@@ -144,3 +144,8 @@ FPyWrapperBaseMetaData* FPyWrapperBaseMetaData::GetMetaData(FPyWrapperBase* Inst
 }
 
 #endif	// WITH_PYTHON
+
+UPythonResourceOwner::UPythonResourceOwner(const FObjectInitializer& ObjectInitializer)
+	: Super(ObjectInitializer)
+{
+}

@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 using UnrealBuildTool;
 
 namespace UnrealBuildTool.Rules
@@ -13,11 +13,18 @@ namespace UnrealBuildTool.Rules
 				}
 			);
 
-			PrivateIncludePathModuleNames.AddRange(
-				new string[] {
-					"Python",
-				}
-			);
+			if (Target.bBuildEditor)
+			{
+				PrivateIncludePathModuleNames.AddRange(
+					new string[] {
+						"Python",
+					}
+				);
+			}
+			else
+			{
+				PrivateDefinitions.Add("WITH_PYTHON=0");
+			}
 		}
 	}
 }

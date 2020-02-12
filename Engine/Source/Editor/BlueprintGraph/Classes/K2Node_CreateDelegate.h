@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 #pragma once
 
 #include "CoreMinimal.h"
@@ -17,7 +17,7 @@ class UK2Node_CreateDelegate : public UK2Node
 {
 	GENERATED_UCLASS_BODY()
 
-	UPROPERTY()
+	UPROPERTY(meta = (BlueprintSearchable = "true"))
 	FName SelectedFunctionName;
 
 	UPROPERTY()

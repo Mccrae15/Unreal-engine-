@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 
 #include "SAnimationEditorViewport.h"
@@ -33,9 +33,10 @@
 #include "Editor/EditorPerProjectUserSettings.h"
 #include "Materials/Material.h"
 #include "EditorFontGlyphs.h"
-#include "Toolkits/AssetEditorManager.h"
+
 #include "SkeletalMeshTypes.h"
 #include "IPersonaToolkit.h"
+#include "Subsystems/AssetEditorSubsystem.h"
 
 #define LOCTEXT_NAMESPACE "PersonaViewportToolbar"
 
@@ -410,6 +411,11 @@ TWeakPtr<SWidget> SAnimationEditorViewportTabBody::AddNotification(TAttribute<EM
 	return ContainingWidget;
 }
 
+void SAnimationEditorViewportTabBody::AddToolbarExtender(FName MenuToExtend, FMenuExtensionDelegate MenuBuilderDelegate)
+{
+	return ViewportWidget->ViewportToolbar->AddMenuExtender(MenuToExtend, MenuBuilderDelegate);
+}
+
 void SAnimationEditorViewportTabBody::RemoveNotification(const TWeakPtr<SWidget>& InContainingWidget)
 {
 	if(InContainingWidget.IsValid())
@@ -434,9 +440,14 @@ FReply SAnimationEditorViewportTabBody::OnKeyDown(const FGeometry& MyGeometry, c
 	{
 		return FReply::Handled();
 	}
+
+	if (OnKeyDownDelegate.IsBound())
+	{
+		return OnKeyDownDelegate.Execute(MyGeometry, InKeyEvent);
+	}
+
 	return FReply::Unhandled();
 }
-
 
 void SAnimationEditorViewportTabBody::Construct(const FArguments& InArgs, const TSharedRef<class IPersonaPreviewScene>& InPreviewScene, const TSharedRef<class FAssetEditorToolkit>& InAssetEditorToolkit, int32 InViewportIndex)
 {
@@ -454,7 +465,7 @@ void SAnimationEditorViewportTabBody::Construct(const FArguments& InArgs, const 
 	InPreviewScene->RegisterOnAnimChanged(FOnAnimChanged::CreateSP(this, &SAnimationEditorViewportTabBody::AnimChanged));
 	InPreviewScene->RegisterOnPreviewMeshChanged(FOnPreviewMeshChanged::CreateSP(this, &SAnimationEditorViewportTabBody::HandlePreviewMeshChanged));
 
-	const FSlateFontInfo SmallLayoutFont = FCoreStyle::GetDefaultFontStyle("Regular", 10);
+	const FSlateFontInfo SmallLayoutFont = FCoreStyle::GetDefaultFontStyle("Regular", 9);
 
 	FAnimViewportMenuCommands::Register();
 	FAnimViewportShowCommands::Register();
@@ -464,7 +475,43 @@ void SAnimationEditorViewportTabBody::Construct(const FArguments& InArgs, const 
 	// Build toolbar widgets
 	UVChannelCombo = SNew(STextComboBox)
 		.OptionsSource(&UVChannels)
+		.Font(SmallLayoutFont)
 		.OnSelectionChanged(this, &SAnimationEditorViewportTabBody::ComboBoxSelectionChanged);
+
+	PopulateSkinWeightProfileNames();
+	
+	SkinWeightCombo = SNew(SNameComboBox)
+		.OptionsSource(&SkinWeightProfileNames)
+		.InitiallySelectedItem(SkinWeightProfileNames.Num() > 0 ? SkinWeightProfileNames[0] : nullptr)
+		.OnComboBoxOpening(FOnComboBoxOpening::CreateLambda([this]() 
+		{ 
+			// Retrieve currently selected value, and check whether or not it is still valid, it could be that a profile has been renamed or removed without updating the entries
+			FName Name = SkinWeightCombo->GetSelectedItem().IsValid() ? *SkinWeightCombo->GetSelectedItem().Get() : NAME_None;
+			PopulateSkinWeightProfileNames();
+			const int32 Index = SkinWeightProfileNames.IndexOfByPredicate([Name](TSharedPtr<FName> SearchName) { return Name == *SearchName; });
+			if (Index != INDEX_NONE)
+			{
+				SkinWeightCombo->SetSelectedItem(SkinWeightProfileNames[Index]);
+			}
+
+		}))
+		.OnSelectionChanged(SNameComboBox::FOnNameSelectionChanged::CreateLambda([WeakScenePtr = PreviewScenePtr](TSharedPtr<FName> SelectedProfile, ESelectInfo::Type SelectInfo)
+		{
+			// Apply the skin weight profile to the component, according to the selected the name, 
+			if (WeakScenePtr.IsValid() && SelectedProfile.IsValid())
+			{
+				UDebugSkelMeshComponent* MeshComponent = WeakScenePtr.Pin()->GetPreviewMeshComponent();
+				if (MeshComponent)
+				{
+					MeshComponent->ClearSkinWeightProfile();
+
+					if (*SelectedProfile != NAME_None)
+					{
+						MeshComponent->SetSkinWeightProfile(*SelectedProfile);
+					}					
+				}
+			}
+		}));	
 
 	FAnimationEditorViewportRequiredArgs ViewportArgs(InPreviewScene, SharedThis(this), InAssetEditorToolkit, InViewportIndex);
 
@@ -541,12 +588,19 @@ void SAnimationEditorViewportTabBody::Construct(const FArguments& InArgs, const 
 	BindCommands();
 
 	PopulateNumUVChannels();
+	PopulateSkinWeightProfileNames();
 
 	GetPreviewScene()->OnRecordingStateChanged().AddSP(this, &SAnimationEditorViewportTabBody::AddRecordingNotification);
+	if (GetPreviewScene()->GetPreviewMesh())
+	{
+		GetPreviewScene()->GetPreviewMesh()->OnPostMeshCached().AddSP(this, &SAnimationEditorViewportTabBody::UpdateSkinWeightSelection);
+	}
 
 	AddPostProcessNotification();
 
 	AddMinLODNotification();
+
+	AddSkinWeightProfileNotification();
 }
 
 void SAnimationEditorViewportTabBody::BindCommands()
@@ -639,6 +693,12 @@ void SAnimationEditorViewportTabBody::BindCommands()
 		FExecuteAction::CreateSP(this, &SAnimationEditorViewportTabBody::UseFixedBounds),
 		FCanExecuteAction::CreateSP(this, &SAnimationEditorViewportTabBody::CanUseFixedBounds),
 		FIsActionChecked::CreateSP(this, &SAnimationEditorViewportTabBody::IsUsingFixedBounds));
+
+	CommandList.MapAction(
+		ViewportShowMenuCommands.UsePreSkinnedBounds,
+		FExecuteAction::CreateSP(this, &SAnimationEditorViewportTabBody::UsePreSkinnedBounds),
+		FCanExecuteAction::CreateSP(this, &SAnimationEditorViewportTabBody::CanUsePreSkinnedBounds),
+		FIsActionChecked::CreateSP(this, &SAnimationEditorViewportTabBody::IsUsingPreSkinnedBounds));
 
 	CommandList.MapAction(
 		ViewportShowMenuCommands.ShowPreviewMesh,
@@ -799,7 +859,7 @@ void SAnimationEditorViewportTabBody::BindCommands()
 
 	CommandList.EndGroup();
 
-#if WITH_APEX_CLOTHING
+#if WITH_APEX_CLOTHING || WITH_CHAOS_CLOTHING
 
 	//Clothing show options
 	CommandList.MapAction( 
@@ -847,7 +907,7 @@ void SAnimationEditorViewportTabBody::BindCommands()
 
 	CommandList.EndGroup();
 
-#endif// #if WITH_APEX_CLOTHING		
+#endif// #if WITH_APEX_CLOTHING || WITH_CHAOS_CLOTHING
 
 	GetPreviewScene()->RegisterOnSelectedLODChanged(FOnSelectedLODChanged::CreateSP(this, &SAnimationEditorViewportTabBody::OnLODModelChanged));
 	//Bind LOD preview menu commands
@@ -1388,9 +1448,41 @@ bool SAnimationEditorViewportTabBody::IsUsingFixedBounds() const
 	return PreviewComponent != NULL && PreviewComponent->bComponentUseFixedSkelBounds;
 }
 
+void SAnimationEditorViewportTabBody::UsePreSkinnedBounds()
+{
+	UDebugSkelMeshComponent* PreviewComponent = GetPreviewScene()->GetPreviewMeshComponent();
+	if (PreviewComponent != NULL)
+	{
+		PreviewComponent->UsePreSkinnedBounds(!PreviewComponent->IsUsingPreSkinnedBounds());
+	}
+}
+
+bool SAnimationEditorViewportTabBody::CanUsePreSkinnedBounds() const
+{
+	UDebugSkelMeshComponent* PreviewComponent = GetPreviewScene()->GetPreviewMeshComponent();
+	return PreviewComponent != NULL && IsShowBoundEnabled();
+}
+
+bool SAnimationEditorViewportTabBody::IsUsingPreSkinnedBounds() const
+{
+	UDebugSkelMeshComponent* PreviewComponent = GetPreviewScene()->GetPreviewMeshComponent();
+	return PreviewComponent != NULL && PreviewComponent->IsUsingPreSkinnedBounds();
+}
+
 void SAnimationEditorViewportTabBody::HandlePreviewMeshChanged(class USkeletalMesh* OldSkeletalMesh, class USkeletalMesh* NewSkeletalMesh)
 {
 	PopulateNumUVChannels();
+	PopulateSkinWeightProfileNames();
+
+	if (OldSkeletalMesh)
+	{
+		OldSkeletalMesh->OnPostMeshCached().RemoveAll(this);
+	}
+	
+	if (NewSkeletalMesh)
+	{
+		NewSkeletalMesh->OnPostMeshCached().AddSP(this, &SAnimationEditorViewportTabBody::UpdateSkinWeightSelection);
+	}
 }
 
 void SAnimationEditorViewportTabBody::AnimChanged(UAnimationAsset* AnimAsset)
@@ -1445,7 +1537,7 @@ void SAnimationEditorViewportTabBody::PopulateUVChoices()
 	
 	if (UDebugSkelMeshComponent* PreviewComponent = GetPreviewScene()->GetPreviewMeshComponent())
 	{
-		int32 CurrentLOD = FMath::Clamp(PreviewComponent->ForcedLodModel - 1, 0, NumUVChannels.Num() - 1);
+		int32 CurrentLOD = FMath::Clamp(PreviewComponent->GetForcedLOD() - 1, 0, NumUVChannels.Num() - 1);
 
 		if (NumUVChannels.IsValidIndex(CurrentLOD))
 		{
@@ -1468,6 +1560,42 @@ void SAnimationEditorViewportTabBody::PopulateUVChoices()
 				UVChannelCombo->SetSelectedItem(UVChannels[CurrentUVChannel]);
 			}
 		}
+	}
+}
+
+void SAnimationEditorViewportTabBody::PopulateSkinWeightProfileNames()
+{
+	SkinWeightProfileNames.Empty();
+
+	// Always make sure we have a default 'none' option
+	const FName DefaultProfileName = NAME_None;
+	SkinWeightProfileNames.Add(MakeShared<FName>(DefaultProfileName));
+
+	// Retrieve all possible skin weight profiles from the component
+	if (UDebugSkelMeshComponent* PreviewComponent = GetPreviewScene()->GetPreviewMeshComponent())
+	{
+		if (USkeletalMesh* Mesh = PreviewComponent->SkeletalMesh)
+		{
+			for (const FSkinWeightProfileInfo& Profile : Mesh->GetSkinWeightProfiles())
+			{
+				SkinWeightProfileNames.AddUnique(MakeShared<FName>(Profile.Name));
+			}
+		}
+	}
+}
+
+void SAnimationEditorViewportTabBody::UpdateSkinWeightSelection(USkeletalMesh* InSkeletalMesh)
+{
+	 // Check (post a mesh build) whether or not our currently selected profile name is still valid, and if not reset to 'none'
+	if (SkinWeightCombo->GetSelectedItem().IsValid())
+	{
+		const FName OldSelection = *SkinWeightCombo->GetSelectedItem();
+		PopulateSkinWeightProfileNames();
+		
+		const int32 SelectionIndex = SkinWeightProfileNames.IndexOfByPredicate([OldSelection](TSharedPtr<FName> InName) { return *InName == OldSelection; });		
+		
+		// Select new entry or otherwise select none
+		SkinWeightCombo->SetSelectedItem(SelectionIndex != INDEX_NONE ? SkinWeightProfileNames[SelectionIndex] : SkinWeightProfileNames[0]);
 	}
 }
 
@@ -1564,20 +1692,23 @@ int32 SAnimationEditorViewportTabBody::GetLODSelection() const
 
 	if (PreviewComponent)
 	{
-		return PreviewComponent->ForcedLodModel;
+		// If we are forcing a LOD level, report the actual LOD level we are displaying
+		// as the mesh can potentially change LOD count under the viewport.
+		if(PreviewComponent->GetForcedLOD() > 0)
+		{
+			return PreviewComponent->PredictedLODLevel + 1;
+		}
+		else
+		{
+			return PreviewComponent->GetForcedLOD();
+		}
 	}
 	return 0;
 }
 
 bool SAnimationEditorViewportTabBody::IsLODModelSelected(int32 LODSelectionType) const
 {
-	UDebugSkelMeshComponent* PreviewComponent = GetPreviewScene()->GetPreviewMeshComponent();
-
-	if (PreviewComponent)
-	{
-		return (PreviewComponent->ForcedLodModel == LODSelectionType) ? true : false;
-	}
-	return false;
+	return GetLODSelection() == LODSelectionType;
 }
 
 void SAnimationEditorViewportTabBody::OnSetLODModel(int32 LODSelectionType)
@@ -1587,7 +1718,7 @@ void SAnimationEditorViewportTabBody::OnSetLODModel(int32 LODSelectionType)
 	if( PreviewComponent )
 	{
 		LODSelection = LODSelectionType;
-		PreviewComponent->ForcedLodModel = LODSelectionType;
+		PreviewComponent->SetForcedLOD(LODSelectionType);
 		PopulateUVChoices();
 		GetPreviewScene()->BroadcastOnSelectedLODChanged();
 	}
@@ -1597,9 +1728,9 @@ void SAnimationEditorViewportTabBody::OnLODModelChanged()
 {
 	UDebugSkelMeshComponent* PreviewComponent = GetPreviewScene()->GetPreviewMeshComponent();
 
-	if (PreviewComponent && LODSelection != PreviewComponent->ForcedLodModel)
+	if (PreviewComponent && LODSelection != PreviewComponent->GetForcedLOD())
 	{
-		LODSelection = PreviewComponent->ForcedLodModel;
+		LODSelection = PreviewComponent->GetForcedLOD();
 		PopulateUVChoices();
 	}
 }
@@ -1709,7 +1840,7 @@ bool SAnimationEditorViewportTabBody::IsPreviewingRootMotion() const
 	return false;
 }
 
-#if WITH_APEX_CLOTHING
+#if WITH_APEX_CLOTHING || WITH_CHAOS_CLOTHING
 bool SAnimationEditorViewportTabBody::IsClothSimulationEnabled() const
 {
 	UDebugSkelMeshComponent* PreviewComponent = GetPreviewScene()->GetPreviewMeshComponent();
@@ -1889,7 +2020,7 @@ bool SAnimationEditorViewportTabBody::IsSectionsDisplayMode(ESectionDisplayMode 
 {
 	return SectionsDisplayMode == DisplayMode;
 }
-#endif // #if WITH_APEX_CLOTHING
+#endif // #if WITH_APEX_CLOTHING || WITH_CHAOS_CLOTHING
 
 void SAnimationEditorViewportTabBody::AddRecordingNotification()
 {
@@ -2067,7 +2198,7 @@ void SAnimationEditorViewportTabBody::AddPostProcessNotification()
 		{
 			if(PreviewComponent->SkeletalMesh && PreviewComponent->SkeletalMesh->PostProcessAnimBlueprint)
 			{
-				FAssetEditorManager::Get().OpenEditorForAssets(TArray<UObject*>({ PreviewComponent->SkeletalMesh->PostProcessAnimBlueprint->ClassGeneratedBy }));
+				GEditor->GetEditorSubsystem<UAssetEditorSubsystem>()->OpenEditorForAssets(TArray<UObject*>({ PreviewComponent->SkeletalMesh->PostProcessAnimBlueprint->ClassGeneratedBy }));
 			}
 		}
 
@@ -2211,6 +2342,66 @@ void SAnimationEditorViewportTabBody::AddMinLODNotification()
 			[
 				SNew(STextBlock)
 				.Text(LOCTEXT("MinLODNotification", "Min LOD applied"))
+				.TextStyle(FEditorStyle::Get(), "AnimViewport.MessageText")
+			]
+		]
+	);
+}
+
+void SAnimationEditorViewportTabBody::AddSkinWeightProfileNotification()
+{
+	if(WeakSkinWeightPreviewNotification.IsValid())
+	{
+		return;
+	}
+
+	auto GetSkinWeightProfileNotificationVisibility = [this]()
+	{
+		if (GetPreviewScene()->GetPreviewMeshComponent() && GetPreviewScene()->GetPreviewMeshComponent()->IsUsingSkinWeightProfile())
+		{
+			return EVisibility::Visible;
+		}
+
+		return EVisibility::Collapsed;
+	};
+
+	auto GetSkinWeightProfileNotificationText = [this]() -> FText
+	{
+		FName ProfileName = NAME_None;
+		if (GetPreviewScene()->GetPreviewMeshComponent())
+		{
+			ProfileName = GetPreviewScene()->GetPreviewMeshComponent()->GetCurrentSkinWeightProfileName();
+		}
+
+		return FText::FormatOrdered(LOCTEXT("ProfileSkinWeightPreviewNotification", "Previewing Skin Weight Profile: {0}"), FText::FromName(ProfileName));
+	};
+
+	WeakSkinWeightPreviewNotification = AddNotification(EMessageSeverity::Info,
+		false,
+		SNew(SHorizontalBox)
+		.Visibility_Lambda(GetSkinWeightProfileNotificationVisibility)
+		.ToolTipText(LOCTEXT("ProfileSkinWeightPreviewTooltip", "Previewing a Skin Weight Profile."))
+		+SHorizontalBox::Slot()
+		.FillWidth(1.0f)
+		.Padding(2.0f, 4.0f)
+		[
+			SNew(SHorizontalBox)
+			+SHorizontalBox::Slot()
+			.AutoWidth()
+			.VAlign(VAlign_Center)
+			.Padding(0.0f, 0.0f, 4.0f, 0.0f)
+			[
+				SNew(STextBlock)
+				.TextStyle(FEditorStyle::Get(), "AnimViewport.MessageText")
+				.Font(FEditorStyle::Get().GetFontStyle("FontAwesome.9"))
+				.Text(FEditorFontGlyphs::Eye)
+			]
+			+SHorizontalBox::Slot()
+			.VAlign(VAlign_Center)
+			.FillWidth(1.0f)
+			[
+				SNew(STextBlock)
+				.Text_Lambda(GetSkinWeightProfileNotificationText)
 				.TextStyle(FEditorStyle::Get(), "AnimViewport.MessageText")
 			]
 		]

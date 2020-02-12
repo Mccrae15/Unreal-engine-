@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 #pragma once
 
 #include "CoreMinimal.h"
@@ -20,8 +20,8 @@ public:
 
 	FMeshDescriptionHelper(FMeshBuildSettings* InBuildSettings);
 
-	//Build a render mesh description with the BuildSettings. This will update the InRenderMeshDescription ptr content
-	void GetRenderMeshDescription(UObject* Owner, const FMeshDescription& InOriginalMeshDescription, FMeshDescription& OutRenderMeshDescription);
+	//Build a render mesh description with the BuildSettings. This will update the RenderMeshDescription in place
+	void SetupRenderMeshDescription(UObject* Owner, FMeshDescription& RenderMeshDescription);
 
 	void ReduceLOD(const FMeshDescription& BaseMesh, FMeshDescription& DestMesh, const struct FMeshReductionSettings& ReductionSettings, const FOverlappingCorners& InOverlappingCorners, float &OutMaxDeviation);
 

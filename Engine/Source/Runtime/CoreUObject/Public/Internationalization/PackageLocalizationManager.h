@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -55,6 +55,11 @@ public:
 	 * @return The localized package name, or NAME_None if there is no localized package.
 	 */
 	FName FindLocalizedPackageNameForCulture(const FName InSourcePackageName, const FString& InCultureName);
+
+	/**
+	 * Update this cache, but only if it is dirty.
+	 */
+	void ConditionalUpdateCache();
 
 	/**
 	 * Singleton accessor.

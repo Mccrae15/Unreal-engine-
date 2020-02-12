@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -195,6 +195,7 @@ private:
 
 	SGraphEditor::FOnFocused OnFocused;
 	SGraphEditor::FOnCreateActionMenu OnCreateActionMenu;
+	SGraphEditor::FOnCreateNodeOrPinMenu OnCreateNodeOrPinMenu;
 
 	TAttribute<bool> IsEditable;
 
@@ -332,6 +333,14 @@ private:
 	bool DisplayGraphAsReadOnly() const;
 
 	bool IsLocked() const;
+	
+	void RegisterContextMenu(const class UEdGraphSchema* Schema, struct FToolMenuContext& MenuContext) const;
+	class UToolMenu* GenerateContextMenu(const class UEdGraphSchema* Schema, struct FToolMenuContext& MenuContext) const;
+
+	static void RegisterContextMenuFor_EdGraphSchema(const FName ParentMenuName);
+	static FName GetNodeParentContextMenuName(UClass* InClass);
+	static FName GetNodeContextMenuName(UClass* InClass);
+	static void AddContextMenuCommentSection(UToolMenu* InMenu);
 
 private:
 	bool bIsActiveTimerRegistered;

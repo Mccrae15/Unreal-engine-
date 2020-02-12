@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "Slate/SGameLayerManager.h"
 #include "Widgets/SOverlay.h"
@@ -16,20 +16,43 @@
 #include "Widgets/Layout/SPopup.h"
 #include "Widgets/Layout/SWindowTitleBarArea.h"
 #include "DebugCanvas.h"
+#include "Types/InvisibleToWidgetReflectorMetaData.h"
+#include "Framework/Application/SlateApplication.h"
+
 
 /* SGameLayerManager interface
  *****************************************************************************/
+static void HandlePerUserHitTestingToggled(IConsoleVariable* CVar)
+{
+	FSlateApplication::Get().InvalidateAllWidgets(false);
+}
+
+static int32 bEnablePerUserHitTesting = true;
+
+static FAutoConsoleVariableRef CVarEnablePerUserHitTesting(
+	TEXT("Slate.AllowPerUserHitTesting"),
+	bEnablePerUserHitTesting,
+	TEXT("Toggles between widgets mapping to a user id and requring a matching user id from an input event or allowing all users to interact with widget"),
+	FConsoleVariableDelegate::CreateStatic(&HandlePerUserHitTestingToggled)
+);
 
 SGameLayerManager::SGameLayerManager()
 :	DefaultWindowTitleBarHeight(64.0f)
 ,	bIsGameUsingBorderlessWindow(false)
 ,	bUseScaledDPI(false)
+,	CachedInverseDPIScale(0.0f)
 {
 }
 
 void SGameLayerManager::Construct(const SGameLayerManager::FArguments& InArgs)
 {
 	SceneViewport = InArgs._SceneViewport;
+
+	// In PIE we should default to per user hit testing being off because developers will need the mouse and keyboard to work for all players
+	if (GIsEditor)
+	{
+		bEnablePerUserHitTesting = false;
+	}
 
 	TSharedRef<SDPIScaler> DPIScaler =
 		SNew(SDPIScaler)
@@ -86,7 +109,7 @@ void SGameLayerManager::Construct(const SGameLayerManager::FArguments& InArgs)
 				[
 					SAssignNew(DebugCanvas, SDebugCanvas)
 					.SceneViewport(InArgs._SceneViewport)
-
+					.AddMetaData<FInvisibleToWidgetReflectorMetaData>(FInvisibleToWidgetReflectorMetaData())
 				]
 			]
 		];
@@ -129,17 +152,17 @@ void SGameLayerManager::SetSceneViewport(FSceneViewport* InSceneViewport)
 	DebugCanvas->SetSceneViewport(InSceneViewport);
 }
 
-const FGeometry& SGameLayerManager::GetViewportWidgetHostGeometry() const
+FGeometry SGameLayerManager::GetViewportWidgetHostGeometry() const
 {
-	return WidgetHost->GetCachedGeometry();
+	return WidgetHost->GetTickSpaceGeometry();
 }
 
-const FGeometry& SGameLayerManager::GetPlayerWidgetHostGeometry(ULocalPlayer* Player) const
+FGeometry SGameLayerManager::GetPlayerWidgetHostGeometry(ULocalPlayer* Player) const
 {
 	TSharedPtr<FPlayerLayer> PlayerLayer = PlayerLayers.FindRef(Player);
 	if ( PlayerLayer.IsValid() )
 	{
-		return PlayerLayer->Widget->GetCachedGeometry();
+		return PlayerLayer->Widget->GetTickSpaceGeometry();
 	}
 
 	static FGeometry Identity;
@@ -169,11 +192,21 @@ void SGameLayerManager::AddWidgetForPlayer(ULocalPlayer* Player, TSharedRef<SWid
 
 void SGameLayerManager::RemoveWidgetForPlayer(ULocalPlayer* Player, TSharedRef<SWidget> ViewportContent)
 {
-	TSharedPtr<FPlayerLayer>* PlayerLayerPtr = PlayerLayers.Find(Player);
-	if ( PlayerLayerPtr )
+	if (TSharedPtr<FPlayerLayer> PlayerLayer = PlayerLayers.FindRef(Player) )
 	{
-		TSharedPtr<FPlayerLayer> PlayerLayer = *PlayerLayerPtr;
 		PlayerLayer->Widget->RemoveSlot(ViewportContent);
+	}
+	else
+	{
+		// If no local user is specified, we need to find the widget and purge it.
+		for (auto& PlayerLayerEntry : PlayerLayers)
+		{
+			const TSharedPtr<FPlayerLayer>& PlayerLayerRef = PlayerLayerEntry.Value;
+			if (PlayerLayerRef->Widget->RemoveSlot(ViewportContent))
+			{
+				return;
+			}
+		}
 	}
 }
 
@@ -245,9 +278,11 @@ void SGameLayerManager::ClearWidgets()
 
 void SGameLayerManager::Tick(const FGeometry& AllottedGeometry, const double InCurrentTime, const float InDeltaTime)
 {
-	CachedGeometry = AllottedGeometry;
-
-	UpdateLayout();
+	//if (AllottedGeometry != CachedGeometry)
+	{
+		CachedGeometry = AllottedGeometry;
+		UpdateLayout();
+	}
 }
 
 int32 SGameLayerManager::OnPaint(const FPaintArgs& Args, const FGeometry& AllottedGeometry, const FSlateRect& MyCullingRect, FSlateWindowElementList& OutDrawElements, int32 LayerId, const FWidgetStyle& InWidgetStyle, bool bParentEnabled) const
@@ -343,6 +378,43 @@ void SGameLayerManager::UpdateLayout()
 	}
 }
 
+class SPlayerLayer : public SOverlay
+{
+	SLATE_BEGIN_ARGS(SPlayerLayer)
+	{
+		_Visibility = EVisibility::SelfHitTestInvisible;
+	}
+	SLATE_END_ARGS()
+
+public:
+	void Construct(const FArguments& InArgs, ULocalPlayer* InOwningPlayer)
+	{
+		OwningPlayer = InOwningPlayer;
+
+		SOverlay::Construct(
+			SOverlay::FArguments()
+			.Clipping(EWidgetClipping::ClipToBoundsAlways));
+	}
+
+	virtual int32 OnPaint(const FPaintArgs& Args, const FGeometry& AllottedGeometry, const FSlateRect& MyCullingRect, FSlateWindowElementList& OutDrawElements, int32 LayerId, const FWidgetStyle& InWidgetStyle, bool bParentEnabled) const override
+	{
+		const int32 UserIndex = bEnablePerUserHitTesting && OwningPlayer.IsValid() ? FSlateApplication::Get().GetUserIndexForController(OwningPlayer->GetControllerId()) : INDEX_NONE;
+
+		// Set user index for all widgets beneath this layer to the index of the player that owns this layer
+		const int32 OldUserIndex = Args.GetHittestGrid().GetUserIndex();
+		Args.GetHittestGrid().SetUserIndex(UserIndex);
+
+		const int32 OutgoingLayer = SOverlay::OnPaint(Args, AllottedGeometry, MyCullingRect, OutDrawElements, LayerId, InWidgetStyle, bParentEnabled);
+
+		// Restore whatever index was set before
+		Args.GetHittestGrid().SetUserIndex(OldUserIndex);
+
+		return OutgoingLayer;
+	}
+private:
+	TWeakObjectPtr<ULocalPlayer> OwningPlayer;
+};
+
 TSharedPtr<SGameLayerManager::FPlayerLayer> SGameLayerManager::FindOrCreatePlayerLayer(ULocalPlayer* LocalPlayer)
 {
 	TSharedPtr<FPlayerLayer>* PlayerLayerPtr = PlayerLayers.Find(LocalPlayer);
@@ -361,9 +433,8 @@ TSharedPtr<SGameLayerManager::FPlayerLayer> SGameLayerManager::FindOrCreatePlaye
 		TSharedPtr<FPlayerLayer> NewLayer = MakeShareable(new FPlayerLayer());
 
 		// Create a new overlay widget to house any widgets we want to display for the player.
-		NewLayer->Widget = SNew(SOverlay)
-			.AddMetaData(StopNavigation)
-			.Clipping(EWidgetClipping::ClipToBoundsAlways);
+		NewLayer->Widget = SNew(SPlayerLayer, LocalPlayer)
+			.AddMetaData(StopNavigation);
 		
 		// Add the overlay to the player canvas, which we'll update every frame to match
 		// the dimensions of the player's split screen rect.
@@ -386,9 +457,9 @@ void SGameLayerManager::RemoveMissingPlayerLayers(const TArray<ULocalPlayer*>& G
 	TArray<ULocalPlayer*> ToRemove;
 
 	// Find the player layers for players that no longer exist
-	for ( TMap< ULocalPlayer*, TSharedPtr<FPlayerLayer> >::TIterator It(PlayerLayers); It; ++It )
+	for (auto& PlayerLayerEntry : PlayerLayers)
 	{
-		ULocalPlayer* Key = ( *It ).Key;
+		ULocalPlayer* Key = Cast<ULocalPlayer>(PlayerLayerEntry.Key.ResolveObjectPtr());
 		if ( !GamePlayers.Contains(Key) )
 		{
 			ToRemove.Add(Key);
@@ -404,10 +475,12 @@ void SGameLayerManager::RemoveMissingPlayerLayers(const TArray<ULocalPlayer*>& G
 
 void SGameLayerManager::RemovePlayerWidgets(ULocalPlayer* LocalPlayer)
 {
-	TSharedPtr<FPlayerLayer> Layer = PlayerLayers.FindRef(LocalPlayer);
+	FObjectKey LocalPlayerKey(LocalPlayer);
+
+	TSharedPtr<FPlayerLayer> Layer = PlayerLayers.FindRef(LocalPlayerKey);
 	PlayerCanvas->RemoveSlot(Layer->Widget.ToSharedRef());
 
-	PlayerLayers.Remove(LocalPlayer);
+	PlayerLayers.Remove(LocalPlayerKey);
 }
 
 void SGameLayerManager::AddOrUpdatePlayerLayers(const FGeometry& AllottedGeometry, UGameViewportClient* ViewportClient, const TArray<ULocalPlayer*>& GamePlayers)
@@ -420,7 +493,14 @@ void SGameLayerManager::AddOrUpdatePlayerLayers(const FGeometry& AllottedGeometr
 	ESplitScreenType::Type SplitType = ViewportClient->GetCurrentSplitscreenConfiguration();
 	TArray<struct FSplitscreenData>& SplitInfo = ViewportClient->SplitscreenInfo;
 
-	float InverseDPIScale = ViewportClient->Viewport ? 1.0f / GetGameViewportDPIScale() : 1.0f;
+	const float InverseDPIScale = ViewportClient->Viewport ? 1.0f / GetGameViewportDPIScale() : 1.0f;
+
+	if (CachedInverseDPIScale != InverseDPIScale)
+	{
+		InvalidatePrepass();
+		Invalidate(EInvalidateWidget::Layout);
+		CachedInverseDPIScale = InverseDPIScale;
+	}
 
 	// Add and Update Player Layers
 	for ( int32 PlayerIndex = 0; PlayerIndex < GamePlayers.Num(); PlayerIndex++ )
@@ -433,16 +513,9 @@ void SGameLayerManager::AddOrUpdatePlayerLayers(const FGeometry& AllottedGeometr
 			FPerPlayerSplitscreenData& SplitData = SplitInfo[SplitType].PlayerData[PlayerIndex];
 
 			// Viewport Sizes
-			FVector2D Size, Position;
-			Size.X = SplitData.SizeX;
-			Size.Y = SplitData.SizeY;
-			Position.X = SplitData.OriginX;
-			Position.Y = SplitData.OriginY;
-
-			FVector2D AspectRatioInset = GetAspectRatioInset(Player);
-
-			Position += AspectRatioInset;
-			Size -= (AspectRatioInset * 2.0f);
+			FVector2D Position(0, 0);
+			FVector2D Size(SplitData.SizeX, SplitData.SizeY);
+			GetNormalizeRect(Player, Position, Size);
 
 			Size = Size * AllottedGeometry.GetLocalSize() * InverseDPIScale;
 			Position = Position * AllottedGeometry.GetLocalSize() * InverseDPIScale;
@@ -458,10 +531,9 @@ void SGameLayerManager::AddOrUpdatePlayerLayers(const FGeometry& AllottedGeometr
 	}
 }
 
-FVector2D SGameLayerManager::GetAspectRatioInset(ULocalPlayer* LocalPlayer) const
+bool SGameLayerManager::GetNormalizeRect(ULocalPlayer* LocalPlayer, FVector2D& OutPosition, FVector2D& OutSize) const
 {
 	QUICK_SCOPE_CYCLE_COUNTER(STAT_SGameLayerManager_GetAspectRatioInset);
-	FVector2D Offset(0.f, 0.f);
 	if ( LocalPlayer )
 	{
 		FSceneViewProjectionData ProjectionData;
@@ -470,13 +542,20 @@ FVector2D SGameLayerManager::GetAspectRatioInset(ULocalPlayer* LocalPlayer) cons
 			const FIntRect ViewRect = ProjectionData.GetViewRect();
 			const FIntRect ConstrainedViewRect = ProjectionData.GetConstrainedViewRect();
 
+			const FIntPoint ViewportSize = LocalPlayer->ViewportClient->Viewport->GetSizeXY();
+
 			// Return normalized coordinates.
-			Offset.X = ( ConstrainedViewRect.Min.X - ViewRect.Min.X ) / (float)ViewRect.Width();
-			Offset.Y = ( ConstrainedViewRect.Min.Y - ViewRect.Min.Y ) / (float)ViewRect.Height();
+			OutPosition.X = ConstrainedViewRect.Min.X / (float)ViewportSize.X;
+			OutPosition.Y = ConstrainedViewRect.Min.Y / (float)ViewportSize.Y;
+
+			OutSize.X = ConstrainedViewRect.Width() / (float)ViewportSize.X;
+			OutSize.Y = ConstrainedViewRect.Height() / (float)ViewportSize.Y;
+
+			return true;
 		}
 	}
 
-	return Offset;
+	return false;
 }
 
 void SGameLayerManager::SetDefaultWindowTitleBarHeight(float Height)

@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "SGraphNode.h"
 #include "EdGraph/EdGraph.h"
@@ -81,12 +81,17 @@ FText SNodeTitle::GetNodeTitle() const
 
 FText SNodeTitle::GetHeadTitle() const
 {
-	return (GraphNode.IsValid() && GraphNode->bCanRenameNode) ? GraphNode->GetNodeTitle(ENodeTitleType::EditableTitle) : CachedHeadTitle;
+	return (GraphNode.IsValid() && GraphNode->GetCanRenameNode()) ? GraphNode->GetNodeTitle(ENodeTitleType::EditableTitle) : CachedHeadTitle;
 }
 
 FVector2D SNodeTitle::GetTitleSize() const
 {
 	return CachedSize;
+}
+
+void SNodeTitle::MarkDirty()
+{
+	NodeTitleCache.MarkDirty();
 }
 
 void SNodeTitle::RebuildWidget()
@@ -563,7 +568,7 @@ FSlateColor SGraphNode::GetNodeTitleColor() const
 {
 	FLinearColor ReturnTitleColor = GraphNode->IsDeprecated() ? FLinearColor::Red : GetNodeObj()->GetNodeTitleColor();
 
-	if(!GraphNode->IsNodeEnabled() || GraphNode->IsDisplayAsDisabledForced())
+	if(!GraphNode->IsNodeEnabled() || GraphNode->IsDisplayAsDisabledForced() || GraphNode->IsNodeUnrelated())
 	{
 		ReturnTitleColor *= FLinearColor(0.5f, 0.5f, 0.5f, 0.4f);
 	}
@@ -576,18 +581,23 @@ FSlateColor SGraphNode::GetNodeTitleColor() const
 
 FSlateColor SGraphNode::GetNodeBodyColor() const
 {
-	FLinearColor ReturnBodyColor = FLinearColor::White;
-	if(!GraphNode->IsNodeEnabled() || GraphNode->IsDisplayAsDisabledForced())
+	FLinearColor ReturnBodyColor = GraphNode->GetNodeBodyTintColor();
+	if(!GraphNode->IsNodeEnabled() || GraphNode->IsDisplayAsDisabledForced() || GraphNode->IsNodeUnrelated())
 	{
 		ReturnBodyColor *= FLinearColor(1.0f, 1.0f, 1.0f, 0.5f); 
 	}
 	return ReturnBodyColor;
 }
 
+const FSlateBrush *  SGraphNode::GetNodeBodyBrush() const
+{
+	return FEditorStyle::GetBrush("Graph.Node.Body");
+}
+
 FSlateColor SGraphNode::GetNodeTitleIconColor() const
 {
 	FLinearColor ReturnIconColor = IconColor;
-	if(!GraphNode->IsNodeEnabled() || GraphNode->IsDisplayAsDisabledForced())
+	if(!GraphNode->IsNodeEnabled() || GraphNode->IsDisplayAsDisabledForced() || GraphNode->IsNodeUnrelated())
 	{
 		ReturnIconColor *= FLinearColor(1.0f, 1.0f, 1.0f, 0.3f); 
 	}
@@ -597,7 +607,7 @@ FSlateColor SGraphNode::GetNodeTitleIconColor() const
 FLinearColor SGraphNode::GetNodeTitleTextColor() const
 {
 	FLinearColor ReturnTextColor = FLinearColor::White;
-	if(!GraphNode->IsNodeEnabled() || GraphNode->IsDisplayAsDisabledForced())
+	if(!GraphNode->IsNodeEnabled() || GraphNode->IsDisplayAsDisabledForced() || GraphNode->IsNodeUnrelated())
 	{
 		ReturnTextColor *= FLinearColor(1.0f, 1.0f, 1.0f, 0.3f); 
 	}
@@ -729,6 +739,11 @@ TSharedRef<SWidget> SGraphNode::CreateTitleWidget(TSharedPtr<SNodeTitle> NodeTit
 	return InlineEditableText.ToSharedRef();
 }
 
+TSharedRef<SWidget> SGraphNode::CreateTitleRightWidget()
+{
+	return SNullWidget::NullWidget;
+}
+
 /**
  * Update this GraphNode to match the data that it is observing
  */
@@ -760,7 +775,7 @@ void SGraphNode::UpdateGraphNode()
 
 	// Get node icon
 	IconColor = FLinearColor::White;
-	const FSlateBrush* IconBrush = NULL;
+	const FSlateBrush* IconBrush = nullptr;
 	if (GraphNode != NULL && GraphNode->ShowPaletteIconOnNode())
 	{
 		IconBrush = GraphNode->GetIconAndTint(IconColor).GetOptionalIcon();
@@ -775,40 +790,53 @@ void SGraphNode::UpdateGraphNode()
 			.ColorAndOpacity( this, &SGraphNode::GetNodeTitleIconColor )
 		]
 		+SOverlay::Slot()
-		.HAlign(HAlign_Left)
+		.HAlign(HAlign_Fill)
 		.VAlign(VAlign_Center)
 		[
-			SNew(SBorder)
-			.BorderImage( FEditorStyle::GetBrush("Graph.Node.ColorSpill") )
-			// The extra margin on the right
-			// is for making the color spill stretch well past the node title
-			.Padding( FMargin(10,5,30,3) )
-			.BorderBackgroundColor( this, &SGraphNode::GetNodeTitleColor )
+			SNew(SHorizontalBox)
+			+ SHorizontalBox::Slot()
+			.HAlign(HAlign_Fill)
 			[
-				SNew(SHorizontalBox)
-				+ SHorizontalBox::Slot()
-				.VAlign(VAlign_Top)
-				.Padding(FMargin(0.f, 0.f, 4.f, 0.f))
-				.AutoWidth()
+				SNew(SBorder)
+				.BorderImage( FEditorStyle::GetBrush("Graph.Node.ColorSpill") )
+				// The extra margin on the right
+				// is for making the color spill stretch well past the node title
+				.Padding( FMargin(10,5,30,3) )
+				.BorderBackgroundColor( this, &SGraphNode::GetNodeTitleColor )
 				[
-					SNew(SImage)
-					.Image(IconBrush)
-					.ColorAndOpacity(this, &SGraphNode::GetNodeTitleIconColor)
-				]
-				+ SHorizontalBox::Slot()
-				[
-					SNew(SVerticalBox)
-					+ SVerticalBox::Slot()
-					.AutoHeight()
+					SNew(SHorizontalBox)
+					+ SHorizontalBox::Slot()
+					.VAlign(VAlign_Top)
+					.Padding(FMargin(0.f, 0.f, 4.f, 0.f))
+					.AutoWidth()
 					[
-						CreateTitleWidget(NodeTitle)
+						SNew(SImage)
+						.Image(IconBrush)
+						.ColorAndOpacity(this, &SGraphNode::GetNodeTitleIconColor)
 					]
-					+ SVerticalBox::Slot()
-					.AutoHeight()
+					+ SHorizontalBox::Slot()
 					[
-						NodeTitle.ToSharedRef()
+						SNew(SVerticalBox)
+						+ SVerticalBox::Slot()
+						.AutoHeight()
+						[
+							CreateTitleWidget(NodeTitle)
+						]
+						+ SVerticalBox::Slot()
+						.AutoHeight()
+						[
+							NodeTitle.ToSharedRef()
+						]
 					]
 				]
+			]
+			+ SHorizontalBox::Slot()
+			.HAlign(HAlign_Right)
+			.VAlign(VAlign_Center)
+			.Padding(0, 0, 5, 0)
+			.AutoWidth()
+			[
+				CreateTitleRightWidget()
 			]
 		]
 		+SOverlay::Slot()
@@ -874,33 +902,16 @@ void SGraphNode::UpdateGraphNode()
 			CreateNodeContentArea()
 		];
 
-	if ((GraphNode->GetDesiredEnabledState() != ENodeEnabledState::Enabled) && !GraphNode->IsAutomaticallyPlacedGhostNode())
+	TSharedPtr<SWidget> EnabledStateWidget = GetEnabledStateWidget();
+	if (EnabledStateWidget.IsValid())
 	{
-		const bool bDevelopmentOnly = GraphNode->GetDesiredEnabledState() == ENodeEnabledState::DevelopmentOnly;
-		const FText StatusMessage = bDevelopmentOnly ? NSLOCTEXT("SGraphNode", "DevelopmentOnly", "Development Only") : NSLOCTEXT("SGraphNode", "DisabledNode", "Disabled");
-		const FText StatusMessageTooltip = bDevelopmentOnly ?
-			NSLOCTEXT("SGraphNode", "DevelopmentOnlyTooltip", "This node will only be executed in the editor and in Development builds in a packaged game (it will be treated as disabled in Shipping or Test builds cooked from a commandlet)") :
-			NSLOCTEXT("SGraphNode", "DisabledNodeTooltip", "This node is currently disabled and will not be executed");
-
 		InnerVerticalBox->AddSlot()
 			.AutoHeight()
 			.HAlign(HAlign_Fill)
 			.VAlign(VAlign_Top)
 			.Padding(FMargin(2, 0))
 			[
-				SNew(SBorder)
-				.BorderImage(FEditorStyle::GetBrush(bDevelopmentOnly ? "Graph.Node.DevelopmentBanner" : "Graph.Node.DisabledBanner"))
-				.HAlign(HAlign_Fill)
-				.VAlign(VAlign_Fill)
-				[
-					SNew(STextBlock)
-					.Text(StatusMessage)
-					.ToolTipText(StatusMessageTooltip)
-					.Justification(ETextJustify::Center)
-					.ColorAndOpacity(FLinearColor::White)
-					.ShadowOffset(FVector2D::UnitVector)
-					.Visibility(EVisibility::Visible)
-				]
+				EnabledStateWidget.ToSharedRef()
 			];
 	}
 
@@ -927,7 +938,7 @@ void SGraphNode::UpdateGraphNode()
 				.Padding(Settings->GetNonPinNodeBodyPadding())
 				[
 					SNew(SImage)
-					.Image(FEditorStyle::GetBrush("Graph.Node.Body"))
+					.Image(GetNodeBodyBrush())
 					.ColorAndOpacity(this, &SGraphNode::GetNodeBodyColor)
 				]
 				+SOverlay::Slot()
@@ -937,30 +948,39 @@ void SGraphNode::UpdateGraphNode()
 			]			
 		];
 
-	// Create comment bubble
-	TSharedPtr<SCommentBubble> CommentBubble;
-	const FSlateColor CommentColor = GetDefault<UGraphEditorSettings>()->DefaultCommentNodeTitleColor;
+	bool SupportsBubble = true;
+	if (GraphNode != nullptr)
+	{
+		SupportsBubble = GraphNode->SupportsCommentBubble();
+	}
 
-	SAssignNew( CommentBubble, SCommentBubble )
-	.GraphNode( GraphNode )
-	.Text( this, &SGraphNode::GetNodeComment )
-	.OnTextCommitted( this, &SGraphNode::OnCommentTextCommitted )
-	.OnToggled( this, &SGraphNode::OnCommentBubbleToggled )
-	.ColorAndOpacity( CommentColor )
-	.AllowPinning( true )
-	.EnableTitleBarBubble( true )
-	.EnableBubbleCtrls( true )
-	.GraphLOD( this, &SGraphNode::GetCurrentLOD )
-	.IsGraphNodeHovered( this, &SGraphNode::IsHovered );
+	if (SupportsBubble)
+	{
+		// Create comment bubble
+		TSharedPtr<SCommentBubble> CommentBubble;
+		const FSlateColor CommentColor = GetDefault<UGraphEditorSettings>()->DefaultCommentNodeTitleColor;
 
-	GetOrAddSlot( ENodeZone::TopCenter )
-	.SlotOffset( TAttribute<FVector2D>( CommentBubble.Get(), &SCommentBubble::GetOffset ))
-	.SlotSize( TAttribute<FVector2D>( CommentBubble.Get(), &SCommentBubble::GetSize ))
-	.AllowScaling( TAttribute<bool>( CommentBubble.Get(), &SCommentBubble::IsScalingAllowed ))
-	.VAlign( VAlign_Top )
-	[
-		CommentBubble.ToSharedRef()
-	];
+		SAssignNew(CommentBubble, SCommentBubble)
+			.GraphNode(GraphNode)
+			.Text(this, &SGraphNode::GetNodeComment)
+			.OnTextCommitted(this, &SGraphNode::OnCommentTextCommitted)
+			.OnToggled(this, &SGraphNode::OnCommentBubbleToggled)
+			.ColorAndOpacity(CommentColor)
+			.AllowPinning(true)
+			.EnableTitleBarBubble(true)
+			.EnableBubbleCtrls(true)
+			.GraphLOD(this, &SGraphNode::GetCurrentLOD)
+			.IsGraphNodeHovered(this, &SGraphNode::IsHovered);
+
+		GetOrAddSlot(ENodeZone::TopCenter)
+			.SlotOffset(TAttribute<FVector2D>(CommentBubble.Get(), &SCommentBubble::GetOffset))
+			.SlotSize(TAttribute<FVector2D>(CommentBubble.Get(), &SCommentBubble::GetSize))
+			.AllowScaling(TAttribute<bool>(CommentBubble.Get(), &SCommentBubble::IsScalingAllowed))
+			.VAlign(VAlign_Top)
+			[
+				CommentBubble.ToSharedRef()
+			];
+	}
 
 	CreateBelowWidgetControls(MainVerticalBox);
 	CreatePinWidgets();
@@ -971,6 +991,34 @@ void SGraphNode::UpdateGraphNode()
 }
 END_SLATE_FUNCTION_BUILD_OPTIMIZATION
 
+
+TSharedPtr<SWidget> SGraphNode::GetEnabledStateWidget()
+{
+	if ((GraphNode->GetDesiredEnabledState() != ENodeEnabledState::Enabled) && !GraphNode->IsAutomaticallyPlacedGhostNode())
+	{
+		const bool bDevelopmentOnly = GraphNode->GetDesiredEnabledState() == ENodeEnabledState::DevelopmentOnly;
+		const FText StatusMessage = bDevelopmentOnly ? NSLOCTEXT("SGraphNode", "DevelopmentOnly", "Development Only") : NSLOCTEXT("SGraphNode", "DisabledNode", "Disabled");
+		const FText StatusMessageTooltip = bDevelopmentOnly ?
+			NSLOCTEXT("SGraphNode", "DevelopmentOnlyTooltip", "This node will only be executed in the editor and in Development builds in a packaged game (it will be treated as disabled in Shipping or Test builds cooked from a commandlet)") :
+			NSLOCTEXT("SGraphNode", "DisabledNodeTooltip", "This node is currently disabled and will not be executed");
+
+		return SNew(SBorder)
+			.BorderImage(FEditorStyle::GetBrush(bDevelopmentOnly ? "Graph.Node.DevelopmentBanner" : "Graph.Node.DisabledBanner"))
+			.HAlign(HAlign_Fill)
+			.VAlign(VAlign_Fill)
+			[
+				SNew(STextBlock)
+				.Text(StatusMessage)
+				.ToolTipText(StatusMessageTooltip)
+				.Justification(ETextJustify::Center)
+				.ColorAndOpacity(FLinearColor::White)
+				.ShadowOffset(FVector2D::UnitVector)
+				.Visibility(EVisibility::Visible)
+			];
+	}
+
+	return TSharedPtr<SWidget>();
+}
 
 TSharedRef<SWidget> SGraphNode::CreateNodeContentArea()
 {
@@ -1343,31 +1391,33 @@ void SGraphNode::PositionThisNodeBetweenOtherNodes(const FVector2D& PrevPos, con
 	GraphNode->NodePosY = NewCorner.Y;
 }
 
-FText SGraphNode::GetErrorMsgToolTip( ) const
+FText SGraphNode::GetErrorMsgToolTip() const
 {
-	FText Result;
-	// Append the node's upgrade message, if any.
-	if (!GraphNode->NodeUpgradeMessage.IsEmpty())
-	{
-		if (Result.IsEmpty())
-		{
-			Result = GraphNode->NodeUpgradeMessage;
-		}
-		else
-		{
-			Result = FText::Format(FText::FromString(TEXT("{0}\n\n{1}")), Result, GraphNode->NodeUpgradeMessage);
-		}
-	}
-	else
+	FText Result = FText::GetEmpty();
+	if (GraphNode != nullptr)
 	{
 		Result = FText::FromString(GraphNode->ErrorMsg);
+
+		// Append the node's upgrade message, if any.
+		if (!GraphNode->NodeUpgradeMessage.IsEmpty())
+		{
+			if (Result.IsEmpty())
+			{
+				Result = GraphNode->NodeUpgradeMessage;
+			}
+			else
+			{
+				Result = FText::Format(FText::FromString(TEXT("{0}\n\n{1}")), Result, GraphNode->NodeUpgradeMessage);
+			}
+		}
 	}
+
 	return Result;
 }
 
 bool SGraphNode::IsNameReadOnly() const
 {
-	return (!GraphNode->bCanRenameNode || !IsNodeEditable());
+	return (!GraphNode->GetCanRenameNode() || !IsNodeEditable());
 }
 
 bool SGraphNode::OnVerifyNameTextChanged(const FText& InText, FText& OutErrorMessage)
@@ -1403,7 +1453,7 @@ void SGraphNode::OnNameTextCommited(const FText& InText, ETextCommit::Type Commi
 
 void SGraphNode::RequestRename()
 {
-	if ((GraphNode != NULL) && GraphNode->bCanRenameNode)
+	if ((GraphNode != nullptr) && GraphNode->GetCanRenameNode())
 	{
 		bRenameIsPending = true;
 	}

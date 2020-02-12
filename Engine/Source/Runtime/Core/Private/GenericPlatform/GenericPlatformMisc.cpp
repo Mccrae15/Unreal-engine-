@@ -1,8 +1,10 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "GenericPlatform/GenericPlatformMisc.h"
 #include "Misc/AssertionMacros.h"
 #include "HAL/PlatformFilemanager.h"
+#include "HAL/CriticalSection.h"
+#include "Misc/ScopeRWLock.h"
 #include "Math/UnrealMathUtility.h"
 #include "HAL/UnrealMemory.h"
 #include "Containers/Array.h"
@@ -26,11 +28,11 @@
 #include "HAL/ExceptionHandling.h"
 #include "GenericPlatform/GenericPlatformCrashContext.h"
 #include "GenericPlatform/GenericPlatformDriver.h"
-#include "GenericPlatform/GenericPlatformInstallBundleManager.h"
 #include "ProfilingDebugging/ExternalProfiler.h"
 #include "HAL/LowLevelMemTracker.h"
 #include "Templates/Function.h"
 #include "Modules/ModuleManager.h"
+#include "Misc/LazySingleton.h"
 
 #include "Misc/UProjectInfo.h"
 #include "Internationalization/Culture.h"
@@ -53,75 +55,95 @@ CORE_API void (*ClipboardPasteShim)(FString& Dest) = nullptr;
 /* EBuildConfigurations interface
  *****************************************************************************/
 
-namespace EBuildConfigurations
+bool LexTryParseString(EBuildConfiguration& OutConfiguration, const TCHAR* Configuration)
 {
-	EBuildConfigurations::Type FromString( const FString& Configuration )
+	if (FCString::Stricmp(Configuration, TEXT("Debug")) == 0)
 	{
-		if (FCString::Strcmp(*Configuration, TEXT("Debug")) == 0)
+		OutConfiguration = EBuildConfiguration::Debug;
+		return true;
+	}
+	else if (FCString::Stricmp(Configuration, TEXT("DebugGame")) == 0)
 		{
-			return Debug;
+		OutConfiguration = EBuildConfiguration::DebugGame;
+		return true;
 		}
-		else if (FCString::Strcmp(*Configuration, TEXT("DebugGame")) == 0)
+	else if (FCString::Stricmp(Configuration, TEXT("Development")) == 0)
 		{
-			return DebugGame;
+		OutConfiguration = EBuildConfiguration::Development;
+		return true;
 		}
-		else if (FCString::Strcmp(*Configuration, TEXT("Development")) == 0)
+	else if (FCString::Stricmp(Configuration, TEXT("Shipping")) == 0)
 		{
-			return Development;
+		OutConfiguration = EBuildConfiguration::Shipping;
+		return true;
 		}
-		else if (FCString::Strcmp(*Configuration, TEXT("Shipping")) == 0)
+	else if(FCString::Stricmp(Configuration, TEXT("Test")) == 0)
 		{
-			return Shipping;
+		OutConfiguration = EBuildConfiguration::Test;
+		return true;
 		}
-		else if(FCString::Strcmp(*Configuration, TEXT("Test")) == 0)
+	else if(FCString::Stricmp(Configuration, TEXT("Unknown")) == 0)
 		{
-			return Test;
+		OutConfiguration = EBuildConfiguration::Unknown;
+		return true;
+	}
+	else
+	{
+		OutConfiguration = EBuildConfiguration::Unknown;
+		return false;
 		}
-
-		return Unknown;
 	}
 
-	const TCHAR* ToString( EBuildConfigurations::Type Configuration )
+const TCHAR* LexToString( EBuildConfiguration Configuration )
 	{
 		switch (Configuration)
 		{
-			case Debug:
+	case EBuildConfiguration::Debug:
 				return TEXT("Debug");
-
-			case DebugGame:
+	case EBuildConfiguration::DebugGame:
 				return TEXT("DebugGame");
-
-			case Development:
+	case EBuildConfiguration::Development:
 				return TEXT("Development");
-
-			case Shipping:
+	case EBuildConfiguration::Shipping:
 				return TEXT("Shipping");
-
-			case Test:
+	case EBuildConfiguration::Test:
 				return TEXT("Test");
-
 			default:
 				return TEXT("Unknown");
 		}
 	}
 
-	FText ToText( EBuildConfigurations::Type Configuration )
+namespace EBuildConfigurations
+{
+	EBuildConfiguration FromString( const FString& Configuration )
+	{
+		EBuildConfiguration Result;
+		LexTryParseString(Result, *Configuration);
+		return Result;
+	}
+
+	const TCHAR* ToString( EBuildConfiguration Configuration )
+	{
+		return LexToString(Configuration);
+	}
+
+	FText ToText( EBuildConfiguration Configuration )
 	{
 		switch (Configuration)
 		{
-		case Debug:
+		case EBuildConfiguration::Debug:
 			return NSLOCTEXT("UnrealBuildConfigurations", "DebugName", "Debug");
 
-		case DebugGame:
+		case EBuildConfiguration::DebugGame:
 			return NSLOCTEXT("UnrealBuildConfigurations", "DebugGameName", "DebugGame");
 
-		case Development:
+		case EBuildConfiguration::Development:
 			return NSLOCTEXT("UnrealBuildConfigurations", "DevelopmentName", "Development");
 
-		case Shipping:
+		case EBuildConfiguration::Shipping:
 			return NSLOCTEXT("UnrealBuildConfigurations", "ShippingName", "Shipping");
 
-		case Test:
+		case EBuildConfiguration::Test:
 			return NSLOCTEXT("UnrealBuildConfigurations", "TestName", "Test");
 
 		default:
@@ -131,46 +153,77 @@ namespace EBuildConfigurations
 }
 
 
-/* EBuildConfigurations interface
+/* EBuildTargetType functions
  *****************************************************************************/
 
-namespace EBuildTargets
+bool LexTryParseString(EBuildTargetType& OutType, const TCHAR* Type)
 {
-	EBuildTargets::Type FromString( const FString& Target )
+	if (FCString::Strcmp(Type, TEXT("Editor")) == 0)
 	{
-		if (FCString::Strcmp(*Target, TEXT("Editor")) == 0)
+		OutType = EBuildTargetType::Editor;
+		return true;
+	}
+	else if (FCString::Strcmp(Type, TEXT("Game")) == 0)
+	{
+		OutType = EBuildTargetType::Game;
+		return true;
+	}
+	else if (FCString::Strcmp(Type, TEXT("Server")) == 0)
+{
+		OutType = EBuildTargetType::Server;
+		return true;
+	}
+	else if (FCString::Strcmp(Type, TEXT("Client")) == 0)
+	{
+		OutType = EBuildTargetType::Client;
+		return true;
+	}
+	else if (FCString::Strcmp(Type, TEXT("Program")) == 0)
 		{
-			return Editor;
+		OutType = EBuildTargetType::Program;
+		return true;
 		}
-		else if (FCString::Strcmp(*Target, TEXT("Game")) == 0)
+	else if (FCString::Strcmp(Type, TEXT("Unknown")) == 0)
 		{
-			return Game;
+		OutType = EBuildTargetType::Unknown;
+		return true;
 		}
-		else if (FCString::Strcmp(*Target, TEXT("Server")) == 0)
+	else
 		{
-			return Server;
+		OutType = EBuildTargetType::Unknown;
+		return false;
 		}
-
-		return Unknown;
 	}
 
-	const TCHAR* ToString( EBuildTargets::Type Target )
+const TCHAR* LexToString(EBuildTargetType Type)
 	{
-		switch (Target)
+	switch (Type)
 		{
-			case Editor:
+	case EBuildTargetType::Editor:
 				return TEXT("Editor");
-
-			case Game:
+	case EBuildTargetType::Game:
 				return TEXT("Game");
-
-			case Server:
+	case EBuildTargetType::Server:
 				return TEXT("Server");
-
+	case EBuildTargetType::Client:
+		return TEXT("Client");
+	case EBuildTargetType::Program:
+		return TEXT("Program");
 			default:
 				return TEXT("Unknown");
 		}
 	}
+
+EBuildTargetType EBuildTargets::FromString(const FString& Target)
+{
+	EBuildTargetType Type;
+	LexTryParseString(Type, *Target);
+	return Type;
+}
+
+const TCHAR* EBuildTargets::ToString(EBuildTargetType Target)
+{
+	return LexToString(Target);
 }
 
 FString FSHA256Signature::ToString() const
@@ -223,6 +276,17 @@ FString FSHA256Signature::ToString() const
 	bool FGenericPlatformMisc::bShouldPromptForRemoteDebugging = false;
 	bool FGenericPlatformMisc::bPromptForRemoteDebugOnEnsure = false;
 #endif	//#if !UE_BUILD_SHIPPING
+
+struct FGenericPlatformMisc::FStaticData
+{
+	FString         RootDir;
+	TArray<FString> AdditionalRootDirectories;
+	FRWLock         AdditionalRootDirectoriesLock;
+	FString         EngineDirectory;
+	FString         LaunchDir;
+	FString         ProjectDir;
+	FString         GamePersistentDownloadDir;
+};
 
 FString FGenericPlatformMisc::GetEnvironmentVariable(const TCHAR* VariableName)
 {
@@ -395,15 +459,10 @@ void FGenericPlatformMisc::MemoryBarrier()
 {
 }
 
-void FGenericPlatformMisc::HandleIOFailure( const TCHAR* Filename )
-{
-	UE_LOG(LogGenericPlatformMisc, Fatal,TEXT("I/O failure operating on '%s'"), Filename ? Filename : TEXT("Unknown file"));
-}
-
 void FGenericPlatformMisc::RaiseException(uint32 ExceptionCode)
 {
 	/** This is the last place to gather memory stats before exception. */
-	FGenericCrashContext::CrashMemoryStats = FPlatformMemory::GetStats();
+	FGenericCrashContext::SetMemoryStats(FPlatformMemory::GetStats());
 
 #if HACK_HEADER_GENERATOR && !PLATFORM_EXCEPTIONS_DISABLED
 	// We want Unreal Header Tool to throw an exception but in normal runtime code 
@@ -424,6 +483,12 @@ void FGenericPlatformMisc::BeginNamedEvent(const struct FColor& Color, const ANS
 		CurrentProfiler->StartScopedEvent(ANSI_TO_TCHAR(Text));
 	}
 #endif
+#if CPUPROFILERTRACE_ENABLED
+	if (CpuChannel)
+	{
+		FCpuProfilerTrace::OutputBeginDynamicEvent(Text);
+	}
+#endif
 }
 
 void FGenericPlatformMisc::BeginNamedEvent(const struct FColor& Color, const TCHAR* Text)
@@ -437,6 +502,12 @@ void FGenericPlatformMisc::BeginNamedEvent(const struct FColor& Color, const TCH
 		CurrentProfiler->StartScopedEvent(Text);
 	}
 #endif
+#if CPUPROFILERTRACE_ENABLED
+	if (CpuChannel)
+	{
+		FCpuProfilerTrace::OutputBeginDynamicEvent(Text);
+	}
+#endif
 }
 
 void FGenericPlatformMisc::EndNamedEvent()
@@ -448,6 +519,12 @@ void FGenericPlatformMisc::EndNamedEvent()
 	if (CurrentProfiler != NULL)
 	{
 		CurrentProfiler->EndScopedEvent();
+	}
+#endif
+#if CPUPROFILERTRACE_ENABLED
+	if (CpuChannel)
+	{
+		FCpuProfilerTrace::OutputEndEvent();
 	}
 #endif
 }
@@ -569,8 +646,14 @@ void FGenericPlatformMisc::RequestExit( bool Force )
 	else
 	{
 		// Tell the platform specific code we want to exit cleanly from the main loop.
-		GIsRequestingExit = 1;
+		RequestEngineExit(TEXT("GenericPlatform RequestExit"));
 	}
+}
+
+bool FGenericPlatformMisc::RestartApplication()
+{
+	UE_LOG(LogInit, Display, TEXT("Restart application is not supported or implemented in current platform"));
+	return false;
 }
 
 void FGenericPlatformMisc::RequestExitWithStatus(bool Force, uint8 ReturnCode)
@@ -649,6 +732,31 @@ void FGenericPlatformMisc::CreateGuid(FGuid& Guid)
 	Guid = FGuid(RandBits | (SequentialBits << 16), EstimatedCurrentDateTime.GetTicks() >> 32, EstimatedCurrentDateTime.GetTicks() & 0xffffffff, FPlatformTime::Cycles());
 }
 
+const TCHAR* LexToString( EAppReturnType::Type Value )
+{
+	switch (Value)
+	{
+	case EAppReturnType::No:
+		return TEXT("No");
+	case EAppReturnType::Yes:
+		return TEXT("Yes");
+	case EAppReturnType::YesAll:
+		return TEXT("YesAll");
+	case EAppReturnType::NoAll:
+		return TEXT("NoAll");
+	case EAppReturnType::Cancel:
+		return TEXT("Cancel");
+	case EAppReturnType::Ok:
+		return TEXT("Ok");
+	case EAppReturnType::Retry:
+		return TEXT("Retry");
+	case EAppReturnType::Continue:
+		return TEXT("Continue");
+	default:
+		return TEXT("Unknown");
+	}
+}
+
 EAppReturnType::Type FGenericPlatformMisc::MessageBoxExt( EAppMsgType::Type MsgType, const TCHAR* Text, const TCHAR* Caption )
 {
 	if (GWarn)
@@ -680,14 +788,14 @@ EAppReturnType::Type FGenericPlatformMisc::MessageBoxExt( EAppMsgType::Type MsgT
 
 const TCHAR* FGenericPlatformMisc::RootDir()
 {
-	static FString Path;
+	FString& Path = TLazySingleton<FStaticData>::Get().RootDir;
 	if (Path.Len() == 0)
 	{
 		FString TempPath = FPaths::EngineDir();
 		int32 chopPos = TempPath.Find(TEXT("/Engine"), ESearchCase::IgnoreCase, ESearchDir::FromEnd);
 		if (chopPos != INDEX_NONE)
 		{
-			TempPath = TempPath.Left(chopPos + 1);
+			TempPath.LeftInline(chopPos + 1, false);
 		}
 		else
 		{
@@ -696,7 +804,7 @@ const TCHAR* FGenericPlatformMisc::RootDir()
 			// if the path ends in a separator, remove it
 			if (TempPath.Right(1) == TEXT("/"))
 			{
-				TempPath = TempPath.LeftChop(1);
+				TempPath.LeftChopInline(1, false);
 			}
 
 			// keep going until we've removed Binaries
@@ -707,7 +815,7 @@ const TCHAR* FGenericPlatformMisc::RootDir()
 #endif
 			if (pos != INDEX_NONE)
 			{
-				TempPath = TempPath.Left(pos + 1);
+				TempPath.LeftInline(pos + 1, false);
 			}
 			else
 			{
@@ -720,7 +828,7 @@ const TCHAR* FGenericPlatformMisc::RootDir()
 				{
 					while (TempPath.Len() && TempPath.Right(1) != TEXT("/"))
 					{
-						TempPath = TempPath.LeftChop(1);
+						TempPath.LeftChopInline(1, false);
 					}
 				}
 			}
@@ -732,35 +840,37 @@ const TCHAR* FGenericPlatformMisc::RootDir()
 	return *Path;
 }
 
-const TArray<FString>& FGenericPlatformMisc::GetAdditionalRootDirectories()
+TArray<FString> FGenericPlatformMisc::GetAdditionalRootDirectories()
 {
-	return Internal_GetAdditionalRootDirectories();
+	FRWScopeLock Lock(TLazySingleton<FStaticData>::Get().AdditionalRootDirectoriesLock, SLT_ReadOnly);
+
+	return TLazySingleton<FStaticData>::Get().AdditionalRootDirectories;
 }
 
 void FGenericPlatformMisc::AddAdditionalRootDirectory(const FString& RootDir)
 {
-	TArray<FString>& RootDirectories = Internal_GetAdditionalRootDirectories();
-	RootDirectories.Add(RootDir);
-}
+	FRWScopeLock Lock(TLazySingleton<FStaticData>::Get().AdditionalRootDirectoriesLock, SLT_Write);
 
-TArray<FString>& FGenericPlatformMisc::Internal_GetAdditionalRootDirectories() 
-{
-	static TArray<FString> AdditionalRootDirectories;
-	return AdditionalRootDirectories;
+	TArray<FString>& RootDirectories = TLazySingleton<FStaticData>::Get().AdditionalRootDirectories;
+	FString NewRootDirectory = RootDir;
+	FPaths::MakePlatformFilename(NewRootDirectory);
+	RootDirectories.Add(NewRootDirectory);
 }
 
 const TCHAR* FGenericPlatformMisc::EngineDir()
 {
-	static FString EngineDirectory = TEXT("");
+	FString& EngineDirectory = TLazySingleton<FStaticData>::Get().EngineDirectory;
 	if (EngineDirectory.Len() == 0)
 	{
 		// See if we are a root-level project
 		FString DefaultEngineDir = TEXT("../../../Engine/");
 #if PLATFORM_DESKTOP
+#if !defined(DISABLE_CWD_CHANGES) || DISABLE_CWD_CHANGES == 0
 		FPlatformProcess::SetCurrentWorkingDirectoryToBaseDir();
+#endif
 
 		//@todo. Need to have a define specific for this scenario??
-		if (FPlatformFileManager::Get().GetPlatformFile().DirectoryExists(*(DefaultEngineDir / TEXT("Binaries"))))
+		if (FPlatformFileManager::Get().GetPlatformFile().DirectoryExists(*(FPlatformProcess::BaseDir() / DefaultEngineDir / TEXT("Binaries"))))
 		{
 			EngineDirectory = DefaultEngineDir;
 		}
@@ -782,29 +892,22 @@ const TCHAR* FGenericPlatformMisc::EngineDir()
 	return *EngineDirectory;
 }
 
-// wrap the LaunchDir variable in a function to work around static/global initialization order
-static FString& GetWrappedLaunchDir()
-{
-	static FString LaunchDir;
-	return LaunchDir;
-}
-
 void FGenericPlatformMisc::CacheLaunchDir()
 {
+	FString& LaunchDir = TLazySingleton<FStaticData>::Get().LaunchDir;
+
 	// we can only cache this ONCE
-	static bool bOneTime = false;
-	if (bOneTime)
+	if (LaunchDir.Len() != 0)
 	{
 		return;
 	}
-	bOneTime = true;
 	
-	GetWrappedLaunchDir() = FPlatformProcess::GetCurrentWorkingDirectory() + TEXT("/");
+	LaunchDir = FPlatformProcess::GetCurrentWorkingDirectory() + TEXT("/");
 }
 
 const TCHAR* FGenericPlatformMisc::LaunchDir()
 {
-	return *GetWrappedLaunchDir();
+	return *TLazySingleton<FStaticData>::Get().LaunchDir;
 }
 
 
@@ -819,35 +922,6 @@ IPlatformChunkInstall* FGenericPlatformMisc::GetPlatformChunkInstall()
 	return &Singleton;
 }
 
-IPlatformInstallBundleManager* FGenericPlatformMisc::GetPlatformInstallBundleManager()
-{
-	static IPlatformInstallBundleManager* Manager = nullptr;
-	static bool bCheckedIni = false;
-
-	if (Manager)
-		return Manager;
-
-	if (!bCheckedIni && !GEngineIni.IsEmpty())
-	{
-		FString ModuleName;
-		IPlatformInstallBundleManagerModule* Module = nullptr;
-		GConfig->GetString(TEXT("InstallBundleManager"), TEXT("ModuleName"), ModuleName, GEngineIni);
-
-		FModuleStatus Status;
-		if (FModuleManager::Get().QueryModule(*ModuleName, Status))
-		{
-			Module = FModuleManager::LoadModulePtr<IPlatformInstallBundleManagerModule>(*ModuleName);
-			if (Module)
-			{
-				Manager = Module->GetInstallBundleManager();
-			}
-		}
-		bCheckedIni = true;
-	}
-
-	return Manager;
-}
-
 void GenericPlatformMisc_GetProjectFilePathProjectDir(FString& OutGameDir)
 {
 	// Here we derive the game path from the project file location.
@@ -860,7 +934,7 @@ void GenericPlatformMisc_GetProjectFilePathProjectDir(FString& OutGameDir)
 
 const TCHAR* FGenericPlatformMisc::ProjectDir()
 {
-	static FString ProjectDir = TEXT("");
+	FString& ProjectDir = TLazySingleton<FStaticData>::Get().ProjectDir;
 
 	// track if last time we called this function the .ini was ready and had fixed the GameName case
 	static bool bWasIniReady = false;
@@ -974,7 +1048,7 @@ FString FGenericPlatformMisc::CloudDir()
 
 const TCHAR* FGenericPlatformMisc::GamePersistentDownloadDir()
 {
-	static FString GamePersistentDownloadDir = TEXT("");
+	FString& GamePersistentDownloadDir = TLazySingleton<FStaticData>::Get().GamePersistentDownloadDir;
 
 	if (GamePersistentDownloadDir.Len() == 0)
 	{
@@ -990,12 +1064,27 @@ const TCHAR* FGenericPlatformMisc::GamePersistentDownloadDir()
 
 const TCHAR* FGenericPlatformMisc::GetUBTPlatform()
 {
-	return TEXT( PREPROCESSOR_TO_STRING(UBT_COMPILED_PLATFORM) );
+	return TEXT(PREPROCESSOR_TO_STRING(UBT_COMPILED_PLATFORM));
 }
 
 const TCHAR* FGenericPlatformMisc::GetUBTTarget()
 {
-    return TEXT(PREPROCESSOR_TO_STRING(UBT_COMPILED_TARGET));
+	return TEXT(PREPROCESSOR_TO_STRING(UBT_COMPILED_TARGET));
+}
+
+/** The name of the UBT target that the current executable was built from. Defaults to the UE4 default target for this type to make content only projects work, 
+	but will be overridden by the primary game module if it exists */
+TCHAR GUBTTargetName[128] = TEXT("UE4" PREPROCESSOR_TO_STRING(UBT_COMPILED_TARGET));
+
+void FGenericPlatformMisc::SetUBTTargetName(const TCHAR* InTargetName)
+{
+	check(FCString::Strlen(InTargetName) < (UE_ARRAY_COUNT(GUBTTargetName) - 1));
+	FCString::Strcpy(GUBTTargetName, InTargetName);
+}
+
+const TCHAR* FGenericPlatformMisc::GetUBTTargetName()
+{
+	return GUBTTargetName;
 }
 
 const TCHAR* FGenericPlatformMisc::GetDefaultDeviceProfileName()
@@ -1151,14 +1240,14 @@ void FGenericPlatformMisc::UpdateHotfixableEnsureSettings()
 	float HandleEnsurePercentInConfig = 100.0f;
 	if (GConfig && GConfig->GetFloat(TEXT("Core.System"), TEXT("HandleEnsurePercent"), HandleEnsurePercentInConfig, GEngineIni))
 	{
-		GenericPlatformMisc::GEnsureChance = HandleEnsurePercentInConfig / 100.0;
+		GenericPlatformMisc::GEnsureChance = HandleEnsurePercentInConfig / 100.0f;
 	}
 	else
 	{
 		float HandleEnsurePercentOnCmdLine = 100.0f;
-		if (FParse::Value(FCommandLine::Get(), TEXT("handleensurepercent="), HandleEnsurePercentOnCmdLine))
+		if (!FCommandLine::IsInitialized() && FParse::Value(FCommandLine::Get(), TEXT("handleensurepercent="), HandleEnsurePercentOnCmdLine))
 		{
-			GenericPlatformMisc::GEnsureChance = HandleEnsurePercentOnCmdLine / 100.0;
+			GenericPlatformMisc::GEnsureChance = HandleEnsurePercentOnCmdLine / 100.0f;
 		}
 	}
 
@@ -1313,9 +1402,26 @@ bool FGenericPlatformMisc::RequestDeviceCheckToken(TFunction<void(const TArray<u
 	return false;
 }
 
-TArray<FChunkTagID> FGenericPlatformMisc::GetOnDemandChunkTagIDs()
+TArray<FCustomChunk> FGenericPlatformMisc::GetAllOnDemandChunks()
 {
-	return TArray<FChunkTagID>();
+	return TArray<FCustomChunk>();
+}
+
+TArray<FCustomChunk> FGenericPlatformMisc::GetAllLanguageChunks()
+{
+	return TArray<FCustomChunk>();
+}
+
+TArray<FCustomChunk> FGenericPlatformMisc::GetCustomChunksByType(ECustomChunkType DesiredChunkType)
+{
+	if (DesiredChunkType == ECustomChunkType::OnDemandChunk)
+	{
+		return GetAllOnDemandChunks();
+	}
+	else
+	{
+		return GetAllLanguageChunks();
+	}
 }
 
 FString FGenericPlatformMisc::LoadTextFileFromPlatformPackage(const FString& RelativePath)
@@ -1324,4 +1430,69 @@ FString FGenericPlatformMisc::LoadTextFileFromPlatformPackage(const FString& Rel
 	FString Result;
 	FFileHelper::LoadFileToString(Result, *Path);
 	return Result;
+}
+
+bool FGenericPlatformMisc::FileExistsInPlatformPackage(const FString& RelativePath)
+{
+	FString Path = RootDir() / RelativePath;
+	return IFileManager::Get().FileExists(*Path);
+}
+
+void FGenericPlatformMisc::TearDown()
+{
+	TLazySingleton<FStaticData>::TearDown();
+}
+
+void FGenericPlatformMisc::ParseChunkIdPakchunkIndexMapping(TArray<FString> ChunkIndexMappingData, TMap<int32, int32>& OutMapping)
+{
+	OutMapping.Empty();
+
+	const TCHAR* PropertyOldChunkIndex = TEXT("Old=");
+	const TCHAR* PropertyNewChunkIndex = TEXT("New=");
+	for (FString& Entry : ChunkIndexMappingData)
+	{
+		// Remove parentheses
+		Entry.TrimStartAndEndInline();
+		Entry.ReplaceInline(TEXT("("), TEXT(""));
+		Entry.ReplaceInline(TEXT(")"), TEXT(""));
+
+		int32 ChunkId = -1;
+		int32 PakchunkIndex = -1;
+		FParse::Value(*Entry, PropertyOldChunkIndex, ChunkId);
+		FParse::Value(*Entry, PropertyNewChunkIndex, PakchunkIndex);
+
+		if (ChunkId != -1 && PakchunkIndex != -1 && ChunkId != PakchunkIndex && !OutMapping.Contains(ChunkId))
+		{
+			OutMapping.Add(ChunkId, PakchunkIndex);
+		}
+	}
+}
+
+int32 FGenericPlatformMisc::GetPakchunkIndexFromPakFile(const FString& InFilename)
+{
+	FString ChunkIdentifier(TEXT("pakchunk"));
+	FString BaseFilename = FPaths::GetBaseFilename(InFilename);
+	int32 ChunkNumber = INDEX_NONE;
+
+	if (BaseFilename.StartsWith(ChunkIdentifier))
+	{
+		int32 StartOfNumber = ChunkIdentifier.Len();
+		int32 DigitCount = 0;
+		if (FChar::IsDigit(BaseFilename[StartOfNumber]))
+		{
+			while ((DigitCount + StartOfNumber) < BaseFilename.Len() && FChar::IsDigit(BaseFilename[StartOfNumber + DigitCount]))
+			{
+				DigitCount++;
+			}
+
+			if ((StartOfNumber + DigitCount) < BaseFilename.Len())
+			{
+				FString ChunkNumberString = BaseFilename.Mid(StartOfNumber, DigitCount);
+				check(ChunkNumberString.IsNumeric());
+				TTypeFromString<int32>::FromString(ChunkNumber, *ChunkNumberString);
+			}
+		}
+	}
+
+	return ChunkNumber;
 }

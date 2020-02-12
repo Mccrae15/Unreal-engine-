@@ -1,8 +1,9 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "AnimNodes/AnimNode_CurveSource.h"
 #include "AnimationRuntime.h"
 #include "Animation/AnimInstanceProxy.h"
+#include "Animation/AnimTrace.h"
 
 FAnimNode_CurveSource::FAnimNode_CurveSource()
 	: SourceBinding(ICurveSourceInterface::DefaultBinding)
@@ -42,9 +43,9 @@ void FAnimNode_CurveSource::PreUpdate(const UAnimInstance* AnimInstance)
 				return;
 			}
 
-			for (TFieldIterator<UObjectProperty> PropertyIt(Actor->GetClass(), EFieldIteratorFlags::IncludeSuper); PropertyIt; ++PropertyIt)
+			for (TFieldIterator<FObjectProperty> PropertyIt(Actor->GetClass(), EFieldIteratorFlags::IncludeSuper); PropertyIt; ++PropertyIt)
 			{
-				UObjectProperty* ObjProp = *PropertyIt;
+				FObjectProperty* ObjProp = *PropertyIt;
 				UActorComponent* ActorComponent = Cast<UActorComponent>(ObjProp->GetObjectPropertyValue(ObjProp->ContainerPtrToValuePtr<void>(Actor)));
 				if (IsSpecifiedCurveSource(ActorComponent, SourceBinding, CurveSource))
 				{
@@ -72,6 +73,7 @@ public:
 
 void FAnimNode_CurveSource::Evaluate_AnyThread(FPoseContext& Output)
 {
+	DECLARE_SCOPE_HIERARCHICAL_COUNTER_ANIMNODE(Evaluate_AnyThread)
 	SourcePose.Evaluate(Output);
 
 	if (CurveSource.GetInterface() != nullptr)
@@ -89,7 +91,10 @@ void FAnimNode_CurveSource::Evaluate_AnyThread(FPoseContext& Output)
 			{
 				const float CurrentValue = Output.Curve.Get(NameUID);
 				const float ClampedAlpha = FMath::Clamp(Alpha, 0.0f, 1.0f);
-				Output.Curve.Set(NameUID, FMath::Lerp(CurrentValue, NamedValue.Value, ClampedAlpha));
+				const float LerpedValue = FMath::Lerp(CurrentValue, NamedValue.Value, ClampedAlpha);
+				Output.Curve.Set(NameUID, LerpedValue);
+
+				TRACE_ANIM_NODE_VALUE(Output, *NamedValue.Name.ToString(), LerpedValue);
 			}
 		}
 	}
@@ -97,6 +102,7 @@ void FAnimNode_CurveSource::Evaluate_AnyThread(FPoseContext& Output)
 
 void FAnimNode_CurveSource::Update_AnyThread(const FAnimationUpdateContext& Context)
 {
+	DECLARE_SCOPE_HIERARCHICAL_COUNTER_ANIMNODE(Update_AnyThread)
 	// Evaluate any BP logic plugged into this node
 	GetEvaluateGraphExposedInputs().Execute(Context);
 	SourcePose.Update(Context);
@@ -104,18 +110,21 @@ void FAnimNode_CurveSource::Update_AnyThread(const FAnimationUpdateContext& Cont
 
 void FAnimNode_CurveSource::Initialize_AnyThread(const FAnimationInitializeContext& Context)
 {
+	DECLARE_SCOPE_HIERARCHICAL_COUNTER_ANIMNODE(Initialize_AnyThread)
 	FAnimNode_Base::Initialize_AnyThread(Context);
 	SourcePose.Initialize(Context);
 }
 
 void FAnimNode_CurveSource::CacheBones_AnyThread(const FAnimationCacheBonesContext& Context)
 {
+	DECLARE_SCOPE_HIERARCHICAL_COUNTER_ANIMNODE(CacheBones_AnyThread)
 	FAnimNode_Base::CacheBones_AnyThread(Context);
 	SourcePose.CacheBones(Context);
 }
 
 void FAnimNode_CurveSource::GatherDebugData(FNodeDebugData& DebugData)
 {
+	DECLARE_SCOPE_HIERARCHICAL_COUNTER_ANIMNODE(GatherDebugData)
 	FAnimNode_Base::GatherDebugData(DebugData);
 	SourcePose.GatherDebugData(DebugData.BranchFlow(1.f));
 }

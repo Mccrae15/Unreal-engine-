@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -6,7 +6,6 @@
 #include "Containers/ResourceArray.h"
 #include "RHI.h"
 #include "RenderResource.h"
-#include "Atmosphere/AtmosphericFogComponent.h"
 
 // Shared by Engine class and Renderer class, need to be core?
 
@@ -112,7 +111,7 @@ public:
 		}
 
 		int32 TotalSize = SizeX * SizeY * SizeZ * DataSize;
-		if (InTextureData.GetElementCount() == TotalSize)
+		if (InTextureData.GetBulkDataSize() == TotalSize)
 		{
 			// Grab a copy of the static volume data.
 			InTextureData.GetCopy(&TextureData, false);
@@ -139,7 +138,7 @@ public:
 	 */
 	virtual void InitRHI() override
 	{
-		if (TextureData && GetFeatureLevel() >= ERHIFeatureLevel::SM4)
+		if (TextureData && GetFeatureLevel() >= ERHIFeatureLevel::SM5)
 		{
 			switch(TexType)
 			{
@@ -168,7 +167,7 @@ public:
 						/*NumMips=*/ 1,
 						/*NumSamples=*/ 1,
 						/*Flags=*/ TexCreate_ShaderResource,
-													/*BulkData=*/ CreateInfo );
+						/*BulkData=*/ CreateInfo );
 					RHIBindDebugLabelName(TextureRHI, TEXT("E_Irradiance"));
 				}
 				break;
@@ -181,7 +180,7 @@ public:
 						SizeX, SizeY, SizeZ, PF_FloatRGBA,
 						/*NumMips=*/ 1,
 						/*Flags=*/ TexCreate_ShaderResource,
-													/*BulkData=*/ CreateInfo );
+						/*BulkData=*/ CreateInfo );
 					RHIBindDebugLabelName(TextureRHI, TEXT("E_Inscatter"));
 				}
 				break;

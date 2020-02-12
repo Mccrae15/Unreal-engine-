@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 /*=============================================================================
 	NetConnection.cpp: Unreal connection base class.
@@ -33,9 +33,14 @@
 #include "UObject/LinkerLoad.h"
 #include "UObject/ObjectKey.h"
 #include "UObject/UObjectIterator.h"
+#include "Net/Core/Trace/NetTrace.h"
 #include "Net/NetworkGranularMemoryLogging.h"
+#include "SocketSubsystem.h"
+#include "Math/NumericLimits.h"
 
 static TAutoConsoleVariable<int32> CVarPingExcludeFrameTime( TEXT( "net.PingExcludeFrameTime" ), 0, TEXT( "Calculate RTT time between NIC's of server and client." ) );
+
+static TAutoConsoleVariable<int32> CVarPingUsePacketRecvTime(TEXT("net.PingUsePacketRecvTime"), 0, TEXT("Use OS or Receive Thread packet receive time, for calculating the ping. Excludes frame time."));
 
 #if !UE_BUILD_SHIPPING
 static TAutoConsoleVariable<int32> CVarPingDisplayServerTime( TEXT( "net.PingDisplayServerTime" ), 0, TEXT( "Show server frame time" ) );
@@ -51,12 +56,84 @@ static TAutoConsoleVariable<int32> CVarMaxChannelSize(TEXT("net.MaxChannelSize")
 static TAutoConsoleVariable<int32> CVarForceNetFlush(TEXT("net.ForceNetFlush"), 0, TEXT("Immediately flush send buffer when written to (helps trace packet writes - WARNING: May be unstable)."));
 #endif
 
+static TAutoConsoleVariable<int32> CVarNetDoPacketOrderCorrection(TEXT("net.DoPacketOrderCorrection"), 0, TEXT("Whether or not to try to fix 'out of order' packet sequences, by caching packets and waiting for the missing sequence."));
+
+static TAutoConsoleVariable<int32> CVarNetPacketOrderCorrectionEnableThreshold(TEXT("net.PacketOrderCorrectionEnableThreshold"), 1, TEXT("The number of 'out of order' packet sequences that need to occur, before correction is enabled."));
+
+static TAutoConsoleVariable<int32> CVarNetPacketOrderMaxMissingPackets(TEXT("net.PacketOrderMaxMissingPackets"), 3, TEXT("The maximum number of missed packet sequences that is allowed, before treating missing packets as lost."));
+
+static TAutoConsoleVariable<int32> CVarNetPacketOrderMaxCachedPackets(TEXT("net.PacketOrderMaxCachedPackets"), 32, TEXT("(NOTE: Must be power of 2!) The maximum number of packets to cache while waiting for missing packet sequences, before treating missing packets as lost."));
+
+TAutoConsoleVariable<int32> CVarNetEnableDetailedScopeCounters(TEXT("net.EnableDetailedScopeCounters"), 1, TEXT("Enables detailed networking scope cycle counters. There are often lots of these which can negatively impact performance."));
+
+#if !UE_BUILD_SHIPPING
+static TAutoConsoleVariable<int32> CVarDisableBandwithThrottling( TEXT( "net.DisableBandwithThrottling" ), 0, TEXT( "Forces IsNetReady to always return true. Not available in shipping builds." ) );
+#endif
+
 extern int32 GNetDormancyValidate;
 
 DECLARE_CYCLE_STAT(TEXT("NetConnection SendAcks"), Stat_NetConnectionSendAck, STATGROUP_Net);
 DECLARE_CYCLE_STAT(TEXT("NetConnection Tick"), Stat_NetConnectionTick, STATGROUP_Net);
 DECLARE_CYCLE_STAT(TEXT("NetConnection ReceivedNak"), Stat_NetConnectionReceivedNak, STATGROUP_Net);
 DECLARE_CYCLE_STAT(TEXT("NetConnection NetConnectionReceivedAcks"), Stat_NetConnectionReceivedAcks, STATGROUP_Net);
+
+namespace UE4_NetConnectionPrivate
+{
+	struct FValidateLevelVisibilityResult
+	{
+		bool bLevelExists = false;
+		UPackage* Package = nullptr;
+		FLinkerLoad* Linker = nullptr;
+	};
+
+	const FValidateLevelVisibilityResult ValidateLevelVisibility(UWorld* World, const FUpdateLevelVisibilityLevelInfo& LevelVisibility)
+	{
+		// Verify that we were passed a valid level name
+		// If we have a linker we know it has been loaded off disk successfully
+		// If we have a file it is fine too
+		// If its in our own streaming level list, its good
+
+		auto IsInLevelList = [&World](FName InPackageName)
+		{
+			for (ULevelStreaming* StreamingLevel : World->GetStreamingLevels())
+			{
+				if (StreamingLevel && (StreamingLevel->GetWorldAssetPackageFName() == InPackageName))
+				{
+					return true;
+				}
+			}
+			return false;
+		};
+
+		FValidateLevelVisibilityResult Result;
+		Result.Package = FindPackage(nullptr, *LevelVisibility.PackageName.ToString());
+		Result.Linker = FLinkerLoad::FindExistingLinkerForPackage(Result.Package);
+		Result.bLevelExists = Result.Linker ||
+			FPackageName::DoesPackageExist(LevelVisibility.FileName.ToString()) ||
+			IsInLevelList(LevelVisibility.PackageName);
+
+		return Result;
+	}
+
+	/** Maximum possible clock time value with available bits. If that value is sent than the jitter clock time is ignored */
+	constexpr uint32 MaxJitterClockTimeValue = (1 << NetConnectionHelper::NumBitsForJitterClockTimeInHeader) - 1;
+
+	/** Maximum possible precision of the jitter stat. Set to 1 second since we only send the milliseconds of the local clock time */
+	constexpr int32 MaxJitterPrecisionInMS = 1000;
+
+	/** Used to reduce the impact on the average jitter of a divergent value */
+	constexpr double JitterNoiseReduction = 16.0;
+
+	/**
+	 * Return the milliseconds of a ClockTime
+	 * Ex: 3.45 seconds => 450 milliseconds
+	 */
+	int32 GetClockTimeMilliseconds(double ClockTimeInSeconds)
+	{
+		return FMath::TruncToInt((ClockTimeInSeconds - FMath::FloorToDouble(ClockTimeInSeconds)) * 1000.0);
+	}
+	
+}
 
 // ChannelRecord Implementation
 namespace FChannelRecordImpl
@@ -97,6 +174,8 @@ UNetConnection::UNetConnection(const FObjectInitializer& ObjectInitializer)
 ,   OwningActor			( nullptr )
 ,	MaxPacket			( 0 )
 ,	InternalAck			( false )
+,	bInternalAck		( false )
+,	RemoteAddr			( nullptr )
 ,	MaxPacketHandlerBits ( 0 )
 ,	State				( USOCK_Invalid )
 ,	Handler()
@@ -106,19 +185,22 @@ UNetConnection::UNetConnection(const FObjectInitializer& ObjectInitializer)
 
 ,	QueuedBits			( 0 )
 ,	TickCount			( 0 )
+,	LastProcessedFrame	( 0 )
 ,	ConnectTime			( 0.0 )
-
+,	LastOSReceiveTime	()
+,	bIsOSReceiveTimeLocal(false)
+,   PreviousJitterTimeDelta(0)
+,	PreviousPacketSendTimeInS(0.0)
 ,	AllowMerge			( false )
 ,	TimeSensitive		( false )
 ,	LastOutBunch		( nullptr )
 ,	SendBunchHeader		( MAX_BUNCH_HEADER_BITS )
 
 ,	StatPeriod			( 1.f  )
-,	BestLag				( 9999 )
 ,	AvgLag				( 9999 )
-
+,   BestLag				( 9999 )
+,   BestLagAcc			( 9999 )
 ,	LagAcc				( 9999 )
-,	BestLagAcc			( 9999 )
 ,	LagCount			( 0 )
 ,	LastTime			( 0 )
 ,	FrameTime			( 0 )
@@ -140,6 +222,8 @@ UNetConnection::UNetConnection(const FObjectInitializer& ObjectInitializer)
 ,	InTotalPacketsLost	( 0 )
 ,	OutTotalPacketsLost	( 0 )
 ,	OutTotalAcks		( 0 )
+,	StatPeriodCount		( 0 )
+,	AverageJitterInMS	(0.0f)
 ,	AnalyticsVars		()
 ,	NetAnalyticsData	()
 ,	SendBuffer			( 0 )
@@ -151,29 +235,46 @@ UNetConnection::UNetConnection(const FObjectInitializer& ObjectInitializer)
 ,	InitInReliable		( 0 )
 ,	EngineNetworkProtocolVersion( FNetworkVersion::GetEngineNetworkProtocolVersion() )
 ,	GameNetworkProtocolVersion( FNetworkVersion::GetGameNetworkProtocolVersion() )
-,	bResendAllDataSinceOpen( false )
+,	ResendAllDataState( EResendAllDataState::None )
 #if !UE_BUILD_SHIPPING
 ,	ReceivedRawPacketDel()
 #endif
 ,	PlayerOnlinePlatformName( NAME_None )
 ,	ClientWorldPackageName( NAME_None )
 ,	LastNotifiedPacketId( -1 )
+,	OutTotalNotifiedPackets(0)
 ,	HasDirtyAcks(0u)
 ,	bHasWarnedAboutChannelLimit(false)
+,	bConnectionPendingCloseDueToSocketSendFailure(false)
+,	TotalOutOfOrderPackets(0)
+,	PacketOrderCache()
+,	PacketOrderCacheStartIdx(0)
+,	PacketOrderCacheCount(0)
+,	bFlushingPacketOrderCache(false)
+,	ConnectionId(0)
 {
+	// This isn't ideal, because it won't capture memory derived classes are creating dynamically.
+	// The allocations could *probably* be moved somewhere else (like InitBase), but that
+	// causes failure to connect for some reason, and for now this is easier.
+	LLM_SCOPE(ELLMTag::Networking);
+
 	MaxChannelSize = CVarMaxChannelSize.GetValueOnAnyThread();
 	if (MaxChannelSize <= 0)
 	{
 		UE_LOG(LogNet, Warning, TEXT("CVarMaxChannelSize of %d is less than or equal to 0, using the default number of channels."), MaxChannelSize);
 		MaxChannelSize = DEFAULT_MAX_CHANNEL_SIZE;
 	}
+	
+	
+	if (!HasAnyFlags(EObjectFlags::RF_ClassDefaultObject | EObjectFlags::RF_ArchetypeObject))
+	{
+		Channels.AddDefaulted(MaxChannelSize);
+		OutReliable.AddDefaulted(MaxChannelSize);
+		InReliable.AddDefaulted(MaxChannelSize);
+		PendingOutRec.AddDefaulted(MaxChannelSize);
 
-	Channels.AddDefaulted(MaxChannelSize);
-	OutReliable.AddDefaulted(MaxChannelSize);
-	InReliable.AddDefaulted(MaxChannelSize);
-	PendingOutRec.AddDefaulted(MaxChannelSize);
-
-	PacketNotify.Init(InPacketId, OutPacketId);
+		PacketNotify.Init(InPacketId, OutPacketId);
+	}	
 }
 
 /**
@@ -194,16 +295,29 @@ void UNetConnection::InitBase(UNetDriver* InDriver,class FSocket* InSocket, cons
 	// Owning net driver
 	Driver = InDriver;
 
+	// Cache instance id
+#if UE_NET_TRACE_ENABLED
+	NetTraceId = Driver->GetNetTraceId();
+#endif
+
+	SetConnectionId(InDriver->AllocateConnectionId());
+
+	const double DriverElapsedTime = Driver->GetElapsedTime();
+
 	// Stats
-	StatUpdateTime			= Driver->Time;
-	LastReceiveTime			= Driver->Time;
+	StatUpdateTime			= DriverElapsedTime;
+	LastReceiveTime			= DriverElapsedTime;
 	LastReceiveRealtime		= 0.0;			// These are set to 0 and initialized on our first tick to deal with scenarios where
 	LastGoodPacketRealtime	= 0.0;			// notable time may elapse between init and first use
 	LastTime				= 0.0;
-	LastSendTime			= Driver->Time;
-	LastTickTime			= Driver->Time;
-	LastRecvAckTime			= Driver->Time;
-	ConnectTime				= Driver->Time;
+	LastSendTime			= DriverElapsedTime;
+	LastTickTime			= DriverElapsedTime;
+	PRAGMA_DISABLE_DEPRECATION_WARNINGS
+	LastRecvAckTime			= DriverElapsedTime;
+	ConnectTime				= DriverElapsedTime;
+	PRAGMA_ENABLE_DEPRECATION_WARNINGS
+	LastRecvAckTimestamp	= DriverElapsedTime;
+	ConnectTimestamp		= DriverElapsedTime;
 
 	// Analytics
 	TSharedPtr<FNetAnalyticsAggregator>& AnalyticsAggregator = Driver->AnalyticsAggregator;
@@ -257,6 +371,8 @@ void UNetConnection::InitBase(UNetDriver* InDriver,class FSocket* InSocket, cons
 		PackageMapClient->Initialize(this, Driver->GuidCache);
 		PackageMap = PackageMapClient;
 	}
+
+	UE_NET_TRACE_CONNECTION_CREATED(NetTraceId, GetConnectionId());
 }
 
 /**
@@ -320,6 +436,11 @@ void UNetConnection::InitHandler()
 		{
 			Handler::Mode Mode = Driver->ServerConnection != nullptr ? Handler::Mode::Client : Handler::Mode::Server;
 
+			PRAGMA_DISABLE_DEPRECATION_WARNINGS
+			Handler->InitializeAddressSerializer([this](const FString& InAddress){
+				return Driver->GetSocketSubsystem()->GetAddressFromString(InAddress);
+			});
+			PRAGMA_ENABLE_DEPRECATION_WARNINGS
 			Handler->InitializeDelegates(FPacketHandlerLowLevelSendTraits::CreateUObject(this, &UNetConnection::LowLevelSend));
 			Handler->NotifyAnalyticsProvider(Driver->AnalyticsProvider, Driver->AnalyticsAggregator);
 			Handler->Initialize(Mode, MaxPacket * 8, false, nullptr, nullptr, Driver->NetDriverName);
@@ -392,33 +513,49 @@ void UNetConnection::NotifyAnalyticsProvider()
 
 void UNetConnection::EnableEncryptionWithKey(TArrayView<const uint8> Key)
 {
+	FEncryptionData EncryptionData;
+	EncryptionData.Key.Append(Key.GetData(), Key.Num());
+
+	EnableEncryption(EncryptionData);
+}
+
+void UNetConnection::EnableEncryption(const FEncryptionData& EncryptionData)
+{
 	if (Handler.IsValid())
 	{
-		UE_LOG(LogNet, Verbose, TEXT("UNetConnection::EnableEncryptionWithKey, %s"), *Describe());
+		UE_LOG(LogNet, Verbose, TEXT("UNetConnection::EnableEncryption, %s"), *Describe());
 
 		TSharedPtr<FEncryptionComponent> EncryptionComponent = Handler->GetEncryptionComponent();
 		if (EncryptionComponent.IsValid())
 		{
-			EncryptionComponent->SetEncryptionKey(Key);
+			EncryptionComponent->SetEncryptionData(EncryptionData);
 			EncryptionComponent->EnableEncryption();
 		}
 		else
 		{
-			UE_LOG(LogNet, Warning, TEXT("UNetConnection::EnableEncryptionWithKey, encryption component not found!"));
+			UE_LOG(LogNet, Warning, TEXT("UNetConnection::EnableEncryption, encryption component not found!"));
 		}
 	}
 }
 
 void UNetConnection::EnableEncryptionWithKeyServer(TArrayView<const uint8> Key)
 {
+	FEncryptionData EncryptionData;
+	EncryptionData.Key.Append(Key.GetData(), Key.Num());
+
+	EnableEncryptionServer(EncryptionData);
+}
+
+void UNetConnection::EnableEncryptionServer(const FEncryptionData& EncryptionData)
+{
 	if (State != USOCK_Invalid && State != USOCK_Closed && Driver)
 	{
 		SendClientEncryptionAck();
-		EnableEncryptionWithKey(Key);
+		EnableEncryption(EncryptionData);
 	}
 	else
 	{
-		UE_LOG(LogNet, Log, TEXT("UNetConnection::EnableEncryptionWithKeyServer, connection in invalid state. %s"), *Describe());
+		UE_LOG(LogNet, Log, TEXT("UNetConnection::EnableEncryptionServer, connection in invalid state. %s"), *Describe());
 	}
 }
 
@@ -437,18 +574,26 @@ void UNetConnection::SendClientEncryptionAck()
 
 void UNetConnection::SetEncryptionKey(TArrayView<const uint8> Key)
 {
+	FEncryptionData EncryptionData;
+	EncryptionData.Key.Append(Key.GetData(), Key.Num());
+
+	SetEncryptionData(EncryptionData);
+}
+
+void UNetConnection::SetEncryptionData(const FEncryptionData& EncryptionData)
+{
 	if (Handler.IsValid())
 	{
-		UE_LOG(LogNet, Verbose, TEXT("UNetConnection::SetEncryptionKey, %s"), *Describe());
+		UE_LOG(LogNet, Verbose, TEXT("UNetConnection::SetEncryptionData, %s"), *Describe());
 
 		TSharedPtr<FEncryptionComponent> EncryptionComponent = Handler->GetEncryptionComponent();
 		if (EncryptionComponent.IsValid())
 		{
-			EncryptionComponent->SetEncryptionKey(Key);
+			EncryptionComponent->SetEncryptionData(EncryptionData);
 		}
 		else
 		{
-			UE_LOG(LogNet, Warning, TEXT("UNetConnection::SetEncryptionKey, encryption component not found!"));
+			UE_LOG(LogNet, Warning, TEXT("UNetConnection::SetEncryptionData, encryption component not found!"));
 		}
 	}
 }
@@ -487,33 +632,32 @@ bool UNetConnection::IsEncryptionEnabled() const
 
 void UNetConnection::Serialize( FArchive& Ar )
 {
-	UObject::Serialize( Ar );
-	Ar << PackageMap;
-	for (UChannel* Channel : Channels)
-	{
-		Ar << Channel;
-	}
+	GRANULAR_NETWORK_MEMORY_TRACKING_INIT(Ar, "UNetConnection::Serialize");
+
+	GRANULAR_NETWORK_MEMORY_TRACKING_TRACK("UObject", UObject::Serialize(Ar));
+
+	GRANULAR_NETWORK_MEMORY_TRACKING_TRACK("PackageName", Ar << PackageMap;);
+	GRANULAR_NETWORK_MEMORY_TRACKING_TRACK("Channels",
+		for (UChannel* Channel : Channels)
+		{
+			Ar << Channel;
+		}
+	);
 
 	if (Ar.IsCountingMemory())
 	{
 		// TODO: We don't currently track:
 		//		StatelessConnectComponents
-		//		PacketHandlers
 		//		AnalyticsVars
 		//		AnalyticsData
 		//		Histogram data.
 		// These are probably insignificant, though.
 
-		GRANULAR_NETWORK_MEMORY_TRACKING_INIT(Ar, "UNetConnection::Serialize");
+		GRANULAR_NETWORK_MEMORY_TRACKING_TRACK("Channels", Channels.CountBytes(Ar));
 
 		GRANULAR_NETWORK_MEMORY_TRACKING_TRACK("Challenge", Challenge.CountBytes(Ar));
 		GRANULAR_NETWORK_MEMORY_TRACKING_TRACK("ClientResponse", ClientResponse.CountBytes(Ar));
 		GRANULAR_NETWORK_MEMORY_TRACKING_TRACK("RequestURL", RequestURL.CountBytes(Ar));
-
-PRAGMA_DISABLE_DEPRECATION_WARNINGS
-		GRANULAR_NETWORK_MEMORY_TRACKING_TRACK("CDKeyHash", CDKeyHash.CountBytes(Ar));
-		GRANULAR_NETWORK_MEMORY_TRACKING_TRACK("CDKeyResponse", CDKeyResponse.CountBytes(Ar));
-PRAGMA_ENABLE_DEPRECATION_WARNINGS
 
 		GRANULAR_NETWORK_MEMORY_TRACKING_TRACK("SendBuffer", SendBuffer.CountMemory(Ar));
 
@@ -558,12 +702,28 @@ PRAGMA_ENABLE_DEPRECATION_WARNINGS
 		GRANULAR_NETWORK_MEMORY_TRACKING_TRACK("LastOut", LastOut.CountMemory(Ar));
 		GRANULAR_NETWORK_MEMORY_TRACKING_TRACK("SendBunchHeader", SendBunchHeader.CountMemory(Ar));
 
+		GRANULAR_NETWORK_MEMORY_TRACKING_TRACK("PacketHandler",
+			if (Handler.IsValid())
+			{
+				// PacketHandler already counts its size.
+				Handler->CountBytes(Ar);
+			}
+		);
+
 #if DO_ENABLE_NET_TEST
 		GRANULAR_NETWORK_MEMORY_TRACKING_TRACK("Delayed",
 			Delayed.CountBytes(Ar);
-			for (const DelayedPacket& Packet : Delayed)
+			for (const FDelayedPacket& Packet : Delayed)
 			{
 				Packet.CountBytes(Ar);
+			}
+		);
+
+		GRANULAR_NETWORK_MEMORY_TRACKING_TRACK("DelayedIncoming", 
+			DelayedIncomingPackets.CountBytes(Ar);
+			for (const FDelayedIncomingPacket& DelayedPacket : DelayedIncomingPackets)
+			{
+				DelayedPacket.CountBytes(Ar);
 			}
 		);
 #endif
@@ -591,6 +751,11 @@ void UNetConnection::Close()
 		if (NetAnalyticsData.IsValid())
 		{
 			NetAnalyticsData->CommitAnalytics(AnalyticsVars);
+		}
+
+		if (const uint32 MyConnectionId = GetConnectionId())
+		{
+			UE_NET_TRACE_CONNECTION_CLOSED(NetTraceId, MyConnectionId);
 		}
 	}
 
@@ -627,7 +792,7 @@ void UNetConnection::CleanUp()
 
 	Close();
 
-	if (Driver != NULL)
+	if (Driver != nullptr)
 	{
 		// Remove from driver.
 		if (Driver->ServerConnection)
@@ -668,6 +833,16 @@ void UNetConnection::CleanUp()
 		}
 	}
 
+	if (Driver != nullptr)
+	{
+		// It would be nicer to have the Driver handle this internally, but unfortunately the ServerConnection member is public.
+		// Otherwise we'd be able to do the appropriate logic in Add/Remove Client/ServerConnection
+		if (const uint32 MyConnectionId = GetConnectionId())
+		{
+			Driver->FreeConnectionId(MyConnectionId);
+		}
+	}
+
 	KeepProcessingActorChannelBunchesMap.Empty();
 
 	PackageMap = NULL;
@@ -702,6 +877,13 @@ void UNetConnection::CleanUp()
 	SetClientLoginState(EClientLoginState::CleanedUp);
 
 	Driver = nullptr;
+
+#if UE_NET_TRACE_ENABLED	
+	UE_NET_TRACE_DESTROY_COLLECTOR(InTraceCollector);
+	UE_NET_TRACE_DESTROY_COLLECTOR(OutTraceCollector);
+	InTraceCollector = nullptr;
+	OutTraceCollector = nullptr;
+#endif
 }
 
 UChildConnection::UChildConnection(const FObjectInitializer& ObjectInitializer)
@@ -802,9 +984,6 @@ void UNetConnection::AssertValid()
 	check(State==USOCK_Closed || State==USOCK_Pending || State==USOCK_Open);
 
 }
-void UNetConnection::SendPackageMap()
-{
-}
 
 bool UNetConnection::ClientHasInitializedLevelFor(const AActor* TestActor) const
 {
@@ -861,39 +1040,30 @@ void UNetConnection::UpdateAllCachedLevelVisibility() const
 
 void UNetConnection::UpdateLevelVisibility(const FName& PackageName, bool bIsVisible)
 {
+	FUpdateLevelVisibilityLevelInfo LevelVisibility;
+	LevelVisibility.PackageName = PackageName;
+	LevelVisibility.FileName = PackageName;
+	LevelVisibility.bIsVisible = bIsVisible;
+
+	UpdateLevelVisibility(LevelVisibility);
+}
+
+void UNetConnection::UpdateLevelVisibility(const FUpdateLevelVisibilityLevelInfo& LevelVisibility)
+{
+	using namespace UE4_NetConnectionPrivate;
+
 	GNumClientUpdateLevelVisibility++;
 
 	// add or remove the level package name from the list, as requested
-	if (bIsVisible)
+	if (LevelVisibility.bIsVisible)
 	{
 		// verify that we were passed a valid level name
-		FString Filename;
-		UPackage* TempPkg = FindPackage(nullptr, *PackageName.ToString());
-		FLinkerLoad* Linker = FLinkerLoad::FindExistingLinkerForPackage(TempPkg);
+		FValidateLevelVisibilityResult VisibilityResult = ValidateLevelVisibility(GetWorld(), LevelVisibility);
 
-		// If we have a linker we know it has been loaded off disk successfully
-		// If we have a file it is fine too
-		// If its in our own streaming level list, its good
-
-		struct Local
+		if (VisibilityResult.bLevelExists)
 		{
-			static bool IsInLevelList(UWorld* World, FName InPackageName)
-			{
-				for (ULevelStreaming* StreamingLevel : World->GetStreamingLevels())
-				{
-					if (StreamingLevel && (StreamingLevel->GetWorldAssetPackageFName() == InPackageName ))
-					{
-						return true;
-					}
-				}
-				return false;
-			}
-		};
-
-		if ( Linker || FPackageName::DoesPackageExist(PackageName.ToString(), nullptr, &Filename ) || Local::IsInLevelList(GetWorld(), PackageName ) )
-		{
-			ClientVisibleLevelNames.Add(PackageName);
-			UE_LOG( LogPlayerController, Verbose, TEXT("ServerUpdateLevelVisibility() Added '%s'"), *PackageName.ToString() );
+			ClientVisibleLevelNames.Add(LevelVisibility.PackageName);
+			UE_LOG(LogPlayerController, Verbose, TEXT("ServerUpdateLevelVisibility() Added '%s'"), *LevelVisibility.PackageName.ToString());
 
 			QUICK_USE_CYCLE_STAT(NetUpdateLevelVisibility_UpdateDormantActors, STATGROUP_Net);
 
@@ -901,7 +1071,7 @@ void UNetConnection::UpdateLevelVisibility(const FName& PackageName, bool bIsVis
 			// destroyed actors list when the level is reloaded, so seek them out and add in
 			for (const auto& DestroyedPair : Driver->DestroyedStartupOrDormantActors)
 			{
-				if (DestroyedPair.Value->StreamingLevelName == PackageName)
+				if (DestroyedPair.Value->StreamingLevelName == LevelVisibility.PackageName)
 				{
 					AddDestructionInfo(DestroyedPair.Value.Get());
 				}
@@ -910,9 +1080,9 @@ void UNetConnection::UpdateLevelVisibility(const FName& PackageName, bool bIsVis
 			// Any dormant actor that has changes flushed or made before going dormant needs to be updated on the client 
 			// when the streaming level is loaded, so mark them active for this connection
 			UWorld* LevelWorld = nullptr;
-			if (TempPkg)
+			if (VisibilityResult.Package)
 			{
-				LevelWorld = (UWorld*)FindObjectWithOuter(TempPkg, UWorld::StaticClass());
+				LevelWorld = (UWorld*)FindObjectWithOuter(VisibilityResult.Package, UWorld::StaticClass());
 				if (LevelWorld)
 				{
 					if (LevelWorld->PersistentLevel)
@@ -924,7 +1094,7 @@ void UNetConnection::UpdateLevelVisibility(const FName& PackageName, bool bIsVis
 							// to mark Dormant All Actors as (temporarily) active to get the update sent over
 							if (Actor && Actor->GetIsReplicated() && (Actor->NetDormancy == DORM_DormantAll))
 							{
-								NetworkObjectList.MarkActive( Actor, this, Driver );
+								NetworkObjectList.MarkActive(Actor, this, Driver);
 							}
 						}
 					}
@@ -933,33 +1103,37 @@ void UNetConnection::UpdateLevelVisibility(const FName& PackageName, bool bIsVis
 
 			if (ReplicationConnectionDriver)
 			{
-				ReplicationConnectionDriver->NotifyClientVisibleLevelNamesAdd(PackageName, LevelWorld);
+				ReplicationConnectionDriver->NotifyClientVisibleLevelNamesAdd(LevelVisibility.PackageName, LevelWorld);
 			}
 
 		}
 		else
 		{
-			UE_LOG( LogPlayerController, Warning, TEXT("ServerUpdateLevelVisibility() ignored non-existant package '%s'"), *PackageName.ToString() );
-			Close();
+			UE_LOG(LogPlayerController, Warning, TEXT("ServerUpdateLevelVisibility() ignored non-existant package. PackageName='%s', FileName='%s'"), *LevelVisibility.PackageName.ToString(), *LevelVisibility.FileName.ToString());
+
+			if (!LevelVisibility.bSkipCloseOnError)
+			{
+				Close();
+			}
 		}
 	}
 	else
 	{
-		ClientVisibleLevelNames.Remove(PackageName);
-		UE_LOG( LogPlayerController, Verbose, TEXT("ServerUpdateLevelVisibility() Removed '%s'"), *PackageName.ToString() );
+		ClientVisibleLevelNames.Remove(LevelVisibility.PackageName);
+		UE_LOG(LogPlayerController, Verbose, TEXT("ServerUpdateLevelVisibility() Removed '%s'"), *LevelVisibility.PackageName.ToString());
 		if (ReplicationConnectionDriver)
 		{
-			ReplicationConnectionDriver->NotifyClientVisibleLevelNamesRemove(PackageName);
+			ReplicationConnectionDriver->NotifyClientVisibleLevelNamesRemove(LevelVisibility.PackageName);
 		}
 			
 		// Close any channels now that have actors that were apart of the level the client just unloaded
-		for ( auto It = ActorChannels.CreateIterator(); It; ++It )
+		for (auto It = ActorChannels.CreateIterator(); It; ++It)
 		{
-			UActorChannel* Channel = It.Value();					
+			UActorChannel* Channel = It.Value();
 
-			check( Channel->OpenedLocally );
+			check(Channel->OpenedLocally);
 
-			if ( Channel->Actor && Channel->Actor->GetLevel()->GetOutermost()->GetFName() == PackageName )
+			if (Channel->Actor && Channel->Actor->GetLevel()->GetOutermost()->GetFName() == LevelVisibility.PackageName)
 			{
 				Channel->Close(EChannelCloseReason::LevelUnloaded);
 			}
@@ -1002,6 +1176,8 @@ void UNetConnection::InitSendBuffer()
 		SendBuffer = FBitWriter(FinalBufferSize);
 	}
 
+	HeaderMarkForPacketInfo.Reset();
+
 	ResetPacketBitCounts();
 
 	ValidateSendBuffer();
@@ -1021,11 +1197,13 @@ void UNetConnection::ReceivedRawPacket( void* InData, int32 Count )
 	}
 #endif
 
+#if DO_ENABLE_NET_TEST
 	// Opportunity for packet loss burst simulation to drop the incoming packet.
 	if (Driver && Driver->IsSimulatingPacketLossBurst())
 	{
 		return;
 	}
+#endif
 
 	uint8* Data = (uint8*)InData;
 
@@ -1110,6 +1288,9 @@ void UNetConnection::ReceivedRawPacket( void* InData, int32 Count )
 			if (Reader.GetBitsLeft() > 0)
 			{
 				ReceivedPacket(Reader);
+
+				// Check if the out of order packet cache needs flushing
+				FlushPacketOrderCache();
 			}
 		}
 		// MalformedPacket - Received a packet with 0's in the last byte
@@ -1125,6 +1306,88 @@ void UNetConnection::ReceivedRawPacket( void* InData, int32 Count )
 	}
 }
 
+void UNetConnection::PostTickDispatch()
+{
+	if (!IsInternalAck())
+	{
+#if DO_ENABLE_NET_TEST
+		ReinjectDelayedPackets();
+#endif
+
+		FlushPacketOrderCache(/*bFlushWholeCache=*/true);
+		PacketAnalytics.Tick();
+	}
+}
+
+void UNetConnection::FlushPacketOrderCache(bool bFlushWholeCache/*=false*/)
+{
+	if (PacketOrderCache.IsSet() && PacketOrderCacheCount > 0)
+	{
+		TCircularBuffer<TUniquePtr<FBitReader>>& Cache = PacketOrderCache.GetValue();
+		int32 CacheEndIdx = PacketOrderCache->GetPreviousIndex(PacketOrderCacheStartIdx);
+		bool bEndOfCacheSet = Cache[CacheEndIdx].IsValid();
+
+		bFlushingPacketOrderCache = true;
+
+		// If the end of the cache has had its value set, this forces the flushing of the whole cache, no matter how many missing sequences there are.
+		// The reason for this (other than making space in the cache), is that when we receive a sequence that is out of range of the cache,
+		// it is stored at the end, and so the cache index no longer lines up with the sequence number - which it needs to.
+		bFlushWholeCache = bFlushWholeCache || bEndOfCacheSet;
+
+		while (PacketOrderCacheCount > 0)
+		{
+			TUniquePtr<FBitReader>& CurCachePacket = Cache[PacketOrderCacheStartIdx];
+
+			if (CurCachePacket.IsValid())
+			{
+				UE_LOG(LogNet, VeryVerbose, TEXT("'Out of Order' Packet Cache, replaying packet with cache index: %i (bFlushWholeCache: %i)"), PacketOrderCacheStartIdx, (int32)bFlushWholeCache);
+
+				ReceivedPacket(*CurCachePacket.Get());
+
+				CurCachePacket.Reset();
+
+				PacketOrderCacheCount--;
+			}
+			// Advance the cache only up to the first missing packet, unless flushing the whole cache
+			else if (!bFlushWholeCache)
+			{
+				break;
+			}
+
+			PacketOrderCacheStartIdx = PacketOrderCache->GetNextIndex(PacketOrderCacheStartIdx);
+		}
+
+		bFlushingPacketOrderCache = false;
+	}
+}
+
+#if DO_ENABLE_NET_TEST
+void UNetConnection::ReinjectDelayedPackets()
+{
+	if (DelayedIncomingPackets.Num() > 0)
+	{
+		const double CurrentTime = FPlatformTime::Seconds();
+
+		TGuardValue<bool> ReinjectingGuard(bIsReinjectingDelayedPackets, true);
+
+		uint32 NbReinjected(0);
+		for (const FDelayedIncomingPacket& DelayedPacket : DelayedIncomingPackets)
+		{
+			if (DelayedPacket.ReinjectionTime > CurrentTime)
+			{
+				break;
+			}
+
+			++NbReinjected;
+			ReceivedPacket(*DelayedPacket.PacketData.Get());
+		}
+
+		// Delete processed packets
+		DelayedIncomingPackets.RemoveAt(0, NbReinjected, false);
+	}
+}
+#endif //#if DO_ENABLE_NET_TEST
+
 uint32 GNetOutBytes = 0;
 
 void UNetConnection::FlushNet(bool bIgnoreSimulation)
@@ -1137,7 +1400,7 @@ void UNetConnection::FlushNet(bool bIgnoreSimulation)
 	TimeSensitive = 0;
 
 	// If there is any pending data to send, send it.
-	if (SendBuffer.GetNumBits() || HasDirtyAcks || ( Driver->Time-LastSendTime > Driver->KeepAliveTime && !InternalAck && State != USOCK_Closed))
+	if (SendBuffer.GetNumBits() || HasDirtyAcks || ( Driver->GetElapsedTime() - LastSendTime > Driver->KeepAliveTime && !IsInternalAck() && State != USOCK_Closed))
 	{
 		// Due to the PacketHandler handshake code, servers must never send the client data,
 		// before first receiving a client control packet (which is taken as an indication of a complete handshake).
@@ -1168,16 +1431,19 @@ void UNetConnection::FlushNet(bool bIgnoreSimulation)
 			Handler->OutgoingHigh(SendBuffer);
 		}
 
+		const double PacketSentTimeInS = FPlatformTime::Seconds();
 
 		// Write the UNetConnection-level termination bit
 		SendBuffer.WriteBit(1);
 
 		// Refresh outgoing header with latest data
-		if ( !InternalAck )
+		if ( !IsInternalAck() )
 		{
 			// if we update ack, we also update received ack associated with outgoing seq
 			// so we know how many ack bits we need to write (which is updated in received packet)
 			WritePacketHeader(SendBuffer);
+
+			WriteFinalPacketInfo(SendBuffer, PacketSentTimeInS);
 		}
 
 		ValidateSendBuffer();
@@ -1190,51 +1456,33 @@ void UNetConnection::FlushNet(bool bIgnoreSimulation)
 		Traits.NumAckBits = NumAckBits;
 		Traits.NumBunchBits = NumBunchBits;
 
-
 		NETWORK_PROFILER(GNetworkProfiler.FlushOutgoingBunches(this));
+
+		// Flush and destroy collector
+#if UE_NET_TRACE_ENABLED	
+		if (OutTraceCollector)
+		{
+			UE_NET_TRACE_FLUSH_COLLECTOR(OutTraceCollector, NetTraceId, GetConnectionId(), ENetTracePacketType::Outgoing);
+			UE_NET_TRACE_DESTROY_COLLECTOR(OutTraceCollector);
+			OutTraceCollector = nullptr;
+		}
+		// Report end of packet
+		UE_NET_TRACE_PACKET_SEND(NetTraceId, GetConnectionId(), OutPacketId, SendBuffer.GetNumBits());
+#endif
 
 		// Send now.
 #if DO_ENABLE_NET_TEST
+
+		bool bWasPacketEmulated(false);
+
 		// if the connection is closing/being destroyed/etc we need to send immediately regardless of settings
 		// because we won't be around to send it delayed
-		if (State == USOCK_Closed || IsGarbageCollecting() || bIgnoreSimulation || InternalAck)
+		if (State != USOCK_Closed && !IsGarbageCollecting() && !bIgnoreSimulation && !IsInternalAck())
 		{
-			// Checked in FlushNet() so each child class doesn't have to implement this
-			if (Driver->IsNetResourceValid())
-			{
-				LowLevelSend(SendBuffer.GetData(), SendBuffer.GetNumBits(), Traits);
-			}
+			bWasPacketEmulated = CheckOutgoingPacketEmulation(Traits);
 		}
-		else if (PacketSimulationSettings.PktOrder)
-		{
-			DelayedPacket& B = *(new(Delayed)DelayedPacket(SendBuffer.GetData(), SendBuffer.GetNumBits(), Traits));
 
-			for (int32 i=Delayed.Num() - 1; i >= 0; i--)
-			{
-				if (FMath::FRand() > 0.50)
-				{
-					if (!ShouldDropOutgoingPacketForLossSimulation(SendBuffer.GetNumBits()))
-					{
-						// Checked in FlushNet() so each child class doesn't have to implement this
-						if (Driver->IsNetResourceValid())
-						{
-							LowLevelSend((char*) &Delayed[i].Data[0], Delayed[i].SizeBits, Delayed[i].Traits);
-						}
-					}
-					Delayed.RemoveAt(i);
-				}
-			}
-		}
-		else if (PacketSimulationSettings.PktLag)
-		{
-			if (!ShouldDropOutgoingPacketForLossSimulation(SendBuffer.GetNumBits()))
-			{
-				DelayedPacket& B = *(new(Delayed)DelayedPacket(SendBuffer.GetData(), SendBuffer.GetNumBits(), Traits));
-
-				B.SendTime = FPlatformTime::Seconds() + (double(PacketSimulationSettings.PktLag)  + 2.0f * (FMath::FRand() - 0.5f) * double(PacketSimulationSettings.PktLagVariance))/ 1000.f;
-			}
-		}
-		else if (!ShouldDropOutgoingPacketForLossSimulation(SendBuffer.GetNumBits()))
+		if (!bWasPacketEmulated)
 		{
 #endif
 			// Checked in FlushNet() so each child class doesn't have to implement this
@@ -1254,16 +1502,16 @@ void UNetConnection::FlushNet(bool bIgnoreSimulation)
 		}
 #endif
 		// Update stuff.
-		const int32 Index = OutPacketId & (ARRAY_COUNT(OutLagPacketId)-1);
+		const int32 Index = OutPacketId & (UE_ARRAY_COUNT(OutLagPacketId)-1);
 
 		// Remember the actual time this packet was sent out, so we can compute ping when the ack comes back
 		OutLagPacketId[Index]			= OutPacketId;
-		OutLagTime[Index]				= FPlatformTime::Seconds();
+		OutLagTime[Index]				= PacketSentTimeInS;
 	
 		OutBytesPerSecondHistory[Index]	= FMath::Min(OutBytesPerSecond / 1024, 255);
 
 		// Increase outgoing sequence number
-		if (!InternalAck)
+		if (!IsInternalAck())
 		{
 			PacketNotify.CommitAndIncrementOutSeq();
 		}
@@ -1278,11 +1526,14 @@ void UNetConnection::FlushNet(bool bIgnoreSimulation)
 		Driver->OutPackets++;
 		Driver->OutTotalPackets++;
 
-		//Record the packet time to the histogram
-		double LastPacketTimeDiffInMs = (Driver->Time - LastSendTime) * 1000.0;
-		NetConnectionHistogram.AddMeasurement(LastPacketTimeDiffInMs);
+		//Record the first packet time in the histogram
+		if (bFlushedNetThisFrame == false)
+		{
+			double LastPacketTimeDiffInMs = (Driver->GetElapsedTime() - LastSendTime) * 1000.0;
+			NetConnectionHistogram.AddMeasurement(LastPacketTimeDiffInMs);
+		}
 
-		LastSendTime = Driver->Time;
+		LastSendTime = Driver->GetElapsedTime();
 
 		const int32 PacketBytes = SendBuffer.GetNumBytes() + PacketOverhead;
 
@@ -1296,20 +1547,101 @@ void UNetConnection::FlushNet(bool bIgnoreSimulation)
 
 		AnalyticsVars.OutAckOnlyCount += (NumAckBits > 0 && NumBunchBits == 0);
 
+		bFlushedNetThisFrame = true;
+
 		InitSendBuffer();
 	}
 }
 
+#if DO_ENABLE_NET_TEST
+bool UNetConnection::CheckOutgoingPacketEmulation(FOutPacketTraits& Traits)
+{
+	if (ShouldDropOutgoingPacketForLossSimulation(SendBuffer.GetNumBits()))
+	{
+		UE_LOG(LogNet, VeryVerbose, TEXT("Dropping outgoing packet at %f"), FPlatformTime::Seconds());
+		return true;
+	}
+	else if (PacketSimulationSettings.PktOrder)
+	{
+		FDelayedPacket& B = *(new(Delayed)FDelayedPacket(SendBuffer.GetData(), SendBuffer.GetNumBits(), Traits));
+
+		for (int32 i = Delayed.Num() - 1; i >= 0; i--)
+		{
+			if (FMath::FRand() > 0.50)
+			{
+				// Checked in FlushNet() so each child class doesn't have to implement this
+				if (Driver->IsNetResourceValid())
+				{
+					LowLevelSend((char*)&Delayed[i].Data[0], Delayed[i].SizeBits, Delayed[i].Traits);
+				}
+
+				Delayed.RemoveAt(i);
+			}
+		}
+
+		return true;
+	}
+	else if (PacketSimulationSettings.PktJitter != 0)
+	{
+		bSendDelayedPacketsOutofOrder = true;
+
+		FDelayedPacket& B = *(new(Delayed)FDelayedPacket(SendBuffer.GetData(), SendBuffer.GetNumBits(), Traits));
+
+		// In order to cause jitter, send one packet at min latency and the next packet at high latency
+		bool bIsLowLatency = (OutPacketId % 2) == 0;
+
+		if (bIsLowLatency)
+		{
+			// ExtraLag goes from [PktLagMin, PktLagMin+PktLagVariance]
+			const double LagVariance = 2.0f * (FMath::FRand() - 0.5f) * double(PacketSimulationSettings.PktLagVariance);
+			const double ExtraLag = (double(PacketSimulationSettings.PktLagMin) + LagVariance) / 1000.f;
+			B.SendTime = FPlatformTime::Seconds() + ExtraLag;
+		}
+		else
+		{
+			// ExtraLag goes from [PktLagMin+PktJitter, PktLagMin+PktJitter+PktLagVariance]
+			const double LagVariance = 2.0f * (FMath::FRand() - 0.5f) * double(PacketSimulationSettings.PktLagVariance);
+			const double ExtraLag = (double(PacketSimulationSettings.PktLagMin + PacketSimulationSettings.PktJitter) + LagVariance) / 1000.f;
+			B.SendTime = FPlatformTime::Seconds() + ExtraLag;
+		}
+	}
+	else if (PacketSimulationSettings.PktLag)
+	{
+		FDelayedPacket& B = *(new(Delayed)FDelayedPacket(SendBuffer.GetData(), SendBuffer.GetNumBits(), Traits));
+
+		// ExtraLag goes from PktLag + [-PktLagVariance, PktLagVariance]
+		const double LagVariance = 2.0f * (FMath::FRand() - 0.5f) * double(PacketSimulationSettings.PktLagVariance);
+		const double ExtraLag = (double(PacketSimulationSettings.PktLag) + LagVariance) / 1000.f;
+		B.SendTime = FPlatformTime::Seconds() + ExtraLag;
+
+		return true;
+
+	}
+	else if (PacketSimulationSettings.PktLagMin > 0 || PacketSimulationSettings.PktLagMax > 0)
+	{
+		FDelayedPacket& B = *(new(Delayed)FDelayedPacket(SendBuffer.GetData(), SendBuffer.GetNumBits(), Traits));
+
+		// ExtraLag goes from [PktLagMin, PktLagMax]
+		const double LagVariance = FMath::FRand() * double(PacketSimulationSettings.PktLagMax - PacketSimulationSettings.PktLagMin);
+		const double ExtraLag = (double(PacketSimulationSettings.PktLagMin) + LagVariance) / 1000.f;
+		B.SendTime = FPlatformTime::Seconds() + ExtraLag;
+		
+		return true;
+	}
+
+	return false;
+}
+#endif
+
+#if DO_ENABLE_NET_TEST
 bool UNetConnection::ShouldDropOutgoingPacketForLossSimulation(int64 NumBits) const
 {
-#if DO_ENABLE_NET_TEST
-	return Driver->IsSimulatingPacketLossBurst() ||
-		(NumBits > PacketSimulationSettings.PktLossMinSize * 8 && NumBits < PacketSimulationSettings.PktLossMaxSize * 8
-		&& PacketSimulationSettings.PktLoss > 0 && FMath::FRand() * 100.f < PacketSimulationSettings.PktLoss);
-#else
-	return false;
-#endif
+	return Driver->IsSimulatingPacketLossBurst() || 
+		(PacketSimulationSettings.PktLoss > 0 && 
+         PacketSimulationSettings.ShouldDropPacketOfSize(NumBits) && 
+         FMath::FRand() * 100.f < PacketSimulationSettings.PktLoss);
 }
+#endif
 
 int32 UNetConnection::IsNetReady( bool Saturate )
 {
@@ -1318,6 +1650,13 @@ int32 UNetConnection::IsNetReady( bool Saturate )
 	{
 		QueuedBits = -SendBuffer.GetNumBits();
 	}
+
+#if !(UE_BUILD_SHIPPING || UE_BUILD_TEST)
+	if (CVarDisableBandwithThrottling.GetValueOnAnyThread() > 0)
+	{
+		return true;
+	}
+#endif
 
 	return QueuedBits + SendBuffer.GetNumBits() <= 0;
 }
@@ -1335,7 +1674,12 @@ void UNetConnection::ReceivedAck(int32 AckPacketId)
 	OutAckPacketId = AckPacketId;
 
 	// Process the bunch.
-	LastRecvAckTime = Driver->Time;
+	PRAGMA_DISABLE_DEPRECATION_WARNINGS
+	LastRecvAckTime = Driver->GetElapsedTime();
+	PRAGMA_ENABLE_DEPRECATION_WARNINGS
+	LastRecvAckTimestamp = Driver->GetElapsedTime();
+
+	PacketAnalytics.TrackAck(AckPacketId);
 
 	if (PackageMap != NULL)
 	{
@@ -1367,6 +1711,7 @@ void UNetConnection::ReceivedAck(int32 AckPacketId)
 					OutBunch->ReceivedAck = 1;
 				}
 			}
+			Channel->ReceivedAck(AckedPacketId);
 			Channel->ReceivedAcks(); //warning: May destroy Channel.
 		}
 	};
@@ -1379,7 +1724,11 @@ void UNetConnection::ReceivedNak( int32 NakPacketId )
 {
 	UE_LOG(LogNetTraffic, Verbose, TEXT("   Received nak %i"), NakPacketId);
 
+	UE_NET_TRACE_PACKET_DROPPED(NetTraceId, GetConnectionId(), NakPacketId, ENetTracePacketType::Outgoing);
+
 	SCOPE_CYCLE_COUNTER(Stat_NetConnectionReceivedNak);
+
+	PacketAnalytics.TrackNak(NakPacketId);
 
 	// Update pending NetGUIDs
 	PackageMap->ReceivedNak(NakPacketId);
@@ -1403,6 +1752,7 @@ void UNetConnection::ReceivedNak( int32 NakPacketId )
 	// Stats
 	++OutPacketsLost;
 	++OutTotalPacketsLost;
+	++Driver->OutPacketsLost;
 	++Driver->OutTotalPacketsLost;
 }
 
@@ -1422,6 +1772,10 @@ void UNetConnection::WritePacketHeader(FBitWriter& Writer)
 	// Write notification header or refresh the header if used space is the same.
 	bool bWroteHeader = PacketNotify.WriteHeader(Writer, bIsHeaderUpdate);
 
+#if !UE_BUILD_SHIPPING
+	checkf(Writer.GetNumBits() <= MAX_PACKET_RELIABLE_SEQUENCE_HEADER_BITS, TEXT("WritePacketHeader exceeded the max allowed bits. Wrote %d. Max %d"), Writer.GetNumBits(), MAX_PACKET_RELIABLE_SEQUENCE_HEADER_BITS);
+#endif
+
 	// Jump back to where we came from.
 	if (bIsHeaderUpdate)
 	{
@@ -1435,27 +1789,124 @@ void UNetConnection::WritePacketHeader(FBitWriter& Writer)
 	}
 }
 
-void UNetConnection::WritePacketInfo(FBitWriter& Writer) const
+void UNetConnection::WriteDummyPacketInfo(FBitWriter& Writer)
 {
-	const uint8 bHasServerFrameTime = Driver->IsServer() ? bLastHasServerFrameTime : ( CVarPingExcludeFrameTime.GetValueOnGameThread() > 0 ? 1u : 0u );
+#if !UE_BUILD_SHIPPING
+	const int32 BitsWrittenPrePacketInfo = Writer.GetNumBits();
+#endif
 
-	// Write data used to calculate link latency
-	Writer.WriteBit(bHasServerFrameTime);
-	if (bHasServerFrameTime && Driver->IsServer())
+	// The first packet of a frame will include the packet info payload
+	const bool bHasPacketInfoPayload = bFlushedNetThisFrame == false;
+	Writer.WriteBit(bHasPacketInfoPayload);
+
+	if (bHasPacketInfoPayload)
 	{
-		uint8 FrameTimeByte = FMath::Min( FMath::FloorToInt( FrameTime * 1000 ), 255 );
-		Writer << FrameTimeByte;
+		// Pre-insert the bits since the final time values will be calculated and inserted right before LowLevelSend
+		HeaderMarkForPacketInfo.Init(Writer);
+		uint32 DummyJitterClockTime(0);
+		Writer.SerializeBits(&DummyJitterClockTime, NetConnectionHelper::NumBitsForJitterClockTimeInHeader);
+
+#if !UE_BUILD_SHIPPING
+		checkf(Writer.GetNumBits() - BitsWrittenPrePacketInfo == (1 + NetConnectionHelper::NumBitsForJitterClockTimeInHeader), TEXT("WriteDummyPacketInfo did not write the expected nb of bits: Wrote %d, Expected %d"),
+			   Writer.GetNumBits() - BitsWrittenPrePacketInfo, (1 + NetConnectionHelper::NumBitsForJitterClockTimeInHeader));
+#endif
+
+		const uint8 bHasServerFrameTime = Driver->IsServer() ? bLastHasServerFrameTime : (CVarPingExcludeFrameTime.GetValueOnGameThread() > 0 ? 1u : 0u);
+		Writer.WriteBit(bHasServerFrameTime);
+
+		if (bHasServerFrameTime && Driver->IsServer())
+		{
+			uint8 DummyFrameTimeByte(0);
+			Writer << DummyFrameTimeByte;
+		}
 	}
 
-	// Notify server of our current rate per second at this time
-	uint8 InKBytesPerSecondByte = FMath::Min(InBytesPerSecond / 1024, 255);
-	Writer << InKBytesPerSecondByte;
+	bSendBufferHasDummyPacketInfo = bHasPacketInfoPayload;
+
+#if !UE_BUILD_SHIPPING
+	checkf(Writer.GetNumBits() - BitsWrittenPrePacketInfo <= MAX_PACKET_INFO_HEADER_BITS, TEXT("WriteDummyPacketInfo exceeded the max allowed bits. Wrote %d. Max %d"), Writer.GetNumBits() - BitsWrittenPrePacketInfo, MAX_PACKET_INFO_HEADER_BITS);
+#endif
 }
 
-bool UNetConnection::ReadPacketInfo(FBitReader& Reader)
+void UNetConnection::WriteFinalPacketInfo(FBitWriter& Writer, const double PacketSentTimeInS)
 {
+	if (bSendBufferHasDummyPacketInfo == false)
+	{
+		// PacketInfo payload is not included in this SendBuffer; nothing to rewrite
+		return;
+	}
+
+	check(HeaderMarkForPacketInfo.GetNumBits() != 0);
+
+	FBitWriterMark CurrentMark(Writer);
+
+	// Go back to write over the dummy bits
+	HeaderMarkForPacketInfo.PopWithoutClear(Writer);
+
+#if !UE_BUILD_SHIPPING
+	const int32 BitsWrittenPreJitterClock = Writer.GetNumBits();
+#endif
+
+	// Write Jitter clock time
+	{
+		const double DeltaSendTimeInMS = (PacketSentTimeInS - PreviousPacketSendTimeInS) * 1000.0;
+
+		uint32 ClockTimeMilliseconds = 0;
+
+		// If the delta is over our max precision, we send MAX value and jitter will be ignored by the receiver.
+		if (DeltaSendTimeInMS >= UE4_NetConnectionPrivate::MaxJitterPrecisionInMS)
+		{
+			ClockTimeMilliseconds = UE4_NetConnectionPrivate::MaxJitterClockTimeValue;
+		}
+		else
+		{
+			// Get the fractional part (milliseconds) of the clock time
+			ClockTimeMilliseconds = UE4_NetConnectionPrivate::GetClockTimeMilliseconds(PacketSentTimeInS);
+
+			// Ensure we don't overflow
+			ClockTimeMilliseconds &= UE4_NetConnectionPrivate::MaxJitterClockTimeValue;
+		}
+
+		Writer.SerializeInt(ClockTimeMilliseconds, UE4_NetConnectionPrivate::MaxJitterClockTimeValue + 1);
+
+#if !UE_BUILD_SHIPPING
+		checkf(Writer.GetNumBits() - BitsWrittenPreJitterClock == NetConnectionHelper::NumBitsForJitterClockTimeInHeader, TEXT("WriteFinalPacketInfo did not write the expected nb of bits: Wrote %d, Expected %d"),
+			   Writer.GetNumBits() - BitsWrittenPreJitterClock, NetConnectionHelper::NumBitsForJitterClockTimeInHeader);
+#endif
+
+		PreviousPacketSendTimeInS = PacketSentTimeInS;
+	}
+
+	// Write server frame time
+	{
+		const uint8 bHasServerFrameTime = Driver->IsServer() ? bLastHasServerFrameTime : (CVarPingExcludeFrameTime.GetValueOnGameThread() > 0 ? 1u : 0u);
+		Writer.WriteBit(bHasServerFrameTime);
+
+		if (bHasServerFrameTime && Driver->IsServer())
+		{
+			// Write data used to calculate link latency
+			uint8 FrameTimeByte = FMath::Min(FMath::FloorToInt(FrameTime * 1000), 255);
+			Writer << FrameTimeByte;
+		}
+	}
+	
+	HeaderMarkForPacketInfo.Reset();
+	
+	// Revert to the correct bit writing place
+	CurrentMark.PopWithoutClear(Writer);
+}
+
+bool UNetConnection::ReadPacketInfo(FBitReader& Reader, bool bHasPacketInfoPayload)
+{
+	// If this packet did not contain any packet info, nothing else to read
+	if (bHasPacketInfoPayload == false)
+	{
+		const bool bCanContinueReading = Reader.IsError() == false;
+		return bCanContinueReading;
+	}
+
 	const bool bHasServerFrameTime = Reader.ReadBit() == 1u;
-	double ServerFrameTime = 0;
+	double ServerFrameTime = 0.0;
 
 	if ( !Driver->IsServer() )
 	{
@@ -1472,10 +1923,13 @@ bool UNetConnection::ReadPacketInfo(FBitReader& Reader)
 		bLastHasServerFrameTime = bHasServerFrameTime;
 	}
 
-	// limit to known size to know the size of the packet header
-	uint8 RemoteInKBytesPerSecondByte = 0;
-	Reader << RemoteInKBytesPerSecondByte;
+	if (Reader.EngineNetVer() < HISTORY_JITTER_IN_HEADER)
+	{
+		uint8 RemoteInKBytesPerSecondByte = 0;
+		Reader << RemoteInKBytesPerSecondByte;
+	}
 
+	// limit to known size to know the size of the packet header
 	if ( Reader.IsError() )
 	{
 		return false;
@@ -1483,7 +1937,7 @@ bool UNetConnection::ReadPacketInfo(FBitReader& Reader)
 
 	// Update ping
 	// At this time we have updated OutAckPacketId to the latest received ack.
-	const int32 Index = OutAckPacketId & (ARRAY_COUNT(OutLagPacketId)-1);
+	const int32 Index = OutAckPacketId & (UE_ARRAY_COUNT(OutLagPacketId)-1);
 
 	if ( OutLagPacketId[Index] == OutAckPacketId )
 	{
@@ -1496,20 +1950,26 @@ bool UNetConnection::ReadPacketInfo(FBitReader& Reader)
 		}
 #endif
 
-		// use FApp's time because it is set closer to the beginning of the frame - we don't care about the time so far of the current frame to process the packet
-		const double CurrentTime = FApp::GetCurrentTime();
-		const double GameTime	 = ServerFrameTime;
-		const double RTT		 = (CurrentTime - OutLagTime[Index] ) - ( CVarPingExcludeFrameTime.GetValueOnAnyThread() ? GameTime : 0.0 );
-		const double NewLag		 = FMath::Max( RTT, 0.0 );
+		double PacketReceiveTime = 0.0;
+		FTimespan& RecvTimespan = LastOSReceiveTime.Timestamp;
 
-		if ( OutBytesPerSecondHistory[Index] > 0 )
+		if (!RecvTimespan.IsZero() && Driver != nullptr && CVarPingUsePacketRecvTime.GetValueOnAnyThread())
 		{
-			RemoteSaturation = ( 1.0f - FMath::Min( ( float )RemoteInKBytesPerSecondByte / ( float )OutBytesPerSecondHistory[Index], 1.0f ) ) * 100.0f;
+			if (bIsOSReceiveTimeLocal)
+			{
+				PacketReceiveTime = RecvTimespan.GetTotalSeconds();
+			}
+			else if (ISocketSubsystem* SocketSubsystem = Driver->GetSocketSubsystem())
+			{
+				PacketReceiveTime = SocketSubsystem->TranslatePacketTimestamp(LastOSReceiveTime);
+			}
 		}
-		else
-		{
-			RemoteSaturation = 0.0f;
-		}
+
+
+		// use FApp's time because it is set closer to the beginning of the frame - we don't care about the time so far of the current frame to process the packet
+		const double CurrentTime = (PacketReceiveTime != 0.0 ? PacketReceiveTime : FApp::GetCurrentTime());
+		const double RTT		 = (CurrentTime - OutLagTime[Index] ) - ( CVarPingExcludeFrameTime.GetValueOnAnyThread() ? ServerFrameTime : 0.0 );
+		const double NewLag		 = FMath::Max( RTT, 0.0 );
 
 		//UE_LOG( LogNet, Warning, TEXT( "Out: %i, InRemote: %i, Saturation: %f" ), OutBytesPerSecondHistory[Index], RemoteInKBytesPerSecond, RemoteSaturation );
 
@@ -1525,7 +1985,35 @@ bool UNetConnection::ReadPacketInfo(FBitReader& Reader)
 	return true;
 }
 
-void UNetConnection::ReceivedPacket( FBitReader& Reader )
+FNetworkGUID UNetConnection::GetActorGUIDFromOpenBunch(FInBunch& Bunch)
+{
+	// NOTE: This could break if this is a PartialBunch and the ActorGUID wasn't serialized.
+	//			Seems unlikely given the aggressive Flushing + increased MTU on InternalAck.
+
+	// Any GUIDs / Exports will have been read already for InternalAck connections,
+	// but we may have to skip over must-be-mapped GUIDs before we can read the actor GUID.
+
+	if (Bunch.bHasMustBeMappedGUIDs)
+	{
+		uint16 NumMustBeMappedGUIDs = 0;
+		Bunch << NumMustBeMappedGUIDs;
+
+		for (int32 i = 0; i < NumMustBeMappedGUIDs; i++)
+		{
+			FNetworkGUID NetGUID;
+			Bunch << NetGUID;
+		}
+	}
+
+	NET_CHECKSUM( Bunch );
+
+	FNetworkGUID ActorGUID;
+	Bunch << ActorGUID;
+
+	return ActorGUID;
+}
+
+void UNetConnection::ReceivedPacket( FBitReader& Reader, bool bIsReinjectedPacket)
 {
 	SCOPED_NAMED_EVENT(UNetConnection_ReceivedPacket, FColor::Green);
 	AssertValid();
@@ -1537,17 +2025,54 @@ void UNetConnection::ReceivedPacket( FBitReader& Reader )
 		return;
 	}
 
+#if DO_ENABLE_NET_TEST
+	if (!IsInternalAck() && !bIsReinjectingDelayedPackets)
+	{
+		if (PacketSimulationSettings.PktIncomingLoss)
+		{
+			if (FMath::FRand() * 100.f < PacketSimulationSettings.PktIncomingLoss)
+			{
+				UE_LOG(LogNet, VeryVerbose, TEXT("Dropped incoming packet at %f"), FPlatformTime::Seconds());
+				return;
+			}
+
+		}
+		if (PacketSimulationSettings.PktIncomingLagMin > 0 || PacketSimulationSettings.PktIncomingLagMax > 0)
+		{
+			// ExtraLagInSec goes from [PktIncomingLagMin, PktIncomingLagMax]
+			const double LagVarianceInMS = FMath::FRand() * double(PacketSimulationSettings.PktIncomingLagMax - PacketSimulationSettings.PktIncomingLagMin);
+			const double ExtraLagInSec = (double(PacketSimulationSettings.PktIncomingLagMin) + LagVarianceInMS) / 1000.f;
+
+			FDelayedIncomingPacket DelayedPacket;
+			DelayedPacket.PacketData = MakeUnique<FBitReader>(Reader);
+			DelayedPacket.ReinjectionTime = FPlatformTime::Seconds() + ExtraLagInSec;
+
+			DelayedIncomingPackets.Emplace(MoveTemp(DelayedPacket));
+
+			UE_LOG(LogNet, VeryVerbose, TEXT("Delaying incoming packet for %f seconds"), ExtraLagInSec);
+			return;
+		}
+	}
+#endif //#if DO_ENABLE_NET_TEST
+
+
+	FBitReaderMark ResetReaderMark(Reader);
+
 	ValidateSendBuffer();
 
-	//Record the packet time to the histogram
-	double LastPacketTimeDiffInMs = (FPlatformTime::Seconds() - LastReceiveRealtime) * 1000.0;
-	NetConnectionHistogram.AddMeasurement(LastPacketTimeDiffInMs);
+	// Record the packet time to the histogram
+	if (!bIsReinjectedPacket)
+	{
+		const double CurrentReceiveTimeInS = FPlatformTime::Seconds();
+		const double LastPacketTimeDiffInMs = (CurrentReceiveTimeInS - LastReceiveRealtime) * 1000.0;
+		NetConnectionHistogram.AddMeasurement(LastPacketTimeDiffInMs);
 
-	// Update receive time to avoid timeout.
-	LastReceiveTime		= Driver->Time;
-	LastReceiveRealtime = FPlatformTime::Seconds();
+		// Update receive time to avoid timeout.
+		LastReceiveTime = Driver->GetElapsedTime();
+		LastReceiveRealtime = CurrentReceiveTimeInS;
+	}
 
-	if (InternalAck)
+	if (IsInternalAck())
 	{
 		++InPacketId;
 	}	
@@ -1561,11 +2086,130 @@ void UNetConnection::ReceivedPacket( FBitReader& Reader )
 			return;
 		}
 
+		bool bHasPacketInfoPayload = true;
+
+		if (Reader.EngineNetVer() >= HISTORY_JITTER_IN_HEADER)
+		{
+			bHasPacketInfoPayload = Reader.ReadBit() == 1u;
+
+			if (bHasPacketInfoPayload)
+			{
+#if !UE_BUILD_SHIPPING
+				const int32 BitsReadPreJitterClock = Reader.GetPosBits();
+#endif
+				// Read jitter clock time from the packet header
+				uint32 PacketJitterClockTimeMS = 0;
+				Reader.SerializeInt(PacketJitterClockTimeMS, UE4_NetConnectionPrivate::MaxJitterClockTimeValue + 1);
+
+#if !UE_BUILD_SHIPPING
+				checkf(Reader.GetPosBits() - BitsReadPreJitterClock == NetConnectionHelper::NumBitsForJitterClockTimeInHeader, TEXT("JitterClockTime did not read the expected nb of bits. Read %d, Expected %d"),
+					   Reader.GetPosBits() - BitsReadPreJitterClock, NetConnectionHelper::NumBitsForJitterClockTimeInHeader);
+#endif
+
+				if (!bIsReinjectedPacket)
+				{
+					ProcessJitter(PacketJitterClockTimeMS);
+				}
+			}			
+		}
+
+		const int32 PacketSequenceDelta = PacketNotify.GetSequenceDelta(Header);
+
+		if (PacketSequenceDelta > 0)
+		{
+			const bool bPacketOrderCacheActive = !bFlushingPacketOrderCache && PacketOrderCache.IsSet();
+			const bool bCheckForMissingSequence = bPacketOrderCacheActive && PacketOrderCacheCount == 0;
+			const bool bFillingPacketOrderCache = bPacketOrderCacheActive && PacketOrderCacheCount > 0;
+			const int32 MaxMissingPackets = (bCheckForMissingSequence ? CVarNetPacketOrderMaxMissingPackets.GetValueOnAnyThread() : 0);
+
+			const int32 MissingPacketCount = PacketSequenceDelta - 1;
+
+			// Cache the packet if we are already caching, and begin caching if we just encountered a missing sequence, within range
+			if (bFillingPacketOrderCache || (bCheckForMissingSequence && MissingPacketCount > 0 && MissingPacketCount <= MaxMissingPackets))
+			{
+				int32 LinearCacheIdx = PacketSequenceDelta - 1;
+				int32 CacheCapacity = PacketOrderCache->Capacity();
+				bool bLastCacheEntry = LinearCacheIdx >= (CacheCapacity - 1);
+
+				// The last cache entry is only set, when we've reached capacity or when we receive a sequence which is out of bounds of the cache
+				LinearCacheIdx = bLastCacheEntry ? (CacheCapacity - 1) : LinearCacheIdx;
+
+				int32 CircularCacheIdx = PacketOrderCacheStartIdx;
+
+				for (int32 LinearDec=LinearCacheIdx; LinearDec > 0; LinearDec--)
+				{
+					CircularCacheIdx = PacketOrderCache->GetNextIndex(CircularCacheIdx);
+				}
+
+				TUniquePtr<FBitReader>& CurCachePacket = PacketOrderCache.GetValue()[CircularCacheIdx];
+
+				// Reset the reader to its initial position, and cache the packet
+				if (!CurCachePacket.IsValid())
+				{
+					UE_LOG(LogNet, VeryVerbose, TEXT("'Out of Order' Packet Cache, caching sequence order '%i' (capacity: %i)"), LinearCacheIdx, CacheCapacity);
+
+					CurCachePacket = MakeUnique<FBitReader>(Reader);
+					PacketOrderCacheCount++;
+
+					ResetReaderMark.Pop(*CurCachePacket);
+				}
+				else
+				{
+					TotalOutOfOrderPackets++;
+					Driver->InOutOfOrderPackets++;
+				}
+
+				return;
+			}
+
+			if (MissingPacketCount > 10)
+			{
+				UE_LOG(LogNetTraffic, Verbose, TEXT("High single frame packet loss. PacketsLost: %i %s" ), MissingPacketCount, *Describe());
+			}
+
+			InPacketsLost += MissingPacketCount;
+			InTotalPacketsLost += MissingPacketCount;
+			Driver->InPacketsLost += MissingPacketCount;
+			Driver->InTotalPacketsLost += MissingPacketCount;
+			InPacketId += PacketSequenceDelta;
+
+			PacketAnalytics.TrackInPacket(InPacketId, MissingPacketCount);
+		}
+		else
+		{
+			TotalOutOfOrderPackets++;
+			Driver->InOutOfOrderPackets++;
+
+			if (!PacketOrderCache.IsSet() && CVarNetDoPacketOrderCorrection.GetValueOnAnyThread() != 0)
+			{
+				int32 EnableThreshold = CVarNetPacketOrderCorrectionEnableThreshold.GetValueOnAnyThread();
+
+				if (TotalOutOfOrderPackets >= EnableThreshold)
+				{
+					UE_LOG(LogNet, Verbose, TEXT("Hit threshold of %i 'out of order' packet sequences. Enabling out of order packet correction."), EnableThreshold);
+
+					int32 CacheSize = FMath::RoundUpToPowerOfTwo(CVarNetPacketOrderMaxCachedPackets.GetValueOnAnyThread());
+
+					PacketOrderCache.Emplace(CacheSize);
+				}
+			}
+
+			// Protect against replay attacks
+			// We already protect against this for reliable bunches, and unreliable properties
+			// The only bunch we would process would be unreliable RPC's, which could allow for replay attacks
+			// So rather than add individual protection for unreliable RPC's as well, just kill it at the source, 
+			// which protects everything in one fell swoop
+			return;
+		}
+
+
 		// Lambda to dispatch delivery notifications, 
 		auto HandlePacketNotification = [&Header, this](FNetPacketNotify::SequenceNumberT AckedSequence, bool bDelivered)
 		{
 			// Increase LastNotifiedPacketId, this is a full packet Id
 			++LastNotifiedPacketId;
+			++OutTotalNotifiedPackets;
+			Driver->IncreaseOutTotalNotifiedPackets();
 
 			// Sanity check
 			if (FNetPacketNotify::SequenceNumberT(LastNotifiedPacketId) != AckedSequence)
@@ -1586,40 +2230,23 @@ void UNetConnection::ReceivedPacket( FBitReader& Reader )
 
 		// Update incoming sequence data and deliver packet notifications
 		// Packet is only accepted if both the incoming sequence number and incoming ack data are valid
-		int PacketSequenceDelta = PacketNotify.Update(Header, HandlePacketNotification);
-		if (PacketSequenceDelta > 0)
-		{
-			const int32 PacketsLost = PacketSequenceDelta - 1;
-		
-			if ( PacketsLost > 10 )
-			{
-				UE_LOG( LogNetTraffic, Verbose, TEXT( "High single frame packet loss. PacketsLost: %i %s" ), PacketsLost, *Describe() );
-			}
+		PacketNotify.Update(Header, HandlePacketNotification);
 
-			InPacketsLost += PacketsLost;
-			InTotalPacketsLost += PacketsLost;
-			Driver->InPacketsLost += PacketsLost;
-			Driver->InTotalPacketsLost += PacketsLost;
-			InPacketId += PacketSequenceDelta;
-
-			// Extra information associated with the header
-			if (!ReadPacketInfo(Reader))
-			{
-				CLOSE_CONNECTION_DUE_TO_SECURITY_VIOLATION(this, ESecurityEvent::Malformed_Packet, TEXT("Failed to read PacketHeader"));
-				return;
-			}
-		}
-		else
+		// Extra information associated with the header (read only after acks have been processed)
+		if (PacketSequenceDelta > 0 && !ReadPacketInfo(Reader, bHasPacketInfoPayload))
 		{
-			Driver->InOutOfOrderPackets++;
-			// Protect against replay attacks
-			// We already protect against this for reliable bunches, and unreliable properties
-			// The only bunch we would process would be unreliable RPC's, which could allow for replay attacks
-			// So rather than add individual protection for unreliable RPC's as well, just kill it at the source, 
-			// which protects everything in one fell swoop
+			CLOSE_CONNECTION_DUE_TO_SECURITY_VIOLATION(this, ESecurityEvent::Malformed_Packet, TEXT("Failed to read PacketHeader"));
 			return;
 		}
 	}
+
+	// Setup InTraceCollector of net tracing is enabled
+#if  UE_NET_TRACE_ENABLED
+	InTraceCollector = UE_NET_TRACE_CREATE_COLLECTOR(ENetTraceVerbosity::Trace);
+
+	// Trace Packet header bits
+	UE_NET_TRACE(PacketHeaderAndInfo, GetInTraceCollector(), ResetReaderMark.GetPos(), Reader.GetPosBits(), ENetTraceVerbosity::Trace);
+#endif
 
 	const bool bIgnoreRPCs = Driver->ShouldIgnoreRPCs();
 
@@ -1633,7 +2260,7 @@ void UNetConnection::ReceivedPacket( FBitReader& Reader )
 	while( !Reader.AtEnd() && State!=USOCK_Closed )
 	{
 		// For demo backwards compatibility, old replays still have this bit
-		if (InternalAck && EngineNetworkProtocolVersion < EEngineNetworkVersionHistory::HISTORY_ACKS_INCLUDED_IN_HEADER)
+		if (IsInternalAck() && EngineNetworkProtocolVersion < EEngineNetworkVersionHistory::HISTORY_ACKS_INCLUDED_IN_HEADER)
 		{
 			const bool IsAckDummy = Reader.ReadBit() == 1u;
 		}
@@ -1692,7 +2319,7 @@ PRAGMA_ENABLE_DEPRECATION_WARNINGS
 
 			if ( Bunch.bReliable )
 			{
-				if ( InternalAck )
+				if ( IsInternalAck() )
 				{
 					// We can derive the sequence for 100% reliable connections
 					Bunch.ChSequence = InReliable[Bunch.ChIndex] + 1;
@@ -1797,6 +2424,10 @@ PRAGMA_ENABLE_DEPRECATION_WARNINGS
 				CLOSE_CONNECTION_DUE_TO_SECURITY_VIOLATION(this, ESecurityEvent::Malformed_Packet, TEXT("Bunch header overflowed"));
 				return;
 			}
+
+			// Trace bunch read
+			UE_NET_TRACE_BUNCH_SCOPE(InTraceCollector, Bunch, StartPos, HeaderPos - StartPos);
+
 			Bunch.SetData( Reader, BunchDataBits );
 			if( Reader.IsError() )
 			{
@@ -1809,7 +2440,7 @@ PRAGMA_ENABLE_DEPRECATION_WARNINGS
 			{
 				Driver->NetGUIDInBytes += (BunchDataBits + (HeaderPos - IncomingStartPos)) >> 3;
 
-				if ( InternalAck )
+				if ( IsInternalAck() )
 				{
 					// NOTE - For replays, we do this even earlier, to try and load this as soon as possible, in case there is an issue creating the channel
 					// If a replay fails to create a channel, we want to salvage as much as possible
@@ -1868,7 +2499,7 @@ PRAGMA_ENABLE_DEPRECATION_WARNINGS
 
 			// We're on a 100% reliable connection and we are rolling back some data.
 			// In that case, we can generally ignore these bunches.
-			if (InternalAck && Channel && bIgnoreAlreadyOpenedChannels)
+			if (IsInternalAck() && Channel && bIgnoreAlreadyOpenedChannels)
 			{
 				// This was an open bunch for a channel that's already opened.
 				// We can ignore future bunches from this channel.
@@ -1876,28 +2507,16 @@ PRAGMA_ENABLE_DEPRECATION_WARNINGS
 
 				if (bNewlyOpenedActorChannel)
 				{
-					// NOTE: This could break if this is a PartialBunch and the ActorGUID wasn't serialized.
-					//			Seems unlikely given the aggressive Flushing + increased MTU on InternalAck.
+					FNetworkGUID ActorGUID = GetActorGUIDFromOpenBunch(Bunch);
 
-					// Any GUIDs / Exports will have been read already for InternalAck connections,
-					// but we may have to skip over must-be-mapped GUIDs before we can read the actor GUID.
-
-					if (Bunch.bHasMustBeMappedGUIDs)
+					if (!Bunch.IsError())
 					{
-						uint16 NumMustBeMappedGUIDs = 0;
-						Bunch << NumMustBeMappedGUIDs;
-
-						for (int32 i = 0; i < NumMustBeMappedGUIDs; i++)
-						{
-							FNetworkGUID NetGUID;
-							Bunch << NetGUID;
-						}
+						IgnoringChannels.Add(Bunch.ChIndex, ActorGUID);
 					}
-
-					FNetworkGUID ActorGUID;
-					Bunch << ActorGUID;
-
-					IgnoringChannels.Add(Bunch.ChIndex, ActorGUID);
+					else
+					{
+						UE_LOG(LogNetTraffic, Error, TEXT("UNetConnection::ReceivedPacket: Unable to read actor GUID for ignored bunch. (Channel %d)"), Bunch.ChIndex);
+					}
 				}
 
 				if (IgnoringChannels.Contains(Bunch.ChIndex))
@@ -1919,6 +2538,8 @@ PRAGMA_ENABLE_DEPRECATION_WARNINGS
 							}
 						}
 					}
+
+					UE_LOG(LogNetTraffic, Log, TEXT("Ignoring bunch for already open channel: %i"), Bunch.ChIndex);
 					continue;
 				}
 			}
@@ -1927,7 +2548,7 @@ PRAGMA_ENABLE_DEPRECATION_WARNINGS
 			if ( Bunch.bReliable && Bunch.ChSequence <= InReliable[Bunch.ChIndex] )
 			{
 				UE_LOG( LogNetTraffic, Log, TEXT( "UNetConnection::ReceivedPacket: Received outdated bunch (Channel %d Current Sequence %i)" ), Bunch.ChIndex, InReliable[Bunch.ChIndex] );
-				check( !InternalAck );		// Should be impossible with 100% reliable connections
+				check( !IsInternalAck() );		// Should be impossible with 100% reliable connections
 				continue;
 			}
 			
@@ -1942,7 +2563,7 @@ PRAGMA_ENABLE_DEPRECATION_WARNINGS
 				const bool ValidUnreliableOpen = Bunch.bOpen && (Bunch.bClose || Bunch.bPartial);
 				if (!ValidUnreliableOpen)
 				{
-					if ( InternalAck )
+					if ( IsInternalAck() )
 					{
 						// Should be impossible with 100% reliable connections
 						UE_LOG( LogNetTraffic, Error, TEXT( "      Received unreliable bunch before open with reliable connection (Channel %d Current Sequence %i)" ), Bunch.ChIndex, InReliable[Bunch.ChIndex] );
@@ -1984,6 +2605,46 @@ PRAGMA_ENABLE_DEPRECATION_WARNINGS
 					UE_LOG(LogNetTraffic, Warning, TEXT("      Ignoring Bunch Create received from client since only server is allowed to create this type of channel: Bunch  %i: ChName %s, ChSequence: %i, bReliable: %i, bPartial: %i, bPartialInitial: %i, bPartialFinal: %i"), Bunch.ChIndex, *Bunch.ChName.ToString(), Bunch.ChSequence, (int)Bunch.bReliable, (int)Bunch.bPartial, (int)Bunch.bPartialInitial, (int)Bunch.bPartialFinal );
 					RejectedChans.AddUnique(Bunch.ChIndex);
 					continue;
+				}
+
+				// peek for guid
+				if (IsInternalAck() && bIgnoreActorBunches)
+				{
+					if (Bunch.bOpen && (!Bunch.bPartial || Bunch.bPartialInitial) && (Bunch.ChName == NAME_Actor))
+					{
+						FBitReaderMark Mark(Bunch);
+						FNetworkGUID ActorGUID = GetActorGUIDFromOpenBunch(Bunch);
+						Mark.Pop(Bunch);
+
+						if (ActorGUID.IsValid() && !ActorGUID.IsDefault())
+						{
+							if (IgnoredBunchGuids.Contains(ActorGUID))
+							{
+								UE_LOG(LogNetTraffic, Verbose, TEXT("Adding Channel: %i to ignore list, ignoring guid: %s"), Bunch.ChIndex, *ActorGUID.ToString());
+								IgnoredBunchChannels.Add(Bunch.ChIndex);
+								continue;
+							}
+							else
+							{
+								if (IgnoredBunchChannels.Remove(Bunch.ChIndex))
+								{
+									UE_LOG(LogNetTraffic, Verbose, TEXT("Removing Channel: %i from ignore list, got new guid: %s"), Bunch.ChIndex, *ActorGUID.ToString());
+								}
+							}
+						}
+						else
+						{
+							UE_LOG(LogNetTraffic, Warning, TEXT("Open bunch with invalid actor guid, Channel: %i"), Bunch.ChIndex);
+						}
+					}
+					else
+					{
+						if (IgnoredBunchChannels.Contains(Bunch.ChIndex))
+						{
+							UE_LOG(LogNetTraffic, Verbose, TEXT("Ignoring bunch on channel: %i"), Bunch.ChIndex);
+							continue;
+						}
+					}
 				}
 
 				// Reliable (either open or later), so create new channel.
@@ -2044,7 +2705,7 @@ PRAGMA_ENABLE_DEPRECATION_WARNINGS
 		LastGoodPacketRealtime = FPlatformTime::Seconds();
 	}
 
-	if( !InternalAck )
+	if( !IsInternalAck() )
 	{
 		// We always call AckSequence even if we are explicitly rejecting the packet as this updates the expected InSeq used to drive future acks.
 		if ( bSkipAck )
@@ -2079,21 +2740,44 @@ PRAGMA_ENABLE_DEPRECATION_WARNINGS
 			}
 		}
 	}
+
+	// Flush trace content collector
+#if UE_NET_TRACE_ENABLED
+	if (InTraceCollector)
+	{
+		UE_NET_TRACE_FLUSH_COLLECTOR(InTraceCollector, NetTraceId, GetConnectionId(), ENetTracePacketType::Incoming);
+		UE_NET_TRACE_DESTROY_COLLECTOR(InTraceCollector);
+		InTraceCollector = nullptr;
+	}
+#endif
+
+	// Trace end marker of this incoming data packet.
+	UE_NET_TRACE_PACKET_RECV(NetTraceId, GetConnectionId(), InPacketId, Reader.GetNumBits());
 }
 
 void UNetConnection::SetIgnoreAlreadyOpenedChannels(bool bInIgnoreAlreadyOpenedChannels)
 {
-	check(InternalAck);
+	check(IsInternalAck());
 	bIgnoreAlreadyOpenedChannels = bInIgnoreAlreadyOpenedChannels;
 	IgnoringChannels.Reset();
 }
 
-int32 UNetConnection::WriteBitsToSendBuffer( 
-	const uint8 *	Bits, 
-	const int32		SizeInBits, 
-	const uint8 *	ExtraBits, 
-	const int32		ExtraSizeInBits,
-	EWriteBitsDataType DataType)
+void UNetConnection::SetIgnoreActorBunches(bool bInIgnoreActorBunches, TSet<FNetworkGUID>&& InIgnoredBunchGuids)
+{
+	check(IsInternalAck());
+	bIgnoreActorBunches = bInIgnoreActorBunches;
+
+	IgnoredBunchChannels.Empty();
+	InIgnoredBunchGuids.Empty();
+
+	if (bIgnoreActorBunches)
+	{
+		IgnoredBunchGuids = MoveTemp(InIgnoredBunchGuids);
+	}
+}
+
+
+void UNetConnection::PrepareWriteBitsToSendBuffer(const int32 SizeInBits, const int32 ExtraSizeInBits)
 {
 	ValidateSendBuffer();
 
@@ -2114,18 +2798,20 @@ int32 UNetConnection::WriteBitsToSendBuffer(
 		FlushNet();
 	}
 
-	// Remember start position in case we want to undo this write
-	// Store this after the possible flush above so we have the correct start position in the case that we do flush
-	LastStart = FBitWriterMark( SendBuffer );
-
 	// If this is the start of the queue, make sure to add the packet id
-	if ( SendBuffer.GetNumBits() == 0 && !InternalAck )
+	if ( SendBuffer.GetNumBits() == 0 && !IsInternalAck() )
 	{
+#if UE_NET_TRACE_ENABLED
+		// If tracing is enabled setup the NetTraceCollector for outgoing data
+		OutTraceCollector = UE_NET_TRACE_CREATE_COLLECTOR(ENetTraceVerbosity::Trace);
+		UE_NET_TRACE_SCOPE(PacketHeaderAndInfo, SendBuffer, OutTraceCollector, ENetTraceVerbosity::Trace);
+#endif
+
 		// Write Packet Header, before sending the packet we will go back and rewrite the data
 		WritePacketHeader(SendBuffer);
 
-		// Also write server RTT and Received rate
-		WritePacketInfo(SendBuffer);
+		// Pre-write the bits for the packet info
+		WriteDummyPacketInfo(SendBuffer);
 
 		// We do not allow the first bunch to merge with the ack data as this will "revert" the ack data.
 		AllowMerge = false;
@@ -2140,6 +2826,18 @@ int32 UNetConnection::WriteBitsToSendBuffer(
 
 		ValidateSendBuffer();
 	}
+}
+
+int32 UNetConnection::WriteBitsToSendBufferInternal( 
+	const uint8 *	Bits, 
+	const int32		SizeInBits, 
+	const uint8 *	ExtraBits, 
+	const int32		ExtraSizeInBits,
+	EWriteBitsDataType DataType)
+{
+	// Remember start position in case we want to undo this write, no meaning to undo the header write as this is only used to pop bunches and the header should not count towards the bunch
+	// Store this after the possible flush above so we have the correct start position in the case that we do flush
+	LastStart = FBitWriterMark( SendBuffer );
 
 	// Add the bits to the queue
 	if ( SizeInBits )
@@ -2179,6 +2877,20 @@ int32 UNetConnection::WriteBitsToSendBuffer(
 	return RememberedPacketId;
 }
 
+int32 UNetConnection::WriteBitsToSendBuffer( 
+	const uint8 *	Bits, 
+	const int32		SizeInBits, 
+	const uint8 *	ExtraBits, 
+	const int32		ExtraSizeInBits,
+	EWriteBitsDataType DataType)
+{
+	// Flush packet as needed and begin new packet
+	PrepareWriteBitsToSendBuffer(SizeInBits, ExtraSizeInBits);
+
+	// Write the data and flush if the packet is full, return value is the packetId into which the data was written
+	return WriteBitsToSendBufferInternal(Bits, SizeInBits, ExtraBits, ExtraSizeInBits, DataType);
+}
+
 /** Returns number of bits left in current packet that can be used without causing a flush  */
 int64 UNetConnection::GetFreeSendBufferBits()
 {
@@ -2195,6 +2907,8 @@ int64 UNetConnection::GetFreeSendBufferBits()
 
 void UNetConnection::PopLastStart()
 {
+	UE_NET_TRACE_POP_SEND_BUNCH(OutTraceCollector);
+
 	NumBunchBits -= SendBuffer.GetNumBits() - LastStart.GetNumBits();
 	LastStart.Pop(SendBuffer);
 	NETWORK_PROFILER(GNetworkProfiler.PopSendBunch(this));
@@ -2207,15 +2921,7 @@ TSharedPtr<FObjectReplicator> UNetConnection::CreateReplicatorForNewActorChannel
 	return NewReplicator;
 }
 
-void UNetConnection::PurgeAcks()
-{
-}
-
-void UNetConnection::SendAck(int32 AckPacketId, bool FirstTime/*=1*/)
-{
-}
-
-int32 UNetConnection::SendRawBunch( FOutBunch& Bunch, bool InAllowMerge )
+int32 UNetConnection::SendRawBunch(FOutBunch& Bunch, bool InAllowMerge, const FNetTraceCollector* BunchCollector)
 {
 	ValidateSendBuffer();
 	check(!Bunch.ReceivedAck);
@@ -2248,7 +2954,7 @@ int32 UNetConnection::SendRawBunch( FOutBunch& Bunch, bool InAllowMerge )
 	SendBunchHeader.WriteBit( Bunch.bHasMustBeMappedGUIDs );
 	SendBunchHeader.WriteBit( Bunch.bPartial );
 
-	if ( Bunch.bReliable && !InternalAck )
+	if ( Bunch.bReliable && !IsInternalAck() )
 	{
 		SendBunchHeader.WriteIntWrapped(Bunch.ChSequence, MAX_CHSEQUENCE);
 	}
@@ -2269,7 +2975,7 @@ int32 UNetConnection::SendRawBunch( FOutBunch& Bunch, bool InAllowMerge )
 
 	// Remember start position.
 	AllowMerge      = InAllowMerge;
-	Bunch.Time      = Driver->Time;
+	Bunch.Time      = Driver->GetElapsedTime();
 
 	if ((Bunch.bClose || Bunch.bOpen) && UE_LOG_ACTIVE(LogNetDormancy,VeryVerbose) )
 	{
@@ -2283,8 +2989,30 @@ int32 UNetConnection::SendRawBunch( FOutBunch& Bunch, bool InAllowMerge )
 
 	NETWORK_PROFILER(GNetworkProfiler.PushSendBunch(this, &Bunch, SendBunchHeader.GetNumBits(), Bunch.GetNumBits()));
 
+	const int32 BunchHeaderBits = SendBunchHeader.GetNumBits();
+	const int32 BunchBits = Bunch.GetNumBits();
+
+	// If the bunch does not fit in the current packet, 
+	// flush packet now so that we can report collected stats in the correct scope
+	PrepareWriteBitsToSendBuffer(BunchHeaderBits, BunchBits);
+
+	// Report bunch, if the bunch has a debug name set, we use the name when reporting the bunch
+	if (GetOutTraceCollector())
+	{
+#if !(UE_BUILD_SHIPPING || UE_BUILD_TEST)
+		if (!Bunch.DebugString.IsEmpty())
+		{
+			UE_NET_TRACE_END_BUNCH(OutTraceCollector, ToCStr(Bunch.DebugString), 0, BunchHeaderBits, BunchBits, Bunch.ChIndex, BunchCollector);
+		}
+		else
+#endif
+		{
+			UE_NET_TRACE_END_BUNCH(OutTraceCollector, Bunch.ChName, 0, BunchHeaderBits, BunchBits, Bunch.ChIndex, BunchCollector);
+		}
+	}
+
 	// Write the bits to the buffer and remember the packet id used
-	Bunch.PacketId = WriteBitsToSendBuffer( SendBunchHeader.GetData(), SendBunchHeader.GetNumBits(), Bunch.GetData(), Bunch.GetNumBits(), EWriteBitsDataType::Bunch );
+	Bunch.PacketId = WriteBitsToSendBufferInternal(SendBunchHeader.GetData(), BunchHeaderBits, Bunch.GetData(), BunchBits, EWriteBitsDataType::Bunch);
 
 	// Track channels that wrote data to this packet.
 	FChannelRecordImpl::PushChannelRecord(ChannelRecord, Bunch.PacketId, Bunch.ChIndex);
@@ -2302,27 +3030,6 @@ int32 UNetConnection::SendRawBunch( FOutBunch& Bunch, bool InAllowMerge )
 	}
 
 	return Bunch.PacketId;
-}
-
-UChannel* UNetConnection::CreateChannel( EChannelType Type, bool bOpenedLocally, int32 ChannelIndex )
-{
-	const EChannelCreateFlags ChannelCreateFlags = (bOpenedLocally ? EChannelCreateFlags::OpenedLocally : EChannelCreateFlags::None);
-	FName ChName = NAME_None;
-
-	switch (Type)
-	{
-	case CHTYPE_Control:
-		ChName = NAME_Control;
-		break;
-	case CHTYPE_Actor:
-		ChName = NAME_Actor;
-		break;
-	case CHTYPE_Voice:
-		ChName = NAME_Voice;
-		break;
-	}
-
-	return CreateChannelByName(ChName, ChannelCreateFlags, ChannelIndex);
 }
 
 UChannel* UNetConnection::CreateChannelByName( const FName& ChName, EChannelCreateFlags CreateFlags, int32 ChIndex )
@@ -2443,29 +3150,49 @@ void UNetConnection::Tick()
 
 	AssertValid();
 
+	// Get frame time.
+	const double CurrentRealtimeSeconds = FPlatformTime::Seconds();
+
 	// Lag simulation.
 #if DO_ENABLE_NET_TEST
-	if( PacketSimulationSettings.PktLag )
+	if (Delayed.Num() > 0)
 	{
-		for( int32 i=0; i < Delayed.Num(); i++ )
+		if (bSendDelayedPacketsOutofOrder)
 		{
-			if( FPlatformTime::Seconds() > Delayed[i].SendTime )
+			for (int Idx=0; Idx < Delayed.Num(); ++Idx)
 			{
-				LowLevelSend((char*)&Delayed[i].Data[0], Delayed[i].SizeBits, Delayed[i].Traits);
-				Delayed.RemoveAt( i );
-				i--;
+				if (CurrentRealtimeSeconds > Delayed[Idx].SendTime)
+				{
+					LowLevelSend((char*)&(Delayed[Idx].Data[0]), Delayed[Idx].SizeBits, Delayed[Idx].Traits);
+				}
 			}
-			else
+
+			Delayed.RemoveAll([&CurrentRealtimeSeconds](const FDelayedPacket& rhs)
 			{
-				// Break now instead of continuing to iterate through the list. Otherwise LagVariance may cause out of order sends
-				break;
+				return CurrentRealtimeSeconds > rhs.SendTime;
+			});
+		}
+		else
+		{
+			uint32 NbPacketsSent(0);
+			for (FDelayedPacket& DelayedPacket : Delayed)
+			{
+				if (CurrentRealtimeSeconds > DelayedPacket.SendTime)
+				{
+					LowLevelSend((char*)&DelayedPacket.Data[0], DelayedPacket.SizeBits, DelayedPacket.Traits);
+					++NbPacketsSent;
+				}
+				else
+				{
+					// Break now instead of continuing to iterate through the list. Otherwise may cause out of order sends
+					break;
+				}
 			}
+
+			Delayed.RemoveAt(0, NbPacketsSent, false);
 		}
 	}
 #endif
-
-	// Get frame time.
-	const double CurrentRealtimeSeconds = FPlatformTime::Seconds();
 
 	// if this is 0 it's our first tick since init, so start our real-time tracking from here
 	if (LastTime == 0.0)
@@ -2476,6 +3203,25 @@ void UNetConnection::Tick()
 	}
 
 	FrameTime = CurrentRealtimeSeconds - LastTime;
+	const int32 MaxNetTickRate = Driver->MaxNetTickRate;
+	float EngineTickRate = GEngine->GetMaxTickRate(0.0f, false);
+	// We want to make sure the DesiredTickRate stays at <= 0 if there's no tick rate limiting of any kind, since it's used later in the function for bandwidth limiting.
+	if (MaxNetTickRate > 0 && EngineTickRate <= 0.0f)
+	{
+		EngineTickRate = MAX_flt;
+	}
+	const float MaxNetTickRateFloat = MaxNetTickRate > 0 ? float(MaxNetTickRate) : MAX_flt;
+	const float DesiredTickRate = FMath::Clamp(EngineTickRate, 0.0f, MaxNetTickRateFloat);
+	// Apply net tick rate limiting if the desired net tick rate is strictly less than the engine tick rate.
+	if (!IsInternalAck() && MaxNetTickRateFloat < EngineTickRate && DesiredTickRate > 0.0f)
+	{
+		const float MinNetFrameTime = 1.0f/DesiredTickRate;
+		if (FrameTime < MinNetFrameTime)
+		{
+			return;
+		}
+	}
+
 	LastTime = CurrentRealtimeSeconds;
 	CumulativeTime += FrameTime;
 	CountedFrames++;
@@ -2487,12 +3233,12 @@ void UNetConnection::Tick()
 	}
 
 	// Pretend everything was acked, for 100% reliable connections or demo recording.
-	if( InternalAck )
+	if(IsInternalAck())
 	{
 		const bool bIsServer = Driver->IsServer();
 		OutAckPacketId = OutPacketId;
 
-		LastReceiveTime = Driver->Time;
+		LastReceiveTime = Driver->GetElapsedTime();
 		LastReceiveRealtime = FPlatformTime::Seconds();
 		LastGoodPacketRealtime = FPlatformTime::Seconds();
 
@@ -2502,7 +3248,7 @@ void UNetConnection::Tick()
 			UChannel* Channel = Channels[ChannelIndex];
 			if (Channel)
 			{
-				for(FOutBunch* OutBunch=Channel->OutRec; OutBunch; OutBunch=OutBunch->Next)
+				for (FOutBunch* OutBunch=Channel->OutRec; OutBunch; OutBunch=OutBunch->Next)
 				{
 					OutBunch->ReceivedAck = 1;
 				}
@@ -2535,10 +3281,15 @@ void UNetConnection::Tick()
 		InPacketsPerSecond = FMath::TruncToInt(static_cast<float>(InPackets) / RealTime);
 		OutPacketsPerSecond = FMath::TruncToInt(static_cast<float>(OutPackets) / RealTime);
 
+		// Add TotalPacketsLost to total since InTotalPackets only counts ACK packets
+		InPacketsLossPercentage.UpdateLoss(InPacketsLost, InTotalPackets + InTotalPacketsLost, StatPeriodCount);
+
+		// Using OutTotalNotifiedPackets so we do not count packets that are still in transit.
+		OutPacketsLossPercentage.UpdateLoss(OutPacketsLost, OutTotalNotifiedPackets, StatPeriodCount);
+
 		// Init counters.
 		LagAcc = 0;
 		StatUpdateTime = CurrentRealtimeSeconds;
-		BestLagAcc = 9999;
 		LagCount = 0;
 		InPacketsLost = 0;
 		OutPacketsLost = 0;
@@ -2546,11 +3297,23 @@ void UNetConnection::Tick()
 		OutBytes = 0;
 		InPackets = 0;
 		OutPackets = 0;
+
+		++StatPeriodCount;
+	}
+
+	if (bConnectionPendingCloseDueToSocketSendFailure)
+	{
+		Close();
+		bConnectionPendingCloseDueToSocketSendFailure = false;
+
+		// early out
+		return;
 	}
 
 	// Compute time passed since last update.
-	const float DeltaTime	= Driver->Time - LastTickTime;
-	LastTickTime			= Driver->Time;
+	const double DriverElapsedTime = Driver->GetElapsedTime();
+	const double DeltaTime	= DriverElapsedTime - LastTickTime;
+	LastTickTime			= DriverElapsedTime;
 
 	// Handle timeouts.
 	const float Timeout = GetTimeoutValue();
@@ -2563,16 +3326,16 @@ void UNetConnection::Tick()
 		// Compute true realtime since packet was received (as well as truly processed)
 		const double Seconds = FPlatformTime::Seconds();
 
-		const float ReceiveRealtimeDelta = Seconds - LastReceiveRealtime;
-		const float GoodRealtimeDelta = Seconds - LastGoodPacketRealtime;
+		const double ReceiveRealtimeDelta = Seconds - LastReceiveRealtime;
+		const double GoodRealtimeDelta = Seconds - LastGoodPacketRealtime;
 
 		// Timeout.
 		FString Error = FString::Printf(TEXT("%s. Elapsed: %2.2f, Real: %2.2f, Good: %2.2f, DriverTime: %2.2f, Threshold: %2.2f, %s"),
 			bPendingDestroy ? DestroyString : TimeoutString,
-			Driver->Time - LastReceiveTime,
+			DriverElapsedTime - LastReceiveTime,
 			ReceiveRealtimeDelta,
 			GoodRealtimeDelta,
-			Driver->Time,
+			DriverElapsedTime,
 			Timeout,
 			*Describe());
 		
@@ -2583,15 +3346,7 @@ void UNetConnection::Tick()
 			LastTimePrinted = FPlatformTime::Seconds();
 		}
 
-		if (!bPendingDestroy)
-		{
-			GEngine->BroadcastNetworkFailure(Driver->GetWorld(), Driver, ENetworkFailure::ConnectionTimeout, Error);
-		}
-
-		Close();
-#if USE_SERVER_PERF_COUNTERS
-		PerfCountersIncrement(TEXT("TimedoutConnections"));
-#endif
+		HandleConnectionTimeout(Error);
 
 		if (Driver == NULL)
 		{
@@ -2681,7 +3436,7 @@ void UNetConnection::Tick()
 	}
 
 	// Flush.
-	if ( TimeSensitive || (Driver->Time - LastSendTime) > Driver->KeepAliveTime)
+	if ( TimeSensitive || (Driver->GetElapsedTime() - LastSendTime) > Driver->KeepAliveTime)
 	{
 		bool bHandlerHandshakeComplete = !Handler.IsValid() || Handler->IsFullyInitialized();
 
@@ -2732,9 +3487,10 @@ void UNetConnection::Tick()
 	// Update queued byte count.
 	// this should be at the end so that the cap is applied *after* sending (and adjusting QueuedBytes for) any remaining data for this tick
 
+	SaturationAnalytics.TrackFrame(!IsNetReady(false));
+
 	// Clamp DeltaTime for bandwidth limiting so that if there is a hitch, we don't try to send
 	// a large burst on the next frame, which can cause another hitch if a lot of additional replication occurs.
-	const float DesiredTickRate = GEngine->GetMaxTickRate(0.0f, false);
 	float BandwidthDeltaTime = DeltaTime;
 	if (DesiredTickRate != 0.0f)
 	{
@@ -2748,6 +3504,22 @@ void UNetConnection::Tick()
 	{
 		QueuedBits = FMath::TruncToInt(-AllowedLag);
 	}
+
+	bFlushedNetThisFrame = false;
+}
+
+void UNetConnection::HandleConnectionTimeout(const FString& Error)
+{
+	if (!bPendingDestroy)
+	{
+		GEngine->BroadcastNetworkFailure(Driver->GetWorld(), Driver, ENetworkFailure::ConnectionTimeout, Error);
+	}
+
+	Close();
+#if USE_SERVER_PERF_COUNTERS
+	PerfCountersIncrement(TEXT("TimedoutConnections"));
+#endif
+
 }
 
 void UNetConnection::HandleClientPlayer( APlayerController *PC, UNetConnection* NetConnection )
@@ -2766,7 +3538,7 @@ void UNetConnection::HandleClientPlayer( APlayerController *PC, UNetConnection* 
 	check(LocalPlayer);
 	if( LocalPlayer->PlayerController && LocalPlayer->PlayerController->GetLevel() == PC->GetLevel())
 	{
-		if (LocalPlayer->PlayerController->Role == ROLE_Authority)
+		if (LocalPlayer->PlayerController->GetLocalRole() == ROLE_Authority)
 		{
 			// local placeholder PC while waiting for connection to be established
 			LocalPlayer->PlayerController->GetWorld()->DestroyActor(LocalPlayer->PlayerController);
@@ -2787,11 +3559,11 @@ void UNetConnection::HandleClientPlayer( APlayerController *PC, UNetConnection* 
 	LocalPlayer->CurrentNetSpeed = CurrentNetSpeed;
 
 	// Init the new playerpawn.
-	PC->Role = ROLE_AutonomousProxy;
+	PC->SetRole(ROLE_AutonomousProxy);
 	PC->NetConnection = NetConnection;
 	PC->SetPlayer(LocalPlayer);
 	UE_LOG(LogNet, Verbose, TEXT("%s setplayer %s"),*PC->GetName(),*LocalPlayer->GetName());
-	LastReceiveTime = Driver->Time;
+	LastReceiveTime = Driver->GetElapsedTime();
 	State = USOCK_Open;
 	PlayerController = PC;
 	OwningActor = PC;
@@ -2807,9 +3579,8 @@ void UNetConnection::HandleClientPlayer( APlayerController *PC, UNetConnection* 
 				const ULevel* Level = LevelStreaming->GetLoadedLevel();
 				if ( Level && Level->bIsVisible && !Level->bClientOnlyVisible )
 				{
-					FUpdateLevelVisibilityLevelInfo& LevelVisibility = *new( LevelVisibilities ) FUpdateLevelVisibilityLevelInfo();
-					LevelVisibility.PackageName = PC->NetworkRemapPath(Level->GetOutermost()->GetFName(), false);
-					LevelVisibility.bIsVisible = true;
+					FUpdateLevelVisibilityLevelInfo& LevelVisibility = *new( LevelVisibilities ) FUpdateLevelVisibilityLevelInfo(Level, true);
+					LevelVisibility.PackageName = PC->NetworkRemapPath(LevelVisibility.PackageName, false);
 				}
 			}
 		}
@@ -2826,7 +3597,8 @@ void UNetConnection::HandleClientPlayer( APlayerController *PC, UNetConnection* 
 		if (*It != LocalPlayer)
 		{
 			// send server command for new child connection
-			It->SendSplitJoin();
+			TArray<FString> Options;
+			It->SendSplitJoin(Options);
 		}
 	}
 }
@@ -2853,7 +3625,7 @@ void UChildConnection::HandleClientPlayer(APlayerController* PC, UNetConnection*
 		check( PC->GetWorld() );
 		for (TActorIterator<APlayerController> It(PC->GetWorld()); It; ++It)
 		{
-			if (It->Role < ROLE_Authority)
+			if (It->GetLocalRole() < ROLE_Authority)
 			{
 				UE_LOG(LogNet, Log, TEXT(" - %s"), *It->GetFullName());
 			}
@@ -2870,7 +3642,7 @@ void UChildConnection::HandleClientPlayer(APlayerController* PC, UNetConnection*
 	check(NewPlayer);
 	if (NewPlayer->PlayerController != NULL)
 	{
-		if (NewPlayer->PlayerController->Role == ROLE_Authority)
+		if (NewPlayer->PlayerController->GetLocalRole() == ROLE_Authority)
 		{
 			// local placeholder PC while waiting for connection to be established
 			NewPlayer->PlayerController->GetWorld()->DestroyActor(NewPlayer->PlayerController);
@@ -2891,7 +3663,7 @@ void UChildConnection::HandleClientPlayer(APlayerController* PC, UNetConnection*
 	NewPlayer->CurrentNetSpeed = CurrentNetSpeed;
 
 	// Init the new playerpawn.
-	PC->Role = ROLE_AutonomousProxy;
+	PC->SetRole(ROLE_AutonomousProxy);
 	PC->NetConnection = NetConnection;
 	PC->SetPlayer(NewPlayer);
 	UE_LOG(LogNet, Verbose, TEXT("%s setplayer %s"), *PC->GetName(), *NewPlayer->GetName());
@@ -2900,17 +3672,10 @@ void UChildConnection::HandleClientPlayer(APlayerController* PC, UNetConnection*
 }
 
 #if DO_ENABLE_NET_TEST
-
 void UNetConnection::UpdatePacketSimulationSettings(void)
 {
 	check(Driver);
-	PacketSimulationSettings.PktLoss = Driver->PacketSimulationSettings.PktLoss;
-	PacketSimulationSettings.PktLossMinSize = Driver->PacketSimulationSettings.PktLossMinSize;
-	PacketSimulationSettings.PktLossMaxSize = Driver->PacketSimulationSettings.PktLossMaxSize;
-	PacketSimulationSettings.PktOrder = Driver->PacketSimulationSettings.PktOrder;
-	PacketSimulationSettings.PktDup = Driver->PacketSimulationSettings.PktDup;
-	PacketSimulationSettings.PktLag = Driver->PacketSimulationSettings.PktLag;
-	PacketSimulationSettings.PktLagVariance = Driver->PacketSimulationSettings.PktLagVariance;
+	PacketSimulationSettings = Driver->PacketSimulationSettings;
 }
 #endif
 
@@ -3227,13 +3992,186 @@ void UNetConnection::CleanupStaleDormantReplicators()
 	}
 }
 
+
+void UNetConnection::SetPendingCloseDueToSocketSendFailure()
+{
+	bConnectionPendingCloseDueToSocketSendFailure = true;
+}
+
+void UNetConnection::ConsumeQueuedActorDelinquencyAnalytics(FNetQueuedActorDelinquencyAnalytics& Out)
+{
+	if (UPackageMapClient* PackageMapClient = Cast<UPackageMapClient>(PackageMap))
+	{
+		return PackageMapClient->ConsumeQueuedActorDelinquencyAnalytics(Out);
+	}
+	else
+	{
+		Out.Reset();
+	}
+}
+
+const FNetQueuedActorDelinquencyAnalytics& UNetConnection::GetQueuedActorDelinquencyAnalytics() const
+{
+	static FNetQueuedActorDelinquencyAnalytics Empty;
+
+	if (UPackageMapClient const * const PackageMapClient = Cast<UPackageMapClient>(PackageMap))
+	{
+		return PackageMapClient->GetQueuedActorDelinquencyAnalytics();
+	}
+	
+	return Empty;
+}
+
+void UNetConnection::ResetQueuedActorDelinquencyAnalytics()
+{
+	if (UPackageMapClient* PackageMapClient = Cast<UPackageMapClient>(PackageMap))
+	{
+		PackageMapClient->ResetQueuedActorDelinquencyAnalytics();
+	}
+}
+
+void UNetConnection::ConsumeSaturationAnalytics(FNetConnectionSaturationAnalytics& Out)
+{
+	Out = MoveTemp(SaturationAnalytics);
+	SaturationAnalytics.Reset();
+}
+
+const FNetConnectionSaturationAnalytics& UNetConnection::GetSaturationAnalytics() const
+{
+	return SaturationAnalytics;
+}
+
+void UNetConnection::ResetSaturationAnalytics()
+{
+	SaturationAnalytics.Reset();
+}
+
+void UNetConnection::ConsumePacketAnalytics(FNetConnectionPacketAnalytics& Out)
+{
+	Out = MoveTemp(PacketAnalytics);
+	PacketAnalytics.Reset();
+}
+
+const FNetConnectionPacketAnalytics& UNetConnection::GetPacketAnalytics() const
+{
+	return PacketAnalytics;
+}
+
+void UNetConnection::ResetPacketAnalytics()
+{
+	PacketAnalytics.Reset();
+}
+
+void UNetConnection::TrackReplicationForAnalytics(const bool bWasSaturated)
+{
+	++TickCount;
+	SaturationAnalytics.TrackReplication(bWasSaturated);
+}
+
+void UNetConnection::ProcessJitter(uint32 PacketJitterClockTimeMS)
+{
+	if (PacketJitterClockTimeMS >= UE4_NetConnectionPrivate::MaxJitterClockTimeValue)
+	{
+		// Ignore this packet for jitter calculations
+		return;
+	}
+
+	const int32 CurrentClockTimeMilliseconds = UE4_NetConnectionPrivate::GetClockTimeMilliseconds(LastReceiveRealtime);
+
+	// Get the delta between the sent and receive clock time.
+	int32 CurrentJitterTimeDelta = CurrentClockTimeMilliseconds - (int32)PacketJitterClockTimeMS;
+	
+	if (CurrentJitterTimeDelta < 0)
+	{
+		// Account for wrap-around
+		CurrentJitterTimeDelta += UE4_NetConnectionPrivate::MaxJitterPrecisionInMS;
+	}
+
+	// Get the difference between the last two deltas
+	const float CurrentJitter = FMath::Abs(CurrentJitterTimeDelta - PreviousJitterTimeDelta);
+	
+
+	// Add the value to the average and smooth it out to reduce divergences
+	const float PreviousJitterInMS = AverageJitterInMS;
+	AverageJitterInMS = PreviousJitterInMS + ((CurrentJitter - PreviousJitterInMS) / UE4_NetConnectionPrivate::JitterNoiseReduction);
+
+	//UE_LOG(LogNetTraffic, Verbose, TEXT("Avg Jitter: %f | CurrentJitter: %f | CurrentTimeDelta: %d | PreviousTimeDelta: %d | ReceivedClockMilli %d | LocalClockMilli %d"), AverageJitterInMS, CurrentJitter, CurrentJitterTimeDelta, PreviousJitterTimeDelta, PacketJitterClockTimeMS, CurrentClockTimeMilliseconds);
+
+	// Store for next process
+	PreviousJitterTimeDelta = CurrentJitterTimeDelta;
+}
+
+void UNetConnection::SendChallengeControlMessage()
+{
+	if (State != USOCK_Invalid && State != USOCK_Closed && Driver)
+	{
+		Challenge = FString::Printf(TEXT("%08X"), FPlatformTime::Cycles());
+		SetExpectedClientLoginMsgType(NMT_Login);
+		FNetControlMessage<NMT_Challenge>::Send(this, Challenge);
+		FlushNet();
+	}
+	else
+	{
+		UE_LOG(LogNet, Log, TEXT("UWorld::SendChallengeControlMessage: connection in invalid state. %s"), *Describe());
+	}
+}
+
+void UNetConnection::SendChallengeControlMessage(const FEncryptionKeyResponse& Response)
+{
+	if (State != USOCK_Invalid && State != USOCK_Closed && Driver)
+	{
+		if (Response.Response == EEncryptionResponse::Success)
+		{
+			// handle deprecated path where only the key is set
+			PRAGMA_DISABLE_DEPRECATION_WARNINGS
+			if ((Response.EncryptionKey.Num() > 0) && (Response.EncryptionData.Key.Num() == 0))
+			{
+				FEncryptionData ResponseData = Response.EncryptionData;
+				ResponseData.Key = Response.EncryptionKey;
+
+				EnableEncryptionServer(ResponseData);
+			}
+			PRAGMA_ENABLE_DEPRECATION_WARNINGS
+			else
+			{
+				EnableEncryptionServer(Response.EncryptionData);
+			}
+
+			SendChallengeControlMessage();
+		}
+		else
+		{
+			FString ResponseStr(LexToString(Response.Response));
+			UE_LOG(LogNet, Warning, TEXT("UWorld::SendChallengeControlMessage: encryption failure [%s] %s"), *ResponseStr, *Response.ErrorMsg);
+			FNetControlMessage<NMT_Failure>::Send(this, ResponseStr);
+			FlushNet();
+			// Can't close the connection here since it will leave the failure message in the send buffer and just close the socket. 
+			// Close();
+		}
+	}
+	else
+	{
+		UE_LOG(LogNet, Warning, TEXT("UNetConnection::SendChallengeControlMessage: connection in invalid state. %s"), *Describe());
+	}
+}
+
+uint32 UNetConnection::GetParentConnectionId() const
+{
+	if (const UChildConnection* ChildConnection = const_cast<UNetConnection*>(this)->GetUChildConnection())
+	{
+		return ChildConnection->Parent->GetParentConnectionId();
+	}
+
+	return GetConnectionId();
+}
+
 /*-----------------------------------------------------------------------------
 	USimulatedClientNetConnection.
 -----------------------------------------------------------------------------*/
 
 USimulatedClientNetConnection::USimulatedClientNetConnection( const FObjectInitializer& ObjectInitializer ) : Super( ObjectInitializer )
 {
-	InternalAck = true;
+	SetInternalAck(true);
 }
 
 void USimulatedClientNetConnection::HandleClientPlayer( class APlayerController* PC, class UNetConnection* NetConnection )
@@ -3489,5 +4427,3 @@ void ConsumeAllChannelRecords(FWrittenChannelsRecord& WrittenChannelsRecord, Fun
 
 }
 
-
-  

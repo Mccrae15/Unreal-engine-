@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -18,6 +18,14 @@ class FViewport;
  * @see UGameViewportClient
  */
 DECLARE_MULTICAST_DELEGATE_ThreeParams(FOnScreenshotCaptured, int32 /*Width*/, int32 /*Height*/, const TArray<FColor>& /*Colors*/);
+
+/**
+ * Delegate type used by UGameViewportClient when a viewport is rendered
+ *
+ * The first parameter is the viewport.
+ * @see UGameViewportClient
+ */
+DECLARE_MULTICAST_DELEGATE_OneParam(FOnViewportRendered, FViewport*);
 
 /**
  * Delegate type used by UGameViewportClient when the top level window associated

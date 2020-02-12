@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -48,21 +48,31 @@ public:
 		Next();
 	}
 
-	ElementType& operator*()
+	ElementType& operator*() const
 	{
 		check(Current);
 		return *Current;
 	}
 
-	ElementType& operator->()
+	ElementType& operator->() const
 	{
 		check(Current);
 		return *Current;
 	}
 
-	operator bool()
+	explicit operator bool() const
 	{
 		return (Current != nullptr);
+	}
+
+	friend bool operator==(const FActiveGameplayEffectIterator& Lhs, const FActiveGameplayEffectIterator& Rhs)
+	{
+		return Lhs.Current == Rhs.Current;
+	}
+
+	friend bool operator!=(const FActiveGameplayEffectIterator& Lhs, const FActiveGameplayEffectIterator& Rhs)
+	{
+		return Lhs.Current != Rhs.Current;
 	}
 
 private:

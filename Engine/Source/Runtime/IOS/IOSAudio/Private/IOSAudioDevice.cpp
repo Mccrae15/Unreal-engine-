@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 /*=============================================================================
  	IOSAudioDevice.cpp: Unreal IOSAudio audio interface object.
@@ -11,6 +11,7 @@
 #include "IOSAudioDevice.h"
 #include "AudioEffect.h"
 #include "ADPCMAudioInfo.h"
+#include "AudioPluginUtilities.h"
 
 DEFINE_LOG_CATEGORY(LogIOSAudio);
 
@@ -31,9 +32,10 @@ IMPLEMENT_MODULE(FIOSAudioDeviceModule, IOSAudio);
 	FIOSAudioDevice
  ------------------------------------------------------------------------------------*/
 
+static int32 SuspendCounter = 0;
+
 void FIOSAudioDevice::ResumeContext()
 {
-	int32& SuspendCounter = GetSuspendCounter();
 	if (SuspendCounter > 0)
 	{
 		FPlatformAtomics::InterlockedDecrement(&SuspendCounter);
@@ -54,7 +56,6 @@ void FIOSAudioDevice::ResumeContext()
 
 void FIOSAudioDevice::SuspendContext()
 {
-	int32& SuspendCounter = GetSuspendCounter();
 	if (SuspendCounter == 0)
 	{
 		FPlatformAtomics::InterlockedIncrement(&SuspendCounter);
@@ -73,10 +74,20 @@ void FIOSAudioDevice::SuspendContext()
 	}
 }
 
-int32& FIOSAudioDevice::GetSuspendCounter()
+void FIOSAudioDevice::IncrementSuspendCounter()
 {
-	static int32 SuspendCounter = 0;
-	return SuspendCounter;
+    if(SuspendCounter == 0)
+    {
+        FPlatformAtomics::InterlockedIncrement(&SuspendCounter);
+    }
+}
+
+void FIOSAudioDevice::DecrementSuspendCounter()
+{
+    if (SuspendCounter > 0)
+    {
+        FPlatformAtomics::InterlockedDecrement(&SuspendCounter);
+    }
 }
 
 void FIOSAudioDevice::UpdateDeviceDeltaTime()
@@ -107,8 +118,14 @@ bool FIOSAudioDevice::Exec(UWorld* InWorld, const TCHAR* Cmd, FOutputDevice& Ar)
 	return FAudioDevice::Exec(InWorld, Cmd, Ar);
 }
 
+FAudioPlatformSettings FIOSAudioDevice::GetPlatformSettings() const
+{
+	return FAudioPlatformSettings::GetPlatformSettings(FPlatformProperties::GetRuntimeSettingsClassName());
+}
+
 bool FIOSAudioDevice::InitializeHardware()
 {
+    UE_LOG(LogIOSAudio, Warning, TEXT("Initializing legacy audio backend for iOS"));
 	SIZE_T SampleSize = sizeof(AudioSampleType);
 	double GraphSampleRate = 44100.0;
 
@@ -193,7 +210,7 @@ bool FIOSAudioDevice::InitializeHardware()
 		return false;
 	}
 
-	uint32 BusCount = MaxChannels * CHANNELS_PER_BUS;
+	uint32 BusCount = GetMaxSources() * CHANNELS_PER_BUS;
 	Status = AudioUnitSetProperty(MixerUnit,
 	                              kAudioUnitProperty_ElementCount,
 	                              kAudioUnitScope_Input,
@@ -232,7 +249,7 @@ bool FIOSAudioDevice::InitializeHardware()
 
 	// Initialize and start the audio unit graph
 	Status = AUGraphInitialize(AudioUnitGraph);
-	if (Status == noErr && GetSuspendCounter() == 0)
+	if (Status == noErr && SuspendCounter == 0)
 	{
 		Status = AUGraphStart(AudioUnitGraph);
 	}

@@ -1,5 +1,5 @@
-﻿/**
- * Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+/**
+ * Copyright Epic Games, Inc. All Rights Reserved.
  */
 
 using System;
@@ -10,7 +10,6 @@ using System.IO;
 using System.Threading;
 using Ionic.Zip;
 using Ionic.Zlib;
-using RPCUtility;
 using System.Net;
 using System.Net.NetworkInformation;
 using System.Reflection;
@@ -601,14 +600,16 @@ namespace iPhonePackager
 			/// </summary>
 			public static string FindRootPathInIPA(ZipFile Zip)
 			{
-				string Info = "/Info.plist";
+				// we want only the root Info.plist, not a plist inside an framework or extension
+				string Info = ".app/Info.plist";
 
 				var FileList = Zip.EntryFileNames;
 				foreach (string TestFilename in FileList)
 				{
 					if (TestFilename.EndsWith(Info))
 					{
-						return TestFilename.Substring(0, TestFilename.Length - Info.Length + 1);
+						// the - 5 removes the .app portion and leaves the slash
+						return TestFilename.Substring(0, TestFilename.Length - (Info.Length - 5));
 					}
 				}
 

@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 /*=============================================================================
 	ParticleResources.h: Declaration of global particle resources.
@@ -54,10 +54,10 @@ public:
 
 /** Global particle index buffer. */
 ENGINE_API extern TGlobalResource<FParticleIndexBuffer> GParticleIndexBuffer;
-extern TGlobalResource<FSixTriangleParticleIndexBuffer> GSixTriangleParticleIndexBuffer;
+ENGINE_API extern TGlobalResource<FSixTriangleParticleIndexBuffer> GSixTriangleParticleIndexBuffer;
 
-typedef FShaderResourceViewRHIParamRef FParticleShaderParamRef;
-typedef FVertexBufferRHIParamRef FParticleBufferParamRef;
+typedef FRHIShaderResourceView* FParticleShaderParamRef;
+typedef FRHIVertexBuffer* FParticleBufferParamRef;
 
 /**
  * Scratch vertex buffer available for dynamic draw calls.

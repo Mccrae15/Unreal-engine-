@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 /*=============================================================================
 Level.cpp: Level-related functions
@@ -7,10 +7,8 @@ Level.cpp: Level-related functions
 #include "Engine/Level.h"
 #include "Misc/ScopedSlowTask.h"
 #include "UObject/RenderingObjectVersion.h"
-#include "Templates/ScopedPointer.h"
 #include "Templates/UnrealTemplate.h"
 #include "UObject/Package.h"
-#include "Serialization/AsyncLoading.h"
 #include "EngineStats.h"
 #include "Engine/Blueprint.h"
 #include "GameFramework/Actor.h"
@@ -47,9 +45,12 @@ Level.cpp: Level-related functions
 #include "PhysicsEngine/BodySetup.h"
 #include "EngineGlobals.h"
 #include "Engine/LevelBounds.h"
+#include "Async/ParallelFor.h"
+#include "UnrealEngine.h"
 #if WITH_EDITOR
 #include "Kismet2/KismetEditorUtilities.h"
 #include "Kismet2/BlueprintEditorUtils.h"
+#include "Algo/AnyOf.h"
 #endif
 #include "Engine/LevelStreaming.h"
 #include "LevelUtils.h"
@@ -58,6 +59,8 @@ Level.cpp: Level-related functions
 #include "Engine/StaticMeshActor.h"
 #include "ComponentRecreateRenderStateContext.h"
 #include "Algo/Copy.h"
+#include "HAL/LowLevelMemTracker.h"
+#include "ObjectTrace.h"
 
 DEFINE_LOG_CATEGORY(LogLevel);
 
@@ -68,6 +71,75 @@ static FAutoConsoleVariableRef CVarActorClusteringEnabled(
 	TEXT("Whether to allow levels to create actor clusters for GC."),
 	ECVF_Default
 );
+
+#if WITH_EDITOR
+FLevelPartitionOperationScope::FLevelPartitionOperationScope(ULevel* InLevel)
+{
+	InterfacePtr = InLevel->GetLevelPartition();
+	Level = InLevel;
+	if (InterfacePtr)
+	{
+		InterfacePtr->BeginOperation(this);
+		Level = CreateTransientLevel(InLevel->GetWorld());
+	}
+}
+
+FLevelPartitionOperationScope::~FLevelPartitionOperationScope()
+{
+	if (InterfacePtr)
+	{
+		InterfacePtr->EndOperation();
+		DestroyTransientLevel(Level);
+	}
+	Level = nullptr;
+}
+
+TArray<AActor*> FLevelPartitionOperationScope::GetActors() const
+{
+	if (InterfacePtr)
+	{
+		return Level->Actors;
+	}
+
+	return {};
+}
+
+ULevel* FLevelPartitionOperationScope::GetLevel() const
+{
+	check(Level);
+	return Level;
+}
+
+ULevel* FLevelPartitionOperationScope::CreateTransientLevel(UWorld* InWorld)
+{
+	ULevel* Level = NewObject<ULevel>(GetTransientPackage(), TEXT("TempLevelPartitionOperationScopeLevel"));
+	check(Level);
+	Level->Initialize(FURL(nullptr));
+	Level->AddToRoot();
+	Level->OwningWorld = InWorld;
+	Level->Model = NewObject<UModel>(Level);
+	Level->Model->Initialize(nullptr, true);
+	Level->bIsVisible = true;
+
+	Level->SetFlags(RF_Transactional);
+	Level->Model->SetFlags(RF_Transactional);
+
+	return Level;
+}
+
+void FLevelPartitionOperationScope::DestroyTransientLevel(ULevel* Level)
+{
+	check(Level->GetOutermost() == GetTransientPackage());
+	// Make sure Level doesn't contain any Actors before destroying. That would mean the operation failed.
+	check(!Algo::AnyOf(Level->Actors, [](AActor* Actor) { return Actor != nullptr; }));
+	// Delete the temporary level
+	Level->ClearLevelComponents();
+	Level->GetWorld()->RemoveLevel(Level);
+	Level->OwningWorld = nullptr;
+	Level->RemoveFromRoot();
+	Level = nullptr;
+}
+#endif
 
 /*-----------------------------------------------------------------------------
 ULevel implementation.
@@ -401,7 +473,7 @@ void ULevel::Serialize( FArchive& Ar )
 		FLevelLegacyMapBuildData LegacyLevelData;
 		LegacyLevelData.Id = LevelBuildDataId;
 		LegacyLevelData.Data = LegacyData;
-		GLevelsWithLegacyBuildData.AddAnnotation(this, LegacyLevelData);
+		GLevelsWithLegacyBuildData.AddAnnotation(this, MoveTemp(LegacyLevelData));
 	}
 
 	Ar << PrecomputedVisibilityHandler;
@@ -431,6 +503,7 @@ void ULevel::CreateReplicatedDestructionInfo(AActor* const Actor)
 	{
 		FReplicatedStaticActorDestructionInfo NewInfo;
 		NewInfo.PathName = Actor->GetFName();
+		NewInfo.FullName = Actor->GetFullName();
 		NewInfo.DestroyedPosition = Actor->GetActorLocation();
 		NewInfo.ObjOuter = Actor->GetOuter();
 		NewInfo.ObjClass = Actor->GetClass();
@@ -453,7 +526,7 @@ bool ULevel::IsNetActor(const AActor* Actor)
 
 	// If this is a server, use RemoteRole.
 	// If this is a client, use Role.
-	const ENetRole NetRole = (!Actor->IsNetMode(NM_Client)) ? Actor->GetRemoteRole() : (ENetRole)Actor->Role;
+	const ENetRole NetRole = (!Actor->IsNetMode(NM_Client)) ? Actor->GetRemoteRole() : (ENetRole)Actor->GetLocalRole();
 
 	// This test will return true on clients for actors with ROLE_Authority, which might be counterintuitive,
 	// but clients will need to consider these actors in some cases, such as if their bTearOff flag is true.
@@ -468,6 +541,7 @@ void ULevel::SortActorList()
 		// No need to sort an empty list
 		return;
 	}
+	LLM_REALLOC_SCOPE(Actors.GetData());
 
 	TArray<AActor*> NewActors;
 	TArray<AActor*> NewNetActors;
@@ -512,21 +586,6 @@ void ULevel::SortActorList()
 }
 
 
-void ULevel::ValidateLightGUIDs()
-{
-	for( TObjectIterator<ULightComponent> It; It; ++It )
-	{
-		ULightComponent*	LightComponent	= *It;
-		bool				IsInLevel		= LightComponent->IsIn( this );
-
-		if( IsInLevel )
-		{
-			LightComponent->ValidateLightGUIDs();
-		}
-	}
-}
-
-
 void ULevel::PreSave(const class ITargetPlatform* TargetPlatform)
 {
 	Super::PreSave(TargetPlatform);
@@ -534,10 +593,6 @@ void ULevel::PreSave(const class ITargetPlatform* TargetPlatform)
 #if WITH_EDITOR
 	if( !IsTemplate() )
 	{
-		UPackage* Package = GetOutermost();
-
-		ValidateLightGUIDs();
-
 		// Clear out any crosslevel references
 		for( int32 ActorIdx = 0; ActorIdx < Actors.Num(); ActorIdx++ )
 		{
@@ -547,8 +602,6 @@ void ULevel::PreSave(const class ITargetPlatform* TargetPlatform)
 				Actor->ClearCrossLevelReferences();
 			}
 		}
-
-		// CheckTextureStreamingBuild(this);
 	}
 #endif // WITH_EDITOR
 }
@@ -614,7 +667,7 @@ void ULevel::PostLoad()
 	}
 
 	// Fixup deprecated stuff in levels simplification settings
-	for (int32 Index = 0; Index < ARRAY_COUNT(LevelSimplification); ++Index)
+	for (int32 Index = 0; Index < UE_ARRAY_COUNT(LevelSimplification); ++Index)
 	{
 		LevelSimplification[Index].PostLoadDeprecated();
 	}
@@ -645,7 +698,7 @@ void ULevel::CreateCluster()
 	// Also, we don't want the level to reference the actors that are clusters because that would
 	// make things work even slower (references to clustered objects are expensive). That's why
 	// we keep a separate array for referencing unclustered actors (ActorsForGC).
-	if (FPlatformProperties::RequiresCookedData() && GActorClusteringEnabled && !bActorClusterCreated)
+	if (FPlatformProperties::RequiresCookedData() && GCreateGCClusters && GActorClusteringEnabled && !bActorClusterCreated)
 	{
 		TArray<AActor*> ClusterActors;
 
@@ -776,82 +829,10 @@ struct FModelComponentKey
 	}
 };
 
-void ULevel::UpdateLevelComponents(bool bRerunConstructionScripts)
+void ULevel::UpdateLevelComponents(bool bRerunConstructionScripts, FRegisterComponentContext* Context)
 {
 	// Update all components in one swoop.
-	IncrementalUpdateComponents( 0, bRerunConstructionScripts );
-}
-
-namespace FLevelSortUtils
-{
-	void AddToListSafe(AActor* TestActor, TArray<AActor*>& List)
-	{
-		if (TestActor)
-		{
-			const bool bAlreadyAdded = List.Contains(TestActor);
-			if (bAlreadyAdded)
-			{
-				FString ListItemDesc;
-				for (int32 Idx = 0; Idx < List.Num(); Idx++)
-				{
-					if (Idx > 0)
-					{
-						ListItemDesc += TEXT(", ");
-					}
-
-					ListItemDesc += GetNameSafe(List[Idx]);
-				}
-
-				UE_LOG(LogLevel, Warning, TEXT("Found a cycle in actor's parent chain: %s"), *ListItemDesc);
-			}
-			else
-			{
-				List.Add(TestActor);
-			}
-		}
-	}
-
-	// Finds list of parents from an entry in ParentMap, returns them in provided array and removes from map
-	// Logs an error when cycle is found
-	void FindAndRemoveParentChain(TMap<AActor*, AActor*>& ParentMap, TArray<AActor*>& ParentChain)
-	{
-		check(ParentMap.Num());
-		
-		// seed from first entry
-		TMap<AActor*, AActor*>::TIterator It(ParentMap);
-		ParentChain.Add(It.Key());
-		ParentChain.Add(It.Value());
-		It.RemoveCurrent();
-
-		// fill chain's parent nodes
-		bool bLoop = true;
-		while (bLoop)
-		{
-			AActor* MapValue = nullptr;
-			bLoop = ParentMap.RemoveAndCopyValue(ParentChain.Last(), MapValue);
-			AddToListSafe(MapValue, ParentChain);
-		}
-
-		// find chain's child nodes, ignore cycle detection since it would've triggered already from previous loop
-		for (AActor* const* MapKey = ParentMap.FindKey(ParentChain[0]); MapKey; MapKey = ParentMap.FindKey(ParentChain[0]))
-		{
-			AActor* MapValue = nullptr;
-			ParentMap.RemoveAndCopyValue((AActor*)MapKey, MapValue);
-			ParentChain.Insert(MapValue, 0);
-		}
-	}
-
-	struct FDepthSort
-	{
-		TMap<AActor*, int32>* DepthMap;
-
-		bool operator()(AActor* A, AActor* B) const
-		{
-			const int32 DepthA = A ? DepthMap->FindRef(A) : MAX_int32;
-			const int32 DepthB = B ? DepthMap->FindRef(B) : MAX_int32;
-			return DepthA < DepthB;
-		}
-	};
+	IncrementalUpdateComponents( 0, bRerunConstructionScripts, Context);
 }
 
 /**
@@ -862,58 +843,69 @@ static void SortActorsHierarchy(TArray<AActor*>& Actors, UObject* Level)
 {
 	const double StartTime = FPlatformTime::Seconds();
 
-	// Precalculate parent map to avoid processing cycles during sort
-	TMap<AActor*, AActor*> ParentMap;
-	for (int32 Idx = 0; Idx < Actors.Num(); Idx++)
+	TMap<AActor*, int32> DepthMap;
+	TArray<AActor*, TInlineAllocator<10>> VisitedActors;
+
+	TFunction<int32(AActor*)> CalcAttachDepth = [&DepthMap, &VisitedActors, &CalcAttachDepth](AActor* Actor)
 	{
-		if (Actors[Idx])
+		int32 Depth = 0;
+		if (int32* FoundDepth = DepthMap.Find(Actor))
 		{
-			AActor* ParentActor = Actors[Idx]->GetAttachParentActor();
-			if (ParentActor)
-			{
-				ParentMap.Add(Actors[Idx], ParentActor);
-			}
+			Depth = *FoundDepth;
 		}
-	}
-
-	if (ParentMap.Num())
-	{
-		TMap<AActor*, int32> DepthMap;
-		FLevelSortUtils::FDepthSort DepthSorter;
-		DepthSorter.DepthMap = &DepthMap;
-
-		TArray<AActor*> ParentChain;
-		while (ParentMap.Num())
+		else
 		{
-			ParentChain.Reset();
-			FLevelSortUtils::FindAndRemoveParentChain(ParentMap, ParentChain);
-
-			// Topmost parent in found parent chain might have its parent already removed
-			// so we need to use it's stored depth as a base depth for whole chain
-			int32 ParentChainStartDepth = 0;
-			if (ParentChain.Num() > 0)
+			if (AActor* ParentActor = Actor->GetAttachParentActor())
 			{
-				if (int32* StartDepthPtr = DepthMap.Find(ParentChain.Last()))
+				if (VisitedActors.Contains(ParentActor))
 				{
-					ParentChainStartDepth = *StartDepthPtr;
+					FString VisitedActorLoop;
+					for (AActor* VisitedActor : VisitedActors)
+					{
+						VisitedActorLoop += VisitedActor->GetName() + TEXT(" -> ");
+					}
+					VisitedActorLoop += Actor->GetName();
+
+					UE_LOG(LogLevel, Warning, TEXT("Found loop in attachment hierarchy: %s"), *VisitedActorLoop);
+					// Once we find a loop, depth is mostly meaningless, so we'll treat the "end" of the loop as 0
+				}
+				else
+				{
+					VisitedActors.Add(Actor);
+					Depth = CalcAttachDepth(ParentActor) + 1;
 				}
 			}
-
-			for (int32 Idx = 0; Idx < ParentChain.Num(); Idx++)
-			{
-				DepthMap.Add(ParentChain[Idx], ParentChainStartDepth + ParentChain.Num() - Idx - 1);
-			}
+			DepthMap.Add(Actor, Depth);
 		}
+		return Depth;
+	};
 
-		// Unfortunately TArray.StableSort assumes no null entries in the array
-		// So it forces me to use internal unrestricted version
-		StableSortInternal(Actors.GetData(), Actors.Num(), DepthSorter);
+	for (AActor* Actor : Actors)
+	{
+		if (Actor)
+		{
+			CalcAttachDepth(Actor);
+			VisitedActors.Reset();
+		}
 	}
 
-	const float ElapsedTime = (float)(FPlatformTime::Seconds() - StartTime);
-	if (ElapsedTime > 1.0f)
+	const double CalcAttachDepthTime = FPlatformTime::Seconds() - StartTime;
+
+	auto DepthSorter = [&DepthMap](AActor* A, AActor* B)
 	{
-		UE_LOG(LogLevel, Warning, TEXT("SortActorsHierarchy(%s) took %f seconds"), Level ? *GetNameSafe(Level->GetOutermost()) : TEXT("??"), ElapsedTime);
+		const int32 DepthA = A ? DepthMap.FindRef(A) : MAX_int32;
+		const int32 DepthB = B ? DepthMap.FindRef(B) : MAX_int32;
+		return DepthA < DepthB;
+	};
+
+	const double StableSortStartTime = FPlatformTime::Seconds();
+	StableSortInternal(Actors.GetData(), Actors.Num(), DepthSorter);
+	const double StableSortTime = FPlatformTime::Seconds() - StableSortStartTime;
+
+	const double ElapsedTime = FPlatformTime::Seconds() - StartTime;
+	if (ElapsedTime > 1.0 && !FApp::IsUnattended())
+	{
+		UE_LOG(LogLevel, Warning, TEXT("SortActorsHierarchy(%s) took %f seconds (CalcAttachDepth: %f StableSort: %f)"), Level ? *GetNameSafe(Level->GetOutermost()) : TEXT("??"), ElapsedTime, CalcAttachDepthTime, StableSortTime);
 	}
 
 	// Since all the null entries got sorted to the end, lop them off right now
@@ -929,7 +921,8 @@ static void SortActorsHierarchy(TArray<AActor*>& Actors, UObject* Level)
 	}
 }
 
-void ULevel::IncrementalUpdateComponents(int32 NumComponentsToUpdate, bool bRerunConstructionScripts)
+DECLARE_CYCLE_STAT(TEXT("Deferred Init Bodies"), STAT_DeferredUpdateBodies, STATGROUP_Physics);
+void ULevel::IncrementalUpdateComponents(int32 NumComponentsToUpdate, bool bRerunConstructionScripts, FRegisterComponentContext* Context)
 {
 	// A value of 0 means that we want to update all components.
 	if (NumComponentsToUpdate != 0)
@@ -946,6 +939,7 @@ void ULevel::IncrementalUpdateComponents(int32 NumComponentsToUpdate, bool bReru
 		SortActorsHierarchy(Actors, this);
 	}
 
+	int32 PreviousIndex = CurrentActorIndexForUpdateComponents;
 	// Find next valid actor to process components registration
 	while (CurrentActorIndexForUpdateComponents < Actors.Num())
 	{
@@ -961,7 +955,7 @@ void ULevel::IncrementalUpdateComponents(int32 NumComponentsToUpdate, bool bReru
 				Actor->PreRegisterAllComponents();
 				bHasCurrentActorCalledPreRegister = true;
 			}
-			bAllComponentsRegistered = Actor->IncrementalRegisterComponents(NumComponentsToUpdate);
+			bAllComponentsRegistered = Actor->IncrementalRegisterComponents(NumComponentsToUpdate, Context);
 		}
 
 		if (bAllComponentsRegistered)
@@ -1019,6 +1013,32 @@ void ULevel::IncrementalUpdateComponents(int32 NumComponentsToUpdate, bool bReru
 	{
 		// The editor is never allowed to incrementally updated components.  Make sure to pass in a value of zero for NumActorsToUpdate.
 		check(OwningWorld->IsGameWorld());
+	}
+
+	{
+		SCOPE_CYCLE_COUNTER(STAT_DeferredUpdateBodies);
+		// Init Bodies
+		FGCScopeGuard ScopeLock;
+		int32 NumToInit = Actors.Num() - PreviousIndex;
+		TSubclassOf<UActorComponent> PrimitiveStaticClass = UPrimitiveComponent::StaticClass();
+		ParallelFor(NumToInit, [&](int32 Idx) {
+			int32 ActorIdx = Idx + PreviousIndex;
+			AActor* Actor = Actors[ActorIdx];
+			if (Actor && !Actor->IsPendingKill())
+			{
+				TArray<UActorComponent*> PrimtiveComponents;
+				Actor->GetComponents(PrimitiveStaticClass, PrimtiveComponents);
+				for (UActorComponent* PrimtiveComponent : PrimtiveComponents)
+				{
+					FBodyInstance* BodyInstance = Cast<UPrimitiveComponent>(PrimtiveComponent)->GetBodyInstance();
+					if (BodyInstance)
+					{
+						BodyInstance->InitAllBodies(GetWorld()->GetPhysicsScene());
+					}
+				}
+			}
+			// @TODO DO NOT CHECKIN
+		}, EParallelForFlags::ForceSingleThread);
 	}
 }
 
@@ -1382,10 +1402,6 @@ void ULevel::PreEditUndo()
 {
 	Super::PreEditUndo();
 
-	// Release the model's resources.
-	Model->BeginReleaseResources();
-	Model->ReleaseResourcesFence.Wait();
-
 	// Detach existing model components.  These are left in the array, so they are saved for undoing the undo.
 	for(int32 ComponentIndex = 0;ComponentIndex < ModelComponents.Num();ComponentIndex++)
 	{
@@ -1394,6 +1410,10 @@ void ULevel::PreEditUndo()
 			ModelComponents[ComponentIndex]->UnregisterComponent();
 		}
 	}
+
+	// Release the model's resources.
+	Model->BeginReleaseResources();
+	Model->ReleaseResourcesFence.Wait();
 
 	ReleaseRenderingResources();
 
@@ -1464,7 +1484,7 @@ void ULevel::PostEditChangeProperty(FPropertyChangedEvent& PropertyChangedEvent)
 {
 	Super::PostEditChangeProperty(PropertyChangedEvent);
 
-	UProperty* PropertyThatChanged = PropertyChangedEvent.MemberProperty;
+	FProperty* PropertyThatChanged = PropertyChangedEvent.MemberProperty;
 	const FString PropertyName = PropertyThatChanged ? PropertyThatChanged->GetName() : TEXT("");
 
 	if (PropertyName == GET_MEMBER_NAME_STRING_CHECKED(ULevel, MapBuildData))
@@ -1501,9 +1521,6 @@ void ULevel::InvalidateModelGeometry()
 	Model->Modify();
 	Modify();
 
-	// Begin releasing the model's resources.
-	Model->BeginReleaseResources();
-
 	// Remove existing model components.
 	for(int32 ComponentIndex = 0;ComponentIndex < ModelComponents.Num();ComponentIndex++)
 	{
@@ -1514,6 +1531,9 @@ void ULevel::InvalidateModelGeometry()
 		}
 	}
 	ModelComponents.Empty();
+
+	// Begin releasing the model's resources.
+	Model->BeginReleaseResources();
 }
 
 
@@ -1580,7 +1600,10 @@ void ULevel::CommitModelSurfaces()
 				{
 					if (Model->bOnlyRebuildMaterialIndexBuffers)
 					{
-						ModelComponents[ComponentIndex]->MarkRenderStateDirty();
+						// This is intentionally updated immediately. We just re-created vertex and index buffers
+						// without invalidating static meshes. Re-create all static meshes now so that mesh draw
+						// commands are refreshed.
+						ModelComponents[ComponentIndex]->RecreateRenderState_Concurrent();
 					}
 					else
 					{
@@ -1774,7 +1797,7 @@ void ULevel::InitializeRenderingResources()
 {
 	// OwningWorld can be NULL when InitializeRenderingResources is called during undo, where a transient ULevel is created to allow undoing level move operations
 	// At the point at which Pre/PostEditChange is called on that transient ULevel, it is not part of any world and therefore should not have its rendering resources initialized
-	if (OwningWorld && bIsVisible)
+	if (OwningWorld && bIsVisible && FApp::CanEverRender())
 	{
 		ULevel* ActiveLightingScenario = OwningWorld->GetActiveLightingScenario();
 		UMapBuildDataRegistry* EffectiveMapBuildData = MapBuildData;
@@ -1791,7 +1814,7 @@ void ULevel::InitializeRenderingResources()
 
 		if (!PrecomputedVolumetricLightmap->IsAddedToScene())
 		{
-			PrecomputedVolumetricLightmap->AddToScene(OwningWorld->Scene, EffectiveMapBuildData, LevelBuildDataId);
+			PrecomputedVolumetricLightmap->AddToScene(OwningWorld->Scene, EffectiveMapBuildData, LevelBuildDataId, IsPersistentLevel());
 		}
 
 		if (OwningWorld->Scene && EffectiveMapBuildData)
@@ -1803,19 +1826,24 @@ void ULevel::InitializeRenderingResources()
 
 void ULevel::ReleaseRenderingResources()
 {
-	if (OwningWorld && PrecomputedLightVolume)
+	if (OwningWorld && FApp::CanEverRender())
 	{
-		PrecomputedLightVolume->RemoveFromScene(OwningWorld->Scene);
-	}
+		if (PrecomputedLightVolume)
+		{
+			PrecomputedLightVolume->RemoveFromScene(OwningWorld->Scene);
+		}
 
-	if (OwningWorld && PrecomputedVolumetricLightmap)
-	{
-		PrecomputedVolumetricLightmap->RemoveFromScene(OwningWorld->Scene);
+		if (PrecomputedVolumetricLightmap)
+		{
+			PrecomputedVolumetricLightmap->RemoveFromScene(OwningWorld->Scene);
+		}
 	}
 }
 
 void ULevel::RouteActorInitialize()
 {
+	TRACE_OBJECT_EVENT(this, RouteActorInitialize);
+
 	// Send PreInitializeComponents and collect volumes.
 	for( int32 Index = 0; Index < Actors.Num(); ++Index )
 	{
@@ -1851,11 +1879,6 @@ void ULevel::RouteActorInitialize()
 					ActorsToBeginPlay.Add(Actor);
 				}
 			}
-
-			// Components are all set up, init touching state.
-			// Note: Not doing notifies here since loading or streaming in isn't actually conceptually beginning a touch.
-			//	     Rather, it was always touching and the mechanics of loading is just an implementation detail.
-			Actor->UpdateOverlaps(Actor->bGenerateOverlapEventsDuringLevelStreaming);
 		}
 	}
 
@@ -1864,7 +1887,7 @@ void ULevel::RouteActorInitialize()
 	{
 		AActor* Actor = ActorsToBeginPlay[ActorIndex];
 		SCOPE_CYCLE_COUNTER(STAT_ActorBeginPlay);
-		Actor->DispatchBeginPlay();
+		Actor->DispatchBeginPlay(/*bFromLevelStreaming*/ true);
 	}
 }
 
@@ -2013,11 +2036,20 @@ void ULevel::OnLevelScriptBlueprintChanged(ULevelScriptBlueprint* InBlueprint)
 		// Make sure this is OUR level scripting blueprint
 		ensureMsgf(InBlueprint == LevelScriptBlueprint, TEXT("Level ('%s') received OnLevelScriptBlueprintChanged notification for the wrong Blueprint ('%s')."), LevelScriptBlueprint ? *LevelScriptBlueprint->GetPathName() : TEXT("NULL"), *InBlueprint->GetPathName()) )
 	{
+		bool bResetDebugObject = false;
+
 		UClass* SpawnClass = (LevelScriptBlueprint->GeneratedClass) ? LevelScriptBlueprint->GeneratedClass : LevelScriptBlueprint->SkeletonGeneratedClass;
 
 		// Get rid of the old LevelScriptActor
 		if( LevelScriptActor )
 		{
+			// Clear the current debug object and indicate that it needs to be reset (below).
+			if (InBlueprint->GetObjectBeingDebugged() == LevelScriptActor)
+			{
+				bResetDebugObject = true;
+				InBlueprint->SetObjectBeingDebugged(nullptr);
+			}
+
 			LevelScriptActor->MarkPendingKill();
 			LevelScriptActor = nullptr;
 		}
@@ -2030,6 +2062,12 @@ void ULevel::OnLevelScriptBlueprintChanged(ULevelScriptBlueprint* InBlueprint)
 
 		if( LevelScriptActor )
 		{
+			// Reset the current debug object to the new instance if it was previously set to the old instance.
+			if (bResetDebugObject)
+			{
+				InBlueprint->SetObjectBeingDebugged(LevelScriptActor);
+			}
+
 			LevelScriptActor->ClearFlags(RF_Transactional);
 			check(LevelScriptActor->GetOuter() == this);
 			// Finally, fixup all the bound events to point to their new LSA
@@ -2049,9 +2087,35 @@ void ULevel::BeginCacheForCookedPlatformData(const ITargetPlatform *TargetPlatfo
 	}
 }
 
+bool ULevel::CanEditChange(const FProperty* PropertyThatWillChange) const
+{
+	static FName NAME_LevelPartition = GET_MEMBER_NAME_CHECKED(ULevel, LevelPartition);
+	if (PropertyThatWillChange->GetFName() == NAME_LevelPartition)
+	{
+		// Can't set a partition on the persistent level
+		if (IsPersistentLevel())
+		{
+			return false;
+		}
+
+		// Can't set a partition on partition sublevels
+		if (IsPartitionSubLevel())
+		{
+			return false;
+		}
+
+		// Can't set a partition if using world composition
+		if (WorldSettings && WorldSettings->bEnableWorldComposition)
+		{
+			return false;
+		}
+	}
+	return Super::CanEditChange(PropertyThatWillChange);
+}
+
 void ULevel::FixupForPIE(int32 PIEInstanceID)
 {
-	TGuardValue<int32> SetPlayInEditorID(GPlayInEditorID, PIEInstanceID);
+	FTemporaryPlayInEditorIDOverride SetPlayInEditorID(PIEInstanceID);
 
 	struct FSoftPathPIEFixupSerializer : public FArchiveUObject
 	{
@@ -2122,13 +2186,12 @@ void ULevel::ApplyWorldOffset(const FVector& InWorldOffset, bool bWorldShift)
 		// Otherwise we need to send a command to move just this volume
 		else if (!bWorldShift) 
 		{
-			ENQUEUE_UNIQUE_RENDER_COMMAND_TWOPARAMETER(
- 				ApplyWorldOffset_PLV,
- 				FPrecomputedLightVolume*, InPrecomputedLightVolume, PrecomputedLightVolume,
- 				FVector, InWorldOffset, InWorldOffset,
- 			{
-				InPrecomputedLightVolume->ApplyWorldOffset(InWorldOffset);
- 			});
+			FPrecomputedLightVolume* InPrecomputedLightVolume = PrecomputedLightVolume;
+			ENQUEUE_RENDER_COMMAND(ApplyWorldOffset_PLV)(
+				[InPrecomputedLightVolume, InWorldOffset](FRHICommandListImmediate& RHICmdList)
+	 			{
+					InPrecomputedLightVolume->ApplyWorldOffset(InWorldOffset);
+ 				});
 		}
 	}
 
@@ -2149,13 +2212,12 @@ void ULevel::ApplyWorldOffset(const FVector& InWorldOffset, bool bWorldShift)
 		// Otherwise we need to send a command to move just this volume
 		else if (!bWorldShift) 
 		{
-			ENQUEUE_UNIQUE_RENDER_COMMAND_TWOPARAMETER(
- 				ApplyWorldOffset_PLV,
- 				FPrecomputedVolumetricLightmap*, InPrecomputedVolumetricLightmap, PrecomputedVolumetricLightmap,
- 				FVector, InWorldOffset, InWorldOffset,
- 			{
-				InPrecomputedVolumetricLightmap->ApplyWorldOffset(InWorldOffset);
- 			});
+			FPrecomputedVolumetricLightmap* InPrecomputedVolumetricLightmap = PrecomputedVolumetricLightmap;
+			ENQUEUE_RENDER_COMMAND(ApplyWorldOffset_PLV)(
+				[InPrecomputedVolumetricLightmap, InWorldOffset](FRHICommandListImmediate& RHICmdList)
+	 			{
+					InPrecomputedVolumetricLightmap->ApplyWorldOffset(InWorldOffset);
+ 				});
 		}
 	}
 
@@ -2292,4 +2354,39 @@ bool ULevel::HasVisibilityChangeRequestPending() const
 	return (OwningWorld && ( this == OwningWorld->GetCurrentLevelPendingVisibility() || this == OwningWorld->GetCurrentLevelPendingInvisibility() ) );
 }
 
+#if WITH_EDITORONLY_DATA
 
+bool ULevel::IsPartitionedLevel() const
+{
+	return LevelPartition != nullptr;
+}
+
+bool ULevel::IsPartitionSubLevel() const
+{
+	return OwnerLevelPartition.IsValid() && LevelPartition == nullptr;
+}
+
+void ULevel::SetLevelPartition(ILevelPartitionInterface* InLevelPartition)
+{
+	UObject* PartitionObject = Cast<UObject>(InLevelPartition);
+	LevelPartition = PartitionObject;
+	OwnerLevelPartition = PartitionObject;
+}
+
+ILevelPartitionInterface* ULevel::GetLevelPartition()
+{
+	return Cast<ILevelPartitionInterface>(OwnerLevelPartition.Get());
+}
+
+const ILevelPartitionInterface* ULevel::GetLevelPartition() const
+{
+	return Cast<ILevelPartitionInterface>(OwnerLevelPartition.Get());
+}
+
+void ULevel::SetPartitionSubLevel(ULevel* SubLevel)
+{
+	check(LevelPartition);
+	SubLevel->OwnerLevelPartition = Cast<UObject>(&*LevelPartition);
+}
+
+#endif // #if WITH_EDITORONLY_DATA

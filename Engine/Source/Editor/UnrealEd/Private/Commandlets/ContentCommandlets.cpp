@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 /*=============================================================================
 	UCContentCommandlets.cpp: Various commmandlets.
@@ -59,6 +59,12 @@ DEFINE_LOG_CATEGORY(LogContentCommandlet);
 
 // for UResavePackagesCommandlet::PerformAdditionalOperations building lighting code
 #include "LightingBuildOptions.h"
+
+// for UResavePackagesCommandlet::PerformAdditionalOperations building navigation data
+#include "EngineUtils.h"
+#include "NavigationData.h"
+#include "AI/NavigationSystemBase.h"
+
 // For preloading FFindInBlueprintSearchManager
 #include "FindInBlueprintManager.h"
 #include "IHierarchicalLODUtilities.h"
@@ -128,7 +134,7 @@ int32 UResavePackagesCommandlet::InitializeResaveParameters( const TArray<FStrin
 		else if (FParse::Value(*CurrentSwitch, TEXT("MAP="), Maps))
 		{
 			// Allow support for -MAP=Value1+Value2+Value3
-			for (int32 PlusIdx = Maps.Find(TEXT("+")); PlusIdx != INDEX_NONE; PlusIdx = Maps.Find(TEXT("+")))
+			for (int32 PlusIdx = Maps.Find(TEXT("+"), ESearchCase::CaseSensitive); PlusIdx != INDEX_NONE; PlusIdx = Maps.Find(TEXT("+"), ESearchCase::CaseSensitive))
 			{
 				const FString NextMap = Maps.Left(PlusIdx);
 				if (NextMap.Len() > 0)
@@ -139,7 +145,7 @@ int32 UResavePackagesCommandlet::InitializeResaveParameters( const TArray<FStrin
 					bExplicitPackages = true;
 				}
 
-				Maps = Maps.Right(Maps.Len() - (PlusIdx + 1));
+				Maps.RightInline(Maps.Len() - (PlusIdx + 1), false);
 			}
 			FString MapFile;
 			FPackageName::SearchForPackageOnDisk(Maps, NULL, &MapFile);
@@ -154,7 +160,7 @@ int32 UResavePackagesCommandlet::InitializeResaveParameters( const TArray<FStrin
 				TArray<FString> Lines;
 
 				// Remove all carriage return characters.
-				Text.ReplaceInline(TEXT("\r"), TEXT(""));
+				Text.ReplaceInline(TEXT("\r"), TEXT(""), ESearchCase::CaseSensitive);
 				// Read all lines
 				Text.ParseIntoArray(Lines, TEXT("\n"), true);
 
@@ -760,7 +766,9 @@ void UResavePackagesCommandlet::LoadAndSaveOnePackage(const FString& Filename)
 							*Filename,Linker->Summary.GetFileVersionUE4(), Linker->Summary.GetFileVersionLicenseeUE4(), GPackageFileUE4Version, VER_LATEST_ENGINE_LICENSEEUE4 );
 					}
 
-					if( SavePackageHelper(Package, Filename) )
+					const static bool bKeepPackageGUIDOnSave = FParse::Param(FCommandLine::Get(), TEXT("KeepPackageGUIDOnSave"));
+					ESaveFlags SaveFlags = bKeepPackageGUIDOnSave ? SAVE_KeepGUID : SAVE_None;
+					if( SavePackageHelper(Package, Filename, RF_Standalone, GWarn, nullptr, SaveFlags) )
 					{
 						if (Verbosity == VERY_VERBOSE)
 						{
@@ -898,8 +906,12 @@ int32 UResavePackagesCommandlet::Main( const FString& Params )
 	bIgnoreChangelist = Switches.Contains(TEXT("IgnoreChangelist"));
 	/** whether we should only save packages with changelist zero */
 	bOnlyUnversioned = Switches.Contains(TEXT("OnlyUnversioned"));
+	/** whether we should only save packages saved by licenseed */
+	bOnlyLicenseed = Switches.Contains(TEXT("OnlyLicenseed"));
 	/** only process packages containing materials */
 	bOnlyMaterials = Switches.Contains(TEXT("onlymaterials"));
+	/** determine if we are building navigation data for the map packages on the pass. **/
+	bShouldBuildNavigationData = Switches.Contains(TEXT("BuildNavigationData"));
 
 	/** check for filtering packages by collection. **/
 	FString FilterByCollection;
@@ -934,6 +946,17 @@ int32 UResavePackagesCommandlet::Main( const FString& Params )
 	bForceProxyGeneration = HLODOptions.Contains("ForceProxies");
 	bForceEnableHLODForLevel = HLODOptions.Contains("ForceEnableHLOD");
 	bForceSingleClusterForLevel = HLODOptions.Contains("ForceSingleCluster");
+
+	if (bShouldBuildHLOD)
+	{
+		UE_LOG(LogContentCommandlet, Display, TEXT("Rebuilding HLODs... Options are:"));
+		UE_LOG(LogContentCommandlet, Display, TEXT("  [%s] Clusters"), bGenerateClusters ? TEXT("X") : TEXT(" "));
+		UE_LOG(LogContentCommandlet, Display, TEXT("  [%s] Proxies"), bGenerateMeshProxies ? TEXT("X") : TEXT(" "));
+		UE_LOG(LogContentCommandlet, Display, TEXT("  [%s] ForceClusters"), bForceClusterGeneration ? TEXT("X") : TEXT(" "));
+		UE_LOG(LogContentCommandlet, Display, TEXT("  [%s] ForceProxies"), bForceProxyGeneration ? TEXT("X") : TEXT(" "));
+		UE_LOG(LogContentCommandlet, Display, TEXT("  [%s] ForceEnableHLOD"), bForceEnableHLODForLevel ? TEXT("X") : TEXT(" "));
+		UE_LOG(LogContentCommandlet, Display, TEXT("  [%s] ForceSingleCluster"), bForceSingleClusterForLevel ? TEXT("X") : TEXT(" "));
+	}
 
 	ForceHLODSetupAsset = FString();
 	FParse::Value(*Params, TEXT("ForceHLODSetupAsset="), ForceHLODSetupAsset);
@@ -1131,50 +1154,44 @@ int32 UResavePackagesCommandlet::Main( const FString& Params )
 
 FText UResavePackagesCommandlet::GetChangelistDescription() const
 {
-	FText ChangelistDescription;
+	FTextBuilder ChangelistDescription;
 
-	if (bShouldBuildTextureStreaming && bShouldBuildLighting && bShouldBuildReflectionCaptures)
+	if (bShouldBuildLighting)
 	{
-		ChangelistDescription = NSLOCTEXT("ContentCmdlets", "ChangelistDescriptionBuildLightingAndTextureStreamingAndReflectionCaptures", "Rebuild lightmaps & texture streaming & reflection captures.");
-	}
-	else if (bShouldBuildTextureStreaming && bShouldBuildLighting)
-	{
-		ChangelistDescription = NSLOCTEXT("ContentCmdlets", "ChangelistDescriptionBuildLightingAndTextureStreaming", "Rebuild lightmaps & texture streaming.");
-	}
-	else if (bShouldBuildTextureStreaming && bShouldBuildReflectionCaptures)
-	{
-		ChangelistDescription = NSLOCTEXT("ContentCmdlets", "ChangelistDescriptionBuildTextureStreamingAndReflectionCaptures", "Rebuild texture streaming & reflection captures.");
-	}
-	else if (bShouldBuildLighting && bShouldBuildReflectionCaptures)
-	{
-		ChangelistDescription = NSLOCTEXT("ContentCmdlets", "ChangelistDescriptionBuildLightingAndReflectionCaptures", "Rebuild lightmaps & reflection captures.");
-	}
-	else if (bShouldBuildLighting)
-	{
-		ChangelistDescription = NSLOCTEXT("ContentCmdlets", "ChangelistDescriptionBuildLighting", "Rebuild lightmaps.");
-	}
-	else if (bShouldBuildTextureStreaming)
-	{
-		ChangelistDescription = NSLOCTEXT("ContentCmdlets", "ChangelistDescriptionBuildTextureStreaming", "Rebuild texture streaming.");
-	}
-	else if (bShouldBuildReflectionCaptures)
-	{
-		ChangelistDescription = NSLOCTEXT("ContentCmdlets", "ChangelistDescriptionBuildReflectionCaptures", "Rebuild reflection captures.");
-	}
-	else if (RedirectorsToFixup.Num() > 0)
-	{
-		ChangelistDescription = NSLOCTEXT("ContentCmdlets", "ChangelistDescriptionRedirectors", "Fixing Redirectors");
-	}
-	else if (bShouldBuildHLOD)
-	{
-		ChangelistDescription = NSLOCTEXT("ContentCmdlets", "ChangelistDescriptionHLODs", "Rebuilding HLODs");
-	}
-	else
-	{
-		ChangelistDescription = NSLOCTEXT("ContentCmdlets", "ChangelistDescription", "Resave Deprecated Packages");
+		ChangelistDescription.AppendLine(NSLOCTEXT("ContentCmdlets", "ChangelistDescriptionBuildLighting", "Rebuild lightmaps."));
 	}
 
-	return ChangelistDescription;
+	if (bShouldBuildTextureStreaming)
+	{
+		ChangelistDescription.AppendLine(NSLOCTEXT("ContentCmdlets", "ChangelistDescriptionBuildTextureStreaming", "Rebuild texture streaming."));
+	}
+
+	if (bShouldBuildReflectionCaptures)
+	{
+		ChangelistDescription.AppendLine(NSLOCTEXT("ContentCmdlets", "ChangelistDescriptionBuildReflectionCaptures", "Rebuild reflection captures."));
+	}
+
+	if (RedirectorsToFixup.Num() > 0)
+	{
+		ChangelistDescription.AppendLine(NSLOCTEXT("ContentCmdlets", "ChangelistDescriptionRedirectors", "Fixing Redirectors"));
+	}
+
+	if (bShouldBuildHLOD)
+	{
+		ChangelistDescription.AppendLine(NSLOCTEXT("ContentCmdlets", "ChangelistDescriptionHLODs", "Rebuilding HLODs"));
+	}
+
+	if (bShouldBuildNavigationData)
+	{
+		ChangelistDescription.AppendLine(NSLOCTEXT("ContentCmdlets", "ChangelistDescriptionBuildNavigationData", "Rebuilding Navigation data."));
+	}
+	
+	if (ChangelistDescription.IsEmpty())
+	{
+		ChangelistDescription.AppendLine(NSLOCTEXT("ContentCmdlets", "ChangelistDescription", "Resave Deprecated Packages"));
+	}
+
+	return ChangelistDescription.ToText();
 }
 
 
@@ -1188,39 +1205,49 @@ void UResavePackagesCommandlet::PerformPreloadOperations( FLinkerLoad* PackageLi
 	if ( MinResaveUE4Version != IGNORE_PACKAGE_VERSION && UE4PackageVersion < MinResaveUE4Version )
 	{
 		bSavePackage = false;
+		return;
 	}
 
 	// Check if this package meets the maximum requirements.
-	bool bNoLimitation = MaxResaveUE4Version == IGNORE_PACKAGE_VERSION && MaxResaveLicenseeUE4Version == IGNORE_PACKAGE_VERSION;
-	bool bAllowResave = bNoLimitation ||
+	const bool bNoLimitation = MaxResaveUE4Version == IGNORE_PACKAGE_VERSION && MaxResaveLicenseeUE4Version == IGNORE_PACKAGE_VERSION;
+	const bool bAllowResave = bNoLimitation ||
 						 (MaxResaveUE4Version != IGNORE_PACKAGE_VERSION && UE4PackageVersion <= MaxResaveUE4Version) ||
 						 (MaxResaveLicenseeUE4Version != IGNORE_PACKAGE_VERSION && LicenseeUE4PackageVersion <= MaxResaveLicenseeUE4Version);
+	// If not, don't resave it.
+	if ( !bAllowResave )
+	{
+		bSavePackage = false;
+		return;
+	}
 
 	// If the package was saved with a higher engine version do not try to resave it. This also addresses problem with people 
 	// building editor locally and resaving content with a 0 CL version (e.g. BUILD_FROM_CL == 0)
 	if (!bIgnoreChangelist && PackageLinker->Summary.SavedByEngineVersion.GetChangelist() > FEngineVersion::Current().GetChangelist())
 	{
-		UE_LOG(LogContentCommandlet, Warning, TEXT("Skipping resave of %s due to engine version mismatch (Package:%d, Editor:%d "), 
+		UE_LOG(LogContentCommandlet, Warning, TEXT("Skipping resave of %s due to engine version mismatch (Package:%d, Editor:%d) "), 
 			*PackageLinker->GetArchiveName(),
 			PackageLinker->Summary.SavedByEngineVersion.GetChangelist(), 
 			FEngineVersion::Current().GetChangelist());
 		bSavePackage = false;
+		return;
 	}
 
 	// Check if the changelist number is zero
 	if (bOnlyUnversioned && PackageLinker->Summary.SavedByEngineVersion.GetChangelist() != 0)
 	{
 		bSavePackage = false;
+		return;
 	}
 
-	// If not, don't resave it.
-	if ( !bAllowResave )
+	// Check if the package was saved by licensees
+	if ( bOnlyLicenseed && !PackageLinker->Summary.SavedByEngineVersion.IsLicenseeVersion() )
 	{
 		bSavePackage = false;
+		return;
 	}
 
 	// Check if the package contains any instances of the class that needs to be resaved.
-	if ( bSavePackage && ResaveClasses.Num() > 0 )
+	if ( ResaveClasses.Num() > 0 )
 	{
 		bSavePackage = false;
 		for (int32 ExportIndex = 0; !bSavePackage && ExportIndex < PackageLinker->ExportMap.Num(); ExportIndex++)
@@ -1248,21 +1275,16 @@ bool UResavePackagesCommandlet::CheckoutFile(const FString& Filename, bool bAddF
 		return true;
 	}
 
-	//FString FullPath = FPaths::ConvertRelativePathToFull(StreamingLevelPackageFilename);
 	ISourceControlProvider& SourceControlProvider = ISourceControlModule::Get().GetProvider();
 	FSourceControlStatePtr SourceControlState = SourceControlProvider.GetState(*Filename, EStateCacheUsage::ForceUpdate);
 	if (SourceControlState.IsValid())
 	{
-		FString CurrentlyCheckedOutUser;
-		if (SourceControlState->IsCheckedOutOther(&CurrentlyCheckedOutUser) && !bIgnoreAlreadyCheckedOut)
+		// Already checked out/added this file
+		if (SourceControlState->IsCheckedOut() || SourceControlState->IsAdded())
 		{
-			UE_LOG(LogContentCommandlet, Error, TEXT("[REPORT] %s level is already checked out by someone else (%s), can not submit!"), *Filename, *CurrentlyCheckedOutUser);
+			return true;
 		}
-		else if (!SourceControlState->IsCurrent())
-		{
-			UE_LOG(LogContentCommandlet, Error, TEXT("[REPORT] %s is not synced to head, can not submit"), *Filename);
-		}
-		else if ( SourceControlState->IsSourceControlled() == false )
+		else if (!SourceControlState->IsSourceControlled())
 		{
 			if ( bAddFile )
 			{
@@ -1277,13 +1299,38 @@ bool UResavePackagesCommandlet::CheckoutFile(const FString& Filename, bool bAddF
 				}
 			}
 		}
+		else if (!SourceControlState->IsCurrent())
+		{
+			if (!bIgnoreAlreadyCheckedOut)
+			{
+				UE_LOG(LogContentCommandlet, Error, TEXT("[REPORT] %s is not synced to head, can not submit"), *Filename);
+			}
+			else
+			{
+				UE_LOG(LogContentCommandlet, Warning, TEXT("[REPORT] %s is not synced to head, can not submit"), *Filename);
+			}
+		}
+		else if (!SourceControlState->CanCheckout())
+		{
+			FString CurrentlyCheckedOutUser;
+			if (SourceControlState->IsCheckedOutOther(&CurrentlyCheckedOutUser))
+			{
+				if (!bIgnoreAlreadyCheckedOut)
+				{
+					UE_LOG(LogContentCommandlet, Error, TEXT("[REPORT] %s level is already checked out by someone else (%s), can not submit!"), *Filename, *CurrentlyCheckedOutUser);
+				}
+				else
+				{
+					UE_LOG(LogContentCommandlet, Warning, TEXT("[REPORT] %s level is already checked out by someone else (%s), can not submit!"), *Filename, *CurrentlyCheckedOutUser);
+				}
+			}
+			else
+			{
+				UE_LOG(LogContentCommandlet, Error, TEXT("[REPORT] Unable to checkout %s, can not submit"), *Filename);
+			}
+		}
 		else 
 		{
-			// already checked out this file
-			if (SourceControlState->IsCheckedOut() || SourceControlState->IsAdded() )
-			{
-				return true;
-			}
 			if (SourceControlProvider.Execute(ISourceControlOperation::Create<FCheckOut>(), *Filename) == ECommandResult::Succeeded)
 			{
 				UE_LOG(LogContentCommandlet, Display, TEXT("[REPORT] %s Checked out successfully"), *Filename);
@@ -1297,7 +1344,6 @@ bool UResavePackagesCommandlet::CheckoutFile(const FString& Filename, bool bAddF
 	}
 	return false;
 }
-
 
 bool UResavePackagesCommandlet::RevertFile(const FString& Filename)
 {
@@ -1321,8 +1367,6 @@ bool UResavePackagesCommandlet::RevertFile(const FString& Filename)
 	return bSuccesfullyReverted;
 }
 
-
-
 bool UResavePackagesCommandlet::CanCheckoutFile(const FString& Filename, FString& CheckedOutUser)
 {
 	ISourceControlProvider& SourceControlProvider = ISourceControlModule::Get().GetProvider();
@@ -1330,8 +1374,13 @@ bool UResavePackagesCommandlet::CanCheckoutFile(const FString& Filename, FString
 	bool bCanCheckout = true;
 	if (SourceControlState.IsValid())
 	{
-		if (!SourceControlState->IsCheckedOut() && SourceControlState->IsCheckedOutOther(&CheckedOutUser))
+		if (!SourceControlState->CanCheckout())
 		{
+			if (!SourceControlState->IsCheckedOutOther(&CheckedOutUser))
+			{
+				CheckedOutUser = "";
+			}
+
 			bCanCheckout = false;
 		}
 	}
@@ -1339,6 +1388,33 @@ bool UResavePackagesCommandlet::CanCheckoutFile(const FString& Filename, FString
 	return bCanCheckout;
 }
 
+void UResavePackagesCommandlet::CheckoutAndSavePackage(UPackage* Package, TArray<FString>& SublevelFilenames, bool bIgnoreAlreadyCheckedOut)
+{
+	check(Package);
+
+	FString PackageFilename;
+	if (FPackageName::TryConvertLongPackageNameToFilename(Package->GetName(), PackageFilename, Package->ContainsMap() ? FPackageName::GetMapPackageExtension() : FPackageName::GetAssetPackageExtension()))
+	{
+		if (IFileManager::Get().FileExists(*PackageFilename))
+		{
+			if (CheckoutFile(PackageFilename, true, bIgnoreAlreadyCheckedOut))
+			{
+				SublevelFilenames.Add(PackageFilename);
+				SavePackageHelper(Package, PackageFilename);
+			}
+		}
+		else
+		{
+			if (SavePackageHelper(Package, PackageFilename))
+			{
+				if (CheckoutFile(PackageFilename, true, bIgnoreAlreadyCheckedOut))
+				{
+					SublevelFilenames.Add(PackageFilename);
+				}
+			}
+		}
+	}
+}
 
 void UResavePackagesCommandlet::PerformAdditionalOperations(class UWorld* World, bool& bSavePackage)
 {
@@ -1357,7 +1433,11 @@ void UResavePackagesCommandlet::PerformAdditionalOperations(class UWorld* World,
 
 	const bool bShouldBuildTextureStreamingForWorld = bShouldBuildTextureStreaming && !bShouldBuildTextureStreamingForAll;
 	const bool bBuildingNonHLODData = (bShouldBuildLighting || bShouldBuildTextureStreamingForWorld || bShouldBuildReflectionCaptures);
-	if (bBuildingNonHLODData || bShouldBuildHLOD)
+
+	// indicates if world and level packages should be checked out only if dirty after building data
+	const bool bShouldCheckoutDirtyPackageOnly = (bShouldBuildHLOD || bShouldBuildNavigationData) && !bBuildingNonHLODData;
+
+	if (bBuildingNonHLODData || bShouldBuildHLOD || bShouldBuildNavigationData)
 	{
 		bool bShouldProceedWithRebuild = true;
 
@@ -1370,7 +1450,7 @@ void UResavePackagesCommandlet::PerformAdditionalOperations(class UWorld* World,
 			IVS.RequiresHitProxies(false);
 			IVS.ShouldSimulatePhysics(false);
 			IVS.EnableTraceCollision(false);
-			IVS.CreateNavigation(false);
+			IVS.CreateNavigation(bShouldBuildNavigationData);
 			IVS.CreateAISystem(false);
 			IVS.AllowAudioPlayback(false);
 			IVS.CreatePhysicsScene(true);
@@ -1383,8 +1463,8 @@ void UResavePackagesCommandlet::PerformAdditionalOperations(class UWorld* World,
 		WorldContext.SetCurrentWorld(World);
 		GWorld = World;
 
-		TArray<FString> SublevelFilenames;
-		auto CheckOutLevelFile = [this,&bShouldProceedWithRebuild, &SublevelFilenames](ULevel* InLevel)
+		TArray<FString> CheckedOutPackagesFilenames;
+		auto CheckOutLevelFile = [this,&bShouldProceedWithRebuild, &CheckedOutPackagesFilenames](ULevel* InLevel)
 		{
 			if (InLevel && InLevel->MapBuildData)
 			{
@@ -1396,7 +1476,7 @@ void UResavePackagesCommandlet::PerformAdditionalOperations(class UWorld* World,
 					{
 						if (CheckoutFile(MapBuildDataPackageName))
 						{
-							SublevelFilenames.Add(MapBuildDataPackageName);
+							CheckedOutPackagesFilenames.Add(MapBuildDataPackageName);
 						}
 						else
 						{
@@ -1415,24 +1495,17 @@ void UResavePackagesCommandlet::PerformAdditionalOperations(class UWorld* World,
 		FString WorldPackageCheckedOutUser;
 		if (FPackageName::DoesPackageExist(World->GetOutermost()->GetName(), NULL, &WorldPackageName))
 		{
-			// If we are only building HLODs check if level can be checked out, if so add to list of files that will be saved/checked-out after rebuilding the data
-			if(bShouldBuildHLOD && !bBuildingNonHLODData)
+			// If we are checking out only dirty package, simply check if level can be checked out. They will be added to list of fsaved/checked-out files after rebuilding the data
+			if (bShouldCheckoutDirtyPackageOnly)
 			{
-				if (CanCheckoutFile(WorldPackageName, WorldPackageCheckedOutUser) || !bSkipCheckedOutFiles)
-				{
-				SublevelFilenames.Add(WorldPackageName);
-			}
-				else 
-				{
-					bShouldProceedWithRebuild = false;
-				}				
+				bShouldProceedWithRebuild = (CanCheckoutFile(WorldPackageName, WorldPackageCheckedOutUser) || !bSkipCheckedOutFiles);
 			}
 			else
 			{
 				// if we can't check out the main map or it's not up to date then we can't do the lighting rebuild at all!
 				if (CheckoutFile(WorldPackageName))
 				{
-					SublevelFilenames.Add(WorldPackageName);
+					CheckedOutPackagesFilenames.Add(WorldPackageName);
 
 					CheckOutLevelFile(World->PersistentLevel);
 				}
@@ -1451,49 +1524,61 @@ void UResavePackagesCommandlet::PerformAdditionalOperations(class UWorld* World,
 		{
 			World->LoadSecondaryLevels(true, NULL);
 
-			for (ULevelStreaming* NextStreamingLevel : World->GetStreamingLevels())
+			TArray<ULevelStreaming*> StreamingLevels = World->GetStreamingLevels();
+			for (ULevelStreaming* StreamingLevel : StreamingLevels)
 			{
-				// If we are not building HLODs or are but also rebuilding lighting we check out the level file, otherwise we don't to try and ensure a minimal HLOD rebuild
-				if (!bShouldBuildHLOD || bBuildingNonHLODData)
+				bool bShouldBeLoaded = true;
+
+				if (!bShouldCheckoutDirtyPackageOnly)
 				{
-					CheckOutLevelFile(NextStreamingLevel->GetLoadedLevel());
+					CheckOutLevelFile(StreamingLevel->GetLoadedLevel());
 				}
 
 				FString StreamingLevelPackageFilename;
-				const FString StreamingLevelWorldAssetPackageName = NextStreamingLevel->GetWorldAssetPackageName();
+				const FString StreamingLevelWorldAssetPackageName = StreamingLevel->GetWorldAssetPackageName();
 				if (FPackageName::DoesPackageExist(StreamingLevelWorldAssetPackageName, NULL, &StreamingLevelPackageFilename))
 				{
-					// If we are building HLODs only, we dont check out the files ahead of rebuilding the data
-					if(bShouldBuildHLOD && !bBuildingNonHLODData)
+					if (bShouldCheckoutDirtyPackageOnly)
 					{
-						FString CurrentlyCheckedOutUser;
-						if (CanCheckoutFile(StreamingLevelPackageFilename, CurrentlyCheckedOutUser) || !bSkipCheckedOutFiles)
+						FString OutUser;
+						bShouldBeLoaded = (CanCheckoutFile(StreamingLevelPackageFilename, OutUser) || !bSkipCheckedOutFiles);
+
+						if (!bShouldBeLoaded)
 						{
-						SublevelFilenames.Add(StreamingLevelPackageFilename);
-					}
-						else 
-						{
-							UE_LOG(LogContentCommandlet, Warning, TEXT("[REPORT] Skipping %s as it is checked out by %s"), *StreamingLevelPackageFilename, *CurrentlyCheckedOutUser);
-						}						
+							if (OutUser.Len())
+							{
+								UE_LOG(LogContentCommandlet, Warning, TEXT("[REPORT] Skipping %s as it is checked out by %s"), *StreamingLevelPackageFilename, *OutUser);
+							}
+							else
+							{
+								UE_LOG(LogContentCommandlet, Warning, TEXT("[REPORT] Skipping %s as it could not be checked out (not at head revision ?)"), *StreamingLevelPackageFilename);
+							}
+						}
 					}
 					else
 					{
 						// check to see if we need to check this package out
 						if (CheckoutFile(StreamingLevelPackageFilename))
 						{
-							SublevelFilenames.Add(StreamingLevelPackageFilename);
+							CheckedOutPackagesFilenames.Add(StreamingLevelPackageFilename);
 						}
 						else
 						{
 							UE_LOG(LogContentCommandlet, Error, TEXT("[REPORT] %s is currently already checked out, cannot continue resaving"), *StreamingLevelPackageFilename);
 							bShouldProceedWithRebuild = false;
+							bShouldBeLoaded = false;
 							break;
 						}
 					}
 				}
 
-				NextStreamingLevel->SetShouldBeVisible(true);
-				NextStreamingLevel->SetShouldBeLoaded(true);
+				if (!bShouldBeLoaded)
+				{
+					World->RemoveStreamingLevel(StreamingLevel);
+				}
+				
+				StreamingLevel->SetShouldBeVisible(bShouldBeLoaded);
+				StreamingLevel->SetShouldBeLoaded(bShouldBeLoaded);
 			}
 		}
 
@@ -1503,10 +1588,10 @@ void UResavePackagesCommandlet::PerformAdditionalOperations(class UWorld* World,
 		{
 			World->FlushLevelStreaming(EFlushLevelStreamingType::Full);
 
-			// If we are (minimally) rebuilding HLOD, set the visible streamed-in levels packages to clean (as FlushLevelStreaming will dirty their packages in this commandlet context)
-			if(bShouldBuildHLOD)
+			// If we are (minimally) rebuilding using only dirty packages, set the visible streamed-in levels packages to clean (as FlushLevelStreaming will dirty their packages in this commandlet context)
+			if (bShouldCheckoutDirtyPackageOnly)
 			{
-				for (const ULevel* Level : GWorld->GetLevels())
+				for (const ULevel* Level : World->GetLevels())
 				{
 					if (Level->bIsVisible)
 					{
@@ -1532,7 +1617,7 @@ void UResavePackagesCommandlet::PerformAdditionalOperations(class UWorld* World,
 					TSubclassOf<UHierarchicalLODSetup> NewHLODSetupAsset = LoadClass<UHierarchicalLODSetup>( NULL, *ForceHLODSetupAsset, NULL, LOAD_None, NULL );
 					if( NewHLODSetupAsset != nullptr )
 					{
-						GWorld->GetWorldSettings()->HLODSetupAsset = NewHLODSetupAsset;
+						World->GetWorldSettings()->HLODSetupAsset = NewHLODSetupAsset;
 					}
 					else
 					{
@@ -1543,16 +1628,16 @@ void UResavePackagesCommandlet::PerformAdditionalOperations(class UWorld* World,
 				// Force HLOD support on for this level if we were asked to
 				if( bForceEnableHLODForLevel )
 				{
-					GWorld->GetWorldSettings()->bEnableHierarchicalLODSystem = true;
+					World->GetWorldSettings()->bEnableHierarchicalLODSystem = true;
 				}
 
 				// Use a single cluster for all actors in the level if we were asked to
 				if( bForceSingleClusterForLevel )
 				{
-					GWorld->GetWorldSettings()->bGenerateSingleClusterForLevel = true;
+					World->GetWorldSettings()->bGenerateSingleClusterForLevel = true;
 				}
 
-				FHierarchicalLODBuilder Builder(GWorld);
+				FHierarchicalLODBuilder Builder(World);
 
 				if (bForceClusterGeneration)
 				{
@@ -1562,6 +1647,16 @@ void UResavePackagesCommandlet::PerformAdditionalOperations(class UWorld* World,
 				else if (bGenerateClusters)
 				{
 					Builder.PreviewBuild();
+				}
+
+				// Get the list of packages that needs to be saved after cluster rebuilding.
+				TSet<UPackage*> PackagesToSave;
+				for (ULevel* Level : World->GetLevels())
+				{
+					if (Level->bIsVisible)
+					{
+						PackagesToSave.Add(Level->GetOutermost());
+					}
 				}
 
 				if (bGenerateMeshProxies || bForceProxyGeneration)
@@ -1586,44 +1681,41 @@ void UResavePackagesCommandlet::PerformAdditionalOperations(class UWorld* World,
 					GShaderCompilingManager->ProcessAsyncResults(false, false);
 				}
 
-				IHierarchicalLODUtilities* Utilities = Module.GetUtilities();
-				for (const ULevel* Level : GWorld->GetLevels())
+				// Get the list of packages needs to be saved after proxy mesh generation.
+				for(ULevel* Level : World->GetLevels())
 				{
-					// Only meshes for clusters that are in a visible level
-					if (Level->bIsVisible)
+					if(Level->bIsVisible)
 					{
-						const int32 NumHLODLevels = Level->GetWorldSettings()->GetNumHierarchicalLODLevels();
+						Builder.GetMeshesPackagesToSave(Level, PackagesToSave);
+					}
+				}
 
-						for (int32 HLODIndex = 0; HLODIndex < NumHLODLevels; ++HLODIndex)
-						{
-							UPackage* HLODPackage = Utilities->CreateOrRetrieveLevelHLODPackage(Level, HLODIndex);
+				// Checkout and save each dirty package
+				for (UPackage* Package : PackagesToSave)
+				{
+					if (Package->IsDirty())
+					{
+						CheckoutAndSavePackage(Package, CheckedOutPackagesFilenames, bSkipCheckedOutFiles);
+					}
+				}
+			}
 
-							// skip packages we havent modified
-							if(HLODPackage->IsDirty())
-							{
-								FString HLODDataFilename;
-								if (FPackageName::TryConvertLongPackageNameToFilename(HLODPackage->GetName(), HLODDataFilename, FPackageName::GetAssetPackageExtension()))
-								{
-									if (IFileManager::Get().FileExists(*HLODDataFilename))
-									{
-										if (CheckoutFile(HLODDataFilename, true))
-										{
-											SublevelFilenames.Add(HLODDataFilename);
-										}
+			if (bShouldBuildNavigationData)
+			{
+				// Make sure navigation is added and initialized in EditorMode
+				FNavigationSystem::AddNavigationSystemToWorld(*World, FNavigationSystemRunMode::EditorMode);
 
-										SavePackageHelper(HLODPackage, HLODDataFilename);
-									}
-									else
-									{
-										SavePackageHelper(HLODPackage, HLODDataFilename);
-										if (CheckoutFile(HLODDataFilename, true))
-										{
-											SublevelFilenames.Add(HLODDataFilename);
-										}
-									}
-								}
-							}
-						}
+				// Invoke navigation data generator
+				UE_LOG(LogContentCommandlet, Display, TEXT("Building navigation data for %s"), *World->GetOutermost()->GetName());
+				FNavigationSystem::Build(*World);
+
+				// Checkout and save each dirty package
+				for (TActorIterator<ANavigationData> It(World); It; ++It)
+				{
+					UPackage* Package = It->GetOutermost();
+					if (Package != nullptr && Package->IsDirty() && !Package->HasAnyFlags(RF_Transient))
+					{
+						CheckoutAndSavePackage(Package, CheckedOutPackagesFilenames, bSkipCheckedOutFiles);
 					}
 				}
 			}
@@ -1653,37 +1745,14 @@ void UResavePackagesCommandlet::PerformAdditionalOperations(class UWorld* World,
 
 				FEditorDelegates::OnLightingBuildFailed.Remove(BuildFailedDelegateHandle);
 			}
-			auto SaveMapBuildData = [this, &SublevelFilenames](ULevel* InLevel)
+			auto SaveMapBuildData = [this, &CheckedOutPackagesFilenames](ULevel* InLevel)
 			{
 				if (InLevel && InLevel->MapBuildData && (bShouldBuildLighting || bShouldBuildHLOD || bShouldBuildReflectionCaptures) )
 				{
 					UPackage* MapBuildDataPackage = InLevel->MapBuildData->GetOutermost();
-					FString MapBuildDataPackageName = MapBuildDataPackage->GetName();
-
-					if (MapBuildDataPackage != InLevel->GetOutermost())
+					if (MapBuildDataPackage != InLevel->GetOutermost() && MapBuildDataPackage->IsDirty())
 					{
-						FString MapBuildDataFilename;
-
-						if (FPackageName::TryConvertLongPackageNameToFilename(MapBuildDataPackageName, MapBuildDataFilename, FPackageName::GetAssetPackageExtension()))
-						{
-							if (IFileManager::Get().FileExists(*MapBuildDataFilename))
-							{
-								if ( CheckoutFile(MapBuildDataFilename, true) )
-								{
-									SublevelFilenames.Add(MapBuildDataFilename);
-								}
-
-								SavePackageHelper(MapBuildDataPackage, MapBuildDataFilename); 
-							}
-							else
-							{
-								SavePackageHelper(MapBuildDataPackage, MapBuildDataFilename);
-								if (CheckoutFile(MapBuildDataFilename, true))
-								{
-									SublevelFilenames.Add(MapBuildDataFilename);
-								}
-							}
-						}
+						CheckoutAndSavePackage(MapBuildDataPackage, CheckedOutPackagesFilenames);
 					}
 				}
 			};
@@ -1698,21 +1767,19 @@ void UResavePackagesCommandlet::PerformAdditionalOperations(class UWorld* World,
 				{
 					FString StreamingLevelPackageFilename;
 					const FString StreamingLevelWorldAssetPackageName = NextStreamingLevel->GetWorldAssetPackageName();
-					if (FPackageName::DoesPackageExist(StreamingLevelWorldAssetPackageName, NULL, &StreamingLevelPackageFilename) && SublevelFilenames.Contains(StreamingLevelPackageFilename))
+					if (FPackageName::DoesPackageExist(StreamingLevelWorldAssetPackageName, NULL, &StreamingLevelPackageFilename) && CheckedOutPackagesFilenames.Contains(StreamingLevelPackageFilename))
 					{
 						UPackage* SubLevelPackage = NextStreamingLevel->GetLoadedLevel()->GetOutermost();
 						bool bSaveSubLevelPackage = true;
-						if(bShouldBuildHLOD && !bBuildingNonHLODData)
+						if (bShouldCheckoutDirtyPackageOnly)
 						{
-							// If we are building HLOD, only save packages that were dirtied
 							bSaveSubLevelPackage = SubLevelPackage->IsDirty();
 						}
 
-						if(bSaveSubLevelPackage)
+						if (bSaveSubLevelPackage)
 						{
-							// When building HLODs we dont check out/modify maps unless dirty
 							bool bFileCheckedOut = true;
-							if(bShouldBuildHLOD && !bBuildingNonHLODData)
+							if (bShouldCheckoutDirtyPackageOnly)
 							{
 								bFileCheckedOut = CheckoutFile(StreamingLevelPackageFilename, true);
 							}
@@ -1738,8 +1805,8 @@ void UResavePackagesCommandlet::PerformAdditionalOperations(class UWorld* World,
 			}
 			else
 			{
-			UE_LOG(LogContentCommandlet, Error, TEXT("[REPORT] Failed to complete steps necessary to start a lightmass or texture streaming build of %s"), *World->GetName());
-		}
+				UE_LOG(LogContentCommandlet, Error, TEXT("[REPORT] Failed to complete steps necessary to start a lightmass or texture streaming build of %s"), *World->GetName());
+			}
 		}
 
 		if ((bShouldProceedWithRebuild == false)||(bSavePackage == false))
@@ -1751,21 +1818,20 @@ void UResavePackagesCommandlet::PerformAdditionalOperations(class UWorld* World,
 			ISourceControlProvider& SourceControlProvider = ISourceControlModule::Get().GetProvider();
 			
 			// revert all our packages
-			for (const auto& SublevelFilename : SublevelFilenames)
+			for (const auto& CheckedOutPackageFilename : CheckedOutPackagesFilenames)
 			{
-				SourceControlProvider.Execute(ISourceControlOperation::Create<FRevert>(), *SublevelFilename);
+				SourceControlProvider.Execute(ISourceControlOperation::Create<FRevert>(), *CheckedOutPackageFilename);
 			}
 		}
 		else
 		{
-			for(const auto& SublevelFilename : SublevelFilenames)
+			for(const auto& CheckedOutPackageFilename : CheckedOutPackagesFilenames)
 			{
-				FilesToSubmit.AddUnique(SublevelFilename);
+				FilesToSubmit.AddUnique(CheckedOutPackageFilename);
 			}
 
-			if(bShouldBuildHLOD && !bBuildingNonHLODData)
+			if (bShouldCheckoutDirtyPackageOnly)
 			{
-				// Don't save outer package if it isn't dirty when doing a HLOD rebuild only
 				bSavePackage = World->GetOutermost()->IsDirty();
 			}
 		}
@@ -1893,7 +1959,7 @@ FArchive& operator<<(FArchive& Ar, FPackageObjects& PackageObjects)
 
 	if (Ar.IsLoading())
 	{
-		int32 NumObjects;
+		int32 NumObjects = 0;
 		FString ObjectName;
 		FString ClassName;
 
@@ -2448,11 +2514,11 @@ int32 UWrangleContentCommandlet::Main( const FString& Params )
 				FString ObjectPathName = It2.Key();
 
 				// skip over the class portion (the It2.Value() has the class pointer already)
-				int32 Space = ObjectPathName.Find(TEXT(" "));
+				int32 Space = ObjectPathName.Find(TEXT(" "), ESearchCase::CaseSensitive);
 				check(Space);
 
 				// get everything after the space
-				ObjectPathName = ObjectPathName.Right(ObjectPathName.Len() - (Space + 1));
+				ObjectPathName.RightInline(ObjectPathName.Len() - (Space + 1), false);
 
 				// load the referenced object
 
@@ -2572,11 +2638,11 @@ int32 UWrangleContentCommandlet::Main( const FString& Params )
 					FString ObjectPathName = ObjectIt.Key();
 
 					// skip over the class portion (the It2.Value() has the class pointer already)
-					int32 Space = ObjectPathName.Find(TEXT(" "));
+					int32 Space = ObjectPathName.Find(TEXT(" "), ESearchCase::CaseSensitive);
 					check(Space > 0);
 
 					// get everything after the space
-					ObjectPathName = ObjectPathName.Right(ObjectPathName.Len() - (Space + 1));
+					ObjectPathName.RightInline(ObjectPathName.Len() - (Space + 1), false);
 
 					// load the unnecessary object
 					UObject* Object = StaticLoadObject(ObjectIt.Value(), NULL, *ObjectPathName, NULL, LOAD_NoWarn, NULL);

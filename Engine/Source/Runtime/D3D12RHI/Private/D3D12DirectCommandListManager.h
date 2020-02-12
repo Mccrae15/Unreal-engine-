@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -93,10 +93,11 @@ public:
 	// Avoids calling GetCompletedValue().
 	bool IsFenceCompleteFast(uint64 FenceValue) const { return FenceValue <= LastCompletedFence; }
 
-	uint64 GetCurrentFence() const { return CurrentFence; }
+	virtual uint64 GetCurrentFence() const { return CurrentFence; }
 	uint64 GetLastSignaledFence() const { return LastSignaledFence; }
 
 	uint64 PeekLastCompletedFence() const;
+	uint64 PeekLastCompletedFence(FRHIGPUMask InGPUMask) const;
 	uint64 UpdateLastCompletedFence();
 
 	// Might not be the most up to date value but avoids calling GetCompletedValue().
@@ -119,7 +120,8 @@ protected:
 	FD3D12FenceCore* FenceCores[MAX_NUM_GPUS];
 };
 
-// Fence value must be incremented manually. Useful when you need incrementing and signaling to happen at different times.
+// Fence value must be incremented manually. Useful when you need incrementing and signaling to happen at different times, e.g. for a FrameFence,
+// where the RenderThread increments and the RHIThread signals, so that both are in agreement on which frame they are on.
 class FD3D12ManualFence : public FD3D12Fence
 {
 public:
@@ -127,11 +129,20 @@ public:
 		: FD3D12Fence(InParent, InGPUMask, InName)
 	{}
 
+	uint64 GetCurrentFence() const final override
+	{
+		return IsInRHIThread()? LastSignaledFence + 1 : CurrentFence;
+	}
+
 	// Signals the specified fence value.
 	uint64 Signal(ED3D12CommandQueueType InQueueType, uint64 FenceToSignal);
 
 	// Increments the current fence and returns the previous value.
-	inline uint64 IncrementCurrentFence() { return CurrentFence++; }
+	inline uint64 IncrementCurrentFence()
+	{
+		check(IsInRenderingThread());
+		return CurrentFence++;
+	}
 };
 
 class FD3D12CommandAllocatorManager : public FD3D12DeviceChild
@@ -162,6 +173,19 @@ private:
 class FD3D12CommandListManager : public FD3D12DeviceChild, public FD3D12SingleNodeGPUObject
 {
 public:
+	struct FResolvedCmdListExecTime
+	{
+		uint64 StartTimestamp;
+		uint64 EndTimestamp;
+
+		FResolvedCmdListExecTime() = default;
+
+		FResolvedCmdListExecTime(uint64 InStart, uint64 InEnd)
+			: StartTimestamp(InStart)
+			, EndTimestamp(InEnd)
+		{}
+	};
+
 	FD3D12CommandListManager(FD3D12Device* InParent, D3D12_COMMAND_LIST_TYPE InCommandListType, ED3D12CommandQueueType InQueueType);
 	virtual ~FD3D12CommandListManager();
 
@@ -206,10 +230,41 @@ public:
 
 	void ReleaseResourceBarrierCommandListAllocator();
 
+	/** Command lists opened after this returns will track their execution time */
+	void StartTrackingCommandListTime();
+
+	/** Command lists opened after this returns won't track execution time */
+	void EndTrackingCommandListTime();
+
+	/** Get the start/end timestamps of all tracked commandlists obtained from this manager */
+	void GetCommandListTimingResults(TArray<FResolvedCmdListExecTime>& OutTimingPairs);
+
+	/** Called back by commandlists when they are closed */
+	void AddCommandListTimingPair(int32 StartTimeQueryIdx, int32 EndTimeQueryIdx);
+
 protected:
+	struct FCmdListExecTime
+	{
+		int32 StartTimeQueryIdx;
+		int32 EndTimeQueryIdx;
+
+		FCmdListExecTime() = default;
+
+		FCmdListExecTime(int32 InStart, int32 InEnd)
+			: StartTimeQueryIdx(InStart)
+			, EndTimeQueryIdx(InEnd)
+		{}
+	};
+
 	// Returns signaled Fence
 	uint64 ExecuteAndIncrementFence(FD3D12CommandListPayload& Payload, FD3D12Fence &Fence);
 	FD3D12CommandListHandle CreateCommandListHandle(FD3D12CommandAllocator& CommandAllocator);
+
+	/** Should this commandlist track its execution time */
+	bool ShouldTrackCommandListTime() const;
+
+	/** Resolve all commandlist start/end timestamp queries and get results. This method is blocking */
+	void FlushPendingTimingPairs();
 
 	TRefCountPtr<ID3D12CommandQueue>		D3DCommandQueue;
 
@@ -225,4 +280,11 @@ protected:
 	ED3D12CommandQueueType					QueueType;
 	FCriticalSection						ResourceStateCS;
 	FCriticalSection						FenceCS;
+
+#if WITH_PROFILEGPU
+	bool bShouldTrackCmdListTime;
+	FCriticalSection CmdListTimingCS;
+	TArray<FCmdListExecTime> PendingTimingPairs;
+	TArray<FResolvedCmdListExecTime> ResolvedTimingPairs;
+#endif
 };

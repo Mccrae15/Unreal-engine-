@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "Perception/PawnSensingComponent.h"
 #include "EngineGlobals.h"
@@ -8,6 +8,7 @@
 #include "GameFramework/Controller.h"
 #include "GameFramework/PlayerController.h"
 #include "Engine/Engine.h"
+#include "EngineUtils.h"
 #include "AIController.h"
 #include "Components/PawnNoiseEmitterComponent.h"
 
@@ -138,7 +139,10 @@ void UPawnSensingComponent::OnTimer()
 		UpdateAISensing();
 	}
 	
-	SetTimer(SensingInterval);
+	if (bEnableSensingUpdates)
+	{
+		SetTimer(SensingInterval);
+	}
 };
 
 
@@ -227,10 +231,9 @@ void UPawnSensingComponent::UpdateAISensing()
 	}
 	else
 	{
-		for (FConstPawnIterator Iterator = Owner->GetWorld()->GetPawnIterator(); Iterator; ++Iterator)
+		for (APawn* Pawn : TActorRange<APawn>(Owner->GetWorld()))
 		{
-			APawn* Pawn = Iterator->Get();
-			if (IsValid(Pawn) && !IsSensorActor(Pawn))
+			if (!IsSensorActor(Pawn))
 			{
 				SensePawn(*Pawn);
 			}
@@ -448,7 +451,7 @@ bool UPawnSensingComponent::ShouldCheckVisibilityOf(APawn *Pawn) const
 		return false;
 	}
 
-	if (Pawn->bHidden)
+	if (Pawn->IsHidden())
 	{
 		return false;
 	}

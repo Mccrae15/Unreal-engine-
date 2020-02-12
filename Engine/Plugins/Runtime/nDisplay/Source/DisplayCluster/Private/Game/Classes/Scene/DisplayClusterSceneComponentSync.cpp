@@ -1,11 +1,15 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "DisplayClusterSceneComponentSync.h"
 
+#include "GameFramework/Actor.h"
+
 #include "Cluster/IPDisplayClusterClusterManager.h"
 #include "Game/IPDisplayClusterGameManager.h"
-#include "Misc/DisplayClusterLog.h"
+
+#include "DisplayClusterUtils/DisplayClusterTypesConverter.h"
 #include "DisplayClusterGlobals.h"
+#include "DisplayClusterLog.h"
 
 
 UDisplayClusterSceneComponentSync::UDisplayClusterSceneComponentSync(const FObjectInitializer& ObjectInitializer) :
@@ -24,7 +28,7 @@ void UDisplayClusterSceneComponentSync::BeginPlay()
 	}
 
 	// Generate unique sync id
-	SyncId = GetSyncId();
+	SyncId = GenerateSyncId();
 
 	GameMgr = GDisplayCluster->GetPrivateGameMgr();
 	if (GameMgr && GameMgr->IsDisplayClusterActive())
@@ -34,7 +38,7 @@ void UDisplayClusterSceneComponentSync::BeginPlay()
 		if (ClusterMgr)
 		{
 			UE_LOG(LogDisplayClusterGame, Log, TEXT("Registering sync object %s..."), *SyncId);
-			ClusterMgr->RegisterSyncObject(this);
+			ClusterMgr->RegisterSyncObject(this, EDisplayClusterSyncGroup::Tick);
 		}
 		else
 		{
@@ -43,15 +47,7 @@ void UDisplayClusterSceneComponentSync::BeginPlay()
 	}
 }
 
-
-void UDisplayClusterSceneComponentSync::TickComponent( float DeltaTime, ELevelTick TickType, FActorComponentTickFunction* ThisTickFunction )
-{
-	Super::TickComponent( DeltaTime, TickType, ThisTickFunction );
-
-	// ...
-}
-
-void UDisplayClusterSceneComponentSync::DestroyComponent(bool bPromoteChildren)
+void UDisplayClusterSceneComponentSync::EndPlay(const EEndPlayReason::Type EndPlayReason)
 {
 	if (GDisplayCluster->IsModuleInitialized())
 	{
@@ -65,38 +61,44 @@ void UDisplayClusterSceneComponentSync::DestroyComponent(bool bPromoteChildren)
 		}
 	}
 
-	Super::DestroyComponent(bPromoteChildren);
+	Super::EndPlay(EndPlayReason);
+}
+
+void UDisplayClusterSceneComponentSync::TickComponent( float DeltaTime, ELevelTick TickType, FActorComponentTickFunction* ThisTickFunction )
+{
+	Super::TickComponent( DeltaTime, TickType, ThisTickFunction );
+
+	// ...
 }
 
 
 //////////////////////////////////////////////////////////////////////////////////////////////
 // IDisplayClusterClusterSyncObject
 //////////////////////////////////////////////////////////////////////////////////////////////
-FString UDisplayClusterSceneComponentSync::GetSyncId() const
+bool UDisplayClusterSceneComponentSync::IsActive() const
 {
-	return FString::Printf(TEXT("S_%s"), *GetOwner()->GetName());
+	return !this->IsPendingKill();
 }
 
 
 //////////////////////////////////////////////////////////////////////////////////////////////
 // IDisplayClusterStringSerializable
 //////////////////////////////////////////////////////////////////////////////////////////////
+FString UDisplayClusterSceneComponentSync::GenerateSyncId()
+{
+	return FString::Printf(TEXT("S_%s"), *GetOwner()->GetName());
+}
+
 FString UDisplayClusterSceneComponentSync::SerializeToString() const
 {
-	return GetSyncTransform().ToString();
+	return FDisplayClusterTypesConverter::template ToHexString(GetSyncTransform());
 }
 
 bool UDisplayClusterSceneComponentSync::DeserializeFromString(const FString& data)
 {
-	FTransform t;
-	if (!t.InitFromString(data))
-	{
-		UE_LOG(LogDisplayClusterGame, Error, TEXT("Unable to deserialize transform data"));
-		return false;
-	}
-
-	UE_LOG(LogDisplayClusterGame, Verbose, TEXT("%s: applying transform data <%s>"), *SyncId, *t.ToHumanReadableString());
-	SetSyncTransform(t);
+	FTransform NewTransform = FDisplayClusterTypesConverter::template FromHexString<FTransform>(data);
+	UE_LOG(LogDisplayClusterGame, Verbose, TEXT("%s: applying transform data <%s>"), *SyncId, *NewTransform.ToHumanReadableString());
+	SetSyncTransform(NewTransform);
 
 	return true;
 }

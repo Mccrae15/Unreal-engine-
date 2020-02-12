@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -37,7 +37,7 @@ public:
 	{
 		// Determine if we need to reallocate the buffer to fit the next item
 		const int64 NewPos = WriterPos + Num;
-		check( NewPos > WriterPos );
+		check( NewPos >= WriterPos );
 		if( NewPos > BulkData.GetBulkDataSize() )
 		{
 			// If so, resize to the new size + 3/8

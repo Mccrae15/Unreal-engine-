@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "ControlRigVariableDetailsCustomization.h"
 #include "Kismet2/BlueprintEditorUtils.h"
@@ -10,11 +10,10 @@
 #include "Widgets/Text/STextBlock.h"
 #include "Widgets/Input/SCheckBox.h"
 #include "Engine/BlueprintGeneratedClass.h"
+#include "ControlRigBlueprint.h"
+#include "RigVMModel/RigVMController.h"
 
 #define LOCTEXT_NAMESPACE "ControlRigVariableDetailsCustomization"
-
-static FName AnimationOutputMetadataName("AnimationOutput");
-static FName AnimationInputMetadataName("AnimationInput");
 
 TSharedPtr<IDetailCustomization> FControlRigVariableDetailsCustomization::MakeInstance(TSharedPtr<IBlueprintEditor> InBlueprintEditor)
 {
@@ -39,7 +38,8 @@ void FControlRigVariableDetailsCustomization::CustomizeDetails(IDetailLayoutBuil
 	DetailLayout.GetObjectsBeingCustomized(ObjectsBeingCustomized);
 	if (ObjectsBeingCustomized.Num() > 0)
 	{
-		TWeakObjectPtr<UProperty> PropertyBeingCustomized(Cast<UProperty>(ObjectsBeingCustomized[0].Get()));
+		UPropertyWrapper* PropertyWrapper = Cast<UPropertyWrapper>(ObjectsBeingCustomized[0].Get());
+		TWeakFieldPtr<FProperty> PropertyBeingCustomized = PropertyWrapper ? PropertyWrapper->GetProperty() : nullptr;
 		if (PropertyBeingCustomized.IsValid())
 		{
 			const FText AnimationInputText = LOCTEXT("AnimationInput", "Animation Input");
@@ -52,7 +52,7 @@ void FControlRigVariableDetailsCustomization::CustomizeDetails(IDetailLayoutBuil
 				.NameContent()
 				[
 					SNew(STextBlock)
-					.IsEnabled(IsAnimationFlagEnabled(PropertyBeingCustomized))
+					.Visibility(IsAnimationFlagEnabled(PropertyBeingCustomized) ? EVisibility::Visible : EVisibility::Hidden)
 					.Font(DetailLayout.GetDetailFont())
 					.Text(AnimationOutputText)
 					.ToolTipText(AnimationOutputTooltipText)
@@ -60,7 +60,7 @@ void FControlRigVariableDetailsCustomization::CustomizeDetails(IDetailLayoutBuil
 				.ValueContent()
 				[
 					SNew(SCheckBox)
-					.IsEnabled(IsAnimationFlagEnabled(PropertyBeingCustomized))
+					.Visibility(IsAnimationFlagEnabled(PropertyBeingCustomized) ? EVisibility::Visible : EVisibility::Hidden)
 					.IsChecked_Raw(this, &FControlRigVariableDetailsCustomization::IsAnimationOutputChecked, PropertyBeingCustomized)
 					.OnCheckStateChanged_Raw(this, &FControlRigVariableDetailsCustomization::HandleAnimationOutputCheckStateChanged, PropertyBeingCustomized)
 					.ToolTipText(AnimationOutputTooltipText)
@@ -71,7 +71,7 @@ void FControlRigVariableDetailsCustomization::CustomizeDetails(IDetailLayoutBuil
 				.NameContent()
 				[
 					SNew(STextBlock)
-					.IsEnabled(IsAnimationFlagEnabled(PropertyBeingCustomized))
+					.Visibility(IsAnimationFlagEnabled(PropertyBeingCustomized) ? EVisibility::Visible : EVisibility::Hidden)
 					.Font(DetailLayout.GetDetailFont())
 					.Text(AnimationInputText)
 					.ToolTipText(AnimationInputTooltipText)
@@ -79,7 +79,7 @@ void FControlRigVariableDetailsCustomization::CustomizeDetails(IDetailLayoutBuil
 				.ValueContent()
 				[
 					SNew(SCheckBox)
-					.IsEnabled(IsAnimationFlagEnabled(PropertyBeingCustomized))
+					.Visibility(IsAnimationFlagEnabled(PropertyBeingCustomized) ? EVisibility::Visible : EVisibility::Hidden)
 					.IsChecked_Raw(this, &FControlRigVariableDetailsCustomization::IsAnimationInputChecked, PropertyBeingCustomized)
 					.OnCheckStateChanged_Raw(this, &FControlRigVariableDetailsCustomization::HandleAnimationInputCheckStateChanged, PropertyBeingCustomized)
 					.ToolTipText(AnimationInputTooltipText)
@@ -88,77 +88,27 @@ void FControlRigVariableDetailsCustomization::CustomizeDetails(IDetailLayoutBuil
 	}
 }
 
-bool FControlRigVariableDetailsCustomization::IsAnimationFlagEnabled(TWeakObjectPtr<UProperty> PropertyBeingCustomized) const
+bool FControlRigVariableDetailsCustomization::IsAnimationFlagEnabled(TWeakFieldPtr<FProperty> PropertyBeingCustomized) const
 {
-	if (PropertyBeingCustomized.IsValid())
-	{
-		if (UBlueprintGeneratedClass* GeneratedClass = Cast<UBlueprintGeneratedClass>(PropertyBeingCustomized.Get()->GetOwnerClass()))
-		{
-			UBlueprint* PropertyOwnerBlueprint = Cast<UBlueprint>(GeneratedClass->ClassGeneratedBy);
-			return PropertyOwnerBlueprint == BlueprintPtr.Get();
-		}
-
-	}
-
 	return false;
 }
 
-ECheckBoxState FControlRigVariableDetailsCustomization::IsAnimationOutputChecked(TWeakObjectPtr<UProperty> PropertyBeingCustomized) const
+ECheckBoxState FControlRigVariableDetailsCustomization::IsAnimationOutputChecked(TWeakFieldPtr<FProperty> PropertyBeingCustomized) const
 {
-	if (PropertyBeingCustomized.IsValid())
-	{
-		UProperty* PropertyPtrBeingCustomized = PropertyBeingCustomized.Get();
-		FString Value;
-		if (PropertyPtrBeingCustomized->HasMetaData(AnimationOutputMetadataName) ||
-			FBlueprintEditorUtils::GetBlueprintVariableMetaData(BlueprintPtr.Get(), PropertyPtrBeingCustomized->GetFName(), nullptr, AnimationOutputMetadataName, Value))
-		{
-			return ECheckBoxState::Checked;
-		}
-	}
-
 	return ECheckBoxState::Unchecked;
 }
 
-void FControlRigVariableDetailsCustomization::HandleAnimationOutputCheckStateChanged(ECheckBoxState CheckBoxState, TWeakObjectPtr<UProperty> PropertyBeingCustomized)
+void FControlRigVariableDetailsCustomization::HandleAnimationOutputCheckStateChanged(ECheckBoxState CheckBoxState, TWeakFieldPtr<FProperty> PropertyBeingCustomized)
 {
-	if (CheckBoxState == ECheckBoxState::Checked)
-	{
-		FBlueprintEditorUtils::SetBlueprintVariableMetaData(BlueprintPtr.Get(), PropertyBeingCustomized->GetFName(), nullptr, AnimationOutputMetadataName, TEXT("true"));
-	}
-	else
-	{
-		FBlueprintEditorUtils::RemoveBlueprintVariableMetaData(BlueprintPtr.Get(), PropertyBeingCustomized->GetFName(), nullptr, AnimationOutputMetadataName);
-	}
-	FBlueprintEditorUtils::ReconstructAllNodes(BlueprintPtr.Get());
 }
 
-ECheckBoxState FControlRigVariableDetailsCustomization::IsAnimationInputChecked(TWeakObjectPtr<UProperty> PropertyBeingCustomized) const
+ECheckBoxState FControlRigVariableDetailsCustomization::IsAnimationInputChecked(TWeakFieldPtr<FProperty> PropertyBeingCustomized) const
 {
-	if (PropertyBeingCustomized.IsValid())
-	{
-		UProperty* PropertyPtrBeingCustomized = PropertyBeingCustomized.Get();
-		FString Value;
-		if (PropertyPtrBeingCustomized->HasMetaData(AnimationInputMetadataName) ||
-			FBlueprintEditorUtils::GetBlueprintVariableMetaData(BlueprintPtr.Get(), PropertyPtrBeingCustomized->GetFName(), nullptr, AnimationInputMetadataName, Value))
-		{
-			return ECheckBoxState::Checked;
-		}
-	}
-
 	return ECheckBoxState::Unchecked;
 }
 
-void FControlRigVariableDetailsCustomization::HandleAnimationInputCheckStateChanged(ECheckBoxState CheckBoxState, TWeakObjectPtr<UProperty> PropertyBeingCustomized)
+void FControlRigVariableDetailsCustomization::HandleAnimationInputCheckStateChanged(ECheckBoxState CheckBoxState, TWeakFieldPtr<FProperty> PropertyBeingCustomized)
 {
-	if (CheckBoxState == ECheckBoxState::Checked)
-	{
-		FBlueprintEditorUtils::SetBlueprintVariableMetaData(BlueprintPtr.Get(), PropertyBeingCustomized->GetFName(), nullptr, AnimationInputMetadataName, TEXT("true"));
-	}
-	else
-	{
-		FBlueprintEditorUtils::RemoveBlueprintVariableMetaData(BlueprintPtr.Get(), PropertyBeingCustomized->GetFName(), nullptr, AnimationInputMetadataName);
-	}
-	FBlueprintEditorUtils::ReconstructAllNodes(BlueprintPtr.Get());
 }
 
 #undef LOCTEXT_NAMESPACE

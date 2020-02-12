@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "GameplayDebuggerAddonManager.h"
 #include "Engine/World.h"
@@ -45,7 +45,7 @@ void FGameplayDebuggerAddonManager::NotifyCategoriesChanged()
 		int32 CategoryId;
 		int32 SlotIdx;
 
-		bool operator<(const FSlotInfo& Other) const { return (SlotIdx == Other.SlotIdx) ? (CategoryName < Other.CategoryName) : (SlotIdx < Other.SlotIdx); }
+		bool operator<(const FSlotInfo& Other) const { return (SlotIdx == Other.SlotIdx) ? CategoryName.LexicalLess(Other.CategoryName) : (SlotIdx < Other.SlotIdx); }
 	};
 
 	TArray<FSlotInfo> AssignList;

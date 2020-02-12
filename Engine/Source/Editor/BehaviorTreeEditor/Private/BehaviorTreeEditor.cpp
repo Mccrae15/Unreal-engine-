@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "BehaviorTreeEditor.h"
 #include "Widgets/Text/STextBlock.h"
@@ -60,6 +60,7 @@
 #include "IContentBrowserSingleton.h"
 #include "ContentBrowserModule.h"
 #include "Widgets/Docking/SDockTab.h"
+#include "Subsystems/AssetEditorSubsystem.h"
 
 #define LOCTEXT_NAMESPACE "BehaviorTreeEditor"
 
@@ -77,7 +78,6 @@ FBehaviorTreeEditor::FBehaviorTreeEditor()
 	bShowDecoratorRangeSelf = false;
 	bSelectedNodeIsInjected = false;
 	bSelectedNodeIsRootLevel = false;
-	SelectedNodesCount = 0;
 
 	bHasMultipleTaskBP = false;
 	bHasMultipleDecoratorBP = false;
@@ -96,19 +96,24 @@ FBehaviorTreeEditor::~FBehaviorTreeEditor()
 	Debugger.Reset();
 }
 
+void FBehaviorTreeEditor::RefreshBlackboardViewsAssociatedObject()
+{
+	if (BlackboardView.IsValid())
+	{
+		BlackboardView->SetObject(GetBlackboardData());
+	}
+
+	if (BlackboardEditor.IsValid())
+	{
+		BlackboardEditor->SetObject(GetBlackboardData());
+	}
+}
+
 void FBehaviorTreeEditor::PostUndo(bool bSuccess)
 {
 	if (bSuccess)
 	{
-		if(BlackboardView.IsValid())
-		{
-			BlackboardView->SetObject(GetBlackboardData());
-		}
-
-		if(BlackboardEditor.IsValid())
-		{
-			BlackboardEditor->SetObject(GetBlackboardData());
-		}
+		RefreshBlackboardViewsAssociatedObject();
 	}
 
 	FAIGraphEditor::PostUndo(bSuccess);
@@ -118,21 +123,13 @@ void FBehaviorTreeEditor::PostRedo(bool bSuccess)
 {
 	if (bSuccess)
 	{
-		if (BlackboardView.IsValid())
-		{
-			BlackboardView->SetObject(GetBlackboardData());
-		}
-
-		if (BlackboardEditor.IsValid())
-		{
-			BlackboardEditor->SetObject(GetBlackboardData());
-		}
+		RefreshBlackboardViewsAssociatedObject();
 	}
 
 	FAIGraphEditor::PostRedo(bSuccess);
 }
 
-void FBehaviorTreeEditor::NotifyPostChange( const FPropertyChangedEvent& PropertyChangedEvent, UProperty* PropertyThatChanged )
+void FBehaviorTreeEditor::NotifyPostChange( const FPropertyChangedEvent& PropertyChangedEvent, FProperty* PropertyThatChanged )
 {
 	if(PropertyChangedEvent.ChangeType != EPropertyChangeType::Interactive)
 	{
@@ -141,14 +138,7 @@ void FBehaviorTreeEditor::NotifyPostChange( const FPropertyChangedEvent& Propert
 			BlackboardData = BehaviorTree->BlackboardAsset;
 		}
 
-		if(BlackboardView.IsValid())
-		{
-			BlackboardView->SetObject(GetBlackboardData());
-		}
-		if(BlackboardEditor.IsValid())
-		{
-			BlackboardEditor->SetObject(GetBlackboardData());
-		}
+		RefreshBlackboardViewsAssociatedObject();
 	}
 }
 
@@ -215,7 +205,8 @@ void FBehaviorTreeEditor::InitBehaviorTreeEditor( const EToolkitMode::Type Mode,
 		ToolbarBuilder = MakeShareable(new FBehaviorTreeEditorToolbar(SharedThis(this)));
 	}
 
-	// if we are already editing objects, dont try to recreate the editor from scratch
+	// if we are already editing objects, dont try to recreate the editor from scratch but update the list of objects in edition
+    // ex: BehaviorTree may want to reuse an editor already opened for its associated Blackboard asset.
 	const TArray<UObject*>* EditedObjects = GetObjectsCurrentlyBeingEdited();
 	if(EditedObjects == nullptr || EditedObjects->Num() == 0)
 	{
@@ -265,6 +256,14 @@ void FBehaviorTreeEditor::InitBehaviorTreeEditor( const EToolkitMode::Type Mode,
 	{
 		check(Debugger.IsValid());
 		Debugger->Setup(BehaviorTree, SharedThis(this));
+
+		for (UObject* ObjectToEdit : ObjectsToEdit)
+		{
+			if (!EditedObjects->Contains(ObjectToEdit))
+		    {
+				AddEditingObject(ObjectToEdit);
+		    }
+		}
 	}
 
 	if(BehaviorTreeToEdit != nullptr)
@@ -316,6 +315,7 @@ void FBehaviorTreeEditor::RestoreBehaviorTree()
 	if(bNewGraph)
 	{
 		MyGraph->UpdateAsset(UBehaviorTreeGraph::ClearDebuggerFlags | UBehaviorTreeGraph::KeepRebuildCounter);
+		RefreshBlackboardViewsAssociatedObject();
 	}
 	else
 	{
@@ -384,14 +384,7 @@ float FBehaviorTreeEditor::HandleGetDebugTimeStamp(bool bUseCurrentState) const
 
 void FBehaviorTreeEditor::HandleDebuggedBlackboardChanged(UBlackboardData* InBlackboardData)
 {
-	if(BlackboardView.IsValid())
-	{
-		BlackboardView->SetObject(InBlackboardData);
-	}
-	if(BlackboardEditor.IsValid())
-	{
-		BlackboardEditor->SetObject(InBlackboardData);
-	}
+	RefreshBlackboardViewsAssociatedObject();
 }
 
 bool FBehaviorTreeEditor::HandleGetDisplayCurrentState() const
@@ -732,8 +725,6 @@ TSharedRef<SWidget> FBehaviorTreeEditor::SpawnBlackboardDetails()
 
 void FBehaviorTreeEditor::OnSelectedNodesChanged(const TSet<class UObject*>& NewSelection)
 {
-	SelectedNodesCount = NewSelection.Num();
-
 	BehaviorTreeEditorUtils::FPropertySelectionInfo SelectionInfo;
 	TArray<UObject*> Selection = BehaviorTreeEditorUtils::GetSelectionForPropertyEditor(NewSelection, SelectionInfo);
 
@@ -1157,9 +1148,9 @@ void FBehaviorTreeEditor::OnNodeDoubleClicked(class UEdGraphNode* Node)
 		UBTTask_RunBehavior* SubtreeTask = MyNode->ParentNode ? Cast<UBTTask_RunBehavior>(MyNode->ParentNode->NodeInstance) : NULL;
 		if (SubtreeTask && SubtreeTask->GetSubtreeAsset())
 		{
-			FAssetEditorManager::Get().OpenEditorForAsset(SubtreeTask->GetSubtreeAsset());
+			GEditor->GetEditorSubsystem<UAssetEditorSubsystem>()->OpenEditorForAsset(SubtreeTask->GetSubtreeAsset());
 
-			IBehaviorTreeEditor* ChildNodeEditor = static_cast<IBehaviorTreeEditor*>(FAssetEditorManager::Get().FindEditorForAsset(SubtreeTask->GetSubtreeAsset(), true));
+			IBehaviorTreeEditor* ChildNodeEditor = static_cast<IBehaviorTreeEditor*>(GEditor->GetEditorSubsystem<UAssetEditorSubsystem>()->FindEditorForAsset(SubtreeTask->GetSubtreeAsset(), true));
 			if (ChildNodeEditor)
 			{
 				ChildNodeEditor->InitializeDebuggerState(Debugger.Get());
@@ -1212,9 +1203,9 @@ void FBehaviorTreeEditor::OnNodeDoubleClicked(class UEdGraphNode* Node)
 		{
 			if (RunTask->GetSubtreeAsset())
 			{
-				FAssetEditorManager::Get().OpenEditorForAsset(RunTask->GetSubtreeAsset());
+				GEditor->GetEditorSubsystem<UAssetEditorSubsystem>()->OpenEditorForAsset(RunTask->GetSubtreeAsset());
 
-				IBehaviorTreeEditor* ChildNodeEditor = static_cast<IBehaviorTreeEditor*>(FAssetEditorManager::Get().FindEditorForAsset(RunTask->GetSubtreeAsset(), true));
+				IBehaviorTreeEditor* ChildNodeEditor = static_cast<IBehaviorTreeEditor*>(GEditor->GetEditorSubsystem<UAssetEditorSubsystem>()->FindEditorForAsset(RunTask->GetSubtreeAsset(), true));
 				if (ChildNodeEditor)
 				{
 					ChildNodeEditor->InitializeDebuggerState(Debugger.Get());
@@ -1232,7 +1223,7 @@ void FBehaviorTreeEditor::OnNodeDoubleClicked(class UEdGraphNode* Node)
 		UBlueprint* BlueprintOb = FindObject<UBlueprint>(Pkg, *ClassName);
 		if(BlueprintOb)
 		{
-			FAssetEditorManager::Get().OpenEditorForAsset(BlueprintOb);
+			GEditor->GetEditorSubsystem<UAssetEditorSubsystem>()->OpenEditorForAsset(BlueprintOb);
 		}
 	}
 }
@@ -1599,12 +1590,6 @@ void FBehaviorTreeEditor::OnNodeTitleCommitted(const FText& NewText, ETextCommit
 	}
 }
 
-bool FBehaviorTreeEditor::GetBoundsForSelectedNodes(FSlateRect& Rect, float Padding) const
-{
-	TSharedPtr<SGraphEditor> FocusedGraphEd = UpdateGraphEdPtr.Pin();
-	return FocusedGraphEd.IsValid() && FocusedGraphEd->GetBoundsForSelectedNodes(Rect, Padding);
-}
-
 void FBehaviorTreeEditor::InitializeDebuggerState(class FBehaviorTreeDebugger* ParentDebugger) const
 {
 	if (Debugger.IsValid())
@@ -1617,9 +1602,9 @@ void FBehaviorTreeEditor::DebuggerSwitchAsset(UBehaviorTree* NewAsset)
 {
 	if (NewAsset)
 	{
-		FAssetEditorManager::Get().OpenEditorForAsset(NewAsset);
+		GEditor->GetEditorSubsystem<UAssetEditorSubsystem>()->OpenEditorForAsset(NewAsset);
 
-		IBehaviorTreeEditor* ChildNodeEditor = static_cast<IBehaviorTreeEditor*>(FAssetEditorManager::Get().FindEditorForAsset(NewAsset, true));
+		IBehaviorTreeEditor* ChildNodeEditor = static_cast<IBehaviorTreeEditor*>(GEditor->GetEditorSubsystem<UAssetEditorSubsystem>()->FindEditorForAsset(NewAsset, true));
 		if (ChildNodeEditor)
 		{
 			ChildNodeEditor->InitializeDebuggerState(Debugger.Get());
@@ -1762,7 +1747,7 @@ void FBehaviorTreeEditor::HandleNewNodeClassPicked(UClass* InClass) const
 			// Create and init a new Blueprint
 			if (UBlueprint* NewBP = FKismetEditorUtilities::CreateBlueprint(InClass, Package, FName(*Name), BPTYPE_Normal, UBlueprint::StaticClass(), UBlueprintGeneratedClass::StaticClass()))
 			{
-				FAssetEditorManager::Get().OpenEditorForAsset(NewBP);
+				GEditor->GetEditorSubsystem<UAssetEditorSubsystem>()->OpenEditorForAsset(NewBP);
 
 				// Notify the asset registry
 				FAssetRegistryModule::AssetCreated(NewBP);

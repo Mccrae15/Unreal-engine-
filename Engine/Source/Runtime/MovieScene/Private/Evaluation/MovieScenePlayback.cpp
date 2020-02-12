@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "Evaluation/MovieScenePlayback.h"
 
@@ -77,6 +77,17 @@ TRange<FFrameNumber> FMovieSceneEvaluationRange::GetTraversedFrameNumberRange() 
 TRange<FFrameNumber> FMovieSceneEvaluationRange::TimeRangeToNumberRange(const TRange<FFrameTime>& InFrameTimeRange)
 {
 	TRange<FFrameNumber> FrameNumberRange;
+	TOptional<FFrameTime> UpperTime;
+	if (!InFrameTimeRange.GetUpperBound().IsOpen())
+	{
+		UpperTime = InFrameTimeRange.GetUpperBoundValue();
+		// Similar to adjusting the lower bound, if there's a subframe on the upper bound, the frame number needs incrementing in order to evaluate keys in the subframe
+		if (UpperTime.GetValue().GetSubFrame() != 0.f || InFrameTimeRange.GetUpperBound().IsInclusive())
+		{
+			UpperTime.GetValue().FrameNumber = UpperTime.GetValue().FrameNumber + 1;
+		}
+		FrameNumberRange.SetUpperBound(TRangeBound<FFrameNumber>::Exclusive(UpperTime.GetValue().FrameNumber));
+	}
 
 	if (!InFrameTimeRange.GetLowerBound().IsOpen())
 	{
@@ -84,21 +95,13 @@ TRange<FFrameNumber> FMovieSceneEvaluationRange::TimeRangeToNumberRange(const TR
 		// If there is a sub frame on the start time, we're actually beyond that frame number, so it needs incrementing
 		if (LowerTime.GetSubFrame() != 0.f || InFrameTimeRange.GetLowerBound().IsExclusive())
 		{
-			LowerTime.FrameNumber = LowerTime.FrameNumber + 1;
+			LowerTime.FrameNumber = (!UpperTime.IsSet() || LowerTime.FrameNumber < UpperTime.GetValue().FrameNumber) ?
+				LowerTime.FrameNumber + 1 : LowerTime.FrameNumber;
+
 		}
 		FrameNumberRange.SetLowerBound(TRangeBound<FFrameNumber>::Inclusive(LowerTime.FrameNumber));
 	}
 
-	if (!InFrameTimeRange.GetUpperBound().IsOpen())
-	{
-		const FFrameTime UpperTime = InFrameTimeRange.GetUpperBoundValue();
-
-		FrameNumberRange.SetUpperBound(
-			InFrameTimeRange.GetUpperBound().IsExclusive()
-			? TRangeBound<FFrameNumber>::Exclusive(UpperTime.FrameNumber)
-			: TRangeBound<FFrameNumber>::Inclusive(UpperTime.FrameNumber)
-		);
-	}
 
 	return FrameNumberRange;
 }

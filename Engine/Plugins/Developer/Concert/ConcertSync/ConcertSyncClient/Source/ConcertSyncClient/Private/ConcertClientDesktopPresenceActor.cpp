@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "ConcertClientDesktopPresenceActor.h"
 #include "Components/StaticMeshComponent.h"
@@ -54,9 +54,9 @@ void AConcertClientDesktopPresenceActor::SetPresenceColor(const FLinearColor& In
 	TextMID->SetVectorParameterValue(ColorParamName, InColor);
 }
 
-void AConcertClientDesktopPresenceActor::InitPresence(const class UConcertAssetContainer& InAssetContainer)
+void AConcertClientDesktopPresenceActor::InitPresence(const class UConcertAssetContainer& InAssetContainer, FName DeviceType)
 {
-	Super::InitPresence(InAssetContainer);
+	Super::InitPresence(InAssetContainer, DeviceType);
 
 	UMaterialInterface* PresenceMaterial = InAssetContainer.PresenceFadeMaterial;
 

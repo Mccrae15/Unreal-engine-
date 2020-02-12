@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 #pragma once
 
 #include "CoreTypes.h"
@@ -17,6 +17,31 @@ struct CORE_API FDestructionObjectVersion
 
 		// Added functionality to strip unnecessary data from geometry collection caches
 		AddedCacheDataReduction,
+
+		// Geometry collection data is now in the DDC
+		GeometryCollectionInDDC,
+
+		// Geometry collection data is now in both the DDC and the asset
+		GeometryCollectionInDDCAndAsset,
+
+		// New way to serialize unique ptr and serializable ptr
+		ChaosArchiveAdded,
+
+		// Serialization support for UFieldSystems
+		FieldsAdded,
+
+		// density default units changed from kg/cm3 to kg/m3
+		DensityUnitsChanged,
+
+		// bulk serialize arrays
+		BulkSerializeArrays,
+
+		// bulk serialize arrays
+		GroupAndAttributeNameRemapping,
+
+		// bulk serialize arrays
+		ImplicitObjectDoCollideAttribute,
+
 
 		// -----<new versions can be added above this line>-------------------------------------------------
 		VersionPlusOne,

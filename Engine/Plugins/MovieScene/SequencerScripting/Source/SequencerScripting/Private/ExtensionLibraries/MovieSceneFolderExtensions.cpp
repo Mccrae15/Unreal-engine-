@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "ExtensionLibraries/MovieSceneFolderExtensions.h"
 #include "MovieSceneFolder.h"
@@ -42,6 +42,7 @@ bool UMovieSceneFolderExtensions::SetFolderColor(UMovieSceneFolder* Folder, FCol
 #if WITH_EDITORONLY_DATA
 	if (Folder)
 	{
+		Folder->Modify();
 		Folder->SetFolderColor(InFolderColor);
 		return true;
 	}

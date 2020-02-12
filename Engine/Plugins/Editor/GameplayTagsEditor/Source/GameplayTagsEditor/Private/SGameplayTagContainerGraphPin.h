@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -63,4 +63,7 @@ private:
 
 	// The List View used to display the read only tag names on the node.
 	TSharedPtr<SListView<TSharedPtr<FString>>> TagListView;
+
+	// Tag filter string for the container
+	FString FilterString;
 };

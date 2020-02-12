@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "FoliageType_InstancedStaticMeshPaintingCustomization.h"
 #include "Layout/Visibility.h"
@@ -59,7 +59,7 @@ void FFoliageType_InstancedStaticMeshPaintingCustomization::CustomizeDetails(IDe
 			UFoliageType* FoliageType = TypeInfo->Settings;
 			if (!FoliageType->IsAsset() && !FoliageType->GetClass()->ClassGeneratedBy)
 			{
-				UnavailableMeshNames.Add(FoliageType->GetStaticMesh()->GetFName());
+				UnavailableMeshNames.Add(FoliageType->GetSource()->GetFName());
 			}
 		}
 

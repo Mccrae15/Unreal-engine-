@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 using UnrealBuildTool;
 
@@ -16,9 +16,9 @@ public class IntelVTune : ModuleRules
 
 			PublicSystemIncludePaths.Add(IntelVTunePath + "include/");
 
-			PublicLibraryPaths.Add(IntelVTunePath + "lib/" + PlatformName);
+			string LibDir = IntelVTunePath + "lib/" + PlatformName + "/";
 
-			PublicAdditionalLibraries.Add("libittnotify.lib");
+			PublicAdditionalLibraries.Add(LibDir + "libittnotify.lib");
 		}
 	}
 }

@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "CoreMinimal.h"
 #include "Misc/Paths.h"
@@ -9,7 +9,9 @@
 #include "Tests/AutomationTestSettings.h"
 #include "Tests/AutomationEditorCommon.h"
 #include "Tests/AutomationCommon.h"
-#include "Toolkits/AssetEditorManager.h"
+
+#include "Subsystems/AssetEditorSubsystem.h"
+#include "Editor.h"
 
 /**
  * Test to open the sub editor windows for a specified list of assets.
@@ -30,7 +32,7 @@ void FOpenAssetEditors::GetTests(TArray<FString>& OutBeautifiedNames, TArray<FSt
 bool FOpenAssetEditors::RunTest(const FString& LongAssetPath)
 {
 	//start with all editors closed
-	FAssetEditorManager::Get().CloseAllAssetEditors();
+	GEditor->GetEditorSubsystem<UAssetEditorSubsystem>()->CloseAllAssetEditors();
 
 	// below is all latent action, so before sending there, verify the asset exists
 	UObject* Object = FSoftObjectPath(LongAssetPath).TryLoad();

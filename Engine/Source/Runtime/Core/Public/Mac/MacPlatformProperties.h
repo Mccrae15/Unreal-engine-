@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 /*================================================================================
 	MacPlatformProperties.h - Basic static properties of a platform 
@@ -27,6 +27,11 @@ struct FMacPlatformProperties
 	static FORCEINLINE const char* IniPlatformName( )
 	{
 		return "Mac";
+	}
+
+	static FORCEINLINE const TCHAR* GetRuntimeSettingsClassName()
+	{
+		return TEXT("/Script/MacTargetPlatform.MacTargetSettings");
 	}
 
 	static FORCEINLINE bool IsGameOnly( )
@@ -128,3 +133,7 @@ struct FMacPlatformProperties
 		return !IsServerOnly();
 	}
 };
+
+#ifdef PROPERTY_HEADER_SHOULD_DEFINE_TYPE
+typedef FMacPlatformProperties<WITH_EDITORONLY_DATA, UE_SERVER, !WITH_SERVER_CODE> FPlatformProperties;
+#endif

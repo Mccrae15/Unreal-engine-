@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 using System;
 using System.IO;
@@ -8,58 +8,50 @@ namespace UnrealBuildTool.Rules
 	public class USDImporter : ModuleRules
 	{
 		public USDImporter(ReadOnlyTargetRules Target) : base(Target)
-        {
-			PublicIncludePaths.AddRange(
-				new string[] {
-				}
-				);
+		{
+			// We require the whole editor to be RTTI enabled on Linux for now
+			if (Target.Platform != UnrealTargetPlatform.Linux)
+			{
+				bUseRTTI = true;
+			}
 
-			PrivateIncludePaths.AddRange(
-				new string[] {
-				}
-				);
-
-		
 			PrivateDependencyModuleNames.AddRange(
 				new string[]
 				{
 					"Core",
 					"CoreUObject",
 					"Engine",
+					"JsonUtilities",
 					"UnrealEd",
 					"InputCore",
 					"SlateCore",
-                    "PropertyEditor",
+					"PropertyEditor",
 					"Slate",
-                    "EditorStyle",
+				"EditorStyle",
                     "RawMesh",
                     "GeometryCache",
 					"MeshDescription",
 					"MeshUtilities",
-                    "PythonScriptPlugin",
+					"MessageLog",
+					"PythonScriptPlugin",
                     "RenderCore",
                     "RHI",
-                    "MessageLog",
-					"JsonUtilities",
-                }
-				);
-
-			PrivateIncludePathModuleNames.AddRange(
-				new string[] {
-					"MeshDescription"
+					"StaticMeshDescription",
+					"UnrealUSDWrapper",
+					"USDUtilities",
 				}
-			);
+				);
 
 			if (Target.Platform == UnrealTargetPlatform.Win64)
 			{
 				PrivateDependencyModuleNames.Add("UnrealUSDWrapper");
 
 				foreach (string FilePath in Directory.EnumerateFiles(Path.Combine(ModuleDirectory, "../../Binaries/Win64/"), "*.dll", SearchOption.AllDirectories))
-                {
-                    RuntimeDependencies.Add(FilePath);
-                }
-            }
-            else if (Target.Platform == UnrealTargetPlatform.Linux && Target.Architecture.StartsWith("x86_64"))
+				{
+					RuntimeDependencies.Add(FilePath);
+				}
+			}
+			else if (Target.Platform == UnrealTargetPlatform.Linux && Target.Architecture.StartsWith("x86_64"))
 			{
 				PrivateDependencyModuleNames.Add("UnrealUSDWrapper");
 
@@ -68,10 +60,10 @@ namespace UnrealBuildTool.Rules
 				PrivateRuntimeLibraryPaths.Add(RuntimeLibraryPath);
 
 				foreach (string FilePath in Directory.EnumerateFiles(RuntimeLibraryPath, "*.so*", SearchOption.AllDirectories))
-                {
-                    RuntimeDependencies.Add(FilePath);
-                }
-            }
+				{
+					RuntimeDependencies.Add(FilePath);
+				}
+			}
 		}
 	}
 }

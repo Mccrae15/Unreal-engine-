@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 using System;
 using System.Collections.Generic;
@@ -30,6 +30,21 @@ namespace UnrealGameSync
 			Window.ShowDialog(Owner);
 			ErrorMessage = Window.ErrorMessage;
 			return Window.Result;
+		}
+
+		public static bool ExecuteAndShowError(IWin32Window Owner, IModalTask Task, string InTitle, string InMessage)
+		{
+			string ErrorMessage;
+			ModalTaskResult Result = Execute(Owner, Task, InTitle, InMessage, out ErrorMessage);
+			if(Result != ModalTaskResult.Succeeded)
+			{
+				if (!String.IsNullOrEmpty(ErrorMessage))
+				{
+					MessageBox.Show(ErrorMessage);
+				}
+				return false;
+			}
+			return true;
 		}
 	}
 }

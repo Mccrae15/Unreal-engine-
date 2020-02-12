@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 /*=============================================================================
 	RawIndexBuffer.h: Raw index buffer definitions.
@@ -10,6 +10,7 @@
 #include "RHI.h"
 #include "RenderResource.h"
 #include "Containers/DynamicRHIResourceArray.h"
+
 
 class FRawIndexBuffer : public FIndexBuffer
 {
@@ -118,14 +119,14 @@ private:
 	bool b32Bit;
 };
 
-class FRawStaticIndexBuffer : public FIndexBuffer
+class ENGINE_VTABLE FRawStaticIndexBuffer : public FIndexBuffer
 {
 public:	
 	/**
 	 * Initialization constructor.
 	 * @param InNeedsCPUAccess	True if resource array data should be accessible by the CPU.
 	 */
-	FRawStaticIndexBuffer(bool InNeedsCPUAccess=false);
+	ENGINE_API FRawStaticIndexBuffer(bool InNeedsCPUAccess=false);
 
 	/**
 	 * Sets a single index value.  Consider using SetIndices() instead if you're setting a lot of indices.
@@ -244,11 +245,25 @@ public:
 	FIndexBufferRHIRef CreateRHIBuffer_RenderThread();
 	FIndexBufferRHIRef CreateRHIBuffer_Async();
 
-	/** Set whether this buffer is managed by the streamer. Must set before InitRHI is called */
-	void SetIsStreamed(bool bValue) { bStreamed = bValue; }
-
 	/** Take over ownership of IntermediateBuffer */
-	void InitRHIForStreaming(FIndexBufferRHIParamRef IntermediateBuffer);
+	template <uint32 MaxNumUpdates>
+	void InitRHIForStreaming(FRHIIndexBuffer* IntermediateBuffer, TRHIResourceUpdateBatcher<MaxNumUpdates>& Batcher)
+	{
+		if (IndexBufferRHI && IntermediateBuffer)
+		{
+			Batcher.QueueUpdateRequest(IndexBufferRHI, IntermediateBuffer);
+		}
+	}
+
+	/** Release any GPU resource owned by the RHI object */
+	template <uint32 MaxNumUpdates>
+	void ReleaseRHIForStreaming(TRHIResourceUpdateBatcher<MaxNumUpdates>& Batcher)
+	{
+		if (IndexBufferRHI)
+		{
+			Batcher.QueueUpdateRequest(IndexBufferRHI, nullptr);
+		}
+	}
 
 	/**
 	 * Serialization.
@@ -267,7 +282,7 @@ public:
     void Discard();
     
 	// FRenderResource interface.
-	virtual void InitRHI() override;
+	ENGINE_API virtual void InitRHI() override;
 
 	inline bool Is32Bit() const { return b32Bit; }
 
@@ -276,15 +291,13 @@ private:
 	FIndexBufferRHIRef CreateRHIBuffer_Internal();
 
 	/** Storage for indices. */
-	TResourceArray<uint8,INDEXBUFFER_ALIGNMENT> IndexStorage;
+	TResourceArray<uint8, INDEXBUFFER_ALIGNMENT> IndexStorage;
 
 	/** If >= 0, represents the number of indices in this IB. Needed in cooked build since InitRHI may discard CPU data */
 	int32 CachedNumIndices;
 
 	/** 32bit or 16bit? */
 	bool b32Bit;
-
-	bool bStreamed;
 };
 
 /**
@@ -294,6 +307,8 @@ class FRawStaticIndexBuffer16or32Interface : public FIndexBuffer
 {
 public:
 	virtual void Serialize( FArchive& Ar ) = 0;
+
+	virtual void SerializeMetaData(FArchive& Ar) = 0;
 
 	/**
 	 * The following methods are basically just accessors that allow us
@@ -312,7 +327,7 @@ public:
 	virtual int32 GetResourceDataSize() const = 0;
 
 	// @param guaranteed only to be valid if the vertex buffer is valid and the buffer was created with the SRV flags
-	FShaderResourceViewRHIParamRef GetSRV() const
+	FRHIShaderResourceView* GetSRV() const
 	{
 		return SRVValue;
 	}
@@ -331,7 +346,8 @@ public:
 	* @param InNeedsCPUAccess - true if resource array data should be CPU accessible
 	*/
 	FRawStaticIndexBuffer16or32(bool InNeedsCPUAccess=false)
-	:	Indices(InNeedsCPUAccess)
+		: Indices(InNeedsCPUAccess)
+		, CachedNumIndices(0)
 	{
 	}
 
@@ -340,30 +356,12 @@ public:
 	*/
 	virtual void InitRHI() override
 	{
-		uint32 Size = Indices.Num() * sizeof(INDEX_TYPE);
-		if(Indices.Num())
+		IndexBufferRHI = CreateRHIBuffer_RenderThread();
+
+		if (IndexBufferRHI && IsSRVNeeded() && Indices.Num())
 		{
-			// Create the index buffer.
-			FRHIResourceCreateInfo CreateInfo(&Indices);
-			
-			extern ENGINE_API bool DoSkeletalMeshIndexBuffersNeedSRV();
-			bool bSRV = DoSkeletalMeshIndexBuffersNeedSRV();
-
-			EBufferUsageFlags Flags = BUF_Static;
-
-			if(bSRV)
-			{
-				// BUF_ShaderResource is needed for SkinCache RecomputeSkinTangents
-				Flags = (EBufferUsageFlags)(Flags | BUF_ShaderResource);
-			}
-
-			IndexBufferRHI = RHICreateIndexBuffer(sizeof(INDEX_TYPE), Size, Flags, CreateInfo);
-
-			if(bSRV)
-			{
-				SRVValue = RHICreateShaderResourceView(IndexBufferRHI);
-			}
-		}    
+			SRVValue = RHICreateShaderResourceView(Indices.Num() ? IndexBufferRHI : nullptr);
+		}
 	}
 	
 	virtual void ReleaseRHI() override
@@ -380,7 +378,13 @@ public:
 	*/
 	virtual void Serialize( FArchive& Ar ) override
 	{
-			Indices.BulkSerialize( Ar );
+		Indices.BulkSerialize(Ar);
+		CachedNumIndices = Indices.Num();
+	}
+
+	virtual void SerializeMetaData(FArchive& Ar) override
+	{
+		Ar << CachedNumIndices;
 	}
 
 	/**
@@ -397,11 +401,12 @@ public:
 
 	virtual int32 Num() const override
 	{
-		return Indices.Num();
+		return CachedNumIndices;
 	}
 
 	virtual int32 AddItem(uint32 Val) override
 	{
+		++CachedNumIndices;
 		return Indices.Add(Val);
 	}
 
@@ -417,17 +422,22 @@ public:
 
 	virtual void Insert(int32 Idx, int32 Num) override
 	{
+		CachedNumIndices += Num;
 		Indices.InsertUninitialized(Idx, Num);
+		check(CachedNumIndices == Indices.Num());
 	}
 
 	virtual void Remove(int32 Idx, int32 Num) override
 	{
+		CachedNumIndices -= Num;
 		Indices.RemoveAt(Idx, Num);
+		check(CachedNumIndices == Indices.Num());
 	}
 
 	virtual void Empty(int32 Slack) override
 	{
 		Indices.Empty(Slack);
+		CachedNumIndices = 0;
 	}
 
 	virtual int32 GetResourceDataSize() const override
@@ -437,9 +447,88 @@ public:
 
 	virtual void AssignNewBuffer(const TArray<INDEX_TYPE>& Buffer)
 	{
-		Indices = TArray<INDEX_TYPE,TAlignedHeapAllocator<INDEXBUFFER_ALIGNMENT> >(Buffer);
+		using IndexBufferType = typename TResourceArray<INDEX_TYPE, INDEXBUFFER_ALIGNMENT>::Super;
+		Indices = IndexBufferType(Buffer);
+		CachedNumIndices = Indices.Num();
+	}
+
+	/** Create an RHI index buffer with CPU data. CPU data may be discarded after creation (see TResourceArray::Discard) */
+	FIndexBufferRHIRef CreateRHIBuffer_RenderThread() { return CreateRHIBuffer_Internal<true>(); }
+	FIndexBufferRHIRef CreateRHIBuffer_Async() { return CreateRHIBuffer_Internal<false>(); }
+
+	/** Similar to Init/ReleaseRHI but only update existing SRV so references to the SRV stays valid */
+	template <uint32 MaxNumUpdates>
+	void InitRHIForStreaming(FRHIIndexBuffer* IntermediateBuffer, TRHIResourceUpdateBatcher<MaxNumUpdates>& Batcher)
+	{
+		if (IndexBufferRHI && IntermediateBuffer)
+		{
+			Batcher.QueueUpdateRequest(IndexBufferRHI, IntermediateBuffer);
+			if (SRVValue)
+			{
+				Batcher.QueueUpdateRequest(SRVValue, IndexBufferRHI);
+			}
+		}
+	}
+
+	template <uint32 MaxNumUpdates>
+	void ReleaseRHIForStreaming(TRHIResourceUpdateBatcher<MaxNumUpdates>& Batcher)
+	{
+		if (IndexBufferRHI)
+		{
+			Batcher.QueueUpdateRequest(IndexBufferRHI, nullptr);
+		}
+		if (SRVValue)
+		{
+			Batcher.QueueUpdateRequest(SRVValue, nullptr);
+		}
 	}
 
 private:
 	TResourceArray<INDEX_TYPE,INDEXBUFFER_ALIGNMENT> Indices;
+
+	int32 CachedNumIndices;
+
+	bool IsSRVNeeded() const
+	{
+		extern ENGINE_API bool DoSkeletalMeshIndexBuffersNeedSRV();
+		bool bSRV = DoSkeletalMeshIndexBuffersNeedSRV();
+		// When bAllowCPUAccess is true, the meshes is likely going to be used for Niagara to spawn particles on mesh surface.
+		// And it can be the case for CPU *and* GPU access: no differenciation today. That is why we create a SRV in this case.
+		// This also avoid setting lots of states on all the members of all the different buffers used by meshes. Follow up: https://jira.it.epicgames.net/browse/UE-69376.
+		bSRV |= Indices.GetAllowCPUAccess();
+		return bSRV;
+	}
+
+	template <bool bRenderThread>
+	FIndexBufferRHIRef CreateRHIBuffer_Internal()
+	{
+		if (CachedNumIndices)
+		{
+			// Create the index buffer.
+			FRHIResourceCreateInfo CreateInfo(&Indices);
+			EBufferUsageFlags Flags = BUF_Static;
+
+			if (IsSRVNeeded())
+			{
+				// BUF_ShaderResource is needed for SkinCache RecomputeSkinTangents
+				Flags = (EBufferUsageFlags)(Flags | BUF_ShaderResource);
+			}
+
+			FIndexBufferRHIRef Ret;
+			const uint32 Size = Indices.Num() * sizeof(INDEX_TYPE);
+			CreateInfo.bWithoutNativeResource = !Size;
+			if (bRenderThread)
+			{
+				Ret = RHICreateIndexBuffer(sizeof(INDEX_TYPE), Size, Flags, CreateInfo);
+			}
+			else
+			{
+				Ret = RHIAsyncCreateIndexBuffer(sizeof(INDEX_TYPE), Size, Flags, CreateInfo);
+			}
+
+			CachedNumIndices = Indices.Num();
+			return Ret;
+		}
+		return nullptr;
+	}
 };

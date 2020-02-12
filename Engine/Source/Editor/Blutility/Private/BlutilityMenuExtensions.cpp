@@ -1,10 +1,10 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "BlutilityMenuExtensions.h"
 #include "AssetRegistryModule.h"
 #include "EditorUtilityBlueprint.h"
 #include "Misc/PackageName.h"
-#include "Toolkits/AssetEditorManager.h"
+
 #include "BlueprintEditorModule.h"
 #include "GlobalEditorUtilityBase.h"
 #include "Framework/MultiBox/MultiBoxBuilder.h"
@@ -20,6 +20,7 @@
 #include "UObject/PropertyPortFlags.h"
 #include "Widgets/Layout/SScrollBox.h"
 #include "ScopedTransaction.h"
+#include "Subsystems/AssetEditorSubsystem.h"
 
 #define LOCTEXT_NAMESPACE "BlutilityMenuExtensions"
 
@@ -186,14 +187,14 @@ void FBlutilityMenuExtensions::GetBlutilityClasses(TArray<FAssetData>& OutAssets
 	}
 }
 
-void FBlutilityMenuExtensions::CreateBlutilityActionsMenu(FMenuBuilder& MenuBuilder, TArray<UGlobalEditorUtilityBase*> Utils)
+void FBlutilityMenuExtensions::CreateBlutilityActionsMenu(FMenuBuilder& MenuBuilder, TArray<IEditorUtilityExtension*> Utils)
 {
 	const static FName NAME_CallInEditor(TEXT("CallInEditor"));
 
 	// Helper struct to track the util to call a function on
 	struct FFunctionAndUtil
 	{
-		FFunctionAndUtil(UFunction* InFunction, UGlobalEditorUtilityBase* InUtil) 
+		FFunctionAndUtil(UFunction* InFunction, IEditorUtilityExtension* InUtil)
 			: Function(InFunction)
 			, Util(InUtil) {}
 
@@ -203,15 +204,15 @@ void FBlutilityMenuExtensions::CreateBlutilityActionsMenu(FMenuBuilder& MenuBuil
 		}
 
 		UFunction* Function;
-		UGlobalEditorUtilityBase* Util;
+		IEditorUtilityExtension* Util;
 	};
 	TArray<FFunctionAndUtil> FunctionsToList;
 	TSet<UClass*> ProcessedClasses;
 
 	// Find the exposed functions available in each class, making sure to not list shared functions from a parent class more than once
-	for(UGlobalEditorUtilityBase* Util : Utils)
+	for(IEditorUtilityExtension* Util : Utils)
 	{
-		UClass* Class = Util->GetClass();
+		UClass* Class = Cast<UObject>(Util)->GetClass();
 
 		if (ProcessedClasses.Contains(Class))
 		{
@@ -259,9 +260,9 @@ void FBlutilityMenuExtensions::CreateBlutilityActionsMenu(FMenuBuilder& MenuBuil
 							if(FSlateApplication::Get().GetModifierKeys().IsShiftDown())
 							{
 								// Edit the script if we have shift held down
-								if(UBlueprint* Blueprint = Cast<UBlueprint>(FunctionAndUtil.Util->GetClass()->ClassGeneratedBy))
+								if(UBlueprint* Blueprint = Cast<UBlueprint>(Cast<UObject>(FunctionAndUtil.Util)->GetClass()->ClassGeneratedBy))
 								{
-									if(IAssetEditorInstance* AssetEditor = FAssetEditorManager::Get().FindEditorForAsset(Blueprint, true))
+									if(IAssetEditorInstance* AssetEditor = GEditor->GetEditorSubsystem<UAssetEditorSubsystem>()->FindEditorForAsset(Blueprint, true))
 									{
 										check(AssetEditor->GetEditorName() == TEXT("BlueprintEditor"));
 										IBlueprintEditor* BlueprintEditor = static_cast<IBlueprintEditor*>(AssetEditor);
@@ -278,14 +279,14 @@ void FBlutilityMenuExtensions::CreateBlutilityActionsMenu(FMenuBuilder& MenuBuil
 							else
 							{
 								// We dont run this on the CDO, as bad things could occur!
-								UObject* TempObject = NewObject<UObject>(GetTransientPackage(), FunctionAndUtil.Util->GetClass());
+								UObject* TempObject = NewObject<UObject>(GetTransientPackage(), Cast<UObject>(FunctionAndUtil.Util)->GetClass());
 								TempObject->AddToRoot(); // Some Blutility actions might run GC so the TempObject needs to be rooted to avoid getting destroyed
 
 								if(FunctionAndUtil.Function->NumParms > 0)
 								{
 									// Create a parameter struct and fill in defaults
 									TSharedRef<FStructOnScope> FuncParams = MakeShared<FStructOnScope>(FunctionAndUtil.Function);
-									for (TFieldIterator<UProperty> It(FunctionAndUtil.Function); It && It->HasAnyPropertyFlags(CPF_Parm); ++It)
+									for (TFieldIterator<FProperty> It(FunctionAndUtil.Function); It && It->HasAnyPropertyFlags(CPF_Parm); ++It)
 									{
 										FString Defaults;
 										if(UEdGraphSchema_K2::FindFunctionParameterDefaultValue(FunctionAndUtil.Function, *It, Defaults))
@@ -331,6 +332,11 @@ void FBlutilityMenuExtensions::CreateBlutilityActionsMenu(FMenuBuilder& MenuBuil
 			false,
 			FSlateIcon("EditorStyle", "GraphEditor.Event_16x"));
 	}
+}
+
+UEditorUtilityExtension::UEditorUtilityExtension(const class FObjectInitializer& ObjectInitializer)
+	: Super(ObjectInitializer)
+{
 }
 
 #undef LOCTEXT_NAMESPACE 

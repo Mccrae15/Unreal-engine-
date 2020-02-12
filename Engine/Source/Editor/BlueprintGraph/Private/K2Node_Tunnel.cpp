@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "K2Node_Tunnel.h"
 #include "EdGraphSchema_K2.h"
@@ -177,6 +177,12 @@ bool UK2Node_Tunnel::CanCreateUserDefinedPin(const FEdGraphPinType& InPinType, E
 	return bResult;
 }
 
+void UK2Node_Tunnel::ClearCachedBlueprintData(UBlueprint* Blueprint)
+{
+	// Remove data marking graphs as latent, this will be re-cache'd as needed
+	MetaData.HasLatentFunctions = INDEX_NONE;
+}
+
 UEdGraphPin* UK2Node_Tunnel::CreatePinFromUserDefinition(const TSharedPtr<FUserPinInfo> NewPinInfo)
 {
 	// Create the new pin
@@ -229,9 +235,9 @@ bool UK2Node_Tunnel::CanModifyExecutionWires()
 	return true;
 }
 
-ERenamePinResult UK2Node_Tunnel::RenameUserDefinedPin(const FName OldName, const FName NewName, bool bTest)
+ERenamePinResult UK2Node_Tunnel::RenameUserDefinedPinImpl(const FName OldName, const FName NewName, bool bTest)
 {
-	const ERenamePinResult ThisNodeResult = Super::RenameUserDefinedPin(OldName, NewName, bTest);
+	const ERenamePinResult ThisNodeResult = Super::RenameUserDefinedPinImpl(OldName, NewName, bTest);
 	if(ERenamePinResult::ERenamePinResult_NameCollision == ThisNodeResult)
 	{
 		return ERenamePinResult::ERenamePinResult_NameCollision;

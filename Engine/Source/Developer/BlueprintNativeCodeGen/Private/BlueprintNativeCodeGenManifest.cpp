@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "BlueprintNativeCodeGenManifest.h"
 #include "UObject/Package.h"
@@ -235,8 +235,8 @@ static bool BlueprintNativeCodeGenManifestImpl::GatherModuleDependencies(const U
 				continue;
 			}
 
-			// we want only native packages, ones that are not editor-only
-			if ((DependentPackage->GetPackageFlags() & (PKG_CompiledIn | PKG_EditorOnly | PKG_Developer)) == PKG_CompiledIn)
+			// we want only native packages, ones that are not editor-only and only those that will be cooked
+			if (DependentPackage->HasAllPackagesFlags(PKG_CompiledIn) && !DependentPackage->HasAnyPackageFlags(PKG_EditorOnly | PKG_Developer | PKG_UncookedOnly))
 			{
 				DependenciesOut.AddUnique(DependentPackage);// PkgImport.ObjectName.ToString());
 			}
@@ -319,16 +319,16 @@ FBlueprintNativeCodeGenPaths FBlueprintNativeCodeGenPaths::GetDefaultCodeGenPath
 	FString DefaultPluginPath = FPaths::Combine(*FPaths::ProjectIntermediateDir(), TEXT("Plugins"), *DefaultPluginName);
 	if (!PlatformName.IsNone())
 	{
-		for (PlatformInfo::FPlatformEnumerator PlatformIt = PlatformInfo::EnumeratePlatformInfoArray(); PlatformIt; ++PlatformIt)
+		for (const PlatformInfo::FPlatformInfo& PlatformInfo : PlatformInfo::GetPlatformInfoArray())
 		{
-			if (PlatformIt->TargetPlatformName == PlatformName)
+			if (PlatformInfo.TargetPlatformName == PlatformName)
 			{
 				static const FName UBTTargetId_Win32 = FName(TEXT("Win32"));
 				static const FName UBTTargetId_Win64 = FName(TEXT("Win64"));
 				static const FName UBTTargetId_Windows = FName(TEXT("Windows"));
 
-				const FName UBTTargetId = (PlatformIt->UBTTargetId == UBTTargetId_Win32 || PlatformIt->UBTTargetId == UBTTargetId_Win64) ? UBTTargetId_Windows : PlatformIt->UBTTargetId;
-				DefaultPluginPath = FPaths::Combine(*DefaultPluginPath, *LexToString(UBTTargetId), *LexToString(PlatformIt->PlatformType));
+				const FName UBTTargetId = (PlatformInfo.UBTTargetId == UBTTargetId_Win32 || PlatformInfo.UBTTargetId == UBTTargetId_Win64) ? UBTTargetId_Windows : PlatformInfo.UBTTargetId;
+				DefaultPluginPath = FPaths::Combine(*DefaultPluginPath, *LexToString(UBTTargetId), LexToString(PlatformInfo.PlatformType));
 				break;
 			}
 		}

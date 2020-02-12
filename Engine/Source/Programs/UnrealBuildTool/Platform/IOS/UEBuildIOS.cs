@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 using System;
 using System.Collections.Generic;
@@ -15,13 +15,19 @@ namespace UnrealBuildTool
 	/// <summary>
 	/// IOS-specific target settings
 	/// </summary>
-	public class IOSTargetRules
+	public partial class IOSTargetRules
 	{
 		/// <summary>
-		/// Whether to strip iOS symbols or not (implied by bGeneratedSYMFile).
+		/// Whether to strip iOS symbols or not (implied by Shipping config).
 		/// </summary>
 		[XmlConfigFile(Category = "BuildConfiguration")]
+		[CommandLine("-stripsymbols", Value = "true")]
 		public bool bStripSymbols = false;
+
+		/// <summary>
+		///
+		/// </summary>
+		public bool bShipForBitcode = false;
 
 		/// <summary>
 		/// If true, then a stub IPA will be generated when compiling is done (minimal files needed for a valid IPA).
@@ -30,10 +36,27 @@ namespace UnrealBuildTool
 		public bool bCreateStubIPA = false;
 
 		/// <summary>
+		/// Whether to generate a native Xcode project as a wrapper for the framework.
+		/// </summary>
+		public bool bGenerateFrameworkWrapperProject = false;
+
+		/// <summary>
+		/// Don't generate crashlytics data
+		/// </summary>
+		[CommandLine("-alwaysgeneratedsym", Value = "true")]
+		public bool bGeneratedSYM = false;
+
+		/// <summary>
 		/// Don't generate crashlytics data
 		/// </summary>
 		[CommandLine("-skipcrashlytics")]
 		public bool bSkipCrashlytics = false;
+
+		/// <summary>
+		/// Mark the build for distribution
+		/// </summary>
+		[CommandLine("-distribution")]
+		public bool bForDistribution = false;
 
 		/// <summary>
 		/// Manual override for the provision to use. Should be a full path.
@@ -52,12 +75,17 @@ namespace UnrealBuildTool
 		/// </summary>
 		[CommandLine("-ImportCertificatePassword=")]
 		public string ImportCertificatePassword = null;
+
+		/// <summary>
+		/// Cached project settings for the target (set in ResetTarget)
+		/// </summary>
+		public IOSProjectSettings ProjectSettings = null;
 	}
 
 	/// <summary>
 	/// Read-only wrapper for IOS-specific target settings
 	/// </summary>
-	public class ReadOnlyIOSTargetRules
+	public partial class ReadOnlyIOSTargetRules
 	{
 		/// <summary>
 		/// The private mutable settings object
@@ -85,6 +113,21 @@ namespace UnrealBuildTool
 			get { return Inner.bStripSymbols; }
 		}
 			
+		public bool bShipForBitcode
+		{
+			get { return Inner.ProjectSettings.bShipForBitcode; }
+		}
+
+		public bool bGenerateFrameworkWrapperProject
+		{
+			get { return Inner.bGenerateFrameworkWrapperProject; }
+		}
+
+		public bool bGeneratedSYM
+		{
+			get { return Inner.bGeneratedSYM; }
+		}
+
 		public bool bCreateStubIPA
 		{
 			get { return Inner.bCreateStubIPA; }
@@ -93,6 +136,11 @@ namespace UnrealBuildTool
 		public bool bSkipCrashlytics
 		{
 			get { return Inner.bSkipCrashlytics; }
+		}
+
+		public bool bForDistribution
+		{
+			get { return Inner.bForDistribution; }
 		}
 
 		public string ImportProvision
@@ -110,6 +158,11 @@ namespace UnrealBuildTool
 			get { return Inner.ImportCertificatePassword; }
 		}
 
+		public float RuntimeVersion
+		{
+			get { return float.Parse(Inner.ProjectSettings.RuntimeVersion, System.Globalization.CultureInfo.InvariantCulture); }
+		}
+		
 #if !__MonoCS__
 #pragma warning restore CS1591
 #endif
@@ -119,7 +172,7 @@ namespace UnrealBuildTool
 	/// <summary>
 	/// Stores project-specific IOS settings. Instances of this object are cached by IOSPlatform.
 	/// </summary>
-	class IOSProjectSettings
+	public class IOSProjectSettings
 	{
 		/// <summary>
 		/// The cached project file location
@@ -127,17 +180,30 @@ namespace UnrealBuildTool
 		public readonly FileReference ProjectFile;
 
 		/// <summary>
+		/// Whether to build the iOS project as a framework.
+		/// </summary>
+		[ConfigFile(ConfigHierarchyType.Engine, "/Script/IOSRuntimeSettings.IOSRuntimeSettings", "bBuildAsFramework")]
+		[CommandLine("-build-as-framework")]
+		public readonly bool bBuildAsFramework = false;
+
+		/// <summary>
+		/// Whether to generate a native Xcode project as a wrapper for the framework.
+		/// </summary>
+		[ConfigFile(ConfigHierarchyType.Engine, "/Script/IOSRuntimeSettings.IOSRuntimeSettings", "bGenerateFrameworkWrapperProject")]
+		public readonly bool bGenerateFrameworkWrapperProject = false;
+
+		/// <summary>
 		/// Whether to generate a dSYM file or not.
 		/// </summary>
 		[ConfigFile(ConfigHierarchyType.Engine, "/Script/IOSRuntimeSettings.IOSRuntimeSettings", "bGeneratedSYMFile")]
-		[CommandLine("-skipgeneratedsymfile", Value="false")]
-		public readonly bool bGeneratedSYMFile = true;
-
+		[CommandLine("-generatedsymfile")]
+		public readonly bool bGeneratedSYMFile = false;
+		
 		/// <summary>
-		/// Whether to generate a dSYM bundle or not.
+		/// Whether to generate a dSYM bundle (as opposed to single file dSYM)
 		/// </summary>
 		[ConfigFile(ConfigHierarchyType.Engine, "/Script/IOSRuntimeSettings.IOSRuntimeSettings", "bGeneratedSYMBundle")]
-		[CommandLine("-skipgeneratedsymbundle", Value = "false")]
+		[CommandLine("-generatedsymbundle")]
 		public readonly bool bGeneratedSYMBundle = false;
 
         /// <summary>
@@ -274,6 +340,18 @@ namespace UnrealBuildTool
 		public readonly bool bDisableForceInline = false;
 		
 		/// <summary>
+		/// true if IDFA are enabled
+		/// </summary>
+		[ConfigFile(ConfigHierarchyType.Engine, "/Script/IOSRuntimeSettings.IOSRuntimeSettings", "bEnableAdvertisingIdentifier")]
+		public readonly bool bEnableAdvertisingIdentifier = false;
+
+		/// <summary>
+		/// true when building for distribution
+		/// </summary>
+		[ConfigFile(ConfigHierarchyType.Game, "/Script/UnrealEd.ProjectPackagingSettings", "ForDistribution")]
+		public readonly bool bForDistribution = false;
+
+		/// <summary>
 		/// Returns a list of all the non-shipping architectures which are supported
 		/// </summary>
 		public IEnumerable<string> NonShippingArchitectures
@@ -331,7 +409,7 @@ namespace UnrealBuildTool
 					case "IOS_12":
 						return "12.0";
 					default:
-						return "10.0";
+						return "11.0";
 				}
 			}
 		}
@@ -362,8 +440,9 @@ namespace UnrealBuildTool
 		/// Constructor
 		/// </summary>
 		/// <param name="ProjectFile">The project file to read settings for</param>
-		public IOSProjectSettings(FileReference ProjectFile) 
-			: this(ProjectFile, UnrealTargetPlatform.IOS)
+		/// <param name="Bundle">Bundle identifier needed when project file is empty</param>
+		public IOSProjectSettings(FileReference ProjectFile, string Bundle) 
+			: this(ProjectFile, UnrealTargetPlatform.IOS, Bundle)
 		{
 		}
 
@@ -372,11 +451,16 @@ namespace UnrealBuildTool
 		/// </summary>
 		/// <param name="ProjectFile">The project file to read settings for</param>
 		/// <param name="Platform">The platform to read settings for</param>
-		protected IOSProjectSettings(FileReference ProjectFile, UnrealTargetPlatform Platform)
+		/// <param name="Bundle">Bundle identifier needed when project file is empty</param>
+		protected IOSProjectSettings(FileReference ProjectFile, UnrealTargetPlatform Platform, string Bundle)
 		{
 			this.ProjectFile = ProjectFile;
 			ConfigCache.ReadSettings(DirectoryReference.FromFile(ProjectFile), Platform, this);
-            BundleIdentifier = BundleIdentifier.Replace("[PROJECT_NAME]", ((ProjectFile != null) ? ProjectFile.GetFileNameWithoutAnyExtensions() : "UE4Game")).Replace("_", "");
+			if ((ProjectFile == null || string.IsNullOrEmpty(ProjectFile.FullName)) && !string.IsNullOrEmpty(Bundle))
+			{
+				BundleIdentifier = Bundle;
+			}
+			BundleIdentifier = BundleIdentifier.Replace("[PROJECT_NAME]", ((ProjectFile != null) ? ProjectFile.GetFileNameWithoutAnyExtensions() : "UE4Game")).Replace("_", "");
 		}
 	}
 
@@ -390,6 +474,7 @@ namespace UnrealBuildTool
         public string MobileProvisionUUID;
         public string MobileProvisionName;
         public string TeamUUID;
+		public string BundleIdentifier;
 		public bool bHaveCertificate = false;
 
 		public string MobileProvision
@@ -556,7 +641,18 @@ namespace UnrealBuildTool
 							TeamUUID = AllText.Substring(idx, AllText.IndexOf("</string>", idx) - idx);
 						}
 					}
-                    idx = AllText.IndexOf("<key>Name</key>");
+					idx = AllText.IndexOf("<key>application-identifier</key>");
+					if (idx > 0)
+					{
+						idx = AllText.IndexOf("<string>", idx);
+						if (idx > 0)
+						{
+							idx += "<string>".Length;
+							String FullID = AllText.Substring(idx, AllText.IndexOf("</string>", idx) - idx);
+							BundleIdentifier = FullID.Substring(FullID.IndexOf('.') + 1);
+						}
+					}
+					idx = AllText.IndexOf("<key>Name</key>");
                     if (idx > 0)
                     {
                         idx = AllText.IndexOf("<string>", idx);
@@ -612,26 +708,41 @@ namespace UnrealBuildTool
 	{
 		IOSPlatformSDK SDK;
 		List<IOSProjectSettings> CachedProjectSettings = new List<IOSProjectSettings>();
-        Dictionary<string, IOSProvisioningData> ProvisionCache = new Dictionary<string, IOSProvisioningData>();
+		List<IOSProjectSettings> CachedProjectSettingsByBundle = new List<IOSProjectSettings>();
+		Dictionary<string, IOSProvisioningData> ProvisionCache = new Dictionary<string, IOSProvisioningData>();
 
 		// by default, use an empty architecture (which is really just a modifer to the platform for some paths/names)
 		public static string IOSArchitecture = "";
 
 		public IOSPlatform(IOSPlatformSDK InSDK)
-			: this(InSDK, UnrealTargetPlatform.IOS, CppPlatform.IOS)
+			: this(InSDK, UnrealTargetPlatform.IOS)
 		{
 		}
 
-		protected IOSPlatform(IOSPlatformSDK InSDK, UnrealTargetPlatform TargetPlatform, CppPlatform CPPPlatform)
-			: base(TargetPlatform, CPPPlatform)
+		protected IOSPlatform(IOSPlatformSDK InSDK, UnrealTargetPlatform TargetPlatform)
+			: base(TargetPlatform)
 		{
 			SDK = InSDK;
 		}
 
-        // The current architecture - affects everything about how UBT operates on IOS
-        public override string GetDefaultArchitecture(FileReference ProjectFile)
+		// The current architecture - affects everything about how UBT operates on IOS
+		public override string GetDefaultArchitecture(FileReference ProjectFile)
 		{
 			return IOSArchitecture;
+		}
+
+		public override List<FileReference> FinalizeBinaryPaths(FileReference BinaryName, FileReference ProjectFile, ReadOnlyTargetRules Target)
+		{
+			List<FileReference> BinaryPaths = new List<FileReference>();
+			if(Target.bShouldCompileAsDLL)
+			{
+				BinaryPaths.Add(FileReference.Combine(BinaryName.Directory, Target.Configuration.ToString(), Target.Name + ".framework", Target.Name));
+			}
+			else
+			{
+				BinaryPaths.Add(BinaryName);
+			}
+			return BinaryPaths;
 		}
 
 		public override void ResetTarget(TargetRules Target)
@@ -643,9 +754,26 @@ namespace UnrealBuildTool
 			}
 
 			Target.bCompileAPEX = false;
-            Target.bCompileNvCloth = false;
+			Target.bCompileNvCloth = false;
 
 			Target.bDeployAfterCompile = true;
+
+			Target.IOSPlatform.ProjectSettings = ((IOSPlatform)GetBuildPlatform(Target.Platform)).ReadProjectSettings(Target.ProjectFile);
+			
+			// always strip in shipping configuration (commandline could have set it also)
+			if (Target.Configuration == UnrealTargetConfiguration.Shipping)
+			{
+				Target.IOSPlatform.bStripSymbols = true;	
+			}
+			
+			// if we are stripping the executable, or if the project requested it, or if it's a buildmachine, generate the dsym
+			if (Target.IOSPlatform.bStripSymbols || Target.IOSPlatform.ProjectSettings.bGeneratedSYMFile || Environment.GetEnvironmentVariable("IsBuildMachine") == "1")
+			{
+				Target.IOSPlatform.bGeneratedSYM = true;
+			}
+
+			// Set bShouldCompileAsDLL when building as a framework
+			Target.bShouldCompileAsDLL = Target.IOSPlatform.ProjectSettings.bBuildAsFramework;
 		}
 
 		public override void ValidateTarget(TargetRules Target)
@@ -660,6 +788,23 @@ namespace UnrealBuildTool
 			{
 				Target.GlobalDefinitions.Add("HAS_METAL=0");
 			}
+
+			if (Target.bShouldCompileAsDLL)
+			{
+				int PreviousDefinition = Target.GlobalDefinitions.FindIndex(s => s.Contains("BUILD_EMBEDDED_APP"));
+				if (PreviousDefinition >= 0)
+				{
+					Target.GlobalDefinitions.RemoveAt(PreviousDefinition);
+				}
+
+				Target.GlobalDefinitions.Add("BUILD_EMBEDDED_APP=1");
+				
+				if (Target.Platform == UnrealTargetPlatform.IOS)
+				{
+					Target.ExportPublicHeader = "Headers/PreIOSEmbeddedView.h";
+				}
+			}
+
 
 			Target.bCheckSystemHeadersForModification = false;
 		}
@@ -705,25 +850,44 @@ namespace UnrealBuildTool
 			return base.GetBinaryExtension(InBinaryType);
 		}
 
-		public IOSProjectSettings ReadProjectSettings(FileReference ProjectFile)
+		public IOSProjectSettings ReadProjectSettings(FileReference ProjectFile, string Bundle = "")
 		{
-			IOSProjectSettings ProjectSettings = CachedProjectSettings.FirstOrDefault(x => x.ProjectFile == ProjectFile);
+			IOSProjectSettings ProjectSettings = null;
+
+			// Use separate lists to prevent an overridden Bundle id polluting the standard project file. 
+			bool bCacheByBundle = !string.IsNullOrEmpty(Bundle);
+			if (bCacheByBundle)
+			{
+				ProjectSettings = CachedProjectSettingsByBundle.FirstOrDefault(x => x.ProjectFile == ProjectFile && x.BundleIdentifier == Bundle);
+			}
+			else
+			{
+				ProjectSettings = CachedProjectSettings.FirstOrDefault(x => x.ProjectFile == ProjectFile);
+			}
+
 			if(ProjectSettings == null)
 			{
-				ProjectSettings = CreateProjectSettings(ProjectFile);
-				CachedProjectSettings.Add(ProjectSettings);
+				ProjectSettings = CreateProjectSettings(ProjectFile, Bundle);
+				if (bCacheByBundle)
+				{
+					CachedProjectSettingsByBundle.Add(ProjectSettings);
+				}
+				else
+				{
+					CachedProjectSettings.Add(ProjectSettings);
+				}
 			}
 			return ProjectSettings;
 		}
 
-		protected virtual IOSProjectSettings CreateProjectSettings(FileReference ProjectFile)
+		protected virtual IOSProjectSettings CreateProjectSettings(FileReference ProjectFile, string Bundle)
 		{
-			return new IOSProjectSettings(ProjectFile);
+			return new IOSProjectSettings(ProjectFile, Bundle);
 		}
 
-		public IOSProvisioningData ReadProvisioningData(FileReference ProjectFile, bool bForDistribution = false)
+		public IOSProvisioningData ReadProvisioningData(FileReference ProjectFile, bool bForDistribution = false, string Bundle = "")
 		{
-			IOSProjectSettings ProjectSettings = ReadProjectSettings(ProjectFile);
+			IOSProjectSettings ProjectSettings = ReadProjectSettings(ProjectFile, Bundle);
 			return ReadProvisioningData(ProjectSettings, bForDistribution);
 		}
 
@@ -747,16 +911,20 @@ namespace UnrealBuildTool
 
 		public override string[] GetDebugInfoExtensions(ReadOnlyTargetRules InTarget, UEBuildBinaryType InBinaryType)
 		{
-			IOSProjectSettings ProjectSettings = ReadProjectSettings(InTarget.ProjectFile);
-
-			if(ProjectSettings.bGeneratedSYMBundle)
+			if (InTarget.IOSPlatform.bGeneratedSYM)
 			{
-				return new string[] {".dSYM.zip"};
+				IOSProjectSettings ProjectSettings = ReadProjectSettings(InTarget.ProjectFile);
+
+				// which format?
+				if (ProjectSettings.bGeneratedSYMBundle)
+				{
+					return new string[] { ".dSYM.zip" };
+				}
+				else
+				{
+					return new string[] { ".dSYM" };
+				}
 			}
-			else if (ProjectSettings.bGeneratedSYMFile)
-            {
-                return new string[] {".dSYM"};
-            }
 
             return new string [] {};
 		}
@@ -780,6 +948,7 @@ namespace UnrealBuildTool
 				{
 					if (f.Contains("Icon") && Path.GetExtension(f).Contains(".png"))
 					{
+						Log.TraceInformation("Requiring custom build because project {0} has custom icons", Path.GetFileName(ProjectDirectoryName.FullName));
 						return true;
 					}
 				}
@@ -907,16 +1076,20 @@ namespace UnrealBuildTool
 		/// <param name="LinkEnvironment">The link environment for this target</param>
 		public override void SetUpEnvironment(ReadOnlyTargetRules Target, CppCompileEnvironment CompileEnvironment, LinkEnvironment LinkEnvironment)
 		{
+			IOSProjectSettings ProjectSettings = ((IOSPlatform)UEBuildPlatform.GetBuildPlatform(Target.Platform)).ReadProjectSettings(Target.ProjectFile);
+			if (!ProjectFileGenerator.bGenerateProjectFiles)
+			{
+				Log.TraceInformation("Compiling against OS Version {0} [minimum allowed at runtime]", ProjectSettings.RuntimeVersion);
+			}
+
 			CompileEnvironment.Definitions.Add("PLATFORM_IOS=1");
 			CompileEnvironment.Definitions.Add("PLATFORM_APPLE=1");
-			CompileEnvironment.Definitions.Add("GLES_SILENCE_DEPRECATION=1");  // suppress GLES "deprecated" warnings until a proper solution is implemented (see UE-65643)
 
 			CompileEnvironment.Definitions.Add("WITH_TTS=0");
 			CompileEnvironment.Definitions.Add("WITH_SPEECH_RECOGNITION=0");
 			CompileEnvironment.Definitions.Add("WITH_EDITOR=0");
 			CompileEnvironment.Definitions.Add("USE_NULL_RHI=0");
 
-			IOSProjectSettings ProjectSettings = ((IOSPlatform)UEBuildPlatform.GetBuildPlatform(Target.Platform)).ReadProjectSettings(Target.ProjectFile);
 			if (ProjectSettings.bNotificationsEnabled)
 			{
 				CompileEnvironment.Definitions.Add("NOTIFICATIONS_ENABLED=1");
@@ -953,6 +1126,11 @@ namespace UnrealBuildTool
 				CompileEnvironment.Definitions.Add("WITH_SIMULATOR=0");
 			}
 
+			if (ProjectSettings.bEnableAdvertisingIdentifier)
+			{
+				CompileEnvironment.Definitions.Add("ENABLE_ADVERTISING_IDENTIFIER=1");
+			}
+
 			// if the project has an Oodle compression Dll, enable the decompressor on IOS
 			if (Target.ProjectFile != null)
 			{
@@ -965,22 +1143,19 @@ namespace UnrealBuildTool
 				}
 			}
 
+			// convert runtime version into standardized integer
+			float TargetFloat = Target.IOSPlatform.RuntimeVersion;
+			int IntPart = (int)TargetFloat;
+			int FracPart = (int)((TargetFloat - IntPart) * 10);
+			int TargetNum = IntPart * 10000 + FracPart * 100;
+			CompileEnvironment.Definitions.Add("MINIMUM_UE4_COMPILED_IOS_VERSION=" + TargetNum);
+
 			LinkEnvironment.AdditionalFrameworks.Add(new UEBuildFramework("GameKit"));
 			LinkEnvironment.AdditionalFrameworks.Add(new UEBuildFramework("StoreKit"));
 			LinkEnvironment.AdditionalFrameworks.Add(new UEBuildFramework("DeviceCheck"));
+
 		}
 
-		/// <summary>
-		/// Modify the rules for a newly created module, in a target that's being built for this platform.
-		/// This is not required - but allows for hiding details of a particular platform.
-		/// </summary>
-		/// <param name="ModuleName">The name of the module</param>
-		/// <param name="Rules">The module rules</param>
-		/// <param name="Target">The target being build</param>
-		public override void ModifyModuleRulesForActivePlatform(string ModuleName, ModuleRules Rules, ReadOnlyTargetRules Target)
-		{
-		}
-		
 		/// <summary>
 		/// Setup the binaries for this specific platform.
 		/// </summary>
@@ -988,16 +1163,18 @@ namespace UnrealBuildTool
 		/// <param name="ExtraModuleNames"></param>
 		public override void AddExtraModules(ReadOnlyTargetRules Target, List<string> ExtraModuleNames)
 		{
-			ExtraModuleNames.Add("IOSPlatformFeatures");
+			if (Target.Type != TargetType.Program)
+			{
+				ExtraModuleNames.Add("IOSPlatformFeatures");
+			}
 		}
 
 		/// <summary>
 		/// Creates a toolchain instance for the given platform.
 		/// </summary>
-		/// <param name="CppPlatform">The platform to create a toolchain for</param>
 		/// <param name="Target">The target being built</param>
 		/// <returns>New toolchain instance.</returns>
-		public override UEToolChain CreateToolChain(CppPlatform CppPlatform, ReadOnlyTargetRules Target)
+		public override UEToolChain CreateToolChain(ReadOnlyTargetRules Target)
 		{
 			IOSProjectSettings ProjectSettings = ReadProjectSettings(Target.ProjectFile);
 			return new IOSToolChain(Target, ProjectSettings);
@@ -1009,7 +1186,14 @@ namespace UnrealBuildTool
 		/// <param name="Receipt">Receipt for the target being deployed</param>
 		public override void Deploy(TargetReceipt Receipt)
 		{
-			new UEDeployIOS().PrepTargetForDeployment(Receipt);
+			if (Receipt.HasValueForAdditionalProperty("CompileAsDll", "true"))
+			{
+				// IOSToolchain.PostBuildSync handles the copy, nothing else to do here
+			}
+			else
+			{
+				new UEDeployIOS().PrepTargetForDeployment(Receipt);
+			}
 		}
 	}
 
@@ -1085,7 +1269,6 @@ namespace UnrealBuildTool
 			SDK.ManageAndValidateSDK();
 
 			// Register this build platform for IOS
-			Log.TraceVerbose("        Registering for {0}", UnrealTargetPlatform.IOS.ToString());
 			UEBuildPlatform.RegisterBuildPlatform(new IOSPlatform(SDK));
 			UEBuildPlatform.RegisterPlatformWithGroup(UnrealTargetPlatform.IOS, UnrealPlatformGroup.Apple);
 			UEBuildPlatform.RegisterPlatformWithGroup(UnrealTargetPlatform.IOS, UnrealPlatformGroup.IOS);

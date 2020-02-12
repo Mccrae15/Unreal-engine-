@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -108,12 +108,13 @@ struct FModuleStatus
 class CORE_API FModuleManager
 	: private FSelfRegisteringExec
 {
-public:
-
 	/**
 	 * Destructor.
 	 */
 	~FModuleManager();
+
+
+public:
 
 	/**
 	 * Gets the singleton instance of the module manager.
@@ -122,7 +123,9 @@ public:
 	 */
 	static FModuleManager& Get( );
 
-public:
+	/** Destroys singleton if it exists. Get() must not be called after Destroy(). */
+	static void TearDown();
+
 
 	/**
 	 * Abandons a loaded module, leaving it loaded in memory but no longer tracking it in the module manager.
@@ -244,7 +247,10 @@ public:
 	 */
 	void AbandonModuleWithCallback( const FName InModuleName );
 
-public:
+	/**
+	 * Add any extra search paths that may be required
+	 */
+	void AddExtraBinarySearchPaths();
 
 	/**
 	  * Gets a module by name, checking to ensure it exists.
@@ -312,7 +318,6 @@ public:
 		return static_cast<TModuleInterface*>(FModuleManager::Get().LoadModule(InModuleName));
 	}
 
-public:
 	/**
 	 * Finds module files on the disk for loadable modules matching the specified wildcard.
 	 *
@@ -357,9 +362,9 @@ public:
 	 * @param InModuleName The name of this module.
 	 * @param InInitializerDelegate The delegate that will be called to initialize an instance of this module.
 	 */
-	void RegisterStaticallyLinkedModule( const FName InModuleName, const FInitializeStaticallyLinkedModule& InInitializerDelegate )
+	void RegisterStaticallyLinkedModule( const FLazyName InModuleName, const FInitializeStaticallyLinkedModule& InInitializerDelegate )
 	{
-		StaticallyLinkedModuleInitializers.Add( InModuleName, InInitializerDelegate );
+		PendingStaticallyLinkedModuleInitializers.Emplace( InModuleName, InInitializerDelegate );
 	}
 
 	/**
@@ -415,9 +420,13 @@ public:
 
 	/** Sets the filename for a module. The module is not reloaded immediately, but the new name will be used for subsequent unload/load events. */
 	void SetModuleFilename(FName ModuleName, const FString& Filename);
-#endif
 
-public:
+	/** Determines if any non-default module instances are loaded (eg. hot reloaded modules) */
+	bool HasAnyOverridenModuleFilename() const;
+
+	/** Save the current module manager's state into a file for bootstrapping other processes. */
+	void SaveCurrentStateForBootstrap(const TCHAR* Filename);
+#endif
 
 	/**
 	 * Gets an event delegate that is executed when the set of known modules changed, i.e. upon module load or unload.
@@ -438,7 +447,8 @@ public:
 	 *
 	 * @return The delegate.
 	 */
-	FSimpleMulticastDelegate& OnProcessLoadedObjectsCallback()
+	DECLARE_EVENT_TwoParams(FModuleManager, ProcessLoadedObjectsEvent, FName, bool);
+	ProcessLoadedObjectsEvent& OnProcessLoadedObjectsCallback()
 	{
 		return ProcessLoadedObjectsCallback;
 	}
@@ -456,13 +466,14 @@ public:
 		return IsPackageLoaded;
 	}
 
-public:
 
 	// FSelfRegisteringExec interface.
 
 	virtual bool Exec( UWorld* Inworld, const TCHAR* Cmd, FOutputDevice& Ar ) override;
 
-protected:
+
+private:
+	friend struct TOptional<FModuleManager>;
 
 	/**
 	 * Hidden constructor.
@@ -470,12 +481,8 @@ protected:
 	 * Use the static Get function to return the singleton instance.
 	 */
 	FModuleManager();
-
-private:
 	FModuleManager(const FModuleManager&) = delete;
 	FModuleManager& operator=(const FModuleManager&) = delete;
-
-protected:
 
 	/**
 	 * Information about a single module (may or may not be loaded.)
@@ -499,6 +506,9 @@ protected:
 		/** True if this module was unloaded at shutdown time, and we never want it to be loaded again */
 		bool bWasUnloadedAtShutdown;
 
+		/** True if this module is full loaded and ready to be used */
+		TAtomic<bool> bIsReady;
+
 		/** Arbitrary number that encodes the load order of this module, so we can shut them down in reverse order. */
 		int32 LoadOrder;
 
@@ -511,6 +521,7 @@ protected:
 		FModuleInfo()
 			: Handle(nullptr)
 			, bWasUnloadedAtShutdown(false)
+			, bIsReady(false)
 			, LoadOrder(CurrentLoadOrder++)
 		{ }
 
@@ -536,6 +547,7 @@ public:
 	/** Clears module path cache */
 	void ResetModulePathsCache();
 
+	friend FArchive& operator<<( FArchive& Ar, FModuleManager& ModuleManager );
 private:
 	static void WarnIfItWasntSafeToLoadHere(const FName InModuleName);
 
@@ -559,21 +571,31 @@ private:
 
 	/** Finds modules within a given directory. */
 	void FindModulePathsInDirectory(const FString &DirectoryName, bool bIsGameDirectory, TMap<FName, FString> &OutModulePaths) const;
+
+	/** Serialize a bootstrapping state into or from an archive. */
+	void SerializeStateForBootstrap_Impl(FArchive& Ar);
 #endif
 
-private:
-	/** Gets module with given name from Modules or creates a new one. Doesn't modify Modules. */
-	ModuleInfoRef GetOrCreateModule(FName InModuleName);
+	/** Adds pending module initializer registrations to the StaticallyLinkedModuleInitializers map. */
+	void ProcessPendingStaticallyLinkedModuleInitializers() const;
 
+private:
 	/** Map of all modules.  Maps the case-insensitive module name to information about that module, loaded or not. */
 	FModuleMap Modules;
 
+	/** Pending registrations of module names */
+	/** We use an array here to stop comparisons (and thus FNames being constructed) when they are registered. */
+	/** Instead, we validate there are no duplicates when they're inserted into StaticallyLinkedModuleInitializers. */
+	mutable TArray<TPair<FLazyName, FInitializeStaticallyLinkedModule>, TInlineAllocator<16>> PendingStaticallyLinkedModuleInitializers;
+
 	/** Map of module names to a delegate that can initialize each respective statically linked module */
-	typedef TMap< FName, FInitializeStaticallyLinkedModule > FStaticallyLinkedModuleInitializerMap;
-	FStaticallyLinkedModuleInitializerMap StaticallyLinkedModuleInitializers;
+	mutable TMap<FName, FInitializeStaticallyLinkedModule> StaticallyLinkedModuleInitializers;
 
 	/** True if module manager should automatically register new UObjects discovered while loading C++ modules */
 	bool bCanProcessNewlyLoadedObjects;
+
+	/** True once AddExtraBinarySearchPaths has been called */
+	bool bExtraBinarySearchPathsAdded;
 
 	/** Cache of known module paths. Used for performance. Can increase editor startup times by up to 30% */
 	mutable TMap<FName, FString> ModulePathsCache;
@@ -583,7 +605,7 @@ private:
 	FModulesChangedEvent ModulesChangedEvent;
 	
 	/** Multicast delegate called to process any new loaded objects. */
-	FSimpleMulticastDelegate ProcessLoadedObjectsCallback;
+	ProcessLoadedObjectsEvent ProcessLoadedObjectsCallback;
 
 	/** When module manager is linked against an application that supports UObjects, this delegate will be primed
 		at startup to provide information about whether a UObject package is loaded into memory. */
@@ -604,6 +626,8 @@ private:
 	mutable FCriticalSection ModulesCriticalSection;
 };
 
+FArchive& operator<<( FArchive& Ar, FModuleManager& ModuleManager );
+
 /**
  * Utility class for registering modules that are statically linked.
  */
@@ -615,7 +639,7 @@ public:
 	/**
 	 * Explicit constructor that registers a statically linked module
 	 */
-	FStaticallyLinkedModuleRegistrant( const ANSICHAR* InModuleName )
+	FStaticallyLinkedModuleRegistrant( FLazyName InModuleName )
 	{
 		// Create a delegate to our InitializeModule method
 		FModuleManager::FInitializeStaticallyLinkedModule InitializerDelegate = FModuleManager::FInitializeStaticallyLinkedModule::CreateRaw(
@@ -623,7 +647,7 @@ public:
 
 		// Register this module
 		FModuleManager::Get().RegisterStaticallyLinkedModule(
-			FName( InModuleName ),	// Module name
+			InModuleName,			// Module name
 			InitializerDelegate );	// Initializer delegate
 	}
 	
@@ -698,7 +722,7 @@ class FDefaultGameModuleImpl
 	// If we're linking monolithically we assume all modules are linked in with the main binary.
 	#define IMPLEMENT_MODULE( ModuleImplClass, ModuleName ) \
 		/** Global registrant object for this module when linked statically */ \
-		static FStaticallyLinkedModuleRegistrant< ModuleImplClass > ModuleRegistrant##ModuleName( #ModuleName ); \
+		static FStaticallyLinkedModuleRegistrant< ModuleImplClass > ModuleRegistrant##ModuleName( TEXT(#ModuleName) ); \
 		/* Forced reference to this function is added by the linker to check that each module uses IMPLEMENT_MODULE */ \
 		extern "C" void IMPLEMENT_MODULE_##ModuleName() { } \
 		PER_MODULE_BOILERPLATE_ANYLINK(ModuleImplClass, ModuleName)
@@ -752,6 +776,21 @@ class FDefaultGameModuleImpl
 #endif
 
 /**
+ * Macros for setting the source directories for live coding builds. This allows locally packaging a target and patching code into it.
+ */
+#ifdef UE_LIVE_CODING_ENGINE_DIR
+	#define IMPLEMENT_LIVE_CODING_ENGINE_DIR() const TCHAR* GLiveCodingEngineDir = TEXT(UE_LIVE_CODING_ENGINE_DIR);
+	#ifdef UE_LIVE_CODING_PROJECT
+		#define IMPLEMENT_LIVE_CODING_PROJECT() const TCHAR* GLiveCodingProject = TEXT(UE_LIVE_CODING_PROJECT);
+	#else
+		#define IMPLEMENT_LIVE_CODING_PROJECT() const TCHAR* GLiveCodingProject = nullptr;
+	#endif
+#else
+	#define IMPLEMENT_LIVE_CODING_ENGINE_DIR()
+	#define IMPLEMENT_LIVE_CODING_PROJECT()
+#endif
+
+/**
  * Macro for passing a list argument to a macro
  */
 #define UE_LIST_ARGUMENT(...) __VA_ARGS__
@@ -764,16 +803,21 @@ class FDefaultGameModuleImpl
 	{ \
 		FSigningKeyRegistration() \
 		{ \
-			extern void RegisterSigningKeyCallback(void (*)(unsigned char OutExponent[64], unsigned char OutModulus[64])); \
+			extern void RegisterSigningKeyCallback(void (*)(TArray<uint8>&, TArray<uint8>&)); \
 			RegisterSigningKeyCallback(&Callback); \
 		} \
-		static void Callback(unsigned char OutExponent[64], unsigned char OutModulus[64]) \
+		static void Callback(TArray<uint8>& OutExponent, TArray<uint8>& OutModulus) \
 		{ \
-			const unsigned char Exponent[64] = { ExponentValue }; \
-			const unsigned char Modulus[64] = { ModulusValue }; \
-			for(int ByteIdx = 0; ByteIdx < 64; ByteIdx++) \
+			const uint8 Exponent[] = { ExponentValue }; \
+			const uint8 Modulus[] = { ModulusValue }; \
+			OutExponent.SetNum(UE_ARRAY_COUNT(Exponent)); \
+			OutModulus.SetNum(UE_ARRAY_COUNT(Modulus)); \
+			for(int ByteIdx = 0; ByteIdx < UE_ARRAY_COUNT(Exponent); ByteIdx++) \
 			{ \
 				OutExponent[ByteIdx] = Exponent[ByteIdx]; \
+			} \
+			for(int ByteIdx = 0; ByteIdx < UE_ARRAY_COUNT(Modulus); ByteIdx++) \
+			{ \
 				OutModulus[ByteIdx] = Modulus[ByteIdx]; \
 			} \
 		} \
@@ -800,6 +844,15 @@ class FDefaultGameModuleImpl
 		} \
 	} GEncryptionKeyRegistration;
 
+#define IMPLEMENT_TARGET_NAME_REGISTRATION() \
+	struct FTargetNameRegistration \
+	{ \
+		FTargetNameRegistration() \
+		{ \
+			FPlatformMisc::SetUBTTargetName(TEXT(PREPROCESSOR_TO_STRING(UE_TARGET_NAME))); \
+		} \
+	} GTargetNameRegistration;
+
 #if IS_PROGRAM
 
 	#if IS_MONOLITHIC
@@ -807,6 +860,8 @@ class FDefaultGameModuleImpl
 			/* For monolithic builds, we must statically define the game's name string (See Core.h) */ \
 			TCHAR GInternalProjectName[64] = TEXT( GameName ); \
 			IMPLEMENT_FOREIGN_ENGINE_DIR() \
+			IMPLEMENT_LIVE_CODING_ENGINE_DIR() \
+			IMPLEMENT_LIVE_CODING_PROJECT() \
 			IMPLEMENT_SIGNING_KEY_REGISTRATION() \
 			IMPLEMENT_ENCRYPTION_KEY_REGISTRATION() \
 			IMPLEMENT_GAME_MODULE(FDefaultGameModuleImpl, ModuleName) \
@@ -821,9 +876,11 @@ class FDefaultGameModuleImpl
 			{ \
 				FAutoSet##ModuleName() \
 				{ \
-					FCString::Strncpy(GInternalProjectName, TEXT( GameName ), ARRAY_COUNT(GInternalProjectName)); \
+					FCString::Strncpy(GInternalProjectName, TEXT( GameName ), UE_ARRAY_COUNT(GInternalProjectName)); \
 				} \
 			} AutoSet##ModuleName; \
+			IMPLEMENT_LIVE_CODING_ENGINE_DIR() \
+			IMPLEMENT_LIVE_CODING_PROJECT() \
 			PER_MODULE_BOILERPLATE \
 			PER_MODULE_BOILERPLATE_ANYLINK(FDefaultGameModuleImpl, ModuleName) \
 			FEngineLoop GEngineLoop;
@@ -843,8 +900,11 @@ class FDefaultGameModuleImpl
 			/* Implement the GIsGameAgnosticExe variable (See Core.h). */ \
 			bool GIsGameAgnosticExe = false; \
 			IMPLEMENT_FOREIGN_ENGINE_DIR() \
+			IMPLEMENT_LIVE_CODING_ENGINE_DIR() \
+			IMPLEMENT_LIVE_CODING_PROJECT() \
 			IMPLEMENT_SIGNING_KEY_REGISTRATION() \
 			IMPLEMENT_ENCRYPTION_KEY_REGISTRATION() \
+			IMPLEMENT_TARGET_NAME_REGISTRATION() \
 			IMPLEMENT_GAME_MODULE( ModuleImplClass, ModuleName ) \
 			PER_MODULE_BOILERPLATE
 
@@ -855,8 +915,11 @@ class FDefaultGameModuleImpl
 			TCHAR GInternalProjectName[64] = TEXT( PREPROCESSOR_TO_STRING(UE_PROJECT_NAME) ); \
 			PER_MODULE_BOILERPLATE \
 			IMPLEMENT_FOREIGN_ENGINE_DIR() \
+			IMPLEMENT_LIVE_CODING_ENGINE_DIR() \
+			IMPLEMENT_LIVE_CODING_PROJECT() \
 			IMPLEMENT_SIGNING_KEY_REGISTRATION() \
 			IMPLEMENT_ENCRYPTION_KEY_REGISTRATION() \
+			IMPLEMENT_TARGET_NAME_REGISTRATION() \
 			IMPLEMENT_GAME_MODULE( ModuleImplClass, ModuleName ) \
 			/* Implement the GIsGameAgnosticExe variable (See Core.h). */ \
 			bool GIsGameAgnosticExe = false;
@@ -867,6 +930,7 @@ class FDefaultGameModuleImpl
 
 	#define IMPLEMENT_PRIMARY_GAME_MODULE( ModuleImplClass, ModuleName, GameName ) \
 		/* Nothing special to do for modular builds.  The game name will be set via the command-line */ \
+		IMPLEMENT_TARGET_NAME_REGISTRATION() \
 		IMPLEMENT_GAME_MODULE( ModuleImplClass, ModuleName )
 #endif	//IS_MONOLITHIC
 

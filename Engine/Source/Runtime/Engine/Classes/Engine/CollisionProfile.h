@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -55,22 +55,23 @@ struct ENGINE_API FCollisionResponseTemplate
 	TEnumAsByte<enum ECollisionChannel> ObjectType;
 
 	UPROPERTY()
+	bool	bCanModify;
+
+	/** This is result of ResponseToChannel after loaded - please note that it is not property serializable **/
+	struct FCollisionResponseContainer ResponseToChannels;
+
+	UPROPERTY()
 	FName ObjectTypeName;
 
 	/** Types of objects that this physics objects will collide with. */
 	UPROPERTY()
 	TArray<FResponseChannel>	CustomResponses;
 
+#if WITH_EDITORONLY_DATA
 	/** Help message for collision profile **/
 	UPROPERTY()
 	FString HelpMessage;
-
-	/** Help message for collision profile **/
-	UPROPERTY()
-	bool	bCanModify;
-
-	/** This is result of ResponseToChannel after loaded - please note that it is not property serializable **/
-	struct FCollisionResponseContainer ResponseToChannels;
+#endif
 
 	/** This constructor */
 	FCollisionResponseTemplate();
@@ -95,10 +96,6 @@ struct FCustomChannelSetup
 	UPROPERTY()
 	TEnumAsByte<enum ECollisionChannel> Channel;
 
-	/** Name of channel you'd like to show up **/
-	UPROPERTY()
-	FName Name;
-
 	/** Default Response for the channel */
 	UPROPERTY()
 	TEnumAsByte<enum ECollisionResponse> DefaultResponse;
@@ -110,6 +107,10 @@ struct FCustomChannelSetup
 	/** Specifies if this is static object. Otherwise it will be dynamic object. This is used for query all objects vs all static objects vs all dynamic objects **/
 	UPROPERTY()
 	bool bStaticObject;	
+
+	/** Name of channel you'd like to show up **/
+	UPROPERTY()
+	FName Name;
 
 	FCustomChannelSetup()
 		: Channel(ECC_WorldStatic)
@@ -188,7 +189,7 @@ public:
 	ENGINE_API static UCollisionProfile* Get();
 
 	/** Begin UObject interface */
-	virtual void PostReloadConfig(class UProperty* PropertyThatWasLoaded) override;
+	virtual void PostReloadConfig(class FProperty* PropertyThatWasLoaded) override;
 	/** End UObject interface */
 
 	/** Fill up the array with the profile names **/
@@ -285,7 +286,7 @@ private:
 	/**
 	 * Fill up ResponseToChannels for ProfileList data from config
 	 */
-	void FillProfileData(TArray<FCollisionResponseTemplate>& ProfileList, const UEnum* CollisionChannelEnum, const FString& KeyName, TArray<FCustomProfile>& EditProfileList);
+	void FillProfileData(TArray<FCollisionResponseTemplate>& ProfileList, const UEnum* CollisionChannelEnum, TArray<FCustomProfile>& EditProfileList);
 
 	/**
 	 * Load Custom Responses to the Template. Returns true if all are found and customized. False otherwise

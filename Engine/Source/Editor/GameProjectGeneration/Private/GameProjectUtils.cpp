@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 
 #include "GameProjectUtils.h"
@@ -43,6 +43,7 @@
 #include "DefaultTemplateProjectDefs.h"
 #include "SNewClassDialog.h"
 #include "FeaturedClasses.inl"
+#include "TemplateCategory.h"
 
 #include "Features/IModularFeatures.h"
 
@@ -66,6 +67,9 @@
 
 #include "Dialogs/SOutputLogDialog.h"
 
+#include "IAudioExtensionPlugin.h"
+#include "AudioPluginUtilities.h"
+#include "Sound/AudioSettings.h"
 #include "Sound/SoundEffectSubmix.h"
 #include "Sound/SoundEffectSource.h"
 #include "Components/SynthComponent.h"
@@ -74,7 +78,9 @@
 #include "Blueprint/BlueprintSupport.h"
 #include "Settings/ProjectPackagingSettings.h"
 
-#include "ProjectBuildMutatorFeature.h"
+#if WITH_LIVE_CODING
+#include "ILiveCodingModule.h"
+#endif
 
 #define LOCTEXT_NAMESPACE "GameProjectUtils"
 
@@ -86,17 +92,147 @@
 TWeakPtr<SNotificationItem> GameProjectUtils::UpdateGameProjectNotification = NULL;
 TWeakPtr<SNotificationItem> GameProjectUtils::WarningProjectNameNotification = NULL;
 
-FString GameProjectUtils::DefaultFeaturePackExtension(TEXT(".upack"));	
+bool GameProjectUtils::bUseAudioMixerForAllPlatforms = false;
 
-bool GameProjectUtils::bUseAudioMixerForAllPlatforms = true;
-
-TArray<FString> GameProjectUtils::AudioMixerEnabledPlatforms(
+struct FAudioDefaultPlatformSettings
 {
-	// If bUseAudioMixerForAllPlatforms is set to false,
-	// This can be used to only flag specific platforms to use the new audio engine on new projects.
-	// For example, for windows:
-	//TEXT("Windows")
-});
+	FString Name;
+	FAudioPlatformSettings Settings;
+	const TCHAR* ConfigSectionName;
+	bool bUseAudioMixer;
+
+	FAudioDefaultPlatformSettings(const TCHAR* InConfigSectionName)
+		: ConfigSectionName(InConfigSectionName)
+		, bUseAudioMixer(false)
+	{
+	}
+};
+
+namespace
+{
+	TMap<FString, FAudioDefaultPlatformSettings> GetAudioPlatformProjectDefaultSettings()
+	{
+		TMap<FString, FAudioDefaultPlatformSettings> DefaultProjectSettings;
+
+		// If bUseAudioMixerForAllPlatforms is set to false, uncomment the following line to enable
+		// the new audio mixer on specific platform. Ex. for Windows:
+		// WindowsSettings.bUseAudioMixer = true;
+
+		FAudioDefaultPlatformSettings AndroidSettings(TEXT("/Script/AndroidRuntimeSettings.AndroidRuntimeSettings"));
+		AndroidSettings.Settings.MaxChannels = 12;
+		DefaultProjectSettings.Add(TEXT("Android"), AndroidSettings);
+
+		FAudioDefaultPlatformSettings IOSSettings(TEXT("/Script/IOSRuntimeSettings.IOSRuntimeSettings"));
+		IOSSettings.Settings.MaxChannels = 16;
+		DefaultProjectSettings.Add(TEXT("IOS"), IOSSettings);
+
+		FAudioDefaultPlatformSettings LinuxSettings(TEXT("/Script/LinuxTargetPlatform.LinuxTargetSettings"));
+		LinuxSettings.Settings.MaxChannels = 16;
+		DefaultProjectSettings.Add(TEXT("Linux"), LinuxSettings);
+
+		FAudioDefaultPlatformSettings MacSettings(TEXT("/Script/MacTargetPlatform.MacTargetSettings"));
+		DefaultProjectSettings.Add(TEXT("Mac"), MacSettings);
+
+		FAudioDefaultPlatformSettings PS4Settings(TEXT("/Script/PS4PlatformEditor.PS4TargetSettings"));
+		PS4Settings.Settings.CallbackBufferFrameSize = 256;
+		PS4Settings.Settings.NumBuffers = 7;
+		PS4Settings.Settings.NumSourceWorkers = 4;
+		DefaultProjectSettings.Add(TEXT("PS4"), PS4Settings);
+
+		FAudioDefaultPlatformSettings SwitchSettings(TEXT("/Script/SwitchRuntimeSettings.SwitchRuntimeSettings"));
+		SwitchSettings.Settings.MaxChannels = 16;
+		DefaultProjectSettings.Add(TEXT("Switch"), SwitchSettings);
+
+		FAudioDefaultPlatformSettings WindowsSettings(TEXT("/Script/WindowsTargetPlatform.WindowsTargetSettings"));
+		WindowsSettings.Settings.CallbackBufferFrameSize = 256;
+		WindowsSettings.Settings.NumBuffers = 7;
+		DefaultProjectSettings.Add(TEXT("Windows"), WindowsSettings);
+
+		FAudioDefaultPlatformSettings XBoxSettings(TEXT("/Script/XboxOnePlatformEditor.XboxOneTargetSettings"));
+		XBoxSettings.Settings.CallbackBufferFrameSize = 256;
+		XBoxSettings.Settings.NumBuffers = 7;
+		DefaultProjectSettings.Add(TEXT("XboxOne"), XBoxSettings);
+
+		return MoveTemp(DefaultProjectSettings);
+	}
+
+	// @todo: This is currently not called from anywhere as this approach does not work for binary builds.
+	/** Set the state of XR plugins in OutProject based on the flags in InProjectInfo. */
+	void SetXRPluginStates(const FProjectInformation& InProjectInfo, FProjectDescriptor& OutProject)
+	{
+		static const FString XRPlugins[] = {
+			TEXT("MagicLeapMedia"),
+			TEXT("MagicLeap"),
+			TEXT("OculusVR"),
+			TEXT("SteamVR") };
+
+		if (InProjectInfo.bEnableXR.IsSet() && 
+			InProjectInfo.bEnableXR.GetValue() == false)
+		{
+			for (const FString& Plugin : XRPlugins)
+			{
+				int32 Index = OutProject.FindPluginReferenceIndex(Plugin);
+				if (Index == INDEX_NONE)
+				{
+					Index = OutProject.Plugins.AddDefaulted();
+					OutProject.Plugins[Index].Name = Plugin;
+				}
+
+				OutProject.Plugins[Index].bEnabled = false;
+			}
+		}
+	}
+
+	/** Get the configuration values for raytracing if enabled. */
+	void AddRaytracingConfigValues(const FProjectInformation& InProjectInfo, TArray<FTemplateConfigValue>& ConfigValues)
+	{
+		if (InProjectInfo.bEnableRaytracing.IsSet() && 
+			InProjectInfo.bEnableRaytracing.GetValue() == true)
+		{
+			ConfigValues.Emplace(TEXT("DefaultEngine.ini"),
+				TEXT("/Script/WindowsTargetPlatform.WindowsTargetSettings"),
+				TEXT("DefaultGraphicsRHI"),
+				TEXT("DefaultGraphicsRHI_DX12"),
+				true /* ShouldReplaceExistingValue */);
+
+			ConfigValues.Emplace(TEXT("DefaultEngine.ini"),
+				TEXT("/Script/Engine.RendererSettings"),
+				TEXT("r.SkinCache.CompileShaders"),
+				TEXT("True"),
+				true /* ShouldReplaceExistingValue */);
+
+			ConfigValues.Emplace(TEXT("DefaultEngine.ini"),
+				TEXT("/Script/Engine.RendererSettings"),
+				TEXT("r.RayTracing"),
+				TEXT("True"),
+				true /* ShouldReplaceExistingValue */);
+		}
+	}
+
+	void AddDefaultMapConfigValues(const FProjectInformation& InProjectInfo, TArray<FTemplateConfigValue>& ConfigValues)
+	{
+		if (InProjectInfo.bIsBlankTemplate &&
+			InProjectInfo.bCopyStarterContent &&
+			GameProjectUtils::IsStarterContentAvailableForNewProjects())
+		{
+			const FString DefaultMap = InProjectInfo.TargetedHardware == EHardwareClass::Mobile ?
+				TEXT("/Game/MobileStarterContent/Maps/Minimal_Default") :
+				TEXT("/Game/StarterContent/Maps/Minimal_Default");
+
+			ConfigValues.Emplace(TEXT("DefaultEngine.ini"),
+				TEXT("/Script/EngineSettings.GameMapsSettings"),
+				TEXT("EditorStartupMap"),
+				DefaultMap,
+				true /* ShouldReplaceExistingValue */);
+
+			ConfigValues.Emplace(TEXT("DefaultEngine.ini"),
+				TEXT("/Script/EngineSettings.GameMapsSettings"),
+				TEXT("GameDefaultMap"),
+				DefaultMap,
+				true /* ShouldReplaceExistingValue */);
+		}
+	}
+} // namespace <>
 
 FText FNewClassInfo::GetClassName() const
 {
@@ -140,11 +276,11 @@ FText FNewClassInfo::GetClassDescription(const bool bFullDescription/* = true*/)
 					if(ClassDescription.FindChar('.', FullStopIndex))
 					{
 						// Only show the first sentence so as not to clutter up the UI with a detailed description of implementation details
-						ClassDescription = ClassDescription.Left(FullStopIndex + 1);
+						ClassDescription.LeftInline(FullStopIndex + 1, false);
 					}
 
 					// Strip out any new-lines in the description
-					ClassDescription.ReplaceInline(TEXT("\n"), TEXT(" "));	
+					ClassDescription.ReplaceInline(TEXT("\n"), TEXT(" "), ESearchCase::CaseSensitive);
 				}
 
 				return FText::FromString(ClassDescription);
@@ -182,10 +318,10 @@ FString FNewClassInfo::GetClassPrefixCPP() const
 	switch(ClassType)
 	{
 	case EClassType::UObject:
-		return BaseClass ? BaseClass->GetPrefixCPP() : TEXT("");
+		return BaseClass ? BaseClass->GetPrefixCPP() : TEXT("U");
 
 	case EClassType::EmptyCpp:
-		return TEXT("");
+		return TEXT("F");
 
 	case EClassType::SlateWidget:
 		return TEXT("S");
@@ -239,11 +375,11 @@ FString FNewClassInfo::GetCleanClassName(const FString& ClassName) const
 			// if our class ends with either Widget or WidgetStyle, we need to strip those out to avoid silly looking duplicates
 			if(CleanClassName.EndsWith(TEXT("Style")))
 			{
-				CleanClassName = CleanClassName.LeftChop(5); // 5 for "Style"
+				CleanClassName.LeftChopInline(5, false); // 5 for "Style"
 			}
 			if(CleanClassName.EndsWith(TEXT("Widget")))
 			{
-				CleanClassName = CleanClassName.LeftChop(6); // 6 for "Widget"
+				CleanClassName.LeftChopInline(6, false); // 6 for "Widget"
 			}
 		}
 		break;
@@ -454,7 +590,7 @@ FString FNewClassInfo::GetSourceTemplateFilename() const
 			}
 			// Some other non-actor, non-component UObject class
 			return TEXT( "UObjectClass.cpp.template" );
-	
+
 	case EClassType::EmptyCpp:
 		return TEXT("EmptyClass.cpp.template");
 
@@ -681,13 +817,35 @@ bool GameProjectUtils::OpenCodeIDE(const FString& ProjectFile, FText& OutFailRea
 	return true;
 }
 
-void GameProjectUtils::GetStarterContentFiles(TArray<FString>& OutFilenames)
+bool GameProjectUtils::IsStarterContentAvailableForNewProjects()
 {
-	FString const SrcFolder = FPaths::FeaturePackDir();
-	
-	FString SearchPath = TEXT("*");
-	SearchPath += DefaultFeaturePackExtension;
-	IFileManager::Get().FindFilesRecursive(OutFilenames, *SrcFolder, *SearchPath, /*Files=*/true, /*Directories=*/false);
+	TArray<FString> OutFilenames;
+	IFileManager::Get().FindFilesRecursive(OutFilenames, *FPaths::FeaturePackDir(), TEXT("*StarterContent.upack"), /*Files=*/true, /*Directories=*/false);
+	return OutFilenames.Num() > 0;
+}
+
+
+FString GameProjectUtils::GetStarterContentName(const FProjectInformation& InProjectInfo)
+{
+	if (!InProjectInfo.StarterContent.IsEmpty())
+	{
+		return InProjectInfo.StarterContent;
+	}
+
+	if (InProjectInfo.TargetedHardware == EHardwareClass::Mobile)
+	{
+		return TEXT("MobileStarterContent");
+	}
+
+	return TEXT("StarterContent");
+}
+
+bool GameProjectUtils::IsStarterContentAvailableForProject(const FProjectInformation& InProjectInfo)
+{
+	const FString StarterContentName = GameProjectUtils::GetStarterContentName(InProjectInfo);
+	const FString StarterContentPackFilename = FPaths::FeaturePackDir() / FString::Printf(TEXT("%s.upack"), *StarterContentName);
+
+	return IFileManager::Get().FileExists(*StarterContentPackFilename);
 }
 
 bool GameProjectUtils::CreateProject(const FProjectInformation& InProjectInfo, FText& OutFailReason, FText& OutFailLog, TArray<FString>* OutCreatedFiles)
@@ -700,18 +858,20 @@ bool GameProjectUtils::CreateProject(const FProjectInformation& InProjectInfo, F
 	FScopedSlowTask SlowTask(0, LOCTEXT( "CreatingProjectStatus", "Creating project..." ));
 	SlowTask.MakeDialog();
 
-	bool bProjectCreationSuccessful = false;
+	TOptional<FGuid> ProjectID;
 	FString TemplateName;
 	if ( InProjectInfo.TemplateFile.IsEmpty() )
 	{
-		bProjectCreationSuccessful = GenerateProjectFromScratch(InProjectInfo, OutFailReason, OutFailLog);
+		ProjectID = GenerateProjectFromScratch(InProjectInfo, OutFailReason, OutFailLog);
 		TemplateName = InProjectInfo.bShouldGenerateCode ? TEXT("Basic Code") : TEXT("Blank");
 	}
 	else
 	{
-		bProjectCreationSuccessful = CreateProjectFromTemplate(InProjectInfo, OutFailReason, OutFailLog, OutCreatedFiles);
+		ProjectID = CreateProjectFromTemplate(InProjectInfo, OutFailReason, OutFailLog, OutCreatedFiles);
 		TemplateName = FPaths::GetBaseFilename(InProjectInfo.TemplateFile);
 	}
+
+	bool bProjectCreationSuccessful = ProjectID.IsSet();
 
 	if (!bProjectCreationSuccessful && CleanupIsEnabled())
 	{
@@ -728,17 +888,32 @@ bool GameProjectUtils::CreateProject(const FProjectInformation& InProjectInfo, F
 	{
 		TArray<FAnalyticsEventAttribute> EventAttributes;
 		EventAttributes.Add(FAnalyticsEventAttribute(TEXT("Template"), TemplateName));
+		EventAttributes.Add(FAnalyticsEventAttribute(TEXT("Category"), InProjectInfo.TemplateCategory.ToString()));
 		EventAttributes.Add(FAnalyticsEventAttribute(TEXT("ProjectType"), InProjectInfo.bShouldGenerateCode ? TEXT("C++ Code") : TEXT("Content Only")));
 		EventAttributes.Add(FAnalyticsEventAttribute(TEXT("Outcome"), bProjectCreationSuccessful ? TEXT("Successful") : TEXT("Failed")));
+		EventAttributes.Add(FAnalyticsEventAttribute(TEXT("ProjectID"), *(bProjectCreationSuccessful ? ProjectID.GetValue().ToString() : FString())));
 
-		UEnum* Enum = StaticEnum<EHardwareClass::Type>();
-		EventAttributes.Add(FAnalyticsEventAttribute(TEXT("HardwareClass"), Enum ? Enum->GetNameStringByValue(InProjectInfo.TargetedHardware) : FString()));
-		Enum = StaticEnum<EGraphicsPreset::Type>();
-		EventAttributes.Add(FAnalyticsEventAttribute(TEXT("GraphicsPreset"), Enum ? Enum->GetNameStringByValue(InProjectInfo.DefaultGraphicsPerformance) : FString()));
+		if (InProjectInfo.TargetedHardware.IsSet())
+		{
+			UEnum* HardwareClassEnum = StaticEnum<EHardwareClass::Type>();
+			if (HardwareClassEnum != nullptr)
+			{
+				EventAttributes.Add(FAnalyticsEventAttribute(TEXT("HardwareClass"), HardwareClassEnum->GetNameStringByValue(InProjectInfo.TargetedHardware.GetValue())));
+			}
+		}
+
+		if (InProjectInfo.DefaultGraphicsPerformance.IsSet())
+		{
+			UEnum* GraphicsPresetEnum = StaticEnum<EGraphicsPreset::Type>();
+			if (GraphicsPresetEnum != nullptr)
+			{
+				EventAttributes.Add(FAnalyticsEventAttribute(TEXT("GraphicsPreset"), GraphicsPresetEnum->GetNameStringByValue(InProjectInfo.DefaultGraphicsPerformance.GetValue())));
+			}
+		}
+
 		EventAttributes.Add(FAnalyticsEventAttribute(TEXT("StarterContent"), InProjectInfo.bCopyStarterContent ? TEXT("Yes") : TEXT("No")));
-		EventAttributes.Emplace(TEXT("Enterprise"), InProjectInfo.bIsEnterpriseProject);
 
-		FEngineAnalytics::GetProvider().RecordEvent( TEXT( "Editor.NewProject.ProjectCreated" ), EventAttributes );
+		FEngineAnalytics::GetProvider().RecordEvent(TEXT("Editor.NewProject.ProjectCreated"), EventAttributes);
 	}
 
 	return bProjectCreationSuccessful;
@@ -766,46 +941,46 @@ void GameProjectUtils::CheckForOutOfDateGameProjectFile()
 			if ( ProjectStatus.bRequiresUpdate )
 			{
 				bRequiresUpdate = true;
-				}
+			}
 		}
 
 		// Get the current project descriptor
-			const FProjectDescriptor* Project = IProjectManager::Get().GetCurrentProject();
+		const FProjectDescriptor* Project = IProjectManager::Get().GetCurrentProject();
 
 		// Check if there are any installed plugins that need to be added as a reference
-				TArray<FPluginReferenceDescriptor> NewPluginReferences = Project->Plugins;
-				for(TSharedRef<IPlugin>& Plugin: IPluginManager::Get().GetEnabledPlugins())
-				{
-					if(Plugin->GetDescriptor().bInstalled && Project->FindPluginReferenceIndex(Plugin->GetName()) == INDEX_NONE)
-					{
-						FPluginReferenceDescriptor PluginReference(Plugin->GetName(), true);
-						NewPluginReferences.Add(PluginReference);
+		TArray<FPluginReferenceDescriptor> NewPluginReferences = Project->Plugins;
+		for(TSharedRef<IPlugin>& Plugin: IPluginManager::Get().GetEnabledPlugins())
+		{
+			if(Plugin->GetDescriptor().bInstalled && Project->FindPluginReferenceIndex(Plugin->GetName()) == INDEX_NONE)
+			{
+				FPluginReferenceDescriptor PluginReference(Plugin->GetName(), true);
+				NewPluginReferences.Add(PluginReference);
 				bRequiresUpdate = true;
-					}
-				}
+			}
+		}
 
-				// Check if there are any referenced plugins that do not have a matching supported plugins list
-				for(FPluginReferenceDescriptor& Reference: NewPluginReferences)
+		// Check if there are any referenced plugins that do not have a matching supported plugins list
+		for(FPluginReferenceDescriptor& Reference: NewPluginReferences)
+		{
+			if(Reference.bEnabled)
+			{
+				TSharedPtr<IPlugin> Plugin = IPluginManager::Get().FindPlugin(Reference.Name);
+				if(Plugin.IsValid())
 				{
-					if(Reference.bEnabled)
+					const FPluginDescriptor& Descriptor = Plugin->GetDescriptor();
+					if(Reference.MarketplaceURL != Descriptor.MarketplaceURL)
 					{
-						TSharedPtr<IPlugin> Plugin = IPluginManager::Get().FindPlugin(Reference.Name);
-						if(Plugin.IsValid())
-						{
-							const FPluginDescriptor& Descriptor = Plugin->GetDescriptor();
-							if(Reference.MarketplaceURL != Descriptor.MarketplaceURL)
-							{
-								Reference.MarketplaceURL = Descriptor.MarketplaceURL;
+						Reference.MarketplaceURL = Descriptor.MarketplaceURL;
 						bRequiresUpdate = true;
-							}
-							if(Reference.SupportedTargetPlatforms != Descriptor.SupportedTargetPlatforms)
-							{
-								Reference.SupportedTargetPlatforms = Descriptor.SupportedTargetPlatforms;
+					}
+					if(Reference.SupportedTargetPlatforms != Descriptor.SupportedTargetPlatforms)
+					{
+						Reference.SupportedTargetPlatforms = Descriptor.SupportedTargetPlatforms;
 						bRequiresUpdate = true;
-							}
-						}
 					}
 				}
+			}
+		}
 
 		// If we have updates pending, show the prompt
 		if (bRequiresUpdate)
@@ -829,10 +1004,10 @@ void GameProjectUtils::CheckForOutOfDateGameProjectFile()
 			Info.ButtonDetails.Add(FNotificationButtonInfo(UpdateProjectCancelText, FText(), FSimpleDelegate::CreateStatic(&GameProjectUtils::OnUpdateProjectCancel)));
 
 			if (UpdateGameProjectNotification.IsValid())
-				{
+			{
 				UpdateGameProjectNotification.Pin()->ExpireAndFadeout();
 				UpdateGameProjectNotification.Reset();
-				}
+			}
 
 			UpdateGameProjectNotification = FSlateNotificationManager::Get().AddNotification(Info);
 
@@ -957,7 +1132,7 @@ void GameProjectUtils::OpenAddToProjectDialog(const FAddToProjectConfig& Config,
 		.SizingRule( ESizingRule::FixedSize )
 		.SupportsMinimize(false) .SupportsMaximize(false);
 
-	TSharedRef<SNewClassDialog> NewClassDialog = 
+	TSharedRef<SNewClassDialog> NewClassDialog =
 		SNew(SNewClassDialog)
 		.ParentWindow(AddCodeWindow)
 		.Class(Config._ParentClass)
@@ -1037,7 +1212,7 @@ bool GameProjectUtils::IsValidClassNameForCreation(const FString& NewClassName, 
 	{
 		return false;
 	}
-	
+
 	// Look for a duplicate class in memory
 	for ( TObjectIterator<UClass> ClassIt; ClassIt; ++ClassIt )
 	{
@@ -1146,9 +1321,33 @@ GameProjectUtils::EAddCodeToProjectResult GameProjectUtils::AddCodeToProject(con
 	return Result;
 }
 
+UTemplateCategories* GameProjectUtils::LoadTemplateCategories(const FString& RootDir)
+{
+	UTemplateCategories* TemplateCategories = nullptr;
+
+	FString TemplateCategoriesIniFilename = RootDir / TEXT("TemplateCategories.ini");
+	if (FPlatformFileManager::Get().GetPlatformFile().FileExists(*TemplateCategoriesIniFilename))
+	{
+		TemplateCategories = NewObject<UTemplateCategories>();
+		TemplateCategories->LoadConfig(UTemplateCategories::StaticClass(), *TemplateCategoriesIniFilename);
+
+		for (FTemplateCategoryDef& Category : TemplateCategories->Categories)
+		{
+			// attempt to resolve the icon relative to the root directory
+			FString TemplateCategoryIcon = RootDir / Category.Icon;
+			if (FPlatformFileManager::Get().GetPlatformFile().FileExists(*TemplateCategoryIcon))
+			{
+				Category.Icon = TemplateCategoryIcon;
+			}
+		}
+	}
+
+	return TemplateCategories;
+}
+
 UTemplateProjectDefs* GameProjectUtils::LoadTemplateDefs(const FString& ProjectDirectory)
 {
-	UTemplateProjectDefs* TemplateDefs = NULL;
+	UTemplateProjectDefs* TemplateDefs = nullptr;
 
 	const FString TemplateDefsIniFilename = ProjectDirectory / TEXT("Config") / GetTemplateDefsFilename();
 	if ( FPlatformFileManager::Get().GetPlatformFile().FileExists(*TemplateDefsIniFilename) )
@@ -1170,14 +1369,20 @@ UTemplateProjectDefs* GameProjectUtils::LoadTemplateDefs(const FString& ProjectD
 				UE_LOG(LogGameProjectGeneration, Error, TEXT("Failed to find template project defs class '%s', using default."), *ClassName);
 			}
 		}
+
 		TemplateDefs = NewObject<UTemplateProjectDefs>(GetTransientPackage(), ClassToConstruct);
 		TemplateDefs->LoadConfig(UTemplateProjectDefs::StaticClass(), *TemplateDefsIniFilename);
+
+		if (TemplateDefs->HiddenSettings.Num() > 1 && TemplateDefs->HiddenSettings.Contains(ETemplateSetting::All))
+		{
+			UE_LOG(LogGameProjectGeneration, Warning, TEXT("Template '%s' contains 'All' in HiddenSettings in addition to other entries. This is a mistake, and means that all settings will be hidden."), *ProjectDirectory);
+		}
 	}
 
 	return TemplateDefs;
 }
 
-bool GameProjectUtils::GenerateProjectFromScratch(const FProjectInformation& InProjectInfo, FText& OutFailReason, FText& OutFailLog)
+TOptional<FGuid> GameProjectUtils::GenerateProjectFromScratch(const FProjectInformation& InProjectInfo, FText& OutFailReason, FText& OutFailLog)
 {
 	FScopedSlowTask SlowTask(5);
 
@@ -1189,18 +1394,19 @@ bool GameProjectUtils::GenerateProjectFromScratch(const FProjectInformation& InP
 
 	ResetCurrentProjectModulesCache();
 
+	FGuid ProjectID;
 	// Generate config files
-	if (!GenerateConfigFiles(InProjectInfo, CreatedFiles, OutFailReason))
+	if (!GenerateConfigFiles(InProjectInfo, CreatedFiles, OutFailReason, ProjectID))
 	{
-		return false;
+		return TOptional<FGuid>();
 	}
 
 	// Insert any required feature packs (EG starter content) into ini file. These will be imported automatically when the editor is first run
 	if(!InsertFeaturePacksIntoINIFile(InProjectInfo, OutFailReason))
 	{
-		return false;
+		return TOptional<FGuid>();
 	}
-	
+
 	// Make the Content folder
 	const FString ContentFolder = NewProjectFolder / TEXT("Content");
 	if ( !IFileManager::Get().MakeDirectory(*ContentFolder) )
@@ -1208,7 +1414,7 @@ bool GameProjectUtils::GenerateProjectFromScratch(const FProjectInformation& InP
 		FFormatNamedArguments Args;
 		Args.Add( TEXT("ContentFolder"), FText::FromString( ContentFolder ) );
 		OutFailReason = FText::Format( LOCTEXT("FailedToCreateContentFolder", "Failed to create the content folder {ContentFolder}"), Args );
-		return false;
+		return TOptional<FGuid>();
 	}
 
 	SlowTask.EnterProgressFrame();
@@ -1222,14 +1428,14 @@ bool GameProjectUtils::GenerateProjectFromScratch(const FProjectInformation& InP
 		// Generate basic source code files
 		if ( !GenerateBasicSourceCode(NewProjectFolder / TEXT("Source"), NewProjectName, NewProjectFolder, StartupModuleNames, CreatedFiles, OutFailReason) )
 		{
-			return false;
+			return TOptional<FGuid>();
 		}
 
 		LocalScope.EnterProgressFrame();
 		// Generate game framework source code files
 		if ( !GenerateGameFrameworkSourceCode(NewProjectFolder / TEXT("Source"), NewProjectName, CreatedFiles, OutFailReason) )
 		{
-			return false;
+			return TOptional<FGuid>();
 		}
 	}
 
@@ -1238,27 +1444,27 @@ bool GameProjectUtils::GenerateProjectFromScratch(const FProjectInformation& InP
 	// Generate the project file
 	{
 		// Set up the descriptor
-		FProjectDescriptor Descriptor;
+		FProjectDescriptor Project;
 		for(int32 Idx = 0; Idx < StartupModuleNames.Num(); Idx++)
 		{
-			Descriptor.Modules.Add(FModuleDescriptor(*StartupModuleNames[Idx]));
+			Project.Modules.Add(FModuleDescriptor(*StartupModuleNames[Idx]));
 		}
 
-		Descriptor.bIsEnterpriseProject = InProjectInfo.bIsEnterpriseProject;
+		Project.bIsEnterpriseProject = InProjectInfo.bIsEnterpriseProject;
 
 		// Try to save it
 		FText LocalFailReason;
-		if(!Descriptor.Save(InProjectInfo.ProjectFilename, LocalFailReason))
+		if(!Project.Save(InProjectInfo.ProjectFilename, LocalFailReason))
 		{
 			OutFailReason = LocalFailReason;
-			return false;
+			return TOptional<FGuid>();
 		}
 		CreatedFiles.Add(InProjectInfo.ProjectFilename);
 
 		// Set the engine identifier for it. Do this after saving, so it can be correctly detected as foreign or non-foreign.
 		if(!SetEngineAssociationForForeignProject(InProjectInfo.ProjectFilename, OutFailReason))
 		{
-			return false;
+			return TOptional<FGuid>();
 		}
 	}
 
@@ -1269,17 +1475,124 @@ bool GameProjectUtils::GenerateProjectFromScratch(const FProjectInformation& InP
 		// Generate project files
 		if ( !GenerateCodeProjectFiles(InProjectInfo.ProjectFilename, OutFailReason, OutFailLog) )
 		{
-			return false;
+			return TOptional<FGuid>();
 		}
 	}
 
 	SlowTask.EnterProgressFrame();
 
 	UE_LOG(LogGameProjectGeneration, Log, TEXT("Created new project with %d files (plus project files)"), CreatedFiles.Num());
+	return ProjectID;
+}
+
+static bool SaveConfigValues(const FProjectInformation& InProjectInfo, const TArray<FTemplateConfigValue>& ConfigValues, FText& OutFailReason)
+{
+	const FString ProjectConfigPath = FPaths::GetPath(InProjectInfo.ProjectFilename) / TEXT("Config");
+
+	// Fix all specified config values
+	for (const FTemplateConfigValue& ConfigValue : ConfigValues)
+	{
+		const FString IniFilename = ProjectConfigPath / ConfigValue.ConfigFile;
+		bool bSuccessfullyProcessed = false;
+
+		TArray<FString> FileLines;
+		if (FFileHelper::LoadANSITextFileToStrings(*IniFilename, &IFileManager::Get(), FileLines))
+		{
+			FString FileOutput;
+			const FString TargetSection = ConfigValue.ConfigSection;
+			FString CurSection;
+			bool bFoundTargetKey = false;
+			for (const FString& LineIn : FileLines)
+			{
+				FString Line = LineIn;
+				Line.TrimStartAndEndInline();
+
+				bool bShouldExcludeLineFromOutput = false;
+
+				// If we not yet found the target key parse each line looking for it
+				if (!bFoundTargetKey)
+				{
+					if (Line.Len() == 0)
+					{
+						// Check for an empty line. No work needs to be done on these lines
+					}
+					else if (Line.StartsWith(TEXT(";")))
+					{
+						// Comment lines start with ";". Skip these lines entirely.
+					}
+					else if (Line.StartsWith(TEXT("[")))
+					{
+						// If this is a section line, update the section
+						// If we are entering a new section and we have not yet found our key in the target section, add it to the end of the section
+						if (CurSection == TargetSection)
+						{
+							FileOutput += ConfigValue.ConfigKey + TEXT("=") + ConfigValue.ConfigValue + LINE_TERMINATOR + LINE_TERMINATOR;
+							bFoundTargetKey = true;
+						}
+
+						// Update the current section
+						CurSection = Line.Mid(1, Line.Len() - 2);
+					}
+					// This is possibly an actual key/value pair
+					else if (CurSection == TargetSection)
+					{
+						// Key value pairs contain an equals sign
+						const int32 EqualsIdx = Line.Find(TEXT("="));
+						if (EqualsIdx != INDEX_NONE)
+						{
+							// Determine the key and see if it is the target key
+							const FString Key = Line.Left(EqualsIdx);
+							if (Key == ConfigValue.ConfigKey)
+							{
+								// Found the target key, add it to the output and skip the current line if the target value is supposed to replace
+								FileOutput += ConfigValue.ConfigKey + TEXT("=") + ConfigValue.ConfigValue + LINE_TERMINATOR;
+								bShouldExcludeLineFromOutput = ConfigValue.bShouldReplaceExistingValue;
+								bFoundTargetKey = true;
+							}
+						}
+					}
+				}
+
+				// Unless we replaced the key, add this line to the output
+				if (!bShouldExcludeLineFromOutput)
+				{
+					FileOutput += Line;
+					if (&LineIn != &FileLines.Last())
+					{
+						// Add a line terminator on every line except the last
+						FileOutput += LINE_TERMINATOR;
+					}
+				}
+			}
+
+			// If the key did not exist, add it here
+			if (!bFoundTargetKey)
+			{
+				// If we did not end in the correct section, add the section to the bottom of the file
+				if (CurSection != TargetSection)
+				{
+					FileOutput += LINE_TERMINATOR;
+					FileOutput += FString::Printf(TEXT("[%s]"), *TargetSection) + LINE_TERMINATOR;
+				}
+
+				// Add the key/value here
+				FileOutput += ConfigValue.ConfigKey + TEXT("=") + ConfigValue.ConfigValue + LINE_TERMINATOR;
+			}
+
+			if (!FFileHelper::SaveStringToFile(FileOutput, *IniFilename))
+			{
+				FFormatNamedArguments Args;
+				Args.Add(TEXT("ConfigFile"), FText::FromString(IniFilename));
+				OutFailReason = LOCTEXT("FailedToFixUpConfigFile", "Failed to process file {ConfigFile}.");
+				return false;
+			}
+		}
+	}
+
 	return true;
 }
 
-bool GameProjectUtils::CreateProjectFromTemplate(const FProjectInformation& InProjectInfo, FText& OutFailReason, FText& OutFailLog,TArray<FString>* OutCreatedFiles)
+TOptional<FGuid> GameProjectUtils::CreateProjectFromTemplate(const FProjectInformation& InProjectInfo, FText& OutFailReason, FText& OutFailLog, TArray<FString>* OutCreatedFiles)
 {
 	FScopedSlowTask SlowTask(10);
 
@@ -1288,27 +1601,44 @@ bool GameProjectUtils::CreateProjectFromTemplate(const FProjectInformation& InPr
 	const FString SrcFolder = FPaths::GetPath(InProjectInfo.TemplateFile);
 	const FString DestFolder = FPaths::GetPath(InProjectInfo.ProjectFilename);
 
-	if ( !FPlatformFileManager::Get().GetPlatformFile().FileExists(*InProjectInfo.TemplateFile) )
+	if (!FPlatformFileManager::Get().GetPlatformFile().FileExists(*InProjectInfo.TemplateFile))
 	{
 		FFormatNamedArguments Args;
 		Args.Add( TEXT("TemplateFile"), FText::FromString( InProjectInfo.TemplateFile ) );
 		OutFailReason = FText::Format( LOCTEXT("InvalidTemplate_MissingProject", "Template project \"{TemplateFile}\" does not exist."), Args );
-		return false;
+		return TOptional<FGuid>();
 	}
 
 	SlowTask.EnterProgressFrame();
 
 	UTemplateProjectDefs* TemplateDefs = LoadTemplateDefs(SrcFolder);
-	if ( TemplateDefs == NULL )
+	if (TemplateDefs == nullptr)
 	{
 		FFormatNamedArguments Args;
 		Args.Add( TEXT("TemplateFile"), FText::FromString( FPaths::GetBaseFilename(InProjectInfo.TemplateFile) ) );
 		Args.Add( TEXT("TemplateDefinesFile"), FText::FromString( GetTemplateDefsFilename() ) );
 		OutFailReason = FText::Format( LOCTEXT("InvalidTemplate_MissingDefs", "Template project \"{TemplateFile}\" does not have definitions file: '{TemplateDefinesFile}'."), Args );
-		return false;
+		return TOptional<FGuid>();
 	}
 
 	SlowTask.EnterProgressFrame();
+
+	// create a Content folder in the destination directory
+	const FString DestContentFolder = DestFolder / TEXT("Content");
+	if (!IFileManager::Get().MakeDirectory(*DestContentFolder, true))
+	{
+		FFormatNamedArguments FailArgs;
+		FailArgs.Add(TEXT("DestContentFolder"), FText::FromString(DestContentFolder));
+		OutFailReason = FText::Format(LOCTEXT("FailedToCreateDirectory", "Failed to create directory \"{DestContentFolder}\"."), FailArgs);
+		return TOptional<FGuid>();
+	}
+
+	// Add a rule to replace the build settings version with the appropriate number
+	FTemplateReplacement& DefaultBuildSettingsRepl = TemplateDefs->ReplacementsInFiles.AddZeroed_GetRef();
+	DefaultBuildSettingsRepl.Extensions.Add("cs");
+	DefaultBuildSettingsRepl.From = TEXT("BuildSettingsVersion.Latest");
+	DefaultBuildSettingsRepl.To = GetDefaultBuildSettingsVersion();
+	DefaultBuildSettingsRepl.bCaseSensitive = true;
 
 	// Fix up the replacement strings using the specified project name
 	TemplateDefs->FixupStrings(TemplateName, ProjectName);
@@ -1415,7 +1745,7 @@ bool GameProjectUtils::CreateProjectFromTemplate(const FProjectInformation& InPr
 				FailArgs.Add(TEXT("SrcFilename"), FText::FromString(SrcFilename));
 				FailArgs.Add(TEXT("DestFilename"), FText::FromString(DestFilename));
 				OutFailReason = FText::Format(LOCTEXT("FailedToCopyFile", "Failed to copy \"{SrcFilename}\" to \"{DestFilename}\"."), FailArgs);
-				return false;
+				return TOptional<FGuid>();
 			}
 		}
 	}
@@ -1454,201 +1784,90 @@ bool GameProjectUtils::CreateProjectFromTemplate(const FProjectInformation& InPr
 				FFormatNamedArguments Args;
 				Args.Add( TEXT("FileToFix"), FText::FromString( FileToFix ) );
 				OutFailReason = FText::Format( LOCTEXT("FailedToFixUpFile", "Failed to process file \"{FileToFix}\"."), Args );
-				return false;
+				return TOptional<FGuid>();
 			}
 		}
 	}
 
 	SlowTask.EnterProgressFrame();
 
-	const FString ProjectConfigPath = DestFolder / TEXT("Config");
-
-	// Write out the hardware class target settings chosen for this project
-	{
-		const FString DefaultEngineIniFilename = ProjectConfigPath / TEXT("DefaultEngine.ini");
-
-		FString FileContents;
-		// Load the existing file - if it doesn't exist we create it
-		FFileHelper::LoadFileToString(FileContents, *DefaultEngineIniFilename);
-
-		FileContents += LINE_TERMINATOR;
-		FileContents += GetHardwareConfigString(InProjectInfo);
-
-		if ( !WriteOutputFile(DefaultEngineIniFilename, FileContents, OutFailReason) )
-		{
-			return false;
-		}
-	}
-
 	// Fixup specific ini values
 	TArray<FTemplateConfigValue> ConfigValuesToSet;
+
+	AddHardwareConfigValues(InProjectInfo, ConfigValuesToSet);
+
+	AddRaytracingConfigValues(InProjectInfo, ConfigValuesToSet);
+
+	AddDefaultMapConfigValues(InProjectInfo, ConfigValuesToSet);
+	
 	TemplateDefs->AddConfigValues(ConfigValuesToSet, TemplateName, ProjectName, InProjectInfo.bShouldGenerateCode);
-	ConfigValuesToSet.Emplace(TEXT("DefaultGame.ini"), TEXT("/Script/EngineSettings.GeneralProjectSettings"), TEXT("ProjectID"), FGuid::NewGuid().ToString(), /*InShouldReplaceExistingValue=*/true);
+
+	FGuid ProjectID = FGuid::NewGuid();
+	ConfigValuesToSet.Emplace(TEXT("DefaultGame.ini"), TEXT("/Script/EngineSettings.GeneralProjectSettings"), TEXT("ProjectID"), ProjectID.ToString(), /*InShouldReplaceExistingValue=*/true);
 
 	// Add all classname fixups
-	for ( const TPair<FString, FString>& Rename : ClassRenames )
+	for (const TPair<FString, FString>& Rename : ClassRenames)
 	{
 		const FString ClassRedirectString = FString::Printf(TEXT("(OldClassName=\"%s\",NewClassName=\"%s\")"), *Rename.Key, *Rename.Value);
 		ConfigValuesToSet.Emplace(TEXT("DefaultEngine.ini"), TEXT("/Script/Engine.Engine"), TEXT("+ActiveClassRedirects"), *ClassRedirectString, /*InShouldReplaceExistingValue=*/false);
 	}
+	
+	SlowTask.EnterProgressFrame();
 
-	// Fix all specified config values
-	for ( const FTemplateConfigValue& ConfigValue : ConfigValuesToSet )
+	if (!SaveConfigValues(InProjectInfo, ConfigValuesToSet, OutFailReason))
 	{
-		const FString IniFilename = ProjectConfigPath / ConfigValue.ConfigFile;
-		bool bSuccessfullyProcessed = false;
-
-		TArray<FString> FileLines;
-		if ( FFileHelper::LoadANSITextFileToStrings(*IniFilename, &IFileManager::Get(), FileLines) )
-		{
-			FString FileOutput;
-			const FString TargetSection = ConfigValue.ConfigSection;
-			FString CurSection;
-			bool bFoundTargetKey = false;
-			for ( const FString& LineIn : FileLines )
-			{
-				FString Line = LineIn;
-				Line.TrimStartAndEndInline();
-
-				bool bShouldExcludeLineFromOutput = false;
-
-				// If we not yet found the target key parse each line looking for it
-				if ( !bFoundTargetKey )
-				{
-					// Check for an empty line. No work needs to be done on these lines
-					if ( Line.Len() == 0 )
-					{
-
-					}
-					// Comment lines start with ";". Skip these lines entirely.
-					else if ( Line.StartsWith(TEXT(";")) )
-					{
-						
-					}
-					// If this is a section line, update the section
-					else if ( Line.StartsWith(TEXT("[")) )
-					{
-						// If we are entering a new section and we have not yet found our key in the target section, add it to the end of the section
-						if ( CurSection == TargetSection )
-						{
-							FileOutput += ConfigValue.ConfigKey + TEXT("=") + ConfigValue.ConfigValue + LINE_TERMINATOR + LINE_TERMINATOR;
-							bFoundTargetKey = true;
-						}
-
-						// Update the current section
-						CurSection = Line.Mid(1, Line.Len() - 2);
-					}
-					// This is possibly an actual key/value pair
-					else if ( CurSection == TargetSection )
-					{
-						// Key value pairs contain an equals sign
-						const int32 EqualsIdx = Line.Find(TEXT("="));
-						if ( EqualsIdx != INDEX_NONE )
-						{
-							// Determine the key and see if it is the target key
-							const FString Key = Line.Left(EqualsIdx);
-							if ( Key == ConfigValue.ConfigKey )
-							{
-								// Found the target key, add it to the output and skip the current line if the target value is supposed to replace
-								FileOutput += ConfigValue.ConfigKey + TEXT("=") + ConfigValue.ConfigValue + LINE_TERMINATOR;
-								bShouldExcludeLineFromOutput = ConfigValue.bShouldReplaceExistingValue;
-								bFoundTargetKey = true;
-							}
-						}
-					}
-				}
-
-				// Unless we replaced the key, add this line to the output
-				if ( !bShouldExcludeLineFromOutput )
-				{
-					FileOutput += Line;
-					if ( &LineIn != &FileLines.Last() )
-					{
-						// Add a line terminator on every line except the last
-						FileOutput += LINE_TERMINATOR;
-					}
-				}
-			}
-
-			// If the key did not exist, add it here
-			if ( !bFoundTargetKey )
-			{
-				// If we did not end in the correct section, add the section to the bottom of the file
-				if ( CurSection != TargetSection )
-				{
-					FileOutput += LINE_TERMINATOR;
-					FileOutput += LINE_TERMINATOR;
-					FileOutput += FString::Printf(TEXT("[%s]"), *TargetSection) + LINE_TERMINATOR;
-				}
-
-				// Add the key/value here
-				FileOutput += ConfigValue.ConfigKey + TEXT("=") + ConfigValue.ConfigValue + LINE_TERMINATOR;
-			}
-
-			if ( FFileHelper::SaveStringToFile(FileOutput, *IniFilename) )
-			{
-				bSuccessfullyProcessed = true;
-			}
-		}
-
-		if ( !bSuccessfullyProcessed )
-		{
-			OutFailReason = LOCTEXT("FailedToFixUpDefaultEngine", "Failed to process file DefaultEngine.ini");
-			return false;
-		}
+		return TOptional<FGuid>();
 	}
 
 	// Insert any required feature packs (EG starter content) into ini file. These will be imported automatically when the editor is first run
-	if(!InsertFeaturePacksIntoINIFile(InProjectInfo, OutFailReason))
+	if (!InsertFeaturePacksIntoINIFile(InProjectInfo, OutFailReason))
 	{
-		return false;
+		return TOptional<FGuid>();
 	}
 
-	if( !AddSharedContentToProject(InProjectInfo, CreatedFiles, OutFailReason ) )
+	if (!AddSharedContentToProject(InProjectInfo, CreatedFiles, OutFailReason))
 	{
-		return false;
+		return TOptional<FGuid>();
 	}
 
 	if (!TemplateDefs->PreGenerateProject(DestFolder, SrcFolder, InProjectInfo.ProjectFilename, InProjectInfo.TemplateFile, InProjectInfo.bShouldGenerateCode, OutFailReason))
 	{
-		return false;
+		return TOptional<FGuid>();
 	}
-	
+
 	SlowTask.EnterProgressFrame();
 
 	// Generate the project file
 	{
 		// Load the source project
 		FProjectDescriptor Project;
-		if(!Project.Load(InProjectInfo.TemplateFile, OutFailReason))
+		if (!Project.Load(InProjectInfo.TemplateFile, OutFailReason))
 		{
-			return false;
+			return TOptional<FGuid>();
 		}
 
 		// Update it to current
 		Project.EngineAssociation.Empty();
 		Project.EpicSampleNameHash = 0;
 
-		Project.bIsEnterpriseProject = InProjectInfo.bIsEnterpriseProject; // Force the enterprise flag to the value that was requested in the ProjectInfo.
-
 		// Fix up module names
 		const FString BaseSourceName = FPaths::GetBaseFilename(InProjectInfo.TemplateFile);
 		const FString BaseNewName = FPaths::GetBaseFilename(InProjectInfo.ProjectFilename);
-		for ( FModuleDescriptor& ModuleInfo : Project.Modules )
+		for (FModuleDescriptor& ModuleInfo : Project.Modules)
 		{
 			ModuleInfo.Name = FName(*ModuleInfo.Name.ToString().Replace(*BaseSourceName, *BaseNewName));
 		}
 
 		// Save it to disk
-		if(!Project.Save(InProjectInfo.ProjectFilename, OutFailReason))
+		if (!Project.Save(InProjectInfo.ProjectFilename, OutFailReason))
 		{
-			return false;
+			return TOptional<FGuid>();
 		}
 
 		// Set the engine identifier if it's a foreign project. Do this after saving, so it can be correctly detected as foreign.
-		if(!SetEngineAssociationForForeignProject(InProjectInfo.ProjectFilename, OutFailReason))
+		if (!SetEngineAssociationForForeignProject(InProjectInfo.ProjectFilename, OutFailReason))
 		{
-			return false;
+			return TOptional<FGuid>();
 		}
 
 		// Add it to the list of created files
@@ -1657,13 +1876,12 @@ bool GameProjectUtils::CreateProjectFromTemplate(const FProjectInformation& InPr
 
 	SlowTask.EnterProgressFrame();
 
-	SlowTask.EnterProgressFrame();
-	if ( InProjectInfo.bShouldGenerateCode )
+	if (InProjectInfo.bShouldGenerateCode)
 	{
 		// Generate project files
-		if ( !GenerateCodeProjectFiles(InProjectInfo.ProjectFilename, OutFailReason, OutFailLog) )
+		if (!GenerateCodeProjectFiles(InProjectInfo.ProjectFilename, OutFailReason, OutFailLog))
 		{
-			return false;
+			return TOptional<FGuid>();
 		}
 	}
 
@@ -1671,14 +1889,15 @@ bool GameProjectUtils::CreateProjectFromTemplate(const FProjectInformation& InPr
 
 	if (!TemplateDefs->PostGenerateProject(DestFolder, SrcFolder, InProjectInfo.ProjectFilename, InProjectInfo.TemplateFile, InProjectInfo.bShouldGenerateCode, OutFailReason))
 	{
-		return false;
+		return TOptional<FGuid>();
 	}
-	
-	if( OutCreatedFiles != nullptr )
+
+	if (OutCreatedFiles != nullptr)
 	{
 		OutCreatedFiles->Append(CreatedFiles);
 	}
-	return true;
+
+	return ProjectID;
 }
 
 bool GameProjectUtils::SetEngineAssociationForForeignProject(const FString& ProjectFileName, FText& OutFailReason)
@@ -1789,25 +2008,48 @@ void GameProjectUtils::DeleteCreatedFiles(const FString& RootFolder, const TArra
 	}
 }
 
-FString GameProjectUtils::GetHardwareConfigString(const FProjectInformation& InProjectInfo)
+void GameProjectUtils::AddHardwareConfigValues(const FProjectInformation& InProjectInfo, TArray<FTemplateConfigValue>& ConfigValues)
 {
-	FString HardwareTargeting;
-	
-	FString TargetHardwareAsString;
-	UEnum::GetValueAsString(TEXT("/Script/HardwareTargeting.EHardwareClass"), InProjectInfo.TargetedHardware, /*out*/ TargetHardwareAsString);
+	if (InProjectInfo.TargetedHardware.IsSet())
+	{
+		UEnum* HardwareClassEnum = StaticEnum<EHardwareClass::Type>();
+		if (HardwareClassEnum != nullptr)
+		{
+			FString TargetHardwareString;
+			HardwareClassEnum->GetValueAsString(InProjectInfo.TargetedHardware.GetValue(), /*out*/ TargetHardwareString);
 
-	FString GraphicsPresetAsString;
-	UEnum::GetValueAsString(TEXT("/Script/HardwareTargeting.EGraphicsPreset"), InProjectInfo.DefaultGraphicsPerformance, /*out*/ GraphicsPresetAsString);
+			if (!TargetHardwareString.IsEmpty())
+			{
+				ConfigValues.Emplace(TEXT("DefaultEngine.ini"),
+					TEXT("/Script/HardwareTargeting.HardwareTargetingSettings"),
+					TEXT("TargetedHardwareClass"),
+					TargetHardwareString,
+					true /* ShouldReplaceExistingValue */);
+			}
+		}
+	}
 
-	HardwareTargeting += TEXT("[/Script/HardwareTargeting.HardwareTargetingSettings]") LINE_TERMINATOR;
-	HardwareTargeting += FString::Printf(TEXT("TargetedHardwareClass=%s") LINE_TERMINATOR, *TargetHardwareAsString);
-	HardwareTargeting += FString::Printf(TEXT("DefaultGraphicsPerformance=%s") LINE_TERMINATOR, *GraphicsPresetAsString);
-	HardwareTargeting += LINE_TERMINATOR;
+	if (InProjectInfo.DefaultGraphicsPerformance.IsSet())
+	{
+		UEnum* GraphicsPresetEnum = StaticEnum<EGraphicsPreset::Type>();
+		if (GraphicsPresetEnum != nullptr)
+		{
+			FString GraphicsPresetString;
+			GraphicsPresetEnum->GetValueAsString(InProjectInfo.DefaultGraphicsPerformance.GetValue(), /*out*/ GraphicsPresetString);
 
-	return HardwareTargeting;
+			if (!GraphicsPresetString.IsEmpty())
+			{
+				ConfigValues.Emplace(TEXT("DefaultEngine.ini"),
+					TEXT("/Script/HardwareTargeting.HardwareTargetingSettings"),
+					TEXT("DefaultGraphicsPerformance"),
+					GraphicsPresetString,
+					true /* ShouldReplaceExistingValue */);
+			}
+		}
+	}
 }
 
-bool GameProjectUtils::GenerateConfigFiles(const FProjectInformation& InProjectInfo, TArray<FString>& OutCreatedFiles, FText& OutFailReason)
+bool GameProjectUtils::GenerateConfigFiles(const FProjectInformation& InProjectInfo, TArray<FString>& OutCreatedFiles, FText& OutFailReason, FGuid& OutProjectID)
 {
 	const FString NewProjectFolder = FPaths::GetPath(InProjectInfo.ProjectFilename);
 	const FString NewProjectName = FPaths::GetBaseFilename(InProjectInfo.ProjectFilename);
@@ -1819,46 +2061,40 @@ bool GameProjectUtils::GenerateConfigFiles(const FProjectInformation& InProjectI
 		const FString DefaultEngineIniFilename = ProjectConfigPath / TEXT("DefaultEngine.ini");
 		FString FileContents;
 
-		FileContents += TEXT("[URL]") LINE_TERMINATOR;
-
-		FileContents += GetHardwareConfigString(InProjectInfo);
-		FileContents += LINE_TERMINATOR;
-		
 		if(bUseAudioMixerForAllPlatforms)
 		{
+			FileContents += LINE_TERMINATOR;
 			FileContents += TEXT("[Audio]") LINE_TERMINATOR;
 			FileContents += TEXT("UseAudioMixer=True") LINE_TERMINATOR;
-			FileContents += LINE_TERMINATOR;
 		}
-		
+
+		if (InProjectInfo.bForceExtendedLuminanceRange)
+		{
+			FileContents += LINE_TERMINATOR;
+			FileContents += TEXT("[/Script/Engine.RendererSettings]") LINE_TERMINATOR;
+			FileContents += TEXT("r.DefaultFeature.AutoExposure.ExtendDefaultLuminanceRange=True") LINE_TERMINATOR;
+		}
+
 		if (InProjectInfo.bCopyStarterContent)
 		{
-			FString SpecificEditorStartupMap;
-			FString SpecificGameDefaultMap;
-
-			// If we have starter content packs available, specify starter map
-			if( IsStarterContentAvailableForNewProjects() == true )
+			if (GameProjectUtils::IsStarterContentAvailableForNewProjects())
 			{
 				if (InProjectInfo.TargetedHardware == EHardwareClass::Mobile)
 				{
-					SpecificEditorStartupMap = TEXT("/Game/MobileStarterContent/Maps/Minimal_Default");
-					SpecificGameDefaultMap = TEXT("/Game/MobileStarterContent/Maps/Minimal_Default");
+					FileContents += TEXT("EditorStartupMap=/Game/MobileStarterContent/Maps/Minimal_Default") LINE_TERMINATOR;
+					FileContents += TEXT("GameDefaultMap=/Game/MobileStarterContent/Maps/Minimal_Default") LINE_TERMINATOR;
 				}
 				else
 				{
-					SpecificEditorStartupMap = TEXT("/Game/StarterContent/Maps/Minimal_Default");
-					SpecificGameDefaultMap = TEXT("/Game/StarterContent/Maps/Minimal_Default");
+					FileContents += TEXT("EditorStartupMap=/Game/StarterContent/Maps/Minimal_Default") LINE_TERMINATOR;
+					FileContents += TEXT("GameDefaultMap=/Game/StarterContent/Maps/Minimal_Default") LINE_TERMINATOR;
 				}
 			}
-			
-			// Write out the settings for startup map and game default map
-			FileContents += TEXT("[/Script/EngineSettings.GameMapsSettings]") LINE_TERMINATOR;
-			FileContents += FString::Printf(TEXT("EditorStartupMap=%s") LINE_TERMINATOR, *SpecificEditorStartupMap);
-			FileContents += FString::Printf(TEXT("GameDefaultMap=%s") LINE_TERMINATOR, *SpecificGameDefaultMap);
+
 			if (InProjectInfo.bShouldGenerateCode)
 			{
 				FileContents += FString::Printf(TEXT("GlobalDefaultGameMode=\"/Script/%s.%sGameMode\"") LINE_TERMINATOR, *NewProjectName, *NewProjectName);
-			}			
+			}
 		}
 
 		if (WriteOutputFile(DefaultEngineIniFilename, FileContents, OutFailReason))
@@ -1866,6 +2102,15 @@ bool GameProjectUtils::GenerateConfigFiles(const FProjectInformation& InProjectI
 			OutCreatedFiles.Add(DefaultEngineIniFilename);
 		}
 		else
+		{
+			return false;
+		}
+
+		TArray<FTemplateConfigValue> ConfigValuesToSet;
+		AddHardwareConfigValues(InProjectInfo, ConfigValuesToSet);
+		AddRaytracingConfigValues(InProjectInfo, ConfigValuesToSet);
+
+		if (!SaveConfigValues(InProjectInfo, ConfigValuesToSet, OutFailReason))
 		{
 			return false;
 		}
@@ -1891,7 +2136,9 @@ bool GameProjectUtils::GenerateConfigFiles(const FProjectInformation& InProjectI
 		const FString DefaultGameIniFilename = ProjectConfigPath / TEXT("DefaultGame.ini");
 		FString FileContents;
 		FileContents += TEXT("[/Script/EngineSettings.GeneralProjectSettings]") LINE_TERMINATOR;
-		FileContents += TEXT("ProjectID=") + FGuid::NewGuid().ToString() + LINE_TERMINATOR;
+
+		OutProjectID = FGuid::NewGuid();
+		FileContents += TEXT("ProjectID=") + OutProjectID.ToString() + LINE_TERMINATOR;
 
 		if (WriteOutputFile(DefaultGameIniFilename, FileContents, OutFailReason))
 		{
@@ -1903,40 +2150,81 @@ bool GameProjectUtils::GenerateConfigFiles(const FProjectInformation& InProjectI
 		}
 	}
 
-	// inis for any audiomixer-enabled platforms:
+	// Platforms inis:
 	{
-		for (const FString& PlatformName : AudioMixerEnabledPlatforms)
+		if (!GeneratePlatformConfigFiles(InProjectInfo, OutFailReason))
 		{
-			if (!GeneratePlatformConfigFiles(InProjectInfo, PlatformName, OutFailReason))
-			{
-				return false;
-			}
+			return false;
 		}
 	}
 
 	return true;
 }
 
-bool GameProjectUtils::GeneratePlatformConfigFiles(const FProjectInformation& InProjectInfo, const FString& InPlatformName, FText& OutFailReason)
+bool GameProjectUtils::GeneratePlatformConfigFiles(const FProjectInformation& InProjectInfo, FText& OutFailReason)
 {
-	const FString NewProjectFolder = FPaths::GetPath(InProjectInfo.ProjectFilename);
+	TMap<FString, FAudioDefaultPlatformSettings> ProjectDefaults = GetAudioPlatformProjectDefaultSettings();
 
-	FString ProjectConfigPath = NewProjectFolder / TEXT("Config");
+	static const FAudioPlatformSettings DefaultSettings;
 
-	const FString PlatformEngineIniFilename = ProjectConfigPath / InPlatformName / InPlatformName + TEXT("Engine.ini");
-	FString FileContents;
-
-	FileContents += TEXT("[Audio]") LINE_TERMINATOR;
-	FileContents += TEXT("UseAudioMixer=True");
-
-	if (WriteOutputFile(PlatformEngineIniFilename, FileContents, OutFailReason))
+	for (TPair<FString, FAudioDefaultPlatformSettings>& SettingsPair : ProjectDefaults)
 	{
-		return true;
+		FString FileContents;
+
+		if (bUseAudioMixerForAllPlatforms || SettingsPair.Value.bUseAudioMixer)
+		{
+			FileContents += TEXT("[Audio]") LINE_TERMINATOR;
+			FileContents += TEXT("UseAudioMixer=True") LINE_TERMINATOR;
+			FileContents += LINE_TERMINATOR;
+		}
+
+		const FString& PlatformName = SettingsPair.Key;
+		const FAudioPlatformSettings& PlatformSettings = SettingsPair.Value.Settings;
+
+		FileContents += TEXT("[") + FString(SettingsPair.Value.ConfigSectionName) + TEXT("]") + LINE_TERMINATOR;
+
+		if (DefaultSettings.SampleRate == PlatformSettings.SampleRate)
+		{
+			FileContents += TEXT(";");
+		}
+		FileContents += TEXT("AudioSampleRate=") + FString::Printf(TEXT("%d"), PlatformSettings.SampleRate) + LINE_TERMINATOR;
+
+		if (DefaultSettings.MaxChannels == PlatformSettings.MaxChannels)
+		{
+			FileContents += TEXT(";");
+		}
+		FileContents += TEXT("AudioMaxChannels=") + FString::Printf(TEXT("%d"), PlatformSettings.MaxChannels) + LINE_TERMINATOR;
+
+		if (DefaultSettings.CallbackBufferFrameSize == PlatformSettings.CallbackBufferFrameSize)
+		{
+			FileContents += TEXT(";");
+		}
+		FileContents += TEXT("AudioCallbackBufferFrameSize=") + FString::Printf(TEXT("%d"), PlatformSettings.CallbackBufferFrameSize) + LINE_TERMINATOR;
+
+		if (DefaultSettings.NumBuffers == PlatformSettings.NumBuffers)
+		{
+			FileContents += TEXT(";");
+		}
+		FileContents += TEXT("AudioNumBuffersToEnqueue=") + FString::Printf(TEXT("%d"), PlatformSettings.NumBuffers) + LINE_TERMINATOR;
+
+		if (DefaultSettings.NumSourceWorkers == PlatformSettings.NumSourceWorkers)
+		{
+			FileContents += TEXT(";");
+		}
+		FileContents += TEXT("AudioNumSourceWorkers=") + FString::Printf(TEXT("%d"), PlatformSettings.NumSourceWorkers) + LINE_TERMINATOR;
+
+		FileContents += LINE_TERMINATOR;
+
+		const FString NewProjectFolder = FPaths::GetPath(InProjectInfo.ProjectFilename);
+		const FString ProjectConfigPath = NewProjectFolder / TEXT("Config");
+		const FString PlatformEngineIniFilename = ProjectConfigPath / PlatformName / PlatformName + TEXT("Engine.ini");
+		if (!WriteOutputFile(PlatformEngineIniFilename, FileContents, OutFailReason))
+		{
+			return false;
+		}
 	}
-	else
-	{
-		return false;
-	}
+
+	return true;
 }
 
 bool GameProjectUtils::GenerateBasicSourceCode(TArray<FString>& OutCreatedFiles, FText& OutFailReason)
@@ -2073,7 +2361,7 @@ bool GameProjectUtils::GenerateGameFrameworkSourceCode(const FString& NewProject
 		const UClass* BaseClass = AGameModeBase::StaticClass();
 		const FString NewClassName = NewProjectName + BaseClass->GetName();
 		const FString NewCPPFilename = GameModulePath / NewClassName + TEXT(".cpp");
-		
+
 		TArray<FString> PropertyOverrides;
 		TArray<FString> AdditionalIncludes;
 		FString UnusedSyncLocation;
@@ -2137,15 +2425,6 @@ bool GameProjectUtils::GenerateCodeProjectFiles(const FString& ProjectFilename, 
 	}
 
 	return true;
-}
-
-bool GameProjectUtils::IsStarterContentAvailableForNewProjects()
-{
-	TArray<FString> StarterContentFiles;
-	GetStarterContentFiles(StarterContentFiles);
-	
-	bool bHasStaterContent = StarterContentFiles.FindByPredicate([&](const FString& Str){ return Str.Contains("StarterContent"); }) != nullptr;
-	return bHasStaterContent;
 }
 
 int32 FindSpecificBuildFiles(const TCHAR* Path, TMap<FString, FString>& BuildFiles)
@@ -2475,7 +2754,7 @@ bool GameProjectUtils::GetClassLocation(const FString& InPath, const FModuleCont
 
 GameProjectUtils::EProjectDuplicateResult GameProjectUtils::DuplicateProjectForUpgrade( const FString& InProjectFile, FString& OutNewProjectFile )
 {
-	IPlatformFile &PlatformFile = FPlatformFileManager::Get().GetPlatformFile();
+	IPlatformFile& PlatformFile = FPlatformFileManager::Get().GetPlatformFile();
 
 	// Get the directory part of the project name
 	FString OldDirectoryName = FPaths::GetPath(InProjectFile);
@@ -2503,7 +2782,8 @@ GameProjectUtils::EProjectDuplicateResult GameProjectUtils::DuplicateProjectForU
 			break;
 		}
 
-		NewDirectoryName = NewDirectoryName.Left(LastSpace).TrimEnd();
+		NewDirectoryName.LeftInline(LastSpace, false);
+		NewDirectoryName.TrimEndInline();
 	}
 
 	// Append the new version number
@@ -2536,7 +2816,7 @@ GameProjectUtils::EProjectDuplicateResult GameProjectUtils::DuplicateProjectForU
 				TEXT("Saved/StagedBuilds"),
 			};
 
-			SourceDirectoriesToSkip.Reserve(ARRAY_COUNT(RelativeDirectoriesToSkip));
+			SourceDirectoriesToSkip.Reserve(UE_ARRAY_COUNT(RelativeDirectoriesToSkip));
 			for (const FString& RelativeDirectoryToSkip : RelativeDirectoriesToSkip)
 			{
 				SourceDirectoriesToSkip.Emplace(RootSourceDirectory / RelativeDirectoryToSkip);
@@ -2627,17 +2907,17 @@ GameProjectUtils::EProjectDuplicateResult GameProjectUtils::DuplicateProjectForU
 void GameProjectUtils::UpdateSupportedTargetPlatforms(const FName& InPlatformName, const bool bIsSupported)
 {
 	const FString& ProjectFilename = FPaths::GetProjectFilePath();
-	if(!ProjectFilename.IsEmpty())
+	if (!ProjectFilename.IsEmpty())
 	{
 		// First attempt to check out the file if SCC is enabled
-		if(ISourceControlModule::Get().IsEnabled())
+		if (ISourceControlModule::Get().IsEnabled())
 		{
 			FText UnusedFailReason;
 			CheckoutGameProjectFile(ProjectFilename, UnusedFailReason);
 		}
 
 		// Second make sure the file is writable
-		if(FPlatformFileManager::Get().GetPlatformFile().IsReadOnly(*ProjectFilename))
+		if (FPlatformFileManager::Get().GetPlatformFile().IsReadOnly(*ProjectFilename))
 		{
 			FPlatformFileManager::Get().GetPlatformFile().SetReadOnly(*ProjectFilename, false);
 		}
@@ -2649,17 +2929,17 @@ void GameProjectUtils::UpdateSupportedTargetPlatforms(const FName& InPlatformNam
 void GameProjectUtils::ClearSupportedTargetPlatforms()
 {
 	const FString& ProjectFilename = FPaths::GetProjectFilePath();
-	if(!ProjectFilename.IsEmpty())
+	if (!ProjectFilename.IsEmpty())
 	{
 		// First attempt to check out the file if SCC is enabled
-		if(ISourceControlModule::Get().IsEnabled())
+		if (ISourceControlModule::Get().IsEnabled())
 		{
 			FText UnusedFailReason;
 			CheckoutGameProjectFile(ProjectFilename, UnusedFailReason);
 		}
 
 		// Second make sure the file is writable
-		if(FPlatformFileManager::Get().GetPlatformFile().IsReadOnly(*ProjectFilename))
+		if (FPlatformFileManager::Get().GetPlatformFile().IsReadOnly(*ProjectFilename))
 		{
 			FPlatformFileManager::Get().GetPlatformFile().SetReadOnly(*ProjectFilename, false);
 		}
@@ -2688,6 +2968,11 @@ void GameProjectUtils::UpdateAdditionalPluginDirectory(const FString& InDir, con
 
 		IProjectManager::Get().UpdateAdditionalPluginDirectory(InDir, bAddOrRemove);
 	}
+}
+
+const TCHAR* GameProjectUtils::GetDefaultBuildSettingsVersion()
+{
+	return TEXT("BuildSettingsVersion.V2");
 }
 
 bool GameProjectUtils::ReadTemplateFile(const FString& TemplateFileName, FString& OutFileContents, FText& OutFailReason)
@@ -2776,9 +3061,9 @@ FString GameProjectUtils::DetermineModuleIncludePath(const FModuleContextInfo& M
 
 	if(FindSourceFileInProject(ModuleInfo.ModuleName + ".h", ModuleInfo.ModuleSourcePath, ModuleIncludePath))
 	{
-		// Work out where the module header is; 
+		// Work out where the module header is;
 		// if it's Public then we can include it without any path since all Public and Classes folders are on the include path
-		// if it's located elsewhere, then we'll need to include it relative to the module source root as we can't guarantee 
+		// if it's located elsewhere, then we'll need to include it relative to the module source root as we can't guarantee
 		// that other folders are on the include paths
 		EClassLocation ModuleLocation;
 		if(GetClassLocation(ModuleIncludePath, ModuleInfo, ModuleLocation))
@@ -3125,7 +3410,7 @@ bool GameProjectUtils::GeneratePluginModuleBuildFile(const FString& NewBuildFile
 	FinalOutput = FinalOutput.Replace(TEXT("%PUBLIC_DEPENDENCY_MODULE_NAMES%"), *MakeCommaDelimitedList(PublicDependencyModuleNames), ESearchCase::CaseSensitive);
 	FinalOutput = FinalOutput.Replace(TEXT("%PRIVATE_DEPENDENCY_MODULE_NAMES%"), *MakeCommaDelimitedList(PrivateDependencyModuleNames), ESearchCase::CaseSensitive);
 	FinalOutput = FinalOutput.Replace(TEXT("%MODULE_NAME%"), *ModuleName, ESearchCase::CaseSensitive);
-	
+
 	const FString PCHUsage = bUseExplicitOrSharedPCHs ? TEXT("UseExplicitOrSharedPCHs") : TEXT("UseSharedPCHs");
 	FinalOutput = FinalOutput.Replace(TEXT("%PCH_USAGE%"), *PCHUsage, ESearchCase::CaseSensitive);
 
@@ -3144,6 +3429,7 @@ bool GameProjectUtils::GenerateGameModuleTargetFile(const FString& NewBuildFileN
 	FinalOutput = FinalOutput.Replace(TEXT("%EXTRA_MODULE_NAMES%"), *MakeCommaDelimitedList(ExtraModuleNames), ESearchCase::CaseSensitive);
 	FinalOutput = FinalOutput.Replace(TEXT("%MODULE_NAME%"), *ModuleName, ESearchCase::CaseSensitive);
 	FinalOutput = FinalOutput.Replace(TEXT("%TARGET_TYPE%"), TEXT("Game"), ESearchCase::CaseSensitive);
+	FinalOutput = FinalOutput.Replace(TEXT("%DEFAULT_BUILD_SETTINGS_VERSION%"), GetDefaultBuildSettingsVersion(), ESearchCase::CaseSensitive);
 
 	return WriteOutputFile(NewBuildFileName, FinalOutput, OutFailReason);
 }
@@ -3178,6 +3464,7 @@ bool GameProjectUtils::GenerateEditorModuleTargetFile(const FString& NewBuildFil
 	FinalOutput = FinalOutput.Replace(TEXT("%EXTRA_MODULE_NAMES%"), *MakeCommaDelimitedList(ExtraModuleNames), ESearchCase::CaseSensitive);
 	FinalOutput = FinalOutput.Replace(TEXT("%MODULE_NAME%"), *ModuleName, ESearchCase::CaseSensitive);
 	FinalOutput = FinalOutput.Replace(TEXT("%TARGET_TYPE%"), TEXT("Editor"), ESearchCase::CaseSensitive);
+	FinalOutput = FinalOutput.Replace(TEXT("%DEFAULT_BUILD_SETTINGS_VERSION%"), GetDefaultBuildSettingsVersion(), ESearchCase::CaseSensitive);
 
 	return WriteOutputFile(NewBuildFileName, FinalOutput, OutFailReason);
 }
@@ -3467,7 +3754,7 @@ void FindCodeFiles(const TCHAR* BaseDirectory, TArray<FString>& FileNames, int32
 		TArray<FString>& FileNames;
 		int32 MaxNumFileNames;
 
-		FDirectoryVisitor(TArray<FString>& InFileNames, int32 InMaxNumFileNames) 
+		FDirectoryVisitor(TArray<FString>& InFileNames, int32 InMaxNumFileNames)
 			: FileNames(InFileNames)
 			, MaxNumFileNames(InMaxNumFileNames)
 		{
@@ -3530,120 +3817,6 @@ bool GameProjectUtils::ProjectHasCodeFiles()
 	TArray<FString> FileNames;
 	FindCodeFiles(*FPaths::GameSourceDir(), FileNames, 1);
 	return FileNames.Num() > 0;
-}
-
-bool GameProjectUtils::ProjectRequiresBuild(const FName InPlatformInfoName)
-{
-	//  early out on projects with code files
-	if (ProjectHasCodeFiles())
-	{
-		return true;
-	}
-
-	bool bRequiresBuild = false;
-
-	if (!FApp::IsEngineInstalled())
-	{
-		// check to see if the default build settings have changed
-		bRequiresBuild |= !HasDefaultBuildSettings(InPlatformInfoName);
-	}
-
-	// check to see if any plugins beyond the defaults have been enabled
-	bRequiresBuild |= !IProjectManager::Get().HasDefaultPluginSettings();
-
-	// check to see if Blueprint nativization is enabled in the Project settings
-	bRequiresBuild |= GetDefault<UProjectPackagingSettings>()->BlueprintNativizationMethod != EProjectPackagingBlueprintNativizationMethod::Disabled;
-
-	// check to see if any projectmutator modular features are available
-	for (FProjectBuildMutatorFeature* Feature : IModularFeatures::Get().GetModularFeatureImplementations<FProjectBuildMutatorFeature>(FProjectBuildMutatorFeature::GetFeatureName()))
-	{
-		bRequiresBuild |= Feature->RequiresProjectBuild(InPlatformInfoName);
-	}
-
-	return bRequiresBuild;
-}
-
-bool GameProjectUtils::DoProjectSettingsMatchDefault(const FString& InPlatformName, const FString& InSection, const TArray<FString>* InBoolKeys, const TArray<FString>* InIntKeys, const TArray<FString>* InStringKeys)
-{
-	FConfigFile ProjIni;
-	FConfigFile DefaultIni;
-	FConfigCacheIni::LoadLocalIniFile(ProjIni, TEXT("Engine"), true, *InPlatformName, true);
-	FConfigCacheIni::LoadExternalIniFile(DefaultIni, TEXT("Engine"), *FPaths::EngineConfigDir(), *FPaths::EngineConfigDir(), true, NULL, true);
-
-	if (InBoolKeys != NULL)
-	{
-		for (int Index = 0; Index < InBoolKeys->Num(); ++Index)
-		{
-			FString Default(TEXT("False")), Project(TEXT("False"));
-			DefaultIni.GetString(*InSection, *((*InBoolKeys)[Index]), Default);
-			ProjIni.GetString(*InSection, *((*InBoolKeys)[Index]), Project);
-			if (Default.Compare(Project, ESearchCase::IgnoreCase))
-			{
-				return false;
-			}
-		}
-	}
-
-	if (InIntKeys != NULL)
-	{
-		for (int Index = 0; Index < InIntKeys->Num(); ++Index)
-		{
-			int64 Default(0), Project(0);
-			DefaultIni.GetInt64(*InSection, *((*InIntKeys)[Index]), Default);
-			ProjIni.GetInt64(*InSection, *((*InIntKeys)[Index]), Project);
-			if (Default != Project)
-			{
-				return false;
-			}
-		}
-	}
-
-	if (InStringKeys != NULL)
-	{
-		for (int Index = 0; Index < InStringKeys->Num(); ++Index)
-		{
-			FString Default(TEXT("False")), Project(TEXT("False"));
-			DefaultIni.GetString(*InSection, *((*InStringKeys)[Index]), Default);
-			ProjIni.GetString(*InSection, *((*InStringKeys)[Index]), Project);
-			if (Default.Compare(Project, ESearchCase::IgnoreCase))
-			{
-				return false;
-			}
-		}
-	}
-
-	return true;
-}
-
-bool GameProjectUtils::HasDefaultBuildSettings(const FName InPlatformInfoName)
-{
-	// first check default build settings for all platforms
-	TArray<FString> BoolKeys, IntKeys, StringKeys, BuildKeys;
-	BuildKeys.Add(TEXT("bCompileApex")); BuildKeys.Add(TEXT("bCompileICU"));
-	BuildKeys.Add(TEXT("bCompileSimplygon")); BuildKeys.Add(TEXT("bCompileSimplygonSSF"));
-	BuildKeys.Add(TEXT("bCompileRecast")); BuildKeys.Add(TEXT("bCompileSpeedTree"));
-	BuildKeys.Add(TEXT("bCompileWithPluginSupport")); BuildKeys.Add(TEXT("bCompilePhysXVehicle")); BuildKeys.Add(TEXT("bCompileFreeType"));
-	BuildKeys.Add(TEXT("bCompileForSize"));	BuildKeys.Add(TEXT("bCompileCEF3")); BuildKeys.Add(TEXT("bCompileCustomSQLitePlatform"));
-
-	const PlatformInfo::FPlatformInfo* const PlatInfo = PlatformInfo::FindPlatformInfo(InPlatformInfoName);
-	check(PlatInfo);
-
-	if (!DoProjectSettingsMatchDefault(PlatInfo->TargetPlatformName.ToString(), TEXT("/Script/BuildSettings.BuildSettings"), &BuildKeys))
-	{
-		return false;
-	}
-
-	if (PlatInfo->SDKStatus == PlatformInfo::EPlatformSDKStatus::Installed)
-	{
-		const ITargetPlatform* const Platform = GetTargetPlatformManager()->FindTargetPlatform(PlatInfo->TargetPlatformName.ToString());
-		if (Platform)
-		{
-			FString PlatformSection;
-			Platform->GetBuildProjectSettingKeys(PlatformSection, BoolKeys, IntKeys, StringKeys);
-			return DoProjectSettingsMatchDefault(PlatInfo->TargetPlatformName.ToString(), PlatformSection, &BoolKeys, &IntKeys, &StringKeys);
-		}
-	}
-	return true;
 }
 
 TArray<FString> GameProjectUtils::GetRequiredAdditionalDependencies(const FNewClassInfo& ClassInfo)
@@ -3710,7 +3883,7 @@ GameProjectUtils::EAddCodeToProjectResult GameProjectUtils::AddCodeToProject_Int
 
 	// Update project file if needed.
 	auto bUpdateProjectModules = false;
-	
+
 	// If the project does not already contain code, add the primary game module
 	TArray<FString> CreatedFiles;
 	TArray<FString> StartupModuleNames;
@@ -3718,6 +3891,9 @@ GameProjectUtils::EAddCodeToProjectResult GameProjectUtils::AddCodeToProject_Int
 	const bool bProjectHadCodeFiles = ProjectHasCodeFiles();
 	if (!bProjectHadCodeFiles)
 	{
+		// Delete any generated intermediate code files. This ensures that blueprint projects with custom build settings can be converted to code projects without causing errors.
+		IFileManager::Get().DeleteDirectory(*(FPaths::ProjectIntermediateDir() / TEXT("Source")), false, true);
+
 		// We always add the basic source code to the root directory, not the potential sub-directory provided by NewClassPath
 		const FString SourceDir = FPaths::GameSourceDir().LeftChop(1); // Trim the trailing /
 
@@ -3806,14 +3982,10 @@ GameProjectUtils::EAddCodeToProjectResult GameProjectUtils::AddCodeToProject_Int
 	// First see if we can avoid a full generation by adding the new files to an already open project
 	if ( bProjectHadCodeFiles && FSourceCodeNavigation::AddSourceFiles(CreatedFilesForExternalAppRead) )
 	{
-		// We successfully added the new files to the solution, but we still need to run UBT with -gather to update any UBT makefiles
-		if ( FDesktopPlatformModule::Get()->InvalidateMakefiles(FPaths::RootDir(), FPaths::GetProjectFilePath(), GWarn) )
-		{
-			// We managed the gather, so we can skip running the full generate
-			bGenerateProjectFiles = false;
-		}
+		// We managed the gather, so we can skip running the full generate
+		bGenerateProjectFiles = false;
 	}
-	
+
 	if ( bGenerateProjectFiles )
 	{
 		// Generate project files if we happen to be using a project file.
@@ -3838,6 +4010,15 @@ GameProjectUtils::EAddCodeToProjectResult GameProjectUtils::AddCodeToProject_Int
 	OutHeaderFilePath = NewHeaderFilename;
 	OutCppFilePath = NewCppFilename;
 
+#if WITH_LIVE_CODING
+	ILiveCodingModule* LiveCoding = FModuleManager::GetModulePtr<ILiveCodingModule>(LIVE_CODING_MODULE_NAME);
+	if (LiveCoding != nullptr && LiveCoding->IsEnabledForSession())
+	{
+		OutFailReason = LOCTEXT("FailedToCompileLiveCodingEnabled", "Adding classes dynamically is not allowed with Live Coding enabled.");
+		return EAddCodeToProjectResult::FailedToHotReload;
+	}
+#endif
+
 	if (!bProjectHadCodeFiles)
 	{
 		// This is the first time we add code to this project so compile its game DLL
@@ -3845,10 +4026,7 @@ GameProjectUtils::EAddCodeToProjectResult GameProjectUtils::AddCodeToProject_Int
 		check(ModuleInfo.ModuleName == GameModuleName);
 
 		IHotReloadInterface& HotReloadSupport = FModuleManager::LoadModuleChecked<IHotReloadInterface>("HotReload");
-		const bool bReloadAfterCompiling = true;
-		const bool bForceCodeProject = true;
-		const bool bFailIfGeneratedCodeChanges = false;
-		if (!HotReloadSupport.RecompileModule(*GameModuleName, bReloadAfterCompiling, *GWarn, bFailIfGeneratedCodeChanges, bForceCodeProject))
+		if (!HotReloadSupport.RecompileModule(*GameModuleName, *GWarn, ERecompileModuleFlags::ReloadAfterRecompile | ERecompileModuleFlags::ForceCodeProject))
 		{
 			OutFailReason = LOCTEXT("FailedToCompileNewGameModule", "Failed to compile newly created game module.");
 			return EAddCodeToProjectResult::FailedToHotReload;
@@ -3894,10 +4072,7 @@ GameProjectUtils::EAddCodeToProjectResult GameProjectUtils::AddCodeToProject_Int
 			else
 			{
 				// Perform a regular unload, then reload
-				const bool bReloadAfterRecompile = true;
-				const bool bForceCodeProject = false;
-				const bool bFailIfGeneratedCodeChanges = true;
-				if (!HotReloadSupport.RecompileModule(ModuleFName, bReloadAfterRecompile, *GWarn, bFailIfGeneratedCodeChanges, bForceCodeProject))
+				if (!HotReloadSupport.RecompileModule(ModuleFName, *GWarn, ERecompileModuleFlags::ReloadAfterRecompile | ERecompileModuleFlags::FailIfGeneratedCodeChanges))
 				{
 					OutFailReason = FText::Format(LOCTEXT("FailedToCompileModuleFmt", "Failed to automatically compile the '{0}' module."), FText::FromString(ModuleInfo.ModuleName));
 					return EAddCodeToProjectResult::FailedToHotReload;
@@ -3913,7 +4088,7 @@ bool GameProjectUtils::FindSourceFileInProject(const FString& InFilename, const 
 {
 	TArray<FString> Filenames;
 	IFileManager::Get().FindFilesRecursive(Filenames, *InSearchPath, *InFilename, true, false, false);
-	
+
 	if(Filenames.Num())
 	{
 		// Assume it's the first match (we should really only find a single file with a given name within a project anyway)
@@ -3969,18 +4144,11 @@ bool GameProjectUtils::InsertFeaturePacksIntoINIFile(const FProjectInformation& 
 	// First the starter content
 	if (InProjectInfo.bCopyStarterContent)
 	{
-		FString StarterPack;
-		if (InProjectInfo.TargetedHardware == EHardwareClass::Mobile)
-		{
-			StarterPack = TEXT("InsertPack=(PackSource=\"MobileStarterContent") + DefaultFeaturePackExtension + TEXT("\",PackName=\"StarterContent\")");
-		}
-		else
-		{
-			StarterPack = TEXT("InsertPack=(PackSource=\"StarterContent")  + DefaultFeaturePackExtension + TEXT("\",PackName=\"StarterContent\")");
-		}
+		FString StarterContentName = GameProjectUtils::GetStarterContentName(InProjectInfo);
+		FString StarterPack = FString::Printf(TEXT("InsertPack=(PackSource=\"%s.upack\",PackName=\"StarterContent\")"), *StarterContentName);
 		PackList.Add(StarterPack);
 	}
-	
+
 	if (PackList.Num() != 0)
 	{
 		FString FileOutput;
@@ -4016,9 +4184,6 @@ bool GameProjectUtils::AddSharedContentToProject(const FProjectInformation &InPr
 	const FString SrcFolder = FPaths::GetPath(InProjectInfo.TemplateFile);
 	const FString DestFolder = FPaths::GetPath(InProjectInfo.ProjectFilename);
 
-	const FString ProjectConfigPath = DestFolder / TEXT("Config");
-	const FString IniFilename = ProjectConfigPath / TEXT("DefaultGame.ini");
-	
 	// Now any packs specified in the template def.
 	UTemplateProjectDefs* TemplateDefs = LoadTemplateDefs(SrcFolder);
 	if (TemplateDefs != NULL)
@@ -4029,15 +4194,14 @@ bool GameProjectUtils::AddSharedContentToProject(const FProjectInformation &InPr
 			RequiredDetail = EFeaturePackDetailLevel::Standard;
 		}
 
-
 		TUniquePtr<FFeaturePackContentSource> TempFeaturePack = MakeUnique<FFeaturePackContentSource>();
-		bool bCopied = TempFeaturePack->InsertAdditionalResources(TemplateDefs->SharedContentPacks,RequiredDetail, DestFolder,CreatedFiles);
+		bool bCopied = TempFeaturePack->InsertAdditionalResources(TemplateDefs->SharedContentPacks, RequiredDetail, DestFolder, CreatedFiles);
 		if( bCopied == false )
 		{
 			FFormatNamedArguments Args;
 			Args.Add(TEXT("TemplateName"), FText::FromString(SrcFolder));
 			OutFailReason = FText::Format(LOCTEXT("SharedResourceError", "Error adding shared resources for '{TemplateName}'."), Args);
-			return false;		
+			return false;
 		}
 	}
 	return true;

@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 /*=============================================================================
 	EditorPhysXSupport.h: Editor version of the engine's PhysXSupport.h
@@ -54,7 +54,7 @@ THIRD_PARTY_INCLUDES_START
 #include "ModuleClothing.h"
 
 // Assets
-#include "Assets/ClothingAsset.h"
+#include "Assets/ClothingAssetNv.h"
 
 // Actors
 #include "ClothingActor.h"

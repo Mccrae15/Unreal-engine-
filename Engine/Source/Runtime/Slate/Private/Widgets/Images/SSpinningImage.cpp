@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "Widgets/Images/SSpinningImage.h"
 #include "Rendering/DrawElements.h"
@@ -6,7 +6,7 @@
 
 void SSpinningImage::Construct(const FArguments& InArgs)
 {
-	Image = InArgs._Image;
+	Image = FInvalidatableBrushAttribute(InArgs._Image);
 	ColorAndOpacity = InArgs._ColorAndOpacity;
 
 	if (InArgs._OnMouseButtonDown.IsBound())

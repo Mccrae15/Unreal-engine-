@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -16,5 +16,6 @@ class BACKGROUNDHTTP_API FGenericPlatformBackgroundHttpManager
 	: public FBackgroundHttpManagerImpl
 {
 public:
+	virtual bool IsGenericImplementation() const override { return true; }
 	virtual ~FGenericPlatformBackgroundHttpManager();
 };

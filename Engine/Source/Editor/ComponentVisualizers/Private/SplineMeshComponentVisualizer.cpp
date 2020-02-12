@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "SplineMeshComponentVisualizer.h"
 #include "Widgets/SNullWidget.h"
@@ -56,8 +56,13 @@ void FSplineMeshComponentVisualizer::DrawVisualization(const UActorComponent* Co
 			const FVector TangentWorldDirection = SplineMeshComp->GetComponentTransform().TransformVector(Spline.Points[PointIndex].LeaveTangent);
 
 			PDI->SetHitProxy(NULL);
-			DrawDashedLine(PDI, KeyPos, KeyPos + TangentWorldDirection, Color, 5, SDPG_Foreground);
-			DrawDashedLine(PDI, KeyPos, KeyPos - TangentWorldDirection, Color, 5, SDPG_Foreground);
+			const float DefaultDashSize = 5.f;
+			const int32 MaxDashDrawCount = 65536;
+			const float LineSize = TangentWorldDirection.Size();
+			int32 DrawCount = FMath::CeilToInt(LineSize / (2.f * DefaultDashSize));
+			float DashSize = (DrawCount > MaxDashDrawCount) ? LineSize / (2.f * MaxDashDrawCount) : DefaultDashSize;
+			DrawDashedLine(PDI, KeyPos, KeyPos + TangentWorldDirection, Color, DashSize, SDPG_Foreground);
+			DrawDashedLine(PDI, KeyPos, KeyPos - TangentWorldDirection, Color, DashSize, SDPG_Foreground);
 			PDI->SetHitProxy(new HSplineMeshTangentHandleProxy(Component, PointIndex, false));
 			PDI->DrawPoint(KeyPos + TangentWorldDirection, Color, TangentHandleSize, SDPG_Foreground);
 			PDI->SetHitProxy(new HSplineMeshTangentHandleProxy(Component, PointIndex, true));
@@ -109,10 +114,18 @@ bool FSplineMeshComponentVisualizer::VisProxyHandleClick(FEditorViewportClient* 
 	{
 		const USplineMeshComponent* SplineMeshComp = CastChecked<const USplineMeshComponent>(VisProxy->Component.Get());
 
-		SplineMeshCompPropName = GetComponentPropertyName(SplineMeshComp);
-		if (SplineMeshCompPropName.IsValid())
+		AActor* OldSplineMeshOwningActor = SplineMeshPropertyPath.GetParentOwningActor();
+		SplineMeshPropertyPath = FComponentPropertyPath(SplineMeshComp);
+		AActor* NewSplineMeshOwningActor = SplineMeshPropertyPath.GetParentOwningActor();
+
+		if (SplineMeshPropertyPath.IsValid())
 		{
-			SplineMeshOwningActor = SplineMeshComp->GetOwner();
+			if (OldSplineMeshOwningActor != NewSplineMeshOwningActor)
+			{
+				SelectedKey = INDEX_NONE;
+				SelectedTangentHandle = INDEX_NONE;
+				SelectedTangentHandleType = ESelectedTangentHandle::None;
+			}
 
 			if (VisProxy->IsA(HSplineMeshKeyProxy::StaticGetType()))
 			{
@@ -141,7 +154,7 @@ bool FSplineMeshComponentVisualizer::VisProxyHandleClick(FEditorViewportClient* 
 		}
 		else
 		{
-			SplineMeshOwningActor = NULL;
+			SplineMeshPropertyPath.Reset();
 		}
 	}
 
@@ -150,7 +163,7 @@ bool FSplineMeshComponentVisualizer::VisProxyHandleClick(FEditorViewportClient* 
 
 USplineMeshComponent* FSplineMeshComponentVisualizer::GetEditedSplineMeshComponent() const
 {
-	return Cast<USplineMeshComponent>(GetComponentFromPropertyName(SplineMeshOwningActor.Get(), SplineMeshCompPropName));
+	return Cast<USplineMeshComponent>(SplineMeshPropertyPath.GetComponent());
 }
 
 
@@ -359,8 +372,7 @@ bool FSplineMeshComponentVisualizer::HandleInputKey(FEditorViewportClient* Viewp
 
 void FSplineMeshComponentVisualizer::EndEditing()
 {
-	SplineMeshOwningActor = NULL;
-	SplineMeshCompPropName.Clear();
+	SplineMeshPropertyPath.Reset();
 	SelectedKey = INDEX_NONE;
 	SelectedTangentHandle = INDEX_NONE;
 	SelectedTangentHandleType = ESelectedTangentHandle::None;
@@ -376,9 +388,9 @@ TSharedPtr<SWidget> FSplineMeshComponentVisualizer::GenerateContextMenu() const
 void FSplineMeshComponentVisualizer::NotifyComponentModified()
 {
 	// Notify of change so any CS is re-run
-	if (SplineMeshOwningActor.IsValid())
+	if (SplineMeshPropertyPath.IsValid())
 	{
-		SplineMeshOwningActor.Get()->PostEditMove(true);
+		SplineMeshPropertyPath.GetParentOwningActor()->PostEditMove(true);
 	}
 
 	GEditor->RedrawLevelEditingViewports(true);

@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "AudioRecordingManager.h"
 #include "AudioCaptureEditor.h"
@@ -405,7 +405,7 @@ void FAudioRecordingManager::StopRecording(TArray<USoundWave*>& OutSoundWaves)
 					}
 
 					// Compressed data is now out of date.
-					NewSoundWave->InvalidateCompressedData();
+					NewSoundWave->InvalidateCompressedData(true, false);
 
 					// Copy the raw wave data file to the sound wave for storage. Will allow the recording to be exported.
 					NewSoundWave->RawData.Lock(LOCK_READ_WRITE);

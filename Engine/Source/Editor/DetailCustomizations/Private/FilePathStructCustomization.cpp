@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "FilePathStructCustomization.h"
 #include "Widgets/DeclarativeSyntaxSupport.h"
@@ -42,7 +42,14 @@ void FFilePathStructCustomization::CustomizeHeader( TSharedRef<IPropertyHandle> 
 	}
 	else
 	{
-		FileTypeFilter = FString::Printf(TEXT("%s files (*.%s)|*.%s"), *MetaData, *MetaData, *MetaData);
+		if (MetaData.Contains(TEXT("|"))) // If MetaData follows the Description|ExtensionList format, use it as is
+		{
+			FileTypeFilter = MetaData;
+		}
+		else
+		{
+			FileTypeFilter = FString::Printf(TEXT("%s files (*.%s)|*.%s"), *MetaData, *MetaData, *MetaData);
+		}
 	}
 
 	// create path picker widget
@@ -95,16 +102,22 @@ void FFilePathStructCustomization::HandleFilePathPickerPathPicked( const FString
 	}
 	else if (bRelativeToGameDir)
 	{
-		//If the path is part of the project directory, make it relative to it or keep the absolute path.
-		const FString AbsolutePickedPath = FPaths::ConvertRelativePathToFull(PickedPath);
-		const FString AbsoluteProjectDir = FPaths::ConvertRelativePathToFull(FPaths::ProjectDir());
-		if (AbsolutePickedPath.StartsWith(AbsoluteProjectDir))
+		//If path is already relative to Content dir, nothing to do.
+		const FString ContentDir = TEXT("Content/");
+		if (!PickedPath.IsEmpty() && !PickedPath.StartsWith(ContentDir))
 		{
-			FinalPath = AbsolutePickedPath.RightChop(AbsoluteProjectDir.Len());
-		}
-		else
-		{
-			FinalPath = AbsolutePickedPath;
+			//If the path is part of the project directory, make it relative to it or keep the absolute path.
+			const FString AbsolutePickedPath = FPaths::ConvertRelativePathToFull(PickedPath);
+			const FString AbsoluteProjectDir = FPaths::ConvertRelativePathToFull(FPaths::ProjectDir());
+			const FString AbsoluteProjectWithContentDir = AbsoluteProjectDir + ContentDir;
+			if (AbsolutePickedPath.StartsWith(AbsoluteProjectWithContentDir))
+			{
+				FinalPath = AbsolutePickedPath.RightChop(AbsoluteProjectDir.Len());
+			}
+			else
+			{
+				FinalPath = AbsolutePickedPath;
+			}
 		}
 	}
 

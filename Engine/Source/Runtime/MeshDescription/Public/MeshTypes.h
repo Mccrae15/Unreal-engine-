@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -146,6 +146,35 @@ struct FEdgeID : public FElementID
 
 	/** Invalid edge ID */
 	MESHDESCRIPTION_API static const FEdgeID Invalid;
+};
+
+
+USTRUCT(BlueprintType)
+struct FTriangleID : public FElementID
+{
+	GENERATED_BODY()
+
+	FTriangleID()
+	{
+	}
+
+	explicit FTriangleID(const FElementID InitElementID)
+		: FElementID(InitElementID.GetValue())
+	{
+	}
+
+	explicit FTriangleID(const int32 InitIDValue)
+		: FElementID(InitIDValue)
+	{
+	}
+
+	FORCEINLINE friend uint32 GetTypeHash(const FTriangleID& Other)
+	{
+		return GetTypeHash(Other.IDValue);
+	}
+
+	/** Invalid edge ID */
+	MESHDESCRIPTION_API static const FTriangleID Invalid;
 };
 
 

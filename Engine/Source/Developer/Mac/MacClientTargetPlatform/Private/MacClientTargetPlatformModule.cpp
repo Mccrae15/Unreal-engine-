@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 /*=============================================================================
 	MacClientTargetPlatformModule.cpp: Implements the FMacClientTargetPlatformModule class.
@@ -30,7 +30,7 @@ public:
 
 	virtual ITargetPlatform* GetTargetPlatform( ) override
 	{
-		if (Singleton == NULL)
+		if (Singleton == NULL && TGenericMacTargetPlatform<false, false, true>::IsUsable())
 		{
 			Singleton = new TGenericMacTargetPlatform<false, false, true>();
 		}

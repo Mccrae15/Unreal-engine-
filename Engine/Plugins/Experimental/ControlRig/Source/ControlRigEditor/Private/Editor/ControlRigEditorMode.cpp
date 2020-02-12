@@ -1,21 +1,24 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "ControlRigEditorMode.h" 
 #include "BlueprintEditorTabs.h"
 #include "SBlueprintEditorToolbar.h"
-#include "ControlRigTabSummoner.h"
 #include "PersonaModule.h"
 #include "IPersonaToolkit.h"
 #include "PersonaTabs.h"
 #include "RigHierarchyTabSummoner.h"
+#include "RigStackTabSummoner.h"
+#include "RigCurveContainerTabSummoner.h"
+#include "ToolMenus.h"
 
 FControlRigEditorMode::FControlRigEditorMode(const TSharedRef<FControlRigEditor>& InControlRigEditor)
 	: FBlueprintEditorApplicationMode(InControlRigEditor, FControlRigEditorModes::ControlRigEditorMode, FControlRigEditorModes::GetLocalizedMode, false, false)
 {
 	ControlRigBlueprintPtr = CastChecked<UControlRigBlueprint>(InControlRigEditor->GetBlueprintObj());
 
-	TabFactories.RegisterFactory(MakeShared<FControlRigTabSummoner>(InControlRigEditor));
 	TabFactories.RegisterFactory(MakeShared<FRigHierarchyTabSummoner>(InControlRigEditor));
+	TabFactories.RegisterFactory(MakeShared<FRigStackTabSummoner>(InControlRigEditor));
+	TabFactories.RegisterFactory(MakeShared<FRigCurveContainerTabSummoner>(InControlRigEditor));
 
 	FPersonaModule& PersonaModule = FModuleManager::LoadModuleChecked<FPersonaModule>("Persona");
 
@@ -31,7 +34,7 @@ FControlRigEditorMode::FControlRigEditorMode(const TSharedRef<FControlRigEditor>
  	TabFactories.RegisterFactory(PersonaModule.CreatePersonaViewportTabFactory(InControlRigEditor, ViewportArgs));
 	TabFactories.RegisterFactory(PersonaModule.CreateAdvancedPreviewSceneTabFactory(InControlRigEditor, InControlRigEditor->GetPersonaToolkit()->GetPreviewScene()));
 
-	TabLayout = FTabManager::NewLayout("Standalone_ControlRigEditMode_Layout_v1.1")
+	TabLayout = FTabManager::NewLayout("Standalone_ControlRigEditMode_Layout_v1.3")
 		->AddArea
 		(
 			// Main application area
@@ -68,8 +71,8 @@ FControlRigEditorMode::FControlRigEditorMode(const TSharedRef<FControlRigEditor>
 						//	Left bottom - rig/hierarchy
 						FTabManager::NewStack()
 						->SetSizeCoefficient(0.5f)
-						->AddTab(FControlRigTabSummoner::TabID, ETabState::OpenedTab)
 						->AddTab(FRigHierarchyTabSummoner::TabID, ETabState::OpenedTab)
+						->AddTab(FRigStackTabSummoner::TabID, ETabState::OpenedTab)
 					)
 				)
 				->Split
@@ -97,22 +100,29 @@ FControlRigEditorMode::FControlRigEditorMode(const TSharedRef<FControlRigEditor>
 				->Split
 				(
 					// Right side
-					FTabManager::NewStack()
-					->SetHideTabWell(false)
+					FTabManager::NewSplitter()
+					->SetOrientation(Orient_Vertical)
 					->SetSizeCoefficient(0.2f)
-					->AddTab(FBlueprintEditorTabs::DetailsID, ETabState::OpenedTab)
-					->AddTab(FPersonaTabs::AdvancedPreviewSceneSettingsID, ETabState::OpenedTab)
-					->SetForegroundTab(FBlueprintEditorTabs::DetailsID)
+					->Split
+					(
+						// Right top
+						FTabManager::NewStack()
+						->SetHideTabWell(false)
+						->SetSizeCoefficient(1.f)
+						->AddTab(FBlueprintEditorTabs::DetailsID, ETabState::OpenedTab)
+						->AddTab(FPersonaTabs::AdvancedPreviewSceneSettingsID, ETabState::OpenedTab)
+						->SetForegroundTab(FBlueprintEditorTabs::DetailsID)
+					)
 				)
 			)
 		);
 
-	// setup toolbar - clear existing toolbar extender from the BP mode
-	ToolbarExtender = MakeShareable(new FExtender);
-	InControlRigEditor->GetToolbarBuilder()->AddCompileToolbar(ToolbarExtender);
-	InControlRigEditor->GetToolbarBuilder()->AddScriptingToolbar(ToolbarExtender);
-	InControlRigEditor->GetToolbarBuilder()->AddBlueprintGlobalOptionsToolbar(ToolbarExtender);
-//	InControlRigEditor->GetToolbarBuilder()->AddDebuggingToolbar(ToolbarExtender);
+	if (UToolMenu* Toolbar = InControlRigEditor->RegisterModeToolbarIfUnregistered(GetModeName()))
+	{
+		InControlRigEditor->GetToolbarBuilder()->AddCompileToolbar(Toolbar);
+		InControlRigEditor->GetToolbarBuilder()->AddScriptingToolbar(Toolbar);
+		InControlRigEditor->GetToolbarBuilder()->AddBlueprintGlobalOptionsToolbar(Toolbar);
+	}
 }
 
 void FControlRigEditorMode::RegisterTabFactories(TSharedPtr<FTabManager> InTabManager)

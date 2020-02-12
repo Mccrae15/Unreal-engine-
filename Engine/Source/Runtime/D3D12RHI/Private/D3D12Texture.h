@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 /*=============================================================================
 D3D12Texture.h: Implementation of D3D12 Texture
@@ -12,7 +12,8 @@ void SafeCreateTexture2D(FD3D12Device* pDevice,
 	FD3D12ResourceLocation* OutTexture2D, 
 	uint8 Format, 
 	uint32 Flags,
-	D3D12_RESOURCE_STATES InitialState);
+	D3D12_RESOURCE_STATES InitialState,
+	const TCHAR* Name);
 
 
 /** Texture base class. */
@@ -84,11 +85,18 @@ public:
 		MemorySize = InMemorySize;
 	}
 
+	void SetAliasingSource(FTextureRHIRef& SourceTextureRHI)
+	{
+		AliasingSourceTexture = SourceTextureRHI;
+	}
+
 	// Accessors.
 	FD3D12Resource* GetResource() const { return ResourceLocation.GetResource(); }
 	uint64 GetOffset() const { return ResourceLocation.GetOffsetFromBaseOfResource(); }
 	FD3D12ShaderResourceView* GetShaderResourceView() const { return ShaderResourceView; }
 	FD3D12BaseShaderResource* GetBaseShaderResource() const { return BaseShaderResource; }
+	inline const FTextureRHIRef& GetAliasingSourceTexture() const { return AliasingSourceTexture; }
+
 	void SetShaderResourceView(FD3D12ShaderResourceView* InShaderResourceView) { ShaderResourceView = InShaderResourceView; }
 
 	static inline bool ShouldDeferCmdListOperation(FRHICommandList* RHICmdList)
@@ -107,6 +115,7 @@ public:
 	}
 
 	void UpdateTexture(const D3D12_TEXTURE_COPY_LOCATION& DestCopyLocation, uint32 DestX, uint32 DestY, uint32 DestZ, const D3D12_TEXTURE_COPY_LOCATION& SourceCopyLocation);
+	void CopyTextureRegion(uint32 DestX, uint32 DestY, uint32 DestZ, FD3D12TextureBase* SourceTexture, const D3D12_BOX& SourceBox);
 	void InitializeTextureData(class FRHICommandListImmediate* RHICmdList, const void* InitData, uint32 InitDataSize, uint32 SizeX, uint32 SizeY, uint32 SizeZ, uint32 NumSlices, uint32 NumMips, EPixelFormat Format, D3D12_RESOURCE_STATES DestinationState);
 
 	/**
@@ -157,7 +166,9 @@ public:
 		// Alias the location, will perform an addref underneath
 		FD3D12ResourceLocation::Alias(ResourceLocation, Texture->ResourceLocation);
 
-		BaseShaderResource = Texture->BaseShaderResource;
+		// Do not copy the BaseShaderResource from the source texture (this is initialized correctly here, and is used for
+		// state caching logic).
+
 		ShaderResourceView = Texture->ShaderResourceView;
 
 		for (uint32 Index = 0; Index < FExclusiveDepthStencil::MaxIndex; Index++)
@@ -169,6 +180,12 @@ public:
 			RenderTargetViews[Index] = Texture->RenderTargetViews[Index];
 		}
 	}
+
+	// Modifiers.
+	void SetReadBackListHandle(FD3D12CommandListHandle listToWaitFor) { ReadBackSyncPoint = listToWaitFor; }
+	FD3D12CLSyncPoint GetReadBackSyncPoint() const { return ReadBackSyncPoint; }
+
+	FD3D12CLSyncPoint ReadBackSyncPoint;
 
 protected:
 
@@ -195,6 +212,8 @@ protected:
 	uint32	NumDepthStencilViews;
 
 	TMap<uint32, FD3D12LockedResource*> LockedMap;
+
+	FTextureRHIRef AliasingSourceTexture;
 };
 
 #if !PLATFORM_SUPPORTS_VIRTUAL_TEXTURES
@@ -244,7 +263,6 @@ public:
 		, RawTextureMemory(InRawTextureMemory)
 #endif
 	{
-		FMemory::Memzero(ReadBackHeapDesc);
 		if (InTextureLayout == nullptr)
 		{
 			FMemory::Memzero(TextureLayout);
@@ -271,15 +289,9 @@ public:
 
 	// Accessors.
 	FD3D12Resource* GetResource() const { return (FD3D12Resource*)FD3D12TextureBase::GetResource(); }
-	const D3D12_PLACED_SUBRESOURCE_FOOTPRINT& GetReadBackHeapDesc() const
-	{
-		// This should only be called if SetReadBackHeapDesc() was called with actual contents
-		check(ReadBackHeapDesc.Footprint.Width > 0 && ReadBackHeapDesc.Footprint.Height > 0);
 
-		return ReadBackHeapDesc;
-	}
+	void GetReadBackHeapDesc(D3D12_PLACED_SUBRESOURCE_FOOTPRINT& OutFootprint, uint32 Subresource) const;
 
-	FD3D12CLSyncPoint GetReadBackSyncPoint() const { return ReadBackSyncPoint; }
 	bool IsCubemap() const { return bCubemap; }
 
 	/** FRHITexture override.  See FRHITexture::GetNativeResource() */
@@ -293,10 +305,6 @@ public:
 	{
 		return static_cast<FD3D12TextureBase*>(this);
 	}
-
-	// Modifiers.
-	void SetReadBackHeapDesc(const D3D12_PLACED_SUBRESOURCE_FOOTPRINT &newReadBackHeapDesc) { ReadBackHeapDesc = newReadBackHeapDesc; }
-	void SetReadBackListHandle(FD3D12CommandListHandle listToWaitFor) { ReadBackSyncPoint = listToWaitFor; }
 
 	// IRefCountedObject interface.
 	virtual uint32 AddRef() const
@@ -321,6 +329,10 @@ public:
 	{
 		RawTextureMemory = Memory;
 	}
+	FPlatformMemory::FPlatformVirtualMemoryBlock& GetRawTextureBlock()
+	{
+		return RawTextureBlock;
+	}
 #endif
 
 	const FD3D12TextureLayout& GetTextureLayout() const { return TextureLayout; }
@@ -329,14 +341,12 @@ private:
 	/** Unlocks a previously locked mip-map. */
 	void UnlockInternal(class FRHICommandListImmediate* RHICmdList, TD3D12Texture2D* Previous, uint32 MipIndex, uint32 ArrayIndex);
 
-	D3D12_PLACED_SUBRESOURCE_FOOTPRINT ReadBackHeapDesc;
-	FD3D12CLSyncPoint ReadBackSyncPoint;
-
 	/** Whether the texture is a cube-map. */
 	const uint32 bCubemap : 1;
 
 #if PLATFORM_SUPPORTS_VIRTUAL_TEXTURES
 	void* RawTextureMemory;
+	FPlatformMemory::FPlatformVirtualMemoryBlock RawTextureBlock;
 #endif
 
 	FD3D12TextureLayout TextureLayout;
@@ -402,13 +412,18 @@ public:
 		: FRHITexture2D(InSizeX, InSizeY, InNumMips, InNumSamples, InFormat, InFlags, InClearValue)
 	{}
 	uint32 GetSizeZ() const { return 0; }
+
+	virtual void GetWriteMaskProperties(void*& OutData, uint32& OutSize) override final
+	{
+		FD3D12FastClearResource::GetWriteMaskProperties(OutData, OutSize);
+	}
 };
 
 class FD3D12BaseTexture2DArray : public FRHITexture2DArray, public FD3D12FastClearResource
 {
 public:
 	FD3D12BaseTexture2DArray(uint32 InSizeX, uint32 InSizeY, uint32 InSizeZ, uint32 InNumMips, uint32 InNumSamples, EPixelFormat InFormat, uint32 InFlags, const FClearValueBinding& InClearValue)
-		: FRHITexture2DArray(InSizeX, InSizeY, InSizeZ, InNumMips, InFormat, InFlags, InClearValue)
+		: FRHITexture2DArray(InSizeX, InSizeY, InSizeZ, InNumMips, InNumSamples, InFormat, InFlags, InClearValue)
 	{
 		check(InNumSamples == 1);
 	}
@@ -419,12 +434,16 @@ class FD3D12BaseTextureCube : public FRHITextureCube, public FD3D12FastClearReso
 public:
 	FD3D12BaseTextureCube(uint32 InSizeX, uint32 InSizeY, uint32 InSizeZ, uint32 InNumMips, uint32 InNumSamples, EPixelFormat InFormat, uint32 InFlags, const FClearValueBinding& InClearValue)
 		: FRHITextureCube(InSizeX, InNumMips, InFormat, InFlags, InClearValue)
+		, SliceCount(InSizeZ)
 	{
 		check(InNumSamples == 1);
 	}
 	uint32 GetSizeX() const { return GetSize(); }
 	uint32 GetSizeY() const { return GetSize(); }
-	uint32 GetSizeZ() const { return 0; }
+	uint32 GetSizeZ() const { return SliceCount; }
+
+private:
+	uint32 SliceCount;
 };
 
 typedef TD3D12Texture2D<FD3D12BaseTexture2D>      FD3D12Texture2D;
@@ -496,7 +515,7 @@ public:
 	static void UpdateD3D12TextureStats(const D3D12_RESOURCE_DESC& Desc, int64 TextureSize, bool b3D, bool bCubeMap);
 
 	template<typename BaseResourceType>
-	static void D3D12TextureAllocated(TD3D12Texture2D<BaseResourceType>& Texture);
+	static void D3D12TextureAllocated(TD3D12Texture2D<BaseResourceType>& Texture, const D3D12_RESOURCE_DESC *Desc = nullptr);
 
 	template<typename BaseResourceType>
 	static void D3D12TextureDeleted(TD3D12Texture2D<BaseResourceType>& Texture);

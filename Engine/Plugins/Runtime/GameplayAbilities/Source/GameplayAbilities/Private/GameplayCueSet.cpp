@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "GameplayCueSet.h"
 #include "GameplayTagsManager.h"
@@ -23,6 +23,10 @@ UGameplayCueSet::UGameplayCueSet(const FObjectInitializer& ObjectInitializer)
 
 bool UGameplayCueSet::HandleGameplayCue(AActor* TargetActor, FGameplayTag GameplayCueTag, EGameplayCueEvent::Type EventType, const FGameplayCueParameters& Parameters)
 {
+#if WITH_SERVER_CODE
+	QUICK_SCOPE_CYCLE_COUNTER(STAT_GameplayCueSet_HandleGameplayCue);
+#endif
+
 	// GameplayCueTags could have been removed from the dictionary but not content. When the content is resaved the old tag will be cleaned up, but it could still come through here
 	// at runtime. Since we only populate the map with dictionary gameplaycue tags, we may not find it here.
 	int32* Ptr = GameplayCueDataMap.Find(GameplayCueTag);
@@ -260,15 +264,18 @@ bool UGameplayCueSet::HandleGameplayCueNotify_Internal(AActor* TargetActor, int3
 		{
 			if (InstancedCue->HandlesEvent(EventType))
 			{
-				//Get our instance. We should probably have a flag or something to determine if we want to reuse or stack instances. That would mean changing our map to have a list of active instances.
-				AGameplayCueNotify_Actor* SpawnedInstancedCue = CueManager->GetInstancedCueActor(TargetActor, CueData.LoadedGameplayCueClass, Parameters);
-				if (ensure(SpawnedInstancedCue))
+				if (TargetActor)
 				{
-					SpawnedInstancedCue->HandleGameplayCue(TargetActor, EventType, Parameters);
-					bReturnVal = true;
-					if (!SpawnedInstancedCue->IsOverride)
+					//Get our instance. We should probably have a flag or something to determine if we want to reuse or stack instances. That would mean changing our map to have a list of active instances.
+					AGameplayCueNotify_Actor* SpawnedInstancedCue = CueManager->GetInstancedCueActor(TargetActor, CueData.LoadedGameplayCueClass, Parameters);
+					if (ensure(SpawnedInstancedCue))
 					{
-						HandleGameplayCueNotify_Internal(TargetActor, CueData.ParentDataIdx, EventType, Parameters);
+						SpawnedInstancedCue->HandleGameplayCue(TargetActor, EventType, Parameters);
+						bReturnVal = true;
+						if (!SpawnedInstancedCue->IsOverride)
+						{
+							HandleGameplayCueNotify_Internal(TargetActor, CueData.ParentDataIdx, EventType, Parameters);
+						}
 					}
 				}
 			}

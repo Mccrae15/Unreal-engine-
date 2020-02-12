@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -10,7 +10,7 @@ class FJsonValue;
 
 #if WITH_TEXT_ARCHIVE_SUPPORT
 
-class FJsonArchiveInputFormatter final : public FStructuredArchiveFormatter
+class COREUOBJECT_API FJsonArchiveInputFormatter final : public FStructuredArchiveFormatter
 {
 public:
 	FJsonArchiveInputFormatter(FArchive& InInner, TFunction<UObject* (const FString&)> InResolveObjectName = nullptr);
@@ -47,6 +47,14 @@ public:
 	virtual void EnterMapElement(FString& Name) override;
 	virtual void EnterMapElement_TextOnly(FString& OutName, EArchiveValueType& OutType) override;
 	virtual void LeaveMapElement() override;
+
+	virtual void EnterAttributedValue() override;
+	virtual void EnterAttribute(FArchiveFieldName AttributeName) override;
+	virtual void EnterAttributedValueValue() override;
+	virtual void LeaveAttribute() override;
+	virtual void LeaveAttributedValue() override;
+	virtual bool TryEnterAttribute(FArchiveFieldName AttributeName, bool bEnterWhenSavin) override;
+	virtual bool TryEnterAttributedValueValue() override;
 
 	virtual void Serialize(uint8& Value) override;
 	virtual void Serialize(uint16& Value) override;
@@ -90,6 +98,7 @@ private:
 	TArray<FObjectRecord> ObjectStack;
 	TArray<TSharedPtr<FJsonValue>> ValueStack;
 	TArray<TMap<FString, TSharedPtr<FJsonValue>>::TIterator> MapIteratorStack;
+	TArray<int32> ArrayValuesRemainingStack;
 
 	static FString EscapeFieldName(const TCHAR* Name);
 	static FString UnescapeFieldName(const TCHAR* Name);

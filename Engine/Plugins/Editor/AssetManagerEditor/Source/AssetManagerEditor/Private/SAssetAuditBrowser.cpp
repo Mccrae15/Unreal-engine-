@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 
 #include "SAssetAuditBrowser.h"
@@ -9,7 +9,7 @@
 #include "Widgets/Text/STextBlock.h"
 #include "Widgets/Input/SMenuAnchor.h"
 #include "Framework/MultiBox/MultiBoxBuilder.h"
-#include "Toolkits/AssetEditorManager.h"
+
 #include "EditorStyleSet.h"
 #include "Widgets/Layout/SBox.h"
 #include "Widgets/Input/SButton.h"
@@ -32,6 +32,8 @@
 #include "Framework/Application/SlateApplication.h"
 #include "DragAndDrop/AssetDragDropOp.h"
 #include "Blueprint/BlueprintSupport.h"
+#include "Subsystems/AssetEditorSubsystem.h"
+#include "Editor.h"
 
 #define LOCTEXT_NAMESPACE "AssetManagementBrowser"
 
@@ -132,7 +134,7 @@ void SAssetAuditBrowser::EditSelectedAssets() const
 		AssetNames.Add(AssetData.ObjectPath);
 	}
 
-	FAssetEditorManager::Get().OpenEditorsForAssets(AssetNames);
+	GEditor->GetEditorSubsystem<UAssetEditorSubsystem>()->OpenEditorsForAssets(AssetNames);
 }
 
 void SAssetAuditBrowser::OnRequestOpenAsset(const FAssetData& AssetData) const
@@ -140,7 +142,7 @@ void SAssetAuditBrowser::OnRequestOpenAsset(const FAssetData& AssetData) const
 	TArray<FName> AssetNames;
 	AssetNames.Add(AssetData.ObjectPath);
 
-	FAssetEditorManager::Get().OpenEditorsForAssets(AssetNames);
+	GEditor->GetEditorSubsystem<UAssetEditorSubsystem>()->OpenEditorsForAssets(AssetNames);
 }
 
 void SAssetAuditBrowser::SaveSelectedAssets() const
@@ -231,8 +233,6 @@ void SAssetAuditBrowser::Construct(const FArguments& InArgs)
 	AssetRegistry = &AssetRegistryModule.Get();
 	AssetManager = &UAssetManager::Get();
 	EditorModule = &IAssetManagerEditorModule::Get();
-
-	AssetManager->UpdateManagementDatabase();
 
 	TArray<const FAssetManagerEditorRegistrySource*> AvailableSources;
 	ManagerEditorModule.GetAvailableRegistrySources(AvailableSources);
@@ -495,7 +495,9 @@ void SAssetAuditBrowser::Construct(const FArguments& InArgs)
 		]
 	];
 
-	RefreshAssetView();
+	// Refresh our data sources to make sure we are displaying up to date info otherwise the user will need to 
+	// hit "refresh" every time they open the dialog to be able to trust it
+	ManagerEditorModule.RefreshRegistryData();
 }
 
 FReply SAssetAuditBrowser::OnKeyDown(const FGeometry& MyGeometry, const FKeyEvent& InKeyEvent)
@@ -619,7 +621,7 @@ TSharedRef<SWidget> SAssetAuditBrowser::CreateHistoryMenu(bool bInBackHistory) c
 
 			MenuBuilder.AddMenuEntry(DisplayName, DisplayName, FSlateIcon(),
 				FUIAction(
-					FExecuteAction::CreateRaw(this, &SAssetAuditBrowser::GoToHistoryIndex, HistoryIdx)
+					FExecuteAction::CreateRaw(const_cast<SAssetAuditBrowser*>(this), &SAssetAuditBrowser::GoToHistoryIndex, HistoryIdx)
 				),
 				NAME_None, EUserInterfaceActionType::Button);
 			--HistoryIdx;
@@ -634,7 +636,7 @@ TSharedRef<SWidget> SAssetAuditBrowser::CreateHistoryMenu(bool bInBackHistory) c
 
 			MenuBuilder.AddMenuEntry(DisplayName, DisplayName, FSlateIcon(),
 				FUIAction(
-					FExecuteAction::CreateRaw(this, &SAssetAuditBrowser::GoToHistoryIndex, HistoryIdx)
+					FExecuteAction::CreateRaw(const_cast<SAssetAuditBrowser*>(this), &SAssetAuditBrowser::GoToHistoryIndex, HistoryIdx)
 				),
 				NAME_None, EUserInterfaceActionType::Button);
 			++HistoryIdx;

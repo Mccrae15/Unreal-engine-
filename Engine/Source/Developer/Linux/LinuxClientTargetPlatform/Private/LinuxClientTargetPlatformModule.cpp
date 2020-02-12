@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 /*=============================================================================
 	LinuxClientTargetPlatformModule.cpp: Implements the FLinuxClientTargetPlatformModule class.
@@ -34,9 +34,9 @@ public:
 
 	virtual ITargetPlatform* GetTargetPlatform( )
 	{
-		if (Singleton == NULL)
+		if (Singleton == NULL && TLinuxTargetPlatform<FLinuxPlatformProperties<false, false, true, false> >::IsUsable())
 		{
- 			Singleton = new TLinuxTargetPlatform<FLinuxPlatformProperties<false, false, true> >();
+ 			Singleton = new TLinuxTargetPlatform<FLinuxPlatformProperties<false, false, true, false> >();
 		}
 
 		return Singleton;

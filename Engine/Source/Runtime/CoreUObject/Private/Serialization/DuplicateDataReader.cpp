@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "CoreMinimal.h"
 #include "Serialization/ArchiveUObject.h"
@@ -47,8 +47,8 @@ void FDuplicateDataReader::SerializeFail()
 
 FArchive& FDuplicateDataReader::operator<<(FName& N)
 {
-	NAME_INDEX ComparisonIndex;
-	NAME_INDEX DisplayIndex;
+	FNameEntryId ComparisonIndex;
+	FNameEntryId DisplayIndex;
 	int32 Number;
 	ByteOrderSerialize(&ComparisonIndex, sizeof(ComparisonIndex));
 	ByteOrderSerialize(&DisplayIndex, sizeof(DisplayIndex));
@@ -105,3 +105,8 @@ FArchive& FDuplicateDataReader::operator<<(FSoftObjectPath& SoftObjectPath)
 	
 	return *this;
 }
+
+//FArchive& FDuplicateDataReader::operator<<(FField*& Field)
+//{
+//
+//}

@@ -21,8 +21,6 @@
 
 #endif
 
-#include <algorithm>
-
 APhononProbeVolume::APhononProbeVolume(const FObjectInitializer& ObjectInitializer)
 	: Super(ObjectInitializer)
 	, PlacementStrategy(EPhononProbePlacementStrategy::UNIFORM_FLOOR)
@@ -170,7 +168,7 @@ void APhononProbeVolume::UpdateProbeData(IPLhandle ProbeBox)
 // UI editability rules
 //==================================================================================================================================================
 
-bool APhononProbeVolume::CanEditChange(const UProperty* InProperty) const
+bool APhononProbeVolume::CanEditChange(const FProperty* InProperty) const
 {
 	const bool ParentVal = Super::CanEditChange(InProperty);
 

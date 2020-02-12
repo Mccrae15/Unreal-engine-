@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "GenericPlatform/GenericPlatformBackgroundHttpResponse.h"
 #include "GenericPlatform/GenericPlatformBackgroundHttp.h"
@@ -16,6 +16,8 @@ FGenericPlatformBackgroundHttpResponse::FGenericPlatformBackgroundHttpResponse(i
 
 FGenericPlatformBackgroundHttpResponse::FGenericPlatformBackgroundHttpResponse(FHttpRequestPtr HttpRequestIn, FHttpResponsePtr HttpResponse, bool bSuccess)
 {
+	ResponseCode = EHttpResponseCodes::Unknown;
+
 	//Don't bother making a response out of a failed HttpRequest
 	if (bSuccess && HttpResponse.IsValid())
 	{

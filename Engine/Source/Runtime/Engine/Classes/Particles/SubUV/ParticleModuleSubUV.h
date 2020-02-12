@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 
 #pragma once
@@ -39,7 +39,7 @@ class UParticleModuleSubUV : public UParticleModuleSubUVBase
 	 *	The movie will update regardless of the slomo settings of the game.
 	 */
 	UPROPERTY(EditAnywhere, Category=Realtime)
-	uint32 bUseRealTime:1;
+	uint8 bUseRealTime:1;
 
 	/** Initializes the default values for this property */
 	void InitializeDefaults();

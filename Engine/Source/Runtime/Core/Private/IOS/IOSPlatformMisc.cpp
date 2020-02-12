@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 /*=============================================================================
 	IOSPlatformMisc.mm: iOS implementations of misc functions
@@ -52,6 +52,10 @@
 #include "Misc/CoreDelegates.h"
 #endif
 
+#if !defined ENABLE_ADVERTISING_IDENTIFIER
+	#define ENABLE_ADVERTISING_IDENTIFIER 0
+#endif
+
 //#include <libproc.h>
 // @pjs commented out to resolve issue with PLATFORM_TVOS being defined by mach-o loader
 //#include <mach-o/dyld.h>
@@ -66,7 +70,7 @@ void (* GMemoryWarningHandler)(const FGenericMemoryWarningContext& Context) = NU
 
 /** global for showing the splash screen */
 bool GShowSplashScreen = true;
-float GOriginalBrightness = 1.0f;
+float GOriginalBrightness = -1.0f;
 
 static int32 GetFreeMemoryMB()
 {
@@ -195,6 +199,8 @@ const TCHAR* FIOSPlatformMisc::GamePersistentDownloadDir()
 #endif
         Result = DownloadPath + Result;
         NSURL* URL = [NSURL fileURLWithPath : Result.GetNSString()];
+#if !PLATFORM_TVOS		
+		// this folder is expected to not exist on TVOS 
         if (![[NSFileManager defaultManager] fileExistsAtPath:[URL path]])
         {
             [[NSFileManager defaultManager] createDirectoryAtURL:URL withIntermediateDirectories : YES attributes : nil error : nil];
@@ -207,6 +213,7 @@ const TCHAR* FIOSPlatformMisc::GamePersistentDownloadDir()
         {
             NSLog(@"Error excluding %@ from backup %@",[URL lastPathComponent], error);
         }
+#endif		
     }
     return *GamePersistentDownloadDir;
 }
@@ -255,7 +262,10 @@ void FIOSPlatformMisc::SetBrightness(float Brightness)
 
 void FIOSPlatformMisc::ResetBrightness()
 {
-    SetBrightness(GOriginalBrightness);
+	if (GOriginalBrightness >= 0.f)
+	{
+		SetBrightness(GOriginalBrightness);
+	}
 }
 
 bool FIOSPlatformMisc::IsRunningOnBattery()
@@ -294,26 +304,33 @@ bool FIOSPlatformMisc::IsInLowPowerMode()
 
 
 #if !PLATFORM_TVOS
-EDeviceScreenOrientation ConvertFromUIDeviceOrientation(UIDeviceOrientation Orientation)
+EDeviceScreenOrientation ConvertFromUIInterfaceOrientation(UIInterfaceOrientation Orientation)
 {
 	switch(Orientation)
 	{
 		default:
-		case UIDeviceOrientationUnknown : return EDeviceScreenOrientation::Unknown; break;
-		case UIDeviceOrientationPortrait : return EDeviceScreenOrientation::Portrait; break;
-		case UIDeviceOrientationPortraitUpsideDown : return EDeviceScreenOrientation::PortraitUpsideDown; break;
-		case UIDeviceOrientationLandscapeLeft : return EDeviceScreenOrientation::LandscapeLeft; break;
-		case UIDeviceOrientationLandscapeRight : return EDeviceScreenOrientation::LandscapeRight; break;
-		case UIDeviceOrientationFaceUp : return EDeviceScreenOrientation::FaceUp; break;
-		case UIDeviceOrientationFaceDown : return EDeviceScreenOrientation::FaceDown; break;
+		case UIInterfaceOrientationUnknown : return EDeviceScreenOrientation::Unknown; break;
+		case UIInterfaceOrientationPortrait : return EDeviceScreenOrientation::Portrait; break;
+		case UIInterfaceOrientationPortraitUpsideDown : return EDeviceScreenOrientation::PortraitUpsideDown; break;
+		case UIInterfaceOrientationLandscapeLeft : return EDeviceScreenOrientation::LandscapeLeft; break;
+		case UIInterfaceOrientationLandscapeRight : return EDeviceScreenOrientation::LandscapeRight; break;
 	}
 }
+#endif
+
+#if !PLATFORM_TVOS
+UIInterfaceOrientation GInterfaceOrientation = UIInterfaceOrientationUnknown;
 #endif
 
 EDeviceScreenOrientation FIOSPlatformMisc::GetDeviceOrientation()
 {
 #if !PLATFORM_TVOS
-	return ConvertFromUIDeviceOrientation([[UIDevice currentDevice] orientation]);
+	if (GInterfaceOrientation == UIInterfaceOrientationUnknown)
+	{
+		GInterfaceOrientation = [[UIApplication sharedApplication] statusBarOrientation];
+	}
+
+	return ConvertFromUIInterfaceOrientation(GInterfaceOrientation);
 #else
 	return EDeviceScreenOrientation::Unknown;
 #endif
@@ -379,9 +396,13 @@ FIOSPlatformMisc::EIOSDevice FIOSPlatformMisc::GetIOSDeviceType()
 		{
 			DeviceType = IOS_IPodTouch5;
 		}
-		else if (Major >= 7)
+		else if (Major == 7)
 		{
 			DeviceType = IOS_IPodTouch6;
+		}
+		else if (Major >= 9)
+		{
+			DeviceType = IOS_IPodTouch7;
 		}
 	}
 	// iPads
@@ -467,6 +488,10 @@ FIOSPlatformMisc::EIOSDevice FIOSPlatformMisc::GetIOSDeviceType()
 			{
 				DeviceType = IOS_IPad6;
 			}
+			else if (Minor == 11 || Minor == 12)
+			{
+				DeviceType = IOS_IPad7;
+			}
 			else
 			{
 				DeviceType = IOS_IPadPro2_129;
@@ -483,7 +508,17 @@ FIOSPlatformMisc::EIOSDevice FIOSPlatformMisc::GetIOSDeviceType()
 				DeviceType = IOS_IPadPro3_129;
 			}
 		}
-
+        else if (Major == 11)
+        {
+            if (Minor <= 2)
+            {
+                DeviceType = IOS_IPadMini5;
+            }
+            else
+            {
+                DeviceType = IOS_IPadAir3;
+            }
+        }
 		// Default to highest settings currently available for any future device
 		else if (Major >= 9)
 		{
@@ -581,17 +616,32 @@ FIOSPlatformMisc::EIOSDevice FIOSPlatformMisc::GetIOSDeviceType()
                 DeviceType = IOS_IPhoneXR;
             }
         }
-		else if (Major >= 12)
+		else if (Major == 12)
+		{
+			if (Minor < 3)
+			{
+				DeviceType = IOS_IPhone11;
+			}
+			else if (Minor < 5)
+			{
+				DeviceType = IOS_IPhone11Pro;
+			}
+			else if (Minor < 7)
+			{
+				DeviceType = IOS_IPhone11ProMax;
+			}
+		}
+		else if (Major >= 13)
 		{
 			// for going forward into unknown devices (like 8/8+?), we can't use Minor,
 			// so treat devices with a scale > 2.5 to be 6SPlus type devices, < 2.5 to be 6S type devices
 			if ([UIScreen mainScreen].scale > 2.5f)
 			{
-				DeviceType = IOS_IPhoneXSMax;
+				DeviceType = IOS_IPhone11ProMax;
 			}
 			else
 			{
-				DeviceType = IOS_IPhoneXS;
+				DeviceType = IOS_IPhone11Pro;
 			}
 		}
 	}
@@ -655,7 +705,7 @@ FIOSPlatformMisc::EIOSDevice FIOSPlatformMisc::GetIOSDeviceType()
 
 int FIOSPlatformMisc::GetDefaultStackSize()
 {
-	return 4 * 1024 * 1024;
+	return 512 * 1024;
 }
 
 void FIOSPlatformMisc::SetMemoryWarningHandler(void (* InHandler)(const FGenericMemoryWarningContext& Context))
@@ -663,8 +713,14 @@ void FIOSPlatformMisc::SetMemoryWarningHandler(void (* InHandler)(const FGeneric
 	GMemoryWarningHandler = InHandler;
 }
 
+bool FIOSPlatformMisc::HasMemoryWarningHandler()
+{
+	return GMemoryWarningHandler != nullptr;
+}
+
 void FIOSPlatformMisc::HandleLowMemoryWarning()
 {
+	UE_LOG(LogInit, Log, TEXT("Low Memory Warning Triggered"));
 	UE_LOG(LogInit, Log, TEXT("Free Memory at Startup: %d MB"), GStartupFreeMemoryMB);
 	UE_LOG(LogInit, Log, TEXT("Free Memory Now       : %d MB"), GetFreeMemoryMB());
 
@@ -790,6 +846,11 @@ void FIOSPlatformMisc::RequestStoreReview()
 #endif
 }
 
+bool FIOSPlatformMisc::IsUpdateAvailable()
+{
+	return [[IOSAppDelegate GetDelegate] IsUpdateAvailable];
+}
+
 /**
 * Returns a unique string for advertising identification
 *
@@ -797,7 +858,7 @@ void FIOSPlatformMisc::RequestStoreReview()
 */
 FString FIOSPlatformMisc::GetUniqueAdvertisingId()
 {
-#if !PLATFORM_TVOS
+#if !PLATFORM_TVOS && ENABLE_ADVERTISING_IDENTIFIER
 	// Check to see if this OS has this function
 	if ([[ASIdentifierManager sharedManager] respondsToSelector:@selector(advertisingIdentifier)])
 	{
@@ -1059,6 +1120,13 @@ FString FIOSPlatformMisc::LoadTextFileFromPlatformPackage(const FString& Relativ
 	return FString(UTF8_TO_TCHAR(FileContents.GetData()));
 }
 
+bool FIOSPlatformMisc::FileExistsInPlatformPackage(const FString& RelativePath)
+{
+	FString FilePath = FString([[NSBundle mainBundle] bundlePath]) / RelativePath;
+
+	return 0 == access(TCHAR_TO_UTF8(*FilePath), F_OK);
+}
+
 void FIOSPlatformMisc::EnableVoiceChat(bool bEnable)
 {
 	return [[IOSAppDelegate GetDelegate] EnableVoiceChat:bEnable];
@@ -1248,6 +1316,13 @@ int32 FIOSPlatformMisc::IOSVersionCompare(uint8 Major, uint8 Minor, uint8 Revisi
 	return 0;
 }
 
+FString FIOSPlatformMisc::GetProjectVersion()
+{
+	NSDictionary* infoDictionary = [[NSBundle mainBundle] infoDictionary];
+	FString localVersionString = FString(infoDictionary[@"CFBundleShortVersionString"]);
+	return localVersionString;
+}
+
 bool FIOSPlatformMisc::RequestDeviceCheckToken(TFunction<void(const TArray<uint8>&)> QuerySucceededFunc, TFunction<void(const FString&, const FString&)> QueryFailedFunc)
 {
 	DCDevice* DeviceCheckDevice = [DCDevice currentDevice];
@@ -1343,7 +1418,7 @@ struct FIOSApplicationInfo
         TempSysCtlBufferSize = PATH_MAX+1;
         sysctlbyname("machdep.cpu.brand_string", MachineCPUString, &TempSysCtlBufferSize, NULL, 0);
         
-        gethostname(MachineName, ARRAY_COUNT(MachineName));
+        gethostname(MachineName, UE_ARRAY_COUNT(MachineName));
         
        BranchBaseDir = FString::Printf( TEXT( "%s!%s!%s!%d" ), *FApp::GetBranchName(), FPlatformProcess::BaseDir(), FPlatformMisc::GetEngineMode(), FEngineVersion::Current().GetChangelist() );
         
@@ -1484,16 +1559,20 @@ static void DefaultCrashHandler(FIOSCrashContext const& Context)
 static uint32 GIOSStackIgnoreDepth = 6;
 
 // true system specific crash handler that gets called first
+static FIOSCrashContext TempCrashContext(ECrashContextType::Crash, TEXT("Temp Context"));
 static void PlatformCrashHandler(int32 Signal, siginfo_t* Info, void* Context)
 {
+	// switch to crash handler malloc to avoid malloc reentrancy
+	check(FIOSApplicationInfo::CrashMalloc);
+	FIOSApplicationInfo::CrashMalloc->Enable(&TempCrashContext, FPlatformTLS::GetCurrentThreadId());
+	
     FIOSCrashContext CrashContext(ECrashContextType::Crash, TEXT("Caught signal"));
     CrashContext.IgnoreDepth = GIOSStackIgnoreDepth;
     CrashContext.InitFromSignal(Signal, Info, Context);
-    
-    // switch to crash handler malloc to avoid malloc reentrancy
-    check(FIOSApplicationInfo::CrashMalloc);
-    FIOSApplicationInfo::CrashMalloc->Enable(&CrashContext, FPlatformTLS::GetCurrentThreadId());
-    
+	
+	// switch to the crash malloc to the new context now that we have everything
+	FIOSApplicationInfo::CrashMalloc->SetContext(&CrashContext);
+	
     if (GCrashHandlerPointer)
     {
         GCrashHandlerPointer(CrashContext);
@@ -1527,9 +1606,9 @@ static void GracefulTerminationHandler(int32 Signal, siginfo_t* Info, void* Cont
         GError->Flush();
     }
     
-    if (!GIsRequestingExit)
+    if (!IsEngineExitRequested())
     {
-        GIsRequestingExit = 1;
+		RequestEngineExit(TEXT("iOS GracefulTerminationHandler"));
     }
     else
     {
@@ -1585,8 +1664,12 @@ bool FIOSPlatformMisc::GetStoredValue(const FString& InStoreId, const FString& I
 
 bool FIOSPlatformMisc::DeleteStoredValue(const FString& InStoreId, const FString& InSectionName, const FString& InKeyName)
 {
-	// No Implementation (currently only used by editor code so not needed on iOS)
-	return false;
+	NSUserDefaults* UserSettings = [NSUserDefaults standardUserDefaults];
+	
+	// store it
+	[UserSettings removeObjectForKey:MakeStoredValueKeyName(InSectionName, InKeyName)];
+
+	return true;
 }
 
 void FIOSPlatformMisc::SetGracefulTerminationHandler()
@@ -1611,7 +1694,7 @@ void FIOSPlatformMisc::SetCrashHandler(void (* CrashHandler)(const FGenericCrash
     if (!FIOSApplicationInfo::CrashReporter && !FIOSApplicationInfo::CrashMalloc)
     {
         // configure the crash handler malloc zone to reserve a little memory for itself
-        FIOSApplicationInfo::CrashMalloc = new FIOSMallocCrashHandler(128*1024);
+        FIOSApplicationInfo::CrashMalloc = new FIOSMallocCrashHandler(4*1024*1024);
         
         PLCrashReporterConfig* Config = [[[PLCrashReporterConfig alloc] initWithSignalHandlerType: PLCrashReporterSignalHandlerTypeBSD symbolicationStrategy: PLCrashReporterSymbolicationStrategyNone crashReportFolder: FIOSApplicationInfo::TemporaryCrashReportFolder().GetNSString() crashReportName: FIOSApplicationInfo::TemporaryCrashReportName().GetNSString()] autorelease];
         FIOSApplicationInfo::CrashReporter = [[PLCrashReporter alloc] initWithConfiguration: Config];
@@ -1650,6 +1733,31 @@ void FIOSPlatformMisc::SetCrashHandler(void (* CrashHandler)(const FGenericCrash
         }
     }
 #endif
+}
+
+bool FIOSPlatformMisc::HasSeparateChannelForDebugOutput()
+{
+#if UE_BUILD_SHIPPING
+    return false;
+#else
+    // We should not just check if we are being debugged because you can use the Xcode log even for
+    // apps launched outside the debugger.
+    return true;
+#endif
+}
+
+void FIOSPlatformMisc::GPUAssert()
+{
+    // make this a fatal error that ends here not in the log
+    // changed to 3 from NULL because clang noticed writing to NULL and warned about it
+    *(int32 *)13 = 123;
+}
+
+void FIOSPlatformMisc::MetalAssert()
+{
+    // make this a fatal error that ends here not in the log
+    // changed to 3 from NULL because clang noticed writing to NULL and warned about it
+    *(int32 *)7 = 123;
 }
 
 FIOSCrashContext::FIOSCrashContext(ECrashContextType InType, const TCHAR* InErrorMessage)
@@ -1880,7 +1988,7 @@ void FIOSCrashContext::GenerateEnsureInfo() const
             Arguments = FString::Printf(TEXT("\"%s/\" -Unattended"), *EnsureLogFolder);
         }
         
-        FString ReportClient = FPaths::ConvertRelativePathToFull(FPlatformProcess::GenerateApplicationPath(TEXT("CrashReportClient"), EBuildConfigurations::Development));
+        FString ReportClient = FPaths::ConvertRelativePathToFull(FPlatformProcess::GenerateApplicationPath(TEXT("CrashReportClient"), EBuildConfiguration::Development));
         FPlatformProcess::ExecProcess(*ReportClient, *Arguments, nullptr, nullptr, nullptr);
     }
 #endif
@@ -1919,3 +2027,55 @@ void ReportEnsure( const TCHAR* ErrorMessage, int NumStackFramesToIgnore )
     bReentranceGuard = false;
     EnsureLock.Unlock();
 }
+
+FString FIOSCrashContext::CreateCrashFolder() const
+{
+	// create a crash-specific directory
+	char CrashInfoFolder[PATH_MAX] = {};
+	FCStringAnsi::Strncpy(CrashInfoFolder, GIOSAppInfo.CrashReportPath, PATH_MAX);
+	FCStringAnsi::Strcat(CrashInfoFolder, PATH_MAX, "/CrashReport-UE4-");
+	FCStringAnsi::Strcat(CrashInfoFolder, PATH_MAX, GIOSAppInfo.AppNameUTF8);
+	FCStringAnsi::Strcat(CrashInfoFolder, PATH_MAX, "-pid-");
+	FCStringAnsi::Strcat(CrashInfoFolder, PATH_MAX, ItoANSI(getpid(), 10));
+	FCStringAnsi::Strcat(CrashInfoFolder, PATH_MAX, "-");
+	FCStringAnsi::Strcat(CrashInfoFolder, PATH_MAX, ItoANSI(GIOSAppInfo.RunUUID.A, 16));
+	FCStringAnsi::Strcat(CrashInfoFolder, PATH_MAX, ItoANSI(GIOSAppInfo.RunUUID.B, 16));
+	FCStringAnsi::Strcat(CrashInfoFolder, PATH_MAX, ItoANSI(GIOSAppInfo.RunUUID.C, 16));
+	FCStringAnsi::Strcat(CrashInfoFolder, PATH_MAX, ItoANSI(GIOSAppInfo.RunUUID.D, 16));
+	
+	return FString(ANSI_TO_TCHAR(CrashInfoFolder));
+}
+
+
+class FIOSExec : public FSelfRegisteringExec
+{
+public:
+	FIOSExec()
+		: FSelfRegisteringExec()
+	{
+		
+	}
+	
+	virtual bool Exec(UWorld* Inworld, const TCHAR* Cmd, FOutputDevice& Ar) override
+	{
+		if (FParse::Command(&Cmd, TEXT("IOS")))
+		{
+			// commands to override and append commandline options for next boot (see FIOSCommandLineHelper)
+			if (FParse::Command(&Cmd, TEXT("OverrideCL")))
+			{
+				return FPlatformMisc::SetStoredValue(TEXT(""), TEXT("IOSCommandLine"), TEXT("ReplacementCL"), Cmd);
+			}
+			else if (FParse::Command(&Cmd, TEXT("AppendCL")))
+			{
+				return FPlatformMisc::SetStoredValue(TEXT(""), TEXT("IOSCommandLine"), TEXT("AppendCL"), Cmd);
+			}
+			else if (FParse::Command(&Cmd, TEXT("ClearAllCL")))
+			{
+				return FPlatformMisc::DeleteStoredValue(TEXT(""), TEXT("IOSCommandLine"), TEXT("ReplacementCL")) &&
+						FPlatformMisc::DeleteStoredValue(TEXT(""), TEXT("IOSCommandLine"), TEXT("AppendCL"));
+			}
+		}
+		
+		return false;
+	}
+} GIOSExec;

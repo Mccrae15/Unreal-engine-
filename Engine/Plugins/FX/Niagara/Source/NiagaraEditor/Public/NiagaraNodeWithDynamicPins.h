@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -10,7 +10,6 @@
 #include "NiagaraNodeWithDynamicPins.generated.h"
 
 class UEdGraphPin;
-class SNiagaraGraphPinAdd;
 
 DECLARE_DELEGATE_OneParam(FOnAddParameter, const FNiagaraVariable&);
 
@@ -23,7 +22,8 @@ public:
 
 	//~ UEdGraphNode interface
 	virtual void PinConnectionListChanged(UEdGraphPin* Pin) override;
-	virtual void GetContextMenuActions(const FGraphNodeContextMenuBuilder& Context) const override;
+	virtual void GetNodeContextMenuActions(class UToolMenu* Menu, class UGraphNodeContextMenuContext* Context) const override;
+	virtual bool IncludeParentNodeContextMenu() const { return true; }
 
 	/** Requests a new pin be added to the node with the specified direction, type, and name. */
 	UEdGraphPin* RequestNewTypedPin(EEdGraphPinDirection Direction, const FNiagaraTypeDefinition& Type, FName InName);
@@ -51,6 +51,10 @@ protected:
 
 	/** Called when a new typed pin is added by the user. */
 	virtual void OnNewTypedPinAdded(UEdGraphPin* NewPin) { }
+	
+	/** Called in subclasses to restrict renaming.*/
+	/** Verify that the potential rename has produced acceptable results for a pin.*/
+	virtual bool VerifyEditablePinName(const FText& InName, FText& OutErrorMessage, const UEdGraphPin* InGraphPinObj) const { OutErrorMessage = FText::GetEmpty(); return true; }
 
 	/** Called when a pin is renamed. */
 	virtual void OnPinRenamed(UEdGraphPin* RenamedPin, const FString& OldPinName) { }
@@ -69,6 +73,8 @@ protected:
 
 	virtual void MoveDynamicPin(UEdGraphPin* Pin, int32 DirectionToMove);
 
+	virtual bool OnVerifyTextChanged(const FText& NewText, FText& OutMessage) { return true; };
+
 private:
 
 	/** Gets the display text for a pin. */
@@ -76,7 +82,7 @@ private:
 
 	/** Called when a pin's name text is committed. */
 	void PinNameTextCommitted(const FText& Text, ETextCommit::Type CommitType, UEdGraphPin* Pin);
-
+	
 	void RemoveDynamicPinFromMenu(UEdGraphPin* Pin);
 
 	void MoveDynamicPinFromMenu(UEdGraphPin* Pin, int32 DirectionToMove);

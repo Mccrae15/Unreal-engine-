@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -11,7 +11,7 @@
 #include "TakeRecorderMicrophoneAudioSource.generated.h"
 
 /** A recording source that records microphone audio */
-UCLASS(Abstract, config=EditorSettings, DisplayName="Microphone Audio Recorder Defaults")
+UCLASS(Abstract, config=EditorSettings, DisplayName="Microphone Audio Recorder")
 class UTakeRecorderMicrophoneAudioSourceSettings : public UTakeRecorderSource
 {
 public:
@@ -22,7 +22,8 @@ public:
 	virtual void PostEditChangeProperty(FPropertyChangedEvent& PropertyChangedEvent) override;
 	
 	// UTakeRecorderSource Interface
-	virtual FString GetSubsceneName(ULevelSequence* InSequence) const override;
+	virtual FString GetSubsceneTrackName(ULevelSequence* InSequence) const override;
+	virtual FString GetSubsceneAssetName(ULevelSequence* InSequence) const override;
 	// ~UTakeRecorderSource Interface
 
 	/** Name of the recorded audio track name */
@@ -35,7 +36,7 @@ public:
 };
 
 /** A recording source that records microphone audio */
-UCLASS(DisplayName="Microphone Audio", Category="Audio", config=EditorSettings)
+UCLASS(Category="Audio", config=EditorSettings, meta = (TakeRecorderDisplayName = "Microphone Audio"))
 class UTakeRecorderMicrophoneAudioSource : public UTakeRecorderMicrophoneAudioSourceSettings
 {
 public:
@@ -70,4 +71,8 @@ private:
 	TWeakObjectPtr<class UMovieSceneAudioTrack> CachedAudioTrack;
 
 	TUniquePtr<ISequenceAudioRecorder> AudioRecorder;
+	
+	//Created in PreRecord but used in StartRecording.
+	FDirectoryPath AudioDirectory;
+	FString AssetName;
 };

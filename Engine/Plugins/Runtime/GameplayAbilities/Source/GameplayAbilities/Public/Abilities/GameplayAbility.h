@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -81,7 +81,7 @@ struct FAbilityTriggerData
 	{}
 
 	/** The tag to respond to */
-	UPROPERTY(EditAnywhere, Category=TriggerData)
+	UPROPERTY(EditAnywhere, Category=TriggerData, meta=(Categories="TriggerTagCategory"))
 	FGameplayTag TriggerTag;
 
 	/** The type of trigger to respond to */
@@ -138,10 +138,16 @@ public:
 		return ReplicationPolicy;
 	}
 
-	/** How does an ability execute on the network. Does a client "ask and predict", "ask and wait", "don't ask (just do it)" */
+	/** Where does an ability execute on the network? Does a client "ask and predict", "ask and wait", "don't ask (just do it)" */
 	EGameplayAbilityNetExecutionPolicy::Type GetNetExecutionPolicy() const
 	{
 		return NetExecutionPolicy;
+	}
+
+	/** Where should an ability execute on the network? Provides protection from clients attempting to execute restricted abilities. */
+	EGameplayAbilityNetSecurityPolicy::Type GetNetSecurityPolicy() const
+	{
+		return NetSecurityPolicy;
 	}
 
 	/** Returns the actor info associated with this ability, has cached pointers to useful objects */
@@ -163,6 +169,8 @@ public:
 	/** Returns the AbilitySystemComponent that is activating this ability */
 	UFUNCTION(BlueprintCallable, Category = Ability)
 	UAbilitySystemComponent* GetAbilitySystemComponentFromActorInfo() const;
+	UAbilitySystemComponent* GetAbilitySystemComponentFromActorInfo_Checked() const;
+	UAbilitySystemComponent* GetAbilitySystemComponentFromActorInfo_Ensured() const;
 
 	/** Gets the current actor info bound to this ability - can only be called on instanced abilities. */
 	const FGameplayAbilityActorInfo* GetCurrentActorInfo() const
@@ -430,6 +438,9 @@ public:
 	/** Called when the ability is given to an AbilitySystemComponent */
 	virtual void OnGiveAbility(const FGameplayAbilityActorInfo* ActorInfo, const FGameplayAbilitySpec& Spec);
 
+	/** Called when the ability is removed from an AbilitySystemComponent */
+	virtual void OnRemoveAbility(const FGameplayAbilityActorInfo* ActorInfo, const FGameplayAbilitySpec& Spec) {}
+
 	/** Called when the avatar actor is set/changes */
 	virtual void OnAvatarSet(const FGameplayAbilityActorInfo* ActorInfo, const FGameplayAbilitySpec& Spec);
 
@@ -458,7 +469,7 @@ public:
 	// --------------------------------------
 
 	/** This ability has these tags */
-	UPROPERTY(EditDefaultsOnly, Category = Tags)
+	UPROPERTY(EditDefaultsOnly, Category = Tags, meta=(Categories="AbilityTagCategory"))
 	FGameplayTagContainer AbilityTags;
 
 	/** If true, this ability will always replicate input press/release events to the server. */
@@ -473,7 +484,7 @@ public:
 	//	UObject overrides
 	// --------------------------------------	
 	virtual UWorld* GetWorld() const override;
-	virtual int32 GetFunctionCallspace(UFunction* Function, void* Parameters, FFrame* Stack) override;
+	virtual int32 GetFunctionCallspace(UFunction* Function, FFrame* Stack) override;
 	virtual bool CallRemoteFunction(UFunction* Function, void* Parameters, FOutParmRec* OutParms, FFrame* Stack) override;
 	virtual bool IsSupportedForNetworking() const override;
 
@@ -670,6 +681,9 @@ protected:
 	UPROPERTY(EditDefaultsOnly, Category=Advanced)
 	TEnumAsByte<EGameplayAbilityNetExecutionPolicy::Type> NetExecutionPolicy;
 
+	UPROPERTY(EditDefaultsOnly, Category = Advanced)
+	TEnumAsByte<EGameplayAbilityNetSecurityPolicy::Type> NetSecurityPolicy;
+
 	/** This GameplayEffect represents the cost (mana, stamina, etc) of the ability. It will be applied when the ability is committed. */
 	UPROPERTY(EditDefaultsOnly, Category = Costs)
 	TSubclassOf<class UGameplayEffect> CostGameplayEffectClass;
@@ -687,43 +701,43 @@ protected:
 	// ----------------------------------------------------------------------------------------------------------------
 
 	/** Abilities matching query are cancelled when this ability is executed */
-	UPROPERTY(EditDefaultsOnly, Category = TagQueries)
+	UPROPERTY(EditDefaultsOnly, Category = TagQueries, meta=(Categories="AbilityTagCategory"))
 	FGameplayTagQuery CancelAbilitiesMatchingTagQuery;
 
 	/** Abilities with these tags are cancelled when this ability is executed */
-	UPROPERTY(EditDefaultsOnly, Category = Tags)
+	UPROPERTY(EditDefaultsOnly, Category = Tags, meta=(Categories="AbilityTagCategory"))
 	FGameplayTagContainer CancelAbilitiesWithTag;
 
 	/** Abilities with these tags are blocked while this ability is active */
-	UPROPERTY(EditDefaultsOnly, Category = Tags)
+	UPROPERTY(EditDefaultsOnly, Category = Tags, meta=(Categories="AbilityTagCategory"))
 	FGameplayTagContainer BlockAbilitiesWithTag;
 
 	/** Tags to apply to activating owner while this ability is active */
-	UPROPERTY(EditDefaultsOnly, Category = Tags)
+	UPROPERTY(EditDefaultsOnly, Category = Tags, meta=(Categories="OwnedTagsCategory"))
 	FGameplayTagContainer ActivationOwnedTags;
 
 	/** This ability can only be activated if the activating actor/component has all of these tags */
-	UPROPERTY(EditDefaultsOnly, Category = Tags)
+	UPROPERTY(EditDefaultsOnly, Category = Tags, meta=(Categories="OwnedTagsCategory"))
 	FGameplayTagContainer ActivationRequiredTags;
 
 	/** This ability is blocked if the activating actor/component has any of these tags */
-	UPROPERTY(EditDefaultsOnly, Category = Tags)
+	UPROPERTY(EditDefaultsOnly, Category = Tags, meta=(Categories="OwnedTagsCategory"))
 	FGameplayTagContainer ActivationBlockedTags;
 
 	/** This ability can only be activated if the source actor/component has all of these tags */
-	UPROPERTY(EditDefaultsOnly, Category = Tags)
+	UPROPERTY(EditDefaultsOnly, Category = Tags, meta=(Categories="SourceTagsCategory"))
 	FGameplayTagContainer SourceRequiredTags;
 
 	/** This ability is blocked if the source actor/component has any of these tags */
-	UPROPERTY(EditDefaultsOnly, Category = Tags)
+	UPROPERTY(EditDefaultsOnly, Category = Tags, meta=(Categories="SourceTagsCategory"))
 	FGameplayTagContainer SourceBlockedTags;
 
 	/** This ability can only be activated if the target actor/component has all of these tags */
-	UPROPERTY(EditDefaultsOnly, Category = Tags)
+	UPROPERTY(EditDefaultsOnly, Category = Tags, meta=(Categories="TargetTagsCategory"))
 	FGameplayTagContainer TargetRequiredTags;
 
 	/** This ability is blocked if the target actor/component has any of these tags */
-	UPROPERTY(EditDefaultsOnly, Category = Tags)
+	UPROPERTY(EditDefaultsOnly, Category = Tags, meta=(Categories="TargetTagsCategory"))
 	FGameplayTagContainer TargetBlockedTags;
 
 	// ----------------------------------------------------------------------------------------------------------------
@@ -773,7 +787,7 @@ protected:
 	/**
 	 * Stops the current animation montage.
 	 *
-	 * @param OverrideBlendTime If < 0, will override the BlendOutTime parameter on the AnimMontage instance
+	 * @param OverrideBlendTime If >= 0, will override the BlendOutTime parameter on the AnimMontage instance
 	 */
 	UFUNCTION(BlueprintCallable, Category="Ability|Animation", Meta = (AdvancedDisplay = "OverrideBlendOutTime"))
 	void MontageStop(float OverrideBlendOutTime = -1.0f);

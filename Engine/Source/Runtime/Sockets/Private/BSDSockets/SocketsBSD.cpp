@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "BSDSockets/SocketsBSD.h"
 
@@ -7,10 +7,6 @@
 #include "BSDSockets/IPAddressBSD.h"
 #include "BSDSockets/SocketSubsystemBSD.h"
 //#include "Net/NetworkProfiler.h"
-
-#if PLATFORM_HTML5 
-	typedef unsigned long u_long;
-#endif 
 
 
 /* FSocket overrides
@@ -63,16 +59,28 @@ bool FSocketBSD::Close(void)
 	return false;
 }
 
-
 bool FSocketBSD::Bind(const FInternetAddr& Addr)
 {
+	if (Addr.GetProtocolType() != GetProtocol())
+	{
+		UE_LOG(LogSockets, Warning, TEXT("Tried to bind address with protocol %s to a socket with protocol %s"),
+			*Addr.GetProtocolType().ToString(), *GetProtocol().ToString());
+		return false;
+	}
+
 	const FInternetAddrBSD& BSDAddr = static_cast<const FInternetAddrBSD&>(Addr);
 	return bind(Socket, (const sockaddr*)&(BSDAddr.Addr), BSDAddr.GetStorageSize()) == 0;
 }
 
-
 bool FSocketBSD::Connect(const FInternetAddr& Addr)
 {
+	if (Addr.GetProtocolType() != GetProtocol())
+	{
+		UE_LOG(LogSockets, Warning, TEXT("Tried to connect with an address with protocol %s using a socket with protocol %s"), 
+			*Addr.GetProtocolType().ToString(), *GetProtocol().ToString());
+		return false;
+	}
+
 	const FInternetAddrBSD& BSDAddr = static_cast<const FInternetAddrBSD&>(Addr);
 	int32 Return = connect(Socket, (const sockaddr*)&(BSDAddr.Addr), BSDAddr.GetStorageSize());
 	
@@ -88,7 +96,6 @@ bool FSocketBSD::Listen(int32 MaxBacklog)
 {
 	return listen(Socket, MaxBacklog) == 0;
 }
-
 
 bool FSocketBSD::WaitForPendingConnection(bool& bHasPendingConnection, const FTimespan& WaitTime)
 {
@@ -109,7 +116,6 @@ bool FSocketBSD::WaitForPendingConnection(bool& bHasPendingConnection, const FTi
 	return bHasSucceeded;
 }
 
-
 bool FSocketBSD::HasPendingData(uint32& PendingDataSize)
 {
 	PendingDataSize = 0;
@@ -129,7 +135,6 @@ bool FSocketBSD::HasPendingData(uint32& PendingDataSize)
 	return false;
 }
 
-
 FSocket* FSocketBSD::Accept(const FString& InSocketDescription)
 {
 	SOCKET NewSocket = accept(Socket, NULL, NULL);
@@ -145,7 +150,6 @@ FSocket* FSocketBSD::Accept(const FString& InSocketDescription)
 	return NULL;
 }
 
-
 FSocket* FSocketBSD::Accept(FInternetAddr& OutAddr, const FString& InSocketDescription)
 {
 	FInternetAddrBSD& BSDAddr = static_cast<FInternetAddrBSD&>(OutAddr);
@@ -157,15 +161,20 @@ FSocket* FSocketBSD::Accept(FInternetAddr& OutAddr, const FString& InSocketDescr
 		// we need the subclass to create the actual FSocket object
 		check(SocketSubsystem);
 		FSocketSubsystemBSD* BSDSystem = static_cast<FSocketSubsystemBSD*>(SocketSubsystem);
-		return BSDSystem->InternalBSDSocketFactory(NewSocket, SocketType, InSocketDescription, BSDAddr.GetProtocolFamily());
+		return BSDSystem->InternalBSDSocketFactory(NewSocket, SocketType, InSocketDescription, BSDAddr.GetProtocolType());
 	}
 
 	return NULL;
 }
 
-
 bool FSocketBSD::SendTo(const uint8* Data, int32 Count, int32& BytesSent, const FInternetAddr& Destination)
 {
+	// TODO: Consider converting IPv4 addresses to v6 when needed
+	if (Destination.GetProtocolType() != GetProtocol())
+	{
+		return false;
+	}
+
 	const FInternetAddrBSD& BSDAddr = static_cast<const FInternetAddrBSD&>(Destination);
 	// Write the data and see how much was written
 	BytesSent = sendto(Socket, (const char*)Data, Count, 0, (const sockaddr*)&(BSDAddr.Addr), BSDAddr.GetStorageSize());
@@ -180,7 +189,6 @@ bool FSocketBSD::SendTo(const uint8* Data, int32 Count, int32& BytesSent, const 
 	return Result;
 }
 
-
 bool FSocketBSD::Send(const uint8* Data, int32 Count, int32& BytesSent)
 {
 	BytesSent = send(Socket,(const char*)Data,Count,0);
@@ -194,7 +202,6 @@ bool FSocketBSD::Send(const uint8* Data, int32 Count, int32& BytesSent)
 	}
 	return Result;
 }
-
 
 bool FSocketBSD::RecvFrom(uint8* Data, int32 BufferSize, int32& BytesRead, FInternetAddr& Source, ESocketReceiveFlags::Type Flags)
 {
@@ -229,7 +236,6 @@ bool FSocketBSD::RecvFrom(uint8* Data, int32 BufferSize, int32& BytesRead, FInte
 	return bSuccess;
 }
 
-
 bool FSocketBSD::Recv(uint8* Data, int32 BufferSize, int32& BytesRead, ESocketReceiveFlags::Type Flags)
 {
 	bool bSuccess = false;
@@ -259,7 +265,6 @@ bool FSocketBSD::Recv(uint8* Data, int32 BufferSize, int32& BytesRead, ESocketRe
 	return bSuccess;
 }
 
-
 bool FSocketBSD::Wait(ESocketWaitConditions::Type Condition, FTimespan WaitTime)
 {
 	if ((Condition == ESocketWaitConditions::WaitForRead) || (Condition == ESocketWaitConditions::WaitForReadOrWrite))
@@ -280,7 +285,6 @@ bool FSocketBSD::Wait(ESocketWaitConditions::Type Condition, FTimespan WaitTime)
 
 	return false;
 }
-
 
 ESocketConnectionState FSocketBSD::GetConnectionState(void)
 {
@@ -315,7 +319,6 @@ ESocketConnectionState FSocketBSD::GetConnectionState(void)
 	return CurrentState;
 }
 
-
 void FSocketBSD::GetAddress(FInternetAddr& OutAddr)
 {
 	FInternetAddrBSD& BSDAddr = static_cast<FInternetAddrBSD&>(OutAddr);
@@ -330,7 +333,6 @@ void FSocketBSD::GetAddress(FInternetAddr& OutAddr)
 		UE_LOG(LogSockets, Error, TEXT("Failed to read address for socket (%s)"), SocketSubsystem->GetSocketError());
 	}
 }
-
 
 bool FSocketBSD::GetPeerAddress(FInternetAddr& OutAddr)
 {
@@ -350,26 +352,31 @@ bool FSocketBSD::GetPeerAddress(FInternetAddr& OutAddr)
 
 bool FSocketBSD::SetNonBlocking(bool bIsNonBlocking)
 {
-	u_long Value = bIsNonBlocking ? true : false;
-
-#if PLATFORM_HTML5 
-	// can't have blocking sockets.
-	ensureMsgf(bIsNonBlocking, TEXT("Can't have blocking sockets on HTML5"));
-    return true;
-#else 
-
 #if PLATFORM_HAS_BSD_SOCKET_FEATURE_WINSOCKETS
+	u_long Value = bIsNonBlocking ? true : false;
 	return ioctlsocket(Socket,FIONBIO,&Value) == 0;
-#else 
+#else
 	int Flags = fcntl(Socket, F_GETFL, 0);
 	//Set the flag or clear it, without destroying the other flags.
 	Flags = bIsNonBlocking ? Flags | O_NONBLOCK : Flags ^ (Flags & O_NONBLOCK);
 	int err = fcntl(Socket, F_SETFL, Flags);
 	return (err == 0 ? true : false);
 #endif
-#endif 
 }
 
+bool FSocketBSD::SetNoDelay(bool bIsNoDelay)
+{
+	// Only do this if we are TCP.
+	if (GetSocketType() == SOCKTYPE_Streaming)
+	{
+#if PLATFORM_HAS_BSD_SOCKET_FEATURE_NODELAY
+		int Param = bIsNoDelay ? 1 : 0;
+		return setsockopt(Socket, IPPROTO_TCP, TCP_NODELAY, (char*)&Param, sizeof(Param)) == 0;
+#endif
+	}
+
+	return true;
+}
 
 bool FSocketBSD::SetBroadcast(bool bAllowBroadcast)
 {
@@ -377,13 +384,12 @@ bool FSocketBSD::SetBroadcast(bool bAllowBroadcast)
 	return setsockopt(Socket,SOL_SOCKET,SO_BROADCAST,(char*)&Param,sizeof(Param)) == 0;
 }
 
-
 bool FSocketBSD::JoinMulticastGroup(const FInternetAddr& GroupAddress)
 {
 	const FInternetAddrBSD& BSDAddr = static_cast<const FInternetAddrBSD&>(GroupAddress);
 
 #if PLATFORM_HAS_BSD_IPV6_SOCKETS
-	if (BSDAddr.GetProtocolFamily() == ESocketProtocolFamily::IPv6)
+	if (BSDAddr.GetProtocolType() == FNetworkProtocolTypes::IPv6)
 	{
 		ipv6_mreq imr;
 		imr.ipv6mr_interface = htonl(BSDAddr.GetScopeId());
@@ -398,19 +404,18 @@ bool FSocketBSD::JoinMulticastGroup(const FInternetAddr& GroupAddress)
 	return (setsockopt(Socket, IPPROTO_IP, IP_ADD_MEMBERSHIP, (char*)&imr, sizeof(imr)) == 0);
 }
 
-
 bool FSocketBSD::JoinMulticastGroup(const FInternetAddr& GroupAddress, const FInternetAddr& InterfaceAddress)
 {
 	const FInternetAddrBSD& BSDAddr = static_cast<const FInternetAddrBSD&>(GroupAddress);
 	const FInternetAddrBSD& BSDIFAddr = static_cast<const FInternetAddrBSD&>(InterfaceAddress);
 
 #if PLATFORM_HAS_BSD_IPV6_SOCKETS
-	if (BSDAddr.GetProtocolFamily() == ESocketProtocolFamily::IPv6)
+	if (BSDAddr.GetProtocolType() == FNetworkProtocolTypes::IPv6)
 	{
 		ipv6_mreq imr;
 		imr.ipv6mr_interface = htonl(BSDIFAddr.GetScopeId());
 		imr.ipv6mr_multiaddr = ((sockaddr_in6*)&(BSDAddr.Addr))->sin6_addr;
-		return (setsockopt(Socket, IPPROTO_IPV6, IP_ADD_MEMBERSHIP, (char*)&imr, sizeof(imr)) == 0);
+		return (setsockopt(Socket, IPPROTO_IPV6, IPV6_JOIN_GROUP, (char*)&imr, sizeof(imr)) == 0);
 	}
 #endif
 
@@ -420,13 +425,12 @@ bool FSocketBSD::JoinMulticastGroup(const FInternetAddr& GroupAddress, const FIn
 	return (setsockopt(Socket, IPPROTO_IP, IP_ADD_MEMBERSHIP, (char*)&imr, sizeof(imr)) == 0);
 }
 
-
 bool FSocketBSD::LeaveMulticastGroup(const FInternetAddr& GroupAddress)
 {
 	const FInternetAddrBSD& BSDAddr = static_cast<const FInternetAddrBSD&>(GroupAddress);
 
 #if PLATFORM_HAS_BSD_IPV6_SOCKETS
-	if (BSDAddr.GetProtocolFamily() == ESocketProtocolFamily::IPv6)
+	if (BSDAddr.GetProtocolType() == FNetworkProtocolTypes::IPv6)
 	{
 		ipv6_mreq imr;
 		imr.ipv6mr_interface = htonl(BSDAddr.GetScopeId());
@@ -441,19 +445,18 @@ bool FSocketBSD::LeaveMulticastGroup(const FInternetAddr& GroupAddress)
 	return (setsockopt(Socket, IPPROTO_IP, IP_DROP_MEMBERSHIP, (char*)&imr, sizeof(imr)) == 0);
 }
 
-
 bool FSocketBSD::LeaveMulticastGroup(const FInternetAddr& GroupAddress, const FInternetAddr& InterfaceAddress)
 {
 	const FInternetAddrBSD& BSDAddr = static_cast<const FInternetAddrBSD&>(GroupAddress);
 	const FInternetAddrBSD& BSDIFAddr = static_cast<const FInternetAddrBSD&>(InterfaceAddress);
 
 #if PLATFORM_HAS_BSD_IPV6_SOCKETS
-	if (BSDAddr.GetProtocolFamily() == ESocketProtocolFamily::IPv6)
+	if (BSDAddr.GetProtocolType() == FNetworkProtocolTypes::IPv6)
 	{
 		ipv6_mreq imr;
 		imr.ipv6mr_interface = htonl(BSDIFAddr.GetScopeId());
 		imr.ipv6mr_multiaddr = ((sockaddr_in6*)&(BSDAddr.Addr))->sin6_addr;
-		return (setsockopt(Socket, IPPROTO_IPV6, IP_DROP_MEMBERSHIP, (char*)&imr, sizeof(imr)) == 0);
+		return (setsockopt(Socket, IPPROTO_IPV6, IPV6_LEAVE_GROUP, (char*)&imr, sizeof(imr)) == 0);
 	}
 #endif
 
@@ -463,11 +466,10 @@ bool FSocketBSD::LeaveMulticastGroup(const FInternetAddr& GroupAddress, const FI
 	return (setsockopt(Socket, IPPROTO_IP, IP_DROP_MEMBERSHIP, (char*)&imr, sizeof(imr)) == 0);
 }
 
-
 bool FSocketBSD::SetMulticastLoopback(bool bLoopback)
 {
 #if PLATFORM_HAS_BSD_IPV6_SOCKETS
-	if (SocketProtocol == ESocketProtocolFamily::IPv6)
+	if (SocketProtocol == FNetworkProtocolTypes::IPv6)
 	{
 		uint32 ShouldLoopback = bLoopback ? 1 : 0;
 		return (setsockopt(Socket, IPPROTO_IPV6, IP_MULTICAST_LOOP, (char*)&ShouldLoopback, sizeof(ShouldLoopback)) == 0);
@@ -477,11 +479,10 @@ bool FSocketBSD::SetMulticastLoopback(bool bLoopback)
 	return (setsockopt(Socket, IPPROTO_IP, IP_MULTICAST_LOOP, (char*)&bLoopback, sizeof(bLoopback)) == 0);
 }
 
-
 bool FSocketBSD::SetMulticastTtl(uint8 TimeToLive)
 {
 #if PLATFORM_HAS_BSD_IPV6_SOCKETS
-	if (SocketProtocol == ESocketProtocolFamily::IPv6)
+	if (SocketProtocol == FNetworkProtocolTypes::IPv6)
 	{
 		uint32 RealTimeToLive = TimeToLive;
 		return (setsockopt(Socket, IPPROTO_IPV6, IPV6_MULTICAST_HOPS, (char*)&RealTimeToLive, sizeof(RealTimeToLive)) == 0);
@@ -491,13 +492,12 @@ bool FSocketBSD::SetMulticastTtl(uint8 TimeToLive)
 	return (setsockopt(Socket, IPPROTO_IP, IP_MULTICAST_TTL, (char*)&TimeToLive, sizeof(TimeToLive)) == 0);
 }
 
-
 bool FSocketBSD::SetMulticastInterface(const FInternetAddr& InterfaceAddress)
 {
 	const FInternetAddrBSD& BSDIFAddr = static_cast<const FInternetAddrBSD&>(InterfaceAddress);
 
 #if PLATFORM_HAS_BSD_IPV6_SOCKETS
-	if (BSDIFAddr.GetProtocolFamily() == ESocketProtocolFamily::IPv6)
+	if (BSDIFAddr.GetProtocolType() == FNetworkProtocolTypes::IPv6)
 	{
 		uint32 InterfaceIndex = htonl(BSDIFAddr.GetScopeId());
 		return (setsockopt(Socket, IPPROTO_IPV6, IPV6_MULTICAST_IF, (char*)&InterfaceIndex, sizeof(InterfaceIndex)) == 0);
@@ -507,7 +507,6 @@ bool FSocketBSD::SetMulticastInterface(const FInternetAddr& InterfaceAddress)
 	in_addr InterfaceAddr = ((sockaddr_in*)&(BSDIFAddr.Addr))->sin_addr;
 	return (setsockopt(Socket, IPPROTO_IP, IP_MULTICAST_IF, (char*)&InterfaceAddr, sizeof(InterfaceAddr)) == 0);
 }
-
 
 bool FSocketBSD::SetReuseAddr(bool bAllowReuse)
 {
@@ -522,7 +521,6 @@ bool FSocketBSD::SetReuseAddr(bool bAllowReuse)
 	return ReuseAddrResult == 0;
 }
 
-
 bool FSocketBSD::SetLinger(bool bShouldLinger,int32 Timeout)
 {
 	linger ling;
@@ -533,13 +531,11 @@ bool FSocketBSD::SetLinger(bool bShouldLinger,int32 Timeout)
 	return setsockopt(Socket,SOL_SOCKET,SO_LINGER,(char*)&ling,sizeof(ling)) == 0;
 }
 
-
 bool FSocketBSD::SetRecvErr(bool bUseErrorQueue)
 {
 	// Not supported, but return true to avoid spurious log messages
 	return true;
 }
-
 
 bool FSocketBSD::SetSendBufferSize(int32 Size,int32& NewSize)
 {
@@ -552,7 +548,6 @@ bool FSocketBSD::SetSendBufferSize(int32 Size,int32& NewSize)
 	return bOk;
 }
 
-
 bool FSocketBSD::SetReceiveBufferSize(int32 Size,int32& NewSize)
 {
 	SOCKLEN SizeSize = sizeof(int32);
@@ -563,7 +558,6 @@ bool FSocketBSD::SetReceiveBufferSize(int32 Size,int32& NewSize)
 
 	return bOk;
 }
-
 
 int32 FSocketBSD::GetPortNo(void)
 {
@@ -595,17 +589,24 @@ int32 FSocketBSD::GetPortNo(void)
 bool FSocketBSD::SetIPv6Only(bool bIPv6Only)
 {
 #if PLATFORM_HAS_BSD_IPV6_SOCKETS
-	int v6only = bIPv6Only ? 1 : 0;
-	bool bOk = (setsockopt(Socket, IPPROTO_IPV6, IPV6_V6ONLY, (char*)&v6only, sizeof(v6only)) == 0);
-
-	if (bOk == false)
+	if (GetProtocol() == FNetworkProtocolTypes::IPv6)
 	{
-		check(SocketSubsystem);
-		UE_LOG(LogSockets, Error, TEXT("Failed to set sock opt for socket (%s)"), SocketSubsystem->GetSocketError());
-	}
+		int v6only = bIPv6Only ? 1 : 0;
+		bool bOk = (setsockopt(Socket, IPPROTO_IPV6, IPV6_V6ONLY, (char*)&v6only, sizeof(v6only)) == 0);
 
-	return bOk;
-#else 
+		if (bOk == false)
+		{
+			check(SocketSubsystem);
+			UE_LOG(LogSockets, Error, TEXT("Failed to set sock opt for socket (%s)"), SocketSubsystem->GetSocketError());
+		}
+
+		return bOk;
+	}
+	else
+	{
+		return true;
+	}
+#else
 	return false;
 #endif
 }

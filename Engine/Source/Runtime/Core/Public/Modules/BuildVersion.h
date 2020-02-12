@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -57,6 +57,11 @@ public:
 	 * The current build id. This will be generated automatically whenever engine binaries change if not set in the default Engine/Build/Build.version.
 	 */
 	FString BuildId;
+
+	/**
+	 * The build version string.
+	 */
+	FString BuildVersion;
 
 	/**
 	 * Default constructor. Initializes the structure to empty.

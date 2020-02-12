@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "MoviePlayer.h"
 #include "Misc/CommandLine.h"
@@ -102,7 +102,7 @@ void DestroyMoviePlayer()
 
 IGameMoviePlayer* GetMoviePlayer()
 {
-	if (!IsMoviePlayerEnabled() || GUsingNullRHI)
+	if (!FCommandLine::IsInitialized() || !IsMoviePlayerEnabled() || GUsingNullRHI)
 	{
 		return FNullGameMoviePlayer::Get();
 	}

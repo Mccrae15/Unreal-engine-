@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -81,6 +81,11 @@ public:
 	 * Sets the rate for screenshots to be taken (default = 0)
 	 */
 	virtual void			SetScreenshotPeriod(float Period) = 0;
+
+	/**
+	 * Mark the next heartbeat as active. If a status message is given, immediately log an active heartbeat with that message.
+	 */
+	virtual void			MarkHeartbeatActive(const FString& OptionalStatusMessage = FString()) = 0;
 
 	/**
 	 * Returns the first controller (if any) matching the provided name

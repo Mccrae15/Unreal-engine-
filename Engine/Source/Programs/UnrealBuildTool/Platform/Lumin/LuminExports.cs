@@ -1,4 +1,4 @@
-﻿// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+﻿// Copyright Epic Games, Inc. All Rights Reserved.
 
 using System;
 using System.Collections.Generic;
@@ -67,6 +67,24 @@ namespace UnrealBuildTool
 		/// </summary>
 		/// <returns>Directory path relative to root of MPK</returns>
 		string GetIconPortalStagingPath();
+
+		/// <summary>
+		/// Path of the certificate to sign the MPK with.
+		/// </summary>
+		/// <returns>Certificate file path relative to root of the project</returns>
+		string GetProjectRelativeCertificatePath();
+
+		/// <summary>
+		/// Whether the app should use vulkan
+		/// </summary>
+		/// <returns>true if app should use vulkan, false otherwise</returns>
+		bool UseVulkan();
+
+		/// <summary>
+		/// Path of the folder containing the vulkan validation layers.
+		/// </summary>
+		/// <returns>Path of the folder containing the vulkan validation layers.</returns>
+		string GetVulkanValdationLayerLibsDir();
 	}
 
 	/// <summary>

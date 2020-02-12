@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -151,6 +151,18 @@ public:
 	*/
 	FGuid	Guid;
 
+#if WITH_EDITORONLY_DATA
+	/**
+	* Current persistent id for this package
+	*/
+	FGuid	PersistentGuid;
+
+	/**
+	* Package persistent owner for this package
+	*/
+	FGuid	OwnerPersistentGuid;
+#endif
+	
 	/**
 	* Data about previous versions of this package
 	*/
@@ -224,10 +236,7 @@ public:
 		return CustomVersionContainer;
 	}
 
-	void SetCustomVersionContainer(const FCustomVersionContainer& InContainer)
-	{
-		CustomVersionContainer = InContainer;
-	}
+	void SetCustomVersionContainer(const FCustomVersionContainer& InContainer);
 
 	void SetFileVersions(const int32 EpicUE4, const int32 LicenseeUE4, const bool bInSaveUnversioned = false)
 	{

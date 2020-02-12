@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "TP_PuzzlePawn.h"
 #include "TP_PuzzleBlock.h"
@@ -43,7 +43,7 @@ void ATP_PuzzlePawn::SetupPlayerInputComponent(UInputComponent* PlayerInputCompo
 {
 	Super::SetupPlayerInputComponent(PlayerInputComponent);
 
-	PlayerInputComponent->BindAction("OnResetVR", EInputEvent::IE_Pressed, this, &ATP_PuzzlePawn::OnResetVR);
+	PlayerInputComponent->BindAction("ResetVR", EInputEvent::IE_Pressed, this, &ATP_PuzzlePawn::OnResetVR);
 	PlayerInputComponent->BindAction("TriggerClick", EInputEvent::IE_Pressed, this, &ATP_PuzzlePawn::TriggerClick);
 }
 

@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -111,6 +111,9 @@ namespace ContentBrowserUtils
 	/** Displays a modeless message asking yes or no type question */
 	void DisplayConfirmationPopup(const FText& Message, const FText& YesString, const FText& NoString, const TSharedRef<SWidget>& ParentContent, const FOnClicked& OnYesClicked, const FOnClicked& OnNoClicked = FOnClicked());
 
+	/** Moves all assets from the source path to the destination path, preserving path structure, deletes source path afterwards if possible */
+	bool RenameFolder(const FString& DestPath, const FString& SourcePath);
+
 	/** Copies all assets in all source paths to the destination path, preserving path structure */
 	bool CopyFolders(const TArray<FString>& InSourcePathNames, const FString& DestPath);
 
@@ -127,6 +130,9 @@ namespace ContentBrowserUtils
 
 	/** Copies references to the specified assets to the clipboard */
 	void CopyAssetReferencesToClipboard(const TArray<FAssetData>& AssetsToCopy);
+
+	/** Copies file paths on disk to the specified assets to the clipboard */
+	void CopyFilePathsToClipboard(const TArray<FAssetData>& AssetsToCopy);
 
 	/**
 	 * Capture active viewport to thumbnail and assigns that thumbnail to incoming assets
@@ -250,6 +256,9 @@ namespace ContentBrowserUtils
 
 	/** Returns true if the specified path is available for object creation */
 	bool IsValidObjectPathForCreate(const FString& ObjectPath, FText& OutErrorMessage, bool bAllowExistingAsset = false);
+	
+	/** Returns true if the specified path is available for object creation */
+	bool IsValidObjectPathForCreate(const FString& ObjectPath, const UClass* ObjectClass, FText& OutErrorMessage, bool bAllowExistingAsset = false);
 
 	/** Returns true if the specified folder name in the specified path is available for folder creation */
 	bool IsValidFolderPathForCreate(const FString& FolderPath, const FString& NewFolderName, FText& OutErrorMessage);

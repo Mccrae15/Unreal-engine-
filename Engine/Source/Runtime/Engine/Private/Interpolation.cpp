@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 /*=============================================================================
 	Interpolation.cpp: Code for supporting interpolation of properties in-game.
@@ -109,14 +109,11 @@
 #include "Animation/AnimBlueprintGeneratedClass.h"
 #include "Particles/ParticleSystemReplay.h"
 #include "GameFramework/GameState.h"
+#include "UObject/CoreObjectVersion.h"
 
 #if WITH_EDITOR
 #include "Sound/SoundCue.h"
 #include "Editor.h"
-#endif
-
-#if PLATFORM_HTML5
-#include <emscripten/emscripten.h>
 #endif
 
 
@@ -325,13 +322,13 @@ namespace InterpTools
 		// Check to see if there is a period in the name, which is the case 
 		// for structs and components that own interp variables. In these  
 		// cases, we want to cut off the preceeding text up and the period.
-		int32 PeriodPosition = PropertyString.Find(TEXT("."));
+		int32 PeriodPosition = PropertyString.Find(TEXT("."), ESearchCase::CaseSensitive);
 
 		if(PeriodPosition != INDEX_NONE)
 		{
 			// We found a period; Only capture the text after the 
 			// period, which represents the actual property name.
-			PropertyString = PropertyString.Mid( PeriodPosition + 1 );
+			PropertyString.MidInline( PeriodPosition + 1, MAX_int32, false );
 		}
 
 		return FName(*PropertyString);
@@ -386,7 +383,7 @@ AMatineeActor::AMatineeActor(const FObjectInitializer& ObjectInitializer)
 		static FConstructorStatics ConstructorStatics;
 
 		SpriteComponent->Sprite = ConstructorStatics.SceneManagerObject.Get();
-		SpriteComponent->RelativeScale3D = FVector(0.5f, 0.5f, 0.5f);
+		SpriteComponent->SetRelativeScale3D(FVector(0.5f, 0.5f, 0.5f));
 		SpriteComponent->SpriteInfo.Category = ConstructorStatics.ID_Matinee;
 		SpriteComponent->SpriteInfo.DisplayName = ConstructorStatics.NAME_Matinee;
 		SpriteComponent->SetupAttachment(RootComponent);
@@ -1155,7 +1152,7 @@ void AMatineeActor::StepInterp( float DeltaTime, bool bPreview )
 			for (int32 ActorIndex = 0; ActorIndex < Info.Actors.Num() && bSkipUpdate; ++ActorIndex)
 			{
 				AActor* Actor = Info.Actors[ ActorIndex ];
-				if (Actor != NULL && Actor->GetLastRenderTime() > Actor->GetWorld()->TimeSeconds - 1.f)
+				if (Actor && Actor->WasRecentlyRendered(1.f))
 				{
 					bSkipUpdate = false;
 				}
@@ -1274,7 +1271,7 @@ void AMatineeActor::StepInterp( float DeltaTime, bool bPreview )
 
 void AMatineeActor::DisableRadioFilterIfNeeded()
 {
-	FAudioDevice* AudioDevice = GEngine->GetMainAudioDevice();
+	FAudioDeviceHandle AudioDevice = GEngine->GetMainAudioDevice();
 	if( AudioDevice )
 	{
 		AudioDevice->EnableRadioEffect( !bDisableRadioFilter );
@@ -1302,7 +1299,7 @@ void AMatineeActor::EnableCinematicMode(bool bEnable)
 
 void AMatineeActor::EnableRadioFilter()
 {
-	FAudioDevice* AudioDevice = GEngine->GetMainAudioDevice();
+	FAudioDeviceHandle AudioDevice = GEngine->GetMainAudioDevice();
 	if( AudioDevice )
 	{
 		AudioDevice->EnableRadioEffect( true );
@@ -1344,7 +1341,7 @@ void AMatineeActor::PostEditChangeProperty( FPropertyChangedEvent& PropertyChang
 	ValidateActorGroups();
 }
 
-bool AMatineeActor::CanEditChange( const UProperty* Property ) const
+bool AMatineeActor::CanEditChange( const FProperty* Property ) const
 {
 	bool bIsEditable = Super::CanEditChange( Property );
 	if( bIsEditable && Property != NULL )
@@ -1577,7 +1574,7 @@ void AMatineeActor::SaveActorVisibility( AActor* Actor )
 			if ( !SavedVisibility )
 			{
 				// Save both bHidden and bHiddenEdTemporary to make it work properly in the editor
-				uint8 bSaveHidden = (Actor->bHidden ? 1 : 0) | (Actor->IsTemporarilyHiddenInEditor() ? 2 : 0);
+				uint8 bSaveHidden = (Actor->IsHidden() ? 1 : 0) | (Actor->IsTemporarilyHiddenInEditor() ? 2 : 0);
 				SavedActorVisibilities.Add( Actor, bSaveHidden );
 			}
 		}
@@ -1645,8 +1642,8 @@ void AMatineeActor::SaveActorTransforms( AActor* Actor )
 		if ( !SavedTransform && Actor->GetRootComponent() )
 		{
 			FSavedTransform NewSavedTransform;
-			NewSavedTransform.Translation = Actor->GetRootComponent()->RelativeLocation;
-			NewSavedTransform.Rotation = Actor->GetRootComponent()->RelativeRotation;
+			NewSavedTransform.Translation = Actor->GetRootComponent()->GetRelativeLocation();
+			NewSavedTransform.Rotation = Actor->GetRootComponent()->GetRelativeRotation();
 
 			SavedActorTransforms.Add( Actor, NewSavedTransform );
 		}
@@ -1667,7 +1664,7 @@ void AMatineeActor::RestoreActorTransforms()
 			FSavedTransform& SavedTransform = It.Value();
 
 			// only update actor position/rotation if the track changed its position/rotation
-			if( SavedActor->GetRootComponent() && (SavedActor->GetRootComponent()->RelativeLocation != SavedTransform.Translation || SavedActor->GetRootComponent()->RelativeRotation != SavedTransform.Rotation) )
+			if( SavedActor->GetRootComponent() && (SavedActor->GetRootComponent()->GetRelativeLocation() != SavedTransform.Translation || SavedActor->GetRootComponent()->GetRelativeRotation() != SavedTransform.Rotation) )
 			{
 				SavedActor->GetRootComponent()->SetRelativeLocationAndRotation(SavedTransform.Translation, SavedTransform.Rotation);
 			}
@@ -1692,7 +1689,7 @@ void AMatineeActor::RestoreActorVisibilities()
 			bool bSavedHiddenEditor = ( It.Value() & 2 ) ? true : false;
 
 			// only update actor if something has actually changed
-			if( SavedActor->bHidden != bSavedHidden )
+			if( SavedActor->IsHidden() != bSavedHidden )
 			{
 				SavedActor->SetActorHiddenInGame( bSavedHidden );
 			}
@@ -3124,9 +3121,11 @@ UInterpTrackInstProperty::UInterpTrackInstProperty(const FObjectInitializer& Obj
 void UInterpTrackInstProperty::SetupPropertyUpdateCallback(AActor* InActor, const FName& TrackPropertyName)
 {
 	// Try to find a custom callback to use when updating the property.  This callback will be called instead of UpdateComponents.
-	void* PropertyScope = NULL;
-	UObject* PropertyOuterObject = FMatineeUtils::FindObjectAndPropOffset(/*out*/ PropertyScope, /*out*/ InterpProperty, InActor, TrackPropertyName);
-	if ((InterpProperty != NULL) && (PropertyOuterObject != NULL))
+	void* PropertyScope = nullptr;
+	FProperty* OutInterpProperty = InterpProperty.Get();
+	UObject* PropertyOuterObject = FMatineeUtils::FindObjectAndPropOffset(/*out*/ PropertyScope, /*out*/ OutInterpProperty, InActor, TrackPropertyName);
+	InterpProperty = OutInterpProperty;
+	if ((InterpProperty != nullptr) && (PropertyOuterObject != nullptr))
 	{
 		PropertyOuterObjectInst = PropertyOuterObject;
 	}
@@ -3136,17 +3135,17 @@ void UInterpTrackInstProperty::SetupPropertyUpdateCallback(AActor* InActor, cons
 void UInterpTrackInstProperty::CallPropertyUpdateCallback()
 {
 	// call post interp change if we have valid outer
-	if(PropertyOuterObjectInst != NULL)
+	if(PropertyOuterObjectInst)
 	{
-		PropertyOuterObjectInst->PostInterpChange(InterpProperty);
+		PropertyOuterObjectInst->PostInterpChange(InterpProperty.Get());
 	}
 }
 
 void UInterpTrackInstProperty::TermTrackInst(UInterpTrack* Track)
 {
 	// Clear references
-	InterpProperty=NULL;
-	PropertyOuterObjectInst=NULL;
+	InterpProperty = nullptr;
+	PropertyOuterObjectInst = nullptr;
 
 	Super::TermTrackInst(Track);
 }
@@ -3740,9 +3739,9 @@ void UInterpTrackMove::UpdateKeyframe(int32 KeyIndex, UInterpTrackInst* TrInst)
 	}
 	*/
 
-	FVector RelativeSpaceEuler = Actor->GetRootComponent()->RelativeRotation.Euler();
+	FVector RelativeSpaceEuler = Actor->GetRootComponent()->GetRelativeRotation().Euler();
 
-	PosTrack.Points[KeyIndex].OutVal = Actor->GetRootComponent()->RelativeLocation;
+	PosTrack.Points[KeyIndex].OutVal = Actor->GetRootComponent()->GetRelativeLocation();
 	
 	// peek at an adjacent key frame to attempt to keep rotation continuous
 	if( EulerTrack.Points.Num() > 1 )
@@ -3838,9 +3837,9 @@ void UInterpTrackMove::UpdateChildKeyframe( UInterpTrack* ChildTrack, int32 KeyI
 	}
 
 	// New position of the actor
-	FVector NewPos = Actor->GetRootComponent()->RelativeLocation;
+	FVector NewPos = Actor->GetRootComponent()->GetRelativeLocation();
 	// New rotation of the actor
-	FVector NewRot =  Actor->GetRootComponent()->RelativeRotation.Euler();
+	FVector NewRot =  Actor->GetRootComponent()->GetRelativeRotation().Euler();
 
 	// Now determine what value should be updated in the float track.
 	switch( MoveAxis )
@@ -4141,17 +4140,6 @@ FName UInterpTrackMove::GetLookupKeyGroupName(int32 KeyIndex)
 
 void UInterpTrackMove::SetLookupKeyGroupName(int32 KeyIndex, const FName &NewGroupName)
 {
-#if PLATFORM_HTML5
-	if( KeyIndex >= LookupTrack.Points.Num() )
-	{	// trying to hunt this down...
-		// AFAICT, this is only happending on HTML5 -- this might be an enscripten/LLVM corruption issue
-		EM_ASM_({
-			console.log("ERROR: SetLookupKeyGroupName: index[" + $0 + "] num[" + $1 + "]");
-			stackTrace();
-		}, KeyIndex, LookupTrack.Points.Num());
-		return;
-	}
-#endif
 	check( (PosTrack.Points.Num() == EulerTrack.Points.Num()) && (PosTrack.Points.Num() == LookupTrack.Points.Num()) );
 	check( KeyIndex < LookupTrack.Points.Num() );
 
@@ -6728,7 +6716,7 @@ void UInterpTrackDirector::UpdateTrack(float NewPosition, UInterpTrackInst* TrIn
 	{
 		AMatineeActor* MatineeActor = CastChecked<AMatineeActor>( GrInst->GetOuter() );
 		// server is authoritative on viewtarget changes
-		if (PC->Role == ROLE_Authority || MatineeActor->bClientSideOnly || bSimulateCameraCutsOnClients)
+		if (PC->GetLocalRole() == ROLE_Authority || MatineeActor->bClientSideOnly || bSimulateCameraCutsOnClients)
 		{
 			float CutTime, CutTransitionTime;
 			FName ViewGroupName = GetViewedGroupName(NewPosition, CutTime, CutTransitionTime);
@@ -6774,7 +6762,7 @@ void UInterpTrackDirector::UpdateTrack(float NewPosition, UInterpTrackInst* TrIn
 					
 					if ( PC->PlayerCameraManager )
 					{
-						PC->PlayerCameraManager->bGameCameraCutThisFrame = true;
+						PC->PlayerCameraManager->SetGameCameraCutThisFrame();
 					}
 					
 					DirInst->OldViewTarget = BackupViewTarget;
@@ -8202,7 +8190,7 @@ void UInterpTrackSound::PreviewUpdateTrack(float NewPosition, UInterpTrackInst* 
 			Component->Play(NewPosition - SoundTrackKey.Time);
 
 			const float ScrubDuration = 0.1f;
-			Component->FadeOut(ScrubDuration, 1.0f);
+			Component->FadeOut(ScrubDuration, 1.0f, EAudioFaderCurve::Logarithmic);
 		}
 	}
 #endif
@@ -8252,7 +8240,7 @@ void UInterpTrackInstSound::TermTrackInst(UInterpTrack* Track)
 	{
 		// If we are currently playing, and want to keep the sound playing, 
 		// just flag it as 'auto destroy', and it will destroy itself when it finishes.
-		if(PlayAudioComp->bIsActive && SoundTrack->bContinueSoundOnMatineeEnd)
+		if(PlayAudioComp->IsActive() && SoundTrack->bContinueSoundOnMatineeEnd)
 		{
 			PlayAudioComp->bAutoDestroy = true;
 		}
@@ -8624,7 +8612,7 @@ UInterpTrackFloatMaterialParam::UInterpTrackFloatMaterialParam(const FObjectInit
 }
 
 #if WITH_EDITOR
-void UInterpTrackFloatMaterialParam::PreEditChange(UProperty* PropertyThatWillChange)
+void UInterpTrackFloatMaterialParam::PreEditChange(FProperty* PropertyThatWillChange)
 {
 	PreEditChangeMaterialParamTrack();
 	Super::PreEditChange(PropertyThatWillChange);
@@ -8782,7 +8770,7 @@ UInterpTrackVectorMaterialParam::UInterpTrackVectorMaterialParam(const FObjectIn
 }
 
 #if WITH_EDITOR
-void UInterpTrackVectorMaterialParam::PreEditChange(UProperty* PropertyThatWillChange)
+void UInterpTrackVectorMaterialParam::PreEditChange(FProperty* PropertyThatWillChange)
 {
 	PreEditChangeMaterialParamTrack();
 	Super::PreEditChange(PropertyThatWillChange);
@@ -9017,7 +9005,7 @@ void UInterpTrackInstToggle::SaveActorState(UInterpTrack* Track)
 	}
 	else if( LightActor != NULL )
 	{
-		bSavedActiveState = LightActor->GetLightComponent()->bVisible;
+		bSavedActiveState = LightActor->GetLightComponent()->GetVisibleFlag();
 	}
 }
 
@@ -9418,7 +9406,7 @@ void UInterpTrackVisibility::UpdateTrack(float NewPosition, UInterpTrackInst* Tr
 						else if( VisibilityKey.Action == EVTA_Toggle )
 						{
 							// Toggle the actor's visibility
-							HideActor( Actor, !Actor->bHidden );
+							HideActor( Actor, !Actor->IsHidden() );
 						}
 						if (!MatineeActor->bClientSideOnly && VisibilityKey.ActiveCondition == EVTC_Always)
 						{
@@ -9852,7 +9840,7 @@ void UInterpTrackFloatAnimBPParam::PostEditChangeProperty(FPropertyChangedEvent&
 {
 	Super::PostEditChangeProperty(PropertyChangedEvent);
 
-	UProperty* PropertyThatChanged = PropertyChangedEvent.Property;
+	FProperty* PropertyThatChanged = PropertyChangedEvent.Property;
 	FName PropertyName = PropertyThatChanged != NULL ? PropertyThatChanged->GetFName() : NAME_None;
 
 	if (PropertyName == GET_MEMBER_NAME_CHECKED(UInterpTrackFloatAnimBPParam, ParamName) ||

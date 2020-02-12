@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "NiagaraScriptSource.h"
 #include "Modules/ModuleManager.h"
@@ -43,21 +43,58 @@ UNiagaraScriptSource::UNiagaraScriptSource(const FObjectInitializer& ObjectIniti
 {
 }
 
-void UNiagaraScriptSource::ComputeVMCompilationId(FNiagaraVMExecutableDataId& Id, ENiagaraScriptUsage InUsage, const FGuid& InUsageId) const
+void UNiagaraScriptSource::ComputeVMCompilationId(FNiagaraVMExecutableDataId& Id, ENiagaraScriptUsage InUsage, const FGuid& InUsageId, bool bForceRebuild) const
 {
 	Id.ScriptUsageType = InUsage;
 	Id.ScriptUsageTypeID = InUsageId;
 	Id.CompilerVersionID = FNiagaraCustomVersion::LatestScriptCompileVersion;
 	if (NodeGraph)
 	{
-		Id.BaseScriptID = NodeGraph->GetCompileID(InUsage, InUsageId);
-		NodeGraph->GatherExternalDependencyIDs(InUsage, InUsageId, Id.ReferencedDependencyIds, Id.ReferencedObjects);
+		NodeGraph->RebuildCachedCompileIds(bForceRebuild);
+		Id.BaseScriptCompileHash = FNiagaraCompileHash(NodeGraph->GetCompileDataHash(InUsage, InUsageId));
+		NodeGraph->GatherExternalDependencyData(InUsage, InUsageId, Id.ReferencedCompileHashes, Id.DebugReferencedObjects);
 	}
+
+	// Add in any referenced HLSL files.
+	FSHAHash Hash = GetShaderFileHash((TEXT("/Plugin/FX/Niagara/Private/NiagaraEmitterInstanceShader.usf")), EShaderPlatform::SP_PCD3D_SM5);
+	Id.ReferencedCompileHashes.Emplace(Hash.Hash, sizeof(Hash.Hash)/sizeof(uint8));
+	Id.DebugReferencedObjects.Emplace(TEXT("/Plugin/FX/Niagara/Private/NiagaraEmitterInstanceShader.usf"));
+	Hash = GetShaderFileHash((TEXT("/Plugin/FX/Niagara/Private/NiagaraShaderVersion.ush")), EShaderPlatform::SP_PCD3D_SM5);
+	Id.ReferencedCompileHashes.Emplace(Hash.Hash, sizeof(Hash.Hash) / sizeof(uint8));
+	Id.DebugReferencedObjects.Emplace(TEXT("/Plugin/FX/Niagara/Private/NiagaraShaderVersion.ush"));
+	Hash = GetShaderFileHash((TEXT("/Engine/Public/ShaderVersion.ush")), EShaderPlatform::SP_PCD3D_SM5);
+	Id.ReferencedCompileHashes.Emplace(Hash.Hash, sizeof(Hash.Hash) / sizeof(uint8));
+	Id.DebugReferencedObjects.Emplace(TEXT("/Engine/Public/ShaderVersion.ush"));
 }
 
-void UNiagaraScriptSource::InvalidateCachedCompileIds() 
+FGuid UNiagaraScriptSource::GetCompileBaseId(ENiagaraScriptUsage InUsage, const FGuid& InUsageId) const
 {
-	NodeGraph->InvalidateCachedCompileIds();
+	return NodeGraph->GetBaseId(InUsage, InUsageId);
+}
+
+FNiagaraCompileHash UNiagaraScriptSource::GetCompileHash(ENiagaraScriptUsage InUsage, const FGuid& InUsageId) const
+{
+	return NodeGraph->GetCompileDataHash(InUsage, InUsageId);
+}
+
+void UNiagaraScriptSource::ForceGraphToRecompileOnNextCheck()
+{
+	NodeGraph->ForceGraphToRecompileOnNextCheck();
+}
+
+void UNiagaraScriptSource::RefreshFromExternalChanges()
+{
+	if (NodeGraph)
+	{
+		for (UEdGraphNode* Node : NodeGraph->Nodes)
+		{
+			UNiagaraNode* NiagaraNode = Cast<UNiagaraNode>(Node);
+			if (NiagaraNode)
+			{
+				NiagaraNode->RefreshFromExternalChanges();
+			}
+		}
+	}
 }
 
 

@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -21,6 +21,9 @@ public:
 
 	virtual bool Initialize() = 0;
 	virtual void Release() = 0;
+
+	virtual void ClearCache()
+	{ }
 
 	virtual bool IsMaster() const = 0;
 	virtual bool IsSlave() const = 0;

@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -27,6 +27,8 @@ class ITargetPlatform;
 class UPrimitiveComponent;
 class UTexture2D;
 class UUnrealEdOptions;
+class FName;
+typedef FName FEditorModeID;
 
 UENUM()
 enum EPackageNotifyState
@@ -107,6 +109,7 @@ struct FTemplateMapInfo
 };
 
 class FPerformanceMonitor;
+
 
 UCLASS(config=Engine, transient)
 class UNREALED_API UUnrealEdEngine : public UEditorEngine, public FNotifyHook
@@ -200,8 +203,8 @@ public:
 	//~ End UObject Interface.
 
 	//~ Begin FNotify Interface.
-	virtual void NotifyPreChange( UProperty* PropertyAboutToChange ) override;
-	virtual void NotifyPostChange( const FPropertyChangedEvent& PropertyChangedEvent, UProperty* PropertyThatChanged ) override;
+	virtual void NotifyPreChange( FProperty* PropertyAboutToChange ) override;
+	virtual void NotifyPostChange( const FPropertyChangedEvent& PropertyChangedEvent, FProperty* PropertyThatChanged ) override;
 	//~ End FNotify Interface.
 
 	//~ Begin UEditorEngine Interface
@@ -812,16 +815,16 @@ public:
 	bool HandleDisasmScriptCommand( const TCHAR* Str, FOutputDevice& Ar );	
 
 	/** OnEditorModeChanged delegate which looks for Matinee editor closing */
+	UE_DEPRECATED(4.24, "Use UpdateEdModeOnMatineeClose() instead")
 	void OnMatineeEditorClosed( class FEdMode* Mode, bool IsEntering );
+	void UpdateEdModeOnMatineeClose(const FEditorModeID& EditorModeID, bool IsEntering);
 
 	bool IsComponentSelected(const UPrimitiveComponent* PrimComponent);
-	
+
 protected:
+
 	/** Called when global editor selection changes */
 	void OnEditorSelectionChanged(UObject* SelectionThatChanged);
-
-	/** Called when blueprint objects are replaced so that we can update the cached visualizer selection */
-	void ReplaceCachedVisualizerObjects(const TMap<UObject*, UObject*>& ReplacementMap);
 
 	EWriteDisallowedWarningState GetWarningStateForWritePermission(const FString& PackageName) const;
 	
@@ -841,6 +844,8 @@ protected:
 
 	/** Handle to the registered OnMatineeEditorClosed delegate. */
 	FDelegateHandle OnMatineeEditorClosedDelegateHandle;
+	/** Handle to the registered UpdateEdModeOnMatineeClose delegate. */
+	FDelegateHandle UpdateEdModeOnMatineeCloseDelegateHandle;
 
 	/** Whether the pivot has been moved independently */
 	bool bPivotMovedIndependently;

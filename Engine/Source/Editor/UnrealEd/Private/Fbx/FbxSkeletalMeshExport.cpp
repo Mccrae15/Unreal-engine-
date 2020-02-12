@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 /*=============================================================================
 	Implementation of Skeletal Mesh export related functionality from FbxExporter
@@ -103,7 +103,7 @@ void FFbxExporter::GetSkeleton(FbxNode* RootNode, TArray<FbxNode*>& BoneNodes)
 /**
  * Adds an Fbx Mesh to the FBX scene based on the data in the given FSkeletalMeshLODModel
  */
-FbxNode* FFbxExporter::CreateMesh(const USkeletalMesh* SkelMesh, const TCHAR* MeshName, int32 LODIndex)
+FbxNode* FFbxExporter::CreateMesh(const USkeletalMesh* SkelMesh, const TCHAR* MeshName, int32 LODIndex, const UAnimSequence* AnimSeq)
 {
 	const FSkeletalMeshModel* SkelMeshResource = SkelMesh->GetImportedModel();
 	if (!SkelMeshResource->LODModels.IsValidIndex(LODIndex))
@@ -207,12 +207,14 @@ FbxNode* FFbxExporter::CreateMesh(const USkeletalMesh* SkelMesh, const TCHAR* Me
 	// Create the per-material polygons sets.
 	int32 SectionCount = SourceModel.Sections.Num();
 	int32 ClothSectionVertexRemoveOffset = 0;
+	TArray<TPair<uint32, uint32>> VertexIndexOffsetPairArray{ TPair<uint32, uint32>(0,0) };
 	for (int32 SectionIndex = 0; SectionIndex < SectionCount; ++SectionIndex)
 	{
 		const FSkelMeshSection& Section = SourceModel.Sections[SectionIndex];
 		if (Section.HasClothingData())
 		{
 			ClothSectionVertexRemoveOffset += Section.GetNumVertices();
+			VertexIndexOffsetPairArray.Emplace(Section.BaseVertexIndex, ClothSectionVertexRemoveOffset);
 			continue;
 		}
 		int32 MatIndex = Section.MaterialIndex;
@@ -247,6 +249,77 @@ FbxNode* FFbxExporter::CreateMesh(const USkeletalMesh* SkelMesh, const TCHAR* Me
 		{
 			FLinearColor VertColor = Vertices[VertIndex].Color.ReinterpretAsLinear();
 				VertexColorArray.Add(FbxColor(VertColor.R, VertColor.G, VertColor.B, VertColor.A));
+		}
+	}
+
+
+	if (GetExportOptions()->bExportMorphTargets && SkelMesh->Skeleton) //The skeleton can be null if this is a destructible mesh.
+	{
+		const FSmartNameMapping* SmartNameMapping = SkelMesh->Skeleton->GetSmartNameContainer(USkeleton::AnimCurveMappingName);
+		TMap<FName, FbxAnimCurve*> BlendShapeCurvesMap;
+
+		if (SkelMesh->MorphTargets.Num())
+		{
+			// The original BlendShape Name was not saved during import, so we need to come up with a new one.
+			const FString BlendShapeName(SkelMesh->GetName() + TEXT("_blendShapes"));
+			FbxBlendShape* BlendShape = FbxBlendShape::Create(Mesh, TCHAR_TO_UTF8(*BlendShapeName));
+
+			for (UMorphTarget* MorphTarget : SkelMesh->MorphTargets)
+			{
+				int32 DeformerIndex = Mesh->AddDeformer(BlendShape);
+				FbxBlendShapeChannel* BlendShapeChannel = FbxBlendShapeChannel::Create(BlendShape, TCHAR_TO_UTF8(*MorphTarget->GetName()));
+
+				if (BlendShape->AddBlendShapeChannel(BlendShapeChannel))
+				{
+					FbxShape* Shape = FbxShape::Create(BlendShapeChannel, TCHAR_TO_UTF8(*MorphTarget->GetName()));
+					Shape->InitControlPoints(VertexCount);
+					FbxVector4* ShapeControlPoints = Shape->GetControlPoints();
+
+					// Replicate the base mesh in the shape control points to set up the data.
+					for (int32 VertIndex = 0; VertIndex < VertexCount; ++VertIndex)
+					{
+						FVector Position = Vertices[VertIndex].Position;
+						ShapeControlPoints[VertIndex] = Converter.ConvertToFbxPos(Position);
+					}
+				
+					int32 NumberOfDeltas = 0;
+					FMorphTargetDelta* MorphTargetDeltas = MorphTarget->GetMorphTargetDelta(LODIndex, NumberOfDeltas);
+					for (int32 MorphTargetDeltaIndex = 0; MorphTargetDeltaIndex < NumberOfDeltas; ++MorphTargetDeltaIndex)
+					{
+						// Apply the morph target deltas to the control points.
+						FMorphTargetDelta& CurrentDelta = MorphTargetDeltas[MorphTargetDeltaIndex];
+						uint32 RemappedSourceIndex = CurrentDelta.SourceIdx;
+
+						if (VertexIndexOffsetPairArray.Num() > 1)
+						{
+							//If the skeletal mesh contains clothing we need to remap the morph target index too.
+							int32 UpperBoundIndex = Algo::UpperBoundBy(VertexIndexOffsetPairArray, RemappedSourceIndex,
+								[](const auto& CurrentPair) { return CurrentPair.Key; }); //Value functor
+							RemappedSourceIndex -= VertexIndexOffsetPairArray[UpperBoundIndex - 1].Value;
+						}
+
+						ShapeControlPoints[RemappedSourceIndex] = Converter.ConvertToFbxPos(Vertices[RemappedSourceIndex].Position + CurrentDelta.PositionDelta);
+					}
+
+					BlendShapeChannel->AddTargetShape(Shape);
+					FName MorphTargetName = MorphTarget->GetFName();
+					if (AnimSeq && SmartNameMapping && SmartNameMapping->GetCurveMetaData(MorphTargetName) && SmartNameMapping->GetCurveMetaData(MorphTargetName)->Type.bMorphtarget)
+					{
+						FbxAnimCurve* AnimCurve = Mesh->GetShapeChannel(DeformerIndex, BlendShape->GetBlendShapeChannelCount() - 1, AnimLayer, true);
+						BlendShapeCurvesMap.Add(MorphTargetName, AnimCurve);
+					}
+				}
+			}
+		}
+
+		if(AnimSeq && BlendShapeCurvesMap.Num() > 0)
+		{
+			ExportCustomAnimCurvesToFbx(BlendShapeCurvesMap, AnimSeq,
+				0.f,		// AnimStartOffset
+				0.f,		// AnimEndOffset
+				1.f,		// AnimPlayRate
+				0.f,		// StartTime
+				100.f);		// ValueScale, for some reason we need to scale BlendShape curves by a factor of 100.
 		}
 	}
 
@@ -486,7 +559,7 @@ void FFbxExporter::CreateBindPose(FbxNode* MeshRootNode)
 	}
 }
 
-void FFbxExporter::ExportSkeletalMeshComponent(USkeletalMeshComponent* SkelMeshComp, const TCHAR* MeshName, FbxNode* ActorRootNode, bool bSaveAnimSeq)
+void FFbxExporter::ExportSkeletalMeshComponent(USkeletalMeshComponent* SkelMeshComp, const TCHAR* MeshName, FbxNode* ActorRootNode, INodeNameAdapter& NodeNameAdapter, bool bSaveAnimSeq)
 {
 	if (SkelMeshComp && SkelMeshComp->SkeletalMesh)
 	{
@@ -496,6 +569,7 @@ void FFbxExporter::ExportSkeletalMeshComponent(USkeletalMeshComponent* SkelMeshC
 		if(SkeletonRootNode)
 		{
 			FbxSkeletonRoots.Add(SkelMeshComp, SkeletonRootNode);
+			NodeNameAdapter.AddFbxNode(SkelMeshComp, SkeletonRootNode);
 		}
 	}
 }
@@ -534,7 +608,7 @@ void ExportObjectMetadataToBones(const UObject* ObjectToExport, const TArray<Fbx
 					NodeName = TagAsString.Left(CharPos);
 
 					// The remaining part is the actual metadata tag
-					TagAsString = TagAsString.RightChop(CharPos + 1); // exclude the period
+					TagAsString.RightChopInline(CharPos + 1, false); // exclude the period
 				}
 
 				// Try to attach the metadata to its associated node by name

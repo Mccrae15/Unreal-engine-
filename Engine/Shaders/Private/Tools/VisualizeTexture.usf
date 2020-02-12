@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 /*=============================================================================
 	VisualizeTexture.usf: VisualizeTexture shader
@@ -17,7 +17,7 @@ TextureCube VisualizeTextureCube;
 SamplerState VisualizeTextureCubeSampler;
 
 //default Texture2D type is <float4>, which won't read the X28_G8UINT format properly.
-Texture2D<uint4> VisualizeDepthStencilTexture; 
+Texture2D<uint4> VisualizeDepthStencil; 
 
 Texture2D<uint> VisualizeUINT8Texture2D;
 
@@ -36,10 +36,10 @@ float3 TextureExtent;
 
 
 void VisualizeTexturePS(
-	FScreenVertexOutput Input,
+	float4 SvPosition : SV_POSITION,
 	out float4 OutColor : SV_Target0)
 {
-	float2 UV = Input.UV;
+	float2 UV = SvPosition.xy / TextureExtent.xy;
 
 	// Longitude Latitude unwrapping
 	float3 SpherePos;
@@ -95,6 +95,14 @@ void VisualizeTexturePS(
 #elif TEXTURE_TYPE == 7
     float IntTexLookup = float(VisualizeUINT8Texture2D.Load(int3(UV * TextureExtent.xy, 0)));
 	float4 TexLookup = IntTexLookup.xxxx;
+#elif TEXTURE_TYPE == 8
+	// 32 bits int, rather arbitrarily visualized as spread over the rgba channels
+    int IntTexLookup = VisualizeUINT8Texture2D.Load(int3(UV * TextureExtent.xy, 0));
+	float4 TexLookup;
+	TexLookup.r = IntTexLookup & 0xFF;
+	TexLookup.g = (IntTexLookup >> 8) & 0xFF;
+	TexLookup.b = (IntTexLookup >> 16) & 0xFF;
+	TexLookup.a = (IntTexLookup >> 24) & 0xFF;
 #endif
 	
 	// Normal = 0, SceneDepth = 1 and ShadowDepth = 2
@@ -129,7 +137,7 @@ void VisualizeTexturePS(
 #if TEXTURE_TYPE == 6
 		// inside #ifdef to avoid D3DDebug error:
 		//    The resource return type for component 0 declared in the shader code (UINT) is not compatible with the Shader Resource View format bound to slot 1 of the Pixel Shader unit (UNORM).  This mismatch is invalid if the shader actually uses the view (e.g. it is not skipped due to shader code branching). [ EXECUTION ERROR #361: DEVICE_DRAW_RESOURCE_RETURN_TYPE_MISMATCH]
-		float fStencil = VisualizeDepthStencilTexture.Load(int3(UV * TextureExtent.xy, 0)).g;
+		float fStencil = VisualizeDepthStencil.Load(int3(UV * TextureExtent.xy, 0)).g;
 		fStencil /= 255.0f;
 		TexLookup.a = fStencil;
 #endif

@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "K2Node_InputKey.h"
 #include "GraphEditorSettings.h"
@@ -24,8 +24,8 @@ UK2Node_InputKey::UK2Node_InputKey(const FObjectInitializer& ObjectInitializer)
 #if PLATFORM_MAC && WITH_EDITOR
 	if (IsTemplate())
 	{
-		UProperty* ControlProp = GetClass()->FindPropertyByName(GET_MEMBER_NAME_CHECKED(UK2Node_InputKey, bControl));
-		UProperty* CommandProp = GetClass()->FindPropertyByName(GET_MEMBER_NAME_CHECKED(UK2Node_InputKey, bCommand));
+		FProperty* ControlProp = GetClass()->FindPropertyByName(GET_MEMBER_NAME_CHECKED(UK2Node_InputKey, bControl));
+		FProperty* CommandProp = GetClass()->FindPropertyByName(GET_MEMBER_NAME_CHECKED(UK2Node_InputKey, bCommand));
 
 		ControlProp->SetMetaData(TEXT("DisplayName"), TEXT("Command"));
 		CommandProp->SetMetaData(TEXT("DisplayName"), TEXT("Control"));
@@ -236,6 +236,10 @@ void UK2Node_InputKey::ValidateNodeDuringCompilation(class FCompilerResultsLog& 
 	else if (InputKey.IsFloatAxis())
 	{
 		MessageLog.Warning(*FText::Format(NSLOCTEXT("KismetCompiler", "Axis_InputKey_Warning", "InputKey Event specifies axis FKey'{0}' for @@"), FText::FromString(InputKey.ToString())).ToString(), this);
+	}
+	else if (InputKey.IsDeprecated())
+	{
+		MessageLog.Warning(*FText::Format(NSLOCTEXT("KismetCompiler", "Deprecated_InputKey_Warning", "InputKey Event specifies FKey'{0}' which has been deprecated for @@"), FText::FromString(InputKey.ToString())).ToString(), this);
 	}
 	else if (!InputKey.IsBindableInBlueprints())
 	{

@@ -1,10 +1,11 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 #include "AIModule.h"
 #include "EngineDefines.h"
 #include "Templates/SubclassOf.h"
 #include "AISystem.h"
 #include "VisualLogger/VisualLogger.h"
 #include "GameFramework/WorldSettings.h"
+#include "DefaultManagerInstanceTracker.h"
 
 #if WITH_EDITOR
 #include "Developer/AssetTools/Public/IAssetTools.h"
@@ -28,6 +29,7 @@
 #define LOCTEXT_NAMESPACE "AIModule"
 
 DEFINE_LOG_CATEGORY_STATIC(LogAIModule, Log, All);
+DEFINE_LOG_CATEGORY(LogManagerInstanceTracker);
 
 class FAIModule : public IAIModule
 {

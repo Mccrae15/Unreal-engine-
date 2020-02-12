@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 using UnrealBuildTool;
 
@@ -17,10 +17,9 @@ public class Bolts : ModuleRules
 
 			PublicIncludePaths.Add(BoltsPath + "Bolts/Include");
 
-			string LibDir = BoltsPath + "Lib/Release" + Target.Architecture;
+			string LibDir = BoltsPath + "Lib/Release" + Target.Architecture + "/";
 
-            PublicLibraryPaths.Add(LibDir);
-            PublicAdditionalLibraries.Add("Bolts");
+            PublicAdditionalLibraries.Add(LibDir + "Bolts");
         }
     }
 }

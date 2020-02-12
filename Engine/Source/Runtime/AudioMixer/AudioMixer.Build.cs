@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 namespace UnrealBuildTool.Rules
 {
@@ -7,8 +7,11 @@ namespace UnrealBuildTool.Rules
 		public AudioMixer(ReadOnlyTargetRules Target) : base(Target)
 		{
 			PrivateIncludePathModuleNames.Add("TargetPlatform");
+            PublicIncludePathModuleNames.Add("TargetPlatform");
 
-			PrivateIncludePaths.AddRange(
+            PublicIncludePathModuleNames.Add("Engine");
+
+            PrivateIncludePaths.AddRange(
 				new string[]
 				{
 					"Runtime/AudioMixer/Private",
@@ -19,7 +22,7 @@ namespace UnrealBuildTool.Rules
 				new string[]
 				{
 					"Core",
-					"CoreUObject",
+					"CoreUObject"
 				}
 			);
 
@@ -28,7 +31,13 @@ namespace UnrealBuildTool.Rules
 				{
 					"CoreUObject",
 					"Engine",
-				}
+                    "NonRealtimeAudioRenderer",
+                    "AudioMixerCore",
+                    "SignalProcessing",
+					"AudioPlatformConfiguration",
+					"SoundFieldRendering",
+                    "AudioExtensions",
+                }
 			);
 
 			AddEngineThirdPartyPrivateStaticDependencies(Target,
@@ -39,64 +48,20 @@ namespace UnrealBuildTool.Rules
 					"UELibSampleRate"
 					);
 
-			// TODO test this for HTML5 !
-			//if (Target.Platform == UnrealTargetPlatform.HTML5)
-			//{
-			//	AddEngineThirdPartyPrivateStaticDependencies(Target,
-			//		"UEOgg",
-			//		"Vorbis",
-			//		"VorbisFile"
-			//		);
-			//}
-
-			if (Target.Platform == UnrealTargetPlatform.Mac)
-			{
-				AddEngineThirdPartyPrivateStaticDependencies(Target,
-					"UEOgg",
-					"Vorbis",
-					"libOpus"
-					);
-				PublicFrameworks.AddRange(new string[] { "AVFoundation", "CoreVideo", "CoreMedia" });
-			}
-
-			if (Target.IsInPlatformGroup(UnrealPlatformGroup.Android))
-			{
-				AddEngineThirdPartyPrivateStaticDependencies(Target,
-					"UEOgg",
-					"Vorbis",
-					"VorbisFile"
-					);
-			}
-
-			if (Target.IsInPlatformGroup(UnrealPlatformGroup.Unix))
-			{
-				AddEngineThirdPartyPrivateStaticDependencies(Target,
-					"UEOgg",
-					"Vorbis",
-					"VorbisFile",
-					"libOpus"
-					);
-			}
-
-			if (Target.Platform == UnrealTargetPlatform.XboxOne)
-			{
-				AddEngineThirdPartyPrivateStaticDependencies(Target,
-					"libOpus"
-					);
-			}
-
 			if (Target.IsInPlatformGroup(UnrealPlatformGroup.Windows))
 			{
-				string LibSndFilePath = Target.UEThirdPartyBinariesDirectory + "libsndfile/";
-				LibSndFilePath += Target.Platform == UnrealTargetPlatform.Win32
-					? "Win32"
-					: "Win64";
-					
-				PublicAdditionalLibraries.Add("libsndfile-1.lib");
+				string PlatformName = Target.Platform == UnrealTargetPlatform.Win32 ? "Win32" : "Win64";
+
+                string LibSndFilePath = Target.UEThirdPartyBinariesDirectory + "libsndfile/";
+                LibSndFilePath += PlatformName;
+
+
+                PublicAdditionalLibraries.Add(LibSndFilePath + "/libsndfile-1.lib");
 				PublicDelayLoadDLLs.Add("libsndfile-1.dll");
 				PublicIncludePathModuleNames.Add("UELibSampleRate");
-				PublicLibraryPaths.Add(LibSndFilePath);
-			}
+
+                RuntimeDependencies.Add("$(EngineDir)/Binaries/ThirdParty/libsndfile/" + PlatformName + "/libsndfile-1.dll");
+            }
 		}
 	}
 }

@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -19,6 +19,7 @@
 
 class ITargetPlatform;
 class UPhysicalMaterial;
+class UPhysicalMaterialMask;
 class UPrimitiveComponent;
 struct FShapeData;
 enum class EPhysXMeshCookFlags : uint8;
@@ -38,6 +39,19 @@ namespace physx
 	class PxTriangleMesh;
 	class PxTriangleMeshGeometry;
 }
+
+#if WITH_CHAOS
+namespace Chaos
+{
+	class FImplicitObject;
+
+	class FTriangleMeshImplicitObject;
+}
+
+template<typename T, int d>
+class FChaosDerivedDataReader;
+
+#endif
 
 DECLARE_CYCLE_STAT_EXTERN(TEXT("PhysX Cooking"), STAT_PhysXCooking, STATGROUP_Physics, );
 
@@ -107,6 +121,9 @@ struct ENGINE_API FCookBodySetupInfo
 	/** Whether to support UV from hit results */
 	bool bSupportUVFromHitResults;
 
+	/** Whether to support face remap, needed for physical material masks */
+	bool bSupportFaceRemap;
+
 	/** Error generating cook info for trimesh*/
 	bool bTriMeshError;
 };
@@ -126,6 +143,10 @@ UCLASS(collapseCategories, MinimalAPI)
 class UBodySetup : public UObject
 {
 	GENERATED_UCLASS_BODY()
+
+	/** Needs implementation in BodySetup.cpp to compile UniquePtr for forward declared class */
+	UBodySetup(FVTableHelper& Helper);
+	virtual ~UBodySetup();
 
 	/** Simplified collision representation of this  */
 	UPROPERTY(EditAnywhere, Category = BodySetup, meta=(DisplayName = "Primitives", NoResetToDefault))
@@ -183,6 +204,13 @@ class UBodySetup : public UObject
 	 */
 	UPROPERTY()
 	uint8 bGenerateMirroredCollision:1;
+
+	/** 
+	 * If true, the physics triangle mesh will store UVs and the face remap table. This is needed
+	 * to support physical material masks in scene queries. 
+	 */
+	UPROPERTY()
+	uint8 bSupportUVsAndFaceRemap:1;
 
 	/** Flag used to know if we have created the physics convex and tri meshes from the cooked data yet */
 	uint8 bCreatedPhysicsMeshes:1;
@@ -243,8 +271,16 @@ public:
 	TArray<physx::PxTriangleMesh*> TriMeshes;
 #endif
 
+#if WITH_CHAOS
+	//FBodySetupTriMeshes* TriMeshWrapper;
+	TArray<TSharedPtr<Chaos::FTriangleMeshImplicitObject, ESPMode::ThreadSafe>> ChaosTriMeshes;
+#endif
+
 	/** Additional UV info, if available. Used for determining UV for a line trace impact. */
 	FBodySetupUVInfo UVInfo;
+
+	/** Additional face remap table, if available. Used for determining face index mapping from collision mesh to static mesh, for use with physical material masks */
+	TArray<int32> FaceRemap;
 
 	/** Default properties of the body instance, copied into objects on instantiation, was URB_BodyInstance */
 	UPROPERTY(EditAnywhere, Category=Collision, meta=(FullyExpand = "true"))
@@ -298,10 +334,21 @@ public:
 	ENGINE_API void AbortPhysicsMeshAsyncCreation();
 
 private:
-#if WITH_PHYSX
+#if WITH_PHYSX && PHYSICS_INTERFACE_PHYSX
+	bool ProcessFormatData_PhysX(FByteBulkData* FormatData);
+	bool RuntimeCookPhysics_PhysX();
+
+	// #TODO MRMesh for some reason needs to be able to call this - that case needs fixed to correctly use the create meshes flow
+	friend class UMRMeshComponent;
+	/** Finish creating the physics meshes and update the body setup data with cooked data */
+	ENGINE_API void FinishCreatingPhysicsMeshes_PhysX(const TArray<physx::PxConvexMesh*>& ConvexMeshes, const TArray<physx::PxConvexMesh*>& ConvexMeshesNegX, const TArray<physx::PxTriangleMesh*>& TriMeshes);
 	/** Finalize game thread data before calling back user's delegate */
 	void FinishCreatePhysicsMeshesAsync(FPhysXCookHelper* AsyncPhysicsCookHelper, FOnAsyncPhysicsCookFinished OnAsyncPhysicsCookFinished);
-#endif // WITH_PHYSX
+#elif WITH_CHAOS
+	bool ProcessFormatData_Chaos(FByteBulkData* FormatData);
+	bool RuntimeCookPhysics_Chaos();
+	void FinishCreatingPhysicsMeshes_Chaos(FChaosDerivedDataReader<float, 3>& InReader);
+#endif
 
 	/**
 	* Given a format name returns its cooked data.
@@ -314,10 +361,12 @@ private:
 
 public:
 
-#if WITH_PHYSX
-	/** Finish creating the physics meshes and update the body setup data with cooked data */
-	ENGINE_API void FinishCreatingPhysicsMeshes(const TArray<physx::PxConvexMesh*>& ConvexMeshes, const TArray<physx::PxConvexMesh*>& ConvexMeshesNegX, const TArray<physx::PxTriangleMesh*>& TriMeshes);
-#endif // WITH_PHYSX
+	/**
+	 * Generate a string to uniquely describe the state of the geometry in this setup to populate the DDC
+	 *
+	 * @param OutString The generated string will be place in this FString
+	 */
+	void GetGeometryDDCKey(FString& OutString) const;
 
 	/** Returns the volume of this element */
 	ENGINE_API virtual float GetVolume(const FVector& Scale) const;
@@ -353,7 +402,7 @@ public:
 	 * @param		bRemoveExisting			If true, clears any pre-existing collision
 	 * @return								true on success, false on failure because of vertex count overflow.
 	 */
-	ENGINE_API void CreateFromModel(class UModel* InModel, bool bRemoveExisting);
+	ENGINE_API bool CreateFromModel(class UModel* InModel, bool bRemoveExisting);
 
 	/**
 	 * Updates the tri mesh collision with new positions, and refits the BVH to match. 
@@ -405,7 +454,7 @@ public:
 	/*
 	* Copy all UPROPERTY settings except the collision geometry.
 	* This function is use when we restore the original data after a re-import of a static mesh.
-	* All UProperty should be copy here except the collision geometry (i.e. AggGeom)
+	* All FProperty should be copy here except the collision geometry (i.e. AggGeom)
 	*/
 	ENGINE_API virtual void CopyBodySetupProperty(const UBodySetup* Other);
 #endif // WITH_EDITOR
@@ -417,7 +466,8 @@ public:
 		FBodyInstance* OwningInstance, 
 		FVector& Scale3D, 
 		UPhysicalMaterial* SimpleMaterial,
-		TArray<UPhysicalMaterial*>& ComplexMaterials, 
+		TArray<UPhysicalMaterial*>& ComplexMaterials,
+		TArray<FPhysicalMaterialMaskParams>& ComplexMaterialMasks,
 		const FBodyCollisionData& BodyCollisionData,
 		const FTransform& RelativeTM = FTransform::Identity, 
 		TArray<FPhysicsShapeHandle>* NewShapes = NULL);

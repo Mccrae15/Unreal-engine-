@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "Editor/ActorPositioning.h"
 #include "EngineDefines.h"
@@ -17,6 +17,7 @@
 #include "SnappingUtils.h"
 #include "LandscapeHeightfieldCollisionComponent.h"
 #include "LandscapeComponent.h"
+#include "Editor/EditorPerProjectUserSettings.h"
 
 FActorPositionTraceResult FActorPositioning::TraceWorldForPositionWithDefault(const FViewportCursorLocation& Cursor, const FSceneView& View, const TArray<AActor*>* IgnoreActors)
 {
@@ -86,16 +87,18 @@ bool IsHitIgnored(const FHitResult& InHit, const FSceneView& InSceneView)
 
 	// Only use this component if it is visible in the specified scene views
 	bool bIsRenderedOnScreen = false;
+	bool bIgnoreTranslucentPrimitive = false;
 	{				
 		if (PrimitiveComponent && PrimitiveComponent->SceneProxy)
 		{
 			const FPrimitiveViewRelevance ViewRelevance = PrimitiveComponent->SceneProxy->GetViewRelevance(&InSceneView);
 			// BSP is a bit special in that its bDrawRelevance is false even when drawn as wireframe because InSceneView.Family->EngineShowFlags.BSPTriangles is off
 			bIsRenderedOnScreen = ViewRelevance.bDrawRelevance || (PrimitiveComponent->IsA(UModelComponent::StaticClass()) && InSceneView.Family->EngineShowFlags.BSP);
+			bIgnoreTranslucentPrimitive = ViewRelevance.HasTranslucency() && !GetDefault<UEditorPerProjectUserSettings>()->bAllowSelectTranslucent;
 		}
 	}
 
-	return !bIsRenderedOnScreen;
+	return !bIsRenderedOnScreen || bIgnoreTranslucentPrimitive;
 }
 
 FActorPositionTraceResult FActorPositioning::TraceWorldForPosition(const UWorld& InWorld, const FSceneView& InSceneView, const FVector& RayStart, const FVector& RayEnd, const TArray<AActor*>* IgnoreActors)
@@ -140,13 +143,13 @@ FActorPositionTraceResult FActorPositioning::TraceWorldForPosition(const UWorld&
 	return Results;
 }
 
-FTransform FActorPositioning::GetCurrentViewportPlacementTransform(const AActor& Actor, bool bSnap)
+FTransform FActorPositioning::GetCurrentViewportPlacementTransform(const AActor& Actor, bool bSnap, const FViewportCursorLocation* InCursor)
 {
 	FVector Collision = Actor.GetPlacementExtent();
 	const UActorFactory* Factory = GEditor->FindActorFactoryForActorClass(Actor.GetClass());
 
 	// Get cursor origin and direction in world space.
-	FViewportCursorLocation CursorLocation = GCurrentLevelEditingViewportClient->GetCursorWorldLocationFromMousePos();
+	FViewportCursorLocation CursorLocation = InCursor ? *InCursor : GCurrentLevelEditingViewportClient->GetCursorWorldLocationFromMousePos();
 	const auto CursorPos = CursorLocation.GetCursorPos();
 
 	FTransform ActorTransform = FTransform::Identity;
@@ -166,13 +169,16 @@ FTransform FActorPositioning::GetCurrentViewportPlacementTransform(const AActor&
 
 		if (GetDefault<ULevelEditorViewportSettings>()->SnapToSurface.bEnabled)
 		{
-			// HACK: If we are aligning rotation to surfaces, we have to factor in the inverse of the actor transform so that the resulting transform after SpawnActor is correct.
+			// HACK: If we are aligning rotation to surfaces, we have to factor in the inverse of the actor's rotation and translation so that the resulting transform after SpawnActor is correct.
 
 			if (auto* RootComponent = Actor.GetRootComponent())
 			{
 				RootComponent->UpdateComponentToWorld();
 			}
+
+			FVector OrigActorScale3D = ActorTransform.GetScale3D();
 			ActorTransform = Actor.GetTransform().Inverse() * ActorTransform;
+			ActorTransform.SetScale3D(OrigActorScale3D);
 		}
 	}
 

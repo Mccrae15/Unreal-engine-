@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 namespace UnrealBuildTool.Rules
 {
@@ -20,14 +20,27 @@ namespace UnrealBuildTool.Rules
                     "Chaos",
 					"ChaosSolvers",
                     "PhysX",
-                    "APEX",
                     "FieldSystemCore",
                     "FieldSystemEngine",
                     "GeometryCollectionCore", 
                     "GeometryCollectionSimulationCore",
-	                "ChaosSolverEngine"
+	                "ChaosSolverEngine",
+                    "IntelISPC",
+					"PhysicsSQ"
                 }
                 );
+
+			if (Target.bCompileAPEX)
+			{
+				PublicDependencyModuleNames.Add("APEX");
+			}
+
+	        if (!Target.bBuildRequiresCookedData)
+			{
+	            DynamicallyLoadedModuleNames.AddRange(new string[] { "DerivedDataCache" });
+		    }
+
+			PrivateIncludePathModuleNames.Add("DerivedDataCache");
 
 			if(Target.bBuildEditor)
             {

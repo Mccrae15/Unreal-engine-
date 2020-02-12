@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 /*=============================================================================
 	TextureRenderTarget.cpp: UTextureRenderTarget implementation
@@ -75,6 +75,7 @@ bool FTextureRenderTargetResource::IsSupportedFormat( EPixelFormat Format )
 	case PF_FloatRGBA: // for exporting materials to .obj/.mtl
 	case PF_A2B10G10R10: //Pixel inspector for normal buffer
 	case PF_DepthStencil: //Pixel inspector for depth and stencil buffer
+	case PF_G16:// for heightmaps
 		return true;
 	default:
 		return false;
@@ -125,20 +126,34 @@ void FDeferredUpdateResource::UpdateResources(FRHICommandListImmediate& RHICmdLi
 			FDeferredUpdateResource* RTResource = *ResourceIt;
 			// iterate to next resource before removing an entry
 			ResourceIt.Next();
+
 			if( RTResource )
 			{
-				// update each resource
-				RTResource->UpdateDeferredResource(RHICmdList);
-				if( RTResource->bOnlyUpdateOnce )
-				{
-					// remove from list if only a single update was requested
-					RTResource->RemoveFromDeferredUpdateList();
-				}
+				CSV_SCOPED_TIMING_STAT_EXCLUSIVE(FlushDeferredResourceUpdate);
+				RTResource->FlushDeferredResourceUpdate(RHICmdList);
 			}
 		}
 		// since the updates should only occur once globally
 		// then we need to reset this before rendering any viewports
 		bNeedsUpdate = false;
+	}
+}
+
+/**
+ * Performs a deferred resource update on this resource if it exists in the UpdateList.
+ */
+void FDeferredUpdateResource::FlushDeferredResourceUpdate( FRHICommandListImmediate& RHICmdList )
+{
+	if( UpdateListLink.IsLinked() )
+	{
+		checkf(bNeedsUpdate, TEXT("The update list does not need to be updated at this point"));
+
+		UpdateDeferredResource(RHICmdList);
+		if( bOnlyUpdateOnce )
+		{
+			// Remove from list if only a single update was requested
+			RemoveFromDeferredUpdateList();
+		}
 	}
 }
 

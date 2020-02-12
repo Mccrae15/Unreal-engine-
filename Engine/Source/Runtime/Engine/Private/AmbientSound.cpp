@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 /*=============================================================================
 	Audio.cpp: Unreal base audio.
@@ -30,8 +30,8 @@ AAmbientSound::AAmbientSound(const FObjectInitializer& ObjectInitializer)
 	RootComponent = AudioComponent;
 
 	bReplicates = false;
-	bHidden = true;
-	bCanBeDamaged = false;
+	SetHidden(true);
+	SetCanBeDamaged(false);
 }
 
 #if WITH_EDITOR

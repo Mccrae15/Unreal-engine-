@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 #include "SubmixEffects/SubmixEffectTapDelay.h"
 
 DEFINE_LOG_CATEGORY(LogTapDelay);
@@ -74,7 +74,8 @@ FTapDelayInfo::FTapDelayInfo()
 	, OutputChannel(0)
 	, PanInDegrees(0.0f)
 	, TapId(TapIdCount++)
-{}
+{
+}
 
 FSubmixEffectTapDelay::FSubmixEffectTapDelay()
 	: SampleRate(0.0f)
@@ -425,7 +426,7 @@ void FTapDelayInterpolationInfo::SetGainValue(float Value, float InterpolationTi
 
 float FTapDelayInterpolationInfo::GetGainValue()
 {
-	return GainParam.GetValue();
+	return GainParam.GetNextValue();
 }
 
 void FTapDelayInterpolationInfo::SetLengthValue(float Value, float InterpolationTime)
@@ -435,5 +436,5 @@ void FTapDelayInterpolationInfo::SetLengthValue(float Value, float Interpolation
 
 float FTapDelayInterpolationInfo::GetLengthValue()
 {
-	return LengthParam.GetValue();
+	return LengthParam.GetNextValue();
 }

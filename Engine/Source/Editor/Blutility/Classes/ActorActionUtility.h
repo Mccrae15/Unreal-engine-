@@ -1,8 +1,12 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
-#include "GlobalEditorUtilityBase.h"
+#include "CoreMinimal.h"
+#include "UObject/ObjectMacros.h"
+#include "EditorUtilityObject.h"
+#include "UObject/ScriptMacros.h"
+#include "BlutilityMenuExtensions.h"
 #include "ActorActionUtility.generated.h"
 
 /** 
@@ -11,7 +15,7 @@
  * included as menu options when right-clicking on a group of actors in the level editor.
  */
 UCLASS(Abstract, hideCategories=(Object), Blueprintable)
-class BLUTILITY_API UActorActionUtility : public UGlobalEditorUtilityBase
+class BLUTILITY_API UActorActionUtility : public UEditorUtilityObject, public IEditorUtilityExtension
 {
 	GENERATED_BODY()
 

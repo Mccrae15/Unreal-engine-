@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "Framework/Text/TextLayout.h"
 #include "Fonts/FontCache.h"
@@ -602,7 +602,7 @@ void FTextLayout::FlowLineLayout(const int32 LineModelIndex, const float Wrappin
 				// This is a single word that's too long to fit onto a line, so we'll fallback to wrapping this word at grapheme cluster boundaries - this may require more than a single split
 				const int32 NonBreakingStringIndexOffset = PreviousBlockEnd;
 				const FString NonBreakingString = FString(Break.TrimmedRange.EndIndex - NonBreakingStringIndexOffset, **LineModel.Text + NonBreakingStringIndexOffset);
-				GraphemeBreakIterator->SetString(NonBreakingString);
+				GraphemeBreakIterator->SetStringRef(&NonBreakingString);
 
 				CurrentWidth = 0.0f;
 				for (int32 PreviousBreak = 0, CurrentBreak = GraphemeBreakIterator->MoveToNext(); CurrentBreak != INDEX_NONE;)
@@ -1073,7 +1073,7 @@ void FTextLayout::CreateLineWrappingCache(FLineModel& LineModel)
 		LineBreakIterator = FBreakIterator::CreateLineBreakIterator();
 	}
 
-	LineBreakIterator->SetString( **LineModel.Text );
+	LineBreakIterator->SetStringRef(&LineModel.Text.Get());
 
 	int32 PreviousBreak = 0;
 	int32 CurrentBreak = 0;
@@ -1664,7 +1664,8 @@ bool FTextLayout::InsertAt(const FTextLocation& Location, const FString& Text)
 				{
 					// Insert the new text run to the left of the non-text run
 					TSharedRef<IRun> NewTextRun = CreateDefaultTextRun( LineModel.Text, FTextRange( RunRange.BeginIndex, RunRange.BeginIndex + Text.Len() ) );
-					RunModel.SetTextRange( FTextRange( RunRange.BeginIndex + 1, RunRange.EndIndex + Text.Len() ) );
+					// Move the Non-Text Run to right to free space for the new run.
+					RunModel.SetTextRange( FTextRange( RunRange.BeginIndex + Text.Len(), RunRange.EndIndex + Text.Len() ) );
 					LineModel.Runs.Insert( NewTextRun, RunIndex++ );
 				}
 				else
@@ -2348,6 +2349,33 @@ void FTextLayout::GetSelectionAsText(FString& DisplayText, const FTextSelection&
 	}
 }
 
+FTextSelection FTextLayout::GetGraphemeAt(const FTextLocation& Location) const
+{
+	const int32 LineIndex = Location.GetLineIndex();
+	const int32 Offset = Location.GetOffset();
+
+	if (!LineModels.IsValidIndex(LineIndex))
+	{
+		return FTextSelection();
+	}
+
+	const FLineModel& LineModel = LineModels[LineIndex];
+
+	GraphemeBreakIterator->SetStringRef(&LineModel.Text.Get());
+
+	const int32 PreviousBreak = (Offset < LineModel.Text->Len()) ? GraphemeBreakIterator->MoveToCandidateAfter(Offset) : GraphemeBreakIterator->ResetToEnd();
+	const int32 CurrentBreak = GraphemeBreakIterator->MoveToPrevious();
+
+	GraphemeBreakIterator->ClearString();
+
+	if (PreviousBreak == CurrentBreak || CurrentBreak == INDEX_NONE)
+	{
+		return FTextSelection();
+	}
+
+	return FTextSelection(FTextLocation(LineIndex, CurrentBreak), FTextLocation(LineIndex, PreviousBreak));
+}
+
 FTextSelection FTextLayout::GetWordAt(const FTextLocation& Location) const
 {
 	const int32 LineIndex = Location.GetLineIndex();
@@ -2360,7 +2388,7 @@ FTextSelection FTextLayout::GetWordAt(const FTextLocation& Location) const
 
 	const FLineModel& LineModel = LineModels[LineIndex];
 
-	WordBreakIterator->SetString(**LineModel.Text);
+	WordBreakIterator->SetStringRef(&LineModel.Text.Get());
 
 	int32 PreviousBreak = (Offset < LineModel.Text->Len()) ? WordBreakIterator->MoveToCandidateAfter(Offset) : WordBreakIterator->ResetToEnd();
 	int32 CurrentBreak = 0;
@@ -2680,10 +2708,7 @@ TSharedRef< ILayoutBlock > FTextLayout::FRunModel::CreateBlock( const FBlockDefi
 		if ( MeasuredRanges[ StartRangeIndex ].BeginIndex == SizeRange.BeginIndex && 
 			MeasuredRanges[ StartRangeIndex ].EndIndex == SizeRange.EndIndex )
 		{
-			if (MeasuredRangeSizes.IsValidIndex(StartRangeIndex))
-			{
-				BlockSize += MeasuredRangeSizes[StartRangeIndex];
-			}
+			BlockSize += FVector2D(MeasuredRangeSizes[StartRangeIndex]);
 		}
 		else
 		{
@@ -2694,10 +2719,7 @@ TSharedRef< ILayoutBlock > FTextLayout::FRunModel::CreateBlock( const FBlockDefi
 	{
 		if ( MeasuredRanges[ StartRangeIndex ].BeginIndex == SizeRange.BeginIndex )
 		{
-			if (MeasuredRangeSizes.IsValidIndex(StartRangeIndex))
-			{
-				BlockSize += MeasuredRangeSizes[StartRangeIndex];
-			}
+			BlockSize += FVector2D(MeasuredRangeSizes[StartRangeIndex]);
 		}
 		else
 		{
@@ -2706,20 +2728,14 @@ TSharedRef< ILayoutBlock > FTextLayout::FRunModel::CreateBlock( const FBlockDefi
 
 		for (int32 Index = StartRangeIndex + 1; Index < EndRangeIndex; Index++)
 		{
-			if (MeasuredRangeSizes.IsValidIndex(Index))
-			{
-				BlockSize.X += MeasuredRangeSizes[Index].X;
-				BlockSize.Y = FMath::Max(MeasuredRangeSizes[Index].Y, BlockSize.Y);
-			}
+			BlockSize.X += MeasuredRangeSizes[Index].X;
+			BlockSize.Y = FMath::Max(MeasuredRangeSizes[Index].Y, BlockSize.Y);
 		}
 
 		if ( MeasuredRanges[ EndRangeIndex ].EndIndex == SizeRange.EndIndex )
 		{
-			if (MeasuredRangeSizes.IsValidIndex(EndRangeIndex))
-			{
-				BlockSize.X += MeasuredRangeSizes[EndRangeIndex].X;
-				BlockSize.Y = FMath::Max(MeasuredRangeSizes[EndRangeIndex].Y, BlockSize.Y);
-			}
+			BlockSize.X += MeasuredRangeSizes[EndRangeIndex].X;
+			BlockSize.Y = FMath::Max(MeasuredRangeSizes[EndRangeIndex].Y, BlockSize.Y);
 		}
 		else
 		{
@@ -2792,7 +2808,7 @@ FVector2D FTextLayout::FRunModel::Measure(int32 BeginIndex, int32 EndIndex, floa
 	FVector2D Size = Run->Measure(BeginIndex, EndIndex, InScale, InTextContext);
 
 	MeasuredRanges.Add( FTextRange( BeginIndex, EndIndex ) );
-	MeasuredRangeSizes.Add( Size );
+	MeasuredRangeSizes.Add(Size);
 
 	return Size;
 }
@@ -2832,9 +2848,10 @@ TSharedRef< IRun > FTextLayout::FRunModel::GetRun() const
 	return Run;
 }
 
-FTextLayout::FRunModel::FRunModel( const TSharedRef< IRun >& InRun ) : Run( InRun )
+FTextLayout::FRunModel::FRunModel( const TSharedRef< IRun >& InRun )
+	: Run( InRun )
 {
-
+	SLATE_CROSS_THREAD_CHECK();
 }
 
 int32 FTextLayout::FTextOffsetLocations::TextLocationToOffset(const FTextLocation& InLocation) const

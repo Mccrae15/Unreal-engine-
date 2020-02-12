@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -72,6 +72,7 @@ class FAutoScopedDurationTimer : public FScopedDurationTimer
 public:
 	FAutoScopedDurationTimer()
 		: FScopedDurationTimer(AccumulatorValue)
+		, AccumulatorValue(0)
 	{
 	}
 
@@ -150,9 +151,9 @@ class FScopedSwitchedDurationTimer
 {
 public:
 	explicit FScopedSwitchedDurationTimer(double& AccumulatorIn, bool bDoFunctionalityIn)
-		: bDoFunctionality(bDoFunctionalityIn)
-		, StartTime(bDoFunctionalityIn ? FPlatformTime::Seconds() : 0)
-		, Accumulator(AccumulatorIn)		
+		: StartTime(bDoFunctionalityIn ? FPlatformTime::Seconds() : 0)
+		, Accumulator(AccumulatorIn)
+		, bDoFunctionality(bDoFunctionalityIn)
 	{
 	}
 
@@ -171,11 +172,11 @@ public:
 	}
 
 protected:
-	const bool bDoFunctionality;
 	/** Start time, captured in ctor. */
 	double StartTime;
 	/** Time variable to update. */
 	double& Accumulator;
+	const bool bDoFunctionality;
 };
 
 /**

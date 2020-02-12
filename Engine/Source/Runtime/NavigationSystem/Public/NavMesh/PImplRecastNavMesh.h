@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 //
 // Private implementation for communication with Recast library
@@ -15,13 +15,16 @@
 #include "NavMesh/RecastNavMesh.h"
 #include "NavMesh/RecastQueryFilter.h"
 
+#if RECAST_INTERNAL_DEBUG_DATA
+#include "NavMesh/RecastInternalDebugData.h"
+#endif
+
 #if WITH_RECAST
 #include "Detour/DetourNavMesh.h"
 #include "Detour/DetourNavMeshQuery.h"
 #endif
 
 class FRecastNavMeshGenerator;
-class UNavigationSystem;
 
 #if WITH_RECAST
 
@@ -73,7 +76,11 @@ public:
 
 	// @TODONAV
 	/** Generates path from the given query. Synchronous. */
+	UE_DEPRECATED(4.25, "Use the version with the added CostLimit parameter (FLT_MAX can be used as default).")
 	ENavigationQueryResult::Type FindPath(const FVector& StartLoc, const FVector& EndLoc, FNavMeshPath& Path, const FNavigationQueryFilter& Filter, const UObject* Owner) const;
+	
+	/** Generates path from the given query. Synchronous. */
+	ENavigationQueryResult::Type FindPath(const FVector& StartLoc, const FVector& EndLoc, const float CostLimit, FNavMeshPath& Path, const FNavigationQueryFilter& Filter, const UObject* Owner) const;
 
 	/** Check if path exists */
 	ENavigationQueryResult::Type TestPath(const FVector& StartLoc, const FVector& EndLoc, const FNavigationQueryFilter& Filter, const UObject* Owner, int32* NumVisitedNodes = 0) const;
@@ -86,7 +93,7 @@ public:
 		ARecastNavMesh::FRaycastResult& RaycastResult, NavNodeRef StartNode = INVALID_NAVNODEREF) const;
 
 	/** Generates path from given query and collect data for every step of A* algorithm */
-	int32 DebugPathfinding(const FVector& StartLoc, const FVector& EndLoc, const FNavigationQueryFilter& Filter, const UObject* Owner, TArray<FRecastDebugPathfindingData>& Steps);
+	int32 DebugPathfinding(const FVector& StartLoc, const FVector& EndLoc, const float CostLimit, const FNavigationQueryFilter& Filter, const UObject* Owner, TArray<FRecastDebugPathfindingData>& Steps);
 
 	/** Returns a random location on the navmesh. */
 	FNavLocation GetRandomPoint(const FNavigationQueryFilter& Filter, const UObject* Owner) const;
@@ -209,6 +216,10 @@ public:
 	/** Compressed layers data, can be reused for tiles generation */
 	TMap<FIntPoint, TArray<FNavMeshTileData> > CompressedTileCacheLayers;
 
+#if RECAST_INTERNAL_DEBUG_DATA
+	TMap<FIntPoint, FRecastInternalDebugData> DebugDataMap;
+#endif
+
 	/** query used for searching data on game thread */
 	mutable dtNavMeshQuery SharedNavQuery;
 
@@ -238,7 +249,10 @@ public:
 	void GetEdgesForPathCorridorImpl(const TArray<NavNodeRef>* PathCorridor, TArray<FNavigationPortalEdge>* PathCorridorEdges, const dtNavMeshQuery& NavQuery) const;
 
 protected:
-	int32 GetTilesDebugGeometry(const FRecastNavMeshGenerator* Generator, const dtMeshTile& Tile, int32 VertBase, FRecastDebugGeometry& OutGeometry, int32 TileIdx = INDEX_NONE) const;
+	/** 
+	 *	@param ForbiddenFlags polys with flags matching the fillter will get added to 
+	 */
+	int32 GetTilesDebugGeometry(const FRecastNavMeshGenerator* Generator, const dtMeshTile& Tile, int32 VertBase, FRecastDebugGeometry& OutGeometry, int32 TileIdx = INDEX_NONE, uint16 ForbiddenFlags = 0) const;
 };
 
 #endif	// WITH_RECAST

@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -148,6 +148,7 @@ private:
 	void OnPreviewYCommitted( int32 NewValue, ETextCommit::Type );
 	TOptional<int32> OnGetPreviewXValue() const { return PreviewSize.X; }
 	TOptional<int32> OnGetPreviewYValue() const { return PreviewSize.Y; }
+
 private:
 	FIntPoint PreviewSize;
 	TSharedPtr<class SMaterialEditorUIPreviewZoomer> PreviewZoomer;

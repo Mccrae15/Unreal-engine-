@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -30,6 +30,8 @@ extern ONLINESUBSYSTEM_API bool IsUniqueIdLocal(const FUniqueNetId& UniqueId);
 #define MAX_LOCAL_PLAYERS 4
 #elif PLATFORM_SWITCH
 #define MAX_LOCAL_PLAYERS 8
+#elif PLATFORM_WINDOWS
+#define MAX_LOCAL_PLAYERS 4
 #else
 #define MAX_LOCAL_PLAYERS 1
 #endif
@@ -1041,6 +1043,11 @@ public:
 		return Start >= 0 && Count >= 0;
 	}
 
+	bool operator==(const FPagedQuery& Other) const
+	{
+		return Other.Start == Start && Other.Count == Count;
+	}
+
 	/** first entry to fetch */
 	int32 Start;
 	/** total entries to fetch. -1 means ALL */
@@ -1165,6 +1172,7 @@ struct FCloudFile
 #define USER_ATTR_PREFERRED_DISPLAYNAME TEXT("prefDisplayName")
 #define USER_ATTR_ID TEXT("id")
 #define USER_ATTR_EMAIL TEXT("email")
+#define USER_ATTR_ALIAS TEXT("alias")
 
 /**
  * Base for all online user info
@@ -1244,6 +1252,8 @@ namespace EInviteStatus
 		PendingOutbound,
 		/** Player has been blocked */
 		Blocked,
+		/** Suggested friend */
+		Suggested
 	};
 
 	/** 
@@ -1272,6 +1282,10 @@ namespace EInviteStatus
 			case Blocked:
 			{
 				return TEXT("Blocked");
+			}
+			case Suggested:
+			{
+				return TEXT("Suggested");
 			}
 		}
 		return TEXT("");
@@ -1470,9 +1484,25 @@ protected:
 		return *this;
 	}
 
+	friend inline uint32 GetTypeHash(const FOnlinePartyId& Value)
+	{
+		return CityHash32(reinterpret_cast<const char*>(Value.GetBytes()), Value.GetSize());
+	}
+
 public:
 	virtual ~FOnlinePartyId() {}
 };
+
+template <typename ValueType>
+struct TOnlinePartyIdMapKeyFuncs : public TDefaultMapKeyFuncs<TSharedRef<const FOnlinePartyId>, ValueType, false>
+{
+	static FORCEINLINE TSharedRef<const FOnlinePartyId>	GetSetKey(TPair<TSharedRef<const FOnlinePartyId>, ValueType> const& Element) { return Element.Key; }
+	static FORCEINLINE uint32							GetKeyHash(TSharedRef<const FOnlinePartyId> const& Key) {	return GetTypeHash(*Key); }
+	static FORCEINLINE bool								Matches(TSharedRef<const FOnlinePartyId> const& A, TSharedRef<const FOnlinePartyId> const& B) { return (A == B) || (*A == *B); }
+};
+
+template <typename ValueType>
+using TOnlinePartyIdMap = TMap<TSharedRef<const FOnlinePartyId>, ValueType, FDefaultSetAllocator, TOnlinePartyIdMapKeyFuncs<ValueType>>;
 
 /**
  * Id of a party's type

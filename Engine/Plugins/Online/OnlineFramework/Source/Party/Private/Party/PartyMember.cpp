@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "Party/PartyMember.h"
 #include "Party/SocialParty.h"
@@ -38,6 +38,11 @@ const USocialParty* FPartyMemberRepData::GetOwnerParty() const
 	return OwnerMember.IsValid() ? &OwnerMember->GetParty() : nullptr;
 }
 
+const UPartyMember* FPartyMemberRepData::GetOwningMember() const
+{
+	return OwnerMember.IsValid() ? OwnerMember.Get() : nullptr;
+}
+
 //////////////////////////////////////////////////////////////////////////
 // PartyMember
 //////////////////////////////////////////////////////////////////////////
@@ -56,7 +61,7 @@ void UPartyMember::BeginDestroy()
 	}
 }
 
-void UPartyMember::InitializePartyMember(const TSharedRef<FOnlinePartyMember>& InOssMember, const FSimpleDelegate& OnInitComplete)
+void UPartyMember::InitializePartyMember(const FOnlinePartyMemberConstRef& InOssMember, const FSimpleDelegate& OnInitComplete)
 {
 	checkf(MemberDataReplicator.IsValid(), TEXT("Child classes of UPartyMember MUST call MemberRepData.EstablishRepDataInstance with a valid FPartyMemberRepData struct instance in their constructor."));
 	MemberDataReplicator->SetOwningMember(*this);
@@ -64,7 +69,13 @@ void UPartyMember::InitializePartyMember(const TSharedRef<FOnlinePartyMember>& I
 	if (ensure(!OssPartyMember.IsValid()))
 	{
 		OssPartyMember = InOssMember;
-		USocialToolkit* OwnerToolkit = GetParty().GetSocialManager().GetFirstLocalUserToolkit();
+		OssPartyMember->OnMemberConnectionStatusChanged().AddUObject(this, &ThisClass::HandleMemberConnectionStatusChanged);
+		USocialToolkit* OwnerToolkit = GetParty().GetSocialManager().GetSocialToolkit(OssPartyMember->GetUserId());
+		// If we are not a local user then we simply get the first local user's toolkit
+		if (OwnerToolkit == nullptr)
+		{
+			OwnerToolkit = GetParty().GetSocialManager().GetFirstLocalUserToolkit();
+		}
 		check(OwnerToolkit);
 
 		OwnerToolkit->QueueUserDependentAction(InOssMember->GetUserId(),
@@ -141,10 +152,6 @@ USocialUser& UPartyMember::GetSocialUser() const
 
 FString UPartyMember::GetDisplayName() const
 {
-	if (SocialUser->IsInitialized())
-	{ 
-		SocialUser->GetDisplayName();
-	}
 	return OssPartyMember->GetDisplayName(GetRepData().GetPlatform());
 }
 
@@ -178,15 +185,15 @@ bool UPartyMember::IsPartyLeader() const
 
 bool UPartyMember::IsLocalPlayer() const
 {
-	return GetPrimaryNetId() == GetParty().GetOwningLocalUserId();
+	return GetParty().GetSocialManager().IsLocalUser(GetPrimaryNetId(), ESocialSubsystem::Primary);
 }
 
-void UPartyMember::NotifyMemberDataReceived(const TSharedRef<FOnlinePartyData>& MemberData)
+void UPartyMember::NotifyMemberDataReceived(const FOnlinePartyData& MemberData)
 {
 	UE_LOG(LogParty, VeryVerbose, TEXT("Received updated rep data for member [%s]"), *ToDebugString());
 
 	check(MemberDataReplicator.IsValid());
-	MemberDataReplicator.ProcessReceivedData(*MemberData/*, bHasReceivedInitialData*/);
+	MemberDataReplicator.ProcessReceivedData(MemberData/*, bHasReceivedInitialData*/);
 
 	if (!bHasReceivedInitialData)
 	{
@@ -253,4 +260,18 @@ void UPartyMember::HandleSocialUserInitialized(USocialUser& InitializedUser)
 	{
 		FinishInitializing();
 	}
+}
+
+EMemberConnectionStatus UPartyMember::GetMemberConnectionStatus() const
+{
+	if (OssPartyMember.IsValid())
+	{
+		return OssPartyMember->MemberConnectionStatus;
+	}
+	return EMemberConnectionStatus::Uninitialized;
+}
+
+void UPartyMember::HandleMemberConnectionStatusChanged(const FUniqueNetId& ChangedUserId, const EMemberConnectionStatus NewMemberConnectionStatus, const EMemberConnectionStatus PreviousMemberConnectionStatus)
+{
+	OnMemberConnectionStatusChanged().Broadcast();
 }

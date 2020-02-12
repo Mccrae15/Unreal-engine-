@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 
 #pragma once
@@ -76,6 +76,8 @@ public:
 	/** Sets the material to use in the next GetView() */
 	void SetMaterialInterface(class UMaterialInterface* InMaterial);
 
+	bool ShouldSetSeparateTranslucency(class UMaterialInterface* InMaterial) const;
+
 protected:
 	// FThumbnailPreviewScene implementation
 	virtual void GetViewMatrixParameters(const float InFOVDegrees, FVector& OutOrigin, float& OutOrbitPitch, float& OutOrbitYaw, float& OutOrbitZoom) const override;
@@ -95,6 +97,9 @@ public:
 
 	/** Sets the skeletal mesh to use in the next GetView() */
 	void SetSkeletalMesh(class USkeletalMesh* InSkeletalMesh);
+
+	/** Returns the preview actor within the scene */
+	class ASkeletalMeshActor* GetPreviewActor() { return PreviewActor; }
 
 protected:
 	// FThumbnailPreviewScene implementation

@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -35,6 +35,11 @@ struct ENGINE_API FMaterialParameterInfo
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category=ParameterInfo)
 	int32 Index;
 
+#if WITH_EDITORONLY_DATA
+	UPROPERTY(Transient)
+	FSoftObjectPath ParameterLocation;
+#endif
+
 	FMaterialParameterInfo(const TCHAR* InName, EMaterialParameterAssociation InAssociation = EMaterialParameterAssociation::GlobalParameter, int32 InIndex = INDEX_NONE)
 		: Name(InName)
 		, Association(InAssociation)
@@ -58,23 +63,109 @@ struct ENGINE_API FMaterialParameterInfo
 		Ar << Ref.Name << Ref.Association << Ref.Index;
 		return Ar;
 	}
-
-	FORCEINLINE bool operator==(const FMaterialParameterInfo& Other) const
-	{
-		return Name.IsEqual(Other.Name) && Association == Other.Association && Index == Other.Index;
-	}
-
-	FORCEINLINE bool operator!=(const FMaterialParameterInfo& Other) const
-	{
-		return !Name.IsEqual(Other.Name) || Association != Other.Association || Index != Other.Index;
-	}
 };
+
+struct FHashedMaterialParameterInfo
+{
+	DECLARE_TYPE_LAYOUT(FHashedMaterialParameterInfo, NonVirtual);
+public:
+	FHashedMaterialParameterInfo(const FHashedName& InName = FHashedName(), EMaterialParameterAssociation InAssociation = EMaterialParameterAssociation::GlobalParameter, int32 InIndex = INDEX_NONE)
+		: Name(InName)
+		, Index(InIndex)
+		, Association(InAssociation)
+	{}
+
+	FHashedMaterialParameterInfo(const TCHAR* InName, EMaterialParameterAssociation InAssociation = EMaterialParameterAssociation::GlobalParameter, int32 InIndex = INDEX_NONE)
+		: Name(InName)
+		, Index(InIndex)
+		, Association(InAssociation)
+	{}
+
+	FHashedMaterialParameterInfo(const FName& InName, EMaterialParameterAssociation InAssociation = EMaterialParameterAssociation::GlobalParameter, int32 InIndex = INDEX_NONE)
+		: Name(InName)
+		, Index(InIndex)
+		, Association(InAssociation)
+	{}
+
+	FHashedMaterialParameterInfo(const FMaterialParameterInfo& Rhs)
+		: Name(Rhs.Name)
+		, Index(Rhs.Index)
+		, Association(Rhs.Association)
+	{}
+
+	FHashedMaterialParameterInfo(const FHashedMaterialParameterInfo& Rhs) = default;
+
+	friend FArchive& operator<<(FArchive& Ar, FHashedMaterialParameterInfo& Ref)
+	{
+		Ar << Ref.Name << Ref.Association << Ref.Index;
+		return Ar;
+	}
+
+	LAYOUT_FIELD(FHashedName, Name);
+	LAYOUT_FIELD(int32, Index);
+	LAYOUT_FIELD(TEnumAsByte<EMaterialParameterAssociation>, Association);
+};
+
+// For sorting/searching
+FORCEINLINE bool operator<(const FHashedMaterialParameterInfo& Lhs, const FHashedMaterialParameterInfo& Rhs)
+{
+	if (Lhs.Association != Rhs.Association) return Lhs.Association < Rhs.Association;
+	else if (Lhs.Index != Rhs.Index) return Lhs.Index < Rhs.Index;
+	return Lhs.Name < Rhs.Name;
+}
+
+FORCEINLINE bool operator==(const FMaterialParameterInfo& Lhs, const FMaterialParameterInfo& Rhs)
+{
+	return Lhs.Name.IsEqual(Rhs.Name) && Lhs.Association == Rhs.Association && Lhs.Index == Rhs.Index;
+}
+
+FORCEINLINE bool operator!=(const FMaterialParameterInfo& Lhs, const FMaterialParameterInfo& Rhs)
+{
+	return !operator==(Lhs, Rhs);
+}
+
+FORCEINLINE bool operator==(const FHashedMaterialParameterInfo& Lhs, const FHashedMaterialParameterInfo& Rhs)
+{
+	return Lhs.Name == Rhs.Name && Lhs.Association == Rhs.Association && Lhs.Index == Rhs.Index;
+}
+
+FORCEINLINE bool operator!=(const FHashedMaterialParameterInfo& Lhs, const FHashedMaterialParameterInfo& Rhs)
+{
+	return !operator==(Lhs, Rhs);
+}
+
+FORCEINLINE bool operator==(const FMaterialParameterInfo& Lhs, const FHashedMaterialParameterInfo& Rhs)
+{
+	return FHashedName(Lhs.Name) == Rhs.Name && Lhs.Index == Rhs.Index && Lhs.Association == Rhs.Association;
+}
+
+FORCEINLINE bool operator!=(const FMaterialParameterInfo& Lhs, const FHashedMaterialParameterInfo& Rhs)
+{
+	return !operator==(Lhs, Rhs);
+}
 
 USTRUCT()
 struct ENGINE_API FMaterialLayersFunctions
 {
 	GENERATED_USTRUCT_BODY()
 
+	/** Serializable ID structure for FMaterialLayersFunctions which allows us to deterministically recompile shaders*/
+	struct ID
+	{
+		TArray<FGuid> LayerIDs;
+		TArray<FGuid> BlendIDs;
+		TArray<bool> LayerStates;
+
+		bool operator==(const ID& Reference) const;
+
+		void SerializeForDDC(FArchive& Ar);
+
+		void UpdateHash(FSHA1& HashState) const;
+
+		//TODO: Investigate whether this is really required given it is only used by FMaterialShaderMapId AND that one also uses UpdateHash
+		void AppendKeyString(FString& KeyString) const;
+	};
+		
 	FMaterialLayersFunctions()
 	{
 		// Default to a non-blended "background" layer
@@ -108,9 +199,8 @@ struct ENGINE_API FMaterialLayersFunctions
 	UPROPERTY(EditAnywhere, Category = MaterialLayers)
 	TArray<bool> LayerStates;
 
-
 	UPROPERTY()
-	FString KeyString;
+	FString KeyString_DEPRECATED;
 
 	void AppendBlendedLayer()
 	{
@@ -123,35 +213,35 @@ struct ENGINE_API FMaterialLayersFunctions
 		RestrictToBlendRelatives.Push(false);
 #endif
 		LayerStates.Push(true);
-		KeyString = GetStaticPermutationString();
 	}
 
 	void RemoveBlendedLayerAt(int32 Index)
 	{
-		check(Layers.IsValidIndex(Index) && Blends.IsValidIndex(Index-1) && LayerStates.IsValidIndex(Index));
-		Layers.RemoveAt(Index);
-		Blends.RemoveAt(Index-1);
-		LayerStates.RemoveAt(Index);
+		if (Layers.IsValidIndex(Index))
+		{
+			check(Layers.IsValidIndex(Index) && Blends.IsValidIndex(Index-1) && LayerStates.IsValidIndex(Index));
+			Layers.RemoveAt(Index);
+			Blends.RemoveAt(Index-1);
+			LayerStates.RemoveAt(Index);
 #if WITH_EDITOR
-		LayerNames.RemoveAt(Index);
-		RestrictToLayerRelatives.RemoveAt(Index);
-		RestrictToBlendRelatives.RemoveAt(Index - 1);
-#endif
-		KeyString = GetStaticPermutationString();
+			check(LayerNames.IsValidIndex(Index) && RestrictToLayerRelatives.IsValidIndex(Index) && RestrictToBlendRelatives.IsValidIndex(Index-1));
+			LayerNames.RemoveAt(Index);
+			RestrictToLayerRelatives.RemoveAt(Index);
+			RestrictToBlendRelatives.RemoveAt(Index-1);
+#endif //WITH_EDITOR
+		}
 	}
 
 	void ToggleBlendedLayerVisibility(int32 Index)
 	{
 		check(LayerStates.IsValidIndex(Index));
 		LayerStates[Index] = !LayerStates[Index];
-		KeyString = GetStaticPermutationString();
 	}
 
 	void SetBlendedLayerVisibility(int32 Index, bool InNewVisibility)
 	{
 		check(LayerStates.IsValidIndex(Index));
 		LayerStates[Index] = InNewVisibility;
-		KeyString = GetStaticPermutationString();
 	}
 
 	bool GetLayerVisibility(int32 Index)
@@ -173,6 +263,8 @@ struct ENGINE_API FMaterialLayersFunctions
 
 #endif
 
+	const ID GetID() const;
+
 	/** Lists referenced function packages in a string, intended for use as a static permutation identifier. */
 	FString GetStaticPermutationString() const;
 
@@ -186,11 +278,6 @@ struct ENGINE_API FMaterialLayersFunctions
 	FORCEINLINE bool operator!=(const FMaterialLayersFunctions& Other) const
 	{
 		return Layers != Other.Layers || Blends != Other.Blends || LayerStates != Other.LayerStates;
-	}
-
-	FORCEINLINE void UpdateStaticPermutationString()
-	{
-		KeyString = GetStaticPermutationString();
 	}
 };
 

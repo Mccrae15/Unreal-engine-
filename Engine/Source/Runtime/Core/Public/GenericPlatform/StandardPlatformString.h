@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -11,7 +11,7 @@
 #include <stdlib.h>
 #include <stdio.h>
 
-#if (PLATFORM_APPLE || PLATFORM_UNIX || PLATFORM_HTML5 || PLATFORM_PS4 || PLATFORM_SWITCH) && !PLATFORM_TCHAR_IS_CHAR16
+#if PLATFORM_USE_GENERIC_STRING_IMPLEMENTATION && !PLATFORM_TCHAR_IS_CHAR16
 
 /**
 * Standard implementation
@@ -62,7 +62,7 @@ public:
 
 	static FORCEINLINE int32 Strlen( const WIDECHAR* String )
 	{
-		return wcslen( String );
+		return (int32)wcslen( String );
 	}
 
 	static FORCEINLINE const WIDECHAR* Strstr( const WIDECHAR* String, const WIDECHAR* Find)
@@ -82,7 +82,7 @@ public:
 
 	static FORCEINLINE int32 Atoi(const WIDECHAR* String)
 	{
-		return wcstol( String, NULL, 10 );
+		return (int32)wcstol( String, NULL, 10 );
 	}
 
 	static FORCEINLINE int64 Atoi64(const WIDECHAR* String)
@@ -102,7 +102,7 @@ public:
 
 	static FORCEINLINE int32 Strtoi( const WIDECHAR* Start, WIDECHAR** End, int32 Base )
 	{
-		return wcstol( Start, End, Base );
+		return (int32)wcstol( Start, End, Base );
 	}
 
 	static FORCEINLINE int64 Strtoi64( const WIDECHAR* Start, WIDECHAR** End, int32 Base )
@@ -121,13 +121,13 @@ public:
 	}
 
 	UE_DEPRECATED(4.22, "GetVarArgs with DestSize and Count arguments has been deprecated - only DestSize should be passed")
-	static int32 GetVarArgs(WIDECHAR* Dest, SIZE_T DestSize, int32 Count, const WIDECHAR*& Fmt, va_list ArgPtr)
+	static CORE_API int32 GetVarArgs(WIDECHAR* Dest, SIZE_T DestSize, int32 Count, const WIDECHAR*& Fmt, va_list ArgPtr)
 	{
 		return GetVarArgs(Dest, DestSize, Fmt, ArgPtr);
 	}
 
 #if PLATFORM_USE_SYSTEM_VSWPRINTF
-	static int32 GetVarArgs( WIDECHAR* Dest, SIZE_T DestSize, const WIDECHAR*& Fmt, va_list ArgPtr )
+	static CORE_API int32 GetVarArgs( WIDECHAR* Dest, SIZE_T DestSize, const WIDECHAR*& Fmt, va_list ArgPtr )
 	{
 #if PLATFORM_USE_LS_SPEC_FOR_WIDECHAR
 		// fix up the Fmt string, as fast as possible, without using an FString
@@ -162,6 +162,10 @@ public:
 						NewFormat[NewIndex++] = LITERAL(WIDECHAR, 'l');
 						NewFormat[NewIndex] = *NextChar;
 					}
+					else if (*NextChar == LITERAL(WIDECHAR, 'S'))
+					{
+						NewFormat[NewIndex] = LITERAL(WIDECHAR, 's');
+					}
 					else
 					{
 						NewFormat[NewIndex] = *NextChar;
@@ -184,7 +188,7 @@ public:
 		return Result;
 	}
 #else // PLATFORM_USE_SYSTEM_VSWPRINTF
-	static int32 GetVarArgs( WIDECHAR* Dest, SIZE_T DestSize, const WIDECHAR*& Fmt, va_list ArgPtr );
+	static CORE_API int32 GetVarArgs( WIDECHAR* Dest, SIZE_T DestSize, const WIDECHAR*& Fmt, va_list ArgPtr );
 #endif // PLATFORM_USE_SYSTEM_VSWPRINTF
 
 	/**
@@ -219,7 +223,7 @@ public:
 
 	static FORCEINLINE int32 Strlen( const ANSICHAR* String )
 	{
-		return strlen( String );
+		return (int32)strlen( String );
 	}
 
 	static FORCEINLINE const ANSICHAR* Strstr( const ANSICHAR* String, const ANSICHAR* Find)
@@ -259,7 +263,7 @@ public:
 
 	static FORCEINLINE int32 Strtoi( const ANSICHAR* Start, ANSICHAR** End, int32 Base )
 	{
-		return strtol( Start, End, Base );
+		return (int32)strtol( Start, End, Base );
 	}
 
 	static FORCEINLINE int64 Strtoi64( const ANSICHAR* Start, ANSICHAR** End, int32 Base )
@@ -278,12 +282,12 @@ public:
 	}
 
 	UE_DEPRECATED(4.22, "GetVarArgs with DestSize and Count arguments has been deprecated - only DestSize should be passed")
-	static int32 GetVarArgs( ANSICHAR* Dest, SIZE_T DestSize, int32 Count, const ANSICHAR*& Fmt, va_list ArgPtr )
+	static CORE_API int32 GetVarArgs( ANSICHAR* Dest, SIZE_T DestSize, int32 Count, const ANSICHAR*& Fmt, va_list ArgPtr )
 	{
 		return GetVarArgs(Dest, DestSize, Fmt, ArgPtr);
 	}
 
-	static int32 GetVarArgs( ANSICHAR* Dest, SIZE_T DestSize, const ANSICHAR*& Fmt, va_list ArgPtr )
+	static CORE_API int32 GetVarArgs( ANSICHAR* Dest, SIZE_T DestSize, const ANSICHAR*& Fmt, va_list ArgPtr )
 	{
 		int32 Result = vsnprintf(Dest, DestSize, Fmt, ArgPtr);
 		va_end( ArgPtr );

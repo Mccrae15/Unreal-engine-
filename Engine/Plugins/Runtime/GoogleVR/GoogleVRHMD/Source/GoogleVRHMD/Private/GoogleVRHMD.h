@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -45,18 +45,6 @@ extern gvr_context* GVRAPI;
 #endif
 
 #endif //GOOGLEVRHMD_SUPPORTED_ANDROID_PLATFORMS
-
-#if GOOGLEVRHMD_SUPPORTED_IOS_PLATFORMS
-
-#import <GVRSDK/GVROverlayView.h>
-
-@class FOverlayViewDelegate;
-@interface FOverlayViewDelegate : UIResponder<GVROverlayViewDelegate>
-{
-}
-@end
-
-#endif //GOOGLEVRHMD_SUPPORTED_IOS_PLATFORMS
 
 // Forward decl
 class FGoogleVRHMD;
@@ -399,11 +387,6 @@ private:
 	FVertexBufferRHIRef DistortionMeshVerticesLeftEye;
 	FVertexBufferRHIRef DistortionMeshVerticesRightEye;
 
-#if GOOGLEVRHMD_SUPPORTED_IOS_PLATFORMS
-	GVROverlayView* OverlayView;
-	FOverlayViewDelegate* OverlayViewDelegate;
-#endif
-
 	// Cached data that should only be updated once per frame
 	mutable uint32		LastUpdatedCacheFrame;
 #if GOOGLEVRHMD_SUPPORTED_PLATFORMS
@@ -419,7 +402,8 @@ private:
 #if GOOGLEVRHMD_SUPPORTED_INSTANT_PREVIEW_PLATFORMS
 	static const int kReadbackTextureCount = 5;
 	FTexture2DRHIRef ReadbackTextures[kReadbackTextureCount];
-	FRenderQueryRHIRef ReadbackCopyQueries[kReadbackTextureCount];
+	FRenderQueryPoolRHIRef RenderQueryPool;
+	FRHIPooledRenderQuery* ReadbackCopyQueries = nullptr;
 	FIntPoint ReadbackTextureSizes[kReadbackTextureCount];
 	int ReadbackTextureCount;
 	instant_preview::ReferencePose ReadbackReferencePoses[kReadbackTextureCount];
@@ -684,6 +668,7 @@ public:
 
 	virtual class TSharedPtr< class IStereoRendering, ESPMode::ThreadSafe > GetStereoRenderingDevice() override { return SharedThis(this); }
 
+
 	//////////////////////////////////////
 	// Begin IXRInput Virtual Interface //
 	//////////////////////////////////////
@@ -780,7 +765,7 @@ public:
 #endif
 
 	virtual void SetTrackingOrigin(EHMDTrackingOrigin::Type) override;
-	virtual EHMDTrackingOrigin::Type GetTrackingOrigin() override;
+	virtual EHMDTrackingOrigin::Type GetTrackingOrigin() const override;
 
 
 #if GOOGLEVRHMD_SUPPORTED_INSTANT_PREVIEW_PLATFORMS

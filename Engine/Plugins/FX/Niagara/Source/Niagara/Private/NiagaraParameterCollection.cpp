@@ -1,7 +1,8 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "NiagaraParameterCollection.h"
 #include "NiagaraDataInterface.h"
+#include "Misc/SecureHash.h"
 #if WITH_EDITORONLY_DATA
 	#include "IAssetTools.h"
 #endif
@@ -11,8 +12,8 @@
 
 UNiagaraParameterCollectionInstance::UNiagaraParameterCollectionInstance(const FObjectInitializer& ObjectInitializer)
 	: Super(ObjectInitializer)
-	, ParameterStorage(this)
 {
+	ParameterStorage.SetOwner(this);
 	//Bind(ParameterStorage);
 }
 
@@ -24,6 +25,9 @@ UNiagaraParameterCollectionInstance::~UNiagaraParameterCollectionInstance()
 void UNiagaraParameterCollectionInstance::PostLoad()
 {
 	Super::PostLoad();
+
+	ParameterStorage.PostLoad();
+
 	//Ensure we're synced up with our collection. TODO: Do conditionally via a version number/guid?
 	SyncWithCollection();
 }
@@ -85,14 +89,15 @@ void UNiagaraParameterCollectionInstance::SyncWithCollection()
 		if (Offset != INDEX_NONE && OverridesParameter(Param))
 		{
 			//If this parameter is in the old store and we're overriding it, use the existing value in the store.
-			ParameterStorage.AddParameter(Param, false);
+			int32 ParameterStorageOffset = INDEX_NONE;
+			ParameterStorage.AddParameter(Param, false, true, &ParameterStorageOffset);
 			if (Param.IsDataInterface())
 			{
 				ParameterStorage.SetDataInterface(OldStore.GetDataInterface(Offset), Param);
 			}
 			else
 			{
-				ParameterStorage.SetParameterData(OldStore.GetParameterData(Offset), ParameterStorage.IndexOf(Param), Param.GetSizeInBytes());
+				ParameterStorage.SetParameterData(OldStore.GetParameterData(Offset), ParameterStorageOffset, Param.GetSizeInBytes());
 			}
 		}
 		else
@@ -102,14 +107,15 @@ void UNiagaraParameterCollectionInstance::SyncWithCollection()
 			Offset = DefaultStore.IndexOf(Param);
 			check(Offset != INDEX_NONE);
 
-			ParameterStorage.AddParameter(Param, false);
+			int32 ParameterStorageOffset = INDEX_NONE;
+			ParameterStorage.AddParameter(Param, false, true, &ParameterStorageOffset);
 			if (Param.IsDataInterface())
 			{
 				ParameterStorage.SetDataInterface(CastChecked<UNiagaraDataInterface>(StaticDuplicateObject(DefaultStore.GetDataInterface(Offset), this)), Param);
 			}
 			else
 			{
-				ParameterStorage.SetParameterData(DefaultStore.GetParameterData(Offset), ParameterStorage.IndexOf(Param), Param.GetSizeInBytes());
+				ParameterStorage.SetParameterData(DefaultStore.GetParameterData(Offset), ParameterStorageOffset, Param.GetSizeInBytes());
 			}
 		}
 	}
@@ -137,7 +143,7 @@ void UNiagaraParameterCollectionInstance::SetOverridesParameter(const FNiagaraVa
 //Blueprint Accessors
 bool UNiagaraParameterCollectionInstance::GetBoolParameter(const FString& InVariableName)
 {
-	return ParameterStorage.GetParameterValue<bool>(FNiagaraVariable(FNiagaraTypeDefinition::GetBoolDef(), *Collection->ParameterNameFromFriendlyName(InVariableName)));
+	return ParameterStorage.GetParameterValue<int32>(FNiagaraVariable(FNiagaraTypeDefinition::GetBoolDef(), *Collection->ParameterNameFromFriendlyName(InVariableName))) == FNiagaraBool::True;
 }
 
 float UNiagaraParameterCollectionInstance::GetFloatParameter(const FString& InVariableName)
@@ -178,7 +184,7 @@ FLinearColor UNiagaraParameterCollectionInstance::GetColorParameter(const FStrin
 
 void UNiagaraParameterCollectionInstance::SetBoolParameter(const FString& InVariableName, bool InValue)
 {
-	ParameterStorage.SetParameterValue(InValue, FNiagaraVariable(FNiagaraTypeDefinition::GetBoolDef(), *Collection->ParameterNameFromFriendlyName(InVariableName)));
+	ParameterStorage.SetParameterValue(InValue ? FNiagaraBool::True : FNiagaraBool::False, FNiagaraVariable(FNiagaraTypeDefinition::GetBoolDef(), *Collection->ParameterNameFromFriendlyName(InVariableName)));
 }
 
 void UNiagaraParameterCollectionInstance::SetFloatParameter(const FString& InVariableName, float InValue)
@@ -284,6 +290,20 @@ FString UNiagaraParameterCollection::GetFullNamespace()const
 	return TEXT("NPC.") + Namespace.ToString() + TEXT(".");
 }
 
+FNiagaraCompileHash UNiagaraParameterCollection::GetCompileHash() const
+{
+	// TODO - Implement an actual hash for parameter collections instead of just hashing a change id.
+	FSHA1 CompileHash;
+	CompileHash.Update((const uint8*)&CompileId, sizeof(FGuid));
+	CompileHash.Final();
+
+	TArray<uint8> DataHash;
+	DataHash.AddUninitialized(FSHA1::DigestSize);
+	CompileHash.GetHash(DataHash.GetData());
+
+	return FNiagaraCompileHash(DataHash);
+}
+
 void UNiagaraParameterCollection::RefreshCompileId()
 {
 	CompileId = FGuid::NewGuid();
@@ -350,6 +370,9 @@ void UNiagaraParameterCollection::MakeNamespaceNameUnique()
 void UNiagaraParameterCollection::PostLoad()
 {
 	Super::PostLoad();
+
+	DefaultInstance->ConditionalPostLoad();
+
 	if (CompileId.IsValid() == false)
 	{
 		CompileId = FGuid::NewGuid();

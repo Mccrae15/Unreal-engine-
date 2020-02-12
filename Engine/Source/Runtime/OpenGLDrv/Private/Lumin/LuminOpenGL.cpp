@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 
 #include "CoreMinimal.h"
@@ -15,6 +15,11 @@ namespace GL_EXT
 	PFNEGLCREATESYNCKHRPROC eglCreateSyncKHR = NULL;
 	PFNEGLDESTROYSYNCKHRPROC eglDestroySyncKHR = NULL;
 	PFNEGLCLIENTWAITSYNCKHRPROC eglClientWaitSyncKHR = NULL;
+
+	PFNEGLCREATEIMAGEKHRPROC eglCreateImageKHR = NULL;
+	PFNEGLDESTROYIMAGEKHRPROC eglDestroyImageKHR = NULL;
+
+	PFNGLEGLIMAGETARGETTEXTURE2DOESPROC glEGLImageTargetTexture2DOES = NULL;
 
 	// Occlusion Queries
 	PFNGLGENQUERIESEXTPROC 					glGenQueriesEXT = NULL;
@@ -74,6 +79,7 @@ namespace GL_EXT
 	PFNGLCLEARBUFFERUIVPROC					glClearBufferuiv = NULL;
 	PFNGLDRAWBUFFERSPROC					glDrawBuffers = NULL;
 	PFNGLTEXBUFFEREXTPROC					glTexBufferEXT = NULL;
+	PFNGLTEXBUFFERRANGEEXTPROC				glTexBufferRangeEXT = NULL;
 
 	PFNGLREADBUFFERPROC glReadBuffer = nullptr;
 	PFNGLCOPYIMAGESUBDATAEXTPROC glCopyImageSubDataEXT = nullptr;
@@ -239,6 +245,11 @@ void FPlatformOpenGLDevice::LoadEXT()
 	eglDestroySyncKHR = (PFNEGLDESTROYSYNCKHRPROC)((void*)eglGetProcAddress("eglDestroySyncKHR"));
 	eglClientWaitSyncKHR = (PFNEGLCLIENTWAITSYNCKHRPROC)((void*)eglGetProcAddress("eglClientWaitSyncKHR"));
 
+	eglCreateImageKHR = (PFNEGLCREATEIMAGEKHRPROC)((void*)eglGetProcAddress("eglCreateImageKHR"));
+	eglDestroyImageKHR = (PFNEGLDESTROYIMAGEKHRPROC)((void*)eglGetProcAddress("eglDestroyImageKHR"));
+
+	glEGLImageTargetTexture2DOES = (PFNGLEGLIMAGETARGETTEXTURE2DOESPROC)((void*)eglGetProcAddress("glEGLImageTargetTexture2DOES"));
+
 	glDebugMessageControlKHR = (PFNGLDEBUGMESSAGECONTROLKHRPROC)((void*)eglGetProcAddress("glDebugMessageControlKHR"));
 	glDebugMessageInsertKHR = (PFNGLDEBUGMESSAGEINSERTKHRPROC)((void*)eglGetProcAddress("glDebugMessageInsertKHR"));
 	glDebugMessageCallbackKHR = (PFNGLDEBUGMESSAGECALLBACKKHRPROC)((void*)eglGetProcAddress("glDebugMessageCallbackKHR"));
@@ -363,7 +374,6 @@ bool FLuminOpenGL::bSupportsTextureBuffer = false;
 bool FLuminOpenGL::bUseES30ShadingLanguage = false;
 bool FLuminOpenGL::bES30Support = false;
 bool FLuminOpenGL::bES31Support = false;
-bool FLuminOpenGL::bSupportsInstancing = false;
 bool FLuminOpenGL::bHasHardwareHiddenSurfaceRemoval = false;
 bool FLuminOpenGL::bSupportsMobileMultiView = false;
 bool FLuminOpenGL::bSupportsImageExternal = false;
@@ -504,7 +514,6 @@ void FLuminOpenGL::ProcessExtensions(const FString& ExtensionsString)
 		glFramebufferTextureLayer = (PFNGLFRAMEBUFFERTEXTURELAYERPROC)((void*)eglGetProcAddress("glFramebufferTextureLayer"));
 
 		// Required by the ES3 spec
-		bSupportsInstancing = true;
 		bSupportsTextureFloat = true;
 		bSupportsTextureHalfFloat = true;
 	}
@@ -537,6 +546,7 @@ void FLuminOpenGL::ProcessExtensions(const FString& ExtensionsString)
 		if (bSupportsTextureBuffer)
 		{
 			glTexBufferEXT = (PFNGLTEXBUFFEREXTPROC)((void*)eglGetProcAddress("glTexBufferEXT"));
+			glTexBufferRangeEXT = (PFNGLTEXBUFFERRANGEEXTPROC)((void*)eglGetProcAddress("glTexBufferRangeEXT"));
 		}
 	}
 	

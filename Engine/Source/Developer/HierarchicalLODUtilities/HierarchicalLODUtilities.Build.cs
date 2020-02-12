@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 using UnrealBuildTool;
 
 public class HierarchicalLODUtilities : ModuleRules
@@ -19,6 +19,8 @@ public class HierarchicalLODUtilities : ModuleRules
             new string[]
 			{
 				"Engine",
+				"MeshDescription",
+				"StaticMeshDescription",
 				"UnrealEd",
                 "Projects",
 			}

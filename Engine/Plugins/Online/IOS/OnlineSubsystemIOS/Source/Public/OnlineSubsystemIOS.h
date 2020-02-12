@@ -1,10 +1,22 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
 #include "OnlineSubsystem.h"
 #include "OnlineSubsystemImpl.h"
 #include "OnlineSubsystemIOSPackage.h"
+#include "OnlineSessionInterfaceIOS.h"
+#include "OnlineFriendsInterfaceIOS.h"
+#include "OnlineIdentityInterfaceIOS.h"
+#include "OnlineLeaderboardsInterfaceIOS.h"
+#include "OnlineStoreInterfaceIOS.h"
+#include "OnlineStoreIOS.h"
+#include "OnlinePurchaseIOS.h"
+#include "OnlineAchievementsInterfaceIOS.h"
+#include "OnlineExternalUIInterfaceIOS.h"
+#include "OnlineTurnBasedInterfaceIOS.h"
+#include "OnlineUserCloudInterfaceIOS.h"
+#include "OnlineSharedCloudInterfaceIOS.h"
 
 @class FStoreKitHelperV2;
 @class FAppStoreUtils;
@@ -35,7 +47,9 @@ public:
 	virtual IOnlineIdentityPtr GetIdentityInterface() const override;
 	virtual IOnlineTitleFilePtr GetTitleFileInterface() const override;
 	virtual IOnlineEntitlementsPtr GetEntitlementsInterface() const override;
+	PRAGMA_DISABLE_DEPRECATION_WARNINGS
 	virtual IOnlineStorePtr GetStoreInterface() const override;
+	PRAGMA_ENABLE_DEPRECATION_WARNINGS
 	virtual IOnlineStoreV2Ptr GetStoreV2Interface() const override;
 	virtual IOnlinePurchasePtr GetPurchaseInterface() const override;
 	virtual IOnlineEventsPtr GetEventsInterface() const override;
@@ -68,6 +82,12 @@ PACKAGE_SCOPE:
 	 * @return true if IAP should be available, false otherwise
 	 */
 	static bool IsInAppPurchasingEnabled();
+	
+	/**
+	 * Is GameCenter enabled
+	 * @return true if enabled, false otherwise
+	 */
+	static bool IsGameCenterEnabled();
 	
 	/**
 	 * Is CloudKit enabled

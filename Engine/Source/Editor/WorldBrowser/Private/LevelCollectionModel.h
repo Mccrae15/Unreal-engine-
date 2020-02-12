@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 #pragma once
 
 #include "CoreMinimal.h"
@@ -331,7 +331,7 @@ public:
 	static FBox GetVisibleLevelsBoundingBox(const FLevelModelList& InList, bool bIncludeChildren);
 
 	/** @return	The UICommandList supported by this collection */
-	const TSharedRef<const FUICommandList> GetCommandList() const;
+	const TSharedRef<FUICommandList> GetCommandList() const;
 
 	/**  */
 	void LoadSettings();

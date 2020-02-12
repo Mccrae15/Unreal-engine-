@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 using System;
 using System.Collections.Generic;
@@ -102,6 +102,20 @@ namespace Tools.DotNETCommon
 			Writer.Write("}");
 
 			bRequiresComma = true;
+		}
+
+		/// <summary>
+		/// Write the opening bracket for an unnamed array
+		/// </summary>
+		/// <param name="ArrayName">Name of the field</param>
+		public void WriteArrayStart()
+		{
+			WriteCommaNewline();
+
+			Writer.Write("{0}[", Indent);
+
+			Indent += "\t";
+			bRequiresComma = false;
 		}
 
 		/// <summary>
@@ -213,6 +227,17 @@ namespace Tools.DotNETCommon
 		public void WriteValue(string Name, bool Value)
 		{
 			WriteValueInternal(Name, Value ? "true" : "false");
+		}
+
+		/// <summary>
+		/// Write a field name and enum value
+		/// </summary>
+		/// <typeparam name="T">The enum type</typeparam>
+		/// <param name="Name">Name of the field</param>
+		/// <param name="Value">Value for the field</param>
+		public void WriteEnumValue<T>(string Name, T Value) where T : struct
+		{
+			WriteValue(Name, Value.ToString());
 		}
 
 		void WriteCommaNewline()

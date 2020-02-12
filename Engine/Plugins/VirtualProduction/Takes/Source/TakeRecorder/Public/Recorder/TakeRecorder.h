@@ -1,8 +1,9 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
 #include "UObject/Object.h"
+#include "UObject/StrongObjectPtr.h"
 #include "ISequencer.h"
 #include "Recorder/TakeRecorderParameters.h"
 #include "Serializers/MovieSceneManifestSerialization.h"
@@ -23,11 +24,14 @@ UENUM(BlueprintType)
 enum class ETakeRecorderState : uint8
 {
 	CountingDown,
+	PreRecord,
+	TickingAfterPre,
 	Started,
 	Stopped,
 	Cancelled,
 };
 
+DECLARE_MULTICAST_DELEGATE_OneParam(FOnTakeRecordingPreInitialize, UTakeRecorder*);
 DECLARE_MULTICAST_DELEGATE_OneParam(FOnTakeRecordingInitialized, UTakeRecorder*);
 DECLARE_MULTICAST_DELEGATE_OneParam(FOnTakeRecordingStarted, UTakeRecorder*);
 DECLARE_MULTICAST_DELEGATE_OneParam(FOnTakeRecordingFinished, UTakeRecorder*);
@@ -106,26 +110,36 @@ public:
 	void Stop();
 
 	/**
-	* Retrieve a multi-cast delegate that is triggered when this recording starts
-	*/
+	 * Retrieve a multi-cast delegate that is triggered before initialization occurs (ie. when the recording button is pressed and before the countdown starts)
+	 */
+	FOnTakeRecordingPreInitialize& OnRecordingPreInitialize();
+
+	/**
+	 * Retrieve a multi-cast delegate that is triggered when this recording starts
+	 */
 	FOnTakeRecordingStarted& OnRecordingStarted();
 
 	/**
-	* Retrieve a multi-cast delegate that is triggered when this recording finishes
-	*/
+	 * Retrieve a multi-cast delegate that is triggered when this recording finishes
+	 */
 	FOnTakeRecordingFinished& OnRecordingFinished();
 
 	/**
-	* Retrieve a multi-cast delegate that is triggered when this recording is cancelled
-	*/
+	 * Retrieve a multi-cast delegate that is triggered when this recording is cancelled
+	 */
 	FOnTakeRecordingCancelled& OnRecordingCancelled();
 
 private:
 
 	/**
-	 * Called after the countdown to start recording
+	 * Called after the countdown to PreRecord
 	 */
-	void Start();
+	void PreRecord();
+
+	/**
+	 * Called after PreRecord To Start
+	 */
+	void Start(const FTimecode& InTimecodeSource);
 
 	/**
 	 * Ticked by a tickable game object to performe any necessary time-sliced logic
@@ -159,6 +173,9 @@ private:
 
 private:
 
+	/** Called by Tick and Start to make sure we record at start */
+	void InternalTick(const FTimecode& InTimecodeSource, float DeltaTime);
+
 	virtual UWorld* GetWorld() const override;
 
 private:
@@ -168,6 +185,9 @@ private:
 
 	/** The state of this recorder instance */
 	ETakeRecorderState State;
+
+	/** FFrameTime in MovieScene Resolution we are at*/
+	FFrameTime CurrentFrameTime;
 
 	/** The asset that we should output recorded data into */
 	UPROPERTY(transient)
@@ -188,6 +208,9 @@ private:
 	/** Anonymous array of cleanup functions to perform when a recording has finished */
 	TArray<TFunction<void()>> OnStopCleanup;
 
+	/** Triggered before the recorder is initialized */
+	FOnTakeRecordingPreInitialize OnRecordingPreInitializeEvent;
+
 	/** Triggered when this recorder starts */
 	FOnTakeRecordingStarted OnRecordingStartedEvent;
 
@@ -200,6 +223,9 @@ private:
 	/** Sequencer ptr that controls playback of the desination asset during the recording */
 	TWeakPtr<ISequencer> WeakSequencer;
 
+	/** Due a few ticks after the pre so we are set up with asset creation */
+	int32 NumberOfTicksAfterPre;
+
 	friend class FTickableTakeRecorder;
 
 private:
@@ -208,9 +234,6 @@ private:
 	 * Set the currently active take recorder instance
 	 */
 	static bool SetActiveRecorder(UTakeRecorder* NewActiveRecorder);
-
-	/** A pointer to the currently active recorder */
-	static UTakeRecorder* CurrentRecorder;
 
 	/** Event to trigger when a new recording is initialized */
 	static FOnTakeRecordingInitialized OnRecordingInitializedEvent;

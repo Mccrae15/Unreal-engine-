@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "SerializedRecorder.h"
 #include "Editor.h"
@@ -24,7 +24,7 @@
 #include "Components/SkeletalMeshComponent.h"
 #include "GameFramework/MovementComponent.h"
 #include "GameFramework/Character.h"
-#include "Toolkits/AssetEditorManager.h"
+
 #include "IAssetTools.h"
 #include "AssetData.h"
 #include "AssetToolsModule.h"
@@ -236,7 +236,7 @@ bool FSerializedRecorder::LoadSubSequenceFile(UMovieSceneSequence* InMovieSceneS
 
 			ULevelSequence* TargetSequence = InMasterSequence;
 			const FString& SubSequenceName = Header.Name;
-			TargetSequence = UTakeRecorderSources::CreateSubSequenceForSource(InMasterSequence, SubSequenceName);
+			TargetSequence = UTakeRecorderSources::CreateSubSequenceForSource(InMasterSequence, SubSequenceName, SubSequenceName);
 			if (TargetSequence)
 			{
 				TargetSequence->GetMovieScene()->TimecodeSource = FApp::GetTimecode();
@@ -442,7 +442,7 @@ AActor* FSerializedRecorder::SetActorPossesableOrSpawnable(UMovieSceneSequence* 
 				SkeletalMeshComponent->SetAnimationMode(EAnimationMode::AnimationSingleNode);
 				SkeletalMeshComponent->bEnableUpdateRateOptimizations = false;
 				SkeletalMeshComponent->VisibilityBasedAnimTickOption = EVisibilityBasedAnimTickOption::AlwaysTickPoseAndRefreshBones;
-				SkeletalMeshComponent->ForcedLodModel = 1;
+				SkeletalMeshComponent->SetForcedLOD(1);
 			}
 
 			// Disable auto-possession on recorded Pawns so that when the Spawnable is spawned it doesn't auto-possess the player

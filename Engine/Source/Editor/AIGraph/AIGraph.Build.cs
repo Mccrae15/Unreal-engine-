@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 using UnrealBuildTool;
 
@@ -40,7 +40,8 @@ public class AIGraph : ModuleRules
 				"AnimGraph",
 				"BlueprintGraph",
                 "AIModule",
-				"ClassViewer"
+				"ClassViewer",
+				"ToolMenus",
 			}
         );
 

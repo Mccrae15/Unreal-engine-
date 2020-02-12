@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
  
 #include "Widgets/Input/SMenuAnchor.h"
 #include "Layout/ArrangedChildren.h"
@@ -9,6 +9,11 @@
 #include "Framework/Application/MenuStack.h"
 #include "Framework/Application/SlateApplication.h"
 #include "Layout/LayoutUtils.h"
+
+#if WITH_EDITOR
+#include "Framework/MultiBox/MultiBox.h"
+#include "Framework/MultiBox/ToolMenuBase.h"
+#endif
 
 static FVector2D GetMenuOffsetForPlacement(const FGeometry& AllottedGeometry, EMenuPlacement PlacementMode, FVector2D PopupSizeLocalSpace)
 {
@@ -93,6 +98,7 @@ void SMenuAnchor::Construct( const FArguments& InArgs )
 	OnGetMenuContent                       = InArgs._OnGetMenuContent;
 	OnMenuOpenChanged                      = InArgs._OnMenuOpenChanged;
 	Placement                              = InArgs._Placement;
+	bFitInWindow						   = InArgs._FitInWindow;
 	Method                                 = InArgs._Method;
 	bShouldDeferPaintingAfterWindowContent = InArgs._ShouldDeferPaintingAfterWindowContent;
 	bUseApplicationMenuStack               = InArgs._UseApplicationMenuStack;
@@ -153,11 +159,21 @@ void SMenuAnchor::Tick( const FGeometry& AllottedGeometry, const double InCurren
 		// geometry to use. Tick() is always in DesktopSpace, so cache the solution here and just use
 		// it in OnArrangeChildren().
 		const FPopupPlacement LocalPlacement(AllottedGeometry, Children[1].GetWidget()->GetDesiredSize(), Placement.Get());
-		const FSlateRect WindowRectLocalSpace = TransformRect(Inverse(AllottedGeometry.GetAccumulatedLayoutTransform()), PopupWindow->GetClientRectInScreen());
-		const FVector2D FittedPlacement = ComputePopupFitInRect(
-			LocalPlacement.AnchorLocalSpace,
-			FSlateRect(LocalPlacement.LocalPopupOffset, LocalPlacement.LocalPopupOffset + LocalPlacement.LocalPopupSize),
-			LocalPlacement.Orientation, WindowRectLocalSpace);
+
+		FVector2D FittedPlacement;
+
+		if (bFitInWindow)
+		{
+			const FSlateRect WindowRectLocalSpace = TransformRect(Inverse(AllottedGeometry.GetAccumulatedLayoutTransform()), PopupWindow->GetClientRectInScreen());
+			FittedPlacement = ComputePopupFitInRect(
+				LocalPlacement.AnchorLocalSpace,
+				FSlateRect(LocalPlacement.LocalPopupOffset, LocalPlacement.LocalPopupOffset + LocalPlacement.LocalPopupSize),
+				LocalPlacement.Orientation, WindowRectLocalSpace);
+		}
+		else
+		{
+			FittedPlacement = LocalPlacement.LocalPopupOffset;
+		}
 
 		LocalPopupPosition = FittedPlacement;
 		ScreenPopupPosition = AllottedGeometry.GetAccumulatedLayoutTransform().TransformPoint(LocalPopupPosition);
@@ -169,7 +185,7 @@ void SMenuAnchor::Tick( const FGeometry& AllottedGeometry, const double InCurren
 
 bool SMenuAnchor::ComputeVolatility() const
 {
-	return IsOpen();
+	return SPanel::ComputeVolatility() || IsOpen();
 }
 
 void SMenuAnchor::OnArrangeChildren( const FGeometry& AllottedGeometry, FArrangedChildren& ArrangedChildren ) const
@@ -337,7 +353,6 @@ void SMenuAnchor::SetIsOpen( bool InIsOpen, const bool bFocusMenu, const int32 F
 
 					const FVector2D NewPosition = MyGeometry.AbsolutePosition;
 					FVector2D NewWindowSize = DesiredContentSize;
-					const FVector2D SummonLocationSize = MyGeometry.GetLocalSize();
 
 					FPopupTransitionEffect TransitionEffect( FPopupTransitionEffect::None );
 					if ( PlacementMode == MenuPlacement_ComboBox || PlacementMode == MenuPlacement_ComboBoxRight )
@@ -352,6 +367,7 @@ void SMenuAnchor::SetIsOpen( bool InIsOpen, const bool bFocusMenu, const int32 F
 					else if ( PlacementMode == MenuPlacement_MenuRight )
 					{
 						TransitionEffect = FPopupTransitionEffect( FPopupTransitionEffect::SubMenu );
+						NewWindowSize = MyGeometry.GetAbsoluteSize();
 					}
 
 					MethodInUse = Method.IsSet()
@@ -364,10 +380,39 @@ void SMenuAnchor::SetIsOpen( bool InIsOpen, const bool bFocusMenu, const int32 F
 						if (MethodInUse.GetPopupMethod() == EPopupMethod::CreateNewWindow)
 						{
 							// Open the pop-up
-							TSharedPtr<IMenu> NewMenu = FSlateApplication::Get().PushMenu(AsShared(), MyWidgetPath, MenuContentRef, NewPosition, TransitionEffect, bFocusMenu, MyGeometry.GetLocalSize(), MethodInUse.GetPopupMethod(), bIsCollapsedByParent);
+							TSharedPtr<IMenu> NewMenu = FSlateApplication::Get().PushMenu(AsShared(), MyWidgetPath, MenuContentRef, NewPosition, TransitionEffect, bFocusMenu, NewWindowSize, MethodInUse.GetPopupMethod(), bIsCollapsedByParent);
 							
 							if (ensure(NewMenu.IsValid()))
 							{
+#if WITH_EDITOR
+								// Reporting more information for UE-81655
+								if (!NewMenu->GetOwnedWindow().IsValid())
+								{
+									UE_LOG(LogSlate, Error, TEXT("!NewMenu->GetOwnedWindow().IsValid(), WidgetPath:\n%s"), *MyWidgetPath.ToString());
+
+									static const FName SMultiBoxWidgetTypeName = "SMultiBoxWidget";
+									for (int32 WidgetIndex = MyWidgetPath.Widgets.Num() - 1; WidgetIndex >= 0; --WidgetIndex)
+									{
+										if (MyWidgetPath.Widgets[WidgetIndex].Widget->GetType() == SMultiBoxWidgetTypeName)
+										{
+											TSharedRef<SMultiBoxWidget> MultiBoxWidget = StaticCastSharedRef<SMultiBoxWidget>(MyWidgetPath.Widgets[WidgetIndex].Widget);
+											TSharedRef<const FMultiBox> MultiBox = MultiBoxWidget->GetMultiBox();
+											FString BlockText;
+											const TArray< TSharedRef< const FMultiBlock > >& Blocks = MultiBox->GetBlocks();
+											for (int32 BlockIndex = 0; BlockIndex < Blocks.Num(); ++BlockIndex)
+											{
+												const bool bIsFinalBlock = (BlockIndex == (Blocks.Num() - 1));
+												const TSharedRef< const FMultiBlock >& Block = Blocks[BlockIndex];
+												BlockText += FString::Printf(TEXT("%s (%d)%s"), *Block->GetExtensionHook().ToString(), (int32)Block->GetType(), bIsFinalBlock ? TEXT("") : TEXT(", "));
+											}
+											UE_LOG(LogSlate, Error, TEXT(" Blocks: %s"), *BlockText);
+											break;
+										}
+									}
+
+									UE_LOG(LogSlate, Error, TEXT(" MenuContentRef: %s"), *MenuContentRef->ToString());
+								}
+#endif
 								check(NewMenu->GetOwnedWindow().IsValid());
 
 								PopupMenuPtr = NewMenu;
@@ -384,7 +429,7 @@ void SMenuAnchor::SetIsOpen( bool InIsOpen, const bool bFocusMenu, const int32 F
 
 							if (bFocusMenu)
 							{
-								FSlateApplication::Get().ReleaseMouseCaptureForUser(FocusUserIndex);
+								FSlateApplication::Get().ReleaseAllPointerCapture(FocusUserIndex);
 							}
 
 							TSharedRef<SMenuAnchor> SharedThis = StaticCastSharedRef<SMenuAnchor>(AsShared());
@@ -417,8 +462,7 @@ void SMenuAnchor::SetIsOpen( bool InIsOpen, const bool bFocusMenu, const int32 F
 							// Start pop-up windows out transparent, then fade them in over time
 							const EWindowTransparency Transparency(EWindowTransparency::PerWindow);
 
-							const float TargetWindowOpacity = 1.0f;
-							FSlateRect Anchor(NewPosition, NewPosition + SummonLocationSize);
+							FSlateRect Anchor(NewPosition, NewPosition + MyGeometry.GetLocalSize());
 							EOrientation Orientation = (TransitionEffect.SlideDirection == FPopupTransitionEffect::SubMenu) ? Orient_Horizontal : Orient_Vertical;
 		
 							// @todo slate: Assumes that popup is not Scaled up or down from application scale.
@@ -434,7 +478,7 @@ void SMenuAnchor::SetIsOpen( bool InIsOpen, const bool bFocusMenu, const int32 F
 							// Release the mouse so that context can be properly restored upon closing menus.  See CL 1411833 before changing this.
 							if (bFocusMenu)
 							{
-								FSlateApplication::Get().ReleaseMouseCaptureForUser(FocusUserIndex);
+								FSlateApplication::Get().ReleaseAllPointerCapture(FocusUserIndex);
 							}
 
 							// Create a new window for the menu
@@ -476,7 +520,7 @@ void SMenuAnchor::SetIsOpen( bool InIsOpen, const bool bFocusMenu, const int32 F
 
 							if (bFocusMenu)
 							{
-								FSlateApplication::Get().ReleaseMouseCaptureForUser(FocusUserIndex);
+								FSlateApplication::Get().ReleaseAllPointerCapture(FocusUserIndex);
 							}
 
 							TSharedRef<SMenuAnchor> SharedThis = StaticCastSharedRef<SMenuAnchor>(AsShared());
@@ -501,6 +545,8 @@ void SMenuAnchor::SetIsOpen( bool InIsOpen, const bool bFocusMenu, const int32 F
 					}
 				}
 			}
+
+			Invalidate(EInvalidateWidget::ChildOrder | EInvalidateWidget::Volatility);
 		}
 		else
 		{
@@ -509,37 +555,39 @@ void SMenuAnchor::SetIsOpen( bool InIsOpen, const bool bFocusMenu, const int32 F
 			{
 				PopupMenuPtr.Pin()->Dismiss();
 			}
-			else
-			{
-				PopupWindowPtr.Reset();
-				OwnedMenuPtr.Reset();
-				MethodInUse = FPopupMethodReply::Unhandled();
-			}
 
-			// Always clear out the menu content children slot to prevent prepass and other hierarchy queries from considering the
-			// hidden menu content as content they should be concerned with.
-			Children[1]
-			[
-				SNullWidget::NullWidget
-			];
+			ResetPopupMenuContent();
 		}
-
-		Invalidate(EInvalidateWidget::LayoutAndVolatility);
 	}
 }
 
 void SMenuAnchor::OnMenuClosed(TSharedRef<IMenu> InMenu)
 {
 	bDismissedThisTick = true;
-	MethodInUse = FPopupMethodReply::Unhandled();
-	PopupMenuPtr.Reset();
-	OwnedMenuPtr.Reset();
-	PopupWindowPtr.Reset();
+
+	ResetPopupMenuContent();
 
 	if (OnMenuOpenChanged.IsBound())
 	{
 		OnMenuOpenChanged.Execute(false);
 	}
+}
+
+void SMenuAnchor::ResetPopupMenuContent()
+{
+	MethodInUse = FPopupMethodReply::Unhandled();
+	PopupMenuPtr.Reset();
+	OwnedMenuPtr.Reset();
+	PopupWindowPtr.Reset();
+
+	// Always clear out the menu content children slot to prevent prepass and other hierarchy queries from considering the
+	// hidden menu content as content they should be concerned with.
+	Children[1]
+	[
+		SNullWidget::NullWidget
+	];
+
+	Invalidate(EInvalidateWidget::ChildOrder | EInvalidateWidget::Volatility);
 }
 
 bool SMenuAnchor::IsOpen() const
@@ -568,6 +616,24 @@ FVector2D SMenuAnchor::GetMenuPosition() const
 	return Pos;
 }
 
+void SMenuAnchor::SetMenuPlacement(TAttribute<EMenuPlacement> InMenuPlacement)
+{
+	if (!Placement.IsSet() || !Placement.IdenticalTo(InMenuPlacement))
+	{
+		Placement = InMenuPlacement;
+		Invalidate(EInvalidateWidget::Layout);
+	}
+}
+
+void SMenuAnchor::SetFitInWindow(bool bFit)
+{
+	if (bFitInWindow != bFit)
+	{
+		bFitInWindow = bFit;
+		Invalidate(EInvalidateWidget::Layout);
+	}
+}
+
 bool SMenuAnchor::HasOpenSubMenus() const
 {
 	bool Result = false;
@@ -575,6 +641,7 @@ bool SMenuAnchor::HasOpenSubMenus() const
 	{
 		Result = FSlateApplication::Get().HasOpenSubMenus(PopupMenuPtr.Pin());
 	}
+
 	return Result;
 }
 

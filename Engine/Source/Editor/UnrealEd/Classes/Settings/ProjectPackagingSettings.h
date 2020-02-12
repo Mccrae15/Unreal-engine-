@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -8,6 +8,8 @@
 #include "Engine/EngineTypes.h"
 #include "ProjectPackagingSettings.generated.h"
 
+struct FTargetInfo;
+
 /**
  * Enumerates the available build configurations for project packaging.
  */
@@ -15,22 +17,22 @@ UENUM()
 enum EProjectPackagingBuildConfigurations
 {
 	/** Debug configuration. */
-	PPBC_DebugGame UMETA(DisplayName="DebugGame"),
+	PPBC_Debug UMETA(DisplayName="Debug"),
 
-	/** Debug Client configuration. */
-	PPBC_DebugGameClient UMETA(DisplayName = "DebugGame Client"),
+	/** DebugGame configuration. */
+	PPBC_DebugGame UMETA(DisplayName="DebugGame"),
 
 	/** Development configuration. */
 	PPBC_Development UMETA(DisplayName="Development"),
 
-	/** Development Client configuration. */
-	PPBC_DevelopmentClient UMETA(DisplayName = "Development Client"),
+	/** Test configuration. */
+	PPBC_Test UMETA(DisplayName="Test"),
 
 	/** Shipping configuration. */
 	PPBC_Shipping UMETA(DisplayName="Shipping"),
 
-	/** Shipping Client configuration. */
-	PPBC_ShippingClient UMETA(DisplayName = "Shipping Client")
+	/** Number of entries in the enum. */
+	PPBC_MAX
 };
 
 /**
@@ -100,6 +102,20 @@ class UNREALED_API UProjectPackagingSettings
 	GENERATED_UCLASS_BODY()
 
 public:
+	/**
+	 * Information about each packaging configuration
+	 */
+	struct FConfigurationInfo
+	{
+		EBuildConfiguration Configuration;
+		FText Name;
+		FText ToolTip;
+	};
+
+	/**
+	 * Static array of information about each configuration
+	 */
+	static const FConfigurationInfo ConfigurationInfo[PPBC_MAX];
 
 	/** Specifies whether to build the game executable during packaging. */
 	UPROPERTY(config, EditAnywhere, Category=Project)
@@ -108,6 +124,10 @@ public:
 	/** The build configuration for which the project is packaged. */
 	UPROPERTY(config, EditAnywhere, Category=Project)
 	TEnumAsByte<EProjectPackagingBuildConfigurations> BuildConfiguration;
+
+	/** Name of the target to build */
+	UPROPERTY(config, EditAnywhere, Category=Project)
+	FString BuildTarget;
 
 	/** The directory to which the packaged project will be copied. */
 	UPROPERTY(config, EditAnywhere, Category=Project)
@@ -152,6 +172,10 @@ public:
 	/** If enabled, all content will be put into a one or more .pak files instead of many individual files (default = enabled). */
 	UPROPERTY(config, EditAnywhere, Category=Packaging)
 	bool UsePakFile;
+
+	/** If enabled, all packages will be put into one or more container files. */
+	UPROPERTY(config, EditAnywhere, Category = Packaging)
+	bool bUseIoStore;
 
 	/** 
 	 * If enabled, will generate pak file chunks.  Assets can be assigned to chunks in the editor or via a delegate (See ShooterGameDelegates.cpp). 
@@ -261,6 +285,14 @@ public:
 	UPROPERTY(config, EditAnywhere, Category=Packaging, AdvancedDisplay, meta=(DisplayName="Localizations to Package"))
 	TArray<FString> CulturesToStage;
 
+	/** List of localization targets that should be chunked during cooking (if using chunks) */
+	UPROPERTY(config, EditAnywhere, Category=Packaging, AdvancedDisplay)
+	TArray<FString> LocalizationTargetsToChunk;
+
+	/** The chunk ID that should be used as the catch-all chunk for any non-asset localized strings */
+	UPROPERTY(config, EditAnywhere, Category=Packaging, AdvancedDisplay)
+	int32 LocalizationTargetCatchAllChunkId = 0;
+
 	/**
 	 * Cook all things in the project content directory
 	 */
@@ -334,6 +366,14 @@ public:
 	 */
 	UPROPERTY(config, EditAnywhere, Category = Packaging, AdvancedDisplay)
 	TArray<FString> CompressedChunkWildcard;
+
+	/** List of ini file keys to strip when packaging */
+	UPROPERTY(config, EditAnywhere, Category = Packaging)
+	TArray<FString> IniKeyBlacklist;
+
+	/** List of ini file sections to strip when packaging */
+	UPROPERTY(config, EditAnywhere, Category = Packaging)
+	TArray<FString> IniSectionBlacklist;
 
 	/**
 	 * List of specific files to include with GenerateEarlyDownloaderPakFile
@@ -410,7 +450,7 @@ public:
 
 	virtual void PostInitProperties() override;
 	virtual void PostEditChangeProperty( struct FPropertyChangedEvent& PropertyChangedEvent ) override;
-	virtual bool CanEditChange( const UProperty* InProperty ) const override;
+	virtual bool CanEditChange( const FProperty* InProperty ) const override;
 
 	/** Adds the given Blueprint asset to the exclusive nativization list. */
 	bool AddBlueprintAssetToNativizationList(const class UBlueprint* InBlueprint);
@@ -420,6 +460,12 @@ public:
 
 	/** Determines if the specified Blueprint is already saved for exclusive nativization. */
 	bool IsBlueprintAssetInNativizationList(const class UBlueprint* InBlueprint) const { return FindBlueprintInNativizationList(InBlueprint) >= 0; }
+
+	/** Gets a list of all valid packaging configurations for the current project */
+	static TArray<EProjectPackagingBuildConfigurations> GetValidPackageConfigurations();
+
+	/** Gets the current build target, checking that it's valid, and the default build target if it is not */
+	const FTargetInfo* GetBuildTargetInfo() const;
 
 private:
 	/** Returns the index of the specified Blueprint in the exclusive nativization list (otherwise INDEX_NONE) */

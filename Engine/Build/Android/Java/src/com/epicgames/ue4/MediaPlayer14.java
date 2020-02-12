@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 package com.epicgames.ue4;
 
@@ -30,6 +30,7 @@ public class MediaPlayer14
 {
 	private boolean SwizzlePixels = true;
 	private boolean VulkanRenderer = false;
+	private boolean NeedTrackInfo = true;
 	private boolean Looping = false;
 	private boolean AudioEnabled = true;
 	private float AudioVolume = 1.0f;
@@ -82,10 +83,11 @@ public class MediaPlayer14
 
 	// ======================================================================================
 
-	public MediaPlayer14(boolean swizzlePixels, boolean vulkanRenderer)
+	public MediaPlayer14(boolean swizzlePixels, boolean vulkanRenderer, boolean needTrackInfo)
 	{
 		SwizzlePixels = swizzlePixels;
 		VulkanRenderer = vulkanRenderer;
+		NeedTrackInfo = needTrackInfo;
 		WaitOnBitmapRender = false;
 		AudioEnabled = true;
 		AudioVolume = 1.0f;
@@ -226,18 +228,47 @@ public class MediaPlayer14
 		return null;
 	}
 
-	 public static boolean RemoteFileExists(String URLName){
-        try {
-            HttpURLConnection.setFollowRedirects(false);
-            HttpURLConnection con =  (HttpURLConnection) new URL(URLName).openConnection();
-            con.setRequestMethod("HEAD");
-            return (con.getResponseCode() == HttpURLConnection.HTTP_OK);
-        }
-        catch (Exception e) {
-            e.printStackTrace();
-            return false;
-        }
-    }
+	public static String RemoteFileExists(String URLName)
+	{
+		// do not try more than 5 redirects, return final URL or null
+		int MaxRedirects = 5;
+		
+		// we set redirect to false and do it manually so we can handle redirect between HTTP/HTTPS which Java doesn't do
+		boolean restoreRedirects = HttpURLConnection.getFollowRedirects();
+		HttpURLConnection.setFollowRedirects(false);
+
+		while (MaxRedirects-- > 0)
+		{
+            try {
+				HttpURLConnection con = (HttpURLConnection) new URL(URLName).openConnection();
+				con.setRequestMethod("HEAD");
+				int responseCode = con.getResponseCode();
+				if (responseCode == HttpURLConnection.HTTP_OK)
+				{
+					con.disconnect();
+					HttpURLConnection.setFollowRedirects(restoreRedirects);
+					return URLName;
+				}
+				if (responseCode == HttpURLConnection.HTTP_SEE_OTHER || responseCode == HttpURLConnection.HTTP_MOVED_PERM || responseCode == HttpURLConnection.HTTP_MOVED_TEMP)
+				{
+					String Location = con.getHeaderField("Location");
+					URL url = con.getURL();
+					con.disconnect();
+					URLName = Location.contains("://") ? Location : url.getProtocol() + "://" + url.getHost() + Location;
+					continue;
+				}
+				HttpURLConnection.setFollowRedirects(restoreRedirects);
+				return null;
+			}
+			catch (Exception e) {
+				e.printStackTrace();
+				HttpURLConnection.setFollowRedirects(restoreRedirects);
+				return null;
+			}
+		}
+		HttpURLConnection.setFollowRedirects(restoreRedirects);
+		return null;
+	}
 
 	public boolean setDataSourceURL(
 		String UrlPath)
@@ -255,7 +286,8 @@ public class MediaPlayer14
 		audioTracks.clear();
 		videoTracks.clear();
 
-		if(!RemoteFileExists(UrlPath))
+		UrlPath = RemoteFileExists(UrlPath);
+		if (UrlPath == null)
 		{
 			return false;
 		}
@@ -265,7 +297,7 @@ public class MediaPlayer14
 			setDataSource(UrlPath);
 			releaseOESTextureRenderer();
 			releaseBitmapRenderer();
-			if (android.os.Build.VERSION.SDK_INT >= 16)
+			if (NeedTrackInfo && android.os.Build.VERSION.SDK_INT >= 16)
 			{
 				MediaExtractor extractor = new MediaExtractor();
 				if (extractor != null)
@@ -384,7 +416,7 @@ public class MediaPlayer14
 			releaseOESTextureRenderer();
 			releaseBitmapRenderer();
 
-			if (android.os.Build.VERSION.SDK_INT >= 16)
+			if (NeedTrackInfo && android.os.Build.VERSION.SDK_INT >= 16)
 			{
 				MediaExtractor extractor = new MediaExtractor();
 				if (extractor != null)
@@ -432,7 +464,7 @@ public class MediaPlayer14
 			releaseOESTextureRenderer();
 			releaseBitmapRenderer();
 
-			if (android.os.Build.VERSION.SDK_INT >= 16)
+			if (NeedTrackInfo && android.os.Build.VERSION.SDK_INT >= 16)
 			{
 				MediaExtractor extractor = new MediaExtractor();
 				if (extractor != null)
@@ -474,7 +506,7 @@ public class MediaPlayer14
 			releaseOESTextureRenderer();
 			releaseBitmapRenderer();
 
-			if (android.os.Build.VERSION.SDK_INT >= 16)
+			if (NeedTrackInfo && android.os.Build.VERSION.SDK_INT >= 16)
 			{
 				MediaExtractor extractor = new MediaExtractor();
 				if (extractor != null)
@@ -1692,6 +1724,7 @@ public class MediaPlayer14
 		private int mTextureID = -1;
 		private float[] mTransformMatrix = new float[16];
 		private boolean mTextureSizeChanged = true;
+		private int GL_TEXTURE_EXTERNAL_OES = 0x8D65;
 
 		private float mUScale = 1.0f;
 		private float mVScale = -1.0f;
@@ -1838,6 +1871,10 @@ public class MediaPlayer14
 				frameUpdateInfo.VOffset = 1.0f - mVOffset;
 			}
 
+			// updateTexImage binds an external texture to active texture unit
+			// make sure to unbind it to prevent state leak
+			GLES20.glBindTexture(GL_TEXTURE_EXTERNAL_OES, 0);
+									
 			return frameUpdateInfo;
 		}
 	};
@@ -1846,7 +1883,7 @@ public class MediaPlayer14
 
 	public AudioTrackInfo[] GetAudioTracks()
 	{
-		if (android.os.Build.VERSION.SDK_INT >= 16)
+		if (NeedTrackInfo && android.os.Build.VERSION.SDK_INT >= 16)
 		{
 			TrackInfo[] trackInfo = getTrackInfo();
 			int CountTracks = 0;
@@ -1922,7 +1959,7 @@ public class MediaPlayer14
 
 	public CaptionTrackInfo[] GetCaptionTracks()
 	{
-		if (android.os.Build.VERSION.SDK_INT >= 21)
+		if (NeedTrackInfo && android.os.Build.VERSION.SDK_INT >= 21)
 		{
 			TrackInfo[] trackInfo = getTrackInfo();
 			int CountTracks = 0;
@@ -1974,7 +2011,7 @@ public class MediaPlayer14
 		int Width = getVideoWidth();
 		int Height = getVideoHeight();
 
-		if (android.os.Build.VERSION.SDK_INT >= 16)
+		if (NeedTrackInfo && android.os.Build.VERSION.SDK_INT >= 16)
 		{
 			TrackInfo[] trackInfo = getTrackInfo();
 			int CountTracks = 0;

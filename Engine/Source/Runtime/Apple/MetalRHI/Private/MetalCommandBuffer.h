@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -31,14 +31,12 @@ enum EMetalDebugCommandType
 enum EMetalDebugLevel
 {
 	EMetalDebugLevelOff,
-	EMetalDebugLevelLogDebugGroups,
 	EMetalDebugLevelFastValidation,
-	EMetalDebugLevelTrackResources,
 	EMetalDebugLevelResetOnBind,
+	EMetalDebugLevelConditionalSubmit,
 	EMetalDebugLevelValidation,
 	EMetalDebugLevelLogOperations,
-	EMetalDebugLevelConditionalSubmit,
-	EMetalDebugLevelWaitForComplete
+	EMetalDebugLevelWaitForComplete,
 };
 
 NS_ASSUME_NONNULL_BEGIN
@@ -52,14 +50,6 @@ struct FMetalDebugCommand
 	MTLRenderPassDescriptor* PassDesc;
 };
 
-/**
- * Simpler NSObject extension that provides for an associated object to track debug groups in a command-buffer.
- * This doesn't interfere with objc_msgSend invocation so doesn't cost as much on the CPU.
- */
-@interface NSObject (IMetalDebugGroupAssociation)
-@property (nonatomic, strong) NSMutableArray<NSString*>* debugGroups;
-@end
-
 #if MTLPP_CONFIG_VALIDATE && METAL_DEBUG_OPTIONS
 
 /**
@@ -72,8 +62,6 @@ struct FMetalDebugCommand
 @public
 	NSMutableArray<NSString*>* DebugGroup;
 	NSString* ActiveEncoder;
-	TSet<id<MTLResource>> Resources;
-	TSet<id> States;
 	id<MTLCommandBuffer> InnerBuffer;
 	TArray<FMetalDebugCommand*> DebugCommands;
 	EMetalDebugLevel DebugLevel;
@@ -95,9 +83,6 @@ public:
 	static FMetalCommandBufferDebugging Get(mtlpp::CommandBuffer& Buffer);
 	ns::AutoReleased<ns::String> GetDescription();
 	ns::AutoReleased<ns::String> GetDebugDescription();
-	
-	void TrackResource(mtlpp::Resource const& Resource);
-	void TrackState(id State);
 	
 	void BeginRenderCommandEncoder(ns::String const& Label, mtlpp::RenderPassDescriptor const& Desc);
 	void BeginComputeCommandEncoder(ns::String const& Label);

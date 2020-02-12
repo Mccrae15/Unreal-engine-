@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "SAutomationWindow.h"
 #include "HAL/PlatformProcess.h"
@@ -1243,18 +1243,29 @@ TSharedPtr<SWidget> SAutomationWindow::HandleAutomationListContextMenuOpening()
 {
 	TArray< TSharedPtr<IAutomationReport> >SelectedReport = TestTable->GetSelectedItems();
 
+	TArray<FString> TestNames;
 	TArray<FString> AssetNames;
-	for (int32 ReportIndex = 0; ReportIndex < SelectedReport.Num(); ++ReportIndex)
+	for (TSharedPtr<IAutomationReport> Report : SelectedReport)
 	{
-		// TODO This is super sketch, we were interpreting the parameter always as the asset, this is no good.
-		if (SelectedReport[ReportIndex].IsValid() && (SelectedReport[ReportIndex]->GetTestParameter().Len() > 0))
+		if (Report.IsValid())
 		{
-			AssetNames.Add(SelectedReport[ReportIndex]->GetTestParameter());
+			FString TestName = Report->GetFullTestPath();
+			if (!TestName.IsEmpty())
+			{
+				TestNames.Add(MoveTemp(TestName));
+			}
+			FString Param = Report->GetTestParameter();
+			if (Param.StartsWith(TEXT("/")))
+			{
+				// Assume that if parameter start with a "/", it should be an asset
+				AssetNames.Add(MoveTemp(Param));
+			}
 		}
 	}		
-	if (AssetNames.Num())
+	
+	if (AssetNames.Num() || TestNames.Num())
 	{
-		return SNew(SAutomationTestItemContextMenu, AssetNames);
+		return SNew(SAutomationTestItemContextMenu, AssetNames, TestNames);
 	}
 
 	return nullptr;
@@ -1656,7 +1667,7 @@ TSharedRef<ITableRow> SAutomationWindow::OnGenerateWidgetForLog(TSharedPtr<FAuto
 		int32 LineNumber = FCString::Atoi(*FileAndLineRegexMatcher.GetCaptureGroup(2));
 
 		// Remove the hyperlink from the message, since we're splitting it into its own string.
-		MessageString = MessageString.RightChop(FileAndLineRegexMatcher.GetMatchEnding());
+		MessageString.RightChopInline(FileAndLineRegexMatcher.GetMatchEnding(), false);
 
 		SourceLink = SNew(SHyperlink)
 			.Style(FEditorStyle::Get(), "Common.GotoNativeCodeHyperlink")

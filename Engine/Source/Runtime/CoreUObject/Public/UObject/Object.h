@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -21,6 +21,7 @@ class FTransactionObjectEvent;
 struct FFrame;
 struct FObjectInstancingGraph;
 struct FPropertyChangedChainEvent;
+class UClass;
 
 DECLARE_LOG_CATEGORY_EXTERN(LogObj, Log, All);
 
@@ -72,8 +73,14 @@ class COREUOBJECT_API UObject : public UObjectBaseUtility
 	/** DO NOT USE. This constructor is for internal usage only for hot-reload purposes. */
 	UObject(FVTableHelper& Helper);
 
+	UE_DEPRECATED(4.23, "CreateDefaultSubobject no longer takes bAbstract as a parameter.")
+	UObject* CreateDefaultSubobject(FName SubobjectFName, UClass* ReturnType, UClass* ClassToCreateByDefault, bool bIsRequired, bool bAbstract, bool bIsTransient)
+	{
+		return CreateDefaultSubobject(SubobjectFName, ReturnType, ClassToCreateByDefault, bIsRequired, bIsTransient);
+	}
+
 	/** Utility function for templates below */
-	UObject* CreateDefaultSubobject(FName SubobjectFName, UClass* ReturnType, UClass* ClassToCreateByDefault, bool bIsRequired, bool bAbstract, bool bIsTransient);
+	UObject* CreateDefaultSubobject(FName SubobjectFName, UClass* ReturnType, UClass* ClassToCreateByDefault, bool bIsRequired, bool bIsTransient);
 
 	/**
 	 * Create a component or subobject only to be used with the editor. They will be stripped out in packaged builds.
@@ -98,7 +105,7 @@ class COREUOBJECT_API UObject : public UObjectBaseUtility
 	TReturnType* CreateDefaultSubobject(FName SubobjectName, bool bTransient = false)
 	{
 		UClass* ReturnType = TReturnType::StaticClass();
-		return static_cast<TReturnType*>(CreateDefaultSubobject(SubobjectName, ReturnType, ReturnType, /*bIsRequired =*/ true, /*bIsAbstract =*/ false, bTransient));
+		return static_cast<TReturnType*>(CreateDefaultSubobject(SubobjectName, ReturnType, ReturnType, /*bIsRequired =*/ true, bTransient));
 	}
 	
 	/**
@@ -111,7 +118,7 @@ class COREUOBJECT_API UObject : public UObjectBaseUtility
 	template<class TReturnType, class TClassToConstructByDefault>
 	TReturnType* CreateDefaultSubobject(FName SubobjectName, bool bTransient = false)
 	{
-		return static_cast<TReturnType*>(CreateDefaultSubobject(SubobjectName, TReturnType::StaticClass(), TClassToConstructByDefault::StaticClass(), /*bIsRequired =*/ true, /*bIsAbstract =*/ false, bTransient));
+		return static_cast<TReturnType*>(CreateDefaultSubobject(SubobjectName, TReturnType::StaticClass(), TClassToConstructByDefault::StaticClass(), /*bIsRequired =*/ true, bTransient));
 	}
 	
 	/**
@@ -125,20 +132,21 @@ class COREUOBJECT_API UObject : public UObjectBaseUtility
 	TReturnType* CreateOptionalDefaultSubobject(FName SubobjectName, bool bTransient = false)
 	{
 		UClass* ReturnType = TReturnType::StaticClass();
-		return static_cast<TReturnType*>(CreateDefaultSubobject(SubobjectName, ReturnType, ReturnType, /*bIsRequired =*/ false, /*bIsAbstract =*/ false, bTransient));
+		return static_cast<TReturnType*>(CreateDefaultSubobject(SubobjectName, ReturnType, ReturnType, /*bIsRequired =*/ false, bTransient));
 	}
 	
 	/**
-	 * Create a subobject that has the Abstract class flag, child classes are expected to override this by calling CreateDEfaultObject with the same name and a non-abstract class.
+	 * Create a subobject that has the Abstract class flag, child classes are expected to override this by calling SetDefaultSubobjectClass with the same name and a non-abstract class.
 	 * @param	TReturnType					Class of return type, all overrides must be of this type
 	 * @param	SubobjectName				Name of the new component
 	 * @param	bTransient					True if the component is being assigned to a transient property. This does not make the component itself transient, but does stop it from inheriting parent defaults
 	 */
 	template<class TReturnType>
+	UE_DEPRECATED(4.23, "CreateAbstract did not work as intended and has been deprecated in favor of CreateDefaultObject")
 	TReturnType* CreateAbstractDefaultSubobject(FName SubobjectName, bool bTransient = false)
 	{
 		UClass* ReturnType = TReturnType::StaticClass();
-		return static_cast<TReturnType*>(CreateDefaultSubobject(SubobjectName, ReturnType, ReturnType, /*bIsRequired =*/ true, /*bIsAbstract =*/ true, bTransient));
+		return static_cast<TReturnType*>(CreateDefaultSubobject(SubobjectName, ReturnType, ReturnType, /*bIsRequired =*/ true, bTransient));
 	}
 
 	/**
@@ -216,10 +224,14 @@ public:
 	 *								currently recording an active undo/redo transaction
 	 * @return true if the object was saved to the transaction buffer
 	 */
+#if WITH_EDITOR
 	virtual bool Modify( bool bAlwaysMarkDirty=true );
 
 	/** Utility to allow overrides of Modify to avoid doing work if this object cannot be safely modified */
 	bool CanModify() const;
+#else
+	FORCEINLINE bool Modify(bool bAlwaysMarkDirty = true) { return false; }
+#endif
 
 #if WITH_EDITOR
 	/** 
@@ -227,6 +239,11 @@ public:
 	 */
 	virtual void LoadedFromAnotherClass(const FName& OldClassName) {}
 #endif
+
+	/**
+	 * Called before calling PostLoad() in FAsyncPackage::PostLoadObjects(). This is the safeguard to prevent PostLoad() from stalling the main thread.
+	 */
+	virtual bool IsReadyForAsyncPostLoad() const { return true; }
 
 	/** 
 	 * Do any object-specific cleanup required immediately after loading an object.
@@ -272,7 +289,7 @@ public:
 
 	/** 
 	 * Handles reading, writing, and reference collecting using FArchive.
-	 * This implementation handles all UProperty serialization, but can be overridden for native variables.
+	 * This implementation handles all FProperty serialization, but can be overridden for native variables.
 	 */
 	virtual void Serialize(FArchive& Ar);
 	virtual void Serialize(FStructuredArchive::FRecord Record);
@@ -285,7 +302,7 @@ public:
 	 *
 	 * @param PropertyThatChanged	Property that changed
 	 */
-	virtual void PostInterpChange(UProperty* PropertyThatChanged) {}
+	virtual void PostInterpChange(FProperty* PropertyThatChanged) {}
 
 #if WITH_EDITOR
 	/** 
@@ -293,11 +310,11 @@ public:
 	 *
 	 * @param PropertyThatWillChange	Property that will be changed
 	 */
-	virtual void PreEditChange(UProperty* PropertyAboutToChange);
+	virtual void PreEditChange(FProperty* PropertyAboutToChange);
 
 	/**
 	 * This alternate version of PreEditChange is called when properties inside structs are modified.  The property that was actually modified
-	 * is located at the tail of the list.  The head of the list of the UStructProperty member variable that contains the property that was modified.
+	 * is located at the tail of the list.  The head of the list of the FStructProperty member variable that contains the property that was modified.
 	 *
 	 * @param PropertyAboutToChange the property that is about to be modified
 	 */
@@ -312,7 +329,7 @@ public:
 	 *
 	 * @return	true if the property can be modified in the editor, otherwise false
 	 */
-	virtual bool CanEditChange( const UProperty* InProperty ) const;
+	virtual bool CanEditChange( const FProperty* InProperty ) const;
 
 	/** 
 	 * Intentionally non-virtual as it calls the FPropertyChangedEvent version
@@ -328,7 +345,7 @@ public:
 
 	/**
 	 * This alternate version of PostEditChange is called when properties inside structs are modified.  The property that was actually modified
-	 * is located at the tail of the list.  The head of the list of the UStructProperty member variable that contains the property that was modified.
+	 * is located at the tail of the list.  The head of the list of the FStructProperty member variable that contains the property that was modified.
 	 */
 	virtual void PostEditChangeChainProperty( struct FPropertyChangedChainEvent& PropertyChangedEvent );
 
@@ -440,6 +457,13 @@ public:
 	}
 
 	/**
+	* Called during garbage collection to determine if an object can have its destructor called on a worker thread.
+	*
+	* @return	true if this object's destructor is thread safe
+	*/
+	virtual bool IsDestructionThreadSafe() const;
+
+	/**
 	* Called during cooking. Must return all objects that will be Preload()ed when this is serialized at load time. Only used by the EDL.
 	*
 	* @param	OutDeps				all objects that will be preloaded when this is serialized at load time
@@ -503,7 +527,7 @@ public:
 	/**
 	 * Called from ReloadConfig after the object has reloaded its configuration data.
 	 */
-	virtual void PostReloadConfig( class UProperty* PropertyThatWasLoaded ) {}
+	virtual void PostReloadConfig( class FProperty* PropertyThatWasLoaded ) {}
 
 	/** 
 	 * Rename this object to a unique name, or change its outer.
@@ -517,6 +541,13 @@ public:
 
 	/** Return a one line description of an object for viewing in the thumbnail view of the generic browser */
 	virtual FString GetDesc() { return TEXT( "" ); }
+
+	/** Return the UStruct corresponding to the sidecar data structure that stores data that is constant for all instances of this class. */
+	virtual UScriptStruct* GetSparseClassDataStruct() const;
+
+#if WITH_EDITOR
+	virtual void MoveDataToSparseClassDataStruct() const {}
+#endif
 
 #if WITH_ENGINE
 	/** 
@@ -538,7 +569,7 @@ public:
 	 *
 	 * @param	out_PropertyValues	receives the property names and values which should be reported for this object.  The map's key should be the name of
 	 *								the property and the map's value should be the textual representation of the property's value.  The property value should
-	 *								be formatted the same way that UProperty::ExportText formats property values (i.e. for arrays, wrap in quotes and use a comma
+	 *								be formatted the same way that FProperty::ExportText formats property values (i.e. for arrays, wrap in quotes and use a comma
 	 *								as the delimiter between elements, etc.)
 	 * @param	ExportFlags			bitmask of EPropertyPortFlags used for modifying the format of the property values
 	 *
@@ -919,7 +950,43 @@ public:
 	 * @param	PackageFilename full path to the package that this object is being saved to on disk
 	 * @param	TargetPlatform	target platform to cook additional files for
 	 */
-	virtual void CookAdditionalFiles( const TCHAR* PackageFilename, const ITargetPlatform* TargetPlatform ) { }
+	UE_DEPRECATED(4.23, "Use the new CookAdditionalFilesOverride that provides a function to write the files")
+	virtual void CookAdditionalFiles(const TCHAR* PackageFilename, const ITargetPlatform* TargetPlatform) { }
+
+	/**
+	 * Called during cook to allow objects to generate additional cooked files alongside their cooked package.
+	 * @note Implement CookAdditionalFilesOverride to define sub class behavior.
+	 *
+	 * @param	PackageFilename full path to the package that this object is being saved to on disk
+	 * @param	TargetPlatform	target platform to cook additional files for
+	 * @param	WriteAdditionalFile function for writing the additional files
+	 */
+	void CookAdditionalFiles(const TCHAR* PackageFilename, const ITargetPlatform* TargetPlatform,
+		TFunctionRef<void(const TCHAR* Filename, void* Data, int64 Size)> WriteAdditionalFile)
+	{
+		CookAdditionalFilesOverride(PackageFilename, TargetPlatform, WriteAdditionalFile);
+	}
+
+private:
+	/**
+	 * Called during cook to allow objects to generate additional cooked files alongside their cooked package.
+	 * Files written using the provided function will be handled as part of the saved cooked package
+	 * and contribute to package total file size, and package hash when enabled.
+	 * @note These should typically match the name of the package, but with a different extension.
+	 *
+	 * @param	PackageFilename full path to the package that this object is being saved to on disk
+	 * @param	TargetPlatform	target platform to cook additional files for
+	 * @param	WriteAdditionalFile function for writing the additional files
+	 */
+	virtual void CookAdditionalFilesOverride(const TCHAR* PackageFilename, const ITargetPlatform* TargetPlatform,
+		TFunctionRef<void(const TCHAR* Filename, void* Data, int64 Size)> WriteAdditionalFile)
+	{
+		PRAGMA_DISABLE_DEPRECATION_WARNINGS;
+		CookAdditionalFiles(PackageFilename, TargetPlatform);
+		PRAGMA_ENABLE_DEPRECATION_WARNINGS;
+	}
+
+public:
 #endif
 	/**
 	 * Determine if this object has SomeObject in its archetype chain.
@@ -976,7 +1043,7 @@ public:
 	/**
 	 * Saves just the property into the global user ini file for the class (with just the changes from base)
 	 */
-	void UpdateSinglePropertyInConfigFile(const UProperty* InProperty, const FString& InConfigIniName);
+	void UpdateSinglePropertyInConfigFile(const FProperty* InProperty, const FString& InConfigIniName);
 
 private:
 	/**
@@ -1019,7 +1086,7 @@ public:
 	 * @param	PropagationFlags	indicates how this call to LoadConfig should be propagated; expects a bitmask of UE4::ELoadConfigPropagationFlags values.
 	 * @param	PropertyToLoad		if specified, only the ini value for the specified property will be imported.
 	 */
-	void LoadConfig( UClass* ConfigClass=NULL, const TCHAR* Filename=NULL, uint32 PropagationFlags=UE4::LCPF_None, class UProperty* PropertyToLoad=NULL );
+	void LoadConfig( UClass* ConfigClass=NULL, const TCHAR* Filename=NULL, uint32 PropagationFlags=UE4::LCPF_None, class FProperty* PropertyToLoad=NULL );
 
 	/**
 	 * Wrapper method for LoadConfig that is used when reloading the config data for objects at runtime which have already loaded their config data at least once.
@@ -1030,7 +1097,7 @@ public:
 	 * @param	PropagationFlags	indicates how this call to LoadConfig should be propagated; expects a bitmask of UE4::ELoadConfigPropagationFlags values.
 	 * @param	PropertyToLoad		if specified, only the ini value for the specified property will be imported
 	 */
-	void ReloadConfig( UClass* ConfigClass=NULL, const TCHAR* Filename=NULL, uint32 PropagationFlags=UE4::LCPF_None, class UProperty* PropertyToLoad=NULL );
+	void ReloadConfig( UClass* ConfigClass=NULL, const TCHAR* Filename=NULL, uint32 PropagationFlags=UE4::LCPF_None, class FProperty* PropertyToLoad=NULL );
 
 	/** Import an object from a file. */
 	void ParseParms( const TCHAR* Parms );
@@ -1061,7 +1128,7 @@ public:
 	 * 
 	 * @return the archetype for this object
 	 */
-	static UObject* GetArchetypeFromRequiredInfo(UClass* Class, UObject* Outer, FName Name, EObjectFlags ObjectFlags);
+	static UObject* GetArchetypeFromRequiredInfo(const UClass* Class, const UObject* Outer, FName Name, EObjectFlags ObjectFlags);
 
 	/**
 	 * Return the template this object is based on. 
@@ -1101,11 +1168,10 @@ public:
 	 * be called locally, remotely, or simply absorbed under the given conditions
 	 *
 	 * @param Function function to call
-	 * @param Parameters arguments to the function call
 	 * @param Stack stack frame for the function call
 	 * @return bitmask representing all callspaces that apply to this UFunction in the given context
 	 */
-	virtual int32 GetFunctionCallspace( UFunction* Function, void* Parameters, FFrame* Stack )
+	virtual int32 GetFunctionCallspace( UFunction* Function, FFrame* Stack )
 	{
 		return FunctionCallspace::Local;
 	}
@@ -1185,6 +1251,7 @@ public:
 	DECLARE_FUNCTION(execDefaultVariable);
 	DECLARE_FUNCTION(execLocalOutVariable);
 	DECLARE_FUNCTION(execInterfaceVariable);
+	DECLARE_FUNCTION(execClassSparseDataVariable);
 	DECLARE_FUNCTION(execInterfaceContext);
 	DECLARE_FUNCTION(execArrayElement);
 	DECLARE_FUNCTION(execBoolVariable);
@@ -1283,6 +1350,7 @@ public:
 	DECLARE_FUNCTION(execTextConst);
 	DECLARE_FUNCTION(execObjectConst);
 	DECLARE_FUNCTION(execSoftObjectConst);
+	DECLARE_FUNCTION(execFieldPathConst);
 
 	DECLARE_FUNCTION(execInstanceDelegate);
 	DECLARE_FUNCTION(execNameConst);
@@ -1386,6 +1454,49 @@ private:
 	* @param	bTransient					true if the component is being assigned to a transient property
 	*/
 	UObject* CreateEditorOnlyDefaultSubobjectImpl(FName SubobjectName, UClass* ReturnType, bool bTransient = false);
+
+public:
+
+	enum class ENetFields_Private
+	{
+		NETFIELD_REP_START = 0,
+		NETFIELD_REP_END = -1
+	};
+
+	virtual void ValidateGeneratedRepEnums(const TArray<struct FRepRecord>& ClassReps) const {}	
+
+private:
+	
+	friend struct FObjectNetPushIdHelper;
+	virtual void SetNetPushIdDynamic(const int32 NewNetPushId)
+	{
+		// This method should only be called on Objects that are networked, and those should
+		// always have this implemented (by UHT).
+		check(false);
+	}
+	
+	virtual int32 GetNetPushIdDynamic() const
+	{
+		return INDEX_NONE;
+	}
+};
+
+struct FObjectNetPushIdHelper
+{
+private:
+	friend struct FNetPrivatePushIdHelper;
+	friend class UNetPushModelHelpers;
+	friend class UKismetArrayLibrary;
+
+	static void SetNetPushIdDynamic(UObject* Object, const int32 NewNetPushId)
+	{
+		Object->SetNetPushIdDynamic(NewNetPushId);
+	}
+	
+	static int32 GetNetPushIdDynamic(const UObject* const Object)
+	{
+		return Object->GetNetPushIdDynamic();
+	}
 };
 
 /**

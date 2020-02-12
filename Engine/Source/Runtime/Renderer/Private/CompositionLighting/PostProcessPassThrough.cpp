@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 /*=============================================================================
 	PostProcessPassThrough.cpp: Post processing pass through implementation.
@@ -18,17 +18,17 @@ FPostProcessPassThroughPS::FPostProcessPassThroughPS(const ShaderMetaType::Compi
 	PostprocessParameter.Bind(Initializer.ParameterMap);
 }
 
-bool FPostProcessPassThroughPS::Serialize(FArchive& Ar)
+/*bool FPostProcessPassThroughPS::Serialize(FArchive& Ar)
 {
 	bool bShaderHasOutdatedParameters = FGlobalShader::Serialize(Ar);
 	Ar << PostprocessParameter;
 	return bShaderHasOutdatedParameters;
-}
+}*/
 
 template <typename TRHICmdList>
 void FPostProcessPassThroughPS::SetParameters(TRHICmdList& RHICmdList, const FRenderingCompositePassContext& Context)
 {
-	const FPixelShaderRHIParamRef ShaderRHI = GetPixelShader();
+	FRHIPixelShader* ShaderRHI = RHICmdList.GetBoundPixelShader();
 
 	FGlobalShader::SetParameters<FViewUniformShaderParameters>(RHICmdList, ShaderRHI, Context.View.ViewUniformBuffer);
 
@@ -111,8 +111,8 @@ void FRCPassPostProcessPassThrough::Process(FRenderingCompositePassContext& Cont
 		TShaderMapRef<FPostProcessPassThroughPS> PixelShader(Context.GetShaderMap());
 
 		GraphicsPSOInit.BoundShaderState.VertexDeclarationRHI = GFilterVertexDeclaration.VertexDeclarationRHI;
-		GraphicsPSOInit.BoundShaderState.VertexShaderRHI = GETSAFERHISHADER_VERTEX(*VertexShader);
-		GraphicsPSOInit.BoundShaderState.PixelShaderRHI = GETSAFERHISHADER_PIXEL(*PixelShader);
+		GraphicsPSOInit.BoundShaderState.VertexShaderRHI = VertexShader.GetVertexShader();
+		GraphicsPSOInit.BoundShaderState.PixelShaderRHI = PixelShader.GetPixelShader();
 		GraphicsPSOInit.PrimitiveType = PT_TriangleList;
 
 		SetGraphicsPipelineState(Context.RHICmdList, GraphicsPSOInit);
@@ -128,7 +128,7 @@ void FRCPassPostProcessPassThrough::Process(FRenderingCompositePassContext& Cont
 			SrcRect.Width(), SrcRect.Height(),
 			DestSize,
 			SrcSize,
-			*VertexShader,
+			VertexShader,
 			View.StereoPass,
 			Context.HasHmdMesh(),
 			EDRF_UseTriangleOptimization);
@@ -161,61 +161,4 @@ FPooledRenderTargetDesc FRCPassPostProcessPassThrough::ComputeOutputDesc(EPassOu
 	Ret.DebugName = TEXT("PassThrough");
 
 	return Ret;
-}
-
-void CopyOverOtherViewportsIfNeeded(FRenderingCompositePassContext& Context, const FSceneView& ExcludeView)
-{
-	const FViewInfo& View = Context.View;
-	const FSceneViewFamily* ViewFamily = View.Family;
-
-	FGraphicsPipelineStateInitializer GraphicsPSOInit;
-	Context.RHICmdList.ApplyCachedRenderTargets(GraphicsPSOInit);
-	GraphicsPSOInit.BlendState = TStaticBlendState<>::GetRHI();
-	GraphicsPSOInit.RasterizerState = TStaticRasterizerState<>::GetRHI();
-	GraphicsPSOInit.DepthStencilState = TStaticDepthStencilState<false, CF_Always>::GetRHI();
-
-	// only for multiple views we need to do this
-	if(ViewFamily->Views.Num())
-	{
-		SCOPED_DRAW_EVENT(Context.RHICmdList, CopyOverOtherViewportsIfNeeded);
-
-		TShaderMapRef<FPostProcessVS> VertexShader(Context.GetShaderMap());
-		TShaderMapRef<FPostProcessPassThroughPS> PixelShader(Context.GetShaderMap());
-
-		GraphicsPSOInit.BoundShaderState.VertexDeclarationRHI = GFilterVertexDeclaration.VertexDeclarationRHI;
-		GraphicsPSOInit.BoundShaderState.VertexShaderRHI = GETSAFERHISHADER_VERTEX(*VertexShader);
-		GraphicsPSOInit.BoundShaderState.PixelShaderRHI = GETSAFERHISHADER_PIXEL(*PixelShader);
-		GraphicsPSOInit.PrimitiveType = PT_TriangleList;
-
-		SetGraphicsPipelineState(Context.RHICmdList, GraphicsPSOInit);
-
-		VertexShader->SetParameters(Context);
-		PixelShader->SetParameters(Context.RHICmdList, Context);
-
-		FSceneRenderTargets& SceneContext = FSceneRenderTargets::Get(Context.RHICmdList);
-
-		FIntPoint Size = SceneContext.GetBufferSizeXY();
-	
-		for(uint32 ViewId = 0, ViewCount = ViewFamily->Views.Num(); ViewId < ViewCount; ++ViewId)
-		{
-			const FViewInfo* LocalView = static_cast<const FViewInfo*>(ViewFamily->Views[ViewId]);
-			
-			if(LocalView != &ExcludeView)
-			{
-				FIntRect Rect = LocalView->ViewRect;
-
-				DrawPostProcessPass(Context.RHICmdList,
-					Rect.Min.X, Rect.Min.Y,
-					Rect.Width(), Rect.Height(),
-					Rect.Min.X, Rect.Min.Y,
-					Rect.Width(), Rect.Height(),
-					Size,
-					Size,
-					*VertexShader,
-					LocalView->StereoPass, 
-					Context.HasHmdMesh(),
-					EDRF_UseTriangleOptimization);
-			}
-		}
-	}
 }

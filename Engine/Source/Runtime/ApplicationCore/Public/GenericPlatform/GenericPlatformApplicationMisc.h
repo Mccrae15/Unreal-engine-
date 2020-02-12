@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -164,9 +164,24 @@ struct APPLICATIONCORE_API FGenericPlatformApplicationMisc
 	static bool IsHighDPIAwarenessEnabled();
 
 	/*
+	 * UE expects mouse coordinates in screen space. Some platforms provides in client space. 
+	 * Return true to anchor the window at the top/left corner to make sure client space coordinates and screen space coordinates match up. 
+	 */
+	static bool AnchorWindowWindowPositionTopLeft()
+	{
+		return false;
+	}
+
+	/*
 	* Set whether gamepads are allowed at the platform level.
 	*/
 	static void SetGamepadsAllowed(bool bAllowed)
+	{}
+
+	/*
+	* Set whether gamepads are allowed at the platform level.
+	*/
+	static void SetGamepadsBlockDeviceFeedback(bool bAllowed)
 	{}
 
 	/*
@@ -201,6 +216,21 @@ struct APPLICATIONCORE_API FGenericPlatformApplicationMisc
 		return FString(TEXT("None"));
 	}
 
+	/*
+	* Whether to enable controller motion data polling (by default motion data is enabled)
+	* Some platforms may want to disable it to reduce battery drain
+	*/
+	static void EnableMotionData(bool bEnable)
+	{}
+
+	/*
+	* Whether controller motion data polling is enabled (by default motion data is enabled)
+	*/
+	static bool IsMotionDataEnabled()
+	{
+		return true;
+	}
+				
 	/** Copies text to the operating system clipboard. */
 	static void ClipboardCopy(const TCHAR* Str);
 

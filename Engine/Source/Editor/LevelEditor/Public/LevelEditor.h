@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -14,17 +14,45 @@
 #include "ViewportTypeDefinition.h"
 
 class AActor;
-class ILevelViewport;
-class IViewportLayoutEntity;
+class IAssetViewport;
 class SLevelEditor;
 class UAnimSequence;
 class USkeletalMeshComponent;
-struct FViewportConstructionArgs;
+
 enum class EMapChangeType : uint8;
 
 extern const FName LevelEditorApp;
 
 DECLARE_DELEGATE_RetVal_OneParam(bool, FAreObjectsEditable, const TArray<TWeakObjectPtr<UObject>>&);
+
+class LevelEditorTabIds
+{
+public:
+	static const FName LevelEditorViewport;
+	static const FName LevelEditorViewport_Clone1;
+	static const FName LevelEditorViewport_Clone2;
+	static const FName LevelEditorViewport_Clone3;
+	static const FName LevelEditorViewport_Clone4;
+	static const FName LevelEditorToolBar;
+	static const FName LevelEditorToolBox;
+	static const FName LevelEditorSelectionDetails;
+	static const FName LevelEditorSelectionDetails2;
+	static const FName LevelEditorSelectionDetails3;
+	static const FName LevelEditorSelectionDetails4;
+	static const FName PlacementBrowser;
+	static const FName LevelEditorBuildAndSubmit;
+	static const FName LevelEditorSceneOutliner;
+	static const FName LevelEditorStatsViewer;
+	static const FName LevelEditorLayerBrowser;
+	static const FName Sequencer;
+	static const FName SequencerGraphEditor;
+	static const FName WorldSettings;
+	static const FName WorldBrowserComposition;
+	static const FName WorldBrowserHierarchy;
+	static const FName WorldBrowserDetails;
+	static const FName LevelEditorHierarchicalLODOutliner;
+	static const FName OutputLog;
+};
 
 /**
  * Level editor module
@@ -69,12 +97,6 @@ public:
 	 */
 	virtual void SummonBuildAndSubmit();
 	
-	/**
-	 * Spawns a new level browser tab
-	 * @todo This only works with the first level editor. Fix it.
-	 */
-	virtual void SummonLevelBrowser();
-
 	virtual void SummonWorldBrowserHierarchy();
 	virtual void SummonWorldBrowserDetails();
 	virtual void SummonWorldBrowserComposition();
@@ -112,7 +134,14 @@ public:
 	 *
 	 * @todo This only works with the first level editor. Fix it.
 	 */
-	virtual TSharedPtr<class ILevelViewport> GetFirstActiveViewport();
+	virtual TSharedPtr<class IAssetViewport> GetFirstActiveViewport();
+
+	/**
+	* Gets the first active viewport of all the viewports.
+	*
+	* @todo This only works with the first level editor. Fix it.
+	*/
+	virtual TSharedPtr<class SLevelViewport> GetFirstActiveLevelViewport();
 
 	/**
 	 * Called to focus the level editor that has a play in editor viewport
@@ -145,7 +174,7 @@ public:
 	virtual const class FLevelViewportCommands& GetLevelViewportCommands() const;
 
 	/* @return The pointer to the current level Editor instance */
-	virtual TWeakPtr<class SLevelEditor> GetLevelEditorInstance() const;
+	virtual TWeakPtr<class ILevelEditor> GetLevelEditorInstance() const;
 
 	/* @return The pointer to the level editor tab */
 	virtual TWeakPtr<class SDockTab> GetLevelEditorInstanceTab() const;
@@ -170,7 +199,9 @@ public:
 	DECLARE_EVENT(FLevelEditorModule, FTabContentChangedEvent);
 	virtual FTabContentChangedEvent& OnTabContentChanged() { return TabContentChangedEvent; }
 
-
+	/** Called when a level editor widget has been created */
+	DECLARE_EVENT_OneParam(FLevelEditorModule, FOnLevelEditorCreated, TSharedPtr<ILevelEditor>);
+	virtual FOnLevelEditorCreated& OnLevelEditorCreated() { return LevelEditorCreatedEvent; }
 	/**
 	 * Called when actor selection changes
 	 * 
@@ -231,6 +262,7 @@ public:
 	virtual TArray<FLevelEditorMenuExtender>& GetAllLevelEditorToolbarSourceControlMenuExtenders() { return LevelEditorToolbarSourceControlMenuExtenders; }
 	virtual TArray<FLevelEditorMenuExtender>& GetAllLevelEditorToolbarCreateMenuExtenders() { return LevelEditorToolbarCreateMenuExtenders; }
 	virtual TArray<FLevelEditorMenuExtender>& GetAllLevelEditorToolbarPlayMenuExtenders() { return LevelEditorToolbarPlayMenuExtenders; }
+	virtual TArray<TSharedPtr<FExtender>>& GetAllLevelEditorToolbarBlueprintsMenuExtenders() { return LevelEditorToolbarBlueprintsMenuExtenders; }
 	virtual TArray<TSharedPtr<FExtender>>& GetAllLevelEditorToolbarCinematicsMenuExtenders() {return LevelEditorToolbarCinematicsMenuExtenders;}
 	virtual TArray<FLevelEditorMenuExtender>& GetAllLevelEditorLevelMenuExtenders() { return LevelEditorLevelMenuExtenders; }
 	
@@ -240,11 +272,27 @@ public:
 	virtual TSharedPtr<FExtensibilityManager> GetModeBarExtensibilityManager() {return ModeBarExtensibilityManager;}
 	virtual TSharedPtr<FExtensibilityManager> GetNotificationBarExtensibilityManager() {return NotificationBarExtensibilityManager;}
 
+	virtual TSharedPtr<FExtender> AssembleExtenders(TSharedRef<FUICommandList>& InCommandList, TArray<FLevelEditorMenuExtender>& MenuExtenderDelegates) const;
+
 	DECLARE_EVENT_OneParam(ILevelEditor, FOnRegisterTabs, TSharedPtr<FTabManager>);
 	FOnRegisterTabs& OnRegisterTabs() { return RegisterTabs; }
 
 	DECLARE_EVENT_OneParam(ILevelEditor, FOnRegisterLayoutExtensions, FLayoutExtender&);
 	FOnRegisterLayoutExtensions& OnRegisterLayoutExtensions() { return RegisterLayoutExtensions; }
+
+	/** Add / Remove status bar item */
+	struct FStatusBarItem
+	{
+		/* Visiblility of the status bar item. */
+		TAttribute<EVisibility> Visibility;
+		/* Label of the status bar item. */
+		TAttribute<FText> Label;
+		/* Value of the status bar item. */
+		TAttribute<FText> Value;
+	};
+	const TMap<FName, FStatusBarItem>& GetStatusBarItems() const { return StatusBarItems; }
+	virtual void AddStatusBarItem(FName InStatusBarIdentifier, const FStatusBarItem& InStatusBarItem);
+	virtual void RemoveStatusBarItem(FName InStatusBarIdentifier);
 
 	/** Called when a new map is loaded */
 	DECLARE_EVENT( FLevelEditorModule, FNotificationBarChanged );
@@ -312,7 +360,7 @@ public:
 	}
 
 	/** Create an instance of a custom viewport from the specified viewport type name */
-	TSharedRef<IViewportLayoutEntity> FactoryViewport(FName InTypeName, const FViewportConstructionArgs& ConstructionArgs) const;
+	TSharedRef<ILevelViewportLayoutEntity> FactoryViewport(FName InTypeName, const FViewportConstructionArgs& ConstructionArgs) const;
 
 private:
 	/**
@@ -338,6 +386,7 @@ private:
 	TSharedPtr<FExtensibilityManager> ModeBarExtensibilityManager;
 	TSharedPtr<FExtensibilityManager> NotificationBarExtensibilityManager;
 
+	TMap<FName, FStatusBarItem> StatusBarItems;
 	FNotificationBarChanged NotificationBarChangedEvent;
 
 	/** 
@@ -353,6 +402,9 @@ private:
 
 	/** Multicast delegate executed when the tab content is changed */
 	FTabContentChangedEvent TabContentChangedEvent;
+
+	/** Multicast delegate executed when a level editor has been created */
+	FOnLevelEditorCreated LevelEditorCreatedEvent;
 
 	/** Multicast delegate executed when actor selection changes */
 	FActorSelectionChangedEvent ActorSelectionChangedEvent;
@@ -384,6 +436,7 @@ private:
 	TArray<FLevelEditorMenuExtender> LevelEditorToolbarCreateMenuExtenders;
 	TArray<FLevelEditorMenuExtender> LevelEditorToolbarPlayMenuExtenders;
 	TArray<TSharedPtr<FExtender>> LevelEditorToolbarCinematicsMenuExtenders;
+	TArray<TSharedPtr<FExtender>> LevelEditorToolbarBlueprintsMenuExtenders;
 	TArray<FLevelEditorMenuExtender> LevelEditorLevelMenuExtenders;
 
 	/* Pointer to the current level Editor instance */

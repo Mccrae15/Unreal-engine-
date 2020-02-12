@@ -1,6 +1,6 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
-#if !WITH_CHAOS && !WITH_IMMEDIATE_PHYSX && !PHYSICS_INTERFACE_LLIMMEDIATE
+#if !WITH_CHAOS && !WITH_IMMEDIATE_PHYSX
 
 #include "Physics/PhysicsInterfacePhysX.h"
 #include "Physics/PhysicsInterfaceUtils.h"
@@ -9,7 +9,12 @@
 #include "Logging/MessageLog.h"
 #include "Components/SkeletalMeshComponent.h"
 #include "Internationalization/Internationalization.h"
-#include "Physics/SQAccelerator.h"
+
+#include "PhysicsInterfaceDeclaresCore.h"
+
+#if !WITH_CHAOS_NEEDS_TO_BE_FIXED
+
+#include "SQAccelerator.h"
 
 #if WITH_PHYSX
 #include "PhysXPublic.h"
@@ -23,7 +28,7 @@
 
 #include "PhysicsEngine/ConstraintDrives.h"
 #include "PhysicsEngine/AggregateGeom.h"
-#include "Physics/PhysicsGeometryPhysX.h"
+#include "Physics/PhysicsGeometry.h"
 #include "Engine/Engine.h"
 #include "PhysicalMaterials/PhysicalMaterial.h"
 #include "PhysicsEngine/PhysicsSettings.h"
@@ -38,8 +43,6 @@ extern TAutoConsoleVariable<float> CVarConstraintLinearDampingScale;
 extern TAutoConsoleVariable<float> CVarConstraintLinearStiffnessScale;
 extern TAutoConsoleVariable<float> CVarConstraintAngularDampingScale;
 extern TAutoConsoleVariable<float> CVarConstraintAngularStiffnessScale;
-
-extern bool GHillClimbError;
 
 enum class EPhysicsInterfaceScopedLockType : uint8
 {
@@ -73,6 +76,16 @@ private:
 	physx::PxScene* Scenes[2];
 	EPhysicsInterfaceScopedLockType LockType;
 };
+
+FPhysicsActorHandle_PhysX DefaultPhysicsActorHandle()
+{
+	return FPhysicsActorHandle_PhysX();
+}
+
+bool IsValidHandle(const FPhysicsActorHandle_PhysX& Handle)
+{
+	return Handle.IsValid();
+}
 
 PxRigidActor* FPhysicsInterface_PhysX::GetPxRigidActor_AssumesLocked(const FPhysicsActorHandle_PhysX& InRef)
 {
@@ -111,7 +124,7 @@ const FBodyInstance* FPhysicsInterface_PhysX::ShapeToOriginalBodyInstance(const 
 	return TargetInstance;
 }
 
-FPhysicsActorHandle FPhysicsInterface_PhysX::CreateActor(const FActorCreationParams& Params)
+void FPhysicsInterface_PhysX::CreateActor(const FActorCreationParams& Params, FPhysicsActorHandle& Handle)
 {
 	FPhysicsActorHandle NewActor;
 
@@ -149,7 +162,7 @@ FPhysicsActorHandle FPhysicsInterface_PhysX::CreateActor(const FActorCreationPar
 		}
 	}
 
-	return NewActor;
+	Handle = NewActor;
 }
 
 //helper function for TermBody to avoid code duplication between scenes
@@ -341,24 +354,6 @@ PxTransform GetKinematicOrGlobalTransform_AssumesLocked(const PxRigidActor* InAc
 	}
 
 	return InActor->getGlobalPose();
-}
-
-void LogHillClimbError_PhysX(const FBodyInstance* BI, const PxGeometry& PGeom, const PxTransform& ShapePose)
-{
-	FString DebugName = BI->OwnerComponent.Get() ? BI->OwnerComponent->GetReadableName() : FString("None");
-	FString TransformString = P2UTransform(ShapePose).ToString();
-	if(PGeom.getType() == PxGeometryType::eCAPSULE)
-	{
-		const PxCapsuleGeometry& CapsuleGeom = static_cast<const PxCapsuleGeometry&>(PGeom);
-		ensureAlwaysMsgf(false, TEXT("HillClimbing stuck in infinite loop for component:%s with Capsule half-height:%f, radius:%f, at world transform:%s"), *DebugName, CapsuleGeom.halfHeight, CapsuleGeom.radius, *TransformString);
-	}
-	else
-	{
-		const uint32 GeomType = PGeom.getType();
-		ensureAlwaysMsgf(false, TEXT("HillClimbing stuck in infinite loop for component:%s with geometry type:%d, at world transform:%s"), *DebugName, GeomType, *TransformString);
-	}
-
-	GHillClimbError = false;
 }
 
 // PhysX interface definition //////////////////////////////////////////////////////////////////////////
@@ -671,6 +666,19 @@ bool FPhysicsCommand_PhysX::ExecuteWrite(FPhysScene_PhysX* InScene, TFunctionRef
 	return false;
 }
 
+bool FPhysicsCommand_PhysX::ExecuteWrite(FPhysicsActorHandle_PhysX& InHandle, TFunctionRef<void(FPhysicsActorHandle_PhysX& Actor)> InCallable)
+{
+	if(InHandle.IsValid())
+	{
+		FPhysicsInterfaceScopedLock_PhysX ScopeLock(&InHandle, EPhysicsInterfaceScopedLockType::Write);
+		InCallable(InHandle);
+
+		return true;
+	}
+
+	return false;
+}
+
 void FPhysicsCommand_PhysX::ExecuteShapeWrite(FBodyInstance* InInstance, FPhysicsShapeHandle_PhysX& InShape, TFunctionRef<void(FPhysicsShapeHandle_PhysX& InShape)> InCallable)
 {
 	if(InShape.IsValid())
@@ -687,7 +695,7 @@ int32 GetAllShapesInternal_AssumedLocked(const FPhysicsActorHandle_PhysX& InActo
 	OutShapes.Empty();
 
 	// grab shapes from sync actor
-	if (InActorHandle.SyncActor)
+	if(InActorHandle.SyncActor)
 	{
 		NumSyncShapes = InActorHandle.SyncActor->getNbShapes();
 		TempShapes.AddUninitialized(NumSyncShapes);
@@ -695,7 +703,7 @@ int32 GetAllShapesInternal_AssumedLocked(const FPhysicsActorHandle_PhysX& InActo
 	}
 
 	OutShapes.Reset(TempShapes.Num());
-	for (PxShape* Shape : TempShapes)
+	for(PxShape* Shape : TempShapes)
 	{
 		OutShapes.Add(FPhysicsShapeHandle_PhysX(Shape));
 	}
@@ -959,16 +967,6 @@ bool FPhysicsInterface_PhysX::IsQueryShape(const FPhysicsShapeHandle_PhysX& InSh
 	if(InShape.IsValid())
 	{
 		return InShape.Shape->getFlags() & PxShapeFlag::eSCENE_QUERY_SHAPE;
-	}
-
-	return false;
-}
-
-bool FPhysicsInterface_PhysX::IsShapeType(const FPhysicsShapeHandle_PhysX& InShape, ECollisionShapeType InType)
-{
-	if(InShape.IsValid())
-	{
-		return InShape.Shape->getGeometryType() == U2PCollisionShapeType(InType);
 	}
 
 	return false;
@@ -1541,7 +1539,7 @@ void FPhysicsInterface_PhysX::SetAngularDamping_AssumesLocked(const FPhysicsActo
 	}
 }
 
-void FPhysicsInterface_PhysX::AddForce_AssumesLocked(const FPhysicsActorHandle_PhysX& InActorHandle, const FVector& InForce)
+void FPhysicsInterface_PhysX::AddImpulse_AssumesLocked(const FPhysicsActorHandle_PhysX& InActorHandle, const FVector& InForce)
 {
 	if(PxRigidBody* Body = GetPx<PxRigidBody>(InActorHandle))
 	{
@@ -1549,7 +1547,7 @@ void FPhysicsInterface_PhysX::AddForce_AssumesLocked(const FPhysicsActorHandle_P
 	}
 }
 
-void FPhysicsInterface_PhysX::AddTorque_AssumesLocked(const FPhysicsActorHandle_PhysX& InActorHandle, const FVector& InTorque)
+void FPhysicsInterface_PhysX::AddAngularImpulseInRadians_AssumesLocked(const FPhysicsActorHandle_PhysX& InActorHandle, const FVector& InTorque)
 {
 	if(PxRigidBody* Body = GetPx<PxRigidBody>(InActorHandle))
 	{
@@ -1557,7 +1555,7 @@ void FPhysicsInterface_PhysX::AddTorque_AssumesLocked(const FPhysicsActorHandle_
 	}
 }
 
-void FPhysicsInterface_PhysX::AddForceMassIndependent_AssumesLocked(const FPhysicsActorHandle_PhysX& InActorHandle, const FVector& InForce)
+void FPhysicsInterface_PhysX::AddVelocity_AssumesLocked(const FPhysicsActorHandle_PhysX& InActorHandle, const FVector& InForce)
 {
 	if(PxRigidBody* Body = GetPx<PxRigidBody>(InActorHandle))
 	{
@@ -1565,7 +1563,7 @@ void FPhysicsInterface_PhysX::AddForceMassIndependent_AssumesLocked(const FPhysi
 	}
 }
 
-void FPhysicsInterface_PhysX::AddTorqueMassIndependent_AssumesLocked(const FPhysicsActorHandle_PhysX& InActorHandle, const FVector& InTorque)
+void FPhysicsInterface_PhysX::AddAngularVelocityInRadians_AssumesLocked(const FPhysicsActorHandle_PhysX& InActorHandle, const FVector& InTorque)
 {
 	if(PxRigidBody* Body = GetPx<PxRigidBody>(InActorHandle))
 	{
@@ -2472,7 +2470,7 @@ bool FPhysicsInterface_PhysX::LineTrace_Geom(FHitResult& OutHit, const FBodyInst
 						const bool bShapeIsSimple = (ShapeFilter.word3 & EPDF_SimpleCollision) != 0;
 						if((bTraceComplex && bShapeIsComplex) || (!bTraceComplex && bShapeIsSimple))
 						{
-							const int32 ArraySize = ARRAY_COUNT(PHits);
+							const int32 ArraySize = UE_ARRAY_COUNT(PHits);
 							
 							PxTransform ShapeTransform = U2PTransform(GetTransform(ShapeRef));
 							const PxI32 NumHits = PxGeometryQuery::raycast(U2PVector(InStart), U2PVector(Delta / DeltaMag), PShape->getGeometry().any(), ShapeTransform, DeltaMag, PHitFlags, ArraySize, PHits);
@@ -2537,7 +2535,7 @@ bool FPhysicsInterface_PhysX::Sweep_Geom(FHitResult& OutHit, const FBodyInstance
 
 			if((RigidBody != nullptr) && (RigidBody->getNbShapes() != 0) && (InInstance->OwnerComponent != nullptr))
 			{
-				FPhysXShapeAdaptor ShapeAdaptor(InShapeRotation, InShape);
+				FPhysXShapeAdapter ShapeAdapter(InShapeRotation, InShape);
 				
 				const FVector Delta = InEnd - InStart;
 				const float DeltaMag = Delta.Size();
@@ -2546,7 +2544,7 @@ bool FPhysicsInterface_PhysX::Sweep_Geom(FHitResult& OutHit, const FBodyInstance
 					PxHitFlags POutputFlags = PxHitFlag::ePOSITION | PxHitFlag::eNORMAL | PxHitFlag::eDISTANCE | PxHitFlag::eFACE_INDEX | PxHitFlag::eMTD;
 
 					UPrimitiveComponent* OwnerComponentInst = InInstance->OwnerComponent.Get();
-					PxTransform PStartTM(U2PVector(InStart), U2PQuat(ShapeAdaptor.GetGeomOrientation()));
+					PxTransform PStartTM(U2PVector(InStart), U2PQuat(ShapeAdapter.GetGeomOrientation()));
 					PxTransform PCompTM(U2PTransform(OwnerComponentInst->GetComponentTransform()));
 
 					PxVec3 PDir = U2PVector(Delta / DeltaMag);
@@ -2578,7 +2576,7 @@ bool FPhysicsInterface_PhysX::Sweep_Geom(FHitResult& OutHit, const FBodyInstance
 						if((bSweepComplex && bShapeIsComplex) || (!bSweepComplex && bShapeIsSimple))
 						{
 							PxTransform PGlobalPose = PCompTM.transform(PShape->getLocalPose());
-							const PxGeometry& Geometry = ShapeAdaptor.GetGeometry();
+							const PxGeometry& Geometry = ShapeAdapter.GetGeometry();
 							if(PxGeometryQuery::sweep(PDir, DeltaMag, Geometry, PStartTM, PShape->getGeometry().any(), PGlobalPose, PHit, POutputFlags))
 							{
 								// we just like to make sure if the hit is made
@@ -2647,11 +2645,6 @@ bool Overlap_GeomInternal(const FBodyInstance* InInstance, const PxGeometry& InP
 					OutOptResult->Direction = P2UVector(POutDirection);
 					OutOptResult->Distance = FMath::Abs(OutDistance);
 
-					if(GHillClimbError)
-					{
-						LogHillClimbError_PhysX(InInstance, InPxGeom, ShapePose);
-					}
-
 					return true;
 				}
 			}
@@ -2667,23 +2660,19 @@ bool Overlap_GeomInternal(const FBodyInstance* InInstance, const PxGeometry& InP
 		}
 	}
 
-	if(GHillClimbError)
-	{
-		LogHillClimbError_PhysX(InInstance, InPxGeom, ShapePose);
-	}
 	return false;
 }
 
 bool FPhysicsInterface_PhysX::Overlap_Geom(const FBodyInstance* InInstance, const FPhysicsGeometryCollection& InGeometry, const FTransform& InShapeTransform, FMTDResult* OutOptResult)
 {
-	PxGeometry&  PGeom = InGeometry.GetGeometry();
+	const PxGeometry&  PGeom = InGeometry.GetGeometry();
 
 	return Overlap_GeomInternal(InInstance, PGeom, InShapeTransform, OutOptResult);
 }
 
 bool FPhysicsInterface_PhysX::Overlap_Geom(const FBodyInstance* InInstance, const FCollisionShape& InCollisionShape, const FQuat& InShapeRotation, const FTransform& InShapeTransform, FMTDResult* OutOptResult /*= nullptr*/)
 {
-	FPhysXShapeAdaptor Adaptor(InShapeRotation, InCollisionShape);
+	FPhysXShapeAdapter Adaptor(InShapeRotation, InCollisionShape);
 
 	return Overlap_GeomInternal(InInstance, Adaptor.GetGeometry(), Adaptor.GetGeomPose(InShapeTransform.GetTranslation()), OutOptResult);
 }
@@ -2802,39 +2791,64 @@ ECollisionShapeType FPhysicsGeometryCollection_PhysX::GetType() const
 	return P2UCollisionShapeType(GeomHolder->getType());
 }
 
-physx::PxGeometry& FPhysicsGeometryCollection_PhysX::GetGeometry() const
+const physx::PxGeometry& FPhysicsGeometryCollection_PhysX::GetGeometry() const
 {
 	return GeomHolder->any();
 }
 
-bool FPhysicsGeometryCollection_PhysX::GetBoxGeometry(physx::PxBoxGeometry& OutGeom) const
+physx::PxGeometry& FPhysicsGeometryCollection_PhysX::GetGeometry()
 {
-	OutGeom = GeomHolder->box();
-	return true;
+	return GeomHolder->any();
 }
 
-bool FPhysicsGeometryCollection_PhysX::GetSphereGeometry(physx::PxSphereGeometry& OutGeom) const
+const physx::PxBoxGeometry& FPhysicsGeometryCollection_PhysX::GetBoxGeometry() const
 {
-	OutGeom = GeomHolder->sphere();
-	return true;
+	return GeomHolder->box();
 }
 
-bool FPhysicsGeometryCollection_PhysX::GetCapsuleGeometry(physx::PxCapsuleGeometry& OutGeom) const
+physx::PxBoxGeometry& FPhysicsGeometryCollection_PhysX::GetBoxGeometry()
 {
-	OutGeom = GeomHolder->capsule();
-	return true;
+	return GeomHolder->box();
 }
 
-bool FPhysicsGeometryCollection_PhysX::GetConvexGeometry(physx::PxConvexMeshGeometry& OutGeom) const
+const physx::PxSphereGeometry& FPhysicsGeometryCollection_PhysX::GetSphereGeometry() const
 {
-	OutGeom = GeomHolder->convexMesh();
-	return true;
+	return GeomHolder->sphere();
 }
 
-bool FPhysicsGeometryCollection_PhysX::GetTriMeshGeometry(physx::PxTriangleMeshGeometry& OutGeom) const
+physx::PxSphereGeometry& FPhysicsGeometryCollection_PhysX::GetSphereGeometry()
 {
-	OutGeom = GeomHolder->triangleMesh();
-	return true;
+	return GeomHolder->sphere();
+}
+
+const physx::PxCapsuleGeometry& FPhysicsGeometryCollection_PhysX::GetCapsuleGeometry() const
+{
+	return GeomHolder->capsule();
+}
+
+physx::PxCapsuleGeometry& FPhysicsGeometryCollection_PhysX::GetCapsuleGeometry()
+{
+	return GeomHolder->capsule();
+}
+
+const physx::PxConvexMeshGeometry& FPhysicsGeometryCollection_PhysX::GetConvexGeometry() const
+{
+	return GeomHolder->convexMesh();
+}
+
+physx::PxConvexMeshGeometry& FPhysicsGeometryCollection_PhysX::GetConvexGeometry()
+{
+	return GeomHolder->convexMesh();
+}
+
+const physx::PxTriangleMeshGeometry& FPhysicsGeometryCollection_PhysX::GetTriMeshGeometry() const
+{
+	return GeomHolder->triangleMesh();
+}
+
+physx::PxTriangleMeshGeometry& FPhysicsGeometryCollection_PhysX::GetTriMeshGeometry()
+{
+	return GeomHolder->triangleMesh();
 }
 
 FPhysicsGeometryCollection_PhysX::FPhysicsGeometryCollection_PhysX(const FPhysicsShapeHandle_PhysX& ShapeRef)
@@ -2843,5 +2857,7 @@ FPhysicsGeometryCollection_PhysX::FPhysicsGeometryCollection_PhysX(const FPhysic
 }
 
 #undef LOCTEXT_NAMESPACE
+
+#endif
 
 #endif

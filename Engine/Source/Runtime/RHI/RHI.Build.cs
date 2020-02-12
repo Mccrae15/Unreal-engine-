@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 using UnrealBuildTool;
 using System;
@@ -8,11 +8,12 @@ public class RHI : ModuleRules
 	public RHI(ReadOnlyTargetRules Target) : base(Target)
 	{
 		PrivateDependencyModuleNames.Add("Core");
+		PrivateDependencyModuleNames.Add("TraceLog");
 		PrivateDependencyModuleNames.Add("ApplicationCore");
 
 		if (Target.bCompileAgainstEngine)
 		{
-            DynamicallyLoadedModuleNames.Add("NullDrv");
+			DynamicallyLoadedModuleNames.Add("NullDrv");
 
 			if (Target.Type != TargetRules.TargetType.Server)   // Dedicated servers should skip loading everything but NullDrv
 			{
@@ -25,6 +26,11 @@ public class RHI : ModuleRules
 					DynamicallyLoadedModuleNames.Add("D3D12RHI");
 				}
 
+				if ((Target.Platform == UnrealTargetPlatform.HoloLens))
+				{
+					DynamicallyLoadedModuleNames.Add("D3D11RHI");
+				}
+
 				if ((Target.Platform == UnrealTargetPlatform.Win64) ||
 					(Target.Platform == UnrealTargetPlatform.Win32) ||
 					(Target.IsInPlatformGroup(UnrealPlatformGroup.Unix) && (Target.Architecture.StartsWith("x86_64") || Target.Architecture.StartsWith("aarch64"))))	// temporary, not all archs can support Vulkan atm
@@ -34,13 +40,12 @@ public class RHI : ModuleRules
 
 				if ((Target.Platform == UnrealTargetPlatform.Win32) ||
 					(Target.Platform == UnrealTargetPlatform.Win64) ||
-					(Target.Platform == UnrealTargetPlatform.Linux && Target.Type != TargetRules.TargetType.Server) ||  // @todo should servers on all platforms skip this?
-					(Target.Platform == UnrealTargetPlatform.HTML5))
+					(Target.IsInPlatformGroup(UnrealPlatformGroup.Linux) && Target.Type != TargetRules.TargetType.Server))  // @todo should servers on all platforms skip this?
 				{
 					DynamicallyLoadedModuleNames.Add("OpenGLDrv");
 				}
 			}
-        }
+		}
 
 		if (Target.Configuration != UnrealTargetConfiguration.Shipping)
 		{
@@ -48,5 +53,5 @@ public class RHI : ModuleRules
 		}
 
 		PrivateIncludePaths.Add("Runtime/RHI/Private");
-    }
+	}
 }

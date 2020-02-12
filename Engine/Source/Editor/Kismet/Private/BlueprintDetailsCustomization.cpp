@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "BlueprintDetailsCustomization.h"
 #include "UObject/StructOnScope.h"
@@ -75,6 +75,7 @@
 #include "Widgets/Input/STextComboBox.h"
 
 #include "UObject/TextProperty.h"
+#include "Subsystems/AssetEditorSubsystem.h"
 
 #define LOCTEXT_NAMESPACE "BlueprintDetailsCustomization"
 
@@ -88,12 +89,12 @@ namespace BlueprintDocumentationDetailDefs
 	static const float DetailsTitleWrapPadding = 32.0f;
 };
 
-void FBlueprintDetails::AddEventsCategory(IDetailLayoutBuilder& DetailBuilder, UProperty* VariableProperty)
+void FBlueprintDetails::AddEventsCategory(IDetailLayoutBuilder& DetailBuilder, FProperty* VariableProperty)
 {
 	UBlueprint* BlueprintObj = GetBlueprintObj();
 	check(BlueprintObj);
 
-	if ( UObjectProperty* ComponentProperty = Cast<UObjectProperty>(VariableProperty) )
+	if ( FObjectProperty* ComponentProperty = CastField<FObjectProperty>(VariableProperty) )
 	{
 		UClass* PropertyClass = ComponentProperty->PropertyClass;
 
@@ -102,14 +103,15 @@ void FBlueprintDetails::AddEventsCategory(IDetailLayoutBuilder& DetailBuilder, U
 		{
 			if ( FBlueprintEditorUtils::CanClassGenerateEvents(PropertyClass) )
 			{
-				for ( TFieldIterator<UMulticastDelegateProperty> PropertyIt(PropertyClass, EFieldIteratorFlags::IncludeSuper); PropertyIt; ++PropertyIt )
+				for ( TFieldIterator<FMulticastDelegateProperty> PropertyIt(PropertyClass, EFieldIteratorFlags::IncludeSuper); PropertyIt; ++PropertyIt )
 				{
-					UProperty* Property = *PropertyIt;
+					FProperty* Property = *PropertyIt;
 
 					FName PropertyName = ComponentProperty->GetFName();
-
+					static const FName HideInDetailPanelName("HideInDetailPanel");
 					// Check for multicast delegates that we can safely assign
-					if ( !Property->HasAnyPropertyFlags(CPF_Parm) && Property->HasAllPropertyFlags(CPF_BlueprintAssignable) )
+					if ( !Property->HasAnyPropertyFlags(CPF_Parm) && Property->HasAllPropertyFlags(CPF_BlueprintAssignable) &&
+						!Property->HasMetaData(HideInDetailPanelName) )
 					{
 						FName EventName = Property->GetFName();
 						FText EventText = Property->GetDisplayNameText();
@@ -178,7 +180,7 @@ FReply FBlueprintDetails::HandleAddOrViewEventForVariable(const FName EventName,
 	UBlueprint* BlueprintObj = GetBlueprintObj();
 
 	// Find the corresponding variable property in the Blueprint
-	UObjectProperty* VariableProperty = FindField<UObjectProperty>(BlueprintObj->SkeletonGeneratedClass, PropertyName);
+	FObjectProperty* VariableProperty = FindField<FObjectProperty>(BlueprintObj->SkeletonGeneratedClass, PropertyName);
 
 	if ( VariableProperty )
 	{
@@ -224,7 +226,7 @@ FBlueprintVarActionDetails::~FBlueprintVarActionDetails()
 	}
 }
 
-// UProperty Detail Customization
+// FProperty Detail Customization
 BEGIN_SLATE_FUNCTION_BUILD_OPTIMIZATION
 void FBlueprintVarActionDetails::CustomizeDetails( IDetailLayoutBuilder& DetailLayout )
 {
@@ -246,7 +248,7 @@ void FBlueprintVarActionDetails::CustomizeDetails( IDetailLayoutBuilder& DetailL
 	}
 
 
-	UProperty* VariableProperty = CachedVariableProperty.Get();
+	FProperty* VariableProperty = CachedVariableProperty.Get();
 
 	// Cache the Blueprint which owns this VariableProperty
 	if (UBlueprintGeneratedClass* GeneratedClass = Cast<UBlueprintGeneratedClass>(VariableProperty->GetOwnerClass()))
@@ -285,26 +287,26 @@ void FBlueprintVarActionDetails::CustomizeDetails( IDetailLayoutBuilder& DetailL
 
 	TSharedPtr<SToolTip> VarTypeTooltip = IDocumentation::Get()->CreateToolTip(LOCTEXT("VarTypeTooltip", "The type of the variable."), NULL, DocLink, TEXT("VariableType"));
 
-	Category.AddCustomRow( LOCTEXT("VariableTypeLabel", "Variable Type") )
-	.NameContent()
-	[
-		SNew(STextBlock)
-		.Text( LOCTEXT("VariableTypeLabel", "Variable Type") )
-		.ToolTip(VarTypeTooltip)
-		.Font(DetailFontInfo)
-	]
-	.ValueContent()
-	.MaxDesiredWidth(980.f)
-	[
-		SNew(SPinTypeSelector, FGetPinTypeTree::CreateUObject(Schema, &UEdGraphSchema_K2::GetVariableTypeTree))
-		.TargetPinType(this, &FBlueprintVarActionDetails::OnGetVarType)
-		.OnPinTypeChanged(this, &FBlueprintVarActionDetails::OnVarTypeChanged)
-		.IsEnabled(this, &FBlueprintVarActionDetails::GetVariableTypeChangeEnabled)
-		.Schema(Schema)
-		.TypeTreeFilter(ETypeTreeFilter::None)
-		.Font( DetailFontInfo )
-		.ToolTip(VarTypeTooltip)
-	];
+	Category.AddCustomRow(LOCTEXT("VariableTypeLabel", "Variable Type"))
+		.NameContent()
+		[
+			SNew(STextBlock)
+			.Text(LOCTEXT("VariableTypeLabel", "Variable Type"))
+			.ToolTip(VarTypeTooltip)
+			.Font(DetailFontInfo)
+		]
+		.ValueContent()
+		.MaxDesiredWidth(980.f)
+		[
+			SNew(SPinTypeSelector, FGetPinTypeTree::CreateUObject(Schema, &UEdGraphSchema_K2::GetVariableTypeTree))
+			.TargetPinType(this, &FBlueprintVarActionDetails::OnGetVarType)
+			.OnPinTypeChanged(this, &FBlueprintVarActionDetails::OnVarTypeChanged)
+			.IsEnabled(this, &FBlueprintVarActionDetails::GetVariableTypeChangeEnabled)
+			.Schema(Schema)
+			.TypeTreeFilter(ETypeTreeFilter::None)
+			.Font(DetailFontInfo)
+			.ToolTip(VarTypeTooltip)
+		];
 
 	TSharedPtr<SToolTip> EditableTooltip = IDocumentation::Get()->CreateToolTip(LOCTEXT("VarEditableTooltip", "Whether this variable is publicly editable on instances of this Blueprint."), NULL, DocLink, TEXT("Editable"));
 
@@ -767,11 +769,11 @@ void FBlueprintVarActionDetails::CustomizeDetails( IDetailLayoutBuilder& DetailL
 					}
 				}
 			}
-			const UProperty* OriginalProperty = nullptr;
+			const FProperty* OriginalProperty = nullptr;
 		
 			if(!IsALocalVariable(VariableProperty))
 			{
-				OriginalProperty = FindField<UProperty>(BlueprintObj->GeneratedClass, VariableProperty->GetFName());
+				OriginalProperty = FindField<FProperty>(BlueprintObj->GeneratedClass, VariableProperty->GetFName());
 			}
 			else
 			{
@@ -783,7 +785,7 @@ void FBlueprintVarActionDetails::CustomizeDetails( IDetailLayoutBuilder& DetailL
 				// Prevent editing the default value of a skeleton property
 				VariableProperty = nullptr;
 			}
-			else if (const UStructProperty* StructProperty = Cast<const UStructProperty>(OriginalProperty))
+			else if (const FStructProperty* StructProperty = CastField<const FStructProperty>(OriginalProperty))
 			{
 				// Prevent editing the default value of a stale struct
 				const UUserDefinedStruct* BGStruct = Cast<const UUserDefinedStruct>(StructProperty->Struct);
@@ -795,7 +797,7 @@ void FBlueprintVarActionDetails::CustomizeDetails( IDetailLayoutBuilder& DetailL
 		}
 
 		// Find the class containing the variable
-		UClass* VariableClass = (VariableProperty ? VariableProperty->GetTypedOuter<UClass>() : nullptr);
+		UClass* VariableClass = (VariableProperty ? VariableProperty->GetTypedOwner<UClass>() : nullptr);
 
 		FText ErrorMessage;
 		IDetailCategoryBuilder& DefaultValueCategory = DetailLayout.EditCategory(TEXT("DefaultValueCategory"), LOCTEXT("DefaultValueCategoryHeading", "Default Value"));
@@ -827,10 +829,9 @@ void FBlueprintVarActionDetails::CustomizeDetails( IDetailLayoutBuilder& DetailL
 		{
 			if(IsALocalVariable(VariableProperty))
 			{
-				UFunction* StructScope = Cast<UFunction>(VariableProperty->GetOuter());
+				UFunction* StructScope = VariableProperty->GetOwner<UFunction>();
 				check(StructScope);
 
-				TSharedPtr<FStructOnScope> StructData = MakeShareable(new FStructOnScope((UFunction*)StructScope));
 				UEdGraph* Graph = FBlueprintEditorUtils::FindScopeGraph(GetBlueprintObj(), (UFunction*)StructScope);
 
 				// Find the function entry nodes in the current graph
@@ -840,15 +841,18 @@ void FBlueprintVarActionDetails::CustomizeDetails( IDetailLayoutBuilder& DetailL
 				// There should always be an entry node in the function graph
 				check(EntryNodes.Num() > 0);
 
-				const UStructProperty* PotentialUDSProperty = Cast<const UStructProperty>(VariableProperty);
+				const FStructProperty* PotentialUDSProperty = CastField<const FStructProperty>(VariableProperty);
 				
 				UK2Node_FunctionEntry* FuncEntry = EntryNodes[0];
+
+				TSharedPtr<FStructOnScope> StructData = MakeShareable(new FStructOnScope((UFunction*)StructScope));
+
 				for (const FBPVariableDescription& LocalVar : FuncEntry->LocalVariables)
 				{
-					if(LocalVar.VarName == VariableProperty->GetFName()) //Property->GetFName())
+					if (LocalVar.VarName == VariableProperty->GetFName())
 					{
 						// Only set the default value if there is one
-						if(!LocalVar.DefaultValue.IsEmpty())
+						if (!LocalVar.DefaultValue.IsEmpty())
 						{
 							FBlueprintEditorUtils::PropertyValueFromString(VariableProperty, LocalVar.DefaultValue, StructData->GetStructMemory());
 						}
@@ -884,7 +888,8 @@ void FBlueprintVarActionDetails::CustomizeDetails( IDetailLayoutBuilder& DetailL
 				else if (CachedVariableProperty.IsValid())
 				{
 					// Capture the non-BP class CDO so we can show the default value
-					TargetBlueprintDefaultObject = CachedVariableProperty->GetOwnerClass()->GetDefaultObject();
+					UClass* OwnerClass = CachedVariableProperty->GetOwnerClass();
+					TargetBlueprintDefaultObject = OwnerClass ? OwnerClass->GetDefaultObject() : nullptr;
 				}
 
 				if (TargetBlueprintDefaultObject != nullptr)
@@ -981,6 +986,48 @@ void FBlueprintVarActionDetails::CustomizeDetails( IDetailLayoutBuilder& DetailL
 				.ToolTip(MultilineTooltip)
 			];
 
+		TSharedPtr<SToolTip> DeprecatedTooltip = IDocumentation::Get()->CreateToolTip(LOCTEXT("VariableDeprecated_Tooltip", "Deprecate usage of this variable. Any nodes that reference it will produce a compiler warning indicating that it should be removed or replaced."), nullptr, DocLink, TEXT("Deprecated"));
+
+		Category.AddCustomRow(LOCTEXT("VariableDeprecated", "Deprecated"), true)
+			.Visibility(TAttribute<EVisibility>(this, &FBlueprintVarActionDetails::GetDeprecatedVisibility))
+			.NameContent()
+			[
+				SNew(STextBlock)
+				.ToolTip(DeprecatedTooltip)
+				.Text(LOCTEXT("VariableDeprecated", "Deprecated"))
+				.Font(DetailFontInfo)
+			]
+			.ValueContent()
+			[
+				SNew(SCheckBox)
+				.IsChecked(this, &FBlueprintVarActionDetails::OnGetDeprecatedCheckboxState)
+				.OnCheckStateChanged(this, &FBlueprintVarActionDetails::OnDeprecatedChanged)
+				.IsEnabled(IsVariableInBlueprint())
+				.ToolTip(DeprecatedTooltip)
+			];
+
+		TSharedPtr<SToolTip> DeprecationMessageTooltip = IDocumentation::Get()->CreateToolTip(LOCTEXT("VariableDeprecationMessage_Tooltip", "Optional message to include with the deprecation compiler warning. For example: \'X is no longer being used. Please replace with Y.\'"), nullptr, DocLink, TEXT("DeprecationMessage"));
+
+		Category.AddCustomRow(LOCTEXT("VariableDeprecationMessageLabel", "Deprecation Message"), true)
+			.Visibility(TAttribute<EVisibility>(this, &FBlueprintVarActionDetails::GetDeprecatedVisibility))
+			.IsEnabled(TAttribute<bool>(this, &FBlueprintVarActionDetails::IsVariableDeprecated))
+			.NameContent()
+			[
+				SNew(STextBlock)
+				.ToolTip(DeprecationMessageTooltip)
+				.Text(LOCTEXT("VariableDeprecationMessageLabel", "Deprecation Message"))
+				.Font(DetailFontInfo)
+			]
+			.ValueContent()
+			[
+				SNew(SEditableTextBox)
+				.Text(this, &FBlueprintVarActionDetails::GetDeprecationMessageText)
+				.OnTextCommitted(this, &FBlueprintVarActionDetails::OnDeprecationMessageTextCommitted, CachedVariableName)
+				.IsEnabled(IsVariableInBlueprint())
+				.ToolTipText(this, &FBlueprintVarActionDetails::GetDeprecationMessageText)
+				.Font(IDetailLayoutBuilder::GetDetailFont())
+			];
+
 		TSharedPtr<SToolTip> PropertyFlagsTooltip = IDocumentation::Get()->CreateToolTip(LOCTEXT("DefinedPropertyFlags_Tooltip", "List of defined flags for this property"), NULL, DocLink, TEXT("PropertyFlags"));
 
 		Category.AddCustomRow(LOCTEXT("DefinedPropertyFlags", "Defined Property Flags"), true)
@@ -1020,7 +1067,7 @@ END_SLATE_FUNCTION_BUILD_OPTIMIZATION
 
 void FBlueprintVarActionDetails::RefreshPropertyFlags()
 {
-	UProperty* VariableProperty = CachedVariableProperty.Get();
+	FProperty* VariableProperty = CachedVariableProperty.Get();
 	if(VariableProperty)
 	{
 		PropertyFlags.Empty();
@@ -1056,9 +1103,9 @@ TSharedRef<ITableRow> FBlueprintVarActionDetails::OnGenerateWidgetForPropertyLis
 		];
 }
 
-bool FBlueprintVarActionDetails::IsAUserVariable(UProperty* VariableProperty) const
+bool FBlueprintVarActionDetails::IsAUserVariable(FProperty* VariableProperty) const
 {
-	UObjectProperty* VariableObjProp = VariableProperty ? Cast<UObjectProperty>(VariableProperty) : NULL;
+	FObjectProperty* VariableObjProp = VariableProperty ? CastField<FObjectProperty>(VariableProperty) : NULL;
 
 	if (VariableObjProp != NULL && VariableObjProp->PropertyClass != NULL)
 	{
@@ -1067,9 +1114,9 @@ bool FBlueprintVarActionDetails::IsAUserVariable(UProperty* VariableProperty) co
 	return true;
 }
 
-bool FBlueprintVarActionDetails::IsASCSVariable(UProperty* VariableProperty) const
+bool FBlueprintVarActionDetails::IsASCSVariable(FProperty* VariableProperty) const
 {
-	UObjectProperty* VariableObjProp = VariableProperty ? Cast<UObjectProperty>(VariableProperty) : NULL;
+	FObjectProperty* VariableObjProp = VariableProperty ? CastField<FObjectProperty>(VariableProperty) : NULL;
 	if (VariableObjProp != NULL && VariableObjProp->PropertyClass != NULL)
 	{
 		return (!IsAUserVariable(VariableProperty) && VariableObjProp->PropertyClass->IsChildOf(UActorComponent::StaticClass()));
@@ -1077,9 +1124,9 @@ bool FBlueprintVarActionDetails::IsASCSVariable(UProperty* VariableProperty) con
 	return false;
 }
 
-bool FBlueprintVarActionDetails::IsABlueprintVariable(UProperty* VariableProperty) const
+bool FBlueprintVarActionDetails::IsABlueprintVariable(FProperty* VariableProperty) const
 {
-	UClass* VarSourceClass = VariableProperty ? Cast<UClass>(VariableProperty->GetOuter()) : NULL;
+	UClass* VarSourceClass = VariableProperty ? VariableProperty->GetOwner<UClass>() : NULL;
 	if(VarSourceClass)
 	{
 		return (VarSourceClass->ClassGeneratedBy != NULL);
@@ -1087,16 +1134,16 @@ bool FBlueprintVarActionDetails::IsABlueprintVariable(UProperty* VariablePropert
 	return false;
 }
 
-bool FBlueprintVarActionDetails::IsALocalVariable(UProperty* VariableProperty) const
+bool FBlueprintVarActionDetails::IsALocalVariable(FProperty* VariableProperty) const
 {
-	return VariableProperty && (Cast<UFunction>(VariableProperty->GetOuter()) != NULL);
+	return VariableProperty && (VariableProperty->GetOwner<UFunction>() != NULL);
 }
 
-UStruct* FBlueprintVarActionDetails::GetLocalVariableScope(UProperty* VariableProperty) const
+UStruct* FBlueprintVarActionDetails::GetLocalVariableScope(FProperty* VariableProperty) const
 {
 	if(IsALocalVariable(VariableProperty))
 	{
-		return Cast<UFunction>(VariableProperty->GetOuter());
+		return VariableProperty->GetOwner<UFunction>();
 	}
 
 	return NULL;
@@ -1109,7 +1156,7 @@ bool FBlueprintVarActionDetails::GetVariableNameChangeEnabled() const
 	UBlueprint* BlueprintObj = GetBlueprintObj();
 	check(BlueprintObj != nullptr);
 
-	UProperty* VariableProperty = CachedVariableProperty.Get();
+	FProperty* VariableProperty = CachedVariableProperty.Get();
 	if(VariableProperty != nullptr && IsVariableInBlueprint())
 	{
 		if(FBlueprintEditorUtils::FindNewVariableIndex(BlueprintObj, CachedVariableName) != INDEX_NONE)
@@ -1148,7 +1195,7 @@ void FBlueprintVarActionDetails::OnVarNameChanged(const FText& InNewText)
 	UBlueprint* BlueprintObj = GetBlueprintObj();
 	check(BlueprintObj != nullptr);
 
-	UProperty* VariableProperty = CachedVariableProperty.Get();
+	FProperty* VariableProperty = CachedVariableProperty.Get();
 	if(VariableProperty && IsASCSVariable(VariableProperty) && BlueprintObj->SimpleConstructionScript != nullptr)
 	{
 		for (USCS_Node* Node : BlueprintObj->SimpleConstructionScript->GetAllNodes())
@@ -1198,11 +1245,11 @@ void FBlueprintVarActionDetails::OnVarNameCommitted(const FText& InNewText, ETex
 		// Double check we're not renaming a timeline disguised as a variable
 		bool bIsTimeline = false;
 
-		UProperty* VariableProperty = CachedVariableProperty.Get();
+		FProperty* VariableProperty = CachedVariableProperty.Get();
 		if (VariableProperty != NULL)
 		{
 			// Don't allow removal of timeline properties - you need to remove the timeline node for that
-			UObjectProperty* ObjProperty = Cast<UObjectProperty>(VariableProperty);
+			FObjectProperty* ObjProperty = CastField<FObjectProperty>(VariableProperty);
 			if(ObjProperty != NULL && ObjProperty->PropertyClass == UTimelineComponent::StaticClass())
 			{
 				bIsTimeline = true;
@@ -1215,7 +1262,7 @@ void FBlueprintVarActionDetails::OnVarNameCommitted(const FText& InNewText, ETex
 			}
 			else if(IsALocalVariable(VariableProperty))
 			{
-				UFunction* LocalVarScope = Cast<UFunction>(VariableProperty->GetOuter());
+				UFunction* LocalVarScope = VariableProperty->GetOwner<UFunction>();
 				FBlueprintEditorUtils::RenameLocalVariable(GetBlueprintObj(), LocalVarScope, CachedVariableName, NewVarName);
 			}
 			else
@@ -1234,8 +1281,8 @@ void FBlueprintVarActionDetails::OnVarNameCommitted(const FText& InNewText, ETex
 
 bool FBlueprintVarActionDetails::GetVariableTypeChangeEnabled() const
 {
-	UProperty* VariableProperty = CachedVariableProperty.Get();
-	if(VariableProperty && IsVariableInBlueprint())
+	FProperty* VariableProperty = CachedVariableProperty.Get();
+	if(VariableProperty && !VariableProperty->IsA<FMulticastDelegateProperty>() && IsVariableInBlueprint())
 	{
 		if (!IsALocalVariable(VariableProperty))
 		{
@@ -1256,10 +1303,10 @@ bool FBlueprintVarActionDetails::GetVariableTypeChangeEnabled() const
 
 bool FBlueprintVarActionDetails::GetVariableCategoryChangeEnabled() const
 {
-	UProperty* VariableProperty = CachedVariableProperty.Get();
+	FProperty* VariableProperty = CachedVariableProperty.Get();
 	if(VariableProperty && IsVariableInBlueprint())
 	{
-		if(UClass* VarSourceClass = Cast<UClass>(VariableProperty->GetOuter()))
+		if(UClass* VarSourceClass = VariableProperty->GetOwner<UClass>())
 		{
 			// If the variable's source class is the same as the current blueprint's class then it was created in this blueprint and it's category can be changed.
 			return VarSourceClass == GetBlueprintObj()->SkeletonGeneratedClass;
@@ -1275,7 +1322,7 @@ bool FBlueprintVarActionDetails::GetVariableCategoryChangeEnabled() const
 
 FEdGraphPinType FBlueprintVarActionDetails::OnGetVarType() const
 {
-	UProperty* VariableProperty = CachedVariableProperty.Get();
+	FProperty* VariableProperty = CachedVariableProperty.Get();
 	if (VariableProperty)
 	{
 		const UEdGraphSchema_K2* K2Schema = GetDefault<UEdGraphSchema_K2>();
@@ -1297,7 +1344,7 @@ void FBlueprintVarActionDetails::OnVarTypeChanged(const FEdGraphPinType& NewPinT
 			// Set the MyBP tab's last pin type used as this, for adding lots of variables of the same type
 			MyBlueprint.Pin()->GetLastPinTypeUsed() = NewPinType;
 
-			UProperty* VariableProperty = CachedVariableProperty.Get();
+			FProperty* VariableProperty = CachedVariableProperty.Get();
 			if(VariableProperty)
 			{
 				if(IsALocalVariable(VariableProperty))
@@ -1355,9 +1402,9 @@ void FBlueprintVarActionDetails::PopulateCategories(SMyBlueprint* MyBlueprint, T
 		SuperClassFlag = EFieldIteratorFlags::IncludeSuper;
 	}
 
-	for (TFieldIterator<UProperty> PropertyIt(Blueprint->SkeletonGeneratedClass, SuperClassFlag); PropertyIt; ++PropertyIt)
+	for (TFieldIterator<FProperty> PropertyIt(Blueprint->SkeletonGeneratedClass, SuperClassFlag); PropertyIt; ++PropertyIt)
 	{
-		UProperty* Property = *PropertyIt;
+		FProperty* Property = *PropertyIt;
 
 		if ((!Property->HasAnyPropertyFlags(CPF_Parm) && Property->HasAllPropertyFlags(CPF_BlueprintVisible)))
 		{
@@ -1389,7 +1436,7 @@ void FBlueprintVarActionDetails::PopulateCategories(SMyBlueprint* MyBlueprint, T
 	{
 		if(UFunction* Function = Blueprint->SkeletonGeneratedClass->FindFunctionByName(FunctionGraph->GetFName()))
 		{
-			FText FunctionCategory = Function->GetMetaDataText(FBlueprintMetadata::MD_FunctionCategory, TEXT("UObjectCategory"), Function->GetFullGroupName(false));
+			FText FunctionCategory = FObjectEditorUtils::GetCategoryText(Function);
 
 			if(!FunctionCategory.IsEmpty())
 			{
@@ -1452,7 +1499,7 @@ void FBlueprintVarActionDetails::PopulateCategories(SMyBlueprint* MyBlueprint, T
 
 		if (UEdGraphSchema_K2::CanKismetOverrideFunction(Function) && !UEdGraphSchema_K2::FunctionCanBePlacedAsEvent(Function))
 		{
-			FText FunctionCategory = Function->GetMetaDataText(FBlueprintMetadata::MD_FunctionCategory, TEXT("UObjectCategory"), Function->GetFullGroupName(false));
+			FText FunctionCategory = FObjectEditorUtils::GetCategoryText(Function);
 
 			if (!FunctionCategory.IsEmpty())
 			{
@@ -1471,11 +1518,15 @@ void FBlueprintVarActionDetails::PopulateCategories(SMyBlueprint* MyBlueprint, T
 	}
 }
 
-UProperty* FBlueprintVarActionDetails::CustomizedObjectAsProperty() const
+FProperty* FBlueprintVarActionDetails::CustomizedObjectAsProperty() const
 {
 	if(ObjectsBeingEdited.Num() == 1)
 	{
-		return Cast<UProperty>(ObjectsBeingEdited[0].Get());
+		UPropertyWrapper* Wrapper = Cast<UPropertyWrapper>(ObjectsBeingEdited[0].Get());
+		if (Wrapper)
+		{
+			return Wrapper->GetProperty();
+		}
 	}
 
 	return nullptr;
@@ -1488,11 +1539,11 @@ UK2Node_Variable* FBlueprintVarActionDetails::EdGraphSelectionAsVar() const
 	if( BlueprintEditor.IsValid() )
 	{
 		/** Get the currently selected set of nodes */
-		TSet<UObject*> Objects = BlueprintEditor.Pin()->GetSelectedNodes();
+		FGraphPanelSelectionSet Objects = BlueprintEditor.Pin()->GetSelectedNodes();
 
 		if (Objects.Num() == 1)
 		{
-			TSet<UObject*>::TIterator Iter(Objects);
+			FGraphPanelSelectionSet::TIterator Iter(Objects);
 			UObject* Object = *Iter;
 
 			if (Object && Object->IsA<UK2Node_Variable>())
@@ -1504,7 +1555,7 @@ UK2Node_Variable* FBlueprintVarActionDetails::EdGraphSelectionAsVar() const
 	return NULL;
 }
 
-UProperty* FBlueprintVarActionDetails::SelectionAsProperty() const
+FProperty* FBlueprintVarActionDetails::SelectionAsProperty() const
 {
 	FEdGraphSchemaAction_K2Var* VarAction = MyBlueprintSelectionAsVar();
 	if(VarAction)
@@ -1521,7 +1572,7 @@ UProperty* FBlueprintVarActionDetails::SelectionAsProperty() const
 	{
 		return GraphVar->GetPropertyForVariable();
 	}
-	UProperty* Property = CustomizedObjectAsProperty();
+	FProperty* Property = CustomizedObjectAsProperty();
 	if(Property)
 	{
 		return Property;
@@ -1546,7 +1597,7 @@ FName FBlueprintVarActionDetails::GetVariableName() const
 	{
 		return GraphVar->GetVarName();
 	}
-	UProperty* Property = CustomizedObjectAsProperty();
+	FProperty* Property = CustomizedObjectAsProperty();
 	if(Property)
 	{
 		return Property->GetFName();
@@ -1617,7 +1668,7 @@ void FBlueprintVarActionDetails::OnCategorySelectionChanged( TSharedPtr<FText> P
 
 EVisibility FBlueprintVarActionDetails::ShowEditableCheckboxVisibilty() const
 {
-	UProperty* VariableProperty = CachedVariableProperty.Get();
+	FProperty* VariableProperty = CachedVariableProperty.Get();
 	if (VariableProperty && GetPropertyOwnerBlueprint())
 	{
 		if (IsABlueprintVariable(VariableProperty) && IsAUserVariable(VariableProperty))
@@ -1630,7 +1681,7 @@ EVisibility FBlueprintVarActionDetails::ShowEditableCheckboxVisibilty() const
 
 ECheckBoxState FBlueprintVarActionDetails::OnEditableCheckboxState() const
 {
-	UProperty* VariableProperty = CachedVariableProperty.Get();
+	FProperty* VariableProperty = CachedVariableProperty.Get();
 	if (VariableProperty)
 	{
 		return VariableProperty->HasAnyPropertyFlags(CPF_DisableEditOnInstance) ? ECheckBoxState::Unchecked : ECheckBoxState::Checked;
@@ -1651,7 +1702,7 @@ void FBlueprintVarActionDetails::OnEditableChanged(ECheckBoxState InNewState)
 
 EVisibility FBlueprintVarActionDetails::ShowReadOnlyCheckboxVisibilty() const
 {
-	UProperty* VariableProperty = CachedVariableProperty.Get();
+	FProperty* VariableProperty = CachedVariableProperty.Get();
 	if (VariableProperty && GetPropertyOwnerBlueprint())
 	{
 		if (IsABlueprintVariable(VariableProperty) && IsAUserVariable(VariableProperty))
@@ -1664,7 +1715,7 @@ EVisibility FBlueprintVarActionDetails::ShowReadOnlyCheckboxVisibilty() const
 
 ECheckBoxState FBlueprintVarActionDetails::OnReadyOnlyCheckboxState() const
 {
-	UProperty* VariableProperty = CachedVariableProperty.Get();
+	FProperty* VariableProperty = CachedVariableProperty.Get();
 	if (VariableProperty)
 	{
 		return VariableProperty->HasAnyPropertyFlags(CPF_BlueprintReadOnly) ? ECheckBoxState::Checked : ECheckBoxState::Unchecked;
@@ -1685,7 +1736,7 @@ void FBlueprintVarActionDetails::OnReadyOnlyChanged(ECheckBoxState InNewState)
 
 ECheckBoxState FBlueprintVarActionDetails::OnCreateWidgetCheckboxState() const
 {
-	UProperty* Property = CachedVariableProperty.Get();
+	FProperty* Property = CachedVariableProperty.Get();
 	if (Property)
 	{
 		bool bMakingWidget = FEdMode::ShouldCreateWidgetForProperty(Property);
@@ -1713,7 +1764,7 @@ void FBlueprintVarActionDetails::OnCreateWidgetChanged(ECheckBoxState InNewState
 
 EVisibility FBlueprintVarActionDetails::Show3DWidgetVisibility() const
 {
-	UProperty* VariableProperty = CachedVariableProperty.Get();
+	FProperty* VariableProperty = CachedVariableProperty.Get();
 	if (VariableProperty && GetPropertyOwnerBlueprint())
 	{
 		if (IsABlueprintVariable(VariableProperty) && FEdMode::CanCreateWidgetForProperty(VariableProperty))
@@ -1726,7 +1777,7 @@ EVisibility FBlueprintVarActionDetails::Show3DWidgetVisibility() const
 
 bool FBlueprintVarActionDetails::Is3DWidgetEnabled()
 {
-	UProperty* VariableProperty = CachedVariableProperty.Get();
+	FProperty* VariableProperty = CachedVariableProperty.Get();
 	if (VariableProperty)
 	{
 		return ( VariableProperty && !VariableProperty->HasAnyPropertyFlags(CPF_DisableEditOnInstance) ) ;
@@ -1736,7 +1787,7 @@ bool FBlueprintVarActionDetails::Is3DWidgetEnabled()
 
 ECheckBoxState FBlueprintVarActionDetails::OnGetExposedToSpawnCheckboxState() const
 {
-	UProperty* Property = CachedVariableProperty.Get();
+	FProperty* Property = CachedVariableProperty.Get();
 	if (Property)
 	{
 		return (Property && Property->GetBoolMetaData(FBlueprintMetadata::MD_ExposeOnSpawn) != false) ? ECheckBoxState::Checked : ECheckBoxState::Unchecked;
@@ -1763,7 +1814,7 @@ void FBlueprintVarActionDetails::OnExposedToSpawnChanged(ECheckBoxState InNewSta
 
 EVisibility FBlueprintVarActionDetails::ExposeOnSpawnVisibility() const
 {
-	UProperty* VariableProperty = CachedVariableProperty.Get();
+	FProperty* VariableProperty = CachedVariableProperty.Get();
 	if (VariableProperty && GetPropertyOwnerBlueprint())
 	{
 		const UEdGraphSchema_K2* K2Schema = GetDefault<UEdGraphSchema_K2>();
@@ -1781,7 +1832,7 @@ EVisibility FBlueprintVarActionDetails::ExposeOnSpawnVisibility() const
 
 ECheckBoxState FBlueprintVarActionDetails::OnGetPrivateCheckboxState() const
 {
-	UProperty* Property = CachedVariableProperty.Get();
+	FProperty* Property = CachedVariableProperty.Get();
 	if (Property)
 	{
 		return (Property && Property->GetBoolMetaData(FBlueprintMetadata::MD_Private) != false) ? ECheckBoxState::Checked : ECheckBoxState::Unchecked;
@@ -1808,7 +1859,7 @@ void FBlueprintVarActionDetails::OnPrivateChanged(ECheckBoxState InNewState)
 
 EVisibility FBlueprintVarActionDetails::ExposePrivateVisibility() const
 {
-	UProperty* Property = CachedVariableProperty.Get();
+	FProperty* Property = CachedVariableProperty.Get();
 	if (Property && GetPropertyOwnerBlueprint())
 	{
 		if (IsABlueprintVariable(Property) && IsAUserVariable(Property))
@@ -1821,7 +1872,7 @@ EVisibility FBlueprintVarActionDetails::ExposePrivateVisibility() const
 
 ECheckBoxState FBlueprintVarActionDetails::OnGetExposedToCinematicsCheckboxState() const
 {
-	UProperty* Property = CachedVariableProperty.Get();
+	FProperty* Property = CachedVariableProperty.Get();
 	if (Property)
 	{
 		return Property && Property->HasAnyPropertyFlags(CPF_Interp) ? ECheckBoxState::Checked : ECheckBoxState::Unchecked;
@@ -1843,20 +1894,20 @@ void FBlueprintVarActionDetails::OnExposedToCinematicsChanged(ECheckBoxState InN
 
 EVisibility FBlueprintVarActionDetails::ExposeToCinematicsVisibility() const
 {
-	UProperty* VariableProperty = CachedVariableProperty.Get();
+	FProperty* VariableProperty = CachedVariableProperty.Get();
 	if (VariableProperty && !IsALocalVariable(VariableProperty))
 	{
-		const bool bIsInteger = VariableProperty->IsA(UIntProperty::StaticClass());
-		const bool bIsByte = VariableProperty->IsA(UByteProperty::StaticClass());
-		const bool bIsEnum = VariableProperty->IsA(UEnumProperty::StaticClass());
-		const bool bIsFloat = VariableProperty->IsA(UFloatProperty::StaticClass());
-		const bool bIsBool = VariableProperty->IsA(UBoolProperty::StaticClass());
-		const bool bIsStr = VariableProperty->IsA(UStrProperty::StaticClass());
-		const bool bIsVectorStruct = VariableProperty->IsA(UStructProperty::StaticClass()) && Cast<UStructProperty>(VariableProperty)->Struct->GetFName() == NAME_Vector;
-		const bool bIsTransformStruct = VariableProperty->IsA(UStructProperty::StaticClass()) && Cast<UStructProperty>(VariableProperty)->Struct->GetFName() == NAME_Transform;
-		const bool bIsColorStruct = VariableProperty->IsA(UStructProperty::StaticClass()) && Cast<UStructProperty>(VariableProperty)->Struct->GetFName() == NAME_Color;
-		const bool bIsLinearColorStruct = VariableProperty->IsA(UStructProperty::StaticClass()) && Cast<UStructProperty>(VariableProperty)->Struct->GetFName() == NAME_LinearColor;
-		const bool bIsActorProperty = VariableProperty->IsA(UObjectProperty::StaticClass()) && Cast<UObjectProperty>(VariableProperty)->PropertyClass->IsChildOf(AActor::StaticClass());
+		const bool bIsInteger = VariableProperty->IsA(FIntProperty::StaticClass());
+		const bool bIsByte = VariableProperty->IsA(FByteProperty::StaticClass());
+		const bool bIsEnum = VariableProperty->IsA(FEnumProperty::StaticClass());
+		const bool bIsFloat = VariableProperty->IsA(FFloatProperty::StaticClass());
+		const bool bIsBool = VariableProperty->IsA(FBoolProperty::StaticClass());
+		const bool bIsStr = VariableProperty->IsA(FStrProperty::StaticClass());
+		const bool bIsVectorStruct = VariableProperty->IsA(FStructProperty::StaticClass()) && CastField<FStructProperty>(VariableProperty)->Struct->GetFName() == NAME_Vector;
+		const bool bIsTransformStruct = VariableProperty->IsA(FStructProperty::StaticClass()) && CastField<FStructProperty>(VariableProperty)->Struct->GetFName() == NAME_Transform;
+		const bool bIsColorStruct = VariableProperty->IsA(FStructProperty::StaticClass()) && CastField<FStructProperty>(VariableProperty)->Struct->GetFName() == NAME_Color;
+		const bool bIsLinearColorStruct = VariableProperty->IsA(FStructProperty::StaticClass()) && CastField<FStructProperty>(VariableProperty)->Struct->GetFName() == NAME_LinearColor;
+		const bool bIsActorProperty = VariableProperty->IsA(FObjectProperty::StaticClass()) && CastField<FObjectProperty>(VariableProperty)->PropertyClass->IsChildOf(AActor::StaticClass());
 
 		if (bIsInteger || bIsByte || bIsEnum || bIsFloat || bIsBool || bIsStr || bIsVectorStruct || bIsTransformStruct || bIsColorStruct || bIsLinearColorStruct || bIsActorProperty)
 		{
@@ -1878,7 +1929,7 @@ TSharedPtr<FString> FBlueprintVarActionDetails::GetVariableReplicationCondition(
 {
 	ELifetimeCondition VariableRepCondition = COND_None;
 		
-	const UProperty* const Property = CachedVariableProperty.Get();
+	const FProperty* const Property = CachedVariableProperty.Get();
 
 	if (Property)
 	{
@@ -1915,7 +1966,7 @@ void FBlueprintVarActionDetails::OnChangeReplicationCondition(TSharedPtr<FString
 
 bool FBlueprintVarActionDetails::ReplicationConditionEnabled() const
 {
-	const UProperty* const VariableProperty = CachedVariableProperty.Get();
+	const FProperty* const VariableProperty = CachedVariableProperty.Get();
 	if (VariableProperty)
 	{
 		const uint64 *PropFlagPtr = FBlueprintEditorUtils::GetBlueprintVariablePropertyFlags(GetBlueprintObj(), VariableProperty->GetFName());
@@ -1937,11 +1988,11 @@ bool FBlueprintVarActionDetails::ReplicationEnabled() const
 	// Update FBlueprintVarActionDetails::ReplicationTooltip if you alter this function
 	// shat users can understand why replication settins are disabled!
 	bool bVariableCanBeReplicated = true;
-	const UProperty* const VariableProperty = CachedVariableProperty.Get();
+	const FProperty* const VariableProperty = CachedVariableProperty.Get();
 	if (VariableProperty)
 	{
 		// sets and maps cannot yet be replicated:
-		bVariableCanBeReplicated = Cast<USetProperty>(VariableProperty) == nullptr && Cast<UMapProperty>(VariableProperty) == nullptr;
+		bVariableCanBeReplicated = CastField<FSetProperty>(VariableProperty) == nullptr && CastField<FMapProperty>(VariableProperty) == nullptr;
 	}
 	return bVariableCanBeReplicated && IsVariableInBlueprint();
 }
@@ -2002,7 +2053,7 @@ void FBlueprintVarActionDetails::OnSetConfigVariableState( ECheckBoxState InNewS
 
 EVisibility FBlueprintVarActionDetails::ExposeConfigVisibility() const
 {
-	UProperty* Property = CachedVariableProperty.Get();
+	FProperty* Property = CachedVariableProperty.Get();
 	if (Property)
 	{
 		if (IsABlueprintVariable(Property) && IsAUserVariable(Property))
@@ -2018,11 +2069,11 @@ bool FBlueprintVarActionDetails::IsConfigCheckBoxEnabled() const
 	bool bEnabled = IsVariableInBlueprint();
 	if (bEnabled && CachedVariableProperty.IsValid())
 	{
-		if (UProperty* VariableProperty = CachedVariableProperty.Get())
+		if (FProperty* VariableProperty = CachedVariableProperty.Get())
 		{
 			// meant to match up with UHT's FPropertyBase::IsObject(), which it uses to block object properties from being marked with CPF_Config
-			bEnabled = VariableProperty->IsA<UClassProperty>() || VariableProperty->IsA<USoftClassProperty>() || VariableProperty->IsA<USoftObjectProperty>() ||
-				(!VariableProperty->IsA<UObjectPropertyBase>() && !VariableProperty->IsA<UInterfaceProperty>());
+			bEnabled = VariableProperty->IsA<FClassProperty>() || VariableProperty->IsA<FSoftClassProperty>() || VariableProperty->IsA<FSoftObjectProperty>() ||
+				(!VariableProperty->IsA<FObjectPropertyBase>() && !VariableProperty->IsA<FInterfaceProperty>());
 		}
 	}
 	return bEnabled;
@@ -2058,12 +2109,12 @@ void FBlueprintVarActionDetails::OnMetaKeyValueChanged(const FText& NewMinValue,
 
 EVisibility FBlueprintVarActionDetails::RangeVisibility() const
 {
-	UProperty* VariableProperty = CachedVariableProperty.Get();
+	FProperty* VariableProperty = CachedVariableProperty.Get();
 	if (VariableProperty)
 	{
-		const bool bIsInteger = VariableProperty->IsA(UIntProperty::StaticClass());
-		const bool bIsNonEnumByte = (VariableProperty->IsA(UByteProperty::StaticClass()) && Cast<const UByteProperty>(VariableProperty)->Enum == NULL);
-		const bool bIsFloat = VariableProperty->IsA(UFloatProperty::StaticClass());
+		const bool bIsInteger = VariableProperty->IsA(FIntProperty::StaticClass());
+		const bool bIsNonEnumByte = (VariableProperty->IsA(FByteProperty::StaticClass()) && CastField<const FByteProperty>(VariableProperty)->Enum == NULL);
+		const bool bIsFloat = VariableProperty->IsA(FFloatProperty::StaticClass());
 
 		if (IsABlueprintVariable(VariableProperty) && (bIsInteger || bIsNonEnumByte || bIsFloat))
 		{
@@ -2075,8 +2126,8 @@ EVisibility FBlueprintVarActionDetails::RangeVisibility() const
 
 EVisibility FBlueprintVarActionDetails::BitmaskVisibility() const
 {
-	UProperty* VariableProperty = CachedVariableProperty.Get();
-	if (VariableProperty && IsABlueprintVariable(VariableProperty) && VariableProperty->IsA(UIntProperty::StaticClass()))
+	FProperty* VariableProperty = CachedVariableProperty.Get();
+	if (VariableProperty && IsABlueprintVariable(VariableProperty) && VariableProperty->IsA(FIntProperty::StaticClass()))
 	{
 		return EVisibility::Visible;
 	}
@@ -2086,7 +2137,7 @@ EVisibility FBlueprintVarActionDetails::BitmaskVisibility() const
 
 ECheckBoxState FBlueprintVarActionDetails::OnBitmaskCheckboxState() const
 {
-	UProperty* Property = CachedVariableProperty.Get();
+	FProperty* Property = CachedVariableProperty.Get();
 	if (Property)
 	{
 		return (Property && Property->HasMetaData(FBlueprintMetadata::MD_Bitmask)) ? ECheckBoxState::Checked : ECheckBoxState::Unchecked;
@@ -2115,7 +2166,7 @@ void FBlueprintVarActionDetails::OnBitmaskChanged(ECheckBoxState InNewState)
 		if (LocalBlueprint->GeneratedClass)
 		{
 			UObject* CDO = LocalBlueprint->GeneratedClass->GetDefaultObject(false);
-			UProperty* VarProperty = FindField<UProperty>(LocalBlueprint->GeneratedClass, VarName);
+			FProperty* VarProperty = FindField<FProperty>(LocalBlueprint->GeneratedClass, VarName);
 
 			if (CDO != nullptr && VarProperty != nullptr)
 			{
@@ -2182,7 +2233,7 @@ void FBlueprintVarActionDetails::OnBitmaskEnumTypeChanged(TSharedPtr<FString> It
 		if (LocalBlueprint->GeneratedClass)
 		{
 			UObject* CDO = LocalBlueprint->GeneratedClass->GetDefaultObject(false);
-			UProperty* VarProperty = FindField<UProperty>(LocalBlueprint->GeneratedClass, VarName);
+			FProperty* VarProperty = FindField<FProperty>(LocalBlueprint->GeneratedClass, VarName);
 
 			if (CDO != nullptr && VarProperty != nullptr)
 			{
@@ -2209,7 +2260,7 @@ TSharedPtr<FString> FBlueprintVarActionDetails::GetVariableReplicationType() con
 	EVariableReplication::Type VariableReplication = EVariableReplication::None;
 	
 	uint64 PropFlags = 0;
-	UProperty* VariableProperty = CachedVariableProperty.Get();
+	FProperty* VariableProperty = CachedVariableProperty.Get();
 
 	if (VariableProperty && (IsVariableInBlueprint() || IsVariableInheritedByBlueprint()))
 	{
@@ -2252,7 +2303,7 @@ void FBlueprintVarActionDetails::OnChangeReplication(TSharedPtr<FString> ItemSel
 
 	EVariableReplication::Type VariableReplication = (EVariableReplication::Type)NewSelection;
 	
-	UProperty* VariableProperty = CachedVariableProperty.Get();
+	FProperty* VariableProperty = CachedVariableProperty.Get();
 
 	UBlueprint* const BlueprintObj = GetBlueprintObj();
 	const FName VarName = CachedVariableName;
@@ -2311,7 +2362,7 @@ void FBlueprintVarActionDetails::OnChangeReplication(TSharedPtr<FString> ItemSel
 void FBlueprintVarActionDetails::ReplicationOnRepFuncChanged(const FString& NewOnRepFunc) const
 {
 	FName NewFuncName = FName(*NewOnRepFunc);
-	UProperty* VariableProperty = CachedVariableProperty.Get();
+	FProperty* VariableProperty = CachedVariableProperty.Get();
 
 	if (VariableProperty)
 	{
@@ -2334,7 +2385,7 @@ void FBlueprintVarActionDetails::ReplicationOnRepFuncChanged(const FString& NewO
 
 EVisibility FBlueprintVarActionDetails::ReplicationVisibility() const
 {
-	UProperty* VariableProperty = CachedVariableProperty.Get();
+	FProperty* VariableProperty = CachedVariableProperty.Get();
 	if(VariableProperty)
 	{
 		if (IsAUserVariable(VariableProperty) && IsABlueprintVariable(VariableProperty))
@@ -2351,7 +2402,7 @@ TSharedRef<SWidget> FBlueprintVarActionDetails::BuildEventsMenuForVariable() con
 	{
 		TSharedPtr<SMyBlueprint> MyBlueprintPtr = MyBlueprint.Pin();
 		FEdGraphSchemaAction_K2Var* Variable = MyBlueprintPtr->SelectionAsVar();
-		UObjectProperty* ComponentProperty = Variable ? Cast<UObjectProperty>(Variable->GetProperty()) : NULL;
+		FObjectProperty* ComponentProperty = Variable ? CastField<FObjectProperty>(Variable->GetProperty()) : NULL;
 		TWeakPtr<FBlueprintEditor> BlueprintEditorPtr = MyBlueprintPtr->GetBlueprintEditor();
 		if( BlueprintEditorPtr.IsValid() && ComponentProperty )
 		{
@@ -2374,7 +2425,7 @@ void FBlueprintVarActionDetails::OnPostEditorRefresh()
 
 EVisibility FBlueprintVarActionDetails::GetTransientVisibility() const
 {
-	UProperty* VariableProperty = CachedVariableProperty.Get();
+	FProperty* VariableProperty = CachedVariableProperty.Get();
 	if (VariableProperty)
 	{
 		if (IsABlueprintVariable(VariableProperty) && IsAUserVariable(VariableProperty))
@@ -2387,7 +2438,7 @@ EVisibility FBlueprintVarActionDetails::GetTransientVisibility() const
 
 ECheckBoxState FBlueprintVarActionDetails::OnGetTransientCheckboxState() const
 {
-	UProperty* Property = CachedVariableProperty.Get();
+	FProperty* Property = CachedVariableProperty.Get();
 	if (Property)
 	{
 		return (Property && Property->HasAnyPropertyFlags(CPF_Transient)) ? ECheckBoxState::Checked : ECheckBoxState::Unchecked;
@@ -2397,7 +2448,7 @@ ECheckBoxState FBlueprintVarActionDetails::OnGetTransientCheckboxState() const
 
 void FBlueprintVarActionDetails::OnTransientChanged(ECheckBoxState InNewState)
 {
-	UProperty* Property = CachedVariableProperty.Get();
+	FProperty* Property = CachedVariableProperty.Get();
 	if (Property)
 	{
 		const bool bTransientFlag = (InNewState == ECheckBoxState::Checked);
@@ -2407,7 +2458,7 @@ void FBlueprintVarActionDetails::OnTransientChanged(ECheckBoxState InNewState)
 
 EVisibility FBlueprintVarActionDetails::GetSaveGameVisibility() const
 {
-	UProperty* VariableProperty = CachedVariableProperty.Get();
+	FProperty* VariableProperty = CachedVariableProperty.Get();
 	if (VariableProperty)
 	{
 		if (IsABlueprintVariable(VariableProperty) && IsAUserVariable(VariableProperty))
@@ -2420,7 +2471,7 @@ EVisibility FBlueprintVarActionDetails::GetSaveGameVisibility() const
 
 ECheckBoxState FBlueprintVarActionDetails::OnGetSaveGameCheckboxState() const
 {
-	UProperty* Property = CachedVariableProperty.Get();
+	FProperty* Property = CachedVariableProperty.Get();
 	if (Property)
 	{
 		return (Property && Property->HasAnyPropertyFlags(CPF_SaveGame)) ? ECheckBoxState::Checked : ECheckBoxState::Unchecked;
@@ -2430,7 +2481,7 @@ ECheckBoxState FBlueprintVarActionDetails::OnGetSaveGameCheckboxState() const
 
 void FBlueprintVarActionDetails::OnSaveGameChanged(ECheckBoxState InNewState)
 {
-	UProperty* Property = CachedVariableProperty.Get();
+	FProperty* Property = CachedVariableProperty.Get();
 	if (Property)
 	{
 		const bool bSaveGameFlag = (InNewState == ECheckBoxState::Checked);
@@ -2440,7 +2491,7 @@ void FBlueprintVarActionDetails::OnSaveGameChanged(ECheckBoxState InNewState)
 
 EVisibility FBlueprintVarActionDetails::GetAdvancedDisplayVisibility() const
 {
-	UProperty* VariableProperty = CachedVariableProperty.Get();
+	FProperty* VariableProperty = CachedVariableProperty.Get();
 	if (VariableProperty)
 	{
 		if (IsABlueprintVariable(VariableProperty) && IsAUserVariable(VariableProperty))
@@ -2453,7 +2504,7 @@ EVisibility FBlueprintVarActionDetails::GetAdvancedDisplayVisibility() const
 
 ECheckBoxState FBlueprintVarActionDetails::OnGetAdvancedDisplayCheckboxState() const
 {
-	UProperty* Property = CachedVariableProperty.Get();
+	FProperty* Property = CachedVariableProperty.Get();
 	if (Property)
 	{
 		return (Property && Property->HasAnyPropertyFlags(CPF_AdvancedDisplay)) ? ECheckBoxState::Checked : ECheckBoxState::Unchecked;
@@ -2463,7 +2514,7 @@ ECheckBoxState FBlueprintVarActionDetails::OnGetAdvancedDisplayCheckboxState() c
 
 void FBlueprintVarActionDetails::OnAdvancedDisplayChanged(ECheckBoxState InNewState)
 {
-	if (UProperty* Property = CachedVariableProperty.Get())
+	if (FProperty* Property = CachedVariableProperty.Get())
 	{
 		const bool bAdvancedFlag = (InNewState == ECheckBoxState::Checked);
 		FBlueprintEditorUtils::SetVariableAdvancedDisplayFlag(GetBlueprintObj(), Property->GetFName(), bAdvancedFlag);
@@ -2472,22 +2523,37 @@ void FBlueprintVarActionDetails::OnAdvancedDisplayChanged(ECheckBoxState InNewSt
 
 EVisibility FBlueprintVarActionDetails::GetMultilineVisibility() const
 {
-	if (UProperty* VariableProperty = CachedVariableProperty.Get())
+	FProperty* VariableProperty = nullptr;
+	if (FProperty* RawVariableProperty = CachedVariableProperty.Get())
 	{
-		if (IsABlueprintVariable(VariableProperty))
+		if (IsABlueprintVariable(RawVariableProperty))
 		{
-			if (VariableProperty->IsA(UTextProperty::StaticClass()) || VariableProperty->IsA(UStrProperty::StaticClass()))
+			if (const FArrayProperty* ArrayProperty = CastField<FArrayProperty>(RawVariableProperty))
 			{
-				return EVisibility::Visible;
+				VariableProperty = ArrayProperty->Inner;
+			}
+			else if (const FSetProperty* SetProperty = CastField<FSetProperty>(RawVariableProperty))
+			{
+				VariableProperty = SetProperty->ElementProp;
+			}
+			else if (const FMapProperty* MapProperty = CastField<FMapProperty>(RawVariableProperty))
+			{
+				VariableProperty = MapProperty->ValueProp;
+			}
+			else
+			{
+				VariableProperty = RawVariableProperty;
 			}
 		}
 	}
-	return EVisibility::Collapsed;
+
+	const bool bCanBeMultiline = (VariableProperty != nullptr) && (VariableProperty->IsA(FTextProperty::StaticClass()) || VariableProperty->IsA(FStrProperty::StaticClass()));
+	return bCanBeMultiline ? EVisibility::Visible : EVisibility::Collapsed;
 }
 
 ECheckBoxState FBlueprintVarActionDetails::OnGetMultilineCheckboxState() const
 {
-	UProperty* Property = CachedVariableProperty.Get();
+	FProperty* Property = CachedVariableProperty.Get();
 	if (Property)
 	{
 		return (Property && Property->GetBoolMetaData(TEXT("MultiLine"))) ? ECheckBoxState::Checked : ECheckBoxState::Unchecked;
@@ -2497,7 +2563,7 @@ ECheckBoxState FBlueprintVarActionDetails::OnGetMultilineCheckboxState() const
 
 void FBlueprintVarActionDetails::OnMultilineChanged(ECheckBoxState InNewState)
 {
-	UProperty* Property = CachedVariableProperty.Get();
+	FProperty* Property = CachedVariableProperty.Get();
 	if (Property)
 	{
 		const bool bMultiline = (InNewState == ECheckBoxState::Checked);
@@ -2505,9 +2571,63 @@ void FBlueprintVarActionDetails::OnMultilineChanged(ECheckBoxState InNewState)
 	}
 }
 
+EVisibility FBlueprintVarActionDetails::GetDeprecatedVisibility() const
+{
+	if (FProperty* VariableProperty = CachedVariableProperty.Get())
+	{
+		if (IsABlueprintVariable(VariableProperty) && IsAUserVariable(VariableProperty))
+		{
+			return EVisibility::Visible;
+		}
+	}
+	return EVisibility::Collapsed;
+}
+
+ECheckBoxState FBlueprintVarActionDetails::OnGetDeprecatedCheckboxState() const
+{
+	return IsVariableDeprecated() ? ECheckBoxState::Checked : ECheckBoxState::Unchecked;
+}
+
+void FBlueprintVarActionDetails::OnDeprecatedChanged(ECheckBoxState InNewState)
+{
+	FProperty* Property = CachedVariableProperty.Get();
+	if (Property)
+	{
+		const bool bDeprecatedFlag = (InNewState == ECheckBoxState::Checked);
+		FBlueprintEditorUtils::SetVariableDeprecatedFlag(GetBlueprintObj(), Property->GetFName(), bDeprecatedFlag);
+	}
+}
+
+FText FBlueprintVarActionDetails::GetDeprecationMessageText() const
+{
+	FName VarName = CachedVariableName;
+	if (VarName != NAME_None)
+	{
+		if (UBlueprint* OwnerBlueprint = GetPropertyOwnerBlueprint())
+		{
+			FString Result;
+			FBlueprintEditorUtils::GetBlueprintVariableMetaData(GetPropertyOwnerBlueprint(), VarName, GetLocalVariableScope(CachedVariableProperty.Get()), FBlueprintMetadata::MD_DeprecationMessage, Result);
+			return FText::FromString(Result);
+		}
+	}
+	return FText();
+}
+
+void FBlueprintVarActionDetails::OnDeprecationMessageTextCommitted(const FText& NewText, ETextCommit::Type InTextCommit, FName VarName)
+{
+	if (NewText.IsEmpty())
+	{
+		FBlueprintEditorUtils::RemoveBlueprintVariableMetaData(GetBlueprintObj(), VarName, GetLocalVariableScope(CachedVariableProperty.Get()), FBlueprintMetadata::MD_DeprecationMessage);
+	}
+	else
+	{
+		FBlueprintEditorUtils::SetBlueprintVariableMetaData(GetBlueprintObj(), VarName, GetLocalVariableScope(CachedVariableProperty.Get()), FBlueprintMetadata::MD_DeprecationMessage, NewText.ToString());
+	}
+}
+
 EVisibility FBlueprintVarActionDetails::IsTooltipEditVisible() const
 {
-	UProperty* VariableProperty = CachedVariableProperty.Get();
+	FProperty* VariableProperty = CachedVariableProperty.Get();
 	if (VariableProperty)
 	{
 		if ((IsABlueprintVariable(VariableProperty) && IsAUserVariable(VariableProperty)) || IsALocalVariable(VariableProperty))
@@ -2528,10 +2648,10 @@ void FBlueprintVarActionDetails::OnFinishedChangingProperties(const FPropertyCha
 	}
 
 	// Find the top level property that was modified within the UFunction
-	const UProperty* DirectProperty = InPropertyChangedEvent.MemberProperty;
-	while (!Cast<const UFunction>(DirectProperty->GetOuter()))
+	const FProperty* DirectProperty = InPropertyChangedEvent.MemberProperty;
+	while (!DirectProperty->GetOwner<const UFunction>())
 	{
-		DirectProperty = CastChecked<const UProperty>(DirectProperty->GetOuter());
+		DirectProperty = DirectProperty->GetOwnerChecked<const FProperty>();
 	}
 
 	FString DefaultValueString;
@@ -2539,12 +2659,12 @@ void FBlueprintVarActionDetails::OnFinishedChangingProperties(const FPropertyCha
 
 	if (InStructData.IsValid())
 	{
-		bDefaultValueSet = FBlueprintEditorUtils::PropertyValueToString(DirectProperty, InStructData->GetStructMemory(), DefaultValueString);
+		UK2Node_FunctionEntry* FuncEntry = Cast<UK2Node_FunctionEntry>(InEntryNode.Get());
+
+		bDefaultValueSet = FBlueprintEditorUtils::PropertyValueToString(DirectProperty, InStructData->GetStructMemory(), DefaultValueString, FuncEntry);
 
 		if(bDefaultValueSet)
 		{
-			UK2Node_FunctionEntry* FuncEntry = Cast<UK2Node_FunctionEntry>(InEntryNode.Get());
-
 			// Search out the correct local variable in the Function Entry Node and set the default value
 			for (FBPVariableDescription& LocalVar : FuncEntry->LocalVariables)
 			{
@@ -2555,6 +2675,7 @@ void FBlueprintVarActionDetails::OnFinishedChangingProperties(const FPropertyCha
 					FuncEntry->Modify();
 					GetBlueprintObj()->Modify();
 					LocalVar.DefaultValue = DefaultValueString;
+					FuncEntry->RefreshFunctionVariableCache();
 					FBlueprintEditorUtils::MarkBlueprintAsModified(GetBlueprintObj());
 					break;
 				}
@@ -2575,6 +2696,13 @@ bool FBlueprintVarActionDetails::IsVariableInheritedByBlueprint() const
 		PropertyOwnerClass = CachedVariableProperty->GetOwnerClass();
 	}
 	return GetBlueprintObj()->SkeletonGeneratedClass->IsChildOf(PropertyOwnerClass);
+}
+
+bool FBlueprintVarActionDetails::IsVariableDeprecated() const
+{
+	FProperty* Property = CachedVariableProperty.Get();
+
+	return Property && Property->HasAnyPropertyFlags(CPF_Deprecated);
 }
 
 static FDetailWidgetRow& AddRow( TArray<TSharedRef<FDetailWidgetRow> >& OutChildRows )
@@ -2775,8 +2903,24 @@ void FBlueprintGraphArgumentLayout::GenerateChildContent( IDetailChildrenBuilder
 			}
 		}
 
+		bool bMacroGraph = false;
+		if (TargetNode && TargetNode->HasValidBlueprint())
+		{
+			if (const UBlueprint* Blueprint = TargetNode->GetBlueprint())
+			{
+				if (Blueprint->BlueprintType == BPTYPE_MacroLibrary)
+				{
+					bMacroGraph = true;
+				}
+				else if (const UEdGraph* Graph = TargetNode->GetGraph()) 
+				{
+					bMacroGraph = Blueprint->MacroGraphs.Contains(Graph);
+				}
+			}
+		}
+
 		// Exec pins can't be passed by reference
-		if (FoundPin == nullptr || !UEdGraphSchema_K2::IsExecPin(*FoundPin))
+		if (FoundPin && !UEdGraphSchema_K2::IsExecPin(*FoundPin) && !bMacroGraph)
 		{
 			ChildrenBuilder.AddCustomRow(LOCTEXT("FunctionArgDetailsPassByReference", "Pass-by-Reference"))
 				.NameContent()
@@ -2973,7 +3117,7 @@ void FBlueprintGraphArgumentLayout::OnArgNameTextCommitted(const FText& NewText,
 	{
 		const FName OldName = ParamItemPtr.Pin()->PinName;
 		const FString& NewName = NewText.ToString();
-		if (OldName.ToString() != NewName)
+		if (!OldName.ToString().Equals(NewName))
 		{
 			GraphActionDetailsPtr.Pin()->OnPinRenamed(TargetNode, OldName, NewName);
 		}
@@ -3006,8 +3150,10 @@ ECheckBoxState FBlueprintGraphArgumentLayout::IsRefChecked() const
 
 void FBlueprintGraphArgumentLayout::OnRefCheckStateChanged(ECheckBoxState InState)
 {
+	const FScopedTransaction Transaction(LOCTEXT("ChangeByRef", "Change Pass By Reference"));
+
 	FEdGraphPinType PinType = OnGetPinInfo();
-	PinType.bIsReference = (InState == ECheckBoxState::Checked)? true : false;
+	PinType.bIsReference = (InState == ECheckBoxState::Checked) ? true : false;
 	
 	PinInfoChanged(PinType);
 }
@@ -3038,6 +3184,7 @@ void FBlueprintGraphArgumentLayout::PinInfoChanged(const FEdGraphPinType& PinTyp
 						});
 						if (UDPinPtr)
 						{
+							Node->Modify();
 							(*UDPinPtr)->PinType = PinType;
 
 							// Inputs flagged as pass-by-reference will also be flagged as 'const' here to conform to the expected native C++
@@ -3096,6 +3243,9 @@ void FBlueprintGraphActionDetails::CustomizeDetails( IDetailLayoutBuilder& Detai
 
 	if (FunctionEntryNode && FunctionEntryNode->IsEditable())
 	{
+		const bool bIsCustomEvent = IsCustomEvent();
+		const bool bIsFunctionGraph = FunctionEntryNode->IsA<UK2Node_FunctionEntry>();
+
 		IDetailCategoryBuilder& Category = DetailLayout.EditCategory("Graph", LOCTEXT("FunctionDetailsGraph", "Graph"));
 		if (bHasAGraph)
 		{
@@ -3293,7 +3443,7 @@ void FBlueprintGraphActionDetails::CustomizeDetails( IDetailLayoutBuilder& Detai
 			}
 		}
 
-		if (IsCustomEvent())
+		if (bIsCustomEvent)
 		{
 			/** A collection of static utility callbacks to provide the custom-event details ui with */
 			struct LocalCustomEventUtils
@@ -3358,6 +3508,27 @@ void FBlueprintGraphActionDetails::CustomizeDetails( IDetailLayoutBuilder& Detai
 										FSlateIcon(),
 										FUIAction(FExecuteAction::CreateStatic( &FBlueprintGraphActionDetails::SetNetFlags, FunctionEntryNodePtr, static_cast<uint32>(FUNC_NetClient) ), CanExecuteDelegate));
 
+			const FString DocLink = TEXT("Shared/Editors/BlueprintEditor/GraphDetails");
+			TSharedPtr<SToolTip> KeywordsTooltip = IDocumentation::Get()->CreateToolTip(LOCTEXT("EditEventKeywords_Tooltip", "Keywords for searching for the event."), nullptr, DocLink, TEXT("Keywords"));
+			Category.AddCustomRow(LOCTEXT("EventsKeywordsLabel", "Keywords"))
+			.NameContent()
+			[
+				SNew(STextBlock)
+					.Text(LOCTEXT("KeywordsLabel", "Keywords"))
+					.ToolTip(KeywordsTooltip)
+					.Font(IDetailLayoutBuilder::GetDetailFont())
+			]
+			.ValueContent()
+			[
+				SNew(SEditableTextBox)
+					.Text(this, &FBlueprintGraphActionDetails::OnGetKeywordsText)
+					.OnTextCommitted(this, &FBlueprintGraphActionDetails::OnKeywordsTextCommitted)
+					.ToolTip(KeywordsTooltip)
+					.RevertTextOnEscape(true)
+					.Font(IDetailLayoutBuilder::GetDetailFont())
+			];
+
+
 			Category.AddCustomRow( LOCTEXT( "FunctionReplicate", "Replicates" ) )
 			.NameContent()
 			[
@@ -3418,7 +3589,7 @@ void FBlueprintGraphActionDetails::CustomizeDetails( IDetailLayoutBuilder& Detai
 				]
 			];
 		}
-		const bool bShowCallInEditor = IsCustomEvent() || FBlueprintEditorUtils::IsBlutility( GetBlueprintObj() ) || (FunctionEntryNode && FunctionEntryNode->IsEditable());
+		const bool bShowCallInEditor = bIsCustomEvent || FBlueprintEditorUtils::IsEditorUtilityBlueprint( GetBlueprintObj() ) || (FunctionEntryNode && FunctionEntryNode->IsEditable());
 		if( bShowCallInEditor )
 		{
 			Category.AddCustomRow( LOCTEXT( "EditorCallable", "Call In Editor" ) )
@@ -3445,6 +3616,67 @@ void FBlueprintGraphActionDetails::CustomizeDetails( IDetailLayoutBuilder& Detai
 						.OnCheckStateChanged( this, &FBlueprintGraphActionDetails::OnEditorCallableEventModified )
 					]
 				]
+			];
+		}
+
+		const bool bShowDeprecated = bIsFunctionGraph || bIsCustomEvent;
+		if (bShowDeprecated)
+		{
+			FFormatNamedArguments DeprecationTooltipFormatArgs;
+			if (bIsFunctionGraph)
+			{
+				DeprecationTooltipFormatArgs.Add(TEXT("FunctionOrCustomEvent"), LOCTEXT("FunctionOrEvent_Function", "function"));
+			}
+			else
+			{
+				DeprecationTooltipFormatArgs.Add(TEXT("FunctionOrCustomEvent"), LOCTEXT("FunctionOrEvent_CustomEvent", "custom event"));
+			}
+
+			bool bIsOverride = false;
+			FFunctionFromNodeHelper FunctionFromNode(FunctionEntryNode);
+			if (FunctionFromNode.Function)
+			{
+				bIsOverride = (UEdGraphSchema_K2::GetCallableParentFunction(FunctionFromNode.Function) != nullptr);
+			}
+
+			const FText DeprecatedTooltipText = FText::Format(LOCTEXT("DeprecatedFunction_Tooltip", "Deprecate usage of this {FunctionOrCustomEvent}. Any nodes that reference it will produce a compiler warning indicating that it should be removed or replaced."), DeprecationTooltipFormatArgs);
+
+			Category.AddCustomRow(LOCTEXT("DeprecatedFunction", "Deprecated"), true)
+			.NameContent()
+			[
+				SNew(STextBlock)
+				.Text(LOCTEXT("DeprecatedFunction", "Deprecated"))
+				.ToolTipText(DeprecatedTooltipText)
+				.Font(IDetailLayoutBuilder::GetDetailFont())
+			]
+			.ValueContent()
+			[
+				SNew(SCheckBox)
+				.IsChecked(this, &FBlueprintGraphActionDetails::OnGetDeprecatedCheckboxState)
+				.ToolTipText(DeprecatedTooltipText)
+				.OnCheckStateChanged(this, &FBlueprintGraphActionDetails::OnDeprecatedChanged)
+				.IsEnabled(!bIsOverride)
+			];
+
+			const FText DeprecationMessageTooltipText = LOCTEXT("DeprecationMessage_Tooltip", "Optional message to include with the deprecation compiler warning. For example: \'X is no longer being used. Please replace with Y.\'");
+
+			Category.AddCustomRow(LOCTEXT("DeprecationMessage", "Deprecation Message"), true)
+			.IsEnabled(TAttribute<bool>(this, &FBlueprintGraphActionDetails::IsFunctionDeprecated))
+			.NameContent()
+			[
+				SNew(STextBlock)
+				.Text(LOCTEXT("DeprecationMessage", "Deprecation Message"))
+				.ToolTipText(DeprecationMessageTooltipText)
+				.Font(IDetailLayoutBuilder::GetDetailFont())
+			]
+			.ValueContent()
+			[
+				SNew(SEditableTextBox)
+				.Text(this, &FBlueprintGraphActionDetails::GetDeprecationMessageText)
+				.OnTextCommitted(this, &FBlueprintGraphActionDetails::OnDeprecationMessageTextCommitted)
+				.IsEnabled(!bIsOverride)
+				.ToolTipText(this, &FBlueprintGraphActionDetails::GetDeprecationMessageText)
+				.Font(IDetailLayoutBuilder::GetDetailFont())
 			];
 		}
 
@@ -3553,9 +3785,21 @@ void FBlueprintGraphActionDetails::CustomizeDetails( IDetailLayoutBuilder& Detai
 			OutputsCategory.HeaderContent(OutputsHeaderContentWidget);
 		}
 	}
-	else
+	else if (bHasAGraph)
 	{
-		if (bHasAGraph)
+		// See if anything else wants to customize our details
+		TWeakPtr<FBlueprintEditor> BlueprintEditor = MyBlueprint.Pin()->GetBlueprintEditor();
+		FBlueprintEditorModule& BlueprintEditorModule = FModuleManager::GetModuleChecked<FBlueprintEditorModule>("Kismet");
+		TArray<TSharedPtr<IDetailCustomization>> Customizations = BlueprintEditorModule.CustomizeGraph(GetGraph()->GetSchema(), BlueprintEditor.Pin());
+		ExternalDetailCustomizations.Append(Customizations);
+		if(ExternalDetailCustomizations.Num() > 0)
+		{
+			for (TSharedPtr<IDetailCustomization> ExternalDetailCustomization : ExternalDetailCustomizations)
+			{
+				ExternalDetailCustomization->CustomizeDetails(DetailLayout);
+			}
+		}
+		else
 		{
 			IDetailCategoryBuilder& Category = DetailLayout.EditCategory("Graph", LOCTEXT("FunctionDetailsGraph", "Graph"));
 			Category.AddCustomRow( FText::GetEmpty() )
@@ -3610,7 +3854,7 @@ void FBlueprintGraphActionDetails::SetNetFlags( TWeakObjectPtr<UK2Node_EditableP
 				TypedEntryNode->SetExtraFlags(ExtraFlags);
 				bBlueprintModified = true;
 			}
-			if (UK2Node_CustomEvent * CustomEventNode = Cast<UK2Node_CustomEvent>(FunctionEntryNode.Get()))
+			if (UK2Node_CustomEvent* CustomEventNode = Cast<UK2Node_CustomEvent>(FunctionEntryNode.Get()))
 			{
 				CustomEventNode->FunctionFlags &= ~FlagsToClear;
 				CustomEventNode->FunctionFlags |= FlagsToSet;
@@ -3627,7 +3871,7 @@ void FBlueprintGraphActionDetails::SetNetFlags( TWeakObjectPtr<UK2Node_EditableP
 
 FText FBlueprintGraphActionDetails::GetCurrentReplicatedEventString() const
 {
-	const UK2Node_EditablePinBase * FunctionEntryNode = FunctionEntryNodePtr.Get();
+	const UK2Node_EditablePinBase* FunctionEntryNode = FunctionEntryNodePtr.Get();
 	const UK2Node_CustomEvent* CustomEvent = Cast<const UK2Node_CustomEvent>(FunctionEntryNode);
 
 	uint32 const ReplicatedNetMask = (FUNC_NetMulticast | FUNC_NetServer | FUNC_NetClient);
@@ -3733,7 +3977,104 @@ void FBlueprintGraphActionDetails::OnEditorCallableEventModified( const ECheckBo
 	}
 }
 
-UMulticastDelegateProperty* FBlueprintDelegateActionDetails::GetDelegateProperty() const
+bool FBlueprintGraphActionDetails::IsFunctionDeprecated() const
+{
+	bool bIsDeprecated = false;
+
+	UK2Node_EditablePinBase* Node = FunctionEntryNodePtr.Get();
+	if (Node != nullptr)
+	{
+		UK2Node_CustomEvent* CustomEventNode = Cast<UK2Node_CustomEvent>(Node);
+		if (CustomEventNode != nullptr)
+		{
+			bIsDeprecated = CustomEventNode->bIsDeprecated;
+		}
+		else
+		{
+			UK2Node_FunctionEntry* FunctionEntryNode = Cast<UK2Node_FunctionEntry>(Node);
+			if (FunctionEntryNode != nullptr)
+			{
+				bIsDeprecated = FunctionEntryNode->MetaData.bIsDeprecated;
+			}
+		}
+	}
+
+	return bIsDeprecated;
+}
+
+ECheckBoxState FBlueprintGraphActionDetails::OnGetDeprecatedCheckboxState() const
+{
+	return IsFunctionDeprecated() ? ECheckBoxState::Checked : ECheckBoxState::Unchecked;
+}
+
+void FBlueprintGraphActionDetails::OnDeprecatedChanged(ECheckBoxState InNewState)
+{
+	const bool bIsDeprecated = (InNewState == ECheckBoxState::Checked);
+
+	UK2Node_EditablePinBase* Node = FunctionEntryNodePtr.Get();
+	if (Node != nullptr)
+	{
+		UK2Node_CustomEvent* CustomEventNode = Cast<UK2Node_CustomEvent>(Node);
+		if (CustomEventNode != nullptr)
+		{
+			CustomEventNode->bIsDeprecated = bIsDeprecated;
+		}
+		else
+		{
+			CastChecked<UK2Node_FunctionEntry>(Node)->MetaData.bIsDeprecated = bIsDeprecated;
+		}
+
+		FBlueprintEditorUtils::MarkBlueprintAsStructurallyModified(Node->GetBlueprint());
+	}
+}
+
+FText FBlueprintGraphActionDetails::GetDeprecationMessageText() const
+{
+	FText DeprecationMessage;
+
+	UK2Node_EditablePinBase* Node = FunctionEntryNodePtr.Get();
+	if (Node != nullptr)
+	{
+		UK2Node_CustomEvent* CustomEventNode = Cast<UK2Node_CustomEvent>(Node);
+		if (CustomEventNode != nullptr)
+		{
+			DeprecationMessage = FText::FromString(CustomEventNode->DeprecationMessage);
+		}
+		else
+		{
+			UK2Node_FunctionEntry* FunctionEntryNode = Cast<UK2Node_FunctionEntry>(Node);
+			if (FunctionEntryNode != nullptr)
+			{
+				DeprecationMessage = FText::FromString(FunctionEntryNode->MetaData.DeprecationMessage);
+			}
+		}
+	}
+
+	return DeprecationMessage;
+}
+
+void FBlueprintGraphActionDetails::OnDeprecationMessageTextCommitted(const FText& NewText, ETextCommit::Type InTextCommit)
+{
+	const FString DeprecationMessage = NewText.ToString();
+
+	UK2Node_EditablePinBase* Node = FunctionEntryNodePtr.Get();
+	if (Node != nullptr)
+	{
+		UK2Node_CustomEvent* CustomEventNode = Cast<UK2Node_CustomEvent>(Node);
+		if (CustomEventNode != nullptr)
+		{
+			CustomEventNode->DeprecationMessage = DeprecationMessage;
+		}
+		else
+		{
+			CastChecked<UK2Node_FunctionEntry>(Node)->MetaData.DeprecationMessage = DeprecationMessage;
+		}
+
+		FBlueprintEditorUtils::MarkBlueprintAsStructurallyModified(Node->GetBlueprint());
+	}
+}
+
+FMulticastDelegateProperty* FBlueprintDelegateActionDetails::GetDelegateProperty() const
 {
 	if (MyBlueprint.IsValid())
 	{
@@ -3747,11 +4088,11 @@ UMulticastDelegateProperty* FBlueprintDelegateActionDetails::GetDelegateProperty
 
 bool FBlueprintDelegateActionDetails::IsBlueprintProperty() const
 {
-	const UMulticastDelegateProperty* Property = GetDelegateProperty();
+	const FMulticastDelegateProperty* Property = GetDelegateProperty();
 	const UBlueprint* Blueprint = GetBlueprintObj();
 	if(Property && Blueprint)
 	{
-		return (Property->GetOuter() == Blueprint->SkeletonGeneratedClass);
+		return (Property->GetOwner<UObject>() == Blueprint->SkeletonGeneratedClass);
 	}
 
 	return false;
@@ -3783,84 +4124,6 @@ UEdGraph* FBlueprintDelegateActionDetails::GetGraph() const
 	return NULL;
 }
 
-FText FBlueprintDelegateActionDetails::OnGetTooltipText() const
-{
-	if (UMulticastDelegateProperty* DelegateProperty = GetDelegateProperty())
-	{
-		FString Result;
-		FBlueprintEditorUtils::GetBlueprintVariableMetaData(GetBlueprintObj(), DelegateProperty->GetFName(), NULL, TEXT("tooltip"), Result);
-		return FText::FromString(Result);
-	}
-	return FText();
-}
-
-void FBlueprintDelegateActionDetails::OnTooltipTextCommitted(const FText& NewText, ETextCommit::Type InTextCommit)
-{
-	if (UMulticastDelegateProperty* DelegateProperty = GetDelegateProperty())
-	{
-		FBlueprintEditorUtils::SetBlueprintVariableMetaData(GetBlueprintObj(), DelegateProperty->GetFName(), NULL, TEXT("tooltip"), NewText.ToString() );
-	}
-}
-
-FText FBlueprintDelegateActionDetails::OnGetCategoryText() const
-{
-	if (UMulticastDelegateProperty* DelegateProperty = GetDelegateProperty())
-	{
-		FName DelegateName = DelegateProperty->GetFName();
-		FText Category = FBlueprintEditorUtils::GetBlueprintVariableCategory(GetBlueprintObj(), DelegateName, NULL);
-
-		// Older blueprints will have their name as the default category
-		if( Category.EqualTo(FText::FromString(GetBlueprintObj()->GetName())) || Category.EqualTo(UEdGraphSchema_K2::VR_DefaultCategory) )
-		{
-			return LOCTEXT("DefaultCategory", "Default");
-		}
-		else
-		{
-			return Category;
-		}
-	}
-	return FText();
-}
-
-void FBlueprintDelegateActionDetails::OnCategoryTextCommitted(const FText& NewText, ETextCommit::Type InTextCommit)
-{
-	if (InTextCommit == ETextCommit::OnEnter || InTextCommit == ETextCommit::OnUserMovedFocus)
-	{
-		if (UMulticastDelegateProperty* DelegateProperty = GetDelegateProperty())
-		{
-			// Remove excess whitespace and prevent categories with just spaces
-			FText CategoryName = FText::TrimPrecedingAndTrailing(NewText);
-			
-			FBlueprintEditorUtils::SetBlueprintVariableCategory(GetBlueprintObj(), DelegateProperty->GetFName(), NULL, CategoryName);
-			check(MyBlueprint.IsValid());
-			FBlueprintVarActionDetails::PopulateCategories(MyBlueprint.Pin().Get(), CategorySource);
-			MyBlueprint.Pin()->ExpandCategory(CategoryName);
-		}
-	}
-}
-
-TSharedRef< ITableRow > FBlueprintDelegateActionDetails::MakeCategoryViewWidget( TSharedPtr<FText> Item, const TSharedRef< STableViewBase >& OwnerTable )
-{
-	return SNew(STableRow<TSharedPtr<FString>>, OwnerTable)
-		[
-			SNew(STextBlock) .Text(*Item.Get())
-		];
-}
-
-void FBlueprintDelegateActionDetails::OnCategorySelectionChanged( TSharedPtr<FText> ProposedSelection, ESelectInfo::Type /*SelectInfo*/ )
-{
-	UMulticastDelegateProperty* DelegateProperty = GetDelegateProperty();
-	if (DelegateProperty && ProposedSelection.IsValid())
-	{
-		FText NewCategory = *ProposedSelection.Get();
-
-		FBlueprintEditorUtils::SetBlueprintVariableCategory(GetBlueprintObj(), DelegateProperty->GetFName(), NULL, NewCategory);
-		CategoryListView.Pin()->ClearSelection();
-		CategoryComboButton.Pin()->SetIsOpen(false);
-		MyBlueprint.Pin()->ExpandCategory(NewCategory);
-	}
-}
-
 void FBlueprintDelegateActionDetails::CustomizeDetails( IDetailLayoutBuilder& DetailLayout )
 {
 	DetailsLayoutPtr = &DetailLayout;
@@ -3870,72 +4133,6 @@ void FBlueprintDelegateActionDetails::CustomizeDetails( IDetailLayoutBuilder& De
 
 	const UEdGraphSchema_K2* Schema = GetDefault<UEdGraphSchema_K2>();
 	const FSlateFontInfo DetailFontInfo = IDetailLayoutBuilder::GetDetailFont();
-
-	{
-		IDetailCategoryBuilder& Category = DetailLayout.EditCategory("Delegate", LOCTEXT("DelegateDetailsCategory", "Delegate"));
-		Category.AddCustomRow( LOCTEXT("VariableToolTipLabel", "Tooltip") )
-		.NameContent()
-		[
-			SNew(STextBlock)
-				.Text( LOCTEXT("VariableToolTipLabel", "Tooltip") )
-				.Font( DetailFontInfo )
-		]
-		.ValueContent()
-		[
-			SNew(SEditableTextBox)
-				.Text( this, &FBlueprintDelegateActionDetails::OnGetTooltipText )
-				.OnTextCommitted( this, &FBlueprintDelegateActionDetails::OnTooltipTextCommitted)
-				.Font( DetailFontInfo )
-		];
-
-		FBlueprintVarActionDetails::PopulateCategories(MyBlueprint.Pin().Get(), CategorySource);
-		TSharedPtr<SComboButton> NewComboButton;
-		TSharedPtr<SListView<TSharedPtr<FText>>> NewListView;
-
-		Category.AddCustomRow( LOCTEXT("CategoryLabel", "Category") )
-		.NameContent()
-		[
-			SNew(STextBlock)
-				.Text( LOCTEXT("CategoryLabel", "Category") )
-				.Font( DetailFontInfo )
-		]
-		.ValueContent()
-		[
-			SAssignNew(NewComboButton, SComboButton)
-			.ContentPadding(FMargin(0,0,5,0))
-			.IsEnabled(this, &FBlueprintDelegateActionDetails::IsBlueprintProperty)
-			.ButtonContent()
-			[
-				SNew(SBorder)
-				.BorderImage( FEditorStyle::GetBrush("NoBorder") )
-				.Padding(FMargin(0, 0, 5, 0))
-				[
-					SNew(SEditableTextBox)
-						.Text(this, &FBlueprintDelegateActionDetails::OnGetCategoryText)
-						.OnTextCommitted(this, &FBlueprintDelegateActionDetails::OnCategoryTextCommitted)
-						.SelectAllTextWhenFocused(true)
-						.RevertTextOnEscape(true)
-						.Font( DetailFontInfo )
-				]
-			]
-			.MenuContent()
-			[
-				SNew(SVerticalBox)
-				+SVerticalBox::Slot()
-				.AutoHeight()
-				.MaxHeight(400.0f)
-				[
-					SAssignNew(NewListView, SListView<TSharedPtr<FText>>)
-						.ListItemsSource(&CategorySource)
-						.OnGenerateRow(this, &FBlueprintDelegateActionDetails::MakeCategoryViewWidget)
-						.OnSelectionChanged(this, &FBlueprintDelegateActionDetails::OnCategorySelectionChanged)
-				]
-			]
-		];
-
-		CategoryComboButton = NewComboButton;
-		CategoryListView = NewListView;
-	}
 
 	if (UK2Node_EditablePinBase* FunctionEntryNode = FunctionEntryNodePtr.Get())
 	{
@@ -4006,9 +4203,9 @@ void FBlueprintDelegateActionDetails::CustomizeDetails( IDetailLayoutBuilder& De
 void FBlueprintDelegateActionDetails::CollectAvailibleSignatures()
 {
 	FunctionsToCopySignatureFrom.Empty();
-	if (UMulticastDelegateProperty* Property = GetDelegateProperty())
+	if (FMulticastDelegateProperty* Property = GetDelegateProperty())
 	{
-		if (UClass* ScopeClass = Cast<UClass>(Property->GetOuterUField()))
+		if (UClass* ScopeClass = Property->GetOwner<UClass>())
 		{
 			for(TFieldIterator<UFunction> It(ScopeClass, EFieldIteratorFlags::IncludeSuper); It; ++It)
 			{
@@ -4032,8 +4229,8 @@ void FBlueprintDelegateActionDetails::CollectAvailibleSignatures()
 void FBlueprintDelegateActionDetails::OnFunctionSelected(TSharedPtr<FString> FunctionName, ESelectInfo::Type SelectInfo)
 {
 	UK2Node_EditablePinBase* FunctionEntryNode = FunctionEntryNodePtr.Get();
-	UMulticastDelegateProperty* Property = GetDelegateProperty();
-	UClass* ScopeClass = Property ? Cast<UClass>(Property->GetOuterUField()) : NULL;
+	FMulticastDelegateProperty* Property = GetDelegateProperty();
+	UClass* ScopeClass = Property ? Property->GetOwner<UClass>() : NULL;
 	const UEdGraphSchema_K2* Schema = GetDefault<UEdGraphSchema_K2>();
 
 	if (FunctionEntryNode && FunctionName.IsValid() && ScopeClass)
@@ -4049,9 +4246,9 @@ void FBlueprintDelegateActionDetails::OnFunctionSelected(TSharedPtr<FString> Fun
 				FunctionEntryNode->RemoveUserDefinedPin(Pin);
 			}
 
-			for (TFieldIterator<UProperty> PropIt(NewSignature); PropIt && (PropIt->PropertyFlags & CPF_Parm); ++PropIt)
+			for (TFieldIterator<FProperty> PropIt(NewSignature); PropIt && (PropIt->PropertyFlags & CPF_Parm); ++PropIt)
 			{
-				UProperty* FuncParam = *PropIt;
+				FProperty* FuncParam = *PropIt;
 				FEdGraphPinType TypeOut;
 				Schema->ConvertPropertyToPinType(FuncParam, TypeOut);
 				UEdGraphPin* EdGraphPin = FunctionEntryNode->CreateUserDefinedPin(FuncParam->GetFName(), TypeOut, EGPD_Output);
@@ -4152,7 +4349,7 @@ bool FBaseBlueprintGraphActionDetails::OnVerifyPinRename(UK2Node_EditablePinBase
 	{
 		// Check if the name conflicts with any of the other internal UFunction's property names (local variables and parameters).
 		const UFunction* FoundFunction = FFunctionFromNodeHelper::FunctionFromNode(InTargetNode);
-		const UProperty* ExistingProperty = FindField<const UProperty>(FoundFunction, *InNewName);
+		const FProperty* ExistingProperty = FindField<const FProperty>(FoundFunction, *InNewName);
 		if (ExistingProperty)
 		{
 			OutErrorMessage = LOCTEXT("ConflictsWithProperty", "Conflicts with another local variable or function parameter!");
@@ -4299,10 +4496,13 @@ UK2Node_EditablePinBase* FBlueprintGraphActionDetails::GetEditableNode() const
 
 UFunction* FBlueprintGraphActionDetails::FindFunction() const
 {
-	UEdGraph* Graph = GetGraph();
-	if(Graph)
+	if (UK2Node_CustomEvent* EventNode = Cast<UK2Node_CustomEvent>(FunctionEntryNodePtr.Get()))
 	{
-		if(UBlueprint* Blueprint = FBlueprintEditorUtils::FindBlueprintForGraph(Graph))
+		return FFunctionFromNodeHelper::FunctionFromNode(EventNode);
+	}
+	else if (UEdGraph* Graph = GetGraph())
+	{
+		if (UBlueprint* Blueprint = FBlueprintEditorUtils::FindBlueprintForGraph(Graph))
 		{
 			UClass* Class = Blueprint->SkeletonGeneratedClass;
 
@@ -4316,7 +4516,7 @@ UFunction* FBlueprintGraphActionDetails::FindFunction() const
 			}
 		}
 	}
-	return NULL;
+	return nullptr;
 }
 
 FKismetUserDeclaredFunctionMetadata* FBlueprintGraphActionDetails::GetMetadataBlock() const
@@ -4331,8 +4531,12 @@ FKismetUserDeclaredFunctionMetadata* FBlueprintGraphActionDetails::GetMetadataBl
 		// Must be exactly a tunnel, not a macro instance
 		return &(TunnelNode->MetaData);
 	}
+	else if (UK2Node_CustomEvent* EventNode = Cast<UK2Node_CustomEvent>(FunctionEntryNode))
+	{
+		return &(EventNode->GetUserDefinedMetaData());
+	}
 
-	return NULL;
+	return nullptr;
 }
 
 FText FBlueprintGraphActionDetails::OnGetTooltipText() const
@@ -4537,7 +4741,7 @@ TSharedRef<ITableRow> FBlueprintGraphActionDetails::HandleGenerateRowAccessSpeci
 FText FBlueprintGraphActionDetails::GetCurrentAccessSpecifierName() const
 {
 	uint32 AccessSpecifierFlag = 0;
-	UK2Node_EditablePinBase * FunctionEntryNode = FunctionEntryNodePtr.Get();
+	UK2Node_EditablePinBase* FunctionEntryNode = FunctionEntryNodePtr.Get();
 	if(UK2Node_FunctionEntry* EntryNode = Cast<UK2Node_FunctionEntry>(FunctionEntryNode))
 	{
 		AccessSpecifierFlag = FUNC_AccessSpecifiers & EntryNode->GetFunctionFlags();
@@ -4553,7 +4757,7 @@ bool FBlueprintGraphActionDetails::IsAccessSpecifierVisible() const
 {
 	bool bSupportedType = false;
 	bool bIsEditable = false;
-	UK2Node_EditablePinBase * FunctionEntryNode = FunctionEntryNodePtr.Get();
+	UK2Node_EditablePinBase* FunctionEntryNode = FunctionEntryNodePtr.Get();
 	if(FunctionEntryNode)
 	{
 		UBlueprint* Blueprint = FunctionEntryNode->GetBlueprint();
@@ -4673,7 +4877,7 @@ bool FBlueprintGraphActionDetails::IsCustomEvent() const
 
 void FBlueprintGraphActionDetails::OnIsReliableReplicationFunctionModified(const ECheckBoxState NewCheckedState)
 {
-	UK2Node_EditablePinBase * FunctionEntryNode = FunctionEntryNodePtr.Get();
+	UK2Node_EditablePinBase* FunctionEntryNode = FunctionEntryNodePtr.Get();
 	UK2Node_CustomEvent* CustomEvent = Cast<UK2Node_CustomEvent>(FunctionEntryNode);
 	if( CustomEvent )
 	{
@@ -4683,7 +4887,7 @@ void FBlueprintGraphActionDetails::OnIsReliableReplicationFunctionModified(const
 			{
 				TypedEntryNode->AddExtraFlags(FUNC_NetReliable);
 			}
-			if (UK2Node_CustomEvent * CustomEventNode = Cast<UK2Node_CustomEvent>(FunctionEntryNode))
+			if (UK2Node_CustomEvent* CustomEventNode = Cast<UK2Node_CustomEvent>(FunctionEntryNode))
 			{
 				CustomEventNode->FunctionFlags |= FUNC_NetReliable;
 			}
@@ -4694,7 +4898,7 @@ void FBlueprintGraphActionDetails::OnIsReliableReplicationFunctionModified(const
 			{
 				TypedEntryNode->ClearExtraFlags(FUNC_NetReliable);
 			}
-			if (UK2Node_CustomEvent * CustomEventNode = Cast<UK2Node_CustomEvent>(FunctionEntryNode))
+			if (UK2Node_CustomEvent* CustomEventNode = Cast<UK2Node_CustomEvent>(FunctionEntryNode))
 			{
 				CustomEventNode->FunctionFlags &= ~FUNC_NetReliable;
 			}
@@ -4706,7 +4910,7 @@ void FBlueprintGraphActionDetails::OnIsReliableReplicationFunctionModified(const
 
 ECheckBoxState FBlueprintGraphActionDetails::GetIsReliableReplicatedFunction() const
 {
-	const UK2Node_EditablePinBase * FunctionEntryNode = FunctionEntryNodePtr.Get();
+	const UK2Node_EditablePinBase* FunctionEntryNode = FunctionEntryNodePtr.Get();
 	const UK2Node_CustomEvent* CustomEvent = Cast<const UK2Node_CustomEvent>(FunctionEntryNode);
 	if(!CustomEvent)
 	{
@@ -4726,7 +4930,7 @@ bool FBlueprintGraphActionDetails::IsPureFunctionVisible() const
 {
 	bool bSupportedType = false;
 	bool bIsEditable = false;
-	UK2Node_EditablePinBase * FunctionEntryNode = FunctionEntryNodePtr.Get();
+	UK2Node_EditablePinBase* FunctionEntryNode = FunctionEntryNodePtr.Get();
 	if(FunctionEntryNode)
 	{
 		UBlueprint* Blueprint = FunctionEntryNode->GetBlueprint();
@@ -4740,7 +4944,7 @@ bool FBlueprintGraphActionDetails::IsPureFunctionVisible() const
 
 void FBlueprintGraphActionDetails::OnIsPureFunctionModified( const ECheckBoxState NewCheckedState )
 {
-	UK2Node_EditablePinBase * FunctionEntryNode = FunctionEntryNodePtr.Get();
+	UK2Node_EditablePinBase* FunctionEntryNode = FunctionEntryNodePtr.Get();
 	UFunction* Function = FindFunction();
 	UK2Node_FunctionEntry* EntryNode = Cast<UK2Node_FunctionEntry>(FunctionEntryNode);
 	if (EntryNode && Function)
@@ -4771,11 +4975,9 @@ bool FBlueprintGraphActionDetails::IsConstFunctionVisible() const
 {
 	bool bSupportedType = false;
 	bool bIsEditable = false;
-	UK2Node_EditablePinBase * FunctionEntryNode = FunctionEntryNodePtr.Get();
+	UK2Node_EditablePinBase* FunctionEntryNode = FunctionEntryNodePtr.Get();
 	if(FunctionEntryNode)
 	{
-		UBlueprint* Blueprint = FunctionEntryNode->GetBlueprint();
-
 		bSupportedType = FunctionEntryNode->IsA<UK2Node_FunctionEntry>();
 		bIsEditable = FunctionEntryNode->IsEditable();
 	}
@@ -4784,7 +4986,7 @@ bool FBlueprintGraphActionDetails::IsConstFunctionVisible() const
 
 void FBlueprintGraphActionDetails::OnIsConstFunctionModified( const ECheckBoxState NewCheckedState )
 {
-	UK2Node_EditablePinBase * FunctionEntryNode = FunctionEntryNodePtr.Get();
+	UK2Node_EditablePinBase* FunctionEntryNode = FunctionEntryNodePtr.Get();
 	UFunction* Function = FindFunction();
 	UK2Node_FunctionEntry* EntryNode = Cast<UK2Node_FunctionEntry>(FunctionEntryNode);
 	if(EntryNode && Function)
@@ -4813,7 +5015,7 @@ ECheckBoxState FBlueprintGraphActionDetails::GetIsConstFunction() const
 
 FReply FBaseBlueprintGraphActionDetails::OnAddNewInputClicked()
 {
-	UK2Node_EditablePinBase * FunctionEntryNode = FunctionEntryNodePtr.Get();
+	UK2Node_EditablePinBase* FunctionEntryNode = FunctionEntryNodePtr.Get();
 
 	if( FunctionEntryNode )
 	{
@@ -5069,7 +5271,7 @@ void FBlueprintInterfaceLayout::OnBrowseToInterface(TWeakObjectPtr<UObject> Asse
 {
 	if (Asset.IsValid())
 	{
-		FAssetEditorManager::Get().OpenEditorForAsset(Asset.Get());
+		GEditor->GetEditorSubsystem<UAssetEditorSubsystem>()->OpenEditorForAsset(Asset.Get());
 	}
 }
 
@@ -5130,21 +5332,16 @@ TSharedRef<SWidget> FBlueprintInterfaceLayout::OnGetAddInterfaceMenuContent()
 	TArray<UBlueprint*> Blueprints;
 	Blueprints.Add(Blueprint);
 	TSharedRef<SWidget> ClassPicker = FBlueprintEditorUtils::ConstructBlueprintInterfaceClassPicker(Blueprints, FOnClassPicked::CreateSP(this, &FBlueprintInterfaceLayout::OnClassPicked));
-	return
-		SNew(SBorder)
-		.BorderImage(FEditorStyle::GetBrush("Menu.Background"))
+	// Achieving fixed width by nesting items within a fixed width box.
+	return SNew(SBox)
+		.WidthOverride(350.0f)
 		[
-			// Achieving fixed width by nesting items within a fixed width box.
-			SNew(SBox)
-			.WidthOverride(350.0f)
+			SNew(SVerticalBox)
+			+SVerticalBox::Slot()
+			.MaxHeight(400.0f)
+			.AutoHeight()
 			[
-				SNew(SVerticalBox)
-				+SVerticalBox::Slot()
-				.MaxHeight(400.0f)
-				.AutoHeight()
-				[
-					ClassPicker
-				]
+				ClassPicker
 			]
 		];
 }
@@ -5187,21 +5384,16 @@ TSharedRef<SWidget> FBlueprintGlobalOptionsDetails::GetParentClassMenuContent()
 	Blueprints.Add(GetBlueprintObj());
 	TSharedRef<SWidget> ClassPicker = FBlueprintEditorUtils::ConstructBlueprintParentClassPicker(Blueprints, FOnClassPicked::CreateSP(this, &FBlueprintGlobalOptionsDetails::OnClassPicked));
 
-	return
-		SNew(SBorder)
-		.BorderImage(FEditorStyle::GetBrush("Menu.Background"))
+	// Achieving fixed width by nesting items within a fixed width box.
+	return SNew(SBox)
+		.WidthOverride(350.0f)
 		[
-			// Achieving fixed width by nesting items within a fixed width box.
-			SNew(SBox)
-			.WidthOverride(350.0f)
+			SNew(SVerticalBox)
+			+SVerticalBox::Slot()
+			.MaxHeight(400.0f)
+			.AutoHeight()
 			[
-				SNew(SVerticalBox)
-				+SVerticalBox::Slot()
-				.MaxHeight(400.0f)
-				.AutoHeight()
-				[
-					ClassPicker
-				]
+				ClassPicker
 			]
 		];
 }
@@ -5267,9 +5459,9 @@ void FBlueprintGlobalOptionsDetails::CustomizeDetails(IDetailLayoutBuilder& Deta
 	if(Blueprint != NULL)
 	{
 		// Hide any properties that aren't included in the "Option" category
-		for (TFieldIterator<UProperty> PropertyIt(Blueprint->GetClass(), EFieldIteratorFlags::IncludeSuper); PropertyIt; ++PropertyIt)
+		for (TFieldIterator<FProperty> PropertyIt(Blueprint->GetClass(), EFieldIteratorFlags::IncludeSuper); PropertyIt; ++PropertyIt)
 		{
-			UProperty* Property = *PropertyIt;
+			FProperty* Property = *PropertyIt;
 			const FString& Category = Property->GetMetaData(TEXT("Category"));
 
 			if (Category != TEXT("BlueprintOptions") && Category != TEXT("ClassOptions"))
@@ -5488,7 +5680,7 @@ void FBlueprintGlobalOptionsDetails::OnNativizeToggled(ECheckBoxState NewState) 
 		}
 
 		// don't need to alter (dirty) compilation state, just the package's save state (since we save this setting to a config on save)
-// 		UProperty* NativizeProperty = UBlueprint::StaticClass()->FindPropertyByName(GET_MEMBER_NAME_CHECKED(UBlueprint, NativizationFlag));
+// 		FProperty* NativizeProperty = UBlueprint::StaticClass()->FindPropertyByName(GET_MEMBER_NAME_CHECKED(UBlueprint, NativizationFlag));
 // 		if (ensure(NativizeProperty != nullptr))
 // 		{
 // 			FPropertyChangedEvent PropertyChangedEvent(NativizeProperty);
@@ -5603,6 +5795,41 @@ void FBlueprintComponentDetails::CustomizeDetails(IDetailLayoutBuilder& DetailLa
 			]
 		];
 
+		// Remove UI to specify overriden component class until undo/redo can be made to work with crashing
+		/*UActorComponent* ComponentTemplate = (CachedNodePtr->IsNative() ? CachedNodePtr->GetComponentTemplate() : nullptr);
+		if (ComponentTemplate)
+		{
+			UClass* BaseClass = ComponentTemplate->GetClass();
+
+			if (const FBPComponentClassOverride* Override = BlueprintObj->ComponentClassOverrides.FindByKey(ComponentTemplate->GetFName()))
+			{
+				AActor* Owner = ComponentTemplate->GetOwner();
+				AActor* OwnerArchetype = CastChecked<AActor>(Owner->GetArchetype());
+				if (UActorComponent* ArchetypeComponent = Cast<UActorComponent>((UObject*)FindObjectWithOuter(OwnerArchetype, UActorComponent::StaticClass(), ComponentTemplate->GetFName())))
+				{
+					BaseClass = ArchetypeComponent->GetClass();
+				}
+			}
+
+			const FText ComponentClassTooltip = LOCTEXT("BlueprintComponentDetails_ComponentClassOverrideTooltip", "The class to use when creating this component for this class. This can only be done for components defined in native at this time.");
+
+			VariableCategory.AddCustomRow( LOCTEXT("BlueprintComponentDetails_ComponentClassOverride", "Component Class") )
+			.NameContent()
+			[
+				SNew(STextBlock)
+				.Text(LOCTEXT("BlueprintComponentDetails_ComponentClassOverrideLabel", "Component Class"))
+				.ToolTipText(ComponentClassTooltip)
+				.Font(IDetailLayoutBuilder::GetDetailFont())
+			]
+			.ValueContent()
+			[
+				SNew(SClassPropertyEntryBox)
+				.MetaClass(BaseClass)
+				.AllowNone(false)
+				.SelectedClass(this, &FBlueprintComponentDetails::GetSelectedEntryClass)
+				.OnSetClass(this, &FBlueprintComponentDetails::HandleNewEntryClassSelected)];
+		}*/
+
 		IDetailCategoryBuilder& SocketsCategory = DetailLayout.EditCategory("Sockets", LOCTEXT("BlueprintComponentDetailsCategory", "Sockets"), ECategoryPriority::Important);
 
 		SocketsCategory.AddCustomRow(LOCTEXT("BlueprintComponentDetails_Sockets", "Sockets"))
@@ -5654,7 +5881,7 @@ void FBlueprintComponentDetails::CustomizeDetails(IDetailLayoutBuilder& DetailLa
 	if ( FBlueprintEditorUtils::DoesSupportEventGraphs(BlueprintObj) && Nodes.Num() == 1 )
 	{
 		FName PropertyName = CachedNodePtr->GetVariableName();
-		UObjectProperty* VariableProperty = FindField<UObjectProperty>(BlueprintObj->SkeletonGeneratedClass, PropertyName);
+		FObjectProperty* VariableProperty = FindField<FObjectProperty>(BlueprintObj->SkeletonGeneratedClass, PropertyName);
 
 		AddEventsCategory(DetailLayout, VariableProperty);
 	}
@@ -5677,16 +5904,26 @@ void FBlueprintComponentDetails::OnVariableTextChanged(const FText& InNewText)
 
 	bIsVariableNameInvalid = true;
 
-	USCS_Node* SCS_Node = CachedNodePtr->GetSCSNode();
-	if(SCS_Node != NULL && !InNewText.IsEmpty() && !FComponentEditorUtils::IsValidVariableNameString(SCS_Node->ComponentTemplate, InNewText.ToString()))
+	const FString& NewTextStr = InNewText.ToString();
+
+	if (USCS_Node* SCS_Node = CachedNodePtr->GetSCSNode())
 	{
-		VariableNameEditableTextBox->SetError(LOCTEXT("ComponentVariableRenameFailed_NotValid", "This name is reserved for engine use."));
-		return;
+		if (!NewTextStr.IsEmpty() && !FComponentEditorUtils::IsValidVariableNameString(SCS_Node->ComponentTemplate, NewTextStr))
+		{
+			VariableNameEditableTextBox->SetError(LOCTEXT("ComponentVariableRenameFailed_NotValid", "This name is reserved for engine use."));
+			return;
+		}
+
+		if (!FComponentEditorUtils::IsComponentNameAvailable(NewTextStr, SCS_Node->ComponentTemplate->GetOuter(), SCS_Node->ComponentTemplate))
+		{
+			VariableNameEditableTextBox->SetError(FText::Format(LOCTEXT("ComponentVariableRenameFailed_InUse", "{0} is in use by another variable or function!"), InNewText));
+			return;
+		}
 	}
 
 	TSharedPtr<INameValidatorInterface> VariableNameValidator = MakeShareable(new FKismetNameValidator(GetBlueprintObj(), CachedNodePtr->GetVariableName()));
 
-	EValidatorResult ValidatorResult = VariableNameValidator->IsValid(InNewText.ToString());
+	EValidatorResult ValidatorResult = VariableNameValidator->IsValid(NewTextStr);
 	if(ValidatorResult == EValidatorResult::AlreadyInUse)
 	{
 		VariableNameEditableTextBox->SetError(FText::Format(LOCTEXT("ComponentVariableRenameFailed_InUse", "{0} is in use by another variable or function!"), InNewText));
@@ -5747,8 +5984,8 @@ void FBlueprintComponentDetails::OnTooltipTextCommitted(const FText& NewText, ET
 bool FBlueprintComponentDetails::OnVariableCategoryChangeEnabled() const
 {
 	check(CachedNodePtr.IsValid());
-
-	return !CachedNodePtr->CanRename();
+	
+	return !CachedNodePtr->IsInherited();
 }
 
 FText FBlueprintComponentDetails::OnGetVariableCategoryText() const
@@ -5820,9 +6057,9 @@ void FBlueprintComponentDetails::PopulateVariableCategories()
 	check(BlueprintObj->SkeletonGeneratedClass);
 
 	TSet<FName> VisibleVariables;
-	for (TFieldIterator<UProperty> PropertyIt(BlueprintObj->SkeletonGeneratedClass, EFieldIteratorFlags::IncludeSuper); PropertyIt; ++PropertyIt)
+	for (TFieldIterator<FProperty> PropertyIt(BlueprintObj->SkeletonGeneratedClass, EFieldIteratorFlags::IncludeSuper); PropertyIt; ++PropertyIt)
 	{
-		UProperty* Property = *PropertyIt;
+		FProperty* Property = *PropertyIt;
 
 		if ((!Property->HasAnyPropertyFlags(CPF_Parm) && Property->HasAllPropertyFlags(CPF_BlueprintVisible)))
 		{
@@ -5851,6 +6088,91 @@ void FBlueprintComponentDetails::PopulateVariableCategories()
 		}
 	}
 }
+
+const UClass* FBlueprintComponentDetails::GetSelectedEntryClass() const
+{
+	check(CachedNodePtr.IsValid());
+
+	if (UActorComponent* ComponentTemplate = CachedNodePtr->GetComponentTemplate())
+	{
+		UBlueprint* BlueprintObj = GetBlueprintObj();
+		check(BlueprintObj);
+
+		do
+		{
+			if (const FBPComponentClassOverride* Override = BlueprintObj->ComponentClassOverrides.FindByKey(ComponentTemplate->GetFName()))
+			{
+				return Override->ComponentClass;
+			}
+
+			BlueprintObj = UBlueprint::GetBlueprintFromClass(Cast<UBlueprintGeneratedClass>(BlueprintObj->ParentClass));
+
+		} while (BlueprintObj);
+
+		return ComponentTemplate->GetClass();
+	}
+
+	return nullptr;
+
+}
+
+void FBlueprintComponentDetails::HandleNewEntryClassSelected(const UClass* NewEntryClass) const
+{
+	const UClass* PreviousClass = GetSelectedEntryClass();
+
+	if (PreviousClass != NewEntryClass)
+	{
+		check(CachedNodePtr.IsValid());
+
+		if (UActorComponent* ComponentTemplate = CachedNodePtr->GetComponentTemplate())
+		{
+			const FScopedTransaction Transaction(LOCTEXT("SetComponentClassOverride", "Set Component Class Override"));
+
+			const FName ComponentTemplateName = ComponentTemplate->GetFName();
+
+			UBlueprint* BlueprintObj = GetBlueprintObj();
+			check(BlueprintObj);
+
+			BlueprintObj->Modify();
+
+			if (FBPComponentClassOverride* Override = BlueprintObj->ComponentClassOverrides.FindByKey(ComponentTemplateName))
+			{
+				bool bRemoveEntry = false;
+				bool bFoundOverride = false;
+
+				UBlueprint* ParentBP = UBlueprint::GetBlueprintFromClass(Cast<UBlueprintGeneratedClass>(BlueprintObj->ParentClass));
+				while (ParentBP)
+				{
+					if (FBPComponentClassOverride* ParentOverride = BlueprintObj->ComponentClassOverrides.FindByKey(ComponentTemplateName))
+					{
+						bRemoveEntry = (ParentOverride->ComponentClass == NewEntryClass);
+						bFoundOverride = true;
+						break;
+					}
+				}
+				if (!bFoundOverride)
+				{
+					bRemoveEntry = (ComponentTemplate->GetClass() == NewEntryClass);
+				}
+				if (bRemoveEntry)
+				{
+					BlueprintObj->ComponentClassOverrides.RemoveAllSwap([ComponentTemplateName](const FBPComponentClassOverride& CCOverride) { return (CCOverride.ComponentName == ComponentTemplateName); });
+				}
+				else
+				{
+					Override->ComponentClass = const_cast<UClass*>(NewEntryClass);
+				}
+			}
+			else
+			{
+				BlueprintObj->ComponentClassOverrides.Emplace(FBPComponentClassOverride(ComponentTemplateName, const_cast<UClass*>(NewEntryClass)));
+			}
+
+			FBlueprintEditorUtils::MarkBlueprintAsStructurallyModified(BlueprintObj);
+		}
+	}
+}
+
 
 FText FBlueprintComponentDetails::GetSocketName() const
 {
@@ -5887,7 +6209,7 @@ void FBlueprintComponentDetails::OnBrowseSocket()
 
 		if (ParentFNode.IsValid())
 		{
-			if (USceneComponent* ParentSceneComponent = Cast<USceneComponent>(ParentFNode->GetEditableComponentTemplate(Editor->GetBlueprint())))
+			if (USceneComponent* ParentSceneComponent = Cast<USceneComponent>(ParentFNode->GetOrCreateEditableComponentTemplate(Editor->GetBlueprint())))
 			{
 				if (ParentSceneComponent->HasAnySockets())
 				{
@@ -5943,7 +6265,7 @@ void FBlueprintGraphNodeDetails::CustomizeDetails( IDetailLayoutBuilder& DetailL
 		}
 	}
 
-	if(!GraphNodePtr.IsValid() || !GraphNodePtr.Get()->bCanRenameNode)
+	if(!GraphNodePtr.IsValid() || !GraphNodePtr.Get()->GetCanRenameNode())
 	{
 		return;
 	}
@@ -6258,8 +6580,8 @@ TWeakObjectPtr<UEdGraphNode_Documentation> FBlueprintDocumentationDetails::EdGra
 		/** Get the currently selected set of nodes */
 		if( BlueprintEditorPtr.Pin()->GetNumberOfSelectedNodes() == 1 )
 		{
-			TSet<UObject*> Objects = BlueprintEditorPtr.Pin()->GetSelectedNodes();
-			TSet<UObject*>::TIterator Iter( Objects );
+			FGraphPanelSelectionSet Objects = BlueprintEditorPtr.Pin()->GetSelectedNodes();
+			FGraphPanelSelectionSet::TIterator Iter( Objects );
 			UObject* Object = *Iter;
 
 			if( Object && Object->IsA<UEdGraphNode_Documentation>() )

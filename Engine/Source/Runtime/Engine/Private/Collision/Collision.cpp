@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 /*=============================================================================
 	Collision.cpp: AActor collision implementation
@@ -110,6 +110,11 @@ bool FHitResult::NetSerialize(FArchive& Ar, class UPackageMap* Map, bool& bOutSu
 	{
 		PenetrationDepth = 0.0f;
 	}
+
+	if (Ar.IsLoading() && bOutSuccess)
+	{
+		Distance = (ImpactPoint - TraceStart).Size();
+	}
 	
 	if (!bInvalidItem)
 	{
@@ -173,6 +178,10 @@ FCollisionQueryParams::FCollisionQueryParams(FName InTraceTag, const TStatId& In
 	{
 		OwnerTag = InIgnoreActor->GetFName();
 	}
+
+#if !(UE_BUILD_TEST || UE_BUILD_SHIPPING)
+		bDebugQuery = false;
+#endif
 }
 
 
@@ -1028,7 +1037,7 @@ namespace CollisionResponseConsoleCommands
 		// Display Data
 		if (Results.Num() > 0)
 		{
-			Results.Sort([](const FName& A, const FName& B) { return A < B; });
+			Results.Sort(FNameLexicalLess());
 			for (FName& ResultName : Results)
 			{
 				UE_LOG(LogCollisionCommands, Log, TEXT("%s"), *ResultName.ToString());

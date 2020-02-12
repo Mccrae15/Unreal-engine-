@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "LiveLinkClientCommands.h"
 #include "EditorStyleSet.h"
@@ -12,7 +12,6 @@ FLiveLinkClientCommands::FLiveLinkClientCommands()
 
 void FLiveLinkClientCommands::RegisterCommands()
 {
-	UI_COMMAND(AddSource, "Add", "Add a new live link source", EUserInterfaceActionType::Button, FInputChord());
 	UI_COMMAND(RemoveSource, "Remove Selected Source(s)", "Remove selected live link source", EUserInterfaceActionType::Button, FInputChord());
 	UI_COMMAND(RemoveAllSources, "Remove All Sources", "Remove all live link sources", EUserInterfaceActionType::Button, FInputChord());
 }

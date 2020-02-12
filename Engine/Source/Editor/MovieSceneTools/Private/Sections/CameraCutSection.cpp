@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "Sections/CameraCutSection.h"
 #include "Sections/MovieSceneCameraCutSection.h"
@@ -15,6 +15,7 @@
 #include "Evaluation/MovieSceneEvaluationTemplateInstance.h"
 #include "EditorStyleSet.h"
 #include "EngineUtils.h"
+#include "Camera/CameraComponent.h"
 
 
 #define LOCTEXT_NAMESPACE "FCameraCutSection"
@@ -76,7 +77,19 @@ void FCameraCutSection::BuildSectionContextMenu(FMenuBuilder& MenuBuilder, const
 		return;
 	}
 
-	const AActor* CameraActor = GetCameraForFrame(Section->GetInclusiveStartFrame());
+	AActor* CameraActor = GetCameraForFrame(Section->GetInclusiveStartFrame());
+
+	if (CameraActor)
+	{
+		MenuBuilder.AddMenuSeparator();
+
+		MenuBuilder.AddMenuEntry(
+			FText::Format(LOCTEXT("SelectCameraTextFormat", "Select {0}"), FText::FromString(CameraActor->GetActorLabel())),
+			FText::Format(LOCTEXT("SelectCameraTooltipFormat", "Select {0}"), FText::FromString(CameraActor->GetActorLabel())),
+			FSlateIcon(),
+			FUIAction(FExecuteAction::CreateRaw(this, &FCameraCutSection::HandleSelectCameraMenuEntryExecute, CameraActor))
+		);
+	}
 
 	// get list of available cameras
 	TArray<AActor*> AllCameras;
@@ -121,27 +134,17 @@ void FCameraCutSection::BuildSectionContextMenu(FMenuBuilder& MenuBuilder, const
 /* FThumbnailSection interface
  *****************************************************************************/
 
-const AActor* FCameraCutSection::GetCameraForFrame(FFrameNumber Time) const
+AActor* FCameraCutSection::GetCameraForFrame(FFrameNumber Time) const
 {
 	UMovieSceneCameraCutSection* CameraCutSection = Cast<UMovieSceneCameraCutSection>(Section);
 	TSharedPtr<ISequencer> Sequencer = SequencerPtr.Pin();
 
 	if (CameraCutSection && Sequencer.IsValid())
 	{
-		FMovieSceneSequenceID SequenceID = Sequencer->GetFocusedTemplateID();
-		if (CameraCutSection->GetCameraBindingID().GetSequenceID().IsValid())
+		UCameraComponent* CameraComponent = CameraCutSection->GetFirstCamera(*Sequencer, Sequencer->GetFocusedTemplateID());
+		if (CameraComponent)
 		{
-			// Ensure that this ID is resolvable from the root, based on the current local sequence ID
-			FMovieSceneObjectBindingID RootBindingID = CameraCutSection->GetCameraBindingID().ResolveLocalToRoot(SequenceID, Sequencer->GetEvaluationTemplate().GetHierarchy());
-			SequenceID = RootBindingID.GetSequenceID();
-		}
-
-		for (TWeakObjectPtr<>& Object : Sequencer->FindBoundObjects(CameraCutSection->GetCameraBindingID().GetGuid(), SequenceID))
-		{
-			if (AActor* Actor = Cast<AActor>(Object.Get()))
-			{
-				return Actor;
-			}
+			return CameraComponent->GetOwner();
 		}
 
 		FMovieSceneSpawnable* Spawnable = Sequencer->GetFocusedMovieSceneSequence()->GetMovieScene()->FindSpawnable(CameraCutSection->GetCameraBindingID().GetGuid());
@@ -152,6 +155,11 @@ const AActor* FCameraCutSection::GetCameraForFrame(FFrameNumber Time) const
 	}
 
 	return nullptr;
+}
+
+FText FCameraCutSection::GetSectionTitle() const
+{
+	return HandleThumbnailTextBlockText();
 }
 
 float FCameraCutSection::GetSectionHeight() const
@@ -187,6 +195,11 @@ FText FCameraCutSection::HandleThumbnailTextBlockText() const
 /* FCameraCutSection callbacks
  *****************************************************************************/
 
+void FCameraCutSection::HandleSelectCameraMenuEntryExecute(AActor* InCamera)
+{
+	GEditor->SelectActor(InCamera, true, true);
+}
+
 void FCameraCutSection::HandleSetCameraMenuEntryExecute(AActor* InCamera)
 {
 	auto Sequencer = SequencerPtr.Pin();
@@ -207,6 +220,19 @@ void FCameraCutSection::HandleSetCameraMenuEntryExecute(AActor* InCamera)
 	
 		Sequencer->NotifyMovieSceneDataChanged( EMovieSceneDataChangeType::TrackValueChanged );
 	}
+}
+
+UCameraComponent* FCameraCutSection::GetViewCamera()
+{
+	UMovieSceneCameraCutSection* CameraCutSection = Cast<UMovieSceneCameraCutSection>(Section);
+	TSharedPtr<ISequencer>       Sequencer        = SequencerPtr.Pin();
+
+	if (CameraCutSection && Sequencer.IsValid())
+	{
+		return CameraCutSection->GetFirstCamera(*Sequencer, Sequencer->GetFocusedTemplateID());
+	}
+
+	return nullptr;
 }
 
 

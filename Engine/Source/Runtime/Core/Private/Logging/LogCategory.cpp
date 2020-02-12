@@ -1,15 +1,16 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "Logging/LogCategory.h"
 #include "CoreGlobals.h"
 #include "Logging/LogSuppressionInterface.h"
 #include "Misc/OutputDeviceRedirector.h"
 
-FLogCategoryBase::FLogCategoryBase(const TCHAR *CategoryName, ELogVerbosity::Type InDefaultVerbosity, ELogVerbosity::Type InCompileTimeVerbosity)
+FLogCategoryBase::FLogCategoryBase(const FLogCategoryName& InCategoryName, ELogVerbosity::Type InDefaultVerbosity, ELogVerbosity::Type InCompileTimeVerbosity)
 	: DefaultVerbosity(InDefaultVerbosity)
 	, CompileTimeVerbosity(InCompileTimeVerbosity)
-	, CategoryFName(CategoryName)
+	, CategoryName(InCategoryName)
 {
+	TRACE_LOG_CATEGORY(this, *FName(CategoryName).ToString(), InDefaultVerbosity);
 	ResetFromDefault();
 	if (CompileTimeVerbosity > ELogVerbosity::NoLogging)
 	{
@@ -23,7 +24,10 @@ FLogCategoryBase::~FLogCategoryBase()
 	checkSlow(!(Verbosity & ELogVerbosity::BreakOnLog)); // this bit is factored out of this variable, always
 	if (CompileTimeVerbosity > ELogVerbosity::NoLogging)
 	{
-		FLogSuppressionInterface::Get().DisassociateSuppress(this);
+		if (FLogSuppressionInterface* Singleton = FLogSuppressionInterface::TryGet())
+		{
+			Singleton->DisassociateSuppress(this);
+		}
 	}
 }
 

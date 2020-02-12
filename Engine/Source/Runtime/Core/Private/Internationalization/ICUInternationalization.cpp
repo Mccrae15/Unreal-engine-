@@ -1,10 +1,12 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 #include "Internationalization/ICUInternationalization.h"
 #include "HAL/FileManager.h"
+#include "HAL/LowLevelMemTracker.h"
 #include "Misc/ScopeLock.h"
 #include "Misc/Paths.h"
 #include "Internationalization/Culture.h"
 #include "Internationalization/Internationalization.h"
+#include "Internationalization/Cultures/LeetCulture.h"
 #include "Stats/Stats.h"
 #include "Misc/CoreStats.h"
 #include "Misc/ConfigCacheIni.h"
@@ -13,11 +15,14 @@
 #if UE_ENABLE_ICU
 
 #include "Internationalization/ICURegex.h"
+#include "Internationalization/ICUCulture.h"
 #include "Internationalization/ICUUtilities.h"
 #include "Internationalization/ICUBreakIterator.h"
 THIRD_PARTY_INCLUDES_START
 	#include <unicode/locid.h>
-	#include <unicode/timezone.h>
+PRAGMA_PUSH_PLATFORM_DEFAULT_PACKING
+	#include <unicode/timezone.h> // icu::Calendar can be affected by the non-standard packing UE4 uses, so force the platform default
+PRAGMA_POP_PLATFORM_DEFAULT_PACKING
 	#include <unicode/uclean.h>
 	#include <unicode/udata.h>
 THIRD_PARTY_INCLUDES_END
@@ -25,6 +30,15 @@ THIRD_PARTY_INCLUDES_END
 DEFINE_LOG_CATEGORY_STATIC(LogICUInternationalization, Log, All);
 
 static_assert(sizeof(UChar) == 2, "UChar (from ICU) is assumed to always be 2-bytes!");
+static_assert(PLATFORM_LITTLE_ENDIAN, "ICU data is only built for little endian platforms. You'll need to rebuild the data for your platform and update this code!");
+
+#if WITH_ICU_V64 && PLATFORM_WINDOWS
+	#if PLATFORM_32BITS
+		static_assert(sizeof(icu::Calendar) == 608, "icu::Calendar should be 608-bytes! Ensure relevant includes are wrapped in PRAGMA_PUSH_PLATFORM_DEFAULT_PACKING and PRAGMA_POP_PLATFORM_DEFAULT_PACKING.");
+	#else
+		static_assert(sizeof(icu::Calendar) == 616, "icu::Calendar should be 616-bytes! Ensure relevant includes are wrapped in PRAGMA_PUSH_PLATFORM_DEFAULT_PACKING and PRAGMA_POP_PLATFORM_DEFAULT_PACKING.");
+	#endif
+#endif
 
 namespace
 {
@@ -37,6 +51,7 @@ namespace
 
 		static void* U_CALLCONV Malloc(const void* context, size_t size)
 		{
+			LLM_SCOPE(ELLMTag::Localization);
 			void* Result = FMemory::Malloc(size);
 #if STATS
 			BytesInUseCount += FMemory::GetAllocSize(Result);
@@ -57,6 +72,7 @@ namespace
 
 		static void* U_CALLCONV Realloc(const void* context, void* mem, size_t size)
 		{
+			LLM_SCOPE(ELLMTag::Localization);
 			return FMemory::Realloc(mem, size);
 		}
 
@@ -109,7 +125,11 @@ bool FICUInternationalization::Initialize()
 		if (FPaths::DirectoryExists(PotentialDataDirectory))
 		{
 			u_setDataDirectory(StringCast<char>(*PotentialDataDirectory).Get());
+#if WITH_ICU_V64
+			ICUDataDirectory = PotentialDataDirectory / TEXT("icudt64l") / TEXT(""); // We include the sub-folder here as it prevents ICU I/O requests outside of this folder
+#else	// WITH_ICU_V64
 			ICUDataDirectory = PotentialDataDirectory / TEXT("icudt53l") / TEXT(""); // We include the sub-folder here as it prevents ICU I/O requests outside of this folder
+#endif	// WITH_ICU_V64
 			break;
 		}
 	}
@@ -133,6 +153,7 @@ bool FICUInternationalization::Initialize()
 		UE_LOG(LogICUInternationalization, Fatal, TEXT("ICU data directory was not discovered:\n%s"), *GetPrioritizedDataDirectoriesString());
 	}
 
+	udata_setFileAccess(UDATA_FILES_FIRST, &ICUStatus); // We always need to load loose ICU data files
 	u_setDataFileFunctions(this, &FICUInternationalization::OpenDataFile, &FICUInternationalization::CloseDataFile, &ICUStatus);
 	u_init(&ICUStatus);
 	checkf(U_SUCCESS(ICUStatus), TEXT("Failed to open ICUInternationalization data file, missing or corrupt?"));
@@ -157,6 +178,10 @@ bool FICUInternationalization::Initialize()
 	I18N->DefaultLocale = FindOrMakeCulture(FPlatformMisc::GetDefaultLocale(), EAllowDefaultCultureFallback::Yes);
 	I18N->CurrentLanguage = I18N->DefaultLanguage;
 	I18N->CurrentLocale = I18N->DefaultLocale;
+
+#if ENABLE_LOC_TESTING
+	I18N->AddCustomCulture(MakeShared<FLeetCulture>(I18N->InvariantCulture.ToSharedRef()));
+#endif
 
 	InitializeTimeZone();
 	InitializeInvariantGregorianCalendar();
@@ -433,16 +458,16 @@ void FICUInternationalization::ConditionalInitializeAllowedCultures()
 	// Get our current build config string so we can compare it against the config entries
 	FString BuildConfigString;
 	{
-		EBuildConfigurations::Type BuildConfig = FApp::GetBuildConfiguration();
-		if (BuildConfig == EBuildConfigurations::DebugGame)
+		EBuildConfiguration BuildConfig = FApp::GetBuildConfiguration();
+		if (BuildConfig == EBuildConfiguration::DebugGame)
 		{
 			// Treat DebugGame and Debug as the same for loc purposes
-			BuildConfig = EBuildConfigurations::Debug;
+			BuildConfig = EBuildConfiguration::Debug;
 		}
 
-		if (BuildConfig != EBuildConfigurations::Unknown)
+		if (BuildConfig != EBuildConfiguration::Unknown)
 		{
-			BuildConfigString = EBuildConfigurations::ToString(BuildConfig);
+			BuildConfigString = LexToString(BuildConfig);
 		}
 	}
 
@@ -539,10 +564,14 @@ void FICUInternationalization::HandleLanguageChanged(const FString& Name)
 
 void FICUInternationalization::GetCultureNames(TArray<FString>& CultureNames) const
 {
-	CultureNames.Reset(AllAvailableCultures.Num());
+	CultureNames.Reset(AllAvailableCultures.Num() + I18N->CustomCultures.Num());
 	for (const FICUCultureData& CultureData : AllAvailableCultures)
 	{
 		CultureNames.Add(CultureData.Name);
+	}
+	for (const FCultureRef& CustomCulture : I18N->CustomCultures)
+	{
+		CultureNames.Add(CustomCulture->GetName());
 	}
 }
 
@@ -676,10 +705,15 @@ FCulturePtr FICUInternationalization::FindOrMakeCanonizedCulture(const FString& 
 	// If no cached culture is found, try to make one.
 	FCulturePtr NewCulture;
 
-	// Is this in our list of available cultures?
-	if (AllAvailableCulturesMap.Contains(Name))
+	// Is this a custom culture?
+	if (FCulturePtr CustomCulture = I18N->GetCustomCulture(Name))
 	{
-		NewCulture = FCulture::Create(Name);
+		NewCulture = CustomCulture;
+	}
+	// Is this in our list of available cultures?
+	else if (AllAvailableCulturesMap.Contains(Name))
+	{
+		NewCulture = FCulture::Create(MakeUnique<FICUCultureImplementation>(Name));
 	}
 	else
 	{
@@ -689,7 +723,7 @@ FCulturePtr FICUInternationalization::FindOrMakeCanonizedCulture(const FString& 
 		{
 			if (ICUStatus != U_USING_DEFAULT_WARNING || AllowDefaultFallback == EAllowDefaultCultureFallback::Yes)
 			{
-				NewCulture = FCulture::Create(Name);
+				NewCulture = FCulture::Create(MakeUnique<FICUCultureImplementation>(Name));
 			}
 			ures_close(ICUResourceBundle);
 		}
@@ -721,32 +755,50 @@ void FICUInternationalization::InitializeInvariantGregorianCalendar()
 {
 	UErrorCode ICUStatus = U_ZERO_ERROR;
 	InvariantGregorianCalendar = MakeUnique<icu::GregorianCalendar>(ICUStatus);
-	InvariantGregorianCalendar->setTimeZone(icu::TimeZone::getUnknown());
+	if (InvariantGregorianCalendar)
+	{
+		InvariantGregorianCalendar->setTimeZone(icu::TimeZone::getUnknown());
+	}
 }
 
 UDate FICUInternationalization::UEDateTimeToICUDate(const FDateTime& DateTime)
 {
-	// UE4 and ICU have a different time scale for pre-Gregorian dates, so we can't just use the UNIX timestamp from the UE4 DateTime
-	// Instead we have to explode the UE4 DateTime into its component parts, and then use an ICU GregorianCalendar (set to the "unknown" 
-	// timezone so it doesn't apply any adjustment to the time) to reconstruct the DateTime as an ICU UDate in the correct scale
-	int32 Year, Month, Day;
-	DateTime.GetDate(Year, Month, Day);
-	const int32 Hour = DateTime.GetHour();
-	const int32 Minute = DateTime.GetMinute();
-	const int32 Second = DateTime.GetSecond();
+	UDate ICUDate = 0;
 
+	if (InvariantGregorianCalendar)
 	{
-		FScopeLock Lock(&InvariantGregorianCalendarCS);
+		// UE4 and ICU have a different time scale for pre-Gregorian dates, so we can't just use the UNIX timestamp from the UE4 DateTime
+		// Instead we have to explode the UE4 DateTime into its component parts, and then use an ICU GregorianCalendar (set to the "unknown" 
+		// timezone so it doesn't apply any adjustment to the time) to reconstruct the DateTime as an ICU UDate in the correct scale
+		int32 Year, Month, Day;
+		DateTime.GetDate(Year, Month, Day);
+		const int32 Hour = DateTime.GetHour();
+		const int32 Minute = DateTime.GetMinute();
+		const int32 Second = DateTime.GetSecond();
 
-		InvariantGregorianCalendar->set(Year, Month - 1, Day, Hour, Minute, Second);
-		
-		UErrorCode ICUStatus = U_ZERO_ERROR;
-		return InvariantGregorianCalendar->getTime(ICUStatus);
+		{
+			FScopeLock Lock(&InvariantGregorianCalendarCS);
+
+			InvariantGregorianCalendar->set(Year, Month - 1, Day, Hour, Minute, Second);
+
+			UErrorCode ICUStatus = U_ZERO_ERROR;
+			ICUDate = InvariantGregorianCalendar->getTime(ICUStatus);
+		}
 	}
+	else
+	{
+		// This method is less accurate (see the comment above), but will work well enough if an ICU GregorianCalendar isn't available
+		const int64 UnixTimestamp = DateTime.ToUnixTimestamp();
+		ICUDate = static_cast<UDate>(static_cast<double>(UnixTimestamp) * U_MILLIS_PER_SECOND);
+	}
+
+	return ICUDate;
 }
 
 UBool FICUInternationalization::OpenDataFile(const void* InContext, void** OutFileContext, void** OutContents, const char* InPath)
 {
+	LLM_SCOPE(ELLMTag::Localization);
+
 	FICUInternationalization* This = (FICUInternationalization*)InContext;
 	check(This);
 

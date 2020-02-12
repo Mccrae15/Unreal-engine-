@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -41,6 +41,10 @@ public:
 	UPROPERTY(EditAnywhere, Category="Behavior")
 	FVector2D Thickness;
 
+	/** The margin around the scrollbar */
+	UPROPERTY(EditAnywhere, Category = "Behavior")
+	FMargin Padding;
+
 public:
 
 	/**
@@ -78,7 +82,10 @@ public:
 	//~ End UVisual Interface
 
 	//~ Begin UObject Interface
+#if WITH_EDITORONLY_DATA
+	virtual void Serialize(FArchive& Ar) override;
 	virtual void PostLoad() override;
+#endif // if WITH_EDITORONLY_DATA
 	//~ End UObject Interface
 
 #if WITH_EDITOR

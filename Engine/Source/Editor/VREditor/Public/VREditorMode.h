@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -67,9 +67,6 @@ public:
 
 	/** When the user actually enters the VR Editor mode */
 	void Enter();
-
-	/** When Blueprints are reinstanced so we can re-connect our interactors. */
-	void OnBlueprintReinstanced();
 
 	/** When the user leaves the VR Editor mode */
 	void Exit( const bool bShouldDisableStereo );
@@ -175,6 +172,12 @@ public:
 		return *UISystem;
 	}
 
+	/** Check whether the UISystem exists */
+	bool UISystemIsActive() const
+	{
+		return UISystem != nullptr;
+	}
+
 	/** Lets other modules know if the radial menu is visible on a given interactor so input should be handled differently */
 	bool IsShowingRadialMenu( const class UVREditorInteractor* Interactor ) const;
 
@@ -270,7 +273,7 @@ public:
 	void TogglePIEAndVREditor();
 
 	/** Create a static motion controller mesh for the current HMD platform */
-	UStaticMeshComponent* CreateMotionControllerMesh( AActor* OwningActor, USceneComponent* AttachmentToComponent );
+	UStaticMeshComponent* CreateMotionControllerMesh( AActor* OwningActor, USceneComponent* AttachmentToComponent, UStaticMesh* OptionalControllerMesh = nullptr );
 
 	/** Helper functions to create a static mesh */
 	UStaticMeshComponent* CreateMesh( AActor* OwningActor, const FString& MeshName, USceneComponent* AttachmentToComponent /*= nullptr */ );
@@ -328,6 +331,11 @@ public:
 	/** Delegate to be called when the debug mode is toggled. */
 	DECLARE_EVENT_OneParam(UVREditorMode, FOnToggleVRModeDebug, bool);
 	FOnToggleVRModeDebug& OnToggleDebugMode() { return OnToggleDebugModeEvent; };
+
+	const TArray<UVREditorInteractor*> GetVRInteractors() const
+	{
+		return Interactors;
+	}
 
 protected:
 
@@ -491,10 +499,10 @@ public:
 	void RefreshVREditorSequencer(class ISequencer* InCurrentSequencer);
 
 	/** Refresh the current actor preview widget on an in-world UI panel */
-	void RefreshActorPreviewWidget(TSharedRef<SWidget> InWidget, int32 Index, AActor *Actor);
+	void RefreshActorPreviewWidget(TSharedRef<SWidget> InWidget, int32 Index, AActor *Actor, bool bIsPanelDetached = false);
 
 	/** General way to spawn an external UMG UI from a radial menu */
-	void UpdateExternalUMGUI(TSubclassOf<class UUserWidget> InUMGClass, FName Name, FVector2D InSize);
+	void UpdateExternalUMGUI(const struct FVREditorFloatingUICreationContext& CreationContext);
 
 	/** General way to spawn an external Slate UI from a radial menu */
 	void UpdateExternalSlateUI(TSharedRef<SWidget> InWidget, FName Name, FVector2D InSize);

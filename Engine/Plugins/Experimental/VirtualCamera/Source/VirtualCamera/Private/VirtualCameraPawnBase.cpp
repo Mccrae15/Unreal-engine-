@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "VirtualCameraPawnBase.h"
 #include "UnrealClient.h"
@@ -23,6 +23,7 @@ AVirtualCameraPawnBase::AVirtualCameraPawnBase(const FObjectInitializer& ObjectI
 
 	MovementComponent = CreateDefaultSubobject<UVirtualCameraMovementComponent>("Movement Component");
 	MovementComponent->UpdatedComponent = CineCamera;
+	MovementComponent->SetRootComponent(DefaultSceneRoot);
 
 	// Set Default Variables
 	HomeWaypointName = "";
@@ -145,8 +146,8 @@ FString AVirtualCameraPawnBase::SavePreset(const bool bSaveCameraSettings, const
 	{
 		PresetToAdd.CameraSettings.FocalLength = CineCamera->GetCurrentFocalLength();
 		PresetToAdd.CameraSettings.Aperture = CineCamera->GetCurrentAperture();
-		PresetToAdd.CameraSettings.FilmbackWidth = CineCamera->FilmbackSettings.SensorWidth;
-		PresetToAdd.CameraSettings.FilmbackHeight = CineCamera->FilmbackSettings.SensorHeight;	
+		PresetToAdd.CameraSettings.FilmbackWidth = CineCamera->Filmback.SensorWidth;
+		PresetToAdd.CameraSettings.FilmbackHeight = CineCamera->Filmback.SensorHeight;	
 	}
 
 	if (MovementComponent)
@@ -233,8 +234,8 @@ void AVirtualCameraPawnBase::UpdateSettingsFromPreset(FVirtualCameraSettingsPres
 		{
 			CineCamera->CurrentAperture = PresetToLoad->CameraSettings.Aperture;
 			CineCamera->CurrentFocalLength = PresetToLoad->CameraSettings.FocalLength;
-			CineCamera->FilmbackSettings.SensorWidth = PresetToLoad->CameraSettings.FilmbackWidth;
-			CineCamera->FilmbackSettings.SensorHeight = PresetToLoad->CameraSettings.FilmbackHeight;
+			CineCamera->Filmback.SensorWidth = PresetToLoad->CameraSettings.FilmbackWidth;
+			CineCamera->Filmback.SensorHeight = PresetToLoad->CameraSettings.FilmbackHeight;
 		}
 	}
 	
@@ -299,7 +300,7 @@ FString AVirtualCameraPawnBase::TakeScreenshot()
 		// Apply aspect ratio restraints to image
 		if (CineCamera && World)
 		{
-			CineCamera->FilmbackSettings = CineCamera->DesiredFilmbackSettings;
+			CineCamera->Filmback = CineCamera->DesiredFilmbackSettings;
 			CineCamera->StopCameraViewUpdates();
 
 			FScreenshotRequest::RequestScreenshot(false);
@@ -412,7 +413,7 @@ void AVirtualCameraPawnBase::SaveSettings()
 	// Save waypoints
 	SaveGameInstance->Waypoints = Waypoints;
 	SaveGameInstance->HomeWaypointName = HomeWaypointName;
-	
+
 	// Save screenshots
 	SaveGameInstance->Screenshots = Screenshots;
 
@@ -424,8 +425,8 @@ void AVirtualCameraPawnBase::SaveSettings()
 
 	// Save filmback settings
 	SaveGameInstance->CameraSettings.FilmbackName = CineCamera->GetCurrentFilmbackName();
-	SaveGameInstance->CameraSettings.FilmbackWidth = CineCamera->FilmbackSettings.SensorWidth;
-	SaveGameInstance->CameraSettings.FilmbackHeight = CineCamera->FilmbackSettings.SensorHeight;
+	SaveGameInstance->CameraSettings.FilmbackWidth = CineCamera->Filmback.SensorWidth;
+	SaveGameInstance->CameraSettings.FilmbackHeight = CineCamera->Filmback.SensorHeight;
 	SaveGameInstance->CameraSettings.MatteOpacity = CineCamera->MatteOpacity;
 
 	// Save axis settings
@@ -503,8 +504,8 @@ void AVirtualCameraPawnBase::LoadSettings()
 	if (!CineCamera->SetFilmbackPresetOption(SaveGameInstance->CameraSettings.FilmbackName))
 	{
 		// If name isn't found, use backup settings
-		CineCamera->FilmbackSettings.SensorWidth = SaveGameInstance->CameraSettings.FilmbackWidth;
-		CineCamera->FilmbackSettings.SensorHeight = SaveGameInstance->CameraSettings.FilmbackHeight;
+		CineCamera->Filmback.SensorWidth = SaveGameInstance->CameraSettings.FilmbackWidth;
+		CineCamera->Filmback.SensorHeight = SaveGameInstance->CameraSettings.FilmbackHeight;
 	}
 	CineCamera->MatteOpacity = SaveGameInstance->CameraSettings.MatteOpacity;
 
@@ -540,3 +541,46 @@ FString AVirtualCameraPawnBase::LeftPadWithZeros(int32 InNumber, int32 MinNumber
 
 	return ReturnString;
 }
+
+//~ Begin IVirtualCameraPresetContainer Interface
+
+FString AVirtualCameraPawnBase::SavePreset_Implementation(const bool bSaveCameraSettings, const bool bSaveStabilization, const bool bSaveAxisLocking, const bool bSaveMotionScale)
+{
+	return SavePreset(bSaveCameraSettings, bSaveStabilization, bSaveAxisLocking, bSaveMotionScale);
+}
+
+bool AVirtualCameraPawnBase::LoadPreset_Implementation(const FString& PresetName)
+{
+	return LoadPreset(PresetName);
+}
+
+int32 AVirtualCameraPawnBase::DeletePreset_Implementation(const FString& PresetName)
+{
+	return DeletePreset(PresetName);
+}
+
+TMap<FString, FVirtualCameraSettingsPreset> AVirtualCameraPawnBase::GetSettingsPresets_Implementation()
+{
+	return GetSettingsPresets();
+}
+
+//~ End IVirtualCameraPresetContainer Interface
+
+//~ Begin IVirtualCameraOptions Interface
+
+void AVirtualCameraPawnBase::SetDesiredDistanceUnits_Implementation(const EUnit DesiredUnits)
+{
+	SetDesiredDistanceUnits(DesiredUnits);
+}
+
+EUnit AVirtualCameraPawnBase::GetDesiredDistanceUnits_Implementation()
+{
+	return GetDesiredDistanceUnits();
+}
+
+bool AVirtualCameraPawnBase::IsFocusVisualizationAllowed_Implementation()
+{
+	return IsFocusVisualizationAllowed();
+}
+
+//~ End IVirtualCameraOptions Interface

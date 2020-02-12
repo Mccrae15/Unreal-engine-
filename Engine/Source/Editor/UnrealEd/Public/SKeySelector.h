@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -55,6 +55,8 @@ protected:
 	const FSlateBrush* GetKeyIconImage() const;
 	/** Gets a succinct description for the key being manipulated */
 	FText GetKeyDescription() const;
+	/** Gets a tooltip for the selected key */
+	FText GetKeyTooltip() const;
 
 	/** Treeview support functions */
 	virtual TSharedRef<ITableRow> GenerateKeyTreeRow(FKeyTreeItem InItem, const TSharedRef<STableViewBase>& OwnerTree);

@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "DetailItemNode.h"
 #include "DetailCategoryGroupNode.h"
@@ -129,9 +129,9 @@ void FDetailItemNode::GetFilterStrings(TArray<FString>& OutFilterStrings) const
 
 void FDetailItemNode::InitPropertyEditor()
 {
-	UProperty* NodeProperty = Customization.GetPropertyNode()->GetProperty();
+	FProperty* NodeProperty = Customization.GetPropertyNode()->GetProperty();
 
-	if( NodeProperty && (NodeProperty->IsA<UArrayProperty>() || NodeProperty->IsA<USetProperty>() || NodeProperty->IsA<UMapProperty>() ))
+	if( NodeProperty && (NodeProperty->IsA<FArrayProperty>() || NodeProperty->IsA<FSetProperty>() || NodeProperty->IsA<FMapProperty>() ))
 	{
 		const bool bUpdateFilteredNodes = false;
 		FSimpleDelegate OnRegenerateChildren = FSimpleDelegate::CreateSP( this, &FDetailItemNode::GenerateChildren, bUpdateFilteredNodes );
@@ -226,6 +226,7 @@ TSharedRef< ITableRow > FDetailItemNode::GenerateWidgetForTableView( const TShar
 			SNew(SDetailCategoryTableRow, AsShared(), OwnerTable)
 			.DisplayName(Customization.GetPropertyNode()->GetDisplayName())
 			.AddMetaData<FTagMetaData>(TagMeta)
+			.ColumnSizeData(&ColumnSizeData)
 			.InnerCategory( true );
 	}
 	else
@@ -406,15 +407,8 @@ bool FDetailItemNode::ShouldBeExpanded() const
 
 ENodeVisibility FDetailItemNode::GetVisibility() const
 {
-	const bool bHasAnythingToShow = Customization.IsValidCustomization();
-
-	const bool bIsForcedHidden = 
-		!bHasAnythingToShow 
-		|| (Customization.HasCustomWidget() && Customization.WidgetDecl->VisibilityAttr.Get() != EVisibility::Visible )
-		|| (Customization.HasPropertyNode() && Customization.PropertyRow->GetPropertyVisibility() != EVisibility::Visible );
-
 	ENodeVisibility Visibility;
-	if( bIsForcedHidden )
+	if(Customization.IsHidden())
 	{
 		Visibility = ENodeVisibility::ForcedHidden;
 	}
@@ -422,7 +416,6 @@ ENodeVisibility FDetailItemNode::GetVisibility() const
 	{
 		Visibility = (bShouldBeVisibleDueToFiltering || bShouldBeVisibleDueToChildFiltering) ? ENodeVisibility::Visible : ENodeVisibility::HiddenDueToFiltering;
 	}
-
 	return Visibility;
 }
 
@@ -483,6 +476,53 @@ static bool PassesAllFilters( FDetailItemNode* ItemNode, const FDetailLayoutCust
 			}
 			return false;
 		}
+
+		static FString GetPropertyNodeValueFilterString(const FDetailLayoutCustomization& InCustomization, TSharedPtr<FPropertyNode> PropertyNode)
+		{
+			if (PropertyNode.IsValid())
+			{
+				// Is it a container (array, map, set?) - if so, ignore it, we don't care about these, only their inner nodes.
+				if (CastField<FArrayProperty>(PropertyNode->GetProperty()) || CastField<FMapProperty>(PropertyNode->GetProperty()) || CastField<FSetProperty>(PropertyNode->GetProperty()))
+				{
+					return FString();
+				}
+
+				// Is it a struct?  If so, some structs are useful, like FGameplayTag, or FGameplayTags, but if it's a user struct for the game
+				// like FMyGameplayStruct, with a bunch of other sub nodes, that will individually be matched and filtered, there's no reason
+				// to filter on the struct as a whole, so essentially what we're doing here is only checking structs that are leaf nodes.
+				if (CastField<FStructProperty>(PropertyNode->GetProperty()))
+				{
+					if (PropertyNode->GetNumChildNodes() > 0)
+					{
+						return FString();
+					}
+				}
+
+				// TODO Will have to do something special for EditInlineNew UObjects, rather than just a simple object path.
+				if (FObjectProperty* ObjectProperty = CastField<FObjectProperty>(PropertyNode->GetProperty()))
+				{
+					uint8* ValueAddress = nullptr;
+					FPropertyAccess::Result Result = PropertyNode->GetSingleReadAddress(ValueAddress);
+					if (ValueAddress != nullptr)
+					{
+						if (UObject* ObjectValue = ObjectProperty->GetObjectPropertyValue(ValueAddress))
+						{
+							return ObjectValue->GetName();
+						}
+					}
+				}
+				else
+				{
+					// PPF_SimpleObjectText, seems to get the most reasonable string for searching.
+					FString OutString;
+					PropertyNode->GetPropertyValueString(OutString, true, PPF_SimpleObjectText);
+
+					return OutString;
+				}
+			}
+
+			return FString();
+		}
 	};
 
 	bool bPassesAllFilters = true;
@@ -495,6 +535,7 @@ static bool PassesAllFilters( FDetailItemNode* ItemNode, const FDetailLayoutCust
 		TSharedPtr<FPropertyNode> PropertyNodePin = InCustomization.GetPropertyNode();
 		
 		const bool bPassesCategoryFilter = !bSearchFilterIsEmpty && InFilter.bShowAllChildrenIfCategoryMatches ? Local::StringPassesFilter(InFilter, InCategoryName) : false;
+		const bool bPassesValueFilter = !bSearchFilterIsEmpty && Local::StringPassesFilter(InFilter, Local::GetPropertyNodeValueFilterString(InCustomization, PropertyNodePin));
 
 		bPassesAllFilters = false;
 		if( PropertyNodePin.IsValid() && !PropertyNodePin->AsCategoryNode())
@@ -503,7 +544,7 @@ static bool PassesAllFilters( FDetailItemNode* ItemNode, const FDetailLayoutCust
 			const bool bIsSeenDueToFiltering = PropertyNodePin->HasNodeFlags(EPropertyNodeFlags::IsSeenDueToFiltering) != 0;
 			const bool bIsParentSeenDueToFiltering = PropertyNodePin->HasNodeFlags(EPropertyNodeFlags::IsParentSeenDueToFiltering) != 0;
 
-			const bool bPassesSearchFilter = bSearchFilterIsEmpty || ( bIsNotBeingFiltered || bIsSeenDueToFiltering || bIsParentSeenDueToFiltering );
+			const bool bPassesSearchFilter = bPassesCategoryFilter || bPassesValueFilter || bSearchFilterIsEmpty || ( bIsNotBeingFiltered || bIsSeenDueToFiltering || bIsParentSeenDueToFiltering );
 			const bool bPassesModifiedFilter = bPassesSearchFilter && ( InFilter.bShowOnlyModifiedProperties == false || PropertyNodePin->GetDiffersFromDefault() == true );
 			const bool bPassesDifferingFilter = InFilter.bShowOnlyDiffering ? InFilter.WhitelistedProperties.Find(*FPropertyNode::CreatePropertyPath(PropertyNodePin.ToSharedRef())) != nullptr : true;
 
@@ -524,16 +565,25 @@ static bool PassesAllFilters( FDetailItemNode* ItemNode, const FDetailLayoutCust
 			const bool bPassesAnimatedFilter = (InFilter.bShowAnimated == false || Local::ItemIsAnimated(ItemNode, PropertyNodePin));
 
 			// The property node is visible (note categories are never visible unless they have a child that is visible )
-			bPassesAllFilters = (bPassesSearchFilter && bPassesModifiedFilter && bPassesDifferingFilter && bPassesKeyableFilter && bPassesAnimatedFilter) || bPassesCategoryFilter;
+			bPassesAllFilters = bPassesSearchFilter && bPassesModifiedFilter && bPassesDifferingFilter && bPassesKeyableFilter && bPassesAnimatedFilter;
 		}
 		else if (InCustomization.HasCustomWidget())
 		{
-			const bool bPassesTextFilter = Local::StringPassesFilter(InFilter, InCustomization.WidgetDecl->FilterTextString.ToString());
+			const bool bPassesTextFilter = bPassesCategoryFilter || bPassesValueFilter || Local::StringPassesFilter(InFilter, InCustomization.WidgetDecl->FilterTextString.ToString());
 			const bool bPassesModifiedFilter = (InFilter.bShowOnlyModifiedProperties == false || InCustomization.WidgetDecl->DiffersFromDefaultAttr.Get() == true);
 			//@todo we need to support custom widgets for keyable,animated, in particularly for transforms(ComponentTransformDetails).
 			const bool bPassesKeyableFilter = (InFilter.bShowKeyable == false);
 			const bool bPassesAnimatedFilter = (InFilter.bShowAnimated == false);
-			bPassesAllFilters = (bPassesTextFilter && bPassesModifiedFilter && bPassesKeyableFilter && bPassesAnimatedFilter) || bPassesCategoryFilter;
+			bPassesAllFilters = bPassesTextFilter && bPassesModifiedFilter && bPassesKeyableFilter && bPassesAnimatedFilter;
+		}
+		else if (InCustomization.HasCustomBuilder())
+		{
+			const bool bPassesTextFilter = bPassesCategoryFilter || bPassesValueFilter || Local::StringPassesFilter(InFilter, InCustomization.CustomBuilderRow->GetWidgetRow().FilterTextString.ToString());
+			//@todo we need to support custom builders for modified, keyable, animated, in particularly for transforms(ComponentTransformDetails).
+			const bool bPassesModifiedFilter = (InFilter.bShowOnlyModifiedProperties == false);
+			const bool bPassesKeyableFilter = (InFilter.bShowKeyable == false);
+			const bool bPassesAnimatedFilter = (InFilter.bShowAnimated == false);
+			bPassesAllFilters = bPassesTextFilter && bPassesModifiedFilter && bPassesKeyableFilter && bPassesAnimatedFilter;
 		}
 	}
 

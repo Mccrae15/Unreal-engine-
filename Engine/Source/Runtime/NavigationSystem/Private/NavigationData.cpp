@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "NavigationData.h"
 #include "EngineGlobals.h"
@@ -19,9 +19,9 @@
 //----------------------------------------------------------------------//
 // FPathFindingQuery
 //----------------------------------------------------------------------//
-FPathFindingQuery::FPathFindingQuery(const UObject* InOwner, const ANavigationData& InNavData, const FVector& Start, const FVector& End, FSharedConstNavQueryFilter SourceQueryFilter, FNavPathSharedPtr InPathInstanceToFill) :
-	FPathFindingQueryData(InOwner, Start, End, SourceQueryFilter), 
-	NavData(&InNavData), PathInstanceToFill(InPathInstanceToFill), NavAgentProperties(FNavAgentProperties::DefaultProperties)
+FPathFindingQuery::FPathFindingQuery(const UObject* InOwner, const ANavigationData& InNavData, const FVector& Start, const FVector& End, FSharedConstNavQueryFilter SourceQueryFilter, FNavPathSharedPtr InPathInstanceToFill, const float CostLimit) :
+	FPathFindingQueryData(InOwner, Start, End, SourceQueryFilter, CostLimit),
+	NavData(&InNavData), PathInstanceToFill(InPathInstanceToFill), NavAgentProperties(InNavData.GetConfig())
 {
 	if (!QueryFilter.IsValid() && NavData.IsValid())
 	{
@@ -29,8 +29,8 @@ FPathFindingQuery::FPathFindingQuery(const UObject* InOwner, const ANavigationDa
 	}
 }
 
-FPathFindingQuery::FPathFindingQuery(const INavAgentInterface& InNavAgent, const ANavigationData& InNavData, const FVector& Start, const FVector& End, FSharedConstNavQueryFilter SourceQueryFilter, FNavPathSharedPtr InPathInstanceToFill) :
-	FPathFindingQueryData(Cast<UObject>(&InNavAgent), Start, End, SourceQueryFilter),
+FPathFindingQuery::FPathFindingQuery(const INavAgentInterface& InNavAgent, const ANavigationData& InNavData, const FVector& Start, const FVector& End, FSharedConstNavQueryFilter SourceQueryFilter, FNavPathSharedPtr InPathInstanceToFill, const float CostLimit) :
+	FPathFindingQueryData(Cast<UObject>(&InNavAgent), Start, End, SourceQueryFilter, CostLimit),
 	NavData(&InNavData), PathInstanceToFill(InPathInstanceToFill), NavAgentProperties(InNavAgent.GetNavAgentPropertiesRef())
 {
 	if (!QueryFilter.IsValid() && NavData.IsValid())
@@ -40,7 +40,7 @@ FPathFindingQuery::FPathFindingQuery(const INavAgentInterface& InNavAgent, const
 }
 
 FPathFindingQuery::FPathFindingQuery(const FPathFindingQuery& Source) :
-	FPathFindingQueryData(Source.Owner.Get(), Source.StartLocation, Source.EndLocation, Source.QueryFilter, Source.NavDataFlags, Source.bAllowPartialPaths),
+	FPathFindingQueryData(Source.Owner.Get(), Source.StartLocation, Source.EndLocation, Source.QueryFilter, Source.NavDataFlags, Source.bAllowPartialPaths, Source.CostLimit),
 	NavData(Source.NavData), PathInstanceToFill(Source.PathInstanceToFill), NavAgentProperties(Source.NavAgentProperties)
 {
 	if (!QueryFilter.IsValid() && NavData.IsValid())
@@ -71,9 +71,27 @@ FPathFindingQuery::FPathFindingQuery(FNavPathSharedRef PathToRecalculate, const 
 		}
 	}
 
-	if (!QueryFilter.IsValid() && NavData.IsValid())
+	if (NavData.IsValid())
 	{
-		QueryFilter = NavData->GetDefaultQueryFilter();
+		if (!QueryFilter.IsValid())
+		{
+			QueryFilter = NavData->GetDefaultQueryFilter();
+		}
+
+		NavAgentProperties = NavData->GetConfig();
+	}
+}
+
+float FPathFindingQuery::ComputeCostLimitFromHeuristic(const FVector& StartPos, const FVector& EndPos, const float HeuristicScale, const float CostLimitFactor, const float MinimumCostLimit) const
+{
+	if (CostLimitFactor == FLT_MAX)
+	{
+		return FLT_MAX;
+	}
+	else
+	{
+		const float OriginalHeuristicEstimate = HeuristicScale * FVector::Dist(StartPos, EndPos);
+		return FMath::Clamp(CostLimitFactor * OriginalHeuristicEstimate, MinimumCostLimit, FLT_MAX);
 	}
 }
 
@@ -82,7 +100,7 @@ FPathFindingQuery::FPathFindingQuery(FNavPathSharedRef PathToRecalculate, const 
 //----------------------------------------------------------------------//
 uint32 FAsyncPathFindingQuery::LastPathFindingUniqueID = INVALID_NAVQUERYID;
 
-FAsyncPathFindingQuery::FAsyncPathFindingQuery(const UObject* InOwner, const ANavigationData& InNavData, const FVector& Start, const FVector& End, const FNavPathQueryDelegate& Delegate, FSharedConstNavQueryFilter SourceQueryFilter)
+FAsyncPathFindingQuery::FAsyncPathFindingQuery(const UObject* InOwner, const ANavigationData& InNavData, const FVector& Start, const FVector& End, const FNavPathQueryDelegate& Delegate, FSharedConstNavQueryFilter SourceQueryFilter, const float CostLimit)
 : FPathFindingQuery(InOwner, InNavData, Start, End, SourceQueryFilter)
 , QueryID(GetUniqueID())
 , OnDoneDelegate(Delegate)
@@ -99,6 +117,7 @@ FAsyncPathFindingQuery::FAsyncPathFindingQuery(const FPathFindingQuery& Query, c
 {
 
 }
+
 //----------------------------------------------------------------------//
 // FSupportedAreaData
 //----------------------------------------------------------------------//
@@ -122,6 +141,7 @@ ANavigationData::ANavigationData(const FObjectInitializer& ObjectInitializer)
 	: Super(ObjectInitializer)
 	, bEnableDrawing(false)
 	, bForceRebuildOnLoad(false)
+	, bAutoDestroyWhenNoNavigation(true)
 	, bCanBeMainNavData(true)
 	, bCanSpawnOnRebuild(true)
 	, RuntimeGeneration(ERuntimeGenerationType::LegacyGeneration) //TODO: set to a valid value once bRebuildAtRuntime_DEPRECATED is removed
@@ -129,11 +149,12 @@ ANavigationData::ANavigationData(const FObjectInitializer& ObjectInitializer)
 	, FindPathImplementation(NULL)
 	, FindHierarchicalPathImplementation(NULL)
 	, bRegistered(false)
+	, bRebuildingSuspended(false)
 	, NavDataUniqueID(GetNextUniqueID())
 {
 	PrimaryActorTick.bCanEverTick = true;
 	bNetLoadOnClient = false;
-	bCanBeDamaged = false;
+	SetCanBeDamaged(false);
 	DefaultQueryFilter = MakeShareable(new FNavigationQueryFilter());
 	ObservedPathsTickInterval = 0.5;
 
@@ -181,11 +202,11 @@ void ANavigationData::PostInitializeComponents()
 	UWorld* MyWorld = GetWorld();
 	UNavigationSystemV1* NavSys = FNavigationSystem::GetCurrent<UNavigationSystemV1>(MyWorld);
 
-	if (MyWorld == nullptr ||
+	if (bAutoDestroyWhenNoNavigation && (MyWorld == nullptr ||
 		(MyWorld->GetNetMode() != NM_Client && NavSys == nullptr) ||
-		(MyWorld->GetNetMode() == NM_Client && !bNetLoadOnClient))
+		(MyWorld->GetNetMode() == NM_Client && !bNetLoadOnClient)))
 	{
-		UE_LOG(LogNavigation, Log, TEXT("Marking %s as PendingKill due to %s"), *GetName()
+		UE_VLOG_UELOG(this, LogNavigation, Log, TEXT("Marking %s as PendingKill due to %s"), *GetName()
 			, !MyWorld ? TEXT("No World") : (MyWorld->GetNetMode() == NM_Client ? TEXT("not creating navigation on clients") : TEXT("missing navigation system")));
 		CleanUpAndMarkPendingKill();
 	}
@@ -215,7 +236,7 @@ void ANavigationData::RequestRegistration()
 		UNavigationSystemV1* NavSys = FNavigationSystem::GetCurrent<UNavigationSystemV1>(GetWorld());
 		if (NavSys)
 		{
-			NavSys->RequestRegistration(this);
+			NavSys->RequestRegistrationDeferred(*this);
 		}
 	}
 }
@@ -319,7 +340,6 @@ void ANavigationData::TickActor(float DeltaTime, enum ELevelTick TickType, FActo
 			}
 
 			FPathFindingQuery Query(PinnedPath.ToSharedRef());
-			// @todo consider supplying NavAgentPropertied from path's querier
 			const FPathFindingResult Result = FindPath(Query.NavAgentProperties, Query.SetPathInstanceToUpdate(PinnedPath));
 
 			// update time stamp to give observers any means of telling if it has changed
@@ -423,7 +443,7 @@ void ANavigationData::PostEditUndo()
 		}
 		else
 		{
-			NavSys->RequestRegistration(this);
+			NavSys->RequestRegistrationDeferred(*this);
 		}
 	}
 }
@@ -501,6 +521,8 @@ void ANavigationData::RebuildAll()
 	
 	if (NavDataGenerator.IsValid())
 	{
+		// mark outermost package as dirty. Internal filters will dirty only for valid scenarios (i.e. commandlet or editor mode only)
+		MarkPackageDirty();
 		NavDataGenerator->RebuildAll();
 	}
 }
@@ -545,9 +567,35 @@ void ANavigationData::TickAsyncBuild(float DeltaSeconds)
 
 void ANavigationData::RebuildDirtyAreas(const TArray<FNavigationDirtyArea>& DirtyAreas)
 {
-	if (NavDataGenerator.IsValid())
+	if (bRebuildingSuspended)
 	{
-		NavDataGenerator->RebuildDirtyAreas(DirtyAreas);
+		SuspendedDirtyAreas.Append(DirtyAreas);
+	}
+	else
+	{
+		if (NavDataGenerator.IsValid())
+		{
+			NavDataGenerator->RebuildDirtyAreas(DirtyAreas);
+		}
+	}
+}
+
+void ANavigationData::SetRebuildingSuspended(const bool bNewSuspend)
+{
+	if (bRebuildingSuspended != bNewSuspend)
+	{
+		bRebuildingSuspended = bNewSuspend;
+		UE_VLOG_UELOG(this, LogNavigation, Verbose, TEXT("%s nav generation %s")
+			, *GetName(), bNewSuspend ? TEXT("SUSPENDED") : TEXT("ACTIVE"));
+
+		if (bNewSuspend == false && SuspendedDirtyAreas.Num() > 0)
+		{
+			UE_VLOG_UELOG(this, LogNavigation, Verbose, TEXT("%s resuming nav generation with %d dirty areas")
+				, *GetName(), SuspendedDirtyAreas.Num());
+			// resuming the generation so we need to utilize SuspendedDirtyAreas and clean it
+			RebuildDirtyAreas(SuspendedDirtyAreas);
+			SuspendedDirtyAreas.Empty();
+		}
 	}
 }
 
@@ -556,12 +604,12 @@ TArray<FBox> ANavigationData::GetNavigableBounds() const
 	TArray<FBox> Result;
 	const UNavigationSystemV1* NavSys = FNavigationSystem::GetCurrent<const UNavigationSystemV1>(GetWorld());
 	
-	const auto& NavigationBounds = NavSys->GetNavigationBounds();
-	Result.Reserve(NavigationBounds.Num());
-
-	for (const auto& Bounds : NavigationBounds)
+	if (NavSys)
 	{
-		Result.Add(Bounds.AreaBox);
+		// @note this has been switched over from calling GetNavigationBounds
+		// to get navigable bounds relevant to this one nav data instance
+		// This implements the original intension of the function
+		NavSys->GetNavigationBoundsForNavData(*this, Result);
 	}
 	
 	return Result;
@@ -572,20 +620,11 @@ TArray<FBox> ANavigationData::GetNavigableBoundsInLevel(ULevel* InLevel) const
 	TArray<FBox> Result;
 	const UNavigationSystemV1* NavSys = FNavigationSystem::GetCurrent<const UNavigationSystemV1>(GetWorld());
 
-	if (NavSys != nullptr)
+	if (NavSys)
 	{
-		const auto& NavigationBounds = NavSys->GetNavigationBounds();
-		Result.Reserve(NavigationBounds.Num());
-
-		for (const auto& Bounds : NavigationBounds)
-		{
-			if (Bounds.Level == InLevel)
-			{
-				Result.Add(Bounds.AreaBox);
-			}
-		}
+		NavSys->GetNavigationBoundsForNavData(*this, Result, InLevel);
 	}
-	
+
 	return Result;
 }
 
@@ -607,7 +646,7 @@ void ANavigationData::OnNavAreaAdded(const UClass* NavAreaClass, int32 AgentInde
 	const bool bIsMetaArea = DefArea != nullptr && DefArea->IsMetaArea();
 	if (!DefArea || bIsMetaArea || !DefArea->IsSupportingAgent(AgentIndex))
 	{
-		UE_LOG(LogNavigation, Verbose, TEXT("%s discarded area %s (valid:%s meta:%s validAgent[%d]:%s)"),
+		UE_VLOG_UELOG(this, LogNavigation, Verbose, TEXT("%s discarded area %s (valid:%s meta:%s validAgent[%d]:%s)"),
 			*GetName(), *GetNameSafe(NavAreaClass),
 			DefArea ? TEXT("yes") : TEXT("NO"),
 			bIsMetaArea ? TEXT("YES") : TEXT("no"),
@@ -623,7 +662,7 @@ void ANavigationData::OnNavAreaAdded(const UClass* NavAreaClass, int32 AgentInde
 		{
 			SupportedAreas[i].AreaClass = NavAreaClass;
 			AreaClassToIdMap.Add(NavAreaClass, SupportedAreas[i].AreaID);
-			UE_LOG(LogNavigation, Verbose, TEXT("%s updated area %s with ID %d"), *GetName(), *AreaClassName, SupportedAreas[i].AreaID);
+			UE_VLOG_UELOG(this, LogNavigation, Verbose, TEXT("%s updated area %s with ID %d"), *GetName(), *AreaClassName, SupportedAreas[i].AreaID);
 			return;
 		}
 	}
@@ -632,7 +671,7 @@ void ANavigationData::OnNavAreaAdded(const UClass* NavAreaClass, int32 AgentInde
 	const int32 MaxSupported = GetMaxSupportedAreas();
 	if (SupportedAreas.Num() >= MaxSupported)
 	{
-		UE_LOG(LogNavigation, Error, TEXT("%s can't support area %s - limit reached! (%d)"), *GetName(), *AreaClassName, MaxSupported);
+		UE_VLOG_UELOG(this, LogNavigation, Error, TEXT("%s can't support area %s - limit reached! (%d)"), *GetName(), *AreaClassName, MaxSupported);
 		return;
 	}
 
@@ -643,7 +682,7 @@ void ANavigationData::OnNavAreaAdded(const UClass* NavAreaClass, int32 AgentInde
 	SupportedAreas.Add(NewAgentData);
 	AreaClassToIdMap.Add(NavAreaClass, NewAgentData.AreaID);
 
-	UE_LOG(LogNavigation, Verbose, TEXT("%s registered area %s with ID %d"), *GetName(), *AreaClassName, NewAgentData.AreaID);
+	UE_VLOG_UELOG(this, LogNavigation, Verbose, TEXT("%s registered area %s with ID %d"), *GetName(), *AreaClassName, NewAgentData.AreaID);
 }
 
 void ANavigationData::OnNavAreaEvent(const UClass* NavAreaClass, ENavAreaEvent::Type Event)
@@ -776,7 +815,7 @@ uint32 ANavigationData::LogMemUsed() const
 	const uint32 MemUsed = ActivePaths.GetAllocatedSize() + SupportedAreas.GetAllocatedSize() +
 		QueryFilters.GetAllocatedSize() + AreaClassToIdMap.GetAllocatedSize();
 
-	UE_LOG(LogNavigation, Display, TEXT("%s: ANavigationData: %u\n    self: %d"), *GetName(), MemUsed, sizeof(ANavigationData));	
+	UE_VLOG_UELOG(this, LogNavigation, Display, TEXT("%s: ANavigationData: %u\n    self: %d"), *GetName(), MemUsed, sizeof(ANavigationData));
 
 	if (NavDataGenerator.IsValid())
 	{

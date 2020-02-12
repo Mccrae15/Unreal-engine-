@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -89,6 +89,8 @@ public:
 	void RaiseNotificationWindows( const TSharedPtr< FLinuxWindow >& ParentWindow);
 
 	void RemoveNotificationWindow(SDL_HWindow HWnd);
+
+	void CheckIfApplicatioNeedsDeactivation();
 
 	EWindowZone::Type WindowHitTest( const TSharedPtr< FLinuxWindow > &window, int x, int y );
 

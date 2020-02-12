@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 /*=============================================================================
 	HitProxies.h: Hit proxy definitions.
@@ -126,7 +126,7 @@ private:
 /**
  * Base class for detecting user-interface hits.
  */
-class HHitProxy : public FRefCountedObject
+class ENGINE_VTABLE HHitProxy : public FRefCountedObject
 {
 	//DECLARE_HIT_PROXY( ENGINE_API )
 	//We separate the GetType function implementation here because this is the base class/

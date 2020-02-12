@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "BlueprintActionMenuUtils.h"
 #include "BlueprintActionMenuBuilder.h"
@@ -158,28 +158,28 @@ static bool BlueprintActionMenuUtilsImpl::IsNonFavoritedAction(FBlueprintActionF
 //------------------------------------------------------------------------------
 static bool BlueprintActionMenuUtilsImpl::IsPureNonConstAction(FBlueprintActionFilter const& Filter, FBlueprintActionInfo& BlueprintAction)
 {
-	bool bIsFliteredOut = false;
+	bool bIsFilteredOut = false;
 
 	if (UFunction const* Function = BlueprintAction.GetAssociatedFunction())
 	{
 		bool const bIsImperative = !Function->HasAnyFunctionFlags(FUNC_BlueprintPure);
 		bool const bIsConstFunc  =  Function->HasAnyFunctionFlags(FUNC_Const);
-		bIsFliteredOut = !bIsImperative && !bIsConstFunc;
+		bIsFilteredOut = !bIsImperative && !bIsConstFunc;
 	}
-	return bIsFliteredOut;
+	return bIsFilteredOut;
 }
 
 //------------------------------------------------------------------------------
 static bool BlueprintActionMenuUtilsImpl::IsUnexposedMemberAction(FBlueprintActionFilter const& Filter, FBlueprintActionInfo& BlueprintAction)
 {
-	bool bIsFliteredOut = false;
+	bool bIsFilteredOut = false;
 
 	if (UFunction const* Function = BlueprintAction.GetAssociatedFunction())
 	{
 		TArray<FString> AllExposedCategories;
-		for (TWeakObjectPtr<UObject> Binding : BlueprintAction.GetBindings())
+		for (FBindingObject Binding : BlueprintAction.GetBindings())
 		{
-			if (UProperty* Property = Cast<UProperty>(Binding.Get()))
+			if (FProperty* Property = Binding.Get<FProperty>())
 			{
 				const FString& ExposedCategoryMetadata = Property->GetMetaData(FBlueprintMetadata::MD_ExposeFunctionCategories);
 				if (ExposedCategoryMetadata.IsEmpty())
@@ -194,19 +194,19 @@ static bool BlueprintActionMenuUtilsImpl::IsUnexposedMemberAction(FBlueprintActi
 		}
 
 		const FString& FunctionCategory = Function->GetMetaData(FBlueprintMetadata::MD_FunctionCategory);
-		bIsFliteredOut = !AllExposedCategories.Contains(FunctionCategory);
+		bIsFilteredOut = !AllExposedCategories.Contains(FunctionCategory);
 	}
-	return bIsFliteredOut;
+	return bIsFilteredOut;
 }
 
 //------------------------------------------------------------------------------
 static bool BlueprintActionMenuUtilsImpl::IsUnexposedNonComponentAction(FBlueprintActionFilter const& Filter, FBlueprintActionInfo& BlueprintAction)
 {
-	bool bIsFliteredOut = false;
+	bool bIsFilteredOut = false;
 
-	for (TWeakObjectPtr<UObject> Binding : BlueprintAction.GetBindings())
+	for (FBindingObject Binding : BlueprintAction.GetBindings())
 	{
-		if (UObjectProperty* ObjectProperty = Cast<UObjectProperty>(Binding.Get()))
+		if (FObjectProperty* ObjectProperty = Binding.Get<FObjectProperty>())
 		{
 			bool const bIsComponent = ObjectProperty->PropertyClass->IsChildOf<UActorComponent>();
 			// ignoring components for this rejection test
@@ -217,11 +217,11 @@ static bool BlueprintActionMenuUtilsImpl::IsUnexposedNonComponentAction(FBluepri
 		}
 		// else, it's not a component... let's do this!
 
-		bIsFliteredOut = IsUnexposedMemberAction(Filter, BlueprintAction);
+		bIsFilteredOut = IsUnexposedMemberAction(Filter, BlueprintAction);
 		break;
 	}
 
-	return bIsFliteredOut;
+	return bIsFilteredOut;
 }
 
 //------------------------------------------------------------------------------
@@ -316,9 +316,9 @@ static FBlueprintActionFilter BlueprintActionMenuUtilsImpl::MakeCallOnMemberFilt
 	for ( const auto& ClassData : TargetClasses)
 	{
 		UClass const* TargetClass = ClassData.TargetClass;
-		for (TFieldIterator<UObjectProperty> PropertyIt(TargetClass, EFieldIteratorFlags::IncludeSuper); PropertyIt; ++PropertyIt)
+		for (TFieldIterator<FObjectProperty> PropertyIt(TargetClass, EFieldIteratorFlags::IncludeSuper); PropertyIt; ++PropertyIt)
 		{
- 			UObjectProperty* ObjectProperty = *PropertyIt;
+ 			FObjectProperty* ObjectProperty = *PropertyIt;
 			if (!ObjectProperty->HasAnyPropertyFlags(CPF_BlueprintVisible))
 			{
 				continue;
@@ -343,7 +343,7 @@ static void BlueprintActionMenuUtilsImpl::AddComponentSections(FBlueprintActionF
 
 	if (ComponentsFilter.Context.SelectedObjects.Num() == 1)
 	{
-		FText const ComponentName = FText::FromName(ComponentsFilter.Context.SelectedObjects.Last()->GetFName());
+		FText const ComponentName = FText::FromName(ComponentsFilter.Context.SelectedObjects.Last().GetFName());
 		FuncSectionHeading  = FText::Format(LOCTEXT("SingleComponentFuncCategory", "Call Function on {0}"), ComponentName);
 		EventSectionHeading = FText::Format(LOCTEXT("SingleComponentEventCategory", "Add Event for {0}"), ComponentName);
 	}
@@ -365,7 +365,7 @@ static void BlueprintActionMenuUtilsImpl::AddLevelActorSections(FBlueprintAction
 
 	if (LevelActorsFilter.Context.SelectedObjects.Num() == 1)
 	{
-		FText const ActorName = FText::FromName(LevelActorsFilter.Context.SelectedObjects.Last()->GetFName());
+		FText const ActorName = FText::FromName(LevelActorsFilter.Context.SelectedObjects.Last().GetFName());
 		FuncSectionHeading  = FText::Format(LOCTEXT("SingleActorFuncCategory", "Call Function on {0}"), ActorName);
 		EventSectionHeading = FText::Format(LOCTEXT("SingleActorEventCategory", "Add Event for {0}"), ActorName);
 	}
@@ -497,13 +497,13 @@ void FBlueprintActionMenuUtils::MakeContextMenu(FBlueprintActionContext const& C
 	UEdGraphSchema_K2 const* K2Schema = GetDefault<UEdGraphSchema_K2>();
 
 	// make sure the bound menu sections have the proper OwnerClasses specified
-	for (UObject* Selection : Context.SelectedObjects)
+	for (FFieldVariant Selection : Context.SelectedObjects)
 	{
-		if (UObjectProperty* ObjProperty = Cast<UObjectProperty>(Selection))
+		if (FObjectProperty* ObjProperty = CastField<FObjectProperty>(Selection.ToField()))
 		{
 			LevelActorsFilter.Context.SelectedObjects.Remove(Selection);
 		}
-		else if (AActor* LevelActor = Cast<AActor>(Selection))
+		else if (AActor* LevelActor = Cast<AActor>(Selection.ToUObject()))
 		{
 			ComponentsFilter.Context.SelectedObjects.Remove(Selection);
 			if (!bCanOperateOnLevelActors || (!LevelActor->NeedsLoadForClient() && !LevelActor->NeedsLoadForServer()))
@@ -754,7 +754,6 @@ const UK2Node* FBlueprintActionMenuUtils::ExtractNodeTemplateFromAction(TSharedP
 			ActionId == FEdGraphSchemaAction_K2AddCustomEvent::StaticGetTypeId() ||
 			ActionId == FEdGraphSchemaAction_K2AddCallOnActor::StaticGetTypeId() ||
 			ActionId == FEdGraphSchemaAction_K2TargetNode::StaticGetTypeId() ||
-			ActionId == FEdGraphSchemaAction_K2PasteHere::StaticGetTypeId() ||
 			ActionId == FEdGraphSchemaAction_K2Event::StaticGetTypeId() || 
 			ActionId == FEdGraphSchemaAction_K2AddEvent::StaticGetTypeId() ||
 			ActionId == FEdGraphSchemaAction_K2InputAction::StaticGetTypeId())

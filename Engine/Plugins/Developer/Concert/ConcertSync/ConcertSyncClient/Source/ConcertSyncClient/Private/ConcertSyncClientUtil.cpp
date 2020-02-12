@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "ConcertSyncClientUtil.h"
 #include "ConcertSyncArchives.h"
@@ -33,6 +33,10 @@
 	#include "UnrealEdGlobals.h"
 	#include "Editor/UnrealEdEngine.h"
 	#include "PackageTools.h"
+	#include "ObjectTools.h"
+	#include "Subsystems/AssetEditorSubsystem.h"
+	#include "GameMapsSettings.h"
+	#include "FileHelpers.h"
 #endif
 
 namespace ConcertSyncClientUtil
@@ -57,6 +61,23 @@ void UpdatePendingKillState(UObject* InObj, const bool bIsPendingKill)
 	}
 }
 
+bool ObjectIdsMatch(const FConcertObjectId& One, const FConcertObjectId& Two)
+{
+	return One.ObjectClassPathName == Two.ObjectClassPathName
+		&& One.ObjectOuterPathName == Two.ObjectOuterPathName
+		&& One.ObjectName == Two.ObjectName;
+}
+
+int32 GetObjectPathDepth(UObject* InObjToTest)
+{
+	int32 Depth = 0;
+	for (UObject* Outer = InObjToTest; Outer; Outer = Outer->GetOuter())
+	{
+		++Depth;
+	}
+	return Depth;
+}
+
 FGetObjectResult GetObject(const FConcertObjectId& InObjectId, const FName InNewName, const FName InNewOuterPath, const bool bAllowCreate)
 {
 	const bool bIsRename = !InNewName.IsNone();
@@ -68,31 +89,20 @@ FGetObjectResult GetObject(const FConcertObjectId& InObjectId, const FName InNew
 	const FName ObjectNameToFind = InObjectId.ObjectName;
 	const FName ObjectNameToCreate = bIsRename ? InNewName : ObjectNameToFind;
 
-	auto FindOrLoadOuterPackage = [](const FName InOuterName) -> UObject*
+	auto FindOrLoadClass = [bAllowCreate](const FName InClassName) -> UClass*
 	{
-		const FString OuterNameStr = InOuterName.ToString();
+		const FString ClassNameStr = InClassName.ToString();
 
-		// Always attempt to find an in-memory object first as we may be calling this function while a load is taking place
-		if (UObject* FoundOuter = StaticFindObject(UObject::StaticClass(), nullptr, *OuterNameStr))
-		{
-			return FoundOuter;
-		}
-
-		// If the outer name is a package path that isn't currently loaded, then we need to try loading it to avoid 
-		// creating an in-memory version of the package (which would prevent the real package ever loading)
-		if (FPackageName::IsValidLongPackageName(OuterNameStr))
-		{
-			return LoadPackage(nullptr, *OuterNameStr, LOAD_NoWarn);
-		}
-
-		return nullptr;
+		return bAllowCreate
+			? LoadObject<UClass>(nullptr, *ClassNameStr)
+			: FindObject<UClass>(nullptr, *ClassNameStr);
 	};
 
-	// We need the object class to do anything
-	if (UClass* ObjectClass = LoadObject<UClass>(nullptr, *InObjectId.ObjectClassPathName.ToString()))
+	// Find the outer for the existing object
+	if (UObject* ExistingObjectOuter = StaticFindObject(UObject::StaticClass(), nullptr, *ObjectOuterPathToFind.ToString()))
 	{
-		// Find the outer for the existing object
-		if (UObject* ExistingObjectOuter = FindOrLoadOuterPackage(ObjectOuterPathToFind))
+		// We need the object class to find or create the object
+		if (UClass* ObjectClass = FindOrLoadClass(InObjectId.ObjectClassPathName))
 		{
 			// Find the existing object
 			if (UObject* ExistingObject = StaticFindObject(ObjectClass, ExistingObjectOuter, *ObjectNameToFind.ToString(), /*bExactClass*/true))
@@ -130,9 +140,13 @@ FGetObjectResult GetObject(const FConcertObjectId& InObjectId, const FName InNew
 				return FGetObjectResult(ExistingObject, ResultFlags);
 			}
 		}
+	}
 
-		// Find the outer for the new object
-		if (UObject* NewObjectOuter = FindOrLoadOuterPackage(ObjectOuterPathToCreate))
+	// Find the outer for the new object
+	if (UObject* NewObjectOuter = StaticFindObject(UObject::StaticClass(), nullptr, *ObjectOuterPathToCreate.ToString()))
+	{
+		// We need the object class to find or create the object
+		if (UClass* ObjectClass = FindOrLoadClass(InObjectId.ObjectClassPathName))
 		{
 			// Find the new object (in case something already created it)
 			if (UObject* NewObject = StaticFindObject(ObjectClass, NewObjectOuter, *ObjectNameToCreate.ToString(), /*bExactClass*/true))
@@ -186,12 +200,12 @@ FGetObjectResult GetObject(const FConcertObjectId& InObjectId, const FName InNew
 	return FGetObjectResult();
 }
 
-bool ImportPropertyData(const FConcertLocalIdentifierTable* InLocalIdentifierTable, const FConcertSyncWorldRemapper& InWorldRemapper, UObject* InObj, const FName InPropertyName, const TArray<uint8>& InSerializedData)
+bool ImportPropertyData(const FConcertLocalIdentifierTable* InLocalIdentifierTable, const FConcertSyncWorldRemapper& InWorldRemapper, const FConcertSessionVersionInfo* InVersionInfo, UObject* InObj, const FName InPropertyName, const TArray<uint8>& InSerializedData)
 {
-	UProperty* Prop = InObj->GetClass()->FindPropertyByName(InPropertyName);
+	FProperty* Prop = InObj->GetClass()->FindPropertyByName(InPropertyName);
 	if (Prop)
 	{
-		FConcertSyncObjectReader ObjectReader(InLocalIdentifierTable, InWorldRemapper, InObj, InSerializedData);
+		FConcertSyncObjectReader ObjectReader(InLocalIdentifierTable, InWorldRemapper, InVersionInfo, InObj, InSerializedData);
 		ObjectReader.SerializeProperty(Prop, InObj);
 		return !ObjectReader.GetError();
 	}
@@ -215,9 +229,9 @@ TArray<FName> GetRootProperties(const TArray<FName>& InChangedProperties)
 	return RootProperties;
 }
 
-UProperty* GetExportedProperty(const UStruct* InStruct, const FName InPropertyName, const bool InIncludeEditorOnlyData)
+FProperty* GetExportedProperty(const UStruct* InStruct, const FName InPropertyName, const bool InIncludeEditorOnlyData)
 {
-	UProperty* Property = FindField<UProperty>(InStruct, InPropertyName);
+	FProperty* Property = FindField<FProperty>(InStruct, InPropertyName);
 
 	// Filter the property
 	if (Property 
@@ -235,7 +249,7 @@ void SerializeProperties(FConcertLocalIdentifierTable* InLocalIdentifierTable, c
 	const TArray<FName> RootPropertyNames = GetRootProperties(InChangedProperties);
 	for (const FName& RootPropertyName : RootPropertyNames)
 	{
-		UProperty* RootProperty = GetExportedProperty(InObject->GetClass(), RootPropertyName, InIncludeEditorOnlyData);
+		FProperty* RootProperty = GetExportedProperty(InObject->GetClass(), RootPropertyName, InIncludeEditorOnlyData);
 		if (RootProperty)
 		{
 			FConcertSerializedPropertyData& PropertyData = OutPropertyDatas.AddDefaulted_GetRef();
@@ -245,12 +259,12 @@ void SerializeProperties(FConcertLocalIdentifierTable* InLocalIdentifierTable, c
 	}
 }
 
-void SerializeProperty(FConcertLocalIdentifierTable* InLocalIdentifierTable, const UObject* InObject, const UProperty* InProperty, const bool InIncludeEditorOnlyData, TArray<uint8>& OutSerializedData)
+void SerializeProperty(FConcertLocalIdentifierTable* InLocalIdentifierTable, const UObject* InObject, const FProperty* InProperty, const bool InIncludeEditorOnlyData, TArray<uint8>& OutSerializedData)
 {
 	bool bSkipAssets = false; // TODO: Handle asset updates
 
 	FConcertSyncObjectWriter ObjectWriter(InLocalIdentifierTable, (UObject*)InObject, OutSerializedData, InIncludeEditorOnlyData, bSkipAssets);
-	ObjectWriter.SerializeProperty((UProperty*)InProperty, (UObject*)InObject);
+	ObjectWriter.SerializeProperty((FProperty*)InProperty, (UObject*)InObject);
 }
 
 void SerializeObject(FConcertLocalIdentifierTable* InLocalIdentifierTable, const UObject* InObject, const TArray<FName>* InChangedProperties, const bool InIncludeEditorOnlyData, TArray<uint8>& OutSerializedData)
@@ -337,43 +351,96 @@ void PurgePackages(TArrayView<const FName> InPackageNames)
 		return;
 	}
 
-	auto MakeObjectPurgeable = [](UObject* InObject)
-	{
-		if (InObject->IsRooted())
-		{
-			InObject->RemoveFromRoot();
-		}
-		InObject->ClearFlags(RF_Public | RF_Standalone);
-	};
-
-	auto MakePackagePurgeable = [MakeObjectPurgeable](UPackage* InPackage)
-	{
-		MakeObjectPurgeable(InPackage);
-		ForEachObjectWithOuter(InPackage, [MakeObjectPurgeable](UObject* InObject)
-		{
-			MakeObjectPurgeable(InObject);
-		});
-	};
-
 #if WITH_EDITOR
-	// Clean-up any in-memory packages that should be purged
-	bool bRunGC = false;
+	TArray<UObject*> ObjectsToPurge;
+	auto CollectObjectToPurge = [&ObjectsToPurge](UObject* InObject)
+	{
+		if (InObject->IsAsset() && GIsEditor)
+		{
+			GEditor->GetEditorSubsystem<UAssetEditorSubsystem>()->CloseAllEditorsForAsset(InObject);
+		}
+		ObjectsToPurge.Add(InObject);
+	};
 
+	// Get the current edited map package to check if its going to be purged.
+	bool bEditedMapPurged = false;
+	UWorld* CurrentWorld = GetCurrentWorld();
+	UPackage* EditedMapPackage = CurrentWorld ? CurrentWorld->GetOutermost(): nullptr;
+
+	// Collect any in-memory packages that should be purged and check if we are including the current map in the purge.
 	for (const FName PackageName : InPackageNames)
 	{
 		UPackage* ExistingPackage = FindPackage(nullptr, *PackageName.ToString());
 		if (ExistingPackage)
 		{
-			bRunGC = true;
-			MakePackagePurgeable(ExistingPackage);
+			// Prevent any message from the editor saying a package is not saved or doesn't exist on disk.
+			ExistingPackage->SetDirtyFlag(false);
+
+			CollectObjectToPurge(ExistingPackage);
+			ForEachObjectWithOuter(ExistingPackage, [&CollectObjectToPurge](UObject* InObject)
+			{
+				CollectObjectToPurge(InObject);
+			});
+
+			bEditedMapPurged |= EditedMapPackage == ExistingPackage;
 		}
 	}
 
-	if (bRunGC)
+	// Broadcast the eminent objects destruction (ex. tell BlueprintActionDatabase to release its reference(s) on Blueprint(s) right now)
+	FEditorDelegates::OnAssetsPreDelete.Broadcast(ObjectsToPurge);
+
+	// Mark objects as purgeable.
+	for (UObject* Object : ObjectsToPurge)
+	{
+		if (Object->IsRooted())
+		{
+			Object->RemoveFromRoot();
+		}
+		Object->ClearFlags(RF_Public | RF_Standalone);
+	}
+
+	// TODO: Revisit force replacing reference, current implementation is too aggressive and causes instability
+	// If we have any object that were made purgeable, null out their references so we can garbage collect
+	//if (ObjectsToPurge.Num() > 0)
+	//{
+	//	ObjectTools::ForceReplaceReferences(nullptr, ObjectsToPurge);
+	//
+	//}
+
+	// Check if the map being edited is going to be purged. (b/c it's being deleted)
+	if (bEditedMapPurged)
+	{
+		// The world being edited was purged and cannot be saved anymore, even with 'Save Current As', replace it by something sensible.
+		FString StartupMapPackage = GetDefault<UGameMapsSettings>()->EditorStartupMap.GetLongPackageName();
+		if (FPackageName::DoesPackageExist(StartupMapPackage))
+		{
+			UEditorLoadingAndSavingUtils::NewMapFromTemplate(StartupMapPackage, /*bSaveExistingMap*/false); // Expected to run GC internally.
+		}
+		else
+		{
+			UEditorLoadingAndSavingUtils::NewBlankMap(/*bSaveExistingMap*/false); // Expected to run GC internally.
+		}
+	}
+	// if we have object to purge but the map isn't one of them collect garbage (if we purged the map it has already been done)
+	else if (ObjectsToPurge.Num() > 0)
 	{
 		CollectGarbage(GARBAGE_COLLECTION_KEEPFLAGS);
 	}
-#endif
+#endif // WITH_EDITOR
+}
+
+UWorld* GetCurrentWorld()
+{
+	UWorld* CurrentWorld = nullptr;
+	if (GIsEditor)
+	{
+		CurrentWorld = GEditor->GetEditorWorldContext().World();
+	}
+	else if (UGameEngine* GameEngine = Cast<UGameEngine>(GEngine))
+	{
+		CurrentWorld = GameEngine->GetGameWorld();
+	}
+	return CurrentWorld;
 }
 
 }

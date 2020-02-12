@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 /*=============================================================================
 	ShadowDepthPixelShader.usf: Pixel shader for writing shadow depth.
@@ -8,6 +8,7 @@
 #define SHADOW_DEPTH_SHADER 1
 #define USE_STENCIL_LOD_DITHER	0
 
+#include "LPVListEntry.ush"
 #include "Common.ush"
 
 // Reroute SceneTexturesStruct uniform buffer references to the shadow depth pass uniform buffer
@@ -83,11 +84,9 @@ void Main(
 #endif
 
 #if PERSPECTIVE_CORRECT_DEPTH
-	float DepthBias = PassStruct.ShadowParams.x;
-	float InvMaxSubjectDepth = PassStruct.ShadowParams.y;
-
+	const float InvMaxSubjectDepth = PassStruct.ShadowParams.w;
 	Inputs.ShadowDepth *= InvMaxSubjectDepth;
-	Inputs.ShadowDepth += DepthBias;
+	Inputs.ShadowDepth += Inputs.DepthBias;
 
 	OutDepth = saturate(Inputs.ShadowDepth);
 #endif
@@ -150,7 +149,7 @@ void Main(
 #if MATERIAL_BLOCK_GI
 	OutColor = 1.0f;
 	OutReflectiveShadowMapDiffuse = opacity;
-#elif MATERIALBLENDING_TRANSLUCENT || MATERIALBLENDING_ALPHACOMPOSITE
+#elif MATERIALBLENDING_TRANSLUCENT || MATERIALBLENDING_ALPHACOMPOSITE || MATERIALBLENDING_ALPHAHOLDOUT
 	OutColor = 0;
 	OutReflectiveShadowMapDiffuse = 0;
 	clip(-1.0);

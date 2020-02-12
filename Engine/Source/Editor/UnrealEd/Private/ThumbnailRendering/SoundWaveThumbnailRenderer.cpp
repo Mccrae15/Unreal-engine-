@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "ThumbnailRendering/SoundWaveThumbnailRenderer.h"
 #include "CanvasItem.h"
@@ -21,7 +21,7 @@ bool USoundWaveThumbnailRenderer::CanVisualizeAsset(UObject* Object)
 	return true;
 }
 
-void USoundWaveThumbnailRenderer::Draw(UObject* Object, int32 X, int32 Y, uint32 Width, uint32 Height, FRenderTarget*, FCanvas* Canvas)
+void USoundWaveThumbnailRenderer::Draw(UObject* Object, int32 X, int32 Y, uint32 Width, uint32 Height, FRenderTarget*, FCanvas* Canvas, bool bAdditionalViewFamily)
 {
 	USoundWave* SoundWave = Cast<USoundWave>(Object);
 	if (SoundWave != nullptr && SoundWave->NumChannels > 0)
@@ -74,11 +74,25 @@ void USoundWaveThumbnailRenderer::Draw(UObject* Object, int32 X, int32 Y, uint32
 					// Make sure we have a mono file here
 					if (SoundWave->NumChannels > 2)
 					{
-						check(WaveInfo.pChannels && *WaveInfo.pChannels == 1);
+						bool bLooksSane = (WaveInfo.pChannels && *WaveInfo.pChannels == 1);
+						if (!bLooksSane)
+						{
+							UE_LOG(LogAudio, Warning, TEXT("USoundWaveThumbnailRenderer::Draw: Not rendering thumbnail for Wave '%s', as its supposed to be mono and has '%d' channels."), 
+								*GetNameSafe(SoundWave), WaveInfo.pChannels ? *WaveInfo.pChannels : -1);
+
+							continue;
+						}
 					}
 					else
 					{
-						check(WaveInfo.pChannels && *WaveInfo.pChannels == SoundWave->NumChannels);
+						bool bLooksSane = WaveInfo.pChannels && *WaveInfo.pChannels == SoundWave->NumChannels;
+						if (!bLooksSane)
+						{
+							UE_LOG(LogAudio, Warning, TEXT("USoundWaveThumbnailRenderer::Draw: Not rendering thumbnail for Wave '%s', as pChannels('%d') != SoundWave->NumChannels('%d')"),
+								*GetNameSafe(SoundWave), WaveInfo.pChannels ? *WaveInfo.pChannels : -1, SoundWave->NumChannels);
+							
+							continue;
+						}
 					}
 
 					// Sample count

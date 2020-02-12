@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 /*==============================================================================
 	ParticleCurveTexture.h: Texture used to hold particle curves.
@@ -158,7 +158,7 @@ public:
 	/**
 	 * Retrieves the curve texture from which shaders can sample.
 	 */
-	FTexture2DRHIParamRef GetCurveTexture() { return CurveTextureRHI; }
+	FRHITexture2D* GetCurveTexture() { return CurveTextureRHI; }
 
 	/**
 	 * Submits pending curves to the GPU.

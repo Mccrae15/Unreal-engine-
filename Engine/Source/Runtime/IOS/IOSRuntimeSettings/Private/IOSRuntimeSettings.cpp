@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "IOSRuntimeSettings.h"
 #include "HAL/FileManager.h"
@@ -14,14 +14,17 @@ UIOSRuntimeSettings::UIOSRuntimeSettings(const FObjectInitializer& ObjectInitial
 	bEnableCloudKitSupport = false;
 	bSupportsPortraitOrientation = true;
 	bSupportsITunesFileSharing = false;
+	bSupportsFilesApp = false;
 	BundleDisplayName = TEXT("UE4 Game");
 	BundleName = TEXT("MyUE4Game");
 	BundleIdentifier = TEXT("com.YourCompany.GameNameNoSpaces");
 	VersionInfo = TEXT("1.0.0");
     FrameRateLock = EPowerUsageFrameRateLock::PUFRL_30;
+	bEnableDynamicMaxFPS = false;
 	bSupportsIPad = true;
 	bSupportsIPhone = true;
-	MinimumiOSVersion = EIOSVersion::IOS_10;
+	MinimumiOSVersion = EIOSVersion::IOS_11;
+    bBuildAsFramework = true;
 	EnableRemoteShaderCompile = false;
 	bGeneratedSYMFile = false;
 	bGeneratedSYMBundle = false;
@@ -32,7 +35,7 @@ UIOSRuntimeSettings::UIOSRuntimeSettings(const FObjectInitializer& ObjectInitial
 	bShipForArmV7 = false;
 	bShipForArm64 = true;
 	bShipForArmV7S = false;
-	bShipForBitcode = false;
+	bShipForBitcode = true;
 	bUseRSync = true;
 	AdditionalPlistData = TEXT("");
 	AdditionalLinkerFlags = TEXT("");
@@ -41,15 +44,15 @@ UIOSRuntimeSettings::UIOSRuntimeSettings(const FObjectInitializer& ObjectInitial
 	bAllowRemoteRotation = true;
 	bUseRemoteAsVirtualJoystick = true;
 	bUseRemoteAbsoluteDpadValues = false;
+	bDisableMotionData = false;
     bEnableRemoteNotificationsSupport = false;
     bEnableBackgroundFetch = false;
-	bSupportsOpenGLES2 = false;
 	bSupportsMetal = true;
 	bSupportsMetalMRT = false;
 	bDisableHTTPS = false;
 }
 
-void UIOSRuntimeSettings::PostReloadConfig(class UProperty* PropertyThatWasLoaded)
+void UIOSRuntimeSettings::PostReloadConfig(class FProperty* PropertyThatWasLoaded)
 {
 	Super::PostReloadConfig(PropertyThatWasLoaded);
 
@@ -77,11 +80,6 @@ void UIOSRuntimeSettings::PostEditChangeProperty(struct FPropertyChangedEvent& P
 	{
 		bSupportsMetal = true;
 		UpdateSinglePropertyInConfigFile(GetClass()->FindPropertyByName(GET_MEMBER_NAME_CHECKED(UIOSRuntimeSettings, bSupportsMetal)), GetDefaultConfigFilename());
-	}
-	if (bSupportsOpenGLES2)
-	{
-		bSupportsOpenGLES2 = false;
-		UpdateSinglePropertyInConfigFile(GetClass()->FindPropertyByName(GET_MEMBER_NAME_CHECKED(UIOSRuntimeSettings, bSupportsOpenGLES2)), GetDefaultConfigFilename());
 	}
 
 	// Ensure that at least arm64 is selected for shipping and dev
@@ -153,50 +151,46 @@ void UIOSRuntimeSettings::PostInitProperties()
 		}
 	}
 
-	// switch IOS_6.1, IOS_7, IOS_8, and IOS_9 to IOS_10
-	if (MinimumiOSVersion < EIOSVersion::IOS_10)
+	// switch IOS_6.1, IOS_7, IOS_8, IOS_9 and IOS_10 to IOS_11
+	if (MinimumiOSVersion < EIOSVersion::IOS_11)
 	{
-		MinimumiOSVersion = EIOSVersion::IOS_10;
-	}
-	if (bSupportsOpenGLES2)
-	{
-		bSupportsOpenGLES2 = false;
+		MinimumiOSVersion = EIOSVersion::IOS_11;
+		UpdateSinglePropertyInConfigFile(GetClass()->FindPropertyByName(GET_MEMBER_NAME_CHECKED(UIOSRuntimeSettings, MinimumiOSVersion)), GetDefaultConfigFilename());
 	}
 	if (bDevForArmV7)
 	{
 		bDevForArmV7 = false;
+		UpdateSinglePropertyInConfigFile(GetClass()->FindPropertyByName(GET_MEMBER_NAME_CHECKED(UIOSRuntimeSettings, bDevForArmV7)), GetDefaultConfigFilename());
 	}
 	if (bDevForArmV7S)
 	{
 		bDevForArmV7S = false;
+		UpdateSinglePropertyInConfigFile(GetClass()->FindPropertyByName(GET_MEMBER_NAME_CHECKED(UIOSRuntimeSettings, bDevForArmV7S)), GetDefaultConfigFilename());
 	}
 	if (bShipForArmV7)
 	{
 		bShipForArmV7 = false;
+		UpdateSinglePropertyInConfigFile(GetClass()->FindPropertyByName(GET_MEMBER_NAME_CHECKED(UIOSRuntimeSettings, bShipForArmV7)), GetDefaultConfigFilename());
 	}
 	if (bShipForArmV7S)
 	{
 		bShipForArmV7S = false;
+		UpdateSinglePropertyInConfigFile(GetClass()->FindPropertyByName(GET_MEMBER_NAME_CHECKED(UIOSRuntimeSettings, bShipForArmV7S)), GetDefaultConfigFilename());
 	}
 	if (!bSupportsMetal && !bSupportsMetalMRT)
 	{
 		bSupportsMetal = true;
+		UpdateSinglePropertyInConfigFile(GetClass()->FindPropertyByName(GET_MEMBER_NAME_CHECKED(UIOSRuntimeSettings, bSupportsMetal)), GetDefaultConfigFilename());
 	}
 	if (!bDevForArm64)
 	{
 		bDevForArm64 = true;
+		UpdateSinglePropertyInConfigFile(GetClass()->FindPropertyByName(GET_MEMBER_NAME_CHECKED(UIOSRuntimeSettings, bDevForArm64)), GetDefaultConfigFilename());
 	}
 	if (!bShipForArm64)
 	{
 		bShipForArm64 = true;
+		UpdateSinglePropertyInConfigFile(GetClass()->FindPropertyByName(GET_MEMBER_NAME_CHECKED(UIOSRuntimeSettings, bShipForArm64)), GetDefaultConfigFilename());
 	}
-	
-	// Due to a driver bug on A8 devices running iOS 9 we can only support the global clip-plane when running iOS 10+
-	static IConsoleVariable* ClipPlaneCVar = IConsoleManager::Get().FindConsoleVariable(TEXT("r.AllowGlobalClipPlane"));
-	if (ClipPlaneCVar && ClipPlaneCVar->GetInt() != 0 && MinimumiOSVersion < EIOSVersion::IOS_10)
-	{
-		MinimumiOSVersion = EIOSVersion::IOS_10;
-	}
-
 }
 #endif

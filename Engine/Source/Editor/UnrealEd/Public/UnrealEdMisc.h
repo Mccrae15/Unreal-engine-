@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -10,6 +10,7 @@
 class FPerformanceAnalyticsStats;
 class FTickableEditorObject;
 class FUICommandInfo;
+class FConsoleCommandExecutor;
 
 enum class EMapChangeType : uint8
 {
@@ -344,6 +345,9 @@ private:
 
 	/** Package names and the number of times they have been updated */
 	TMap<FName, uint32> NumUpdatesByAssetName;
+
+	/** Pointer to the classic "Cmd" executor */
+	TUniquePtr<FConsoleCommandExecutor> CmdExec;
 
 	/** Handle to the registered OnUserDefinedChordChanged delegate. */
 	FDelegateHandle OnUserDefinedChordChangedDelegateHandle;

@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "NiagaraDataInterfaceCurlNoise.h"
 #include "NiagaraShader.h"
@@ -164,7 +164,7 @@ FNiagaraMatrix4x3 SimplexCorners(FVector v)
 	return FNiagaraMatrix4x3(base, base + a1, base + a2, base + 0.5);
 }
 
-FVector4 NiagaraVector4Saturate(FVector4 v) {
+FVector4 NiagaraVector4Saturate(const FVector4& v) {
 	return FVector4(FMath::Clamp(v.X, 0.0f, 1.0f), FMath::Clamp(v.Y, 0.0f, 1.0f), FMath::Clamp(v.Z, 0.0f, 1.0f), FMath::Clamp(v.W, 0.0f, 1.0f));
 }
 
@@ -183,7 +183,7 @@ struct FNiagaraMatrix3x4
 	FVector4 row2;
 
 	FNiagaraMatrix3x4() : row0(FVector4(0.0, 0.0, 0.0, 0.0)), row1(FVector4(0.0, 0.0, 0.0, 0.0)), row2(FVector4(0.0, 0.0, 0.0, 0.0)) {}
-	FNiagaraMatrix3x4(FVector4 row0, FVector4 row1, FVector4 row2) : row0(row0), row1(row1), row2(row2) {}
+	FNiagaraMatrix3x4(const FVector4& row0, const FVector4& row1, const FVector4& row2) : row0(row0), row1(row1), row2(row2) {}
 
 	FVector4& operator[](int row)
 	{
@@ -226,14 +226,14 @@ FVector FNiagaraUIntVectorToFVector(FNiagaraUIntVector v)
 	return FVector(v.X, v.Y, v.Z);
 }
 
-FVector MulFVector4AndFNiagaraMatrix4x3(FVector4 lhs, FNiagaraMatrix4x3 rhs)
+FVector MulFVector4AndFNiagaraMatrix4x3(const FVector4& lhs, FNiagaraMatrix4x3 rhs)
 {
 	return FVector(lhs[0] * rhs[0][0] + lhs[1] * rhs[1][0] + lhs[2] * rhs[2][0] + lhs[3] * rhs[3][0],
 		           lhs[0] * rhs[0][1] + lhs[1] * rhs[1][1] + lhs[2] * rhs[2][1] + lhs[3] * rhs[3][1],
 	           	   lhs[0] * rhs[0][2] + lhs[1] * rhs[1][2] + lhs[2] * rhs[2][2] + lhs[3] * rhs[3][2]);
 }
 
-FVector MulFNiagaraMatrix3x4FAndVector4(FNiagaraMatrix3x4 lhs, FVector4 rhs)
+FVector MulFNiagaraMatrix3x4FAndVector4(const FNiagaraMatrix3x4& lhs, const FVector4& rhs)
 {
 	return FVector(lhs[0][0] * rhs[0] + lhs[0][1] * rhs[1] + lhs[0][2] * rhs[2] + lhs[0][3] * rhs[3],
 		           lhs[1][0] * rhs[0] + lhs[1][1] * rhs[1] + lhs[1][2] * rhs[2] + lhs[1][3] * rhs[3],
@@ -308,6 +308,8 @@ UNiagaraDataInterfaceCurlNoise::UNiagaraDataInterfaceCurlNoise(FObjectInitialize
 	, Seed(0)
 {
 	OffsetFromSeed = FNiagaraUIntVectorToFVector(Rand3DPCG16(FIntVector(Seed, Seed, Seed))) / 100.0;
+
+	Proxy.Reset(new FNiagaraDataInterfaceProxyCurlNoise(OffsetFromSeed));
 }
 
 void UNiagaraDataInterfaceCurlNoise::PostInitProperties()
@@ -324,11 +326,13 @@ void UNiagaraDataInterfaceCurlNoise::PostLoad()
 {
 	Super::PostLoad();
 	OffsetFromSeed = FNiagaraUIntVectorToFVector(Rand3DPCG16(FIntVector(Seed, Seed, Seed))) / 100.0;
+
+	PushToRenderThread();
 }
 
 #if WITH_EDITOR
 
-void UNiagaraDataInterfaceCurlNoise::PreEditChange(UProperty* PropertyAboutToChange)
+void UNiagaraDataInterfaceCurlNoise::PreEditChange(FProperty* PropertyAboutToChange)
 {
 	Super::PreEditChange(PropertyAboutToChange);
 	
@@ -346,6 +350,8 @@ void UNiagaraDataInterfaceCurlNoise::PostEditChangeProperty(struct FPropertyChan
 		// NOTE: Calculate the offset based on the seed on-change instead of on every invocation for every particle...
 		OffsetFromSeed = FNiagaraUIntVectorToFVector(Rand3DPCG16(FIntVector(Seed, Seed, Seed))) / 100.0;
 	}
+
+	PushToRenderThread();
 }
 
 #endif
@@ -359,6 +365,7 @@ bool UNiagaraDataInterfaceCurlNoise::CopyToInternal(UNiagaraDataInterface* Desti
 	UNiagaraDataInterfaceCurlNoise* DestinationCurlNoise = CastChecked<UNiagaraDataInterfaceCurlNoise>(Destination);
 	DestinationCurlNoise->Seed = Seed;
 	DestinationCurlNoise->OffsetFromSeed = OffsetFromSeed;
+	DestinationCurlNoise->PushToRenderThread();
 
 	return true;
 }
@@ -416,7 +423,7 @@ void UNiagaraDataInterfaceCurlNoise::SampleNoiseField(FVectorVMContext& Context)
 	}
 }
 
-bool UNiagaraDataInterfaceCurlNoise::GetFunctionHLSL(const FName& DefinitionFunctionName, FString InstanceFunctionName, FNiagaraDataInterfaceGPUParamInfo& ParamInfo, FString& OutHLSL)
+bool UNiagaraDataInterfaceCurlNoise::GetFunctionHLSL(const FNiagaraDataInterfaceGPUParamInfo& ParamInfo, const FNiagaraDataInterfaceGeneratedFunction& FunctionInfo, int FunctionInstanceIndex, FString& OutHLSL)
 {
 	static const TCHAR *FormatSample = TEXT(R"(
 		void {FunctionName}(float3 In_XYZ, out float3 Out_Value)
@@ -426,57 +433,63 @@ bool UNiagaraDataInterfaceCurlNoise::GetFunctionHLSL(const FName& DefinitionFunc
 			Out_Value = float3(J[1][2]-J[2][1], J[2][0]-J[0][2], J[0][1]-J[1][0]); // See comments to JacobianSimplex_ALU in Random.ush
 		}
 	)");
-	TMap<FString, FStringFormatArg> ArgsSample = {
-		{TEXT("FunctionName"), InstanceFunctionName},
-		{TEXT("OffsetFromSeedName"), OffsetFromSeedBaseName + ParamInfo.DataInterfaceHLSLSymbol},
-	};
+	TMap<FString, FStringFormatArg> ArgsSample;
+	ArgsSample.Add(TEXT("FunctionName"), FunctionInfo.InstanceName);
+	ArgsSample.Add(TEXT("OffsetFromSeedName"), OffsetFromSeedBaseName + ParamInfo.DataInterfaceHLSLSymbol);
 	OutHLSL += FString::Format(FormatSample, ArgsSample);
 	return true;
 }
 
-void UNiagaraDataInterfaceCurlNoise::GetParameterDefinitionHLSL(FNiagaraDataInterfaceGPUParamInfo& ParamInfo, FString& OutHLSL)
+void UNiagaraDataInterfaceCurlNoise::GetParameterDefinitionHLSL(const FNiagaraDataInterfaceGPUParamInfo& ParamInfo, FString& OutHLSL)
 {
 	static const TCHAR *FormatDeclarations = TEXT(R"(
 		float3 {OffsetFromSeedName};
 	)");
 
-	TMap<FString, FStringFormatArg> ArgsDeclarations = {
-		{TEXT("OffsetFromSeedName"), OffsetFromSeedBaseName + ParamInfo.DataInterfaceHLSLSymbol},
-	};
+	TMap<FString, FStringFormatArg> ArgsDeclarations;
+	ArgsDeclarations.Add(TEXT("OffsetFromSeedName"), OffsetFromSeedBaseName + ParamInfo.DataInterfaceHLSLSymbol);
 	OutHLSL += FString::Format(FormatDeclarations, ArgsDeclarations);
+}
+
+void UNiagaraDataInterfaceCurlNoise::PushToRenderThread()
+{
+	FNiagaraDataInterfaceProxyCurlNoise* RT_Proxy = GetProxyAs<FNiagaraDataInterfaceProxyCurlNoise>();
+
+	FVector RT_Offset = OffsetFromSeed;
+
+	// Push Updates to Proxy.
+	ENQUEUE_RENDER_COMMAND(FUpdateDIColorCurve)(
+		[RT_Proxy, RT_Offset](FRHICommandListImmediate& RHICmdList)
+	{
+		RT_Proxy->OffsetFromSeed = RT_Offset;
+	});
 }
 
 struct FNiagaraDataInterfaceParametersCS_CurlNoise : public FNiagaraDataInterfaceParametersCS
 {
-	virtual void Bind(const FNiagaraDataInterfaceParamRef& ParamRef, const class FShaderParameterMap& ParameterMap) override
+	DECLARE_TYPE_LAYOUT(FNiagaraDataInterfaceParametersCS_CurlNoise, NonVirtual);
+public:
+	void Bind(const FNiagaraDataInterfaceGPUParamInfo& ParameterInfo, const class FShaderParameterMap& ParameterMap)
 	{
-		OffsetFromSeed.Bind(ParameterMap, *(OffsetFromSeedBaseName + ParamRef.ParameterInfo.DataInterfaceHLSLSymbol));
+		OffsetFromSeed.Bind(ParameterMap, *(OffsetFromSeedBaseName + ParameterInfo.DataInterfaceHLSLSymbol));
 	}
 
-	virtual void Serialize(FArchive& Ar)override
-	{
-		Ar << OffsetFromSeed;
-	}
-
-	virtual void Set(FRHICommandList& RHICmdList, FNiagaraShader* Shader, class UNiagaraDataInterface* DataInterface, void* PerInstanceData) const override
+	void Set(FRHICommandList& RHICmdList, const FNiagaraDataInterfaceSetArgs& Context) const
 	{
 		check(IsInRenderingThread());
 
 		// Get shader and DI
-		const FComputeShaderRHIParamRef ComputeShaderRHI = Shader->GetComputeShader();
-		UNiagaraDataInterfaceCurlNoise* CNDI = CastChecked<UNiagaraDataInterfaceCurlNoise>(DataInterface);
-
-		// Note: There is a flush in PreEditChange to make sure everything is synced up at this point 
+		FRHIComputeShader* ComputeShaderRHI = Context.Shader.GetComputeShader();
+		FNiagaraDataInterfaceProxyCurlNoise* CNDI = static_cast<FNiagaraDataInterfaceProxyCurlNoise*>(Context.DataInterface);
 
 		// Set parameters
 		SetShaderValue(RHICmdList, ComputeShaderRHI, OffsetFromSeed, CNDI->OffsetFromSeed);
 	}
 
 private:
-	FShaderParameter OffsetFromSeed;
+	LAYOUT_FIELD(FShaderParameter, OffsetFromSeed);
 };
 
-FNiagaraDataInterfaceParametersCS* UNiagaraDataInterfaceCurlNoise::ConstructComputeParameters()const
-{
-	return new FNiagaraDataInterfaceParametersCS_CurlNoise();
-}
+IMPLEMENT_TYPE_LAYOUT(FNiagaraDataInterfaceParametersCS_CurlNoise);
+
+IMPLEMENT_NIAGARA_DI_PARAMETER(UNiagaraDataInterfaceCurlNoise, FNiagaraDataInterfaceParametersCS_CurlNoise);

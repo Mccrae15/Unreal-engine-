@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -62,6 +62,13 @@ public:
 	static FString EngineConfigDir();
 
 	/**
+	 * Returns the Editor Settings directory of the engine
+	 *
+	 * @return Editor Settings directory.
+	 */
+	static FString EngineEditorSettingsDir();
+
+	/**
 	 * Returns the intermediate directory of the engine
 	 *
 	 * @return content directory
@@ -81,6 +88,20 @@ public:
 	 * @return Plugins directory.
 	 */
 	static FString EnginePluginsDir();
+
+	/**
+	 * Returns the directory for default Editor UI Layout files of the engine
+	 *
+	 * @return Directory for default Editor UI Layout files.
+	 */
+	static FString EngineDefaultLayoutDir();
+
+	/**
+	 * Returns the directory for user-generated Editor UI Layout files of the engine
+	 *
+	 * @return Directory for user-generated Editor UI Layout files.
+	 */
+	static FString EngineUserLayoutDir();
 
 	/** 
 	* Returns the base directory enterprise directory.
@@ -104,6 +125,20 @@ public:
 	static FString EnterpriseFeaturePackDir();
 
 	/**
+	 * Returns the directory where engine platform extensions reside
+	 *
+	 * @return engine platform extensions directory
+	 */
+	static FString EnginePlatformExtensionsDir();
+
+	/**
+	 * Returns the directory where the project's platform extensions reside
+	 *
+	 * @return project platform extensions directory
+	 */
+	static FString ProjectPlatformExtensionsDir();
+
+	/**
 	 * Returns the root directory of the engine directory tree
 	 *
 	 * @return Root directory.
@@ -120,18 +155,12 @@ public:
 	 */
 	static FString ProjectDir();
 
-	UE_DEPRECATED(4.18, "FPaths::GameDir() has been superseded by FPaths::ProjectDir().")
-	static FORCEINLINE FString GameDir() { return ProjectDir(); }
-
 	/**
 	* Returns the root directory for user-specific game files.
 	*
 	* @return game user directory
 	*/
 	static FString ProjectUserDir();
-
-	UE_DEPRECATED(4.18, "FPaths::GameUserDir() has been superseded by FPaths::ProjectUserDir().")
-	static FORCEINLINE FString GameUserDir() { return ProjectUserDir(); }
 
 	/**
 	 * Returns the content directory of the current game by looking at FApp::GetProjectName().
@@ -140,9 +169,6 @@ public:
 	 */
 	static FString ProjectContentDir();
 
-	UE_DEPRECATED(4.18, "FPaths::GameContentDir() has been superseded by FPaths::ProjectContentDir().")
-	static FORCEINLINE FString GameContentDir() { return ProjectContentDir(); }
-
 	/**
 	* Returns the directory the root configuration files are located.
 	*
@@ -150,18 +176,12 @@ public:
 	*/
 	static FString ProjectConfigDir();
 
-	UE_DEPRECATED(4.18, "FPaths::GameConfigDir() has been superseded by FPaths::ProjectConfigDir().")
-	static FORCEINLINE FString GameConfigDir() { return ProjectConfigDir(); }
-
 	/**
 	 * Returns the saved directory of the current game by looking at FApp::GetProjectName().
 	 *
 	 * @return saved directory
 	 */
-	static FString ProjectSavedDir();
-
-	UE_DEPRECATED(4.18, "FPaths::GameSavedDir() has been superseded by FPaths::ProjectSavedDir().")
-	static FORCEINLINE FString GameSavedDir() { return ProjectSavedDir(); }
+	static const FString& ProjectSavedDir();
 
 	/**
 	 * Returns the intermediate directory of the current game by looking at FApp::GetProjectName().
@@ -172,18 +192,12 @@ public:
 
 	static FString ShaderWorkingDir();
 
-	UE_DEPRECATED(4.18, "FPaths::GameIntermediateDir() has been superseded by FPaths::ProjectIntermediateDir().")
-	static FORCEINLINE FString GameIntermediateDir() { return ProjectIntermediateDir(); }
-
 	/**
 	 * Returns the plugins directory of the current game by looking at FApp::GetProjectName().
 	 *
 	 * @return plugins directory
 	 */
 	static FString ProjectPluginsDir();
-
-	UE_DEPRECATED(4.18, "FPaths::GamePluginsDir() has been superseded by FPaths::ProjectPluginsDir().")
-	static FORCEINLINE FString GamePluginsDir() { return ProjectPluginsDir(); }
 
 	/**
 	 * Returns the mods directory of the current project by looking at FApp::GetProjectName().
@@ -201,9 +215,6 @@ public:
 	* Returns the writable directory for downloaded data that persists across play sessions.
 	*/
 	static FString ProjectPersistentDownloadDir();
-
-	UE_DEPRECATED(4.18, "FPaths::GamePersistentDownloadDir() has been superseded by FPaths::ProjectPersistentDownloadDir().")
-	static FORCEINLINE FString GamePersistentDownloadDir() { return ProjectPersistentDownloadDir(); }
 
 	/**
 	 * Returns the directory the engine uses to look for the source leaf ini files. This
@@ -264,9 +275,6 @@ public:
 	 */
 	static FString ProjectLogDir();
 
-	UE_DEPRECATED(4.18, "FPaths::GameLogDir() has been superseded by FPaths::ProjectLogDir().")
-	static FORCEINLINE FString GameLogDir() { return ProjectLogDir(); }
-
 	/** Returns the directory for automation save files */
 	static FString AutomationDir();
 
@@ -281,6 +289,9 @@ public:
 
 	/** Returns the directory that contains subfolders for developer-specific content */
 	static FString GameDevelopersDir();
+
+	/** Returns The folder name for the developer-specific directory for the current user */
+	static FString GameUserDeveloperFolderName();
 
 	/** Returns The directory that contains developer-specific content for the current user */
 	static FString GameUserDeveloperDir();
@@ -382,13 +393,22 @@ public:
 	static FString GetCleanFilename(FString&& InPath);
 
 	// Returns the same thing as GetCleanFilename, but without the extension
-	static FString GetBaseFilename( const FString& InPath, bool bRemovePath=true );
+	static FString GetBaseFilename(const FString& InPath, bool bRemovePath=true );
+
+	// Returns the same thing as GetCleanFilename, but without the extension
+	static FString GetBaseFilename(FString&& InPath, bool bRemovePath = true);
 
 	// Returns the path in front of the filename
 	static FString GetPath(const FString& InPath);
 
 	// Returns the path in front of the filename
 	static FString GetPath(FString&& InPath);
+
+	// Returns the leaf in the path
+	static FString GetPathLeaf(const FString& InPath);
+
+	// Returns the leaf in the path
+	static FString GetPathLeaf(FString&& InPath);
 
 	/** Changes the extension of the given filename (does nothing if the file has no extension) */
 	static FString ChangeExtension(const FString& InPath, const FString& InNewExtension);
@@ -420,6 +440,9 @@ public:
 	 * @returns True if both paths are the same. False otherwise.
 	 */
 	static bool IsSamePath(const FString& PathA, const FString& PathB);
+
+	/** Determines if a path is under a given directory */
+	static bool IsUnderDirectory(const FString& InPath, const FString& InDirectory);
 
 	/** Normalize all / and \ to TEXT("/") and remove any trailing TEXT("/") if the character before that is not a TEXT("/") or a colon */
 	static void NormalizeDirectoryName(FString& InPath);
@@ -521,7 +544,7 @@ public:
 	/**
 	* Returns a string containing all invalid characters as dictated by the operating system
 	*/
-	static const FString& GetInvalidFileSystemChars();
+	static FString GetInvalidFileSystemChars();
 
 	/**
 	*	Returns a string that is safe to use as a filename because all items in
@@ -556,15 +579,22 @@ public:
 		const TCHAR* Paths[] = { GetTCharPtr(Forward<PathTypes>(InPaths))... };
 		FString Out;
 		
-		CombineInternal(Out, Paths, ARRAY_COUNT(Paths));
+		CombineInternal(Out, Paths, UE_ARRAY_COUNT(Paths));
 		return Out;
 	}
+
+	/**
+	 * Frees any memory retained by FPaths.
+	 */
+	static void TearDown();
 
 protected:
 
 	static void CombineInternal(FString& OutPath, const TCHAR** Paths, int32 NumPaths);
 
 private:
+	struct FStaticData;
+
 	FORCEINLINE static const TCHAR* GetTCharPtr(const TCHAR* Ptr)
 	{
 		return Ptr;
@@ -575,13 +605,9 @@ private:
 		return *Str;
 	}
 
-	/** Holds the path to the currently loaded game project file. */
-	static FString GameProjectFilePath;
+	/** Returns, if any, the value of the -userdir command line argument. This can be used to sandbox artifacts to a desired location */
+	static const FString& CustomUserDirArgument();
 
-	/** Thread protection for above path */
-	FORCEINLINE static FCriticalSection* GameProjectFilePathLock() 
-	{
-		static FCriticalSection Lock;
-		return &Lock; 
-	}
+	/** Returns, if any, the value of the -shaderworkingdir command line argument. This can be used to sandbox shader working files to a desired location */
+	static const FString& CustomShaderDirArgument();
 };

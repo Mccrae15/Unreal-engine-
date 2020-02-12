@@ -1,9 +1,12 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "SoundSubmixGraph/SoundSubmixGraphNode.h"
 #include "Sound/SoundSubmix.h"
 #include "SoundSubmixGraph/SoundSubmixGraphSchema.h"
 #include "SoundSubmixGraph/SoundSubmixGraph.h"
+#include "Toolkits/AssetEditorManager.h"
+#include "SoundSubmixEditor.h"
+#include "SoundSubmixDefaultColorPalette.h"
 
 #define LOCTEXT_NAMESPACE "SoundSubmixGraphNode"
 
@@ -54,15 +57,19 @@ bool USoundSubmixGraphNode::CheckRepresentsSoundSubmix()
 
 FLinearColor USoundSubmixGraphNode::GetNodeTitleColor() const
 {
-	return Super::GetNodeTitleColor();
+	return Audio::GetColorForSubmixType(SoundSubmix);
 }
 
 void USoundSubmixGraphNode::AllocateDefaultPins()
 {
 	check(Pins.Num() == 0);
 
-	ChildPin = CreatePin(EGPD_Output, TEXT("SoundSubmix"), *LOCTEXT("SoundSubmixChildren", "Children").ToString());
-	ParentPin = CreatePin(EGPD_Input, TEXT("SoundSubmix"), NAME_None);
+	ChildPin = CreatePin(EGPD_Input, Audio::GetNameForSubmixType(SoundSubmix), *LOCTEXT("SoundSubmixGraphNode_Input", "Input").ToString());
+
+	if (USoundSubmixWithParentBase* NonEndpointSubmix = Cast<USoundSubmixWithParentBase>(SoundSubmix))
+	{
+		ParentPin = CreatePin(EGPD_Output, Audio::GetNameForSubmixType(SoundSubmix), *LOCTEXT("SoundSubmixGraphNode_Output", "Output").ToString());
+	}
 }
 
 void USoundSubmixGraphNode::AutowireNewNode(UEdGraphPin* FromPin)
@@ -87,6 +94,35 @@ bool USoundSubmixGraphNode::CanCreateUnderSpecifiedSchema(const UEdGraphSchema* 
 	return Schema->IsA(USoundSubmixGraphSchema::StaticClass());
 }
 
+bool USoundSubmixGraphNode::CanUserDeleteNode() const
+{
+	check(GEditor);
+	UAssetEditorSubsystem* EditorSubsystem = GEditor->GetEditorSubsystem<UAssetEditorSubsystem>();
+	TArray<IAssetEditorInstance*> SubmixEditors = EditorSubsystem->FindEditorsForAsset(SoundSubmix);
+	for (IAssetEditorInstance* Editor : SubmixEditors)
+	{
+		if (!Editor)
+		{
+			continue;
+		}
+
+		FSoundSubmixEditor* SubmixEditor = static_cast<FSoundSubmixEditor*>(Editor);
+		if (UEdGraph* Graph = SubmixEditor->GetGraph())
+		{
+			if (SoundSubmix->SoundSubmixGraph == Graph)
+			{
+				USoundSubmixBase* RootSubmix = CastChecked<USoundSubmixGraph>(Graph)->GetRootSoundSubmix();
+				if (RootSubmix == SoundSubmix)
+				{
+					return false;
+				}
+			}
+		}
+	}
+
+	return UEdGraphNode::CanUserDeleteNode();
+}
+
 FText USoundSubmixGraphNode::GetNodeTitle(ENodeTitleType::Type TitleType) const
 {
 	if (SoundSubmix)
@@ -98,13 +134,4 @@ FText USoundSubmixGraphNode::GetNodeTitle(ENodeTitleType::Type TitleType) const
 		return Super::GetNodeTitle(TitleType);
 	}
 }
-
-bool USoundSubmixGraphNode::CanUserDeleteNode() const
-{
-	USoundSubmixGraph* SoundSubmixGraph = CastChecked<USoundSubmixGraph>(GetGraph());
-
-	// Cannot remove the root node from the graph
-	return SoundSubmix != SoundSubmixGraph->GetRootSoundSubmix();
-}
-
 #undef LOCTEXT_NAMESPACE

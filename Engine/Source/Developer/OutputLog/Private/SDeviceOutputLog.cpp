@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "SDeviceOutputLog.h"
 #include "Framework/Text/TextLayout.h"
@@ -24,7 +24,9 @@ static bool IsSupportedPlatform(ITargetPlatform* Platform)
 
 void SDeviceOutputLog::Construct( const FArguments& InArgs )
 {
-	MessagesTextMarshaller = FOutputLogTextLayoutMarshaller::Create(TArray<TSharedPtr<FLogMessage>>(), &Filter);
+	bAutoSelectDevice = InArgs._AutoSelectDevice;
+
+	MessagesTextMarshaller = FOutputLogTextLayoutMarshaller::Create(TArray<TSharedPtr<FOutputLogMessage>>(), &Filter);
 
 	MessagesTextBox = SNew(SMultiLineEditableTextBox)
 		.Style(FEditorStyle::Get(), "Log.TextBox")
@@ -144,32 +146,55 @@ SDeviceOutputLog::~SDeviceOutputLog()
 			Platform->OnDeviceLost().RemoveAll(this);
 		}
 	}
+	CurrentDeviceOutputPtr.Reset();
 }
 
 void SDeviceOutputLog::Tick(const FGeometry& AllottedGeometry, const double InCurrentTime, const float InDeltaTime)
 {
+	// If auto-select is enabled request connecting to the default device and select it
+	if (!CurrentDevicePtr.IsValid() && bAutoSelectDevice)
+	{
+		int32 DefaultDeviceEntryIdx = DeviceList.IndexOfByPredicate([this](const TSharedPtr<FTargetDeviceEntry>& Other) {
+			ITargetDevicePtr PinnedPtr = Other->DeviceWeakPtr.Pin();
+			return PinnedPtr->IsDefault();
+		});
+
+		if (DeviceList.IsValidIndex(DefaultDeviceEntryIdx))
+		{
+			ITargetDevicePtr PinnedPtr = DeviceList[DefaultDeviceEntryIdx]->DeviceWeakPtr.Pin();
+			PinnedPtr->Connect();
+			OnDeviceSelectionChanged(DeviceList[DefaultDeviceEntryIdx]);
+		}
+	}
+
+	// If the device is selected but was not yet connected then the output router would not have been registered
+	if (CurrentDevicePtr.IsValid() && !CurrentDeviceOutputPtr.IsValid())
+	{
+		ITargetDevicePtr PinnedPtr = CurrentDevicePtr->DeviceWeakPtr.Pin();
+		if (PinnedPtr.IsValid() && PinnedPtr->IsConnected())
+		{
+			// It is now connected so register the output router
+			CurrentDeviceOutputPtr = PinnedPtr->CreateDeviceOutputRouter(this);
+		}
+	}
+
 	FScopeLock ScopeLock(&BufferedLinesSynch);
 	if (BufferedLines.Num() > 0)
 	{
 		for (const FBufferedLine& Line : BufferedLines)
 		{
-			MessagesTextMarshaller->AppendMessage(*Line.Data, Line.Verbosity, Line.Category);
+			MessagesTextMarshaller->AppendPendingMessage(Line.Data, Line.Verbosity, Line.Category);
 		}
-
-		// Don't scroll to the bottom automatically when the user is scrolling the view or has scrolled it away from the bottom.
-		if (!bIsUserScrolled)
-		{
-			MessagesTextBox->ScrollTo(FTextLocation(MessagesTextMarshaller->GetNumMessages() - 1));
-		}
-
 		BufferedLines.Empty(32);
 	}
+
+	SOutputLog::Tick(AllottedGeometry, InCurrentTime, InDeltaTime);
 }
 
 void SDeviceOutputLog::Serialize(const TCHAR* V, ELogVerbosity::Type Verbosity, const class FName& Category)
 {
 	FScopeLock ScopeLock(&BufferedLinesSynch);
-	BufferedLines.Add(FBufferedLine(V, Category, Verbosity));
+	BufferedLines.Emplace(V, Category, Verbosity);
 }
 
 bool SDeviceOutputLog::CanBeUsedOnAnyThread() const
@@ -220,11 +245,35 @@ void SDeviceOutputLog::HandleTargetPlatformDeviceDiscovered(ITargetDeviceRef Dis
 	if (DeviceList.IsValidIndex(ExistingEntryIdx))
 	{
 		DeviceList[ExistingEntryIdx]->DeviceWeakPtr = DiscoveredDevice;
+		if (CurrentDevicePtr == DeviceList[ExistingEntryIdx])
+		{
+			if (!CurrentDeviceOutputPtr.IsValid())
+			{
+				if (CurrentDevicePtr.IsValid())
+				{
+					ITargetDevicePtr PinnedPtr = CurrentDevicePtr->DeviceWeakPtr.Pin();
+					if (PinnedPtr.IsValid() && PinnedPtr->IsConnected())
+					{
+						CurrentDeviceOutputPtr = PinnedPtr->CreateDeviceOutputRouter(this);
+					}
+				}
+			}
+		}
 	}
 	else
 	{
 		AddDeviceEntry(DiscoveredDevice);
 	}
+}
+
+ITargetDevicePtr SDeviceOutputLog::GetSelectedTargetDevice() const
+{
+	ITargetDevicePtr PinnedPtr = nullptr;
+	if (CurrentDevicePtr.IsValid())
+	{
+		PinnedPtr = CurrentDevicePtr->DeviceWeakPtr.Pin();
+	}
+	return PinnedPtr;
 }
 
 void SDeviceOutputLog::AddDeviceEntry(ITargetDeviceRef TargetDevice)

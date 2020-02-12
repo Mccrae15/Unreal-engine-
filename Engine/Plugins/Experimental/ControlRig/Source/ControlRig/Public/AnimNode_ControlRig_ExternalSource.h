@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -17,8 +17,6 @@ struct CONTROLRIG_API FAnimNode_ControlRig_ExternalSource : public FAnimNode_Con
 
 	void SetControlRig(UControlRig* InControlRig);
 	virtual UControlRig* GetControlRig() const;
-
-	virtual void Evaluate_AnyThread(FPoseContext& Output) override;
 
 private:
 	UPROPERTY(transient)

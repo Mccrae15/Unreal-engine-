@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -6,6 +6,8 @@
 #include "NiagaraCommon.h"
 #include "UObject/StructOnScope.h"
 #include "Misc/Attribute.h"
+#include "AssetData.h"
+#include "NiagaraGraph.h"
 
 class UNiagaraNodeInput;
 class UNiagaraNodeOutput;
@@ -13,6 +15,7 @@ struct FNiagaraVariable;
 struct FNiagaraTypeDefinition;
 class UNiagaraGraph;
 class UNiagaraSystem;
+class FNiagaraSystemViewModel;
 struct FNiagaraEmitterHandle;
 class UNiagaraEmitter;
 class UNiagaraScript;
@@ -23,6 +26,12 @@ class SWidget;
 class UNiagaraNode;
 class UEdGraphSchema_Niagara;
 class UEdGraphPin;
+class FCompileConstantResolver;
+class UNiagaraStackEditorData;
+class FMenuBuilder;
+class FNiagaraEmitterViewModel;
+class FNiagaraEmitterHandleViewModel;
+enum class ECheckBoxState : uint8;
 
 namespace FNiagaraEditorUtilities
 {
@@ -104,7 +113,7 @@ namespace FNiagaraEditorUtilities
 	void GetParameterVariablesFromSystem(UNiagaraSystem& System, TArray<FNiagaraVariable>& ParameterVariables, FGetParameterVariablesFromSystemOptions Options = FGetParameterVariablesFromSystemOptions());
 
 	/** Helper to clean up copy & pasted graphs.*/
-	void FixUpPastedInputNodes(UEdGraph* Graph, TSet<UEdGraphNode*> PastedNodes);
+	void FixUpPastedNodes(UEdGraph* Graph, TSet<UEdGraphNode*> PastedNodes);
 
 	/** Helper to convert compile status to text.*/
 	FText StatusToText(ENiagaraScriptCompileStatus Status);
@@ -121,6 +130,8 @@ namespace FNiagaraEditorUtilities
 	/** Returns whether the data in two structs on scope matches. */
 	bool DataMatches(const FStructOnScope& StructOnScopeA, const FStructOnScope& StructOnScopeB);
 
+	void NIAGARAEDITOR_API CopyDataTo(FStructOnScope& DestinationStructOnScope, const FStructOnScope& SourceStructOnScope, bool bCheckTypes = true);
+
 	TSharedPtr<SWidget> CreateInlineErrorText(TAttribute<FText> ErrorMessage, TAttribute<FText> ErrorTooltip);
 
 	void CompileExistingEmitters(const TArray<UNiagaraEmitter*>& AffectedEmitters);
@@ -135,7 +146,40 @@ namespace FNiagaraEditorUtilities
 
 	void FixUpNumericPins(const UEdGraphSchema_Niagara* Schema, UNiagaraNode* Node);
 
-	void PreprocessFunctionGraph(const UEdGraphSchema_Niagara* Schema, UNiagaraGraph* Graph, const TArray<UEdGraphPin*>& CallInputs, const TArray<UEdGraphPin*>& CallOutputs, ENiagaraScriptUsage ScriptUsage);
+	void SetStaticSwitchConstants(UNiagaraGraph* Graph, const TArray<UEdGraphPin*>& CallInputs, const FCompileConstantResolver& ConstantResolver);
+
+	bool ResolveConstantValue(UEdGraphPin* Pin, int32& Value);
+
+	TSharedPtr<FStructOnScope> StaticSwitchDefaultIntToStructOnScope(int32 InStaticSwitchDefaultValue, FNiagaraTypeDefinition InSwitchType);
+
+	void PreprocessFunctionGraph(const UEdGraphSchema_Niagara* Schema, UNiagaraGraph* Graph, const TArray<UEdGraphPin*>& CallInputs, const TArray<UEdGraphPin*>& CallOutputs, ENiagaraScriptUsage ScriptUsage, const FCompileConstantResolver& ConstantResolver);
+
+	bool PODPropertyAppendCompileHash(const void* Container, FProperty* Property, const FString& PropertyName, struct FNiagaraCompileHashVisitor* InVisitor);
+	bool NestedPropertiesAppendCompileHash(const void* Container, const UStruct* Struct, EFieldIteratorFlags::SuperClassFlags IteratorFlags, const FString& BaseName, struct FNiagaraCompileHashVisitor* InVisitor);
+
+	/** Options for the GetScriptsByFilter function. 
+	** @Param ScriptUsageToInclude Only return Scripts that have this usage
+	** @Param (Optional) TargetUsageToMatch Only return Scripts that have this target usage (output node) 
+	** @Param bIncludeDeprecatedScripts Whether or not to return Scripts that are deprecated (defaults to false) 
+	** @Param bIncludeNonLibraryScripts Whether or not to return non-library scripts (defaults to false)
+	*/
+	struct FGetFilteredScriptAssetsOptions
+	{
+		FGetFilteredScriptAssetsOptions()
+			: ScriptUsageToInclude(ENiagaraScriptUsage::Module)
+			, TargetUsageToMatch()
+			, bIncludeDeprecatedScripts(false)
+			, bIncludeNonLibraryScripts(false)
+		{
+		}
+
+		ENiagaraScriptUsage ScriptUsageToInclude;
+		TOptional<ENiagaraScriptUsage> TargetUsageToMatch;
+		bool bIncludeDeprecatedScripts;
+		bool bIncludeNonLibraryScripts;
+	};
+
+	NIAGARAEDITOR_API void GetFilteredScriptAssets(FGetFilteredScriptAssetsOptions InFilter, TArray<FAssetData>& OutFilteredScriptAssets); 
 
 	NIAGARAEDITOR_API UNiagaraNodeOutput* GetScriptOutputNode(UNiagaraScript& Script);
 
@@ -150,5 +194,50 @@ namespace FNiagaraEditorUtilities
 	 */
 	const FNiagaraEmitterHandle* GetEmitterHandleForEmitter(UNiagaraSystem& System, UNiagaraEmitter& Emitter);
 
-	NIAGARAEDITOR_API FText FormatScriptAssetDescription(FText Description, FName Path);
+	NIAGARAEDITOR_API bool IsScriptAssetInLibrary(const FAssetData& ScriptAssetData);
+
+	NIAGARAEDITOR_API FText FormatScriptName(FName Name, bool bIsInLibrary);
+
+	NIAGARAEDITOR_API FText FormatScriptDescription(FText Description, FName Path, bool bIsInLibrary);
+
+	void ResetSystemsThatReferenceSystemViewModel(const FNiagaraSystemViewModel& ReferencedSystemViewModel);
+
+	TArray<UNiagaraComponent*> GetComponentsThatReferenceSystem(const UNiagaraSystem& ReferencedSystem);
+
+	TArray<UNiagaraComponent*> GetComponentsThatReferenceSystemViewModel(const FNiagaraSystemViewModel& ReferencedSystemViewModel);
+
+	const FGuid AddEmitterToSystem(UNiagaraSystem& InSystem, UNiagaraEmitter& InEmitterToAdd);
+
+	void RemoveEmittersFromSystemByEmitterHandleId(UNiagaraSystem& InSystem, TSet<FGuid> EmitterHandleIdsToDelete);
+
+	/** Kills all system instances using the referenced system. */
+	void KillSystemInstances(const UNiagaraSystem& System);
+
+
+	bool VerifyNameChangeForInputOrOutputNode(const UNiagaraNode& NodeBeingChanged, FName OldName, FName NewName, FText& OutErrorMessage);
+
+	/**
+	 * Adds a new Parameter to a target ParameterStore with an undo/redo transaction and name collision handling.
+	 * @param NewParameterVariable The FNiagaraVariable to be added to TargetParameterStore. MUST be a unique object, do not pass an existing reference.
+	 * @param TargetParameterStore The ParameterStore to receive NewVariable.
+	 * @param ParameterStoreOwner The UObject to call Modify() on for the undo/redo transaction of adding NewVariable.
+	 * @param StackEditorData The editor data used to mark the newly added FNiagaraVariable in the Stack for renaming.
+	 * @returns Bool for whether adding the parameter succeeded.
+	 */
+	bool AddParameter(FNiagaraVariable& NewParameterVariable, FNiagaraParameterStore& TargetParameterStore, UObject& ParameterStoreOwner, UNiagaraStackEditorData& StackEditorData);
+
+	NIAGARAEDITOR_API bool AddEmitterContextMenuActions(FMenuBuilder& MenuBuilder, const TSharedPtr<FNiagaraEmitterHandleViewModel>& EmitterHandleViewModel);
+
+	void ShowParentEmitterInContentBrowser(TSharedRef<FNiagaraEmitterViewModel> EmitterViewModel);
+
+	void OpenParentEmitterForEdit(TSharedRef<FNiagaraEmitterViewModel> Emitter);
+	ECheckBoxState GetSelectedEmittersEnabledCheckState(TSharedRef<FNiagaraSystemViewModel> SystemViewModel);
+	void ToggleSelectedEmittersEnabled(TSharedRef<FNiagaraSystemViewModel> SystemViewModel);
+
+	ECheckBoxState GetSelectedEmittersIsolatedCheckState(TSharedRef<FNiagaraSystemViewModel> SystemViewModel);
+	void ToggleSelectedEmittersIsolated(TSharedRef<FNiagaraSystemViewModel> SystemViewModel);
+
+	void CreateAssetFromEmitter(TSharedRef<FNiagaraEmitterHandleViewModel> EmitterHandleViewModel);
+
+	NIAGARAEDITOR_API void WarnWithToastAndLog(FText WarningMessage);
 };

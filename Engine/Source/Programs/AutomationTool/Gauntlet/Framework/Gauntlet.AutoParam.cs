@@ -1,4 +1,4 @@
-﻿// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+﻿// Copyright Epic Games, Inc. All Rights Reserved.
 
 using System;
 using System.Collections.Generic;
@@ -37,7 +37,7 @@ namespace Gauntlet
 		/// <summary>
 		/// Names that can refer to this param
 		/// </summary>
-		protected string[] OptionNames;
+		public string[] OptionNames { get; protected set; }
 
 		/// <summary>
 		/// Constructor that takes nothing. Param option should be -MemberName or -MemberName=value.

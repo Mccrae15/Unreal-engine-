@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 /*=============================================================================
 	OpenGLQuery.cpp: OpenGL query RHI implementation.
@@ -20,10 +20,10 @@ static FAutoConsoleVariableRef CVarOpenGLPollRenderQueryResult(
 
 struct FQueryItem
 {
-	FRenderQueryRHIParamRef Query;
+	FRHIRenderQuery* Query;
 	int32 BeginSequence;
 
-	FQueryItem(FRenderQueryRHIParamRef InQueryRHI)
+	FQueryItem(FRHIRenderQuery* InQueryRHI)
 		: Query(InQueryRHI)
 	{
 		FOpenGLRenderQuery* InQuery = FOpenGLDynamicRHI::ResourceCast(InQueryRHI);
@@ -57,7 +57,7 @@ struct FGLQueryBatcher
 	{
 	}
 
-	void Add(FRenderQueryRHIParamRef Query)
+	void Add(FRHIRenderQuery* Query)
 	{
 		if (NewBatch && NewBatch->FrameNumberRenderThread)
 		{
@@ -72,7 +72,7 @@ struct FGLQueryBatcher
 			Batch->bHasFlushedSinceLastWait = false;
 		}
 	}
-	void Flush(FOpenGLDynamicRHI& RHI, FRenderQueryRHIParamRef TargetQueryRHI)
+	void Flush(FOpenGLDynamicRHI& RHI, FRHIRenderQuery* TargetQueryRHI)
 	{
 		QUICK_SCOPE_CYCLE_COUNTER(STAT_FGLQueryBatcher_FlushScan);
 		bool bFoundQuery = false;
@@ -88,7 +88,7 @@ struct FGLQueryBatcher
 			for (int32 IndexInner = 0; IndexInner < Batch->BatchContents.Num(); IndexInner++)
 			{
 				FQueryItem& Item = Batch->BatchContents[IndexInner];
-				FRenderQueryRHIParamRef QueryRHI = Item.Query;
+				FRHIRenderQuery* QueryRHI = Item.Query;
 				FOpenGLRenderQuery* Query = FOpenGLDynamicRHI::ResourceCast(QueryRHI);
 				if (TargetQueryRHI == QueryRHI)
 				{
@@ -147,7 +147,7 @@ struct FGLQueryBatcher
 			for (int32 IndexInner = 0; IndexInner < Batch->BatchContents.Num(); IndexInner++)
 			{
 				FQueryItem& Item = Batch->BatchContents[IndexInner];
-				FRenderQueryRHIParamRef QueryRHI = Item.Query;
+				FRHIRenderQuery* QueryRHI = Item.Query;
 				FOpenGLRenderQuery* Query = FOpenGLDynamicRHI::ResourceCast(QueryRHI);
 
 				int32 Begins = Query->TotalBegins.GetValue();
@@ -253,7 +253,7 @@ FRenderQueryRHIRef FOpenGLDynamicRHI::RHICreateRenderQuery(ERenderQueryType Quer
 	return new FOpenGLRenderQuery(QueryType);
 }
 
-void FOpenGLDynamicRHI::RHIBeginRenderQuery(FRenderQueryRHIParamRef QueryRHI)
+void FOpenGLDynamicRHI::RHIBeginRenderQuery(FRHIRenderQuery* QueryRHI)
 {
 	VERIFY_GL_SCOPE();
 
@@ -266,7 +266,7 @@ void FOpenGLDynamicRHI::RHIBeginRenderQuery(FRenderQueryRHIParamRef QueryRHI)
 	}
 }
 
-void FOpenGLDynamicRHI::RHIEndRenderQuery(FRenderQueryRHIParamRef QueryRHI)
+void FOpenGLDynamicRHI::RHIEndRenderQuery(FRHIRenderQuery* QueryRHI)
 {
 	VERIFY_GL_SCOPE();
 
@@ -527,7 +527,7 @@ public:
 };
 
 
-bool FOpenGLDynamicRHI::RHIGetRenderQueryResult(FRenderQueryRHIParamRef QueryRHI,uint64& OutResult,bool bWait)
+bool FOpenGLDynamicRHI::RHIGetRenderQueryResult(FRHIRenderQuery* QueryRHI, uint64& OutResult, bool bWait, uint32 GPUIndex)
 {
 	check(IsInRenderingThread() || IsInRHIThread());
 
@@ -614,6 +614,12 @@ bool FOpenGLDynamicRHI::RHIGetRenderQueryResult(FRenderQueryRHIParamRef QueryRHI
 
 
 
+FRenderQueryPoolRHIRef FOpenGLDynamicRHI::RHICreateRenderQueryPool(ERenderQueryType QueryType, uint32 /*NumQueries*/)
+{
+	// Workaround to fix UE-77873: pass <QueryType> to primary implementation and ignore <NumQueries> for pre-allocated queries
+	return FDynamicRHI::RHICreateRenderQueryPool(QueryType);
+}
+
 extern void OnQueryCreation( FOpenGLRenderQuery* Query );
 extern void OnQueryDeletion( FOpenGLRenderQuery* Query );
 
@@ -687,9 +693,7 @@ void FOpenGLEventQuery::IssueEvent()
 		Sync = UGLsync();
 	}
 	Sync = FOpenGL::FenceSync(GL_SYNC_GPU_COMMANDS_COMPLETE, 0);
-#ifndef __EMSCRIPTEN__ // https://answers.unrealengine.com/questions/409649/html5-opengl-backend-doesnt-need-to-flush-gl-comma.html
 	FOpenGL::Flush();
-#endif
 
 	checkSlow(FOpenGL::IsSync(Sync));
 
@@ -1142,17 +1146,11 @@ void FOpenGLDisjointTimeStampQuery::ReleaseResources()
 
 FGPUFenceRHIRef FOpenGLDynamicRHI::RHICreateGPUFence(const FName &Name)
 {
-#if OPENGL_GL3
 	return new FOpenGLGPUFence(Name);
-#else
-	UE_LOG(LogRHI, Fatal, TEXT("Fences are only available in OpenGL3 or later"));
-	return nullptr;
-#endif
 }
 
 FOpenGLGPUFence::~FOpenGLGPUFence()
 {
-#if OPENGL_GL3
 	if (bValidSync)
 	{
 		FRHICommandListImmediate& RHICmdList = FRHICommandListExecutor::GetImmediateCommandList();
@@ -1161,15 +1159,10 @@ FOpenGLGPUFence::~FOpenGLGPUFence()
 		FOpenGL::DeleteSync(Fence);
 		RHITHREAD_GLCOMMAND_EPILOGUE_NORETURN();
 	}
-#else
-	UE_LOG(LogRHI, Fatal, TEXT("Fences are only available in OpenGL3 or later"));
-#endif
 }
 
 void FOpenGLGPUFence::Clear()
 {
-#if OPENGL_GL3
-
 	if (bValidSync)
 	{
 		FRHICommandListImmediate& RHICmdList = FRHICommandListExecutor::GetImmediateCommandList();
@@ -1179,13 +1172,9 @@ void FOpenGLGPUFence::Clear()
 		bValidSync = false;
 		RHITHREAD_GLCOMMAND_EPILOGUE();
 	}
-#else
-	UE_LOG(LogRHI, Fatal, TEXT("Fences are only available in OpenGL3 or later"));
-#endif
 }
 bool FOpenGLGPUFence::Poll() const
 {
-#if OPENGL_GL3
 	if (!bValidSync)
 	{
 		return false;
@@ -1199,15 +1188,10 @@ bool FOpenGLGPUFence::Poll() const
 	return (Result == FOpenGLBase::FR_AlreadySignaled || Result == FOpenGLBase::FR_ConditionSatisfied);
 
 	RHITHREAD_GLCOMMAND_EPILOGUE_RETURN(bool);
-#else
-	UE_LOG(LogRHI, Fatal, TEXT("Fences are only available in OpenGL3 or later"));
-	return false;
-#endif
 }
 
 void FOpenGLGPUFence::WriteInternal()
 {
-#if OPENGL_GL3
 	FRHICommandListImmediate& RHICmdList = FRHICommandListExecutor::GetImmediateCommandList();
 	RHITHREAD_GLCOMMAND_PROLOGUE();
 	VERIFY_GL_SCOPE();
@@ -1221,7 +1205,4 @@ void FOpenGLGPUFence::WriteInternal()
 	Fence = FOpenGL::FenceSync(GL_SYNC_GPU_COMMANDS_COMPLETE, 0);
 	bValidSync = true;
 	RHITHREAD_GLCOMMAND_EPILOGUE();
-#else
-	UE_LOG(LogRHI, Fatal, TEXT("Fences are only available in OpenGL3 or later"));
-#endif
 }

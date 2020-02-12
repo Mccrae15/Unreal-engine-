@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "Unix/UnixPlatformCrashContext.h"
 #include "Containers/StringConv.h"
@@ -24,6 +24,7 @@
 #include "Misc/App.h"
 #include "Misc/EngineVersion.h"
 #include "HAL/PlatformMallocCrash.h"
+#include "Unix/UnixPlatformRealTimeSignals.h"
 #include "Unix/UnixPlatformRunnableThread.h"
 #include "HAL/ExceptionHandling.h"
 #include "Stats/Stats.h"
@@ -100,7 +101,7 @@ void FUnixCrashContext::InitFromSignal(int32 InSignal, siginfo_t* InInfo, void* 
 	Info = InInfo;
 	Context = reinterpret_cast< ucontext_t* >( InContext );
 
-	FCString::Strcat(SignalDescription, ARRAY_COUNT( SignalDescription ) - 1, *DescribeSignal(Signal, Info, Context));
+	FCString::Strcat(SignalDescription, UE_ARRAY_COUNT( SignalDescription ) - 1, *DescribeSignal(Signal, Info, Context));
 }
 
 void FUnixCrashContext::InitFromEnsureHandler(const TCHAR* EnsureMessage, const void* CrashAddress)
@@ -115,10 +116,10 @@ void FUnixCrashContext::InitFromEnsureHandler(const TCHAR* EnsureMessage, const 
 	Context = nullptr;
 
 	// set signal description to a more human-readable one for ensures
-	FCString::Strcpy(SignalDescription, ARRAY_COUNT(SignalDescription) - 1, EnsureMessage);
+	FCString::Strcpy(SignalDescription, UE_ARRAY_COUNT(SignalDescription) - 1, EnsureMessage);
 
 	// only need the first string
-	for (int Idx = 0; Idx < ARRAY_COUNT(SignalDescription); ++Idx)
+	for (int Idx = 0; Idx < UE_ARRAY_COUNT(SignalDescription); ++Idx)
 	{
 		if (SignalDescription[Idx] == TEXT('\n'))
 		{
@@ -138,7 +139,7 @@ void GracefulTerminationHandler(int32 Signal, siginfo_t* Info, void* Context)
 	GEnteredSignalHandler = 1;
 
 	// do not flush logs at this point; this can result in a deadlock if the signal was received while we were holding lock in the malloc (flushing allocates memory)
-	if( !GIsRequestingExit )
+	if( !IsEngineExitRequested() )
 	{
 		FPlatformMisc::RequestExitWithStatus(false, 128 + Signal);	// Keeping the established shell practice of returning 128 + signal for terminations by signal. Allows to distinguish SIGINT/SIGTERM/SIGHUP.
 	}
@@ -154,7 +155,7 @@ void CreateExceptionInfoString(int32 Signal, siginfo_t* Info, ucontext_t *Contex
 {
 	FString ErrorString = TEXT("Unhandled Exception: ");
 	ErrorString += DescribeSignal(Signal, Info, Context);
-	FCString::Strncpy(GErrorExceptionDescription, *ErrorString, FMath::Min(ErrorString.Len() + 1, (int32)ARRAY_COUNT(GErrorExceptionDescription)));
+	FCString::Strncpy(GErrorExceptionDescription, *ErrorString, FMath::Min(ErrorString.Len() + 1, (int32)UE_ARRAY_COUNT(GErrorExceptionDescription)));
 }
 
 namespace
@@ -292,7 +293,7 @@ void FUnixCrashContext::CaptureStackTrace()
 		ANSICHAR* StackTrace = (ANSICHAR*) FMemory::Malloc( StackTraceSize );
 		StackTrace[0] = 0;
 
-		int32 IgnoreCount = 0;
+		int32 IgnoreCount = NumMinidumpFramesToIgnore;
 		CapturePortableCallStack(IgnoreCount, this);
 
 		// Walk the stack and dump it to the allocated memory (do not ignore any stack frames to be consistent with check()/ensure() handling)
@@ -302,7 +303,7 @@ void FUnixCrashContext::CaptureStackTrace()
 		printf("StackTrace:\n%s\n", StackTrace);
 #endif
 
-		FCString::Strncat( GErrorHist, UTF8_TO_TCHAR(StackTrace), ARRAY_COUNT(GErrorHist) - 1 );
+		FCString::Strncat( GErrorHist, UTF8_TO_TCHAR(StackTrace), UE_ARRAY_COUNT(GErrorHist) - 1 );
 		CreateExceptionInfoString(Signal, Info, Context);
 
 		FMemory::Free( StackTrace );
@@ -389,15 +390,21 @@ void FUnixCrashContext::GenerateCrashInfoAndLaunchReporter(bool bReportingNonCra
 		CrashGuid = FGuid::NewGuid().ToString();
 	}
 
-	/* Table showing the desired behavior when wanting to show a pop up or not. As well as avoiding starting CRC
-	 *  based on an *.ini setting bSendUnattendedBugReports and whether or not we are unattended
+
+	/* Table showing the desired behavior when wanting to start the CRC or not.
+	 *  based on an *.ini setting for bSendUnattendedBugReports or bAgreeToCrashUpload and whether or not we are unattended
 	 *
-	 *  Unattended | AgreeToUpload || Show Popup | Start CRC
-	 *  ----------------------------------------------------
-	 *      1      |       1       ||     0      |    1
-	 *      1      |       0       ||     0      |    0
-	 *      0      |       1       ||     0      |    1
-	 *      0      |       0       ||     1      |    1
+	 *  Unattended | AgreeToUpload | SendUnattendedBug || Start CRC
+	 *  ------------------------------------------------------------
+	 *      1      |       1       |         1         ||     1
+	 *      1      |       1       |         0         ||     1
+	 *      1      |       0       |         1         ||     1
+	 *      1      |       0       |         0         ||     0
+	 *      0      |       1       |         1         ||     1
+	 *      0      |       1       |         0         ||     1
+	 *      0      |       0       |         1         ||     1
+	 *      0      |       0       |         0         ||     1
+	 *
 	 */
 
 	// Suppress the user input dialog if we're running in unattended mode
@@ -415,6 +422,13 @@ void FUnixCrashContext::GenerateCrashInfoAndLaunchReporter(bool bReportingNonCra
 	}
 #endif
 
+	bool bImplicitSend = false;
+	if (!UE_EDITOR && GConfig && !bReportingNonCrash)
+	{
+		// Only check if we are in a non-editor build
+		GConfig->GetBool(TEXT("CrashReportClient"), TEXT("bImplicitSend"), bImplicitSend, GEngineIni);
+	}
+
 	// By default we wont upload unless the *.ini has set this to true
 	bool bSendUnattendedBugReports = false;
 	if (GConfig)
@@ -422,13 +436,29 @@ void FUnixCrashContext::GenerateCrashInfoAndLaunchReporter(bool bReportingNonCra
 		GConfig->GetBool(TEXT("/Script/UnrealEd.CrashReportsPrivacySettings"), TEXT("bSendUnattendedBugReports"), bSendUnattendedBugReports, GEditorSettingsIni);
 	}
 
+	// Controls if we want analytics in the crash report client
+	bool bSendUsageData = true;
+	if (GConfig)
+	{
+		GConfig->GetBool(TEXT("/Script/UnrealEd.AnalyticsPrivacySettings"), TEXT("bSendUsageData"), bSendUsageData, GEditorSettingsIni);
+	}
+
+	// If we are not an editor but still want to agree to upload for non-licensee check the settings
+	bool bAgreeToCrashUpload = false;
+	if (!UE_EDITOR && GConfig)
+	{
+		GConfig->GetBool(TEXT("CrashReportClient"), TEXT("bAgreeToCrashUpload"), bAgreeToCrashUpload, GEngineIni);
+	}
+
 	if (BuildSettings::IsLicenseeVersion() && !UE_EDITOR)
 	{
 		// do not send unattended reports in licensees' builds except for the editor, where it is governed by the above setting
 		bSendUnattendedBugReports = false;
+		bAgreeToCrashUpload = false;
+		bSendUsageData = false;
 	}
 
-	bool bSkipCRC = bUnattended && !bSendUnattendedBugReports;
+	bool bSkipCRC = bUnattended && !bSendUnattendedBugReports && !bAgreeToCrashUpload;
 
 	if (!bSkipCRC)
 	{
@@ -473,7 +503,7 @@ void FUnixCrashContext::GenerateCrashInfoAndLaunchReporter(bool bReportingNonCra
 			uint64 TotalDiskSpace = 0;
 			uint64 TotalDiskFreeSpace = 0;
 			bool bLowDriveSpace = false;
-			if (FPlatformMisc::GetDiskTotalAndFreeSpace(*LogDstAbsolute, TotalDiskSpace, TotalDiskFreeSpace))
+			if (FPlatformMisc::GetDiskTotalAndFreeSpace(*CrashInfoAbsolute, TotalDiskSpace, TotalDiskFreeSpace))
 			{
 				if (TotalDiskFreeSpace < MinDriveSpaceForCrashLog)
 				{
@@ -544,14 +574,19 @@ void FUnixCrashContext::GenerateCrashInfoAndLaunchReporter(bool bReportingNonCra
 			CrashReportClientArguments += TEXT("\"\"") + CrashReportLogFilepath + TEXT("\"\"");
 			CrashReportClientArguments += TEXT(" ");
 
-			if (bUnattended)
+			// If the editor setting has been disabled to not send analytics extend this to the CRC
+			if (!bSendUsageData)
 			{
-				CrashReportClientArguments += TEXT(" -Unattended ");
+				CrashReportClientArguments += TEXT(" -NoAnalytics ");
 			}
 
-			if (bSendUnattendedBugReports)
+			if (bImplicitSend)
 			{
-				CrashReportClientArguments += TEXT(" -SkipPopup ");
+				CrashReportClientArguments += TEXT(" -Unattended -ImplicitSend ");
+			}
+			else if (bUnattended)
+			{
+				CrashReportClientArguments += TEXT(" -Unattended ");
 			}
 
 			// Whether to clean up crash reports after send
@@ -593,21 +628,32 @@ void FUnixCrashContext::GenerateCrashInfoAndLaunchReporter(bool bReportingNonCra
 			}
 			else
 			{
-				// spin here until CrashReporter exits
-				FProcHandle RunningProc = FPlatformProcess::CreateProc(RelativePathToCrashReporter, *CrashReportClientArguments, true, false, false, NULL, 0, NULL, NULL);
-
-				// do not wait indefinitely - can be more generous about the hitch than in ensure() case
-				// NOTE: Chris.Wood - increased from 3 to 8 mins because server crashes were timing out and getting lost
-				// NOTE: Do not increase above 8.5 mins without altering watchdog scripts to match
-				const double kCrashTimeOut = 8 * 60.0;
-
-				const double kCrashSleepInterval = 1.0;
-				if (!UnixCrashReporterTracker::WaitForProcWithTimeout(RunningProc, kCrashTimeOut, kCrashSleepInterval))
+				// Things can be setup to allow for a global crash handler to capture the core from a crash and allow another process
+				// to handle spawning of this process
+				bool bStartCRCFromEngineHandler = true;
+				if (GConfig)
 				{
-					FPlatformProcess::TerminateProc(RunningProc);
+					GConfig->GetBool(TEXT("CrashReportClient"), TEXT("bStartCRCFromEngineHandler"), bStartCRCFromEngineHandler, GEngineIni);
 				}
 
-				FPlatformProcess::CloseProc(RunningProc);
+				if (bStartCRCFromEngineHandler)
+				{
+					// spin here until CrashReporter exits
+					FProcHandle RunningProc = FPlatformProcess::CreateProc(RelativePathToCrashReporter, *CrashReportClientArguments, true, false, false, NULL, 0, NULL, NULL);
+
+					// do not wait indefinitely - can be more generous about the hitch than in ensure() case
+					// NOTE: Chris.Wood - increased from 3 to 8 mins because server crashes were timing out and getting lost
+					// NOTE: Do not increase above 8.5 mins without altering watchdog scripts to match
+					const double kCrashTimeOut = 8 * 60.0;
+
+					const double kCrashSleepInterval = 1.0;
+					if (!UnixCrashReporterTracker::WaitForProcWithTimeout(RunningProc, kCrashTimeOut, kCrashSleepInterval))
+					{
+						FPlatformProcess::TerminateProc(RunningProc);
+					}
+
+					FPlatformProcess::CloseProc(RunningProc);
+				}
 			}
 		}
 	}
@@ -645,6 +691,7 @@ void DefaultCrashHandler(const FUnixCrashContext & Context)
 	const_cast<FUnixCrashContext&>(Context).CaptureStackTrace();
 	if (GLog)
 	{
+		GLog->SetCurrentThreadAsMasterThread();
 		GLog->Flush();
 	}
 	if (GWarn)
@@ -665,7 +712,8 @@ void (* GCrashHandlerPointer)(const FGenericCrashContext & Context) = NULL;
 
 extern int32 CORE_API GMaxNumberFileMappingCache;
 
-extern thread_local const TCHAR* GAssertErrorMessage;
+extern thread_local const TCHAR* GCrashErrorMessage;
+extern thread_local ECrashContextType GCrashErrorType;
 
 /** True system-specific crash handler that gets called first */
 void PlatformCrashHandler(int32 Signal, siginfo_t* Info, void* Context)
@@ -684,15 +732,15 @@ void PlatformCrashHandler(int32 Signal, siginfo_t* Info, void* Context)
 	ECrashContextType Type;
 	const TCHAR* ErrorMessage;
 
-	if (GAssertErrorMessage == nullptr)
+	if (GCrashErrorMessage == nullptr)
 	{
 		Type = ECrashContextType::Crash;
 		ErrorMessage = TEXT("Caught signal");
 	}
 	else
 	{
-		Type = ECrashContextType::Assert;
-		ErrorMessage = GAssertErrorMessage;
+		Type = GCrashErrorType;
+		ErrorMessage = GCrashErrorMessage;
 	}
 
 	FUnixCrashContext CrashContext(Type, ErrorMessage);
@@ -713,6 +761,27 @@ void PlatformCrashHandler(int32 Signal, siginfo_t* Info, void* Context)
 	}
 }
 
+void ThreadStackWalker(int32 Signal, siginfo_t* Info, void* Context)
+{
+	ThreadStackUserData* ThreadStackData = static_cast<ThreadStackUserData*>(Info->si_value.sival_ptr);
+
+	if (ThreadStackData)
+	{
+		if (ThreadStackData->bCaptureCallStack)
+		{
+			// One for the pthread frame and one for siqueue
+			int32 IgnoreCount = 2;
+			FPlatformStackWalk::StackWalkAndDump(ThreadStackData->CallStack, ThreadStackData->CallStackSize, IgnoreCount);
+		}
+		else
+		{
+			ThreadStackData->BackTraceCount = FPlatformStackWalk::CaptureStackBackTrace(ThreadStackData->BackTrace, ThreadStackData->CallStackSize);
+		}
+
+		ThreadStackData->bDone = true;
+	}
+}
+
 void FUnixPlatformMisc::SetGracefulTerminationHandler()
 {
 	struct sigaction Action;
@@ -727,6 +796,9 @@ void FUnixPlatformMisc::SetGracefulTerminationHandler()
 
 // reserve stack for the main thread in BSS
 char FRunnableThreadUnix::MainThreadSignalHandlerStack[FRunnableThreadUnix::EConstants::CrashHandlerStackSize];
+
+// Defined in UnixPlatformMemory.cpp. Allows settings a specific signal to maintain its default handler rather then ignoring it
+extern int32 GSignalToDefault;
 
 void FUnixPlatformMisc::SetCrashHandler(void (* CrashHandler)(const FGenericCrashContext & Context))
 {
@@ -776,8 +848,9 @@ void FUnixPlatformMisc::SetCrashHandler(void (* CrashHandler)(const FGenericCras
 	Action.sa_flags = SA_SIGINFO | SA_RESTART | SA_ONSTACK;
 	Action.sa_handler = SIG_IGN;
 
-	// set all the signals except ones we know we are handling to be ignored
-	for (int Signal = 1; Signal < NSIG; ++Signal)
+	// Set all the signals except ones we know we are handling to be ignored
+	// Exempt realtime signals as well as they are used by third party libs and VTune
+	for (int Signal = 1; Signal < SIGRTMIN; ++Signal)
 	{
 		bool bSignalShouldBeIgnored = true;
 		for (int HandledSignal : HandledSignals)
@@ -789,11 +862,23 @@ void FUnixPlatformMisc::SetCrashHandler(void (* CrashHandler)(const FGenericCras
 			}
 		}
 
+		if (GSignalToDefault && Signal == GSignalToDefault)
+		{
+			bSignalShouldBeIgnored = false;
+		}
+
 		if (bSignalShouldBeIgnored)
 		{
 			sigaction(Signal, &Action, nullptr);
 		}
 	}
+
+	struct sigaction ActionForThread;
+	FMemory::Memzero(ActionForThread);
+	sigfillset(&ActionForThread.sa_mask);
+	ActionForThread.sa_flags = SA_SIGINFO | SA_RESTART | SA_ONSTACK;
+	ActionForThread.sa_sigaction = ThreadStackWalker;
+	sigaction(THREAD_CALLSTACK_GENERATOR, &ActionForThread, nullptr);
 
 	checkf(IsInGameThread(), TEXT("Crash handler for the game thread should be set from the game thread only."));
 

@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 /*=============================================================================
 	Audio.h: Unreal base audio.
@@ -7,17 +7,57 @@
 #pragma once
 
 #include "CoreMinimal.h"
+#include "AudioDefines.h"
 #include "Stats/Stats.h"
 #include "HAL/ThreadSafeBool.h"
-#include "Sound/SoundClass.h"
-#include "Sound/SoundSubmix.h"
+#include "Sound/AudioOutputTarget.h"
 #include "Sound/SoundAttenuation.h"
 #include "Sound/SoundEffectSource.h"
+#include "Sound/SoundSubmixSend.h"
 #include "Sound/SoundSourceBusSend.h"
 #include "IAudioExtensionPlugin.h"
 
+ENGINE_API DECLARE_LOG_CATEGORY_EXTERN(LogAudio, Display, All);
+
+// Special log category used for temporary programmer debugging code of audio
+ENGINE_API DECLARE_LOG_CATEGORY_EXTERN(LogAudioDebug, Display, All);
+
+/**
+ * Audio stats
+ */
+DECLARE_DWORD_COUNTER_STAT_EXTERN(TEXT("Active Sounds"), STAT_ActiveSounds, STATGROUP_Audio, );
+DECLARE_CYCLE_STAT_EXTERN(TEXT("Audio Evaluate Concurrency"), STAT_AudioEvaluateConcurrency, STATGROUP_Audio, );
+DECLARE_DWORD_COUNTER_STAT_EXTERN(TEXT("Audio Sources"), STAT_AudioSources, STATGROUP_Audio, );
+DECLARE_DWORD_COUNTER_STAT_EXTERN(TEXT("Wave Instances"), STAT_WaveInstances, STATGROUP_Audio, );
+DECLARE_DWORD_COUNTER_STAT_EXTERN(TEXT("Wave Instances Dropped"), STAT_WavesDroppedDueToPriority, STATGROUP_Audio, );
+DECLARE_DWORD_COUNTER_STAT_EXTERN(TEXT("Virtualized Loops"), STAT_AudioVirtualLoops, STATGROUP_Audio, );
+DECLARE_DWORD_COUNTER_STAT_EXTERN(TEXT("Audible Wave Instances Dropped"), STAT_AudibleWavesDroppedDueToPriority, STATGROUP_Audio, );
+DECLARE_DWORD_COUNTER_STAT_EXTERN(TEXT("Max Channels"), STAT_AudioMaxChannels, STATGROUP_Audio, );
+DECLARE_DWORD_COUNTER_STAT_EXTERN(TEXT("Max Stopping Sources"), STAT_AudioMaxStoppingSources, STATGROUP_Audio, );
+DECLARE_DWORD_COUNTER_STAT_EXTERN(TEXT("Finished delegates called"), STAT_AudioFinishedDelegatesCalled, STATGROUP_Audio, );
+DECLARE_CYCLE_STAT_EXTERN(TEXT("Finished delegates time"), STAT_AudioFinishedDelegates, STATGROUP_Audio, );
+DECLARE_MEMORY_STAT_EXTERN(TEXT("Audio Memory Used"), STAT_AudioMemorySize, STATGROUP_Audio, );
+DECLARE_FLOAT_ACCUMULATOR_STAT_EXTERN(TEXT("Audio Buffer Time"), STAT_AudioBufferTime, STATGROUP_Audio, );
+DECLARE_FLOAT_ACCUMULATOR_STAT_EXTERN(TEXT("Audio Buffer Time (w/ Channels)"), STAT_AudioBufferTimeChannels, STATGROUP_Audio, );
+DECLARE_CYCLE_STAT_EXTERN(TEXT("Gathering WaveInstances"), STAT_AudioGatherWaveInstances, STATGROUP_Audio, );
+DECLARE_CYCLE_STAT_EXTERN(TEXT("Processing Sources"), STAT_AudioStartSources, STATGROUP_Audio, );
+DECLARE_CYCLE_STAT_EXTERN(TEXT("Updating Sources"), STAT_AudioUpdateSources, STATGROUP_Audio, ENGINE_API);
+DECLARE_CYCLE_STAT_EXTERN(TEXT("Updating Effects"), STAT_AudioUpdateEffects, STATGROUP_Audio, );
+DECLARE_CYCLE_STAT_EXTERN(TEXT("Source Init"), STAT_AudioSourceInitTime, STATGROUP_Audio, ENGINE_API);
+DECLARE_CYCLE_STAT_EXTERN(TEXT("Source Create"), STAT_AudioSourceCreateTime, STATGROUP_Audio, ENGINE_API);
+DECLARE_CYCLE_STAT_EXTERN(TEXT("Submit Buffers"), STAT_AudioSubmitBuffersTime, STATGROUP_Audio, ENGINE_API);
+DECLARE_CYCLE_STAT_EXTERN(TEXT("Decompress Audio"), STAT_AudioDecompressTime, STATGROUP_Audio, );
+DECLARE_CYCLE_STAT_EXTERN(TEXT("Decompress Vorbis"), STAT_VorbisDecompressTime, STATGROUP_Audio, );
+DECLARE_CYCLE_STAT_EXTERN(TEXT("Prepare Audio Decompression"), STAT_AudioPrepareDecompressionTime, STATGROUP_Audio, );
+DECLARE_CYCLE_STAT_EXTERN(TEXT("Prepare Vorbis Decompression"), STAT_VorbisPrepareDecompressionTime, STATGROUP_Audio, );
+DECLARE_CYCLE_STAT_EXTERN(TEXT("Finding Nearest Location"), STAT_AudioFindNearestLocation, STATGROUP_Audio, );
+DECLARE_CYCLE_STAT_EXTERN(TEXT("Decompress Streamed"), STAT_AudioStreamedDecompressTime, STATGROUP_Audio, );
+DECLARE_CYCLE_STAT_EXTERN(TEXT("Buffer Creation"), STAT_AudioResourceCreationTime, STATGROUP_Audio, );
+
+
 class FAudioDevice;
 class USoundNode;
+struct FSoundModulationControls;
 class USoundWave;
 class USoundClass;
 class USoundSubmix;
@@ -25,83 +65,6 @@ class USoundSourceBus;
 struct FActiveSound;
 struct FWaveInstance;
 struct FSoundSourceBusSendInfo;
-
-//#include "Sound/SoundConcurrency.h"
-
-ENGINE_API DECLARE_LOG_CATEGORY_EXTERN(LogAudio, Warning, All);
-
-// Special log category used for temporary programmer debugging code of audio
-ENGINE_API DECLARE_LOG_CATEGORY_EXTERN(LogAudioDebug, Display, All);
- 
-/** 
- * Maximum number of channels that can be set using the ini setting
- */
-#define MAX_AUDIOCHANNELS				64
-
-
-/** 
- * Length of sound in seconds to be considered as looping forever
- */
-#define INDEFINITELY_LOOPING_DURATION	10000.0f
-
-/**
- * Some defaults to help cross platform consistency
- */
-#define SPEAKER_COUNT					6
-
-#define DEFAULT_LOW_FREQUENCY			600.0f
-#define DEFAULT_MID_FREQUENCY			1000.0f
-#define DEFAULT_HIGH_FREQUENCY			2000.0f
-
-#define MAX_VOLUME						4.0f
-#define MIN_PITCH						0.4f
-#define MAX_PITCH						2.0f
-
-#define MIN_SOUND_PRIORITY				0.0f
-#define MAX_SOUND_PRIORITY				100.0f
-
-#define DEFAULT_SUBTITLE_PRIORITY		10000.0f
-
-/**
- * Some filters don't work properly with extreme values, so these are the limits 
- */
-#define MIN_FILTER_GAIN					0.126f
-#define MAX_FILTER_GAIN					7.94f
-
-#define MIN_FILTER_FREQUENCY			20.0f
-#define MAX_FILTER_FREQUENCY			20000.0f
-
-#define MIN_FILTER_BANDWIDTH			0.1f
-#define MAX_FILTER_BANDWIDTH			2.0f
-
-/**
- * Audio stats
- */
-DECLARE_DWORD_COUNTER_STAT_EXTERN( TEXT( "Active Sounds" ), STAT_ActiveSounds, STATGROUP_Audio , );
-DECLARE_CYCLE_STAT_EXTERN(TEXT("Audio Evaluate Concurrency"), STAT_AudioEvaluateConcurrency, STATGROUP_Audio, );
-DECLARE_DWORD_COUNTER_STAT_EXTERN( TEXT( "Audio Sources" ), STAT_AudioSources, STATGROUP_Audio , );
-DECLARE_DWORD_COUNTER_STAT_EXTERN( TEXT( "Wave Instances" ), STAT_WaveInstances, STATGROUP_Audio , );
-DECLARE_DWORD_COUNTER_STAT_EXTERN( TEXT( "Wave Instances Dropped" ), STAT_WavesDroppedDueToPriority, STATGROUP_Audio , );
-DECLARE_DWORD_COUNTER_STAT_EXTERN( TEXT( "Audible Wave Instances Dropped" ), STAT_AudibleWavesDroppedDueToPriority, STATGROUP_Audio , );
-DECLARE_DWORD_COUNTER_STAT_EXTERN( TEXT( "Finished delegates called" ), STAT_AudioFinishedDelegatesCalled, STATGROUP_Audio , );
-DECLARE_CYCLE_STAT_EXTERN( TEXT( "Finished delegates time" ), STAT_AudioFinishedDelegates, STATGROUP_Audio , );
-DECLARE_MEMORY_STAT_EXTERN( TEXT( "Audio Memory Used" ), STAT_AudioMemorySize, STATGROUP_Audio , );
-DECLARE_FLOAT_ACCUMULATOR_STAT_EXTERN( TEXT( "Audio Buffer Time" ), STAT_AudioBufferTime, STATGROUP_Audio , );
-DECLARE_FLOAT_ACCUMULATOR_STAT_EXTERN( TEXT( "Audio Buffer Time (w/ Channels)" ), STAT_AudioBufferTimeChannels, STATGROUP_Audio , );
-DECLARE_CYCLE_STAT_EXTERN( TEXT( "Gathering WaveInstances" ), STAT_AudioGatherWaveInstances, STATGROUP_Audio , );
-DECLARE_CYCLE_STAT_EXTERN( TEXT( "Processing Sources" ), STAT_AudioStartSources, STATGROUP_Audio , );
-DECLARE_CYCLE_STAT_EXTERN( TEXT( "Updating Sources" ), STAT_AudioUpdateSources, STATGROUP_Audio , ENGINE_API);
-DECLARE_CYCLE_STAT_EXTERN( TEXT( "Updating Effects" ), STAT_AudioUpdateEffects, STATGROUP_Audio , );
-DECLARE_CYCLE_STAT_EXTERN( TEXT( "Source Init" ), STAT_AudioSourceInitTime, STATGROUP_Audio , ENGINE_API);
-DECLARE_CYCLE_STAT_EXTERN( TEXT( "Source Create" ), STAT_AudioSourceCreateTime, STATGROUP_Audio , ENGINE_API);
-DECLARE_CYCLE_STAT_EXTERN( TEXT( "Submit Buffers" ), STAT_AudioSubmitBuffersTime, STATGROUP_Audio , ENGINE_API);
-DECLARE_CYCLE_STAT_EXTERN( TEXT( "Decompress Audio" ), STAT_AudioDecompressTime, STATGROUP_Audio , );
-DECLARE_CYCLE_STAT_EXTERN( TEXT( "Decompress Vorbis" ), STAT_VorbisDecompressTime, STATGROUP_Audio , );
-DECLARE_CYCLE_STAT_EXTERN( TEXT( "Prepare Audio Decompression" ), STAT_AudioPrepareDecompressionTime, STATGROUP_Audio , );
-DECLARE_CYCLE_STAT_EXTERN( TEXT( "Prepare Vorbis Decompression" ), STAT_VorbisPrepareDecompressionTime, STATGROUP_Audio , );
-DECLARE_CYCLE_STAT_EXTERN( TEXT( "Finding Nearest Location" ), STAT_AudioFindNearestLocation, STATGROUP_Audio , );
-DECLARE_CYCLE_STAT_EXTERN( TEXT( "Decompress Streamed" ), STAT_AudioStreamedDecompressTime, STATGROUP_Audio , );
-DECLARE_CYCLE_STAT_EXTERN( TEXT( "Buffer Creation" ), STAT_AudioResourceCreationTime, STATGROUP_Audio , );
 
 /**
  * Channel definitions for multistream waves
@@ -121,66 +84,6 @@ enum EAudioSpeakers
 	SPEAKER_RightBack,		//				*
 	SPEAKER_Count
 };
-
-namespace EAudioMixerChannel
-{
-	/** Enumeration values represent sound file or speaker channel types. */
-	enum Type
-	{
-		FrontLeft,
-		FrontRight,
-		FrontCenter,
-		LowFrequency,
-		BackLeft,
-		BackRight,
-		FrontLeftOfCenter,
-		FrontRightOfCenter,
-		BackCenter,
-		SideLeft,
-		SideRight,
-		TopCenter,
-		TopFrontLeft,
-		TopFrontCenter,
-		TopFrontRight,
-		TopBackLeft,
-		TopBackCenter,
-		TopBackRight,
-		Unknown,
-		ChannelTypeCount
-	};
-
-	static const int32 MaxSupportedChannel = EAudioMixerChannel::TopCenter;
-
-	inline const TCHAR* ToString(EAudioMixerChannel::Type InType)
-	{
-		switch (InType)
-		{
-		case FrontLeft:				return TEXT("FrontLeft");
-		case FrontRight:			return TEXT("FrontRight");
-		case FrontCenter:			return TEXT("FrontCenter");
-		case LowFrequency:			return TEXT("LowFrequency");
-		case BackLeft:				return TEXT("BackLeft");
-		case BackRight:				return TEXT("BackRight");
-		case FrontLeftOfCenter:		return TEXT("FrontLeftOfCenter");
-		case FrontRightOfCenter:	return TEXT("FrontRightOfCenter");
-		case BackCenter:			return TEXT("BackCenter");
-		case SideLeft:				return TEXT("SideLeft");
-		case SideRight:				return TEXT("SideRight");
-		case TopCenter:				return TEXT("TopCenter");
-		case TopFrontLeft:			return TEXT("TopFrontLeft");
-		case TopFrontCenter:		return TEXT("TopFrontCenter");
-		case TopFrontRight:			return TEXT("TopFrontRight");
-		case TopBackLeft:			return TEXT("TopBackLeft");
-		case TopBackCenter:			return TEXT("TopBackCenter");
-		case TopBackRight:			return TEXT("TopBackRight");
-		case Unknown:				return TEXT("Unknown");
-
-		default:
-			return TEXT("UNSUPPORTED");
-		}
-	}
-}
-
 
 // Forward declarations.
 class UAudioComponent;
@@ -259,8 +162,11 @@ struct ENGINE_API FWaveInstance
 	/** Sound class */
 	USoundClass* SoundClass;
 
+	/** Modulation controls */
+	FSoundModulationControls SoundModulationControls;
+
 	/** Sound submix object to send audio to for mixing in audio mixer.  */
-	USoundSubmix* SoundSubmix;
+	USoundSubmixBase* SoundSubmix;
 
 	/** Sound submix sends */
 	TArray<FSoundSubmixSendInfo> SoundSubmixSends;
@@ -275,7 +181,7 @@ struct ENGINE_API FWaveInstance
 	FNotifyBufferFinishedHooks NotifyBufferFinishedHooks;
 
 	/** Active Sound this wave instance belongs to */
-	struct FActiveSound* ActiveSound;
+	FActiveSound* ActiveSound;
 
 private:
 
@@ -287,9 +193,6 @@ private:
 
 	/** Current volume multiplier - used to zero the volume without stopping the source */
 	float VolumeMultiplier;
-
-	/** The volume of the wave instance due to application volume or tab-state */
-	float VolumeApp;
 
 	/** The current envelope value of the wave instance. */
 	float EnvelopValue;
@@ -314,6 +217,7 @@ public:
 	float RadioFilterVolumeThreshold;
 
 	/** The amount of stereo sounds to bleed to the rear speakers */
+	UE_DEPRECATED(4.25, "Stereo Bleed is no longer supported.")
 	float StereoBleed;
 
 	/** The amount of a sound to bleed to the LFE channel */
@@ -340,17 +244,16 @@ public:
 	/** Whether the notify finished hook has been called since the last update/parsenodes */
 	uint32 bAlreadyNotifiedHook:1;
 
+private:
 	/** Whether to use spatialization */
 	uint32 bUseSpatialization:1;
 
+public:
 	/** Whether or not to enable the low pass filter */
 	uint32 bEnableLowPassFilter:1;
 
 	/** Whether or not the sound is occluded. */
 	uint32 bIsOccluded:1;
-
-	/** Whether to apply audio effects */
-	uint32 bEQFilterApplied:1;
 
 	/** Whether or not this sound plays when the game is paused in the UI */
 	uint32 bIsUISound:1;
@@ -388,11 +291,17 @@ public:
 	/** The occlusion plugin settings to use for the wave instance. */
 	UReverbPluginSourceSettingsBase* ReverbPluginSettings;
 
+	/** The modulation plugin settings to use for the wave instance. */
+	USoundModulationPluginSourceSettingsBase* ModulationPluginSettings;
+
 	/** Which output target the sound should play on. */
 	EAudioOutputTarget::Type OutputTarget;
 
 	/** The low pass filter frequency to use */
 	float LowPassFilterFrequency;
+
+	/** The low pass filter frequency to use from sound class. */
+	float SoundClassFilterFrequency;
 
 	/** The low pass filter frequency to use if the sound is occluded. */
 	float OcclusionFilterFrequency;
@@ -423,6 +332,9 @@ public:
 
 	/** The distance from this wave instance to the closest listener. */
 	float ListenerToSoundDistance;
+
+	/** The distance from this wave instance to the closest listener. (ignoring attenuation override) */
+	float ListenerToSoundDistanceForPanning;
 
 	/** The absolute position of the wave instance relative to forward vector of listener. */
 	float AbsoluteAzimuth; 
@@ -455,7 +367,7 @@ public:
 	uint8 UserIndex;
 
 	/** Constructor, initializing all member variables. */
-	FWaveInstance(FActiveSound* ActiveSound);
+	FWaveInstance(const UPTRINT InWaveInstanceHash, FActiveSound& ActiveSound);
 
 	/** Stops the wave instance without notifying NotifyWaveInstanceFinishedHook. */
 	void StopWithoutNotification();
@@ -472,14 +384,19 @@ public:
 	/** Returns the actual volume the wave instance will play at */
 	bool ShouldStopDueToMaxConcurrency() const;
 
-	/** Setters for various volume values on wave instances. */
+	/** Setters for various values on wave instances. */
 	void SetVolume(const float InVolume) { Volume = InVolume; }
 	void SetDistanceAttenuation(const float InDistanceAttenuation) { DistanceAttenuation = InDistanceAttenuation; }
-	void SetVolumeApp(const float InVolumeApp) { VolumeApp = InVolumeApp; }
+	void SetPitch(const float InPitch) { Pitch = InPitch; }
 	void SetVolumeMultiplier(const float InVolumeMultiplier) { VolumeMultiplier = InVolumeMultiplier; }
 
 	void SetStopping(const bool bInIsStopping) { bIsStopping = bInIsStopping; }
 	bool IsStopping() const { return bIsStopping; }
+
+	/** Returns whether or not the WaveInstance is actively playing sound or set to
+	  * play when silent.
+	  */
+	bool IsPlaying() const;
 
 	/** Returns the volume multiplier on the wave instance. */
 	float GetVolumeMultiplier() const { return VolumeMultiplier; }
@@ -496,14 +413,16 @@ public:
 	/** Returns the dynamic volume of the sound */
 	float GetDynamicVolume() const;
 
+	/** Returns the pitch of the wave instance */
+	float GetPitch() const;
+
 	/** Returns the volume of the wave instance (ignoring application muting) */
 	float GetVolume() const;
 
 	/** Returns the weighted priority of the wave instance. */
 	float GetVolumeWeightedPriority() const;
 
-	/** Returns the volume due to application behavior for the wave instance. */
-	float GetVolumeApp() const { return VolumeApp; }
+	bool IsSeekable() const;
 
 	/** Checks whether wave is streaming and streaming is supported */
 	bool IsStreaming() const;
@@ -517,6 +436,11 @@ public:
 	/** Gets the envelope value of the waveinstance. Only returns non-zero values if it's a real voice. Only implemented in the audio mixer. */
 	float GetEnvelopeValue() const { return EnvelopValue; }
 
+	/** Whether to use spatialization, which controls 3D effects like panning */
+	void SetUseSpatialization(const bool InUseSpatialization) { bUseSpatialization = InUseSpatialization; }
+
+	/** Whether this wave will be spatialized, which controls 3D effects like panning */
+	bool GetUseSpatialization() const;
 };
 
 inline uint32 GetTypeHash(FWaveInstance* A) { return A->TypeHash; }
@@ -525,7 +449,7 @@ inline uint32 GetTypeHash(FWaveInstance* A) { return A->TypeHash; }
 	FSoundBuffer.
 -----------------------------------------------------------------------------*/
 
-class FSoundBuffer
+class ENGINE_VTABLE FSoundBuffer
 {
 public:
 	FSoundBuffer(class FAudioDevice * InAudioDevice)
@@ -601,7 +525,7 @@ public:
 FSoundSource.
 -----------------------------------------------------------------------------*/
 
-class FSoundSource
+class ENGINE_VTABLE FSoundSource
 {
 public:
 	/** Constructor */
@@ -609,7 +533,6 @@ public:
 		: AudioDevice(InAudioDevice)
 		, WaveInstance(nullptr)
 		, Buffer(nullptr)
-		, StereoBleed(0.0f)
 		, LFEBleed(0.5f)
 		, LPFFrequency(MAX_FILTER_FREQUENCY)
 		, HPFFrequency(MIN_FILTER_FREQUENCY)
@@ -698,13 +621,11 @@ public:
 	/** Returns true if reverb should be applied. */
 	bool IsReverbApplied() const { return bReverbApplied; }
 
-	/** Returns true if EQ should be applied. */
-	bool IsEQFilterApplied() const  { return WaveInstance->bEQFilterApplied; }
-
 	/** Set the bReverbApplied variable. */
 	ENGINE_API bool SetReverbApplied(bool bHardwareAvailable);
 
 	/** Set the StereoBleed variable. */
+	UE_DEPRECATED(4.25, "Stereo Bleed is no longer supported.")
 	ENGINE_API float SetStereoBleed();
 
 	/** Updates and sets the LFEBleed variable. */
@@ -715,9 +636,6 @@ public:
 
 	/** Updates the stereo emitter positions of this voice. */
 	ENGINE_API void UpdateStereoEmitterPositions();
-
-	/** Draws debug info about this source voice if enabled. */
-	ENGINE_API void DrawDebugInfo();
 
 	/** Gets parameters necessary for computing 3d spatialization of sources. */
 	ENGINE_API FSpatializationParams GetSpatializationParams();
@@ -741,6 +659,8 @@ public:
 
 	/** Returns the source's envelope at the callback block rate. Only implemented in audio mixer. */
 	ENGINE_API virtual float GetEnvelopeValue() const { return 0.0f; };
+
+	ENGINE_API void GetChannelLocations(FVector& Left, FVector&Right) const;
 
 	void NotifyPlaybackData();
 
@@ -769,9 +689,6 @@ protected:
 
 	/** Cached sound buffer associated with currently bound wave instance. */
 	FSoundBuffer* Buffer;
-
-	/** The amount of stereo sounds to bleed to the rear speakers */
-	float StereoBleed;
 
 	/** The amount of a sound to bleed to the LFE speaker */
 	float LFEBleed;
@@ -847,6 +764,29 @@ protected:
 
 	friend class FAudioDevice;
 	friend struct FActiveSound;
+
+#if ENABLE_AUDIO_DEBUG
+public:
+
+	/** Struct containing the debug state of a SoundSource */
+	struct ENGINE_API FDebugInfo
+	{
+		/** True if this sound has been soloed. */
+		bool bIsSoloed = false;
+
+		/** True if this sound has been muted . */
+		bool bIsMuted = false;
+
+		/** Reason why this sound is mute/soloed. */
+		FString MuteSoloReason;
+
+		/** Basic CS so we can pass this around safely. */
+		FCriticalSection CS;
+	};
+	
+	TSharedPtr<FDebugInfo, ESPMode::ThreadSafe> DebugInfo;
+	friend struct FDebugInfo;
+#endif //ENABLE_AUDIO_DEBUG
 };
 
 /*-----------------------------------------------------------------------------

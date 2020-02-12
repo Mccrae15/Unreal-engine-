@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 #pragma  once
 
 #include "CoreMinimal.h"
@@ -13,7 +13,7 @@ class USCS_Node;
 class UUserDefinedEnum;
 class UUserDefinedStruct;
 struct FDefaultSubobjectData;
-struct FNonativeComponentData;
+struct FNonNativeComponentData;
 enum class ENativizedTermUsage : uint8;
 struct FEmitterLocalContext;
 
@@ -50,12 +50,12 @@ public:
 	 FScopeBlock(FEmitterLocalContext& Context);
 	~FScopeBlock();
 
-	void TrackLocalAccessorDecl(const UProperty* Property);
+	void TrackLocalAccessorDecl(const FProperty* Property);
 
 private:
 	FEmitterLocalContext& Context;
 	FScopeBlock*  OuterScopeBlock;
-	TArray<const UProperty*> LocalAccessorDecls;
+	TArray<const FProperty*> LocalAccessorDecls;
 };
 
 struct FEmitterLocalContext
@@ -134,7 +134,7 @@ public:
 	void MarkUnconvertedClassAsNecessary(UField* InField);
 
 	// PROPERTIES FOR INACCESSIBLE MEMBER VARIABLES
-	TMap<const UProperty*, FString> PropertiesForInaccessibleStructs;
+	TMap<const FProperty*, FString> PropertiesForInaccessibleStructs;
 	void ResetPropertiesForInaccessibleStructs()
 	{
 		PropertiesForInaccessibleStructs.Empty();
@@ -220,8 +220,8 @@ public:
 		ForceConverted,
 	};
 
-	FString ExportCppDeclaration(const UProperty* Property, EExportedDeclaration::Type DeclarationType, uint32 AdditionalExportCPPFlags, EPropertyNameInDeclaration ParameterName = EPropertyNameInDeclaration::Regular, const FString& NamePostfix = FString(), const FString& TypePrefix = FString()) const;
-	FString ExportTextItem(const UProperty* Property, const void* PropertyValue) const;
+	FString ExportCppDeclaration(const FProperty* Property, EExportedDeclaration::Type DeclarationType, uint32 AdditionalExportCPPFlags, EPropertyNameInDeclaration ParameterName = EPropertyNameInDeclaration::Regular, const FString& NamePostfix = FString(), const FString& TypePrefix = FString()) const;
+	FString ExportTextItem(const FProperty* Property, const void* PropertyValue) const;
 
 	// AS FCodeText
 	void IncreaseIndent()
@@ -246,14 +246,14 @@ private:
 struct FEmitHelper
 {
 	// bUInterface - use interface with "U" prefix, by default there is "I" prefix
-	static FString GetCppName(const UField* Field, bool bUInterface = false, bool bForceParameterNameModification = false);
+	static FString GetCppName(FFieldVariant Field, bool bUInterface = false, bool bForceParameterNameModification = false);
 
 	// returns an unique number for a structure in structures hierarchy
 	static int32 GetInheritenceLevel(const UStruct* Struct);
 
 	static FString FloatToString(float Value);
 
-	static bool PropertyForConstCast(const UProperty* Property);
+	static bool PropertyForConstCast(const FProperty* Property);
 
 	static void ArrayToString(const TArray<FString>& Array, FString& OutString, const TCHAR* Separator);
 
@@ -261,13 +261,13 @@ struct FEmitHelper
 
 	static bool IsMetaDataValid(const FName Name, const FString& Value);
 
-	static FString HandleRepNotifyFunc(const UProperty* Property);
+	static FString HandleRepNotifyFunc(const FProperty* Property);
 
-	static bool MetaDataCanBeNative(const FName MetaDataName, const UField* Field);
+	static bool MetaDataCanBeNative(const FName MetaDataName, FFieldVariant Field);
 
-	static FString HandleMetaData(const UField* Field, bool AddCategory = true, const TArray<FString>* AdditinalMetaData = nullptr);
+	static FString HandleMetaData(FFieldVariant Field, bool AddCategory = true, const TArray<FString>* AdditinalMetaData = nullptr);
 
-	static TArray<FString> ProperyFlagsToTags(uint64 Flags, bool bIsClassProperty);
+	static TArray<FString> PropertyFlagsToTags(uint64 Flags, bool bIsClassProperty);
 
 	static TArray<FString> FunctionFlagsToTags(uint64 Flags);
 
@@ -279,7 +279,7 @@ struct FEmitHelper
 
 	static int32 ParseDelegateDetails(FEmitterLocalContext& EmitterContext, UFunction* Signature, FString& OutParametersMacro, FString& OutParamNumberStr);
 
-	static void EmitSinglecastDelegateDeclarations(FEmitterLocalContext& EmitterContext, const TArray<UDelegateProperty*>& Delegates);
+	static void EmitSinglecastDelegateDeclarations(FEmitterLocalContext& EmitterContext, const TArray<FDelegateProperty*>& Delegates);
 
 	static void EmitSinglecastDelegateDeclarations_Inner(FEmitterLocalContext& EmitterContext, UFunction* Signature, const FString& TypeName);
 
@@ -293,7 +293,7 @@ struct FEmitHelper
 		FString CustomValue;
 		FText LiteralText;
 		UObject* LiteralObject;
-		const UProperty* CoerceProperty;
+		const FProperty* CoerceProperty;
 
 		FLiteralTermParams()
 			:LiteralObject(nullptr)
@@ -312,7 +312,7 @@ struct FEmitHelper
 
 	static bool ShouldHandleAsImplementableEvent(UFunction* Function);
 
-	static bool GenerateAutomaticCast(FEmitterLocalContext& EmitterContext, const FEdGraphPinType& LType, const FEdGraphPinType& RType, const UProperty* LProp, const UProperty* RProp, FString& OutCastBegin, FString& OutCastEnd, bool bForceReference = false);
+	static bool GenerateAutomaticCast(FEmitterLocalContext& EmitterContext, const FEdGraphPinType& LType, const FEdGraphPinType& RType, const FProperty* LProp, const FProperty* RProp, FString& OutCastBegin, FString& OutCastEnd, bool bForceReference = false);
 
 	static FString GenerateReplaceConvertedMD(UObject* Obj);
 
@@ -324,16 +324,14 @@ struct FEmitHelper
 
 	static FString GetGameMainHeaderFilename();
 
-	static FString GenerateGetPropertyByName(FEmitterLocalContext& EmitterContext, const UProperty* Property);
+	static FString GenerateGetPropertyByName(FEmitterLocalContext& EmitterContext, const FProperty* Property);
 
-	static FString AccessInaccessibleProperty(FEmitterLocalContext& EmitterContext, const UProperty* Property, FString OverrideTypeDeclaration
+	static FString AccessInaccessibleProperty(FEmitterLocalContext& EmitterContext, const FProperty* Property, FString OverrideTypeDeclaration
 		, const FString& ContextStr, const FString& ContextAdressOp, int32 StaticArrayIdx
 		, ENativizedTermUsage TermUsage, FString* CustomSetExpressionEnding);
 
 	static const TCHAR* EmptyDefaultConstructor(UScriptStruct* Struct);
 };
-
-struct FNonativeComponentData;
 
 struct FEmitDefaultValueHelper
 {
@@ -350,12 +348,25 @@ struct FEmitDefaultValueHelper
 		Dot,
 	};
 
+	/** Allows callers to control the behavior of emitting code to initialize properties. */
+	enum class EPropertyGenerationControlFlags
+	{
+		/** Normal operation (default). */
+		None = 0,
+		/** Allow transient properties to be emitted. By default, transient properties are skipped. */
+		AllowTransient = 1 << 0,
+		/** Allow protected properties to be treated as an accessible property. By default, protected properties will use the inaccessible property path, which emits some extra code. */
+		AllowProtected = 1 << 1,
+		/** Emit code to construct the value before assigning it. By default, it's assumed that the value has already been constructed. */
+		IncludeFirstConstructionLine = 1 << 2
+	};
+
 	// OuterPath ends context/outer name (or empty, if the scope is "this")
-	static void OuterGenerate(FEmitterLocalContext& Context, const UProperty* Property, const FString& OuterPath, const uint8* DataContainer, const uint8* OptionalDefaultDataContainer, EPropertyAccessOperator AccessOperator, bool bAllowProtected = false);
+	static void OuterGenerate(FEmitterLocalContext& Context, const FProperty* Property, const FString& OuterPath, const uint8* DataContainer, const uint8* OptionalDefaultDataContainer, EPropertyAccessOperator AccessOperator, EPropertyGenerationControlFlags ControlFlags = EPropertyGenerationControlFlags::None);
 
 
 	// PathToMember ends with variable name
-	static void InnerGenerate(FEmitterLocalContext& Context, const UProperty* Property, const FString& PathToMember, const uint8* ValuePtr, const uint8* DefaultValuePtr, bool bWithoutFirstConstructionLine = false);
+	static void InnerGenerate(FEmitterLocalContext& Context, const FProperty* Property, const FString& PathToMember, const uint8* ValuePtr, const uint8* DefaultValuePtr, EPropertyGenerationControlFlags ControlFlags = EPropertyGenerationControlFlags::None);
 
 	// Creates the subobject (of class) returns it's native local name, 
 	// returns empty string if cannot handle
@@ -374,12 +385,14 @@ struct FEmitDefaultValueHelper
 private:
 	// Returns native term, 
 	// returns empty string if cannot handle
-	static FString HandleSpecialTypes(FEmitterLocalContext& Context, const UProperty* Property, const uint8* ValuePtr);
+	static FString HandleSpecialTypes(FEmitterLocalContext& Context, const FProperty* Property, const uint8* ValuePtr);
 
-	static FString HandleNonNativeComponent(FEmitterLocalContext& Context, const USCS_Node* Node, TSet<const UProperty*>& OutHandledProperties
-		, TArray<FString>& NativeCreatedComponentProperties, const USCS_Node* ParentNode, TArray<FNonativeComponentData>& ComponentsToInit
+	static FString HandleNonNativeComponent(FEmitterLocalContext& Context, const USCS_Node* Node, TSet<const FProperty*>& OutHandledProperties
+		, TArray<FString>& NativeCreatedComponentProperties, const USCS_Node* ParentNode, TArray<FNonNativeComponentData>& ComponentsToInit
 		, bool bBlockRecursion);
 };
+
+ENUM_CLASS_FLAGS(FEmitDefaultValueHelper::EPropertyGenerationControlFlags);
 
 struct FBackendHelperUMG
 {
@@ -402,11 +415,11 @@ struct FBackendHelperAnim
 {
 	static void AddHeaders(FEmitterLocalContext& EmitterContext);
 	static void CreateAnimClassData(FEmitterLocalContext& Context);
-	static bool ShouldAddAnimNodeInitializationFunctionCall(FEmitterLocalContext& Context, const UProperty* InProperty);
-	static void AddAllAnimNodesInitializationFunction(FEmitterLocalContext& Context, const FString& InCppClassName, const TArray<const UProperty*>& InAnimProperties);
+	static bool ShouldAddAnimNodeInitializationFunctionCall(FEmitterLocalContext& Context, const FProperty* InProperty);
+	static void AddAllAnimNodesInitializationFunction(FEmitterLocalContext& Context, const FString& InCppClassName, const TArray<const FProperty*>& InAnimProperties);
 	static void AddAllAnimNodesInitializationFunctionCall(FEmitterLocalContext& Context);
-	static void AddAnimNodeInitializationFunctionCall(FEmitterLocalContext& Context, const UProperty* InProperty);
-	static void AddAnimNodeInitializationFunction(FEmitterLocalContext& Context, const FString& InCppClassName, const UProperty* InProperty, bool bInNewProperty, UObject* InCDO, UObject* InParentCDO);
+	static void AddAnimNodeInitializationFunctionCall(FEmitterLocalContext& Context, const FProperty* InProperty);
+	static void AddAnimNodeInitializationFunction(FEmitterLocalContext& Context, const FString& InCppClassName, const FProperty* InProperty, bool bInNewProperty, UObject* InCDO, UObject* InParentCDO);
 };
 
 /** this struct helps generate a static function that initializes Static Searchable Values. */
@@ -420,9 +433,9 @@ struct FBackendHelperStaticSearchableValues
 };
 struct FNativizationSummaryHelper
 {
-	static void InaccessibleProperty(const UProperty* Property);
+	static void InaccessibleProperty(const FProperty* Property);
 	// Notify, that the class used a (unrelated) property
-	static void PropertyUsed(const UClass* Class, const UProperty* Property);
+	static void PropertyUsed(const UClass* Class, const FProperty* Property);
 	// Notify, that the class used a (unrelated) function
 	static void FunctionUsed(const UClass* Class, const UFunction* Function);
 	static void RegisterClass(const UClass* OriginalClass);

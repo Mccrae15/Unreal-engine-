@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "PhysicsEngine/PhysicsThruster.h"
 #include "UObject/ConstructorHelpers.h"
@@ -43,7 +43,7 @@ void UPhysicsThrusterComponent::TickComponent(float DeltaTime, enum ELevelTick T
 	Super::TickComponent(DeltaTime, TickType, ThisTickFunction);
 
 	// Applied force to the base, so if we don't have one, do nothing.
-	if( bIsActive && GetAttachParent())
+	if(IsActive() && GetAttachParent())
 	{
 		FVector WorldForce = ThrustStrength * GetComponentTransform().TransformVectorNoScale( FVector(-1.f,0.f,0.f) );
 

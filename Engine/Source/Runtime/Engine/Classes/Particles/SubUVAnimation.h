@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 /**
  * SubUV animation asset
@@ -52,7 +52,7 @@ enum EOpacitySourceMode
 	OSM_BlueChannel
 };
 
-class FSubUVDerivedData
+class ENGINE_API FSubUVDerivedData
 {
 public:
 	TArray<FVector2D> BoundingGeometry;
@@ -193,7 +193,7 @@ public:
 		return &DerivedData.BoundingGeometry[FrameIndex * GetNumBoundingVertices()];
 	}
 
-	inline FShaderResourceViewRHIParamRef GetBoundingGeometrySRV() const
+	inline FRHIShaderResourceView* GetBoundingGeometrySRV() const
 	{
 		return BoundingGeometryBuffer->ShaderResourceView;
 	}
@@ -203,7 +203,7 @@ public:
 	virtual void Serialize(FStructuredArchive::FRecord Record) override;
 	virtual void PostLoad() override;
 #if WITH_EDITOR
-	virtual void PreEditChange(UProperty* PropertyAboutToChange) override;
+	virtual void PreEditChange(FProperty* PropertyAboutToChange) override;
 	virtual void PostEditChangeProperty(FPropertyChangedEvent& PropertyChangedEvent) override;
 #endif // WITH_EDITOR
 	virtual void BeginDestroy() override;

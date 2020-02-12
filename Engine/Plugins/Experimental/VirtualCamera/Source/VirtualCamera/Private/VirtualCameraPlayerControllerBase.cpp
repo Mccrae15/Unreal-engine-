@@ -1,32 +1,30 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "VirtualCameraPlayerControllerBase.h"
 
+#include "ConcertVirtualCamera.h"
 #include "CineCameraActor.h"
 #include "Engine/Engine.h"
 #include "Engine/World.h"
 #include "Features/IModularFeatures.h"
+#include "Framework/Application/SlateApplication.h"
 #include "IXRTrackingSystem.h"
-#include "RemoteSession/RemoteSession.h"
-#include "RemoteSession/Channels/RemoteSessionInputChannel.h"
-#include "RemoteSession/Channels/RemoteSessionFrameBufferChannel.h"
-#include "RemoteSession/Channels/RemoteSessionXRTrackingChannel.h"
-#include "SteamVRFunctionLibrary.h"
+#include "RemoteSession.h"
+#include "Channels/RemoteSessionInputChannel.h"
+#include "Channels/RemoteSessionFrameBufferChannel.h"
+#include "Channels/RemoteSessionXRTrackingChannel.h"
+#include "Roles/LiveLinkAnimationRole.h"
+#include "Roles/LiveLinkAnimationTypes.h"
+#include "Roles/LiveLinkTransformRole.h"
+#include "Roles/LiveLinkTransformTypes.h"
+#include "VirtualCamera.h"
+#include "VirtualCameraSubsystem.h"
+#include "VPGameMode.h"
+#include "VPRootActor.h"
 
 #if WITH_EDITOR
 #include "Recorder/TakeRecorderBlueprintLibrary.h"
-#include "ScopedTransaction.h"
 #endif
-
-FVirtualCameraPlayerControllerMultiUserOptions::FVirtualCameraPlayerControllerMultiUserOptions()
-	: bUpdateTargetCameraProperties(true)
-	, bUpdateTargetCameraTransform(true)
-	, bUseTransactionActor(false)
-	, bCreateTransactionTargetCameraProperties(false)
-	, bCreateTransactionTargetCameraTransform(false)
-{
-
-}
 
 
 AVirtualCameraPlayerControllerBase::AVirtualCameraPlayerControllerBase(const FObjectInitializer& ObjectInitializer)
@@ -51,17 +49,64 @@ AVirtualCameraPlayerControllerBase::AVirtualCameraPlayerControllerBase(const FOb
 	TouchInputState = ETouchInputState::BlueprintDefined;
 	PreviousTouchInput = TouchInputState;
 	CurrentFocusMethod = EVirtualCameraFocusMethod::Manual;
+
+	// Cached values
+	bCachedShouldUpdateTargetCameraTransform = true;
+	bCachedIsVirtualCameraControlledByRemoteSession = true;
+}
+
+void AVirtualCameraPlayerControllerBase::OnPossess(APawn* InPawn)
+{
+	bCachedShouldUpdateTargetCameraTransform = ShouldUpdateTargetCameraTransform();
+	bCachedIsVirtualCameraControlledByRemoteSession = IsVirtualCameraControlledByRemoteSession();
+
+	Super::OnPossess(InPawn);
 }
 
 void AVirtualCameraPlayerControllerBase::BeginPlay()
 {
+	// Find the Root Actor
+	RootActor = nullptr;
+	AVPGameMode* VPGameMode = Cast<AVPGameMode>(GetWorld()->GetAuthGameMode());
+	if (VPGameMode)
+	{
+		RootActor = VPGameMode->GetRootActor();
+	}
+	else
+	{
+		UE_LOG(LogVirtualCamera, Warning, TEXT("The Game Mode is not a VPGameMode."));
+	}
+
+	if (RootActor == nullptr)
+	{
+		UE_LOG(LogVirtualCamera, Warning, TEXT("There is no VP Root Actor in the scene. A CineCameraActor will be spawned. Multi user functionalities may suffer."));
+	}
+
+	// set controller implementation (aka this) onto camera subsystem
+	if (UVirtualCameraSubsystem* SubSystem = GEngine->GetEngineSubsystem<UVirtualCameraSubsystem>())
+	{
+		SubSystem->SetVirtualCameraController(this);
+	}
+
 	// Make a default sequence playback controller
 	LevelSequencePlaybackController = NewObject<ULevelSequencePlaybackController>(this);
-
 	if (LevelSequencePlaybackController)
 	{
-		//Always spawn the target camera that the level sequence will use as a target
-		TargetCameraActor = GetWorld()->SpawnActor<ACineCameraActor>(TargetCameraActorClass);
+		// Get the Cine Camera actor used by that root actor
+		if (RootActor)
+		{
+			TargetCameraActor = RootActor->GetCineCameraActor();
+			if (TargetCameraActor == nullptr)
+			{
+				UE_LOG(LogVirtualCamera, Warning, TEXT("The Root Actor doesn't have a cinematic camera."));
+			}
+		}
+
+		if (TargetCameraActor == nullptr)
+		{
+			// Spawn the target camera that the level sequence will use as a target
+			TargetCameraActor = GetWorld()->SpawnActor<ACineCameraActor>(TargetCameraActorClass);
+		}
 
 		// bLockToHmd is set to true by default. Remove it to prevent unwanted movement from XR system.
 		TargetCameraActor->GetCameraComponent()->bLockToHmd = false;
@@ -70,17 +115,25 @@ void AVirtualCameraPlayerControllerBase::BeginPlay()
 		LevelSequencePlaybackController->OnRecordEnabledStateChanged.BindUObject(this, &AVirtualCameraPlayerControllerBase::HandleRecordEnabledStateChange);
 	}
 
-	if (IRemoteSessionModule* RemoteSession = FModuleManager::LoadModulePtr<IRemoteSessionModule>("RemoteSession"))
+	// Is this Controller a RemoteSession controller
+	if (bCachedIsVirtualCameraControlledByRemoteSession)
 	{
-        TMap<FString, ERemoteSessionChannelMode> RequiredChannels;
-        RequiredChannels.Add(FRemoteSessionFrameBufferChannel::StaticType(),ERemoteSessionChannelMode::Write);
-        RequiredChannels.Add(FRemoteSessionInputChannel::StaticType(),ERemoteSessionChannelMode::Read);
-        RequiredChannels.Add(FRemoteSessionXRTrackingChannel::StaticType(),ERemoteSessionChannelMode::Read);
-        
-        RemoteSession->SetSupportedChannels(RequiredChannels);
-		RemoteSession->InitHost();
+		if (IRemoteSessionModule* RemoteSession = FModuleManager::LoadModulePtr<IRemoteSessionModule>("RemoteSession"))
+		{
+			TMap<FString, ERemoteSessionChannelMode> RequiredChannels;
+			RequiredChannels.Add(FRemoteSessionFrameBufferChannelFactoryWorker::StaticType(), ERemoteSessionChannelMode::Write);
+			RequiredChannels.Add(FRemoteSessionInputChannel::StaticType(), ERemoteSessionChannelMode::Read);
+			RequiredChannels.Add(FRemoteSessionXRTrackingChannel::StaticType(), ERemoteSessionChannelMode::Read);
+
+			RemoteSession->SetSupportedChannels(RequiredChannels);
+			RemoteSession->InitHost();
+		}
 	}
-	
+	else
+	{
+		SetViewTargetWithBlend(TargetCameraActor);
+	}
+
 	if (UVirtualCameraCineCameraComponent* CineCamera = GetVirtualCameraCineCameraComponent())
 	{
 		// Need to make sure we don't let ARKit control camera completely
@@ -95,23 +148,16 @@ void AVirtualCameraPlayerControllerBase::BeginPlay()
 	// Initialize the view of the camera with offsets taken into account
 	UpdatePawnWithTrackerData();
 	ResetCameraOffsetsToTracker();
-	
-	Super::BeginPlay();
 
-	// To do a transition with Concert. Normally it should be done via the Component.
-	if (MultiUserOptions.bUseTransactionActor)
-	{
-		FActorSpawnParameters SpawnParam;
-		SpawnParam.bNoFail = true;
-		TransactionActor = GetWorld()->SpawnActor<AVirtualCameraPlayerControllerTransaction>(AVirtualCameraPlayerControllerTransaction::StaticClass(), SpawnParam);
-	}
+	Super::BeginPlay();
 }
 
 void AVirtualCameraPlayerControllerBase::Tick(float DeltaSeconds)
 {
 	Super::Tick(DeltaSeconds);
-	
-	if (AVirtualCameraPawnBase* VCPawn = GetVirtualCameraPawn())
+
+	AVirtualCameraPawnBase* VCPawn = GetVirtualCameraPawn();
+	if (VCPawn)
 	{
 		UpdatePawnWithTrackerData();
 
@@ -135,7 +181,7 @@ void AVirtualCameraPlayerControllerBase::Tick(float DeltaSeconds)
 
 	if (LevelSequencePlaybackController)
 	{
-		PilotTargetedCamera(VCCamera);
+		PilotTargetedCamera(VCPawn, VCCamera);
 	}
 }
 
@@ -164,12 +210,22 @@ ACineCameraActor* AVirtualCameraPlayerControllerBase::GetTargetCamera()
 	return TargetCameraActor;
 }
 
+void AVirtualCameraPlayerControllerBase::SetInputSource(ETrackerInputSource InInputSource)
+{
+	if (InputSource != InInputSource)
+	{
+		InputSource = InInputSource;
+
+		bCachedShouldUpdateTargetCameraTransform = ShouldUpdateTargetCameraTransform();
+	}
+}
+
 FString AVirtualCameraPlayerControllerBase::GetDistanceInDesiredUnits(const float InputDistance, const EUnit ConversionUnit) const
 {
 	// Checks if the specified conversion unit is a unit of distance, since this function assumes conversion from Unreal Units
 	if (!FUnitConversion::IsUnitOfType(ConversionUnit, EUnitType::Distance))
 	{
-		UE_LOG(LogActor, Warning, TEXT("Conversion unit selected is not a unit of distance."))
+		UE_LOG(LogVirtualCamera, Warning, TEXT("Conversion unit selected is not a unit of distance."))
 		return FString();
 	}
 
@@ -226,55 +282,67 @@ static const FName RemoteSessionTrackingSystemName(TEXT("RemoteSessionXRTracking
 
 bool AVirtualCameraPlayerControllerBase::GetCurrentTrackerLocationAndRotation(FVector& OutTrackerLocation, FRotator& OutTrackerRotation)
 {
-	TArray<int32> TrackedDeviceIDs;
-	FQuat ARKitQuaternion;
+	bool bTransformSet = false;
 
 	switch (InputSource)
 	{
 		case ETrackerInputSource::ARKit:
 			if (GEngine && GEngine->XRSystem.IsValid() && GEngine->XRSystem->GetSystemName() == RemoteSessionTrackingSystemName)
 			{
+				FQuat ARKitQuaternion;
 				GEngine->XRSystem->GetCurrentPose(0, ARKitQuaternion, OutTrackerLocation);
 				OutTrackerRotation = ARKitQuaternion.Rotator();
-				return true;
+				bTransformSet = true;
 			}
 			break;
 
 		case ETrackerInputSource::LiveLink:
 			if (LiveLinkClient)
 			{
-				const FLiveLinkSubjectFrame* CurrentFrame = LiveLinkClient->GetSubjectData(LiveLinkTargetName);
-				if (CurrentFrame && CurrentFrame->Transforms.Num() > 0)
+				FLiveLinkSubjectFrameData EvaluateData;
+				if (LiveLinkClient->EvaluateFrame_AnyThread(LiveLinkTargetName, ULiveLinkTransformRole::StaticClass(), EvaluateData))
 				{
-					OutTrackerLocation = CurrentFrame->Transforms[0].GetLocation();
-					OutTrackerRotation = CurrentFrame->Transforms[0].GetRotation().Rotator();
+					FLiveLinkTransformFrameData* TransformFrameData = EvaluateData.FrameData.Cast<FLiveLinkTransformFrameData>();
+					check(TransformFrameData);
+
+					OutTrackerLocation = TransformFrameData->Transform.GetLocation();
+					OutTrackerRotation = TransformFrameData->Transform.GetRotation().Rotator();
+
+					bTransformSet = true;
 				}
-				return true;
-			}
-			break;
+				else if (LiveLinkClient->EvaluateFrame_AnyThread(LiveLinkTargetName, ULiveLinkAnimationRole::StaticClass(), EvaluateData))
+				{
+					FLiveLinkAnimationFrameData* AnimationFrameData = EvaluateData.FrameData.Cast<FLiveLinkAnimationFrameData>();
+					FLiveLinkSkeletonStaticData* AnimationStaticData = EvaluateData.StaticData.Cast<FLiveLinkSkeletonStaticData>();
+					check(AnimationFrameData && AnimationStaticData);
 
-		case ETrackerInputSource::Vive:
-			USteamVRFunctionLibrary::GetValidTrackedDeviceIds(ESteamVRTrackedDeviceType::Other, TrackedDeviceIDs);
+					int32 RootIndex = AnimationStaticData->FindRootBone();
+					if (AnimationFrameData->Transforms.IsValidIndex(RootIndex))
+					{
+						
+						OutTrackerLocation = AnimationFrameData->Transforms[RootIndex].GetLocation();
+						OutTrackerRotation = AnimationFrameData->Transforms[RootIndex].GetRotation().Rotator();
 
-			// ToDo: Add filtering in event that there are multiple valid trackers available
-			if (TrackedDeviceIDs.Num() > 0)
-			{
-				USteamVRFunctionLibrary::GetTrackedDevicePositionAndOrientation(TrackedDeviceIDs[0], OutTrackerLocation, OutTrackerRotation);
-				return true;
+						bTransformSet = true;
+					}
+				}
 			}
 			break;
 
 		case ETrackerInputSource::Custom:
 			GetCustomTrackerLocationAndRotation(OutTrackerLocation, OutTrackerRotation);
-			return true;
+			bTransformSet = true;
+			break;
 
 		default:
-			UE_LOG(LogActor, Warning, TEXT("Selected tracker source is not yet supported"))
+			UE_LOG(LogVirtualCamera, Warning, TEXT("Selected tracker source is not yet supported"))
 			break;
 	}
 
-	// Return failure status if we couldn't find device to track or device isn't supported
-	return false;
+	bTransformSet = bTransformSet && !OutTrackerLocation.ContainsNaN() && !OutTrackerRotation.ContainsNaN();
+
+	// Return failure status if we couldn't find device to track or device isn't supported or the values contains NaN
+	return bTransformSet;
 }
 
 bool AVirtualCameraPlayerControllerBase::IsTouchInputInFocusMode()
@@ -394,60 +462,54 @@ UVirtualCameraMovementComponent* AVirtualCameraPlayerControllerBase::GetVirtualC
 	return nullptr;
 }
 
-void AVirtualCameraPlayerControllerBase::PilotTargetedCamera(UVirtualCameraCineCameraComponent* CameraToFollow)
+void AVirtualCameraPlayerControllerBase::PilotTargetedCamera(AVirtualCameraPawnBase* PawnToFollow, UVirtualCameraCineCameraComponent* CameraToFollow)
 {
-	if (!TargetCameraActor || !CameraToFollow)
+	if (TargetCameraActor == nullptr || PawnToFollow == nullptr || CameraToFollow == nullptr)
 	{
 		return;
 	}
 
-	if (MultiUserOptions.bUpdateTargetCameraTransform)
+	UCineCameraComponent* TargetCameraComponent = TargetCameraActor->GetCineCameraComponent();
+	if (TargetCameraComponent == nullptr)
 	{
-#if WITH_EDITOR
-		FScopedTransaction Transaction(NSLOCTEXT("VirtualCamera", "SetVCamTransform", "Set VCam Transform"), MultiUserOptions.bCreateTransactionTargetCameraTransform);
-		TargetCameraActor->Modify();
-#endif //WITH_EDITOR
-
-		TargetCameraActor->SetActorLocationAndRotation(CameraToFollow->GetComponentLocation(), CameraToFollow->GetComponentRotation().Quaternion());
+		return;
 	}
 
-	if (MultiUserOptions.bUpdateTargetCameraProperties)
+	bool bAssignValues = false;
+	FConcertVirtualCameraControllerEvent CameraEvent;
+	if (bCachedIsVirtualCameraControlledByRemoteSession)
 	{
-		if (UCineCameraComponent* TargetComponent = TargetCameraActor->GetCineCameraComponent())
+		CameraEvent.InputSource = InputSource;
+		CameraEvent.CameraData = FConcertVirtualCameraCameraData(PawnToFollow, CameraToFollow);
+
+		IVirtualCameraModule::Get().GetConcertVirtualCameraManager()->SendControllerCameraEvent(CameraEvent);
+		bAssignValues = true;
+	}
+	else
+	{
+		bAssignValues = IVirtualCameraModule::Get().GetConcertVirtualCameraManager()->GetLatestControllerCameraEvent(CameraEvent);
+		if (bAssignValues)
 		{
-#if WITH_EDITOR
-			FScopedTransaction Transaction(NSLOCTEXT("VirtualCamera", "SetVCamSettings", "Set VCam Settings"), MultiUserOptions.bCreateTransactionTargetCameraProperties);
-			TargetComponent->Modify();
-			if (TransactionActor)
-			{
-				TransactionActor->Modify();
-			}
-#endif //WITH_EDITOR
+			CameraEvent.CameraData.ApplyTo(PawnToFollow, CameraToFollow, bCachedShouldUpdateTargetCameraTransform);
 
-			TargetComponent->CurrentAperture = CameraToFollow->CurrentAperture;
-			TargetComponent->CurrentFocalLength = CameraToFollow->CurrentFocalLength;
-			TargetComponent->FocusSettings = CameraToFollow->FocusSettings;
-			TargetComponent->LensSettings = CameraToFollow->LensSettings;
-			TargetComponent->FilmbackSettings = CameraToFollow->DesiredFilmbackSettings;
-
-			if (TransactionActor)
+			if (CameraEvent.InputSource != InputSource)
 			{
-				TransactionActor->Aperture = CameraToFollow->CurrentAperture;
-				TransactionActor->FocalLength = CameraToFollow->CurrentFocalLength;
-				TransactionActor->FilmbackSettings = CameraToFollow->DesiredFilmbackSettings;
-				TransactionActor->FocusSettings = CameraToFollow->FocusSettings;
-				TransactionActor->LensSettings = CameraToFollow->LensSettings;
+				SetInputSource(CameraEvent.InputSource);
 			}
 		}
 	}
-	else if (TransactionActor)
+
+	// Copy the info to the camera target camera
+	if (bAssignValues)
 	{
-		CameraToFollow->CurrentAperture = TransactionActor->Aperture;
-		CameraToFollow->CurrentFocalLength = TransactionActor->FocalLength;
-		CameraToFollow->DesiredFilmbackSettings = TransactionActor->FilmbackSettings;
-		CameraToFollow->FocusSettings = TransactionActor->FocusSettings;
-		CameraToFollow->LensSettings = TransactionActor->LensSettings;
+		TargetCameraActor->SetActorLocationAndRotation(CameraEvent.CameraData.CameraActorLocation, CameraEvent.CameraData.CameraActorRotation);
+		TargetCameraComponent->CurrentAperture = CameraToFollow->CurrentAperture;
+		TargetCameraComponent->CurrentFocalLength = CameraToFollow->CurrentFocalLength;
+		TargetCameraComponent->FocusSettings = CameraToFollow->FocusSettings;
+		TargetCameraComponent->LensSettings = CameraToFollow->LensSettings;
+		TargetCameraComponent->Filmback = CameraToFollow->Filmback;
 	}
+	TargetCameraComponent->SetRelativeLocationAndRotation(CameraToFollow->GetRelativeLocation(), CameraToFollow->GetRelativeRotation());
 }
 
 bool AVirtualCameraPlayerControllerBase::InputTouch(uint32 Handle, ETouchType::Type Type, const FVector2D & TouchLocation, float Force, FDateTime DeviceTimestamp, uint32 TouchpadIndex)
@@ -564,15 +626,16 @@ void AVirtualCameraPlayerControllerBase::UpdatePawnWithTrackerData()
 	{
 		FVector TrackerLocation = FVector::ZeroVector;
 		FRotator TrackerRotation = FRotator::ZeroRotator;
-		GetCurrentTrackerLocationAndRotation(TrackerLocation, TrackerRotation);
+		if (GetCurrentTrackerLocationAndRotation(TrackerLocation, TrackerRotation))
+		{
+			// Apply tracker offset to tracker; convert everything to transforms to make sure motions are calculated in the right order
+			FTransform TrackerRaw = FTransform(TrackerRotation, TrackerLocation);
+			FTransform AdjustedTracker = TrackerPostOffset.AsTransform() * TrackerRaw * TrackerPreOffset.AsTransform();
+			TrackerRotation = AdjustedTracker.Rotator();
+			TrackerLocation = AdjustedTracker.GetLocation();
 
-		// Apply tracker offset to tracker; convert everything to transforms to make sure motions are calculated in the right order
-		FTransform TrackerRaw = FTransform(TrackerRotation, TrackerLocation);
-		FTransform AdjustedTracker = TrackerPostOffset.AsTransform() * TrackerRaw * TrackerPreOffset.AsTransform();
-		TrackerRotation = AdjustedTracker.Rotator();
-		TrackerLocation = AdjustedTracker.GetLocation();
-
-		VCPawn->ProcessMovementInput(TrackerLocation, TrackerRotation);
+			VCPawn->ProcessMovementInput(TrackerLocation, TrackerRotation);
+		}
 	}
 }
 
@@ -607,6 +670,16 @@ bool AVirtualCameraPlayerControllerBase::IsLocationWithinMatte(const FVector Loc
 	}
 	
 	return false;
+}
+
+bool AVirtualCameraPlayerControllerBase::IsVirtualCameraControlledByRemoteSession_Implementation() const
+{
+	return true;
+}
+
+bool AVirtualCameraPlayerControllerBase::ShouldUpdateTargetCameraTransform_Implementation() const
+{
+	return InputSource == ETrackerInputSource::ARKit || IsVirtualCameraControlledByRemoteSession();
 }
 
 /***** UI Interface Functions *****/
@@ -1346,4 +1419,34 @@ bool AVirtualCameraPlayerControllerBase::ToggleAxisLock(const EVirtualCameraAxis
 	}
 
 	return false;
+}
+
+void AVirtualCameraPlayerControllerBase::ActivateGameViewport()
+{
+	FSlateApplication::Get().ActivateGameViewport();
+}
+
+UCineCameraComponent* AVirtualCameraPlayerControllerBase::GetStreamedCameraComponent_Implementation() const
+{
+	return GetVirtualCameraCineCameraComponent();
+}
+
+UCineCameraComponent* AVirtualCameraPlayerControllerBase::GetRecordingCameraComponent_Implementation() const
+{
+	return TargetCameraActor ? TargetCameraActor->GetCineCameraComponent() : nullptr;
+}
+
+ULevelSequencePlaybackController* AVirtualCameraPlayerControllerBase::GetSequenceController_Implementation() const
+{
+	return LevelSequencePlaybackController;
+}
+
+TScriptInterface<IVirtualCameraPresetContainer> AVirtualCameraPlayerControllerBase::GetPresetContainer_Implementation() const
+{
+	return GetVirtualCameraPawn();
+}
+
+TScriptInterface<IVirtualCameraOptions> AVirtualCameraPlayerControllerBase::GetOptions_Implementation() const
+{
+	return GetVirtualCameraPawn();
 }

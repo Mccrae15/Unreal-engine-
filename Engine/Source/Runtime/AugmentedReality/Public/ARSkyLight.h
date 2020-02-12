@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -6,6 +6,8 @@
 #include "Engine/SkyLight.h"
 
 #include "ARSkyLight.generated.h"
+
+class UAREnvironmentCaptureProbe;
 
 /** This sky light class forces a refresh of the cube map data when an AR environment probe changes */
 UCLASS()

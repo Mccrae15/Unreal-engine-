@@ -1,30 +1,29 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
 #include "CoreMinimal.h"
-#include "IConcertSessionHandler.h"
-#include "ConcertUIExtension.h"
+#include "ConcertActionDefinition.h"
 #include "ConcertPresenceEvents.h"
 #include "ConcertMessages.h"
 #include "ConcertWorkspaceMessages.h"
 #include "ConcertClientPresenceActor.h"
 #include "ConcertClientPresenceMode.h"
+#include "IConcertClientPresenceManager.h"
 #include "UObject/Class.h"
-#include "UObject/StrongObjectPtr.h"
+#include "UObject/GCObject.h"
 
 #if WITH_EDITOR
 
 #include "ViewportWorldInteraction.h"
 
 class IConcertClientSession;
+enum class EEditorPlayMode : uint8;
 
 /** Remote client event items */
 struct FConcertClientPresenceStateEntry
 {
-	FConcertClientPresenceStateEntry(TSharedRef<FConcertClientPresenceEventBase> InPresenceEvent)
-		: PresenceEvent(MoveTemp(InPresenceEvent))
-		, bSyncPending(true) {}
+	FConcertClientPresenceStateEntry(TSharedRef<FConcertClientPresenceEventBase> InPresenceEvent);
 
 	/** Presence state */
 	TSharedRef<FConcertClientPresenceEventBase> PresenceEvent;
@@ -36,11 +35,7 @@ struct FConcertClientPresenceStateEntry
 /** State for remote clients associated with client id */
 struct FConcertClientPresenceState
 {
-	FConcertClientPresenceState()
-		: bIsConnected(true)
-		, bInPIE(false)
-		, bInVR(false)
-		, bVisible(true) {}
+	FConcertClientPresenceState();
 
 	/** State map */
 	TMap<UScriptStruct*, FConcertClientPresenceStateEntry> EventStateMap;
@@ -48,17 +43,20 @@ struct FConcertClientPresenceState
 	/** Display name */
 	FString DisplayName;
 
+	/** Avatar color. */
+	FLinearColor AvatarColor;
+
 	/** Whether client is connected */
 	bool bIsConnected;
 
-	/** Whether client is in PIE */
-	bool bInPIE;
-
-	/** Whether client is in VR editing mode */
-	bool bInVR;
+	/** The editor play mode (PIE/SIE/None). */
+	EEditorPlayMode EditorPlayMode;
 
 	/** Whether client is visible */
 	bool bVisible;
+
+	/** Whether client is using a VRDevice */
+	FName VRDevice;
 
 	/** Presence actor */
 	TWeakObjectPtr<AConcertClientPresenceActor> PresenceActor;
@@ -67,9 +65,7 @@ struct FConcertClientPresenceState
 /** State that persists beyond remote client sessions, associated with display name */
 struct FConcertClientPresencePersistentState
 {
-	FConcertClientPresencePersistentState()
-		: bVisible(true)
-		, bPropagateToAll(false) {}
+	FConcertClientPresencePersistentState();
 
 	/** Whether client is visible */
 	bool bVisible;
@@ -78,45 +74,77 @@ struct FConcertClientPresencePersistentState
 	bool bPropagateToAll;
 };
 
-class FConcertClientPresenceManager : public TSharedFromThis<FConcertClientPresenceManager>
+class FConcertClientPresenceManager : public TSharedFromThis<FConcertClientPresenceManager>, public FGCObject, public IConcertClientPresenceManager
 {
 public:
 	FConcertClientPresenceManager(TSharedRef<IConcertClientSession> InSession);
 	~FConcertClientPresenceManager();
 
+	//~ FGCObject interfaces
+	virtual void AddReferencedObjects(FReferenceCollector& Collector) override;
+
 	/** Gets the container for all the assets of Concert clients. */
 	const class UConcertAssetContainer& GetAssetContainer() const;
 
+	/** Returns true if current session is in Game (i.e. !GIsEditor) */
+	bool IsInGame() const;
+
 	/** Returns true if current session is in PIE */
 	bool IsInPIE() const;
-	
-	/** Get the current world */
-	UWorld* GetWorld() const;
+
+	/** Returns true if current session is in SIE */
+	bool IsInSIE() const;
+
+	/** 
+	 * Get the current world
+	 * @param bIgnorePIE if bIgnorePIE is true will still return the editor world even if an PIE world exists.
+	 * @return the current world
+	 */
+	UWorld* GetWorld(bool bIgnorePIE = false) const;
 
 	/** Get the active perspective viewport */
 	FLevelEditorViewportClient * GetPerspectiveViewport() const;
 
-	/** Set whether presence is currently enabled and should be shown (unless hidden by other settings) */
-	void SetPresenceEnabled(const bool bIsEnabled = true);
+	/** Set the presence mode factory. */
+	virtual void SetPresenceModeFactory(TSharedRef<IConcertClientPresenceModeFactory> InFactory) override;
 
-	/** Set presence visibility */
-	void SetPresenceVisibility(const FString& InDisplayName, bool bVisibility, bool bPropagateToAll = false);
+	/** Set whether presence is currently enabled and should be shown (unless hidden by other settings) */
+	virtual void SetPresenceEnabled(const bool bIsEnabled = true) override;
+
+	/** Set presence visibility by name */
+	virtual void SetPresenceVisibility(const FString& InDisplayName, bool bVisibility, bool bPropagateToAll = false) override;
+
+	/** Set Presence visibility by client id. */
+	virtual void SetPresenceVisibility(const FGuid& EndpointId, bool bVisibility, bool bPropagateToAll = false) override;
+
+	/** Get the presence transform */
+	virtual FTransform GetPresenceTransform(const FGuid& EndpointId) const override;
+
+	/** Jump (teleport) to another presence */
+	virtual void InitiateJumpToPresence(const FGuid& InEndpointId, const FTransform& InTransformOffset = FTransform::Identity) override;
 
 	/** Get location update frequency */
 	static double GetLocationUpdateFrequency();
 
-	/** Jump (teleport) to another presence */
-	void InitiateJumpToPresence(FGuid InEndpointId);
-
 	/**
 	 * Returns the path to the UWorld object opened in the editor of the specified client endpoint.
 	 * The information may be unavailable if the client was disconnected, the information hasn't replicated yet
-	 * or the code was not compiled as part of the UE Editor. The path returned can be the path of a play world (PIE/SIE)
-	 * if the user is in PIE/SIE. It this case, the path will look like /Game/UEDPIE_10_FooMap.FooMap rather than /Game/FooMap.FooMap.
-	 * @param InEndpointId The end point of any clients connected to the session (local or remote).
+	 * or the code was not compiled as part of the UE Editor. This function always returns the editor context world
+	 * path, never the PIE/SIE context world path (which contains a UEDPIE_%d_ decoration embedded) even if the user
+	 * is in PIE or SIE. For example, the PIE/SIE context world path would look like '/Game/UEDPIE_10_FooMap.FooMap'
+	 * while the editor context world returned by this function looks like '/Game/FooMap.FooMap'.
+	 * @param[in] EndpointId The end point of a clients connected to the session (local or remote).
+	 * @param[out] OutEditorPlayMode Indicates if the client corresponding to the end point is in PIE, SIE or simply editing.
 	 * @return The path to the world being opened in the specified end point editor or an empty string if the information is not available.
 	 */
-	FString GetClientWorldPath(FGuid InEndpointId) const;
+	virtual FString GetPresenceWorldPath(const FGuid& InEndpointId, EEditorPlayMode& OutEditorPlayMode) const override;
+
+	/**
+	 * Returns presence action specific that can be performed with the specified client, like jumping to this client presence.
+	 * @param InClientInfo The client for which the actions must be defined.
+	 * @param OutActions The available action for this client.
+	 */
+	void GetPresenceClientActions(const FConcertSessionClientInfo& InClientInfo, TArray<FConcertActionDefinition>& OutActions);
 
 private:
 
@@ -128,6 +156,9 @@ private:
 
 	/** Is presence visible for the given state? */
 	bool IsPresenceVisible(const FConcertClientPresenceState& InPresenceState) const;
+
+	/** Return if PIE presence is potentially visible for a state. */
+	bool IsPIEPresenceEnabled(const FConcertClientPresenceState& InPresenceState) const;
 
 	/** Is presence visible for the given endpoint id? */
 	bool IsPresenceVisible(const FGuid& InEndpointId) const;
@@ -151,7 +182,7 @@ private:
 	/** Handle a presence data update from another client session */
 	template<typename PresenceUpdateEventType>
 	void HandleConcertClientPresenceUpdateEvent(const FConcertSessionContext& InSessionContext, const PresenceUpdateEventType& InEvent);
-		
+
 	/** Handle a presence visibility update from another client session */
 	void HandleConcertClientPresenceVisibilityUpdateEvent(const FConcertSessionContext& InSessionContext, const FConcertClientPresenceVisibilityUpdateEvent& InEvent);
 
@@ -159,10 +190,10 @@ private:
 	bool ShouldProcessPresenceEvent(const FConcertSessionContext& InSessionContext, const UStruct* InEventType, const FConcertClientPresenceEventBase& InEvent) const;
 
 	/** Create a new presence actor */
-	AConcertClientPresenceActor* CreatePresenceActor(const FConcertClientInfo& InClientInfo, bool bClientInVR);
+	AConcertClientPresenceActor* CreatePresenceActor(const FConcertClientInfo& InClientInfo, FName VRDevice);
 
 	/** Spawn a presence actor */
-	AConcertClientPresenceActor* SpawnPresenceActor(const FConcertClientInfo& InClientInfo, bool bClientInVR);
+	AConcertClientPresenceActor* SpawnPresenceActor(const FConcertClientInfo& InClientInfo, FName VRDevice);
 
 	/** Clear presence */
 	void ClearPresenceActor(const FGuid& InEndpointId);
@@ -179,15 +210,6 @@ private:
 	/** Handle a client session disconnect */
 	void OnSessionClientChanged(IConcertClientSession& InSession, EConcertClientStatus InClientStatus, const FConcertSessionClientInfo& InClientInfo);
 
-	/** Handle entering VR */
-	void OnVREditingModeEnter();
-
-	/** Handle exiting VR */
-	void OnVREditingModeExit();
-
-	/** Updates current presence mode based on VR status and avatar classes */
-	void UpdatePresenceMode();
-
 	/** Notifies other clients to update avatar for this client */
 	void SendPresenceInVREvent(const FGuid* InEndpointId = nullptr);
 
@@ -195,19 +217,7 @@ private:
 	void HandleConcertClientPresenceInVREvent(const FConcertSessionContext& InSessionContext, const FConcertClientPresenceInVREvent& InEvent);
 
 	/** Updates presence avatar for remote client by invalidating current presence actor */
-	void UpdatePresenceAvatar(const FGuid& InEndpointId, bool bIsInVR);
-
-	/** Loads and returns the container for all the assets of Concert clients. */
-	static class UConcertAssetContainer& LoadAssetContainer();
-
-	/** Need to manage the GC of the asset container */
-	void AddReferencedObjects(FReferenceCollector& Collector);
-
-	/** Set presence PIE state */
-	void SetPresenceInPIE(const FGuid& InEndpointId, bool bInPIE);
-
-	/** Set presence visibility */
-	void SetPresenceVisibility(const FGuid& InEndpointId, bool bVisibility, bool bPropagateToAll = false);
+	void UpdatePresenceAvatar(const FGuid& InEndpointId, FName VRDevice);
 
 	/** Toggle presence visibility */
 	void TogglePresenceVisibility(const FGuid& InEndpointId, bool bPropagateToAll = false);
@@ -215,47 +225,35 @@ private:
 	/** Ensure presence state info for client session */
 	FConcertClientPresenceState& EnsurePresenceState(const FGuid& InEndpointId);
 
-	/** Build presence specific UI in the Concert Browser */
-	void BuildPresenceClientUI(const FConcertSessionClientInfo& InClientInfo, TArray<FConcertUIButtonDefinition>& OutButtonDefs);
-
 	/** Is the jump-to button enabled for the given endpoint? */
 	bool IsJumpToPresenceEnabled(FGuid InEndpointId) const;
 
 	/** Handle the show/hide button being clicked for the given endpoint */
-	FReply OnJumpToPresenceClicked(FGuid InEndpointId);
+	void OnJumpToPresence(FGuid InEndpointId, FTransform InTransformOffset);
 
 	/** Is the show/hide button enabled for the given endpoint? */
 	bool IsShowHidePresenceEnabled(FGuid InEndpointId) const;
 
 	/** Get the correct show/hide text for the given endpoint */
 	FText GetShowHidePresenceText(FGuid InEndpointId) const;
+	
+	/** Get the correct show/hide icon style for the given endpoint */
+	FName GetShowHidePresenceIconStyle(FGuid InEndpointId) const;
 
 	/** Get the correct show/hide tooltip for the given endpoint */
 	FText GetShowHidePresenceToolTip(FGuid InEndpointId) const;
 
 	/** Handle the show/hide button being clicked for the given endpoint */
-	FReply OnShowHidePresenceClicked(FGuid InEndpointId);
-
-	/** Delegate handle for the end-of-frame notification */
-	FDelegateHandle OnEndFrameHandle;
-
-	/** Delegate handle for adding extra buttons to clients in the Concert Browser */
-	FDelegateHandle ClientButtonExtensionHandle;
-
-	/** Delegate handle invoked when a client session connects or disconnects */
-	FDelegateHandle OnSessionClientChangedHandle;
-
-	/** Delegate handle invoked when entering VR */
-	FDelegateHandle OnVREditingModeEnterHandle;
-
-	/** Delegate handle invoked when exiting VR */
-	FDelegateHandle OnVREditingModeExitHandle;
+	void OnShowHidePresence(FGuid InEndpointId);
 
 	/** Session Pointer */
-	TSharedRef<IConcertClientSession> Session; 
+	TSharedRef<IConcertClientSession> Session;
+
+	/** Factory in charge of creating presence mode and avatar. */
+	TSharedPtr<IConcertClientPresenceModeFactory> PresenceModeFactory;
 
 	/** Presence avatar mode for this client */
-	TUniquePtr<FConcertClientBasePresenceMode> CurrentAvatarMode;
+	TUniquePtr<IConcertClientBasePresenceMode> CurrentAvatarMode;
 
 	/** The asset container path */
 	static const TCHAR* AssetContainerPath;
@@ -266,17 +264,8 @@ private:
 	/** True if presence is currently enabled and should be shown (unless hidden by other settings) */
 	bool bIsPresenceEnabled;
 
-	/** True if in VR */
-	bool bInVR;
-
-	/** Avatar actor class */
-	UClass* CurrentAvatarActorClass;
-
-	/** Desktop avatar actor class */
-	UClass* DesktopAvatarActorClass;
-
-	/** VR avatar actor class */
-	UClass* VRAvatarActorClass;
+	/** The list of loaded classes representing remote clients avatar. */
+	TMap<FString, UClass*> OthersAvatarClasses;
 
 	/** Presence state associated with remote client id */
 	TMap<FGuid, FConcertClientPresenceState> PresenceStateMap;
@@ -289,6 +278,35 @@ private:
 
 	/** Time since last location update for this client */
 	double SecondsSinceLastLocationUpdate;
+};
+
+/**
+ * Implementation for the default PresenceMode factory
+ */
+class FConcertClientDefaultPresenceModeFactory : public IConcertClientPresenceModeFactory
+{
+public:
+	FConcertClientDefaultPresenceModeFactory(FConcertClientPresenceManager* InManager);
+	virtual ~FConcertClientDefaultPresenceModeFactory();
+
+	virtual bool ShouldResetPresenceMode() const override;
+	virtual TUniquePtr<IConcertClientBasePresenceMode> CreatePresenceMode() override;
+	virtual void AddReferencedObjects(FReferenceCollector& Collector) override;
+private:
+	/** Handle entering VR */
+	void OnVREditingModeEnter();
+
+	/** Handle exiting VR */
+	void OnVREditingModeExit();
+
+	/** Holds the manager. */
+	FConcertClientPresenceManager* Manager;
+
+	/** Holds the vr device type, NAME_None if not in VR. */
+	FName VRDeviceType;
+
+	/** Flag to indicate the presence mode should be recreated from the factory. */
+	bool bShouldResetPresenceMode;
 };
 
 #else

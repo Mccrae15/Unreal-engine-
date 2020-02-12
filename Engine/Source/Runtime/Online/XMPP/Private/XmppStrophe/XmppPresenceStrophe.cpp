@@ -1,16 +1,26 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "XmppStrophe/XmppPresenceStrophe.h"
 #include "XmppStrophe/XmppConnectionStrophe.h"
 #include "XmppStrophe/StropheStanza.h"
 #include "XmppStrophe/StropheStanzaConstants.h"
+#include "Misc/EmbeddedCommunication.h"
+#include "Containers/BackgroundableTicker.h"
 
 #if WITH_XMPP_STROPHE
 
+#define TickRequesterId FName("StrophePresence")
+
 FXmppPresenceStrophe::FXmppPresenceStrophe(FXmppConnectionStrophe& InConnectionManager)
-	: ConnectionManager(InConnectionManager)
+	: FTickerObjectBase(0.0f, FBackgroundableTicker::GetCoreTicker())
+	, ConnectionManager(InConnectionManager)
 {
 
+}
+
+FXmppPresenceStrophe::~FXmppPresenceStrophe()
+{
+	CleanupMessages();
 }
 
 void FXmppPresenceStrophe::OnDisconnect()
@@ -19,7 +29,19 @@ void FXmppPresenceStrophe::OnDisconnect()
 	{
 		RosterMembers.Empty();
 	}
-	IncomingPresenceUpdates.Empty();
+
+	CleanupMessages();
+}
+
+void FXmppPresenceStrophe::OnReconnect()
+{
+	// Triggered by login request when already connected
+	// re-broadcast all cached presence entries
+	for (const auto& Pair : RosterMembers)
+	{
+		const TSharedRef<FXmppUserPresence>& Presence = Pair.Value;
+		OnXmppPresenceReceivedDelegate.Broadcast(ConnectionManager.AsShared(), Presence->UserJid, Presence);
+	}
 }
 
 bool FXmppPresenceStrophe::ReceiveStanza(const FStropheStanza& IncomingStanza)
@@ -56,7 +78,7 @@ bool FXmppPresenceStrophe::ReceiveStanza(const FStropheStanza& IncomingStanza)
 	{
 		Presence.bIsAvailable = true;
 
-		TOptional<const FStropheStanza> StatusTextStanza = IncomingStanza.GetChild(Strophe::SN_STATUS);
+		TOptional<const FStropheStanza> StatusTextStanza = IncomingStanza.GetChildStropheStanza(Strophe::SN_STATUS);
 		if (StatusTextStanza.IsSet())
 		{
 			Presence.StatusStr = StatusTextStanza->GetText();
@@ -64,7 +86,7 @@ bool FXmppPresenceStrophe::ReceiveStanza(const FStropheStanza& IncomingStanza)
 
 		Presence.Status = EXmppPresenceStatus::Online;
 
-		TOptional<const FStropheStanza> StatusEnumStanza = IncomingStanza.GetChild(Strophe::SN_SHOW);
+		TOptional<const FStropheStanza> StatusEnumStanza = IncomingStanza.GetChildStropheStanza(Strophe::SN_SHOW);
 		if (StatusEnumStanza.IsSet())
 		{
 			FString StatusEnum(StatusEnumStanza->GetText());
@@ -86,16 +108,19 @@ bool FXmppPresenceStrophe::ReceiveStanza(const FStropheStanza& IncomingStanza)
 			}
 		}
 
-		TOptional<const FStropheStanza> TimestampStanza = IncomingStanza.GetChild(Strophe::SN_DELAY);
+		TOptional<const FStropheStanza> TimestampStanza = IncomingStanza.GetChildStropheStanza(Strophe::SN_DELAY);
 		if (TimestampStanza.IsSet())
 		{
 			FDateTime::ParseIso8601(*TimestampStanza->GetAttribute(Strophe::SA_STAMP), Presence.SentTime);
 		}
 
+		Presence.ReceivedTime = FDateTime::UtcNow();
+
 		FString UnusedPlatformUserId;
 		Presence.UserJid.ParseResource(Presence.AppId, Presence.Platform, UnusedPlatformUserId);
 	}
 
+	FEmbeddedCommunication::KeepAwake(TickRequesterId, false);
 	return IncomingPresenceUpdates.Enqueue(MakeUnique<FXmppUserPresence>(MoveTemp(Presence)));
 }
 
@@ -200,6 +225,7 @@ bool FXmppPresenceStrophe::Tick(float DeltaTime)
 		TUniquePtr<FXmppUserPresence> PresencePtr;
 		if (IncomingPresenceUpdates.Dequeue(PresencePtr))
 		{
+			FEmbeddedCommunication::AllowSleep(TickRequesterId);
 			check(PresencePtr.IsValid());
 			OnPresenceUpdate(MoveTemp(PresencePtr));
 		}
@@ -215,5 +241,17 @@ void FXmppPresenceStrophe::OnPresenceUpdate(TUniquePtr<FXmppUserPresence>&& NewP
 	RosterMembers.Emplace(Presence->UserJid.GetFullPath(), Presence);
 	OnXmppPresenceReceivedDelegate.Broadcast(ConnectionManager.AsShared(), Presence->UserJid, Presence);
 }
+
+void FXmppPresenceStrophe::CleanupMessages()
+{
+	while (!IncomingPresenceUpdates.IsEmpty())
+	{
+		TUniquePtr<FXmppUserPresence> PresencePtr;
+		IncomingPresenceUpdates.Dequeue(PresencePtr);
+		FEmbeddedCommunication::AllowSleep(TickRequesterId);
+	}
+}
+
+#undef TickRequesterId
 
 #endif

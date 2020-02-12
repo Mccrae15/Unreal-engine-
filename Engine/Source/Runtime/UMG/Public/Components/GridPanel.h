@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -12,7 +12,7 @@ class SGridPanel;
 class UGridSlot;
 
 /**
- * A panel that evenly divides up available space between all of its children.
+ * A table-like panel that retains the width of every column throughout the table.
  * 
  * * Many Children
  */
@@ -35,7 +35,7 @@ public:
 
 	/**  */
 	UFUNCTION(BlueprintCallable, Category="Widget")
-	UGridSlot* AddChildToGrid(UWidget* Content);
+	UGridSlot* AddChildToGrid(UWidget* Content, int32 InRow = 0, int32 InColumn = 0);
 
 	UFUNCTION(BlueprintCallable, Category = "Widget")
 	void SetColumnFill(int32 ColumnIndex, float Coefficient);

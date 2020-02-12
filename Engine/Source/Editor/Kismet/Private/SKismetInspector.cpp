@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 
 #include "SKismetInspector.h"
@@ -33,6 +33,7 @@
 #include "IDetailCustomization.h"
 #include "Editor.h"
 #include "PropertyEditorModule.h"
+#include "Kismet2/ComponentEditorUtils.h"	// For CanEditNativeComponent()
 
 #include "IDetailsView.h"
 
@@ -234,6 +235,11 @@ bool SKismetInspector::IsSelected(UObject* Object) const
 	return false;
 }
 
+const TArray< TWeakObjectPtr<UObject> >& SKismetInspector::GetSelectedObjects() const
+{
+	return SelectedObjects;
+}
+
 FText SKismetInspector::GetContextualEditingWidgetTitle() const
 {
 	FText Title = PropertyViewTitle;
@@ -249,7 +255,7 @@ FText SKismetInspector::GetContextualEditingWidgetTitle() const
 			}
 			else if (USCS_Node* SCSNode = Cast<USCS_Node>(Object))
 			{
-				if (SCSNode->ComponentTemplate != NULL)
+				if (SCSNode->ComponentTemplate != nullptr)
 				{
 					const FName VariableName = SCSNode->GetVariableName();
 					if (VariableName != NAME_None)
@@ -331,7 +337,7 @@ void SKismetInspector::Construct(const FArguments& InArgs)
 	// Create a property view
 	FPropertyEditorModule& EditModule = FModuleManager::Get().GetModuleChecked<FPropertyEditorModule>("PropertyEditor");
 
-	FNotifyHook* NotifyHook = NULL;
+	FNotifyHook* NotifyHook = nullptr;
 	if(InArgs._SetNotifyHook)
 	{
 		NotifyHook = Kismet2.Get();
@@ -354,7 +360,7 @@ void SKismetInspector::Construct(const FArguments& InArgs)
 	if( MyBlueprint.IsValid() )
 	{
 		FOnGetDetailCustomizationInstance LayoutDelegateDetails = FOnGetDetailCustomizationInstance::CreateStatic(&FBlueprintDelegateActionDetails::MakeInstance, MyBlueprint);
-		PropertyView->RegisterInstancedCustomPropertyLayout(UMulticastDelegateProperty::StaticClass(), LayoutDelegateDetails);
+		PropertyView->RegisterInstancedCustomPropertyLayout(UMulticastDelegatePropertyWrapper::StaticClass(), LayoutDelegateDetails);
 
 		// Register function and variable details customization
 		FOnGetDetailCustomizationInstance LayoutGraphDetails = FOnGetDetailCustomizationInstance::CreateStatic(&FBlueprintGraphActionDetails::MakeInstance, MyBlueprint);
@@ -363,7 +369,7 @@ void SKismetInspector::Construct(const FArguments& InArgs)
 		PropertyView->RegisterInstancedCustomPropertyLayout(UK2Node_CallFunction::StaticClass(), LayoutGraphDetails);
 
 		FOnGetDetailCustomizationInstance LayoutVariableDetails = FOnGetDetailCustomizationInstance::CreateStatic(&FBlueprintVarActionDetails::MakeInstance, MyBlueprint);
-		PropertyView->RegisterInstancedCustomPropertyLayout(UProperty::StaticClass(), LayoutVariableDetails);
+		PropertyView->RegisterInstancedCustomPropertyLayout(UPropertyWrapper::StaticClass(), LayoutVariableDetails);
 		PropertyView->RegisterInstancedCustomPropertyLayout(UK2Node_VariableGet::StaticClass(), LayoutVariableDetails);
 		PropertyView->RegisterInstancedCustomPropertyLayout(UK2Node_VariableSet::StaticClass(), LayoutVariableDetails);
 	}
@@ -465,7 +471,7 @@ void SKismetInspector::ShowDetailsForSingleObject(UObject* Object, const FShowDe
 {
 	TArray<UObject*> PropertyObjects;
 
-	if (Object != NULL)
+	if (Object != nullptr)
 	{
 		PropertyObjects.Add(Object);
 	}
@@ -475,19 +481,6 @@ void SKismetInspector::ShowDetailsForSingleObject(UObject* Object, const FShowDe
 
 void SKismetInspector::ShowDetailsForObjects(const TArray<UObject*>& PropertyObjects, const FShowDetailsOptions& Options)
 {
-	static bool bIsReentrant = false;
-	if ( !bIsReentrant )
-	{
-		bIsReentrant = true;
-		// When the selection is changed, we may be potentially actively editing a property,
-		// if this occurs we need need to immediately clear keyboard focus
-		if ( FSlateApplication::Get().HasFocusedDescendants(AsShared()) )
-		{
-			FSlateApplication::Get().ClearKeyboardFocus(EFocusCause::Mouse);
-		}
-		bIsReentrant = false;
-	}
-
 	// Refresh is being deferred until the next tick, this prevents batch operations from bombarding the details view with calls to refresh
 	RefreshPropertyObjects = PropertyObjects;
 	RefreshOptions = Options;
@@ -518,26 +511,25 @@ void SKismetInspector::ShowSingleStruct(TSharedPtr<FStructOnScope> InStructToDis
 	bRefreshOnTick = true;
 }
 
-void SKismetInspector::AddPropertiesRecursive(UProperty* Property)
+void SKismetInspector::AddPropertiesRecursive(FProperty* Property)
 {
-	if (Property != NULL)
+	if (Property != nullptr)
 	{
 		// Add this property
 		SelectedObjectProperties.Add(Property);
 
 		// If this is a struct or an array of structs, recursively add the child properties
-		UArrayProperty* ArrayProperty = Cast<UArrayProperty>(Property);
-		UStructProperty* StructProperty = Cast<UStructProperty>(Property);
-		if(	StructProperty != NULL && 
-			StructProperty->Struct != NULL)
+		FArrayProperty* ArrayProperty = CastField<FArrayProperty>(Property);
+		FStructProperty* StructProperty = CastField<FStructProperty>(Property);
+		if(	StructProperty != nullptr && StructProperty->Struct != nullptr)
 		{
-			for (TFieldIterator<UProperty> StructPropIt(StructProperty->Struct); StructPropIt; ++StructPropIt)
+			for (TFieldIterator<FProperty> StructPropIt(StructProperty->Struct); StructPropIt; ++StructPropIt)
 			{
-				UProperty* InsideStructProperty = *StructPropIt;
+				FProperty* InsideStructProperty = *StructPropIt;
 				AddPropertiesRecursive(InsideStructProperty);
 			}
 		}
-		else if( ArrayProperty && ArrayProperty->Inner->IsA<UStructProperty>() )
+		else if( ArrayProperty && ArrayProperty->Inner->IsA<FStructProperty>() )
 		{
 			AddPropertiesRecursive(ArrayProperty->Inner);
 		}
@@ -635,7 +627,7 @@ void SKismetInspector::UpdateFromObjects(const TArray<UObject*>& PropertyObjects
 			{
 				// Edit the component template
 				UActorComponent* NodeComponent = SCSNode->ComponentTemplate;
-				if (NodeComponent != NULL)
+				if (NodeComponent != nullptr)
 				{
 					SelectionInfo.ObjectsForPropertyEditing.Add(NodeComponent);
 					SelectionInfo.EditableComponentTemplates.Add(NodeComponent);
@@ -662,10 +654,9 @@ void SKismetInspector::UpdateFromObjects(const TArray<UObject*>& PropertyObjects
 			else if (UActorComponent* ActorComponent = Cast<UActorComponent>(Object))
 			{
 				AActor* Owner = ActorComponent->GetOwner();
-				if(Owner != NULL && Owner->HasAnyFlags(RF_ClassDefaultObject))
-				{
-					// We're editing a component that's owned by a CDO, so set the CDO to the property editor (so that propagation works) and then filter to just the component property that we want to edit
-					SelectionInfo.ObjectsForPropertyEditing.AddUnique(Owner);
+				if(Owner != nullptr && Owner->HasAnyFlags(RF_ClassDefaultObject))
+				{					
+					SelectionInfo.ObjectsForPropertyEditing.AddUnique(ActorComponent);
 					SelectionInfo.EditableComponentTemplates.Add(ActorComponent);
 				}
 				else
@@ -686,60 +677,47 @@ void SKismetInspector::UpdateFromObjects(const TArray<UObject*>& PropertyObjects
 	SelectedObjectProperties.Empty();
 
 	// Add to the property filter list for any editable component templates
-	if(SelectionInfo.EditableComponentTemplates.Num())
+	if (SelectionInfo.EditableComponentTemplates.Num())
 	{
-		for(auto CompIt = SelectionInfo.EditableComponentTemplates.CreateIterator(); CompIt; ++CompIt)
+		for (auto CompIt = SelectionInfo.EditableComponentTemplates.CreateIterator(); CompIt; ++CompIt)
 		{
 			UActorComponent* EditableComponentTemplate = *CompIt;
-			check(EditableComponentTemplate != NULL);
+			check(EditableComponentTemplate != nullptr);
 
 			// Add all properties belonging to the component template class
-			for(TFieldIterator<UProperty> PropIt(EditableComponentTemplate->GetClass()); PropIt; ++PropIt)
+			for (TFieldIterator<FProperty> PropIt(EditableComponentTemplate->GetClass()); PropIt; ++PropIt)
 			{
-				UProperty* Property = *PropIt;
-				check(Property != NULL);
+				FProperty* Property = *PropIt;
+				check(Property != nullptr);
 
 				AddPropertiesRecursive(Property);
 			}
 
 			// Attempt to locate a matching property for the current component template
-			for(auto ObjIt = SelectionInfo.ObjectsForPropertyEditing.CreateIterator(); ObjIt; ++ObjIt)
+			for (auto ObjIt = SelectionInfo.ObjectsForPropertyEditing.CreateIterator(); ObjIt; ++ObjIt)
 			{
 				UObject* Object = *ObjIt;
-				check(Object != NULL);
+				check(Object != nullptr);
 
-				if(Object != EditableComponentTemplate)
+				if (Object != EditableComponentTemplate)
 				{
-					UObjectProperty* ObjectProperty = FindField<UObjectProperty>(Object->GetClass(), EditableComponentTemplate->GetFName());
-					if(ObjectProperty != nullptr)
+					if (FObjectProperty* ObjectProperty = FindField<FObjectProperty>(Object->GetClass(), EditableComponentTemplate->GetFName()))
 					{
 						SelectedObjectProperties.Add(ObjectProperty);
 					}
-					else if(UActorComponent* Archetype = Cast<UActorComponent>(EditableComponentTemplate->GetArchetype()))
+					else
 					{
-						if(AActor* Owner = Archetype->GetOwner())
+						FProperty* ReferencingProperty = FComponentEditorUtils::GetPropertyForEditableNativeComponent(EditableComponentTemplate);
+						if (ReferencingProperty == nullptr)
 						{
-							if(UClass* OwnerClass = Owner->GetClass())
+							if (UActorComponent* Archetype = Cast<UActorComponent>(EditableComponentTemplate->GetArchetype()))
 							{
-								AActor* OwnerCDO = CastChecked<AActor>(OwnerClass->GetDefaultObject());
-								for(TFieldIterator<UObjectProperty> ObjPropIt(OwnerClass, EFieldIteratorFlags::IncludeSuper); ObjPropIt; ++ObjPropIt)
-								{
-									ObjectProperty = *ObjPropIt;
-									check(ObjectProperty != nullptr);
-
-									// If the property value matches the current archetype, add it as a selected property for filtering
-									if(Archetype->GetClass()->IsChildOf(ObjectProperty->PropertyClass)
-										&& Archetype == ObjectProperty->GetObjectPropertyValue_InContainer(OwnerCDO))
-									{
-										ObjectProperty = FindField<UObjectProperty>(Object->GetClass(), ObjectProperty->GetFName());
-										if(ObjectProperty != nullptr)
-										{
-											SelectedObjectProperties.Add(ObjectProperty);
-											break;
-										}
-									}
-								}
+								ReferencingProperty = FComponentEditorUtils::GetPropertyForEditableNativeComponent(Archetype);
 							}
+						}
+						if (ReferencingProperty)
+						{
+							SelectedObjectProperties.Add(ReferencingProperty);
 						}
 					}
 				}
@@ -756,7 +734,7 @@ void SKismetInspector::UpdateFromObjects(const TArray<UObject*>& PropertyObjects
 
 bool SKismetInspector::IsStructViewPropertyReadOnly(const struct FPropertyAndParent& PropertyAndParent) const
 {
-	const UProperty& Property = PropertyAndParent.Property;
+	const FProperty& Property = PropertyAndParent.Property;
 	if (Property.HasAnyPropertyFlags(CPF_EditConst))
 	{
 		return true;
@@ -765,9 +743,24 @@ bool SKismetInspector::IsStructViewPropertyReadOnly(const struct FPropertyAndPar
 	return false;
 }
 
+bool SKismetInspector::IsAnyParentContainerSelected(const FPropertyAndParent& PropertyAndParent) const
+{
+	for (const FProperty* CurrentProperty : PropertyAndParent.ParentProperties)
+	{
+		const FProperty* CurrentOuter = CurrentProperty->GetOwner<FProperty>();
+
+		if (CurrentOuter != nullptr && SelectedObjectProperties.Find(const_cast<FProperty*>(CurrentOuter)))
+		{
+			return true;
+		}
+	}
+
+	return false;
+} 
+
 bool SKismetInspector::IsPropertyVisible( const FPropertyAndParent& PropertyAndParent ) const
 {
-	const UProperty& Property = PropertyAndParent.Property;
+	const FProperty& Property = PropertyAndParent.Property;
 
 
 	// If we are in 'instance preview' - hide anything marked 'disabled edit on instance'
@@ -791,9 +784,9 @@ bool SKismetInspector::IsPropertyVisible( const FPropertyAndParent& PropertyAndP
 		}
 	}
 
-	if(const UClass* OwningClass = Cast<UClass>(Property.GetOuter()))
+	if(const UClass* OwningClass = Property.GetOwner<UClass>())
 	{
-		const UBlueprint* BP = BlueprintEditorPtr.IsValid() ? BlueprintEditorPtr.Pin()->GetBlueprintObj() : NULL;
+		const UBlueprint* BP = BlueprintEditorPtr.IsValid() ? BlueprintEditorPtr.Pin()->GetBlueprintObj() : nullptr;
 		const bool VariableAddedInCurentBlueprint = (OwningClass->ClassGeneratedBy == BP);
 
 		// If we did not add this var, hide it!
@@ -807,10 +800,13 @@ bool SKismetInspector::IsPropertyVisible( const FPropertyAndParent& PropertyAndP
 	}
 
 	// figure out if this Blueprint variable is an Actor variable
-	const UArrayProperty* ArrayProperty = Cast<const UArrayProperty>(&Property);
-	const UProperty* TestProperty = ArrayProperty ? ArrayProperty->Inner : &Property;
-	const UObjectPropertyBase* ObjectProperty = Cast<const UObjectPropertyBase>(TestProperty);
-	bool bIsActorProperty = (ObjectProperty != NULL && ObjectProperty->PropertyClass->IsChildOf(AActor::StaticClass()));
+	const FArrayProperty* ArrayProperty = CastField<const FArrayProperty>(&Property);
+	const FSetProperty* SetProperty = CastField<const FSetProperty>(&Property);
+	const FMapProperty* MapProperty = CastField<const FMapProperty>(&Property);
+
+	const FProperty* TestProperty = ArrayProperty ? ArrayProperty->Inner : &Property;
+	const FObjectPropertyBase* ObjectProperty = CastField<const FObjectPropertyBase>(TestProperty);
+	bool bIsActorProperty = (ObjectProperty != nullptr && ObjectProperty->PropertyClass->IsChildOf(AActor::StaticClass()));
 
 	if (bEditOnTemplateDisabled && bIsActorProperty)
 	{
@@ -827,35 +823,41 @@ bool SKismetInspector::IsPropertyVisible( const FPropertyAndParent& PropertyAndP
 	}
 
 	// Filter down to selected properties only if set.
-	if ( SelectedObjectProperties.Find( MakeWeakObjectPtr( const_cast<UProperty*>( &Property ) ) ) ) 
+	if (SelectedObjectProperties.Find(const_cast<FProperty*>(&Property)))
 	{
 		// If the current property is selected, it is visible.
 		return true;
 	}
-	else if ( PropertyAndParent.ParentProperty )
+	else if ( PropertyAndParent.ParentProperties.Num() > 0 && SelectedObjectProperties.Num() > 0 )
 	{
-		const UProperty* ParentProperty = PropertyAndParent.ParentProperty;
-		const UProperty* ParentPropertyOuter = nullptr;
-		
-		if (ParentProperty)
-		{
-			ParentPropertyOuter = Cast<UProperty>(ParentProperty->GetOuter());
-		}
+		const FProperty* ParentProperty = PropertyAndParent.ParentProperties[0];
 
-		if ( SelectedObjectProperties.Find( MakeWeakObjectPtr( const_cast<UProperty*>( ParentProperty ) ) ) )
+		if ( SelectedObjectProperties.Find( const_cast<FProperty*>( ParentProperty ) ) )
 		{
 			// If its parent is selected, it should be visible
 			return true;
 		}
-		else if ( ParentPropertyOuter && SelectedObjectProperties.Find( MakeWeakObjectPtr( const_cast<UProperty*>( ParentPropertyOuter ) ) ) )
+		else if ( IsAnyParentContainerSelected(PropertyAndParent) )
 		{
-			// If its parent is part of a container and the container property is selected, it should be visible
 			return true;
+		}
+	}
+	else if (ArrayProperty || MapProperty || SetProperty)
+	{
+		// .Find won't work here because the items inside of the container properties are not FProperties
+		for (const TWeakFieldPtr<FProperty>& CurProp : SelectedObjectProperties)
+		{
+			if ((ArrayProperty && (ArrayProperty->PropertyFlags & CPF_Edit) && CurProp->GetFName() == ArrayProperty->GetFName()) ||
+				(MapProperty && (MapProperty->PropertyFlags & CPF_Edit) && CurProp->GetFName() == MapProperty->GetFName()) ||
+				(SetProperty && (SetProperty->PropertyFlags & CPF_Edit) && CurProp->GetFName() == SetProperty->GetFName()))
+			{
+				return true;
+			}
 		}
 	}
 
 
-	return !SelectedObjectProperties.Num();
+	return SelectedObjectProperties.Num() == 0;
 }
 
 void SKismetInspector::SetPropertyWindowContents(TArray<UObject*> Objects)

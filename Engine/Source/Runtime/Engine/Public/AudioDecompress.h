@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 /*=============================================================================
 	AudioDecompress.h: Unreal audio vorbis decompression interface object.
@@ -12,6 +12,7 @@
 #include "Sound/SoundWave.h"
 #include "Misc/ScopeLock.h"
 #include "HAL/LowLevelMemTracker.h"
+#include "ContentStreaming.h"
 
 // 186ms of 44.1KHz data
 // 372ms of 22KHz data
@@ -26,6 +27,10 @@ struct FSoundQualityInfo;
 class ICompressedAudioInfo
 {
 public:
+	ICompressedAudioInfo()
+		: StreamingSoundWave(nullptr)
+	{}
+
 	/**
 	* Virtual destructor.
 	*/
@@ -94,12 +99,36 @@ public:
 	virtual bool SupportsStreaming() const {return false;}
 
 	/**
+	 * This can be called to explicitly release this decoder's reference to a chunk of compressed audio
+	 * without destroying the decoder itself.
+	 * @param bBlockUntilReleased when set to true will cause this call to block if the decoder is currently using the chunk.
+	 * @returns true if the chunk was released, false otherwise.
+	 */
+	virtual bool ReleaseStreamChunk(bool bBlockUntilReleased)
+	{
+		// If we hit this check, ReleaseStreamChunk needs to be implemented for this codec.
+		checkNoEntry();
+		return false;
+	}
+
+	/**
 	* Streams the header information of a compressed format
 	*
 	* @param	Wave			Wave that will be read from to retrieve necessary chunk
 	* @param	QualityInfo		Quality Info (to be filled out)
 	*/
-	virtual bool StreamCompressedInfo(USoundWave* Wave, struct FSoundQualityInfo* QualityInfo) {return false;}
+	bool StreamCompressedInfo(USoundWave* Wave, struct FSoundQualityInfo* QualityInfo)
+	{
+		StreamingSoundWave = Wave;
+
+		return StreamCompressedInfoInternal(Wave, QualityInfo);
+	}
+
+protected:
+	/** Internal override implemented by subclasses. */
+	virtual bool StreamCompressedInfoInternal(USoundWave* Wave, struct FSoundQualityInfo* QualityInfo) = 0;
+
+public:
 
 	/**
 	* Decompresses streamed data to raw PCM data.
@@ -121,6 +150,12 @@ public:
 	 * Gets the offset into the chunk that was last read to (for Streaming Manager priority)
 	 */
 	virtual int32 GetCurrentChunkOffset() const {return -1;}
+
+	/** Return the streaming sound wave used by this decoder. Returns nullptr if there is not a streaming sound wave. */
+	virtual USoundWave* GetStreamingSoundWave() { return StreamingSoundWave; }
+
+protected:
+	USoundWave* StreamingSoundWave;
 };
 
 /** Struct used to store the results of a decode operation. **/
@@ -161,7 +196,7 @@ public:
 	virtual bool UsesVorbisChannelOrdering() const override { return false; }
 	virtual int GetStreamBufferSize() const override { return  MONO_PCM_BUFFER_SIZE; }
 	virtual bool SupportsStreaming() const override { return true; }
-	virtual bool StreamCompressedInfo(USoundWave* Wave, FSoundQualityInfo* QualityInfo) override;
+	virtual bool StreamCompressedInfoInternal(USoundWave* Wave, FSoundQualityInfo* QualityInfo) override;
 	virtual bool StreamCompressedData(uint8* Destination, bool bLooping, uint32 BufferSize) override;
 	virtual int32 GetCurrentChunkIndex() const override { return CurrentChunkIndex; }
 	virtual int32 GetCurrentChunkOffset() const override { return SrcBufferOffset; }
@@ -224,6 +259,15 @@ protected:
 	*/
 	uint32	ZeroBuffer(uint8* Destination, uint32 BufferSize);
 
+	/**
+	 * Helper function for getting a chunk of compressed audio.
+	 * @param InSoundWave Pointer to the soundwave to get compressed audio from.
+	 * @param ChunkIndex the index of the chunk to get from InSoundWave.
+	 * @param[out] OutChunkSize the size of the chunk.
+	 * @return a pointer to the chunk if it's loaded, nullptr otherwise.
+	 */
+	const uint8* GetLoadedChunk(USoundWave* InSoundWave, uint32 ChunkIndex, uint32& OutChunkSize);
+
 	/** bool set before ParseHeader. Whether we are streaming a file or not. */
 	bool bIsStreaming;
 	/** Ptr to the current streamed chunk. */
@@ -234,6 +278,8 @@ protected:
 	uint32 SrcBufferOffset;
 	/** Where the actual audio data starts in the current streamed chunk. Accounts for header offset. */
 	uint32 AudioDataOffset;
+	/** The chunk index where the actual audio data starts. */
+	uint32 AudioDataChunkIndex;
 	/** Sample rate of the source file */
 	uint16 SampleRate;
 	/** The total sample count of the source file. */
@@ -254,14 +300,14 @@ protected:
 	uint32 LastPCMOffset;
 	/** If we're currently reading the final buffer. */
 	bool bStoringEndOfFile;
-    /** Ptr to the sound wave currently streaming. */
-	USoundWave* StreamingSoundWave;
 	/** The current chunk index in the streamed chunks. */
 	int32 CurrentChunkIndex;
 	/** Whether or not to print the chunk fail message. */
 	bool bPrintChunkFailMessage;
 	/** Number of bytes of padding used, overridden in some implementations. Defaults to 0. */
 	uint32 SrcBufferPadding;
+	/** Chunk Handle to ensure that this chunk of streamed audio is not deleted while we are using it. */
+	FAudioChunkHandle CurCompressedChunkHandle;
 };
 
 
@@ -281,7 +327,7 @@ public:
 	 *
 	 * @param	InWave		Wave data to decompress
 	 */
-	ENGINE_API FAsyncAudioDecompressWorker(USoundWave* InWave, int32 InNumPrecacheFrames);
+	ENGINE_API FAsyncAudioDecompressWorker(USoundWave* InWave, int32 InNumPrecacheFrames, FAudioDevice* InAudioDevice = nullptr);
 
 	/**
 	 * Performs the async audio decompression
@@ -367,7 +413,7 @@ public:
 
 	void DoWork()
 	{
-		LLM_SCOPE(ELLMTag::Audio);
+		LLM_SCOPE(ELLMTag::AudioMisc);
 
 		switch(TaskType)
 		{
@@ -464,13 +510,19 @@ public:
 	void EnsureCompletion(bool bDoWorkOnThisThreadIfNotStarted = true)
 	{
 		FScopeLock Lock(&CritSect);
+
+		if (!bDoWorkOnThisThreadIfNotStarted)
+		{
+			Task->Cancel();
+		}
 		Task->EnsureCompletion(bDoWorkOnThisThreadIfNotStarted);
 	}
 
 	void StartBackgroundTask()
 	{
 		FScopeLock Lock(&CritSect);
-		Task->StartBackgroundTask(ShouldUseBackgroundPoolFor_FAsyncRealtimeAudioTask() ? GBackgroundPriorityThreadPool : GThreadPool);
+		const bool bUseBackground = ShouldUseBackgroundPoolFor_FAsyncRealtimeAudioTask() && (Task->GetTask().GetTaskType() != ERealtimeAudioTaskType::Procedural);
+		Task->StartBackgroundTask(bUseBackground ? GBackgroundPriorityThreadPool : GThreadPool);
 	}
 
 	FAsyncRealtimeAudioTaskWorker<T>& GetTask()

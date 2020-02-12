@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "Blueprint/WidgetLayoutLibrary.h"
 #include "EngineGlobals.h"
@@ -9,10 +9,17 @@
 #include "Components/CanvasPanelSlot.h"
 #include "Components/HorizontalBoxSlot.h"
 #include "Components/VerticalBoxSlot.h"
+#include "Components/ScrollBoxSlot.h"
 #include "Components/UniformGridSlot.h"
 #include "Components/GridSlot.h"
 #include "Components/OverlaySlot.h"
 #include "Components/BorderSlot.h"
+#include "Components/SafeZoneSlot.h"
+#include "Components/ScaleBoxSlot.h"
+#include "Components/ScrollBoxSlot.h"
+#include "Components/SizeBoxSlot.h"
+#include "Components/WrapBoxSlot.h"
+#include "Components/WidgetSwitcherSlot.h"
 #include "Engine/UserInterfaceSettings.h"
 #include "Slate/SlateBrushAsset.h"
 #include "Blueprint/WidgetLayoutLibrary.h"
@@ -34,20 +41,19 @@ UWidgetLayoutLibrary::UWidgetLayoutLibrary(const FObjectInitializer& ObjectIniti
 {
 }
 
-bool UWidgetLayoutLibrary::ProjectWorldLocationToWidgetPosition(APlayerController* PlayerController, FVector WorldLocation, FVector2D& ViewportPosition)
+bool UWidgetLayoutLibrary::ProjectWorldLocationToWidgetPosition(APlayerController* PlayerController, FVector WorldLocation, FVector2D& ViewportPosition, bool bPlayerViewportRelative)
 {
 	FVector ScreenPosition3D;
-	const bool bSuccess = ProjectWorldLocationToWidgetPositionWithDistance(PlayerController, WorldLocation, ScreenPosition3D);
+	const bool bSuccess = ProjectWorldLocationToWidgetPositionWithDistance(PlayerController, WorldLocation, ScreenPosition3D, bPlayerViewportRelative);
 	ViewportPosition = FVector2D(ScreenPosition3D.X, ScreenPosition3D.Y);
 	return bSuccess;
 }
 
-bool UWidgetLayoutLibrary::ProjectWorldLocationToWidgetPositionWithDistance(APlayerController* PlayerController, FVector WorldLocation, FVector& ViewportPosition)
+bool UWidgetLayoutLibrary::ProjectWorldLocationToWidgetPositionWithDistance(APlayerController* PlayerController, FVector WorldLocation, FVector& ViewportPosition, bool bPlayerViewportRelative)
 {	
 	if ( PlayerController )
 	{
 		FVector PixelLocation;
-		const bool bPlayerViewportRelative = false;
 		const bool bProjected = PlayerController->ProjectWorldLocationToScreenWithDistance(WorldLocation, PixelLocation, bPlayerViewportRelative);
 
 		if ( bProjected )
@@ -275,6 +281,66 @@ UVerticalBoxSlot* UWidgetLayoutLibrary::SlotAsVerticalBoxSlot(UWidget* Widget)
 	if (Widget)
 	{
 		return Cast<UVerticalBoxSlot>(Widget->Slot);
+	}
+
+	return nullptr;
+}
+
+UScrollBoxSlot* UWidgetLayoutLibrary::SlotAsScrollBoxSlot(UWidget* Widget)
+{
+	if (Widget)
+	{
+		return Cast<UScrollBoxSlot>(Widget->Slot);
+	}
+
+	return nullptr;
+}
+
+USafeZoneSlot* UWidgetLayoutLibrary::SlotAsSafeBoxSlot(UWidget* Widget)
+{
+	if (Widget)
+	{
+		return Cast<USafeZoneSlot>(Widget->Slot);
+	}
+
+	return nullptr;
+}
+
+UScaleBoxSlot* UWidgetLayoutLibrary::SlotAsScaleBoxSlot(UWidget* Widget)
+{
+	if (Widget)
+	{
+		return Cast<UScaleBoxSlot>(Widget->Slot);
+	}
+
+	return nullptr;
+}
+
+USizeBoxSlot* UWidgetLayoutLibrary::SlotAsSizeBoxSlot(UWidget* Widget)
+{
+	if (Widget)
+	{
+		return Cast<USizeBoxSlot>(Widget->Slot);
+	}
+
+	return nullptr;
+}
+
+UWrapBoxSlot* UWidgetLayoutLibrary::SlotAsWrapBoxSlot(UWidget* Widget)
+{
+	if (Widget)
+	{
+		return Cast<UWrapBoxSlot>(Widget->Slot);
+	}
+
+	return nullptr;
+}
+
+UWidgetSwitcherSlot* UWidgetLayoutLibrary::SlotAsWidgetSwitcherSlot(UWidget* Widget)
+{
+	if (Widget)
+	{
+		return Cast<UWidgetSwitcherSlot>(Widget->Slot);
 	}
 
 	return nullptr;

@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "Blueprint/UserWidgetPool.h"
 
@@ -6,23 +6,22 @@ FUserWidgetPool::FUserWidgetPool(UWidget& InOwningWidget)
 	: OwningWidget(&InOwningWidget)
 {}
 
-FUserWidgetPool& FUserWidgetPool::operator=(FUserWidgetPool&& Other)
-{
-	OwningWidget = Other.OwningWidget;
-
-	ActiveWidgets = MoveTemp(Other.ActiveWidgets);
-	InactiveWidgets = MoveTemp(Other.InactiveWidgets);
-	CachedSlateByWidgetObject = MoveTemp(Other.CachedSlateByWidgetObject);
-
-	Other.OwningWidget.Reset();
-	Other.ResetPool();
-
-	return *this;
-}
-
 FUserWidgetPool::~FUserWidgetPool()
 {
 	ResetPool();
+}
+
+void FUserWidgetPool::SetWorld(UWorld* InOwningWorld)
+{
+	OwningWorld = InOwningWorld;
+}
+
+void FUserWidgetPool::RebuildWidgets()
+{
+	for (UUserWidget* Widget : ActiveWidgets)
+	{
+		CachedSlateByWidgetObject.Add(Widget, Widget->TakeWidget());
+	}
 }
 
 void FUserWidgetPool::AddReferencedObjects(FReferenceCollector& Collector)
@@ -33,16 +32,27 @@ void FUserWidgetPool::AddReferencedObjects(FReferenceCollector& Collector)
 
 void FUserWidgetPool::Release(UUserWidget* Widget, bool bReleaseSlate)
 {
-	const int32 ActiveWidgetIdx = ActiveWidgets.Find(Widget);
-	if (ActiveWidgetIdx != INDEX_NONE)
+	if (Widget != nullptr)
 	{
-		InactiveWidgets.Push(Widget);
-		ActiveWidgets.RemoveAt(ActiveWidgetIdx);
-
-		if (bReleaseSlate)
+		const int32 ActiveWidgetIdx = ActiveWidgets.Find(Widget);
+		if (ActiveWidgetIdx != INDEX_NONE)
 		{
-			CachedSlateByWidgetObject.Remove(Widget);
+			InactiveWidgets.Push(Widget);
+			ActiveWidgets.RemoveAt(ActiveWidgetIdx);
+
+			if (bReleaseSlate)
+			{
+				CachedSlateByWidgetObject.Remove(Widget);
+			}
 		}
+	}
+}
+
+void FUserWidgetPool::Release(TArray<UUserWidget*> Widgets, bool bReleaseSlate)
+{
+	for (UUserWidget* Widget : Widgets)
+	{
+		Release(Widget, bReleaseSlate);
 	}
 }
 
@@ -61,5 +71,18 @@ void FUserWidgetPool::ResetPool()
 {
 	InactiveWidgets.Reset();
 	ActiveWidgets.Reset();
+	CachedSlateByWidgetObject.Reset();
+}
+
+void FUserWidgetPool::ReleaseInactiveSlateResources()
+{
+	for (UUserWidget* InactiveWidget : InactiveWidgets)
+	{
+		CachedSlateByWidgetObject.Remove(InactiveWidget);
+	}
+}
+
+void FUserWidgetPool::ReleaseAllSlateResources()
+{
 	CachedSlateByWidgetObject.Reset();
 }

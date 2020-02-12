@@ -1,10 +1,14 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
 #include "CoreMinimal.h"
 #include "Containers/Queue.h"
 #include "Sound/SoundWaveProcedural.h"
+#include "AudioDecompress.h"
+#include "AudioMixerBuffer.h"
+
+class USoundWave;
 
 namespace Audio
 {
@@ -25,22 +29,32 @@ namespace Audio
 		// The number of channels of the procedural buffer
 		int32 NumChannels;
 
+		// Force decodes to execute synchronously
+		bool bForceSyncDecode;
+
 		FProceduralAudioTaskData()
 			: ProceduralSoundWave(nullptr)
 			, AudioData(nullptr)
 			, NumSamples(0)
 			, NumChannels(0)
+			, bForceSyncDecode(false)
 		{}
 	};
 
 	// Data needed for a decode audio task
 	struct FDecodeAudioTaskData
 	{
-		// The mixer buffer buffer object which holds state to use for the decode operation
-		FMixerBuffer* MixerBuffer;
-
 		// A pointer to a buffer of audio which will be decoded to
 		float* AudioData;
+
+		// Decompression state for decoder
+		ICompressedAudioInfo* DecompressionState;
+
+		// The buffer type for the decoder
+		Audio::EBufferType::Type BufferType;
+
+		// Number of channels of the decoder
+		int32 NumChannels;
 
 		// The number of frames which are precached
 		int32 NumPrecacheFrames;
@@ -54,13 +68,20 @@ namespace Audio
 		// Whether or not to skip the first buffer
 		bool bSkipFirstBuffer;
 
+		// Force this decoding operation to occur synchronously,
+		// regardless of the value of au.ForceSyncAudioDecodes. (used by time synth)
+		bool bForceSyncDecode;
+
 		FDecodeAudioTaskData()
-			: MixerBuffer(nullptr)
-			, AudioData(nullptr)
+			: AudioData(nullptr)
+			, DecompressionState(nullptr)
+			, BufferType(Audio::EBufferType::Invalid)
+			, NumChannels(0)
 			, NumPrecacheFrames(0)
 			, NumFramesToDecode(0)
 			, bLoopingMode(false)
 			, bSkipFirstBuffer(false)
+			, bForceSyncDecode(false)
 		{}
 	};
 
@@ -130,6 +151,9 @@ namespace Audio
 
 		// Ensures the completion of the decode operation.
 		virtual void EnsureCompletion() = 0;
+
+		// Cancel the decode operation
+		virtual void CancelTask() = 0;
 
 		// Returns the result of a procedural sound generate job
 		virtual void GetResult(FProceduralAudioTaskResults& OutResult) {};

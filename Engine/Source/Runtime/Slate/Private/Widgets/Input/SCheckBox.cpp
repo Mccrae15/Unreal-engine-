@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "Widgets/Input/SCheckBox.h"
 #include "Widgets/SBoxPanel.h"
@@ -7,7 +7,18 @@
 #include "Framework/Application/SlateApplication.h"
 #include "Widgets/Layout/SBorder.h"
 #include "Widgets/Images/SImage.h"
+#if WITH_ACCESSIBILITY
+#include "Widgets/Accessibility/SlateAccessibleWidgets.h"
+#include "Widgets/Accessibility/SlateAccessibleMessageHandler.h"
+#endif
 
+SCheckBox::SCheckBox()
+{
+#if WITH_ACCESSIBILITY
+	AccessibleBehavior = EAccessibleBehavior::Summary;
+	bCanChildrenBeAccessible = false;
+#endif
+}
 
 /**
  * Construct this widget
@@ -69,7 +80,7 @@ bool SCheckBox::SupportsKeyboardFocus() const
 
 FReply SCheckBox::OnKeyUp( const FGeometry& MyGeometry, const FKeyEvent& InKeyEvent )
 {
-	if (InKeyEvent.GetKey() == EKeys::Enter || InKeyEvent.GetKey() == EKeys::SpaceBar || InKeyEvent.GetKey() == EKeys::Virtual_Accept)
+	if (FSlateApplication::Get().GetNavigationActionFromKey(InKeyEvent) == EUINavigationAction::Accept)
 	{
 		ToggleCheckedState();
 
@@ -297,6 +308,10 @@ void SCheckBox::ToggleCheckedState()
 		// The state of the check box changed.  Execute the delegate to notify users
 		OnCheckStateChanged.ExecuteIfBound( ECheckBoxState::Checked );
 	}
+
+#if WITH_ACCESSIBILITY
+	FSlateApplicationBase::Get().GetAccessibleMessageHandler()->OnWidgetEventRaised(AsShared(), EAccessibleEvent::Activate, State == ECheckBoxState::Checked, IsCheckboxChecked.Get() == ECheckBoxState::Checked);
+#endif
 }
 
 void SCheckBox::SetIsChecked(TAttribute<ECheckBoxState> InIsChecked)
@@ -509,3 +524,10 @@ const FSlateBrush* SCheckBox::GetUndeterminedPressedImage() const
 {
 	return UndeterminedPressedImage ? UndeterminedPressedImage : &Style->UndeterminedPressedImage;
 }
+
+#if WITH_ACCESSIBILITY
+TSharedRef<FSlateAccessibleWidget> SCheckBox::CreateAccessibleWidget()
+{
+	return MakeShareable<FSlateAccessibleWidget>(new FSlateAccessibleCheckBox(SharedThis(this)));
+}
+#endif

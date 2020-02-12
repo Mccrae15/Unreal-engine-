@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -27,10 +27,11 @@ class UCanvas;
 struct FAnimInstanceProxy;
 struct FAnimNode_AssetPlayerBase;
 struct FAnimNode_StateMachine;
-struct FAnimNode_SubInput;
+struct FAnimNode_LinkedInputPose;
 struct FBakedAnimationStateMachine;
 class FCompilerResultsLog;
 struct FBoneContainer;
+struct FAnimNode_LinkedAnimLayer;
 
 typedef TArray<FTransform> FTransformArrayA2;
 
@@ -422,6 +423,17 @@ class ENGINE_API UAnimInstance : public UObject
 	/** Flag to check back on the game thread that indicates we need to run PostUpdateAnimation() in the post-eval call */
 	uint8 bNeedsUpdate : 1;
 
+	/** Flag to check if created by LinkedAnimGraph in ReinitializeLinkedAnimInstance */
+	uint8 bCreatedByLinkedAnimGraph : 1;
+
+	/** Whether to process notifies from any linked anim instances */
+	UPROPERTY(EditDefaultsOnly, Category = Notifies)
+	uint8 bReceiveNotifiesFromLinkedInstances : 1;
+
+	/** Whether to propagate notifies to any linked anim instances */
+	UPROPERTY(EditDefaultsOnly, Category = Notifies)
+	uint8 bPropagateNotifiesToLinkedInstances : 1;
+
 private:
 	/** True when Montages are being ticked, and Montage Events should be queued. 
 	 * When Montage are being ticked, we queue AnimNotifies and Events. We trigger notifies first, then Montage events. */
@@ -440,8 +452,6 @@ public:
 
 	// @todo document
 	void MakeMontageTickRecord(FAnimTickRecord& TickRecord, class UAnimMontage* Montage, float CurrentPosition, float PreviousPosition, float MoveDelta, float Weight, TArray<FPassedMarker>& MarkersPassedThisTick, FMarkerTickRecord& MarkerTickRecord);
-
-	bool IsSlotNodeRelevantForNotifies(FName SlotNodeName) const;
 
 	/** Get global weight in AnimGraph for this slot node.
 	* Note: this is the weight of the node, not the weight of any potential montage it is playing. */
@@ -494,6 +504,22 @@ public:
 	// Can does this anim instance need an update (parallel or not)?
 	bool NeedsUpdate() const;
 
+	/** Get whether to process notifies from any linked anim instances */
+	UFUNCTION(BlueprintPure, Category = "Notifies")
+	bool GetReceiveNotifiesFromLinkedInstances() const { return bReceiveNotifiesFromLinkedInstances; }
+
+	/** Set whether to process notifies from any linked anim instances */
+	UFUNCTION(BlueprintCallable, Category = "Notifies")
+	void SetReceiveNotifiesFromLinkedInstances(bool bSet) { bReceiveNotifiesFromLinkedInstances = bSet; }
+
+	/** Get whether to propagate notifies to any linked anim instances */
+	UFUNCTION(BlueprintPure, Category = "Notifies")
+	bool GetPropagateNotifiesToLinkedInstances() const { return bPropagateNotifiesToLinkedInstances; }
+
+	/** Set whether to propagate notifies to any linked anim instances */
+	UFUNCTION(BlueprintCallable, Category = "Notifies")
+	void SetPropagateNotifiesToLinkedInstances(bool bSet) { bPropagateNotifiesToLinkedInstances = bSet; }
+
 private:
 	// Does this anim instance need immediate update (rather than parallel)?
 	bool NeedsImmediateUpdate(float DeltaSeconds) const;
@@ -524,6 +550,10 @@ public:
 	/** Executed when begin play is called on the owning component */
 	UFUNCTION(BlueprintImplementableEvent)
 	void BlueprintBeginPlay();
+
+	/** Executed when the all Linked Animation Layers are initialized */
+	UFUNCTION(BlueprintImplementableEvent)
+	void BlueprintLinkedAnimationLayersInitialized();
 
 	bool CanTransitionSignature() const;
 	
@@ -564,6 +594,10 @@ public:
 	/** Stops the animation montage. If reference is NULL, it will stop ALL active montages. */
 	UFUNCTION(BlueprintCallable, Category = "Montage")
 	void Montage_Stop(float InBlendOutTime, const UAnimMontage* Montage = NULL);
+
+	/** Stops all active montages belonging to a group. */
+	UFUNCTION(BlueprintCallable, Category = "Montage")
+	void Montage_StopGroupByName(float InBlendOutTime, FName GroupName);
 
 	/** Pauses the animation montage. If reference is NULL, it will pause ALL active montages. */
 	UFUNCTION(BlueprintCallable, Category = "Montage")
@@ -698,7 +732,80 @@ public:
 	virtual void OnMontageInstanceStopped(FAnimMontageInstance & StoppedMontageInstance);
 	void ClearMontageInstanceReferences(FAnimMontageInstance& InMontageInstance);
 
-	FAnimNode_SubInput* GetSubInputNode() const;
+	UE_DEPRECATED(4.24, "Function renamed, please use GetLinkedInputPoseNode")
+	FAnimNode_LinkedInputPose* GetSubInputNode(FName InSubInput = NAME_None, FName InGraph = NAME_None) { return GetLinkedInputPoseNode(InSubInput, InGraph); }
+
+	/** 
+	 * Get a linked input pose node by name, given a named graph.
+	 * @param	InSubInput	The name of the linked input pose. If this is NAME_None, then we assume that the desired input is FAnimNode_LinkedInputPose::DefaultInputPoseName.
+	 * @param	InGraph		The name of the graph in which to find the linked input. If this is NAME_None, then we assume that the desired graph is "AnimGraph", the default.
+	 */
+	FAnimNode_LinkedInputPose* GetLinkedInputPoseNode(FName InSubInput = NAME_None, FName InGraph = NAME_None);
+
+	UE_DEPRECATED(4.24, "Function renamed, please use GetLinkedAnimGraphInstanceByTag")
+	UAnimInstance* GetSubInstanceByTag(FName InTag) const { return GetLinkedAnimGraphInstanceByTag(InTag); }
+
+	/** Runs through all nodes, attempting to find the first linked instance by name/tag */
+	UFUNCTION(BlueprintPure, Category = "Animation Blueprint Linking")
+	UAnimInstance* GetLinkedAnimGraphInstanceByTag(FName InTag) const;
+
+	UE_DEPRECATED(4.24, "Function renamed, please use GetLinkedAnimGraphInstancesByTag")
+	void GetSubInstancesByTag(FName InTag, TArray<UAnimInstance*>& OutSubInstances) const;
+
+	/** Runs through all nodes, attempting to find all linked instances that match the name/tag */
+	UFUNCTION(BlueprintPure, Category = "Animation Blueprint Linking")
+	void GetLinkedAnimGraphInstancesByTag(FName InTag, TArray<UAnimInstance*>& OutLinkedInstances) const;
+
+	UE_DEPRECATED(4.24, "Function renamed, please use LinkAnimGraphByTag")
+	void SetSubInstanceClassByTag(FName InTag, TSubclassOf<UAnimInstance> InClass) { LinkAnimGraphByTag(InTag, InClass); }
+
+	/** Runs through all nodes, attempting to find a linked instance by name/tag, then sets the class of each node if the tag matches */
+	UFUNCTION(BlueprintCallable, Category = "Animation Blueprint Linking")
+	void LinkAnimGraphByTag(FName InTag, TSubclassOf<UAnimInstance> InClass);
+
+	UE_DEPRECATED(4.24, "Function renamed, please use LinkAnimClassLayers")
+	void SetLayerOverlay(TSubclassOf<UAnimInstance> InClass) { LinkAnimClassLayers(InClass); }
+
+	/**
+	 * Runs through all layer nodes, attempting to find layer nodes that are implemented by the specified class, then sets up a linked instance of the class for each.
+	 * Allocates one linked instance to run each of the groups specified in the class, so state is shared. If a layer is not grouped (ie. NAME_None), then state is not shared
+	 * and a separate linked instance is allocated for each layer node.
+	 * If InClass is null, then all layers are reset to their defaults.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "Animation Blueprint Linking")
+	void LinkAnimClassLayers(TSubclassOf<UAnimInstance> InClass);
+
+	UE_DEPRECATED(4.24, "Function renamed, please use UnlinkAnimClassLayers")
+	void ClearLayerOverlay(TSubclassOf<UAnimInstance> InClass) { UnlinkAnimClassLayers(InClass); }
+
+	/**
+	 * Runs through all layer nodes, attempting to find layer nodes that are currently running the specified class, then resets each to its default value.
+	 * State sharing rules are as with SetLayerOverlay.
+	 * If InClass is null, does nothing.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "Animation Blueprint Linking")
+	void UnlinkAnimClassLayers(TSubclassOf<UAnimInstance> InClass);
+
+	UE_DEPRECATED(4.24, "Function renamed, please use GetLinkedAnimLayerInstanceByGroup")
+	UAnimInstance* GetLayerSubInstanceByGroup(FName InGroup) const { return GetLinkedAnimLayerInstanceByGroup(InGroup); }
+
+	/** Gets the layer linked instance corresponding to the specified group */
+	UFUNCTION(BlueprintPure, Category = "Animation Blueprint Linking")
+	UAnimInstance* GetLinkedAnimLayerInstanceByGroup(FName InGroup) const;
+
+	UE_DEPRECATED(4.24, "Function renamed, please use GetLinkedAnimLayerInstanceByClass")
+	UAnimInstance* GetLayerSubInstanceByClass(TSubclassOf<UAnimInstance> InClass) const { return GetLinkedAnimLayerInstanceByClass(InClass); }
+
+	/** Gets the first layer linked instance corresponding to the specified class */
+	UFUNCTION(BlueprintPure, Category = "Animation Blueprint Linking")
+	UAnimInstance* GetLinkedAnimLayerInstanceByClass(TSubclassOf<UAnimInstance> InClass) const;
+
+	/** Sets up initial layer groupings */
+	void InitializeGroupedLayers(bool bInDeferSubGraphInitialization);
+
+private:
+	/** Helper function to perform layer overlay actions (set, clear) */
+	void PerformLinkedLayerOverlayOperation(TSubclassOf<UAnimInstance> InClass, TFunctionRef<UClass*(UClass*, FAnimNode_LinkedAnimLayer*)> InClassSelectorFunction, bool bInDeferSubGraphInitialization = false);
 
 protected:
 	/** Map between Active Montages and their FAnimMontageInstance */
@@ -855,6 +962,9 @@ public:
 	 */
 	int32 GetInstanceAssetPlayerIndex(FName MachineName, FName StateName, FName InstanceName = NAME_None);
 
+	/** Returns all Animation Nodes of FAnimNode_AssetPlayerBase class within the specified (named) Animation Graph */
+	TArray<FAnimNode_AssetPlayerBase*> GetInstanceAssetPlayers(const FName& GraphName);
+
 	/** Gets the runtime instance desc of the state machine specified by name */
 	const FBakedAnimationStateMachine* GetStateMachineInstanceDesc(FName MachineName);
 
@@ -956,14 +1066,26 @@ public:
 	 */
 	virtual void OnUROPreInterpolation_AnyThread(FAnimationEvaluationContext& InOutContext) {}
 
+	/** Flag passed to UpdateAnimation, determines the path we follow */
+	enum class EUpdateAnimationFlag : uint8
+	{
+		/** Enforces a parallel update, regardless of state */
+		ForceParallelUpdate,
+		/** Use state to determine whether or not to immediately or update in parallel */
+		Default
+	};
+
 	// Animation phase trigger
 	// start with initialize
 	// update happens in every tick. Can happen in parallel with others if conditions are right.
 	// evaluate happens when condition is met - i.e. depending on your skeletalmeshcomponent update flag
 	// post eval happens after evaluation is done
 	// uninitialize happens when owner is unregistered
-	void InitializeAnimation();
-	void UpdateAnimation(float DeltaSeconds, bool bNeedsValidRootMotion);
+	// @param	bInDeferRootNodeInitialization	When set to true, defer init of the blend tree until the first Update() call
+	void InitializeAnimation(bool bInDeferRootNodeInitialization = false);
+
+	/** Update Animation code-paths, updates and advances animation state, returns whether or not the actual update should have been called immediately */
+	void UpdateAnimation(float DeltaSeconds, bool bNeedsValidRootMotion, EUpdateAnimationFlag UpdateFlag = EUpdateAnimationFlag::Default );
 
 	/** Run update animation work on a worker thread */
 	void ParallelUpdateAnimation();
@@ -980,7 +1102,7 @@ public:
 	/** Perform evaluation. Can be called from worker threads. */
 	void ParallelEvaluateAnimation(bool bForceRefPose, const USkeletalMesh* InSkeletalMesh, FBlendedHeapCurve& OutCurve, FCompactPose& OutPose);
 
-	UE_DEPRECATED(4.32, "Please use ParallelEvaluateAnimation without passing OutBoneSpaceTransforms.")
+	UE_DEPRECATED(4.23, "Please use ParallelEvaluateAnimation without passing OutBoneSpaceTransforms.")
 	void ParallelEvaluateAnimation(bool bForceRefPose, const USkeletalMesh* InSkeletalMesh, TArray<FTransform>& OutBoneSpaceTransforms, FBlendedHeapCurve& OutCurve, FCompactPose& OutPose);
 
 	void PostEvaluateAnimation();
@@ -1161,7 +1283,7 @@ public:
 	void AddCurveValue(const FName& CurveName, float Value);
 
 	/** Given a machine and state index, record a state weight for this frame */
-	void RecordStateWeight(const int32 InMachineClassIndex, const int32 InStateIndex, const float InStateWeight);
+	void RecordStateWeight(const int32 InMachineClassIndex, const int32 InStateIndex, const float InStateWeight, const float InElapsedTime);
 
 protected:
 #if WITH_EDITORONLY_DATA
@@ -1234,22 +1356,36 @@ protected:
 	/** Override point for derived classes to destroy their own proxy objects (allows custom allocation) */
 	virtual void DestroyAnimInstanceProxy(FAnimInstanceProxy* InProxy);
 
+	/** Access the proxy but block if a task is currently in progress as it wouldn't be safe to access it 
+	 *	This is protected static member for allowing derived to access
+	 */
+	template <typename T /*= FAnimInstanceProxy*/>	// @TODO: Cant default parameters to this function on Xbox One until we move off the VS2012 compiler
+	FORCEINLINE static T* GetProxyOnGameThreadStatic(UAnimInstance* InAnimInstance)
+	{
+		if (InAnimInstance)
+		{
+			check(IsInGameThread());
+			UObject* OuterObj = InAnimInstance->GetOuter();
+			if (OuterObj && OuterObj->IsA<USkeletalMeshComponent>())
+			{
+				bool bBlockOnTask = true;
+				bool bPerformPostAnimEvaluation = true;
+				InAnimInstance->GetSkelMeshComponent()->HandleExistingParallelEvaluationTask(bBlockOnTask, bPerformPostAnimEvaluation);
+			}
+			if (InAnimInstance->AnimInstanceProxy == nullptr)
+			{
+				InAnimInstance->AnimInstanceProxy = InAnimInstance->CreateAnimInstanceProxy();
+			}
+			return static_cast<T*>(InAnimInstance->AnimInstanceProxy);
+		}
+
+		return nullptr;
+	}
 	/** Access the proxy but block if a task is currently in progress as it wouldn't be safe to access it */
 	template <typename T /*= FAnimInstanceProxy*/>	// @TODO: Cant default parameters to this function on Xbox One until we move off the VS2012 compiler
 	FORCEINLINE T& GetProxyOnGameThread()
 	{
-		check(IsInGameThread());
-		if(GetOuter() && GetOuter()->IsA<USkeletalMeshComponent>())
-		{
-			bool bBlockOnTask = true;
-			bool bPerformPostAnimEvaluation = true;
-			GetSkelMeshComponent()->HandleExistingParallelEvaluationTask(bBlockOnTask, bPerformPostAnimEvaluation);
-		}
-		if(AnimInstanceProxy == nullptr)
-		{
-			AnimInstanceProxy = CreateAnimInstanceProxy();
-		}
-		return *static_cast<T*>(AnimInstanceProxy);
+		return *GetProxyOnGameThreadStatic<T>(this);
 	}
 
 	/** Access the proxy but block if a task is currently in progress as it wouldn't be safe to access it */
@@ -1310,7 +1446,10 @@ protected:
 		return *static_cast<const T*>(AnimInstanceProxy);
 	}
 
-	friend struct FAnimNode_SubInstance;
+	friend struct FAnimNode_LinkedAnimGraph;
+	
+	/** Return whether this AnimNotifyState should be triggered */
+	virtual bool ShouldTriggerAnimNotifyState(const UAnimNotifyState* AnimNotifyState) const;
 
 protected:
 	/** Proxy object, nothing should access this from an externally-callable API as it is used as a scratch area on worker threads */

@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 //=============================================================================
 // LocalPlayer
@@ -23,10 +23,11 @@
 #include "LocalPlayer.generated.h"
 
 
-#define INVALID_CONTROLLERID 255
+#define INVALID_CONTROLLERID (-1)
 
 class AActor;
 class FSceneView;
+class FSlateUser;
 class UGameInstance;
 class ULocalPlayer;
 struct FMinimalViewInfo;
@@ -52,6 +53,9 @@ struct ENGINE_API FLocalPlayerContext
 
 	/** Returns the world context. */
 	UWorld* GetWorld() const;
+
+	/** Returns the game instance */
+	UGameInstance* GetGameInstance() const;
 
 	/** Returns the local player. */
 	class ULocalPlayer* GetLocalPlayer() const;
@@ -167,7 +171,7 @@ class ENGINE_API ULocalPlayer : public UPlayer
 public:
 
 	/** DO NOT USE. This constructor is for internal usage only for hot-reload purposes. */
-	ULocalPlayer(FVTableHelper& Helper) : Super(Helper), SubsystemCollection(this), SlateOperations(FReply::Unhandled()) {}
+	ULocalPlayer(FVTableHelper& Helper) : Super(Helper), SlateOperations(FReply::Unhandled()) {}
 
 	/** The FUniqueNetId which this player is associated with. */
 	FUniqueNetIdRepl CachedUniqueNetId;
@@ -201,8 +205,7 @@ public:
 	FOnControllerIdChanged& OnControllerIdChanged() const { return OnControllerIdChangedEvent; }
 
 private:
-	FSceneViewStateReference ViewState;
-	TArray<FSceneViewStateReference> StereoViewStates;
+	TArray<FSceneViewStateReference> ViewStates;
 
 	/** The controller ID which this player accepts input from. */
 	UPROPERTY()
@@ -261,6 +264,10 @@ public:
 	 */
 	FReply& GetSlateOperations() { return SlateOperations; }
 	const FReply& GetSlateOperations() const { return SlateOperations; }
+
+	/** Get the SlateUser that this LocalPlayer corresponds to */
+	TSharedPtr<FSlateUser> GetSlateUser();
+	TSharedPtr<const FSlateUser> GetSlateUser() const;
 
 	/**
 	 * Get the world the players actor belongs to
@@ -379,8 +386,10 @@ public:
 	 * @note this happens automatically for all viewports that exist during the initial server connect
 	 * 	so it's only necessary to manually call this for viewports created after that
 	 * if the join fails (because the server was full, for example) all viewports on this client will be disconnected
+	 *
+	 * @param	Options		array of URL options to append.
 	 */
-	virtual void SendSplitJoin();
+	virtual void SendSplitJoin(TArray<FString>& Options);
 	
 	/**
 	 * Change the ControllerId for this player; if the specified ControllerId is already taken by another player, changes the ControllerId
@@ -477,6 +486,11 @@ public:
 	 * @return	true if this player is not using splitscreen, or is the first player in the split-screen layout.
 	 */
 	bool IsPrimaryPlayer() const;
+	 
+	/**
+	 * Clear cached view state.  Suitable for calling when cleaning up the world but the view state has some references objects (usually mids) owned by the world (thus preventing GC) 
+	 */
+	void CleanupViewState();
 
 	/** Locked view state needs access to GetViewPoint. */
 	friend class FLockedViewState;

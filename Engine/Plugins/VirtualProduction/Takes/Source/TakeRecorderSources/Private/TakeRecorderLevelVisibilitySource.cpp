@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "TakeRecorderLevelVisibilitySource.h"
 #include "TakesUtils.h"
@@ -35,11 +35,20 @@ void UTakeRecorderLevelVisibilitySourceSettings::PostEditChangeProperty(FPropert
 	}
 }
 
-FString UTakeRecorderLevelVisibilitySourceSettings::GetSubsceneName(ULevelSequence* InSequence) const
+FString UTakeRecorderLevelVisibilitySourceSettings::GetSubsceneTrackName(ULevelSequence* InSequence) const
 {
 	if (UTakeMetaData* TakeMetaData = InSequence->FindMetaData<UTakeMetaData>())
 	{
-		return TakeMetaData->GetSlate() + TEXT("Level Visibility");
+		return FString::Printf(TEXT("Level Visibility_%s"), *TakeMetaData->GenerateAssetPath("{slate}"));
+	}
+	return TEXT("Level Visibility");
+}
+
+FString UTakeRecorderLevelVisibilitySourceSettings::GetSubsceneAssetName(ULevelSequence* InSequence) const
+{
+	if (UTakeMetaData* TakeMetaData = InSequence->FindMetaData<UTakeMetaData>())
+	{
+		return FString::Printf(TEXT("Level Visibility_%s"), *TakeMetaData->GenerateAssetPath("{slate}_{take}"));
 	}
 	return TEXT("Level Visibility");
 }
@@ -99,18 +108,12 @@ TArray<UTakeRecorderSource*> UTakeRecorderLevelVisibilitySource::PreRecording(cl
 	UMovieSceneLevelVisibilitySection* VisibleSection = NewObject<UMovieSceneLevelVisibilitySection>(CachedLevelVisibilityTrack.Get(), UMovieSceneLevelVisibilitySection::StaticClass());
 	VisibleSection->SetVisibility(ELevelVisibility::Visible);
 	VisibleSection->SetRowIndex(0);
-	for (FName VisibleLevelName : VisibleLevelNames)
-	{
-		VisibleSection->GetLevelNames()->AddUnique(VisibleLevelName);
-	}
+	VisibleSection->SetLevelNames(VisibleLevelNames);
 
 	UMovieSceneLevelVisibilitySection* HiddenSection = NewObject<UMovieSceneLevelVisibilitySection>(CachedLevelVisibilityTrack.Get(), UMovieSceneLevelVisibilitySection::StaticClass());
 	HiddenSection->SetVisibility(ELevelVisibility::Hidden);
 	HiddenSection->SetRowIndex(1);
-	for (FName HiddenLevelName : HiddenLevelNames)
-	{
-		HiddenSection->GetLevelNames()->AddUnique(HiddenLevelName);
-	}
+	HiddenSection->SetLevelNames(HiddenLevelNames);
 
 	CachedLevelVisibilityTrack->AddSection(*VisibleSection);
 	CachedLevelVisibilityTrack->AddSection(*HiddenSection);

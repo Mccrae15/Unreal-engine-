@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "Widgets/Layout/SGridPanel.h"
 #include "Types/PaintArgs.h"
@@ -9,6 +9,7 @@
 SGridPanel::SGridPanel()
 : Slots(this)
 {
+	SetCanTick(false);
 }
 
 SGridPanel::FSlot& SGridPanel::AddSlot( int32 Column, int32 Row, SGridPanel::Layer InLayer )
@@ -55,12 +56,6 @@ void SGridPanel::Construct( const FArguments& InArgs )
 
 int32 SGridPanel::OnPaint( const FPaintArgs& Args, const FGeometry& AllottedGeometry, const FSlateRect& MyCullingRect, FSlateWindowElementList& OutDrawElements, int32 LayerId, const FWidgetStyle& InWidgetStyle, bool bParentEnabled ) const
 {
-	if(GSlateLayoutCaching)
-	{
-		// HACK
-		GetDesiredSize();
-	}
-
 	FArrangedChildren ArrangedChildren(EVisibility::All);
 	this->ArrangeChildren(AllottedGeometry, ArrangedChildren);
 
@@ -76,36 +71,43 @@ int32 SGridPanel::OnPaint( const FPaintArgs& Args, const FGeometry& AllottedGeom
 	//
 	// GridLayers must ensure that everything in LayerN is below LayerN+1. In other words,
 	// every grid layer group must start at the current MaxLayerId (similar to how SOverlay works).
-	int32 LastGridLayer = 0;
-	for (int32 ChildIndex = 0; ChildIndex < Slots.Num(); ++ChildIndex)
+	if(ArrangedChildren.Num())
 	{
-		FArrangedWidget& CurWidget = ArrangedChildren[ChildIndex];
-		if (CurWidget.Widget->GetVisibility().IsVisible())
+		int32 LastGridLayer = 0;
+		for (int32 ChildIndex = 0; ChildIndex < Slots.Num(); ++ChildIndex)
 		{
-			const FSlot& CurSlot = Slots[ChildIndex];
-
-			if (!IsChildWidgetCulled(MyCullingRect, CurWidget))
+			FArrangedWidget& CurWidget = ArrangedChildren[ChildIndex];
+			if (CurWidget.Widget->GetVisibility().IsVisible())
 			{
-				if ( LastGridLayer != CurSlot.LayerParam )
-				{
-					// We starting a new grid layer group?
-					LastGridLayer = CurSlot.LayerParam;
-					// Ensure that everything here is drawn on top of 
-					// previously drawn grid content.
-					LayerId = MaxLayerId + 1;
-				}
+				const FSlot& CurSlot = Slots[ChildIndex];
 
-				const int32 CurWidgetsMaxLayerId = CurWidget.Widget->Paint(
-					NewArgs,
-					CurWidget.Geometry,
-					MyCullingRect,
-					OutDrawElements,
-					LayerId,
-					InWidgetStyle,
-					bShouldBeEnabled
+				if (!IsChildWidgetCulled(MyCullingRect, CurWidget))
+				{
+					if (LastGridLayer != CurSlot.LayerParam)
+					{
+						// We starting a new grid layer group?
+						LastGridLayer = CurSlot.LayerParam;
+						// Ensure that everything here is drawn on top of 
+						// previously drawn grid content.
+						LayerId = MaxLayerId + 1;
+					}
+
+					const int32 CurWidgetsMaxLayerId = CurWidget.Widget->Paint(
+						NewArgs,
+						CurWidget.Geometry,
+						MyCullingRect,
+						OutDrawElements,
+						LayerId,
+						InWidgetStyle,
+						bShouldBeEnabled
 					);
 
-				MaxLayerId = FMath::Max(MaxLayerId, CurWidgetsMaxLayerId);
+					MaxLayerId = FMath::Max(MaxLayerId, CurWidgetsMaxLayerId);
+				}
+				else
+				{
+					//SlateGI - RemoveContent
+				}
 			}
 		}
 	}
@@ -271,6 +273,8 @@ void SGridPanel::SetColumnFill( int32 ColumnId, const TAttribute<float>& Coeffic
 		ColFillCoefficients.Emplace(0);
 	}
 	ColFillCoefficients[ColumnId] = Coefficient;
+
+	Invalidate(EInvalidateWidgetReason::Layout);
 }
 
 void SGridPanel::SetRowFill( int32 RowId, const TAttribute<float>& Coefficient )
@@ -280,12 +284,16 @@ void SGridPanel::SetRowFill( int32 RowId, const TAttribute<float>& Coefficient )
 		RowFillCoefficients.Emplace(0);
 	}
 	RowFillCoefficients[RowId] = Coefficient;
+
+	Invalidate(EInvalidateWidgetReason::Layout);
 }
 
 void SGridPanel::ClearFill()
 {
 	ColFillCoefficients.Reset();
 	RowFillCoefficients.Reset();
+
+	Invalidate(EInvalidateWidgetReason::Layout);
 }
 
 void SGridPanel::ComputePartialSums( TArray<float>& TurnMeIntoPartialSums )
@@ -343,7 +351,7 @@ SGridPanel::FSlot& SGridPanel::InsertSlot( SGridPanel::FSlot* InSlot )
 	return *InSlot;
 }
 
-void SGridPanel::NotifySlotChanged(SGridPanel::FSlot* InSlot)
+void SGridPanel::NotifySlotChanged(SGridPanel::FSlot* InSlot, bool bSlotLayerChanged /*= false*/)
 {
 	// Keep the size of the grid up to date.
 	// We need an extra cell at the end for easily figuring out the size across any number of cells
@@ -360,6 +368,16 @@ void SGridPanel::NotifySlotChanged(SGridPanel::FSlot* InSlot)
 	{
 		Rows.AddZeroed( NumRowsRequiredForThisSlot - Rows.Num() );
 	}
+
+	if (bSlotLayerChanged)
+	{
+		Slots.Sort([](const FSlot& LHS, const FSlot& RHS)
+		{
+			return LHS.LayerParam < RHS.LayerParam;
+		});
+	}
+
+	Invalidate(EInvalidateWidgetReason::Layout);
 }
 
 void SGridPanel::ComputeDesiredCellSizes( TArray<float>& OutColumns, TArray<float>& OutRows ) const

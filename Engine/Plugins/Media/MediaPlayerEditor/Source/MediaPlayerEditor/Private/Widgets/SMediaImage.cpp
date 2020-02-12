@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "Widgets/SMediaImage.h"
 
@@ -45,6 +45,18 @@ void SMediaImage::Construct(const FArguments& InArgs, UTexture* InTexture)
 				Input.MaskB = Output.MaskB;
 				Input.MaskA = Output.MaskA;
 			}
+
+			FExpressionInput& Opacity = Material->Opacity;
+			{
+				Opacity.Expression = TextureSampler;
+				Opacity.Mask = Output.Mask;
+				Opacity.MaskR = 0;
+				Opacity.MaskG = 0;
+				Opacity.MaskB = 0;
+				Opacity.MaskA = 1;
+			}
+
+			Material->BlendMode = BLEND_AlphaComposite;
 
 			Material->Expressions.Add(TextureSampler);
 			Material->MaterialDomain = EMaterialDomain::MD_UI;

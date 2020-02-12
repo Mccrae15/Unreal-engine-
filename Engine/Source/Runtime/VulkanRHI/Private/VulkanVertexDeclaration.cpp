@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 /*=============================================================================
 	VulkanVertexDeclaration.cpp: Vulkan vertex declaration RHI implementation.
@@ -60,6 +60,9 @@ FVertexDeclarationRHIRef FVulkanDynamicRHI::RHICreateVertexDeclaration(const FVe
 	return *VertexDeclarationRefPtr;
 }
 
+FVulkanVertexInputStateInfo::~FVulkanVertexInputStateInfo()
+{
+}
 FVulkanVertexInputStateInfo::FVulkanVertexInputStateInfo()
 	: Hash(0)
 	, BindingsNum(0)
@@ -69,6 +72,22 @@ FVulkanVertexInputStateInfo::FVulkanVertexInputStateInfo()
 	FMemory::Memzero(Info);
 	FMemory::Memzero(Attributes);
 	FMemory::Memzero(Bindings);
+}
+
+bool FVulkanVertexInputStateInfo::operator ==(const FVulkanVertexInputStateInfo& Other)
+{
+	if(AttributesNum != Other.AttributesNum)
+	{
+		return false;
+	}
+	for(uint32 i = 0; i < AttributesNum; ++i)
+	{
+		if(0 != FMemory::Memcmp(&Attributes[i], &Other.Attributes[i], sizeof(Attributes[i])))
+		{
+			return false;
+		}
+	}
+	return true;
 }
 
 void FVulkanVertexInputStateInfo::Generate(FVulkanVertexDeclaration* VertexDeclaration, uint32 VertexHeaderInOutAttributeMask)
@@ -113,7 +132,7 @@ void FVulkanVertexInputStateInfo::Generate(FVulkanVertexDeclaration* VertexDecla
 	BindingsNum = 0;
 	BindingToStream.Reset();
 	StreamToBinding.Reset();
-	for (int32 i=0; i<ARRAY_COUNT(Bindings); i++)
+	for (int32 i=0; i<UE_ARRAY_COUNT(Bindings); i++)
 	{
 		if (!((1<<i) & BindingsMask))
 		{
@@ -129,7 +148,7 @@ void FVulkanVertexInputStateInfo::Generate(FVulkanVertexDeclaration* VertexDecla
 	}
 
 	// Clean originally placed bindings
-	FMemory::Memset(Bindings + BindingsNum, 0, sizeof(Bindings[0]) * (ARRAY_COUNT(Bindings)-BindingsNum));
+	FMemory::Memset(Bindings + BindingsNum, 0, sizeof(Bindings[0]) * (UE_ARRAY_COUNT(Bindings)-BindingsNum));
 
 	// Attributes are expected to be uninitialized/empty
 	check(AttributesNum == 0);
@@ -147,7 +166,7 @@ void FVulkanVertexInputStateInfo::Generate(FVulkanVertexDeclaration* VertexDecla
 
 		CurrAttribute.binding = StreamToBinding.FindChecked(CurrElement.StreamIndex);
 		CurrAttribute.location = CurrElement.AttributeIndex;
-		CurrAttribute.format = UEToVkFormat(CurrElement.Type);
+		CurrAttribute.format = UEToVkBufferFormat(CurrElement.Type);
 		CurrAttribute.offset = CurrElement.Offset;
 	}
 

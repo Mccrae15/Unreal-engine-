@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 /*=============================================================================
 	LightComponent.cpp: LightComponent implementation.
@@ -27,7 +27,7 @@
 
 void FStaticShadowDepthMap::InitRHI()
 {
-	if (FApp::CanEverRender() && Data && Data->ShadowMapSizeX > 0 && Data->ShadowMapSizeY > 0 && GMaxRHIFeatureLevel >= ERHIFeatureLevel::SM4)
+	if (FApp::CanEverRender() && Data && Data->ShadowMapSizeX > 0 && Data->ShadowMapSizeY > 0 && GMaxRHIFeatureLevel >= ERHIFeatureLevel::SM5)
 	{
 		FRHIResourceCreateInfo CreateInfo;
 		FTexture2DRHIRef Texture2DRHI = RHICreateTexture2D(Data->ShadowMapSizeX, Data->ShadowMapSizeY, PF_R16F, 1, 1, 0, CreateInfo);
@@ -67,6 +67,56 @@ void ULightComponentBase::SetCastVolumetricShadow(bool bNewValue)
 		&& bCastVolumetricShadow != bNewValue)
 	{
 		bCastVolumetricShadow = bNewValue;
+		MarkRenderStateDirty();
+	}
+}
+
+void ULightComponentBase::SetCastDeepShadow(bool bNewValue)
+{
+	if (AreDynamicDataChangesAllowed()
+		&& bCastDeepShadow != bNewValue)
+	{
+		bCastDeepShadow = bNewValue;
+		MarkRenderStateDirty();
+	}
+}
+
+void ULightComponentBase::SetAffectReflection(bool bNewValue)
+{
+	if (AreDynamicDataChangesAllowed()
+		&& bAffectReflection != bNewValue)
+	{
+		bAffectReflection = bNewValue;
+		MarkRenderStateDirty();
+	}
+}
+
+void ULightComponentBase::SetAffectGlobalIllumination(bool bNewValue)
+{
+	if (AreDynamicDataChangesAllowed()
+		&& bAffectGlobalIllumination != bNewValue)
+	{
+		bAffectGlobalIllumination = bNewValue;
+		MarkRenderStateDirty();
+	}
+}
+
+void ULightComponentBase::SetCastRaytracedShadow(bool bNewValue)
+{
+	if (AreDynamicDataChangesAllowed()
+		&& bCastRaytracedShadow != bNewValue)
+	{
+		bCastRaytracedShadow = bNewValue;
+		MarkRenderStateDirty();
+	}
+}
+
+void ULightComponentBase::SetSamplesPerPixel(int NewValue)
+{
+	if (AreDynamicDataChangesAllowed()
+		&& SamplesPerPixel != NewValue)
+	{
+		SamplesPerPixel = NewValue;
 		MarkRenderStateDirty();
 	}
 }
@@ -136,32 +186,38 @@ void ULightComponentBase::PostEditChangeProperty(FPropertyChangedEvent& Property
 void ULightComponentBase::ValidateLightGUIDs()
 {
 	// Validate light guids.
-	if( !LightGuid.IsValid() )
+	if (!LightGuid.IsValid())
 	{
-		LightGuid = FGuid::NewGuid();
+		UpdateLightGUIDs();
 	}
 }
 
 void ULightComponentBase::UpdateLightGUIDs()
 {
-	LightGuid = FGuid::NewGuid();
+	LightGuid = (HasStaticShadowing() ? FGuid::NewGuid() : FGuid());
 }
 
 bool ULightComponentBase::HasStaticLighting() const
 {
-	AActor* Owner = GetOwner();
-
-	return Owner && (Mobility == EComponentMobility::Static);
+	return (Mobility == EComponentMobility::Static) && GetOwner();
 }
 
 bool ULightComponentBase::HasStaticShadowing() const
 {
-	AActor* Owner = GetOwner();
-
-	return Owner && (Mobility != EComponentMobility::Movable);
+	return (Mobility != EComponentMobility::Movable) && GetOwner();
 }
 
 #if WITH_EDITOR
+void ULightComponentBase::PostLoad()
+{
+	Super::PostLoad();
+
+	if (!HasStaticShadowing())
+	{
+		LightGuid.Invalidate();
+	}
+}
+
 void ULightComponentBase::OnRegister()
 {
 	Super::OnRegister();
@@ -175,7 +231,7 @@ void ULightComponentBase::OnRegister()
 	}
 }
 
-bool ULightComponentBase::CanEditChange(const UProperty* InProperty) const
+bool ULightComponentBase::CanEditChange(const FProperty* InProperty) const
 {
 	if (InProperty)
 	{
@@ -213,6 +269,7 @@ FLightSceneProxy::FLightSceneProxy(const ULightComponent* InLightComponent)
 	, VolumetricScatteringIntensity(FMath::Max(InLightComponent->VolumetricScatteringIntensity, 0.0f))
 	, ShadowResolutionScale(InLightComponent->ShadowResolutionScale)
 	, ShadowBias(InLightComponent->ShadowBias)
+	, ShadowSlopeBias(InLightComponent->ShadowSlopeBias)
 	, ShadowSharpen(InLightComponent->ShadowSharpen)
 	, ContactShadowLength(InLightComponent->ContactShadowLength)
 	, SpecularScale(InLightComponent->SpecularScale)
@@ -228,8 +285,12 @@ FLightSceneProxy::FLightSceneProxy(const ULightComponent* InLightComponent)
 	, bCastTranslucentShadows(InLightComponent->CastTranslucentShadows)
 	, bTransmission(InLightComponent->bTransmission && bCastDynamicShadow && !bStaticShadowing)
 	, bCastVolumetricShadow(InLightComponent->bCastVolumetricShadow)
+	, bCastHairStrandsDeepShadow(InLightComponent->bCastDeepShadow)
 	, bCastShadowsFromCinematicObjectsOnly(InLightComponent->bCastShadowsFromCinematicObjectsOnly)
 	, bForceCachedShadowsForMovablePrimitives(InLightComponent->bForceCachedShadowsForMovablePrimitives)
+	, bCastRaytracedShadow(InLightComponent->bCastRaytracedShadow)
+	, bAffectReflection(InLightComponent->bAffectReflection)
+	, bAffectGlobalIllumination(InLightComponent->bAffectGlobalIllumination)
 	, bAffectTranslucentLighting(InLightComponent->bAffectTranslucentLighting)
 	, bUsedAsAtmosphereSunLight(InLightComponent->IsUsedAsAtmosphereSunLight())
 	, bAffectDynamicIndirectLighting(InLightComponent->bAffectDynamicIndirectLighting)
@@ -238,6 +299,7 @@ FLightSceneProxy::FLightSceneProxy(const ULightComponent* InLightComponent)
 	, bCastModulatedShadows(false)
 	, bUseWholeSceneCSMForMovableObjects(false)
 	, bTiledDeferredLightingSupported(false)
+	, AtmosphereSunLightIndex(InLightComponent->GetAtmosphereSunLightIndex())
 	, LightType(InLightComponent->GetLightType())	
 	, LightingChannelMask(GetLightingChannelMaskForStruct(InLightComponent->LightingChannels))
 	, StatId(InLightComponent->GetStatID(true))
@@ -245,6 +307,8 @@ FLightSceneProxy::FLightSceneProxy(const ULightComponent* InLightComponent)
 	, LevelName(InLightComponent->GetOutermost()->GetFName())
 	, FarShadowDistance(0)
 	, FarShadowCascadeCount(0)
+	, ShadowAmount(1.0f)
+	, SamplesPerPixel(1)
 {
 	check(SceneInterface);
 
@@ -264,19 +328,12 @@ FLightSceneProxy::FLightSceneProxy(const ULightComponent* InLightComponent)
 
 	StaticShadowDepthMap = &LightComponent->StaticShadowDepthMap;
 
-	// Brightness in Lumens
-	float LightBrightness = InLightComponent->ComputeLightBrightness();
-
 	if(LightComponent->IESTexture)
 	{
 		IESTexture = LightComponent->IESTexture;
 	}
-
-	Color = FLinearColor(InLightComponent->LightColor) * LightBrightness;
-	if( InLightComponent->bUseTemperature )
-	{
-		Color *= FLinearColor::MakeFromColorTemperature(InLightComponent->Temperature);
-	}
+	 
+	Color = LightComponent->GetColoredLightBrightness();
 
 	if(LightComponent->LightFunctionMaterial &&
 		LightComponent->LightFunctionMaterial->GetMaterial()->MaterialDomain == MD_LightFunction )
@@ -291,6 +348,8 @@ FLightSceneProxy::FLightSceneProxy(const ULightComponent* InLightComponent)
 	LightFunctionScale = LightComponent->LightFunctionScale;
 	LightFunctionFadeDistance = LightComponent->LightFunctionFadeDistance;
 	LightFunctionDisabledBrightness = LightComponent->DisabledBrightness;
+
+	SamplesPerPixel = LightComponent->SamplesPerPixel;
 }
 
 bool FLightSceneProxy::ShouldCreatePerObjectShadowsForDynamicObjects() const
@@ -335,10 +394,15 @@ ULightComponentBase::ULightComponentBase(const FObjectInitializer& ObjectInitial
 	CastShadows = true;
 	CastStaticShadows = true;
 	CastDynamicShadows = true;
+	bCastRaytracedShadow = true;
+	bAffectReflection = true;
+	bAffectGlobalIllumination = true;
 #if WITH_EDITORONLY_DATA
 	bVisualizeComponent = true;
 #endif
 }
+
+ULightComponent::FOnUpdateColorAndBrightness ULightComponent::UpdateColorAndBrightnessEvent;
 
 /**
  * Updates/ resets light GUIDs.
@@ -352,6 +416,7 @@ ULightComponent::ULightComponent(const FObjectInitializer& ObjectInitializer)
 	IndirectLightingIntensity = 1.0f;
 	ShadowResolutionScale = 1.0f;
 	ShadowBias = 0.5f;
+	ShadowSlopeBias = 0.5f;
 	ShadowSharpen = 0.0f;
 	ContactShadowLength = 0.0f;
 	ContactShadowLengthInWS = false;
@@ -370,6 +435,7 @@ ULightComponent::ULightComponent(const FObjectInitializer& ObjectInitializer)
 	bEnableLightShaftBloom = false;
 	BloomScale = .2f;
 	BloomThreshold = 0;
+	BloomMaxBrightness = 100.0f;
 	BloomTint = FColor::White;
 
 	RayStartOffsetDepthScale = .003f;
@@ -378,6 +444,8 @@ ULightComponent::ULightComponent(const FObjectInitializer& ObjectInitializer)
 	MaxDistanceFadeRange = 0.0f;
 	bAddedToSceneVisible = false;
 	bForceCachedShadowsForMovablePrimitives = false;
+
+	SamplesPerPixel = 1;
 }
 
 bool ULightComponent::AffectsPrimitive(const UPrimitiveComponent* Primitive) const
@@ -458,7 +526,7 @@ void ULightComponent::Serialize(FArchive& Ar)
 			FLightComponentLegacyMapBuildData LegacyLightData;
 			LegacyLightData.Id = LightGuid;
 			LegacyLightData.Data = LegacyData;
-			GLightComponentsWithLegacyBuildData.AddAnnotation(this, LegacyLightData);
+			GLightComponentsWithLegacyBuildData.AddAnnotation(this, MoveTemp(LegacyLightData));
 		}
 	}
 
@@ -497,7 +565,13 @@ void ULightComponent::PostLoad()
 }
 
 #if WITH_EDITOR
-bool ULightComponent::CanEditChange(const UProperty* InProperty) const
+void ULightComponent::PreSave(const class ITargetPlatform* TargetPlatform)
+{
+	Super::PreSave(TargetPlatform);
+	ValidateLightGUIDs();
+}
+
+bool ULightComponent::CanEditChange(const FProperty* InProperty) const
 {
 	if (InProperty)
 	{
@@ -554,6 +628,7 @@ bool ULightComponent::CanEditChange(const UProperty* InProperty) const
 
 		if (PropertyName == GET_MEMBER_NAME_STRING_CHECKED(ULightComponent, BloomScale)
 			|| PropertyName == GET_MEMBER_NAME_STRING_CHECKED(ULightComponent, BloomThreshold)
+			|| PropertyName == GET_MEMBER_NAME_STRING_CHECKED(ULightComponent, BloomMaxBrightness)
 			|| PropertyName == GET_MEMBER_NAME_STRING_CHECKED(ULightComponent, BloomTint))
 		{
 			return bEnableLightShaftBloom;
@@ -570,7 +645,7 @@ bool ULightComponent::CanEditChange(const UProperty* InProperty) const
 
 void ULightComponent::PostEditChangeProperty(FPropertyChangedEvent& PropertyChangedEvent)
 {
-	UProperty* PropertyThatChanged = PropertyChangedEvent.MemberProperty;
+	FProperty* PropertyThatChanged = PropertyChangedEvent.MemberProperty;
 	const FString PropertyName = PropertyThatChanged ? PropertyThatChanged->GetName() : TEXT("");
 
 	Intensity = FMath::Max(0.0f, Intensity);
@@ -597,19 +672,25 @@ void ULightComponent::PostEditChangeProperty(FPropertyChangedEvent& PropertyChan
 		PropertyName != GET_MEMBER_NAME_STRING_CHECKED(ULightComponent, DisabledBrightness) &&
 		PropertyName != GET_MEMBER_NAME_STRING_CHECKED(ULightComponent, ShadowResolutionScale) &&
 		PropertyName != GET_MEMBER_NAME_STRING_CHECKED(ULightComponent, ShadowBias) &&
+		PropertyName != GET_MEMBER_NAME_STRING_CHECKED(ULightComponent, ShadowSlopeBias) &&
 		PropertyName != GET_MEMBER_NAME_STRING_CHECKED(ULightComponent, ShadowSharpen) &&
 		PropertyName != GET_MEMBER_NAME_STRING_CHECKED(ULightComponent, ContactShadowLength) &&
 		PropertyName != GET_MEMBER_NAME_STRING_CHECKED(ULightComponent, ContactShadowLengthInWS) &&
 		PropertyName != GET_MEMBER_NAME_STRING_CHECKED(ULightComponent, bEnableLightShaftBloom) &&
 		PropertyName != GET_MEMBER_NAME_STRING_CHECKED(ULightComponent, BloomScale) &&
 		PropertyName != GET_MEMBER_NAME_STRING_CHECKED(ULightComponent, BloomThreshold) &&
+		PropertyName != GET_MEMBER_NAME_STRING_CHECKED(ULightComponent, BloomMaxBrightness) &&
 		PropertyName != GET_MEMBER_NAME_STRING_CHECKED(ULightComponent, BloomTint) &&
 		PropertyName != GET_MEMBER_NAME_STRING_CHECKED(ULightComponent, bUseRayTracedDistanceFieldShadows) &&
 		PropertyName != GET_MEMBER_NAME_STRING_CHECKED(ULightComponent, RayStartOffsetDepthScale) &&
-		PropertyName != GET_MEMBER_NAME_STRING_CHECKED(ULightComponent, bVisible) &&
+		PropertyName != USceneComponent::GetVisiblePropertyName().ToString() &&
 		PropertyName != GET_MEMBER_NAME_STRING_CHECKED(ULightComponent, LightingChannels) &&
 		PropertyName != GET_MEMBER_NAME_STRING_CHECKED(ULightComponent, VolumetricScatteringIntensity) &&
 		PropertyName != GET_MEMBER_NAME_STRING_CHECKED(ULightComponent, bCastVolumetricShadow) &&
+		PropertyName != GET_MEMBER_NAME_STRING_CHECKED(ULightComponent, bCastDeepShadow) &&
+		PropertyName != GET_MEMBER_NAME_STRING_CHECKED(ULightComponent, bCastRaytracedShadow) &&
+		PropertyName != GET_MEMBER_NAME_STRING_CHECKED(ULightComponent, bAffectReflection) &&
+		PropertyName != GET_MEMBER_NAME_STRING_CHECKED(ULightComponent, bAffectGlobalIllumination) &&
 		// Point light properties that shouldn't unbuild lighting
 		PropertyName != GET_MEMBER_NAME_STRING_CHECKED(UPointLightComponent, SourceRadius) &&
 		PropertyName != GET_MEMBER_NAME_STRING_CHECKED(UPointLightComponent, SoftSourceRadius) &&
@@ -632,6 +713,7 @@ void ULightComponent::PostEditChangeProperty(FPropertyChangedEvent& PropertyChan
 		PropertyName != GET_MEMBER_NAME_STRING_CHECKED(UDirectionalLightComponent, LightShaftOverrideDirection) &&
 		PropertyName != GET_MEMBER_NAME_STRING_CHECKED(UDirectionalLightComponent, bCastModulatedShadows) &&
 		PropertyName != GET_MEMBER_NAME_STRING_CHECKED(UDirectionalLightComponent, ModulatedShadowColor) &&
+		PropertyName != GET_MEMBER_NAME_STRING_CHECKED(UDirectionalLightComponent, ShadowAmount) &&
 		// Properties that should only unbuild lighting for a Static light (can be changed dynamically on a Stationary light)
 		(PropertyName != GET_MEMBER_NAME_STRING_CHECKED(ULightComponent, Intensity) || Mobility == EComponentMobility::Static) &&
 		(PropertyName != GET_MEMBER_NAME_STRING_CHECKED(ULightComponent, LightColor) || Mobility == EComponentMobility::Static) &&
@@ -693,9 +775,9 @@ void ULightComponent::OnRegister()
 	ValidateLightGUIDs();
 }
 
-void ULightComponent::CreateRenderState_Concurrent()
+void ULightComponent::CreateRenderState_Concurrent(FRegisterComponentContext* Context)
 {
-	Super::CreateRenderState_Concurrent();
+	Super::CreateRenderState_Concurrent(Context);
 
 	if (bAffectsWorld)
 	{
@@ -735,7 +817,12 @@ void ULightComponent::SendRenderTransform_Concurrent()
 void ULightComponent::DestroyRenderState_Concurrent()
 {
 	Super::DestroyRenderState_Concurrent();
-	GetWorld()->Scene->RemoveLight(this);
+	UWorld* MyWorld = GetWorld();
+	check(MyWorld != nullptr);
+	if (ensure(MyWorld->Scene != nullptr))
+	{
+		MyWorld->Scene->RemoveLight(this);
+	}
 	bAddedToSceneVisible = false;
 }
 
@@ -768,6 +855,8 @@ void ULightComponent::SetIndirectLightingIntensity(float NewIntensity)
 			//@todo - remove from scene if brightness or color becomes 0
 			World->Scene->UpdateLightColorAndBrightness( this );
 		}
+
+		UpdateColorAndBrightnessEvent.Broadcast(*this);
 	}
 }
 
@@ -786,6 +875,8 @@ void ULightComponent::SetVolumetricScatteringIntensity(float NewIntensity)
 			//@todo - remove from scene if brightness or color becomes 0
 			World->Scene->UpdateLightColorAndBrightness( this );
 		}
+
+		UpdateColorAndBrightnessEvent.Broadcast(*this);
 	}
 }
 
@@ -807,6 +898,8 @@ void ULightComponent::SetLightColor(FLinearColor NewLightColor, bool bSRGB)
 			//@todo - remove from scene if brightness or color becomes 0
 			World->Scene->UpdateLightColorAndBrightness( this );
 		}
+
+		UpdateColorAndBrightnessEvent.Broadcast(*this);
 	}
 }
 
@@ -826,6 +919,8 @@ void ULightComponent::SetTemperature(float NewTemperature)
 			//@todo - remove from scene if brightness or color becomes 0
 			World->Scene->UpdateLightColorAndBrightness( this );
 		}
+
+		UpdateColorAndBrightnessEvent.Broadcast(*this);
 	}
 }
 
@@ -931,6 +1026,16 @@ void ULightComponent::SetBloomThreshold(float NewValue)
 	}
 }
 
+void ULightComponent::SetBloomMaxBrightness(float NewValue)
+{
+	if (AreDynamicDataChangesAllowed()
+		&& BloomMaxBrightness != NewValue)
+	{
+		BloomMaxBrightness = NewValue;
+		MarkRenderStateDirty();
+	}
+}
+
 void ULightComponent::SetBloomTint(FColor NewValue)
 {
 	if (AreDynamicDataChangesAllowed()
@@ -981,6 +1086,16 @@ void ULightComponent::SetShadowBias(float NewValue)
 	}
 }
 
+void ULightComponent::SetShadowSlopeBias(float NewValue)
+{
+	if (AreDynamicDataChangesAllowed()
+		&& ShadowSlopeBias != NewValue)
+	{
+		ShadowSlopeBias = NewValue;
+		MarkRenderStateDirty();
+	}
+}
+
 void ULightComponent::SetSpecularScale(float NewValue)
 {
 	if (AreDynamicDataChangesAllowed()
@@ -997,6 +1112,19 @@ void ULightComponent::SetForceCachedShadowsForMovablePrimitives(bool bNewValue)
 		&& bForceCachedShadowsForMovablePrimitives != bNewValue)
 	{
 		bForceCachedShadowsForMovablePrimitives = bNewValue;
+		MarkRenderStateDirty();
+	}
+}
+
+void ULightComponent::SetLightingChannels(bool bChannel0, bool bChannel1, bool bChannel2)
+{
+	if (bChannel0 != LightingChannels.bChannel0 ||
+		bChannel1 != LightingChannels.bChannel1 ||
+		bChannel2 != LightingChannels.bChannel2)
+	{
+		LightingChannels.bChannel0 = bChannel0;
+		LightingChannels.bChannel1 = bChannel1;
+		LightingChannels.bChannel2 = bChannel2;
 		MarkRenderStateDirty();
 	}
 }
@@ -1026,6 +1154,8 @@ void ULightComponent::UpdateColorAndBrightness()
 			World->Scene->UpdateLightColorAndBrightness(this);
 		}
 	}
+
+	UpdateColorAndBrightnessEvent.Broadcast(*this);
 }
 
 //
@@ -1049,7 +1179,7 @@ void ULightComponent::InvalidateLightingCacheDetailed(bool bInvalidateBuildEnque
 /** Invalidates the light's cached lighting with the option to recreate the light Guids. */
 void ULightComponent::InvalidateLightingCacheInner(bool bRecreateLightGuids)
 {
-	if (HasStaticLighting() || HasStaticShadowing())
+	if (HasStaticShadowing())
 	{
 		// Save the light state for transactions.
 		Modify();
@@ -1068,6 +1198,10 @@ void ULightComponent::InvalidateLightingCacheInner(bool bRecreateLightGuids)
 
 		MarkRenderStateDirty();
 	}
+	else
+	{
+		LightGuid.Invalidate();
+	}
 }
 
 TStructOnScope<FActorComponentInstanceData> ULightComponent::GetComponentInstanceData() const
@@ -1085,7 +1219,7 @@ void ULightComponent::ApplyComponentInstanceData(FPrecomputedLightInstanceData* 
 		return;
 	}
 
-	LightGuid = LightMapData->LightGuid;
+	LightGuid = (HasStaticShadowing() ? LightMapData->LightGuid : FGuid());
 	PreviewShadowMapChannel = LightMapData->PreviewShadowMapChannel;
 
 	MarkRenderStateDirty();
@@ -1164,7 +1298,20 @@ void ULightComponent::InitializeStaticShadowDepthMap()
 			});
 
 		BeginInitResource(&StaticShadowDepthMap);
+			}
+}
+
+FLinearColor ULightComponent::GetColoredLightBrightness() const
+{
+	// Brightness in Lumens
+	float LightBrightness = ComputeLightBrightness();
+	FLinearColor Energy = FLinearColor(LightColor) * LightBrightness;
+	if (bUseTemperature)
+	{
+		Energy *= FLinearColor::MakeFromColorTemperature(Temperature);
 	}
+
+	return Energy;
 }
 
 UMaterialInterface* ULightComponent::GetMaterial(int32 ElementIndex) const
@@ -1193,7 +1340,7 @@ void ULightComponent::SetMaterial(int32 ElementIndex, UMaterialInterface* InMate
 *
 * @param PropertyThatChanged	Property that changed
 */
-void ULightComponent::PostInterpChange(UProperty* PropertyThatChanged)
+void ULightComponent::PostInterpChange(FProperty* PropertyThatChanged)
 {
 	static FName LightColorName(TEXT("LightColor"));
 	static FName IntensityName(TEXT("Intensity"));
@@ -1362,7 +1509,7 @@ void ULightComponent::ReassignStationaryLightChannels(UWorld* TargetWorld, bool 
 		}
 
 		// Use the lowest free channel
-		for (int32 ChannelIndex = 0; ChannelIndex < ARRAY_COUNT(bChannelUsed); ChannelIndex++)
+		for (int32 ChannelIndex = 0; ChannelIndex < UE_ARRAY_COUNT(bChannelUsed); ChannelIndex++)
 		{
 			if (!bChannelUsed[ChannelIndex])
 			{

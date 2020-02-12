@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #ifndef MTIDrawable_hpp
 #define MTIDrawable_hpp
@@ -47,6 +47,8 @@ struct MTILayerTrace : public IMPTable<CAMetalLayer*, MTILayerTrace>, public MTI
 	{
 	}
 	
+	INTERPOSE_DECLARATION_VOID(init, id);
+	INTERPOSE_DECLARATION(initWithLayer, id, id);
 	INTERPOSE_DECLARATION(Setdevice, void, id <MTLDevice>);
 	INTERPOSE_DECLARATION(SetpixelFormat, void, MTLPixelFormat);
 	INTERPOSE_DECLARATION(SetframebufferOnly, void, BOOL);

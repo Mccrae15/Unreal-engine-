@@ -1,8 +1,9 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "BoneControllers/AnimNode_Trail.h"
 #include "Animation/AnimInstanceProxy.h"
 #include "AngularLimit.h"
+#include "Animation/AnimTrace.h"
 /////////////////////////////////////////////////////
 // FAnimNode_Trail
 
@@ -28,7 +29,6 @@ FAnimNode_Trail::FAnimNode_Trail()
 	, TrailRelaxation_DEPRECATED(10.f)
 #endif// #if WITH_EDITORONLY_DATA
 	, MaxDeltaTime(0.f)
-	, UnwindingSize(3)
 	, RelaxationSpeedScale(1.f)
 	, StretchLimit(0)
 	, FakeVelocity(FVector::ZeroVector)
@@ -44,13 +44,17 @@ FAnimNode_Trail::FAnimNode_Trail()
 
 void FAnimNode_Trail::UpdateInternal(const FAnimationUpdateContext& Context)
 {
+	DECLARE_SCOPE_HIERARCHICAL_COUNTER_ANIMNODE(UpdateInternal)
 	FAnimNode_SkeletalControlBase::UpdateInternal(Context);
 
 	ThisTimstep += Context.GetDeltaTime();
+
+	TRACE_ANIM_NODE_VALUE(Context, TEXT("Active Bone"), TrailBone.BoneName);
 }
 
 void FAnimNode_Trail::GatherDebugData(FNodeDebugData& DebugData)
 {
+	DECLARE_SCOPE_HIERARCHICAL_COUNTER_ANIMNODE(GatherDebugData)
 	FString DebugLine = DebugData.GetNodeName(this);
 
 	DebugLine += "(";
@@ -64,6 +68,7 @@ void FAnimNode_Trail::GatherDebugData(FNodeDebugData& DebugData)
 
 void FAnimNode_Trail::EvaluateSkeletalControl_AnyThread(FComponentSpacePoseContext& Output, TArray<FBoneTransform>& OutBoneTransforms)
 {
+	DECLARE_SCOPE_HIERARCHICAL_COUNTER_ANIMNODE(EvaluateSkeletalControl_AnyThread)
 	SCOPE_CYCLE_COUNTER(STAT_Trail_Eval);
 
 	check(OutBoneTransforms.Num() == 0);
@@ -393,6 +398,7 @@ bool FAnimNode_Trail::IsValidToEvaluate(const USkeleton* Skeleton, const FBoneCo
 
 void FAnimNode_Trail::InitializeBoneReferences(const FBoneContainer& RequiredBones) 
 {
+	DECLARE_SCOPE_HIERARCHICAL_COUNTER_ANIMNODE(InitializeBoneReferences)
 	TrailBone.Initialize(RequiredBones);
 	BaseJoint.Initialize(RequiredBones);
 
@@ -474,6 +480,7 @@ void FAnimNode_Trail::PostLoad()
 
 void FAnimNode_Trail::Initialize_AnyThread(const FAnimationInitializeContext& Context)
 {
+	DECLARE_SCOPE_HIERARCHICAL_COUNTER_ANIMNODE(Initialize_AnyThread)
 	FAnimNode_SkeletalControlBase::Initialize_AnyThread(Context);
 
 	// allocated all memory here in initialize

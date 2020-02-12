@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "TileMapEditing/TileMapEdModeToolkit.h"
 #include "Framework/MultiBox/MultiBoxDefs.h"
@@ -317,7 +317,7 @@ TSharedRef<SWidget> FTileMapEdModeToolkit::BuildToolBar() const
 		//@TODO: TileMapTerrain: Ugly styling
 		FUIAction TerrainTypeDropdownAction;
 		TerrainTypeDropdownAction.IsActionVisibleDelegate = FIsActionButtonVisible::CreateSP(this, &FTileMapEdModeToolkit::DoesSelectedTileSetHaveTerrains);
-		ToolsToolbar.AddComboButton(TerrainTypeDropdownAction, FOnGetContent::CreateSP(this, &FTileMapEdModeToolkit::GenerateTerrainMenu));
+		ToolsToolbar.AddComboButton(TerrainTypeDropdownAction, FOnGetContent::CreateSP(const_cast<FTileMapEdModeToolkit*>(this), &FTileMapEdModeToolkit::GenerateTerrainMenu));
 	}
 
 	return

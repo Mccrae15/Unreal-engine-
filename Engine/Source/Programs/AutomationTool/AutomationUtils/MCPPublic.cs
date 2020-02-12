@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 using System;
 using System.Collections.Generic;
 using System.Linq;
@@ -130,12 +130,29 @@ namespace EpicGames.MCP.Automation
 		/// AndroidCN Platform.
 		/// </summary>
 		AndroidCN,
+
+		/// <summary>
+		/// PS4 platform
+		/// </summary>
+		PS4,
+
+		/// <summary>
+		/// Switch platform
+		/// </summary>
+		Switch,
+
+		/// <summary>
+		/// Xbox One Platform
+		/// </summary>
+		XboxOne,
+
+
 	}
 
-    /// <summary>
-    /// Enum that defines CDN types
-    /// </summary>
-    public enum CDNType
+	/// <summary>
+	/// Enum that defines CDN types
+	/// </summary>
+	public enum CDNType
     {
         /// <summary>
         /// Internal HTTP CDN server
@@ -247,7 +264,26 @@ namespace EpicGames.MCP.Automation
 			{
 				return MCPPlatform.Linux;
 			}
-
+			else if (TargetPlatform == UnrealTargetPlatform.IOS)
+			{
+				return MCPPlatform.IOS;
+			}
+			else if (TargetPlatform == UnrealTargetPlatform.Android)
+			{
+				return MCPPlatform.Android;
+			}
+			else if (TargetPlatform == UnrealTargetPlatform.PS4)
+			{
+				return MCPPlatform.PS4;
+			}
+			else if (TargetPlatform == UnrealTargetPlatform.XboxOne)
+			{
+				return MCPPlatform.XboxOne;
+			}
+			else if (TargetPlatform == UnrealTargetPlatform.Switch)
+			{
+				return MCPPlatform.Switch;
+			}
 			throw new AutomationException("Platform {0} is not properly supported by the MCP backend yet", TargetPlatform);
         }
 
@@ -272,7 +308,26 @@ namespace EpicGames.MCP.Automation
 			{
 				return UnrealTargetPlatform.Linux;
 			}
-
+			else if (TargetPlatform == MCPPlatform.IOS)
+			{
+				return UnrealTargetPlatform.IOS;
+			}
+			else if (TargetPlatform == MCPPlatform.Android)
+			{
+				return UnrealTargetPlatform.Android;
+			}
+			else if (TargetPlatform == MCPPlatform.PS4)
+			{
+				return UnrealTargetPlatform.PS4;
+			}
+			else if (TargetPlatform == MCPPlatform.XboxOne)
+			{
+				return UnrealTargetPlatform.XboxOne;
+			}
+			else if (TargetPlatform == MCPPlatform.Switch)
+			{
+				return UnrealTargetPlatform.Switch;
+			}
 			throw new AutomationException("Platform {0} is not properly supported by the MCP backend yet", TargetPlatform);
         }
 
@@ -692,6 +747,10 @@ namespace EpicGames.MCP.Automation
 			/// </summary>
 			public string BuildVersion;
 			/// <summary>
+			/// Used as part of the build version string.
+			/// </summary>
+			public MCPPlatform Platform;
+			/// <summary>
 			/// Optional. The set of files that should be kept from ManifestA.
 			/// </summary>
 			public HashSet<string> FilesToKeepFromA;
@@ -699,6 +758,7 @@ namespace EpicGames.MCP.Automation
 			/// Optional. The set of files that should be kept from ManifestB.
 			/// </summary>
 			public HashSet<string> FilesToKeepFromB;
+			
 		}
 
 		public class ManifestDiffOptions
@@ -717,8 +777,12 @@ namespace EpicGames.MCP.Automation
 			public string ManifestB;
 			/// <summary>
 			/// The install tags to use for ManifestB.
-			/// </summary
+			/// </summary>
 			public HashSet<string> InstallTagsB;
+			/// <summary>
+			/// Tag sets to be compared between manifests 
+			/// </summary>
+			public List<HashSet<string>> CompareTagSets;
 		}
 
 		public class ManifestDiffOutput
@@ -751,10 +815,18 @@ namespace EpicGames.MCP.Automation
 				/// </summary>
 				public Dictionary<string, ulong> IndividualTagDownloadSizes;
 				/// <summary>
+				/// The list of download sizes for each tag set that was in the list to be analyzed.
+				/// </summary>
+				public Dictionary<string, ulong> CompareTagSetDownloadSizes;
+				/// <summary>
 				/// The list of build sizes for each individual install tag that was used.
 				/// Note that the sum of these can be higher than the actual total due to possibility of shares files.
 				/// </summary>
 				public Dictionary<string, ulong> IndividualTagBuildSizes;
+				/// <summary>
+				/// The list of build sizes for each tag set that was in the list to be analyzed.
+				/// </summary>
+				public Dictionary<string, ulong> CompareTagSetBuildSizes;
 			}
 			public class ManifestDiff
 			{
@@ -783,10 +855,38 @@ namespace EpicGames.MCP.Automation
 				/// </summary>
 				public ulong DeltaDownloadSize;
 				/// <summary>
+				/// The required disk space to apply the patch from ManifestA to ManifestB, subject to using the tags that were provided.
+				/// </summary>
+				public ulong TempDiskSpaceReq;
+				/// <summary>
 				/// The list of delta sizes for each individual install tag that was used.
 				/// Note that the sum of these can be higher than the actual total due to possibility of shares files.
 				/// </summary>
 				public Dictionary<string, ulong> IndividualTagDeltaSizes;
+				/// <summary>
+				/// The list of delta sizes for each tag set that was in the list to be analyzed.
+				/// </summary>
+				public Dictionary<string, ulong> CompareTagSetDeltaSizes;
+				/// <summary>
+				/// The list of disk space requirements to apply the patch for each tag set that was in the list to be analyzed.
+				/// </summary>
+				public Dictionary<string, ulong> CompareTagSetTempDiskSpaceReqs;
+				/// <summary>
+				/// Install time coefficients represent an estimation for time to install the patch. These are not accurate timing representations, but are comparable between runs with different versions.
+				/// They can be used to spot out of the ordinary time requirements for installing an update.
+				/// The list if non-null will contain 6 entries as follows:
+				///   InstallTimeCoefficients[0] - Low-Spec using DestructiveInstall.
+				///   InstallTimeCoefficients[1] - Low-Spec using NonDestructiveInstall.
+				///   InstallTimeCoefficients[2] - Mid-Spec using DestructiveInstall.
+				///   InstallTimeCoefficients[3] - Mid-Spec using NonDestructiveInstall.
+				///   InstallTimeCoefficients[4] - High-Spec using DestructiveInstall.
+				///   InstallTimeCoefficients[5] - High-Spec using NonDestructiveInstall.
+				/// Low-Spec was taken from 25 percentile as of July 2019.
+				/// Mid-Spec was taken from 50 percentile as of July 2019.
+				/// High-Spec was taken from 75 percentile as of July 2019.
+				/// If the BPT version being used does not support this feature, or a problem occurred, InstallTimeCoefficients will be null.
+				/// </summary>
+				public List<float> InstallTimeCoefficients;
 			}
 			/// <summary>
 			/// The manifest detail for the source build of the differential.
@@ -837,6 +937,13 @@ namespace EpicGames.MCP.Automation
 			/// </summary>
 			public ulong? MaxOutputFileSize;
 			/// <summary>
+			/// Optionally provide a tagset to filter the files available from PrevManifestFile. This may increase chunks saved into the chunkdb files, in order to serve data
+			/// from files that are not expected to be available. Most of the time this should be the union of all tags in TagSetSplit, unless tagging is changed between the two manifests.
+			/// An empty string must be included to include untagged files.
+			/// Leaving this variable null will include all files.
+			/// </summary
+			public HashSet<string> PrevManifestTags;
+			/// <summary>
 			/// Optionally provide a list of tagsets to split chunkdb files on. First all data from the tagset at index 0 will be saved, then any extra data needed
 			/// for tagset at index 1, and so on. Note that this means the chunkdb files produced for tagset at index 1 will not contain some required data for that tagset if
 			/// the data already got saved out as part of tagset at index 0, and thus the chunkdb files are additive with no dupes.
@@ -877,6 +984,10 @@ namespace EpicGames.MCP.Automation
 			/// The file path to the update manifest. New data will be added to the cloud directory that this manifest is in.
 			/// </summary>
 			public string DestinationManifest;
+			/// <summary>
+			/// Specifies in bytes, an upper limit for original diffs to try to enhance.
+			/// </summary>
+			public ulong DiffAbortThreshold;
 		}
 
 		static BuildPatchToolBase Handler = null;
@@ -1042,6 +1153,15 @@ namespace EpicGames.MCP.Automation
 		abstract public void PostBuildInfo(BuildPatchToolStagingInfo StagingInfo, string McpConfigName);
 
 		/// <summary>
+		/// Sets a value in the key/value pair metadata associated with the specified build.
+		/// </summary>
+		/// <param name="StagingIfno">StagingInfo describing the build info to edit.</param>
+		/// <param name="Key">The key for the metadata item.</param>
+		/// <param name="Value">The value to associate with the key.</param>
+		/// <param name="McpConfigName">Name of which MCP config to post to.</param>
+		abstract public void SetMetadata(BuildPatchToolStagingInfo StagingInfo, string Key, string Value, string McpConfigName);
+
+		/// <summary>
 		/// Given a BuildVersion defining our a build, return the labels applied to that build
 		/// </summary>
 		/// <param name="BuildVersion">Build version to return labels for.</param>
@@ -1135,6 +1255,9 @@ namespace EpicGames.MCP.Automation
     {
         static McpAccountServiceBase Handler = null;
 
+		Dictionary<string, Tuple<string, DateTime>> CachedTokens = new Dictionary<string, Tuple<string, DateTime>>();
+		readonly object CachedTokensLock = new object();
+
         public static McpAccountServiceBase Get()
         {
             if (Handler == null)
@@ -1167,7 +1290,35 @@ namespace EpicGames.MCP.Automation
 		/// <returns>An OAuth client token for the specified environment.</returns>
 		public string GetClientToken(McpConfigData McpConfig)
 		{
-			return GetClientToken(McpConfig, McpConfig.ClientId, McpConfig.ClientSecret);
+			lock(CachedTokensLock)
+			{
+				if (CachedTokens.ContainsKey(McpConfig.Name))
+				{
+					Tuple<string, DateTime> TokenWithExpiry = CachedTokens[McpConfig.Name];
+					if (TokenWithExpiry.Item2 > DateTime.UtcNow)
+					{
+						CommandUtils.LogInformation("Reusing client token for {0} with expiry {1:yyyy-MM-dd HH:mm:ss}", McpConfig.Name, TokenWithExpiry.Item2);
+						return TokenWithExpiry.Item1;
+					}
+				}
+			}
+
+			DateTime Expiry;
+			string Result = GetClientToken(McpConfig, McpConfig.ClientId, McpConfig.ClientSecret, out Expiry);
+
+			lock(CachedTokensLock)
+			{
+				if (CachedTokens.ContainsKey(McpConfig.Name))
+				{
+					CachedTokens[McpConfig.Name] = new Tuple<string, DateTime>(Result, Expiry);
+				}
+				else
+				{
+					CachedTokens.Add(McpConfig.Name, new Tuple<string, DateTime>(Result, Expiry));
+				}
+				CommandUtils.LogInformation("Obtained new client token for {0} with expiry {1:yyyy-MM-dd HH:mm:ss}", McpConfig.Name, Expiry);
+			}
+			return Result;
 		}
 
 		/// <summary>
@@ -1188,7 +1339,21 @@ namespace EpicGames.MCP.Automation
 		/// <param name="ClientId">The client id used to obtain the token</param>
 		/// <param name="ClientSecret">The client secret used to obtain the token</param>
 		/// <returns>An OAuth client token for the specified environment.</returns>
-		public abstract string GetClientToken(McpConfigData McpConfig, string ClientId, string ClientSecret);
+		public string GetClientToken(McpConfigData McpConfig, string ClientId, string ClientSecret)
+		{
+			DateTime ThrowAway;
+			return GetClientToken(McpConfig, ClientId, ClientSecret, out ThrowAway);
+		}
+
+		/// <summary>
+		/// Gets an OAuth client token for an environment using the specified client id and client secret
+		/// </summary>
+		/// <param name="McpConfig">A descriptor for the environment we want a token for</param>
+		/// <param name="ClientId">The client id used to obtain the token</param>
+		/// <param name="ClientSecret">The client secret used to obtain the token</param>
+		/// <param name="Expiry">Output parameter which receives the expiry date of the generated token</param>
+		/// <returns>An OAuth client token for the specified environment.</returns>
+		public abstract string GetClientToken(McpConfigData McpConfig, string ClientId, string ClientSecret, out DateTime Expiry);
 
 		public abstract string SendWebRequest(WebRequest Upload, string Method, string ContentType, byte[] Data);
     }
@@ -1393,8 +1558,10 @@ namespace EpicGames.MCP.Automation
 		/// <param name="bQuiet">If set to true, all log output for the operation is supressed.</param>
 		/// <param name="Metadata">If not null, key-value pairs of metadata to be applied to the object.</param>
 		/// <returns>A PostFileResult indicating whether the call was successful, and the URL to the uploaded file.</returns>
-		abstract public Task<PostFileResult> PostMultipartFileAsync(string Container, string Identifier, string SourceFilePath, int NumConcurrentConnections, decimal PartSizeMegabytes = 5.0m, string ContentType = null, bool bOverwrite = true, bool bMakePublic = false, bool bQuiet = false, IDictionary<string, object> Metadata = null);
-
+		abstract public Task<PostFileResult> PostMultipartFileAsync(string Container, string Identifier, string SourceFilePath, int NumConcurrentConnections, decimal PartSizeMegabytes = 5.0m, string ContentType = null, bool bOverwrite = true, bool bMakePublic = false, bool bQuiet = false, IDictionary<string, object> Metadata = null);
+
+
+
 		/// <summary>
 		/// Deletes a file from cloud storage
 		/// </summary>
@@ -1758,7 +1925,7 @@ namespace EpicGames.MCP.Config
 			CommandUtils.LogVerbose("LauncherV2BaseUrl : {0}", LauncherV2BaseUrl);
 			CommandUtils.LogVerbose("CatalogBaseUrl : {0}", CatalogBaseUrl);
             CommandUtils.LogVerbose("ClientId : {0}", ClientId);
-            // we don't really want this in logs CommandUtils.Log("ClientSecret : {0}", ClientSecret);
+            // we don't really want this in logs CommandUtils.LogVerbose("ClientSecret : {0}", ClientSecret);
         }
     }
 

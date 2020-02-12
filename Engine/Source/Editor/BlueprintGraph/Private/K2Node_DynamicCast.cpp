@@ -1,11 +1,11 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 
 #include "K2Node_DynamicCast.h"
 #include "UObject/Interface.h"
 #include "Engine/Blueprint.h"
 #include "Framework/Commands/UIAction.h"
-#include "Framework/MultiBox/MultiBoxBuilder.h"
+#include "ToolMenus.h"
 #include "EdGraphSchema_K2.h"
 
 #include "BlueprintEditorSettings.h"
@@ -117,13 +117,12 @@ FText UK2Node_DynamicCast::GetNodeTitle(ENodeTitleType::Type TitleType) const
 	return CachedNodeTitle;
 }
 
-void UK2Node_DynamicCast::GetContextMenuActions(const FGraphNodeContextMenuBuilder& Context) const
+void UK2Node_DynamicCast::GetNodeContextMenuActions(UToolMenu* Menu, UGraphNodeContextMenuContext* Context) const
 {
-	Super::GetContextMenuActions(Context);
+	Super::GetNodeContextMenuActions(Menu, Context);
 
-	if (!Context.bIsDebugging)
+	if (!Context->bIsDebugging)
 	{
-		Context.MenuBuilder->BeginSection("K2NodeDynamicCast", LOCTEXT("DynamicCastHeader", "Cast"));
 		{
 			FText MenuEntryTitle = LOCTEXT("MakePureTitle", "Convert to pure cast");
 			FText MenuEntryTooltip = LOCTEXT("MakePureTooltip", "Removes the execution pins to make the node more versatile (NOTE: the cast could still fail, resulting in an invalid output).");
@@ -149,18 +148,19 @@ void UK2Node_DynamicCast::GetContextMenuActions(const FGraphNodeContextMenuBuild
 				}
 			}
 
-			Context.MenuBuilder->AddMenuEntry(
+			FToolMenuSection& Section = Menu->AddSection("K2NodeDynamicCast", LOCTEXT("DynamicCastHeader", "Cast"));
+			Section.AddMenuEntry(
+				"TogglePurity",
 				MenuEntryTitle,
 				MenuEntryTooltip,
 				FSlateIcon(),
 				FUIAction(
-					FExecuteAction::CreateUObject(this, &UK2Node_DynamicCast::TogglePurity),
+					FExecuteAction::CreateUObject(const_cast<UK2Node_DynamicCast*>(this), &UK2Node_DynamicCast::TogglePurity),
 					FCanExecuteAction::CreateStatic(CanExecutePurityToggle, bCanTogglePurity),
 					FIsActionChecked()
 				)
 			);
 		}
-		Context.MenuBuilder->EndSection();
 	}
 }
 
@@ -303,7 +303,7 @@ FText UK2Node_DynamicCast::GetMenuCategory() const
 FBlueprintNodeSignature UK2Node_DynamicCast::GetSignature() const
 {
 	FBlueprintNodeSignature NodeSignature = Super::GetSignature();
-	NodeSignature.AddSubObject(TargetType);
+	NodeSignature.AddSubObject(TargetType.Get());
 
 	return NodeSignature;
 }

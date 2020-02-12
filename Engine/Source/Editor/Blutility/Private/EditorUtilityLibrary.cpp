@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "EditorUtilityLibrary.h"
 #include "Engine/Selection.h"
@@ -73,6 +73,34 @@ TArray<UObject*> UEditorUtilityLibrary::GetSelectedAssets()
 	}
 
 	return Result;
+}
+
+TArray<UClass*> UEditorUtilityLibrary::GetSelectedBlueprintClasses()
+{
+	//@TODO: Blocking load, no slow dialog
+	FContentBrowserModule& ContentBrowserModule = FModuleManager::LoadModuleChecked<FContentBrowserModule>("ContentBrowser");
+	TArray<FAssetData> SelectedAssets;
+	ContentBrowserModule.Get().GetSelectedAssets(SelectedAssets);
+
+	TArray<UClass*> Result;
+	for (FAssetData& AssetData : SelectedAssets)
+	{
+		if (UBlueprint* Blueprint = Cast<UBlueprint>(AssetData.GetAsset()))
+		{
+			Result.Add(Blueprint->GeneratedClass);
+		}
+	}
+
+	return Result;
+}
+
+TArray<FAssetData> UEditorUtilityLibrary::GetSelectedAssetData()
+{
+	FContentBrowserModule& ContentBrowserModule = FModuleManager::LoadModuleChecked<FContentBrowserModule>("ContentBrowser");
+	TArray<FAssetData> SelectedAssets;
+	ContentBrowserModule.Get().GetSelectedAssets(SelectedAssets);
+
+	return SelectedAssets;
 }
 
 void UEditorUtilityLibrary::RenameAsset(UObject* Asset, const FString& NewName)

@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 namespace UnrealBuildTool.Rules
 {
@@ -28,7 +28,7 @@ namespace UnrealBuildTool.Rules
 				//@todo: remove when no longer neeeded (no other code changes should be necessary).
 				if (Target.WindowsPlatform.bNeedsLegacyStdioDefinitionsLib)
 				{
-					PublicAdditionalLibraries.Add("legacy_stdio_definitions.lib");
+					PublicSystemLibraries.Add("legacy_stdio_definitions.lib");
 				}
 			}
 

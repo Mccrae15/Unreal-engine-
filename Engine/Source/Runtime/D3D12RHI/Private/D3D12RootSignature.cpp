@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 /*=============================================================================
 	D3D12RootSignature.cpp: D3D12 Root Signatures
@@ -6,7 +6,7 @@
 
 #include "D3D12RHIPrivate.h"
 #include "D3D12RootSignatureDefinitions.h"
-#include "CommonRayTracingBuiltInResources.ush"
+#include "RayTracingBuiltInResources.h"
 
 namespace
 {
@@ -99,11 +99,16 @@ FD3D12RootSignatureDesc::FD3D12RootSignatureDesc(const FD3D12QuantizedBoundShade
 		BindingSpace = RAY_TRACING_REGISTER_SPACE_LOCAL;
 
 		// Add standard root parameters for hit groups, as per FHitGroupSystemParameters declaration in D3D12RayTracing.cpp and RayTracingHitGroupCommon.ush:
-		// - index buffer as root SRV (raw buffer)
-		// - vertex buffer as root SRV (raw buffer)
-		// - index/vertex fetch configuration as root constant (1 DWORD, defining index and vertex formats)
-
-		// #dxr_todo: Root parameters for hit shaders should be added in the shader pipeline, so that regular root parameter generation code can be used without hard-coding anything.
+		//          Resources:
+		// 8 bytes: index buffer as root SRV (raw buffer)
+		// 8 bytes: vertex buffer as root SRV (raw buffer)
+		//          FHitGroupSystemRootConstants:
+		// 4 bytes: index/vertex fetch configuration as root constant (bitfield defining index and vertex formats)
+		// 4 bytes: index buffer offset in bytes
+		// 4 bytes: hit group user data
+		// 4 bytes: unused padding to ensure the next parameter is aligned to 8-byte boundary
+		// -----------
+		// 32 bytes
 
 		check(RootParameterCount == 0 && RootParametersSize == 0); // We expect system RT parameters to come first
 
@@ -123,12 +128,11 @@ FD3D12RootSignatureDesc::FD3D12RootSignatureDesc(const FD3D12QuantizedBoundShade
 			RootParametersSize += RootDescriptorCost;
 		}
 
-		// Configuration structure (b0, space1)
+		// FHitGroupSystemRootConstants structure
 		{
 			check(RootParameterCount < MaxRootParameters);
-			// 1 DWORD as defined by FHitGroupSystemParameters::Config
-			// 1 DWORD padding to ensure that the next parameter is aligned to 8-byte boundary
-			const uint32 NumConstants = 2;
+			static_assert(sizeof(FHitGroupSystemRootConstants) % 8 == 0, "FHitGroupSystemRootConstants structure must be 8-byte aligned");
+			const uint32 NumConstants = sizeof(FHitGroupSystemRootConstants) / sizeof(uint32);
 			TableSlots[RootParameterCount].InitAsConstants(NumConstants, RAY_TRACING_SYSTEM_ROOTCONSTANT_REGISTER, RAY_TRACING_REGISTER_SPACE_SYSTEM);
 			RootParameterCount++;
 			RootParametersSize += NumConstants * RootConstantCost;
@@ -143,12 +147,12 @@ FD3D12RootSignatureDesc::FD3D12RootSignatureDesc(const FD3D12QuantizedBoundShade
 	const uint32 RootDescriptorTableCost = QBSS.RootSignatureType == RS_RayTracingLocal ? RootDescriptorTableCostLocal : RootDescriptorTableCostGlobal;
 
 	// For each root parameter type...
-	for (uint32 RootParameterTypeIndex = 0; RootParameterTypeIndex < ARRAY_COUNT(RootParameterTypePriorityOrder); RootParameterTypeIndex++)
+	for (uint32 RootParameterTypeIndex = 0; RootParameterTypeIndex < UE_ARRAY_COUNT(RootParameterTypePriorityOrder); RootParameterTypeIndex++)
 	{
 		const D3D12_ROOT_PARAMETER_TYPE& RootParameterType = RootParameterTypePriorityOrder[RootParameterTypeIndex];
 
 		// ... and each shader stage visibility ...
-		for (uint32 ShaderVisibilityIndex = 0; ShaderVisibilityIndex < ARRAY_COUNT(ShaderVisibilityPriorityOrder); ShaderVisibilityIndex++)
+		for (uint32 ShaderVisibilityIndex = 0; ShaderVisibilityIndex < UE_ARRAY_COUNT(ShaderVisibilityPriorityOrder); ShaderVisibilityIndex++)
 		{
 			const EShaderVisibility& Visibility = ShaderVisibilityPriorityOrder[ShaderVisibilityIndex];
 			const FShaderRegisterCounts& Shader = QBSS.RegisterCounts[Visibility];
@@ -234,7 +238,7 @@ FD3D12RootSignatureDesc::FD3D12RootSignatureDesc(const FD3D12QuantizedBoundShade
 			Flags |= D3D12_ROOT_SIGNATURE_FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT;
 		}
 
-		for (uint32 ShaderVisibilityIndex = 0; ShaderVisibilityIndex < ARRAY_COUNT(ShaderVisibilityPriorityOrder); ShaderVisibilityIndex++)
+		for (uint32 ShaderVisibilityIndex = 0; ShaderVisibilityIndex < UE_ARRAY_COUNT(ShaderVisibilityPriorityOrder); ShaderVisibilityIndex++)
 		{
 			const EShaderVisibility& Visibility = ShaderVisibilityPriorityOrder[ShaderVisibilityIndex];
 			const FShaderRegisterCounts& Shader = QBSS.RegisterCounts[Visibility];
@@ -252,9 +256,9 @@ FD3D12RootSignatureDesc::FD3D12RootSignatureDesc(const FD3D12QuantizedBoundShade
 	// Init the desc (warn about the size if necessary).
 #if !NO_LOGGING
 	const uint32 SizeWarningThreshold = 12;
-	if (RootParametersSize > SizeWarningThreshold)
+	if (RootParametersSize > SizeWarningThreshold && QBSS.RootSignatureType == RS_Raster)
 	{
-		UE_LOG(LogD3D12RHI, Display, TEXT("Root signature created where the root parameters take up %u DWORDS. Using more than %u DWORDs can negatively impact performance depending on the hardware and root parameter usage."), RootParametersSize, SizeWarningThreshold);
+		UE_LOG(LogD3D12RHI, Verbose, TEXT("Root signature created where the root parameters take up %u DWORDS. Using more than %u DWORDs can negatively impact performance depending on the hardware and root parameter usage."), RootParametersSize, SizeWarningThreshold);
 	}
 #endif
 	RootDesc.Init_1_1(RootParameterCount, TableSlots, 0, nullptr, Flags);
@@ -374,7 +378,7 @@ void FD3D12RootSignature::Init(const D3D12_VERSIONED_ROOT_SIGNATURE_DESC& InDesc
 	VERIFYD3D12RESULT(SerializeHR);
 
 	// Create and analyze the root signature.
-	VERIFYD3D12RESULT(Device->CreateRootSignature((uint32)FRHIGPUMask::All(),
+	VERIFYD3D12RESULT(Device->CreateRootSignature(FRHIGPUMask::All().GetNative(),
 		RootSignatureBlob->GetBufferPointer(),
 		RootSignatureBlob->GetBufferSize(),
 		IID_PPV_ARGS(RootSignature.GetInitReference())));
@@ -394,7 +398,7 @@ void FD3D12RootSignature::Init(ID3DBlob* const InBlob, uint32 BindingSpace)
 	VERIFYD3D12RESULT(D3D12CreateVersionedRootSignatureDeserializer(RootSignatureBlob->GetBufferPointer(), RootSignatureBlob->GetBufferSize(), IID_PPV_ARGS(Deserializer.GetInitReference())));
 
 	// Create and analyze the root signature.
-	VERIFYD3D12RESULT(Device->CreateRootSignature((uint32)FRHIGPUMask::All(),
+	VERIFYD3D12RESULT(Device->CreateRootSignature(FRHIGPUMask::All().GetNative(),
 		RootSignatureBlob->GetBufferPointer(),
 		RootSignatureBlob->GetBufferSize(),
 		IID_PPV_ARGS(RootSignature.GetInitReference())));

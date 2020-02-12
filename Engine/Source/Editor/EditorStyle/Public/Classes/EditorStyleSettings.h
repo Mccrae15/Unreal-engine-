@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -47,6 +47,13 @@ public:
 	 */
 	UPROPERTY(EditAnywhere, Category=UserInterface, meta = (ConfigRestartRequired = true, DisplayName="Enable High DPI Support"))
 	bool bEnableHighDPIAwareness;
+
+	/**
+	 * Whether to enable the Editor UI Layout configuration tools for the user.
+	 * If disabled, the "Save Layout As" and "Remove Layout" menus will be removed, as well as the "Import Layout..." sub-menu.
+	 */
+	UPROPERTY(EditAnywhere, config, Category = UserInterface)
+	bool bEnableUserEditorLayoutManagement;
 
 	/** Applies a color vision deficiency filter to the entire editor */
 	UPROPERTY(EditAnywhere, config, Category = "Accessibility")
@@ -190,6 +197,10 @@ public:
 	/** Should editor tabs be colorized according to the asset type */
 	UPROPERTY(EditAnywhere, config, Category=UserInterface)
 	uint32 bEnableColorizedEditorTabs : 1;
+
+	/** If enabled, the modes tab will revert to the previous mode UI */
+	UPROPERTY(EditAnywhere, config, AdvancedDisplay, Category = UserInterface, meta=(ConfigRestartRequired = true))
+	uint32 bEnableLegacyEditorModeUI : 1;
 
 public:
 

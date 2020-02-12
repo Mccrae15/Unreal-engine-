@@ -1,8 +1,8 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 
 #include "AnimGraphNode_BlendListByInt.h"
-#include "Framework/MultiBox/MultiBoxBuilder.h"
+#include "ToolMenus.h"
 #include "Kismet2/BlueprintEditorUtils.h"
 
 #include "GraphEditorActions.h"
@@ -52,7 +52,7 @@ void UAnimGraphNode_BlendListByInt::RemovePinFromBlendList(UEdGraphPin* Pin)
 	FScopedTransaction Transaction( NSLOCTEXT("A3Nodes", "RemoveBlendListPin", "RemoveBlendListPin") );
 	Modify();
 
-	UProperty* AssociatedProperty;
+	FProperty* AssociatedProperty;
 	int32 ArrayIndex;
 	GetPinAssociatedProperty(GetFNodeType(), Pin, /*out*/ AssociatedProperty, /*out*/ ArrayIndex);
 
@@ -69,26 +69,25 @@ void UAnimGraphNode_BlendListByInt::RemovePinFromBlendList(UEdGraphPin* Pin)
 	}
 }
 
-void UAnimGraphNode_BlendListByInt::GetContextMenuActions(const FGraphNodeContextMenuBuilder& Context) const
+void UAnimGraphNode_BlendListByInt::GetNodeContextMenuActions(UToolMenu* Menu, UGraphNodeContextMenuContext* Context) const
 {
-	if (!Context.bIsDebugging)
+	if (!Context->bIsDebugging)
 	{
-		Context.MenuBuilder->BeginSection("AnimGraphBlendList", NSLOCTEXT("A3Nodes", "BlendListHeader", "BlendList"));
 		{
-			if (Context.Pin != NULL)
+			FToolMenuSection& Section = Menu->AddSection("AnimGraphBlendList", NSLOCTEXT("A3Nodes", "BlendListHeader", "BlendList"));
+			if (Context->Pin != NULL)
 			{
 				// we only do this for normal BlendList/BlendList by enum, BlendList by Bool doesn't support add/remove pins
-				if ( Context.Pin->Direction == EGPD_Input )
+				if ( Context->Pin->Direction == EGPD_Input )
 				{
-					Context.MenuBuilder->AddMenuEntry(FGraphEditorCommands::Get().RemoveBlendListPin);
+					Section.AddMenuEntry(FGraphEditorCommands::Get().RemoveBlendListPin);
 				}
 			}
 			else
 			{
-				Context.MenuBuilder->AddMenuEntry(FGraphEditorCommands::Get().AddBlendListPin);
+				Section.AddMenuEntry(FGraphEditorCommands::Get().AddBlendListPin);
 			}
 		}
-		Context.MenuBuilder->EndSection();	
 	}
 }
 

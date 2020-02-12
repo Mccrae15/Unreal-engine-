@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 #include "Chaos/UniformGrid.h"
 
 #include "Chaos/ArrayFaceND.h"
@@ -144,22 +144,6 @@ TVector<int32, d> TUniformGrid<T, d>::GetIndex(const int32 Index) const
 }
 
 template<class T, int d>
-TVector<int32, d> TUniformGrid<T, d>::ClampIndex(const TVector<int32, d>& Index) const
-{
-	TVector<int32, d> Result;
-	for (int32 i = 0; i < d; ++i)
-	{
-		if (Index[i] >= MCells[i])
-			Result[i] = MCells[i] - 1;
-		else if (Index[i] < 0)
-			Result[i] = 0;
-		else
-			Result[i] = Index[i];
-	}
-	return Result;
-}
-
-template<class T, int d>
 TVector<T, d> TUniformGrid<T, d>::Clamp(const TVector<T, d>& X) const
 {
 	TVector<T, d> Result;
@@ -265,7 +249,16 @@ TVector<T, 3> TUniformGrid<T, 3>::ClampMinusHalf(const TVector<T, 3>& X) const
 	return Result;
 }
 
+
+template<class T>
+bool Chaos::TUniformGrid<T, 3>::IsValid(const TVector<int32, 3>& X) const
+{
+	return X == ClampIndex(X);
+}
+
+
 template class Chaos::TUniformGridBase<float, 3>;
 template class Chaos::TUniformGrid<float, 3>;
+template class Chaos::TUniformGrid<float, 2>;
 template TVector<float, 3> Chaos::TUniformGridBase<float, 3>::LinearlyInterpolate<TVector<float, 3>>(const TArrayND<TVector<float, 3>, 3>&, const TVector<float, 3>&) const;
 template CHAOS_API float Chaos::TUniformGridBase<float, 3>::LinearlyInterpolate<float>(const TArrayND<float, 3>&, const TVector<float, 3>&) const;

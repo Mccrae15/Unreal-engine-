@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "GenericPlatform/GenericPlatformBackgroundHttp.h"
 #include "GenericPlatform/GenericPlatformBackgroundHttpManager.h"
@@ -41,10 +41,4 @@ const FString& FGenericPlatformBackgroundHttp::GetTemporaryRootPath()
 {
 	static FString BackgroundHttpDir = FPaths::Combine(FPlatformMisc::GamePersistentDownloadDir(), TEXT("BackgroundHttpTemp"));
 	return BackgroundHttpDir;
-}
-
-int FGenericPlatformBackgroundHttp::GetPlatformMaxActiveDownloads()
-{
-	//In general, lets just use 4 active downloads at once
-	return 4;
 }

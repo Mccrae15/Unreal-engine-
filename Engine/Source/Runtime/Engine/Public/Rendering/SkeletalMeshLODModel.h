@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -13,7 +13,7 @@
 #include "Serialization/BulkData.h"
 #include "SkeletalMeshTypes.h"
 #include "Rendering/SkeletalMeshLODImporterData.h"
-
+#include "Animation/SkinWeightProfile.h"
 
 //
 //	FSoftSkinVertex
@@ -34,11 +34,11 @@ struct FSoftSkinVertex
 	FVector2D		UVs[MAX_TEXCOORDS];
 	// VertexColor
 	FColor			Color;
-	uint8			InfluenceBones[MAX_TOTAL_INFLUENCES];
+	FBoneIndexType	InfluenceBones[MAX_TOTAL_INFLUENCES];
 	uint8			InfluenceWeights[MAX_TOTAL_INFLUENCES];
 
 	/** If this vert is rigidly weighted to a bone, return true and the bone index. Otherwise return false. */
-	ENGINE_API bool GetRigidWeightBone(uint8& OutBoneIndex) const;
+	ENGINE_API bool GetRigidWeightBone(FBoneIndexType& OutBoneIndex) const;
 
 	/** Returns the maximum weight of any bone that influences this vertex. */
 	ENGINE_API uint8 GetMaximumWeight() const;
@@ -109,6 +109,9 @@ struct FSkelMeshSection
 	/** max # of bones used to skin the vertices in this section */
 	int32 MaxBoneInfluences;
 
+	/** whether to store bone indices as 16 bit or 8 bit in vertex buffer for rendering. */
+	bool bUse16BitBoneIndex;
+
 	// INDEX_NONE if not set
 	int16 CorrespondClothAssetIndex;
 
@@ -127,6 +130,24 @@ struct FSkelMeshSection
 	 */
 	int32 GenerateUpToLodIndex;
 
+	/*
+	 * This represent the original section index in the imported data. The original data is chunk per material,
+	 * we use this index to store user section modification. The user cannot change a BONE chunked section data,
+	 * since the BONE chunk can be per-platform. Do not use this value to index the Sections array, only the user
+	 * section data should be index by this value.
+	 */
+	int32 OriginalDataSectionIndex;
+
+	/*
+	 * If this section was produce because of BONE chunking, the parent section index will be valid.
+	 * If the section is not the result of skin vertex chunking, this value will be INDEX_NONE.
+	 * Use this value to know if the section was BONE chunked:
+	 * if(ChunkedParentSectionIndex != INDEX_NONE) will be true if the section is BONE chunked
+	 */
+	int32 ChunkedParentSectionIndex;
+
+
+
 	FSkelMeshSection()
 		: MaterialIndex(0)
 		, BaseIndex(0)
@@ -139,9 +160,12 @@ struct FSkelMeshSection
 		, BaseVertexIndex(0)
 		, NumVertices(0)
 		, MaxBoneInfluences(4)
+		, bUse16BitBoneIndex(false)
 		, CorrespondClothAssetIndex(INDEX_NONE)
 		, bDisabled(false)
-		, GenerateUpToLodIndex(-1)
+		, GenerateUpToLodIndex(INDEX_NONE)
+		, OriginalDataSectionIndex(INDEX_NONE)
+		, ChunkedParentSectionIndex(INDEX_NONE)
 	{}
 
 
@@ -176,13 +200,81 @@ struct FSkelMeshSection
 	*/
 	ENGINE_API void CalcMaxBoneInfluences();
 
-	FORCEINLINE bool HasExtraBoneInfluences() const
+	FORCEINLINE int32 GetMaxBoneInfluences() const
 	{
-		return MaxBoneInfluences > MAX_INFLUENCES_PER_STREAM;
+		return MaxBoneInfluences;
+	}
+
+	/**
+	* Calculate if this skel mesh section needs 16-bit bone indices
+	*/
+	ENGINE_API void CalcUse16BitBoneIndex();
+
+	FORCEINLINE bool Use16BitBoneIndex() const
+	{
+		return bUse16BitBoneIndex;
 	}
 
 	// Serialization.
 	friend FArchive& operator<<(FArchive& Ar, FSkelMeshSection& S);
+};
+
+/**
+* Structure containing all the section data a user can change.
+*
+* Some section data also impact dependent generated LOD, those member should be add to the DDC Key
+* and trig a rebuild if they are change.
+*/
+struct FSkelMeshSourceSectionUserData
+{
+	/** This section will recompute tangent in runtime */
+	bool bRecomputeTangent;
+
+	/** This section will cast shadow */
+	bool bCastShadow;
+
+	// INDEX_NONE if not set
+	int16 CorrespondClothAssetIndex;
+
+	/** Clothing data for this section, clothing is only present if ClothingData.IsValid() returns true */
+	FClothingSectionData ClothingData;
+
+
+	//////////////////////////////////////////////////////////////////////////
+	//Skeletalmesh DDC key members, Add sections member that impact generated skel mesh here
+
+	/** If disabled, we won't render this section */
+	bool bDisabled;
+
+	/*
+	 * The LOD index at which any generated lower quality LODs will include this section.
+	 * A value of -1 mean the section will always be include when generating a LOD
+	 */
+	int32 GenerateUpToLodIndex;
+
+	// End DDC members
+	//////////////////////////////////////////////////////////////////////////
+
+
+
+	FSkelMeshSourceSectionUserData()
+		: bRecomputeTangent(false)
+		, bCastShadow(true)
+		, CorrespondClothAssetIndex(INDEX_NONE)
+		, bDisabled(false)
+		, GenerateUpToLodIndex(INDEX_NONE)
+	{}
+
+	/**
+	* @return TRUE if we have cloth data for this section
+	*/
+	FORCEINLINE bool HasClothingData() const
+	{
+		return (ClothingData.AssetGuid.IsValid());
+	}
+
+	// Serialization.
+	friend FArchive& operator<<(FArchive& Ar, FSkelMeshSourceSectionUserData& S);
 };
 
 /**
@@ -193,6 +285,14 @@ class FSkeletalMeshLODModel
 public:
 	/** Sections. */
 	TArray<FSkelMeshSection> Sections;
+
+	/*
+	 * When user change section data in the UI, we store it here to be able to regenerate the changes
+	 * Note: the key (int32) is the original imported section data, because of BONE chunk the size of
+	 * this array is not the same as the Sections array. Use the section's OriginalDataSectionIndex to
+	 * index it.
+	 */
+	TMap<int32, FSkelMeshSourceSectionUserData> UserSectionsData;
 
 	uint32						NumVertices;
 	/** The number of unique texture coordinate sets in this lod */
@@ -214,6 +314,9 @@ public:
 	*/
 	TArray<FBoneIndexType> RequiredBones;
 
+	/** Set of skin weight profile, identified by a FName which matches FSkinWeightProfileInfo.Name in the owning Skeletal Mesh*/
+	TMap<FName, FImportedSkinWeightProfileData> SkinWeightProfiles;
+
 	/** Mapping from final mesh vertex index to raw import vertex index. Needed for vertex animation, which only stores positions for import verts. */
 	TArray<int32>				MeshToImportVertexMap;
 	/** The max index in MeshToImportVertexMap, ie. the number of imported (raw) verts. */
@@ -224,13 +327,21 @@ public:
 	FWordBulkData				LegacyRawPointIndices;
 
 	/** Imported raw mesh data. Optional, only the imported mesh LOD has this, generated LOD or old asset will be null. */
-	FRawSkeletalMeshBulkData	RawSkeletalMeshBulkData;
+	FRawSkeletalMeshBulkData	RawSkeletalMeshBulkData_DEPRECATED;
+	/** This ID is use to create the DDC key, it must be set when we save the FRawSkeletalMeshBulkData. */
+	FString						RawSkeletalMeshBulkDataID;
+	bool						bIsBuildDataAvailable;
+	bool						bIsRawSkeletalMeshBulkDataEmpty;
 
 	/** Constructor (default) */
 	FSkeletalMeshLODModel()
 		: NumVertices(0)
 		, NumTexCoords(0)
 		, MaxImportVertex(-1)
+		, RawSkeletalMeshBulkDataID(TEXT(""))
+		, bIsBuildDataAvailable(false)
+		, bIsRawSkeletalMeshBulkDataEmpty(true)
+		, BuildStringID(TEXT(""))
 	{
 	}
 
@@ -266,7 +377,7 @@ public:
 	/**
 	* @return true if any chunks have cloth data.
 	*/
-	bool HasClothData() const;
+	ENGINE_API bool HasClothData() const;
 
 	ENGINE_API int32 NumNonClothingSections() const;
 
@@ -280,9 +391,36 @@ public:
 	*/
 	ENGINE_API void GetNonClothVertices(TArray<FSoftSkinVertex>& OutVertices) const;
 
-	bool DoSectionsNeedExtraBoneInfluences() const;
+	ENGINE_API int32 GetMaxBoneInfluences() const;
+	bool DoSectionsUse16BitBoneIndex() const;
 
 	void GetResourceSizeEx(FResourceSizeEx& CumulativeResourceSize) const;
+
+	/**
+	* Make sure user section data is present for every original sections
+	*/
+	ENGINE_API void SyncronizeUserSectionsDataArray(bool bResetNonUsedSection = false);
+
+	//Temporary build String ID
+	//We use this string to store the LOD model data so we can know if the LOD need to be rebuild
+	//This GUID is set when we Cache the render data (build function)
+	mutable FString BuildStringID;
+
+	/**
+	* Build a derive data key with the user section data (UserSectionsData) and the original bulk data
+	*/
+	ENGINE_API FString GetLODModelDeriveDataKey() const;
+	
+	/**
+	* Copy one structure to the other, make sure all bulk data is unlock and the data can be read before copying.
+	*/
+	static ENGINE_API bool CopyStructure(FSkeletalMeshLODModel* Destination, FSkeletalMeshLODModel* Source);
+
+	/**
+	* This function will update the chunked information for each section. Only old data before the 
+	* skeletal mesh build refactor should need to call this function.
+	*/
+	ENGINE_API void UpdateChunkedSectionInfo(const FString& SkeletalMeshName, TArray<int32>& LODMaterialMap);
 };
 
 #endif // WITH_EDITOR

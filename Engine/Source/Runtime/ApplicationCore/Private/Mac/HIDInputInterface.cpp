@@ -1,8 +1,9 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "HIDInputInterface.h"
 #include "HAL/PlatformTime.h"
 #include "Misc/CallbackDevice.h"
+#include "Misc/ConfigCacheIni.h"
 #include "Templates/SharedPointer.h"
 
 static int32 GetDevicePropertyAsInt32(IOHIDDeviceRef DeviceRef, CFStringRef Property)
@@ -36,6 +37,9 @@ HIDInputInterface::HIDInputInterface(const TSharedRef<FGenericApplicationMessage
 	bIsGamepadAttached = false;
 	InitialButtonRepeatDelay = 0.2f;
 	ButtonRepeatDelay = 0.1f;
+
+	GConfig->GetFloat(TEXT("/Script/Engine.InputSettings"), TEXT("InitialButtonRepeatDelay"), InitialButtonRepeatDelay, GInputIni);
+	GConfig->GetFloat(TEXT("/Script/Engine.InputSettings"), TEXT("ButtonRepeatDelay"), ButtonRepeatDelay, GInputIni);
 
 	Buttons[0] = FGamepadKeyNames::FaceButtonBottom;
 	Buttons[1] = FGamepadKeyNames::FaceButtonRight;
@@ -307,7 +311,7 @@ void HIDInputInterface::FHIDDeviceInfo::SetupMappings()
 
 		bool bIsXbox360Controller = false;
 
-		for (int i = 0; i < ARRAY_COUNT(XBox360Controllers); ++i)
+		for (int i = 0; i < UE_ARRAY_COUNT(XBox360Controllers); ++i)
 		{
 			const FXBox360ControllerID ControllerID = XBox360Controllers[i];
 			if (ControllerID.VendorID == VendorID && ControllerID.ProductID == ProductID)
@@ -452,7 +456,7 @@ void HIDInputInterface::SendControllerEvents()
 					else
 					{
 						const bool bIsTrigger = Element.Usage == ControllerState.Device.LeftTriggerAnalogMapping || Element.Usage == ControllerState.Device.RightTriggerAnalogMapping;
-						const float Percentage = FMath::GetRangePct(Element.MinValue, Element.MaxValue, NewValue);
+						const float Percentage = FMath::GetRangePct((float)Element.MinValue, (float)Element.MaxValue, (float)NewValue);
 						const float FloatValue = bIsTrigger ? Percentage : Percentage * 2.0f - 1.0f;
 
 						if (Element.Usage == ControllerState.Device.LeftAnalogXMapping && ControllerState.LeftAnalogX != NewValue)

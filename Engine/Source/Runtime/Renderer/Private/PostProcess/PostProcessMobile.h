@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 /*=============================================================================
 	PostProcessMobile.h: Mobile uber post processing.
@@ -14,6 +14,10 @@ class FViewInfo;
 
 // return Depth of Field Scale if Gaussian DoF mode is active. 0.0f otherwise.
 float GetMobileDepthOfFieldScale(const FViewInfo& View);
+
+// Used to indicate the final PP stage which needs to be flipped on platforms that 'RHINeedsToSwitchVerticalAxis'
+void SetMobilePassFlipVerticalAxis(const FRenderingCompositePass* FlipPass);
+bool ShouldMobilePassFlipVerticalAxis(const FRenderingCompositePassContext& Context, const FRenderingCompositePass* ShouldFlipPass);
 
 class FRCPassPostProcessBloomSetupES2 : public TRenderingCompositePassBase<1, 1>
 {
@@ -106,13 +110,12 @@ private:
 class FRCPassPostProcessSunMaskES2 : public TRenderingCompositePassBase<1, 1>
 {
 public:
-	FRCPassPostProcessSunMaskES2(FIntPoint InPrePostSourceViewportSize, bool bInOnChip) : PrePostSourceViewportSize(InPrePostSourceViewportSize), bOnChip(bInOnChip) { }
+	FRCPassPostProcessSunMaskES2(FIntPoint InPrePostSourceViewportSize) : PrePostSourceViewportSize(InPrePostSourceViewportSize) { }
 	virtual void Process(FRenderingCompositePassContext& Context) override;
 	virtual FPooledRenderTargetDesc ComputeOutputDesc(EPassOutputId InPassOutputId) const override;
 	virtual void Release() override { delete this; }
 private:
 	FIntPoint PrePostSourceViewportSize;
-	bool bOnChip;
 	template <bool bUseDepthTexture>
 	void SetShader(const FRenderingCompositePassContext& Context);
 };
@@ -149,7 +152,7 @@ public:
 	virtual void Release() override { delete this; }
 private:
 	FIntPoint PrePostSourceViewportSize;
-	FShader* SetShader(const FRenderingCompositePassContext& Context);
+	TShaderRef<FShader> SetShader(const FRenderingCompositePassContext& Context);
 };
 
 class FRCPassPostProcessSunMergeSmallES2 : public TRenderingCompositePassBase<2, 1>

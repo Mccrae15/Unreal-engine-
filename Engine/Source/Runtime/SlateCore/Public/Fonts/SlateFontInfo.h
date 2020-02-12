@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -10,17 +10,14 @@
 
 /**
  * Sets the maximum font fallback level, for when a character can't be found in the selected font set.
- *
- * UI code that renders strings from a third party (e.g. player chat in a multiplayer game), should restrict font fallback to localized,
- * (or to no fallback, if international font isn't important), to prevent potential performance problems.
+ * UI code that renders strings from a third party (e.g. player chat in a multiplayer game) may want to restrict font fallback to prevent potential performance problems.
  */
-UENUM()
 enum class EFontFallback : uint8
 {
 	/** No fallback font */
 	FF_NoFallback,
 	/** Fallback to localized font set */
-	FF_LocalizedFallback,
+	FF_LocalizedFallback UE_DEPRECATED(4.24, "Legacy localized fallback fonts have been removed. FF_LocalizedFallback no longer has any meaning, so use FF_NoFallback instead."),
 	/** Fallback to last resort font set */
 	FF_LastResortFallback,
 	/** Tries all fallbacks */
@@ -78,25 +75,27 @@ struct SLATECORE_API FFontOutlineSettings
 
 	inline bool IsIdenticalToForCaching(const FFontOutlineSettings& Other) const
 	{
+		// Ignore OutlineMaterial && OutlineColor because they do not affect the cached glyph.
 		return OutlineSize == Other.OutlineSize
 			&&  bSeparateFillAlpha == Other.bSeparateFillAlpha;
 	}
 
 	inline bool IsIdenticalTo(const FFontOutlineSettings& Other) const
 	{
-		return OutlineSize == Other.OutlineSize
-			&& bSeparateFillAlpha == Other.bSeparateFillAlpha
-			&& OutlineMaterial == Other.OutlineMaterial
-			&& OutlineColor == Other.OutlineColor
-			&& bApplyOutlineToDropShadows == Other.bApplyOutlineToDropShadows;
+		return
+			OutlineSize == Other.OutlineSize &&
+			bSeparateFillAlpha == Other.bSeparateFillAlpha &&
+			bApplyOutlineToDropShadows == Other.bApplyOutlineToDropShadows &&
+			OutlineMaterial == Other.OutlineMaterial &&
+			OutlineColor == Other.OutlineColor;
 	}
 
 	friend inline uint32 GetTypeHash(const FFontOutlineSettings& OutlineSettings)
 	{
 		uint32 Hash = 0;
+		// Ignore OutlineMaterial && OutlineColor because they do not affect the cached glyph.
 		Hash = HashCombine(Hash, GetTypeHash(OutlineSettings.OutlineSize));
 		Hash = HashCombine(Hash, GetTypeHash(OutlineSettings.bSeparateFillAlpha));
-
 		return Hash;
 	}
 
@@ -238,6 +237,7 @@ public:
 public:
 	inline bool IsIdentialToForCaching(const FSlateFontInfo& Other) const
 	{
+		// Ignore FontMaterial because it does not affect the cached glyph.
 		return FontObject == Other.FontObject
 			&& OutlineSettings.IsIdenticalToForCaching(Other.OutlineSettings)
 			&& CompositeFont == Other.CompositeFont
@@ -281,9 +281,9 @@ public:
 	 */
 	friend inline uint32 GetTypeHash( const FSlateFontInfo& FontInfo )
 	{
+		// Ignore FontMaterial because it does not affect the cached glyph.
 		uint32 Hash = 0;
 		Hash = HashCombine(Hash, GetTypeHash(FontInfo.FontObject));
-		Hash = HashCombine(Hash, GetTypeHash(FontInfo.FontMaterial));
 		Hash = HashCombine(Hash, GetTypeHash(FontInfo.OutlineSettings));
 		Hash = HashCombine(Hash, GetTypeHash(FontInfo.CompositeFont));
 		Hash = HashCombine(Hash, GetTypeHash(FontInfo.TypefaceFontName));

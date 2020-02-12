@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "Navigation/NavLinkProxy.h"
 #include "UObject/ConstructorHelpers.h"
@@ -22,7 +22,7 @@ ANavLinkProxy::ANavLinkProxy(const FObjectInitializer& ObjectInitializer) : Supe
 	USceneComponent* SceneComponent = CreateDefaultSubobject<USceneComponent>(TEXT("PositionComponent"));
 	RootComponent = SceneComponent;
 
-	bHidden = true;
+	SetHidden(true);
 
 #if WITH_EDITORONLY_DATA
 	EdRenderComp = CreateDefaultSubobject<UNavLinkRenderingComponent>(TEXT("EdRenderComp"));
@@ -48,9 +48,9 @@ ANavLinkProxy::ANavLinkProxy(const FObjectInitializer& ObjectInitializer) : Supe
 		static FConstructorStatics ConstructorStatics;
 
 		SpriteComponent->Sprite = ConstructorStatics.SpriteTexture.Get();
-		SpriteComponent->RelativeScale3D = FVector(0.5f, 0.5f, 0.5f);
+		SpriteComponent->SetRelativeScale3D(FVector(0.5f, 0.5f, 0.5f));
 		SpriteComponent->bHiddenInGame = true;
-		SpriteComponent->bVisible = true;
+		SpriteComponent->SetVisibleFlag(true);
 		SpriteComponent->SpriteInfo.Category = ConstructorStatics.ID_Decals;
 		SpriteComponent->SpriteInfo.DisplayName = ConstructorStatics.NAME_Decals;
 		SpriteComponent->SetupAttachment(RootComponent);
@@ -70,7 +70,7 @@ ANavLinkProxy::ANavLinkProxy(const FObjectInitializer& ObjectInitializer) : Supe
 	PointLinks.Add(DefLink);
 
 	SetActorEnableCollision(false);
-	bCanBeDamaged = false;
+	SetCanBeDamaged(false);
 }
 
 #if WITH_EDITOR
@@ -155,11 +155,6 @@ void ANavLinkProxy::PostLoad()
 	{
 		Link.InitializeAreaClass();
 	}
-	
-	if (SmartLinkComp)
-	{
-		SmartLinkComp->SetNavigationRelevancy(bSmartLinkIsRelevant);
-	}
 }
 
 #if ENABLE_VISUAL_LOG
@@ -199,12 +194,19 @@ bool ANavLinkProxy::GetNavigationLinksClasses(TArray<TSubclassOf<UNavLinkDefinit
 bool ANavLinkProxy::GetNavigationLinksArray(TArray<FNavigationLink>& OutLink, TArray<FNavigationSegmentLink>& OutSegments) const
 {
 	OutLink.Append(PointLinks);
+
+	const bool bIsSmartLinkActive = (SmartLinkComp && SmartLinkComp->IsNavigationRelevant());
+	if (bIsSmartLinkActive)
+	{
+		OutLink.Add(SmartLinkComp->GetLinkModifier());
+	}
+
 	OutSegments.Append(SegmentLinks);
 
-	return (PointLinks.Num() > 0) || (SegmentLinks.Num() > 0);
+	return (PointLinks.Num() > 0) || (SegmentLinks.Num() > 0) || bIsSmartLinkActive;
 }
 
-FBox ANavLinkProxy::GetComponentsBoundingBox(bool bNonColliding) const
+FBox ANavLinkProxy::GetComponentsBoundingBox(bool bNonColliding, bool bIncludeFromChildActors) const
 {
 	FBox LinksBB(FVector(0.f, 0.f, -10.f), FVector(0.f,0.f,10.f));
 
@@ -287,3 +289,13 @@ bool ANavLinkProxy::HasMovingAgents() const
 {
 	return SmartLinkComp->HasMovingAgents();
 }
+
+#if WITH_EDITOR
+void ANavLinkProxy::CopyEndPointsFromSimpleLinkToSmartLink()
+{
+	if (PointLinks.Num() && SmartLinkComp)
+	{
+		SmartLinkComp->SetLinkData(PointLinks[0].Left, PointLinks[0].Right, PointLinks[0].Direction);
+	}
+}
+#endif // WITH_EDITOR

@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "Generation/CloudEnumeration.h"
 #include "HAL/FileManager.h"
@@ -30,6 +30,7 @@ namespace BuildPatchServices
 		virtual bool IsChunkFeatureLevelMatch(const FGuid& ChunkId) const override;
 		virtual const uint64& GetChunkHash(const FGuid& ChunkId) const override;
 		virtual const FSHAHash& GetChunkShaHash(const FGuid& ChunkId) const override;
+		virtual const TMap<FSHAHash, TSet<FGuid>>& GetIdenticalChunks() const override;
 	private:
 		void EnumerateCloud();
 		TFuture<FBuildPatchAppManifestPtr> AsyncLoadManifest(const FString& ManifestFilename);
@@ -48,6 +49,7 @@ namespace BuildPatchServices
 		TMap<FGuid, uint32> ChunkWindowSizes;
 		TMap<uint32, TSet<FGuid>> WindowsSizeChunks;
 		TSet<FGuid> FeatureLevelMatchedChunks;
+		TMap<FSHAHash, TSet<FGuid>> IdenticalChunks;
 		FStatsCollector* StatsCollector;
 		TFuture<void> Future;
 		volatile FStatsCollector::FAtomicValue* StatManifestsLoaded;
@@ -135,6 +137,12 @@ namespace BuildPatchServices
 		return ChunkShaHashes[ChunkId];
 	}
 
+	const TMap<FSHAHash, TSet<FGuid>>& FCloudEnumeration::GetIdenticalChunks() const
+	{
+		Future.Wait();
+		return IdenticalChunks;
+	}
+
 	void FCloudEnumeration::EnumerateCloud()
 	{
 		uint64 EnumerationTimer;
@@ -178,7 +186,7 @@ namespace BuildPatchServices
 
 	TFuture<FBuildPatchAppManifestPtr> FCloudEnumeration::AsyncLoadManifest(const FString& ManifestFilename)
 	{
-		return Async<FBuildPatchAppManifestPtr>(EAsyncExecution::ThreadPool, [this, ManifestFilename]() -> FBuildPatchAppManifestPtr
+		return Async(EAsyncExecution::ThreadPool, [this, ManifestFilename]() -> FBuildPatchAppManifestPtr
 		{
 			if (IFileManager::Get().GetTimeStamp(*ManifestFilename) < ManifestAgeThreshold)
 			{
@@ -205,7 +213,7 @@ namespace BuildPatchServices
 		typedef TTuple<TSet<uint32>, TMap<FGuid, uint32>> FWindowSizes;
 		// Check if this chunk will already beling to our matching feature level sub dir - ptr==ptr test is fine, no need to string compare.
 		const bool bMatchingChunkSubdir = FeatureLevelChunkSubdir == ManifestVersionHelpers::GetChunkSubdir(Manifest->GetFeatureLevel());
-		TFuture<FWindowSizes> CalculateChunkWindowSizesFuture = Async<FWindowSizes>(EAsyncExecution::TaskGraph, [&](){ return CalculateChunkWindowSizes(Manifest); });
+		TFuture<FWindowSizes> CalculateChunkWindowSizesFuture = Async(EAsyncExecution::TaskGraph, [&](){ return CalculateChunkWindowSizes(Manifest); });
 		TArray<FGuid> DataList;
 		Manifest->GetDataList(DataList);
 		if (!Manifest->IsFileDataManifest())
@@ -226,6 +234,7 @@ namespace BuildPatchServices
 						FMemory::Memcpy(ChunkShaHashes.FindOrAdd(DataGuid).Hash, ChunkInfo->ShaHash.Hash, FSHA1::DigestSize);
 						UniqueWindowSizes.Add(ChunkInfo->WindowSize);
 						ChunkWindowSizes.Add(DataGuid, ChunkInfo->WindowSize);
+						IdenticalChunks.FindOrAdd(ChunkInfo->ShaHash).Add(DataGuid);
 						FStatsCollector::Accumulate(StatChunksEnumerated, 1);
 					}
 					if (bMatchingChunkSubdir)

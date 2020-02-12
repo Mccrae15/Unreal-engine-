@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -13,6 +13,8 @@
  * The first parameter is the profile manager.
  */
 DECLARE_MULTICAST_DELEGATE_OneParam(FOnLauncherProfileManagerInitialized, ILauncherProfileManager&);
+
+DECLARE_MULTICAST_DELEGATE_OneParam(FOnCreateLauncher, ILauncherRef);
 
 
 /**
@@ -65,6 +67,11 @@ public:
 	virtual FLauncherServicesSDKNotInstalled& OnLauncherServicesSDKNotInstalled( ) = 0;
 	virtual void BroadcastLauncherServicesSDKNotInstalled(const FString& PlatformName, const FString& DocLink) = 0;
 
+	/**
+	 * Determines the executable that should be used for executing commandlets
+	 */
+	virtual FString GetExecutableForCommandlets() const = 0;
+
 public:
 
 	/** Virtual destructor. */
@@ -75,4 +82,6 @@ public:
 	 * Delegate that is invoked when a profile manager is initialized.
 	 */
 	LAUNCHERSERVICES_API static FOnLauncherProfileManagerInitialized ProfileManagerInitializedDelegate;
+
+	FOnCreateLauncher OnCreateLauncherDelegate;
 };

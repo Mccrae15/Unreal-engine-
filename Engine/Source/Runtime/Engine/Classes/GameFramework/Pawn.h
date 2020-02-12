@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -93,7 +93,7 @@ public:
 
 	/**
 	 * Determines when the Pawn creates and is possessed by an AI Controller (on level start, when spawned, etc).
-	 * Only possible if AIControllerClass is set, and ignored if AutoPossessPlayer is enabled.
+	 * Only possible if AIControllerClassRef is set, and ignored if AutoPossessPlayer is enabled.
 	 * @see AutoPossessPlayer
 	 */
 	UPROPERTY(EditAnywhere, Category=Pawn)
@@ -193,8 +193,13 @@ public:
 	virtual float GetDefaultHalfHeight() const;
 
 	/** See if this actor is currently being controlled */
+	UE_DEPRECATED(4.24, "IsControlled is deprecated. To check if this pawn is controlled by anything, then call IsPawnControlled. To check if this pawn is controlled only by the player then call IsPlayerControlled")
 	UFUNCTION(BlueprintCallable, Category=Pawn)
 	bool IsControlled() const;
+
+	/** Check if this actor is currently being controlled at all (the actor has a valid Controller) */
+	UFUNCTION(BlueprintCallable, Category = Pawn)
+	bool IsPawnControlled() const;
 
 	/** Returns controller for this actor. */
 	UFUNCTION(BlueprintCallable, Category=Pawn)

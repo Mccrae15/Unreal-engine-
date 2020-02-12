@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "FoliagePaletteItem.h"
 #include "Widgets/Input/SButton.h"
@@ -44,7 +44,7 @@ FFoliagePaletteItemModel::FFoliagePaletteItemModel(FFoliageMeshUIInfoPtr InTypeI
 	}
 	else
 	{
-		AssetData = FAssetData(TypeInfo->Settings->GetClass()->GetDefaultObject<UFoliageType>()->GetStaticMesh());
+		AssetData = FAssetData(TypeInfo->Settings->GetClass()->GetDefaultObject<UFoliageType>()->GetSource());
 	}
 	
 
@@ -56,7 +56,7 @@ FFoliagePaletteItemModel::FFoliagePaletteItemModel(FFoliageMeshUIInfoPtr InTypeI
 	if (TypeInfo->Settings->IsAsset())
 	{
 		// Get the Foliage Type asset color
-		auto FoliageTypeAssetActions =  AssetToolsModule.Get().GetAssetTypeActionsForClass(UFoliageType_InstancedStaticMesh::StaticClass());
+		auto FoliageTypeAssetActions =  AssetToolsModule.Get().GetAssetTypeActionsForClass(TypeInfo->Settings->GetClass());
 		if (FoliageTypeAssetActions.IsValid())
 		{
 			ThumbnailConfig.AssetTypeColorOverride = FoliageTypeAssetActions.Pin()->GetTypeColor();
@@ -303,12 +303,12 @@ void FFoliagePaletteItemModel::SetTypeActiveInPalette(bool bSetActiveInPalette)
 	UFoliageType* FoliageType = GetFoliageType();
 	if (FoliageType->IsSelected != bSetActiveInPalette)
 	{
-		FoliageType->Modify();
+		FoliageType->Modify(false);
 		FoliageType->IsSelected = bSetActiveInPalette;
 
 		if (IsBlueprint())
 		{
-			FoliageType->GetClass()->ClassGeneratedBy->Modify();
+			FoliageType->GetClass()->ClassGeneratedBy->Modify(false);
 			FoliageType->GetClass()->GetDefaultObject<UFoliageType>()->IsSelected = bSetActiveInPalette;
 		}
 	}

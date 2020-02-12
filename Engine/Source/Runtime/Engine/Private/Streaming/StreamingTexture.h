@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 /*=============================================================================
 StreamingTexture.h: Definitions of classes used for texture streaming.
@@ -12,6 +12,10 @@ StreamingTexture.h: Definitions of classes used for texture streaming.
 struct FRenderAssetStreamingManager;
 struct FRenderAssetStreamingSettings;
 
+// When enabled we store the filename of optional data as a FString in FStreamingRenderAsset and 
+// use that to check for the existence of the optional data. When disabled we poll the BulkData instead.
+#define STORE_OPTIONAL_DATA_FILENAME !USE_NEW_BULKDATA
+
 /*-----------------------------------------------------------------------------
 	FStreamingRenderAsset, the streaming system's version of UTexture2D.
 -----------------------------------------------------------------------------*/
@@ -19,18 +23,17 @@ struct FRenderAssetStreamingSettings;
 /** Self-contained structure to manage a streaming texture/mesh, possibly on a separate thread. */
 struct FStreamingRenderAsset
 {
-private:
-	enum EOptionalMipsState : uint8
-	{
-		NotCached,
-		NoOptionalMips,
-		HasOptionalMips,
-	};
-
 	static constexpr int32 MaxNumMeshLODs = MAX_MESH_LOD_COUNT;
 	static_assert(2 * MaxNumMeshLODs >= MAX_TEXTURE_MIP_COUNT, "Failed mip count assumption");
 
-public:
+	enum EOptionalMipsState : uint8
+	{
+		OMS_NotCached,
+		OMS_NoOptionalMips,
+		OMS_HasOptionalMips,
+		OMS_Num
+	};
+
 	enum EAssetType : uint8
 	{
 		AT_Texture,
@@ -64,7 +67,7 @@ public:
 	int32 GetSize( int32 InMipCount ) const
 	{
 		check(InMipCount > 0);
-		check(InMipCount <= RenderAssetType == AT_Texture ? MAX_TEXTURE_MIP_COUNT : MaxNumMeshLODs);
+		check(InMipCount <= (IsTexture() ? MAX_TEXTURE_MIP_COUNT : MaxNumMeshLODs));
 		return CumulativeLODSizes[InMipCount - 1];
 	}
 
@@ -103,7 +106,7 @@ public:
 		const FRenderAssetStreamingSettings& Settings);
 
 	/** Init BudgetedMip and update RetentionPriority. Returns the size that would be taken if all budgeted mips where loaded. */
-	int64 UpdateRetentionPriority_Async();
+	int64 UpdateRetentionPriority_Async(bool bPrioritizeMesh);
 
 	/** Reduce the maximum allowed resolution by 1 mip. Return the size freed by doing so. */
 	int64 DropMaxResolution_Async(int32 NumDroppedMips);
@@ -114,14 +117,20 @@ public:
 	/** Increase BudgetedMip by 1, up to resident mips, and return the size taken. */
 	int64 KeepOneMip_Async();
 
+	/** Return the memory delta in bytes caused by max resolution change. Actual memory reduction is smaller or equal. **/
+	int64 GetDropMaxResMemDelta(int32 NumDroppedMips) const;
+
+	/** Return the memory delta in bytes if a mip is successfully dropped. */
+	int64 GetDropOneMipMemDelta() const;
+
 	float GetMaxAllowedSize(float MaxScreenSizeOverAllViews) const
 	{
-		return RenderAssetType == AT_Texture ? (float)(0x1 << (MaxAllowedMips - 1)) : MaxScreenSizeOverAllViews;
+		return IsTexture() ? (float)(0x1 << (MaxAllowedMips - 1)) : MaxScreenSizeOverAllViews;
 	}
 
 	float GetNormalizedScreenSize(int32 NumMips) const
 	{
-		check(RenderAssetType == AT_StaticMesh || RenderAssetType == AT_SkeletalMesh);
+		check(IsMesh());
 		check(NumMips > 0 && NumMips <= MipCount);
 		return LODScreenSizes[NumMips - 1];
 	}
@@ -129,7 +138,7 @@ public:
 	float GetLODScreenSize(int32 NumMips, float MaxScreenSizeOverAllViews) const
 	{
 		check(NumMips > 0 && NumMips <= MipCount);
-		return RenderAssetType == AT_Texture ?
+		return IsTexture() ?
 			static_cast<float>(1 << (NumMips - 1)) :
 			GetNormalizedScreenSize(NumMips) * MaxScreenSizeOverAllViews;
 	}
@@ -149,6 +158,17 @@ public:
 	// This allows streaming to happen in parallel with the async update task
 	void StreamWantedMipsUsingCachedData(FRenderAssetStreamingManager& Manager);
 
+	bool IsTexture() const
+	{
+		return RenderAssetType == AT_Texture;
+	}
+
+	bool IsMesh() const
+	{
+		// FRenderAssetStreamingManager only handles textures and meshes currently
+		return RenderAssetType != AT_Texture;
+	}
+
 	FORCEINLINE int32 GetPerfectWantedMips() const { return FMath::Max<int32>(VisibleWantedMips,  HiddenWantedMips); }
 
 	// Whether this texture/mesh can be affected by Global Bias and Budget Bias per texture/mesh.
@@ -156,9 +176,9 @@ public:
 	FORCEINLINE bool IsMaxResolutionAffectedByGlobalBias() const 
 	{
 		// In editor, forced stream in should never have reduced mips as they can be edited.
-		return (RenderAssetType != AT_Texture || LODGroup != TEXTUREGROUP_HierarchicalLOD)
+		return (IsMesh() || LODGroup != TEXTUREGROUP_HierarchicalLOD)
 			&& !bIsTerrainTexture
-			&& !bIgnoreStreamingMipBias
+			&& !(bForceFullyLoadHeuristic && bIgnoreStreamingMipBias)
 			&& !(GIsEditor && bForceFullyLoadHeuristic); 
 	}
 
@@ -174,9 +194,9 @@ public:
 	FORCEINLINE void ClearCachedOptionalMipsState_Async()
 	{
 		// If we already have our optional mips there is no need to recache, pak files can't go away!
-		if (OptionalMipsState == EOptionalMipsState::NoOptionalMips && NumNonOptionalMips != MipCount)
+		if (OptionalMipsState == EOptionalMipsState::OMS_NoOptionalMips && NumNonOptionalMips != MipCount)
 		{
-			OptionalMipsState = EOptionalMipsState::NotCached;
+			OptionalMipsState = EOptionalMipsState::OMS_NotCached;
 		}
 	}
 
@@ -192,10 +212,14 @@ public:
 	/** (1) Texture/mesh to manage. Note that this becomes null when the texture/mesh is removed. */
 	UStreamableRenderAsset*		RenderAsset;
 	/** (2) */
+#if STORE_OPTIONAL_DATA_FILENAME
 	FString			OptionalBulkDataFilename;
+#else
+	int32			OptionalMipIndex;
+#endif
 	
 	/** (1) Cached texture/mesh LOD group. */
-	int32	LODGroup;
+	int32			LODGroup;
 	/** (1) Cached number of mipmaps that are not allowed to stream. */
 	int32			NumNonStreamingMips;
 	/** (1) Cached number of mip-maps in the asset's mip array (including the base mip) */
@@ -270,7 +294,7 @@ public:
 	uint32			bReadyForStreaming : 1;
 	/** (2) Whether the texture should be forcibly fully loaded. */
 	uint32			bForceFullyLoad : 1;
-	/** (2) Whether the texture resolution should be affected by the memory budget. */
+	/** (2) Whether the texture resolution should be affected by the memory budget. Only effective when forced fully resident. */
 	uint32			bIgnoreStreamingMipBias : 1;
 
 	/** (3) Whether the texture is currently being streamed in/out. */
@@ -293,4 +317,6 @@ public:
 
 private:
 	FORCEINLINE_DEBUGGABLE void StreamWantedMips_Internal(FRenderAssetStreamingManager& Manager, bool bUseCachedData);
+
+	FORCEINLINE_DEBUGGABLE int32 ClampMaxResChange_Internal(int32 NumMipDropRequested) const;
 };

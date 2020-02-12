@@ -1,7 +1,8 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 #pragma once
 
 #include "BuildPatchFileConstructor.h"
+#include "Common/StatsCollector.h"
 
 #if WITH_DEV_AUTOMATION_TESTS
 

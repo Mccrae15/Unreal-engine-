@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "SStaticMeshEditorViewport.h"
 #include "SStaticMeshEditorViewportToolBar.h"
@@ -58,11 +58,11 @@ void SStaticMeshEditorViewport::Construct(const FArguments& InArgs)
 	SEditorViewport::Construct( SEditorViewport::FArguments() );
 
 	PreviewMeshComponent = NewObject<UStaticMeshComponent>(GetTransientPackage(), NAME_None, RF_Transient );
-	if (GEditor->PreviewFeatureLevel <= ERHIFeatureLevel::ES3_1)
+	ERHIFeatureLevel::Type FeatureLevel = GEditor->PreviewPlatform.GetEffectivePreviewFeatureLevel();
+	if (FeatureLevel <= ERHIFeatureLevel::ES3_1)
 	{
 		PreviewMeshComponent->SetMobility(EComponentMobility::Static);
 	}
-
 	SetPreviewMesh(StaticMesh);
 
 	FCoreUObjectDelegates::OnObjectPropertyChanged.AddRaw(this, &SStaticMeshEditorViewport::OnObjectPropertyChanged);
@@ -278,11 +278,11 @@ void SStaticMeshEditorViewport::UpdatePreviewMesh(UStaticMesh* InStaticMesh, boo
 	}
 
 	PreviewMeshComponent = NewObject<UStaticMeshComponent>();
-	if (GEditor->PreviewFeatureLevel <= ERHIFeatureLevel::ES3_1)
+	ERHIFeatureLevel::Type FeatureLevel = GEditor->PreviewPlatform.GetEffectivePreviewFeatureLevel();
+	if ( FeatureLevel <= ERHIFeatureLevel::ES3_1)
 	{
 		PreviewMeshComponent->SetMobility(EComponentMobility::Static);
 	}
-
 	PreviewMeshComponent->SetStaticMesh(InStaticMesh);
 
 	PreviewScene->AddComponent(PreviewMeshComponent,FTransform::Identity);
@@ -305,6 +305,17 @@ void SStaticMeshEditorViewport::UpdatePreviewMesh(UStaticMesh* InStaticMesh, boo
 	}
 
 	EditorViewportClient->SetPreviewMesh(InStaticMesh, PreviewMeshComponent, bResetCamera);
+
+	if (EditorViewportClient->EngineShowFlags.PhysicalMaterialMasks)
+	{
+		//Reapply the physical material masks mode on the newly set static mesh.
+		SetViewModePhysicalMaterialMasksImplementation(true);
+	}
+	else if (EditorViewportClient->EngineShowFlags.VertexColors)
+	{
+		//Reapply the vertex color mode on the newly set static mesh.
+		SetViewModeVertexColorImplementation(true);
+	}
 
 	PreviewMeshComponent->SelectionOverrideDelegate = UPrimitiveComponent::FSelectionOverride::CreateRaw(this, &SStaticMeshEditorViewport::PreviewComponentSelectionOverride);
 	PreviewMeshComponent->PushSelectionToProxy();
@@ -346,37 +357,78 @@ bool SStaticMeshEditorViewport::IsInViewModeWireframeChecked() const
 
 void SStaticMeshEditorViewport::SetViewModeVertexColor()
 {
-	if (!EditorViewportClient->EngineShowFlags.VertexColors)
-	{
-		EditorViewportClient->EngineShowFlags.SetVertexColors(true);
-		EditorViewportClient->EngineShowFlags.SetLighting(false);
-		EditorViewportClient->EngineShowFlags.SetIndirectLightingCache(false);
-		EditorViewportClient->EngineShowFlags.SetPostProcessing(false);
-		EditorViewportClient->SetFloorAndEnvironmentVisibility(false);
-		StaticMeshEditorPtr.Pin()->GetStaticMeshComponent()->bDisplayVertexColors = true;
-		StaticMeshEditorPtr.Pin()->GetStaticMeshComponent()->MarkRenderStateDirty();
-	}
-	else
-	{
-		EditorViewportClient->EngineShowFlags.SetVertexColors(false);
-		EditorViewportClient->EngineShowFlags.SetLighting(true);
-		EditorViewportClient->EngineShowFlags.SetIndirectLightingCache(true);
-		EditorViewportClient->EngineShowFlags.SetPostProcessing(true);
-		EditorViewportClient->SetFloorAndEnvironmentVisibility(true);
-		StaticMeshEditorPtr.Pin()->GetStaticMeshComponent()->bDisplayVertexColors = false;
-		StaticMeshEditorPtr.Pin()->GetStaticMeshComponent()->MarkRenderStateDirty();
-	}
+	SetViewModeVertexColorImplementation(!EditorViewportClient->EngineShowFlags.VertexColors);
+
 	if (FEngineAnalytics::IsAvailable())
 	{
 		FEngineAnalytics::GetProvider().RecordEvent(TEXT("Editor.Usage.StaticMesh.Toolbar"), FAnalyticsEventAttribute(TEXT("VertexColors"), static_cast<int>(EditorViewportClient->EngineShowFlags.VertexColors)));
 	}
+}
+
+void SStaticMeshEditorViewport::SetViewModeVertexColorImplementation(bool bValue)
+{
+	SetViewModeVertexColorSubImplementation(bValue);
+
+	// Disable physical material masks, if enabling vertex color.
+	if (bValue)
+	{
+		SetViewModePhysicalMaterialMasksSubImplementation(false);
+	}
+
+	StaticMeshEditorPtr.Pin()->GetStaticMeshComponent()->MarkRenderStateDirty();
 	SceneViewport->Invalidate();
+}
+
+void SStaticMeshEditorViewport::SetViewModeVertexColorSubImplementation(bool bValue)
+{
+	EditorViewportClient->EngineShowFlags.SetVertexColors(bValue);
+	EditorViewportClient->EngineShowFlags.SetLighting(!bValue);
+	EditorViewportClient->EngineShowFlags.SetIndirectLightingCache(!bValue);
+	EditorViewportClient->EngineShowFlags.SetPostProcessing(!bValue);
+	EditorViewportClient->SetFloorAndEnvironmentVisibility(!bValue);
+	StaticMeshEditorPtr.Pin()->GetStaticMeshComponent()->bDisplayVertexColors = bValue;
 }
 
 bool SStaticMeshEditorViewport::IsInViewModeVertexColorChecked() const
 {
 	return EditorViewportClient->EngineShowFlags.VertexColors;
 }
+
+void SStaticMeshEditorViewport::SetViewModePhysicalMaterialMasks()
+{
+	SetViewModePhysicalMaterialMasksImplementation(!EditorViewportClient->EngineShowFlags.PhysicalMaterialMasks);
+
+	if (FEngineAnalytics::IsAvailable())
+	{
+		FEngineAnalytics::GetProvider().RecordEvent(TEXT("Editor.Usage.StaticMesh.Toolbar"), FAnalyticsEventAttribute(TEXT("PhysicalMaterialMasks"), static_cast<int>(EditorViewportClient->EngineShowFlags.PhysicalMaterialMasks)));
+	}
+}
+
+void SStaticMeshEditorViewport::SetViewModePhysicalMaterialMasksImplementation(bool bValue)
+{
+	SetViewModePhysicalMaterialMasksSubImplementation(bValue);
+
+	// Disable vertex color, if enabling physical material masks.
+	if (bValue)
+	{
+		SetViewModeVertexColorSubImplementation(false);
+	}
+
+	StaticMeshEditorPtr.Pin()->GetStaticMeshComponent()->MarkRenderStateDirty();
+	SceneViewport->Invalidate();
+}
+
+void SStaticMeshEditorViewport::SetViewModePhysicalMaterialMasksSubImplementation(bool bValue)
+{
+	EditorViewportClient->EngineShowFlags.SetPhysicalMaterialMasks(bValue);
+	StaticMeshEditorPtr.Pin()->GetStaticMeshComponent()->bDisplayPhysicalMaterialMasks = bValue;
+}
+
+bool SStaticMeshEditorViewport::IsInViewModePhysicalMaterialMasksChecked() const
+{
+	return EditorViewportClient->EngineShowFlags.PhysicalMaterialMasks;
+}
+
 
 void SStaticMeshEditorViewport::ForceLODLevel(int32 InForcedLOD)
 {
@@ -408,10 +460,12 @@ void SStaticMeshEditorViewport::OnSetLODModel(int32 InLODSelection)
 {
 	if (PreviewMeshComponent)
 	{
+		PreviewMeshComponent->bOverrideMinLOD = (InLODSelection != 0);
 		LODSelection = InLODSelection;
 		PreviewMeshComponent->SetForcedLodModel(LODSelection);
 		//PopulateUVChoices();
 		StaticMeshEditorPtr.Pin()->BroadcastOnSelectedLODChanged();
+		RefreshViewport();
 	}
 }
 
@@ -467,7 +521,7 @@ EVisibility SStaticMeshEditorViewport::OnGetViewportContentVisibility() const
 
 void SStaticMeshEditorViewport::BindCommands()
 {
-	SEditorViewport::BindCommands();
+	SAssetEditorViewport::BindCommands();
 
 	const FStaticMeshEditorCommands& Commands = FStaticMeshEditorCommands::Get();
 
@@ -484,6 +538,12 @@ void SStaticMeshEditorViewport::BindCommands()
 		FExecuteAction::CreateSP( this, &SStaticMeshEditorViewport::SetViewModeVertexColor ),
 		FCanExecuteAction(),
 		FIsActionChecked::CreateSP( this, &SStaticMeshEditorViewport::IsInViewModeVertexColorChecked ) );
+
+	CommandList->MapAction(
+		Commands.SetShowPhysicalMaterialMasks,
+		FExecuteAction::CreateSP(this, &SStaticMeshEditorViewport::SetViewModePhysicalMaterialMasks),
+		FCanExecuteAction(),
+		FIsActionChecked::CreateSP(this, &SStaticMeshEditorViewport::IsInViewModePhysicalMaterialMasksChecked));
 
 	CommandList->MapAction(
 		Commands.ResetCamera,

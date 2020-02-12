@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -36,6 +36,13 @@ public:
 	 * @param StructData The structure data to display.
 	 */
 	virtual void SetStructureData(TSharedPtr<class FStructOnScope> StructData) = 0;
+
+	/**
+	 * Set the CustomName used for display purposes.
+	 *
+	 * @param Text The FText to use for setting the Name
+	 */
+	virtual void SetCustomName(const FText& Text) = 0;
 
 public:
 

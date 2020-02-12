@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 /*=============================================================================
 	OpenGLState.h: OpenGL state definitions.
@@ -220,10 +220,16 @@ struct FUAVStage
 {
 	GLenum Format;
 	GLuint Resource;
+	GLenum Access;
+	GLint Layer;
+	bool bLayered;
 	
 	FUAVStage()
 	:	Format(GL_NONE)
 	,	Resource(0)
+	,	Access(GL_READ_WRITE)
+	,	Layer(0)
+	,	bLayered(false)
 	{
 	}
 };
@@ -285,13 +291,17 @@ struct FOpenGLCommonState
 		CleanupResources();
 	}
 
-	virtual void InitializeResources(int32 NumCombinedTextures, int32 NumComputeUAVUnits)
+	// NumCombinedTextures must be greater than or equal to FOpenGL::GetMaxCombinedTextureImageUnits()
+	// NumCombinedUAVUnits must be greater than or equal to FOpenGL::GetMaxCombinedUAVUnits()
+	virtual void InitializeResources(int32 NumCombinedTextures, int32 NumCombinedUAVUnits)
 	{
+		check(NumCombinedTextures >= FOpenGL::GetMaxCombinedTextureImageUnits());
+		check(NumCombinedUAVUnits >= FOpenGL::GetMaxCombinedUAVUnits());
 		check(!Textures && !SamplerStates && !UAVs);
 		Textures = new FTextureStage[NumCombinedTextures];
 		SamplerStates = new FOpenGLSamplerState*[NumCombinedTextures];
 		FMemory::Memset( SamplerStates, 0, NumCombinedTextures * sizeof(*SamplerStates) );
-		UAVs = new FUAVStage[NumComputeUAVUnits];
+		UAVs = new FUAVStage[NumCombinedUAVUnits];
 	}
 
 	virtual void CleanupResources()
@@ -368,6 +378,8 @@ struct FOpenGLContextState : public FOpenGLCommonState
 	uint32 ActiveStreamMask;
 	uint32 MaxActiveAttrib;
 
+	uint32 ActiveUAVMask;
+
 	FOpenGLContextState()
 	:	StencilRef(0)
 	,	Framebuffer(0)
@@ -396,6 +408,7 @@ struct FOpenGLContextState : public FOpenGLCommonState
 	, ActiveAttribMask(0)
 	, ActiveStreamMask(0)
 	, MaxActiveAttrib(0)
+	, ActiveUAVMask(0)
 	{
 		Scissor.Min.X = Scissor.Min.Y = Scissor.Max.X = Scissor.Max.Y = 0;
 		Viewport.Min.X = Viewport.Min.Y = Viewport.Max.X = Viewport.Max.Y = 0;
@@ -404,11 +417,13 @@ struct FOpenGLContextState : public FOpenGLCommonState
 		FMemory::Memzero(DrawFramebuffers, sizeof(DrawFramebuffers));
 	}
 
-	virtual void InitializeResources(int32 NumCombinedTextures, int32 NumComputeUAVUnits) override
+	virtual void InitializeResources(int32 NumCombinedTextures, int32 NumCombinedUAVUnits) override
 	{
-		FOpenGLCommonState::InitializeResources(NumCombinedTextures, NumComputeUAVUnits);
+		FOpenGLCommonState::InitializeResources(NumCombinedTextures, NumCombinedUAVUnits);
 		CachedSamplerStates.Empty(NumCombinedTextures);
 		CachedSamplerStates.AddZeroed(NumCombinedTextures);
+
+		checkf(NumCombinedUAVUnits <= sizeof(ActiveUAVMask) * 8, TEXT("Not enough bits in ActiveUAVMask to store %d UAV units"), NumCombinedUAVUnits);
 	}
 
 	virtual void CleanupResources() override

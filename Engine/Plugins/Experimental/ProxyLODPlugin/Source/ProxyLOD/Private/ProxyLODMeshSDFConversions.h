@@ -1,17 +1,16 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
 
 #include "ProxyLODMeshTypes.h"
 #include "ProxyLODMeshConvertUtils.h"
+#include "ProxyLODMeshUtilities.h"
 
+THIRD_PARTY_INCLUDES_START
 #include <openvdb/openvdb.h>
-
-
-
 #include <openvdb/tools/VolumeToMesh.h> // for VolumeToMesh
-
+THIRD_PARTY_INCLUDES_END
 
 namespace ProxyLOD
 {
@@ -110,6 +109,7 @@ namespace ProxyLOD
 template <typename DstMeshType>
 void ProxyLOD::SDFVolumeToMesh(const openvdb::FloatGrid::ConstPtr SDFVolume, const double IsoValue, const double Adaptivity, DstMeshType& OutMesh)
 {
+	TRACE_CPUPROFILER_EVENT_SCOPE(ProxyLOD::SDFVolumeToMesh)
 
 	// we should be generating a new FMeshDescription.
 

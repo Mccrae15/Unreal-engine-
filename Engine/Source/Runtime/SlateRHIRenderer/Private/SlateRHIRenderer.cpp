@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "SlateRHIRenderer.h"
 #include "Fonts/FontCache.h"
@@ -30,10 +30,11 @@
 #include "CommonRenderResources.h"
 #include "RenderTargetPool.h"
 #include "RendererUtils.h"
+#include "HAL/LowLevelMemTracker.h"
+#include "Rendering/RenderingCommon.h"
 
 DECLARE_CYCLE_STAT(TEXT("Slate RT: Rendering"), STAT_SlateRenderingRTTime, STATGROUP_Slate);
-DECLARE_CYCLE_STAT(TEXT("Slate RT: Create Batches"), STAT_SlateRTCreateBatches, STATGROUP_Slate);
-DECLARE_CYCLE_STAT(TEXT("Slate RT: Fill Vertex & Index Buffers"), STAT_SlateRTFillVertexIndexBuffers, STATGROUP_Slate);
+
 DECLARE_CYCLE_STAT(TEXT("Slate RT: Draw Batches"), STAT_SlateRTDrawBatches, STATGROUP_Slate);
 
 DECLARE_GPU_STAT_NAMED(SlateUI, TEXT("Slate UI"));
@@ -83,6 +84,10 @@ struct FSlateDrawWindowCommandParams
 {
 	FSlateRHIRenderer* Renderer;
 	FSlateWindowElementList* WindowElementList;
+	SWindow* Window;
+#if WANTS_DRAW_MESH_EVENTS
+	FString WindowTitle;
+#endif
 	float WorldTimeSeconds;
 	float DeltaTimeSeconds;
 	float RealTimeSeconds;
@@ -103,27 +108,30 @@ void FViewportInfo::ReleaseRHI()
 	ViewportRHI.SafeRelease();
 }
 
+void FViewportInfo::ReleaseResource()
+{
+	FRenderResource::ReleaseResource();
+	UITargetRT.SafeRelease();
+	UITargetRTMask.SafeRelease();
+	HDRSourceRT.SafeRelease();
+}
+
 void FViewportInfo::ConditionallyUpdateDepthBuffer(bool bInRequiresStencilTest, uint32 InWidth, uint32 InHeight)
 {
-	FViewportInfo* ViewportInfo = this;
-	ENQUEUE_RENDER_COMMAND(UpdateDepthBufferCommand)(
-		[ViewportInfo, bInRequiresStencilTest, InWidth, InHeight](FRHICommandListImmediate& RHICmdList)
+	check(IsInRenderingThread());
+
+	bool bDepthStencilStale =
+		bInRequiresStencilTest &&
+		(!bRequiresStencilTest ||
+		(DepthStencil.IsValid() && (DepthStencil->GetSizeX() != InWidth || DepthStencil->GetSizeY() != InHeight)));
+
+	bRequiresStencilTest = bInRequiresStencilTest;
+
+	// Allocate a stencil buffer if needed and not already allocated
+	if (bDepthStencilStale)
 	{
-		bool bDepthStencilStale =
-			bInRequiresStencilTest &&
-			(!ViewportInfo->bRequiresStencilTest ||
-			(ViewportInfo->DepthStencil.IsValid() && (ViewportInfo->DepthStencil->GetSizeX() != InWidth || ViewportInfo->DepthStencil->GetSizeY() != InHeight))
-				);
-
-		ViewportInfo->bRequiresStencilTest = bInRequiresStencilTest;
-
-		// Allocate a stencil buffer if needed and not already allocated
-		if (bDepthStencilStale)
-		{
-			ViewportInfo->RecreateDepthBuffer_RenderThread();
-		}
+		RecreateDepthBuffer_RenderThread();
 	}
-	);
 }
 
 void FViewportInfo::RecreateDepthBuffer_RenderThread()
@@ -145,6 +153,7 @@ FSlateRHIRenderer::FSlateRHIRenderer(TSharedRef<FSlateFontServices> InSlateFontS
 	: FSlateRenderer(InSlateFontServices)
 	, EnqueuedWindowDrawBuffer(NULL)
 	, FreeBufferIndex(0)
+	, FastPathRenderingDataCleanupList(nullptr)
 	, CurrentSceneIndex(-1)
 	, ResourceVersion(0)
 {
@@ -188,7 +197,7 @@ bool FSlateRHIRenderer::Initialize()
 
 	RenderingPolicy = MakeShareable(new FSlateRHIRenderingPolicy(SlateFontServices.ToSharedRef(), ResourceManager.ToSharedRef()));
 
-	ElementBatcher = MakeShareable(new FSlateElementBatcher(RenderingPolicy.ToSharedRef()));
+	ElementBatcher = MakeUnique<FSlateElementBatcher>(RenderingPolicy.ToSharedRef());
 
 	CurrentSceneIndex = -1;
 	ActiveScenes.Empty();
@@ -206,11 +215,14 @@ void FSlateRHIRenderer::Destroy()
 		BeginReleaseResource(It.Value());
 	}
 
+	if (FastPathRenderingDataCleanupList)
+	{
+		FastPathRenderingDataCleanupList->Cleanup();
+		FastPathRenderingDataCleanupList = nullptr;
+	}
 
 	FlushRenderingCommands();
 
-
-	check(ElementBatcher.IsUnique());
 	ElementBatcher.Reset();
 	RenderingPolicy.Reset();
 	ResourceManager.Reset();
@@ -320,6 +332,10 @@ void FSlateRHIRenderer::CreateViewport(const TSharedRef<SWindow> Window)
 		bool bFullscreen = IsViewportFullscreen( *Window );
 		NewInfo->ViewportRHI = RHICreateViewport( NewInfo->OSWindow, Width, Height, bFullscreen, NewInfo->PixelFormat );
 		NewInfo->bFullscreen = bFullscreen;
+
+		// Was the window created on a HDR compatible display?
+		NewInfo->bHDREnabled = RHIGetColorSpace(NewInfo->ViewportRHI) != EColorSpaceAndEOTF::ERec709_sRGB ;
+		Window->SetIsHDR(NewInfo->bHDREnabled);
 
 		WindowToViewportInfo.Add(&Window.Get(), NewInfo);
 
@@ -478,6 +494,13 @@ void FSlateRHIRenderer::OnWindowDestroyed(const TSharedRef<SWindow>& InWindow)
 	WindowToViewportInfo.Remove(&InWindow.Get());
 }
 
+/** Called when a window is Finished being Reshaped - Currently need to check if its HDR status has changed */
+void FSlateRHIRenderer::OnWindowFinishReshaped(const TSharedPtr<SWindow>& InWindow)
+{
+	FViewportInfo* ViewInfo = WindowToViewportInfo.FindRef(InWindow.Get());
+	RHICheckViewportHDRStatus(ViewInfo->ViewportRHI);
+}
+
 // Limited platform support for HDR UI composition
 bool SupportsUICompositionRendering(const EShaderPlatform Platform)
 {
@@ -524,16 +547,8 @@ public:
 			OutputDeviceValue = FMath::Max(OutputDeviceValue, 2);
 		}
 
-		SetShaderValue(RHICmdList, GetPixelShader(), OutputDevice, OutputDeviceValue);
-		SetShaderValue(RHICmdList, GetPixelShader(), OutputGamut, OutputGamutValue);
-	}
-
-	virtual bool Serialize(FArchive& Ar) override
-	{
-		bool bShaderHasOutdatedParameters = FGlobalShader::Serialize(Ar);
-		Ar << OutputDevice;
-		Ar << OutputGamut;
-		return bShaderHasOutdatedParameters;
+		SetShaderValue(RHICmdList, RHICmdList.GetBoundPixelShader(), OutputDevice, OutputDeviceValue);
+		SetShaderValue(RHICmdList, RHICmdList.GetBoundPixelShader(), OutputGamut, OutputGamutValue);
 	}
 
 	static const TCHAR* GetSourceFilename()
@@ -547,8 +562,8 @@ public:
 	}
 
 private:
-	FShaderParameter OutputDevice;
-	FShaderParameter OutputGamut;
+	LAYOUT_FIELD(FShaderParameter, OutputDevice);
+	LAYOUT_FIELD(FShaderParameter, OutputGamut);
 };
 
 IMPLEMENT_SHADER_TYPE(, FCompositeLUTGenerationPS, TEXT("/Engine/Private/CompositeUIPixelShader.usf"), TEXT("GenerateLUTPS"), SF_Pixel);
@@ -580,19 +595,19 @@ public:
 	}
 	FCompositePS() {}
 
-	void SetParameters(FRHICommandList& RHICmdList, FTextureRHIParamRef UITextureRHI, FTextureRHIParamRef UITextureWriteMaskRHI, FTextureRHIParamRef SceneTextureRHI, FTextureRHIParamRef ColorSpaceLUTRHI)
+	void SetParameters(FRHICommandList& RHICmdList, FRHITexture* UITextureRHI, FRHITexture* UITextureWriteMaskRHI, FRHITexture* SceneTextureRHI, FRHITexture* ColorSpaceLUTRHI)
 	{
 		static const auto CVarOutputDevice = IConsoleManager::Get().FindTConsoleVariableDataInt(TEXT("r.HDR.Display.OutputDevice"));
 
-		SetTextureParameter(RHICmdList, GetPixelShader(), UITexture, UISampler, TStaticSamplerState<SF_Point>::GetRHI(), UITextureRHI);
-		SetTextureParameter(RHICmdList, GetPixelShader(), SceneTexture, SceneSampler, TStaticSamplerState<SF_Point>::GetRHI(), SceneTextureRHI);
-		SetTextureParameter(RHICmdList, GetPixelShader(), ColorSpaceLUT, ColorSpaceLUTSampler, TStaticSamplerState<SF_Bilinear, AM_Clamp, AM_Clamp, AM_Clamp>::GetRHI(), ColorSpaceLUTRHI);
-		SetShaderValue(RHICmdList, GetPixelShader(), UILevel, CVarUILevel.GetValueOnRenderThread());
-		SetShaderValue(RHICmdList, GetPixelShader(), OutputDevice, CVarOutputDevice->GetValueOnRenderThread());
+		SetTextureParameter(RHICmdList, RHICmdList.GetBoundPixelShader(), UITexture, UISampler, TStaticSamplerState<SF_Point>::GetRHI(), UITextureRHI);
+		SetTextureParameter(RHICmdList, RHICmdList.GetBoundPixelShader(), SceneTexture, SceneSampler, TStaticSamplerState<SF_Point>::GetRHI(), SceneTextureRHI);
+		SetTextureParameter(RHICmdList, RHICmdList.GetBoundPixelShader(), ColorSpaceLUT, ColorSpaceLUTSampler, TStaticSamplerState<SF_Bilinear, AM_Clamp, AM_Clamp, AM_Clamp>::GetRHI(), ColorSpaceLUTRHI);
+		SetShaderValue(RHICmdList, RHICmdList.GetBoundPixelShader(), UILevel, CVarUILevel.GetValueOnRenderThread());
+		SetShaderValue(RHICmdList, RHICmdList.GetBoundPixelShader(), OutputDevice, CVarOutputDevice->GetValueOnRenderThread());
 		
-		if (GSupportsRenderTargetWriteMask)
+		if (RHISupportsRenderTargetWriteMask(GMaxRHIShaderPlatform))
 		{
-			SetTextureParameter(RHICmdList, GetPixelShader(), UIWriteMaskTexture, UITextureWriteMaskRHI);
+			SetTextureParameter(RHICmdList, RHICmdList.GetBoundPixelShader(), UIWriteMaskTexture, UITextureWriteMaskRHI);
 		}
 	}
 
@@ -600,17 +615,6 @@ public:
 	{
 		FGlobalShader::ModifyCompilationEnvironment(Parameters, OutEnvironment);
 		OutEnvironment.SetDefine(TEXT("SCRGB_ENCODING"), EncodingType);
-	}
-
-	virtual bool Serialize(FArchive& Ar) override
-	{
-		bool bShaderHasOutdatedParameters = FGlobalShader::Serialize(Ar);
-		Ar << UITexture << UISampler;
-		Ar << UIWriteMaskTexture;
-		Ar << SceneTexture << SceneSampler;
-		Ar << ColorSpaceLUT << ColorSpaceLUTSampler;
-		Ar << UILevel << OutputDevice;
-		return bShaderHasOutdatedParameters;
 	}
 
 	static const TCHAR* GetSourceFilename()
@@ -624,15 +628,15 @@ public:
 	}
 
 private:
-	FShaderResourceParameter UITexture;
-	FShaderResourceParameter UIWriteMaskTexture;
-	FShaderResourceParameter UISampler;
-	FShaderResourceParameter SceneTexture;
-	FShaderResourceParameter SceneSampler;
-	FShaderResourceParameter ColorSpaceLUT;
-	FShaderResourceParameter ColorSpaceLUTSampler;
-	FShaderParameter UILevel;
-	FShaderParameter OutputDevice;
+	LAYOUT_FIELD(FShaderResourceParameter, UITexture);
+	LAYOUT_FIELD(FShaderResourceParameter, UIWriteMaskTexture);
+	LAYOUT_FIELD(FShaderResourceParameter, UISampler);
+	LAYOUT_FIELD(FShaderResourceParameter, SceneTexture);
+	LAYOUT_FIELD(FShaderResourceParameter, SceneSampler);
+	LAYOUT_FIELD(FShaderResourceParameter, ColorSpaceLUT);
+	LAYOUT_FIELD(FShaderResourceParameter, ColorSpaceLUTSampler);
+	LAYOUT_FIELD(FShaderParameter, UILevel);
+	LAYOUT_FIELD(FShaderParameter, OutputDevice);
 };
 
 #define SHADER_VARIATION(A) typedef FCompositePS<A> FCompositePS##A; \
@@ -646,16 +650,27 @@ static FAutoConsoleVariableRef CVarSlateWireframe(TEXT("Slate.ShowWireFrame"), S
 /** Draws windows from a FSlateDrawBuffer on the render thread */
 void FSlateRHIRenderer::DrawWindow_RenderThread(FRHICommandListImmediate& RHICmdList, FViewportInfo& ViewportInfo, FSlateWindowElementList& WindowElementList, const struct FSlateDrawWindowCommandParams& DrawCommandParams)
 {
+	LLM_SCOPE(ELLMTag::SceneRender);
+	
+	bool bRenderOffscreen = false;	// Render to an offscreen texture which can then be finally color converted at the end.
+	
+#if WITH_EDITOR
+	if (RHIGetColorSpace(ViewportInfo.ViewportRHI) != EColorSpaceAndEOTF::ERec709_sRGB)
+	{
+		bRenderOffscreen = true;
+	}
+#endif
+
+	FMemMark MemMark(FMemStack::Get());
+
 	static uint32 LastTimestamp = FPlatformTime::Cycles();
 	{
-		SCOPED_DRAW_EVENT(RHICmdList, SlateUI);
+		SCOPED_DRAW_EVENTF(RHICmdList, SlateUI, TEXT("SlateUI Title = %s"), DrawCommandParams.WindowTitle.IsEmpty() ? TEXT("<none>") : *DrawCommandParams.WindowTitle);
 		SCOPED_GPU_STAT(RHICmdList, SlateUI);
+		SCOPED_NAMED_EVENT_TEXT("Slate::DrawWindow_RenderThread", FColor::Magenta);
 
 		// Should only be called by the rendering thread
 		check(IsInRenderingThread());
-
-		// Any window that draws should be reporting referenced UObjects for the duration of the frame.
-		check(WindowElementList.ShouldReportUObjectReferences());
 
 		FMaterialRenderProxy::UpdateDeferredCachedUniformExpressions();
 		GetRendererModule().InitializeSystemTextures(RHICmdList);
@@ -693,24 +708,15 @@ void FSlateRHIRenderer::DrawWindow_RenderThread(FRHICommandListImmediate& RHICmd
 		{
 			SCOPED_GPU_STAT(RHICmdList, SlateUI);
 			SCOPE_CYCLE_COUNTER(STAT_SlateRenderingRTTime);
+			CSV_SCOPED_TIMING_STAT_EXCLUSIVE(Slate);
 
 			FSlateBatchData& BatchData = WindowElementList.GetBatchData();
-			FElementBatchMap& RootBatchMap = WindowElementList.GetRootDrawLayer().GetElementBatchMap();
 
-			WindowElementList.PreDraw_ParallelThread();
+			// Update the vertex and index buffer	
+			RenderingPolicy->BuildRenderingBuffers(RHICmdList, BatchData);
 
-			{
-				SCOPE_CYCLE_COUNTER(STAT_SlateRTCreateBatches);
-				// Update the vertex and index buffer	
-				BatchData.CreateRenderBatches(RootBatchMap);
-			}
-
-			RootBatchMap.UpdateResourceVersion(ResourceVersion);
-
-			{
-				SCOPE_CYCLE_COUNTER(STAT_SlateRTFillVertexIndexBuffers);
-				RenderingPolicy->UpdateVertexAndIndexBuffers(RHICmdList, BatchData);
-			}
+			// This must happen after rendering buffers are created
+			ViewportInfo.ConditionallyUpdateDepthBuffer(BatchData.IsStencilClippingRequired(), ViewportInfo.DesiredWidth, ViewportInfo.DesiredHeight);
 
 			// should have been created by the game thread
 			check(IsValidRef(ViewportInfo.ViewportRHI));
@@ -722,10 +728,11 @@ void FSlateRHIRenderer::DrawWindow_RenderThread(FRHICommandListImmediate& RHICmd
 			const uint32 ViewportHeight = (ViewportRT) ? ViewportRT->GetSizeY() : ViewportInfo.Height;
 
 			// Check to see that targets are up-to-date
-			if (bCompositeUI && (!ViewportInfo.UITargetRT || ViewportInfo.UITargetRT->GetRenderTargetItem().TargetableTexture->GetTexture2D()->GetSizeX() != ViewportWidth || ViewportInfo.UITargetRT->GetRenderTargetItem().TargetableTexture->GetTexture2D()->GetSizeY() != ViewportHeight))
+			if (bCompositeUI && (!ViewportInfo.UITargetRT || ViewportInfo.UITargetRT->GetRenderTargetItem().TargetableTexture->GetTexture2D()->GetSizeX() != ViewportWidth || ViewportInfo.UITargetRT->GetRenderTargetItem().TargetableTexture->GetTexture2D()->GetSizeY() != ViewportHeight
+				|| !ViewportInfo.HDRSourceRT || ViewportInfo.HDRSourceRT->GetRenderTargetItem().TargetableTexture->GetFormat() != BackBuffer->GetFormat()))
 			{
 				// Composition buffers
-				uint32 BaseFlags = (GSupportsRenderTargetWriteMask) ? TexCreate_NoFastClearFinalize : TexCreate_None;
+				uint32 BaseFlags = RHISupportsRenderTargetWriteMask(GMaxRHIShaderPlatform) ? TexCreate_NoFastClearFinalize : TexCreate_None;
 
 				FPooledRenderTargetDesc Desc(FPooledRenderTargetDesc::Create2DDesc(FIntPoint(ViewportWidth, ViewportHeight),
 					PF_B8G8R8A8,
@@ -738,6 +745,9 @@ void FSlateRHIRenderer::DrawWindow_RenderThread(FRHICommandListImmediate& RHICmd
 					true));
 
 				GRenderTargetPool.FindFreeElement(RHICmdList, Desc, ViewportInfo.UITargetRT, TEXT("UITargetRT"));
+
+				Desc.Format = BackBuffer->GetFormat();
+				GRenderTargetPool.FindFreeElement(RHICmdList, Desc, ViewportInfo.HDRSourceRT, TEXT("HDRSourceRT"));
 
 				// LUT
 				ViewportInfo.ColorSpaceLUTRT.SafeRelease();
@@ -755,13 +765,36 @@ void FSlateRHIRenderer::DrawWindow_RenderThread(FRHICommandListImmediate& RHICmd
 			{
 				bClear = true; // Force a clear of the UI buffer to black
 
-				// Make sure the backbuffer is readable
+				// Grab HDR backbuffer
 				FResolveParams ResolveParams;
-				RHICmdList.CopyToResolveTarget(FinalBuffer, FinalBuffer, ResolveParams);
+				RHICmdList.CopyToResolveTarget(FinalBuffer, ViewportInfo.HDRSourceRT->GetRenderTargetItem().TargetableTexture, ResolveParams);
 
 				// UI backbuffer is temp target
 				BackBuffer = ViewportInfo.UITargetRT->GetRenderTargetItem().TargetableTexture->GetTexture2D();
 			}
+
+#if WITH_EDITOR
+			TRefCountPtr<IPooledRenderTarget> HDRRenderRT;
+
+			if (bRenderOffscreen )
+			{
+				FPooledRenderTargetDesc Desc(FPooledRenderTargetDesc::Create2DDesc(FIntPoint(ViewportWidth, ViewportHeight),
+					PF_FloatRGBA,
+					FClearValueBinding::Transparent,
+					TexCreate_None,
+					TexCreate_ShaderResource | TexCreate_RenderTargetable,
+					false,
+					1,
+					true,
+					true));
+
+				GRenderTargetPool.FindFreeElement(RHICmdList, Desc, HDRRenderRT, TEXT("HDRTargetRT"));
+
+				FResolveParams ResolveParams;
+				RHICmdList.CopyToResolveTarget(FinalBuffer, FinalBuffer, ResolveParams);
+				BackBuffer = HDRRenderRT->GetRenderTargetItem().TargetableTexture->GetTexture2D();
+			}
+#endif
 
 			if (SlateWireFrame)
 			{
@@ -802,23 +835,27 @@ void FSlateRHIRenderer::DrawWindow_RenderThread(FRHICommandListImmediate& RHICmd
 					}
 				}
 	#endif
-				RHICmdList.BeginRenderPass(RPInfo, TEXT("SlateBatches"));
 				{
 					if (BatchData.GetRenderBatches().Num() > 0)
 					{
+						RHICmdList.BeginRenderPass(RPInfo, TEXT("SlateBatches"));
 						SCOPE_CYCLE_COUNTER(STAT_SlateRTDrawBatches);
 
 						FSlateBackBuffer BackBufferTarget(BackBuffer, FIntPoint(ViewportWidth, ViewportHeight));
 
 						FSlateRenderingParams RenderParams(ViewMatrix * ViewportInfo.ProjectionMatrix, DrawCommandParams.WorldTimeSeconds, DrawCommandParams.DeltaTimeSeconds, DrawCommandParams.RealTimeSeconds);
 						RenderParams.bWireFrame = !!SlateWireFrame;
+						RenderParams.bIsHDR     = ViewportInfo.bHDREnabled;
+
+						FTexture2DRHIRef EmptyTarget;
 
 						RenderingPolicy->DrawElements
 						(
 							RHICmdList,
 							BackBufferTarget,
 							BackBuffer,
-							ViewportInfo.DepthStencil,
+							ViewportInfo.bRequiresStencilTest ? ViewportInfo.DepthStencil : EmptyTarget,
+							BatchData.GetFirstRenderBatchIndex(),
 							BatchData.GetRenderBatches(),
 							RenderParams
 						);
@@ -864,17 +901,21 @@ void FSlateRHIRenderer::DrawWindow_RenderThread(FRHICommandListImmediate& RHICmd
 						const FVolumeBounds VolumeBounds(CompositionLUTSize);
 
 						GraphicsPSOInit.BoundShaderState.VertexDeclarationRHI = GScreenVertexDeclaration.VertexDeclarationRHI;
-						GraphicsPSOInit.BoundShaderState.VertexShaderRHI = GETSAFERHISHADER_VERTEX(*VertexShader);
-						GraphicsPSOInit.BoundShaderState.GeometryShaderRHI = GETSAFERHISHADER_GEOMETRY(*GeometryShader);
-						GraphicsPSOInit.BoundShaderState.PixelShaderRHI = GETSAFERHISHADER_PIXEL(*PixelShader);
+						GraphicsPSOInit.BoundShaderState.VertexShaderRHI = VertexShader.GetVertexShader();
+#if PLATFORM_SUPPORTS_GEOMETRY_SHADERS
+						GraphicsPSOInit.BoundShaderState.GeometryShaderRHI = GeometryShader.GetGeometryShader();
+#endif
+						GraphicsPSOInit.BoundShaderState.PixelShaderRHI = PixelShader.GetPixelShader();
 						GraphicsPSOInit.PrimitiveType = PT_TriangleStrip;
 						SetGraphicsPipelineState(RHICmdList, GraphicsPSOInit);
 
 						VertexShader->SetParameters(RHICmdList, VolumeBounds, FIntVector(VolumeBounds.MaxX - VolumeBounds.MinX));
+#if PLATFORM_SUPPORTS_GEOMETRY_SHADERS
 						if (GeometryShader.IsValid())
 						{
 							GeometryShader->SetParameters(RHICmdList, VolumeBounds.MinZ);
 						}
+#endif
 						PixelShader->SetParameters(RHICmdList);
 
 						RasterizeToVolumeTexture(RHICmdList, VolumeBounds);
@@ -888,12 +929,14 @@ void FSlateRHIRenderer::DrawWindow_RenderThread(FRHICommandListImmediate& RHICmd
 					FResolveParams ResolveParams;
 					RHICmdList.CopyToResolveTarget(ViewportInfo.UITargetRT->GetRenderTargetItem().TargetableTexture, ViewportInfo.UITargetRT->GetRenderTargetItem().TargetableTexture, ResolveParams);
 
-					if (GSupportsRenderTargetWriteMask)
+					if (RHISupportsRenderTargetWriteMask(GMaxRHIShaderPlatform))
 					{
-						RHICmdList.TransitionResource(EResourceTransitionAccess::EMetaData, ViewportInfo.UITargetRT->GetRenderTargetItem().TargetableTexture);
-						FRenderTargetWriteMask::Decode(RHICmdList, ShaderMap, { ViewportInfo.UITargetRT }, ViewportInfo.UITargetRTMask, 0, TEXT("UIRTWriteMask"));
+						IPooledRenderTarget* RenderTargets[] = { ViewportInfo.UITargetRT.GetReference() };
+						FRenderTargetWriteMask::Decode<1>(RHICmdList, ShaderMap, RenderTargets, ViewportInfo.UITargetRTMask, 0, TEXT("UIRTWriteMask"));
 					}
 
+					RHICmdList.TransitionResource(EResourceTransitionAccess::EWritable, FinalBuffer);
+					RHICmdList.TransitionResource(EResourceTransitionAccess::EReadable, ViewportInfo.HDRSourceRT->GetRenderTargetItem().TargetableTexture);
 					FRHIRenderPassInfo RPInfo(FinalBuffer, ERenderTargetActions::Load_Store);
 					RHICmdList.BeginRenderPass(RPInfo, TEXT("SlateComposite"));
 					{
@@ -905,19 +948,20 @@ void FSlateRHIRenderer::DrawWindow_RenderThread(FRHICommandListImmediate& RHICmd
 
 						TShaderMapRef<FScreenVS> VertexShader(ShaderMap);
 
+						FRHITexture* UITargetRTMaskTexture = RHISupportsRenderTargetWriteMask(GMaxRHIShaderPlatform) ? ViewportInfo.UITargetRTMask->GetRenderTargetItem().TargetableTexture : nullptr;
 						if (HDROutputDevice == 5 || HDROutputDevice == 6)
 						{
 							// ScRGB encoding
 							TShaderMapRef<FCompositePS<1>> PixelShader(ShaderMap);
 
 							GraphicsPSOInit.BoundShaderState.VertexDeclarationRHI = GFilterVertexDeclaration.VertexDeclarationRHI;
-							GraphicsPSOInit.BoundShaderState.VertexShaderRHI = GETSAFERHISHADER_VERTEX(*VertexShader);
-							GraphicsPSOInit.BoundShaderState.PixelShaderRHI = GETSAFERHISHADER_PIXEL(*PixelShader);
+							GraphicsPSOInit.BoundShaderState.VertexShaderRHI = VertexShader.GetVertexShader();
+							GraphicsPSOInit.BoundShaderState.PixelShaderRHI = PixelShader.GetPixelShader();
 							GraphicsPSOInit.PrimitiveType = PT_TriangleList;
 
 							SetGraphicsPipelineState(RHICmdList, GraphicsPSOInit);
 
-							PixelShader->SetParameters(RHICmdList, ViewportInfo.UITargetRT->GetRenderTargetItem().TargetableTexture, ViewportInfo.UITargetRTMask->GetRenderTargetItem().TargetableTexture, FinalBuffer, ViewportInfo.ColorSpaceLUTSRV);
+							PixelShader->SetParameters(RHICmdList, ViewportInfo.UITargetRT->GetRenderTargetItem().TargetableTexture, UITargetRTMaskTexture, ViewportInfo.HDRSourceRT->GetRenderTargetItem().TargetableTexture, ViewportInfo.ColorSpaceLUTSRV);
 						}
 						else
 						{
@@ -925,13 +969,13 @@ void FSlateRHIRenderer::DrawWindow_RenderThread(FRHICommandListImmediate& RHICmd
 							TShaderMapRef<FCompositePS<0>> PixelShader(ShaderMap);
 
 							GraphicsPSOInit.BoundShaderState.VertexDeclarationRHI = GFilterVertexDeclaration.VertexDeclarationRHI;
-							GraphicsPSOInit.BoundShaderState.VertexShaderRHI = GETSAFERHISHADER_VERTEX(*VertexShader);
-							GraphicsPSOInit.BoundShaderState.PixelShaderRHI = GETSAFERHISHADER_PIXEL(*PixelShader);
+							GraphicsPSOInit.BoundShaderState.VertexShaderRHI = VertexShader.GetVertexShader();
+							GraphicsPSOInit.BoundShaderState.PixelShaderRHI = PixelShader.GetPixelShader();
 							GraphicsPSOInit.PrimitiveType = PT_TriangleList;
 
 							SetGraphicsPipelineState(RHICmdList, GraphicsPSOInit);
 
-							PixelShader->SetParameters(RHICmdList, ViewportInfo.UITargetRT->GetRenderTargetItem().TargetableTexture, ViewportInfo.UITargetRTMask->GetRenderTargetItem().TargetableTexture, FinalBuffer, ViewportInfo.ColorSpaceLUTSRV);
+							PixelShader->SetParameters(RHICmdList, ViewportInfo.UITargetRT->GetRenderTargetItem().TargetableTexture, UITargetRTMaskTexture, ViewportInfo.HDRSourceRT->GetRenderTargetItem().TargetableTexture, ViewportInfo.ColorSpaceLUTSRV);
 						}
 
 						RendererModule.DrawRectangle(
@@ -942,7 +986,7 @@ void FSlateRHIRenderer::DrawWindow_RenderThread(FRHICommandListImmediate& RHICmd
 							ViewportWidth, ViewportHeight,
 							FIntPoint(ViewportWidth, ViewportHeight),
 							FIntPoint(ViewportWidth, ViewportHeight),
-							*VertexShader,
+							VertexShader,
 							EDRF_UseTriangleOptimization);
 					}
 					RHICmdList.EndRenderPass();
@@ -952,6 +996,53 @@ void FSlateRHIRenderer::DrawWindow_RenderThread(FRHICommandListImmediate& RHICmd
 				BackBuffer = FinalBuffer;
 			} //bCompositeUI
 
+
+#if WITH_EDITOR
+			if (bRenderOffscreen)
+			{
+				const auto FeatureLevel = GMaxRHIFeatureLevel;
+				auto ShaderMap = GetGlobalShaderMap(FeatureLevel);
+
+				FRHIRenderPassInfo RPInfo(FinalBuffer, ERenderTargetActions::Load_Store);
+				RHICmdList.BeginRenderPass(RPInfo, TEXT("SlateComposite"));
+
+				FGraphicsPipelineStateInitializer GraphicsPSOInit;
+				RHICmdList.ApplyCachedRenderTargets(GraphicsPSOInit);
+				GraphicsPSOInit.BlendState			= TStaticBlendState<>::GetRHI();
+				GraphicsPSOInit.RasterizerState		= TStaticRasterizerState<>::GetRHI();
+				GraphicsPSOInit.DepthStencilState	= TStaticDepthStencilState<false, CF_Always>::GetRHI();
+
+				// ST2084 (PQ) encoding
+				TShaderMapRef<FHDREditorConvertPS> PixelShader(ShaderMap);
+				TShaderMapRef<FScreenVS> VertexShader(ShaderMap);
+
+				GraphicsPSOInit.BoundShaderState.VertexDeclarationRHI = GFilterVertexDeclaration.VertexDeclarationRHI;
+				GraphicsPSOInit.BoundShaderState.VertexShaderRHI = VertexShader.GetVertexShader();
+				GraphicsPSOInit.BoundShaderState.PixelShaderRHI = PixelShader.GetPixelShader();
+				GraphicsPSOInit.PrimitiveType = PT_TriangleList;
+
+				SetGraphicsPipelineState(RHICmdList, GraphicsPSOInit);
+
+				PixelShader->SetParameters(RHICmdList, HDRRenderRT->GetRenderTargetItem().TargetableTexture );
+
+				static const FName RendererModuleName("Renderer");
+				IRendererModule& RendererModule = FModuleManager::GetModuleChecked<IRendererModule>(RendererModuleName);
+
+				RendererModule.DrawRectangle(
+					RHICmdList,
+					0, 0,
+					ViewportWidth, ViewportHeight,
+					0, 0,
+					ViewportWidth, ViewportHeight,
+					FIntPoint(ViewportWidth, ViewportHeight),
+					FIntPoint(ViewportWidth, ViewportHeight),
+					VertexShader,
+					EDRF_UseTriangleOptimization);
+				
+				RHICmdList.EndRenderPass();
+				BackBuffer = FinalBuffer;
+			}
+#endif
 			if (!bRenderedStereo && GEngine && IsValidRef(ViewportInfo.GetRenderTargetTexture()) && GEngine->StereoRenderingDevice.IsValid())
 			{
 				const FVector2D WindowSize = WindowElementList.GetWindowSize();
@@ -960,10 +1051,7 @@ void FSlateRHIRenderer::DrawWindow_RenderThread(FRHICommandListImmediate& RHICmd
 			RHICmdList.TransitionResource(EResourceTransitionAccess::EReadable, BackBuffer);
 
 			// Fire delegate to inform bound functions the back buffer is ready to be captured.
-			if (OnBackBufferReadyToPresentDelegate.IsBound())
-			{
-				OnBackBufferReadyToPresentDelegate.Execute(BackBuffer);
-			}
+			OnBackBufferReadyToPresentDelegate.Broadcast(*DrawCommandParams.Window, BackBuffer);
 		}
 	}
 
@@ -971,7 +1059,27 @@ void FSlateRHIRenderer::DrawWindow_RenderThread(FRHICommandListImmediate& RHICmd
 	{
 		// take screenshot before swapbuffer
 		FTexture2DRHIRef BackBuffer = RHICmdList.GetViewportBackBuffer(ViewportInfo.ViewportRHI);
-		RHICmdList.ReadSurfaceData(BackBuffer, ScreenshotRect, *OutScreenshotData, FReadSurfaceDataFlags());
+
+		// Sanity check to make sure the user specified a valid screenshot rect.
+		FIntRect ClampedScreenshotRect;
+		ClampedScreenshotRect.Min = ScreenshotRect.Min;
+		ClampedScreenshotRect.Max = ScreenshotRect.Max.ComponentMin(BackBuffer->GetSizeXY());
+		ClampedScreenshotRect.Max = ScreenshotRect.Min.ComponentMax(ClampedScreenshotRect.Max);
+
+		if (ClampedScreenshotRect != ScreenshotRect)
+		{
+			UE_LOG(LogSlate, Warning, TEXT("Slate: Screenshot rect max coordinate had to be clamped from [%d, %d] to [%d, %d]"), ScreenshotRect.Max.X, ScreenshotRect.Max.Y, ClampedScreenshotRect.Max.X, ClampedScreenshotRect.Max.Y);
+		}
+
+		if (!ClampedScreenshotRect.IsEmpty())
+		{
+			RHICmdList.ReadSurfaceData(BackBuffer, ScreenshotRect, *OutScreenshotData, FReadSurfaceDataFlags());
+		}
+		else
+		{
+			UE_LOG(LogSlate, Warning, TEXT("Slate: Screenshot rect was empty! Skipping readback of back buffer."));
+		}
+
 		bTakingAScreenShot = false;
 		OutScreenshotData = NULL;
 	}
@@ -1026,9 +1134,6 @@ void FSlateRHIRenderer::DrawWindow_RenderThread(FRHICommandListImmediate& RHICmd
 			GWorkingRHIThreadStallTime = 0;
 		});
 	}
-
-	// Any window that draws should be reporting referenced UObjects for the duration of the frame.
-	check(WindowElementList.ShouldReportUObjectReferences());
 }
 
 void FSlateRHIRenderer::DrawWindows(FSlateDrawBuffer& WindowDrawBuffer)
@@ -1092,7 +1197,6 @@ void FSlateRHIRenderer::DrawWindows_Private(FSlateDrawBuffer& WindowDrawBuffer)
 				FontCache->UpdateCache();
 
 				bool bLockToVsync = ElementBatcher->RequiresVsync();
-				bool bRequiresStencilTest = ElementList.GetBatchData().IsStencilClippingRequired();
 
 				bool bForceVsyncFromCVar = false;
 				if (GIsEditor)
@@ -1114,18 +1218,15 @@ void FSlateRHIRenderer::DrawWindows_Private(FSlateDrawBuffer& WindowDrawBuffer)
 				// The viewport had better exist at this point  
 				FViewportInfo* ViewInfo = WindowToViewportInfo.FindChecked(Window);
 
+				// Cache off the HDR status
+				ViewInfo->bHDREnabled = RHIGetColorSpace(ViewInfo->ViewportRHI) != EColorSpaceAndEOTF::ERec709_sRGB;
+				Window->SetIsHDR(ViewInfo->bHDREnabled);
+
 				if (Window->IsViewportSizeDrivenByWindow())
 				{
 					// Resize the viewport if needed
 					ConditionalResizeViewport(ViewInfo, ViewInfo->DesiredWidth, ViewInfo->DesiredHeight, IsViewportFullscreen(*Window));
 				}
-
-				
-				if (bRequiresStencilTest || bRequiresStencilTest != ViewInfo->bRequiresStencilTest)
-				{
-					ViewInfo->ConditionallyUpdateDepthBuffer(bRequiresStencilTest, ViewInfo->DesiredWidth, ViewInfo->DesiredHeight);
-				}
-				
 
 				// Tell the rendering thread to draw the windows
 				{
@@ -1133,6 +1234,10 @@ void FSlateRHIRenderer::DrawWindows_Private(FSlateDrawBuffer& WindowDrawBuffer)
 
 					Params.Renderer = this;
 					Params.WindowElementList = &ElementList;
+					Params.Window = Window;
+#if WANTS_DRAW_MESH_EVENTS
+					Params.WindowTitle = Window->GetTitle().ToString();
+#endif
 					Params.bLockToVsync = bLockToVsync;
 #if ALPHA_BLENDED_WINDOWS
 					Params.bClear = Window->GetTransparencySupport() == EWindowTransparency::PerPixel;
@@ -1182,17 +1287,23 @@ void FSlateRHIRenderer::DrawWindows_Private(FSlateDrawBuffer& WindowDrawBuffer)
 	if (DeferredUpdateContexts.Num() > 0)
 	{
 		// Intentionally copy the contexts to avoid contention with the game thread
-		ENQUEUE_UNIQUE_RENDER_COMMAND_ONEPARAMETER(DrawWidgetRendererImmediate,
-			FDeferredUpdateContextList, Contexts, DeferredUpdateContexts,
+		ENQUEUE_RENDER_COMMAND(DrawWidgetRendererImmediate)(
+			[Contexts = DeferredUpdateContexts](FRHICommandListImmediate& RHICmdList) mutable
 			{
 				for (const FRenderThreadUpdateContext& Context : Contexts)
 				{
-					static_cast<ISlate3DRenderer*>(Context.Renderer)->DrawWindowToTarget_RenderThread(RHICmdList, Context);
+					Context.Renderer->DrawWindowToTarget_RenderThread(RHICmdList, Context);
 				}
 			}
 		);
 
 		DeferredUpdateContexts.Empty();
+	}
+
+	if (FastPathRenderingDataCleanupList)
+	{
+		FastPathRenderingDataCleanupList->Cleanup();
+		FastPathRenderingDataCleanupList = nullptr;
 	}
 
 	// flush the cache if needed
@@ -1475,6 +1586,77 @@ void FSlateRHIRenderer::ClearScenes()
 	}
 }
 
+
+FRHICOMMAND_MACRO(FClearCachedRenderingDataCommand)
+{
+public:
+	FClearCachedRenderingDataCommand(FSlateCachedFastPathRenderingData* InCachedRenderingData)
+		: CachedRenderingData(InCachedRenderingData)
+	{
+		
+	}
+
+	void Execute(FRHICommandListBase& CmdList)
+	{
+		delete CachedRenderingData;
+	}
+
+private:
+	FSlateCachedFastPathRenderingData* CachedRenderingData;
+};
+
+FRHICOMMAND_MACRO(FClearCachedElementDataCommand)
+{
+public:
+	FClearCachedElementDataCommand(FSlateCachedElementData* InCachedElementData)
+		: CachedElementData(InCachedElementData)
+	{
+
+	}
+
+	void Execute(FRHICommandListBase& CmdList)
+	{
+		delete CachedElementData;
+	}
+
+private:
+	FSlateCachedElementData* CachedElementData;
+};
+
+void FSlateRHIRenderer::DestroyCachedFastPathRenderingData(FSlateCachedFastPathRenderingData* CachedRenderingData)
+{
+	check(CachedRenderingData);
+
+	if (!FastPathRenderingDataCleanupList)
+	{
+		// This will be deleted later on the rendering thread
+		FastPathRenderingDataCleanupList = new FFastPathRenderingDataCleanupList;
+	}
+
+	FastPathRenderingDataCleanupList->FastPathRenderingDataToRemove.Add(CachedRenderingData);
+}
+
+void FSlateRHIRenderer::DestroyCachedFastPathElementData(FSlateCachedElementData* CachedElementData)
+{
+	check(CachedElementData);
+
+	// Cached data should be destroyed in a thread safe way.  If there is an rhi thread it could be reading from the data to copy it into a vertex buffer
+	// so delete it on the rhi thread if necessary, otherwise delete it on the render thread
+	ENQUEUE_RENDER_COMMAND(ClearCachedElementData)(
+		[CachedElementData](FRHICommandListImmediate& RHICmdList)
+	{
+		if (!RHICmdList.Bypass())
+		{
+			new (RHICmdList.AllocCommand<FClearCachedElementDataCommand>()) FClearCachedElementDataCommand(CachedElementData);
+		}
+		else
+		{
+			FClearCachedElementDataCommand Cmd(CachedElementData);
+			Cmd.Execute(RHICmdList);
+		}
+	});
+}
+
 bool FSlateRHIRenderer::AreShadersInitialized() const
 {
 #if WITH_EDITORONLY_DATA
@@ -1511,7 +1693,7 @@ void FSlateRHIRenderer::ReleaseAccessedResources(bool bImmediatelyFlush)
 		// This should NOT be done unless flushing
 		RenderingPolicy->FlushGeneratedResources();
 
-		FlushCommands();
+		//FlushCommands();
 	}
 }
 
@@ -1546,81 +1728,13 @@ void FSlateRHIRenderer::AddWidgetRendererUpdate(const struct FRenderThreadUpdate
 	else
 	{
 		// Enqueue a command to unlock the draw buffer after all windows have been drawn
-		ENQUEUE_UNIQUE_RENDER_COMMAND_ONEPARAMETER(DrawWidgetRendererImmediate,
-			FRenderThreadUpdateContext, InContext, Context,
+		FRenderThreadUpdateContext InContext = Context;
+		ENQUEUE_RENDER_COMMAND(DrawWidgetRendererImmediate)(
+			[InContext](FRHICommandListImmediate& RHICmdList)
 			{
-				static_cast<ISlate3DRenderer*>(InContext.Renderer)->DrawWindowToTarget_RenderThread(RHICmdList, InContext);
+				InContext.Renderer->DrawWindowToTarget_RenderThread(RHICmdList, InContext);
 			});
 	}
-}
-
-
-TSharedRef<FSlateRenderDataHandle, ESPMode::ThreadSafe> FSlateRHIRenderer::CacheElementRenderData(const ILayoutCache* Cacher, FSlateWindowElementList& ElementList)
-{
-	TSharedRef<FSlateRenderDataHandle, ESPMode::ThreadSafe> RenderDataHandle = MakeShareable(new FSlateRenderDataHandle(Cacher, ResourceManager.Get()));
-
-	checkSlow(ElementList.GetChildDrawLayers().Num() == 0);
-
-	// Add all elements for this window to the element batcher
-	ElementBatcher->AddElements(ElementList);
-
-	// All elements for this window have been batched and rendering data updated
-	ElementBatcher->ResetBatches();
-
-	struct FCacheElementBatchesContext
-	{
-		FSlateRHIRenderingPolicy* RenderPolicy;
-		FSlateWindowElementList* SlateElementList;
-		TSharedRef<FSlateRenderDataHandle, ESPMode::ThreadSafe> RenderDataHandle;
-		uint32 ResourceVersion;
-	};
-	FCacheElementBatchesContext CacheElementBatchesContext =
-	{
-		RenderingPolicy.Get(),
-		&ElementList,
-		RenderDataHandle,
-		ResourceVersion
-	};
-
-	RenderDataHandle->BeginUsing();
-
-	ENQUEUE_RENDER_COMMAND(CacheElementBatches)(
-		[CacheElementBatchesContext](FRHICommandListImmediate& RHICmdList)
-	{
-		FSlateBatchData& BatchData = CacheElementBatchesContext.SlateElementList->GetBatchData();
-		FElementBatchMap& RootBatchMap = CacheElementBatchesContext.SlateElementList->GetRootDrawLayer().GetElementBatchMap();
-
-		BatchData.SetRenderDataHandle(CacheElementBatchesContext.RenderDataHandle);
-		BatchData.CreateRenderBatches(RootBatchMap);
-		CacheElementBatchesContext.RenderPolicy->UpdateVertexAndIndexBuffers(RHICmdList, BatchData, CacheElementBatchesContext.RenderDataHandle);
-
-		RootBatchMap.UpdateResourceVersion(CacheElementBatchesContext.ResourceVersion);
-
-		CacheElementBatchesContext.RenderDataHandle->EndUsing();
-	}
-	);
-
-	return RenderDataHandle;
-}
-
-void FSlateRHIRenderer::ReleaseCachingResourcesFor(const ILayoutCache* Cacher)
-{
-	struct FReleaseCachingResourcesForContext
-	{
-		FSlateRHIRenderingPolicy* RenderPolicy;
-		const ILayoutCache* Cacher;
-	};
-	FReleaseCachingResourcesForContext MarshalContext =
-	{
-		RenderingPolicy.Get(),
-		Cacher,
-	};
-	ENQUEUE_RENDER_COMMAND(ReleaseCachingResourcesFor)(
-		[MarshalContext](FRHICommandListImmediate& RHICmdList)
-	{
-		MarshalContext.RenderPolicy->ReleaseCachingResourcesFor(RHICmdList, MarshalContext.Cacher);
-	}
-	);
 }
 
 FSlateEndDrawingWindowsCommand::FSlateEndDrawingWindowsCommand(FSlateRHIRenderingPolicy& InPolicy, FSlateDrawBuffer* InDrawBuffer)
@@ -1630,11 +1744,6 @@ FSlateEndDrawingWindowsCommand::FSlateEndDrawingWindowsCommand(FSlateRHIRenderin
 
 void FSlateEndDrawingWindowsCommand::Execute(FRHICommandListBase& CmdList)
 {
-	for (auto& ElementList : DrawBuffer->GetWindowElementLists())
-	{
-		ElementList->PostDraw_ParallelThread();
-	}
-
 	DrawBuffer->Unlock();
 	Policy.EndDrawingWindows();
 }
@@ -1650,4 +1759,51 @@ void FSlateEndDrawingWindowsCommand::EndDrawingWindows(FRHICommandListImmediate&
 		FSlateEndDrawingWindowsCommand Cmd(Policy, DrawBuffer);
 		Cmd.Execute(RHICmdList);
 	}
+}
+
+
+struct FClearCachedRenderingDataCommand2 final : public FRHICommand < FClearCachedRenderingDataCommand2 >
+{
+public:
+	FClearCachedRenderingDataCommand2(FFastPathRenderingDataCleanupList* InCleanupList)
+		: CleanupList(InCleanupList)
+	{
+
+	}
+
+	void Execute(FRHICommandListBase& CmdList)
+	{
+		delete CleanupList;
+	}
+
+private:
+	FFastPathRenderingDataCleanupList* CleanupList;
+};
+
+
+FFastPathRenderingDataCleanupList::~FFastPathRenderingDataCleanupList()
+{
+	for (FSlateCachedFastPathRenderingData* Data : FastPathRenderingDataToRemove)
+	{
+		delete Data;
+	}
+}
+
+void FFastPathRenderingDataCleanupList::Cleanup()
+{
+	// Cached data should be destroyed in a thread safe way.  If there is an rhi thread it could be reading from the data to copy it into a vertex buffer
+	// so delete it on the rhi thread if necessary, otherwise delete it on the render thread
+	ENQUEUE_RENDER_COMMAND(ClearCachedRenderingData)(
+		[CleanupList = this](FRHICommandListImmediate& RHICmdList)
+	{
+		if (!RHICmdList.Bypass())
+		{
+			new (RHICmdList.AllocCommand<FClearCachedRenderingDataCommand2>()) FClearCachedRenderingDataCommand2(CleanupList);
+		}
+		else
+		{
+			FClearCachedRenderingDataCommand2 Cmd(CleanupList);
+			Cmd.Execute(RHICmdList);
+		}
+	});
 }

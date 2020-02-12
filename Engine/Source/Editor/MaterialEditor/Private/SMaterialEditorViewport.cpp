@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "SMaterialEditorViewport.h"
 #include "Widgets/SBoxPanel.h"
@@ -29,6 +29,7 @@
 #include "AdvancedPreviewScene.h"
 #include "AssetViewerSettings.h"
 #include "Engine/PostProcessVolume.h"
+#include "MaterialEditorSettings.h"
 
 #define LOCTEXT_NAMESPACE "MaterialEditor"
 
@@ -172,7 +173,7 @@ FLinearColor FMaterialEditorViewportClient::GetBackgroundColor() const
 				{
 					BackgroundColor = FLinearColor::White;
 				}
-				else if (PreviewBlendMode == BLEND_Translucent || PreviewBlendMode == BLEND_AlphaComposite)
+				else if (PreviewBlendMode == BLEND_Translucent || PreviewBlendMode == BLEND_AlphaComposite || PreviewBlendMode == BLEND_AlphaHoldout)
 				{
 					BackgroundColor = FColor(64, 64, 64);
 				}
@@ -373,6 +374,13 @@ bool SMaterialEditor3DPreviewViewport::SetPreviewAsset(UObject* InAsset)
 		{
 			PreviewPrimType = TPT_None;
 		}
+
+		// Update the rotation of the plane mesh so that it is front facing to the viewport camera's default forward view.
+		if (PreviewPrimType == TPT_Plane)
+		{
+			const FRotator PlaneRotation(0.0f, 180.0f, 0.0f);
+			Transform.SetRotation(FQuat(PlaneRotation));
+		}
 	}
 	else if (InAsset != nullptr)
 	{
@@ -393,7 +401,7 @@ bool SMaterialEditor3DPreviewViewport::SetPreviewAsset(UObject* InAsset)
 	// Add the new component to the scene
 	if (PreviewMeshComponent != nullptr)
 	{
-		if (GEditor->PreviewFeatureLevel <= ERHIFeatureLevel::ES3_1)
+		if (GEditor->PreviewPlatform.GetEffectivePreviewFeatureLevel() <= ERHIFeatureLevel::ES3_1)
 		{
 			PreviewMeshComponent->SetMobility(EComponentMobility::Static);
 		}
@@ -426,7 +434,7 @@ void SMaterialEditor3DPreviewViewport::SetPreviewMaterial(UMaterialInterface* In
 	PreviewMaterial = InMaterialInterface;
 
 	// Spawn post processing volume actor if the material has post processing as domain.
-	if (PreviewMaterial->GetMaterial()->IsPostProcessMaterial())
+	if (PreviewMaterial && PreviewMaterial->GetMaterial()->IsPostProcessMaterial())
 	{
 		if (PostProcessVolumeActor == nullptr)
 		{
@@ -455,7 +463,12 @@ void SMaterialEditor3DPreviewViewport::SetPreviewMaterial(UMaterialInterface* In
 		if (PreviewMeshComponent != nullptr)
 		{
 			PreviewMeshComponent->OverrideMaterials.Empty();
-			PreviewMeshComponent->OverrideMaterials.Add(PreviewMaterial);
+
+			if (PreviewMaterial)
+			{
+				PreviewMeshComponent->OverrideMaterials.Add(PreviewMaterial);
+			}
+
 			PreviewMeshComponent->MarkRenderStateDirty();
 		}
 		
@@ -700,7 +713,7 @@ TSharedRef<FEditorViewportClient> SMaterialEditor3DPreviewViewport::MakeEditorVi
 	EditorViewportClient = MakeShareable( new FMaterialEditorViewportClient(MaterialEditorPtr, *AdvancedPreviewScene.Get(), SharedThis(this)) );
 	UAssetViewerSettings::Get()->OnAssetViewerSettingsChanged().AddRaw(this, &SMaterialEditor3DPreviewViewport::OnAssetViewerSettingsChanged);
 	EditorViewportClient->SetViewLocation( FVector::ZeroVector );
-	EditorViewportClient->SetViewRotation( FRotator(0.0f, -90.0f, 0.0f) );
+	EditorViewportClient->SetViewRotation( FRotator(-15.0f, -90.0f, 0.0f) );
 	EditorViewportClient->SetViewLocationForOrbiting( FVector::ZeroVector );
 	EditorViewportClient->bSetListenerPosition = false;
 	EditorViewportClient->EngineShowFlags.EnableAdvancedFeatures();
@@ -751,7 +764,7 @@ void SMaterialEditor3DPreviewViewport::OnPropertyChanged(UObject* ObjectBeingMod
 {
 	if (ObjectBeingModified != nullptr && ObjectBeingModified == PreviewMaterial)
 	{
-		UProperty* PropertyThatChanged = PropertyChangedEvent.Property;
+		FProperty* PropertyThatChanged = PropertyChangedEvent.Property;
 		static const FString MaterialDomain = TEXT("MaterialDomain");
 		if (PropertyThatChanged != nullptr && PropertyThatChanged->GetName() == MaterialDomain)
 		{
@@ -806,7 +819,7 @@ private:
 
 void SMaterialEditorUIPreviewZoomer::Construct( const FArguments& InArgs, UMaterialInterface* InPreviewMaterial )
 {
-	PreviewBrush = MakeShareable( new FSlateMaterialBrush( *InPreviewMaterial, FVector2D(250,250) ) );
+	PreviewBrush = MakeShareable( new FSlateMaterialBrush( *InPreviewMaterial, GetDefault<UMaterialEditorSettings>()->GetPreviewViewportStartingSize() ) );
 
 	ChildSlot
 	[
@@ -890,7 +903,6 @@ void SMaterialEditorUIPreviewZoomer::SetPreviewMaterial(UMaterialInterface* InPr
 
 void SMaterialEditorUIPreviewViewport::Construct( const FArguments& InArgs, UMaterialInterface* PreviewMaterial )
 {
-
 	ChildSlot
 	[
 		SNew( SVerticalBox )
@@ -971,7 +983,7 @@ void SMaterialEditorUIPreviewViewport::Construct( const FArguments& InArgs, UMat
 		]
 	];
 
-	PreviewSize = FIntPoint(250,250);
+	PreviewSize = GetDefault<UMaterialEditorSettings>()->GetPreviewViewportStartingSize();
 	PreviewZoomer->SetPreviewSize( FVector2D(PreviewSize) );
 }
 
@@ -1004,5 +1016,6 @@ void SMaterialEditorUIPreviewViewport::OnPreviewYCommitted( int32 NewValue, ETex
 {
 	OnPreviewYChanged( NewValue );
 }
+
 
 #undef LOCTEXT_NAMESPACE

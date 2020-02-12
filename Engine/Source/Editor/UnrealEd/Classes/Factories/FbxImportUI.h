@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 /**
  * Fbx Importer UI options.
@@ -94,7 +94,7 @@ namespace ImportCompareHelper
 
 }
 
-UCLASS(config=EditorPerProjectUserSettings, AutoExpandCategories=(FTransform), HideCategories=Object, MinimalAPI)
+UCLASS(BlueprintType, config=EditorPerProjectUserSettings, AutoExpandCategories=(FTransform), HideCategories=Object, MinimalAPI)
 class UFbxImportUI : public UObject, public IImportSettingsParser
 {
 	GENERATED_UCLASS_BODY()
@@ -217,7 +217,7 @@ public:
 	void ResetToDefault();
 
 	/** UObject Interface */
-	virtual bool CanEditChange( const UProperty* InProperty ) const override;
+	virtual bool CanEditChange( const FProperty* InProperty ) const override;
 
 	/** IImportSettings Interface */
 	virtual void ParseFromJson(TSharedRef<class FJsonObject> ImportSettingsJson) override;

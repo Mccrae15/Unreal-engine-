@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -15,6 +15,14 @@ class FInBunch;
 class FNetFieldExportGroup;
 class FOutBunch;
 class UNetConnection;
+
+enum class ESetChannelActorFlags : uint32
+{
+	None					= 0,
+	SkipReplicatorCreation	= (1 << 0),
+};
+
+ENUM_CLASS_FLAGS(ESetChannelActorFlags);
 
 /**
  * A channel for exchanging actor and its subobject's properties and RPCs.
@@ -79,18 +87,25 @@ private:
 	/** Tracks whether or not our actor has been seen as pending kill. */
 	uint32 bActorIsPendingKill : 1;
 
+	/**
+	 * Whether or not our NetDriver detected a hitch somewhere else in the engine.
+	 * This is used by ProcessQueuedBunches to prevent erroneous log spam.
+	 */
+	uint32 bSuppressQueuedBunchWarningsDueToHitches : 1;
+
 public:
 	bool GetSkipRoleSwap() const { return !!bSkipRoleSwap; }
 	void SetSkipRoleSwap(const bool bShouldSkip) { bSkipRoleSwap = bShouldSkip; }
 
-	FObjectReplicator* ActorReplicator;
+	TSharedPtr<FObjectReplicator> ActorReplicator;
 
 	TMap< UObject*, TSharedRef< FObjectReplicator > > ReplicationMap;
 
 	// Async networking loading support state
 	TArray< class FInBunch * >			QueuedBunches;			// Queued bunches waiting on pending guids to resolve
 	double								QueuedBunchStartTime;	// Time when since queued bunches was last empty
-	TSet< FNetworkGUID >				PendingGuidResolves;	// These guids are waiting for their resolves, we need to queue up bunches until these are resolved
+
+	TSet<FNetworkGUID> PendingGuidResolves;	// These guids are waiting for their resolves, we need to queue up bunches until these are resolved
 
 	UPROPERTY()
 	TArray< UObject* >					CreateSubObjects;		// Any sub-object we created on this channel
@@ -109,20 +124,9 @@ public:
 	/**
 	 * Default constructor
 	 */
-	UActorChannel(const FObjectInitializer& ObjectInitializer = FObjectInitializer::Get())
-		: UChannel(ObjectInitializer)
-#if !UE_BUILD_SHIPPING
-		, bBlockChannelFailure(false)
-#endif
-	{
-		PRAGMA_DISABLE_DEPRECATION_WARNINGS
-		ChType = CHTYPE_Actor;
-		PRAGMA_ENABLE_DEPRECATION_WARNINGS
-		ChName = NAME_Actor;
-		bClearRecentActorRefs = true;
-		bHoldQueuedExportBunchesAndGUIDs = false;
-		QueuedCloseReason = EChannelCloseReason::Destroyed;
-	}
+	UActorChannel(const FObjectInitializer& ObjectInitializer = FObjectInitializer::Get());
+
+	~UActorChannel();
 
 public:
 
@@ -154,7 +158,7 @@ public:
 	 * It's expected that InActor is either null (releasing the channel's reference) or
 	 * a valid actor that is not PendingKill or PendingKillPending.
 	 */
-	void SetChannelActor( AActor* InActor );
+	void SetChannelActor(AActor* InActor, ESetChannelActorFlags Flags);
 
 	virtual void NotifyActorChannelOpen(AActor* InActor, FInBunch& InBunch);
 
@@ -173,6 +177,9 @@ public:
 	/** Queue a function bunch for this channel to be sent on the next property update. */
 	void QueueRemoteFunctionBunch( UObject* CallTarget, UFunction* Func, FOutBunch &Bunch );
 
+	/** If not queueing the RPC, prepare the channel for replicating the call.  */
+	void PrepareForRemoteFunction(UObject* TargetObj);
+	
 	/** Returns true if channel is ready to go dormant (e.g., all outstanding property updates have been ACK'd) */
 	virtual bool ReadyForDormancy(bool debug=false) override;
 	
@@ -306,8 +313,6 @@ public:
 protected:
 	
 	TSharedRef< FObjectReplicator > & FindOrCreateReplicator(UObject* Obj, bool* bOutCreated=nullptr);
-	UE_DEPRECATED(4.22, "Use FindOrCreateReplicator() which takes a raw UObject pointer.")
-	TSharedRef< FObjectReplicator > & FindOrCreateReplicator( const TWeakObjectPtr<UObject>& Obj);
 
 	bool ObjectHasReplicator(const TWeakObjectPtr<UObject>& Obj) const;	// returns whether we have already created a replicator for this object or not
 
@@ -320,4 +325,10 @@ protected:
 
 	/** Closes the actor channel but with a 'dormant' flag set so it can be reopened */
 	virtual void BecomeDormant() override;
+
+private:
+
+	// TODO: It would be nice to merge the tracking of these with PendingGuidResolves, to not duplicate memory,
+	// especially since both of these sets should be empty most of the time for most channels.
+	TSet<TSharedRef<struct FQueuedBunchObjectReference>> QueuedBunchObjectReferences;
 };

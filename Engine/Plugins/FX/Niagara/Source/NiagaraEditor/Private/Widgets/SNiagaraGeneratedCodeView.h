@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -61,7 +61,7 @@ protected:
 
 	void SetSearchMofN();
 
-	void SelectedEmitterHandlesChanged();
+	void SystemSelectionChanged();
 	void OnTabChanged(uint32 Tab);
 	bool GetTabCheckedState(uint32 Tab) const;
 	EVisibility GetViewVisibility(uint32 Tab) const;

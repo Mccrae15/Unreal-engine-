@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -21,6 +21,8 @@ public:
 	void Cleanup();
 
 	virtual void SetUseGammaCorrection(bool bUseGammaCorrection) override;
+	virtual void SetApplyColorDeficiencyCorrection(bool bApplyColorCorrection) override;
+
 	virtual FSlateDrawBuffer& GetDrawBuffer() override;
 	virtual void DrawWindow_GameThread(FSlateDrawBuffer& DrawBuffer) override;
 	virtual void DrawWindowToTarget_RenderThread(FRHICommandListImmediate& RHICmdList, const struct FRenderThreadUpdateContext& Context) override;
@@ -41,7 +43,7 @@ private:
 	TSharedPtr<class FSlateRHIRenderingPolicy> RenderTargetPolicy;
 
 	/** Element batcher that renders draw elements */
-	TSharedPtr<FSlateElementBatcher> ElementBatcher;
+	TUniquePtr<FSlateElementBatcher> ElementBatcher;
 
 	/** The draw buffer that is currently free for use by the game thread */
 	uint8 FreeBufferIndex;

@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 
 /*=============================================================================================
@@ -16,7 +16,7 @@ class FString;
 struct FMacPlatformSurvey : public FGenericPlatformSurvey
 {
 	/** Start, or check on, the hardware survey */
-	static bool GetSurveyResults( FHardwareSurveyResults& OutResults, bool bWait = false );
+	APPLICATIONCORE_API static bool GetSurveyResults( FHardwareSurveyResults& OutResults, bool bWait = false );
 
 private:
 	/**

@@ -1,7 +1,8 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "SynthComponents/SynthComponentGranulator.h"
 #include "UObject/Package.h"
+#include "AudioDevice.h"
 
 UGranularSynth::UGranularSynth(const FObjectInitializer& ObjInitializer)
 	: Super(ObjInitializer)

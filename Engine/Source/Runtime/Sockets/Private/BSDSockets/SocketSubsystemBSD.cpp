@@ -1,43 +1,45 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "BSDSockets/SocketSubsystemBSD.h"
 
 #if PLATFORM_HAS_BSD_SOCKETS || PLATFORM_HAS_BSD_IPV6_SOCKETS
 
-#include "IPAddress.h"
 #include "BSDSockets/IPAddressBSD.h"
 #include "BSDSockets/SocketsBSD.h"
+#include "Misc/CString.h"
 #include <errno.h>
 
-FSocketBSD* FSocketSubsystemBSD::InternalBSDSocketFactory(SOCKET Socket, ESocketType SocketType, const FString& SocketDescription, ESocketProtocolFamily SocketProtocol)
+TAutoConsoleVariable<int32> CVarDisableIPv6(
+	TEXT("net.DisableIPv6"),
+	1,
+	TEXT("If true, IPv6 will not resolve and its usage will be avoided when possible"));
+
+FSocketBSD* FSocketSubsystemBSD::InternalBSDSocketFactory(SOCKET Socket, ESocketType SocketType, const FString& SocketDescription, const FName& SocketProtocol)
 {
 	// return a new socket object
 	return new FSocketBSD(Socket, SocketType, SocketDescription, SocketProtocol, this);
 }
 
-FSocket* FSocketSubsystemBSD::CreateSocket(const FName& SocketType, const FString& SocketDescription, bool bForceUDP)
-{
-	return CreateSocket(SocketType, SocketDescription, GetDefaultSocketProtocolFamily());
-}
-
-FSocket* FSocketSubsystemBSD::CreateSocket(const FName& SocketType, const FString& SocketDescription, ESocketProtocolFamily ProtocolType)
+FSocket* FSocketSubsystemBSD::CreateSocket(const FName& SocketType, const FString& SocketDescription, const FName& ProtocolType)
 {
 	SOCKET Socket = INVALID_SOCKET;
 	FSocket* NewSocket = nullptr;
 	int PlatformSpecificTypeFlags = 0;
 
+	FName SocketProtocolType = ProtocolType;
+
 	// For platforms that have two subsystems (ex: Steam) but don't explicitly inherit from SocketSubsystemBSD
 	// so they don't know which protocol to end up using and pass in None.
 	// This is invalid, so we need to attempt to still resolve it.
-	if (ProtocolType == ESocketProtocolFamily::None)
+	if (ProtocolType != FNetworkProtocolTypes::IPv4 && ProtocolType != FNetworkProtocolTypes::IPv6)
 	{
-		ProtocolType = GetDefaultSocketProtocolFamily();
-	}
-
-	// Don't support any other protocol families.
-	if (ProtocolType != ESocketProtocolFamily::IPv4 && ProtocolType != ESocketProtocolFamily::IPv6)
-	{
-		return nullptr;
+		SocketProtocolType = GetDefaultSocketProtocolFamily();
+		// Check to make sure this is still valid.
+		if (SocketProtocolType != FNetworkProtocolTypes::IPv4 && SocketProtocolType != FNetworkProtocolTypes::IPv6)
+		{
+			UE_LOG(LogSockets, Warning, TEXT("Provided socket protocol type is unsupported! Returning null socket"));
+			return nullptr;
+		}
 	}
 
 #if PLATFORM_HAS_BSD_SOCKET_FEATURE_CLOSE_ON_EXEC
@@ -47,7 +49,7 @@ FSocket* FSocketSubsystemBSD::CreateSocket(const FName& SocketType, const FStrin
 	bool bIsUDP = SocketType.GetComparisonIndex() == NAME_DGram;
 	int32 SocketTypeFlag = (bIsUDP) ? SOCK_DGRAM : SOCK_STREAM;
 
-	Socket = socket(GetProtocolFamilyValue(ProtocolType), SocketTypeFlag | PlatformSpecificTypeFlags, ((bIsUDP) ? IPPROTO_UDP : IPPROTO_TCP));
+	Socket = socket(GetProtocolFamilyValue(SocketProtocolType), SocketTypeFlag | PlatformSpecificTypeFlags, ((bIsUDP) ? IPPROTO_UDP : IPPROTO_TCP));
 
 #if PLATFORM_ANDROID
 	// To avoid out of range in FD_SET
@@ -58,7 +60,7 @@ FSocket* FSocketSubsystemBSD::CreateSocket(const FName& SocketType, const FStrin
 	else
 #endif
 	{
-		NewSocket = (Socket != INVALID_SOCKET) ? InternalBSDSocketFactory(Socket, ((bIsUDP) ? SOCKTYPE_Datagram : SOCKTYPE_Streaming), SocketDescription, ProtocolType) : nullptr;
+		NewSocket = (Socket != INVALID_SOCKET) ? InternalBSDSocketFactory(Socket, ((bIsUDP) ? SOCKTYPE_Datagram : SOCKTYPE_Streaming), SocketDescription, SocketProtocolType) : nullptr;
 	}
 
 	if (!NewSocket)
@@ -69,43 +71,13 @@ FSocket* FSocketSubsystemBSD::CreateSocket(const FName& SocketType, const FStrin
 	return NewSocket;
 }
 
-ESocketErrors FSocketSubsystemBSD::CreateAddressFromIP(const ANSICHAR* IPAddress, FInternetAddr& OutAddr)
-{
-	FAddressInfoResult GAIResult = GetAddressInfo(ANSI_TO_TCHAR(IPAddress), nullptr,
-		EAddressInfoFlags::AllResultsWithMapping | EAddressInfoFlags::NoResolveHost | EAddressInfoFlags::OnlyUsableAddresses);
-
-	if (GAIResult.Results.Num() > 0)
-	{
-		OutAddr.SetRawIp(GAIResult.Results[0].Address->GetRawIp());
-		return SE_NO_ERROR;
-	}
-	
-	return SE_HOST_NOT_FOUND;
-}
-
-ESocketErrors FSocketSubsystemBSD::GetHostByName(const ANSICHAR* HostName, FInternetAddr& OutAddr)
-{
-	FAddressInfoResult GAIResult = GetAddressInfo(ANSI_TO_TCHAR(HostName), nullptr,
-		EAddressInfoFlags::AllResultsWithMapping | EAddressInfoFlags::OnlyUsableAddresses | EAddressInfoFlags::BindableAddress);
-
-	if (GAIResult.Results.Num() > 0)
-	{
-		TSharedRef<FInternetAddrBSD> ResultAddr = StaticCastSharedRef<FInternetAddrBSD>(GAIResult.Results[0].Address);
-		OutAddr.SetRawIp(ResultAddr->GetRawIp());
-		static_cast<FInternetAddrBSD&>(OutAddr).SetScopeId(ResultAddr->GetScopeId());
-		return SE_NO_ERROR;
-	}
-
-	return SE_HOST_NOT_FOUND;
-}
-
 void FSocketSubsystemBSD::DestroySocket(FSocket* Socket)
 {
 	delete Socket;
 }
 
 FAddressInfoResult FSocketSubsystemBSD::GetAddressInfo(const TCHAR* HostName, const TCHAR* ServiceName,
-	EAddressInfoFlags QueryFlags, ESocketProtocolFamily ProtocolType, ESocketType SocketType)
+	EAddressInfoFlags QueryFlags, const FName ProtocolTypeName, ESocketType SocketType)
 {
 	FAddressInfoResult AddrQueryResult = FAddressInfoResult(HostName, ServiceName);
 
@@ -119,12 +91,17 @@ FAddressInfoResult FSocketSubsystemBSD::GetAddressInfo(const TCHAR* HostName, co
 	addrinfo* AddrInfo = nullptr;
 
 	// Make sure we filter out IPv6 if the platform is not officially supported
-	// (if it isn't supported but we explicitly ask for it, allow it).
-	bool bCanUseIPv6 = (PLATFORM_HAS_BSD_IPV6_SOCKETS || ProtocolType == ESocketProtocolFamily::IPv6) ? true : false;
+	const bool bCanUseIPv6 = (CVarDisableIPv6.GetValueOnAnyThread() == 0 && PLATFORM_HAS_BSD_IPV6_SOCKETS);
+
+	// Determine if we can save time with numericserv
+	if (ServiceName != nullptr && FString(ServiceName).IsNumeric())
+	{
+		QueryFlags |= EAddressInfoFlags::NoResolveService;
+	}
 
 	addrinfo HintAddrInfo;
 	FMemory::Memzero(&HintAddrInfo, sizeof(HintAddrInfo));
-	HintAddrInfo.ai_family = GetProtocolFamilyValue(ProtocolType);
+	HintAddrInfo.ai_family = GetProtocolFamilyValue(ProtocolTypeName);
 	HintAddrInfo.ai_flags = GetAddressInfoHintFlag(QueryFlags);
 
 	if (SocketType != ESocketType::SOCKTYPE_Unknown)
@@ -135,10 +112,10 @@ FAddressInfoResult FSocketSubsystemBSD::GetAddressInfo(const TCHAR* HostName, co
 	}
 
 	int32 ErrorCode = getaddrinfo(TCHAR_TO_UTF8(HostName), TCHAR_TO_UTF8(ServiceName), &HintAddrInfo, &AddrInfo);
-	ESocketErrors SocketError = TranslateGAIErrorCode(ErrorCode);
+	AddrQueryResult.ReturnCode = TranslateGAIErrorCode(ErrorCode);
 
-	UE_LOG(LogSockets, Verbose, TEXT("Executed getaddrinfo with HostName: %s Return: %d"), HostName, ErrorCode);
-	if (SocketError == SE_NO_ERROR)
+	UE_LOG(LogSockets, Verbose, TEXT("Executed getaddrinfo with HostName: %s ServiceName: %s Return: %d"), HostName ? HostName : TEXT("null"), ServiceName ? ServiceName : TEXT("null"), ErrorCode);
+	if (AddrQueryResult.ReturnCode == SE_NO_ERROR)
 	{
 		addrinfo* AddrInfoHead = AddrInfo;
 		// The canonical name will always be stored in only the first result in a getaddrinfo query
@@ -156,10 +133,19 @@ FAddressInfoResult FSocketSubsystemBSD::GetAddressInfo(const TCHAR* HostName, co
 				{
 					TSharedRef<FInternetAddrBSD> NewAddress = MakeShareable(new FInternetAddrBSD(this));
 					NewAddress->Set(*AddrData, AddrInfo->ai_addrlen);
-					AddrQueryResult.Results.Add(FAddressInfoResultData(NewAddress, AddrInfo->ai_addrlen,
-						GetProtocolFamilyType(AddrInfo->ai_family), GetSocketType(AddrInfo->ai_protocol)));
+					
+					FAddressInfoResultData NewAddressData(NewAddress, AddrInfo->ai_addrlen, GetProtocolFamilyTypeName(AddrInfo->ai_family), GetSocketType(AddrInfo->ai_protocol));
 
-					UE_LOG(LogSockets, Verbose, TEXT("# Family: %s Address: %s"), ((AddrInfo->ai_family == AF_INET) ? TEXT("IPv4") : TEXT("IPv6")), *(NewAddress->ToString(false)));
+					// While the FNames are the correct way to enumerate over address types, we still need to support the old format.
+					PRAGMA_DISABLE_DEPRECATION_WARNINGS
+					NewAddressData.AddressProtocol = GetProtocolFamilyType(AddrInfo->ai_family);
+					PRAGMA_ENABLE_DEPRECATION_WARNINGS
+
+					if (AddrQueryResult.Results.Add(NewAddressData) != INDEX_NONE)
+					{
+						sockaddr_in6* IPv6AddrData = reinterpret_cast<sockaddr_in6*>(AddrInfo->ai_addr);
+						UE_LOG(LogSockets, Verbose, TEXT("# Family: %s Address: %s And scope %d"), ((AddrInfo->ai_family == AF_INET) ? TEXT("IPv4") : TEXT("IPv6")), *(NewAddress->ToString(true)), ((AddrInfo->ai_family == AF_INET) ? -1 : IPv6AddrData->sin6_scope_id));
+					}
 				}
 			}
 		}
@@ -167,12 +153,79 @@ FAddressInfoResult FSocketSubsystemBSD::GetAddressInfo(const TCHAR* HostName, co
 	}
 	else
 	{
-		UE_LOG(LogSockets, Warning, TEXT("GetAddressInfo failed to resolve host with error %s [%d]"), GetSocketError(SocketError), ErrorCode);
+		UE_LOG(LogSockets, Warning, TEXT("GetAddressInfo failed to resolve host with error %s [%d]"), GetSocketError(AddrQueryResult.ReturnCode), ErrorCode);
 	}
 #else
 	UE_LOG(LogSockets, Error, TEXT("Platform has no getaddrinfo(), but did not override FSocketSubsystem::GetAddressInfo()"));
 #endif
 	return AddrQueryResult;
+}
+
+TSharedPtr<FInternetAddr> FSocketSubsystemBSD::GetAddressFromString(const FString& InAddress)
+{
+	sockaddr_storage NetworkBuffer;
+	FMemory::Memzero(NetworkBuffer);
+
+	void* UniversalNetBufferPtr = nullptr;
+	int32 AddrFamily = AF_INET;
+
+#if PLATFORM_HAS_BSD_IPV6_SOCKETS
+	int32 ColonIndex;
+	if (InAddress.FindChar(TEXT(':'), ColonIndex))
+	{
+		AddrFamily = AF_INET6;
+		UniversalNetBufferPtr = &(((sockaddr_in6*)&NetworkBuffer)->sin6_addr);
+	}
+	else
+#endif
+	{
+		UniversalNetBufferPtr = &(((sockaddr_in*)&NetworkBuffer)->sin_addr);
+	}
+
+	NetworkBuffer.ss_family = AddrFamily;
+
+	if (inet_pton(AddrFamily, TCHAR_TO_ANSI(*InAddress), UniversalNetBufferPtr))
+	{
+		TSharedRef<FInternetAddrBSD> ReturnAddress = StaticCastSharedRef<FInternetAddrBSD>(CreateInternetAddr());
+		ReturnAddress->Set(NetworkBuffer);
+		return ReturnAddress;
+	}
+	
+	ESocketErrors LastError = GetLastErrorCode();
+	UE_LOG(LogSockets, Warning, TEXT("Could not serialize %s, got error code %s [%d]"), *InAddress, GetSocketError(LastError), LastError);
+	return nullptr;
+}
+
+bool FSocketSubsystemBSD::GetMultihomeAddress(TSharedRef<FInternetAddr>& Addr)
+{
+	// This function is overwritten to make sure that functions that use GetLocalHostAddr/GetLocalBindAddr
+	// are able to use that function to pull something like the adapter interface from all code paths.
+	if (ISocketSubsystem::GetMultihomeAddress(Addr))
+	{
+		// Only IPv6 protocols need to handle the scope id.
+		if (Addr->GetProtocolType() == FNetworkProtocolTypes::IPv6)
+		{
+			TArray<TSharedPtr<FInternetAddr>> AdapterAddresses;
+			if (GetLocalAdapterAddresses(AdapterAddresses))
+			{
+				uint32 ScopeId = 0;
+				for (const TSharedPtr<FInternetAddr>& AdapterAddress : AdapterAddresses)
+				{
+					// If the endpoint is the same, then we want to make sure that we write the scope id into it
+					if (Addr->CompareEndpoints(*AdapterAddress))
+					{
+						ScopeId = StaticCastSharedPtr<FInternetAddrBSD>(AdapterAddress)->GetScopeId();
+						break;
+					}
+				}
+
+				StaticCastSharedRef<FInternetAddrBSD>(Addr)->SetScopeId(ScopeId);
+			}
+		}
+		return true;
+	}
+
+	return false;
 }
 
 bool FSocketSubsystemBSD::GetHostName(FString& HostName)
@@ -191,18 +244,19 @@ bool FSocketSubsystemBSD::GetHostName(FString& HostName)
 #endif
 }
 
-
 const TCHAR* FSocketSubsystemBSD::GetSocketAPIName() const
 {
 	return TEXT("BSD IPv4/6");
 }
 
-TSharedRef<FInternetAddr> FSocketSubsystemBSD::CreateInternetAddr(uint32 Address, uint32 Port)
+TSharedRef<FInternetAddr> FSocketSubsystemBSD::CreateInternetAddr()
 {
-	TSharedRef<FInternetAddr> ReturnAddr = MakeShareable(new FInternetAddrBSD(this));
-	ReturnAddr->SetIp(Address);
-	ReturnAddr->SetPort(Port);
-	return ReturnAddr;
+	return MakeShareable(new FInternetAddrBSD(this));
+}
+
+TSharedRef<FInternetAddr> FSocketSubsystemBSD::CreateInternetAddr(const FName ProtocolType)
+{
+	return MakeShareable(new FInternetAddrBSD(this, ProtocolType));
 }
 
 bool FSocketSubsystemBSD::IsSocketWaitSupported() const
@@ -214,7 +268,6 @@ ESocketErrors FSocketSubsystemBSD::GetLastErrorCode()
 {
 	return TranslateErrorCode(errno);
 }
-
 
 ESocketErrors FSocketSubsystemBSD::TranslateErrorCode(int32 Code)
 {
@@ -281,7 +334,7 @@ ESocketErrors FSocketSubsystemBSD::TranslateErrorCode(int32 Code)
 // 	case SYSNOTREADY: return SE_SYSNOTREADY;
 // 	case VERNOTSUPPORTED: return SE_VERNOTSUPPORTED;
 // 	case NOTINITIALISED: return SE_NOTINITIALISED;
-
+	case EPIPE: return SE_ECONNRESET; // for when backgrounding with an open pipe to a server
 #if PLATFORM_HAS_BSD_SOCKET_FEATURE_GETHOSTNAME
 	case HOST_NOT_FOUND: return SE_HOST_NOT_FOUND;
 	case TRY_AGAIN: return SE_TRY_AGAIN;
@@ -329,6 +382,32 @@ ESocketErrors FSocketSubsystemBSD::TranslateGAIErrorCode(int32 Code) const
 	return SE_NO_ERROR;
 }
 
+int32 FSocketSubsystemBSD::GetProtocolFamilyValue(const FName& InProtocol) const
+{
+	if (InProtocol == FNetworkProtocolTypes::IPv4)
+	{
+		return AF_INET;
+	}
+	else if (InProtocol == FNetworkProtocolTypes::IPv6)
+	{
+		return AF_INET6;
+	}
+
+	return AF_UNSPEC;
+}
+
+const FName FSocketSubsystemBSD::GetProtocolFamilyTypeName(int32 InProtocol) const
+{
+	switch (InProtocol)
+	{
+		default:
+		case AF_UNSPEC: return NAME_None;
+		case AF_INET:   return FNetworkProtocolTypes::IPv4;
+		case AF_INET6:  return FNetworkProtocolTypes::IPv6;
+	}
+}
+
+PRAGMA_DISABLE_DEPRECATION_WARNINGS
 int32 FSocketSubsystemBSD::GetProtocolFamilyValue(ESocketProtocolFamily InProtocol) const
 {
 	switch (InProtocol)
@@ -350,6 +429,7 @@ ESocketProtocolFamily FSocketSubsystemBSD::GetProtocolFamilyType(int32 InProtoco
 		case AF_INET6:  return ESocketProtocolFamily::IPv6;
 	}
 }
+PRAGMA_ENABLE_DEPRECATION_WARNINGS
 
 ESocketType FSocketSubsystemBSD::GetSocketType(int32 InSocketType) const
 {

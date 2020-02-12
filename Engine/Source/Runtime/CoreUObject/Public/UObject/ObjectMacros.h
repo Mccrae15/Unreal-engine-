@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 /*=============================================================================
 	ObjectMacros.h: Helper macros and defines for UObject system
@@ -109,18 +109,18 @@ enum EPackageFlags
 	PKG_ForDiffing					= 0x00000020,	///< This package was loaded just for the purposes of diffing
 	PKG_EditorOnly					= 0x00000040,	///< This is editor-only package (for example: editor module script package)
 	PKG_Developer					= 0x00000080,	///< Developer module
-//	PKG_Unused						= 0x00000100,
+	PKG_UncookedOnly				= 0x00000100,	///< Loaded only in uncooked builds (i.e. runtime in editor)
 //	PKG_Unused						= 0x00000200,
 //	PKG_Unused						= 0x00000400,
 //	PKG_Unused						= 0x00000800,
 //	PKG_Unused						= 0x00001000,
 //	PKG_Unused						= 0x00002000,
 	PKG_ContainsMapData				= 0x00004000,   ///< Contains map data (UObjects only referenced by a single ULevel) but is stored in a different package
-	PKG_Need						= 0x00008000,	///< Client needs to download this package.
+//	PKG_Unused						= 0x00008000,
 	PKG_Compiling					= 0x00010000,	///< package is currently being compiled
 	PKG_ContainsMap					= 0x00020000,	///< Set if the package contains a ULevel/ UWorld object
 	PKG_RequiresLocalizationGather	= 0x00040000,	///< Set if the package contains any data to be gathered by localization
-	PKG_DisallowLazyLoading			= 0x00080000,	///< Set if the archive serializing this package cannot use lazy loading
+//	PKG_Unused						= 0x00080000,
 	PKG_PlayInEditor				= 0x00100000,	///< Set if the package was created for the purpose of PIE
 	PKG_ContainsScript				= 0x00200000,	///< Package is allowed to contain UClass objects
 	PKG_DisallowExport				= 0x00400000,	///< Editor should not export asset in this package
@@ -294,39 +294,39 @@ enum EClassCastFlags : uint64
 	CASTCLASS_None = 0x0000000000000000,
 
 	CASTCLASS_UField						= 0x0000000000000001,
-	CASTCLASS_UInt8Property					= 0x0000000000000002,
+	CASTCLASS_FInt8Property					= 0x0000000000000002,
 	CASTCLASS_UEnum							= 0x0000000000000004,
 	CASTCLASS_UStruct						= 0x0000000000000008,
 	CASTCLASS_UScriptStruct					= 0x0000000000000010,
 	CASTCLASS_UClass						= 0x0000000000000020,
-	CASTCLASS_UByteProperty					= 0x0000000000000040,
-	CASTCLASS_UIntProperty					= 0x0000000000000080,
-	CASTCLASS_UFloatProperty				= 0x0000000000000100,
-	CASTCLASS_UUInt64Property				= 0x0000000000000200,
-	CASTCLASS_UClassProperty				= 0x0000000000000400,
-	CASTCLASS_UUInt32Property				= 0x0000000000000800,
-	CASTCLASS_UInterfaceProperty			= 0x0000000000001000,
-	CASTCLASS_UNameProperty					= 0x0000000000002000,
-	CASTCLASS_UStrProperty					= 0x0000000000004000,
-	CASTCLASS_UProperty						= 0x0000000000008000,
-	CASTCLASS_UObjectProperty				= 0x0000000000010000,
-	CASTCLASS_UBoolProperty					= 0x0000000000020000,
-	CASTCLASS_UUInt16Property				= 0x0000000000040000,
+	CASTCLASS_FByteProperty					= 0x0000000000000040,
+	CASTCLASS_FIntProperty					= 0x0000000000000080,
+	CASTCLASS_FFloatProperty				= 0x0000000000000100,
+	CASTCLASS_FUInt64Property				= 0x0000000000000200,
+	CASTCLASS_FClassProperty				= 0x0000000000000400,
+	CASTCLASS_FUInt32Property				= 0x0000000000000800,
+	CASTCLASS_FInterfaceProperty			= 0x0000000000001000,
+	CASTCLASS_FNameProperty					= 0x0000000000002000,
+	CASTCLASS_FStrProperty					= 0x0000000000004000,
+	CASTCLASS_FProperty						= 0x0000000000008000,
+	CASTCLASS_FObjectProperty				= 0x0000000000010000,
+	CASTCLASS_FBoolProperty					= 0x0000000000020000,
+	CASTCLASS_FUInt16Property				= 0x0000000000040000,
 	CASTCLASS_UFunction						= 0x0000000000080000,
-	CASTCLASS_UStructProperty				= 0x0000000000100000,
-	CASTCLASS_UArrayProperty				= 0x0000000000200000,
-	CASTCLASS_UInt64Property				= 0x0000000000400000,
-	CASTCLASS_UDelegateProperty				= 0x0000000000800000,
-	CASTCLASS_UNumericProperty				= 0x0000000001000000,
-	CASTCLASS_UMulticastDelegateProperty	= 0x0000000002000000,
-	CASTCLASS_UObjectPropertyBase			= 0x0000000004000000,
-	CASTCLASS_UWeakObjectProperty			= 0x0000000008000000,
-	CASTCLASS_ULazyObjectProperty			= 0x0000000010000000,
-	CASTCLASS_USoftObjectProperty			= 0x0000000020000000,
-	CASTCLASS_UTextProperty					= 0x0000000040000000,
-	CASTCLASS_UInt16Property				= 0x0000000080000000,
-	CASTCLASS_UDoubleProperty				= 0x0000000100000000,
-	CASTCLASS_USoftClassProperty			= 0x0000000200000000,
+	CASTCLASS_FStructProperty				= 0x0000000000100000,
+	CASTCLASS_FArrayProperty				= 0x0000000000200000,
+	CASTCLASS_FInt64Property				= 0x0000000000400000,
+	CASTCLASS_FDelegateProperty				= 0x0000000000800000,
+	CASTCLASS_FNumericProperty				= 0x0000000001000000,
+	CASTCLASS_FMulticastDelegateProperty	= 0x0000000002000000,
+	CASTCLASS_FObjectPropertyBase			= 0x0000000004000000,
+	CASTCLASS_FWeakObjectProperty			= 0x0000000008000000,
+	CASTCLASS_FLazyObjectProperty			= 0x0000000010000000,
+	CASTCLASS_FSoftObjectProperty			= 0x0000000020000000,
+	CASTCLASS_FTextProperty					= 0x0000000040000000,
+	CASTCLASS_FInt16Property				= 0x0000000080000000,
+	CASTCLASS_FDoubleProperty				= 0x0000000100000000,
+	CASTCLASS_FSoftClassProperty			= 0x0000000200000000,
 	CASTCLASS_UPackage						= 0x0000000400000000,
 	CASTCLASS_ULevel						= 0x0000000800000000,
 	CASTCLASS_AActor						= 0x0000001000000000,
@@ -339,9 +339,13 @@ enum EClassCastFlags : uint64
 	CASTCLASS_UBlueprint					= 0x0000080000000000,
 	CASTCLASS_UDelegateFunction				= 0x0000100000000000,
 	CASTCLASS_UStaticMeshComponent			= 0x0000200000000000,
-	CASTCLASS_UMapProperty					= 0x0000400000000000,
-	CASTCLASS_USetProperty					= 0x0000800000000000,
-	CASTCLASS_UEnumProperty					= 0x0001000000000000,
+	CASTCLASS_FMapProperty					= 0x0000400000000000,
+	CASTCLASS_FSetProperty					= 0x0000800000000000,
+	CASTCLASS_FEnumProperty					= 0x0001000000000000,
+	CASTCLASS_USparseDelegateFunction			= 0x0002000000000000,
+	CASTCLASS_FMulticastInlineDelegateProperty	= 0x0004000000000000,
+	CASTCLASS_FMulticastSparseDelegateProperty	= 0x0008000000000000,
+	CASTCLASS_FFieldPathProperty			= 0x0010000000000000,
 };
 
 #define CASTCLASS_AllFlags ((EClassCastFlags)0xFFFFFFFFFFFFFFFF)
@@ -382,7 +386,7 @@ enum EPropertyFlags : uint64
 	CPF_DuplicateTransient				= 0x0000000000200000,	///< Property should always be reset to the default value during any type of duplication (copy/paste, binary duplication, etc.)
 	CPF_SubobjectReference				= 0x0000000000400000,	///< Property contains subobject references (TSubobjectPtr)
 	//CPF_    							= 0x0000000000800000,	///< 
-	CPF_SaveGame						= 0x0000000001000000,	///< Property should be serialized for save games
+	CPF_SaveGame						= 0x0000000001000000,	///< Property should be serialized for save games, this is only checked for game-specific archives with ArIsSaveGame
 	CPF_NoClear							= 0x0000000002000000,	///< Hide clear (and browse) button.
 	//CPF_  							= 0x0000000004000000,	///<
 	CPF_ReferenceParm					= 0x0000000008000000,	///< Value is passed by reference; CPF_OutParam and CPF_Param should also be set.
@@ -442,27 +446,49 @@ enum EPropertyFlags : uint64
 
 ENUM_CLASS_FLAGS(EPropertyFlags)
 
-/** 
+/**
+ * Extra flags for array properties.
+ */
+enum class EArrayPropertyFlags
+{
+	None,
+	UsesMemoryImageAllocator
+};
+
+ENUM_CLASS_FLAGS(EArrayPropertyFlags)
+
+/**
+ * Extra flags for map properties.
+ */
+enum class EMapPropertyFlags
+{
+	None,
+	UsesMemoryImageAllocator
+};
+
+ENUM_CLASS_FLAGS(EMapPropertyFlags)
+
+/**
  * Flags describing an object instance
  */
 enum EObjectFlags
 {
 	// Do not add new flags unless they truly belong here. There are alternatives.
 	// if you change any the bit of any of the RF_Load flags, then you will need legacy serialization
-	RF_NoFlags					= 0x00000000,	///< No flags, used to avoid a cast
+	RF_NoFlags						= 0x00000000,	///< No flags, used to avoid a cast
 
 	// This first group of flags mostly has to do with what kind of object it is. Other than transient, these are the persistent object flags.
 	// The garbage collector also tends to look at these.
 	RF_Public					=0x00000001,	///< Object is visible outside its package.
 	RF_Standalone				=0x00000002,	///< Keep object around for editing even if unreferenced.
-	RF_MarkAsNative				=0x00000004,	///< Object (UField) will be marked as native on construction (DO NOT USE THIS FLAG in HasAnyFlags() etc)
+	RF_MarkAsNative					=0x00000004,	///< Object (UField) will be marked as native on construction (DO NOT USE THIS FLAG in HasAnyFlags() etc)
 	RF_Transactional			=0x00000008,	///< Object is transactional.
 	RF_ClassDefaultObject		=0x00000010,	///< This object is its class's default object
 	RF_ArchetypeObject			=0x00000020,	///< This object is a template for another object - treat like a class default object
 	RF_Transient				=0x00000040,	///< Don't save object.
 
 	// This group of flags is primarily concerned with garbage collection.
-	RF_MarkAsRootSet			=0x00000080,	///< Object will be marked as root set on construction and not be garbage collected, even if unreferenced (DO NOT USE THIS FLAG in HasAnyFlags() etc)
+	RF_MarkAsRootSet					=0x00000080,	///< Object will be marked as root set on construction and not be garbage collected, even if unreferenced (DO NOT USE THIS FLAG in HasAnyFlags() etc)
 	RF_TagGarbageTemp			=0x00000100,	///< This is a temp user flag for various utilities that need to use the garbage collector. The garbage collector itself does not interpret it.
 
 	// The group of flags tracks the stages of the lifetime of a uobject
@@ -528,7 +554,7 @@ ENUM_CLASS_FLAGS(EInternalObjectFlags);
 ----------------------------------------------------------------------------*/
 
 class UObject;
-class UProperty;
+class FProperty;
 class FObjectInitializer; 
 
 struct COREUOBJECT_API FReferencerInformation 
@@ -540,10 +566,10 @@ struct COREUOBJECT_API FReferencerInformation
 	int32						TotalReferences;
 
 	/** the array of UProperties in Referencer which hold references to target */
-	TArray<const UProperty*>		ReferencingProperties;
+	TArray<const FProperty*>		ReferencingProperties;
 
 	FReferencerInformation( UObject* inReferencer );
-	FReferencerInformation( UObject* inReferencer, int32 InReferences, const TArray<const UProperty*>& InProperties );
+	FReferencerInformation( UObject* inReferencer, int32 InReferences, const TArray<const FProperty*>& InProperties );
 };
 
 struct COREUOBJECT_API FReferencerInformationList
@@ -578,6 +604,7 @@ struct COREUOBJECT_API FReferencerInformationList
 #define UPARAM(...)
 #define UENUM(...)
 #define UDELEGATE(...)
+#define RIGVM_METHOD(...)
 
 // This pair of macros is used to help implement GENERATED_BODY() and GENERATED_USTRUCT_BODY()
 #define BODY_MACRO_COMBINE_INNER(A,B,C,D) A##B##C##D
@@ -722,6 +749,9 @@ namespace UC
 
 		/// Marks this class as an 'early access' preview (while not considered production-ready, it's a step beyond 'experimental' and is being provided as a preview of things to come)
 		EarlyAccessPreview,
+
+		// Some properties are stored once per class in a sidecar structure and not on instances of the class
+		SparseClassDataType,
 	};
 }
 
@@ -933,7 +963,8 @@ namespace UP
 		/// to use on struct properties or parameters.
 		AssetRegistrySearchable,
 
-		/// Property should be serialized for save game.
+		/// Property should be serialized for save games.
+		/// This is only checked for game-specific archives with ArIsSaveGame set
 		SaveGame,
 
 		/// MC Delegates only.  Property should be exposed for calling in blueprint code
@@ -983,6 +1014,9 @@ namespace UM
 
 		/// A short tooltip that is used in some contexts where the full tooltip might be overwhelming (such as the parent class picker dialog)
 		ShortTooltip,
+
+		/// A setting to determine validation of tooltips and comments. Needs to be set to "Strict"
+		DocumentationPolicy,
 	};
 
 	// Metadata usable in UCLASS
@@ -1060,7 +1094,10 @@ namespace UM
 		/// [PropertyMetadata] Used for Subclass and SoftClass properties.  Indicates whether abstract class types should be shown in the class picker.
 		AllowAbstract,
 
-		/// [PropertyMetadata] Used for FSoftObjectPath properties.  Comma delimited list that indicates the class type(s) of assets to be displayed in the asset picker.
+		/// [PropertyMetadata] Used for ComponentReference properties.  Indicates whether other actor that are not in the property outer hierarchy should be shown in the component picker.
+		AllowAnyActor,
+
+		/// [PropertyMetadata] Used for FSoftObjectPath, ComponentReference and UClass properties.  Comma delimited list that indicates the class type(s) of assets to be displayed in the asset picker(FSoftObjectPath) or component picker or class viewer (UClass).
 		AllowedClasses,
 
 		/// [PropertyMetadata] Used for FVector properties.  It causes a ratio lock to be added when displaying this property in details panels.
@@ -1105,6 +1142,9 @@ namespace UM
 		/// [ClassMetadata] [PropertyMetadata] [FunctionMetadata] The name to use for this class, property, or function when exporting it to a scripting language. May include deprecated names as additional semi-colon separated entries.
 		//ScriptName, (Commented out so as to avoid duplicate name with version in the Class section, but still show in the property section)
 
+		/// [PropertyMetadata] Used for FSoftObjectPath, ActorComponentReference and UClass properties.  Comma delimited list that indicates the class type(s) of assets that will NOT be displayed in the asset picker (FSoftObjectPath) or component picker or class viewer (UClass).
+		DisallowedClasses,
+
 		/// [PropertyMetadata] Indicates that the property should be displayed immediately after the property named in the metadata.
 		DisplayAfter,
 
@@ -1139,8 +1179,14 @@ namespace UM
 		/// [PropertyMetadata] Deprecated.
 		FixedIncrement,
 
+		/// [PropertyMetadata] Used by asset properties. Indicates that the asset pickers should always show engine content
+		ForceShowEngineContent,
+
 		/// [PropertyMetadata] Used for FColor and FLinearColor properties. Indicates that the Alpha property should be hidden when displaying the property widget in the details.
 		HideAlphaChannel,
+
+		/// [PropertyMetadata] Indicates that the property should be hidden in the details panel. Currently only used by events.
+		HideInDetailPanel,
 
 		/// [PropertyMetadata] Used for Subclass and SoftClass properties. Specifies to hide the ability to change view options in the class picker
 		HideViewOptions,
@@ -1216,6 +1262,12 @@ namespace UM
 
 		/// [PropertyMetadata] Used for SoftObjectPtr/SoftObjectPath properties to specify a reference should not be tracked. This reference will not be automatically cooked or saved into the asset registry for redirector/delete fixup.
 		Untracked,
+
+		/// [PropertyMetadata] Causes FString and FName properties to have a limited set of options generated dynamically, e.g. meta=(GetOptions="FuncName")
+		///
+		/// UFUNCTION()
+		/// TArray<FString> FuncName() const; // Always return string array even if FName property.
+		GetOptions,
 	};
 
 	// Metadata usable in UPROPERTY for customizing the behavior of Persona and UMG
@@ -1263,13 +1315,14 @@ namespace UM
 		/// [FunctionMetadata] Used when ArrayParm has been specified to indicate other function parameters that should be treated as wild card properties linked to the type of the array parameter.
 		ArrayTypeDependentParams,
 
-		/// [FunctionMetadata]
+		/// [FunctionMetadata] For reference parameters, indicates that a value should be created to be used for the input if none is linked via BP.
+		/// This also allows for inline editing of the default value on some types (take FRotator for instance). Only valid for inputs.
 		AutoCreateRefTerm,
 
 		/// [FunctionMetadata] This function is an internal implementation detail, used to implement another function or node.  It is never directly exposed in a graph.
 		BlueprintInternalUseOnly,
 
-		/// [FunctionMetadata] This function can only be called on 'this' in a blueprint. It cannot be called on another instance.
+		/// [FunctionMetadata] This function is only accessible from within its class and derived classes.
 		BlueprintProtected,
 
 		/// [FunctionMetadata] Used for BlueprintCallable functions that have a WorldContext pin to indicate that the function can be called even if the class does not implement the virtual function GetWorld().
@@ -1281,7 +1334,7 @@ namespace UM
 		/// [FunctionMetadata] Indicates that a BlueprintCallable function should display in the compact display mode and the name to use in that mode.
 		CompactNodeTitle,
 
-		/// [FunctionMetadata]
+		/// [FunctionMetadata] Used with CustomThunk to declare that a parameter is actually polymorphic
 		CustomStructureParam,
 
 		/// [FunctionMetadata] For BlueprintCallable functions indicates that the object property named's default value should be the self context of the node
@@ -1293,7 +1346,7 @@ namespace UM
 		/// [ClassMetadata] [FunctionMetadata] Used in conjunction with DeprecatedNode or DeprecatedFunction to customize the warning message displayed to the user.
 		// DeprecationMessage, (Commented out so as to avoid duplicate name with version in the Class section, but still show in the function section)
 
-		/// [FunctionMetadata] For BlueprintCallable functions indicates that an input exec pin should be created for each entry in the enum specified.
+		/// [FunctionMetadata] For BlueprintCallable functions indicates that an input/output (determined by whether it is an input/output enum) exec pin should be created for each entry in the enum specified.
 		ExpandEnumAsExecs,
 
 		/// [ClassMetadata] [PropertyMetadata] [FunctionMetadata] The name to display for this class, property, or function instead of auto-generating it from the name.
@@ -1338,7 +1391,7 @@ namespace UM
 		/// [FunctionMetadata] For BlueprintCallable functions indicates that the parameter pin should be hidden from the user's view.
 		HidePin,
 
-		/// [FunctionMetadata]
+		/// [FunctionMetadata] For some functions used by async task nodes, specify this parameter should be skipped when exposing pins
 		HideSpawnParms,
 
 		/// [FunctionMetadata] For BlueprintCallable functions provides additional keywords to be associated with the function for search purposes.
@@ -1399,7 +1452,7 @@ namespace UM
 	}
 
 #define IMPLEMENT_FARCHIVE_SERIALIZER( TClass ) void TClass::Serialize(FArchive& Ar) { TClass::Serialize(FStructuredArchiveFromArchive(Ar).GetSlot().EnterRecord()); }
-#define IMPLEMENT_FSTRUCTUREDARCHIVE_SERIALIZER( TClass ) void TClass::Serialize(FStructuredArchive::FRecord Record) { FArchiveUObjectFromStructuredArchive Ar(Record.EnterField(FIELD_NAME_TEXT("BaseClassAutoGen"))); TClass::Serialize(Ar); }
+#define IMPLEMENT_FSTRUCTUREDARCHIVE_SERIALIZER( TClass ) void TClass::Serialize(FStructuredArchive::FRecord Record) { FArchiveUObjectFromStructuredArchive Ar(Record.EnterField(SA_FIELD_NAME(TEXT("BaseClassAutoGen")))); TClass::Serialize(Ar.GetArchive()); Ar.Close(); }
 #define DECLARE_FARCHIVE_SERIALIZER( TClass, API ) virtual API void Serialize(FArchive& Ar) override;
 #define DECLARE_FSTRUCTUREDARCHIVE_SERIALIZER( TClass, API ) virtual API void Serialize(FStructuredArchive::FRecord Record) override;
 
@@ -1570,6 +1623,7 @@ public: \
 				PrivateStaticClass, \
 				StaticRegisterNatives##TClass, \
 				sizeof(TClass), \
+				alignof(TClass), \
 				(EClassFlags)TClass::StaticClassFlags, \
 				TClass::StaticClassCastFlags(), \
 				TClass::StaticConfigName(), \
@@ -1638,6 +1692,7 @@ public: \
 			PrivateStaticClass, \
 			StaticRegisterNatives##TClass, \
 			sizeof(TClass), \
+			alignof(TClass), \
 			(EClassFlags)TClass::StaticClassFlags, \
 			TClass::StaticClassCastFlags(), \
 			TClass::StaticConfigName(), \
@@ -1646,7 +1701,8 @@ public: \
 			&TClass::AddReferencedObjects, \
 			&TClass::Super::StaticClass, \
 			&TClass::WithinClass::StaticClass, \
-			true \
+			true, \
+			&TClass::__CustomDynamicClassInitialization \
 			); \
 		} \
 		return PrivateStaticClass; \
@@ -1656,7 +1712,7 @@ public: \
 typedef uint32 ERenameFlags;
 
 /** Default rename behavior */
-#define REN_None					(0x0000)
+#define REN_None				(0x0000)
 /** Rename won't call ResetLoaders or flush async loading. You should pass this if you are renaming a deep subobject and do not need to reset loading for the outer package */
 #define REN_ForceNoResetLoaders		(0x0001) 
 /** Just test to make sure that the rename is guaranteed to succeed if an non test rename immediately follows */

@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 #pragma once
 
 #include "CoreMinimal.h"
@@ -6,7 +6,7 @@
 #include "TreeItemID.h"
 #include "ITreeItem.h"
 
-class FMenuBuilder;
+class UToolMenu;
 
 namespace HLODOutliner
 {
@@ -37,7 +37,7 @@ namespace HLODOutliner
 
 		//~ Begin ITreeItem Interface.
 		virtual bool CanInteract() const override;
-		virtual void GenerateContextMenu(FMenuBuilder& MenuBuilder, SHLODOutliner& Outliner) override;
+		virtual void GenerateContextMenu(UToolMenu* Menu, SHLODOutliner& Outliner) override;
 		virtual FString GetDisplayString() const override;
 		virtual FTreeItemID GetID() override;
 		//~ Begin ITreeItem Interface.

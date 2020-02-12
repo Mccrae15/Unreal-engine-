@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -7,7 +7,6 @@
 #include "UObject/GCObject.h"
 #include "ITakeRecorderModule.h"
 
-struct FLevelSequenceActionExtender;
 
 class FExtender;
 class FTakePresetActions;
@@ -33,6 +32,10 @@ private:
 
 	/** FGCObject interface */
 	virtual void AddReferencedObjects(FReferenceCollector& Collector) override;
+	virtual FString GetReferencerName() const override
+	{
+		return "FTakeRecorderModule";
+	}
 
 private:
 
@@ -56,6 +59,8 @@ private:
 
 	void UnregisterSerializedRecorder();
 
+	void RegisterMenus();
+
 private:
 
 	DECLARE_MULTICAST_DELEGATE_TwoParams(FOnExtendSourcesMenuEvent, TSharedRef<FExtender>, UTakeRecorderSources*);
@@ -70,7 +75,6 @@ private:
 	FName ProjectSettingsName;
 
 	TSharedPtr<FTakePresetActions> TakePresetActions;
-	TSharedPtr<FLevelSequenceActionExtender> LevelSequenceAssetActionExtender;
 	TSharedPtr<FSerializedRecorder> SerializedRecorder;
 
 	USequencerSettings* SequencerSettings;

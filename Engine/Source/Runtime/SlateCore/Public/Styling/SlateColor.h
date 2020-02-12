@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -134,6 +134,24 @@ public:
 	bool IsColorSpecified( ) const
 	{
 		return (ColorUseRule == ESlateColorStylingMode::UseColor_Specified) || (ColorUseRule == ESlateColorStylingMode::UseColor_Specified_Link);
+	}
+
+	/**
+	 * If the color rule is set to UseColor_Specified_Link, this will copy the linked color internally,
+	 * unlink it and set the color rule to UseColor_Specified.
+	 * Nothing happens if the color rule is not set to UseColor_Specified_Link.
+	 */
+	void Unlink()
+	{
+		if (ColorUseRule == ESlateColorStylingMode::UseColor_Specified_Link)
+		{
+			ColorUseRule = ESlateColorStylingMode::UseColor_Specified;
+			if (ensure(LinkedSpecifiedColor.IsValid()))
+			{
+				SpecifiedColor = *LinkedSpecifiedColor;
+				LinkedSpecifiedColor.Reset();
+			}
+		}
 	}
 
 	/**

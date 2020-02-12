@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -13,6 +13,10 @@
 
 class FMenuBuilder;
 class FSequencerSectionPainter;
+class IDetailsView;
+class ISequencer;
+class ISequencerSection;
+class ISequencerTrackEditor;
 struct FSlateBrush;
 
 /** Enumerates which edge is being resized */
@@ -41,9 +45,26 @@ namespace SequencerSectionConstants
 }
 
 /**
+ * Parameters for the callback used when a section wants to customize how its properties details context menu looks like.
+ */
+struct FSequencerSectionPropertyDetailsViewCustomizationParams
+{
+	FSequencerSectionPropertyDetailsViewCustomizationParams(TSharedRef<ISequencerSection> InSectionInterface, TSharedRef<ISequencer> InSequencer, ISequencerTrackEditor& InTrackEditor)
+		: SectionInterface(InSectionInterface)
+		, Sequencer(InSequencer)
+		, TrackEditor(InTrackEditor)
+	{}
+
+	FGuid ParentObjectBindingGuid;
+	TSharedRef<ISequencerSection> SectionInterface;
+	TSharedRef<ISequencer> Sequencer;
+	ISequencerTrackEditor& TrackEditor;
+};
+
+/**
  * Interface that should be implemented for the UI portion of a section
  */
-class ISequencerSection
+class SEQUENCER_VTABLE ISequencerSection
 {
 public:
 	virtual ~ISequencerSection(){}
@@ -67,12 +88,6 @@ public:
 	 * @return The generated widget 
 	 */
 	virtual TSharedRef<SWidget> GenerateSectionWidget() { return SNullWidget::NullWidget; }
-
-	UE_DEPRECATED(4.20, "Please override Sequencer::DrawKeys instead")
-	virtual const FSlateBrush* GetKeyBrush(FKeyHandle KeyHandle) const { return nullptr; }
-
-	UE_DEPRECATED(4.20, "Please override Sequencer::DrawKeys instead")
-	virtual FVector2D GetKeyBrushOrigin( FKeyHandle KeyHandle ) const { return FVector2D(0.0f, 0.0f); }
 
 	/**
 	 * Called when the section is double clicked
@@ -185,9 +200,17 @@ public:
 	 */
 	virtual void BeginSlipSection() {}
 	virtual void SlipSection(FFrameNumber SlipTime) {}
+
+	/**
+	 * Called when the properties context menu is being built, so this section can customize how the menu's details view looks like.
+	 *
+	 * @param DetailsView The details view widget
+	 * @param InParams Information about the current operation
+	 */
+	virtual void CustomizePropertiesDetailsView(TSharedRef<IDetailsView> DetailsView, const FSequencerSectionPropertyDetailsViewCustomizationParams& InParams) const {}
 };
 
-class FSequencerSection : public ISequencerSection
+class SEQUENCER_VTABLE FSequencerSection : public ISequencerSection
 {
 public:
 	FSequencerSection(UMovieSceneSection& InSection)

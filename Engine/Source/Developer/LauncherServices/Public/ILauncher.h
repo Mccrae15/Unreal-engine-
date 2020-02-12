@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -14,6 +14,8 @@ typedef TSharedPtr<class ILauncher> ILauncherPtr;
 
 /** Type definition for shared references to instances of ILauncher. */
 typedef TSharedRef<class ILauncher> ILauncherRef;
+
+DECLARE_MULTICAST_DELEGATE_TwoParams(FOnLauncherWorkerStarted, ILauncherWorkerPtr, ILauncherProfileRef);
 
 
 /**
@@ -36,4 +38,6 @@ public:
 
 	/** Virtual destructor. */
 	virtual ~ILauncher( ) { }
+
+	FOnLauncherWorkerStarted FLauncherWorkerStartedDelegate;
 };

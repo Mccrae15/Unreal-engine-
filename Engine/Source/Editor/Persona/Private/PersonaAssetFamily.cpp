@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "PersonaAssetFamily.h"
 #include "Modules/ModuleManager.h"
@@ -364,11 +364,15 @@ void FPersonaAssetFamily::FindCounterpartAssets(const UObject* InAsset, const US
 	{
 		const UAnimBlueprint* AnimBlueprint = CastChecked<const UAnimBlueprint>(InAsset);
 		OutSkeleton = AnimBlueprint->TargetSkeleton;
-		check(AnimBlueprint->TargetSkeleton);
-		OutMesh = AnimBlueprint->TargetSkeleton->GetPreviewMesh();
-		if(OutMesh == nullptr)
+		OutMesh = AnimBlueprint->GetPreviewMesh();
+		check(AnimBlueprint->BlueprintType == BPTYPE_Interface || AnimBlueprint->TargetSkeleton != nullptr);
+		if(OutMesh == nullptr && AnimBlueprint->TargetSkeleton)
 		{
-			OutMesh = OutSkeleton->FindCompatibleMesh();
+			OutMesh = AnimBlueprint->TargetSkeleton->GetPreviewMesh();
+			if(OutMesh == nullptr)
+			{
+				OutMesh = AnimBlueprint->TargetSkeleton->FindCompatibleMesh();
+			}
 		}
 	}
 	else if (InAsset->IsA<UPhysicsAsset>())

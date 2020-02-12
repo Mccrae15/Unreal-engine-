@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "SLevelViewportToolBar.h"
 #include "Framework/Commands/UIAction.h"
@@ -19,7 +19,7 @@
 #include "EditorShowFlags.h"
 #include "LevelViewportActions.h"
 #include "LevelEditorViewport.h"
-#include "Layers/ILayers.h"
+#include "Layers/LayersSubsystem.h"
 #include "DeviceProfiles/DeviceProfile.h"
 #include "IDeviceProfileServicesModule.h"
 #include "EditorViewportCommands.h"
@@ -509,20 +509,11 @@ TSharedRef<SWidget> SLevelViewportToolBar::GenerateOptionsMenu() const
 	Viewport.Pin()->OnFloatingButtonClicked();
 
 	const FLevelViewportCommands& LevelViewportActions = FLevelViewportCommands::Get();
+	TSharedRef<FUICommandList> CommandList = Viewport.Pin()->GetCommandList().ToSharedRef();
 
 	// Get all menu extenders for this context menu from the level editor module
 	FLevelEditorModule& LevelEditorModule = FModuleManager::GetModuleChecked<FLevelEditorModule>( TEXT("LevelEditor") );
-	TArray<FLevelEditorModule::FLevelEditorMenuExtender> MenuExtenderDelegates = LevelEditorModule.GetAllLevelViewportOptionsMenuExtenders();
-	
-	TArray<TSharedPtr<FExtender>> Extenders;
-	for (int32 i = 0; i < MenuExtenderDelegates.Num(); ++i)
-	{
-		if (MenuExtenderDelegates[i].IsBound())
-		{
-			Extenders.Add(MenuExtenderDelegates[i].Execute(Viewport.Pin()->GetCommandList().ToSharedRef()));
-		}
-	}
-	TSharedPtr<FExtender> MenuExtender = FExtender::Combine(Extenders);
+	TSharedPtr<FExtender> MenuExtender = LevelEditorModule.AssembleExtenders(CommandList, LevelEditorModule.GetAllLevelViewportOptionsMenuExtenders());
 
 	const bool bIsPerspective = Viewport.Pin()->GetLevelViewportClient().IsPerspective();
 	const bool bInShouldCloseWindowAfterMenuSelection = true;
@@ -628,7 +619,7 @@ TSharedRef<SWidget> SLevelViewportToolBar::GenerateDevicePreviewMenu() const
 
 	// Default menu - clear all settings
 	{
-		FUIAction Action( FExecuteAction::CreateSP( this, &SLevelViewportToolBar::SetLevelProfile, FString( "Default" ) ),
+		FUIAction Action( FExecuteAction::CreateSP( const_cast<SLevelViewportToolBar*>(this), &SLevelViewportToolBar::SetLevelProfile, FString( "Default" ) ),
 			FCanExecuteAction(),
 			FIsActionChecked::CreateSP( ViewportRef, &SLevelViewport::IsDeviceProfileStringSet, FString( "Default" ) ) );
 		DeviceMenuBuilder.AddMenuEntry( LOCTEXT("DevicePreviewMenuClear", "Off"), FText::GetEmpty(), FSlateIcon(), Action, NAME_None, EUserInterfaceActionType::Button );
@@ -651,7 +642,7 @@ TSharedRef<SWidget> SLevelViewportToolBar::GenerateDevicePreviewMenu() const
 		{
 			const FName PlatformIcon = UIManager->GetDeviceIconName( CurItem );
 
-			FUIAction Action( FExecuteAction::CreateSP( this, &SLevelViewportToolBar::SetLevelProfile, CurItem ),
+			FUIAction Action( FExecuteAction::CreateSP( const_cast<SLevelViewportToolBar*>(this), &SLevelViewportToolBar::SetLevelProfile, CurItem ),
 				FCanExecuteAction(),
 				FIsActionChecked::CreateSP( ViewportRef, &SLevelViewport::IsDeviceProfileStringSet, CurItem ) );
 			DeviceMenuBuilder.AddMenuEntry( FText::FromString( CurItem ), FText(), FSlateIcon(FEditorStyle::GetStyleSetName(), PlatformIcon), Action, NAME_None, EUserInterfaceActionType::Button );
@@ -675,7 +666,7 @@ TSharedRef<SWidget> SLevelViewportToolBar::GenerateDevicePreviewMenu() const
 			DeviceMenuBuilder.AddSubMenu(
 				FText::FromString( PlatformNameStr ),
 				FText::GetEmpty(),
-				FNewMenuDelegate::CreateRaw( this, &SLevelViewportToolBar::MakeDevicePreviewSubMenu, DeviceProfiles ),
+				FNewMenuDelegate::CreateRaw( const_cast<SLevelViewportToolBar*>(this), &SLevelViewportToolBar::MakeDevicePreviewSubMenu, DeviceProfiles ),
 				false,
 				FSlateIcon(FEditorStyle::GetStyleSetName(), PlatformIcon)
 				);
@@ -940,20 +931,11 @@ TSharedRef<SWidget> SLevelViewportToolBar::GenerateShowMenu() const
 	Viewport.Pin()->OnFloatingButtonClicked();
 
 	const FLevelViewportCommands& Actions = FLevelViewportCommands::Get();
+	TSharedRef<FUICommandList> CommandList = Viewport.Pin()->GetCommandList().ToSharedRef();
 
 	// Get all menu extenders for this context menu from the level editor module
 	FLevelEditorModule& LevelEditorModule = FModuleManager::GetModuleChecked<FLevelEditorModule>(TEXT("LevelEditor"));
-	TArray<FLevelEditorModule::FLevelEditorMenuExtender> MenuExtenderDelegates = LevelEditorModule.GetAllLevelViewportShowMenuExtenders();
-
-	TArray<TSharedPtr<FExtender>> Extenders;
-	for (int32 i = 0; i < MenuExtenderDelegates.Num(); ++i)
-	{
-		if (MenuExtenderDelegates[i].IsBound())
-		{
-			Extenders.Add(MenuExtenderDelegates[i].Execute(Viewport.Pin()->GetCommandList().ToSharedRef()));
-		}
-	}
-	TSharedPtr<FExtender> MenuExtender = FExtender::Combine(Extenders);
+	TSharedPtr<FExtender> MenuExtender = LevelEditorModule.AssembleExtenders(CommandList, LevelEditorModule.GetAllLevelViewportShowMenuExtenders());
 
 	const bool bInShouldCloseWindowAfterMenuSelection = true;
 	FMenuBuilder ShowMenuBuilder( bInShouldCloseWindowAfterMenuSelection, Viewport.Pin()->GetCommandList(), MenuExtender);
@@ -1062,7 +1044,7 @@ TSharedRef<SWidget> SLevelViewportToolBar::GenerateFOVMenu() const
 				.MinValue(FOVMin)
 				.MaxValue(FOVMax)
 				.Value( this, &SLevelViewportToolBar::OnGetFOVValue )
-				.OnValueChanged( this, &SLevelViewportToolBar::OnFOVValueChanged )
+				.OnValueChanged( const_cast<SLevelViewportToolBar*>(this), &SLevelViewportToolBar::OnFOVValueChanged )
 			]
 		];
 }
@@ -1114,7 +1096,7 @@ TSharedRef<SWidget> SLevelViewportToolBar::GenerateScreenPercentageMenu() const
 		.MinValue(PreviewScreenPercentageMin)
 		.MaxValue(PreviewScreenPercentageMax)
 		.Value(this, &SLevelViewportToolBar::OnGetScreenPercentageValue)
-		.OnValueChanged(this, &SLevelViewportToolBar::OnScreenPercentageValueChanged)
+		.OnValueChanged(const_cast<SLevelViewportToolBar*>(this), &SLevelViewportToolBar::OnScreenPercentageValueChanged)
 		]
 		];
 }
@@ -1152,7 +1134,7 @@ TSharedRef<SWidget> SLevelViewportToolBar::GenerateFarViewPlaneMenu() const
 				.MaxValue(100000.0f)
 				.Font(FEditorStyle::GetFontStyle(TEXT("MenuItem.Font")))
 				.Value(this, &SLevelViewportToolBar::OnGetFarViewPlaneValue)
-				.OnValueChanged(this, &SLevelViewportToolBar::OnFarViewPlaneValueChanged)
+				.OnValueChanged(const_cast<SLevelViewportToolBar*>(this), &SLevelViewportToolBar::OnFarViewPlaneValueChanged)
 			]
 		];
 }
@@ -1183,7 +1165,8 @@ void SLevelViewportToolBar::FillShowLayersMenu( FMenuBuilder& MenuBuilder, TWeak
 		{
 			// Get all the layers and create an entry for each of them
 			TArray<FName> AllLayerNames;
-			GEditor->Layers->AddAllLayerNamesTo(AllLayerNames);
+			ULayersSubsystem* Layers = GEditor->GetEditorSubsystem<ULayersSubsystem>();
+			Layers->AddAllLayerNamesTo(AllLayerNames);
 
 			for( int32 LayerIndex = 0; LayerIndex < AllLayerNames.Num(); ++LayerIndex )
 			{
@@ -1218,7 +1201,7 @@ static TMap<FName, TArray<UFoliageType*>> GroupFoliageByOuter(const TArray<UFoli
 		}
 	}
 
-	Result.KeySort([](const FName& A, const FName& B) { return (A < B && B != NAME_None); });
+	Result.KeySort([](const FName& A, const FName& B) { return (A.LexicalLess(B) && B != NAME_None); });
 	return Result;
 }
 
@@ -1305,8 +1288,16 @@ void SLevelViewportToolBar::CreateViewMenuExtensions(FMenuBuilder& MenuBuilder)
 	MenuBuilder.AddSubMenu(LOCTEXT("VisualizeBufferViewModeDisplayName", "Buffer Visualization"),
 		LOCTEXT("BufferVisualizationMenu_ToolTip", "Select a mode for buffer visualization"),
 		FNewMenuDelegate::CreateStatic(&FBufferVisualizationMenuCommands::BuildVisualisationSubMenu),
-		false,
-		FSlateIcon(FEditorStyle::GetStyleSetName(), "EditorViewport.VisualizeBufferMode"));
+		FUIAction(FExecuteAction(), FCanExecuteAction(),
+			FIsActionChecked::CreateLambda([this]()
+			{
+				const TSharedRef<SEditorViewport> ViewportRef = Viewport.Pin().ToSharedRef();
+				const TSharedPtr<FEditorViewportClient> ViewportClient = ViewportRef->GetViewportClient();
+				check(ViewportClient.IsValid());
+				return ViewportClient->IsViewModeEnabled(VMI_VisualizeBuffer);
+			})),
+		/* InExtensionHook = */ NAME_None, EUserInterfaceActionType::RadioButton,
+		/* bInOpenSubMenuOnClick = */ false, FSlateIcon(FEditorStyle::GetStyleSetName(), "EditorViewport.VisualizeBufferMode"));
 
 	MenuBuilder.BeginSection("LevelViewportLandscape", LOCTEXT("LandscapeHeader", "Landscape") );
 	{

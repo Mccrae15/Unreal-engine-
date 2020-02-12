@@ -1,9 +1,66 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
 #include "PropertyPathHelpers.h"
+#include "Rigs/RigHierarchyContainer.h"
+#include "Rigs/RigCurveContainer.h"
+#include "Stats/StatsHierarchical.h"
+#include "RigVMCore/RigVMExecuteContext.h"
 #include "ControlRigDefines.generated.h"
+
+#define DECLARE_SCOPE_HIERARCHICAL_COUNTER_RIGUNIT()
+//	DECLARE_SCOPE_HIERARCHICAL_COUNTER_FUNC()
+
+USTRUCT()
+struct FControlRigExecuteContext : public FRigVMExecuteContext
+{
+	GENERATED_BODY()
+
+	FControlRigExecuteContext()
+		: FRigVMExecuteContext()
+		, Hierarchy(nullptr)
+	{
+	}
+		
+	FRigHierarchyContainer* Hierarchy;
+
+	FRigBoneHierarchy* GetBones()
+	{
+		if (Hierarchy != nullptr)
+		{
+			return &Hierarchy->BoneHierarchy;
+		}
+		return nullptr;
+	}
+
+	FRigSpaceHierarchy* GetSpaces()
+	{
+		if (Hierarchy != nullptr)
+		{
+			return &Hierarchy->SpaceHierarchy;
+		}
+		return nullptr;
+	}
+
+	FRigControlHierarchy* GetControls()
+	{
+		if (Hierarchy != nullptr)
+		{
+			return &Hierarchy->ControlHierarchy;
+		}
+		return nullptr;
+	}
+
+	FRigCurveContainer* GetCurves()
+	{
+		if (Hierarchy != nullptr)
+		{
+			return &Hierarchy->CurveContainer;
+		}
+		return nullptr;
+	}
+};
 
 UENUM()
 enum class ETransformSpaceMode : uint8
@@ -17,12 +74,23 @@ enum class ETransformSpaceMode : uint8
 	/** Apply in Base space */
 	BaseSpace,
 
-	/** Apply in base joint */
+	/** Apply in base bone */
 	BaseJoint,
 
 	/** MAX - invalid */
 	Max UMETA(Hidden),
 };
+
+UENUM()
+namespace EControlRigClampSpatialMode
+{
+	enum Type
+	{
+		Plane,
+		Cylinder,
+		Sphere
+	};
+}
 
 UENUM()
 enum class ETransformGetterType : uint8
@@ -33,68 +101,16 @@ enum class ETransformGetterType : uint8
 };
 
 UENUM()
-enum class EControlRigOpCode : uint8
+enum class EBoneGetterSetterMode : uint8
 {
-	Done,
-	Copy,
-	Exec,
-	Invalid,
-};
+	/** Apply in parent space */
+	LocalSpace,
 
-struct FRigExecutor
-{
-	EControlRigOpCode OpCode;
+	/** Apply in rig space*/
+	GlobalSpace,
 
-	FCachedPropertyPath Property1;
-	FCachedPropertyPath Property2;
-
-	void Reset()
-	{
-		OpCode = EControlRigOpCode::Invalid;
-	}
-};
-
-USTRUCT()
-struct FControlRigOperator
-{
-	GENERATED_BODY()
-
-	UPROPERTY(VisibleAnywhere, Category = "FControlRigBlueprintOperator")
-	EControlRigOpCode OpCode;
-	
-	/** Path to the property we are linking from */
-	UPROPERTY(VisibleAnywhere, Category = "FControlRigBlueprintOperator")
-	FString PropertyPath1;
-
-	/** Path to the property we are linking to */
-	UPROPERTY(VisibleAnywhere, Category = "FControlRigBlueprintOperator")
-	FString PropertyPath2;
-
-	FControlRigOperator(EControlRigOpCode Op = EControlRigOpCode::Invalid)
-		: OpCode(Op)
-	{
-	}
-
-	FControlRigOperator(EControlRigOpCode Op, const FString& InProperty1, const FString& InProperty2)
-		: OpCode(Op)
-		, PropertyPath1(InProperty1)
-		, PropertyPath2(InProperty2)
-	{
-
-	}
-
-	// fill up runtime operation code for the instance
-	bool InitializeParam(UObject* OuterObject, FRigExecutor& OutExecutor);
-
-	FString ToString()
-	{
-		TArray<FStringFormatArg> Arguments;
-		Arguments.Add(FStringFormatArg((int32)OpCode));
-		Arguments.Add(PropertyPath1);
-		Arguments.Add(PropertyPath2);
-
-		return FString::Format(TEXT("Opcode {0} : Property1 {1}, Property2 {2}"), Arguments);
-	}
+	/** MAX - invalid */
+	Max UMETA(Hidden),
 };
 
 // thought of mixing this with execution on

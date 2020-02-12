@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 /*=============================================================================
 	D3D12RHI.h: Public D3D RHI definitions.
@@ -51,7 +51,8 @@
 
 	// Xbox doesn't have DXGI but common code needs this defined for headers
 	#define DXGI_QUERY_VIDEO_MEMORY_INFO			int
-#elif PLATFORM_WINDOWS
+
+#elif PLATFORM_WINDOWS || PLATFORM_HOLOLENS
 	#define ENABLE_RESIDENCY_MANAGEMENT				1
 	#define ASYNC_DEFERRED_DELETION					1
 	#define PIPELINE_STATE_FILE_LOCATION			FPaths::ProjectSavedDir()

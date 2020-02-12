@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "SSingleProperty.h"
 #include "UObject/UnrealType.h"
@@ -90,6 +90,11 @@ public:
 		return false;
 	}
 
+	virtual TSharedPtr<FEditConditionParser> GetEditConditionParser() const override
+	{
+		return nullptr;
+	}
+
 private:
 	TWeakPtr< SSingleProperty > View;
 };
@@ -142,13 +147,13 @@ void SSingleProperty::SetObject( UObject* InObject )
 	// valid criteria for standalone properties 
 	if( ValueNode.IsValid() )
 	{
-		UProperty* Property = ValueNode->GetProperty();
+		FProperty* Property = ValueNode->GetProperty();
 	//TODO MaterialLayers: Remove below commenting
 		bIsAcceptableProperty = true;
 		// not an array property (dynamic or static)
-		//bIsAcceptableProperty &= !( Property->IsA( UArrayProperty::StaticClass() ) || (Property->ArrayDim > 1 && ValueNode->GetArrayIndex() == INDEX_NONE) );
+		//bIsAcceptableProperty &= !( Property->IsA( FArrayProperty::StaticClass() ) || (Property->ArrayDim > 1 && ValueNode->GetArrayIndex() == INDEX_NONE) );
 		// not a struct property unless its a built in type like a vector
-		//bIsAcceptableProperty &= ( !Property->IsA( UStructProperty::StaticClass() ) || PropertyEditorHelpers::IsBuiltInStructProperty( Property ) );
+		//bIsAcceptableProperty &= ( !Property->IsA( FStructProperty::StaticClass() ) || PropertyEditorHelpers::IsBuiltInStructProperty( Property ) );
 		PropertyHandle = PropertyEditorHelpers::GetPropertyHandle(ValueNode.ToSharedRef(), NotifyHook, PropertyUtilities);
 	}
 
@@ -169,7 +174,7 @@ void SSingleProperty::SetObject( UObject* InObject )
 		if( NamePlacement != EPropertyNamePlacement::Hidden )
 		{
 			HorizontalBox->AddSlot()
-			.Padding( 2.0f, 0.0f, 2.0f, 4.0f )
+			.Padding(4.0f, 0.0f)
 			.AutoWidth()
 			.VAlign( VAlign_Center )
 			[
@@ -179,7 +184,7 @@ void SSingleProperty::SetObject( UObject* InObject )
 		}
 
 		HorizontalBox->AddSlot()
-		.Padding( 0.0f, 2.0f, 0.0f, 2.0f )
+		.Padding( 4.0f, 0.0f)
 		.FillWidth(1.0f)
 		.VAlign( VAlign_Center )
 		[
@@ -275,7 +280,7 @@ void SSingleProperty::CreateColorPickerWindow( const TSharedRef< class FProperty
 	{
 		auto Node = PropertyEditor->GetPropertyNode();
 		check( &Node.Get() == ValueNode.Get() );
-		UProperty* Property = Node->GetProperty();
+		FProperty* Property = Node->GetProperty();
 		check(Property);
 
 		FReadAddressList ReadAddresses;
@@ -288,13 +293,13 @@ void SSingleProperty::CreateColorPickerWindow( const TSharedRef< class FProperty
 			const uint8* Addr = ReadAddresses.GetAddress(0);
 			if( Addr )
 			{
-				if( Cast<UStructProperty>(Property)->Struct->GetFName() == NAME_Color )
+				if( CastField<FStructProperty>(Property)->Struct->GetFName() == NAME_Color )
 				{
 					DWORDColor.Add((FColor*)Addr);
 				}
 				else
 				{
-					check( Cast<UStructProperty>(Property)->Struct->GetFName() == NAME_LinearColor );
+					check( CastField<FStructProperty>(Property)->Struct->GetFName() == NAME_LinearColor );
 					LinearColor.Add((FLinearColor*)Addr);
 				}
 			}
@@ -316,7 +321,7 @@ void SSingleProperty::SetColorPropertyFromColorPicker(FLinearColor NewColor)
 {
 	if( HasValidProperty() )
 	{
-		UProperty* NodeProperty = ValueNode->GetProperty();
+		FProperty* NodeProperty = ValueNode->GetProperty();
 		check(NodeProperty);
 
 		//@todo if multiple objects we need to iterate

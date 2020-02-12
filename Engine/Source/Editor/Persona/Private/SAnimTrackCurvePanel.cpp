@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 
 #include "SAnimTrackCurvePanel.h"
@@ -544,7 +544,7 @@ void SAnimTrackCurvePanel::Construct(const FArguments& InArgs, const TSharedRef<
 
 	if (InPreviewScene->GetPreviewMeshComponent()->PreviewInstance)
 	{
-		InPreviewScene->GetPreviewMeshComponent()->PreviewInstance->SetKeyCompleteDelegate(FSimpleDelegate::CreateSP(this, &SAnimTrackCurvePanel::HandleKeyComplete));
+		InPreviewScene->GetPreviewMeshComponent()->PreviewInstance->AddKeyCompleteDelegate(FSimpleDelegate::CreateSP(this, &SAnimTrackCurvePanel::HandleKeyComplete));
 	}
 
 	Sequence->RegisterOnAnimTrackCurvesChanged(UAnimSequenceBase::FOnAnimTrackCurvesChanged::CreateSP(this, &SAnimTrackCurvePanel::UpdatePanel));
@@ -644,7 +644,7 @@ void SAnimTrackCurvePanel::UpdatePanel()
 			MetadataNameMap->GetName(A.Name.UID, AName);
 			MetadataNameMap->GetName(B.Name.UID, BName);
 
-			return AName < BName;
+			return AName.LexicalLess(BName);
 		});
 
 		// see if we need to clear or not
@@ -894,7 +894,7 @@ TSharedRef<SWidget> SAnimTrackCurvePanel::CreateCurveContextMenu(USkeleton::Anim
 			MenuBuilder.AddWidget(
 				SNew(SCheckBox)
 				.IsChecked(this, &SAnimTrackCurvePanel::GetCurveFlagAsCheckboxState, CurveUid, AACF_Disabled)
-				.OnCheckStateChanged(this, &SAnimTrackCurvePanel::SetCurveFlagFromCheckboxState, CurveUid, AACF_Disabled)
+				.OnCheckStateChanged(const_cast<SAnimTrackCurvePanel*>(this), &SAnimTrackCurvePanel::SetCurveFlagFromCheckboxState, CurveUid, AACF_Disabled)
 				.ToolTipText(LOCTEXT("DisableCurveTooltip", "Disable Track"))
 				[
 					SNew(STextBlock)
@@ -909,7 +909,7 @@ TSharedRef<SWidget> SAnimTrackCurvePanel::CreateCurveContextMenu(USkeleton::Anim
 		{
 			FUIAction NewAction;
 
-			NewAction.ExecuteAction.BindSP(this, &SAnimTrackCurvePanel::DeleteTrack, CurveUid);
+			NewAction.ExecuteAction.BindSP(const_cast<SAnimTrackCurvePanel*>(this), &SAnimTrackCurvePanel::DeleteTrack, CurveUid);
 			MenuBuilder.AddMenuEntry(
 				LOCTEXT("RemoveTrack", "Remove Track"),
 				LOCTEXT("RemoveTrackTooltip", "Remove this track"),

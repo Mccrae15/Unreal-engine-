@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -26,9 +26,8 @@ public:
 	// This handler uses AES256, which has 32-byte keys.
 	static const int32 BlockSizeInBytes = 16;
 
-
 	// Replace the key used for encryption with NewKey if NewKey is exactly KeySizeInBytes long.
-	virtual void SetEncryptionKey(TArrayView<const uint8> NewKey) override;
+	virtual void SetEncryptionData(const FEncryptionData& EncryptionData) override;
 
 	// After calling this, future outgoing packets will be encrypted (until a call to DisableEncryption).
 	virtual void EnableEncryption() override;
@@ -44,8 +43,8 @@ public:
 	virtual bool IsValid() const override;
 	virtual void Incoming(FBitReader& Packet) override;
 	virtual void Outgoing(FBitWriter& Packet, FOutPacketTraits& Traits) override;
-	virtual void IncomingConnectionless(const FString& Address, FBitReader& Packet) override;
-	virtual void OutgoingConnectionless(const FString& Address, FBitWriter& Packet, FOutPacketTraits& Traits) override;
+	virtual void IncomingConnectionless(const TSharedPtr<const FInternetAddr>& Address, FBitReader& Packet) override {}
+	virtual void OutgoingConnectionless(const TSharedPtr<const FInternetAddr>& Address, FBitWriter& Packet, FOutPacketTraits& Traits) override {}
 	virtual int32 GetReservedPacketBits() const override;
 	virtual void CountBytes(FArchive& Ar) const override;
 

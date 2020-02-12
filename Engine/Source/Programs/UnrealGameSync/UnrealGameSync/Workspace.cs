@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 using System;
 using System.Collections.Generic;
@@ -60,6 +60,7 @@ namespace UnrealGameSync
 		public HashSet<Guid> CustomBuildSteps;
 		public Dictionary<string, string> Variables;
 		public PerforceSyncOptions PerforceSyncOptions;
+		public List<PerforceFileRecord> HaveFiles; // Cached when sync filter has changed
 
 		public WorkspaceUpdateContext(int InChangeNumber, WorkspaceUpdateOptions InOptions, string[] InSyncFilter, Dictionary<Guid, ConfigObject> InDefaultBuildSteps, List<ConfigObject> InUserBuildSteps, HashSet<Guid> InCustomBuildSteps, Dictionary<string, string> InVariables)
 		{
@@ -100,30 +101,16 @@ namespace UnrealGameSync
 
 	class Workspace : IDisposable
 	{
-		readonly WorkspaceSyncCategory[] DefaultSyncCategories =
-		{
-			new WorkspaceSyncCategory(new Guid("{6703E989-D912-451D-93AD-B48DE748D282}"), "Content", "*.uasset", "*.umap"),
-			new WorkspaceSyncCategory(new Guid("{6507C2FB-19DD-403A-AFA3-BBF898248D5A}"), "Documentation", "/Engine/Documentation/..."),
-			new WorkspaceSyncCategory(new Guid("{FD7C716E-4BAD-43AE-8FAE-8748EF9EE44D}"), "Platform Support: Android", "/Engine/Source/ThirdParty/.../Android/...", ".../Build/Android/PipelineCaches/..."),
-			new WorkspaceSyncCategory(new Guid("{3299A73D-2176-4C0F-BC99-C1C6631AF6C4}"), "Platform Support: HTML5", "/Engine/Source/ThirdParty/.../HTML5/...", "/Engine/Extras/ThirdPartyNotUE/emsdk/..."),
-			new WorkspaceSyncCategory(new Guid("{176B2EB2-35F7-4E8E-B131-5F1C5F0959AF}"), "Platform Support: iOS", "/Engine/Source/ThirdParty/.../IOS/...", ".../Build/IOS/PipelineCaches/..."),
-			new WorkspaceSyncCategory(new Guid("{F44B2D25-CBC0-4A8F-B6B3-E4A8125533DD}"), "Platform Support: Linux", "/Engine/Source/ThirdParty/.../Linux/..."),
-			new WorkspaceSyncCategory(new Guid("{2AF45231-0D75-463B-BF9F-ABB3231091BB}"), "Platform Support: Mac", "/Engine/Source/ThirdParty/.../Mac/...", ".../Build/Mac/PipelineCaches/..."),
-			new WorkspaceSyncCategory(new Guid("{C8CB4934-ADE9-46C9-B6E3-61A659E1FAF5}"), "Platform Support: PS4", ".../PS4/..."),
-			new WorkspaceSyncCategory(new Guid("{F8AE5AC3-DA2D-4719-BABF-8A90D878379E}"), "Platform Support: Switch", ".../Switch/..."),
-			new WorkspaceSyncCategory(new Guid("{3788A0BC-188C-4A0D-950A-D68175F0D110}"), "Platform Support: tvOS", "/Engine/Source/ThirdParty/.../TVOS/..."),
-			new WorkspaceSyncCategory(new Guid("{1144E719-FCD7-491B-B0FC-8B4C3565BF79}"), "Platform Support: Win32", "/Engine/Source/ThirdParty/.../Win32/..."),
-			new WorkspaceSyncCategory(new Guid("{5206CCEE-9024-4E36-8B89-F5F5A7D288D2}"), "Platform Support: Win64", "/Engine/Source/ThirdParty/.../Win64/..."),
-			new WorkspaceSyncCategory(new Guid("{06887423-B094-4718-9B55-C7A21EE67EE4}"), "Platform Support: XboxOne", ".../XboxOne/..."),
-			new WorkspaceSyncCategory(new Guid("{CFEC942A-BB90-4F0C-ACCF-238ECAAD9430}"), "Source Code", "/Engine/Source/..."),
-		};
-
 		const string BuildVersionFileName = "/Engine/Build/Build.version";
 		const string VersionHeaderFileName = "/Engine/Source/Runtime/Launch/Resources/Version.h";
 		const string ObjectVersionFileName = "/Engine/Source/Runtime/Core/Private/UObject/ObjectVersion.cpp";
 
+		readonly string LocalVersionHeaderFileName = VersionHeaderFileName.Replace('/', '\\');
+		readonly string LocalObjectVersionFileName = ObjectVersionFileName.Replace('/', '\\');
+
 		public readonly PerforceConnection Perforce;
 		public readonly string LocalRootPath;
+		public readonly string LocalRootPrefix;
 		public readonly string SelectedLocalFileName;
 		public readonly string ClientRootPath;
 		public readonly string SelectedClientFileName;
@@ -138,18 +125,123 @@ namespace UnrealGameSync
 
 		public event Action<WorkspaceUpdateContext, WorkspaceUpdateResult, string> OnUpdateComplete;
 
+		class RecordCounter : IDisposable
+		{
+			ProgressValue Progress;
+			string Message;
+			int Count;
+			Stopwatch Timer = Stopwatch.StartNew();
+
+			public RecordCounter(ProgressValue Progress, string Message)
+			{
+				this.Progress = Progress;
+				this.Message = Message;
+
+				Progress.Set(Message);
+			}
+
+			public void Dispose()
+			{
+				UpdateMessage();
+			}
+
+			public void Increment()
+			{
+				Count++;
+				if(Timer.ElapsedMilliseconds > 250)
+				{
+					UpdateMessage();
+				}
+			}
+
+			public void UpdateMessage()
+			{
+				Progress.Set(String.Format("{0} ({1:N0})", Message, Count));
+				Timer.Restart();
+			}
+		}
+
+		class SyncTree
+		{
+			public bool bCanUseWildcard;
+			public int TotalExcludedFiles;
+			public HashSet<string> IncludedFiles = new HashSet<string>();
+			public Dictionary<string, SyncTree> NameToSubTree = new Dictionary<string, SyncTree>(StringComparer.OrdinalIgnoreCase);
+
+			public SyncTree(bool bCanUseWildcard)
+			{
+				this.bCanUseWildcard = bCanUseWildcard;
+			}
+
+			public SyncTree FindOrAddSubTree(string Name)
+			{
+				SyncTree Result;
+				if (!NameToSubTree.TryGetValue(Name, out Result))
+				{
+					Result = new SyncTree(bCanUseWildcard);
+					NameToSubTree.Add(Name, Result);
+				}
+				return Result;
+			}
+
+			public void IncludeFile(string Path)
+			{
+				int Idx = Path.IndexOf('/');
+				if (Idx == -1)
+				{
+					IncludedFiles.Add(Path);
+				}
+				else
+				{
+					SyncTree SubTree = FindOrAddSubTree(Path.Substring(0, Idx));
+					SubTree.IncludeFile(Path.Substring(Idx + 1));
+				}
+			}
+
+			public void ExcludeFile(string Path)
+			{
+				int Idx = Path.IndexOf('/');
+				if (Idx != -1)
+				{
+					SyncTree SubTree = FindOrAddSubTree(Path.Substring(0, Idx));
+					SubTree.ExcludeFile(Path.Substring(Idx + 1));
+				}
+				TotalExcludedFiles++;
+			}
+
+			public void GetOptimizedSyncCommands(string Prefix, int ChangeNumber, SortedSet<string> SyncCommands)
+			{
+				if (bCanUseWildcard && TotalExcludedFiles == 0)
+				{
+					SyncCommands.Add(String.Format("{0}/...@{1}", Prefix, ChangeNumber));
+				}
+				else
+				{
+					foreach(string File in IncludedFiles)
+					{
+						SyncCommands.Add(String.Format("{0}/{1}@{2}", Prefix, File, ChangeNumber));
+					}
+					foreach (KeyValuePair<string, SyncTree> Pair in NameToSubTree)
+					{
+						Pair.Value.GetOptimizedSyncCommands(String.Format("{0}/{1}", Prefix, PerforceUtils.EscapePath(Pair.Key)), ChangeNumber, SyncCommands);
+					}
+				}
+			}
+		}
+
 		public Workspace(PerforceConnection InPerforce, string InLocalRootPath, string InSelectedLocalFileName, string InClientRootPath, string InSelectedClientFileName, int InInitialChangeNumber, string InInitialSyncFilterHash, int InLastBuiltChangeNumber, string InTelemetryProjectPath, bool bInIsEnterpriseProject, TextWriter InLog)
 		{
 			Perforce = InPerforce;
 			LocalRootPath = InLocalRootPath;
+			LocalRootPrefix = InLocalRootPath.TrimEnd(Path.DirectorySeparatorChar) + Path.DirectorySeparatorChar;
 			SelectedLocalFileName = InSelectedLocalFileName;
 			ClientRootPath = InClientRootPath;
 			SelectedClientFileName = InSelectedClientFileName;
+			TelemetryProjectPath = InTelemetryProjectPath;
 			CurrentChangeNumber = InInitialChangeNumber;
 			CurrentSyncFilterHash = InInitialSyncFilterHash;
 			PendingChangeNumber = InInitialChangeNumber;
 			LastBuiltChangeNumber = InLastBuiltChangeNumber;
-			TelemetryProjectPath = InTelemetryProjectPath;
 			bIsEnterpriseProject = bInIsEnterpriseProject;
 			Log = InLog;
 
@@ -160,48 +252,6 @@ namespace UnrealGameSync
 		public void Dispose()
 		{
 			CancelUpdate();
-		}
-
-		public Dictionary<Guid, WorkspaceSyncCategory> GetSyncCategories()
-		{
-			Dictionary<Guid, WorkspaceSyncCategory> UniqueIdToCategory = new Dictionary<Guid, WorkspaceSyncCategory>();
-
-			// Add the default filters
-			foreach(WorkspaceSyncCategory DefaultSyncCategory in DefaultSyncCategories)
-			{
-				UniqueIdToCategory.Add(DefaultSyncCategory.UniqueId, DefaultSyncCategory);
-			}
-
-			// Add the custom filters
-			if(ProjectConfigFile != null)
-			{
-				string[] CategoryLines = ProjectConfigFile.GetValues("Options.SyncCategory", new string[0]);
-				foreach(string CategoryLine in CategoryLines)
-				{
-					ConfigObject Object = new ConfigObject(CategoryLine);
-
-					Guid UniqueId;
-					if(Guid.TryParse(Object.GetValue("UniqueId", ""), out UniqueId))
-					{
-						WorkspaceSyncCategory Category;
-						if(!UniqueIdToCategory.TryGetValue(UniqueId, out Category))
-						{
-							Category = new WorkspaceSyncCategory(UniqueId);
-							UniqueIdToCategory.Add(UniqueId, Category);
-						}
-
-						if(Object.GetValue("Clear", false))
-						{
-							Category.Paths = new string[0];
-						}
-
-						Category.Name = Object.GetValue("Name", Category.Name);
-						Category.bEnable = Object.GetValue("Enable", Category.bEnable);
-						Category.Paths = Enumerable.Concat(Category.Paths, Object.GetValue("Paths", "").Split(';').Select(x => x.Trim())).Distinct().OrderBy(x => x).ToArray();
-					}
-				}
-			}
-			return UniqueIdToCategory;
 		}
 
 		public ConfigFile ProjectConfigFile
@@ -318,17 +368,14 @@ namespace UnrealGameSync
 						return WorkspaceUpdateResult.FailedToSyncLoginExpired;
 					}
 
-					// Find all the files that are out of date
-					Progress.Set("Finding files to sync...");
-
 					// Figure out which paths to sync
-					List<string> SyncPaths = GetSyncPaths((Context.Options & WorkspaceUpdateOptions.SyncAllProjects) != 0, Context.SyncFilter);
+					List<string> RelativeSyncPaths = GetRelativeSyncPaths((Context.Options & WorkspaceUpdateOptions.SyncAllProjects) != 0, Context.SyncFilter);
+					List<string> SyncPaths = new List<string>(RelativeSyncPaths.Select(x => ClientRootPath + x));
 
 					// Get the user's sync filter
-					FileFilter UserFilter = null;
+					FileFilter UserFilter = new FileFilter(FileFilterType.Include);
 					if(Context.SyncFilter != null)
 					{
-						UserFilter = new FileFilter(FileFilterType.Include);
 						UserFilter.AddRules(Context.SyncFilter.Select(x => x.Trim()).Where(x => x.Length > 0 && !x.StartsWith(";") && !x.StartsWith("#")));
 					}
 
@@ -336,7 +383,11 @@ namespace UnrealGameSync
 					string NextSyncFilterHash = null;
 					using (SHA1Managed SHA = new SHA1Managed())
 					{
-						StringBuilder CombinedFilter = new StringBuilder(String.Join("\n", SyncPaths));
+						StringBuilder CombinedFilter = new StringBuilder();
+						foreach(string RelativeSyncPath in RelativeSyncPaths)
+						{
+							CombinedFilter.AppendFormat("{0}\n", RelativeSyncPath);
+						}
 						if(Context.SyncFilter != null)
 						{
 							CombinedFilter.Append("--FROM--\n");
@@ -346,33 +397,35 @@ namespace UnrealGameSync
 					}
 
 					// If the hash differs, enumerate everything in the workspace to find what needs to be removed
-					List<string> RemoveDepotPaths = new List<string>();
 					if (NextSyncFilterHash != CurrentSyncFilterHash)
 					{
 						Log.WriteLine("Filter has changed ({0} -> {1}); finding files in workspace that need to be removed.", (String.IsNullOrEmpty(CurrentSyncFilterHash))? "None" : CurrentSyncFilterHash, NextSyncFilterHash);
 
 						// Find all the files that are in this workspace
-						List<PerforceFileRecord> HaveFiles;
-						if(!Perforce.Have("//...", out HaveFiles, Log))
+						List<PerforceFileRecord> HaveFiles = Context.HaveFiles;
+						if(HaveFiles == null)
 						{
-							StatusMessage = "Unable to query files.";
-							return WorkspaceUpdateResult.FailedToSync;
+							HaveFiles = new List<PerforceFileRecord>();
+							using(RecordCounter HaveCounter = new RecordCounter(Progress, "Sync filter changed; checking workspace..."))
+							{
+								if(!Perforce.Have("//...", Record => { HaveFiles.Add(Record); HaveCounter.Increment(); }, Log))
+								{
+									StatusMessage = "Unable to query files.";
+									return WorkspaceUpdateResult.FailedToSync;
+								}
+							}
+							Context.HaveFiles = HaveFiles;
 						}
 
 						// Build a filter for the current sync paths
 						FileFilter SyncPathsFilter = new FileFilter(FileFilterType.Exclude);
-						foreach(string SyncPath in SyncPaths)
+						foreach(string RelativeSyncPath in RelativeSyncPaths)
 						{
-							if(!SyncPath.StartsWith(ClientRootPath))
-							{
-								Log.WriteLine("Invalid sync path; '{0}' does not begin with '{1}'", SyncPath, ClientRootPath);
-								StatusMessage = "Unable to sync files.";
-								return WorkspaceUpdateResult.FailedToSync;
-							}
-							SyncPathsFilter.Include(SyncPath.Substring(ClientRootPath.Length));
+							SyncPathsFilter.Include(RelativeSyncPath);
 						}
 
 						// Remove all the files that are not included by the filter
+						List<string> RemoveDepotPaths = new List<string>();
 						foreach(PerforceFileRecord HaveFile in HaveFiles)
 						{
 							try
@@ -393,12 +446,9 @@ namespace UnrealGameSync
 						// Check if there are any paths outside the regular sync paths
 						if(RemoveDepotPaths.Count > 0)
 						{
-							FileFilter ProjectFilter = new FileFilter(FileFilterType.Exclude);
-							ProjectFilter.AddRules(SyncPaths);
-
 							bool bDeleteListMatches = true;
 
-							Dictionary<string, bool> NewDeleteFiles = new Dictionary<string, bool>(StringComparer.InvariantCultureIgnoreCase);
+							Dictionary<string, bool> NewDeleteFiles = new Dictionary<string, bool>(StringComparer.OrdinalIgnoreCase);
 							foreach(string RemoveDepotPath in RemoveDepotPaths)
 							{
 								bool bDelete;
@@ -420,115 +470,138 @@ namespace UnrealGameSync
 							RemoveDepotPaths.RemoveAll(x => !Context.DeleteFiles[x]);
 						}
 
-						// Clear the current sync filter hash. If the sync is canceled, we'll be in an indeterminate state, and we should always clean next time round.
-						CurrentSyncFilterHash = "INVALID";
-					}
-
-					// Find all the server changes, and anything that's opened for edit locally. We need to sync files we have open to schedule a resolve.
-					List<string> SyncDepotPaths = new List<string>();
-					foreach(string SyncPath in SyncPaths)
-					{
-						List<PerforceFileRecord> SyncRecords;
-						if(!Perforce.SyncPreview(SyncPath, PendingChangeNumber, !Context.Options.HasFlag(WorkspaceUpdateOptions.Sync), out SyncRecords, Log))
+						// Actually delete any files that we don't want
+						if(RemoveDepotPaths.Count > 0)
 						{
-							StatusMessage = String.Format("Couldn't enumerate changes matching {0}.", SyncPath);
-							return WorkspaceUpdateResult.FailedToSync;
-						}
+							// Clear the current sync filter hash. If the sync is canceled, we'll be in an indeterminate state, and we should always clean next time round.
+							CurrentSyncFilterHash = "INVALID";
 
-						foreach(PerforceFileRecord SyncRecord in SyncRecords)
-						{
-							try
+							// Find all the depot paths that will be synced
+							HashSet<string> RemainingDepotPathsToRemove = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+							RemainingDepotPathsToRemove.UnionWith(RemoveDepotPaths);
+
+							// Build the list of revisions to sync
+							List<string> RevisionsToRemove = new List<string>();
+							RevisionsToRemove.AddRange(RemoveDepotPaths.Select(x => String.Format("{0}#0", x)));
+
+							WorkspaceUpdateResult RemoveResult = SyncFileRevisions("Removing files...", Context, RevisionsToRemove, RemainingDepotPathsToRemove, out StatusMessage);
+							if(RemoveResult != WorkspaceUpdateResult.Success)
 							{
-								if(!String.IsNullOrEmpty(SyncRecord.ClientPath))
-								{
-									Path.GetFullPath(SyncRecord.ClientPath);
-								}
-							}
-							catch(PathTooLongException)
-							{
-								Log.WriteLine("The local path for {0} exceeds the maximum allowed by Windows. Re-sync your workspace to a directory with a shorter name, or delete the file from the server.", SyncRecord.ClientPath);
-								StatusMessage = "File exceeds maximum path length allowed by Windows.";
-								return WorkspaceUpdateResult.FailedToSync;
+								return RemoveResult;
 							}
 						}
 
-						if(UserFilter != null)
-						{
-							SyncRecords.RemoveAll(x => !String.IsNullOrEmpty(x.ClientPath) && !MatchFilter(Path.GetFullPath(x.ClientPath), UserFilter));
-						}
-
-						SyncDepotPaths.AddRange(SyncRecords.Select(x => x.DepotPath));
-
-						List<PerforceFileRecord> OpenRecords;
-						if(!Perforce.GetOpenFiles(SyncPath, out OpenRecords, Log))
-						{
-							StatusMessage = String.Format("Couldn't find open files matching {0}.", SyncPath);
-							return WorkspaceUpdateResult.FailedToSync;
-						}
-
-						// don't force a sync on added files
-						SyncDepotPaths.AddRange(OpenRecords.Where(x => x.Action != "add" && x.Action != "branch" && x.Action != "move/add").Select(x => x.DepotPath));
+						// Update the sync filter hash. We've removed any files we need to at this point.
+						CurrentSyncFilterHash = NextSyncFilterHash;
 					}
 
-					// Filter out all the binaries that we don't want
-					FileFilter Filter = new FileFilter(FileFilterType.Include);
-					Filter.Exclude("..." + BuildVersionFileName);
-					Filter.Exclude("..." + VersionHeaderFileName);
-					Filter.Exclude("..." + ObjectVersionFileName);
-					if(Context.Options.HasFlag(WorkspaceUpdateOptions.ContentOnly))
+					// Create a filter for all the files we don't want
+					FileFilter Filter = new FileFilter(UserFilter);
+					Filter.Exclude(BuildVersionFileName);
+					if (Context.Options.HasFlag(WorkspaceUpdateOptions.ContentOnly))
 					{
 						Filter.Exclude("*.usf");
 						Filter.Exclude("*.ush");
 					}
-					SyncDepotPaths.RemoveAll(x => !Filter.Matches(x));
 
-					// Find all the depot paths that will be synced
-					HashSet<string> RemainingDepotPaths = new HashSet<string>(StringComparer.InvariantCultureIgnoreCase);
-					RemainingDepotPaths.UnionWith(RemoveDepotPaths);
-					RemainingDepotPaths.UnionWith(SyncDepotPaths);
-
-					// Build the list of revisions to sync
-					List<string> SyncRevisions = new List<string>();
-					SyncRevisions.AddRange(RemoveDepotPaths.Select(x => String.Format("{0}#0", x)));
-					SyncRevisions.AddRange(SyncDepotPaths.Select(x => String.Format("{0}@{1}", x, PendingChangeNumber)));
-
-					// Sync them all
-					List<string> TamperedFiles = new List<string>();
-					if(!Perforce.Sync(SyncRevisions, Record => UpdateSyncProgress(Record, RemainingDepotPaths, SyncRevisions.Count), TamperedFiles, false, Context.PerforceSyncOptions, Log))
+					// Create a tree to store the sync path
+					SyncTree SyncTree = new SyncTree(false);
+					foreach (string RelativeSyncPath in RelativeSyncPaths)
 					{
-						StatusMessage = "Aborted sync due to errors.";
-						return WorkspaceUpdateResult.FailedToSync;
+						const string WildcardSuffix = "/...";
+						if (RelativeSyncPath.EndsWith(WildcardSuffix, StringComparison.Ordinal))
+						{
+							SyncTree Leaf = SyncTree;
+
+							string[] Fragments = RelativeSyncPath.Split('/');
+							for (int Idx = 1; Idx < Fragments.Length - 1; Idx++)
+							{
+								Leaf = Leaf.FindOrAddSubTree(Fragments[Idx]);
+							}
+
+							Leaf.bCanUseWildcard = true;
+						}
 					}
 
-					// If any files need to be clobbered, defer to the main thread to figure out which ones
-					if(TamperedFiles.Count > 0)
+					// Find all the server changes, and anything that's opened for edit locally. We need to sync files we have open to schedule a resolve.
+					SortedSet<string> SyncCommands = new SortedSet<string>(StringComparer.Ordinal);
+					List<string> SyncDepotPaths = new List<string>();
+					using(RecordCounter Counter = new RecordCounter(Progress, "Filtering files..."))
 					{
-						int NumNewFilesToClobber = 0;
-						foreach(string TamperedFile in TamperedFiles)
+						foreach(string SyncPath in SyncPaths)
 						{
-							if(!Context.ClobberFiles.ContainsKey(TamperedFile))
+							List<PerforceFileRecord> SyncRecords = new List<PerforceFileRecord>();
+							if(!Perforce.SyncPreview(SyncPath, PendingChangeNumber, !Context.Options.HasFlag(WorkspaceUpdateOptions.Sync), Record => { SyncRecords.Add(Record); Counter.Increment(); }, Log))
 							{
-								Context.ClobberFiles[TamperedFile] = true;
-								NumNewFilesToClobber++;
-							}
-						}
-						if(NumNewFilesToClobber > 0)
-						{
-							StatusMessage = String.Format("Cancelled sync after checking files to clobber ({0} new files).", NumNewFilesToClobber);
-							return WorkspaceUpdateResult.FilesToClobber;
-						}
-						foreach(string TamperedFile in TamperedFiles)
-						{
-							if(Context.ClobberFiles[TamperedFile] && !Perforce.ForceSync(TamperedFile, PendingChangeNumber, Log))
-							{
-								StatusMessage = String.Format("Couldn't sync {0}.", TamperedFile);
+								StatusMessage = String.Format("Couldn't enumerate changes matching {0}.", SyncPath);
 								return WorkspaceUpdateResult.FailedToSync;
 							}
+
+							List<PerforceFileRecord> OpenRecords;
+							if (!Perforce.GetOpenFiles(SyncPath, out OpenRecords, Log))
+							{
+								StatusMessage = String.Format("Couldn't find open files matching {0}.", SyncPath);
+								return WorkspaceUpdateResult.FailedToSync;
+							}
+
+							SyncRecords.AddRange(OpenRecords.Where(x => x.Action != "add" && x.Action != "branch" && x.Action != "move/add"));
+
+							foreach (PerforceFileRecord SyncRecord in SyncRecords)
+							{
+								// If it doesn't exist locally, just add a sync command for it
+								if (String.IsNullOrEmpty(SyncRecord.ClientPath))
+								{
+									SyncCommands.Add(String.Format("{0}@{1}", SyncRecord.DepotPath, PendingChangeNumber));
+									SyncDepotPaths.Add(SyncRecord.DepotPath);
+									continue;
+								}
+
+								// Get the full local path
+								string FullName;
+								try
+								{
+									FullName = Path.GetFullPath(SyncRecord.ClientPath);
+								}
+								catch(PathTooLongException)
+								{
+									Log.WriteLine("The local path for {0} exceeds the maximum allowed by Windows. Re-sync your workspace to a directory with a shorter name, or delete the file from the server.", SyncRecord.ClientPath);
+									StatusMessage = "File exceeds maximum path length allowed by Windows.";
+									return WorkspaceUpdateResult.FailedToSync;
+								}
+
+								// Make sure it's under the current directory. Not sure why this would happen, just being safe.
+								if (!FullName.StartsWith(LocalRootPrefix, StringComparison.OrdinalIgnoreCase))
+								{
+									SyncCommands.Add(String.Format("{0}@{1}", SyncRecord.DepotPath, PendingChangeNumber));
+									SyncDepotPaths.Add(SyncRecord.DepotPath);
+									continue;
+								}
+
+								// Check that it matches the filter
+								string RelativePath = FullName.Substring(LocalRootPrefix.Length).Replace('\\', '/');
+								if (Filter.Matches(RelativePath))
+								{
+									SyncTree.IncludeFile(RelativePath);
+									SyncDepotPaths.Add(SyncRecord.DepotPath);
+								}
+								else
+								{
+									SyncTree.ExcludeFile(RelativePath);
+								}
+							}
 						}
 					}
+					SyncTree.GetOptimizedSyncCommands(ClientRootPath, PendingChangeNumber, SyncCommands);
 
-					// Update the sync filter hash. We've removed any files we need to at this point.
-					CurrentSyncFilterHash = NextSyncFilterHash;
+					// Find all the depot paths that will be synced
+					HashSet<string> RemainingDepotPaths = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+					RemainingDepotPaths.UnionWith(SyncDepotPaths);
+
+					WorkspaceUpdateResult SyncResult = SyncFileRevisions("Syncing files...", Context, SyncCommands.ToList(), RemainingDepotPaths, out StatusMessage);
+					if(SyncResult != WorkspaceUpdateResult.Success)
+					{
+						return SyncResult;
+					}
 
 					int VersionChangeNumber = -1;
 					if(Context.Options.HasFlag(WorkspaceUpdateOptions.Sync) && !Context.Options.HasFlag(WorkspaceUpdateOptions.UpdateFilter))
@@ -593,18 +666,23 @@ namespace UnrealGameSync
 						}
 
 						// Update the version files
-						if(ProjectConfigFile.GetValue("Options.UseFastModularVersioning", false))
+						if(ProjectConfigFile.GetValue("Options.UseFastModularVersioningV2", false))
 						{
 							bool bIsEpicInternal;
 							Perforce.FileExists(ClientRootPath + "/Engine/Build/NotForLicensees/EpicInternal.txt", out bIsEpicInternal, Log);
 
-							Dictionary<string, string> BuildVersionStrings = new Dictionary<string,string>();
-							BuildVersionStrings["\"Changelist\":"] = String.Format(" {0},", PendingChangeNumber);
-							BuildVersionStrings["\"CompatibleChangelist\":"] = String.Format(" {0},", VersionChangeNumber);
-							BuildVersionStrings["\"BranchName\":"] = String.Format(" \"{0}\"", BranchOrStreamName.Replace('/', '+'));
-							BuildVersionStrings["\"IsPromotedBuild\":"] = " 0,";
-							BuildVersionStrings["\"IsLicenseeVersion\":"] = bIsEpicInternal? "0," : "1,";
-							if(!UpdateVersionFile(ClientRootPath + BuildVersionFileName, BuildVersionStrings, PendingChangeNumber))
+							if (!UpdateVersionFile(ClientRootPath + BuildVersionFileName, PendingChangeNumber, Text => UpdateBuildVersion(Text, PendingChangeNumber, VersionChangeNumber, BranchOrStreamName, !bIsEpicInternal)))
+							{
+								StatusMessage = String.Format("Failed to update {0}.", BuildVersionFileName);
+								return WorkspaceUpdateResult.FailedToSync;
+							}
+						}
+						else if(ProjectConfigFile.GetValue("Options.UseFastModularVersioning", false))
+						{
+							bool bIsEpicInternal;
+							Perforce.FileExists(ClientRootPath + "/Engine/Build/NotForLicensees/EpicInternal.txt", out bIsEpicInternal, Log);
+
+							if (!UpdateVersionFile(ClientRootPath + BuildVersionFileName, PendingChangeNumber, Text => UpdateBuildVersion(Text, PendingChangeNumber, VersionChangeNumber, BranchOrStreamName, !bIsEpicInternal)))
 							{
 								StatusMessage = String.Format("Failed to update {0}.", BuildVersionFileName);
 								return WorkspaceUpdateResult.FailedToSync;
@@ -651,7 +729,7 @@ namespace UnrealGameSync
 						}
 
 						// Remove all the receipts for build targets in this branch
-						if(SelectedClientFileName.EndsWith(".uproject", StringComparison.InvariantCultureIgnoreCase))
+						if(SelectedClientFileName.EndsWith(".uproject", StringComparison.OrdinalIgnoreCase))
 						{
 							Perforce.Sync(PerforceUtils.GetClientOrDepotDirectoryName(SelectedClientFileName) + "/Build/Receipts/...#0", Log);
 						}
@@ -730,7 +808,7 @@ namespace UnrealGameSync
 					Times.Add(new Tuple<string,TimeSpan>("Sync", Stopwatch.Stop("Success")));
 
 					// Save the number of files synced
-					NumFilesSynced = SyncRevisions.Count;
+					NumFilesSynced = SyncDepotPaths.Count;
 					Log.WriteLine();
 				}
 			}
@@ -742,7 +820,7 @@ namespace UnrealGameSync
 				{
 					// Create the directory for extracted archive manifests
 					string ManifestDirectoryName;
-					if(SelectedLocalFileName.EndsWith(".uproject", StringComparison.InvariantCultureIgnoreCase))
+					if(SelectedLocalFileName.EndsWith(".uproject", StringComparison.OrdinalIgnoreCase))
 					{
 						ManifestDirectoryName = Path.Combine(Path.GetDirectoryName(SelectedLocalFileName), "Saved", "UnrealGameSync");
 					}
@@ -819,7 +897,7 @@ namespace UnrealGameSync
 					CommandLine.AppendFormat("/C \"\"{0}\"", Path.Combine(LocalRootPath, "GenerateProjectFiles.bat"));
 					if((Context.Options & WorkspaceUpdateOptions.SyncAllProjects) == 0 && (Context.Options & WorkspaceUpdateOptions.IncludeAllProjectsInSolution) == 0)
 					{
-						if(SelectedLocalFileName.EndsWith(".uproject", StringComparison.InvariantCultureIgnoreCase))
+						if(SelectedLocalFileName.EndsWith(".uproject", StringComparison.OrdinalIgnoreCase))
 						{
 							CommandLine.AppendFormat(" \"{0}\"", SelectedLocalFileName);
 						}
@@ -1022,21 +1100,35 @@ namespace UnrealGameSync
 
 		public List<string> GetSyncPaths(bool bSyncAllProjects, string[] SyncFilter)
 		{
-			// Add the default project paths
+			List<string> SyncPaths = GetRelativeSyncPaths(bSyncAllProjects, SyncFilter);
+			return SyncPaths.Select(x => ClientRootPath + x).ToList();
+		}
+
+		public List<string> GetRelativeSyncPaths(bool bSyncAllProjects, string[] SyncFilter)
+		{
 			List<string> SyncPaths = new List<string>();
-			if(bSyncAllProjects || !SelectedClientFileName.EndsWith(".uproject", StringComparison.InvariantCultureIgnoreCase))
+
+			// Check the client path is formatted correctly
+			if (!SelectedClientFileName.StartsWith(ClientRootPath + "/"))
 			{
-				SyncPaths.Add(ClientRootPath + "/...");
+				throw new Exception(String.Format("Expected '{0}' to start with '{1}'", SelectedClientFileName, ClientRootPath));
+			}
+
+			// Add the default project paths
+			int LastSlashIdx = SelectedClientFileName.LastIndexOf('/');
+			if (bSyncAllProjects || !SelectedClientFileName.EndsWith(".uproject", StringComparison.OrdinalIgnoreCase) || LastSlashIdx <= ClientRootPath.Length)
+			{
+				SyncPaths.Add("/...");
 			}
 			else
 			{
-				SyncPaths.Add(ClientRootPath + "/*");
-				SyncPaths.Add(ClientRootPath + "/Engine/...");
+				SyncPaths.Add("/*");
+				SyncPaths.Add("/Engine/...");
 				if(bIsEnterpriseProject)
 				{
-					SyncPaths.Add(ClientRootPath + "/Enterprise/...");
+					SyncPaths.Add("/Enterprise/...");
 				}
-				SyncPaths.Add(PerforceUtils.GetClientOrDepotDirectoryName(SelectedClientFileName) + "/...");
+				SyncPaths.Add(SelectedClientFileName.Substring(ClientRootPath.Length, LastSlashIdx - ClientRootPath.Length) + "/...");
 			}
 
 			// Apply the sync filter to that list. We only want inclusive rules in the output list, but we can manually apply exclusions to previous entries.
@@ -1047,11 +1139,11 @@ namespace UnrealGameSync
 					string TrimSyncPath = SyncPath.Trim();
 					if(TrimSyncPath.StartsWith("/"))
 					{
-						SyncPaths.Add(ClientRootPath + TrimSyncPath);
+						SyncPaths.Add(TrimSyncPath);
 					}
 					else if(TrimSyncPath.StartsWith("-/") && TrimSyncPath.EndsWith("..."))
 					{
-						SyncPaths.RemoveAll(x => x.StartsWith(ClientRootPath + TrimSyncPath.Substring(1, TrimSyncPath.Length - 4)));
+						SyncPaths.RemoveAll(x => x.StartsWith(TrimSyncPath.Substring(1, TrimSyncPath.Length - 4)));
 					}
 				}
 			}
@@ -1076,11 +1168,11 @@ namespace UnrealGameSync
 
 			return SyncPaths;
 		}
-		
+
 		public bool MatchFilter(string FileName, FileFilter Filter)
 		{
 			bool bMatch = true;
-			if(FileName.StartsWith(LocalRootPath, StringComparison.InvariantCultureIgnoreCase))
+			if(FileName.StartsWith(LocalRootPath, StringComparison.OrdinalIgnoreCase))
 			{
 				if(!Filter.Matches(FileName.Substring(LocalRootPath.Length)))
 				{
@@ -1088,6 +1180,55 @@ namespace UnrealGameSync
 				}
 			}
 			return bMatch;
+		}
+
+		WorkspaceUpdateResult SyncFileRevisions(string Prefix, WorkspaceUpdateContext Context, List<string> SyncCommands, HashSet<string> RemainingDepotPaths, out string StatusMessage)
+		{
+			int TotalDepotPaths = RemainingDepotPaths.Count;
+
+			// Sync them all
+			List<string> TamperedFiles = new List<string>();
+			if(!Perforce.Sync(SyncCommands, Record => UpdateSyncProgress(Prefix, Record, RemainingDepotPaths, TotalDepotPaths), TamperedFiles, false, Context.PerforceSyncOptions, Log))
+			{
+				StatusMessage = "Aborted sync due to errors.";
+				return WorkspaceUpdateResult.FailedToSync;
+			}
+
+			// If any files need to be clobbered, defer to the main thread to figure out which ones
+			if(TamperedFiles.Count > 0)
+			{
+				int NumNewFilesToClobber = 0;
+				foreach(string TamperedFile in TamperedFiles)
+				{
+					if(!Context.ClobberFiles.ContainsKey(TamperedFile))
+					{
+						Context.ClobberFiles[TamperedFile] = true;
+						if(TamperedFile.EndsWith(LocalObjectVersionFileName, StringComparison.OrdinalIgnoreCase) || TamperedFile.EndsWith(LocalVersionHeaderFileName, StringComparison.OrdinalIgnoreCase))
+						{
+							// Hack for UseFastModularVersioningV2; we don't need to update these files any more.
+							continue;
+						}
+						NumNewFilesToClobber++;
+					}
+				}
+				if(NumNewFilesToClobber > 0)
+				{
+					StatusMessage = String.Format("Cancelled sync after checking files to clobber ({0} new files).", NumNewFilesToClobber);
+					return WorkspaceUpdateResult.FilesToClobber;
+				}
+				foreach(string TamperedFile in TamperedFiles)
+				{
+					if(Context.ClobberFiles[TamperedFile] && !Perforce.ForceSync(TamperedFile, PendingChangeNumber, Log))
+					{
+						StatusMessage = String.Format("Couldn't sync {0}.", TamperedFile);
+						return WorkspaceUpdateResult.FailedToSync;
+					}
+				}
+			}
+
+			// All succeeded
+			StatusMessage = null;
+			return WorkspaceUpdateResult.Success;
 		}
 
 		static ConfigFile ReadProjectConfigFile(string LocalRootPath, string SelectedLocalFileName, TextWriter Log)
@@ -1152,7 +1293,7 @@ namespace UnrealGameSync
 			{
 				return true;
 			}
-			if(OpenFiles.Any(x => x.DepotPath.IndexOf("/Source/", StringComparison.InvariantCultureIgnoreCase) != -1))
+			if(OpenFiles.Any(x => x.DepotPath.IndexOf("/Source/", StringComparison.OrdinalIgnoreCase) != -1))
 			{
 				return true;
 			}
@@ -1175,11 +1316,11 @@ namespace UnrealGameSync
 			return true;
 		}
 
-		void UpdateSyncProgress(PerforceFileRecord Record, HashSet<string> RemainingFiles, int NumFiles)
+		void UpdateSyncProgress(string Prefix, PerforceFileRecord Record, HashSet<string> RemainingFiles, int NumFiles)
 		{
 			RemainingFiles.Remove(Record.DepotPath);
 
-			string Message = String.Format("Syncing files... ({0}/{1})", NumFiles - RemainingFiles.Count, NumFiles);
+			string Message = String.Format("{0} ({1}/{2})", Prefix, NumFiles - RemainingFiles.Count, NumFiles);
 			float Fraction = Math.Min((float)(NumFiles - RemainingFiles.Count) / (float)NumFiles, 1.0f);
 			Progress.Set(Message, Fraction);
 
@@ -1188,13 +1329,30 @@ namespace UnrealGameSync
 
 		bool UpdateVersionFile(string ClientPath, Dictionary<string, string> VersionStrings, int ChangeNumber)
 		{
+			return UpdateVersionFile(ClientPath, ChangeNumber, Text => UpdateVersionStrings(Text, VersionStrings));
+		}
+
+		bool UpdateVersionFile(string ClientPath, int ChangeNumber, Func<string, string> Update)
+		{
 			List<PerforceFileRecord> Records;
 			if(!Perforce.Stat(ClientPath, out Records, Log))
 			{
 				Log.WriteLine("Failed to query records for {0}", ClientPath);
 				return false;
 			}
-			if(Records.Count == 0)
+			if (Records.Count > 1)
+			{
+				// Attempt to remove any existing file which is synced
+				Perforce.ForceSync(String.Format("{0}#0", ClientPath), Log);
+
+				// Try to get the mapped files again
+				if (!Perforce.Stat(ClientPath, out Records, Log))
+				{
+					Log.WriteLine("Failed to query records for {0}", ClientPath);
+					return false;
+				}
+			}
+			if (Records.Count == 0)
 			{
 				Log.WriteLine("Ignoring {0}; not found on server.", ClientPath);
 				return true;
@@ -1210,21 +1368,50 @@ namespace UnrealGameSync
 				return false;
 			}
 
+			string Text = String.Join("\n", Lines);
+			Text = Update(Text);
+			return WriteVersionFile(LocalPath, DepotPath, Text);
+		}
+
+		string UpdateVersionStrings(string Text, Dictionary<string, string> VersionStrings)
+		{
 			StringWriter Writer = new StringWriter();
-			foreach(string Line in Lines)
+			foreach (string Line in Text.Split('\n'))
 			{
 				string NewLine = Line;
-				foreach(KeyValuePair<string, string> VersionString in VersionStrings)
+				foreach (KeyValuePair<string, string> VersionString in VersionStrings)
 				{
-					if(UpdateVersionLine(ref NewLine, VersionString.Key, VersionString.Value))
+					if (UpdateVersionLine(ref NewLine, VersionString.Key, VersionString.Value))
 					{
 						break;
 					}
 				}
 				Writer.WriteLine(NewLine);
 			}
+			return Writer.ToString();
+		}
 
-			return WriteVersionFile(LocalPath, DepotPath, Writer.ToString());
+		string UpdateBuildVersion(string Text, int Changelist, int CodeChangelist, string BranchOrStreamName, bool bIsLicenseeVersion)
+		{
+			Dictionary<string, object> Object = Json.Deserialize(Text);
+
+			object PrevCompatibleChangelistObj;
+			int PrevCompatibleChangelist = Object.TryGetValue("CompatibleChangelist", out PrevCompatibleChangelistObj) ? (int)Convert.ChangeType(PrevCompatibleChangelistObj, typeof(int)) : 0;
+
+			object PrevIsLicenseeVersionObj;
+			bool PrevIsLicenseeVersion = Object.TryGetValue("IsLicenseeVersion", out PrevIsLicenseeVersionObj)? ((int)Convert.ChangeType(PrevIsLicenseeVersionObj, typeof(int)) != 0) : false;
+
+			Object["Changelist"] = Changelist;
+			if(PrevCompatibleChangelist == 0 || PrevIsLicenseeVersion != bIsLicenseeVersion)
+			{
+				// Don't overwrite the compatible changelist if we're in a hotfix release
+				Object["CompatibleChangelist"] = CodeChangelist;
+			}
+			Object["BranchName"] = BranchOrStreamName.Replace('/', '+');
+			Object["IsPromotedBuild"] = 0;
+			Object["IsLicenseeVersion"] = bIsLicenseeVersion ? 1 : 0;
+
+			return Json.Serialize(Object, JsonSerializeOptions.PrettyPrint);
 		}
 
 		bool WriteVersionFile(string LocalPath, string DepotPath, string NewText)

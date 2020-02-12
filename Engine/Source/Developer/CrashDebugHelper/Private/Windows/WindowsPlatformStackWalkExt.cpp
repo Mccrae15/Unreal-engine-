@@ -1,10 +1,10 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "WindowsPlatformStackWalkExt.h"
+#include "CrashDebugHelper.h"
 #include "CrashDebugHelperPrivate.h"
 #include "GenericPlatform/GenericPlatformStackWalk.h"
 #include "GenericPlatform/GenericPlatformCrashContext.h"
-#include "CrashDebugPDBCache.h"
 #include "Misc/Parse.h"
 #include "Misc/CommandLine.h"
 #include "Misc/MemStack.h"
@@ -20,6 +20,14 @@
 
 #pragma comment( lib, "dbgeng.lib" )
 
+// Use _NT_SYMBOL_PATH for non development builds. We don't want shipping crash reporter to try to 
+// access build servers for example.
+#if !UE_BUILD_SHIPPING
+	#define ALLOW_UNREAL_ACCESS_TO_NT_SYMBOL_PATH 1
+#else
+	#define ALLOW_UNREAL_ACCESS_TO_NT_SYMBOL_PATH 0
+#endif
+
 static IDebugClient5* Client = NULL;
 static IDebugControl4* Control = NULL;
 static IDebugSymbols3* Symbol = NULL;
@@ -33,8 +41,6 @@ FWindowsPlatformStackWalkExt::~FWindowsPlatformStackWalkExt()
 {
 	ShutdownStackWalking();
 }
-
-
 
 bool FWindowsPlatformStackWalkExt::InitStackWalking()
 {
@@ -173,65 +179,48 @@ void FWindowsPlatformStackWalkExt::GetExeFileVersionAndModuleList( FCrashModuleI
 
 void FWindowsPlatformStackWalkExt::SetSymbolPathsFromModules()
 {
-	const bool bUseCachedData = CrashInfo.PDBCacheEntry.IsValid();
 	FString CombinedPath = TEXT( "" );
 
-	// Use symbol cache from command line
-	FString DebugSymbols;
-	if (FParse::Value(FCommandLine::Get(), TEXT("DebugSymbols="), DebugSymbols))
 	{
-		CombinedPath += TEXT("SRV*");
-		CombinedPath += DebugSymbols;
-		CombinedPath += TEXT(";");
-	}
-
-	// For externally launched minidump diagnostics.
-	if( bUseCachedData )
-	{
-		TSet<FString> SymbolPaths;
-		for( const auto& Filename : CrashInfo.PDBCacheEntry->Files )
+		// Use symbol cache from command line
+		FString DebugSymbols;
+		if (FParse::Value(FCommandLine::Get(), TEXT("DebugSymbols="), DebugSymbols))
 		{
-			const FString SymbolPath = FPaths::GetPath( Filename );
-			if( SymbolPath.Len() > 0 )
-			{
-				SymbolPaths.Add( SymbolPath );
-			}
+			CombinedPath += TEXT("SRV*");
+			CombinedPath += DebugSymbols;
+			CombinedPath += TEXT(";");
 		}
 
-		for( const auto& SymbolPath : SymbolPaths )
-		{
-			CombinedPath += SymbolPath;
-			CombinedPath += TEXT( ";" );
-		}
-
-		// Set the symbol path
-		Symbol->SetImagePathWide( *CombinedPath );
-		Symbol->SetSymbolPathWide( *CombinedPath );
-	}
-	// For locally launched minidump diagnostics.
-	else
-	{
 		// Iterate over all loaded modules.
 		TSet<FString> SymbolPaths;
 		for (const auto& Filename : CrashInfo.ModuleNames)
 		{
-			const FString Path = FPaths::GetPath( Filename );
-			if( Path.Len() > 0 )
+			const FString Path = FPaths::GetPath(Filename);
+			if (Path.Len() > 0)
 			{
-				SymbolPaths.Add( Path );
+				SymbolPaths.Add(Path);
 			}
 		}
 
-		for( const auto& SymbolPath : SymbolPaths )
+		for (const auto& SymbolPath : SymbolPaths)
 		{
 			CombinedPath += SymbolPath;
-			CombinedPath += TEXT( ";" );
+			CombinedPath += TEXT(";");
 		}
 
-		// Set the symbol path
-		Symbol->SetImagePathWide( *CombinedPath );
-		Symbol->SetSymbolPathWide( *CombinedPath );
+#if ALLOW_UNREAL_ACCESS_TO_NT_SYMBOL_PATH
+		FString SymbolPathEnvironmentVariable = FPlatformMisc::GetEnvironmentVariable(L"_NT_SYMBOL_PATH");
+		if (!SymbolPathEnvironmentVariable.IsEmpty())
+		{
+			CombinedPath += SymbolPathEnvironmentVariable;
+			CombinedPath += ";";
+		}
+#endif
 	}
+
+	// Set the symbol path
+	Symbol->SetImagePathWide( *CombinedPath );
+	Symbol->SetSymbolPathWide( *CombinedPath );
 
 	// Add in syncing of the Microsoft symbol servers if requested
 	if( FParse::Param( FCommandLine::Get(), TEXT( "SyncMicrosoftSymbols" ) ) )
@@ -256,7 +245,7 @@ void FWindowsPlatformStackWalkExt::SetSymbolPathsFromModules()
 
 	TCHAR SymbolPath[16384] = { 0 };
 
-	Symbol->GetSymbolPathWide( SymbolPath, ARRAY_COUNT(SymbolPath), NULL );
+	Symbol->GetSymbolPathWide( SymbolPath, UE_ARRAY_COUNT(SymbolPath), NULL );
 	TArray<FString> SymbolPaths;
 	FString( SymbolPath ).ParseIntoArray(SymbolPaths, TEXT(";"), true );
 
@@ -266,7 +255,7 @@ void FWindowsPlatformStackWalkExt::SetSymbolPathsFromModules()
 		UE_LOG( LogCrashDebugHelper, Log, TEXT( "    %s" ), *It );
 	}
 
-	Symbol->GetImagePathWide( SymbolPath, ARRAY_COUNT( SymbolPath ), NULL );
+	Symbol->GetImagePathWide( SymbolPath, UE_ARRAY_COUNT( SymbolPath ), NULL );
 	TArray<FString> ImagePaths;
 	FString( SymbolPath ).ParseIntoArray( ImagePaths, TEXT( ";" ), true );
 	
@@ -415,7 +404,7 @@ void FWindowsPlatformStackWalkExt::GetExceptionInfo()
 	ULONG ProcessID = 0;
 	ULONG ThreadId = 0;
 	TCHAR Description[MAX_PATH] = { 0 };
-	Control->GetLastEventInformationWide( &ExceptionType, &ProcessID, &ThreadId, NULL, 0, NULL, Description, ARRAY_COUNT( Description ), NULL );
+	Control->GetLastEventInformationWide( &ExceptionType, &ProcessID, &ThreadId, NULL, 0, NULL, Description, UE_ARRAY_COUNT( Description ), NULL );
 
 	Exception.Code = ExceptionType;
 	Exception.ProcessId = ProcessID;

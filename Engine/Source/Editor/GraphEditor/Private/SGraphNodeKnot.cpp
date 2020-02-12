@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 
 #include "SGraphNodeKnot.h"
@@ -461,26 +461,6 @@ void SGraphNodeKnot::OnCommentTextCommitted(const FText& NewComment, ETextCommit
 	if (!bAlwaysShowCommentBubble && !CommentBubble->TextBlockHasKeyboardFocus() && !CommentBubble->IsHovered())
 	{
 		// Hide the comment bubble if visibility hasn't changed
-		CommentBubble->SetCommentBubbleVisibility(/*bVisible =*/false);
-	}
-}
-
-void SGraphNodeKnot::OnMouseEnter(const FGeometry& MyGeometry, const FPointerEvent& MouseEvent)
-{
-	SGraphNode::OnMouseEnter(MyGeometry, MouseEvent);
-	if (!GraphNode->bCommentBubbleVisible && !GraphNode->NodeComment.IsEmpty())
-	{
-		// Show the bubble widget while hovered
-		CommentBubble->SetCommentBubbleVisibility(/*bVisible =*/true);
-	}
-}
-
-void SGraphNodeKnot::OnMouseLeave(const FPointerEvent& MouseEvent)
-{
-	SGraphNode::OnMouseLeave(MouseEvent);
-	if (!bAlwaysShowCommentBubble && !CommentBubble->TextBlockHasKeyboardFocus())
-	{
-		// Hide the comment bubble if visibility hasn't changed;
 		CommentBubble->SetCommentBubbleVisibility(/*bVisible =*/false);
 	}
 }

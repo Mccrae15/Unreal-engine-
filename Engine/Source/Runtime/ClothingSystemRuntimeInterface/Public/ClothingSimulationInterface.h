@@ -1,28 +1,31 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
-
+// Copyright Epic Games, Inc. All Rights Reserved.
 #pragma once
 
 #include "ClothingSystemRuntimeTypes.h"
 
 class UClothingAssetBase;
 class USkeletalMeshComponent;
+class USkinnedMeshComponent;
+struct FClothCollisionData;
 
-// Empty interface, derived simulation modules define the contents of the context
+/** Empty interface, derived simulation modules define the contents of the context. */
 class CLOTHINGSYSTEMRUNTIMEINTERFACE_API IClothingSimulationContext
 {
 public:
-	virtual ~IClothingSimulationContext() {};
+	IClothingSimulationContext();
+	virtual ~IClothingSimulationContext();
 };
 
+/** Base class for clothing simulators. */
 class CLOTHINGSYSTEMRUNTIMEINTERFACE_API IClothingSimulation
 {
 public:
-
-	virtual ~IClothingSimulation() {}
+	IClothingSimulation();
+	virtual ~IClothingSimulation();
 
 	// The majority of the API for this class is protected. The required objects (skel meshes and the parallel task)
 	// are friends so they can use the functionality. For the most part the simulation is not designed to be used
-	// outside of the skeletal mesh component as it parallel simulation is tied to the skel mesh tick and
+	// outside of the skeletal mesh component as its parallel simulation is tied to the skel mesh tick and
 	// dependents.
 	// Any method that is available in the public section below should consider that it may be called while
 	// the simulation is running.
@@ -42,6 +45,9 @@ protected:
 	 * @param SimDataIndex - the sim data index to use when doing the writeback in GetSimulationData
 	 */
 	virtual void CreateActor(USkeletalMeshComponent* InOwnerComponent, UClothingAssetBase* InAsset, int32 SimDataIndex) = 0;
+
+	/** Do any required initialization after all the actors have been loaded */
+	virtual void PostActorCreationInitialize() = 0;
 	
 	/** Create a new context, will not be filled, call FillContext before simulating with this context */
 	virtual IClothingSimulationContext* CreateContext() = 0;

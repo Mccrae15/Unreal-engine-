@@ -1,13 +1,14 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "DisplayClusterSceneComponent.h"
 
+#include "DisplayClusterRootComponent.h"
+
 #include "Config/DisplayClusterConfigTypes.h"
-#include "Game/IPDisplayClusterGameManager.h"
 #include "Input/IPDisplayClusterInputManager.h"
-#include "Misc/DisplayClusterLog.h"
 
 #include "DisplayClusterGlobals.h"
+#include "DisplayClusterLog.h"
 
 
 UDisplayClusterSceneComponent::UDisplayClusterSceneComponent(const FObjectInitializer& ObjectInitializer) :
@@ -49,7 +50,7 @@ void UDisplayClusterSceneComponent::TickComponent( float DeltaTime, ELevelTick T
 				// Update transform
 				this->SetRelativeLocationAndRotation(loc, rot);
 				// Force child transforms update
-				UpdateChildTransforms(/*true*/);
+				UpdateChildTransforms(EUpdateTransformFlags::PropagateFromParent);
 			}
 		}
 	}
@@ -70,13 +71,12 @@ bool UDisplayClusterSceneComponent::ApplySettings()
 	// Take place in hierarchy
 	if (!GetParentId().IsEmpty())
 	{
-		const IPDisplayClusterGameManager* const GameMgr = GDisplayCluster->GetPrivateGameMgr();
-		if (GameMgr)
+		UDisplayClusterRootComponent* const RootComp = Cast<UDisplayClusterRootComponent>(GetAttachParent());
+		if (RootComp)
 		{
 			UE_LOG(LogDisplayClusterGame, Log, TEXT("Attaching %s to %s"), *GetId(), *GetParentId());
-			UDisplayClusterSceneComponent* const pComp = GameMgr->GetNodeById(GetParentId());
+			UDisplayClusterSceneComponent* const pComp = RootComp->GetNodeById(GetParentId());
 			AttachToComponent(pComp, FAttachmentTransformRules(EAttachmentRule::KeepRelative, false));
-			//this->SetRelativeTransform(FTransform::Identity);
 		}
 	}
 

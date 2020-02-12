@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 /*=============================================================================
 	MacPlatformMisc.mm: Mac implementations of misc functions
@@ -20,6 +20,7 @@
 #include "HAL/PlatformOutputDevices.h"
 #include "HAL/IConsoleManager.h"
 #include "HAL/FileManager.h"
+#include "HAL/ThreadManager.h"
 #include "Misc/OutputDeviceError.h"
 #include "Misc/OutputDeviceRedirector.h"
 #include "Misc/FeedbackContext.h"
@@ -71,12 +72,16 @@ static FAutoConsoleVariableRef CVarMacExplicitRendererID(
 	TEXT("Forces the Mac RHI to use the specified rendering device which is a 0-based index into the list of GPUs provided by FMacPlatformMisc::GetGPUDescriptors or -1 to disable & use the default device. (Default: -1, off)"),
 	ECVF_RenderThreadSafe|ECVF_ReadOnly
 	);
+static TAutoConsoleVariable<int32> CVarMacPlatformDumpAllThreadsOnHang(
+	TEXT("Mac.DumpAllThreadsOnHang"),
+	1,
+	TEXT("If > 0, then when reporting a hang generate a backtrace for all threads."));
 
 /*------------------------------------------------------------------------------
  FMacApplicationInfo - class to contain all state for crash reporting that is unsafe to acquire in a signal.
  ------------------------------------------------------------------------------*/
 
-FMacMallocCrashHandler* GCrashMalloc = nullptr;
+ CORE_API FMacMallocCrashHandler* GCrashMalloc = nullptr;
 
 /**
  * Information that cannot be obtained during a signal-handler is initialised here.
@@ -197,7 +202,7 @@ struct FMacApplicationInfo
 		TempSysCtlBufferSize = PATH_MAX+1;
 		sysctlbyname("machdep.cpu.brand_string", MachineCPUString, &TempSysCtlBufferSize, NULL, 0);
 		
-		gethostname(MachineName, ARRAY_COUNT(MachineName));
+		gethostname(MachineName, UE_ARRAY_COUNT(MachineName));
 		
 		FString CrashVideoPath = FPaths::ProjectLogDir() + TEXT("CrashVideo.avi");
 
@@ -220,7 +225,7 @@ struct FMacApplicationInfo
 		// Cache & create the crash report folder.
 		FString ReportPath = FPaths::ConvertRelativePathToFull(FString::Printf(TEXT("%s"), *(FPaths::GameAgnosticSavedDir() / TEXT("Crashes"))));
 		FCStringAnsi::Strcpy(CrashReportPath, PATH_MAX+1, TCHAR_TO_UTF8(*ReportPath));
-		FString ReportClient = FPaths::ConvertRelativePathToFull(FPlatformProcess::GenerateApplicationPath(TEXT("CrashReportClient"), EBuildConfigurations::Development));
+		FString ReportClient = FPaths::ConvertRelativePathToFull(FPlatformProcess::GenerateApplicationPath(TEXT("CrashReportClient"), EBuildConfiguration::Development));
 		FCStringAnsi::Strcpy(CrashReportClient, PATH_MAX+1, TCHAR_TO_UTF8(*ReportClient));
 		IFileManager::Get().MakeDirectory(*ReportPath, true);
 		
@@ -258,9 +263,12 @@ struct FMacApplicationInfo
 		[PLCrashReportFile getCString:PLCrashReportPath maxLength:PATH_MAX encoding:NSUTF8StringEncoding];
 		
 		SystemLogSize = 0;
+		KernelErrorDir = nullptr;
 		if (!bIsSandboxed)
 		{
 			SystemLogSize = IFileManager::Get().FileSize(TEXT("/var/log/system.log"));
+			
+			KernelErrorDir = opendir("/Library/Logs/DiagnosticReports");
 		}
 		
 		if (!FPlatformMisc::IsDebuggerPresent() && FParse::Param(FCommandLine::Get(), TEXT("RedirectNSLog")))
@@ -316,6 +324,11 @@ struct FMacApplicationInfo
 		{
 			notify_cancel(PowerSourceNotification);
 			PowerSourceNotification = 0;
+		}
+		if (KernelErrorDir)
+		{
+			closedir(KernelErrorDir);
+			KernelErrorDir = nullptr;
 		}
 	}
 	
@@ -395,6 +408,7 @@ struct FMacApplicationInfo
 	FString XcodePath;
 	NSOperatingSystemVersion XcodeVersion;
 	NSPipe* StdErrPipe;
+	DIR* KernelErrorDir;
 	static PLCrashReporter* CrashReporter;
 };
 static FMacApplicationInfo GMacAppInfo;
@@ -409,6 +423,16 @@ void FMacPlatformMisc::PlatformPreInit()
 	// No SIGPIPE crashes please - they are a pain to debug!
 	signal(SIGPIPE, SIG_IGN);
 
+	// Disable ApplePlatformThreadStackWalk when the debugger is attached
+	if (FPlatformMisc::IsDebuggerPresent() && !GAlwaysReportCrash)
+	{
+		IConsoleVariable* CVarApplePlatformThreadStackWalkEnable = IConsoleManager::Get().FindConsoleVariable(TEXT("ApplePlatformThreadStackWalk.Enable"));
+		if (CVarApplePlatformThreadStackWalkEnable)
+		{
+			CVarApplePlatformThreadStackWalkEnable->Set(0);
+		}
+	}
+
 	// Increase the maximum number of simultaneously open files
 	uint32 MaxFilesPerProc = OPEN_MAX;
 	size_t UInt32Size = sizeof(uint32);
@@ -418,11 +442,7 @@ void FMacPlatformMisc::PlatformPreInit()
 	int32 Result = getrlimit(RLIMIT_NOFILE, &Limit);
 	if (Result == 0)
 	{
-		if(Limit.rlim_max != RLIM_INFINITY)
-		{
-			UE_LOG(LogInit, Warning, TEXT("Hard Max File Limit Too Small: %llu, should be RLIM_INFINITY, UE4 may be unstable."), Limit.rlim_max);
-		}
-		if(Limit.rlim_max == RLIM_INFINITY)
+		if (Limit.rlim_max == RLIM_INFINITY)
 		{
 			Limit.rlim_cur = MaxFilesPerProc;
 		}
@@ -431,12 +451,16 @@ void FMacPlatformMisc::PlatformPreInit()
 			Limit.rlim_cur = FMath::Min(Limit.rlim_max, (rlim_t)MaxFilesPerProc);
 		}
 	}
+	if (Limit.rlim_cur < OPEN_MAX)
+	{
+		UE_LOG(LogInit, Warning, TEXT("Open files limit too small: %llu, should be at least OPEN_MAX (%llu). rlim_max is %llu, kern.maxfilesperproc is %u. UE4 may be unstable."), Limit.rlim_cur, OPEN_MAX, Limit.rlim_max, MaxFilesPerProc);
+	}
 	Result = setrlimit(RLIMIT_NOFILE, &Limit);
 	if (Result != 0)
 	{
 		UE_LOG(LogInit, Warning, TEXT("Failed to change open file limit, UE4 may be unstable."));
 	}
-	
+
 	FApplePlatformSymbolication::EnableCoreSymbolication(!FPlatformProcess::IsSandboxedApplication() && IS_PROGRAM);
 }
 
@@ -576,13 +600,22 @@ void FMacPlatformMisc::RequestExit( bool Force )
 	
 	if( Force )
 	{
+		// Make sure the log is flushed.
+		if (GLog)
+		{
+			// This may be called from other thread, so set this thread as the master.
+			GLog->SetCurrentThreadAsMasterThread();
+			GLog->TearDown();
+		}
+
+
 		// Exit immediately, by request.
 		_Exit(GIsCriticalError ? 3 : 0);
 	}
 	else
 	{
 		// Tell the platform specific code we want to exit cleanly from the main loop.
-		GIsRequestingExit = 1;
+		RequestEngineExit(TEXT("Mac RequestExit"));
 	}
 }
 
@@ -631,9 +664,11 @@ int32 FMacPlatformMisc::NumberOfCores()
 		else
 		{
 			SIZE_T Size = sizeof(int32);
+			int Result = sysctlbyname("hw.physicalcpu", &NumberOfCores, &Size, NULL, 0);
 		
-			if (sysctlbyname("hw.physicalcpu", &NumberOfCores, &Size, NULL, 0) != 0)
+			if (Result != 0)
 			{
+				UE_LOG(LogMac, Error,  TEXT("sysctlbyname(hw.physicalcpu...) failed with error %d. Defaulting to one core"), Result);
 				NumberOfCores = 1;
 			}
 		}
@@ -643,7 +678,19 @@ int32 FMacPlatformMisc::NumberOfCores()
 
 int32 FMacPlatformMisc::NumberOfCoresIncludingHyperthreads()
 {
-	return FApplePlatformMisc::NumberOfCores();
+	static int32 NumberOfCores = -1;
+	if (NumberOfCores == -1)
+	{
+		SIZE_T Size = sizeof(int32);
+		int Result = sysctlbyname("hw.logicalcpu", &NumberOfCores, &Size, NULL, 0);
+		
+		if (Result != 0)
+		{
+			UE_LOG(LogMac, Error,  TEXT("sysctlbyname(hw.logicalcpu...) failed with error %d. Defaulting to one core"), Result);
+			NumberOfCores = 1;
+		}
+	}
+	return NumberOfCores;
 }
 
 void FMacPlatformMisc::NormalizePath(FString& InPath)
@@ -1344,6 +1391,40 @@ FString FMacPlatformMisc::GetCPUVendor()
 	return ANSI_TO_TCHAR(VendorResult.Buffer);
 }
 
+FString FMacPlatformMisc::GetCPUBrand()
+{
+	static FString Result = FGenericPlatformMisc::GetCPUBrand();
+	static bool bHaveResult = false;
+
+	if (!bHaveResult)
+	{
+		// @see for more information http://msdn.microsoft.com/en-us/library/vstudio/hskdteyh(v=vs.100).aspx
+		ANSICHAR BrandString[0x40] = { 0 };
+		int32 CPUInfo[4] = { -1 };
+		const SIZE_T CPUInfoSize = sizeof(CPUInfo);
+
+		asm( "cpuid" : "=a" (CPUInfo[0]), "=b" (CPUInfo[1]), "=c" (CPUInfo[2]), "=d" (CPUInfo[3]) : "a" (0x80000000));
+		const uint32 MaxExtIDs = CPUInfo[0];
+
+		if (MaxExtIDs >= 0x80000004)
+		{
+			const uint32 FirstBrandString = 0x80000002;
+			const uint32 NumBrandStrings = 3;
+			for (uint32 Index = 0; Index < NumBrandStrings; ++Index)
+			{
+				asm( "cpuid" : "=a" (CPUInfo[0]), "=b" (CPUInfo[1]), "=c" (CPUInfo[2]), "=d" (CPUInfo[3]) : "a" (FirstBrandString + Index));
+				FPlatformMemory::Memcpy(BrandString + CPUInfoSize * Index, CPUInfo, CPUInfoSize);
+			}
+		}
+
+		Result = BrandString;
+
+		bHaveResult = true;
+	}
+
+	return FString(Result);
+}
+
 uint32 FMacPlatformMisc::GetCPUInfo()
 {
 	uint32 Args[4];
@@ -1479,7 +1560,9 @@ static void DefaultCrashHandler(FMacCrashContext const& Context)
 static uint32 GMacStackIgnoreDepth = 6;
 
 /** Message for the assert triggered on this thread */
-thread_local const TCHAR* GAssertErrorMessage = nullptr;
+thread_local const TCHAR* GCrashErrorMessage = nullptr;
+thread_local ECrashContextType GCrashErrorType = ECrashContextType::Crash;
+thread_local uint8* GCrashContextMemory[sizeof(FMacCrashContext)];
 
 /** True system-specific crash handler that gets called first */
 static void PlatformCrashHandler(int32 Signal, siginfo_t* Info, void* Context)
@@ -1490,39 +1573,67 @@ static void PlatformCrashHandler(int32 Signal, siginfo_t* Info, void* Context)
 	ECrashContextType Type;
 	const TCHAR* ErrorMessage;
 
-	if (GAssertErrorMessage == nullptr)
+	if (GCrashErrorMessage == nullptr)
 	{
 		Type = ECrashContextType::Crash;
 		ErrorMessage = TEXT("Caught signal");
 	}
 	else
 	{
-		Type = ECrashContextType::Assert;
-		ErrorMessage = GAssertErrorMessage;
+		Type = GCrashErrorType;
+		ErrorMessage = GCrashErrorMessage;
 	}
-	
-	FMacCrashContext CrashContext(Type, ErrorMessage);
-	CrashContext.IgnoreDepth = GMacStackIgnoreDepth;
-	CrashContext.InitFromSignal(Signal, Info, Context);
-	
+
+	FMacCrashContext* CrashContext = new (GCrashContextMemory) FMacCrashContext(Type, ErrorMessage);
+	CrashContext->IgnoreDepth = GMacStackIgnoreDepth;
+	CrashContext->InitFromSignal(Signal, Info, Context);
+
 	// Switch to crash handler malloc to avoid malloc reentrancy
 	check(GCrashMalloc);
-	GCrashMalloc->Enable(&CrashContext, FPlatformTLS::GetCurrentThreadId());
-	
+	GCrashMalloc->Enable(CrashContext, FPlatformTLS::GetCurrentThreadId());
+
 	if (GCrashHandlerPointer)
 	{
-		GCrashHandlerPointer(CrashContext);
+		GCrashHandlerPointer(*CrashContext);
 	}
 	else
 	{
 		// call default one
-		DefaultCrashHandler(CrashContext);
+		DefaultCrashHandler(*CrashContext);
 	}
 }
 
 static void PLCrashReporterHandler(siginfo_t* Info, ucontext_t* Uap, void* Context)
 {
-	PlatformCrashHandler((int32)Info->si_signo, Info, Uap);
+	if (Info->si_signo == SIGUSR2)
+	{
+		// All of these are locked on a mutex from where the SIGUSR2 signal was raised. Only touch these here in the signal handler
+		extern ANSICHAR* GThreadCallStack;
+		extern uint64* GThreadBackTrace;
+		extern SIZE_T GThreadCallStackSize;
+		extern bool GThreadCallStackInUse;
+		extern uint32 GThreadBackTraceCount;
+
+		// Only handle this if we have a valid plcrashreporter context. As backtrace(...) does not work in a signal handler when
+		// an alternative stack is used
+		if (FMacApplicationInfo::CrashReporter)
+		{
+			if (GThreadCallStack)
+			{
+				FPlatformStackWalk::StackWalkAndDump(GThreadCallStack, GThreadCallStackSize, 0, FMacApplicationInfo::CrashReporter);
+			}
+			else if  (GThreadBackTrace)
+			{
+				GThreadBackTraceCount = FPlatformStackWalk::CaptureStackBackTrace(GThreadBackTrace, GThreadCallStackSize, FMacApplicationInfo::CrashReporter);
+			}
+		}
+
+		GThreadCallStackInUse = false;
+	}
+	else
+	{
+		PlatformCrashHandler((int32)Info->si_signo, Info, Uap);
+	}
 }
 
 /**
@@ -1544,13 +1655,13 @@ static void GracefulTerminationHandler(int32 Signal, siginfo_t* Info, void* Cont
 		GError->Flush();
 	}
 	
-	if( !GIsRequestingExit )
+	if( !IsEngineExitRequested() )
 	{
-		GIsRequestingExit = 1;
+		RequestEngineExit(TEXT("Mac GracefulTerminationHandler"));
 	}
 	else
 	{
-		_Exit(0);
+		_Exit(1);
 	}
 }
 
@@ -1725,6 +1836,36 @@ void FMacCrashContext::GenerateInfoInFolder(char const* const InfoFolder) const
 		close(ConfigDst);
 		close(ConfigSrc);
 
+		// Copy all the GPU restart logs from the user machine into our log
+		if ( !GMacAppInfo.bIsSandboxed && GIsGPUCrashed && GMacAppInfo.KernelErrorDir )
+		{
+			struct dirent DirEntry;
+			struct dirent* DirResult;
+			while(readdir_r(GMacAppInfo.KernelErrorDir, &DirEntry, &DirResult) == 0 && DirResult == &DirEntry)
+			{
+				if (strstr(DirEntry.d_name, ".gpuRestart"))
+				{
+					FCStringAnsi::Strncpy(FilePath, "/Library/Logs/DiagnosticReports/", PATH_MAX);
+					FCStringAnsi::Strcat(FilePath, PATH_MAX, DirEntry.d_name);
+					if (access(FilePath, R_OK|F_OK) == 0)
+					{
+						char const* SysLogHeader = "\nAppending GPU Restart Log: ";
+						write(LogDst, SysLogHeader, strlen(SysLogHeader));
+						
+						write(LogDst, FilePath, strlen(FilePath));
+						write(LogDst, "\n", strlen("\n"));
+
+						int SysLogSrc = open(FilePath, O_RDONLY);
+						while((Bytes = read(SysLogSrc, Data, PATH_MAX)) > 0)
+						{
+							write(LogDst, Data, Bytes);
+						}
+						close(SysLogSrc);
+					}
+				}
+			}
+		}
+		
 		// Copy the system log to capture GPU restarts and other nasties not reported by our application
 		if ( !GMacAppInfo.bIsSandboxed && GMacAppInfo.SystemLogSize >= 0 && access("/var/log/system.log", R_OK|F_OK) == 0 )
 		{
@@ -1775,19 +1916,34 @@ void FMacCrashContext::GenerateCrashInfoAndLaunchReporter() const
 	// Prevent CrashReportClient from spawning another CrashReportClient.
 	bool bCanRunCrashReportClient = FCString::Stristr( *(GMacAppInfo.ExecutableName), TEXT( "CrashReportClient" ) ) == nullptr;
 
+	bool bImplicitSend = false;
+	if (!UE_EDITOR && GConfig)
+	{
+		// Only check if we are in a non-editor build
+		GConfig->GetBool(TEXT("CrashReportClient"), TEXT("bImplicitSend"), bImplicitSend, GEngineIni);
+	}
+
 	bool bSendUnattendedBugReports = true;
 	if (GConfig)
 	{
 		GConfig->GetBool(TEXT("/Script/UnrealEd.CrashReportsPrivacySettings"), TEXT("bSendUnattendedBugReports"), bSendUnattendedBugReports, GEditorSettingsIni);
 	}
 
+	bool bSendUsageData = true;
+	if (GConfig)
+	{
+		GConfig->GetBool(TEXT("/Script/UnrealEd.AnalyticsPrivacySettings"), TEXT("bSendUsageData"), bSendUsageData, GEditorSettingsIni);
+	}
+
 	if (BuildSettings::IsLicenseeVersion() && !UE_EDITOR)
 	{
 		// do not send unattended reports in licensees' builds except for the editor, where it is governed by the above setting
 		bSendUnattendedBugReports = false;
+		bSendUsageData = false;
 	}
 
-	if (GMacAppInfo.bIsUnattended && !bSendUnattendedBugReports)
+	const bool bUnattended = GMacAppInfo.bIsUnattended || IsRunningDedicatedServer();
+	if (bUnattended && !bSendUnattendedBugReports)
 	{
 		bCanRunCrashReportClient = false;
 	}
@@ -1817,15 +1973,28 @@ void FMacCrashContext::GenerateCrashInfoAndLaunchReporter() const
 		if(ForkPID == 0)
 		{
 			// Child
-			if(GMacAppInfo.bIsUnattended)
+			if (bImplicitSend)
+			{
+				execl(GMacAppInfo.CrashReportClient, "CrashReportClient", CrashInfoFolder, "-Unattended", "-ImplicitSend", NULL);
+			}
+			else if(GMacAppInfo.bIsUnattended)
 			{
 				execl(GMacAppInfo.CrashReportClient, "CrashReportClient", CrashInfoFolder, "-Unattended", NULL);
 			}
 			else
 			{
-				execl(GMacAppInfo.CrashReportClient, "CrashReportClient", CrashInfoFolder, NULL);
+				if (bSendUsageData)
+				{
+					execl(GMacAppInfo.CrashReportClient, "CrashReportClient", CrashInfoFolder, NULL);
+				}
+				// If the editor setting has been disabled to not send analytics extend this to the CRC
+				else
+				{
+					execl(GMacAppInfo.CrashReportClient, "CrashReportClient", CrashInfoFolder, "-NoAnalytics", NULL);
+				}
 			}
 		}
+
 		// We no longer wait here because on return the OS will scribble & crash again due to the behaviour of the XPC function
 		// macOS uses internally to launch/wait on the CrashReportClient. It is simpler, easier & safer to just die here like a good little Mac.app.
 	}
@@ -1851,7 +2020,7 @@ void FMacCrashContext::GenerateCrashInfoAndLaunchReporter() const
 		raise(Signal);
 	}
 	
-	_Exit(0);
+	_Exit(1);
 }
 
 void FMacCrashContext::GenerateEnsureInfoAndLaunchReporter() const
@@ -1865,13 +2034,21 @@ void FMacCrashContext::GenerateEnsureInfoAndLaunchReporter() const
 		GConfig->GetBool(TEXT("/Script/UnrealEd.CrashReportsPrivacySettings"), TEXT("bSendUnattendedBugReports"), bSendUnattendedBugReports, GEditorSettingsIni);
 	}
 
+	bool bSendUsageData = true;
+	if (GConfig)
+	{
+		GConfig->GetBool(TEXT("/Script/UnrealEd.AnalyticsPrivacySettings"), TEXT("bSendUsageData"), bSendUsageData, GEditorSettingsIni);
+	}
+
 	if (BuildSettings::IsLicenseeVersion() && !UE_EDITOR)
 	{
 		// do not send unattended reports in licensees' builds except for the editor, where it is governed by the above setting
 		bSendUnattendedBugReports = false;
+		bSendUsageData = false;
 	}
 
-	if(GMacAppInfo.bIsUnattended && !bSendUnattendedBugReports)
+	const bool bUnattended = GMacAppInfo.bIsUnattended || !IsInteractiveEnsureMode() || IsRunningDedicatedServer();
+	if (bUnattended && !bSendUnattendedBugReports)
 	{
 		bCanRunCrashReportClient = false;
 	}
@@ -1901,14 +2078,87 @@ void FMacCrashContext::GenerateEnsureInfoAndLaunchReporter() const
 			Arguments = FString::Printf(TEXT("\"%s/\" -Unattended"), *EnsureLogFolder);
 		}
 
-		FString ReportClient = FPaths::ConvertRelativePathToFull(FPlatformProcess::GenerateApplicationPath(TEXT("CrashReportClient"), EBuildConfigurations::Development));
+		// If the editor setting has been disabled to not send analytics extend this to the CRC
+		if (!bSendUsageData)
+		{
+			Arguments += TEXT(" -NoAnalytics");
+		}
+
+		FString ReportClient = FPaths::ConvertRelativePathToFull(FPlatformProcess::GenerateApplicationPath(TEXT("CrashReportClient"), EBuildConfiguration::Development));
 		FPlatformProcess::ExecProcess(*ReportClient, *Arguments, nullptr, nullptr, nullptr);
 	}
 }
 
+void FMacCrashContext::AddThreadContext(
+	uint32 ThreadIdEnteredOn,
+	uint32 ThreadId,
+	const FString& ThreadName,
+	const TArray<FCrashStackFrame>& PortableCallStack)
+{
+	AllThreadContexts += TEXT("<Thread>");
+	{
+		AllThreadContexts += TEXT("<CallStack>");
+
+		int32 MaxModuleNameLen = 0;
+		for (const FCrashStackFrame& StFrame : PortableCallStack)
+		{
+			MaxModuleNameLen = FMath::Max(MaxModuleNameLen, StFrame.ModuleName.Len());
+		}
+
+		FString CallstackStr;
+		for (const FCrashStackFrame& StFrame : PortableCallStack)
+		{
+			CallstackStr += FString::Printf(TEXT("%-*s 0x%016x + %-8x"), MaxModuleNameLen + 1, *StFrame.ModuleName, StFrame.BaseAddress, StFrame.Offset);
+			CallstackStr += LINE_TERMINATOR;
+		}
+		AppendEscapedXMLString(AllThreadContexts, *CallstackStr);
+		AllThreadContexts += TEXT("</CallStack>") LINE_TERMINATOR;
+	}
+
+	AllThreadContexts += FString::Printf(TEXT("<IsCrashed>%s</IsCrashed>") LINE_TERMINATOR, (ThreadId == ThreadIdEnteredOn) ? TEXT("true") : TEXT("false"));
+	// TODO: do we need thread register states?
+	AllThreadContexts += TEXT("<Registers></Registers>") LINE_TERMINATOR;
+	AllThreadContexts += FString::Printf(TEXT("<ThreadID>%d</ThreadID>") LINE_TERMINATOR, ThreadId);
+	AllThreadContexts += FString::Printf(TEXT("<ThreadName>%s</ThreadName>") LINE_TERMINATOR, *ThreadName);
+	AllThreadContexts += TEXT("</Thread>");
+	AllThreadContexts += LINE_TERMINATOR;
+}
+
+void FMacCrashContext::CaptureAllThreadContext(uint32 ThreadIdEnteredOn)
+{
+	TArray<typename FThreadManager::FThreadStackBackTrace> StackTraces;
+	FThreadManager::Get().GetAllThreadStackBackTraces(StackTraces);
+
+	for (int32 Idx = 0; Idx < StackTraces.Num(); ++Idx)
+	{
+		const FThreadManager::FThreadStackBackTrace& ThreadStTrace = StackTraces[Idx];
+		const uint32 ThreadId     = ThreadStTrace.ThreadId;
+		const FString& ThreadName = ThreadStTrace.ThreadName;
+
+		TArray<FCrashStackFrame> PortableStack;
+		GetPortableCallStack(ThreadStTrace.ProgramCounters.GetData(), ThreadStTrace.ProgramCounters.Num(), PortableStack);
+
+		AddThreadContext(ThreadIdEnteredOn, ThreadId, ThreadName, PortableStack);
+	}
+}
+
+bool FMacCrashContext::GetPlatformAllThreadContextsString(FString& OutStr) const
+{
+	OutStr = AllThreadContexts;
+	return !OutStr.IsEmpty();
+}
+
 void ReportAssert(const TCHAR* ErrorMessage, int NumStackFramesToIgnore)
 {
-	GAssertErrorMessage = ErrorMessage;
+	GCrashErrorMessage = ErrorMessage;
+	GCrashErrorType = ECrashContextType::Assert;
+	FPlatformMisc::RaiseException(1);
+}
+
+void ReportGPUCrash(const TCHAR* ErrorMessage, int NumStackFramesToIgnore)
+{
+	GCrashErrorMessage = ErrorMessage;
+	GCrashErrorType = ECrashContextType::GPUCrash;
 	FPlatformMisc::RaiseException(1);
 }
 
@@ -1951,8 +2201,14 @@ void ReportHang(const TCHAR* ErrorMessage, const uint64* StackFrames, int32 NumS
 	{
 		bReentranceGuard = true;
 
-		FMacCrashContext EnsureContext(ECrashContextType::Ensure, ErrorMessage);
+		FMacCrashContext EnsureContext(ECrashContextType::Hang, ErrorMessage);
 		EnsureContext.SetPortableCallStack(StackFrames, NumStackFrames);
+
+		if (CVarMacPlatformDumpAllThreadsOnHang.AsVariable()->GetInt())
+		{
+			EnsureContext.CaptureAllThreadContext(HungThreadId);
+		}
+
 		EnsureContext.GenerateEnsureInfoAndLaunchReporter();
 
 		bReentranceGuard = false;

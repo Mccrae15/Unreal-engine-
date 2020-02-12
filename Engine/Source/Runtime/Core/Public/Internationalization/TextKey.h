@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -66,6 +66,9 @@ public:
 
 	/** Compact any slack within the internal table */
 	static void CompactDataStructures();
+
+	/** Do not use any FTextKey or FTextId after calling this */
+	static void TearDown();
 
 private:
 	/** Pointer to the string buffer we reference from the internal table */

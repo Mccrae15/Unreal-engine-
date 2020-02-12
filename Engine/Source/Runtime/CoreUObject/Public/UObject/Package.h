@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -6,16 +6,22 @@
 #include "UObject/ObjectMacros.h"
 #include "UObject/UObjectGlobals.h"
 #include "UObject/Object.h"
+#include "UObject/PackageId.h"
 #include "Misc/Guid.h"
 #include "Misc/WorldCompositionUtility.h"
-#include "Templates/ScopedPointer.h"
 #include "Misc/OutputDeviceError.h"
 #include "Misc/ObjectThumbnail.h"
 #include "Serialization/CustomVersion.h"
 #include "Templates/UniquePtr.h"
 #include "Misc/SecureHash.h"
+#include "Async/Future.h"
 
 class Error;
+
+// This is a dummy type which is not implemented anywhere. It's only 
+// used to flag a deprecated Conform argument to package save functions.
+class FLinkerNull;
+class FSavePackageContext;
 
 /**
 * Represents the result of saving a package
@@ -54,13 +60,13 @@ struct FSavePackageResultStruct
 	int64 TotalFileSize;
 
 	/** MD5 hash of the cooked data */
-	FMD5Hash CookedHash;
+	TFuture<FMD5Hash> CookedHash;
 
 	/** Constructors, it will implicitly construct from the result enum */
 	FSavePackageResultStruct() : Result(ESavePackageResult::Error), TotalFileSize(0) {}
 	FSavePackageResultStruct(ESavePackageResult InResult) : Result(InResult), TotalFileSize(0) {}
 	FSavePackageResultStruct(ESavePackageResult InResult, int64 InTotalFileSize) : Result(InResult), TotalFileSize(InTotalFileSize) {}
-	FSavePackageResultStruct(ESavePackageResult InResult, int64 InTotalFileSize, FMD5Hash InHash) : Result(InResult), TotalFileSize(InTotalFileSize), CookedHash(InHash) {}
+	FSavePackageResultStruct(ESavePackageResult InResult, int64 InTotalFileSize, TFuture<FMD5Hash>&& InHash) : Result(InResult), TotalFileSize(InTotalFileSize), CookedHash(MoveTemp(InHash)) {}
 
 	bool operator==(const FSavePackageResultStruct& Other) const
 	{
@@ -144,15 +150,24 @@ public:
 
 private:
 	/** Time in seconds it took to fully load this package. 0 if package is either in process of being loaded or has never been fully loaded.					*/
-	float LoadTime;
+	float LoadTime;		// TODO: strip from runtime?
 
 #if WITH_EDITORONLY_DATA
 	/** Indicates which folder to display this package under in the Generic Browser's list of packages. If not specified, package is added to the root level.	*/
 	FName	FolderName;
 #endif
 
-	/** GUID of package if it was loaded from disk; used by netcode to make sure packages match between client and server */
+	/** GUID of package if it was loaded from disk; used by netcode to make sure packages match between client and server. Changes at every save. */
 	FGuid Guid;
+
+#if WITH_EDITORONLY_DATA
+	/** Persistent GUID of package if it was loaded from disk. Persistent across saves. */
+	FGuid PersistentGuid;
+
+	/** Persistent GUID of owning package, to allow private references when saving */
+	FGuid OwnerPersistentGuid;
+#endif
+
 	/** Chunk IDs for the streaming install chunks this package will be placed in.  Empty for no chunk */
 	TArray<int32> ChunkIDs;
 
@@ -173,11 +188,13 @@ public:
 private:
 	/** Package Flags */
 	uint32	PackageFlagsPrivate;
-
+	
+	/** Globally unique id used to address I/O chunks within the package */
+	FPackageId PackageId;
 public:
 
 	/** Editor only: PIE instance ID this package belongs to, INDEX_NONE otherwise */
-	int32 PIEInstanceID;
+	int32 PIEInstanceID;		// TODO: strip from runtime?
 
 	/** The name of the file that this package was loaded from */
 	FName	FileName;
@@ -195,7 +212,7 @@ public:
 	FCustomVersionContainer LinkerCustomVersion;
 
 	/** size of the file for this package; if the package was not loaded from a file or was a forced export in another package, this will be zero */
-	uint64 FileSize;
+	uint64 FileSize;			// TODO: strip from runtime?
 
 #if WITH_EDITORONLY_DATA
 	/** Editor only: Thumbnails stored in this package */
@@ -218,8 +235,6 @@ public:
 
 	/** Serializer */
 	virtual void Serialize( FArchive& Ar ) override;
-
-	static void AddReferencedObjects(UObject* InThis, FReferenceCollector& Collector);
 
 	/** Packages are never assets */
 	virtual bool IsAsset() const override { return false; }
@@ -454,6 +469,34 @@ public:
 		Guid = NewGuid;
 	}
 
+#if WITH_EDITORONLY_DATA
+	/** returns our persistent Guid */
+	FORCEINLINE FGuid GetPersistentGuid() const
+	{
+		return PersistentGuid;
+	}
+	/** sets a specific persistent Guid */
+	FORCEINLINE void SetPersistentGuid(FGuid NewPersistentGuid)
+	{
+		PersistentGuid = NewPersistentGuid;
+	}
+
+	/** returns our owner persistent Guid */
+	FORCEINLINE FGuid GetOwnerPersistentGuid() const
+	{
+		return OwnerPersistentGuid;
+	}
+	/** sets a specific owner persistent Guid */
+	FORCEINLINE void SetOwnerPersistentGuid(FGuid NewOwnerPersistentGuid)
+	{
+		OwnerPersistentGuid = NewOwnerPersistentGuid;
+	}
+
+	bool IsOwned() const;
+	bool IsOwnedBy(const UPackage* Package) const;
+	bool HasSameOwner(const UPackage* Package) const;
+#endif
+
 	/** returns our FileSize */
 	FORCEINLINE int64 GetFileSize()
 	{
@@ -469,6 +512,18 @@ public:
 	FORCEINLINE void SetChunkIDs(const TArray<int32>& InChunkIDs)
 	{
 		ChunkIDs = InChunkIDs;
+	}
+
+	/** returns the unique package id */
+	FORCEINLINE FPackageId GetPackageId() const
+	{
+		return PackageId;
+	}
+
+	/** sets the unique package id */
+	FORCEINLINE void SetPackageId(FPackageId InPackageId)
+	{
+		PackageId = InPackageId;
 	}
 
 	////////////////////////////////////////////////////////
@@ -504,9 +559,10 @@ public:
 	* @return	FSavePackageResultStruct enum value with the result of saving a package as well as extra data
 	*/
 	static FSavePackageResultStruct Save(UPackage* InOuter, UObject* Base, EObjectFlags TopLevelFlags, const TCHAR* Filename,
-		FOutputDevice* Error=GError, FLinkerLoad* Conform=NULL, bool bForceByteSwapping=false, bool bWarnOfLongFilename=true, 
+		FOutputDevice* Error=GError, FLinkerNull* Conform=NULL, bool bForceByteSwapping=false, bool bWarnOfLongFilename=true, 
 		uint32 SaveFlags=SAVE_None, const class ITargetPlatform* TargetPlatform = NULL, const FDateTime& FinalTimeStamp = FDateTime::MinValue(), 
-		bool bSlowTask = true, class FArchiveDiffMap* InOutDiffMap = nullptr);
+		bool bSlowTask = true, class FArchiveDiffMap* InOutDiffMap = nullptr,
+		FSavePackageContext* SavePackageContext = nullptr);
 
 	/**
 	* Save one specific object (along with any objects it references contained within the same Outer) into an Unreal package.
@@ -529,35 +585,11 @@ public:
 	* @return	true if the package was saved successfully.
 	*/
 	static bool SavePackage(UPackage* InOuter, UObject* Base, EObjectFlags TopLevelFlags, const TCHAR* Filename,
-		FOutputDevice* Error = GError, FLinkerLoad* Conform = NULL, bool bForceByteSwapping = false, bool bWarnOfLongFilename = true,
+		FOutputDevice* Error = GError, FLinkerNull* Conform = NULL, bool bForceByteSwapping = false, bool bWarnOfLongFilename = true,
 		uint32 SaveFlags = SAVE_None, const class ITargetPlatform* TargetPlatform = NULL, const FDateTime& FinalTimeStamp = FDateTime::MinValue(), bool bSlowTask = true);
 
 	/** Wait for any SAVE_Async file writes to complete **/
 	static void WaitForAsyncFileWrites();
-
-	/**
-	* Static: Saves thumbnail data for the specified package outer and linker
-	*
-	* @param	InOuter							the outer to use for the new package
-	* @param	Linker							linker we're currently saving with
-	*/
-	static void SaveThumbnails(UPackage* InOuter, FLinkerSave* Linker, FStructuredArchive::FSlot Slot);
-
-	/**
-	* Static: Saves asset registry data for the specified package outer and linker
-	*
-	* @param	InOuter							the outer to use for the new package
-	* @param	Linker							linker we're currently saving with
-	*/
-	static void SaveAssetRegistryData(UPackage* InOuter, FLinkerSave* Linker, FStructuredArchive::FSlot Slot);
-
-	/**
-	* Static: Saves the level information used by the World browser
-	*
-	* @param	InOuter							the outer to use for the new package
-	* @param	Linker							linker we're currently saving with
-	*/
-	static void SaveWorldLevelInfo(UPackage* InOuter, FLinkerSave* Linker, FStructuredArchive::FSlot Slot);
 
 	/**
 	* Determines if a package contains no more assets.
@@ -567,16 +599,5 @@ public:
 	* @return true if Package contains no more assets.
 	*/
 	static bool IsEmptyPackage(UPackage* Package, const UObject* LastReferencer = NULL);
-
-	/**
-	* Determines the set of object marks that should be excluded for the target platform
-	*
-	* @param TargetPlatform	The platform being saved for
-	* @param bIsCooking		Whether we are cooking or not
-	*
-	* @return Excluded object marks specific for the particular target platform, objects with any of these marks will be rejected from the cook
-	*/
-	static EObjectMark GetExcludedObjectMarksForTargetPlatform( const class ITargetPlatform* TargetPlatform, const bool bIsCooking );
-
 };
 PRAGMA_ENABLE_DEPRECATION_WARNINGS

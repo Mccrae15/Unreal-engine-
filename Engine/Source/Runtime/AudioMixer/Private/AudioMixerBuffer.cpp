@@ -1,8 +1,11 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "AudioMixerBuffer.h"
 #include "AudioMixerDevice.h"
+#include "AudioDecompress.h"
 #include "Interfaces/IAudioFormat.h"
+#include "AudioMixerSourceDecode.h"
+#include "AudioStreaming.h"
 
 namespace Audio
 {
@@ -23,7 +26,7 @@ namespace Audio
 		// Set the base-class NumChannels to wave's NumChannels
 		NumChannels = InWave->NumChannels;
 
-		if (InWave->DecompressionType == EDecompressionType::DTYPE_Native || InWave->DecompressionType == EDecompressionType::DTYPE_Preview)
+		if (InBufferType != EBufferType::PCMRealTime && (InWave->DecompressionType == EDecompressionType::DTYPE_Native || InWave->DecompressionType == EDecompressionType::DTYPE_Preview))
 		{
 			check(!InWave->RawPCMData || InWave->RawPCMDataSize);
 			Data = InWave->RawPCMData;
@@ -42,6 +45,11 @@ namespace Audio
 
 		if (DecompressionState)
 		{
+			if (BufferType == EBufferType::Streaming)
+			{
+				IStreamingManager::Get().GetAudioStreamingManager().RemoveDecoder(DecompressionState);
+			}
+
 			delete DecompressionState;
 			DecompressionState = nullptr;
 		}
@@ -87,7 +95,7 @@ namespace Audio
 
 			case EBufferType::PCMRealTime:
 				return (DecompressionState ? DecompressionState->GetSourceBufferSize() : 0) + (MONO_PCM_BUFFER_SIZE * NumChannels);
-			
+
 			case EBufferType::Streaming:
 				return MONO_PCM_BUFFER_SIZE * NumChannels;
 
@@ -153,26 +161,6 @@ namespace Audio
 		return false;
 	}
 
-	bool FMixerBuffer::ReadCompressedData(uint8* Destination, int32 InNumFrames, bool bLooping)
-	{
-		if (!DecompressionState)
-		{
-			UE_LOG(LogAudioMixer, Warning, TEXT("Attempting to read compressed data without a compression state instance for resource '%s'"), *ResourceName);
-			return false;
-		}
-
-		const int32 kPCMBufferSize = NumChannels * InNumFrames * sizeof(int16);
-
-		if (BufferType == EBufferType::Streaming)
-		{
-			return DecompressionState->StreamCompressedData(Destination, bLooping, kPCMBufferSize);
-		}
-		else
-		{
-			return DecompressionState->ReadCompressedData(Destination, bLooping, kPCMBufferSize);
-		}
-	}
-
 	void FMixerBuffer::Seek(const float SeekTime)
 	{
 		if (ensure(DecompressionState))
@@ -188,6 +176,10 @@ namespace Audio
 		{
 			return nullptr;
 		}
+
+#if WITH_EDITOR
+		InWave->InvalidateSoundWaveIfNeccessary();
+#endif // WITH_EDITOR
 
 		FAudioDeviceManager* AudioDeviceManager = FAudioDevice::GetAudioDeviceManager();
 
@@ -318,7 +310,7 @@ namespace Audio
 	FMixerBuffer* FMixerBuffer::CreateStreamingBuffer(FAudioDevice* AudioDevice, USoundWave* InWave)
 	{
 		FMixerBuffer* Buffer = new FMixerBuffer(AudioDevice, InWave, EBufferType::Streaming);
-		
+
 		FSoundQualityInfo QualityInfo = { 0 };
 
 		Buffer->DecompressionState = AudioDevice->CreateCompressedAudioInfo(InWave);
@@ -340,10 +332,18 @@ namespace Audio
 		}
 		else
 		{
-			InWave->DecompressionType = DTYPE_Invalid;
-			InWave->NumChannels = 0;
+			// When set to seekable streaming, missing the first chunk is possible and
+			// does not signify any issue with the asset itself, so don't mark it as invalid.
+			if (InWave && !InWave->IsSeekableStreaming())
+			{
+				UE_LOG(LogAudioMixer, Warning,
+					TEXT("FMixerBuffer::CreateStreamingBuffer failed to StreamCompressedInfo on SoundWave '%s'.  Invalidating wave resource data (asset now requires re-cook)."),
+					*InWave->GetName());
 
-			InWave->RemoveAudioResource(); 
+				InWave->DecompressionType = DTYPE_Invalid;
+				InWave->NumChannels = 0;
+				InWave->RemoveAudioResource();
+			}
 
 			delete Buffer;
 			Buffer = nullptr;
@@ -401,6 +401,16 @@ namespace Audio
 	bool FMixerBuffer::IsRealTimeBuffer() const
 	{
 		return BufferType == EBufferType::PCMRealTime || BufferType == EBufferType::Streaming;
+	}
+
+	ICompressedAudioInfo* FMixerBuffer::GetDecompressionState(bool bTakesOwnership)
+	{
+		ICompressedAudioInfo* Output = DecompressionState;
+		if (bTakesOwnership)
+		{
+			DecompressionState = nullptr;
+		}
+		return Output;
 	}
 
 	void FMixerBuffer::GetPCMData(uint8** OutData, uint32* OutDataSize)

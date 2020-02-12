@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -23,9 +23,10 @@ public:
 	// IMainFrameModule interface
 
 	virtual void CreateDefaultMainFrame( const bool bStartImmersive, const bool bStartPIE ) override;
-	virtual TSharedRef<SWidget> MakeMainMenu( const TSharedPtr<FTabManager>& TabManager, const TSharedRef< FExtender > Extender ) const override;
-	virtual TSharedRef<SWidget> MakeMainTabMenu( const TSharedPtr<FTabManager>& TabManager, const TSharedRef< FExtender > Extender ) const override;
-	virtual TSharedRef<SWidget> MakeDeveloperTools( ) const override;
+	virtual void RecreateDefaultMainFrame(const bool bStartImmersive, const bool bStartPIE) override;
+	virtual TSharedRef<SWidget> MakeMainMenu(const TSharedPtr<FTabManager>& TabManager, const FName MenuName, FToolMenuContext& ToolMenuContext) const override;
+	virtual TSharedRef<SWidget> MakeMainTabMenu(const TSharedPtr<FTabManager>& TabManager, const FName MenuName, FToolMenuContext& ToolMenuContext) const override;
+	virtual TSharedRef<SWidget> MakeDeveloperTools( const TArray<FMainFrameDeveloperTool>& AdditionalTools ) const override;
 
 	virtual bool IsWindowInitialized( ) const override
 	{
@@ -83,8 +84,10 @@ public:
 
 	virtual const FText GetApplicationTitle( const bool bIncludeGameName ) const override
 	{
-		return StaticGetApplicationTitle( bIncludeGameName );
+		return OverriddenWindowTitle.IsEmpty() ? StaticGetApplicationTitle( bIncludeGameName ) : OverriddenWindowTitle;
 	}
+
+	virtual void SetApplicationTitleOverride(const FText& NewOverriddenApplicationTitle) override;
 
 	virtual void ShowAboutWindow( ) const override
 	{
@@ -165,6 +168,9 @@ private:
 
 	// Friendly name for persistently level name currently loaded.  Used for window and tab titles.
 	FString LoadedLevelName;
+
+	// Override window title, or empty to not override
+	FText OverriddenWindowTitle;
 
 	/// Event to be called when the mainframe is fully created.
 	FMainFrameCreationFinishedEvent MainFrameCreationFinishedEvent;

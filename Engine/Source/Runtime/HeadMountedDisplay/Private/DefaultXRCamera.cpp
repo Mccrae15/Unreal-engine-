@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "DefaultXRCamera.h"
 #include "GameFramework/PlayerController.h"
@@ -181,11 +181,6 @@ void FDefaultXRCamera::PreRenderViewFamily_RenderThread(FRHICommandListImmediate
 			}
 		}
 	}
-}
-
-void FDefaultXRCamera::PostRenderViewFamily_RenderThread(FRHICommandListImmediate& RHICmdList, FSceneViewFamily& InViewFamily)
-{
-	LateUpdate.PostRender_RenderThread();
 }
 
 void FDefaultXRCamera::SetupViewFamily(FSceneViewFamily& InViewFamily)

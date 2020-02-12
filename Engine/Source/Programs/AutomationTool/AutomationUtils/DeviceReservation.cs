@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 using System;
 using System.Collections.Generic;
 using System.IO;
@@ -51,13 +51,13 @@ namespace AutomationTool.DeviceReservation
 		/// </summary>
 		/// <param name="InWorkingDirectory">Working directory which contains the devices.xml and reservations.xml files. Usually a network share.</param>
 		/// <param name="InDeviceTypes">An array of device types to reserve, one for each device requested. These must match the device types listed in devices.xml.</param>
-		public DeviceReservationAutoRenew(string InReservationBaseUri, int RetryMax, params string[] InDeviceTypes)
+		public DeviceReservationAutoRenew(string InReservationBaseUri, int RetryMax, string PoolID, params string[] InDeviceTypes)
 		{
 			ReservationBaseUri = new Uri(InReservationBaseUri);
 
 			// Make a device reservation for all the required device types.
 			// This blocks until the reservation is successful.
-			ActiveReservation = Reservation.Create(ReservationBaseUri, InDeviceTypes, ReserveTime, RetryMax);
+			ActiveReservation = Reservation.Create(ReservationBaseUri, InDeviceTypes, ReserveTime, RetryMax, PoolID);
 
 			// Resolve the device IPs
 			ReservedDevices = new List<Device>();
@@ -203,9 +203,26 @@ namespace AutomationTool.DeviceReservation
 			public string Hostname;
 			public TimeSpan Duration;
 			public string ReservationDetails;
+			public string PoolID;
 		}
 
-		public static Reservation Create(Uri BaseUri, string[] DeviceTypes, TimeSpan Duration, int RetryMax = 5)
+		private static string SanitizeErrorMessage(string Message)
+		{
+			string[] TriggersSrc = { "Warning:", "Error:", "Exception:" };
+			string[] TriggersDst = { "Warn1ng:", "Err0r:", "Except10n:" };
+
+			for (int Index = 0; Index < TriggersSrc.Length; ++Index)
+			{
+				if (Message.IndexOf(TriggersSrc[Index], StringComparison.OrdinalIgnoreCase) != -1)
+				{
+					Message = Regex.Replace(Message, TriggersSrc[Index], TriggersDst[Index], RegexOptions.IgnoreCase);
+				}
+			}
+
+			return Message;
+		}
+
+		public static Reservation Create(Uri BaseUri, string[] DeviceTypes, TimeSpan Duration, int RetryMax = 5, string PoolID = "")
 		{
 			bool bFirst = true;
 			TimeSpan RetryTime = TimeSpan.FromMinutes(1);
@@ -231,13 +248,13 @@ namespace AutomationTool.DeviceReservation
 						DeviceTypes = DeviceTypes,
 						Hostname = Environment.MachineName,
 						Duration = Duration,
-						ReservationDetails = ReservationDetails
+						ReservationDetails = ReservationDetails,
+						PoolID = PoolID
 					});
 				}
 				catch (WebException WebEx)
 				{
-
-					Console.WriteLine(String.Format("WebException on reservation request: {0} : {1}", WebEx.Message, WebEx.Status));
+					Console.WriteLine(String.Format("WebException on reservation request: {0} : {1}", SanitizeErrorMessage(WebEx.Message), WebEx.Status));
 
 					if (RetryCount == RetryMax)
 					{
@@ -264,21 +281,7 @@ namespace AutomationTool.DeviceReservation
 				catch (Exception Ex)
 				{
 					UnknownException = Ex;
-
-					string Line = UnknownException.Message;
-
-					string[] TriggersSrc = { "Warning:", "Error:", "Exception:" };
-					string[] TriggersDst = { "Warn1ng:", "Err0r:", "Except10n:" };
-
-					for (int Index = 0; Index < TriggersSrc.Length; ++Index)
-					{
-						if (Line.IndexOf(TriggersSrc[Index], StringComparison.OrdinalIgnoreCase) != -1)
-						{
-							Line = Regex.Replace(Line, TriggersSrc[Index], TriggersDst[Index], RegexOptions.IgnoreCase);
-						}
-					}
-
-					Console.WriteLine("Device reservation unsuccessful: {0}", Line);
+					Console.WriteLine("Device reservation unsuccessful: {0}", SanitizeErrorMessage(UnknownException.Message));
 				}
 			}
 		}

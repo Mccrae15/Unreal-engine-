@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 using System;
 using System.IO;
@@ -49,7 +49,6 @@ namespace UnrealBuildTool.Rules
 					"ImageWrapper",
 					"MediaAssets",
 					"Analytics",
-					"UtilityShaders",
 					"OpenGLDrv",
 					"VulkanRHI",
 					"OVRPlugin",
@@ -97,8 +96,9 @@ namespace UnrealBuildTool.Rules
 					AddEngineThirdPartyPrivateStaticDependencies(Target, "DX11Audio");
 					AddEngineThirdPartyPrivateStaticDependencies(Target, "DirectSound");
 					AddEngineThirdPartyPrivateStaticDependencies(Target, "NVAftermath");
-					AddEngineThirdPartyPrivateStaticDependencies(Target, "IntelMetricsDiscovery");
-				}
+                    AddEngineThirdPartyPrivateStaticDependencies(Target, "IntelMetricsDiscovery");
+					AddEngineThirdPartyPrivateStaticDependencies(Target, "IntelExtensionsFramework");
+                }
 
 				// Vulkan
 				{
@@ -128,7 +128,7 @@ namespace UnrealBuildTool.Rules
 				// AndroidPlugin
 				{
 					string PluginPath = Utils.MakePathRelativeTo(ModuleDirectory, Target.RelativeEnginePath);
-					AdditionalPropertiesForReceipt.Add("AndroidPlugin", Path.Combine(PluginPath, "GearVR_APL.xml"));
+					AdditionalPropertiesForReceipt.Add("AndroidPlugin", Path.Combine(PluginPath, "OculusMobile_APL.xml"));
 				}
 			}
 		}

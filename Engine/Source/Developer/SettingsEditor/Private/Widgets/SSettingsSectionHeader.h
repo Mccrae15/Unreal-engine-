@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -22,8 +22,11 @@ public:
 	{}
 	SLATE_END_ARGS()
 
-	void Construct(const FArguments& InArgs, const UObject* InSettingsObject, ISettingsEditorModelPtr InModel, TSharedPtr<IDetailsView> InDetailsView);
+	void Construct(const FArguments& InArgs, const UObject* InSettingsObject, ISettingsEditorModelPtr InModel, TSharedPtr<IDetailsView> InDetailsView, const TSharedPtr<ITableRow>& InTableRow);
+
 private:
+
+	void CommonConstruct(const UObject* InSettingsObject, ISettingsEditorModelPtr InModel, TSharedPtr<IDetailsView> InDetailsView);
 
 	FText GetSettingsBoxTitleText() const;
 	FText GetSettingsBoxDescriptionText() const;
@@ -88,9 +91,11 @@ private:
 	void HandleCheckoutNoticeFileProbablyModifiedExternally();
 
 	/** Callback for determining the visibility of the 'Locked' notice. */
-	EVisibility HandleCheckoutNoticeVisibility() const;
+	EVisibility GetCheckoutNoticeVisibility() const;
 
-	EVisibility HandleButtonRowVisibility() const;
+	EVisibility GetButtonRowVisibility() const;
+
+	EVisibility GetCategoryDescriptionVisibility() const;
 
 	void OnSettingsSelectionChanged();
 private:
@@ -101,20 +106,22 @@ private:
 	ISettingsSectionPtr SettingsSection;
 	TWeakObjectPtr<UObject> SettingsObject;
 	TWeakPtr<IDetailsView> DetailsView;
+	TWeakPtr<ITableRow> TableRow;
 };
 
 
 class FSettingsDetailRootObjectCustomization : public IDetailRootObjectCustomization
 {
 public:
-	FSettingsDetailRootObjectCustomization(ISettingsEditorModelPtr InModel, TSharedRef<IDetailsView> InDetailsView);
+	FSettingsDetailRootObjectCustomization(ISettingsEditorModelPtr InModel, const TSharedRef<IDetailsView>& InDetailsView);
 
 	void Initialize();
 
 	/** IDetailRootObjectCustomization interface */
-	virtual TSharedPtr<SWidget> CustomizeObjectHeader(const UObject* InRootObject) override;
+	virtual TSharedPtr<SWidget> CustomizeObjectHeader(const UObject* InRootObject, const TSharedPtr<ITableRow>& InTableRow) override;
 	virtual bool IsObjectVisible(const UObject* InRootObject) const override;
 	virtual bool ShouldDisplayHeader(const UObject* InRootObject) const override;
+	virtual EExpansionArrowUsage GetExpansionArrowUsage() const override { return EExpansionArrowUsage::Custom; }
 private:
 	void OnSelectedSectionChanged();
 

@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -22,6 +22,9 @@ struct FNiagaraVariable;
 struct FNiagaraEmitterHandle;
 class FNiagaraEmitterHandleViewModel;
 class FNiagaraSystemScriptViewModel;
+class UNiagaraStackViewModel;
+class UNiagaraStackEntry;
+class UNiagaraSystemSelectionViewModel;
 class FNiagaraSystemInstance;
 class ISequencer;
 struct FAssetData;
@@ -32,6 +35,8 @@ struct FNiagaraParameterStore;
 struct FEdGraphEditAction;
 class UNiagaraNodeFunctionCall;
 class FNiagaraEmitterViewModel;
+class FNiagaraOverviewGraphViewModel;
+class UNiagaraScratchPadViewModel;
 
 /** Defines different editing modes for this system view model. */
 enum class NIAGARAEDITOR_API ENiagaraSystemViewModelEditMode
@@ -59,6 +64,9 @@ struct FNiagaraSystemViewModelOptions
 	/** Whether or not the system represented by this view model can be simulated. True by default. */
 	bool bCanSimulate;
 
+	/** An optional unique id which associates this view model with messages in the message manager. */
+	TOptional<const FGuid> MessageLogGuid;
+
 	/** Gets the current editing mode for this system. */
 	ENiagaraSystemViewModelEditMode EditMode;
 };
@@ -85,8 +93,6 @@ public:
 
 	DECLARE_MULTICAST_DELEGATE(FOnCurveOwnerChanged);
 
-	DECLARE_MULTICAST_DELEGATE(FOnSelectedEmitterHandlesChanged);
-
 	DECLARE_MULTICAST_DELEGATE(FOnPostSequencerTimeChange)
 
 	DECLARE_MULTICAST_DELEGATE(FOnSystemCompiled);
@@ -95,17 +101,65 @@ public:
 
 	DECLARE_MULTICAST_DELEGATE(FOnPinnedCurvesChanged);
 
+	DECLARE_MULTICAST_DELEGATE(FOnPreClose);
+
+	DECLARE_MULTICAST_DELEGATE_OneParam(FOnRequestFocusTab, FName /* TabName */);
+
 public:
+	struct FEmitterHandleToDuplicate
+	{
+		FString SystemPath;
+		FGuid EmitterHandleId;
+		bool operator==(const FEmitterHandleToDuplicate& Other) const
+		{
+			return SystemPath == Other.SystemPath && EmitterHandleId == Other.EmitterHandleId;
+		}
+	};
+	
+	/** Defines different multi-system reset modes for this system view model */
+	enum class EMultiResetMode
+	{
+		/** Reset this instance. Then, if reset dependent systems is enabled in the editor through NiagaraEditorCommands, find all components that share this system and reset those components' system instances. */
+		AllowResetAllInstances,
+		/** Reset just this instance. */
+		ResetThisInstance,
+	};
+
+	/** Defines different time reset modes for this system view model */
+	enum class ETimeResetMode
+	{
+		/** If the current sequencer state and user settings allow, reset this system's time. */
+		AllowResetTime,
+		/** Keep this system's current time. */
+		KeepCurrentTime,
+	};
+
+	/** Defines different initialization modes when resetting for this system view model */
+	enum class EReinitMode
+	{
+		/** Reinitialize this system (pull in all changes) */
+		ReinitializeSystem,
+		/** Reset this system (do not pull in changes) */
+		ResetSystem,
+	};
 	/** Creates a new view model with the supplied System and System instance. */
-	FNiagaraSystemViewModel(UNiagaraSystem& InSystem, FNiagaraSystemViewModelOptions InOptions);
+	FNiagaraSystemViewModel();
+	
+	/** Initializes this system view model with the supplied system and options. */
+	void Initialize(UNiagaraSystem& InSystem, FNiagaraSystemViewModelOptions InOptions);
 
 	~FNiagaraSystemViewModel();
 
-	/** Gets an array of the view models for the emitter handles owned by this System. */
-	const TArray<TSharedRef<FNiagaraEmitterHandleViewModel>>& GetEmitterHandleViewModels();
+	NIAGARAEDITOR_API FText GetDisplayName() const;
 
-	/** Gets an emitter handle view model by id.  Returns an invalid shared ptr if it can't be found. */
-	TSharedPtr<FNiagaraEmitterHandleViewModel> GetEmitterHandleViewModelById(FGuid InEmitterHandleId);
+	/** Gets an array of the view models for the emitter handles owned by this System. */
+	NIAGARAEDITOR_API const TArray<TSharedRef<FNiagaraEmitterHandleViewModel>>& GetEmitterHandleViewModels();
+
+	/** Gets an emitter handle view model by ID. Returns an invalid shared ptr if it can't be found. */
+	NIAGARAEDITOR_API TSharedPtr<FNiagaraEmitterHandleViewModel> GetEmitterHandleViewModelById(FGuid InEmitterHandleId);
+
+	/** Gets an emitter handle view model for the given emitter. Returns an invalid shared ptr if it can't be found. */
+	NIAGARAEDITOR_API TSharedPtr<FNiagaraEmitterHandleViewModel> GetEmitterHandleViewModelForEmitter(UNiagaraEmitter* InEmitter) const;
 
 	/** Gets the view model for the System script. */
 	TSharedPtr<FNiagaraSystemScriptViewModel> GetSystemScriptViewModel();
@@ -120,7 +174,7 @@ public:
 	FNiagaraCurveOwner& GetCurveOwner();
 
 	/** Get access to the underlying system*/
-	UNiagaraSystem& GetSystem() { return System; }
+	NIAGARAEDITOR_API UNiagaraSystem& GetSystem() const;
 
 	/** Gets whether or not emitters can be added from the timeline. */
 	bool GetCanModifyEmittersFromTimeline() const;
@@ -129,28 +183,19 @@ public:
 	NIAGARAEDITOR_API ENiagaraSystemViewModelEditMode GetEditMode() const;
 
 	/** Adds a new emitter to the System from an emitter asset data. */
-	void AddEmitterFromAssetData(const FAssetData& AssetData);
+	NIAGARAEDITOR_API TSharedPtr<FNiagaraEmitterHandleViewModel> AddEmitterFromAssetData(const FAssetData& AssetData);
 
 	/** Adds a new emitter to the System. */
-	void AddEmitter(UNiagaraEmitter& Emitter);
-
-	/** Duplicates the selected emitter in this System. */
-	void DuplicateEmitter(TSharedRef<FNiagaraEmitterHandleViewModel> EmitterHandleToDuplicate);
-
-	/** Deletes the selected emitter from the System. */
-	void DeleteEmitter(TSharedRef<FNiagaraEmitterHandleViewModel> EmitterHandleToDelete);
+	NIAGARAEDITOR_API TSharedPtr<FNiagaraEmitterHandleViewModel> AddEmitter(UNiagaraEmitter& Emitter);
 
 	/** Deletes the emitters with the supplied ids from the system */
-	void DeleteEmitters(TSet<FGuid> EmitterHandleIdsToDelete);
+	NIAGARAEDITOR_API void DeleteEmitters(TSet<FGuid> EmitterHandleIdsToDelete);
 
 	/** Gets a multicast delegate which is called any time the array of emitter handle view models changes. */
-	FOnEmitterHandleViewModelsChanged& OnEmitterHandleViewModelsChanged();
+	NIAGARAEDITOR_API FOnEmitterHandleViewModelsChanged& OnEmitterHandleViewModelsChanged();
 
 	/** Gets a delegate which is called any time the data in the curve owner is changed internally by this view model. */
 	FOnCurveOwnerChanged& OnCurveOwnerChanged();
-
-	/** Gets a multicast delegate which is called whenever the selected emitter handles changes. */
-	FOnSelectedEmitterHandlesChanged& OnSelectedEmitterHandlesChanged();
 	
 	/** Gets a multicast delegate which is called whenever we've received and handled a sequencer time update.*/
 	FOnPostSequencerTimeChange& OnPostSequencerTimeChanged();
@@ -170,44 +215,36 @@ public:
 	virtual bool IsTickable() const override { return true; }
 	virtual TStatId GetStatId() const override;
 
-	/** Resets the System instance to initial conditions. */
+	/** Resets the System instance to initial conditions. Tries to resets system simulation time. Does not reset all systems that share its emitters.
+	 * Does not reinitialize the system to pull in changes. Calls into overloaded ResetSystem(). */
 	void ResetSystem();
 
-	/** Resets the system instance on the next frame. */
+	/** Resets the System instance to initial conditions on the next tick. Tries to resets system simulation time. Does not reset all systems that share its emitters.
+	 * Does not reinitialize the system to pull in changes. Calls into overloaded ResetSystem(). */
 	void RequestResetSystem();
 
-	/** Reinitializes the System instance to initial conditions - rebuilds all data sets and resets data interfaces. */
-	void ReInitializeSystemInstances();
+	/** Resets the system instance to initial conditions. Optionally resets system simulation time. Optionally resets all systems that share its emitters. 
+	 * Optionally reinitializes the system to pull in changes.
+	 * @param TimeResetMode Defines whether the system being reset should try to reset its time to 0 or keep its current time.
+	 * @param MultiResetMode Defines whether the system being reset should try to reset all other systems with which it shares emitters along with resetting itself.
+	 * @param ReinitMode Defines whether the system should reinitialize and pull in changes or reset and keep its current state.
+	 */
+	void ResetSystem(ETimeResetMode TimeResetMode, EMultiResetMode MultiResetMode, EReinitMode ReinitMode);
 
 	/** Compiles the spawn and update scripts. */
 	void CompileSystem(bool bForce);
 
 	/* Get the latest status of this view-model's script compilation.*/
-	ENiagaraScriptCompileStatus GetLatestCompileStatus();
-
-	/** Gets the ids for the currently selected emitter handles. */
-	const TArray<FGuid>& GetSelectedEmitterHandleIds();
-
-	/** Sets the currently selected emitter handles by id. */
-	void SetSelectedEmitterHandlesById(TArray<FGuid> InSelectedEmitterHandleIds);
-
-	/** Sets the currently selected emitter handle by id. */
-	void SetSelectedEmitterHandleById(FGuid InSelectedEmitterHandleId);
-
-	/** Gets the currently selected emitter handles. */
-	void GetSelectedEmitterHandles(TArray<TSharedRef<FNiagaraEmitterHandleViewModel>>& OutSelectedEmitterHanldles);
+	ENiagaraScriptCompileStatus GetLatestCompileStatus() const;
 
 	/** Gets editor specific data which can be stored per system.  If this data hasn't been created the default version will be returned. */
-	const UNiagaraSystemEditorData& GetEditorData() const;
-
-	/** Gets editor specific data which is stored per system.  If this data hasn't been created then it will be created. */
-	UNiagaraSystemEditorData& GetOrCreateEditorData();
+	NIAGARAEDITOR_API UNiagaraSystemEditorData& GetEditorData() const;
 	
 	/** Act as if the system has been fully destroyed although references might persist.*/
 	void Cleanup();
 
 	/** Reinitializes all System instances, and rebuilds emitter handle view models and tracks. */
-	void RefreshAll();
+	NIAGARAEDITOR_API void RefreshAll();
 
 	/** Called to notify the system view model that one of the data objects in the system was modified. */
 	void NotifyDataObjectChanged(UObject* ChangedObject);
@@ -216,13 +253,10 @@ public:
 	void UpdateEmitterFixedBounds();
 
 	/** Isolates the supplied emitters.  This will remove all other emitters from isolation. */
-	void IsolateEmitters(TArray<TSharedRef<FNiagaraEmitterHandleViewModel>> EmitterHandlesToIsolate);
+	NIAGARAEDITOR_API void IsolateEmitters(TArray<FGuid> EmitterHandlesIdsToIsolate);
 
 	/** Toggles the isolation state of a single emitter. */
 	void ToggleEmitterIsolation(TSharedRef<FNiagaraEmitterHandleViewModel> InEmitterHandle);
-
-	/** Returns whether the suplied emitter is isolated. */
-	bool IsEmitterIsolated(TSharedRef<FNiagaraEmitterHandleViewModel> InEmitterHandle);
 
 	/** Export the current state of the system to text.*/
 	void DumpToText(FString& ExportText);
@@ -239,8 +273,15 @@ public:
 	/** Checks whether or not an emitter is pinned in the stack UI*/
 	NIAGARAEDITOR_API bool GetIsEmitterPinned(TSharedRef<FNiagaraEmitterHandleViewModel> EmitterHandleModel);
 
-	NIAGARAEDITOR_API void OnPreSave();
-	NIAGARAEDITOR_API void OnPreClose();
+	NIAGARAEDITOR_API void NotifyPreSave();
+
+	NIAGARAEDITOR_API void NotifyPreClose();
+
+	NIAGARAEDITOR_API FOnPreClose& OnPreClose();
+
+	FOnRequestFocusTab& OnRequestFocusTab();
+
+	void FocusTab(FName TabName);
 	
 	/** Gets the system toolkit command list. */
 	NIAGARAEDITOR_API TSharedPtr<FUICommandList> GetToolkitCommands();
@@ -251,15 +292,33 @@ public:
 	/** Set the system toolkit command list. */
 	void SetToolkitCommands(const TSharedRef<FUICommandList>& InToolkitCommands);
 
-	/** Gets the stack module data for the provided emitter, for use in module dependencies. */
-	const TArray<FNiagaraStackModuleData>& GetStackModuleDataForEmitter(TSharedRef<FNiagaraEmitterViewModel> EmitterViewModel);
+	/** Gets the stack module data for the provided module, for use in determining dependencies. */
+	const TArray<FNiagaraStackModuleData>& GetStackModuleData(UNiagaraStackEntry* ModuleEntry);
+
+	/** Gets the ViewModel for the system overview graph. */
+	NIAGARAEDITOR_API TSharedPtr<FNiagaraOverviewGraphViewModel> GetOverviewGraphViewModel() const;
+
+	/** Gets the stack view model representing this system. */
+	NIAGARAEDITOR_API UNiagaraStackViewModel* GetSystemStackViewModel();
+
+	/** Gets the a view model representing the selected entries in the overview. */
+	NIAGARAEDITOR_API UNiagaraSystemSelectionViewModel* GetSelectionViewModel();
+
+	NIAGARAEDITOR_API UNiagaraScratchPadViewModel* GetScriptScratchPadViewModel();
+
+	/** Duplicates a set of emitters and refreshes everything.*/
+	void DuplicateEmitters(TArray<FEmitterHandleToDuplicate> EmitterHandlesToDuplicate);
 
 private:
-	/** Reset the current simulation for the system */
-	void ResetSystemInternal(bool bCanResetTime);
+
+	/** Sends message jobs to FNiagaraMessageManager for all compile events from the last compile. */
+	void SendLastCompileMessageJobs() const;
 
 	/** Sets up the preview component and System instance. */
 	void SetupPreviewComponentAndInstance();
+
+	/** Resets the emitter handle view models and tracks to remove data from them.  This must be called before modifying the emitter handle collection to prevent accessing invalid data. */
+	void ResetEmitterHandleViewModelsAndTracks();
 
 	/** Rebuilds the emitter handle view models. */
 	void RefreshEmitterHandleViewModels();
@@ -279,9 +338,6 @@ private:
 	/** Gets the content for the add menu in sequencer. */
 	void GetSequencerAddMenuContent(FMenuBuilder& MenuBuilder, TSharedRef<ISequencer> Sequencer);
 
-	/** Kills all system instances using the system being displayed by this view model. */
-	void KillSystemInstances();
-
 	/** Resets and rebuilds the data in the curve owner. */
 	void ResetCurveData();
 
@@ -289,13 +345,13 @@ private:
 	void UpdateCompiledDataInterfaces(UNiagaraDataInterface* ChangedDataInterface);
 
 	/** Called whenever a property on the emitter handle changes. */
-	void EmitterHandlePropertyChanged(TSharedRef<FNiagaraEmitterHandleViewModel> EmitterHandleViewModel);
+	void EmitterHandlePropertyChanged(FGuid OwningEmitterHandleId);
 
 	/** Called whenever the name on an emitter handle changes. */
-	void EmitterHandleNameChanged(TSharedRef<FNiagaraEmitterHandleViewModel> EmitterHandleViewModel);
+	void EmitterHandleNameChanged();
 
 	/** Called whenever a property on the emitter changes. */
-	void EmitterPropertyChanged(TSharedRef<FNiagaraEmitterHandleViewModel> EmitterHandleViewModel);
+	void EmitterPropertyChanged();
 
 	/** 
 	 * Called whenever a parameter store owned by the system changes.
@@ -305,7 +361,7 @@ private:
 	void SystemParameterStoreChanged(const FNiagaraParameterStore& ChangedParameterStore, const UNiagaraScript* OwningScript);
 
 	/** Called whenever an emitter's script graph changes. */
-	void EmitterScriptGraphChanged(const FEdGraphEditAction& InAction, const UNiagaraScript& OwningScript, const TSharedRef<FNiagaraEmitterHandleViewModel> OwningEmitterHandleViewModel);
+	void EmitterScriptGraphChanged(const FEdGraphEditAction& InAction, const UNiagaraScript& OwningScript, FGuid OwningEmitterHandleId);
 
 	/** Called whenever the system script graph changes. */
 	void SystemScriptGraphChanged(const FEdGraphEditAction& InAction);
@@ -315,7 +371,7 @@ private:
 	* @param ChangedParameterStore The parameter store that changed.
 	* @param OwningScript The script that owns the parameter store, if there is one.
 	*/
-	void EmitterParameterStoreChanged(const FNiagaraParameterStore& ChangedParameterStore, const UNiagaraScript& OwningScript, const TSharedRef<FNiagaraEmitterHandleViewModel> OwningEmitterHandleViewModel);
+	void EmitterParameterStoreChanged(const FNiagaraParameterStore& ChangedParameterStore, const UNiagaraScript& OwningScript);
 
 	/** Updates the current simulation for a parameter changing, based on the current simulation options. */
 	void UpdateSimulationFromParameterChange();
@@ -331,6 +387,9 @@ private:
 
 	/** Called whenever the global time in the sequencer is changed. */
 	void SequencerTimeChanged();
+
+	/** Called whenever the current selection in the system changes. */
+	void SystemSelectionChanged();
 
 	/** Called whenever the track selection in sequencer changes. */
 	void SequencerTrackSelectionChanged(TArray<UMovieSceneTrack*> SelectedTracks);
@@ -353,9 +412,6 @@ private:
 	/** Called whenever the System instance is reset.*/
 	void SystemInstanceReset();
 
-	/** Duplicates a set of emitters and refreshes everything.*/
-	void DuplicateEmitters(TSet<FGuid> EmitterHandleIdsToDuplicate);
-
 	/** Adds event handler for the system's scripts. */
 	void AddSystemEventHandlers();
 
@@ -374,9 +430,15 @@ private:
 	/** builds stack module data for use in module dependencies */
 	void BuildStackModuleData(UNiagaraScript* Script, FGuid InEmitterHandleId, TArray<FNiagaraStackModuleData>& OutStackModuleData);
 
+	/** Called whenever one of the owned stack viewmodels structure changes. */
+	void StackViewModelStructureChanged();
+
+	/** Called whenever one of the scripts in the scratch pad changes. */
+	void ScratchPadScriptsChanged();
+
 private:
 	/** The System being viewed and edited by this view model. */
-	UNiagaraSystem& System;
+	UNiagaraSystem* System;
 
 	/** The component used for previewing the System in a viewport. */
 	UNiagaraComponent* PreviewComponent;
@@ -429,14 +491,16 @@ private:
 	/** A multicast delegate which is called when the contents of the curve owner is changed internally by this view model. */
 	FOnCurveOwnerChanged OnCurveOwnerChangedDelegate;
 
-	/** A multicast delegate which is called whenever the selected emitter changes. */
-	FOnSelectedEmitterHandlesChanged OnSelectedEmitterHandlesChangedDelegate;
-
 	/** A multicast delegate which is called whenever we've received and handled a sequencer time update.*/
 	FOnPostSequencerTimeChange OnPostSequencerTimeChangeDelegate;
 
 	/** A multicast delegate which is called whenever the system has been compiled. */
 	FOnSystemCompiled OnSystemCompiledDelegate;
+
+	/** A multicast delegate which is called whenever this has been notified it's owner will be closing. */
+	FOnPreClose OnPreCloseDelegate;
+
+	FOnRequestFocusTab OnRequestFocusTabDelegate;
 
 	/** A flag for preventing reentrancy when syncrhonizing sequencer data. */
 	bool bUpdatingEmittersFromSequencerDataChange;
@@ -452,9 +516,6 @@ private:
 
 	/** A curve owner implementation for curves in a niagara System. */
 	FNiagaraCurveOwner CurveOwner;
-
-	/** The ids for the currently selected emitter handles. */
-	TArray<FGuid> SelectedEmitterHandleIds;
 
 	TNiagaraViewModelManager<UNiagaraSystem, FNiagaraSystemViewModel>::Handle RegisteredHandle;
 
@@ -473,7 +534,7 @@ private:
 	/** A handle to the on parameter changed delegate for the user parameter store. */
 	FDelegateHandle UserParameterStoreChangedHandle;
 
-	/** A flag indicating that a reset has been request on the next frame */
+	/** A flag indicating that a reset has been request on the next tick */
 	bool bResetRequestPending;
 
 	/** The system toolkit commands. */
@@ -488,12 +549,24 @@ private:
 	/** A flag which indicates that a compile has been requested, but has not completed. */
 	bool bCompilePendingCompletion;
 
-	/** The cache of stack module data for each emitter */
-	TMap<FGuid, TArray<FNiagaraStackModuleData>> EmitterToCachedStackModuleData;
+	/** The cache of stack module data for each emitter and for the system */
+	TMap<FGuid, TArray<FNiagaraStackModuleData>> GuidToCachedStackModuleData;
 	
 	/** A handle to the on graph changed delegate for the system script. */
 	FDelegateHandle SystemScriptGraphChangedHandler;
 
 	/** An array of emitter handle ids which need their sequencer tracks refreshed next frame. */
 	TArray<FGuid> EmitterIdsRequiringSequencerTrackUpdate;
+
+	/** GUID used when sending message jobs to FNiagaraMessageManager for notifying the FNiagaraMessageLogViewModel with the same GUID key */
+	TOptional<const FGuid> SystemMessageLogGuidKey;
+
+	/** ViewModel for the system overview graph */
+	TSharedPtr<FNiagaraOverviewGraphViewModel> OverviewGraphViewModel;
+
+	UNiagaraStackViewModel* SystemStackViewModel;
+
+	UNiagaraSystemSelectionViewModel* SelectionViewModel;
+
+	UNiagaraScratchPadViewModel* ScriptScratchPadViewModel;
 };

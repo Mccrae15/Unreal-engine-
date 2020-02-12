@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 using UnrealBuildTool;
 
@@ -26,9 +26,10 @@ public class MovieSceneTools : ModuleRules
                 "InputCore",
                 "MovieSceneCapture",
 				"UnrealEd",
-				"Sequencer"
-			}
-		);
+				"Sequencer",
+                "EditorWidgets",
+            }
+        );
 
 		PrivateDependencyModuleNames.AddRange(
 			new string[] {
@@ -39,17 +40,18 @@ public class MovieSceneTools : ModuleRules
                 "Json",
                 "JsonUtilities",
 				"LevelSequence",
+                "LiveLinkInterface",
                 "MessageLog",
 				"MovieScene",
 				"MovieSceneTracks",
 				"BlueprintGraph",
+				"Kismet",
 				"KismetCompiler",
                 "GraphEditor",
                 "ContentBrowser",
 				"Slate",
 				"SlateCore",
                 "EditorStyle",
-				"EditorWidgets",
 				"PropertyEditor",
                 "MaterialEditor",
 				"RenderCore",
@@ -59,6 +61,7 @@ public class MovieSceneTools : ModuleRules
                 "AnimationCore",
 				"TimeManagement",
                 "XmlParser",
+				"ToolMenus",
 			}
 		);
 
@@ -71,8 +74,9 @@ public class MovieSceneTools : ModuleRules
 				"SceneOutliner",
                 "MainFrame",
                 "UnrealEd",
+                "Analytics",
             }
-		);
+        );
 
 		DynamicallyLoadedModuleNames.AddRange(
 			new string[] {

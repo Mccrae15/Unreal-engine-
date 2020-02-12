@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -16,9 +16,6 @@
 class IDetailsView;
 class FMeshEditorModeToolkit;
 struct FTreeItem;
-
-// #note: cutout fracturing isn't currently working
-//#define CUTOUT_ENABLED
 
 class SCustomSlider : public SSlider
 {
@@ -146,10 +143,8 @@ protected:
 	TSharedPtr<IDetailsView> RadialDetailsView;
 	TSharedPtr<IDetailsView> SlicingDetailsView;
 	TSharedPtr<IDetailsView> PlaneCutDetailsView;
-#ifdef CUTOUT_ENABLED
 	TSharedPtr<IDetailsView> CutoutDetailsView;
 	TSharedPtr<IDetailsView> BrickDetailsView;
-#endif
 
 	/** Fracture Configuration Settings */
 	UMeshFractureSettings* MeshFractureSettings;

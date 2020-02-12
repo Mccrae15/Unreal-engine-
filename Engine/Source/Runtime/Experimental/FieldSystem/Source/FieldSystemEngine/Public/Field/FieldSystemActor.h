@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -25,4 +25,5 @@ public:
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = Field, meta = (ExposeFunctionCategories = "Components|FieldSystem", AllowPrivateAccess = "true"))
 	UFieldSystemComponent* FieldSystemComponent;
 	UFieldSystemComponent* GetFieldSystemComponent() const { return FieldSystemComponent; }
+	virtual void OnConstruction(const FTransform& Transform) override;
 };

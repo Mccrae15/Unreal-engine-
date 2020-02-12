@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -45,7 +45,7 @@ public:
 	/** Returns the name of this type */
 	virtual FText GetName() const = 0;
 
-	/** Checks to see if the specified object is handled by this type. */
+	/** Get the supported class of this type. */
 	virtual UClass* GetSupportedClass() const = 0;
 
 	/** Returns the color associated with this type */
@@ -57,11 +57,17 @@ public:
 	/** Generates a menubuilder for the specified objects. */
 	virtual void GetActions( const TArray<UObject*>& InObjects, class FMenuBuilder& MenuBuilder ) = 0;
 
+	/** Generates a menu section for the specified objects. */
+	virtual void GetActions(const TArray<UObject*>& InObjects, struct FToolMenuSection& Section) = 0;
+
 	/** Opens the asset editor for the specified objects. If EditWithinLevelEditor is valid, the world-centric editor will be used. */
 	virtual void OpenAssetEditor( const TArray<UObject*>& InObjects, TSharedPtr<IToolkitHost> EditWithinLevelEditor = TSharedPtr<IToolkitHost>() ) = 0;
 
 	/** Performs asset type specific activation for the supplied assets. This happens when the user double clicks, presses enter, or presses space. */
 	virtual void AssetsActivated( const TArray<UObject*>& InObjects, EAssetTypeActivationMethod::Type ActivationType ) = 0;
+
+	/** Allows overriding asset activation to perform asset type specific activation for the supplied assets. This happens when the user double clicks, presses enter, or presses space. Return true if you have overridden the behavior. */
+	virtual bool AssetsActivatedOverride(const TArray<UObject*>& InObjects, EAssetTypeActivationMethod::Type ActivationType) = 0;
 
 	/** Returns true if this class can be used as a filter in the content browser */
 	virtual bool CanFilter() = 0;
@@ -78,8 +84,11 @@ public:
 	/** Begins a merge between the specified assets */
 	virtual void Merge(UObject* BaseAsset, UObject* RemoteAsset, UObject* LocalAsset, const FOnMergeResolved& ResolutionCallback) = 0;
 
-	/** Returns the categories that this asset type. The return value is one or more flags from EAssetTypeCategories.  */
+	/** Returns the categories that this asset type appears in. The return value is one or more flags from EAssetTypeCategories.  */
 	virtual uint32 GetCategories() = 0;
+
+	/** Returns array of sub-menu names that this asset type is parented under in the Asset Creation Context Menu. */
+	virtual const TArray<FText>& GetSubMenus() const = 0;
 
 	/** @return True if we should force world-centric mode for newly-opened assets */
 	virtual bool ShouldForceWorldCentric() = 0;
@@ -110,4 +119,10 @@ public:
 
 	/** Builds the filter for this class*/
 	virtual void BuildBackendFilter(struct FARFilter& InFilter) = 0;
+
+	/** Sets whether or not this asset type is a supported type for this editor session. */
+	virtual void SetSupported(bool bInSupported) = 0;
+
+	/** Is this asset type supported in the current session? */
+	virtual bool IsSupported() const = 0;
 };

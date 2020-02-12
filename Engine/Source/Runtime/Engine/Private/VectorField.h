@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 /*==============================================================================
 	VectorField.h: Interface to vector fields.
@@ -67,6 +67,30 @@ public:
 	 * Resets the vector field simulation.
 	 */
 	virtual void ResetVectorField() {}
+
+
+	/** Ref couting **/
+	uint32 AddRef() const
+	{ 
+		return (uint32)NumRefs.Increment(); 
+	}
+
+	uint32 Release() const
+	{
+		uint32 NewValue = (uint32)NumRefs.Decrement();
+		if (NewValue == 0)
+		{
+			delete this;
+		}
+		return NewValue;
+	}
+
+protected:
+
+	virtual ~FVectorFieldResource(){}
+
+	/** Ref couting. Required becauce of how resources are shared between FVectorFieldInstance and UVectorField... **/
+	mutable FThreadSafeCounter NumRefs;
 };
 
 /**
@@ -76,8 +100,8 @@ class FVectorFieldInstance
 {
 public:
 
-	/** The vector field resource. */
-	FVectorFieldResource* Resource;
+	/** The vector field resource. Kept an active ref count to manage release with UVectorFieldStatic. */
+	TRefCountPtr<FVectorFieldResource> Resource;
 	/** Bounds of the vector field in world space. */
 	FBox WorldBounds;
 	/** Transform from the vector field's local space to world space, no scaling is applied. */

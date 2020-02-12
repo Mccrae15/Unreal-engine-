@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -16,5 +16,7 @@ class UNREALED_API UDEditorTextureParameterValue : public UDEditorParameterValue
 	UPROPERTY(EditAnywhere, Category=DEditorTextureParameterValue)
 	class UTexture* ParameterValue;
 
+	UPROPERTY(Transient)
+	FParameterChannelNames ChannelNames;
 };
 

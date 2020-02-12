@@ -1,11 +1,11 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 
 #include "K2Node_MakeArray.h"
 #include "EdGraph/EdGraphPin.h"
 #include "Engine/Blueprint.h"
 #include "Framework/Commands/UIAction.h"
-#include "Framework/MultiBox/MultiBoxBuilder.h"
+#include "ToolMenus.h"
 #include "EdGraphSchema_K2.h"
 #include "EdGraph/EdGraphNodeUtils.h"
 #include "Kismet2/BlueprintEditorUtils.h"
@@ -72,51 +72,52 @@ FSlateIcon UK2Node_MakeArray::GetIconAndTint(FLinearColor& OutColor) const
 	return Icon;
 }
 
-void UK2Node_MakeArray::GetContextMenuActions(const FGraphNodeContextMenuBuilder& Context) const
+void UK2Node_MakeArray::GetNodeContextMenuActions(UToolMenu* Menu, UGraphNodeContextMenuContext* Context) const
 {
-	Super::GetContextMenuActions(Context);
+	Super::GetNodeContextMenuActions(Menu, Context);
 
-	if (!Context.bIsDebugging)
+	if (!Context->bIsDebugging)
 	{
-		Context.MenuBuilder->BeginSection("K2NodeMakeArray", NSLOCTEXT("K2Nodes", "MakeArrayHeader", "MakeArray"));
+		FToolMenuSection& Section = Menu->AddSection("K2NodeMakeArray", NSLOCTEXT("K2Nodes", "MakeArrayHeader", "MakeArray"));
 
-		if (Context.Pin != NULL)
+		if (Context->Pin != NULL)
 		{
-			if (Context.Pin->Direction == EGPD_Input && Context.Pin->ParentPin == nullptr)
+			if (Context->Pin->Direction == EGPD_Input && Context->Pin->ParentPin == nullptr)
 			{
-				Context.MenuBuilder->AddMenuEntry(
+				Section.AddMenuEntry(
+					"RemovePin",
 					LOCTEXT("RemovePin", "Remove array element pin"),
 					LOCTEXT("RemovePinTooltip", "Remove this array element pin"),
 					FSlateIcon(),
 					FUIAction(
-						FExecuteAction::CreateUObject(this, &UK2Node_MakeArray::RemoveInputPin, const_cast<UEdGraphPin*>(Context.Pin))
+						FExecuteAction::CreateUObject(const_cast<UK2Node_MakeArray*>(this), &UK2Node_MakeArray::RemoveInputPin, const_cast<UEdGraphPin*>(Context->Pin))
 					)
 				);
 			}
 		}
 		else
 		{
-			Context.MenuBuilder->AddMenuEntry(
+			Section.AddMenuEntry(
+				"AddPin",
 				LOCTEXT("AddPin", "Add array element pin"),
 				LOCTEXT("AddPinTooltip", "Add another array element pin"),
 				FSlateIcon(),
 				FUIAction(
-					FExecuteAction::CreateUObject(this, &UK2Node_MakeArray::InteractiveAddInputPin)
+					FExecuteAction::CreateUObject(const_cast<UK2Node_MakeArray*>(this), &UK2Node_MakeArray::InteractiveAddInputPin)
 				)
 			);
 		}
 
-		Context.MenuBuilder->AddMenuEntry(
+		Section.AddMenuEntry(
+			"ResetToWildcard",
 			LOCTEXT("ResetToWildcard", "Reset to wildcard"),
 			LOCTEXT("ResetToWildcardTooltip", "Reset the node to have wildcard input/outputs. Requires no pins are connected."),
 			FSlateIcon(),
 			FUIAction(
-				FExecuteAction::CreateUObject(this, &UK2Node_MakeArray::ClearPinTypeToWildcard),
+				FExecuteAction::CreateUObject(const_cast<UK2Node_MakeArray*>(this), &UK2Node_MakeArray::ClearPinTypeToWildcard),
 				FCanExecuteAction::CreateUObject(this, &UK2Node_MakeArray::CanResetToWildcard)
 			)
 		);
-
-		Context.MenuBuilder->EndSection();
 	}
 }
 

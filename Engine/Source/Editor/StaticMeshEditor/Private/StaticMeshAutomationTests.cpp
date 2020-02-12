@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "CoreMinimal.h"
 #include "Misc/ConfigCacheIni.h"
@@ -7,10 +7,11 @@
 #include "Framework/Application/SlateApplication.h"
 #include "Engine/StaticMesh.h"
 #include "Editor.h"
-#include "Toolkits/AssetEditorManager.h"
+
 
 #include "Tests/AutomationCommon.h"
 #include "StaticMeshEditorViewportClient.h"
+#include "Subsystems/AssetEditorSubsystem.h"
 
 namespace EditorViewButtonHelper
 {
@@ -99,6 +100,7 @@ namespace EditorViewButtonHelper
 				if (!AutomationParameters.ViewportClient->EngineShowFlags.VertexColors)
 				{
 					AutomationParameters.ViewportClient->EngineShowFlags.SetVertexColors(true);
+					AutomationParameters.ViewportClient->EngineShowFlags.SetPhysicalMaterialMasks(false);
 					AutomationParameters.ViewportClient->EngineShowFlags.SetLighting(false);
 					AutomationParameters.ViewportClient->EngineShowFlags.SetIndirectLightingCache(false);
 				}
@@ -147,7 +149,7 @@ namespace EditorViewButtonHelper
 
 	bool FCloseAllAssetEditorsCommand::Update()
 	{
-		FAssetEditorManager::Get().CloseAllAssetEditors();
+		GEditor->GetEditorSubsystem<UAssetEditorSubsystem>()->CloseAllAssetEditors();
 
 		return true;
 	}
@@ -179,7 +181,7 @@ bool FStaticMeshEditorTest::RunTest(const FString& Parameters)
 		NULL,
 		LOAD_None,
 		NULL);
-	FAssetEditorManager::Get().OpenEditorForAsset(EditorMesh);
+	GEditor->GetEditorSubsystem<UAssetEditorSubsystem>()->OpenEditorForAsset(EditorMesh);
 
 	{
 		TArray<TSharedRef<SWindow>> AllWindows;

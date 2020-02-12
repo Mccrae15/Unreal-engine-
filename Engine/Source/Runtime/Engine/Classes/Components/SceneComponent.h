@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -44,6 +44,9 @@ struct ENGINE_API FOverlapInfo
 
 // All added members of FOverlapInfo are PODs.
 template<> struct TIsPODType<FOverlapInfo> { enum { Value = TIsPODType<FHitResult>::Value }; };
+
+typedef TArray<FOverlapInfo, TInlineAllocator<3>> TInlineOverlapInfoArray;
+typedef TArrayView<const FOverlapInfo> TOverlapArrayView;
 
 /** Detail mode for scene component rendering, corresponds with the integer value of UWorld::GetDetailMode() */
 UENUM()
@@ -94,7 +97,7 @@ FORCEINLINE EMoveComponentFlags operator&(EMoveComponentFlags Arg1,EMoveComponen
 FORCEINLINE void operator&=(EMoveComponentFlags& Dest,EMoveComponentFlags Arg)					{ Dest = EMoveComponentFlags(Dest & Arg); }
 FORCEINLINE void operator|=(EMoveComponentFlags& Dest,EMoveComponentFlags Arg)					{ Dest = EMoveComponentFlags(Dest | Arg); }
 
-DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(FPhysicsVolumeChanged, class APhysicsVolume*, NewVolume);
+DECLARE_DYNAMIC_MULTICAST_SPARSE_DELEGATE_OneParam(FPhysicsVolumeChanged, USceneComponent, PhysicsVolumeChangedDelegate, class APhysicsVolume*, NewVolume);
 DECLARE_EVENT_ThreeParams(USceneComponent, FTransformUpdated, USceneComponent* /*UpdatedComponent*/, EUpdateTransformFlags /*UpdateTransformFlags*/, ETeleportType /*Teleport*/);
 
 /**
@@ -146,25 +149,23 @@ public:
 	FBoxSphereBounds Bounds;
 
 	/** Location of the component relative to its parent */
-	UPROPERTY(EditAnywhere, BlueprintReadOnly, ReplicatedUsing=OnRep_RelativeLocation, Category = Transform)
+	UE_DEPRECATED(4.24, "This member will be made private. Please use GetRelativeLocation or SetRelativeLocation.")
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, ReplicatedUsing=OnRep_Transform, Category = Transform)
 	FVector RelativeLocation;
 
 	/** Rotation of the component relative to its parent */
-	UPROPERTY(EditAnywhere, BlueprintReadOnly, ReplicatedUsing=OnRep_RelativeRotation, Category=Transform)
+	UE_DEPRECATED(4.24, "This member will be made private. Please use GetRelativeRotation or SetRelativeRotation.")
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, ReplicatedUsing=OnRep_Transform, Category=Transform)
 	FRotator RelativeRotation;
 
 	/**
 	*	Non-uniform scaling of the component relative to its parent.
 	*	Note that scaling is always applied in local space (no shearing etc)
 	*/
+	UE_DEPRECATED(4.24, "This member will be made private. Please use GetRelativeScale3D or SetRelativeScale3D.")
 	UPROPERTY(BlueprintReadOnly, ReplicatedUsing=OnRep_Transform, interp, Category=Transform)
 	FVector RelativeScale3D;
 
-private:
-	/** Current transform of the component, relative to the world */
-	FTransform ComponentToWorld;
-
-public:
 	/**
 	* Velocity of the component.
 	* @see GetComponentVelocity()
@@ -183,18 +184,22 @@ private:
 
 public:
 	/** If RelativeLocation should be considered relative to the world, rather than the parent */
+	UE_DEPRECATED(4.24, "This member will be made private. Please use IsUsingAbsoluteLocation or SetUsingAbsoluteLocation.")
 	UPROPERTY(EditAnywhere, AdvancedDisplay, BlueprintReadWrite, ReplicatedUsing=OnRep_Transform, Category=Transform)
 	uint8 bAbsoluteLocation:1;
 
 	/** If RelativeRotation should be considered relative to the world, rather than the parent */
+	UE_DEPRECATED(4.24, "This member will be made private. Please use IsUsingAbsoluteRotation or SetUsingAbsoluteRotation.")
 	UPROPERTY(EditAnywhere, AdvancedDisplay, BlueprintReadWrite, ReplicatedUsing=OnRep_Transform, Category=Transform)
 	uint8 bAbsoluteRotation:1;
 
 	/** If RelativeScale3D should be considered relative to the world, rather than the parent */
+	UE_DEPRECATED(4.24, "This member will be made private. Please use IsUsingAbsoluteScale or SetUsingAbsoluteScale.")
 	UPROPERTY(EditAnywhere, AdvancedDisplay, BlueprintReadWrite, ReplicatedUsing=OnRep_Transform, Category=Transform)
 	uint8 bAbsoluteScale:1;
 
 	/** Whether to completely draw the primitive; if false, the primitive is not drawn, does not cast a shadow. */
+	UE_DEPRECATED(4.24, "This member will be made private. Please use IsVisible or SetVisibility.")
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, ReplicatedUsing=OnRep_Visibility,  Category = Rendering)
 	uint8 bVisible:1;
 
@@ -206,6 +211,12 @@ private:
 	/** Whether or not we should be attached. */
 	UPROPERTY(Transient, Replicated)
 	uint8 bShouldBeAttached : 1;
+
+	UPROPERTY(Transient, Replicated)
+	uint8 bShouldSnapLocationWhenAttached : 1;
+
+	UPROPERTY(Transient, Replicated)
+	uint8 bShouldSnapRotationWhenAttached : 1;
 
 	/**
 	 * Whether or not the cached PhysicsVolume this component overlaps should be updated when the component is moved.
@@ -252,15 +263,13 @@ protected:
 private:
 	uint8 bNetUpdateTransform : 1;
 	uint8 bNetUpdateAttachment : 1;
-	uint8 bNetHasReceivedRelativeLocation : 1;
-	uint8 bNetHasReceivedRelativeRotation : 1;
 
 public:
 	/** Global flag to enable/disable overlap optimizations, settable with p.SkipUpdateOverlapsOptimEnabled cvar */ 
 	static int32 SkipUpdateOverlapsOptimEnabled;
 
 #if WITH_EDITORONLY_DATA
-	/** This component is explicitly for visualization in the editor */
+	/** This component should create a sprite component for visualization in the editor */
 	UPROPERTY()
 	uint8 bVisualizeComponent : 1;
 #endif
@@ -273,30 +282,17 @@ public:
 	UPROPERTY(EditAnywhere, AdvancedDisplay, BlueprintReadOnly, Category = LOD)
 	TEnumAsByte<enum EDetailMode> DetailMode;
 
+	/** Delegate that will be called when PhysicsVolume has been changed **/
+	UPROPERTY(BlueprintAssignable, Category=PhysicsVolume, meta=(DisplayName="Physics Volume Changed"))
+	FPhysicsVolumeChanged PhysicsVolumeChangedDelegate;
+
 #if WITH_EDITORONLY_DATA
 protected:
 	/** Editor only component used to display the sprite so as to be able to see the location of the Audio Component  */
 	class UBillboardComponent* SpriteComponent;
 #endif
 
-private:
-	/** Cache that avoids Quat<->Rotator conversions if possible. Only to be used with GetComponentTransform().GetRotation(). */
-	FRotationConversionCache WorldRotationCache;
-
-	/** Cache that avoids Quat<->Rotator conversions if possible. Only to be used with RelativeRotation. */
-	FRotationConversionCache RelativeRotationCache;
-
 public:
-	/** Sets the RelativeRotationCache. Used to ensure component ends up with the same RelativeRotation after calling SetWorldTransform(). */
-	void SetRelativeRotationCache(const FRotationConversionCache& InCache);
-	
-	/** Get the RelativeRotationCache.  */
-	FORCEINLINE const FRotationConversionCache& GetRelativeRotationCache() const { return RelativeRotationCache; }
-
-	/** Delegate that will be called when PhysicsVolume has been changed **/
-	UPROPERTY(BlueprintAssignable, Category=PhysicsVolume, meta=(DisplayName="Physics Volume Changed"))
-	FPhysicsVolumeChanged PhysicsVolumeChangedDelegate;
-
 	/** Delegate called when this component is moved */
 	FTransformUpdated TransformUpdated;
 
@@ -310,14 +306,25 @@ private:
 	void BeginScopedMovementUpdate(class FScopedMovementUpdate& ScopedUpdate);
 	void EndScopedMovementUpdate(class FScopedMovementUpdate& ScopedUpdate);
 
+	/** Cache that avoids Quat<->Rotator conversions if possible. Only to be used with GetComponentTransform().GetRotation(). */
+	FRotationConversionCache WorldRotationCache;
+
+	/** Cache that avoids Quat<->Rotator conversions if possible. Only to be used with RelativeRotation. */
+	FRotationConversionCache RelativeRotationCache;
+
+	/** Current transform of the component, relative to the world */
+	FTransform ComponentToWorld;
+
+public:
+	/** Sets the RelativeRotationCache. Used to ensure component ends up with the same RelativeRotation after calling SetWorldTransform(). */
+	void SetRelativeRotationCache(const FRotationConversionCache& InCache);
+	
+	/** Get the RelativeRotationCache.  */
+	FORCEINLINE const FRotationConversionCache& GetRelativeRotationCache() const { return RelativeRotationCache; }
+
+private:
 	UFUNCTION()
 	void OnRep_Transform();
-
-	UFUNCTION()
-	void OnRep_RelativeLocation();
-
-	UFUNCTION()
-	void OnRep_RelativeRotation();
 
 	UFUNCTION()
 	void OnRep_AttachParent();
@@ -404,7 +411,7 @@ public:
 
 	/** Set the non-uniform scale of the component relative to its parent */
 	UFUNCTION(BlueprintCallable, Category="Utilities|Transformation")
-	virtual void SetRelativeScale3D(FVector NewScale3D);
+	void SetRelativeScale3D(FVector NewScale3D);
 
 	/**
 	 * Adds a delta to the translation of the component relative to its parent
@@ -664,26 +671,26 @@ public:
 	bool K2_AttachTo(USceneComponent* InParent, FName InSocketName = NAME_None, EAttachLocation::Type AttachType = EAttachLocation::KeepRelativeOffset, bool bWeldSimulatedBodies = true);
 
 	/**
-	 * Attach this component to another scene component, optionally at a named socket. It is valid to call this on components whether or not they have been Registered, however from
-	 * constructor or when not registered it is preferable to use SetupAttachment.
-	 * @param  Parent				Parent to attach to.
-	 * @param  AttachmentRules		How to handle transforms & welding when attaching.
-	 * @param  SocketName			Optional socket to attach to on the parent.
-	 * @return True if attachment is successful (or already attached to requested parent/socket), false if attachment is rejected and there is no change in AttachParent.
-	 */
+	* Attach this component to another scene component, optionally at a named socket. It is valid to call this on components whether or not they have been Registered, however from
+	* constructor or when not registered it is preferable to use SetupAttachment.
+	* @param  Parent				Parent to attach to.
+	* @param  AttachmentRules		How to handle transforms & welding when attaching.
+	* @param  SocketName			Optional socket to attach to on the parent.
+	* @return True if attachment is successful (or already attached to requested parent/socket), false if attachment is rejected and there is no change in AttachParent.
+	*/
 	bool AttachToComponent(USceneComponent* InParent, const FAttachmentTransformRules& AttachmentRules, FName InSocketName = NAME_None );
 
 	/**
-	 * Attach this component to another scene component, optionally at a named socket. It is valid to call this on components whether or not they have been Registered.
-	 * @param  Parent					Parent to attach to.
-	 * @param  SocketName				Optional socket to attach to on the parent.
-	 * @param  LocationRule				How to handle translation when attaching.
-	 * @param  RotationRule				How to handle rotation when attaching.
-	 * @param  ScaleRule					How to handle scale when attaching.
-	 * @param  bWeldSimulatedBodies		Whether to weld together simulated physics bodies.
-	 * @return True if attachment is successful (or already attached to requested parent/socket), false if attachment is rejected and there is no change in AttachParent.
-	 */
-	UFUNCTION(BlueprintCallable, Category = "Utilities|Transformation", meta = (DisplayName = "AttachToComponent", ScriptName = "AttachToComponent", bWeldSimulatedBodies=true))
+	* Attach this component to another scene component, optionally at a named socket. It is valid to call this on components whether or not they have been Registered.
+	* @param  Parent					Parent to attach to.
+	* @param  SocketName				Optional socket to attach to on the parent.
+	* @param  LocationRule				How to handle translation when attaching.
+	* @param  RotationRule				How to handle rotation when attaching.
+	* @param  ScaleRule					How to handle scale when attaching.
+	* @param  bWeldSimulatedBodies		Whether to weld together simulated physics bodies.
+	* @return True if attachment is successful (or already attached to requested parent/socket), false if attachment is rejected and there is no change in AttachParent.
+	*/
+	UFUNCTION(BlueprintCallable, Category = "Utilities|Transformation", meta = (DisplayName = "AttachComponentToComponent", ScriptName = "AttachToComponent", bWeldSimulatedBodies=true))
 	bool K2_AttachToComponent(USceneComponent* Parent, FName SocketName, EAttachmentRule LocationRule, EAttachmentRule RotationRule, EAttachmentRule ScaleRule, bool bWeldSimulatedBodies);
 
 	/** DEPRECATED - Use AttachToComponent() instead */
@@ -835,7 +842,7 @@ public:
 	UFUNCTION(BlueprintCallable, Category="Rendering")
 	void ToggleVisibility(bool bPropagateToChildren = false)
 	{
-		SetVisibility(!bVisible, bPropagateToChildren);
+		SetVisibility(!GetVisibleFlag(), bPropagateToChildren);
 	}
 
 	/** Changes the value of bHiddenInGame, if false this will disable Visibility during gameplay */
@@ -852,7 +859,7 @@ public:
 	virtual bool ShouldCreateRenderState() const override { return true; }
 	virtual void UpdateComponentToWorld(EUpdateTransformFlags UpdateTransformFlags = EUpdateTransformFlags::None, ETeleportType Teleport = ETeleportType::None) override final
 	{
-		UpdateComponentToWorldWithParent(GetAttachParent(), GetAttachSocketName(), UpdateTransformFlags, RelativeRotationCache.RotatorToQuat(RelativeRotation), Teleport);
+		UpdateComponentToWorldWithParent(GetAttachParent(), GetAttachSocketName(), UpdateTransformFlags, RelativeRotationCache.RotatorToQuat(GetRelativeRotation()), Teleport);
 	}
 	virtual void DestroyComponent(bool bPromoteChildren = false) override;
 	virtual void OnComponentDestroyed(bool bDestroyingHierarchy) override;
@@ -861,7 +868,7 @@ public:
 	//~ End ActorComponent Interface
 
 	//~ Begin UObject Interface
-	virtual void PostInterpChange(UProperty* PropertyThatChanged) override;
+	virtual void PostInterpChange(FProperty* PropertyThatChanged) override;
 	virtual void BeginDestroy() override;
 	virtual bool IsPostLoadThreadSafe() const override;
 	virtual void PreNetReceive() override;
@@ -875,7 +882,7 @@ public:
 	virtual bool NeedsLoadForTargetPlatform(const ITargetPlatform* TargetPlatform) const;
 	virtual void PostEditChangeProperty(FPropertyChangedEvent& PropertyChangedEvent) override;
 	virtual void PostEditChangeChainProperty(FPropertyChangedChainEvent& PropertyChangedEvent) override;
-	virtual bool CanEditChange(const UProperty* Property) const override;
+	virtual bool CanEditChange(const FProperty* Property) const override;
 #endif
 	//~ End UObject Interface
 
@@ -893,7 +900,7 @@ protected:
 	bool CheckStaticMobilityAndWarn(const FText& ActionText) const;
 
 	/** Internal helper for UpdateOverlaps */
-	virtual bool UpdateOverlapsImpl(TArray<FOverlapInfo> const* PendingOverlaps = nullptr, bool bDoNotifies = true, const TArray<FOverlapInfo>* OverlapsAtEndLocation = nullptr);
+	virtual bool UpdateOverlapsImpl(const TOverlapArrayView* PendingOverlaps = nullptr, bool bDoNotifies = true, const TOverlapArrayView* OverlapsAtEndLocation = nullptr);
 
 private:
 	void PropagateTransformUpdate(bool bTransformChanged, EUpdateTransformFlags UpdateTransformFlags = EUpdateTransformFlags::None, ETeleportType Teleport = ETeleportType::None);
@@ -902,7 +909,7 @@ private:
 public:
 
 	/** Queries world and updates overlap tracking state for this component */
-	bool UpdateOverlaps(TArray<FOverlapInfo> const* PendingOverlaps = nullptr, bool bDoNotifies = true, const TArray<FOverlapInfo>* OverlapsAtEndLocation = nullptr);
+	bool UpdateOverlaps(const TOverlapArrayView* PendingOverlaps = nullptr, bool bDoNotifies = true, const TOverlapArrayView* OverlapsAtEndLocation = nullptr);
 
 	/**
 	 * Tries to move the component by a movement vector (Delta) and sets rotation to NewRotation.
@@ -993,6 +1000,12 @@ public:
 	/** Calculate the bounds of the component. Default behavior is a bounding box/sphere of zero size. */
 	virtual FBoxSphereBounds CalcBounds(const FTransform& LocalToWorld) const;
 
+	/** Calculate the local bounds of the component. Default behavior is calling CalcBounds with an identity transform. */
+	virtual FBoxSphereBounds CalcLocalBounds() const 
+	{ 
+		return CalcBounds(FTransform::Identity);
+	}
+
 	/**
 	 * Calculate the axis-aligned bounding cylinder of the component (radius in X-Y, half-height along Z axis).
 	 * Default behavior is just a cylinder around the box of the cached BoxSphereBounds.
@@ -1070,7 +1083,7 @@ protected:
 		Parent = Parent ? Parent : GetAttachParent();
 		if (Parent)
 		{
-			const bool bGeneral = bAbsoluteLocation || bAbsoluteRotation || bAbsoluteScale;
+			const bool bGeneral = IsUsingAbsoluteLocation() || IsUsingAbsoluteRotation() || IsUsingAbsoluteScale();
 			if (!bGeneral)
 			{
 				return NewRelativeTransform * Parent->GetSocketTransform(SocketName);
@@ -1244,6 +1257,266 @@ private:
 	friend class FScopedMovementUpdate;
 	friend class FScopedPreventAttachedComponentMove;
 	friend struct FDirectAttachChildrenAccessor;
+
+PRAGMA_DISABLE_DEPRECATION_WARNINGS
+	//~ Begin Methods for Replicated Members.
+private:
+
+	/**
+	 * Sets the value of AttachParent without causing other side effects to this instance.
+	 * Other systems may leverage this to get notifications for when the value is changed.
+	 */
+	void SetAttachParent(USceneComponent* NewAttachParent);
+	
+	/**
+	 * Sets the value of AttachSocketName without causing other side effects to this instance.
+	 * Other systems may leverage this to get notifications for when the value is changed.
+	 */
+	void SetAttachSocketName(FName NewSocketName);
+	
+	/**
+	 * Called when AttachChildren is modified.
+	 * Other systems may leverage this to get notifications for when the value is changed.
+	 */
+	void ModifiedAttachChildren();
+
+public:
+
+	/**
+	 * Gets the property name for RelativeLocation.
+	 *
+	 * This exists so subclasses don't need to have direct access to the RelativeLocation property so it
+	 * can be made private later.
+	 */
+	static const FName GetRelativeLocationPropertyName()
+	{
+		return GET_MEMBER_NAME_CHECKED(USceneComponent, RelativeLocation);
+	}
+	
+	/**
+	 * Gets the literal value of RelativeLocation.
+	 * Note, this may be an absolute location if this is a root component (not attached to anything) or
+	 * when IsUsingAbsoluteLocation returns true.
+	 *
+	 * This exists so subclasses don't need to have direct access to the RelativeLocation property so it
+	 * can be made private later.
+	 */
+	FVector GetRelativeLocation() const
+	{
+		return RelativeLocation;
+	}
+	
+	/**
+	 * Gets a refence to RelativeLocation with the expectation that it will be modified.
+	 * Note, this may be an absolute location if this is a root component (not attached to anything) or
+	 * when IsUsingAbsoluteLocation returns true.
+	 *
+	 * This exists so subclasses don't need to have direct access to the RelativeLocation property so it
+	 * can be made private later.
+	 *
+	 * You should not use this method. The standard SetRelativeLocation variants should be used.
+	 */
+	FVector& GetRelativeLocation_DirectMutable();
+
+	/**
+	 * Sets the value of RelativeLocation without causing other side effects to this instance.
+	 *
+	 * You should not use this method. The standard SetRelativeLocation variants should be used.
+	 */
+	void SetRelativeLocation_Direct(const FVector NewRelativeLocation);
+
+	/**
+	 * Gets the property name for RelativeRotation.
+	 *
+	 * This exists so subclasses don't need to have direct access to the RelativeRotation property so it
+	 * can be made private later.
+	 */
+	static const FName GetRelativeRotationPropertyName()
+	{
+		return GET_MEMBER_NAME_CHECKED(USceneComponent, RelativeRotation);
+	}
+	
+	/**
+	 * Gets the literal value of RelativeRotation.
+	 * Note, this may be an absolute rotation if this is a root component (not attached to anything) or
+	 * when GetAbsoluteRotation returns true.
+	 *
+	 * This exists so subclasses don't need to have direct access to the RelativeRotation property so it
+	 * can be made private later.
+	 */
+	FRotator GetRelativeRotation() const
+	{
+		return RelativeRotation;
+	}
+	
+	/**
+	 * Gets a refence to RelativeRotation with the expectation that it will be modified.
+	 * Note, this may be an absolute rotation if this is a root component (not attached to anything) or
+	 * when GetAbsoluteRotation returns true.
+	 *
+	 * This exists so subclasses don't need to have direct access to the RelativeRotation property so it
+	 * can be made private later.
+	 *
+	 * You should not use this method. The standard SetRelativeRotation variants should be used.
+	 */
+	FRotator& GetRelativeRotation_DirectMutable();
+
+	/**
+	 * Sets the value of RelativeRotation without causing other side effects to this instance.
+	 *
+	 * You should not use this method. The standard SetRelativeRotation variants should be used.
+	 */
+	void SetRelativeRotation_Direct(const FRotator NewRelativeRotation);
+
+	/**
+	 * Gets the property name for RelativeScale3D.
+	 *
+	 * This exists so subclasses don't need to have direct access to the RelativeScale3D property so it
+	 * can be made private later.
+	 */
+	static const FName GetRelativeScale3DPropertyName()
+	{
+		return GET_MEMBER_NAME_CHECKED(USceneComponent, RelativeScale3D);
+	}
+	
+	/**
+	 * Gets the literal value of RelativeScale3D.
+	 * Note, this may be an absolute scale if this is a root component (not attached to anything) or
+	 * when GetAbsoluteScale3D returns true.
+	 *
+	 * This exists so subclasses don't need to have direct access to the RelativeScale3D property so it
+	 * can be made private later.
+	 */
+	FVector GetRelativeScale3D() const
+	{
+		return RelativeScale3D;
+	}
+	
+	/**
+	 * Gets a refence to RelativeRotation with the expectation that it will be modified.
+	 * Note, this may be an absolute scale if this is a root component (not attached to anything) or
+	 * when GetAbsoluteScale3D returns true.
+	 *
+	 * This exists so subclasses don't need to have direct access to the RelativeScale3D property so it
+	 * can be made private later.
+	 *
+	 * You should not use this method. The standard SetRelativeScale3D variants should be used.
+	 */
+	FVector& GetRelativeScale3D_DirectMutable();
+
+	/**
+	 * Sets the value of RelativeScale3D without causing other side effects to this instance.
+	 *
+	 * You should not use this method. The standard SetRelativeScale3D variants should be used.
+	 */
+	void SetRelativeScale3D_Direct(const FVector NewRelativeScale3D);
+
+	/**
+	 * Gets the property name for bAbsoluteLocation.
+	 *
+	 * This exists so subclasses don't need to have direct access to the bAbsoluteLocation property so it
+	 * can be made private later.
+	 */
+	static const FName GetAbsoluteLocationPropertyName()
+	{
+		return GET_MEMBER_NAME_CHECKED(USceneComponent, bAbsoluteLocation);
+	}
+
+	/**
+	 * Gets the literal value of bAbsoluteLocation.
+	 *
+	 * This exists so subclasses don't need to have direct access to the bAbsoluteLocation property so it
+	 * can be made private later.
+	 */
+	bool IsUsingAbsoluteLocation() const
+	{
+		return bAbsoluteLocation;
+	}
+	
+	/** Sets the value of bAbsoluteLocation without causing other side effects to this instance. */
+	void SetUsingAbsoluteLocation(const bool bInAbsoluteLocation);
+
+	/**
+	 * Gets the property name for bAbsoluteRotation.
+	 *
+	 * This exists so subclasses don't need to have direct access to the bAbsoluteRotation property so it
+	 * can be made private later.
+	 */
+	static const FName GetAbsoluteRotationPropertyName()
+	{
+		return GET_MEMBER_NAME_CHECKED(USceneComponent, bAbsoluteRotation);
+	}
+
+	/**
+	 * Gets the literal value of bAbsoluteRotation.
+	 *
+	 * This exists so subclasses don't need to have direct access to the bAbsoluteRotation property so it
+	 * can be made private later.
+	 */
+	bool IsUsingAbsoluteRotation() const
+	{
+		return bAbsoluteRotation;
+	}
+	
+	/** Sets the value of bAbsoluteRotation without causing other side effects to this instance. */
+	void SetUsingAbsoluteRotation(const bool bInAbsoluteRotation);
+
+	/**
+	 * Gets the property name for bAbsoluteScale.
+	 * This exists so subclasses don't need to have direct access to the bAbsoluteScale property so it
+	 * can be made private later.
+	 */
+	static const FName GetAbsoluteScalePropertyName()
+	{
+		return GET_MEMBER_NAME_CHECKED(USceneComponent, bAbsoluteScale);
+	}
+
+	/**
+	 * Gets the literal value of bAbsoluteScale.
+	 *
+	 * This exists so subclasses don't need to have direct access to the bReplicates property so it
+	 * can be made private later.
+	 '*/
+	bool IsUsingAbsoluteScale() const
+	{
+		return bAbsoluteScale;
+	}
+	
+	/** Sets the value of bAbsoluteScale without causing other side effects to this instance. */
+	void SetUsingAbsoluteScale(const bool bInAbsoluteRotation);
+
+	/**
+	 * Gets the property name for bVisible.
+	 * This exists so subclasses don't need to have direct access to the bVisible property so it
+	 * can be made private later.
+	 */
+	static const FName GetVisiblePropertyName()
+	{
+		return GET_MEMBER_NAME_CHECKED(USceneComponent, bVisible);
+	}
+
+	/**
+	 * Gets the literal value of bVisible.
+	 *
+	 * This exists so subclasses don't need to have direct access to the bVisible property so it
+	 * can be made private later.
+	 *
+	 * IsVisible and IsVisibleInEditor are preferred in most cases because they respect virtual behavior.
+	 */
+	bool GetVisibleFlag() const
+	{
+		return bVisible;
+	}
+	
+	/**
+	 * Sets the value of bVisible without causing other side effects to this instance.
+	 *
+	 * ToggleVisible and SetVisibility are preferred in most cases because they respect virtual behavior and side effects.
+	 */
+	void SetVisibleFlag(const bool bInVisible);
+	
+	//~ End Methods for Replicated Members.
+PRAGMA_ENABLE_DEPRECATION_WARNINGS
 };
 
 /** 
@@ -1300,22 +1573,22 @@ FORCEINLINE_DEBUGGABLE bool USceneComponent::MoveComponent(const FVector& Delta,
 
 FORCEINLINE_DEBUGGABLE void USceneComponent::SetRelativeLocation(FVector NewLocation, bool bSweep, FHitResult* OutSweepHitResult, ETeleportType Teleport)
 {
-	SetRelativeLocationAndRotation(NewLocation, RelativeRotationCache.RotatorToQuat(RelativeRotation), bSweep, OutSweepHitResult, Teleport);
+	SetRelativeLocationAndRotation(NewLocation, RelativeRotationCache.RotatorToQuat(GetRelativeRotation()), bSweep, OutSweepHitResult, Teleport);
 }
 
 FORCEINLINE_DEBUGGABLE void USceneComponent::SetRelativeRotation(const FQuat& NewRotation, bool bSweep, FHitResult* OutSweepHitResult, ETeleportType Teleport)
 {
-	SetRelativeLocationAndRotation(RelativeLocation, NewRotation, bSweep, OutSweepHitResult, Teleport);
+	SetRelativeLocationAndRotation(GetRelativeLocation(), NewRotation, bSweep, OutSweepHitResult, Teleport);
 }
 
 FORCEINLINE_DEBUGGABLE void USceneComponent::AddRelativeLocation(FVector DeltaLocation, bool bSweep, FHitResult* OutSweepHitResult, ETeleportType Teleport)
 {
-	SetRelativeLocationAndRotation(RelativeLocation + DeltaLocation, RelativeRotationCache.RotatorToQuat(RelativeRotation), bSweep, OutSweepHitResult, Teleport);
+	SetRelativeLocationAndRotation(GetRelativeLocation() + DeltaLocation, RelativeRotationCache.RotatorToQuat(GetRelativeRotation()), bSweep, OutSweepHitResult, Teleport);
 }
 
 FORCEINLINE_DEBUGGABLE void USceneComponent::AddRelativeRotation(FRotator DeltaRotation, bool bSweep, FHitResult* OutSweepHitResult, ETeleportType Teleport)
 {
-	SetRelativeRotation(RelativeRotation + DeltaRotation, bSweep, OutSweepHitResult, Teleport);
+	SetRelativeRotation(GetRelativeRotation() + DeltaRotation, bSweep, OutSweepHitResult, Teleport);
 }
 
 //////////////////////////////////////////////////////////////////////////
@@ -1358,39 +1631,7 @@ public:
 	 * Init scoped behavior for a given Component.
 	 * Note that null is perfectly acceptable here (does nothing) as a simple way to toggle behavior at runtime without weird conditional compilation.
 	 */
-	FScopedPreventAttachedComponentMove(USceneComponent* Component)
-	: Owner(Component)
-	{
-		if (Component)
-		{
-			// Save old flags
-			bSavedAbsoluteLocation = Component->bAbsoluteLocation;
-			bSavedAbsoluteRotation = Component->bAbsoluteRotation;
-			bSavedAbsoluteScale = Component->bAbsoluteScale;
-			bSavedNonAbsoluteComponent = !(bSavedAbsoluteLocation && bSavedAbsoluteRotation && bSavedAbsoluteScale);
-		
-			// Use absolute (stay in world space no matter what parent does)
-			Component->bAbsoluteLocation = true;
-			Component->bAbsoluteRotation = true;
-			Component->bAbsoluteScale = true;
-
-			if (bSavedNonAbsoluteComponent && Component->GetAttachParent())
-			{
-				// Make RelativeLocation etc relative to the world.
-				Component->ConditionalUpdateComponentToWorld();
-				Component->RelativeLocation = Component->GetComponentLocation();
-				Component->RelativeRotation = Component->GetComponentRotation();
-				Component->RelativeScale3D = Component->GetComponentScale();
-			}
-		}
-		else
-		{
-			bSavedAbsoluteLocation = false;
-			bSavedAbsoluteRotation = false;
-			bSavedAbsoluteScale = false;
-		}
-	}
-
+	FScopedPreventAttachedComponentMove(USceneComponent* Component);
 	~FScopedPreventAttachedComponentMove();
 
 private:
@@ -1437,7 +1678,8 @@ class ENGINE_API FScopedMovementUpdate : private FNoncopyable
 {
 public:
 	
-	typedef TArray<struct FHitResult, TInlineAllocator<2>> TBlockingHitArray;
+	typedef TArray<struct FHitResult, TInlineAllocator<2>> TScopedBlockingHitArray;
+	typedef TArray<struct FOverlapInfo, TInlineAllocator<3>> TScopedOverlapInfoArray;
 
 	FScopedMovementUpdate( USceneComponent* Component, EScopedUpdate::Type ScopeBehavior = EScopedUpdate::DeferredUpdates, bool bRequireOverlapsEventFlagToQueueOverlaps = true );
 	~FScopedMovementUpdate();
@@ -1481,16 +1723,16 @@ public:
 	bool RequiresOverlapsEventFlag() const;
 
 	/** Returns the pending overlaps within this scope. */
-	const TArray<FOverlapInfo>& GetPendingOverlaps() const;
+	const TScopedOverlapInfoArray& GetPendingOverlaps() const;
 
 	/** Returns the list of pending blocking hits, which will be used for notifications once the move is committed. */
-	const TBlockingHitArray& GetPendingBlockingHits() const;
+	const TScopedBlockingHitArray& GetPendingBlockingHits() const;
 
 	//--------------------------------------------------------------------------------------------------------//
 	// These methods are intended only to be used by SceneComponent and derived classes.
 
 	/** Add overlaps to the queued overlaps array. This is intended for use only by SceneComponent and its derived classes whenever movement is performed. */
-	void AppendOverlapsAfterMove(const TArray<FOverlapInfo>& NewPendingOverlaps, bool bSweep, bool bIncludesOverlapsAtEnd);
+	void AppendOverlapsAfterMove(const TOverlapArrayView& NewPendingOverlaps, bool bSweep, bool bIncludesOverlapsAtEnd);
 
 	/** Keep current pending overlaps after a move but make note that there was movement (just a symmetric rotation). */
 	void KeepCurrentOverlapsAfterRotation(bool bSweep);
@@ -1509,7 +1751,8 @@ public:
 
 protected:
 	/** Fills in the list of overlaps at the end location (in EndOverlaps). Returns pointer to the list, or null if it can't be computed. */
-	const TArray<FOverlapInfo>* GetOverlapsAtEnd(class UPrimitiveComponent& PrimComponent, TArray<FOverlapInfo>& EndOverlaps, bool bTransformChanged) const;
+	template<typename AllocatorType>
+	TOptional<TOverlapArrayView> GetOverlapsAtEnd(class UPrimitiveComponent& PrimComponent, TArray<FOverlapInfo, AllocatorType>& OutEndOverlaps, bool bTransformChanged) const;
 
 	bool SetWorldLocationAndRotation(FVector NewLocation, const FQuat& NewQuat, bool bNoPhysics = false, ETeleportType Teleport = ETeleportType::None);
 
@@ -1537,8 +1780,8 @@ protected:
 	FVector InitialRelativeScale;
 
 	int32 FinalOverlapCandidatesIndex;		// If not INDEX_NONE, overlaps at this index and beyond in PendingOverlaps are at the final destination
-	TArray<FOverlapInfo> PendingOverlaps;	// All overlaps encountered during the scope of moves.
-	TBlockingHitArray BlockingHits;			// All blocking hits encountered during the scope of moves.
+	TScopedOverlapInfoArray PendingOverlaps;	// All overlaps encountered during the scope of moves.
+	TScopedBlockingHitArray BlockingHits;		// All blocking hits encountered during the scope of moves.
 
 	uint8 bDeferUpdates:1;
 	uint8 bHasMoved:1;
@@ -1575,12 +1818,12 @@ FORCEINLINE bool FScopedMovementUpdate::RequiresOverlapsEventFlag() const
 	return bRequireOverlapsEventFlag;
 }
 
-FORCEINLINE const TArray<struct FOverlapInfo>& FScopedMovementUpdate::GetPendingOverlaps() const
+FORCEINLINE const FScopedMovementUpdate::TScopedOverlapInfoArray& FScopedMovementUpdate::GetPendingOverlaps() const
 {
 	return PendingOverlaps;
 }
 
-FORCEINLINE const FScopedMovementUpdate::TBlockingHitArray& FScopedMovementUpdate::GetPendingBlockingHits() const
+FORCEINLINE const FScopedMovementUpdate::TScopedBlockingHitArray& FScopedMovementUpdate::GetPendingBlockingHits() const
 {
 	return BlockingHits;
 }
@@ -1645,7 +1888,7 @@ FORCEINLINE_DEBUGGABLE void USceneComponent::BeginScopedMovementUpdate(class FSc
 	ScopedMovementStack.Push(&ScopedUpdate);
 }
 
-FORCEINLINE_DEBUGGABLE bool USceneComponent::UpdateOverlaps(TArray<FOverlapInfo> const* PendingOverlaps /* = nullptr */, bool bDoNotifies /* = true */, const TArray<FOverlapInfo>* OverlapsAtEndLocation /* = nullptr */)
+FORCEINLINE_DEBUGGABLE bool USceneComponent::UpdateOverlaps(const TOverlapArrayView* PendingOverlaps /* = nullptr */, bool bDoNotifies /* = true */, const TOverlapArrayView* OverlapsAtEndLocation /* = nullptr */)
 {
 	if (IsDeferringMovementUpdates())
 	{

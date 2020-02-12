@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "IOSWindow.h"
 #include "IOS/IOSAppDelegate.h"
@@ -70,7 +70,7 @@ void FIOSWindow::Initialize( class FIOSApplication* const Application, const TSh
 FPlatformRect FIOSWindow::GetScreenRect()
 {
 	// get the main view's frame
-	IOSAppDelegate* AppDelegate = (IOSAppDelegate*)[[UIApplication sharedApplication] delegate];
+	IOSAppDelegate* AppDelegate = [IOSAppDelegate GetDelegate];
 	UIView* View = AppDelegate.IOSView;
 	CGRect Frame = [View frame];
 	CGFloat Scale = View.contentScaleFactor;
@@ -82,6 +82,22 @@ FPlatformRect FIOSWindow::GetScreenRect()
 	ScreenRect.Right = (Frame.origin.x + Frame.size.width) * Scale;
 
 	return ScreenRect;
+}
+
+FPlatformRect FIOSWindow::GetUIWindowRect()
+{
+	// get the main window's bounds
+	IOSAppDelegate* AppDelegate = [IOSAppDelegate GetDelegate];
+	UIWindow* Window = AppDelegate.Window;
+	CGRect Bounds = [Window bounds];
+
+	FPlatformRect WindowRect;
+	WindowRect.Top = Bounds.origin.y;
+	WindowRect.Bottom = Bounds.origin.y + Bounds.size.height;
+	WindowRect.Left = Bounds.origin.x;
+	WindowRect.Right = Bounds.origin.x + Bounds.size.width;
+
+	return WindowRect;
 }
 
 

@@ -1,10 +1,11 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 
 #include "CoreMinimal.h"
 #include "Misc/MemStack.h"
 #include "UObject/Object.h"
 #include "UObject/Package.h"
+#include "Algo/Find.h"
 #include "Engine/Level.h"
 #include "Components/ActorComponent.h"
 #include "Model.h"
@@ -233,8 +234,27 @@ void FTransaction::FObjectRecord::Load(FTransaction* Owner)
 
 		if (CustomChange.IsValid())
 		{
-			TUniquePtr<FChange> InvertedChange = CustomChange->Execute( Object.Get() );
-			CustomChange = MoveTemp( InvertedChange );
+			if (CustomChange->HasExpired(Object.Get()) == false)		// skip expired changes
+			{
+				if (CustomChange->GetChangeType() == FChange::EChangeStyle::InPlaceSwap)
+				{
+					TUniquePtr<FChange> InvertedChange = CustomChange->Execute(Object.Get());
+					ensure(InvertedChange->GetChangeType() == FChange::EChangeStyle::InPlaceSwap);
+					CustomChange = MoveTemp(InvertedChange);
+				}
+				else
+				{
+					bool bIsRedo = (Owner->Inc == 1);
+					if (bIsRedo)
+					{
+						CustomChange->Apply(Object.Get());
+					}
+					else
+					{
+						CustomChange->Revert(Object.Get());
+					}
+				}
+			}
 		}
 		else
 		{
@@ -285,7 +305,7 @@ void FTransaction::FObjectRecord::Finalize( FTransaction* Owner, TSharedPtr<ITra
 			// have been tracking delta-changes between snapshots and this finalization will need to account for those changes too
 			if (bSnapshot)
 			{
-				Diff(Owner, SerializedObjectSnapshot, CurrentSerializedObject, DeltaChange);
+				Diff(Owner, SerializedObjectSnapshot, CurrentSerializedObject, DeltaChange, /*bFullDiff*/false);
 			}
 
 			SerializedObjectFlip.Swap(CurrentSerializedObject);
@@ -297,7 +317,7 @@ void FTransaction::FObjectRecord::Finalize( FTransaction* Owner, TSharedPtr<ITra
 	}
 }
 
-void FTransaction::FObjectRecord::Snapshot( FTransaction* Owner )
+void FTransaction::FObjectRecord::Snapshot( FTransaction* Owner, TArrayView<const FProperty*> Properties )
 {
 	if (Array)
 	{
@@ -318,14 +338,14 @@ void FTransaction::FObjectRecord::Snapshot( FTransaction* Owner )
 		FSerializedObject CurrentSerializedObject;
 		{
 			CurrentSerializedObject.SetObject(CurrentObject);
-			FWriter Writer(CurrentSerializedObject, bWantsBinarySerialization);
-			SerializeObject(Writer);
+			FWriter Writer(CurrentSerializedObject, bWantsBinarySerialization, Properties);
+			CurrentObject->SerializeScriptProperties(Writer);
 		}
 
 		// Diff against the correct serialized data depending on whether we already had a snapshot
 		const FSerializedObject& InitialSerializedObject = bSnapshot ? SerializedObjectSnapshot : SerializedObject;
 		FTransactionObjectDeltaChange SnapshotDeltaChange;
-		Diff(Owner, InitialSerializedObject, CurrentSerializedObject, SnapshotDeltaChange);
+		Diff(Owner, InitialSerializedObject, CurrentSerializedObject, SnapshotDeltaChange, /*bFullDiff*/false);
 
 		// Update the snapshot data for next time
 		bSnapshot = true;
@@ -341,7 +361,7 @@ void FTransaction::FObjectRecord::Snapshot( FTransaction* Owner )
 	}
 }
 
-void FTransaction::FObjectRecord::Diff( const FTransaction* Owner, const FSerializedObject& OldSerializedObject, const FSerializedObject& NewSerializedObject, FTransactionObjectDeltaChange& OutDeltaChange )
+void FTransaction::FObjectRecord::Diff( const FTransaction* Owner, const FSerializedObject& OldSerializedObject, const FSerializedObject& NewSerializedObject, FTransactionObjectDeltaChange& OutDeltaChange, const bool bFullDiff )
 {
 	auto AreObjectPointersIdentical = [&OldSerializedObject, &NewSerializedObject](const FName InPropertyName)
 	{
@@ -385,18 +405,21 @@ void FTransaction::FObjectRecord::Diff( const FTransaction* Owner, const FSerial
 		return bAreNamesIdentical;
 	};
 
-	OutDeltaChange.bHasNameChange |= OldSerializedObject.ObjectName != NewSerializedObject.ObjectName;
-	OutDeltaChange.bHasOuterChange |= OldSerializedObject.ObjectOuterPathName != NewSerializedObject.ObjectOuterPathName;
-	OutDeltaChange.bHasPendingKillChange |= OldSerializedObject.bIsPendingKill != NewSerializedObject.bIsPendingKill;
-
-	if (!AreObjectPointersIdentical(NAME_None))
+	if (bFullDiff)
 	{
-		OutDeltaChange.bHasNonPropertyChanges = true;
-	}
+		OutDeltaChange.bHasNameChange |= OldSerializedObject.ObjectName != NewSerializedObject.ObjectName;
+		OutDeltaChange.bHasOuterChange |= OldSerializedObject.ObjectOuterPathName != NewSerializedObject.ObjectOuterPathName;
+		OutDeltaChange.bHasPendingKillChange |= OldSerializedObject.bIsPendingKill != NewSerializedObject.bIsPendingKill;
 
-	if (!AreNamesIdentical(NAME_None))
-	{
-		OutDeltaChange.bHasNonPropertyChanges = true;
+		if (!AreObjectPointersIdentical(NAME_None))
+		{
+			OutDeltaChange.bHasNonPropertyChanges = true;
+		}
+
+		if (!AreNamesIdentical(NAME_None))
+		{
+			OutDeltaChange.bHasNonPropertyChanges = true;
+		}
 	}
 
 	if (OldSerializedObject.SerializedProperties.Num() > 0 || NewSerializedObject.SerializedProperties.Num() > 0)
@@ -411,8 +434,11 @@ void FTransaction::FObjectRecord::Diff( const FTransaction* Owner, const FSerial
 			const FSerializedProperty* OldSerializedProperty = OldSerializedObject.SerializedProperties.Find(NewNamePropertyPair.Key);
 			if (!OldSerializedProperty)
 			{
-				// Missing property, assume that the property changed
-				OutDeltaChange.ChangedProperties.AddUnique(NewNamePropertyPair.Key);
+				if (bFullDiff)
+				{
+					// Missing property, assume that the property changed
+					OutDeltaChange.ChangedProperties.AddUnique(NewNamePropertyPair.Key);
+				}
 				continue;
 			}
 
@@ -448,49 +474,55 @@ void FTransaction::FObjectRecord::Diff( const FTransaction* Owner, const FSerial
 			const FSerializedProperty* NewSerializedProperty = NewSerializedObject.SerializedProperties.Find(OldNamePropertyPair.Key);
 			if (!NewSerializedProperty)
 			{
-				// Missing property, assume that the property changed
-				OutDeltaChange.ChangedProperties.AddUnique(OldNamePropertyPair.Key);
+				if (bFullDiff)
+				{
+					// Missing property, assume that the property changed
+					OutDeltaChange.ChangedProperties.AddUnique(OldNamePropertyPair.Key);
+				}
 				continue;
 			}
 		}
 
-		// Compare the data before the property block to see if something else in the object has changed
-		if (!OutDeltaChange.bHasNonPropertyChanges)
+		if (bFullDiff)
 		{
-			const int32 OldHeaderSize = StartOfOldPropertyBlock;
-			const int32 CurrentHeaderSize = StartOfNewPropertyBlock;
-
-			bool bIsHeaderIdentical = OldHeaderSize == CurrentHeaderSize;
-			if (bIsHeaderIdentical && CurrentHeaderSize > 0)
+			// Compare the data before the property block to see if something else in the object has changed
+			if (!OutDeltaChange.bHasNonPropertyChanges)
 			{
-				bIsHeaderIdentical = FMemory::Memcmp(&OldSerializedObject.Data[0], &NewSerializedObject.Data[0], CurrentHeaderSize) == 0;
+				const int32 OldHeaderSize = FMath::Min(StartOfOldPropertyBlock, OldSerializedObject.Data.Num());
+				const int32 CurrentHeaderSize = FMath::Min(StartOfNewPropertyBlock, NewSerializedObject.Data.Num());
+
+				bool bIsHeaderIdentical = OldHeaderSize == CurrentHeaderSize;
+				if (bIsHeaderIdentical && CurrentHeaderSize > 0)
+				{
+					bIsHeaderIdentical = FMemory::Memcmp(&OldSerializedObject.Data[0], &NewSerializedObject.Data[0], CurrentHeaderSize) == 0;
+				}
+
+				if (!bIsHeaderIdentical)
+				{
+					OutDeltaChange.bHasNonPropertyChanges = true;
+				}
 			}
 
-			if (!bIsHeaderIdentical)
+			// Compare the data after the property block to see if something else in the object has changed
+			if (!OutDeltaChange.bHasNonPropertyChanges)
 			{
-				OutDeltaChange.bHasNonPropertyChanges = true;
-			}
-		}
+				const int32 OldFooterSize = OldSerializedObject.Data.Num() - FMath::Max(EndOfOldPropertyBlock, 0);
+				const int32 CurrentFooterSize = NewSerializedObject.Data.Num() - FMath::Max(EndOfNewPropertyBlock, 0);
 
-		// Compare the data after the property block to see if something else in the object has changed
-		if (!OutDeltaChange.bHasNonPropertyChanges)
-		{
-			const int32 OldFooterSize = OldSerializedObject.Data.Num() - EndOfOldPropertyBlock;
-			const int32 CurrentFooterSize = NewSerializedObject.Data.Num() - EndOfNewPropertyBlock;
+				bool bIsFooterIdentical = OldFooterSize == CurrentFooterSize;
+				if (bIsFooterIdentical && CurrentFooterSize > 0)
+				{
+					bIsFooterIdentical = FMemory::Memcmp(&OldSerializedObject.Data[EndOfOldPropertyBlock], &NewSerializedObject.Data[EndOfNewPropertyBlock], CurrentFooterSize) == 0;
+				}
 
-			bool bIsFooterIdentical = OldFooterSize == CurrentFooterSize;
-			if (bIsFooterIdentical && CurrentFooterSize > 0)
-			{
-				bIsFooterIdentical = FMemory::Memcmp(&OldSerializedObject.Data[EndOfOldPropertyBlock], &NewSerializedObject.Data[EndOfNewPropertyBlock], CurrentFooterSize) == 0;
-			}
-
-			if (!bIsFooterIdentical)
-			{
-				OutDeltaChange.bHasNonPropertyChanges = true;
+				if (!bIsFooterIdentical)
+				{
+					OutDeltaChange.bHasNonPropertyChanges = true;
+				}
 			}
 		}
 	}
-	else
+	else if (bFullDiff)
 	{
 		// No properties, so just compare the whole blob
 		bool bIsBlobIdentical = OldSerializedObject.Data.Num() == NewSerializedObject.Data.Num();
@@ -511,6 +543,20 @@ int32 FTransaction::GetRecordCount() const
 	return Records.Num();
 }
 
+bool FTransaction::IsTransient() const
+{
+	bool bHasChanges = false;
+	for (const FObjectRecord& Record : Records)
+	{
+		if (Record.ContainsPieObject())
+		{
+			return true;
+		}
+		bHasChanges |= Record.HasChanges();
+	}
+	return !bHasChanges;
+}
+
 bool FTransaction::ContainsPieObjects() const
 {
 	for( const FObjectRecord& Record : Records )
@@ -520,9 +566,25 @@ bool FTransaction::ContainsPieObjects() const
 			return true;
 		}
 	}
-
 	return false;
 }
+
+bool FTransaction::HasExpired() const
+{
+	if (Records.Num() == 0)		// only return true if we definitely have expired changes
+	{
+		return false;
+	}
+	for (const FObjectRecord& Record : Records)
+	{
+		if (Record.HasExpired() == false)
+		{
+			return false;
+		}
+	}
+	return true;
+}
+
 
 bool FTransaction::IsObjectTransacting(const UObject* Object) const
 {
@@ -634,17 +696,23 @@ void FTransaction::FObjectRecord::AddReferencedObjects( FReferenceCollector& Col
 	Collector.AddReferencedObject(Obj);
 	Object.Object = Obj;
 
-	for (FPersistentObjectRef& ReferencedObject : SerializedObject.ReferencedObjects)
+	auto AddSerializedObjectReferences = [](FSerializedObject& InSerializedObject, FReferenceCollector& InCollector)
 	{
-		UObject* RefObj = ReferencedObject.Object;
-		Collector.AddReferencedObject(RefObj);
-		ReferencedObject.Object = RefObj;
-	}
+		for (FPersistentObjectRef& ReferencedObject : InSerializedObject.ReferencedObjects)
+		{
+			UObject* RefObj = ReferencedObject.Object;
+			InCollector.AddReferencedObject(RefObj);
+			ReferencedObject.Object = RefObj;
+		}
 
-	if (SerializedObject.ObjectAnnotation.IsValid())
-	{
-		SerializedObject.ObjectAnnotation->AddReferencedObjects(Collector);
-	}
+		if (InSerializedObject.ObjectAnnotation.IsValid())
+		{
+			InSerializedObject.ObjectAnnotation->AddReferencedObjects(InCollector);
+		}
+	};
+	AddSerializedObjectReferences(SerializedObject, Collector);
+	AddSerializedObjectReferences(SerializedObjectFlip, Collector);
+	AddSerializedObjectReferences(SerializedObjectSnapshot, Collector);
 }
 
 bool FTransaction::FObjectRecord::ContainsPieObject() const
@@ -658,15 +726,45 @@ bool FTransaction::FObjectRecord::ContainsPieObject() const
 		}
 	}
 
-	for (const FPersistentObjectRef& ReferencedObject : SerializedObject.ReferencedObjects)
+	auto SerializedObjectContainPieObjects = [](const FSerializedObject& InSerializedObject) -> bool
 	{
-		const UObject* Obj = ReferencedObject.Object;
-		if( Obj && Obj->GetOutermost()->HasAnyPackageFlags(PKG_PlayInEditor))
+		for (const FPersistentObjectRef& ReferencedObject : InSerializedObject.ReferencedObjects)
 		{
-			return true;
+			const UObject* Obj = ReferencedObject.Object;
+			if (Obj && Obj->GetOutermost()->HasAnyPackageFlags(PKG_PlayInEditor))
+			{
+				return true;
+			}
 		}
-	}
+		return false;
+	};
 
+	if (SerializedObjectContainPieObjects(SerializedObject))
+	{
+		return true;
+	}
+	if (SerializedObjectContainPieObjects(SerializedObjectFlip))
+	{
+		return true;
+	}
+	if (SerializedObjectContainPieObjects(SerializedObjectSnapshot))
+	{
+		return true;
+	}
+	return false;
+}
+
+bool FTransaction::FObjectRecord::HasChanges() const
+{
+	return DeltaChange.HasChanged() || CustomChange;
+}
+
+bool FTransaction::FObjectRecord::HasExpired() const
+{
+	if (CustomChange && CustomChange->HasExpired(Object.Get()) == true)
+	{
+		return true;
+	}
 	return false;
 }
 
@@ -689,7 +787,7 @@ void FTransaction::SaveObject( UObject* Object )
 	{
 		ObjectMap.Add(Object,1);
 		// Save the object.
-		new( Records )FObjectRecord( this, Object, nullptr, NULL, 0, 0, 0, 0, NULL, NULL, NULL );
+		Records.Add(new FObjectRecord( this, Object, nullptr, nullptr, 0, 0, 0, 0, nullptr, nullptr, nullptr));
 	}
 	else
 	{
@@ -715,7 +813,7 @@ void FTransaction::SaveArray( UObject* Object, FScriptArray* Array, int32 Index,
 	if( Object->HasAnyFlags(RF_Transactional) && !Object->GetOutermost()->HasAnyPackageFlags(PKG_PlayInEditor))
 	{
 		// Save the array.
-		new( Records )FObjectRecord( this, Object, nullptr, Array, Index, Count, Oper, ElementSize, DefaultConstructor, Serializer, Destructor );
+		Records.Add(new FObjectRecord( this, Object, nullptr, Array, Index, Count, Oper, ElementSize, DefaultConstructor, Serializer, Destructor ));
 	}
 }
 
@@ -731,7 +829,7 @@ void FTransaction::StoreUndo( UObject* Object, TUniquePtr<FChange> UndoChange )
 	}
 
 	// Save the undo record
-	new( Records )FObjectRecord( this, Object, MoveTemp( UndoChange ), NULL, 0, 0, 0, 0, NULL, NULL, NULL );
+	Records.Add(new FObjectRecord( this, Object, MoveTemp( UndoChange ), nullptr, 0, 0, 0, 0, nullptr, nullptr, nullptr));
 }
 
 void FTransaction::SetPrimaryObject(UObject* InObject)
@@ -742,18 +840,18 @@ void FTransaction::SetPrimaryObject(UObject* InObject)
 	}
 }
 
-void FTransaction::SnapshotObject( UObject* InObject )
+void FTransaction::SnapshotObject( UObject* InObject, TArrayView<const FProperty*> Properties )
 {
 	if (InObject && ObjectMap.Contains(InObject))
 	{
-		FObjectRecord* FoundObjectRecord = Records.FindByPredicate([InObject](const FObjectRecord& ObjRecord)
+		FObjectRecord* FoundObjectRecord = Algo::FindByPredicate(Records, [InObject](const FObjectRecord& ObjRecord)
 		{
 			return ObjRecord.Object.Get() == InObject;
 		});
 
 		if (FoundObjectRecord)
 		{
-			FoundObjectRecord->Snapshot(this);
+			FoundObjectRecord->Snapshot(this, Properties);
 		}
 	}
 }
@@ -826,18 +924,9 @@ void FTransaction::Apply()
 
 	// An Actor's components must always get its PostEditUndo before the owning Actor
 	// so do a quick sort on Outer depth, component will deeper than their owner
-	ChangedObjects.KeySort([](UObject& A, UObject& B)
+	ChangedObjects.KeyStableSort([](UObject& A, UObject& B)
 	{
-		auto GetObjectDepth = [](UObject* InObj)
-		{
-			int32 Depth = 0;
-			for (UObject* Outer = InObj; Outer; Outer = Outer->GetOuter())
-			{
-				++Depth;
-			}
-			return Depth;
-		};
-		return GetObjectDepth(&A) > GetObjectDepth(&B);
+		return Cast<UActorComponent>(&A) != nullptr;
 	});
 
 	TArray<ULevel*> LevelsToCommitModelSurface;
@@ -917,18 +1006,9 @@ void FTransaction::Finalize()
 
 	// An Actor's components must always be notified before the owning Actor
 	// so do a quick sort on Outer depth, component will deeper than their owner
-	ChangedObjects.KeySort([](UObject& A, UObject& B)
+	ChangedObjects.KeyStableSort([](UObject& A, UObject& B)
 	{
-		auto GetObjectDepth = [](UObject* InObj)
-		{
-			int32 Depth = 0;
-			for (UObject* Outer = InObj; Outer; Outer = Outer->GetOuter())
-			{
-				++Depth;
-			}
-			return Depth;
-		};
-		return GetObjectDepth(&A) > GetObjectDepth(&B);
+		return Cast<UActorComponent>(&A) != nullptr;
 	});
 
 	for (auto ChangedObjectIt : ChangedObjects)
@@ -945,7 +1025,6 @@ void FTransaction::Finalize()
 			ChangedObject->PostTransacted(FTransactionObjectEvent(Id, OperationId, ETransactionObjectEventType::Finalized, DeltaChange, ChangedObjectTransactionAnnotation, InitialSerializedObject.ObjectName, InitialSerializedObject.ObjectPathName, InitialSerializedObject.ObjectOuterPathName, InitialSerializedObject.ObjectClassPathName));
 		}
 	}
-
 	ChangedObjects.Reset();
 }
 
@@ -1111,9 +1190,8 @@ int32 UTransBuffer::End()
 				TransactionStateChangedDelegate.Broadcast(GUndo->GetContext(), ETransactionStateEventType::TransactionFinalized);
 				GUndo->EndOperation();
 
-				// PIE objects now generate transactions.
-				// Once the transaction is finalized however, they aren't kept in the undo buffer.
-				if (GUndo->ContainsPieObjects())
+				// Once the transaction is finalized, remove it from the undo buffer if it's flagged as transient. (i.e contains PIE objects is no-op)
+				if (GUndo->IsTransient())
 				{
 					check(UndoCount == 0);
 					UndoBuffer.Pop(false);
@@ -1228,11 +1306,11 @@ void UTransBuffer::Cancel( int32 StartIndex /*=0*/ )
 bool UTransBuffer::CanUndo( FText* Text )
 {
 	CheckState();
-	if( ActiveCount )
+	if (ActiveCount || CurrentTransaction != nullptr )
 	{
-		if( Text )
+		if (Text)
 		{
-			*Text = NSLOCTEXT("TransactionSystem", "CantUndoDuringTransaction", "(Can't undo while action is in progress)");
+			*Text = GUndo ? FText::Format(NSLOCTEXT("TransactionSystem", "CantUndoDuringTransactionX", "(Can't undo while '{0}' is in progress)"), GUndo->GetContext().Title) : NSLOCTEXT("TransactionSystem", "CantUndoDuringTransaction", "(Can't undo while action is in progress)");
 		}
 		return false;
 	}
@@ -1250,7 +1328,7 @@ bool UTransBuffer::CanUndo( FText* Text )
 		}
 	}
 
-	if( UndoBuffer.Num()==UndoCount )
+	if (UndoBuffer.Num() == UndoCount)
 	{
 		if( Text )
 		{
@@ -1265,11 +1343,11 @@ bool UTransBuffer::CanUndo( FText* Text )
 bool UTransBuffer::CanRedo( FText* Text )
 {
 	CheckState();
-	if( ActiveCount )
+	if( ActiveCount || CurrentTransaction != nullptr )
 	{
 		if( Text )
 		{
-			*Text = NSLOCTEXT("TransactionSystem", "CantRedoDuringTransaction", "(Can't redo while action is in progress)");
+			*Text = GUndo ? FText::Format(NSLOCTEXT("TransactionSystem", "CantRedoDuringTransactionX", "(Can't redo while '{0}' is in progress)"), GUndo->GetContext().Title) : NSLOCTEXT("TransactionSystem", "CantRedoDuringTransaction", "(Can't redo while action is in progress)");
 		}
 		return 0;
 	}
@@ -1373,21 +1451,33 @@ bool UTransBuffer::Undo(bool bCanRedo)
 
 	// Apply the undo changes.
 	GIsTransacting = true;
+
+	// custom changes (FChange) can be applied to temporary objects that require undo/redo for some time,
+	// but we want to skip over these changes later (eg in the context of a Tool that is used for a while and
+	// then closed). In this case the Transaction is "expired" and we continue to Undo until we find a 
+	// non-Expired Transaction. 
+	bool bDoneTransacting = false;
+	do
 	{
 		FTransaction& Transaction = UndoBuffer[ UndoBuffer.Num() - ++UndoCount ].Get();
-		UE_LOG(LogEditorTransaction, Log,  TEXT("Undo %s"), *Transaction.GetTitle().ToString() );
-		CurrentTransaction = &Transaction;
-		CurrentTransaction->BeginOperation();
+		if (Transaction.HasExpired() == false)
+		{
+			UE_LOG(LogEditorTransaction, Log, TEXT("Undo %s"), *Transaction.GetTitle().ToString());
+			CurrentTransaction = &Transaction;
+			CurrentTransaction->BeginOperation();
 
-		const FTransactionContext TransactionContext = CurrentTransaction->GetContext();
-		TransactionStateChangedDelegate.Broadcast(TransactionContext, ETransactionStateEventType::UndoRedoStarted);
-		BeforeRedoUndoDelegate.Broadcast(TransactionContext);
-		Transaction.Apply();
-		UndoDelegate.Broadcast(TransactionContext, true);
-		TransactionStateChangedDelegate.Broadcast(TransactionContext, ETransactionStateEventType::UndoRedoFinalized);
+			const FTransactionContext TransactionContext = CurrentTransaction->GetContext();
+			TransactionStateChangedDelegate.Broadcast(TransactionContext, ETransactionStateEventType::UndoRedoStarted);
+			BeforeRedoUndoDelegate.Broadcast(TransactionContext);
+			Transaction.Apply();
+			UndoDelegate.Broadcast(TransactionContext, true);
+			TransactionStateChangedDelegate.Broadcast(TransactionContext, ETransactionStateEventType::UndoRedoFinalized);
 
-		CurrentTransaction->EndOperation();
-		CurrentTransaction = nullptr;
+			CurrentTransaction->EndOperation();
+			CurrentTransaction = nullptr;
+
+			bDoneTransacting = true;
+		}
 
 		if (!bCanRedo)
 		{
@@ -1396,8 +1486,17 @@ bool UTransBuffer::Undo(bool bCanRedo)
 
 			UndoBufferChangedDelegate.Broadcast();
 		}
-	}
+	} 
+	while (bDoneTransacting == false && CanUndo());
+
 	GIsTransacting = false;
+
+	// if all transactions were expired, reproduce the !CanUndo() branch at the top of the function
+	if (bDoneTransacting == false)
+	{
+		UndoDelegate.Broadcast(FTransactionContext(), false);
+		return false;
+	}
 
 	CheckState();
 
@@ -1417,23 +1516,41 @@ bool UTransBuffer::Redo()
 
 	// Apply the redo changes.
 	GIsTransacting = true;
+
+	// Skip over Expired transactions (see comments in ::Undo)
+	bool bDoneTransacting = false;
+	do
 	{
 		FTransaction& Transaction = UndoBuffer[ UndoBuffer.Num() - UndoCount-- ].Get();
-		UE_LOG(LogEditorTransaction, Log,  TEXT("Redo %s"), *Transaction.GetTitle().ToString() );
-		CurrentTransaction = &Transaction;
-		CurrentTransaction->BeginOperation();
+		if (Transaction.HasExpired() == false)
+		{
+			UE_LOG(LogEditorTransaction, Log, TEXT("Redo %s"), *Transaction.GetTitle().ToString());
+			CurrentTransaction = &Transaction;
+			CurrentTransaction->BeginOperation();
 
-		const FTransactionContext TransactionContext = CurrentTransaction->GetContext();
-		TransactionStateChangedDelegate.Broadcast(TransactionContext, ETransactionStateEventType::UndoRedoStarted);
-		BeforeRedoUndoDelegate.Broadcast(TransactionContext);
-		Transaction.Apply();
-		RedoDelegate.Broadcast(TransactionContext, true);
-		TransactionStateChangedDelegate.Broadcast(TransactionContext, ETransactionStateEventType::UndoRedoFinalized);
+			const FTransactionContext TransactionContext = CurrentTransaction->GetContext();
+			TransactionStateChangedDelegate.Broadcast(TransactionContext, ETransactionStateEventType::UndoRedoStarted);
+			BeforeRedoUndoDelegate.Broadcast(TransactionContext);
+			Transaction.Apply();
+			RedoDelegate.Broadcast(TransactionContext, true);
+			TransactionStateChangedDelegate.Broadcast(TransactionContext, ETransactionStateEventType::UndoRedoFinalized);
 
-		CurrentTransaction->EndOperation();
-		CurrentTransaction = nullptr;
-	}
+			CurrentTransaction->EndOperation();
+			CurrentTransaction = nullptr;
+
+			bDoneTransacting = true;
+		}
+	} 
+	while (bDoneTransacting == false && CanRedo());
+
 	GIsTransacting = false;
+
+	// if all transactions were expired, reproduce the !CanRedo() branch at the top of the function
+	if (bDoneTransacting == false)
+	{
+		RedoDelegate.Broadcast(FTransactionContext(), false);
+		return false;
+	}
 
 	CheckState();
 

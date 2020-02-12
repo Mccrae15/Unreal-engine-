@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 
 #include "LevelUtils.h"
@@ -11,6 +11,7 @@
 #include "EngineGlobals.h"
 #include "Misc/FeedbackContext.h"
 #include "GameFramework/WorldSettings.h"
+#include "Components/ModelComponent.h"
 
 #if WITH_EDITOR
 #include "ScopedTransaction.h"
@@ -46,6 +47,7 @@ static TMap<ULevel*, FLevelReadOnlyData> LevelReadOnlyCache;
 
 #if WITH_EDITOR
 bool FLevelUtils::bMovingLevel = false;
+bool FLevelUtils::bApplyingLevelTransform = false;
 #endif
 
 /**
@@ -222,44 +224,9 @@ bool FLevelUtils::IsLevelLoaded(ULevel* Level)
 	}
 
 	ULevelStreaming* StreamingLevel = FindStreamingLevel( Level );
-	checkf( StreamingLevel, TEXT("Couldn't find streaming level" ) );
-
-	// @todo: Dave, please come talk to me before implementing anything like this.
-	return true;
+	return (StreamingLevel != nullptr);
 }
 
-/**
- * Flags an unloaded level for loading.
- *
- * @param	Level		The level to modify.
- */
-void FLevelUtils::MarkLevelForLoading(ULevel* Level)
-{
-	// If the level is valid and not the persistent level (which is always loaded) . . .
-	if ( Level && !Level->IsPersistentLevel() )
-	{
-		// Mark the level's stream for load.
-		ULevelStreaming* StreamingLevel = FindStreamingLevel( Level );
-		checkf( StreamingLevel, TEXT("Couldn't find streaming level" ) );
-		// @todo: Dave, please come talk to me before implementing anything like this.
-	}
-}
-
-/**
- * Flags a loaded level for unloading.
- *
- * @param	Level		The level to modify.
- */
-void FLevelUtils::MarkLevelForUnloading(ULevel* Level)
-{
-	// If the level is valid and not the persistent level (which is always loaded) . . .
-	if ( Level && !Level->IsPersistentLevel() )
-	{
-		ULevelStreaming* StreamingLevel = FindStreamingLevel( Level );
-		checkf( StreamingLevel, TEXT("Couldn't find streaming level" ) );
-		// @todo: Dave, please come talk to me before implementing anything like this.
-	}
-}
 
 /////////////////////////////////////////////////////////////////////////////////////////
 //
@@ -333,6 +300,19 @@ void FLevelUtils::SetEditorTransform(ULevelStreaming* StreamingLevel, const FTra
 	const FScopedTransaction LevelOffsetTransaction( LOCTEXT( "ChangeEditorLevelTransform", "Edit Level Transform" ) );
 	StreamingLevel->Modify();
 
+	// Ensure that all Actors are in the transaction so that their location is restored and any construction script behaviors 
+	// based on being at a different location are correctly applied on undo/redo
+	if (ULevel* LoadedLevel = StreamingLevel->GetLoadedLevel())
+	{
+		for (AActor* Actor : LoadedLevel->Actors)
+		{
+			if (Actor)
+			{
+				Actor->Modify();
+			}
+		}
+	}
+
 	// Apply new transform
 	RemoveEditorTransform(StreamingLevel, false );
 	StreamingLevel->LevelTransform = Transform;
@@ -345,20 +325,23 @@ void FLevelUtils::SetEditorTransform(ULevelStreaming* StreamingLevel, const FTra
 void FLevelUtils::ApplyEditorTransform(const ULevelStreaming* StreamingLevel, bool bDoPostEditMove )
 {
 	check(StreamingLevel);
-	ULevel* LoadedLevel = StreamingLevel->GetLoadedLevel();
-	if( LoadedLevel != NULL )
+	if (ULevel* LoadedLevel = StreamingLevel->GetLoadedLevel())
 	{	
-		ApplyLevelTransform( LoadedLevel, StreamingLevel->LevelTransform, bDoPostEditMove );
+		FApplyLevelTransformParams TransformParams(LoadedLevel, StreamingLevel->LevelTransform);
+		TransformParams.bDoPostEditMove = bDoPostEditMove;
+		ApplyLevelTransform(TransformParams);
 	}
 }
 
 void FLevelUtils::RemoveEditorTransform(const ULevelStreaming* StreamingLevel, bool bDoPostEditMove )
 {
 	check(StreamingLevel);
-	ULevel* LoadedLevel = StreamingLevel->GetLoadedLevel();
-	if( LoadedLevel != NULL )
+	if (ULevel* LoadedLevel = StreamingLevel->GetLoadedLevel())
 	{
-		ApplyLevelTransform( LoadedLevel, StreamingLevel->LevelTransform.Inverse(), bDoPostEditMove );
+		const FTransform InverseTransform = StreamingLevel->LevelTransform.Inverse();
+		FApplyLevelTransformParams TransformParams(LoadedLevel, InverseTransform);
+		TransformParams.bDoPostEditMove = bDoPostEditMove;
+		ApplyLevelTransform(TransformParams);
 	}
 }
 
@@ -393,48 +376,91 @@ bool FLevelUtils::IsMovingLevel()
 	return bMovingLevel;
 }
 
+bool FLevelUtils::IsApplyingLevelTransform()
+{
+	return bApplyingLevelTransform;
+}
+
 #endif // WITH_EDITOR
 
-
-void FLevelUtils::ApplyLevelTransform( ULevel* Level, const FTransform& LevelTransform, bool bDoPostEditMove )
+void FLevelUtils::ApplyLevelTransform(const FLevelUtils::FApplyLevelTransformParams& TransformParams)
 {
-	bool bTransformActors =  !LevelTransform.Equals(FTransform::Identity);
+	const bool bTransformActors =  !TransformParams.LevelTransform.Equals(FTransform::Identity);
 	if (bTransformActors)
 	{
-		if (!LevelTransform.GetRotation().IsIdentity())
+#if WITH_EDITOR
+		TGuardValue<bool> ApplyingLevelTransformGuard(bApplyingLevelTransform, true);
+#endif
+		if (!TransformParams.LevelTransform.GetRotation().IsIdentity())
 		{
 			// If there is a rotation applied, then the relative precomputed bounds become invalid.
-			Level->bTextureStreamingRotationChanged = true;
+			TransformParams.Level->bTextureStreamingRotationChanged = true;
 		}
 
-		// Iterate over all actors in the level and transform them
-		for( int32 ActorIndex=0; ActorIndex<Level->Actors.Num(); ActorIndex++ )
+		if (TransformParams.bSetRelativeTransformDirectly)
 		{
-			AActor* Actor = Level->Actors[ActorIndex];
-
-			// Don't want to transform children they should stay relative to there parents.
-			if( Actor && Actor->GetAttachParentActor() == NULL )
+			// Iterate over all model components to transform BSP geometry accordingly
+			for (UModelComponent* ModelComponent : TransformParams.Level->ModelComponents)
 			{
-				// Has to modify root component directly as GetActorPosition is incorrect this early
-				USceneComponent *RootComponent = Actor->GetRootComponent();
-				if (RootComponent)
+				if (ModelComponent)
 				{
-					RootComponent->SetRelativeLocationAndRotation( LevelTransform.TransformPosition(RootComponent->RelativeLocation), (FTransform(RootComponent->RelativeRotation) * LevelTransform).Rotator());
-				}			
+					ModelComponent->SetRelativeLocation_Direct(TransformParams.LevelTransform.TransformPosition(ModelComponent->GetRelativeLocation()));
+					ModelComponent->SetRelativeRotation_Direct(TransformParams.LevelTransform.TransformRotation(ModelComponent->GetRelativeRotation().Quaternion()).Rotator());
+				}
+			}
+
+			// Iterate over all actors in the level and transform them
+			for (AActor* Actor : TransformParams.Level->Actors)
+			{
+				if (Actor)
+				{
+					USceneComponent* RootComponent = Actor->GetRootComponent();
+
+					// Don't want to transform children they should stay relative to their parents.
+					if (RootComponent && RootComponent->GetAttachParent() == nullptr)
+					{
+						RootComponent->SetRelativeLocation_Direct(TransformParams.LevelTransform.TransformPosition(RootComponent->GetRelativeLocation()));
+						RootComponent->SetRelativeRotation_Direct(TransformParams.LevelTransform.TransformRotation(RootComponent->GetRelativeRotation().Quaternion()).Rotator());
+					}
+				}
+			}
+		}
+		else
+		{
+			// Iterate over all model components to transform BSP geometry accordingly
+			for (UModelComponent* ModelComponent : TransformParams.Level->ModelComponents)
+			{
+				if (ModelComponent)
+				{
+					ModelComponent->SetRelativeLocationAndRotation(TransformParams.LevelTransform.TransformPosition(ModelComponent->GetRelativeLocation()), TransformParams.LevelTransform.TransformRotation(ModelComponent->GetRelativeRotation().Quaternion()));
+				}
+			}
+
+			// Iterate over all actors in the level and transform them
+			for (AActor* Actor : TransformParams.Level->Actors)
+			{
+				if (Actor)
+				{
+					USceneComponent* RootComponent = Actor->GetRootComponent();
+
+					// Don't want to transform children they should stay relative to their parents.
+					if (RootComponent && RootComponent->GetAttachParent() == nullptr)
+					{
+						RootComponent->SetRelativeLocationAndRotation(TransformParams.LevelTransform.TransformPosition(RootComponent->GetRelativeLocation()), TransformParams.LevelTransform.TransformRotation(RootComponent->GetRelativeRotation().Quaternion()));
+					}
+				}
 			}
 		}
 
 #if WITH_EDITOR
-		if( bDoPostEditMove )
+		if (TransformParams.bDoPostEditMove)
 		{
-			ApplyPostEditMove( Level );						
+			ApplyPostEditMove(TransformParams.Level);
 		}
 #endif // WITH_EDITOR
 
-		Level->OnApplyLevelTransform.Broadcast(LevelTransform);
+		TransformParams.Level->OnApplyLevelTransform.Broadcast(TransformParams.LevelTransform);
 	}
 }
-
-
 
 #undef LOCTEXT_NAMESPACE

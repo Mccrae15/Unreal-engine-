@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "Slate/SObjectWidget.h"
 
@@ -35,7 +35,7 @@ SObjectWidget::~SObjectWidget(void)
 #if SLATE_VERBOSE_NAMED_EVENTS
 	// This can happen during blueprint compiling, so just ignore it if it happens then, this is really only a concern
 	// in a running game.
-	if (!GCompilingBlueprint)
+	if (!GCompilingBlueprint && !GIsGCingAfterBlueprintCompile)
 	{
 		// This is only a concern during a running game - design-time instances can be destroyed from GC quite often when recompiling
 		if (!WidgetObject || !WidgetObject->IsDesignTime())
@@ -128,16 +128,6 @@ int32 SObjectWidget::OnPaint(const FPaintArgs& Args, const FGeometry& AllottedGe
 	}
 	
 	return MaxLayer;
-}
-
-bool SObjectWidget::ComputeVolatility() const
-{
-	if ( CanRouteEvent() )
-	{
-		return SCompoundWidget::ComputeVolatility() || WidgetObject->IsPlayingAnimation();
-	}
-
-	return SCompoundWidget::ComputeVolatility();
 }
 
 FVector2D SObjectWidget::ComputeDesiredSize(float LayoutScaleMultiplier) const
@@ -513,13 +503,13 @@ FReply SObjectWidget::OnTouchForceChanged(const FGeometry& MyGeometry, const FPo
 
 FNavigationReply SObjectWidget::OnNavigation(const FGeometry& MyGeometry, const FNavigationEvent& InNavigationEvent)
 {
-	if (WidgetObject->NativeSupportsCustomNavigation())
+	if (WidgetObject && WidgetObject->NativeSupportsCustomNavigation())
 	{
 		return WidgetObject->NativeOnNavigation(MyGeometry, InNavigationEvent);
 	}
 	FNavigationReply Reply = SCompoundWidget::OnNavigation(MyGeometry, InNavigationEvent);
 
-	if ( CanRouteEvent() )
+	if (WidgetObject && CanRouteEvent() )
 	{
 		return WidgetObject->NativeOnNavigation(MyGeometry, InNavigationEvent, Reply);
 	}

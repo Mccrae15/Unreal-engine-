@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 using UnrealBuildTool;
 
@@ -18,5 +18,7 @@ public class UnrealVersionSelector : ModuleRules
 		{
 			PrivateDependencyModuleNames.AddRange(new string[] { "Core", "Projects", "DesktopPlatform", "ApplicationCore" });
 		}
-	}
+
+        PrivateDependencyModuleNames.Add("Json");
+    }
 }

@@ -1,8 +1,8 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "BehaviorTreeGraphNode.h"
 #include "Widgets/DeclarativeSyntaxSupport.h"
-#include "Framework/MultiBox/MultiBoxBuilder.h"
+#include "ToolMenus.h"
 #include "BehaviorTree/BTNode.h"
 #include "BehaviorTree/BTDecorator.h"
 #include "BehaviorTree/BTService.h"
@@ -136,12 +136,25 @@ void UBehaviorTreeGraphNode::FindDiffs(UEdGraphNode* OtherNode, FDiffResults& Re
 				FGraphDiffControl::FNodeMatch NodeMatch;
 				NodeMatch.NewNode = RhsSubNode;
 
+				// Do two passes, exact and soft
 				for (UEdGraphNode* LhsSubNode : LhsSubNodes)
 				{
-					if (FGraphDiffControl::IsNodeMatch(LhsSubNode, RhsSubNode, &NodeMatches))
+					if (FGraphDiffControl::IsNodeMatch(LhsSubNode, RhsSubNode, true, &NodeMatches))
 					{
 						NodeMatch.OldNode = LhsSubNode;
 						break;
+					}
+				}
+				
+				if (NodeMatch.NewNode == nullptr)
+				{
+					for (UEdGraphNode* LhsSubNode : LhsSubNodes)
+					{
+						if (FGraphDiffControl::IsNodeMatch(LhsSubNode, RhsSubNode, false, &NodeMatches))
+						{
+							NodeMatch.OldNode = LhsSubNode;
+							break;
+						}
 					}
 				}
 
@@ -168,17 +181,9 @@ void UBehaviorTreeGraphNode::FindDiffs(UEdGraphNode* OtherNode, FDiffResults& Re
 					continue;
 				}
 
+				// There can't be a matching node in RhsGraph because it would have been found above
 				FGraphDiffControl::FNodeMatch NodeMatch;
 				NodeMatch.NewNode = LhsSubNode;
-
-				for (UEdGraphNode* RhsSubNode : RhsSubNodes)
-				{
-					if (FGraphDiffControl::IsNodeMatch(LhsSubNode, RhsSubNode, &NodeMatches))
-					{
-						NodeMatch.OldNode = RhsSubNode;
-						break;
-					}
-				}
 
 				NodeMatch.Diff(SubtractiveDiffContext, Results);
 			}
@@ -322,44 +327,50 @@ void UBehaviorTreeGraphNode::InsertSubNodeAt(UAIGraphNode* SubNode, int32 DropIn
 	}
 }
 
-void UBehaviorTreeGraphNode::CreateAddDecoratorSubMenu(class FMenuBuilder& MenuBuilder, UEdGraph* Graph) const
+void UBehaviorTreeGraphNode::CreateAddDecoratorSubMenu(UToolMenu* Menu, UEdGraph* Graph) const
 {
-	TSharedRef<SGraphEditorActionMenuAI> Menu =	
+	TSharedRef<SGraphEditorActionMenuAI> Widget =
 		SNew(SGraphEditorActionMenuAI)
 		.GraphObj( Graph )
 		.GraphNode((UBehaviorTreeGraphNode*)this)
 		.SubNodeFlags(ESubNode::Decorator)
 		.AutoExpandActionMenu(true);
 
-	MenuBuilder.AddWidget(Menu,FText(),true);
+	FToolMenuSection& Section = Menu->FindOrAddSection("Section");
+	Section.AddEntry(FToolMenuEntry::InitWidget("DecoratorWidget", Widget, FText(), true));
 }
 
-void UBehaviorTreeGraphNode::CreateAddServiceSubMenu(class FMenuBuilder& MenuBuilder, UEdGraph* Graph) const
+void UBehaviorTreeGraphNode::CreateAddServiceSubMenu(UToolMenu* Menu, UEdGraph* Graph) const
 {
-	TSharedRef<SGraphEditorActionMenuAI> Menu =	
+	TSharedRef<SGraphEditorActionMenuAI> Widget =
 		SNew(SGraphEditorActionMenuAI)
 		.GraphObj( Graph )
 		.GraphNode((UBehaviorTreeGraphNode*)this)
 		.SubNodeFlags(ESubNode::Service)
 		.AutoExpandActionMenu(true);
 
-	MenuBuilder.AddWidget(Menu,FText(),true);
+	FToolMenuSection& Section = Menu->FindOrAddSection("Section");
+	Section.AddEntry(FToolMenuEntry::InitWidget("ServiceWidget", Widget, FText(), true));
 }
 
-void UBehaviorTreeGraphNode::AddContextMenuActionsDecorators(const FGraphNodeContextMenuBuilder& Context) const
+void UBehaviorTreeGraphNode::AddContextMenuActionsDecorators(UToolMenu* Menu, const FName SectionName, UGraphNodeContextMenuContext* Context) const
 {
-	Context.MenuBuilder->AddSubMenu(
+	FToolMenuSection& Section = Menu->FindOrAddSection(SectionName);
+	Section.AddSubMenu(
+		"AddDecorator",
 		LOCTEXT("AddDecorator", "Add Decorator..." ),
 		LOCTEXT("AddDecoratorTooltip", "Adds new decorator as a subnode" ),
-		FNewMenuDelegate::CreateUObject( this, &UBehaviorTreeGraphNode::CreateAddDecoratorSubMenu,(UEdGraph*)Context.Graph));
+		FNewToolMenuDelegate::CreateUObject(this, &UBehaviorTreeGraphNode::CreateAddDecoratorSubMenu, (UEdGraph*)Context->Graph));
 }
 
-void UBehaviorTreeGraphNode::AddContextMenuActionsServices(const FGraphNodeContextMenuBuilder& Context) const
+void UBehaviorTreeGraphNode::AddContextMenuActionsServices(UToolMenu* Menu, const FName SectionName, UGraphNodeContextMenuContext* Context) const
 {
-	Context.MenuBuilder->AddSubMenu(
+	FToolMenuSection& Section = Menu->FindOrAddSection(SectionName);
+	Section.AddSubMenu(
+		"AddService",
 		LOCTEXT("AddService", "Add Service..." ),
 		LOCTEXT("AddServiceTooltip", "Adds new service as a subnode" ),
-		FNewMenuDelegate::CreateUObject( this, &UBehaviorTreeGraphNode::CreateAddServiceSubMenu,(UEdGraph*)Context.Graph));
+		FNewToolMenuDelegate::CreateUObject(this, &UBehaviorTreeGraphNode::CreateAddServiceSubMenu, (UEdGraph*)Context->Graph));
 }
 
 void UBehaviorTreeGraphNode::ClearDebuggerState()

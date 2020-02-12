@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -17,6 +17,8 @@ class UDynamicBlueprintBinding;
 class UEdGraph;
 class UEdGraphPin;
 class UEdGraphSchema;
+
+DECLARE_MULTICAST_DELEGATE_ThreeParams(FOnUserDefinedPinRenamed, UK2Node*, FName, FName);
 
 /** Helper structure to cache old data for optional pins so the data can be restored during reconstruction */
 struct FOldOptionalPinSettings
@@ -120,10 +122,10 @@ public:
 	virtual ~FOptionalPinManager() { }
 
 	/** Should the specified property be displayed by default */
-	virtual void GetRecordDefaults(UProperty* TestProperty, FOptionalPinFromProperty& Record) const;
+	virtual void GetRecordDefaults(FProperty* TestProperty, FOptionalPinFromProperty& Record) const;
 
 	/** Can this property be managed as an optional pin (with the ability to be shown or hidden) */
-	virtual bool CanTreatPropertyAsOptional(UProperty* TestProperty) const;
+	virtual bool CanTreatPropertyAsOptional(FProperty* TestProperty) const;
 
 	/** 
 	 * Reconstructs the specified property array using the SourceStruct
@@ -145,7 +147,7 @@ public:
 	void CreateVisiblePins(TArray<FOptionalPinFromProperty>& Properties, UStruct* SourceStruct, EEdGraphPinDirection Direction, class UK2Node* TargetNode, uint8* StructBasePtr = nullptr, uint8* DefaultsPtr = nullptr);
 
 	// Customize automatically created pins if desired
-	virtual void CustomizePinData(UEdGraphPin* Pin, FName SourcePropertyName, int32 ArrayIndex, UProperty* Property = NULL) const {}
+	virtual void CustomizePinData(UEdGraphPin* Pin, FName SourcePropertyName, int32 ArrayIndex, FProperty* Property = NULL) const {}
 
 	/** Helper function to make consistent behavior between nodes that use optional pins */
 	static void CacheShownPins(const TArray<FOptionalPinFromProperty>& OptionalPins, TArray<FName>& OldShownPins);
@@ -155,9 +157,9 @@ public:
 
 
 protected:
-	virtual void PostInitNewPin(UEdGraphPin* Pin, FOptionalPinFromProperty& Record, int32 ArrayIndex, UProperty* Property, uint8* PropertyAddress, uint8* DefaultPropertyAddress) const {}
-	virtual void PostRemovedOldPin(FOptionalPinFromProperty& Record, int32 ArrayIndex, UProperty* Property, uint8* PropertyAddress, uint8* DefaultPropertyAddress) const {}
-	void RebuildProperty(UProperty* TestProperty, FName CategoryName, TArray<FOptionalPinFromProperty>& Properties, UStruct* SourceStruct, TMap<FName, FOldOptionalPinSettings>& OldSettings);
+	virtual void PostInitNewPin(UEdGraphPin* Pin, FOptionalPinFromProperty& Record, int32 ArrayIndex, FProperty* Property, uint8* PropertyAddress, uint8* DefaultPropertyAddress) const {}
+	virtual void PostRemovedOldPin(FOptionalPinFromProperty& Record, int32 ArrayIndex, FProperty* Property, uint8* PropertyAddress, uint8* DefaultPropertyAddress) const {}
+	void RebuildProperty(FProperty* TestProperty, FName CategoryName, TArray<FOptionalPinFromProperty>& Properties, UStruct* SourceStruct, TMap<FName, FOldOptionalPinSettings>& OldSettings);
 };
 
 enum ERenamePinResult
@@ -171,7 +173,7 @@ enum ERenamePinResult
  * Abstract base class of all blueprint graph nodes.
  */
 UCLASS(abstract, MinimalAPI)
-class UK2Node : public UEdGraphNode
+class BLUEPRINTGRAPH_VTABLE UK2Node : public UEdGraphNode
 {
 	GENERATED_UCLASS_BODY()
 
@@ -270,6 +272,9 @@ class UK2Node : public UEdGraphNode
 	/** Expands a node while compiling, which may add additional nodes or delete this node */
 	BLUEPRINTGRAPH_API virtual void ExpandNode(class FKismetCompilerContext& CompilerContext, UEdGraph* SourceGraph);
 
+	/** Clears out any cached data that needs to be regenerated after a structural blueprint change */
+	BLUEPRINTGRAPH_API virtual void ClearCachedBlueprintData(UBlueprint* Blueprint) {}
+
 	/** Performs a node-specific deprecation fixup, which may delete this node and replace it with another one */
 	BLUEPRINTGRAPH_API virtual void ConvertDeprecatedNode(UEdGraph* Graph, bool bOnlySafeChanges) {}
 
@@ -312,14 +317,17 @@ class UK2Node : public UEdGraphNode
 	// Can this node be created under the specified schema
 	BLUEPRINTGRAPH_API virtual bool CanCreateUnderSpecifiedSchema(const UEdGraphSchema* DesiredSchema) const override;
 
-	// Renames an existing pin on the node.
-	BLUEPRINTGRAPH_API virtual ERenamePinResult RenameUserDefinedPin(const FName OldName, const FName NewName, bool bTest = false);
-
 	// Returns which dynamic binding class (if any) to use for this node
 	BLUEPRINTGRAPH_API virtual UClass* GetDynamicBindingClass() const { return NULL; }
 
 	// Puts information about this node into the dynamic binding object
 	BLUEPRINTGRAPH_API virtual void RegisterDynamicBinding(UDynamicBlueprintBinding* BindingObject) const { };
+
+	// Renames a user defined pin and broadcasts the result to any OnUserDefinedPinRenamed listeners on success (if bTest is false)
+	BLUEPRINTGRAPH_API ERenamePinResult RenameUserDefinedPin(const FName OldName, const FName NewName, bool bTest = false);
+
+	/** Retrieves a delegate that is called when a user-defined pin on this node is renamed */
+	BLUEPRINTGRAPH_API FOnUserDefinedPinRenamed& OnUserDefinedPinRenamed();
 
 	/**
 	 * Handles inserting the node between the FromPin and what the FromPin was original connected to
@@ -388,7 +396,9 @@ class UK2Node : public UEdGraphNode
 
 	BLUEPRINTGRAPH_API virtual int32 GetNodeRefreshPriority() const { return EBaseNodeRefreshPriority::Normal; }
 
+	BLUEPRINTGRAPH_API bool DoesWildcardPinAcceptContainer(const UEdGraphPin* Pin);
 	BLUEPRINTGRAPH_API virtual bool DoesInputWildcardPinAcceptArray(const UEdGraphPin* Pin) const { return true; }
+	BLUEPRINTGRAPH_API virtual bool DoesOutputWildcardPinAcceptContainer(const UEdGraphPin* Pin) const { return true; }
 
 	/** Handle when a variable is renamed in the Blueprint Palette */
 	virtual void HandleVariableRenamed(UBlueprint* InBlueprint, UClass* InVariableClass, UEdGraph* InGraph, const FName& InOldVarName, const FName& InNewVarName) {}
@@ -423,6 +433,12 @@ protected:
 	/** Determines what the possible redirect pin names are **/
 	BLUEPRINTGRAPH_API virtual void GetRedirectPinNames(const UEdGraphPin& Pin, TArray<FString>& RedirectPinNames) const;
 
+	// Implementation function that renames an existing pin on the node. Does not broadcast notifications.
+	BLUEPRINTGRAPH_API virtual ERenamePinResult RenameUserDefinedPinImpl(const FName OldName, const FName NewName, bool bTest);
+
+	/** Attempt to broadcast an event for a user-defined pin being renamed on this node */
+	BLUEPRINTGRAPH_API void BroadcastUserDefinedPinRenamed(FName OldName, FName NewName);
+
 	/** 
 	 * Searches ParamRedirect Map and find if there is matching new param
 	 * 
@@ -455,7 +471,11 @@ protected:
 		}
 	}
 
-	void FixupPinDefaultValues();
+	/** Handle backwards compatible fixes on load */
+	BLUEPRINTGRAPH_API virtual void FixupPinDefaultValues();
+
+	/** Fixes up structure/soft object ref pins, on both save and load */
+	BLUEPRINTGRAPH_API virtual void FixupPinStringDataReferences(FArchive* SavingArchive);
 
 private:
 

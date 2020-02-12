@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -57,27 +57,42 @@ public:
 	virtual void EndSession() override;
 	virtual bool StartScene(UWorld* pWorld) override;
 	virtual void EndScene() override;
+	virtual void StartFrame(uint64 FrameNum) override;
 	virtual void PreTick(float DeltaSeconds) override;
-
+	virtual void Tick(float DeltaSeconds) override;
+	virtual void PostTick(float DeltaSeconds) override;
+	virtual void EndFrame(uint64 FrameNum) override;
 
 public:
-	virtual FDisplayClusterBeforeStartSessionEvent& OnDisplayClusterBeforeStartSession() override
-	{ return DisplayClusterBeforeStartSessionEvent; }
-
 	virtual FDisplayClusterStartSessionEvent& OnDisplayClusterStartSession() override
 	{ return DisplayClusterStartSessionEvent; }
 
 	virtual FDisplayClusterEndSessionEvent& OnDisplayClusterEndSession() override
 	{ return DisplayClusterEndSessionEvent; }
 
+	virtual FDisplayClusterStartFrameEvent& OnDisplayClusterStartFrame() override
+	{ return DisplayClusterStartFrameEvent; }
+
+	virtual FDisplayClusterEndFrameEvent& OnDisplayClusterEndFrame() override
+	{ return DisplayClusterEndFrameEvent; }
+
 	virtual FDisplayClusterPreTickEvent& OnDisplayClusterPreTick() override
 	{ return DisplayClusterPreTickEvent; }
 
+	virtual FDisplayClusterTickEvent& OnDisplayClusterTick() override
+	{ return DisplayClusterTickEvent; }
+
+	virtual FDisplayClusterPostTickEvent& OnDisplayClusterPostTick() override
+	{ return DisplayClusterPostTickEvent; }
+
 private:
-	FDisplayClusterBeforeStartSessionEvent   DisplayClusterBeforeStartSessionEvent;
 	FDisplayClusterStartSessionEvent         DisplayClusterStartSessionEvent;
 	FDisplayClusterEndSessionEvent           DisplayClusterEndSessionEvent;
+	FDisplayClusterStartFrameEvent           DisplayClusterStartFrameEvent;
+	FDisplayClusterEndFrameEvent             DisplayClusterEndFrameEvent;
 	FDisplayClusterPreTickEvent              DisplayClusterPreTickEvent;
+	FDisplayClusterTickEvent                 DisplayClusterTickEvent;
+	FDisplayClusterPostTickEvent             DisplayClusterPostTickEvent;
 
 private:
 	//////////////////////////////////////////////////////////////////////////////////////////////

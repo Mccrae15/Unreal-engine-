@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -59,6 +59,10 @@ enum TextureGroup
 	TEXTUREGROUP_Impostor UMETA(DisplayName="ini:Impostor Color"),
 	/** Impostor Normal and Depth, use default compression*/
 	TEXTUREGROUP_ImpostorNormalDepth UMETA(DisplayName="ini:Impostor Normal and Depth"),
+	/** 8 bit data stored in textures */
+	TEXTUREGROUP_8BitData UMETA(DisplayName="ini:8 Bit Data"),
+	/** 16 bit data stored in textures */
+	TEXTUREGROUP_16BitData UMETA(DisplayName="ini:16 Bit Data"),
 	/** Project specific group, rename in Engine.ini, [EnumRemap] TEXTUREGROUP_Project**.DisplayName=My Fun Group */
 	TEXTUREGROUP_Project01 UMETA(DisplayName="ini:Project Group 01"),
 	TEXTUREGROUP_Project02 UMETA(DisplayName="ini:Project Group 02"),
@@ -70,6 +74,11 @@ enum TextureGroup
 	TEXTUREGROUP_Project08 UMETA(DisplayName="ini:Project Group 08"),
 	TEXTUREGROUP_Project09 UMETA(DisplayName="ini:Project Group 09"),
 	TEXTUREGROUP_Project10 UMETA(DisplayName="ini:Project Group 10"),
+	TEXTUREGROUP_Project11 UMETA(DisplayName="ini:Project Group 11"),
+	TEXTUREGROUP_Project12 UMETA(DisplayName="ini:Project Group 12"),
+	TEXTUREGROUP_Project13 UMETA(DisplayName="ini:Project Group 13"),
+	TEXTUREGROUP_Project14 UMETA(DisplayName="ini:Project Group 14"),
+	TEXTUREGROUP_Project15 UMETA(DisplayName="ini:Project Group 15"),
 	TEXTUREGROUP_MAX,
 };
 
@@ -83,25 +92,25 @@ enum TextureMipGenSettings
 	/** 8x8 with sharpening: 0=no sharpening but better quality which is softer, 1=little, 5=medium, 10=extreme. */
 	TMGS_Sharpen0 UMETA(DisplayName="Sharpen0"),
 	/** 8x8 with sharpening: 0=no sharpening but better quality which is softer, 1=little, 5=medium, 10=extreme. */
-	TMGS_Sharpen1 UMETA(DisplayName = "Sharpen1"),
+	TMGS_Sharpen1 UMETA(DisplayName="Sharpen1"),
 	/** 8x8 with sharpening: 0=no sharpening but better quality which is softer, 1=little, 5=medium, 10=extreme. */
-	TMGS_Sharpen2 UMETA(DisplayName = "Sharpen2"),
+	TMGS_Sharpen2 UMETA(DisplayName="Sharpen2"),
 	/** 8x8 with sharpening: 0=no sharpening but better quality which is softer, 1=little, 5=medium, 10=extreme. */
-	TMGS_Sharpen3 UMETA(DisplayName = "Sharpen3"),
+	TMGS_Sharpen3 UMETA(DisplayName="Sharpen3"),
 	/** 8x8 with sharpening: 0=no sharpening but better quality which is softer, 1=little, 5=medium, 10=extreme. */
-	TMGS_Sharpen4 UMETA(DisplayName = "Sharpen4"),
+	TMGS_Sharpen4 UMETA(DisplayName="Sharpen4"),
 	/** 8x8 with sharpening: 0=no sharpening but better quality which is softer, 1=little, 5=medium, 10=extreme. */
-	TMGS_Sharpen5 UMETA(DisplayName = "Sharpen5"),
+	TMGS_Sharpen5 UMETA(DisplayName="Sharpen5"),
 	/** 8x8 with sharpening: 0=no sharpening but better quality which is softer, 1=little, 5=medium, 10=extreme. */
-	TMGS_Sharpen6 UMETA(DisplayName = "Sharpen6"),
+	TMGS_Sharpen6 UMETA(DisplayName="Sharpen6"),
 	/** 8x8 with sharpening: 0=no sharpening but better quality which is softer, 1=little, 5=medium, 10=extreme. */
-	TMGS_Sharpen7 UMETA(DisplayName = "Sharpen7"),
+	TMGS_Sharpen7 UMETA(DisplayName="Sharpen7"),
 	/** 8x8 with sharpening: 0=no sharpening but better quality which is softer, 1=little, 5=medium, 10=extreme. */
-	TMGS_Sharpen8 UMETA(DisplayName = "Sharpen8"),
+	TMGS_Sharpen8 UMETA(DisplayName="Sharpen8"),
 	/** 8x8 with sharpening: 0=no sharpening but better quality which is softer, 1=little, 5=medium, 10=extreme. */
-	TMGS_Sharpen9 UMETA(DisplayName = "Sharpen9"),
+	TMGS_Sharpen9 UMETA(DisplayName="Sharpen9"),
 	/** 8x8 with sharpening: 0=no sharpening but better quality which is softer, 1=little, 5=medium, 10=extreme. */
-	TMGS_Sharpen10 UMETA(DisplayName = "Sharpen10"),
+	TMGS_Sharpen10 UMETA(DisplayName="Sharpen10"),
 	TMGS_NoMipmaps UMETA(DisplayName="NoMipmaps"),
 	/** Do not touch existing mip chain as it contains generated data. */
 	TMGS_LeaveExistingMips UMETA(DisplayName="LeaveExistingMips"),
@@ -110,7 +119,9 @@ enum TextureMipGenSettings
 	TMGS_Blur2 UMETA(DisplayName="Blur2"),
 	TMGS_Blur3 UMETA(DisplayName="Blur3"),
 	TMGS_Blur4 UMETA(DisplayName="Blur4"),
-	TMGS_Blur5 UMETA(DisplayName="Blur5"),
+	TMGS_Blur5 UMETA(DisplayName = "Blur5"),
+	/** Use the first texel of each 2x2 (or 2x2x2) group. */
+	TMGS_Unfiltered UMETA(DisplayName = "Unfiltered"),
 	TMGS_MAX,
 
 	// Note: These are serialized as as raw values in the texture DDC key, so additional entries
@@ -148,4 +159,15 @@ enum class ETextureSamplerFilter : uint8
 	Trilinear,
 	AnisotropicPoint,
 	AnisotropicLinear,
+};
+
+UENUM()
+enum class ETextureMipLoadOptions : uint8
+{
+	// Fallback to the LODGroup settings
+	Default,
+	// Load all mips.
+	AllMips,
+	// Load only the first mip.
+	OnlyFirstMip,
 };

@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -60,10 +60,6 @@ struct FSessionServicePong
 	/** Holds the application's instance name. */
 	UPROPERTY(EditAnywhere, Category="Message")
 	FString InstanceName;
-
-	/** Indicates whether the application is running on a console. */
-	UPROPERTY(EditAnywhere, Category="Message")
-	bool IsConsoleBuild;
 
 	/** Holds the name of the platform that the application is running on. */
 	UPROPERTY(EditAnywhere, Category="Message")

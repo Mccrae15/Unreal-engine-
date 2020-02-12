@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -68,6 +68,9 @@ public:
 	/** Access the underlying tree data */
 	TSharedPtr<FSequencerNodeTree> GetNodeTree() { return SequencerNodeTree; }
 
+	/** @return the number of root nodes this tree contains */
+	int32 GetNumRootNodes() const { return RootNodes.Num(); }
+
 	/** @return an optional region specifying the vertical bounds in which a highlight should be drawn */
 	const TOptional<FHighlightRegion>& GetHighlightRegion() const { return HighlightRegion; }
 
@@ -130,6 +133,13 @@ protected:
 	virtual void OnRightMouseButtonDown(const FPointerEvent& MouseEvent) override;
 	virtual void OnRightMouseButtonUp(const FPointerEvent& MouseEvent) override;
 
+	virtual FReply OnDragOver(const FGeometry& MyGeometry, const FDragDropEvent& DragDropEvent) override;
+	virtual FReply OnDrop(const FGeometry& MyGeometry, const FDragDropEvent& DragDropEvent) override;
+
+public:
+
+	virtual FReply OnKeyDown(const FGeometry& MyGeometry, const FKeyEvent& InKeyEvent) override;
+
 private:
 
 	/** Updates the tree selection to match the current sequencer selection. */
@@ -179,6 +189,15 @@ public:
 	/** Ensure that the track area column is either show or hidden, depending on the visibility of the curve editor */
 	void UpdateTrackArea();
 
+	/** Add a SSequencerTreeView object that should be modified or updated when this Treeview is updated */
+	void AddSlaveTreeView(TSharedPtr<SSequencerTreeView> SlaveTreeView);
+
+	/** Set a SSequencerTreeView object this Treeview is slaved to, for operations that should happen on the master */
+	void SetMasterTreeView(TSharedPtr<SSequencerTreeView> InMasterTreeView) { MasterTreeView = InMasterTreeView; }
+
+	/** Set whether this TreeView should show only pinned nodes or only non-pinned nodes  */
+	void SetShowPinned(bool bShowPinned) { bShowPinnedNodes = bShowPinned; }
+
 protected:
 	
 	/** Linear, sorted array of nodes that we currently have generated widgets for */
@@ -215,6 +234,12 @@ private:
 	/** A global highlight for the currently hovered tree node hierarchy */
 	TOptional<FHighlightRegion> HighlightRegion;
 
+	/** SSequencerTreeView objects that should be modified or updated when this Treeview is updated */
+	TArray<TSharedPtr<SSequencerTreeView>> SlaveTreeViews;
+
+	/** The SSequencerTreeView object this SSequencerTreeView is slave to, or nullptr if not a slave */
+	TSharedPtr<SSequencerTreeView> MasterTreeView;
+
 	/** When true, the sequencer selection is being updated from a change in the tree seleciton. */
 	bool bUpdatingSequencerSelection;
 
@@ -223,6 +248,9 @@ private:
 
 	/** Right mouse button is down, don't update sequencer selection. */
 	bool bRightMouseButtonDown;
+
+	/** Whether this tree is for pinned nodes or non-pinned nodes */
+	bool bShowPinnedNodes;
 
 	/**
 	 * When true a sequencer selection change broadcast was suppressed when updating sequencer selection
@@ -268,6 +296,9 @@ public:
 
 	/** Called to complete a drag and drop onto this drop. */
 	FReply OnAcceptDrop( const FDragDropEvent& DragDropEvent, EItemDropZone ItemDropZone, FDisplayNodeRef DisplayNode );
+
+	/** Gets the padding for this row based on whether it is a root node or not */
+	FMargin GetRowPadding() const;
 
 private:
 

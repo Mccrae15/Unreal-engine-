@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -8,6 +8,8 @@
 #include "Stats/Stats.h"
 #include "PacketHandler.h"
 #include "UObject/CoreNet.h"
+#include "OodleAnalytics.h"
+#include "OodleArchives.h"
 
 DECLARE_LOG_CATEGORY_EXTERN(OodleHandlerComponentLog, Log, All);
 
@@ -18,12 +20,25 @@ DECLARE_LOG_CATEGORY_EXTERN(OodleHandlerComponentLog, Log, All);
 // The maximum compress/decompress buffer size - overkill, as buffers are statically allocated, and can't use Oodle runtime buffer calc
 #define MAX_OODLE_BUFFER	(MAX_OODLE_PACKET_BYTES * 2)
 
-#include "OodleAnalytics.h"
-#include "OodleArchives.h"
+/**
+ * Specifies when compression is enabled. Used to make compression optional, for some platforms/clients
+ */
+UENUM()
+enum class EOodleEnableMode : uint8
+{
+	AlwaysEnabled,					// Oodle compression is always enabled - forces compression to be enabled remotely
+	WhenCompressedPacketReceived	// Oodle compression is only enabled if remotely requested
+};
 
-#if HAS_OODLE_SDK
 
-#if UE4_OODLE_VER >= 200
+#if HAS_OODLE_NET_SDK
+
+#if UE4_OODLE_VER >= 270
+#include "oodle2net.h"
+	#if HAS_OODLE_DATA_SDK // allow data SDK usage if we have it
+	#include "oodle2.h"
+	#endif
+#elif UE4_OODLE_VER >= 200
 #include "oodle2.h"
 #else
 #include "oodle.h"
@@ -288,6 +303,11 @@ public:
 	void InitializeDictionaries();
 
 	/**
+	 * Lazy dictionary initialization, triggered by receiving a compressed packet from the remote connection
+	 */
+	void RemoteInitializeDictionaries();
+
+	/**
 	 * Initializes FOodleDictionary data, from the specified dictionary file
 	 *
 	 * @param FilePath			The dictionary file path
@@ -336,6 +356,13 @@ public:
 	void FreePacketLogs();
 #endif
 
+	/** 
+	 * Check if component is currently compressing packets
+	 *
+	 * @return	Whether or not compression is active
+	 */
+	bool IsCompressionActive() const;
+
 	virtual void Initialize() override;
 
 	virtual bool IsValid() const override;
@@ -344,11 +371,11 @@ public:
 
 	virtual void Outgoing(FBitWriter& Packet, FOutPacketTraits& Traits) override;
 
-	virtual void IncomingConnectionless(const FString& Address, FBitReader& Packet) override
+	virtual void IncomingConnectionless(const TSharedPtr<const FInternetAddr>& Address, FBitReader& Packet) override
 	{
 	}
 
-	virtual void OutgoingConnectionless(const FString& Address, FBitWriter& Packet, FOutPacketTraits& Traits) override
+	virtual void OutgoingConnectionless(const TSharedPtr<const FInternetAddr>& Address, FBitWriter& Packet, FOutPacketTraits& Traits) override
 	{
 	}
 
@@ -356,9 +383,16 @@ public:
 
 	virtual void NotifyAnalyticsProvider() override;
 
+
 protected:
-	/** Whether or not Oodle is enabled */
+	/** Whether or not Oodle, and its additions to the packet protocol, are enabled */
 	bool bEnableOodle;
+
+	/** When to enable compression on the server */
+	EOodleEnableMode ServerEnableMode;
+
+	/** When to enable compression on the client */
+	EOodleEnableMode ClientEnableMode;
 
 #if !UE_BUILD_SHIPPING || OODLE_DEV_SHIPPING
 	/** File to log input packets to */
@@ -392,6 +426,9 @@ public:
 
 	/** Client (Incoming - relative to server) dictionary data */
 	TSharedPtr<FOodleDictionary> ClientDictionary;
+
+	/** Whether or not InitializeDictionaries was ever called */
+	bool bInitializedDictionaries;
 };
 #endif
 
@@ -402,12 +439,9 @@ public:
 class FOodleComponentModuleInterface : public FPacketHandlerComponentModuleInterface
 {
 private:
-	/** Reference to the Oodle library handle */
-	void* OodleDllHandle;
 
 public:
 	FOodleComponentModuleInterface()
-		: OodleDllHandle(nullptr)
 	{
 	}
 

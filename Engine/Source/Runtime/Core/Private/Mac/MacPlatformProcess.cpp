@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 /*=============================================================================
 	MacPlatformProcess.mm: Mac implementations of Process functions
@@ -16,6 +16,7 @@
 #include <mach/thread_act.h>
 #include <mach/thread_policy.h>
 #include <libproc.h>
+#include <cpuid.h>
 #include "Apple/PostAppleSystemHeaders.h"
 
 void* FMacPlatformProcess::GetDllHandle( const TCHAR* Filename )
@@ -67,20 +68,20 @@ void FMacPlatformProcess::FreeDllHandle( void* DllHandle )
 	dlclose( DllHandle );
 }
 
-FString FMacPlatformProcess::GenerateApplicationPath( const FString& AppName, EBuildConfigurations::Type BuildConfiguration)
+FString FMacPlatformProcess::GenerateApplicationPath( const FString& AppName, EBuildConfiguration BuildConfiguration)
 {
 	SCOPED_AUTORELEASE_POOL;
 	
 	FString PlatformName = TEXT("Mac");
 	FString ExecutableName = AppName;
-	if (BuildConfiguration != EBuildConfigurations::Development)
+	if (BuildConfiguration != EBuildConfiguration::Development)
 	{
-		ExecutableName += FString::Printf(TEXT("-%s-%s"), *PlatformName, EBuildConfigurations::ToString(BuildConfiguration));
+		ExecutableName += FString::Printf(TEXT("-%s-%s"), *PlatformName, LexToString(BuildConfiguration));
 	}
-	
+
 	NSURL* CurrentBundleURL = [[NSBundle mainBundle] bundleURL];
 	NSString* CurrentBundleName = [[CurrentBundleURL lastPathComponent] stringByDeletingPathExtension];
-	if(FString(CurrentBundleName) == ExecutableName)
+	if (FString(CurrentBundleName) == ExecutableName)
 	{
 		CFStringRef FilePath = CFURLCopyFileSystemPath((CFURLRef)CurrentBundleURL, kCFURLPOSIXPathStyle);
 		FString ExecutablePath = FString::Printf(TEXT("%s/Contents/MacOS/%s"), *FString((NSString*)FilePath), *ExecutableName);
@@ -90,8 +91,8 @@ FString FMacPlatformProcess::GenerateApplicationPath( const FString& AppName, EB
 	else
 	{
 		// Try expected path of an executable inside an app package in Engine Binaries
-		FString ExecutablePath = FString::Printf(TEXT("../../../Engine/Binaries/%s/%s.app/Contents/MacOS/%s"), *PlatformName, *ExecutableName, *ExecutableName);
-			
+		FString ExecutablePath = FPaths::EngineDir() / FString::Printf(TEXT("Binaries/%s/%s.app/Contents/MacOS/%s"), *PlatformName, *ExecutableName, *ExecutableName);
+
 		NSString* LaunchPath = ExecutablePath.GetNSString();
 		
 		if ([[NSFileManager defaultManager] fileExistsAtPath: LaunchPath])
@@ -100,32 +101,16 @@ FString FMacPlatformProcess::GenerateApplicationPath( const FString& AppName, EB
 		}
 		else
 		{
-			// Next try expected path of a simple executable file in Engine Binaries
-			ExecutablePath = FString::Printf(TEXT("../../../Engine/Binaries/%s/%s"), *PlatformName, *ExecutableName);
-
+			// Try the path of a simple executable file in Engine Binaries
+			ExecutablePath = FPaths::EngineDir() / FString::Printf(TEXT("Binaries/%s/%s"), *PlatformName, *ExecutableName);
 			LaunchPath = ExecutablePath.GetNSString();
 
 			if ([[NSFileManager defaultManager] fileExistsAtPath:LaunchPath])
 			{
 				return ExecutablePath;
 			}
-			else
-			{
-				CFStringRef App = FPlatformString::TCHARToCFString(*ExecutableName);
-				NSWorkspace* Workspace = [NSWorkspace sharedWorkspace];
-				NSString* AppPath = [Workspace fullPathForApplication : (NSString*)App];
-				CFRelease(App);
-				if (AppPath)
-				{
-					ExecutablePath = FString::Printf(TEXT("%s/Contents/MacOS/%s"), *FString(AppPath), *ExecutableName);
-					return ExecutablePath;
-				}
-				else
-				{
-					return FString();
-				}
-			}
 		}
+		return FString(); // Not found.
 	}
 }
 
@@ -253,12 +238,36 @@ FString FMacPlatformProcess::GetGameBundleId()
 	// Encode the data as a string
 	NSString* String = [[NSString alloc] initWithData:_PipeOutput encoding:NSUTF8StringEncoding];
 	
-	OutString = FString(String);
+	OutString += FString(String);
 	
 	[String release];
 }
 
 @end // NSAutoReadPipe
+
+void DisableStallingMetalGPUCaptureKeysForChildProcessWhenDebugging(NSTask* childProcess)
+{
+#if WITH_EDITOR
+	if(FPlatformMisc::IsDebuggerPresent())
+	{
+		// - These are the extra environment keys when turning on GPU Frame Capture via Xcode 11.3 in macOS Catalina (10.15.2):
+		//		DYLD_INSERT_LIBRARIES, DYMTL_TOOLS_DYLIB_PATH, GPUTOOLS_LOAD_GTMTLCAPTURE, GT_HOST_URL_MTL and METAL_LOAD_INTERPOSER
+		// - Both DYLD_INSERT_LIBRARIES and METAL_LOAD_INTERPOSER seem to be new for Catalina (10.15.2) compared to Mojave (10.14.6).
+		// - Using DYLD_INSERT_LIBRARIES seem to be causing a stall at child process startup with Xcode debugger attached to the parent process.
+		// - Removing DYLD_INSERT_LIBRARIES removes the stall for child process startup which is especially useful for ShaderCompileWorker when invoking MetalCompiler and it's other child processes tools.
+
+		// Get the current environment and remove the relevant key(s)
+		NSMutableDictionary* childEnvironment = [[NSProcessInfo processInfo].environment mutableCopy];
+		
+		NSArray* metalKeysToRemove = @[@"DYLD_INSERT_LIBRARIES"];
+		
+		[childEnvironment removeObjectsForKeys:metalKeysToRemove];
+		[childProcess setEnvironment:childEnvironment];
+		
+		[childEnvironment release];
+	}
+#endif
+}
 
 bool FMacPlatformProcess::ExecProcess( const TCHAR* URL, const TCHAR* Params, int32* OutReturnCode, FString* OutStdOut, FString* OutStdErr, const TCHAR* OptionalWorkingDirectory)
 {
@@ -365,6 +374,8 @@ bool FMacPlatformProcess::ExecProcess( const TCHAR* URL, const TCHAR* Params, in
 				}
 			}
 		}
+		
+		DisableStallingMetalGPUCaptureKeysForChildProcessWhenDebugging(ProcessHandle);
 		
 		[ProcessHandle setArguments: Arguments];
 		
@@ -535,6 +546,8 @@ FProcHandle FMacPlatformProcess::CreateProc( const TCHAR* URL, const TCHAR* Parm
 				}
 			}
 		}
+		
+		DisableStallingMetalGPUCaptureKeysForChildProcessWhenDebugging(ProcessHandle);
 
 		[ProcessHandle setArguments: Arguments];
 
@@ -658,6 +671,13 @@ uint32 FMacPlatformProcess::GetCurrentProcessId()
 	return getpid();
 }
 
+uint32 FMacPlatformProcess::GetCurrentCoreNumber()
+{
+	int CPUInfo[4];
+	__cpuid(1, CPUInfo[0], CPUInfo[1], CPUInfo[2], CPUInfo[3]);
+	return (CPUInfo[1] >> 24) & 0xff;
+}
+
 bool FMacPlatformProcess::GetProcReturnCode( FProcHandle& ProcessHandle, int32* ReturnCode )
 {
 	SCOPED_AUTORELEASE_POOL;
@@ -667,12 +687,21 @@ bool FMacPlatformProcess::GetProcReturnCode( FProcHandle& ProcessHandle, int32* 
 		return false;
 	}
 
-	*ReturnCode = [(NSTask*)ProcessHandle.Get() terminationStatus];
+	if (ReturnCode)
+	{
+		*ReturnCode = [(NSTask*)ProcessHandle.Get() terminationStatus];
+	}
 	return true;
 }
 
 bool FMacPlatformProcess::IsApplicationRunning( uint32 ProcessId )
 {
+	// PID 0 is not a valid user application so lets ignore it as valid
+	if (ProcessId == 0)
+	{
+		return false;
+	}
+
 	errno = 0;
 	getpriority(PRIO_PROCESS, ProcessId);
 	return errno == 0;
@@ -732,31 +761,50 @@ const TCHAR* FMacPlatformProcess::BaseDir()
 	if (!Result[0])
 	{
 		SCOPED_AUTORELEASE_POOL;
-		NSFileManager* FileManager = [NSFileManager defaultManager];
-		NSString *BasePath = [[NSBundle mainBundle] bundlePath];
-		// If it has .app extension, it's a bundle, otherwise BasePath is a full path to Binaries/Mac (in case of command line tools)
-		if ([[BasePath pathExtension] isEqual: @"app"])
+		
+		FString CommandLine = [[[NSProcessInfo processInfo] arguments] componentsJoinedByString:@" "];
+	
+		FString BaseArg;
+		FParse::Value(*CommandLine, TEXT("-basedir="), BaseArg);
+
+		if (BaseArg.Len())
 		{
-			NSString* BundledBinariesPath = NULL;
-			if (!FApp::IsProjectNameEmpty())
-			{
-				BundledBinariesPath = [BasePath stringByAppendingPathComponent : [NSString stringWithFormat : @"Contents/UE4/%s/Binaries/Mac", TCHAR_TO_UTF8(FApp::GetProjectName())]];
-			}
-			if (!BundledBinariesPath || ![FileManager fileExistsAtPath:BundledBinariesPath])
-			{
-				BundledBinariesPath = [BasePath stringByAppendingPathComponent: @"Contents/UE4/Engine/Binaries/Mac"];
-			}
-			if ([FileManager fileExistsAtPath: BundledBinariesPath])
-			{
-				BasePath = BundledBinariesPath;
-			}
-			else
-			{
-				BasePath = [BasePath stringByDeletingLastPathComponent];
-			}
+			BaseArg = BaseArg.Replace(TEXT("\\"), TEXT("/"));
+			BaseArg += TEXT('/');
+			FCString::Strcpy(Result, *BaseArg);
+			
+			FPlatformMisc::LowLevelOutputDebugStringf(TEXT("BaseDir set to %s"), Result);
 		}
-		FCString::Strcpy(Result, MAC_MAX_PATH, *FString(BasePath));
-		FCString::Strcat(Result, TEXT("/"));
+		else
+		{
+			NSFileManager* FileManager = [NSFileManager defaultManager];
+			NSString *BasePath = [[NSBundle mainBundle] bundlePath];
+			// If it has .app extension, it's a bundle, otherwise BasePath is a full path to Binaries/Mac (in case of command line tools)
+			if ([[BasePath pathExtension] isEqual: @"app"])
+			{
+				NSString* BundledBinariesPath = NULL;
+				if (!FApp::IsProjectNameEmpty())
+				{
+					BundledBinariesPath = [BasePath stringByAppendingPathComponent : [NSString stringWithFormat : @"Contents/UE4/%s/Binaries/Mac", TCHAR_TO_UTF8(FApp::GetProjectName())]];
+				}
+				if (!BundledBinariesPath || ![FileManager fileExistsAtPath:BundledBinariesPath])
+				{
+					BundledBinariesPath = [BasePath stringByAppendingPathComponent: @"Contents/UE4/Engine/Binaries/Mac"];
+				}
+				if ([FileManager fileExistsAtPath: BundledBinariesPath])
+				{
+					BasePath = BundledBinariesPath;
+				}
+				else
+				{
+					BasePath = [BasePath stringByDeletingLastPathComponent];
+				}
+			}
+		
+			FCString::Strcpy(Result, MAC_MAX_PATH, *FString(BasePath));
+			FCString::Strcat(Result, TEXT("/"));
+			
+		}
 	}
 	return Result;
 }
@@ -870,8 +918,8 @@ const TCHAR* FMacPlatformProcess::ComputerName()
 
 	if( !Result[0] )
 	{
-		ANSICHAR AnsiResult[ARRAY_COUNT(Result)];
-		gethostname(AnsiResult, ARRAY_COUNT(Result));
+		ANSICHAR AnsiResult[UE_ARRAY_COUNT(Result)];
+		gethostname(AnsiResult, UE_ARRAY_COUNT(Result));
 		FCString::Strcpy(Result, ANSI_TO_TCHAR(AnsiResult));
 	}
 	return Result;
@@ -908,8 +956,12 @@ const TCHAR* FMacPlatformProcess::UserName(bool bOnlyAlphaNumeric)
 
 void FMacPlatformProcess::SetCurrentWorkingDirectoryToBaseDir()
 {
+#if defined(DISABLE_CWD_CHANGES) && DISABLE_CWD_CHANGES != 0
+	check(false);
+#else
 	FPlatformMisc::CacheLaunchDir();
 	chdir([FString(BaseDir()).GetNSString() fileSystemRepresentation]);
+#endif
 }
 
 FString FMacPlatformProcess::GetCurrentWorkingDirectory()
@@ -918,6 +970,18 @@ FString FMacPlatformProcess::GetCurrentWorkingDirectory()
 	ANSICHAR CurrentDir[MAC_MAX_PATH] = { 0 };
 	getcwd(CurrentDir, sizeof(CurrentDir));
 	return UTF8_TO_TCHAR(CurrentDir);
+}
+
+const TCHAR* FMacPlatformProcess::ExecutablePath()
+{
+	static TCHAR Result[512]=TEXT("");
+	if( !Result[0] )
+	{
+		SCOPED_AUTORELEASE_POOL;
+		NSString *NSExeName = [[NSBundle mainBundle] executablePath];
+		FPlatformString::CFStringToTCHAR( ( CFStringRef )NSExeName, Result );
+	}
+	return Result;
 }
 
 const TCHAR* FMacPlatformProcess::ExecutableName(bool bRemoveExtension)
@@ -1074,7 +1138,7 @@ bool FMacPlatformProcess::WritePipe(void* WritePipe, const FString& Message, FSt
 
 	// Convert input to UTF8CHAR
 	uint32 BytesAvailable = Message.Len();
-	UTF8CHAR * Buffer = new UTF8CHAR[BytesAvailable + 1];
+	UTF8CHAR * Buffer = new UTF8CHAR[BytesAvailable + 2];
 	for (uint32 i = 0; i < BytesAvailable; i++)
 	{
 		Buffer[i] = Message[i];

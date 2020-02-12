@@ -1,10 +1,11 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
 #include "CoreMinimal.h"
 #include "Framework/Application/IPlatformTextField.h"
 #include "Internationalization/Text.h"
+#include "IOSView.h"
 
 #import <UIKit/UIKit.h>
 
@@ -41,7 +42,7 @@ typedef FIOSPlatformTextField FPlatformTextField;
 #endif
 }
 
--(void)show:(TSharedPtr<IVirtualKeyboardEntry>)InTextWidget;
+-(void)show:(TSharedPtr<IVirtualKeyboardEntry>)InTextWidget text:(NSString*)TextContents placeholder:(NSString*)PlaceholderContents keyboardConfig:(FKeyboardConfig)KeyboardConfig;
 -(void)hide;
 -(bool)hasTextWidget;
 

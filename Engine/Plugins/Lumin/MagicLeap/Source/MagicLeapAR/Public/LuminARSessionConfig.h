@@ -1,12 +1,12 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
 #include "UObject/Object.h"
 #include "UObject/ObjectMacros.h"
 #include "LuminARTypes.h"
-#include "PlanesComponent.h"
 #include "ARSessionConfig.h"
+#include "MagicLeapPlanesTypes.h"
 
 #include "LuminARSessionConfig.generated.h"
 
@@ -44,7 +44,7 @@ public:
 
 	/** Additional Flags to apply to the plane queries. Note: the plane orientation detection settings also cause flags to be set.  It is ok to duplicate those here.*/
 	UPROPERTY(EditAnywhere, Category = "Lumin AR Settings")
-	TArray<EPlaneQueryFlags> PlaneQueryFlags;
+	TArray<EMagicLeapPlaneQueryFlags> PlaneQueryFlags;
 
 	/** If true discard any 'plane' objects that come through with zero extents and only polygon edge data.*/
 	UPROPERTY(EditAnywhere, Category = "Lumin AR Settings")

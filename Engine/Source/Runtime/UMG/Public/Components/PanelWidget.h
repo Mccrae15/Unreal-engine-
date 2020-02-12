@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -88,7 +88,7 @@ public:
 	 */
 	void ShiftChild(int32 Index, UWidget* Child);
 
-	void SetDesignerFlags(EWidgetDesignFlags::Type NewFlags);
+	virtual void SetDesignerFlags(EWidgetDesignFlags NewFlags) override;
 
 #endif
 

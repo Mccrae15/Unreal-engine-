@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 
 #pragma once
@@ -17,8 +17,8 @@ class ENGINE_API USoundNodeAssetReferencer : public USoundNode
 	GENERATED_BODY()
 
 public:
-	virtual void LoadAsset(bool bAddToRoot = false) PURE_VIRTUAL(USoundNodesAssetReferencer::LoadAsset,);
-	virtual void ClearAssetReferences() PURE_VIRTUAL(USoundNodesAssetReferencer::ClearAssetReferences, );
+	virtual void LoadAsset(bool bAddToRoot = false) PURE_VIRTUAL(USoundNodeAssetReferencer::LoadAsset,);
+	virtual void ClearAssetReferences() PURE_VIRTUAL(USoundNodeAssetReferencer::ClearAssetReferences, );
 
 	bool ShouldHardReferenceAsset() const;
 

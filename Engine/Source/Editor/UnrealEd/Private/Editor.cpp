@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 
 #include "Editor.h"
@@ -18,11 +18,13 @@
 #include "Factories/ReimportSoundFactory.h"
 #include "Factories/ReimportSoundSurroundFactory.h"
 #include "Factories/ReimportTextureFactory.h"
+#include "Factories/PhysicalMaterialMaskFactory.h"
 #include "Engine/BlueprintGeneratedClass.h"
 #include "Misc/ScopedSlowTask.h"
 #include "UObject/UObjectIterator.h"
 #include "EngineUtils.h"
-#include "Dialogs/Dialogs.h"
+#include "Misc/MessageDialog.h"
+#include "UnrealEngine.h"
 
 // needed for the RemotePropagator
 
@@ -89,6 +91,8 @@ FSimpleMulticastDelegate								FEditorDelegates::LoadSelectedAssetsIfNeeded;
 FSimpleMulticastDelegate								FEditorDelegates::DisplayLoadErrors;
 FEditorDelegates::FOnEditorModeTransitioned				FEditorDelegates::EditorModeEnter;
 FEditorDelegates::FOnEditorModeTransitioned				FEditorDelegates::EditorModeExit;
+FEditorDelegates::FOnEditorModeIDTransitioned			FEditorDelegates::EditorModeIDEnter;
+FEditorDelegates::FOnEditorModeIDTransitioned			FEditorDelegates::EditorModeIDExit;
 FEditorDelegates::FOnPIEEvent							FEditorDelegates::PreBeginPIE;
 FEditorDelegates::FOnPIEEvent							FEditorDelegates::BeginPIE;
 FEditorDelegates::FOnPIEEvent							FEditorDelegates::PrePIEEnded;
@@ -122,6 +126,7 @@ FEditorDelegates::FOnMapOpened							FEditorDelegates::OnMapOpened;
 FEditorDelegates::FOnEditorCameraMoved					FEditorDelegates::OnEditorCameraMoved;
 FEditorDelegates::FOnDollyPerspectiveCamera				FEditorDelegates::OnDollyPerspectiveCamera;
 FSimpleMulticastDelegate								FEditorDelegates::OnShutdownPostPackagesSaved;
+FEditorDelegates::FOnAssetsCanDelete					FEditorDelegates::OnAssetsCanDelete;
 FEditorDelegates::FOnAssetsPreDelete					FEditorDelegates::OnAssetsPreDelete;
 FEditorDelegates::FOnAssetsDeleted						FEditorDelegates::OnAssetsDeleted;
 FEditorDelegates::FOnAssetDragStarted					FEditorDelegates::OnAssetDragStarted;
@@ -137,7 +142,7 @@ FEditorDelegates::FOnDuplicateActorsBegin				FEditorDelegates::OnDuplicateActors
 FEditorDelegates::FOnDuplicateActorsEnd					FEditorDelegates::OnDuplicateActorsEnd;
 FEditorDelegates::FOnDeleteActorsBegin					FEditorDelegates::OnDeleteActorsBegin;
 FEditorDelegates::FOnDeleteActorsEnd					FEditorDelegates::OnDeleteActorsEnd;
-FEditorDelegates::FOnViewAssetIdentifiers				FEditorDelegates::OnOpenReferenceViewer;
+FEditorDelegates::FOnOpenReferenceViewer				FEditorDelegates::OnOpenReferenceViewer;
 FEditorDelegates::FOnViewAssetIdentifiers				FEditorDelegates::OnOpenSizeMap;
 FEditorDelegates::FOnViewAssetIdentifiers				FEditorDelegates::OnOpenAssetAudit;
 FEditorDelegates::FOnViewAssetIdentifiers				FEditorDelegates::OnEditAssetIdentifiers;
@@ -202,6 +207,8 @@ void FReimportManager::UpdateReimportPaths( UObject* Obj, const TArray<FString>&
 {
 	if (Obj)
 	{
+		SortHandlersIfNeeded();
+
 		TArray<FString> UnusedExistingFilenames;
 		auto* Handler = Handlers.FindByPredicate([&](FReimportHandler* InHandler){ return InHandler->CanReimport(Obj, UnusedExistingFilenames); });
 		if (Handler)
@@ -216,6 +223,8 @@ void FReimportManager::UpdateReimportPath(UObject* Obj, const FString& Filename,
 {
 	if (Obj)
 	{
+		SortHandlersIfNeeded();
+
 		TArray<FString> UnusedExistingFilenames;
 		auto* Handler = Handlers.FindByPredicate([&](FReimportHandler* InHandler) { return InHandler->CanReimport(Obj, UnusedExistingFilenames); });
 		if (Handler)
@@ -244,13 +253,8 @@ bool FReimportManager::Reimport( UObject* Obj, bool bAskForNewFileIfMissing, boo
 	bool bSuccess = false;
 	if ( Obj )
 	{
-		if (bHandlersNeedSorting)
-		{
-			// Use > operator because we want higher priorities earlier in the list
-			Handlers.Sort([](const FReimportHandler& A, const FReimportHandler& B) { return A.GetPriority() > B.GetPriority(); });
-			bHandlersNeedSorting = false;
-		}
-		
+		SortHandlersIfNeeded();
+
 		bool bValidSourceFilename = false;
 		TArray<FString> SourceFilenames;
 
@@ -276,9 +280,10 @@ bool FReimportManager::Reimport( UObject* Obj, bool bAskForNewFileIfMissing, boo
 		if(CanReimportHandler != nullptr)
 		{
 			TArray<int32> MissingFileIndex;
+
 			// Check all filenames for missing files
 			bool bMissingFiles = false;
-			if (SourceFilenames.Num() > 0)
+			if (!bForceNewFile && SourceFilenames.Num() > 0)
 			{
 				for (int32 FileIndex = 0; FileIndex < SourceFilenames.Num(); ++FileIndex)
 				{
@@ -294,7 +299,22 @@ bool FReimportManager::Reimport( UObject* Obj, bool bAskForNewFileIfMissing, boo
 			}
 			else
 			{
-				MissingFileIndex.AddUnique(SourceFileIndex == INDEX_NONE ? 0 : SourceFileIndex);
+				int32 RealSourceFileIndex = SourceFileIndex == INDEX_NONE ? 0 : SourceFileIndex;
+				if (bForceNewFile)
+				{
+					if (SourceFilenames.IsValidIndex(RealSourceFileIndex))
+					{
+						SourceFilenames[RealSourceFileIndex].Empty();
+					}
+					else
+					{
+						//Add the missing entries
+						SourceFilenames.AddDefaulted(RealSourceFileIndex - (SourceFilenames.Num() - 1));
+					}
+					bAskForNewFileIfMissing = true;
+				}
+
+				MissingFileIndex.AddUnique(RealSourceFileIndex);
 				bMissingFiles = true;
 			}
 
@@ -313,16 +333,32 @@ bool FReimportManager::Reimport( UObject* Obj, bool bAskForNewFileIfMissing, boo
 						GetNewReimportPath(Obj, SourceFilenames, FileIndex);
 					}
 				}
-				if ( SourceFilenames.Num() == 0 )
+				bool bAllSourceFileEmpty = true;
+				for (int32 SourceIndex = 0; SourceIndex < SourceFilenames.Num(); ++SourceIndex)
+				{
+					if (!SourceFilenames[SourceIndex].IsEmpty())
+					{
+						bAllSourceFileEmpty = false;
+						break;
+					}
+				}
+				if ( SourceFilenames.Num() == 0 || bAllSourceFileEmpty)
 				{
 					// Failed to specify a new filename. Don't show a notification of the failure since the user exited on his own
 					bValidSourceFilename = false;
 					bShowNotification = false;
+					SourceFilenames.Empty();
 				}
 				else
 				{
 					// A new filename was supplied, update the path
-					CanReimportHandler->SetReimportPaths(Obj, SourceFilenames[0], SourceFileIndex);
+					for (int32 SourceIndex = 0; SourceIndex < SourceFilenames.Num(); ++SourceIndex)
+					{
+						if (!SourceFilenames[SourceIndex].IsEmpty())
+						{
+							CanReimportHandler->SetReimportPaths(Obj, SourceFilenames[SourceIndex], SourceIndex);
+						}
+					}
 				}
 			}
 			else if (!PreferredReimportFile.IsEmpty() && !SourceFilenames.Contains(PreferredReimportFile))
@@ -429,7 +465,12 @@ void FReimportManager::ValidateAllSourceFileAndReimport(TArray<UObject*> &ToImpo
 		{
 			if (SourceFilenames.Num() == 0)
 			{
-				MissingFileSelectedAssets.FindOrAdd(Asset);
+				TArray<int32>& SourceIndexArray = MissingFileSelectedAssets.FindOrAdd(Asset);
+				if (SourceIndexArray.Num() == 0)
+				{
+					// Insert an invalid index to indicate no file
+					SourceIndexArray.Add(INDEX_NONE);
+				}
 			}
 			else
 			{
@@ -484,19 +525,18 @@ void FReimportManager::ValidateAllSourceFileAndReimport(TArray<UObject*> &ToImpo
 					MaxListFile--;
 					for (int32 FileIndex : SourceIndexArray)
 					{
-						int32 RemapFileIndex = 0;
 						if (SourceFilenames.IsValidIndex(FileIndex))
 						{
-							RemapFileIndex = FileIndex;
+							AssetToFileListString += FString::Printf(TEXT("Asset %s -> Missing file %s"), *(Asset->GetName()), *(SourceFilenames[FileIndex]));
 						}
-						AssetToFileListString += FString::Printf(TEXT("Asset %s -> Missing file %s"), *(Asset->GetName()), *(SourceFilenames[RemapFileIndex]));
 					}
 				}
 			}
 			Arguments.Add(TEXT("AssetToFileList"), FText::FromString(AssetToFileListString));
 			FText DialogText = FText::Format(LOCTEXT("ReimportMissingFileChoiceDialogMessage", "There is {MissingNumber} assets with missing source file path. Do you want to specify a new source file path for each asset?\n \"No\" will skip the reimport of all asset with a missing source file path.\n \"Cancel\" will cancel the whole reimport.\n{AssetToFileList}"), Arguments);
+			const FText Title = LOCTEXT("ReimportMissingFileChoiceDialogMessageTitle", "Reimport missing files");
 
-			UserChoice = OpenMsgDlgInt(EAppMsgType::YesNoCancel, DialogText, LOCTEXT("ReimportMissingFileChoiceDialogMessageTitle", "Reimport missing files"));
+			UserChoice = FMessageDialog::Open(EAppMsgType::YesNoCancel, DialogText, &Title);
 		}
 
 		//Ask missing file locations
@@ -512,7 +552,7 @@ void FReimportManager::ValidateAllSourceFileAndReimport(TArray<UObject*> &ToImpo
 				{
 					TArray<FString> SourceFilenames;
 					this->GetNewReimportPath(Asset, SourceFilenames, FileIndex);
-					if (SourceFilenames.Num() == 0)
+					if (SourceFilenames.Num() == 0 || SourceFilenames[0].IsEmpty())
 					{
 						continue;
 					}
@@ -550,6 +590,16 @@ void FReimportManager::AddReferencedObjects( FReferenceCollector& Collector )
 	}
 }
 
+void FReimportManager::SortHandlersIfNeeded()
+{
+	if (bHandlersNeedSorting)
+	{
+		// Use > operator because we want higher priorities earlier in the list
+		Handlers.Sort([](const FReimportHandler& A, const FReimportHandler& B) { return A.GetPriority() > B.GetPriority(); });
+		bHandlersNeedSorting = false;
+	}
+}
+
 bool FReimportManager::ReimportMultiple(TArrayView<UObject*> Objects, bool bAskForNewFileIfMissing /*= false*/, bool bShowNotification /*= true*/, FString PreferredReimportFile /*= TEXT("")*/, FReimportHandler* SpecifiedReimportHandler /*= nullptr */, int32 SourceFileIndex /*= INDEX_NONE*/)
 {
 	bool bBulkSuccess = true;
@@ -575,6 +625,7 @@ bool FReimportManager::ReimportMultiple(TArrayView<UObject*> Objects, bool bAskF
 
 void FReimportManager::GetNewReimportPath(UObject* Obj, TArray<FString>& InOutFilenames, int32 SourceFileIndex /*= INDEX_NONE*/)
 {
+	int32 RealSourceFileIndex = SourceFileIndex == INDEX_NONE ? 0 : SourceFileIndex;
 	TArray<UObject*> ReturnObjects;
 	FString FileTypes;
 	FString AllExtensions;
@@ -590,8 +641,19 @@ void FReimportManager::GetNewReimportPath(UObject* Obj, TArray<FString>& InOutFi
 	}
 
 	// Determine whether we will allow multi select and clear old filenames
-	bool bAllowMultiSelect = InOutFilenames.Num() > 1;
-	InOutFilenames.Empty();
+	bool bAllowMultiSelect = SourceFileIndex == INDEX_NONE && InOutFilenames.Num() > 1;
+	if (bAllowMultiSelect)
+	{
+		InOutFilenames.Empty();
+	}
+	else
+	{
+		if (!InOutFilenames.IsValidIndex(RealSourceFileIndex))
+		{
+			InOutFilenames.AddZeroed(RealSourceFileIndex - InOutFilenames.Num() + 1);
+		}
+		InOutFilenames[RealSourceFileIndex].Empty();
+	}
 
 	// Get the list of valid factories
 	for( TObjectIterator<UClass> It ; It ; ++It )
@@ -681,9 +743,20 @@ void FReimportManager::GetNewReimportPath(UObject* Obj, TArray<FString>& InOutFi
 
 	if ( bOpened )
 	{
-		for (int32 FileIndex = 0; FileIndex < OpenFilenames.Num(); ++FileIndex)
+		if (bAllowMultiSelect)
 		{
-			InOutFilenames.Add(OpenFilenames[FileIndex]);
+			for (int32 FileIndex = 0; FileIndex < OpenFilenames.Num(); ++FileIndex)
+			{
+				InOutFilenames.Add(OpenFilenames[FileIndex]);
+			}
+		}
+		else
+		{
+			//Use the first valid entry
+			if(OpenFilenames.Num() > 0)
+			{
+				InOutFilenames[RealSourceFileIndex] = OpenFilenames[0];
+			}
 		}
 	}
 }
@@ -703,6 +776,9 @@ FReimportManager::FReimportManager()
 
 	// Create reimport handler for FBX scene
 	UReimportFbxSceneFactory::StaticClass();
+
+	// Create reimport handler for PhysicalMaterialMasks
+	UPhysicalMaterialMaskFactory::StaticClass();
 }
 
 FReimportManager::~FReimportManager()
@@ -733,6 +809,12 @@ UWorld* SetPlayInEditorWorld( UWorld* PlayInEditorWorld )
 	GIsPlayInEditorWorld = true;
 	GWorld = PlayInEditorWorld;
 
+	if (FWorldContext* WorldContext = GEngine->GetWorldContextFromWorld(PlayInEditorWorld))
+	{
+		GPlayInEditorID = WorldContext->PIEInstance;
+		UpdatePlayInEditorWorldDebugString(WorldContext);
+	}
+
 	return SavedWorld;
 }
 
@@ -747,6 +829,8 @@ void RestoreEditorWorld( UWorld* EditorWorld )
 	check(GIsPlayInEditorWorld);
 	GIsPlayInEditorWorld = false;
 	GWorld = EditorWorld;
+	GPlayInEditorID = INDEX_NONE;
+	UpdatePlayInEditorWorldDebugString(nullptr);
 }
 
 /**
@@ -1043,14 +1127,14 @@ namespace EditorUtilities
 	}
 
 
-	void CopySinglePropertyRecursive(const void* const InSourcePtr, void* const InTargetPtr, UObject* const InTargetObject, UProperty* const InProperty)
+	void CopySinglePropertyRecursive(const void* const InSourcePtr, void* const InTargetPtr, UObject* const InTargetObject, FProperty* const InProperty)
 	{
 		// Properties that are *object* properties are tricky
 		// Sometimes the object will be a reference to a PIE-world object, and copying that reference back to an actor CDO asset is not a good idea
 		// If the property is referencing an actor or actor component in the PIE world, then we can try and fix that reference up to the equivalent
 		// from the editor world; otherwise we have to skip it
 		bool bNeedsGenericCopy = true;
-		if( UObjectPropertyBase* const ObjectProperty = Cast<UObjectPropertyBase>(InProperty) )
+		if( FObjectPropertyBase* const ObjectProperty = CastField<FObjectPropertyBase>(InProperty) )
 		{
 			const int32 PropertyArrayDim = InProperty->ArrayDim;
 			for (int32 ArrayIndex = 0; ArrayIndex < PropertyArrayDim; ArrayIndex++)
@@ -1090,7 +1174,7 @@ namespace EditorUtilities
 				}
 			}
 		}
-		else if (UStructProperty* const StructProperty = Cast<UStructProperty>(InProperty))
+		else if (FStructProperty* const StructProperty = CastField<FStructProperty>(InProperty))
 		{
 			// Ensure that the target struct is initialized before copying fields from the source.
 			StructProperty->InitializeValue_InContainer(InTargetPtr);
@@ -1101,25 +1185,25 @@ namespace EditorUtilities
 				const void* const SourcePtr = StructProperty->ContainerPtrToValuePtr<void>(InSourcePtr, ArrayIndex);
 				void* const TargetPtr = StructProperty->ContainerPtrToValuePtr<void>(InTargetPtr, ArrayIndex);
 
-				for (TFieldIterator<UProperty> It(StructProperty->Struct); It; ++It)
+				for (TFieldIterator<FProperty> It(StructProperty->Struct); It; ++It)
 				{
-					UProperty* const InnerProperty = *It;
+					FProperty* const InnerProperty = *It;
 					CopySinglePropertyRecursive(SourcePtr, TargetPtr, InTargetObject, InnerProperty);
 				}
 			}
 
 			bNeedsGenericCopy = false;
 		}
-		else if (UArrayProperty* const ArrayProperty = Cast<UArrayProperty>(InProperty))
+		else if (FArrayProperty* const ArrayProperty = CastField<FArrayProperty>(InProperty))
 		{
 			check(InProperty->ArrayDim == 1);
 			FScriptArrayHelper SourceArrayHelper(ArrayProperty, ArrayProperty->ContainerPtrToValuePtr<void>(InSourcePtr));
 			FScriptArrayHelper TargetArrayHelper(ArrayProperty, ArrayProperty->ContainerPtrToValuePtr<void>(InTargetPtr));
 
-			UProperty* InnerProperty = ArrayProperty->Inner;
+			FProperty* InnerProperty = ArrayProperty->Inner;
 			int32 Num = SourceArrayHelper.Num();
 
-			// here we emulate UArrayProperty::CopyValuesInternal()
+			// here we emulate FArrayProperty::CopyValuesInternal()
 			if (!(InnerProperty->PropertyFlags & CPF_IsPlainOldData))
 			{
 				TargetArrayHelper.EmptyAndAddValues(Num);
@@ -1144,7 +1228,7 @@ namespace EditorUtilities
 		}
 	}
 
-	void CopySingleProperty(const UObject* const InSourceObject, UObject* const InTargetObject, UProperty* const InProperty)
+	void CopySingleProperty(const UObject* const InSourceObject, UObject* const InTargetObject, FProperty* const InProperty)
 	{
 		CopySinglePropertyRecursive(InSourceObject, InTargetObject, InTargetObject, InProperty);
 	}
@@ -1182,7 +1266,7 @@ namespace EditorUtilities
 		// Copy non-component properties from the old actor to the new actor
 		// @todo sequencer: Most of this block of code was borrowed (pasted) from UEditorEngine::ConvertActors().  If we end up being able to share these code bodies, that would be nice!
 		TSet<UObject*> ModifiedObjects;
-		for( UProperty* Property = ActorClass->PropertyLink; Property != nullptr; Property = Property->PropertyLinkNext )
+		for( FProperty* Property = ActorClass->PropertyLink; Property != nullptr; Property = Property->PropertyLinkNext )
 		{
 			const bool bIsTransient = !!( Property->PropertyFlags & CPF_Transient );
 			const bool bIsComponentContainer = !!( Property->PropertyFlags & CPF_ContainsInstancedReference );
@@ -1192,7 +1276,8 @@ namespace EditorUtilities
 
 			if( !bIsTransient && !bIsIdentical && !bIsComponentContainer && !bIsComponentProp && !bIsBlueprintReadonly)
 			{
-				const bool bIsSafeToCopy = !( Options.Flags & ECopyOptions::OnlyCopyEditOrInterpProperties ) || ( Property->HasAnyPropertyFlags( CPF_Edit | CPF_Interp ) );
+				const bool bIsSafeToCopy = (!( Options.Flags & ECopyOptions::OnlyCopyEditOrInterpProperties ) || ( Property->HasAnyPropertyFlags( CPF_Edit | CPF_Interp ) ))
+				                        && (!( Options.Flags & ECopyOptions::SkipInstanceOnlyProperties) || ( !Property->HasAllPropertyFlags(CPF_DisableEditOnTemplate) ) );
 				if( bIsSafeToCopy )
 				{
 					if (!Options.CanCopyProperty(*Property, *SourceActor))
@@ -1298,26 +1383,27 @@ namespace EditorUtilities
 					}
 				}
 
-				TSet<const UProperty*> SourceUCSModifiedProperties;
+				TSet<const FProperty*> SourceUCSModifiedProperties;
 				SourceComponent->GetUCSModifiedProperties(SourceUCSModifiedProperties);
 
 				TArray<UActorComponent*> ComponentInstancesToReregister;
 
 				// Copy component properties
-				for( UProperty* Property = ComponentClass->PropertyLink; Property != nullptr; Property = Property->PropertyLinkNext )
+				for( FProperty* Property = ComponentClass->PropertyLink; Property != nullptr; Property = Property->PropertyLinkNext )
 				{
 					const bool bIsTransient = !!( Property->PropertyFlags & CPF_Transient );
 					const bool bIsIdentical = Property->Identical_InContainer( SourceComponent, TargetComponent );
 					const bool bIsComponent = !!( Property->PropertyFlags & ( CPF_InstancedReference | CPF_ContainsInstancedReference ) );
 					const bool bIsTransform =
-						Property->GetFName() == GET_MEMBER_NAME_CHECKED(USceneComponent, RelativeScale3D) ||
-						Property->GetFName() == GET_MEMBER_NAME_CHECKED(USceneComponent, RelativeLocation) ||
-						Property->GetFName() == GET_MEMBER_NAME_CHECKED(USceneComponent, RelativeRotation);
+						Property->GetFName() == USceneComponent::GetRelativeScale3DPropertyName() ||
+						Property->GetFName() == USceneComponent::GetRelativeLocationPropertyName() ||
+						Property->GetFName() == USceneComponent::GetRelativeRotationPropertyName();
 
 					if( !bIsTransient && !bIsIdentical && !bIsComponent && !SourceUCSModifiedProperties.Contains(Property)
 						&& ( !bIsTransform || SourceComponent != SourceActor->GetRootComponent() || ( !SourceActor->HasAnyFlags( RF_ClassDefaultObject | RF_ArchetypeObject ) && !TargetActor->HasAnyFlags( RF_ClassDefaultObject | RF_ArchetypeObject ) ) ) )
 					{
-						const bool bIsSafeToCopy = !( Options.Flags & ECopyOptions::OnlyCopyEditOrInterpProperties ) || ( Property->HasAnyPropertyFlags( CPF_Edit | CPF_Interp ) );
+						const bool bIsSafeToCopy = (!(Options.Flags & ECopyOptions::OnlyCopyEditOrInterpProperties) || (Property->HasAnyPropertyFlags(CPF_Edit | CPF_Interp)))
+						                        && (!(Options.Flags & ECopyOptions::SkipInstanceOnlyProperties) || (!Property->HasAllPropertyFlags(CPF_DisableEditOnTemplate)));
 						if( bIsSafeToCopy )
 						{
 							if (!Options.CanCopyProperty(*Property, *SourceActor))

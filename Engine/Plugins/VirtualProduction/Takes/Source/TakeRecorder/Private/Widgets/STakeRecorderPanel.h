@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -100,8 +100,8 @@ private:
 
 	FReply OnReviewLastRecording();
 
-	ECheckBoxState GetUserSettingsCheckState() const;
-	void ToggleUserSettings(ECheckBoxState CheckState);
+	ECheckBoxState GetSettingsCheckState() const;
+	void ToggleSettings(ECheckBoxState CheckState);
 
 	void OnLevelSequenceChanged();
 

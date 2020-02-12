@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -47,6 +47,7 @@ inline const TCHAR* LexToString(ESocialSubsystem InSubsystem)
 UENUM()
 enum class ESocialRelationship : uint8
 {
+	Any,
 	FriendInviteReceived,
 	FriendInviteSent,
 	PartyInvite,
@@ -57,6 +58,31 @@ enum class ESocialRelationship : uint8
 	// Follower, (?)
 };
 
+inline const TCHAR* LexToString(ESocialRelationship Relationship)
+{
+	switch (Relationship)
+	{
+	case ESocialRelationship::Any:
+		return TEXT("Any");
+	case ESocialRelationship::FriendInviteReceived:
+		return TEXT("FriendInviteReceived");
+	case ESocialRelationship::FriendInviteSent:
+		return TEXT("FriendInviteSent");
+	case ESocialRelationship::PartyInvite:
+		return TEXT("PartyInvite");
+	case ESocialRelationship::Friend:
+		return TEXT("Friend");
+	case ESocialRelationship::BlockedPlayer:
+		return TEXT("BlockedPlayer");
+	case ESocialRelationship::SuggestedFriend:
+		return TEXT("SuggestedFriend");
+	case ESocialRelationship::RecentPlayer:
+		return TEXT("RecentPlayer");
+	}
+
+	return TEXT("Unknown");
+}
+
 UENUM()
 enum class ECrossplayPreference : uint8
 {
@@ -64,17 +90,6 @@ enum class ECrossplayPreference : uint8
 	OptedIn,
 	OptedOut,
 	OptedOutRestricted
-};
-
-UENUM()
-enum class ESendFriendInviteFailureReason : uint8
-{
-	NotFound,
-	AlreadyFriends,
-	InvitePending,
-	AddingSelfFail,
-	AddingBlockedFail,
-	UnknownError
 };
 
 /** Thin wrapper to infuse a raw platform string with some meaning */
@@ -91,6 +106,7 @@ public:
 
 	operator const FString&() const { return PlatformStr; }
 	const FString& ToString() const { return PlatformStr; }
+	const FString GetTypeName() const;
 
 	bool operator==(const FString& OtherStr) const;
 	bool operator!=(const FString& OtherStr) const { return !operator==(OtherStr); }
@@ -145,6 +161,16 @@ private:
 	};
 
 	TArray<FSocialActionStep> ActionSteps;
+};
+
+UENUM()
+enum class EPlatformIconDisplayRule : uint8
+{
+	Always,									// always show the platform icon
+	AlwaysIfDifferent,						// always show the icon if it's a different platform from my own
+	AlwaysWhenInCrossplayParty,				// always show the icon if I'm in a crossplay party
+	AlwaysIfDifferentWhenInCrossplayParty,	// only show the icon if it's different from my own and I'm in a crossplay party
+	Never,									// never show the icon
 };
 
 #define DECLARE_SHARED_PTR_ALIASES(Type)	\

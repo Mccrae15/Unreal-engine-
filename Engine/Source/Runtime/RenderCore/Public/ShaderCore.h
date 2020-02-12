@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 /*=============================================================================
 	ShaderCore.h: Shader core module definitions.
@@ -15,6 +15,15 @@
 #include "UniformBuffer.h"
 
 class Error;
+
+// this is for the protocol, not the data, bump if FShaderCompilerInput or ProcessInputFromArchive changes.
+const int32 ShaderCompileWorkerInputVersion = 12;
+// this is for the protocol, not the data, bump if FShaderCompilerOutput or WriteToOutputArchive changes.
+const int32 ShaderCompileWorkerOutputVersion = 5;
+// this is for the protocol, not the data, bump if FShaderCompilerOutput or WriteToOutputArchive changes.
+const int32 ShaderCompileWorkerSingleJobHeader = 'S';
+// this is for the protocol, not the data, bump if FShaderCompilerOutput or WriteToOutputArchive changes.
+const int32 ShaderCompileWorkerPipelineJobHeader = 'P';
 
 /**
  * Controls whether shader related logs are visible.
@@ -60,11 +69,13 @@ DECLARE_FLOAT_ACCUMULATOR_STAT_EXTERN(TEXT("Total RT Shader Init Time"),STAT_Sha
 DECLARE_CYCLE_STAT_EXTERN(TEXT("Frame RT Shader Init Time"),STAT_Shaders_FrameRTShaderInitForRenderingTime,STATGROUP_Shaders, RENDERCORE_API);
 DECLARE_MEMORY_STAT_EXTERN(TEXT("Shader Memory"),STAT_Shaders_ShaderMemory,STATGROUP_Shaders, RENDERCORE_API);
 DECLARE_MEMORY_STAT_EXTERN(TEXT("Shader Resource Mem"),STAT_Shaders_ShaderResourceMemory,STATGROUP_Shaders, RENDERCORE_API);
-DECLARE_MEMORY_STAT_EXTERN(TEXT("Shader MapMemory"),STAT_Shaders_ShaderMapMemory,STATGROUP_Shaders, RENDERCORE_API);
+
+DECLARE_DWORD_ACCUMULATOR_STAT_EXTERN(TEXT("Num Shaders Registered"), STAT_Shaders_NumShadersRegistered, STATGROUP_Shaders, RENDERCORE_API);
+DECLARE_DWORD_ACCUMULATOR_STAT_EXTERN(TEXT("Num Shaders Duplicated"), STAT_Shaders_NumShadersDuplicated, STATGROUP_Shaders, RENDERCORE_API);
 
 inline TStatId GetMemoryStatType(EShaderFrequency ShaderFrequency)
 {
-	static_assert(9 == SF_NumFrequencies, "EShaderFrequency has a bad size.");
+	static_assert(10 == SF_NumFrequencies, "EShaderFrequency has a bad size.");
 
 	switch(ShaderFrequency)
 	{
@@ -73,6 +84,7 @@ inline TStatId GetMemoryStatType(EShaderFrequency ShaderFrequency)
 		case SF_RayGen:				return GET_STATID(STAT_PixelShaderMemory);
 		case SF_RayMiss:			return GET_STATID(STAT_PixelShaderMemory);
 		case SF_RayHitGroup:		return GET_STATID(STAT_PixelShaderMemory);
+		case SF_RayCallable:		return GET_STATID(STAT_PixelShaderMemory);
 	}
 	return GET_STATID(STAT_VertexShaderMemory);
 }
@@ -147,6 +159,7 @@ struct FShaderTarget
 		return ((Target.Frequency << SP_NumBits) | Target.Platform);
 	}
 };
+DECLARE_INTRINSIC_TYPE_LAYOUT(FShaderTarget);
 
 static_assert(sizeof(FShaderTarget) == sizeof(uint32), "FShaderTarget is expected to be bit-packed into a single uint32.");
 
@@ -155,17 +168,19 @@ enum ECompilerFlags
 	CFLAG_PreferFlowControl = 0,
 	CFLAG_Debug,
 	CFLAG_AvoidFlowControl,
-	/** Disable shader validation */
+	// Disable shader validation
 	CFLAG_SkipValidation,
-	/** Only allows standard optimizations, not the longest compile times. */
+	// Only allows standard optimizations, not the longest compile times.
 	CFLAG_StandardOptimization,
-	/** Shader should use on chip memory instead of main memory ring buffer memory. */
+	// Always optimize, even when CFLAG_Debug is set. Required for some complex shaders and features.
+	CFLAG_ForceOptimization,
+	// Shader should use on chip memory instead of main memory ring buffer memory.
 	CFLAG_OnChip,
 	CFLAG_KeepDebugInfo,
 	CFLAG_NoFastMath,
-	/** Explicitly enforce zero initialisation on shader platforms that may omit it. */
+	// Explicitly enforce zero initialisation on shader platforms that may omit it.
 	CFLAG_ZeroInitialise,
-	/** Explicitly enforce bounds checking on shader platforms that may omit it. */
+	// Explicitly enforce bounds checking on shader platforms that may omit it.
 	CFLAG_BoundsChecking,
 	// Compile ES2 with ES3.1 features
 	CFLAG_FeatureLevelES31,
@@ -185,6 +200,9 @@ enum ECompilerFlags
 	// Check GRHISupportsWaveOperations before using shaders compiled with this flag at runtime.
 	// https://github.com/Microsoft/DirectXShaderCompiler/wiki/Wave-Intrinsics
 	CFLAG_WaveOperations,
+	// Use DirectX Shader Compiler (DXC) to compile all shaders, intended for compatibility testing.
+	CFLAG_ForceDXC,
+	CFLAG_SkipOptimizations,
 };
 
 enum class EShaderParameterType : uint8
@@ -219,6 +237,17 @@ struct FParameterAllocation
 	}
 };
 
+inline bool operator==(const FParameterAllocation& A, const FParameterAllocation& B)
+{
+	return
+		A.BufferIndex == B.BufferIndex && A.BaseIndex == B.BaseIndex && A.Size == B.Size && A.Type == B.Type && A.bBound == B.bBound;
+}
+
+inline bool operator!=(const FParameterAllocation& A, const FParameterAllocation& B)
+{
+	return !(A == B);
+}
+
 /**
  * A map of shader parameter names to registers allocated to that parameter.
  */
@@ -233,6 +262,7 @@ public:
 	RENDERCORE_API bool ContainsParameterAllocation(const TCHAR* ParameterName) const;
 	RENDERCORE_API void AddParameterAllocation(const TCHAR* ParameterName,uint16 BufferIndex,uint16 BaseIndex,uint16 Size,EShaderParameterType ParameterType);
 	RENDERCORE_API void RemoveParameterAllocation(const TCHAR* ParameterName);
+
 	/** Checks that all parameters are bound and asserts if any aren't in a debug build
 	* @param InVertexFactoryType can be 0
 	*/
@@ -442,8 +472,11 @@ struct FShaderCompilerEnvironment : public FRefCountedObject
 	TMap<uint32,uint8> RenderTargetOutputFormatsMap;
 	TMap<FString,FResourceTableEntry> ResourceTableMap;
 	TMap<FString,uint32> ResourceTableLayoutHashes;
+	TMap<FString, FString> ResourceTableLayoutSlots;
 	TMap<FString, FString> RemoteServerData;
 	TMap<FString, FString> ShaderFormatCVars;
+
+	const ITargetPlatform* TargetPlatform = nullptr;
 
 	/** Default constructor. */
 	FShaderCompilerEnvironment()
@@ -492,6 +525,7 @@ struct FShaderCompilerEnvironment : public FRefCountedObject
 		Ar << Environment.RenderTargetOutputFormatsMap;
 		Ar << Environment.ResourceTableMap;
 		Ar << Environment.ResourceTableLayoutHashes;
+		Ar << Environment.ResourceTableLayoutSlots;
 		Ar << Environment.RemoteServerData;
 		Ar << Environment.ShaderFormatCVars;
 
@@ -521,6 +555,7 @@ struct FShaderCompilerEnvironment : public FRefCountedObject
 		CompilerFlags.Append(Other.CompilerFlags);
 		ResourceTableMap.Append(Other.ResourceTableMap);
 		ResourceTableLayoutHashes.Append(Other.ResourceTableLayoutHashes);
+		ResourceTableLayoutSlots.Append(Other.ResourceTableLayoutSlots);
 		Definitions.Merge(Other.Definitions);
 		RenderTargetOutputFormatsMap.Append(Other.RenderTargetOutputFormatsMap);
 		RemoteServerData.Append(Other.RemoteServerData);
@@ -558,6 +593,9 @@ struct FShaderCompilerInput
 	// materialname or "Global" "for debugging and better error messages
 	FString DebugGroupName;
 
+	// Description of the configuration used when compiling. 
+	FString DebugDescription;
+
 	// Compilation Environment
 	FShaderCompilerEnvironment Environment;
 	TRefCountPtr<FShaderCompilerEnvironment> SharedEnvironment;
@@ -568,13 +606,16 @@ struct FShaderCompilerInput
 		/** Name of the constant buffer stored parameter. */
 		FString Name;
 
+		/** Type expected in the shader code to ensure the binding is bug free. */
+		FString ExpectedShaderType;
+
 		/** The offset of the parameter in the root shader parameter struct. */
 		uint16 ByteOffset;
-
 
 		friend FArchive& operator<<(FArchive& Ar, FRootParameterBinding& RootParameterBinding)
 		{
 			Ar << RootParameterBinding.Name;
+			Ar << RootParameterBinding.ExpectedShaderType;
 			Ar << RootParameterBinding.ByteOffset;
 			return Ar;
 		}
@@ -588,6 +629,7 @@ struct FShaderCompilerInput
 	FExtraShaderCompilerSettings ExtraSettings;
 
 	FShaderCompilerInput() :
+		Target(SF_NumFrequencies, SP_NumPlatforms),
 		bSkipPreprocessedCache(false),
 		bGenerateDirectCompileFile(false),
 		bCompilingForShaderPipeline(false),
@@ -699,6 +741,7 @@ struct FShaderCompilerInput
 		Ar << Input.DumpDebugInfoRootPath;
 		Ar << Input.DumpDebugInfoPath;
 		Ar << Input.DebugGroupName;
+		Ar << Input.DebugDescription;
 		Ar << Input.Environment;
 		Ar << Input.ExtraSettings;
 		Ar << Input.RootParameterBindings;
@@ -713,24 +756,64 @@ struct FShaderCompilerInput
 struct FShaderCompilerError
 {
 	FShaderCompilerError(const TCHAR* InStrippedErrorMessage = TEXT(""))
-	:	ErrorVirtualFilePath(TEXT(""))
-	,	ErrorLineString(TEXT(""))
-	,	StrippedErrorMessage(InStrippedErrorMessage)
+		: ErrorVirtualFilePath(TEXT(""))
+		, ErrorLineString(TEXT(""))
+		, StrippedErrorMessage(InStrippedErrorMessage)
+		, HighlightedLine(TEXT(""))
+		, HighlightedLineMarker(TEXT(""))
 	{}
 
 	FShaderCompilerError(const TCHAR* InVirtualFilePath, const TCHAR* InLineString, const TCHAR* InStrippedErrorMessage)
 		: ErrorVirtualFilePath(InVirtualFilePath)
 		, ErrorLineString(InLineString)
 		, StrippedErrorMessage(InStrippedErrorMessage)
+		, HighlightedLine(TEXT(""))
+		, HighlightedLineMarker(TEXT(""))
 	{}
 
 	FString ErrorVirtualFilePath;
 	FString ErrorLineString;
 	FString StrippedErrorMessage;
+	FString HighlightedLine;
+	FString HighlightedLineMarker;
 
+	/** Returns the error message with source file and source line (if present). */
 	FString GetErrorString() const
 	{
-		return ErrorVirtualFilePath + TEXT("(") + ErrorLineString + TEXT("): ") + StrippedErrorMessage; // TODO
+		if (ErrorVirtualFilePath.IsEmpty())
+		{
+			return StrippedErrorMessage;
+		}
+		else
+		{
+			return ErrorVirtualFilePath + TEXT("(") + ErrorLineString + TEXT("): ") + StrippedErrorMessage;
+		}
+	}
+
+	/** Returns the error message with source file and source line (if present), as well as a line marker seperated with a LINE_TERMINATOR. */
+	FString GetErrorStringWithLineMarker() const
+	{
+		if (HasLineMarker())
+		{
+			// Append highlighted line and its marker to the same error message with line terminators
+			// to get a similar multiline error output as with DXC
+			return (GetErrorString() + LINE_TERMINATOR + TEXT("\t") + HighlightedLine + LINE_TERMINATOR + TEXT("\t") + HighlightedLineMarker);
+		}
+		else
+		{
+			return GetErrorString();
+		}
+	}
+
+	/**
+	Returns true if this error message has a marker string for the highlighted source line where the error occurred. Example:
+		/Engine/Private/MySourceFile.usf(120): error: undeclared identifier 'a'
+		float b = a;
+				  ^
+	*/
+	bool HasLineMarker() const
+	{
+		return !HighlightedLine.IsEmpty() && !HighlightedLineMarker.IsEmpty();
 	}
 
 	/** Returns the path of the underlying source file relative to the process base dir. */
@@ -738,7 +821,7 @@ struct FShaderCompilerError
 
 	friend FArchive& operator<<(FArchive& Ar,FShaderCompilerError& Error)
 	{
-		return Ar << Error.ErrorVirtualFilePath << Error.ErrorLineString << Error.StrippedErrorMessage;
+		return Ar << Error.ErrorVirtualFilePath << Error.ErrorLineString << Error.StrippedErrorMessage << Error.HighlightedLine << Error.HighlightedLineMarker;
 	}
 };
 
@@ -755,26 +838,44 @@ struct FShaderCodePackedResourceCounts
 	uint8 NumUAVs;
 };
 
-#ifdef __EMSCRIPTEN__
-// Emscripten asm.js is strict and doesn't support unaligned memory load or stores.
-// When such an unaligned memory access occurs, the compiler needs to know about it,
-// so that it can generate the appropriate unalignment-aware memory load/store instruction.
-typedef int32 __attribute__((aligned(1))) unaligned_int32;
-typedef uint32 __attribute__((aligned(1))) unaligned_uint32;
-#else
-// On x86 etc. unaligned memory accesses are supported by the CPU, so no need to
-// behave specially for them.
-typedef int32 unaligned_int32;
-typedef uint32 unaligned_uint32;
+struct FShaderCodeVendorExtension
+{
+	// for FindOptionalData() and AddOptionalData()
+	static const uint8 Key = 'v';
+
+	uint32 VendorId;
+	FParameterAllocation Parameter;
+
+	friend FArchive& operator<<(FArchive& Ar, FShaderCodeVendorExtension& Extension)
+	{
+		return Ar << Extension.VendorId << Extension.Parameter;
+	}
+};
+
+inline bool operator==(const FShaderCodeVendorExtension& A, const FShaderCodeVendorExtension& B)
+{
+	return A.VendorId == B.VendorId && A.Parameter == B.Parameter;
+}
+
+inline bool operator!=(const FShaderCodeVendorExtension& A, const FShaderCodeVendorExtension& B)
+{
+	return !(A == B);
+}
+
+#ifndef RENDERCORE_ATTRIBUTE_UNALIGNED
+// TODO find out if using GCC_ALIGN(1) instead of this new #define break on all kinds of platforms...
+#define RENDERCORE_ATTRIBUTE_UNALIGNED
 #endif
+typedef int32  RENDERCORE_ATTRIBUTE_UNALIGNED unaligned_int32;
+typedef uint32 RENDERCORE_ATTRIBUTE_UNALIGNED unaligned_uint32;
 
 // later we can transform that to the actual class passed around at the RHI level
 class FShaderCodeReader
 {
-	const TArray<uint8>& ShaderCode;
+	TArrayView<const uint8> ShaderCode;
 
 public:
-	FShaderCodeReader(const TArray<uint8>& InShaderCode)
+	FShaderCodeReader(TArrayView<const uint8> InShaderCode)
 		: ShaderCode(InShaderCode)
 	{
 		check(ShaderCode.Num());
@@ -855,7 +956,7 @@ public:
 		return 0;
 	}
 
-	// Returns nullptr and Size -1 if not key was not found
+	// Returns nullptr and Size -1 if key was not found
 	const uint8* FindOptionalDataAndSize(uint8 InKey, int32& OutSize) const
 	{
 		check(ShaderCode.Num() >= 4);
@@ -1024,6 +1125,7 @@ struct FShaderCompilerOutput
 	FShaderCompilerOutput()
 	:	NumInstructions(0)
 	,	NumTextureSamplers(0)
+	,	CompileTime(0.0)
 	,	bSucceeded(false)
 	,	bFailedRemovingUnused(false)
 	,	bSupportsQueryingUsedAttributes(false)
@@ -1038,6 +1140,7 @@ struct FShaderCompilerOutput
 	FSHAHash OutputHash;
 	uint32 NumInstructions;
 	uint32 NumTextureSamplers;
+	double CompileTime;
 	bool bSucceeded;
 	bool bFailedRemovingUnused;
 	bool bSupportsQueryingUsedAttributes;
@@ -1055,6 +1158,7 @@ struct FShaderCompilerOutput
 		// Note: this serialize is used to pass between UE4 and the shader compile worker, recompile both when modifying
 		Ar << Output.ParameterMap << Output.Errors << Output.Target << Output.ShaderCode << Output.NumInstructions << Output.NumTextureSamplers << Output.bSucceeded;
 		Ar << Output.bFailedRemovingUnused << Output.bSupportsQueryingUsedAttributes << Output.UsedAttributes;
+		Ar << Output.CompileTime;
 		Ar << Output.OptionalFinalShaderSource;
 		Ar << Output.PlatformDebugData;
 
@@ -1077,16 +1181,19 @@ extern RENDERCORE_API bool CheckVirtualShaderFilePath(const FString& VirtualPath
  */
 extern RENDERCORE_API FString ParseVirtualShaderFilename(const FString& InFilename);
 
+/** Replaces virtual platform path with appropriate path for a given ShaderPlatform. Returns true if path was changed. */
+extern RENDERCORE_API bool ReplaceVirtualFilePathForShaderPlatform(FString& InOutVirtualFilePath, EShaderPlatform ShaderPlatform);
+
 /**
  * Loads the shader file with the given name.
  * @param VirtualFilePath - The virtual path of shader file to load.
- * @param OutFileContents - If true is returned, will contain the contents of the shader file.
+ * @param OutFileContents - If true is returned, will contain the contents of the shader file. Can be null.
  * @return True if the file was successfully loaded.
  */
-extern RENDERCORE_API bool LoadShaderSourceFile(const TCHAR* VirtualFilePath, FString& OutFileContents, TArray<FShaderCompilerError>* OutCompileErrors);
+extern RENDERCORE_API bool LoadShaderSourceFile(const TCHAR* VirtualFilePath, EShaderPlatform ShaderPlatform, FString* OutFileContents, TArray<FShaderCompilerError>* OutCompileErrors);
 
 /** Loads the shader file with the given name.  If the shader file couldn't be loaded, throws a fatal error. */
-extern RENDERCORE_API void LoadShaderSourceFileChecked(const TCHAR* VirtualFilePath, FString& OutFileContents);
+extern RENDERCORE_API void LoadShaderSourceFileChecked(const TCHAR* VirtualFilePath, EShaderPlatform ShaderPlatform, FString& OutFileContents);
 
 /**
  * Recursively populates IncludeFilenames with the include filenames from Filename
@@ -1147,3 +1254,34 @@ extern RENDERCORE_API void ResetAllShaderSourceDirectoryMappings();
  * @param RealShaderDirectory FPlatformProcess::BaseDir() relative path of the directory map.
  */
 extern RENDERCORE_API void AddShaderSourceDirectoryMapping(const FString& VirtualShaderDirectory, const FString& RealShaderDirectory);
+
+/** Validates that the uniform buffer at the requested static slot. */
+extern RENDERCORE_API void ValidateStaticUniformBuffer(FRHIUniformBuffer* UniformBuffer, FUniformBufferStaticSlot Slot, uint32 ExpectedHash);
+
+template <typename TRHIContext, typename TRHIShader>
+void ApplyGlobalUniformBuffers(
+	TRHIContext* CommandContext,
+	TRHIShader* Shader,
+	const TArray<FUniformBufferStaticSlot>& Slots,
+	const TArray<uint32>& LayoutHashes,
+	const TArray<FRHIUniformBuffer*>& UniformBuffers)
+{
+	checkf(LayoutHashes.Num() == Slots.Num(), TEXT("Shader %s, LayoutHashes %d, Slots %d"),
+		*Shader->ShaderName, LayoutHashes.Num(), Slots.Num());
+
+	for (int32 BufferIndex = 0; BufferIndex < Slots.Num(); ++BufferIndex)
+	{
+		const FUniformBufferStaticSlot Slot = Slots[BufferIndex];
+
+		if (IsUniformBufferStaticSlotValid(Slot))
+		{
+			FRHIUniformBuffer* Buffer = UniformBuffers[Slot];
+			ValidateStaticUniformBuffer(Buffer, Slot, LayoutHashes[BufferIndex]);
+
+			if (Buffer)
+			{
+				CommandContext->RHISetShaderUniformBuffer(Shader, BufferIndex, Buffer);
+			}
+		}
+	}
+}

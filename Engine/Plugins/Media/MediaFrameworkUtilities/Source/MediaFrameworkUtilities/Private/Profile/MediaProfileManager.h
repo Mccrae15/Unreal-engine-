@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -9,30 +9,31 @@ class UMediaProfile;
 class UProxyMediaSource;
 class UProxyMediaOutput;
 
-class FMediaProfileManager : public IMediaProfileManager
+class FMediaProfileManager : public IMediaProfileManager, public FGCObject
 {
 public:
 	FMediaProfileManager();
+	virtual ~FMediaProfileManager();
 
+	//~ Begin IMediaProfileManager Interface
 	virtual UMediaProfile* GetCurrentMediaProfile() const override;
 	virtual void SetCurrentMediaProfile(UMediaProfile* InMediaProfile) override;
+	TArray<UProxyMediaSource*> GetAllMediaSourceProxy() const override;
+	TArray<UProxyMediaOutput*> GetAllMediaOutputProxy() const override;
 	virtual FOnMediaProfileChanged& OnMediaProfileChanged() override;
+	//~ End IMediaProfileManager Interface
+
+	//~ Begin FGCObject Interface
+	virtual void AddReferencedObjects(FReferenceCollector& Collector) override;
+	//~End FGCObject Interface
 
 private:
-	class FInternalReferenceCollector : public FGCObject
-	{
-	public:
-		FInternalReferenceCollector(FMediaProfileManager* InOwner);
-		virtual void AddReferencedObjects(FReferenceCollector& Collector) override;
-	private:
-		FMediaProfileManager* Owner;
-	};
-	friend FInternalReferenceCollector;
-	FInternalReferenceCollector Collector;
+#if WITH_EDITOR
+	void OnMediaProxiesChanged();
+#endif
 
+	TArray<UProxyMediaSource*> MediaSourceProxies;
+	TArray<UProxyMediaOutput*> MediaOutputProxies;
 	UMediaProfile* CurrentMediaProfile;
-	TArray<UProxyMediaSource*> CurrentProxyMediaSources;
-	TArray<UProxyMediaOutput*> CurrentProxyMediaOutputs;
-
 	FOnMediaProfileChanged MediaProfileChangedDelegate;
 };

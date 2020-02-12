@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 
 #pragma once
@@ -93,7 +93,10 @@ class USCS_Node : public UObject
 
 	/** Make sure, the guid is proper - backward compatibility */
 	ENGINE_API void ValidateGuid();
-#endif
+
+	/** Returns Valid if this object has data validation rules set up for it and the data for this object is valid. Returns Invalid if it does not pass the rules. Returns NotValidated if no rules are set for this object. */
+	virtual EDataValidationResult IsDataValid(TArray<FText>& ValidationErrors) override;
+#endif // WITH_EDITOR
 
 	/**
 	 * Create the specified component on the actor, then call action on children
@@ -196,7 +199,7 @@ protected:
 private:
 	/** Internal variable name. This is used for:
 			a) Generating the component template (archetype) object name.
-			b) A UObjectProperty in the generated Blueprint class. This holds a reference to the component instance created at Actor construction time.
+			b) A FObjectProperty in the generated Blueprint class. This holds a reference to the component instance created at Actor construction time.
 			c) Archetype lookup through the generated Blueprint class. All instances route back to the archetype through the variable name (i.e. not the template name).
 	 */
 	UPROPERTY()

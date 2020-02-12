@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 /*=============================================================================
 	AnimationGraphSchema.cpp
@@ -8,6 +8,8 @@
 #include "Animation/AnimationAsset.h"
 #include "Animation/AnimBlueprint.h"
 #include "Framework/MultiBox/MultiBoxBuilder.h"
+#include "ToolMenus.h"
+#include "ObjectEditorUtils.h"
 #include "K2Node.h"
 #include "EdGraphSchema_K2_Actions.h"
 #include "Kismet2/BlueprintEditorUtils.h"
@@ -32,6 +34,9 @@
 #include "K2Node_Knot.h"
 #include "ScopedTransaction.h"
 #include "Animation/AnimMontage.h"
+#include "AnimGraphNode_LinkedInputPose.h"
+#include "AnimGraphNode_LinkedAnimLayer.h"
+#include "AnimGraphNode_RigidBody.h"
 
 #define LOCTEXT_NAMESPACE "AnimationGraphSchema"
 
@@ -145,6 +150,28 @@ bool UAnimationGraphSchema::IsComponentSpacePosePin(const FEdGraphPinType& PinTy
 	return (PinType.PinCategory == UAnimationGraphSchema::PC_Struct) && (PinType.PinSubCategoryObject == ComponentSpacePoseLinkStruct);
 }
 
+FEdGraphPinType UAnimationGraphSchema::MakeLocalSpacePosePin()
+{
+	FEdGraphPinType PinType;
+	PinType.ResetToDefaults();
+
+	PinType.PinCategory = UAnimationGraphSchema::PC_Struct;
+	PinType.PinSubCategoryObject = FPoseLink::StaticStruct();
+
+	return PinType;
+}
+
+FEdGraphPinType UAnimationGraphSchema::MakeComponentSpacePosePin()
+{
+	FEdGraphPinType PinType;
+	PinType.ResetToDefaults();
+
+	PinType.PinCategory = UAnimationGraphSchema::PC_Struct;
+	PinType.PinSubCategoryObject = FComponentSpacePoseLink::StaticStruct();
+
+	return PinType;
+}
+
 bool UAnimationGraphSchema::TryCreateConnection(UEdGraphPin* A, UEdGraphPin* B) const
 {
 	UEdGraphPin* OutputPin = nullptr;
@@ -205,7 +232,7 @@ bool UAnimationGraphSchema::ArePinsCompatible(const UEdGraphPin* PinA, const UEd
 	{
 		return false;
 	}
-
+	
 	// Disallow pose pins connecting to wildcards (apart from reroute nodes)
 	if(IsPosePin(PinA->PinType) && PinB->PinType.PinCategory == PC_Wildcard)
 	{
@@ -223,6 +250,72 @@ bool UAnimationGraphSchema::DoesSupportAnimNotifyActions() const
 {
 	// Don't offer notify items in anim graph
 	return false;
+}
+
+void UAnimationGraphSchema::CreateFunctionGraphTerminators(UEdGraph& Graph, UClass* Class) const
+{
+	if(const UAnimationGraphSchema* Schema = ExactCast<UAnimationGraphSchema>(Graph.GetSchema()))
+	{
+		const FName GraphName = Graph.GetFName();
+
+		// Get the function GUID from the most up-to-date class
+		FGuid GraphGuid;
+		FBlueprintEditorUtils::GetFunctionGuidFromClassByFieldName(FBlueprintEditorUtils::GetMostUpToDateClass(Class), GraphName, GraphGuid);
+
+		// Create a root node
+		FGraphNodeCreator<UAnimGraphNode_Root> RootNodeCreator(Graph);
+		UAnimGraphNode_Root* RootNode = RootNodeCreator.CreateNode();
+		RootNodeCreator.Finalize();
+		SetNodeMetaData(RootNode, FNodeMetadata::DefaultGraphNode);
+
+		UFunction* InterfaceToImplement = FindField<UFunction>(Class, GraphName);
+		if (InterfaceToImplement)
+		{
+			// Propagate group from metadata
+			TArray<UAnimGraphNode_Root*> RootNodes;
+			Graph.GetNodesOfClass<UAnimGraphNode_Root>(RootNodes);
+
+			check(RootNodes.Num() == 1);
+			RootNodes[0]->Node.Group = *FObjectEditorUtils::GetCategoryText(InterfaceToImplement).ToString();
+
+			int32 CurrentPoseIndex = 0;
+			for (TFieldIterator<FProperty> PropIt(InterfaceToImplement); PropIt && (PropIt->PropertyFlags & CPF_Parm); ++PropIt)
+			{
+				FProperty* Param = *PropIt;
+
+				const bool bIsFunctionInput = !Param->HasAnyPropertyFlags(CPF_OutParm) || Param->HasAnyPropertyFlags(CPF_ReferenceParm);
+
+				if (bIsFunctionInput)
+				{
+					FEdGraphPinType PinType;
+					if(Schema->ConvertPropertyToPinType(Param, PinType))
+					{
+						// Create linked input pose for each pose pin type
+						if(UAnimationGraphSchema::IsPosePin(PinType))
+						{
+							FGraphNodeCreator<UAnimGraphNode_LinkedInputPose> LinkedInputNodeCreator(Graph);
+							UAnimGraphNode_LinkedInputPose* LinkedInputNode = LinkedInputNodeCreator.CreateNode();
+							LinkedInputNode->FunctionReference.SetExternalMember(GraphName, Class, GraphGuid);
+							LinkedInputNode->Node.Name = Param->GetFName();
+							LinkedInputNode->InputPoseIndex = CurrentPoseIndex;
+
+							LinkedInputNode->ReconstructNode();
+							SetNodeMetaData(LinkedInputNode, FNodeMetadata::DefaultGraphNode);
+							LinkedInputNodeCreator.Finalize();
+
+							CurrentPoseIndex++;
+						}
+					}
+				}
+			}
+		}
+
+		AutoArrangeInterfaceGraph(Graph);
+	}
+	else
+	{
+		Super::CreateFunctionGraphTerminators(Graph, Class);
+	}
 }
 
 bool UAnimationGraphSchema::SearchForAutocastFunction(const UEdGraphPin* OutputPin, const UEdGraphPin* InputPin, FName& TargetFunction, /*out*/ UClass*& FunctionOwner) const
@@ -319,6 +412,20 @@ void UAnimationGraphSchema::SpawnNodeFromAsset(UAnimationAsset* Asset, const FVe
 	}
 }
 
+void UAnimationGraphSchema::SpawnRigidBodyNodeFromAsset(UPhysicsAsset* Asset, const FVector2D& GraphPosition, UEdGraph* Graph)
+{
+	check(Graph);
+	check(Graph->GetSchema()->IsA(UAnimationGraphSchema::StaticClass()));
+	check(Asset);
+
+	FEdGraphSchemaAction_K2NewNode Action;
+
+	UAnimGraphNode_RigidBody* NewNode = NewObject<UAnimGraphNode_RigidBody>(GetTransientPackage());
+	NewNode->Node.OverridePhysicsAsset = Asset;
+	Action.NodeTemplate = NewNode;
+
+	Action.PerformAction(Graph, nullptr, GraphPosition);
+}
 
 void UAnimationGraphSchema::UpdateNodeWithAsset(UK2Node* K2Node, UAnimationAsset* Asset)
 {
@@ -340,17 +447,20 @@ void UAnimationGraphSchema::UpdateNodeWithAsset(UK2Node* K2Node, UAnimationAsset
 	}
 }
 
-
 void UAnimationGraphSchema::DroppedAssetsOnGraph( const TArray<FAssetData>& Assets, const FVector2D& GraphPosition, UEdGraph* Graph ) const 
 {
-	UAnimationAsset* Asset = FAssetData::GetFirstAsset<UAnimationAsset>(Assets);
-	if ((Asset != NULL) && (Graph != NULL))
+	if (Graph != NULL)
 	{
-		SpawnNodeFromAsset(Asset, GraphPosition, Graph, NULL);
+		if (UAnimationAsset* AnimationAsset = FAssetData::GetFirstAsset<UAnimationAsset>(Assets))
+		{
+			SpawnNodeFromAsset(AnimationAsset, GraphPosition, Graph, NULL);
+		}
+		else if (UPhysicsAsset* PhysicsAsset = FAssetData::GetFirstAsset<UPhysicsAsset>(Assets))
+		{
+			SpawnRigidBodyNodeFromAsset(PhysicsAsset, GraphPosition, Graph);
+		}
 	}
 }
-
-
 
 void UAnimationGraphSchema::DroppedAssetsOnNode(const TArray<FAssetData>& Assets, const FVector2D& GraphPosition, UEdGraphNode* Node) const
 {
@@ -437,11 +547,10 @@ void UAnimationGraphSchema::GetAssetsPinHoverMessage(const TArray<FAssetData>& A
 
 void UAnimationGraphSchema::GetAssetsGraphHoverMessage(const TArray<FAssetData>& Assets, const UEdGraph* HoverGraph, FString& OutTooltipText, bool& OutOkIcon) const
 {
-	UAnimationAsset* Asset = FAssetData::GetFirstAsset<UAnimationAsset>(Assets);
-	if (Asset)
+	if (UAnimationAsset* AnimationAsset = FAssetData::GetFirstAsset<UAnimationAsset>(Assets))
 	{
 		UAnimBlueprint* AnimBlueprint = Cast<UAnimBlueprint>(FBlueprintEditorUtils::FindBlueprintForGraph(HoverGraph));
-		const bool bSkelMatch = (AnimBlueprint != NULL) && (AnimBlueprint->TargetSkeleton == Asset->GetSkeleton());
+		const bool bSkelMatch = (AnimBlueprint != NULL) && (AnimBlueprint->TargetSkeleton == AnimationAsset->GetSkeleton());
 		if (!bSkelMatch)
 		{
 			OutOkIcon = false;
@@ -458,20 +567,24 @@ void UAnimationGraphSchema::GetAssetsGraphHoverMessage(const TArray<FAssetData>&
 			OutTooltipText = TEXT("");
 		}
 	}
+	else if(UPhysicsAsset* PhysicsAsset = FAssetData::GetFirstAsset<UPhysicsAsset>(Assets))
+	{
+		OutOkIcon = true;
+		OutTooltipText = TEXT("");
+	}
 }
 
-void UAnimationGraphSchema::GetContextMenuActions(const UEdGraph* CurrentGraph, const UEdGraphNode* InGraphNode, const UEdGraphPin* InGraphPin, FMenuBuilder* MenuBuilder, bool bIsDebugging) const
+void UAnimationGraphSchema::GetContextMenuActions(UToolMenu* Menu, UGraphNodeContextMenuContext* Context) const
 {
-	Super::GetContextMenuActions(CurrentGraph, InGraphNode, InGraphPin, MenuBuilder, bIsDebugging);
+	Super::GetContextMenuActions(Menu, Context);
 
-	if (const UAnimGraphNode_Base* AnimGraphNode = Cast<const UAnimGraphNode_Base>(InGraphNode))
+	if (const UAnimGraphNode_Base* AnimGraphNode = Cast<const UAnimGraphNode_Base>(Context->Node))
 	{
-		MenuBuilder->BeginSection("AnimGraphSchemaNodeActions", LOCTEXT("AnimNodeActionsMenuHeader", "Anim Node Actions"));
 		{
 			// Node contextual actions
-			MenuBuilder->AddMenuEntry(FAnimGraphCommands::Get().TogglePoseWatch);
+			FToolMenuSection& Section = Menu->AddSection("AnimGraphSchemaNodeActions", LOCTEXT("AnimNodeActionsMenuHeader", "Anim Node Actions"));
+			Section.AddMenuEntry(FAnimGraphCommands::Get().TogglePoseWatch);
 		}
-		MenuBuilder->EndSection();
 	}
 }
 
@@ -489,6 +602,270 @@ FText UAnimationGraphSchema::GetPinDisplayName(const UEdGraphPin* Pin) const
 	}
 
 	return DisplayName;
+}
+
+void UAnimationGraphSchema::GetGraphDisplayInformation(const UEdGraph& Graph, /*out*/ FGraphDisplayInfo& DisplayInfo) const
+{
+	if (GetGraphType(&Graph) == GT_Animation)
+	{
+		DisplayInfo.PlainName = FText::FromString(Graph.GetName());
+		DisplayInfo.DisplayName = DisplayInfo.PlainName;
+		DisplayInfo.Tooltip = Graph.GetFName() == UEdGraphSchema_K2::GN_AnimGraph ? 
+			LOCTEXT("GraphTooltip_AnimGraph", "Graph used to blend together different animations.") : 
+			LOCTEXT("GraphTooltip_AnimGraphLayer", "Layer used to organize blending into sub-graphs.");
+
+		if(!Graph.bAllowDeletion)
+		{
+			// Might be from an interface, so check
+			UBlueprint* Blueprint = FBlueprintEditorUtils::FindBlueprintForGraph(&Graph);
+			TSubclassOf<UInterface> Interface;
+
+			auto FindInterfaceForGraph = [&Blueprint, &Graph](TSubclassOf<UInterface>& OutInterface)
+			{
+				for(const FBPInterfaceDescription& InterfaceDesc : Blueprint->ImplementedInterfaces)
+				{
+					for(UEdGraph* InterfaceGraph : InterfaceDesc.Graphs)
+					{
+						if(InterfaceGraph == &Graph)
+						{
+							OutInterface = InterfaceDesc.Interface;
+							return true;
+						}
+					}
+				}
+
+				return false;
+			};
+
+			if(FindInterfaceForGraph(Interface))
+			{
+				DisplayInfo.Tooltip = FText::Format(LOCTEXT("GraphTooltip_AnimGraphInterface", "Layer inherited from interface '{0}'."), FText::FromString(Interface.Get()->GetName()));
+			}
+		}
+			
+		DisplayInfo.DocLink = TEXT("Shared/Editors/BlueprintEditor/GraphTypes");
+		DisplayInfo.DocExcerptName = TEXT("AnimGraph");
+	}
+	else
+	{
+		Super::GetGraphDisplayInformation(Graph, DisplayInfo);
+	}
+}
+
+void UAnimationGraphSchema::AutoArrangeInterfaceGraph(UEdGraph& Graph)
+{
+	// auto-arrange all nodes now
+	TArray<UAnimGraphNode_Root*> RootNodes;
+	Graph.GetNodesOfClass<UAnimGraphNode_Root>(RootNodes);
+	check(RootNodes.Num() == 1);
+	UAnimGraphNode_Root* Root = RootNodes[0];
+				
+	TArray<UAnimGraphNode_LinkedInputPose*> LinkedInputPoseNodes;
+	Graph.GetNodesOfClass<UAnimGraphNode_LinkedInputPose>(LinkedInputPoseNodes);
+
+	FBox2D RootBounds(FVector2D(Root->NodePosX, Root->NodePosY), FVector2D(Root->NodePosX + 130, Root->NodePosY + 200));
+
+	float TotalHeight = 0.0f;
+	float MaxWidth = 0.0f;
+	const int32 HeightPerProperty = 30;
+
+	for(UAnimGraphNode_LinkedInputPose* Node : LinkedInputPoseNodes)
+	{
+		FBox2D LinkedInputPoseBounds(
+			FVector2D(Node->NodePosX, Node->NodePosY),
+			FVector2D(Node->NodePosX + 400, Node->NodePosY + 100 + (Node->GetNumInputs() * HeightPerProperty))
+		);
+
+		FVector2D BoundsSize = LinkedInputPoseBounds.GetSize();
+		TotalHeight += BoundsSize.Y + 10.0f;
+		MaxWidth = FMath::Max(BoundsSize.X, MaxWidth);
+	}
+
+	float NodeOffset = RootBounds.GetCenter().Y - (TotalHeight * 0.5f);
+	float NodePosX = RootBounds.Min.X - (MaxWidth + 100.0f);
+	for(UAnimGraphNode_LinkedInputPose* Node : LinkedInputPoseNodes)
+	{
+		Node->NodePosX = NodePosX;
+		Node->NodePosY = NodeOffset;
+
+		FBox2D LinkedInputPoseBounds(
+			FVector2D(Node->NodePosX, Node->NodePosY),
+			FVector2D(Node->NodePosX + 400, Node->NodePosY + 100 + (Node->GetNumInputs() * HeightPerProperty))
+		);
+
+		NodeOffset += LinkedInputPoseBounds.GetSize().Y + 10.0f;
+	}
+}
+
+void UAnimationGraphSchema::ConformAnimGraphToInterface(UBlueprint* InBlueprint, UEdGraph& InGraph, UFunction* InFunction)
+{
+	if(const UAnimationGraphSchema* Schema = ExactCast<UAnimationGraphSchema>(InGraph.GetSchema()))
+	{
+		// Propagate group from metadata
+		TArray<UAnimGraphNode_Root*> RootNodes;
+		InGraph.GetNodesOfClass<UAnimGraphNode_Root>(RootNodes);
+
+		check(RootNodes.Num() == 1);
+		RootNodes[0]->Node.Group = *FObjectEditorUtils::GetCategoryText(InFunction).ToString();
+
+		TArray<UAnimGraphNode_LinkedInputPose*> LinkedInputPoseNodes;
+		InGraph.GetNodesOfClass<UAnimGraphNode_LinkedInputPose>(LinkedInputPoseNodes);
+
+		for(UAnimGraphNode_LinkedInputPose* LinkedInputPoseNode : LinkedInputPoseNodes)
+		{
+			// Sync pose names in case they have changed
+			LinkedInputPoseNode->ConformInputPoseName();
+
+			// Clean up any old linked input poses that no longer exist
+			if(!LinkedInputPoseNode->ValidateAgainstFunctionReference())
+			{
+				InGraph.RemoveNode(LinkedInputPoseNode);
+			}
+		}
+
+		UClass* InterfaceClass = CastChecked<UClass>(InFunction->GetOuter());
+
+		// Add any inputs that are not present in the graph (matching by pose index)
+		int32 CurrentPoseIndex = 0;
+		for (TFieldIterator<FProperty> PropIt(InFunction); PropIt && (PropIt->PropertyFlags & CPF_Parm); ++PropIt)
+		{
+			FProperty* Param = *PropIt;
+
+			const bool bIsFunctionInput = !Param->HasAnyPropertyFlags(CPF_OutParm) || Param->HasAnyPropertyFlags(CPF_ReferenceParm);
+
+			if (bIsFunctionInput)
+			{
+				FEdGraphPinType PinType;
+				if(Schema->ConvertPropertyToPinType(Param, PinType))
+				{
+					// Create linked input pose for each pose pin type
+					if(UAnimationGraphSchema::IsPosePin(PinType))
+					{
+						UAnimGraphNode_LinkedInputPose** MatchingNode = LinkedInputPoseNodes.FindByPredicate(
+							[CurrentPoseIndex](UAnimGraphNode_LinkedInputPose* InLinkedInputPoseNode)
+							{
+								return InLinkedInputPoseNode->InputPoseIndex == CurrentPoseIndex;
+							});
+
+						if(MatchingNode == nullptr)
+						{
+							const FName GraphName = InGraph.GetFName();
+
+							// Get the function GUID from the most up-to-date class
+							FGuid GraphGuid;
+							FBlueprintEditorUtils::GetFunctionGuidFromClassByFieldName(FBlueprintEditorUtils::GetMostUpToDateClass(InterfaceClass), GraphName, GraphGuid);
+
+							// not found, add this node
+							FGraphNodeCreator<UAnimGraphNode_LinkedInputPose> LinkedInputPoseNodeCreator(InGraph);
+							UAnimGraphNode_LinkedInputPose* LinkedInputPoseNode = LinkedInputPoseNodeCreator.CreateNode();
+							LinkedInputPoseNode->FunctionReference.SetExternalMember(GraphName, InterfaceClass, GraphGuid);
+							LinkedInputPoseNode->Node.Name = Param->GetFName();
+							LinkedInputPoseNode->InputPoseIndex = CurrentPoseIndex;
+
+							LinkedInputPoseNode->ReconstructNode();
+							SetNodeMetaData(LinkedInputPoseNode, FNodeMetadata::DefaultGraphNode);
+							LinkedInputPoseNodeCreator.Finalize();
+
+							FVector2D NewPosition = GetPositionForNewLinkedInputPoseNode(InGraph);
+							LinkedInputPoseNode->NodePosX = NewPosition.X;
+							LinkedInputPoseNode->NodePosY = NewPosition.Y;
+						}
+
+						CurrentPoseIndex++;
+					}
+				}
+			}
+		}
+	}
+}
+
+void UAnimationGraphSchema::ConformAnimLayersByGuid(const UAnimBlueprint* InAnimBlueprint, const FBPInterfaceDescription& CurrentInterfaceDesc)
+{
+	const UBlueprint* InterfaceBlueprint = CastChecked<UBlueprint>(CurrentInterfaceDesc.Interface->ClassGeneratedBy);
+
+	TArray<UEdGraph*> InterfaceGraphs;
+	InterfaceBlueprint->GetAllGraphs(InterfaceGraphs);
+
+	TArray<UEdGraph*> Graphs;
+	InAnimBlueprint->GetAllGraphs(Graphs);
+
+	for (UEdGraph* Graph : Graphs)
+	{
+		TArray<UAnimGraphNode_LinkedAnimLayer*> LayerNodes;
+		Graph->GetNodesOfClass<UAnimGraphNode_LinkedAnimLayer>(LayerNodes);
+
+		for (UAnimGraphNode_LinkedAnimLayer* LayerNode : LayerNodes)
+		{
+			LayerNode->UpdateGuidForLayer();
+
+			if (LayerNode->InterfaceGuid.IsValid())
+			{
+				for (UEdGraph* InterfaceGraph : InterfaceGraphs)
+				{
+					// Check to see if GUID matches but name does not and update if so
+					if (InterfaceGraph->GraphGuid == LayerNode->InterfaceGuid && InterfaceGraph->GetFName() != LayerNode->Node.Layer)
+					{
+						LayerNode->Node.Layer = InterfaceGraph->GetFName();
+					}
+				}
+			}
+		}
+	}
+}
+
+FVector2D UAnimationGraphSchema::GetPositionForNewLinkedInputPoseNode(UEdGraph& InGraph)
+{
+	TArray<UAnimGraphNode_LinkedInputPose*> LinkedInputPoseNodes;
+	InGraph.GetNodesOfClass<UAnimGraphNode_LinkedInputPose>(LinkedInputPoseNodes);
+
+	if(LinkedInputPoseNodes.Num() == 0)
+	{
+		TArray<UAnimGraphNode_Base*> AllNodes;
+		InGraph.GetNodesOfClass<UAnimGraphNode_Base>(AllNodes);
+
+		// No nodes, so insert to the top-left of all existing nodes.
+		FBox2D AllNodesBounds;
+		for(UAnimGraphNode_Base* Node : AllNodes)
+		{
+			FBox2D NodeBounds(
+				FVector2D(Node->NodePosX, Node->NodePosY),
+				FVector2D(Node->NodePosX + 400, Node->NodePosY + 100)
+			);
+
+			AllNodesBounds += NodeBounds;
+		}
+
+		return FVector2D(AllNodesBounds.Min.X - 300.0f, AllNodesBounds.Min.Y);
+	}
+	else
+	{
+		const int32 HeightPerProperty = 30;
+
+		// Some existing linked input poses. Insert below the bottom-most one.
+		UAnimGraphNode_LinkedInputPose* Node = LinkedInputPoseNodes[0];
+
+		FBox2D BottomMostLinkedInputPoseBounds(
+			FVector2D(Node->NodePosX, Node->NodePosY),
+			FVector2D(Node->NodePosX + 400, Node->NodePosY + 100 + (Node->GetNumInputs() * HeightPerProperty))
+		);
+
+		for(int32 LinkedInputPoseIndex = 1; LinkedInputPoseIndex < LinkedInputPoseNodes.Num(); ++LinkedInputPoseIndex)
+		{
+			Node = LinkedInputPoseNodes[LinkedInputPoseIndex];
+
+			FBox2D LinkedInputPoseBounds(
+				FVector2D(Node->NodePosX, Node->NodePosY),
+				FVector2D(Node->NodePosX + 400, Node->NodePosY + 100 + (Node->GetNumInputs() * HeightPerProperty))
+			);
+
+			if(LinkedInputPoseBounds.Min.Y > BottomMostLinkedInputPoseBounds.Min.Y)
+			{
+				BottomMostLinkedInputPoseBounds = LinkedInputPoseBounds;
+			}
+		}
+
+		return FVector2D(BottomMostLinkedInputPoseBounds.Min.X, BottomMostLinkedInputPoseBounds.Max.Y + 10.0f);
+	}
 }
 
 #undef LOCTEXT_NAMESPACE

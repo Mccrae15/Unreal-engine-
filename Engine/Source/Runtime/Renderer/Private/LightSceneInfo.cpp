@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 /*=============================================================================
 	LightSceneInfo.cpp: Light scene info implementation.
@@ -30,20 +30,25 @@ void FLightSceneInfoCompact::Init(FLightSceneInfo* InLightSceneInfo)
 	bCastDynamicShadow = InLightSceneInfo->Proxy->CastsDynamicShadow();
 	bCastStaticShadow = InLightSceneInfo->Proxy->CastsStaticShadow();
 	bStaticLighting = InLightSceneInfo->Proxy->HasStaticLighting();
+	bAffectReflection = InLightSceneInfo->Proxy->AffectReflection();
+	bAffectGlobalIllumination = InLightSceneInfo->Proxy->AffectGlobalIllumination();
+	bCastRaytracedShadow = InLightSceneInfo->Proxy->CastsRaytracedShadow();
 }
 
 FLightSceneInfo::FLightSceneInfo(FLightSceneProxy* InProxy, bool InbVisible)
-	: Proxy(InProxy)
-	, DynamicInteractionOftenMovingPrimitiveList(NULL)
+	: DynamicInteractionOftenMovingPrimitiveList(NULL)
 	, DynamicInteractionStaticPrimitiveList(NULL)
+	, Proxy(InProxy)
 	, Id(INDEX_NONE)
 	, TileIntersectionResources(nullptr)
+	, HeightFieldTileIntersectionResources(nullptr)
 	, DynamicShadowMapChannel(-1)
 	, bPrecomputedLightingIsValid(InProxy->GetLightComponent()->IsPrecomputedLightingValid())
 	, bVisible(InbVisible)
 	, bEnableLightShaftBloom(InProxy->GetLightComponent()->bEnableLightShaftBloom)
 	, BloomScale(InProxy->GetLightComponent()->BloomScale)
 	, BloomThreshold(InProxy->GetLightComponent()->BloomThreshold)
+	, BloomMaxBrightness(InProxy->GetLightComponent()->BloomMaxBrightness)
 	, BloomTint(InProxy->GetLightComponent()->BloomTint)
 	, NumUnbuiltInteractions(0)
 	, bCreatePerObjectShadowsForDynamicObjects(Proxy->ShouldCreatePerObjectShadowsForDynamicObjects())
@@ -64,16 +69,26 @@ void FLightSceneInfo::AddToScene()
 {
 	const FLightSceneInfoCompact& LightSceneInfoCompact = Scene->Lights[Id];
 
+	bool bIsValidLightTypeMobile = false;
+	if (Scene->GetShadingPath() == EShadingPath::Mobile && Proxy->IsMovable())
+	{
+		static const auto MobileEnableMovableSpotLightsVar = IConsoleManager::Get().FindTConsoleVariableDataInt(TEXT("r.Mobile.EnableMovableSpotLights"));
+		const uint8 LightType = Proxy->GetLightType();
+		bIsValidLightTypeMobile = LightType == LightType_Rect || LightType == LightType_Point
+			|| (LightType == LightType_Spot && MobileEnableMovableSpotLightsVar->GetValueOnRenderThread());
+	}
+
 	// Only need to create light interactions for lights that can cast a shadow, 
 	// As deferred shading doesn't need to know anything about the primitives that a light affects
 	if (Proxy->CastsDynamicShadow() 
 		|| Proxy->CastsStaticShadow() 
 		// Lights that should be baked need to check for interactions to track unbuilt state correctly
 		|| Proxy->HasStaticLighting()
-		// ES2 path supports dynamic point lights in the base pass using forward rendering, so we need to know the primitives
-		|| (Scene->GetFeatureLevel() < ERHIFeatureLevel::SM4 && Proxy->GetLightType() == LightType_Point && Proxy->IsMovable()))
+		// Mobile path supports dynamic point/spot lights in the base pass using forward rendering, so we need to know the primitives
+		|| bIsValidLightTypeMobile)
 	{
 		// Add the light to the scene's light octree.
+		Scene->FlushAsyncLightPrimitiveInteractionCreation();
 		Scene->LightOctree.AddElement(LightSceneInfoCompact);
 
 		// TODO: Special case directional lights, no need to traverse the octree.
@@ -110,6 +125,8 @@ void FLightSceneInfo::CreateLightPrimitiveInteraction(const FLightSceneInfoCompa
 
 void FLightSceneInfo::RemoveFromScene()
 {
+	Scene->FlushAsyncLightPrimitiveInteractionCreation();
+
 	if (OctreeId.IsValidId())
 	{
 		// Remove the light from the octree.
@@ -185,6 +202,24 @@ bool FLightSceneInfo::ShouldRenderLight(const FViewInfo& View) const
 bool FLightSceneInfo::IsPrecomputedLightingValid() const
 {
 	return (bPrecomputedLightingIsValid && NumUnbuiltInteractions < GWholeSceneShadowUnbuiltInteractionThreshold) || !Proxy->HasStaticShadowing();
+}
+
+FLightPrimitiveInteraction* FLightSceneInfo::GetDynamicInteractionOftenMovingPrimitiveList(bool bSync) const
+{
+	if (bSync)
+	{
+		Scene->FlushAsyncLightPrimitiveInteractionCreation();
+	}
+	return DynamicInteractionOftenMovingPrimitiveList;
+}
+
+FLightPrimitiveInteraction* FLightSceneInfo::GetDynamicInteractionStaticPrimitiveList(bool bSync) const
+{
+	if (bSync)
+	{
+		Scene->FlushAsyncLightPrimitiveInteractionCreation();
+	}
+	return DynamicInteractionStaticPrimitiveList;
 }
 
 void FLightSceneInfo::ReleaseRHI()

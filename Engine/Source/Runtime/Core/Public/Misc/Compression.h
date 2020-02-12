@@ -1,10 +1,14 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
-#include "CoreMinimal.h"
+#include "CoreTypes.h"
+#include "UObject/NameTypes.h"
 #include "Templates/Atomic.h"
 #include "Misc/CompressionFlags.h"
+#include "HAL/CriticalSection.h"
+
+class IMemoryReadStream;
 
 // Define global current platform default to current platform.  
 // DEPRECATED, USE NAME_Zlib
@@ -26,6 +30,15 @@ struct FCompression
 	CORE_API static TAtomic<uint64> CompressorSrcBytes;
 	/** Number of bytes after compression.		*/
 	CORE_API static TAtomic<uint64> CompressorDstBytes;
+
+
+	/**
+	 * Returns a version number for a specified format
+	 *
+	 * @param	FormatName					Compressor format name (eg NAME_Zlib)
+	 * @return								An interpretation of an internal version number for a specific format (different formats will have different layouts) this should change if a version is updated
+	 */
+	CORE_API static uint32 GetCompressorVersion(FName FormatName);
 
 	/**
 	 * Thread-safe abstract compression routine to query memory requirements for a compression operation.
@@ -65,6 +78,16 @@ struct FCompression
 	 */
 	CORE_API static bool UncompressMemory(FName FormatName, void* UncompressedBuffer, int32 UncompressedSize, const void* CompressedBuffer, int32 CompressedSize, ECompressionFlags Flags=COMPRESS_NoFlags, int32 CompressionData=0);
 
+	CORE_API static bool UncompressMemoryStream(FName FormatName, void* UncompressedBuffer, int32 UncompressedSize, IMemoryReadStream* Stream, int64 StreamOffset, int32 CompressedSize, ECompressionFlags Flags = COMPRESS_NoFlags, int32 CompressionData = 0);
+	/**
+	 * Returns a string which can be used to identify if a format has become out of date
+	 *
+	 * @param	FormatName					name of the format to retrieve the DDC suffix for
+	 * @return	unique DDC key string which will be different when the format is changed / updated
+	 */
+	CORE_API static FString GetCompressorDDCSuffix(FName FormatName);
+
+
 	/**
 	 * Checks to see if a format will be usable, so that a fallback can be used
 	 * @param FormatName The name of the format to test
@@ -77,19 +100,8 @@ struct FCompression
 	 */
 	CORE_API static bool VerifyCompressionFlagsValid(int32 InCompressionFlags);
 
-
-
-
-
-	UE_DEPRECATED(4.20, "Use the FName based version of CompressMemoryBound")
-	CORE_API static int32 CompressMemoryBound(ECompressionFlags Flags, int32 UncompressedSize, int32 BitWindow = DEFAULT_ZLIB_BIT_WINDOW);
-	UE_DEPRECATED(4.20, "Use the FName based version of CompressMemory")
-	CORE_API static bool CompressMemory(ECompressionFlags Flags, void* CompressedBuffer, int32& CompressedSize, const void* UncompressedBuffer, int32 UncompressedSize, int32 BitWindow = DEFAULT_ZLIB_BIT_WINDOW);
-	UE_DEPRECATED(4.20, "Use the FName based version of UncompressMemory")
-	CORE_API static bool UncompressMemory(ECompressionFlags Flags, void* UncompressedBuffer, int32 UncompressedSize, const void* CompressedBuffer, int32 CompressedSize, bool bIsSourcePadded = false, int32 BitWindow = DEFAULT_ZLIB_BIT_WINDOW);
-
 	CORE_API static FName GetCompressionFormatFromDeprecatedFlags(ECompressionFlags DeprecatedFlags);
-	
+
 private:
 	
 	/**
@@ -99,6 +111,8 @@ private:
 
 	/** Mapping of Compression FNames to their compressor objects */
 	static TMap<FName, struct ICompressionFormat*> CompressionFormats;
+	static FCriticalSection CompressionFormatsCriticalSection;
+
 };
 
 

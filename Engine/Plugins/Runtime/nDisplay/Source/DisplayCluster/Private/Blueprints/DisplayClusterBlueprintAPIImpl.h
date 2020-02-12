@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -6,7 +6,10 @@
 #include "Blueprints/IDisplayClusterBlueprintAPI.h"
 #include "DisplayClusterBlueprintAPIImpl.generated.h"
 
+class UDisplayClusterRootComponent;
+
 struct FDisplayClusterClusterEvent;
+struct FPostProcessSettings;
 
 
 /**
@@ -68,20 +71,21 @@ public:
 	//////////////////////////////////////////////////////////////////////////////////////////////
 	// Config API
 	//////////////////////////////////////////////////////////////////////////////////////////////
-
+	UFUNCTION(BlueprintCallable, meta = (DisplayName = "Get local viewports"), Category = "DisplayCluster|Config")
+	virtual void GetLocalViewports(bool IsRTT, TArray<FString>& ViewportIDs, TArray<FString>& ViewportTypes, TArray<FIntPoint>& ViewportLocations, TArray<FIntPoint>& ViewportSizes) override;
 
 public:
 	//////////////////////////////////////////////////////////////////////////////////////////////
 	// Game API
 	//////////////////////////////////////////////////////////////////////////////////////////////
 	// Root
-	UFUNCTION(BlueprintCallable, meta = (DisplayName = "Get root"), Category = "DisplayCluster|Game")
-	virtual ADisplayClusterPawn* GetRoot() override;
+	UFUNCTION(BlueprintCallable, meta = (DisplayName = "Get root actor"), Category = "DisplayCluster|Game")
+	virtual ADisplayClusterRootActor* GetRootActor() override;
+
+	UFUNCTION(BlueprintCallable, meta = (DisplayName = "Get root component"), Category = "DisplayCluster|Game")
+	virtual UDisplayClusterRootComponent* GetRootComponent() override;
 
 	// Screens
-	UFUNCTION(BlueprintCallable, meta = (DisplayName = "Get active screens"), Category = "DisplayCluster|Game")
-	virtual TArray<UDisplayClusterScreenComponent*> GetActiveScreens() override;
-
 	UFUNCTION(BlueprintCallable, meta = (DisplayName = "Get screen by ID"), Category = "DisplayCluster|Game")
 	virtual UDisplayClusterScreenComponent* GetScreenById(const FString& id) override;
 
@@ -92,14 +96,20 @@ public:
 	virtual int32 GetScreensAmount() override;
 
 	// Cameras
-	/*
-	virtual UDisplayClusterCameraComponent*         GetActiveCamera() const override;
-	virtual UDisplayClusterCameraComponent*         GetCameraById(const FString& id) const override;
-	virtual TArray<UDisplayClusterCameraComponent*> GetAllCameras() const override;
-	virtual int32                        GetCamerasAmount() const override;
-	virtual void                         SetActiveCamera(int32 idx) override;
-	virtual void                         SetActiveCamera(const FString& id) override;
-	*/
+	UFUNCTION(BlueprintCallable, meta = (DisplayName = "Get all cameras"), Category = "DisplayCluster|Game")
+	virtual TArray<UDisplayClusterCameraComponent*> GetAllCameras() override;
+
+	UFUNCTION(BlueprintCallable, meta = (DisplayName = "Get camera by ID"), Category = "DisplayCluster|Game")
+	virtual UDisplayClusterCameraComponent* GetCameraById(const FString& id) override;
+
+	UFUNCTION(BlueprintCallable, meta = (DisplayName = "Get cameras amount"), Category = "DisplayCluster|Game")
+	virtual int32 GetCamerasAmount() override;
+
+	UFUNCTION(BlueprintCallable, meta = (DisplayName = "Get default camera"), Category = "DisplayCluster|Game")
+	virtual UDisplayClusterCameraComponent* GetDefaultCamera() override;
+
+	UFUNCTION(BlueprintCallable, meta = (DisplayName = "Set default camera by ID"), Category = "DisplayCluster|Game")
+	virtual void SetDefaultCameraById(const FString& id) override;
 
 	// Nodes
 	UFUNCTION(BlueprintCallable, meta = (DisplayName = "Get node by ID"), Category = "DisplayCluster|Game")
@@ -107,25 +117,6 @@ public:
 
 	UFUNCTION(BlueprintCallable, meta = (DisplayName = "Get all nodes"), Category = "DisplayCluster|Game")
 	virtual TArray<UDisplayClusterSceneComponent*> GetAllNodes() override;
-
-	// Navigation
-	UFUNCTION(BlueprintCallable, meta = (DisplayName = "Get translation direction component"), Category = "DisplayCluster|Game")
-	virtual USceneComponent* GetTranslationDirectionComponent() override;
-
-	UFUNCTION(BlueprintCallable, meta = (DisplayName = "Set translation direction component"), Category = "DisplayCluster|Game")
-	virtual void SetTranslationDirectionComponent(USceneComponent* pComp) override;
-
-	UFUNCTION(BlueprintCallable, meta = (DisplayName = "Set translation direction component by ID"), Category = "DisplayCluster|Game")
-	virtual void SetTranslationDirectionComponentId(const FString& id) override;
-
-	UFUNCTION(BlueprintCallable, meta = (DisplayName = "Get rotate around component"), Category = "DisplayCluster|Game")
-	virtual USceneComponent* GetRotateAroundComponent() override;
-
-	UFUNCTION(BlueprintCallable, meta = (DisplayName = "Set rotate around component"), Category = "DisplayCluster|Game")
-	virtual void SetRotateAroundComponent(USceneComponent* pComp) override;
-
-	UFUNCTION(BlueprintCallable, meta = (DisplayName = "Set rotate around component by ID"), Category = "DisplayCluster|Game")
-	virtual void SetRotateAroundComponentId(const FString& id) override;
 
 public:
 	//////////////////////////////////////////////////////////////////////////////////////////////
@@ -181,24 +172,48 @@ public:
 	//////////////////////////////////////////////////////////////////////////////////////////////
 	// Render API
 	//////////////////////////////////////////////////////////////////////////////////////////////
-	UFUNCTION(BlueprintCallable, meta = (DisplayName = "Set interpuppillary distance"), Category = "DisplayCluster|Render")
-	virtual void SetInterpupillaryDistance(float dist) override;
+	UFUNCTION(BlueprintCallable, meta = (DisplayName = "Set viewport camera"), Category = "DisplayCluster|Render")
+	virtual void SetViewportCamera(const FString& InCameraId, const FString& InViewportId) override;
 
-	UFUNCTION(BlueprintCallable, meta = (DisplayName = "Get interpuppillary distance"), Category = "DisplayCluster|Render")
-	virtual float GetInterpupillaryDistance() override;
+	UFUNCTION(BlueprintCallable, meta = (DisplayName = "Get viewport's buffer ratio"), Category = "DisplayCluster|Render")
+	virtual void GetBufferRatio(const FString& InViewportId, float& OutBufferRatio) override;
 
-	UFUNCTION(BlueprintCallable, meta = (DisplayName = "Set eye swap"), Category = "DisplayCluster|Render")
-	virtual void SetEyesSwap(bool swap) override;
+	UFUNCTION(BlueprintCallable, meta = (DisplayName = "Set viewport's buffer ratio"), Category = "DisplayCluster|Render")
+	virtual void SetBufferRatio(const FString& InViewportId, float InBufferRatio) override;
 
-	UFUNCTION(BlueprintCallable, meta = (DisplayName = "Get eye swap"), Category = "DisplayCluster|Render")
-	virtual bool GetEyesSwap() override;
+	UFUNCTION(BlueprintCallable, meta = (DisplayName = "Set start post processing settings for viewport"), Category = "DisplayCluster|Render")
+	virtual void SetStartPostProcessingSettings(const FString& ViewportID, const FPostProcessSettings& StartPostProcessingSettings) override;
 
-	UFUNCTION(BlueprintCallable, meta = (DisplayName = "Toggle eye swap"), Category = "DisplayCluster|Render")
-	virtual bool ToggleEyesSwap() override;
+	UFUNCTION(BlueprintCallable, meta = (DisplayName = "Set start post override settings for viewport"), Category = "DisplayCluster|Render")
+	virtual void SetOverridePostProcessingSettings(const FString& ViewportID, const FPostProcessSettings& OverridePostProcessingSettings, float BlendWeight = 1.0f) override;
 
-	UFUNCTION(BlueprintCallable, meta = (DisplayName = "Get near and far clipping distance"), Category = "DisplayCluster|Render")
-	virtual void GetCullingDistance(float& NearClipPlane, float& FarClipPlane) override;
+	UFUNCTION(BlueprintCallable, meta = (DisplayName = "Set start post processing settings for viewport"), Category = "DisplayCluster|Render")
+	virtual void SetFinalPostProcessingSettings(const FString& ViewportID, const FPostProcessSettings& FinalPostProcessingSettings) override;
 
-	UFUNCTION(BlueprintCallable, meta = (DisplayName = "Set near and far clipping distance"), Category = "DisplayCluster|Render")
-	virtual void SetCullingDistance(float NearClipPlane, float FarClipPlane) override;
+	UFUNCTION(BlueprintCallable, meta = (DisplayName = "Get viewport rectangle"), Category = "DisplayCluster|Render")
+	virtual bool GetViewportRect(const FString& ViewportID, FIntPoint& ViewportLoc, FIntPoint& ViewportSize) override;
+
+public:
+	//////////////////////////////////////////////////////////////////////////////////////////////
+	// Render/Camera API
+	//////////////////////////////////////////////////////////////////////////////////////////////
+	/** Return eye interpupillary distance (eye separation) for stereoscopic rendering. */
+	UFUNCTION(BlueprintCallable, meta = (DisplayName = "Get interpuppillary distance"), Category = "DisplayCluster|Render|Camera")
+	virtual float GetInterpupillaryDistance(const FString& CameraId) override;
+
+	/** Set eye interpupillary distance (eye separation) for stereoscopic rendering. */
+	UFUNCTION(BlueprintCallable, meta = (DisplayName = "Set interpuppillary distance"), Category = "DisplayCluster|Render|Camera")
+	virtual void SetInterpupillaryDistance(const FString& CameraId, float EyeDistance) override;
+
+	/** Get Swap eye rendering state. */
+	UFUNCTION(BlueprintCallable, meta = (DisplayName = "Get eye swap"), Category = "DisplayCluster|Render|Camera")
+	virtual bool GetEyesSwap(const FString& CameraId) override;
+
+	/** Swap eye rendering. */
+	UFUNCTION(BlueprintCallable, meta = (DisplayName = "Set eye swap"), Category = "DisplayCluster|Render|Camera")
+	virtual void SetEyesSwap(const FString& CameraId, bool EyeSwapped) override;
+
+	/** Toggle current eye swap state. */
+	UFUNCTION(BlueprintCallable, meta = (DisplayName = "Toggle eye swap"), Category = "DisplayCluster|Render|Camera")
+	virtual bool ToggleEyesSwap(const FString& CameraId) override;
 };

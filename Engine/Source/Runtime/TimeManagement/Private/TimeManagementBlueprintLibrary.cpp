@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "TimeManagementBlueprintLibrary.h"
 
@@ -29,6 +29,11 @@ FString UTimeManagementBlueprintLibrary::Conv_TimecodeToString(const FTimecode& 
 FTimecode UTimeManagementBlueprintLibrary::GetTimecode()
 {
 	return FApp::GetTimecode();
+}
+
+FFrameRate UTimeManagementBlueprintLibrary::GetTimecodeFrameRate()
+{
+	return FApp::GetTimecodeFrameRate();
 }
 
 bool UTimeManagementBlueprintLibrary::IsValid_Framerate(const FFrameRate& InFrameRate) 

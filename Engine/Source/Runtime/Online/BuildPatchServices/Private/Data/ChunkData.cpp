@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "Data/ChunkData.h"
 #include "Serialization/MemoryReader.h"
@@ -133,14 +133,15 @@ namespace BuildPatchServices
 				case BuildPatchServices::EFeatureLevel::StoredAsBinaryData:
 				case BuildPatchServices::EFeatureLevel::VariableSizeChunksWithoutWindowSizeChunkInfo:
 				case BuildPatchServices::EFeatureLevel::VariableSizeChunks:
-				case BuildPatchServices::EFeatureLevel::StoresUniqueBuildId:
+				case BuildPatchServices::EFeatureLevel::UsesRuntimeGeneratedBuildId:
+				case BuildPatchServices::EFeatureLevel::UsesBuildTimeGeneratedBuildId:
 					return EChunkVersion::StoresDataSizeUncompressed;
 			}
 			checkf(false, TEXT("Unhandled FeatureLevel %s"), FeatureLevelToString(FeatureLevel));
 			return EChunkVersion::Invalid;
 		}
 	}
-	static_assert((uint32)EFeatureLevel::Latest == 17, "Please adjust HeaderHelpers::FeatureLevelToChunkVersion for new feature levels.");
+	static_assert((uint32)EFeatureLevel::Latest == 18, "Please adjust HeaderHelpers::FeatureLevelToChunkVersion for new feature levels.");
 
 	FChunkHeader::FChunkHeader()
 		: Version((uint32)EChunkVersion::Latest)
@@ -215,8 +216,12 @@ namespace BuildPatchServices
 
 		if (bSuccess)
 		{
-			// Make sure the archive now points to data location.
-			Ar.Seek(StartPos + Header.HeaderSize);
+			// Make sure the archive now points to data location. Only seek if we must, to avoid a flush.
+			const int64 DataLocation = StartPos + Header.HeaderSize;
+			if (Ar.Tell() != DataLocation)
+			{
+				Ar.Seek(DataLocation);
+			}
 		}
 		else
 		{
@@ -284,8 +289,12 @@ namespace BuildPatchServices
 			Ar.Seek(EndPos);
 		}
 
-		// We must always make sure to seek the archive to the correct end location.
-		Ar.Seek(StartPos + DataSize);
+		// We must always make sure to seek the archive to the correct end location. Only seek if we must, to avoid a flush.
+		const int64 DataLocation = StartPos + DataSize;
+		if (Ar.Tell() != DataLocation)
+		{
+			Ar.Seek(DataLocation);
+		}
 		return Ar;
 	}
 
@@ -377,8 +386,12 @@ namespace BuildPatchServices
 
 		if (bSuccess)
 		{
-			// Make sure the archive now points to data location.
-			Ar.Seek(StartPos + Header.HeaderSize);
+			// Make sure the archive now points to data location. Only seek if we must, to avoid a flush.
+			const int64 DataLocation = StartPos + Header.HeaderSize;
+			if (Ar.Tell() != DataLocation)
+			{
+				Ar.Seek(DataLocation);
+			}
 		}
 		else
 		{

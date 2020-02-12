@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -18,6 +18,14 @@ UCLASS(Blueprintable, ClassGroup=Lights, hidecategories=(Object, LightProfiles),
 class ENGINE_API UDirectionalLightComponent : public ULightComponent
 {
 	GENERATED_UCLASS_BODY()
+
+	/**
+	* Controls the depth bias scaling across cascades. This allows to mitigage the shadow acne difference on shadow cascades transition.
+	* A value of 1 scales shadow bias based on each cascade size (Default).
+	* A value of 0 scales shadow bias uniformly accross all cacascade.
+	*/
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = Light, AdvancedDisplay, meta = (UIMin = "0", UIMax = "1"))
+	float ShadowCascadeBiasDistribution;
 
 	/** Whether to occlude fog and atmosphere inscattering with screenspace blurred occlusion from this light. */
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category=LightShafts, meta=(DisplayName = "Light Shaft Occlusion"))
@@ -147,9 +155,18 @@ class ENGINE_API UDirectionalLightComponent : public ULightComponent
 	**/
 	UPROPERTY(BlueprintReadOnly, interp, Category = Light, meta = (HideAlphaChannel), AdvancedDisplay)
 	FColor ModulatedShadowColor;
+	
+	/**
+	 * Control the amount of shadow occlusion. A value of 0 means no occlusion, thus no shadow.
+	 */
+	UPROPERTY(BlueprintReadOnly, interp, Category = Light, meta = (HideAlphaChannel, UIMin = "0", UIMax = "1", ClampMin = "0", ClampMax = "1"), AdvancedDisplay)
+	float ShadowAmount;
 
 	UPROPERTY(EditAnywhere, AdvancedDisplay, BlueprintReadOnly, Category=Light, meta=(DisplayName = "Atmosphere / Fog Sun Light"))
 	uint32 bUsedAsAtmosphereSunLight : 1;
+
+	UPROPERTY(EditAnywhere, AdvancedDisplay, BlueprintReadOnly, Category = Light, meta = (DisplayName = "Atmosphere Sun Light Index", UIMin = "0", UIMax = "1", ClampMin = "0", ClampMax= "1"))
+	int32 AtmosphereSunLightIndex;
 
 	UFUNCTION(BlueprintCallable, Category="Rendering|Lighting")
 	void SetDynamicShadowDistanceMovableLight(float NewValue);
@@ -178,6 +195,9 @@ class ENGINE_API UDirectionalLightComponent : public ULightComponent
 	UFUNCTION(BlueprintCallable, Category="Rendering|Lighting")
 	void SetLightShaftOverrideDirection(FVector NewValue);
 
+	UFUNCTION(BlueprintCallable, Category="Rendering|Lighting")
+	void SetShadowAmount(float NewValue);
+
 	//~ Begin ULightComponent Interface
 	virtual FVector4 GetLightPosition() const override;
 	virtual ELightComponentType GetLightType() const override;
@@ -193,12 +213,16 @@ class ENGINE_API UDirectionalLightComponent : public ULightComponent
 	{
 		return bUsedAsAtmosphereSunLight;
 	}
+	virtual uint8 GetAtmosphereSunLightIndex() const override
+	{
+		return AtmosphereSunLightIndex;
+	}
 	//~ End ULightComponent Interface
 
 	//~ Begin UObject Interface
 #if WITH_EDITOR
 	virtual void PostEditChangeProperty(FPropertyChangedEvent& PropertyChangedEvent) override;
-	virtual bool CanEditChange(const UProperty* InProperty) const override;
+	virtual bool CanEditChange(const FProperty* InProperty) const override;
 #endif // WITH_EDITOR
 	virtual void Serialize(FArchive& Ar) override;
 	//~ Begin UObject Interface

@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 using UnrealBuildTool;
 
@@ -40,7 +40,6 @@ public class UMGEditor : ModuleRules
 				"CoreUObject",
 				"ApplicationCore",
 				"InputCore",
-				"Slate",
 				"Engine",
 				"AssetTools",
 				"UnrealEd", // for FAssetEditorManager
@@ -49,6 +48,7 @@ public class UMGEditor : ModuleRules
 				"BlueprintGraph",
 				"GraphEditor",
 				"Kismet",  // for FWorkflowCentricApplication
+				"PropertyPath",
 				"PropertyEditor",
 				"UMG",
 				"EditorStyle",
@@ -63,7 +63,9 @@ public class UMGEditor : ModuleRules
 				"RenderCore",
                 "TargetPlatform",
 				"TimeManagement",
-				"GameProjectGeneration"
+				"GameProjectGeneration",
+				"PropertyPath",
+				"ToolMenus",
 			}
 			);
 	}

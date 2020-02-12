@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "Animation/UMGSequencePlayer.h"
 #include "MovieScene.h"
@@ -13,6 +13,7 @@ UUMGSequencePlayer::UUMGSequencePlayer(const FObjectInitializer& ObjectInitializ
 	PlayerStatus = EMovieScenePlayerStatus::Stopped;
 	TimeCursorPosition = FFrameTime(0);
 	PlaybackSpeed = 1;
+	bRestoreState = false;
 	Animation = nullptr;
 	bIsEvaluating = false;
 	UserTag = NAME_None;
@@ -113,7 +114,8 @@ void UUMGSequencePlayer::Tick(float DeltaTime)
 
 			bIsEvaluating = true;
 
-			const FMovieSceneContext Context(FMovieSceneEvaluationRange(AbsolutePlaybackStart + TimeCursorPosition, AbsolutePlaybackStart + LastTimePosition, AnimationResolution), PlayerStatus);
+			FMovieSceneContext Context(FMovieSceneEvaluationRange(AbsolutePlaybackStart + TimeCursorPosition, AbsolutePlaybackStart + LastTimePosition, AnimationResolution), PlayerStatus);
+			Context.SetHasJumped(bCrossedLowerBound || bCrossedUpperBound || bCrossedEndTime);
 			RootTemplateInstance.Evaluate(Context, *this);
 
 			bIsEvaluating = false;
@@ -124,16 +126,28 @@ void UUMGSequencePlayer::Tick(float DeltaTime)
 		if ( bCompleted )
 		{
 			PlayerStatus = EMovieScenePlayerStatus::Stopped;
+			
+			if (bRestoreState)
+			{
+				RestorePreAnimatedState();
+			}
+
 			UserWidget->OnAnimationFinishedPlaying(*this);
 			OnSequenceFinishedPlayingEvent.Broadcast(*this);
 		}
 	}
 }
 
-void UUMGSequencePlayer::PlayInternal(double StartAtTime, double EndAtTime, int32 InNumLoopsToPlay, EUMGSequencePlayMode::Type InPlayMode, float InPlaybackSpeed)
+void UUMGSequencePlayer::PlayInternal(double StartAtTime, double EndAtTime, int32 InNumLoopsToPlay, EUMGSequencePlayMode::Type InPlayMode, float InPlaybackSpeed, bool bInRestoreState)
 {
+	if (bInRestoreState)
+	{
+		PreAnimatedState.EnableGlobalCapture();
+	}
+
 	RootTemplateInstance.Initialize(*Animation, *this);
 
+	bRestoreState = bInRestoreState;
 	PlaybackSpeed = FMath::Abs(InPlaybackSpeed);
 	PlayMode = InPlayMode;
 
@@ -166,26 +180,27 @@ void UUMGSequencePlayer::PlayInternal(double StartAtTime, double EndAtTime, int3
 	NumLoopsCompleted = 0;
 	bIsPlayingForward = InPlayMode != EUMGSequencePlayMode::Reverse;
 
+	PlayerStatus = EMovieScenePlayerStatus::Playing;
+
 	// Immediately evaluate the first frame of the animation so that if tick has already occurred, the widget is setup correctly and ready to be
 	// rendered using the first frames data, otherwise you may see a *pop* due to a widget being constructed with a default different than the
 	// first frame of the animation.
+	// Playback assumes the start frame has already been evaulated, so we also want to evaluate any events on the start frame here.
 	if (RootTemplateInstance.IsValid())
 	{
 		const FMovieSceneContext Context(FMovieSceneEvaluationRange(AbsolutePlaybackStart + TimeCursorPosition, AbsolutePlaybackStart + TimeCursorPosition, AnimationResolution), PlayerStatus);
 		RootTemplateInstance.Evaluate(Context, *this);
 	}
-
-	PlayerStatus = EMovieScenePlayerStatus::Playing;
 }
 
-void UUMGSequencePlayer::Play(float StartAtTime, int32 InNumLoopsToPlay, EUMGSequencePlayMode::Type InPlayMode, float InPlaybackSpeed)
+void UUMGSequencePlayer::Play(float StartAtTime, int32 InNumLoopsToPlay, EUMGSequencePlayMode::Type InPlayMode, float InPlaybackSpeed, bool bInRestoreState)
 {
-	PlayInternal(StartAtTime, 0.0, InNumLoopsToPlay, InPlayMode, InPlaybackSpeed);
+	PlayInternal(StartAtTime, 0.0, InNumLoopsToPlay, InPlayMode, InPlaybackSpeed, bInRestoreState);
 }
 
-void UUMGSequencePlayer::PlayTo(float StartAtTime, float EndAtTime, int32 InNumLoopsToPlay, EUMGSequencePlayMode::Type InPlayMode, float InPlaybackSpeed)
+void UUMGSequencePlayer::PlayTo(float StartAtTime, float EndAtTime, int32 InNumLoopsToPlay, EUMGSequencePlayMode::Type InPlayMode, float InPlaybackSpeed, bool bInRestoreState)
 {
-	PlayInternal(StartAtTime, EndAtTime, InNumLoopsToPlay, InPlayMode, InPlaybackSpeed);
+	PlayInternal(StartAtTime, EndAtTime, InNumLoopsToPlay, InPlayMode, InPlaybackSpeed, bInRestoreState);
 }
 
 void UUMGSequencePlayer::Pause()
@@ -229,6 +244,11 @@ void UUMGSequencePlayer::Stop()
 		const FMovieSceneContext Context(FMovieSceneEvaluationRange(AbsolutePlaybackStart, AnimationResolution), PlayerStatus);
 		RootTemplateInstance.Evaluate(Context, *this);
 		RootTemplateInstance.Finish(*this);
+	}
+
+	if (bRestoreState)
+	{
+		RestorePreAnimatedState();
 	}
 
 	UserWidget->OnAnimationFinishedPlaying(*this);

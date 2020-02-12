@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "SDeviceProfileEditor.h"
 #include "Widgets/Text/STextBlock.h"
@@ -363,7 +363,10 @@ TSharedPtr< SWidget > SDeviceProfileEditor::CreateMainDeviceProfilePanel()
 			SNew( SBorder )
 			.BorderImage( FEditorStyle::GetBrush( "Docking.Tab.ContentAreaBrush" ) )
 			[
-				SNew( SDeviceProfileCreateProfilePanel, DeviceProfileManager )
+				SNew( STextBlock )
+				.AutoWrapText(true)
+				.Text(LOCTEXT("CreateDeviceProfile", "To create a device profile, edit your project's DefaultDeviceProfiles.ini file. "
+					"Make sure to add to or create a section called [DeviceProfileNameAndTypes]. See Engine/Config/BaseDeviceProfiles.ini for examples."))
 			]
 		];
 
@@ -555,9 +558,9 @@ void SDeviceProfileEditor::RebuildPropertyTable()
 
 	PropertyTable->SetIsUserAllowedToChangeRoot( false );
 
-	for (TFieldIterator<UProperty> DeviceProfilePropertyIter( UDeviceProfile::StaticClass() ); DeviceProfilePropertyIter; ++DeviceProfilePropertyIter)
+	for (TFieldIterator<FProperty> DeviceProfilePropertyIter( UDeviceProfile::StaticClass() ); DeviceProfilePropertyIter; ++DeviceProfilePropertyIter)
 	{
-		TWeakObjectPtr< UProperty > DeviceProfileProperty = *DeviceProfilePropertyIter;
+		TWeakFieldPtr< FProperty > DeviceProfileProperty = *DeviceProfilePropertyIter;
 		if(DeviceProfileProperty->GetName() != TEXT("Parent") )
 		{
 			PropertyTable->AddColumn(DeviceProfileProperty);

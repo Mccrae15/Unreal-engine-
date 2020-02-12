@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -68,7 +68,7 @@ class UNiagaraPreviewAxis_InterpParamBase : public UNiagaraPreviewAxis
 
 protected:
 	UPROPERTY(EditAnywhere, Category = Axis)
-	FString Param;
+	FName Param;
 	UPROPERTY(EditAnywhere, Category = Axis)
 	int32 Count;
 
@@ -203,6 +203,13 @@ public:
 
 	UFUNCTION(BlueprintCallable, Category=Preview)
 	void DeactivatePreviews();
+
+	UFUNCTION(BlueprintCallable, Category = Preview)
+	void SetPaused(bool bPaused);
+
+	UFUNCTION(BlueprintCallable, Category = Preview)
+	void GetPreviews(TArray<UNiagaraComponent*>& OutPreviews);
+
 private:
 
 	void DestroyPreviews();

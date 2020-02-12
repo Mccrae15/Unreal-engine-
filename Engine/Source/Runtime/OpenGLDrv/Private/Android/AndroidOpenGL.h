@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 /*=============================================================================
 	AndroidOpenGL.h: Public OpenGL ES definitions for Android-specific functionality
@@ -18,7 +18,7 @@
 #include <EGL/eglplatform.h>
 #include <GLES2/gl2ext.h>
 	
-typedef EGLSyncKHR UGLsync;
+typedef GLsync			UGLsync;
 #define GLdouble		GLfloat
 typedef khronos_int64_t GLint64;
 typedef khronos_uint64_t GLuint64;
@@ -36,12 +36,27 @@ typedef khronos_uint64_t GLuint64;
 
 #define GL_BGRA			GL_BGRA_EXT 
 #define GL_UNSIGNED_INT_8_8_8_8_REV	GL_UNSIGNED_BYTE
-#define glMapBuffer		glMapBufferOESa
-#define glUnmapBuffer	glUnmapBufferOESa
 
 #ifndef GL_HALF_FLOAT
 #define GL_HALF_FLOAT	GL_HALF_FLOAT_OES
 #endif
+
+#ifndef GL_TEXTURE_1D
+#define GL_TEXTURE_1D			0x0DE0
+#endif
+
+#ifndef GL_TEXTURE_1D_ARRAY
+#define GL_TEXTURE_1D_ARRAY		0x8C18
+#endif
+
+#ifndef GL_TEXTURE_2D_ARRAY
+#define GL_TEXTURE_2D_ARRAY		0x8C1A
+#endif
+
+#ifndef GL_TEXTURE_RECTANGLE
+#define GL_TEXTURE_RECTANGLE	0x84F5
+#endif
+
 
 #define GL_COMPRESSED_RGB8_ETC2           0x9274
 #define GL_COMPRESSED_SRGB8_ETC2          0x9275
@@ -61,6 +76,9 @@ extern PFNBLITFRAMEBUFFERNVPROC					glBlitFramebufferNV ;
 #define GL_SAMPLES_PASSED_EXT					0x8914
 #define GL_ANY_SAMPLES_PASSED_EXT				0x8C2F
 
+#ifndef GL_MAX_TEXTURE_BUFFER_SIZE
+#define GL_MAX_TEXTURE_BUFFER_SIZE				0x8C2B
+#endif
 
 typedef void (GL_APIENTRYP PFNGLGENQUERIESEXTPROC) (GLsizei n, GLuint *ids);
 typedef void (GL_APIENTRYP PFNGLDELETEQUERIESEXTPROC) (GLsizei n, const GLuint *ids);
@@ -108,6 +126,7 @@ extern PFNGLLABELOBJECTEXTPROC			glLabelObjectEXT;
 extern PFNGLGETOBJECTLABELEXTPROC		glGetObjectLabelEXT;
 extern PFNGLPOPGROUPMARKEREXTPROC 		glPopGroupMarkerEXT;
 extern PFNGLTEXSTORAGE2DPROC			glTexStorage2D;
+extern PFNGLTEXSTORAGE3DPROC			glTexStorage3D;
 extern PFNGLDEBUGMESSAGECONTROLKHRPROC	glDebugMessageControlKHR;
 extern PFNGLDEBUGMESSAGEINSERTKHRPROC	glDebugMessageInsertKHR;
 extern PFNGLDEBUGMESSAGECALLBACKKHRPROC	glDebugMessageCallbackKHR;
@@ -123,12 +142,22 @@ extern PFNGLDRAWELEMENTSINSTANCEDPROC	glDrawElementsInstanced;
 extern PFNGLDRAWARRAYSINSTANCEDPROC		glDrawArraysInstanced;
 extern PFNGLVERTEXATTRIBDIVISORPROC		glVertexAttribDivisor;
 
+extern PFNGLGENVERTEXARRAYSPROC 		glGenVertexArrays;
+extern PFNGLBINDVERTEXARRAYPROC 		glBindVertexArray;
+extern PFNGLMAPBUFFERRANGEPROC			glMapBufferRange;
+extern PFNGLUNMAPBUFFERPROC				glUnmapBuffer;
+extern PFNGLCOPYBUFFERSUBDATAPROC		glCopyBufferSubData;
+extern PFNGLDRAWARRAYSINDIRECTPROC		glDrawArraysIndirect;
+extern PFNGLDRAWELEMENTSINDIRECTPROC	glDrawElementsIndirect;
+
 extern PFNGLTEXBUFFEREXTPROC			glTexBufferEXT;
+extern PFNGLTEXBUFFERRANGEEXTPROC		glTexBufferRangeEXT;
 extern PFNGLUNIFORM4UIVPROC				glUniform4uiv;
 extern PFNGLCLEARBUFFERFIPROC			glClearBufferfi;
 extern PFNGLCLEARBUFFERFVPROC			glClearBufferfv;
 extern PFNGLCLEARBUFFERIVPROC			glClearBufferiv;
 extern PFNGLCLEARBUFFERUIVPROC			glClearBufferuiv;
+extern PFNGLREADBUFFERPROC				glReadBuffer;
 extern PFNGLDRAWBUFFERSPROC				glDrawBuffers;
 extern PFNGLTEXIMAGE3DPROC				glTexImage3D;
 extern PFNGLTEXSUBIMAGE3DPROC			glTexSubImage3D;
@@ -156,6 +185,16 @@ extern PFNGLSAMPLERPARAMETERIPROC		glSamplerParameteri;
 extern PFNGLBINDSAMPLERPROC				glBindSampler;
 
 extern PFNGLPROGRAMPARAMETERIPROC		glProgramParameteri;
+
+extern PFNGLMEMORYBARRIERPROC			glMemoryBarrier;
+extern PFNGLDISPATCHCOMPUTEPROC			glDispatchCompute;
+extern PFNGLDISPATCHCOMPUTEINDIRECTPROC	glDispatchComputeIndirect;
+extern PFNGLBINDIMAGETEXTUREPROC		glBindImageTexture;
+
+extern PFNGLDELETESYNCPROC				glDeleteSync;
+extern PFNGLFENCESYNCPROC				glFenceSync;
+extern PFNGLISSYNCPROC					glIsSync;
+extern PFNGLCLIENTWAITSYNCPROC			glClientWaitSync;
 
 #include "OpenGLES2.h"
 
@@ -199,6 +238,12 @@ extern "C"
 	extern PFNeglQueryTimestampSupportedANDROID eglGetCompositorTimingSupportedANDROID_p;
 	extern PFNeglQueryTimestampSupportedANDROID eglGetFrameTimestampsSupportedANDROID_p;
 }
+
+#ifndef GL_FRAMEBUFFER_FETCH_NONCOHERENT_QCOM
+#define GL_FRAMEBUFFER_FETCH_NONCOHERENT_QCOM	0x96A2
+#endif
+typedef void (GL_APIENTRYP PFNGLFRAMEBUFFERFETCHBARRIERQCOMPROC) (void);
+extern PFNGLFRAMEBUFFERFETCHBARRIERQCOMPROC	glFramebufferFetchBarrierQCOM;
 
 struct FAndroidOpenGL : public FOpenGLES2
 {
@@ -252,52 +297,38 @@ struct FAndroidOpenGL : public FOpenGLES2
 	{
 		if (GUseThreadedRendering)
 		{
-			//handle error here
-			EGLBoolean Result = eglDestroySyncKHR_p( AndroidEGL::GetInstance()->GetDisplay(), Sync );
-			if(Result == EGL_FALSE)
-			{
-				//handle error here
-			}
+			glDeleteSync( Sync );
 		}
 	}
 
 	static FORCEINLINE UGLsync FenceSync(GLenum Condition, GLbitfield Flags)
 	{
-		check(Condition == GL_SYNC_GPU_COMMANDS_COMPLETE && Flags == 0);
-		return GUseThreadedRendering ? eglCreateSyncKHR_p( AndroidEGL::GetInstance()->GetDisplay(), EGL_SYNC_FENCE_KHR, NULL ) : 0;
+		return GUseThreadedRendering ? glFenceSync( Condition, Flags ) : 0;
 	}
-	
+
 	static FORCEINLINE bool IsSync(UGLsync Sync)
 	{
-		if(GUseThreadedRendering)
+		if (GUseThreadedRendering)
 		{
-			return (Sync != EGL_NO_SYNC_KHR) ? true : false;
+			return (glIsSync( Sync ) == GL_TRUE) ? true : false;
 		}
-		else
-		{
-			return true;
-		}
+		return true;
 	}
 
 	static FORCEINLINE EFenceResult ClientWaitSync(UGLsync Sync, GLbitfield Flags, GLuint64 Timeout)
 	{
 		if (GUseThreadedRendering)
 		{
-			QUICK_SCOPE_CYCLE_COUNTER(STAT_eglClientWaitSyncKHR_p);
-			// check( Flags == GL_SYNC_FLUSH_COMMANDS_BIT );
-			GLenum Result = eglClientWaitSyncKHR_p( AndroidEGL::GetInstance()->GetDisplay(), Sync, EGL_SYNC_FLUSH_COMMANDS_BIT_KHR, Timeout );
+			GLenum Result = glClientWaitSync( Sync, Flags, Timeout );
 			switch (Result)
 			{
-			case EGL_TIMEOUT_EXPIRED_KHR:		return FR_TimeoutExpired;
-			case EGL_CONDITION_SATISFIED_KHR:	return FR_ConditionSatisfied;
+				case GL_ALREADY_SIGNALED:		return FR_AlreadySignaled;
+				case GL_TIMEOUT_EXPIRED:		return FR_TimeoutExpired;
+				case GL_CONDITION_SATISFIED:	return FR_ConditionSatisfied;
 			}
 			return FR_WaitFailed;
 		}
-		else
-		{
-			return FR_ConditionSatisfied;
-		}
-		return FR_WaitFailed;
+		return FR_ConditionSatisfied;
 	}
 
 	static FORCEINLINE void FramebufferTexture2D(GLenum Target, GLenum Attachment, GLenum TexTarget, GLuint Texture, GLint Level)
@@ -361,46 +392,98 @@ struct FAndroidOpenGL : public FOpenGLES2
 
 	static FORCEINLINE void DrawArraysInstanced(GLenum Mode, GLint First, GLsizei Count, GLsizei InstanceCount)
 	{
-		check(SupportsInstancing());
 		glDrawArraysInstanced(Mode, First, Count, InstanceCount);
 	}
 
 	static FORCEINLINE void DrawElementsInstanced(GLenum Mode, GLsizei Count, GLenum Type, const GLvoid* Indices, GLsizei InstanceCount)
 	{
-		check(SupportsInstancing());
 		glDrawElementsInstanced(Mode, Count, Type, Indices, InstanceCount);
+	}
+
+	static FORCEINLINE void CopyBufferSubData(GLenum ReadTarget, GLenum WriteTarget, GLintptr ReadOffset, GLintptr WriteOffset, GLsizeiptr Size)
+	{
+		glCopyBufferSubData(ReadTarget, WriteTarget, ReadOffset, WriteOffset, Size);
+	}
+
+	static FORCEINLINE void DrawArraysIndirect(GLenum Mode, const void *Offset)
+	{
+		glDrawArraysIndirect(Mode, Offset);
+	}
+
+	static FORCEINLINE void DrawElementsIndirect(GLenum Mode, GLenum Type, const void *Offset)
+	{
+		glDrawElementsIndirect(Mode, Type, Offset);
 	}
 
 	static FORCEINLINE void VertexAttribDivisor(GLuint Index, GLuint Divisor)
 	{
-		if (SupportsInstancing())
-		{
-			glVertexAttribDivisor(Index, Divisor);
-		}
+		glVertexAttribDivisor(Index, Divisor);
 	}
 	
 	static FORCEINLINE void TexStorage3D(GLenum Target, GLint Levels, GLint InternalFormat, GLsizei Width, GLsizei Height, GLsizei Depth, GLenum Format, GLenum Type)
 	{
-		const bool bArrayTexture = Target == GL_TEXTURE_2D_ARRAY || Target == GL_TEXTURE_CUBE_MAP_ARRAY;
-		for(uint32 MipIndex = 0; MipIndex < uint32(Levels); MipIndex++)
+		if (glTexStorage3D)
 		{
-			glTexImage3D(
-				Target,
-				MipIndex,
-				InternalFormat,
-				FMath::Max<uint32>(1,(Width >> MipIndex)),
-				FMath::Max<uint32>(1,(Height >> MipIndex)),
-				(bArrayTexture) ? Depth : FMath::Max<uint32>(1,(Depth >> MipIndex)),
-				0,
-				Format,
-				Type,
-				NULL
-				);
+			glTexStorage3D( Target, Levels, InternalFormat, Width, Height, Depth);
+		}
+		else
+		{
+			const bool bArrayTexture = Target == GL_TEXTURE_2D_ARRAY || Target == GL_TEXTURE_CUBE_MAP_ARRAY;
+			for(uint32 MipIndex = 0; MipIndex < uint32(Levels); MipIndex++)
+			{
+				glTexImage3D(
+					Target,
+					MipIndex,
+					InternalFormat,
+					FMath::Max<uint32>(1,(Width >> MipIndex)),
+					FMath::Max<uint32>(1,(Height >> MipIndex)),
+					(bArrayTexture) ? Depth : FMath::Max<uint32>(1,(Depth >> MipIndex)),
+					0,
+					Format,
+					Type,
+					NULL
+					);
 
-			VERIFY_GL(TexImage_3D);
+				VERIFY_GL(TexImage_3D);
+			}
 		}
 	}
 	
+	static FORCEINLINE void* MapBufferRange(GLenum Type, uint32 InOffset, uint32 InSize, EResourceLockMode LockMode)
+	{
+		GLenum Access;
+		switch (LockMode)
+		{
+		case EResourceLockMode::RLM_ReadOnly:
+			Access = GL_MAP_READ_BIT;
+			break;
+		case EResourceLockMode::RLM_WriteOnly:
+			Access = (GL_MAP_INVALIDATE_BUFFER_BIT | GL_MAP_WRITE_BIT | GL_MAP_UNSYNCHRONIZED_BIT);
+			break;
+		case EResourceLockMode::RLM_WriteOnlyUnsynchronized:
+			Access = (GL_MAP_WRITE_BIT | GL_MAP_UNSYNCHRONIZED_BIT);
+			break;
+		case EResourceLockMode::RLM_WriteOnlyPersistent:
+			Access = (GL_MAP_WRITE_BIT | GL_MAP_PERSISTENT_BIT | GL_MAP_COHERENT_BIT);
+			break;
+		case EResourceLockMode::RLM_ReadWrite:
+		default:
+			Access = (GL_MAP_READ_BIT | GL_MAP_WRITE_BIT);
+		}
+		return glMapBufferRange(Type, InOffset, InSize, Access);
+	}
+
+	static FORCEINLINE void UnmapBuffer(GLenum Type)
+	{
+		glUnmapBuffer(Type);
+	}
+
+	static FORCEINLINE void UnmapBufferRange(GLenum Type, uint32 InOffset, uint32 InSize)
+	{
+		UnmapBuffer(Type);
+	}
+
+
 	static FORCEINLINE void TexImage3D(GLenum Target, GLint Level, GLint InternalFormat, GLsizei Width, GLsizei Height, GLsizei Depth, GLint Border, GLenum Format, GLenum Type, const GLvoid* PixelData)
 	{
 		glTexImage3D(Target, Level, InternalFormat, Width, Height, Depth, Border, Format, Type, PixelData);
@@ -414,6 +497,15 @@ struct FAndroidOpenGL : public FOpenGLES2
 	static FORCEINLINE void TexSubImage3D(GLenum Target, GLint Level, GLint XOffset, GLint YOffset, GLint ZOffset, GLsizei Width, GLsizei Height, GLsizei Depth, GLenum Format, GLenum Type, const GLvoid* PixelData)
 	{
 		glTexSubImage3D(Target, Level, XOffset, YOffset, ZOffset, Width, Height, Depth, Format, Type, PixelData);
+	}
+
+	static FORCEINLINE void	CopyTexSubImage1D(GLenum Target, GLint Level, GLint XOffset, GLint X, GLint Y, GLsizei Width)
+	{
+	}
+
+	static FORCEINLINE void	CopyTexSubImage2D(GLenum Target, GLint Level, GLint XOffset, GLint YOffset, GLint X, GLint Y, GLsizei Width, GLsizei Height)
+	{
+		glCopyTexSubImage2D(Target, Level, XOffset, YOffset, X, Y, Width, Height);
 	}
 
 	static FORCEINLINE void	CopyTexSubImage3D(GLenum Target, GLint Level, GLint XOffset, GLint YOffset, GLint ZOffset, GLint X, GLint Y, GLsizei Width, GLsizei Height)
@@ -448,6 +540,11 @@ struct FAndroidOpenGL : public FOpenGLES2
 		glDrawBuffers(NumBuffers, Buffers);
 	}
 	
+	static FORCEINLINE void ReadBuffer(GLenum Mode)
+	{
+		glReadBuffer( Mode );
+	}
+
 	static FORCEINLINE void ColorMaskIndexed(GLuint Index, GLboolean Red, GLboolean Green, GLboolean Blue, GLboolean Alpha)
 	{
 		check(Index == 0 || SupportsMultipleRenderTargets());
@@ -457,6 +554,11 @@ struct FAndroidOpenGL : public FOpenGLES2
 	static FORCEINLINE void TexBuffer(GLenum Target, GLenum InternalFormat, GLuint Buffer)
 	{
 		glTexBufferEXT(Target, InternalFormat, Buffer);
+	}
+
+	static FORCEINLINE void TexBufferRange(GLenum Target, GLenum InternalFormat, GLuint Buffer, GLintptr Offset, GLsizeiptr Size)
+	{
+		glTexBufferRangeEXT(Target, InternalFormat, Buffer, Offset, Size);
 	}
 
 	static FORCEINLINE void ProgramUniform4uiv(GLuint Program, GLint Location, GLsizei Count, const GLuint *Value)
@@ -551,6 +653,28 @@ struct FAndroidOpenGL : public FOpenGLES2
 		glBindSampler(Unit, Sampler);
 	}
 
+	static FORCEINLINE void MemoryBarrier(GLbitfield Barriers)
+	{
+		glMemoryBarrier(Barriers);
+	}
+	
+	static FORCEINLINE void DispatchCompute(GLuint NumGroupsX, GLuint NumGroupsY, GLuint NumGroupsZ)
+	{
+		glDispatchCompute(NumGroupsX, NumGroupsY, NumGroupsZ);
+	}
+
+	static FORCEINLINE void DispatchComputeIndirect(GLintptr Offset)
+	{
+		glDispatchComputeIndirect(Offset);
+	}
+
+	static FORCEINLINE void BindImageTexture(GLuint Unit, GLuint Texture, GLint Level, GLboolean Layered, GLint Layer, GLenum Access, GLenum Format)
+	{
+		glBindImageTexture(Unit, Texture, Level, Layered, Layer, Access, Format);
+	}
+	
+	static FORCEINLINE bool SupportsPixelBuffers() { return false; }
+	
 	// Adreno doesn't support HALF_FLOAT
 	static FORCEINLINE int32 GetReadHalfFloatPixelsEnum()				{ return GL_FLOAT; }
 
@@ -570,7 +694,6 @@ struct FAndroidOpenGL : public FOpenGLES2
 
 	static FORCEINLINE bool SupportsSRGB()								{ return IsES31Usable(); }		// only with enabled EFeatureLevelSupport::ES31
 	static FORCEINLINE bool SupportsTextureSwizzle()					{ return bES30Support; }
-	static FORCEINLINE bool SupportsInstancing()						{ return bSupportsInstancing; }
 	static FORCEINLINE bool SupportsDrawBuffers()						{ return bES30Support; }
 	static FORCEINLINE bool SupportsMultipleRenderTargets()				{ return bES30Support; }
 	static FORCEINLINE bool SupportsWideMRT()							{ return bES31Support; }
@@ -591,7 +714,8 @@ struct FAndroidOpenGL : public FOpenGLES2
 	
 	static FORCEINLINE bool SupportsBlitFramebuffer() { return FOpenGLES2::SupportsBlitFramebuffer() || IsES31Usable(); }
 
-	static FORCEINLINE bool SupportsComputeShaders() { return bES31Support && RHISupportsComputeShaders(GetShaderPlatform()); }
+	static FORCEINLINE bool SupportsComputeShaders() { return bES31Support; }
+	static FORCEINLINE bool SupportsStructuredBuffers()	{ return bES31Support; }
 
 	enum class EImageExternalType : uint8
 	{
@@ -611,7 +735,30 @@ struct FAndroidOpenGL : public FOpenGLES2
 
 	static FORCEINLINE GLint GetMaxMSAASamplesTileMem() { return MaxMSAASamplesTileMem; }
 
+	static FORCEINLINE GLint GetMaxComputeTextureImageUnits() { check(MaxComputeTextureImageUnits != -1); return MaxComputeTextureImageUnits; }
+	static FORCEINLINE GLint GetMaxComputeUniformComponents() { check(MaxComputeUniformComponents != -1); return MaxComputeUniformComponents; }
+	static FORCEINLINE GLint GetFirstComputeUAVUnit()			{ return 0; }
+	static FORCEINLINE GLint GetMaxComputeUAVUnits()			{ check(MaxComputeUAVUnits != -1); return MaxComputeUAVUnits; }
+	static FORCEINLINE GLint GetFirstPixelUAVUnit()				{ return 0; }
+	static FORCEINLINE GLint GetMaxPixelUAVUnits()				{ check(MaxPixelUAVUnits != -1); return MaxPixelUAVUnits; }
+	static FORCEINLINE GLint GetMaxCombinedUAVUnits()			{ return MaxCombinedUAVUnits; }
+		
+	static FORCEINLINE void FrameBufferFetchBarrier()
+	{
+		if (glFramebufferFetchBarrierQCOM)
+		{
+			glFramebufferFetchBarrierQCOM();
+		}
+	}
+		
+	static FORCEINLINE bool SupportsDrawIndirect() { return true; }
+
 	static void ProcessExtensions(const FString& ExtensionsString);
+	static void SetupDefaultGLContextState(const FString& ExtensionsString);
+
+	static bool RequiresAdrenoTilingModeHint();
+	static void EnableAdrenoTilingModeHint(bool bEnable);
+	static bool bRequiresAdrenoTilingHint;
 
 	// whether to use ES 3.0 function glTexStorage2D to allocate storage for GL_HALF_FLOAT_OES render target textures
 	static bool bUseHalfFloatTexStorage;
@@ -627,9 +774,6 @@ struct FAndroidOpenGL : public FOpenGLES2
 
 	// whether device supports ES 3.1
 	static bool bES31Support;
-
-	// whether device supports hardware instancing
-	static bool bSupportsInstancing;
 
 	/** Whether device supports Hidden Surface Removal */
 	static bool bHasHardwareHiddenSurfaceRemoval;
@@ -660,6 +804,13 @@ struct FAndroidOpenGL : public FOpenGLES2
 	/** supported OpenGL ES version queried from the system */
 	static int32 GLMajorVerion;
 	static int32 GLMinorVersion;
+
+	static GLint MaxComputeTextureImageUnits;
+	static GLint MaxComputeUniformComponents;
+
+	static GLint MaxCombinedUAVUnits;
+	static GLint MaxComputeUAVUnits;
+	static GLint MaxPixelUAVUnits;
 };
 
 typedef FAndroidOpenGL FOpenGL;

@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "Widgets/STimecodeSynchronizerSourceViewport.h"
 #include "TimecodeSynchronizer.h"
@@ -36,6 +36,9 @@ void STimecodeSynchronizerSourceViewport::Construct(const FArguments& InArgs, UT
 	TimecodeSynchronization.Reset(InTimecodeSynchronizer);
 	AttachedSourceIndex = InAttachedSourceIndex;
 	bIsSynchronizedSource = bInIsSynchronizedSource;
+
+	FSlateFontInfo Font18 = FCoreStyle::Get().GetFontStyle(TEXT("NormalFont"));
+	Font18.Size = 18;
 
 	ChildSlot
 	[
@@ -97,9 +100,10 @@ void STimecodeSynchronizerSourceViewport::Construct(const FArguments& InArgs, UT
 								// Min Timecode
 								SNew(STextBlock)
 								.ColorAndOpacity(FSlateColor::UseSubduedForeground())
-								.Font(FEditorStyle::Get().GetFontStyle("FontAwesome.18"))
+								.Font(Font18)
 								.ShadowOffset(FVector2D(1.f, 1.f))
 								.Text(this, &STimecodeSynchronizerSourceViewport::HandleIntervalMinTimecodeText)
+								.Justification(ETextJustify::Right)
 								.ToolTipText(LOCTEXT("OverlayMinTimecodeDataTooltip", "Buffered minimum Timecode of this source"))
 							]
 							
@@ -109,9 +113,10 @@ void STimecodeSynchronizerSourceViewport::Construct(const FArguments& InArgs, UT
 								// Max Timecode
 								SNew(STextBlock)
 								.ColorAndOpacity(FSlateColor::UseSubduedForeground())
-								.Font(FEditorStyle::Get().GetFontStyle("FontAwesome.18"))
+								.Font(Font18)
 								.ShadowOffset(FVector2D(1.f, 1.f))
 								.Text(this, &STimecodeSynchronizerSourceViewport::HandleIntervalMaxTimecodeText)
+								.Justification(ETextJustify::Right)
 								.ToolTipText(LOCTEXT("OverlayMaxTimecodeDataTooltip", "Buffered maximum Timecode of this source"))
 							]
 						]
@@ -128,7 +133,7 @@ void STimecodeSynchronizerSourceViewport::Construct(const FArguments& InArgs, UT
 							// Display if source is the master
 							SNew(STextBlock)
 							.ColorAndOpacity(FSlateColor::UseSubduedForeground())
-							.Font(FEditorStyle::Get().GetFontStyle("FontAwesome.18"))
+							.Font(Font18)
 							.ShadowOffset(FVector2D(1.f, 1.f))
 							.Text(this, &STimecodeSynchronizerSourceViewport::HandleIsSourceMasterText)
 							.ToolTipText(LOCTEXT("OverlayMasterSourceTooltip", "Is this source used as the master"))
@@ -141,9 +146,10 @@ void STimecodeSynchronizerSourceViewport::Construct(const FArguments& InArgs, UT
 							// Current Timecode
 							SNew(STextBlock)
 							.ColorAndOpacity(FSlateColor::UseSubduedForeground())
-							.Font(FEditorStyle::Get().GetFontStyle("FontAwesome.18"))
+							.Font(Font18)
 							.ShadowOffset(FVector2D(1.f, 1.f))
 							.Text(this, &STimecodeSynchronizerSourceViewport::HandleCurrentTimecodeText)
+							.Justification(ETextJustify::Right)
 							.ToolTipText(LOCTEXT("OverlayCurrentTimecodeDataTooltip", "Current Timecode of system"))
 						]
 					]
@@ -163,11 +169,10 @@ FText STimecodeSynchronizerSourceViewport::HandleIntervalMinTimecodeText() const
 	if (AttachedSource && AttachedSource->IsReady())
 	{
 		const FFrameNumber OldestFrame = AttachedSource->GetInputSourceState().OldestAvailableSample.GetFrame();
-		const bool bIsDropFrame = FTimecode::IsDropFormatTimecodeSupported(AttachedSource->GetFrameRate());
-		Timecode = FTimecode::FromFrameNumber(OldestFrame, AttachedSource->GetFrameRate(), bIsDropFrame);
+		Timecode = FTimecode::FromFrameNumber(OldestFrame, AttachedSource->GetFrameRate());
 	}
 
-	return FText::FromString(Timecode.ToString());
+	return FText::FromString(FString("Minimum: ") + Timecode.ToString());
 }
 
 FText STimecodeSynchronizerSourceViewport::HandleIntervalMaxTimecodeText() const
@@ -177,16 +182,15 @@ FText STimecodeSynchronizerSourceViewport::HandleIntervalMaxTimecodeText() const
 	if (AttachedSource && AttachedSource->IsReady())
 	{
 		const FFrameNumber NewestFrame = AttachedSource->GetInputSourceState().NewestAvailableSample.GetFrame();
-		const bool bIsDropFrame = FTimecode::IsDropFormatTimecodeSupported(AttachedSource->GetFrameRate());
-		Timecode = FTimecode::FromFrameNumber(NewestFrame, AttachedSource->GetFrameRate(), bIsDropFrame);
+		Timecode = FTimecode::FromFrameNumber(NewestFrame, AttachedSource->GetFrameRate());
 	}
 
-	return FText::FromString(Timecode.ToString());
+	return FText::FromString(FString("Maximum: ") + Timecode.ToString());
 }
 
 FText STimecodeSynchronizerSourceViewport::HandleCurrentTimecodeText() const
 {
-	return FText::FromString(FApp::GetTimecode().ToString());
+	return FText::FromString(FString("Current: ") + FApp::GetTimecode().ToString());
 }
 
 FText STimecodeSynchronizerSourceViewport::HandleIsSourceMasterText() const

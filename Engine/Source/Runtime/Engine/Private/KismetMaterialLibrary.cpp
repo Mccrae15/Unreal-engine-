@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "Kismet/KismetMaterialLibrary.h"
 #include "EngineGlobals.h"
@@ -132,7 +132,7 @@ class UMaterialInstanceDynamic* UKismetMaterialLibrary::CreateDynamicMaterialIns
 	if (Parent)
 	{
 
-		// MIDs need to be created within a persistent object if in the construction script (or blutility) or else they will not be saved.
+		// MIDs need to be created within a persistent object if in the construction script (or editor utility) or else they will not be saved.
 		// If this MID is created at runtime then put it in the transient package
 		UWorld* World = GEngine->GetWorldFromContextObject(WorldContextObject, EGetWorldErrorMode::ReturnNull);
 		UObject* MIDOuter = (World && (World->bIsRunningConstructionScript  || !World->IsGameWorld()) ? WorldContextObject : nullptr);

@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "AutoReimport/AssetSourceFilenameCache.h"
 #include "Misc/Paths.h"
@@ -7,9 +7,9 @@
 
 FAssetSourceFilenameCache::FAssetSourceFilenameCache()
 {
-	if (GIsRequestingExit)
+	if (IsEngineExitRequested())
 	{
-		// This can get created for the first timeon shutdown, if so don't do anything
+		// This can get created for the first time on shutdown, if so don't do anything
 		return;
 	}
 

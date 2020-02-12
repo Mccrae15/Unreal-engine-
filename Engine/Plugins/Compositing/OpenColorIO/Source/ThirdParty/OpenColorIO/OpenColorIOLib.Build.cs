@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 using System;
 using System.IO;
 using UnrealBuildTool;
@@ -20,22 +20,17 @@ public class OpenColorIOLib : ModuleRules
 				PublicSystemIncludePaths.Add(IncPath);
 
 				string LibPath = Path.Combine(ModuleDirectory, "distribution", "lib", PlatformDir);
-				PublicLibraryPaths.Add(LibPath);
-
 				string BinaryPath = Path.GetFullPath(Path.Combine(ModuleDirectory, "../../../Binaries/ThirdParty", PlatformDir));
 
 				string LibName = "OpenColorIO";
 
-				PublicAdditionalLibraries.Add(LibName + ".lib");
+				PublicAdditionalLibraries.Add(Path.Combine(LibPath, LibName + ".lib"));
 				string DLLName = LibName + ".dll";
 				PublicDelayLoadDLLs.Add(DLLName);
 				RuntimeDependencies.Add(Path.Combine(BinaryPath, DLLName));
 				PublicDefinitions.Add("WITH_OCIO=1");
 				PublicDefinitions.Add("OCIO_PLATFORM_PATH=Binaries/ThirdParty/" + PlatformDir);
 				PublicDefinitions.Add("OCIO_DLL_NAME=" + DLLName);
-
-				//The header file OpenColorIOABI.h that is generated depends on this definition.
-				PublicDefinitions.Add("__GNUC__=0");
 
 				bIsPlatformAdded = true;
 			}

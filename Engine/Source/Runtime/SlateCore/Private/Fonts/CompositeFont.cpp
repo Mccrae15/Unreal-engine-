@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "Fonts/CompositeFont.h"
 #include "SlateGlobals.h"
@@ -267,4 +267,9 @@ void FStandaloneCompositeFont::AddReferencedObjects(FReferenceCollector& Collect
 			TypefaceEntry.Font.AddReferencedObjects(Collector);
 		}
 	}
+}
+
+FString FStandaloneCompositeFont::GetReferencerName() const
+{
+	return TEXT("FStandaloneCompositeFont");
 }

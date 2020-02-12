@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "NetcodeUnitTest.h"
 
@@ -109,21 +109,6 @@ public:
 		{
 			GLogTraceManager->AddLogTrace(TraceStr);
 		}
-
-		// Hack-override the log category name
-#if !NO_LOGGING
-		class FLogOverride : public FLogCategoryBase
-		{
-		public:
-			// Used to access protected CategoryFName
-			void OverrideName(FName InName)
-			{
-				CategoryFName = InName;
-			}
-		};
-
-		((FLogOverride&)NetCodeTestNone).OverrideName(TEXT("None"));
-#endif
 	}
 
 	/**

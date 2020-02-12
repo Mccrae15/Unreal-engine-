@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -18,7 +18,7 @@ class WMFMEDIAFACTORY_API UWmfMediaSettings
 	GENERATED_BODY()
 
 public:
-	 
+
 	/** Default constructor. */
 	UWmfMediaSettings();
 
@@ -54,4 +54,16 @@ public:
 	/** Use hardware accelerated video acceleration (GPU) when possible otherwise fallback to software implementation (CPU), Windows and DX11 only. */
 	UPROPERTY(config, EditAnywhere, Category=Media, meta = (DisplayName = "Hardware Accelerated Video Decoding (Experimental)"))
 	bool HardwareAcceleratedVideoDecoding;
+
+	/** Set when at least one registered codec is hardware accelerated. */
+	bool bAreHardwareAcceleratedCodecRegistered;
+
+public:
+
+	void EnableHardwareAcceleratedCodecRegistered();
+
+#if WITH_EDITOR
+	virtual bool CanEditChange(const FProperty* InProperty) const override;
+#endif //WITH_EDITOR
+
 };

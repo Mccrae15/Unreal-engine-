@@ -1,19 +1,20 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "SignedArchiveWriter.h"
 #include "IPlatformFilePak.h"
 #include "Misc/SecureHash.h"
 #include "HAL/FileManager.h"
 
-FSignedArchiveWriter::FSignedArchiveWriter(FArchive& InPak, const FString& InPakFilename, const FEncryptionKey& InPublicKey, const FEncryptionKey& InPrivateKey)
-: BufferArchive(Buffer)
-	, PakWriter(InPak)
-	, PakSignaturesFilename(FPaths::ChangeExtension(InPakFilename, TEXT("sig")))
-	, SizeOnDisk(0)
-	, PakSize(0)
-	, PublicKey(InPublicKey)
-	, PrivateKey(InPrivateKey)
+FSignedArchiveWriter::FSignedArchiveWriter(FArchive& InPak, const FString& InPakFilename, const FRSAKeyHandle InSigningKey)
+: FArchive(InPak)
+, BufferArchive(Buffer)
+, PakWriter(InPak)
+, PakSignaturesFilename(FPaths::ChangeExtension(InPakFilename, TEXT("sig")))
+, SizeOnDisk(0)
+, PakSize(0)
+, SigningKey(InSigningKey)
 {
+	check(IsSaving());
 	Buffer.Reserve(FPakInfo::MaxChunkDataSize);
 }
 
@@ -44,14 +45,10 @@ bool FSignedArchiveWriter::Close()
 		SerializeBufferAndSign();
 	}
 
-	FEncryptedSignature EncryptedMasterHash;
-	FDecryptedSignature DecryptedMasterHash;
-	DecryptedMasterHash.Data = ComputePakChunkHash((const uint8*)&ChunkHashes[0], ChunkHashes.Num() * sizeof(TPakChunkHash));
-	FEncryption::EncryptSignature(DecryptedMasterHash, EncryptedMasterHash, PrivateKey);
-
 	FArchive* SignatureWriter = IFileManager::Get().CreateFileWriter(*PakSignaturesFilename);
-	*SignatureWriter << EncryptedMasterHash;
-	*SignatureWriter << ChunkHashes;
+	FPakSignatureFile SignatureFile;
+	SignatureFile.SetChunkHashesAndSign(ChunkHashes, SigningKey);
+	SignatureFile.Serialize(*SignatureWriter);
 	delete SignatureWriter;
 
 	return FArchive::Close();

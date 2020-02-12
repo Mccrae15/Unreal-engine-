@@ -1,4 +1,4 @@
-﻿// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+﻿// Copyright Epic Games, Inc. All Rights Reserved.
 
 using Gauntlet;
 using System;
@@ -22,6 +22,8 @@ namespace Gauntlet.SelfTest
 	{
 		public override void TickTest()
 		{
+			AccountPool.Initialize();
+
 			AccountPool.Instance.RegisterAccount(new EpicAccount("Foo", "Bar"));
 
 			// Add three devices to the pool
@@ -31,7 +33,7 @@ namespace Gauntlet.SelfTest
 			});
 			
 			// Create a new build (params come from our base class will be similar to "OrionGame" and "p:\builds\orion\branch-cl")
-			UnrealBuildSource Build = new UnrealBuildSource(this.GameName, this.UsesSharedBuildType, Environment.CurrentDirectory, this.BuildPath, new string[] { "" });
+			UnrealBuildSource Build = new UnrealBuildSource(this.ProjectName, this.ProjectFile, this.UnrealPath, this.UsesSharedBuildType, this.BuildPath, new string[] { "" });
 
 			// create a new options structure
 			UnrealOptions Options = new UnrealOptions();

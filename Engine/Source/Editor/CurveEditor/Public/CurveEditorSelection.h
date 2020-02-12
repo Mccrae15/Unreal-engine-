@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -11,12 +11,13 @@
 
 struct FCurvePointHandle;
 
+class FCurveEditor;
 
 /**
  * A set of key handles implemented as a sorted array for transparent passing to TArrayView<> APIs.
  * Lookup is achieved via binary search: O(log(n)).
  */
-struct FKeyHandleSet
+struct CURVEEDITOR_API FKeyHandleSet
 {
 	/**
 	 * Add a new key handle to this set
@@ -65,6 +66,12 @@ struct CURVEEDITOR_API FCurveEditorSelection
 	 * Default constructor
 	 */
 	FCurveEditorSelection();
+
+	/**
+	 * Constructor which takes a reference to the curve editor, 
+	 * which is used to find if a model is read only
+	 */
+	FCurveEditorSelection(TWeakPtr<FCurveEditor> InWeakCurveEditor);
 
 	/**
 	 * Retrieve the current type of selection
@@ -124,7 +131,6 @@ public:
 	 * Add key handles to this selection, changing the selection type if necessary.
 	 */
 	void Add(FCurveModelID CurveID, ECurvePointType PointType, TArrayView<const FKeyHandle> Keys);
-
 public:
 
 	/**
@@ -175,6 +181,9 @@ public:
 	void ChangeSelectionPointType(ECurvePointType InPointType);
 
 private:
+
+	/** Weak reference to the curve editor to check whether keys are locked or not */
+	TWeakPtr<FCurveEditor> WeakCurveEditor;
 
 	/** A serial number that increments every time a change is made to the selection */
 	uint32 SerialNumber;

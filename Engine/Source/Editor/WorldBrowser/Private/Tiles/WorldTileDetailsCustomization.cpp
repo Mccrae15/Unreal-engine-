@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 #include "Tiles/WorldTileDetailsCustomization.h"
 #include "Misc/PackageName.h"
 #include "Widgets/Layout/SBox.h"
@@ -270,7 +270,7 @@ void FTileLODEntryDetailsCustomization::CustomizeChildren(TSharedRef<IPropertyHa
 		);
 	
 	TSharedPtr<IPropertyHandle> DistanceProperty = StructPropertyHandle->GetChildHandle(
-		GET_MEMBER_NAME_CHECKED(FTileLODEntryDetails, Distance)
+		GET_MEMBER_NAME_CHECKED(FTileLODEntryDetails, RelativeDistance)
 		);
 	
 	TSharedPtr<IPropertyHandle> SimplificationDetails = StructPropertyHandle->GetChildHandle(

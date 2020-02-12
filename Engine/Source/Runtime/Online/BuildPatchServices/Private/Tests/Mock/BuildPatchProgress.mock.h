@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 #pragma once
 
 #include "BuildPatchProgress.h"
@@ -25,11 +25,6 @@ namespace BuildPatchServices
 		virtual void Abort() override
 		{
 			MOCK_FUNC_NOT_IMPLEMENTED("FMockBuildPatchProgress::Abort");
-		}
-
-		virtual void Reset() override
-		{
-			MOCK_FUNC_NOT_IMPLEMENTED("FMockBuildPatchProgress::Reset");
 		}
 
 		virtual void SetStateProgress(const EBuildPatchState& State, const float& Value) override

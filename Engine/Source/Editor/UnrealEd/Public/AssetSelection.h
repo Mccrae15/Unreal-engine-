@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -172,6 +172,13 @@ namespace AssetSelectionUtils
 	 */
 	UNREALED_API bool IsClassPlaceable(const UClass* Class);
 	/**
+	 * Checks if a Blueprint based on a class type can be placed in a level
+	 *
+	 * @param Class	The class to check
+	 * @return true if the Blueprint based on this class is placeable
+	 */
+	UNREALED_API bool IsChildBlueprintPlaceable(const UClass* Class);
+	/**
 	 * Gets the selected assets in the content browser
 	 *
 	 * @param SelectedLoadedAssets	(Out) The list of assets which are loaded
@@ -209,6 +216,11 @@ namespace AssetSelectionUtils
 	 */
 	UNREALED_API bool IsBuilderBrushSelected();
 };
+
+namespace ActorPlacementUtils
+{
+	UNREALED_API bool IsLevelValidForActorPlacement(ULevel* Level, TArray<FTransform>& InActorTransforms);
+}
 
 class UNREALED_API FActorFactoryAssetProxy
 {

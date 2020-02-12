@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 using System;
 using System.Collections.Generic;
@@ -340,17 +340,6 @@ namespace Tools.DotNETCommon
 				{
 					UpdateNode.MaxExcludeRuleNumber = LastNode.RuleNumber;
 				}
-			}
-		}
-
-		/// <summary>
-		/// Excludes all confidential folders from the filter
-		/// </summary>
-		public void ExcludeRestrictedFolders()
-		{
-			foreach(string RestrictedFolderName in RestrictedFolders.Names)
-			{
-				AddRule(String.Format(".../{0}/...", RestrictedFolderName), FileFilterType.Exclude);
 			}
 		}
 

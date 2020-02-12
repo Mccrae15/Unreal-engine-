@@ -1,15 +1,14 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "ARSupportInterface.h"
 #include "ARTraceResult.h"
-#include "ARSystem.h"
 #include "Features/IModularFeatures.h"
 #include "ARBlueprintLibrary.h"
 #include "ARBlueprintProxy.h"
 #include "Templates/SharedPointer.h"
 #include "Engine/Texture2D.h"
 
-FARSupportInterface ::FARSupportInterface (IARSystemSupport* InARImplementation, IXRTrackingSystem* InXRTrackingSystem)
+FARSupportInterface::FARSupportInterface (IARSystemSupport* InARImplementation, IXRTrackingSystem* InXRTrackingSystem)
 	: ARImplemention(InARImplementation)
 	, XRTrackingSystem(InXRTrackingSystem)
 	, AlignmentTransform(FTransform::Identity)
@@ -17,15 +16,10 @@ FARSupportInterface ::FARSupportInterface (IARSystemSupport* InARImplementation,
 {
 }
 
-
 FARSupportInterface ::~FARSupportInterface ()
 {
 	IModularFeatures::Get().UnregisterModularFeature(FARSupportInterface ::GetModularFeatureName(), this);
-
-	UARBlueprintLibrary::RegisterAsARSystem(nullptr);
-	UARBaseAsyncTaskBlueprintProxy::RegisterAsARSystem(nullptr);
 }
-
 
 void FARSupportInterface ::InitializeARSystem()
 {
@@ -34,8 +28,8 @@ void FARSupportInterface ::InitializeARSystem()
 
 	if (ARImplemention)
 	{
-		UARBlueprintLibrary::RegisterAsARSystem(MakeShareable(this));
-		UARBaseAsyncTaskBlueprintProxy::RegisterAsARSystem(MakeShareable(this));
+		UARBlueprintLibrary::RegisterAsARSystem(AsShared());
+		UARBaseAsyncTaskBlueprintProxy::RegisterAsARSystem(AsShared());
 
 		ARImplemention->OnARSystemInitialized();
 	}
@@ -328,3 +322,69 @@ void FARSupportInterface ::AddReferencedObjects(FReferenceCollector& Collector)
 		Collector.AddReferencedObject(ARSettings);
 	}
 }
+
+bool FARSupportInterface::IsSessionTrackingFeatureSupported(EARSessionType SessionType, EARSessionTrackingFeature SessionTrackingFeature) const
+{
+	if (ARImplemention)
+	{
+		return ARImplemention->OnIsSessionTrackingFeatureSupported(SessionType, SessionTrackingFeature);
+	}
+	return false;
+}
+
+TArray<FARPose2D> FARSupportInterface::GetTracked2DPose() const
+{
+	if (ARImplemention)
+	{
+		return ARImplemention->OnGetTracked2DPose();
+	}
+	return {};
+}
+
+UARTextureCameraImage* FARSupportInterface::GetPersonSegmentationImage() const
+{
+	if (ARImplemention)
+	{
+		return ARImplemention->OnGetPersonSegmentationImage();
+	}
+	return nullptr;
+}
+
+UARTextureCameraImage* FARSupportInterface::GetPersonSegmentationDepthImage() const
+{
+	if (ARImplemention)
+	{
+		return ARImplemention->OnGetPersonSegmentationDepthImage();
+	}
+	return nullptr;
+}
+
+#define DEFINE_AR_SI_DELEGATE_FUNCS(DelegateName) \
+FDelegateHandle FARSupportInterface::Add##DelegateName##Delegate_Handle(const F##DelegateName##Delegate& Delegate) \
+{ \
+	if (ARImplemention) \
+	{ \
+		return ARImplemention->Add##DelegateName##Delegate_Handle(Delegate); \
+	} \
+	return Delegate.GetHandle(); \
+} \
+void FARSupportInterface::Clear##DelegateName##Delegate_Handle(FDelegateHandle& Handle) \
+{ \
+	if (ARImplemention) \
+	{ \
+		ARImplemention->Clear##DelegateName##Delegate_Handle(Handle); \
+		return; \
+	} \
+	Handle.Reset(); \
+} \
+void FARSupportInterface::Clear##DelegateName##Delegates(void* Object) \
+{ \
+	if (ARImplemention) \
+	{ \
+		ARImplemention->Clear##DelegateName##Delegates(Object); \
+	} \
+}
+
+DEFINE_AR_SI_DELEGATE_FUNCS(OnTrackableAdded)
+DEFINE_AR_SI_DELEGATE_FUNCS(OnTrackableUpdated)
+DEFINE_AR_SI_DELEGATE_FUNCS(OnTrackableRemoved)

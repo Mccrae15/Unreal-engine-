@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 
 #include "Commandlets/GenerateDistillFileSetsCommandlet.h"
@@ -261,11 +261,11 @@ int32 UGenerateDistillFileSetsCommandlet::Main( const FString& InParams )
 				AllPackageNames.Add(Package->GetName());
 
 				UE_LOG(LogGenerateDistillFileSetsCommandlet, Display, TEXT( "Finding content referenced by %s..." ), *MapPackage );
-				TArray<UObject *> ObjectsInOuter;
-				GetObjectsWithOuter(NULL, ObjectsInOuter, false);
-				for (int32 Index = 0; Index < ObjectsInOuter.Num(); Index++)
+				TArray<UObject *> AllPackages;
+				GetObjectsOfClass(UPackage::StaticClass(), AllPackages);
+				for (int32 Index = 0; Index < AllPackages.Num(); Index++)
 				{
-					FString OtherName = ObjectsInOuter[Index]->GetOutermost()->GetName();
+					FString OtherName = AllPackages[Index]->GetOutermost()->GetName();
 					if (!AllPackageNames.Contains(OtherName))
 					{
 						AllPackageNames.Add(OtherName);

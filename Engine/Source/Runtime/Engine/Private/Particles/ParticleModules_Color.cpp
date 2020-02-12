@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 /*=============================================================================
 	ParticleModules_Color.cpp: 
@@ -93,7 +93,7 @@ void UParticleModuleColor::PostEditChangeProperty(FPropertyChangedEvent& Propert
 {
 	InitializeDefaults();
 
-	UProperty* PropertyThatChanged = PropertyChangedEvent.Property;
+	FProperty* PropertyThatChanged = PropertyChangedEvent.Property;
 	if (PropertyThatChanged)
 	{
 		if (PropertyThatChanged->GetFName() == FName(TEXT("bClampAlpha")))
@@ -124,7 +124,7 @@ bool UParticleModuleColor::AddModuleCurvesToEditor(UInterpCurveEdSetup* EdSetup,
 	bool bNewCurve = false;
 #if WITH_EDITORONLY_DATA
 	// Iterate over object and find any InterpCurveFloats or UDistributionFloats
-	for (TFieldIterator<UStructProperty> It(GetClass()); It; ++It)
+	for (TFieldIterator<FStructProperty> It(GetClass()); It; ++It)
 	{
 		// attempt to get a distribution from a random struct property
 		UObject* Distribution = FRawDistribution::TryGetDistributionObjectFromRawDistributionProperty(*It, (uint8*)this);
@@ -155,7 +155,7 @@ bool UParticleModuleColor::AddModuleCurvesToEditor(UInterpCurveEdSetup* EdSetup,
 
 void UParticleModuleColor::Spawn(FParticleEmitterInstance* Owner, int32 Offset, float SpawnTime, FBaseParticle* ParticleBase)
 {
-	SpawnEx(Owner, Offset, SpawnTime, NULL, ParticleBase);
+	SpawnEx(Owner, Offset, SpawnTime, &GetRandomStream(Owner), ParticleBase);
 }
 
 
@@ -192,27 +192,11 @@ UParticleModuleColor_Seeded::UParticleModuleColor_Seeded(const FObjectInitialize
 	bRequiresLoopingNotification = true;
 }
 
-void UParticleModuleColor_Seeded::Spawn(FParticleEmitterInstance* Owner, int32 Offset, float SpawnTime, FBaseParticle* ParticleBase)
-{
-	FParticleRandomSeedInstancePayload* Payload = (FParticleRandomSeedInstancePayload*)(Owner->GetModuleInstanceData(this));
-	SpawnEx(Owner, Offset, SpawnTime, (Payload != NULL) ? &(Payload->RandomStream) : NULL, ParticleBase);
-}
-
-uint32 UParticleModuleColor_Seeded::RequiredBytesPerInstance()
-{
-	return RandomSeedInfo.GetInstancePayloadSize();
-}
-
-uint32 UParticleModuleColor_Seeded::PrepPerInstanceBlock(FParticleEmitterInstance* Owner, void* InstData)
-{
-	return PrepRandomSeedInstancePayload(Owner, (FParticleRandomSeedInstancePayload*)InstData, RandomSeedInfo);
-}
-
 void UParticleModuleColor_Seeded::EmitterLoopingNotify(FParticleEmitterInstance* Owner)
 {
 	if (RandomSeedInfo.bResetSeedOnEmitterLooping == true)
 	{
-		FParticleRandomSeedInstancePayload* Payload = (FParticleRandomSeedInstancePayload*)(Owner->GetModuleInstanceData(this));
+		FParticleRandomSeedInstancePayload* Payload = Owner->GetModuleRandomSeedInstanceData(this);
 		PrepRandomSeedInstancePayload(Owner, Payload, RandomSeedInfo);
 	}
 }
@@ -302,7 +286,7 @@ void UParticleModuleColorOverLife::PostEditChangeProperty(FPropertyChangedEvent&
 {
 	InitializeDefaults();
 
-	UProperty* PropertyThatChanged = PropertyChangedEvent.Property;
+	FProperty* PropertyThatChanged = PropertyChangedEvent.Property;
 	if (PropertyThatChanged)
 	{
 		if (PropertyThatChanged->GetFName() == FName(TEXT("bClampAlpha")))
@@ -334,7 +318,7 @@ bool UParticleModuleColorOverLife::AddModuleCurvesToEditor(UInterpCurveEdSetup* 
 	bool bNewCurve = false;
 #if WITH_EDITORONLY_DATA
 	// Iterate over object and find any InterpCurveFloats or UDistributionFloats
-	for (TFieldIterator<UStructProperty> It(GetClass()); It; ++It)
+	for (TFieldIterator<FStructProperty> It(GetClass()); It; ++It)
 	{
 		// attempt to get a distribution from a random struct property
 		UObject* Distribution = FRawDistribution::TryGetDistributionObjectFromRawDistributionProperty(*It, (uint8*)this);

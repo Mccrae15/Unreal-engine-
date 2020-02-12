@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "Tracks/MovieSceneMaterialTrack.h"
 #include "MovieSceneCommonHelpers.h"
@@ -48,6 +48,11 @@ void UMovieSceneMaterialTrack::RemoveSection(UMovieSceneSection& Section)
 	Sections.Remove(&Section);
 }
 
+void UMovieSceneMaterialTrack::RemoveSectionAt(int32 SectionIndex)
+{
+	Sections.RemoveAt(SectionIndex);
+}
+
 
 bool UMovieSceneMaterialTrack::IsEmpty() const
 {
@@ -67,7 +72,11 @@ void UMovieSceneMaterialTrack::AddScalarParameterKey(FName ParameterName, FFrame
 	if (NearestSection == nullptr)
 	{
 		NearestSection = Cast<UMovieSceneParameterSection>(CreateNewSection());
-		NearestSection->SetRange(TRange<FFrameNumber>::Inclusive(Time, Time));
+
+		UMovieScene* MovieScene = GetTypedOuter<UMovieScene>();
+		check(MovieScene);
+
+		NearestSection->SetRange(MovieScene->GetPlaybackRange());
 		Sections.Add(NearestSection);
 	}
 	if (NearestSection->TryModify())
@@ -83,7 +92,12 @@ void UMovieSceneMaterialTrack::AddColorParameterKey(FName ParameterName, FFrameN
 	if (NearestSection == nullptr)
 	{
 		NearestSection = Cast<UMovieSceneParameterSection>(CreateNewSection());
-		NearestSection->SetRange(TRange<FFrameNumber>::Inclusive(Time, Time));
+
+		UMovieScene* MovieScene = GetTypedOuter<UMovieScene>();
+		check(MovieScene);
+
+		NearestSection->SetRange(MovieScene->GetPlaybackRange());
+
 		Sections.Add(NearestSection);
 	}
 	if (NearestSection->TryModify())

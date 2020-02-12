@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -206,7 +206,6 @@
 #include "Async/TaskGraphInterfaces.h"
 #include "Serialization/BufferReader.h"
 #include "Misc/SecureHash.h"
-#include "Templates/ScopedPointer.h"
 #include "Containers/StaticArray.h"
 #include "Misc/Paths.h"
 #include "Misc/CoreStats.h"
@@ -392,7 +391,6 @@
 #include "Framework/Commands/InputBindingManager.h"
 #include "Framework/Commands/Commands.h"
 #include "Framework/Text/TextLayout.h"
-#include "Framework/Text/TextRange.h"
 #include "Framework/Text/TextRunRenderer.h"
 #include "Framework/Text/TextLineHighlight.h"
 #include "Framework/Text/IRun.h"
@@ -552,7 +550,6 @@
 #include "Curves/CurveBase.h"
 #include "Curves/CurveOwnerInterface.h"
 #include "Camera/CameraTypes.h"
-#include "Sound/SoundClass.h"
 #include "Curves/CurveFloat.h"
 #include "EditorFramework/AssetImportData.h"
 #include "Animation/Skeleton.h"
@@ -604,7 +601,7 @@
 #include "Animation/AnimBlueprint.h"
 #include "EngineModule.h"
 #include "AI/NavigationSystemBase.h"
-#include "GenericOctreePublic.h"
+#include "Math/GenericOctreePublic.h"
 #include "CanvasTypes.h"
 #include "Sound/SoundBase.h"
 #include "Components/LightComponent.h"
@@ -643,7 +640,7 @@
 #include "Editor/UnrealEdEngine.h"
 #include "IPackageAutoSaver.h"
 #include "ComponentVisualizerManager.h"
-#include "Toolkits/AssetEditorManager.h"
+
 #include "Factories/FbxAnimSequenceImportData.h"
 #include "Factories/FbxSceneImportFactory.h"
 #include "EditorModeManager.h"

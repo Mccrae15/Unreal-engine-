@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -159,6 +159,7 @@ public:
 	FMmaStat<int> DrawCalls;
 	FMmaStat<int> PrimitivesDrawn;
 	FMmaStat<double> FrameTime;
+	FMmaStat<double> DynamicResolution;
 
 	/** Title of the Snapshot */
 	FString Title;

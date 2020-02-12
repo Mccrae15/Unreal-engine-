@@ -1,10 +1,9 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "Input/Devices/VRPN/Button/DisplayClusterVrpnButtonInputDevice.h"
 
-#include "Misc/DisplayClusterHelpers.h"
-#include "Misc/DisplayClusterLog.h"
-
+#include "DisplayClusterHelpers.h"
+#include "DisplayClusterLog.h"
 #include "DisplayClusterStrings.h"
 
 
@@ -42,7 +41,7 @@ void FDisplayClusterVrpnButtonInputDevice::Update()
 bool FDisplayClusterVrpnButtonInputDevice::Initialize()
 {
 	FString addr;
-	if (!DisplayClusterHelpers::str::ExtractParam(ConfigData.Params, FString(DisplayClusterStrings::cfg::data::input::Address), addr))
+	if (!DisplayClusterHelpers::str::ExtractValue(ConfigData.Params, FString(DisplayClusterStrings::cfg::data::input::Address), addr))
 	{
 		UE_LOG(LogDisplayClusterInputVRPN, Error, TEXT("%s - device address not found"), *ToString());
 		return false;

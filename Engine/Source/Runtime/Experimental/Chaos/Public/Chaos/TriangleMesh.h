@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 #pragma once
 
 #include "Chaos/Array.h"
@@ -14,11 +14,14 @@ namespace Chaos
 	class CHAOS_API TTriangleMesh
 	{
 	public:
-		TTriangleMesh(TArray<TVector<int32, 3>>&& Elements, const int32 StartIdx=0, const int32 EndIdx=-1);
+		TTriangleMesh();
+		TTriangleMesh(TArray<TVector<int32, 3>>&& Elements, const int32 StartIdx = 0, const int32 EndIdx = -1);
 		TTriangleMesh(const TTriangleMesh& Other) = delete;
 		TTriangleMesh(TTriangleMesh&& Other);
-		~TTriangleMesh()
-		{}
+		~TTriangleMesh();
+
+		void Init(TArray<TVector<int32, 3>>&& Elements, const int32 StartIdx = 0, const int32 EndIdx = -1);
+		void Init(const TArray<TVector<int32, 3>>& Elements, const int32 StartIdx = 0, const int32 EndIdx = -1);
 
 		/**
 		 * Returns the closed interval of the smallest vertex index used by 
@@ -26,10 +29,12 @@ namespace Chaos
 		 *
 		 * If this mesh is empty, the second index of the range will be negative.
 		 */
-		TPair<int32, int32> GetVertexRange() const
-		{
-			return TPair<int32, int32>(MStartIdx, MStartIdx + MNumIndices - 1);
-		}
+		TPair<int32, int32> GetVertexRange() const;
+
+		/** Returns the set of vertices used by triangles. */
+		TSet<int32> GetVertices() const;
+		/** Returns the unique set of vertices used by this triangle mesh. */
+		void GetVertexSet(TSet<int32>& VertexSet) const;
 
 		/**
 		 * Extends the vertex range.
@@ -47,20 +52,39 @@ namespace Chaos
 			}
 		}
 
-		const TArray<TVector<int32, 3>>& GetSurfaceElements() const
-		{
-			return MElements;
-		}
+		const TArray<TVector<int32, 3>>& GetElements() const& { return MElements; }
+		/**
+		 * Move accessor for topology array.
+		 *
+		 * Use via:
+		 * \code
+		 * TArray<TVector<int32,3>> Triangles;
+		 * TTriangleMesh<T> TriMesh(Triangles); // steals Triangles to TriMesh::MElements
+		 * Triangles = MoveTemp(TriMesh).GetElements(); // steals TriMesh::MElements back to Triangles
+		 * \endcode
+		 */
+		TArray<TVector<int32, 3>> GetElements() && { return MoveTemp(MElements); }
 
-		int32 GetNumElements() const
-		{
-			return MElements.Num();
-		}
+		const TArray<TVector<int32, 3>>& GetSurfaceElements() const& { return MElements; }
+		/**
+		 * Move accessor for topology array.
+		 *
+		 * Use via:
+		 * \code
+		 * TArray<TVector<int32,3>> Triangles;
+		 * TTriangleMesh<T> TriMesh(Triangles); // steals Triangles to TriMesh::MElements
+		 * Triangles = MoveTemp(TriMesh).GetSurfaceElements(); // steals TriMesh::MElements back to Triangles
+		 * \endcode
+		 */
+		TArray<TVector<int32, 3>> GetSurfaceElements() && { return MoveTemp(MElements); }
 
-		const TSet<uint32>& GetNeighbors(const int32 Element) const
-		{
-			return MPointToNeighborsMap[Element];
-		}
+		int32 GetNumElements() const { return MElements.Num(); }
+
+		const TMap<int32, TSet<uint32>>& GetPointToNeighborsMap() const;
+		const TSet<uint32>& GetNeighbors(const int32 Element) const { return GetPointToNeighborsMap()[Element]; }
+
+		const TMap<int32, TArray<int32>>& GetPointToTriangleMap() const;
+		const TArray<int32>& GetCoincidentTriangles(const int32 Element) const { return GetPointToTriangleMap()[Element]; }
 
 		TSet<int32> GetNRing(const int32 Element, const int32 N) const
 		{
@@ -102,32 +126,31 @@ namespace Chaos
 		TArray<Chaos::TVector<int32, 2>> GetUniqueAdjacentPoints() const;
 		TArray<Chaos::TVector<int32, 4>> GetUniqueAdjacentElements() const;
 
-		TArray<TVector<T, 3>> GetFaceNormals(const TArrayView<const TVector<T, 3>>& points) const;
+		/** The GetFaceNormals functions assume Counter Clockwise triangle windings in a Left Handed coordinate system
+			If this is not the case the returned face normals may be inverted
+		*/
+		TArray<TVector<T, 3>> GetFaceNormals(const TArrayView<const TVector<T, 3>>& Points, const bool ReturnEmptyOnError = true) const;
+		void GetFaceNormals(TArray<TVector<T, 3>>& Normals, const TArrayView<const TVector<T, 3>>& Points, const bool ReturnEmptyOnError = true) const;
 		/** Deprecated. Use TArrayView version. */
-		TArray<TVector<T, 3>> GetFaceNormals(const TParticles<T, 3>& InParticles) const
-		{
-			const TArrayCollectionArray<TVector<T, 3>>& X = InParticles.X();
-			const TArrayView<const TVector<T, 3>> XV(X.GetData(), X.Num());
-			return GetFaceNormals(XV);
-		}
+		TArray<TVector<T, 3>> GetFaceNormals(const TParticles<T, 3>& InParticles, const bool ReturnEmptyOnError = true) const
+		{ return GetFaceNormals(InParticles.X(), ReturnEmptyOnError); }
 
-		TArray<TVector<T, 3>> GetPointNormals(const TArrayView<const TVector<T, 3>>& points) const;
+		TArray<TVector<T, 3>> GetPointNormals(const TArrayView<const TVector<T, 3>>& points, const bool bReturnEmptyOnError = false, const bool bUseGlobalArray = true);
+		void GetPointNormals(TArray<TVector<T, 3>>& PointNormals, const TArray<TVector<T, 3>>& FaceNormals, const bool ReturnEmptyOnError = false, const bool bUseGlobalArray = true);
+		/** \brief Get per-point normals. 
+		 * This const version of this function requires \c GetPointToTriangleMap() 
+		 * to be called prior to invoking this function. 
+		 * @param bUseGlobalArray When true, fill the array from the StartIdx to StartIdx + NumIndices - 1 positions, otherwise fill the array from the 0 to NumIndices - 1 positions.
+		 */
+		void GetPointNormals(TArray<TVector<T, 3>>& PointNormals, const TArray<TVector<T, 3>>& FaceNormals, const bool bReturnEmptyOnError, const bool bUseGlobalArray) const;
 		/** Deprecated. Use TArrayView version. */
-		TArray<TVector<T, 3>> GetPointNormals(const TParticles<T, 3>& InParticles) const
-		{
-			const TArrayCollectionArray<TVector<T, 3>>& X = InParticles.X();
-			const TArrayView<const TVector<T, 3>> XV(X.GetData(), X.Num());
-			return GetPointNormals(XV);
-		}
+		TArray<TVector<T, 3>> GetPointNormals(const TParticles<T, 3>& InParticles, const bool bReturnEmptyOnError = false, const bool bUseGlobalArray = true)
+		{ return GetPointNormals(InParticles.X(), bReturnEmptyOnError, bUseGlobalArray); }
 
 		static TTriangleMesh<T> GetConvexHullFromParticles(const TArrayView<const TVector<T, 3>>& points);
 		/** Deprecated. Use TArrayView version. */
 		static TTriangleMesh<T> GetConvexHullFromParticles(const TParticles<T, 3>& InParticles)
-		{
-			const TArrayCollectionArray<TVector<T, 3>>& X = InParticles.X();
-			const TArrayView<const TVector<T, 3>> XV(const_cast<TVector<T, 3>*>(X.GetData()), X.Num());
-			return GetConvexHullFromParticles(XV);
-		}
+		{ return GetConvexHullFromParticles(InParticles.X()); }
 
 		/**
 		 * @ret The connectivity of this mesh represented as a collection of unique segments.
@@ -178,18 +201,51 @@ namespace Chaos
 		/** @brief Reorder vertices according to @param Order. */
 		void RemapVertices(const TArray<int32>& Order);
 
-	private:
-		int32 GlobalToLocal(int32 GlobalIdx)
+		static void InitEquilateralTriangleXY(TTriangleMesh<T>& TriMesh, TParticles<T, 3>& Particles)
 		{
-			int32 LocalIdx = GlobalIdx - MStartIdx;
+			const int32 Idx = Particles.Size();
+			Particles.AddParticles(3);
+			// Left handed
+			Particles.X(Idx + 0) = TVector<T, 3>(0., 0.8083, 0.);
+			Particles.X(Idx + 1) = TVector<T, 3>(0.7, -0.4041, 0.);
+			Particles.X(Idx + 2) = TVector<T, 3>(-0.7, -0.4041, 0.);
+
+			TArray<TVector<int32, 3>> Elements;
+			Elements.SetNum(1);
+			Elements[0] = TVector<int32, 3>(Idx + 0, Idx + 1, Idx + 2);
+
+			TriMesh.Init(MoveTemp(Elements));
+		}
+		static void InitEquilateralTriangleYZ(TTriangleMesh<T>& TriMesh, TParticles<T, 3>& Particles)
+		{
+			const int32 Idx = Particles.Size();
+			Particles.AddParticles(3);
+			// Left handed
+			Particles.X(Idx + 0) = TVector<T, 3>(0., 0., 0.8083);
+			Particles.X(Idx + 1) = TVector<T, 3>(0., 0.7, -0.4041);
+			Particles.X(Idx + 2) = TVector<T, 3>(0., -0.7, -0.4041);
+
+			TArray<TVector<int32, 3>> Elements;
+			Elements.SetNum(1);
+			Elements[0] = TVector<int32, 3>(Idx + 0, Idx + 1, Idx + 2);
+
+			TriMesh.Init(MoveTemp(Elements));
+		}
+
+	private:
+		void InitHelper(const int32 StartIdx, const int32 EndIdx);
+
+		int32 GlobalToLocal(int32 GlobalIdx) const
+		{
+			const int32 LocalIdx = GlobalIdx - MStartIdx;
 			check(LocalIdx >= 0 && LocalIdx < MNumIndices);
 			return LocalIdx;
 		}
 
 		TArray<TVector<int32, 3>> MElements;
 
-		TMap<int32, TArray<int32>> MPointToTriangleMap;
-		TMap<int32, TSet<uint32>> MPointToNeighborsMap;
+		mutable TMap<int32, TArray<int32>> MPointToTriangleMap;
+		mutable TMap<int32, TSet<uint32>> MPointToNeighborsMap;
 
 		TSegmentMesh<T> MSegmentMesh;
 		TArray<TVector<int32, 3>> MFaceToEdges;

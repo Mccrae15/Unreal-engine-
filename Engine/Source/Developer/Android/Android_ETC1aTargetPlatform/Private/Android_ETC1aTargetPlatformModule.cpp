@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 /*=============================================================================
 	AndroidETC1a_TargetPlatformModule.cpp: Implements the FAndroidETC1a_TargetPlatformModule class.
@@ -6,7 +6,7 @@
 
 #include "CoreMinimal.h"
 #include "Modules/ModuleManager.h"
-#include "Android/AndroidProperties.h"
+#include "Android/AndroidPlatformProperties.h"
 #include "Interfaces/ITargetPlatformModule.h"
 #include "Common/TargetPlatformBase.h"
 #include "Interfaces/IAndroidDeviceDetection.h"
@@ -45,7 +45,7 @@ public:
 
 	virtual ITargetPlatform* GetTargetPlatform() override
 	{
-		if (AndroidTargetSingleton == NULL)
+		if (AndroidTargetSingleton == NULL && FAndroid_ETC1aTargetPlatform::IsUsable())
 		{
 			AndroidTargetSingleton = new FAndroid_ETC1aTargetPlatform();
 		}

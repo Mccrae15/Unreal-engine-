@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "PIEPreviewDevice.h"
 
@@ -424,7 +424,6 @@ void FPIEPreviewDevice::ApplyRHIOverrides() const
 		GMaxShadowDepthBufferSizeX.SetPreviewOverride(RHIOverrideState->MaxShadowDepthBufferSizeX);
 		GMaxShadowDepthBufferSizeY.SetPreviewOverride(RHIOverrideState->MaxShadowDepthBufferSizeY);
 		GMaxCubeTextureDimensions.SetPreviewOverride(RHIOverrideState->MaxCubeTextureDimensions);
-		GRHISupportsInstancing.SetPreviewOverride(RHIOverrideState->SupportsInstancing);
 		GSupportsMultipleRenderTargets.SetPreviewOverride(RHIOverrideState->SupportsMultipleRenderTargets);
 		GSupportsRenderTargetFormat_PF_FloatRGBA.SetPreviewOverride(RHIOverrideState->SupportsRenderTargetFormat_PF_FloatRGBA);
 		GSupportsRenderTargetFormat_PF_G8.SetPreviewOverride(RHIOverrideState->SupportsRenderTargetFormat_PF_G8);
@@ -454,6 +453,8 @@ FString FPIEPreviewDevice::GetProfile() const
 				DeviceParameters.Add("DeviceModel", AndroidProperties.DeviceModel);
 				DeviceParameters.Add("DeviceBuildNumber", AndroidProperties.DeviceBuildNumber);
 				DeviceParameters.Add("UsingHoudini", AndroidProperties.UsingHoudini ? "true" : "false");
+				DeviceParameters.Add("Hardware", AndroidProperties.Hardware);
+				DeviceParameters.Add("Chipset", AndroidProperties.Chipset);
 
 				FString PIEProfileName = AndroidDeviceProfileSelector->GetDeviceProfileName(DeviceParameters);
 				if (!PIEProfileName.IsEmpty())

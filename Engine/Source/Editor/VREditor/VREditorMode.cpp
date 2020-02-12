@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "VREditorMode.h"
 #include "Modules/ModuleManager.h"
@@ -54,6 +54,7 @@
 #include "EngineUtils.h"
 #include "Kismet/GameplayStatics.h"
 #include "XRMotionControllerBase.h" // for FXRMotionControllerBase::Left/RightHandSourceId
+#include "VREditorFloatingUI.h"
 
 #define LOCTEXT_NAMESPACE "VREditorMode"
 
@@ -99,7 +100,7 @@ UVREditorMode::UVREditorMode() :
 	bStartedPlayFromVREditor( false ),
 	bStartedPlayFromVREditorSimulate( false ),
 	AssetContainer( nullptr )
-{
+{ 
 }
 
 void UVREditorMode::Init()
@@ -138,8 +139,6 @@ void UVREditorMode::Init()
 		check( WorldInteraction != nullptr );
 	}
 
-	GEditor->OnBlueprintReinstanced().AddUObject( this, &UVREditorMode::OnBlueprintReinstanced );
-
 	// Setup the asset container.
 	AssetContainer = &LoadAssetContainer();
 	check(AssetContainer != nullptr);
@@ -149,114 +148,6 @@ void UVREditorMode::Init()
 
 	bIsFullyInitialized = true;
 }
-
-// If we're recompiling Blueprints, we'll need to re-create and re-connect our interactors. 
-void UVREditorMode::OnBlueprintReinstanced()
-{
-	// Tear down
-	{
-		DestroyTransientActor( AvatarActor );
-		AvatarActor = nullptr;
-		FlashlightComponent = nullptr;
-	}
-
-	// Kill subsystems
-	if (UISystem != nullptr)
-	{
-		UISystem->Shutdown();
-		UISystem->MarkPendingKill();
-		UISystem = nullptr;
-	}
-
-	if (PlacementSystem != nullptr)
-	{
-		PlacementSystem->Shutdown();
-		PlacementSystem->MarkPendingKill();
-		PlacementSystem = nullptr;
-	}
-
-	if (TeleportActor != nullptr)
-	{
-		DestroyTransientActor( TeleportActor );
-		TeleportActor = nullptr;
-	}
-
-	if (AutoScalerSystem != nullptr)
-	{
-		AutoScalerSystem->Shutdown();
-		AutoScalerSystem->MarkPendingKill();
-		AutoScalerSystem = nullptr;
-	}
-
-	//	Rebuild
-	if (bActuallyUsingVR)
-	{
-		// Tell Slate to require a larger pixel distance threshold before the drag starts.  This is important for things
-		// like Content Browser drag and drop.
-		SavedEditorState.DragTriggerDistance = FSlateApplication::Get().GetDragTriggerDistance();
-		FSlateApplication::Get().SetDragTriggerDistance( VREd::SlateDragDistanceOverride->GetFloat() );
-
-		// When actually in VR, make sure the transform gizmo is big!
-		SavedEditorState.TransformGizmoScale = WorldInteraction->GetTransformGizmoScale();
-		WorldInteraction->SetTransformGizmoScale( GetDefault<UVRModeSettings>()->GizmoScale );
-		WorldInteraction->SetShouldSuppressExistingCursor( true );
-		WorldInteraction->SetInVR( true );
-	}
-
-	// Setup our avatar
-	if (AvatarActor == nullptr)
-	{
-		const bool bWithSceneComponent = true;
-		AvatarActor = SpawnTransientSceneActor<AVREditorAvatarActor>( TEXT( "AvatarActor" ), bWithSceneComponent );
-		AvatarActor->Init( this );
-
-		WorldInteraction->AddActorToExcludeFromHitTests( AvatarActor );
-	}
-
-		// Setup sub systems
-	{
-		// Setup world interaction
-		// We need input preprocessing for VR so that we can receive motion controller input without any viewports having 
-		// to be focused.  This is mainly because Slate UI injected into the 3D world can cause focus to be lost unexpectedly,
-		// but we need the user to still be able to interact with UI.
-		WorldInteraction->SetUseInputPreprocessor( true );
-
-		// Motion controllers
-//		LeftHandInteractor->SetControllerHandSide( FXRMotionControllerBase::LeftHandSourceId );
-
-//		RightHandInteractor->SetControllerHandSide( FXRMotionControllerBase::RightHandSourceId );
-
-		WorldInteraction->PairInteractors(GetHandInteractor(EControllerHand::Left), GetHandInteractor(EControllerHand::Right));
-
-		for (UVREditorInteractor* Interactor : Interactors)
-		{
-			Interactor->Init( this );
-			WorldInteraction->AddInteractor( Interactor );
-		}
-
-		// Setup the UI system
-		UISystem = NewObject<UVREditorUISystem>();
-		UISystem->Init( this );
-
-		PlacementSystem = NewObject<UVREditorPlacement>();
-		PlacementSystem->Init( this );
-
-		// Setup teleporter
-		TeleportActor = SpawnTransientSceneActor<AVREditorTeleporter>( TEXT( "Teleporter" ), true );
-		TeleportActor->Init( this );
-		WorldInteraction->AddActorToExcludeFromHitTests( TeleportActor );
-
-		// Setup autoscaler
-		AutoScalerSystem = NewObject<UVREditorAutoScaler>();
-		AutoScalerSystem->Init( this );
-	}
-
-	for (UVREditorInteractor* Interactor : Interactors)
-	{
-		Interactor->SetupComponent( AvatarActor );
-	}
-}
-
 
 /*
 * @EventName Editor.Usage.EnterVRMode
@@ -288,21 +179,20 @@ void UVREditorMode::Shutdown()
 	GEnableVREditorHacks = false;
 
 	FEditorDelegates::EndPIE.RemoveAll(this);
-
-	GEditor->OnBlueprintReinstanced().RemoveAll( this );
 }
 
 void UVREditorMode::AllocateInteractors()
 {
-	const TSubclassOf<UVREditorInteractor> InteractorClass = GetDefault<UVRModeSettings>()->InteractorClass;
-
 	class UVREditorInteractor* LeftHandInteractor = nullptr;
 	class UVREditorInteractor* RightHandInteractor = nullptr;
 
-	if (InteractorClass)
+	const TSoftClassPtr<UVREditorInteractor> InteractorClassSoft = GetDefault<UVRModeSettings>()->InteractorClass;
+	InteractorClassSoft.LoadSynchronous();
+
+	if (InteractorClassSoft.IsValid())
 	{
-		LeftHandInteractor = NewObject<UVREditorInteractor>( GetTransientPackage(), InteractorClass );
-		RightHandInteractor = NewObject<UVREditorInteractor>( GetTransientPackage(), InteractorClass );
+		LeftHandInteractor = NewObject<UVREditorInteractor>(GetTransientPackage(), InteractorClassSoft.Get());
+		RightHandInteractor = NewObject<UVREditorInteractor>(GetTransientPackage(), InteractorClassSoft.Get());
 	}
 
 	if (LeftHandInteractor == nullptr)
@@ -360,7 +250,7 @@ void UVREditorMode::Enter()
 		// Do we have an active perspective viewport that is valid for VR?  If so, go ahead and use that.
 		TSharedPtr<SLevelViewport> ExistingActiveLevelViewport;
 		{
-			TSharedPtr<ILevelViewport> ActiveLevelViewport = LevelEditor->GetActiveViewportInterface();
+			TSharedPtr<IAssetViewport> ActiveLevelViewport = LevelEditor->GetActiveViewportInterface();
 			if(ActiveLevelViewport.IsValid())
 			{
 				ExistingActiveLevelViewport = StaticCastSharedRef< SLevelViewport >(ActiveLevelViewport->AsWidget());
@@ -441,11 +331,12 @@ void UVREditorMode::Enter()
 		PlacementSystem->Init(this);
 
 		// Setup teleporter
-		const TSubclassOf<AVREditorTeleporter> TeleporterClass = GetDefault<UVRModeSettings>()->TeleporterClass;
+		const TSoftClassPtr<AVREditorTeleporter> TeleporterClassSoft = GetDefault<UVRModeSettings>()->TeleporterClass;
+		TeleporterClassSoft.LoadSynchronous();
 
-		if (TeleporterClass)
+		if (TeleporterClassSoft.IsValid())
 		{
-			TeleportActor = CastChecked<AVREditorTeleporter>( SpawnTransientSceneActor( TeleporterClass, TEXT( "Teleporter" ), true ) );
+			TeleportActor = CastChecked<AVREditorTeleporter>( SpawnTransientSceneActor(TeleporterClassSoft.Get(), TEXT( "Teleporter" ), true ) );
 		}
 
 		if( !TeleportActor )
@@ -865,19 +756,27 @@ void UVREditorMode::RefreshVREditorSequencer(class ISequencer* InCurrentSequence
 	}
 }
 
-void UVREditorMode::RefreshActorPreviewWidget(TSharedRef<SWidget> InWidget, int32 Index, AActor *Actor)
+void UVREditorMode::RefreshActorPreviewWidget(TSharedRef<SWidget> InWidget, int32 Index, AActor *Actor, bool bIsPanelDetached)
 {
 	if (bActuallyUsingVR && UISystem != nullptr)
 	{
-		GetUISystem().UpdateActorPreviewUI(InWidget, Index, Actor);
+		if (bIsPanelDetached)
+		{
+			GetUISystem().UpdateDetachedActorPreviewUI(InWidget, Index);
+		}
+		else
+		{
+			GetUISystem().UpdateActorPreviewUI(InWidget, Index, Actor);
+		}
+		
 	}
 }
 
-void UVREditorMode::UpdateExternalUMGUI(TSubclassOf<UUserWidget> InUMGClass, FName Name, FVector2D InSize)
+void UVREditorMode::UpdateExternalUMGUI(const FVREditorFloatingUICreationContext& CreationContext) 
 {
 	if (bActuallyUsingVR && UISystem != nullptr)
 	{
-		GetUISystem().UpdateExternalUMGUI(InUMGClass, Name, InSize);
+		GetUISystem().UpdateExternalUMGUI(CreationContext); 
 	}
 }
 
@@ -999,9 +898,11 @@ void UVREditorMode::ToggleSIEAndVREditor()
 {
 	if (GEditor->EditorWorld == nullptr && !GEditor->bIsSimulatingInEditor)
 	{
-		const FVector* StartLoc = NULL;
-		const FRotator* StartRot = NULL;
-		GEditor->RequestPlaySession(false, VREditorLevelViewportWeakPtr.Pin(), true /*bSimulateInEditor*/, StartLoc, StartRot, -1);
+		FRequestPlaySessionParams SessionParams;
+		SessionParams.DestinationSlateViewport = VREditorLevelViewportWeakPtr;
+		SessionParams.WorldType = EPlaySessionWorldType::SimulateInEditor;
+
+		GEditor->RequestPlaySession(SessionParams);
 	}
 	else if (GEditor->PlayWorld != nullptr && GEditor->bIsSimulatingInEditor)
 	{
@@ -1014,10 +915,16 @@ void UVREditorMode::TogglePIEAndVREditor()
 	bool bRequestedPIE = false;
 	if (GEditor->EditorWorld == nullptr && GEditor->PlayWorld == nullptr && !GEditor->bIsSimulatingInEditor)
 	{
-		const FVector* StartLoc = NULL;
-		const FRotator* StartRot = NULL;
+		FRequestPlaySessionParams SessionParams;
+		SessionParams.DestinationSlateViewport = VREditorLevelViewportWeakPtr;
+		SessionParams.WorldType = EPlaySessionWorldType::PlayInEditor;
+		
 		const bool bHMDIsReady = (GEngine && GEngine->XRSystem.IsValid() && GEngine->XRSystem->GetHMDDevice() && GEngine->XRSystem->GetHMDDevice()->IsHMDConnected());
-		GEditor->RequestPlaySession(true, VREditorLevelViewportWeakPtr.Pin(), false /*bSimulateInEditor*/, StartLoc, StartRot, -1, false, bHMDIsReady);
+		if (bHMDIsReady)
+		{
+			SessionParams.SessionPreviewTypeOverride = EPlaySessionPreviewType::VRPreview;
+		}
+		GEditor->RequestPlaySession(SessionParams);
 		bRequestedPIE = true;
 	}
 	else if (GEditor->PlayWorld != nullptr)
@@ -1312,20 +1219,24 @@ void UVREditorMode::RestoreWorldToMeters()
 	GNewWorldToMetersScale = 0.0f;
 }
 
-UStaticMeshComponent* UVREditorMode::CreateMotionControllerMesh( AActor* OwningActor, USceneComponent* AttachmentToComponent )
-{
-	UStaticMesh* ControllerMesh = nullptr;
-	if(GetHMDDeviceType() == FName(TEXT("SteamVR")))
+UStaticMeshComponent* UVREditorMode::CreateMotionControllerMesh(AActor* OwningActor, USceneComponent* AttachmentToComponent, UStaticMesh* OptionalControllerMesh)
+{	
+	UStaticMesh* ControllerMesh = OptionalControllerMesh;
+
+	if (ControllerMesh == nullptr)
 	{
-		ControllerMesh = AssetContainer->VivePreControllerMesh;
-	}
-	else if(GetHMDDeviceType() == FName(TEXT("OculusHMD")))
-	{
-		ControllerMesh = AssetContainer->OculusControllerMesh;
-	}
-	else
-	{
-		ControllerMesh = AssetContainer->GenericControllerMesh;
+		if (GetHMDDeviceType() == FName(TEXT("SteamVR")))
+		{
+			ControllerMesh = AssetContainer->VivePreControllerMesh;
+		}
+		else if (GetHMDDeviceType() == FName(TEXT("OculusHMD")))
+		{
+			ControllerMesh = AssetContainer->OculusControllerMesh;
+		}
+		else
+		{
+			ControllerMesh = AssetContainer->GenericControllerMesh;
+		}
 	}
 
 	return CreateMesh(OwningActor, ControllerMesh, AttachmentToComponent);

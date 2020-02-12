@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 
 #include "Widgets/SSettingsSectionHeader.h"
@@ -15,22 +15,25 @@
 #include "SSettingsEditorCheckoutNotice.h"
 #include "DesktopPlatformModule.h"
 #include "IDetailsView.h"
+#include "Widgets/Views/SExpanderArrow.h"
+#include "Widgets/Views/STableRow.h"
 
 #define LOCTEXT_NAMESPACE "SSettingsEditor"
 
-void SSettingsSectionHeader::Construct(const FArguments& InArgs, const UObject* InSettingsObject, ISettingsEditorModelPtr InModel, TSharedPtr<IDetailsView> InDetailsView)
+void SSettingsSectionHeader::Construct(const FArguments& InArgs, const UObject* InSettingsObject, ISettingsEditorModelPtr InModel, TSharedPtr<IDetailsView> InDetailsView, const TSharedPtr<ITableRow>& InTableRow)
 {
 	Model = InModel;
 	SettingsObject = MakeWeakObjectPtr(const_cast<UObject*>(InSettingsObject));
 	SettingsSection = Model->GetSectionFromSectionObject(InSettingsObject);
 	DetailsView = InDetailsView;
+	TableRow = InTableRow;
 
 	Model->OnSelectionChanged().AddSP(this, &SSettingsSectionHeader::OnSettingsSelectionChanged);
 
 	// Create the watcher widget for the default config file (checks file status / SCC state)
 	FileWatcherWidget =
 		SNew(SSettingsEditorCheckoutNotice)
-		.Visibility(this, &SSettingsSectionHeader::HandleCheckoutNoticeVisibility)
+		.Visibility(this, &SSettingsSectionHeader::GetCheckoutNoticeVisibility)
 		.OnFileProbablyModifiedExternally(this, &SSettingsSectionHeader::HandleCheckoutNoticeFileProbablyModifiedExternally)
 		.ConfigFilePath(this, &SSettingsSectionHeader::HandleCheckoutNoticeConfigFilePath);
 
@@ -50,19 +53,30 @@ void SSettingsSectionHeader::Construct(const FArguments& InArgs, const UObject* 
 				+ SVerticalBox::Slot()
 				.AutoHeight()
 				[
-					// category title
-					SNew(STextBlock)
-					.Font(FEditorStyle::GetFontStyle("SettingsEditor.CatgoryAndSectionFont"))
-					.Text(GetSettingsBoxTitleText())
+					SNew(SHorizontalBox)
+					+ SHorizontalBox::Slot()
+					.VAlign(VAlign_Center)
+					.Padding(2.0f, 2.0f, 2.0f, 2.0f)
+					.AutoWidth()
+					[
+						SNew(SExpanderArrow, InTableRow)
+					]
+					+ SHorizontalBox::Slot()// category title
+					[
+						SNew(STextBlock)
+						.Font(FEditorStyle::GetFontStyle("SettingsEditor.CatgoryAndSectionFont"))
+						.Text(GetSettingsBoxTitleText())
+					]
 				]
 				+ SVerticalBox::Slot()
 				.AutoHeight()
-				.Padding(0.0f, 8.0f, 0.0f, 0.0f)
+				.Padding(16.0f, 8.0f, 0.0f, 0.0f)
 				[
 					// category description
 					SNew(STextBlock)
 					.ColorAndOpacity(FSlateColor::UseSubduedForeground())
 					.Text(GetSettingsBoxDescriptionText())
+					.Visibility(this, &SSettingsSectionHeader::GetCategoryDescriptionVisibility)
 				]
 			]
 			+ SHorizontalBox::Slot()
@@ -72,7 +86,7 @@ void SSettingsSectionHeader::Construct(const FArguments& InArgs, const UObject* 
 			.Padding(16.0f, 0.0f, 0.0f, 0.0f)
 			[
 				SNew(SHorizontalBox)
-				.Visibility(this, &SSettingsSectionHeader::HandleButtonRowVisibility)
+				.Visibility(this, &SSettingsSectionHeader::GetButtonRowVisibility)
 				+SHorizontalBox::Slot()
 				[
 					// set as default button
@@ -150,9 +164,14 @@ FText SSettingsSectionHeader::GetSettingsBoxDescriptionText() const
 	return FText::GetEmpty();
 }
 
-EVisibility SSettingsSectionHeader::HandleButtonRowVisibility() const
+EVisibility SSettingsSectionHeader::GetButtonRowVisibility() const
 {
 	return DetailsView.Pin()->HasActiveSearch() ? EVisibility::Hidden : EVisibility::Visible;
+}
+
+EVisibility SSettingsSectionHeader::GetCategoryDescriptionVisibility() const
+{
+	return TableRow.IsValid() && TableRow.Pin()->IsItemExpanded() ? EVisibility::Visible : EVisibility::Collapsed;
 }
 
 FReply SSettingsSectionHeader::HandleExportButtonClicked()
@@ -254,7 +273,7 @@ FString SSettingsSectionHeader::GetDefaultConfigFilePath() const
 */
 bool SSettingsSectionHeader::IsDefaultConfigCheckOutNeeded(bool bForceSourceControlUpdate) const
 {
-	if(SettingsObject.IsValid() && SettingsObject->GetClass()->HasAnyClassFlags(CLASS_Config | CLASS_DefaultConfig))
+	if(SettingsObject.IsValid() && SettingsObject->GetClass()->HasAllClassFlags(CLASS_Config | CLASS_DefaultConfig))
 	{
 		// We can only fetch the file watcher if it's visible otherwise fallback to source control
 		if (FileWatcherWidget->GetVisibility().IsVisible())
@@ -295,7 +314,7 @@ bool SSettingsSectionHeader::HandleResetToDefaultsButtonEnabled() const
 
 EVisibility SSettingsSectionHeader::HandleSetAsDefaultButtonVisibility() const
 {
-	return (SettingsSection.IsValid() && SettingsSection->HasDefaultSettingsObject() && SettingsSection->CanSaveDefaults()) ? EVisibility::Collapsed : EVisibility::Visible;
+	return (SettingsSection.IsValid() && SettingsSection->CanSaveDefaults()) ? EVisibility::Visible : EVisibility::Collapsed;
 }
 
 FReply SSettingsSectionHeader::HandleSetAsDefaultButtonClicked()
@@ -479,9 +498,9 @@ void SSettingsSectionHeader::HandleCheckoutNoticeFileProbablyModifiedExternally(
 }
 
 /** Callback for determining the visibility of the 'Locked' notice. */
-EVisibility SSettingsSectionHeader::HandleCheckoutNoticeVisibility() const
+EVisibility SSettingsSectionHeader::GetCheckoutNoticeVisibility() const
 {
-	// Only Defaultfig are under source control, so the checkout notice should not be visible for the other cases
+	// Only DefaultConfig are under source control, so the checkout notice should not be visible for the other cases
 	if(SettingsObject.IsValid() && SettingsObject->GetClass()->HasAnyClassFlags(CLASS_DefaultConfig) && !DetailsView.Pin()->HasActiveSearch())
 	{
 		return EVisibility::Visible;
@@ -496,7 +515,7 @@ void SSettingsSectionHeader::OnSettingsSelectionChanged()
 }
 
 
-FSettingsDetailRootObjectCustomization::FSettingsDetailRootObjectCustomization(ISettingsEditorModelPtr InModel, TSharedRef<IDetailsView> InDetailsView)
+FSettingsDetailRootObjectCustomization::FSettingsDetailRootObjectCustomization(ISettingsEditorModelPtr InModel, const TSharedRef<IDetailsView>& InDetailsView)
 	: Model(InModel)
 	, DetailsView(InDetailsView)
 {
@@ -509,9 +528,9 @@ void FSettingsDetailRootObjectCustomization::Initialize()
 	OnSelectedSectionChanged();
 }
 
-TSharedPtr<SWidget> FSettingsDetailRootObjectCustomization::CustomizeObjectHeader(const UObject* InRootObject)
+TSharedPtr<SWidget> FSettingsDetailRootObjectCustomization::CustomizeObjectHeader(const UObject* InRootObject, const TSharedPtr<ITableRow>& InTableRow)
 {
-	return SNew(SSettingsSectionHeader, InRootObject, Model, DetailsView.Pin());
+	return SNew(SSettingsSectionHeader, InRootObject, Model, DetailsView.Pin(), InTableRow);
 }
 
 bool FSettingsDetailRootObjectCustomization::IsObjectVisible(const UObject* InRootObject) const

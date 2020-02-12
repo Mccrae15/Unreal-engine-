@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 using UnrealBuildTool;
 
@@ -41,14 +41,15 @@ public class MaterialEditor : ModuleRules
 				"GraphEditor",
                 "AdvancedPreviewScene",
                 "Projects",
-
+                "AssetRegistry",
+				"ToolMenus",
+				"MainFrame",
 			}
 		);
 
 		DynamicallyLoadedModuleNames.AddRange(
 			new string[] {
 				"AssetTools",
-				"MainFrame",
 				"SceneOutliner",
 				"ClassViewer",
 				"ContentBrowser",

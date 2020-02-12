@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -8,15 +8,20 @@ struct APPLICATIONCORE_API FIOSPlatformApplicationMisc : public FGenericPlatform
 {
 	static void LoadPreInitModules();
 
+	static class FFeedbackContext* GetFeedbackContext();
 	static class FOutputDeviceError* GetErrorOutputDevice();
 	static class GenericApplication* CreateApplication();
 	static bool IsScreensaverEnabled();
 	static bool ControlScreensaver(EScreenSaverAction Action);
 
 	static void SetGamepadsAllowed(bool bAllowed);
+	static void SetGamepadsBlockDeviceFeedback(bool bBlock);
 	static void ResetGamepadAssignments();
 	static void ResetGamepadAssignmentToController(int32 ControllerId);
 	static bool IsControllerAssignedToGamepad(int32 ControllerId);
+
+	static void EnableMotionData(bool bEnable);
+	static bool IsMotionDataEnabled();
 
 	static void ClipboardCopy(const TCHAR* Str);
 	static void ClipboardPaste(class FString& Dest);

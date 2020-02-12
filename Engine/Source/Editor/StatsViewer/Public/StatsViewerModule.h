@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -19,6 +19,7 @@ namespace EStatsPage
 		PrimitiveStats,
 		StaticMeshLightingInfo,
 		TextureStats,
+		ShaderCookerStats,
 	};
 }
 
@@ -36,6 +37,17 @@ public:
 	 * @return	New stats viewer widget
 	 */
 	virtual TSharedRef< IStatsViewer > CreateStatsViewer() const;
+
+	/**
+	 * Creates a customized stats viewer widget.
+	 *
+	 * @param InWorld					Use this world (instead of default one) for all statistics
+	 * @param EnabledDefaultPagesMask	The default pages that will be available for this stats viewer
+	 * @param ViewerName				A unique name for this stats viewer (used as a configuration settings key)
+	 *
+	 * @return	New stats viewer widget
+	 */
+	virtual TSharedRef< IStatsViewer > CreateStatsViewer( UWorld& InWorld, uint32 EnabledDefaultPagesMask, const FName& ViewerName ) const;
 
 	/**
 	 * Creates a stats viewer custom column, supporting weak object references.

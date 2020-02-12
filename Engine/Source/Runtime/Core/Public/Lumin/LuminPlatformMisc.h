@@ -1,7 +1,7 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
-#include "Android/AndroidMisc.h"
+#include "Android/AndroidPlatformMisc.h"
 #include "Logging/LogVerbosity.h"
 
 struct CORE_API FLuminPlatformMisc : public FAndroidMisc
@@ -56,6 +56,9 @@ struct CORE_API FLuminPlatformMisc : public FAndroidMisc
 	static const FString& GetApplicationPackageDirectoryPath();
 	static const FString& GetApplicationApplicationPackageName();
 	static const FString& GetApplicationComponentName();
+
+	static FString GetDefaultLocale();
+	static FString GetDefaultLanguage();
 
 private:
 	static void InitApplicationPaths();

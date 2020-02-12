@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "SpotLightComponentVisualizer.h"
 #include "SceneManagement.h"
@@ -27,6 +27,11 @@ void FSpotLightComponentVisualizer::DrawVisualization( const UActorComponent* Co
 			if(SpotLightComp->InnerConeAngle > KINDA_SMALL_NUMBER)
 			{
 				DrawWireSphereCappedCone(PDI, TransformNoScale, SpotLightComp->AttenuationRadius, SpotLightComp->InnerConeAngle, 32, 8, 10, FColor(150, 200, 255), SDPG_World);
+			}
+
+			if (SpotLightComp->IESTexture)
+			{
+				LightProfileVisualizer.DrawVisualization( SpotLightComp->IESTexture, TransformNoScale, View, PDI );
 			}
 		}
 	}

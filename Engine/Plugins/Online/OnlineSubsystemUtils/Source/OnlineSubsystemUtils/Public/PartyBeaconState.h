@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -195,6 +195,12 @@ struct ONLINESUBSYSTEMUTILS_API FPartyReservation
 	UPROPERTY(Transient)
 	TArray<FPlayerReservation> PartyMembers;
 
+	/** Keeping a record of all logged out players from this reservation. */
+	UPROPERTY(Transient)
+	TArray<FPlayerReservation> RemovedPartyMembers;
+	void RemovePartyMemberAtIndex(int32 Idx);
+	int32 RemoveAllPartyMembers(const FPlayerReservation& OtherRes);
+
 	/** Is this data well formed */
 	bool IsValid() const;
 
@@ -231,7 +237,7 @@ class ONLINESUBSYSTEMUTILS_API UPartyBeaconState : public UObject
 	 *
 	 * @return true if successful created, false otherwise
 	 */
-	virtual bool InitState(int32 InTeamCount, int32 InTeamSize, int32 InMaxReservations, FName InSessionName, int32 InForceTeamNum);
+	virtual bool InitState(int32 InTeamCount, int32 InTeamSize, int32 InMaxReservations, FName InSessionName, int32 InForceTeamNum, bool bEnableRemovalRequests);
 
 	/**
 	 * Reconfigures the beacon for a different team/player count configuration
@@ -552,6 +558,9 @@ protected:
 	/** Are multiple consoles types allowed to play together */
 	UPROPERTY(Config)
 	bool bRestrictCrossConsole;
+	/** Process requests from clients to remove players from beacon */
+	UPROPERTY(Transient)
+	bool bEnableRemovalRequests;
 
 	/** Current reservations in the system */
 	UPROPERTY(Transient)

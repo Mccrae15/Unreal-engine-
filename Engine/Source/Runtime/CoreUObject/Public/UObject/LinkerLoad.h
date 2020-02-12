@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -70,7 +70,7 @@ struct FScopedCreateImportCounter
 /**
  * Handles loading Unreal package files, including reading UObject data from disk.
  */
-class FArchiveAsync2;
+class FAsyncArchive;
 
 class FLinkerLoad 
 #if !WITH_EDITOR
@@ -82,6 +82,7 @@ class FLinkerLoad
 	friend class UObject;
 	friend class UPackageMap;
 	friend struct FAsyncPackage;
+	friend struct FAsyncPackage2;
 	friend struct FResolvingExportTracker;
 protected:
 	/** Linker loading status. */
@@ -127,14 +128,17 @@ public:
 	bool					bForceSimpleIndexToObject;
 	bool					bLockoutLegacyOperations;
 
-	/** True if Loader is FArchiveAsync2  */
-	bool					bLoaderIsFArchiveAsync2;
-	FORCEINLINE FArchiveAsync2* GetFArchiveAsync2Loader()
+	/** True if Loader is FAsyncArchive  */
+	bool					bIsAsyncLoader;
+	FORCEINLINE FAsyncArchive* GetAsyncLoader()
 	{
-		return bLoaderIsFArchiveAsync2 ? (FArchiveAsync2*)Loader : nullptr;
+		return bIsAsyncLoader ? (FAsyncArchive*)Loader : nullptr;
 	}
 
 private:
+
+	/** True if the linker is currently deleting loader */
+	bool					bIsDestroyingLoader;
 
 	/** Structured archive interface. Wraps underlying loader to provide contextual metadata to the values being written
 	 *  which ultimately allows text based serialization of the data
@@ -142,10 +146,7 @@ private:
 	FStructuredArchive* StructuredArchive;
 	FArchiveFormatterType* StructuredArchiveFormatter;
 	TOptional<FStructuredArchive::FRecord> StructuredArchiveRootRecord;
-
-	/** A map of full object path name to package index. Used with text assets to resolve incoming string names to an export */
-	TMap<FName, FPackageIndex> ObjectNameToPackageImportIndex;
-	TMap<FName, FPackageIndex> ObjectNameToPackageExportIndex;
+	TArray<FStructuredArchiveChildReader*> ExportReaders;
 
 	/** The archive that actually reads the raw data from disk.																*/
 	FArchive*				Loader;
@@ -171,10 +172,11 @@ public:
 		return Loader != nullptr;
 	}
 
-	void DestroyLoader()
+	void DestroyLoader();
+
+	FORCEINLINE bool IsDestroyingLoader() const
 	{
-		delete Loader;
-		Loader = nullptr;
+		return bIsDestroyingLoader;
 	}
 
 	/** The async package associated with this linker */
@@ -185,7 +187,8 @@ public:
 #endif // WITH_EDITOR
 
 	/** Hash table for exports.																								*/
-	int32						ExportHash[256];
+	static constexpr int32 ExportHashCount = 256;
+	TUniquePtr<int32[]> ExportHash;
 
 	/**
 	* List of imports and exports that must be serialized before other exports...all packed together, see FirstExportDependency
@@ -244,6 +247,11 @@ public:
 	 */
 	COREUOBJECT_API static bool RemoveKnownMissingPackage(FName PackageName);
 
+	/**
+	 * 
+	 */
+	COREUOBJECT_API static void OnNewFileAdded(const FString& Filename);
+
 	/** 
 	 * Checks if the linker has any objects in the export table that require loading.
 	 */
@@ -258,8 +266,6 @@ private:
 
 	// Variables used during async linker creation.
 
-	/** Current index into name map, used by async linker creation for spreading out serializing name entries.					*/
-	int32						NameMapIndex;
 	/** Current index into gatherable text data map, used by async linker creation for spreading out serializing text entries.	*/
 	int32						GatherableTextDataMapIndex;
 	/** Current index into import map, used by async linker creation for spreading out serializing importmap entries.			*/
@@ -274,6 +280,8 @@ private:
 
 	/** Whether we already serialized the package file summary.																*/
 	bool					bHasSerializedPackageFileSummary;
+	/** Whether we have already reconstructed the import/export tables for a text asset */
+	bool					bHasReconstructedImportAndExportMap;
 	/** Whether we already serialized preload dependencies.																*/
 	bool					bHasSerializedPreloadDependencies;
 	/** Whether we already fixed up import map.																				*/
@@ -806,32 +814,31 @@ private:
 		Value = ID;
 		return Ar;
 	}
-	void BadNameIndexError(NAME_INDEX NameIndex);
+	void BadNameIndexError(int32 NameIndex);
 	FORCEINLINE virtual FArchive& operator<<(FName& Name) override
 	{
-		Name = NAME_None;
 		FArchive& Ar = *this;
-		NAME_INDEX NameIndex;
+		int32 NameIndex;
 		Ar << NameIndex;
-		int32 Number;
+		int32 Number = 0;
 		Ar << Number;
 
-		if (!NameMap.IsValidIndex(NameIndex))
+		if (NameMap.IsValidIndex(NameIndex))
 		{
+			// if the name wasn't loaded (because it wasn't valid in this context)
+			FNameEntryId MappedName = NameMap[NameIndex];
+
+			// simply create the name from the NameMap's name and the serialized instance number
+			Name = FName::CreateFromDisplayId(MappedName, Number);
+		}
+		else
+		{
+			Name = FName();
 			BadNameIndexError(NameIndex);
 			ArIsError = true;
 			ArIsCriticalError = true;
 		}
-		else
-		{
-			// if the name wasn't loaded (because it wasn't valid in this context)
-			const FName& MappedName = NameMap[NameIndex];
-			if (!MappedName.IsNone())
-			{
-				// simply create the name from the NameMap's name and the serialized instance number
-				Name = FName(MappedName, Number);
-			}
-		}
+
 		return *this;
 	}
 
@@ -876,7 +883,7 @@ protected: // Daniel L: Made this protected so I can override the constructor an
 	 * 
 	 * @return	true if linker has finished creation, false if it is still in flight
 	 */
-	ELinkerStatus Tick( float InTimeLimit, bool bInUseTimeLimit, bool bInUseFullTimeLimit);
+	ELinkerStatus Tick( float InTimeLimit, bool bInUseTimeLimit, bool bInUseFullTimeLimit, TMap<TPair<FName, FPackageIndex>, FPackageIndex>* ObjectNameWithOuterToExportMap);
 
 	/**
 	 * Private constructor, passing arguments through from CreateLinker.
@@ -910,6 +917,11 @@ private:
 	ELinkerStatus SerializePackageFileSummary();
 
 	/**
+	 * Updates the linker, loader and root package with data from the package file summary.
+	 * */
+	ELinkerStatus UpdateFromPackageFileSummary();
+
+	/**
 	 * Serializes the name map.
 	 */
 	ELinkerStatus SerializeNameMap();
@@ -929,12 +941,25 @@ private:
 	 */
 	ELinkerStatus SerializeExportMap();
 
+#if WITH_TEXT_ARCHIVE_SUPPORT
+	/**
+	 * Create an import and export table when loading a text asset.
+	 */
+	ELinkerStatus ReconstructImportAndExportMap();
+#endif
+
 	ELinkerStatus SerializeDependsMap();
 
 	ELinkerStatus SerializePreloadDependencies();
 
 	/** Sets the basic linker archive info */
 	void ResetStatusInfo();
+
+	/** For a given full object path, find or create the associated import or export table record. Used when loading text assets which only store object paths */
+	FPackageIndex FindOrCreateImportOrExport(const FString& InFullPath);
+
+	/** For the given object and class info, find or create an associated import record. Used when loading text assets which only store object paths */
+	FPackageIndex FindOrCreateImport(const FName InObjectName, const FName InClassName, const FName InClassPackageName);
 
 public:
 	/**
@@ -1158,7 +1183,7 @@ private:
 
 	/** 
 	 * Internal list to track imports that were deferred, but don't belong to 
-	 * the ImportMap (thinks ones loaded through config files via UProperty::ImportText).
+	 * the ImportMap (thinks ones loaded through config files via FProperty::ImportText).
 	 */
 	TMap<FName, FLinkerPlaceholderBase*> ImportPlaceholders;
 #endif // USE_CIRCULAR_DEPENDENCY_LOAD_DEFERRING
@@ -1179,7 +1204,7 @@ private:
 	/**
 	 * Finalizes linker creation, adding linker to loaders array and potentially verifying imports.
 	 */
-	ELinkerStatus FinalizeCreation();
+	ELinkerStatus FinalizeCreation(TMap<TPair<FName, FPackageIndex>, FPackageIndex>* ObjectNameWithOuterToExportMap);
 
 	//
 	// FLinkerLoad creation helpers END
@@ -1187,8 +1212,13 @@ private:
 
 private:
 
-	/** Current UObject serialization context */
-	TRefCountPtr<FUObjectSerializeContext> CurrentLoadContext;
+#if WITH_TEXT_ARCHIVE_SUPPORT
+	// Cache of the export names in a text asset. Allows us to enter those export slots by index rather than needing to reconstruct the name
+	TArray<FName> OriginalExportNames;
+
+	// Function to get a slot for a given export
+	FStructuredArchiveSlot GetExportSlot(FPackageIndex InExportIndex);
+#endif
 
 public:
 

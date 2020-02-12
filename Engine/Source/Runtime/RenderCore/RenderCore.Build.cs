@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 using UnrealBuildTool;
 
@@ -19,8 +19,11 @@ public class RenderCore : ModuleRules
 
         }
 
-        PrivateDependencyModuleNames.AddRange(new string[] { "Core", "Projects", "RHI", "ApplicationCore" });
+        PrivateDependencyModuleNames.AddRange(new string[] { "Core", "Projects", "RHI", "ApplicationCore", "TraceLog" });
 
         PrivateIncludePathModuleNames.AddRange(new string[] { "DerivedDataCache" });
+		
+		// Added in Dev-VT, still needed?
+		PrivateIncludePathModuleNames.AddRange(new string[] { "TargetPlatform" });
     }
 }

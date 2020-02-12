@@ -7,9 +7,16 @@
 #include "IAudioExtensionPlugin.h"
 #include "Sound/SoundEffectSubmix.h"
 #include "Sound/SoundEffectPreset.h"
+#include "UObject/WeakObjectPtrTemplates.h"
+
 #include "PhononCommon.h"
 #include "phonon.h"
 #include "PhononReverb.generated.h"
+
+
+// Forward Declaration
+class FSubmixEffectReverbPlugin;
+
 
 namespace SteamAudio
 {
@@ -21,6 +28,8 @@ namespace SteamAudio
 
 		IPLhandle ConvolutionEffect;
 		float IndirectContribution;
+		float DipolePower;
+		float DipoleWeight;
 		IPLAudioBuffer InBuffer;
 		TArray<float> IndirectInArray;
 	};
@@ -37,15 +46,19 @@ namespace SteamAudio
 		virtual void Initialize(const FAudioPluginInitializationParams InitializationParams) override;
 		virtual void OnInitSource(const uint32 SourceId, const FName& AudioComponentUserId, const uint32 NumChannels, UReverbPluginSourceSettingsBase* InSettings) override;
 		virtual void OnReleaseSource(const uint32 SourceId) override;
-		virtual class FSoundEffectSubmix* GetEffectSubmix(class USoundSubmix* Submix) override;
+		virtual FSoundEffectSubmixPtr GetEffectSubmix() override;
+		virtual USoundSubmix* GetSubmix() override;
 		virtual void ProcessSourceAudio(const FAudioPluginSourceInputData& InputData, FAudioPluginSourceOutputData& OutputData) override;
 		
 		void ProcessMixedAudio(const FSoundEffectSubmixInputData& InData, FSoundEffectSubmixOutputData& OutData);
 		void SetEnvironment(FEnvironment* InEnvironment);
 		void CreateReverbEffect();
-		void UpdateListener(const FVector& Position, const FVector& Forward, const FVector& Up);
+		void UpdateListener(const FVector& Position, const FVector& Forward, const FVector& Up, const FVector& Right);
 
 	private:
+		FSoundEffectSubmixPtr SubmixEffect;
+		TWeakObjectPtr<USoundSubmix> ReverbSubmix;
+
 		IPLhandle BinauralRenderer;
 		IPLhandle IndirectBinauralEffect;
 		IPLhandle IndirectPanningEffect;
@@ -54,7 +67,7 @@ namespace SteamAudio
 
 		IPLAudioBuffer IndirectOutBuffer;
 		int32 AmbisonicsChannels;
-		float** IndirectOutDeinterleaved;
+		IPLfloat32** IndirectOutDeinterleaved;
 		TArray<float> IndirectOutArray;
 
 		IPLAudioBuffer IndirectIntermediateBuffer;
@@ -68,13 +81,14 @@ namespace SteamAudio
 		FCriticalSection ListenerCriticalSection;
 		IPLVector3 ListenerPosition;
 		IPLVector3 ListenerForward;
+		IPLVector3 ListenerRight;
 		IPLVector3 ListenerUp;
+		bool bListenerInitialized;
 
 		EIplSpatializationMethod CachedSpatializationMethod;
 
 		TArray<FReverbSource> ReverbSources;
 
-		float ReverbIndirectContribution;
 		TArray<float> ReverbIndirectInArray;
 
 		TAudioPluginListenerPtr PluginManagerPtr;

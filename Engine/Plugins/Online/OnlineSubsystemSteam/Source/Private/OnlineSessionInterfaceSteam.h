@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -447,12 +447,7 @@ public:
 
 	virtual ~FOnlineSessionSteam() {}
 
-	virtual TSharedPtr<const FUniqueNetId> CreateSessionIdFromString(const FString& SessionIdStr) override
-	{
-		/* NYI */
-		TSharedPtr<const FUniqueNetId> SessionId;
-		return SessionId;
-	}
+	virtual TSharedPtr<const FUniqueNetId> CreateSessionIdFromString(const FString& SessionIdStr) override;
 
 	FNamedOnlineSession* GetNamedSession(FName SessionName) override
 	{

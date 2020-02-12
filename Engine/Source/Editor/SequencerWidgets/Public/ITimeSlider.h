@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -13,7 +13,6 @@
 #include "IMovieScenePlayer.h"
 
 class FSlateWindowElementList;
-class USequencerSettings;
 
 /** Enum specifying how to interpolate to a new view range */
 enum class EViewRangeInterpolation
@@ -28,7 +27,9 @@ DECLARE_DELEGATE_TwoParams( FOnScrubPositionChanged, FFrameTime, bool )
 DECLARE_DELEGATE_TwoParams( FOnViewRangeChanged, TRange<double>, EViewRangeInterpolation )
 DECLARE_DELEGATE_OneParam( FOnTimeRangeChanged, TRange<double> )
 DECLARE_DELEGATE_OneParam( FOnFrameRangeChanged, TRange<FFrameNumber> )
-DECLARE_DELEGATE_TwoParams( FOnMarkedFrameChanged, FFrameNumber, bool )
+DECLARE_DELEGATE_TwoParams(FOnSetMarkedFrame, int32, FFrameNumber)
+DECLARE_DELEGATE_OneParam(FOnAddMarkedFrame, FFrameNumber)
+DECLARE_DELEGATE_OneParam(FOnDeleteMarkedFrame, int32)
 DECLARE_DELEGATE_RetVal_TwoParams( FFrameNumber, FOnGetNearestKey, FFrameTime, bool )
 
 /** Structure used to wrap up a range, and an optional animation target */
@@ -72,7 +73,6 @@ struct FTimeSliderArgs
 		, ViewRange( FAnimatedRange(0.0f, 5.0f) )
 		, ClampRange( FAnimatedRange(-FLT_MAX/2.f, FLT_MAX/2.f) )
 		, AllowZoom(true)
-		, Settings(nullptr)
 	{}
 
 	/** The scrub position */
@@ -135,17 +135,29 @@ struct FTimeSliderArgs
 	/** Called right after the selection range has finished being dragged */
 	FSimpleDelegate OnSelectionRangeEndDrag;
 
+	/** Called right before a mark starts to be dragged */
+	FSimpleDelegate OnMarkBeginDrag;
+
+	/** Called right after a mark has finished being dragged */
+	FSimpleDelegate OnMarkEndDrag;
+
 	/** Attribute for the current sequence's vertical frames */
 	TAttribute<TSet<FFrameNumber>> VerticalFrames;
 
 	/** Attribute for the current sequence's marked frames */
 	TAttribute<TArray<FMovieSceneMarkedFrame>> MarkedFrames;
 
-	/** Called when the marked frames need to be updated */
-	FOnMarkedFrameChanged OnMarkedFrameChanged;
+	/** Called when the marked frame needs to be set */
+	FOnSetMarkedFrame OnSetMarkedFrame;
 
-	/** Called when all marked frames should be cleared */
-	FSimpleDelegate OnClearAllMarkedFrames;
+	/** Called when a marked frame is added */
+	FOnAddMarkedFrame OnAddMarkedFrame;
+
+	/** Called when a marked frame is deleted */
+	FOnDeleteMarkedFrame OnDeleteMarkedFrame;
+
+	/** Called when all marked frames should be deleted */
+	FSimpleDelegate OnDeleteAllMarkedFrames;
 
 	/** Round the scrub position to an integer during playback */
 	TAttribute<EMovieScenePlayerStatus::Type> PlaybackStatus;
@@ -162,18 +174,55 @@ struct FTimeSliderArgs
 	/** If we are allowed to zoom */
 	bool AllowZoom;
 
-	/** User-supplied settings object */
-	USequencerSettings* Settings;
-
 	/** Numeric Type interface for converting between frame numbers and display formats. */
 	TSharedPtr<INumericTypeInterface<double>> NumericTypeInterface;
 };
+
+struct FPaintPlaybackRangeArgs
+{
+	FPaintPlaybackRangeArgs()
+		: StartBrush(nullptr), EndBrush(nullptr), BrushWidth(0.f), SolidFillOpacity(0.f)
+	{}
+
+	FPaintPlaybackRangeArgs(const FSlateBrush* InStartBrush, const FSlateBrush* InEndBrush, float InBrushWidth)
+		: StartBrush(InStartBrush), EndBrush(InEndBrush), BrushWidth(InBrushWidth)
+	{}
+	/** Brush to use for the start bound */
+	const FSlateBrush* StartBrush;
+	/** Brush to use for the end bound */
+	const FSlateBrush* EndBrush;
+	/** The width of the above brushes, in slate units */
+	float BrushWidth;
+	/** level of opacity for the fill color between the range markers */
+	float SolidFillOpacity;
+};
+
+struct FPaintViewAreaArgs
+{
+	FPaintViewAreaArgs()
+		: bDisplayTickLines(false), bDisplayScrubPosition(false), bDisplayMarkedFrames(false)
+	{}
+
+	/** Whether to display tick lines */
+	bool bDisplayTickLines;
+	/** Whether to display the scrub position */
+	bool bDisplayScrubPosition;
+	/** Whether to display the marked frames */
+	bool bDisplayMarkedFrames;
+	/** Optional Paint args for the playback range*/
+	TOptional<FPaintPlaybackRangeArgs> PlaybackRangeArgs;
+};
+
 
 class ITimeSliderController : public ISequencerInputHandler
 {
 public:
 	virtual ~ITimeSliderController(){}
+
 	virtual int32 OnPaintTimeSlider( bool bMirrorLabels, const FGeometry& AllottedGeometry, const FSlateRect& MyCullingRect, FSlateWindowElementList& OutDrawElements, int32 LayerId, const FWidgetStyle& InWidgetStyle, bool bParentEnabled ) const = 0;
+
+	virtual int32 OnPaintViewArea( const FGeometry& AllottedGeometry, const FSlateRect& MyCullingRect, FSlateWindowElementList& OutDrawElements, int32 LayerId, bool bEnabled, const FPaintViewAreaArgs& Args ) const = 0;
+
 	virtual FCursorReply OnCursorQuery( TSharedRef<const SWidget> WidgetOwner, const FGeometry& MyGeometry, const FPointerEvent& CursorEvent ) const = 0;
 
 	/** Get the current play rate for this controller */
@@ -190,6 +239,12 @@ public:
 
 	/** Get the current play range for this controller */
 	virtual TRange<FFrameNumber> GetPlayRange() const { return TRange<FFrameNumber>(); }
+
+	/** Get the current time for the Scrub handle which indicates what range is being evaluated. */
+	virtual FFrameTime GetScrubPosition() const { return FFrameTime(); }
+
+	/** Set the current time for the Scrub handle which indicates what range is being evaluated. */
+	virtual void SetScrubPosition(FFrameTime InTime) {}
 
 	/**
 	 * Set a new range based on a min, max and an interpolation mode

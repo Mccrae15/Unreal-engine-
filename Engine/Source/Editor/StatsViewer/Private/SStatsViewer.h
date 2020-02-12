@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 #pragma once
 
 #include "CoreMinimal.h"
@@ -11,6 +11,8 @@
 #include "IStatsViewer.h"
 #include "IStatsPage.h"
 
+class FStatsPageManager;
+
 /**
  * Stats Viewer widget
  */
@@ -19,7 +21,7 @@ class SStatsViewer : public IStatsViewer
 public:
 
 	SLATE_BEGIN_ARGS( SStatsViewer ){}
-
+	SLATE_ARGUMENT(TSharedPtr< FStatsPageManager >, StatsPageManager)
 	SLATE_END_ARGS()
 
 	/**
@@ -42,6 +44,7 @@ public:
 	virtual void Refresh() override;
 	TSharedPtr< class IPropertyTable > GetPropertyTable() override;
 	int32 GetObjectSetIndex() const override;
+	void SwitchAndFilterPage(int32 Page, const FString& FilterValue, const FString& FilterProperty) override;
 	/** End IStatsViewer interface */
 
 private:
@@ -129,10 +132,16 @@ private:
 	/** We just clicked the export button */
 	FReply OnExportClicked();
 
+	/** Get a valid stats page manager */
+	FStatsPageManager& GetStatsPageManager() const;
+
 private:
 
 	/** Flag to refresh the table next tick */
 	bool bNeedsRefresh;
+
+	/** Flag to refresh the table triggered by a filter change */
+	bool bNeedsRefreshForFilterChange;
 
 	/** Timer to prevent constant update of the searched items when typing */
 	float SearchTextUpdateTimer;
@@ -158,6 +167,9 @@ private:
 	/** The current set of objects we are viewing */
 	TArray< TWeakObjectPtr<UObject> > CurrentObjects;
 
+	/** The last generated set of objects that will be used when refresh triggered by a filter change */
+	TArray< TWeakObjectPtr<UObject> > LastGeneratedObjectList;
+
 	/** The 'total' custom column used for displaying totals for properties that support the feature */
 	TSharedRef<class FStatsCustomColumn> CustomColumn;
 
@@ -166,5 +178,8 @@ private:
 
 	/** Container for custom filters supplied by stats pages */
 	TSharedPtr< SBorder > CustomFilter;
+
+	/** The page manager that is managing our pages. Can be invalid, in which case the global one will be used */
+	TSharedPtr < FStatsPageManager > StatsPageManagerPtr;
 };
 

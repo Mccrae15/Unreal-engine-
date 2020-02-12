@@ -1,26 +1,12 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "Misc/EngineVersion.h"
 #include "Misc/Guid.h"
+#include "Misc/LazySingleton.h"
 #include "Serialization/CustomVersion.h"
 #include "Runtime/Launch/Resources/Version.h"
 #include "UObject/ReleaseObjectVersion.h"
 #include "BuildSettings.h"
-
-// Global instance of the current engine version
-FEngineVersion FEngineVersion::CurrentVersion(ENGINE_MAJOR_VERSION, ENGINE_MINOR_VERSION, ENGINE_PATCH_VERSION, BuildSettings::GetCurrentChangelist() | (BuildSettings::IsLicenseeVersion()? (1U << 31) : 0), BuildSettings::GetBranchName());
-
-// Version which this engine maintains strict API and package compatibility with. By default, we always maintain compatibility with the current major/minor version, unless we're built at a different changelist.
-FEngineVersion FEngineVersion::CompatibleWithVersion(ENGINE_MAJOR_VERSION, ENGINE_MINOR_VERSION, 0, BuildSettings::GetCompatibleChangelist() | (BuildSettings::IsLicenseeVersion()? (1U << 31) : 0), BuildSettings::GetBranchName());
-
-
-FEngineVersionBase::FEngineVersionBase()
-: Major(0)
-, Minor(0)
-, Patch(0)
-, Changelist(0)
-{
-}
 
 FEngineVersionBase::FEngineVersionBase(uint16 InMajor, uint16 InMinor, uint16 InPatch, uint32 InChangelist)
 : Major(InMajor)
@@ -55,7 +41,7 @@ bool FEngineVersionBase::HasChangelist() const
 EVersionComparison FEngineVersionBase::GetNewest(const FEngineVersionBase &First, const FEngineVersionBase &Second, EVersionComponent *OutComponent)
 {
 	EVersionComponent LocalComponent = EVersionComponent::Minor;
-	auto& Component = OutComponent ? *OutComponent : LocalComponent;
+	EVersionComponent& Component = OutComponent ? *OutComponent : LocalComponent;
 
 	// Compare major versions
 	if (First.GetMajor() != Second.GetMajor())
@@ -94,11 +80,6 @@ uint32 FEngineVersionBase::EncodeLicenseeChangelist(uint32 Changelist)
 	return Changelist | 0x80000000;
 }
 
-
-FEngineVersion::FEngineVersion()
-{
-	Empty();
-}
 
 FEngineVersion::FEngineVersion(uint16 InMajor, uint16 InMinor, uint16 InPatch, uint32 InChangelist, const FString &InBranch)
 {
@@ -187,18 +168,36 @@ bool FEngineVersion::Parse(const FString &Text, FEngineVersion &OutVersion)
 	}
 
 	// Build the output version
-	OutVersion.Set(Major, Minor, Patch, Changelist, Branch);
+	OutVersion.Set((uint16)Major, (uint16)Minor, (uint16)Patch, (uint32)Changelist, Branch);
 	return true;
 }
 
+struct FGlobalEngineVersions
+{
+	const FEngineVersion Current;
+	const FEngineVersion CompatibleWith;
+
+	FGlobalEngineVersions()
+		: Current(ENGINE_MAJOR_VERSION, ENGINE_MINOR_VERSION, ENGINE_PATCH_VERSION,
+			BuildSettings::GetCurrentChangelist() | (BuildSettings::IsLicenseeVersion() ? (1U << 31) : 0), BuildSettings::GetBranchName())
+		, CompatibleWith(ENGINE_MAJOR_VERSION, ENGINE_MINOR_VERSION, (BuildSettings::IsLicenseeVersion() ? ENGINE_PATCH_VERSION : 0),
+			BuildSettings::GetCompatibleChangelist() | (BuildSettings::IsLicenseeVersion() ? (1U << 31) : 0), BuildSettings::GetBranchName())
+	{}
+};
+
 const FEngineVersion& FEngineVersion::Current()
 {
-	return CurrentVersion;
+	return TLazySingleton<FGlobalEngineVersions>::Get().Current;
 }
 
 const FEngineVersion& FEngineVersion::CompatibleWith()
 {
-	return CompatibleWithVersion;
+	return TLazySingleton<FGlobalEngineVersions>::Get().CompatibleWith;
+}
+
+void FEngineVersion::TearDown()
+{
+	TLazySingleton<FGlobalEngineVersions>::TearDown();
 }
 
 const FString& FEngineVersion::GetBranchDescriptor() const
@@ -213,12 +212,30 @@ void operator<<(FArchive &Ar, FEngineVersion &Version)
 
 void operator<<(FStructuredArchive::FSlot Slot, FEngineVersion &Version)
 {
-	FStructuredArchive::FRecord Record = Slot.EnterRecord();
-	Record << NAMED_ITEM("Major", Version.Major);
-	Record << NAMED_ITEM("Minor", Version.Minor);
-	Record << NAMED_ITEM("Patch", Version.Patch);
-	Record << NAMED_ITEM("Changelist", Version.Changelist);
-	Record << NAMED_ITEM("Branch", Version.Branch);
+	FArchive& BaseArchive = Slot.GetUnderlyingArchive();
+	if (BaseArchive.IsTextFormat())
+	{
+		if (BaseArchive.IsLoading())
+		{
+			FString VersionString;
+			Slot << VersionString;
+			FEngineVersion::Parse(VersionString, Version);
+		}
+		else
+		{
+			FString VersionString = Version.ToString();
+			Slot << VersionString;
+		}
+	}
+	else
+	{
+		FStructuredArchive::FRecord Record = Slot.EnterRecord();
+		Record << SA_VALUE(TEXT("Major"), Version.Major);
+		Record << SA_VALUE(TEXT("Minor"), Version.Minor);
+		Record << SA_VALUE(TEXT("Patch"), Version.Patch);
+		Record << SA_VALUE(TEXT("Changelist"), Version.Changelist);
+		Record << SA_VALUE(TEXT("Branch"), Version.Branch);
+	}
 }
 
 

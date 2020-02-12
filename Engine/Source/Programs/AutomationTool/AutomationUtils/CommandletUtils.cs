@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 using System;
 using System.Collections.Generic;
 using System.Linq;
@@ -163,7 +163,7 @@ namespace AutomationTool
         /// <param name="Maps">List of maps to cook, can be null in which case -MapIniSection=AllMaps is used.</param>
         /// <param name="TargetPlatform">Target platform.</param>
         /// <param name="Parameters">List of additional parameters.</param>
-        public static List<string> GenerateDistillFileSetsCommandlet(FileReference ProjectName, string ManifestFile, string UE4Exe = "UE4Editor-Cmd.exe", string[] Maps = null, string Parameters = "")
+        public static List<FileReference> GenerateDistillFileSetsCommandlet(FileReference ProjectName, string ManifestFile, string UE4Exe = "UE4Editor-Cmd.exe", string[] Maps = null, string Parameters = "")
         {
             string MapsToCook = "";
             if (!IsNullOrEmpty(Maps))
@@ -193,7 +193,7 @@ namespace AutomationTool
             {
                 throw new AutomationException("GenerateDistillFileSets for {0} did not produce any files.", ProjectName);
             }
-            var Result = new List<string>();
+            var Result = new List<FileReference>();
             foreach (var ThisFile in Lines)
             {
                 var TestFile = CombinePaths(ThisFile);
@@ -203,8 +203,8 @@ namespace AutomationTool
                 }
                 // we correct the case here
                 var TestFileInfo = new FileInfo(TestFile);
-                var FinalFile = CombinePaths(TestFileInfo.FullName);
-                if (!FileExists_NoExceptions(FinalFile))
+                var FinalFile = new FileReference(TestFileInfo);
+                if (!FileReference.Exists(FinalFile))
                 {
                     throw new AutomationException("GenerateDistillFileSets produced {0}, but {1} doesn't exist.", ThisFile, FinalFile);
                 }
@@ -419,7 +419,7 @@ namespace AutomationTool
 						ExitCodeDesc = String.Format(" (signal {0})", RunResult.ExitCode - 128);
 					}
 				}
-				throw new CommandletException(DestLogFile, RunResult.ExitCode, "Editor terminated with exit code {0}{1} while running {2}{3}; see log {4}", RunResult.ExitCode, ExitCodeDesc, Commandlet, (ProjectName == null)? "" : String.Format(" for {0}", ProjectName), DestLogFile);
+				throw new CommandletException(DestLogFile, RunResult.ExitCode, "Editor terminated with exit code {0}{1} while running {2}{3}; see log {4}", RunResult.ExitCode, ExitCodeDesc, Commandlet, (ProjectName == null)? "" : String.Format(" for {0}", ProjectName), DestLogFile) { OutputFormat = AutomationExceptionOutputFormat.Minimal };
 			}
 		}
 		
@@ -431,17 +431,19 @@ namespace AutomationTool
 		/// <returns>Path to the editor executable</returns>
 		public static string GetEditorCommandletExe(string BuildRoot, UnrealBuildTool.UnrealTargetPlatform HostPlatform)
 		{
-			switch(HostPlatform)
+			if (HostPlatform == UnrealBuildTool.UnrealTargetPlatform.Mac)
 			{
-				case UnrealBuildTool.UnrealTargetPlatform.Mac:
-					return CommandUtils.CombinePaths(BuildRoot, "Engine/Binaries/Mac/UE4Editor.app/Contents/MacOS/UE4Editor");
-				case UnrealBuildTool.UnrealTargetPlatform.Win64:
-					return CommandUtils.CombinePaths(BuildRoot, "Engine/Binaries/Win64/UE4Editor-Cmd.exe");
-				case UnrealBuildTool.UnrealTargetPlatform.Linux:
-					return CommandUtils.CombinePaths(BuildRoot, "Engine/Binaries/Linux/UE4Editor");
-				default:
-					throw new AutomationException("EditorCommandlet is not supported for platform {0}", HostPlatform);
+				return CommandUtils.CombinePaths(BuildRoot, "Engine/Binaries/Mac/UE4Editor.app/Contents/MacOS/UE4Editor");
 			}
+			if (HostPlatform == UnrealBuildTool.UnrealTargetPlatform.Win64)
+			{
+				return CommandUtils.CombinePaths(BuildRoot, "Engine/Binaries/Win64/UE4Editor-Cmd.exe");
+			}
+			if (HostPlatform == UnrealBuildTool.UnrealTargetPlatform.Linux)
+			{
+				return CommandUtils.CombinePaths(BuildRoot, "Engine/Binaries/Linux/UE4Editor");
+			}
+			throw new AutomationException("EditorCommandlet is not supported for platform {0}", HostPlatform);
 		}
 
 		/// <summary>

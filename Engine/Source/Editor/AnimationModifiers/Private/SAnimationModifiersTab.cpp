@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "SAnimationModifiersTab.h"
 
@@ -15,10 +15,10 @@
 #include "ClassViewerFilter.h"
 #include "PropertyEditorModule.h"
 #include "IDetailsView.h"
-#include "Dialogs/Dialogs.h"
+#include "Misc/MessageDialog.h"
 #include "Editor.h"
 #include "ScopedTransaction.h"
-#include "Toolkits/AssetEditorManager.h"
+
 #include "Editor.h"
 #include "Widgets/Input/SComboButton.h"
 #include "Widgets/Input/SButton.h"
@@ -26,6 +26,7 @@
 #include "Widgets/Input/SMenuAnchor.h"
 #include "Engine/BlueprintGeneratedClass.h"
 #include "AnimationModifierHelpers.h"
+#include "Subsystems/AssetEditorSubsystem.h"
 
 #define LOCTEXT_NAMESPACE "SAnimationModifiersTab"
 
@@ -39,9 +40,8 @@ SAnimationModifiersTab::~SAnimationModifiersTab()
 	if (GEditor)
 	{
 		GEditor->UnregisterForUndo(this);
+		GEditor->GetEditorSubsystem<UAssetEditorSubsystem>()->OnAssetOpenedInEditor().RemoveAll(this);	
 	}
-
-	FAssetEditorManager::Get().OnAssetOpenedInEditor().RemoveAll(this);	
 }
 
 void SAnimationModifiersTab::Tick(const FGeometry& AllottedGeometry, const double InCurrentTime, const float InDeltaTime)
@@ -142,6 +142,7 @@ void SAnimationModifiersTab::Construct(const FArguments& InArgs)
 							.Items(&ModifierItems)
 							.InstanceDetailsView(ModifierInstanceDetailsView)
 							.OnApplyModifier(FOnModifierArray::CreateSP(this, &SAnimationModifiersTab::OnApplyModifier))
+							.OnCanRevertModifier(FOnCanModifierArray::CreateSP(this, &SAnimationModifiersTab::OnCanRevertModifier))
 							.OnRevertModifier(FOnModifierArray::CreateSP(this, &SAnimationModifiersTab::OnRevertModifier))
 							.OnRemoveModifier(FOnModifierArray::CreateSP(this, &SAnimationModifiersTab::OnRemoveModifier))
 							.OnOpenModifier(FOnSingleModifier::CreateSP(this, &SAnimationModifiersTab::OnOpenModifier))
@@ -172,7 +173,7 @@ void SAnimationModifiersTab::Construct(const FArguments& InArgs)
 	{
 		GEditor->RegisterForUndo(this);
 	}
-	FAssetEditorManager::Get().OnAssetOpenedInEditor().AddSP(this, &SAnimationModifiersTab::OnAssetOpened);
+	GEditor->GetEditorSubsystem<UAssetEditorSubsystem>()->OnAssetOpenedInEditor().AddSP(this, &SAnimationModifiersTab::OnAssetOpened);
 }
 
 void SAnimationModifiersTab::OnModifierPicked(UClass* PickedClass)
@@ -317,9 +318,30 @@ void SAnimationModifiersTab::OnRevertModifier(const TArray<TWeakObjectPtr<UAnima
 	RevertModifiers(ModifierInstances);
 }
 
+bool SAnimationModifiersTab::OnCanRevertModifier(const TArray<TWeakObjectPtr<UAnimationModifier>>& Instances)
+{
+	bool bCanRevert = false;
+
+	for (TWeakObjectPtr<UAnimationModifier> InstancePtr : Instances)
+	{
+		checkf(InstancePtr.IsValid(), TEXT("Invalid weak object ptr to modifier instance"));
+		UAnimationModifier* Instance = InstancePtr.Get();
+
+		// At least one instance has to be revert-able
+		if (Instance->CanRevert())
+		{
+			bCanRevert = true;
+			break;
+		}
+	}
+
+	return bCanRevert;
+}
+
 void SAnimationModifiersTab::OnRemoveModifier(const TArray<TWeakObjectPtr<UAnimationModifier>>& Instances)
 {
-	const bool bShouldRevert = OpenMsgDlgInt(EAppMsgType::YesNo, LOCTEXT("RemoveAndRevertPopupText", "Should the Modifiers be reverted before removing them?"), FText::FromString("Revert before Removing")) == EAppReturnType::Yes;
+	const FText Title = FText::FromString("Revert before Removing");
+	const bool bShouldRevert = FMessageDialog::Open(EAppMsgType::YesNo, LOCTEXT("RemoveAndRevertPopupText", "Should the Modifiers be reverted before removing them?"), &Title) == EAppReturnType::Yes;
 
 	FScopedTransaction Transaction(LOCTEXT("RemoveModifiersTransaction", "Removing Animation Modifier(s)"));	
 	AssetUserData->Modify();
@@ -360,7 +382,7 @@ void SAnimationModifiersTab::OnOpenModifier(const TWeakObjectPtr<UAnimationModif
 		UBlueprint* Blueprint = Cast<UBlueprint>(BPGeneratedClass->ClassGeneratedBy);
 		if (Blueprint)
 		{
-			FAssetEditorManager::Get().OpenEditorForAsset(Blueprint);
+			GEditor->GetEditorSubsystem<UAssetEditorSubsystem>()->OpenEditorForAsset(Blueprint);
 		}
 	}
 }
@@ -417,7 +439,8 @@ void SAnimationModifiersTab::ApplyModifiers(const TArray<UAnimationModifier*>& M
 	else if (Skeleton != nullptr)
 	{
 		// Double check with the user for applying all modifiers to referenced animation sequences for the skeleton
-		bApply = OpenMsgDlgInt(EAppMsgType::YesNo, LOCTEXT("ApplyingSkeletonModifierPopupText", "Are you sure you want to apply the modifiers to all animation sequences referenced by the current skeleton?"), FText::FromString("Are you sure?")) == EAppReturnType::Yes;
+		const FText Title = FText::FromString("Are you sure?");
+		bApply = FMessageDialog::Open(EAppMsgType::YesNo, LOCTEXT("ApplyingSkeletonModifierPopupText", "Are you sure you want to apply the modifiers to all animation sequences referenced by the current skeleton?"), &Title) == EAppReturnType::Yes;
 		
 		if (bApply)
 		{
@@ -457,7 +480,8 @@ void SAnimationModifiersTab::RevertModifiers(const TArray<UAnimationModifier*>& 
 	else if (Skeleton != nullptr)
 	{
 		// Double check with the user for reverting all modifiers from referenced animation sequences for the skeleton
-		bRevert = OpenMsgDlgInt(EAppMsgType::YesNo, LOCTEXT("RevertingSkeletonModifierPopupText", "Are you sure you want to revert the modifiers from all animation sequences referenced by the current skeleton?"), FText::FromString("Are you sure?")) == EAppReturnType::Yes;
+		const FText Title = FText::FromString("Are you sure?");
+		bRevert = FMessageDialog::Open(EAppMsgType::YesNo, LOCTEXT("RevertingSkeletonModifierPopupText", "Are you sure you want to revert the modifiers from all animation sequences referenced by the current skeleton?"), &Title) == EAppReturnType::Yes;
 
 		if ( bRevert)
 		{

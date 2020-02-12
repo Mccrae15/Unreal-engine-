@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 /*=============================================================================
 	ApexDestructibleAssetImport.cpp:
@@ -766,6 +766,8 @@ bool SetApexDestructibleAsset(UDestructibleMesh& DestructibleMesh, apex::Destruc
 {
 	DestructibleMesh.PreEditChange(NULL);
 
+	DestructibleMesh.InvalidateDeriveDataCacheGUID();
+
 	ExistingDestMeshData * ExistDestMeshDataPtr = nullptr;
 	if(Options & EDestructibleImportOptions::PreserveSettings)
 	{
@@ -912,6 +914,8 @@ bool SetApexDestructibleAsset(UDestructibleMesh& DestructibleMesh, apex::Destruc
 		IMeshUtilities::MeshBuildOptions BuildOptions;
 		BuildOptions.bComputeNormals = !bHaveNormals;
 		BuildOptions.bComputeTangents = !bHaveTangents;
+		BuildOptions.bUseMikkTSpace = true;
+		BuildOptions.bComputeWeightedNormals = true;
 
 		// Create actual rendering data.
 		if (!MeshUtilities.BuildSkeletalMesh(DestructibleMeshResource.LODModels[0], DestructibleMesh.RefSkeleton, LODInfluences,LODWedges,LODFaces,LODPoints,LODPointToRawMap,BuildOptions))

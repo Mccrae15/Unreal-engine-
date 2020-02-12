@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -19,7 +19,8 @@ public:
 	virtual void PostEditChangeProperty(FPropertyChangedEvent& PropertyChangedEvent) override;
 
 	// UTakeRecorderSource Interface
-	virtual FString GetSubsceneName(ULevelSequence* InSequence) const override;
+	virtual FString GetSubsceneTrackName(ULevelSequence* InSequence) const override;
+	virtual FString GetSubsceneAssetName(ULevelSequence* InSequence) const override;
 	// ~UTakeRecorderSource Interface
 
 	/** Name of the recorded level visibility track name */
@@ -28,7 +29,7 @@ public:
 };
 
 /** A recording source that records level visibility state */
-UCLASS(DisplayName="Level Visibility", Category="Other", config = EditorSettings)
+UCLASS(Category="Other", config = EditorSettings, meta = (TakeRecorderDisplayName = "Level Visibility"))
 class UTakeRecorderLevelVisibilitySource : public UTakeRecorderLevelVisibilitySourceSettings
 {
 public:
